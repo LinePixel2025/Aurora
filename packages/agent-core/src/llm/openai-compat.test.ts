@@ -1,7 +1,13 @@
+import { createServer, type Server } from 'node:http'
 import { describe, expect, it } from 'vitest'
 import { OpenAiCompatProvider, normalizeBaseUrl, statusToCode } from './openai-compat.js'
 import { isLlmError } from './types.js'
 import { collect, createFetchStub, sseLine } from '../testing/fetchStub.js'
+
+/** 启动测试用本地 HTTP 服务并等它真正开始监听 */
+function listen(server: Server): Promise<void> {
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+}
 
 function provider(
   responses: Parameters<typeof createFetchStub>[0],
@@ -198,6 +204,48 @@ describe('OpenAiCompatProvider.listModels / testConnection', () => {
     ])
     expect(stub.calls[0]?.method).toBe('GET')
     expect(stub.calls[0]?.url).toBe('https://api.deepseek.com/v1/models')
+  })
+
+  it('GET /models 不携带请求体', async () => {
+    const { instance, stub } = provider([{ json: { data: [{ id: 'deepseek-chat' }] } }])
+    await instance.listModels()
+    // 给 GET 挂 body 会被 undici 直接拒绝（Request with GET/HEAD method cannot have body.）
+    expect(stub.calls[0]?.body).toBeUndefined()
+  })
+
+  it('真实 fetch（undici）下 GET /models 可用：回归「GET 带 body」崩溃', async () => {
+    const received: Array<{ method: string; url: string; bytes: number }> = []
+    const server = createServer((req, res) => {
+      received.push({ method: req.method ?? '', url: req.url ?? '', bytes: 0 })
+      req.on('data', (chunk: Buffer) => {
+        const last = received[received.length - 1]
+        if (last) last.bytes += chunk.length
+      })
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ data: [{ id: 'local-model' }] }))
+      })
+    })
+    await listen(server)
+    try {
+      const address = server.address()
+      if (address === null || typeof address === 'string') throw new Error('无法获取测试服务端口')
+      // 注意：不注入 fetchImpl，走真实 undici —— 这正是单测替身覆盖不到的地方
+      const instance = new OpenAiCompatProvider({
+        id: 'local',
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: 'sk-test',
+        defaultModel: 'local-model',
+        maxRetries: 0,
+      })
+      const models = await instance.listModels()
+      expect(models).toEqual([{ id: 'local-model' }])
+      expect(received[0]?.method).toBe('GET')
+      expect(received[0]?.url).toBe('/v1/models')
+      expect(received[0]?.bytes).toBe(0)
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
   })
 
   it('测试连接成功返回延迟与模型数', async () => {

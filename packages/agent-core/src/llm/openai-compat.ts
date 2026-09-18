@@ -43,6 +43,13 @@ const RETRYABLE: ReadonlySet<LlmErrorCode> = new Set<LlmErrorCode>([
   'E_SERVER',
 ])
 
+/**
+ * GET / HEAD 语义上不允许携带请求体：带了会被 undici 直接拒绝
+ * （`Request with GET/HEAD method cannot have body.`），而且该错误会被归类成可重试的
+ * E_NETWORK，白等一轮指数退避。这里统一兜底，调用方误传 body 也不会发出去。
+ */
+const BODYLESS_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD'])
+
 export class OpenAiCompatProvider implements LlmProvider {
   readonly id: string
   private readonly baseUrl: string
@@ -70,7 +77,7 @@ export class OpenAiCompatProvider implements LlmProvider {
   }
   async listModels(): Promise<ModelInfo[]> {
     const response = await this.fetchWithPolicy(
-      this.createRequest('GET', '/models', {}, 'application/json'),
+      this.createRequest('GET', '/models', undefined, 'application/json'),
     )
     const payload = (await response.json()) as {
       data?: Array<{ id?: unknown; owned_by?: unknown }>
@@ -280,7 +287,9 @@ export class OpenAiCompatProvider implements LlmProvider {
       const response = await this.fetchImpl(request.url, {
         method: request.method,
         headers: request.headers,
-        ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
+        ...(request.body === undefined || BODYLESS_METHODS.has(request.method)
+          ? {}
+          : { body: JSON.stringify(request.body) }),
         signal: controller.signal,
       })
       if (!response.ok) {
