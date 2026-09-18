@@ -60,6 +60,17 @@ export interface LlmProvider {
 - 失败降级：未配置可用模型时立即返回 `E_NO_MODEL`（不发起网络请求）；
   LLM 错误码（`E_AUTH` / `E_RATE_LIMIT` / `E_TIMEOUT` / `E_NETWORK` …）原样透传为 `error` 事件。
 
+> **敏感工具确认已落地（v0.5.0）**：
+> - 内核新增可选钩子 `AgentLoopOptions.confirmTool({ name, input, sessionId, sensitivity })`；
+>   在 `sensitivity === 'confirm'` 且钩子存在时，**先确认再执行**。返回 `false` →
+>   不执行工具、以「用户拒绝执行」文本回填模型、工具卡片置 `error`、**循环继续**
+>   （模型可改走别的路径或向用户说明）。
+> - **确认链路本身抛错按拒绝处理**：确认交互不可用时宁可不执行敏感操作。
+> - **未注入钩子时保持 P3 行为**（不拦截，仅留痕）——避免 P3 的 MCP 路径在确认载体
+>   尚未接好时意外变成"必然被拒"。
+> - 主进程侧由 `ProactiveScheduler` 承载（见 §9），60s 超时、勿扰时段一律按拒绝；
+>   设置项 `advanced.confirmSensitiveTools` 可整体关闭，且**每次调用即时判断**（改设置无需重启）。
+
 ## 6. Skill 系统
 
 - **结构**：`SKILL.md`（frontmatter：`name` / `description` / `when_to_use` + 正文指令）+ 可选 `scripts/`。
@@ -104,24 +115,53 @@ export interface LlmProvider {
 |---|---|---|---|
 | 当前时间 / 星期 / 日期 | 进程内定时器 | 分钟级 | 课程表、问候语 |
 | 电源状态（AC / 电池 / 电量） | systeminformation | 状态变化 + 5min | 低电量提醒等主动服务 |
-| 网络连通性 | 系统探测 | 变化触发 | 联网任务前置检查 |
-| 前台窗口 / 应用 | active-win（PowerShell 回退） | 5s | 上下文感知（“我在写什么”） |
-| 显示器 / 屏幕状态 | Electron API | 变化触发 | 窗口贴边策略 |
-| 课程表（ClassRoom） | manual / ClassIsland | 事件驱动 | 课前提醒 |
+| 网络连通性 | 系统探测（DNS） | 30s | 联网任务前置检查 |
+| 前台窗口 / 应用 | PowerShell 探针（`GetForegroundWindow` + `GetWindowTextW` + 进程名） | 5s | 上下文感知（“我在写什么”） |
+| 显示器 / 屏幕状态 | Electron `screen`（主进程注入） | 摘要即时读取 | 窗口贴边策略 |
+| 课程表（ClassRoom） | `manual` provider / ClassIsland（P7 占位） | 摘要即时读取 + 课前轮询（30s） | 课前提醒、`timetable` Skill |
+
+- 前台窗口**不引入 `active-win`**：该原生模块预编译产物杀软误报多（03 §3），v1 直接用 PowerShell 探针；
+  探针 stdout 由**导出的纯函数** `parseForegroundProbe` 解析，因此解析逻辑可单测、
+  探测失败只降级为 `unknown`（ADR-007）。
+- ClassIsland 联动（`provider: 'classisland'`）是 P7 项：当前返回空课程表，**不抛错、不阻塞**（见 05 §3.4）。
 
 ### 8.2 实现与消费
 
-- 统一 `PerceptionProvider` 接口，采集器注册制、独立调度（见 ADR-007）；数据存环形缓冲（当前值 + 最近 10 条）。
+- `PerceptionHub`（`apps/desktop/src/main/perception.ts`）逐项独立调度（见 ADR-007），
+  且**不依赖 Electron**：前台窗口探针、显示器（`displayProvider`）、课程表（`scheduleProvider`）
+  全部经构造参数注入；未注入或采集失败时该项保留在 `unknown`。
+- **降级契约（ADR-007）**：任何采集失败都只记 debug 日志并把该项留在 `unknown`，
+  `summary()` 永不抛错；采集成功的项一律从 `unknown` 中移除。
 - **三类消费**：
-  1. **上下文注入**：组装系统提示词时附感知摘要（时间、电量、网络、前台应用等）；
-  2. **事件总线**：模式 / 触发器订阅（如课前 5 分钟事件）；
-  3. **工具查询**：`system-status` Skill 直接读取当前值回答用户。
+  1. **上下文注入**：`contextSummary()` 生成系统提示词片段（时间 / 电源 / 网络 / 前台应用 / 显示器 / 今日课程）；
+  2. **事件总线**：课前 5 分钟触发（§9）、模式 / 触发器订阅；
+  3. **工具查询**：`system-status` / `timetable` Skill 直接读取当前值回答用户。
 
 ## 9. 主动引导（Proactive）
 
 - 触发器注册表：首次安装未完成、模式引导未完成、分类完成通知、课前 5 分钟……
-- 调度策略：单次最多触发一条（队列排队）；支持勿扰时段；全部触发器可配置开关。
+  调度策略：单次最多触发一条（队列排队）；支持勿扰时段；全部触发器可配置开关。
 - 载体：打开 / 聚焦 AI 交互窗口，以 AI 消息开场（对话式收集，见 05 §2）。
+
+### 9.1 已落地（P5）
+
+| 触发器 | 实现 | 载体 |
+|---|---|---|
+| 课前 5 分钟 | `PreClassReminder`（`pre-class-reminder.ts`）+ 纯函数 `preClassTrigger` | 系统通知 + 自动打开科目文件夹 |
+| 敏感工具确认 | `ProactiveScheduler`（`proactive.ts`）+ IPC `proactive:sensitiveTool` / `proactive:resolveSensitiveTool` | 交互窗确认卡片 |
+| 模式引导 / 分类完成 | 模式系统（05 §1）与分类管线（05 §3.3）各自触发 | 交互窗 AI 消息 / 系统通知 |
+
+- **敏感工具确认（§5）**：工具 `sensitivity === 'confirm'` 时（MCP 工具一律如此）先推送
+  `SensitiveToolRequest`（`confirmId` / `expiresAt`），渲染层回执后放行或拒绝；
+  **超时（默认 60s）、勿扰时段、卡片推送失败一律按拒绝处理**，会话 abort / 退出时
+  `rejectAll()` 让在途确认立即失败，避免工具永久挂起。设置项
+  `advanced.confirmSensitiveTools` 关闭时直接放行（内核仍按 `sensitivity` 写日志留痕）。
+- **课前提醒**：默认每 30s 检查一次课程表，命中「课前 5 分钟」窗口时发系统通知并自动打开
+  该科目文件夹（`explorer`）。同一节课以 `<weekday>-<startTime>-<subject>` 去重、只提醒一次；
+  支持**启动补偿**（启动时已进入窗口，例如只剩 2 分钟）与**跨天**（23:5x 时次日 00:0x 的课）；
+  多节课同时进入窗口时按剩余时间升序提醒。勿扰时段静默跳过；通知 / 打开文件夹失败只降级为日志。
+- **勿扰时段**：`isQuietHour` 纯函数判定（支持跨天，如 22:30–07:00）；时段缺失或时间非法时不静默。
+- 未完成项（P7）：ClassIsland 联动、Work / Code Mode 的日程与待办类新触发器。
 
 ## 10. 安全
 

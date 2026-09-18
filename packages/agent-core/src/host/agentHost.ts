@@ -40,6 +40,16 @@ export interface AgentHostDeps {
   maxChars?: number
   /** 工具调用轮次上限 */
   maxRounds?: number
+  /**
+   * 敏感工具执行前的用户确认（docs/06 §5）。
+   * 未注入时保持 v0.3.0 行为（不拦截，仅由 `onToolCall` 留痕）。
+   */
+  confirmTool?(info: {
+    name: string
+    input: unknown
+    sessionId: string
+    sensitivity: 'confirm'
+  }): Promise<boolean>
 }
 
 export const ERROR_NO_MODEL = 'E_NO_MODEL'
@@ -188,6 +198,7 @@ export class KernelAgentHost implements AgentHostContract {
         sessionId,
         signal: input.controller.signal,
         ...(this.deps.maxRounds === undefined ? {} : { maxRounds: this.deps.maxRounds }),
+        ...(this.deps.confirmTool === undefined ? {} : { confirmTool: this.deps.confirmTool }),
         append: (message: NewMessage) => this.deps.sessions.append(sessionId, message),
         updateToolCall: (messageId: string, call: StoredToolCall) =>
           this.deps.sessions.updateToolCall(messageId, call),

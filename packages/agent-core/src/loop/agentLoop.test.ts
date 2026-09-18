@@ -437,4 +437,194 @@ describe('runAgentLoop', () => {
     )
     expect(rec.toolLog).toEqual([{ name: 'echo', sensitivity: 'safe', isError: false }])
   })
+
+  describe('confirmTool（敏感工具确认，docs/06 §5）', () => {
+    /** 注册一个 sensitivity=confirm 的工具，并记录它是否真的被执行 */
+    function registryWithSensitive(executed: { count: number }): ToolRegistry {
+      const tools = new ToolRegistry()
+      tools.register({
+        name: 'danger',
+        description: '危险操作',
+        parameters: { type: 'object', properties: {} },
+        sensitivity: 'confirm',
+        execute: async () => {
+          executed.count += 1
+          return { content: '已执行危险操作', summary: '已执行' }
+        },
+      })
+      return tools
+    }
+
+    async function runWithConfirm(options: {
+      executed: { count: number }
+      confirmTool?: (info: {
+        name: string
+        input: unknown
+        sessionId: string
+        sensitivity: 'confirm'
+      }) => Promise<boolean>
+    }): Promise<{ events: AgentLoopEvent[]; rec: ReturnType<typeof createRecorder> }> {
+      const rec = createRecorder()
+      const provider = createFakeProvider([
+        { toolCalls: [{ id: 'c1', name: 'danger', arguments: '{"path":"D:\\\\x"}' }] },
+        { text: '收到' },
+      ])
+      const events = await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: '删掉它',
+          history: [],
+          tools: registryWithSensitive(options.executed),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+          onToolCall: (info) => rec.toolLog.push(info),
+          ...(options.confirmTool === undefined ? {} : { confirmTool: options.confirmTool }),
+        }),
+      )
+      return { events, rec }
+    }
+
+    it('用户允许 → 工具真的执行', async () => {
+      const executed = { count: 0 }
+      const seen: Array<{ name: string; sessionId: string; sensitivity: string }> = []
+      const { events } = await runWithConfirm({
+        executed,
+        confirmTool: async (info) => {
+          seen.push({ name: info.name, sessionId: info.sessionId, sensitivity: info.sensitivity })
+          return true
+        },
+      })
+
+      expect(executed.count).toBe(1)
+      expect(seen).toEqual([{ name: 'danger', sessionId: 'quick', sensitivity: 'confirm' }])
+      const states = events
+        .filter((event) => event.type === 'tool')
+        .map((event) => event.call.state)
+      expect(states).toEqual(['running', 'success'])
+      expect(events.at(-1)?.type).toBe('done')
+    })
+
+    it('用户拒绝 → 工具不执行，卡片 error，且循环继续让模型收尾', async () => {
+      const executed = { count: 0 }
+      const { events, rec } = await runWithConfirm({
+        executed,
+        confirmTool: async () => false,
+      })
+
+      expect(executed.count).toBe(0)
+      const states = events
+        .filter((event) => event.type === 'tool')
+        .map((event) => event.call.state)
+      expect(states).toEqual(['running', 'error'])
+      // 拒绝文本回填给模型，而不是直接中断
+      const toolMessage = rec.messages.find((message) => message.role === 'tool')
+      expect(toolMessage?.content).toContain('用户拒绝执行')
+      expect(events.at(-1)?.type).toBe('done')
+      // 工具留痕标记为失败
+      expect(rec.toolLog).toEqual([{ name: 'danger', sensitivity: 'confirm', isError: true }])
+    })
+
+    it('确认链路抛错 → 按拒绝处理（不越权执行）', async () => {
+      const executed = { count: 0 }
+      const { events } = await runWithConfirm({
+        executed,
+        confirmTool: async () => {
+          throw new Error('确认通道断了')
+        },
+      })
+
+      expect(executed.count).toBe(0)
+      const states = events
+        .filter((event) => event.type === 'tool')
+        .map((event) => event.call.state)
+      expect(states).toEqual(['running', 'error'])
+    })
+
+    it('未注入 confirmTool → 保持 v0.3.0 行为（不拦截，直接执行）', async () => {
+      const executed = { count: 0 }
+      const { events } = await runWithConfirm({ executed })
+
+      expect(executed.count).toBe(1)
+      const states = events
+        .filter((event) => event.type === 'tool')
+        .map((event) => event.call.state)
+      expect(states).toEqual(['running', 'success'])
+    })
+
+    it('confirmTool 收到解析后的参数对象（不是原始字符串）', async () => {
+      const executed = { count: 0 }
+      let received: unknown
+      await runWithConfirm({
+        executed,
+        confirmTool: async (info) => {
+          received = info.input
+          return true
+        },
+      })
+      expect(received).toEqual({ path: 'D:\\x' })
+    })
+
+    it('safe 级工具不触发确认', async () => {
+      const rec = createRecorder()
+      const provider = createFakeProvider([
+        { toolCalls: [{ id: 'c', name: 'echo', arguments: '{"text":"hi"}' }] },
+        { text: 'ok' },
+      ])
+      let confirmCalls = 0
+      await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: 'x',
+          history: [],
+          tools: registryWithEcho(),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+          confirmTool: async () => {
+            confirmCalls += 1
+            return false
+          },
+        }),
+      )
+      expect(confirmCalls).toBe(0)
+      expect(rec.messages.find((m) => m.role === 'tool')?.content).toBe('echo:hi')
+    })
+
+    it('参数不是合法 JSON 时先报错，不触发确认', async () => {
+      const executed = { count: 0 }
+      const rec = createRecorder()
+      const provider = createFakeProvider([
+        { toolCalls: [{ id: 'c1', name: 'danger', arguments: '{坏 JSON' }] },
+        { text: '收到' },
+      ])
+      let confirmCalls = 0
+      const events = await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: 'x',
+          history: [],
+          tools: registryWithSensitive(executed),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+          confirmTool: async () => {
+            confirmCalls += 1
+            return true
+          },
+        }),
+      )
+      expect(confirmCalls).toBe(0)
+      expect(executed.count).toBe(0)
+      expect(
+        events.filter((event) => event.type === 'tool').map((event) => event.call.state),
+      ).toEqual(['running', 'error'])
+    })
+  })
 })

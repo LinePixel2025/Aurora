@@ -8,7 +8,16 @@
 import { existsSync, promises as fs, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { BrowserWindow, app, dialog, session } from 'electron'
+import {
+  BrowserWindow,
+  Notification,
+  app,
+  dialog,
+  screen,
+  session,
+  shell,
+  utilityProcess,
+} from 'electron'
 import {
   KernelAgentHost,
   SessionStore,
@@ -34,10 +43,20 @@ import { FileLogger } from './logger.js'
 import { createSafeStorageCrypto } from './crypto.js'
 import { WindowManager } from './window-manager.js'
 import { PerceptionHub } from './perception.js'
-import { DesktopAgentHost, createProviderFactory } from './agent-host.js'
+import { DesktopAgentHost, createConfirmTool, createProviderFactory } from './agent-host.js'
 import { McpController } from './mcp.js'
 import { LlmTester } from './llm-tester.js'
 import { registerIpc, type DesktopDeps } from './ipc.js'
+import type { ProactiveLike } from './contracts.js'
+import { ProactiveScheduler } from './proactive.js'
+import { PreClassReminder } from './pre-class-reminder.js'
+import { resolveScheduleProvider } from './schedule.js'
+import { resolveSubjectFolder } from './paths.js'
+import { AuroraFileWatcher } from './file-watcher.js'
+import { ExtractPool, type ExtractWorkerChild } from './extract-pool.js'
+import { ClassificationHistory } from './classification-history.js'
+import { ClassificationService, type ClassifyProviderFactory } from './classification.js'
+import { NotificationService } from './notifications.js'
 import { UpdateService } from './updater.js'
 import { createUpdaterPort } from './updater-port.js'
 import { createTray, type TrayController } from './tray.js'
@@ -45,6 +64,20 @@ import { SMOKE_FLAG, SMOKE_RESULT_PREFIX, smokeScript } from './smoke.js'
 import { STUB_API_KEY, STUB_MODEL, startStubLlmServer, type StubLlmServer } from './smoke-llm.js'
 
 const isDev = !app.isPackaged
+
+/**
+ * 自测模式（`AURORA_SMOKE=1`，仅开发态）。
+ * 用来关闭有副作用的行为（如真的弹出资源管理器）并开放诊断回执。
+ */
+const smokeMode = isDev && process.env['AURORA_SMOKE'] === '1'
+
+/** 自测诊断：课前提醒触发记录（最新在前） */
+const preClassFired: Array<{
+  subject: string
+  minutesUntil: number
+  targetDir: string
+  opened: boolean
+}> = []
 
 /**
  * 用户数据目录固定为 `%APPDATA%/Aurora`（docs/08 §2）。
@@ -94,6 +127,13 @@ let agent: DesktopAgentHost | undefined
 let sessions: SessionStore | undefined
 let mcp: McpController | undefined
 let updater: UpdateService | undefined
+/** 分类管线（docs/05 §3）：监听 → 队列 → 提取 → 判定 → 落盘 → 通知 */
+let classification: ClassificationService | undefined
+let fileWatcher: AuroraFileWatcher | undefined
+let extractPool: ExtractPool | undefined
+let notifications: NotificationService | undefined
+let proactiveScheduler: ProactiveScheduler | undefined
+let preClassReminder: PreClassReminder | undefined
 let disposeIpc: (() => void) | undefined
 /** MCP 状态订阅（IPC 层与主进程内部共用，避免为状态再引入一次事件总线） */
 const mcpStatusListeners = new Set<(statuses: McpServerStatus[]) => void>()
@@ -194,8 +234,35 @@ async function bootstrap(): Promise<void> {
     logger.warn('safeStorage 不可用，API Key 仅驻留内存')
   }
 
-  // 3. 系统感知（P1：时间 / 电源 / 网络）
-  perception = new PerceptionHub({ logger: logger.child('perception') })
+  // 3. 系统感知（docs/06 §8.1）：时间 / 电源 / 网络 / 前台窗口 / 显示器 / 课程表
+  //    显示器与课程表的数据源在主进程侧（Electron screen / 模式配置），以注入方式提供，
+  //    使 `perception.ts` 保持不依赖 Electron、可单测。
+  perception = new PerceptionHub({
+    logger: logger.child('perception'),
+    displayProvider: () => {
+      try {
+        const displays = screen.getAllDisplays()
+        const primary = screen.getPrimaryDisplay()
+        return {
+          width: primary.size.width,
+          height: primary.size.height,
+          scaleFactor: primary.scaleFactor,
+          count: displays.length,
+        }
+      } catch (error) {
+        logger?.debug('显示器信息不可用，已降级为未知', { error: String(error) })
+        return undefined
+      }
+    },
+    scheduleProvider: async () => {
+      try {
+        return await resolveScheduleProvider(settings!.get().modes.classroom).getToday(new Date())
+      } catch (error) {
+        logger?.debug('课程表不可用，已降级为未知', { error: String(error) })
+        return undefined
+      }
+    },
+  })
   perception.start()
 
   // 4. 窗口
@@ -310,6 +377,26 @@ async function bootstrap(): Promise<void> {
   })
   await mcp.start()
 
+  // 7.1 主动引导 / 敏感工具确认（docs/06 §5、§9）——必须在内核之前装配：
+  //     内核的 `confirmTool` 钩子需要它作为确认载体。
+  proactiveScheduler = new ProactiveScheduler({
+    quietHours: () => settings!.get().advanced.quietHours,
+    logger: logger.child('proactive'),
+    // 推送本身走 IPC 广播（见 ipc.ts 的 proactive.sensitiveTool），
+    // 但必须**先把交互窗显示出来**：否则用户在服务窗发起请求后交互窗若未打开，
+    // 确认卡片无处可显示，60s 后会被当作拒绝——静默失败最难排查。
+    present: () => {
+      windows?.showChat()
+      windows?.focus('chat')
+    },
+  })
+  const confirmTool = createConfirmTool({
+    proactive: proactiveScheduler,
+    // 每次调用即时判断：设置页改开关无需重启
+    enabled: () => settings!.get().advanced.confirmSensitiveTools,
+    logger: logger.child('confirm'),
+  })
+
   const kernel = new KernelAgentHost({
     sessions,
     provider: createProviderFactory(settings, logger.child('llm')),
@@ -318,6 +405,7 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('agent'),
     modePrompt: () => modes.systemPrompt(),
     perceptionSummary: () => perception?.contextSummary() ?? Promise.resolve(''),
+    confirmTool,
   })
   agent = new DesktopAgentHost({
     settings,
@@ -325,16 +413,121 @@ async function bootstrap(): Promise<void> {
     perception,
     logger: logger.child('agent-host'),
     kernel,
+    confirmTool,
   })
   const llm = new LlmTester({ settings, logger: logger.child('llm') })
 
-  // 7.2 自动更新（docs/09）：electron-updater 适配层 + 状态机
+  // 7.2 分类管线装配（docs/05 §3、docs/02 §5.2）
+  //     chokidar 监听 → 并发队列 → utilityProcess 内容提取 → 规则/LLM 判定 → 落盘 → 通知
+  notifications = new NotificationService({
+    logger: logger.child('notify'),
+    present: createNotificationPresenter(),
+    openPath: (target) =>
+      shell.openPath(target).then((error) => {
+        if (error !== '') throw new Error(error)
+      }),
+  })
+  extractPool = new ExtractPool({
+    fork: () =>
+      utilityProcess.fork(join(__dirname, 'extract-worker.js'), [], {
+        serviceName: 'aurora-extract',
+      }) as unknown as ExtractWorkerChild,
+    logger: logger.child('extract'),
+  })
+  const classificationHistory = new ClassificationHistory({
+    dir: userData,
+    logger: logger.child('classification-history'),
+  })
+  await classificationHistory.init()
+  classification = new ClassificationService({
+    getSettings: () => settings!.get(),
+    extract: (input) => extractPool!.extract(input),
+    // 复用 Agent 的 provider 工厂：模型 / Key 改动后分类立即跟着变
+    providerFactory: createClassifyFactory(createProviderFactory(settings, logger.child('llm'))),
+    history: classificationHistory,
+    notifications: notifications,
+    fs: {
+      exists: async (path) => {
+        try {
+          await fs.access(path)
+          return true
+        } catch {
+          return false
+        }
+      },
+      ensureDir: async (path) => {
+        await fs.mkdir(path, { recursive: true })
+      },
+      rename: async (from, to) => {
+        await fs.rename(from, to)
+      },
+      copy: async (from, to) => {
+        await fs.copyFile(from, to)
+      },
+      remove: async (path) => {
+        await fs.rm(path, { force: true })
+      },
+      sizeOf: async (path) => {
+        try {
+          const stat = await fs.stat(path)
+          return stat.isDirectory() ? undefined : stat.size
+        } catch {
+          return undefined
+        }
+      },
+    },
+    logger: logger.child('classification'),
+    suppressPath: (path) => fileWatcher?.suppress(path),
+  })
+
+  fileWatcher = new AuroraFileWatcher({ logger: logger.child('watcher') })
+  fileWatcher.onAdd((file) => classification?.handleFile(file))
+
+  // 7.3 自动更新（docs/09）：electron-updater 适配层 + 状态机
   updater = new UpdateService({
     port: createUpdaterPort(logger.child('updater')),
     currentVersion: app.getVersion(),
     logger: logger.child('updater'),
     // 自测/发布验证用：允许把"启动后延迟自动检查"调短（默认 20s）
     ...(readAutoCheckDelay() === undefined ? {} : { autoCheckDelayMs: readAutoCheckDelay() }),
+  })
+
+  // 7.5 课前提醒（docs/05 §3.4）：按课程表在课前 5 分钟通知并打开科目文件夹
+  //
+  // 自测（smokeMode）下把"打开文件夹"记为**真实回执**而不是真的弹资源管理器：
+  // 无头/CI 环境弹出资源管理器没有意义，但"到底有没有调用打开"必须可观测，
+  // 否则"自动打开科目文件夹"这条验收就只能靠看代码。
+  let preClassOpened = false
+  preClassReminder = new PreClassReminder({
+    // 每次检查重新解析：`resolveScheduleProvider` 是**按值快照**的，
+    // 只构造一次会导致"设置页改完课程表要重启才生效"。
+    getProvider: () => resolveScheduleProvider(settings!.get().modes.classroom),
+    enabled: () => settings!.get().modes.classroom.preClassReminder,
+    quietHours: () => settings!.get().advanced.quietHours,
+    notify: (title, body, openPath) => notify(title, body, openPath),
+    openPath: async (target) => {
+      if (smokeMode) {
+        preClassOpened = true
+        logger?.info('自测：跳过真实打开文件夹，已记录回执', { target })
+        return
+      }
+      const error = await shell.openPath(target)
+      if (error !== '') throw new Error(error)
+    },
+    resolveSubjectDir: (subjectName) => {
+      const classroom = settings!.get().modes.classroom
+      const subject = classroom.subjects.find((item) => item.name === subjectName)
+      return resolveSubjectFolder(classroom.watchDir, subject?.folder ?? '')
+    },
+    logger: logger.child('pre-class'),
+    ...(smokeMode
+      ? {
+          onFired: (info: { subject: string; minutesUntil: number; targetDir: string }) => {
+            preClassFired.unshift({ ...info, opened: preClassOpened })
+            if (preClassFired.length > 10) preClassFired.length = 10
+          },
+        }
+      : {}),
   })
 
   const deps: DesktopDeps = {
@@ -347,6 +540,8 @@ async function bootstrap(): Promise<void> {
     llm,
     skills,
     sessions,
+    classification,
+    proactive: adaptProactive(proactiveScheduler),
     mcpStatus: () => mcp?.statuses() ?? [],
     onMcpStatusChanged: (listener) => {
       mcpStatusListeners.add(listener)
@@ -358,24 +553,38 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('ipc'),
     paths,
     isDev,
+    smokeMode,
+    smokeDiagnostics: () => ({
+      enabled: true,
+      preClassFired: smokeMode ? [...preClassFired] : undefined,
+    }),
     onQuit: () => app.quit(),
     onSettingsChanged: (next) => {
       if (!next.general.edgeBar.enabled) windows?.hide('edge-bar')
       syncLaunchAtLogin(next.general.launchAtLogin)
       tray?.refresh()
+      // 感知文件夹 / 科目 / 阈值变更后，让分类管线按新配置重新武装
+      syncClassification()
     },
   }
   disposeIpc = registerIpc(deps)
 
   // 8. 托盘
   tray = createTray(deps, resolveTrayIcon())
-  modes.onChange(() => tray?.refresh())
+  modes.onChange(() => {
+    tray?.refresh()
+    // 切到 / 离开 ClassRoom 都要调整文件监听
+    syncClassification()
+  })
   settings.onChange(() => tray?.refresh())
 
-  // 8.1 开机自启：必须在 ready 之后调用（docs/04 §P1）
+  // 8.1 分类管线：按当前模式与感知文件夹启动监听并武装队列（docs/05 §3.1）
+  syncClassification()
+
+  // 8.2 开机自启：必须在 ready 之后调用（docs/04 §P1）
   syncLaunchAtLogin(settings.get().general.launchAtLogin)
 
-  // 8.2 自动更新：延迟静默检查（不阻塞启动），并在有更新时通知托盘
+  // 8.3 自动更新：延迟静默检查（不阻塞启动），并在有更新时通知托盘
   updater.scheduleAutoCheck()
 
   // 9. 首次引导 / 正常启动
@@ -414,6 +623,7 @@ async function runSmokeTest(userData: string): Promise<void> {
 
   // 1. 启本地桩 LLM，并把配置指向它（凭据走 safeStorage 加密路径）
   let stub: StubLlmServer | undefined
+  let watchDir = ''
   try {
     stub = await startStubLlmServer(logger?.child('smoke-llm'))
     const smokePatch: SettingsPatch = {
@@ -435,6 +645,10 @@ async function runSmokeTest(userData: string): Promise<void> {
     // 自测断言依赖确定的会话长度：每次运行前清空快速会话
     await sessions?.clear('quick')
     await sessions?.flush()
+    // P4/P5 断言的前置：把感知文件夹指向本轮临时目录、配好科目与一节即将开始的课。
+    // 待分类文件**不在这里**预放——由渲染层脚本在订阅事件后经 app:smokeDropFile 实时投放，
+    // 这样验证的是真实的 chokidar add 链路（而不是启动扫描）。
+    watchDir = await seedSmokeClassroom(userData)
     await settings?.flush()
   } catch (error) {
     logger?.error('自测准备失败：无法启动桩 LLM 服务', { error: String(error) })
@@ -445,7 +659,7 @@ async function runSmokeTest(userData: string): Promise<void> {
   let payload: { results?: Array<{ name: string; ok: boolean; detail: string }>; fatal?: string }
   try {
     payload = (await target.webContents.executeJavaScript(
-      smokeScript(stub.baseUrl, STUB_MODEL),
+      smokeScript(stub.baseUrl, STUB_MODEL, watchDir),
       true,
     )) as typeof payload
   } catch (error) {
@@ -466,16 +680,19 @@ async function runSmokeTest(userData: string): Promise<void> {
   }
 
   // 2. 主进程侧断言：工具循环真的走了两轮，且第二轮带回了 tool 结果
-  const chatRequests = stub.requests.filter((item) => item.path.endsWith('/chat/completions'))
+  //    只统计**对话**请求：分类管线也会打桩服务，不能混在一起数。
+  const chatRequests = stub.chatRequestCount()
   // 第一轮 2 次（工具调用 + 最终回复）、第二轮 1 次（纯文本）= 3 次；
   // "第二次请求带回 tool 结果"证明工具循环真实走通。
-  record(
-    '桩 LLM 收到 3 轮 chat 请求（工具循环成立）',
-    chatRequests.length === 3,
-    `count=${chatRequests.length}`,
-  )
+  record('桩 LLM 收到 3 轮 chat 请求（工具循环成立）', chatRequests === 3, `count=${chatRequests}`)
   record('第二次请求带回了 tool 结果', stub.sawToolResult(), '')
   record('请求携带了工具清单（use_skill 已注册）', stub.sawTools(), '')
+  // 分类管线确实调用过模型（低置信文件走了 LLM 分支）
+  record(
+    '分类管线调用过模型（结构化输出）',
+    stub.classifyRequestCount() > 0,
+    `classify=${stub.classifyRequestCount()}`,
+  )
 
   for (const item of results) {
     const line = `${item.ok ? 'PASS' : 'FAIL'} ${item.name}${item.detail === '' ? '' : ` — ${item.detail}`}`
@@ -527,13 +744,70 @@ async function runSmokeTest(userData: string): Promise<void> {
   app.exit(failed.length === 0 ? 0 : 2)
 }
 
+/**
+ * 自测前置（仅 `AURORA_SMOKE=1`，docs/04 §P4/§P5 验收）：
+ * 1. 把感知文件夹指向自测临时目录（不碰开发者的真实目录）；
+ * 2. 科目只留「数学 / 物理 / 语文」，使断言不受默认九科模板干扰；
+ * 3. 放一节 **4 分钟后开始** 的数学课，让课前 5 分钟窗口立刻命中
+ *    （无需等待真实课前时间）。
+ *
+ * **刻意不预先放入待分类文件**：文件由渲染层脚本经 `app:smokeDropFile` 在
+ * 订阅了分类事件之后写入，这样才真正验证了「新文件拖入 → 自动归类」的
+ * 实时链路（chokidar add），而不是启动时的兜底扫描。
+ */
+async function seedSmokeClassroom(userData: string): Promise<string> {
+  const watchDir = join(userData, '感知文件夹')
+  await fs.mkdir(watchDir, { recursive: true })
+
+  // 2. 一节 3 分钟后开始的课：落在课前 5 分钟窗口内，
+  //    首轮 tick（默认 30s 间隔）就会命中，无需等待真实时刻
+  const startTime = new Date(Date.now() + 3 * 60_000)
+  const clock = `${pad2(startTime.getHours())}:${pad2(startTime.getMinutes())}`
+
+  settings?.mutate((draft) => {
+    draft.modes.current = 'classroom'
+    draft.modes.classroom.watchDir = watchDir
+    draft.modes.classroom.subjects = [
+      { name: '数学', folder: '分类/数学', keywords: ['方程'] },
+      { name: '物理', folder: '分类/物理', keywords: ['电路'] },
+      { name: '语文', folder: '分类/语文', keywords: [] },
+    ]
+    draft.modes.classroom.preClassReminder = true
+    draft.modes.classroom.schedule = {
+      provider: 'manual',
+      lessons: [
+        {
+          weekday: startTime.getDay(),
+          startTime: clock,
+          endTime: `${pad2(startTime.getHours())}:${pad2(startTime.getMinutes())}`,
+          subject: '数学',
+        },
+      ],
+    }
+  })
+  logger?.info('自测已配置 ClassRoom（待分类文件由渲染层实时投放）', { watchDir, lesson: clock })
+  return watchDir
+}
+
+function pad2(value: number): string {
+  return `${value}`.padStart(2, '0')
+}
+
 async function shutdown(): Promise<void> {
   logger?.info('Aurora 退出中')
   disposeIpc?.()
   perception?.stop()
   agent?.dispose()
   updater?.dispose()
+  // 主动引导：让在途的敏感工具确认立即失败，不留下悬挂的 Promise
+  proactiveScheduler?.dispose()
+  preClassReminder?.stop()
   windows?.prepareQuit()
+  // 分类管线：先停监听（不再进新文件），再排在途任务，最后落盘流水
+  await fileWatcher?.stop().catch(() => undefined)
+  await classification?.drain().catch(() => undefined)
+  await classification?.close().catch(() => undefined)
+  extractPool?.close()
   // 会话与 MCP 子进程必须在退出前收尾（docs/06 §4 / §7）
   await sessions?.flush().catch((error: unknown) => {
     logger?.warn('退出前落盘会话失败', { error: String(error) })
@@ -565,9 +839,103 @@ function syncLaunchAtLogin(enabled: boolean): void {
   }
 }
 
+/**
+ * `ProactiveScheduler` → IPC 依赖面（`ProactiveLike`）的适配。
+ *
+ * 只做命名对齐（`onSensitiveTool` ↔ `onRequest`）：调度器是纯 `agent-core` 风格的
+ * 业务实现，IPC 契约用的是名字更中性的 `onRequest`，两者不必强绑。
+ */
+function adaptProactive(scheduler: ProactiveScheduler): ProactiveLike {
+  return {
+    requestSensitiveToolConfirm: (input) => scheduler.requestSensitiveToolConfirm(input),
+    resolve: (confirmId, approved) => scheduler.resolve(confirmId, approved),
+    rejectAll: (reason) => scheduler.rejectAll(reason),
+    onRequest: (listener) => scheduler.onRequest(listener),
+  }
+}
+
+/**
+ * 让分类管线与当前配置对齐（docs/05 §3.1）：
+ * 仅在 ClassRoom 激活且已配置感知文件夹时监听；否则停掉，避免无谓的 I/O。
+ * 感知文件夹变化时重建监听（`watch()` 本身幂等）。
+ */
+function syncClassification(): void {
+  const service = classification
+  const watcher = fileWatcher
+  if (service === undefined || watcher === undefined || settings === undefined) return
+
+  const current = settings.get()
+  const classroom = current.modes.classroom
+  const shouldWatch = current.modes.current === 'classroom' && classroom.watchDir !== ''
+
+  // 课前提醒与分类监听同源：都由「当前是否处于 ClassRoom 且配置就绪」决定
+  if (shouldWatch) preClassReminder?.start()
+  else preClassReminder?.stop()
+
+  if (!shouldWatch) {
+    void watcher.stop()
+    service.reconfigure()
+    return
+  }
+  if (watcher.watchDir === classroom.watchDir) {
+    service.reconfigure()
+    return
+  }
+  void watcher
+    .watch(classroom.watchDir)
+    .then(() => service.reconfigure())
+    .catch((error: unknown) => {
+      logger?.warn('启动文件监听失败（分类功能不可用，不影响其它功能）', {
+        error: String(error),
+      })
+    })
+}
+
+/** 模式层（`ModeWindowPort`）发起的通知（docs/05 §3.3）。 */
 function notify(title: string, body: string, openPath?: string): void {
-  // P1 仅日志；系统通知与点击打开文件夹在 P4 分类管线落地
-  logger?.info('通知', { title, body, openPath })
+  if (notifications === undefined) {
+    logger?.info('通知（通知服务尚未就绪）', { title, body, openPath })
+    return
+  }
+  notifications.notify({ title, body, ...(openPath === undefined ? {} : { openPath }) })
+}
+
+/** 系统通知载体（docs/05 §3.3）。展示失败返回 false，由 NotificationService 记日志降级。 */
+function createNotificationPresenter(): (request: {
+  title: string
+  body: string
+  openPath?: string
+}) => boolean {
+  return (request) => {
+    if (!Notification.isSupported()) return false
+    try {
+      const notification = new Notification({ title: request.title, body: request.body })
+      notification.on('click', () => {
+        void notifications?.handleClick(request.openPath)
+      })
+      notification.show()
+      return true
+    } catch (error) {
+      logger?.warn('系统通知不可用，已降级为日志', { error: String(error) })
+      return false
+    }
+  }
+}
+
+/**
+ * 把 Agent 的 provider 工厂适配成分类管线需要的形状（docs/05 §3.2 ②）。
+ * `OpenAiCompatProvider.chat()` 已满足 `ClassifyProvider`，这里只做结构收窄。
+ */
+function createClassifyFactory(
+  factory: ReturnType<typeof createProviderFactory>,
+): ClassifyProviderFactory {
+  return {
+    create: () => {
+      const config = factory.create()
+      if (config === undefined) return undefined
+      return { provider: config.provider, model: config.model }
+    },
+  }
 }
 
 /** `AURORA_UPDATE_AUTODELAY_MS`：仅用于自测/发布验证，缩短启动后的自动检查延迟 */

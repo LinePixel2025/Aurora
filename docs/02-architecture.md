@@ -57,8 +57,14 @@
 | `window-manager` | 窗口创建 / 显隐 / 置顶 / 贴边 / 多显示器位置记忆 |
 | `settings-store` | 配置读写、schema 校验、版本迁移、safeStorage 凭据 |
 | `mode-manager` | 模式注册表、切换流程、引导状态（见 05） |
-| `file-watcher` | 智慧感知文件夹监听、稳定判定、分类队列（见 05 §3） |
+| `file-watcher` | 智慧感知文件夹监听、稳定判定、抑制自触发（见 05 §3.1） |
+| `classification` + `classify/*` | 分类队列、规则缓存、LLM 判定、科目映射与落盘（见 05 §3.2） |
+| `classification-history` | 分类流水持久化（`userData/classification.json`，见 08 §1.2） |
+| `extract` / `extract-worker` / `extract-pool` | 内容提取（utilityProcess 隔离、超时与降级） |
+| `notifications` | 系统通知与点击打开路径（分类完成 / 待分类 / 课前提醒） |
 | `perception` | 系统感知采集器注册与调度（见 06 §8） |
+| `schedule` / `pre-class-reminder` | 课程表 provider 与课前 5 分钟提醒（见 05 §3.4） |
+| `proactive` | 主动引导调度与敏感工具确认（勿扰时段、超时按拒绝，见 06 §9） |
 | `agent-host` | 装配 agent-core 与 modes，向渲染层暴露统一 API |
 | `ipc` | IPC 通道注册（契约见 §6） |
 
@@ -125,9 +131,16 @@ aurora/
 
 ```
 chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
-  → 内容提取（utilityProcess）→ LLM 分类（结构化输出）→ 科目映射
-  → 移动文件 + 写分类历史 → 系统通知 + 交互窗分类流水推送
+  → 规则命中？（科目名 / 关键词 / 用户修正沉淀）
+      ├─ 命中 → 科目目录（跳过 LLM，省 token）
+      └─ 未命中 → 内容提取（utilityProcess）→ LLM 结构化分类 → 阈值判定
+  → 移动文件 + 写分类流水 → 系统通知 + 交互窗分类流水推送
+  → 低于阈值 / 失败 → 「待分类」兜底 + 请用户确认通知
 ```
+
+> **实现说明（v0.4.0）**：队列、规则、判定、落盘、流水、通知各为一个可单测模块；
+> 提取在 `utilityProcess` 内（第二个 main 构建入口 `out/main/extract-worker.js`）。
+> 无可用模型时在提取**之前**即兜底；提取失败降级为「文件名证据」而不中断管线。
 
 ### 5.3 主动引导流
 

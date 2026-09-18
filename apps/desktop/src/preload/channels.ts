@@ -23,6 +23,8 @@ const CHANNELS = {
     quit: 'app:quit',
     openLogs: 'app:openLogs',
     openPath: 'app:openPath',
+    smokeDiagnostics: 'app:smokeDiagnostics',
+    smokeDropFile: 'app:smokeDropFile',
   },
   settings: {
     get: 'settings:get',
@@ -69,6 +71,17 @@ const CHANNELS = {
     abort: 'chat:abort',
     history: 'chat:history',
     event: 'chat:event',
+  },
+  classification: {
+    history: 'classification:history',
+    state: 'classification:state',
+    correct: 'classification:correct',
+    clear: 'classification:clear',
+    event: 'classification:event',
+  },
+  proactive: {
+    sensitiveTool: 'proactive:sensitiveTool',
+    resolveSensitiveTool: 'proactive:resolveSensitiveTool',
   },
   mcp: {
     status: 'mcp:status',

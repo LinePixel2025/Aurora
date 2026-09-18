@@ -90,10 +90,40 @@ export interface ModeGuide {
    - 高频分类沉淀为本地规则（如“文件名含‘数学’→ 数学”），命中规则跳过 LLM；
    - 用户修正分类时同步更新规则与历史。
 
+> **实现说明（v0.4.0）** —— 落地位置与几处工程决策：
+>
+> | 环节 | 实现 | 要点 |
+> |---|---|---|
+> | 监听 / 稳定判定 | `main/file-watcher.ts`（chokidar） | `depth: 0`（科目文件夹在感知文件夹内，递归会造成自触发）、`awaitWriteFinish` 等价「连续两次 stat 尺寸不变」、忽略隐藏 / `~$*` / `*.tmp` / `*.crdownload` / `Thumbs.db`；**抑制集** + **监听代次**双重防回环（旧 watcher 的迟到事件按代次丢弃）。`ignoreInitial: false`：Aurora 启动前就已拖入的文件同样要归类 |
+> | 队列 | `main/classify/queue.ts` | 并发 2、同路径去重、单文件失败不影响队列；每阶段发事件供渲染层实时刷新 |
+> | 内容提取 | `main/extract.ts`（纯逻辑）+ `extract-worker.ts`（utilityProcess 入口）+ `extract-pool.ts`（主进程侧池） | 用 **officeparser@7.8.0** 解析 pdf/docx/pptx/xlsx 等；txt/md/csv 自行读取（含 UTF-8/UTF-16/GBK 嗅探）；图片给尺寸、压缩包给条目清单；证据按**字节**做 head 70% + tail 30% 截断（只留头会丢文末结论、只留尾会丢标题线索）。超时 15s、崩溃重启、`import()` 懒加载；**任何失败都降级为「文件名证据」，绝不中断管线** |
+> | 规则 | `main/classify/rules.ts` | 优先级：科目名字面命中(0.95) > 配置关键词(0.92) > 用户修正沉淀的学习规则(0.90)；不同科目同权重并列时**放弃并交给模型**（不猜）。规则只处理文件名（读内容就不省成本了） |
+> | LLM 分类 | `main/classify/llm.ts` | 复用 OpenAI 兼容 provider 的 `response_format: json_object`；解析失败**降温度重试一次**，仍失败按未判定处理；科目必须在配置列表内；输出用括号平衡法抽取（能正确处理 `reason` 里的 `}`） |
+> | 落盘 | `main/classify/paths.ts` | 优先 `rename`；失败回退 `copy` + **大小校验**后删源（校验不过则保留原文件并报错）；重名加 ` (1)`/` (2)`；`classification.autoMove=false` 时只记流水不动文件 |
+> | 流水 | `main/classification-history.ts` | `userData/classification.json`，上限 500 条，原子写 + 300ms 防抖 + 损坏备份重建；写盘**串行化**（并发写会共用同一临时文件互相破坏，且先发起的写完成时会用旧快照清掉 `dirty` 导致丢数据） |
+> | 通知 | `main/notifications.ts` | `Notification` + 点击打开目标文件夹；3s 去重；不可用时降级为日志并计数（自测据此断言） |
+> | 装配 | `main/classification.ts` | 未配置可用模型时**在提取之前**就兜底（不去解析几十 MB 的 PDF 只为发现无法判定）；判定完成后 `movedTo` / `reason`（含降级告警）全部落到流水，可追溯 |
+>
+> **与文档的一处差异**：`AutoMove` 关闭时不会移动文件，只记录流水并标注原因——这是设置页可选项，
+> 默认 `true`（与本文档一致）。
+>
+> **尚未实现**：用户修正后的「反哺规则」已落地（见 3.2 ④ 与 §3.3），
+> 但**修正历史不参与跨启动的规则重建之外的学习**（不做基于内容的相似度学习）。
+
 ### 3.3 通知与交互
 
 - 分类完成 → 系统通知（“《xxx.pdf》已分类到 数学/”），点击通知打开对应文件夹。
 - AI 交互窗口展示**分类流水**（时间 / 文件 / 科目 / 依据），支持用户就地修正。
+
+> **实现说明（v0.4.0）**：
+> - 通知分两类：判定成功 → 「分类完成」（点击打开科目目录）；兜底 / 失败 → 「需要你确认分类」
+>   （点击打开「待分类」目录）。二者都带 3s 去重。
+> - 分类流水在 **AI 交互窗口的可折叠区块**（`renderer/shared/components/ClassificationLedger.vue`）
+>   展示，挂载时经 `classification:history` + `classification:state` 水合，之后由
+>   `classification:event` 实时追加；每行可「改到其他科目」（`classification:correct`）
+>   与「打开所在文件夹」。
+> - 修正会把文件移到新科目、把该条标记 `corrected: true`，并由修正记录**沉淀为学习规则**
+>   （见 §3.2 ④）——同一类文件名再次出现时 `source` 为 `rule`，不再消耗模型调用。
 
 ### 3.4 上课前自动打开科目文件夹
 
@@ -103,9 +133,17 @@ export interface ModeGuide {
 ```ts
 export interface IScheduleProvider {
   id: 'manual' | 'classisland';
-  getToday(): Promise<Lesson[]>; // Lesson: { subject, startTime, endTime }
+  getToday(now: Date): Promise<Lesson[]>; // Lesson: { subject, startTime, endTime }
 }
 ```
+
+> **实现说明（v0.5.0）**：`IScheduleProvider` 落地在 `apps/desktop/src/main/schedule.ts`，
+> 除 `manual` 与 `classisland` 占位实现外，另导出纯函数 `preClassTrigger()`（判定「课前进度窗口内
+> 应触发哪些课」，处理跨天、非法时间、同一节课只触发一次、**应用启动时的补偿触发**）、
+> `parseClock()`、`lessonKey()` 与 `needsNextDayLessons()`。
+> 定时与副作用在 `pre-class-reminder.ts`（30s tick）：命中后先记 `firedKeys` 再发通知 / 打开目录，
+> 因此通知或打开失败都不会每 30s 重复刷屏；受 `modes.classroom.preClassReminder` 与勿扰时段约束。
+> 与 OCR、ClassIsland 相关的接口仍为预留。
 
 ## 4. Work Mode / Code Mode 接口预留
 

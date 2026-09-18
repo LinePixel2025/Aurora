@@ -28,6 +28,32 @@ export interface AgentHostOptions {
   logger: Logger
   /** 已装配好的内核 AgentHost（由 index.ts 构造） */
   kernel: AgentHost
+  /**
+   * 敏感工具确认（docs/06 §5）。运行时由主进程注入内核的 `runAgentLoop.confirmTool`；
+   * 未提供时保持 P3 行为（仅按 `sensitivity` 留痕、不阻断执行）。
+   */
+  confirmTool?: ConfirmToolDecision
+}
+
+/**
+ * 敏感工具执行前的用户确认回调（docs/06 §5）。
+ * 形状与 `@aurora/agent-core` 的 `AgentLoopOptions.confirmTool` 一致：
+ * 由内核在工具 `sensitivity === 'confirm'` 时调用，`false` 表示用户拒绝执行。
+ */
+export type ConfirmToolDecision = (info: {
+  name: string
+  input: unknown
+  sessionId: string
+  sensitivity: 'confirm'
+}) => Promise<boolean>
+
+/** 确认载体（结构上由 `proactive.ts` 的 `ProactiveScheduler` 满足） */
+export interface SensitiveToolConfirmerLike {
+  requestSensitiveToolConfirm(input: {
+    sessionId: string
+    toolName: string
+    input: unknown
+  }): Promise<boolean>
 }
 
 /**
@@ -61,6 +87,14 @@ export class DesktopAgentHost implements AgentHost {
     return () => {
       this.listeners.delete(listener)
     }
+  }
+
+  /**
+   * 敏感工具确认钩子：由 `index.ts` 在装配内核时交给 `KernelAgentHost`，
+   * 再由内核透传给 `runAgentLoop`（docs/06 §5）。未配置时为 `undefined`。
+   */
+  get confirmTool(): ConfirmToolDecision | undefined {
+    return this.options.confirmTool
   }
 
   /** 供设置页 / 诊断使用：当前系统提示词预览。 */
@@ -140,6 +174,36 @@ export function createProviderFactory(
         temperature: config.temperature,
       }
     },
+  }
+}
+
+/**
+ * 把主动引导的确认载体适配成内核需要的 `confirmTool` 钩子（docs/06 §5）。
+ *
+ * - 设置项 `advanced.confirmSensitiveTools` 关闭时**每次调用即时判断**并直接放行
+ *   （改设置无需重启；内核仍会按 `sensitivity` 写日志留痕）；
+ * - 确认链路自身失败时按"拒绝"处理：确认交互不可用时宁可不执行敏感工具。
+ */
+export function createConfirmTool(options: {
+  proactive: SensitiveToolConfirmerLike
+  enabled: () => boolean
+  logger?: Logger
+}): ConfirmToolDecision {
+  return async (info) => {
+    if (!options.enabled()) return true
+    try {
+      return await options.proactive.requestSensitiveToolConfirm({
+        sessionId: info.sessionId,
+        toolName: info.name,
+        input: info.input,
+      })
+    } catch (error) {
+      options.logger?.warn('敏感工具确认链路失败，按拒绝处理', {
+        tool: info.name,
+        error: String(error),
+      })
+      return false
+    }
   }
 }
 

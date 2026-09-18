@@ -6,6 +6,7 @@ import type { Result } from '../utils/result.js'
 import type {
   AdvancedSettings,
   GeneralSettings,
+  Lesson,
   LlmSettings,
   ModeId,
   Settings,
@@ -36,6 +37,26 @@ export interface OpenPathRequest {
   kind: 'logs' | 'config' | 'watchDir' | 'subject'
   /** kind = subject 时使用：科目名 */
   subject?: string
+}
+
+/**
+ * 仅开发态自测用的诊断信息（`AURORA_SMOKE=1`）。
+ *
+ * 存在的理由：像"课前提醒真的触发过并打开了科目文件夹"这类**主进程内部副作用**
+ * 无法从渲染层观察（自测里不能用真实 `shell.openPath` 弹资源管理器），
+ * 又必须被端到端断言覆盖，因此留这一个只读回执口。
+ * 生产环境（未打包开发态之外）一律返回 `enabled: false`，不暴露任何信息。
+ */
+export interface SmokeDiagnostics {
+  enabled: boolean
+  /** 课前提醒触发记录（最新在前） */
+  preClassFired?: Array<{
+    subject: string
+    minutesUntil: number
+    targetDir: string
+    /** 是否已调用过打开目录 */
+    opened: boolean
+  }>
 }
 
 // ───────────────────────── 设置 ─────────────────────────
@@ -223,8 +244,75 @@ export interface PerceptionSummary {
   weekday: string
   battery?: { hasBattery: boolean; percent: number; isCharging: boolean }
   network?: { online: boolean; type: string }
+  /** 前台应用与窗口标题（docs/06 §8.1） */
+  foreground?: { app: string; title: string }
+  /** 主显示器状态（docs/06 §8.1） */
+  display?: { width: number; height: number; scaleFactor: number; count: number }
+  /** 今天剩余的课程（来自课程表 provider，docs/05 §3.4） */
+  lessons?: Lesson[]
   /** 未实现的采集项统一为 unknown，绝不抛错（ADR-007） */
   unknown: string[]
+}
+
+// ───────────────────────── 分类管线（docs/05 §3） ─────────────────────────
+
+/** 单个文件的处理阶段；`fallback` = 进「待分类」，`skipped` = 无需处理/文件已消失 */
+export type ClassificationState =
+  'queued' | 'extracting' | 'classifying' | 'moving' | 'done' | 'fallback' | 'skipped' | 'error'
+
+/** 判定来源：规则命中 / 模型判定 / 兜底 / 用户修正 */
+export type ClassificationSource = 'rule' | 'llm' | 'fallback' | 'user'
+
+/** 一条分类流水（持久化为 `userData/classification.json`） */
+export interface ClassificationRecord {
+  id: string
+  /** ISO 时间戳 */
+  occurredAt: string
+  path: string
+  fileName: string
+  ext: string
+  sizeBytes: number
+  /** 判定出的科目名；空串表示未判定 */
+  subject: string
+  confidence: number
+  /** 判定依据（一句话，展示给用户） */
+  reason: string
+  source: ClassificationSource
+  /** 落盘后的绝对路径；缺省表示未移动 */
+  movedTo?: string
+  /** 用户是否修正过该条 */
+  corrected?: boolean
+  /** 失败原因（state = error） */
+  error?: string
+}
+
+/** 分类事件：既用于实时推送，也用于渲染层挂载时水合 */
+export interface ClassificationEvent {
+  record: ClassificationRecord
+  state: ClassificationState
+  queueDepth: number
+  running: number
+}
+
+/** 用户就地修正分类结果（反哺规则缓存，docs/05 §3.2） */
+export interface ClassificationCorrection {
+  recordId: string
+  subject: string
+}
+
+// ───────────────────────── 敏感工具确认（docs/06 §5） ─────────────────────────
+
+/**
+ * 敏感工具执行前的确认请求。渲染层用 `confirmId` 回执；
+ * `expiresAt` 之后主进程按「拒绝」处理，避免会话永久挂起。
+ */
+export interface SensitiveToolRequest {
+  confirmId: string
+  toolName: string
+  input: unknown
+  sessionId: string
+  /** ISO 时间戳 */
+  expiresAt: string
 }
 
 // ───────────────────────── 对话（P3 接入 Agent 内核） ─────────────────────────
@@ -293,6 +381,14 @@ export interface AuroraApi {
     getInfo(): Promise<Result<AppInfo>>
     quit(): Promise<void>
     openPath(request: OpenPathRequest): Promise<Result<string>>
+    /** 仅开发态自测可用；其它情况返回 `{ enabled: false }` */
+    getSmokeDiagnostics(): Promise<Result<SmokeDiagnostics>>
+    /**
+     * 仅开发态自测可用：把文件放进当前感知文件夹。
+     * 渲染层没有文件系统能力，而"新文件拖入 → 自动分类"必须经真实
+     * chokidar add 事件验证，因此留这一个受 `smokeMode` 保护的口子。
+     */
+    smokeDropFile(request: { fileName: string; content: string }): Promise<Result<string>>
   }
   settings: {
     get(): Promise<Result<Settings>>
@@ -340,6 +436,23 @@ export interface AuroraApi {
     onEvent(listener: (event: AgentEvent) => void): () => void
     /** 会话历史（窗口挂载时水合，docs/06 §4） */
     history(request: ChatHistoryRequest): Promise<Result<ChatMessageDto[]>>
+  }
+  classification: {
+    /** 分类流水（新的在前）；缺省返回全部（主进程上限 500 条） */
+    history(limit?: number): Promise<Result<ClassificationRecord[]>>
+    /** 当前在途事件（窗口挂载水合，避免只靠推送丢状态） */
+    state(): Promise<Result<ClassificationEvent[]>>
+    /** 就地修正分类结果；返回更新后的流水 */
+    correct(input: ClassificationCorrection): Promise<Result<ClassificationRecord[]>>
+    /** 清空分类流水（不删规则） */
+    clear(): Promise<Result<boolean>>
+    onEvent(listener: (event: ClassificationEvent) => void): () => void
+  }
+  proactive: {
+    /** 敏感工具确认请求（docs/06 §5） */
+    onSensitiveTool(listener: (request: SensitiveToolRequest) => void): () => void
+    /** 回执：true = 允许执行；超时/未知 id 返回 false */
+    resolveSensitiveTool(confirmId: string, approved: boolean): Promise<Result<boolean>>
   }
   mcp: {
     status(): Promise<Result<McpServerStatus[]>>

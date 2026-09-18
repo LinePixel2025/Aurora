@@ -29,6 +29,8 @@ const api: AuroraApi = {
     getInfo: () => invoke(IPC.app.getInfo),
     quit: () => ipcRenderer.invoke(IPC.app.quit) as Promise<void>,
     openPath: (request) => invoke(IPC.app.openPath, request),
+    getSmokeDiagnostics: () => invoke(IPC.app.smokeDiagnostics),
+    smokeDropFile: (request) => invoke(IPC.app.smokeDropFile, request),
   },
   settings: {
     get: () => invoke(IPC.settings.get),
@@ -75,6 +77,18 @@ const api: AuroraApi = {
     abort: (requestId) => invoke(IPC.chat.abort, requestId),
     onEvent: (listener) => subscribe(IPC.chat.event, listener),
     history: (request) => invoke(IPC.chat.history, request),
+  },
+  classification: {
+    history: (limit) => invoke(IPC.classification.history, limit),
+    state: () => invoke(IPC.classification.state),
+    correct: (input) => invoke(IPC.classification.correct, input),
+    clear: () => invoke(IPC.classification.clear),
+    onEvent: (listener) => subscribe(IPC.classification.event, listener),
+  },
+  proactive: {
+    onSensitiveTool: (listener) => subscribe(IPC.proactive.sensitiveTool, listener),
+    resolveSensitiveTool: (confirmId, approved) =>
+      invoke(IPC.proactive.resolveSensitiveTool, confirmId, approved),
   },
   mcp: {
     status: () => invoke(IPC.mcp.status),

@@ -60,11 +60,7 @@ if (tag === undefined || tag === '') {
   process.exit(2)
 }
 
-const files = [
-  `Aurora-Setup-${version}.exe`,
-  `Aurora-Setup-${version}.exe.blockmap`,
-  'latest.yml',
-]
+const files = [`Aurora-Setup-${version}.exe`, `Aurora-Setup-${version}.exe.blockmap`, 'latest.yml']
 
 for (const name of files) {
   const path = join(releaseDir, name)
@@ -82,15 +78,11 @@ function resolveToken() {
   if (fromEnv !== '') return { token: fromEnv, source: '环境变量' }
 
   try {
-    const output = execFileSync(
-      'git',
-      ['credential', 'fill'],
-      {
-        input: 'protocol=https\nhost=github.com\n\n',
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'ignore'],
-      },
-    )
+    const output = execFileSync('git', ['credential', 'fill'], {
+      input: 'protocol=https\nhost=github.com\n\n',
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    })
     const match = /^password=(.+)$/m.exec(output)
     const token = match?.[1]?.trim() ?? ''
     if (token !== '') return { token, source: 'git 凭据管理器' }

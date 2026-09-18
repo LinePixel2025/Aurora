@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { SettingsStore, canonicalSecretPath, redactKeys } from './store.js'
 import { CONFIG_FILE_NAME } from './store.js'
+import { CONFIG_VERSION } from './schema.js'
 import { createMemoryLogger } from '../utils/logger.js'
 import { MemoryFileSystem, createFakeCrypto, memoryPath } from '../testing/memoryFs.js'
 
@@ -35,7 +36,7 @@ describe('SettingsStore · 初始化', () => {
       string,
       unknown
     >
-    expect(onDisk['version']).toBe(1)
+    expect(onDisk['version']).toBe(CONFIG_VERSION)
     expect((onDisk['modes'] as Record<string, unknown>)['current']).toBe('classroom')
   })
 
@@ -57,7 +58,7 @@ describe('SettingsStore · 初始化', () => {
     expect(report.corrupted).toBe(true)
     expect(report.backupPath).toContain('config.corrupt-')
     expect(await fsPort.exists(report.backupPath as string)).toBe(true)
-    expect(store.get().version).toBe(1)
+    expect(store.get().version).toBe(CONFIG_VERSION)
     expect(logger.entries.some((l) => l.includes('配置文件解析失败'))).toBe(true)
   })
 
@@ -104,7 +105,7 @@ describe('SettingsStore · 初始化', () => {
     const { store, fsPort, configPath, logger } = setup({ seed })
     const report = await store.init()
     expect(report.fromVersion).toBe(0)
-    expect(report.appliedMigrations).toHaveLength(1)
+    expect(report.appliedMigrations).toHaveLength(CONFIG_VERSION)
     await store.flush()
     const raw = (await fsPort.readFile(configPath)) as string
     expect(raw).toContain('fakestorage:v1:')

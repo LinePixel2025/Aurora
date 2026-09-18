@@ -6,14 +6,18 @@
  */
 import type {
   AgentEvent,
+  ClassificationEvent,
+  ClassificationRecord,
   GuideAnswerResult,
   GuideSession,
+  Lesson,
   Logger,
   ModeChangedEvent,
   ModeId,
   ModeSummary,
   OpenPathRequest,
   PerceptionSummary,
+  SensitiveToolRequest,
   SendMessageRequest,
   Settings,
   UpdateState,
@@ -24,14 +28,18 @@ import type {
 /** 也用于 agent-host 的最小依赖面 */
 export type {
   AgentEvent,
+  ClassificationEvent,
+  ClassificationRecord,
   GuideAnswerResult,
   GuideSession,
+  Lesson,
   Logger,
   ModeChangedEvent,
   ModeId,
   ModeSummary,
   OpenPathRequest,
   PerceptionSummary,
+  SensitiveToolRequest,
   SendMessageRequest,
   Settings,
   UpdateState,
@@ -100,6 +108,39 @@ export interface PerceptionLike {
   contextSummary(): Promise<string>
   start(): void
   stop(): void
+}
+
+/** 课程表 provider（docs/05 §3.4）：主进程 `schedule.ts` 的 `IScheduleProvider` 结构上满足。 */
+export interface ScheduleProviderLike {
+  readonly id: 'manual' | 'classisland'
+  /** 当天的课程，按开始时间升序 */
+  getToday(now: Date): Promise<Lesson[]>
+}
+
+/** 分类管线（docs/05 §3）：IPC 只依赖这个最小面，便于单测注入假实现。 */
+export interface ClassificationControllerLike {
+  list(): ClassificationRecord[]
+  recentEvents(): ClassificationEvent[]
+  correct(recordId: string, subject: string): Promise<ClassificationRecord[]>
+  clear(): void
+  onEvent(listener: (event: ClassificationEvent) => void): () => void
+  /** 与配置对齐，返回当前是否处于可工作状态 */
+  reconfigure(): boolean
+}
+
+/** 主动引导 / 敏感工具确认（docs/06 §5、§9） */
+export interface ProactiveLike {
+  /** 敏感工具执行前的确认；勿扰时段内直接拒绝 */
+  requestSensitiveToolConfirm(input: {
+    sessionId: string
+    toolName: string
+    input: unknown
+  }): Promise<boolean>
+  /** 渲染层回执 */
+  resolve(confirmId: string, approved: boolean): boolean
+  /** 会话取消 / 退出时让在途确认立即失败 */
+  rejectAll(reason: string): void
+  onRequest(listener: (request: SensitiveToolRequest) => void): () => void
 }
 
 export interface AgentHost {

@@ -1,6 +1,6 @@
 # 04 · 实现路径与里程碑
 
-状态：`进行中`——P0 / P1 / P2 / P3 已完成（v0.3.0），P4 起待开始；进度随开发更新
+状态：`进行中`——P0 / P1 / P2 / P3 / P4 / P5 已完成（v0.3.0 → v0.5.0），P6 余下打磨项待做；进度随开发更新
 
 版本策略：v0.x 内部迭代 → **v1.0.0** 首个对外版本。优先级：P0 必须 / P1 尽量 / P2 后续。
 工作量按 **1 名全职开发** 估算，共约 9～10 周到 v1.0.0；多人协作可并行压缩。
@@ -13,10 +13,10 @@
 | P1 | 基础壳与设置：托盘、设置窗、配置、首次引导 | v0.1.0 | 1 周 | **已完成** |
 | P2 | 通用交互 UI：服务窗、提示条、交互窗、迷你窗 | v0.2.0 | 1.5 周 | **已完成**（含真实对话与工具卡片） |
 | P3 | Agent 内核：对话、工具循环、Skill、MCP | v0.3.0 | 2 周 | **已完成** |
-| P4 | 模式系统 + ClassRoom Mode：感知文件夹自动分类、对话引导 | v0.4.0 | 2 周 | 部分完成（模式框架 + 引导已落地，监听/分类待做） |
-| P5 | 系统感知与主动引导：感知采集、上下文注入、课前提醒 | v0.5.0 | 1.5 周 | 部分完成（时间/电源/网络采集已落地） |
-| P6 | 打磨发布：打包、安装器、日志、文档 | v1.0.0 | 1 周 | **打包与自动更新已完成**（签名待证书） |
-| P7 | 后期：Work/Code Mode、ClassIsland 联动、自动更新 | v1.x | — | 自动更新已完成，其余预留 |
+| P4 | 模式系统 + ClassRoom Mode：感知文件夹自动分类、对话引导 | v0.4.0 | 2 周 | **已完成** |
+| P5 | 系统感知与主动引导：感知采集、上下文注入、课前提醒、敏感确认 | v0.5.0 | 1.5 周 | **已完成** |
+| P6 | 打磨发布：打包、安装器、日志、文档 | v1.0.0 | 1 周 | **打包与自动更新已完成**（签名待证书；余下打磨项未做） |
+| P7 | 后期：Work/Code Mode、ClassIsland 联动 | v1.x | — | 预留 |
 
 ### 已完成范围（截至 v0.3.0）
 
@@ -30,8 +30,7 @@
 - P3 前置：OpenAI 兼容 Provider（SSE 流式、超时、指数退避、AbortSignal）、SKILL.md 解析
   与注册表（3 个内置技能）、工具注册表骨架、`chat:send` → `chat:event` IPC 契约与
   占位 AgentHost（返回真实感知摘要 + 下一阶段说明）。
-- P3：**Agent 内核完整落地**（`packages/agent-core`）——
-  `session`（会话持久化 `userData/sessions/*.json`、原子写 + 防抖、损坏备份重建、字符预算截断且不拆散工具调用对）、
+- P3：**Agent 内核完整落地**（`packages/agent-core`）——  `session`（会话持久化 `userData/sessions/*.json`、原子写 + 防抖、损坏备份重建、字符预算截断且不拆散工具调用对）、
   `loop`（工具调用循环，上限 8 轮、同轮工具顺序执行、失败回填不中断、abort 贯穿）、
   `context`（系统提示词组装：人设 / 模式 / 感知 / Skill / 工具 / 安全规则）、
   `skills/bridge`（`use_skill` 注入技能正文，**不执行脚本**；支持 `/skill`、`@skill` 显式调用）、
@@ -42,8 +41,9 @@
   设置页 MCP 状态灯接入 `mcp:status` / `mcp:statusChanged`。
 - P5 前置：时间/电源/网络感知采集，缺失项降级为 `unknown`。
 
-**验证方式**：`pnpm test`（256 项单测）、`pnpm verify`（26 项真实磁盘验收）、
-`AURORA_SMOKE=1 pnpm dev`（52 项真实 Electron + preload + IPC 链路断言；使用临时 userData 与本地假 LLM 桩服务，离线可跑）。
+**验证方式**：`pnpm test`（500 项单测）、`pnpm verify`（26 项真实磁盘验收）、
+`AURORA_SMOKE=1 pnpm dev`（77 项真实 Electron + preload + IPC 链路断言；使用临时 userData
+与本地假 LLM 桩服务，**离线可跑**；含实时投放文件触发的分类管线与课前提醒端到端断言）。
 
 依赖关系：P0 → P1 → P2、P3 可并行 → P4（依赖 P2+P3）→ P5 → P6。P4 与 P5 部分可并行（分类管线 vs 感知采集互不依赖）。
 
@@ -113,8 +113,8 @@
   占位 `PlaceholderAgentHost` 已由 `KernelAgentHost` + `DesktopAgentHost` 替换（渲染层契约不变）。
   详见「已完成范围」中的 P3 条目与 06 文档各节标注的 v1 / P3 范围。
   - **验收状态**：`AURORA_SMOKE=1 pnpm dev` 用本地假 LLM 桩服务端到端验证了
-    「模型 → `use_skill` → 工具结果回填 → 最终回复 → 会话持久化 → 历史水合」全链路
-    （47/47 断言）；MCP 路径由单测用真实子进程假 MCP server 覆盖（stdio 与
+    「模型 → `use_skill` → 工具结果回填 → 最终回复 → 会话持久化 → 历史水合」全链路；
+    MCP 路径由单测用真实子进程假 MCP server 覆盖（stdio 与
     streamable-http 两种传输）。
   - **已知限制**：MCP HTTP 传输暂不支持自定义鉴权头（凭据仅经 stdio `env` 注入）；
     敏感工具的用户确认交互归 P5（P3 仅标记 `sensitivity` 并日志留痕，且不执行任何 Skill 脚本）。
@@ -130,8 +130,44 @@
 - **已完成前置（v0.1.0）**：`ModeManager` + `IMode` 框架 + 模式切换事件（含失败回滚）；
   ClassRoom 完整模式实现（激活时创建感知文件夹与科目文件夹、系统提示词片段、就绪度校验）；
   `GuideRunner` 四步对话式引导（校验、写配置、可中断续接、重置引导）；
-  Work / Code 占位模式。**待做**：chokidar 监听与稳定判定、内容提取（utilityProcess）、
-  LLM 分类与科目映射、移动/通知/分类流水、规则缓存。
+  Work / Code 占位模式。
+- **实现说明（v0.4.0）**：
+  - **监听与稳定判定**：`main/file-watcher.ts`（chokidar，`depth: 0` + `awaitWriteFinish` + 忽略规则 +
+    **抑制集**（分类落盘后由 `classification.ts` 经 `suppressPath` 回调登记目标路径）+
+    **监听代次**（`stop()` / 换目录后旧 watcher 的迟到事件一律丢弃））。
+    `ignoreInitial: false`——启动前已在文件夹里的文件同样归类。
+    另有**根目录守卫**：目标目录解析后等于感知文件夹本身时（`folder` 配成 `"."`、`"./"`、`"a/.."`
+    等）拒绝移动，否则同目录 rename 会触发新的 add 事件形成无限重分类（见
+    `classify/paths.ts` 的 `resolvesToWatchRoot`）。
+  - **提取**：`main/extract.ts`（纯逻辑）+ `extract-worker.ts`（**utilityProcess** 第二个构建入口）
+    + `extract-pool.ts`（懒启动 / 15s 超时 / 崩溃重启）。用 **officeparser@7.8.0** 解析
+    pdf / docx / pptx / xlsx / odt / rtf / epub；txt / md / csv 自读（UTF-8 / UTF-16 / GBK 嗅探）；
+    图片给尺寸、压缩包给条目清单；证据按字节 head 70% + tail 30% 截断至 8KB。
+    **提取失败一律降级为「文件名证据」，不中断管线。**
+  - **⚠ 父子进程消息形状不对称（踩过的坑）**：Electron `utilityProcess` 的
+    `message` 形状两侧不同——子进程 → 父进程是**裸 payload**，父进程 → 子进程才包在
+    `{ data, ports }` 里。因此主进程侧**不能**照抄子进程的 `message.data`，
+    否则每次提取都会静默等到 15s 超时并降级（表现为"分类结果总是只用文件名"，
+    且日志里满是 `内容提取超时`）。`extract-pool.ts` 的 `unwrapChildMessage`
+    同时兼容两种形状，并配有 `extract-pool.test.ts` 按**真实裸 payload** 回包做回归。
+  - **分类**：规则优先（科目名 0.95 > 关键词 0.92 > 用户修正沉淀 0.90，不同科目并列时放弃交给模型
+    → 省 token 且不误判），未命中才走 LLM 结构化输出（`response_format: json_object`，
+    解析失败降温度重试一次）；低于阈值进「待分类」。**无可用模型时在提取之前就兜底**。
+  - **落盘**：`rename` 优先、失败回退 `copy` + 大小校验后删源、重名加 ` (1)`；
+    `classification.autoMove=false` 时只记流水不动文件。
+  - **流水**：`userData/classification.json`（`ClassificationHistory`，上限 500 条、原子写 + 防抖 +
+    损坏重建 + 写盘串行化）；**规则缓存不单独持久化**，启动时由用户修正记录重建。
+  - **通知**：`NotificationService` 落地真实系统通知（分类完成 → 点击打开科目目录；
+    兜底 → 点击打开「待分类」目录），3s 去重、不可用降级为日志。
+  - **UI**：交互窗「分类流水」可折叠区块（水合 + 实时推送），支持就地修正与打开所在文件夹；
+    设置页新增完整 ClassRoom 区（感知文件夹 / 科目增删改 + 关键词 / 课程表编辑 / 分类行为 / 流水）。
+  - **已验证**：`AURORA_SMOKE=1 pnpm dev` 用**实时投放文件**（经自测专用通道写入感知文件夹）验证
+    真实 `chokidar add` → 规则命中 → 移动 → 通知 → 事件推送全链路，并覆盖
+    「低置信 → 待分类（含落盘目录断言）」「用户修正 → 沉淀规则 → 同类文件跳过模型」两条分支。
+    **提取失败只降级不中断**由单测覆盖（`extract.test.ts` / `extract-pool.test.ts`）。
+  - **已知限制**：`classification.autoMove=false`（或移动失败）时，停留在感知文件夹根的文件
+    会在**每次监听重建**（模式切换 / 感知文件夹变更）时被重新处理，产生重复流水与通知；
+    尚未按 (路径, 大小, 修改时间) 去重。
 
 ### P5 · 系统感知与主动引导（v0.5.0）
 
@@ -141,8 +177,29 @@
 - **验收**：询问“我电脑现在什么状态”时 AI 引用实时感知数据；课前提醒按课程表触发且打开对应科目文件夹。
 - **已完成前置（v0.1.0）**：时间/星期、电源、网络连通性采集（`systeminfo` + DNS 探测，
   缺失项统一降级 `unknown`）；感知摘要已进入占位回复文本与设置页预览。
-  **待做**：前台窗口、显示器、课程表采集，感知摘要注入真实系统提示词，
-  课前 5 分钟触发器与 `IScheduleProvider`。
+- **实现说明（v0.5.0）**：
+  - **感知扩展**：前台窗口 / 应用（PowerShell 内联探针 `GetForegroundWindow` + `GetWindowTextW`
+    + 进程名，5s 轮询，中文标题正常）、主显示器（Electron `screen`，注入式采集器）、
+    今日课程（`IScheduleProvider`）。`summary()` 按**实际采集结果**增删 `unknown`，
+    任一采集项失败都降级为 `unknown` 且不抛错（ADR-007）；`contextSummary()` 增加
+    「当前前台 / 显示器 / 今日课程」，随既有 `perceptionSummary` 路径进入系统提示词。
+    **未引入 active-win**（原生模块 + 杀软误报），见 03 §ADR-007。
+  - **课程表**：`main/schedule.ts` —— `IScheduleProvider`（`manual` 完整 + `classisland` 占位）、
+    `parseClock` / `lessonKey` / `preClassTrigger`（窗口判定、跨天、去重、**启动补偿**）/
+    `needsNextDayLessons`。
+  - **课前提醒**：`main/pre-class-reminder.ts` —— 30s tick，命中后发系统通知并打开科目文件夹；
+    先记 `firedKeys` 再执行副作用（失败不刷屏）；受 `preClassReminder` 开关与勿扰时段约束；
+    **每次检查重新解析 provider**，设置页改完课程表即时生效（无需重启）。
+  - **主动引导**：`main/proactive.ts` —— `ProactiveScheduler` + 纯函数 `isQuietHour`（支持跨天）；
+    勿扰时段直接拒绝，确认超时 60s 按拒绝处理，`rejectAll` 用于会话取消 / 退出。
+  - **敏感工具确认（原 P3 遗留）**：`AgentLoopOptions.confirmTool` 钩子落地——
+    `sensitivity === 'confirm'` 的工具（含全部 MCP 工具）执行前经 `ProactiveScheduler` 请求确认，
+    拒绝 / 超时一律**不执行**并以「用户拒绝执行」文本回填模型，循环继续；
+    确认链路自身抛错时同样不执行，回填文本为「用户确认流程异常，已取消执行：…」；
+    渲染层确认卡片带倒计时。未注入钩子时保持 P3 行为（不拦截、只留痕）。
+    设置项 `advanced.confirmSensitiveTools` 可整体关闭（每次调用即时判断）。
+  - **验证**：`AURORA_SMOKE=1 pnpm dev` 断言感知含前台窗口 / 显示器 / 课程表，
+    以及课前提醒真实触发并指向正确科目目录（自测下「打开文件夹」换成回执，不弹资源管理器）。
 
 ### P6 · 打磨与发布（v1.0.0）
 

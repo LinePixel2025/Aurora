@@ -3,7 +3,7 @@
  * 端到端验收脚本（真实磁盘，不依赖 Electron UI）。
  *
  * 覆盖 docs/04 §P1 验收中的关键点：
- *  1. 全新环境 → 配置落盘 → 结构正确、version=1、需要引导
+ *  1. 全新环境 → 配置落盘 → 结构正确、version=当前 CONFIG_VERSION、需要引导
  *  2. 写入 API Key → 磁盘上无明文、重启后可解密读回
  *  3. 损坏配置 → 备份 + 重建
  *  4. 字段非法 → 字段级回退默认值
@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os'
 const require = createRequire(import.meta.url)
 const shared = require('../packages/shared/dist/index.js')
 
-const { SettingsStore } = shared
+const { SettingsStore, CONFIG_VERSION } = shared
 
 /** 可逆的假 safeStorage：真实实现由 Electron safeStorage 提供（见 apps/desktop/src/main/crypto.ts） */
 const crypto = {
@@ -81,7 +81,7 @@ async function main() {
     check('安全存储可用', report.cryptoAvailable)
     await store.flush()
     const fresh = JSON.parse(await fs.readFile(configPath, 'utf8'))
-    check('config.version = 1', fresh.version === 1, `version=${fresh.version}`)
+    check('config.version = 当前版本', fresh.version === CONFIG_VERSION, `version=${fresh.version}`)
     check('默认模式为 classroom', fresh.modes.current === 'classroom')
     check('默认科目为九科模板', fresh.modes.classroom.subjects.length === 9)
     check('未配置模型时 llm.active 为空', fresh.llm.active === '')
@@ -151,7 +151,13 @@ async function main() {
     )
     const migrated = await newStore(dir)
     await migrated.store.flush()
-    check('执行了 v0 → v1 迁移', migrated.report.appliedMigrations.length === 1)
+    // v0 缺 version 字段，需连续走完 0→1→…→当前版本；断言"迁移确实发生"而非条数，
+    // 这样每次新增迁移（如 v1→v2 补分类配置）都不需要改本脚本。
+    check(
+      '执行了 v0 → 当前版本的迁移链',
+      migrated.report.appliedMigrations.length === CONFIG_VERSION,
+      `count=${migrated.report.appliedMigrations.length}/${CONFIG_VERSION}`,
+    )
     check('模式字段已归一', migrated.store.get().modes.current === 'classroom')
     const migratedRaw = await fs.readFile(configPath, 'utf8')
     check(

@@ -54,6 +54,22 @@ export interface AgentLoopOptions {
   sessionId: string
   signal?: AbortSignal
   maxRounds?: number
+  /**
+   * 敏感工具（`sensitivity === 'confirm'`）执行前的用户确认（docs/06 §5）。
+   *
+   * 返回 `false` 表示用户拒绝：不执行工具，以「用户拒绝执行」文本回填模型，
+   * 工具卡片置 `error`，循环继续（模型可以改走别的路径或向用户说明）。
+   *
+   * **未提供时保持 v0.3.0 行为**：不拦截、只记日志留痕。
+   * 这样既不会让 P3 的 MCP 路径意外变成"必然被拒"，
+   * 也保证确认交互只在主进程真正接好后才生效。
+   */
+  confirmTool?(info: {
+    name: string
+    input: unknown
+    sessionId: string
+    sensitivity: 'confirm'
+  }): Promise<boolean>
   /** 落盘一条消息（用户 / 助手 / 工具结果） */
   append(message: NewMessage): Promise<StoredMessage>
   /** 原地更新某条助手消息里的工具卡片状态 */
@@ -293,6 +309,32 @@ async function runTool(options: AgentLoopOptions, call: StoredToolCall): Promise
       isError: true,
     })
     return { content: message, summary: message, state: 'error' }
+  }
+
+  // 敏感工具执行前的用户确认（docs/06 §5）。
+  // 未接确认钩子时保持既有行为（仅标记 sensitivity + 日志留痕）。
+  if (tool.sensitivity === 'confirm' && options.confirmTool !== undefined) {
+    let approved = false
+    try {
+      approved = await options.confirmTool({
+        name: call.name,
+        input,
+        sessionId: options.sessionId,
+        sensitivity: 'confirm',
+      })
+    } catch (error) {
+      // 确认链路本身出错按"拒绝"处理：宁可不动敏感操作，也不越权执行
+      approved = false
+      options.onToolCall?.({ name: call.name, sensitivity: 'confirm', isError: true })
+      const message = `用户确认流程异常，已取消执行：${error instanceof Error ? error.message : String(error)}`
+      return { content: message, summary: message, state: 'error' }
+    }
+
+    if (!approved) {
+      options.onToolCall?.({ name: call.name, sensitivity: 'confirm', isError: true })
+      const message = `用户拒绝执行工具 "${call.name}"，请勿重复调用；如确有必要，请先向用户说明原因并征得同意。`
+      return { content: message, summary: '用户拒绝执行', state: 'error' }
+    }
   }
 
   try {

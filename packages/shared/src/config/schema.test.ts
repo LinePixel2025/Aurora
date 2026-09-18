@@ -106,4 +106,32 @@ describe('SettingsSchema / defaults 一致性', () => {
     ;(settings['modes'] as Record<string, unknown>)['current'] = 'gaming'
     expect(SettingsSchema.safeParse(settings).success).toBe(false)
   })
+
+  it('分类管线默认值与类型校验（P4）', () => {
+    const classification = createDefaultSettings().modes.classroom.classification
+    expect(classification).toEqual({
+      autoMove: true,
+      confidenceThreshold: 0.6,
+      fallbackFolder: '待分类',
+    })
+    expect(fieldAccepts('modes.classroom.classification.autoMove', false)).toBe(true)
+    expect(fieldAccepts('modes.classroom.classification.autoMove', 'yes')).toBe(false)
+    expect(fieldAccepts('modes.classroom.classification.confidenceThreshold', 0.5)).toBe(true)
+    expect(fieldAccepts('modes.classroom.classification.confidenceThreshold', '0.5')).toBe(false)
+    expect(fieldAccepts('modes.classroom.classification.fallbackFolder', '待分类')).toBe(true)
+  })
+
+  it('confidenceThreshold 越界被 Schema 拒绝', () => {
+    const settings = createDefaultSettings()
+    settings.modes.classroom.classification.confidenceThreshold = 1.5
+    expect(SettingsSchema.safeParse(settings).success).toBe(false)
+    settings.modes.classroom.classification.confidenceThreshold = 0
+    expect(SettingsSchema.safeParse(settings).success).toBe(true)
+  })
+
+  it('敏感工具确认开关默认开启且为布尔（P5）', () => {
+    expect(createDefaultSettings().advanced.confirmSensitiveTools).toBe(true)
+    expect(fieldAccepts('advanced.confirmSensitiveTools', false)).toBe(true)
+    expect(fieldAccepts('advanced.confirmSensitiveTools', 'no')).toBe(false)
+  })
 })

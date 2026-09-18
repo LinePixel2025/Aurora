@@ -39,6 +39,13 @@ export function createDefaultSubjects(): Settings['modes']['classroom']['subject
   }))
 }
 
+/** 05 §3.2 分类管线默认行为 */
+export const DEFAULT_CLASSIFICATION = {
+  autoMove: true,
+  confidenceThreshold: 0.6,
+  fallbackFolder: '待分类',
+} as const
+
 export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
   version: CONFIG_VERSION,
   general: {
@@ -67,6 +74,7 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
         lessons: [],
       },
       preClassReminder: true,
+      classification: { ...DEFAULT_CLASSIFICATION },
     },
     work: { guideCompleted: false },
     code: { guideCompleted: false },
@@ -83,6 +91,7 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     proxy: '',
     logLevel: 'info',
     quietHours: null,
+    confirmSensitiveTools: true,
   },
 }
 

@@ -6,14 +6,24 @@ packages:
 # - electron: 下载 Electron 运行时二进制
 # - esbuild: 下载平台原生二进制（vite / vitest 依赖）
 # - vue-demi: 生成 Vue 2/3 兼容入口（pinia 依赖）
+# 显式拒绝（写 false 而非删除条目）的依赖：
+# - tesseract.js: 其 postinstall 只是 `opencollective-postinstall` 赞助请求，
+#   不含任何功能步骤；拒绝可避免安装期联网，OCR 仍可正常使用。
+# - electron-builder: 无任何 install/postinstall 脚本（平台二进制走 optionalDependencies），
+#   放行 false 不影响打包。
+# - electron-winstaller: 只为 Squirrel.Windows 准备 NuGet 包 / 下载 7z，
+#   本项目用 NSIS（electron-builder 的 nsis target），不需要它。
 allowBuilds:
   electron: true
+  electron-builder: false
+  electron-winstaller: false
   esbuild: true
+  tesseract.js: false
   vue-demi: true
 
-# 显式忽略的安装脚本：这些包会拉取与本项目无关的二进制，
-# 且 pnpm 11 在"有构建脚本既未放行也未忽略"时会直接让 install 失败。
-# - electron-winstaller: 只为 Squirrel.Windows 准备 NuGet 包，
-#   本项目用 NSIS（electron-builder 的 nsis target），不需要它。
-ignoredBuilds:
-  - electron-winstaller
+# 注 1：@napi-rs/canvas 通过 optionalDependencies 分发各平台预编译二进制，
+#       自身没有安装脚本，因此无需出现在本文件中。
+# 注 2：不再额外维护 `ignoredBuilds` 列表——pnpm 11 会把它与 `allowBuilds` 合并推导，
+#       两处并存时 `ignoredBuilds` 条目不生效，且 `pnpm test` 前置的
+#       verify-deps 检查会以 `ERR_PNPM_IGNORED_BUILDS` 让命令失败。
+#       写成 `false` 已是显式决定，不需要第二份声明。

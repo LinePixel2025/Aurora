@@ -7,10 +7,12 @@
 
 ## 当前实现状态
 
-**v0.3.0**：P0（脚手架）、P1（基础壳与设置，含首次引导）、P2（四种窗口外壳）已完成，
-**P3（Agent 内核：真实对话、会话持久化、工具调用循环、Skill、MCP）已完成**；
+**v0.5.0**：P0（脚手架）、P1（基础壳与设置，含首次引导）、P2（四种窗口外壳）、
+**P3（Agent 内核：真实对话、会话持久化、工具调用循环、Skill、MCP）**、
+**P4（模式系统 + ClassRoom Mode：智慧感知文件夹自动分类、分类流水与就地修正、规则缓存）**、
+**P5（系统感知与主动引导：前台窗口 / 显示器 / 课程表采集、课前提醒、敏感工具确认）** 均已完成；
 **P6 打包与自动更新已完成**（NSIS 安装包 + 公开 releases 仓库 + electron-updater，见 [09](./09-packaging-release.md)）；
-P4 / P5 功能待开始。
+P6 余下打磨项（代码签名、日志轮转、用户文档、启动优化）与 P7 仍待做。
 详见 [04-roadmap.md](./04-roadmap.md) 的阶段状态与「实现说明」。
 实际工程结构见根目录 [README.md](../README.md)；端到端验证见 `pnpm verify`、
 `pnpm verify:release`、`pnpm verify:update` 与 `AURORA_SMOKE=1 pnpm dev`。

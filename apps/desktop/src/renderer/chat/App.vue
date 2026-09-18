@@ -3,11 +3,16 @@
  * AI 交互窗口（docs/07 §2.3）：完整对话窗，约 420×640，贴右缘滑出。
  *
  * P3 范围：真实模型流式对话、工具执行卡片、会话历史水合（`chat:history`）、模式引导面板。
+ * P5 追加：敏感工具确认卡片（docs/06 §5）与分类流水面板（docs/05 §3.3）——
+ * 交互窗是主动引导的**主载体**，两者都挂在这里。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import type { SensitiveToolRequest } from '@aurora/shared'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
+import ClassificationLedger from '../shared/components/ClassificationLedger.vue'
 import MessageList from '../shared/components/MessageList.vue'
+import SensitiveToolCard from '../shared/components/SensitiveToolCard.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import { useChat } from '../shared/composables/useChat.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
@@ -30,14 +35,30 @@ const modeStore = useModeStore()
 const input = ref('')
 const showHistory = ref(false)
 
+/** 待确认的敏感工具调用（主进程同一时刻最多推一条） */
+const sensitiveRequest = ref<SensitiveToolRequest | null>(null)
+let offSensitiveTool: (() => void) | null = null
+
 const history = computed(() => [
   { id: 'main', title: '完整会话', subtitle: 'AI 交互窗口', active: true },
   { id: 'quick', title: '快速会话', subtitle: '服务窗 / 小窗共享', active: false },
 ])
 
 onMounted(() => {
+  offSensitiveTool = window.aurora.proactive.onSensitiveTool((request) => {
+    sensitiveRequest.value = request
+  })
   void hydrate()
 })
+
+onUnmounted(() => {
+  offSensitiveTool?.()
+  offSensitiveTool = null
+})
+
+function resolveSensitive(): void {
+  sensitiveRequest.value = null
+}
 
 const guide = computed(() => {
   const mode = modeStore.current
@@ -92,6 +113,14 @@ async function markGuideDone(): Promise<void> {
       </div>
     </header>
 
+    <SensitiveToolCard
+      v-if="sensitiveRequest"
+      :key="sensitiveRequest.confirmId"
+      :request="sensitiveRequest"
+      class="sensitive-host"
+      @resolved="resolveSensitive"
+    />
+
     <div class="body">
       <aside v-if="showHistory" class="history">
         <p class="tiny muted">会话（多会话列表在后续版本接入）</p>
@@ -127,6 +156,8 @@ async function markGuideDone(): Promise<void> {
         />
       </main>
     </div>
+
+    <ClassificationLedger class="ledger-host" :limit="20" />
 
     <footer class="composer">
       <textarea
@@ -177,6 +208,14 @@ async function markGuideDone(): Promise<void> {
   flex: 1;
   display: flex;
   min-height: 0;
+}
+
+.sensitive-host {
+  flex: 0 0 auto;
+}
+
+.ledger-host {
+  flex: 0 0 auto;
 }
 
 .history {

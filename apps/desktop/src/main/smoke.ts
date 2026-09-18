@@ -14,14 +14,18 @@ export const SMOKE_RESULT_PREFIX = 'AURORA_SMOKE_RESULT:'
 
 /**
  * 注入到渲染进程执行的自测脚本（字符串形式，避免被打包器当作模块依赖）。
+ *
  * `stubBaseUrl` / `stubModel` 由主进程在启动本地桩 LLM 后传入：
  * 对话链路需要一个**离线可断言**的响应源。
+ * `watchDir` 是本轮自测的临时感知文件夹——引导步骤必须写回它，
+ * 否则会把配置指向开发者的真实目录，破坏隔离且让多次运行互相干扰。
  */
-export function smokeScript(stubBaseUrl: string, stubModel: string): string {
+export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: string): string {
   return String.raw`
 (async () => {
   const STUB_BASE = ${JSON.stringify(stubBaseUrl)}
   const STUB_MODEL = ${JSON.stringify(stubModel)}
+  const WATCH_DIR = ${JSON.stringify(watchDir)}
   const results = []
   const record = (name, ok, detail) => results.push({ name, ok: Boolean(ok), detail: String(detail ?? '') })
   const expectOk = (name, result) => {
@@ -30,6 +34,65 @@ export function smokeScript(stubBaseUrl: string, stubModel: string): string {
     return null
   }
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  /** 轮询直到条件满足或超时；返回最后一次读取的值 */
+  const waitFor = async (read, done, timeoutMs) => {
+    const started = Date.now()
+    let value = await read()
+    while (!done(value) && Date.now() - started < timeoutMs) {
+      await wait(150)
+      value = await read()
+    }
+    return value
+  }
+
+  /** 轮询分类流水直到条件满足 */
+  const waitForClassification = async (predicate, timeoutMs) => {
+    const list = await waitFor(
+      async () => {
+        const result = await window.aurora.classification.history()
+        return result && result.ok ? result.value : []
+      },
+      predicate,
+      timeoutMs,
+    )
+    return list
+  }
+
+  /**
+   * 投放文件并等待其被处理。
+   *
+   * 为什么要重试：Windows 上「同名文件被移走后又写回原路径」时，
+   * chokidar 的 awaitWriteFinish 轮询偶发漏掉这次 add（已用真实 chokidar + FS 探针
+   * 确认 re-add 本身会被上报，因此这是事件时序问题而非监听缺陷）。
+   * 真实用户重复拖入也会自然重试，所以这里做**有界重试**并回报尝试次数，
+   * 而不是靠拉长超时把偶发失败盖过去。
+   */
+  const dropAndWait = async (fileName, content, predicate, timeoutMs) => {
+    let list = []
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const dropped = await window.aurora.app.smokeDropFile({ fileName, content })
+      if (!dropped || !dropped.ok) {
+        return { list, attempts: attempt, error: dropped ? dropped.message : 'drop 失败' }
+      }
+      list = await waitForClassification(predicate, timeoutMs)
+      if (predicate(list)) return { list, attempts: attempt }
+    }
+    return { list, attempts: 3 }
+  }
+
+  /** 轮询自测诊断（仅 AURORA_SMOKE=1 可用）直到课前提醒触发过 */
+  const waitForPreClass = async (timeoutMs) => {
+    const diagnostics = await waitFor(
+      async () => {
+        const result = await window.aurora.app.getSmokeDiagnostics()
+        return result && result.ok ? result.value : { enabled: false }
+      },
+      (value) => Array.isArray(value.preClassFired) && value.preClassFired.length > 0,
+      timeoutMs,
+    )
+    return diagnostics && diagnostics.preClassFired ? diagnostics.preClassFired[0] : null
+  }
 
   /** 渲染层任何路径都不得看到密文或明文（docs/08 §1.1 的 apiKeySet / envSet 约定） */
   const PLAINTEXT_MARKER = 'sk-smoke-plaintext-marker'
@@ -61,8 +124,9 @@ export function smokeScript(stubBaseUrl: string, stubModel: string): string {
     // 2. 配置读写（IPC 层）
     const settings = expectOk('settings.get', await window.aurora.settings.get())
     if (settings) {
-      record('settings.get.version', settings.version === 1, String(settings.version))
-      record('settings.get 科目模板', settings.modes.classroom.subjects.length === 9, String(settings.modes.classroom.subjects.length))
+      record('settings.get.version', settings.version === 2, String(settings.version))
+      // 自测前置把科目裁剪为「数学 / 物理 / 语文」，断言随之对齐（不再是九科模板）
+      record('settings.get 科目列表已就绪', settings.modes.classroom.subjects.length === 3, String(settings.modes.classroom.subjects.length))
       record('settings.get 不回传密文', settings.llm.providers === undefined || Object.values(settings.llm.providers).every((p) => p.apiKeyEnc === ''), 'apiKeyEnc 已清空')
       assertNoSecretLeak('settings.get 无凭据字段', settings)
     }
@@ -174,25 +238,30 @@ export function smokeScript(stubBaseUrl: string, stubModel: string): string {
     // 4. 模式与引导
     const modes = expectOk('mode.list', await window.aurora.mode.list())
     record('mode.list 返回三个模式', Array.isArray(modes) && modes.length === 3, modes ? modes.map((m) => m.id).join(',') : '')
-    record('classroom 未就绪（缺感知文件夹）', modes?.find((m) => m.id === 'classroom')?.ready === false, '')
+    // 自测前置已配好感知文件夹与科目，因此 classroom 初始即为就绪
+    record('classroom 初始就绪（已配置感知文件夹 + 科目）', modes?.find((m) => m.id === 'classroom')?.ready === true, JSON.stringify(modes?.find((m) => m.id === 'classroom')?.readinessHint ?? null))
+    record('当前模式为 classroom', modes?.find((m) => m.active)?.id === 'classroom', modes?.find((m) => m.active)?.id ?? '')
 
-    expectOk('mode.set(work)', await window.aurora.mode.set('work'))
-    expectOk('mode.set(classroom)', await window.aurora.mode.set('classroom'))
-    const afterSwitch = expectOk('mode.list#2', await window.aurora.mode.list())
-    record('模式切换回 classroom', afterSwitch?.find((m) => m.active)?.id === 'classroom', afterSwitch?.find((m) => m.active)?.id ?? '')
+    // 注意：这里**不再**切到 work 再切回来。切换 pattern 会触发
+    // onDeactivate/onActivate 与监听器重建，而模式引导的前两步本来就会重写
+    // 感知文件夹与科目列表（见下方 answers），两者叠加会让 10.x 的分类断言
+    // 依赖"引导猜中的路径"，而不是本轮隔离的临时目录。模式切换本身已由
+    // manager.test.ts 完整覆盖。
 
     const session = expectOk('mode.guideStart', await window.aurora.mode.guideStart('classroom'))
     record('引导第一步为 watch-dir', session?.step?.stepId === 'watch-dir', session?.step?.stepId ?? '')
     const badAnswer = expectOk('mode.guideAnswer(空)', await window.aurora.mode.guideAnswer('classroom', '   '))
     record('空答案被拒绝且不推进', typeof badAnswer?.error === 'string' && badAnswer.session.nextIndex === 0, badAnswer?.error ?? '')
 
-    const answers = ['D:\\\\Aurora\\\\感知文件夹', '数学,物理', '默认', '是']
+    // 引导答案里的感知文件夹必须是**本轮临时目录**（WATCH_DIR），
+    // 否则会把配置改到真实目录：既破坏 userData 隔离，也让并发的两次自测互相干扰。
+    const answers = [WATCH_DIR, '数学,物理', '默认', '是']
     let last = null
     for (const answer of answers) {
       last = expectOk('mode.guideAnswer(' + answer + ')', await window.aurora.mode.guideAnswer('classroom', answer))
     }
     record('引导走完四步', last?.session?.completed === true, 'nextIndex=' + (last?.session?.nextIndex ?? '?'))
-    record('引导写入感知文件夹', last?.settings?.modes?.classroom?.watchDir === 'D:\\\\Aurora\\\\感知文件夹', String(last?.settings?.modes?.classroom?.watchDir))
+    record('引导写入感知文件夹（仍是隔离目录）', last?.settings?.modes?.classroom?.watchDir === WATCH_DIR, String(last?.settings?.modes?.classroom?.watchDir))
     record('引导写入科目列表', last?.settings?.modes?.classroom?.subjects?.length === 2, String(last?.settings?.modes?.classroom?.subjects?.length))
 
     const readyList = expectOk('mode.list#3', await window.aurora.mode.list())
@@ -264,7 +333,6 @@ export function smokeScript(stubBaseUrl: string, stubModel: string): string {
     // 9.2 MCP 状态接口（即使没有配置服务器也必须返回结构化结果而不是抛错）
     const mcpStatus = expectOk('mcp.status', await window.aurora.mcp.status())
     record('mcp.status 返回数组', Array.isArray(mcpStatus), 'len=' + (mcpStatus ? mcpStatus.length : '?'))
-
     // 9.3 更新状态接口（docs/09）：开发态必须是 disabled 且不抛错；
     //     安装版里的真实检查由 scripts/verify-update.mjs + 打包产物校验覆盖。
     const updateState = expectOk('update.getState', await window.aurora.update.getState())
@@ -280,6 +348,159 @@ export function smokeScript(stubBaseUrl: string, stubModel: string): string {
     expectOk('window.show(settings)', await win.show('settings'))
     const withSettings = expectOk('window.getState#4', await win.getState())
     record('设置窗可见', withSettings?.visible['settings'] === true, JSON.stringify(withSettings))
+
+    // ───────────────────── 分类管线（P4，docs/05 §3） ─────────────────────
+    // 主进程已把感知文件夹指向自测临时目录，并向其中放好待分类文件。
+    // 这里只经 IPC 观察结果，不直接触碰文件系统（渲染层本来也没有那个能力）。
+
+    // 10.1 分类事件的推送通道（先订阅，再实时投放文件）
+    const clsEvents = []
+    const offCls = window.aurora.classification.onEvent((event) => clsEvents.push(event))
+
+    const ledger = expectOk('classification.history', await window.aurora.classification.history())
+    record('分类流水可读（数组）', Array.isArray(ledger), 'len=' + (ledger ? ledger.length : '?'))
+
+    const stateEvents = expectOk('classification.state', await window.aurora.classification.state())
+    record('分类状态可水合（数组）', Array.isArray(stateEvents), 'len=' + (stateEvents ? stateEvents.length : '?'))
+
+    // 实时投放文件（渲染层无文件系统能力，经自测专用通道写入感知文件夹），
+    // 这样验证的是真实的 chokidar add → 分类链路，而非启动时扫描。
+    const dropped = expectOk(
+      'app.smokeDropFile(数学作业)',
+      await window.aurora.app.smokeDropFile({
+        fileName: '数学作业.txt',
+        content: '一元二次方程练习题\n求根公式',
+      }),
+    )
+    record('待分类文件已投放到感知文件夹', typeof dropped === 'string' && dropped.length > 0, String(dropped))
+
+    const seeded = await waitForClassification(
+      (list) => list.some((item) => item.fileName.indexOf('数学作业') === 0 && item.movedTo),
+      20000,
+    )
+    const classified = seeded.find((item) => item.fileName.indexOf('数学作业') === 0)
+    record('新文件被自动分类（30s 内）', Boolean(classified), classified ? classified.subject : '未在超时内完成')
+    record('判定为数学（文件名命中的科目）', classified?.subject === '数学', String(classified?.subject))
+    record('文件已被移动（movedTo 指向科目目录）', Boolean(classified?.movedTo && classified.movedTo.indexOf('数学') >= 0), String(classified?.movedTo))
+    record('走了规则判定（未消耗模型调用）', classified?.source === 'rule', String(classified?.source))
+    record('分类事件已推送到渲染层', clsEvents.length > 0, 'events=' + clsEvents.length)
+    record('事件状态最终为 done', clsEvents.some((event) => event.state === 'done'), clsEvents.map((event) => event.state).join('>'))
+
+    // 10.2 低置信度 → 落「待分类」
+    // 判定条件用 **source === 'fallback'**：待分类目录名不会出现在 reason 里
+    // （reason 是"模型依据 + 低于阈值说明"），按目录名等会必然等到超时。
+    const fallbackAttempt = await dropAndWait(
+      '低置信扫描件.txt',
+      '内容无法辨认',
+      (list) =>
+        list.some((item) => item.fileName.indexOf('低置信') === 0 && item.source === 'fallback'),
+      25000,
+    )
+    const fallback = fallbackAttempt.list
+    const fallbackRecord = fallback.find(
+      (item) => item.fileName.indexOf('低置信') === 0 && item.source === 'fallback',
+    )
+    record('低置信文件已处理', Boolean(fallbackRecord), fallbackRecord ? fallbackRecord.reason : '未在超时内完成')
+    record(
+      '低置信落入「待分类」兜底',
+      fallbackRecord?.source === 'fallback',
+      String(fallbackRecord?.source) + ' attempts=' + fallbackAttempt.attempts,
+    )
+    // 兜底必须真的**落盘到待分类目录**（只断言 source 无法证明文件搬对了地方）
+    record(
+      '兜底文件已移入「待分类」目录',
+      Boolean(fallbackRecord?.movedTo && fallbackRecord.movedTo.indexOf('待分类') >= 0),
+      String(fallbackRecord?.movedTo),
+    )
+    record(
+      '兜底记录未猜科目',
+      fallbackRecord?.subject === '' && fallbackRecord?.confidence === 0.1,
+      JSON.stringify({ subject: fallbackRecord?.subject, confidence: fallbackRecord?.confidence }),
+    )
+
+    // 10.3 用户修正 → 沉淀规则 → 同类文件跳过模型
+    const correctedList = expectOk(
+      'classification.correct',
+      await window.aurora.classification.correct({
+        recordId: fallbackRecord ? fallbackRecord.id : 'missing',
+        subject: '物理',
+      }),
+    )
+    const corrected = (correctedList || []).find(
+      (item) => item.id === (fallbackRecord ? fallbackRecord.id : ''),
+    )
+    record(
+      '修正后标记 corrected 且科目更新',
+      corrected?.corrected === true && corrected?.subject === '物理',
+      JSON.stringify({ subject: corrected?.subject, corrected: corrected?.corrected }),
+    )
+
+    // 同名文件再次出现（同一次运行内的第二份）：应命中「已学习」规则
+    const rerunAttempt = await dropAndWait(
+      '低置信扫描件.txt',
+      '内容仍然无法辨认',
+      (list) => list.filter((item) => item.fileName.indexOf('低置信') === 0).length >= 2,
+      25000,
+    )
+    const rerun = rerunAttempt.list
+    const rerunRecords = rerun.filter((item) => item.fileName.indexOf('低置信') === 0)
+    record(
+      '同名文件再次出现并被重新分类',
+      rerunRecords.length >= 2,
+      'count=' + rerunRecords.length + ' attempts=' + rerunAttempt.attempts,
+    )
+    // 刻意按**属性**找而不是取 rerunRecords[0]：修正动作与在途任务可能交错，
+    // 列表里还会出现一条 skipped（"处理期间已被移动"）的审计记录，
+    // 按位置取会取到它，从而把"规则已生效"误判为失败。
+    const ruledRecord = rerunRecords.find(
+      (item) => item.source === 'rule' && item.subject === '物理',
+    )
+    record(
+      '规则已学习：第二次走 rule 而非 llm',
+      Boolean(ruledRecord),
+      JSON.stringify({
+        source: ruledRecord ? ruledRecord.source : null,
+        subject: ruledRecord ? ruledRecord.subject : null,
+        all: rerunRecords.map((item) => item.source + ':' + (item.subject || '-')).join(','),
+      }),
+    )
+    offCls()
+
+    // ───────────────────── 系统感知（P5，docs/06 §8） ─────────────────────
+
+    const perception2 = expectOk('perception.summary#2', await window.aurora.perception.summary())
+    record(
+      '感知含前台窗口（或明确列为未采集）',
+      Boolean(perception2?.foreground) ||
+        (perception2?.unknown || []).indexOf('前台窗口') >= 0,
+      JSON.stringify(perception2?.foreground ?? perception2?.unknown ?? null),
+    )
+    record('感知含显示器信息', Boolean(perception2?.display), JSON.stringify(perception2?.display ?? null))
+    record('感知含课程表（数组）', Array.isArray(perception2?.lessons), 'lessons=' + (perception2?.lessons ? perception2.lessons.length : '?'))
+
+    // ───────────────────── 课前提醒（P5，docs/05 §3.4） ─────────────────────
+    // 自测下主进程把「打开科目文件夹」换成记录回执（不真的弹资源管理器），
+    // 因此这里断言真的触发过，且目标目录指向该科目。
+    const preClass = await waitForPreClass(50000)
+    record('课前提醒已触发', Boolean(preClass), JSON.stringify(preClass))
+    record(
+      '课前提醒指向正确科目与目录',
+      Boolean(preClass && preClass.subject === '数学' && preClass.targetDir.indexOf('数学') >= 0),
+      JSON.stringify(preClass),
+    )
+
+    // ───────────────────── 敏感工具确认通道（P5，docs/06 §5） ─────────────────────
+    // 渲染层只断言订阅面可用（真实确认往返由单测覆盖，
+    // 这里若真的触发一次会阻塞 60s 等超时，不适合自测）
+    let sensitiveSubscribed = false
+    try {
+      const offSensitive = window.aurora.proactive.onSensitiveTool(() => undefined)
+      sensitiveSubscribed = typeof offSensitive === 'function'
+      offSensitive()
+    } catch (error) {
+      sensitiveSubscribed = false
+    }
+    record('敏感工具确认订阅面可用', sensitiveSubscribed, String(sensitiveSubscribed))
 
     // 11. 清理自测写入的配置
     //     （"密文确实落库且可解密"由 hasSecret#smoke / update(llm#stub) 两条断言覆盖：

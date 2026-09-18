@@ -121,6 +121,20 @@ async function resetAll(): Promise<void> {
       />
     </SettingField>
 
+    <SettingField
+      label="敏感工具确认"
+      hint="移动 / 删除文件、命令执行等敏感工具（MCP 工具一律如此）执行前需要你确认；关闭后只写日志留痕、不拦截（docs/06 §5）"
+    >
+      <label class="row tiny">
+        <input
+          type="checkbox"
+          :checked="advanced?.confirmSensitiveTools ?? true"
+          @change="save({ confirmSensitiveTools: ($event.target as HTMLInputElement).checked })"
+        />
+        <span>执行前需要确认（默认开启）</span>
+      </label>
+    </SettingField>
+
     <div class="divider" />
 
     <SettingField label="日志与配置">

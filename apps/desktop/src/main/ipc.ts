@@ -7,6 +7,7 @@
  * - 密文字段不回传渲染层（只回传"是否已设置"）。
  */
 import { join } from 'node:path'
+import { promises as writeFs } from 'node:fs'
 import { BrowserWindow, app, ipcMain, shell } from 'electron'
 import { type SessionStore } from '@aurora/agent-core'
 import {
@@ -18,6 +19,9 @@ import {
   type AuroraApi,
   type ChatHistoryRequest,
   type ChatMessageDto,
+  type ClassificationCorrection,
+  type ClassificationEvent,
+  type ClassificationRecord,
   type GuideAnswerResult,
   type GuideSession,
   type Logger,
@@ -30,21 +34,25 @@ import {
   type SetSecretsOutcome,
   type Settings,
   type SettingsPatch,
+  type SmokeDiagnostics,
   type UpdateState,
   type WindowName,
   type WindowState,
 } from '@aurora/shared'
 import type {
   AgentHost,
+  ClassificationControllerLike,
   GuideRunnerLike,
   LlmTesterLike,
   ModeManagerLike,
   PerceptionLike,
+  ProactiveLike,
   SettingsStoreLike,
   SkillsInfoLike,
   UpdateControllerLike,
   WindowManagerLike,
 } from './contracts.js'
+import { resolveSubjectFolder } from './paths.js'
 
 export interface DesktopDeps {
   settings: SettingsStoreLike
@@ -57,6 +65,10 @@ export interface DesktopDeps {
   skills: SkillsInfoLike
   /** 会话历史（chat:history 水合，docs/06 §4） */
   sessions: SessionStore
+  /** 分类管线（classification:*，docs/05 §3） */
+  classification: ClassificationControllerLike
+  /** 敏感工具确认（proactive:*，docs/06 §5） */
+  proactive: ProactiveLike
   /** MCP 状态（mcp:status，docs/06 §7） */
   mcpStatus: () => McpServerStatus[]
   onMcpStatusChanged: (listener: (statuses: McpServerStatus[]) => void) => () => void
@@ -65,6 +77,10 @@ export interface DesktopDeps {
   logger: Logger
   paths: { userData: string; logs: string; config: string; builtinSkills: string }
   isDev: boolean
+  /** 仅自测（`AURORA_SMOKE=1`）为 true；控制诊断通道是否可用 */
+  smokeMode?: boolean
+  /** 自测诊断回执（仅 smokeMode 下被调用） */
+  smokeDiagnostics?: () => SmokeDiagnostics
   onQuit: () => void
   onSettingsChanged?: (settings: Settings) => void
 }
@@ -110,6 +126,30 @@ export function registerIpc(deps: DesktopDeps): () => void {
     return ok(undefined)
   })
   handle<string>(IPC.app.openPath, (request: OpenPathRequest) => openPath(deps, request))
+  handle<SmokeDiagnostics>(IPC.app.smokeDiagnostics, () =>
+    // 生产环境（含打包态）不暴露任何诊断信息
+    deps.isDev && deps.smokeMode === true
+      ? ok(deps.smokeDiagnostics?.() ?? { enabled: true })
+      : ok({ enabled: false }),
+  )
+  handle<string>(IPC.app.smokeDropFile, async (request: { fileName: string; content: string }) => {
+    if (!deps.isDev || deps.smokeMode !== true) {
+      return err('E_INVALID_STATE', '该接口仅在开发自测下可用')
+    }
+    const watchDir = deps.settings.get().modes.classroom.watchDir
+    if (watchDir.trim() === '') return err('E_INVALID_STATE', '尚未配置智慧感知文件夹')
+    // 只允许简单文件名，防路径穿越（自测专用接口也要守边界）
+    if (request.fileName.includes('/') || request.fileName.includes('\\')) {
+      return err('E_INVALID_ARGUMENT', '文件名不能包含路径分隔符')
+    }
+    const target = join(watchDir, request.fileName)
+    try {
+      await writeFs.writeFile(target, request.content, 'utf8')
+      return ok(target)
+    } catch (error) {
+      return err('E_IO', error instanceof Error ? error.message : String(error))
+    }
+  })
 
   // ───────────────────────── settings ─────────────────────────
 
@@ -244,6 +284,37 @@ export function registerIpc(deps: DesktopDeps): () => void {
   handle(IPC.skills.list, () => ok(deps.skills.list()))
   handle<McpServerStatus[]>(IPC.mcp.status, () => ok(deps.mcpStatus()))
 
+  // ───────────────────────── 分类管线（docs/05 §3） ─────────────────────────
+
+  handle<ClassificationRecord[]>(IPC.classification.history, (limit?: number) => {
+    const records = deps.classification.list()
+    if (limit === undefined || !Number.isFinite(limit) || limit <= 0) return ok(records)
+    return ok(records.slice(0, Math.floor(limit)))
+  })
+  handle<ClassificationEvent[]>(IPC.classification.state, () =>
+    ok(deps.classification.recentEvents()),
+  )
+  handle<ClassificationRecord[]>(
+    IPC.classification.correct,
+    async (input: ClassificationCorrection) => {
+      try {
+        return ok(await deps.classification.correct(input.recordId, input.subject))
+      } catch (error) {
+        return err('E_INVALID_ARGUMENT', error instanceof Error ? error.message : String(error))
+      }
+    },
+  )
+  handle<boolean>(IPC.classification.clear, () => {
+    deps.classification.clear()
+    return ok(true)
+  })
+
+  // ───────────────────────── 敏感工具确认（docs/06 §5） ─────────────────────────
+
+  handle<boolean>(IPC.proactive.resolveSensitiveTool, (confirmId: string, approved: boolean) =>
+    ok(deps.proactive.resolve(confirmId, approved)),
+  )
+
   // ───────────────────────── 更新（docs/09） ─────────────────────────
 
   handle<UpdateState>(IPC.update.getState, () => ok(deps.updater.getState()))
@@ -278,6 +349,12 @@ export function registerIpc(deps: DesktopDeps): () => void {
   const offAgent = deps.agent.onEvent((event) => {
     broadcast(IPC.chat.event, event)
   })
+  const offClassification = deps.classification.onEvent((event) => {
+    broadcast(IPC.classification.event, event)
+  })
+  const offSensitive = deps.proactive.onRequest((request) => {
+    broadcast(IPC.proactive.sensitiveTool, request)
+  })
   const offMcp = deps.onMcpStatusChanged((statuses) => {
     broadcast(IPC.mcp.statusChanged, statuses)
   })
@@ -291,6 +368,8 @@ export function registerIpc(deps: DesktopDeps): () => void {
     offModes()
     offWindows()
     offAgent()
+    offClassification()
+    offSensitive()
     offMcp()
     offUpdate()
   }
@@ -445,13 +524,6 @@ async function openPath(deps: DesktopDeps, request: OpenPathRequest): Promise<Re
 }
 
 /** 相对路径按感知文件夹解析（docs/05 §2 ③ 的默认规则） */
-export function resolveSubjectFolder(watchDir: string, folder: string): string {
-  const trimmed = folder.trim()
-  if (/^[a-zA-Z]:[\\/]/.test(trimmed) || trimmed.startsWith('/') || trimmed.startsWith('\\\\')) {
-    return trimmed
-  }
-  if (watchDir.trim() === '') return trimmed
-  return join(watchDir, trimmed)
-}
+export { resolveSubjectFolder } from './paths.js'
 
 export type { AuroraApi }

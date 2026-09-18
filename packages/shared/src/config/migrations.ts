@@ -4,6 +4,7 @@
  * 约定：每次 Schema 破坏性变更向 `MIGRATIONS` 追加一条，永不修改历史条目。
  */
 import { CONFIG_VERSION } from './schema.js'
+import { DEFAULT_CLASSIFICATION } from './defaults.js'
 import type { Logger } from '../utils/logger.js'
 
 export interface Migration {
@@ -54,7 +55,38 @@ const migrateV0ToV1: Migration = {
   },
 }
 
-export const MIGRATIONS: Migration[] = [migrateV0ToV1]
+/**
+ * v1 → v2：为 P4 分类管线与 P5 敏感工具确认补齐配置字段。
+ *
+ * 只补缺失字段，**不覆盖**用户已写入的值（幂等：重复执行结果一致）。
+ */
+const migrateV1ToV2: Migration = {
+  from: 1,
+  to: 2,
+  describe: 'v1 → v2：补齐 modes.classroom.classification 与 advanced.confirmSensitiveTools',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const modes = { ...(asRecord(raw['modes']) ?? {}) }
+    const classroom = { ...(asRecord(modes['classroom']) ?? {}) }
+    if (asRecord(classroom['classification']) === undefined) {
+      classroom['classification'] = { ...DEFAULT_CLASSIFICATION }
+    }
+    modes['classroom'] = classroom
+    next['modes'] = modes
+
+    const advanced = { ...(asRecord(raw['advanced']) ?? {}) }
+    if (typeof advanced['confirmSensitiveTools'] !== 'boolean') {
+      advanced['confirmSensitiveTools'] = true
+    }
+    next['advanced'] = advanced
+
+    next['version'] = 2
+    return next
+  },
+}
+
+export const MIGRATIONS: Migration[] = [migrateV0ToV1, migrateV1ToV2]
 
 export interface MigrationOutcome {
   data: Record<string, unknown>

@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 1 as const
+export const CONFIG_VERSION = 2 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -115,6 +115,17 @@ export const ScheduleSchema = z.object({
 })
 export type ScheduleConfig = z.infer<typeof ScheduleSchema>
 
+/** 分类管线行为（docs/05 §3.2、docs/08 §1）。 */
+export const ClassificationSchema = z.object({
+  /** 判定成功后就地移动文件；false 时只记录流水、不动文件。 */
+  autoMove: z.boolean(),
+  /** 低于该置信度的判定进「待分类」，不猜（docs/05 §3.2）。 */
+  confidenceThreshold: z.number().min(0).max(1),
+  /** 兜底目录，相对 watchDir 或绝对路径。 */
+  fallbackFolder: z.string().min(1),
+})
+export type ClassificationConfig = z.infer<typeof ClassificationSchema>
+
 export const ClassroomModeSchema = z.object({
   guideCompleted: z.boolean(),
   /** 智慧感知文件夹绝对路径；空串表示未配置。 */
@@ -122,6 +133,7 @@ export const ClassroomModeSchema = z.object({
   subjects: z.array(SubjectSchema),
   schedule: ScheduleSchema,
   preClassReminder: z.boolean(),
+  classification: ClassificationSchema,
 })
 export type ClassroomModeConfig = z.infer<typeof ClassroomModeSchema>
 
@@ -171,6 +183,11 @@ export const AdvancedSchema = z.object({
   proxy: z.string(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']),
   quietHours: QuietHoursSchema,
+  /**
+   * 敏感工具（`sensitivity = 'confirm'`，含全部 MCP 工具）执行前是否要求用户确认
+   * （docs/06 §5）。关闭后按 v0.3.0 行为降级：只记日志留痕、不拦截。
+   */
+  confirmSensitiveTools: z.boolean(),
 })
 export type AdvancedSettings = z.infer<typeof AdvancedSchema>
 

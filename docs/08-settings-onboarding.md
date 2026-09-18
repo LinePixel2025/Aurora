@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v1）
+## 1. 配置 Schema（config.json，v2）
 
 ```jsonc
 {
-  "version": 1,
+  "version": 2,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -32,7 +32,12 @@
       "watchDir": "",
       "subjects": [ { "name": "数学", "folder": "分类/数学", "keywords": [] } ],
       "schedule": { "provider": "manual", "lessons": [] },
-      "preClassReminder": true
+      "preClassReminder": true,
+      "classification": {
+        "autoMove": true,
+        "confidenceThreshold": 0.6,
+        "fallbackFolder": "待分类"
+      }
     },
     "work": { "guideCompleted": false },
     "code": { "guideCompleted": false }
@@ -44,7 +49,12 @@
       { "name": "example", "transport": "stdio", "command": "npx", "args": [], "envEnc": {} }
     ]
   },
-  "advanced": { "proxy": "", "logLevel": "info", "quietHours": null }
+  "advanced": {
+    "proxy": "",
+    "logLevel": "info",
+    "quietHours": null,
+    "confirmSensitiveTools": true
+  }
 }
 ```
 
@@ -52,6 +62,11 @@
 - `mcp.lazyConnect`：连接策略（见 06 §7）。`false`（默认）= 启动即连；`true` = 首次使用某个 MCP 工具时才连接。
 - MCP 环境变量的**变量名**由 `envEnc` 的键表达，设置页据此展示"已配置的变量名"，
   因此 Schema 不额外维护一份 `env` 列表（避免两处数据不一致）。
+- `modes.classroom.classification`（v2 新增，见 05 §3.2）：`autoMove` 关闭时只写分类流水、
+  不移动文件；`confidenceThreshold` 是进「待分类」的置信度下限；`fallbackFolder` 是兜底目录
+  （相对 `watchDir` 或绝对路径）。
+- `advanced.confirmSensitiveTools`（v2 新增）：敏感工具（`sensitivity = 'confirm'`，含全部 MCP 工具）
+  执行前是否要求用户确认（见 06 §5）。关闭后按 v0.3.0 行为降级为「只记日志留痕、不拦截」。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -66,11 +81,25 @@
 
 两者由主进程在回传前计算，不写入 `config.json`，因此不参与版本迁移。
 
+### 1.2 不属于 config.json 的本地数据
+
+分类流水与规则缓存**不写入 config.json**（避免配置被高频重写），单独存放：
+
+| 文件 | 内容 | 说明 |
+|---|---|---|
+| `userData/classification.json` | `{ version, records: ClassificationRecord[] }` | 分类流水（上限 500 条，新的在前）；原子写 + 300ms 防抖 + 损坏备份重建 |
+
+规则缓存**不单独持久化**，启动时由流水中的用户修正记录重建（见 05 §3.2），
+因而不新增存储面，也不会与流水出现两处数据不一致。
+
 ## 2. 存储与安全
 
-- 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、日志 `logs/`、用户技能 `skills/`。
+- 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
+  分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行（v1 起预留）。
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 2`：
+  `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
+  `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`，幂等且不覆盖已有值）。
 - 凭据：`apiKeyEnc` / `envEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -110,5 +139,25 @@
     `mcp:statusChanged` 驱动（`ready` / `connecting` / `error` 三态，`error` 时展示
     最近一次失败原因），`lazyConnect` 可在设置页切换。
 - **高级**：日志查看与导出、代理设置、勿扰时段、重置为默认配置。
-  - 实现状态（v0.1.0）：代理与日志级别已写入配置（消费方在 P3 接入）；勿扰时段可读写，
-    触发器的实际拦截归入 P5 主动引导调度。
+  - 实现状态（v0.1.0）：代理与日志级别已写入配置（消费方在 P3 接入）；勿扰时段可读写。
+  - 实现状态（v0.5.0）：**勿扰时段已实际拦截主动行为**——敏感工具确认在时段内直接拒绝
+    （`ProactiveScheduler.isQuietHour`），课前提醒在时段内静默跳过。新增
+    「敏感工具确认」开关（`advanced.confirmSensitiveTools`，默认开启）：关闭后敏感工具
+    不再询问用户，降级为「只记日志留痕」，且**每次调用即时判断**，改设置无需重启。
+
+## 7. ClassRoom 模式设置页（v0.4.0）
+
+模式为 ClassRoom 时，模式页渲染完整配置区（`renderer/settings/components/ClassroomSection.vue`）：
+
+- **智慧感知文件夹**：输入绝对路径 + 「打开文件夹」（`app:openPath` 的 `watchDir`）。
+- **科目列表**：增 / 删 / 改名，每科可配**目标文件夹**与**分类关键词**；
+  改科目名会同步改写引用它的课程表条目，删除时提示仍有多少节课引用该科目。
+- **课程表**：`schedule.provider`（manual / classisland）+ 课程行
+  （星期 0–6 中文、起止 `HH:mm`、科目下拉）。
+- **课前提醒**：`modes.classroom.preClassReminder` 开关。
+- **分类行为**：`classification.autoMove`（自动移动）、`confidenceThreshold`（0–1 滑条）、
+  `fallbackFolder`（兜底目录）。
+- **分类流水**：内嵌 `ClassificationLedger`（默认展开，50 条），可就地修正与打开文件夹。
+
+写入统一走 `settings.update({ modes: { ...当前 modes, classroom: { ...当前 classroom, ...补丁 } } })`：
+`settings:update` 是**按顶层分组浅合并**，因此必须展开当前分组，否则会丢掉未被提及的子字段。

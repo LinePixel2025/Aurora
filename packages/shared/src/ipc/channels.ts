@@ -6,6 +6,10 @@ export const IPC = {
     quit: 'app:quit',
     openLogs: 'app:openLogs',
     openPath: 'app:openPath',
+    /** 仅开发态自测用（`AURORA_SMOKE=1`），生产环境返回 enabled: false */
+    smokeDiagnostics: 'app:smokeDiagnostics',
+    /** 仅开发态自测用：把文件放进感知文件夹，触发真实的 chokidar add 事件 */
+    smokeDropFile: 'app:smokeDropFile',
   },
   settings: {
     get: 'settings:get',
@@ -53,6 +57,19 @@ export const IPC = {
     history: 'chat:history',
     event: 'chat:event',
   },
+  /** ClassRoom 分类管线（docs/05 §3、docs/02 §5.2） */
+  classification: {
+    history: 'classification:history',
+    state: 'classification:state',
+    correct: 'classification:correct',
+    clear: 'classification:clear',
+    event: 'classification:event',
+  },
+  /** 主动引导与敏感工具确认（docs/06 §5、§9） */
+  proactive: {
+    sensitiveTool: 'proactive:sensitiveTool',
+    resolveSensitiveTool: 'proactive:resolveSensitiveTool',
+  },
   mcp: {
     status: 'mcp:status',
     statusChanged: 'mcp:statusChanged',
@@ -75,5 +92,7 @@ export type IpcChannel =
   | (typeof IPC.perception)[keyof typeof IPC.perception]
   | (typeof IPC.skills)[keyof typeof IPC.skills]
   | (typeof IPC.chat)[keyof typeof IPC.chat]
+  | (typeof IPC.classification)[keyof typeof IPC.classification]
+  | (typeof IPC.proactive)[keyof typeof IPC.proactive]
   | (typeof IPC.mcp)[keyof typeof IPC.mcp]
   | (typeof IPC.update)[keyof typeof IPC.update]

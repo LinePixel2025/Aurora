@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /** 模式设置页：三模式卡片 + 引导状态 + 重新引导 / 继续引导（docs/07 §2.5）。 */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { ModeId } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
+import ClassroomSection from '../components/ClassroomSection.vue'
 import { useModeStore, useSettingsStore, useWindowStore } from '../../shared/stores.js'
 
 const modeStore = useModeStore()
@@ -13,6 +14,9 @@ const windowStore = useWindowStore()
 const busy = ref<ModeId | null>(null)
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
+
+/** ClassRoom 专属配置只在 ClassRoom 为当前模式时展示（docs/05 §3）。 */
+const classroomActive = computed(() => settingsStore.settings?.modes.current === 'classroom')
 
 async function choose(id: ModeId): Promise<void> {
   busy.value = id
@@ -42,31 +46,6 @@ async function restartGuide(id: ModeId): Promise<void> {
 async function markDone(id: ModeId): Promise<void> {
   await modeStore.completeGuide(id)
   message.value = '已标记该模式引导为完成'
-}
-
-async function openWatchDir(): Promise<void> {
-  const result = await window.aurora.app.openPath({ kind: 'watchDir' })
-  if (!result.ok) error.value = result.message
-}
-
-async function openSubject(name: string): Promise<void> {
-  const result = await window.aurora.app.openPath({ kind: 'subject', subject: name })
-  if (!result.ok) error.value = result.message
-}
-
-async function saveClassroomField(patch: {
-  watchDir?: string
-  preClassReminder?: boolean
-}): Promise<void> {
-  const classroom = settingsStore.settings?.modes.classroom
-  if (!classroom) return
-  const ok = await settingsStore.update({
-    modes: {
-      ...(settingsStore.settings?.modes ?? ({} as never)),
-      classroom: { ...classroom, ...patch },
-    },
-  } as never)
-  if (!ok) error.value = settingsStore.error
 }
 </script>
 
@@ -131,46 +110,8 @@ async function saveClassroomField(patch: {
       </article>
     </div>
 
-    <template v-if="settingsStore.settings?.modes.current === 'classroom'">
-      <div class="divider" />
-      <h3>ClassRoom 快速设置</h3>
-      <div class="row wrap">
-        <input
-          class="path-input"
-          type="text"
-          spellcheck="false"
-          placeholder="智慧感知文件夹（绝对路径）"
-          :value="settingsStore.settings.modes.classroom.watchDir"
-          @change="saveClassroomField({ watchDir: ($event.target as HTMLInputElement).value })"
-        />
-        <AppButton size="sm" @click="openWatchDir">打开文件夹</AppButton>
-        <label class="row tiny">
-          <input
-            type="checkbox"
-            :checked="settingsStore.settings.modes.classroom.preClassReminder"
-            @change="
-              saveClassroomField({ preClassReminder: ($event.target as HTMLInputElement).checked })
-            "
-          />
-          课前提醒
-        </label>
-      </div>
-      <div class="subjects">
-        <button
-          v-for="subject in settingsStore.settings.modes.classroom.subjects"
-          :key="subject.name"
-          type="button"
-          class="subject-chip"
-          :title="subject.folder"
-          @click="openSubject(subject.name)"
-        >
-          {{ subject.name }}
-        </button>
-      </div>
-      <p class="tiny muted">
-        分类管线（拖入即自动归类）属 P4 阶段：当前版本已保存配置与科目映射，届时直接生效。
-      </p>
-    </template>
+    <div v-if="classroomActive" class="divider" />
+    <ClassroomSection v-if="classroomActive" />
   </section>
 </template>
 
@@ -189,11 +130,6 @@ header h2 {
 
 header p {
   margin: 4px 0 0;
-}
-
-h3 {
-  margin: 0;
-  font-size: 14px;
 }
 
 .cards {
@@ -241,38 +177,5 @@ h3 {
 
 .warn-text {
   color: #f7c568;
-}
-
-.wrap {
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.path-input {
-  flex: 1;
-  min-width: 260px;
-  padding: 7px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: rgba(0, 0, 0, 0.28);
-}
-
-.subjects {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.subject-chip {
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.05);
-  font-size: 12px;
-  transition: background var(--transition-fast);
-}
-
-.subject-chip:hover {
-  background: rgba(86, 132, 255, 0.16);
 }
 </style>

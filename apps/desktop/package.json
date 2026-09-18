@@ -1,7 +1,7 @@
 {
   "name": "@aurora/desktop",
   "productName": "Aurora",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Aurora Electron 桌面壳",
   "main": "./out/main/index.js",
@@ -24,6 +24,7 @@
     "@aurora/shared": "workspace:*",
     "chokidar": "^3.6.0",
     "electron-updater": "^6.8.9",
+    "officeparser": "7.8.0",
     "systeminformation": "^5.23.5"
   },
   "devDependencies": {

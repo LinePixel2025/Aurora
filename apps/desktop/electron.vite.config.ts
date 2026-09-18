@@ -29,7 +29,12 @@ export default defineConfig({
     build: {
       outDir: r('out/main'),
       rollupOptions: {
-        input: { index: r('src/main/index.ts') },
+        // 第二个入口是**文档内容提取 worker**（docs/02 §2.1、docs/05 §3.2）：
+        // 由主进程以 `utilityProcess.fork` 启动，重任务隔离在子进程里，不阻塞事件循环。
+        input: {
+          index: r('src/main/index.ts'),
+          'extract-worker': r('src/main/extract-worker.ts'),
+        },
       },
     },
   },
