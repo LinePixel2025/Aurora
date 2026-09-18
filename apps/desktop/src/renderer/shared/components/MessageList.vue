@@ -22,6 +22,13 @@ const rendered = computed(() =>
     html: renderMarkdown(message.content),
   })),
 )
+
+/** 工具卡片的展示文案（docs/06 §5：运行中 / 成功 / 失败 + 输出摘要） */
+function toolStateLabel(state: 'running' | 'success' | 'error'): string {
+  if (state === 'running') return '执行中'
+  if (state === 'success') return '完成'
+  return '失败'
+}
 </script>
 
 <template>
@@ -42,7 +49,24 @@ const rendered = computed(() =>
         </span>
         <!-- 安全说明：内容先经 renderMarkdown 转义，再套用白名单标记（见 shared/markdown.ts） -->
         <!-- eslint-disable-next-line vue/no-v-html -->
-        <div v-else class="md" v-html="message.html" />
+        <div v-else-if="message.content !== ''" class="md" v-html="message.html" />
+
+        <!-- 工具执行卡片：小窗（compact）不展示，保持精简 -->
+        <div v-if="!compact && (message.toolCalls?.length ?? 0) > 0" class="tools">
+          <article
+            v-for="call in message.toolCalls"
+            :key="call.id"
+            class="tool-card"
+            :class="`t-${call.state}`"
+          >
+            <span class="tool-state" aria-hidden="true" />
+            <span class="mono tiny tool-name">{{ call.name }}</span>
+            <span class="badge">{{ toolStateLabel(call.state) }}</span>
+            <span v-if="call.outputSummary" class="tiny muted tool-summary">
+              {{ call.outputSummary }}
+            </span>
+          </article>
+        </div>
       </div>
     </article>
     <slot />
@@ -115,6 +139,67 @@ const rendered = computed(() =>
 .compact .bubble {
   font-size: 12px;
   padding: 6px 10px;
+}
+
+/* ── 工具执行卡片（docs/06 §5） ── */
+.tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.tool-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tool-state {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--status-idle);
+}
+
+.t-running .tool-state {
+  background: var(--aurora-blue);
+  animation: tool-pulse 1s infinite ease-in-out;
+}
+
+.t-success .tool-state {
+  background: var(--status-ok, #3fbf7f);
+}
+
+.t-error .tool-state {
+  background: #f2555a;
+}
+
+.tool-name {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+}
+
+.tool-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+@keyframes tool-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .typing {

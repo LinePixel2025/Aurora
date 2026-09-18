@@ -1,14 +1,20 @@
 /**
  * AgentHost 装配层（docs/02 §3.1、docs/06 §5）。
  *
- * P1 行为：窗口可输入消息，主进程返回**真实感知摘要 + 当前模式提示词**，
- * 并明确标注"AI 内核将在下一阶段接入"。P3 会用 agent-core 的
- * `session` / `loop` / `llm` 替换 `buildReply`，IPC 契约保持不变。
+ * 本文件只做"接线"：把 `SettingsStore` 的凭据、当前模式提示词、系统感知、
+ * Skill 注册表与 MCP Hub 组装成内核需要的依赖，再交给 `KernelAgentHost`。
+ * 真实逻辑全部在 `packages/agent-core`（纯 Node、可单测）。
  */
+import {
+  OpenAiCompatProvider,
+  describeError,
+  isLlmError,
+  type AgentProviderFactory,
+  type ProviderConfig,
+} from '@aurora/agent-core'
+import type { AgentEvent, AgentHost, LlmSettings, LlmProviderConfig } from '@aurora/shared'
+import type { Logger } from '@aurora/shared'
 import type {
-  AgentEvent,
-  AgentHost,
-  Logger,
   ModeManagerLike,
   PerceptionLike,
   SendMessageRequest,
@@ -20,34 +26,34 @@ export interface AgentHostOptions {
   modes: ModeManagerLike
   perception: PerceptionLike
   logger: Logger
+  /** 已装配好的内核 AgentHost（由 index.ts 构造） */
+  kernel: AgentHost
 }
 
-export class PlaceholderAgentHost implements AgentHost {
+/**
+ * 包装内核 AgentHost：替换掉 P1 的占位回复，并在事件流出口补上
+ * LLM 错误码的中文可操作提示（IPC 契约与渲染层无需改动）。
+ */
+export class DesktopAgentHost implements AgentHost {
   private readonly options: AgentHostOptions
+  private readonly detach: () => void
   private readonly listeners = new Set<(event: AgentEvent) => void>()
-  private counter = 0
-  private readonly aborted = new Set<string>()
 
   constructor(options: AgentHostOptions) {
     this.options = options
+    this.detach = options.kernel.onEvent((event) => this.dispatch(event))
   }
 
   isReady(): boolean {
-    return false
+    return this.options.kernel.isReady()
   }
 
   send(request: SendMessageRequest): Promise<{ requestId: string }> {
-    this.counter += 1
-    const requestId = `req-${Date.now()}-${this.counter}`
-    this.emit({ type: 'queued', requestId })
-
-    void this.deliver(requestId, request)
-    return Promise.resolve({ requestId })
+    return this.options.kernel.send(request)
   }
 
   abort(requestId: string): boolean {
-    this.aborted.add(requestId)
-    return true
+    return this.options.kernel.abort(requestId)
   }
 
   onEvent(listener: (event: AgentEvent) => void): () => void {
@@ -57,74 +63,26 @@ export class PlaceholderAgentHost implements AgentHost {
     }
   }
 
-  /** 当前模式提示词 + 感知摘要，供 P3 复用与设置页预览。 */
-  buildSystemPrompt(): string {
-    return [this.options.modes.systemPrompt(), this.replyContext()]
+  /** 供设置页 / 诊断使用：当前系统提示词预览。 */
+  async buildSystemPromptPreview(): Promise<string> {
+    return [this.options.modes.systemPrompt(), await this.options.perception.contextSummary()]
       .filter((part) => part !== '')
       .join('\n\n')
   }
 
-  private replyContext(): string {
-    return ''
+  dispose(): void {
+    this.detach()
+    this.listeners.clear()
   }
 
-  private async deliver(requestId: string, request: SendMessageRequest): Promise<void> {
-    const text = await this.buildReply(request)
-    if (this.aborted.has(requestId)) {
-      this.aborted.delete(requestId)
-      this.emit({ type: 'done', requestId })
-      return
-    }
-    // 模拟流式输出，让渲染层的打字机与状态机在 P1 就能被验证
-    for (const chunk of chunkText(text)) {
-      if (this.aborted.has(requestId)) {
-        this.aborted.delete(requestId)
-        this.emit({ type: 'done', requestId })
-        return
-      }
-      this.emit({ type: 'text', requestId, delta: chunk })
-      await delay(18)
-    }
-    this.emit({ type: 'done', requestId, pending: true })
-  }
-
-  private async buildReply(request: SendMessageRequest): Promise<string> {
-    const settings = this.options.settings.get()
-    const active = settings.llm.active
-    const provider = active === '' ? undefined : settings.llm.providers[active]
-
-    const header: string[] = []
-    if (!provider || provider.apiKeyEnc === '') {
-      header.push('⚠️ 还没有可用的 AI 模型配置，请先在「设置 → AI 模型」中完成配置。')
-    } else {
-      header.push(`已就绪的模型：${provider.model}（${active}）`)
-    }
-
-    const summary = await this.options.perception.contextSummary()
-    const mode = this.options.modes.currentSummary()
-    const lines = [
-      ...header,
-      '',
-      `当前模式：${mode.displayName}${mode.placeholder ? '（建设中）' : ''}`,
-      `系统状态：${summary}`,
-      '',
-      `你说的是：「${truncate(request.text, 200)}」`,
-      '',
-      'AI 对话内核将在下一阶段（v0.3.0 · Agent 内核）接入：届时这里会返回模型的真实回复，',
-      '并支持工具调用、Skill 与 MCP。当前版本可先在「设置」中完成模型与模式配置。',
-    ]
-    this.options.logger.info('收到占位回复请求', {
-      origin: request.origin,
-      sessionId: request.sessionId,
-      hasModel: Boolean(provider),
-    })
-    return lines.join('\n')
-  }
-
-  private emit(event: AgentEvent): void {
+  private dispatch(event: AgentEvent): void {
+    const outgoing =
+      event.type === 'error'
+        ? { ...event, message: explainError(event.code, event.message) }
+        : event
     for (const listener of this.listeners) {
       try {
-        listener(event)
+        listener(outgoing)
       } catch (error) {
         this.options.logger.warn('Agent 事件监听器抛错', { error: String(error) })
       }
@@ -132,18 +90,80 @@ export class PlaceholderAgentHost implements AgentHost {
   }
 }
 
-function chunkText(text: string, size = 6): string[] {
-  const chunks: string[] = []
-  for (let index = 0; index < text.length; index += size) {
-    chunks.push(text.slice(index, index + size))
+/**
+ * 用当前设置即时构造 provider（每次请求都重新读取 + 解密）。
+ * 这样在设置页改完 API Key / 模型后**无需重启**即可生效。
+ */
+export function createProviderFactory(
+  settings: SettingsStoreLike,
+  logger: Logger,
+): AgentProviderFactory {
+  return {
+    create(): ProviderConfig | undefined {
+      const llm: LlmSettings = settings.get().llm
+      const providerId = llm.active
+      if (providerId === '') {
+        logger.debug('尚未选择默认模型配置')
+        return undefined
+      }
+      const config: LlmProviderConfig | undefined = llm.providers[providerId]
+      if (config === undefined) {
+        logger.warn('默认模型配置不存在', { providerId })
+        return undefined
+      }
+      if (config.baseUrl.trim() === '' || config.model.trim() === '') {
+        logger.warn('模型配置缺少 baseUrl 或 model', { providerId })
+        return undefined
+      }
+
+      const apiKey = settings.getSecret(`llm.providers.${providerId}.apiKey`)
+      if (apiKey === '') {
+        logger.warn('模型配置缺少 API Key（可能加密不可用或尚未填写）', { providerId })
+        return undefined
+      }
+
+      return {
+        provider: new OpenAiCompatProvider({
+          id: providerId,
+          baseUrl: config.baseUrl,
+          apiKey,
+          defaultModel: config.model,
+          onRetry: (info) =>
+            logger.warn('LLM 请求重试', {
+              providerId,
+              attempt: info.attempt,
+              code: info.code,
+              delayMs: info.delayMs,
+            }),
+        }),
+        model: config.model,
+        temperature: config.temperature,
+      }
+    },
   }
-  return chunks
 }
 
-function truncate(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}…`
+/** LLM 错误 → 可操作的中文提示（IPC 层只做透传，文案集中在这里）。 */
+export function explainError(code: string, message: string): string {
+  if (isLlmErrorCode(code)) return describeError(code, message)
+  return message
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+const LLM_ERROR_CODES = [
+  'E_AUTH',
+  'E_RATE_LIMIT',
+  'E_TIMEOUT',
+  'E_NETWORK',
+  'E_NOT_FOUND',
+  'E_BAD_REQUEST',
+  'E_SERVER',
+  'E_ABORTED',
+  'E_UNKNOWN',
+] as const
+
+function isLlmErrorCode(code: string): code is (typeof LLM_ERROR_CODES)[number] {
+  return (LLM_ERROR_CODES as readonly string[]).includes(code)
 }
+
+export { isLlmError }
+export type { AgentHost, AgentEvent }

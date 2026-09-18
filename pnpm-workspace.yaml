@@ -10,3 +10,10 @@ allowBuilds:
   electron: true
   esbuild: true
   vue-demi: true
+
+# 显式忽略的安装脚本：这些包会拉取与本项目无关的二进制，
+# 且 pnpm 11 在"有构建脚本既未放行也未忽略"时会直接让 install 失败。
+# - electron-winstaller: 只为 Squirrel.Windows 准备 NuGet 包，
+#   本项目用 NSIS（electron-builder 的 nsis target），不需要它。
+ignoredBuilds:
+  - electron-winstaller

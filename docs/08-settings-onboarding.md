@@ -39,6 +39,7 @@
   },
   "skills": { "userDir": "", "disabled": [] },
   "mcp": {
+    "lazyConnect": false,
     "servers": [
       { "name": "example", "transport": "stdio", "command": "npx", "args": [], "envEnc": {} }
     ]
@@ -48,6 +49,9 @@
 ```
 
 - 字段说明：`llm.providers` 支持多组模型配置，`llm.active` 指定默认；`modes.classroom.subjects` 即科目 → 文件夹映射（见 05 §3）；`schedule.provider` 为 `manual | classisland`（见 05 §3.4）。
+- `mcp.lazyConnect`：连接策略（见 06 §7）。`false`（默认）= 启动即连；`true` = 首次使用某个 MCP 工具时才连接。
+- MCP 环境变量的**变量名**由 `envEnc` 的键表达，设置页据此展示"已配置的变量名"，
+  因此 Schema 不额外维护一份 `env` 列表（避免两处数据不一致）。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -102,6 +106,9 @@
 
 - **Skill 管理**：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。
 - **MCP 管理**：服务器列表、添加（stdio 命令 / HTTP URL）、连接状态灯、错误日志。
+  - 实现状态（v0.3.0）：列表读写与凭据脱敏沿用 v0.1.0；**状态灯**由 `mcp:status` /
+    `mcp:statusChanged` 驱动（`ready` / `connecting` / `error` 三态，`error` 时展示
+    最近一次失败原因），`lazyConnect` 可在设置页切换。
 - **高级**：日志查看与导出、代理设置、勿扰时段、重置为默认配置。
   - 实现状态（v0.1.0）：代理与日志级别已写入配置（消费方在 P3 接入）；勿扰时段可读写，
     触发器的实际拦截归入 P5 主动引导调度。

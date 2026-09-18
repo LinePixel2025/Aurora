@@ -1,6 +1,7 @@
 # 06 · Agent 内核设计
 
-状态：`已定稿`（v1 基线）
+状态：`已定稿`（v1 基线；P3 已完成——会话 / 工具循环 / Skill 执行 / MCP 客户端均已落地，
+"已定稿"指设计不变，实现细节见各节标注的 v1 / P3 范围）
 
 ## 1. 目标
 
@@ -35,21 +36,41 @@ export interface LlmProvider {
 ## 4. 会话管理
 
 - 会话划分（v1）：**快速会话**（服务窗 + 迷你窗共享）× 1，**完整会话**（AI 交互窗口）× 1，设置引导会话复用完整会话窗口。后续可扩展多会话列表。
-- 持久化：`userData/sessions/*.json`（含工具消息），支持清空 / 导出。
-- 上下文窗口管理：超长自动摘要压缩（P1）；v1 先按 token 上限截断旧消息并保留系统提示词。
+- 会话 id 由来源窗口映射（`quick` / `main` / `settings`），仅允许 `[A-Za-z0-9_-]`；非法值归一为 `settings`（防路径穿越）。
+- 持久化：`userData/sessions/<sessionId>.json`（含工具消息），结构 `{ version, sessionId, updatedAt, messages }`，
+  原子写 + 300ms 防抖（与 `SettingsStore` 同一套 `FileSystemPort` 约定），退出前 `flush()`；
+  文件损坏时备份为 `<sessionId>.corrupt-<ts>.json` 并重建为空会话。系统提示词**不落盘**，每次请求重新组装。
+- 渲染层挂载时通过 `chat:history` 水合消息列表，因此重启后交互窗仍能看到历史。
+- 上下文窗口管理：超长自动摘要压缩（P1）；v1 先按 **字符上限（默认 60k）** 截断旧消息并保留系统提示词，
+  且截断时保证「assistant(toolCalls) + 其后 tool 结果」成对保留。
+- 同一会话并发请求返回 `E_BUSY`（不排队），避免历史交错。
 
 ## 5. 工具调用循环（Agent Loop）
 
-- **系统提示词组装**：基础人设 + 当前模式片段（IMode.systemPrompt）+ 感知摘要 + 工具清单（Skill / MCP）+ 安全规则。
-- **循环**：用户消息 → LLM → [工具调用 → 执行 → 结果回填] × N（上限 8 轮）→ 最终回复。
+- **系统提示词组装**：基础人设 + 当前模式片段（IMode.systemPrompt）+ 感知摘要 + Skill 清单 + 工具清单 + 安全规则。
+  小节顺序固定，空片段自动省略；每次请求即时组装，不做缓存。
+- **循环**：用户消息 → LLM → [工具调用 → 执行 → 结果回填] × N（**上限 8 轮**）→ 最终回复。
+- 单轮出现多个工具调用时**按顺序执行**（不并发），保证 `chat:event` 工具卡片状态与结果顺序确定。
+- 到达轮次上限仍未收敛：以已有文本收尾，`done` 事件带 `pending: true`（不报错、不丢输出）。
+- 工具执行异常 / 工具名不存在：以「工具错误」文本回填模型，循环继续；渲染层卡片置 `error`。
 - 工具执行状态实时推送渲染层（运行中 / 成功 / 失败 + 输出摘要），渲染为执行卡片。
-- 敏感工具（文件移动 / 删除、命令执行）需用户确认：一次性授权或逐次确认（P1 落地逐次确认）。
+- 敏感工具（文件移动 / 删除、命令执行）需用户确认：**v1（P3）尚未落地确认交互**，
+  仅以 `ToolDefinition.sensitivity = 'confirm'` 标记（MCP 工具一律标记）并写日志留痕；
+  逐次确认的交互载体归入 P5 的主动引导界面。
+- 失败降级：未配置可用模型时立即返回 `E_NO_MODEL`（不发起网络请求）；
+  LLM 错误码（`E_AUTH` / `E_RATE_LIMIT` / `E_TIMEOUT` / `E_NETWORK` …）原样透传为 `error` 事件。
 
 ## 6. Skill 系统
 
 - **结构**：`SKILL.md`（frontmatter：`name` / `description` / `when_to_use` + 正文指令）+ 可选 `scripts/`。
 - **注册表**：内置 `skills/`（随安装包）+ 用户目录 `userData/skills/`（设置页管理：查看 / 添加 / 删除 / 启用）。
 - **匹配**：以工具形式向 LLM 暴露 `use_skill`，由 LLM 依 description 自动选择；用户可显式 `@skill名` 或 `/skill名`。
+- **执行范围（v1 / P3）**：`use_skill` 只把目标技能的正文指令与所在目录注入当前上下文
+  （参数 `{ name }`，`enum` 取自已启用技能），**不执行任何脚本**、无需用户确认；
+  技能自带 `scripts/` 时在返回文本中提示模型，由模型在需要时向用户说明用途。
+  同一请求内重复调用同一技能直接返回"已注入，无需重复"。
+- **显式调用**：用户消息以 `/skill名` 或 `@skill名` 开头时，在调用 LLM 之前先把该技能正文注入；
+  未知技能名不算错误（按普通文本处理）。
 - **v1 内置 Skill 规划**：
   - `file-classify`：分类管线专用（内容证据 → 科目判定）；
   - `system-status`：直接读取感知当前值（电量 / 网络 / 前台应用等）；
@@ -58,9 +79,22 @@ export interface LlmProvider {
 ## 7. MCP 子系统
 
 - **McpClientHub**：维护多个 MCP 连接（`stdio` / `streamable-http`）；启动时按配置连接，失败降级并标记状态（设置页可见状态灯）。
+- **客户端实现（v1 / P3）**：自研最小 JSON-RPC 2.0 客户端，**零新增依赖**，仅覆盖 v1 需要的协议子集：
+  `initialize` → `notifications/initialized` → `tools/list` → `tools/call`。
+  - `stdio`：`child_process.spawn(command, args, { env, stdio: ['pipe','pipe','pipe'], windowsHide: true })`，
+    按 **Content-Length 分帧**读 stdout（兼容按纯 JSON 行发送的实现），stderr 收集为日志；
+    命令来自**用户显式配置**，参数以 argv 数组传递、绝不经过 shell，也不接受来自 LLM 的命令字符串。
+  - `http`（streamable-http）：`POST` + `Accept: application/json, text/event-stream`，
+    按响应 content-type 分流（SSE 复用 `llm/sse.ts` 的分帧解析，JSON 直接解析）。
+  - 声明协议版本 `2024-11-05` 并回显服务端返回值；请求级超时（默认 30s）。
+  - **已知限制**：HTTP 传输暂不支持自定义鉴权头（Bearer / API Key），v1 的 MCP 凭据仅经 stdio `env` 注入。
 - **工具注册**：MCP tools → Agent 工具表，命名 `mcp.<server>.<tool>`；与 Skill 冲突时 MCP 优先并记日志。
+  全部 MCP 工具标记 `sensitivity = 'confirm'`（确认交互归 P5，见 §5）。
 - **配置**：设置页添加 / 删除 / 编辑服务器（URL 或 command + args + env）；env 中凭据安全存储（见 08 §2）。
-- **生命周期**：懒连接（首次使用）与启动即连两种策略，可在设置中切换。
+- **生命周期**：由 `mcp.lazyConnect` 决定——`false`（默认）启动即连，`true` 首次使用某工具时才连接。
+  设置变更后 `reconfigure()` 幂等 diff（新增 / 移除 / 改动），单个服务器失败不影响其它服务器，
+  子进程退出时其工具从注册表移除、在途请求全部失败。
+- **状态**：`idle → connecting → ready | error`，变化经 `mcp:statusChanged` 推送到设置页状态灯。
 
 ## 8. 系统感知（Perception）
 

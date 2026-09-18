@@ -1,0 +1,77 @@
+# electron-builder 打包配置（docs/04 §P6、docs/09 §3）
+#
+# 产物：Windows NSIS 安装包 + 自动更新所需的 latest.yml / blockmap。
+# 更新源：**公开的 releases-only 仓库**（`LinePixel2025/Aurora-releases`）——
+# 源码仓库保持私有，客户端无需携带任何 GitHub 凭证即可检查更新。
+#
+# 不签名（用户选择）：首装会出现 SmartScreen「未知发行者」提示，
+# 说明见 docs/09 §4；将来接入证书时只需加 `win.signingHashAlgorithms` +
+# `CSC_LINK` / `CSC_KEY_PASSWORD` 环境变量，本文件结构无需改动。
+appId: com.aurora.desktop
+productName: Aurora
+copyright: Copyright © 2026 LinePixel2025
+
+directories:
+  output: release
+  buildResources: build
+
+# 复用 pnpm 已经装好的 Electron 发行包（node_modules/electron/dist），
+# 不让 electron-builder 再去 GitHub/@electron/get 下一份 —— 内网/代理环境下
+# 那一步会因证书拦截直接失败，而且重复下载 150MB+ 纯属浪费。
+# 版本一致性由 electron（devDependency）决定。
+electronDist: node_modules/electron/dist
+
+# `out/` 是 electron-vite 的产物（main / preload / renderer 全在里面）；
+# `package.json` 必须显式包含，否则 electron-builder 找不到 main 入口。
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+
+# 内置 Skill 需要真实文件路径（skills/ 是 SKILL.md 包，不能进 asar）
+extraResources:
+  - from: ../../skills
+    to: skills
+    filter:
+      - '**/*'
+
+asar: true
+
+win:
+  icon: resources/icon.ico
+  # 不签名（用户决策）：跳过 electron-builder 的签名/exe 元数据步骤。
+  # 原因：该步骤依赖 winCodeSign 工具链（signtool.exe），
+  #   - 首次打包需要从 GitHub 下载，内网/代理环境会因证书链被拦而**打包失败**；
+  #   - 镜像源上并没有这个资源（实测 404）。
+  # 未签名安装包的功能完全正常，只是首装会出现 SmartScreen「未知发行者」提示（docs/09 §4）。
+  # 将来接入证书时：置为 true，并设置 CSC_LINK / CSC_KEY_PASSWORD 环境变量即可。
+  signAndEditExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # 产物名稳定且无空格，便于 CI 与手工上传
+  artifactName: Aurora-Setup-${version}.${ext}
+
+nsis:
+  # 保留安装包：自动更新只下载增量 blockmap，不需要重新打包
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Aurora
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  # 卸载时保留用户配置与会话（%APPDATA%/Aurora），避免"卸载即丢数据"
+  # 需要彻底清除时用户可手动删除该目录（docs/09 §5）
+
+# 发布目标：只上传安装包与更新元数据到公开 releases 仓库。
+# 本地打包（pnpm package）时 electron-builder 不会发布，只有带 --publish always
+# 或 CI 上设置 CSC/ GH_TOKEN 才会真正上传（见 docs/09 §2）。
+publish:
+  provider: github
+  owner: LinePixel2025
+  repo: Aurora-releases
+  releaseType: release

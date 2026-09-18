@@ -77,6 +77,7 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
   },
   mcp: {
     servers: [],
+    lazyConnect: false,
   },
   advanced: {
     proxy: '',

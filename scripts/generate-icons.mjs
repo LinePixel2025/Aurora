@@ -106,3 +106,39 @@ for (const [name, size] of targets) {
 // 托盘默认图标
 writeFileSync(join(outDir, 'tray.png'), render(16))
 console.log('generated tray.png (16×16)')
+
+/**
+ * 打包用 ICO：electron-builder 在缺少 .ico 时会去下载 winCodeSign 工具链转换，
+ * 而那是联网 + 首次运行才有的依赖。这里直接按 ICO 容器格式写入内嵌 PNG
+ * （Vista+ 支持 PNG 压缩的图标条目），让打包**离线可完成**。
+ */
+const ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
+const icoImages = ICO_SIZES.map((size) => ({ size, png: render(size) }))
+writeFileSync(join(outDir, 'icon.ico'), encodeIco(icoImages))
+console.log(`generated icon.ico (${ICO_SIZES.join('/')}, ${ICO_SIZES.length} entries)`)
+
+function encodeIco(images) {
+  const header = Buffer.alloc(6)
+  header.writeUInt16LE(0, 0) // reserved
+  header.writeUInt16LE(1, 2) // type: icon
+  header.writeUInt16LE(images.length, 4)
+
+  const directory = Buffer.alloc(16 * images.length)
+  let offset = header.length + directory.length
+
+  images.forEach((image, index) => {
+    const entry = index * 16
+    // 256 在 ICO 目录里用 0 表示
+    directory[entry] = image.size >= 256 ? 0 : image.size
+    directory[entry + 1] = image.size >= 256 ? 0 : image.size
+    directory[entry + 2] = 0 // 调色板数量
+    directory[entry + 3] = 0 // reserved
+    directory.writeUInt16LE(1, entry + 4) // color planes
+    directory.writeUInt16LE(32, entry + 6) // bits per pixel
+    directory.writeUInt32LE(image.png.length, entry + 8)
+    directory.writeUInt32LE(offset, entry + 12)
+    offset += image.png.length
+  })
+
+  return Buffer.concat([header, directory, ...images.map((image) => image.png)])
+}

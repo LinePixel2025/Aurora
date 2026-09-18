@@ -30,6 +30,39 @@ export function createTray(deps: DesktopDeps, iconPath: string): TrayController 
     })
   }
 
+  /** 托盘里的更新入口（docs/09 §5）：只在可自动更新时出现，避免开发态噪音 */
+  const updateItems = (): MenuItemConstructorOptions[] => {
+    const state = deps.updater.getState()
+    if (!state.enabled) return []
+    if (state.status === 'downloaded') {
+      return [
+        {
+          label: `安装更新 v${state.availableVersion ?? ''} 并重启`,
+          click: () => deps.updater.install(),
+        },
+      ]
+    }
+    if (state.status === 'available') {
+      return [
+        {
+          label: `发现新版本 v${state.availableVersion ?? ''}：打开设置更新`,
+          click: () => deps.windows.show('settings'),
+        },
+      ]
+    }
+    return [
+      {
+        label: state.status === 'checking' ? '正在检查更新…' : '检查更新',
+        enabled: state.status !== 'checking' && state.status !== 'downloading',
+        click: () => {
+          void deps.updater.check().then((next) => {
+            if (next.status === 'available') deps.windows.show('settings')
+          })
+        },
+      },
+    ]
+  }
+
   const buildMenu = (): Menu => {
     const settings = deps.settings.get()
     const modes = deps.modes.list()
@@ -83,6 +116,7 @@ export function createTray(deps: DesktopDeps, iconPath: string): TrayController 
         label: needsModel ? '状态：未配置 AI 模型' : `状态：${current?.displayName ?? '未知模式'}`,
         enabled: false,
       },
+      ...updateItems(),
       { label: '打开配置目录', click: () => void openPathByKind('config') },
       { label: '打开日志目录', click: () => void openPathByKind('logs') },
       { label: '退出 Aurora', click: () => deps.onQuit() },

@@ -3,7 +3,7 @@
  * 小 AI 交互窗口（docs/07 §2.4）：320×480，锚定服务窗，与服务窗共享"快速会话"。
  * 精简形态：气泡 + 流式文本 + 状态点；提供「展开到完整窗口」（会话归属切换由主进程状态机保证互斥）。
  */
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import MessageList from '../shared/components/MessageList.vue'
@@ -12,11 +12,23 @@ import { useChat } from '../shared/composables/useChat.js'
 import { useSettingsStore, useWindowStore } from '../shared/stores.js'
 
 const chat = useChat('mini-chat')
-const { messages, streaming, error: chatError, statusTone, send: sendMessage, abort } = chat
+const {
+  messages,
+  streaming,
+  error: chatError,
+  statusTone,
+  send: sendMessage,
+  abort,
+  hydrate,
+} = chat
 const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
 
 const input = ref('')
+
+onMounted(() => {
+  void hydrate()
+})
 
 async function send(): Promise<void> {
   const text = input.value.trim()

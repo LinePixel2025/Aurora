@@ -397,8 +397,12 @@ export function toLlmError(error: unknown): LlmError {
   return new LlmError('E_UNKNOWN', String(error))
 }
 
-export function describeError(error: LlmError): string {
-  switch (error.code) {
+export function describeError(error: LlmError): string
+export function describeError(code: LlmErrorCode, message: string): string
+export function describeError(errorOrCode: LlmError | LlmErrorCode, message = ''): string {
+  const code = typeof errorOrCode === 'string' ? errorOrCode : errorOrCode.code
+  const detail = typeof errorOrCode === 'string' ? message : errorOrCode.message
+  switch (code) {
     case 'E_AUTH':
       return '认证失败：请检查 API Key 是否正确、是否有该模型权限'
     case 'E_NOT_FOUND':
@@ -408,15 +412,15 @@ export function describeError(error: LlmError): string {
     case 'E_TIMEOUT':
       return '连接超时：请检查网络、代理或服务可用性'
     case 'E_NETWORK':
-      return `网络异常：${error.message}`
+      return `网络异常：${detail}`
     case 'E_BAD_REQUEST':
-      return `请求被拒绝：${error.message}`
+      return `请求被拒绝：${detail}`
     case 'E_SERVER':
-      return `服务端错误：${error.message}`
+      return `服务端错误：${detail}`
     case 'E_ABORTED':
       return '请求已取消'
     default:
-      return error.message
+      return detail
   }
 }
 

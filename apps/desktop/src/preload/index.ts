@@ -74,6 +74,18 @@ const api: AuroraApi = {
     send: (request) => invoke(IPC.chat.send, request),
     abort: (requestId) => invoke(IPC.chat.abort, requestId),
     onEvent: (listener) => subscribe(IPC.chat.event, listener),
+    history: (request) => invoke(IPC.chat.history, request),
+  },
+  mcp: {
+    status: () => invoke(IPC.mcp.status),
+    onStatusChanged: (listener) => subscribe(IPC.mcp.statusChanged, listener),
+  },
+  update: {
+    getState: () => invoke(IPC.update.getState),
+    check: () => invoke(IPC.update.check),
+    download: () => invoke(IPC.update.download),
+    install: () => invoke(IPC.update.install),
+    onStateChanged: (listener) => subscribe(IPC.update.stateChanged, listener),
   },
 }
 

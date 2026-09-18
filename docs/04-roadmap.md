@@ -1,6 +1,6 @@
 # 04 · 实现路径与里程碑
 
-状态：`进行中`——P0 / P1 已完成（v0.1.0），P2 窗口外壳已完成，P3 起待开始；进度随开发更新
+状态：`进行中`——P0 / P1 / P2 / P3 已完成（v0.3.0），P4 起待开始；进度随开发更新
 
 版本策略：v0.x 内部迭代 → **v1.0.0** 首个对外版本。优先级：P0 必须 / P1 尽量 / P2 后续。
 工作量按 **1 名全职开发** 估算，共约 9～10 周到 v1.0.0；多人协作可并行压缩。
@@ -11,14 +11,14 @@
 |---|---|---|---|---|
 | P0 | 项目初始化：monorepo 脚手架、CI、规范 | — | 0.5 周 | **已完成** |
 | P1 | 基础壳与设置：托盘、设置窗、配置、首次引导 | v0.1.0 | 1 周 | **已完成** |
-| P2 | 通用交互 UI：服务窗、提示条、交互窗、迷你窗 | v0.2.0 | 1.5 周 | **外壳已完成**（对话/流式接 P3） |
-| P3 | Agent 内核：对话、工具循环、Skill、MCP | v0.3.0 | 2 周 | 待开始（Provider/Skill 注册表已就绪） |
+| P2 | 通用交互 UI：服务窗、提示条、交互窗、迷你窗 | v0.2.0 | 1.5 周 | **已完成**（含真实对话与工具卡片） |
+| P3 | Agent 内核：对话、工具循环、Skill、MCP | v0.3.0 | 2 周 | **已完成** |
 | P4 | 模式系统 + ClassRoom Mode：感知文件夹自动分类、对话引导 | v0.4.0 | 2 周 | 部分完成（模式框架 + 引导已落地，监听/分类待做） |
 | P5 | 系统感知与主动引导：感知采集、上下文注入、课前提醒 | v0.5.0 | 1.5 周 | 部分完成（时间/电源/网络采集已落地） |
-| P6 | 打磨发布：打包、安装器、日志、文档 | v1.0.0 | 1 周 | 待开始（日志已落地） |
-| P7 | 后期：Work/Code Mode、ClassIsland 联动、自动更新 | v1.x | — | 预留 |
+| P6 | 打磨发布：打包、安装器、日志、文档 | v1.0.0 | 1 周 | **打包与自动更新已完成**（签名待证书） |
+| P7 | 后期：Work/Code Mode、ClassIsland 联动、自动更新 | v1.x | — | 自动更新已完成，其余预留 |
 
-### 已完成范围（v0.1.0 实际落地）
+### 已完成范围（截至 v0.3.0）
 
 - P0：pnpm workspace monorepo、TS strict、ESLint/Prettier、vitest、GitHub Actions（windows-latest）。
 - P1：托盘常驻与菜单、单实例锁、关闭即隐藏、设置窗六页、配置 Schema + 迁移链 + 原子写 +
@@ -30,10 +30,20 @@
 - P3 前置：OpenAI 兼容 Provider（SSE 流式、超时、指数退避、AbortSignal）、SKILL.md 解析
   与注册表（3 个内置技能）、工具注册表骨架、`chat:send` → `chat:event` IPC 契约与
   占位 AgentHost（返回真实感知摘要 + 下一阶段说明）。
+- P3：**Agent 内核完整落地**（`packages/agent-core`）——
+  `session`（会话持久化 `userData/sessions/*.json`、原子写 + 防抖、损坏备份重建、字符预算截断且不拆散工具调用对）、
+  `loop`（工具调用循环，上限 8 轮、同轮工具顺序执行、失败回填不中断、abort 贯穿）、
+  `context`（系统提示词组装：人设 / 模式 / 感知 / Skill / 工具 / 安全规则）、
+  `skills/bridge`（`use_skill` 注入技能正文，**不执行脚本**；支持 `/skill`、`@skill` 显式调用）、
+  `mcp`（自研最小 JSON-RPC 客户端 + stdio `Content-Length` 分帧 + streamable-http、`McpClientHub`
+  多连接管理、`mcp.<server>.<tool>` 注册、失败降级为状态灯、`lazyConnect` 策略）、
+  `host`（`KernelAgentHost`：会话装配、显式技能注入、事件映射、`E_NO_MODEL` / `E_BUSY` 降级）。
+  渲染层接入真实流式回复、工具执行卡片（运行中/成功/失败）与会话历史水合（`chat:history`）；
+  设置页 MCP 状态灯接入 `mcp:status` / `mcp:statusChanged`。
 - P5 前置：时间/电源/网络感知采集，缺失项降级为 `unknown`。
 
-**验证方式**：`pnpm test`（153 项单测）、`pnpm verify`（26 项真实磁盘验收）、
-`AURORA_SMOKE=1 pnpm dev`（29 项真实 Electron + preload + IPC 链路断言）。
+**验证方式**：`pnpm test`（256 项单测）、`pnpm verify`（26 项真实磁盘验收）、
+`AURORA_SMOKE=1 pnpm dev`（52 项真实 Electron + preload + IPC 链路断言；使用临时 userData 与本地假 LLM 桩服务，离线可跑）。
 
 依赖关系：P0 → P1 → P2、P3 可并行 → P4（依赖 P2+P3）→ P5 → P6。P4 与 P5 部分可并行（分类管线 vs 感知采集互不依赖）。
 
@@ -75,10 +85,11 @@
 - 小 AI 交互窗口：精简对话、与服务窗共享“快速会话”
 - 窗口间状态机（服务窗 ↔ 迷你窗 ↔ 交互窗）、多显示器位置记忆（P1）
 - **验收**：三种入口均可发起并完成一轮 mock 对话；窗口行为符合 07 规格。
-- **实现说明（v0.1.0）**：四种窗口外壳 + 状态机 + 位置记忆已完成；
-  `/` 与 `@` 浮层已可用（`/chat`、`/mini`、`/settings`、`/hide`、`/clear`），
-  对话返回占位回复（真实感知摘要 + 下一阶段说明），会话归属切换由主进程
-  `windowState` 状态机保证互斥。真实模型回复与工具执行卡片在 P3 接入。
+- **实现说明（v0.3.0）**：四种窗口外壳 + 状态机 + 位置记忆（v0.1.0）；
+  `/` 与 `@` 浮层已可用（`/chat`、`/mini`、`/settings`、`/hide`、`/clear`）。
+  对话已是**真实模型流式回复**（P3 接入），并渲染工具执行卡片、挂载时经
+  `chat:history` 水合历史；事件按 `sessionId` + `requestId` 双重过滤，避免
+  「快速会话」在服务窗与迷你窗之间串窗。
   - **preload 约束（重要）**：preload 运行在 `sandbox: true` 的渲染进程里，
     既无 Node 能力也**无法解析 pnpm 工作区包**，因此必须是自包含产物——只
     `require('electron')` 加字面量通道表（`src/preload/channels.ts`，由类型
@@ -97,9 +108,16 @@
 - **验收**：AI 可实际调用 Skill 与 MCP 工具完成任务；MCP 连接失败不阻塞主流程。
 - **已完成前置（v0.1.0）**：`LlmProvider` 抽象与 `OpenAiCompatProvider`（流式 SSE、
   超时、指数退避、AbortSignal）；`SkillsRegistry` 扫描内置/用户 SKILL.md（含 3 个内置技能）；
-  `ToolRegistry` 骨架（含 MCP 优先的同名冲突策略）；`chat:send` → `chat:event`
-  IPC 契约与 `AgentHost` 占位实现。**待做**：`session` / `loop` / `mcp` / `context` / `proactive`
-  模块，替换占位实现（渲染层无需改动）。
+  `ToolRegistry` 骨架（含 MCP 优先的同名冲突策略）；`chat:send` → `chat:event` IPC 契约。
+- **实现说明（v0.3.0）**：`session` / `loop` / `context` / `mcp` / `host` 全部落地，
+  占位 `PlaceholderAgentHost` 已由 `KernelAgentHost` + `DesktopAgentHost` 替换（渲染层契约不变）。
+  详见「已完成范围」中的 P3 条目与 06 文档各节标注的 v1 / P3 范围。
+  - **验收状态**：`AURORA_SMOKE=1 pnpm dev` 用本地假 LLM 桩服务端到端验证了
+    「模型 → `use_skill` → 工具结果回填 → 最终回复 → 会话持久化 → 历史水合」全链路
+    （47/47 断言）；MCP 路径由单测用真实子进程假 MCP server 覆盖（stdio 与
+    streamable-http 两种传输）。
+  - **已知限制**：MCP HTTP 传输暂不支持自定义鉴权头（凭据仅经 stdio `env` 注入）；
+    敏感工具的用户确认交互归 P5（P3 仅标记 `sensitivity` 并日志留痕，且不执行任何 Skill 脚本）。
 
 ### P4 · 模式系统 + ClassRoom Mode（v0.4.0）
 
@@ -132,6 +150,22 @@
 - 日志轮转与本地错误记录；启动时间与内存优化
 - 用户文档（快速上手）、隐私说明（凭据仅本机加密存储）
 - **验收**：全新 Windows 10/11 机器上“安装 → 引导 → 核心链路”全通，无崩溃。
+- **实现说明（v0.3.0）**：
+  - **打包已落地**：`apps/desktop/electron-builder.yml`（Windows x64 + NSIS，非 oneClick），
+    产物 `Aurora-Setup-<version>.exe` + `latest.yml` + `*.blockmap`；
+    `extraResources` 把内置 `skills/` 放到 `resources/skills`；
+    `scripts/generate-icons.mjs` 现在直接产出 `icon.ico`（多尺寸，7 个条目），打包不再依赖
+    winCodeSign 工具链。
+  - **自动更新已落地（原 P7 项，随 P6 一起做）**：主进程 `UpdateService` 状态机 +
+    electron-updater 适配层，设置页「更新」区与托盘入口；更新源为**公开 releases 仓库**，
+    源码仓库保持私有，客户端不携带任何凭证（docs/09 §1）。
+  - **发布流程**：`pnpm release`（本地，构建→打包→校验→打 tag→可选上传）与
+    `.github/workflows/release.yml`（推送 `v*` tag 自动发布）。
+  - **不签名**（用户决策）：`signAndEditExecutable: false`，首装会出现 SmartScreen
+    「未知发行者」提示，用户操作说明见 docs/09 §4；接入证书时改一个布尔值即可。
+  - **已验证**：`pnpm verify:release`（产物 14 项，含 sha512/size 与实际文件一致性）+
+    `pnpm verify:update`（**启动已打包应用对着本地更新源真的发现新版本**，5 项）。
+  - **待做**：代码签名证书、日志轮转、用户文档与隐私说明、启动耗时/内存优化。
 
 ### P7 · 后期（预留，见 05 §4）
 

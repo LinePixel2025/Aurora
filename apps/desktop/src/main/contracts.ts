@@ -16,6 +16,7 @@ import type {
   PerceptionSummary,
   SendMessageRequest,
   Settings,
+  UpdateState,
   WindowName,
   WindowState,
 } from '@aurora/shared'
@@ -33,6 +34,7 @@ export type {
   PerceptionSummary,
   SendMessageRequest,
   Settings,
+  UpdateState,
   WindowName,
   WindowState,
 }
@@ -141,6 +143,17 @@ export interface SkillsInfoLike {
     dir: string
   }>
   setDisabled(names: readonly string[]): void
+}
+
+/** 自动更新（docs/09）：主进程用 UpdateService，IPC 只依赖这个最小面 */
+export interface UpdateControllerLike {
+  getState(): UpdateState
+  check(): Promise<UpdateState>
+  download(): Promise<UpdateState>
+  install(): boolean
+  scheduleAutoCheck(): void
+  onStateChanged(listener: (state: UpdateState) => void): () => void
+  dispose(): void
 }
 
 export interface TrayLike {

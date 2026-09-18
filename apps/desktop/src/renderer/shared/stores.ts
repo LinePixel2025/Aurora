@@ -1,13 +1,15 @@
 /**
  * 渲染层共享状态（Pinia）。
  *
- * 三个方向：
+ * 四个方向：
  * - 设置（settings:get / settings:changed）
  * - 模式与引导（mode:* / mode:changed / guide:*）
  * - 窗口可见性（window:* / window:stateChanged）
+ * - 自动更新（update:* / update:stateChanged）
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import type { Result } from '@aurora/shared'
 import type {
   AppInfo,
   ModeChangedEvent,
@@ -15,6 +17,7 @@ import type {
   ModeSummary,
   PerceptionSummary,
   Settings,
+  UpdateState,
   WindowName,
   WindowState,
 } from '@aurora/shared'
@@ -203,4 +206,46 @@ export const usePerceptionStore = defineStore('perception', () => {
   }
 
   return { summary, refresh }
+})
+
+/** 自动更新状态（docs/09 §5）：设置页与托盘共用同一份状态机快照 */
+export const useUpdateStore = defineStore('update', () => {
+  const state = ref<UpdateState | null>(null)
+  const busy = ref(false)
+  const error = ref<string | null>(null)
+
+  async function load(): Promise<void> {
+    const result = await window.aurora.update.getState()
+    if (result.ok) state.value = result.value
+  }
+
+  async function run(action: () => Promise<Result<UpdateState>>): Promise<void> {
+    busy.value = true
+    error.value = null
+    try {
+      const result = await action()
+      if (result.ok) state.value = result.value
+      else error.value = result.message
+    } finally {
+      busy.value = false
+    }
+  }
+
+  const check = (): Promise<void> => run(() => window.aurora.update.check())
+  const download = (): Promise<void> => run(() => window.aurora.update.download())
+
+  async function install(): Promise<void> {
+    // 安装会结束当前进程，失败时（未下载完成）返回 false
+    const result = await window.aurora.update.install()
+    if (!result.ok) error.value = result.message
+  }
+
+  function bind(): () => void {
+    return window.aurora.update.onStateChanged((next) => {
+      state.value = next
+      if (next.status === 'error' && next.error !== undefined) error.value = next.error
+    })
+  }
+
+  return { state, busy, error, load, check, download, install, bind }
 })

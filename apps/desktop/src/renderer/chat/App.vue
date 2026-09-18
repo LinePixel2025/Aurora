@@ -2,10 +2,9 @@
 /**
  * AI 交互窗口（docs/07 §2.3）：完整对话窗，约 420×640，贴右缘滑出。
  *
- * P1 范围：Markdown 渲染、流式输出、工具执行卡片占位、会话历史占位、模式引导面板。
- * 真实模型的对话与工具调用在 P3 接入（IPC 契约已就绪）。
+ * P3 范围：真实模型流式对话、工具执行卡片、会话历史水合（`chat:history`）、模式引导面板。
  */
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import MessageList from '../shared/components/MessageList.vue'
@@ -14,7 +13,16 @@ import { useChat } from '../shared/composables/useChat.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 
 const chat = useChat('chat')
-const { messages, streaming, error: chatError, statusTone, send: sendMessage, abort, clear } = chat
+const {
+  messages,
+  streaming,
+  error: chatError,
+  statusTone,
+  send: sendMessage,
+  abort,
+  clear,
+  hydrate,
+} = chat
 const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
@@ -27,8 +35,9 @@ const history = computed(() => [
   { id: 'quick', title: '快速会话', subtitle: '服务窗 / 小窗共享', active: false },
 ])
 
-/** 工具执行卡片占位：P3 会由 `chat:event` 的 tool 事件填充 */
-const toolCards = ref<Array<{ id: string; name: string; state: string }>>([])
+onMounted(() => {
+  void hydrate()
+})
 
 const guide = computed(() => {
   const mode = modeStore.current
@@ -85,7 +94,7 @@ async function markGuideDone(): Promise<void> {
 
     <div class="body">
       <aside v-if="showHistory" class="history">
-        <p class="tiny muted">会话（多会话列表在 P3 接入）</p>
+        <p class="tiny muted">会话（多会话列表在后续版本接入）</p>
         <button
           v-for="item in history"
           :key="item.id"
@@ -115,15 +124,7 @@ async function markGuideDone(): Promise<void> {
         <MessageList
           :messages="messages"
           empty-hint="这是完整对话窗口：可以问系统状态、让 Aurora 帮忙整理资料。"
-        >
-          <div v-if="toolCards.length > 0" class="tools">
-            <p class="tiny muted">工具执行（P3 接入后展示真实调用）</p>
-            <article v-for="card in toolCards" :key="card.id" class="tool-card">
-              <span class="mono tiny">{{ card.name }}</span>
-              <span class="badge">{{ card.state }}</span>
-            </article>
-          </div>
-        </MessageList>
+        />
       </main>
     </div>
 
@@ -137,7 +138,7 @@ async function markGuideDone(): Promise<void> {
       />
       <div class="row">
         <span class="tiny muted grow">
-          会话：{{ chat.sessionId }} · 工具与 Skill 将在 P3 接入
+          会话：{{ chat.sessionId }} · P3 内核已接入（可调用 Skill 与 MCP 工具）
         </span>
         <AppButton v-if="streaming" size="sm" @click="abort">停止</AppButton>
         <AppButton
@@ -208,22 +209,6 @@ async function markGuideDone(): Promise<void> {
   gap: var(--space-2);
   overflow-y: auto;
   padding: var(--space-3);
-}
-
-.tools {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.tool-card {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.03);
 }
 
 .composer {

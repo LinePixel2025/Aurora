@@ -28,7 +28,8 @@ export default tseslint.config(
     },
   },
   {
-    files: ['scripts/**/*.mjs'],
+    // 脚本与测试夹具（Node ESM，不在 tsconfig 的 include 内）
+    files: ['scripts/**/*.mjs', '**/src/**/testing/**/*.mjs'],
     languageOptions: {
       globals: {
         Buffer: 'readonly',

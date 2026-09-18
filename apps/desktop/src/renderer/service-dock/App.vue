@@ -8,7 +8,7 @@
  * - `/`、`@` 前缀浮层（快捷指令 / Skill，P2 起逐项生效）；
  * - 状态点：闲置灰 / 思考中呼吸蓝 / 有未读橙 / 异常红。
  */
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import type { ModeId } from '@aurora/shared'
 import StatusDot from '../shared/components/StatusDot.vue'
 import { useChat } from '../shared/composables/useChat.js'
@@ -24,7 +24,11 @@ const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
 const perception = usePerceptionStore()
 const chat = useChat('service-dock')
-const { statusTone, streaming, send: sendMessage, clear } = chat
+const { statusTone, streaming, send: sendMessage, clear, hydrate } = chat
+
+onMounted(() => {
+  void hydrate()
+})
 
 const input = ref('')
 const inputEl = ref<HTMLInputElement | null>(null)

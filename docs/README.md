@@ -7,10 +7,13 @@
 
 ## 当前实现状态
 
-**v0.1.0**：P0（脚手架）与 P1（基础壳与设置，含首次引导）已完成，P2 四种窗口外壳已完成，
-P3 起待开始。详见 [04-roadmap.md](./04-roadmap.md) 的阶段状态与「实现说明」。
-实际工程结构见根目录 [README.md](../README.md)；端到端验证见 `pnpm verify` 与
-`AURORA_SMOKE=1 pnpm dev`。
+**v0.3.0**：P0（脚手架）、P1（基础壳与设置，含首次引导）、P2（四种窗口外壳）已完成，
+**P3（Agent 内核：真实对话、会话持久化、工具调用循环、Skill、MCP）已完成**；
+**P6 打包与自动更新已完成**（NSIS 安装包 + 公开 releases 仓库 + electron-updater，见 [09](./09-packaging-release.md)）；
+P4 / P5 功能待开始。
+详见 [04-roadmap.md](./04-roadmap.md) 的阶段状态与「实现说明」。
+实际工程结构见根目录 [README.md](../README.md)；端到端验证见 `pnpm verify`、
+`pnpm verify:release`、`pnpm verify:update` 与 `AURORA_SMOKE=1 pnpm dev`。
 
 ## 文档索引
 
@@ -24,6 +27,7 @@ P3 起待开始。详见 [04-roadmap.md](./04-roadmap.md) 的阶段状态与「�
 | 06 | [06-agent-core.md](./06-agent-core.md) | Agent 内核：LLM、会话、工具循环、Skill、MCP、系统感知、主动引导 | 核心设计 |
 | 07 | [07-ui-spec.md](./07-ui-spec.md) | 窗口体系（服务窗/提示条/交互窗等）与交互规格 | 界面规格 |
 | 08 | [08-settings-onboarding.md](./08-settings-onboarding.md) | 配置 Schema、存储安全、首次安装引导、设置页设计 | 配置设计 |
+| 09 | [09-packaging-release.md](./09-packaging-release.md) | 打包（NSIS）、双仓库发布拓扑、自动更新、SmartScreen 说明 | 发布运维 |
 
 ## 阅读顺序建议
 

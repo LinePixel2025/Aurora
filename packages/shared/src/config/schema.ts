@@ -159,6 +159,11 @@ export type McpServerConfig = z.infer<typeof McpServerSchema>
 
 export const McpSchema = z.object({
   servers: z.array(McpServerSchema),
+  /**
+   * 连接策略（docs/06 §7）：`true` 时首次使用才连接（懒连接）；
+   * `false` 为默认——启动即连，失败降级为状态灯 error。
+   */
+  lazyConnect: z.boolean(),
 })
 export type McpSettings = z.infer<typeof McpSchema>
 

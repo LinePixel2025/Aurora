@@ -5,7 +5,27 @@ export * from './llm/types.js'
 export * from './llm/sse.js'
 export * from './llm/openai-compat.js'
 
-// 能力层（P1 仅注册表骨架，P3 接入 loop / mcp）
+// 会话层（docs/06 §4）
+export * from './session/types.js'
+export * from './session/history.js'
+export * from './session/store.js'
+
+// 执行层（docs/06 §5）
+export * from './loop/agentLoop.js'
+
+// 编排层（docs/06 §5）
+export * from './context/systemPrompt.js'
+
+// 能力层（docs/06 §6 / §7）
 export * from './skills/parse.js'
 export * from './skills/registry.js'
+export * from './skills/bridge.js'
 export * from './tools/registry.js'
+export * from './mcp/errors.js'
+export * from './mcp/jsonrpc.js'
+export * from './mcp/transports.js'
+export * from './mcp/client.js'
+export * from './mcp/hub.js'
+
+// 装配层（主进程用）
+export * from './host/agentHost.js'

@@ -50,7 +50,19 @@ export const IPC = {
   chat: {
     send: 'chat:send',
     abort: 'chat:abort',
+    history: 'chat:history',
     event: 'chat:event',
+  },
+  mcp: {
+    status: 'mcp:status',
+    statusChanged: 'mcp:statusChanged',
+  },
+  update: {
+    getState: 'update:getState',
+    check: 'update:check',
+    download: 'update:download',
+    install: 'update:install',
+    stateChanged: 'update:stateChanged',
   },
 } as const
 
@@ -63,3 +75,5 @@ export type IpcChannel =
   | (typeof IPC.perception)[keyof typeof IPC.perception]
   | (typeof IPC.skills)[keyof typeof IPC.skills]
   | (typeof IPC.chat)[keyof typeof IPC.chat]
+  | (typeof IPC.mcp)[keyof typeof IPC.mcp]
+  | (typeof IPC.update)[keyof typeof IPC.update]

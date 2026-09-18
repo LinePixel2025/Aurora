@@ -7,7 +7,6 @@ import type {
   AdvancedSettings,
   GeneralSettings,
   LlmSettings,
-  McpServerConfig,
   ModeId,
   Settings,
   WindowName,
@@ -41,13 +40,17 @@ export interface OpenPathRequest {
 
 // ───────────────────────── 设置 ─────────────────────────
 
-/** 局部更新配置：只写传入的顶层分组（浅合并）。 */
+/**
+ * 局部更新配置：每个分组是**局部**更新（如只传 `mcp.servers`）。
+ * 主进程会把未提及的子字段补回当前值后再合并（见 `main/ipc.ts` 的 applyPatch），
+ * 因此调用方不需要先读出完整分组。
+ */
 export interface SettingsPatch {
   general?: Partial<GeneralSettings>
   llm?: Partial<LlmSettings>
   advanced?: Partial<AdvancedSettings>
   skills?: Partial<Settings['skills']>
-  mcp?: { servers: McpServerConfig[] }
+  mcp?: Partial<Settings['mcp']>
   modes?: Partial<Settings['modes']>
 }
 
@@ -151,6 +154,54 @@ export interface WindowState {
   primary: PrimaryWindow | null
 }
 
+// ───────────────────────── 更新（docs/04 §P6、docs/09） ─────────────────────────
+
+/** `disabled`：开发态 / 未打包 / 更新源不可用时不可用（降级为"仅手动检查"）。 */
+export type UpdateStatus =
+  | 'disabled'
+  | 'idle'
+  | 'checking'
+  | 'up-to-date'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+export interface UpdateState {
+  status: UpdateStatus
+  /** 当前运行版本 */
+  currentVersion: string
+  /** 检测到的新版本（status 为 available / downloading / downloaded 时存在） */
+  availableVersion?: string
+  /** 下载进度 0–100 */
+  progressPercent?: number
+  /** 已下载字节 / 总字节 */
+  transferred?: number
+  total?: number
+  /** 人话错误说明（status = error） */
+  error?: string
+  /** 更新源（公开 releases 仓库），便于用户在设置页确认 */
+  feed?: string
+  /** 最近一次检查时间（ISO） */
+  checkedAt?: string
+  /** 是否处于可用状态（disabled 时为 false） */
+  enabled: boolean
+}
+
+// ───────────────────────── MCP ─────────────────────────
+
+export type McpServerState = 'idle' | 'connecting' | 'ready' | 'error'
+
+export interface McpServerStatus {
+  name: string
+  transport: 'stdio' | 'http'
+  enabled: boolean
+  state: McpServerState
+  /** 已注册到工具表的工具数量（state = ready 时有效） */
+  toolCount: number
+  lastError?: string
+}
+
 // ───────────────────────── Skill ─────────────────────────
 
 export interface SkillSummary {
@@ -193,12 +244,47 @@ export interface AgentToolCall {
   outputSummary?: string
 }
 
+/**
+ * 会话消息（持久化 + IPC 回传共用，docs/06 §4）。
+ * 刻意不依赖 `@aurora/agent-core`：内核的 `ChatRequestMessage` 是 LLM 侧形状，
+ * 这里是 Aurora 自己的存储 / 渲染形状，两者由 session 模块负责转换。
+ */
+export interface ChatMessageDto {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  /** ISO 时间戳 */
+  createdAt: string
+  /** assistant 消息发起的工具调用（含最终状态），供渲染层显示执行卡片 */
+  toolCalls?: AgentToolCall[]
+}
+
+export interface ChatHistoryRequest {
+  sessionId: string
+  /** 返回最近 N 条；缺省返回全部 */
+  limit?: number
+}
+
+/**
+ * 事件一律携带 `sessionId`：快速会话由服务窗与迷你窗共享，
+ * 只按 `requestId` 过滤会串窗（docs/06 §4）。
+ *
+ * `messageId`（text / tool）：该轮助手消息在会话存储中的 id。
+ * 多轮工具调用会产生多条助手消息，渲染层据此把文本与工具卡片
+ * 归到正确的消息上（首轮前渲染层还不知道 id，收到后再认领）。
+ */
 export type AgentEvent =
-  | { type: 'queued'; requestId: string }
-  | { type: 'text'; requestId: string; delta: string }
-  | { type: 'tool'; requestId: string; call: AgentToolCall }
-  | { type: 'done'; requestId: string; pending?: boolean }
-  | { type: 'error'; requestId: string; code: string; message: string }
+  | { type: 'queued'; sessionId: string; requestId: string }
+  | { type: 'text'; sessionId: string; requestId: string; messageId: string; delta: string }
+  | {
+      type: 'tool'
+      sessionId: string
+      requestId: string
+      messageId: string
+      call: AgentToolCall
+    }
+  | { type: 'done'; sessionId: string; requestId: string; pending?: boolean }
+  | { type: 'error'; sessionId: string; requestId: string; code: string; message: string }
 
 // ───────────────────────── preload 暴露面 ─────────────────────────
 
@@ -252,5 +338,20 @@ export interface AuroraApi {
     send(request: SendMessageRequest): Promise<Result<{ requestId: string }>>
     abort(requestId: string): Promise<Result<boolean>>
     onEvent(listener: (event: AgentEvent) => void): () => void
+    /** 会话历史（窗口挂载时水合，docs/06 §4） */
+    history(request: ChatHistoryRequest): Promise<Result<ChatMessageDto[]>>
+  }
+  mcp: {
+    status(): Promise<Result<McpServerStatus[]>>
+    onStatusChanged(listener: (servers: McpServerStatus[]) => void): () => void
+  }
+  update: {
+    getState(): Promise<Result<UpdateState>>
+    /** 检查更新（不自动下载） */
+    check(): Promise<Result<UpdateState>>
+    download(): Promise<Result<UpdateState>>
+    /** 退出并安装；调用后进程会结束 */
+    install(): Promise<Result<boolean>>
+    onStateChanged(listener: (state: UpdateState) => void): () => void
   }
 }

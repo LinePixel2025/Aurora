@@ -67,7 +67,19 @@ const CHANNELS = {
   chat: {
     send: 'chat:send',
     abort: 'chat:abort',
+    history: 'chat:history',
     event: 'chat:event',
+  },
+  mcp: {
+    status: 'mcp:status',
+    statusChanged: 'mcp:statusChanged',
+  },
+  update: {
+    getState: 'update:getState',
+    check: 'update:check',
+    download: 'update:download',
+    install: 'update:install',
+    stateChanged: 'update:stateChanged',
   },
 } as const
 

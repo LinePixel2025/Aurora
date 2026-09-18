@@ -1,12 +1,15 @@
 /**
- * 对话状态（P1 为"外壳 + 占位回复"）。
+ * 对话状态（P3：真实内核 + 会话水合）。
  *
- * 与主进程的 IPC 契约已按 P3 设计好：`chat:send` → `chat:event` 流式事件。
- * 目前 `PlaceholderAgentHost` 会返回真实感知摘要 + 下一阶段说明，
- * 因此窗口交互（打字机、状态点、中止）在 P1 就能被完整验证。
+ * 与主进程的契约：`chat:send` → `chat:event` 流式事件 + `chat:history` 水合。
+ * 事件按 `sessionId` **与** `requestId` 双重过滤：快速会话由服务窗与迷你窗
+ * 共享（docs/06 §4），只按 requestId 过滤会串窗。
+ *
+ * 多轮工具调用会产生多条助手消息，事件里的 `messageId` 就是会话存储中的消息 id，
+ * 渲染层据此认领（首轮之前还不知道 id）。
  */
 import { computed, onScopeDispose, ref } from 'vue'
-import type { AgentEvent, SendMessageRequest, WindowName } from '@aurora/shared'
+import type { AgentToolCall, ChatMessageDto, SendMessageRequest, WindowName } from '@aurora/shared'
 
 export interface ChatMessage {
   id: string
@@ -15,6 +18,8 @@ export interface ChatMessage {
   pending?: boolean
   error?: boolean
   createdAt: number
+  /** 工具执行卡片（运行中 / 成功 / 失败） */
+  toolCalls?: AgentToolCall[]
 }
 
 /** 每个窗口一个会话：服务窗与迷你窗共享"快速会话"（docs/06 §4） */
@@ -31,7 +36,9 @@ export function useChat(windowName: WindowName) {
   const unread = ref(false)
   const error = ref<string | null>(null)
   let activeRequest: string | null = null
+  /** 当前正在流式接收的助手消息 id（服务端生成的存储 id） */
   let assistantId: string | null = null
+  let hydrated = false
 
   const statusTone = computed<'idle' | 'running' | 'unread' | 'error'>(() => {
     if (error.value) return 'error'
@@ -48,13 +55,22 @@ export function useChat(windowName: WindowName) {
     return null
   })
 
-  const dispose = window.aurora.chat.onEvent((event: AgentEvent) => {
+  const dispose = window.aurora.chat.onEvent((event) => {
+    if (event.sessionId !== sessionId) return
     if (activeRequest !== null && event.requestId !== activeRequest) return
 
     switch (event.type) {
       case 'text': {
-        const message = currentAssistant()
-        if (message) message.content += event.delta
+        const message = messageFor(event.messageId)
+        if (message) {
+          message.content += event.delta
+          message.pending = false
+        }
+        break
+      }
+      case 'tool': {
+        const message = messageFor(event.messageId)
+        if (message) upsertToolCall(message, event.call)
         break
       }
       case 'done': {
@@ -62,7 +78,7 @@ export function useChat(windowName: WindowName) {
         const message = currentAssistant()
         if (message) {
           message.pending = false
-          message.content += message.content === '' ? '（暂无回复）' : ''
+          if (message.content === '') message.content = '（暂无回复）'
         }
         unread.value = true
         activeRequest = null
@@ -72,11 +88,11 @@ export function useChat(windowName: WindowName) {
       case 'error': {
         streaming.value = false
         error.value = event.message
-        const message = currentAssistant()
+        const message = currentAssistant() ?? lastAssistant.value
         if (message) {
           message.pending = false
           message.error = true
-          message.content = `请求失败：${event.message}`
+          message.content = message.content === '' ? `请求失败：${event.message}` : message.content
         }
         activeRequest = null
         assistantId = null
@@ -89,9 +105,58 @@ export function useChat(windowName: WindowName) {
 
   onScopeDispose(dispose)
 
+  /** 找到事件所属的助手消息；不在列表里则按服务端 id 追加一条。 */
+  function messageFor(messageId: string): ChatMessage | undefined {
+    const existing = messages.value.find((message) => message.id === messageId)
+    if (existing) {
+      assistantId = messageId
+      return existing
+    }
+    if (assistantId !== null && messageId !== assistantId) {
+      // 多轮工具调用：上一轮已结束，服务端开始了新一轮助手消息
+      assistantId = messageId
+    }
+    assistantId = messageId
+    const created: ChatMessage = {
+      id: messageId,
+      role: 'assistant',
+      content: '',
+      pending: true,
+      createdAt: Date.now(),
+    }
+    messages.value.push(created)
+    return created
+  }
+
   function currentAssistant(): ChatMessage | undefined {
     if (assistantId === null) return undefined
     return messages.value.find((message) => message.id === assistantId)
+  }
+
+  /** 同一 call id 原地更新状态（running → success/error） */
+  function upsertToolCall(message: ChatMessage, call: AgentToolCall): void {
+    const list = message.toolCalls ?? []
+    const index = list.findIndex((item) => item.id === call.id)
+    if (index >= 0) list[index] = { ...call }
+    else list.push({ ...call })
+    message.toolCalls = [...list]
+    message.pending = message.content === ''
+  }
+
+  /** 挂载时水合历史（docs/06 §4：重启后交互窗仍能看到历史）。 */
+  async function hydrate(): Promise<void> {
+    if (hydrated) return
+    hydrated = true
+    const result = await window.aurora.chat.history({ sessionId })
+    if (!result.ok) {
+      window.console?.warn('会话历史读取失败', result.message)
+      return
+    }
+    // 水合期间可能已有新消息进来（用户在窗口刚打开时就开始输入）
+    const incoming = messages.value.filter(
+      (message) => !result.value.some((item) => item.id === message.id),
+    )
+    messages.value = [...result.value.map(toChatMessage), ...incoming]
   }
 
   async function send(text: string): Promise<void> {
@@ -100,34 +165,29 @@ export function useChat(windowName: WindowName) {
 
     error.value = null
     messages.value.push({
-      id: `u-${Date.now()}`,
+      id: `u-${Date.now()}-${messages.value.length}`,
       role: 'user',
       content: trimmed,
       createdAt: Date.now(),
     })
 
-    assistantId = `a-${Date.now()}`
-    messages.value.push({
-      id: assistantId,
-      role: 'assistant',
-      content: '',
-      pending: true,
-      createdAt: Date.now(),
-    })
     streaming.value = true
     unread.value = false
+    activeRequest = null
+    assistantId = null
 
     const request: SendMessageRequest = { sessionId, text: trimmed, origin: windowName }
     const result = await window.aurora.chat.send(request)
     if (!result.ok) {
       streaming.value = false
       error.value = result.message
-      const message = currentAssistant()
-      if (message) {
-        message.pending = false
-        message.error = true
-        message.content = `发送失败：${result.message}`
-      }
+      messages.value.push({
+        id: `e-${Date.now()}`,
+        role: 'assistant',
+        content: `发送失败：${result.message}`,
+        error: true,
+        createdAt: Date.now(),
+      })
       return
     }
     activeRequest = result.value.requestId
@@ -137,6 +197,8 @@ export function useChat(windowName: WindowName) {
     if (activeRequest === null) return
     await window.aurora.chat.abort(activeRequest)
     streaming.value = false
+    const message = currentAssistant()
+    if (message) message.pending = false
     activeRequest = null
     assistantId = null
   }
@@ -159,9 +221,20 @@ export function useChat(windowName: WindowName) {
     error,
     statusTone,
     lastAssistant,
+    hydrate,
     send,
     abort,
     clear,
     markRead,
+  }
+}
+
+function toChatMessage(dto: ChatMessageDto): ChatMessage {
+  return {
+    id: dto.id,
+    role: dto.role,
+    content: dto.content,
+    createdAt: Date.parse(dto.createdAt) || Date.now(),
+    ...(dto.toolCalls === undefined ? {} : { toolCalls: dto.toolCalls }),
   }
 }

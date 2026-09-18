@@ -1,14 +1,63 @@
 <script setup lang="ts">
-/** 常规设置页（docs/08 §1 general / advanced 中的界面相关项）。 */
-import { computed, ref, watch } from 'vue'
+/** 常规设置页（docs/08 §1 general / advanced 中的界面相关项 + docs/09 更新）。 */
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
-import { usePerceptionStore, useSettingsStore, useWindowStore } from '../../shared/stores.js'
+import {
+  usePerceptionStore,
+  useSettingsStore,
+  useUpdateStore,
+  useWindowStore,
+} from '../../shared/stores.js'
 
 const settingsStore = useSettingsStore()
 const windowStore = useWindowStore()
 const perception = usePerceptionStore()
+const update = useUpdateStore()
+
+let detachUpdate: (() => void) | null = null
+onMounted(async () => {
+  detachUpdate = update.bind()
+  await update.load()
+})
+onUnmounted(() => {
+  detachUpdate?.()
+  detachUpdate = null
+})
+
+/** 更新状态 → 用户可读文案（docs/09 §5） */
+const updateLabel = computed(() => {
+  const state = update.state
+  if (!state) return '正在读取…'
+  switch (state.status) {
+    case 'disabled':
+      return '当前为开发模式 / 未打包运行，自动更新不可用'
+    case 'idle':
+      return '尚未检查'
+    case 'checking':
+      return '正在检查更新…'
+    case 'up-to-date':
+      return `已是最新版本（v${state.currentVersion}）`
+    case 'available':
+      return `发现新版本 v${state.availableVersion ?? ''}（当前 v${state.currentVersion}）`
+    case 'downloading':
+      return `正在下载 v${state.availableVersion ?? ''}（${state.progressPercent ?? 0}%）`
+    case 'downloaded':
+      return `v${state.availableVersion ?? ''} 已下载，重启后安装`
+    case 'error':
+      return state.error ?? '检查更新失败'
+    default:
+      return ''
+  }
+})
+
+const updateTone = computed<'ok' | 'error' | 'info'>(() => {
+  const status = update.state?.status
+  if (status === 'error') return 'error'
+  if (status === 'available' || status === 'downloaded') return 'ok'
+  return 'info'
+})
 
 const general = computed(() => settingsStore.settings?.general ?? null)
 const language = ref(general.value?.language ?? 'zh-CN')
@@ -109,6 +158,72 @@ async function toggleEdgeBar(): Promise<void> {
       </div>
     </SettingField>
 
+    <div class="divider" />
+
+    <h3>更新</h3>
+    <SettingField
+      label="当前版本"
+      :hint="
+        update.state?.feed
+          ? `更新源：${update.state.feed}`
+          : '更新源：打包后内置（公开 releases 仓库）'
+      "
+    >
+      <div class="column grow">
+        <span class="mono tiny"
+          >v{{ settingsStore.appInfo?.appVersion ?? update.state?.currentVersion ?? '—' }}</span
+        >
+      </div>
+    </SettingField>
+
+    <SettingField label="更新状态">
+      <div class="column grow">
+        <AppToast :tone="updateTone">{{ updateLabel }}</AppToast>
+        <div
+          v-if="update.state?.status === 'downloading'"
+          class="progress"
+          role="progressbar"
+          :aria-valuenow="update.state.progressPercent ?? 0"
+          aria-valuemin="0"
+          aria-valuemax="100"
+        >
+          <span :style="{ width: `${update.state.progressPercent ?? 0}%` }" />
+        </div>
+        <div class="row wrap">
+          <AppButton
+            size="sm"
+            :disabled="
+              update.busy || !update.state?.enabled || update.state?.status === 'downloading'
+            "
+            @click="update.check()"
+          >
+            检查更新
+          </AppButton>
+          <AppButton
+            v-if="update.state?.status === 'available'"
+            size="sm"
+            variant="primary"
+            :disabled="update.busy"
+            @click="update.download()"
+          >
+            下载更新
+          </AppButton>
+          <AppButton
+            v-if="update.state?.status === 'downloaded'"
+            size="sm"
+            variant="primary"
+            @click="update.install()"
+          >
+            安装并重启
+          </AppButton>
+        </div>
+        <p v-if="update.state?.enabled === false" class="tiny muted">
+          自动更新只在安装版中可用；开发态请用
+          <code class="mono">AURORA_UPDATE_FEED</code> 指向本地更新源做验证（docs/09 §6）。
+        </p>
+      </div>
+    </SettingField>
+
     <footer class="row">
       <AppButton variant="primary" @click="save">保存</AppButton>
       <AppToast v-if="saved" tone="ok">{{ saved }}</AppToast>
@@ -132,6 +247,26 @@ header h2 {
 
 header p {
   margin: 4px 0 0;
+}
+
+h3 {
+  margin: var(--space-3) 0 0;
+  font-size: 14px;
+}
+
+.progress {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.progress span {
+  display: block;
+  height: 100%;
+  background: var(--aurora-gradient);
+  transition: width 0.2s ease;
 }
 
 footer {

@@ -2,11 +2,11 @@
 /**
  * MCP 管理页（docs/06 §7、docs/08 §6）。
  *
- * P1 范围：服务器配置的增删改与状态灯占位（连接能力在 P3 接入 McpClientHub）。
+ * 服务器配置增删改 + **真实连接状态灯**（`mcp:status` / `mcp:statusChanged`）。
  * env 凭据通过 settings:setSecrets 加密存储，列表只显示已配置的变量名。
  */
-import { computed, reactive, ref } from 'vue'
-import type { McpServerConfig } from '@aurora/shared'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import type { McpServerConfig, McpServerStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
@@ -15,6 +15,47 @@ import { useSettingsStore } from '../../shared/stores.js'
 const settingsStore = useSettingsStore()
 const error = ref<string | null>(null)
 const message = ref<string | null>(null)
+const statuses = ref<McpServerStatus[]>([])
+let offStatus: (() => void) | null = null
+
+onMounted(async () => {
+  offStatus = window.aurora.mcp.onStatusChanged((next) => {
+    statuses.value = next
+  })
+  const result = await window.aurora.mcp.status()
+  if (result.ok) statuses.value = result.value
+})
+
+onUnmounted(() => {
+  offStatus?.()
+  offStatus = null
+})
+
+function statusOf(name: string): McpServerStatus | undefined {
+  return statuses.value.find((item) => item.name === name)
+}
+
+function stateLabel(status: McpServerStatus | undefined): string {
+  if (status === undefined) return '未连接'
+  switch (status.state) {
+    case 'ready':
+      return `已连接 · ${status.toolCount} 个工具`
+    case 'connecting':
+      return '连接中…'
+    case 'error':
+      return '连接失败'
+    default:
+      return status.enabled ? '待连接' : '已停用'
+  }
+}
+
+function stateTone(status: McpServerStatus | undefined): string {
+  if (status === undefined) return 'off'
+  if (status.state === 'ready') return 'ready'
+  if (status.state === 'connecting') return 'connecting'
+  if (status.state === 'error') return 'error'
+  return status.enabled ? 'idle' : 'off'
+}
 
 const form = reactive({
   name: '',
@@ -26,6 +67,14 @@ const form = reactive({
 })
 
 const servers = computed<McpServerConfig[]>(() => settingsStore.settings?.mcp.servers ?? [])
+const lazyConnect = computed(() => settingsStore.settings?.mcp.lazyConnect ?? false)
+
+async function setLazyConnect(value: boolean): Promise<void> {
+  error.value = null
+  if (!(await settingsStore.update({ mcp: { lazyConnect: value } }))) {
+    error.value = settingsStore.error
+  }
+}
 
 async function saveServers(
   next: McpServerConfig[],
@@ -109,7 +158,7 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
       <p class="tiny muted">
         连接外部工具服务（Model Context Protocol）。工具会以
         <code class="mono">mcp.&lt;server&gt;.&lt;tool&gt;</code> 注册进 Agent 工具表； 与 Skill
-        重名时 MCP 优先。P1 仅保存配置与状态灯，真实连接与工具注册在 P3 落地。
+        重名时 MCP 优先。连接失败只影响该服务器，不会阻塞对话。
       </p>
     </header>
 
@@ -119,10 +168,21 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
     <div class="list">
       <article v-for="server in servers" :key="server.name" class="server">
         <header class="server-head">
-          <span class="dot" :class="server.enabled ? 'on' : 'off'" />
+          <span
+            class="dot"
+            :class="[
+              statusOf(server.name)
+                ? stateTone(statusOf(server.name))
+                : server.enabled
+                  ? 'on'
+                  : 'off',
+            ]"
+          />
           <strong class="mono">{{ server.name }}</strong>
           <span class="badge">{{ server.transport }}</span>
-          <span class="badge warn">未连接（P3）</span>
+          <span class="badge" :class="{ warn: statusOf(server.name)?.state === 'error' }">
+            {{ stateLabel(statusOf(server.name)) }}
+          </span>
           <span class="grow" />
           <AppButton size="sm" variant="ghost" @click="toggleEnabled(server)">
             {{ server.enabled ? '停用' : '启用' }}
@@ -136,12 +196,31 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
               : (server.url ?? '')
           }}
         </p>
+        <p v-if="statusOf(server.name)?.lastError" class="tiny err">
+          {{ statusOf(server.name)?.lastError }}
+        </p>
         <p v-if="Object.keys(server.envEnc).length > 0" class="tiny muted">
           环境变量：{{ Object.keys(server.envEnc).join('、') }}（值已加密存储）
         </p>
       </article>
       <p v-if="servers.length === 0" class="muted">尚未配置 MCP 服务器。</p>
     </div>
+
+    <div class="divider" />
+    <h3>连接策略</h3>
+    <SettingField
+      label="懒连接"
+      hint="开启后在首次使用某个 MCP 工具时才连接；关闭则启动即连（默认）"
+    >
+      <label class="row tiny">
+        <input
+          type="checkbox"
+          :checked="lazyConnect"
+          @change="setLazyConnect(($event.target as HTMLInputElement).checked)"
+        />
+        <span>首次使用时才连接服务器</span>
+      </label>
+    </SettingField>
 
     <div class="divider" />
     <h3>添加服务器</h3>
@@ -241,12 +320,40 @@ code {
   background: var(--status-idle);
 }
 
-.dot.on {
+.dot.on,
+.dot.ready {
   background: var(--aurora-green);
 }
 
 .dot.off {
   background: var(--status-idle);
+}
+
+.dot.connecting {
+  background: var(--aurora-blue);
+  animation: dot-pulse 1s infinite ease-in-out;
+}
+
+.dot.error {
+  background: #f2555a;
+}
+
+.dot.idle {
+  background: var(--status-idle);
+}
+
+.err {
+  color: #ff9ca0;
+}
+
+@keyframes dot-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 footer {
