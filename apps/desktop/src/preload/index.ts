@@ -1,0 +1,80 @@
+/**
+ * Preload：把主进程能力以白名单形式暴露给渲染层（docs/02 §2.1、§6）。
+ *
+ * 安全约定：`contextIsolation: true` + `sandbox: true` + `nodeIntegration: false`，
+ * 渲染层只能看到 `window.aurora`，事件订阅返回解除函数（卸载时自动解绑）。
+ *
+ * 依赖约定：本文件必须**自包含**——只 `require('electron')`，
+ * 通道常量取自 `./channels.js`（字符串字面量表，编译期与共享契约比对）。
+ * 不要在这里 import `@aurora/shared`：沙箱化 preload 无法解析工作区包。
+ */
+import { contextBridge, ipcRenderer } from 'electron'
+import type { AuroraApi, Result } from '@aurora/shared'
+import { PRELOAD_CHANNELS as IPC } from './channels.js'
+
+function invoke<T>(channel: string, ...args: unknown[]): Promise<Result<T>> {
+  return ipcRenderer.invoke(channel, ...args) as Promise<Result<T>>
+}
+
+function subscribe<T>(channel: string, listener: (payload: T) => void): () => void {
+  const handler = (_event: unknown, payload: T): void => listener(payload)
+  ipcRenderer.on(channel, handler)
+  return () => {
+    ipcRenderer.removeListener(channel, handler)
+  }
+}
+
+const api: AuroraApi = {
+  app: {
+    getInfo: () => invoke(IPC.app.getInfo),
+    quit: () => ipcRenderer.invoke(IPC.app.quit) as Promise<void>,
+    openPath: (request) => invoke(IPC.app.openPath, request),
+  },
+  settings: {
+    get: () => invoke(IPC.settings.get),
+    update: (patch) => invoke(IPC.settings.update, patch),
+    reset: () => invoke(IPC.settings.reset),
+    setSecrets: (entries) => invoke(IPC.settings.setSecret, entries),
+    hasSecret: (path) => invoke(IPC.settings.hasSecret, path),
+    clearSecret: (path) => invoke(IPC.settings.clearSecret, path),
+    exportRedacted: () => invoke(IPC.settings.exportRedacted),
+    onChanged: (listener) => subscribe(IPC.settings.changed, listener),
+  },
+  mode: {
+    list: () => invoke(IPC.mode.list),
+    set: (id) => invoke(IPC.mode.set, id),
+    completeGuide: (id) => invoke(IPC.mode.completeGuide, id),
+    resetGuide: (id) => invoke(IPC.mode.resetGuide, id),
+    guideStart: (id) => invoke(IPC.mode.guideStart, id),
+    guideAnswer: (id, answer) => invoke(IPC.mode.guideAnswer, id, answer),
+    guideReset: (id) => invoke(IPC.mode.guideReset, id),
+    onChanged: (listener) => subscribe(IPC.mode.changed, listener),
+  },
+  llm: {
+    testConnection: (request) => invoke(IPC.llm.testConnection, request),
+    listModels: (request) => invoke(IPC.llm.listModels, request),
+  },
+  window: {
+    show: (name) => invoke(IPC.window.show, name),
+    hide: (name) => invoke(IPC.window.hide, name),
+    toggle: (name) => invoke(IPC.window.toggle, name),
+    showChat: () => invoke(IPC.window.showChat),
+    showMiniChat: () => invoke(IPC.window.showMiniChat),
+    setPosition: (name, position) => invoke(IPC.window.setPosition, name, position),
+    getState: () => invoke(IPC.window.getState),
+    onStateChanged: (listener) => subscribe(IPC.window.stateChanged, listener),
+  },
+  perception: {
+    summary: () => invoke(IPC.perception.summary),
+  },
+  skills: {
+    list: () => invoke(IPC.skills.list),
+  },
+  chat: {
+    send: (request) => invoke(IPC.chat.send, request),
+    abort: (requestId) => invoke(IPC.chat.abort, requestId),
+    onEvent: (listener) => subscribe(IPC.chat.event, listener),
+  },
+}
+
+contextBridge.exposeInMainWorld('aurora', api)

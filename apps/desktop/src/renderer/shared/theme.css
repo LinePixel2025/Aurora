@@ -1,0 +1,181 @@
+/** 主题样式：深色为主 + 极光绿→蓝渐变（docs/07 §5）。 */
+:root {
+  --aurora-green: #38d196;
+  --aurora-blue: #5684ff;
+  --aurora-gradient: linear-gradient(135deg, var(--aurora-green), var(--aurora-blue));
+
+  --bg-base: #0f1116;
+  --bg-raised: #171a21;
+  --bg-overlay: rgba(23, 26, 33, 0.86);
+  --bg-glass: rgba(18, 20, 26, 0.72);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  --text-primary: #eef1f6;
+  --text-secondary: #a7b0c0;
+  --text-muted: #6d7686;
+
+  --status-idle: #6d7686;
+  --status-running: #5684ff;
+  --status-unread: #f5a524;
+  --status-error: #f2555a;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --transition-fast: 120ms ease-out;
+  --transition-base: 180ms ease-out;
+
+  --font-ui:
+    'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', '微软雅黑', system-ui, sans-serif;
+  --font-mono: 'Cascadia Code', 'Consolas', 'JetBrains Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--text-primary);
+  background: var(--bg-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+body.transparent {
+  background: transparent;
+}
+
+#app {
+  height: 100%;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--text-primary);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* ───────── 通用原子类 ───────── */
+
+.glass {
+  background: var(--bg-glass);
+  backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid var(--border-subtle);
+}
+
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.muted {
+  color: var(--text-secondary);
+}
+
+.tiny {
+  font-size: 12px;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+}
+
+.badge.warn {
+  background: rgba(245, 165, 36, 0.16);
+  color: #f7c568;
+}
+
+.badge.error {
+  background: rgba(242, 85, 90, 0.16);
+  color: #ff9ca0;
+}
+
+.badge.ok {
+  background: rgba(56, 209, 150, 0.14);
+  color: #6fe0b4;
+}
+
+.divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: var(--space-3) 0;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity var(--transition-base);
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}

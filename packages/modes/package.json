@@ -1,0 +1,26 @@
+{
+  "name": "@aurora/modes",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Aurora 模式系统（classroom 完整实现，work / code 占位）",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aurora/shared": "workspace:*"
+  }
+}

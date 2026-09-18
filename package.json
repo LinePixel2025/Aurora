@@ -1,0 +1,37 @@
+{
+  "name": "aurora",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Aurora —— 将 Windows 接入 AI 生态的系统级 Agent 工具",
+  "packageManager": "pnpm@11.15.1",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @aurora/desktop dev",
+    "build": "pnpm -r build",
+    "build:packages": "pnpm --filter \"./packages/**\" -r build",
+    "typecheck": "pnpm -r --parallel typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "node scripts/verify-p1.mjs",
+    "icons": "node scripts/generate-icons.mjs",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.10.2",
+    "@vitest/coverage-v8": "^2.1.8",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-vue": "^9.32.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "vitest": "^2.1.8",
+    "vue-eslint-parser": "^9.4.3"
+  }
+}

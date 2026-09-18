@@ -1,0 +1,20 @@
+/** @aurora/shared —— Aurora 共享类型、配置 Schema、SettingsStore 与 IPC 契约。 */
+
+// 基础工具
+export * from './utils/result.js'
+export * from './utils/logger.js'
+export * from './utils/object.js'
+
+// 配置
+export * from './config/schema.js'
+export * from './config/defaults.js'
+export * from './config/migrations.js'
+export * from './config/ports.js'
+export * from './config/store.js'
+
+// 契约
+export * from './ipc/channels.js'
+export * from './ipc/types.js'
+export * from './mode/types.js'
+export * from './mode/windowState.js'
+export * from './agent/types.js'
