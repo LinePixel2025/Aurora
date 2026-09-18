@@ -4,7 +4,7 @@
  * 约定：
  * - 业务窗口不显示在任务栏；关闭按钮 = 隐藏，仅托盘「退出」真正退出；
  * - 迷你窗与交互窗同屏互斥；隐藏服务窗时迷你窗一并隐藏（shared/windowState 负责状态机）；
- * - 位置 / 尺寸写入 `general.windowState`，跨启动保留。
+ * - 位置 / 尺寸写入 `general.windowState`，跨启动保留；服务窗例外，只记位置（docs/07 §2.1）。
  */
 import { join } from 'node:path'
 import { BrowserWindow, screen } from 'electron'
@@ -18,6 +18,7 @@ import {
   type WindowName,
   type WindowState,
 } from '@aurora/shared'
+import { dockAnchorRect, resizeDockKeepingAnchor, restoreDockBounds } from './dock-geometry.js'
 
 export interface WindowManagerOptions {
   settings: SettingsStore
@@ -41,10 +42,18 @@ interface WindowSpec {
   place: 'dock' | 'edge' | 'chat' | 'anchor-dock' | 'center'
 }
 
+/**
+ * 服务窗两态尺寸（docs/07 §2.1）：常态为 56×56 圆形浮球，点击后展开为 320×56 输入条。
+ * 尺寸由折叠态决定，**不随窗口几何持久化来回切换**（否则收起态会继承上一次输入条的宽高）。
+ */
+const DOCK_SIZES: Record<'collapsed' | 'expanded', { width: number; height: number }> = {
+  collapsed: { width: 56, height: 56 },
+  expanded: { width: 320, height: 56 },
+}
+
 const SPECS: Record<WindowName, WindowSpec> = {
   'service-dock': {
-    width: 320,
-    height: 56,
+    ...DOCK_SIZES.collapsed,
     resizable: false,
     transparent: true,
     alwaysOnTop: true,
@@ -109,6 +118,8 @@ export class WindowManager {
   private state: WindowState = createInitialWindowState()
   private readonly listeners = new Set<(state: WindowState) => void>()
   private readonly options: WindowManagerOptions
+  /** 服务窗是否处于展开（输入条）态；默认收起为圆形浮球（docs/07 §2.1） */
+  private dockExpanded = false
 
   constructor(options: WindowManagerOptions) {
     this.options = options
@@ -136,13 +147,14 @@ export class WindowManager {
     if (existing && !existing.isDestroyed()) return existing
 
     const spec = SPECS[name]
+    const size = this.sizeFor(name)
     const saved = this.readGeometry(name)
-    const bounds = saved ?? this.computeBounds(name, spec)
+    const bounds = saved ?? this.computeBounds(name, { ...spec, ...size })
 
     const win = new BrowserWindow({
       ...bounds,
-      width: bounds.width ?? spec.width,
-      height: bounds.height ?? spec.height,
+      width: bounds.width ?? size.width,
+      height: bounds.height ?? size.height,
       show: false,
       frame: false,
       resizable: spec.resizable,
@@ -213,6 +225,9 @@ export class WindowManager {
   private quitting = false
 
   show(name: WindowName): WindowState {
+    // 服务窗每次重新显示都回到收起态（圆球），避免上次的输入条形态残留（docs/07 §2.1）。
+    // 先于 applyVisibility 同步尺寸，避免「先显示大窗再缩回」的闪烁。
+    if (name === 'service-dock') this.resizeDock(false)
     const win = this.ensure(name)
     this.state = showInState(this.state, name)
     this.applyVisibility(name, true, win)
@@ -255,6 +270,17 @@ export class WindowManager {
     const win = this.ensure('mini-chat')
     if (!win.isVisible()) this.anchorToDock(win, dock)
     return this.show('mini-chat')
+  }
+
+  /**
+   * 服务窗收起态（圆形浮球）/ 展开态（输入条）切换（docs/07 §2.1）。
+   *
+   * 只改尺寸与位置，**不动可见性、不广播状态变化**（可见性没变，广播只会制造无意义的渲染层更新）。
+   * 展开 / 收起保持浮球水平中心不变、底边不变。窗口处于收起态时调用无副作用。
+   */
+  setDockExpanded(expanded: boolean): WindowState {
+    this.resizeDock(expanded)
+    return this.getState()
   }
 
   /** 把外部传入的坐标写回（渲染层拖拽结束时调用）。 */
@@ -348,13 +374,15 @@ export class WindowManager {
           height,
         }
       case 'anchor-dock': {
+        // 迷你窗水平居中于服务窗，垂直留 12px 间隙（docs/07 §2.4）
         const dock = this.windows.get('service-dock')
         const dockBounds = dock?.getBounds()
-        const anchorX = dockBounds?.x ?? Math.round(area.x + (area.width - width) / 2)
-        const anchorY = dockBounds?.y ?? Math.round(area.y + area.height - height - 24)
+        const anchorCenterX =
+          dockBounds !== undefined ? dockBounds.x + dockBounds.width / 2 : area.x + area.width / 2
+        const anchorY = dockBounds?.y ?? area.y + area.height - 24
         return {
-          x: clamp(anchorX, area.x, area.x + area.width - width),
-          y: clamp(anchorY - height - 12, area.y, area.y + area.height - height),
+          x: Math.round(clamp(anchorCenterX - width / 2, area.x, area.x + area.width - width)),
+          y: Math.round(clamp(anchorY - height - 12, area.y, area.y + area.height - height)),
           width,
           height,
         }
@@ -373,10 +401,34 @@ export class WindowManager {
     const area = screen.getPrimaryDisplay().workArea
     const dockBounds = dock.getBounds()
     const { width, height } = win.getBounds()
+    const centerX = dockBounds.x + dockBounds.width / 2
     win.setPosition(
-      clamp(dockBounds.x, area.x, area.x + area.width - width),
-      clamp(dockBounds.y - height - 12, area.y, area.y + area.height - height),
+      Math.round(clamp(centerX - width / 2, area.x, area.x + area.width - width)),
+      Math.round(clamp(dockBounds.y - height - 12, area.y, area.y + area.height - height)),
     )
+  }
+
+  /** 窗口当前应采用的尺寸：服务窗按折叠态，其余取 SPECS 固定尺寸。 */
+  private sizeFor(name: WindowName): { width: number; height: number } {
+    if (name === 'service-dock') {
+      return DOCK_SIZES[this.dockExpanded ? 'expanded' : 'collapsed']
+    }
+    const spec = SPECS[name]
+    return { width: spec.width, height: spec.height }
+  }
+
+  /**
+   * 把服务窗切到指定折叠态：保持水平中心与底边不变、clamp 进工作区。
+   * 窗口尚未创建时只更新标记（没有窗口就没有尺寸可改），下次 show 会按标记建窗。
+   */
+  private resizeDock(expanded: boolean): void {
+    this.dockExpanded = expanded
+    const win = this.windows.get('service-dock')
+    if (!win || win.isDestroyed()) return
+    const size = DOCK_SIZES[expanded ? 'expanded' : 'collapsed']
+    const next = resizeDockKeepingAnchor(win.getBounds(), size, screen.getPrimaryDisplay().workArea)
+    win.setBounds(next)
+    this.persistGeometry('service-dock', win)
   }
 
   private readGeometry(
@@ -391,6 +443,11 @@ export class WindowManager {
     if (x === undefined || y === undefined || width === undefined || height === undefined)
       return undefined
     const area = screen.getPrimaryDisplay().workArea
+    if (name === 'service-dock') {
+      // 服务窗只恢复位置：尺寸由折叠态决定。若沿用持久化尺寸，收起态会继承上次
+      // 输入条的宽高（320×56 的球），圆球形态就被破坏（docs/07 §2.1）。
+      return restoreDockBounds({ x, y }, this.sizeFor(name), area)
+    }
     return {
       x: clamp(x, area.x - width + 40, area.x + area.width - 40),
       y: clamp(y, area.y, area.y + area.height - 40),
@@ -400,7 +457,12 @@ export class WindowManager {
   }
 
   private persistGeometry(name: WindowName, win: BrowserWindow): void {
-    const bounds = win.getBounds()
+    // 服务窗存「收起态锚点」而非当前左上角：窗口可能在展开态退出，
+    // 直接存会把输入条的左边缘当成下次圆球的定位基准（docs/07 §2.1）。
+    const bounds =
+      name === 'service-dock'
+        ? dockAnchorRect(win.getBounds(), DOCK_SIZES.collapsed)
+        : win.getBounds()
     this.options.settings.mutate((draft) => {
       draft.general.windowState[name] = {
         x: bounds.x,

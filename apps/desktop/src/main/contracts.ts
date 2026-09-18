@@ -69,6 +69,8 @@ export interface WindowManagerLike {
   showChat(): WindowState
   showMiniChat(): WindowState
   setPosition(name: WindowName, position: { x: number; y: number }): WindowState
+  /** 服务窗收起态（圆形浮球）/ 展开态（输入条）切换（docs/07 §2.1） */
+  setDockExpanded(expanded: boolean): WindowState
   focus(name: WindowName): void
   onStateChanged(listener: (state: WindowState) => void): () => void
 }

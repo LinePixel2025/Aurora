@@ -2,8 +2,12 @@
 /**
  * 设置窗口（docs/07 §2.5、docs/08 §5/§6）：单窗口分栏
  * 常规 / 模式 / AI 模型 / Skill / MCP / 高级。
+ *
+ * 本窗无系统标题栏（`frame: false`），因此侧栏品牌区自担标题栏职责：
+ * 整行可拖动，并提供「✕ 隐藏」按钮（`Esc` 等效）。按 docs/02 §2.2 约定，
+ * 此处「关闭」= 隐藏窗口（不退出应用，退出只走托盘菜单）。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import AppToast from '../shared/components/AppToast.vue'
 import GeneralPage from './pages/GeneralPage.vue'
 import ModesPage from './pages/ModesPage.vue'
@@ -11,7 +15,7 @@ import LlmPage from './pages/LlmPage.vue'
 import SkillsPage from './pages/SkillsPage.vue'
 import McpPage from './pages/McpPage.vue'
 import AdvancedPage from './pages/AdvancedPage.vue'
-import { usePerceptionStore, useSettingsStore } from '../shared/stores.js'
+import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 
 type PageId = 'general' | 'modes' | 'llm' | 'skills' | 'mcp' | 'advanced'
 
@@ -26,12 +30,26 @@ const nav: Array<{ id: PageId; label: string; hint: string }> = [
 
 const active = ref<PageId>('general')
 const settingsStore = useSettingsStore()
+const windowStore = useWindowStore()
 const perception = usePerceptionStore()
 
 const needsOnboarding = computed(() => settingsStore.needsOnboarding)
 
+async function closeSettings(): Promise<void> {
+  await windowStore.hide('settings')
+}
+
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') void closeSettings()
+}
+
 onMounted(() => {
   void perception.refresh()
+  window.addEventListener('keydown', onKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
 })
 
 function select(id: PageId): void {
@@ -48,6 +66,15 @@ function select(id: PageId): void {
           <strong>Aurora</strong>
           <p class="tiny muted">设置</p>
         </div>
+        <button
+          class="close no-drag"
+          type="button"
+          title="隐藏设置窗口（Esc）"
+          aria-label="隐藏设置窗口"
+          @click="closeSettings"
+        >
+          ✕
+        </button>
       </div>
       <nav>
         <button
@@ -110,6 +137,12 @@ function select(id: PageId): void {
   padding: 0 var(--space-2);
 }
 
+.brand > div {
+  /* 让品牌文案占满剩余宽度，把关闭按钮推到最右 */
+  flex: 1;
+  min-width: 0;
+}
+
 .brand-mark {
   width: 22px;
   height: 22px;
@@ -119,6 +152,26 @@ function select(id: PageId): void {
 
 .brand p {
   margin: 0;
+}
+
+.close {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-secondary);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.close:hover {
+  background: rgba(242, 85, 90, 0.18);
+  color: #ff9ca0;
 }
 
 nav {

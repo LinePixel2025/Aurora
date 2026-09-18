@@ -57,6 +57,7 @@ const CHANNELS = {
     showChat: 'window:showChat',
     showMiniChat: 'window:showMiniChat',
     setPosition: 'window:setPosition',
+    setDockExpanded: 'window:setDockExpanded',
     stateChanged: 'window:stateChanged',
     getState: 'window:getState',
   },

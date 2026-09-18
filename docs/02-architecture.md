@@ -38,11 +38,11 @@
 | 窗口 | 创建方 | 数量 | 形态与来源 |
 |---|---|---|---|
 | 托盘 Tray | 主进程 | 1 | 系统托盘图标 + 菜单（显示服务窗 / 打开对话 / 设置 / 切换模式 / 退出） |
-| AI 服务窗 | WindowManager | 1 | 无边框、置顶、输入框形态 |
+| AI 服务窗 | WindowManager | 1 | 无边框、置顶；收起态 56×56 圆形浮球，点击展开为 320×56 输入条（`window:setDockExpanded`） |
 | 提示条 Edge Bar | WindowManager | 每显示器 1（v1 主屏 1） | 屏幕右缘超薄竖条，悬停 / 点击展开 |
 | AI 交互窗口 | WindowManager | 1 | 完整对话窗，贴右缘滑出 |
-| 小 AI 交互窗口 | WindowManager | 1 | 轻量对话窗，锚定服务窗 |
-| 设置窗口 | WindowManager | 1 | 单窗口分栏 |
+| 小 AI 交互窗口 | WindowManager | 1 | 轻量对话窗，水平居中于服务窗 |
+| 设置窗口 | WindowManager | 1 | 单窗口分栏；无系统标题栏，侧栏品牌区可拖动 + 「✕ 隐藏」按钮（Esc 等效） |
 | 首次引导窗口 | WindowManager | 1 | 向导式 |
 
 约定：业务窗口均 **`skipTaskbar` 隐藏任务栏图标**，统一由托盘管理生命周期；关闭按钮 = 隐藏（仅托盘“退出”真正退出）。

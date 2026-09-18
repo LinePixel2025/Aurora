@@ -63,6 +63,7 @@ const api: AuroraApi = {
     showChat: () => invoke(IPC.window.showChat),
     showMiniChat: () => invoke(IPC.window.showMiniChat),
     setPosition: (name, position) => invoke(IPC.window.setPosition, name, position),
+    setDockExpanded: (expanded) => invoke(IPC.window.setDockExpanded, expanded),
     getState: () => invoke(IPC.window.getState),
     onStateChanged: (listener) => subscribe(IPC.window.stateChanged, listener),
   },

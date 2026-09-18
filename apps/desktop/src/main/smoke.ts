@@ -283,6 +283,13 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     // 8. 窗口状态机（含迷你窗/交互窗互斥）
     const win = window.aurora.window
     expectOk('window.show(service-dock)', await win.show('service-dock'))
+
+    // 8.1 服务窗两态折叠（docs/07 §2.1）：展开 / 收起只改尺寸，不应改变可见性
+    const collapsed = expectOk('window.setDockExpanded(false)', await win.setDockExpanded(false))
+    record('服务窗收起态仍可见', collapsed?.visible['service-dock'] === true, JSON.stringify(collapsed))
+    const expandedDock = expectOk('window.setDockExpanded(true)', await win.setDockExpanded(true))
+    record('服务窗展开态仍可见', expandedDock?.visible['service-dock'] === true, JSON.stringify(expandedDock))
+    expectOk('window.setDockExpanded#reset', await win.setDockExpanded(false))
     expectOk('window.show(edge-bar)', await win.show('edge-bar'))
     expectOk('window.showMiniChat', await win.showMiniChat())
     const withMini = expectOk('window.getState', await win.getState())

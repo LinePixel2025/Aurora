@@ -188,13 +188,19 @@ export const useWindowStore = defineStore('windows', () => {
     if (result.ok) state.value = result.value
   }
 
+  /** 服务窗收起态（圆球）/ 展开态（输入条）切换（docs/07 §2.1） */
+  async function setDockExpanded(expanded: boolean): Promise<void> {
+    const result = await window.aurora.window.setDockExpanded(expanded)
+    if (result.ok) state.value = result.value
+  }
+
   function bind(): () => void {
     return window.aurora.window.onStateChanged((next) => {
       state.value = next
     })
   }
 
-  return { state, load, show, hide, toggle, showChat, showMiniChat, bind }
+  return { state, load, show, hide, toggle, showChat, showMiniChat, setDockExpanded, bind }
 })
 
 export const usePerceptionStore = defineStore('perception', () => {
