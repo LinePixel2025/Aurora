@@ -29,9 +29,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 不写 version：pnpm/action-setup 会读取 package.json 的
+      # packageManager（pnpm@11.15.1）。两处都指定会报
+      # ERR_PNPM_BAD_PM_VERSION 直接失败。
       - uses: pnpm/action-setup@v4
-        with:
-          version: 11
 
       - uses: actions/setup-node@v4
         with:
