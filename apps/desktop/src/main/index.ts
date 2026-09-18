@@ -254,8 +254,9 @@ async function bootstrap(): Promise<void> {
     paths,
     isDev,
     onQuit: () => app.quit(),
-    onSettingsChanged: () => {
-      if (settings?.get().general.edgeBar.enabled === false) windows?.hide('edge-bar')
+    onSettingsChanged: (next) => {
+      if (!next.general.edgeBar.enabled) windows?.hide('edge-bar')
+      syncLaunchAtLogin(next.general.launchAtLogin)
       tray?.refresh()
     },
   }
@@ -265,6 +266,9 @@ async function bootstrap(): Promise<void> {
   tray = createTray(deps, resolveTrayIcon())
   modes.onChange(() => tray?.refresh())
   settings.onChange(() => tray?.refresh())
+
+  // 8.1 开机自启：必须在 ready 之后调用（docs/04 §P1）
+  syncLaunchAtLogin(settings.get().general.launchAtLogin)
 
   // 9. 首次引导 / 正常启动
   if (report.needsOnboarding) {
@@ -353,6 +357,21 @@ async function shutdown(): Promise<void> {
   }
   tray?.destroy()
   await logger?.close()
+}
+
+/**
+ * 同步「开机自启」到系统（Windows 注册表 Run 项，由 Electron 维护）。
+ * 幂等：仅在当前状态与期望不一致时写入，避免每次启动都改注册表。
+ */
+function syncLaunchAtLogin(enabled: boolean): void {
+  try {
+    const current = app.getLoginItemSettings()
+    if (current.openAtLogin === enabled) return
+    app.setLoginItemSettings({ openAtLogin: enabled })
+    logger?.info('已更新开机自启设置', { openAtLogin: enabled })
+  } catch (error) {
+    logger?.warn('设置开机自启失败（不影响主流程）', { error: String(error) })
+  }
 }
 
 function notify(title: string, body: string, openPath?: string): void {

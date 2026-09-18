@@ -2,7 +2,7 @@
  * 托盘（docs/02 §2.2、docs/07 §2）：常驻入口 + 模式切换 + 设置 / 引导 / 退出。
  */
 import { existsSync } from 'node:fs'
-import { Menu, Tray, nativeImage, type MenuItemConstructorOptions } from 'electron'
+import { Menu, Tray, nativeImage, shell, type MenuItemConstructorOptions } from 'electron'
 import { MODE_IDS, type Logger, type ModeId } from '@aurora/shared'
 import type { DesktopDeps } from './ipc.js'
 
@@ -83,11 +83,19 @@ export function createTray(deps: DesktopDeps, iconPath: string): TrayController 
         label: needsModel ? '状态：未配置 AI 模型' : `状态：${current?.displayName ?? '未知模式'}`,
         enabled: false,
       },
-      { label: '打开日志目录', click: () => deps.windows.show('settings') },
+      { label: '打开配置目录', click: () => void openPathByKind('config') },
+      { label: '打开日志目录', click: () => void openPathByKind('logs') },
       { label: '退出 Aurora', click: () => deps.onQuit() },
     ]
 
     return Menu.buildFromTemplate(template)
+  }
+
+  /** 托盘里的"打开目录"必须真正打开目录（docs/07 §2.2 的排障入口） */
+  const openPathByKind = async (kind: 'logs' | 'config'): Promise<void> => {
+    const target = kind === 'logs' ? deps.paths.logs : deps.paths.config
+    const error = await shell.openPath(target)
+    if (error !== '') deps.logger.warn('托盘打开目录失败', { kind, target, error })
   }
 
   const refresh = (): void => {

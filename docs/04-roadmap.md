@@ -61,6 +61,11 @@
     `OpenAiCompatProvider`（先 `GET /models`，404/405 时退化为最小 chat 探测）。
   - 引导为「向导 + 表单」；ClassRoom 模式内的对话式引导由 `packages/modes` 的
     `GuideRunner`（四步、可中断续接）驱动。
+  - 「开机自启」已实际生效：主进程用 `app.getLoginItemSettings()` / `setLoginItemSettings()`
+    同步注册表项（幂等，仅状态不一致时写入）。
+  - 「全局快捷键 `Alt+Space`」目前**仅保存配置值**，尚未注册系统级热键
+    （`globalShortcut` 与冲突检测归入 P2 一并落地）；「系统通知」与「点击通知打开文件夹」
+    的载体已按 P4 分类管线预留，当前只写日志。
 
 ### P2 · 通用交互 UI（v0.2.0）
 
@@ -74,6 +79,13 @@
   `/` 与 `@` 浮层已可用（`/chat`、`/mini`、`/settings`、`/hide`、`/clear`），
   对话返回占位回复（真实感知摘要 + 下一阶段说明），会话归属切换由主进程
   `windowState` 状态机保证互斥。真实模型回复与工具执行卡片在 P3 接入。
+  - **preload 约束（重要）**：preload 运行在 `sandbox: true` 的渲染进程里，
+    既无 Node 能力也**无法解析 pnpm 工作区包**，因此必须是自包含产物——只
+    `require('electron')` 加字面量通道表（`src/preload/channels.ts`，由类型
+    断言与 `@aurora/shared` 的 `IPC` 双向对齐）。主进程则可内联工作区包
+    （它们是纯 ESM，CJS `require()` 会抛 `ERR_REQUIRE_ESM`）。
+  - 渲染层只允许 `import type`（或经 `@aurora/shared/browser` 引入纯常量），
+    否则会把 `node:fs` 拉进浏览器 bundle 导致构建失败。
 
 ### P3 · Agent 内核（v0.3.0）
 

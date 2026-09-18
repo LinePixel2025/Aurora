@@ -59,11 +59,12 @@ docs/                   项目文档（SSOT）
 
 - **P0**：pnpm workspace monorepo、TS strict、ESLint/Prettier、vitest、GitHub Actions（Windows）。
 - **P1 基础壳与设置**
-  - 托盘常驻 + 菜单（显隐服务窗 / 打开对话 / 切换模式 / 重新引导 / 设置 / 退出）
-  - 单实例锁；关闭窗口 = 隐藏，仅托盘可退出
+  - 托盘常驻 + 菜单（显隐服务窗 / 打开对话 / 切换模式 / 重新引导 / 设置 / 打开配置与日志目录 / 退出）
+  - 单实例锁；关闭窗口 = 隐藏，仅托盘可退出；**开机自启**已接入注册表（`app.setLoginItemSettings`）
   - 设置窗口六页：常规 / 模式 / AI 模型 / Skill / MCP / 高级
   - 配置 store：Zod Schema、版本迁移链、原子写 + 防抖、损坏文件备份重建、字段级回退默认值
-  - 凭据安全：safeStorage 加密落盘；不可用时仅驻留内存并明确提示；日志与导出全程脱敏
+  - 凭据安全：safeStorage 加密落盘；不可用时仅驻留内存并明确提示；`settings:get` 与
+    `settings:changed` **两条路径**都经过脱敏（渲染层只看到 `apiKeySet` / `envSet` 标记）
   - **首次安装引导**：AI 模型（baseURL / API Key / 模型名 + 真实「测试连接」与模型列表）、模式选择、ClassRoom 表单式引导
   - ClassRoom 对话式引导运行器：四步（感知文件夹 → 科目列表 → 每科目标文件夹 → 课前提醒），可中断续接
 - **P2 窗口外壳**：AI 服务窗（置顶输入框 + `/`、`@` 前缀浮层 + 状态点）、右侧提示条（悬停展开面板）、
@@ -83,10 +84,26 @@ docs/                   项目文档（SSOT）
 
 > 当前四种窗口的"发送消息"返回的是**占位回复**（真实感知摘要 + 下一阶段说明），
 > 用于验证窗口状态机、流式渲染与 IPC 契约；IPC 通道已按 P3 设计，替换实现时渲染层无需改动。
+>
+> 设置项中已有值但**尚未真正生效**的：全局快捷键 `Alt+Space`（待注册 `globalShortcut`）、
+> 高级页的代理与勿扰时段（消费者分别在 P3 / P5）、MCP 服务器（连接在 P3）。
+
+## 工程约束（改动前请先读）
+
+- **preload 必须自包含**：它跑在 `sandbox: true` 的渲染进程里，没有 Node 能力，也无法解析
+  pnpm 工作区包，只能 `require('electron')` + 字面量通道表（`src/preload/channels.ts`
+  与 `@aurora/shared` 的 `IPC` 有编译期双向断言，改契约时同步改这里）。
+- **主进程内联工作区包**：`@aurora/*` 是纯 ESM，CJS 主进程 `require()` 会抛
+  `ERR_REQUIRE_ESM`，因此 `electron.vite.config.ts` 把它们排除在 `externalizeDepsPlugin` 之外。
+- **渲染层只允许类型导入**：从 `@aurora/shared` 取纯常量请走 `@aurora/shared/browser`
+  子路径，否则会把 `node:fs` 拉进浏览器 bundle（构建会直接失败）。
+- 文档是 SSOT：改配置 Schema 或交互前先更新 `docs/`（见 [docs/README.md](docs/README.md)）。
 
 ## 安全说明
 
 - API Key / MCP 环境变量使用 Electron `safeStorage` 加密后写入 `%APPDATA%/Aurora/config.json`；
   明文密钥永不落盘（安全存储不可用时只驻留内存）。
 - 日志（`%APPDATA%/Aurora/logs/`，保留 7 天）与「导出脱敏配置」中的凭据一律替换为 `***`。
-- 渲染进程启用 `contextIsolation` + `sandbox`，只能通过 preload 白名单调用主进程能力。
+- 渲染进程启用 `contextIsolation` + `sandbox`，只能通过 preload 白名单调用主进程能力；
+  `settings:get` 与 `settings:changed` 两条通道都只回传 `apiKeySet` / `envSet` 标记，不含密文。
+

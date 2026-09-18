@@ -8,7 +8,12 @@ import { z } from 'zod'
 
 export const CONFIG_VERSION = 1 as const
 
-export const MODE_IDS = ['work', 'code', 'classroom'] as const
+/**
+ * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
+ * 08 §1 注释中的 `work / code / classroom` 为枚举列举顺序，不表示 UI 顺序；
+ * 设置页与引导按本数组顺序渲染（docs/07 §2.5「三模式卡片」、docs/08 §3「ClassRoom 推荐」）。
+ */
+export const MODE_IDS = ['classroom', 'work', 'code'] as const
 export type ModeId = (typeof MODE_IDS)[number]
 export const ModeIdSchema = z.enum(MODE_IDS)
 

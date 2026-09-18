@@ -223,7 +223,8 @@ export function registerIpc(deps: DesktopDeps): () => void {
   // ───────────────────────── 推送 ─────────────────────────
 
   const offSettings = deps.settings.onChange?.((settings) => {
-    broadcast(IPC.settings.changed, settings)
+    // 推送同样必须走脱敏：否则 ciphertext 会随广播绕过 toRendererSettings 进入渲染层
+    broadcast(IPC.settings.changed, redactSettingsForRenderer(deps, settings))
   })
   const offModes = deps.modes.onChange((event) => {
     broadcast(IPC.mode.changed, event)
@@ -299,7 +300,16 @@ function applyPatch(deps: DesktopDeps, patch: SettingsPatch): Result<Settings> {
 
 /** 回传渲染层前把密文替换为"是否已设置"。 */
 function toRendererSettings(deps: DesktopDeps): Settings {
-  const settings = deps.settings.get()
+  return redactSettingsForRenderer(deps, deps.settings.get())
+}
+
+/**
+ * 密文 → "是否已设置"标记。
+ * `settings:get` 与 `settings:changed` 广播共用，保证任何路径都不把
+ * `apiKeyEnc` / `envEnc` 的值送进渲染进程（docs/08 §1.1）。
+ */
+function redactSettingsForRenderer(deps: DesktopDeps, source: Settings): Settings {
+  const settings = structuredClone(source)
   for (const [id, provider] of Object.entries(settings.llm.providers)) {
     const draft = provider as unknown as Record<string, unknown>
     draft['apiKeySet'] = deps.settings.getSecret(`llm.providers.${id}.apiKey`) !== ''

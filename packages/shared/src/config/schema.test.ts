@@ -3,12 +3,17 @@ import { createDefaultSettings, PROVIDER_PRESETS } from './defaults.js'
 import {
   CONFIG_VERSION,
   DEFAULT_SUBJECT_NAMES,
+  MODE_IDS,
   SettingsSchema,
   fieldAccepts,
   schemaPathCount,
 } from './schema.js'
 
 describe('SettingsSchema / defaults 一致性', () => {
+  it('MODE_IDS 顺序 ClassRoom 在前（docs/07 §2.5、docs/08 §3 推荐 ClassRoom）', () => {
+    expect([...MODE_IDS]).toEqual(['classroom', 'work', 'code'])
+  })
+
   it('默认配置必须通过 Schema 校验', () => {
     const parsed = SettingsSchema.safeParse(createDefaultSettings())
     expect(parsed.success).toBe(true)

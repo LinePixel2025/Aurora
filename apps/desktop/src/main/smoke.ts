@@ -24,11 +24,25 @@ export const SMOKE_SCRIPT = String.raw`
   }
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+  /** 渲染层任何路径都不得看到密文或明文（docs/08 §1.1 的 apiKeySet / envSet 约定） */
+  const PLAINTEXT_MARKER = 'sk-smoke-plaintext-marker'
+  const assertNoSecretLeak = (name, payload) => {
+    const json = JSON.stringify(payload)
+    const leakedCipher = /"apiKeyEnc"\s*:\s*"[^"]+"/.test(json)
+    const leakedEnv = /"envEnc"\s*:\s*\{[^}]+\}/.test(json)
+    const leakedPlain = json.includes(PLAINTEXT_MARKER)
+    record(name, !leakedCipher && !leakedEnv && !leakedPlain, leakedPlain ? '出现明文' : leakedCipher || leakedEnv ? '出现密文' : '无密文/明文')
+  }
+
   if (!window.aurora) {
     return { fatal: 'window.aurora 未暴露：preload 加载失败' }
   }
 
   try {
+    // 0. 广播脱敏：订阅 settings:changed，确保推送路径同样不泄漏凭据
+    const changedPayloads = []
+    const offChanged = window.aurora.settings.onChanged((next) => changedPayloads.push(next))
+
     // 1. 应用信息
     const info = expectOk('app.getInfo', await window.aurora.app.getInfo())
     if (info) {
@@ -43,6 +57,7 @@ export const SMOKE_SCRIPT = String.raw`
       record('settings.get.version', settings.version === 1, String(settings.version))
       record('settings.get 科目模板', settings.modes.classroom.subjects.length === 9, String(settings.modes.classroom.subjects.length))
       record('settings.get 不回传密文', settings.llm.providers === undefined || Object.values(settings.llm.providers).every((p) => p.apiKeyEnc === ''), 'apiKeyEnc 已清空')
+      assertNoSecretLeak('settings.get 无凭据字段', settings)
     }
 
     // 3. 写入模型配置（含凭据加密）
@@ -55,11 +70,18 @@ export const SMOKE_SCRIPT = String.raw`
       },
     }))
     if (update) record('settings.update 生效', update.llm.active === 'smoke', update.llm.active)
+    assertNoSecretLeak('settings.update 回包不含密文', update ?? {})
 
     const secrets = expectOk('settings.setSecrets', await window.aurora.settings.setSecrets({
       'llm.providers.smoke.apiKey': 'sk-smoke-plaintext-marker',
     }))
     if (secrets) record('setSecrets 已加密落盘', secrets.persisted === true, JSON.stringify(secrets.paths))
+
+    // 写入凭据后应产生一次 settings:changed 广播，推送路径同样不得含密文/明文
+    await wait(120)
+    record('settings:changed 已推送', changedPayloads.length > 0, 'times=' + changedPayloads.length)
+    for (const payload of changedPayloads) assertNoSecretLeak('settings:changed 广播已脱敏', payload)
+    offChanged()
 
     record('hasSecret 可查询', expectOk('settings.hasSecret', await window.aurora.settings.hasSecret('llm.providers.smoke.apiKey')) === true, '')
     record('app.getInfo.needsOnboarding 变为 false', expectOk('app.getInfo#2', await window.aurora.app.getInfo())?.needsOnboarding === false, '')

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MODE_IDS,
   createDefaultSettings,
   createMemoryLogger,
   type IMode,
@@ -67,10 +68,12 @@ describe('ModeManager 注册与摘要', () => {
     expect(() => manager.currentId()).toThrowError(/尚未初始化/)
   })
 
-  it('init 装配三个模式并按 05 §1.1 顺序返回', async () => {
+  it('init 装配三个模式并按 MODE_IDS 顺序返回（ClassRoom 在前）', async () => {
     const { manager, ctx } = createHarness()
     const list = await manager.init(ctx)
-    expect(list.map((m) => m.id)).toEqual(['work', 'code', 'classroom'])
+    // 与 docs/07 §2.5、docs/08 §3「ClassRoom 推荐」一致：首发模式排在最前
+    expect(list.map((m) => m.id)).toEqual([...MODE_IDS])
+    expect(list[0]?.id).toBe('classroom')
     const classroom = list.find((m) => m.id === 'classroom')
     expect(classroom).toMatchObject({
       displayName: 'ClassRoom Mode',
