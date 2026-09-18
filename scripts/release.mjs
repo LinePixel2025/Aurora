@@ -35,9 +35,24 @@ const packageJson = JSON.parse(await fs.readFile(join(root, 'package.json'), 'ut
 const version = packageJson.version
 const tag = `v${version}`
 
+/**
+ * Windows 下 `shell: true` 时 Node 只是用空格把参数拼起来、不做转义，
+ * 含空格的参数（如 tag 消息 `-m "Aurora v0.5.0"`）会被拆成两个参数，
+ * 表现为 `git tag` 报 `Failed to resolve 'v0.5.0' as a valid ref`。
+ * 因此这里显式加引号。
+ */
+function shellQuote(arg) {
+  return /[\s"&|<>^()]/.test(arg) ? `"${arg.replaceAll('"', '\\"')}"` : arg
+}
+
+function shellArgs(commandArgs) {
+  return process.platform === 'win32' ? commandArgs.map(shellQuote) : commandArgs
+}
+
 function run(command, commandArgs, options = {}) {
-  console.log(`\n$ ${command} ${commandArgs.join(' ')}`)
-  execFileSync(command, commandArgs, {
+  const args = shellArgs(commandArgs)
+  console.log(`\n$ ${command} ${args.join(' ')}`)
+  execFileSync(command, args, {
     cwd: options.cwd ?? root,
     stdio: 'inherit',
     env: { ...process.env, ...(options.env ?? {}) },
@@ -46,7 +61,7 @@ function run(command, commandArgs, options = {}) {
 }
 
 function capture(command, commandArgs) {
-  return execFileSync(command, commandArgs, {
+  return execFileSync(command, shellArgs(commandArgs), {
     cwd: root,
     encoding: 'utf8',
     shell: process.platform === 'win32',
