@@ -876,7 +876,10 @@ async function seedSmokeClassroom(userData: string): Promise<string> {
   //    首轮 tick（默认 30s 间隔）就会命中，无需等待真实时刻
   const startTime = new Date(Date.now() + 3 * 60_000)
   const clock = `${pad2(startTime.getHours())}:${pad2(startTime.getMinutes())}`
-  const endClock = `${pad2(startTime.getHours())}:${pad2(startTime.getMinutes() + 45)}`
+  // 用 Date 推进 45 分钟：手算 `分钟 + 45` 在 [HH:15, HH:59] 会溢出成 "HH:60+"，
+  // 被桥接解析器判为非法时间（endTime 需 HH:mm）而丢弃整节课，导致课前提醒断言假失败。
+  const endTime = new Date(startTime.getTime() + 45 * 60_000)
+  const endClock = `${pad2(endTime.getHours())}:${pad2(endTime.getMinutes())}`
 
   // 3. 桥接夹具：与真实插件写出的契约完全一致（docs/05 §3.4 v2）
   const bridgePath = join(userData, 'classisland-bridge.json')
