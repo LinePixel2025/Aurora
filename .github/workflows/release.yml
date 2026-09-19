@@ -3,10 +3,15 @@ name: Release
 # 打 tag（v*）时自动打包 Windows 安装包并上传到**公开的 releases 仓库**。
 # 源码仓库可以保持 private：客户端只从公开 releases 仓库读取更新清单，
 # 不需要在安装包里携带任何 GitHub 凭证（docs/09 §1/§2）。
+# **按需触发**：不再跟随 `v*` tag 自动发布（docs/09 §2）。
+#
+# 原因：日常发布走本地 `scripts/release.mjs`（v0.3.0 起一直如此）；而云端发布需要
+# `secrets.RELEASE_TOKEN`（能写 Aurora-releases，当前未配置），挂在 tag 上只会每次
+# 稳定失败、制造红噪音。配好 token 后可恢复自动触发，把下面的 `push:` 块加回来：
+#   on:
+#     push:
+#       tags: ['v*']
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       version:

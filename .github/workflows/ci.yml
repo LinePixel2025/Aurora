@@ -1,9 +1,16 @@
 name: CI
 
+# **按需触发**：不跟随 push / PR 自动运行（docs/09 §2）。
+#
+# 为什么：单人私有仓库、无 PR 门禁，而本地 `pnpm test`（598 项，约 8s）+
+# `pnpm build`（约 6s）已覆盖同一套检查。每次 push 自动跑只会产生与代码无关的
+# 红噪音（典型是 `pnpm install` 的供应链策略拦截，见 pnpm-workspace.yaml 的
+# minimumReleaseAge 说明），拖慢开发节奏。
+#
+# 需要干净环境验证时手动发起：
+#   Actions 页面 → Run workflow，或 `gh workflow run ci.yml`
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

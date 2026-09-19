@@ -40,7 +40,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 
 - **跑单个/单包测试**：`pnpm vitest run <文件路径>`，或 `pnpm --filter @aurora/agent-core test`。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：PowerShell 下 `$env:AURORA_SMOKE='1'; pnpm dev`，结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`。调试渲染层加 `AURORA_DEVTOOLS=1`。
-- CI（`.github/workflows/ci.yml`，Windows）顺序：`format:check → lint → typecheck → test → build`，提交前本地跑一遍。
+- **CI 是按需触发的，不跟随 push / PR 自动跑**（`.github/workflows/ci.yml`，Windows）。
+  日常验证靠本地 `pnpm typecheck && pnpm test && pnpm build`——与 CI 同一套检查、全量约 15 秒；
+  需要干净环境时手动发起（Actions → Run workflow，或 `gh workflow run ci.yml`）。
+  CI 内部顺序：`format:check → lint → typecheck → test → build`。策略原因见 docs/09 §2。
 
 ## 架构硬约束（改错会直接构建失败或线上炸）
 

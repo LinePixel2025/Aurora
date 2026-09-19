@@ -92,7 +92,7 @@
 ### ADR-009 工程组织：pnpm workspace monorepo
 
 - `apps/desktop` + `packages/{agent-core, modes, shared}`；agent-core / modes 为纯 Node 包（vitest 单测）。
-- CI：GitHub Actions（lint / typecheck / test / build 三平台矩阵，Windows 为主）。
+- CI：GitHub Actions（Windows，`lint / typecheck / test / build`），**按需手动触发**、不跟随 push / PR（见 09 §2）。
 
 ## 3. 依赖风险清单
 

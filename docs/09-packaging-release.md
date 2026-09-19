@@ -33,14 +33,39 @@ pnpm release -- --publish --push   # 顺便把 tag 推到 origin
 `scripts/release.mjs` 的预检：工作区必须干净（否则用 `--force` 显式承担"把未提交改动打进包"的风险）；
 产物校验通过才会打 tag。
 
-### CI 发布
+### CI（按需触发，不自动跑）
 
-`.github/workflows/release.yml`：推送 `v*` tag 触发 →
-`format:check / lint / typecheck / test / build` → 打包 → `verify-update.mjs` →
-用 `secrets.RELEASE_TOKEN`（需能写 `Aurora-releases`）执行 `gh release upload`。
+两个 workflow 都**只在显式发起时运行**，不跟随 push / PR 自动触发：
 
+| Workflow | 触发 | 用途 |
+|---|---|---|
+| `ci.yml` | `workflow_dispatch` | 干净环境中跑 `format:check → lint → typecheck → test → build` |
+| `release.yml` | `workflow_dispatch` | 云端打包 + 上传到 `Aurora-releases`（需 `RELEASE_TOKEN`） |
+
+手动发起：Actions 页面 → **Run workflow**，或 `gh workflow run ci.yml`。
+
+**为什么默认不自动跑**：单人私有仓库、无 PR 门禁（GitHub 的 branch protection 需 Pro），
+本地 `pnpm test`（598 项，约 8s）+ `pnpm build`（约 6s）已覆盖同一套检查；
+自动跑只会产生与代码无关的红噪音（典型是下方 `minimumReleaseAge` 的安装期拦截），
+拖慢开发节奏。**发布前的权威验证走本地 `scripts/release.mjs`。**
+
+> `release.yml` 需要 `secrets.RELEASE_TOKEN`（能写 `Aurora-releases`）才能真正上传；
+> 未配置时它会在上传步骤失败，因此默认不挂在 tag 上。配好 token 后，把 `on:` 恢复为
+> `push: { tags: ['v*'] }` 即可实现「推 tag 即发布」。
+>
 > CI 里刻意用 `electron-builder --publish never` + `gh release upload`，
 > 因为 electron-builder 的自动发布是往**当前仓库**发的，而我们的产物要去另一个仓库。
+
+### 最小发布年龄（`minimumReleaseAge`，重要）
+
+pnpm 在 **CI 环境**默认按 24 小时窗口校验 lockfile：刚发布的依赖会被判为违规，
+`pnpm install --frozen-lockfile` 直接以 `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION` 失败
+（即使代码与 lockfile 都没问题，也要干等满 24 小时才自行恢复）。
+本机默认值是 0、CI 默认不是，两者不一致会导致**「本地全绿、CI 全红」**。
+
+本仓库在 `pnpm-workspace.yaml` 显式钉 `minimumReleaseAge: 0`，使 CI 与本地一致。
+代价是放弃这层「新包冷却」保护——这是有意识的取舍：单人项目 + 镜像源，
+其收益低于发布被卡住的成本。要恢复该保护，把该值改为正数（分钟）即可。
 
 ### 内网 / 代理环境注意（重要）
 

@@ -218,7 +218,8 @@ P6 打包与自动更新完成、余下打磨项待做，P7 的 **ClassIsland �
     electron-updater 适配层，设置页「更新」区与托盘入口；更新源为**公开 releases 仓库**，
     源码仓库保持私有，客户端不携带任何凭证（docs/09 §1）。
   - **发布流程**：`pnpm release`（本地，构建→打包→校验→打 tag→可选上传）与
-    `.github/workflows/release.yml`（推送 `v*` tag 自动发布）。
+    `.github/workflows/release.yml`（云端打包发布，**按需手动触发**；配置
+    `secrets.RELEASE_TOKEN` 后可恢复 `v*` tag 自动触发）。
   - **不签名**（用户决策）：`signAndEditExecutable: false`，首装会出现 SmartScreen
     「未知发行者」提示，用户操作说明见 docs/09 §4；接入证书时改一个布尔值即可。
   - **已验证**：`pnpm verify:release`（产物 14 项，含 sha512/size 与实际文件一致性）+
