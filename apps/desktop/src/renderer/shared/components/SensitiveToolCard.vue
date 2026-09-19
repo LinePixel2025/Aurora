@@ -5,6 +5,10 @@
  * 工具 `sensitivity === 'confirm'` 时（MCP 工具一律如此）主进程先推送确认请求，
  * 由本卡片回执后放行或拒绝。主进程在 `expiresAt` 之后按「拒绝」处理，
  * 因此倒计时结束时卡片自行收起——用户不会看到一个已经失效的确认框。
+ *
+ * 视觉（docs/07 §5）：悬浮在对话区之上（`--shadow-3`）+ `.anim-pop` 弹入，
+ * 倒计时 ≤15s 转 `--status-error`；确认 / 拒绝用 AppButton 的 primary / danger。
+ * 行为链路（IPC 回执、超时按拒绝）保持原样。
  */
 import { computed, onUnmounted, ref } from 'vue'
 import type { SensitiveToolRequest } from '@aurora/shared'
@@ -76,7 +80,7 @@ async function decide(approved: boolean): Promise<void> {
 </script>
 
 <template>
-  <article class="sensitive" :class="{ urgent }">
+  <article class="sensitive anim-pop" :class="{ urgent }">
     <header class="row">
       <StatusDot tone="error" title="敏感工具确认" />
       <strong>敏感工具执行前需确认</strong>
@@ -122,14 +126,14 @@ async function decide(approved: boolean): Promise<void> {
   margin: 0 var(--space-3) var(--space-2);
   padding: var(--space-3);
   border-radius: var(--radius-md);
-  border: 1px solid rgba(242, 85, 90, 0.32);
-  background: rgba(242, 85, 90, 0.1);
-  box-shadow: var(--shadow-2);
+  border: 1px solid color-mix(in srgb, var(--status-error) 32%, transparent);
+  background: color-mix(in srgb, var(--status-error) 10%, var(--bg-raised));
+  box-shadow: var(--shadow-3);
   transition: border-color var(--transition-base);
 }
 
 .sensitive.urgent {
-  border-color: rgba(242, 85, 90, 0.6);
+  border-color: color-mix(in srgb, var(--status-error) 60%, transparent);
 }
 
 .intro {
@@ -140,7 +144,7 @@ async function decide(approved: boolean): Promise<void> {
 .tool {
   padding: 1px 5px;
   border-radius: var(--radius-xs);
-  background: rgba(0, 0, 0, 0.32);
+  background: var(--bg-base);
   color: var(--text-primary);
 }
 
@@ -151,7 +155,7 @@ async function decide(approved: boolean): Promise<void> {
   padding: 8px 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
-  background: rgba(0, 0, 0, 0.38);
+  background: var(--bg-base);
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
   white-space: pre-wrap;
@@ -163,8 +167,9 @@ async function decide(approved: boolean): Promise<void> {
   flex: 0 0 auto;
 }
 
+/* ≤15s：倒计时与进度条转错误语义色（docs/06 §5） */
 .countdown.urgent {
-  color: #ff9ca0;
+  color: var(--status-error);
 }
 
 .progress {
@@ -179,12 +184,16 @@ async function decide(approved: boolean): Promise<void> {
   height: 100%;
   border-radius: var(--radius-pill);
   background: var(--aurora-gradient);
-  transition: width 250ms linear;
+  transition: width var(--dur-base) linear;
+}
+
+.sensitive.urgent .progress span {
+  background: var(--status-error);
 }
 
 .err {
   margin: 0;
-  color: #ff9ca0;
+  color: var(--status-error);
 }
 
 footer {

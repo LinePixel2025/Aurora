@@ -6,6 +6,10 @@
  * P5 追加：敏感工具确认卡片（docs/06 §5）与分类流水面板（docs/05 §3.3）——
  * 交互窗是主动引导的**主载体**，两者都挂在这里。
  * P6 追加：多会话列表 / 切换（docs/06 §4）与附件拖拽发送（docs/07 §2.3）。
+ *
+ * 视觉（docs/07 §5）：玻璃容器 + 分层头尾（`--fill-1`），用户气泡右对齐、助手正文铺开，
+ * 输入区是独立的圆角容器（聚焦加品牌光晕），会话列表/工具卡片走 `.sheet-*` / `.collapse-*`。
+ * 交互语义（会话切换、发送、中断、附件拖拽、工具卡片、敏感工具确认）保持不变。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { SensitiveToolRequest } from '@aurora/shared'
@@ -70,6 +74,12 @@ const guide = computed(() => {
   const mode = modeStore.current
   if (!mode || mode.guideCompleted) return null
   return mode
+})
+
+/** 标题栏里的当前会话名（空标题显示为「新会话」，与主进程摘要一致） */
+const currentTitle = computed(() => {
+  const current = sessions.value.find((item) => item.id === sessionId.value)
+  return sessionTitle(current?.title ?? '')
 })
 
 // ───────────────────────── 附件拖拽（docs/07 §2.3） ─────────────────────────
@@ -160,16 +170,18 @@ function formatTime(iso: string): string {
 </script>
 
 <template>
-  <div class="chat">
+  <div class="chat glass">
     <header class="head drag-region">
-      <div class="row">
+      <div class="head-title">
         <StatusDot :tone="statusTone" title="AI 状态" />
-        <strong>对话</strong>
+        <strong class="head-name">对话</strong>
         <span class="badge">{{ modeStore.current?.displayName ?? '未激活' }}</span>
         <span v-if="settingsStore.needsOnboarding" class="badge warn">未配置模型</span>
+        <span class="tiny muted session">{{ currentTitle }}</span>
       </div>
-      <div class="row no-drag">
+      <div class="head-actions no-drag">
         <AppButton size="sm" variant="ghost" @click="showHistory = !showHistory">历史</AppButton>
+        <AppButton size="sm" variant="ghost" @click="newSession">新建</AppButton>
         <AppButton size="sm" variant="ghost" @click="clear">清空</AppButton>
         <AppButton size="sm" variant="ghost" @click="windowStore.show('settings')">设置</AppButton>
         <AppButton size="sm" variant="ghost" @click="close">收起</AppButton>
@@ -185,30 +197,32 @@ function formatTime(iso: string): string {
     />
 
     <div class="body">
-      <aside v-if="showHistory" class="history">
-        <div class="row">
-          <strong class="tiny grow">会话</strong>
-          <AppButton size="sm" variant="ghost" @click="newSession">新建</AppButton>
-        </div>
-        <p v-if="sessions.length === 0" class="tiny muted">还没有会话</p>
-        <button
-          v-for="item in sessions"
-          :key="item.id"
-          type="button"
-          class="history-item"
-          :class="{ active: item.id === sessionId }"
-          @click="switchSession(item.id)"
-        >
-          <strong class="tiny">{{ sessionTitle(item.title) }}</strong>
-          <span class="tiny muted">
-            {{ formatTime(item.updatedAt) }} · {{ item.messageCount }} 条
-          </span>
-        </button>
-      </aside>
+      <Transition name="sheet">
+        <aside v-if="showHistory" class="history">
+          <div class="row">
+            <strong class="tiny grow">会话</strong>
+            <AppButton size="sm" variant="ghost" @click="newSession">新建</AppButton>
+          </div>
+          <p v-if="sessions.length === 0" class="tiny muted">还没有会话</p>
+          <button
+            v-for="item in sessions"
+            :key="item.id"
+            type="button"
+            class="history-item interactive"
+            :class="{ active: item.id === sessionId }"
+            @click="switchSession(item.id)"
+          >
+            <strong class="tiny">{{ sessionTitle(item.title) }}</strong>
+            <span class="tiny muted">
+              {{ formatTime(item.updatedAt) }} · {{ item.messageCount }} 条
+            </span>
+          </button>
+        </aside>
+      </Transition>
 
       <main
         class="thread"
-        :class="{ dragging }"
+        :class="{ dragging, streaming }"
         @dragenter.prevent="dragging = true"
         @dragover.prevent
         @dragleave="dragging = false"
@@ -239,31 +253,49 @@ function formatTime(iso: string): string {
     <ClassificationLedger class="ledger-host" :limit="20" />
 
     <footer class="composer">
-      <div v-if="attachments.length > 0" class="row wrap attachments">
+      <div v-if="attachments.length > 0" class="attachments">
         <span v-for="path in attachments" :key="path" class="chip tiny">
           {{ fileNameOf(path) }}
-          <button type="button" class="chip-remove" @click="removeAttachment(path)">×</button>
+          <button
+            type="button"
+            class="chip-remove"
+            aria-label="移除附件"
+            @click="removeAttachment(path)"
+          >
+            ×
+          </button>
         </span>
       </div>
-      <textarea
-        v-model="input"
-        spellcheck="false"
-        placeholder="输入消息，Ctrl + Enter 发送；可直接把文件拖进来"
-        @keydown.enter.exact.prevent="send"
-        @keydown.ctrl.enter.prevent="send"
-      />
-      <div class="row">
-        <span class="tiny muted grow"> 会话：{{ sessionId }} · 可调用 Skill 与 MCP 工具 </span>
-        <AppButton v-if="streaming" size="sm" @click="abort">停止</AppButton>
-        <AppButton
-          size="sm"
-          variant="primary"
-          :disabled="streaming || (input.trim() === '' && attachments.length === 0)"
-          @click="send"
-        >
-          发送
-        </AppButton>
+
+      <div class="composer-box">
+        <textarea
+          v-model="input"
+          spellcheck="false"
+          placeholder="输入消息，Ctrl + Enter 发送；可直接把文件拖进来"
+          @keydown.enter.exact.prevent="send"
+          @keydown.ctrl.enter.prevent="send"
+        />
+        <div class="composer-bar">
+          <span class="tiny muted meta"> 会话：{{ sessionId }} · 可调用 Skill 与 MCP 工具 </span>
+          <AppButton v-if="streaming" size="sm" @click="abort">停止</AppButton>
+          <span class="send-slot">
+            <AppButton
+              class="send"
+              size="sm"
+              variant="primary"
+              aria-label="发送"
+              title="发送（Ctrl + Enter）"
+              :disabled="streaming || (input.trim() === '' && attachments.length === 0)"
+              @click="send"
+            >
+              <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M8 13V3.6M8 3.6 4.2 7.4M8 3.6l3.8 3.8" />
+              </svg>
+            </AppButton>
+          </span>
+        </div>
       </div>
+
       <AppToast v-if="chatError" tone="error">{{ chatError }}</AppToast>
     </footer>
   </div>
@@ -274,17 +306,58 @@ function formatTime(iso: string): string {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: var(--bg-base);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }
 
+/* ── 标题栏：两行（标题 / 操作），靠分层填充与内容区区分，不加粗边框 ── */
 .head {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: var(--fill-1);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.head-title {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
-  padding: 10px var(--space-3);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-raised);
+  min-width: 0;
+}
+
+.head-name {
+  flex: 0 0 auto;
+  font-weight: var(--weight-semibold);
+}
+
+/* 标题栏只有会话名可被压缩（窄窗时不挤掉状态点与 badge） */
+.head-title .badge,
+.head-title .status-dot {
+  flex: 0 0 auto;
+}
+
+.session {
+  flex: 0 1 auto;
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+
+/* 头部本身是 --fill-1 层：中性 badge 要再亮一层才有底（语义色 badge 保留全局样式） */
+.head .badge:not(.warn):not(.error):not(.ok) {
+  background: var(--fill-2);
 }
 
 .body {
@@ -301,32 +374,49 @@ function formatTime(iso: string): string {
   flex: 0 0 auto;
 }
 
+/* ── 会话列表 ── */
 .history {
-  width: 150px;
-  padding: var(--space-3) var(--space-2);
-  border-right: 1px solid var(--border-subtle);
+  flex: 0 0 auto;
+  width: 152px;
+  padding: var(--space-2);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   overflow-y: auto;
+  background: var(--fill-1);
+  border-right: 1px solid var(--border-subtle);
 }
 
 .history-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 1px;
-  padding: 6px 8px;
+  padding: 6px 8px 6px 12px;
   border-radius: var(--radius-sm);
   text-align: left;
-}
-
-.history-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  /* 会话标题来自首条用户消息，可能是长 URL：允许在任意位置折行，不撑破 152px 侧栏 */
+  overflow-wrap: anywhere;
 }
 
 .history-item.active {
-  background: rgba(86, 132, 255, 0.16);
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+/* 当前项：左侧 3px 品牌色指示条 */
+.history-item.active::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 60%;
+  border-radius: var(--radius-pill);
+  background: var(--aurora-blue);
 }
 
 .thread {
@@ -342,7 +432,7 @@ function formatTime(iso: string): string {
 .thread.dragging {
   outline: 1px dashed var(--aurora-blue);
   outline-offset: -6px;
-  background: rgba(86, 132, 255, 0.06);
+  background: color-mix(in srgb, var(--aurora-blue) 8%, transparent);
 }
 
 .drop-hint {
@@ -351,26 +441,58 @@ function formatTime(iso: string): string {
   color: var(--aurora-blue);
 }
 
+/**
+ * 流式光标：只挂在**最后一条助手消息**正文的末尾。
+ * 用父级 `.streaming` + `::after` 实现，不碰 MessageList 的 props，也不会在每条 delta
+ * 上重放整段进场动画（`.rise-*` 只在插入新消息时生效）。
+ */
+.thread.streaming :deep(.message.r-assistant:last-of-type .md > :last-child)::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  border-radius: 1px;
+  background: var(--aurora-blue);
+  animation: caret 1.1s steps(1, end) infinite;
+}
+
+@keyframes caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  46%,
+  100% {
+    opacity: 0.15;
+  }
+}
+
+/* ── 输入区 ── */
 .composer {
-  border-top: 1px solid var(--border-subtle);
-  padding: var(--space-2) var(--space-3) var(--space-3);
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
   background: var(--bg-raised);
+  border-top: 1px solid var(--border-subtle);
 }
 
 .attachments {
-  gap: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
 }
 
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(86, 132, 255, 0.16);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--aurora-blue) 18%, transparent);
 }
 
 .chip-remove {
@@ -378,24 +500,75 @@ function formatTime(iso: string): string {
   background: transparent;
   color: inherit;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--text-base);
   line-height: 1;
   padding: 0;
 }
 
+.composer-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background: var(--fill-1);
+  transition:
+    border-color var(--transition-base),
+    box-shadow var(--transition-base);
+}
+
+/* 聚焦：边框转品牌色 + 柔和光晕（docs/07 §5 允许的品牌精确值） */
+.composer-box:focus-within {
+  border-color: var(--aurora-blue);
+  box-shadow: 0 0 0 3px rgba(86, 132, 255, 0.18);
+}
+
 .composer textarea {
   width: 100%;
-  min-height: 56px;
+  min-height: 44px;
   max-height: 160px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: rgba(0, 0, 0, 0.28);
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  line-height: var(--leading-normal);
   resize: vertical;
   outline: none;
 }
 
-.composer textarea:focus {
-  border-color: var(--aurora-blue);
+.composer textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.composer-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 发送按钮：渐变圆形（AppButton 的 primary 底色 + 这里的尺寸覆盖） */
+.send-slot :deep(.aurora-button) {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: var(--radius-pill);
+}
+
+.icon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 </style>
