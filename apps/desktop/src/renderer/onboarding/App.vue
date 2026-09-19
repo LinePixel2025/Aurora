@@ -161,8 +161,13 @@ async function finishClassroomGuide(): Promise<void> {
 
 async function complete(): Promise<void> {
   await settingsStore.refreshAppInfo()
-  await window.aurora.window.show('service-dock')
-  await window.aurora.window.show('chat')
+  // 常驻入口是提示条（AI 服务窗已移除）；用户关掉了提示条时直接打开交互窗，避免引导结束后没有落脚处
+  const edgeBarEnabled = settingsStore.settings?.general.edgeBar.enabled ?? true
+  if (edgeBarEnabled) {
+    await window.aurora.window.show('edge-bar')
+  } else {
+    await window.aurora.window.showChat()
+  }
   await window.aurora.window.hide('onboarding')
 }
 

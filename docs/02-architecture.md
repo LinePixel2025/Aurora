@@ -31,17 +31,16 @@
 
 - **主进程（Main）**：唯一入口。承载托盘、窗口管理、配置、文件监听、系统感知与 Agent 内核装配。v1 中 Agent 内核直接运行于主进程（异步 I/O，不阻塞事件循环）；**重任务**（文档内容提取、批量文件分析）走 `utilityProcess` 子进程隔离，避免卡顿。
 - **渲染进程（Renderer）**：每个窗口一个进程（Vue 3）。所有系统能力通过 preload 暴露的 `window.aurora.*` 调用，启用 `contextIsolation` 与 `sandbox`。
-- **单实例**：`app.requestSingleInstanceLock()`；二次启动时聚焦已有实例并唤起 AI 服务窗。
+- **单实例**：`app.requestSingleInstanceLock()`；二次启动时聚焦已有实例并唤起 AI 交互窗口。
 
 ### 2.2 窗口清单
 
 | 窗口 | 创建方 | 数量 | 形态与来源 |
 |---|---|---|---|
-| 托盘 Tray | 主进程 | 1 | 系统托盘图标 + 菜单（显示服务窗 / 打开对话 / 设置 / 切换模式 / 退出） |
-| AI 服务窗 | WindowManager | 1 | 无边框、置顶；收起态 56×56 圆形浮球，点击展开为 320×56 输入条（`window:setDockExpanded`） |
-| 提示条 Edge Bar | WindowManager | 每显示器 1（v1 主屏 1） | 屏幕右缘超薄竖条，悬停 / 点击展开 |
+| 托盘 Tray | 主进程 | 1 | 系统托盘图标 + 菜单（打开对话 / 设置 / 切换模式 / 退出） |
+| 提示条 Edge Bar | WindowManager | 每显示器 1（v1 主屏 1） | 屏幕右缘超薄竖条，悬停展开面板、点击呼出交互窗 |
 | AI 交互窗口 | WindowManager | 1 | 完整对话窗，贴右缘滑出 |
-| 小 AI 交互窗口 | WindowManager | 1 | 轻量对话窗，水平居中于服务窗 |
+| 小 AI 交互窗口 | WindowManager | 1 | 轻量对话窗，锚定提示条左侧（提示条不可用时回落工作区右下角） |
 | 设置窗口 | WindowManager | 1 | 单窗口分栏；无系统标题栏，侧栏品牌区可拖动 + 「✕ 隐藏」按钮（Esc 等效） |
 | 首次引导窗口 | WindowManager | 1 | 向导式 |
 
@@ -99,8 +98,8 @@ aurora/
 │     │  ├─ main/               # 主进程（§3.1 各模块）
 │     │  ├─ preload/            # contextBridge 白名单 API
 │     │  └─ renderer/           # Vue 3 应用
-│     │     ├─ windows/         # 各窗口入口：service-dock / edge-bar /
-│     │     │                   #   chat / mini-chat / settings / onboarding
+│     │     ├─ windows/         # 各窗口入口：edge-bar / chat /
+│     │     │                   #   mini-chat / settings / onboarding
 │     │     └─ shared/          # 渲染层共享组件与样式
 │     ├─ resources/             # 图标、托盘图标、安装器资源
 │     └─ package.json
@@ -122,7 +121,7 @@ aurora/
 ### 5.1 对话流
 
 ```
-服务窗/交互窗输入 → renderer aurora.chat.send → preload → 主进程 AgentHost
+交互窗 / 小窗输入 → renderer aurora.chat.send → preload → 主进程 AgentHost
   → agent-core（会话追加 + 上下文组装）→ LLM 流式 → 事件回推 renderer
       （流式文本 + 工具执行状态：运行中/成功/失败）
 ```
@@ -159,5 +158,5 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
 ## 7. 生命周期与容错
 
 - 主进程异常统一捕获并写日志（`userData/logs/`，按天轮转）；渲染层崩溃不拖垮主进程。
-- 降级策略：LLM 不可用 → 服务窗显示状态提示；分类失败 → 文件移入“待分类”；MCP 连接失败 → 标记状态并跳过，不影响主流程。
+- 降级策略：LLM 不可用 → 提示条 / 交互窗显示状态提示；分类失败 → 文件移入“待分类”；MCP 连接失败 → 标记状态并跳过，不影响主流程。
 - 退出：托盘“退出”为唯一常规出口；所有窗口关闭仅隐藏。

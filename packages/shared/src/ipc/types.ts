@@ -505,8 +505,8 @@ export interface AuroraApi {
     showChat(): Promise<Result<WindowState>>
     showMiniChat(): Promise<Result<WindowState>>
     setPosition(name: WindowName, position: { x: number; y: number }): Promise<Result<WindowState>>
-    /** 服务窗收起态（圆形浮球）/ 展开态（输入条）切换（docs/07 §2.1） */
-    setDockExpanded(expanded: boolean): Promise<Result<WindowState>>
+    /** 提示条收起态（8px 竖条）/ 展开态（面板）切换（docs/07 §2.2） */
+    setEdgeBarExpanded(expanded: boolean): Promise<Result<WindowState>>
     getState(): Promise<Result<WindowState>>
     onStateChanged(listener: (state: WindowState) => void): () => void
   }

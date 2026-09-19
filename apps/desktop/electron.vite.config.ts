@@ -6,7 +6,6 @@ const r = (...p: string[]): string => resolve(__dirname, ...p)
 
 /** Renderer window entries — one HTML per window (docs/02 §2.2, docs/07 §2). */
 const windowEntries = {
-  'service-dock': r('src/renderer/service-dock/index.html'),
   'edge-bar': r('src/renderer/edge-bar/index.html'),
   chat: r('src/renderer/chat/index.html'),
   'mini-chat': r('src/renderer/mini-chat/index.html'),

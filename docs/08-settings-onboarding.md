@@ -2,16 +2,18 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v3）
+## 1. 配置 Schema（config.json，v4）
 
 ```jsonc
 {
-  "version": 3,
+  "version": 4,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
     "hotkey": "Alt+Space",
-    "edgeBar": { "enabled": true, "opacity": 0.9, "quietHours": null }
+    "edgeBar": { "enabled": true, "opacity": 0.9, "quietHours": null },
+    // 各窗口位置 / 尺寸记忆，key 集合见 WINDOW_NAMES（edge-bar / chat / mini-chat / settings / onboarding）
+    "windowState": {}
   },
   "llm": {
     "active": "deepseek",
@@ -66,6 +68,9 @@
 ```
 
 - 字段说明：`llm.providers` 支持多组模型配置，`llm.active` 指定默认；`modes.classroom.subjects` 即科目 → 文件夹映射（见 05 §3）；`schedule.provider` 为 `manual | classisland`（见 05 §3.4）。
+- `general.windowState` 的 key 集合即 `WINDOW_NAMES`：`edge-bar` / `chat` / `mini-chat` / `settings` / `onboarding`
+  （v4 起移除 `service-dock`，该窗口已删除）。
+- `general.language` 是**未生效的死字段**（无 i18n 消费方，见 §5 语言项），保留仅为避免再动一次配置版本。
 - `mcp.lazyConnect`：连接策略（见 06 §7）。`false`（默认）= 启动即连；`true` = 首次使用某个 MCP 工具时才连接。
 - MCP 环境变量的**变量名**由 `envEnc` 的键表达，设置页据此展示"已配置的变量名"，
   因此 Schema 不额外维护一份 `env` 列表（避免两处数据不一致）。
@@ -104,11 +109,12 @@
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 3`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 4`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
-  `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）。
-  三条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
+  `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
+  `v3 → v4`（移除 `general.windowState['service-dock']`，AI 悬浮窗已删除）。
+  四条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -120,7 +126,7 @@
         → “测试连接”（展示延迟；可选拉取模型列表）
   → 模式选择（ClassRoom 推荐）
   → 模式引导（若选 ClassRoom）：感知文件夹 + 科目列表 → 完成（见 05 §2）
-  → 完成页 → 进入托盘常驻，显示 AI 服务窗
+  → 完成页 → 进入托盘常驻，显示提示条
 ```
 
 - **规则**：AI 模型配置未完成不允许进入主界面（需求：第一次安装要求用户填写）；测试连接失败允许先保存，但持续提示未通过。
@@ -142,6 +148,9 @@
 
 ## 6. 其他设置页
 
+- **常规**（`general.*`）：开机自启、全局快捷键、提示条（显示 / 透明度 / 独立勿扰时段）均已生效；
+  `general.language` 是**未生效的死字段** —— Schema 里保留（避免再动一次配置版本），但**没有 i18n 消费方**，
+  改它不会改变界面语言（见 §1 字段说明）。
 - **Skill 管理**：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。
   - 实现状态（v0.6.0）：`skills.userDir` **真正生效**（此前运行时硬编码 `userData/skills`，
     配置项是死字段）。空串回落 `userData/skills`；填自定义目录后保存会**按新目录重扫**。

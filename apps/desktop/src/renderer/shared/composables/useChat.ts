@@ -2,8 +2,8 @@
  * 对话状态（P3：真实内核 + 会话水合）。
  *
  * 与主进程的契约：`chat:send` → `chat:event` 流式事件 + `chat:history` 水合。
- * 事件按 `sessionId` **与** `requestId` 双重过滤：快速会话由服务窗与迷你窗
- * 共享（docs/06 §4），只按 requestId 过滤会串窗。
+ * 事件按 `sessionId` **与** `requestId` 双重过滤：不同窗口可能解析到同一个会话
+ * （docs/06 §4），只按 requestId 过滤会串窗。
  *
  * 多轮工具调用会产生多条助手消息，事件里的 `messageId` 就是会话存储中的消息 id，
  * 渲染层据此认领（首轮之前还不知道 id）。
@@ -33,9 +33,9 @@ export interface ChatMessage {
   attachments?: string[]
 }
 
-/** 每个窗口的**默认**会话：服务窗与迷你窗共享"快速会话"（docs/06 §4） */
+/** 每个窗口的**默认**会话：迷你窗使用"快速会话"（docs/06 §4） */
 export function sessionIdFor(windowName: WindowName): string {
-  if (windowName === 'service-dock' || windowName === 'mini-chat') return 'quick'
+  if (windowName === 'mini-chat') return 'quick'
   if (windowName === 'chat') return 'main'
   return 'settings'
 }
@@ -45,8 +45,8 @@ export function useChat(windowName: WindowName) {
   /**
    * 当前会话 id（可切换）。
    *
-   * 事件按 `sessionId` **与** `requestId` 双重过滤：快速会话由服务窗与迷你窗
-   * 共享（docs/06 §4），只按 requestId 过滤会串窗；切换会话后旧会话的流式事件
+   * 事件按 `sessionId` **与** `requestId` 双重过滤：不同窗口可能解析到同一个会话
+   * （docs/06 §4），只按 requestId 过滤会串窗；切换会话后旧会话的流式事件
    * 也必须被丢弃，否则历史会串到新会话气泡里。
    */
   const sessionId = ref(defaultSessionId)

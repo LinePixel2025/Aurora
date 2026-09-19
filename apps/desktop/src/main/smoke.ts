@@ -124,7 +124,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     // 2. 配置读写（IPC 层）
     const settings = expectOk('settings.get', await window.aurora.settings.get())
     if (settings) {
-      record('settings.get.version', settings.version === 3, String(settings.version))
+      record('settings.get.version', settings.version === 4, String(settings.version))
       // 自测前置把科目裁剪为「数学 / 物理 / 语文」，断言随之对齐（不再是九科模板）
       record('settings.get 科目列表已就绪', settings.modes.classroom.subjects.length === 3, String(settings.modes.classroom.subjects.length))
       record('settings.get 不回传密文', settings.llm.providers === undefined || Object.values(settings.llm.providers).every((p) => p.apiKeyEnc === ''), 'apiKeyEnc 已清空')
@@ -282,30 +282,23 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
 
     // 8. 窗口状态机（含迷你窗/交互窗互斥）
     const win = window.aurora.window
-    expectOk('window.show(service-dock)', await win.show('service-dock'))
-
-    // 8.1 服务窗两态折叠（docs/07 §2.1）：展开 / 收起只改尺寸，不应改变可见性
-    const collapsed = expectOk('window.setDockExpanded(false)', await win.setDockExpanded(false))
-    record('服务窗收起态仍可见', collapsed?.visible['service-dock'] === true, JSON.stringify(collapsed))
-    const expandedDock = expectOk('window.setDockExpanded(true)', await win.setDockExpanded(true))
-    record('服务窗展开态仍可见', expandedDock?.visible['service-dock'] === true, JSON.stringify(expandedDock))
-    expectOk('window.setDockExpanded#reset', await win.setDockExpanded(false))
     expectOk('window.show(edge-bar)', await win.show('edge-bar'))
     expectOk('window.showMiniChat', await win.showMiniChat())
     const withMini = expectOk('window.getState', await win.getState())
     record('迷你窗可见且 primary=mini-chat', withMini?.visible['mini-chat'] === true && withMini?.primary === 'mini-chat', JSON.stringify(withMini))
     expectOk('window.showChat', await win.showChat())
     const withChat = expectOk('window.getState#2', await win.getState())
+    // 互斥断言同时回归 show() 的真实显隐同步：旧窗口必须真的从桌面上消失
     record('交互窗与迷你窗互斥', withChat?.visible['chat'] === true && withChat?.visible['mini-chat'] === false, JSON.stringify(withChat))
-    expectOk('window.hide(service-dock)', await win.hide('service-dock'))
+    expectOk('window.hide(chat)', await win.hide('chat'))
     const hidden = expectOk('window.getState#3', await win.getState())
-    record('隐藏服务窗后迷你窗也隐藏', hidden?.visible['chat'] === true, JSON.stringify(hidden))
+    record('隐藏交互窗后无主窗口且提示条仍在', hidden?.visible['chat'] === false && hidden?.primary === null && hidden?.visible['edge-bar'] === true, JSON.stringify(hidden))
 
     // 9. 真实对话链路（chat:send → 工具循环 → chat:event 流式 → chat:history）
     //    quick 会话由主进程在自测前清空，因此这里的条数断言是确定的。
     const events = []
     const off = window.aurora.chat.onEvent((event) => events.push(event))
-    const sent = expectOk('chat.send', await window.aurora.chat.send({ sessionId: 'quick', text: '/system-status 我电脑现在什么状态', origin: 'service-dock' }))
+    const sent = expectOk('chat.send', await window.aurora.chat.send({ sessionId: 'quick', text: '/system-status 我电脑现在什么状态', origin: 'edge-bar' }))
     if (sent) {
       for (let i = 0; i < 200 && !events.some((e) => e.type === 'done' || e.type === 'error'); i += 1) await wait(50)
     }
@@ -328,7 +321,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     // 9.1 第二轮对话：证明上下文可续接（tool 结果留在会话里）
     const secondEvents = []
     const off2 = window.aurora.chat.onEvent((event) => secondEvents.push(event))
-    const sent2 = expectOk('chat.send#2', await window.aurora.chat.send({ sessionId: 'quick', text: '再说一句', origin: 'service-dock' }))
+    const sent2 = expectOk('chat.send#2', await window.aurora.chat.send({ sessionId: 'quick', text: '再说一句', origin: 'edge-bar' }))
     if (sent2) {
       for (let i = 0; i < 200 && !secondEvents.some((e) => e.type === 'done' || e.type === 'error'); i += 1) await wait(50)
     }

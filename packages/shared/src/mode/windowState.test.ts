@@ -16,12 +16,12 @@ describe('窗口可见性状态机（docs/07 §3）', () => {
     expect(state.primary).toBeNull()
   })
 
-  it('显示服务窗与提示条互不影响', () => {
+  it('显示提示条与设置窗互不影响', () => {
     let state = createInitialWindowState()
-    state = showWindow(state, 'service-dock')
     state = showWindow(state, 'edge-bar')
-    expect(isVisible(state, 'service-dock')).toBe(true)
+    state = showWindow(state, 'settings')
     expect(isVisible(state, 'edge-bar')).toBe(true)
+    expect(isVisible(state, 'settings')).toBe(true)
   })
 
   it('迷你窗与交互窗互斥：后显示者胜出', () => {
@@ -34,22 +34,13 @@ describe('窗口可见性状态机（docs/07 §3）', () => {
     expect(state.primary).toBe('chat')
   })
 
-  it('隐藏服务窗时迷你窗一并隐藏', () => {
+  it('隐藏主对话窗口后 primary 归零，其它窗口不受影响', () => {
     let state = createInitialWindowState()
-    state = showWindow(state, 'service-dock')
-    state = showWindow(state, 'mini-chat')
-    state = hideWindow(state, 'service-dock')
-    expect(isVisible(state, 'service-dock')).toBe(false)
-    expect(isVisible(state, 'mini-chat')).toBe(false)
-    expect(state.primary).toBeNull()
-  })
-
-  it('隐藏交互窗不影响服务窗', () => {
-    let state = createInitialWindowState()
-    state = showWindow(state, 'service-dock')
+    state = showWindow(state, 'edge-bar')
     state = showWindow(state, 'chat')
     state = hideWindow(state, 'chat')
-    expect(isVisible(state, 'service-dock')).toBe(true)
+    expect(isVisible(state, 'edge-bar')).toBe(true)
+    expect(isVisible(state, 'chat')).toBe(false)
     expect(state.primary).toBeNull()
   })
 

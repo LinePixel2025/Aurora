@@ -150,14 +150,14 @@ let disposeIpc: (() => void) | undefined
 /** MCP 状态订阅（IPC 层与主进程内部共用，避免为状态再引入一次事件总线） */
 const mcpStatusListeners = new Set<(statuses: McpServerStatus[]) => void>()
 
-/** 单实例：二次启动聚焦并唤起服务窗（docs/02 §2.1） */
+/** 单实例：二次启动聚焦并唤起交互窗（docs/02 §2.1） */
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    windows?.show('service-dock')
-    windows?.focus('service-dock')
+    windows?.showChat()
+    windows?.focus('chat')
   })
 
   app.setAppUserModelId('com.aurora.desktop')
@@ -535,10 +535,10 @@ async function bootstrap(): Promise<void> {
       unregister: (accelerator) => globalShortcut.unregister(accelerator),
       unregisterAll: () => globalShortcut.unregisterAll(),
     },
-    // 切换服务窗显隐：与托盘左键同一动作，用户习惯一致
+    // 切换交互窗显隐：与托盘左键同一动作，用户习惯一致
     onTrigger: () => {
-      logger?.debug('全局快捷键触发：切换服务窗')
-      windows?.toggle('service-dock')
+      logger?.debug('全局快捷键触发：切换交互窗')
+      windows?.toggle('chat')
     },
     logger: logger.child('hotkey'),
   })
@@ -697,7 +697,7 @@ async function bootstrap(): Promise<void> {
     logger.info('未配置 AI 模型，进入首次引导')
     windows.show('onboarding')
   } else {
-    windows.show('service-dock')
+    // 常驻入口收敛为提示条 + 托盘：提示条按配置显示，交互窗由用户按需呼出
     if (settings.get().general.edgeBar.enabled) windows.show('edge-bar')
     modes.requestGuideIfNeeded(settings.get().modes.current, 'startup')
   }

@@ -3,7 +3,6 @@
  *
  * 规则（docs/07 §3）：
  * - 迷你窗与交互窗同屏互斥（同一会话同一时间只在一个窗口）；
- * - 隐藏服务窗时迷你窗一并隐藏；
  * - 关闭 = 隐藏，托盘是唯一真实出口（docs/02 §2.2）。
  */
 import type { PrimaryWindow, WindowName, WindowState } from '../ipc/types.js'
@@ -36,12 +35,7 @@ export function showWindow(state: WindowState, name: WindowName): WindowState {
 }
 
 export function hideWindow(state: WindowState, name: WindowName): WindowState {
-  const next = withVisible(state, name, false)
-  if (name === 'service-dock') {
-    // 服务窗隐藏 → 迷你窗一并隐藏（docs/07 §3）
-    return { visible: { ...next.visible, 'mini-chat': false }, primary: null }
-  }
-  return next
+  return withVisible(state, name, false)
 }
 
 export function toggleWindow(state: WindowState, name: WindowName): WindowState {

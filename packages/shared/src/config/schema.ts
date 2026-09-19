@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 3 as const
+export const CONFIG_VERSION = 4 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -17,14 +17,7 @@ export const MODE_IDS = ['classroom', 'work', 'code'] as const
 export type ModeId = (typeof MODE_IDS)[number]
 export const ModeIdSchema = z.enum(MODE_IDS)
 
-export const WINDOW_NAMES = [
-  'service-dock',
-  'edge-bar',
-  'chat',
-  'mini-chat',
-  'settings',
-  'onboarding',
-] as const
+export const WINDOW_NAMES = ['edge-bar', 'chat', 'mini-chat', 'settings', 'onboarding'] as const
 export type WindowName = (typeof WINDOW_NAMES)[number]
 export const WindowNameSchema = z.enum(WINDOW_NAMES)
 

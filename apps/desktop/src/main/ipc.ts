@@ -290,8 +290,8 @@ export function registerIpc(deps: DesktopDeps): () => void {
     (name: WindowName, position: { x: number; y: number }) =>
       withState(() => deps.windows.setPosition(name, position)),
   )
-  handle<WindowState>(IPC.window.setDockExpanded, (expanded: boolean) =>
-    withState(() => deps.windows.setDockExpanded(expanded)),
+  handle<WindowState>(IPC.window.setEdgeBarExpanded, (expanded: boolean) =>
+    withState(() => deps.windows.setEdgeBarExpanded(expanded)),
   )
 
   // ───────────────────────── perception / chat ─────────────────────────

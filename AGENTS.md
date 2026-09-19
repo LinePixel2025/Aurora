@@ -4,7 +4,7 @@
 
 ## 项目是什么
 
-**Aurora** —— 把 Windows 接入 AI 生态的**系统级 Agent 工具**：常驻托盘，以「AI 服务窗 + 右侧提示条」提供无感 AI 服务。Electron + Vue 3 + TypeScript，pnpm workspace monorepo，所有文档与注释以中文为主。
+**Aurora** —— 把 Windows 接入 AI 生态的**系统级 Agent 工具**：常驻托盘，以「右侧提示条」提供无感 AI 服务。Electron + Vue 3 + TypeScript，pnpm workspace monorepo，所有文档与注释以中文为主。
 
 ## 目录与职责
 
@@ -13,7 +13,7 @@ apps/desktop/
   src/main/          Electron 主进程：托盘、窗口管理、配置、文件监听、分类管线、
                      系统感知、主动引导、Agent 装配、IPC 注册
   src/preload/       沙箱化 contextBridge 白名单（自包含，见下）
-  src/renderer/      六个窗口入口：service-dock / edge-bar / chat / mini-chat /
+  src/renderer/      五个窗口入口：edge-bar / chat / mini-chat /
                      settings / onboarding + shared/ 共享组件
 packages/shared/     配置 Schema、SettingsStore、IPC 契约、模式/窗口类型
 packages/agent-core/ Agent 内核：LLM / 会话 / 工具循环 / Skill / MCP / Prompt 组装
@@ -87,6 +87,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - 全局快捷键默认 `Alt+Space` **在 Windows 上常被系统占用**（它是系统窗口菜单键）。
   注册失败是预期路径：`main/hotkey.ts` 会把真实原因回传设置页，用户改绑即可 —— 不要"修"成静默成功。
 - 提示条的 `可穿透性`（`setIgnoreMouseEvents`）尚未接入；`general.language` 仍是死字段（无 i18n）。
+- **AI 悬浮窗（service-dock）已于本轮移除**，常驻入口为提示条 + 托盘；配置迁移到 v4
+  （`v3 → v4` 删除 `general.windowState['service-dock']`）。提示条的悬停展开面板与点击呼出交互窗见 docs/07 §2.2。
 - MCP HTTP 传输暂不支持自定义鉴权头（凭据仅经 stdio `env` 注入）。
 - Skill 的 `scripts/` 永不自动执行（只注入指令正文）；图片 OCR 未启用（只取文件名与尺寸）。
 - Work / Code Mode 为占位实现；多语言、ARM64 / 便携版、macOS / Linux 未开始。

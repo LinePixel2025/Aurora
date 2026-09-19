@@ -6,9 +6,9 @@ export function currentWindowName(): WindowName {
   // prod: /out/renderer/<window>/index.html ；dev: /<window>/index.html
   const index = segments.lastIndexOf('index.html')
   const candidate = index > 0 ? segments[index - 1] : segments[segments.length - 1]
-  return (candidate ?? 'service-dock') as WindowName
+  return (candidate ?? 'chat') as WindowName
 }
 
 export function isTransparentWindow(name: WindowName): boolean {
-  return name === 'service-dock' || name === 'edge-bar'
+  return name === 'edge-bar'
 }

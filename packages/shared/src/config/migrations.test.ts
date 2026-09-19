@@ -69,8 +69,8 @@ describe('配置迁移链', () => {
         modes: { current: 'classroom', classroom: { watchDir: 'D:\\感知', subjects: [] } },
       })
       expect(outcome.fromVersion).toBe(1)
-      // v1 → v2 → v3：链式执行，两版迁移都会跑
-      expect(outcome.applied).toHaveLength(2)
+      // v1 → v2 → v3 → v4：链式执行，三版迁移都会跑
+      expect(outcome.applied).toHaveLength(3)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
@@ -130,7 +130,8 @@ describe('配置迁移链', () => {
         modes: { classroom: { schedule: { provider: 'manual', lessons: [lesson] } } },
       })
       expect(outcome.fromVersion).toBe(2)
-      expect(outcome.applied).toHaveLength(1)
+      // v2 → v3 → v4：链式执行
+      expect(outcome.applied).toHaveLength(2)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
         string,
@@ -169,7 +170,53 @@ describe('配置迁移链', () => {
     it('缺少 modes 分组时不抛错', () => {
       const outcome = migrate({ version: 2 })
       expect(outcome.warnings).toEqual([])
-      expect(outcome.data['version']).toBe(3)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+  })
+
+  describe('v3 → v4（移除 AI 悬浮窗 service-dock）', () => {
+    const CHAT_GEOMETRY = { x: 1480, y: 200, width: 420, height: 640 }
+    const DOCK_GEOMETRY = { x: 900, y: 960, width: 56, height: 56 }
+    const loadWindowState = (raw: Record<string, unknown>): Record<string, unknown> => {
+      const general = raw['general'] as Record<string, unknown>
+      return general['windowState'] as Record<string, unknown>
+    }
+
+    it('删掉 service-dock 键，保留其它窗口几何原样', () => {
+      const outcome = migrate({
+        version: 3,
+        general: {
+          language: 'zh-CN',
+          windowState: { 'service-dock': DOCK_GEOMETRY, chat: CHAT_GEOMETRY },
+        },
+      })
+      expect(outcome.fromVersion).toBe(3)
+      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.data['version']).toBe(4)
+
+      const windowState = loadWindowState(outcome.data)
+      expect(windowState['service-dock']).toBeUndefined()
+      expect(windowState['chat']).toEqual(CHAT_GEOMETRY)
+      expect(Object.keys(windowState)).toEqual(['chat'])
+      // 其它 general 字段不受影响
+      expect((outcome.data['general'] as Record<string, unknown>)['language']).toBe('zh-CN')
+    })
+
+    it('重复执行结果一致（幂等）', () => {
+      const once = migrate({
+        version: 3,
+        general: { windowState: { 'service-dock': DOCK_GEOMETRY, chat: CHAT_GEOMETRY } },
+      })
+      const twice = migrate({ ...once.data, version: 3 })
+      expect(loadWindowState(twice.data)).toEqual(loadWindowState(once.data))
+      expect(loadWindowState(twice.data)['chat']).toEqual(CHAT_GEOMETRY)
+    })
+
+    it('缺少 general / windowState 分组时不抛错', () => {
+      const outcome = migrate({ version: 3 })
+      expect(outcome.warnings).toEqual([])
+      expect(outcome.data['version']).toBe(4)
+      expect(loadWindowState(outcome.data)).toEqual({})
     })
   })
 })

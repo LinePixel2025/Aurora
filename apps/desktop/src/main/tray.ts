@@ -70,15 +70,6 @@ export function createTray(deps: DesktopDeps, iconPath: string): TrayController 
     const needsModel = deps.settings.needsOnboarding()
 
     const template: MenuItemConstructorOptions[] = [
-      {
-        label: deps.windows.getState().visible['service-dock']
-          ? '隐藏 AI 服务窗'
-          : '显示 AI 服务窗',
-        click: () => {
-          deps.windows.toggle('service-dock')
-          refresh()
-        },
-      },
       { label: '打开对话窗口', click: () => deps.windows.showChat() },
       { type: 'separator' },
       {
@@ -145,7 +136,7 @@ export function createTray(deps: DesktopDeps, iconPath: string): TrayController 
   }
 
   tray.on('click', () => {
-    deps.windows.toggle('service-dock')
+    deps.windows.toggle('chat')
     refresh()
   })
 

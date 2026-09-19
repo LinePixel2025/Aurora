@@ -113,7 +113,28 @@ const migrateV2ToV3: Migration = {
   },
 }
 
-export const MIGRATIONS: Migration[] = [migrateV0ToV1, migrateV1ToV2, migrateV2ToV3]
+/**
+ * v3 → v4：AI 悬浮窗（`service-dock`）已删除，清掉它的窗口几何记录。
+ *
+ * 只删该 key，**不动**其它字段与其它窗口的几何（幂等）。
+ */
+const migrateV3ToV4: Migration = {
+  from: 3,
+  to: 4,
+  describe: "v3 → v4：移除 general.windowState['service-dock']（AI 悬浮窗已删除）",
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const general = { ...(asRecord(raw['general']) ?? {}) }
+    const windowState = { ...(asRecord(general['windowState']) ?? {}) }
+    delete windowState['service-dock']
+    general['windowState'] = windowState
+    next['general'] = general
+    next['version'] = 4
+    return next
+  },
+}
+
+export const MIGRATIONS: Migration[] = [migrateV0ToV1, migrateV1ToV2, migrateV2ToV3, migrateV3ToV4]
 
 export interface MigrationOutcome {
   data: Record<string, unknown>

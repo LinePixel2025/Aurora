@@ -3,12 +3,13 @@
  *
  * 约定：
  * - 业务窗口不显示在任务栏；关闭按钮 = 隐藏，仅托盘「退出」真正退出；
- * - 迷你窗与交互窗同屏互斥；隐藏服务窗时迷你窗一并隐藏（shared/windowState 负责状态机）；
- * - 位置 / 尺寸写入 `general.windowState`，跨启动保留；服务窗例外，只记位置（docs/07 §2.1）。
+ * - 迷你窗与交互窗同屏互斥（shared/windowState 负责状态机，这里同步真实窗口）；
+ * - 位置 / 尺寸写入 `general.windowState`，跨启动保留。
  */
 import { join } from 'node:path'
 import { BrowserWindow, screen } from 'electron'
 import {
+  WINDOW_NAMES,
   createInitialWindowState,
   hideWindow as hideInState,
   showWindow as showInState,
@@ -18,7 +19,6 @@ import {
   type WindowName,
   type WindowState,
 } from '@aurora/shared'
-import { dockAnchorRect, resizeDockKeepingAnchor, restoreDockBounds } from './dock-geometry.js'
 
 export interface WindowManagerOptions {
   settings: SettingsStore
@@ -39,28 +39,10 @@ interface WindowSpec {
   skipTaskbar: boolean
   focusable: boolean
   /** 单例窗口默认位置计算 */
-  place: 'dock' | 'edge' | 'chat' | 'anchor-dock' | 'center'
-}
-
-/**
- * 服务窗两态尺寸（docs/07 §2.1）：常态为 56×56 圆形浮球，点击后展开为 320×56 输入条。
- * 尺寸由折叠态决定，**不随窗口几何持久化来回切换**（否则收起态会继承上一次输入条的宽高）。
- */
-const DOCK_SIZES: Record<'collapsed' | 'expanded', { width: number; height: number }> = {
-  collapsed: { width: 56, height: 56 },
-  expanded: { width: 320, height: 56 },
+  place: 'edge' | 'chat' | 'anchor-dock' | 'center'
 }
 
 const SPECS: Record<WindowName, WindowSpec> = {
-  'service-dock': {
-    ...DOCK_SIZES.collapsed,
-    resizable: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    focusable: true,
-    place: 'dock',
-  },
   'edge-bar': {
     width: 8,
     height: 200,
@@ -118,8 +100,6 @@ export class WindowManager {
   private state: WindowState = createInitialWindowState()
   private readonly listeners = new Set<(state: WindowState) => void>()
   private readonly options: WindowManagerOptions
-  /** 服务窗是否处于展开（输入条）态；默认收起为圆形浮球（docs/07 §2.1） */
-  private dockExpanded = false
 
   constructor(options: WindowManagerOptions) {
     this.options = options
@@ -165,7 +145,7 @@ export class WindowManager {
       minimizable: false,
       maximizable: false,
       fullscreenable: false,
-      backgroundColor: name === 'service-dock' || name === 'edge-bar' ? '#00000000' : '#12141a',
+      backgroundColor: name === 'edge-bar' ? '#00000000' : '#12141a',
       title: titleFor(name),
       webPreferences: {
         preload: this.options.preloadPath,
@@ -246,11 +226,17 @@ export class WindowManager {
   private quitting = false
 
   show(name: WindowName): WindowState {
-    // 服务窗每次重新显示都回到收起态（圆球），避免上次的输入条形态残留（docs/07 §2.1）。
-    // 先于 applyVisibility 同步尺寸，避免「先显示大窗再缩回」的闪烁。
-    if (name === 'service-dock') this.resizeDock(false)
+    const before = this.state
+    const next = showInState(this.state, name)
+    this.state = next
+    // 状态机把另一个主对话窗口置为不可见时，**真实窗口必须同步隐藏**，
+    // 否则旧窗口会继续盖在新窗口上（hide() 一直有这一步，show() 此前漏了）。
+    for (const other of WINDOW_NAMES) {
+      if (before.visible[other] === true && next.visible[other] !== true) {
+        this.applyVisibility(other, false)
+      }
+    }
     const win = this.ensure(name)
-    this.state = showInState(this.state, name)
     this.applyVisibility(name, true, win)
     this.emit()
     return this.getState()
@@ -259,8 +245,6 @@ export class WindowManager {
   hide(name: WindowName): WindowState {
     const before = this.state
     this.state = hideInState(this.state, name)
-    // 服务窗隐藏时迷你窗一并隐藏（状态机已处理），这里同步真实窗口
-    if (name === 'service-dock') this.applyVisibility('mini-chat', false)
     this.applyVisibility(name, false)
     if (before.primary !== this.state.primary && this.state.primary === null) {
       this.applyVisibility('chat', false)
@@ -287,20 +271,18 @@ export class WindowManager {
   }
 
   showMiniChat(): WindowState {
-    const dock = this.ensure('service-dock')
     const win = this.ensure('mini-chat')
-    if (!win.isVisible()) this.anchorToDock(win, dock)
+    if (!win.isVisible()) this.anchorToEdgeBar(win, this.windows.get('edge-bar'))
     return this.show('mini-chat')
   }
 
   /**
-   * 服务窗收起态（圆形浮球）/ 展开态（输入条）切换（docs/07 §2.1）。
+   * 提示条收起态（8px 竖条）/ 展开态（面板）切换（docs/07 §2.2）。
    *
-   * 只改尺寸与位置，**不动可见性、不广播状态变化**（可见性没变，广播只会制造无意义的渲染层更新）。
-   * 展开 / 收起保持浮球水平中心不变、底边不变。窗口处于收起态时调用无副作用。
+   * 契约已打通（渲染层 → preload → ipc → 此处）；真实的两态尺寸与右缘固定逻辑
+   * 在后续步骤实现，当前只回传状态。
    */
-  setDockExpanded(expanded: boolean): WindowState {
-    this.resizeDock(expanded)
+  setEdgeBarExpanded(_expanded: boolean): WindowState {
     return this.getState()
   }
 
@@ -357,7 +339,7 @@ export class WindowManager {
       return
     }
     if (visible) {
-      if (name === 'edge-bar' || name === 'service-dock') win.showInactive()
+      if (name === 'edge-bar') win.showInactive()
       else win.show()
     } else {
       win.hide()
@@ -373,13 +355,6 @@ export class WindowManager {
     const { width, height } = spec
 
     switch (spec.place) {
-      case 'dock':
-        return {
-          x: Math.round(area.x + (area.width - width) / 2),
-          y: Math.round(area.y + area.height - height - 24),
-          width,
-          height,
-        }
       case 'edge':
         return {
           x: Math.round(area.x + area.width - width),
@@ -395,15 +370,18 @@ export class WindowManager {
           height,
         }
       case 'anchor-dock': {
-        // 迷你窗水平居中于服务窗，垂直留 12px 间隙（docs/07 §2.4）
-        const dock = this.windows.get('service-dock')
-        const dockBounds = dock?.getBounds()
-        const anchorCenterX =
-          dockBounds !== undefined ? dockBounds.x + dockBounds.width / 2 : area.x + area.width / 2
-        const anchorY = dockBounds?.y ?? area.y + area.height - 24
+        // 迷你窗左缘贴提示条左缘，垂直中心与提示条一致；提示条未创建时回落工作区右下角（docs/07 §2.4）
+        const edgeBounds = this.existingWindow('edge-bar')?.getBounds()
+        if (edgeBounds === undefined) return this.bottomRightBounds(width, height)
         return {
-          x: Math.round(clamp(anchorCenterX - width / 2, area.x, area.x + area.width - width)),
-          y: Math.round(clamp(anchorY - height - 12, area.y, area.y + area.height - height)),
+          x: Math.round(clamp(edgeBounds.x, area.x, area.x + area.width - width)),
+          y: Math.round(
+            clamp(
+              edgeBounds.y + (edgeBounds.height - height) / 2,
+              area.y,
+              area.y + area.height - height,
+            ),
+          ),
           width,
           height,
         }
@@ -418,38 +396,56 @@ export class WindowManager {
     }
   }
 
-  private anchorToDock(win: BrowserWindow, dock: BrowserWindow): void {
+  /** 提示条窗口不存在时的回落位置：工作区右下角（留 12px 边距）。 */
+  private bottomRightBounds(
+    width: number,
+    height: number,
+  ): {
+    x: number
+    y: number
+    width: number
+    height: number
+  } {
     const area = screen.getPrimaryDisplay().workArea
-    const dockBounds = dock.getBounds()
+    return {
+      x: Math.round(area.x + area.width - width - 12),
+      y: Math.round(area.y + area.height - height - 12),
+      width,
+      height,
+    }
+  }
+
+  /** 取已创建且未销毁的窗口（不创建：锚定只认现有提示条，没建就回落）。 */
+  private existingWindow(name: WindowName): BrowserWindow | undefined {
+    const win = this.windows.get(name)
+    return win !== undefined && !win.isDestroyed() ? win : undefined
+  }
+
+  private anchorToEdgeBar(win: BrowserWindow, edge: BrowserWindow | undefined): void {
+    const area = screen.getPrimaryDisplay().workArea
     const { width, height } = win.getBounds()
-    const centerX = dockBounds.x + dockBounds.width / 2
+    const edgeBounds = edge !== undefined && !edge.isDestroyed() ? edge.getBounds() : undefined
+    if (edgeBounds === undefined) {
+      const fallback = this.bottomRightBounds(width, height)
+      win.setPosition(fallback.x, fallback.y)
+      return
+    }
     win.setPosition(
-      Math.round(clamp(centerX - width / 2, area.x, area.x + area.width - width)),
-      Math.round(clamp(dockBounds.y - height - 12, area.y, area.y + area.height - height)),
+      Math.round(clamp(edgeBounds.x, area.x, area.x + area.width - width)),
+      Math.round(
+        clamp(
+          edgeBounds.y + (edgeBounds.height - height) / 2,
+          area.y,
+          area.y + area.height - height,
+        ),
+      ),
     )
   }
 
-  /** 窗口当前应采用的尺寸：服务窗按折叠态，其余取 SPECS 固定尺寸。 */
+  /** 窗口当前应采用的尺寸：取 SPECS 固定尺寸。 */
   private sizeFor(name: WindowName): { width: number; height: number } {
-    if (name === 'service-dock') {
-      return DOCK_SIZES[this.dockExpanded ? 'expanded' : 'collapsed']
-    }
     const spec = SPECS[name]
     return { width: spec.width, height: spec.height }
-  }
-
-  /**
-   * 把服务窗切到指定折叠态：保持水平中心与底边不变、clamp 进工作区。
-   * 窗口尚未创建时只更新标记（没有窗口就没有尺寸可改），下次 show 会按标记建窗。
-   */
-  private resizeDock(expanded: boolean): void {
-    this.dockExpanded = expanded
-    const win = this.windows.get('service-dock')
-    if (!win || win.isDestroyed()) return
-    const size = DOCK_SIZES[expanded ? 'expanded' : 'collapsed']
-    const next = resizeDockKeepingAnchor(win.getBounds(), size, screen.getPrimaryDisplay().workArea)
-    win.setBounds(next)
-    this.persistGeometry('service-dock', win)
   }
 
   private readGeometry(
@@ -464,11 +460,6 @@ export class WindowManager {
     if (x === undefined || y === undefined || width === undefined || height === undefined)
       return undefined
     const area = screen.getPrimaryDisplay().workArea
-    if (name === 'service-dock') {
-      // 服务窗只恢复位置：尺寸由折叠态决定。若沿用持久化尺寸，收起态会继承上次
-      // 输入条的宽高（320×56 的球），圆球形态就被破坏（docs/07 §2.1）。
-      return restoreDockBounds({ x, y }, this.sizeFor(name), area)
-    }
     return {
       x: clamp(x, area.x - width + 40, area.x + area.width - 40),
       y: clamp(y, area.y, area.y + area.height - 40),
@@ -478,12 +469,7 @@ export class WindowManager {
   }
 
   private persistGeometry(name: WindowName, win: BrowserWindow): void {
-    // 服务窗存「收起态锚点」而非当前左上角：窗口可能在展开态退出，
-    // 直接存会把输入条的左边缘当成下次圆球的定位基准（docs/07 §2.1）。
-    const bounds =
-      name === 'service-dock'
-        ? dockAnchorRect(win.getBounds(), DOCK_SIZES.collapsed)
-        : win.getBounds()
+    const bounds = win.getBounds()
     this.options.settings.mutate((draft) => {
       draft.general.windowState[name] = {
         x: bounds.x,
@@ -516,7 +502,6 @@ function toNumber(value: unknown): number | undefined {
 
 function titleFor(name: WindowName): string {
   const titles: Record<WindowName, string> = {
-    'service-dock': 'Aurora AI 服务窗',
     'edge-bar': 'Aurora 提示条',
     chat: 'Aurora 对话',
     'mini-chat': 'Aurora 快速对话',

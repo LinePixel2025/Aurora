@@ -35,7 +35,8 @@ export interface LlmProvider {
 
 ## 4. 会话管理
 
-- 会话划分（v1）：**快速会话**（服务窗 + 迷你窗共享）× 1，**完整会话**（AI 交互窗口）× 1，设置引导会话复用完整会话窗口。后续可扩展多会话列表。
+- 会话划分（v1）：**快速会话**（迷你窗）× 1，**完整会话**（AI 交互窗口）× 1，设置引导会话复用完整会话窗口。
+  快速会话与完整交互窗**分离**（AI 服务窗已移除，迷你窗是快速会话唯一入口），后续可扩展多会话列表。
 - 会话 id 由来源窗口映射（`quick` / `main` / `settings`），仅允许 `[A-Za-z0-9_-]`；非法值归一为 `settings`（防路径穿越）。
 - 持久化：`userData/sessions/<sessionId>.json`（含工具消息），结构 `{ version, sessionId, updatedAt, messages }`，
   原子写 + 300ms 防抖（与 `SettingsStore` 同一套 `FileSystemPort` 约定），退出前 `flush()`；

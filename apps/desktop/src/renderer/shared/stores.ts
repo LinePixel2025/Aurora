@@ -188,9 +188,9 @@ export const useWindowStore = defineStore('windows', () => {
     if (result.ok) state.value = result.value
   }
 
-  /** 服务窗收起态（圆球）/ 展开态（输入条）切换（docs/07 §2.1） */
-  async function setDockExpanded(expanded: boolean): Promise<void> {
-    const result = await window.aurora.window.setDockExpanded(expanded)
+  /** 提示条收起态（8px 竖条）/ 展开态（面板）切换（docs/07 §2.2） */
+  async function setEdgeBarExpanded(expanded: boolean): Promise<void> {
+    const result = await window.aurora.window.setEdgeBarExpanded(expanded)
     if (result.ok) state.value = result.value
   }
 
@@ -200,7 +200,7 @@ export const useWindowStore = defineStore('windows', () => {
     })
   }
 
-  return { state, load, show, hide, toggle, showChat, showMiniChat, setDockExpanded, bind }
+  return { state, load, show, hide, toggle, showChat, showMiniChat, setEdgeBarExpanded, bind }
 })
 
 export const usePerceptionStore = defineStore('perception', () => {
