@@ -4,12 +4,17 @@
  *  欢迎 → AI 模型（必填）→ 模式选择 → ClassRoom 模式引导（表单式）→ 完成
  *
  * 规则：AI 模型未完成不允许进入主界面；测试连接失败允许先保存但持续提示。
+ *
+ * 版面契约（step-05）：窗口固定 720×560、不可缩放 —— 三段式「进度 + 单步内容 + 底部操作」
+ * 必须在这个尺寸内成立：内容区不出现滚动条、不溢出。表单控件一律用共享 `SettingField`，
+ * 错误反馈一律用 `AppToast tone="error"`（不在页面里另写内联错误样式）。
  */
 import { computed, reactive, ref } from 'vue'
 import { PROVIDER_PRESETS, type ModeId, type TestConnectionResult } from '@aurora/shared/browser'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import SettingField from '../shared/components/SettingField.vue'
+import StatusDot from '../shared/components/StatusDot.vue'
 import { useModeStore, useSettingsStore } from '../shared/stores.js'
 
 const settingsStore = useSettingsStore()
@@ -17,9 +22,10 @@ const modeStore = useModeStore()
 
 const stepIndex = ref(0)
 const steps = ['欢迎', 'AI 模型', '选择模式', '模式设置', '完成'] as const
+/** 步骤切换动画方向：与「下一步 / 上一步」一致，两个方向不能用同一个动画 */
+const direction = ref<'forward' | 'back'>('forward')
 
 const form = reactive({
-  language: 'zh-CN',
   providerId: PROVIDER_PRESETS[0].id as string,
   baseUrl: PROVIDER_PRESETS[0].baseUrl as string,
   model: PROVIDER_PRESETS[0].model as string,
@@ -36,10 +42,18 @@ const testResult = ref<TestConnectionResult | null>(null)
 const saving = ref(false)
 const error = ref<string | null>(null)
 
+const currentStepLabel = computed(() => steps[stepIndex.value] ?? '')
+const transitionName = computed(() => (direction.value === 'forward' ? 'sheet-next' : 'sheet-prev'))
 const selectedMode = computed(() => modeStore.modes.find((mode) => mode.id === form.mode) ?? null)
 const modelReady = computed(
   () => form.baseUrl.trim() !== '' && form.model.trim() !== '' && form.apiKey.trim() !== '',
 )
+
+/** 切到某一步时统一处理方向，避免进/退两个方向共用一个动画 */
+function goToStep(index: number, forward: boolean): void {
+  direction.value = forward ? 'forward' : 'back'
+  stepIndex.value = index
+}
 
 function applyPreset(id: string): void {
   const preset = PROVIDER_PRESETS.find((item) => item.id === id)
@@ -117,12 +131,12 @@ async function next(): Promise<void> {
       return
     }
   }
-  stepIndex.value = Math.min(stepIndex.value + 1, steps.length - 1)
+  goToStep(Math.min(stepIndex.value + 1, steps.length - 1), true)
 }
 
 function back(): void {
   error.value = null
-  stepIndex.value = Math.max(stepIndex.value - 1, 0)
+  goToStep(Math.max(stepIndex.value - 1, 0), false)
 }
 
 async function finishClassroomGuide(): Promise<void> {
@@ -156,7 +170,7 @@ async function finishClassroomGuide(): Promise<void> {
     return
   }
   await modeStore.load()
-  stepIndex.value = steps.length - 1
+  goToStep(steps.length - 1, true)
 }
 
 async function complete(): Promise<void> {
@@ -172,192 +186,211 @@ async function complete(): Promise<void> {
 }
 
 function skipClassroomGuide(): void {
-  stepIndex.value = steps.length - 1
+  goToStep(steps.length - 1, true)
 }
+
+const lastStep = computed(() => steps.length - 1)
 </script>
 
 <template>
   <div class="onboarding glass">
+    <!-- 标题栏：整行可拖动（窗口无系统边框），右侧是步骤圆点进度 -->
     <header class="head drag-region">
       <div class="brand">
         <span class="brand-mark" />
         <div>
           <h1>Aurora</h1>
-          <p class="tiny muted">把 Windows 接入 AI 生态 · 首次引导</p>
+          <p class="brand-sub">把 Windows 接入 AI 生态 · 首次引导</p>
         </div>
       </div>
-      <ol class="steps no-drag">
-        <li
-          v-for="(step, index) in steps"
-          :key="step"
-          :class="{ active: index === stepIndex, done: index < stepIndex }"
-        >
-          <span class="index">{{ index + 1 }}</span>
-          {{ step }}
-        </li>
-      </ol>
+      <div class="progress-wrap no-drag">
+        <ol class="progress">
+          <li
+            v-for="(step, index) in steps"
+            :key="step"
+            class="progress-item"
+            :class="{ active: index === stepIndex, done: index < stepIndex }"
+            :title="step"
+          >
+            <span class="dot" />
+          </li>
+        </ol>
+        <span class="progress-text">{{ currentStepLabel }}</span>
+      </div>
     </header>
 
     <main class="body">
-      <!-- ① 欢迎 -->
-      <section v-if="stepIndex === 0" class="pane">
-        <h2>欢迎使用 Aurora</h2>
-        <p class="muted">
-          Aurora 常驻系统托盘，提供无感、自主的 AI 服务：顶置 AI 服务窗、屏幕右侧提示条、
-          完整对话窗口与智慧感知文件夹。整个引导约 2 分钟。
-        </p>
-        <div class="cards">
-          <article class="card">
-            <h3>ClassRoom Mode</h3>
-            <p class="tiny muted">
-              课堂学习：把新文件拖入「智慧感知文件夹」，自动分析并归类到对应科目；课前提醒并打开科目文件夹。
-            </p>
-          </article>
-          <article class="card dim">
-            <h3>Work Mode</h3>
-            <p class="tiny muted">办公场景（建设中）：日程、文档摘要、会议纪要。</p>
-          </article>
-          <article class="card dim">
-            <h3>Code Mode</h3>
-            <p class="tiny muted">编码场景（建设中）：工作区识别、Git 感知、终端工具组。</p>
-          </article>
-        </div>
-        <SettingField label="界面语言">
-          <select v-model="form.language">
-            <option value="zh-CN">简体中文</option>
-            <option value="en-US">English</option>
-          </select>
-        </SettingField>
-      </section>
-
-      <!-- ② AI 模型（必填） -->
-      <section v-else-if="stepIndex === 1" class="pane">
-        <h2>配置 AI 模型 <span class="badge warn">必填</span></h2>
-        <p class="muted tiny">
-          支持任何 OpenAI 兼容服务（DeepSeek / OpenAI / Ollama /
-          vLLM…），凭据使用系统安全存储加密后仅保存在本机。
-        </p>
-
-        <div class="row wrap">
-          <AppButton
-            v-for="preset in PROVIDER_PRESETS"
-            :key="preset.id"
-            size="sm"
-            :variant="form.providerId === preset.id ? 'primary' : 'secondary'"
-            @click="applyPreset(preset.id)"
-          >
-            {{ preset.label }}
-          </AppButton>
-        </div>
-
-        <SettingField
-          label="baseURL"
-          required
-          hint="多数服务需要以 /v1 结尾，例如 https://api.deepseek.com"
-        >
-          <input
-            v-model="form.baseUrl"
-            type="text"
-            spellcheck="false"
-            placeholder="https://api.deepseek.com"
-          />
-        </SettingField>
-        <SettingField label="API Key" required hint="仅本机加密存储，不会上传">
-          <input v-model="form.apiKey" type="password" spellcheck="false" placeholder="sk-..." />
-        </SettingField>
-        <SettingField label="模型名" required>
-          <input v-model="form.model" type="text" spellcheck="false" placeholder="deepseek-chat" />
-        </SettingField>
-        <SettingField label="temperature" hint="0 更确定，2 更发散">
-          <input v-model.number="form.temperature" type="number" min="0" max="2" step="0.1" />
-        </SettingField>
-
-        <div class="row">
-          <AppButton :disabled="testing || !modelReady" @click="testConnection">
-            {{ testing ? '测试中…' : '测试连接' }}
-          </AppButton>
-          <AppToast v-if="testResult" :tone="testResult.ok ? 'ok' : 'error'">
-            {{ testResult.message }}（{{ testResult.latencyMs }}ms）
-            <template v-if="testResult.models && testResult.models.length > 0">
-              · 可用模型 {{ testResult.models.length }} 个
-            </template>
-          </AppToast>
-        </div>
-      </section>
-
-      <!-- ③ 模式选择 -->
-      <section v-else-if="stepIndex === 2" class="pane">
-        <h2>选择使用模式</h2>
-        <p class="muted tiny">
-          同一时刻只启用一个模式；之后可在设置中随时切换，切换后 AI 会引导你完成该模式的配置。
-        </p>
-        <div class="mode-list">
-          <button
-            v-for="mode in modeStore.modes"
-            :key="mode.id"
-            class="mode-card"
-            :class="{ active: form.mode === mode.id, placeholder: mode.placeholder }"
-            type="button"
-            @click="form.mode = mode.id"
-          >
-            <strong>{{ mode.displayName }}</strong>
-            <span v-if="mode.placeholder" class="badge">建设中</span>
-            <span v-else-if="mode.id === 'classroom'" class="badge ok">推荐</span>
-            <p class="tiny muted">{{ mode.description }}</p>
-          </button>
-        </div>
-      </section>
-
-      <!-- ④ 模式引导 -->
-      <section v-else-if="stepIndex === 3" class="pane">
-        <h2>{{ selectedMode?.displayName ?? form.mode }} 设置</h2>
-        <template v-if="form.mode === 'classroom'">
-          <p class="muted tiny">
-            设置「智慧感知文件夹」与科目列表；也可以稍后通过对话式引导完成（设置 → 模式 →
-            重新引导）。
+      <transition :name="transitionName" mode="out-in">
+        <!-- ① 欢迎 -->
+        <section v-if="stepIndex === 0" key="welcome" class="pane">
+          <h2 class="pane-title anim-rise">欢迎使用 Aurora</h2>
+          <p class="lead anim-rise" style="animation-delay: 40ms">
+            Aurora 常驻系统托盘，从屏幕右侧的提示条提供服务：悬停展开面板、点击呼出完整对话窗口；
+            配合智慧感知文件夹自动整理你的文件。整个引导约 2 分钟。
           </p>
-          <SettingField
-            label="智慧感知文件夹"
-            hint="留空则在首次激活时使用 用户目录\Aurora\感知文件夹"
-          >
-            <input
-              v-model="form.watchDir"
-              type="text"
-              spellcheck="false"
-              placeholder="D:\Aurora\感知文件夹"
-            />
-          </SettingField>
-          <SettingField label="科目列表" hint="用逗号分隔；每科目标文件夹默认为 分类/<科目>">
-            <textarea v-model="form.subjects" spellcheck="false" />
-          </SettingField>
-          <SettingField label="上课前提醒" hint="课前 5 分钟提醒并打开科目文件夹（P5 落地）">
-            <input v-model="form.preClassReminder" type="checkbox" />
-          </SettingField>
-        </template>
-        <p v-else class="muted">
-          该模式目前为占位实现，无需额外配置；激活后仅注入提示词片段，具体能力将在后续版本提供。
-        </p>
-      </section>
+          <div class="cards anim-rise" style="animation-delay: 80ms">
+            <article class="card">
+              <h3>ClassRoom Mode</h3>
+              <p class="tiny muted">
+                课堂学习：把新文件拖入「智慧感知文件夹」，自动分析并归类到对应科目；课前提醒并打开科目文件夹。
+              </p>
+            </article>
+            <article class="card dim">
+              <h3>Work Mode</h3>
+              <p class="tiny muted">办公场景（建设中）：日程、文档摘要、会议纪要。</p>
+            </article>
+            <article class="card dim">
+              <h3>Code Mode</h3>
+              <p class="tiny muted">编码场景（建设中）：工作区识别、Git 感知、终端工具组。</p>
+            </article>
+          </div>
+        </section>
 
-      <!-- ⑤ 完成 -->
-      <section v-else class="pane center">
-        <span class="brand-mark large" />
-        <h2>配置完成</h2>
-        <p class="muted">
-          Aurora 已常驻系统托盘。默认模型：<strong>{{
-            settingsStore.activeProvider?.model ?? '未配置'
-          }}</strong>
-          ；当前模式：<strong>{{ modeStore.current?.displayName ?? form.mode }}</strong
-          >。
-        </p>
-        <p class="tiny muted">
-          提示：顶置服务窗输入即可提问；屏幕右侧提示条可拉出完整对话窗口；托盘右键可切换模式与打开设置。
-        </p>
-      </section>
+        <!-- ② AI 模型（必填） -->
+        <section v-else-if="stepIndex === 1" key="llm" class="pane">
+          <h2 class="pane-title anim-rise">配置 AI 模型 <span class="badge warn">必填</span></h2>
+          <p class="lead anim-rise" style="animation-delay: 40ms">
+            支持任何 OpenAI 兼容服务（DeepSeek / OpenAI / Ollama /
+            vLLM…），凭据使用系统安全存储加密后仅保存在本机。
+          </p>
+
+          <div class="row wrap anim-rise" style="animation-delay: 60ms">
+            <AppButton
+              v-for="preset in PROVIDER_PRESETS"
+              :key="preset.id"
+              size="sm"
+              :variant="form.providerId === preset.id ? 'primary' : 'secondary'"
+              @click="applyPreset(preset.id)"
+            >
+              {{ preset.label }}
+            </AppButton>
+          </div>
+
+          <div class="field-grid anim-rise" style="animation-delay: 80ms">
+            <SettingField label="baseURL" required hint="多数服务需以 /v1 结尾">
+              <input
+                v-model="form.baseUrl"
+                type="text"
+                spellcheck="false"
+                placeholder="https://api.deepseek.com"
+              />
+            </SettingField>
+            <SettingField label="模型名" required>
+              <input
+                v-model="form.model"
+                type="text"
+                spellcheck="false"
+                placeholder="deepseek-chat"
+              />
+            </SettingField>
+            <SettingField label="API Key" required hint="仅本机加密存储，不会上传">
+              <input
+                v-model="form.apiKey"
+                type="password"
+                spellcheck="false"
+                placeholder="sk-..."
+              />
+            </SettingField>
+            <SettingField label="temperature" hint="0 更确定，2 更发散">
+              <input v-model.number="form.temperature" type="number" min="0" max="2" step="0.1" />
+            </SettingField>
+          </div>
+
+          <div class="row test-row anim-rise" style="animation-delay: 100ms">
+            <AppButton
+              variant="secondary"
+              :disabled="testing || !modelReady"
+              @click="testConnection"
+            >
+              <StatusDot v-if="testing" tone="running" :size="8" />
+              {{ testing ? '测试中…' : '测试连接' }}
+            </AppButton>
+            <AppToast v-if="testResult" :tone="testResult.ok ? 'ok' : 'error'">
+              {{ testResult.message }}（{{ testResult.latencyMs }}ms）
+              <template v-if="testResult.models && testResult.models.length > 0">
+                · 可用模型 {{ testResult.models.length }} 个
+              </template>
+            </AppToast>
+          </div>
+        </section>
+
+        <!-- ③ 模式选择 -->
+        <section v-else-if="stepIndex === 2" key="modes" class="pane">
+          <h2 class="pane-title anim-rise">选择使用模式</h2>
+          <p class="lead anim-rise" style="animation-delay: 40ms">
+            同一时刻只启用一个模式，之后可在设置中随时切换或重新引导。
+          </p>
+          <div class="mode-list anim-rise" style="animation-delay: 80ms">
+            <button
+              v-for="mode in modeStore.modes"
+              :key="mode.id"
+              class="mode-card interactive"
+              :class="{ active: form.mode === mode.id, placeholder: mode.placeholder }"
+              type="button"
+              @click="form.mode = mode.id"
+            >
+              <strong>{{ mode.displayName }}</strong>
+              <span v-if="mode.placeholder" class="badge">建设中</span>
+              <span v-else-if="mode.id === 'classroom'" class="badge ok">推荐</span>
+              <p class="tiny muted">{{ mode.description }}</p>
+            </button>
+          </div>
+        </section>
+
+        <!-- ④ 模式引导 -->
+        <section v-else-if="stepIndex === 3" key="guide" class="pane">
+          <h2 class="pane-title anim-rise">{{ selectedMode?.displayName ?? form.mode }} 设置</h2>
+          <template v-if="form.mode === 'classroom'">
+            <p class="lead anim-rise" style="animation-delay: 40ms">
+              设置「智慧感知文件夹」与科目列表；也可以稍后通过对话式引导完成（设置 → 模式 →
+              重新引导）。
+            </p>
+            <div class="anim-rise" style="animation-delay: 80ms">
+              <SettingField
+                label="智慧感知文件夹"
+                hint="留空则在首次激活时使用 用户目录\Aurora\感知文件夹"
+              >
+                <input
+                  v-model="form.watchDir"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="D:\Aurora\感知文件夹"
+                />
+              </SettingField>
+              <SettingField label="科目列表" hint="用逗号分隔；每科目标文件夹默认为 分类/<科目>">
+                <textarea v-model="form.subjects" spellcheck="false" />
+              </SettingField>
+              <SettingField label="上课前提醒" hint="课前 5 分钟提醒并打开科目文件夹（P5 落地）">
+                <input v-model="form.preClassReminder" type="checkbox" />
+              </SettingField>
+            </div>
+          </template>
+          <p v-else class="lead anim-rise" style="animation-delay: 40ms">
+            该模式目前为占位实现，无需额外配置；激活后仅注入提示词片段，具体能力将在后续版本提供。
+          </p>
+        </section>
+
+        <!-- ⑤ 完成 -->
+        <section v-else key="done" class="pane done-pane">
+          <span class="brand-mark xl anim-rise" />
+          <h2 class="pane-title anim-rise" style="animation-delay: 60ms">一切就绪</h2>
+          <p class="lead anim-rise" style="animation-delay: 120ms">
+            Aurora 已常驻系统托盘。默认模型：<strong>{{
+              settingsStore.activeProvider?.model ?? '未配置'
+            }}</strong>
+            ；当前模式：<strong>{{ modeStore.current?.displayName ?? form.mode }}</strong
+            >。
+          </p>
+          <p class="tiny muted anim-rise" style="animation-delay: 180ms">
+            提示：屏幕右侧提示条悬停展开面板，点击可拉出完整对话窗口；托盘右键可切换模式与打开设置。
+          </p>
+        </section>
+      </transition>
     </main>
 
+    <!-- 底部操作：左为反馈区，右侧主按钮是视觉锚点 -->
     <footer class="foot">
-      <div class="grow">
+      <div class="grow foot-note">
         <AppToast v-if="error" tone="error">{{ error }}</AppToast>
         <AppToast v-else-if="!settingsStore.cryptoAvailable" tone="warn">
           系统安全存储不可用：API Key 只在本次运行中有效，不会写入磁盘。
@@ -367,7 +400,7 @@ function skipClassroomGuide(): void {
         </AppToast>
         <span v-else class="tiny muted">步骤 {{ stepIndex + 1 }} / {{ steps.length }}</span>
       </div>
-      <AppButton v-if="stepIndex > 0 && stepIndex < steps.length - 1" variant="ghost" @click="back"
+      <AppButton v-if="stepIndex > 0 && stepIndex < lastStep" variant="ghost" @click="back"
         >上一步</AppButton
       >
       <AppButton
@@ -386,14 +419,15 @@ function skipClassroomGuide(): void {
         保存并继续
       </AppButton>
       <AppButton
-        v-else-if="stepIndex < steps.length - 1"
+        v-else-if="stepIndex < lastStep"
         variant="primary"
         :disabled="saving"
         @click="next"
       >
+        <StatusDot v-if="saving" tone="running" :size="8" />
         {{ saving ? '保存中…' : '下一步' }}
       </AppButton>
-      <AppButton v-else variant="primary" @click="complete">开始使用</AppButton>
+      <AppButton v-else variant="primary" class="anim-rise" @click="complete">开始使用</AppButton>
     </footer>
   </div>
 </template>
@@ -403,15 +437,18 @@ function skipClassroomGuide(): void {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  border-radius: var(--radius-lg);
   overflow: hidden;
+  border-radius: var(--radius-lg);
 }
 
+/* ───────── 顶部：拖动区 + 步骤圆点进度 ───────── */
+
 .head {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: var(--space-5);
-  padding: var(--space-4) var(--space-5);
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-5);
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -419,101 +456,134 @@ function skipClassroomGuide(): void {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  min-width: 0;
 }
 
 .brand h1 {
   margin: 0;
+  font-family: var(--font-display);
   font-size: 18px;
-  letter-spacing: 0.5px;
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.02em;
 }
 
-.brand p {
+.brand-sub {
   margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
 }
 
 .brand-mark {
+  flex: 0 0 auto;
   width: 28px;
   height: 28px;
   border-radius: 50%;
   background: var(--aurora-gradient);
-  box-shadow: 0 0 18px rgba(86, 132, 255, 0.45);
+  filter: drop-shadow(0 0 12px var(--aurora-blue));
 }
 
-.brand-mark.large {
-  width: 56px;
-  height: 56px;
+.brand-mark.xl {
+  width: 64px;
+  height: 64px;
 }
 
-.steps {
+.progress-wrap {
   display: flex;
+  align-items: center;
   gap: var(--space-3);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
-  margin-left: auto;
 }
 
-.steps li {
+.progress-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-muted);
 }
 
-.steps li.active {
-  color: var(--text-primary);
-}
-
-.steps li.done {
-  color: var(--aurora-green);
-}
-
-.index {
-  display: grid;
-  place-items: center;
+/* 已完成 → 当前 → 未开始之间的连接线，纯装饰 */
+.progress-item + .progress-item::before {
+  content: '';
+  display: block;
   width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
-  font-size: 11px;
+  height: 1px;
+  background: var(--border-subtle);
 }
 
-.steps li.active .index {
-  background: var(--aurora-gradient);
-  color: #08131a;
+.dot {
+  display: block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--fill-2);
+  transition:
+    background var(--transition-fast),
+    transform var(--transition-fast);
 }
+
+.progress-item.done .dot {
+  background: var(--text-muted);
+}
+
+.progress-item.active .dot {
+  background: var(--aurora-gradient);
+  transform: scale(1.3);
+  box-shadow: 0 0 0 4px var(--fill-1);
+}
+
+.progress-text {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+/* ───────── 中部：单步内容（固定尺寸内不出现滚动条） ───────── */
 
 .body {
   flex: 1;
+  min-height: 0;
+  padding: var(--space-4) var(--space-5);
   overflow-y: auto;
-  padding: var(--space-5);
+  overflow-x: hidden;
 }
 
-.pane h2 {
-  margin: 0 0 var(--space-2);
-  font-size: 16px;
-}
-
-.pane.center {
+.pane {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  text-align: center;
   gap: var(--space-3);
+  min-width: 0;
 }
 
-.cards,
-.mode-list {
-  display: grid;
-  gap: var(--space-3);
-  margin: var(--space-4) 0;
+.pane-title {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--leading-tight);
+}
+
+.lead {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
 }
 
 .cards {
+  display: grid;
   grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
 }
 
 .card,
@@ -521,7 +591,7 @@ function skipClassroomGuide(): void {
   padding: var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--fill-1);
   text-align: left;
 }
 
@@ -531,8 +601,17 @@ function skipClassroomGuide(): void {
   font-size: 14px;
 }
 
+.card p {
+  margin: 0;
+}
+
 .card.dim {
   opacity: 0.6;
+}
+
+.mode-list {
+  display: grid;
+  gap: var(--space-2);
 }
 
 .mode-card {
@@ -543,9 +622,6 @@ function skipClassroomGuide(): void {
     'desc desc desc';
   gap: 4px var(--space-2);
   cursor: pointer;
-  transition:
-    border-color var(--transition-fast),
-    background var(--transition-fast);
 }
 
 .mode-card strong {
@@ -564,23 +640,106 @@ function skipClassroomGuide(): void {
 
 .mode-card.active {
   border-color: var(--aurora-blue);
-  background: rgba(86, 132, 255, 0.1);
+  background: var(--fill-2);
+  box-shadow: 0 0 0 3px var(--fill-1);
 }
 
 .mode-card.placeholder {
   opacity: 0.75;
 }
 
-.wrap {
-  flex-wrap: wrap;
-  margin-bottom: var(--space-3);
+/* AI 模型页：两列栅格，四个字段在两行内排完（固定高度里装得下） */
+.field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 var(--space-4);
 }
 
+/**
+ * 两列栅格：标签列压到 120px（够放 baseURL / API Key / temperature），
+ * 说明文字改成跨两列的独立一行 —— 否则在 120px 的列里会折成两三行，把固定高度吃掉。
+ */
+.field-grid :deep(.field) {
+  grid-template-columns: 120px 1fr;
+  grid-template-areas:
+    'label control'
+    'hint hint';
+}
+
+/* `.row` 用 theme.css 的全局原子类，这里只补它没有的换行能力 */
+.wrap {
+  flex-wrap: wrap;
+}
+
+.test-row {
+  align-items: flex-start;
+}
+
+/* 完成页：品牌渐变 + 居中收束 */
+.done-pane {
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  gap: var(--space-3);
+}
+
+.done-pane .lead {
+  max-width: 460px;
+}
+
+.done-pane .tiny {
+  margin: 0;
+  max-width: 460px;
+}
+
+/* ───────── 步骤切换：方向与操作一致（下一步 = 从右侧滑入） ───────── */
+
+.sheet-next-enter-active,
+.sheet-prev-enter-active {
+  transition:
+    opacity var(--dur-base) var(--ease-standard),
+    transform var(--dur-base) var(--ease-spring);
+}
+
+.sheet-next-leave-active,
+.sheet-prev-leave-active {
+  transition:
+    opacity var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
+}
+
+.sheet-next-enter-from,
+.sheet-prev-leave-to {
+  opacity: 0;
+  transform: translateX(28px);
+}
+
+.sheet-next-leave-to,
+.sheet-prev-enter-from {
+  opacity: 0;
+  transform: translateX(-28px);
+}
+
+/* ───────── 底部操作 ───────── */
+
 .foot {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-5);
   border-top: 1px solid var(--border-subtle);
+}
+
+.foot-note {
+  min-width: 0;
+}
+
+/* 底部固定高度：反馈区长文案单行省略，不把页脚撑高 */
+.foot-note :deep(.toast) {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 </style>
