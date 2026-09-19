@@ -148,9 +148,12 @@
 
 ## 6. 其他设置页
 
-- **常规**（`general.*`）：开机自启、全局快捷键、提示条（显示 / 透明度 / 独立勿扰时段）均已生效；
+- **常规**（`general.*`）：开机自启、全局快捷键、提示条（显示 / 透明度 / 独立勿扰时段）均已生效。
   `general.language` 是**未生效的死字段** —— Schema 里保留（避免再动一次配置版本），但**没有 i18n 消费方**，
-  改它不会改变界面语言（见 §1 字段说明）。
+  改它不会改变界面语言，因此**设置页与引导页都不再显示该选择器**（保存时仍原样回传，配置不丢）。
+- **页面骨架**：所有页面统一「标题 + 一句话说明 + 分组卡片」（`theme.css` 的
+  `.page` / `.page-title` / `.page-sub` + `settings/settings.css` 的 `.section-card` /
+  `.section-title` / `.section-desc` / `.empty-state`）；侧栏按「基础 / AI 能力 / 系统」三组排列。
 - **Skill 管理**：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。
   - 实现状态（v0.6.0）：`skills.userDir` **真正生效**（此前运行时硬编码 `userData/skills`，
     配置项是死字段）。空串回落 `userData/skills`；填自定义目录后保存会**按新目录重扫**。
@@ -162,8 +165,10 @@
 - **MCP 管理**：服务器列表、添加（stdio 命令 / HTTP URL）、连接状态灯、错误日志。
   - 实现状态（v0.3.0）：列表读写与凭据脱敏沿用 v0.1.0；**状态灯**由 `mcp:status` /
     `mcp:statusChanged` 驱动（`ready` / `connecting` / `error` 三态，`error` 时展示
-    最近一次失败原因），`lazyConnect` 可在设置页切换。
+    最近一次失败原因），`lazyConnect` 可在设置页切换（收在「高级」折叠里）。
 - **高级**：日志查看与导出、代理设置、日志级别、勿扰时段、重置为默认配置。
+  分组为「网络 / 日志 / 勿扰 / 安全 / 危险操作」；「重置为默认配置」需**就地二次确认**
+  （按钮变为「确认重置？」+ 取消），不再用原生 `confirm`。
   - 实现状态（v0.5.0）：**勿扰时段已实际拦截主动行为**——敏感工具确认在时段内直接拒绝
     （`ProactiveScheduler.isQuietHour`），课前提醒在时段内静默跳过。新增
     「敏感工具确认」开关（`advanced.confirmSensitiveTools`，默认开启）：关闭后敏感工具
@@ -177,6 +182,31 @@
       （含已存在的子 logger）生效。此前是构造期快照，改级别只影响之后新建的 logger。
     - 另：「日志查看」走 `app:openLogs`（该通道此前只有常量与 preload 镜像、没有 handler，
       调用会挂起，v0.6.0 补齐）。
+
+### 6.1 按条件显示的设置项（前端刷新轮）
+
+每个控件带 `data-field="<配置路径>"`（与 §1 Schema 路径一致），**条件不成立时控件不存在于 DOM**
+（不是 `disabled`、也不是 `opacity: 0`），原位置改为一段 `data-empty="<路径>"` 说明。
+门控矩阵：
+
+| 设置项（`data-field` 前缀） | 显示条件 |
+|---|---|
+| `modes.classroom.*` | `modes.current === 'classroom'` |
+| `modes.work.*` / `modes.code.*` | 无字段：对应模式选中时只显示「暂无可配置项」空状态（`data-empty="modes.work"` / `"modes.code"`） |
+| `modes.classroom.schedule.classisland.*` | `schedule.provider === 'classisland'` |
+| `modes.classroom.preClassReminder` | `schedule.lessons.length > 0` |
+| `modes.classroom.classification.confidenceThreshold` | `subjects.length > 0` |
+| `modes.classroom.classification.fallbackFolder` | `classification.autoMove === true` |
+| `general.edgeBar.opacity` / `general.edgeBar.quietHours.*` | `general.edgeBar.enabled === true`（`enabled` 开关本身常显，否则无法重新启用） |
+| `general.language` | **永不显示**（无 i18n 消费方的死字段，字段保留在 Schema 仅为配置兼容） |
+| `skills.disabled` | `skills.list()` 非空 |
+| `mcp.servers.*` / `mcp.lazyConnect` | `mcp.servers.length > 0` |
+| `llm.providers.*`（含 `temperature`） | `llm.providers` 至少一项 |
+
+校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针会按页断言计数，例如
+`settings?page=general` → `general.language` 计数为 0、`general.edgeBar.enabled` 为 1 且详情项 > 0；
+`settings?page=modes` 下 ClassRoom 时 `modes.classroom.*` 计数为 38，切到 Work 后必须为 0
+且出现 `data-empty="modes.work"`。探针结果写 `<目录>/report.json` 并以 `AURORA_SMOKE_RESULT:` 前缀落日志。
 
 ## 7. ClassRoom 模式设置页（v0.4.0）
 

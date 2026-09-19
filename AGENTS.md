@@ -41,9 +41,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **跑单个/单包测试**：`pnpm vitest run <文件路径>`，或 `pnpm --filter @aurora/agent-core test`。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：PowerShell 下 `$env:AURORA_SMOKE='1'; pnpm dev`，结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`。调试渲染层加 `AURORA_DEVTOOLS=1`。
 - **窗口截图核对（前端视觉验收）**：`$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev`，会把五个窗口、
-  提示条两态、设置页 6 页截成 PNG 落到该目录，并写 `report.json`（渲染层 DOM 探针结果：面板按钮命中测试、
-  点击竖条后的窗口状态）。只截部分窗口用 `$env:AURORA_CAPTURE_WINDOWS='edge-bar,chat'`。
-  命令结束后进程自行退出；截图规则见 docs/07 §5.3。
+  提示条两态、设置页 6 页 + 2 个门控场景截成 15 张 PNG，并写 `report.json`（渲染层 DOM 探针结果：
+  面板按钮命中测试、点击竖条后的窗口状态、设置页 `data-field` 门控计数；探针返回 `pass` 时按 PASS/FAIL 落日志）。
+  只截部分窗口用 `$env:AURORA_CAPTURE_WINDOWS='edge-bar,chat'`。命令结束后进程自行退出；
+  需要动到配置的探针（如切模式）请与 `$env:AURORA_SMOKE='1'` 同开以隔离 userData。规则见 docs/07 §5.3。
 - **CI 是按需触发的，不跟随 push / PR 自动跑**（`.github/workflows/ci.yml`，Windows）。
   日常验证靠本地 `pnpm typecheck && pnpm test && pnpm build`——与 CI 同一套检查、全量约 15 秒；
   需要干净环境时手动发起（Actions → Run workflow，或 `gh workflow run ci.yml`）。
@@ -90,7 +91,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 
 - 全局快捷键默认 `Alt+Space` **在 Windows 上常被系统占用**（它是系统窗口菜单键）。
   注册失败是预期路径：`main/hotkey.ts` 会把真实原因回传设置页，用户改绑即可 —— 不要"修"成静默成功。
-- 提示条的 `可穿透性`（`setIgnoreMouseEvents`）尚未接入；`general.language` 仍是死字段（无 i18n）。
+- 提示条的 `可穿透性`（`setIgnoreMouseEvents`）尚未接入；`general.language` 是死字段（无 i18n 消费方），
+  **已从设置页与引导页移除**（Schema 里保留字段仅为兼容旧配置，改它不生效）。
 - **AI 悬浮窗（service-dock）已于本轮移除**，常驻入口为提示条 + 托盘；配置迁移到 v4
   （`v3 → v4` 删除 `general.windowState['service-dock']`）。提示条的悬停展开面板与点击呼出交互窗见 docs/07 §2.2。
 - MCP HTTP 传输暂不支持自定义鉴权头（凭据仅经 stdio `env` 注入）。
