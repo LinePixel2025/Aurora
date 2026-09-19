@@ -1,10 +1,14 @@
 <script setup lang="ts">
-/** 轻量 Toast：错误提示与可恢复操作入口（docs/07 §4）。 */
+/**
+ * 轻量 Toast：错误提示与可恢复操作入口（docs/07 §4）。
+ *
+ * 用分层填充 + 语义色，进场走 `.anim-rise`；props 不变。
+ */
 withDefaults(defineProps<{ tone?: 'info' | 'warn' | 'error' | 'ok' }>(), { tone: 'info' })
 </script>
 
 <template>
-  <div class="toast" :class="`t-${tone}`" role="alert">
+  <div class="toast anim-rise" :class="`t-${tone}`" role="alert">
     <slot />
   </div>
 </template>
@@ -16,10 +20,10 @@ withDefaults(defineProps<{ tone?: 'info' | 'warn' | 'error' | 'ok' }>(), { tone:
   gap: var(--space-2);
   padding: 8px 12px;
   border-radius: var(--radius-sm);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
   border: 1px solid var(--border-subtle);
-  background: var(--bg-raised);
+  background: var(--fill-1);
   color: var(--text-secondary);
 }
 

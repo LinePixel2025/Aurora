@@ -109,15 +109,15 @@ function toolStateLabel(state: 'running' | 'success' | 'error'): string {
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  font-size: 11px;
-  background: rgba(255, 255, 255, 0.08);
+  font-size: var(--text-xs);
+  background: var(--fill-2);
   color: var(--text-secondary);
 }
 
 .r-assistant .avatar {
   background: var(--aurora-gradient);
   color: #08131a;
-  font-weight: 700;
+  font-weight: var(--weight-semibold);
 }
 
 .bubble {
@@ -126,8 +126,9 @@ function toolStateLabel(state: 'running' | 'success' | 'error'): string {
   border-radius: var(--radius-md);
   background: var(--bg-raised);
   border: 1px solid var(--border-subtle);
-  font-size: 13px;
-  line-height: 1.65;
+  box-shadow: var(--shadow-1);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
   word-break: break-word;
 }
 
@@ -143,7 +144,7 @@ function toolStateLabel(state: 'running' | 'success' | 'error'): string {
 }
 
 .compact .bubble {
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 6px 10px;
 }
 
@@ -164,7 +165,7 @@ function toolStateLabel(state: 'running' | 'success' | 'error'): string {
 
 .attached-chip {
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: rgba(86, 132, 255, 0.18);
   color: var(--text-muted);
   max-width: 100%;
@@ -180,7 +181,7 @@ function toolStateLabel(state: 'running' | 'success' | 'error'): string {
   padding: 4px 8px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--fill-1);
 }
 
 .tool-state {
@@ -197,11 +198,11 @@ function toolStateLabel(state: 'running' | 'success' | 'error'): string {
 }
 
 .t-success .tool-state {
-  background: var(--status-ok, #3fbf7f);
+  background: var(--status-ok);
 }
 
 .t-error .tool-state {
-  background: #f2555a;
+  background: var(--status-error);
 }
 
 .tool-name {
@@ -269,7 +270,7 @@ function toolStateLabel(state: 'running' | 'success' | 'error'): string {
 
 .md :deep(.md-h) {
   margin: 6px 0 4px;
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 
 .md :deep(.md-list) {
@@ -280,19 +281,19 @@ function toolStateLabel(state: 'running' | 'success' | 'error'): string {
 .md :deep(.md-code) {
   margin: 6px 0;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: rgba(0, 0, 0, 0.4);
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .md :deep(.md-inline) {
   padding: 1px 4px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--fill-2);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .md :deep(.md-link) {

@@ -200,7 +200,7 @@ async function clearAll(): Promise<void> {
 }
 
 .head:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--fill-1);
 }
 
 .chevron {
@@ -241,7 +241,7 @@ async function clearAll(): Promise<void> {
   padding: 6px 8px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--fill-1);
 }
 
 .line {
@@ -257,7 +257,7 @@ async function clearAll(): Promise<void> {
 }
 
 .name {
-  font-size: 13px;
+  font-size: var(--text-base);
   min-width: 0;
 }
 
@@ -302,16 +302,19 @@ async function clearAll(): Promise<void> {
   flex: 0 0 auto;
   max-width: 132px;
   padding: 3px 6px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   border: 1px solid var(--border-subtle);
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--fill-1);
   color: var(--text-secondary);
-  font-size: 12px;
-  transition: border-color var(--transition-fast);
+  font-size: var(--text-sm);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .pick:focus {
   border-color: var(--aurora-blue);
+  box-shadow: 0 0 0 3px rgba(86, 132, 255, 0.22);
   outline: none;
 }
 
@@ -331,8 +334,8 @@ async function clearAll(): Promise<void> {
 .tag {
   flex: 0 0 auto;
   padding: 1px 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-pill);
+  background: var(--fill-2);
   color: var(--text-secondary);
 }
 

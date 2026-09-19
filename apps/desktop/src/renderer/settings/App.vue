@@ -28,7 +28,17 @@ const nav: Array<{ id: PageId; label: string; hint: string }> = [
   { id: 'advanced', label: '高级', hint: '代理、日志、勿扰' },
 ]
 
-const active = ref<PageId>('general')
+/**
+ * 初始页面：支持 `?page=<id>` 深链（截图核对工具按页出图，docs/07 §5）。
+ * 正常启动不带 query，回落到「常规」；未知值同样回落，避免白屏。
+ */
+function initialPage(): PageId {
+  const requested = new URLSearchParams(window.location.search).get('page')
+  const match = nav.find((item) => item.id === requested)
+  return match?.id ?? 'general'
+}
+
+const active = ref<PageId>(initialPage())
 const settingsStore = useSettingsStore()
 const windowStore = useWindowStore()
 const perception = usePerceptionStore()

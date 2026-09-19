@@ -107,6 +107,8 @@ export class WindowManager {
   private state: WindowState = createInitialWindowState()
   private readonly listeners = new Set<(state: WindowState) => void>()
   private readonly options: WindowManagerOptions
+  /** 各窗口当前这次加载的 in-flight promise（`whenLoaded()` 用；窗口销毁时清理） */
+  private readonly loadTasks = new Map<WindowName, Promise<void>>()
   /** 提示条是否处于展开（面板）态；默认收起为 8px 竖条（docs/07 §2.2） */
   private edgeBarExpanded = false
 
@@ -142,8 +144,35 @@ export class WindowManager {
     return win.getBounds()
   }
 
-  /** 取窗口（不存在则创建），不改变可见性状态。 */
-  ensure(name: WindowName): BrowserWindow {
+  /**
+   * 带 query 重新加载窗口（**仅截图场景使用**：设置页深链 `?page=<id>`，docs/07 §5）。
+   *
+   * 为什么是 reload 而不是新开窗口：截图工具要一次跑完 6 个设置页，
+   * 每个页面都新建窗口会堆一排窗口，也会污染 `windowState` 的位置记忆。
+   */
+  async reload(name: WindowName, query: Record<string, string>): Promise<void> {
+    const win = this.ensure(name)
+    await this.trackLoad(name, win, query)
+  }
+
+  /**
+   * 等窗口当前这次加载完成（截图核对用）。
+   *
+   * 为什么需要：`ensure()` 里的 `load()` 是 fire-and-forget，调用方返回时页面**还没开始**加载，
+   * 此时 `webContents.isLoading()` 仍是 false —— 只靠 isLoading 判断会直接"认为加载完了"，
+   * 截出一张 0 字节空图（实测踩到过）。
+   */
+  async whenLoaded(name: WindowName): Promise<void> {
+    await this.loadTasks.get(name)
+  }
+
+  /**
+   * 取窗口（不存在则创建），不改变可见性状态。
+   *
+   * `query` 只在**创建**时生效（已有窗口不会重新加载；需要换 query 用 `reload()`）；
+   * 它服务于截图深链（`?page=<id>`），正常启动不传。
+   */
+  ensure(name: WindowName, query?: Record<string, string>): BrowserWindow {
     const existing = this.windows.get(name)
     if (existing && !existing.isDestroyed()) return existing
 
@@ -215,13 +244,14 @@ export class WindowManager {
     win.on('resized', () => this.persistGeometry(name, win))
     win.on('closed', () => {
       this.windows.delete(name)
+      this.loadTasks.delete(name)
     })
     win.webContents.on('render-process-gone', (_event, details) => {
       this.options.logger.error('渲染进程异常退出', { window: name, reason: details.reason })
       this.hide(name)
     })
 
-    void this.load(win, name)
+    void this.trackLoad(name, win, query)
     this.windows.set(name, win)
     this.options.logger.debug('窗口已创建', { window: name, bounds })
     return win
@@ -358,17 +388,34 @@ export class WindowManager {
 
   // ───────────────────────── 内部 ─────────────────────────
 
-  private async load(win: BrowserWindow, name: WindowName): Promise<void> {
+  private async load(
+    win: BrowserWindow,
+    name: WindowName,
+    query?: Record<string, string>,
+  ): Promise<void> {
     const { rendererUrl, rendererDir } = this.options
+    const hasQuery = query !== undefined && Object.keys(query).length > 0
     try {
       if (rendererUrl) {
-        await win.loadURL(`${rendererUrl}/${name}/index.html`)
+        const search = hasQuery ? `?${new URLSearchParams(query).toString()}` : ''
+        await win.loadURL(`${rendererUrl}/${name}/index.html${search}`)
       } else {
-        await win.loadFile(join(rendererDir, name, 'index.html'))
+        await win.loadFile(join(rendererDir, name, 'index.html'), hasQuery ? { query } : undefined)
       }
     } catch (error) {
       this.options.logger.error('窗口加载失败', { window: name, error: String(error) })
     }
+  }
+
+  /** 发起一次加载并登记 in-flight promise，供 `whenLoaded()` 等待。 */
+  private trackLoad(
+    name: WindowName,
+    win: BrowserWindow,
+    query?: Record<string, string>,
+  ): Promise<void> {
+    const task = this.load(win, name, query)
+    this.loadTasks.set(name, task)
+    return task
   }
 
   private applyVisibility(name: WindowName, visible: boolean, existing?: BrowserWindow): void {

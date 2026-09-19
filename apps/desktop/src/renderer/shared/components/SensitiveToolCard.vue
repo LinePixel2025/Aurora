@@ -124,7 +124,7 @@ async function decide(approved: boolean): Promise<void> {
   border-radius: var(--radius-md);
   border: 1px solid rgba(242, 85, 90, 0.32);
   background: rgba(242, 85, 90, 0.1);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-2);
   transition: border-color var(--transition-base);
 }
 
@@ -134,12 +134,12 @@ async function decide(approved: boolean): Promise<void> {
 
 .intro {
   margin: 0;
-  line-height: 1.6;
+  line-height: var(--leading-normal);
 }
 
 .tool {
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: rgba(0, 0, 0, 0.32);
   color: var(--text-primary);
 }
@@ -152,8 +152,8 @@ async function decide(approved: boolean): Promise<void> {
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
   background: rgba(0, 0, 0, 0.38);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -169,15 +169,15 @@ async function decide(approved: boolean): Promise<void> {
 
 .progress {
   height: 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--fill-3);
 }
 
 .progress span {
   display: block;
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--aurora-gradient);
   transition: width 250ms linear;
 }

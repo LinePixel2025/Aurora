@@ -1,5 +1,10 @@
 <script setup lang="ts">
-/** 设置项一行：标签 + 说明 + 控件插槽。 */
+/**
+ * 设置项一行：标签 + 说明 + 控件插槽（label / hint / control 三行栅格）。
+ *
+ * 控件（input / select / textarea / checkbox）统一高度、圆角与聚焦光晕；
+ * props 与插槽用法保持不变。
+ */
 defineProps<{ label: string; hint?: string; required?: boolean }>()
 </script>
 
@@ -31,6 +36,7 @@ defineProps<{ label: string; hint?: string; required?: boolean }>()
 .label {
   grid-area: label;
   color: var(--text-primary);
+  font-weight: var(--weight-medium);
   align-self: center;
 }
 
@@ -42,7 +48,7 @@ defineProps<{ label: string; hint?: string; required?: boolean }>()
 .hint {
   grid-area: hint;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .control {
@@ -53,31 +59,69 @@ defineProps<{ label: string; hint?: string; required?: boolean }>()
   min-width: 0;
 }
 
+/* 输入控件统一外观：深色内嵌底 + 聚焦时品牌蓝描边与光晕 */
 .control :deep(input[type='text']),
 .control :deep(input[type='password']),
 .control :deep(input[type='number']),
 .control :deep(select) {
   width: 100%;
-  padding: 7px 10px;
-  border-radius: var(--radius-sm);
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-xs);
   border: 1px solid var(--border-subtle);
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--fill-1);
+  color: var(--text-primary);
   outline: none;
-  transition: border-color var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.control :deep(input[type='text']:hover),
+.control :deep(input[type='password']:hover),
+.control :deep(input[type='number']:hover),
+.control :deep(select:hover) {
+  border-color: var(--border-strong);
 }
 
 .control :deep(input:focus),
 .control :deep(select:focus) {
   border-color: var(--aurora-blue);
+  background: var(--fill-2);
+  box-shadow: 0 0 0 3px rgba(86, 132, 255, 0.22);
 }
 
 .control :deep(textarea) {
   width: 100%;
   min-height: 64px;
   padding: 8px 10px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
   border: 1px solid var(--border-subtle);
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--fill-1);
+  color: var(--text-primary);
+  font-family: inherit;
+  line-height: var(--leading-normal);
+  outline: none;
   resize: vertical;
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.control :deep(textarea:focus) {
+  border-color: var(--aurora-blue);
+  background: var(--fill-2);
+  box-shadow: 0 0 0 3px rgba(86, 132, 255, 0.22);
+}
+
+/* 复选框：沿用系统外观但统一强调色，避免各页各自写死 */
+.control :deep(input[type='checkbox']) {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-xs);
+  accent-color: var(--aurora-blue);
+  cursor: pointer;
 }
 </style>

@@ -66,6 +66,7 @@ import { createTray, type TrayController } from './tray.js'
 import { SMOKE_FLAG, SMOKE_RESULT_PREFIX, smokeScript } from './smoke.js'
 import { STUB_API_KEY, STUB_MODEL, startStubLlmServer, type StubLlmServer } from './smoke-llm.js'
 import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
+import { captureWindows, defaultCapturePlan, filterCapturePlan } from './capture.js'
 
 const isDev = !app.isPackaged
 
@@ -709,10 +710,60 @@ async function bootstrap(): Promise<void> {
 
   logger.info('Aurora 就绪')
 
-  // 10. 开发自测（AURORA_SMOKE=1）：在真实渲染进程里跑一遍关键链路后退出
-  if (isDev && process.env[SMOKE_FLAG] === '1') {
+  // 10. 视觉核对（AURORA_CAPTURE=<目录>，仅开发态）：截完五个窗口 + 设置页各页后退出。
+  //     与 AURORA_SMOKE 互斥：两者都会在结束时退出进程，同开只会互相抢窗口。
+  const captureDir = process.env['AURORA_CAPTURE']
+  if (isDev && captureDir !== undefined && captureDir.trim() !== '') {
+    void runCapture(captureDir.trim())
+  } else if (isDev && process.env[SMOKE_FLAG] === '1') {
+    // 11. 开发自测（AURORA_SMOKE=1）：在真实渲染进程里跑一遍关键链路后退出
     void runSmokeTest(userData)
   }
+}
+
+/**
+ * 视觉核对（`AURORA_CAPTURE=<目录> pnpm dev`，docs/07 §5）：
+ * 把五个窗口 + 提示条两态 + 设置页各页截成 PNG 后退出，供前端视觉验收用。
+ *
+ * 只用 `webContents.capturePage()`，不依赖屏幕是否可见 / 是否被别的窗口遮挡，
+ * 因此可以在自动化流程里跑，也不会把用户的桌面状态当成断言依据。
+ */
+async function runCapture(dir: string): Promise<void> {
+  if (windows === undefined) {
+    logger?.error('截图失败：窗口管理器尚未就绪')
+    app.exit(1)
+    return
+  }
+  const manager = windows
+  const plan = filterCapturePlan(defaultCapturePlan(manager), process.env['AURORA_CAPTURE_WINDOWS'])
+  logger?.info('开始窗口截图', { dir, count: plan.length })
+  const result = await captureWindows({
+    dir,
+    targets: plan,
+    manager,
+    logger: logger ?? undefined,
+    delayMs: 700,
+  })
+  logger?.info('窗口截图完成', { written: result.files.length, dir })
+
+  // 渲染层探针结果与截图一起落盘：截图回答"长什么样"，探针回答"能不能点"。
+  // 用与 AURORA_SMOKE 相同的前缀，方便在同一条命令链里 grep 结果。
+  try {
+    const report = { dir, files: result.files, checks: result.checks }
+    await fs.writeFile(join(dir, 'report.json'), JSON.stringify(report, null, 2), 'utf8')
+  } catch (error) {
+    logger?.warn('截图报告写出失败', { error: String(error) })
+  }
+  for (const item of result.checks) {
+    if (item.result === undefined) continue
+    logger?.[item.ok ? 'info' : 'error'](
+      `${SMOKE_RESULT_PREFIX} 截图探针 ${item.name} — ${JSON.stringify(item.result)}`,
+    )
+  }
+
+  // 一次性任务：写完就退出，不常驻（与 AURORA_SMOKE 同一约定）
+  manager.prepareQuit()
+  app.exit(result.files.length > 0 ? 0 : 1)
 }
 
 /**

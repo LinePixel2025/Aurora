@@ -40,6 +40,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 
 - **跑单个/单包测试**：`pnpm vitest run <文件路径>`，或 `pnpm --filter @aurora/agent-core test`。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：PowerShell 下 `$env:AURORA_SMOKE='1'; pnpm dev`，结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`。调试渲染层加 `AURORA_DEVTOOLS=1`。
+- **窗口截图核对（前端视觉验收）**：`$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev`，会把五个窗口、
+  提示条两态、设置页 6 页截成 PNG 落到该目录，并写 `report.json`（渲染层 DOM 探针结果：面板按钮命中测试、
+  点击竖条后的窗口状态）。只截部分窗口用 `$env:AURORA_CAPTURE_WINDOWS='edge-bar,chat'`。
+  命令结束后进程自行退出；截图规则见 docs/07 §5.3。
 - **CI 是按需触发的，不跟随 push / PR 自动跑**（`.github/workflows/ci.yml`，Windows）。
   日常验证靠本地 `pnpm typecheck && pnpm test && pnpm build`——与 CI 同一套检查、全量约 15 秒；
   需要干净环境时手动发起（Actions → Run workflow，或 `gh workflow run ci.yml`）。

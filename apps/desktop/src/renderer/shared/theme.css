@@ -1,28 +1,78 @@
-/** 主题样式：深色为主 + 极光绿→蓝渐变（docs/07 §5）。 */
+/**
+ * Aurora 设计令牌与动效基线（docs/07 §1/§5）—— 五个窗口共用（各自 main.ts 里 import）。
+ *
+ * 约定（改这里等于改全部窗口，务必克制）：
+ * - **既有令牌名一律保留**（值可以改）：`--bg-*` / `--border-*` / `--text-*` / `--status-*` /
+ *   `--radius-sm|md|lg` / `--space-1..6` / `--transition-fast|base` / `--font-ui|mono` / `--aurora-gradient`。
+ *   它们散布在各窗口的 scoped 样式里，删名字会导致大面积样式静默失效（CSS 变量不报错）。
+ * - 新增能力一律用**新名字**（`--fill-*` / `--radius-xs|xl|pill` / `--dur-*` / `--ease-*` / `--shadow-*` / `--blur-*`）。
+ * - 所有过渡必须走 `--transition-fast|base` 或 `--dur-*` + `--ease-*`，**不要写死时长** ——
+ *   否则 `prefers-reduced-motion` 降级会漏掉它们。
+ *
+ * 风格取向：Apple 风格深色玻璃（分层填充 + 大圆角 + 柔和阴影 + 弹性缓动），品牌极光渐变作唯一点缀。
+ */
 :root {
+  color-scheme: dark;
+
+  /* ───────── 品牌 ───────── */
   --aurora-green: #38d196;
   --aurora-blue: #5684ff;
   --aurora-gradient: linear-gradient(135deg, var(--aurora-green), var(--aurora-blue));
 
-  --bg-base: #0f1116;
-  --bg-raised: #171a21;
-  --bg-overlay: rgba(23, 26, 33, 0.86);
-  --bg-glass: rgba(18, 20, 26, 0.72);
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.16);
+  /* ───────── 底色与材质（Apple 灰阶） ───────── */
+  --bg-base: #0b0c0f;
+  --bg-raised: #141519;
+  --bg-overlay: rgba(20, 21, 25, 0.78);
+  --bg-glass: rgba(20, 21, 25, 0.72);
+  /* 分层填充：越靠上层越亮（卡片 → 悬停 → 选中） */
+  --fill-1: rgba(255, 255, 255, 0.045);
+  --fill-2: rgba(255, 255, 255, 0.075);
+  --fill-3: rgba(255, 255, 255, 0.11);
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.14);
 
-  --text-primary: #eef1f6;
-  --text-secondary: #a7b0c0;
-  --text-muted: #6d7686;
+  /* ───────── 文本 ───────── */
+  --text-primary: #f5f5f7;
+  --text-secondary: #a1a1aa;
+  --text-muted: #6e6e73;
 
-  --status-idle: #6d7686;
+  /* ───────── 状态语义（全局同色，docs/07 §1） ───────── */
+  --status-idle: #6e6e73;
   --status-running: #5684ff;
   --status-unread: #f5a524;
   --status-error: #f2555a;
+  --status-ok: #38d196;
 
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
+  /* ───────── 字体 ───────── */
+  /* Windows 上没有真 SF，用系统 UI 字体栈近似；中文回落到雅黑 */
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Segoe UI Variable Text',
+    'Segoe UI', 'Microsoft YaHei UI', '微软雅黑', system-ui, sans-serif;
+  --font-display: 'SF Pro Display', 'Segoe UI Variable Display', var(--font-ui);
+  --font-mono: 'Cascadia Code', 'Consolas', 'JetBrains Mono', monospace;
+
+  /* 字号阶梯：正文 13.5px（Mac 观感），标题用 display 字体 + 负字距 */
+  --text-xs: 11px;
+  --text-sm: 12.5px;
+  --text-base: 13.5px;
+  --text-lg: 15px;
+  --text-xl: 20px;
+  --text-2xl: 26px;
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* ───────── 圆角（Apple 的连续圆角观感靠大半径 + 小元素用 pill） ───────── */
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-pill: 999px;
+
+  /* ───────── 间距（沿用旧值，不要改：五个窗口的排布都基于它） ───────── */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -30,12 +80,25 @@
   --space-5: 24px;
   --space-6: 32px;
 
-  --transition-fast: 120ms ease-out;
-  --transition-base: 180ms ease-out;
+  /* ───────── 毛玻璃 ───────── */
+  --blur-thin: 12px;
+  --blur: 24px;
+  --blur-thick: 40px;
 
-  --font-ui:
-    'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', '微软雅黑', system-ui, sans-serif;
-  --font-mono: 'Cascadia Code', 'Consolas', 'JetBrains Mono', monospace;
+  /* ───────── 阴影（越上层越散、越深） ───────── */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.32);
+  --shadow-3: 0 24px 64px rgba(0, 0, 0, 0.44);
+
+  /* ───────── 缓动与时长 ───────── */
+  /* spring 用于"出现/展开"（快起慢收，观感有弹性但不回弹），standard 用于颜色与透明度 */
+  --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 140ms;
+  --dur-base: 220ms;
+  --dur-slow: 340ms;
+  --transition-fast: var(--dur-fast) var(--ease-standard);
+  --transition-base: var(--dur-base) var(--ease-spring);
 }
 
 * {
@@ -48,7 +111,8 @@ body {
   padding: 0;
   height: 100%;
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
   color: var(--text-primary);
   background: var(--bg-base);
   -webkit-font-smoothing: antialiased;
@@ -79,27 +143,55 @@ select {
   color: var(--text-primary);
 }
 
+/* 键盘可达性：只在键盘导航时显形，鼠标点击不出现描边 */
+:focus-visible {
+  outline: 2px solid rgba(86, 132, 255, 0.7);
+  outline-offset: 2px;
+  border-radius: inherit;
+}
+
+::selection {
+  background: rgba(86, 132, 255, 0.35);
+  color: var(--text-primary);
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
-  border-radius: 4px;
+  background: var(--fill-3);
+  border-radius: var(--radius-pill);
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.24);
 }
 
-/* ───────── 通用原子类 ───────── */
+/* ───────── 材质 ───────── */
 
+/**
+ * 玻璃层：模糊 + 提饱和 + 1px 内描边（顶部亮边）+ 柔和外阴影。
+ * 不支持 backdrop-filter 的环境回落到几乎不透明的实色，避免文字糊在背景上。
+ */
 .glass {
   background: var(--bg-glass);
-  backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(var(--blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
   border: 1px solid var(--border-subtle);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    var(--shadow-2);
 }
+
+@supports not (backdrop-filter: blur(1px)) {
+  .glass {
+    background: rgba(20, 21, 25, 0.96);
+  }
+}
+
+/* ───────── 通用原子类 ───────── */
 
 .drag-region {
   -webkit-app-region: drag;
@@ -131,7 +223,7 @@ select {
 }
 
 .tiny {
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .mono {
@@ -141,11 +233,11 @@ select {
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  background: rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+  background: var(--fill-1);
   color: var(--text-secondary);
 }
 
@@ -170,6 +262,118 @@ select {
   margin: var(--space-3) 0;
 }
 
+/**
+ * 页面骨架：各页原本各自 scoped 声明 `.page` / `header h2`，这里收敛成全局类。
+ * 页面若需要不同的内边距 / 最大宽度，仍可在自己的 scoped 样式里覆盖
+ * （scoped 选择器带 `[data-v-*]`，优先级高于全局类，覆盖是安全的）。
+ */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  height: 100%;
+  min-height: 0;
+}
+
+.page-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--leading-tight);
+}
+
+.page-sub {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+/* ───────── 动效 ───────── */
+
+/** 可点击卡片的统一反馈：悬停上浮 1px + 抬升阴影，按下缩到 0.98 */
+.interactive {
+  transition:
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast),
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.interactive:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2);
+}
+
+.interactive:active {
+  transform: scale(0.98);
+  box-shadow: var(--shadow-1);
+}
+
+@keyframes aurora-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes aurora-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/** 进场：内容块逐个出现时用 `.anim-rise`，弹出层用 `.anim-pop` */
+.anim-rise {
+  animation: aurora-rise-in var(--dur-base) var(--ease-spring) both;
+}
+
+.anim-pop {
+  animation: aurora-pop-in var(--dur-base) var(--ease-spring) both;
+}
+
+/* Vue <Transition> 预设：name="sheet|rise|fade|collapse" */
+
+/* 从右侧滑入（提示条面板 / 交互窗内的抽屉） */
+.sheet-enter-active,
+.sheet-leave-active {
+  transition:
+    opacity var(--dur-base) var(--ease-standard),
+    transform var(--dur-base) var(--ease-spring);
+}
+
+.sheet-enter-from,
+.sheet-leave-to {
+  opacity: 0;
+  transform: translateX(16px);
+}
+
+/* 自下而上浮起（消息气泡 / 列表项） */
+.rise-enter-active,
+.rise-leave-active {
+  transition:
+    opacity var(--dur-base) var(--ease-standard),
+    transform var(--dur-base) var(--ease-spring);
+}
+
+.rise-enter-from,
+.rise-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+/* 纯淡入淡出（内容切换） */
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity var(--transition-base);
@@ -178,4 +382,63 @@ select {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+/**
+ * 高度展开（工具执行卡片 / 折叠区块）。
+ * 用 max-height 而不是 height：内容高度未知，动画结束会自然停在实际高度。
+ */
+.collapse-enter-active,
+.collapse-leave-active {
+  overflow: hidden;
+  transition:
+    max-height var(--dur-base) var(--ease-standard),
+    opacity var(--dur-base) var(--ease-standard);
+}
+
+.collapse-enter-from,
+.collapse-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+
+.collapse-enter-to,
+.collapse-leave-from {
+  max-height: 70vh;
+  opacity: 1;
+}
+
+/* ───────── 系统偏好降级 ───────── */
+
+/**
+ * `prefers-reduced-motion`：把时长压到 1ms 并让所有位移动画立即落位。
+ * 断言方式：`transition-duration` 覆盖到全部元素（含内联 200ms 这类没走令牌的写法），
+ * 保证降级是"全局兜底"而不是"只对守规矩的样式生效"。
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 1ms;
+    --dur-base: 1ms;
+    --dur-slow: 1ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .interactive:hover,
+  .interactive:active {
+    transform: none;
+  }
+
+  .anim-rise,
+  .anim-pop {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
 }

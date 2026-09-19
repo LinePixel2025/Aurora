@@ -104,9 +104,55 @@
 - **系统通知**：分类完成（点击打开对应文件夹）、课前提醒、引导提醒。
 - **窗口内 Toast**：错误提示（LLM 失败、MCP 断开、分类失败）与可恢复操作入口。
 
-## 5. 视觉方向（建议基线）
+## 5. 视觉方向与设计令牌（SSOT）
 
-- 深色为主、半透明毛玻璃质感；主色取极光绿 → 蓝渐变（呼应 Aurora），状态色语义统一（蓝 = 运行中、橙 = 未读、红 = 异常）。
-- 字体：系统 UI 字体栈（Segoe UI Variable / 微软雅黑）。
-- 窗口圆角 8～12px，统一 8px 间距栅格；所有动画 120～200ms ease-out。
-- 详细视觉以实际 UI 开发时的设计稿为准，本节约束的是风格方向而非像素。
+方向：**Apple 风格深色玻璃** —— 分层填充 + 大圆角 + 柔和阴影 + 弹性缓动，品牌极光渐变作唯一点缀。
+
+### 5.1 设计令牌
+
+全部定义在 `apps/desktop/src/renderer/shared/theme.css`，五个窗口共用（各自 `main.ts` 里 import）。
+
+| 类别 | 令牌 | 值 / 说明 |
+|---|---|---|
+| 品牌 | `--aurora-green` / `--aurora-blue` / `--aurora-gradient` | `#38d196` / `#5684ff`，渐变呼应 Aurora；**全局唯一点缀色** |
+| 底色 | `--bg-base` / `--bg-raised` / `--bg-overlay` / `--bg-glass` | `#0b0c0f` / `#141519` / `rgba(20,21,25,.78)` / `.72` |
+| 分层填充 | `--fill-1` / `--fill-2` / `--fill-3` | 悬浮层 → 卡片 → 悬停/选中，逐层变亮 |
+| 分隔线 | `--border-subtle` / `--border-strong` | `rgba(255,255,255,.07)` / `.14` |
+| 文本 | `--text-primary` / `--text-secondary` / `--text-muted` | `#f5f5f7` / `#a1a1aa` / `#6e6e73` |
+| 状态 | `--status-idle` / `-running` / `-unread` / `-error` / `-ok` | 灰 / 蓝 / 橙 / 红 / 绿，**五个窗口语义一致** |
+| 字体 | `--font-ui` / `--font-display` / `--font-mono` | 系统 UI 栈（`SF Pro Text` → `Segoe UI Variable` → 雅黑）；标题用 display 字体 + `-0.01em` |
+| 字号 | `--text-xs(11)` / `sm(12.5)` / `base(13.5)` / `lg(15)` / `xl(20)` / `2xl(26)` | 正文基准 `--text-base`；`--leading-tight(1.25)` / `normal(1.5)` |
+| 字重 | `--weight-regular(400)` / `medium(500)` / `semibold(600)` | |
+| 圆角 | `--radius-xs(6)` / `sm(10)` / `md(14)` / `lg(20)` / `xl(28)` / `pill(999)` | |
+| 间距 | `--space-1..6`（4/8/12/16/24/32） | 8px 栅格 |
+| 材质 | `--blur-thin(12)` / `--blur(24)` / `--blur-thick(40)` | `.glass` = 模糊 + `saturate(180%)` + 1px 内描边 + `--shadow-2`；不支持 `backdrop-filter` 时回落实色 |
+| 阴影 | `--shadow-1` / `-2` / `-3` | 越靠上层越散越深 |
+| 缓动 | `--ease-standard` / `--ease-spring` | 颜色/透明度用 standard；出现/展开用 spring（快起慢收、不回弹） |
+| 时长 | `--dur-fast(140)` / `base(220)` / `slow(340)`；`--transition-fast|base` | 后者是前者的组合别名 |
+
+**硬约束**：既有令牌名（`--bg-*`、`--border-*`、`--text-*`、`--status-*`、`--radius-sm|md|lg`、
+`--space-1..6`、`--transition-fast|base`、`--font-ui|mono`、`--aurora-gradient`）**只增不删**——
+它们散落在各窗口的 scoped 样式里，删名字不会报错，只会静默掉样式。
+
+### 5.2 动效规范
+
+- 工具类（`theme.css` 全局）：`.interactive`（悬停上浮 1px + `--shadow-2`，按下 `scale(.98)`）、
+  `.anim-rise`（`translateY(6px)` 淡入）、`.anim-pop`（`scale(.96)` 弹入）。
+- Vue `<Transition>` 预设：`.sheet-*`（右侧滑入，提示条面板 / 抽屉）、`.rise-*`（气泡与列表项）、
+  `.fade-*`（内容切换）、`.collapse-*`（`max-height` 展开，工具卡片 / 折叠区块）。
+- **硬约定**：所有过渡/动画必须走 `--transition-*` 或 `--dur-*` + `--ease-*`，不写死时长；
+  `prefers-reduced-motion: reduce` 下把三个时长压到 1ms 并让位移动画立刻落位（theme.css 里已全局兜底）。
+- 页面骨架统一用 `.page` / `.page-title` / `.page-sub`；页面需要不同内边距时在自己的 scoped 样式里覆盖
+  （scoped 选择器优先级更高，覆盖安全）。
+
+### 5.3 截图核对工具（AURORA_CAPTURE）
+
+- `AURORA_CAPTURE=<目录> pnpm dev`：把五个窗口、提示条两态、设置页 6 页截成 PNG 后退出；
+  `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）。仅开发态生效。
+- 产物：`<目录>/<window>.png`、`edge-bar-expanded.png`（悬停展开态）、`settings-<page>.png`，
+  外加 `report.json`（渲染层探针结果）。
+- 探针（`main/capture.ts`）用 `webContents.executeJavaScript` 驱动**真实 hover / click** 链路：
+  面板按钮的 `elementFromPoint` 命中测试、点击竖条后的窗口状态。因此它能钉住
+  「面板存在但点不到」这类纯截图看不出来的问题；结果以 `AURORA_SMOKE_RESULT:` 前缀写进主进程日志。
+- 设置页深链：`main/window-manager.ts` 的 `ensure(name, query)` / `reload(name, query)`
+  给 URL / `loadFile` 传 query，仅截图场景使用，正常启动不带 query。

@@ -1,5 +1,10 @@
 <script setup lang="ts">
-/** 统一按钮：主色渐变 / 次级 / 文本三种形态。 */
+/**
+ * 统一按钮：primary（极光渐变）/ secondary（玻璃填充）/ ghost（纯文本）/ danger（危险操作）。
+ *
+ * 视觉走 theme.css 的令牌与 `.interactive`（悬停上浮 + 按下回缩）；
+ * props / emits 与调用方式保持不变。
+ */
 withDefaults(
   defineProps<{
     variant?: 'primary' | 'secondary' | 'ghost' | 'danger'
@@ -13,7 +18,7 @@ withDefaults(
 
 <template>
   <button
-    class="aurora-button"
+    class="aurora-button interactive"
     :class="[`v-${variant}`, `s-${size}`, { block }]"
     :disabled="disabled"
     type="button"
@@ -31,20 +36,19 @@ withDefaults(
   border-radius: var(--radius-sm);
   padding: 8px 14px;
   border: 1px solid transparent;
-  transition:
-    background var(--transition-fast),
-    border-color var(--transition-fast),
-    transform var(--transition-fast);
+  font-weight: var(--weight-medium);
   white-space: nowrap;
-}
-
-.aurora-button:active:not(:disabled) {
-  transform: translateY(1px);
 }
 
 .aurora-button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* 禁用态不吃 `.interactive` 的悬停反馈 */
+.aurora-button:disabled:hover {
+  transform: none;
 }
 
 .block {
@@ -53,13 +57,15 @@ withDefaults(
 
 .s-sm {
   padding: 5px 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
+  border-radius: var(--radius-xs);
 }
 
 .v-primary {
   background: var(--aurora-gradient);
   color: #08131a;
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
+  box-shadow: var(--shadow-1);
 }
 
 .v-primary:hover:not(:disabled) {
@@ -67,13 +73,13 @@ withDefaults(
 }
 
 .v-secondary {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--fill-2);
   border-color: var(--border-subtle);
   color: var(--text-primary);
 }
 
 .v-secondary:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.11);
+  background: var(--fill-3);
 }
 
 .v-ghost {
@@ -82,7 +88,8 @@ withDefaults(
 
 .v-ghost:hover:not(:disabled) {
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--fill-1);
+  box-shadow: none;
 }
 
 .v-danger {
