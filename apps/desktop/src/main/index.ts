@@ -756,8 +756,11 @@ async function runCapture(dir: string): Promise<void> {
   }
   for (const item of result.checks) {
     if (item.result === undefined) continue
-    logger?.[item.ok ? 'info' : 'error'](
-      `${SMOKE_RESULT_PREFIX} 截图探针 ${item.name} — ${JSON.stringify(item.result)}`,
+    // 探针脚本可以返回 `pass: boolean` 表达一条明确断言；没有 pass 时只当作信息记录
+    const verdict = (item.result as { pass?: unknown }).pass
+    const label = verdict === undefined ? 'INFO' : verdict === true ? 'PASS' : 'FAIL'
+    logger?.[verdict === false ? 'error' : 'info'](
+      `${SMOKE_RESULT_PREFIX} ${label} 截图探针 ${item.name} — ${JSON.stringify(item.result)}`,
     )
   }
 

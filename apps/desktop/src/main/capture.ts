@@ -188,9 +188,13 @@ export const EDGE_BAR_CLICK_SCRIPT = `(async () => {
       chatVisible: state.value.visible['chat'] === true,
       miniChatVisible: state.value.visible['mini-chat'] === true,
       primary: state.value.primary,
+      pass:
+        state.value.visible['chat'] === true &&
+        state.value.visible['mini-chat'] !== true &&
+        state.value.primary === 'chat',
     }
   } catch (error) {
-    return { clicked: false, reason: String(error) }
+    return { clicked: false, reason: String(error), pass: false }
   }
 })()`
 
@@ -227,14 +231,95 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       buttonCount: buttons.length,
       probes,
       allClickable: probes.length > 0 && probes.every((p) => p.hit && p.insideWindow),
+      pass:
+        buttons.length === 4 &&
+        width <= 228 &&
+        probes.every((p) => p.hit && p.insideWindow && p.width > 0),
     }
   } catch (error) {
-    return { panel: false, reason: String(error) }
+    return { panel: false, reason: String(error), pass: false }
   }
 })()`
 
 /**
- * 默认截图清单：五个窗口 + 提示条两态 + 设置页各页深链 + 一条点击回归。
+ * 设置页门控探针（docs/08 §6.1）：每个控件带 `data-field="<配置路径>"`，
+ * 条件不成立时**整个控件不在 DOM 里**（不是 disabled、也不是靠 CSS 藏），位置改为 `data-empty` 说明块。
+ *
+ * 这一条钉住的是用户原话里的第三个诉求：「用户无法设置的内容不要显示」。
+ */
+export const SETTINGS_FIELDS_SCRIPT = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const emptyStates = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
+      el.getAttribute('data-empty'),
+    )
+    const classroomFields = count('[data-field^="modes.classroom"]')
+    const languageFields = count('[data-field="general.language"]')
+    const edgeBarToggle = count('[data-field="general.edgeBar.enabled"]')
+    const edgeBarDetail = count(
+      '[data-field="general.edgeBar.opacity"],[data-field^="general.edgeBar.quietHours"]',
+    )
+    const activeMode = document.querySelector('.cards .card.active .card-head strong')
+    const activeNav = document.querySelector('.nav-item.active')
+    return {
+      page: activeNav === null ? 'unknown' : (activeNav.textContent || '').trim(),
+      classroomFields,
+      languageFields,
+      edgeBarToggle,
+      edgeBarDetail,
+      activeMode: activeMode === null ? null : (activeMode.textContent || '').trim(),
+      emptyStates,
+      // 死字段（general.language）在任何页面都不该出现；提示条详情跟着开关走
+      pass:
+        languageFields === 0 &&
+        (edgeBarToggle === 0 ? edgeBarDetail === 0 : edgeBarDetail > 0),
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/** 把模式切到 Work（未选中 ClassRoom 时不应出现任何 classroom 控件） */
+export const SETTINGS_SWITCH_TO_WORK_SCRIPT = `(() => {
+  try {
+    const cards = Array.from(document.querySelectorAll('.cards .card'))
+    const target = cards.find((card) =>
+      ((card.querySelector('.card-head strong') || {}).textContent || '').toLowerCase().includes('work'),
+    )
+    if (target === undefined) return { switched: false, reason: 'no work card' }
+    const button = Array.from(target.querySelectorAll('button')).find(
+      (item) => (item.textContent || '').trim() === '启用',
+    )
+    if (button === undefined) return { switched: false, reason: 'no enable button (already active?)' }
+    button.click()
+    return { switched: true }
+  } catch (error) {
+    return { switched: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 切到非 ClassRoom 模式后：classroom 字段必须为 0，并出现「暂无可配置项」空状态。
+ * 这条是 step-06 的核心验收，靠真实 DOM 而不是"看代码应该有 v-if"。
+ */
+export const SETTINGS_CLASSROOM_GATING_SCRIPT = `(() => {
+  try {
+    const classroomFields = document.querySelectorAll('[data-field^="modes.classroom"]').length
+    const empty = document.querySelector('[data-empty^="modes."]')
+    const active = document.querySelector('.cards .card.active .card-head strong')
+    return {
+      classroomFields,
+      emptyState: empty === null ? null : empty.getAttribute('data-empty'),
+      activeMode: active === null ? null : (active.textContent || '').trim(),
+      pass: classroomFields === 0 && empty !== null,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 默认截图清单：五个窗口 + 提示条两态 + 设置页各页深链 + 三条 DOM 断言。
  * `AURORA_CAPTURE_WINDOWS` 可以只截其中一部分（逗号分隔）。
  */
 export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
@@ -251,8 +336,29 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
     { name: 'onboarding', file: 'onboarding.png' },
   ]
   for (const page of SETTINGS_PAGE_IDS) {
-    plan.push({ name: 'settings', file: `settings-${page}.png`, query: { page } })
+    plan.push({
+      name: 'settings',
+      file: `settings-${page}.png`,
+      query: { page },
+      // 「常规」页是 `general.*` 门控的现场：死字段 general.language 必须为 0，
+      // 提示条透明度 / 静默时段要跟着 general.edgeBar.enabled 出现或消失
+      check: page === 'general' ? SETTINGS_FIELDS_SCRIPT : undefined,
+    })
   }
+  // 设置页门控断言：classroom 配置在；切到 Work 后 classroom 配置必须消失
+  plan.push({
+    name: 'settings',
+    file: 'settings-modes-classroom-gating.png',
+    query: { page: 'modes' },
+    check: SETTINGS_FIELDS_SCRIPT,
+  })
+  plan.push({
+    name: 'settings',
+    file: 'settings-modes-work-gating.png',
+    query: { page: 'modes' },
+    act: SETTINGS_SWITCH_TO_WORK_SCRIPT,
+    check: SETTINGS_CLASSROOM_GATING_SCRIPT,
+  })
   // 收尾两件事：面板收起（不留展开态）、点击竖条能呼出交互窗（回归 line 1 的 bug）
   plan.push({
     name: 'edge-bar',
