@@ -1,9 +1,16 @@
 <script setup lang="ts">
 /**
- * 右侧提示条（docs/07 §2.2）：贴屏幕右缘的 8px 竖条，悬停 / 点击展开为 200×全高面板。
- * 面板含：AI 状态灯、当前模式、最近消息预览、打开对话 / 设置 / 隐藏 快捷入口。
+ * 右侧提示条（docs/07 §2.2）：贴屏幕右缘的 8px 竖条。
+ *
+ * 行为契约：
+ * - 悬停 → 主进程把窗口加宽到 228px（`window:setEdgeBarExpanded`），面板滑入；
+ *   移开鼠标 → 面板淡出后再把窗口收回 8px（否则屏幕右侧会留一块看不见却挡鼠标的区域）；
+ * - 点击竖条 → 呼出完整交互窗（`window:showChat`）；展开态下竖条仍是有效点击目标；
+ * - 面板含：AI 状态灯、当前模式、最近消息预览、系统状态、打开对话 / 设置 / 小窗对话 / 隐藏。
+ *
+ * 视觉重构（Apple 风格令牌与动效）在 step-05，这里只保证行为正确。
  */
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import { useChat } from '../shared/composables/useChat.js'
 import {
@@ -13,6 +20,13 @@ import {
   useWindowStore,
 } from '../shared/stores.js'
 
+/** 悬停多久才展开：太短会被鼠标划过边缘误触发，太长显得迟钝 */
+const EXPAND_DELAY_MS = 120
+/** 移开多久才收起：给用户从竖条移到面板的容错时间 */
+const COLLAPSE_DELAY_MS = 220
+/** 面板退出动画时长，与 theme.css 的 --transition-base 对齐；收窗口必须晚于它，否则面板被裁掉 */
+const PANEL_EXIT_MS = 220
+
 const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
@@ -21,10 +35,61 @@ const chat = useChat('mini-chat')
 const { statusTone } = chat
 
 const expanded = ref(false)
+let expandTimer: ReturnType<typeof setTimeout> | undefined
+let collapseTimer: ReturnType<typeof setTimeout> | undefined
+let shrinkTimer: ReturnType<typeof setTimeout> | undefined
+
+function clearTimers(): void {
+  clearTimeout(expandTimer)
+  clearTimeout(collapseTimer)
+  clearTimeout(shrinkTimer)
+  expandTimer = undefined
+  collapseTimer = undefined
+  shrinkTimer = undefined
+}
+
+/** 悬停进入：窗口先加宽，面板后出现 —— 反过来的话面板会先被 8px 窗口裁掉再跳出来 */
+function onPointerEnter(): void {
+  clearTimeout(collapseTimer)
+  clearTimeout(shrinkTimer)
+  collapseTimer = undefined
+  shrinkTimer = undefined
+  if (expanded.value) return
+  expandTimer = setTimeout(() => {
+    expandTimer = undefined
+    void (async () => {
+      await windowStore.setEdgeBarExpanded(true)
+      expanded.value = true
+    })()
+  }, EXPAND_DELAY_MS)
+}
+
+/** 移开鼠标：面板先淡出，动画结束后再把窗口收回竖条 */
+function onPointerLeave(): void {
+  clearTimeout(expandTimer)
+  expandTimer = undefined
+  clearTimeout(collapseTimer)
+  collapseTimer = setTimeout(() => {
+    collapseTimer = undefined
+    expanded.value = false
+    clearTimeout(shrinkTimer)
+    shrinkTimer = setTimeout(() => {
+      shrinkTimer = undefined
+      void windowStore.setEdgeBarExpanded(false)
+    }, PANEL_EXIT_MS)
+  }, COLLAPSE_DELAY_MS)
+}
+
+/** 面板内的操作：立即收起（用户已经明确做了选择，不需要动画缓冲） */
+function collapseNow(): void {
+  clearTimers()
+  expanded.value = false
+  void windowStore.setEdgeBarExpanded(false)
+}
 
 const recent = computed(() => {
   const last = chat.lastAssistant.value
-  if (!last) return '还没有消息：在服务窗输入即可开始'
+  if (!last) return '还没有消息：点「小窗对话」开始'
   return last.content.slice(0, 120) || '思考中…'
 })
 
@@ -39,29 +104,31 @@ const statusLabel = computed(() =>
 )
 
 async function openChat(): Promise<void> {
-  expanded.value = false
+  collapseNow()
   await windowStore.showChat()
 }
 
+async function openMiniChat(): Promise<void> {
+  collapseNow()
+  await windowStore.showMiniChat()
+}
+
 async function openSettings(): Promise<void> {
-  expanded.value = false
+  collapseNow()
   await windowStore.show('settings')
 }
 
 async function hideSelf(): Promise<void> {
-  expanded.value = false
+  collapseNow()
   await windowStore.hide('edge-bar')
 }
+
+onUnmounted(clearTimers)
 </script>
 
 <template>
-  <div
-    class="edge"
-    :class="{ expanded }"
-    @mouseenter="expanded = true"
-    @mouseleave="expanded = false"
-  >
-    <button class="strip" type="button" title="Aurora" @click="openChat">
+  <div class="edge" :class="{ expanded }" @mouseenter="onPointerEnter" @mouseleave="onPointerLeave">
+    <button class="strip" type="button" title="打开 Aurora 对话" @click="openChat">
       <StatusDot :tone="statusTone" :size="10" :title="statusLabel" />
       <span class="strip-label">AURORA</span>
     </button>
@@ -105,8 +172,8 @@ async function hideSelf(): Promise<void> {
 
         <section class="actions">
           <button type="button" @click="openChat">打开对话窗口</button>
+          <button type="button" @click="openMiniChat">小窗对话</button>
           <button type="button" @click="openSettings">设置</button>
-          <button type="button" @click="windowStore.showMiniChat()">小窗对话</button>
           <button type="button" @click="hideSelf">隐藏提示条</button>
         </section>
       </aside>
@@ -121,10 +188,12 @@ async function hideSelf(): Promise<void> {
   display: flex;
   justify-content: flex-end;
   align-items: stretch;
+  /* 窗口宽度就是内容宽度（收起 8 / 展开 228），不需要裁剪；保留 hidden 只为兜住圆角溢出 */
   overflow: hidden;
 }
 
 .strip {
+  flex: 0 0 8px;
   width: 8px;
   display: flex;
   flex-direction: column;
@@ -133,11 +202,11 @@ async function hideSelf(): Promise<void> {
   gap: var(--space-3);
   background: linear-gradient(180deg, rgba(56, 209, 150, 0.5), rgba(86, 132, 255, 0.5));
   border-radius: 4px 0 0 4px;
-  transition: width var(--transition-base);
+  transition: background var(--transition-fast);
 }
 
-.edge.expanded .strip {
-  width: 0;
+.strip:hover {
+  background: linear-gradient(180deg, rgba(56, 209, 150, 0.75), rgba(86, 132, 255, 0.75));
 }
 
 .strip-label {
@@ -148,12 +217,16 @@ async function hideSelf(): Promise<void> {
   font-weight: 600;
 }
 
+/**
+ * 面板宽度预算 220px = 窗口展开宽度 228px（EDGE_BAR_WIDTHS.expanded）- 8px 竖条。
+ * 超过这个宽度会被窗口裁掉，所以不要再加宽。
+ */
 .panel {
   position: absolute;
   right: 0;
   top: 0;
   bottom: 0;
-  width: 200px;
+  width: 220px;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);

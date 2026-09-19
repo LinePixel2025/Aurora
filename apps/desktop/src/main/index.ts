@@ -65,6 +65,7 @@ import { createUpdaterPort } from './updater-port.js'
 import { createTray, type TrayController } from './tray.js'
 import { SMOKE_FLAG, SMOKE_RESULT_PREFIX, smokeScript } from './smoke.js'
 import { STUB_API_KEY, STUB_MODEL, startStubLlmServer, type StubLlmServer } from './smoke-llm.js'
+import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
 
 const isDev = !app.isPackaged
 
@@ -801,6 +802,60 @@ async function runSmokeTest(userData: string): Promise<void> {
     '分类管线调用过模型（结构化输出）',
     stub.classifyRequestCount() > 0,
     `classify=${stub.classifyRequestCount()}`,
+  )
+
+  // 3. 提示条两态：断言**真实 BrowserWindow 的几何**（不只状态机）。
+  //    纯函数由 edge-bar-geometry.test.ts 覆盖；这里证明 setBounds 在主进程链路里真的生效，
+  //    且展开/收起保持右缘与 y 不变（docs/07 §2.2）。
+  //
+  //    注意：Windows 上 `getBounds()` 会带上窗口的不可见边框（实测 8px 请求 → 10px 返回，
+  //    且随 DPI 缩放变化），所以这里断言**不变量 + 容差**，而不是精确相等 ——
+  //    精确的几何算术由纯函数单测保证。
+  const near = (a: number, b: number, tolerance: number): boolean => Math.abs(a - b) <= tolerance
+  const workArea = screen.getPrimaryDisplay().workArea
+  const rightEdge = workArea.x + workArea.width
+  windows?.setEdgeBarExpanded(false)
+  const barCollapsed = windows?.getBounds('edge-bar')
+  windows?.setEdgeBarExpanded(true)
+  const barExpanded = windows?.getBounds('edge-bar')
+  windows?.setEdgeBarExpanded(false)
+  const barBack = windows?.getBounds('edge-bar')
+  record(
+    '提示条收起态真实窗口约 8px 宽且贴右缘',
+    barCollapsed !== undefined &&
+      near(barCollapsed.width, EDGE_BAR_WIDTHS.collapsed, 4) &&
+      near(barCollapsed.x + barCollapsed.width, rightEdge, 4),
+    JSON.stringify(barCollapsed),
+  )
+  record(
+    '提示条展开态真实窗口约 228px、右缘与 y 不变',
+    barCollapsed !== undefined &&
+      barExpanded !== undefined &&
+      near(barExpanded.width, EDGE_BAR_WIDTHS.expanded, 4) &&
+      near(barExpanded.x + barExpanded.width, barCollapsed.x + barCollapsed.width, 3) &&
+      barExpanded.y === barCollapsed.y,
+    JSON.stringify(barExpanded),
+  )
+  record(
+    '提示条展开比收起宽出约 220px（8 -> 228）',
+    barCollapsed !== undefined &&
+      barExpanded !== undefined &&
+      near(
+        barExpanded.width - barCollapsed.width,
+        EDGE_BAR_WIDTHS.expanded - EDGE_BAR_WIDTHS.collapsed,
+        4,
+      ),
+    barCollapsed !== undefined && barExpanded !== undefined
+      ? `delta=${barExpanded.width - barCollapsed.width}`
+      : 'undefined',
+  )
+  record(
+    '提示条收起后真实窗口回到初始矩形（往返幂等）',
+    barBack !== undefined &&
+      barCollapsed !== undefined &&
+      barBack.x === barCollapsed.x &&
+      barBack.width === barCollapsed.width,
+    JSON.stringify(barBack),
   )
 
   for (const item of results) {

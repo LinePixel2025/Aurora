@@ -151,6 +151,10 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
 ## 6. IPC 契约约定
 
 - 通道命名：`namespace:action`，如 `chat:send`、`settings:get`、`classify:subscribe`。
+- 窗口控制（`window:*`）：`show` / `hide` / `toggle` / `showChat` / `showMiniChat` / `setPosition` /
+  `setEdgeBarExpanded` / `getState`，事件推送 `window:stateChanged`。
+  `window:setEdgeBarExpanded` 驱动提示条两态宽度（收起 8px / 展开 228px，右缘固定，见 07 §2.2）；
+  它只改窗口几何、不改可见性，因此**不广播** `stateChanged`。
 - 跨进程类型统一定义于 `packages/shared`；preload 只暴露白名单方法。
 - 事件推送使用 `on/off` 成对暴露，渲染层卸载时自动解绑。
 - 大 payload（文件全文）只在主进程 / utilityProcess 内部流转，不进渲染进程。

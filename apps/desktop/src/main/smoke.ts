@@ -280,9 +280,14 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     const badTest = await window.aurora.llm.testConnection({ baseUrl: 'https://127.0.0.1:9/v1', apiKey: 'sk-x', model: 'm' })
     record('llm.testConnection 返回结构化结果', badTest && typeof badTest.ok === 'boolean', badTest?.ok ? badTest.message : badTest?.message ?? 'undefined')
 
-    // 8. 窗口状态机（含迷你窗/交互窗互斥）
+    // 8. 窗口状态机（含迷你窗/交互窗互斥、提示条两态）
     const win = window.aurora.window
     expectOk('window.show(edge-bar)', await win.show('edge-bar'))
+    // 8.1 提示条两态展开（docs/07 §2.2）：只改窗口宽度，**不应改变可见性**
+    const barExpanded = expectOk('window.setEdgeBarExpanded(true)', await win.setEdgeBarExpanded(true))
+    record('提示条展开后仍可见', barExpanded?.visible['edge-bar'] === true, JSON.stringify(barExpanded))
+    const barCollapsed = expectOk('window.setEdgeBarExpanded(false)', await win.setEdgeBarExpanded(false))
+    record('提示条收起后仍可见', barCollapsed?.visible['edge-bar'] === true, JSON.stringify(barCollapsed))
     expectOk('window.showMiniChat', await win.showMiniChat())
     const withMini = expectOk('window.getState', await win.getState())
     record('迷你窗可见且 primary=mini-chat', withMini?.visible['mini-chat'] === true && withMini?.primary === 'mini-chat', JSON.stringify(withMini))

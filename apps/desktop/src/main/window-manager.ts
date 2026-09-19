@@ -19,6 +19,7 @@ import {
   type WindowName,
   type WindowState,
 } from '@aurora/shared'
+import { EDGE_BAR_WIDTHS, placeEdgeBar, resizeEdgeBarKeepingRight } from './edge-bar-geometry.js'
 
 export interface WindowManagerOptions {
   settings: SettingsStore
@@ -100,6 +101,8 @@ export class WindowManager {
   private state: WindowState = createInitialWindowState()
   private readonly listeners = new Set<(state: WindowState) => void>()
   private readonly options: WindowManagerOptions
+  /** 提示条是否处于展开（面板）态；默认收起为 8px 竖条（docs/07 §2.2） */
+  private edgeBarExpanded = false
 
   constructor(options: WindowManagerOptions) {
     this.options = options
@@ -119,6 +122,18 @@ export class WindowManager {
   exists(name: WindowName): boolean {
     const win = this.windows.get(name)
     return win !== undefined && !win.isDestroyed()
+  }
+
+  /**
+   * 读取窗口的**真实**几何（未创建 / 已销毁时返回 undefined）。
+   *
+   * 与 `getState()` 的区别：状态机只说"应该可见"，这里说的是窗口在桌面上的真实矩形，
+   * 供自测（AURORA_SMOKE）断言 setBounds 真的生效，而不是只改了状态字段。
+   */
+  getBounds(name: WindowName): { x: number; y: number; width: number; height: number } | undefined {
+    const win = this.windows.get(name)
+    if (!win || win.isDestroyed()) return undefined
+    return win.getBounds()
   }
 
   /** 取窗口（不存在则创建），不改变可见性状态。 */
@@ -245,6 +260,9 @@ export class WindowManager {
   hide(name: WindowName): WindowState {
     const before = this.state
     this.state = hideInState(this.state, name)
+    // 提示条隐藏时收回竖条尺寸：否则下次显示会残留展开态的 228px 宽，
+    // 在鼠标移开后又变成一块「看不见但挡鼠标」的区域（docs/07 §2.2）。
+    if (name === 'edge-bar') this.collapseEdgeBar()
     this.applyVisibility(name, false)
     if (before.primary !== this.state.primary && this.state.primary === null) {
       this.applyVisibility('chat', false)
@@ -279,10 +297,19 @@ export class WindowManager {
   /**
    * 提示条收起态（8px 竖条）/ 展开态（面板）切换（docs/07 §2.2）。
    *
-   * 契约已打通（渲染层 → preload → ipc → 此处）；真实的两态尺寸与右缘固定逻辑
-   * 在后续步骤实现，当前只回传状态。
+   * 只改尺寸与位置，**不动可见性、不广播状态变化**——可见性没变，广播只会制造无意义的渲染层更新。
+   * 展开 / 收起保持**右缘固定**、`y` 与高度不变（向左生长）；窗口尚未创建时只记录标记，
+   * 下次 `show()` 会按标记建窗。
    */
-  setEdgeBarExpanded(_expanded: boolean): WindowState {
+  setEdgeBarExpanded(expanded: boolean): WindowState {
+    this.edgeBarExpanded = expanded
+    const win = this.windows.get('edge-bar')
+    if (!win || win.isDestroyed()) return this.getState()
+    const width = EDGE_BAR_WIDTHS[expanded ? 'expanded' : 'collapsed']
+    win.setBounds(
+      resizeEdgeBarKeepingRight(win.getBounds(), width, screen.getPrimaryDisplay().workArea),
+    )
+    this.persistGeometry('edge-bar', win)
     return this.getState()
   }
 
@@ -346,6 +373,21 @@ export class WindowManager {
     }
   }
 
+  /** 复位提示条折叠标记并同步收缩真实窗口（窗口不存在时只清标记）。 */
+  private collapseEdgeBar(): void {
+    if (!this.edgeBarExpanded) return
+    this.edgeBarExpanded = false
+    const win = this.windows.get('edge-bar')
+    if (!win || win.isDestroyed()) return
+    win.setBounds(
+      resizeEdgeBarKeepingRight(
+        win.getBounds(),
+        EDGE_BAR_WIDTHS.collapsed,
+        screen.getPrimaryDisplay().workArea,
+      ),
+    )
+  }
+
   private computeBounds(
     name: WindowName,
     spec: WindowSpec,
@@ -356,12 +398,8 @@ export class WindowManager {
 
     switch (spec.place) {
       case 'edge':
-        return {
-          x: Math.round(area.x + area.width - width),
-          y: Math.round(area.y + (area.height - height) / 2),
-          width,
-          height,
-        }
+        // 提示条：右缘贴工作区右缘、垂直居中，宽度按折叠态（收起 8 / 展开 228）
+        return placeEdgeBar(area, this.sizeFor(name))
       case 'chat':
         return {
           x: Math.round(area.x + area.width - width - 12),
@@ -442,9 +480,15 @@ export class WindowManager {
     )
   }
 
-  /** 窗口当前应采用的尺寸：取 SPECS 固定尺寸。 */
+  /** 窗口当前应采用的尺寸：提示条按折叠态，其余取 SPECS 固定尺寸。 */
   private sizeFor(name: WindowName): { width: number; height: number } {
     const spec = SPECS[name]
+    if (name === 'edge-bar') {
+      return {
+        width: EDGE_BAR_WIDTHS[this.edgeBarExpanded ? 'expanded' : 'collapsed'],
+        height: spec.height,
+      }
+    }
     return { width: spec.width, height: spec.height }
   }
 
@@ -460,6 +504,19 @@ export class WindowManager {
     if (x === undefined || y === undefined || width === undefined || height === undefined)
       return undefined
     const area = screen.getPrimaryDisplay().workArea
+    if (name === 'edge-bar') {
+      // 提示条尺寸由折叠态决定，**不复用持久化宽高**：否则收起态会继承展开态的 228px，
+      // 在屏幕右侧留下一块看不见却挡鼠标的区域（当年服务窗踩过的同型坑）。
+      // x 也一律重算贴右缘：持久化的 x 可能来自展开态（右缘 - 228），复用会让竖条整体左移；
+      // 提示条不参与用户拖动，水平位置无需记忆。y 沿用持久化值并 clamp 进工作区。
+      const size = this.sizeFor(name)
+      return {
+        x: Math.round(area.x + area.width - size.width),
+        y: Math.round(clamp(y, area.y, Math.max(area.y, area.y + area.height - size.height))),
+        width: size.width,
+        height: size.height,
+      }
+    }
     return {
       x: clamp(x, area.x - width + 40, area.x + area.width - 40),
       y: clamp(y, area.y, area.y + area.height - 40),
