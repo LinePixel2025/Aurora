@@ -2,6 +2,9 @@
 /**
  * AI 模型设置页（docs/08 §5）：多 Provider 管理 + 测试连接 + 模型列表。
  * 凭据只以"已设置 / 未设置"呈现，明文永不回传渲染层。
+ *
+ * 信息层次（step-06）：必填项常显；`temperature` 与「连接测试 / 拉取模型列表」收进
+ * 「高级参数」折叠；删除 provider 是危险操作，单独放在卡片最底部。
  */
 import { computed, reactive, ref, watch } from 'vue'
 import {
@@ -29,6 +32,9 @@ const results = reactive<Record<string, TestConnectionResult>>({})
 const models = reactive<Record<string, string[]>>({})
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
+/** 「添加 Provider」面板与每张卡片的「高级参数」都默认收起，页面首屏只留必填项 */
+const showAdd = ref(false)
+const advancedOpen = reactive<Record<string, boolean>>({})
 
 const activeId = computed(() => settingsStore.settings?.llm.active ?? '')
 
@@ -38,6 +44,10 @@ function resultOf(id: string): TestConnectionResult | undefined {
 
 function modelsOf(id: string): string[] {
   return models[id] ?? []
+}
+
+function toggleAdvanced(id: string): void {
+  advancedOpen[id] = !advancedOpen[id]
 }
 
 function syncDrafts(): void {
@@ -124,6 +134,7 @@ function addPreset(id: string): void {
   })
   newProviderId.value = ''
   error.value = null
+  showAdd.value = false
 }
 
 async function removeProvider(id: string): Promise<void> {
@@ -204,8 +215,8 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
 <template>
   <section class="page">
     <header>
-      <h2>AI 模型</h2>
-      <p class="tiny muted">
+      <h1 class="page-title">AI 模型</h1>
+      <p class="page-sub">
         支持任何 OpenAI 兼容服务。凭据使用系统安全存储加密后保存在本机，日志与导出均会脱敏。
       </p>
     </header>
@@ -213,33 +224,47 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
     <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
     <AppToast v-if="error" tone="error">{{ error }}</AppToast>
 
-    <div class="add-row">
-      <input
-        v-model="newProviderId"
-        type="text"
-        spellcheck="false"
-        placeholder="自定义 provider id（可选）"
-      />
-      <AppButton
-        v-for="preset in PROVIDER_PRESETS"
-        :key="preset.id"
-        size="sm"
-        @click="addPreset(preset.id)"
-      >
-        + {{ preset.label }}
-      </AppButton>
-      <AppButton size="sm" variant="ghost" @click="addPreset('custom')">+ 空白配置</AppButton>
-    </div>
+    <!-- 空状态：没有任何 provider 时不摆一排空卡片，直接给主入口 -->
+    <section v-if="drafts.length === 0" class="section-card empty-state" data-empty="llm.providers">
+      <h2 class="section-title">还没有 AI 模型配置</h2>
+      <p class="section-desc">
+        至少添加一个 Provider 并设为默认后，主功能才可用；未配置时启动会进入首次引导向导。
+      </p>
+      <div class="row">
+        <AppButton variant="primary" @click="showAdd = true">添加 AI 模型</AppButton>
+      </div>
+    </section>
 
-    <p v-if="drafts.length === 0" class="muted">
-      还没有模型配置。至少添加一个并设为默认后，主功能才可用。
-    </p>
+    <section v-if="showAdd" class="section-card">
+      <h2 class="section-title">添加 Provider</h2>
+      <p class="section-desc">选一个预设快速填好 Base URL 与模型名，或填自定义 id 后手动配置。</p>
+      <div class="add-row">
+        <input
+          v-model="newProviderId"
+          class="input"
+          type="text"
+          spellcheck="false"
+          placeholder="自定义 provider id（可选）"
+        />
+        <AppButton
+          v-for="preset in PROVIDER_PRESETS"
+          :key="preset.id"
+          size="sm"
+          @click="addPreset(preset.id)"
+        >
+          + {{ preset.label }}
+        </AppButton>
+        <AppButton size="sm" variant="ghost" @click="addPreset('custom')">+ 空白配置</AppButton>
+        <AppButton size="sm" variant="ghost" @click="showAdd = false">取消</AppButton>
+      </div>
+    </section>
 
     <article
       v-for="draft in drafts"
       :key="draft.id"
-      class="provider"
-      :class="{ active: activeId === draft.id }"
+      class="section-card"
+      :class="{ accent: activeId === draft.id }"
+      :data-field="`llm.providers.${draft.id}`"
     >
       <header class="provider-head">
         <span class="mono">{{ draft.id }}</span>
@@ -251,81 +276,122 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
         <AppButton
           size="sm"
           variant="ghost"
+          data-field="llm.active"
           :disabled="activeId === draft.id"
           @click="setActive(draft.id)"
         >
-          设为默认
+          {{ activeId === draft.id ? '已是默认' : '设为默认' }}
         </AppButton>
-        <AppButton size="sm" variant="danger" @click="removeProvider(draft.id)">删除</AppButton>
       </header>
 
-      <SettingField label="baseURL" required>
-        <input v-model="draft.baseUrl" type="text" spellcheck="false" />
+      <!-- 必填项常显 -->
+      <SettingField
+        :data-field="`llm.providers.${draft.id}.baseUrl`"
+        label="baseURL"
+        required
+        hint="OpenAI 兼容端点，例如 https://api.deepseek.com/v1"
+      >
+        <input v-model="draft.baseUrl" class="input" type="text" spellcheck="false" />
       </SettingField>
-      <SettingField label="API Key" :hint="draft.apiKeySet ? '已保存（留空表示不修改）' : '必填'">
-        <input v-model="draft.apiKey" type="password" spellcheck="false" placeholder="sk-..." />
+      <SettingField
+        :data-field="`llm.providers.${draft.id}.apiKey`"
+        label="API Key"
+        :hint="draft.apiKeySet ? '已保存（留空表示不修改）' : '必填'"
+      >
+        <input
+          v-model="draft.apiKey"
+          class="input"
+          type="password"
+          spellcheck="false"
+          placeholder="sk-..."
+        />
       </SettingField>
-      <SettingField label="模型名" required>
-        <input v-model="draft.model" type="text" spellcheck="false" />
-      </SettingField>
-      <SettingField label="temperature">
-        <input v-model.number="draft.temperature" type="number" min="0" max="2" step="0.1" />
+      <SettingField
+        :data-field="`llm.providers.${draft.id}.model`"
+        label="模型名"
+        required
+        hint="例：deepseek-chat；拉取模型列表后可直接点选"
+      >
+        <input v-model="draft.model" class="input" type="text" spellcheck="false" />
       </SettingField>
 
-      <footer class="row wrap">
-        <AppButton size="sm" :disabled="testing !== null" @click="testProvider(draft)">
-          {{ testing === draft.id ? '测试中…' : '保存并测试连接' }}
-        </AppButton>
-        <AppButton
-          size="sm"
-          variant="ghost"
-          :disabled="testing !== null"
-          @click="loadModels(draft)"
+      <button
+        class="more"
+        type="button"
+        :aria-expanded="advancedOpen[draft.id] === true"
+        @click="toggleAdvanced(draft.id)"
+      >
+        <span class="chevron" :class="{ open: advancedOpen[draft.id] === true }" aria-hidden="true"
+          >▸</span
         >
-          拉取模型列表
+        高级参数与连接测试
+      </button>
+
+      <Transition name="collapse">
+        <div v-if="advancedOpen[draft.id] === true" class="advanced">
+          <SettingField
+            :data-field="`llm.providers.${draft.id}.temperature`"
+            label="temperature"
+            hint="0 ～ 2；越高越发散，默认 0.7"
+          >
+            <input
+              v-model.number="draft.temperature"
+              class="input"
+              type="number"
+              min="0"
+              max="2"
+              step="0.1"
+            />
+          </SettingField>
+
+          <div class="row wrap">
+            <AppButton size="sm" :disabled="testing !== null" @click="testProvider(draft)">
+              {{ testing === draft.id ? '测试中…' : '保存并测试连接' }}
+            </AppButton>
+            <AppButton
+              size="sm"
+              variant="ghost"
+              :disabled="testing !== null"
+              @click="loadModels(draft)"
+            >
+              拉取模型列表
+            </AppButton>
+            <AppToast v-if="resultOf(draft.id)" :tone="resultOf(draft.id)?.ok ? 'ok' : 'error'">
+              {{ resultOf(draft.id)?.message }}（{{ resultOf(draft.id)?.latencyMs }}ms）
+            </AppToast>
+          </div>
+
+          <div v-if="modelsOf(draft.id).length > 0" class="models">
+            <button
+              v-for="model in modelsOf(draft.id)"
+              :key="model"
+              type="button"
+              class="model-chip interactive"
+              @click="draft.model = model"
+            >
+              {{ model }}
+            </button>
+          </div>
+        </div>
+      </Transition>
+
+      <!-- 危险操作放卡片最底部，与必填项隔开 -->
+      <footer class="danger-zone">
+        <AppButton size="sm" variant="danger" @click="removeProvider(draft.id)">
+          删除这个 Provider
         </AppButton>
-        <AppToast v-if="resultOf(draft.id)" :tone="resultOf(draft.id)?.ok ? 'ok' : 'error'">
-          {{ resultOf(draft.id)?.message }}（{{ resultOf(draft.id)?.latencyMs }}ms）
-        </AppToast>
       </footer>
-
-      <div v-if="modelsOf(draft.id).length > 0" class="models">
-        <button
-          v-for="model in modelsOf(draft.id)"
-          :key="model"
-          type="button"
-          class="model-chip"
-          @click="draft.model = model"
-        >
-          {{ model }}
-        </button>
-      </div>
     </article>
 
-    <footer v-if="drafts.length > 0" class="row">
+    <footer v-if="drafts.length > 0" class="row wrap">
       <AppButton variant="primary" @click="saveAll">保存全部</AppButton>
+      <AppButton size="sm" variant="ghost" @click="showAdd = !showAdd">+ 添加 Provider</AppButton>
       <span class="tiny muted">默认模型 id：{{ activeId || '（未设置）' }}</span>
     </footer>
   </section>
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  max-width: 860px;
-}
-
-header h2 {
-  margin: 0;
-  font-size: 16px;
-}
-
-header p {
-  margin: 4px 0 0;
-}
-
 .add-row {
   display: flex;
   flex-wrap: wrap;
@@ -333,37 +399,52 @@ header p {
   align-items: center;
 }
 
-.add-row input {
+.add-row .input {
   min-width: 200px;
-  padding: 7px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: rgba(0, 0, 0, 0.28);
-}
-
-.provider {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.provider.active {
-  border-color: var(--aurora-green);
+  width: auto;
 }
 
 .provider-head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: var(--space-1);
 }
 
 .provider-head .mono {
-  font-size: 13px;
+  font-size: var(--text-base);
+}
+
+/* 折叠入口：与分组头一致的弱化按钮 */
+.more {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  transition: color var(--transition-fast);
+}
+
+.more:hover {
+  color: var(--text-primary);
+}
+
+.chevron {
+  display: inline-block;
+  color: var(--text-muted);
+  transition: transform var(--transition-fast);
+}
+
+.chevron.open {
+  transform: rotate(90deg);
+}
+
+.advanced {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-2);
 }
 
 .wrap {
@@ -374,20 +455,24 @@ header p {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: var(--space-2);
 }
 
 .model-chip {
   padding: 3px 9px;
-  border-radius: 999px;
-  font-size: 12px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
   font-family: var(--font-mono);
   border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.04);
-  transition: background var(--transition-fast);
+  background: var(--fill-2);
 }
 
 .model-chip:hover {
-  background: rgba(56, 209, 150, 0.16);
+  background: var(--fill-3);
+}
+
+.danger-zone {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
 }
 </style>

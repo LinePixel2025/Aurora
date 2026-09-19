@@ -1,6 +1,11 @@
 <script setup lang="ts">
-/** Skill 管理页（docs/08 §6）：展示内置 / 用户技能、启用状态与扫描结果。 */
-import { onMounted, ref } from 'vue'
+/**
+ * Skill 管理页（docs/08 §6）：展示内置 / 用户技能、启用状态与扫描结果。
+ *
+ * 信息层次（step-06）：用户目录 + 扫描操作放一张卡；技能清单放另一张卡并带
+ * 「已启用 x / 共 y」摘要；`skills.disabled` 列表只在发现技能后才有对象。
+ */
+import { computed, onMounted, ref } from 'vue'
 import type { SkillSummary, SkillsStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
@@ -15,6 +20,8 @@ const message = ref<string | null>(null)
 const rescanning = ref(false)
 
 const userDirInput = ref('')
+
+const enabledCount = computed(() => skills.value.filter((skill) => skill.enabled).length)
 
 async function load(): Promise<void> {
   const result = await window.aurora.skills.list()
@@ -95,8 +102,8 @@ onMounted(() => {
 <template>
   <section class="page">
     <header>
-      <h2>Skill</h2>
-      <p class="tiny muted">
+      <h1 class="page-title">Skill</h1>
+      <p class="page-sub">
         以 <code class="mono">SKILL.md</code>（YAML frontmatter + 指令正文）描述的可复用能力包，
         存放于内置 <code class="mono">skills/</code> 与用户技能目录。 模型按描述自动匹配并调用
         <code class="mono">use_skill</code> 读取指令；也可在输入框用
@@ -107,104 +114,116 @@ onMounted(() => {
     <AppToast v-if="error" tone="error">{{ error }}</AppToast>
     <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
 
-    <SettingField
-      label="用户技能目录"
-      :hint="
-        status
-          ? `留空使用默认目录。当前生效：${status.userDir}${
-              status.scannedAt ? ` · 上次扫描：${new Date(status.scannedAt).toLocaleString()}` : ''
-            }`
-          : '留空使用默认目录（用户数据目录 / skills）'
-      "
-    >
-      <div class="row grow">
-        <input
-          v-model="userDirInput"
-          type="text"
-          spellcheck="false"
-          placeholder="留空使用默认目录"
-        />
-        <AppButton size="sm" @click="saveUserDir">保存</AppButton>
+    <section class="section-card">
+      <h2 class="section-title">技能目录</h2>
+      <p class="section-desc">
+        留空 = 使用默认目录（用户数据目录 /
+        <code class="mono">skills</code>）。改目录会立即重扫磁盘。
+      </p>
+
+      <SettingField
+        data-field="skills.userDir"
+        label="用户技能目录"
+        :hint="
+          status
+            ? `留空 = 使用默认目录 ｜ 当前生效：${status.userDir}${
+                status.scannedAt
+                  ? ` · 上次扫描：${new Date(status.scannedAt).toLocaleString()}`
+                  : ''
+              }`
+            : '留空 = 使用默认目录（用户数据目录 / skills）'
+        "
+      >
+        <div class="row grow">
+          <input
+            v-model="userDirInput"
+            class="input"
+            type="text"
+            spellcheck="false"
+            placeholder="留空使用默认目录"
+          />
+          <AppButton size="sm" @click="saveUserDir">保存</AppButton>
+        </div>
+      </SettingField>
+
+      <div class="row">
+        <AppButton size="sm" :disabled="rescanning" @click="rescan">
+          {{ rescanning ? '扫描中…' : '重新扫描' }}
+        </AppButton>
+        <AppButton size="sm" variant="ghost" @click="openDir">打开用户技能目录</AppButton>
       </div>
-    </SettingField>
 
-    <AppToast v-if="status && status.warnings.length > 0" tone="warn">
-      有 {{ status.warnings.length }} 个技能解析失败，已跳过：
-      <span class="tiny muted">{{ status.warnings.slice(0, 3).join('；') }}</span>
-    </AppToast>
+      <AppToast v-if="status && status.warnings.length > 0" tone="warn">
+        有 {{ status.warnings.length }} 个技能解析失败，已跳过：
+        <span class="tiny muted">{{ status.warnings.slice(0, 3).join('；') }}</span>
+      </AppToast>
+    </section>
 
-    <div class="row">
-      <AppButton size="sm" :disabled="rescanning" @click="rescan">
-        {{ rescanning ? '扫描中…' : '重新扫描' }}
-      </AppButton>
-      <AppButton size="sm" variant="ghost" @click="openDir">打开用户技能目录</AppButton>
-    </div>
+    <!-- 空状态：没有技能就没有可启停的对象（skills.disabled 不出现） -->
+    <section
+      v-if="skills.length === 0"
+      class="section-card empty-state"
+      data-empty="skills.disabled"
+    >
+      <h2 class="section-title">未发现技能</h2>
+      <p class="section-desc">
+        请确认仓库根目录存在
+        <code class="mono">skills/&lt;name&gt;/SKILL.md</code>，或在上方配置用户技能目录后重新扫描。
+      </p>
+    </section>
 
-    <p v-if="skills.length === 0" class="muted">
-      未发现技能。请确认仓库根目录存在 <code class="mono">skills/&lt;name&gt;/SKILL.md</code>。
-    </p>
+    <section v-else class="section-card">
+      <div class="row">
+        <h2 class="section-title grow">已发现的技能</h2>
+        <span class="badge ok">已启用 {{ enabledCount }}</span>
+        <span class="badge">共 {{ skills.length }}</span>
+      </div>
 
-    <table v-else class="table">
-      <thead>
-        <tr>
-          <th>名称</th>
-          <th>来源</th>
-          <th>适用场景</th>
-          <th>脚本</th>
-          <th>启用</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="skill in skills" :key="skill.name">
-          <td>
-            <strong>{{ skill.name }}</strong>
-            <p class="tiny muted">{{ skill.description }}</p>
-          </td>
-          <td>
-            <span class="badge">{{ skill.source === 'builtin' ? '内置' : '用户' }}</span>
-          </td>
-          <td class="tiny muted">{{ skill.whenToUse ?? '—' }}</td>
-          <td class="tiny muted">{{ skill.hasScripts ? 'scripts/' : '—' }}</td>
-          <td>
-            <label class="row tiny">
-              <input type="checkbox" :checked="skill.enabled" @change="toggle(skill)" />
-              {{ skill.enabled ? '已启用' : '已停用' }}
-            </label>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>来源</th>
+            <th>状态</th>
+            <th>适用场景</th>
+            <th>脚本</th>
+            <th>启用</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="skill in skills" :key="skill.name">
+            <td>
+              <strong>{{ skill.name }}</strong>
+              <p class="tiny muted">{{ skill.description }}</p>
+            </td>
+            <td>
+              <span class="badge">{{ skill.source === 'builtin' ? '内置' : '用户' }}</span>
+            </td>
+            <td>
+              <span class="badge" :class="skill.enabled ? 'ok' : ''">
+                {{ skill.enabled ? '已启用' : '已停用' }}
+              </span>
+            </td>
+            <td class="tiny muted">{{ skill.whenToUse ?? '—' }}</td>
+            <td class="tiny muted">{{ skill.hasScripts ? 'scripts/' : '—' }}</td>
+            <td>
+              <label class="row tiny" :data-field="`skills.disabled.${skill.name}`">
+                <input type="checkbox" :checked="skill.enabled" @change="toggle(skill)" />
+                {{ skill.enabled ? '已启用' : '已停用' }}
+              </label>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
   </section>
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  max-width: 900px;
-}
-
-header h2 {
-  margin: 0;
-  font-size: 16px;
-}
-
-header p {
-  margin: 4px 0 0;
-  line-height: 1.7;
-}
-
-code {
-  padding: 1px 4px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.07);
-}
-
 .table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
 
 .table th,
@@ -217,15 +236,15 @@ code {
 
 .table th {
   color: var(--text-muted);
-  font-weight: 500;
-  font-size: 12px;
+  font-weight: var(--weight-medium);
+  font-size: var(--text-sm);
 }
 
 .table p {
   margin: 2px 0 0;
 }
 
-input[type='text'] {
-  min-width: 320px;
+.table tr:last-child td {
+  border-bottom: none;
 }
 </style>

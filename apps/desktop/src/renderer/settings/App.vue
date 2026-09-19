@@ -19,14 +19,41 @@ import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/
 
 type PageId = 'general' | 'modes' | 'llm' | 'skills' | 'mcp' | 'advanced'
 
-const nav: Array<{ id: PageId; label: string; hint: string }> = [
-  { id: 'general', label: '常规', hint: '语言、开机自启、提示条' },
+interface NavItem {
+  id: PageId
+  label: string
+  hint: string
+}
+
+/** 扁平清单同时是「页面 id → 标签 / 说明」的查表数据（深链校验也用它） */
+const nav: NavItem[] = [
+  { id: 'general', label: '常规', hint: '开机自启、快捷键、提示条' },
   { id: 'modes', label: '模式', hint: '三种模式与引导' },
   { id: 'llm', label: 'AI 模型', hint: 'Provider 与连接测试' },
   { id: 'skills', label: 'Skill', hint: '内置与用户技能' },
   { id: 'mcp', label: 'MCP', hint: '外部工具服务' },
   { id: 'advanced', label: '高级', hint: '代理、日志、勿扰' },
 ]
+
+/**
+ * 侧栏分组（docs/07 §2.5）：页面本身不变，只是把 6 项按「基础 / AI 能力 / 系统」
+ * 分层，避免六个同级项平铺时看不出主次。
+ */
+const navGroups: Array<{ title: string; ids: PageId[] }> = [
+  { title: '基础', ids: ['general', 'modes'] },
+  { title: 'AI 能力', ids: ['llm', 'skills', 'mcp'] },
+  { title: '系统', ids: ['advanced'] },
+]
+
+/** 分组渲染用：分组标题 + 该组条目（条目与 `nav` 是同一批对象，避免两处维护文案） */
+const grouped = computed(() =>
+  navGroups.map((group) => ({
+    title: group.title,
+    items: group.ids
+      .map((id) => nav.find((item) => item.id === id))
+      .filter((item): item is NavItem => item !== undefined),
+  })),
+)
 
 /**
  * 初始页面：支持 `?page=<id>` 深链（截图核对工具按页出图，docs/07 §5）。
@@ -87,17 +114,20 @@ function select(id: PageId): void {
         </button>
       </div>
       <nav>
-        <button
-          v-for="item in nav"
-          :key="item.id"
-          type="button"
-          class="nav-item"
-          :class="{ active: active === item.id }"
-          @click="select(item.id)"
-        >
-          <span class="label">{{ item.label }}</span>
-          <span class="tiny muted">{{ item.hint }}</span>
-        </button>
+        <template v-for="group in grouped" :key="group.title">
+          <p class="nav-group">{{ group.title }}</p>
+          <button
+            v-for="item in group.items"
+            :key="item.id"
+            type="button"
+            class="nav-item"
+            :class="{ active: active === item.id }"
+            @click="select(item.id)"
+          >
+            <span class="label">{{ item.label }}</span>
+            <span class="tiny muted">{{ item.hint }}</span>
+          </button>
+        </template>
       </nav>
       <div class="foot">
         <p class="tiny muted">v{{ settingsStore.appInfo?.appVersion ?? '0.1.0' }}</p>
@@ -190,7 +220,22 @@ nav {
   gap: 2px;
 }
 
+/* 分组标题：小字号 + 弱色 + 字间距，只承担分层，不与可点条目抢注意力 */
+.nav-group {
+  margin: var(--space-3) 0 var(--space-1);
+  padding: 0 10px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+nav > .nav-group:first-child {
+  margin-top: 0;
+}
+
 .nav-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -198,15 +243,29 @@ nav {
   padding: 8px 10px;
   border-radius: var(--radius-sm);
   text-align: left;
-  transition: background var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .nav-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--fill-1);
 }
 
+/* 当前项：分层填充 + 左侧品牌色指示条（不靠纯色块区分，色觉障碍下也可辨） */
 .nav-item.active {
-  background: rgba(86, 132, 255, 0.14);
+  background: var(--fill-2);
+}
+
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--aurora-gradient);
 }
 
 .nav-item .label {

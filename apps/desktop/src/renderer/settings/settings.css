@@ -1,0 +1,108 @@
+/**
+ * 设置窗口的页面骨架与分组卡片（docs/07 §2.5、docs/08）。
+ *
+ * 只用设置窗加载（`settings/main.ts` 在 `theme.css` 之后 import），因此这里的类
+ * 不会泄漏到其它窗口。选择这种"窗口局部样式表"而不是改 `theme.css` 的原因：
+ * `theme.css` 是五个窗口共用的 SSOT，下面这些约束只对设置窗成立 ——
+ * 比如「内容区 `.content` 已经给了 `--space-5` 内边距，页面不再自带 padding」，
+ * 放进全局会让其它窗口的 `.page` 一起失去内边距。
+ *
+ * 复用关系：`.page` / `.page-title` / `.page-sub` 直接用全局类（step-03 已提供），
+ * 这里只补全局缺少的 `.section-card` / `.section-title` / `.section-desc` / `.empty-state`
+ * 与设置窗内的 `.page` 内边距覆盖、内联控件统一外观。
+ */
+
+/**
+ * 页面骨架覆盖：全局 `.page` 是「撑满窗口 + 自带 padding」的独立窗口用法，
+ * 设置窗的滚动容器是 `.content`，因此页面自身不再加内边距、不再撑满高度。
+ * 选择器带 `.settings` 提高优先级，不依赖样式表的注入顺序。
+ */
+.settings .page {
+  padding: 0;
+  padding-bottom: 32px;
+  height: auto;
+  max-width: 860px;
+}
+
+/* ───────── 分组卡片 ───────── */
+
+.section-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--fill-1);
+}
+
+/* 当前生效 / 默认对象（当前模式卡片、默认 provider）的强调描边 */
+.section-card.accent {
+  border-color: var(--aurora-blue);
+}
+
+.section-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+}
+
+.section-desc {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+/* ───────── 空状态（无 provider / 无 MCP / 无技能 / 占位模式） ───────── */
+
+.empty-state {
+  gap: var(--space-3);
+  border-style: dashed;
+  border-color: var(--border-strong);
+}
+
+/* ───────── 统一内联控件（拆出的 classroom 子组件与各页共用） ───────── */
+
+.settings .input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+  background: var(--fill-1);
+  color: var(--text-primary);
+  outline: none;
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.settings .input:hover {
+  border-color: var(--border-strong);
+}
+
+.settings .input:focus {
+  border-color: var(--aurora-blue);
+  background: var(--fill-2);
+  /* 与 SettingField.vue 内控件的聚焦光晕取同一个值：行内控件包不包 SettingField 观感一致。
+     主题里没有"聚焦光晕"令牌，此处刻意与既有共享组件保持逐字一致，而不是新造一个色值。 */
+  box-shadow: 0 0 0 3px rgba(86, 132, 255, 0.22);
+}
+
+.settings .input[type='range'] {
+  padding: 0;
+  border: none;
+  background: none;
+  accent-color: var(--aurora-blue);
+}
+
+/* 行内代码（各页原本各自写了一套，这里收敛） */
+.settings code {
+  padding: 1px 4px;
+  border-radius: var(--radius-xs);
+  background: var(--fill-2);
+  font-family: var(--font-mono);
+}

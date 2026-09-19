@@ -1,5 +1,12 @@
 <script setup lang="ts">
-/** 模式设置页：三模式卡片 + 引导状态 + 重新引导 / 继续引导（docs/07 §2.5）。 */
+/**
+ * 模式设置页（docs/07 §2.5）：三模式卡片 + 引导状态。
+ *
+ * 页面下半部分**只渲染当前模式**的内容：
+ * - ClassRoom → 完整配置区（`ClassroomSection`）；
+ * - Work / Code → 占位实现说明，不得出现任何 `modes.classroom.*` 控件（docs/05 §2）。
+ * 卡片上的「重新引导 / 标记完成」是次级操作，默认收起，避免与「启用」抢视觉重心。
+ */
 import { computed, ref } from 'vue'
 import type { ModeId } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
@@ -15,8 +22,15 @@ const busy = ref<ModeId | null>(null)
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
 
-/** ClassRoom 专属配置只在 ClassRoom 为当前模式时展示（docs/05 §3）。 */
-const classroomActive = computed(() => settingsStore.settings?.modes.current === 'classroom')
+/** 展开「次级操作」的卡片（同一时刻只展开一张） */
+const openActions = ref<ModeId | null>(null)
+
+/** 当前模式（未加载完成时为 null）：决定下方渲染哪一块配置 */
+const currentMode = computed<ModeId | null>(() => settingsStore.settings?.modes.current ?? null)
+
+const currentLabel = computed(
+  () => modeStore.modes.find((mode) => mode.id === currentMode.value)?.displayName ?? '当前模式',
+)
 
 async function choose(id: ModeId): Promise<void> {
   busy.value = id
@@ -52,8 +66,8 @@ async function markDone(id: ModeId): Promise<void> {
 <template>
   <section class="page">
     <header>
-      <h2>模式</h2>
-      <p class="tiny muted">
+      <h1 class="page-title">模式</h1>
+      <p class="page-sub">
         同一时刻只启用一个模式；切换后若引导未完成，AI 会在对话窗口主动发起引导。
       </p>
     </header>
@@ -80,6 +94,7 @@ async function markDone(id: ModeId): Promise<void> {
         <ul class="fields tiny muted">
           <li v-for="field in mode.guideSteps" :key="field" class="mono">{{ field }}</li>
         </ul>
+
         <footer class="row">
           <AppButton
             size="sm"
@@ -87,51 +102,64 @@ async function markDone(id: ModeId): Promise<void> {
             :disabled="busy !== null || mode.active"
             @click="choose(mode.id)"
           >
-            启用
+            {{ mode.active ? '已启用' : '启用' }}
           </AppButton>
           <AppButton
             size="sm"
             variant="ghost"
-            :disabled="busy !== null"
-            @click="restartGuide(mode.id)"
+            :aria-expanded="openActions === mode.id"
+            @click="openActions = openActions === mode.id ? null : mode.id"
           >
-            重新引导
-          </AppButton>
-          <AppButton
-            v-if="!mode.guideCompleted"
-            size="sm"
-            variant="ghost"
-            :disabled="busy !== null"
-            @click="markDone(mode.id)"
-          >
-            标记完成
+            {{ openActions === mode.id ? '收起' : '引导设置…' }}
           </AppButton>
         </footer>
+
+        <Transition name="collapse">
+          <div v-if="openActions === mode.id" class="actions">
+            <AppButton
+              size="sm"
+              variant="ghost"
+              :disabled="busy !== null"
+              @click="restartGuide(mode.id)"
+            >
+              重新引导
+            </AppButton>
+            <AppButton
+              v-if="!mode.guideCompleted"
+              size="sm"
+              variant="ghost"
+              :disabled="busy !== null"
+              @click="markDone(mode.id)"
+            >
+              标记完成
+            </AppButton>
+          </div>
+        </Transition>
       </article>
     </div>
 
-    <div v-if="classroomActive" class="divider" />
-    <ClassroomSection v-if="classroomActive" />
+    <!-- 只渲染当前模式的内容：ClassRoom 是唯一有配置项的实现 -->
+    <ClassroomSection v-if="currentMode === 'classroom'" />
+    <section
+      v-else-if="currentMode !== null"
+      class="section-card empty-state"
+      :data-empty="`modes.${currentMode}`"
+    >
+      <h2 class="section-title">{{ currentLabel }} 暂无可配置项</h2>
+      <p class="section-desc">
+        该模式仍是占位实现（docs/04 路线图）：对话可用，但没有专属设置项。切到 ClassRoom
+        后这里会出现感知文件夹、科目与课表等配置。
+      </p>
+      <div class="row">
+        <AppButton size="sm" :disabled="busy !== null" @click="choose('classroom')">
+          切换到 ClassRoom
+        </AppButton>
+      </div>
+    </section>
   </section>
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  max-width: 860px;
-}
-
-header h2 {
-  margin: 0;
-  font-size: 16px;
-}
-
-header p {
-  margin: 4px 0 0;
-}
-
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -142,15 +170,18 @@ header p {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3);
+  padding: var(--space-4);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--fill-1);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .card.active {
   border-color: var(--aurora-blue);
-  background: rgba(86, 132, 255, 0.08);
+  background: var(--fill-2);
 }
 
 .card.placeholder {
@@ -175,7 +206,15 @@ header p {
   gap: 2px;
 }
 
+/* 次级操作：与主按钮同一行但视觉更弱，展开后单独占一行 */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-top: var(--space-1);
+}
+
 .warn-text {
-  color: #f7c568;
+  color: var(--status-unread);
 }
 </style>

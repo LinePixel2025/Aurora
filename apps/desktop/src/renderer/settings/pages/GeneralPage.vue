@@ -1,5 +1,11 @@
 <script setup lang="ts">
-/** 常规设置页（docs/08 §1 general / advanced 中的界面相关项 + docs/09 更新）。 */
+/**
+ * 常规设置页（docs/08 §1/§6）：启动、提示条、系统感知、关于与更新。
+ *
+ * `general.language` 是**没有 i18n 消费方的死字段**（docs/08 §1）：
+ * 本页不再提供任何入口，但保存时仍原样回传当前值 —— `settings:update` 是
+ * 顶层分组浅合并，`general` 整对象被替换，漏掉 language 会被 Schema 默认值重置。
+ */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { HotkeyStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
@@ -59,7 +65,6 @@ const updateTone = computed<'ok' | 'error' | 'info'>(() => {
 })
 
 const general = computed(() => settingsStore.settings?.general ?? null)
-const language = ref(general.value?.language ?? 'zh-CN')
 const launchAtLogin = ref(general.value?.launchAtLogin ?? false)
 const hotkey = ref(general.value?.hotkey ?? 'Alt+Space')
 const edgeEnabled = ref(general.value?.edgeBar.enabled ?? true)
@@ -110,7 +115,6 @@ watch(
   () => settingsStore.settings,
   (next) => {
     if (!next) return
-    language.value = next.general.language
     launchAtLogin.value = next.general.launchAtLogin
     hotkey.value = next.general.hotkey
     edgeEnabled.value = next.general.edgeBar.enabled
@@ -124,7 +128,8 @@ async function save(): Promise<void> {
   saved.value = null
   const ok = await settingsStore.update({
     general: {
-      language: language.value,
+      // 死字段原样回传：UI 不提供入口，但也不该被保存动作重置（docs/08 §1）
+      language: general.value?.language ?? 'zh-CN',
       launchAtLogin: launchAtLogin.value,
       hotkey: hotkey.value.trim() === '' ? 'Alt+Space' : hotkey.value.trim(),
       edgeBar: {
@@ -146,158 +151,194 @@ async function toggleEdgeBar(): Promise<void> {
 <template>
   <section class="page">
     <header>
-      <h2>常规</h2>
-      <p class="tiny muted">界面语言、开机自启、全局快捷键与右侧提示条。</p>
+      <h1 class="page-title">常规</h1>
+      <p class="page-sub">开机自启、全局快捷键与右侧提示条；系统感知与更新状态也在这里查看。</p>
     </header>
 
-    <SettingField label="界面语言">
-      <select v-model="language">
-        <option value="zh-CN">简体中文</option>
-        <option value="en-US">English</option>
-      </select>
-    </SettingField>
+    <section class="section-card">
+      <h2 class="section-title">启动</h2>
+      <p class="section-desc">登录 Windows 后常驻托盘，并用全局快捷键随时唤出交互窗。</p>
 
-    <SettingField label="开机自启" hint="登录 Windows 后自动在托盘常驻（P1 已接入）">
-      <input v-model="launchAtLogin" type="checkbox" />
-    </SettingField>
+      <SettingField
+        data-field="general.launchAtLogin"
+        label="开机自启"
+        hint="登录 Windows 后自动在托盘常驻"
+      >
+        <input v-model="launchAtLogin" type="checkbox" />
+      </SettingField>
 
-    <SettingField
-      label="唤出快捷键"
-      :hint="
-        hotkeyStatus === null
-          ? '读取注册状态…'
-          : hotkeyStatus.registered
-            ? `已在系统注册（${hotkeyStatus.hotkey}），按下即可显示 / 收起服务窗`
-            : (hotkeyStatus.message ?? '未注册')
-      "
-    >
-      <div class="column grow">
-        <input v-model="hotkey" type="text" spellcheck="false" placeholder="Alt+Space" />
-        <AppToast v-if="hotkeyStatus !== null && !hotkeyStatus.registered" tone="warn">
-          {{ hotkeyStatus.message ?? '该快捷键未注册成功' }}
-        </AppToast>
-      </div>
-    </SettingField>
-
-    <div class="divider" />
-
-    <SettingField label="右侧提示条" hint="桌面右缘常驻的 8px 提示条">
-      <input v-model="edgeEnabled" type="checkbox" />
-      <AppButton size="sm" variant="ghost" @click="toggleEdgeBar">立即显隐</AppButton>
-    </SettingField>
-
-    <SettingField label="提示条透明度" hint="0.2 ～ 1.0；保存后立即应用">
-      <input v-model.number="edgeOpacity" type="number" min="0.2" max="1" step="0.05" />
-    </SettingField>
-
-    <SettingField label="提示条开始隐藏" hint="格式 HH:mm；留空表示不限（仅影响提示条本身）">
-      <input
-        type="text"
-        spellcheck="false"
-        placeholder="22:30"
-        :value="edgeQuietStart"
-        @change="saveEdgeQuiet('start', ($event.target as HTMLInputElement).value)"
-      />
-    </SettingField>
-
-    <SettingField label="提示条恢复显示" hint="格式 HH:mm；跨午夜时开始时间大于结束时间">
-      <input
-        type="text"
-        spellcheck="false"
-        placeholder="07:00"
-        :value="edgeQuietEnd"
-        @change="saveEdgeQuiet('end', ($event.target as HTMLInputElement).value)"
-      />
-    </SettingField>
-
-    <div class="divider" />
-
-    <SettingField label="系统感知预览" hint="P1 已接入时间 / 电源 / 网络；其余采集项在 P5 补齐">
-      <div class="column grow">
-        <AppToast v-if="perception.summary">
-          {{ perception.summary.localTime }} {{ perception.summary.weekday }}
-          <template v-if="perception.summary.battery">
-            · 电量 {{ perception.summary.battery.percent }}%
-          </template>
-          <template v-if="perception.summary.network">
-            · 网络 {{ perception.summary.network.online ? '在线' : '离线' }}
-          </template>
-          · 未实现：{{ perception.summary.unknown.join('、') || '无' }}
-        </AppToast>
-        <div class="row">
-          <AppButton size="sm" @click="perception.refresh">刷新</AppButton>
+      <SettingField
+        data-field="general.hotkey"
+        label="唤出快捷键"
+        :hint="
+          hotkeyStatus === null
+            ? '读取注册状态…'
+            : hotkeyStatus.registered
+              ? `已在系统注册（${hotkeyStatus.hotkey}），按下即可显示 / 收起交互窗`
+              : (hotkeyStatus.message ?? '未注册')
+        "
+      >
+        <div class="column grow">
+          <input v-model="hotkey" type="text" spellcheck="false" placeholder="Alt+Space" />
+          <AppToast v-if="hotkeyStatus !== null && !hotkeyStatus.registered" tone="warn">
+            {{ hotkeyStatus.message ?? '该快捷键未注册成功' }}
+          </AppToast>
         </div>
-      </div>
-    </SettingField>
+      </SettingField>
+    </section>
 
-    <div class="divider" />
+    <section class="section-card">
+      <h2 class="section-title">提示条</h2>
+      <p class="section-desc">
+        桌面右缘常驻的 8px 提示条：悬停展开面板，点击呼出完整交互窗（docs/07 §2.2）。
+      </p>
 
-    <h3>更新</h3>
-    <SettingField
-      label="当前版本"
-      :hint="
-        update.state?.feed
-          ? `更新源：${update.state.feed}`
-          : '更新源：打包后内置（公开 releases 仓库）'
-      "
-    >
-      <div class="column grow">
-        <span class="mono tiny"
-          >v{{ settingsStore.appInfo?.appVersion ?? update.state?.currentVersion ?? '—' }}</span
+      <SettingField
+        data-field="general.edgeBar.enabled"
+        label="启用提示条"
+        hint="关闭后提示条从屏幕隐藏；透明度与静默时段会一并收起，重新启用即可继续调整"
+      >
+        <input v-model="edgeEnabled" type="checkbox" />
+        <AppButton size="sm" variant="ghost" @click="toggleEdgeBar">立即显隐</AppButton>
+      </SettingField>
+
+      <template v-if="edgeEnabled">
+        <SettingField
+          data-field="general.edgeBar.opacity"
+          label="提示条透明度"
+          hint="0.2 ～ 1.0；保存后立即应用"
         >
-      </div>
-    </SettingField>
+          <input v-model.number="edgeOpacity" type="number" min="0.2" max="1" step="0.05" />
+        </SettingField>
 
-    <SettingField label="更新状态">
-      <div class="column grow">
-        <AppToast :tone="updateTone">{{ updateLabel }}</AppToast>
-        <div
-          v-if="update.state?.status === 'downloading'"
-          class="progress"
-          role="progressbar"
-          :aria-valuenow="update.state.progressPercent ?? 0"
-          aria-valuemin="0"
-          aria-valuemax="100"
+        <SettingField
+          data-field="general.edgeBar.quietHours.start"
+          label="提示条开始隐藏"
+          hint="格式 HH:mm；留空表示不限（仅影响提示条本身）"
         >
-          <span :style="{ width: `${update.state.progressPercent ?? 0}%` }" />
+          <input
+            type="text"
+            spellcheck="false"
+            placeholder="22:30"
+            :value="edgeQuietStart"
+            @change="saveEdgeQuiet('start', ($event.target as HTMLInputElement).value)"
+          />
+        </SettingField>
+
+        <SettingField
+          data-field="general.edgeBar.quietHours.end"
+          label="提示条恢复显示"
+          hint="格式 HH:mm；跨午夜时开始时间大于结束时间"
+        >
+          <input
+            type="text"
+            spellcheck="false"
+            placeholder="07:00"
+            :value="edgeQuietEnd"
+            @change="saveEdgeQuiet('end', ($event.target as HTMLInputElement).value)"
+          />
+        </SettingField>
+      </template>
+
+      <p v-else class="section-desc" data-empty="general.edgeBar">
+        提示条已停用：透明度与静默时段暂不可配，重新启用后即可继续调整。
+      </p>
+    </section>
+
+    <section class="section-card">
+      <h2 class="section-title">系统感知</h2>
+      <p class="section-desc">时间 / 电源 / 网络已接入；其余采集项在 P5 补齐（docs/06 §8）。</p>
+
+      <SettingField label="当前感知快照">
+        <div class="column grow">
+          <AppToast v-if="perception.summary">
+            {{ perception.summary.localTime }} {{ perception.summary.weekday }}
+            <template v-if="perception.summary.battery">
+              · 电量 {{ perception.summary.battery.percent }}%
+            </template>
+            <template v-if="perception.summary.network">
+              · 网络 {{ perception.summary.network.online ? '在线' : '离线' }}
+            </template>
+            · 未实现：{{ perception.summary.unknown.join('、') || '无' }}
+          </AppToast>
+          <div class="row">
+            <AppButton size="sm" @click="perception.refresh">刷新</AppButton>
+          </div>
         </div>
-        <div class="row wrap">
-          <AppButton
-            size="sm"
-            :disabled="
-              update.busy || !update.state?.enabled || update.state?.status === 'downloading'
-            "
-            @click="update.check()"
+      </SettingField>
+    </section>
+
+    <section class="section-card">
+      <h2 class="section-title">关于与更新</h2>
+      <p class="section-desc">版本信息、更新状态与手动检查入口（docs/09 §5）。</p>
+
+      <SettingField
+        label="当前版本"
+        :hint="
+          update.state?.feed
+            ? `更新源：${update.state.feed}`
+            : '更新源：打包后内置（公开 releases 仓库）'
+        "
+      >
+        <div class="column grow">
+          <span class="mono tiny"
+            >v{{ settingsStore.appInfo?.appVersion ?? update.state?.currentVersion ?? '—' }}</span
           >
-            检查更新
-          </AppButton>
-          <AppButton
-            v-if="update.state?.status === 'available'"
-            size="sm"
-            variant="primary"
-            :disabled="update.busy"
-            @click="update.download()"
-          >
-            下载更新
-          </AppButton>
-          <AppButton
-            v-if="update.state?.status === 'downloaded'"
-            size="sm"
-            variant="primary"
-            @click="update.install()"
-          >
-            安装并重启
-          </AppButton>
         </div>
-        <p v-if="update.state?.enabled === false" class="tiny muted">
-          自动更新只在安装版中可用；开发态请用
-          <code class="mono">AURORA_UPDATE_FEED</code> 指向本地更新源做验证（docs/09 §6）。
-        </p>
-      </div>
-    </SettingField>
+      </SettingField>
+
+      <SettingField label="更新状态">
+        <div class="column grow">
+          <AppToast :tone="updateTone">{{ updateLabel }}</AppToast>
+          <div
+            v-if="update.state?.status === 'downloading'"
+            class="progress"
+            role="progressbar"
+            :aria-valuenow="update.state.progressPercent ?? 0"
+            aria-valuemin="0"
+            aria-valuemax="100"
+          >
+            <span :style="{ width: `${update.state.progressPercent ?? 0}%` }" />
+          </div>
+          <div class="row wrap">
+            <AppButton
+              size="sm"
+              :disabled="
+                update.busy || !update.state?.enabled || update.state?.status === 'downloading'
+              "
+              @click="update.check()"
+            >
+              检查更新
+            </AppButton>
+            <AppButton
+              v-if="update.state?.status === 'available'"
+              size="sm"
+              variant="primary"
+              :disabled="update.busy"
+              @click="update.download()"
+            >
+              下载更新
+            </AppButton>
+            <AppButton
+              v-if="update.state?.status === 'downloaded'"
+              size="sm"
+              variant="primary"
+              @click="update.install()"
+            >
+              安装并重启
+            </AppButton>
+          </div>
+          <p v-if="update.state?.enabled === false" class="tiny muted">
+            自动更新只在安装版中可用；开发态请用
+            <code class="mono">AURORA_UPDATE_FEED</code> 指向本地更新源做验证（docs/09 §6）。
+          </p>
+        </div>
+      </SettingField>
+    </section>
 
     <footer class="row">
       <AppButton variant="primary" @click="save">保存</AppButton>
+      <span class="tiny muted">启动与提示条的改动需点击保存后生效</span>
       <AppToast v-if="saved" tone="ok">{{ saved }}</AppToast>
       <AppToast v-if="error" tone="error">{{ error }}</AppToast>
     </footer>
@@ -305,43 +346,28 @@ async function toggleEdgeBar(): Promise<void> {
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  max-width: 720px;
-}
-
-header h2 {
-  margin: 0;
-  font-size: 16px;
-}
-
-header p {
-  margin: 4px 0 0;
-}
-
-h3 {
-  margin: var(--space-3) 0 0;
-  font-size: 14px;
-}
-
+/* 页面骨架（.page / .page-title / .page-sub / .section-*）走 settings.css 与 theme.css */
 .progress {
   position: relative;
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--fill-2);
 }
 
 .progress span {
   display: block;
   height: 100%;
   background: var(--aurora-gradient);
-  transition: width 0.2s ease;
+  transition: width var(--transition-base);
+}
+
+.wrap {
+  flex-wrap: wrap;
 }
 
 footer {
-  margin-top: var(--space-4);
+  align-items: center;
+  flex-wrap: wrap;
 }
 </style>
