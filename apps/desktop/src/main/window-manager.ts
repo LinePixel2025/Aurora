@@ -19,7 +19,13 @@ import {
   type WindowName,
   type WindowState,
 } from '@aurora/shared'
-import { EDGE_BAR_WIDTHS, placeEdgeBar, resizeEdgeBarKeepingRight } from './edge-bar-geometry.js'
+import {
+  EDGE_BAR_COLLAPSED_HEIGHT,
+  EDGE_BAR_WIDTHS,
+  expandedEdgeBarHeight,
+  placeEdgeBar,
+  resizeEdgeBarKeepingAnchor,
+} from './edge-bar-geometry.js'
 
 export interface WindowManagerOptions {
   settings: SettingsStore
@@ -295,19 +301,25 @@ export class WindowManager {
   }
 
   /**
-   * 提示条收起态（8px 竖条）/ 展开态（面板）切换（docs/07 §2.2）。
+   * 提示条收起态（8px 竖条）/ 展开态（228px 全高面板）切换（docs/07 §2.2）。
    *
    * 只改尺寸与位置，**不动可见性、不广播状态变化**——可见性没变，广播只会制造无意义的渲染层更新。
-   * 展开 / 收起保持**右缘固定**、`y` 与高度不变（向左生长）；窗口尚未创建时只记录标记，
+   * 展开 / 收起保持**右缘与垂直中心固定**（向左、向上下生长）；窗口尚未创建时只记录标记，
    * 下次 `show()` 会按标记建窗。
+   *
+   * 展开态要跟着长高：面板里的四块信息 + 四个操作按钮在 200px 高度里装不下，
+   * 按钮会被挤到可视区之外（实测按钮 top=278、窗口高 202）——用户看得到面板却点不到按钮。
    */
   setEdgeBarExpanded(expanded: boolean): WindowState {
     this.edgeBarExpanded = expanded
     const win = this.windows.get('edge-bar')
     if (!win || win.isDestroyed()) return this.getState()
-    const width = EDGE_BAR_WIDTHS[expanded ? 'expanded' : 'collapsed']
     win.setBounds(
-      resizeEdgeBarKeepingRight(win.getBounds(), width, screen.getPrimaryDisplay().workArea),
+      resizeEdgeBarKeepingAnchor(
+        win.getBounds(),
+        this.sizeFor('edge-bar'),
+        screen.getPrimaryDisplay().workArea,
+      ),
     )
     this.persistGeometry('edge-bar', win)
     return this.getState()
@@ -380,9 +392,9 @@ export class WindowManager {
     const win = this.windows.get('edge-bar')
     if (!win || win.isDestroyed()) return
     win.setBounds(
-      resizeEdgeBarKeepingRight(
+      resizeEdgeBarKeepingAnchor(
         win.getBounds(),
-        EDGE_BAR_WIDTHS.collapsed,
+        this.sizeFor('edge-bar'),
         screen.getPrimaryDisplay().workArea,
       ),
     )
@@ -484,9 +496,13 @@ export class WindowManager {
   private sizeFor(name: WindowName): { width: number; height: number } {
     const spec = SPECS[name]
     if (name === 'edge-bar') {
+      if (!this.edgeBarExpanded) {
+        return { width: EDGE_BAR_WIDTHS.collapsed, height: EDGE_BAR_COLLAPSED_HEIGHT }
+      }
+      // 展开态高度跟工作区走（全高面板），所以这里要读屏幕
       return {
-        width: EDGE_BAR_WIDTHS[this.edgeBarExpanded ? 'expanded' : 'collapsed'],
-        height: spec.height,
+        width: EDGE_BAR_WIDTHS.expanded,
+        height: expandedEdgeBarHeight(screen.getPrimaryDisplay().workArea),
       }
     }
     return { width: spec.width, height: spec.height }

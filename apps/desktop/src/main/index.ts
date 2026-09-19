@@ -828,13 +828,21 @@ async function runSmokeTest(userData: string): Promise<void> {
     JSON.stringify(barCollapsed),
   )
   record(
-    '提示条展开态真实窗口约 228px、右缘与 y 不变',
+    '提示条展开态真实窗口约 228px 宽、右缘与垂直中心不变',
     barCollapsed !== undefined &&
       barExpanded !== undefined &&
       near(barExpanded.width, EDGE_BAR_WIDTHS.expanded, 4) &&
       near(barExpanded.x + barExpanded.width, barCollapsed.x + barCollapsed.width, 3) &&
-      barExpanded.y === barCollapsed.y,
+      near(barExpanded.y + barExpanded.height / 2, barCollapsed.y + barCollapsed.height / 2, 3) &&
+      barExpanded.height > barCollapsed.height,
     JSON.stringify(barExpanded),
+  )
+  record(
+    '提示条展开态占满工作区高度（面板按钮不会被挤出可视区）',
+    barExpanded !== undefined &&
+      barExpanded.height >= workArea.height - 2 * 24 - 6 &&
+      barExpanded.height <= workArea.height,
+    barExpanded !== undefined ? `height=${barExpanded.height}, workArea=${workArea.height}` : '',
   )
   record(
     '提示条展开比收起宽出约 220px（8 -> 228）',
@@ -854,7 +862,8 @@ async function runSmokeTest(userData: string): Promise<void> {
     barBack !== undefined &&
       barCollapsed !== undefined &&
       barBack.x === barCollapsed.x &&
-      barBack.width === barCollapsed.width,
+      barBack.width === barCollapsed.width &&
+      barBack.height === barCollapsed.height,
     JSON.stringify(barBack),
   )
 
