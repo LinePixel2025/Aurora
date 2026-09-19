@@ -4,15 +4,18 @@ import { AuroraFileWatcher, extOf, shouldIgnore, type WatcherLike } from './file
 /** 假 chokidar：手动触发 add / error 事件 */
 function fakeWatcher(): WatcherLike & {
   emitAdd(path: string): void
+  emitChange(path: string): void
   emitError(error: unknown): void
   closed: boolean
 } {
   const addListeners: Array<(path: string) => void> = []
+  const changeListeners: Array<(path: string) => void> = []
   const errorListeners: Array<(error: unknown) => void> = []
   const watcher = {
     closed: false,
-    on(event: 'add' | 'error', listener: (payload: never) => void) {
+    on(event: 'add' | 'change' | 'error', listener: (payload: never) => void) {
       if (event === 'add') addListeners.push(listener as (path: string) => void)
+      else if (event === 'change') changeListeners.push(listener as (path: string) => void)
       else errorListeners.push(listener as (error: unknown) => void)
       return watcher
     },
@@ -21,6 +24,9 @@ function fakeWatcher(): WatcherLike & {
     },
     emitAdd(path: string) {
       for (const listener of addListeners) listener(path)
+    },
+    emitChange(path: string) {
+      for (const listener of changeListeners) listener(path)
     },
     emitError(error: unknown) {
       for (const listener of errorListeners) listener(error)
@@ -82,9 +88,14 @@ describe('AuroraFileWatcher', () => {
     const watcher = fakeWatcher()
     const fileWatcher = new AuroraFileWatcher({
       createWatcher: () => watcher,
-      statSize: async () => 1234,
+      statFile: async () => ({ sizeBytes: 1234, mtimeMs: 1_700_000_000_000 }),
     })
-    const seen: Array<{ fileName: string; ext: string; sizeBytes: number }> = []
+    const seen: Array<{
+      fileName: string
+      ext: string
+      sizeBytes: number
+      mtimeMs: number
+    }> = []
     fileWatcher.onAdd((file) => seen.push(file))
 
     await fileWatcher.watch('D:\\感知')
@@ -92,7 +103,13 @@ describe('AuroraFileWatcher', () => {
     await settle()
 
     expect(seen).toEqual([
-      { path: 'D:\\感知\\数学作业.pdf', fileName: '数学作业.pdf', ext: 'pdf', sizeBytes: 1234 },
+      {
+        path: 'D:\\感知\\数学作业.pdf',
+        fileName: '数学作业.pdf',
+        ext: 'pdf',
+        sizeBytes: 1234,
+        mtimeMs: 1_700_000_000_000,
+      },
     ])
     expect(fileWatcher.watching).toBe(true)
   })
@@ -101,7 +118,7 @@ describe('AuroraFileWatcher', () => {
     const watcher = fakeWatcher()
     const fileWatcher = new AuroraFileWatcher({
       createWatcher: () => watcher,
-      statSize: async () => 1,
+      statFile: async () => ({ sizeBytes: 1, mtimeMs: 1_700_000_000_000 }),
     })
     const seen: string[] = []
     fileWatcher.onAdd((file) => seen.push(file.fileName))
@@ -117,7 +134,7 @@ describe('AuroraFileWatcher', () => {
     const watcher = fakeWatcher()
     const fileWatcher = new AuroraFileWatcher({
       createWatcher: () => watcher,
-      statSize: async () => 1,
+      statFile: async () => ({ sizeBytes: 1, mtimeMs: 1_700_000_000_000 }),
     })
     const seen: string[] = []
     fileWatcher.onAdd((file) => seen.push(file.fileName))
@@ -132,7 +149,7 @@ describe('AuroraFileWatcher', () => {
     const watcher = fakeWatcher()
     const fileWatcher = new AuroraFileWatcher({
       createWatcher: () => watcher,
-      statSize: async () => undefined,
+      statFile: async () => undefined,
     })
     const seen: string[] = []
     fileWatcher.onAdd((file) => seen.push(file.fileName))
@@ -147,7 +164,7 @@ describe('AuroraFileWatcher', () => {
     const watcher = fakeWatcher()
     const fileWatcher = new AuroraFileWatcher({
       createWatcher: () => watcher,
-      statSize: async () => 1,
+      statFile: async () => ({ sizeBytes: 1, mtimeMs: 1_700_000_000_000 }),
     })
     const seen: string[] = []
     fileWatcher.onAdd((file) => seen.push(file.fileName))
@@ -166,7 +183,7 @@ describe('AuroraFileWatcher', () => {
     let index = 0
     const fileWatcher = new AuroraFileWatcher({
       createWatcher: () => watchers[index++]!,
-      statSize: async () => 1,
+      statFile: async () => ({ sizeBytes: 1, mtimeMs: 1_700_000_000_000 }),
     })
 
     await fileWatcher.watch('D:\\A')
@@ -180,7 +197,7 @@ describe('AuroraFileWatcher', () => {
     const watcher = fakeWatcher()
     const fileWatcher = new AuroraFileWatcher({
       createWatcher: () => watcher,
-      statSize: async () => 1,
+      statFile: async () => ({ sizeBytes: 1, mtimeMs: 1_700_000_000_000 }),
     })
     const seen: string[] = []
     fileWatcher.onAdd((file) => seen.push(file.fileName))
@@ -198,7 +215,7 @@ describe('AuroraFileWatcher', () => {
     const logs: string[] = []
     const fileWatcher = new AuroraFileWatcher({
       createWatcher: () => watcher,
-      statSize: async () => 1,
+      statFile: async () => ({ sizeBytes: 1, mtimeMs: 1_700_000_000_000 }),
       logger: {
         info: () => undefined,
         debug: () => undefined,
@@ -221,7 +238,7 @@ describe('AuroraFileWatcher', () => {
     const watcher = fakeWatcher()
     const fileWatcher = new AuroraFileWatcher({
       createWatcher: () => watcher,
-      statSize: async () => 1,
+      statFile: async () => ({ sizeBytes: 1, mtimeMs: 1_700_000_000_000 }),
     })
     const seen: string[] = []
     fileWatcher.onAdd(() => {
@@ -239,7 +256,7 @@ describe('AuroraFileWatcher', () => {
     const watcher = fakeWatcher()
     const fileWatcher = new AuroraFileWatcher({
       createWatcher: () => watcher,
-      statSize: async () => 1,
+      statFile: async () => ({ sizeBytes: 1, mtimeMs: 1_700_000_000_000 }),
     })
     const seen: string[] = []
     const off = fileWatcher.onAdd((file) => seen.push(file.fileName))
@@ -247,6 +264,65 @@ describe('AuroraFileWatcher', () => {
     await fileWatcher.watch('D:\\感知')
     off()
     watcher.emitAdd('D:\\感知\\a.pdf')
+    await settle()
+    expect(seen).toEqual([])
+  })
+})
+describe('AuroraFileWatcher · change 事件（docs/05 §3.2）', () => {
+  // 路径用拼接构造，避免源码里出现转义反斜杠（可读性也更好）
+  const SEP = String.fromCharCode(92)
+  const DIR = 'D:' + SEP + '感知'
+  const FILE = DIR + SEP + '作业.pdf'
+
+  it('文件被覆盖（change）同样触发回调，交由上层按签名去重', async () => {
+    const watcher = fakeWatcher()
+    const fileWatcher = new AuroraFileWatcher({
+      createWatcher: () => watcher,
+      statFile: async () => ({ sizeBytes: 2048, mtimeMs: 1_700_000_100_000 }),
+    })
+    const seen: Array<{ fileName: string; sizeBytes: number; mtimeMs: number }> = []
+    fileWatcher.onAdd((file) => seen.push(file))
+
+    await fileWatcher.watch(DIR)
+    watcher.emitAdd(FILE)
+    await settle()
+    watcher.emitChange(FILE)
+    await settle()
+
+    // 两次都应上报：是否重复处理由分类管线按 (路径, 大小, 修改时间) 决定，
+    // 监听层不做业务判断——否则「内容变了要重新分类」这件事永远收不到通知。
+    expect(seen).toHaveLength(2)
+    expect(seen[1]?.mtimeMs).toBe(1_700_000_100_000)
+  })
+
+  it('change 也遵守忽略规则与子目录校验', async () => {
+    const watcher = fakeWatcher()
+    const fileWatcher = new AuroraFileWatcher({
+      createWatcher: () => watcher,
+      statFile: async () => ({ sizeBytes: 1, mtimeMs: 1 }),
+    })
+    const seen: string[] = []
+    fileWatcher.onAdd((file) => seen.push(file.fileName))
+
+    await fileWatcher.watch(DIR)
+    watcher.emitChange(DIR + SEP + '~' + String.fromCharCode(36) + '作业.docx')
+    watcher.emitChange(DIR + SEP + '分类' + SEP + '作业.pdf')
+    await settle()
+    expect(seen).toEqual([])
+  })
+
+  it('change 也受抑制集约束（避免管线自身移动造成重复处理）', async () => {
+    const watcher = fakeWatcher()
+    const fileWatcher = new AuroraFileWatcher({
+      createWatcher: () => watcher,
+      statFile: async () => ({ sizeBytes: 1, mtimeMs: 1 }),
+    })
+    const seen: string[] = []
+    fileWatcher.onAdd((file) => seen.push(file.fileName))
+
+    await fileWatcher.watch(DIR)
+    fileWatcher.suppress(FILE)
+    watcher.emitChange(FILE)
     await settle()
     expect(seen).toEqual([])
   })

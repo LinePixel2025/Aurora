@@ -1,0 +1,105 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Aurora × ClassIsland 桥接插件（目标框架与 ClassIsland 2.x 一致：net8.0）。
+
+    构建时需指向**已安装的 ClassIsland 程序集**（不通过 NuGet 引用）：
+      dotnet build -c Release -p:ClassIslandDir="<ClassIsland 安装目录>"
+    也可设置环境变量 CLASSISLAND_DIR；两者都没有时会尝试常见安装位置。
+
+    ClassIsland 的「完整包」把程序集放在 <安装目录>/app-<版本>/ 下，
+    因此这里会自动往下探一层 —— 用户直接指向下载解压出来的那层目录即可。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>AuroraClassIslandBridge</AssemblyName>
+    <RootNamespace>Aurora.ClassIslandBridge</RootNamespace>
+    <!-- 插件作为类库由宿主加载，不需要可执行入口 -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+
+  <!-- 1) 确定 ClassIsland 安装目录 -->
+  <PropertyGroup Condition="'$(ClassIslandDir)' == ''">
+    <ClassIslandDir Condition="'$(CLASSISLAND_DIR)' != ''">$(CLASSISLAND_DIR)</ClassIslandDir>
+    <ClassIslandDir Condition="'$(ClassIslandDir)' == '' AND Exists('$(LOCALAPPDATA)/Programs/ClassIsland')">$(LOCALAPPDATA)/Programs/ClassIsland</ClassIslandDir>
+    <ClassIslandDir Condition="'$(ClassIslandDir)' == '' AND Exists('$(ProgramFiles)/ClassIsland')">$(ProgramFiles)/ClassIsland</ClassIslandDir>
+  </PropertyGroup>
+
+  <!--
+    2) 定位真正含 dll 的目录（完整包会多一层 app-<版本>）。
+
+    必须在 target 里做：Reference 的 HintPath 在**评估阶段**就展开，
+    那时 glob 结果还不存在，会出现 MSB3245「未能解析此引用」。
+    因此这里先算出路径，再在 target 内动态加入引用项。
+  -->
+  <ItemGroup>
+    <_ClassIslandCoreCandidate Include="$(ClassIslandDir)/ClassIsland.Core.dll" />
+    <_ClassIslandCoreCandidate Include="$(ClassIslandDir)/app-*/ClassIsland.Core.dll" />
+  </ItemGroup>
+
+  <Target Name="ResolveClassIslandReferences" BeforeTargets="ResolveAssemblyReferences">
+    <PropertyGroup>
+      <_ClassIslandCoreDll>%(_ClassIslandCoreCandidate.Identity)</_ClassIslandCoreDll>
+      <ClassIslandCoreDir>$([System.IO.Path]::GetDirectoryName('$(_ClassIslandCoreDll)'))</ClassIslandCoreDir>
+    </PropertyGroup>
+
+    <Error Condition="'$(_ClassIslandCoreDll)' == ''"
+           Text="未找到 ClassIsland.Core.dll。请用 -p:ClassIslandDir=&quot;&lt;ClassIsland 安装目录&gt;&quot; 指定；若是完整包，指向含 app-&lt;版本&gt; 的那层即可。" />
+
+    <ItemGroup>
+      <!--
+        Private=false：由宿主加载进插件的 AssemblyLoadContext，复制反而会与宿主版本冲突。
+        Microsoft.Extensions.* 是 PluginBase.Initialize 签名所需（HostBuilderContext /
+        IServiceCollection / ILogger），ClassIsland 自身也带这些程序集，直接引用可避免
+        NuGet 版本与宿主不一致导致的运行时加载失败。
+      -->
+      <Reference Include="ClassIsland.Core">
+        <HintPath>$(_ClassIslandCoreDll)</HintPath>
+        <Private>false</Private>
+      </Reference>
+      <Reference Include="ClassIsland.Shared">
+        <HintPath>$(ClassIslandCoreDir)/ClassIsland.Shared.dll</HintPath>
+        <Private>false</Private>
+      </Reference>
+      <Reference Include="ClassIsland.Shared.IPC">
+        <HintPath>$(ClassIslandCoreDir)/ClassIsland.Shared.IPC.dll</HintPath>
+        <Private>false</Private>
+      </Reference>
+      <Reference Include="Microsoft.Extensions.Hosting.Abstractions">
+        <HintPath>$(ClassIslandCoreDir)/Microsoft.Extensions.Hosting.Abstractions.dll</HintPath>
+        <Private>false</Private>
+      </Reference>
+      <Reference Include="Microsoft.Extensions.DependencyInjection.Abstractions">
+        <HintPath>$(ClassIslandCoreDir)/Microsoft.Extensions.DependencyInjection.Abstractions.dll</HintPath>
+        <Private>false</Private>
+      </Reference>
+      <Reference Include="Microsoft.Extensions.Logging.Abstractions">
+        <HintPath>$(ClassIslandCoreDir)/Microsoft.Extensions.Logging.Abstractions.dll</HintPath>
+        <Private>false</Private>
+      </Reference>
+      <!--
+        AppBase 继承自 Avalonia.Application，因此引用它是一种**类型依赖**：
+        即使我们不写 UI，编译器也需要它才能解析 AppBase 的成员。
+      -->
+      <Reference Include="Avalonia.Controls">
+        <HintPath>$(ClassIslandCoreDir)/Avalonia.Controls.dll</HintPath>
+        <Private>false</Private>
+      </Reference>
+      <Reference Include="Avalonia.Base">
+        <HintPath>$(ClassIslandCoreDir)/Avalonia.Base.dll</HintPath>
+        <Private>false</Private>
+      </Reference>
+    </ItemGroup>
+  </Target>
+
+  <!-- 插件清单与说明随产物复制到插件目录 -->
+  <ItemGroup>
+    <None Include="manifest.yml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="README.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="icon.png" CopyToOutputDirectory="PreserveNewest" Condition="Exists('icon.png')" />
+  </ItemGroup>
+
+</Project>

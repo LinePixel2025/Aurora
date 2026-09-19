@@ -124,7 +124,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     // 2. 配置读写（IPC 层）
     const settings = expectOk('settings.get', await window.aurora.settings.get())
     if (settings) {
-      record('settings.get.version', settings.version === 2, String(settings.version))
+      record('settings.get.version', settings.version === 3, String(settings.version))
       // 自测前置把科目裁剪为「数学 / 物理 / 语文」，断言随之对齐（不再是九科模板）
       record('settings.get 科目列表已就绪', settings.modes.classroom.subjects.length === 3, String(settings.modes.classroom.subjects.length))
       record('settings.get 不回传密文', settings.llm.providers === undefined || Object.values(settings.llm.providers).every((p) => p.apiKeyEnc === ''), 'apiKeyEnc 已清空')
@@ -396,16 +396,24 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     // 10.2 低置信度 → 落「待分类」
     // 判定条件用 **source === 'fallback'**：待分类目录名不会出现在 reason 里
     // （reason 是"模型依据 + 低于阈值说明"），按目录名等会必然等到超时。
+    // 同时带上 movedTo：history.append（记录判定结果）发生在真正搬文件**之前**，
+    // 只等 source === 'fallback' 会读到移动前的快照，
+    // 于是"已移入待分类目录"这条断言会随机拿到 movedTo=undefined。
+    // 等终态才能既验证"落到了待分类"，又不会误报。
     const fallbackAttempt = await dropAndWait(
       '低置信扫描件.txt',
       '内容无法辨认',
       (list) =>
-        list.some((item) => item.fileName.indexOf('低置信') === 0 && item.source === 'fallback'),
+        list.some(
+          (item) =>
+            item.fileName.indexOf('低置信') === 0 && item.source === 'fallback' && item.movedTo,
+        ),
       25000,
     )
     const fallback = fallbackAttempt.list
     const fallbackRecord = fallback.find(
-      (item) => item.fileName.indexOf('低置信') === 0 && item.source === 'fallback',
+      (item) =>
+        item.fileName.indexOf('低置信') === 0 && item.source === 'fallback' && item.movedTo,
     )
     record('低置信文件已处理', Boolean(fallbackRecord), fallbackRecord ? fallbackRecord.reason : '未在超时内完成')
     record(
@@ -454,7 +462,13 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     record(
       '同名文件再次出现并被重新分类',
       rerunRecords.length >= 2,
-      'count=' + rerunRecords.length + ' attempts=' + rerunAttempt.attempts,
+      'count=' + rerunRecords.length + ' attempts=' + rerunAttempt.attempts +
+        ' records=' + JSON.stringify(rerunRecords.map((item) => ({
+          id: item.id,
+          state: item.reason,
+          movedTo: item.movedTo ? 'yes' : 'no',
+          modifiedAt: item.modifiedAt ? 'yes' : 'no',
+        }))),
     )
     // 刻意按**属性**找而不是取 rerunRecords[0]：修正动作与在途任务可能交错，
     // 列表里还会出现一条 skipped（"处理期间已被移动"）的审计记录，
@@ -508,6 +522,76 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       sensitiveSubscribed = false
     }
     record('敏感工具确认订阅面可用', sensitiveSubscribed, String(sensitiveSubscribed))
+
+    // ─────────────── 全局快捷键注册状态（docs/07 §5） ───────────────
+    // 只断言通道可用并回传了结构化状态：Alt+Space 是否真的注册成功取决于
+    // 运行自测的机器有没有被系统/其他程序占用，"注册失败"也是合法结果。
+    const hotkey = expectOk('hotkey.status', await window.aurora.hotkey.status())
+    record(
+      '快捷键状态可查询（含是否已注册）',
+      typeof hotkey === 'object' && hotkey !== null && typeof hotkey.registered === 'boolean',
+      JSON.stringify(hotkey),
+    )
+
+    // ─────────────── Skill 扫描状态与重扫（docs/06 §6） ───────────────
+    const skillsStatus = expectOk('skills.status', await window.aurora.skills.status())
+    record(
+      'Skill 状态含生效的用户目录',
+      Boolean(skillsStatus && skillsStatus.userDir),
+      JSON.stringify(skillsStatus && { userDir: skillsStatus.userDir, total: skillsStatus.total }),
+    )
+    const rescanned = expectOk('skills.rescan', await window.aurora.skills.rescan())
+    record(
+      'Skill 重扫返回扫描结果',
+      Boolean(rescanned && typeof rescanned.total === 'number' && rescanned.scannedAt),
+      JSON.stringify(rescanned && { total: rescanned.total, failed: rescanned.failed }),
+    )
+
+    // ─────────────── 会话列表与新会话（docs/06 §4） ───────────────
+    const sessions = expectOk('chat.sessions', await window.aurora.chat.sessions())
+    record(
+      '会话列表可读且含 quick 会话',
+      Array.isArray(sessions) && sessions.some((item) => item.id === 'quick'),
+      JSON.stringify(Array.isArray(sessions) ? sessions.map((item) => item.id) : null),
+    )
+    const newSessionId = expectOk('chat.newSession', await window.aurora.chat.newSession())
+    record(
+      '可新建会话并返回新 id',
+      typeof newSessionId === 'string' && newSessionId.length > 0 && newSessionId !== 'quick',
+      String(newSessionId),
+    )
+
+    // ─────────────── ClassIsland 桥接（docs/05 §3.4 v2） ───────────────
+    // 自测前置（seedSmokeClassroom）会把课表来源切到 classisland 并写一份夹具 JSON，
+    // 因此这里断言的是**真实读取链路**：写文件 → provider 解析 → 今日课程。
+    const bridgeTest = await window.aurora.classisland.test()
+    record(
+      'ClassIsland 测试连接：读取夹具 JSON 成功',
+      bridgeTest.ok === true && bridgeTest.value.ok === true,
+      JSON.stringify(bridgeTest.ok ? { lessons: bridgeTest.value.lessons.length, error: bridgeTest.value.error } : bridgeTest),
+    )
+    const bridgeLessons = bridgeTest.ok ? bridgeTest.value.lessons : []
+    record(
+      'ClassIsland 今日课程含夹具里的数学课',
+      bridgeLessons.some((lesson) => lesson.subject === '数学'),
+      JSON.stringify(bridgeLessons.map((lesson) => lesson.startTime + ' ' + lesson.subject)),
+    )
+
+    const bridgeStatus = expectOk('classisland.status', await window.aurora.classisland.status())
+    record(
+      'ClassIsland 状态显示已启用且同步成功',
+      Boolean(bridgeStatus && bridgeStatus.enabled && bridgeStatus.ok),
+      JSON.stringify(bridgeStatus),
+    )
+
+    // ─────────────── 日志目录通道（原死通道） ───────────────
+    // 只断言通道存在且返回结构化结果：真的打开资源管理器在无头环境没有意义。
+    const openLogs = await window.aurora.app.openLogs()
+    record(
+      'openLogs 通道已接通（不再挂起）',
+      typeof openLogs === 'object' && openLogs !== null && typeof openLogs.ok === 'boolean',
+      JSON.stringify(openLogs && { ok: openLogs.ok }),
+    )
 
     // 11. 清理自测写入的配置
     //     （"密文确实落库且可解密"由 hasSecret#smoke / update(llm#stub) 两条断言覆盖：

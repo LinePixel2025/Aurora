@@ -13,20 +13,18 @@ import {
   Notification,
   app,
   dialog,
+  globalShortcut,
   screen,
   session,
   shell,
   utilityProcess,
 } from 'electron'
-import {
-  KernelAgentHost,
-  SessionStore,
-  SkillsBridge,
-  SkillsRegistry,
-  ToolRegistry,
-} from '@aurora/agent-core'
+import { KernelAgentHost, SessionStore, SkillsBridge, ToolRegistry } from '@aurora/agent-core'
 import {
   SettingsStore,
+  type ClassIslandStatus,
+  type ClassIslandTestResult,
+  type Logger,
   type McpServerStatus,
   type ModeContext,
   type Settings,
@@ -47,10 +45,15 @@ import { DesktopAgentHost, createConfirmTool, createProviderFactory } from './ag
 import { McpController } from './mcp.js'
 import { LlmTester } from './llm-tester.js'
 import { registerIpc, type DesktopDeps } from './ipc.js'
-import type { ProactiveLike } from './contracts.js'
+import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { ProactiveScheduler } from './proactive.js'
 import { PreClassReminder } from './pre-class-reminder.js'
-import { resolveScheduleProvider } from './schedule.js'
+import { EdgeBarScheduler } from './edge-bar-scheduler.js'
+import { HotkeyManager } from './hotkey.js'
+import { SkillsService } from './skills.js'
+import { ClassIslandProvider } from './classisland.js'
+import { applyProxy, createNetFetch } from './net.js'
+import { resolveScheduleProvider, type IScheduleProvider } from './schedule.js'
 import { resolveSubjectFolder } from './paths.js'
 import { AuroraFileWatcher } from './file-watcher.js'
 import { ExtractPool, type ExtractWorkerChild } from './extract-pool.js'
@@ -134,6 +137,15 @@ let extractPool: ExtractPool | undefined
 let notifications: NotificationService | undefined
 let proactiveScheduler: ProactiveScheduler | undefined
 let preClassReminder: PreClassReminder | undefined
+let edgeBarScheduler: EdgeBarScheduler | undefined
+let hotkeys: HotkeyManager | undefined
+let skillsService: SkillsService | undefined
+/** 当前生效的出网 fetch（按代理设置重建） */
+let netFetch: typeof fetch | undefined
+/** ClassIsland 桥接 provider（配置里选 classisland 且已填端点时才有值） */
+let classIslandProvider: ClassIslandProvider | undefined
+/** 构造当前 provider 用的配置签名（变化时重建） */
+let classIslandSignature = ''
 let disposeIpc: (() => void) | undefined
 /** MCP 状态订阅（IPC 层与主进程内部共用，避免为状态再引入一次事件总线） */
 const mcpStatusListeners = new Set<(statuses: McpServerStatus[]) => void>()
@@ -174,7 +186,9 @@ async function bootstrap(): Promise<void> {
   const userData = app.getPath('userData')
   const logsDir =
     smokeWorkspace === undefined ? join(userData, 'logs') : join(tmpdir(), 'aurora-smoke-logs')
-  logger = new FileLogger({ dir: logsDir, level: isDev ? 'debug' : 'info', console: isDev })
+  // 日志级别取自设置（docs/08 §6）：启动时读一次，之后由设置变更热更新。
+  // 设置还没加载完，因此先用兜底值；第 2 步读完配置后立即同步（见 syncAdvanced）。
+  logger = new FileLogger({ dir: logsDir, level: 'info', console: isDev })
   logger.info('Aurora 启动', {
     version: app.getVersion(),
     electron: process.versions.electron,
@@ -234,6 +248,13 @@ async function bootstrap(): Promise<void> {
     logger.warn('safeStorage 不可用，API Key 仅驻留内存')
   }
 
+  // 2.1 高级页生效项（docs/08 §6）：日志级别、系统代理。
+  //     这两项曾经只是「存进配置但无人消费」的假开关 —— 用户改了没效果、也查不出来。
+  //     放在这里是因为必须在任何出网 / 写日志之前生效。
+  logger.setLevel(settings.get().advanced.logLevel)
+  netFetch = createNetFetch()
+  await applyAdvancedNetwork(settings.get().advanced.proxy)
+
   // 3. 系统感知（docs/06 §8.1）：时间 / 电源 / 网络 / 前台窗口 / 显示器 / 课程表
   //    显示器与课程表的数据源在主进程侧（Electron screen / 模式配置），以注入方式提供，
   //    使 `perception.ts` 保持不依赖 Electron、可单测。
@@ -256,7 +277,7 @@ async function bootstrap(): Promise<void> {
     },
     scheduleProvider: async () => {
       try {
-        return await resolveScheduleProvider(settings!.get().modes.classroom).getToday(new Date())
+        return await currentScheduleProvider().getToday(new Date())
       } catch (error) {
         logger?.debug('课程表不可用，已降级为未知', { error: String(error) })
         return undefined
@@ -277,15 +298,21 @@ async function bootstrap(): Promise<void> {
   })
 
   // 5. Skill 注册表（内置 skills/ + 用户技能目录）
-  const skills = new SkillsRegistry({
-    builtinDir: resolveBuiltinSkillsDir(),
-    userDir: join(userData, 'skills'),
-    logger: logger.child('skills'),
-  })
-  await skills.scan().catch((error: unknown) => {
-    logger?.warn('技能扫描失败', { error: String(error) })
-  })
-  skills.setDisabled(settings.get().skills.disabled)
+  //    用户目录来自 `skills.userDir`（空串回落 `userData/skills`）——在此之前该配置项
+  //    只是个死字段，运行时永远读 `userData/skills`（docs/08 §6）。
+  skillsService = new SkillsService(
+    {
+      builtinDir: resolveBuiltinSkillsDir(),
+      userData,
+      logger: logger.child('skills'),
+    },
+    settings.get(),
+  )
+  await skillsService.init(settings.get())
+  const skills = skillsService.kernel
+  if (skillsService.status().failed > 0) {
+    logger.warn('部分技能解析失败，已跳过', { count: skillsService.status().failed })
+  }
 
   // 6. 模式装配
   const modes = new ModeManager(logger.child('mode'))
@@ -373,6 +400,7 @@ async function bootstrap(): Promise<void> {
     settings,
     tools,
     logger: logger.child('mcp'),
+    resolveFetch: () => netFetch,
     onStatusChanged: (statuses) => mcpStatusListeners.forEach((listener) => listener(statuses)),
   })
   await mcp.start()
@@ -397,14 +425,18 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('confirm'),
   })
 
+  const providerFactory = createProviderFactory(settings, logger.child('llm'), () => netFetch)
   const kernel = new KernelAgentHost({
     sessions,
-    provider: createProviderFactory(settings, logger.child('llm')),
+    provider: providerFactory,
     tools,
     skills: skillBridge,
     logger: logger.child('agent'),
     modePrompt: () => modes.systemPrompt(),
     perceptionSummary: () => perception?.contextSummary() ?? Promise.resolve(''),
+    // 长上下文摘要（docs/06 §4）：被截断的旧消息交给当前 provider 压成一段摘要。
+    // 装配层实现、内核只接受注入 —— agent-core 保持不依赖网络与 Electron。
+    summarize: createSummarizer(settings, logger.child('summary')),
     confirmTool,
   })
   agent = new DesktopAgentHost({
@@ -415,7 +447,11 @@ async function bootstrap(): Promise<void> {
     kernel,
     confirmTool,
   })
-  const llm = new LlmTester({ settings, logger: logger.child('llm') })
+  const llm = new LlmTester({
+    settings,
+    logger: logger.child('llm'),
+    resolveFetch: () => netFetch,
+  })
 
   // 7.2 分类管线装配（docs/05 §3、docs/02 §5.2）
   //     chokidar 监听 → 并发队列 → utilityProcess 内容提取 → 规则/LLM 判定 → 落盘 → 通知
@@ -492,6 +528,22 @@ async function bootstrap(): Promise<void> {
     ...(readAutoCheckDelay() === undefined ? {} : { autoCheckDelayMs: readAutoCheckDelay() }),
   })
 
+  // 7.4 全局快捷键（docs/07 §5）：`general.hotkey` 之前只是个存了不注册的死字段
+  hotkeys = new HotkeyManager({
+    port: {
+      register: (accelerator, handler) => globalShortcut.register(accelerator, handler),
+      unregister: (accelerator) => globalShortcut.unregister(accelerator),
+      unregisterAll: () => globalShortcut.unregisterAll(),
+    },
+    // 切换服务窗显隐：与托盘左键同一动作，用户习惯一致
+    onTrigger: () => {
+      logger?.debug('全局快捷键触发：切换服务窗')
+      windows?.toggle('service-dock')
+    },
+    logger: logger.child('hotkey'),
+  })
+  hotkeys.apply(settings.get().general.hotkey)
+
   // 7.5 课前提醒（docs/05 §3.4）：按课程表在课前 5 分钟通知并打开科目文件夹
   //
   // 自测（smokeMode）下把"打开文件夹"记为**真实回执**而不是真的弹资源管理器：
@@ -501,7 +553,7 @@ async function bootstrap(): Promise<void> {
   preClassReminder = new PreClassReminder({
     // 每次检查重新解析：`resolveScheduleProvider` 是**按值快照**的，
     // 只构造一次会导致"设置页改完课程表要重启才生效"。
-    getProvider: () => resolveScheduleProvider(settings!.get().modes.classroom),
+    getProvider: () => currentScheduleProvider(),
     enabled: () => settings!.get().modes.classroom.preClassReminder,
     quietHours: () => settings!.get().advanced.quietHours,
     notify: (title, body, openPath) => notify(title, body, openPath),
@@ -538,10 +590,16 @@ async function bootstrap(): Promise<void> {
     agent,
     perception,
     llm,
-    skills,
+    skills: skillsService,
     sessions,
     classification,
     proactive: adaptProactive(proactiveScheduler),
+    hotkey: hotkeys,
+    classisland: {
+      enabled: () => isClassIslandActive(),
+      status: () => classIslandStatus(),
+      test: () => testClassIsland(),
+    },
     mcpStatus: () => mcp?.statuses() ?? [],
     onMcpStatusChanged: (listener) => {
       mcpStatusListeners.add(listener)
@@ -559,8 +617,42 @@ async function bootstrap(): Promise<void> {
       preClassFired: smokeMode ? [...preClassFired] : undefined,
     }),
     onQuit: () => app.quit(),
+    // 附件提取（docs/07 §2.3）：复用分类管线的提取器（同一份 officeparser 能力），
+    // 走 utilityProcess 池以免一个几十 MB 的 PDF 卡住主进程事件循环。
+    attachmentExtract: async (path) => {
+      const { basename, extname } = await import('node:path')
+      const fileName = basename(path)
+      const ext = extname(path).replace(/^\./, '').toLowerCase()
+      try {
+        const stat = await fs.stat(path)
+        if (!stat.isFile()) return { path, fileName, note: '不是文件' }
+        const result = await extractPool!.extract({
+          path,
+          ext,
+          sizeBytes: stat.size,
+        })
+        const warnings = result.warnings ?? []
+        return {
+          path,
+          fileName,
+          ...(result.evidence.trim() === '' ? {} : { text: result.evidence }),
+          ...(warnings.length > 0 ? { note: warnings.join('；') } : {}),
+        }
+      } catch (error) {
+        return { path, fileName, note: `提取失败：${String(error)}` }
+      }
+    },
     onSettingsChanged: (next) => {
+      // 高级页的三项「真生效」路径（docs/08 §6）：
+      // 日志级别热改、代理即时重应用、提示条透明度重新取值。
+      logger?.setLevel(next.advanced.logLevel)
+      void applyAdvancedNetwork(next.advanced.proxy)
+      windows?.applyEdgeBarOpacity(next.general.edgeBar.opacity)
+      // 快捷键改绑（幂等：值没变时内部直接返回，不会闪断）
+      hotkeys?.apply(next.general.hotkey)
       if (!next.general.edgeBar.enabled) windows?.hide('edge-bar')
+      // Skill 用户目录可能被改（`skills.userDir`），按新配置重解析并重扫
+      void skillsService?.reconfigure(next)
       syncLaunchAtLogin(next.general.launchAtLogin)
       tray?.refresh()
       // 感知文件夹 / 科目 / 阈值变更后，让分类管线按新配置重新武装
@@ -584,6 +676,19 @@ async function bootstrap(): Promise<void> {
   // 8.2 开机自启：必须在 ready 之后调用（docs/04 §P1）
   syncLaunchAtLogin(settings.get().general.launchAtLogin)
 
+  // 8.2.1 提示条透明度与独立勿扰时段（docs/07 §2.2、docs/08 §1）：
+  //       透明度立即应用；勿扰由 EdgeBarScheduler 每 30s 判定，与 advanced.quietHours 相互独立。
+  windows.applyEdgeBarOpacity(settings.get().general.edgeBar.opacity)
+  edgeBarScheduler = new EdgeBarScheduler({
+    // 首次引导期间不显示提示条：那时用户还没配好模型，竖条只会挡视线
+    enabled: () => settings!.get().general.edgeBar.enabled && settings!.needsOnboarding() === false,
+    quietHours: () => settings!.get().general.edgeBar.quietHours,
+    show: () => windows?.show('edge-bar'),
+    hide: () => windows?.hide('edge-bar'),
+    logger: logger.child('edge-bar'),
+  })
+  edgeBarScheduler.start()
+
   // 8.3 自动更新：延迟静默检查（不阻塞启动），并在有更新时通知托盘
   updater.scheduleAutoCheck()
 
@@ -596,6 +701,10 @@ async function bootstrap(): Promise<void> {
     if (settings.get().general.edgeBar.enabled) windows.show('edge-bar')
     modes.requestGuideIfNeeded(settings.get().modes.current, 'startup')
   }
+
+  // 引导刚结束（或本就在正常态）时立刻重算一次提示条可见性：
+  // 上面的 `needsOnboarding()` 守卫会让首次启动的 tick 判定为不可见
+  edgeBarScheduler?.tick()
 
   logger.info('Aurora 就绪')
 
@@ -748,8 +857,12 @@ async function runSmokeTest(userData: string): Promise<void> {
  * 自测前置（仅 `AURORA_SMOKE=1`，docs/04 §P4/§P5 验收）：
  * 1. 把感知文件夹指向自测临时目录（不碰开发者的真实目录）；
  * 2. 科目只留「数学 / 物理 / 语文」，使断言不受默认九科模板干扰；
- * 3. 放一节 **4 分钟后开始** 的数学课，让课前 5 分钟窗口立刻命中
- *    （无需等待真实课前时间）。
+ * 3. 课表来源切成 **ClassIsland 桥接**（file 模式），并写一份夹具 JSON，
+ *    里面放一节 **3 分钟后开始** 的数学课 —— 落在课前 5 分钟窗口内，
+ *    首轮 tick 就会命中，无需等待真实课前时间。
+ *
+ * 第 3 条把「桥接 JSON → provider 解析 → 感知摘要 → 课前提醒」整条链路
+ * 串起来验证：只测解析器无法证明装配真的接通了。
  *
  * **刻意不预先放入待分类文件**：文件由渲染层脚本经 `app:smokeDropFile` 在
  * 订阅了分类事件之后写入，这样才真正验证了「新文件拖入 → 自动归类」的
@@ -763,6 +876,30 @@ async function seedSmokeClassroom(userData: string): Promise<string> {
   //    首轮 tick（默认 30s 间隔）就会命中，无需等待真实时刻
   const startTime = new Date(Date.now() + 3 * 60_000)
   const clock = `${pad2(startTime.getHours())}:${pad2(startTime.getMinutes())}`
+  const endClock = `${pad2(startTime.getHours())}:${pad2(startTime.getMinutes() + 45)}`
+
+  // 3. 桥接夹具：与真实插件写出的契约完全一致（docs/05 §3.4 v2）
+  const bridgePath = join(userData, 'classisland-bridge.json')
+  await fs.writeFile(
+    bridgePath,
+    JSON.stringify(
+      {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        lessons: [
+          {
+            weekday: startTime.getDay(),
+            startTime: clock,
+            endTime: endClock,
+            subject: '数学',
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  )
 
   settings?.mutate((draft) => {
     draft.modes.current = 'classroom'
@@ -774,23 +911,164 @@ async function seedSmokeClassroom(userData: string): Promise<string> {
     ]
     draft.modes.classroom.preClassReminder = true
     draft.modes.classroom.schedule = {
-      provider: 'manual',
-      lessons: [
-        {
-          weekday: startTime.getDay(),
-          startTime: clock,
-          endTime: `${pad2(startTime.getHours())}:${pad2(startTime.getMinutes())}`,
-          subject: '数学',
-        },
-      ],
+      provider: 'classisland',
+      // 手动课表留空：走 classisland 时它不参与解析，但 Schema 要求字段存在
+      lessons: [],
+      classisland: {
+        source: 'file',
+        endpoint: bridgePath,
+        timeoutMs: 2000,
+      },
     }
   })
-  logger?.info('自测已配置 ClassRoom（待分类文件由渲染层实时投放）', { watchDir, lesson: clock })
+  logger?.info('自测已配置 ClassRoom（课表来自 ClassIsland 桥接夹具）', {
+    watchDir,
+    lesson: clock,
+    bridgePath,
+  })
   return watchDir
 }
 
 function pad2(value: number): string {
   return `${value}`.padStart(2, '0')
+}
+
+/**
+ * 应用系统代理（docs/08 §6 `advanced.proxy`）。
+ *
+ * 同时做两件事：把代理交给 Chromium 会话（`session.setProxy`），并按新配置重建
+ * 出网 fetch —— LLM / MCP HTTP / 连接测试都读这个引用，因此改完即刻生效。
+ * 任何失败只记日志：代理配错不应该让应用起不来。
+ */
+async function applyAdvancedNetwork(proxy: string): Promise<void> {
+  try {
+    netFetch = createNetFetch()
+    await applyProxy(proxy)
+    logger?.info('系统代理已应用', { proxy: proxy.trim() === '' ? '（直连）' : proxy.trim() })
+  } catch (error) {
+    logger?.warn('应用系统代理失败，保持原设置', { error: String(error) })
+  }
+}
+
+/** ClassIsland 联动是否启用（选了 classisland 且填了端点）。 */
+function isClassIslandActive(): boolean {
+  const schedule = settings?.get().modes.classroom.schedule
+  if (schedule === undefined || schedule.provider !== 'classisland') return false
+  return schedule.classisland.endpoint.trim() !== ''
+}
+
+/**
+ * ClassIsland provider 单例（按配置签名缓存）。
+ *
+ * provider 内部持有「上次读取的原文」，缓存它才能让「内容未变则跳过重复解析」生效；
+ * 端点变化时重建，避免继续读旧地址。
+ */
+function classIslandProviderFor(): ClassIslandProvider | undefined {
+  const schedule = settings?.get().modes.classroom.schedule
+  if (schedule === undefined) return undefined
+  const config = schedule.classisland
+  if (config.endpoint.trim() === '') {
+    classIslandProvider = undefined
+    return undefined
+  }
+  const signature = `${config.source}|${config.endpoint}|${config.timeoutMs}`
+  if (classIslandProvider !== undefined && classIslandSignature === signature) {
+    return classIslandProvider
+  }
+  classIslandProvider = new ClassIslandProvider({
+    ...config,
+    logger: logger?.child('classisland'),
+  })
+  classIslandSignature = signature
+  return classIslandProvider
+}
+
+function classIslandStatus(): ClassIslandStatus {
+  const schedule = settings?.get().modes.classroom.schedule
+  const config = schedule?.classisland ?? { source: 'file' as const, endpoint: '', timeoutMs: 3000 }
+  const enabled = isClassIslandActive()
+  const provider = enabled ? classIslandProviderFor() : undefined
+  const status = provider?.getStatus()
+  return {
+    enabled,
+    source: config.source,
+    endpoint: config.endpoint,
+    ok: status?.ok ?? false,
+    lastSyncAt: status?.lastSyncAt ?? null,
+    lessonCount: status?.lessonCount ?? 0,
+    warnings: status?.warnings ?? [],
+    ...(status?.error === undefined ? {} : { error: status.error }),
+  }
+}
+
+/** 设置页「测试连接」：立即按当前配置解析一次（临时实例，不影响缓存中的 provider）。 */
+async function testClassIsland(): Promise<ClassIslandTestResult> {
+  const schedule = settings?.get().modes.classroom.schedule
+  const config = schedule?.classisland ?? { source: 'file' as const, endpoint: '', timeoutMs: 3000 }
+  const provider = new ClassIslandProvider({ ...config, logger: logger?.child('classisland') })
+  const result = await provider.test(new Date())
+  return {
+    ok: result.ok,
+    source: config.source,
+    endpoint: config.endpoint,
+    lessons: result.lessons,
+    warnings: result.warnings,
+    ...(result.error === undefined ? {} : { error: result.error }),
+    elapsedMs: result.elapsedMs,
+  }
+}
+
+/**
+ * 当前课程表 provider（`manual` / `classisland`，docs/05 §3.4）。
+ * 感知摘要与课前提醒共用此函数，保证两处看到同一份课表。
+ */
+function currentScheduleProvider(): IScheduleProvider {
+  const classroom = settings!.get().modes.classroom
+  return resolveScheduleProvider(classroom, { classisland: classIslandProviderFor() })
+}
+
+/**
+ * 长上下文摘要器（docs/06 §4）。
+ *
+ * 复用当前 provider：摘要是一次普通的非流式对话请求，因此天然继承
+ * 用户配置的模型 / 代理 / 重试策略。失败向上抛，由 `compressHistory`
+ * 退回纯截断 —— 摘要失败绝不能拖垮用户这次提问。
+ */
+function createSummarizer(
+  store: SettingsStoreLike,
+  log: Logger,
+): (input: {
+  dropped: Array<{ role: string; content: string }>
+  previousSummary?: string
+}) => Promise<string> {
+  return async (input) => {
+    const config = createProviderFactory(store, log, () => netFetch).create()
+    if (config === undefined) throw new Error('尚无可用模型配置，跳过摘要')
+    const transcript = input.dropped
+      .map((message) => `${message.role === 'user' ? '用户' : '助手'}：${message.content}`)
+      .join('\n')
+    const prompt = [
+      input.previousSummary === undefined
+        ? '请把下面这段对话压缩成要点摘要。'
+        : '这是对话的累计摘要与新增片段，请合并更新为一份要点摘要。',
+      '要求：保留用户的目标、已确认的结论、未完成事项与关键事实；',
+      '去掉寒暄与重复；用中文；不超过 300 字；只输出摘要正文。',
+      input.previousSummary === undefined ? '' : `\n【已有摘要】\n${input.previousSummary}`,
+      `\n【新增对话】\n${transcript}`,
+    ]
+      .filter((part) => part !== '')
+      .join('\n')
+
+    let text = ''
+    for await (const event of config.provider.chat({
+      model: config.model,
+      messages: [{ role: 'user', content: prompt }],
+    })) {
+      if (event.type === 'text') text += event.delta
+      if (event.type === 'error') throw new Error(event.message)
+    }
+    return text
+  }
 }
 
 async function shutdown(): Promise<void> {
@@ -799,6 +1077,9 @@ async function shutdown(): Promise<void> {
   perception?.stop()
   agent?.dispose()
   updater?.dispose()
+  // 全局快捷键必须在退出前注销，否则会残留到进程消亡（Electron 只在正常退出时自动清）
+  hotkeys?.dispose()
+  edgeBarScheduler?.stop()
   // 主动引导：让在途的敏感工具确认立即失败，不留下悬挂的 Promise
   proactiveScheduler?.dispose()
   preClassReminder?.stop()

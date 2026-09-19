@@ -12,6 +12,11 @@ export interface McpControllerOptions {
   settings: SettingsStoreLike
   tools: ToolRegistry
   logger: Logger
+  /**
+   * 当前出网 fetch（docs/08 §6 系统代理）。
+   * 用函数：用户在设置页改代理后无需重启即可对**新建连接**生效。
+   */
+  resolveFetch?: () => typeof fetch | undefined
   onStatusChanged?: (statuses: McpServerStatus[]) => void
 }
 
@@ -28,6 +33,7 @@ export class McpController {
     this.hub = new McpClientHub({
       tools: options.tools,
       logger: options.logger,
+      ...(options.resolveFetch === undefined ? {} : { resolveFetch: options.resolveFetch }),
       ...(options.onStatusChanged === undefined
         ? {}
         : { onStatusChanged: options.onStatusChanged }),

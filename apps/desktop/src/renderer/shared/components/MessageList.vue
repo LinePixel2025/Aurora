@@ -44,6 +44,12 @@ function toolStateLabel(state: 'running' | 'success' | 'error'): string {
         {{ message.role === 'user' ? '我' : message.role === 'assistant' ? 'A' : 'S' }}
       </span>
       <div class="bubble">
+        <!-- 附件 chip（docs/07 §2.3）：只显示文件名，正文已在主进程提取并入上下文 -->
+        <div v-if="(message.attachments?.length ?? 0) > 0" class="attached">
+          <span v-for="name in message.attachments" :key="name" class="attached-chip tiny">
+            {{ name }}
+          </span>
+        </div>
         <span v-if="message.pending && message.content === ''" class="typing">
           <i /><i /><i />
         </span>
@@ -147,6 +153,24 @@ function toolStateLabel(state: 'running' | 'success' | 'error'): string {
   flex-direction: column;
   gap: 4px;
   margin-top: 6px;
+}
+
+.attached {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.attached-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(86, 132, 255, 0.18);
+  color: var(--text-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tool-card {

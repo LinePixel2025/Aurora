@@ -19,11 +19,15 @@ import {
   type AuroraApi,
   type ChatHistoryRequest,
   type ChatMessageDto,
+  type ChatSessionSummary,
+  type ClassIslandStatus,
+  type ClassIslandTestResult,
   type ClassificationCorrection,
   type ClassificationEvent,
   type ClassificationRecord,
   type GuideAnswerResult,
   type GuideSession,
+  type HotkeyStatus,
   type Logger,
   type McpServerStatus,
   type ModeId,
@@ -31,9 +35,12 @@ import {
   type OpenPathRequest,
   type Result,
   type SecretEntries,
+  type SendMessageRequest,
   type SetSecretsOutcome,
   type Settings,
   type SettingsPatch,
+  type SkillSummary,
+  type SkillsStatus,
   type SmokeDiagnostics,
   type UpdateState,
   type WindowName,
@@ -41,8 +48,10 @@ import {
 } from '@aurora/shared'
 import type {
   AgentHost,
+  ClassIslandControllerLike,
   ClassificationControllerLike,
   GuideRunnerLike,
+  HotkeyControllerLike,
   LlmTesterLike,
   ModeManagerLike,
   PerceptionLike,
@@ -53,6 +62,11 @@ import type {
   WindowManagerLike,
 } from './contracts.js'
 import { resolveSubjectFolder } from './paths.js'
+
+/** 附件正文入上下文的字符上限（超出截断，避免一个 PDF 吃掉整个上下文预算） */
+const MAX_ATTACHMENT_CHARS = 8_000
+/** 单条消息最多处理的附件数 */
+const MAX_ATTACHMENTS = 5
 
 export interface DesktopDeps {
   settings: SettingsStoreLike
@@ -69,6 +83,10 @@ export interface DesktopDeps {
   classification: ClassificationControllerLike
   /** 敏感工具确认（proactive:*，docs/06 §5） */
   proactive: ProactiveLike
+  /** 全局快捷键状态（hotkey:*，docs/07 §5） */
+  hotkey: HotkeyControllerLike
+  /** ClassIsland 桥接（classisland:*，docs/05 §3.4 v2） */
+  classisland: ClassIslandControllerLike
   /** MCP 状态（mcp:status，docs/06 §7） */
   mcpStatus: () => McpServerStatus[]
   onMcpStatusChanged: (listener: (statuses: McpServerStatus[]) => void) => () => void
@@ -81,8 +99,24 @@ export interface DesktopDeps {
   smokeMode?: boolean
   /** 自测诊断回执（仅 smokeMode 下被调用） */
   smokeDiagnostics?: () => SmokeDiagnostics
+  /**
+   * 附件提取（docs/07 §2.3）：把拖进对话窗的本地文件转成可入上下文的文本。
+   * 由主进程注入（复用分类管线的 `extract.ts`，不引入第二条提取路径）。
+   * 返回 `undefined` 表示该文件无法提取文本（按「仅文件名」降级处理）。
+   */
+  attachmentExtract?: (path: string) => Promise<AttachmentDigest | undefined>
   onQuit: () => void
   onSettingsChanged?: (settings: Settings) => void
+}
+
+/** 单个附件提取结果（用文件名 + 截断正文入上下文） */
+export interface AttachmentDigest {
+  path: string
+  fileName: string
+  /** 提取到的文本（已截断）；无法提取时为 undefined */
+  text?: string
+  /** 提取失败 / 不支持时的原因（会一并告给模型，避免它假装读过） */
+  note?: string
 }
 
 export function registerIpc(deps: DesktopDeps): () => void {
@@ -126,6 +160,9 @@ export function registerIpc(deps: DesktopDeps): () => void {
     return ok(undefined)
   })
   handle<string>(IPC.app.openPath, (request: OpenPathRequest) => openPath(deps, request))
+  // 死通道收尾：`app:openLogs` 之前只有通道常量与 preload 镜像、没有 handler，
+  // 任何调用都会挂起到超时。这里补上，与托盘「打开日志目录」同一实现。
+  handle<string>(IPC.app.openLogs, () => openPath(deps, { kind: 'logs' }))
   handle<SmokeDiagnostics>(IPC.app.smokeDiagnostics, () =>
     // 生产环境（含打包态）不暴露任何诊断信息
     deps.isDev && deps.smokeMode === true
@@ -266,13 +303,20 @@ export function registerIpc(deps: DesktopDeps): () => void {
         err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
       ),
   )
-  handle(IPC.chat.send, (request: Parameters<AgentHost['send']>[0]) =>
-    deps.agent
-      .send(request)
-      .then(ok, (error: unknown) =>
-        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
-      ),
-  )
+  handle(IPC.chat.send, async (request: SendMessageRequest) => {
+    // 附件（docs/07 §2.3）：在主进程提取成文本后拼进本轮消息。
+    // 刻意**不在渲染层**读文件 —— 渲染进程没有 fs 能力，也不该有。
+    try {
+      const extraContext = await buildAttachmentContext(deps, request.attachments)
+      return await deps.agent
+        .send(extraContext === undefined ? request : { ...request, extraContext })
+        .then(ok, (error: unknown) =>
+          err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+        )
+    } catch (error) {
+      return err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
+    }
+  })
   handle<boolean>(IPC.chat.abort, (requestId: string) => ok(deps.agent.abort(requestId)))
   handle<ChatMessageDto[]>(IPC.chat.history, (request: ChatHistoryRequest) => {
     const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
@@ -284,7 +328,40 @@ export function registerIpc(deps: DesktopDeps): () => void {
         err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
       )
   })
-  handle(IPC.skills.list, () => ok(deps.skills.list()))
+  // 「当前会话」由渲染层判定：不同窗口用的是不同会话（quick / main），
+  // 主进程不知道哪个正在被看，因此不在这里标 active。
+  handle<ChatSessionSummary[]>(IPC.chat.sessions, () =>
+    deps.sessions
+      .summaries()
+      .then(ok, (error: unknown) =>
+        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      ),
+  )
+  handle<string>(IPC.chat.newSession, () =>
+    deps.sessions
+      .createSession()
+      .then(ok, (error: unknown) =>
+        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      ),
+  )
+  handle<SkillSummary[]>(IPC.skills.list, () => ok(deps.skills.list()))
+  handle<SkillsStatus>(IPC.skills.rescan, () =>
+    deps.skills
+      .rescan()
+      .then(ok, (error: unknown) =>
+        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      ),
+  )
+  handle<SkillsStatus>(IPC.skills.status, () => ok(deps.skills.status()))
+  handle<HotkeyStatus>(IPC.hotkey.status, () => ok(deps.hotkey.getStatus()))
+  handle<ClassIslandStatus>(IPC.classisland.status, () => ok(deps.classisland.status()))
+  handle<ClassIslandTestResult>(IPC.classisland.test, () =>
+    deps.classisland
+      .test()
+      .then(ok, (error: unknown) =>
+        err('E_NETWORK', error instanceof Error ? error.message : String(error)),
+      ),
+  )
   handle<McpServerStatus[]>(IPC.mcp.status, () => ok(deps.mcpStatus()))
 
   // ───────────────────────── 分类管线（docs/05 §3） ─────────────────────────
@@ -364,6 +441,9 @@ export function registerIpc(deps: DesktopDeps): () => void {
   const offUpdate = deps.updater.onStateChanged((state) => {
     broadcast(IPC.update.stateChanged, state)
   })
+  const offHotkey = deps.hotkey.onChange((status) => {
+    broadcast(IPC.hotkey.changed, status)
+  })
 
   return () => {
     for (const [channel] of handlers) ipcMain.removeHandler(channel)
@@ -375,6 +455,7 @@ export function registerIpc(deps: DesktopDeps): () => void {
     offSensitive()
     offMcp()
     offUpdate()
+    offHotkey()
   }
 }
 
@@ -384,6 +465,70 @@ function broadcast(channel: string, payload: unknown): void {
     if (win.isDestroyed()) continue
     win.webContents.send(channel, payload)
   }
+}
+
+/**
+ * 把附件提取成可入上下文的文本块（docs/07 §2.3）。
+ *
+ * 降级策略：无法提取（不支持的格式 / 提取失败）时**不阻断发送**，
+ * 而是在上下文里如实写明「该文件内容未读取」，避免模型以为读过内容而编造。
+ * 返回 `undefined` 表示本次没有可用附件（调用方走原路径，不额外拼上下文）。
+ */
+async function buildAttachmentContext(
+  deps: DesktopDeps,
+  attachments: string[] | undefined,
+): Promise<string | undefined> {
+  if (attachments === undefined || attachments.length === 0) return undefined
+  const extract = deps.attachmentExtract
+  if (extract === undefined) {
+    // 未装配提取能力（例如精简场景）：如实说明，不静默假装附件存在
+    return `【附件】${attachments.length} 个文件未读取内容（当前环境未启用附件解析）`
+  }
+
+  const targets = attachments.slice(0, MAX_ATTACHMENTS)
+  if (attachments.length > MAX_ATTACHMENTS) {
+    deps.logger.warn('附件数量超过上限，多余的已忽略', {
+      provided: attachments.length,
+      limit: MAX_ATTACHMENTS,
+    })
+  }
+
+  const blocks: string[] = []
+  for (const path of targets) {
+    try {
+      const digest = await extract(path)
+      if (digest === undefined) {
+        blocks.push(`【附件】${fileNameOf(path)}：内容未读取（不支持的格式）`)
+        continue
+      }
+      if (digest.text === undefined || digest.text.trim() === '') {
+        blocks.push(
+          `【附件】${digest.fileName}：内容未读取${digest.note === undefined ? '' : `（${digest.note}）`}`,
+        )
+        continue
+      }
+      blocks.push(
+        [
+          `【附件】${digest.fileName}`,
+          digest.text.length > MAX_ATTACHMENT_CHARS
+            ? `${digest.text.slice(0, MAX_ATTACHMENT_CHARS)}\n（内容过长，已截断）`
+            : digest.text,
+        ].join('\n'),
+      )
+    } catch (error) {
+      deps.logger.warn('附件提取失败，按未读取处理', { path, error: String(error) })
+      blocks.push(`【附件】${fileNameOf(path)}：内容未读取（提取失败）`)
+    }
+  }
+
+  if (blocks.length === 0) return undefined
+  return ['以下是用户随消息一起发送的本地文件内容，仅供本次回复参考。', ...blocks].join('\n\n')
+}
+
+/** 从绝对路径取文件名（渲染层传来的路径可能含 Windows 反斜杠） */
+function fileNameOf(path: string): string {
+  const segments = path.split(/[\\/]/)
+  return segments[segments.length - 1] ?? path
 }
 
 // ───────────────────────── 辅助 ─────────────────────────

@@ -1,0 +1,134 @@
+/**
+ * Skill 服务（docs/06 §6、docs/08 §6）。
+ *
+ * 存在理由：`SkillsRegistry` 的 `userDir` 是**构造期固定**的，而设置项
+ * `skills.userDir` 允许用户把它指到自定义目录（如云盘同步的技能包）。
+ * 之前的实现硬编码 `userData/skills`，配置项存了也永远不生效 ——
+ * 这正是「假开关」之一。这里把「按当前设置解析目录 + 目录变了就重建注册表」
+ * 收在一处，避免调用方各自记着重建。
+ *
+ * 纯函数 `resolveSkillsUserDir` 单独导出，便于单测与「设置页展示实际生效路径」。
+ */
+import { join } from 'node:path'
+import { SkillsRegistry } from '@aurora/agent-core'
+import type { Logger, Settings, SkillSummary, SkillsStatus } from '@aurora/shared'
+
+/**
+ * 解析生效的用户技能目录。
+ * `skills.userDir` 为空串（默认）时回落到 `userData/skills`（docs/08 §1）。
+ */
+export function resolveSkillsUserDir(settings: Pick<Settings, 'skills'>, userData: string): string {
+  const configured = settings.skills.userDir.trim()
+  return configured === '' ? join(userData, 'skills') : configured
+}
+
+export interface SkillsServiceOptions {
+  builtinDir: string
+  /** 当前用户数据目录（`skills.userDir` 为空时的回落基准） */
+  userData: string
+  logger: Logger
+}
+
+/**
+ * 包装 `SkillsRegistry`：负责目录重解析与状态上报。
+ *
+ * 目录变化时**复用同一个注册表实例**（`setUserDir` + 重扫），因为
+ * `use_skill` 工具的闭包与提示词组装都持有该实例；换目录时新建实例会让
+ * 它们继续指向旧表，表现为「改了目录但模型仍看到旧技能」。
+ */
+export class SkillsService {
+  private readonly options: SkillsServiceOptions
+  private readonly registry: SkillsRegistry
+  private currentUserDir: string
+  private scannedAt: string | null = null
+  private lastWarnings: string[] = []
+
+  constructor(options: SkillsServiceOptions, initialSettings: Settings) {
+    this.options = options
+    this.currentUserDir = resolveSkillsUserDir(initialSettings, options.userData)
+    this.registry = new SkillsRegistry({
+      builtinDir: options.builtinDir,
+      userDir: this.currentUserDir,
+      logger: options.logger.child('skills'),
+    })
+  }
+
+  /**
+   * 首次扫描（启动时调用）。
+   *
+   * 走 `reconfigure` 而不是"设 disabled + rescan"：构造器拿到的
+   * `initialSettings` 只是为了先建出注册表，真正生效的目录必须以**这里的设置**为准
+   * ——否则启动时 `skills.userDir` 会被忽略，用户的自定义技能目录要等改一次设置才生效。
+   */
+  async init(settings: Settings): Promise<SkillsStatus> {
+    return this.reconfigure(settings)
+  }
+
+  get directory(): string {
+    return this.currentUserDir
+  }
+
+  list(): SkillSummary[] {
+    return this.registry.list().map((skill) => ({
+      name: skill.name,
+      description: skill.description,
+      ...(skill.whenToUse === undefined ? {} : { whenToUse: skill.whenToUse }),
+      source: skill.source,
+      hasScripts: skill.hasScripts,
+      enabled: skill.enabled,
+      dir: skill.dir,
+    }))
+  }
+
+  /** 供内核组装提示词 / 工具表使用 */
+  get kernel(): SkillsRegistry {
+    return this.registry
+  }
+
+  /** 应用设置里的 `skills.disabled`（`SkillsInfoLike` 的方法名）。 */
+  setDisabled(names: readonly string[]): void {
+    this.registry.setDisabled(names)
+  }
+
+  /**
+   * 按当前设置重新解析目录并扫描。
+   * 目录变化时切换注册表的用户目录（保留 disabled 集合），随后统一重扫。
+   */
+  async reconfigure(settings: Settings): Promise<SkillsStatus> {
+    const nextDir = resolveSkillsUserDir(settings, this.options.userData)
+    if (nextDir !== this.currentUserDir) {
+      this.options.logger.info('用户技能目录已变更', {
+        from: this.currentUserDir,
+        to: nextDir,
+      })
+      this.currentUserDir = nextDir
+      this.registry.setUserDir(nextDir)
+    }
+    this.registry.setDisabled(settings.skills.disabled)
+    return this.rescan()
+  }
+
+  async rescan(): Promise<SkillsStatus> {
+    try {
+      const report = await this.registry.scan()
+      this.scannedAt = new Date().toISOString()
+      this.lastWarnings = report.issues.map((issue) => `${issue.path}：${issue.error}`)
+      return this.status()
+    } catch (error) {
+      this.options.logger.warn('技能扫描失败', { error: String(error) })
+      this.lastWarnings = [`扫描失败：${String(error)}`]
+      return this.status()
+    }
+  }
+
+  status(): SkillsStatus {
+    return {
+      userDir: this.currentUserDir,
+      builtinDir: this.options.builtinDir,
+      total: this.registry.list().length,
+      failed: this.lastWarnings.length,
+      scannedAt: this.scannedAt,
+      warnings: [...this.lastWarnings],
+    }
+  }
+}

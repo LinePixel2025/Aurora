@@ -49,7 +49,7 @@ export class SkillsRegistry {
   private skills = new Map<string, Skill>()
   private readonly logger: Logger
   private readonly builtinDir: string
-  private readonly userDir: string | undefined
+  private userDir: string | undefined
   private disabled = new Set<string>()
   private issues: SkillScanIssue[] = []
 
@@ -57,6 +57,22 @@ export class SkillsRegistry {
     this.builtinDir = options.builtinDir
     this.userDir = options.userDir
     this.logger = options.logger ?? createNoopLogger()
+  }
+
+  /** 当前生效的用户技能目录（`undefined` 表示不扫描用户目录）。 */
+  get directory(): string | undefined {
+    return this.userDir
+  }
+
+  /**
+   * 切换用户技能目录（docs/08 §6 `skills.userDir`）。
+   *
+   * 为什么是可变而非重建：注册表实例被 `use_skill` 工具的闭包与提示词组装持有，
+   * 换目录时若新建实例，这些引用会指向旧表 —— 表现为"改了目录但模型仍看到旧技能"。
+   * 改完目录**必须**再调一次 `scan()`。
+   */
+  setUserDir(dir: string | undefined): void {
+    this.userDir = dir === undefined || dir.trim() === '' ? undefined : dir
   }
 
   /** 扫描并重建注册表；用户目录中的同名技能覆盖内置技能。 */

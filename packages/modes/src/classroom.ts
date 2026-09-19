@@ -101,7 +101,15 @@ export const classroomGuide: ModeGuide = {
         const enabled = parseYesNo(answer) ?? true
         ctx.settings.mutate((draft) => {
           draft.modes.classroom.preClassReminder = enabled
-          if (!enabled) draft.modes.classroom.schedule = { provider: 'manual', lessons: [] }
+          // 关闭提醒时清空手动课表（避免残留数据在下次开启时突然生效）；
+          // 保留 classisland 子配置，用户可能已配好桥接端点。
+          if (!enabled) {
+            draft.modes.classroom.schedule = {
+              provider: 'manual',
+              lessons: [],
+              classisland: { ...draft.modes.classroom.schedule.classisland },
+            }
+          }
         })
       },
     },

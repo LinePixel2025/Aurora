@@ -132,7 +132,7 @@ async function add(): Promise<void> {
 
   const saved = await saveServers([...servers.value, server], secrets)
   if (!saved) return
-  message.value = `已添加 ${name}（连接能力将在 P3 接入）`
+  message.value = `已添加 ${name}（连接状态见下方状态灯）`
   form.name = ''
   form.envText = ''
 }

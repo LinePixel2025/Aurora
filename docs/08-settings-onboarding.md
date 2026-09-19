@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v2）
+## 1. 配置 Schema（config.json，v3）
 
 ```jsonc
 {
-  "version": 2,
+  "version": 3,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -31,7 +31,14 @@
       "guideCompleted": false,
       "watchDir": "",
       "subjects": [ { "name": "数学", "folder": "分类/数学", "keywords": [] } ],
-      "schedule": { "provider": "manual", "lessons": [] },
+      "schedule": {
+        "provider": "manual",
+        "lessons": [],
+        // ClassIsland 桥接数据源（docs/05 §3.4 v2）：
+        // source = "file"（读 JSON 文件）| "http"（读本机回环端点）；
+        // endpoint 为空串表示尚未配置（此时 provider 返回空课表）
+        "classisland": { "source": "file", "endpoint": "", "timeoutMs": 3000 }
+      },
       "preClassReminder": true,
       "classification": {
         "autoMove": true,
@@ -97,9 +104,11 @@
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 2`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 3`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
-  `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`，幂等且不覆盖已有值）。
+  `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
+  `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）。
+  三条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -134,16 +143,31 @@
 ## 6. 其他设置页
 
 - **Skill 管理**：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。
+  - 实现状态（v0.6.0）：`skills.userDir` **真正生效**（此前运行时硬编码 `userData/skills`，
+    配置项是死字段）。空串回落 `userData/skills`；填自定义目录后保存会**按新目录重扫**。
+    页面显示「当前生效目录」与「上次扫描时间」，并提供**真实的**「重新扫描」
+    （`skills:rescan`，重扫磁盘而非重新拉取内存清单）；解析失败的技能计入
+    `skills:status` 的 `failed` / `warnings` 并在页面提示，不再静默吞掉。
+    另：目录切换复用**同一个注册表实例**（`setUserDir` + 重扫）——`use_skill` 工具的闭包
+    与提示词组装都持有该实例，换实例会让它们继续指向旧表，表现为「改了目录但模型仍看到旧技能」。
 - **MCP 管理**：服务器列表、添加（stdio 命令 / HTTP URL）、连接状态灯、错误日志。
   - 实现状态（v0.3.0）：列表读写与凭据脱敏沿用 v0.1.0；**状态灯**由 `mcp:status` /
     `mcp:statusChanged` 驱动（`ready` / `connecting` / `error` 三态，`error` 时展示
     最近一次失败原因），`lazyConnect` 可在设置页切换。
-- **高级**：日志查看与导出、代理设置、勿扰时段、重置为默认配置。
-  - 实现状态（v0.1.0）：代理与日志级别已写入配置（消费方在 P3 接入）；勿扰时段可读写。
+- **高级**：日志查看与导出、代理设置、日志级别、勿扰时段、重置为默认配置。
   - 实现状态（v0.5.0）：**勿扰时段已实际拦截主动行为**——敏感工具确认在时段内直接拒绝
     （`ProactiveScheduler.isQuietHour`），课前提醒在时段内静默跳过。新增
     「敏感工具确认」开关（`advanced.confirmSensitiveTools`，默认开启）：关闭后敏感工具
     不再询问用户，降级为「只记日志留痕」，且**每次调用即时判断**，改设置无需重启。
+  - 实现状态（v0.6.0）：**代理与日志级别真正生效**（此前是「存了不生效」的死配置）——
+    - `advanced.proxy`：`main/net.ts` 交给 `session.setProxy`，出网改用 Electron `net.fetch`
+      （走 Chromium 网络栈 → 自动遵守代理）并保留 `globalThis.fetch` 回落；
+      注入到 LLM provider、MCP HTTP 传输与「测试连接」，**保存后立即生效**（含关闭残留连接）。
+      漏写 scheme（如 `127.0.0.1:7890`）会自动补 `http://`；分协议规则（`http=…;https=…`）原样保留。
+    - `advanced.logLevel`：`FileLogger` 的级别改为**共享可变引用**，改一次即对整棵日志树
+      （含已存在的子 logger）生效。此前是构造期快照，改级别只影响之后新建的 logger。
+    - 另：「日志查看」走 `app:openLogs`（该通道此前只有常量与 preload 镜像、没有 handler，
+      调用会挂起，v0.6.0 补齐）。
 
 ## 7. ClassRoom 模式设置页（v0.4.0）
 
@@ -154,6 +178,12 @@
   改科目名会同步改写引用它的课程表条目，删除时提示仍有多少节课引用该科目。
 - **课程表**：`schedule.provider`（manual / classisland）+ 课程行
   （星期 0–6 中文、起止 `HH:mm`、科目下拉）。
+  - **ClassIsland 联动（v0.6.0）**：选中 `classisland` 时展开子配置 ——
+    「数据来源」（JSON 文件 / 本地 HTTP 端点）、「端点 / 文件路径」、
+    「读取超时」（毫秒）与「**测试连接**」按钮。
+    测试连接会立即按当前配置解析一次，回传**今日课程预览 + 逐行告警 + 错误原因 + 耗时**；
+    页面同时显示最近一次同步状态（是否成功、今日课程数、最近同步时间）。
+    改动端点或来源时会清空上一次的测试结果，避免把「旧地址的成功状态」误读为当前可用。
 - **课前提醒**：`modes.classroom.preClassReminder` 开关。
 - **分类行为**：`classification.autoMove`（自动移动）、`confidenceThreshold`（0–1 滑条）、
   `fallbackFolder`（兜底目录）。

@@ -109,6 +109,12 @@ export interface ModeGuide {
 >
 > **尚未实现**：用户修正后的「反哺规则」已落地（见 3.2 ④ 与 §3.3），
 > 但**修正历史不参与跨启动的规则重建之外的学习**（不做基于内容的相似度学习）。
+>
+> **v0.6.0 补充**：`autoMove=false`（或移动失败、处理失败）时文件会留在感知文件夹里，
+> 而 chokidar 的 `ignoreInitial: false` 每次启动都会再次报出同一个文件 ——
+> 不去重就会反复记流水、反复弹通知。现在按 `(路径, 大小, 修改时间)` 作为"已处理"签名
+> （落库在流水的 `modifiedAt` 字段），仅在记录**未被移动**（`movedTo` 缺失）时命中跳过；
+> 原路径再次出现同名同大小的文件、或 mtime 已变化（用户改了内容）时仍会重新处理。
 
 ### 3.3 通知与交互
 
@@ -128,7 +134,7 @@ export interface ModeGuide {
 ### 3.4 上课前自动打开科目文件夹
 
 - **v1（手动课程表）**：设置中维护每周课程表（星期 × 节次 → 科目）；课前 5 分钟系统通知 + 自动打开该科目文件夹（explorer）。
-- **v2（ClassIsland 联动，P7）**：通过 ClassIsland（开源桌面课程表应用）的配置数据 / API / 插件机制读取课程表，替代手动课程表。预留接口，实现可插拔：
+- **v2（ClassIsland 联动）**：通过 ClassIsland（开源桌面课程表应用）读取课程表，替代手动课程表。预留接口，实现可插拔：
 
 ```ts
 export interface IScheduleProvider {
@@ -143,7 +149,65 @@ export interface IScheduleProvider {
 > `parseClock()`、`lessonKey()` 与 `needsNextDayLessons()`。
 > 定时与副作用在 `pre-class-reminder.ts`（30s tick）：命中后先记 `firedKeys` 再发通知 / 打开目录，
 > 因此通知或打开失败都不会每 30s 重复刷屏；受 `modes.classroom.preClassReminder` 与勿扰时段约束。
-> 与 OCR、ClassIsland 相关的接口仍为预留。
+
+#### v2 实现说明（v0.6.0）：ClassIsland 联动
+
+**为什么不是"直接读 ClassIsland"**：ClassIsland 的扩展体系是 .NET（`PluginBase` + `manifest.yml`，
+每个插件独立 `AssemblyLoadContext`），跨进程能力走 `dotnetCampus.Ipc` **命名管道**；
+`classisland://` URI 只能触发应用内导航、**不传数据**；官方没有 HTTP API。
+Aurora 是 Node/Electron 应用，无法直接消费上述任何一种。因此采用**桥接 + 双源**：
+
+```
+ClassIsland ──(C# 插件)──▶ 本地 JSON 契约 ──(读文件 / 读回环端点)──▶ Aurora 的 ClassIslandProvider
+                                                                        │
+                                          ┌─────────────────────────────┴───────────────────┐
+                                    感知摘要（今日课程）        课前提醒（课前 5 分钟打开科目文件夹）
+```
+
+**数据契约**（Aurora 侧 `main/classisland.ts` 的 `ClassIslandPayload`）：
+
+```json
+{ "version": 1, "generatedAt": "2026-09-19T07:30:00Z",
+  "lessons": [{ "weekday": 1, "startTime": "08:00", "endTime": "08:45", "subject": "数学" }] }
+```
+
+`weekday` 沿用 `Lesson` 语义（0=周日 … 6=周六，**7 也接受并折成周日**），
+`lessons` **一次给全周**，当天筛选由 `getToday` 完成 —— 与既有 `IScheduleProvider` 契约天然对齐，
+因此**感知摘要、课前提醒、`timetable` Skill 三条消费链零改动复用**。
+
+| 关注点 | 决策 | 理由 |
+|---|---|---|
+| 数据源 | `file`（默认）或 `http`，配置在 `modes.classroom.schedule.classisland` | 文件最省事；端点适合不想让 Aurora 读文件 / 想要更及时的场景 |
+| 失败语义 | **一律降级为空课表 + 记日志与告警，绝不抛出** | 课前提醒是增强能力，不能因为桥接插件没装就把主流程带崩（ADR-007） |
+| 数据校验 | 逐行校验，非法行跳过并累积告警（带行号） | 宁可少一节课，也不要在错误的时间打开错误的科目文件夹 |
+| 重复解析 | 按**原始文本**缓存，文本未变则复用上次结果 | 避免同一批告警每 30s 刷一次日志 |
+| provider 生命周期 | 按配置签名（source / endpoint / timeout）缓存单例，签名变化即重建 | 保留"文本未变则不重解析"的缓存必须跨 tick 存活；端点变更要立即生效 |
+| 超时 | `timeoutMs`（默认 3000，Schema 约束 200–30000） | 桥接卡死时不能让 tick 挂住 |
+| 可观测 | `classisland:status`（上次同步时间 / 今日课程数 / 告警 / 错误）+ `classisland:test`（立即解析并回传今日预览） | 「读不到」必须可诊断，否则用户只会看到"课前提醒没触发" |
+
+**桥接插件**：源码随仓库提供在 [`integrations/classisland-bridge/`](../integrations/classisland-bridge/README.md)
+（`Plugin.cs` + `BridgeOptions.cs` + `manifest.yml` + `.csproj` + 中文 README）。
+插件订阅 `ILessonsService.CurrentClassPlan`，以**反射**读取课表结构
+（插件与宿主的小版本不总是严格同步，硬编码字段名一旦对不上就是编译失败），
+用**临时文件 + 覆盖重命名**原子写出 JSON（保证 Aurora 不会读到半截文件），
+并可选开启仅监听 `127.0.0.1` 的只读端点。
+
+> **验证程度**：桥接插件已用 **ClassIsland 2.1.0.1 的真实程序集编译（0 error）并实跑验证** ——
+> ClassIsland 日志确认插件被加载，且写出了符合契约的 `schedule.json`，
+> Aurora 侧也用它真实产出的文件验证过解析（零告警、星期/时间/科目均正确）。
+> 但本仓库 CI **不编译**它（流水线无 .NET SDK），因此改动后需在装有 .NET SDK 与
+> ClassIsland 的机器上重新验证。
+>
+> 实现要点（都是踩过坑后确定的）：`PluginBase` **只有** `Initialize` 一个抽象成员，
+> 生命周期要挂 `AppBase.Current` 的 `AppStarted` / `AppStopping` 事件；
+> 取服务用接口上的**静态**方法 `IAppHost.TryGetService<T>()`（`AppBase` 没有 public `Services` 属性）；
+> 课表按**日期**取（`ILessonsService.GetClassPlanByDate`），星期与单双周轮换由 ClassIsland 自己算，
+> 比解读 `TimeRule` 可靠；科目名要经 `IPublicProfileService.Profile.Subjects`（Guid 字典）查，
+> 查不到就**跳过该节次**而不是编造名字。
+> Aurora 侧契约不变，插件端调整范围限于 `Plugin.cs`。
+
+**已知未实现**：单双周、临时调课、班级区分等 ClassIsland 高级课表特性未映射到 Aurora 的
+四字段 `Lesson` 模型；OCR 仍未启用。
 
 ## 4. Work Mode / Code Mode 接口预留
 

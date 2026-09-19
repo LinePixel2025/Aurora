@@ -1,6 +1,7 @@
 # 04 · 实现路径与里程碑
 
-状态：`进行中`——P0 / P1 / P2 / P3 / P4 / P5 已完成（v0.3.0 → v0.5.0），P6 余下打磨项待做；进度随开发更新
+状态：`进行中`——P0 / P1 / P2 / P3 / P4 / P5 已完成（v0.3.0 → v0.6.0），
+P6 打包与自动更新完成、余下打磨项待做，P7 的 **ClassIsland 联动已提前落地**；进度随开发更新
 
 版本策略：v0.x 内部迭代 → **v1.0.0** 首个对外版本。优先级：P0 必须 / P1 尽量 / P2 后续。
 工作量按 **1 名全职开发** 估算，共约 9～10 周到 v1.0.0；多人协作可并行压缩。
@@ -15,8 +16,8 @@
 | P3 | Agent 内核：对话、工具循环、Skill、MCP | v0.3.0 | 2 周 | **已完成** |
 | P4 | 模式系统 + ClassRoom Mode：感知文件夹自动分类、对话引导 | v0.4.0 | 2 周 | **已完成** |
 | P5 | 系统感知与主动引导：感知采集、上下文注入、课前提醒、敏感确认 | v0.5.0 | 1.5 周 | **已完成** |
-| P6 | 打磨发布：打包、安装器、日志、文档 | v1.0.0 | 1 周 | **打包与自动更新已完成**（签名待证书；余下打磨项未做） |
-| P7 | 后期：Work/Code Mode、ClassIsland 联动 | v1.x | — | 预留 |
+| P6 | 打磨发布：打包、安装器、日志、文档 | v1.0.0 | 1 周 | **打包 / 自动更新 / 日志 / 文档已完成**；签名待证书、启动优化未做 |
+| P7 | 后期：Work/Code Mode、ClassIsland 联动 | v1.x | — | **ClassIsland 联动已完成**（v0.6.0）；Work/Code Mode 预留 |
 
 ### 已完成范围（截至 v0.3.0）
 
@@ -222,13 +223,53 @@
     「未知发行者」提示，用户操作说明见 docs/09 §4；接入证书时改一个布尔值即可。
   - **已验证**：`pnpm verify:release`（产物 14 项，含 sha512/size 与实际文件一致性）+
     `pnpm verify:update`（**启动已打包应用对着本地更新源真的发现新版本**，5 项）。
-  - **待做**：代码签名证书、日志轮转、用户文档与隐私说明、启动耗时/内存优化。
+  - **待做**：代码签名证书、启动耗时 / 内存优化。
+  - **已完成（v0.6.0）**：日志轮转（`main/logger.ts`，按天写 + 保留 7 天）、
+    用户文档与隐私说明（[10](./10-user-guide.md) / [11](./11-privacy.md)）。
+
+### P6+ · v0.6.0 补齐「假开关」与体验缺口
+
+v0.6.0 的重点不是新增大功能，而是**把"设置里能改、运行时没人消费"的配置真正接上**，
+并把 ClassIsland 联动（原 P7 项）提前落地。
+
+- **接线修复**（每一项此前都是死配置 / 死通道）：
+  - `general.hotkey`：真的注册全局快捷键（`main/hotkey.ts`），含格式校验（拒绝无修饰键的裸按键）、
+    冲突检测与可操作文案（`Alt+Space` 是 Windows 系统窗口菜单键，被占用属预期路径）、
+    运行时可改绑、退出时注销；设置页显示**真实注册状态**而非期望值。
+  - `advanced.proxy`：真的接入网络栈（`main/net.ts`）—— `session.setProxy` 统一生效，
+    出网改用 Electron `net.fetch`（走 Chromium 网络栈）并保留 `globalThis.fetch` 回落；
+    注入到 LLM provider、MCP HTTP 传输与「测试连接」，改完即时生效（含关闭残留连接）。
+  - `advanced.logLevel`：`FileLogger` 级别改为**共享可变引用**，热改后整棵日志树同步生效
+    （此前是构造期快照，改级别对已存在的子 logger 无效）。
+  - `skills.userDir`：抽出 `SkillsService`（`main/skills.ts`）按设置解析用户技能目录并支持重扫，
+    新增 `skills:rescan` / `skills:status`；设置页可填自定义目录并看到生效路径与解析告警。
+  - `general.edgeBar.opacity` / `general.edgeBar.quietHours`：透明度即时应用；
+    提示条有**独立的**勿扰时段（`main/edge-bar-scheduler.ts`），与 `advanced.quietHours`
+    （管主动打扰）职责分离。
+  - `app:openLogs`：补齐 handler（此前只有通道常量与 preload 镜像，调用会挂起）。
+- **ClassIsland 联动**（详见 [05 §3.4](./05-mode-system.md)）：新增 `main/classisland.ts`
+  （契约解析 + provider，任何失败降级为空课表并记告警）、`classisland:status` / `classisland:test`
+  通道、设置页「数据来源 / 端点 / 超时 + 测试连接」；配置 Schema → **v3**；
+  随仓库附带桥接插件源码 `integrations/classisland-bridge/`。
+- **桥接插件实测**：`integrations/classisland-bridge` 用 ClassIsland **2.1.0.1** 的真实程序集
+  编译通过，并装入 ClassIsland 实跑 —— 日志确认插件被加载、写出了符合契约的 `schedule.json`，
+  Aurora 侧解析该真实文件零告警。修掉了一批「凭文档写、实际不存在」的 API 误用
+  （`PluginBase.OnStartup/OnShutdown` 不存在、`AppBase.Services` 不存在、
+  `TimeLayout.LayoutItems` 实为 `Layouts`）。CI 仍不编译该插件（无 .NET SDK）。
+- **体验补齐**：对话窗多会话列表与切换（`chat:sessions` / `chat:newSession`）、
+  附件拖拽发送（preload `webUtils.getPathForFile` + 复用现有提取器）、
+  `autoMove=false` 时按 `(路径, 大小, 修改时间)` 去重、
+  长上下文摘要压缩（`compressHistory`，无 summarizer / 失败时退回纯截断）。
+- **验证**：新增约 80 条单测（快捷键、代理归一、日志热改、Skill 目录、提示条勿扰、
+  分类去重、摘要压缩含回落、ClassIsland 解析与降级、会话列表）；
+  `AURORA_SMOKE` 扩展为走**真实桥接文件**驱动课前提醒，并覆盖快捷键状态、Skill 重扫、
+  会话列表、日志目录通道。
 
 ### P7 · 后期（预留，见 05 §4）
 
 - Work Mode / Code Mode 功能实现
-- ClassIsland 联动（课程表自动获取）
-- 自动更新、多语言、macOS / Linux 评估
+- ~~ClassIsland 联动（课程表自动获取）~~ —— **已于 v0.6.0 完成**
+- 多语言、macOS / Linux 评估、ARM64 / 便携版
 
 ## 3. 需求 → 阶段映射（可追溯性）
 
@@ -245,7 +286,7 @@
 | 自感知 Agent、实时感知系统状态的接口 | P5 | P0 |
 | ClassRoom：智慧感知文件夹拖入新文件 → 智能分析 → 自动分类 | P4 | P0 |
 | ClassRoom：选择模式后对话式主动引导设置 | P4 | P0 |
-| 每科目上课前自动打开对应科目文件夹 | P5（手动课程表）/ P7（ClassIsland 联动） | P1 / P2 |
+| 每科目上课前自动打开对应科目文件夹 | P5（手动课程表）/ **P6+（ClassIsland 联动，已完成）** | P1 / P2 |
 | Work Mode / Code Mode（后期，预留接口） | P4 定义接口，P7 实现 | P2 |
 
 ## 4. 主要风险与应对

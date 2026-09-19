@@ -25,7 +25,8 @@ async function save(patch: Partial<NonNullable<typeof advanced.value>>): Promise
 }
 
 async function openLogs(): Promise<void> {
-  const result = await window.aurora.app.openPath({ kind: 'logs' })
+  // 走专用通道（与托盘「打开日志目录」同一实现）
+  const result = await window.aurora.app.openLogs()
   if (result.ok) message.value = `日志目录：${result.value}`
   else error.value = result.message
 }
@@ -65,7 +66,10 @@ async function resetAll(): Promise<void> {
     <AppToast v-if="error" tone="error">{{ error }}</AppToast>
     <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
 
-    <SettingField label="系统代理" hint="留空表示直连；例如 http://127.0.0.1:7890">
+    <SettingField
+      label="系统代理"
+      hint="留空表示直连；例如 http://127.0.0.1:7890（也可只写 127.0.0.1:7890）。保存后立即对模型与 MCP 生效"
+    >
       <input
         type="text"
         spellcheck="false"
@@ -74,7 +78,10 @@ async function resetAll(): Promise<void> {
       />
     </SettingField>
 
-    <SettingField label="日志级别" hint="日志写入 用户数据目录/logs，保留 7 天且自动脱敏">
+    <SettingField
+      label="日志级别"
+      hint="保存后立即生效；日志写入 用户数据目录/logs，保留 7 天且自动脱敏"
+    >
       <select
         :value="advanced?.logLevel ?? 'info'"
         @change="save({ logLevel: ($event.target as HTMLSelectElement).value as never })"
@@ -86,7 +93,10 @@ async function resetAll(): Promise<void> {
       </select>
     </SettingField>
 
-    <SettingField label="勿扰时段开始" hint="格式 HH:mm；留空表示不启用">
+    <SettingField
+      label="勿扰时段开始"
+      hint="格式 HH:mm；留空表示不启用。仅拦截主动打扰（课前提醒、敏感工具确认），不影响提示条显示"
+    >
       <input
         type="text"
         spellcheck="false"

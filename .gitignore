@@ -16,3 +16,10 @@ coverage/
 *.log
 .DS_Store
 Thumbs.db
+
+# 编码代理的本地状态（计划草稿等），不属于项目源码
+.zcode/
+
+# ClassIsland 桥接插件的 .NET 构建产物（源码在 integrations/ 下）
+integrations/classisland-bridge/bin/
+integrations/classisland-bridge/obj/

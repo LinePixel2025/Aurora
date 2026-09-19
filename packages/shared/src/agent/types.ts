@@ -1,4 +1,4 @@
-/** Agent 内核对外接口（主进程装配 agent-core 时实现；P3 接入真实对话循环）。 */
+/** Agent 内核对外接口（主进程装配 agent-core 时实现；真实循环见 loop/agentLoop.ts）。 */
 import type { AgentEvent, SendMessageRequest } from '../ipc/types.js'
 
 export interface AgentHost {

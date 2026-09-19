@@ -9,7 +9,7 @@
  * - 纯 Node：文件系统经 `FileSystemPort` 注入，单测可替换。
  */
 import { join } from 'node:path'
-import { nodeFileSystem, type FileSystemPort } from '@aurora/shared'
+import { nodeFileSystem, type ChatSessionSummary, type FileSystemPort } from '@aurora/shared'
 import type { Logger } from '@aurora/shared'
 import { createNoopLogger } from '@aurora/shared'
 import { DEFAULT_MAX_MESSAGES, truncateHistory, type TruncateOptions } from './history.js'
@@ -184,6 +184,48 @@ export class SessionStore {
   }
 
   /**
+   * 会话摘要列表（`chat:sessions`，docs/06 §4）。
+   *
+   * 标题取**首条用户消息**的前若干字符：这比 let 模型生成标题便宜得多，
+   * 也不需要额外请求；空会话回落为「新会话」。
+   * 排序：有消息的按最后一条消息时间倒序，空会话排最后（新建会话在顶部更符合直觉，
+   * 但用户此时期待看到的是「刚建的会话」，因此空会话用其 id 的生成时间参与排序）。
+   */
+  async summaries(activeId?: string): Promise<ChatSessionSummary[]> {
+    const items: ChatSessionSummary[] = []
+    for (const id of await this.listSessions()) {
+      const messages = await this.get(id)
+      const firstUser = messages.find((message) => message.role === 'user')
+      const last = messages[messages.length - 1]
+      items.push({
+        id,
+        title: titleFor(firstUser),
+        updatedAt: last?.createdAt ?? createdAtFromId(id) ?? new Date(0).toISOString(),
+        messageCount: messages.filter(
+          (message) => message.role === 'user' || message.role === 'assistant',
+        ).length,
+        ...(activeId === undefined ? {} : { active: id === normalizeSessionId(activeId) }),
+      })
+    }
+    return items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+  }
+
+  /**
+   * 新建一个空会话并返回其 id。
+   *
+   * 只生成 id 并标记为已加载（空数组）：文件在首条消息落盘时才真正创建，
+   * 避免用户连点「新建」在磁盘上堆一批空文件。
+   */
+  async createSession(): Promise<string> {
+    const id = normalizeSessionId(`chat-${Date.now().toString(36)}-${(this.counter += 1)}`)
+    if (!this.loaded.has(id)) {
+      this.loaded.add(id)
+      this.cache.set(id, [])
+    }
+    return id
+  }
+
+  /**
    * 立即落盘（退出前 / 单测使用）。
    *
    * 先等在途写入排队完成（`writeNow` 自身不入队），再对仍然脏的会话重试，
@@ -327,4 +369,27 @@ function isStoredMessage(value: unknown): value is StoredMessage {
     typeof candidate['createdAt'] === 'string' &&
     (role === 'user' || role === 'assistant' || role === 'tool' || role === 'system')
   )
+}
+
+/** 会话标题最大长度（中文字符按 1 计） */
+const TITLE_MAX_LENGTH = 24
+
+function titleFor(firstUser: StoredMessage | undefined): string {
+  if (firstUser === undefined) return '新会话'
+  const text = firstUser.content.replace(/\s+/g, ' ').trim()
+  if (text === '') return '新会话'
+  return text.length <= TITLE_MAX_LENGTH ? text : `${text.slice(0, TITLE_MAX_LENGTH)}…`
+}
+
+/**
+ * 空会话没有消息时间戳，用 id 里的 base36 时间戳兜底。
+ * 仅识别 `chat-<base36>-<n>` 这一种自生成 id；其它（`main` / `quick` / 用户自定）
+ * 返回 `undefined`，由调用方回落到 epoch（排最后）。
+ */
+function createdAtFromId(id: string): string | undefined {
+  const match = /^chat-([0-9a-z]+)-\d+$/.exec(id)
+  if (match === null) return undefined
+  const parsed = Number.parseInt(match[1] ?? '', 36)
+  if (!Number.isFinite(parsed)) return undefined
+  return new Date(parsed).toISOString()
 }

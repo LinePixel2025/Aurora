@@ -51,12 +51,27 @@ export const IPC = {
   },
   skills: {
     list: 'skills:list',
+    rescan: 'skills:rescan',
+    status: 'skills:status',
   },
   chat: {
     send: 'chat:send',
     abort: 'chat:abort',
     history: 'chat:history',
     event: 'chat:event',
+    /** 会话列表 / 新建会话（docs/06 §4） */
+    sessions: 'chat:sessions',
+    newSession: 'chat:newSession',
+  },
+  /** 全局快捷键注册状态（docs/07 §5、docs/08 §1） */
+  hotkey: {
+    status: 'hotkey:status',
+    changed: 'hotkey:changed',
+  },
+  /** ClassIsland 桥接（docs/05 §3.4 v2） */
+  classisland: {
+    status: 'classisland:status',
+    test: 'classisland:test',
   },
   /** ClassRoom 分类管线（docs/05 §3、docs/02 §5.2） */
   classification: {
@@ -93,6 +108,8 @@ export type IpcChannel =
   | (typeof IPC.perception)[keyof typeof IPC.perception]
   | (typeof IPC.skills)[keyof typeof IPC.skills]
   | (typeof IPC.chat)[keyof typeof IPC.chat]
+  | (typeof IPC.hotkey)[keyof typeof IPC.hotkey]
+  | (typeof IPC.classisland)[keyof typeof IPC.classisland]
   | (typeof IPC.classification)[keyof typeof IPC.classification]
   | (typeof IPC.proactive)[keyof typeof IPC.proactive]
   | (typeof IPC.mcp)[keyof typeof IPC.mcp]

@@ -20,35 +20,53 @@ const LEVEL_ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, e
 
 export class FileLogger implements Logger {
   readonly dir: string
-  private readonly level: LogLevel
   private readonly retentionDays: number
   private readonly toConsole: boolean
   private readonly now: () => Date
   private readonly scope: string
+  /**
+   * 级别是**共享可变引用**：`child()` 会把它传给子 logger，
+   * 因此 `setLevel()` 一次即可让整棵日志树（含已存在的子 logger）同步生效。
+   *
+   * 为什么不用「每个 child 各持一份快照」：设置页改日志级别后，
+   * 主进程里几十个已构造的子 logger 不会重建，快照方案下改级别只会对
+   * 之后新建的 logger 生效 —— 用户看到的就是「改了没用」。
+   */
+  private readonly levelRef: { value: LogLevel }
   private queue: Promise<void> = Promise.resolve()
   private pending: string[] = []
   private flushTimer: NodeJS.Timeout | undefined
   private initialized = false
 
-  constructor(options: FileLoggerOptions, scope = '') {
+  constructor(options: FileLoggerOptions, scope = '', levelRef?: { value: LogLevel }) {
     this.dir = options.dir
-    this.level = options.level ?? 'info'
+    this.levelRef = levelRef ?? { value: options.level ?? 'info' }
     this.retentionDays = options.retentionDays ?? 7
     this.toConsole = options.console ?? false
     this.now = options.now ?? (() => new Date())
     this.scope = scope
   }
 
+  /** 热更新日志级别（docs/08 §6 `advanced.logLevel`）。 */
+  setLevel(level: LogLevel): void {
+    this.levelRef.value = level
+  }
+
+  /** 当前生效级别（诊断 / 测试用）。 */
+  getLevel(): LogLevel {
+    return this.levelRef.value
+  }
+
   child(scope: string): Logger {
     return new FileLogger(
       {
         dir: this.dir,
-        level: this.level,
         retentionDays: this.retentionDays,
         console: this.toConsole,
         now: this.now,
       },
       this.scope === '' ? scope : `${this.scope}:${scope}`,
+      this.levelRef,
     )
   }
 
@@ -79,7 +97,7 @@ export class FileLogger implements Logger {
   }
 
   private write(level: LogLevel, message: string, meta?: unknown): void {
-    if (LEVEL_ORDER[level] < LEVEL_ORDER[this.level]) return
+    if (LEVEL_ORDER[level] < LEVEL_ORDER[this.levelRef.value]) return
     const scope = this.scope === '' ? '' : ` [${this.scope}]`
     const detail = meta === undefined ? '' : ` ${safeJson(redactKeys(meta))}`
     const line = `${this.now().toISOString()} ${level.toUpperCase()}${scope} ${message}${detail}`

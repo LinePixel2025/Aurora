@@ -118,12 +118,14 @@ export interface LlmProvider {
 | 网络连通性 | 系统探测（DNS） | 30s | 联网任务前置检查 |
 | 前台窗口 / 应用 | PowerShell 探针（`GetForegroundWindow` + `GetWindowTextW` + 进程名） | 5s | 上下文感知（“我在写什么”） |
 | 显示器 / 屏幕状态 | Electron `screen`（主进程注入） | 摘要即时读取 | 窗口贴边策略 |
-| 课程表（ClassRoom） | `manual` provider / ClassIsland（P7 占位） | 摘要即时读取 + 课前轮询（30s） | 课前提醒、`timetable` Skill |
+| 课程表（ClassRoom） | `manual` provider / ClassIsland 桥接 | 摘要即时读取 + 课前轮询（30s） | 课前提醒、`timetable` Skill |
 
 - 前台窗口**不引入 `active-win`**：该原生模块预编译产物杀软误报多（03 §3），v1 直接用 PowerShell 探针；
   探针 stdout 由**导出的纯函数** `parseForegroundProbe` 解析，因此解析逻辑可单测、
   探测失败只降级为 `unknown`（ADR-007）。
-- ClassIsland 联动（`provider: 'classisland'`）是 P7 项：当前返回空课程表，**不抛错、不阻塞**（见 05 §3.4）。
+- ClassIsland 联动（`provider: 'classisland'`，v0.6.0 落地）：读桥接插件写出的本地 JSON
+  或本机回环端点，**读取失败一律降级为空课表、不抛错不阻塞**（见 05 §3.4）。
+  未配置端点时仍走空实现——语义从「功能未实现」变为「已配置但尚未接线」。
 
 ### 8.2 实现与消费
 
@@ -161,7 +163,9 @@ export interface LlmProvider {
   支持**启动补偿**（启动时已进入窗口，例如只剩 2 分钟）与**跨天**（23:5x 时次日 00:0x 的课）；
   多节课同时进入窗口时按剩余时间升序提醒。勿扰时段静默跳过；通知 / 打开文件夹失败只降级为日志。
 - **勿扰时段**：`isQuietHour` 纯函数判定（支持跨天，如 22:30–07:00）；时段缺失或时间非法时不静默。
-- 未完成项（P7）：ClassIsland 联动、Work / Code Mode 的日程与待办类新触发器。
+- 未完成项：Work / Code Mode 的日程与待办类新触发器（P7）。
+  ClassIsland 联动已于 v0.6.0 完成，其课程变更仍走 30s 轮询而非事件推送
+  （桥接为单向数据源，没有反向事件通道）。
 
 ## 10. 安全
 

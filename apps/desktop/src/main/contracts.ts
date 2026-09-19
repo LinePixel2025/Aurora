@@ -6,10 +6,14 @@
  */
 import type {
   AgentEvent,
+  ChatSessionSummary,
+  ClassIslandStatus,
+  ClassIslandTestResult,
   ClassificationEvent,
   ClassificationRecord,
   GuideAnswerResult,
   GuideSession,
+  HotkeyStatus,
   Lesson,
   Logger,
   ModeChangedEvent,
@@ -20,6 +24,8 @@ import type {
   SensitiveToolRequest,
   SendMessageRequest,
   Settings,
+  SkillSummary,
+  SkillsStatus,
   UpdateState,
   WindowName,
   WindowState,
@@ -146,7 +152,7 @@ export interface ProactiveLike {
 }
 
 export interface AgentHost {
-  send(request: SendMessageRequest): Promise<{ requestId: string }>
+  send(request: SendMessageRequest & { extraContext?: string }): Promise<{ requestId: string }>
   abort(requestId: string): boolean
   onEvent(listener: (event: AgentEvent) => void): () => void
   isReady(): boolean
@@ -176,16 +182,36 @@ export interface LlmTesterLike {
 }
 
 export interface SkillsInfoLike {
-  list(): Array<{
-    name: string
-    description: string
-    whenToUse?: string
-    source: 'builtin' | 'user'
-    hasScripts: boolean
-    enabled: boolean
-    dir: string
-  }>
+  list(): SkillSummary[]
   setDisabled(names: readonly string[]): void
+  /** 重新扫描（`skills:rescan`，docs/06 §6） */
+  rescan(): Promise<SkillsStatus>
+  /** 扫描状态：生效的用户目录、技能数、解析告警 */
+  status(): SkillsStatus
+  /** 设置变更后按新配置重解析目录并重扫（`skills.userDir` 生效路径） */
+  reconfigure(settings: Settings): Promise<SkillsStatus>
+}
+
+/** 全局快捷键（docs/07 §5）：`HotkeyManager` 结构上满足 */
+export interface HotkeyControllerLike {
+  getStatus(): HotkeyStatus
+  apply(hotkey: string): HotkeyStatus
+  onChange(listener: (status: HotkeyStatus) => void): () => void
+}
+
+/** ClassIsland 桥接（docs/05 §3.4 v2）：`ClassIslandProvider` 结构上满足 */
+export interface ClassIslandControllerLike {
+  /** 桥接是否启用（配置里选了 classisland 且填了端点） */
+  enabled(): boolean
+  status(): ClassIslandStatus
+  /** 立即按当前配置解析一次 */
+  test(): Promise<ClassIslandTestResult>
+}
+
+/** 会话列表 / 新建会话（`chat:sessions` / `chat:newSession`，docs/06 §4） */
+export interface SessionListLike {
+  listSessions(): Promise<ChatSessionSummary[]>
+  createSession(): Promise<string>
 }
 
 /** 自动更新（docs/09）：主进程用 UpdateService，IPC 只依赖这个最小面 */

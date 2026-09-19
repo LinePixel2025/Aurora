@@ -107,7 +107,11 @@ function settingsWith(overrides: {
           { name: '数学', folder: '分类/数学', keywords: ['方程'] },
           { name: '物理', folder: '分类/物理', keywords: ['电路'] },
         ],
-        schedule: { provider: 'manual', lessons: [] },
+        schedule: {
+          provider: 'manual',
+          lessons: [],
+          classisland: { source: 'file', endpoint: '', timeoutMs: 3000 },
+        },
         preClassReminder: true,
         classification: {
           autoMove: overrides.autoMove ?? true,
@@ -605,5 +609,76 @@ describe('ClassificationService · 事件与状态', () => {
     h.service.handleFile(file)
     await h.service.drain()
     expect(provider.calls).toBe(1)
+  })
+})
+
+describe('ClassificationService · 已处理文件跨重启去重（docs/05 §3.2）', () => {
+  const dupPath = `${WATCH}\\数学.pdf`
+  const dupBase = { path: dupPath, fileName: '数学.pdf', ext: 'pdf', sizeBytes: 100 }
+  const MTIME = Date.parse('2025-01-01T00:00:00.000Z')
+
+  it('autoMove=false：文件留在原处，重启后同一个文件不再重复记流水 / 通知', async () => {
+    const h = harness({
+      seed: { [dupPath]: 100 },
+      settings: settingsWith({ autoMove: false }),
+    })
+    h.service.handleFile({ ...dupBase, mtimeMs: MTIME })
+    await h.service.drain()
+    expect(h.history.records).toHaveLength(1)
+
+    // 模拟重启：chokidar 的 ignoreInitial=false 会把老文件再报一次
+    h.service.handleFile({ ...dupBase, mtimeMs: MTIME })
+    await h.service.drain()
+
+    expect(h.history.records).toHaveLength(1)
+    expect(h.events.at(-1)?.state).toBe('skipped')
+    expect(h.notifications).toHaveLength(1)
+  })
+
+  it('内容被改动（大小不变、mtime 变化）时视为新文件，重新处理', async () => {
+    const h = harness({
+      seed: { [dupPath]: 100 },
+      settings: settingsWith({ autoMove: false }),
+    })
+    h.service.handleFile({ ...dupBase, mtimeMs: MTIME })
+    await h.service.drain()
+
+    h.service.handleFile({ ...dupBase, mtimeMs: MTIME + 60_000 })
+    await h.service.drain()
+    expect(h.history.records).toHaveLength(2)
+  })
+
+  it('已成功移动过的文件：原路径再次出现同名同大小文件 → 当作新文件处理', async () => {
+    const h = harness({ seed: { [dupPath]: 100 } })
+    h.service.handleFile({ ...dupBase, mtimeMs: MTIME })
+    await h.service.drain()
+    expect(h.history.records[0]?.movedTo).toBeDefined()
+
+    h.service.handleFile({ ...dupBase, mtimeMs: MTIME })
+    await h.service.drain()
+    // 原路径又出现文件，说明是用户主动放回来的新文件，必须重新分类
+    expect(h.history.records).toHaveLength(2)
+  })
+
+  it('mtime 未知时不参与去重（宁可重复处理，也不误判为已处理）', async () => {
+    const h = harness({
+      seed: { [dupPath]: 100 },
+      settings: settingsWith({ autoMove: false }),
+    })
+    h.service.handleFile(dupBase)
+    await h.service.drain()
+    h.service.handleFile(dupBase)
+    await h.service.drain()
+    expect(h.history.records).toHaveLength(2)
+  })
+
+  it('落进流水的记录带有 modifiedAt（跨重启去重的依据）', async () => {
+    const h = harness({
+      seed: { [dupPath]: 100 },
+      settings: settingsWith({ autoMove: false }),
+    })
+    h.service.handleFile({ ...dupBase, mtimeMs: MTIME })
+    await h.service.drain()
+    expect(h.history.records[0]?.modifiedAt).toBe(new Date(MTIME).toISOString())
   })
 })

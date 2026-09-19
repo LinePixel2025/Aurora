@@ -77,7 +77,10 @@
     需要额外的构建放行与打包处理，且存在杀软误报风险（见 §3 依赖风险清单）；
     PowerShell 探针零依赖、可离线自测，接口不变，后续若性能不足可平滑替换。
   - 显示器 / 屏幕状态：Electron `screen` API（由主进程注入采集器），变化触发；
-  - 课程表（ClassRoom）：`IScheduleProvider`（manual / ClassIsland 占位），事件驱动。
+  - 课程表（ClassRoom）：`IScheduleProvider`（manual / ClassIsland 桥接），事件驱动。
+    **实现说明（v0.6.0）**：ClassIsland 是 .NET 应用，跨进程能力走命名管道、无 HTTP API，
+    Node 侧无法直接消费；因此改为读「桥接插件写出的本地 JSON / 回环端点」（见 05 §3.4），
+    Aurora 只认一份四字段契约，桥接由随仓库附带的 C# 插件提供。
 - 采集器注册制 + 独立调度；任一采集项失败一律降级为 `unknown`，**绝不抛错**。
 - 后续高频 / 低开销需求可引入 Rust N-API 原生模块替换实现，接口不变。
 

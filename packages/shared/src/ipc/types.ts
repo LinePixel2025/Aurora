@@ -235,6 +235,74 @@ export interface SkillSummary {
   dir: string
 }
 
+/** Skill 扫描状态（`skills:rescan` / `skills:status`，docs/06 §6） */
+export interface SkillsStatus {
+  /** 生效的用户技能目录（`skills.userDir` 为空时为 `userData/skills`） */
+  userDir: string
+  builtinDir: string
+  /** 本次扫描发现的技能数（含被禁用的） */
+  total: number
+  /** frontmatter 解析失败等被跳过的条目数 */
+  failed: number
+  /** 上次扫描时间（ISO 时间戳），尚未扫描时为 null */
+  scannedAt: string | null
+  /** 扫描过程中的告警（最多若干条，供设置页展示） */
+  warnings: string[]
+}
+
+/** 全局快捷键注册状态（`hotkey:status`，docs/07 §5） */
+export interface HotkeyStatus {
+  /** 当前配置里的快捷键字符串（如 `Alt+Space`） */
+  hotkey: string
+  /** 是否已在系统注册成功 */
+  registered: boolean
+  /** 注册失败原因（被占用 / 非法格式 / 未注册） */
+  message?: string
+}
+
+/**
+ * ClassIsland 桥接状态（`classisland:status`，docs/05 §3.4 v2）。
+ * 未启用 classisland provider 时 `enabled` 为 false，其余字段表示「最后一次尝试」。
+ */
+export interface ClassIslandStatus {
+  enabled: boolean
+  source: 'http' | 'file'
+  endpoint: string
+  /** 最近一次读取是否成功 */
+  ok: boolean
+  /** 最近一次读取成功的时间（ISO 时间戳） */
+  lastSyncAt: string | null
+  /** 最近一次读取到的今日课程数 */
+  lessonCount: number
+  /** 桥接数据里的告警（逐行校验失败等） */
+  warnings: string[]
+  error?: string
+}
+
+/** `classisland:test`：立即按当前配置解析一次并回传预览 */
+export interface ClassIslandTestResult {
+  ok: boolean
+  source: 'http' | 'file'
+  endpoint: string
+  /** 今日课程预览（已按开始时间升序） */
+  lessons: Lesson[]
+  warnings: string[]
+  error?: string
+  elapsedMs: number
+}
+
+/** 会话摘要（`chat:sessions`，docs/06 §4） */
+export interface ChatSessionSummary {
+  id: string
+  /** 取首条用户消息前若干字符；空会话用「新会话」 */
+  title: string
+  /** 最后一条消息时间（ISO 时间戳）；空会话取创建/发现时间 */
+  updatedAt: string
+  messageCount: number
+  /** 当前窗口正在使用的会话 */
+  active?: boolean
+}
+
 // ───────────────────────── 感知（P5 补全） ─────────────────────────
 
 export interface PerceptionSummary {
@@ -282,6 +350,15 @@ export interface ClassificationRecord {
   movedTo?: string
   /** 用户是否修正过该条 */
   corrected?: boolean
+  /**
+   * 源文件的修改时间（ISO 时间戳）。
+   *
+   * 与 `path` / `sizeBytes` 一起构成「这个文件已处理过」的签名：文件**没被移动**时
+   * （`autoMove=false` 或移动失败），Aurora 重启后会再次收到同一个文件的 add 事件
+   * （`ignoreInitial: false`），靠签名跳过重复的流水与通知（docs/05 §3.2）。
+   * 老记录没有该字段，首次重新处理后即会补上。
+   */
+  modifiedAt?: string
   /** 失败原因（state = error） */
   error?: string
 }
@@ -315,13 +392,18 @@ export interface SensitiveToolRequest {
   expiresAt: string
 }
 
-// ───────────────────────── 对话（P3 接入 Agent 内核） ─────────────────────────
+// ───────────────────────── 对话（Agent 内核，docs/06 §4/§5） ─────────────────────────
 
 export interface SendMessageRequest {
   sessionId: string
   text: string
   /** 系统提示词会被注入的来源窗口，用于日志与后续多窗口路由 */
   origin: WindowName
+  /**
+   * 附件绝对路径列表（拖拽发送，docs/07 §2.3）。
+   * 主进程用 `extract.ts` 提取文本后拼进本轮用户消息；提取失败按降级处理，不阻断发送。
+   */
+  attachments?: string[]
 }
 
 export interface AgentToolCall {
@@ -381,6 +463,8 @@ export interface AuroraApi {
     getInfo(): Promise<Result<AppInfo>>
     quit(): Promise<void>
     openPath(request: OpenPathRequest): Promise<Result<string>>
+    /** 打开日志目录（等价 `openPath({ kind: 'logs' })`），与托盘入口行为一致 */
+    openLogs(): Promise<Result<string>>
     /** 仅开发态自测可用；其它情况返回 `{ enabled: false }` */
     getSmokeDiagnostics(): Promise<Result<SmokeDiagnostics>>
     /**
@@ -431,6 +515,21 @@ export interface AuroraApi {
   }
   skills: {
     list(): Promise<Result<SkillSummary[]>>
+    /** 重新扫描内置 + 用户技能目录（设置页「重新扫描」） */
+    rescan(): Promise<Result<SkillsStatus>>
+    status(): Promise<Result<SkillsStatus>>
+  }
+  hotkey: {
+    /** 当前快捷键注册状态（docs/07 §5） */
+    status(): Promise<Result<HotkeyStatus>>
+    /** 注册状态变化推送（改绑 / 冲突时） */
+    onChanged(listener: (status: HotkeyStatus) => void): () => void
+  }
+  classisland: {
+    /** 桥接状态（最后一次读取结果，docs/05 §3.4 v2） */
+    status(): Promise<Result<ClassIslandStatus>>
+    /** 立即按当前配置解析一次，回传今日课程预览与错误 */
+    test(): Promise<Result<ClassIslandTestResult>>
   }
   chat: {
     send(request: SendMessageRequest): Promise<Result<{ requestId: string }>>
@@ -438,6 +537,18 @@ export interface AuroraApi {
     onEvent(listener: (event: AgentEvent) => void): () => void
     /** 会话历史（窗口挂载时水合，docs/06 §4） */
     history(request: ChatHistoryRequest): Promise<Result<ChatMessageDto[]>>
+    /** 会话列表（新的在前） */
+    sessions(): Promise<Result<ChatSessionSummary[]>>
+    /** 新建会话并返回其 id */
+    newSession(): Promise<Result<string>>
+    /**
+     * 拖拽文件的绝对路径（docs/07 §2.3）。
+     *
+     * **同步方法**，且只能在 preload 里实现：Electron 32+ 已移除 `File.path`，
+     * 唯一途径是 `webUtils.getPathForFile`；而 `File` 对象不可结构化克隆，
+     * 无法经 IPC 传到主进程再解析。返回空串表示该文件拿不到本地路径（如网页拖拽）。
+     */
+    filePath(file: File): string
   }
   classification: {
     /** 分类流水（新的在前）；缺省返回全部（主进程上限 500 条） */

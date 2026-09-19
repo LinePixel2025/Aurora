@@ -184,3 +184,76 @@ describe('SessionStore', () => {
     expect(await store.get('quick')).toEqual([])
   })
 })
+
+describe('SessionStore · 会话列表与新建（chat:sessions / chat:newSession）', () => {
+  it('summaries 用首条用户消息作标题，并给出条数与更新时间', async () => {
+    const { store } = setup()
+    await store.append('main', { role: 'system', content: '系统提示词不参与渲染' })
+    await store.append('main', { role: 'user', content: '帮我把数学作业分类' })
+    await store.append('main', { role: 'assistant', content: '好的' })
+
+    const summaries = await store.summaries()
+    const main = summaries.find((item) => item.id === 'main')
+    expect(main?.title).toBe('帮我把数学作业分类')
+    // 只统计渲染层可见的用户 / 助手消息
+    expect(main?.messageCount).toBe(2)
+    expect(main?.updatedAt).not.toBe('')
+  })
+
+  it('标题过长时截断并加省略号', async () => {
+    const { store } = setup()
+    await store.append('main', { role: 'user', content: '一二三四五六七八九十'.repeat(5) })
+    const summaries = await store.summaries()
+    const title = summaries.find((item) => item.id === 'main')?.title ?? ''
+    expect(title.endsWith('…')).toBe(true)
+    expect(title.length).toBeLessThanOrEqual(25)
+  })
+
+  it('空会话标题为「新会话」', async () => {
+    const { store } = setup()
+    await store.clear('main')
+    const summaries = await store.summaries()
+    expect(summaries.find((item) => item.id === 'main')?.title).toBe('新会话')
+  })
+
+  it('activeId 命中时标记 active（渲染层也可自行判定）', async () => {
+    const { store } = setup()
+    await store.append('quick', { role: 'user', content: 'hi' })
+    const summaries = await store.summaries('quick')
+    expect(summaries.find((item) => item.id === 'quick')?.active).toBe(true)
+  })
+
+  it('按最后更新时间倒序排列', async () => {
+    const { store } = setup()
+    await store.append('older', { role: 'user', content: 'a' })
+    // 直接控制时间戳，避免依赖真实时钟精度
+    await store.append('newer', {
+      role: 'user',
+      content: 'b',
+      createdAt: '2099-01-01T00:00:00.000Z',
+    })
+    const summaries = await store.summaries()
+    expect(summaries[0]?.id).toBe('newer')
+  })
+
+  it('createSession 返回新 id 且不落空文件（首条消息才创建文件）', async () => {
+    const { store, fs } = setup()
+    const id = await store.createSession()
+    expect(id.startsWith('chat-')).toBe(true)
+    expect(await store.get(id)).toEqual([])
+    // 还没写任何消息，磁盘上不该出现文件
+    const files = await fs.readdir(SESSION_DIR)
+    expect(files.some((name) => name === `${id}.json`)).toBe(false)
+
+    await store.append(id, { role: 'user', content: '第一条' })
+    await store.flush()
+    expect(await store.get(id)).toHaveLength(1)
+  })
+
+  it('两个 createSession 的 id 不同', async () => {
+    const { store } = setup()
+    const first = await store.createSession()
+    const second = await store.createSession()
+    expect(first).not.toBe(second)
+  })
+})

@@ -46,6 +46,13 @@ export const DEFAULT_CLASSIFICATION = {
   fallbackFolder: '待分类',
 } as const
 
+/** 05 §3.4 ClassIsland 桥接默认：文件源 + 未配置端点（此时 provider 返回空课表） */
+export const DEFAULT_CLASSISLAND_SCHEDULE = {
+  source: 'file',
+  endpoint: '',
+  timeoutMs: 3000,
+} as const
+
 export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
   version: CONFIG_VERSION,
   general: {
@@ -72,6 +79,7 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
       schedule: {
         provider: 'manual',
         lessons: [],
+        classisland: { ...DEFAULT_CLASSISLAND_SCHEDULE },
       },
       preClassReminder: true,
       classification: { ...DEFAULT_CLASSIFICATION },

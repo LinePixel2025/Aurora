@@ -2,8 +2,9 @@
 
 将 Windows 接入 AI 生态的**系统级 Agent 工具**：常驻系统托盘，以「AI 服务窗 + 右侧提示条」的轻量形态提供无感、自主的 AI 服务。
 
-> 当前版本：**v0.3.0**（P0 脚手架 + P1 基础壳与设置 + P2 四种窗口外壳 + P3 Agent 内核）
+> 当前版本：**v0.6.0**（P0–P5 全部完成 + P6 打包与自动更新 + ClassIsland 联动）
 > 需求源头见 [`Aurora.md`](./Aurora.md)，设计与验收标准见 [`docs/`](./docs/README.md)（单一事实来源）。
+> 用户手册见 [docs/10](./docs/10-user-guide.md)，隐私说明见 [docs/11](./docs/11-privacy.md)。
 
 ## 快速开始
 
@@ -26,7 +27,7 @@ pnpm dev              # 启动 Electron：托盘 + 首次引导窗口
 | `pnpm dev` | 启动 Electron（主进程 / preload / 渲染层 HMR） |
 | `pnpm build` | 构建三个包 + Electron 产物（`apps/desktop/out`） |
 | `pnpm typecheck` | 全仓类型检查（含 `vue-tsc`） |
-| `pnpm test` | vitest 单测（shared / agent-core / modes），256 项 |
+| `pnpm test` | vitest 单测（shared / agent-core / modes / 主进程纯逻辑），595 项 |
 | `pnpm verify` | 真实磁盘的配置层验收脚本（需先 `pnpm build`），26 项断言 |
 | `pnpm lint` / `pnpm format` | ESLint / Prettier |
 | `node scripts/generate-icons.mjs` | 重新生成占位图标（托盘 / 应用图标） |
@@ -34,7 +35,7 @@ pnpm dev              # 启动 Electron：托盘 + 首次引导窗口
 ### 端到端自测（真实 Electron + preload + IPC）
 
 ```powershell
-$env:AURORA_SMOKE='1'; pnpm dev   # 启动后自动跑 52 项链路断言，结果见日志并自动退出
+$env:AURORA_SMOKE='1'; pnpm dev   # 启动后自动跑约 60 项链路断言，结果见日志并自动退出
 Get-Content "$env:TEMP\aurora-smoke-logs\aurora-*.log" | Select-String 'AURORA_SMOKE_RESULT'
 ```
 
@@ -57,11 +58,12 @@ packages/shared         配置 Schema、SettingsStore、IPC 契约、模式与�
 packages/agent-core     Agent 内核：LLM Provider、会话、工具循环、Skill 桥接、MCP 客户端
 packages/modes          IMode 框架、ClassRoom 完整实现、Work/Code 占位、引导运行器
 skills/                 内置 SKILL.md（file-classify / system-status / timetable）
+integrations/           ClassIsland 桥接插件源码（C#，需 .NET SDK 自行构建）
 scripts/                图标生成等构建脚本
 docs/                   项目文档（SSOT）
 ```
 
-## 本版本已实现（v0.3.0）
+## 已实现（截至 v0.6.0）
 
 - **P0**：pnpm workspace monorepo、TS strict、ESLint/Prettier、vitest、GitHub Actions（Windows）。
 - **P1 基础壳与设置**
@@ -88,21 +90,36 @@ docs/                   项目文档（SSOT）
   - 设置页 MCP 状态灯接入 `mcp:status` / `mcp:statusChanged`；新增「懒连接」开关
 - 系统感知（时间 / 电源 / 网络，缺失项降级为 unknown）已注入真实系统提示词
 
-## 尚未实现（后续阶段）
+## v0.6.0 新增
 
-| 阶段 | 内容 |
+- **ClassIsland 联动**（原 P7 项提前落地）：`schedule.provider = classisland` 从占位改为真实实现 ——
+  读桥接插件写出的本地 JSON 或本机回环端点，感知摘要 / 课前提醒 / `timetable` Skill 三条消费链
+  零改动复用。桥接插件源码见 [`integrations/classisland-bridge/`](./integrations/classisland-bridge/README.md)
+  （.NET 8 + `manifest.yml`，需自行 `dotnet build`）。任何读取失败都降级为空课表并记告警，不阻塞主流程。
+- **接线修复**——清掉「设置里能改、运行时没有消费方」的假开关：
+  - `general.hotkey` 真的注册全局快捷键（含格式校验、冲突检测、运行时改绑、退出注销与状态回显）
+  - `advanced.proxy` 真的接入网络栈（`session.setProxy` + Electron `net.fetch`，注入 LLM / MCP / 连接测试）
+  - `advanced.logLevel` 支持热更新（共享级别引用，含已存在的子 logger）
+  - `skills.userDir` 生效（含重扫、生效路径与解析告警展示）
+  - `general.edgeBar.opacity` / `general.edgeBar.quietHours` 生效（提示条独立勿扰）
+  - `app:openLogs` 死通道补齐 handler
+- **体验补齐**：对话窗多会话列表与切换、附件拖拽发送、`autoMove=false` 时按
+  `(路径, 大小, 修改时间)` 去重、长上下文自动摘要压缩（无摘要能力或失败时退回纯截断）。
+
+## 尚未实现（后续）
+
+| 内容 | 说明 |
 |---|---|
-| P4 (v0.4.0) | 智慧感知文件夹监听（chokidar）+ 内容提取（utilityProcess）+ LLM 分类 + 移动/通知/分类流水 |
-| P5 (v0.5.0) | 前台窗口、显示器、课程表感知；课前 5 分钟提醒并打开科目文件夹；敏感工具的用户确认交互 |
-| P6 (v1.0.0) | electron-builder NSIS 安装包、品牌图标、日志轮转打磨、用户文档 |
-| P7 | Work / Code Mode 功能、ClassIsland 联动、自动更新、多语言 |
+| 代码签名证书 | 待证书；接入时把 `signAndEditExecutable` 改回 `true` 即可 |
+| 启动耗时 / 内存优化 | P6 余下打磨项 |
+| Work / Code Mode | 仍为占位（提示词 + 引导），能力位见 docs/05 §4 |
+| OCR 图片识别 | 图片目前只取文件名与尺寸，不识别文字 |
+| 多语言 / macOS / Linux / ARM64 / 便携版 | 未开始 |
 
-> **已知限制（P3）**：MCP HTTP 传输暂不支持自定义鉴权头（凭据仅经 stdio `env` 注入）；
-> 敏感工具（`sensitivity: 'confirm'`，MCP 工具一律标记）目前只写日志留痕，
-> 逐次确认交互归 P5；Skill 自带 `scripts/` 不会被自动执行。
->
-> 设置项中已有值但**尚未真正生效**的：全局快捷键 `Alt+Space`（待注册 `globalShortcut`）、
-> 高级页的代理（消费方在 P3 的 LLM 层仍走 Node 默认代理）与勿扰时段（消费方在 P5）。
+> **已知限制**：MCP HTTP 传输暂不支持自定义鉴权头（凭据仅经 stdio `env` 注入）；
+> Skill 自带 `scripts/` 不会被自动执行（只注入指令正文）；
+> ClassIsland 侧只同步「星期 × 节次 → 科目」，单双周与临时调课不在此列；
+> `Alt+Space` 是 Windows 系统窗口菜单键，注册失败属预期路径，设置页会提示改绑。
 
 ## 工程约束（改动前请先读）
 

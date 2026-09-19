@@ -7,8 +7,15 @@
  * `settings:update` 按**顶层分组**做局部合并，但 `modes.classroom` 是整体替换的对象，
  * 因此这里始终先展开当前值再覆盖被修改的字段（与旧版 `saveClassroomField` 同一模式）。
  */
-import { computed, ref } from 'vue'
-import type { ClassroomModeConfig, Lesson, ScheduleProviderId, SubjectConfig } from '@aurora/shared'
+import { computed, onMounted, ref } from 'vue'
+import type {
+  ClassIslandStatus,
+  ClassIslandTestResult,
+  ClassroomModeConfig,
+  Lesson,
+  ScheduleProviderId,
+  SubjectConfig,
+} from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import ClassificationLedger from '../../shared/components/ClassificationLedger.vue'
@@ -163,6 +170,64 @@ function onProviderChange(event: Event): void {
   const value = (event.target as HTMLSelectElement).value
   if (value === 'manual' || value === 'classisland') void setScheduleProvider(value)
 }
+
+// ───────────────────────── ClassIsland 桥接（docs/05 §3.4 v2） ─────────────────────────
+
+const DEFAULT_CLASSISLAND = { source: 'file' as const, endpoint: '', timeoutMs: 3000 }
+
+const classisland = computed(() => classroom.value?.schedule.classisland ?? DEFAULT_CLASSISLAND)
+/** 「测试连接」结果（每次点击覆盖）；改动端点时清空 */
+const testResult = ref<ClassIslandTestResult | null>(null)
+const testing = ref(false)
+/** 最近一次已知的桥接状态（挂载时拉一次，用于说明「尚未成功读取」的原因） */
+const bridgeStatus = ref<ClassIslandStatus | null>(null)
+
+async function patchClassisland(
+  change: Partial<{ source: 'file' | 'http'; endpoint: string; timeoutMs: number }>,
+): Promise<void> {
+  const current = classroom.value
+  if (current === null) return
+  // 改了端点/来源先清掉上次结果：否则会显示「上一个地址」的成功状态，误导人
+  testResult.value = null
+  await patch({
+    schedule: {
+      ...current.schedule,
+      classisland: { ...current.schedule.classisland, ...change },
+    },
+  })
+}
+
+async function testClassisland(): Promise<void> {
+  testing.value = true
+  error.value = null
+  try {
+    const result = await window.aurora.classisland.test()
+    if (!result.ok) {
+      error.value = result.message
+      return
+    }
+    testResult.value = result.value
+    bridgeStatus.value = {
+      enabled: true,
+      source: result.value.source,
+      endpoint: result.value.endpoint,
+      ok: result.value.ok,
+      lastSyncAt: result.value.ok ? new Date().toISOString() : null,
+      lessonCount: result.value.lessons.length,
+      warnings: result.value.warnings,
+      ...(result.value.error === undefined ? {} : { error: result.value.error }),
+    }
+  } finally {
+    testing.value = false
+  }
+}
+
+onMounted(async () => {
+  // 只在选中 classisland 时查状态，避免每次打开设置页都多一次 IPC
+  if (classroom.value?.schedule.provider !== 'classisland') return
+  const status = await window.aurora.classisland.status()
+  if (status.ok) bridgeStatus.value = status.value
+})
 
 async function addLesson(): Promise<void> {
   const current = classroom.value
@@ -319,13 +384,103 @@ async function setFallbackFolder(value: string): Promise<void> {
 
       <SettingField
         label="课程表来源"
-        hint="classisland 为 P7 预留：当前返回空课程表，不抛错也不阻塞"
+        hint="手动维护，或从 ClassIsland 桥接插件读取（桥接安装见 docs/10 用户手册）"
       >
         <select :value="classroom.schedule.provider" @change="onProviderChange">
           <option value="manual">手动维护（默认）</option>
-          <option value="classisland">ClassIsland 联动（P7）</option>
+          <option value="classisland">ClassIsland 联动</option>
         </select>
       </SettingField>
+
+      <!-- ClassIsland 桥接配置（docs/05 §3.4 v2）：仅在选中该来源时展开 -->
+      <template v-if="classroom.schedule.provider === 'classisland'">
+        <SettingField
+          label="数据来源"
+          hint="文件：桥接插件写出的 JSON；HTTP：桥接插件的本地回环端点"
+        >
+          <select
+            :value="classisland.source"
+            @change="
+              patchClassisland({
+                source: ($event.target as HTMLSelectElement).value as 'file' | 'http',
+              })
+            "
+          >
+            <option value="file">JSON 文件</option>
+            <option value="http">本地 HTTP 端点</option>
+          </select>
+        </SettingField>
+
+        <SettingField
+          label="端点 / 文件路径"
+          :hint="
+            classisland.source === 'file'
+              ? '桥接插件写出的 JSON 文件绝对路径（见桥接插件 README）'
+              : '桥接插件的本地端点，例如 http://127.0.0.1:17945/schedule'
+          "
+        >
+          <div class="row grow">
+            <input
+              class="input grow"
+              type="text"
+              spellcheck="false"
+              :value="classisland.endpoint"
+              placeholder="留空表示未配置（此时课表为空）"
+              @change="
+                patchClassisland({ endpoint: ($event.target as HTMLInputElement).value.trim() })
+              "
+            />
+            <AppButton size="sm" :disabled="testing" @click="testClassisland">
+              {{ testing ? '测试中…' : '测试连接' }}
+            </AppButton>
+          </div>
+        </SettingField>
+
+        <SettingField label="读取超时" hint="毫秒；桥接不可用时按此超时降级为空课表，不阻塞主流程">
+          <input
+            class="input"
+            type="number"
+            min="200"
+            max="30000"
+            step="100"
+            :value="classisland.timeoutMs"
+            @change="
+              patchClassisland({ timeoutMs: Number(($event.target as HTMLInputElement).value) })
+            "
+          />
+        </SettingField>
+
+        <AppToast v-if="testResult" :tone="testResult.ok ? 'ok' : 'error'">
+          <template v-if="testResult.ok">
+            读取成功（{{ testResult.elapsedMs }}ms）：今日 {{ testResult.lessons.length }} 节课
+            <template v-if="testResult.lessons.length > 0">
+              —— {{ testResult.lessons.map((l) => `${l.startTime} ${l.subject}`).join('、') }}
+            </template>
+          </template>
+          <template v-else>读取失败：{{ testResult.error ?? '未知原因' }}</template>
+          <template v-if="testResult.warnings.length > 0">
+            <br />
+            <span class="tiny muted">
+              有 {{ testResult.warnings.length }} 条课程被跳过：{{ testResult.warnings[0] }}
+            </span>
+          </template>
+        </AppToast>
+
+        <AppToast v-else-if="bridgeStatus && !bridgeStatus.ok" tone="warn">
+          {{
+            classisland.endpoint.trim() === ''
+              ? '尚未配置端点：课程表会保持为空，课前提醒不会触发。'
+              : (bridgeStatus.error ?? '尚未成功读取桥接数据')
+          }}
+        </AppToast>
+
+        <AppToast v-else-if="bridgeStatus" tone="ok">
+          桥接正常：今日 {{ bridgeStatus.lessonCount }} 节课
+          <template v-if="bridgeStatus.lastSyncAt">
+            （最近同步 {{ new Date(bridgeStatus.lastSyncAt).toLocaleTimeString() }}）
+          </template>
+        </AppToast>
+      </template>
 
       <div class="row">
         <span class="tiny muted grow">

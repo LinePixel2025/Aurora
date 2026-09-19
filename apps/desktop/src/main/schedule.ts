@@ -4,7 +4,8 @@
  * 纯逻辑、**不依赖 Electron**：系统能力（ClassIsland 数据源、PowerShell、通知）
  * 一律由调用方注入，因此 provider 与触发函数都能在 Node 里完整单测。
  *
- * v1 只有手动课程表（`manual`），ClassIsland 联动是 P7 的占位实现。
+ * 课程表有两个来源：`manual`（设置里手填）与 `classisland`（读桥接插件的本地 JSON，
+ * 见 `classisland.ts`）。两者都实现同一个 `IScheduleProvider`，消费方无需区分。
  */
 import type { Lesson as ScheduledLesson } from '@aurora/shared'
 
@@ -62,11 +63,12 @@ export function createManualScheduleProvider(
 }
 
 /**
- * ClassIsland 占位 provider（P7 实现，docs/05 §3.4 v2）。
+ * ClassIsland 占位 provider（未配置桥接端点时使用，docs/05 §3.4 v2）。
  *
- * 当前**尚未接入** ClassIsland 的配置数据 / API / 插件机制，因此永远返回空数组：
- * 课前提醒因此不会触发，而感知摘要里的课程表保持"空"而非"未知"。
- * 这里刻意不抛错：未接入属于已知状态，不应让调用方进入降级分支。
+ * 与 v1 的区别：v1 无论配置如何都返回空数组，属于「功能未实现」；
+ * 现在只有**用户选了 classisland 但没填端点**时才走到这里，
+ * 语义是「已配置但尚未接线」，因此同样返回空数组且不抛错
+ * （未接入属于已知状态，不应让调用方进入降级分支）。
  */
 export function createClassislandPlaceholderProvider(): IScheduleProvider {
   return {
@@ -77,11 +79,26 @@ export function createClassislandPlaceholderProvider(): IScheduleProvider {
   }
 }
 
+/** `resolveScheduleProvider` 的可选依赖（不传时 classisland 走空实现，保持既有行为） */
+export interface ScheduleProviderDeps {
+  /** 已配置的 ClassIsland provider；缺省 / 未配置端点时回落到空实现 */
+  classisland?: IScheduleProvider | undefined
+}
+
 /** 按设置挑选 provider（`manual` / `classisland`），结构上接受 `settings.modes.classroom`。 */
-export function resolveScheduleProvider(settings: {
-  schedule: { provider: 'manual' | 'classisland'; lessons: readonly Lesson[] }
-}): IScheduleProvider {
-  if (settings.schedule.provider === 'classisland') return createClassislandPlaceholderProvider()
+export function resolveScheduleProvider(
+  settings: {
+    schedule: {
+      provider: 'manual' | 'classisland'
+      lessons: readonly Lesson[]
+      classisland?: { source: 'http' | 'file'; endpoint: string; timeoutMs: number }
+    }
+  },
+  deps: ScheduleProviderDeps = {},
+): IScheduleProvider {
+  if (settings.schedule.provider === 'classisland') {
+    return deps.classisland ?? createClassislandPlaceholderProvider()
+  }
   return createManualScheduleProvider(() => settings.schedule.lessons)
 }
 

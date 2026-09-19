@@ -15,6 +15,8 @@ export interface QueueJob {
   fileName: string
   ext: string
   sizeBytes: number
+  /** 源文件修改时间（毫秒），用于 `(路径, 大小, mtime)` 去重签名（docs/05 §3.2） */
+  mtimeMs?: number
   /**
    * 入队时就已确定的流水记录（进度事件与最终事件**必须共用同一个 id**，
    * 否则渲染层按 id 归并时会留下一条永远停在「排队中」的幽灵行）。

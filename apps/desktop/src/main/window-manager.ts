@@ -177,6 +177,10 @@ export class WindowManager {
     })
 
     win.setMenuBarVisibility(false)
+    // 提示条透明度取自设置（docs/08 §1）；窗口创建时即应用，避免一次可见的跳变
+    if (name === 'edge-bar') {
+      this.applyEdgeBarOpacity(this.options.settings.get().general.edgeBar.opacity)
+    }
     if (this.options.isDev) {
       const name$ = name
       // dev：把渲染层日志转发到主进程终端，便于排查白屏 / CSP / 脚本错误
@@ -220,6 +224,23 @@ export class WindowManager {
     this.windows.set(name, win)
     this.options.logger.debug('窗口已创建', { window: name, bounds })
     return win
+  }
+
+  /**
+   * 应用提示条透明度（docs/07 §2.2、docs/08 §1 `general.edgeBar.opacity`）。
+   *
+   * 只对已创建的窗口生效；窗口尚未创建时跳过（创建时会在 `ensure()` 里按当前值设置），
+   * 因此这里不需要「记住待应用值」——`index.ts` 在每次设置变更与启动时都会调用一次。
+   */
+  applyEdgeBarOpacity(opacity: number): void {
+    const win = this.windows.get('edge-bar')
+    if (win === undefined || win.isDestroyed()) return
+    const clamped = Math.min(1, Math.max(0.2, Number.isFinite(opacity) ? opacity : 0.9))
+    try {
+      win.setOpacity(clamped)
+    } catch (error) {
+      this.options.logger.debug('设置提示条透明度失败', { opacity: clamped, error: String(error) })
+    }
   }
 
   private quitting = false

@@ -25,6 +25,12 @@ export interface SystemPromptParts {
   modePrompt?: string
   /** 系统感知摘要（PerceptionHub.contextSummary） */
   perceptionSummary?: string
+  /**
+   * 更早对话的压缩摘要（docs/06 §4 长上下文）。
+   * 与感知摘要分成两节：模型需要知道「这段是回忆，不是当前状态」，
+   * 否则会把历史里的时间/科目误当成实时信息。
+   */
+  historySummary?: string
   /** 技能清单（SkillsRegistry.toCatalogPrompt） */
   skillCatalog?: string
   /** 工具清单（由工具表生成；为空表示本次没有可用工具） */
@@ -39,6 +45,17 @@ export function buildSystemPrompt(parts: SystemPromptParts = {}): string {
 
   const perception = normalize(parts.perceptionSummary)
   if (perception !== undefined) sections.push(`## 系统状态\n${perception}`)
+
+  const history = normalize(parts.historySummary)
+  if (history !== undefined) {
+    sections.push(
+      [
+        '## 更早对话的摘要',
+        history,
+        '（以上是被压缩的历史上下文，仅供回忆；与当前系统状态冲突时以系统状态为准。）',
+      ].join('\n'),
+    )
+  }
 
   const skills = normalize(parts.skillCatalog)
   if (skills !== undefined) {

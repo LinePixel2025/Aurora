@@ -19,11 +19,20 @@ export interface WatchedFile {
   fileName: string
   ext: string
   sizeBytes: number
+  /**
+   * 文件修改时间（毫秒）。
+   *
+   * 用途：`(路径, 大小, 修改时间)` 三元组作为「这个文件我已处理过」的签名，
+   * 供 `autoMove=false`（文件留在原处）时跨重启去重 —— 没有它就只能靠路径+大小，
+   * 用户改完内容但大小不变的文件会被误判成已处理。
+   */
+  mtimeMs: number
 }
 
 /** chokidar 的最小结构面（便于单测注入假实现） */
 export interface WatcherLike {
   on(event: 'add', listener: (path: string) => void): unknown
+  on(event: 'change', listener: (path: string) => void): unknown
   on(event: 'error', listener: (error: unknown) => void): unknown
   close(): Promise<void>
 }
@@ -37,7 +46,7 @@ export interface FileWatcherOptions {
   /** 新建监听实例；默认用 chokidar。单测注入假实现。 */
   createWatcher?: (dir: string) => WatcherLike
   /** 读取文件大小；默认 fs.stat。读不到（文件已消失）返回 undefined → 跳过 */
-  statSize?: (path: string) => Promise<number | undefined>
+  statFile?: (path: string) => Promise<{ sizeBytes: number; mtimeMs: number } | undefined>
   /** 文件稳定判定窗口，默认 800ms（docs/05 §3.1） */
   stabilityThresholdMs?: number
   /** 轮询间隔，默认 100ms */
@@ -81,7 +90,12 @@ export class AuroraFileWatcher {
     this.dir = dir
     const generation = ++this.generation
     const watcher = this.createWatcher(dir)
-    watcher.on('add', (path) => void this.handleAdd(path, generation))
+    watcher.on('add', (path) => void this.handleEvent(path, generation, 'add'))
+    // 同时监听 change：用户在感知文件夹里**覆盖**同名文件（例如重新导出一份作业）
+    // 只会产生 change 而非 add，只监听 add 会让这类改动永远不被重新判定。
+    // 重复处理由分类管线的 `(路径, 大小, 修改时间)` 签名兜住（docs/05 §3.2）：
+    // 内容没变 → 签名相同 → 跳过；内容变了 → 签名不同 → 重新分类。
+    watcher.on('change', (path) => void this.handleEvent(path, generation, 'change'))
     watcher.on('error', (error) => {
       this.options.logger?.warn('文件监听出错（不影响其它功能）', { error: String(error) })
     })
@@ -145,14 +159,26 @@ export class AuroraFileWatcher {
     return instance as unknown as WatcherLike
   }
 
-  private async handleAdd(path: string, generation: number): Promise<void> {
+  /**
+   * 处理一次文件事件（`add` 与 `change` 共用）。
+   *
+   * 两者都走同一条路：读取当前 stat 后交给上层。上层按
+   * `(路径, 大小, 修改时间)` 去重，因此：
+   * - `change` 但内容没变 → 签名相同 → 跳过，不会重复分类；
+   * - `change` 且内容变了 → 签名不同 → 重新分类（这正是用户覆盖文件时期望的行为）。
+   */
+  private async handleEvent(
+    path: string,
+    generation: number,
+    kind: 'add' | 'change',
+  ): Promise<void> {
     // 旧代次的迟到事件（已 stop / 已换目录）一律丢弃
     if (generation !== this.generation) {
-      this.options.logger?.debug('忽略已失效监听的迟到事件', { path })
+      this.options.logger?.debug('忽略已失效监听的迟到事件', { path, kind })
       return
     }
     if (this.suppressed.has(path)) {
-      this.options.logger?.debug('忽略管线自身造成的变动', { path })
+      this.options.logger?.debug('忽略管线自身造成的变动', { path, kind })
       return
     }
 
@@ -171,21 +197,29 @@ export class AuroraFileWatcher {
       }
     }
 
-    const sizeBytes = await this.statSize(path)
-    if (sizeBytes === undefined) {
+    const stat = await this.statFile(path)
+    if (stat === undefined) {
       this.options.logger?.debug('文件已消失，跳过', { path })
       return
     }
 
     const ext = extOf(fileName)
-    this.emitAdd({ path, fileName, ext, sizeBytes })
+    this.emitAdd({
+      path,
+      fileName,
+      ext,
+      sizeBytes: stat.sizeBytes,
+      mtimeMs: stat.mtimeMs,
+    })
   }
 
-  private async statSize(path: string): Promise<number | undefined> {
-    if (this.options.statSize) return this.options.statSize(path)
+  private async statFile(
+    path: string,
+  ): Promise<{ sizeBytes: number; mtimeMs: number } | undefined> {
+    if (this.options.statFile) return this.options.statFile(path)
     try {
       const stat = await fs.stat(path)
-      return stat.isDirectory() ? undefined : stat.size
+      return stat.isDirectory() ? undefined : { sizeBytes: stat.size, mtimeMs: stat.mtimeMs }
     } catch {
       return undefined
     }

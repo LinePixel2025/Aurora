@@ -4,7 +4,7 @@
  * 约定：每次 Schema 破坏性变更向 `MIGRATIONS` 追加一条，永不修改历史条目。
  */
 import { CONFIG_VERSION } from './schema.js'
-import { DEFAULT_CLASSIFICATION } from './defaults.js'
+import { DEFAULT_CLASSIFICATION, DEFAULT_CLASSISLAND_SCHEDULE } from './defaults.js'
 import type { Logger } from '../utils/logger.js'
 
 export interface Migration {
@@ -86,7 +86,34 @@ const migrateV1ToV2: Migration = {
   },
 }
 
-export const MIGRATIONS: Migration[] = [migrateV0ToV1, migrateV1ToV2]
+/**
+ * v2 → v3：为 ClassIsland 联动（docs/05 §3.4 v2）补齐 `schedule.classisland`。
+ *
+ * 只补缺失字段、**不覆盖**用户已写入的值（幂等）。
+ */
+const migrateV2ToV3: Migration = {
+  from: 2,
+  to: 3,
+  describe: 'v2 → v3：补齐 modes.classroom.schedule.classisland（ClassIsland 桥接数据源）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const modes = { ...(asRecord(raw['modes']) ?? {}) }
+    const classroom = { ...(asRecord(modes['classroom']) ?? {}) }
+    const schedule = { ...(asRecord(classroom['schedule']) ?? {}) }
+    if (asRecord(schedule['classisland']) === undefined) {
+      schedule['classisland'] = { ...DEFAULT_CLASSISLAND_SCHEDULE }
+    }
+    classroom['schedule'] = schedule
+    modes['classroom'] = classroom
+    next['modes'] = modes
+
+    next['version'] = 3
+    return next
+  },
+}
+
+export const MIGRATIONS: Migration[] = [migrateV0ToV1, migrateV1ToV2, migrateV2ToV3]
 
 export interface MigrationOutcome {
   data: Record<string, unknown>

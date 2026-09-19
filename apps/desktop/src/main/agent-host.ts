@@ -127,10 +127,14 @@ export class DesktopAgentHost implements AgentHost {
 /**
  * 用当前设置即时构造 provider（每次请求都重新读取 + 解密）。
  * 这样在设置页改完 API Key / 模型后**无需重启**即可生效。
+ *
+ * `resolveFetch` 同理按调用即时取值：系统代理改完，下一次请求就走新代理
+ * （docs/08 §6；在此之前 `advanced.proxy` 是个没有消费方的死字段）。
  */
 export function createProviderFactory(
   settings: SettingsStoreLike,
   logger: Logger,
+  resolveFetch?: () => typeof fetch | undefined,
 ): AgentProviderFactory {
   return {
     create(): ProviderConfig | undefined {
@@ -162,6 +166,9 @@ export function createProviderFactory(
           baseUrl: config.baseUrl,
           apiKey,
           defaultModel: config.model,
+          ...(fetchImplOf(resolveFetch) === undefined
+            ? {}
+            : { fetchImpl: fetchImplOf(resolveFetch) }),
           onRetry: (info) =>
             logger.warn('LLM 请求重试', {
               providerId,
@@ -174,6 +181,16 @@ export function createProviderFactory(
         temperature: config.temperature,
       }
     },
+  }
+}
+
+/** 取当前出网 fetch；解析失败按「未提供」处理，让内核回落到全局 fetch。 */
+function fetchImplOf(resolveFetch?: () => typeof fetch | undefined): typeof fetch | undefined {
+  if (resolveFetch === undefined) return undefined
+  try {
+    return resolveFetch()
+  } catch {
+    return undefined
   }
 }
 

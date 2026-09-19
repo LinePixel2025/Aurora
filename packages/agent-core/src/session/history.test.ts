@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { truncateHistory, toChatRequestMessages } from './history.js'
+import { compressHistory, truncateHistory, toChatRequestMessages } from './history.js'
 import type { StoredMessage } from './types.js'
 
 function msg(
@@ -118,5 +118,110 @@ describe('toChatRequestMessages', () => {
       msg({ id: '2', role: 'user', content: 'b' }),
     ]
     expect(toChatRequestMessages(messages, { excludeTail: 1 })).toHaveLength(1)
+  })
+})
+
+describe('compressHistory（docs/06 §4 长上下文摘要）', () => {
+  const long = (n: number): StoredMessage[] =>
+    Array.from({ length: n }, (_item, index) =>
+      msg({ id: `${index}`, role: 'user', content: `第${index}轮问题` }),
+    )
+
+  it('未触发截断时不调用 summarizer', async () => {
+    let called = 0
+    const result = await compressHistory([msg({ id: '1', role: 'user', content: 'hi' })], {
+      maxChars: 1000,
+      summarize: async () => {
+        called += 1
+        return '摘要'
+      },
+    })
+    expect(called).toBe(0)
+    expect(result.compressed).toBe(false)
+    expect(result.summary).toBeUndefined()
+  })
+
+  it('触发截断时把丢弃的消息交给 summarizer，并回传累计摘要', async () => {
+    let received: string[] = []
+    const result = await compressHistory(long(6), {
+      maxChars: 12,
+      summarize: async (input) => {
+        received = input.dropped.map((item) => item.content)
+        return '用户依次问了第0到第2轮'
+      },
+    })
+    expect(result.compressed).toBe(true)
+    expect(result.summary).toBe('用户依次问了第0到第2轮')
+    // 丢弃的正是最旧那些消息
+    expect(received[0]).toContain('第0轮')
+    // 保留的消息仍是最后若干条
+    expect(result.messages.at(-1)?.content).toContain('第5轮')
+  })
+
+  it('把上一次的累计摘要一并交给 summarizer（增量更新）', async () => {
+    let previous: string | undefined
+    const result = await compressHistory(long(6), {
+      maxChars: 12,
+      previousSummary: '更早的摘要',
+      summarize: async (input) => {
+        previous = input.previousSummary
+        return '合并后的摘要'
+      },
+    })
+    expect(previous).toBe('更早的摘要')
+    expect(result.summary).toBe('合并后的摘要')
+  })
+
+  it('summarizer 抛错时回落纯截断，并保留已有摘要', async () => {
+    const truncated = truncateHistory(long(6), { maxChars: 12 })
+    const result = await compressHistory(long(6), {
+      maxChars: 12,
+      previousSummary: '旧摘要',
+      summarize: async () => {
+        throw new Error('模型不可用')
+      },
+    })
+    expect(result.compressed).toBe(false)
+    expect(result.summary).toBe('旧摘要')
+    // 与纯截断的结果完全一致
+    expect(result.messages.map((item) => item.id)).toEqual(
+      truncated.messages.map((item) => item.id),
+    )
+  })
+
+  it('summarizer 返回空串时视为失败（不写入空摘要）', async () => {
+    const result = await compressHistory(long(6), {
+      maxChars: 12,
+      summarize: async () => '   ',
+    })
+    expect(result.compressed).toBe(false)
+    expect(result.summary).toBeUndefined()
+  })
+
+  it('未提供 summarizer 时等同于纯截断（调用方可无条件改用本函数）', async () => {
+    const truncated = truncateHistory(long(6), { maxChars: 12 })
+    const result = await compressHistory(long(6), { maxChars: 12 })
+    expect(result.compressed).toBe(false)
+    expect(result.messages.map((item) => item.id)).toEqual(
+      truncated.messages.map((item) => item.id),
+    )
+  })
+
+  it('工具调用组不会被摘要流程拆散（保留原有不变量）', () => {
+    const messages = [
+      msg({ id: '1', role: 'user', content: 'x'.repeat(50) }),
+      msg({
+        id: '2',
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'use_skill', arguments: '{}', state: 'success' as const }],
+      }),
+      msg({ id: '3', role: 'tool', content: '结果', toolCallId: 'c1' }),
+      msg({ id: '4', role: 'assistant', content: '最终答复' }),
+    ]
+    const result = truncateHistory(messages, { maxChars: 10 })
+    // 保留区里不允许出现孤儿 tool 结果
+    const keptIds = result.messages.map((item) => item.id)
+    if (keptIds.includes('3')) expect(keptIds).toContain('2')
   })
 })

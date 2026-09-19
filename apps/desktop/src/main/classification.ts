@@ -78,6 +78,16 @@ interface RuntimeConfig {
 
 export const DEFAULT_EVENT_BUFFER = 30
 
+/**
+ * 文件去重签名：`(路径, 大小, 修改时间)`（docs/05 §3.2）。
+ *
+ * 导出的理由：单测与「为什么这个文件被跳过」的排查都要用同一个算法，
+ * 各写一份迟早会漂移。
+ */
+export function fileSignature(file: { path: string; sizeBytes: number; mtimeMs: number }): string {
+  return `${file.path}|${file.sizeBytes}|${file.mtimeMs}`
+}
+
 export class ClassificationService {
   private readonly deps: ClassificationServiceDeps
   private readonly logger: Logger
@@ -130,11 +140,42 @@ export class ClassificationService {
   }
 
   /** 感知文件夹出现新稳定文件时调用（由 `FileWatcher` 转发）。 */
-  handleFile(file: { path: string; fileName: string; ext: string; sizeBytes: number }): void {
+  handleFile(file: {
+    path: string
+    fileName: string
+    ext: string
+    sizeBytes: number
+    /** 源文件修改时间（毫秒）；缺省表示未知，此时不参与去重（退化为旧行为） */
+    mtimeMs?: number
+  }): void {
     if (!this.active) {
       this.logger.debug('分类管线未启用，忽略文件', { path: file.path })
       return
     }
+
+    // 去重（docs/05 §3.2）：文件**没被移动**时（`autoMove=false` / 移动失败 / 处理失败），
+    // 它会留在感知文件夹里，而 chokidar 的 `ignoreInitial: false` 每次启动都会再次
+    // 报出同一个文件 —— 不去重就会反复记流水、反复弹通知。
+    // 已移动成功的文件天然不会再来（目录都换了），因此只需比对"未移动"的历史记录。
+    const duplicate = this.findProcessed({
+      path: file.path,
+      sizeBytes: file.sizeBytes,
+      mtimeMs: file.mtimeMs,
+    })
+    if (duplicate !== undefined) {
+      this.logger.debug('该文件已处理过且未被移动，跳过重复处理', {
+        path: file.path,
+        recordId: duplicate.id,
+      })
+      this.emit({
+        record: duplicate,
+        state: 'skipped',
+        queueDepth: this.queue.depth,
+        running: this.queue.running,
+      })
+      return
+    }
+
     // 记录在**入队时**就生成，并随 job 一路带到最终事件：
     // 渲染层按 record.id 归并进度，若入队与处理各造一条记录，
     // 那条 queued 行会永远停在「排队中」（幽灵行）。
@@ -152,6 +193,36 @@ export class ClassificationService {
       queueDepth: this.queue.depth,
       running: this.queue.running,
     })
+  }
+
+  /**
+   * 找出「同一文件已被处理、且当时没有移动它」的历史记录。
+   *
+   * 签名 = `(路径, 大小, 修改时间)`：比只看路径可靠（用户替换同名文件能识别出来），
+   * 也比只看路径+大小可靠（改内容但大小不变的文件能识别出来）。
+   * 只在 `movedTo` 缺失时才算命中：已移动的记录意味着文件已不在原处，
+   * 此时原路径再出现同名同大小的文件属于**用户主动放回来的新文件**，必须重新处理。
+   */
+  private findProcessed(file: {
+    path: string
+    sizeBytes: number
+    mtimeMs: number | undefined
+  }): ClassificationRecord | undefined {
+    // mtime 未知时不参与去重：宁可重复处理一次，也不要把用户的文件误判成"已处理"
+    if (file.mtimeMs === undefined || !Number.isFinite(file.mtimeMs) || file.mtimeMs <= 0) {
+      return undefined
+    }
+    const signature = fileSignature({ ...file, mtimeMs: file.mtimeMs })
+    return this.deps.history.list().find(
+      (record) =>
+        record.movedTo === undefined &&
+        record.modifiedAt !== undefined &&
+        fileSignature({
+          path: record.path,
+          sizeBytes: record.sizeBytes,
+          mtimeMs: Date.parse(record.modifiedAt),
+        }) === signature,
+    )
   }
 
   /** 用户就地修正分类结果（docs/05 §3.3）：移动文件 + 沉淀规则。 */
@@ -391,6 +462,14 @@ export class ClassificationService {
       watchDir: config.watchDir,
     })
 
+    // 去重签名只在**文件留在原处**时写（autoMove 关闭 / 移动失败）：
+    // 此时 chokidar 的 `ignoreInitial: false` 下次启动会再报一次同一个文件，
+    // 靠签名跳过重复的流水与通知（见 `findProcessed`）。
+    // 移动成功则**不写** —— 文件已不在原处，原路径再出现同名文件属于用户放回来的新文件，
+    // 必须重新分类。
+    // 位置也重要：必须等 moveInto 之后才决定，因为"移动失败"只有跑完才知道。
+    if (!outcome.moved) record = { ...record, ...this.modifiedAtOf(job) }
+
     const state: ClassificationState = outcome.ok ? (isFallback ? 'fallback' : 'done') : 'error'
     // 落盘后抑制目标路径：避免文件系统把 rename 报成 add 时被当成新文件重复分类
     if (outcome.moved) this.deps.suppressPath?.(outcome.targetPath)
@@ -459,7 +538,24 @@ export class ClassificationService {
       confidence: verdict.confidence,
       reason: verdict.reason,
       source: verdict.source,
+      // 注意：**不在这里**写 `modifiedAt`。
+      // 该字段是"这个文件已处理过"的去重签名（见 `findProcessed`），
+      // 只有**判定真正完成且文件留在原处**时才有意义 —— 由 `land()` 在移动结束后补写。
+      // 若在入队时就写，那么"文件在处理期间被移走 → skipped"这类审计记录
+      // 也会带上签名，用户把同名文件重新放回来时就会被误判为"已处理"而永不重新分类。
     }
+  }
+
+  /**
+   * 源文件修改时间的去重签名字段（docs/05 §3.2）。
+   *
+   * 非法 / 缺失时间返回空对象：宁可不去重（重复处理一次），
+   * 也不要把用户的文件误判成"已处理"而永不分类。
+   */
+  private modifiedAtOf(job: QueueJob): { modifiedAt?: string } {
+    const mtime = job.mtimeMs
+    if (mtime === undefined || !Number.isFinite(mtime) || mtime <= 0) return {}
+    return { modifiedAt: new Date(mtime).toISOString() }
   }
 
   private runtime(): RuntimeConfig {

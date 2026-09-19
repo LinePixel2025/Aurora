@@ -30,6 +30,13 @@ export interface McpClientHubOptions {
   logger?: Logger
   /** 默认请求超时，默认 30s */
   timeoutMs?: number
+  /**
+   * HTTP 传输使用的 fetch（docs/08 §6 系统代理）。
+   *
+   * 用**函数**而非实例：代理是运行时可改的，装配层会按设置重建 fetch，
+   * 而 hub 只在构造时拿到一个引用。返回 `undefined` 时回落 `globalThis.fetch`。
+   */
+  resolveFetch?: () => typeof fetch | undefined
   /** 注入传输实现（单测用假传输） */
   createTransport?(definition: McpServerDefinition): McpTransport
   onStatusChanged?(statuses: McpServerStatus[]): void
@@ -60,6 +67,7 @@ export class McpClientHub {
   private readonly timeoutMs: number
   private readonly createTransport: (definition: McpServerDefinition) => McpTransport
   private readonly onStatusChanged: ((statuses: McpServerStatus[]) => void) | undefined
+  private readonly resolveFetch: (() => typeof fetch | undefined) | undefined
   private readonly entries = new Map<string, ServerEntry>()
   private lazyConnect = false
   private closed = false
@@ -68,8 +76,25 @@ export class McpClientHub {
     this.tools = options.tools
     this.logger = options.logger ?? createNoopLogger()
     this.timeoutMs = options.timeoutMs ?? 30_000
-    this.createTransport = options.createTransport ?? defaultTransport
+    this.resolveFetch = options.resolveFetch
+    this.createTransport =
+      options.createTransport ??
+      ((definition) => defaultTransport(definition, this.fetchFor(definition)))
     this.onStatusChanged = options.onStatusChanged
+  }
+
+  /** HTTP 传输取当前 fetch；resolveFetch 抛错时按未提供处理（不能拖垮建连）。 */
+  private fetchFor(definition: McpServerDefinition): typeof fetch | undefined {
+    if (this.resolveFetch === undefined) return undefined
+    try {
+      return this.resolveFetch()
+    } catch (error) {
+      this.logger.warn('取网络客户端失败，MCP HTTP 传输回落默认实现', {
+        server: definition.name,
+        error: String(error),
+      })
+      return undefined
+    }
   }
 
   get isLazy(): boolean {
@@ -300,12 +325,15 @@ export class McpClientHub {
   }
 }
 
-function defaultTransport(definition: McpServerDefinition): McpTransport {
+function defaultTransport(definition: McpServerDefinition, fetchImpl?: typeof fetch): McpTransport {
   if (definition.transport === 'http') {
     if ((definition.url ?? '') === '') {
       throw new McpError('E_PROTOCOL', 'HTTP 传输缺少 url')
     }
-    return new HttpTransport({ url: definition.url ?? '' })
+    return new HttpTransport({
+      url: definition.url ?? '',
+      ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    })
   }
   if ((definition.command ?? '') === '') {
     throw new McpError('E_SPAWN', 'stdio 传输缺少 command')

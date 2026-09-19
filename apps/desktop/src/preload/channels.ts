@@ -66,12 +66,25 @@ const CHANNELS = {
   },
   skills: {
     list: 'skills:list',
+    rescan: 'skills:rescan',
+    status: 'skills:status',
   },
   chat: {
     send: 'chat:send',
     abort: 'chat:abort',
     history: 'chat:history',
     event: 'chat:event',
+    sessions: 'chat:sessions',
+    // 通道表与 shared 契约同构：新增通道必须两处同步（编译期双向断言会兜住）
+    newSession: 'chat:newSession',
+  },
+  hotkey: {
+    status: 'hotkey:status',
+    changed: 'hotkey:changed',
+  },
+  classisland: {
+    status: 'classisland:status',
+    test: 'classisland:test',
   },
   classification: {
     history: 'classification:history',

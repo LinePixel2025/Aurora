@@ -123,23 +123,26 @@ describe('UpdateService 状态机', () => {
   })
 
   it('静默自动检查失败时只记 warn，不打断启动', async () => {
-    const { service, logger } = createService({
-      checkError: new Error('ENOTFOUND'),
-      autoCheckDelayMs: 1,
-    })
+    // 关键顺序：**必须先装假定时器，再构造服务**。
+    // `UpdateService` 在构造时就把 `setTimeout` 抓进 `setTimeoutImpl`，
+    // 若先构造再 useFakeTimers，服务持有的是真实定时器 —— 假定时器推进不到它，
+    // 只能赌真实 1ms 定时器抢在断言前跑完，于是这条断言会在负载高时随机失败。
     vi.useFakeTimers()
     try {
+      const { service, logger } = createService({
+        checkError: new Error('ENOTFOUND'),
+        autoCheckDelayMs: 1,
+      })
       service.scheduleAutoCheck()
-      // 自动检查是 fire-and-forget：推进定时器后让微任务跑完
-      for (let tick = 0; tick < 10; tick += 1) {
-        await vi.advanceTimersByTimeAsync(5)
-      }
+      // 自动检查是 fire-and-forget：触发定时器后还要让 `checkForUpdates()` 的
+      // Promise 落地（catch → fail → 写日志）才会留下 warn。
+      await vi.advanceTimersByTimeAsync(10)
+      expect(
+        logger.entries.some((line) => line.includes('[warn]') && line.includes('更新失败')),
+      ).toBe(true)
     } finally {
       vi.useRealTimers()
     }
-    expect(
-      logger.entries.some((line) => line.includes('[warn]') && line.includes('更新失败')),
-    ).toBe(true)
   })
 
   it('只允许在 downloaded 状态安装，安装后调用 quitAndInstall', async () => {

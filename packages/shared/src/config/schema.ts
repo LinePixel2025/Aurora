@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 2 as const
+export const CONFIG_VERSION = 3 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -109,9 +109,30 @@ export const LessonSchema = z.object({
 })
 export type Lesson = z.infer<typeof LessonSchema>
 
+/**
+ * ClassIsland 桥接数据源（docs/05 §3.4 v2）。
+ *
+ * ClassIsland 自身只提供 .NET 插件体系与命名管道 IPC，没有可供 Node 侧直接消费的
+ * HTTP API；因此 Aurora 只认一份**本地 JSON 契约**（`classisland.ts` 的
+ * `ClassIslandPayload`），由随仓库附带的桥接插件（`integrations/classisland-bridge`）
+ * 以文件或本地 HTTP 端点两种方式暴露。
+ */
+export const ClassIslandSourceSchema = z.enum(['http', 'file'])
+export type ClassIslandSource = z.infer<typeof ClassIslandSourceSchema>
+
+export const ClassIslandScheduleSchema = z.object({
+  source: ClassIslandSourceSchema,
+  /** `http` 为桥接端点 URL；`file` 为 JSON 文件绝对路径。空串表示尚未配置。 */
+  endpoint: z.string(),
+  /** 单次读取/请求超时（毫秒） */
+  timeoutMs: z.number().int().min(200).max(30_000),
+})
+export type ClassIslandScheduleConfig = z.infer<typeof ClassIslandScheduleSchema>
+
 export const ScheduleSchema = z.object({
   provider: ScheduleProviderSchema,
   lessons: z.array(LessonSchema),
+  classisland: ClassIslandScheduleSchema,
 })
 export type ScheduleConfig = z.infer<typeof ScheduleSchema>
 

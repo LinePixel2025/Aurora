@@ -81,6 +81,26 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 
 ## 尚未生效 / 已知限制（别误当成 bug）
 
-- 全局快捷键 `Alt+Space`（待注册 `globalShortcut`）；高级页的代理与勿扰时段配置已在 Schema 中但消费方未完全接入。
+- 全局快捷键默认 `Alt+Space` **在 Windows 上常被系统占用**（它是系统窗口菜单键）。
+  注册失败是预期路径：`main/hotkey.ts` 会把真实原因回传设置页，用户改绑即可 —— 不要"修"成静默成功。
+- 提示条的 `可穿透性`（`setIgnoreMouseEvents`）尚未接入；`general.language` 仍是死字段（无 i18n）。
 - MCP HTTP 传输暂不支持自定义鉴权头（凭据仅经 stdio `env` 注入）。
-- Work / Code Mode 为占位实现；ClassIsland 联动、多语言属 P7。
+- Skill 的 `scripts/` 永不自动执行（只注入指令正文）；图片 OCR 未启用（只取文件名与尺寸）。
+- Work / Code Mode 为占位实现；多语言、ARM64 / 便携版、macOS / Linux 未开始。
+- `integrations/classisland-bridge` **CI 不编译**（流水线没有 .NET SDK）。
+  它已用 ClassIsland 2.1.0.1 的真实程序集在本机编译并实跑验证过（见该目录 README 的「已验证程度」），
+  改动后请在装有 .NET SDK 与 ClassIsland 的机器上重新验证：
+  `dotnet build -c Release -p:ClassIslandDir="<ClassIsland 安装目录>"`。
+  注意 ClassIsland 的程序集**不在**安装根目录，而在 `app-<版本>/` 子目录（csproj 会自动往下一层找）。
+
+## 几个容易踩的接线点（改之前先看这里）
+
+- **网络出网统一走 `main/net.ts` 的 `netFetch`**：它优先用 Electron `net.fetch`（走 Chromium
+  网络栈 → 才受 `session.setProxy` 的代理影响），并保留 `globalThis.fetch` 回落。
+  新增任何出网调用都要注入它，否则 `advanced.proxy` 对该调用无效。
+- **`agent-core` / `modes` 不得 import electron**：代理、快捷键、窗口、日志实现全在主进程，
+  内核只接受注入（`fetchImpl` / `summarize` / `confirmTool` 都是这个套路）。
+- **配置字段"能写"不等于"生效"**：本轮修掉的就是一批死字段。新增配置项时要么接上消费方，
+  要么在本文档里明确标注为未生效。
+- **ClassIsland 联动只认 `main/classisland.ts` 的 JSON 契约**，桥接端的实现细节不得泄漏到
+  provider 与消费链；桥接数据的一切异常都必须降级为空课表 + 告警。

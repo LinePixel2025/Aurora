@@ -265,3 +265,98 @@ describe('KernelAgentHost', () => {
     expect(roles).toEqual(['system', 'user', 'assistant', 'user'])
   })
 })
+
+describe('KernelAgentHost · 历史摘要压缩（docs/06 §4）', () => {
+  interface SummaryHarness extends Harness {
+    /** 用对象承载计数（展开复制会丢掉更新，必须持有同一个引用） */
+    counter: { summaryCalls: number }
+  }
+
+  async function createSummaryHarness(
+    summarize: (input: {
+      dropped: Array<{ role: string; content: string }>
+      previousSummary?: string
+    }) => Promise<string>,
+  ): Promise<SummaryHarness> {
+    const fs = new TestFileSystem()
+    const sessions = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
+    const logger = createMemoryLogger()
+    const skills = new SkillsBridge(await createSkills())
+    const tools = new ToolRegistry()
+    skills.registerInto(tools)
+
+    const provider = createFakeProvider([{ text: '收到' }])
+    const events: AgentEvent[] = []
+    const counter = { summaryCalls: 0 }
+    const host = new KernelAgentHost({
+      sessions,
+      provider: { create: () => ({ provider, model: 'fake-model' }) },
+      tools,
+      skills,
+      logger,
+      // 预算刻意设为：能放下最后一条短消息，但放不下更早的长消息 ——
+      // 这样旧消息才会被真正丢弃（触发摘要），也不会因为"最后一条本身就超预算"
+      // 而走 truncateHistory 的保守全保留分支
+      maxChars: 10,
+      summarize: async (input) => {
+        counter.summaryCalls += 1
+        return summarize({
+          dropped: input.dropped.map((item) => ({ role: item.role, content: item.content })),
+          ...(input.previousSummary === undefined
+            ? {}
+            : { previousSummary: input.previousSummary }),
+        })
+      },
+    })
+    host.onEvent((event) => events.push(event))
+
+    return {
+      host,
+      events,
+      sessions,
+      tools,
+      provider,
+      counter,
+      send: (text, sessionId = 'quick') => host.send({ sessionId, text, origin: 'chat' }),
+      async waitForDone(timeoutMs = 2_000) {
+        const deadline = Date.now() + timeoutMs
+        while (Date.now() < deadline) {
+          if (events.some((event) => event.type === 'done' || event.type === 'error')) return
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+      },
+    }
+  }
+
+  it('超预算时压缩历史，并把摘要注入系统提示词', async () => {
+    const harness = await createSummaryHarness(async () => '用户之前问过数学作业的事')
+    const sessions = harness.sessions
+    // 两条历史：第一条超预算会被丢弃（成为摘要素材），第二条留在上下文里
+    await sessions.append('quick', { role: 'user', content: '这是很久以前的一段很长的对话内容' })
+    await sessions.append('quick', { role: 'assistant', content: '好的' })
+
+    await harness.send('现在呢')
+    await harness.waitForDone()
+
+    expect(harness.counter.summaryCalls).toBe(1)
+    const systemPrompt = harness.provider.calls[0]?.messages[0]?.content ?? ''
+    expect(systemPrompt).toContain('更早对话的摘要')
+    expect(systemPrompt).toContain('用户之前问过数学作业的事')
+  })
+
+  it('summarizer 抛错时请求照常完成（退回纯截断，不让摘要拖垮对话）', async () => {
+    const harness = await createSummaryHarness(async () => {
+      throw new Error('摘要模型不可用')
+    })
+    await harness.sessions.append('quick', { role: 'user', content: '一段很长的历史内容占位说明' })
+    await harness.sessions.append('quick', { role: 'assistant', content: '好的' })
+
+    await harness.send('继续')
+    await harness.waitForDone()
+
+    expect(harness.events.some((event) => event.type === 'error')).toBe(false)
+    expect(harness.events.some((event) => event.type === 'text')).toBe(true)
+    const systemPrompt = harness.provider.calls[0]?.messages[0]?.content ?? ''
+    expect(systemPrompt).not.toContain('更早对话的摘要')
+  })
+})

@@ -12,6 +12,12 @@ export interface LlmTesterOptions {
   logger: Logger
   /** 测试连接的有效超时（比对话短，避免设置页长时间等待） */
   timeoutMs?: number
+  /**
+   * 当前出网 fetch（docs/08 §6 系统代理）。
+   * 「测试连接」必须走与真实请求同一条网络路径，否则会出现
+   * 「测试通过但实际对话失败」（或反之），是最难排查的一类假阳性。
+   */
+  resolveFetch?: () => typeof fetch | undefined
 }
 
 export interface LlmTestRequest {
@@ -26,11 +32,13 @@ export class LlmTester implements LlmTesterLike {
   private readonly settings: SettingsStoreLike
   private readonly logger: Logger
   private readonly timeoutMs: number
+  private readonly resolveFetch: (() => typeof fetch | undefined) | undefined
 
   constructor(options: LlmTesterOptions) {
     this.settings = options.settings
     this.logger = options.logger
     this.timeoutMs = options.timeoutMs ?? 15_000
+    this.resolveFetch = options.resolveFetch
   }
 
   async test(request: LlmTestRequest): Promise<TestConnectionResult> {
@@ -91,6 +99,7 @@ export class LlmTester implements LlmTesterLike {
   }
 
   private createProvider(input: { id: string; baseUrl: string; apiKey: string; model: string }) {
+    const fetchImpl = this.netFetch()
     return new OpenAiCompatProvider({
       id: input.id,
       baseUrl: input.baseUrl,
@@ -98,7 +107,19 @@ export class LlmTester implements LlmTesterLike {
       defaultModel: input.model,
       timeoutMs: this.timeoutMs,
       maxRetries: 1,
+      ...(fetchImpl === undefined ? {} : { fetchImpl }),
       onRetry: (info) => this.logger.debug('LLM 请求重试', info),
     })
+  }
+
+  /** 解析当前出网 fetch；解析失败按未提供处理（回落内核默认）。 */
+  private netFetch(): typeof fetch | undefined {
+    if (this.resolveFetch === undefined) return undefined
+    try {
+      return this.resolveFetch()
+    } catch (error) {
+      this.logger.debug('取网络客户端失败，回落默认实现', { error: String(error) })
+      return undefined
+    }
   }
 }

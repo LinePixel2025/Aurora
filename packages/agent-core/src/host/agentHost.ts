@@ -10,7 +10,7 @@ import { createNoopLogger } from '@aurora/shared'
 import { buildSystemPrompt, describeTools } from '../context/systemPrompt.js'
 import { runAgentLoop, type LoopProvider } from '../loop/agentLoop.js'
 import type { SkillsBridge } from '../skills/bridge.js'
-import { truncateHistory, DEFAULT_MAX_CHARS } from '../session/history.js'
+import { compressHistory, DEFAULT_MAX_CHARS, type SummarizeFn } from '../session/history.js'
 import type { SessionStore } from '../session/store.js'
 import type { NewMessage, StoredToolCall } from '../session/types.js'
 import type { ToolRegistry } from '../tools/registry.js'
@@ -38,6 +38,11 @@ export interface AgentHostDeps {
   perceptionSummary?(): Promise<string>
   /** 单次请求的会话历史字符预算 */
   maxChars?: number
+  /**
+   * 长上下文摘要（docs/06 §4）：截断丢弃的旧消息交给它压成一段摘要，
+   * 跨轮次累计后注入系统提示词。未注入 / 失败时行为与纯截断一致。
+   */
+  summarize?: SummarizeFn
   /** 工具调用轮次上限 */
   maxRounds?: number
   /**
@@ -60,6 +65,8 @@ export class KernelAgentHost implements AgentHostContract {
   private readonly logger: Logger
   private readonly listeners = new Set<(event: AgentEvent) => void>()
   private readonly active = new Map<string, { requestId: string; controller: AbortController }>()
+  /** 每个会话的累计历史摘要（内存态；进程重启后由后续轮次重新压缩得出） */
+  private readonly summaries = new Map<string, string>()
   private counter = 0
 
   constructor(deps: AgentHostDeps) {
@@ -75,6 +82,11 @@ export class KernelAgentHost implements AgentHostContract {
     sessionId: string
     text: string
     origin: string
+    /**
+     * 额外上下文（附件提取文本等，docs/07 §2.3）。
+     * 由装配层在发送前准备好并拼进本轮用户消息，内核只负责透传。
+     */
+    extraContext?: string
   }): Promise<{ requestId: string }> {
     const sessionId = request.sessionId
     this.counter += 1
@@ -121,7 +133,15 @@ export class KernelAgentHost implements AgentHostContract {
     this.active.set(sessionId, { requestId, controller })
 
     // 后台推进；事件通过 onEvent 推送，异常不越过 IPC 边界
-    void this.run({ sessionId, requestId, text, origin: request.origin, config, controller })
+    void this.run({
+      sessionId,
+      requestId,
+      text,
+      origin: request.origin,
+      config,
+      controller,
+      ...(request.extraContext === undefined ? {} : { extraContext: request.extraContext }),
+    })
     return { requestId }
   }
 
@@ -159,24 +179,44 @@ export class KernelAgentHost implements AgentHostContract {
     origin: string
     config: ProviderConfig
     controller: AbortController
+    extraContext?: string
   }): Promise<void> {
     const { sessionId, requestId } = input
     try {
       const explicit = this.deps.skills.parseExplicitInvocation(input.text)
       const userInput =
         explicit === undefined ? input.text : explicit.rest === '' ? input.text : explicit.rest
-      const extraContext =
-        explicit === undefined ? undefined : this.deps.skills.render(explicit.skillName)
+      // 技能正文与附件文本共用 extraContext：都是「本轮要额外给模型看的内容」
+      const extraContext = joinSections([
+        explicit === undefined ? undefined : this.deps.skills.render(explicit.skillName),
+        input.extraContext,
+      ])
 
-      const history = truncateHistory(await this.deps.sessions.get(sessionId), {
+      // 会话压缩：超预算时把丢弃的旧消息压成摘要（跨轮次累计，存在内存里）。
+      // summarizer 缺失 / 抛错时 compressHistory 会退回纯截断，不会让请求失败。
+      const compression = await compressHistory(await this.deps.sessions.get(sessionId), {
         maxChars: this.deps.maxChars ?? DEFAULT_MAX_CHARS,
-      }).messages
+        ...(this.deps.summarize === undefined ? {} : { summarize: this.deps.summarize }),
+        ...(this.summaries.get(sessionId) === undefined
+          ? {}
+          : { previousSummary: this.summaries.get(sessionId) }),
+      })
+      if (compression.summary !== undefined) this.summaries.set(sessionId, compression.summary)
+      if (compression.compressed) {
+        this.logger.info('已完成历史摘要压缩', {
+          sessionId,
+          dropped: compression.dropped,
+          summaryChars: compression.summary?.length ?? 0,
+        })
+      }
+      const history = compression.messages
 
       const systemPrompt = buildSystemPrompt({
         ...(this.deps.modePrompt === undefined ? {} : { modePrompt: this.deps.modePrompt() }),
         ...(this.deps.perceptionSummary === undefined
           ? {}
           : { perceptionSummary: await this.deps.perceptionSummary() }),
+        ...(compression.summary === undefined ? {} : { historySummary: compression.summary }),
         skillCatalog: this.deps.skills.catalogPrompt,
         ...(() => {
           const catalog = describeTools(this.deps.tools.list())
@@ -278,3 +318,9 @@ export class KernelAgentHost implements AgentHostContract {
 }
 
 export type { AgentToolCall }
+
+/** 拼接若干可选文本段（去掉空段，用空行分隔）。 */
+function joinSections(parts: Array<string | undefined>): string | undefined {
+  const kept = parts.map((part) => part?.trim() ?? '').filter((part) => part !== '')
+  return kept.length === 0 ? undefined : kept.join('\n\n')
+}

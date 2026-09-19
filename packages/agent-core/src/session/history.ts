@@ -111,13 +111,111 @@ export function truncateHistory(
   return { messages: kept, dropped, truncated: dropped > 0 }
 }
 
+/** 生成 / 更新摘要的注入点（由装配层用当前 provider 实现，内核不引入网络耦合） */
+export type SummarizeFn = (input: {
+  /** 本次被截断丢弃的消息（已按时间升序） */
+  dropped: StoredMessage[]
+  /** 上一次的累计摘要；首次压缩时为 undefined */
+  previousSummary?: string
+}) => Promise<string>
+
+export interface CompressOptions extends TruncateOptions {
+  summarize?: SummarizeFn
+  /** 上一次的累计摘要（调用方持有，跨轮次复用） */
+  previousSummary?: string
+}
+
+export interface CompressResult extends TruncateResult {
+  /** 累计摘要；`undefined` 表示尚未压缩过 */
+  summary?: string
+  /** 本次是否真的调用了 summarizer 并拿到可用摘要 */
+  compressed: boolean
+}
+
+/** 喂给 summarizer 的原始文本预算（超出部分从最旧开始截断） */
+const MAX_SUMMARY_INPUT_CHARS = 20_000
+
+/**
+ * 带摘要的上下文压缩（docs/06 §4「长上下文」）。
+ *
+ * 与纯截断的关系：**截断永远是兜底**。没有 `summarize`、summarizer 抛错、
+ * 或返回空串时，行为与 `truncateHistory` 完全一致（丢弃的部分直接消失），
+ * 因此调用方可以无条件改用本函数而不引入新的失败模式。
+ *
+ * 摘要由调用方持有（`previousSummary` 入参 / `summary` 出参）：本模块保持无状态，
+ * 便于单测；跨轮次的累计与注入位置由装配层决定。
+ * 摘要文本刻意**不进入 messages**：它是模型侧的提示，不该出现在会话文件或渲染层历史里。
+ */
+export async function compressHistory(
+  messages: readonly StoredMessage[],
+  options: CompressOptions = {},
+): Promise<CompressResult> {
+  const truncated = truncateHistory(messages, options)
+  if (!truncated.truncated) {
+    return {
+      ...truncated,
+      compressed: false,
+      ...(options.previousSummary === undefined ? {} : { summary: options.previousSummary }),
+    }
+  }
+
+  const summarize = options.summarize
+  if (summarize === undefined) {
+    return {
+      ...truncated,
+      compressed: false,
+      ...(options.previousSummary === undefined ? {} : { summary: options.previousSummary }),
+    }
+  }
+
+  const dropped = messages.slice(0, truncated.dropped)
+  try {
+    const text = await summarize({
+      dropped: trimForSummary(dropped),
+      ...(options.previousSummary === undefined
+        ? {}
+        : { previousSummary: options.previousSummary }),
+    })
+    const summary = text.trim()
+    if (summary === '') {
+      return {
+        ...truncated,
+        compressed: false,
+        ...(options.previousSummary === undefined ? {} : { summary: options.previousSummary }),
+      }
+    }
+    return { ...truncated, summary, compressed: true }
+  } catch {
+    // 摘要失败不放大为请求失败：退回纯截断，并保留已有摘要
+    return {
+      ...truncated,
+      compressed: false,
+      ...(options.previousSummary === undefined ? {} : { summary: options.previousSummary }),
+    }
+  }
+}
+
+/** 从最新开始保留，直到达到文本预算（丢弃部分越旧越先被舍弃）。 */
+function trimForSummary(messages: readonly StoredMessage[]): StoredMessage[] {
+  const kept: StoredMessage[] = []
+  let total = 0
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message === undefined) continue
+    const weight = message.content.length
+    if (total + weight > MAX_SUMMARY_INPUT_CHARS && kept.length > 0) break
+    total += weight
+    kept.unshift(message)
+  }
+  return kept
+}
+
 /**
  * 转换为 LLM 消息。
  * - `system`：跳过（系统提示词由 context 层每次重新组装，不参与历史）
  * - `tool`：还原为 `role:'tool'` + `toolCallId`
  * - `assistant`：带 `toolCalls` 时一并还原（`content` 为空也合法）
- */
-export function toChatRequestMessages(
+ */ export function toChatRequestMessages(
   messages: readonly StoredMessage[],
   options: { excludeTail?: number } = {},
 ): ChatRequestMessage[] {

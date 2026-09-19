@@ -7,9 +7,18 @@
  *
  * 多轮工具调用会产生多条助手消息，事件里的 `messageId` 就是会话存储中的消息 id，
  * 渲染层据此认领（首轮之前还不知道 id）。
+ *
+ * 多会话（docs/06 §4）：`sessionId` 是可切换的 ref；`chat:sessions` 提供列表，
+ * `chat:newSession` 新建。窗口默认会话仍是 `main` / `quick`，老数据继续可读。
  */
 import { computed, onScopeDispose, ref } from 'vue'
-import type { AgentToolCall, ChatMessageDto, SendMessageRequest, WindowName } from '@aurora/shared'
+import type {
+  AgentToolCall,
+  ChatMessageDto,
+  ChatSessionSummary,
+  SendMessageRequest,
+  WindowName,
+} from '@aurora/shared'
 
 export interface ChatMessage {
   id: string
@@ -20,9 +29,11 @@ export interface ChatMessage {
   createdAt: number
   /** 工具执行卡片（运行中 / 成功 / 失败） */
   toolCalls?: AgentToolCall[]
+  /** 本条用户消息携带的附件文件名（仅用于气泡内展示） */
+  attachments?: string[]
 }
 
-/** 每个窗口一个会话：服务窗与迷你窗共享"快速会话"（docs/06 §4） */
+/** 每个窗口的**默认**会话：服务窗与迷你窗共享"快速会话"（docs/06 §4） */
 export function sessionIdFor(windowName: WindowName): string {
   if (windowName === 'service-dock' || windowName === 'mini-chat') return 'quick'
   if (windowName === 'chat') return 'main'
@@ -30,15 +41,26 @@ export function sessionIdFor(windowName: WindowName): string {
 }
 
 export function useChat(windowName: WindowName) {
-  const sessionId = sessionIdFor(windowName)
+  const defaultSessionId = sessionIdFor(windowName)
+  /**
+   * 当前会话 id（可切换）。
+   *
+   * 事件按 `sessionId` **与** `requestId` 双重过滤：快速会话由服务窗与迷你窗
+   * 共享（docs/06 §4），只按 requestId 过滤会串窗；切换会话后旧会话的流式事件
+   * 也必须被丢弃，否则历史会串到新会话气泡里。
+   */
+  const sessionId = ref(defaultSessionId)
   const messages = ref<ChatMessage[]>([])
   const streaming = ref(false)
   const unread = ref(false)
   const error = ref<string | null>(null)
+  /** 会话列表（`chat:sessions`），仅交互窗使用 */
+  const sessions = ref<ChatSessionSummary[]>([])
   let activeRequest: string | null = null
   /** 当前正在流式接收的助手消息 id（服务端生成的存储 id） */
   let assistantId: string | null = null
-  let hydrated = false
+  /** 已水合过的会话 id（切换会话时按新 id 重新水合） */
+  const hydrated = new Set<string>()
 
   const statusTone = computed<'idle' | 'running' | 'unread' | 'error'>(() => {
     if (error.value) return 'error'
@@ -56,7 +78,7 @@ export function useChat(windowName: WindowName) {
   })
 
   const dispose = window.aurora.chat.onEvent((event) => {
-    if (event.sessionId !== sessionId) return
+    if (event.sessionId !== sessionId.value) return
     if (activeRequest !== null && event.requestId !== activeRequest) return
 
     switch (event.type) {
@@ -145,9 +167,12 @@ export function useChat(windowName: WindowName) {
 
   /** 挂载时水合历史（docs/06 §4：重启后交互窗仍能看到历史）。 */
   async function hydrate(): Promise<void> {
-    if (hydrated) return
-    hydrated = true
-    const result = await window.aurora.chat.history({ sessionId })
+    const target = sessionId.value
+    if (hydrated.has(target)) return
+    hydrated.add(target)
+    const result = await window.aurora.chat.history({ sessionId: target })
+    // 水合期间用户可能已经切走了会话：丢弃这次结果，避免把 A 的历史塞进 B
+    if (sessionId.value !== target) return
     if (!result.ok) {
       window.console?.warn('会话历史读取失败', result.message)
       return
@@ -159,16 +184,58 @@ export function useChat(windowName: WindowName) {
     messages.value = [...result.value.map(toChatMessage), ...incoming]
   }
 
-  async function send(text: string): Promise<void> {
+  /** 拉取会话列表（交互窗的「历史」侧栏用）。 */
+  async function loadSessions(): Promise<void> {
+    const result = await window.aurora.chat.sessions()
+    if (!result.ok) {
+      window.console?.warn('会话列表读取失败', result.message)
+      return
+    }
+    // active 由渲染层判定：主进程不知道哪个窗口正在看哪个会话
+    sessions.value = result.value.map((item) => ({
+      ...item,
+      active: item.id === sessionId.value,
+    }))
+  }
+
+  /** 切换到指定会话（重新水合）。切换会中断本地流式状态，但不 abort 服务端请求。 */
+  async function switchSession(id: string): Promise<void> {
+    if (id === sessionId.value) return
+    sessionId.value = id
+    messages.value = []
+    error.value = null
+    unread.value = false
+    streaming.value = false
+    activeRequest = null
+    assistantId = null
+    await hydrate()
+    await loadSessions()
+  }
+
+  /** 新建会话并切过去。新会话此时还没有标题，发完第一条消息后列表会刷新。 */
+  async function newSession(): Promise<void> {
+    const result = await window.aurora.chat.newSession()
+    if (!result.ok) {
+      error.value = result.message
+      return
+    }
+    await switchSession(result.value)
+  }
+
+  async function send(text: string, attachments: string[] = []): Promise<void> {
     const trimmed = text.trim()
-    if (trimmed === '' || streaming.value) return
+    // 允许「只发附件」：有附件时文本可以为空
+    if (trimmed === '' && attachments.length === 0) return
+    if (streaming.value) return
 
     error.value = null
+    const names = attachments.map(fileNameOf)
     messages.value.push({
       id: `u-${Date.now()}-${messages.value.length}`,
       role: 'user',
       content: trimmed,
       createdAt: Date.now(),
+      ...(names.length === 0 ? {} : { attachments: names }),
     })
 
     streaming.value = true
@@ -176,7 +243,12 @@ export function useChat(windowName: WindowName) {
     activeRequest = null
     assistantId = null
 
-    const request: SendMessageRequest = { sessionId, text: trimmed, origin: windowName }
+    const request: SendMessageRequest = {
+      sessionId: sessionId.value,
+      text: trimmed,
+      origin: windowName,
+      ...(attachments.length === 0 ? {} : { attachments }),
+    }
     const result = await window.aurora.chat.send(request)
     if (!result.ok) {
       streaming.value = false
@@ -216,12 +288,16 @@ export function useChat(windowName: WindowName) {
   return {
     sessionId,
     messages,
+    sessions,
     streaming,
     unread,
     error,
     statusTone,
     lastAssistant,
     hydrate,
+    loadSessions,
+    switchSession,
+    newSession,
     send,
     abort,
     clear,
@@ -237,4 +313,10 @@ function toChatMessage(dto: ChatMessageDto): ChatMessage {
     createdAt: Date.parse(dto.createdAt) || Date.now(),
     ...(dto.toolCalls === undefined ? {} : { toolCalls: dto.toolCalls }),
   }
+}
+
+/** 从绝对路径取文件名（Windows 反斜杠与 POSIX 斜杠都处理） */
+function fileNameOf(path: string): string {
+  const segments = path.split(/[\\/]/)
+  return segments[segments.length - 1] ?? path
 }

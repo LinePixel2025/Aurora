@@ -8,7 +8,7 @@
  * 通道常量取自 `./channels.js`（字符串字面量表，编译期与共享契约比对）。
  * 不要在这里 import `@aurora/shared`：沙箱化 preload 无法解析工作区包。
  */
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { AuroraApi, Result } from '@aurora/shared'
 import { PRELOAD_CHANNELS as IPC } from './channels.js'
 
@@ -24,11 +24,28 @@ function subscribe<T>(channel: string, listener: (payload: T) => void): () => vo
   }
 }
 
+/**
+ * 取拖入文件的**绝对路径**（docs/07 §2.3）。
+ *
+ * Electron 32 起 `File.path` 已被移除，必须走 `webUtils.getPathForFile`。
+ * 这个能力只能在 preload 里提供（渲染进程拿不到文件系统路径），
+ * 因此单独暴露一个同步方法，而不是把 File 对象塞进 IPC
+ * （File 不可结构化克隆，塞过去会直接抛错）。
+ */
+function filePathOf(file: File): string {
+  try {
+    return webUtils.getPathForFile(file)
+  } catch {
+    return ''
+  }
+}
+
 const api: AuroraApi = {
   app: {
     getInfo: () => invoke(IPC.app.getInfo),
     quit: () => ipcRenderer.invoke(IPC.app.quit) as Promise<void>,
     openPath: (request) => invoke(IPC.app.openPath, request),
+    openLogs: () => invoke(IPC.app.openLogs),
     getSmokeDiagnostics: () => invoke(IPC.app.smokeDiagnostics),
     smokeDropFile: (request) => invoke(IPC.app.smokeDropFile, request),
   },
@@ -72,12 +89,26 @@ const api: AuroraApi = {
   },
   skills: {
     list: () => invoke(IPC.skills.list),
+    rescan: () => invoke(IPC.skills.rescan),
+    status: () => invoke(IPC.skills.status),
+  },
+  hotkey: {
+    status: () => invoke(IPC.hotkey.status),
+    onChanged: (listener) => subscribe(IPC.hotkey.changed, listener),
+  },
+  classisland: {
+    status: () => invoke(IPC.classisland.status),
+    test: () => invoke(IPC.classisland.test),
   },
   chat: {
     send: (request) => invoke(IPC.chat.send, request),
     abort: (requestId) => invoke(IPC.chat.abort, requestId),
     onEvent: (listener) => subscribe(IPC.chat.event, listener),
     history: (request) => invoke(IPC.chat.history, request),
+    sessions: () => invoke(IPC.chat.sessions),
+    newSession: () => invoke(IPC.chat.newSession),
+    // 附件拖拽：同步返回路径，渲染层再把它放进 chat.send 的 attachments
+    filePath: (file) => filePathOf(file),
   },
   classification: {
     history: (limit) => invoke(IPC.classification.history, limit),

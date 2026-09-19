@@ -69,8 +69,9 @@ describe('配置迁移链', () => {
         modes: { current: 'classroom', classroom: { watchDir: 'D:\\感知', subjects: [] } },
       })
       expect(outcome.fromVersion).toBe(1)
-      expect(outcome.applied).toHaveLength(1)
-      expect(outcome.data['version']).toBe(2)
+      // v1 → v2 → v3：链式执行，两版迁移都会跑
+      expect(outcome.applied).toHaveLength(2)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
         string,
@@ -117,7 +118,58 @@ describe('配置迁移链', () => {
     it('缺少 modes / advanced 分组时不抛错', () => {
       const outcome = migrate({ version: 1 })
       expect(outcome.warnings).toEqual([])
-      expect(outcome.data['version']).toBe(2)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+  })
+
+  describe('v2 → v3（ClassIsland 桥接数据源）', () => {
+    it('补齐 schedule.classisland 并保留手动课程表', () => {
+      const lesson = { weekday: 1, startTime: '08:00', endTime: '08:45', subject: '数学' }
+      const outcome = migrate({
+        version: 2,
+        modes: { classroom: { schedule: { provider: 'manual', lessons: [lesson] } } },
+      })
+      expect(outcome.fromVersion).toBe(2)
+      expect(outcome.applied).toHaveLength(1)
+
+      const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
+        string,
+        unknown
+      >
+      const schedule = classroom['schedule'] as Record<string, unknown>
+      expect(schedule['provider']).toBe('manual')
+      expect(schedule['lessons']).toEqual([lesson])
+      expect(schedule['classisland']).toEqual({ source: 'file', endpoint: '', timeoutMs: 3000 })
+    })
+
+    it('不覆盖用户已写入的 classisland 配置（幂等）', () => {
+      const custom = {
+        source: 'http',
+        endpoint: 'http://127.0.0.1:17945/schedule',
+        timeoutMs: 1500,
+      }
+      const load = (raw: Record<string, unknown>): unknown => {
+        const classroom = (raw['modes'] as Record<string, unknown>)['classroom'] as Record<
+          string,
+          unknown
+        >
+        return (classroom['schedule'] as Record<string, unknown>)['classisland']
+      }
+
+      const once = migrate({
+        version: 2,
+        modes: { classroom: { schedule: { classisland: custom } } },
+      })
+      expect(load(once.data)).toEqual(custom)
+
+      const twice = migrate({ ...once.data, version: 2 })
+      expect(load(twice.data)).toEqual(custom)
+    })
+
+    it('缺少 modes 分组时不抛错', () => {
+      const outcome = migrate({ version: 2 })
+      expect(outcome.warnings).toEqual([])
+      expect(outcome.data['version']).toBe(3)
     })
   })
 })

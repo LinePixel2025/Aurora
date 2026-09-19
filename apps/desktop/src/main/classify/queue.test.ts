@@ -3,7 +3,13 @@ import type { ClassificationRecord } from '@aurora/shared'
 import { ClassificationQueue, type QueueJob, type QueueProgress } from './queue.js'
 
 function job(name: string): QueueJob {
-  return { path: `D:\\感知\\${name}`, fileName: name, ext: 'pdf', sizeBytes: 1 }
+  return {
+    path: `D:\\感知\\${name}`,
+    fileName: name,
+    ext: 'pdf',
+    sizeBytes: 1,
+    mtimeMs: 1_700_000_000_000,
+  }
 }
 
 function record(name: string): ClassificationRecord {

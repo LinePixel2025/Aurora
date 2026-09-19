@@ -1,7 +1,7 @@
 /**
  * 工具注册表骨架（docs/06 §5）。
  *
- * P1 只需类型与注册表；真实的工具调用循环在 P3 接入
+ * 本模块只负责注册与查询；调用循环在 `loop/agentLoop.ts`。
  * （`loop` 模块会消费本文件暴露的工具表，MCP / Skill 都往这里注册）。
  */
 import type { LlmToolDefinition, LlmToolParameterSchema } from '../llm/types.js'
