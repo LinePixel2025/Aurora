@@ -113,5 +113,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   内核只接受注入（`fetchImpl` / `summarize` / `confirmTool` 都是这个套路）。
 - **配置字段"能写"不等于"生效"**：本轮修掉的就是一批死字段。新增配置项时要么接上消费方，
   要么在本文档里明确标注为未生效。
+- **跨 IPC 不能传 reactive 代理**：`ipcRenderer.invoke` 用结构化克隆传参，Vue `reactive` 产出的
+  **Proxy 不可克隆**，会抛 `DataCloneError: An object could not be cloned.`——若在异步 handler 里
+  await 它，表现就是「点了保存没反应、也不报错」。`{ ...settings.value.modes }` 这类展开只让**顶层**
+  变纯，嵌套子对象仍是 Proxy。渲染层统一在 `shared/stores.ts` 的 `toPlainPatch()` 里做 JSON 往返
+  再发；新增任何往主进程送对象的通道都要照做（或只传字面量/字符串）。
 - **ClassIsland 联动只认 `main/classisland.ts` 的 JSON 契约**，桥接端的实现细节不得泄漏到
   provider 与消费链；桥接数据的一切异常都必须降级为空课表 + 告警。
