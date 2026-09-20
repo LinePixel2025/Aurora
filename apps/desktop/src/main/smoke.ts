@@ -166,7 +166,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       llm: {
         active: freshProviderId,
         providers: {
-          [freshProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, apiKeyEnc: '', model: 'fresh-model', temperature: 0.5 },
+          [freshProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, apiKeyEnc: '', model: 'fresh-model', temperature: 0.5, reasoningEffort: 'auto' },
         },
       },
     }))
@@ -188,7 +188,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       llm: {
         active: freshProviderId,
         providers: {
-          [freshProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, model: 'renamed-model', temperature: 0.5 },
+          [freshProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, model: 'renamed-model', temperature: 0.5, reasoningEffort: 'auto' },
         },
       },
     }))

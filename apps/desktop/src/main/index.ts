@@ -7,7 +7,7 @@
  */
 import { existsSync, promises as fs, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import {
   BrowserWindow,
   Notification,
@@ -21,6 +21,7 @@ import {
 } from 'electron'
 import { KernelAgentHost, SessionStore, SkillsBridge, ToolRegistry } from '@aurora/agent-core'
 import {
+  COMPUTER_TOOL_NAMES,
   SettingsStore,
   type ClassIslandStatus,
   type ClassIslandTestResult,
@@ -67,7 +68,7 @@ import { SMOKE_FLAG, SMOKE_RESULT_PREFIX, smokeScript } from './smoke.js'
 import { STUB_API_KEY, STUB_MODEL, startStubLlmServer, type StubLlmServer } from './smoke-llm.js'
 import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
 import { captureWindows, defaultCapturePlan, filterCapturePlan } from './capture.js'
-import { registerComputerTools } from './tools/index.js'
+import { registerComputerTools, type ComputerTools } from './tools/index.js'
 import { createCommandRunner } from './tools/command-runner.js'
 import { createNodeFilePort } from './tools/file-port.js'
 import { createShellOpenPort } from './tools/open-port.js'
@@ -164,6 +165,9 @@ let classIslandProvider: ClassIslandProvider | undefined
 /** 构造当前 provider 用的配置签名（变化时重建） */
 let classIslandSignature = ''
 let disposeIpc: (() => void) | undefined
+/** 工具表与电脑操控装配器提到模块级：`runSmokeTest` 要在真实进程里断言它们（docs/06 §11） */
+let tools: ToolRegistry | undefined
+let computerTools: ComputerTools | undefined
 /** MCP 状态订阅（IPC 层与主进程内部共用，避免为状态再引入一次事件总线） */
 const mcpStatusListeners = new Set<(statuses: McpServerStatus[]) => void>()
 
@@ -409,7 +413,7 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('session'),
     onWriteError: (error) => logger?.error('会话写入失败', { error: error.message }),
   })
-  const tools = new ToolRegistry()
+  tools = new ToolRegistry()
   const skillBridge = new SkillsBridge(skills)
   skillBridge.registerInto(tools)
 
@@ -418,7 +422,7 @@ async function bootstrap(): Promise<void> {
   //     `sync()` 是唯一的开关落地点：这里一次、`onSettingsChanged` 一次 → 改完立即生效。
   //     runner 的 `defaultCwd` 只作兜底，真正的工作目录由工具层每次按配置传入
   //     （于是 `agent.tools.workspaceDir` 改完不用重建 runner）。
-  const computerTools = registerComputerTools({
+  computerTools = registerComputerTools({
     tools,
     getSettings: () => settings!.get(),
     logger: logger.child('tools'),
@@ -689,7 +693,7 @@ async function bootstrap(): Promise<void> {
       syncLaunchAtLogin(next.general.launchAtLogin)
       // 电脑操控工具（docs/06 §11）：开关 / 超时 / 上限改完立即生效——重建工具实例，
       // 工具表变化会进下一次请求的系统提示词，无需重启。
-      computerTools.sync()
+      if (computerTools) computerTools.sync()
       tray?.refresh()
       // 感知文件夹 / 科目 / 阈值变更后，让分类管线按新配置重新武装
       syncClassification()
@@ -964,6 +968,105 @@ async function runSmokeTest(userData: string): Promise<void> {
       barBack.height === barCollapsed.height,
     JSON.stringify(barBack),
   )
+
+  // 4. 电脑操控工具（docs/06 §11）：用**真实的 Windows 进程与文件系统**证明
+  //    「模型真的能操控电脑」这条链路在主进程装配下是通的。
+  {
+    const names = tools ? tools.list().map((tool) => tool.name) : []
+    const missing = COMPUTER_TOOL_NAMES.filter((name) => !names.includes(name))
+    record(
+      '电脑操控工具已注册（5 个）',
+      missing.length === 0,
+      `names=${names.join(',')}${missing.length === 0 ? '' : ` missing=${missing.join(',')}`}`,
+    )
+
+    // 敏感级直接钉住 step 1 文档里写的值：这两个工具的每一次调用都必须弹确认卡片
+    const runCommand = tools?.get('run_command')
+    const writeFile = tools?.get('write_file')
+    const readFile = tools?.get('read_file')
+    record(
+      '敏感级与文档一致（run_command / write_file = confirm，read_file = safe）',
+      runCommand?.sensitivity === 'confirm' &&
+        writeFile?.sensitivity === 'confirm' &&
+        readFile?.sensitivity === 'safe',
+      `run_command=${runCommand?.sensitivity ?? 'missing'} write_file=${writeFile?.sensitivity ?? 'missing'} read_file=${readFile?.sensitivity ?? 'missing'}`,
+    )
+
+    // 真实执行一条命令并读回产物。
+    // 注 1：这里**直接调 `execute` 而不走确认链路** —— 自测下没有渲染层点击确认，
+    //       走状态机会白等 60s 然后被拒；确认链路本身已由 `proactive.test.ts` 与既有 smoke 覆盖。
+    // 注 2：产物写在**专用空目录**里，而不是直接丢进 `%TEMP%`：`list_dir` 的默认上限是 200 条
+    //       且目录排在文件前面，系统临时目录里有上千个子目录时文件会被整段截掉 ——
+    //       那会变成"断言永远失败"，而不是"功能坏了"。
+    const probeDir = join(tmpdir(), `aurora-smoke-tools-${Date.now()}`)
+    const probeFile = join(probeDir, 'aurora-ctrl-ok.txt')
+    let executed = false
+    let readBackOk = false
+    let listedOk = false
+    let commandDetail = ''
+    try {
+      await fs.mkdir(probeDir, { recursive: true })
+      const command = await runCommand?.execute(
+        { command: `Set-Content -LiteralPath '${probeFile}' -Value AURORA_CTRL_OK -Encoding UTF8` },
+        { sessionId: 'smoke' },
+      )
+      executed = command !== undefined && command.isError !== true
+      commandDetail = command === undefined ? 'run_command 未注册' : command.content.slice(0, 80)
+
+      const readBack = await readFile?.execute({ path: probeFile }, { sessionId: 'smoke' })
+      readBackOk = readBack !== undefined && readBack.content.includes('AURORA_CTRL_OK')
+
+      const listed = await tools
+        ?.get('list_dir')
+        ?.execute({ path: probeDir }, { sessionId: 'smoke' })
+      listedOk =
+        listed !== undefined &&
+        listed.isError !== true &&
+        listed.content.includes(basename(probeFile))
+      if (!listedOk && listed !== undefined) commandDetail = listed.content.slice(0, 120)
+    } catch (error) {
+      commandDetail = `异常：${String(error)}`
+    }
+
+    record(
+      '真实执行 run_command 后 read_file 能读回产物',
+      executed && readBackOk,
+      `exit=${executed ? 'ok' : 'fail'} readBack=${readBackOk ? 'ok' : 'fail'} file=${probeFile}`,
+    )
+    record('list_dir 能在该目录看到刚写入的文件', listedOk, commandDetail)
+    await fs.rm(probeDir, { recursive: true, force: true }).catch(() => undefined)
+
+    // 开关热生效：`settings:update` 是顶层浅合并，必须带**完整**的 agent.tools 子树，
+    // 否则会把 files / open 配置写丢 —— 这条断言顺带回归这一点。
+    let hotSwitchOk = false
+    let subtreeKept = false
+    if (settings !== undefined) {
+      const before = settings.get().agent.tools
+      settings.update({
+        agent: { tools: { ...before, terminal: { ...before.terminal, enabled: false } } },
+      })
+      computerTools?.sync()
+      const offSoFar =
+        tools?.get('run_command') === undefined && tools?.get('open_path') !== undefined
+
+      settings.update({
+        agent: { tools: { ...before, terminal: { ...before.terminal, enabled: true } } },
+      })
+      computerTools?.sync()
+      const backOn = tools?.get('run_command') !== undefined
+
+      const after = settings.get().agent.tools
+      subtreeKept =
+        after.files.maxReadBytes === before.files.maxReadBytes &&
+        after.open.enabled === before.open.enabled
+      hotSwitchOk = offSoFar && backOn && subtreeKept
+    }
+    record(
+      '开关热生效：关掉终端立刻摘掉 run_command（open_path 仍在），改回即恢复且 files/open 没被写丢',
+      hotSwitchOk,
+      hotSwitchOk ? '' : `subtreeKept=${subtreeKept}`,
+    )
+  }
 
   for (const item of results) {
     const line = `${item.ok ? 'PASS' : 'FAIL'} ${item.name}${item.detail === '' ? '' : ` — ${item.detail}`}`
