@@ -41,10 +41,11 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **跑单个/单包测试**：`pnpm vitest run <文件路径>`，或 `pnpm --filter @aurora/agent-core test`。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：PowerShell 下 `$env:AURORA_SMOKE='1'; pnpm dev`，结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`。调试渲染层加 `AURORA_DEVTOOLS=1`。
 - **窗口截图核对（前端视觉验收）**：`$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev`，会把五个窗口、
-  提示条两态、设置页 6 页 + 2 个门控场景截成 15 张 PNG，并写 `report.json`（渲染层 DOM 探针结果：
-  面板按钮命中测试、点击竖条后的窗口状态、设置页 `data-field` 门控计数；探针返回 `pass` 时按 PASS/FAIL 落日志）。
+  提示条两态、设置页 6 页 + 3 个门控场景 + 1 个真实写盘场景截成 16 张 PNG，并写 `report.json`（渲染层 DOM 探针结果：
+  面板按钮命中测试、点击竖条后的窗口状态、设置页 `data-field` 门控计数；探针返回 `pass` 时按 PASS/FAIL 落日志，
+  有 FAIL 时进程退出码为 2）。
   只截部分窗口用 `$env:AURORA_CAPTURE_WINDOWS='edge-bar,chat'`。命令结束后进程自行退出；
-  需要动到配置的探针（如切模式）请与 `$env:AURORA_SMOKE='1'` 同开以隔离 userData。规则见 docs/07 §5.3。
+  userData **自动隔离**（探针会改配置），无需再手动同开 `$env:AURORA_SMOKE='1'`。规则见 docs/07 §5.3。
 - **CI 是按需触发的，不跟随 push / PR 自动跑**（`.github/workflows/ci.yml`，Windows）。
   日常验证靠本地 `pnpm typecheck && pnpm test && pnpm build`——与 CI 同一套检查、全量约 15 秒；
   需要干净环境时手动发起（Actions → Run workflow，或 `gh workflow run ci.yml`）。
@@ -113,10 +114,11 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   内核只接受注入（`fetchImpl` / `summarize` / `confirmTool` 都是这个套路）。
 - **配置字段"能写"不等于"生效"**：本轮修掉的就是一批死字段。新增配置项时要么接上消费方，
   要么在本文档里明确标注为未生效。
-- **跨 IPC 不能传 reactive 代理**：`ipcRenderer.invoke` 用结构化克隆传参，Vue `reactive` 产出的
+- **跨 IPC 不能传 reactive 代理**：`ipcRenderer.invoke` 用结构化克隆传参，Vue `reactive` / `ref` 产出的
   **Proxy 不可克隆**，会抛 `DataCloneError: An object could not be cloned.`——若在异步 handler 里
-  await 它，表现就是「点了保存没反应、也不报错」。`{ ...settings.value.modes }` 这类展开只让**顶层**
-  变纯，嵌套子对象仍是 Proxy。渲染层统一在 `shared/stores.ts` 的 `toPlainPatch()` 里做 JSON 往返
-  再发；新增任何往主进程送对象的通道都要照做（或只传字面量/字符串）。
+  await 它，表现就是「点了没反应、也不报错」（`settings:update` 与 `chat:send` 的附件列表都踩过）。
+  注意 `{ ...reactiveObj }` 这类展开只让**顶层**变纯，嵌套子对象仍是 Proxy。
+  渲染层往主进程送对象前统一走 `deepClone()`（`@aurora/shared/browser`，内部 structuredClone →
+  JSON 回落，正好把 Proxy 变成纯数据）；只传字面量 / 字符串的通道不用处理。
 - **ClassIsland 联动只认 `main/classisland.ts` 的 JSON 契约**，桥接端的实现细节不得泄漏到
   provider 与消费链；桥接数据的一切异常都必须降级为空课表 + 告警。

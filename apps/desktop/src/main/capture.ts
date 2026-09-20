@@ -65,6 +65,8 @@ export interface CaptureResult {
   dir: string
   files: string[]
   checks: CaptureCheck[]
+  /** 是否存在 `pass === false` 的探针（主进程据此决定退出码，见 index.ts） */
+  failed: boolean
 }
 
 function wait(ms: number): Promise<void> {
@@ -136,7 +138,12 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
       checks.push({ name: target.name, file, ok: false, error: String(error) })
     }
   }
-  return { dir, files, checks }
+  return {
+    dir,
+    files,
+    checks,
+    failed: checks.some((item) => (item.result as { pass?: unknown } | undefined)?.pass === false),
+  }
 }
 
 /**

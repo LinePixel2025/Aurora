@@ -96,8 +96,19 @@ app.setName('Aurora')
  * 复用真实 userData 会被上一次运行的数据污染。这里改用临时目录，
  * 退出时由 `runSmokeTest` 删除；被强杀留下的目录由 `pruneSmokeWorkspaces` 兜底清理。
  */
+/**
+ * 自测（`AURORA_SMOKE=1`）与截图核对（`AURORA_CAPTURE=<目录>`）都必须与开发者本机配置隔离：
+ * - 自测断言依赖"全新环境"（科目模板 9 科、classroom 未就绪、无历史会话）；
+ * - 截图探针会**写真实配置**（切模式、翻 classroom 开关），不隔离就会改掉用户自己的设置。
+ *
+ * 两者都改用临时目录，退出时删除；被强杀留下的目录由 `pruneSmokeWorkspaces` 兜底清理。
+ * 注意：`AURORA_CAPTURE` 单独使用（不带 `AURORA_SMOKE`）也要隔离 —— 这是默认行为，不是可选项。
+ */
 let smokeWorkspace: string | undefined
-if (!app.isPackaged && process.env['AURORA_SMOKE'] === '1') {
+const isolatedRun =
+  !app.isPackaged &&
+  (process.env['AURORA_SMOKE'] === '1' || (process.env['AURORA_CAPTURE'] ?? '').trim() !== '')
+if (isolatedRun) {
   smokeWorkspace = join(tmpdir(), `aurora-smoke-${process.pid}-${Date.now()}`)
   pruneSmokeWorkspaces()
   app.setPath('userData', smokeWorkspace)
@@ -764,9 +775,18 @@ async function runCapture(dir: string): Promise<void> {
     )
   }
 
-  // 一次性任务：写完就退出，不常驻（与 AURORA_SMOKE 同一约定）
+  // 退出码必须反映探针结论：只写出一张图就 exit 0 会让脚本化的调用方
+  // 把「5 条断言里有 FAIL」当成功。
+  if (result.failed) logger?.error('截图探针存在失败项，退出码 2')
+
+  // 一次性任务：写完就退出，不常驻（与 AURORA_SMOKE 同一约定）。
+  // 隔离出来的临时 userData 也一并删掉，避免每跑一次截图就留一个目录。
   manager.prepareQuit()
-  app.exit(result.files.length > 0 ? 0 : 1)
+  if (smokeWorkspace !== undefined) {
+    await fs.rm(smokeWorkspace, { recursive: true, force: true }).catch(() => undefined)
+  }
+  if (result.files.length === 0) app.exit(1)
+  else app.exit(result.failed ? 2 : 0)
 }
 
 /**

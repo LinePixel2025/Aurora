@@ -179,15 +179,22 @@
 
 ### 5.3 截图核对工具（AURORA_CAPTURE）
 
-- `AURORA_CAPTURE=<目录> pnpm dev`：把五个窗口、提示条两态、设置页 6 页 + 2 条门控断言
-  截成 PNG 后退出；`AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）。
-  仅开发态生效；与 `AURORA_SMOKE` 互斥（都会在结束时退出进程）。
+- `AURORA_CAPTURE=<目录> pnpm dev`：把五个窗口、提示条两态、设置页 6 页 + 3 条 DOM 探针场景
+  （常规页字段门控 / 模式页 ClassRoom / 切换模式后门控）+ 1 条真实写盘场景，共 **16 张 PNG** 后退出；
+  `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）。
+  仅开发态生效；与 `AURORA_SMOKE` 同时设置时**截图优先**（自测不会执行）。
+  进程退出码：0 = 全部成功，1 = 一张图都没写出，2 = 有探针 `pass === false`。
+- **userData 会自动隔离（必须，不是可选）**：探针里有两条会**写真实配置**（切到 Work 模式、
+  翻 `classification.autoMove`），所以 `AURORA_CAPTURE` 存在时应用就把 userData 指向临时目录并在退出时删除
+  —— 与 `AURORA_SMOKE` 走同一条隔离路径（`index.ts` 的 `isolatedRun`）。
+  也就是说截图跑在**全新默认配置**上，不会碰用户自己的 `%APPDATA%/Aurora`。
 - 产物：`<目录>/<窗口或场景>.png` 与 `report.json`（每张图的渲染层探针结果）。
 - 三类动作（`main/capture.ts` 的 `CaptureTarget`）：`prepare`（主进程侧准备）、
   `act`（在渲染层派发真实 `mouseenter` / `click`）、`check`（截图后取一份可判定结果）。
   面板是渲染层 hover 驱动的，**只从主进程改窗口尺寸会拍到空面板**，所以提示条展开态走 `act`。
 - 探针返回 `pass: boolean` 时按 `PASS` / `FAIL` 写日志（前缀与 `AURORA_SMOKE_RESULT` 一致）：
-  - 提示条面板：`elementFromPoint` 命中测试 4 个按钮 + 是否落在窗口宽度内 + 面板宽度 ≤ 220px；
+  - 提示条面板：`elementFromPoint` 命中测试 4 个按钮 + 是否落在窗口宽度内 + 窗口宽 ≤ 228px
+    （面板自身的 220px 只作为信息回报 `styled`）；
   - 点击竖条后的窗口状态（`chat` 可见、`mini-chat` 不可见、`primary === 'chat'`）；
   - 设置页门控：`data-field` / `data-empty` 计数（死字段 `general.language` 必须为 0、
     非 ClassRoom 模式下 `modes.classroom.*` 必须为 0、提示条详情跟随开关）。
@@ -195,5 +202,3 @@
   不等会截到 0 字节空图），并对空图重试；连续空图直接判失败，不产出空文件。
 - 设置页深链：`main/window-manager.ts` 的 `ensure(name, query)` / `reload(name, query)`
   给 URL / `loadFile` 传 query，仅截图场景使用，正常启动不带 query。
-- 建议在隔离 profile 下跑带 `act` 的探针（`$env:AURORA_SMOKE='1'` 会让应用把 userData 指向临时目录，
-  同时 `AURORA_CAPTURE` 优先于自测执行），否则「切到 Work 模式」这类探针会改到本机真实配置。
