@@ -69,8 +69,8 @@ describe('配置迁移链', () => {
         modes: { current: 'classroom', classroom: { watchDir: 'D:\\感知', subjects: [] } },
       })
       expect(outcome.fromVersion).toBe(1)
-      // v1 → v2 → v3 → v4：链式执行，三版迁移都会跑
-      expect(outcome.applied).toHaveLength(3)
+      // v1 → v2 → v3 → v4 → v5：链式执行，四版迁移都会跑
+      expect(outcome.applied).toHaveLength(4)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
@@ -130,8 +130,8 @@ describe('配置迁移链', () => {
         modes: { classroom: { schedule: { provider: 'manual', lessons: [lesson] } } },
       })
       expect(outcome.fromVersion).toBe(2)
-      // v2 → v3 → v4：链式执行
-      expect(outcome.applied).toHaveLength(2)
+      // v2 → v3 → v4 → v5：链式执行
+      expect(outcome.applied).toHaveLength(3)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
         string,
@@ -191,8 +191,9 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(3)
-      expect(outcome.applied).toHaveLength(1)
-      expect(outcome.data['version']).toBe(4)
+      // v3 → v4 → v5：链式执行
+      expect(outcome.applied).toHaveLength(2)
+      expect(outcome.data['version']).toBe(5)
 
       const windowState = loadWindowState(outcome.data)
       expect(windowState['service-dock']).toBeUndefined()
@@ -215,8 +216,142 @@ describe('配置迁移链', () => {
     it('缺少 general / windowState 分组时不抛错', () => {
       const outcome = migrate({ version: 3 })
       expect(outcome.warnings).toEqual([])
-      expect(outcome.data['version']).toBe(4)
+      expect(outcome.data['version']).toBe(5)
       expect(loadWindowState(outcome.data)).toEqual({})
+    })
+  })
+
+  describe('v4 → v5（思考等级与电脑操控工具）', () => {
+    /** 一份「完整 v4 配置」：自定义 provider + 用户改过的 advanced / 上限值 */
+    const V4_CONFIG: Record<string, unknown> = {
+      version: 4,
+      general: { language: 'en-US', hotkey: 'Ctrl+Alt+A' },
+      llm: {
+        active: 'custom',
+        providers: {
+          custom: {
+            type: 'openai-compat',
+            baseUrl: 'http://127.0.0.1:11434/v1',
+            apiKeyEnc: 'cipher',
+            model: 'qwen2.5:7b',
+            temperature: 1.4,
+          },
+        },
+      },
+      modes: { current: 'work' },
+      advanced: { proxy: 'http://127.0.0.1:7890', logLevel: 'debug', confirmSensitiveTools: false },
+    }
+
+    it('补齐 reasoningEffort 与 agent.tools，且用户已写入的其它字段原样保留', () => {
+      const outcome = migrate(V4_CONFIG)
+      expect(outcome.fromVersion).toBe(4)
+      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.data['version']).toBe(5)
+
+      const llm = outcome.data['llm'] as Record<string, unknown>
+      expect(llm['active']).toBe('custom')
+      const provider = (llm['providers'] as Record<string, Record<string, unknown>>)['custom']!
+      expect(provider['reasoningEffort']).toBe('auto')
+      // 其它 provider 字段一个不动
+      expect(provider['baseUrl']).toBe('http://127.0.0.1:11434/v1')
+      expect(provider['model']).toBe('qwen2.5:7b')
+      expect(provider['temperature']).toBe(1.4)
+      expect(provider['apiKeyEnc']).toBe('cipher')
+
+      // advanced / general 原样保留（迁移不碰）
+      expect(outcome.data['advanced']).toEqual({
+        proxy: 'http://127.0.0.1:7890',
+        logLevel: 'debug',
+        confirmSensitiveTools: false,
+      })
+      expect(outcome.data['general']).toEqual({ language: 'en-US', hotkey: 'Ctrl+Alt+A' })
+
+      // agent.tools 为默认值
+      expect(outcome.data['agent']).toEqual({
+        tools: {
+          enabled: true,
+          workspaceDir: '',
+          terminal: { enabled: true, timeoutMs: 60_000, maxOutputChars: 8000 },
+          files: { enabled: true, maxReadBytes: 262_144 },
+          open: { enabled: true },
+        },
+      })
+    })
+
+    it('幂等：对已迁移结果再跑一次，结果与第一次一致', () => {
+      const once = migrate(V4_CONFIG)
+      const twice = migrate({ ...once.data, version: 4 })
+      expect(twice.data).toEqual(once.data)
+    })
+
+    it('用户已写 reasoningEffort: high 时不被覆盖', () => {
+      const config = structuredClone(V4_CONFIG)
+      ;((config['llm'] as Record<string, unknown>)['providers'] as Record<string, unknown>)[
+        'custom'
+      ] = {
+        ...(((config['llm'] as Record<string, unknown>)['providers'] as Record<string, unknown>)[
+          'custom'
+        ] as Record<string, unknown>),
+        reasoningEffort: 'high',
+      }
+      const outcome = migrate(config)
+      const provider = (
+        (outcome.data['llm'] as Record<string, unknown>)['providers'] as Record<
+          string,
+          Record<string, unknown>
+        >
+      )['custom']!
+      expect(provider['reasoningEffort']).toBe('high')
+    })
+
+    it('非法 reasoningEffort（手改配置写错）回落 auto', () => {
+      const config = structuredClone(V4_CONFIG)
+      ;((config['llm'] as Record<string, unknown>)['providers'] as Record<string, unknown>)[
+        'custom'
+      ] = {
+        ...(((config['llm'] as Record<string, unknown>)['providers'] as Record<string, unknown>)[
+          'custom'
+        ] as Record<string, unknown>),
+        reasoningEffort: 'ultra',
+      }
+      const outcome = migrate(config)
+      const provider = (
+        (outcome.data['llm'] as Record<string, unknown>)['providers'] as Record<
+          string,
+          Record<string, unknown>
+        >
+      )['custom']!
+      expect(provider['reasoningEffort']).toBe('auto')
+    })
+
+    it('已存在的 agent.tools 上限值保留，只补缺失字段', () => {
+      const config = structuredClone(V4_CONFIG)
+      config['agent'] = { tools: { terminal: { timeoutMs: 5_000 }, enabled: false } }
+      const outcome = migrate(config)
+      expect(outcome.data['agent']).toEqual({
+        tools: {
+          enabled: false,
+          workspaceDir: '',
+          terminal: { enabled: true, timeoutMs: 5_000, maxOutputChars: 8000 },
+          files: { enabled: true, maxReadBytes: 262_144 },
+          open: { enabled: true },
+        },
+      })
+    })
+
+    it('缺少 llm / agent 分组时不抛错', () => {
+      const outcome = migrate({ version: 4 })
+      expect(outcome.warnings).toEqual([])
+      expect(outcome.data['version']).toBe(5)
+      // 没有 providers 就不凭空造 llm.providers（既有的「空 llm 迁移后仍为空」语义）
+      expect(outcome.data['llm']).toBeUndefined()
+      expect((outcome.data['agent'] as Record<string, unknown>)['tools']).toEqual({
+        enabled: true,
+        workspaceDir: '',
+        terminal: { enabled: true, timeoutMs: 60_000, maxOutputChars: 8000 },
+        files: { enabled: true, maxReadBytes: 262_144 },
+        open: { enabled: true },
+      })
     })
   })
 })

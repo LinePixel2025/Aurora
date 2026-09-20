@@ -97,6 +97,7 @@ async function main() {
             apiKeyEnc: '',
             model: 'deepseek-chat',
             temperature: 0.7,
+            reasoningEffort: 'auto',
           },
         },
       },

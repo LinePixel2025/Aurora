@@ -10,7 +10,12 @@
  * 错误反馈一律用 `AppToast tone="error"`（不在页面里另写内联错误样式）。
  */
 import { computed, reactive, ref } from 'vue'
-import { PROVIDER_PRESETS, type ModeId, type TestConnectionResult } from '@aurora/shared/browser'
+import {
+  DEFAULT_REASONING_EFFORT,
+  PROVIDER_PRESETS,
+  type ModeId,
+  type TestConnectionResult,
+} from '@aurora/shared/browser'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import SettingField from '../shared/components/SettingField.vue'
@@ -92,6 +97,7 @@ async function persistModel(): Promise<boolean> {
           apiKeyEnc: '',
           model: form.model.trim(),
           temperature: form.temperature,
+          reasoningEffort: DEFAULT_REASONING_EFFORT,
         },
       },
     },

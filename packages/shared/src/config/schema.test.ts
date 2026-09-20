@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createDefaultSettings, PROVIDER_PRESETS } from './defaults.js'
 import {
+  COMPUTER_TOOL_NAMES,
   CONFIG_VERSION,
   DEFAULT_SUBJECT_NAMES,
   MODE_IDS,
@@ -97,6 +98,7 @@ describe('SettingsSchema / defaults 一致性', () => {
       apiKeyEnc: 'enc',
       model: 'deepseek-chat',
       temperature: 9,
+      reasoningEffort: 'auto',
     }
     expect(SettingsSchema.safeParse(settings).success).toBe(false)
   })
@@ -133,5 +135,76 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(createDefaultSettings().advanced.confirmSensitiveTools).toBe(true)
     expect(fieldAccepts('advanced.confirmSensitiveTools', false)).toBe(true)
     expect(fieldAccepts('advanced.confirmSensitiveTools', 'no')).toBe(false)
+  })
+
+  it('思考等级：只接受四个枚举值，非法值被逐字段校验拦下（v5）', () => {
+    const settings = createDefaultSettings()
+    settings.llm.providers['deepseek'] = {
+      type: 'openai-compat',
+      baseUrl: 'https://api.deepseek.com',
+      apiKeyEnc: 'enc',
+      model: 'deepseek-chat',
+      temperature: 0.7,
+      reasoningEffort: 'high',
+    }
+    expect(SettingsSchema.safeParse(settings).success).toBe(true)
+
+    expect(fieldAccepts('llm.providers.deepseek.reasoningEffort', 'high')).toBe(true)
+    expect(fieldAccepts('llm.providers.deepseek.reasoningEffort', 'auto')).toBe(true)
+    // 类型对不代表值合法：枚举必须按值校验，否则非法值会活到 parse 把整份配置判为损坏
+    expect(fieldAccepts('llm.providers.deepseek.reasoningEffort', 'ultra')).toBe(false)
+    expect(fieldAccepts('llm.providers.deepseek.reasoningEffort', 42)).toBe(false)
+  })
+
+  it('电脑操控工具配置：默认值完整、字段路径可校验（v5）', () => {
+    expect([...COMPUTER_TOOL_NAMES]).toEqual([
+      'run_command',
+      'read_file',
+      'write_file',
+      'list_dir',
+      'open_path',
+    ])
+    expect(createDefaultSettings().agent.tools).toEqual({
+      enabled: true,
+      workspaceDir: '',
+      terminal: { enabled: true, timeoutMs: 60_000, maxOutputChars: 8000 },
+      files: { enabled: true, maxReadBytes: 262_144 },
+      open: { enabled: true },
+    })
+
+    expect(fieldAccepts('agent.tools.terminal.timeoutMs', 60_000)).toBe(true)
+    expect(fieldAccepts('agent.tools.terminal.timeoutMs', 'x')).toBe(false)
+    expect(fieldAccepts('agent.tools.enabled', false)).toBe(true)
+    expect(fieldAccepts('agent.tools.workspaceDir', 'D:\\工作目录')).toBe(true)
+    expect(fieldAccepts('agent.tools.workspaceDir', 123)).toBe(false)
+  })
+
+  it('电脑操控工具上限越界会被 Schema 拒绝（v5）', () => {
+    const tooSmall = createDefaultSettings()
+    tooSmall.agent.tools.terminal.timeoutMs = 999
+    expect(SettingsSchema.safeParse(tooSmall).success).toBe(false)
+
+    const tooLarge = createDefaultSettings()
+    tooLarge.agent.tools.terminal.timeoutMs = 400_000
+    expect(SettingsSchema.safeParse(tooLarge).success).toBe(false)
+
+    const outputTooSmall = createDefaultSettings()
+    outputTooSmall.agent.tools.terminal.maxOutputChars = 499
+    expect(SettingsSchema.safeParse(outputTooSmall).success).toBe(false)
+
+    const readTooSmall = createDefaultSettings()
+    readTooSmall.agent.tools.files.maxReadBytes = 1_023
+    expect(SettingsSchema.safeParse(readTooSmall).success).toBe(false)
+
+    const readTooLarge = createDefaultSettings()
+    readTooLarge.agent.tools.files.maxReadBytes = 4_194_305
+    expect(SettingsSchema.safeParse(readTooLarge).success).toBe(false)
+
+    // 边界值本身合法
+    const ok = createDefaultSettings()
+    ok.agent.tools.terminal.timeoutMs = 300_000
+    ok.agent.tools.terminal.maxOutputChars = 500
+    ok.agent.tools.files.maxReadBytes = 4_194_304
+    expect(SettingsSchema.safeParse(ok).success).toBe(true)
   })
 })

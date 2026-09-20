@@ -3,8 +3,13 @@
  *
  * 约定：每次 Schema 破坏性变更向 `MIGRATIONS` 追加一条，永不修改历史条目。
  */
-import { CONFIG_VERSION } from './schema.js'
-import { DEFAULT_CLASSIFICATION, DEFAULT_CLASSISLAND_SCHEDULE } from './defaults.js'
+import { CONFIG_VERSION, REASONING_EFFORT_LEVELS } from './schema.js'
+import {
+  DEFAULT_AGENT_TOOLS,
+  DEFAULT_CLASSIFICATION,
+  DEFAULT_CLASSISLAND_SCHEDULE,
+  DEFAULT_REASONING_EFFORT,
+} from './defaults.js'
 import type { Logger } from '../utils/logger.js'
 
 export interface Migration {
@@ -134,7 +139,77 @@ const migrateV3ToV4: Migration = {
   },
 }
 
-export const MIGRATIONS: Migration[] = [migrateV0ToV1, migrateV1ToV2, migrateV2ToV3, migrateV3ToV4]
+/**
+ * v4 → v5：补齐思考等级（`llm.providers.*.reasoningEffort`）与电脑操控工具配置（`agent.tools.*`）。
+ *
+ * 只补**缺失**字段：用户已写入的 provider 字段、已改过的上限值一个都不动（幂等）。
+ * 唯一例外是 `reasoningEffort` —— 它必须是四个合法枚举值之一，非法值（含手改配置文件写错的）
+ * 统一回落 `'auto'`，否则会一路活到 `SettingsSchema.parse` 把整份配置判为损坏。
+ */
+const migrateV4ToV5: Migration = {
+  from: 4,
+  to: 5,
+  describe: 'v4 → v5：补齐 llm.providers.*.reasoningEffort 与 agent.tools.*',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    // providers 里**已有**的条目逐条补 reasoningEffort；
+    // 没有 providers 时不凭空造出这个键（保持「空的 llm 迁移后仍是空的」这一既有语义）。
+    const llm = asRecord(raw['llm'])
+    const providersRaw = asRecord(llm?.['providers'])
+    if (llm !== undefined && providersRaw !== undefined) {
+      const providers = { ...providersRaw }
+      for (const [id, value] of Object.entries(providers)) {
+        const provider = asRecord(value)
+        if (provider === undefined) continue
+        const effort = provider['reasoningEffort']
+        if (typeof effort !== 'string' || !isReasoningEffort(effort)) {
+          providers[id] = { ...provider, reasoningEffort: DEFAULT_REASONING_EFFORT }
+        }
+      }
+      next['llm'] = { ...llm, providers }
+    }
+
+    const agent = { ...(asRecord(raw['agent']) ?? {}) }
+    agent['tools'] = fillMissing(
+      asRecord(agent['tools']) ?? {},
+      DEFAULT_AGENT_TOOLS as unknown as Record<string, unknown>,
+    )
+    next['agent'] = agent
+
+    next['version'] = 5
+    return next
+  },
+}
+
+function isReasoningEffort(value: string): boolean {
+  return (REASONING_EFFORT_LEVELS as readonly string[]).includes(value)
+}
+
+/** 用默认值补齐 `target` 缺失的键（递归进嵌套对象）；已存在的值一律保留。 */
+function fillMissing(
+  target: Record<string, unknown>,
+  defaults: Record<string, unknown>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...target }
+  for (const [key, fallback] of Object.entries(defaults)) {
+    const current = result[key]
+    if (asRecord(fallback) !== undefined) {
+      result[key] = fillMissing(asRecord(current) ?? {}, fallback as Record<string, unknown>)
+      continue
+    }
+    if (current === undefined) result[key] = fallback
+  }
+  return result
+}
+
+export const MIGRATIONS: Migration[] = [
+  migrateV0ToV1,
+  migrateV1ToV2,
+  migrateV2ToV3,
+  migrateV3ToV4,
+  migrateV4ToV5,
+]
 
 export interface MigrationOutcome {
   data: Record<string, unknown>

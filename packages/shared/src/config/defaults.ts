@@ -3,6 +3,7 @@ import {
   CONFIG_VERSION,
   DEFAULT_SUBJECT_FOLDER_PREFIX,
   DEFAULT_SUBJECT_NAMES,
+  type ReasoningEffort,
   type Settings,
   type WindowName,
 } from './schema.js'
@@ -30,6 +31,14 @@ export const LOCAL_PRESET = {
 
 export const PROVIDER_PRESETS = [DEEPSEEK_PRESET, OPENAI_PRESET, LOCAL_PRESET] as const
 
+/**
+ * 新建 provider 时的思考等级默认值（docs/08 §1、docs/06 §11）。
+ *
+ * 单独抽成常量而不是到处写字符串 `'auto'`：`auto` 表示「请求体里不带 `reasoning_effort`」，
+ * 是不认该参数的厂商唯一能正常工作的取值，所有创建 provider 的入口都必须用它。
+ */
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'auto'
+
 /** 05 §2 默认科目模板 → 科目/文件夹映射 */
 export function createDefaultSubjects(): Settings['modes']['classroom']['subjects'] {
   return DEFAULT_SUBJECT_NAMES.map((name) => ({
@@ -51,6 +60,29 @@ export const DEFAULT_CLASSISLAND_SCHEDULE = {
   source: 'file',
   endpoint: '',
   timeoutMs: 3000,
+} as const
+
+/**
+ * 电脑操控工具默认配置（docs/08 §1、docs/06 §11）。
+ *
+ * 默认全开，但每一个敏感工具（`run_command` / `write_file` / `open_path`）执行前都要用户确认，
+ * 所以"默认开"并不等于"默认能被静默操控"。
+ */
+export const DEFAULT_AGENT_TOOLS = {
+  enabled: true,
+  workspaceDir: '',
+  terminal: {
+    enabled: true,
+    timeoutMs: 60_000,
+    maxOutputChars: 8000,
+  },
+  files: {
+    enabled: true,
+    maxReadBytes: 262_144,
+  },
+  open: {
+    enabled: true,
+  },
 } as const
 
 export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
@@ -100,6 +132,9 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     logLevel: 'info',
     quietHours: null,
     confirmSensitiveTools: true,
+  },
+  agent: {
+    tools: { ...DEFAULT_AGENT_TOOLS },
   },
 }
 

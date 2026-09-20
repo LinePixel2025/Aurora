@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 4 as const
+export const CONFIG_VERSION = 5 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -63,6 +63,16 @@ export type GeneralSettings = z.infer<typeof GeneralSchema>
 export const LlmProviderTypeSchema = z.enum(['openai-compat'])
 export type LlmProviderType = z.infer<typeof LlmProviderTypeSchema>
 
+/**
+ * 模型思考等级（docs/06 §3）：`auto` = 不下发 `reasoning_effort` 字段。
+ *
+ * `auto` 存在的原因是兼容性：不认这个参数的 OpenAI 兼容厂商收到它可能直接 400，
+ * 所以「不选」必须能表达成「字段根本不出现」，而不是发一个空值。
+ */
+export const REASONING_EFFORT_LEVELS = ['auto', 'low', 'medium', 'high'] as const
+export type ReasoningEffort = (typeof REASONING_EFFORT_LEVELS)[number]
+export const ReasoningEffortSchema = z.enum(REASONING_EFFORT_LEVELS)
+
 export const LlmProviderSchema = z.object({
   type: LlmProviderTypeSchema,
   baseUrl: z.string(),
@@ -70,6 +80,8 @@ export const LlmProviderSchema = z.object({
   apiKeyEnc: z.string(),
   model: z.string(),
   temperature: z.number().min(0).max(2),
+  /** 思考等级；由主进程装配层把 `auto` 映射成「不下发」（docs/06 §11）。 */
+  reasoningEffort: ReasoningEffortSchema,
 })
 export type LlmProviderConfig = z.infer<typeof LlmProviderSchema>
 
@@ -205,6 +217,49 @@ export const AdvancedSchema = z.object({
 })
 export type AdvancedSettings = z.infer<typeof AdvancedSchema>
 
+/**
+ * 电脑操控工具名（docs/06 §11）——工具注册、设置页静态展示、smoke 断言共用同一份常量，
+ * 避免三处各写一份字符串导致改名时漏改。
+ */
+export const COMPUTER_TOOL_NAMES = [
+  'run_command',
+  'read_file',
+  'write_file',
+  'list_dir',
+  'open_path',
+] as const
+export type ComputerToolName = (typeof COMPUTER_TOOL_NAMES)[number]
+
+/**
+ * 电脑操控工具配置（docs/08 §1、docs/06 §11）。
+ *
+ * `workspaceDir` 只是工具的**默认**工作目录（空串 = 用户主目录），**不是沙箱**：
+ * 模型仍可显式传入其它路径，安全靠"逐次确认 + 输出上限 + 总开关"而不是路径限制。
+ */
+export const AgentToolsSchema = z.object({
+  /** 总开关；false 时 5 个工具一个都不注册。 */
+  enabled: z.boolean(),
+  workspaceDir: z.string(),
+  terminal: z.object({
+    enabled: z.boolean(),
+    timeoutMs: z.number().int().min(1_000).max(300_000),
+    maxOutputChars: z.number().int().min(500).max(100_000),
+  }),
+  files: z.object({
+    enabled: z.boolean(),
+    maxReadBytes: z.number().int().min(1_024).max(4_194_304),
+  }),
+  open: z.object({
+    enabled: z.boolean(),
+  }),
+})
+export type AgentToolsConfig = z.infer<typeof AgentToolsSchema>
+
+export const AgentSchema = z.object({
+  tools: AgentToolsSchema,
+})
+export type AgentSettings = z.infer<typeof AgentSchema>
+
 export const SettingsSchema = z.object({
   version: z.number().int().min(0),
   general: GeneralSchema,
@@ -213,6 +268,7 @@ export const SettingsSchema = z.object({
   skills: SkillsSchema,
   mcp: McpSchema,
   advanced: AdvancedSchema,
+  agent: AgentSchema,
 })
 
 export type Settings = z.infer<typeof SettingsSchema>
@@ -231,10 +287,17 @@ import type { FieldValidator } from '../utils/object.js'
 /** 'any' 表示"该路径接受任意类型"（枚举 / 字面量） */
 type AcceptSpec = 'any' | readonly string[]
 
-const schemaSpecs = buildSpecs(SettingsSchema)
+/** 枚举字段的合法取值表（`z.enum`）：类型对不代表值合法，必须按值校验。 */
+type EnumSpec = readonly unknown[]
+
+const schemaSpecs = new Map<string, AcceptSpec>()
+const enumPaths = new Map<string, EnumSpec>()
+walk(SettingsSchema, '', schemaSpecs, enumPaths)
 const dynamicPaths = collectDynamicPaths(SettingsSchema)
 
 export const fieldAccepts: FieldValidator = (path, candidate) => {
+  const allowedValues = lookupEnum(path)
+  if (allowedValues !== undefined) return allowedValues.includes(candidate)
   const spec = lookupSpec(path)
   if (spec === undefined || spec === 'any') return true
   return spec.includes(typeNameOf(candidate))
@@ -350,10 +413,34 @@ export function debugSchemaSpecs(): Record<string, AcceptSpec | undefined> {
   return Object.fromEntries(schemaSpecs)
 }
 
-function buildSpecs(root: z.ZodTypeAny, path = ''): Map<string, AcceptSpec> {
-  const specs = new Map<string, AcceptSpec>()
-  walk(root, path, specs)
-  return specs
+/**
+ * 枚举路径查找（与 `lookupSpec` 同一套通配兜底）：
+ * `llm.providers.<id>.reasoningEffort` 在 Schema 遍历时登记成 `llm.providers.*.reasoningEffort`，
+ * 因此逐级用 `*` / `[]` 替换才找得到。
+ */
+function lookupEnum(path: string): EnumSpec | undefined {
+  const exact = enumPaths.get(path)
+  if (exact !== undefined) return exact
+
+  const segments = path.split('.')
+  for (let i = 0; i < segments.length; i++) {
+    const alternatives = segments[i] === '[]' ? ['*'] : ['*', '[]']
+    for (const alternative of alternatives) {
+      if (alternative === segments[i]) continue
+      const candidatePath = [...segments.slice(0, i), alternative, ...segments.slice(i + 1)].join(
+        '.',
+      )
+      const found = enumPaths.get(candidatePath)
+      if (found !== undefined) return found
+    }
+  }
+
+  if (!path.endsWith('[]')) {
+    const withSuffix = path.replace(/\.([^.]+)$/, '.$1[]')
+    const found = enumPaths.get(withSuffix)
+    if (found !== undefined) return found
+  }
+  return undefined
 }
 
 function record(specs: Map<string, AcceptSpec>, path: string, spec: AcceptSpec): void {
@@ -375,7 +462,12 @@ function elementSegment(path: string): string {
   return path.endsWith('[]') ? path : `${path}[]`
 }
 
-function walk(schema: z.ZodTypeAny, path: string, specs: Map<string, AcceptSpec>): void {
+function walk(
+  schema: z.ZodTypeAny,
+  path: string,
+  specs: Map<string, AcceptSpec>,
+  enums: Map<string, EnumSpec>,
+): void {
   const def = schema._def as { typeName: string; [key: string]: unknown }
 
   switch (def.typeName) {
@@ -383,26 +475,35 @@ function walk(schema: z.ZodTypeAny, path: string, specs: Map<string, AcceptSpec>
       const shape = materialize(def['shape'])
       if (shape && typeof shape === 'object') {
         for (const [key, value] of Object.entries(shape as Record<string, z.ZodTypeAny>)) {
-          walk(value, path === '' ? key : `${path}.${key}`, specs)
+          walk(value, path === '' ? key : `${path}.${key}`, specs, enums)
         }
       }
+      return
+    }
+    case 'ZodEnum': {
+      // 类型层面枚举按"任意类型"处理（值本身是字符串），但**值**必须逐个校验：
+      // 否则 `reasoningEffort: 'ultra'` 这类非法枚举值会一路活到 `SettingsSchema.parse`
+      // 并把整份配置判为损坏（备份 + 重建），而不是像其它非法字段那样只回退这一个字段。
+      const values = def['values'] as readonly unknown[] | undefined
+      if (values) enums.set(path, values)
+      record(specs, path, 'any')
       return
     }
     case 'ZodRecord': {
       // 键是动态的：本级整体接受，值结构记在 `<path>.*` 下
       record(specs, path, 'any')
       const valueType = def['valueType']
-      if (valueType) walk(valueType as z.ZodTypeAny, `${path}.*`, specs)
+      if (valueType) walk(valueType as z.ZodTypeAny, `${path}.*`, specs, enums)
       return
     }
     case 'ZodArray': {
       record(specs, path, ['array'])
       const element = materialize(def['type'])
-      if (element) walk(element as z.ZodTypeAny, elementSegment(path), specs)
+      if (element) walk(element as z.ZodTypeAny, elementSegment(path), specs, enums)
       return
     }
     case 'ZodUnion':
-      for (const option of def['options'] as z.ZodTypeAny[]) walk(option, path, specs)
+      for (const option of def['options'] as z.ZodTypeAny[]) walk(option, path, specs, enums)
       return
     case 'ZodOptional':
     case 'ZodNullable':
@@ -410,13 +511,13 @@ function walk(schema: z.ZodTypeAny, path: string, specs: Map<string, AcceptSpec>
     case 'ZodCatch':
     case 'ZodReadonly': {
       const inner = def['innerType']
-      if (inner) walk(inner as z.ZodTypeAny, path, specs)
+      if (inner) walk(inner as z.ZodTypeAny, path, specs, enums)
       return
     }
     case 'ZodEffects': {
       // z.refine / z.transform：直接用输出类型继续（无输出类型时按"任意"处理）
       const inner = def['innerType'] as z.ZodTypeAny | undefined
-      if (inner) walk(inner, path, specs)
+      if (inner) walk(inner, path, specs, enums)
       else record(specs, path, 'any')
       return
     }

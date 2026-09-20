@@ -124,7 +124,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     // 2. 配置读写（IPC 层）
     const settings = expectOk('settings.get', await window.aurora.settings.get())
     if (settings) {
-      record('settings.get.version', settings.version === 4, String(settings.version))
+      record('settings.get.version', settings.version === 5, String(settings.version))
       // 自测前置把科目裁剪为「数学 / 物理 / 语文」，断言随之对齐（不再是九科模板）
       record('settings.get 科目列表已就绪', settings.modes.classroom.subjects.length === 3, String(settings.modes.classroom.subjects.length))
       record('settings.get 不回传密文', settings.llm.providers === undefined || Object.values(settings.llm.providers).every((p) => p.apiKeyEnc === ''), 'apiKeyEnc 已清空')

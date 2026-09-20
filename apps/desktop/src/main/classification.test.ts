@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_AGENT_TOOLS } from '@aurora/shared'
 import type { ClassificationRecord, Logger, Settings } from '@aurora/shared'
 import { ClassificationService } from './classification.js'
 import type { ClassifyProvider } from './classify/llm.js'
@@ -130,6 +131,7 @@ function settingsWith(overrides: {
       quietHours: null,
       confirmSensitiveTools: true,
     },
+    agent: { tools: { ...DEFAULT_AGENT_TOOLS } },
   }
 }
 

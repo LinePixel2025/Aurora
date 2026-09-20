@@ -139,6 +139,42 @@ describe('SettingsStore · 初始化', () => {
     expect(await fsPort.exists(memoryPath('config.json.123.tmp'))).toBe(false)
   })
 
+  it('磁盘上的 v4 配置：迁移到 v5 后思考等级与电脑操控工具配置就绪', async () => {
+    const seeded = createDefaultSettings()
+    const seed = {
+      [memoryPath(CONFIG_FILE_NAME)]: JSON.stringify({
+        ...seeded,
+        version: 4,
+        llm: {
+          active: 'legacy',
+          providers: {
+            legacy: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.deepseek.com',
+              apiKeyEnc: 'cipher',
+              model: 'deepseek-chat',
+              temperature: 0.7,
+            },
+          },
+        },
+        agent: undefined,
+      }),
+    }
+    const { store } = setup({ seed })
+    const report = await store.init()
+    expect(report.fromVersion).toBe(4)
+    expect(report.corrupted).toBe(false)
+    expect(store.get().version).toBe(CONFIG_VERSION)
+    expect(store.get().llm.providers['legacy']?.reasoningEffort).toBe('auto')
+    expect(store.get().agent.tools).toEqual({
+      enabled: true,
+      workspaceDir: '',
+      terminal: { enabled: true, timeoutMs: 60_000, maxOutputChars: 8000 },
+      files: { enabled: true, maxReadBytes: 262_144 },
+      open: { enabled: true },
+    })
+  })
+
   it('从 v0 旧配置迁移：明文 apiKey 被迁移并补加密', async () => {
     const seed = {
       [memoryPath(CONFIG_FILE_NAME)]: JSON.stringify({
@@ -242,6 +278,7 @@ describe('SettingsStore · 凭据安全', () => {
         apiKeyEnc: '',
         model: 'deepseek-chat',
         temperature: 0.7,
+        reasoningEffort: 'auto',
       }
       draft.llm.active = 'deepseek'
     })
@@ -268,6 +305,7 @@ describe('SettingsStore · 凭据安全', () => {
         apiKeyEnc: '',
         model: 'deepseek-chat',
         temperature: 0.7,
+        reasoningEffort: 'auto',
       }
       draft.llm.active = 'deepseek'
     })
@@ -293,6 +331,7 @@ describe('SettingsStore · 凭据安全', () => {
         apiKeyEnc: '',
         model: 'deepseek-chat',
         temperature: 0.7,
+        reasoningEffort: 'auto',
       }
       draft.llm.active = 'deepseek'
     })
@@ -321,6 +360,7 @@ describe('SettingsStore · 凭据安全', () => {
         apiKeyEnc: '',
         model: 'deepseek-chat',
         temperature: 0.7,
+        reasoningEffort: 'auto',
       }
       draft.llm.active = 'deepseek'
     })
@@ -343,6 +383,7 @@ describe('SettingsStore · 凭据安全', () => {
         apiKeyEnc: '',
         model: 'deepseek-chat',
         temperature: 0.7,
+        reasoningEffort: 'auto',
       }
     })
     store.setSecret('llm.providers.deepseek.apiKey', 'sk-old')
@@ -372,6 +413,7 @@ describe('SettingsStore · 凭据安全', () => {
         apiKeyEnc: '',
         model: 'deepseek-chat',
         temperature: 0.7,
+        reasoningEffort: 'auto',
       }
     })
     store.setSecret('llm.providers.deepseek.apiKey', 'sk-x')
@@ -409,6 +451,7 @@ describe('SettingsStore · 凭据安全', () => {
         apiKeyEnc: '',
         model: 'deepseek-chat',
         temperature: 0.7,
+        reasoningEffort: 'auto',
       }
       draft.mcp.servers.push({
         name: 'demo',

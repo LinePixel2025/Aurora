@@ -8,6 +8,7 @@
  */
 import { computed, reactive, ref, watch } from 'vue'
 import {
+  DEFAULT_REASONING_EFFORT,
   PROVIDER_PRESETS,
   type LlmProviderConfig,
   type TestConnectionResult,
@@ -81,6 +82,7 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
           apiKeyEnc: '',
           model: draft.model.trim(),
           temperature: Number(draft.temperature),
+          reasoningEffort: draft.reasoningEffort,
         },
       },
     },
@@ -129,6 +131,7 @@ function addPreset(id: string): void {
     apiKeyEnc: '',
     model: preset?.model ?? '',
     temperature: 0.7,
+    reasoningEffort: DEFAULT_REASONING_EFFORT,
     apiKey: '',
     apiKeySet: false,
   })

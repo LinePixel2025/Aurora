@@ -820,6 +820,7 @@ async function runSmokeTest(userData: string): Promise<void> {
             apiKeyEnc: '',
             model: STUB_MODEL,
             temperature: 0.7,
+            reasoningEffort: 'auto',
           },
         },
       },
