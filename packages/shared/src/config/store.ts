@@ -9,7 +9,13 @@
  *   写盘时加密为 `apiKeyEnc` / `envEnc`；加密不可用时凭据只驻留内存，绝不落盘明文。
  */
 import { join } from 'node:path'
-import { SettingsSchema, fieldAccepts, isDynamicPath, type Settings } from './schema.js'
+import {
+  SettingsSchema,
+  WINDOW_NAMES,
+  fieldAccepts,
+  isDynamicPath,
+  type Settings,
+} from './schema.js'
 import { createDefaultSettings } from './defaults.js'
 import { migrate, readVersion, type MigrationOutcome } from './migrations.js'
 import {
@@ -102,6 +108,8 @@ export class SettingsStore {
 
     let created = false
     let corrupted = false
+    /** 读盘时做过字段级修复（如摘掉已下线窗口几何）：需要立刻落盘，否则每次启动都要再修一遍 */
+    let repaired = false
     let backupPath: string | undefined
     let raw: Record<string, unknown> | undefined
 
@@ -132,6 +140,14 @@ export class SettingsStore {
       const outcome: MigrationOutcome = migrate(raw, this.logger)
       warnings.push(...outcome.warnings)
       appliedMigrations = outcome.applied
+      // 已下线窗口的几何残留：`general.windowState` 是 `z.record(WindowNameSchema, …)`，
+      // 而动态键路径在 sanitize 里**不校验键**，于是这类键会一路活到 `SettingsSchema.parse` 并硬抛
+      // —— 表现为「应用起不来」，而不是文档写的「备份后重建」。迁移只在 `version < 当前` 时才跑，
+      // 所以「声明已是 v4、却还留着 service-dock」这种文件不会被迁移链覆盖。
+      // 这里按 `WINDOW_NAMES` 精确摘掉未知键：只丢一个窗口几何，用户的其它配置一个不动。
+      const prunedWarnings = pruneUnknownWindowState(outcome.data, this.logger)
+      warnings.push(...prunedWarnings)
+      repaired = prunedWarnings.length > 0
       const issues: SanitizeIssue[] = []
       candidate = sanitizeWithDefaults(
         outcome.data,
@@ -147,7 +163,17 @@ export class SettingsStore {
       this.lastSanitizeIssues = issues
     }
 
-    const settings = SettingsSchema.parse(candidate)
+    let settings: Settings
+    try {
+      settings = SettingsSchema.parse(candidate)
+    } catch (error) {
+      // 兜底：任何 Schema 漂移都不该让应用**启动失败**。走与「文件损坏」同一条路——
+      // 备份原文件 + 重建默认配置，用户能在设置页看到 `corrupted` 与备份路径。
+      corrupted = true
+      this.logger.error('配置校验失败，已备份并重建默认配置', { error: String(error) })
+      backupPath = await this.backupCorruptFile()
+      settings = SettingsSchema.parse(deepClone(defaults))
+    }
     if (settings.llm.active !== '' && !settings.llm.providers[settings.llm.active]) {
       warnings.push(`默认模型配置 "${settings.llm.active}" 不存在，已重置为未配置`)
       settings.llm.active = ''
@@ -157,8 +183,8 @@ export class SettingsStore {
     // 历史明文凭据（v0 迁移而来）在此补加密，之后才允许首次落盘
     const encrypted = this.encryptStoredSecrets()
 
-    // 首次运行 / 迁移 / 字段回退都值得立刻落盘一次
-    if (created || corrupted || appliedMigrations.length > 0 || encrypted > 0) {
+    // 首次运行 / 迁移 / 字段回退 / 字段修复都值得立刻落盘一次
+    if (created || corrupted || repaired || appliedMigrations.length > 0 || encrypted > 0) {
       this.scheduleWrite(0)
     }
 
@@ -584,4 +610,28 @@ export function redactKeys(value: unknown): unknown {
     out[key] = redactKeys(raw)
   }
   return out
+}
+
+/**
+ * 摘掉 `general.windowState` 里**已下线窗口**的几何记录（就地修改 `raw`），返回警告文案。
+ *
+ * 背景：`windowState` 的 Schema 是 `z.record(WindowNameSchema, …)`，而 `sanitizeWithDefaults`
+ * 把动态键路径（`llm.providers` / `general.windowState`）视为"键名任意"，不校验键合法性。
+ * 于是 `service-dock` 这类已删除窗口的键会活到 `SettingsSchema.parse` 并**硬抛**，
+ * 应用直接起不来；而迁移链只在 `version < CONFIG_VERSION` 时运行，兜不住
+ * 「声明是 v4、却仍带旧键」的文件（正常升级路径是 v3 → 迁移删键，不受影响）。
+ *
+ * 只动这一个 record 的键，用户其它配置与其它窗口几何保持不变。
+ */
+export function pruneUnknownWindowState(raw: Record<string, unknown>, logger?: Logger): string[] {
+  const general = raw['general']
+  if (!isPlainObject(general)) return []
+  const windowState = general['windowState']
+  if (!isPlainObject(windowState)) return []
+  const known = new Set<string>(WINDOW_NAMES)
+  const retired = Object.keys(windowState).filter((key) => !known.has(key))
+  if (retired.length === 0) return []
+  for (const key of retired) delete windowState[key]
+  logger?.warn('清理已下线窗口的几何记录', { retired })
+  return [`已移除不再存在的窗口几何记录：${retired.join('、')}`]
 }

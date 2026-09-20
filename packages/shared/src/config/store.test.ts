@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { SettingsStore, canonicalSecretPath, redactKeys } from './store.js'
 import { CONFIG_FILE_NAME } from './store.js'
 import { CONFIG_VERSION } from './schema.js'
+import { createDefaultSettings } from './defaults.js'
 import { createMemoryLogger } from '../utils/logger.js'
 import { MemoryFileSystem, createFakeCrypto, memoryPath } from '../testing/memoryFs.js'
 
@@ -60,6 +61,49 @@ describe('SettingsStore · 初始化', () => {
     expect(await fsPort.exists(report.backupPath as string)).toBe(true)
     expect(store.get().version).toBe(CONFIG_VERSION)
     expect(logger.entries.some((l) => l.includes('配置文件解析失败'))).toBe(true)
+  })
+
+  it('已是当前版本、但残留已下线窗口几何：只摘掉该键，用户其它配置不动', async () => {
+    // 真实踩到过：windowState 是 z.record(WindowNameSchema, …)，而动态键路径在 sanitize 里
+    // 不校验键 → 旧键会活到 SettingsSchema.parse 并硬抛，应用**起不来**。
+    const seeded = createDefaultSettings()
+    seeded.modes.classroom.watchDir = 'D:\\感知文件夹'
+    const seed = {
+      [memoryPath(CONFIG_FILE_NAME)]: JSON.stringify({
+        ...seeded,
+        version: CONFIG_VERSION,
+        general: {
+          ...seeded.general,
+          language: 'en-US',
+          windowState: {
+            chat: { x: 11, y: 22, width: 433, height: 650 },
+            'service-dock': { x: 694, y: 938, width: 322, height: 59 },
+          },
+        },
+      }),
+    }
+    const { store, fsPort, logger, configPath } = setup({ seed })
+    const report = await store.init()
+    expect(report.corrupted).toBe(false)
+    const state = store.get().general.windowState as Record<string, unknown>
+    expect(state['service-dock']).toBeUndefined()
+    expect(state['chat']).toEqual({ x: 11, y: 22, width: 433, height: 650 })
+    // 用户其它配置不受影响
+    expect(store.get().general.language).toBe('en-US')
+    expect(store.get().modes.classroom.watchDir).toBe('D:\\感知文件夹')
+    expect(logger.entries.some((l) => l.includes('清理已下线窗口的几何记录'))).toBe(true)
+    // 修复必须落盘（否则每次启动都要再修一遍）
+    await store.flush()
+    const onDisk = JSON.parse((await fsPort.readFile(configPath)) as string) as Record<
+      string,
+      unknown
+    >
+    const diskState = (onDisk['general'] as Record<string, unknown>)['windowState'] as Record<
+      string,
+      unknown
+    >
+    expect(diskState['service-dock']).toBeUndefined()
+    expect(diskState['chat']).toEqual({ x: 11, y: 22, width: 433, height: 650 })
   })
 
   it('字段级非法值回退默认，合法字段保留', async () => {
