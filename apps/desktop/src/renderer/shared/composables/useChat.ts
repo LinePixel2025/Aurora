@@ -12,6 +12,7 @@
  * `chat:newSession` 新建。窗口默认会话仍是 `main` / `quick`，老数据继续可读。
  */
 import { computed, onScopeDispose, ref } from 'vue'
+import { deepClone } from '@aurora/shared/browser'
 import type {
   AgentToolCall,
   ChatMessageDto,
@@ -247,9 +248,27 @@ export function useChat(windowName: WindowName) {
       sessionId: sessionId.value,
       text: trimmed,
       origin: windowName,
-      ...(attachments.length === 0 ? {} : { attachments }),
+      // `attachments` 来自 `ref<string[]>`，是 Vue 的 reactive Proxy —— 结构化克隆不能传 Proxy
+      // （见 shared/stores.ts 的同一处理），必须转成纯数组，否则整条发送链路以
+      // DataCloneError 静默失败、输入区还会永远停在「流式中」。
+      ...(attachments.length === 0 ? {} : { attachments: deepClone(attachments) }),
     }
-    const result = await window.aurora.chat.send(request)
+    let result: Awaited<ReturnType<typeof window.aurora.chat.send>>
+    try {
+      result = await window.aurora.chat.send(request)
+    } catch (cause) {
+      // invoke 本身也可能抛（序列化失败等）：必须复位 streaming，否则输入区永久停在「流式中」
+      streaming.value = false
+      error.value = String(cause)
+      messages.value.push({
+        id: `e-${Date.now()}`,
+        role: 'assistant',
+        content: `发送失败：${String(cause)}`,
+        error: true,
+        createdAt: Date.now(),
+      })
+      return
+    }
     if (!result.ok) {
       streaming.value = false
       error.value = result.message

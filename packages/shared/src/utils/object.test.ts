@@ -74,4 +74,22 @@ describe('sanitizeWithDefaults（非法字段回退默认值）', () => {
     clone.modes.classroom.watchDir = 'D:\\感知文件夹'
     expect(source.modes.classroom.watchDir).toBe('')
   })
+
+  it('deepClone 能把 Proxy 变成可结构化克隆的纯数据', () => {
+    // 这条钉住的是一个真实踩过的坑：`ipcRenderer.invoke` 用结构化克隆传参，
+    // Vue reactive 产出的 Proxy 不可克隆（DataCloneError）；渲染层发往主进程的
+    // patch / 数组必须先过 deepClone（见 renderer/shared/stores.ts、useChat.ts）。
+    const proxy = new Proxy({ modes: { classroom: { subjects: ['数学'] } } }, {})
+    expect(() => structuredClone(proxy)).toThrow()
+
+    const plain = deepClone(proxy)
+    expect(plain).toEqual({ modes: { classroom: { subjects: ['数学'] } } })
+    expect(() => structuredClone(plain)).not.toThrow()
+  })
+
+  it('deepClone 处理数组 Proxy（附件列表的场景）', () => {
+    const list = new Proxy(['a.txt', 'b.pdf'], {})
+    expect(() => structuredClone(list)).toThrow()
+    expect(deepClone(list)).toEqual(['a.txt', 'b.pdf'])
+  })
 })

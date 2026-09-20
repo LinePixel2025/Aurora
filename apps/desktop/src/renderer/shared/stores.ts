@@ -21,19 +21,7 @@ import type {
   WindowName,
   WindowState,
 } from '@aurora/shared'
-
-/**
- * 把配置 patch 转成**纯数据**再发给主进程。
- *
- * 为什么必须做：`ipcRenderer.invoke` 用结构化克隆传参，而 **Proxy 不可克隆**
- * （抛 `DataCloneError: An object could not be cloned.`）。设置页的 patch 大多由
- * `{ ...settings.value.modes }` 这类展开构造 —— reactive 的嵌套子对象仍是 Proxy，
- * 于是整次保存直接以 unhandled rejection 失败：**既不写盘、也不报错**（实测复现）。
- * 只做一次 JSON 往返即可，配置数据本来就是纯 JSON（凭据不走这条通道，走 `settings:setSecret`）。
- */
-function toPlainPatch<T>(patch: T): T {
-  return JSON.parse(JSON.stringify(patch ?? null)) as T
-}
+import { deepClone } from '@aurora/shared/browser'
 
 export const useSettingsStore = defineStore('settings', () => {
   const settings = ref<Settings | null>(null)
@@ -57,7 +45,11 @@ export const useSettingsStore = defineStore('settings', () => {
   async function update(
     patch: Parameters<typeof window.aurora.settings.update>[0],
   ): Promise<boolean> {
-    const result = await window.aurora.settings.update(toPlainPatch(patch))
+    // `deepClone` 而不是直接发：`ipcRenderer.invoke` 用结构化克隆传参，**Proxy 不可克隆**。
+    // 设置页的 patch 由 `{ ...settings.value.modes }` 这类展开构造，嵌套子对象仍是 Vue 的
+    // reactive Proxy → 整次保存会以 DataCloneError 静默失败（既不写盘也不报错，实测踩过）。
+    // `deepClone` 内部先试 structuredClone、失败回落 JSON，正好把 Proxy 变成纯数据。
+    const result = await window.aurora.settings.update(deepClone(patch))
     if (result.ok) {
       settings.value = result.value
       error.value = null
