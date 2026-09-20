@@ -319,7 +319,64 @@ export const SETTINGS_CLASSROOM_GATING_SCRIPT = `(() => {
 })()`
 
 /**
- * 默认截图清单：五个窗口 + 提示条两态 + 设置页各页深链 + 三条 DOM 断言。
+ * 真实写盘探针（step-06 拆分 `ClassroomSection` 后最容易踩的坑）：
+ * `settings:update` 只做**顶层浅合并**，子组件若直接传 `{ classroom: change }` 会静默丢字段。
+ *
+ * 走完整的用户路径：展开「分类行为」分组 → 点 `classification.autoMove` 复选框 →
+ * 经组件的 `patch()` → IPC → `SettingsStore` 落盘。前后快照在渲染层暂存，由 check 比对。
+ */
+export const SETTINGS_CLASSROOM_PATCH_ACT = `(async () => {
+  const record = (value) => {
+    window.__auroraPatchProbe = Object.assign(window.__auroraPatchProbe || {}, { act: value })
+    return value
+  }
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return record({ ok: false, reason: 'settings.get failed' })
+    window.__auroraPatchProbe = { before: state.value.modes.classroom }
+    const heads = Array.from(document.querySelectorAll('.group-head'))
+    if (heads.length < 4) return record({ ok: false, reason: 'group heads=' + heads.length })
+    heads[3].click()
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    const field = document.querySelector('[data-field="modes.classroom.classification.autoMove"]')
+    const box = field === null ? null : field.querySelector('input[type="checkbox"]')
+    if (box === null) return record({ ok: false, reason: 'no autoMove checkbox' })
+    box.click()
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    return record({ ok: true, checked: box.checked })
+  } catch (error) {
+    return record({ ok: false, reason: String(error) })
+  }
+})()`
+
+export const SETTINGS_CLASSROOM_PATCH_CHECK = `(async () => {
+  try {
+    const probe = window.__auroraPatchProbe
+    if (probe === undefined) return { pass: false, reason: 'act 未记录 before 快照' }
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { pass: false, reason: 'settings.get failed' }
+    const before = probe.before
+    const now = state.value.modes.classroom
+    const lostKeys = Object.keys(before).filter((key) => !(key in now))
+    const scheduleKept = JSON.stringify(before.schedule) === JSON.stringify(now.schedule)
+    const subjectsKept = JSON.stringify(before.subjects) === JSON.stringify(now.subjects)
+    const toggled = before.classification.autoMove !== now.classification.autoMove
+    return {
+      act: probe.act === undefined ? null : probe.act,
+      lostKeys,
+      scheduleKept,
+      subjectsKept,
+      toggled,
+      autoMove: now.classification.autoMove,
+      pass: lostKeys.length === 0 && scheduleKept && subjectsKept && toggled,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 默认截图清单：五个窗口 + 提示条两态 + 设置页各页深链 + 四条 DOM 断言。
  * `AURORA_CAPTURE_WINDOWS` 可以只截其中一部分（逗号分隔）。
  */
 export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
@@ -351,6 +408,15 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
     file: 'settings-modes-classroom-gating.png',
     query: { page: 'modes' },
     check: SETTINGS_FIELDS_SCRIPT,
+  })
+  // 真实写盘：改一个 classroom 字段后其它字段不能丢（浅合并语义回归）。
+  // 必须排在「切到 Work」之前 —— 切走之后 classroom 控件就不在 DOM 里了。
+  plan.push({
+    name: 'settings',
+    file: 'settings-classroom-patch.png',
+    query: { page: 'modes' },
+    act: SETTINGS_CLASSROOM_PATCH_ACT,
+    check: SETTINGS_CLASSROOM_PATCH_CHECK,
   })
   plan.push({
     name: 'settings',
