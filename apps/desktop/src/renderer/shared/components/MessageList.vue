@@ -10,6 +10,7 @@
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import type { AgentToolCall } from '@aurora/shared'
 import type { ChatMessage } from '../composables/useChat.js'
+import { useStickToBottom } from '../composables/useStickToBottom.js'
 import { renderMarkdown } from '../markdown.js'
 import StatusDot from './StatusDot.vue'
 
@@ -21,6 +22,43 @@ const props = withDefaults(
   }>(),
   { compact: false, emptyHint: '开始一段对话吧' },
 )
+
+// ───────────────────────── 跟随最新（自动滚底） ─────────────────────────
+
+/**
+ * 滚动容器是窗口自己的 `.thread`（由 `useStickToBottom` 从本组件根节点向上查找），
+ * 因此这里只负责"什么算新内容、什么时候强制回底"，容器结构不动。
+ */
+const rootEl = ref<HTMLElement | null>(null)
+const { following, stick } = useStickToBottom(() => rootEl.value)
+
+/**
+ * 自己发的消息必须能看到回复：即使此前正在翻历史，也强制恢复跟随。
+ * 助手消息追加**不**强制 —— 多轮工具调用会把正在回看历史的用户一次次拽回底部。
+ */
+watch(
+  () => props.messages.length,
+  (next, previous) => {
+    const last = props.messages[next - 1]
+    if (next > previous && last?.role === 'user') stick()
+  },
+)
+
+/**
+ * 消息数组**被整体替换**（历史水合 / 切换会话 / 清空）时强制恢复跟随：
+ * 上一个会话里"翻历史"的状态不能带到新会话，否则打开会话会停在顶部。
+ * 流式增量与追加都不换引用，所以不会走到这里。
+ */
+watch(
+  () => props.messages,
+  () => stick(),
+)
+
+/** 「回到最新」用平滑滚动，但尊重系统「减少动态效果」 */
+function jumpToLatest(): void {
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+  stick(reduceMotion ? 'auto' : 'smooth')
+}
 
 /**
  * 代码块「复制」按钮。
@@ -197,7 +235,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 </script>
 
 <template>
-  <div class="messages" :class="{ compact }" @click="onContentClick">
+  <div ref="rootEl" class="messages" :class="{ compact }" @click="onContentClick">
     <div v-if="messages.length === 0" class="empty anim-rise">
       <span class="empty-orb" aria-hidden="true" />
       <p class="empty-title">{{ compact ? '快速提问' : '开始对话' }}</p>
@@ -280,6 +318,14 @@ async function onContentClick(event: MouseEvent): Promise<void> {
       </article>
     </TransitionGroup>
     <slot />
+
+    <!--
+      用户上滚后（`following === false`）才出现的回底入口：跟随中不显示，
+      既不遮挡最后一条消息，也不改变"自动到底"的默认体验。
+    -->
+    <button v-if="!following" type="button" class="jump-latest" @click="jumpToLatest">
+      ↓ 回到最新
+    </button>
   </div>
 </template>
 
@@ -326,6 +372,31 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   margin: 0;
   max-width: 30ch;
   line-height: var(--leading-normal);
+}
+
+/* ── 「回到最新」：用户上滚后暂停跟随时出现，吸附在滚动容器底部 ── */
+/* `position: sticky` 让它在滚动容器（`.thread`）里始终可见，且不脱离文档流；
+   不透明底色 + 描边保证压在消息正文上仍然可读。 */
+.jump-latest {
+  position: sticky;
+  bottom: var(--space-1);
+  align-self: center;
+  margin-top: var(--space-2);
+  padding: 3px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  box-shadow: var(--shadow-2);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.jump-latest:hover {
+  color: var(--text-primary);
+  background: var(--fill-2);
 }
 
 /* ── 消息：用户右对齐胶囊气泡，助手左对齐纯文本块 ── */

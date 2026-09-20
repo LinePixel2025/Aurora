@@ -249,6 +249,79 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
 })()`
 
 /**
+ * 对话自动滚底探针（交互窗 / 小窗共用）。
+ *
+ * 钉住的是「新消息不会自动拉到最新」这个 bug：滚动容器是窗口的 `.thread`，
+ * 内容变高时渲染层必须自己滚到底。这里不去驱动真实模型（截图跑在默认配置上，
+ * 没有可用的 LLM），而是向 `.messages` 追加一个 1600px 的探针节点 ——
+ * 对滚动逻辑而言与「新消息 / 流式增量把内容撑高」完全等价。
+ *
+ * 两个必须注意的点（都踩过）：
+ * - 探针节点要 `flex-shrink: 0`：`.messages` 是 `.thread`（固定高）的 flex 子项，
+ *   一个没有内容的空 div 会被压扁回窗口高度，探针就变成"没有可滚动内容"的空转断言。
+ *   真实消息是有文字的，`min-height: auto` 不会让它被压掉，所以这里显式禁掉收缩。
+ * - `pass` 里带 `maxScroll >= 200` 守卫：先确认"内容确实比窗口高"，再看"是否滚到了底"，
+ *   否则一旦探针没撑开内容，`distance === 0` 会假 PASS。
+ *
+ * 同一条探针还顺带核对「回到最新」胶囊（用户主动上滚后才出现的入口）：
+ * 把 `scrollTop` 归零模拟上滚，断言胶囊出现且**落在滚动容器可视区内**。
+ * `position: sticky` 在交互窗那种"`.messages` 盒子被钉住、内容按溢出渲染"的布局里
+ * 未必吸附得住，这条断言就是钉这个的。
+ *
+ * 放在 `check` 里（截图**之后**执行），所以不会出现在 PNG 中；执行完立刻移除节点。
+ */
+export const CHAT_AUTO_SCROLL_SCRIPT = `(async () => {
+  try {
+    const thread = document.querySelector('.thread')
+    const list = document.querySelector('.messages')
+    if (thread === null || list === null) {
+      return { pass: false, reason: 'no .thread/.messages' }
+    }
+    const filler = document.createElement('div')
+    filler.setAttribute('data-probe', 'auto-scroll')
+    filler.style.height = '1600px'
+    filler.style.flexShrink = '0'
+    list.appendChild(filler)
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    const maxScroll = Math.round(thread.scrollHeight - thread.clientHeight)
+    const scrolled = Math.round(thread.scrollTop)
+    const distance = maxScroll - scrolled
+    const scrollHeight = Math.round(thread.scrollHeight)
+    const clientHeight = thread.clientHeight
+    // 2) 「回到最新」胶囊：模拟用户主动上滚 → 必须出现，且吸附在可视区内（可点）
+    thread.scrollTop = 0
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    const button = list.querySelector('.jump-latest')
+    const rect = button === null ? null : button.getBoundingClientRect()
+    const threadRect = thread.getBoundingClientRect()
+    const jump = {
+      present: button !== null,
+      top: rect === null ? null : Math.round(rect.top),
+      bottom: rect === null ? null : Math.round(rect.bottom),
+      inView:
+        rect !== null &&
+        rect.height > 0 &&
+        rect.top >= threadRect.top - 1 &&
+        rect.bottom <= threadRect.bottom + 1,
+    }
+    filler.remove()
+    thread.scrollTop = 0
+    return {
+      pass: maxScroll >= 200 && distance <= 4 && jump.present && jump.inView,
+      scrollable: maxScroll >= 200,
+      distance,
+      scrolled,
+      maxScroll,
+      scrollHeight,
+      clientHeight,
+      jump,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
  * 设置页门控探针（docs/08 §6.1）：每个控件带 `data-field="<配置路径>"`，
  * 条件不成立时**整个控件不在 DOM 里**（不是 disabled、也不是靠 CSS 藏），位置改为 `data-empty` 说明块。
  *
@@ -395,8 +468,9 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       act: EDGE_BAR_HOVER_SCRIPT,
       check: EDGE_BAR_PANEL_SCRIPT,
     },
-    { name: 'chat', file: 'chat.png' },
-    { name: 'mini-chat', file: 'mini-chat.png' },
+    // 交互窗 / 小窗各带一条自动滚底断言（回归「对话不会自动拉到最新」）
+    { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
+    { name: 'mini-chat', file: 'mini-chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
     { name: 'onboarding', file: 'onboarding.png' },
   ]
   for (const page of SETTINGS_PAGE_IDS) {
