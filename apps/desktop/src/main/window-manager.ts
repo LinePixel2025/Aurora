@@ -568,17 +568,11 @@ export class WindowManager {
       return undefined
     const area = screen.getPrimaryDisplay().workArea
     if (name === 'edge-bar') {
-      // 提示条尺寸由折叠态决定，**不复用持久化宽高**：否则收起态会继承展开态的 228px，
-      // 在屏幕右侧留下一块看不见却挡鼠标的区域（当年服务窗踩过的同型坑）。
-      // x 也一律重算贴右缘：持久化的 x 可能来自展开态（右缘 - 228），复用会让竖条整体左移；
-      // 提示条不参与用户拖动，水平位置无需记忆。y 沿用持久化值并 clamp 进工作区。
-      const size = this.sizeFor(name)
-      return {
-        x: Math.round(area.x + area.width - size.width),
-        y: Math.round(clamp(y, area.y, Math.max(area.y, area.y + area.height - size.height))),
-        width: size.width,
-        height: size.height,
-      }
+      // 提示条**完全不复用持久化几何**：它不参与用户拖动，位置与尺寸都由「工作区右缘 +
+      // 垂直居中 + 当前折叠态」唯一决定（`computeBounds` 的 `edge` 分支）。
+      // 复用会踩两个坑：收起态继承展开态的 228px 宽（屏幕右侧留下看不见却挡鼠标的区域）；
+      // 展开态退出时存下的是 y=24，下次启动竖条跑到屏幕顶部而不是居中。
+      return undefined
     }
     return {
       x: clamp(x, area.x - width + 40, area.x + area.width - 40),
@@ -590,6 +584,10 @@ export class WindowManager {
 
   private persistGeometry(name: WindowName, win: BrowserWindow): void {
     const bounds = win.getBounds()
+    // 提示条不落盘：它的几何完全由「右缘 + 垂直居中 + 折叠态」推导（`readGeometry` 也不读它）。
+    // 若照写，鼠标每次掠过右缘的展开/收起都会触发一次配置写 + `settings:changed`，
+    // 进而让主进程重建托盘菜单 —— 纯 UI 悬停不该有这种写入放大。
+    if (name === 'edge-bar') return
     this.options.settings.mutate((draft) => {
       draft.general.windowState[name] = {
         x: bounds.x,

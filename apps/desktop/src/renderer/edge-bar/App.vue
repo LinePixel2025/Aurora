@@ -52,13 +52,19 @@ function clearTimers(): void {
   shrinkTimer = undefined
 }
 
-/** 悬停进入：窗口先加宽，面板后出现 —— 反过来的话面板会先被 8px 窗口裁掉再跳出来 */
+/**
+ * 悬停进入：窗口先加宽，面板后出现 —— 反过来的话面板会先被 8px 窗口裁掉再跳出来。
+ *
+ * **不做 `if (expanded.value) return` 早退**：主进程可能在我们不知情时把提示条隐藏
+ * （勿扰时段的 `EdgeBarScheduler`、设置页的「立即显隐」），窗口已被收回 8px 而渲染层的
+ * `expanded` 仍是 true；早退会让面板渲染在 8px 窗口里被裁掉且无法自愈。
+ * `setEdgeBarExpanded` 在主进程是幂等的，无条件调用即是最省事的自愈路径。
+ */
 function onPointerEnter(): void {
   clearTimeout(collapseTimer)
   clearTimeout(shrinkTimer)
   collapseTimer = undefined
   shrinkTimer = undefined
-  if (expanded.value) return
   expandTimer = setTimeout(() => {
     expandTimer = undefined
     void (async () => {
