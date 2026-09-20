@@ -47,7 +47,9 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
 
       const cfg = deps.getSettings().agent.tools
       if (!cfg.enabled) {
-        deps.logger.info('电脑操控工具已关闭（总开关）', { names: [] })
+        deps.logger.info('电脑操控工具总开关已关闭：5 个工具全部不注册', {
+          names: [...toolNames],
+        })
         return []
       }
 

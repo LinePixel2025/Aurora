@@ -1007,7 +1007,11 @@ async function runSmokeTest(userData: string): Promise<void> {
     try {
       await fs.mkdir(probeDir, { recursive: true })
       const command = await runCommand?.execute(
-        { command: `Set-Content -LiteralPath '${probeFile}' -Value AURORA_CTRL_OK -Encoding UTF8` },
+        {
+          // PowerShell 单引号字面量里的单引号要写成两个：路径来自 tmpdir()，正常不会含引号，
+          // 但拼接前先转义，免得将来换成用户可控路径时这里变成一个注入点。
+          command: `Set-Content -LiteralPath '${probeFile.replace(/'/g, "''")}' -Value AURORA_CTRL_OK -Encoding UTF8`,
+        },
         { sessionId: 'smoke' },
       )
       executed = command !== undefined && command.isError !== true
@@ -1065,6 +1069,27 @@ async function runSmokeTest(userData: string): Promise<void> {
       '开关热生效：关掉终端立刻摘掉 run_command（open_path 仍在），改回即恢复且 files/open 没被写丢',
       hotSwitchOk,
       hotSwitchOk ? '' : `subtreeKept=${subtreeKept}`,
+    )
+
+    // 总开关：`00-index.md` 完成标准点名的那一条 —— 关闭后 5 个工具**一个都不剩**，
+    // 且不能误伤其它工具（`unregister` 只按这 5 个名字摘，`use_skill` / `mcp.*` 不受影响）。
+    let masterOffOk = false
+    if (settings !== undefined) {
+      const before = settings.get().agent.tools
+      settings.update({ agent: { tools: { ...before, enabled: false } } })
+      computerTools?.sync()
+      const allGone = COMPUTER_TOOL_NAMES.every((name) => tools?.get(name) === undefined)
+      const othersKept = tools?.get('use_skill') !== undefined
+
+      settings.update({ agent: { tools: { ...before, enabled: true } } })
+      computerTools?.sync()
+      const restored = COMPUTER_TOOL_NAMES.every((name) => tools?.get(name) !== undefined)
+      masterOffOk = allGone && othersKept && restored
+    }
+    record(
+      '总开关热生效：关闭后 5 个工具全部从注册表移除（其它工具不受影响），改回即恢复',
+      masterOffOk,
+      masterOffOk ? '' : '总开关断言失败',
     )
   }
 
