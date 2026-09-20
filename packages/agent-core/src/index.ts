@@ -23,6 +23,7 @@ export * from './skills/bridge.js'
 export * from './tools/registry.js'
 // 电脑操控工具（docs/06 §11）：内核侧纯逻辑，真实系统调用在主进程注入。
 export * from './tools/terminal.js'
+export * from './tools/files.js'
 export * from './mcp/errors.js'
 export * from './mcp/jsonrpc.js'
 export * from './mcp/transports.js'
