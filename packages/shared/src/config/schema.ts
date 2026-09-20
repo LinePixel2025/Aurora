@@ -481,9 +481,15 @@ function walk(
       return
     }
     case 'ZodEnum': {
-      // 类型层面枚举按"任意类型"处理（值本身是字符串），但**值**必须逐个校验：
-      // 否则 `reasoningEffort: 'ultra'` 这类非法枚举值会一路活到 `SettingsSchema.parse`
-      // 并把整份配置判为损坏（备份 + 重建），而不是像其它非法字段那样只回退这一个字段。
+      // 类型层面枚举按"任意类型"处理（值本身是字符串），但**值**逐个登记以便按值校验：
+      // 非法枚举值（如 `logLevel: 'verbose'`）此前会一路活到 `SettingsSchema.parse`，
+      // 把**整份配置**判为损坏（备份 + 重建），而不是像其它非法字段那样只回退这一个字段。
+      //
+      // 注意生效范围：只对**静态**枚举路径有效（`advanced.logLevel`、`modes.current`、
+      // `modes.classroom.schedule.{provider,classisland.source}`）。`llm.providers.*.reasoningEffort`
+      // 虽然也是 `z.enum`，但它在 `z.record` 之下、而 record 路径被 `isDynamicPath` 判定为
+      // "整体保留候选对象"（见 store.ts 的 sanitize），逐字段校验根本不会被问到；
+      // 那边靠 `migrateV4ToV5` 把非法值回落成 `auto` 兜底。
       const values = def['values'] as readonly unknown[] | undefined
       if (values) enums.set(path, values)
       record(specs, path, 'any')

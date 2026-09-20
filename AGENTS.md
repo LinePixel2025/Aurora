@@ -41,7 +41,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **跑单个/单包测试**：`pnpm vitest run <文件路径>`，或 `pnpm --filter @aurora/agent-core test`。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：PowerShell 下 `$env:AURORA_SMOKE='1'; pnpm dev`，结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`。调试渲染层加 `AURORA_DEVTOOLS=1`。
 - **窗口截图核对（前端视觉验收）**：`$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev`，会把五个窗口、
-  提示条两态、设置页 7 页 + 3 个门控场景 + 1 个真实写盘场景截成 18 张 PNG，并写 `report.json`（渲染层 DOM 探针结果：
+  提示条两态、设置页 7 页、思考等级参数面板、3 个门控场景、1 个真实写盘场景与 2 张提示条收尾图
+  截成 18 张 PNG（构成以 `report.json` 的实际条目为准），并写 `report.json`（渲染层 DOM 探针结果：
   面板按钮命中测试、点击竖条后的窗口状态、设置页 `data-field` 门控计数；探针返回 `pass` 时按 PASS/FAIL 落日志，
   有 FAIL 时进程退出码为 2）。
   只截部分窗口用 `$env:AURORA_CAPTURE_WINDOWS='edge-bar,chat'`。命令结束后进程自行退出；

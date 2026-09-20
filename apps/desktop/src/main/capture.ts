@@ -569,7 +569,8 @@ export const SETTINGS_LLM_EFFORT_CHECK = `(() => {
 })()`
 
 /**
- * 默认截图清单：五个窗口 + 提示条两态 + 设置页各页深链 + 四条 DOM 断言。
+ * 默认截图清单：五个窗口 + 提示条两态 + 设置页各页深链（含思考等级参数面板）+ 若干 DOM 断言场景
+ * （门控计数 / 对话自动滚底 / 思考等级 / 电脑操控页，见下面各条的 `check`）。
  * `AURORA_CAPTURE_WINDOWS` 可以只截其中一部分（逗号分隔）。
  */
 export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {

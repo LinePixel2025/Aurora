@@ -137,7 +137,7 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(fieldAccepts('advanced.confirmSensitiveTools', 'no')).toBe(false)
   })
 
-  it('思考等级：只接受四个枚举值，非法值被逐字段校验拦下（v5）', () => {
+  it('思考等级：只接受四个枚举值（枚举按值校验，而非"类型对就放行"）（v5）', () => {
     const settings = createDefaultSettings()
     settings.llm.providers['deepseek'] = {
       type: 'openai-compat',

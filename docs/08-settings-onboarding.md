@@ -197,7 +197,7 @@
     否则关掉就再也无法启用（门控见 §6.1）。
   - 「工作目录」为空串时回落用户主目录；它只是 **`run_command` 的缺省 `cwd`**，**不是沙箱** ——
     越界不静默，结果里回带真实的绝对路径。注意 `read_file` / `write_file` / `list_dir` **不读**该字段
-    （相对路径按主进程 CWD 解析），所以提示词要求模型对文件类工具传绝对路径（见 06 §11.4）。
+    （相对路径按主进程 CWD 解析，打包应用该值不可预期，故文件类工具只适合用绝对路径；见 06 §11.4）。
   - 逐次确认沿用 `sensitivity` 判定：`run_command` / `write_file` / `open_path` 为 `confirm`
     （走 06 §5 的确认链路，勿扰时段或确认超时一律按拒绝），`read_file` / `list_dir` 为 `safe`；
     由 `advanced.confirmSensitiveTools` 统一开关，关闭后敏感工具不再询问（见 §1）。
@@ -236,7 +236,7 @@
 | `general.language` | **永不显示**（无 i18n 消费方的死字段，字段保留在 Schema 仅为配置兼容） |
 | `skills.disabled` | `skills.list()` 非空 |
 | `mcp.servers.*` / `mcp.lazyConnect` | `mcp.servers.length > 0` |
-| `llm.providers.*`（含 `temperature`） | `llm.providers` 至少一项 |
+| `llm.providers.*`（含 `temperature` / `reasoningEffort`） | `llm.providers` 至少一项 |
 | `agent.tools.enabled` | 常显（否则无法重新启用） |
 | `agent.tools.workspaceDir` | 常显（总开关关着时也要能改默认工作目录） |
 | `agent.tools.terminal.*` / `files.*` / `open.enabled` | `agent.tools.enabled === true` |

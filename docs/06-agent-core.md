@@ -173,7 +173,9 @@ export interface LlmProvider {
 ## 10. 安全
 
 - **凭据**：API key / MCP env 用 safeStorage 加密落盘；日志与导出配置一律脱敏。
-- **文件操作**：默认限于感知文件夹范围内；越界操作需用户确认。
+- **文件操作**：ClassRoom 分类管线只在「感知文件夹」内移动文件；Skill 只注入指令文本、永不执行
+  `scripts/`。**v0.7.0 起的电脑操控工具是另一回事**：`read_file` / `write_file` / `list_dir`
+  **不受感知文件夹限制**（`workspaceDir` 不是沙箱），边界见 §11.1。
 - **网络**：LLM / MCP 支持系统代理（设置项 `advanced.proxy`）。
 - **执行**：命令 / 文件操作前经工具权限分级校验，敏感级需确认。
 
@@ -218,8 +220,11 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增 5 
   工具结果里回带解析后的绝对路径（命令的实际 `cwd`、文件的实际路径），
   确认卡片展示的则是模型的**原始参数**（要解析出绝对路径就得先执行，因此卡片里看到的是
   相对路径原文；解析结果在工具执行结果里回带）。
-  **`read_file` / `write_file` / `list_dir` 不读 `workspaceDir`**：它们的相对路径按主进程 CWD 解析，
-  所以提示词要求模型对文件类工具传绝对路径（`workspaceDir` 只影响命令的缺省 cwd）。
+  **`read_file` / `write_file` / `list_dir` 不读 `workspaceDir`**：它们的相对路径按**主进程 CWD**
+  解析（`file-port.ts` 的 `resolve()`）——打包应用从开始菜单启动时 CWD 并不可预期，
+  因此文件类工具实际上只适合用绝对路径（`workspaceDir` 只影响命令的缺省 `cwd`）。
+  另外配置的目录不存在时，`run_command` 会回落到装配层传入的 `defaultCwd`（主进程 CWD），
+  结果头里回带真实 `cwd`，但这件事**事前**在确认卡片上看不到。
 - **输出上限**：命令输出（stdout + stderr）按 `agent.tools.terminal.maxOutputChars` 截断，
   取 **head 60% + tail 40%**，中间插入截断提示——编译错误与堆栈通常在尾部，tail 保证不丢。
   但要注意 stdout / stderr **各自**另有 1 MiB 的采集硬上限（`command-runner.ts` 的 `maxOutputBytes`），
