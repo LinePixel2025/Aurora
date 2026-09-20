@@ -70,7 +70,7 @@
 - 字段说明：`llm.providers` 支持多组模型配置，`llm.active` 指定默认；`modes.classroom.subjects` 即科目 → 文件夹映射（见 05 §3）；`schedule.provider` 为 `manual | classisland`（见 05 §3.4）。
 - `general.windowState` 的 key 集合即 `WINDOW_NAMES`：`edge-bar` / `chat` / `mini-chat` / `settings` / `onboarding`
   （v4 起移除 `service-dock`，该窗口已删除）。
-- `general.language` 是**未生效的死字段**（无 i18n 消费方，见 §5 语言项），保留仅为避免再动一次配置版本。
+- `general.language` 是**未生效的死字段**（无 i18n 消费方，见 §6.1 门控矩阵），保留仅为避免再动一次配置版本。
 - `mcp.lazyConnect`：连接策略（见 06 §7）。`false`（默认）= 启动即连；`true` = 首次使用某个 MCP 工具时才连接。
 - MCP 环境变量的**变量名**由 `envEnc` 的键表达，设置页据此展示"已配置的变量名"，
   因此 Schema 不额外维护一份 `env` 列表（避免两处数据不一致）。
@@ -121,13 +121,15 @@
 
 ```
 欢迎（品牌 + 三模式介绍）
-  → 语言 / 主题（默认跟随系统，可跳过）
   → AI 模型配置【必填】：provider 预设（DeepSeek / OpenAI / 自定义）+ baseURL + API key + 模型名
         → “测试连接”（展示延迟；可选拉取模型列表）
   → 模式选择（ClassRoom 推荐）
   → 模式引导（若选 ClassRoom）：感知文件夹 + 科目列表 → 完成（见 05 §2）
   → 完成页 → 进入托盘常驻，显示提示条
 ```
+
+> 早期版本的「语言 / 主题」步骤已删除：`general.language` 是死字段（无 i18n 消费方），
+> 主题也没有实现，两件都不可配置。详见 §6.1 的门控矩阵。
 
 - **规则**：AI 模型配置未完成不允许进入主界面（需求：第一次安装要求用户填写）；测试连接失败允许先保存，但持续提示未通过。
 - 引导可重跑：设置 → 模式 → “重新引导”。
@@ -203,10 +205,11 @@
 | `mcp.servers.*` / `mcp.lazyConnect` | `mcp.servers.length > 0` |
 | `llm.providers.*`（含 `temperature`） | `llm.providers` 至少一项 |
 
-校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针会按页断言计数，例如
-`settings?page=general` → `general.language` 计数为 0、`general.edgeBar.enabled` 为 1 且详情项 > 0；
-`settings?page=modes` 下 ClassRoom 时 `modes.classroom.*` 计数为 38，切到 Work 后必须为 0
-且出现 `data-empty="modes.work"`。探针结果写 `<目录>/report.json` 并以 `AURORA_SMOKE_RESULT:` 前缀落日志。
+校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针按页断言——
+`settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0；
+`settings?page=modes` 在 ClassRoom 下必须能数到 `modes.classroom.*` 字段（具体条数随科目数与展开分组变化，
+探针只断言 `> 0` 与「切走必须为 0」），切到 Work 后必须为 0 且出现 `data-empty="modes.work"`。
+探针结果写 `<目录>/report.json` 并以 `AURORA_SMOKE_RESULT:` 前缀落日志，存在 FAIL 时进程退出码为 2。
 
 ## 7. ClassRoom 模式设置页（v0.4.0）
 

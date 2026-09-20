@@ -18,7 +18,7 @@
 │                                 │  └ Proactive(主动引导)                    │ │
 │                                 └───────────────────────────────────────────┘ │
 │ Preload：contextBridge 白名单 API（window.aurora.*）                           │
-│ Renderer（Vue 3，每窗口一进程）：ServiceDock / EdgeBar / Chat / MiniChat /     │
+│ Renderer（Vue 3，每窗口一进程）：EdgeBar / Chat / MiniChat /                  │
 │          Settings / Onboarding                                                │
 └──────────┬────────────────────────┬────────────────────────┬──────────────────┘
            │                        │                        │
