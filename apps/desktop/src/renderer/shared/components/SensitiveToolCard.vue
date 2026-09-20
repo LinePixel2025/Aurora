@@ -109,7 +109,7 @@ async function decide(approved: boolean): Promise<void> {
     <p v-if="error" class="tiny err">{{ error }}</p>
 
     <footer class="row">
-      <span class="tiny muted grow">超时、关闭窗口或会话中止一律按「拒绝」处理。</span>
+      <span class="tiny muted grow">60 秒不响应一律按「拒绝」处理。</span>
       <AppButton size="sm" variant="danger" :disabled="busy" @click="decide(false)">拒绝</AppButton>
       <AppButton size="sm" variant="primary" :disabled="busy" @click="decide(true)">
         允许一次

@@ -158,9 +158,11 @@ export interface LlmProvider {
 
 - **敏感工具确认（§5）**：工具 `sensitivity === 'confirm'` 时（MCP 工具一律如此）先推送
   `SensitiveToolRequest`（`confirmId` / `expiresAt`），渲染层回执后放行或拒绝；
-  **超时（默认 60s）、勿扰时段、卡片推送失败一律按拒绝处理**，会话 abort / 退出时
-  `rejectAll()` 让在途确认立即失败，避免工具永久挂起。设置项
-  `advanced.confirmSensitiveTools` 关闭时直接放行（内核仍按 `sensitivity` 写日志留痕）。
+  **超时（默认 60s）、勿扰时段、卡片推送失败一律按拒绝处理**；应用**退出**时 `dispose()`
+  会调 `rejectAll()` 让在途确认立即失败，避免工具永久挂起。
+  ⚠️ **已知缺口**：`rejectAll()` 目前**没有**接到 `chat:abort`（会话中止只中断内核循环，
+  在途确认卡片仍可点击、并在 60s 前一直有效）——所以「会话中止 = 确认作废」这句话目前不成立，
+  待接线后才会。设置项 `advanced.confirmSensitiveTools` 关闭时直接放行（内核仍按 `sensitivity` 写日志留痕）。
 - **课前提醒**：默认每 30s 检查一次课程表，命中「课前 5 分钟」窗口时发系统通知并自动打开
   该科目文件夹（`explorer`）。同一节课以 `<weekday>-<startTime>-<subject>` 去重、只提醒一次；
   支持**启动补偿**（启动时已进入窗口，例如只剩 2 分钟）与**跨天**（23:5x 时次日 00:0x 的课）；
