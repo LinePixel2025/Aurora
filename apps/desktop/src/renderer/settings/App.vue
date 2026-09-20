@@ -14,10 +14,11 @@ import ModesPage from './pages/ModesPage.vue'
 import LlmPage from './pages/LlmPage.vue'
 import SkillsPage from './pages/SkillsPage.vue'
 import McpPage from './pages/McpPage.vue'
+import AgentPage from './pages/AgentPage.vue'
 import AdvancedPage from './pages/AdvancedPage.vue'
 import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 
-type PageId = 'general' | 'modes' | 'llm' | 'skills' | 'mcp' | 'advanced'
+type PageId = 'general' | 'modes' | 'llm' | 'skills' | 'mcp' | 'agent' | 'advanced'
 
 interface NavItem {
   id: PageId
@@ -32,16 +33,17 @@ const nav: NavItem[] = [
   { id: 'llm', label: 'AI 模型', hint: 'Provider 与连接测试' },
   { id: 'skills', label: 'Skill', hint: '内置与用户技能' },
   { id: 'mcp', label: 'MCP', hint: '外部工具服务' },
+  { id: 'agent', label: '电脑操控', hint: '终端与文件操控' },
   { id: 'advanced', label: '高级', hint: '代理、日志、勿扰' },
 ]
 
 /**
- * 侧栏分组（docs/07 §2.5）：页面本身不变，只是把 6 项按「基础 / AI 能力 / 系统」
- * 分层，避免六个同级项平铺时看不出主次。
+ * 侧栏分组（docs/07 §2.5）：页面本身不变，只是把 7 项按「基础 / AI 能力 / 系统」
+ * 分层，避免同级项平铺时看不出主次。
  */
 const navGroups: Array<{ title: string; ids: PageId[] }> = [
   { title: '基础', ids: ['general', 'modes'] },
-  { title: 'AI 能力', ids: ['llm', 'skills', 'mcp'] },
+  { title: 'AI 能力', ids: ['llm', 'skills', 'mcp', 'agent'] },
   { title: '系统', ids: ['advanced'] },
 ]
 
@@ -148,6 +150,7 @@ function select(id: PageId): void {
       <LlmPage v-else-if="active === 'llm'" />
       <SkillsPage v-else-if="active === 'skills'" />
       <McpPage v-else-if="active === 'mcp'" />
+      <AgentPage v-else-if="active === 'agent'" />
       <AdvancedPage v-else />
     </main>
   </div>

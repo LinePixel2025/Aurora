@@ -194,9 +194,10 @@
 
 ### 5.3 截图核对工具（AURORA_CAPTURE）
 
-- `AURORA_CAPTURE=<目录> pnpm dev`：把五个窗口、提示条两态、设置页 6 页 + 3 条 DOM 探针场景
-  （常规页字段门控 / 模式页 ClassRoom / 切换模式后门控）+ 1 条真实写盘场景，共 **16 张 PNG** 后退出
-  （交互窗与小窗的截图还各带一条自动滚底探针，不额外出图）；
+- `AURORA_CAPTURE=<目录> pnpm dev`：把五个窗口、提示条两态、设置页 7 页 + 3 条 DOM 探针场景
+  （常规页字段门控 / 模式页 ClassRoom / 切换模式后门控）+ 1 条真实写盘场景，共 **18 张 PNG** 后退出
+  （交互窗与小窗的截图还各带一条自动滚底探针，设置页另有「AI 模型 - 思考等级」与「电脑操控」
+  各一条探针场景，都不额外出图）；
   `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）。
   仅开发态生效；与 `AURORA_SMOKE` 同时设置时**截图优先**（自测不会执行）。
   进程退出码：0 = 全部成功，1 = 一张图都没写出，2 = 有探针 `pass === false`。
@@ -221,7 +222,13 @@
     探针放在 `check`（截图**之后**执行），不污染 PNG，执行完移除节点、归位滚动；注：探针节点是
     **合成内容**，只验证滚动机制本身，不需要配置模型；
   - 设置页门控：`data-field` / `data-empty` 计数（死字段 `general.language` 必须为 0、
-    非 ClassRoom 模式下 `modes.classroom.*` 必须为 0、提示条详情跟随开关）。
+    非 ClassRoom 模式下 `modes.classroom.*` 必须为 0、提示条详情跟随开关）；
+  - **电脑操控页门控**（`SETTINGS_AGENT_FIELDS_SCRIPT`）：读 `agent.tools.enabled` 复选框的**实际状态**，
+    开着时要求终端 / 文件 / 打开三栏的详情字段都在（`terminalFields/filesFields/openFields > 0`
+    且 `data-empty` 为空），关着时只要求总开关本身仍在 —— 否则用户再也开不回来；
+  - **思考等级**（`SETTINGS_LLM_EFFORT_CHECK`）：造一个 provider → 展开「高级参数与连接测试」→
+    断言 `[data-field$=".reasoningEffort"]` 与 `[data-field$=".temperature"]` 都在、且下拉的
+    `select.value` 等于配置里写的 `'high'`（覆盖「写盘 → 回读 → 渲染」整条链路）。
 - 截图前会等 `WindowManager.whenLoaded()`（`ensure()` 的加载是 fire-and-forget，
   不等会截到 0 字节空图），并对空图重试；连续空图直接判失败，不产出空文件。
 - 设置页深链：`main/window-manager.ts` 的 `ensure(name, query)` / `reload(name, query)`

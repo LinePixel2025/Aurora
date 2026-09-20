@@ -34,7 +34,7 @@ export interface AppInfo {
 }
 
 export interface OpenPathRequest {
-  kind: 'logs' | 'config' | 'watchDir' | 'subject'
+  kind: 'logs' | 'config' | 'watchDir' | 'subject' | 'workspace'
   /** kind = subject 时使用：科目名 */
   subject?: string
 }
@@ -73,6 +73,8 @@ export interface SettingsPatch {
   skills?: Partial<Settings['skills']>
   mcp?: Partial<Settings['mcp']>
   modes?: Partial<Settings['modes']>
+  /** 电脑操控工具（docs/06 §11）：顶层浅合并，调用方必须带上完整的 `tools` 子树 */
+  agent?: Partial<Settings['agent']>
 }
 
 /** 敏感字段路径 → 明文值；由主进程加密后落盘（docs/08 §2）。 */

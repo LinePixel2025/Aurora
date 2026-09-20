@@ -24,7 +24,15 @@ import type { Logger, WindowName } from '@aurora/shared'
 import type { WindowManager } from './window-manager.js'
 
 /** 设置页可深链的页面 id，需与 `renderer/settings/App.vue` 的 `PageId` 保持一致 */
-export const SETTINGS_PAGE_IDS = ['general', 'modes', 'llm', 'skills', 'mcp', 'advanced'] as const
+export const SETTINGS_PAGE_IDS = [
+  'general',
+  'modes',
+  'llm',
+  'skills',
+  'mcp',
+  'agent',
+  'advanced',
+] as const
 
 export type SettingsPageId = (typeof SETTINGS_PAGE_IDS)[number]
 
@@ -359,6 +367,46 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
   }
 })()`
 
+/**
+ * 「电脑操控」设置页门控探针（docs/08 §6.1、step 5）。
+ *
+ * 与 `SETTINGS_FIELDS_SCRIPT` 同一套路：`data-field` 计数 + `data-empty` 列表，
+ * 但这里要额外读**总开关的实际状态**——`agent.tools.enabled` 为 false 时三个分栏控件
+ * 本来就该整块消失（只剩总开关与工作目录两个常显字段）。
+ */
+export const SETTINGS_AGENT_FIELDS_SCRIPT = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const toggle = document.querySelector('[data-field="agent.tools.enabled"] input[type="checkbox"]')
+    const enabled = toggle === null ? null : toggle.checked
+    const total = count('[data-field^="agent.tools"]')
+    const terminalFields = count('[data-field^="agent.tools.terminal"]')
+    const filesFields = count('[data-field^="agent.tools.files"]')
+    const openFields = count('[data-field^="agent.tools.open"]')
+    const emptyStates = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
+      el.getAttribute('data-empty'),
+    )
+    const activeNav = document.querySelector('.nav-item.active')
+    return {
+      page: activeNav === null ? 'unknown' : (activeNav.textContent || '').trim(),
+      togglePresent: toggle !== null,
+      enabled,
+      total,
+      terminalFields,
+      filesFields,
+      openFields,
+      emptyStates,
+      // 总开关必须在（否则用户再也开不回来）；开着时三个分栏的详情字段都得在
+      pass:
+        toggle !== null &&
+        (enabled !== true ||
+          (terminalFields > 0 && filesFields > 0 && openFields > 0 && emptyStates.length === 0)),
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
 /** 把模式切到 Work（未选中 ClassRoom 时不应出现任何 classroom 控件） */
 export const SETTINGS_SWITCH_TO_WORK_SCRIPT = `(() => {
   try {
@@ -544,8 +592,14 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       file: `settings-${page}.png`,
       query: { page },
       // 「常规」页是 `general.*` 门控的现场：死字段 general.language 必须为 0，
-      // 提示条透明度 / 静默时段要跟着 general.edgeBar.enabled 出现或消失
-      check: page === 'general' ? SETTINGS_FIELDS_SCRIPT : undefined,
+      // 提示条透明度 / 静默时段要跟着 general.edgeBar.enabled 出现或消失；
+      // 「电脑操控」页同理，另加"总开关状态 → 分栏详情是否出现"的断言（step 5）
+      check:
+        page === 'general'
+          ? SETTINGS_FIELDS_SCRIPT
+          : page === 'agent'
+            ? SETTINGS_AGENT_FIELDS_SCRIPT
+            : undefined,
     })
   }
   // 思考等级（step-02）：造一个 provider → 展开「高级参数」→ 断言下拉真值来自配置。

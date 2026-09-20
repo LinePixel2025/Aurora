@@ -237,12 +237,15 @@
 | `mcp.servers.*` / `mcp.lazyConnect` | `mcp.servers.length > 0` |
 | `llm.providers.*`（含 `temperature`） | `llm.providers` 至少一项 |
 | `agent.tools.enabled` | 常显（否则无法重新启用） |
+| `agent.tools.workspaceDir` | 常显（总开关关着时也要能改默认工作目录） |
 | `agent.tools.terminal.*` / `files.*` / `open.enabled` | `agent.tools.enabled === true` |
 
 校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针按页断言——
 `settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0；
 `settings?page=modes` 在 ClassRoom 下必须能数到 `modes.classroom.*` 字段（具体条数随科目数与展开分组变化，
-探针只断言 `> 0` 与「切走必须为 0」），切到 Work 后必须为 0 且出现 `data-empty="modes.work"`。
+探针只断言 `> 0` 与「切走必须为 0」），切到 Work 后必须为 0 且出现 `data-empty="modes.work"`；
+`settings?page=agent` 读 `agent.tools.enabled` 复选框的**实际状态**：开着时终端 / 文件 / 打开三栏的
+详情字段都必须存在（且 `data-empty` 为空），关着时只要求总开关自己还在。
 探针结果写 `<目录>/report.json` 并以 `AURORA_SMOKE_RESULT:` 前缀落日志，存在 FAIL 时进程退出码为 2。
 
 ## 7. ClassRoom 模式设置页（v0.4.0）

@@ -67,6 +67,10 @@ import { SMOKE_FLAG, SMOKE_RESULT_PREFIX, smokeScript } from './smoke.js'
 import { STUB_API_KEY, STUB_MODEL, startStubLlmServer, type StubLlmServer } from './smoke-llm.js'
 import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
 import { captureWindows, defaultCapturePlan, filterCapturePlan } from './capture.js'
+import { registerComputerTools } from './tools/index.js'
+import { createCommandRunner } from './tools/command-runner.js'
+import { createNodeFilePort } from './tools/file-port.js'
+import { createShellOpenPort } from './tools/open-port.js'
 
 const isDev = !app.isPackaged
 
@@ -409,6 +413,22 @@ async function bootstrap(): Promise<void> {
   const skillBridge = new SkillsBridge(skills)
   skillBridge.registerInto(tools)
 
+  // 7.1 电脑操控工具（docs/06 §11）：按 `agent.tools.*` 注册 5 个工具。
+  //     必须在内核（KernelAgentHost）构造前装配，否则第一次请求的工具表是空的。
+  //     `sync()` 是唯一的开关落地点：这里一次、`onSettingsChanged` 一次 → 改完立即生效。
+  //     runner 的 `defaultCwd` 只作兜底，真正的工作目录由工具层每次按配置传入
+  //     （于是 `agent.tools.workspaceDir` 改完不用重建 runner）。
+  const computerTools = registerComputerTools({
+    tools,
+    getSettings: () => settings!.get(),
+    logger: logger.child('tools'),
+    homeDir: () => app.getPath('home'),
+    run: createCommandRunner({ defaultCwd: process.cwd(), maxOutputBytes: 1024 * 1024 }),
+    files: createNodeFilePort(),
+    open: createShellOpenPort(),
+  })
+  computerTools.sync()
+
   mcp = new McpController({
     settings,
     tools,
@@ -667,6 +687,9 @@ async function bootstrap(): Promise<void> {
       // Skill 用户目录可能被改（`skills.userDir`），按新配置重解析并重扫
       void skillsService?.reconfigure(next)
       syncLaunchAtLogin(next.general.launchAtLogin)
+      // 电脑操控工具（docs/06 §11）：开关 / 超时 / 上限改完立即生效——重建工具实例，
+      // 工具表变化会进下一次请求的系统提示词，无需重启。
+      computerTools.sync()
       tray?.refresh()
       // 感知文件夹 / 科目 / 阈值变更后，让分类管线按新配置重新武装
       syncClassification()

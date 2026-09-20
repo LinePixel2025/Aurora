@@ -594,6 +594,9 @@ function applyPatch(deps: DesktopDeps, patch: SettingsPatch): Result<Settings> {
     if (patch.mcp !== undefined) Object.assign(draft.mcp, patch.mcp)
     draft.mcp.servers = servers
     if (patch.modes !== undefined) Object.assign(draft.modes, patch.modes)
+    // 电脑操控工具：`SettingsPatch.agent` 是**整棵** tools 子树，直接覆盖即可
+    // （只传 `{ terminal: {...} }` 会把 files / open 静默丢掉，设置页必须带完整的树）。
+    if (patch.agent !== undefined) Object.assign(draft.agent, patch.agent)
   })
   if (!updated) return err('E_INVALID_ARGUMENT', '配置校验失败：请检查填写内容')
 
@@ -649,6 +652,12 @@ async function openPath(deps: DesktopDeps, request: OpenPathRequest): Promise<Re
     case 'watchDir':
       target = settings.modes.classroom.watchDir
       break
+    case 'workspace': {
+      // 电脑操控工具的默认工作目录（docs/06 §11）：空串 = 用户主目录
+      const configured = settings.agent.tools.workspaceDir.trim()
+      target = configured === '' ? app.getPath('home') : configured
+      break
+    }
     case 'subject': {
       const subject = settings.modes.classroom.subjects.find(
         (item) => item.name === request.subject,
