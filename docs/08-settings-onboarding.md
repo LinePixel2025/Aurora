@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v4）
+## 1. 配置 Schema（config.json，v5）
 
 ```jsonc
 {
-  "version": 4,
+  "version": 5,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -23,7 +23,8 @@
         "baseUrl": "https://api.deepseek.com",
         "apiKeyEnc": "<safeStorage 密文>",
         "model": "deepseek-chat",
-        "temperature": 0.7
+        "temperature": 0.7,
+        "reasoningEffort": "auto"  // auto | low | medium | high；auto = 不下发该参数
       }
     }
   },
@@ -63,6 +64,15 @@
     "logLevel": "info",
     "quietHours": null,
     "confirmSensitiveTools": true
+  },
+  "agent": {
+    "tools": {
+      "enabled": true,          // 电脑操控工具总开关；false 时 5 个工具都不注册
+      "workspaceDir": "",       // 工具默认工作目录；空串 = 用户主目录
+      "terminal": { "enabled": true, "timeoutMs": 60000, "maxOutputChars": 8000 },
+      "files": { "enabled": true, "maxReadBytes": 262144 },
+      "open": { "enabled": true }
+    }
   }
 }
 ```
@@ -79,6 +89,15 @@
   （相对 `watchDir` 或绝对路径）。
 - `advanced.confirmSensitiveTools`（v2 新增）：敏感工具（`sensitivity = 'confirm'`，含全部 MCP 工具）
   执行前是否要求用户确认（见 06 §5）。关闭后按 v0.3.0 行为降级为「只记日志留痕、不拦截」。
+- `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
+  `auto` 表示请求里**不带 `reasoning_effort` 字段**，用于兼容不认该参数的厂商；
+  其余三档按值下发（见 06 §3）。
+- `agent.tools`（v5 新增，见 06 §11）：4 个开关 + 3 个上限 ——
+  `enabled` 是电脑操控工具**总开关**（`false` 时 5 个工具都不注册）；`workspaceDir` 是工具默认工作目录
+  （空串 = 用户主目录，只作**默认值**、不是沙箱）；`terminal.enabled` 开关终端工具、
+  `terminal.timeoutMs` 是单次命令超时（毫秒）、`terminal.maxOutputChars` 是回传输出的截断上限；
+  `files.enabled` 开关文件读写、`files.maxReadBytes` 是单次读取上限（字节）；
+  `open.enabled` 开关「打开路径」工具。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -109,12 +128,13 @@
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 4`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 5`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
-  `v3 → v4`（移除 `general.windowState['service-dock']`，AI 悬浮窗已删除）。
-  四条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
+  `v3 → v4`（移除 `general.windowState['service-dock']`，AI 悬浮窗已删除）、
+  `v4 → v5`（补齐 `llm.providers.*.reasoningEffort` 与 `agent.tools.*`）。
+  五条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -168,6 +188,18 @@
   - 实现状态（v0.3.0）：列表读写与凭据脱敏沿用 v0.1.0；**状态灯**由 `mcp:status` /
     `mcp:statusChanged` 驱动（`ready` / `connecting` / `error` 三态，`error` 时展示
     最近一次失败原因），`lazyConnect` 可在设置页切换（收在「高级」折叠里）。
+- **电脑操控**（`agent.tools.*`，v0.7.0）：侧栏「AI 能力」组第 4 项（该组依序为
+  `llm` / `skills` / `mcp` / `agent`）。页面提供电脑操控工具的开关与上限：「总开关」、「工作目录」、
+  终端（开关 / 超时 ms / 输出字符上限）、文件（开关 / 单次读取字节上限）、打开（开关）；
+  字段路径见 §1，工具能力与安全边界见 06 §11。
+  - 总开关 `agent.tools.enabled` 关闭后 `run_command` / `read_file` / `write_file` /
+    `list_dir` / `open_path` 5 个工具都不注册（模型看不到它们）；总开关本身**常显**，
+    否则关掉就再也无法启用（门控见 §6.1）。
+  - 「工作目录」为空串时回落用户主目录；它只是工具的**默认**工作目录，**不是沙箱** ——
+    越界不静默，结果里回带真实的绝对路径。
+  - 逐次确认沿用 `sensitivity` 判定：`run_command` / `write_file` / `open_path` 为 `confirm`
+    （走 06 §5 的确认链路，勿扰时段或确认超时一律按拒绝），`read_file` / `list_dir` 为 `safe`；
+    由 `advanced.confirmSensitiveTools` 统一开关，关闭后敏感工具不再询问（见 §1）。
 - **高级**：日志查看与导出、代理设置、日志级别、勿扰时段、重置为默认配置。
   分组为「网络 / 日志 / 勿扰 / 安全 / 危险操作」；「重置为默认配置」需**就地二次确认**
   （按钮变为「确认重置？」+ 取消），不再用原生 `confirm`。
@@ -204,6 +236,8 @@
 | `skills.disabled` | `skills.list()` 非空 |
 | `mcp.servers.*` / `mcp.lazyConnect` | `mcp.servers.length > 0` |
 | `llm.providers.*`（含 `temperature`） | `llm.providers` 至少一项 |
+| `agent.tools.enabled` | 常显（否则无法重新启用） |
+| `agent.tools.terminal.*` / `files.*` / `open.enabled` | `agent.tools.enabled === true` |
 
 校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针按页断言——
 `settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0；

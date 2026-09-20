@@ -32,6 +32,8 @@ export interface LlmProvider {
 - 默认实现 `OpenAiCompatProvider`：`baseURL + apiKey + model`，兼容 DeepSeek / OpenAI / Ollama / vLLM 等（见 ADR-003）。
 - 设置中可保存多组模型配置并切换默认；会话级可选模型；temperature 等参数可调。
 - 可靠性：指数退避重试、单请求超时（默认 60s）、流式中断可取消（AbortSignal 贯穿到 IPC）。
+- `ChatRequest.reasoningEffort` 由 `llm.providers.<id>.reasoningEffort` 驱动，取值
+  `auto | low | medium | high`；`auto`（默认）时**不下发** `reasoning_effort` 字段。
 
 ## 4. 会话管理
 
@@ -174,3 +176,74 @@ export interface LlmProvider {
 - **文件操作**：默认限于感知文件夹范围内；越界操作需用户确认。
 - **网络**：LLM / MCP 支持系统代理（设置项 `advanced.proxy`）。
 - **执行**：命令 / 文件操作前经工具权限分级校验，敏感级需确认。
+
+## 11. 电脑操控工具（v0.7.0）
+
+v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增 5 个内置工具，把命令执行与文件读写
+接进 §5 的工具循环。工具定义（名称 / 参数 Schema / 敏感级）留在 `packages/agent-core`，
+真正的系统调用落在主进程并**经构造参数注入**，内核仍不依赖 Electron / DOM（见 §2 分层）。
+
+| 工具 | 参数 | sensitivity | 实现文件 |
+|---|---|---|---|
+| `run_command` | `{ command, cwd?, timeoutMs? }` | confirm | `packages/agent-core/src/tools/terminal.ts` + `apps/desktop/src/main/tools/command-runner.ts` |
+| `read_file` | `{ path, maxBytes? }` | safe | `packages/agent-core/src/tools/files.ts` + `apps/desktop/src/main/tools/file-port.ts` |
+| `write_file` | `{ path, content, mode?: 'overwrite' \| 'append' }` | confirm | 同上 |
+| `list_dir` | `{ path, limit? }` | safe | 同上 |
+| `open_path` | `{ target }` | confirm | `packages/agent-core/src/tools/files.ts` + `apps/desktop/src/main/tools/open-port.ts` |
+
+- **工具语义**：`run_command` 执行单条命令并采集 stdout / stderr；`read_file` 按 UTF-8 读文本；
+  `write_file` 写文本（`mode` 缺省 `overwrite`，`append` 追加）；`list_dir` 列目录项；
+  `open_path` 交系统默认程序打开路径（`explorer` / 关联程序），不等待其退出。
+- **配置字段（不改名）**：`agent.tools.enabled`（总开关）、`agent.tools.workspaceDir`（默认 cwd）、
+  `agent.tools.terminal.{enabled,timeoutMs,maxOutputChars}`、
+  `agent.tools.files.{enabled,maxReadBytes}`、`agent.tools.open.enabled`。各子开关只决定对应工具
+  是否注册；`false` 时该工具不出现在工具清单里（非"注册后拒绝"）。
+
+### 11.1 安全边界
+
+- **逐次确认**：`run_command` / `write_file` / `open_path` 三个 `sensitivity = 'confirm'` 的工具，
+  **每一次调用**都走 §5 的 `confirmTool` 钩子（主进程侧由 §9.1 的 `ProactiveScheduler` 承载）。
+  **超时（默认 60s）与勿扰时段一律按拒绝处理**，拒绝后不执行、以「用户拒绝执行」文本回填模型、
+  工具卡片置 `error`、循环继续。
+- **总开关**：`agent.tools.enabled = false` 时 5 个工具**完全不注册**——模型在工具清单里看不到
+  它们，系统提示词里也没有相应说明，因而不可能产生确认卡片或任何本机副作用。
+- **`workspaceDir` 只是默认工作目录，不是沙箱**：它仅作为 `run_command` 的缺省 `cwd` 与
+  相对路径的解析基准（为空串时回落用户主目录），工具**不限制**模型访问该目录之外的位置。
+  越界**不静默**：
+  工具结果里回带解析后的绝对路径（命令的实际 `cwd`、文件的实际路径），确认卡片同样展示
+  绝对路径，由用户据此决定是否放行。
+- **输出上限**：命令输出（stdout + stderr）按 `agent.tools.terminal.maxOutputChars` 截断，
+  取 **head 60% + tail 40%**，中间插入截断提示——编译错误与堆栈通常在尾部，tail 保证不丢。
+- **超时按进程树终止**：`agent.tools.terminal.timeoutMs` 到期后用 `taskkill /T /F` 杀掉整棵
+  进程树；只调 Node 的 `child.kill()` 在 Windows 上杀不掉孙进程（`npm` / `pnpm` 这类会派生孙进程，
+  留下孤儿进程继续占端口、改磁盘）。
+- **UTF-8 输出约定**：命令按 UTF-8 采集输出。PowerShell 5.1 默认按控制台代码页输出，
+  spawn 时必须显式设 `[Console]::OutputEncoding`（必要时含 `$OutputEncoding`），
+  否则中文一律乱码。
+- **不做命令黑名单**：黑名单必然漏（`cmd /c`、编码 / 转义、`$()`、别名、脚本文件都能绕过），
+  安全边界由「**逐次确认 + 输出上限 + 总开关**」三道构成，而不是字符串匹配。
+
+### 11.2 `advanced.confirmSensitiveTools = false` 时的语义
+
+沿用既有行为（§5 / §9.1）：**直接放行**，不推送确认卡片，内核仍按 `sensitivity` 写日志留痕。
+此时代码路径与用户自己在 PowerShell 里敲同样的命令**能力等同**——`run_command` / `write_file` /
+`open_path` 会在无人确认的情况下执行，包括删除文件、改注册表、装软件这类不可逆操作。
+因此该开关的定位是「减少打扰」，**不是安全加固**；需要安全边界时保持默认 `true`。
+
+### 11.3 非目标（v0.7.0 明确不做）
+
+- **鼠标 / 键盘模拟**：不做 `SendInput` / UI 自动化，Agent 不得代替用户点击、输入界面。
+- **截图 / 录屏**：不采集屏幕像素，视觉输入不在本轮范围。
+- **持久交互式 shell**：不为会话维持长驻 shell；每次 `run_command` 都是独立进程。
+- **命令黑名单**：见 §11.1——不做字符串级别的命令过滤。
+
+### 11.4 已知限制
+
+- **只支持非交互命令**：需要 TTY / 交互提示的程序（`npm login`、不带 `-m` 的 `git commit`、
+  批处理里的 `pause`）会一直挂到超时，最终按进程树终止并回带已采集的输出。
+- **不支持需要持续输入的程序**：REPL、`more`、密码提示等等待后续输入者无法推进。
+- **不注入持久 shell 会话**：每次调用是新进程，`cd` / `set` / 环境变量改动**不会**跨调用保留；
+  跨步状态要用 `cwd` 参数或写文件表达。
+- **不支持字节级二进制输出**：输出按 UTF-8 文本解码，二进制内容（图片、压缩包、
+  `certutil -dump`）会乱码或被截断；要读文件内容请走 `read_file`。
+- `read_file` 单次读取上限为 `agent.tools.files.maxReadBytes`，超出部分不返回。
