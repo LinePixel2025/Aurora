@@ -146,6 +146,26 @@ describe('OpenAiCompatProvider.chat', () => {
     ])
   })
 
+  it('请求体带上思考等级 reasoning_effort', async () => {
+    const { instance, stub } = provider([{ sseChunks: ['data: [DONE]\n\n'] }])
+    await collect(
+      instance.chat({
+        model: 'm',
+        messages: [{ role: 'user', content: 'hi' }],
+        reasoningEffort: 'high',
+      }),
+    )
+    const body = stub.calls[0]?.body as Record<string, unknown>
+    expect(body['reasoning_effort']).toBe('high')
+  })
+
+  it('未指定思考等级时请求体完全不出现 reasoning_effort（auto 不下发）', async () => {
+    const { instance, stub } = provider([{ sseChunks: ['data: [DONE]\n\n'] }])
+    await collect(instance.chat({ model: 'm', messages: [{ role: 'user', content: 'hi' }] }))
+    const body = stub.calls[0]?.body as Record<string, unknown>
+    expect('reasoning_effort' in body).toBe(false)
+  })
+
   it('HTTP 错误转为 error 事件（不抛给调用方）', async () => {
     const { instance } = provider([{ status: 401, text: 'invalid api key' }])
     const events = await collect(instance.chat({ model: 'm', messages: [] }))

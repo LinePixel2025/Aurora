@@ -347,6 +347,19 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
             />
           </SettingField>
 
+          <SettingField
+            :data-field="`llm.providers.${draft.id}.reasoningEffort`"
+            label="思考等级"
+            hint="auto 不指定该参数，兼容性最好；越高越深入，但更慢更贵"
+          >
+            <select v-model="draft.reasoningEffort" class="input">
+              <option value="auto">auto（不指定，兼容性最好）</option>
+              <option value="low">low（更快）</option>
+              <option value="medium">medium</option>
+              <option value="high">high（更深入）</option>
+            </select>
+          </SettingField>
+
           <div class="row wrap">
             <AppButton size="sm" :disabled="testing !== null" @click="testProvider(draft)">
               {{ testing === draft.id ? '测试中…' : '保存并测试连接' }}

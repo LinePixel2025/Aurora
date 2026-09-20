@@ -7,6 +7,7 @@ import { SkillsRegistry } from '../skills/registry.js'
 import { ToolRegistry } from '../tools/registry.js'
 import { createFakeProvider, type ScriptRound } from '../testing/fakeProvider.js'
 import { SESSION_DIR, TestFileSystem } from '../testing/fileSystem.js'
+import type { ReasoningEffortLevel } from '../llm/types.js'
 import type { AgentEvent } from '@aurora/shared'
 
 async function createSkills(): Promise<SkillsRegistry> {
@@ -41,6 +42,8 @@ async function createHarness(options: {
   rounds: ScriptRound[]
   withProvider?: boolean
   maxRounds?: number
+  /** 装配层透传给内核的思考等级（`undefined` 代表用户选了 `auto`） */
+  reasoningEffort?: ReasoningEffortLevel
 }): Promise<Harness> {
   const fs = new TestFileSystem()
   const sessions = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
@@ -66,7 +69,14 @@ async function createHarness(options: {
       create: () =>
         options.withProvider === false
           ? undefined
-          : { provider, model: 'fake-model', temperature: 0.3 },
+          : {
+              provider,
+              model: 'fake-model',
+              temperature: 0.3,
+              ...(options.reasoningEffort === undefined
+                ? {}
+                : { reasoningEffort: options.reasoningEffort }),
+            },
     },
     tools,
     skills,
@@ -252,6 +262,20 @@ describe('KernelAgentHost', () => {
     await harness.waitForDone()
     const done = harness.events.find((event) => event.type === 'done')
     expect(done).toMatchObject({ type: 'done', pending: true })
+  })
+
+  it('思考等级透传：provider.create() 给出 medium 时请求带上 reasoningEffort', async () => {
+    const harness = await createHarness({ rounds: [{ text: 'ok' }], reasoningEffort: 'medium' })
+    await harness.send('hi')
+    await harness.waitForDone()
+    expect(harness.provider.calls[0]?.reasoningEffort).toBe('medium')
+  })
+
+  it('未配置思考等级（auto）时请求对象里没有 reasoningEffort 字段', async () => {
+    const harness = await createHarness({ rounds: [{ text: 'ok' }] })
+    await harness.send('hi')
+    await harness.waitForDone()
+    expect('reasoningEffort' in (harness.provider.calls[0] ?? {})).toBe(false)
   })
 
   it('历史会进入后续请求（续接上下文）', async () => {

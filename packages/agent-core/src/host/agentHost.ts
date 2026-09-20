@@ -9,6 +9,7 @@ import type { Logger } from '@aurora/shared'
 import { createNoopLogger } from '@aurora/shared'
 import { buildSystemPrompt, describeTools } from '../context/systemPrompt.js'
 import { runAgentLoop, type LoopProvider } from '../loop/agentLoop.js'
+import type { ReasoningEffortLevel } from '../llm/types.js'
 import type { SkillsBridge } from '../skills/bridge.js'
 import { compressHistory, DEFAULT_MAX_CHARS, type SummarizeFn } from '../session/history.js'
 import type { SessionStore } from '../session/store.js'
@@ -19,6 +20,8 @@ export interface ProviderConfig {
   provider: LoopProvider
   model: string
   temperature?: number
+  /** 思考等级（v5）；`undefined` = 不下发思考等级字段 */
+  reasoningEffort?: ReasoningEffortLevel
 }
 
 export interface AgentProviderFactory {
@@ -230,6 +233,10 @@ export class KernelAgentHost implements AgentHostContract {
         ...(input.config.temperature === undefined
           ? {}
           : { temperature: input.config.temperature }),
+        // 思考等级（`auto` 已在装配层映射成 undefined，这里只做透传）
+        ...(input.config.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: input.config.reasoningEffort }),
         systemPrompt,
         userInput,
         ...(extraContext === undefined ? {} : { extraContext }),

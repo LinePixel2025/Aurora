@@ -1,4 +1,13 @@
 /** LLM 提供者抽象（docs/06 §3、ADR-003）。 */
+import type { ReasoningEffort } from '@aurora/shared'
+
+/**
+ * 真正允许下发给模型的思考等级（v5）。
+ *
+ * `auto` 表示「不下发思考等级字段」，由装配层（主进程 `createProviderFactory`）
+ * 映射成 `undefined`；内核**永远**收不到 `'auto'`。
+ */
+export type ReasoningEffortLevel = Exclude<ReasoningEffort, 'auto'>
 
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool'
 
@@ -37,6 +46,11 @@ export interface ChatRequest {
   messages: ChatRequestMessage[]
   tools?: LlmToolDefinition[]
   temperature?: number
+  /**
+   * 思考等级（v5）。`undefined` = 请求体里不带思考等级字段
+   * （用户选 `auto`，兼容性最好）；`auto` 不会出现在这里，见 `ReasoningEffortLevel`。
+   */
+  reasoningEffort?: ReasoningEffortLevel
   maxTokens?: number
   /** 要求模型以 JSON 对象作答（结构化输出，docs/05 §3.2） */
   jsonObject?: boolean

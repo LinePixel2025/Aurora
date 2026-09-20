@@ -160,6 +160,10 @@ export function createProviderFactory(
         return undefined
       }
 
+      // 「思考等级」按用户设置透传给内核；`auto` 约定为「不下发 reasoning_effort」，
+      // 在内核边界之前就映射成 undefined —— 其它层不许再判断 `'auto'`。
+      const reasoningEffort = config.reasoningEffort === 'auto' ? undefined : config.reasoningEffort
+
       return {
         provider: new OpenAiCompatProvider({
           id: providerId,
@@ -179,6 +183,7 @@ export function createProviderFactory(
         }),
         model: config.model,
         temperature: config.temperature,
+        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
       }
     },
   }

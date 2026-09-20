@@ -456,6 +456,71 @@ export const SETTINGS_CLASSROOM_PATCH_CHECK = `(async () => {
 })()`
 
 /**
+ * 思考等级探针 · 前半（step-02）：走真实用户路径把「思考等级」写进配置。
+ *
+ * 截图用的是**隔离 userData**（`index.ts` 的 `AURORA_CAPTURE` 分支），起步时一个
+ * provider 都没有，所以先经 `settings.update` 造一个带 `reasoningEffort: 'high'` 的；
+ * 等 `settings:changed` 推送把卡片画出来，再点开第一张卡片上的 `.more`
+ * （「高级参数与连接测试」）—— 下拉只在折叠区展开后才在 DOM 里。
+ */
+export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { ok: false, reason: 'settings.get failed' }
+    if (Object.keys(state.value.llm.providers).length === 0) {
+      const result = await window.aurora.settings.update({
+        llm: {
+          active: 'capture',
+          providers: {
+            capture: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.deepseek.com/v1',
+              apiKeyEnc: '',
+              model: 'deepseek-chat',
+              temperature: 0.7,
+              reasoningEffort: 'high',
+            },
+          },
+        },
+      })
+      if (!result.ok) return { ok: false, reason: result.message }
+      await new Promise((resolve) => setTimeout(resolve, 600))
+    }
+    const more = document.querySelector('.more')
+    if (more === null) return { ok: false, reason: 'no .more' }
+    more.click()
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 思考等级探针 · 后半：确认「写盘 → 回读 → 渲染」整条链路通了。
+ *
+ * 只数 DOM 不够（一个写死的 `<select>` 也能数出来），所以要读下拉的**当前值**：
+ * 它来自刚持久化的配置，`'high'` 才对得上。
+ */
+export const SETTINGS_LLM_EFFORT_CHECK = `(() => {
+  try {
+    const effortFields = document.querySelectorAll('[data-field$=".reasoningEffort"]')
+    const temperatureFields = document.querySelectorAll('[data-field$=".temperature"]')
+    const first = effortFields[0]
+    const select = first === undefined ? null : first.querySelector('select')
+    const value = select === null ? null : select.value
+    return {
+      effortFields: effortFields.length,
+      temperatureFields: temperatureFields.length,
+      value,
+      pass: effortFields.length > 0 && temperatureFields.length > 0 && value === 'high',
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
  * 默认截图清单：五个窗口 + 提示条两态 + 设置页各页深链 + 四条 DOM 断言。
  * `AURORA_CAPTURE_WINDOWS` 可以只截其中一部分（逗号分隔）。
  */
@@ -483,6 +548,15 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       check: page === 'general' ? SETTINGS_FIELDS_SCRIPT : undefined,
     })
   }
+  // 思考等级（step-02）：造一个 provider → 展开「高级参数」→ 断言下拉真值来自配置。
+  // 刻意放在 SETTINGS_PAGE_IDS 循环**之外**：塞进循环会让每个设置页都多点一次。
+  plan.push({
+    name: 'settings',
+    file: 'settings-llm-params.png',
+    query: { page: 'llm' },
+    act: SETTINGS_LLM_EFFORT_ACT,
+    check: SETTINGS_LLM_EFFORT_CHECK,
+  })
   // 设置页门控断言：classroom 配置在；切到 Work 后 classroom 配置必须消失
   plan.push({
     name: 'settings',

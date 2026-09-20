@@ -218,6 +218,8 @@ export class OpenAiCompatProvider implements LlmProvider {
       messages: req.messages.map(toOpenAiMessage),
       stream,
       ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
+      // 思考等级：`undefined` 时**完全不写**该字段（不认这个参数的厂商会直接 400）
+      ...(req.reasoningEffort === undefined ? {} : { reasoning_effort: req.reasoningEffort }),
       ...(req.maxTokens === undefined ? {} : { max_tokens: req.maxTokens }),
       ...(req.jsonObject ? { response_format: { type: 'json_object' } } : {}),
       ...(req.tools && req.tools.length > 0

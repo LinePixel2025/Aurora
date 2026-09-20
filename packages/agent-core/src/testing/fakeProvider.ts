@@ -1,5 +1,10 @@
 /** 测试用假 LLM provider：按脚本轮次产出 ChatEvent。 */
-import type { ChatEvent, ChatRequestMessage, LlmToolDefinition } from '../llm/types.js'
+import type {
+  ChatEvent,
+  ChatRequestMessage,
+  LlmToolDefinition,
+  ReasoningEffortLevel,
+} from '../llm/types.js'
 import type { LoopProvider } from '../loop/agentLoop.js'
 
 export interface RecordedCall {
@@ -7,6 +12,8 @@ export interface RecordedCall {
   messages: ChatRequestMessage[]
   tools?: LlmToolDefinition[]
   temperature?: number
+  /** 思考等级；`undefined` 表示本次请求没有下发思考等级字段 */
+  reasoningEffort?: ReasoningEffortLevel
 }
 
 export interface ScriptRound {
@@ -32,6 +39,7 @@ export function createFakeProvider(
         messages: req.messages,
         ...(req.tools === undefined ? {} : { tools: req.tools }),
         ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
+        ...(req.reasoningEffort === undefined ? {} : { reasoningEffort: req.reasoningEffort }),
       })
       return iterate(round, signal)
     },

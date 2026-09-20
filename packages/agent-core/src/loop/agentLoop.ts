@@ -9,7 +9,12 @@
  * 工具结果必须能对应到发起它的 assistant 消息，否则续接上下文时服务端会拒绝请求。
  */
 import type { AgentToolCall } from '@aurora/shared'
-import type { ChatEvent, ChatRequestMessage, LlmToolDefinition } from '../llm/types.js'
+import type {
+  ChatEvent,
+  ChatRequestMessage,
+  LlmToolDefinition,
+  ReasoningEffortLevel,
+} from '../llm/types.js'
 import type { ToolRegistry } from '../tools/registry.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
 
@@ -30,6 +35,8 @@ export interface LoopProvider {
       messages: ChatRequestMessage[]
       tools?: LlmToolDefinition[]
       temperature?: number
+      /** 思考等级；`undefined` = 不下发思考等级字段（见 `ReasoningEffortLevel`） */
+      reasoningEffort?: ReasoningEffortLevel
       jsonObject?: boolean
     },
     signal?: AbortSignal,
@@ -40,6 +47,8 @@ export interface AgentLoopOptions {
   provider: LoopProvider
   model: string
   temperature?: number
+  /** 思考等级（v5）；`undefined` = 不下发思考等级字段 */
+  reasoningEffort?: ReasoningEffortLevel
   systemPrompt: string
   /** 本次用户输入 */
   userInput: string
@@ -112,6 +121,9 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
         messages,
         ...(llmTools.length === 0 ? {} : { tools: llmTools }),
         ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
+        ...(options.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: options.reasoningEffort }),
       },
       options.signal,
     )) {
