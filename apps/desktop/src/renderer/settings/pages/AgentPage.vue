@@ -152,16 +152,17 @@ async function openWorkspace(): Promise<void> {
     <section class="section-card">
       <h2 class="section-title">工作目录</h2>
       <p class="section-desc">
-        工具的<strong>默认</strong>工作目录：命令在其下执行，相对路径以此为基准。这<strong
+        <strong>命令</strong>的缺省工作目录：执行命令时若未显式指定路径，就在它下面运行。这<strong
           >不是沙箱</strong
         >
-        —— 模型仍可显式传入其它路径，安全边界是「逐次确认 + 输出上限 + 总开关」。
+        —— 模型仍可显式传入其它路径，安全边界是「逐次确认 + 输出上限 + 总开关」。 文件类工具（读 /
+        写 / 列目录）不读此项，它们的相对路径按应用自身目录解析， 因此提示词要求模型传绝对路径。
       </p>
 
       <SettingField
         data-field="agent.tools.workspaceDir"
         label="默认工作目录"
-        hint="留空 = 用户主目录（如 C:\Users\you）；不是沙箱，模型仍可访问其它路径"
+        hint="留空 = 用户主目录（如 C:\Users\you）；只作用于命令的缺省 cwd，且不是沙箱"
       >
         <input
           class="input"
@@ -340,8 +341,8 @@ async function openWorkspace(): Promise<void> {
     </section>
 
     <p class="tiny muted">
-      安全提示：默认工作目录只影响相对路径的基准，不是沙箱；请务必保留「敏感工具确认」，
-      或至少清楚关闭它的后果。
+      安全提示：默认工作目录只影响命令的缺省
+      cwd（不是沙箱，也不影响文件类工具）；请务必保留「敏感工具确认」， 或至少清楚关闭它的后果。
     </p>
   </section>
 </template>

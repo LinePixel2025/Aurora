@@ -93,8 +93,8 @@
   `auto` 表示请求里**不带 `reasoning_effort` 字段**，用于兼容不认该参数的厂商；
   其余三档按值下发（见 06 §3）。
 - `agent.tools`（v5 新增，见 06 §11）：4 个开关 + 3 个上限 ——
-  `enabled` 是电脑操控工具**总开关**（`false` 时 5 个工具都不注册）；`workspaceDir` 是工具默认工作目录
-  （空串 = 用户主目录，只作**默认值**、不是沙箱）；`terminal.enabled` 开关终端工具、
+  `enabled` 是电脑操控工具**总开关**（`false` 时 5 个工具都不注册）；`workspaceDir` 是 **`run_command`
+  的缺省 `cwd`**（空串 = 用户主目录，只作**默认值**、不是沙箱；文件类工具不读它，见 06 §11.1）；`terminal.enabled` 开关终端工具、
   `terminal.timeoutMs` 是单次命令超时（毫秒）、`terminal.maxOutputChars` 是回传输出的截断上限；
   `files.enabled` 开关文件读写、`files.maxReadBytes` 是单次读取上限（字节）；
   `open.enabled` 开关「打开路径」工具。
@@ -195,8 +195,9 @@
   - 总开关 `agent.tools.enabled` 关闭后 `run_command` / `read_file` / `write_file` /
     `list_dir` / `open_path` 5 个工具都不注册（模型看不到它们）；总开关本身**常显**，
     否则关掉就再也无法启用（门控见 §6.1）。
-  - 「工作目录」为空串时回落用户主目录；它只是工具的**默认**工作目录，**不是沙箱** ——
-    越界不静默，结果里回带真实的绝对路径。
+  - 「工作目录」为空串时回落用户主目录；它只是 **`run_command` 的缺省 `cwd`**，**不是沙箱** ——
+    越界不静默，结果里回带真实的绝对路径。注意 `read_file` / `write_file` / `list_dir` **不读**该字段
+    （相对路径按主进程 CWD 解析），所以提示词要求模型对文件类工具传绝对路径（见 06 §11.4）。
   - 逐次确认沿用 `sensitivity` 判定：`run_command` / `write_file` / `open_path` 为 `confirm`
     （走 06 §5 的确认链路，勿扰时段或确认超时一律按拒绝），`read_file` / `list_dir` 为 `safe`；
     由 `advanced.confirmSensitiveTools` 统一开关，关闭后敏感工具不再询问（见 §1）。

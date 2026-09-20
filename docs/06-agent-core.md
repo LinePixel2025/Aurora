@@ -193,27 +193,38 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增 5 
 
 - **工具语义**：`run_command` 执行单条命令并采集 stdout / stderr；`read_file` 按 UTF-8 读文本；
   `write_file` 写文本（`mode` 缺省 `overwrite`，`append` 追加）；`list_dir` 列目录项；
-  `open_path` 交系统默认程序打开路径（`explorer` / 关联程序），不等待其退出。
-- **配置字段（不改名）**：`agent.tools.enabled`（总开关）、`agent.tools.workspaceDir`（默认 cwd）、
-  `agent.tools.terminal.{enabled,timeoutMs,maxOutputChars}`、
+  `open_path` 交系统默认程序处理——`http(s)://` / `mailto:` 走 `shell.openExternal`，
+  其它路径走 `shell.openPath`（由 Windows 关联程序决定打开方式，Aurora 不指定具体程序），
+  都不等待目标程序退出。
+- **参数钳制**：`read_file.maxBytes` 缺省取 `agent.tools.files.maxReadBytes`，钳到 `1024 .. 上限`；
+  `list_dir.limit` 钳到 `1 .. 500`（缺省 200）；`run_command.timeoutMs` 钳到 `1000 .. 300000`。
+  参数非法（缺必填 / 类型不对）一律返回 `isError` 且**不触碰**真实系统调用。
+- **配置字段（不改名）**：`agent.tools.enabled`（总开关）、`agent.tools.workspaceDir`（命令的默认 cwd，
+  见 §11.1）、`agent.tools.terminal.{enabled,timeoutMs,maxOutputChars}`、
   `agent.tools.files.{enabled,maxReadBytes}`、`agent.tools.open.enabled`。各子开关只决定对应工具
   是否注册；`false` 时该工具不出现在工具清单里（非"注册后拒绝"）。
 
 ### 11.1 安全边界
 
 - **逐次确认**：`run_command` / `write_file` / `open_path` 三个 `sensitivity = 'confirm'` 的工具，
-  **每一次调用**都走 §5 的 `confirmTool` 钩子（主进程侧由 §9.1 的 `ProactiveScheduler` 承载）。
+  **每一次调用**都走 §5 的 `confirmTool` 钩子（主进程侧由 §9.1 的 `ProactiveScheduler` 承载；
+  应用内恒注入该钩子，未注入时内核不拦截——这是内核的可测试性设计，不是可配置项）。
   **超时（默认 60s）与勿扰时段一律按拒绝处理**，拒绝后不执行、以「用户拒绝执行」文本回填模型、
   工具卡片置 `error`、循环继续。
 - **总开关**：`agent.tools.enabled = false` 时 5 个工具**完全不注册**——模型在工具清单里看不到
   它们，系统提示词里也没有相应说明，因而不可能产生确认卡片或任何本机副作用。
-- **`workspaceDir` 只是默认工作目录，不是沙箱**：它仅作为 `run_command` 的缺省 `cwd` 与
-  相对路径的解析基准（为空串时回落用户主目录），工具**不限制**模型访问该目录之外的位置。
-  越界**不静默**：
-  工具结果里回带解析后的绝对路径（命令的实际 `cwd`、文件的实际路径），确认卡片同样展示
-  绝对路径，由用户据此决定是否放行。
+- **`workspaceDir` 只是默认工作目录，不是沙箱**：它只作为 `run_command` 的缺省 `cwd`
+  （为空串时回落用户主目录），工具**不限制**模型访问该目录之外的位置。越界**不静默**：
+  工具结果里回带解析后的绝对路径（命令的实际 `cwd`、文件的实际路径），
+  确认卡片展示的则是模型的**原始参数**（要解析出绝对路径就得先执行，因此卡片里看到的是
+  相对路径原文；解析结果在工具执行结果里回带）。
+  **`read_file` / `write_file` / `list_dir` 不读 `workspaceDir`**：它们的相对路径按主进程 CWD 解析，
+  所以提示词要求模型对文件类工具传绝对路径（`workspaceDir` 只影响命令的缺省 cwd）。
 - **输出上限**：命令输出（stdout + stderr）按 `agent.tools.terminal.maxOutputChars` 截断，
   取 **head 60% + tail 40%**，中间插入截断提示——编译错误与堆栈通常在尾部，tail 保证不丢。
+  但要注意 stdout / stderr **各自**另有 1 MiB 的采集硬上限（`command-runner.ts` 的 `maxOutputBytes`），
+  溢出时**丢的是尾部**：单次输出超过 1 MiB 时，上面那个 tail 40% 也只是"1 MiB 截断点"的结尾文本，
+  并不是进程真实输出的结尾。
 - **超时按进程树终止**：`agent.tools.terminal.timeoutMs` 到期后用 `taskkill /T /F` 杀掉整棵
   进程树；只调 Node 的 `child.kill()` 在 Windows 上杀不掉孙进程（`npm` / `pnpm` 这类会派生孙进程，
   留下孤儿进程继续占端口、改磁盘）。
@@ -226,8 +237,10 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增 5 
 ### 11.2 `advanced.confirmSensitiveTools = false` 时的语义
 
 沿用既有行为（§5 / §9.1）：**直接放行**，不推送确认卡片，内核仍按 `sensitivity` 写日志留痕。
-此时代码路径与用户自己在 PowerShell 里敲同样的命令**能力等同**——`run_command` / `write_file` /
-`open_path` 会在无人确认的情况下执行，包括删除文件、改注册表、装软件这类不可逆操作。
+此时代码路径与用户自己在 PowerShell 里敲同样的命令**能力相当**（甚至略宽：命令以
+`-NoProfile -NonInteractive -ExecutionPolicy Bypass` 启动，比默认执行策略更宽松，但同样**不是**管理员提权）
+——`run_command` / `write_file` / `open_path` 会在无人确认的情况下执行，
+包括删除文件、改注册表、装软件这类不可逆操作。
 因此该开关的定位是「减少打扰」，**不是安全加固**；需要安全边界时保持默认 `true`。
 
 ### 11.3 非目标（v0.7.0 明确不做）
@@ -246,4 +259,10 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增 5 
   跨步状态要用 `cwd` 参数或写文件表达。
 - **不支持字节级二进制输出**：输出按 UTF-8 文本解码，二进制内容（图片、压缩包、
   `certutil -dump`）会乱码或被截断；要读文件内容请走 `read_file`。
-- `read_file` 单次读取上限为 `agent.tools.files.maxReadBytes`，超出部分不返回。
+- **stdout / stderr 各自 1 MiB 采集上限**：见 §11.1 的「输出上限」——溢出丢的是尾部，
+  所以超过 1 MiB 的命令输出无法完整回填给模型；需要完整日志时让命令自己重定向到文件再 `read_file`。
+- `read_file` 单次读取上限为 `agent.tools.files.maxReadBytes`（下限 1024），超出部分不返回并标注
+  `…（已按 maxBytes 截断）…`；`list_dir` 单次最多 500 项、缺省 200，超出部分不返回并标注已截断。
+- **文件类工具的相对路径按主进程 CWD 解析**（不是 `workspaceDir`）：模型应传绝对路径；
+  只有 `run_command` 的缺省 `cwd` 用 `agent.tools.workspaceDir`。
+- `write_file` 的 `overwrite` 是「同目录临时文件 + `rename`」原子写；`append` 直接追加。

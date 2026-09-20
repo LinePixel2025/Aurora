@@ -30,6 +30,26 @@
   `autoMove=false` 时按 `(路径, 大小, 修改时间)` 去重、长上下文自动摘要压缩（失败退回纯截断）。
 - **文档**：新增 [10 用户手册](./10-user-guide.md) 与 [11 隐私说明](./11-privacy.md)。
 
+**v0.7.0 本轮新增**：
+
+- **模型思考等级**：设置页「AI 模型」每个 provider 的「高级参数与连接测试」新增「思考等级」
+  （`auto` / `low` / `medium` / `high`），端到端下发为请求体的 `reasoning_effort`；
+  `auto`（默认）= **不下发该字段**，以兼容不认该参数的厂商。配置在
+  `llm.providers.<id>.reasoningEffort`。
+- **终端与文件操控工具**（内核第一次具备真实操作本机的能力，配置在 `agent.tools.*`）：
+  `run_command`（PowerShell，confirm）、`read_file`（safe）、`write_file`（confirm）、
+  `list_dir`（safe）、`open_path`（用系统默认程序打开，confirm）。真实系统调用全在主进程实现，
+  内核只认注入的端口；超时按**进程树**终止；输出 head 60% + tail 40% 截断；**不做命令黑名单**。
+- **「电脑操控」设置页 + 全套安全边界**：侧栏第 7 项；总开关 / 工作目录 / 终端 / 文件 / 打开
+  分开关，改完**立即生效**（无需重启）；敏感工具逐次确认（60s 不响应 / 勿扰时段按拒绝）；
+  关闭「敏感工具确认」后不再逐次询问（能力等同用户自己敲同样的命令）。配置 Schema 升到 **v5**
+  （`v4 → v5` 迁移补齐新字段，幂等且不覆盖用户已写值）。关键字段：`agent.tools.enabled`、
+  `agent.tools.workspaceDir`、`agent.tools.terminal.{enabled,timeoutMs,maxOutputChars}`、
+  `agent.tools.files.{enabled,maxReadBytes}`、`agent.tools.open.enabled`。
+
+鼠标键盘模拟、截图录屏、持久交互式 shell、命令黑名单、Anthropic 等非 OpenAI 兼容协议
+**仍属后续范围**。
+
 仍待做：代码签名证书、启动耗时 / 内存优化、Work / Code Mode 功能实现、OCR、多语言。
 详见 [04-roadmap.md](./04-roadmap.md) 的阶段状态与「实现说明」。
 实际工程结构见根目录 [README.md](../README.md)；端到端验证见 `pnpm verify`、
