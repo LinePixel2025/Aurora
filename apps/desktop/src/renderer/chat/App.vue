@@ -8,20 +8,25 @@
  * P6 追加：多会话列表 / 切换（docs/06 §4）与附件拖拽发送（docs/07 §2.3）。
  * 本轮：侧栏改为「快速 / 会话」双栏（快速会话与提示条共用同一会话），
  * 「收起」= 只隐藏窗口（`windowStore.hide('chat')`），不做任何会话动作、也不 abort 流式回复。
+ * 本轮追加：输入区加「思考等级」下拉（与设置页 AI 模型卡写的是**同一个** `reasoningEffort`，
+ * 改完对下一次请求立即生效，不用进设置页）。
  *
  * 视觉（docs/07 §5）：玻璃容器 + 分层头尾（`--fill-1`），用户气泡右对齐、助手正文铺开，
  * 输入区是独立的圆角容器（聚焦加品牌光晕），会话列表/工具卡片走 `.sheet-*` / `.collapse-*`。
  * 交互语义（会话切换、发送、中断、附件拖拽、工具卡片、敏感工具确认）保持不变。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import type { ChatMessageDto, SensitiveToolRequest } from '@aurora/shared'
+import type { ChatMessageDto, LlmProviderConfig, SensitiveToolRequest } from '@aurora/shared'
+import { DEFAULT_REASONING_EFFORT, type ReasoningEffort } from '@aurora/shared/browser'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import ClassificationLedger from '../shared/components/ClassificationLedger.vue'
 import MessageList from '../shared/components/MessageList.vue'
 import SensitiveToolCard from '../shared/components/SensitiveToolCard.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
+import ThinkingLevelSelect from '../shared/components/ThinkingLevelSelect.vue'
 import { useChat } from '../shared/composables/useChat.js'
+import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 
 const chat = useChat('chat', 'main')
@@ -44,6 +49,8 @@ const {
 const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
+// 拖动统一走显式清单（step 6）：交互窗可拖，按钮区显式 no-drag，不靠模板写死 class
+const { dragClass, noDragClass } = useWindowDrag('chat')
 
 const input = ref('')
 /** 侧栏显隐（头部「历史」按钮切换）；默认收起，不挤占消息区 */
@@ -79,6 +86,8 @@ async function refreshQuickPreview(): Promise<void> {
 onUnmounted(() => {
   offSensitiveTool?.()
   offSensitiveTool = null
+  if (effortHintTimer !== null) window.clearTimeout(effortHintTimer)
+  effortHintTimer = null
 })
 
 function resolveSensitive(): void {
@@ -96,6 +105,94 @@ const currentTitle = computed(() => {
   const current = sessions.value.find((item) => item.id === sessionId.value)
   return sessionTitle(current?.title ?? '')
 })
+
+// ───────────────────── 思考等级（docs/06 §3 / docs/07 §2.3） ─────────────────────
+
+/**
+ * 输入区的「思考等级」下拉：读写**当前生效 provider** 的 `llm.providers.<active>.reasoningEffort`。
+ *
+ * 与设置页「AI 模型」卡写的是同一个字段（单一事实来源），**没有按会话覆盖**；
+ * 保存成功后 `settings:changed` 会把新配置推回 store，控件值随之更新，
+ * 下一次请求由 `createProviderFactory()` 读到新值（`auto` → 不下发 `reasoning_effort`）。
+ */
+const activeProviderId = computed(() => settingsStore.settings?.llm.active ?? '')
+
+/** 当前生效 provider 的思考等级；没有可用 provider 时为 `null`（此时控件禁用而不是隐藏） */
+const effort = computed<ReasoningEffort | null>(() => {
+  const settings = settingsStore.settings
+  if (!settings) return null
+  const provider = settings.llm.providers[activeProviderId.value]
+  return provider ? provider.reasoningEffort : null
+})
+
+/** 下拉显示值：无 provider 时用默认等级占位——禁用态也要让用户看得见这个控件 */
+const effortValue = computed<ReasoningEffort>(() => effort.value ?? DEFAULT_REASONING_EFFORT)
+
+/** 下拉 tooltip：无 provider → 指向修复路径；有 provider → 说明这个参数的含义 */
+const effortTitle = computed(() =>
+  effort.value === null
+    ? '先在「设置 → AI 模型」里配置并选中一个模型'
+    : '思考等级（越高越深入，但更慢更贵）；auto 不下发该参数，兼容性最好',
+)
+
+/** 保存结果的一行轻提示（成功 2 秒后消失；失败走 chatError） */
+const effortHint = ref<string | null>(null)
+let effortHintTimer: number | null = null
+
+function flashEffortHint(text: string): void {
+  effortHint.value = text
+  if (effortHintTimer !== null) window.clearTimeout(effortHintTimer)
+  effortHintTimer = window.setTimeout(() => {
+    effortHint.value = null
+    effortHintTimer = null
+  }, 2000)
+}
+
+/**
+ * 去掉只在渲染层存在的两个字段，其余字段原样透传（将来给 provider 加业务字段不会被漏掉）。
+ *
+ * 为什么必须去掉：渲染层拿到的 `apiKeyEnc` 按设计永远是空串（主进程 `redactSettings()` 脱敏），
+ * 而主进程 `applyPatch()` 对每个出现在 patch 里的 provider 做 `{ ...已有, ...patch }` 逐字段合并——
+ * 把空串带回去就等于"把磁盘上的密文覆盖成空"。同进程内 `SettingsStore.setSecret` 写的
+ * `memorySecrets` 缓存会继续供出正确凭据，所以现象是「用起来没事、重启后 API Key 没了」
+ * （主进程 `smoke.ts` 的注释对 patch 有同样的要求）。
+ */
+function stripSecretFields(provider: LlmProviderConfig): LlmProviderConfig {
+  const {
+    apiKeyEnc: _cipher,
+    apiKeySet: _keySet,
+    ...rest
+  } = provider as LlmProviderConfig & { apiKeySet?: boolean }
+  return rest as LlmProviderConfig
+}
+
+/**
+ * 写入当前 provider 的思考等级（只在用户真的改了值时写，挂载 / 切 provider 都不产生空写）。
+ *
+ * patch 必须**原样回传 `llm.active` 与全部 `providers`**（分组级局部更新，缺了会丢配置），
+ * 但每一个 provider 都要先过 `stripSecretFields()`：只改当前那个，其余 provider 的**空密文**
+ * 一样会覆盖磁盘上的对应凭据。
+ */
+async function setEffort(next: ReasoningEffort): Promise<void> {
+  const settings = settingsStore.settings
+  const id = activeProviderId.value
+  if (!settings || id === '') return
+  const provider = settings.llm.providers[id]
+  if (!provider || provider.reasoningEffort === next) return
+  const providers: Record<string, LlmProviderConfig> = {}
+  for (const [providerId, item] of Object.entries(settings.llm.providers)) {
+    providers[providerId] = stripSecretFields(item)
+  }
+  providers[id] = { ...stripSecretFields(provider), reasoningEffort: next }
+  const ok = await settingsStore.update({
+    llm: { active: settings.llm.active, providers },
+  })
+  if (!ok) {
+    chatError.value = settingsStore.error
+    return
+  }
+  flashEffortHint(`思考等级已改为 ${next}`)
+}
 
 // ───────────────────────── 附件拖拽（docs/07 §2.3） ─────────────────────────
 
@@ -203,7 +300,7 @@ function formatTime(iso: string): string {
 
 <template>
   <div class="chat glass">
-    <header class="head drag-region">
+    <header class="head" :class="dragClass">
       <div class="head-title">
         <StatusDot :tone="statusTone" title="AI 状态" />
         <strong class="head-name">对话</strong>
@@ -211,7 +308,7 @@ function formatTime(iso: string): string {
         <span v-if="settingsStore.needsOnboarding" class="badge warn">未配置模型</span>
         <span class="tiny muted session">{{ currentTitle }}</span>
       </div>
-      <div class="head-actions no-drag">
+      <div class="head-actions" :class="noDragClass">
         <AppButton size="sm" variant="ghost" @click="showSidebar = !showSidebar">历史</AppButton>
         <AppButton size="sm" variant="ghost" @click="newSession">新建</AppButton>
         <AppButton size="sm" variant="ghost" @click="clear">清空</AppButton>
@@ -355,6 +452,24 @@ function formatTime(iso: string): string {
         />
         <div class="composer-bar">
           <span class="tiny muted meta"> 会话：{{ sessionId }} · 可调用 Skill 与 MCP 工具 </span>
+          <label class="tiny muted effort-label" for="chat-thinking-level">思考</label>
+          <!-- 下拉自己带 `data-field="chat.reasoningEffort"`：capture 探针与 UI 断言的唯一抓手 -->
+          <ThinkingLevelSelect
+            id="chat-thinking-level"
+            :model-value="effortValue"
+            :disabled="effort === null"
+            :title="effortTitle"
+            @update:model-value="setEffort"
+          />
+          <!--
+            无可用 provider 时控件**保持可见**（只禁用、不隐藏）：用户抱怨的正是「找不到按钮」。
+            提示文字与 tooltip 都指向修复路径；tooltip 挂在这行提示上是因为 Chromium 不给
+            禁用态的原生控件弹 title。
+          -->
+          <span v-if="effort === null" class="tiny muted effort-hint" :title="effortTitle">
+            未配置模型
+          </span>
+          <span v-else-if="effortHint" class="tiny muted effort-hint">{{ effortHint }}</span>
           <AppButton v-if="streaming" size="sm" @click="abort">停止</AppButton>
           <span class="send-slot">
             <AppButton
@@ -664,6 +779,32 @@ function formatTime(iso: string): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/**
+ * 「思考」标签与提示（docs/07 §2.3）。
+ *
+ * 420px 宽的交互窗里这一行已经很紧，压缩的**只能**是可省略的文本：
+ * 标签、下拉（组件内 `flex: 0 0 auto`）与发送按钮都不收缩，
+ * 提示自己可以收缩并省略——否则它会把发送按钮顶出行外。
+ * `white-space: nowrap` 是必须的：CJK 允许逐字断行，标签被压时会折成两行撑高输入区。
+ */
+.effort-label {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.effort-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 发送按钮不允许被压缩：它被挤出圆角输入框是这一行最容易破的版 */
+.send-slot {
+  flex: 0 0 auto;
 }
 
 /* 发送按钮：渐变圆形（AppButton 的 primary 底色 + 这里的尺寸覆盖） */
