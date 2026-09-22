@@ -75,3 +75,7 @@ publish:
   owner: LinePixel2025
   repo: Aurora-releases
   releaseType: release
+  # 显式钉住更新通道：electron-builder 默认会从预发布版本号（`1.0.0-beta.1` → `beta`）
+  # 推导出 `beta.yml`，而本仓库的发布脚本与客户端更新链路都按 `latest.yml` 组织。
+  # 置为 latest 的语义是：**这次 beta 会推送给所有已装正式版的用户**（用户决策）。
+  channel: latest
