@@ -6,7 +6,9 @@
  * - 悬停 → 主进程把窗口加宽到 228px（`window:setEdgeBarExpanded`），面板从右滑入；
  *   移开鼠标 → 面板淡出后再把窗口收回 8px（否则屏幕右侧会留一块看不见却挡鼠标的区域）；
  * - 点击竖条 → 呼出完整交互窗（`window:showChat`）；展开态下竖条仍贴着屏幕右缘，仍是有效点击目标；
- * - 面板内容：AI 状态 → 当前模式 → 最近消息 → 今日课程 → 系统状态，底部是四个操作入口。
+ * - 面板内容：AI 状态 → 当前模式 → 最近消息 → 今日课程 → 系统状态，底部是三个操作入口。
+ *   快速会话已并入交互窗侧栏（「快速」栏），面板不再有独立的快速对话入口；
+ *   「最近消息」展示的仍是快速会话（与交互窗侧栏同一会话）。
  *
  * 几何预算（不要突破）：展开窗口 228px = 竖条 8px + 面板 220px。
  * 面板宽度写死 220px，任何内部布局都在这个宽度内成立，否则会被窗口裁切。
@@ -35,7 +37,7 @@ const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
 const perception = usePerceptionStore()
-const chat = useChat('mini-chat')
+const chat = useChat('edge-bar', 'quick')
 const { statusTone } = chat
 
 const expanded = ref(false)
@@ -183,11 +185,6 @@ async function openChat(): Promise<void> {
   await windowStore.showChat()
 }
 
-async function openMiniChat(): Promise<void> {
-  collapseNow()
-  await windowStore.showMiniChat()
-}
-
 async function openSettings(): Promise<void> {
   collapseNow()
   await windowStore.show('settings')
@@ -198,7 +195,7 @@ async function hideSelf(): Promise<void> {
   await windowStore.hide('edge-bar')
 }
 
-// 面板的「最近消息」要真有内容：挂载时按快速会话水合一次（只读；不改变小窗自身状态）
+// 面板的「最近消息」要真有内容：挂载时按快速会话水合一次（只读；不改变提示条自身状态）
 onMounted(() => {
   void chat.hydrate()
 })
@@ -258,7 +255,7 @@ onUnmounted(clearTimers)
                 <p class="msg-text">{{ previewOf(message) }}</p>
               </li>
             </ul>
-            <p v-else class="empty">还没有消息：点「小窗对话」开始</p>
+            <p v-else class="empty">还没有消息：点「打开对话窗口」开始</p>
           </section>
 
           <!-- ④ 今日课程（仅 ClassRoom 模式） -->
@@ -292,7 +289,7 @@ onUnmounted(clearTimers)
           </section>
         </div>
 
-        <!-- 操作区：4 个入口，主入口用 primary -->
+        <!-- 操作区：3 个入口，主入口用 primary -->
         <section class="actions">
           <AppButton variant="primary" size="sm" block @click="openChat">
             <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
@@ -301,13 +298,6 @@ onUnmounted(clearTimers)
               />
             </svg>
             打开对话窗口
-          </AppButton>
-          <AppButton variant="ghost" size="sm" block @click="openMiniChat">
-            <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-              <rect x="2.5" y="3" width="11" height="10" rx="2" />
-              <path d="M2.5 6.5h11" />
-            </svg>
-            小窗对话
           </AppButton>
           <AppButton variant="ghost" size="sm" block @click="openSettings">
             <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">

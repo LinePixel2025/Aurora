@@ -188,11 +188,6 @@ export const useWindowStore = defineStore('windows', () => {
     if (result.ok) state.value = result.value
   }
 
-  async function showMiniChat(): Promise<void> {
-    const result = await window.aurora.window.showMiniChat()
-    if (result.ok) state.value = result.value
-  }
-
   /** 提示条收起态（8px 竖条）/ 展开态（面板）切换（docs/07 §2.2） */
   async function setEdgeBarExpanded(expanded: boolean): Promise<void> {
     const result = await window.aurora.window.setEdgeBarExpanded(expanded)
@@ -205,7 +200,7 @@ export const useWindowStore = defineStore('windows', () => {
     })
   }
 
-  return { state, load, show, hide, toggle, showChat, showMiniChat, setEdgeBarExpanded, bind }
+  return { state, load, show, hide, toggle, showChat, setEdgeBarExpanded, bind }
 })
 
 export const usePerceptionStore = defineStore('perception', () => {

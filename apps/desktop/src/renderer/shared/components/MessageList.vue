@@ -1,11 +1,10 @@
 <script setup lang="ts">
 /**
- * 消息列表（交互窗与小窗共用）。
- * `compact` 模式用于小 AI 交互窗口：气泡 + 流式文本 + 工具状态点，不展示完整执行卡片。
+ * 消息列表（交互窗的消息流）。
  *
  * 视觉（docs/07 §5）：用户消息右对齐胶囊气泡，助手消息左对齐纯文本块（Apple 风格：不套气泡），
  * 代码块单独成卡并带 hover 显隐的「复制」；工具执行卡片默认折叠，展开走 `.collapse-*`。
- * props / 插槽契约保持原样（`compact` / `emptyHint` 语义与默认值不变）。
+ * props / 插槽契约：`messages`（消息数组）+ `emptyHint`（空状态提示语）。
  */
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import type { AgentToolCall } from '@aurora/shared'
@@ -17,10 +16,9 @@ import StatusDot from './StatusDot.vue'
 const props = withDefaults(
   defineProps<{
     messages: ChatMessage[]
-    compact?: boolean
     emptyHint?: string
   }>(),
-  { compact: false, emptyHint: '开始一段对话吧' },
+  { emptyHint: '开始一段对话吧' },
 )
 
 // ───────────────────────── 跟随最新（自动滚底） ─────────────────────────
@@ -97,13 +95,6 @@ function toolTone(state: AgentToolCall['state']): 'idle' | 'running' | 'error' {
   if (state === 'running') return 'running'
   if (state === 'error') return 'error'
   return 'idle'
-}
-
-/** 小窗只有状态点：用一个词说明这组调用的总体状态（docs/07 §2.4「无完整执行卡片」） */
-function toolDotsLabel(calls: AgentToolCall[]): string {
-  if (calls.some((call) => call.state === 'error')) return '工具失败'
-  if (calls.some((call) => call.state === 'running')) return '工具执行中'
-  return '工具完成'
 }
 
 // ───────────────────────── 工具卡片：折叠态 + 耗时 ─────────────────────────
@@ -235,10 +226,10 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 </script>
 
 <template>
-  <div ref="rootEl" class="messages" :class="{ compact }" @click="onContentClick">
+  <div ref="rootEl" class="messages" @click="onContentClick">
     <div v-if="messages.length === 0" class="empty anim-rise">
       <span class="empty-orb" aria-hidden="true" />
-      <p class="empty-title">{{ compact ? '快速提问' : '开始对话' }}</p>
+      <p class="empty-title">开始对话</p>
       <p class="empty-hint tiny muted">{{ emptyHint }}</p>
     </div>
 
@@ -266,8 +257,8 @@ async function onContentClick(event: MouseEvent): Promise<void> {
           <!-- eslint-disable-next-line vue/no-v-html -->
           <div v-else-if="message.content !== ''" class="md" v-html="message.html" />
 
-          <!-- 工具执行卡片：折叠头行 + 展开细节（小窗 compact 只留状态点，docs/07 §2.4） -->
-          <div v-if="!compact && (message.toolCalls?.length ?? 0) > 0" class="tools">
+          <!-- 工具执行卡片：折叠头行 + 展开细节（docs/06 §5） -->
+          <div v-if="(message.toolCalls?.length ?? 0) > 0" class="tools">
             <article
               v-for="call in message.toolCalls"
               :key="call.id"
@@ -302,17 +293,6 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 </div>
               </Transition>
             </article>
-          </div>
-
-          <div v-if="compact && (message.toolCalls?.length ?? 0) > 0" class="tool-dots">
-            <StatusDot
-              v-for="call in message.toolCalls"
-              :key="call.id"
-              :tone="toolTone(call.state)"
-              :size="6"
-              :title="`${call.name} · ${toolStateLabel(call.state)}`"
-            />
-            <span class="tiny muted">{{ toolDotsLabel(message.toolCalls ?? []) }}</span>
           </div>
         </div>
       </article>
@@ -458,29 +438,6 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   color: var(--status-error);
 }
 
-.compact .bubble {
-  font-size: var(--text-sm);
-}
-
-.compact .r-user .bubble {
-  padding: 6px 10px;
-}
-
-/* 小窗的进场位移更轻（4px），其余走全局 `.rise-*` */
-.compact .rise-enter-from,
-.compact .rise-leave-to {
-  transform: translateY(4px);
-}
-
-.compact .empty-orb {
-  width: 32px;
-  height: 32px;
-}
-
-.compact .empty-title {
-  font-size: var(--text-base);
-}
-
 /* ── 工具执行卡片（docs/06 §5） ── */
 .tools {
   display: flex;
@@ -594,14 +551,6 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-/* 小窗：只留状态点 */
-.tool-dots {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-top: var(--space-1);
 }
 
 .typing {

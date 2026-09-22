@@ -69,8 +69,8 @@ describe('配置迁移链', () => {
         modes: { current: 'classroom', classroom: { watchDir: 'D:\\感知', subjects: [] } },
       })
       expect(outcome.fromVersion).toBe(1)
-      // v1 → v2 → v3 → v4 → v5：链式执行，四版迁移都会跑
-      expect(outcome.applied).toHaveLength(4)
+      // v1 → v2 → v3 → v4 → v5 → v6：链式执行，五版迁移都会跑
+      expect(outcome.applied).toHaveLength(5)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
@@ -130,8 +130,8 @@ describe('配置迁移链', () => {
         modes: { classroom: { schedule: { provider: 'manual', lessons: [lesson] } } },
       })
       expect(outcome.fromVersion).toBe(2)
-      // v2 → v3 → v4 → v5：链式执行
-      expect(outcome.applied).toHaveLength(3)
+      // v2 → v3 → v4 → v5 → v6：链式执行
+      expect(outcome.applied).toHaveLength(4)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
         string,
@@ -191,9 +191,9 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(3)
-      // v3 → v4 → v5：链式执行
-      expect(outcome.applied).toHaveLength(2)
-      expect(outcome.data['version']).toBe(5)
+      // v3 → v4 → v5 → v6：链式执行
+      expect(outcome.applied).toHaveLength(3)
+      expect(outcome.data['version']).toBe(6)
 
       const windowState = loadWindowState(outcome.data)
       expect(windowState['service-dock']).toBeUndefined()
@@ -216,7 +216,7 @@ describe('配置迁移链', () => {
     it('缺少 general / windowState 分组时不抛错', () => {
       const outcome = migrate({ version: 3 })
       expect(outcome.warnings).toEqual([])
-      expect(outcome.data['version']).toBe(5)
+      expect(outcome.data['version']).toBe(6)
       expect(loadWindowState(outcome.data)).toEqual({})
     })
   })
@@ -245,8 +245,8 @@ describe('配置迁移链', () => {
     it('补齐 reasoningEffort 与 agent.tools，且用户已写入的其它字段原样保留', () => {
       const outcome = migrate(V4_CONFIG)
       expect(outcome.fromVersion).toBe(4)
-      expect(outcome.applied).toHaveLength(1)
-      expect(outcome.data['version']).toBe(5)
+      expect(outcome.applied).toHaveLength(2)
+      expect(outcome.data['version']).toBe(6)
 
       const llm = outcome.data['llm'] as Record<string, unknown>
       expect(llm['active']).toBe('custom')
@@ -342,7 +342,7 @@ describe('配置迁移链', () => {
     it('缺少 llm / agent 分组时不抛错', () => {
       const outcome = migrate({ version: 4 })
       expect(outcome.warnings).toEqual([])
-      expect(outcome.data['version']).toBe(5)
+      expect(outcome.data['version']).toBe(6)
       // 没有 providers 就不凭空造 llm.providers（既有的「空 llm 迁移后仍为空」语义）
       expect(outcome.data['llm']).toBeUndefined()
       expect((outcome.data['agent'] as Record<string, unknown>)['tools']).toEqual({
@@ -352,6 +352,58 @@ describe('配置迁移链', () => {
         files: { enabled: true, maxReadBytes: 262_144 },
         open: { enabled: true },
       })
+    })
+  })
+
+  describe('v5 → v6（移除独立小窗 mini-chat）', () => {
+    const CHAT_GEOMETRY = { x: 1480, y: 200, width: 420, height: 640 }
+    const MINI_GEOMETRY = { x: 1500, y: 260, width: 320, height: 480 }
+    const SETTINGS_GEOMETRY = { x: 700, y: 120, width: 900, height: 700 }
+    const loadWindowState = (raw: Record<string, unknown>): Record<string, unknown> => {
+      const general = raw['general'] as Record<string, unknown>
+      return general['windowState'] as Record<string, unknown>
+    }
+
+    it('删掉 mini-chat 键，chat / settings 几何原样保留，version 升到 6', () => {
+      const outcome = migrate({
+        version: 5,
+        general: {
+          language: 'zh-CN',
+          windowState: {
+            'mini-chat': MINI_GEOMETRY,
+            chat: CHAT_GEOMETRY,
+            settings: SETTINGS_GEOMETRY,
+          },
+        },
+      })
+      expect(outcome.fromVersion).toBe(5)
+      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.data['version']).toBe(6)
+
+      const windowState = loadWindowState(outcome.data)
+      expect(windowState['mini-chat']).toBeUndefined()
+      expect(windowState['chat']).toEqual(CHAT_GEOMETRY)
+      expect(windowState['settings']).toEqual(SETTINGS_GEOMETRY)
+      expect(Object.keys(windowState)).toEqual(['chat', 'settings'])
+      // 其它 general 字段不受影响
+      expect((outcome.data['general'] as Record<string, unknown>)['language']).toBe('zh-CN')
+    })
+
+    it('重复执行结果一致（幂等）', () => {
+      const once = migrate({
+        version: 5,
+        general: { windowState: { 'mini-chat': MINI_GEOMETRY, chat: CHAT_GEOMETRY } },
+      })
+      const twice = migrate({ ...once.data, version: 5 })
+      expect(loadWindowState(twice.data)).toEqual(loadWindowState(once.data))
+      expect(loadWindowState(twice.data)['chat']).toEqual(CHAT_GEOMETRY)
+    })
+
+    it('缺少 general / windowState 时不抛错，也不凭空造出 windowState', () => {
+      const outcome = migrate({ version: 5 })
+      expect(outcome.warnings).toEqual([])
+      expect(outcome.data['version']).toBe(6)
+      expect(outcome.data['general']).toBeUndefined()
     })
   })
 })

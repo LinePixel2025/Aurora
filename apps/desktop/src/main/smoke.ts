@@ -280,7 +280,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     const badTest = await window.aurora.llm.testConnection({ baseUrl: 'https://127.0.0.1:9/v1', apiKey: 'sk-x', model: 'm' })
     record('llm.testConnection 返回结构化结果', badTest && typeof badTest.ok === 'boolean', badTest?.ok ? badTest.message : badTest?.message ?? 'undefined')
 
-    // 8. 窗口状态机（含迷你窗/交互窗互斥、提示条两态）
+    // 8. 窗口状态机（交互窗唯一主对话窗口、提示条两态）
     const win = window.aurora.window
     expectOk('window.show(edge-bar)', await win.show('edge-bar'))
     // 8.1 提示条两态展开（docs/07 §2.2）：只改窗口宽度，**不应改变可见性**
@@ -288,16 +288,14 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     record('提示条展开后仍可见', barExpanded?.visible['edge-bar'] === true, JSON.stringify(barExpanded))
     const barCollapsed = expectOk('window.setEdgeBarExpanded(false)', await win.setEdgeBarExpanded(false))
     record('提示条收起后仍可见', barCollapsed?.visible['edge-bar'] === true, JSON.stringify(barCollapsed))
-    expectOk('window.showMiniChat', await win.showMiniChat())
-    const withMini = expectOk('window.getState', await win.getState())
-    record('迷你窗可见且 primary=mini-chat', withMini?.visible['mini-chat'] === true && withMini?.primary === 'mini-chat', JSON.stringify(withMini))
     expectOk('window.showChat', await win.showChat())
     const withChat = expectOk('window.getState#2', await win.getState())
-    // 互斥断言同时回归 show() 的真实显隐同步：旧窗口必须真的从桌面上消失
-    record('交互窗与迷你窗互斥', withChat?.visible['chat'] === true && withChat?.visible['mini-chat'] === false, JSON.stringify(withChat))
+    // 交互窗是唯一主对话窗口：show 后可见且 primary=chat，hide 后不可见且 primary 归空。
+    // 同时回归 show() 的真实显隐同步（窗口必须真的从桌面上消失）。
+    record('window.showChat 后 chat 可见且 primary=chat', withChat?.visible['chat'] === true && withChat?.primary === 'chat', JSON.stringify(withChat))
     expectOk('window.hide(chat)', await win.hide('chat'))
     const hidden = expectOk('window.getState#3', await win.getState())
-    record('隐藏交互窗后无主窗口且提示条仍在', hidden?.visible['chat'] === false && hidden?.primary === null && hidden?.visible['edge-bar'] === true, JSON.stringify(hidden))
+    record('window.hide(chat) 后 chat 不可见、primary 归空且提示条仍在', hidden?.visible['chat'] !== true && hidden?.primary === null && hidden?.visible['edge-bar'] === true, JSON.stringify(hidden))
 
     // 9. 真实对话链路（chat:send → 工具循环 → chat:event 流式 → chat:history）
     //    quick 会话由主进程在自测前清空，因此这里的条数断言是确定的。

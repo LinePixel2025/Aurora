@@ -6,7 +6,7 @@ import type { App } from 'vue'
 import { useModeStore, usePerceptionStore, useSettingsStore, useWindowStore } from './stores.js'
 
 export interface BootstrapOptions {
-  /** 是否订阅窗口可见性变化（服务窗 / 迷你窗 / 交互窗需要） */
+  /** 是否订阅窗口可见性变化（提示条 / 交互窗 / 设置页 / 引导页需要） */
   trackWindows?: boolean
   /** 是否订阅设置变化 */
   trackSettings?: boolean

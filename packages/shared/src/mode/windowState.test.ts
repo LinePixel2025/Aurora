@@ -22,15 +22,17 @@ describe('窗口可见性状态机（docs/07 §3）', () => {
     state = showWindow(state, 'settings')
     expect(isVisible(state, 'edge-bar')).toBe(true)
     expect(isVisible(state, 'settings')).toBe(true)
+    expect(state.primary).toBeNull()
   })
 
-  it('迷你窗与交互窗互斥：后显示者胜出', () => {
+  it('交互窗是唯一主对话窗口：显示后 primary 为 chat，其它窗口不夺走它', () => {
     let state = createInitialWindowState()
-    state = showWindow(state, 'mini-chat')
-    expect(state.primary).toBe('mini-chat')
     state = showWindow(state, 'chat')
     expect(isVisible(state, 'chat')).toBe(true)
-    expect(isVisible(state, 'mini-chat')).toBe(false)
+    expect(state.primary).toBe('chat')
+
+    state = showWindow(state, 'settings')
+    expect(isVisible(state, 'settings')).toBe(true)
     expect(state.primary).toBe('chat')
   })
 
@@ -44,26 +46,26 @@ describe('窗口可见性状态机（docs/07 §3）', () => {
     expect(state.primary).toBeNull()
   })
 
-  it('toggle 在显示与隐藏之间切换（含互斥）', () => {
+  it('toggle 在显示与隐藏之间切换（chat 参与主窗口判定）', () => {
     let state = createInitialWindowState()
-    state = toggleWindow(state, 'mini-chat')
-    expect(isVisible(state, 'mini-chat')).toBe(true)
     state = toggleWindow(state, 'chat')
     expect(isVisible(state, 'chat')).toBe(true)
-    expect(isVisible(state, 'mini-chat')).toBe(false)
+    expect(state.primary).toBe('chat')
     state = toggleWindow(state, 'chat')
     expect(isVisible(state, 'chat')).toBe(false)
     expect(state.primary).toBeNull()
   })
 
-  it('设置窗与引导窗不参与主对话互斥', () => {
+  it('设置窗与引导窗不参与主对话判定', () => {
     let state = createInitialWindowState()
     state = showWindow(state, 'chat')
     state = showWindow(state, 'settings')
     state = showWindow(state, 'onboarding')
     expect(isVisible(state, 'chat')).toBe(true)
     expect(state.primary).toBe('chat')
+    expect(isPrimaryWindow('chat')).toBe(true)
     expect(isPrimaryWindow('settings')).toBe(false)
+    expect(isPrimaryWindow('edge-bar')).toBe(false)
     expect(listVisible(state)).toEqual(['chat', 'settings', 'onboarding'])
   })
 

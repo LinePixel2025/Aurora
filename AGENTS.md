@@ -13,8 +13,9 @@ apps/desktop/
   src/main/          Electron 主进程：托盘、窗口管理、配置、文件监听、分类管线、
                      系统感知、主动引导、Agent 装配、IPC 注册
   src/preload/       沙箱化 contextBridge 白名单（自包含，见下）
-  src/renderer/      五个窗口入口：edge-bar / chat / mini-chat /
+  src/renderer/      四个窗口入口：edge-bar / chat /
                      settings / onboarding + shared/ 共享组件
+                     （快速会话没有独立窗口，并入交互窗侧栏的「快速」栏）
 packages/shared/     配置 Schema、SettingsStore、IPC 契约、模式/窗口类型
 packages/agent-core/ Agent 内核：LLM / 会话 / 工具循环 / Skill / MCP / Prompt 组装
 packages/modes/      IMode 框架、ClassRoom 完整实现、Work/Code 占位
@@ -40,7 +41,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 
 - **跑单个/单包测试**：`pnpm vitest run <文件路径>`，或 `pnpm --filter @aurora/agent-core test`。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：PowerShell 下 `$env:AURORA_SMOKE='1'; pnpm dev`，结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`。调试渲染层加 `AURORA_DEVTOOLS=1`。
-- **窗口截图核对（前端视觉验收）**：`$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev`，会把五个窗口、
+- **窗口截图核对（前端视觉验收）**：`$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev`，会把四个窗口、
   提示条两态、设置页 7 页、思考等级参数面板、3 个门控场景、1 个真实写盘场景与 2 张提示条收尾图
   截成 18 张 PNG（构成以 `report.json` 的实际条目为准），并写 `report.json`（渲染层 DOM 探针结果：
   面板按钮命中测试、点击竖条后的窗口状态、设置页 `data-field` 门控计数；探针返回 `pass` 时按 PASS/FAIL 落日志，
@@ -97,6 +98,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **已从设置页与引导页移除**（Schema 里保留字段仅为兼容旧配置，改它不生效）。
 - **AI 悬浮窗（service-dock）已于本轮移除**，常驻入口为提示条 + 托盘；配置迁移到 v4
   （`v3 → v4` 删除 `general.windowState['service-dock']`）。提示条的悬停展开面板与点击呼出交互窗见 docs/07 §2.2。
+- **独立小窗（mini-chat）已于本轮删除**：交互窗标题栏「收起」= **直接隐藏窗口**（正在进行的流式回复不中止）；
+  「快速会话」（`sessionId = quick`）与历史会话列表都搬到交互窗侧栏（「快速 / 会话」双栏），
+  提示条面板操作入口由 4 个减为 3 个；配置迁移到 v6（`v5 → v6` 删除 `general.windowState['mini-chat']`）。
 - MCP HTTP 传输暂不支持自定义鉴权头（凭据仅经 stdio `env` 注入）。
 - Skill 的 `scripts/` 永不自动执行（只注入指令正文）；图片 OCR 未启用（只取文件名与尺寸）。
 - Work / Code Mode 为占位实现；多语言、ARM64 / 便携版、macOS / Linux 未开始。

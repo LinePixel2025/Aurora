@@ -169,12 +169,10 @@ export interface ModelInfo {
 
 // ───────────────────────── 窗口 ─────────────────────────
 
-export type PrimaryWindow = 'mini-chat' | 'chat'
-
 export interface WindowState {
   visible: Partial<Record<WindowName, boolean>>
-  /** 迷你窗与交互窗同屏互斥（docs/07 §3） */
-  primary: PrimaryWindow | null
+  /** 当前主对话窗口；交互窗是唯一候选（独立小窗已删除，docs/07 §3） */
+  primary: 'chat' | null
 }
 
 // ───────────────────────── 更新（docs/04 §P6、docs/09） ─────────────────────────
@@ -438,8 +436,8 @@ export interface ChatHistoryRequest {
 }
 
 /**
- * 事件一律携带 `sessionId`：快速会话由服务窗与迷你窗共享，
- * 只按 `requestId` 过滤会串窗（docs/06 §4）。
+ * 事件一律携带 `sessionId`：快速会话与完整会话共用一个交互窗，
+ * 只按 `requestId` 过滤会串会话（docs/06 §4）。
  *
  * `messageId`（text / tool）：该轮助手消息在会话存储中的 id。
  * 多轮工具调用会产生多条助手消息，渲染层据此把文本与工具卡片
@@ -505,7 +503,6 @@ export interface AuroraApi {
     hide(name: WindowName): Promise<Result<WindowState>>
     toggle(name: WindowName): Promise<Result<WindowState>>
     showChat(): Promise<Result<WindowState>>
-    showMiniChat(): Promise<Result<WindowState>>
     setPosition(name: WindowName, position: { x: number; y: number }): Promise<Result<WindowState>>
     /** 提示条收起态（8px 竖条）/ 展开态（面板）切换（docs/07 §2.2） */
     setEdgeBarExpanded(expanded: boolean): Promise<Result<WindowState>>

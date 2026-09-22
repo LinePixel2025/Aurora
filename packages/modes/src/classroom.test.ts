@@ -34,7 +34,6 @@ function createContext(input: Settings = createDefaultSettings()) {
     },
     windows: {
       showChat: () => undefined,
-      showMiniChat: () => undefined,
       notify: (title, body, openPath) => {
         notifications.push([title, body, openPath ?? ''].join('|'))
       },

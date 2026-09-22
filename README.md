@@ -45,7 +45,7 @@ Get-Content "$env:TEMP\aurora-smoke-logs\aurora-*.log" | Select-String 'AURORA_S
 日志固定写到 `%TEMP%\aurora-smoke-logs`（临时 userData 会随自测一起删除）。
 
 覆盖：`window.aurora` 暴露面、配置读写、凭据加密落盘（磁盘无明文）、模式切换与四步引导、
-窗口状态机（迷你窗/交互窗互斥）、**真实对话流式 + 工具卡片 + 会话历史水合**、
+窗口状态机（**交互窗为唯一主对话窗口**，收起 = 直接隐藏）、**真实对话流式 + 工具卡片 + 会话历史水合**、
 MCP 状态接口、设置窗打开。
 
 调试渲染层时可加 `AURORA_DEVTOOLS=1`（dev 模式下自动打开 DevTools；渲染层 console 始终会转发到主进程日志）。
@@ -53,7 +53,7 @@ MCP 状态接口、设置窗打开。
 ## 目录结构
 
 ```
-apps/desktop            Electron 壳（main / preload / renderer 五个窗口入口）
+apps/desktop            Electron 壳（main / preload / renderer 四个窗口入口）
 packages/shared         配置 Schema、SettingsStore、IPC 契约、模式与窗口类型
 packages/agent-core     Agent 内核：LLM Provider、会话、工具循环、Skill 桥接、MCP 客户端
 packages/modes          IMode 框架、ClassRoom 完整实现、Work/Code 占位、引导运行器
@@ -76,7 +76,7 @@ docs/                   项目文档（SSOT）
   - **首次安装引导**：AI 模型（baseURL / API Key / 模型名 + 真实「测试连接」与模型列表）、模式选择、ClassRoom 表单式引导
   - ClassRoom 对话式引导运行器：四步（感知文件夹 → 科目列表 → 每科目标文件夹 → 课前提醒），可中断续接
 - **P2 窗口外壳**：右侧提示条（悬停展开面板、点击呼出交互窗、8 / 228px 两态）、
-  完整对话窗口（Markdown 渲染、流式输出、**工具执行卡片**、历史水合）、小 AI 交互窗口；迷你窗与交互窗互斥、位置跨启动记忆
+  完整对话窗口（Markdown 渲染、流式输出、**工具执行卡片**、历史水合、**快速会话并入侧栏**）；位置跨启动记忆
   （原「AI 服务窗」已于前端刷新中删除，常驻入口收敛为提示条 + 托盘）
 - **P3 Agent 内核（本版本核心）**
   - `session`：`userData/sessions/*.json` 持久化（原子写 + 300ms 防抖 + 退出前 flush）、

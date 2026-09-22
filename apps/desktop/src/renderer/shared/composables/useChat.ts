@@ -9,7 +9,8 @@
  * 渲染层据此认领（首轮之前还不知道 id）。
  *
  * 多会话（docs/06 §4）：`sessionId` 是可切换的 ref；`chat:sessions` 提供列表，
- * `chat:newSession` 新建。窗口默认会话仍是 `main` / `quick`，老数据继续可读。
+ * `chat:newSession` 新建。默认会话由入参 `context` 决定（`main` / `quick` / `settings`），
+ * 会话 id 与旧版一致，老数据继续可读。
  */
 import { computed, onScopeDispose, ref } from 'vue'
 import { deepClone } from '@aurora/shared/browser'
@@ -34,15 +35,27 @@ export interface ChatMessage {
   attachments?: string[]
 }
 
-/** 每个窗口的**默认**会话：迷你窗使用"快速会话"（docs/06 §4） */
-export function sessionIdFor(windowName: WindowName): string {
-  if (windowName === 'mini-chat') return 'quick'
-  if (windowName === 'chat') return 'main'
+/** 对话上下文（原为窗口名映射；mini-chat 删除后改为显式声明，会话 id 保持不变） */
+export type ChatContext = 'main' | 'quick' | 'settings'
+
+/**
+ * 上下文 → 会话 id。
+ *
+ * 映射刻意保持不变（`quick` / `main` / `settings`）：老会话文件继续可读，
+ * 现在「快速会话」由交互窗侧栏与提示条共用（docs/06 §4）。
+ */
+export function sessionIdFor(context: ChatContext): string {
+  if (context === 'quick') return 'quick'
+  if (context === 'main') return 'main'
   return 'settings'
 }
 
-export function useChat(windowName: WindowName) {
-  const defaultSessionId = sessionIdFor(windowName)
+/**
+ * `windowName` 仍然保留：它是 `chat:send` 的 `origin`（`SendMessageRequest.origin` 是 `WindowName`），
+ * 主进程据此判断消息来自哪个窗口；会话 id 由显式的 `context` 决定。
+ */
+export function useChat(windowName: WindowName, context: ChatContext) {
+  const defaultSessionId = sessionIdFor(context)
   /**
    * 当前会话 id（可切换）。
    *
@@ -185,6 +198,21 @@ export function useChat(windowName: WindowName) {
     messages.value = [...result.value.map(toChatMessage), ...incoming]
   }
 
+  /**
+   * 只读拉取「快速会话」的最近几条（交互窗侧栏「快速」栏用）。
+   *
+   * 刻意**不碰** `sessionId` / `messages`：快速会话是独立于当前会话的预览，
+   * 塞进消息流会把两个会话串在一起。渲染成什么样由调用方决定。
+   */
+  async function loadQuickPreview(): Promise<ChatMessageDto[]> {
+    const result = await window.aurora.chat.history({ sessionId: 'quick', limit: 5 })
+    if (!result.ok) {
+      window.console?.warn('快速会话预览读取失败', result.message)
+      return []
+    }
+    return result.value
+  }
+
   /** 拉取会话列表（交互窗的「历史」侧栏用）。 */
   async function loadSessions(): Promise<void> {
     const result = await window.aurora.chat.sessions()
@@ -314,6 +342,7 @@ export function useChat(windowName: WindowName) {
     statusTone,
     lastAssistant,
     hydrate,
+    loadQuickPreview,
     loadSessions,
     switchSession,
     newSession,

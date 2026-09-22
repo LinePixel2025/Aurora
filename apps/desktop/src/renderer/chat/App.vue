@@ -6,13 +6,15 @@
  * P5 追加：敏感工具确认卡片（docs/06 §5）与分类流水面板（docs/05 §3.3）——
  * 交互窗是主动引导的**主载体**，两者都挂在这里。
  * P6 追加：多会话列表 / 切换（docs/06 §4）与附件拖拽发送（docs/07 §2.3）。
+ * 本轮：侧栏改为「快速 / 会话」双栏（快速会话与提示条共用同一会话），
+ * 「收起」= 只隐藏窗口（`windowStore.hide('chat')`），不做任何会话动作、也不 abort 流式回复。
  *
  * 视觉（docs/07 §5）：玻璃容器 + 分层头尾（`--fill-1`），用户气泡右对齐、助手正文铺开，
  * 输入区是独立的圆角容器（聚焦加品牌光晕），会话列表/工具卡片走 `.sheet-*` / `.collapse-*`。
  * 交互语义（会话切换、发送、中断、附件拖拽、工具卡片、敏感工具确认）保持不变。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import type { SensitiveToolRequest } from '@aurora/shared'
+import type { ChatMessageDto, SensitiveToolRequest } from '@aurora/shared'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import ClassificationLedger from '../shared/components/ClassificationLedger.vue'
@@ -22,7 +24,7 @@ import StatusDot from '../shared/components/StatusDot.vue'
 import { useChat } from '../shared/composables/useChat.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 
-const chat = useChat('chat')
+const chat = useChat('chat', 'main')
 const {
   sessionId,
   messages,
@@ -34,6 +36,7 @@ const {
   abort,
   clear,
   hydrate,
+  loadQuickPreview,
   loadSessions,
   switchSession,
   newSession,
@@ -43,7 +46,12 @@ const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
 
 const input = ref('')
-const showHistory = ref(false)
+/** 侧栏显隐（头部「历史」按钮切换）；默认收起，不挤占消息区 */
+const showSidebar = ref(false)
+/** 侧栏栏目：「快速」= 快速会话预览，「会话」= 完整会话列表 */
+const sidebarTab = ref<'quick' | 'sessions'>('sessions')
+/** 「快速」栏的只读预览（`loadQuickPreview()`，不改变当前会话） */
+const quickPreview = ref<ChatMessageDto[]>([])
 
 /** 待确认的敏感工具调用（主进程同一时刻最多推一条） */
 const sensitiveRequest = ref<SensitiveToolRequest | null>(null)
@@ -58,8 +66,15 @@ onMounted(() => {
   offSensitiveTool = window.aurora.proactive.onSensitiveTool((request) => {
     sensitiveRequest.value = request
   })
+  // 水合当前会话（main）→ 会话列表 → 快速会话预览：让侧栏「快速」栏一打开就有内容
   void hydrate().then(() => loadSessions())
+  void refreshQuickPreview()
 })
+
+/** 刷新「快速」栏预览（只读，不切换当前会话） */
+async function refreshQuickPreview(): Promise<void> {
+  quickPreview.value = await loadQuickPreview()
+}
 
 onUnmounted(() => {
   offSensitiveTool?.()
@@ -128,9 +143,26 @@ async function send(): Promise<void> {
   void loadSessions()
 }
 
-async function close(): Promise<void> {
-  await windowStore.hide('chat')
-  await windowStore.showMiniChat()
+/**
+ * 切换侧栏栏目。
+ *
+ * 切到「快速」时顺带刷新预览（只读，不影响当前会话）：否则在快速会话里发完消息后，
+ * 预览会一直停在挂载时的那几条。
+ */
+function selectTab(tab: 'quick' | 'sessions'): void {
+  sidebarTab.value = tab
+  if (tab === 'quick') void refreshQuickPreview()
+}
+
+/** 「继续快速对话」：切到快速会话（栏目保持不变，用户还在「快速」栏里） */
+async function openQuick(): Promise<void> {
+  await switchSession('quick')
+}
+
+/** 「快速」栏的预览正文：折叠空白 + 截断（侧栏只有 152px 宽，不做多行渲染） */
+function previewText(content: string): string {
+  const flat = content.replace(/\s+/g, ' ').trim()
+  return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat
 }
 
 async function startGuide(): Promise<void> {
@@ -180,11 +212,22 @@ function formatTime(iso: string): string {
         <span class="tiny muted session">{{ currentTitle }}</span>
       </div>
       <div class="head-actions no-drag">
-        <AppButton size="sm" variant="ghost" @click="showHistory = !showHistory">历史</AppButton>
+        <AppButton size="sm" variant="ghost" @click="showSidebar = !showSidebar">历史</AppButton>
         <AppButton size="sm" variant="ghost" @click="newSession">新建</AppButton>
         <AppButton size="sm" variant="ghost" @click="clear">清空</AppButton>
         <AppButton size="sm" variant="ghost" @click="windowStore.show('settings')">设置</AppButton>
-        <AppButton size="sm" variant="ghost" @click="close">收起</AppButton>
+        <!--
+          收起 = **直接隐藏窗口**：只隐藏，正在进行的流式回复不会被 abort
+          （`hide()` 不触碰 `chat:abort`，docs/02 §2.2「关闭 = 隐藏」）。
+        -->
+        <AppButton
+          size="sm"
+          variant="ghost"
+          title="收起对话窗口（对话仍在后台继续）"
+          @click="windowStore.hide('chat')"
+        >
+          收起
+        </AppButton>
       </div>
     </header>
 
@@ -198,25 +241,60 @@ function formatTime(iso: string): string {
 
     <div class="body">
       <Transition name="sheet">
-        <aside v-if="showHistory" class="history">
-          <div class="row">
-            <strong class="tiny grow">会话</strong>
-            <AppButton size="sm" variant="ghost" @click="newSession">新建</AppButton>
+        <aside v-if="showSidebar" class="history">
+          <!-- 双栏：「快速」= 快速会话预览（与提示条共用同一会话），「会话」= 完整会话列表 -->
+          <div class="sidebar-tabs">
+            <button
+              type="button"
+              class="tab interactive"
+              :class="{ active: sidebarTab === 'quick' }"
+              @click="selectTab('quick')"
+            >
+              快速
+            </button>
+            <button
+              type="button"
+              class="tab interactive"
+              :class="{ active: sidebarTab === 'sessions' }"
+              @click="selectTab('sessions')"
+            >
+              会话
+            </button>
           </div>
-          <p v-if="sessions.length === 0" class="tiny muted">还没有会话</p>
-          <button
-            v-for="item in sessions"
-            :key="item.id"
-            type="button"
-            class="history-item interactive"
-            :class="{ active: item.id === sessionId }"
-            @click="switchSession(item.id)"
-          >
-            <strong class="tiny">{{ sessionTitle(item.title) }}</strong>
-            <span class="tiny muted">
-              {{ formatTime(item.updatedAt) }} · {{ item.messageCount }} 条
-            </span>
-          </button>
+
+          <template v-if="sidebarTab === 'quick'">
+            <p v-if="quickPreview.length === 0" class="tiny muted">快速会话还没有消息</p>
+            <div v-for="item in quickPreview" :key="item.id" class="history-item quick-item">
+              <strong class="tiny">{{ item.role === 'user' ? '我' : 'Aurora' }}</strong>
+              <span class="tiny muted">{{ previewText(item.content) }}</span>
+            </div>
+            <div class="sidebar-foot">
+              <AppButton size="sm" variant="primary" block @click="openQuick">
+                继续快速对话
+              </AppButton>
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="row">
+              <strong class="tiny grow">会话</strong>
+              <AppButton size="sm" variant="ghost" @click="newSession">新建</AppButton>
+            </div>
+            <p v-if="sessions.length === 0" class="tiny muted">还没有会话</p>
+            <button
+              v-for="item in sessions"
+              :key="item.id"
+              type="button"
+              class="history-item interactive"
+              :class="{ active: item.id === sessionId }"
+              @click="switchSession(item.id)"
+            >
+              <strong class="tiny">{{ sessionTitle(item.title) }}</strong>
+              <span class="tiny muted">
+                {{ formatTime(item.updatedAt) }} · {{ item.messageCount }} 条
+              </span>
+            </button>
+          </template>
         </aside>
       </Transition>
 
@@ -374,7 +452,7 @@ function formatTime(iso: string): string {
   flex: 0 0 auto;
 }
 
-/* ── 会话列表 ── */
+/* ── 侧栏：快速 / 会话双栏 ── */
 .history {
   flex: 0 0 auto;
   width: 152px;
@@ -417,6 +495,40 @@ function formatTime(iso: string): string {
   height: 60%;
   border-radius: var(--radius-pill);
   background: var(--aurora-blue);
+}
+
+/* ── 侧栏栏目切换（快速 / 会话）：分段控件，与全局 .interactive 悬停共用 ── */
+.sidebar-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--fill-2);
+}
+
+.tab {
+  flex: 1;
+  padding: 3px 0;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.tab.active {
+  background: var(--fill-1);
+  color: var(--text-primary);
+}
+
+/* 「快速」栏的预览条目是只读快照，不响应点击（切换走底部主按钮） */
+.quick-item {
+  cursor: default;
+}
+
+/* 「继续快速对话」贴侧栏底部，与上方预览拉开距离 */
+.sidebar-foot {
+  margin-top: auto;
+  padding-top: var(--space-1);
 }
 
 .thread {

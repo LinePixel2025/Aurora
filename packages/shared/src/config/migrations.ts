@@ -203,12 +203,38 @@ function fillMissing(
   return result
 }
 
+/**
+ * v5 → v6：独立小窗（`mini-chat`）已删除，清掉它的窗口几何记录。
+ *
+ * 只删该 key，**不动**其它字段与其它窗口的几何（幂等）。
+ * 与 v3 → v4 删 `service-dock` 的唯一差别：**只在 `general.windowState` 已存在时改写**，
+ * 不给本来没有窗口几何的配置凭空造出一个空对象。
+ */
+const migrateV5ToV6: Migration = {
+  from: 5,
+  to: 6,
+  describe: "v5 → v6：移除 general.windowState['mini-chat']（独立小窗已删除）",
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const general = asRecord(raw['general'])
+    const windowState = asRecord(general?.['windowState'])
+    if (general !== undefined && windowState !== undefined) {
+      const cleaned = { ...windowState }
+      delete cleaned['mini-chat']
+      next['general'] = { ...general, windowState: cleaned }
+    }
+    next['version'] = 6
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
   migrateV2ToV3,
   migrateV3ToV4,
   migrateV4ToV5,
+  migrateV5ToV6,
 ]
 
 export interface MigrationOutcome {

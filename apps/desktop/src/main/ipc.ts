@@ -284,7 +284,6 @@ export function registerIpc(deps: DesktopDeps): () => void {
     withState(() => deps.windows.toggle(name)),
   )
   handle<WindowState>(IPC.window.showChat, () => withState(() => deps.windows.showChat()))
-  handle<WindowState>(IPC.window.showMiniChat, () => withState(() => deps.windows.showMiniChat()))
   handle<WindowState>(
     IPC.window.setPosition,
     (name: WindowName, position: { x: number; y: number }) =>

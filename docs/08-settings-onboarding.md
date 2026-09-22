@@ -2,17 +2,17 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v5）
+## 1. 配置 Schema（config.json，v6）
 
 ```jsonc
 {
-  "version": 5,
+  "version": 6,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
     "hotkey": "Alt+Space",
     "edgeBar": { "enabled": true, "opacity": 0.9, "quietHours": null },
-    // 各窗口位置 / 尺寸记忆，key 集合见 WINDOW_NAMES（edge-bar / chat / mini-chat / settings / onboarding）
+    // 各窗口位置 / 尺寸记忆，key 集合见 WINDOW_NAMES（edge-bar / chat / settings / onboarding）
     "windowState": {}
   },
   "llm": {
@@ -78,8 +78,8 @@
 ```
 
 - 字段说明：`llm.providers` 支持多组模型配置，`llm.active` 指定默认；`modes.classroom.subjects` 即科目 → 文件夹映射（见 05 §3）；`schedule.provider` 为 `manual | classisland`（见 05 §3.4）。
-- `general.windowState` 的 key 集合即 `WINDOW_NAMES`：`edge-bar` / `chat` / `mini-chat` / `settings` / `onboarding`
-  （v4 起移除 `service-dock`，该窗口已删除）。
+- `general.windowState` 的 key 集合即 `WINDOW_NAMES`：`edge-bar` / `chat` / `settings` / `onboarding`
+  （v4 起移除 `service-dock`、v6 起移除 `mini-chat`，两个窗口均已删除）。
 - `general.language` 是**未生效的死字段**（无 i18n 消费方，见 §6.1 门控矩阵），保留仅为避免再动一次配置版本。
 - `mcp.lazyConnect`：连接策略（见 06 §7）。`false`（默认）= 启动即连；`true` = 首次使用某个 MCP 工具时才连接。
 - MCP 环境变量的**变量名**由 `envEnc` 的键表达，设置页据此展示"已配置的变量名"，
@@ -128,13 +128,14 @@
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 5`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 6`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
   `v3 → v4`（移除 `general.windowState['service-dock']`，AI 悬浮窗已删除）、
-  `v4 → v5`（补齐 `llm.providers.*.reasoningEffort` 与 `agent.tools.*`）。
-  五条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
+  `v4 → v5`（补齐 `llm.providers.*.reasoningEffort` 与 `agent.tools.*`）、
+  `v5 → v6`（移除 `general.windowState['mini-chat']`，独立小窗已删除）。
+  六条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程

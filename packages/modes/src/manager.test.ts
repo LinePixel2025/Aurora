@@ -37,7 +37,7 @@ function createHarness(settings: Settings = createDefaultSettings()): Harness {
         return structuredClone(settings)
       },
     },
-    windows: { showChat: () => undefined, showMiniChat: () => undefined, notify: () => undefined },
+    windows: { showChat: () => undefined, notify: () => undefined },
     proactive: {
       requestGuide: (mode, reason) => guideRequests.push({ mode, reason }),
       cancelGuide: () => undefined,

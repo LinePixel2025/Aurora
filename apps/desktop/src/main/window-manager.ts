@@ -3,7 +3,7 @@
  *
  * 约定：
  * - 业务窗口不显示在任务栏；关闭按钮 = 隐藏，仅托盘「退出」真正退出；
- * - 迷你窗与交互窗同屏互斥（shared/windowState 负责状态机，这里同步真实窗口）；
+ * - 交互窗是唯一主对话窗口（shared/windowState 负责状态机，这里同步真实窗口）；
  * - 位置 / 尺寸写入 `general.windowState`，跨启动保留。
  */
 import { join } from 'node:path'
@@ -14,7 +14,6 @@ import {
   hideWindow as hideInState,
   showWindow as showInState,
   type Logger,
-  type PrimaryWindow,
   type SettingsStore,
   type WindowName,
   type WindowState,
@@ -46,7 +45,7 @@ interface WindowSpec {
   skipTaskbar: boolean
   focusable: boolean
   /** 单例窗口默认位置计算 */
-  place: 'edge' | 'chat' | 'anchor-dock' | 'center'
+  place: 'edge' | 'chat' | 'center'
 }
 
 const SPECS: Record<WindowName, WindowSpec> = {
@@ -69,16 +68,6 @@ const SPECS: Record<WindowName, WindowSpec> = {
     skipTaskbar: true,
     focusable: true,
     place: 'chat',
-  },
-  'mini-chat': {
-    width: 320,
-    height: 480,
-    resizable: false,
-    transparent: false,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    focusable: true,
-    place: 'anchor-dock',
   },
   settings: {
     width: 900,
@@ -315,19 +304,13 @@ export class WindowManager {
     return this.state.visible[name] === true
   }
 
-  /** 状态机决定的"主对话窗口"（迷你窗 / 交互窗二选一） */
-  get primary(): PrimaryWindow | null {
+  /** 状态机决定的"主对话窗口"（只有交互窗参与判定，docs/07 §2.3） */
+  get primary(): 'chat' | null {
     return this.state.primary
   }
 
   showChat(): WindowState {
     return this.show('chat')
-  }
-
-  showMiniChat(): WindowState {
-    const win = this.ensure('mini-chat')
-    if (!win.isVisible()) this.anchorToEdgeBar(win, this.windows.get('edge-bar'))
-    return this.show('mini-chat')
   }
 
   /**
@@ -466,23 +449,6 @@ export class WindowManager {
           width,
           height,
         }
-      case 'anchor-dock': {
-        // 迷你窗左缘贴提示条左缘，垂直中心与提示条一致；提示条未创建时回落工作区右下角（docs/07 §2.4）
-        const edgeBounds = this.existingWindow('edge-bar')?.getBounds()
-        if (edgeBounds === undefined) return this.bottomRightBounds(width, height)
-        return {
-          x: Math.round(clamp(edgeBounds.x, area.x, area.x + area.width - width)),
-          y: Math.round(
-            clamp(
-              edgeBounds.y + (edgeBounds.height - height) / 2,
-              area.y,
-              area.y + area.height - height,
-            ),
-          ),
-          width,
-          height,
-        }
-      }
       default:
         return {
           x: Math.round(area.x + (area.width - width) / 2),
@@ -491,52 +457,6 @@ export class WindowManager {
           height,
         }
     }
-  }
-
-  /** 提示条窗口不存在时的回落位置：工作区右下角（留 12px 边距）。 */
-  private bottomRightBounds(
-    width: number,
-    height: number,
-  ): {
-    x: number
-    y: number
-    width: number
-    height: number
-  } {
-    const area = screen.getPrimaryDisplay().workArea
-    return {
-      x: Math.round(area.x + area.width - width - 12),
-      y: Math.round(area.y + area.height - height - 12),
-      width,
-      height,
-    }
-  }
-
-  /** 取已创建且未销毁的窗口（不创建：锚定只认现有提示条，没建就回落）。 */
-  private existingWindow(name: WindowName): BrowserWindow | undefined {
-    const win = this.windows.get(name)
-    return win !== undefined && !win.isDestroyed() ? win : undefined
-  }
-
-  private anchorToEdgeBar(win: BrowserWindow, edge: BrowserWindow | undefined): void {
-    const area = screen.getPrimaryDisplay().workArea
-    const { width, height } = win.getBounds()
-    const edgeBounds = edge !== undefined && !edge.isDestroyed() ? edge.getBounds() : undefined
-    if (edgeBounds === undefined) {
-      const fallback = this.bottomRightBounds(width, height)
-      win.setPosition(fallback.x, fallback.y)
-      return
-    }
-    win.setPosition(
-      Math.round(clamp(edgeBounds.x, area.x, area.x + area.width - width)),
-      Math.round(
-        clamp(
-          edgeBounds.y + (edgeBounds.height - height) / 2,
-          area.y,
-          area.y + area.height - height,
-        ),
-      ),
-    )
   }
 
   /** 窗口当前应采用的尺寸：提示条按折叠态，其余取 SPECS 固定尺寸。 */
@@ -622,7 +542,6 @@ function titleFor(name: WindowName): string {
   const titles: Record<WindowName, string> = {
     'edge-bar': 'Aurora 提示条',
     chat: 'Aurora 对话',
-    'mini-chat': 'Aurora 快速对话',
     settings: 'Aurora 设置',
     onboarding: 'Aurora 首次引导',
   }

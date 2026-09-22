@@ -201,12 +201,9 @@ export const EDGE_BAR_CLICK_SCRIPT = `(async () => {
       clicked: true,
       stateOk: true,
       chatVisible: state.value.visible['chat'] === true,
-      miniChatVisible: state.value.visible['mini-chat'] === true,
       primary: state.value.primary,
-      pass:
-        state.value.visible['chat'] === true &&
-        state.value.visible['mini-chat'] !== true &&
-        state.value.primary === 'chat',
+      // 主对话窗口只剩交互窗：呼出后 primary 必须是 'chat'（注意：本段在模板字符串里，注释不能带反引号）
+      pass: state.value.visible['chat'] === true && state.value.primary === 'chat',
     }
   } catch (error) {
     return { clicked: false, reason: String(error), pass: false }
@@ -214,7 +211,7 @@ export const EDGE_BAR_CLICK_SCRIPT = `(async () => {
 })()`
 
 /**
- * 面板可用性探针：面板是否挂载、四个按钮是否**真的能被点到**
+ * 面板可用性探针：面板是否挂载、三个按钮是否**真的能被点到**
  * （`elementFromPoint` 命中测试）且完全落在窗口宽度内。
  *
  * 这一条是「侧边栏点击无效」这类 bug 的关键断言：DOM 里存在按钮 ≠ 用户点得到。
@@ -247,7 +244,7 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       probes,
       allClickable: probes.length > 0 && probes.every((p) => p.hit && p.insideWindow),
       pass:
-        buttons.length === 4 &&
+        buttons.length === 3 &&
         width <= 228 &&
         probes.every((p) => p.hit && p.insideWindow && p.width > 0),
     }
@@ -257,7 +254,7 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
 })()`
 
 /**
- * 对话自动滚底探针（交互窗 / 小窗共用）。
+ * 对话自动滚底探针（交互窗专用）。
  *
  * 钉住的是「新消息不会自动拉到最新」这个 bug：滚动容器是窗口的 `.thread`，
  * 内容变高时渲染层必须自己滚到底。这里不去驱动真实模型（截图跑在默认配置上，
@@ -323,6 +320,68 @@ export const CHAT_AUTO_SCROLL_SCRIPT = `(async () => {
       scrollHeight,
       clientHeight,
       jump,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 「收起 = 直接消失」探针（step-01）：点交互窗头部操作区的「收起」按钮，再断言窗口真的没了。
+ *
+ * 这一条钉住的是一个已修掉的 bug：原来的「收起」会**另外弹出一个快速对话窗口**
+ * （`close()` 里调的是那条已被删除的「显示快速对话」IPC 通道），用户按「收起」却看到多出一个窗口。
+ * 现在它必须等价于 `windowStore.hide('chat')`。
+ *
+ * ⚠️ 为什么**点击写在 check 里、而不是 `act` 里**（与 step-01 原计划不同，实测后改的）：
+ * `act` 在截图**之前**跑（见 `captureWindows` 的顺序 show → act → wait → capturePage）。
+ * 窗口一旦被真的 `hide()`，紧接着的 `capturePage()` 在 Windows 上**永不返回**——表现为
+ * 整个 `AURORA_CAPTURE` 流程卡死、进程不退出、`report.json` 写不出来（实测 8 分钟无进展，已复现）。
+ * 所以截图必须发生在窗口仍然可见的时候；而「点完之后窗口是否真的消失」由这条 check 断言，
+ * 它跑在截图之后，点击与断言的因果链仍然是真实的（按钮 → Vue handler → IPC → 主进程 hide）。
+ * 因此 `chat-collapse.png` 拍到的是**点之前的交互窗**（含那颗「收起」按钮），
+ * 「收起后窗口消失」这件事由本探针的 `pass` 负责，不靠截图。
+ *
+ * 按文本找按钮而不是按 class：`.head-actions` 里的按钮是同一个 `AppButton` 渲染的，只有文案能区分；
+ * 找不到时把实际文案回传（而不是静默成功），否则改了文案会让这条断言变成空转。
+ *
+ * `primary === null` 是关键：残留的 `primary` 说明「隐藏」被实现成了「换成另一个主窗口」。
+ * `getState()` 带 4s 超时兜底：窗口隐藏后渲染层可能被降频，万一读不回来也不能把整轮截图拖死。
+ */
+export const CHAT_COLLAPSE_CHECK = `(async () => {
+  try {
+    const actions = document.querySelector('.head-actions')
+    if (actions === null) return { pass: false, reason: 'no .head-actions' }
+    const buttons = Array.from(actions.querySelectorAll('button'))
+    const button = buttons.find((item) => (item.textContent || '').trim() === '收起')
+    if (button === undefined) {
+      return {
+        pass: false,
+        reason: 'no 收起 button',
+        labels: buttons.map((item) => (item.textContent || '').trim()),
+      }
+    }
+
+    button.click()
+    await new Promise((resolve) => setTimeout(resolve, 600))
+
+    const state = await Promise.race([
+      window.aurora.window.getState(),
+      new Promise((resolve) => setTimeout(() => resolve(null), 4000)),
+    ])
+    if (state === null) {
+      return { pass: false, reason: 'window.getState 超时（窗口隐藏后渲染层被降频？）' }
+    }
+    if (!state.ok) return { pass: false, state, reason: state.message }
+    const visible = state.value.visible
+    const primary = state.value.primary
+    return {
+      pass: visible['chat'] !== true && primary === null,
+      clicked: true,
+      label: (button.textContent || '').trim(),
+      chatVisible: visible['chat'] === true,
+      primary,
+      state,
     }
   } catch (error) {
     return { pass: false, reason: String(error) }
@@ -569,8 +628,9 @@ export const SETTINGS_LLM_EFFORT_CHECK = `(() => {
 })()`
 
 /**
- * 默认截图清单：五个窗口 + 提示条两态 + 设置页各页深链（含思考等级参数面板）+ 若干 DOM 断言场景
- * （门控计数 / 对话自动滚底 / 思考等级 / 电脑操控页，见下面各条的 `check`）。
+ * 默认截图清单：四个窗口 + 提示条两态 + 设置页各页深链（含思考等级参数面板）+ 若干 DOM 断言场景
+ * （门控计数 / 对话自动滚底 / 收起即消失 / 思考等级 / 电脑操控页，见下面各条的 `check`）。
+ * 独立的快速对话窗口已从全仓删除：快速会话并入交互窗侧栏，故清单里不再有它的场景。
  * `AURORA_CAPTURE_WINDOWS` 可以只截其中一部分（逗号分隔）。
  */
 export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
@@ -582,9 +642,14 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       act: EDGE_BAR_HOVER_SCRIPT,
       check: EDGE_BAR_PANEL_SCRIPT,
     },
-    // 交互窗 / 小窗各带一条自动滚底断言（回归「对话不会自动拉到最新」）
+    // 交互窗带一条自动滚底断言（回归「对话不会自动拉到最新」）；
+    // 紧随其后的「收起即消失」场景沿用同一个 `name: 'chat'`（`CaptureTarget.name` 的类型是
+    // `WindowName`，且 `report.json` 的 checks 是**数组**、靠 `file` 区分），因此只能靠
+    // `chat-collapse.png` 这个文件名与 `AURORA_CAPTURE_WINDOWS=chat` 过滤到，不会与上一条冲突。
+    // 该场景**不设 act**：点击收起放在 check 里（原因见 `CHAT_COLLAPSE_CHECK` 的注释——
+    // 窗口先被 hide 掉会让紧接着的 capturePage 永不返回，整轮截图卡死）。
     { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
-    { name: 'mini-chat', file: 'mini-chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
+    { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },
     { name: 'onboarding', file: 'onboarding.png' },
   ]
   for (const page of SETTINGS_PAGE_IDS) {

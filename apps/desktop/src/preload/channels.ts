@@ -55,7 +55,6 @@ const CHANNELS = {
     hide: 'window:hide',
     toggle: 'window:toggle',
     showChat: 'window:showChat',
-    showMiniChat: 'window:showMiniChat',
     setPosition: 'window:setPosition',
     setEdgeBarExpanded: 'window:setEdgeBarExpanded',
     stateChanged: 'window:stateChanged',

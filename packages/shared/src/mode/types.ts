@@ -18,7 +18,6 @@ export interface ModeSettingsPort {
 /** 窗口控制端口：主进程 WindowManager 提供。 */
 export interface ModeWindowPort {
   showChat(): void
-  showMiniChat(): void
   notify(title: string, body: string, openPath?: string): void
 }
 

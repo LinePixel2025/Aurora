@@ -73,7 +73,6 @@ export interface WindowManagerLike {
   hide(name: WindowName): WindowState
   toggle(name: WindowName): WindowState
   showChat(): WindowState
-  showMiniChat(): WindowState
   setPosition(name: WindowName, position: { x: number; y: number }): WindowState
   /** 提示条收起态（8px 竖条）/ 展开态（面板）切换（docs/07 §2.2） */
   setEdgeBarExpanded(expanded: boolean): WindowState

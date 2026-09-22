@@ -78,7 +78,6 @@ const api: AuroraApi = {
     hide: (name) => invoke(IPC.window.hide, name),
     toggle: (name) => invoke(IPC.window.toggle, name),
     showChat: () => invoke(IPC.window.showChat),
-    showMiniChat: () => invoke(IPC.window.showMiniChat),
     setPosition: (name, position) => invoke(IPC.window.setPosition, name, position),
     setEdgeBarExpanded: (expanded) => invoke(IPC.window.setEdgeBarExpanded, expanded),
     getState: () => invoke(IPC.window.getState),

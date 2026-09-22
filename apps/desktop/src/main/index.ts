@@ -344,7 +344,6 @@ async function bootstrap(): Promise<void> {
     },
     windows: {
       showChat: () => windows?.showChat(),
-      showMiniChat: () => windows?.showMiniChat(),
       notify: (title, body, openPath) => notify(title, body, openPath),
     },
     proactive: {
@@ -748,7 +747,7 @@ async function bootstrap(): Promise<void> {
 
   logger.info('Aurora 就绪')
 
-  // 10. 视觉核对（AURORA_CAPTURE=<目录>，仅开发态）：截完五个窗口 + 设置页各页后退出。
+  // 10. 视觉核对（AURORA_CAPTURE=<目录>，仅开发态）：截完四个窗口 + 设置页各页后退出。
   //     与 AURORA_SMOKE 互斥：两者都会在结束时退出进程，同开只会互相抢窗口。
   const captureDir = process.env['AURORA_CAPTURE']
   if (isDev && captureDir !== undefined && captureDir.trim() !== '') {
@@ -761,7 +760,7 @@ async function bootstrap(): Promise<void> {
 
 /**
  * 视觉核对（`AURORA_CAPTURE=<目录> pnpm dev`，docs/07 §5）：
- * 把五个窗口 + 提示条两态 + 设置页各页截成 PNG 后退出，供前端视觉验收用。
+ * 把四个窗口 + 提示条两态 + 设置页各页截成 PNG 后退出，供前端视觉验收用。
  *
  * 只用 `webContents.capturePage()`，不依赖屏幕是否可见 / 是否被别的窗口遮挡，
  * 因此可以在自动化流程里跑，也不会把用户的桌面状态当成断言依据。

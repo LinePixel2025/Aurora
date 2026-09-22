@@ -8,7 +8,6 @@ const r = (...p: string[]): string => resolve(__dirname, ...p)
 const windowEntries = {
   'edge-bar': r('src/renderer/edge-bar/index.html'),
   chat: r('src/renderer/chat/index.html'),
-  'mini-chat': r('src/renderer/mini-chat/index.html'),
   settings: r('src/renderer/settings/index.html'),
   onboarding: r('src/renderer/onboarding/index.html'),
 }
