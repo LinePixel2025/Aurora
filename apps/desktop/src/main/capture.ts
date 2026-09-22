@@ -574,17 +574,24 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
   try {
     const state = await window.aurora.settings.get()
     if (!state.ok) return { ok: false, reason: 'settings.get failed' }
-    if (Object.keys(state.value.llm.providers).length === 0) {
+    // 与「对话窗思考等级」探针共用一份配置，两个场景谁先跑都要能自足：
+    // 所以不是「没有 provider 才造」，而是「当前 provider 的 reasoningEffort 不是 high 就写成 high」。
+    const providers = state.value.llm.providers
+    const active = state.value.llm.active !== '' ? state.value.llm.active : 'capture'
+    const existing = providers[active]
+    if (existing === undefined || existing.reasoningEffort !== 'high') {
       const result = await window.aurora.settings.update({
         llm: {
-          active: 'capture',
+          active,
           providers: {
-            capture: {
+            ...providers,
+            [active]: {
               type: 'openai-compat',
               baseUrl: 'https://api.deepseek.com/v1',
               apiKeyEnc: '',
               model: 'deepseek-chat',
               temperature: 0.7,
+              ...(existing ?? {}),
               reasoningEffort: 'high',
             },
           },
@@ -628,10 +635,186 @@ export const SETTINGS_LLM_EFFORT_CHECK = `(() => {
 })()`
 
 /**
+ * 对话窗思考等级探针 · 前半（step-03）：把交互窗输入区的「思考」下拉切到 `high`。
+ *
+ * 截图用**隔离 userData**，起步时一个 provider 都没有 —— 而「没有可用 provider」时渲染层按设计把控件
+ * `disabled`（不隐藏），此时切不动。所以先像 `SETTINGS_LLM_EFFORT_ACT` 那样造一个 provider，再操作下拉。
+ * 原值记到 `window.__auroraEffortProbe`，供 check 阶段**写回**，避免污染后面的截图场景。
+ */
+export const CHAT_THINKING_LEVEL_ACT = `(async () => {
+  try {
+    let state = await window.aurora.settings.get()
+    if (!state.ok) return { changed: false, reason: 'settings.get failed' }
+    if (Object.keys(state.value.llm.providers).length === 0) {
+      const created = await window.aurora.settings.update({
+        llm: {
+          active: 'capture',
+          providers: {
+            capture: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.deepseek.com/v1',
+              apiKeyEnc: '',
+              model: 'deepseek-chat',
+              temperature: 0.7,
+              reasoningEffort: 'auto',
+            },
+          },
+        },
+      })
+      if (!created.ok) return { changed: false, reason: created.message }
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      state = await window.aurora.settings.get()
+      if (!state.ok) return { changed: false, reason: 'settings.get#2 failed' }
+    }
+
+    const active = state.value.llm.active
+    const provider = active === '' ? undefined : state.value.llm.providers[active]
+    window.__auroraEffortProbe = {
+      active,
+      before: provider === undefined ? null : provider.reasoningEffort,
+    }
+
+    const field = document.querySelector('[data-field="chat.reasoningEffort"]')
+    if (field === null) return { changed: false, reason: 'no chat.reasoningEffort field' }
+    const select = field.tagName === 'SELECT' ? field : field.querySelector('select')
+    if (select === null) return { changed: false, reason: 'no <select> in chat.reasoningEffort' }
+
+    select.value = 'high'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    return { changed: true, options: select.options.length, disabled: select.disabled === true }
+  } catch (error) {
+    return { changed: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 对话窗思考等级探针 · 后半：配置值、DOM 值、选项数三者对得上，并把原值写回。
+ *
+ * 只断言配置变了不够（可能界面根本没接线），只断言 DOM 也不够（可能只是本地 state）——
+ * 所以两处都读，并要求 option 数量是 4（`auto/low/medium/high`）。
+ */
+export const CHAT_THINKING_LEVEL_CHECK = `(async () => {
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { pass: false, reason: 'settings.get failed' }
+    const active = state.value.llm.active
+    const provider = active === '' ? undefined : state.value.llm.providers[active]
+    const configValue = provider === undefined ? null : provider.reasoningEffort
+
+    const field = document.querySelector('[data-field="chat.reasoningEffort"]')
+    const select =
+      field === null ? null : field.tagName === 'SELECT' ? field : field.querySelector('select')
+    const domValue = select === null ? null : select.value
+    const optionCount = select === null ? 0 : select.options.length
+
+    // 写回原值：本场景会改配置，后面还有别的截图场景，不能让它们看到 high
+    const probe = window.__auroraEffortProbe
+    let restored = null
+    if (probe !== undefined && probe.active !== '' && probe.before !== null) {
+      const providers = state.value.llm.providers
+      const target = providers[probe.active]
+      if (target !== undefined && target.reasoningEffort !== probe.before) {
+        const result = await window.aurora.settings.update({
+          llm: {
+            active,
+            providers: { ...providers, [probe.active]: { ...target, reasoningEffort: probe.before } },
+          },
+        })
+        restored = result.ok
+      }
+    }
+
+    return {
+      pass: configValue === 'high' && domValue === 'high' && optionCount === 4,
+      configValue,
+      domValue,
+      optionCount,
+      restored,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 窗口拖动探针（step-06）：能拖的窗口必须有一条**够大**的拖动区，且拖动区里的按钮仍点得到。
+ *
+ * 背景：拖动能力此前靠各窗自己记得挂 `drag-region`，settings 窗只有侧栏里约 22-30px 的 `.brand` 能拖，
+ * 用户感知就是「有些能拖有些不行」。三个断言分别对应三类真实故障：
+ * ① 一个可见拖动区都没有（没挂 class）；② 高度的最大值 < 32px（挂了但抓不住）；
+ * ③ 拖动区里的按钮被 `-webkit-app-region: drag` 吃掉点击（`elementFromPoint` 命中的不是按钮自己）。
+ *
+ * 读数兼容两种属性名：Chromium 上生效值可能只认 `-webkit-app-region` 或 `app-region` 之一。
+ * 若两者都读到空串，说明该属性**不可读**——此时不要把它改成永远 PASS：保留 `regionValue` 原值
+ * 供排查，判定口径的取舍写在 docs/07 §5.3（`regions` 数组本身已经能说明「挂没挂、够不够大」）。
+ */
+export const WINDOW_DRAG_SCRIPT = `(() => {
+  try {
+    const regions = []
+    let maxHeight = 0
+    let biggest = null
+    for (const el of Array.from(document.querySelectorAll('.drag-region'))) {
+      const rect = el.getBoundingClientRect()
+      const style = getComputedStyle(el)
+      const region = (
+        style.getPropertyValue('-webkit-app-region') || style.getPropertyValue('app-region') || ''
+      ).trim()
+      const visible = rect.width > 0 && rect.height > 0
+      regions.push({
+        tag: el.tagName.toLowerCase(),
+        cls: String(el.className || ''),
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+        top: Math.round(rect.top),
+        region,
+        visible,
+      })
+      if (visible && rect.height > maxHeight) {
+        maxHeight = rect.height
+        biggest = el
+      }
+    }
+
+    let regionValue = null
+    let buttonLabel = null
+    let buttonHit = null
+    if (biggest !== null) {
+      const style = getComputedStyle(biggest)
+      regionValue = (
+        style.getPropertyValue('-webkit-app-region') || style.getPropertyValue('app-region') || ''
+      ).trim()
+      const button = biggest.querySelector('button')
+      if (button !== null) {
+        const rect = button.getBoundingClientRect()
+        buttonLabel = (button.textContent || '').trim()
+        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+        buttonHit = hit !== null && (hit === button || button.contains(hit))
+      }
+    }
+
+    return {
+      regions,
+      maxHeight: Math.round(maxHeight),
+      regionValue,
+      buttonLabel,
+      buttonHit,
+      pass: regions.some((item) => item.visible) && maxHeight >= 32 && regionValue === 'drag' && buttonHit === true,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
  * 默认截图清单：四个窗口 + 提示条两态 + 设置页各页深链（含思考等级参数面板）+ 若干 DOM 断言场景
- * （门控计数 / 对话自动滚底 / 收起即消失 / 思考等级 / 电脑操控页，见下面各条的 `check`）。
+ * （门控计数 / 对话自动滚底 / 收起即消失 / 思考等级 / 电脑拖动区 / 电脑操控页，见下面各条的 `check`）。
  * 独立的快速对话窗口已从全仓删除：快速会话并入交互窗侧栏，故清单里不再有它的场景。
  * `AURORA_CAPTURE_WINDOWS` 可以只截其中一部分（逗号分隔）。
+ *
+ * ⚠️ 交互窗场景的**顺序约束**：凡是要在交互窗里操作 DOM 的场景，都必须排在 `chat-collapse.png` **之前**——
+ * 收起会把窗口隐藏，之后再 `capturePage()` 只会卡死。因此顺序固定为
+ * `chat-thinking-level` → `chat-model-picker`（step 5 加）→ `chat-drag` → `chat-collapse` → `chat.png`。
  */
 export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
   const plan: CaptureTarget[] = [
@@ -642,14 +825,20 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       act: EDGE_BAR_HOVER_SCRIPT,
       check: EDGE_BAR_PANEL_SCRIPT,
     },
-    // 交互窗带一条自动滚底断言（回归「对话不会自动拉到最新」）；
-    // 紧随其后的「收起即消失」场景沿用同一个 `name: 'chat'`（`CaptureTarget.name` 的类型是
-    // `WindowName`，且 `report.json` 的 checks 是**数组**、靠 `file` 区分），因此只能靠
-    // `chat-collapse.png` 这个文件名与 `AURORA_CAPTURE_WINDOWS=chat` 过滤到，不会与上一条冲突。
-    // 该场景**不设 act**：点击收起放在 check 里（原因见 `CHAT_COLLAPSE_CHECK` 的注释——
+    // 交互窗的场景顺序见函数头注释：能在窗口里操作 DOM 的都排在 chat-collapse 之前。
+    // 这些场景都沿用 `name: 'chat'`（`CaptureTarget.name` 的类型是 `WindowName`，且 `report.json`
+    // 的 checks 是**数组**、靠 `file` 区分），所以靠文件名与 `AURORA_CAPTURE_WINDOWS=chat` 过滤。
+    // 「收起即消失」**不设 act**：点击放在 check 里（原因见 `CHAT_COLLAPSE_CHECK` 的注释——
     // 窗口先被 hide 掉会让紧接着的 capturePage 永不返回，整轮截图卡死）。
-    { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
+    {
+      name: 'chat',
+      file: 'chat-thinking-level.png',
+      act: CHAT_THINKING_LEVEL_ACT,
+      check: CHAT_THINKING_LEVEL_CHECK,
+    },
+    { name: 'chat', file: 'chat-drag.png', check: WINDOW_DRAG_SCRIPT },
     { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },
+    { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
     { name: 'onboarding', file: 'onboarding.png' },
   ]
   for (const page of SETTINGS_PAGE_IDS) {
@@ -668,6 +857,14 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
             : undefined,
     })
   }
+  // 设置窗拖动区（step-06）：侧栏顶部 / `.brand` / 内容区顶部三处至少要有一条 ≥ 32px 的可见拖动区，
+  // 且拖动区里的按钮仍能被 elementFromPoint 命中（不被 `-webkit-app-region: drag` 吃掉点击）。
+  plan.push({
+    name: 'settings',
+    file: 'settings-drag.png',
+    query: { page: 'general' },
+    check: WINDOW_DRAG_SCRIPT,
+  })
   // 思考等级（step-02）：造一个 provider → 展开「高级参数」→ 断言下拉真值来自配置。
   // 刻意放在 SETTINGS_PAGE_IDS 循环**之外**：塞进循环会让每个设置页都多点一次。
   plan.push({
