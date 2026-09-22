@@ -193,11 +193,29 @@ select {
 
 /* ───────── 通用原子类 ───────── */
 
+/**
+ * 拖动区：窗口无系统标题栏（`frame: false`）时，用户按住这里可以拖动窗口。
+ * Chromium 的 app-region 命中测试只认显式挂了本类的元素 —— 没挂就是不能拖，
+ * 因此「哪些窗口能拖」由 `shared/composables/useWindowDrag.ts` 的 `DRAGGABLE_WINDOWS`
+ * 清单决定，**各窗不要自己写死 `drag-region`**，否则又会退回到「有些能拖有些不行」。
+ *
+ * 拖动区默认不吃点击 —— 区内的按钮 / 输入框必须自己挂 `.no-drag`
+ * （写在这里是为了让后人一眼看到这条约束）；拖动条高度要 ≥ 32px，太薄用户抓不住。
+ */
 .drag-region {
   -webkit-app-region: drag;
 }
 
 .no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/**
+ * 拖动区内的交互元素：逐个挂 `.no-drag` 容易漏，这里按标签兜一层底。
+ * 两条规则都写 `no-drag`（值一致），所以不冲突；**兜底只是保险，不是替代** ——
+ * 需要点击的元素仍然要显式挂 `.no-drag`，实测某处点不到时以显式挂类为准。
+ */
+.drag-region :is(button, input, select, textarea, a, [role='button'], [contenteditable='true']) {
   -webkit-app-region: no-drag;
 }
 

@@ -12,6 +12,10 @@
  *
  * 几何预算（不要突破）：展开窗口 228px = 竖条 8px + 面板 220px。
  * 面板宽度写死 220px，任何内部布局都在这个宽度内成立，否则会被窗口裁切。
+ *
+ * 拖动：**刻意不提供**。本窗 `focusable: false`，位置与尺寸完全由主进程按「工作区右缘 +
+ * 垂直居中 + 当前折叠态」推导（`window-manager.ts` 的 `edge` 分支），不参与用户拖动，
+ * 因此模板里不挂 `drag-region`（不在 `useWindowDrag` 的清单里，docs/07 §2.2）。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import AppButton from '../shared/components/AppButton.vue'

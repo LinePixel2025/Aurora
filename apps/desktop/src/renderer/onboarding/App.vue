@@ -20,10 +20,13 @@ import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import SettingField from '../shared/components/SettingField.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
+import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { useModeStore, useSettingsStore } from '../shared/stores.js'
 
 const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
+/** 本窗可拖（docs/07 §1）：拖动条 = `.head`，其中的步骤进度挂 `no-drag` */
+const { dragClass, noDragClass } = useWindowDrag('onboarding')
 
 const stepIndex = ref(0)
 const steps = ['欢迎', 'AI 模型', '选择模式', '模式设置', '完成'] as const
@@ -201,7 +204,7 @@ const lastStep = computed(() => steps.length - 1)
 <template>
   <div class="onboarding glass">
     <!-- 标题栏：整行可拖动（窗口无系统边框），右侧是步骤圆点进度 -->
-    <header class="head drag-region">
+    <header class="head" :class="dragClass">
       <div class="brand">
         <span class="brand-mark" />
         <div>
@@ -209,7 +212,7 @@ const lastStep = computed(() => steps.length - 1)
           <p class="brand-sub">把 Windows 接入 AI 生态 · 首次引导</p>
         </div>
       </div>
-      <div class="progress-wrap no-drag">
+      <div class="progress-wrap" :class="noDragClass">
         <ol class="progress">
           <li
             v-for="(step, index) in steps"
