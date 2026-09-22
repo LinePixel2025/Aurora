@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CONFIG_VERSION } from './schema.js'
+import { CONFIG_VERSION, SETTINGS_READONLY_PREFIXES } from './schema.js'
 import { MIGRATIONS, migrate, readVersion } from './migrations.js'
 import { createMemoryLogger } from '../utils/logger.js'
 
@@ -258,11 +258,12 @@ describe('配置迁移链', () => {
       expect(provider['temperature']).toBe(1.4)
       expect(provider['apiKeyEnc']).toBe('cipher')
 
-      // advanced / general 原样保留（迁移不碰）
+      // advanced 只被 v5 → v6 补上 readonlyPrefixes，用户改过的值原样保留；general 迁移不碰
       expect(outcome.data['advanced']).toEqual({
         proxy: 'http://127.0.0.1:7890',
         logLevel: 'debug',
         confirmSensitiveTools: false,
+        readonlyPrefixes: [...SETTINGS_READONLY_PREFIXES],
       })
       expect(outcome.data['general']).toEqual({ language: 'en-US', hotkey: 'Ctrl+Alt+A' })
 
@@ -355,7 +356,7 @@ describe('配置迁移链', () => {
     })
   })
 
-  describe('v5 → v6（移除独立小窗 mini-chat）', () => {
+  describe('v5 → v6（移除独立小窗 mini-chat；补齐 advanced.readonlyPrefixes）', () => {
     const CHAT_GEOMETRY = { x: 1480, y: 200, width: 420, height: 640 }
     const MINI_GEOMETRY = { x: 1500, y: 260, width: 320, height: 480 }
     const SETTINGS_GEOMETRY = { x: 700, y: 120, width: 900, height: 700 }
@@ -363,6 +364,8 @@ describe('配置迁移链', () => {
       const general = raw['general'] as Record<string, unknown>
       return general['windowState'] as Record<string, unknown>
     }
+    const loadReadonlyPrefixes = (raw: Record<string, unknown>): unknown =>
+      (raw['advanced'] as Record<string, unknown>)['readonlyPrefixes']
 
     it('删掉 mini-chat 键，chat / settings 几何原样保留，version 升到 6', () => {
       const outcome = migrate({
@@ -379,6 +382,9 @@ describe('配置迁移链', () => {
       expect(outcome.fromVersion).toBe(5)
       expect(outcome.applied).toHaveLength(1)
       expect(outcome.data['version']).toBe(6)
+      // describe 变更（补了 readonlyPrefixes 字样）不影响既有断言：仍是一条 v5 → v6 迁移
+      expect(outcome.applied[0]).toContain('v5 → v6')
+      expect(outcome.applied[0]).toContain('readonlyPrefixes')
 
       const windowState = loadWindowState(outcome.data)
       expect(windowState['mini-chat']).toBeUndefined()
@@ -389,6 +395,19 @@ describe('配置迁移链', () => {
       expect((outcome.data['general'] as Record<string, unknown>)['language']).toBe('zh-CN')
     })
 
+    it('补齐 advanced.readonlyPrefixes 默认值，且不覆盖用户已写入的黑名单', () => {
+      const added = migrate({ version: 5, advanced: { logLevel: 'warn' } })
+      expect((added.data['advanced'] as Record<string, unknown>)['logLevel']).toBe('warn')
+      expect(loadReadonlyPrefixes(added.data)).toEqual([...SETTINGS_READONLY_PREFIXES])
+
+      // 用户（高级逃生阀）自定义的黑名单原样保留，包括故意清空
+      const kept = migrate({ version: 5, advanced: { readonlyPrefixes: ['custom.path'] } })
+      expect(loadReadonlyPrefixes(kept.data)).toEqual(['custom.path'])
+
+      const emptied = migrate({ version: 5, advanced: { readonlyPrefixes: [] } })
+      expect(loadReadonlyPrefixes(emptied.data)).toEqual([])
+    })
+
     it('重复执行结果一致（幂等）', () => {
       const once = migrate({
         version: 5,
@@ -397,6 +416,7 @@ describe('配置迁移链', () => {
       const twice = migrate({ ...once.data, version: 5 })
       expect(loadWindowState(twice.data)).toEqual(loadWindowState(once.data))
       expect(loadWindowState(twice.data)['chat']).toEqual(CHAT_GEOMETRY)
+      expect(loadReadonlyPrefixes(twice.data)).toEqual(loadReadonlyPrefixes(once.data))
     })
 
     it('缺少 general / windowState 时不抛错，也不凭空造出 windowState', () => {
@@ -404,6 +424,8 @@ describe('配置迁移链', () => {
       expect(outcome.warnings).toEqual([])
       expect(outcome.data['version']).toBe(6)
       expect(outcome.data['general']).toBeUndefined()
+      // advanced 半边是**无条件**补默认值（与 general 的「有则改」不对称，见迁移注释）
+      expect(loadReadonlyPrefixes(outcome.data)).toEqual([...SETTINGS_READONLY_PREFIXES])
     })
   })
 })

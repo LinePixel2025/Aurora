@@ -130,63 +130,108 @@ export class DesktopAgentHost implements AgentHost {
  *
  * `resolveFetch` 同理按调用即时取值：系统代理改完，下一次请求就走新代理
  * （docs/08 §6；在此之前 `advanced.proxy` 是个没有消费方的死字段）。
+ *
+ * `create({ allowFallback: true })` 额外提供**启动自愈**：默认条目不可用时临时回退到
+ * 另一个可用条目（只影响本次请求构造，不写配置）。见下方 `fallback`。
  */
 export function createProviderFactory(
   settings: SettingsStoreLike,
   logger: Logger,
   resolveFetch?: () => typeof fetch | undefined,
 ): AgentProviderFactory {
+  /**
+   * 用某个已配置条目构造 provider。
+   * 返回 `undefined` 的原因都会记日志（缺 baseUrl / model / 可用 Key），
+   * 因此自愈回退时跳过哪些条目是可查的；`quiet` 用于探测回退候选（那些条目本就不是
+   * 当前默认，缺 Key 属于正常状态，不该刷 warn）。
+   */
+  const build = (
+    providerId: string,
+    config: LlmProviderConfig,
+    quiet = false,
+  ): ProviderConfig | undefined => {
+    if (config.baseUrl.trim() === '' || config.model.trim() === '') {
+      if (!quiet) logger.warn('模型配置缺少 baseUrl 或 model', { providerId })
+      return undefined
+    }
+
+    const apiKey = settings.getSecret(`llm.providers.${providerId}.apiKey`)
+    if (apiKey === '') {
+      if (!quiet) logger.warn('模型配置缺少 API Key（可能加密不可用或尚未填写）', { providerId })
+      return undefined
+    }
+
+    // 「思考等级」按用户设置透传给内核；`auto` 约定为「不下发 reasoning_effort」，
+    // 在内核边界之前就映射成 undefined —— 其它层不许再判断 `'auto'`。
+    const reasoningEffort = config.reasoningEffort === 'auto' ? undefined : config.reasoningEffort
+
+    return {
+      provider: new OpenAiCompatProvider({
+        id: providerId,
+        baseUrl: config.baseUrl,
+        apiKey,
+        defaultModel: config.model,
+        ...(fetchImplOf(resolveFetch) === undefined
+          ? {}
+          : { fetchImpl: fetchImplOf(resolveFetch) }),
+        onRetry: (info) =>
+          logger.warn('LLM 请求重试', {
+            providerId,
+            attempt: info.attempt,
+            code: info.code,
+            delayMs: info.delayMs,
+          }),
+      }),
+      model: config.model,
+      temperature: config.temperature,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    }
+  }
+
+  /**
+   * 启动自愈（docs/06 §12）：默认条目不可用时，临时借一个**确实可用**的条目把本轮请求建起来。
+   *
+   * 这件事只影响本次请求构造：**不写配置**（`llm.active` 改不改由用户或设置页决定），
+   * 否则一次模型调用就会悄悄改掉用户的选择。
+   *
+   * 触发场景有二：AI 把 `llm.active` 写空 / 写成一个不存在的 id（见 `set_setting` 的黑名单与
+   * `SettingsStore.sanitize` 的重置），或用户在配置文件里手改错了字段。
+   */
+  const fallback = (llm: LlmSettings): ProviderConfig | undefined => {
+    for (const [id, candidate] of Object.entries(llm.providers)) {
+      if (id === llm.active) continue
+      const built = build(id, candidate, true)
+      if (built !== undefined) {
+        logger.warn('默认模型配置不可用，已回退到可用条目', { active: llm.active, fallback: id })
+        return built
+      }
+    }
+    return undefined
+  }
+
   return {
-    create(): ProviderConfig | undefined {
+    create(options?: { allowFallback?: boolean }): ProviderConfig | undefined {
       const llm: LlmSettings = settings.get().llm
       const providerId = llm.active
       if (providerId === '') {
         logger.debug('尚未选择默认模型配置')
-        return undefined
+        return allowFallbackOf(options) ? fallback(llm) : undefined
       }
       const config: LlmProviderConfig | undefined = llm.providers[providerId]
       if (config === undefined) {
         logger.warn('默认模型配置不存在', { providerId })
-        return undefined
+        return allowFallbackOf(options) ? fallback(llm) : undefined
       }
-      if (config.baseUrl.trim() === '' || config.model.trim() === '') {
-        logger.warn('模型配置缺少 baseUrl 或 model', { providerId })
-        return undefined
-      }
-
-      const apiKey = settings.getSecret(`llm.providers.${providerId}.apiKey`)
-      if (apiKey === '') {
-        logger.warn('模型配置缺少 API Key（可能加密不可用或尚未填写）', { providerId })
-        return undefined
-      }
-
-      // 「思考等级」按用户设置透传给内核；`auto` 约定为「不下发 reasoning_effort」，
-      // 在内核边界之前就映射成 undefined —— 其它层不许再判断 `'auto'`。
-      const reasoningEffort = config.reasoningEffort === 'auto' ? undefined : config.reasoningEffort
-
-      return {
-        provider: new OpenAiCompatProvider({
-          id: providerId,
-          baseUrl: config.baseUrl,
-          apiKey,
-          defaultModel: config.model,
-          ...(fetchImplOf(resolveFetch) === undefined
-            ? {}
-            : { fetchImpl: fetchImplOf(resolveFetch) }),
-          onRetry: (info) =>
-            logger.warn('LLM 请求重试', {
-              providerId,
-              attempt: info.attempt,
-              code: info.code,
-              delayMs: info.delayMs,
-            }),
-        }),
-        model: config.model,
-        temperature: config.temperature,
-        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-      }
+      const built = build(providerId, config)
+      if (built === undefined && allowFallbackOf(options)) return fallback(llm)
+      return built
     },
   }
+}
+
+/** 只有显式要求自愈时才回退：普通调用（如设置页「测试连接」）必须如实报告失败。 */
+function allowFallbackOf(options?: { allowFallback?: boolean }): boolean {
+  return options?.allowFallback === true
 }
 
 /** 取当前出网 fetch；解析失败按「未提供」处理，让内核回落到全局 fetch。 */

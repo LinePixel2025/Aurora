@@ -130,6 +130,8 @@ function settingsWith(overrides: {
       logLevel: 'info',
       quietHours: null,
       confirmSensitiveTools: true,
+      // step 2 新增：`Settings` 里是 zod `.default()`，输出类型必填，fixture 必须补上
+      readonlyPrefixes: [],
     },
     agent: { tools: { ...DEFAULT_AGENT_TOOLS } },
   }

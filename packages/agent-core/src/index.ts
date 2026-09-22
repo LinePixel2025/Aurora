@@ -24,6 +24,8 @@ export * from './tools/registry.js'
 // 电脑操控工具（docs/06 §11）：内核侧纯逻辑，真实系统调用在主进程注入。
 export * from './tools/terminal.js'
 export * from './tools/files.js'
+// AI 修改自身配置（docs/06 §12）：同上，真实配置读写由主进程端口注入。
+export * from './tools/settings.js'
 export * from './mcp/errors.js'
 export * from './mcp/jsonrpc.js'
 export * from './mcp/transports.js'

@@ -5,9 +5,12 @@ import {
   CONFIG_VERSION,
   DEFAULT_SUBJECT_NAMES,
   MODE_IDS,
+  SETTINGS_READONLY_PREFIXES,
   SettingsSchema,
+  canWriteSettingPath,
   fieldAccepts,
   schemaPathCount,
+  settingsReadonlyReason,
 } from './schema.js'
 
 describe('SettingsSchema / defaults 一致性', () => {
@@ -206,5 +209,67 @@ describe('SettingsSchema / defaults 一致性', () => {
     ok.agent.tools.terminal.maxOutputChars = 500
     ok.agent.tools.files.maxReadBytes = 4_194_304
     expect(SettingsSchema.safeParse(ok).success).toBe(true)
+  })
+})
+
+describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () => {
+  it('默认黑名单即 SETTINGS_READONLY_PREFIXES，且是可变数组', () => {
+    const settings = createDefaultSettings()
+    expect(settings.advanced.readonlyPrefixes).toEqual([...SETTINGS_READONLY_PREFIXES])
+    // 高级用户的逃生阀要能改：默认值必须是可变数组，不能是 `as const` 的只读元组
+    settings.advanced.readonlyPrefixes.push('custom.path')
+    expect(settings.advanced.readonlyPrefixes).toContain('custom.path')
+    // 且不是与常量共享引用（默认配置每次都拿新副本）
+    expect(createDefaultSettings().advanced.readonlyPrefixes).toEqual([
+      ...SETTINGS_READONLY_PREFIXES,
+    ])
+  })
+
+  it('可写路径：被 Schema 登记且不在黑名单里', () => {
+    expect(canWriteSettingPath('agent.tools.terminal.enabled')).toBe(true)
+    expect(settingsReadonlyReason('agent.tools.terminal.enabled')).toBeUndefined()
+    expect(canWriteSettingPath('advanced.logLevel')).toBe(true)
+    expect(canWriteSettingPath('agent.tools.workspaceDir')).toBe(true)
+    // 工具实际要改的代表性字段：静态字段（含枚举 / 数组 / 数字 / 布尔）都不能被「未知路径」误杀
+    for (const path of [
+      'llm.active',
+      'modes.classroom.classification.autoMove',
+      'modes.classroom.schedule.lessons',
+      'general.edgeBar.opacity',
+      'skills.disabled',
+      'mcp.lazyConnect',
+      'advanced.confirmSensitiveTools',
+    ]) {
+      expect(settingsReadonlyReason(path), path).toBeUndefined()
+    }
+  })
+
+  it('黑名单路径（含其子路径）一律拒绝，并给出中文原因', () => {
+    expect(canWriteSettingPath('llm.providers.deepseek.apiKeyEnc')).toBe(false)
+    expect(settingsReadonlyReason('llm.providers.deepseek.apiKeyEnc')).toBe(
+      '凭据字段不允许通过工具修改',
+    )
+    expect(canWriteSettingPath('advanced.proxy')).toBe(false)
+    expect(settingsReadonlyReason('advanced.proxy')).toContain('代理')
+    expect(canWriteSettingPath('general.hotkey')).toBe(false)
+    expect(settingsReadonlyReason('general.hotkey')).toContain('快捷键')
+    // 前缀本身、以及窗口几何这类动态键路径
+    expect(canWriteSettingPath('llm.providers')).toBe(false)
+    expect(canWriteSettingPath('version')).toBe(false)
+    expect(canWriteSettingPath('general.windowState.chat')).toBe(false)
+    expect(canWriteSettingPath('mcp.servers')).toBe(false)
+  })
+
+  it('前缀按路径段匹配，不误伤名字相近的字段', () => {
+    // `llm.providerSuffix` 与前缀 `llm.providers` 只是字符级前缀相同、段名不同 → 不算黑名单命中；
+    // 它同时也不是 Schema 登记的字段，所以理由是「未知配置路径」而非凭据类原因。
+    expect(settingsReadonlyReason('llm.providerSuffix')).toBe('未知配置路径')
+    expect(settingsReadonlyReason('versionXxx')).toBe('未知配置路径')
+    expect(settingsReadonlyReason('general.windowStateBackup')).toBe('未知配置路径')
+  })
+
+  it('拼错路径必须拒绝（Schema 识别不了，防悄悄写进配置）', () => {
+    expect(canWriteSettingPath('modes.classrom.typo')).toBe(false)
+    expect(settingsReadonlyReason('modes.classrom.typo')).toBe('未知配置路径')
   })
 })

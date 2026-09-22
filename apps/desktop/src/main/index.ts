@@ -20,8 +20,10 @@ import {
   utilityProcess,
 } from 'electron'
 import { KernelAgentHost, SessionStore, SkillsBridge, ToolRegistry } from '@aurora/agent-core'
+import type { SettingsToolPort, ToolDefinition } from '@aurora/agent-core'
 import {
   COMPUTER_TOOL_NAMES,
+  SettingsSchema,
   SettingsStore,
   type ClassIslandStatus,
   type ClassIslandTestResult,
@@ -45,7 +47,7 @@ import { PerceptionHub } from './perception.js'
 import { DesktopAgentHost, createConfirmTool, createProviderFactory } from './agent-host.js'
 import { McpController } from './mcp.js'
 import { LlmTester } from './llm-tester.js'
-import { registerIpc, type DesktopDeps } from './ipc.js'
+import { registerIpc, createSettingsWriter, type DesktopDeps } from './ipc.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { ProactiveScheduler } from './proactive.js'
 import { PreClassReminder } from './pre-class-reminder.js'
@@ -68,7 +70,13 @@ import { SMOKE_FLAG, SMOKE_RESULT_PREFIX, smokeScript } from './smoke.js'
 import { STUB_API_KEY, STUB_MODEL, startStubLlmServer, type StubLlmServer } from './smoke-llm.js'
 import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
 import { captureWindows, defaultCapturePlan, filterCapturePlan } from './capture.js'
-import { registerComputerTools, type ComputerTools } from './tools/index.js'
+import {
+  registerComputerTools,
+  registerSettingsTool,
+  type ComputerTools,
+  type SettingsToolRegistry,
+} from './tools/index.js'
+import { createSettingsPort } from './tools/settings-port.js'
 import { createCommandRunner } from './tools/command-runner.js'
 import { createNodeFilePort } from './tools/file-port.js'
 import { createShellOpenPort } from './tools/open-port.js'
@@ -168,6 +176,8 @@ let disposeIpc: (() => void) | undefined
 /** 工具表与电脑操控装配器提到模块级：`runSmokeTest` 要在真实进程里断言它们（docs/06 §11） */
 let tools: ToolRegistry | undefined
 let computerTools: ComputerTools | undefined
+/** `set_setting` 装配器（docs/06 §12）：与电脑操控工具分开注册，互不摘除 */
+let settingsTool: SettingsToolRegistry | undefined
 /** MCP 状态订阅（IPC 层与主进程内部共用，避免为状态再引入一次事件总线） */
 const mcpStatusListeners = new Set<(statuses: McpServerStatus[]) => void>()
 
@@ -421,6 +431,16 @@ async function bootstrap(): Promise<void> {
   //     `sync()` 是唯一的开关落地点：这里一次、`onSettingsChanged` 一次 → 改完立即生效。
   //     runner 的 `defaultCwd` 只作兜底，真正的工作目录由工具层每次按配置传入
   //     （于是 `agent.tools.workspaceDir` 改完不用重建 runner）。
+  //
+  // 7.1.1 `set_setting`（docs/06 §12）：AI 修改自身配置的唯一入口。
+  //     写入复用 IPC 层同一个 `applyPatch`（局部合并 + 凭据抽取 + 广播）；
+  //     绑定它所需的 `DesktopDeps`（下面的 `deps`）在后半段才装配，因此这里传 getter，
+  //     真正的取值发生在第一次写入时。
+  const settingsPort: SettingsToolPort = createSettingsPort({
+    settings,
+    applyPatch: () => createSettingsWriter(deps),
+    logger: logger.child('settings-tool'),
+  })
   computerTools = registerComputerTools({
     tools,
     getSettings: () => settings!.get(),
@@ -429,8 +449,10 @@ async function bootstrap(): Promise<void> {
     run: createCommandRunner({ defaultCwd: process.cwd(), maxOutputBytes: 1024 * 1024 }),
     files: createNodeFilePort(),
     open: createShellOpenPort(),
+    settingsPort,
   })
-  computerTools.sync()
+  settingsTool = registerSettingsTool({ tools, port: settingsPort, logger: logger.child('tools') })
+  syncToolRegistries()
 
   mcp = new McpController({
     settings,
@@ -464,7 +486,21 @@ async function bootstrap(): Promise<void> {
   const providerFactory = createProviderFactory(settings, logger.child('llm'), () => netFetch)
   const kernel = new KernelAgentHost({
     sessions,
-    provider: providerFactory,
+    // 启动自愈（docs/06 §12、step 02 第 6 条）：常规构造失败时（`llm.active` 为空 / 指向不存在的
+    // provider / 当前条目缺 Key），临时借一个可用条目把请求建起来，而不是让 Agent 彻底失能。
+    // 回退只影响本次请求构造，不写配置。
+    provider: {
+      create: () => {
+        try {
+          const config = providerFactory.create()
+          if (config !== undefined) return config
+          return providerFactory.create({ allowFallback: true })
+        } catch (error) {
+          logger?.warn('默认模型配置构造失败，尝试回退到可用条目', { error: String(error) })
+          return providerFactory.create({ allowFallback: true })
+        }
+      },
+    },
     tools,
     skills: skillBridge,
     logger: logger.child('agent'),
@@ -690,9 +726,9 @@ async function bootstrap(): Promise<void> {
       // Skill 用户目录可能被改（`skills.userDir`），按新配置重解析并重扫
       void skillsService?.reconfigure(next)
       syncLaunchAtLogin(next.general.launchAtLogin)
-      // 电脑操控工具（docs/06 §11）：开关 / 超时 / 上限改完立即生效——重建工具实例，
-      // 工具表变化会进下一次请求的系统提示词，无需重启。
-      if (computerTools) computerTools.sync()
+      // 电脑操控工具（docs/06 §11）+ `set_setting`（docs/06 §12）：开关 / 超时 / 上限改完立即生效
+      // ——重建工具实例，工具表变化会进下一次请求的系统提示词，无需重启。
+      syncToolRegistries()
       tray?.refresh()
       // 感知文件夹 / 科目 / 阈值变更后，让分类管线按新配置重新武装
       syncClassification()
@@ -1048,14 +1084,14 @@ async function runSmokeTest(userData: string): Promise<void> {
       settings.update({
         agent: { tools: { ...before, terminal: { ...before.terminal, enabled: false } } },
       })
-      computerTools?.sync()
+      syncToolRegistries()
       const offSoFar =
         tools?.get('run_command') === undefined && tools?.get('open_path') !== undefined
 
       settings.update({
         agent: { tools: { ...before, terminal: { ...before.terminal, enabled: true } } },
       })
-      computerTools?.sync()
+      syncToolRegistries()
       const backOn = tools?.get('run_command') !== undefined
 
       const after = settings.get().agent.tools
@@ -1076,12 +1112,12 @@ async function runSmokeTest(userData: string): Promise<void> {
     if (settings !== undefined) {
       const before = settings.get().agent.tools
       settings.update({ agent: { tools: { ...before, enabled: false } } })
-      computerTools?.sync()
+      syncToolRegistries()
       const allGone = COMPUTER_TOOL_NAMES.every((name) => tools?.get(name) === undefined)
       const othersKept = tools?.get('use_skill') !== undefined
 
       settings.update({ agent: { tools: { ...before, enabled: true } } })
-      computerTools?.sync()
+      syncToolRegistries()
       const restored = COMPUTER_TOOL_NAMES.every((name) => tools?.get(name) !== undefined)
       masterOffOk = allGone && othersKept && restored
     }
@@ -1090,6 +1126,74 @@ async function runSmokeTest(userData: string): Promise<void> {
       masterOffOk,
       masterOffOk ? '' : '总开关断言失败',
     )
+  }
+
+  // 5. `set_setting` 的 crash 矩阵（docs/06 §12、step 02 第 8 条）：
+  //    逐个写入「AI 可能写出的坏值」，每次都必须保证
+  //    ① 配置仍能被 `SettingsSchema` 解析；② `set_setting` 自己没被写没。
+  //    这条钉的是"AI 改设置导致应用下次启动崩"的整类问题。
+  if (settings !== undefined && tools !== undefined) {
+    const setSetting = tools.get('set_setting')
+    // 期望被工具直接拒绝的路径（黑名单 / 未知路径 / 非法枚举）。
+    // `agent.tools.enabled` 是**有意允许**的：总开关关掉后 `set_setting` 仍在，
+    // AI 仍能改回 `agent.tools.*`（见 step 02「交接」的边界说明），因此它只断言"没写坏"。
+    const crashMatrix: Array<{ path: string; value: unknown; expectReject: boolean }> = [
+      { path: 'agent.tools.enabled', value: false, expectReject: false },
+      { path: 'advanced.logLevel', value: 'verbose', expectReject: true },
+      { path: 'llm.active', value: 'nope', expectReject: false },
+      { path: 'modes.classroom.typo', value: 1, expectReject: true },
+      { path: 'llm.providers.x.apiKeyEnc', value: 'leak', expectReject: true },
+    ]
+
+    for (const item of crashMatrix) {
+      const outcome =
+        setSetting === undefined
+          ? { rejected: false, note: 'set_setting 未注册' }
+          : await writeSettingThroughTool(setSetting, item.path, item.value)
+      const parsed = SettingsSchema.safeParse(settings.get())
+      const toolKept = tools.get('set_setting') !== undefined
+      const rejectOk = item.expectReject ? outcome.rejected : true
+      record(
+        `配置写入不会写坏（${item.path}）`,
+        parsed.success && toolKept && rejectOk,
+        [
+          `accepted=${outcome.rejected ? 'no' : 'yes'}`,
+          `expected=${item.expectReject ? 'reject' : 'accept-or-reject'}`,
+          `schema=${parsed.success ? 'ok' : 'FAIL'}`,
+          `toolKept=${toolKept ? 'yes' : 'no'}`,
+          outcome.note,
+        ]
+          .filter((part) => part !== '')
+          .join(' '),
+      )
+    }
+
+    // 写回总开关：矩阵第 1 条有意把 `agent.tools.enabled` 写成 false，
+    // 不复位的话后面的收尾清理会以为"用户本来就关着"，也会影响下一次 dev 运行的观感。
+    const toolsNow = settings.get().agent.tools
+    settings.update({ agent: { tools: { ...toolsNow, enabled: true } } })
+    syncToolRegistries()
+
+    // 5.1 「AI 用 run_command 手改配置文件」这条路径：直接把 config.json 写成非法 JSON，
+    //     重新走一遍 `SettingsStore.init()` 的读取链路后，`settings.get()` 必须仍是一份
+    //     合法配置（损坏文件走「备份后重建」，见 packages/shared 的 store.ts）。
+    //     没有这条断言，"AI 绕过一切校验改配置"就只是文档里的承诺。
+    const configPath = join(userData, 'config.json')
+    let corruptRecovered = false
+    let corruptDetail = ''
+    try {
+      await fs.writeFile(configPath, '{ 这不是合法 JSON ---', 'utf8')
+      const report = await settings.init()
+      const parsedAfter = SettingsSchema.safeParse(settings.get())
+      corruptRecovered = report.corrupted && parsedAfter.success
+      corruptDetail = `corrupted=${report.corrupted} backup=${report.backupPath ?? 'none'}`
+      // 内存里已是重建后的合法配置，但落盘是防抖的：显式 flush 一次，
+      // 让"损坏文件已被合法配置替换"在磁盘上也立刻成立（下面的收尾清理依赖它）。
+      await settings.flush()
+    } catch (error) {
+      corruptDetail = `异常：${String(error)}`
+    }
+    record('损坏 config.json 仍能恢复为合法配置', corruptRecovered, corruptDetail)
   }
 
   for (const item of results) {
@@ -1432,6 +1536,20 @@ function adaptProactive(scheduler: ProactiveScheduler): ProactiveLike {
  * 仅在 ClassRoom 激活且已配置感知文件夹时监听；否则停掉，避免无谓的 I/O。
  * 感知文件夹变化时重建监听（`watch()` 本身幂等）。
  */
+/**
+ * 工具注册表的**唯一**同步入口（docs/06 §11、§12）。 *
+ * 两个装配器必须一起同步：
+ * - `computerTools`：按 `agent.tools.*` 重建 5 个电脑操控工具；
+ * - `settingsTool`：重建 `set_setting`（不受 `agent.tools.enabled` 影响，见 tools/index.ts）。
+ *
+ * 拆开写会让「改开关后工具表变化」的时机不一致：`set_setting` 是否注册不再依赖
+ * `agent.tools.enabled`，但它读的是同一份配置，必须和电脑操控工具在同一拍完成重建。
+ */
+function syncToolRegistries(): void {
+  computerTools?.sync()
+  settingsTool?.sync()
+}
+
 function syncClassification(): void {
   const service = classification
   const watcher = fileWatcher
@@ -1462,6 +1580,35 @@ function syncClassification(): void {
         error: String(error),
       })
     })
+}
+
+/**
+ * 走**真实工具**写一条配置（自测用）。
+ *
+ * 刻意调 `set_setting.execute` 而不是 `settingsPort.write`：这样 crash 矩阵覆盖的
+ * 是模型真正会走到的那条链路（内核工具的参数解析 / 可写性前置校验 / 异常收敛），
+ * 而不是只测端口。确认卡片不在自测里弹（`execute` 由内核在循环中调用 `confirmTool` 之前
+ * 就已经过参数校验），因此不会白等 60s。
+ */
+async function writeSettingThroughTool(
+  tool: ToolDefinition,
+  path: string,
+  value: unknown,
+): Promise<{ rejected: boolean; note: string }> {
+  try {
+    const result = await tool.execute(
+      { action: 'set', values: [{ path, value }] },
+      { sessionId: 'smoke' },
+    )
+    return {
+      rejected: result.isError === true,
+      note: result.content.slice(0, 120).replace(/\s+/g, ' '),
+    }
+  } catch (error) {
+    // 工具把内建异常收敛成 isError；真抛出来说明**异常冒泡进了工具循环**，
+    // 正是本步要防的「AI 改设置导致整轮对话中断」，如实记成失败。
+    return { rejected: false, note: `异常冒泡：${String(error)}` }
+  }
 }
 
 /** 模式层（`ModeWindowPort`）发起的通知（docs/05 §3.3）。 */

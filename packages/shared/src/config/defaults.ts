@@ -3,6 +3,7 @@ import {
   CONFIG_VERSION,
   DEFAULT_SUBJECT_FOLDER_PREFIX,
   DEFAULT_SUBJECT_NAMES,
+  SETTINGS_READONLY_PREFIXES,
   type ReasoningEffort,
   type Settings,
   type WindowName,
@@ -132,6 +133,7 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     logLevel: 'info',
     quietHours: null,
     confirmSensitiveTools: true,
+    readonlyPrefixes: [...SETTINGS_READONLY_PREFIXES],
   },
   agent: {
     tools: { ...DEFAULT_AGENT_TOOLS },

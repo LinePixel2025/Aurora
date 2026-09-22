@@ -532,6 +532,25 @@ function fileNameOf(path: string): string {
 
 // ───────────────────────── 辅助 ─────────────────────────
 
+/**
+ * `applyPatch` 需要的最小依赖面。
+ *
+ * 抽出来是为了让「写配置的第二个调用方」——`tools/settings-port.ts`（AI 的 `set_setting`）——
+ * 能拿到**同一个实现**（`applyPatch` 仍只在本文件内被真正读写），
+ * 而不是自己 `settings.mutate()` 重写一套合并 / 凭据 / 广播逻辑。
+ */
+export type SettingsWriteDeps = Pick<
+  DesktopDeps,
+  'settings' | 'skills' | 'logger' | 'onSettingsChanged'
+>
+
+/** 把 `applyPatch` 绑成 `(patch) => Result<Settings>`，供 `set_setting` 端口复用。 */
+export function createSettingsWriter(
+  deps: SettingsWriteDeps,
+): (patch: SettingsPatch) => Result<Settings> {
+  return (patch) => applyPatch(deps as DesktopDeps, patch)
+}
+
 function applyPatch(deps: DesktopDeps, patch: SettingsPatch): Result<Settings> {
   const secrets: SecretEntries = {}
 
@@ -574,9 +593,17 @@ function applyPatch(deps: DesktopDeps, patch: SettingsPatch): Result<Settings> {
   const updated = deps.settings.mutate((draft) => {
     const providers = { ...draft.llm.providers }
     for (const [id, provider] of Object.entries(patch.llm?.providers ?? {})) {
+      const existing = providers[id]
+      const incoming = { ...provider } as Record<string, unknown>
+      // 渲染层永远看不到密文（`settings:get` 把 `apiKeyEnc` 一律置成空串，见 `redactSettings`），
+      // 而下面的合并是「patch 覆盖已有」。所以**空串只能理解为「本次不改凭据」**：
+      // 否则设置页/对话窗回传一次全量 providers，就会把磁盘上的密文清空——
+      // 同进程内被 `SettingsStore` 的 memorySecrets 缓存掩盖，重启后才表现为「API Key 没了」。
+      // 新建 provider（没有 existing）时保留空串：`LlmProviderSchema` 要求该字段存在。
+      if (existing !== undefined && incoming['apiKeyEnc'] === '') delete incoming['apiKeyEnc']
       providers[id] = {
-        ...(providers[id] ?? {}),
-        ...provider,
+        ...(existing ?? {}),
+        ...incoming,
       } as Settings['llm']['providers'][string]
     }
 
@@ -623,19 +650,28 @@ function toRendererSettings(deps: DesktopDeps): Settings {
  * `apiKeyEnc` / `envEnc` 的值送进渲染进程（docs/08 §1.1）。
  */
 function redactSettingsForRenderer(deps: DesktopDeps, source: Settings): Settings {
-  const settings = structuredClone(source)
-  for (const [id, provider] of Object.entries(settings.llm.providers)) {
+  return redactSettings(deps.settings, source)
+}
+
+/**
+ * 脱敏主体：只依赖 `SettingsStoreLike`（取凭据"是否已设置"），
+ * 因此 `set_setting` 的端口（`tools/settings-port.ts`）能复用**同一份**逻辑，
+ * 不会出现"两处脱敏，改一处漏一处"。
+ */
+export function redactSettings(settings: SettingsStoreLike, source: Settings): Settings {
+  const clone = structuredClone(source)
+  for (const [id, provider] of Object.entries(clone.llm.providers)) {
     const draft = provider as unknown as Record<string, unknown>
-    draft['apiKeySet'] = deps.settings.getSecret(`llm.providers.${id}.apiKey`) !== ''
+    draft['apiKeySet'] = settings.getSecret(`llm.providers.${id}.apiKey`) !== ''
     draft['apiKeyEnc'] = ''
   }
-  for (const server of settings.mcp.servers) {
+  for (const server of clone.mcp.servers) {
     const draft = server as unknown as Record<string, unknown>
     const env = (server as unknown as { envEnc?: Record<string, string> }).envEnc ?? {}
     draft['envSet'] = Object.keys(env)
     draft['envEnc'] = {}
   }
-  return settings
+  return clone
 }
 
 async function openPath(deps: DesktopDeps, request: OpenPathRequest): Promise<Result<string>> {

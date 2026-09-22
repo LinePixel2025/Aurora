@@ -3,7 +3,7 @@
  *
  * 约定：每次 Schema 破坏性变更向 `MIGRATIONS` 追加一条，永不修改历史条目。
  */
-import { CONFIG_VERSION, REASONING_EFFORT_LEVELS } from './schema.js'
+import { CONFIG_VERSION, REASONING_EFFORT_LEVELS, SETTINGS_READONLY_PREFIXES } from './schema.js'
 import {
   DEFAULT_AGENT_TOOLS,
   DEFAULT_CLASSIFICATION,
@@ -204,16 +204,19 @@ function fillMissing(
 }
 
 /**
- * v5 → v6：独立小窗（`mini-chat`）已删除，清掉它的窗口几何记录。
+ * v5 → v6：独立小窗（`mini-chat`）已删除，清掉它的窗口几何记录；同时补上
+ * `advanced.readonlyPrefixes`（AI 改配置的路径黑名单，见 `schema.ts`）。
  *
- * 只删该 key，**不动**其它字段与其它窗口的几何（幂等）。
+ * 窗口几何半边：只删该 key，**不动**其它字段与其它窗口的几何（幂等）。
  * 与 v3 → v4 删 `service-dock` 的唯一差别：**只在 `general.windowState` 已存在时改写**，
  * 不给本来没有窗口几何的配置凭空造出一个空对象。
+ * `advanced` 半边照 v4 → v5 对 `agent` 的做法**无条件**补默认值（用户已写入的黑名单一个都不动）。
  */
 const migrateV5ToV6: Migration = {
   from: 5,
   to: 6,
-  describe: "v5 → v6：移除 general.windowState['mini-chat']（独立小窗已删除）",
+  describe:
+    "v5 → v6：移除 general.windowState['mini-chat']（独立小窗已删除）；补齐 advanced.readonlyPrefixes",
   transform(raw) {
     const next: Record<string, unknown> = { ...raw }
     const general = asRecord(raw['general'])
@@ -223,6 +226,11 @@ const migrateV5ToV6: Migration = {
       delete cleaned['mini-chat']
       next['general'] = { ...general, windowState: cleaned }
     }
+
+    next['advanced'] = fillMissing(asRecord(raw['advanced']) ?? {}, {
+      readonlyPrefixes: [...SETTINGS_READONLY_PREFIXES],
+    })
+
     next['version'] = 6
     return next
   },

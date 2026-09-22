@@ -205,6 +205,23 @@ export const McpSchema = z.object({
 })
 export type McpSettings = z.infer<typeof McpSchema>
 
+/** AI 改配置（settings 工具）一律禁止触碰的路径前缀（docs/06 §12）。 */
+export const SETTINGS_READONLY_PREFIXES = [
+  // 凭据与密文：绝不让 AI 读回或改写（凭据只经 safeStorage / setSecret 落库）
+  'llm.providers',
+  'mcp.servers',
+  // Schema 版本与窗口几何：改坏会让配置迁移 / 窗口位置出现难以复现的怪状
+  'version',
+  'general.windowState',
+  // 代理：写错会让所有出网立刻失效，AI 连不上自己就没法改回来
+  'advanced.proxy',
+  // 引导与首次运行标记、开机自启、全局快捷键：改它会改变启动路径或抢占系统热键
+  'general.onboarded',
+  'general.firstRun',
+  'general.launchAtLogin',
+  'general.hotkey',
+] as const
+
 export const AdvancedSchema = z.object({
   proxy: z.string(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']),
@@ -214,6 +231,14 @@ export const AdvancedSchema = z.object({
    * （docs/06 §5）。关闭后按 v0.3.0 行为降级：只记日志留痕、不拦截。
    */
   confirmSensitiveTools: z.boolean(),
+  /**
+   * AI 改配置（`set_setting`）禁止触碰的路径前缀（docs/06 §12）。
+   *
+   * 默认值即 `SETTINGS_READONLY_PREFIXES`（不可变元组 → 展开成可变数组）；
+   * 把它做成配置项是为了给高级用户留一个逃生阀，但「Schema 必须识别该路径」这条兜底
+   * （见 `canWriteSettingPath`）不随它变化——黑名单清空也不等于任意路径可写。
+   */
+  readonlyPrefixes: z.array(z.string()).default([...SETTINGS_READONLY_PREFIXES]),
 })
 export type AdvancedSettings = z.infer<typeof AdvancedSchema>
 
@@ -272,6 +297,68 @@ export const SettingsSchema = z.object({
 })
 
 export type Settings = z.infer<typeof SettingsSchema>
+
+/** 黑名单前缀 → 给模型与审计日志看的中文原因（每个默认前缀都必须有一条）。 */
+const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number], string> = {
+  'llm.providers': '凭据字段不允许通过工具修改',
+  'mcp.servers': '凭据字段不允许通过工具修改',
+  version: '配置版本由迁移链维护，不允许通过工具修改',
+  'general.windowState': '窗口位置由系统维护，不允许通过工具修改',
+  'advanced.proxy': '代理设置写错会立即断网，不允许通过工具修改',
+  'general.onboarded': '引导状态不允许通过工具修改',
+  'general.firstRun': '首次运行标记不允许通过工具修改',
+  'general.launchAtLogin': '开机自启不允许通过工具修改',
+  'general.hotkey': '全局快捷键不允许通过工具修改',
+}
+
+/**
+ * 前缀匹配按**路径段**判断：`llm.providers` 命中 `llm.providers.x.apiKeyEnc`，
+ * 但**不**命中 `llm.providerSuffix`（后者只是字符级前缀相同，段名并非 `providers`）；
+ * `version` 同理不命中 `versionXxx`。逐段相等才算是命中，避免相近字段名被误伤进黑名单。
+ */
+function matchReadonlyPrefix(
+  path: string,
+): (typeof SETTINGS_READONLY_PREFIXES)[number] | undefined {
+  const segments = path.split('.')
+  for (const prefix of SETTINGS_READONLY_PREFIXES) {
+    const prefixSegments = prefix.split('.')
+    if (prefixSegments.length > segments.length) continue
+    if (prefixSegments.every((segment, index) => segments[index] === segment)) return prefix
+  }
+  return undefined
+}
+
+/**
+ * 路径是否被 Schema 登记：静态字段命中 `lookupSpec`（含 `*` / `[]` 通配兜底），
+ * 或落在 `z.record` 这类动态键路径上（`llm.providers` / `general.windowState`）。
+ */
+function isKnownSettingPath(path: string): boolean {
+  return lookupSpec(path) !== undefined || isDynamicPath(path)
+}
+
+/**
+ * 路径不可写时给出人类可读的中文原因（可写则返回 `undefined`）。
+ * 工具把原因回填给模型，写审计日志也复用它留痕（docs/06 §12）。
+ */
+export function settingsReadonlyReason(path: string): string | undefined {
+  const prefix = matchReadonlyPrefix(path)
+  if (prefix !== undefined) return READONLY_PREFIX_REASONS[prefix]
+  // `fieldAccepts` 对**未登记**的路径默认放行（见该函数注释「未登记的路径默认接受」），
+  // 只靠它当白名单的话，拼错的字段（`modes.classrom.typo`）会被悄悄写进 config.json，
+  // 再被 `SettingsSchema` 判为非法，把整份配置拖进备份 + 重建。
+  if (!isKnownSettingPath(path)) return '未知配置路径'
+  return undefined
+}
+
+/**
+ * AI 改配置（`set_setting` 工具）的路径是否可写（docs/06 §12）。
+ * 规则：① 命中 `SETTINGS_READONLY_PREFIXES` → 拒绝；
+ *      ② 路径必须能被 Schema 识别（`lookupSpec` 登记过，或 `isDynamicPath` 认的通配路径）→ 否则拒绝
+ *         （防拼错字段悄悄写进配置；**不能**用 `fieldAccepts`，它对未登记路径默认放行）。
+ */
+export function canWriteSettingPath(path: string): boolean {
+  return settingsReadonlyReason(path) === undefined
+}
 
 /**
  * 逐字段回退用的路径感知校验器：`fieldAccepts('general.language', 42) === false`，

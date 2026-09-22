@@ -1,17 +1,39 @@
 import { describe, expect, it } from 'vitest'
-import { ToolRegistry, type CommandRunner, type FilePort, type OpenPort } from '@aurora/agent-core'
+import {
+  ToolRegistry,
+  type CommandRunner,
+  type FilePort,
+  type OpenPort,
+  type SettingsToolPort,
+  type SettingsWriteOutcome,
+} from '@aurora/agent-core'
 import {
   COMPUTER_TOOL_NAMES,
   createDefaultSettings,
   createMemoryLogger,
   type Settings,
 } from '@aurora/shared'
-import { registerComputerTools } from './index.js'
+import { registerComputerTools, registerSettingsTool } from './index.js'
 
 const HOME = 'C:\\Users\\tester'
 
 function makeSettings(): Settings {
   return structuredClone(createDefaultSettings())
+}
+
+/** `set_setting` 的假端口：只记录调用，本文件验证的是"装配与摘除"，不是真实写盘 */
+function fakeSettingsPort(): SettingsToolPort & { writes: unknown[][] } {
+  const writes: unknown[][] = []
+  return {
+    writes,
+    snapshot: () => ({}),
+    read: () => undefined,
+    writable: () => ({ ok: true }),
+    async write(paths): Promise<SettingsWriteOutcome> {
+      writes.push(paths)
+      return { ok: true, message: 'ok', applied: paths.map((item) => item.path) }
+    },
+  }
 }
 
 /** 不改真实文件系统：记录调用即可（本文件只验证"按开关注册哪些工具"） */
@@ -53,6 +75,7 @@ function fakeRunner(stdout = 'AURORA_FAKE_OK'): CommandRunner & { calls: unknown
 
 function setup(settings: Settings, runner: CommandRunner = fakeRunner()) {
   const tools = new ToolRegistry()
+  const port = fakeSettingsPort()
   const registry = registerComputerTools({
     tools,
     getSettings: () => settings,
@@ -61,8 +84,9 @@ function setup(settings: Settings, runner: CommandRunner = fakeRunner()) {
     run: runner,
     files: fakeFilePort(),
     open: fakeOpenPort(),
+    settingsPort: port,
   })
-  return { tools, registry }
+  return { tools, registry, port }
 }
 
 describe('registerComputerTools', () => {
@@ -157,5 +181,71 @@ describe('registerComputerTools', () => {
 
     const after = await tools.get('run_command')!.execute({ command: 'echo' }, { sessionId: 't' })
     expect(after.content).toContain('已截断')
+  })
+})
+
+describe('registerSettingsTool', () => {
+  function setupSettings() {
+    const tools = new ToolRegistry()
+    const port = fakeSettingsPort()
+    const registry = registerSettingsTool({ tools, port, logger: createMemoryLogger() })
+    return { tools, registry, port }
+  }
+
+  it('注册 set_setting，且敏感级为 confirm（改配置必须过确认卡片）', () => {
+    const { tools, registry } = setupSettings()
+    expect(registry.sync()).toEqual(['set_setting'])
+    expect(tools.get('set_setting')?.sensitivity).toBe('confirm')
+  })
+
+  it('sync 幂等：重复调用不会留下两个实例', () => {
+    const { tools, registry } = setupSettings()
+    registry.sync()
+    const first = tools.get('set_setting')
+    registry.sync()
+    expect(tools.list().filter((tool) => tool.name === 'set_setting')).toHaveLength(1)
+    // 重建是刻意的（工具闭包按当前配置取值），但名字与敏感级必须一致
+    expect(tools.get('set_setting')?.sensitivity).toBe(first?.sensitivity)
+  })
+
+  it('不受 agent.tools.enabled 影响：总开关关掉后电脑操控工具全没了，set_setting 仍在', () => {
+    const settings = makeSettings()
+    const tools = new ToolRegistry()
+    const port = fakeSettingsPort()
+    const computerRegistry = registerComputerTools({
+      tools,
+      getSettings: () => settings,
+      logger: createMemoryLogger(),
+      homeDir: () => HOME,
+      run: fakeRunner(),
+      files: fakeFilePort(),
+      open: fakeOpenPort(),
+      settingsPort: port,
+    })
+    const settingsRegistry = registerSettingsTool({
+      tools,
+      port,
+      logger: createMemoryLogger(),
+    })
+
+    computerRegistry.sync()
+    settingsRegistry.sync()
+    expect(tools.get('set_setting')).toBeDefined()
+
+    settings.agent.tools.enabled = false
+    computerRegistry.sync()
+    settingsRegistry.sync()
+
+    expect(COMPUTER_TOOL_NAMES.every((name) => tools.get(name) === undefined)).toBe(true)
+    expect(tools.get('set_setting')).toBeDefined()
+    expect(port.writes).toEqual([])
+  })
+
+  it('黑名单被清空也照样注册（「Schema 必须识别路径」这条兜底永远生效）', () => {
+    // 装配本身不看 `advanced.readonlyPrefixes`：黑名单为空 ≠ 全部可写，
+    // 端口侧还有 `canWriteSettingPath` 的「Schema 必须识别该路径」兜底。
+    const { tools, registry } = setupSettings()
+    expect(registry.sync()).toEqual(['set_setting'])
+    expect(tools.get('set_setting')).toBeDefined()
   })
 })

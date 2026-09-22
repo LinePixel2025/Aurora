@@ -25,8 +25,14 @@ export interface ProviderConfig {
 }
 
 export interface AgentProviderFactory {
-  /** 每次请求即时构造（保证设置页改 Key 后立即生效） */
-  create(): ProviderConfig | undefined
+  /**
+   * 每次请求即时构造（保证设置页改 Key 后立即生效）。
+   *
+   * `allowFallback` 只由**装配层的自愈路径**使用（step-02 §6）：配置被写坏、导致
+   * `llm.active` 指向不存在的 provider 时，回退到「有 baseUrl + model + 可用 Key」的
+   * 最近可用条目，避免 AI 彻底失能。缺省 `false`——正常路径行为与从前完全一致。
+   */
+  create(options?: { allowFallback?: boolean }): ProviderConfig | undefined
 }
 
 export interface AgentHostDeps {

@@ -13,10 +13,12 @@ import { COMPUTER_TOOL_NAMES, type Logger, type Settings } from '@aurora/shared'
 import {
   createFileTools,
   createOpenTool,
+  createSettingsTool,
   createTerminalTool,
   type CommandRunner,
   type FilePort,
   type OpenPort,
+  type SettingsToolPort,
   type ToolRegistry,
 } from '@aurora/agent-core'
 
@@ -29,6 +31,8 @@ export interface ComputerToolsDeps {
   run: CommandRunner
   files: FilePort
   open: OpenPort
+  /** `set_setting`（docs/06 §12）的真实读写端口；与 `getSettings` 是两码事 */
+  settingsPort: SettingsToolPort
 }
 
 export interface ComputerTools {
@@ -85,6 +89,46 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
       const names = toolNames.filter((name) => deps.tools.get(name) !== undefined)
       deps.logger.info('已同步电脑操控工具', { names, workspaceDir })
       return names
+    },
+  }
+}
+
+export interface SettingsToolDeps {
+  tools: ToolRegistry
+  port: SettingsToolPort
+  logger: Logger
+}
+
+export interface SettingsToolRegistry {
+  /** 按当前配置重建工具表，返回本次注册的工具名 */
+  sync(): string[]
+}
+
+/** `set_setting` 的固定名字：注册 / 摘除 / smoke 断言共用，避免三处各写一份字符串。 */
+const SETTINGS_TOOL_NAME = 'set_setting'
+
+/**
+ * `set_setting` 装配器（docs/06 §12）。
+ *
+ * 与 `registerComputerTools` 的关键差别：**不受 `agent.tools.enabled` 影响**。
+ * 原因有两层：
+ * 1. `set_setting` 不在 `COMPUTER_TOOL_NAMES` 里，`registerComputerTools.sync()` 只按那 5 个
+ *    名字摘除，两者天然互不干扰；
+ * 2. 这恰恰是安全边界的一部分——总开关关掉后 AI 仍能改回 `agent.tools.*`，
+ *    但改不回别的（`llm.providers` 等本来就在黑名单里）。
+ *
+ * 即便 `advanced.readonlyPrefixes` 被用户清空，这里**依然注册**：
+ * 黑名单为空 ≠ 全部可写，`canWriteSettingPath` 的「Schema 必须识别该路径」永远生效。
+ */
+export function registerSettingsTool(deps: SettingsToolDeps): SettingsToolRegistry {
+  return {
+    sync(): string[] {
+      // 先摘再注册（幂等）：工具实例按每次调用即时读配置，重建很便宜，
+      // 且能保证"上一次注册的实例不会因为配置改变而留下旧闭包"。
+      deps.tools.unregister(SETTINGS_TOOL_NAME)
+      deps.tools.register(createSettingsTool({ port: deps.port, logger: deps.logger }))
+      deps.logger.info('已同步 set_setting 工具', { name: SETTINGS_TOOL_NAME })
+      return [SETTINGS_TOOL_NAME]
     },
   }
 }

@@ -8,10 +8,10 @@
  * 由 `main/index.ts` 在 `AURORA_SMOKE=1` 时通过 `webContents.executeJavaScript` 注入执行，
  * 结果以 `AURORA_SMOKE_RESULT:` 前缀打印到主进程日志。
  */
+import { CONFIG_VERSION } from '@aurora/shared'
 
 export const SMOKE_FLAG = 'AURORA_SMOKE'
 export const SMOKE_RESULT_PREFIX = 'AURORA_SMOKE_RESULT:'
-
 /**
  * 注入到渲染进程执行的自测脚本（字符串形式，避免被打包器当作模块依赖）。
  *
@@ -26,6 +26,8 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
   const STUB_BASE = ${JSON.stringify(stubBaseUrl)}
   const STUB_MODEL = ${JSON.stringify(stubModel)}
   const WATCH_DIR = ${JSON.stringify(watchDir)}
+  // 期望的配置版本由主进程注入（不再写死数字：Schema 升版时这里必须跟着走，否则自测会假 FAIL）
+  const EXPECTED_CONFIG_VERSION = ${CONFIG_VERSION}
   const results = []
   const record = (name, ok, detail) => results.push({ name, ok: Boolean(ok), detail: String(detail ?? '') })
   const expectOk = (name, result) => {
@@ -124,7 +126,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     // 2. 配置读写（IPC 层）
     const settings = expectOk('settings.get', await window.aurora.settings.get())
     if (settings) {
-      record('settings.get.version', settings.version === 5, String(settings.version))
+      record('settings.get.version', settings.version === EXPECTED_CONFIG_VERSION, String(settings.version))
       // 自测前置把科目裁剪为「数学 / 物理 / 语文」，断言随之对齐（不再是九科模板）
       record('settings.get 科目列表已就绪', settings.modes.classroom.subjects.length === 3, String(settings.modes.classroom.subjects.length))
       record('settings.get 不回传密文', settings.llm.providers === undefined || Object.values(settings.llm.providers).every((p) => p.apiKeyEnc === ''), 'apiKeyEnc 已清空')
@@ -198,6 +200,25 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
         expectOk('settings.hasSecret#rename', await window.aurora.settings.hasSecret('llm.providers.' + freshProviderId + '.apiKey')) === true,
       'model=' + (rename?.llm?.providers?.[freshProviderId]?.model ?? '?'),
     )
+    // 关键回归（本轮修）：真实设置页 saveProvider 会把 settings:get 回传的**全量 providers**
+    // （每个都带 apiKeyEnc: ''）原样写回去。空串必须被理解为「本次不改凭据」——
+    // 主进程 applyPatch 已按这个语义处理（空串不覆盖已存密文）。这里显式带空串回传并断言凭据仍在。
+    // 注意：本段在 String.raw 模板字符串里，注释不能出现反引号。
+    const emptyCipher = expectOk('settings.update(带空 apiKeyEnc 回传)', await window.aurora.settings.update({
+      llm: {
+        active: freshProviderId,
+        providers: {
+          [freshProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, apiKeyEnc: '', model: 'renamed-model', temperature: 0.5, reasoningEffort: 'auto' },
+        },
+      },
+    }))
+    record(
+      '带空 apiKeyEnc 回传后凭据仍在',
+      emptyCipher?.llm?.providers?.[freshProviderId]?.model === 'renamed-model' &&
+        expectOk('settings.hasSecret#emptyCipher', await window.aurora.settings.hasSecret('llm.providers.' + freshProviderId + '.apiKey')) === true,
+      'model=' + (emptyCipher?.llm?.providers?.[freshProviderId]?.model ?? '?'),
+    )
+
     const freshRemove = { ...(freshSave?.llm?.providers ?? {}) }
     delete freshRemove[freshProviderId]
     expectOk('settings.update(清理全新 provider)', await window.aurora.settings.update({
