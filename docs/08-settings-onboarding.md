@@ -63,7 +63,12 @@
     "proxy": "",
     "logLevel": "info",
     "quietHours": null,
-    "confirmSensitiveTools": true
+    "confirmSensitiveTools": true,
+    // v6 新增：AI 改配置（set_setting）一律禁止触碰的路径前缀，按路径段匹配，见 06 §12
+    "readonlyPrefixes": [
+      "llm.providers", "mcp.servers", "version", "general.windowState", "advanced.proxy",
+      "general.onboarded", "general.firstRun", "general.launchAtLogin", "general.hotkey"
+    ]
   },
   "agent": {
     "tools": {
@@ -87,8 +92,16 @@
 - `modes.classroom.classification`（v2 新增，见 05 §3.2）：`autoMove` 关闭时只写分类流水、
   不移动文件；`confidenceThreshold` 是进「待分类」的置信度下限；`fallbackFolder` 是兜底目录
   （相对 `watchDir` 或绝对路径）。
-- `advanced.confirmSensitiveTools`（v2 新增）：敏感工具（`sensitivity = 'confirm'`，含全部 MCP 工具）
-  执行前是否要求用户确认（见 06 §5）。关闭后按 v0.3.0 行为降级为「只记日志留痕、不拦截」。
+- `advanced.confirmSensitiveTools`（v2 新增）：敏感工具（`sensitivity = 'confirm'`，含全部 MCP 工具
+  与 `set_setting`）执行前是否要求用户确认（见 06 §5）。关闭后按 v0.3.0 行为降级为「只记日志留痕、不拦截」。
+- `advanced.readonlyPrefixes`（**v6 新增**，见 06 §12）：AI 通过 `set_setting` 改配置时
+  **一律禁止触碰**的路径前缀，按**路径段**前缀匹配。默认值即 `SETTINGS_READONLY_PREFIXES`：
+  `llm.providers`、`mcp.servers`、`version`、`general.windowState`、`advanced.proxy`、
+  `general.onboarded`、`general.firstRun`、`general.launchAtLogin`、`general.hotkey`。
+  **改它等于改 AI 的可写范围，属于高级用户的逃生阀**：把它清空**不等于**「全部可写」——
+  「Schema 不认识的路径一律拒绝」这条兜底永远生效（防模型拼错字段名后悄悄写进配置）。
+  `v5 → v6` 迁移会为旧配置补齐这一项，`CONFIG_VERSION` 仍为 **6**（本字段是本轮 v6 内追加的，
+  没有另起新版本号）。
 - `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
   `auto` 表示请求里**不带 `reasoning_effort` 字段**，用于兼容不认该参数的厂商；
   其余三档按值下发（见 06 §3）。
@@ -134,7 +147,7 @@
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
   `v3 → v4`（移除 `general.windowState['service-dock']`，AI 悬浮窗已删除）、
   `v4 → v5`（补齐 `llm.providers.*.reasoningEffort` 与 `agent.tools.*`）、
-  `v5 → v6`（移除 `general.windowState['mini-chat']`，独立小窗已删除）。
+  `v5 → v6`（移除 `general.windowState['mini-chat']`，独立小窗已删除；补齐 `advanced.readonlyPrefixes`）。
   六条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 

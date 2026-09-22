@@ -34,6 +34,11 @@ export interface LlmProvider {
 - 可靠性：指数退避重试、单请求超时（默认 60s）、流式中断可取消（AbortSignal 贯穿到 IPC）。
 - `ChatRequest.reasoningEffort` 由 `llm.providers.<id>.reasoningEffort` 驱动，取值
   `auto | low | medium | high`；`auto`（默认）时**不下发** `reasoning_effort` 字段。
+  设置页「AI 模型」的高级参数与对话窗输入区的「思考」下拉**两处入口写的是同一个字段，
+  没有第二份来源**（也不做按会话覆盖）：改哪一处，下一次请求都按新值下发。
+  **已知取舍**：思考等级作用于当前 provider 下的**所有模型**；将来若要按模型区分，
+  需要把它扩展成模型级映射（例如 `llm.providers.<id>.models.<model>.reasoningEffort`），
+  当前 Schema 不支持。
 
 ## 4. 会话管理
 
@@ -75,6 +80,9 @@ export interface LlmProvider {
 >   尚未接好时意外变成"必然被拒"。
 > - 主进程侧由 `ProactiveScheduler` 承载（见 §9），60s 超时、勿扰时段一律按拒绝；
 >   设置项 `advanced.confirmSensitiveTools` 可整体关闭，且**每次调用即时判断**（改设置无需重启）。
+> - v0.7.0 起内核另有第 6 个内置工具 `set_setting`（AI 修改自身配置，见 §12），
+>   同样标记 `sensitivity = 'confirm'` —— 因此**每一次改配置都会弹确认卡片**，
+>   走的正是上面这条链路。
 
 ## 6. Skill 系统
 
@@ -189,6 +197,11 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增 5 
 接进 §5 的工具循环。工具定义（名称 / 参数 Schema / 敏感级）留在 `packages/agent-core`，
 真正的系统调用落在主进程并**经构造参数注入**，内核仍不依赖 Electron / DOM（见 §2 分层）。
 
+> 另有第 6 个内核工具 `set_setting`（AI 修改自身配置，实现文件
+> `packages/agent-core/src/tools/settings.ts` + `apps/desktop/src/main/tools/settings-port.ts`）——
+> 它**不是**电脑操控工具：不在 `COMPUTER_TOOL_NAMES` 里，**不受 `agent.tools.enabled` 影响**，
+> 注册路径独立（见 §12）。
+
 | 工具 | 参数 | sensitivity | 实现文件 |
 |---|---|---|---|
 | `run_command` | `{ command, cwd?, timeoutMs? }` | confirm | `packages/agent-core/src/tools/terminal.ts` + `apps/desktop/src/main/tools/command-runner.ts` |
@@ -275,3 +288,98 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增 5 
 - **文件类工具的相对路径按主进程 CWD 解析**（不是 `workspaceDir`）：模型应传绝对路径；
   只有 `run_command` 的缺省 `cwd` 用 `agent.tools.workspaceDir`。
 - `write_file` 的 `overwrite` 是「同目录临时文件 + `rename`」原子写；`append` 直接追加。
+
+## 12. AI 修改自身配置（`set_setting`，v0.7.0）
+
+v0.7.0 起 Agent 能读写**自己的配置**：内核新增内置工具 `set_setting`，定义在
+`packages/agent-core/src/tools/settings.ts`（纯 Node，只认注入的端口，见 §2 分层），
+真实读写落在主进程 `apps/desktop/src/main/tools/settings-port.ts`。
+它与 §11 的电脑操控工具是**两条独立注册路径**：既不属于 `COMPUTER_TOOL_NAMES`，
+也**不受 `agent.tools.enabled` 影响**（见 §12.6）。
+
+### 12.1 工具签名与三个 action
+
+| 工具 | 参数 | sensitivity | 实现文件 |
+|---|---|---|---|
+| `set_setting` | `{ action: 'get', path }` / `{ action: 'list', group? }` / `{ action: 'set', values: Array<{ path, value }> }` | confirm | `packages/agent-core/src/tools/settings.ts` + `apps/desktop/src/main/tools/settings-port.ts` |
+
+- `get`：读一个路径的当前值（值经脱敏）。不可读的路径（凭据类）返回 `isError` 与「该路径不可读」，
+  与 `set` 用的是**同一套可写性判定**——不可写即不可读。
+- `list`：列出**可写**路径与当前值，可用 `group`（例如 `agent.tools`）收窄。
+  单条 value 超过 200 字符截断；整体超过 4000 字符截断并提示改用 `group`。
+- `set`：一次写入多条 `{ path, value }`。**先对每个 path 校验可写性，有一个不行就整体拒绝**，
+  不存在「写一半」的中间态；全部通过后一次交给主进程写入。
+- **不回显疑似密钥**：返回内容里的值统一先过 `redactValue`，路径命中
+  `apiKey` / `Enc` / `env` / `secret` / `token` / `key` 一律替换成 `***`。
+- `port.write` 抛出的异常被捕获后转成 `isError` 结果，**不允许异常冒泡进工具循环**——
+  冒泡会中断整轮对话，那正是「AI 改设置把会话搞崩」的表现。
+
+### 12.2 可写范围：黑名单 + Schema 兜底
+
+判定在 `packages/shared/src/config/schema.ts` 的 `canWriteSettingPath` / `settingsReadonlyReason`，
+两道闸门：
+
+1. **黑名单前缀**（`advanced.readonlyPrefixes`，默认值即导出的 `SETTINGS_READONLY_PREFIXES`）：
+   `llm.providers`、`mcp.servers`、`version`、`general.windowState`、`advanced.proxy`、
+   `general.onboarded`、`general.firstRun`、`general.launchAtLogin`、`general.hotkey`。
+   按**路径段**前缀匹配（`llm.providers` 命中 `llm.providers.deepseek.apiKeyEnc`，
+   但**不**命中 `llm.providerSettings` 这类仅开头相同的字段名）。
+   被挡住的理由是分层的：凭据与密文只经 safeStorage / `setSecret` 落库；
+   Schema 版本与窗口几何改坏会产生难以复现的迁移 / 几何怪状；代理写错会让**所有出网立刻失效**，
+   AI 连不上模型就再没有改回来的机会；引导 / 首启标记、开机自启与全局快捷键会改变启动路径或抢占系统热键。
+2. **Schema 兜底：不认识的路径一律拒绝**。路径必须能被 Schema 识别
+   （`schema.ts` 里 `lookupSpec()` 登记过的字段，或 `isDynamicPath()` 认的通配路径），
+   否则直接拒——防的是模型拼错字段名后「悄悄写进配置」，留下一个没人察觉的死字段。
+   ⚠️ 这里**不能**用 `fieldAccepts`：它对**未登记**的路径默认放行（它的语义是「门控放行」，不是「路径存在性」），
+   拿它当白名单等于没有兜底。
+
+黑名单为空**不等于全部可写**：第 2 条兜底永远生效。`advanced.readonlyPrefixes` 的值可由用户修改
+（docs/08 §1），改它等于改 AI 的可写范围。但 AI **改不动它**：`set` 的 `value` 只接受
+`string | number | boolean`，而该字段是数组——写数组会被 Schema 判定为非法并被整体拒绝。
+
+### 12.3 确认链路（复用 §5 / §9.1）
+
+`set_setting` 标记 `sensitivity = 'confirm'`，**每一次调用**都走 §5 的 `confirmTool` 钩子
+（主进程侧由 §9.1 的 `ProactiveScheduler` 推确认卡片）。超时（默认 60s）、勿扰时段、
+卡片推送失败一律按拒绝处理，拒绝后以「用户拒绝执行」文本回填模型、工具卡片置 `error`、循环继续。
+`advanced.confirmSensitiveTools = false` 时**直接放行**，内核仍按 `sensitivity` 写日志留痕
+——语义与 §11.2 一致：那是「减少打扰」，不是安全加固。
+
+### 12.4 唯一落地点：`applyPatch` + 审计日志
+
+- 主进程端口 `createSettingsPort()` 的 `write()` 把多个 path 按**顶层分组**
+  （`general` / `llm` / `modes` / `skills` / `mcp` / `advanced` / `agent`）聚合成一个 `SettingsPatch`，
+  同一分组内按**深合并**逐层写进该分组对象（`settings:update` 只有顶层浅合并语义），
+  然后调用 `apps/desktop/src/main/ipc.ts` 的 `applyPatch` —— 它是**配置写入的唯一落地点**，
+  负责局部合并语义、凭据抽取（`apiKey` / `env` → `setSecret`）与 `settings:changed` 广播。
+  工具侧**不得**绕过它自己写盘，否则会同时丢掉「凭据保留」与「广播」这两件事。
+- `applyPatch` 失败 → 返回 `{ ok: false, message: '配置校验失败：…' }` 且**不做回滚**：
+  此时 `SettingsStore` 的内存态根本没变，回滚反而会写脏。成功后会再做一次
+  `SettingsSchema.safeParse` 二次校验，万一不合法才用 `mutate` 把写入前的快照整体写回。
+- **审计日志**：每次成功写入记一条
+  `logger.info('AI 修改配置', { applied, before, after })` —— `applied` 是实际生效的路径列表，
+  `before` / `after` 只取这些路径的值且**已经过脱敏**；**绝不把整份配置写进日志**。
+
+### 12.5 启动自愈（provider 回退）
+
+AI 能改 `llm.*`，用户也会手改 `config.json`，因此「配置被写坏 → `create()` 拿不到 provider →
+AI 彻底失能、连改回来的机会都没有」是一条必须堵死的路径。做法：
+`AgentProviderFactory.create({ allowFallback: true })` 在 `llm.active` 为空或指向不存在的 provider、
+且 `llm.providers` 里存在至少一个「有 `baseUrl` + `model` + 可用 Key」的条目时，
+临时用该条目构造 provider，并 `logger.warn('默认模型配置不可用，已回退到可用条目', { active, fallback })`。
+
+**回退只影响本次请求的构造，不写配置**：`llm.active` 保持原样，设置页看到的仍是真实配置，
+要真正修好仍然由用户（或 AI 显式 `set_setting`）决定。装配层在正常 `create()` 抛错时
+再降级调用 `create({ allowFallback: true })`。
+
+### 12.6 已知边界
+
+- **`agent.tools.enabled = false` 会摘掉 5 个电脑操控工具**（§11.1），但 `set_setting` **仍在**：
+  AI 之后仍能用它改 `agent.tools.*`（包括把总开关打回来）。在重新打开之前，
+  `run_command` / `read_file` / `write_file` / `list_dir` / `open_path` 在它的工具清单里不存在
+  —— 它只剩下「改配置」这一种动手方式。这是**有意的边界**：总开关的作用是「让模型看不见动手工具」，
+  不是「让模型彻底失能」。
+- **动态路径不开口子**：`llm.providers.*` 与 `mcp.servers.*` 整棵子树都在黑名单里，
+  端口聚合逻辑遇到它们直接返回失败；工具也因此**没有**删除 provider / MCP 服务器的能力。
+- **单次 `set` 是全有或全无**：跨分组的多条改动聚合成**一个** patch 一次性交给 `applyPatch`，
+  不存在「写一半」的中间态；但两次 `set` 调用之间当然不是事务。

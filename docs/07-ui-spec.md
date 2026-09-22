@@ -8,6 +8,10 @@
 - **顺**：所有展开 / 收起带过渡动画，不突兀。
 - **聚**：视觉统一（深色主题为主、跟随系统）、状态指示一致（AI 状态灯全局同色语义）。
 - **隐**：业务窗口无任务栏图标，托盘为唯一管理入口；所有窗口可一键隐藏。
+- **拖**：能拖的窗口由**显式清单**决定（`DRAGGABLE_WINDOWS = ['chat', 'settings', 'onboarding']`，
+  `useWindowDrag` composable），模板统一用 `:class="dragClass"` 挂 `drag-region`，
+  不靠各窗自己记得加 class；拖动条**可见高度 ≥ 32px**（够用户抓住）。
+  右侧提示条**刻意不可拖**——它 `focusable: false`，几何完全由主进程推导（见 §2.2）。
 
 ## 2. 窗口规格
 
@@ -39,6 +43,11 @@
     - 提示条**只持久化 y**：宽高由折叠态决定、水平位置恒定贴右缘，跨启动不复用持久化宽高
       （否则收起态会继承展开态的 228px 宽）。
   - 未实现：`可穿透性可配`（尚未接入 `setIgnoreMouseEvents`）——提示条仍然整块接收鼠标事件。
+  - **刻意不可拖动（本轮明确）**：提示条的 `BrowserWindow` 是 `focusable: false`
+    （`window-manager.ts`），宽高与位置完全由「工作区右缘 + 垂直居中 + 折叠态」推导
+    （`window-manager.ts` 里也写明了「不参与用户拖动」）。允许拖动会让**两套几何来源打架**：
+    用户拖出来的位置会被下一次展开 / 收起复位，观感是「拖了没用还乱跳」。
+    因此它不挂 `drag-region`，也不在 `DRAGGABLE_WINDOWS` 清单里（见 §1）。
 - **可配置**：显示 / 隐藏、透明度、静默时段。
   - 实现状态（v0.6.0）：`general.edgeBar.opacity` 保存后即时应用（`setOpacity`，范围 0.2–1.0）；
     `general.edgeBar.quietHours` 由 `main/edge-bar-scheduler.ts` 每 30s 判定，**仅控制提示条自身显隐**，
@@ -80,6 +89,16 @@
 - **侧栏（本轮）**：标题栏「历史」按钮展开侧栏，侧栏是「快速 / 会话」**双栏** ——
   「快速」栏展示快速会话（`sessionId = quick`）最近 5 条预览 + 「继续快速对话」按钮，
   「会话」栏是完整会话列表（切换 / 新建）。两栏共用**同一个窗口**，快速会话不再有独立小窗。
+- **思考等级（本轮）**：输入区（`.composer-bar`）含「思考等级」下拉
+  （`data-field="chat.reasoningEffort"`，`ThinkingLevelSelect.vue`），读写**当前生效 provider** 的
+  `llm.providers.<active>.reasoningEffort`：`auto` = **不下发**该参数（映射成 `undefined`），
+  `low` / `medium` / `high` 原样透传。**设置页与对话窗输入区两处入口写的是同一个字段，没有第二份来源**，
+  也不做按会话覆盖；改完对**下一次**请求生效，无需重启。
+  无可用 provider 时控件**不隐藏**，而是 `disabled` + 提示「先在「设置 → AI 模型」里配置并选中一个模型」
+  ——用户抱怨的正是「找不到按钮」，在没有模型时彻底藏起来会让同一个抱怨复现；
+  禁用态至少是「找得到但用不了」，并且指向了修复路径。
+- **窗口拖动（本轮）**：标题栏 `.head` 走统一的 `useWindowDrag('chat')`（`:class="dragClass"`），
+  按钮区挂 `noDragClass`；详见 §1 与 §5.3 的拖动探针。
 - **未实现**：输入框的 `/`、`@` 补全浮层 —— 代码里从来没有对应功能（composer 只有 textarea + Enter 发送），
   做它需要新开一步（渲染层要能拿到 Skill / MCP 工具清单）。
 
@@ -98,6 +117,11 @@
 - **关闭入口（v0.5.1 起）**：本窗无系统标题栏（`frame: false`），因此侧栏品牌区自担标题栏职责——
   整行可拖动（`drag-region`），右侧提供「✕ 隐藏」按钮；按 `Esc` 等效。
   按 docs/02 §2.2 约定，此处「关闭」= **隐藏窗口**（不退出应用，退出只走托盘菜单）。
+- **可拖动区域（本轮补齐）**：侧栏顶部（`.sidebar-drag` 透明条 + 品牌行 `.brand`，
+  `.brand` 增加 `min-height: 36px`）与内容区顶部的拖动带（`.content-drag`，高 10px）**都可以拖**；
+  关闭按钮与其它交互元素挂 `no-drag`（`theme.css` 另有一条按标签兜底的规则）。
+  此前只有侧栏里约 22–30px 的品牌行能拖，正是「有些能拖有些不行」最直接的原因；
+  现在侧栏空白处、品牌行、内容区顶部三处都能按住拖动窗口。
 - 模式页：三模式卡片选择 + 引导状态；**只渲染当前模式的配置内容**，Work / Code 显示「暂无可配置项」空状态。
 - **视觉（前端刷新轮）**：页面骨架统一用 theme.css 的 `.page` / `.page-title` / `.page-sub`，
   分组卡片用 `settings/settings.css` 的 `.section-card` / `.section-title` / `.section-desc`
@@ -192,7 +216,10 @@
 
 - `AURORA_CAPTURE=<目录> pnpm dev`：把四个窗口、提示条两态、设置页 7 页、思考等级参数面板、
   3 条 DOM 探针场景（常规页字段门控 / 模式页 ClassRoom / 切换模式后门控）+ 1 条真实写盘场景
-  与 2 张提示条收尾图共 **18 张 PNG**（构成以 `report.json` 的实际条目为准）后退出；
+  与 2 张提示条收尾图截成一批 PNG 后退出。
+  **PNG 张数以 `report.json` 的实际条目为准，文档里不写死**：本轮（对话窗 UX 修复）是**净增**——
+  新增 `chat-thinking-level.png` / `chat-drag.png` / `settings-drag.png` 三条场景，
+  相对上一轮的 18 张变为 21 张；后续步骤还会继续加，因此不要按固定张数做校验；
   （交互窗的截图还带一条自动滚底探针与一条「收起即隐藏」探针；设置页另有「AI 模型 - 思考等级」一条探针场景
   ——它**会**额外出 `settings-llm-params.png`——以及「电脑操控」页的门控探针，后者不额外出图）；
   `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）。
@@ -234,6 +261,30 @@
   - **思考等级**（`SETTINGS_LLM_EFFORT_CHECK`）：造一个 provider → 展开「高级参数与连接测试」→
     断言 `[data-field$=".reasoningEffort"]` 与 `[data-field$=".temperature"]` 都在、且下拉的
     `select.value` 等于配置里写的 `'high'`（覆盖「写盘 → 回读 → 渲染」整条链路）。
+  - **对话窗思考等级**（`CHAT_THINKING_LEVEL_ACT` / `CHAT_THINKING_LEVEL_CHECK`，
+    产物 `chat-thinking-level.png`，交互窗一条）：act 先把
+    `[data-field="chat.reasoningEffort"]` 下拉切到 `high` 并派发 `change`，等 600ms 让
+    `settings:update` + `settings:changed` 往返完成；check 再取
+    `llm.providers[llm.active].reasoningEffort`，与 DOM 里该下拉的 `select.value` 比对，
+    并断言 option 数量为 4。`pass` = 配置值 === `'high'` **且** DOM 值 === `'high'` **且** option 数 === 4
+    ——它同时钉住「读写的是同一个字段」与「探针不改坏用户配置」：act 前先记下原值，
+    check 结尾把原值写回，恢复结果一并放进返回值。
+  - **窗口拖动**（`WINDOW_DRAG_SCRIPT`，产物 `chat-drag.png` 与 `settings-drag.png`，两个窗口各一条场景）：
+    量出所有**可见** `.drag-region`（`getBoundingClientRect()` 的宽或高为 0 视为不可见）并取最大高度，
+    要求「至少有一个可见拖动区」且 **`maxHeight >= 32`**（够抓）；再读生效的 `app-region` 值为 `drag`
+    （`getComputedStyle` 同时兼容 `-webkit-app-region` 与 `app-region` 两种属性名 —— Chromium 上可能只认其一）；
+    最后在拖动区内部找第一个 `button`，量其中心点做 `elementFromPoint`，断言命中的是它自己或其后代
+    （即交互元素没有被拖动区吃掉）。返回值带 `regions` 数组（`tag` / `cls` / `w` / `h` / `top`），
+    失败时能直接看出是「没挂类」还是「挂了但太小」。
+    ⚠️ **待确认口径**：属性名两种都试，若实测在 Electron 上**两个都读到空串**（属性不可读），
+    该条会判 FAIL。此时**不要**把探针改成永远 PASS，而是把判定退化为「按 `regions` 的存在性与尺寸」，
+    并在 `report.json` 里保留 `region` / `regionValue` 原始值，同时在本文档注明该属性不可读
+    （真实拖动仍可手测）——处置结论必须写进该步的执行记录。
+  - **交互窗场景的全局顺序（本轮定死）**：`chat-thinking-level` → `chat-model-picker`
+    （模型选择器场景，后续步骤加）→ `chat-drag` → `chat-collapse` → `chat.png`。
+    **所有需要在交互窗里操作 DOM 的场景都必须排在 `chat-collapse` 之前**——
+    标题栏「收起」是直接 `hide()` 窗口，之后既做不了 DOM 操作也截不到图。
+    设置窗的拖动场景（`settings-drag.png`，`query: { page: 'general' }`）与既有设置页场景无顺序约束。
 - 截图前会等 `WindowManager.whenLoaded()`（`ensure()` 的加载是 fire-and-forget，
   不等会截到 0 字节空图），并对空图重试；连续空图直接判失败，不产出空文件。
 - 设置页深链：`main/window-manager.ts` 的 `ensure(name, query)` / `reload(name, query)`
