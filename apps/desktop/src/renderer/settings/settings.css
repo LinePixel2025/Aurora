@@ -3,7 +3,7 @@
  *
  * 只用设置窗加载（`settings/main.ts` 在 `theme.css` 之后 import），因此这里的类
  * 不会泄漏到其它窗口。选择这种"窗口局部样式表"而不是改 `theme.css` 的原因：
- * `theme.css` 是五个窗口共用的 SSOT，下面这些约束只对设置窗成立 ——
+ * `theme.css` 是四个窗口共用的 SSOT，下面这些约束只对设置窗成立 ——
  * 比如「内容区 `.content` 已经给了 `--space-5` 内边距，页面不再自带 padding」，
  * 放进全局会让其它窗口的 `.page` 一起失去内边距。
  *
