@@ -896,7 +896,8 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
   background: var(--aurora-blue);
 }
 
-/* 折叠入口：与分组头一致的弱化按钮（行内那颗只留 chevron，卡内那颗带文案） */
+/* 折叠入口：与分组头一致的弱化按钮。**只在编辑卡内**出现（行上只有编辑 / 设为默认 / 删除三个动作，
+   行内那颗只留 chevron 的展开按钮已撤掉），所以这颗带 chevron + 文案 */
 .more {
   display: flex;
   align-items: center;

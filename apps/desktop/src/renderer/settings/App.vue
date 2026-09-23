@@ -186,9 +186,9 @@ function select(id: PageId): void {
 
 /**
  * 侧栏顶部拖动条：透明无内容，16px。
- * `margin-bottom` 抵消 `.sidebar` 的 `gap`，让它与下面的品牌行首尾相接
- * （16px + 品牌行 ≈ 39px ≈ 55px 连续拖动区，中间不留 12px 抓不住的缝），且品牌行及以下的
- * 位置与改动前完全一致（`--space-4` 的顶部内边距被同高的拖动条顶替）。
+ * `margin-bottom` 抵消 `.sidebar` 的 `gap`（12px），让品牌行的**位置**与改动前一致
+ * （16px 拖动条顶替了同高的顶部内边距），但它并**不与品牌行首尾相接**——负 margin 只抵掉了 gap，
+ * 两者之间仍隔 12px，实测拖动区高度分别为 16px 与 ≈39px（探针取最大高度那条判定，够 32px）。
  */
 .sidebar-drag {
   flex: 0 0 auto;

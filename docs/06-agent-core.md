@@ -324,23 +324,35 @@ v0.7.0 起 Agent 能读写**自己的配置**：内核新增内置工具 `set_se
 判定在 `packages/shared/src/config/schema.ts` 的 `canWriteSettingPath` / `settingsReadonlyReason`，
 两道闸门：
 
-1. **黑名单前缀**（`advanced.readonlyPrefixes`，默认值即导出的 `SETTINGS_READONLY_PREFIXES`）：
-   `llm.providers`、`mcp.servers`、`version`、`general.windowState`、`advanced.proxy`、
-   `general.onboarded`、`general.firstRun`、`general.launchAtLogin`、`general.hotkey`。
+1. **黑名单前缀**：判定分两步 —— 先查用户配置项 `advanced.readonlyPrefixes`（默认值即导出的
+   `SETTINGS_READONLY_PREFIXES`，见 docs/08 §1，**具体条目以该常量为准**），
+   再**无条件**走 `canWriteSettingPath()`，后者内部用的是**硬编码**常量 `SETTINGS_READONLY_PREFIXES`
+   ——它**从不读取用户配置**。也就是说 `advanced.readonlyPrefixes` 只能在默认黑名单**之上**追加限制，
+   **不能放宽**：默认项始终生效，把 `general.hotkey` 从配置里删掉或清空整个数组，
+   `general.hotkey` 这条路径**仍然被拒**（清空 = 回到默认项，而不是放开）。
+   默认项覆盖：凭据与密文（`llm.providers` / `mcp.servers`）、配置版本（`version`）、
+   窗口几何（`general.windowState`）、网络代理（`advanced.proxy`）、引导与首启标记
+   （`general.onboarded` / `general.firstRun`）、开机自启（`general.launchAtLogin`）、
+   全局快捷键（`general.hotkey`）、敏感工具确认总闸门（`advanced.confirmSensitiveTools`）。
    按**路径段**前缀匹配（`llm.providers` 命中 `llm.providers.deepseek.apiKeyEnc`，
    但**不**命中 `llm.providerSettings` 这类仅开头相同的字段名）。
    被挡住的理由是分层的：凭据与密文只经 safeStorage / `setSecret` 落库；
    Schema 版本与窗口几何改坏会产生难以复现的迁移 / 几何怪状；代理写错会让**所有出网立刻失效**，
-   AI 连不上模型就再没有改回来的机会；引导 / 首启标记、开机自启与全局快捷键会改变启动路径或抢占系统热键。
+   AI 连不上模型就再没有改回来的机会；引导 / 首启标记、开机自启与全局快捷键会改变启动路径或抢占系统热键；
+   `advanced.confirmSensitiveTools` 被关掉 = AI 摘掉敏感工具（含 `run_command` / `write_file` /
+   `set_setting` 自身）的确认闸门，属于**自我提权**，因此只能由用户在设置页手动关
+   （设置页走 `settings:update`，不经过这条黑名单）。
 2. **Schema 兜底：不认识的路径一律拒绝**。路径必须能被 Schema 识别
    （`schema.ts` 里 `lookupSpec()` 登记过的字段，或 `isDynamicPath()` 认的通配路径），
    否则直接拒——防的是模型拼错字段名后「悄悄写进配置」，留下一个没人察觉的死字段。
    ⚠️ 这里**不能**用 `fieldAccepts`：它对**未登记**的路径默认放行（它的语义是「门控放行」，不是「路径存在性」），
    拿它当白名单等于没有兜底。
 
-黑名单为空**不等于全部可写**：第 2 条兜底永远生效。`advanced.readonlyPrefixes` 的值可由用户修改
-（docs/08 §1），改它等于改 AI 的可写范围。但 AI **改不动它**：`set` 的 `value` 只接受
-`string | number | boolean`，而该字段是数组——写数组会被 Schema 判定为非法并被整体拒绝。
+黑名单为空**不等于全部可写**：默认项与第 2 条兜底都永远生效。`advanced.readonlyPrefixes` 可由用户修改
+（docs/08 §1），但它的作用**只是追加**：加进去的前缀会立刻生效，而默认项删不掉、清空数组
+也只是**回到默认项**，不是放开。所以「改它 = 收紧 AI 的可写范围」，反之不成立。
+AI **改不动它**：`set` 的 `value` 只接受 `string | number | boolean`，而该字段是数组
+——写数组会被 Schema 判定为非法并被整体拒绝。
 
 ### 12.3 确认链路（复用 §5 / §9.1）
 
@@ -374,16 +386,19 @@ AI 彻底失能、连改回来的机会都没有」是一条必须堵死的路�
 临时用该条目构造 provider，并 `logger.warn('默认模型配置不可用，已回退到可用条目', { active, fallback })`。
 
 **回退只影响本次请求的构造，不写配置**：`llm.active` 保持原样，设置页看到的仍是真实配置，
-要真正修好仍然由用户（或 AI 显式 `set_setting`）决定。装配层在正常 `create()` 抛错时
-再降级调用 `create({ allowFallback: true })`。
+要真正修好仍然由用户（或 AI 显式 `set_setting`）决定。装配层在正常
+`create()` **返回 `undefined` 或抛错**时都会降级调用 `create({ allowFallback: true })`
+（`try/catch` 只是额外兜网：真正的判定依据是「有没有拿到 provider」）。
 
 ### 12.6 已知边界
 
-- **`agent.tools.enabled = false` 会摘掉 5 个电脑操控工具**（§11.1），但 `set_setting` **仍在**：
-  AI 之后仍能用它改 `agent.tools.*`（包括把总开关打回来）。在重新打开之前，
+- **`agent.tools.enabled = false` 会摘掉 5 个电脑操控工具**（§11.1），但 `set_setting` **仍然注册**：
+  AI 仍可（在用户确认后）改 `agent.tools.*`，包括把总开关打回来。在重新打开之前，
   `run_command` / `read_file` / `write_file` / `list_dir` / `open_path` 在它的工具清单里不存在
   —— 它只剩下「改配置」这一种动手方式。这是**有意的边界**：总开关的作用是「让模型看不见动手工具」，
   不是「让模型彻底失能」。
+  - 写入语义：`set_setting` 写 `agent.tools.enabled` 这类三层路径时，**以当前分组值为基底深合并**，
+    只覆盖被点名的字段，**不会把同分组的其它字段抹掉**（`terminal` / `files` / `open` 的现有值原样保留）。
 - **动态路径不开口子**：`llm.providers.*` 与 `mcp.servers.*` 整棵子树都在黑名单里，
   端口聚合逻辑遇到它们直接返回失败；工具也因此**没有**删除 provider / MCP 服务器的能力。
 - **单次 `set` 是全有或全无**：跨分组的多条改动聚合成**一个** patch 一次性交给 `applyPatch`，

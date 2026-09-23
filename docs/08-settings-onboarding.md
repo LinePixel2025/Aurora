@@ -66,10 +66,12 @@
     "logLevel": "info",
     "quietHours": null,
     "confirmSensitiveTools": true,
-    // v6 新增：AI 改配置（set_setting）一律禁止触碰的路径前缀，按路径段匹配，见 06 §12
+    // v6 新增：AI 改配置（set_setting）的路径黑名单，按路径段匹配，见 06 §12。
+    // 只能在默认项之上追加限制：默认项始终生效，删掉或清空都不能放开（判定的第二道用的是硬编码常量）
     "readonlyPrefixes": [
       "llm.providers", "mcp.servers", "version", "general.windowState", "advanced.proxy",
-      "general.onboarded", "general.firstRun", "general.launchAtLogin", "general.hotkey"
+      "general.onboarded", "general.firstRun", "general.launchAtLogin", "general.hotkey",
+      "advanced.confirmSensitiveTools"
     ]
   },
   "agent": {
@@ -96,12 +98,16 @@
   （相对 `watchDir` 或绝对路径）。
 - `advanced.confirmSensitiveTools`（v2 新增）：敏感工具（`sensitivity = 'confirm'`，含全部 MCP 工具
   与 `set_setting`）执行前是否要求用户确认（见 06 §5）。关闭后按 v0.3.0 行为降级为「只记日志留痕、不拦截」。
-- `advanced.readonlyPrefixes`（**v6 新增**，见 06 §12）：AI 通过 `set_setting` 改配置时
-  **一律禁止触碰**的路径前缀，按**路径段**前缀匹配。默认值即 `SETTINGS_READONLY_PREFIXES`：
-  `llm.providers`、`mcp.servers`、`version`、`general.windowState`、`advanced.proxy`、
-  `general.onboarded`、`general.firstRun`、`general.launchAtLogin`、`general.hotkey`。
-  **改它等于改 AI 的可写范围，属于高级用户的逃生阀**：把它清空**不等于**「全部可写」——
-  「Schema 不认识的路径一律拒绝」这条兜底永远生效（防模型拼错字段名后悄悄写进配置）。
+  **它本身在默认黑名单里**（见下一条）：关闭它等于摘掉敏感工具的确认闸门，属于 AI 自我提权，
+  因此只允许用户在设置页手动关（设置页走 `settings:update`，不经过该黑名单）。
+- `advanced.readonlyPrefixes`（**v6 新增**，见 06 §12）：AI 通过 `set_setting` 改配置时的路径黑名单，
+  按**路径段**前缀匹配。默认值即 `SETTINGS_READONLY_PREFIXES`（覆盖凭据 / 密文、配置版本、
+  窗口几何、网络代理、引导与首启标记、开机自启、全局快捷键、敏感工具确认总闸门；**具体条目以该常量为准**）。
+  **它只能在默认黑名单之上追加限制，不能放宽 —— 默认项始终生效，无法通过配置放开**：
+  判定时先查这个配置项，再**无条件**走 `canWriteSettingPath()`，而后者用的是硬编码的
+  `SETTINGS_READONLY_PREFIXES`，**从不读取用户配置**。所以把 `general.hotkey` 从数组里删掉、
+  甚至把数组清空，`general.hotkey` 这条路径**仍然被拒**（清空 = 回到默认项，而不是放开）。
+  另一条兜底同样不随它变化：「Schema 不认识的路径一律拒绝」，防模型拼错字段名后悄悄写进配置。
   `v5 → v6` 迁移会为旧配置补齐这一项，`CONFIG_VERSION` 仍为 **6**（本字段是本轮 v6 内追加的，
   没有另起新版本号）。
 - `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
@@ -273,6 +279,10 @@
   - 总开关 `agent.tools.enabled` 关闭后 `run_command` / `read_file` / `write_file` /
     `list_dir` / `open_path` 5 个工具都不注册（模型看不到它们）；总开关本身**常显**，
     否则关掉就再也无法启用（门控见 §6.1）。
+  - 总开关**不是把 AI 锁死**：`set_setting` 仍会注册，AI 仍可（在用户确认后）改 `agent.tools.*`
+    把总开关打回来（见 06 §12.6）。`set_setting` 写 `agent.tools.<子字段>` 时
+    **以当前分组值为基底深合并**，只覆盖被点名的字段 —— 不会把 `terminal` / `files` / `open`
+    的现有值抹掉。
   - 「工作目录」为空串时回落用户主目录；它只是 **`run_command` 的缺省 `cwd`**，**不是沙箱** ——
     越界不静默，结果里回带真实的绝对路径。注意 `read_file` / `write_file` / `list_dir` **不读**该字段
     （相对路径按主进程 CWD 解析，打包应用该值不可预期，故文件类工具只适合用绝对路径；见 06 §11.4）。

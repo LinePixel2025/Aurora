@@ -242,8 +242,9 @@
   探针 `SETTINGS_LLM_STRUCTURE_CHECK`：provider 行数 === 配置里的 provider 数量、点开「编辑」后**可见编辑卡恰好 1 张**、
   `providers` 为空时存在 `[data-empty="llm.providers"]`；该场景**只读配置**、自己不改写，避免与「思考等级」那条互相干扰）、
   「AI 模型 - 模型列表」场景（`settings-llm-models.png`）与交互窗的「模型选择」场景（`chat-model-picker.png`），
-  最后两条都会**临时改写配置**（切模型 / 加一行，必要时造一个 provider）并尽力恢复原状，判定口径见下面各条；
-  以及「电脑操控」页的门控探针，后者不额外出图）；
+  最后两条在**必要时**会**临时改写配置**（`chat-model-picker` 切模型；`settings-llm-models`
+  的「+ 手动添加」只改本地 draft，仅当「一个 provider 都没有」时才先造一个），并尽力恢复原状，判定口径见下面各条；
+  另有「电脑操控」页的门控探针，后者不额外出图）；
   `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）。
   仅开发态生效；与 `AURORA_SMOKE` 同时设置时**截图优先**（自测不会执行）。
   进程退出码：0 = 全部成功，1 = 一张图都没写出，2 = 有探针 `pass === false`。
@@ -251,14 +252,16 @@
   至少包括：门控场景（切到 Work 模式、翻 `classification.autoMove`）、
   `chat-thinking-level`（改 `reasoningEffort`，check 结尾写回原值）、
   `chat-model-picker`（切 `model`，check 结尾写回原值）、
-  `settings-llm-params`（造一个 provider 用于断言）、
-  `settings-llm-models`（点「+ 手动添加」加一行，结束时删掉恢复原状）。
+  `settings-llm-params`（造一个 provider 用于断言）。
   它们中的大多数会在结束时把改动还原（如 `chat-thinking-level` / `chat-model-picker` 写回原值、
   `settings-llm-models` 删回新增行），但这属于**各场景自己的自律、不是框架保证**：
   场景中途失败就会把脏配置留给后面的场景。所以 `AURORA_CAPTURE` 存在时应用一律把 userData
   指向临时目录并在退出时删除 —— 与 `AURORA_SMOKE` 走同一条隔离路径（`index.ts` 的 `isolatedRun`）。
   也就是说截图跑在**全新默认配置**上，不会碰用户自己的 `%APPDATA%/Aurora`。
   （`SETTINGS_LLM_STRUCTURE_*` 与 `CHAT_AUTO_SCROLL_SCRIPT` 等**只读**探针不在此列。）
+- **`settings-llm-models` 基本不改配置**：它的 `+ 手动添加` 只改**本地 draft**（加一行空行，点「应用」才落盘），
+  唯一会写盘的情况是隔离环境里**一个 provider 都没有**时先造一个（否则列表区根本不在 DOM 里）；
+  check 结尾把刚加的那一行删掉恢复行数。上面的隔离仍然必须——其余几条探针确实会改配置。
 - 产物：`<目录>/<窗口或场景>.png` 与 `report.json`（每张图的渲染层探针结果）。
 - 三类动作（`main/capture.ts` 的 `CaptureTarget`）：`prepare`（主进程侧准备）、
   `act`（在渲染层派发真实 `mouseenter` / `click`）、`check`（截图后取一份可判定结果）。
@@ -292,14 +295,18 @@
     点开第一行的「高级参数与连接测试」→ 断言 `[data-field$=".reasoningEffort"]` 与
     `[data-field$=".temperature"]` 都在、且下拉的 `select.value` 等于配置里写的 `'high'`
     （覆盖「写盘 → 回读 → 渲染」整条链路）。
-    ⚠️ 这条探针点的是 `document.querySelector('.more')`（设置页里第一颗折叠按钮）：模型页在**列表态**
-    下也要有可点的 `.more`，所以每行行首的展开按钮同样挂 `.more`（点它 = 打开本行编辑卡并展开高级区）。
+    ⚠️ 这条探针找的是 `document.querySelector('.more')`（设置页里第一颗折叠按钮），而**列表态的行上没有折叠箭头**
+    ——所以 act 先按真实用户路径点 `data-action="edit-provider"` 开卡，再点**卡内**那颗 `.more`
+    （`高级参数与连接测试`）。行上刻意只有「编辑 / 设为默认 / 删除」三个动作（删除另带就地二次确认条），
+    就是为了让「展开高级参数」只有一个入口、且仍是一次只开一张卡。
   - **AI 模型页结构**（`SETTINGS_LLM_STRUCTURE_ACT` / `SETTINGS_LLM_STRUCTURE_CHECK`，
     产物 `settings-llm-structure.png`）：act 点开第一行的 `data-action="edit-provider"`
-    （找不到就按文案「编辑」兜底，并把行内实际按钮文案回传）；check 要求
-    `[data-field^="llm.providers."]` 里「不含更深的点」的行元素数 === 配置里的 provider 数量、
-    且**可见**编辑卡（可见的 `[data-field$=".baseUrl"]`）恰好 1 张；`providers` 为空时改为要求
-    存在 `[data-empty="llm.providers"]`。act 全程**不写配置**。
+    （找不到就按文案「编辑」兜底，并把行内实际按钮文案回传）；check 按 **provider id 白名单**选行：
+    行容器是 `data-field` **恰好等于** `llm.providers.<id>`（`<id>` 取自配置里的 provider 键）的元素，
+    要求这样的行数 === 配置里的 provider 数量，且**可见**编辑卡（可见的 `[data-field$=".baseUrl"]`）恰好 1 张
+    ——卡内字段多一层（`llm.providers.<id>.baseUrl`）、模型列表容器也多一层（`<id>.modelList`），
+    因此不会被误算成行（这是白名单比对，**不是**「`data-field` 后半段不含更深的点」这种猜测）；
+    `providers` 为空时改为要求存在 `[data-empty="llm.providers"]`。act 全程**不写配置**。
   - **对话窗思考等级**（`CHAT_THINKING_LEVEL_ACT` / `CHAT_THINKING_LEVEL_CHECK`，
     产物 `chat-thinking-level.png`，交互窗一条）：act 先把
     `[data-field="chat.reasoningEffort"]` 下拉切到 `high` 并派发 `change`，等 600ms 让
@@ -315,19 +322,24 @@
     `data-field="llm.providers.<id>.modelList.<index>"`）→ 点一次 `data-action="add-model"`
     后**行数 +1** → 结束时**把刚加的那一项删掉**，让后面的场景仍看到干净配置。
     `pass` = 列表区存在 && 行数 ≥ 1 && 添加后行数增加 && 恢复后行数还原。
-    ⚠️ 它会临时改配置，因此排在 `settings-llm-params` **之前**，避免它把参数场景造出的 provider 状态搅乱。
+    ⚠️ 这条 act **只改本地 draft**（`+ 手动添加` 加一行空行，点「应用」才落盘），
+    唯一写盘的情况是**一个 provider 都没有**时先造一个（否则列表区不在 DOM 里，无从点开）；
+    恢复（删掉刚加的那一行）在 check 里做。之所以仍排在 `settings-llm-params` **之前**，
+    是为了少一次配置往返，也避免它把参数场景造出的 provider 状态搅乱。
   - **对话窗模型选择器**（`CHAT_MODEL_PICKER_ACT` / `CHAT_MODEL_PICKER_CHECK`，
-    产物 `chat-model-picker.png`，交互窗一条）：act 先读 `settings.get()`，还没有 provider 时
-    造一个带**两个**模型 id 的（`modelList: ['deepseek-chat', 'deepseek-reasoner']`，并设为 `llm.active`），
+    产物 `chat-model-picker.png`，交互窗一条）：act 先读 `settings.get()`，
+    在**没有可用 provider**（`llm.active` 指向的条目不存在）**或**它的 `modelList` 少于两个候选时
+    造 / 补一个带**两个**模型 id 的（`modelList: ['deepseek-chat', 'deepseek-reasoner']`，并设为 `llm.active`），
     等 `settings:changed` 生效后把 `[data-field="chat.model"]` 切到第二个模型并派发 `change`，
     等 600ms 让 `settings:update` 往返完成，并把原值记进 `window.__auroraModelProbe`；
     check 再断言**配置里的 `model`**（`llm.providers[llm.active].model`）与
     **DOM 里该 select 的 `.value`** 一致，且 **option 数 ≥ 2**，结束时把 `model` 写回原值。
     `pass` = 三条件全真 —— 它同时钉住「两处读写的是同一个字段」与「探针事后恢复配置」。
   - **窗口拖动**（`WINDOW_DRAG_SCRIPT`，产物 `chat-drag.png` 与 `settings-drag.png`，两个窗口各一条场景）：
-    量出所有**可见** `.drag-region`（`getBoundingClientRect()` 的宽或高为 0 视为不可见）并取最大高度，
-    要求「至少有一个可见拖动区」且 **`maxHeight >= 32`**（够抓）；再读生效的 `app-region` 值为 `drag`
-    （`getComputedStyle` 同时兼容 `-webkit-app-region` 与 `app-region` 两种属性名 —— Chromium 上可能只认其一）；
+    量出所有**可见** `.drag-region`（`getBoundingClientRect()` 的宽或高为 0 视为不可见）并取**最大高度那条**，
+    要求「至少有一个可见拖动区」且 **`maxHeight >= 32`**（够抓）；再读**那条**生效的 `app-region` 值为 `drag`
+    （只断言高度最大的那一条，不是逐块都验 —— 比如设置窗的 `.content-drag` 即使不算数也不影响判定；
+    `getComputedStyle` 同时兼容 `-webkit-app-region` 与 `app-region` 两种属性名 —— Chromium 上可能只认其一）；
     最后在拖动区内部找第一个 `button`，量其中心点做 `elementFromPoint`，断言命中的是它自己或其后代
     （即交互元素没有被拖动区吃掉）。返回值带 `regions` 数组（`tag` / `cls` / `w` / `h` / `top`），
     失败时能直接看出是「没挂类」还是「挂了但太小」。
@@ -337,8 +349,11 @@
     （真实拖动仍可手测）——处置结论必须写进该步的执行记录。
   - **交互窗场景的全局顺序（本轮定死）**：`chat-thinking-level` → `chat-model-picker` →
     `chat-drag` → `chat-collapse` → `chat.png`。
-    **所有需要在交互窗里操作 DOM 的场景都必须排在 `chat-collapse` 之前**——
-    标题栏「收起」是直接 `hide()` 窗口，之后既做不了 DOM 操作也截不到图。
+    真正的约束只有一条：**不要在同一条场景的 `act` 里隐藏窗口**——`act` 在截图之前跑，
+    窗口若先被 `hide()`，紧接着的 `capturePage()` 在已隐藏窗口上**不返回**（实测整轮卡死）。
+    跨场景之间没有这个限制：每换一条场景 `captureWindows` 会重新 `manager.show()`，
+    所以 `chat-collapse`（点「收起」隐藏窗口）**之后**仍有 `chat.png` 场景，并且能正常出图 ——
+    「之后既做不了 DOM 操作也截不到图」是**过强的说法**，不要照抄。
     设置窗的拖动场景（`settings-drag.png`，`query: { page: 'general' }`）与既有设置页场景无顺序约束；
     设置页的 `settings-llm-models` 排在 `settings-llm-params` 之前（理由见上）。
 - 截图前会等 `WindowManager.whenLoaded()`（`ensure()` 的加载是 fire-and-forget，
