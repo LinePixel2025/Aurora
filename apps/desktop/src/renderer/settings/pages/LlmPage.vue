@@ -7,9 +7,13 @@
  * 危险操作走**就地二次确认**；凭据是 write-only 输入，页面永不回显明文（只显示「已保存 / 缺失」）。
  *
  * 编辑卡（`mode === 'edit' && editingId === id`，一次只渲染一张）从上到下是：
- * 必填区（baseURL / API Key / 模型名）→ **模型分组预留位**（step 5 的模型列表插在这里）
- * → `.more`「高级参数与连接测试」折叠区（temperature / 思考等级 / 连接测试 / 模型 chips，默认收起）
- * → 卡片底部「应用 / 取消」。
+ * 必填区（baseURL / API Key / 模型名）→ **「模型设置」区**（候选模型列表：拉取 / 手动添加 /
+ * 重命名 / 删除 / 点选「当前使用」）→ `.more`「高级参数与连接测试」折叠区
+ * （temperature / 思考等级 / 连接测试 / 模型 chips，默认收起）→ 卡片底部「应用 / 取消」。
+ *
+ * 「当前使用」与「候选列表」的关系（唯一生效值只有 `model`，列表 `modelList` 只是候选项）：
+ * 在「模型名」里填的 id 会自动补进列表；删掉当前使用的那一项**不换模型**，只提示
+ * 「当前模型已不在列表中」，改用哪个由用户自己点选 —— 见各 handler 的注释。
  *
  * 行上只有「名称 + 凭据状态 + 是否默认 + 编辑 / 设为默认 / 删除」四个动作，没有多余的折叠箭头：
  * 展开高级参数是**卡内**那颗 `.more` 的职责（capture 的 `SETTINGS_LLM_EFFORT_ACT` 会先点开卡再点它）。
@@ -51,6 +55,10 @@ const editingId = ref<string | null>(null)
 const pendingRemoveId = ref<string | null>(null)
 /** 高级参数折叠状态（按 provider 记，默认收起） */
 const advancedOpen = reactive<Record<string, boolean>>({})
+/** 候选模型的行内重命名编辑态：「<providerId>:<index>」，同一时刻只允许一行在编辑 */
+const renamingModel = ref<string | null>(null)
+/** 行内重命名的输入值（与上面那条一一对应，所以共用一个 ref 就够） */
+const renameValue = ref('')
 
 const activeId = computed(() => settingsStore.settings?.llm.active ?? '')
 const activeDraft = computed(
@@ -73,12 +81,146 @@ function advancedOf(id: string): boolean {
   return advancedOpen[id] === true
 }
 
+/**
+ * 去重合并两组模型 id（「模型设置」区）：现有项保持原顺序在前、新 id 追加在后，
+ * 首尾空白与空串一律丢掉。
+ *
+ * `syncDrafts` / `loadModels` / 落盘的 patch 都走这一个函数，「列表长什么样」只有一处定义。
+ */
+function mergeModelIds(current: readonly string[], incoming: readonly string[]): string[] {
+  const merged: string[] = []
+  for (const raw of [...current, ...incoming]) {
+    const id = raw.trim()
+    if (id !== '' && !merged.includes(id)) merged.push(id)
+  }
+  return merged
+}
+
+/** 当前使用的模型 id：比对一律用去掉首尾空白的值，免得一个空格让两边看起来不一致。 */
+function currentModel(draft: ProviderDraft): string {
+  return draft.model.trim()
+}
+
+/**
+ * `model` 是**唯一生效值**，候选列表只是候选项：用户在「模型名」里填的 id 若不在列表里就自动追加，
+ * 两者始终一致，而且用户看得见发生了什么（列表里当场多一行）。
+ */
+function adoptCurrentModel(draft: ProviderDraft): void {
+  const model = currentModel(draft)
+  if (model === '') return
+  if (!draft.modelList.includes(model)) draft.modelList.push(model)
+}
+
+/** 某一行是不是「当前使用」的那一个。 */
+function isCurrent(draft: ProviderDraft, id: string): boolean {
+  return id !== '' && id === currentModel(draft)
+}
+
+/** 当前使用的模型不在候选列表里（删掉当前项之后就是这个状态）：只提示，不换模型。 */
+function modelNotInList(draft: ProviderDraft): boolean {
+  const model = currentModel(draft)
+  return model !== '' && !draft.modelList.includes(model)
+}
+
+/**
+ * 「模型名」输入框：写回 `draft.model` 与「自动补进候选列表」必须在同一个事件里按顺序发生，
+ * 所以这里用 `:value` + `@input` 显式接管。不用 `v-model` 的原因是它给原生 input 挂的监听器
+ * 注册在 `@input` **之后**，回调里读到的会是上一个值（补进列表的就会是旧 id）。
+ */
+function onModelInput(draft: ProviderDraft, event: Event): void {
+  const target = event.target as HTMLInputElement
+  draft.model = target.value
+  adoptCurrentModel(draft)
+}
+
+/** 点选「当前使用」（列表行与折叠区的模型 chips 共用这一个入口）：改的是唯一生效值 `model`。 */
+function selectModel(draft: ProviderDraft, id: string): void {
+  if (id.trim() === '') return
+  draft.model = id
+  adoptCurrentModel(draft)
+}
+
+/**
+ * 「+ 手动添加」：立刻加一行空白项（行数当即 +1，capture 探针按行数断言），
+ * 由用户点该行的「重命名」填 id；保存时空行会被丢掉，不会写进配置。
+ */
+function addModel(draft: ProviderDraft): void {
+  draft.modelList.push('')
+  message.value = null
+  error.value = null
+}
+
+/** 第 index 行是否在行内编辑态。 */
+function isRenaming(draftId: string, index: number): boolean {
+  return renamingModel.value === `${draftId}:${index}`
+}
+
+function startRename(draft: ProviderDraft, index: number): void {
+  renamingModel.value = `${draft.id}:${index}`
+  renameValue.value = draft.modelList[index] ?? ''
+  error.value = null
+}
+
+/** 只清编辑态：行内编辑按 index 定位，列表结构一变就必须收起来，否则输入框会串到别的行上。 */
+function closeRename(): void {
+  renamingModel.value = null
+  renameValue.value = ''
+}
+
+/** 「取消」：待填写的空行顺手清掉（点了「+ 手动添加」又反悔，不该留下一个空行）。 */
+function cancelRename(draft: ProviderDraft, index: number): void {
+  if (draft.modelList[index] === '') draft.modelList.splice(index, 1)
+  closeRename()
+}
+
+/**
+ * 重命名提交：改的就是列表里的 id；**改的正是当前使用的那个时 `model` 同步改成新 id**
+ * （否则两边就指不到同一个模型了）。空值按「取消」处理，重名拒绝。
+ */
+function commitRename(draft: ProviderDraft, index: number): void {
+  const previous = draft.modelList[index] ?? ''
+  const next = renameValue.value.trim()
+  if (next === '' || next === previous) {
+    cancelRename(draft, index)
+    return
+  }
+  if (draft.modelList.some((id, i) => i !== index && id.trim() === next)) {
+    error.value = `模型「${next}」已在列表中`
+    return
+  }
+  draft.modelList[index] = next
+  if (previous !== '' && previous === currentModel(draft)) draft.model = next
+  closeRename()
+}
+
+/**
+ * 从候选列表移除一行。
+ *
+ * 删的正是当前使用的模型时**不换模型**：`model` 原样保留（它是唯一生效值，改用哪个由用户决定），
+ * 页面只在列表下方提示「当前模型已不在列表中」——静默换模型会让下一次请求悄悄用上别的模型。
+ */
+function removeModel(draft: ProviderDraft, index: number): void {
+  draft.modelList.splice(index, 1)
+  closeRename()
+  message.value = null
+  error.value = null
+}
+
+/** 落盘的候选列表：去空白、去重，并保证当前使用的 `model` 一定在列表里。 */
+function normalizedModelList(draft: ProviderDraft): string[] {
+  return mergeModelIds(draft.modelList, [currentModel(draft)])
+}
+
 function syncDrafts(): void {
   const settings = settingsStore.settings
   if (!settings) return
   drafts.value = Object.entries(settings.llm.providers).map(([id, provider]) => ({
     id,
     ...provider,
+    // 候选列表**深拷贝成新数组**：`{ ...provider }` 只浅拷贝，卡里直接改会和 store 里
+    // 尚未落盘的配置共用同一个数组（下一次 setActive / saveProvider 就把它一起写盘了）。
+    // 顺手把当前使用的模型补进去：它本来就是候选项之一，用户看得见两者是一致的。
+    modelList: mergeModelIds(provider.modelList, [provider.model.trim()]),
     apiKey: '',
     apiKeySet: Boolean((provider as unknown as { apiKeySet?: boolean }).apiKeySet),
   }))
@@ -160,6 +302,9 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
           baseUrl: draft.baseUrl.trim(),
           apiKeyEnc: '',
           model: draft.model.trim(),
+          // 候选列表是数组：跨 IPC 前**深拷贝成新数组**（`reactive` 里的数组是 Proxy，
+          // 直接传会 DataCloneError）。`normalizedModelList` 每次都新建数组，顺带去空白 / 去重。
+          modelList: normalizedModelList(draft),
           temperature: Number(draft.temperature),
           reasoningEffort: draft.reasoningEffort,
         },
@@ -213,12 +358,15 @@ function addPreset(id: string): void {
     error.value = `Provider「${key}」已存在`
     return
   }
+  const model = preset?.model ?? ''
   drafts.value.push({
     id: key,
     type: 'openai-compat',
     baseUrl: preset?.baseUrl ?? '',
     apiKeyEnc: '',
-    model: preset?.model ?? '',
+    model,
+    // 与 `syncDrafts` 同一口径：当前使用的模型就是列表里的第一个候选项
+    modelList: model === '' ? [] : [model],
     temperature: 0.7,
     reasoningEffort: DEFAULT_REASONING_EFFORT,
     apiKey: '',
@@ -310,7 +458,11 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
   if (result.ok) {
     const ids = result.value.map((item) => item.id)
     models[draft.id] = ids
-    message.value = `已拉取 ${ids.length} 个模型`
+    // 去重合并（不覆盖已有项）：拉到的 id 追加进候选列表，当前使用的模型本来就已在其中
+    draft.modelList = mergeModelIds(draft.modelList, ids)
+    // 列表长度变了，行内编辑按 index 定位会串行，先收起来
+    closeRename()
+    message.value = `已拉取 ${ids.length} 个，列表共 ${draft.modelList.length} 个`
   } else {
     error.value = result.message
   }
@@ -481,14 +633,117 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
           required
           hint="例：deepseek-chat；拉取模型列表后可直接点选"
         >
-          <input v-model="draft.model" class="input" type="text" spellcheck="false" />
+          <!-- 刻意不用 `v-model`：填的 id 要**同时**写回 `model` 与候选列表（见 onModelInput） -->
+          <input
+            :value="draft.model"
+            class="input"
+            type="text"
+            spellcheck="false"
+            @input="onModelInput(draft, $event)"
+          />
         </SettingField>
+        <p class="tiny model-note">这里填当前使用的模型 id；模型列表只是候选项</p>
 
-        <!-- 模型分组预留位（step 5 的模型列表插在必填区与 `.more` 之间，别把 `.more` 顶到 model 输入框上） -->
+        <!-- 「模型设置」区（step 5）：候选模型列表。真正生效的仍是上面那个「模型名」 -->
         <section class="model-section" :data-field="`llm.providers.${draft.id}.modelList`">
-          <h3 class="model-title">模型</h3>
-          <p class="tiny muted">
-            这里是模型列表的位置：候选模型会在列表里直接点选（当前使用哪个模型仍由上面的「模型名」决定）。
+          <div class="row wrap">
+            <h3 class="model-title grow">模型列表</h3>
+            <AppButton
+              size="sm"
+              variant="ghost"
+              :disabled="testing !== null"
+              @click="loadModels(draft)"
+            >
+              {{ testing === draft.id ? '拉取中…' : '拉取模型列表' }}
+            </AppButton>
+            <AppButton size="sm" variant="ghost" data-action="add-model" @click="addModel(draft)">
+              + 手动添加
+            </AppButton>
+          </div>
+
+          <!-- 空态：列表为空就用一句话说清两条路（手动填 / 拉取），不摆一排空行 -->
+          <p
+            v-if="draft.modelList.length === 0"
+            class="model-empty"
+            :data-empty="`llm.providers.${draft.id}.modelList`"
+          >
+            还没有模型列表：先在下面填一个模型名，或点「拉取模型列表」
+          </p>
+
+          <div v-else class="model-list">
+            <div
+              v-for="(item, index) in draft.modelList"
+              :key="`${draft.id}:${index}`"
+              class="model-row"
+              :class="{ current: isCurrent(draft, item) }"
+              :data-field="`llm.providers.${draft.id}.modelList.${index}`"
+            >
+              <template v-if="isRenaming(draft.id, index)">
+                <input
+                  v-model="renameValue"
+                  class="input model-rename"
+                  type="text"
+                  spellcheck="false"
+                  @keydown.enter="commitRename(draft, index)"
+                  @keydown.esc="cancelRename(draft, index)"
+                />
+                <AppButton
+                  size="sm"
+                  data-action="commit-rename-model"
+                  @click="commitRename(draft, index)"
+                >
+                  确定
+                </AppButton>
+                <AppButton
+                  size="sm"
+                  variant="ghost"
+                  data-action="cancel-rename-model"
+                  @click="cancelRename(draft, index)"
+                >
+                  取消
+                </AppButton>
+              </template>
+              <template v-else>
+                <label class="model-pick">
+                  <input
+                    type="radio"
+                    :name="`model-of-${draft.id}`"
+                    :checked="isCurrent(draft, item)"
+                    :disabled="item === ''"
+                    data-action="select-model"
+                    @change="selectModel(draft, item)"
+                  />
+                  <span class="mono model-id" :class="{ pending: item === '' }">
+                    {{ item === '' ? '（未命名）' : item }}
+                  </span>
+                </label>
+                <span v-if="isCurrent(draft, item)" class="badge ok">当前使用</span>
+                <span class="grow" />
+                <AppButton
+                  size="sm"
+                  variant="ghost"
+                  data-action="rename-model"
+                  @click="startRename(draft, index)"
+                >
+                  重命名
+                </AppButton>
+                <AppButton
+                  size="sm"
+                  variant="ghost"
+                  data-action="remove-model"
+                  @click="removeModel(draft, index)"
+                >
+                  删除
+                </AppButton>
+              </template>
+            </div>
+          </div>
+
+          <!-- 删掉当前使用的那一项之后：`model` 原样保留，只在这里提示，不静默换成列表里的别的模型 -->
+          <p v-if="modelNotInList(draft)" class="tiny model-missing">
+            当前模型已不在列表中：生效值仍是「{{
+              draft.model.trim()
+            }}」，请点选列表或改上面的「模型名」
           </p>
         </section>
 
@@ -549,13 +804,14 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
               </AppToast>
             </div>
 
+            <!-- 折叠区的模型 chips 与「模型列表」共用 selectModel：点选即改生效值并补进候选列表 -->
             <div v-if="modelsOf(draft.id).length > 0" class="models">
               <button
                 v-for="model in modelsOf(draft.id)"
                 :key="model"
                 type="button"
                 class="model-chip interactive"
-                @click="draft.model = model"
+                @click="selectModel(draft, model)"
               >
                 {{ model }}
               </button>
@@ -665,7 +921,7 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
   transform: rotate(90deg);
 }
 
-/* 模型分组的预留位（step 5 在这里放模型列表） */
+/* 「模型设置」区（step 5）：候选模型列表。真正生效的仍是必填区的「模型名」 */
 .model-section {
   display: flex;
   flex-direction: column;
@@ -680,6 +936,91 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
   color: var(--text-secondary);
+}
+
+/* 「模型名」输入框下面那行小字：说清谁是生效值、谁只是候选项 */
+.model-note {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 一行候选模型：hover 用分层填充（与 provider 行列表同一套观感），不做上浮位移，免得行跟着跳 */
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-xs);
+  transition: background var(--transition-fast);
+}
+
+.model-row:hover {
+  background: var(--fill-2);
+}
+
+.model-pick {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  cursor: pointer;
+}
+
+.model-pick input[type='radio'] {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  accent-color: var(--aurora-blue);
+  cursor: pointer;
+}
+
+.model-pick input[type='radio']:disabled {
+  cursor: default;
+}
+
+.model-id {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 当前使用的那一行：文字回到主色（标记已由 radio + badge 表达，不再加重背景，免得和 hover 打架） */
+.model-row.current .model-id {
+  color: var(--text-primary);
+}
+
+.model-id.pending {
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.model-rename {
+  min-width: 0;
+  max-width: 260px;
+}
+
+/* 空态：一句话说清两条路，不摆一排空行（与 provider 空状态同一套虚线观感，弱化到行内尺寸） */
+.model-empty {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-xs);
+  border: 1px dashed var(--border-strong);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+/* 删掉当前使用的那一项之后的提示：不换模型，只把状态说清楚（用告警色令牌，不写死颜色） */
+.model-missing {
+  margin: 0;
+  color: var(--status-unread);
 }
 
 /* 删除的二次确认条 */
