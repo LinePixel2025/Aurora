@@ -10,6 +10,8 @@
  * 「收起」= 只隐藏窗口（`windowStore.hide('chat')`），不做任何会话动作、也不 abort 流式回复。
  * 本轮追加：输入区加「思考等级」下拉（与设置页 AI 模型卡写的是**同一个** `reasoningEffort`，
  * 改完对下一次请求立即生效，不用进设置页）。
+ * 本轮追加：「思考」旁边再加「模型」下拉（`ModelPickerSelect.vue`）——候选来自同一个 provider 的
+ * `modelList`，选定值写进 `model`（与设置页「模型名」输入框同一份数据），下一次请求即生效。
  *
  * 视觉（docs/07 §5）：玻璃容器 + 分层头尾（`--fill-1`），用户气泡右对齐、助手正文铺开，
  * 输入区是独立的圆角容器（聚焦加品牌光晕），会话列表/工具卡片走 `.sheet-*` / `.collapse-*`。
@@ -22,6 +24,7 @@ import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import ClassificationLedger from '../shared/components/ClassificationLedger.vue'
 import MessageList from '../shared/components/MessageList.vue'
+import ModelPickerSelect from '../shared/components/ModelPickerSelect.vue'
 import SensitiveToolCard from '../shared/components/SensitiveToolCard.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import ThinkingLevelSelect from '../shared/components/ThinkingLevelSelect.vue'
@@ -86,8 +89,8 @@ async function refreshQuickPreview(): Promise<void> {
 onUnmounted(() => {
   offSensitiveTool?.()
   offSensitiveTool = null
-  if (effortHintTimer !== null) window.clearTimeout(effortHintTimer)
-  effortHintTimer = null
+  if (pickerHintTimer !== null) window.clearTimeout(pickerHintTimer)
+  pickerHintTimer = null
 })
 
 function resolveSensitive(): void {
@@ -106,45 +109,72 @@ const currentTitle = computed(() => {
   return sessionTitle(current?.title ?? '')
 })
 
-// ───────────────────── 思考等级（docs/06 §3 / docs/07 §2.3） ─────────────────────
+// ────────────── 输入区的两个 provider 控件：模型 / 思考等级（docs/06 §3、docs/07 §2.3） ──────────────
 
 /**
- * 输入区的「思考等级」下拉：读写**当前生效 provider** 的 `llm.providers.<active>.reasoningEffort`。
+ * 「模型」与「思考等级」两个下拉读写的是**同一个 provider 子树**，只是字段不同：
+ * `llm.providers.<active>.model`（唯一生效值）与 `.reasoningEffort`。
  *
- * 与设置页「AI 模型」卡写的是同一个字段（单一事实来源），**没有按会话覆盖**；
- * 保存成功后 `settings:changed` 会把新配置推回 store，控件值随之更新，
- * 下一次请求由 `createProviderFactory()` 读到新值（`auto` → 不下发 `reasoning_effort`）。
+ * 与设置页「AI 模型」卡写的是同一份数据（单一事实来源），**没有按会话覆盖**；
+ * 保存成功后 `settings:changed` 会把新配置推回 store，两个控件随之更新。
+ *
+ * ⚠️ 不需要改主进程 / 不需要额外接线：`createProviderFactory()` 返回的对象里，每次
+ * `create()` 都重新读一遍 `settings.get().llm`（`main/agent-host.ts:212-228`），
+ * 所以写完配置后**下一次发送**就用新的 `model`（`reasoningEffort` 同理），不用重启也不用重装 provider。
  */
 const activeProviderId = computed(() => settingsStore.settings?.llm.active ?? '')
 
-/** 当前生效 provider 的思考等级；没有可用 provider 时为 `null`（此时控件禁用而不是隐藏） */
-const effort = computed<ReasoningEffort | null>(() => {
+/** 当前生效 provider；没有可用 provider（未配置 / active 指向不存在的 id）时为 `null` */
+const activeProvider = computed<LlmProviderConfig | null>(() => {
   const settings = settingsStore.settings
   if (!settings) return null
-  const provider = settings.llm.providers[activeProviderId.value]
-  return provider ? provider.reasoningEffort : null
+  return settings.llm.providers[activeProviderId.value] ?? null
 })
 
-/** 下拉显示值：无 provider 时用默认等级占位——禁用态也要让用户看得见这个控件 */
+/** 模型下拉的当前值（`model` 是唯一生效值；空串 = 还没填） */
+const currentModel = computed<string>(() => activeProvider.value?.model ?? '')
+
+/**
+ * 模型下拉的候选列表。
+ *
+ * `modelList` 在 Schema 里带 `.default([])`，但拉取 / 手工维护都可能留下空串或重复项，
+ * 这里只做 `?? []` 兜底（去重与空串过滤是 `ModelPickerSelect` 的事，两个入口共用同一套规则）。
+ */
+const modelOptions = computed<string[]>(() => activeProvider.value?.modelList ?? [])
+
+/** 当前生效 provider 的思考等级；没有可用 provider 时为 `null`（此时控件禁用而不是隐藏） */
+const effort = computed<ReasoningEffort | null>(() => activeProvider.value?.reasoningEffort ?? null)
+
+/** 思考下拉显示值：无 provider 时用默认等级占位——禁用态也要让用户看得见这个控件 */
 const effortValue = computed<ReasoningEffort>(() => effort.value ?? DEFAULT_REASONING_EFFORT)
 
-/** 下拉 tooltip：无 provider → 指向修复路径；有 provider → 说明这个参数的含义 */
+/** 无 provider 时两个下拉共用的 tooltip / 提示文案（与设置页口径一致：指向修复路径） */
+const missingProviderTitle = '先在「设置 → AI 模型」里配置并选中一个模型'
+
+/** 模型下拉的 tooltip（挂在这行提示上时也用它：Chromium 不给禁用态的原生控件弹 title） */
+const modelTitle = computed(() =>
+  activeProvider.value === null
+    ? missingProviderTitle
+    : '当前使用的模型（候选来自「设置 → AI 模型」的模型列表）；改完对下一次请求生效',
+)
+
+/** 思考下拉的 tooltip：无 provider → 指向修复路径；有 provider → 说明这个参数的含义 */
 const effortTitle = computed(() =>
-  effort.value === null
-    ? '先在「设置 → AI 模型」里配置并选中一个模型'
+  activeProvider.value === null
+    ? missingProviderTitle
     : '思考等级（越高越深入，但更慢更贵）；auto 不下发该参数，兼容性最好',
 )
 
-/** 保存结果的一行轻提示（成功 2 秒后消失；失败走 chatError） */
-const effortHint = ref<string | null>(null)
-let effortHintTimer: number | null = null
+/** 两个下拉共用的保存结果轻提示（成功 2 秒后消失；失败走 chatError） */
+const pickerHint = ref<string | null>(null)
+let pickerHintTimer: number | null = null
 
-function flashEffortHint(text: string): void {
-  effortHint.value = text
-  if (effortHintTimer !== null) window.clearTimeout(effortHintTimer)
-  effortHintTimer = window.setTimeout(() => {
-    effortHint.value = null
-    effortHintTimer = null
+function flashPickerHint(text: string): void {
+  pickerHint.value = text
+  if (pickerHintTimer !== null) window.clearTimeout(pickerHintTimer)
+  pickerHintTimer = window.setTimeout(() => {
+    pickerHint.value = null
+    pickerHintTimer = null
   }, 2000)
 }
 
@@ -167,31 +197,63 @@ function stripSecretFields(provider: LlmProviderConfig): LlmProviderConfig {
 }
 
 /**
- * 写入当前 provider 的思考等级（只在用户真的改了值时写，挂载 / 切 provider 都不产生空写）。
+ * 更新当前 provider 的若干字段——「模型」与「思考等级」两个下拉共用的写入路径。
  *
- * patch 必须**原样回传 `llm.active` 与全部 `providers`**（分组级局部更新，缺了会丢配置），
- * 但每一个 provider 都要先过 `stripSecretFields()`：只改当前那个，其余 provider 的**空密文**
- * 一样会覆盖磁盘上的对应凭据。
+ * patch 必须**原样回传 `llm.active` 与全部 `providers`**（`settings:update` 只有顶层浅合并，
+ * 分组级局部更新缺一条就丢配置），但每一个 provider 都要先过 `stripSecretFields()`：
+ * 只覆盖当前那一个，其余 provider 的**空密文**一样会覆盖磁盘上的对应凭据。
+ * 只有当前 provider 用 patch 覆盖（`{ ...当前, ...patch }`），其余原样透传。
+ *
+ * 返回值 = 是否成功写入；失败时把 store 的错误挂到 `chatError`（调用方只管提示成功文案）。
  */
-async function setEffort(next: ReasoningEffort): Promise<void> {
+async function updateActiveProvider(patch: Partial<LlmProviderConfig>): Promise<boolean> {
   const settings = settingsStore.settings
   const id = activeProviderId.value
-  if (!settings || id === '') return
+  if (!settings || id === '') return false
   const provider = settings.llm.providers[id]
-  if (!provider || provider.reasoningEffort === next) return
+  if (!provider) return false
   const providers: Record<string, LlmProviderConfig> = {}
   for (const [providerId, item] of Object.entries(settings.llm.providers)) {
     providers[providerId] = stripSecretFields(item)
   }
-  providers[id] = { ...stripSecretFields(provider), reasoningEffort: next }
+  providers[id] = { ...stripSecretFields(provider), ...patch }
   const ok = await settingsStore.update({
     llm: { active: settings.llm.active, providers },
   })
   if (!ok) {
     chatError.value = settingsStore.error
-    return
+    return false
   }
-  flashEffortHint(`思考等级已改为 ${next}`)
+  return true
+}
+
+/**
+ * 写入当前 provider 的思考等级（只在用户真的改了值时写，挂载 / 切 provider 都不产生空写）。
+ *
+ * `auto` 由主进程装配层映射成「不下发 `reasoning_effort`」（docs/06 §3），这里只负责落盘。
+ */
+async function setEffort(next: ReasoningEffort): Promise<void> {
+  const provider = activeProvider.value
+  if (provider === null || provider.reasoningEffort === next) return
+  if (await updateActiveProvider({ reasoningEffort: next })) {
+    flashPickerHint(`思考等级已改为 ${next}`)
+  }
+}
+
+/**
+ * 写入当前 provider 的模型（`model` 是唯一生效值；`modelList` 只是候选，不跟着改）。
+ *
+ * 切换后**下一次发送**就用新模型：`createProviderFactory().create()` 每次都重读配置
+ * （`main/agent-host.ts:212-228`），所以这里不需要通知主进程，也不需要重建 provider。
+ * 若新模型不在 `modelList` 里也照样写入——设置页的「模型名」输入框允许填任意 id，
+ * 下拉里会把它显示成「（不在列表中）」，不允许静默替换。
+ */
+async function setModel(next: string): Promise<void> {
+  const provider = activeProvider.value
+  if (provider === null || provider.model === next) return
+  if (await updateActiveProvider({ model: next })) {
+    flashPickerHint(`模型已切换为 ${next}`)
+  }
 }
 
 // ───────────────────────── 附件拖拽（docs/07 §2.3） ─────────────────────────
@@ -452,7 +514,22 @@ function formatTime(iso: string): string {
         />
         <div class="composer-bar">
           <span class="tiny muted meta"> 会话：{{ sessionId }} · 可调用 Skill 与 MCP 工具 </span>
-          <label class="tiny muted effort-label" for="chat-thinking-level">思考</label>
+          <!--
+            顺序固定为：meta 文本 → 模型 → 思考 → 停止 / 发送（docs/07 §2.3）。
+            420px 宽下这一行很紧，能被压缩的只有可省略的文本（`.meta` 与 `.picker-hint`），
+            两个下拉、两个标签与发送按钮都不参与「挤出去」——发送按钮必须留在圆角框内。
+          -->
+          <label class="tiny muted picker-label" for="chat-model-picker">模型</label>
+          <!-- 下拉自己带 `data-field="chat.model"`：capture 探针与 UI 断言的唯一抓手 -->
+          <ModelPickerSelect
+            id="chat-model-picker"
+            :model-value="currentModel"
+            :models="modelOptions"
+            :disabled="activeProvider === null"
+            :title="modelTitle"
+            @update:model-value="setModel"
+          />
+          <label class="tiny muted picker-label" for="chat-thinking-level">思考</label>
           <!-- 下拉自己带 `data-field="chat.reasoningEffort"`：capture 探针与 UI 断言的唯一抓手 -->
           <ThinkingLevelSelect
             id="chat-thinking-level"
@@ -462,14 +539,14 @@ function formatTime(iso: string): string {
             @update:model-value="setEffort"
           />
           <!--
-            无可用 provider 时控件**保持可见**（只禁用、不隐藏）：用户抱怨的正是「找不到按钮」。
+            无可用 provider 时两个控件**保持可见**（只禁用、不隐藏）：用户抱怨的正是「找不到按钮」。
             提示文字与 tooltip 都指向修复路径；tooltip 挂在这行提示上是因为 Chromium 不给
             禁用态的原生控件弹 title。
           -->
-          <span v-if="effort === null" class="tiny muted effort-hint" :title="effortTitle">
+          <span v-if="activeProvider === null" class="tiny muted picker-hint" :title="modelTitle">
             未配置模型
           </span>
-          <span v-else-if="effortHint" class="tiny muted effort-hint">{{ effortHint }}</span>
+          <span v-else-if="pickerHint" class="tiny muted picker-hint">{{ pickerHint }}</span>
           <AppButton v-if="streaming" size="sm" @click="abort">停止</AppButton>
           <span class="send-slot">
             <AppButton
@@ -782,20 +859,30 @@ function formatTime(iso: string): string {
 }
 
 /**
- * 「思考」标签与提示（docs/07 §2.3）。
+ * 「模型」「思考」两个标签与提示（docs/07 §2.3）。
  *
- * 420px 宽的交互窗里这一行已经很紧，压缩的**只能**是可省略的文本：
- * 标签、下拉（组件内 `flex: 0 0 auto`）与发送按钮都不收缩，
- * 提示自己可以收缩并省略——否则它会把发送按钮顶出行外。
+ * 420px 宽的交互窗里这一行很紧：圆角输入框内的可用宽度约 **370px**
+ * （420 − `.composer` 两侧 12px − `.composer-box` 两侧 12px − 边框 2px），
+ * 而固定内容在**流式**时约 **358px**（模型标签 22 + 模型下拉 110 + 思考标签 22 +
+ * 思考下拉 ≤128 + 「停止」46 + 发送 30），再加 6 个 8px 间距 = **406px**——必然超出。
+ * 所以降级顺序是「提示文本（shrink 100）→ 模型下拉（110 → 最低 72）」；
+ * 两个标签与发送按钮都是 `flex: 0 0 auto`、永不收缩——**发送按钮必须留在圆角框内**。
+ * 非流式时（无「停止」按钮）固定内容 312px + 5 个间距 = 352px，模型下拉保持 110px，
+ * 余下的约 18px 全归 `.meta`（它就是那个被省略号截掉的「可省略文本」）。
  * `white-space: nowrap` 是必须的：CJK 允许逐字断行，标签被压时会折成两行撑高输入区。
  */
-.effort-label {
+.picker-label {
   flex: 0 0 auto;
   white-space: nowrap;
 }
 
-.effort-hint {
-  flex: 0 1 auto;
+/**
+ * 提示文本是这一行的**第一顺位收缩者**（`shrink: 100` 远大于模型下拉的 `1`）：
+ * 「模型已切换为 deepseek-reasoner」这类文案比 meta 长得多，让它先省略，
+ * 模型下拉才能在非流式时稳稳保持 110px（不会随提示出现而抽动）。
+ */
+.picker-hint {
+  flex: 0 100 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
