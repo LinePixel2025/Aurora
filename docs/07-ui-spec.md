@@ -97,6 +97,17 @@
   无可用 provider 时控件**不隐藏**，而是 `disabled` + 提示「先在「设置 → AI 模型」里配置并选中一个模型」
   ——用户抱怨的正是「找不到按钮」，在没有模型时彻底藏起来会让同一个抱怨复现；
   禁用态至少是「找得到但用不了」，并且指向了修复路径。
+- **模型选择（本轮）**：输入区（`.composer-bar`）与「思考」并排还有一个「模型」下拉
+  （`data-field="chat.model"`，`ModelPickerSelect.vue`），选项来自**当前生效 provider** 的
+  `llm.providers.<active>.modelList`；选中即把该 provider 的 `llm.providers.<active>.model`
+  改成这一项，下一次请求生效（主进程每次请求都重新读 `settings.get().llm`，无需重启）。
+  **模型页与对话窗读写的是同一份列表**：模型页维护 `modelList`、对话窗从同一份列表里选，
+  没有第二份来源。当前 `model` 不在列表里（或列表为空）时，下拉把当前值显示为
+  「`<model>`（不在列表中）」而不是悄悄替换成别的模型。
+  无可用 provider 时**与思考等级一样**「不隐藏、只 `disabled`」，并给出同一句去设置页的提示。
+  `.composer-bar` 的控件顺序是：`meta` 文本 → **模型** → **思考** → 停止 / 发送按钮；
+  420px 窄窗放不下时先让 `meta` 让位（隐藏或 `overflow: hidden` + `min-width: 0`），
+  **发送按钮绝不能被挤出行外**（标题栏拖动区的改动不要碰输入区，见 §1 与 §5.3 的拖动探针）。
 - **窗口拖动（本轮）**：标题栏 `.head` 走统一的 `useWindowDrag('chat')`（`:class="dragClass"`），
   按钮区挂 `noDragClass`；详见 §1 与 §5.3 的拖动探针。
 - **未实现**：输入框的 `/`、`@` 补全浮层 —— 代码里从来没有对应功能（composer 只有 textarea + Enter 发送），
@@ -219,24 +230,35 @@
 
 ### 5.3 截图核对工具（AURORA_CAPTURE）
 
-- `AURORA_CAPTURE=<目录> pnpm dev`：把四个窗口、提示条两态、设置页 7 页、思考等级参数面板、
-  3 条 DOM 探针场景（常规页字段门控 / 模式页 ClassRoom / 切换模式后门控）+ 1 条真实写盘场景
-  与 2 张提示条收尾图截成一批 PNG 后退出。
-  **PNG 张数以 `report.json` 的实际条目为准，文档里不写死**：本轮（对话窗 UX 修复）是**净增**——
-  新增 `chat-thinking-level.png` / `chat-drag.png` / `settings-drag.png` / `settings-llm-structure.png`
-  等场景；后续步骤还会继续加，因此不要按固定张数做校验；
+- `AURORA_CAPTURE=<目录> pnpm dev`：把四个窗口、提示条两态、设置页各页与各条 DOM 探针场景
+  （面板 / 收起 / 自动滚底 / 门控 / 拖动 / 思考等级 / 模型列表与模型选择 / 真实写盘 / 提示条收尾图）
+  截成一批 PNG 后退出。
+  **张数与具体构成以 `report.json` 的实际条目为准，文档里不写死**：本轮（对话窗 UX 修复）是**净增**——
+  新增 `chat-thinking-level.png` / `settings-llm-params.png` / `settings-llm-structure.png` /
+  `settings-llm-models.png` / `chat-model-picker.png` / `chat-drag.png` / `settings-drag.png` 等场景；
+  后续步骤还会继续加，因此**不要按固定张数做校验**（这里列出的名字只是当前已知条目，不是清单全集）；
   （交互窗的截图还带一条自动滚底探针与一条「收起即隐藏」探针；设置页另有「AI 模型 - 思考等级」一条探针场景
   ——它**会**额外出 `settings-llm-params.png`——以及「AI 模型 - 结构」场景（`settings-llm-structure.png`，
   探针 `SETTINGS_LLM_STRUCTURE_CHECK`：provider 行数 === 配置里的 provider 数量、点开「编辑」后**可见编辑卡恰好 1 张**、
-  `providers` 为空时存在 `[data-empty="llm.providers"]`；该场景**只读配置**、自己不改写，避免与「思考等级」那条互相干扰），
+  `providers` 为空时存在 `[data-empty="llm.providers"]`；该场景**只读配置**、自己不改写，避免与「思考等级」那条互相干扰）、
+  「AI 模型 - 模型列表」场景（`settings-llm-models.png`）与交互窗的「模型选择」场景（`chat-model-picker.png`），
+  最后两条都会**临时改写配置**（切模型 / 加一行，必要时造一个 provider）并尽力恢复原状，判定口径见下面各条；
   以及「电脑操控」页的门控探针，后者不额外出图）；
   `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）。
   仅开发态生效；与 `AURORA_SMOKE` 同时设置时**截图优先**（自测不会执行）。
   进程退出码：0 = 全部成功，1 = 一张图都没写出，2 = 有探针 `pass === false`。
-- **userData 会自动隔离（必须，不是可选）**：探针里有两条会**写真实配置**（切到 Work 模式、
-  翻 `classification.autoMove`），所以 `AURORA_CAPTURE` 存在时应用就把 userData 指向临时目录并在退出时删除
-  —— 与 `AURORA_SMOKE` 走同一条隔离路径（`index.ts` 的 `isolatedRun`）。
+- **userData 会自动隔离（必须，不是可选）**：**多条**探针会**临时改写真实配置**——
+  至少包括：门控场景（切到 Work 模式、翻 `classification.autoMove`）、
+  `chat-thinking-level`（改 `reasoningEffort`，check 结尾写回原值）、
+  `chat-model-picker`（切 `model`，check 结尾写回原值）、
+  `settings-llm-params`（造一个 provider 用于断言）、
+  `settings-llm-models`（点「+ 手动添加」加一行，结束时删掉恢复原状）。
+  它们中的大多数会在结束时把改动还原（如 `chat-thinking-level` / `chat-model-picker` 写回原值、
+  `settings-llm-models` 删回新增行），但这属于**各场景自己的自律、不是框架保证**：
+  场景中途失败就会把脏配置留给后面的场景。所以 `AURORA_CAPTURE` 存在时应用一律把 userData
+  指向临时目录并在退出时删除 —— 与 `AURORA_SMOKE` 走同一条隔离路径（`index.ts` 的 `isolatedRun`）。
   也就是说截图跑在**全新默认配置**上，不会碰用户自己的 `%APPDATA%/Aurora`。
+  （`SETTINGS_LLM_STRUCTURE_*` 与 `CHAT_AUTO_SCROLL_SCRIPT` 等**只读**探针不在此列。）
 - 产物：`<目录>/<窗口或场景>.png` 与 `report.json`（每张图的渲染层探针结果）。
 - 三类动作（`main/capture.ts` 的 `CaptureTarget`）：`prepare`（主进程侧准备）、
   `act`（在渲染层派发真实 `mouseenter` / `click`）、`check`（截图后取一份可判定结果）。
@@ -286,6 +308,22 @@
     并断言 option 数量为 4。`pass` = 配置值 === `'high'` **且** DOM 值 === `'high'` **且** option 数 === 4
     ——它同时钉住「读写的是同一个字段」与「探针不改坏用户配置」：act 前先记下原值，
     check 结尾把原值写回，恢复结果一并放进返回值。
+  - **模型页「模型列表」区**（`SETTINGS_LLM_MODELS_ACT` / `SETTINGS_LLM_MODELS_CHECK`，
+    产物 `settings-llm-models.png`，设置页 `?page=llm`）：act 点开第一行的「编辑」
+    （`data-action="edit-provider"`，找不到就按文案「编辑」兜底）；check 断言
+    「模型设置区」存在（`[data-field$=".modelList"]`）且**行数 ≥ 1**（行是
+    `data-field="llm.providers.<id>.modelList.<index>"`）→ 点一次 `data-action="add-model"`
+    后**行数 +1** → 结束时**把刚加的那一项删掉**，让后面的场景仍看到干净配置。
+    `pass` = 列表区存在 && 行数 ≥ 1 && 添加后行数增加 && 恢复后行数还原。
+    ⚠️ 它会临时改配置，因此排在 `settings-llm-params` **之前**，避免它把参数场景造出的 provider 状态搅乱。
+  - **对话窗模型选择器**（`CHAT_MODEL_PICKER_ACT` / `CHAT_MODEL_PICKER_CHECK`，
+    产物 `chat-model-picker.png`，交互窗一条）：act 先读 `settings.get()`，还没有 provider 时
+    造一个带**两个**模型 id 的（`modelList: ['deepseek-chat', 'deepseek-reasoner']`，并设为 `llm.active`），
+    等 `settings:changed` 生效后把 `[data-field="chat.model"]` 切到第二个模型并派发 `change`，
+    等 600ms 让 `settings:update` 往返完成，并把原值记进 `window.__auroraModelProbe`；
+    check 再断言**配置里的 `model`**（`llm.providers[llm.active].model`）与
+    **DOM 里该 select 的 `.value`** 一致，且 **option 数 ≥ 2**，结束时把 `model` 写回原值。
+    `pass` = 三条件全真 —— 它同时钉住「两处读写的是同一个字段」与「探针事后恢复配置」。
   - **窗口拖动**（`WINDOW_DRAG_SCRIPT`，产物 `chat-drag.png` 与 `settings-drag.png`，两个窗口各一条场景）：
     量出所有**可见** `.drag-region`（`getBoundingClientRect()` 的宽或高为 0 视为不可见）并取最大高度，
     要求「至少有一个可见拖动区」且 **`maxHeight >= 32`**（够抓）；再读生效的 `app-region` 值为 `drag`
@@ -297,11 +335,12 @@
     该条会判 FAIL。此时**不要**把探针改成永远 PASS，而是把判定退化为「按 `regions` 的存在性与尺寸」，
     并在 `report.json` 里保留 `region` / `regionValue` 原始值，同时在本文档注明该属性不可读
     （真实拖动仍可手测）——处置结论必须写进该步的执行记录。
-  - **交互窗场景的全局顺序（本轮定死）**：`chat-thinking-level` → `chat-model-picker`
-    （模型选择器场景，后续步骤加）→ `chat-drag` → `chat-collapse` → `chat.png`。
+  - **交互窗场景的全局顺序（本轮定死）**：`chat-thinking-level` → `chat-model-picker` →
+    `chat-drag` → `chat-collapse` → `chat.png`。
     **所有需要在交互窗里操作 DOM 的场景都必须排在 `chat-collapse` 之前**——
     标题栏「收起」是直接 `hide()` 窗口，之后既做不了 DOM 操作也截不到图。
-    设置窗的拖动场景（`settings-drag.png`，`query: { page: 'general' }`）与既有设置页场景无顺序约束。
+    设置窗的拖动场景（`settings-drag.png`，`query: { page: 'general' }`）与既有设置页场景无顺序约束；
+    设置页的 `settings-llm-models` 排在 `settings-llm-params` 之前（理由见上）。
 - 截图前会等 `WindowManager.whenLoaded()`（`ensure()` 的加载是 fire-and-forget，
   不等会截到 0 字节空图），并对空图重试；连续空图直接判失败，不产出空文件。
 - 设置页深链：`main/window-manager.ts` 的 `ensure(name, query)` / `reload(name, query)`

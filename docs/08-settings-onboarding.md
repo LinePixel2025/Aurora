@@ -22,9 +22,11 @@
         "type": "openai-compat",
         "baseUrl": "https://api.deepseek.com",
         "apiKeyEnc": "<safeStorage 密文>",
-        "model": "deepseek-chat",
+        "model": "deepseek-chat",  // 唯一生效值：请求实际用的模型就是它
         "temperature": 0.7,
-        "reasoningEffort": "auto"  // auto | low | medium | high；auto = 不下发该参数
+        "reasoningEffort": "auto", // auto | low | medium | high；auto = 不下发该参数
+        // v6 新增：**候选**模型 id 列表（设置页「模型列表」与对话窗模型选择器共用，见 §5）
+        "modelList": ["deepseek-chat", "deepseek-reasoner"]
       }
     }
   },
@@ -104,7 +106,17 @@
   没有另起新版本号）。
 - `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
   `auto` 表示请求里**不带 `reasoning_effort` 字段**，用于兼容不认该参数的厂商；
-  其余三档按值下发（见 06 §3）。
+  其余三档按值下发（见 06 §3）。它是 **provider 级**字段：作用于该 provider 下的**所有**模型，
+  切模型不会切换等级（见 §5 第 6 条与 06 §3 的「已知取舍」）。
+- `llm.providers.<id>.modelList`（**v6 新增**，见 §5）：该 provider 下的**候选**模型 id 列表
+  （`string[]`，`.default([])`），供设置页「模型列表」编辑区与对话窗模型选择器使用 ——
+  两处读写的是**同一份**列表，没有第二份来源。
+  它**只作候选**用途：真正生效的仍然是 `llm.providers.<id>.model`（**唯一生效值**），
+  往列表里加减模型**不会**改变请求用的模型。
+  回落行为：`modelList` 为空（或当前 `model` 不在其中）时，选择器**只显示当前 `model`**
+  并标注「（不在列表中）」，**不会**悄悄替换成列表里的第一个模型；对话窗同样显示为
+  `<model>（不在列表中）`。`v5 → v6` 迁移会为旧配置的每个 provider 补齐 `modelList: []`
+  （已存在的值不动），`CONFIG_VERSION` 仍为 **6**（本字段是本轮 v6 内追加的，没有另起新版本号）。
 - `agent.tools`（v5 新增，见 06 §11）：4 个开关 + 3 个上限 ——
   `enabled` 是电脑操控工具**总开关**（`false` 时 5 个工具都不注册）；`workspaceDir` 是 **`run_command`
   的缺省 `cwd`**（空串 = 用户主目录，只作**默认值**、不是沙箱；文件类工具不读它，见 06 §11.1）；`terminal.enabled` 开关终端工具、
@@ -147,7 +159,8 @@
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
   `v3 → v4`（移除 `general.windowState['service-dock']`，AI 悬浮窗已删除）、
   `v4 → v5`（补齐 `llm.providers.*.reasoningEffort` 与 `agent.tools.*`）、
-  `v5 → v6`（移除 `general.windowState['mini-chat']`，独立小窗已删除；补齐 `advanced.readonlyPrefixes`）。
+  `v5 → v6`（移除 `general.windowState['mini-chat']`，独立小窗已删除；
+  补齐 `llm.providers.*.modelList` 与 `advanced.readonlyPrefixes`）。
   六条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
@@ -195,20 +208,41 @@
 4. **编辑卡**（`editingId` 是单值，因此**同一时刻最多一张卡**）：
    - 必填区：`baseUrl` / `apiKey` / `model`（必填项前置，缺失时当场提示是哪个 provider 的哪个字段，
      不再等到保存后由 Schema 兜底）；
-   - 「模型」分组：候选模型列表的位置（step 5 接入，列表只是候选项，当前用哪个模型仍由「模型名」决定）；
+   - 「模型设置」区（必填区与 `高级参数与连接测试` 折叠区**之间**）——该 provider 的**候选模型列表**：
+     - 头部：标题「模型列表」+「拉取模型列表」（与折叠区里同名按钮共用同一段 `loadModels` 拉取逻辑）
+       与「+ 手动添加」；
+     - 列表：每项一行，行上有
+       - **「当前使用」标记**（选中即把 `llm.providers.<id>.model` 设为该 id，即改的是唯一生效值）；
+       - 模型 id 文本（`.mono`）；重命名（改的就是列表里的 id，若是当前使用的那个则同步改 `model`）；
+       - 删除（从列表移除）；
+     - **删除当前使用的那一项不换模型**：`model` 原样保留，只在页面提示「当前模型已不在列表中」，
+       改哪个由用户自己决定——与 §1 的回落口径一致，不静默换模型；
+     - 「拉取模型列表」把发现到的 id **去重合并**进现有列表（不覆盖已有项），
+       结果提示为「已拉取 N 个，列表共 M 个」；
+     - 列表为空时是 `data-empty="llm.providers.<id>.modelList"` 的空状态提示块
+       （文案：「还没有模型列表：先在下面填一个模型名，或点「拉取模型列表」」）；
+     - 与「模型名」的关系：必填区的 `data-field="llm.providers.<id>.model"` 输入框**保留在原位**，
+       它是「当前使用模型」的**唯一编辑点**（也是 capture 抓手）；它填的 id 不在列表里时会
+       **自动追加进列表**，让两者保持一致且用户看得见发生了什么。
    - `高级参数与连接测试` 折叠区（**默认收起**）：`temperature`、思考等级、`保存并测试连接` /
      `拉取模型列表`、连接延迟与可用模型 chips；
    - 卡底 `应用`（只提交这一张卡，成功回列表态）/ `取消`。
    - 添加流程：预设 chips（DeepSeek / OpenAI / 本地兼容）+ 自定义 id 输入框；重复 id 提示
      `Provider「<id>」已存在`；选中预设**直接进编辑卡**。
+   - **模型列表是页与窗的公共数据**：本页维护 `llm.providers.<id>.modelList`，对话窗的「模型」选择器
+     从**同一份**列表里选、并把选中项写回 `llm.providers.<id>.model`（docs/07 §2.3）。
+     两边不存在各自的副本，因此「模型页改当前模型 → 对话窗选择器跟着变」是必然而非同步逻辑。
 5. **删除是危险操作**：点「删除」先就地出现确认条
    （`删除 provider「<id>」？依赖它的会话将无法再请求模型。` + `确认删除` / `取消`），
    确认后才走「删 provider + 清 `apiKey` secret + `llm.active` 置空」。
 6. **思考等级**属于 **provider 维度**（`llm.providers.<id>.reasoningEffort`，Schema 就是这么存的），
    所以保留在本页的折叠区里；交互窗另有入口（docs/07 §2.3，读写的是同一个字段）。
+   因此它作用于该 provider 下的**所有**模型 —— 在对话窗切模型**不会**切换思考等级，
+   这是**已知取舍**；将来若要按模型区分，需要把它扩展成模型级映射（见 06 §3）。
 7. 保存语义：`settings:update` 只有**顶层浅合并**，因此任何一次保存都必须**原样回传全部 provider
    再覆盖当前一个**；`apiKeyEnc: ''` 对已有 provider 表示「本次不改凭据」（新建时 Schema 要求该字段存在）；
-   明文 API Key 只走 `settings:setSecrets`。
+   明文 API Key 只走 `settings:setSecrets`。`modelList` 是数组，跨 IPC 前必须**深拷贝成新数组**
+   （`reactive` 里的数组是 Proxy，直接传会 `DataCloneError`）。
 8. 支持范围：DeepSeek / OpenAI / 其他 OpenAI 兼容（含 Ollama 本地）；P2 再评估更多协议（Anthropic 等）。
 9. 测试连接：展示延迟与可用模型列表（可选拉取）。
 
@@ -280,7 +314,7 @@
 | `general.language` | **永不显示**（无 i18n 消费方的死字段，字段保留在 Schema 仅为配置兼容） |
 | `skills.disabled` | `skills.list()` 非空 |
 | `mcp.servers.*` / `mcp.lazyConnect` | `mcp.servers.length > 0` |
-| `llm.providers.*`（含 `temperature` / `reasoningEffort`） | `llm.providers` 至少一项 |
+| `llm.providers.*`（含 `temperature` / `reasoningEffort` / `modelList`） | `llm.providers` 至少一项 |
 | `agent.tools.enabled` | 常显（否则无法重新启用） |
 | `agent.tools.workspaceDir` | 常显（总开关关着时也要能改默认工作目录） |
 | `agent.tools.terminal.*` / `files.*` / `open.enabled` | `agent.tools.enabled === true` |

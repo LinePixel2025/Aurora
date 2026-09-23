@@ -30,15 +30,20 @@ export interface LlmProvider {
 ```
 
 - 默认实现 `OpenAiCompatProvider`：`baseURL + apiKey + model`，兼容 DeepSeek / OpenAI / Ollama / vLLM 等（见 ADR-003）。
-- 设置中可保存多组模型配置并切换默认；会话级可选模型；temperature 等参数可调。
+- 设置中可保存多组模型配置并切换默认；temperature 等参数可调。
+  （「会话级可选模型」目前**没有实现**：每个 provider 只有一个生效的 `model`，也不做按会话覆盖
+  —— 见 07 §2.3。另有一份候选列表 `llm.providers.<id>.modelList` 只决定 UI 里能选什么，
+  对话窗选模型写回的就是 `model` 本身，内核侧只认 `model`，见 08 §1/§5。）
 - 可靠性：指数退避重试、单请求超时（默认 60s）、流式中断可取消（AbortSignal 贯穿到 IPC）。
 - `ChatRequest.reasoningEffort` 由 `llm.providers.<id>.reasoningEffort` 驱动，取值
   `auto | low | medium | high`；`auto`（默认）时**不下发** `reasoning_effort` 字段。
   设置页「AI 模型」的高级参数与对话窗输入区的「思考」下拉**两处入口写的是同一个字段，
   没有第二份来源**（也不做按会话覆盖）：改哪一处，下一次请求都按新值下发。
-  **已知取舍**：思考等级作用于当前 provider 下的**所有模型**；将来若要按模型区分，
-  需要把它扩展成模型级映射（例如 `llm.providers.<id>.models.<model>.reasoningEffort`），
-  当前 Schema 不支持。
+  **已知取舍**：思考等级存在 **provider 级**，因此作用于当前 provider 下的**所有模型** ——
+  对话窗的「模型」下拉（`chat.model`，选项来自 `llm.providers.<id>.modelList`）只切模型、
+  **不切思考等级**。将来若要按模型区分，需要把它扩展成**模型级映射**
+  （例如 `llm.providers.<id>.effortByModel: Record<modelId, 'auto' | 'low' | 'medium' | 'high'>`），
+  当前 Schema 与 UI 都不支持；在那之前，不要假定「切了模型就换了等级」。
 
 ## 4. 会话管理
 
