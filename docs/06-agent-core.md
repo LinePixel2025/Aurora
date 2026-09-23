@@ -375,7 +375,10 @@ AI **改不动它**：`set` 的 `value` 只接受 `string | number | boolean`，
     因此回传里的「空」只能理解为**本次不改凭据**；MCP 的 `envEnc` 是**逐键**合并的
     （某键值为空串 → 保留该键已有密文）；
   - **`mcp.servers` 是整数组权威**：不在数组里 = 删除，被删服务器的每个环境变量都会
-    连同 `SettingsStore` 内存里的明文缓存一起清掉。
+    连同 `SettingsStore` 内存里的明文缓存一起清掉；
+  - **`llm.providers` 是 record，缺项 ≠ 删除**：回传一份缺少某 provider 的 `providers`
+    不会删掉它；删除必须显式声明 `llm.removedProviders`，合并完成后主进程同样会清掉
+    被删 provider 的密文与内存明文缓存（`llm.active` 指向它时由 `sanitize` 重置为空串）。
   工具侧**不得**绕过它自己写盘，否则会同时丢掉「凭据保留」与「广播」这两件事。
 - `applyPatch` 失败 → 返回 `{ ok: false, message: '配置校验失败：…' }` 且**不做回滚**：
   此时 `SettingsStore` 的内存态根本没变，回滚反而会写脏。成功后会再做一次

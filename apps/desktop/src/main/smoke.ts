@@ -261,11 +261,51 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     )
     assertNoSecretLeak('MCP 回包不含密文', resaved ?? {})
 
-    const freshRemove = { ...(freshSave?.llm?.providers ?? {}) }
-    delete freshRemove[freshProviderId]
-    expectOk('settings.update(清理全新 provider)', await window.aurora.settings.update({
-      llm: { active: 'smoke', providers: freshRemove },
+    // 3.1.4 删除语义（本轮修）：llm.providers 是 record，「缺项」表达不了删除。
+    //     回传一份少了 fresh 的 providers（不带 removedProviders）不得误删它 ——
+    //     fresh 的密文还要留到脚本结束后由主进程读盘断言（见 index.ts）。
+    const withoutFresh = { ...(emptyCipher?.llm?.providers ?? {}) }
+    delete withoutFresh[freshProviderId]
+    const notDeleted = expectOk('settings.update(缺项回传)', await window.aurora.settings.update({
+      llm: { active: 'smoke', providers: withoutFresh },
     }))
+    record(
+      '缺项回传不会误删 provider（删除必须显式声明）',
+      notDeleted?.llm?.providers?.[freshProviderId] !== undefined &&
+        expectOk('settings.hasSecret#notDeleted', await window.aurora.settings.hasSecret('llm.providers.' + freshProviderId + '.apiKey')) === true,
+      Object.keys(notDeleted?.llm?.providers ?? {}).join(',') || 'providers 为空',
+    )
+
+    // 3.1.5 真删除：显式声明 removedProviders 之后，provider 与它的凭据都必须消失
+    //     （旧行为是「provider 还在、密文被 clearSecret 清掉」，本轮修掉）。
+    const removeProviderId = 'remove-' + Date.now()
+    expectOk('settings.update(建待删 provider)', await window.aurora.settings.update({
+      llm: {
+        active: 'smoke',
+        providers: {
+          ...(notDeleted?.llm?.providers ?? {}),
+          [removeProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, apiKeyEnc: '', model: 'remove-me', temperature: 0.5, reasoningEffort: 'auto' },
+        },
+      },
+    }))
+    expectOk('settings.setSecrets(待删 provider)', await window.aurora.settings.setSecrets({
+      ['llm.providers.' + removeProviderId + '.apiKey']: 'sk-remove-marker',
+    }))
+    const removalPatch = { ...(notDeleted?.llm?.providers ?? {}) }
+    delete removalPatch[removeProviderId]
+    const removed = expectOk('settings.update(删除 provider)', await window.aurora.settings.update({
+      llm: { active: 'smoke', providers: removalPatch, removedProviders: [removeProviderId] },
+    }))
+    record(
+      '删除 provider 真正生效',
+      removed?.llm?.providers?.[removeProviderId] === undefined,
+      Object.keys(removed?.llm?.providers ?? {}).join(',') || 'providers 为空',
+    )
+    record(
+      '删除 provider 会一并清掉凭据',
+      expectOk('settings.hasSecret#removed', await window.aurora.settings.hasSecret('llm.providers.' + removeProviderId + '.apiKey')) === false,
+      '',
+    )
 
     // 3.2 凭据保真（可观测性说明）：渲染层看到的 apiKeyEnc 按设计永远是空串
     //     （docs/08 §1.1 脱敏），因此这里只能断言"凭据是否已设置"标记；

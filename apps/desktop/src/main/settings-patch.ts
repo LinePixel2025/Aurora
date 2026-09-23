@@ -14,6 +14,8 @@
  *   否则设置页保存一次就会把磁盘上的密文清空（同进程被 `memorySecrets` 掩盖，重启才暴露）。
  * - MCP 的 `envEnc` 是**逐键**合并的：空对象 = 一个键也不改；空串值 = 该键保留已有密文
  *   （新增服务器时它是「占位」，随后由 `settings:setSecrets` 写成真密文）。
+ * - 删除语义按容器类型区分：`llm.providers` 是 **record**，缺项 ≠ 删除（必须显式声明
+ *   `llm.removedProviders`）；`mcp.servers` 是**数组**，整数组权威（不在数组里 = 删除）。
  */
 import {
   deepClone,
@@ -72,14 +74,19 @@ export function extractPatchSecrets(patch: SettingsPatch): PatchSecrets {
  *
  * 返回值存在的理由：删除条目（provider / MCP 服务器）时，密文随条目一起消失，
  * 但 `SettingsStore.memorySecrets` 里的**明文缓存**还在 —— 不清掉就会出现
- * 「`hasSecret` 说还有、可配置里已经没有这个条目」的幽灵凭据。
+ * 「`hasSecret` 说还有、配置里已经没有这个条目」的幽灵凭据。
  */
 export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): string[] {
   const cleared: string[] = []
 
-  // provider 级：渲染层永远看不到 `apiKeyEnc`（docs/08 §1.1），必须保留已有密文，
-  // 否则设置页改一次模型名就会把凭据清空（Schema 也会因缺字段而校验失败）。
+  // provider 级：`llm.providers` 是 record，「缺项」表达不了删除 —— 删除必须由
+  // `llm.removedProviders` 显式声明（缺项 ≠ 删除，见 `SettingsPatch` 的注释）。
   const providers = { ...draft.llm.providers }
+  const removals = [...(patch.llm?.removedProviders ?? [])]
+  for (const id of removals) delete providers[id]
+
+  // 再逐个 provider 合并：渲染层永远看不到 `apiKeyEnc`（docs/08 §1.1），必须保留已有密文，
+  // 否则设置页改一次模型名就会把凭据清空（Schema 也会因缺字段而校验失败）。
   for (const [id, provider] of Object.entries(patch.llm?.providers ?? {})) {
     const existing = providers[id]
     const incoming = { ...provider } as Record<string, unknown>
@@ -90,6 +97,13 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
       ...(existing ?? {}),
       ...incoming,
     } as Settings['llm']['providers'][string]
+  }
+
+  // 被声明的删除：只要最终状态里没有密文（条目没了，或同一 patch 又把它建回来但没给密文），
+  // 就要求清掉磁盘密文与内存明文缓存 —— 否则 `hasSecret` 会对着一个没有密文的 provider
+  // 说"还有凭据"。同一 patch 里「删了又给出密文」则以给出为准，不清。
+  for (const id of removals) {
+    if ((providers[id]?.apiKeyEnc ?? '') === '') cleared.push(`llm.providers.${id}.apiKey`)
   }
 
   // MCP 级：`patch.mcp.servers` 是**整数组权威**（不在数组里 = 删除），
@@ -116,7 +130,13 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
   }
 
   if (patch.general !== undefined) Object.assign(draft.general, patch.general)
-  if (patch.llm !== undefined) Object.assign(draft.llm, patch.llm)
+  if (patch.llm !== undefined) {
+    // `removedProviders` 是删除指令、不是配置字段：不能落进 `draft.llm`
+    //（否则会进 Zod 解析，将来换成严格 schema 就会直接抛错）。
+    const llmPatch = { ...patch.llm } as Record<string, unknown>
+    delete llmPatch['removedProviders']
+    Object.assign(draft.llm, llmPatch)
+  }
   draft.llm.providers = providers
   if (patch.advanced !== undefined) Object.assign(draft.advanced, patch.advanced)
   if (patch.skills !== undefined) Object.assign(draft.skills, patch.skills)

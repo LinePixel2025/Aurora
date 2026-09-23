@@ -962,6 +962,15 @@ async function runSmokeTest(userData: string): Promise<void> {
         ? `未找到 smoke-mcp-* 服务器（实际：${mcpServers.map((server) => server.name ?? '?').join(',') || '空'}）`
         : `${smokeMcp.name}: envEnc.TOKEN 长度=${typeof envCipher === 'string' ? envCipher.length : String(envCipher)}`,
     )
+
+    // 删除 provider 的落盘证据：脚本经 `removedProviders` 删掉的那个 provider
+    // 必须从磁盘上消失（旧行为是「provider 还在、密文被清掉」）。
+    const leakedRemoval = Object.keys(providers).find((id) => id.startsWith('remove-'))
+    record(
+      '磁盘上没有已删除的 provider（removedProviders 真正落盘生效）',
+      leakedRemoval === undefined,
+      leakedRemoval === undefined ? 'config.json 里已无 remove-*' : `仍存在：${leakedRemoval}`,
+    )
   } catch (error) {
     record(
       '磁盘上的 fresh provider 仍是密文（空 apiKeyEnc 回传没有清掉凭据）',
@@ -1304,6 +1313,7 @@ async function runSmokeTest(userData: string): Promise<void> {
       raw.includes('sk-smoke-plaintext-marker') ||
       raw.includes('sk-fresh-marker') ||
       raw.includes('sk-mcp-plaintext-marker') ||
+      raw.includes('sk-remove-marker') ||
       /"apiKey"\s*:/.test(raw)
     logger?.[leaked ? 'error' : 'info'](
       `${SMOKE_RESULT_PREFIX} ${leaked ? 'FAIL' : 'PASS'} 磁盘无明文 API Key`,

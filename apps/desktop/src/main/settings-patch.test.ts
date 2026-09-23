@@ -139,9 +139,70 @@ describe('mergeSettingsPatch —— provider 密文保留', () => {
       providers: { a: provider(), b: provider({ model: 'b-model' }) },
     })
 
-    mergeSettingsPatch(draft, { llm: { providers: { a: provider({ model: 'a-next' }) } } })
+    const cleared = mergeSettingsPatch(draft, {
+      llm: { providers: { a: provider({ model: 'a-next' }) } },
+    })
 
     expect(Object.keys(draft.llm.providers).sort()).toEqual(['a', 'b'])
+    expect(cleared).toEqual([])
+  })
+})
+
+describe('mergeSettingsPatch —— 删除 provider 必须显式声明', () => {
+  it('removedProviders 真的删掉 provider，并声明清理它的凭据', () => {
+    const draft = settingsWith({
+      providers: { a: provider({ apiKeyEnc: 'CIPHER-A' }), b: provider({ model: 'b-model' }) },
+    })
+
+    const cleared = mergeSettingsPatch(draft, {
+      llm: { removedProviders: ['a'], providers: { b: provider({ model: 'b-model' }) } },
+    })
+
+    expect(Object.keys(draft.llm.providers)).toEqual(['b'])
+    expect(cleared).toEqual(['llm.providers.a.apiKey'])
+  })
+
+  it('声明删除一个不存在的 id：不误删别的 provider，清理路径幂等（主进程侧是 no-op）', () => {
+    const draft = settingsWith({ providers: { a: provider() } })
+
+    const cleared = mergeSettingsPatch(draft, { llm: { removedProviders: ['ghost'] } })
+
+    expect(Object.keys(draft.llm.providers)).toEqual(['a'])
+    expect(cleared).toEqual(['llm.providers.ghost.apiKey'])
+  })
+
+  it('同一 patch 里「删了又给出空密文」：按新建处理，旧密文与缓存都要清', () => {
+    const draft = settingsWith({ providers: { a: provider({ apiKeyEnc: 'OLD-CIPHER' }) } })
+
+    const cleared = mergeSettingsPatch(draft, {
+      llm: {
+        removedProviders: ['a'],
+        providers: { a: provider({ apiKeyEnc: '', model: 'next' }) },
+      },
+    })
+
+    expect(draft.llm.providers['a']?.apiKeyEnc).toBe('')
+    expect(draft.llm.providers['a']?.model).toBe('next')
+    expect(cleared).toEqual(['llm.providers.a.apiKey'])
+  })
+
+  it('同一 patch 里「删了又给出新密文」：以给出的为准，不清凭据', () => {
+    const draft = settingsWith({ providers: { a: provider({ apiKeyEnc: 'OLD-CIPHER' }) } })
+
+    const cleared = mergeSettingsPatch(draft, {
+      llm: { removedProviders: ['a'], providers: { a: provider({ apiKeyEnc: 'NEW-CIPHER' }) } },
+    })
+
+    expect(draft.llm.providers['a']?.apiKeyEnc).toBe('NEW-CIPHER')
+    expect(cleared).toEqual([])
+  })
+
+  it('removedProviders 是删除指令，不会渗进配置对象', () => {
+    const draft = settingsWith({ providers: { a: provider() } })
+
+    mergeSettingsPatch(draft, { llm: { removedProviders: ['a'] } })
+
+    expect('removedProviders' in (draft.llm as unknown as Record<string, unknown>)).toBe(false)
   })
 })
 

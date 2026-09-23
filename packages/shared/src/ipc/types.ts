@@ -65,10 +65,25 @@ export interface SmokeDiagnostics {
  * 局部更新配置：每个分组是**局部**更新（如只传 `mcp.servers`）。
  * 主进程会把未提及的子字段补回当前值后再合并（见 `main/ipc.ts` 的 applyPatch），
  * 因此调用方不需要先读出完整分组。
+ *
+ * 两条**删除语义**的例外（record 与数组不同，别混用）：
+ * - `llm.providers` 是 record：**缺项 ≠ 删除**，删除必须用 `llm.removedProviders` 显式声明；
+ * - `mcp.servers` 是数组：**整数组权威**，不在数组里就是删除，
+ *   被删服务器的环境变量密文与内存明文缓存由主进程一并清理。
  */
 export interface SettingsPatch {
   general?: Partial<GeneralSettings>
-  llm?: Partial<LlmSettings>
+  llm?: Partial<LlmSettings> & {
+    /**
+     * 显式删除的 provider id 列表（`llm.providers` 是 record，局部合并删不掉条目）。
+     *
+     * 主进程会一并清掉这些 provider 的 `apiKeyEnc` 与内存里的明文缓存；
+     * `llm.active` 指向被删 id 时由 `SettingsStore.sanitize` 重置为空串。
+     * 同一个 patch 里既声明删除、又在 `providers` 里给出同一个 id 时，字段以**给出的**为准：
+     * 给出的条目带非空密文则保留它，否则（含空串）按**新建**处理，旧密文与缓存照样清理。
+     */
+    removedProviders?: string[]
+  }
   advanced?: Partial<AdvancedSettings>
   skills?: Partial<Settings['skills']>
   mcp?: Partial<Settings['mcp']>

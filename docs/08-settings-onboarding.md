@@ -147,9 +147,10 @@
 「空」只能被主进程理解为**本次不改凭据**（`applyPatch` 的合并规则，见 06 §12.4）。其中 MCP 的
 `envEnc` 是**逐键**合并的：空对象 = 一个键也不改；某个键的值是空串 = 该键保留已有密文
 （新增服务器时它是占位，随后由 `settings:setSecrets` 写成真密文）。渲染层**表达不了**
-凭据删除：删除单个 MCP 环境变量只能走 `settings:clearSecret`（`envEnc` 的键随之消失）；
+「只删凭据」这种操作：删除单个 MCP 环境变量只能走 `settings:clearSecret`（`envEnc` 的键随之消失）；
 MCP 服务器整体删除由 `mcp.servers` 数组的权威语义表达（不在数组里 = 删除），
-其环境变量密文与内存中的明文缓存由主进程一并清理。
+provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）——
+两种删除的凭据（密文 + 内存明文缓存）都由主进程在删除**成功之后**一并清理。
 
 ### 1.2 不属于 config.json 的本地数据
 
@@ -247,14 +248,17 @@ MCP 服务器整体删除由 `mcp.servers` 数组的权威语义表达（不在�
      从**同一份**列表里选、并把选中项写回 `llm.providers.<id>.model`（docs/07 §2.3）。
      两边不存在各自的副本，因此「模型页改当前模型 → 对话窗选择器跟着变」是必然而非同步逻辑。
 5. **删除是危险操作**：点「删除」先就地出现确认条
-   （`删除 provider「<id>」？依赖它的会话将无法再请求模型。` + `确认删除` / `取消`），
-   确认后才走「删 provider + 清 `apiKey` secret + `llm.active` 置空」。
+   （`删除 provider「<id>」？依赖它的会话将无法再请求模型。` + `确认删除` / `取消`）。
+   确认后的 patch 带 `llm.removedProviders: [<id>]` —— `llm.providers` 是 record，
+   **缺项表达不了删除**（只回传一份少了它的 `providers` 是合法的局部更新形状，不会删掉它）。
+   密文与内存明文缓存在**删除成功之后**由主进程一并清理；删除失败时凭据保持原样。
 6. **思考等级**属于 **provider 维度**（`llm.providers.<id>.reasoningEffort`，Schema 就是这么存的），
    所以保留在本页的折叠区里；交互窗另有入口（docs/07 §2.3，读写的是同一个字段）。
    因此它作用于该 provider 下的**所有**模型 —— 在对话窗切模型**不会**切换思考等级，
    这是**已知取舍**；将来若要按模型区分，需要把它扩展成模型级映射（见 06 §3）。
 7. 保存语义：`settings:update` 只有**顶层浅合并**，因此任何一次保存都必须**原样回传全部 provider
    再覆盖当前一个**；`apiKeyEnc: ''` 对已有 provider 表示「本次不改凭据」（新建时 Schema 要求该字段存在）；
+   **缺项 ≠ 删除**（删除必须显式声明 `llm.removedProviders`，见第 5 条）；
    明文 API Key 只走 `settings:setSecrets`。`modelList` 是数组，跨 IPC 前必须**深拷贝成新数组**
    （`reactive` 里的数组是 Proxy，直接传会 `DataCloneError`）。
 8. 支持范围：DeepSeek / OpenAI / 其他 OpenAI 兼容（含 Ollama 本地）；P2 再评估更多协议（Anthropic 等）。

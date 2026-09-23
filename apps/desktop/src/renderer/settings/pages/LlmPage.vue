@@ -386,6 +386,16 @@ function requestRemove(id: string): void {
   error.value = null
 }
 
+/**
+ * 删除一个 provider。
+ *
+ * 关键语义（别退化）：
+ * - `llm.providers` 是 record，**缺项 ≠ 删除**：只在 `providers` 里少一项，
+ *   `applyPatch` 不会删掉它（缺项是合法的局部更新形状）。删除必须显式声明
+ *   `removedProviders: [id]`。
+ * - 凭据清理由主进程在删除**成功之后**一并做（清密文 + 内存明文缓存），这里不再单独
+ *   `clearSecret` —— 删除失败时清凭据会把「provider 还在、密文没了」这个缺陷换个方向复现。
+ */
 async function removeProvider(id: string): Promise<void> {
   const settings = settingsStore.settings
   if (!settings) return
@@ -395,14 +405,13 @@ async function removeProvider(id: string): Promise<void> {
     llm: {
       active: settings.llm.active === id ? '' : settings.llm.active,
       providers: next,
+      removedProviders: [id],
     },
   })
   if (!ok) {
     error.value = settingsStore.error
     return
   }
-  // provider 都没了，凭据不能留在 safeStorage 里
-  await window.aurora.settings.clearSecret(`llm.providers.${id}.apiKey`)
   pendingRemoveId.value = null
   if (editingId.value === id) closeEditor()
   syncDrafts()
