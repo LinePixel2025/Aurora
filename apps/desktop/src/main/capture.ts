@@ -600,8 +600,18 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
       if (!result.ok) return { ok: false, reason: result.message }
       await new Promise((resolve) => setTimeout(resolve, 600))
     }
+    // step-04 之后模型页是「provider 行列表 + 一次只开一张编辑卡」：高级参数区在**卡内**，
+    // 列表态 querySelector('.more') 只会拿到 null。所以先按真实用户路径点开第一行的
+    // 「编辑」（data-action="edit-provider"），再点卡内的 .more。行上刻意没有折叠箭头，
+    // 就是为了让「展开高级参数」只有一个入口、一次仍只有一张卡。
+    // 注意：本段在模板字符串里，注释不能出现反引号。
+    const editButton = document.querySelector('[data-action="edit-provider"]')
+    if (editButton === null) return { ok: false, reason: 'no edit-provider button' }
+    editButton.click()
+    await new Promise((resolve) => setTimeout(resolve, 500))
+
     const more = document.querySelector('.more')
-    if (more === null) return { ok: false, reason: 'no .more' }
+    if (more === null) return { ok: false, reason: 'no .more after opening editor' }
     more.click()
     await new Promise((resolve) => setTimeout(resolve, 600))
     return { ok: true }
@@ -807,6 +817,95 @@ export const WINDOW_DRAG_SCRIPT = `(() => {
 })()`
 
 /**
+ * 「AI 模型」页结构探针 · 前半（step-04）：点开第一行 provider 的「编辑」。
+ *
+ * 这一步刻意**不写配置**：`settings-llm-params` 那条会造 provider 并断言下拉真值，
+ * 两条场景互相干扰的话失败原因很难定位。这里只点开一张卡，验证「一次只开一张」。
+ * 优先用 `data-action="edit-provider"` 定位，找不到就按文案「编辑」兜底——
+ * 兜底也失败时把行内实际按钮文案回传（而不是静默成功），否则改个文案这条断言就变成空转。
+ */
+export const SETTINGS_LLM_STRUCTURE_ACT = `(async () => {
+  try {
+    const rows = Array.from(document.querySelectorAll('[data-field^="llm.providers."]')).filter(
+      (el) => {
+        const value = el.getAttribute('data-field') || ''
+        const rest = value.slice('llm.providers.'.length)
+        return rest !== '' && rest.indexOf('.') === -1
+      },
+    )
+    const first = rows[0]
+    if (first === undefined) {
+      window.__auroraLlmStructureProbe = { clicked: false, reason: 'no provider row' }
+      return window.__auroraLlmStructureProbe
+    }
+    const buttons = Array.from(first.querySelectorAll('button'))
+    const button =
+      first.querySelector('[data-action="edit-provider"]') ||
+      buttons.find((item) => (item.textContent || '').trim() === '编辑')
+    if (button === null || button === undefined) {
+      window.__auroraLlmStructureProbe = {
+        clicked: false,
+        reason: 'no edit button',
+        labels: buttons.map((item) => (item.textContent || '').trim()),
+      }
+      return window.__auroraLlmStructureProbe
+    }
+    button.click()
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    window.__auroraLlmStructureProbe = { clicked: true, label: (button.textContent || '').trim() }
+    return window.__auroraLlmStructureProbe
+  } catch (error) {
+    return { clicked: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 「AI 模型」页结构探针 · 后半：行列表与配置一致，且**一次只开一张编辑卡**。
+ *
+ * 三个断言分别钉住重构后的信息架构：
+ * ① 每个 provider 恰好一行（行容器的 `data-field` 是 `llm.providers.<id>`，不含更深的点）；
+ * ② 点开「编辑」之后**恰好一张**可见编辑卡（用卡内必填字段 `.baseUrl` 的可见数量计数）——
+ *    恒等 ≤1 会漏掉「一张都没开」这种假通过，所以要求 === 1；
+ * ③ `providers` 为空时必须有 `[data-empty="llm.providers"]` 空状态（不再画一排空行）。
+ */
+export const SETTINGS_LLM_STRUCTURE_CHECK = `(async () => {
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { pass: false, reason: 'settings.get failed' }
+    const expected = Object.keys(state.value.llm.providers).length
+
+    const rows = Array.from(document.querySelectorAll('[data-field^="llm.providers."]')).filter(
+      (el) => {
+        const value = el.getAttribute('data-field') || ''
+        const rest = value.slice('llm.providers.'.length)
+        return rest !== '' && rest.indexOf('.') === -1
+      },
+    )
+    const isVisible = (el) => {
+      const rect = el.getBoundingClientRect()
+      return rect.width > 0 && rect.height > 0
+    }
+    const editors = Array.from(document.querySelectorAll('[data-field$=".baseUrl"]')).filter(
+      isVisible,
+    ).length
+    const emptyState = document.querySelector('[data-empty="llm.providers"]') !== null
+    const act = window.__auroraLlmStructureProbe
+
+    return {
+      pass: expected > 0 ? rows.length === expected && editors === 1 : emptyState,
+      expected,
+      rows: rows.length,
+      rowIds: rows.map((el) => el.getAttribute('data-field')),
+      editors,
+      emptyState,
+      act: act === undefined ? null : act,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
  * 默认截图清单：四个窗口 + 提示条两态 + 设置页各页深链（含思考等级参数面板）+ 若干 DOM 断言场景
  * （门控计数 / 对话自动滚底 / 收起即消失 / 思考等级 / 电脑拖动区 / 电脑操控页，见下面各条的 `check`）。
  * 独立的快速对话窗口已从全仓删除：快速会话并入交互窗侧栏，故清单里不再有它的场景。
@@ -873,6 +972,16 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
     query: { page: 'llm' },
     act: SETTINGS_LLM_EFFORT_ACT,
     check: SETTINGS_LLM_EFFORT_CHECK,
+  })
+  // AI 模型页的新信息架构（step-04）：行列表 + 一次只开一张编辑卡 + 空状态。
+  // 顺序在 `settings-llm-params` 之后；两者互不干扰——每个场景都会 `reload` 设置窗，
+  // 页面回到列表态，且本场景自身**不改配置**（只点开一张卡）。
+  plan.push({
+    name: 'settings',
+    file: 'settings-llm-structure.png',
+    query: { page: 'llm' },
+    act: SETTINGS_LLM_STRUCTURE_ACT,
+    check: SETTINGS_LLM_STRUCTURE_CHECK,
   })
   // 设置页门控断言：classroom 配置在；切到 Work 后 classroom 配置必须消失
   plan.push({

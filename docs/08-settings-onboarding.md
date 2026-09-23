@@ -178,9 +178,39 @@
 
 ## 5. AI 模型设置页
 
-- 多 Provider 管理：新增 / 编辑 / 删除、设为默认。
-- 测试连接：展示延迟与可用模型列表（可选拉取）。
-- 支持范围：DeepSeek / OpenAI / 其他 OpenAI 兼容（含 Ollama 本地）；P2 再评估更多协议（Anthropic 等）。
+信息架构是**目录行列表 + 一次只开一张编辑卡**（前端刷新轮重写）：
+不再把所有 provider 平铺成一屏长滚动卡片，而是自上而下四块 ——
+
+1. **页头摘要**：标题 + 一句话说明（凭据加密、日志脱敏）+ 当前默认状态
+   （`当前默认：<activeId> · <model>`；`llm.active` 为空或指向不存在的 provider 时显示「尚未选择默认模型」）。
+2. **工具行**：`+ 添加 Provider`（切到添加态）与「保存全部」（逐个保存全部 provider）。
+3. **provider 行列表**：每个 provider 一行，行上只有
+   - 名称（`.mono`）；
+   - **凭据状态 badge**：`apiKeySet === true` → `凭据已保存`（ok），否则 `缺少凭据`（warn）——
+     凭据**永不回显**（§1.1），编辑卡里的 API Key 是 write-only 输入，**留空 = 本次不修改**；
+   - 是否默认 badge（`默认` / 不显示）；
+   - 行尾操作：`编辑` / `设为默认`（已是默认时 disabled）/ `删除`。
+   - 列表为空时是 `data-empty="llm.providers"` 的**空状态卡**（文案与「添加 AI 模型」主按钮），
+     不画一排空行。
+4. **编辑卡**（`editingId` 是单值，因此**同一时刻最多一张卡**）：
+   - 必填区：`baseUrl` / `apiKey` / `model`（必填项前置，缺失时当场提示是哪个 provider 的哪个字段，
+     不再等到保存后由 Schema 兜底）；
+   - 「模型」分组：候选模型列表的位置（step 5 接入，列表只是候选项，当前用哪个模型仍由「模型名」决定）；
+   - `高级参数与连接测试` 折叠区（**默认收起**）：`temperature`、思考等级、`保存并测试连接` /
+     `拉取模型列表`、连接延迟与可用模型 chips；
+   - 卡底 `应用`（只提交这一张卡，成功回列表态）/ `取消`。
+   - 添加流程：预设 chips（DeepSeek / OpenAI / 本地兼容）+ 自定义 id 输入框；重复 id 提示
+     `Provider「<id>」已存在`；选中预设**直接进编辑卡**。
+5. **删除是危险操作**：点「删除」先就地出现确认条
+   （`删除 provider「<id>」？依赖它的会话将无法再请求模型。` + `确认删除` / `取消`），
+   确认后才走「删 provider + 清 `apiKey` secret + `llm.active` 置空」。
+6. **思考等级**属于 **provider 维度**（`llm.providers.<id>.reasoningEffort`，Schema 就是这么存的），
+   所以保留在本页的折叠区里；交互窗另有入口（docs/07 §2.3，读写的是同一个字段）。
+7. 保存语义：`settings:update` 只有**顶层浅合并**，因此任何一次保存都必须**原样回传全部 provider
+   再覆盖当前一个**；`apiKeyEnc: ''` 对已有 provider 表示「本次不改凭据」（新建时 Schema 要求该字段存在）；
+   明文 API Key 只走 `settings:setSecrets`。
+8. 支持范围：DeepSeek / OpenAI / 其他 OpenAI 兼容（含 Ollama 本地）；P2 再评估更多协议（Anthropic 等）。
+9. 测试连接：展示延迟与可用模型列表（可选拉取）。
 
 ## 6. 其他设置页
 

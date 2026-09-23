@@ -123,6 +123,11 @@
   此前只有侧栏里约 22–30px 的品牌行能拖，正是「有些能拖有些不行」最直接的原因；
   现在侧栏空白处、品牌行、内容区顶部三处都能按住拖动窗口。
 - 模式页：三模式卡片选择 + 引导状态；**只渲染当前模式的配置内容**，Work / Code 显示「暂无可配置项」空状态。
+- **AI 模型页（本轮重写）**：**目录行列表 + 一次只开一张编辑卡**（`editingId` 单值），不再平铺所有卡片——
+  行上只有名称 + 凭据状态 badge（`凭据已保存` / `缺少凭据`）+ 是否默认 + 行操作
+  （`编辑` / `设为默认` / `删除`）；当前默认行带 `.accent` 描边与左侧 3px 品牌色指示条，行 hover 用 `--fill-2`；
+  `删除` 是危险操作，先就地弹确认条（`data-action="confirm-remove-provider"`）再生效；
+  列表为空时是 `data-empty="llm.providers"` 的空状态卡。详情见 docs/08 §5。
 - **视觉（前端刷新轮）**：页面骨架统一用 theme.css 的 `.page` / `.page-title` / `.page-sub`，
   分组卡片用 `settings/settings.css` 的 `.section-card` / `.section-title` / `.section-desc`
   （该样式表只被设置窗 import，不影响其它窗口）；空状态用 `.empty-state`。
@@ -218,10 +223,13 @@
   3 条 DOM 探针场景（常规页字段门控 / 模式页 ClassRoom / 切换模式后门控）+ 1 条真实写盘场景
   与 2 张提示条收尾图截成一批 PNG 后退出。
   **PNG 张数以 `report.json` 的实际条目为准，文档里不写死**：本轮（对话窗 UX 修复）是**净增**——
-  新增 `chat-thinking-level.png` / `chat-drag.png` / `settings-drag.png` 三条场景，
-  相对上一轮的 18 张变为 21 张；后续步骤还会继续加，因此不要按固定张数做校验；
+  新增 `chat-thinking-level.png` / `chat-drag.png` / `settings-drag.png` / `settings-llm-structure.png`
+  等场景；后续步骤还会继续加，因此不要按固定张数做校验；
   （交互窗的截图还带一条自动滚底探针与一条「收起即隐藏」探针；设置页另有「AI 模型 - 思考等级」一条探针场景
-  ——它**会**额外出 `settings-llm-params.png`——以及「电脑操控」页的门控探针，后者不额外出图）；
+  ——它**会**额外出 `settings-llm-params.png`——以及「AI 模型 - 结构」场景（`settings-llm-structure.png`，
+  探针 `SETTINGS_LLM_STRUCTURE_CHECK`：provider 行数 === 配置里的 provider 数量、点开「编辑」后**可见编辑卡恰好 1 张**、
+  `providers` 为空时存在 `[data-empty="llm.providers"]`；该场景**只读配置**、自己不改写，避免与「思考等级」那条互相干扰），
+  以及「电脑操控」页的门控探针，后者不额外出图）；
   `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）。
   仅开发态生效；与 `AURORA_SMOKE` 同时设置时**截图优先**（自测不会执行）。
   进程退出码：0 = 全部成功，1 = 一张图都没写出，2 = 有探针 `pass === false`。
@@ -258,9 +266,18 @@
   - **电脑操控页门控**（`SETTINGS_AGENT_FIELDS_SCRIPT`）：读 `agent.tools.enabled` 复选框的**实际状态**，
     开着时要求终端 / 文件 / 打开三栏的详情字段都在（`terminalFields/filesFields/openFields > 0`
     且 `data-empty` 为空），关着时只要求总开关本身仍在 —— 否则用户再也开不回来；
-  - **思考等级**（`SETTINGS_LLM_EFFORT_CHECK`）：造一个 provider → 展开「高级参数与连接测试」→
-    断言 `[data-field$=".reasoningEffort"]` 与 `[data-field$=".temperature"]` 都在、且下拉的
-    `select.value` 等于配置里写的 `'high'`（覆盖「写盘 → 回读 → 渲染」整条链路）。
+  - **思考等级**（`SETTINGS_LLM_EFFORT_CHECK`，产物 `settings-llm-params.png`）：造一个 provider →
+    点开第一行的「高级参数与连接测试」→ 断言 `[data-field$=".reasoningEffort"]` 与
+    `[data-field$=".temperature"]` 都在、且下拉的 `select.value` 等于配置里写的 `'high'`
+    （覆盖「写盘 → 回读 → 渲染」整条链路）。
+    ⚠️ 这条探针点的是 `document.querySelector('.more')`（设置页里第一颗折叠按钮）：模型页在**列表态**
+    下也要有可点的 `.more`，所以每行行首的展开按钮同样挂 `.more`（点它 = 打开本行编辑卡并展开高级区）。
+  - **AI 模型页结构**（`SETTINGS_LLM_STRUCTURE_ACT` / `SETTINGS_LLM_STRUCTURE_CHECK`，
+    产物 `settings-llm-structure.png`）：act 点开第一行的 `data-action="edit-provider"`
+    （找不到就按文案「编辑」兜底，并把行内实际按钮文案回传）；check 要求
+    `[data-field^="llm.providers."]` 里「不含更深的点」的行元素数 === 配置里的 provider 数量、
+    且**可见**编辑卡（可见的 `[data-field$=".baseUrl"]`）恰好 1 张；`providers` 为空时改为要求
+    存在 `[data-empty="llm.providers"]`。act 全程**不写配置**。
   - **对话窗思考等级**（`CHAT_THINKING_LEVEL_ACT` / `CHAT_THINKING_LEVEL_CHECK`，
     产物 `chat-thinking-level.png`，交互窗一条）：act 先把
     `[data-field="chat.reasoningEffort"]` 下拉切到 `high` 并派发 `change`，等 600ms 让
