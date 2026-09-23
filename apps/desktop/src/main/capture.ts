@@ -817,6 +817,210 @@ export const WINDOW_DRAG_SCRIPT = `(() => {
 })()`
 
 /**
+ * 对话窗模型选择器探针 · 前半（step-05）：把 [data-field="chat.model"] 切到第二个模型。
+ *
+ * 与思考等级那条同构：隔离 userData 起步时没有 provider，而「没有可用 provider」时两个选择器
+ * 都按设计禁用，所以先造一个**带候选列表**的 provider（modelList 至少两个 id）再操作。
+ * 原值（model 与 modelList）记到 window.__auroraModelProbe，供 check 阶段写回、不污染后续场景。
+ */
+export const CHAT_MODEL_PICKER_ACT = `(async () => {
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { changed: false, reason: 'settings.get failed' }
+    const providers = state.value.llm.providers
+    const active = state.value.llm.active !== '' ? state.value.llm.active : 'capture'
+    const existing = providers[active]
+    const models = ['deepseek-chat', 'deepseek-reasoner']
+    window.__auroraModelProbe = {
+      active,
+      before: existing === undefined ? null : existing.model,
+      beforeList: existing === undefined ? null : existing.modelList,
+    }
+
+    const list = existing === undefined ? undefined : existing.modelList
+    if (existing === undefined || list === undefined || list.length < models.length) {
+      const result = await window.aurora.settings.update({
+        llm: {
+          active,
+          providers: {
+            ...providers,
+            [active]: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.deepseek.com/v1',
+              apiKeyEnc: '',
+              model: 'deepseek-chat',
+              temperature: 0.7,
+              ...(existing === undefined ? {} : existing),
+              modelList: models,
+            },
+          },
+        },
+      })
+      if (!result.ok) return { changed: false, reason: result.message }
+      await new Promise((resolve) => setTimeout(resolve, 600))
+    }
+
+    const field = document.querySelector('[data-field="chat.model"]')
+    if (field === null) return { changed: false, reason: 'no chat.model field' }
+    const select = field.tagName === 'SELECT' ? field : field.querySelector('select')
+    if (select === null) return { changed: false, reason: 'no <select> inside chat.model' }
+    const optionValues = Array.from(select.options).map((item) => item.value)
+    if (optionValues.indexOf('deepseek-reasoner') === -1) {
+      // 目标不在选项里就不硬切：切开只会静默拿到一个不是我们想要的值
+      return { changed: false, reason: 'deepseek-reasoner 不在选项里', options: optionValues }
+    }
+    select.value = 'deepseek-reasoner'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    return { changed: true, options: optionValues }
+  } catch (error) {
+    return { changed: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 对话窗模型选择器探针 · 后半：配置里的 model 与 DOM 的 value 必须都变成新模型。
+ *
+ * 两处都读的理由与思考等级那条一致：只读配置可能是界面没接线，只读 DOM 可能是本地 state。
+ * 结束时把 model（与 modelList，如果这次是我们造出来的）写回原值。
+ */
+export const CHAT_MODEL_PICKER_CHECK = `(async () => {
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { pass: false, reason: 'settings.get failed' }
+    const active = state.value.llm.active
+    const provider = active === '' ? undefined : state.value.llm.providers[active]
+    const configModel = provider === undefined ? null : provider.model
+
+    const field = document.querySelector('[data-field="chat.model"]')
+    const select =
+      field === null ? null : field.tagName === 'SELECT' ? field : field.querySelector('select')
+    const domValue = select === null ? null : select.value
+    const optionCount = select === null ? 0 : select.options.length
+
+    const probe = window.__auroraModelProbe
+    let restored = null
+    if (probe !== undefined && probe.active !== '' && probe.before !== null) {
+      const providers = state.value.llm.providers
+      const target = providers[probe.active]
+      if (target !== undefined && target.model !== probe.before) {
+        const patch = { ...target, model: probe.before }
+        if (probe.beforeList !== null) patch.modelList = probe.beforeList
+        const result = await window.aurora.settings.update({
+          llm: { active, providers: { ...providers, [probe.active]: patch } },
+        })
+        restored = result.ok
+      }
+    }
+
+    return {
+      pass: configModel === 'deepseek-reasoner' && domValue === 'deepseek-reasoner' && optionCount >= 2,
+      configModel,
+      domValue,
+      optionCount,
+      restored,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 「AI 模型」页「模型设置」区探针 · 前半（step-05）：点开第一行的「编辑」并点一次「+ 手动添加」。
+ *
+ * `+ 手动添加` 只改**本地 draft**（加一行空行，保存时才落盘），所以这一步不动配置；
+ * 行数变化由 check 断言，恢复也由 check 收尾（删掉最后一行）。
+ * 隔离 userData 起步时一个 provider 都没有（没有 provider 时列表区根本不在 DOM 里），
+ * 所以先造一个带候选列表的。
+ */
+export const SETTINGS_LLM_MODELS_ACT = `(async () => {
+  try {
+    let state = await window.aurora.settings.get()
+    if (!state.ok) return { ok: false, reason: 'settings.get failed' }
+    if (Object.keys(state.value.llm.providers).length === 0) {
+      const created = await window.aurora.settings.update({
+        llm: {
+          active: 'capture',
+          providers: {
+            capture: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.deepseek.com/v1',
+              apiKeyEnc: '',
+              model: 'deepseek-chat',
+              modelList: ['deepseek-chat'],
+              temperature: 0.7,
+              reasoningEffort: 'auto',
+            },
+          },
+        },
+      })
+      if (!created.ok) return { ok: false, reason: created.message }
+      await new Promise((resolve) => setTimeout(resolve, 600))
+    }
+
+    const edit = document.querySelector('[data-action="edit-provider"]')
+    if (edit === null) return { ok: false, reason: 'no edit-provider button' }
+    edit.click()
+    await new Promise((resolve) => setTimeout(resolve, 500))
+
+    const section = document.querySelector('[data-field$=".modelList"]')
+    if (section === null) return { ok: false, reason: 'no model list section' }
+    const countRows = () => document.querySelectorAll('[data-field*=".modelList."]').length
+    const before = countRows()
+
+    const add = document.querySelector('[data-action="add-model"]')
+    if (add === null) return { ok: false, reason: 'no add-model button', before }
+    add.click()
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const after = countRows()
+
+    window.__auroraLlmModelsProbe = { before, after }
+    return { ok: true, before, after }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 「模型设置」区探针 · 后半：区存在、列表行数 ≥ 1、「+ 手动添加」使行数恰好 +1，并删回原状。
+ *
+ * 这里同时也钉住「删除当前模型不静默换模型」的反面：**恢复动作必须只减行、不改 model**
+ * （所以删的是刚加出来的那一行，不是当前使用的那行）。配置侧的一致性由
+ * `chat-model-picker` 那条探针（配置值 === DOM 值）与设置页保存语义共同覆盖。
+ */
+export const SETTINGS_LLM_MODELS_CHECK = `(async () => {
+  try {
+    const section = document.querySelector('[data-field$=".modelList"]')
+    const countRows = () => document.querySelectorAll('[data-field*=".modelList."]').length
+    const probe = window.__auroraLlmModelsProbe
+    const before = probe === undefined ? null : probe.before
+    const after = probe === undefined ? null : probe.after
+
+    // 恢复：删掉「+ 手动添加」加出来的最后一行（它是最新加的空行）
+    const rows = Array.from(document.querySelectorAll('[data-field*=".modelList."]'))
+    const last = rows[rows.length - 1]
+    const remove = last === undefined ? null : last.querySelector('[data-action="remove-model"]')
+    let restored = null
+    if (remove !== null) {
+      remove.click()
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      restored = countRows()
+    }
+
+    return {
+      pass: section !== null && before !== null && after === before + 1 && restored === before,
+      sectionExists: section !== null,
+      rowsBefore: before,
+      rowsAfterAdd: after,
+      rowsAfterRestore: restored,
+      emptyState: document.querySelector('[data-empty$=".modelList"]') !== null,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
  * 「AI 模型」页结构探针 · 前半（step-04）：点开第一行 provider 的「编辑」。
  *
  * 这一步刻意**不写配置**：`settings-llm-params` 那条会造 provider 并断言下拉真值，
@@ -826,13 +1030,21 @@ export const WINDOW_DRAG_SCRIPT = `(() => {
  */
 export const SETTINGS_LLM_STRUCTURE_ACT = `(async () => {
   try {
-    const rows = Array.from(document.querySelectorAll('[data-field^="llm.providers."]')).filter(
-      (el) => {
-        const value = el.getAttribute('data-field') || ''
-        const rest = value.slice('llm.providers.'.length)
-        return rest !== '' && rest.indexOf('.') === -1
-      },
-    )
+    const state = await window.aurora.settings.get()
+    if (!state.ok) {
+      window.__auroraLlmStructureProbe = { clicked: false, reason: 'settings.get failed' }
+      return window.__auroraLlmStructureProbe
+    }
+    // 行容器是唯一 data-field 恰好等于「llm.providers.<id>」的元素：
+    // 卡内的字段会多一层（llm.providers.<id>.baseUrl），模型列表容器更是 <id>.modelList。
+    // 所以拿配置里的 provider id 做白名单比对，而不是靠「后面还有没有点」去猜。
+    // 注意：本段在模板字符串里，注释不能出现反引号。
+    const ids = Object.keys(state.value.llm.providers)
+    const rows = Array.from(document.querySelectorAll('[data-field]')).filter((el) => {
+      const value = el.getAttribute('data-field') || ''
+      if (value.indexOf('llm.providers.') !== 0) return false
+      return ids.indexOf(value.slice('llm.providers.'.length)) !== -1
+    })
     const first = rows[0]
     if (first === undefined) {
       window.__auroraLlmStructureProbe = { clicked: false, reason: 'no provider row' }
@@ -863,7 +1075,8 @@ export const SETTINGS_LLM_STRUCTURE_ACT = `(async () => {
  * 「AI 模型」页结构探针 · 后半：行列表与配置一致，且**一次只开一张编辑卡**。
  *
  * 三个断言分别钉住重构后的信息架构：
- * ① 每个 provider 恰好一行（行容器的 `data-field` 是 `llm.providers.<id>`，不含更深的点）；
+ * ① 每个 provider 恰好一行（行容器的 `data-field` 恰好是 `llm.providers.<id>`，
+ *    用配置里的 provider id 做白名单比对 —— 卡内字段与模型列表容器都多一层，不会被算成行）；
  * ② 点开「编辑」之后**恰好一张**可见编辑卡（用卡内必填字段 `.baseUrl` 的可见数量计数）——
  *    恒等 ≤1 会漏掉「一张都没开」这种假通过，所以要求 === 1；
  * ③ `providers` 为空时必须有 `[data-empty="llm.providers"]` 空状态（不再画一排空行）。
@@ -873,14 +1086,15 @@ export const SETTINGS_LLM_STRUCTURE_CHECK = `(async () => {
     const state = await window.aurora.settings.get()
     if (!state.ok) return { pass: false, reason: 'settings.get failed' }
     const expected = Object.keys(state.value.llm.providers).length
+    const ids = Object.keys(state.value.llm.providers)
 
-    const rows = Array.from(document.querySelectorAll('[data-field^="llm.providers."]')).filter(
-      (el) => {
-        const value = el.getAttribute('data-field') || ''
-        const rest = value.slice('llm.providers.'.length)
-        return rest !== '' && rest.indexOf('.') === -1
-      },
-    )
+    // 行容器 = data-field 恰好是「llm.providers.<id>」（id 取自配置）的元素。
+    // 卡内字段多一层（.baseUrl），模型列表容器是 <id>.modelList —— 都不会被算成行。
+    const rows = Array.from(document.querySelectorAll('[data-field]')).filter((el) => {
+      const value = el.getAttribute('data-field') || ''
+      if (value.indexOf('llm.providers.') !== 0) return false
+      return ids.indexOf(value.slice('llm.providers.'.length)) !== -1
+    })
     const isVisible = (el) => {
       const rect = el.getBoundingClientRect()
       return rect.width > 0 && rect.height > 0
@@ -935,6 +1149,12 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       act: CHAT_THINKING_LEVEL_ACT,
       check: CHAT_THINKING_LEVEL_CHECK,
     },
+    {
+      name: 'chat',
+      file: 'chat-model-picker.png',
+      act: CHAT_MODEL_PICKER_ACT,
+      check: CHAT_MODEL_PICKER_CHECK,
+    },
     { name: 'chat', file: 'chat-drag.png', check: WINDOW_DRAG_SCRIPT },
     { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },
     { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
@@ -963,6 +1183,15 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
     file: 'settings-drag.png',
     query: { page: 'general' },
     check: WINDOW_DRAG_SCRIPT,
+  })
+  // 模型设置区（step-05）：点开第一行的「编辑」→「+ 手动添加」使行数恰好 +1 → 删回原状。
+  // 排在 `settings-llm-params` **之前**：它只动本地 draft、不改配置，先跑能少一次配置往返。
+  plan.push({
+    name: 'settings',
+    file: 'settings-llm-models.png',
+    query: { page: 'llm' },
+    act: SETTINGS_LLM_MODELS_ACT,
+    check: SETTINGS_LLM_MODELS_CHECK,
   })
   // 思考等级（step-02）：造一个 provider → 展开「高级参数」→ 断言下拉真值来自配置。
   // 刻意放在 SETTINGS_PAGE_IDS 循环**之外**：塞进循环会让每个设置页都多点一次。
