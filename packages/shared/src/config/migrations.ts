@@ -205,18 +205,22 @@ function fillMissing(
 
 /**
  * v5 → v6：独立小窗（`mini-chat`）已删除，清掉它的窗口几何记录；同时补上
- * `advanced.readonlyPrefixes`（AI 改配置的路径黑名单，见 `schema.ts`）。
+ * `advanced.readonlyPrefixes`（AI 改配置的路径黑名单，见 `schema.ts`）与
+ * `llm.providers.*.modelList`（模型候选列表，见 `schema.ts` / docs/08 §5）。
  *
  * 窗口几何半边：只删该 key，**不动**其它字段与其它窗口的几何（幂等）。
  * 与 v3 → v4 删 `service-dock` 的唯一差别：**只在 `general.windowState` 已存在时改写**，
  * 不给本来没有窗口几何的配置凭空造出一个空对象。
  * `advanced` 半边照 v4 → v5 对 `agent` 的做法**无条件**补默认值（用户已写入的黑名单一个都不动）。
+ * `modelList` 半边照 v4 → v5 补 `reasoningEffort` 的做法：**遍历已有 provider、只补缺失键**，
+ * 没有 `providers` 时不凭空造出 `llm.providers`（保持「空 llm 迁移后仍为空」这一既有语义）；
+ * 唯一例外是非数组的 `modelList`（手改配置写错）统一归零 —— 同 `reasoningEffort` 的非法值回落。
  */
 const migrateV5ToV6: Migration = {
   from: 5,
   to: 6,
   describe:
-    "v5 → v6：移除 general.windowState['mini-chat']（独立小窗已删除）；补齐 advanced.readonlyPrefixes",
+    "v5 → v6：移除 general.windowState['mini-chat']；补齐 llm.providers.*.modelList 与 advanced.readonlyPrefixes",
   transform(raw) {
     const next: Record<string, unknown> = { ...raw }
     const general = asRecord(raw['general'])
@@ -225,6 +229,28 @@ const migrateV5ToV6: Migration = {
       const cleaned = { ...windowState }
       delete cleaned['mini-chat']
       next['general'] = { ...general, windowState: cleaned }
+    }
+
+    // providers 里**已有**的条目逐条补 modelList：只补缺失的键（`fillMissing` 已存在的值一律保留），
+    // 因此用户/设置页写入的候选列表在重复执行时一个都不动（幂等）。
+    const llm = asRecord(raw['llm'])
+    const providersRaw = asRecord(llm?.['providers'])
+    if (llm !== undefined && providersRaw !== undefined) {
+      const providers = { ...providersRaw }
+      for (const [id, value] of Object.entries(providers)) {
+        const provider = asRecord(value)
+        if (provider === undefined) continue
+        // 每轮新建 `[]`：不同 provider 之间不共享同一个数组实例
+        const filled = fillMissing(provider, { modelList: [] })
+        // 非数组（用户手改配置写错）一律归零：`llm.providers.*` 是 `z.record`，
+        // `sanitizeWithDefaults` 对这棵子树**不做逐字段回退**，非法值会一路活到
+        // `SettingsSchema.parse`，把整份配置判成损坏（备份 + 重建）。
+        // v4 → v5 为 `reasoningEffort` 专门做「非法枚举回落 auto」就是同一个理由。
+        const list = filled['modelList']
+        if (list !== undefined && !Array.isArray(list)) filled['modelList'] = []
+        providers[id] = filled
+      }
+      next['llm'] = { ...llm, providers }
     }
 
     next['advanced'] = fillMissing(asRecord(raw['advanced']) ?? {}, {

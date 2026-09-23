@@ -356,7 +356,7 @@ describe('配置迁移链', () => {
     })
   })
 
-  describe('v5 → v6（移除独立小窗 mini-chat；补齐 advanced.readonlyPrefixes）', () => {
+  describe('v5 → v6（移除独立小窗 mini-chat；补齐 readonlyPrefixes 与 modelList）', () => {
     const CHAT_GEOMETRY = { x: 1480, y: 200, width: 420, height: 640 }
     const MINI_GEOMETRY = { x: 1500, y: 260, width: 320, height: 480 }
     const SETTINGS_GEOMETRY = { x: 700, y: 120, width: 900, height: 700 }
@@ -366,6 +366,11 @@ describe('配置迁移链', () => {
     }
     const loadReadonlyPrefixes = (raw: Record<string, unknown>): unknown =>
       (raw['advanced'] as Record<string, unknown>)['readonlyPrefixes']
+    const loadProviders = (raw: Record<string, unknown>): Record<string, Record<string, unknown>> =>
+      (raw['llm'] as Record<string, unknown>)['providers'] as Record<
+        string,
+        Record<string, unknown>
+      >
 
     it('删掉 mini-chat 键，chat / settings 几何原样保留，version 升到 6', () => {
       const outcome = migrate({
@@ -382,7 +387,7 @@ describe('配置迁移链', () => {
       expect(outcome.fromVersion).toBe(5)
       expect(outcome.applied).toHaveLength(1)
       expect(outcome.data['version']).toBe(6)
-      // describe 变更（补了 readonlyPrefixes 字样）不影响既有断言：仍是一条 v5 → v6 迁移
+      // describe 变更（补了 modelList 字样）不影响既有断言：仍是一条 v5 → v6 迁移
       expect(outcome.applied[0]).toContain('v5 → v6')
       expect(outcome.applied[0]).toContain('readonlyPrefixes')
 
@@ -408,22 +413,99 @@ describe('配置迁移链', () => {
       expect(loadReadonlyPrefixes(emptied.data)).toEqual([])
     })
 
+    it('补齐每个已有 provider 的 modelList，且已有列表与其它字段原样保留', () => {
+      const outcome = migrate({
+        version: 5,
+        llm: {
+          active: 'custom',
+          providers: {
+            custom: {
+              type: 'openai-compat',
+              baseUrl: 'http://127.0.0.1:11434/v1',
+              apiKeyEnc: 'cipher',
+              model: 'qwen2.5:7b',
+              temperature: 1.4,
+              reasoningEffort: 'high',
+              // 已有候选列表（如手改配置文件写入）在迁移中不得被覆盖
+              modelList: ['x'],
+            },
+            fresh: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.deepseek.com',
+              apiKeyEnc: 'cipher',
+              model: 'deepseek-chat',
+              temperature: 0.7,
+              reasoningEffort: 'auto',
+            },
+          },
+        },
+      })
+      expect(outcome.fromVersion).toBe(5)
+      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.data['version']).toBe(6)
+      expect(outcome.applied[0]).toContain('modelList')
+
+      const providers = loadProviders(outcome.data)
+      // 缺的补成空数组：「列表为空」与「没有这个字段」对消费方必须是同一件事
+      expect(providers['fresh']?.['modelList']).toEqual([])
+      // 已有的原样保留（只补缺失键，不覆盖）
+      expect(providers['custom']?.['modelList']).toEqual(['x'])
+      // 其它 provider 字段一个不动
+      expect(providers['custom']?.['model']).toBe('qwen2.5:7b')
+      expect(providers['custom']?.['temperature']).toBe(1.4)
+      expect(providers['custom']?.['reasoningEffort']).toBe('high')
+      expect(providers['fresh']?.['model']).toBe('deepseek-chat')
+      expect((outcome.data['llm'] as Record<string, unknown>)['active']).toBe('custom')
+      // advanced 半边不受影响：同一次迁移里仍无条件补默认黑名单
+      expect(loadReadonlyPrefixes(outcome.data)).toEqual([...SETTINGS_READONLY_PREFIXES])
+    })
+
+    it('非数组的 modelList（手改配置写错）归零，而不是把整份配置判成损坏', () => {
+      const outcome = migrate({
+        version: 5,
+        llm: {
+          active: 'custom',
+          providers: {
+            custom: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.deepseek.com',
+              apiKeyEnc: 'cipher',
+              model: 'deepseek-chat',
+              temperature: 0.7,
+              reasoningEffort: 'auto',
+              modelList: 'deepseek-chat',
+            },
+          },
+        },
+      })
+      // `llm.providers.*` 是 z.record：逐字段回退管不到它，非法值会一路活到 SettingsSchema.parse，
+      // 把整份配置判成损坏（备份 + 重建）。所以迁移里像 reasoningEffort 那样主动回落。
+      expect(loadProviders(outcome.data)['custom']?.['modelList']).toEqual([])
+      // 其它字段不受牵连
+      expect(loadProviders(outcome.data)['custom']?.['model']).toBe('deepseek-chat')
+    })
+
     it('重复执行结果一致（幂等）', () => {
       const once = migrate({
         version: 5,
         general: { windowState: { 'mini-chat': MINI_GEOMETRY, chat: CHAT_GEOMETRY } },
+        llm: { active: 'custom', providers: { custom: { model: 'qwen2.5:7b' } } },
       })
       const twice = migrate({ ...once.data, version: 5 })
       expect(loadWindowState(twice.data)).toEqual(loadWindowState(once.data))
       expect(loadWindowState(twice.data)['chat']).toEqual(CHAT_GEOMETRY)
       expect(loadReadonlyPrefixes(twice.data)).toEqual(loadReadonlyPrefixes(once.data))
+      expect(loadProviders(twice.data)).toEqual(loadProviders(once.data))
+      expect(loadProviders(once.data)['custom']?.['modelList']).toEqual([])
     })
 
-    it('缺少 general / windowState 时不抛错，也不凭空造出 windowState', () => {
+    it('缺少 general / windowState 时不抛错，也不凭空造出 windowState / llm.providers', () => {
       const outcome = migrate({ version: 5 })
       expect(outcome.warnings).toEqual([])
       expect(outcome.data['version']).toBe(6)
       expect(outcome.data['general']).toBeUndefined()
+      // 没有 providers 就不凭空造出 llm.providers（与 v4 → v5 对 llm 的语义一致）
+      expect(outcome.data['llm']).toBeUndefined()
       // advanced 半边是**无条件**补默认值（与 general 的「有则改」不对称，见迁移注释）
       expect(loadReadonlyPrefixes(outcome.data)).toEqual([...SETTINGS_READONLY_PREFIXES])
     })

@@ -159,6 +159,28 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(fieldAccepts('llm.providers.deepseek.reasoningEffort', 42)).toBe(false)
   })
 
+  it('模型候选列表：必须是数组，且默认值为空数组（v6）', () => {
+    // 默认配置里没有 provider，逐字段回退用的校验器仍必须认识这条路径
+    expect(fieldAccepts('llm.providers.deepseek.modelList', ['a', 'b'])).toBe(true)
+    expect(fieldAccepts('llm.providers.deepseek.modelList', [])).toBe(true)
+    // 「必须是数组」：单个字符串不能当成只有一项的列表（否则设置页会写进非数组值）
+    expect(fieldAccepts('llm.providers.deepseek.modelList', 'a')).toBe(false)
+    expect(fieldAccepts('llm.providers.deepseek.modelList', { 0: 'a' })).toBe(false)
+
+    const settings = createDefaultSettings()
+    settings.llm.providers['deepseek'] = {
+      type: 'openai-compat',
+      baseUrl: 'https://api.deepseek.com',
+      apiKeyEnc: 'enc',
+      model: 'deepseek-chat',
+      temperature: 0.7,
+      reasoningEffort: 'auto',
+      modelList: [],
+    }
+    expect(SettingsSchema.safeParse(settings).success).toBe(true)
+    expect(SettingsSchema.parse(settings).llm.providers['deepseek']?.modelList).toEqual([])
+  })
+
   it('电脑操控工具配置：默认值完整、字段路径可校验（v5）', () => {
     expect([...COMPUTER_TOOL_NAMES]).toEqual([
       'run_command',

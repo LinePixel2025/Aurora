@@ -99,6 +99,9 @@ async function persistModel(): Promise<boolean> {
           baseUrl: form.baseUrl.trim(),
           apiKeyEnc: '',
           model: form.model.trim(),
+          // 引导页只确定「当前使用哪个模型」，候选列表留空（用户之后在「设置 → AI 模型」里维护）；
+          // 该字段在 `LlmProviderConfig` 里是必填（zod `.default([])` 只放宽输入类型），必须显式给出。
+          modelList: [],
           temperature: form.temperature,
           reasoningEffort: DEFAULT_REASONING_EFFORT,
         },

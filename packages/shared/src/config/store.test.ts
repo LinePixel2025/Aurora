@@ -175,6 +175,40 @@ describe('SettingsStore · 初始化', () => {
     })
   })
 
+  it('磁盘上的 v6 provider 缺 modelList：读入补成 []，其余字段一个都不变', async () => {
+    const seeded = createDefaultSettings()
+    seeded.general.language = 'en-US'
+    seeded.modes.classroom.watchDir = 'D:\\感知文件夹'
+    // 旧版本写下的 provider：没有 modelList 这个键（版本已声明为 v6，迁移链不会跑）
+    const legacyProvider = {
+      type: 'openai-compat',
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      apiKeyEnc: '',
+      model: 'qwen2.5:7b',
+      temperature: 1.4,
+      reasoningEffort: 'high',
+    }
+    const seed = {
+      [memoryPath(CONFIG_FILE_NAME)]: JSON.stringify({
+        ...seeded,
+        version: CONFIG_VERSION,
+        llm: { active: 'legacy', providers: { legacy: legacyProvider } },
+      }),
+    }
+    const { store } = setup({ seed })
+    const report = await store.init()
+    expect(report.corrupted).toBe(false)
+    expect(report.fromVersion).toBe(CONFIG_VERSION)
+    expect(report.appliedMigrations).toEqual([])
+
+    // 缺字段由 `z.array(z.string()).default([])` 补齐：设置页与对话窗无条件拿到数组
+    expect(store.get().llm.providers['legacy']).toEqual({ ...legacyProvider, modelList: [] })
+    // 其余字段一个都不变
+    expect(store.get().llm.active).toBe('legacy')
+    expect(store.get().general.language).toBe('en-US')
+    expect(store.get().modes.classroom.watchDir).toBe('D:\\感知文件夹')
+  })
+
   it('从 v0 旧配置迁移：明文 apiKey 被迁移并补加密', async () => {
     const seed = {
       [memoryPath(CONFIG_FILE_NAME)]: JSON.stringify({

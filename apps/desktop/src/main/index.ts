@@ -881,6 +881,9 @@ async function runSmokeTest(userData: string): Promise<void> {
             baseUrl: stub.baseUrl,
             apiKeyEnc: '',
             model: STUB_MODEL,
+            // `LlmProviderConfig.modelList` 是 output 必填字段（zod `.default([])` 只放宽输入类型），
+            // 这里显式给出候选列表：自测也顺带覆盖「选择器能列出两个模型」的场景。
+            modelList: [STUB_MODEL, `${STUB_MODEL}-alt`],
             temperature: 0.7,
             reasoningEffort: 'auto',
           },

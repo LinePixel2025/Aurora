@@ -79,6 +79,14 @@ export const LlmProviderSchema = z.object({
   /** safeStorage 密文；解密值只存在于运行时内存。 */
   apiKeyEnc: z.string(),
   model: z.string(),
+  /**
+   * 该 provider 下可选的模型 id 列表（docs/08 §5）。
+   * 用 `.default([])` 而不是「可选字段」：设置页与对话窗都必须能无条件读到一个数组，
+   * 否则每一处消费都要写 `?? []`，漏一处就是一个运行时崩点。
+   * 仅作**候选列表**用途：真正生效的仍是 `model`——列表里没有 `model` 时，
+   * 选项串里要把当前值显示为「（不在列表中）」而不是把它悄悄替换掉。
+   */
+  modelList: z.array(z.string()).default([]),
   temperature: z.number().min(0).max(2),
   /** 思考等级；由主进程装配层把 `auto` 映射成「不下发」（docs/06 §11）。 */
   reasoningEffort: ReasoningEffortSchema,
