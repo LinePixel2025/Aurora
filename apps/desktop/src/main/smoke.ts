@@ -219,6 +219,48 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       'model=' + (emptyCipher?.llm?.providers?.[freshProviderId]?.model ?? '?'),
     )
 
+    // 3.1.3 MCP 凭据保真的同一条真实路径（本轮修）：设置页保存服务器列表时回传的是
+    //     settings:get 脱敏过的对象（每个 server 的 envEnc 都是空对象）。空 envEnc 必须被
+    //     理解为「本次不改凭据」—— 否则一次「停用 / 删除别的服务器」就会清空全部 MCP 密文。
+    //     夹具用 http + enabled:false：hub 对 disabled 服务器不建连，不会真的起进程。
+    const mcpServerName = 'smoke-mcp-' + Date.now()
+    const mcpSaved = expectOk('settings.update(mcp 新增)', await window.aurora.settings.update({
+      mcp: {
+        servers: [{
+          name: mcpServerName,
+          transport: 'http',
+          url: 'http://127.0.0.1:9/mcp',
+          envEnc: { TOKEN: '' },
+          enabled: false,
+        }],
+      },
+    }))
+    record(
+      'MCP 服务器可保存（envEnc 占位也能过校验）',
+      mcpSaved?.mcp?.servers?.[0]?.name === mcpServerName,
+      String(mcpSaved?.mcp?.servers?.[0]?.name ?? 'save 失败'),
+    )
+    const mcpSecret = expectOk('settings.setSecrets(mcp)', await window.aurora.settings.setSecrets({
+      ['mcp.servers.' + mcpServerName + '.env.TOKEN']: 'sk-mcp-plaintext-marker',
+    }))
+    record(
+      'MCP env 已加密落盘',
+      mcpSecret?.persisted === true &&
+        expectOk('settings.hasSecret#mcp', await window.aurora.settings.hasSecret('mcp.servers.' + mcpServerName + '.env.TOKEN')) === true,
+      JSON.stringify(mcpSecret?.paths ?? []),
+    )
+    // 关键回归：把**脱敏后**的服务器列表原样写回（「停用 / 启用」「删除其它服务器」都走这条）
+    const redactedServers = (expectOk('settings.get#mcp', await window.aurora.settings.get())?.mcp?.servers) ?? []
+    const resaved = expectOk('settings.update(mcp 原样回传)', await window.aurora.settings.update({ mcp: { servers: redactedServers } }))
+    const resavedServer = resaved?.mcp?.servers?.[0] ?? null
+    record(
+      '带空 envEnc 回传后 MCP 凭据仍在',
+      Boolean(resavedServer?.envSet?.indexOf('TOKEN') >= 0) &&
+        expectOk('settings.hasSecret#mcpResave', await window.aurora.settings.hasSecret('mcp.servers.' + mcpServerName + '.env.TOKEN')) === true,
+      resavedServer ? 'envSet=' + JSON.stringify(resavedServer.envSet) : 'save 失败',
+    )
+    assertNoSecretLeak('MCP 回包不含密文', resaved ?? {})
+
     const freshRemove = { ...(freshSave?.llm?.providers ?? {}) }
     delete freshRemove[freshProviderId]
     expectOk('settings.update(清理全新 provider)', await window.aurora.settings.update({

@@ -62,6 +62,7 @@ import type {
   WindowManagerLike,
 } from './contracts.js'
 import { resolveSubjectFolder } from './paths.js'
+import { extractPatchSecrets, mergeSettingsPatch } from './settings-patch.js'
 
 /** 附件正文入上下文的字符上限（超出截断，避免一个 PDF 吃掉整个上下文预算） */
 const MAX_ATTACHMENT_CHARS = 8_000
@@ -552,80 +553,25 @@ export function createSettingsWriter(
 }
 
 function applyPatch(deps: DesktopDeps, patch: SettingsPatch): Result<Settings> {
-  const secrets: SecretEntries = {}
+  // 凭据抽取与合并语义都在 `settings-patch.ts`（纯逻辑、有单测）：这里只负责
+  // 校验失败的处理、凭据的加密落盘 / 清理，以及 `settings:changed` 广播。
+  const { patch: cleaned, secrets } = extractPatchSecrets(patch)
+  /** 需要清掉内存明文缓存的凭据路径（被删条目 / 只剩空占位的键），由合并逻辑给出 */
+  let cleared: string[] = []
 
-  if (patch.llm?.providers) {
-    for (const [id, provider] of Object.entries(patch.llm.providers)) {
-      const draft = provider as Record<string, unknown>
-      const apiKey = draft['apiKey']
-      if (typeof apiKey === 'string') {
-        delete draft['apiKey']
-        if (apiKey !== '') secrets[`llm.providers.${id}.apiKey`] = apiKey
-      }
-    }
-  }
-  if (patch.mcp?.servers) {
-    for (const server of patch.mcp.servers) {
-      const draft = server as unknown as Record<string, unknown>
-      const env = draft['env']
-      if (env && typeof env === 'object') {
-        const entries = env as Record<string, string>
-        for (const [name, value] of Object.entries(entries)) {
-          if (value !== '') secrets[`mcp.servers.${server.name}.env.${name}`] = value
-        }
-        delete draft['env']
-      }
-    }
-  }
-
-  // `SettingsPatch` 的分组是**局部**更新（如只传 `mcp.servers` 或只改 provider 的 model），
-  // 而 SettingsStore.update 是顶层浅合并；这里逐层把未提及的子字段补回当前值：
-  // - 分组级：未提及的顶层子字段（如 `mcp.lazyConnect`）；
-  // - provider 级：渲染层永远看不到 `apiKeyEnc`（docs/08 §1.1），必须保留已有密文，
-  //   否则设置页改一次模型名就会把凭据清空（Schema 也会因缺字段而校验失败）；
-  // - MCP server 级：同理由 `envEnc` 保存凭据。
-  //
-  // 关键：合并必须在 `mutate` 的 mutator **内部**读取当前值。
-  // `SettingsStore.mutate` 会把 mutator 收到的 draft 用 `update()` 再浅合并一次，
+  // 合并必须在 `mutate` 的 mutator **内部**读取当前值。
+  // `SettingsStore.mutate` 会把 mutator 收到的 draft 用 `update()` 再合并一次，
   // 若在 mutator 之外提前取快照，写入凭据（`setSecret` → `mutate`）时
   // 会被旧快照覆盖回 `apiKeyEnc: ''` —— 即"先存模型配置、再存 API Key"的
   // 设置页流程会静默丢掉凭据。
   const updated = deps.settings.mutate((draft) => {
-    const providers = { ...draft.llm.providers }
-    for (const [id, provider] of Object.entries(patch.llm?.providers ?? {})) {
-      const existing = providers[id]
-      const incoming = { ...provider } as Record<string, unknown>
-      // 渲染层永远看不到密文（`settings:get` 把 `apiKeyEnc` 一律置成空串，见 `redactSettings`），
-      // 而下面的合并是「patch 覆盖已有」。所以**空串只能理解为「本次不改凭据」**：
-      // 否则设置页/对话窗回传一次全量 providers，就会把磁盘上的密文清空——
-      // 同进程内被 `SettingsStore` 的 memorySecrets 缓存掩盖，重启后才表现为「API Key 没了」。
-      // 新建 provider（没有 existing）时保留空串：`LlmProviderSchema` 要求该字段存在。
-      if (existing !== undefined && incoming['apiKeyEnc'] === '') delete incoming['apiKeyEnc']
-      providers[id] = {
-        ...(existing ?? {}),
-        ...incoming,
-      } as Settings['llm']['providers'][string]
-    }
-
-    const servers = (patch.mcp?.servers ?? draft.mcp.servers).map((server) => {
-      const existing = draft.mcp.servers.find((item) => item.name === server.name)
-      return existing === undefined ? server : { ...existing, ...server }
-    })
-
-    if (patch.general !== undefined) Object.assign(draft.general, patch.general)
-    if (patch.llm !== undefined) Object.assign(draft.llm, patch.llm)
-    draft.llm.providers = providers
-    if (patch.advanced !== undefined) Object.assign(draft.advanced, patch.advanced)
-    if (patch.skills !== undefined) Object.assign(draft.skills, patch.skills)
-    if (patch.mcp !== undefined) Object.assign(draft.mcp, patch.mcp)
-    draft.mcp.servers = servers
-    if (patch.modes !== undefined) Object.assign(draft.modes, patch.modes)
-    // 电脑操控工具：`SettingsPatch.agent` 是**整棵** tools 子树，直接覆盖即可
-    // （只传 `{ terminal: {...} }` 会把 files / open 静默丢掉，设置页必须带完整的树）。
-    if (patch.agent !== undefined) Object.assign(draft.agent, patch.agent)
+    cleared = mergeSettingsPatch(draft, cleaned)
   })
   if (!updated) return err('E_INVALID_ARGUMENT', '配置校验失败：请检查填写内容')
 
+  // 先清（被删条目 / 只剩空占位的旧明文缓存）再写（本次提交的明文凭据）：
+  // 同一个 patch 里「删了又重建」时，以后写入的凭据为准。
+  for (const path of cleared) deps.settings.clearSecret(path)
   for (const [path, value] of Object.entries(secrets)) {
     try {
       deps.settings.setSecret(path, value)
@@ -635,8 +581,10 @@ function applyPatch(deps: DesktopDeps, patch: SettingsPatch): Result<Settings> {
   }
 
   if (patch.skills?.disabled) deps.skills.setDisabled(patch.skills.disabled)
-  deps.onSettingsChanged?.(updated)
-  return ok(updated)
+  // 取 store 的最新快照：上面的 `clearSecret` 也会走一次 `mutate`，`updated` 可能已不是最新。
+  const current = deps.settings.get()
+  deps.onSettingsChanged?.(current)
+  return ok(current)
 }
 
 /** 回传渲染层前把密文替换为"是否已设置"。 */

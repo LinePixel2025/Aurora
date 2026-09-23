@@ -368,7 +368,14 @@ AI **改不动它**：`set` 的 `value` 只接受 `string | number | boolean`，
   （`general` / `llm` / `modes` / `skills` / `mcp` / `advanced` / `agent`）聚合成一个 `SettingsPatch`，
   同一分组内按**深合并**逐层写进该分组对象（`settings:update` 只有顶层浅合并语义），
   然后调用 `apps/desktop/src/main/ipc.ts` 的 `applyPatch` —— 它是**配置写入的唯一落地点**，
-  负责局部合并语义、凭据抽取（`apiKey` / `env` → `setSecret`）与 `settings:changed` 广播。
+  负责局部合并语义、凭据抽取（`apiKey` / `env` → `setSecret`）、被删条目的凭据清理
+  与 `settings:changed` 广播。合并规则本身是**纯逻辑**（`main/settings-patch.ts`，有单测），
+  两条容易踩的语义：
+  - **渲染层永远看不到密文**（`apiKeyEnc` 是空串、`envEnc` 是空对象，docs/08 §1.1），
+    因此回传里的「空」只能理解为**本次不改凭据**；MCP 的 `envEnc` 是**逐键**合并的
+    （某键值为空串 → 保留该键已有密文）；
+  - **`mcp.servers` 是整数组权威**：不在数组里 = 删除，被删服务器的每个环境变量都会
+    连同 `SettingsStore` 内存里的明文缓存一起清掉。
   工具侧**不得**绕过它自己写盘，否则会同时丢掉「凭据保留」与「广播」这两件事。
 - `applyPatch` 失败 → 返回 `{ ok: false, message: '配置校验失败：…' }` 且**不做回滚**：
   此时 `SettingsStore` 的内存态根本没变，回滚反而会写脏。成功后会再做一次

@@ -86,6 +86,18 @@ const form = reactive({
 const servers = computed<McpServerConfig[]>(() => settingsStore.settings?.mcp.servers ?? [])
 const lazyConnect = computed(() => settingsStore.settings?.mcp.lazyConnect ?? false)
 
+/**
+ * 该服务器已配置的环境变量名。
+ *
+ * 数据源必须是主进程补的**只读标记** `envSet`（docs/08 §1.1），不能读 `server.envEnc` ——
+ * `settings:get` / `settings:changed` 会把 `envEnc` 一律回传成空对象（密文永不进渲染进程），
+ * 按它判断会永远显示成「没有环境变量」。
+ */
+function envNames(server: McpServerConfig): string[] {
+  const marked = (server as McpServerConfig & { envSet?: string[] }).envSet
+  return Array.isArray(marked) ? marked : []
+}
+
 async function setLazyConnect(value: boolean): Promise<void> {
   error.value = null
   if (!(await settingsStore.update({ mcp: { lazyConnect: value } }))) {
@@ -227,8 +239,8 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
       <p v-if="statusOf(server.name)?.lastError" class="tiny err">
         {{ statusOf(server.name)?.lastError }}
       </p>
-      <p v-if="Object.keys(server.envEnc).length > 0" class="tiny muted">
-        环境变量：{{ Object.keys(server.envEnc).join('、') }}（值已加密存储）
+      <p v-if="envNames(server).length > 0" class="tiny muted">
+        环境变量：{{ envNames(server).join('、') }}（值已加密存储）
       </p>
     </article>
 

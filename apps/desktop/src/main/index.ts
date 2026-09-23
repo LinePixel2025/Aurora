@@ -937,6 +937,7 @@ async function runSmokeTest(userData: string): Promise<void> {
     await settings?.flush()
     const disk = JSON.parse(await fs.readFile(join(userData, 'config.json'), 'utf8')) as {
       llm?: { providers?: Record<string, { apiKeyEnc?: unknown }> }
+      mcp?: { servers?: Array<{ name?: string; envEnc?: Record<string, unknown> }> }
     }
     const providers = disk.llm?.providers ?? {}
     const fresh = Object.entries(providers).find(([id]) => id.startsWith('fresh-'))
@@ -947,6 +948,19 @@ async function runSmokeTest(userData: string): Promise<void> {
       fresh === undefined
         ? `未找到 fresh-* provider（实际 provider：${Object.keys(providers).join(',') || '空'}）`
         : `${fresh[0]}: apiKeyEnc 长度=${typeof cipher === 'string' ? cipher.length : String(cipher)}`,
+    )
+
+    // MCP 侧同类断言：脚本把脱敏后的服务器列表（envEnc 为空对象）原样回传过一次，
+    // 此刻磁盘上该服务器的 env 密文必须还在 —— 与 provider 一样，只有读盘才能证明。
+    const mcpServers = disk.mcp?.servers ?? []
+    const smokeMcp = mcpServers.find((server) => (server.name ?? '').startsWith('smoke-mcp-'))
+    const envCipher = smokeMcp?.envEnc?.['TOKEN']
+    record(
+      '磁盘上的 smoke-mcp 仍有 env 密文（空 envEnc 回传没有清掉凭据）',
+      typeof envCipher === 'string' && envCipher !== '',
+      smokeMcp === undefined
+        ? `未找到 smoke-mcp-* 服务器（实际：${mcpServers.map((server) => server.name ?? '?').join(',') || '空'}）`
+        : `${smokeMcp.name}: envEnc.TOKEN 长度=${typeof envCipher === 'string' ? envCipher.length : String(envCipher)}`,
     )
   } catch (error) {
     record(
@@ -1289,6 +1303,7 @@ async function runSmokeTest(userData: string): Promise<void> {
     const leaked =
       raw.includes('sk-smoke-plaintext-marker') ||
       raw.includes('sk-fresh-marker') ||
+      raw.includes('sk-mcp-plaintext-marker') ||
       /"apiKey"\s*:/.test(raw)
     logger?.[leaked ? 'error' : 'info'](
       `${SMOKE_RESULT_PREFIX} ${leaked ? 'FAIL' : 'PASS'} 磁盘无明文 API Key`,
