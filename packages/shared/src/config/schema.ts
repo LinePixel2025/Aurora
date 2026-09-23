@@ -228,6 +228,10 @@ export const SETTINGS_READONLY_PREFIXES = [
   'general.firstRun',
   'general.launchAtLogin',
   'general.hotkey',
+  // 敏感工具确认总闸门：`agent-host` 每次调用**即时判断**它，关掉后 `run_command` /
+  // `write_file` / 全部 MCP 工具 / `set_setting` 自身都不再弹确认卡片 —— 等于 AI 自我提权。
+  // 只保留「用户在设置页手动关」这一条路径（设置页走 `settings:update`，不经过本黑名单）。
+  'advanced.confirmSensitiveTools',
 ] as const
 
 export const AdvancedSchema = z.object({
@@ -237,14 +241,19 @@ export const AdvancedSchema = z.object({
   /**
    * 敏感工具（`sensitivity = 'confirm'`，含全部 MCP 工具）执行前是否要求用户确认
    * （docs/06 §5）。关闭后按 v0.3.0 行为降级：只记日志留痕、不拦截。
+   *
+   * 注意：本字段在 `SETTINGS_READONLY_PREFIXES` 里，**只能由用户在设置页 / 直接改配置**关闭，
+   * AI 的 `set_setting` 一律拒绝（否则等于「AI 自己摘掉确认闸门」= 自我提权）。
    */
   confirmSensitiveTools: z.boolean(),
   /**
    * AI 改配置（`set_setting`）禁止触碰的路径前缀（docs/06 §12）。
    *
-   * 默认值即 `SETTINGS_READONLY_PREFIXES`（不可变元组 → 展开成可变数组）；
-   * 把它做成配置项是为了给高级用户留一个逃生阀，但「Schema 必须识别该路径」这条兜底
-   * （见 `canWriteSettingPath`）不随它变化——黑名单清空也不等于任意路径可写。
+   * 默认值即 `SETTINGS_READONLY_PREFIXES`（不可变元组 → 展开成可变数组）。
+   *
+   * 语义：**只能在默认黑名单之上追加限制，不能放宽** —— `settingsReadonlyReason` 在查过用户配置项之后
+   * 仍会**无条件**再走一遍硬编码常量（`canWriteSettingPath` 从不接收用户配置），所以删掉默认项
+   * 甚至把它清空都**不会**放开对应路径（清空 = 回到默认项）。「Schema 必须识别该路径」那条兜底同样不随它变化。
    */
   readonlyPrefixes: z.array(z.string()).default([...SETTINGS_READONLY_PREFIXES]),
 })
@@ -317,6 +326,7 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'general.firstRun': '首次运行标记不允许通过工具修改',
   'general.launchAtLogin': '开机自启不允许通过工具修改',
   'general.hotkey': '全局快捷键不允许通过工具修改',
+  'advanced.confirmSensitiveTools': '关闭它等于摘掉敏感工具的确认闸门，不允许通过工具修改',
 }
 
 /**
@@ -345,10 +355,28 @@ function isKnownSettingPath(path: string): boolean {
 }
 
 /**
+ * 工具传来的路径必须是**具体路径**，不是 Schema 的通配模式。
+ *
+ * `[]` / `*` 只属于 `lookupSpec` / `isDynamicPath` 的内部模式语言（它们服务于设置页门控与
+ * 逐字段回退，另有用途，语义不动）。若把 `llm.providers[]` 当成可写，`canWriteSettingPath`
+ * 会放行，而 `applyPatch` 写下去时 Zod 会把意外键 strip 掉 —— 结果是
+ * 「`get` / `list` 说可写 + `set` 回报成功但配置一字未改」的**假成功**。
+ * 同理拦掉空段（`llm..providers`）与首尾 `.`：它们同样不是任何真实字段的路径。
+ */
+function isConcreteSettingPath(path: string): boolean {
+  if (path === '') return false
+  if (path.includes('[') || path.includes(']') || path.includes('*')) return false
+  if (path.startsWith('.') || path.endsWith('.')) return false
+  return path.split('.').every((segment) => segment !== '')
+}
+
+/**
  * 路径不可写时给出人类可读的中文原因（可写则返回 `undefined`）。
  * 工具把原因回填给模型，写审计日志也复用它留痕（docs/06 §12）。
  */
 export function settingsReadonlyReason(path: string): string | undefined {
+  // 先做路径合法性检查（见 `isConcreteSettingPath`）：通配 / 畸形路径一律按未知路径拒绝
+  if (!isConcreteSettingPath(path)) return '未知配置路径'
   const prefix = matchReadonlyPrefix(path)
   if (prefix !== undefined) return READONLY_PREFIX_REASONS[prefix]
   // `fieldAccepts` 对**未登记**的路径默认放行（见该函数注释「未登记的路径默认接受」），

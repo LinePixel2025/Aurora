@@ -449,7 +449,6 @@ async function bootstrap(): Promise<void> {
     run: createCommandRunner({ defaultCwd: process.cwd(), maxOutputBytes: 1024 * 1024 }),
     files: createNodeFilePort(),
     open: createShellOpenPort(),
-    settingsPort,
   })
   settingsTool = registerSettingsTool({ tools, port: settingsPort, logger: logger.child('tools') })
   syncToolRegistries()
@@ -929,6 +928,34 @@ async function runSmokeTest(userData: string): Promise<void> {
     results.push({ name, ok, detail })
   }
 
+  // 1.1 凭据保真的**磁盘**断言。
+  //     渲染层看不到密文（`settings:get` 一律回空串），而 `hasSecret` 走 `getSecret()` 会**先读
+  //     `memorySecrets` 缓存** —— 即使磁盘密文被空串覆盖，同一进程里它照样返回 true。
+  //     所以「带空 `apiKeyEnc` 回传不会清掉凭据」这条只有读盘才能证明：脚本里那个 `fresh-*`
+  //     provider 写完 key 之后又被回传过一次空串，此刻磁盘上必须仍是密文。
+  try {
+    await settings?.flush()
+    const disk = JSON.parse(await fs.readFile(join(userData, 'config.json'), 'utf8')) as {
+      llm?: { providers?: Record<string, { apiKeyEnc?: unknown }> }
+    }
+    const providers = disk.llm?.providers ?? {}
+    const fresh = Object.entries(providers).find(([id]) => id.startsWith('fresh-'))
+    const cipher = fresh?.[1]?.apiKeyEnc
+    record(
+      '磁盘上的 fresh provider 仍是密文（空 apiKeyEnc 回传没有清掉凭据）',
+      typeof cipher === 'string' && cipher !== '',
+      fresh === undefined
+        ? `未找到 fresh-* provider（实际 provider：${Object.keys(providers).join(',') || '空'}）`
+        : `${fresh[0]}: apiKeyEnc 长度=${typeof cipher === 'string' ? cipher.length : String(cipher)}`,
+    )
+  } catch (error) {
+    record(
+      '磁盘上的 fresh provider 仍是密文（空 apiKeyEnc 回传没有清掉凭据）',
+      false,
+      `读盘失败：${String(error)}`,
+    )
+  }
+
   // 2. 主进程侧断言：工具循环真的走了两轮，且第二轮带回了 tool 结果
   //    只统计**对话**请求：分类管线也会打桩服务，不能混在一起数。
   const chatRequests = stub.chatRequestCount()
@@ -1132,18 +1159,53 @@ async function runSmokeTest(userData: string): Promise<void> {
   }
 
   // 5. `set_setting` 的 crash 矩阵（docs/06 §12、step 02 第 8 条）：
-  //    逐个写入「AI 可能写出的坏值」，每次都必须保证
-  //    ① 配置仍能被 `SettingsSchema` 解析；② `set_setting` 自己没被写没。
-  //    这条钉的是"AI 改设置导致应用下次启动崩"的整类问题。
+  //    逐条写入「AI 可能写出的坏值」，每条都断言**四件事**：
+  //    ① 工具的接受 / 拒绝符合预期；② `set_setting` 自己没被写没；
+  //    ③ 期望生效的值**真的生效**（含三层路径与同分组兄弟字段是否被抹掉）；
+  //    ④ **磁盘上**的 config.json 仍是 `SettingsSchema` 能解析的合法配置。
+  //    第 ④ 条刻意读盘、而不是 `safeParse(settings.get())` —— 后者恒真：
+  //    `SettingsStore.get()` 的内存态本来就只装「通过了 safeParse」的候选值，
+  //    拿它当证据等于什么都没测；而「AI 改设置导致应用崩」的真实风险正是**下次启动读盘**时炸。
   if (settings !== undefined && tools !== undefined) {
     const setSetting = tools.get('set_setting')
-    // 期望被工具直接拒绝的路径（黑名单 / 未知路径 / 非法枚举）。
-    // `agent.tools.enabled` 是**有意允许**的：总开关关掉后 `set_setting` 仍在，
-    // AI 仍能改回 `agent.tools.*`（见 step 02「交接」的边界说明），因此它只断言"没写坏"。
-    const crashMatrix: Array<{ path: string; value: unknown; expectReject: boolean }> = [
-      { path: 'agent.tools.enabled', value: false, expectReject: false },
+    const configPath = join(userData, 'config.json')
+    const crashMatrix: Array<{
+      path: string
+      value: unknown
+      expectReject: boolean
+      /** 接受后的**可观测**结果（含被 `sanitize` 规范化的情形） */
+      expect?: (current: Settings) => boolean
+      expectNote?: string
+    }> = [
+      {
+        path: 'agent.tools.enabled',
+        value: false,
+        expectReject: false,
+        expect: (current) => current.agent.tools.enabled === false,
+        expectNote: '总开关确实被关掉（深合并没有抹掉同分组兄弟字段）',
+      },
+      {
+        path: 'agent.tools.terminal.timeoutMs',
+        value: 20_000,
+        expectReject: false,
+        expect: (current) => current.agent.tools.terminal.timeoutMs === 20_000,
+        expectNote: '三层路径可写',
+      },
+      {
+        path: 'general.edgeBar.opacity',
+        value: 0.5,
+        expectReject: false,
+        expect: (current) => current.general.edgeBar.opacity === 0.5,
+        expectNote: 'general 分组深合并',
+      },
       { path: 'advanced.logLevel', value: 'verbose', expectReject: true },
-      { path: 'llm.active', value: 'nope', expectReject: false },
+      {
+        path: 'llm.active',
+        value: 'nope',
+        expectReject: false,
+        expect: (current) => current.llm.active === '',
+        expectNote: '指向不存在的 provider 被 sanitize 规范化成空串（工具应如实回报「未生效」）',
+      },
       { path: 'modes.classroom.typo', value: 1, expectReject: true },
       { path: 'llm.providers.x.apiKeyEnc', value: 'leak', expectReject: true },
     ]
@@ -1153,35 +1215,48 @@ async function runSmokeTest(userData: string): Promise<void> {
         setSetting === undefined
           ? { rejected: false, note: 'set_setting 未注册' }
           : await writeSettingThroughTool(setSetting, item.path, item.value)
-      const parsed = SettingsSchema.safeParse(settings.get())
+      await settings.flush()
+      let diskOk = false
+      let diskNote = ''
+      try {
+        diskOk = SettingsSchema.safeParse(JSON.parse(await fs.readFile(configPath, 'utf8'))).success
+      } catch (error) {
+        diskNote = `磁盘配置不可解析：${String(error)}`
+      }
       const toolKept = tools.get('set_setting') !== undefined
       const rejectOk = item.expectReject ? outcome.rejected : true
+      const effectOk = item.expect === undefined ? true : item.expect(settings.get())
       record(
         `配置写入不会写坏（${item.path}）`,
-        parsed.success && toolKept && rejectOk,
+        diskOk && toolKept && rejectOk && effectOk,
         [
           `accepted=${outcome.rejected ? 'no' : 'yes'}`,
-          `expected=${item.expectReject ? 'reject' : 'accept-or-reject'}`,
-          `schema=${parsed.success ? 'ok' : 'FAIL'}`,
+          `expected=${item.expectReject ? 'reject' : 'accept'}`,
+          `effect=${effectOk ? 'ok' : 'FAIL'}`,
+          `disk=${diskOk ? 'ok' : 'FAIL'}`,
           `toolKept=${toolKept ? 'yes' : 'no'}`,
+          item.expectNote ?? '',
           outcome.note,
+          diskNote,
         ]
           .filter((part) => part !== '')
           .join(' '),
       )
     }
 
-    // 写回总开关：矩阵第 1 条有意把 `agent.tools.enabled` 写成 false，
-    // 不复位的话后面的收尾清理会以为"用户本来就关着"，也会影响下一次 dev 运行的观感。
-    const toolsNow = settings.get().agent.tools
-    settings.update({ agent: { tools: { ...toolsNow, enabled: true } } })
+    // 复位：第 1 条故意关了总开关、`llm.active` 那条会被 sanitize 清空，都复原回去，
+    // 让收尾清理与下一次 dev 运行看到的是正常状态。
+    const afterMatrix = settings.get()
+    settings.update({
+      agent: { tools: { ...afterMatrix.agent.tools, enabled: true } },
+      llm: { active: 'smoke', providers: afterMatrix.llm.providers },
+    })
     syncToolRegistries()
 
     // 5.1 「AI 用 run_command 手改配置文件」这条路径：直接把 config.json 写成非法 JSON，
     //     重新走一遍 `SettingsStore.init()` 的读取链路后，`settings.get()` 必须仍是一份
     //     合法配置（损坏文件走「备份后重建」，见 packages/shared 的 store.ts）。
     //     没有这条断言，"AI 绕过一切校验改配置"就只是文档里的承诺。
-    const configPath = join(userData, 'config.json')
     let corruptRecovered = false
     let corruptDetail = ''
     try {

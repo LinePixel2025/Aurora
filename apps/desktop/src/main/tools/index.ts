@@ -31,8 +31,6 @@ export interface ComputerToolsDeps {
   run: CommandRunner
   files: FilePort
   open: OpenPort
-  /** `set_setting`（docs/06 §12）的真实读写端口；与 `getSettings` 是两码事 */
-  settingsPort: SettingsToolPort
 }
 
 export interface ComputerTools {

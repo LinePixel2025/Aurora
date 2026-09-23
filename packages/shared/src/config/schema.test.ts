@@ -260,7 +260,7 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
       'general.edgeBar.opacity',
       'skills.disabled',
       'mcp.lazyConnect',
-      'advanced.confirmSensitiveTools',
+      'advanced.logLevel',
     ]) {
       expect(settingsReadonlyReason(path), path).toBeUndefined()
     }
@@ -280,6 +280,42 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     expect(canWriteSettingPath('version')).toBe(false)
     expect(canWriteSettingPath('general.windowState.chat')).toBe(false)
     expect(canWriteSettingPath('mcp.servers')).toBe(false)
+  })
+
+  it('敏感工具确认总闸门不可由 AI 关闭（AI 自我提权，P1）', () => {
+    // 它是 agent-host 每次调用即时判断的开关，关掉后 run_command / write_file /
+    // 全部 MCP 工具与 set_setting 自身都不再弹确认卡片 → 必须只能由用户在设置页手改
+    expect(canWriteSettingPath('advanced.confirmSensitiveTools')).toBe(false)
+    expect(settingsReadonlyReason('advanced.confirmSensitiveTools')).toBe(
+      '关闭它等于摘掉敏感工具的确认闸门，不允许通过工具修改',
+    )
+    // 同组其它字段不受影响（别把整个 advanced 分组一起封死）
+    expect(canWriteSettingPath('advanced.logLevel')).toBe(true)
+  })
+
+  it('引导 / 首次运行 / 开机自启三个前缀不可被悄悄移出黑名单', () => {
+    for (const path of ['general.launchAtLogin', 'general.onboarded', 'general.firstRun']) {
+      expect(canWriteSettingPath(path), path).toBe(false)
+      expect(settingsReadonlyReason(path), path).toBeDefined()
+    }
+  })
+
+  it('通配 / 畸形路径不是具体路径：一律拒绝，避免「回报成功但配置没改」的假成功（P2）', () => {
+    // 工具路径是**具体路径**，`[]` / `*` 只属于 lookupSpec / isDynamicPath 的内部模式语言。
+    // 这些路径此前靠 isDynamicPath 的「剥掉尾部 []」被判为可写，实际 Zod 会把意外键 strip 掉。
+    expect(canWriteSettingPath('llm.providers[]')).toBe(false)
+    expect(settingsReadonlyReason('llm.providers[]')).toBe('未知配置路径')
+    expect(canWriteSettingPath('mcp.servers[].envEnc')).toBe(false)
+    expect(settingsReadonlyReason('mcp.servers[].envEnc')).toBe('未知配置路径')
+    expect(canWriteSettingPath('general.windowState[]')).toBe(false)
+    expect(canWriteSettingPath('mcp.servers[].name')).toBe(false)
+    // 通配段与畸形段同样拒绝
+    expect(canWriteSettingPath('llm.providers.*.model')).toBe(false)
+    expect(canWriteSettingPath('llm..providers')).toBe(false)
+    expect(canWriteSettingPath('.general.hotkey')).toBe(false)
+    // 合法数组叶子路径不能被误伤（仍可写）
+    expect(canWriteSettingPath('modes.classroom.schedule.lessons')).toBe(true)
+    expect(settingsReadonlyReason('modes.classroom.schedule.lessons')).toBeUndefined()
   })
 
   it('前缀按路径段匹配，不误伤名字相近的字段', () => {

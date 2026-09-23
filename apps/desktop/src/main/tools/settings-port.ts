@@ -55,8 +55,9 @@ export function createSettingsPort(deps: SettingsPortDeps): SettingsToolPort {
     redactSettings(deps.settings, source) as unknown as Record<string, unknown>
 
   /**
-   * 路径可写判定：黑名单（用户可在 `advanced.readonlyPrefixes` 里加减）优先，
-   * 再用 `canWriteSettingPath` 的 Schema 兜底（「Schema 必须识别该路径」永远生效）。
+   * 路径可写判定：用户配置的 `advanced.readonlyPrefixes` **只能追加**限制，
+   * 之后还要无条件走 `canWriteSettingPath` —— 后者用的是硬编码常量（不接收用户配置），
+   * 因此默认九 / 十项永远生效，删掉或清空配置项都放不开它们。
    */
   const reasonOf = (path: string): string | undefined => {
     // 老配置 / 极端情况下该字段可能缺失：缺失按"没有额外黑名单"处理，
@@ -104,8 +105,11 @@ export function createSettingsPort(deps: SettingsPortDeps): SettingsToolPort {
           return { ok: false, message: `${item.path}：不支持的配置分组`, applied: [] }
         }
 
-        // 同分组内多个路径必须**逐层深合并**：`applyPatch` 只做顶层浅合并，
-        // 直接把 `{ 'agent.tools.enabled': false }` 塞进去会写出畸形对象。
+        // 同分组内多个路径必须**逐层深合并**；而且 patch 里必须带**该分组的完整当前值** ——
+        // `applyPatch` 对 `general` / `agent` / `modes` 等分组是**整棵子树覆盖**
+        // （`Object.assign(draft[group], patch[group])`），只塞局部子树会把同分组的兄弟字段抹掉：
+        // 实测写 `agent.tools.enabled` 会连带抹掉 `agent.tools.workspaceDir/terminal/files/open`，
+        // 于是 Schema 校验失败、整次写入被拒（工具却只会收到一句「请检查填写内容」）。
         const branch: Record<string, unknown> = {}
         let cursor = branch
         for (let i = 1; i < segments.length - 1; i++) {
@@ -117,9 +121,13 @@ export function createSettingsPort(deps: SettingsPortDeps): SettingsToolPort {
         // 就地删凭据字段（`delete draft['apiKey']`）时改到调用方的对象。
         cursor[segments[segments.length - 1] as string] = structuredClone(item.value)
 
-        const existing = patch[group]
-        patch[group] =
-          existing === undefined ? branch : mergeDeep(existing as Record<string, unknown>, branch)
+        const currentGroup = (deps.settings.get() as unknown as Record<string, unknown>)[group]
+        const base =
+          typeof currentGroup === 'object' && currentGroup !== null
+            ? (structuredClone(currentGroup) as Record<string, unknown>)
+            : {}
+        const accumulated = (patch[group] as Record<string, unknown> | undefined) ?? {}
+        patch[group] = mergeDeep(mergeDeep(base, accumulated), branch)
         applied.push(item.path)
       }
 
@@ -146,15 +154,29 @@ export function createSettingsPort(deps: SettingsPortDeps): SettingsToolPort {
         return { ok: false, message: '配置写入后校验失败，已回滚到写入前的状态', applied: [] }
       }
 
+      // `applied` 只保留**真的生效**的路径：`SettingsStore.sanitize` 会把非法值悄悄规范化
+      //（例如 `llm.active` 指向不存在的 provider → 重置为 `''`）。若照旧把请求路径全算作「已修改」，
+      // 模型会以为自己改成功了；这里剔掉与请求值不一致的，让工具回填 `未生效：…`。
+      const requested = new Map(paths.map((item) => [item.path, item.value]))
+      const effective = applied.filter((path) => {
+        const actual = readDotted(after as unknown as Record<string, unknown>, path)
+        return JSON.stringify(actual) === JSON.stringify(requested.get(path))
+      })
+      const normalized = applied.filter((path) => !effective.includes(path))
+      if (normalized.length > 0) {
+        // 只记路径，不记值（值可能被规范化成别的东西，但路径本身足以排查）
+        deps.logger.warn('配置写入被规范化（请求值未原样生效）', { paths: normalized })
+      }
+
       // 审计：只记本次改动路径的前后值（已脱敏），**绝不把整份配置写进日志**。
       // 前后各取一次快照，因此还能看出 `sanitize` 是否把某个值改写了（如 llm.active → ''）。
       deps.logger.info('AI 修改配置', {
-        applied,
-        before: pickRedacted(redacted(before), applied),
-        after: pickRedacted(redacted(after), applied),
+        applied: effective,
+        before: pickRedacted(redacted(before), effective),
+        after: pickRedacted(redacted(after), effective),
       })
 
-      return { ok: true, message: `已修改 ${applied.length} 项配置`, applied }
+      return { ok: true, message: `已修改 ${effective.length} 项配置`, applied: effective }
     },
   }
 }

@@ -84,7 +84,6 @@ function setup(settings: Settings, runner: CommandRunner = fakeRunner()) {
     run: runner,
     files: fakeFilePort(),
     open: fakeOpenPort(),
-    settingsPort: port,
   })
   return { tools, registry, port }
 }
@@ -220,7 +219,6 @@ describe('registerSettingsTool', () => {
       run: fakeRunner(),
       files: fakeFilePort(),
       open: fakeOpenPort(),
-      settingsPort: port,
     })
     const settingsRegistry = registerSettingsTool({
       tools,

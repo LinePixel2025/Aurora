@@ -150,7 +150,13 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
     dir,
     files,
     checks,
-    failed: checks.some((item) => (item.result as { pass?: unknown } | undefined)?.pass === false),
+    // 判定要同时覆盖两种情况：探针明确返回 `pass:false`，以及**探针根本没跑起来**
+    //（`executeJavaScript` 抛错 / 元素没拿到而提前 return → `result` 为 `undefined`）。
+    // 只看后者 `pass === false` 的话，这类「静默丢一条」会以退出码 0 结束。
+    failed: checks.some(
+      (item) =>
+        item.ok === false || (item.result as { pass?: unknown } | undefined)?.pass === false,
+    ),
   }
 }
 
@@ -192,11 +198,14 @@ export const EDGE_BAR_LEAVE_SCRIPT = `(() => {
 export const EDGE_BAR_CLICK_SCRIPT = `(async () => {
   try {
     const el = document.querySelector('.strip')
-    if (!el) return { clicked: false, reason: 'no .strip' }
+    if (!el) return { clicked: false, reason: 'no .strip', pass: false }
     el.click()
     await new Promise((resolve) => setTimeout(resolve, 500))
     const state = await window.aurora.window.getState()
-    if (!state.ok) return { clicked: true, stateOk: false, message: state.message }
+    if (!state.ok) {
+      // 拿不到状态不能算通过：这条探针存在的意义就是断言状态（早退分支必须带 pass:false）
+      return { clicked: true, stateOk: false, message: state.message, pass: false }
+    }
     return {
       clicked: true,
       stateOk: true,
@@ -219,7 +228,8 @@ export const EDGE_BAR_CLICK_SCRIPT = `(async () => {
 export const EDGE_BAR_PANEL_SCRIPT = `(() => {
   try {
     const panel = document.querySelector('.panel')
-    if (!panel) return { panel: false }
+    // 面板没挂载正是这条探针要防的故障，必须 pass:false（早退分支不能静默）
+    if (!panel) return { panel: false, pass: false, reason: 'no .panel' }
     const width = document.documentElement.clientWidth
     const buttons = Array.from(panel.querySelectorAll('.actions button'))
     const probes = buttons.map((button) => {
@@ -579,6 +589,11 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
     const providers = state.value.llm.providers
     const active = state.value.llm.active !== '' ? state.value.llm.active : 'capture'
     const existing = providers[active]
+    // 记下原值：check 阶段要写回，避免把 'high' 永久留在配置里（本场景在真实 userData 下也会被跑）
+    window.__auroraEffortSettingsProbe = {
+      active,
+      before: existing === undefined ? 'auto' : existing.reasoningEffort,
+    }
     if (existing === undefined || existing.reasoningEffort !== 'high') {
       const result = await window.aurora.settings.update({
         llm: {
@@ -621,23 +636,49 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
 })()`
 
 /**
- * 思考等级探针 · 后半：确认「写盘 → 回读 → 渲染」整条链路通了。
+ * 思考等级探针 · 后半：确认「写盘 → 回读 → 渲染」整条链路通了，并把原值写回。
  *
  * 只数 DOM 不够（一个写死的 `<select>` 也能数出来），所以要读下拉的**当前值**：
  * 它来自刚持久化的配置，`'high'` 才对得上。
+ *
+ * ⚠️ `pass` 含 `restored === true`：这条场景会把 `reasoningEffort` 写成 `high`（甚至为断言造一个 provider），
+ * 必须写回原值 —— 否则在真实 userData 下跑 `AURORA_CAPTURE_WINDOWS=settings` 会永久改掉用户配置。
  */
-export const SETTINGS_LLM_EFFORT_CHECK = `(() => {
+export const SETTINGS_LLM_EFFORT_CHECK = `(async () => {
   try {
     const effortFields = document.querySelectorAll('[data-field$=".reasoningEffort"]')
     const temperatureFields = document.querySelectorAll('[data-field$=".temperature"]')
     const first = effortFields[0]
     const select = first === undefined ? null : first.querySelector('select')
     const value = select === null ? null : select.value
+    const domOk = effortFields.length > 0 && temperatureFields.length > 0 && value === 'high'
+
+    // DOM 断言必须先读（写回会触发 settings:changed 重新渲染，之后就读不到 high 了）
+    const probe = window.__auroraEffortSettingsProbe
+    let restored = null
+    const state = await window.aurora.settings.get()
+    if (state.ok && probe !== undefined) {
+      const providers = state.value.llm.providers
+      const target = providers[probe.active]
+      if (target === undefined || target.reasoningEffort === probe.before) {
+        restored = true
+      } else {
+        const result = await window.aurora.settings.update({
+          llm: {
+            active: state.value.llm.active,
+            providers: { ...providers, [probe.active]: { ...target, reasoningEffort: probe.before } },
+          },
+        })
+        restored = result.ok === true
+      }
+    }
+
     return {
       effortFields: effortFields.length,
       temperatureFields: temperatureFields.length,
       value,
-      pass: effortFields.length > 0 && temperatureFields.length > 0 && value === 'high',
+      restored,
+      pass: domOk && restored === true,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -684,10 +725,23 @@ export const CHAT_THINKING_LEVEL_ACT = `(async () => {
       before: provider === undefined ? null : provider.reasoningEffort,
     }
 
-    const field = document.querySelector('[data-field="chat.reasoningEffort"]')
-    if (field === null) return { changed: false, reason: 'no chat.reasoningEffort field' }
-    const select = field.tagName === 'SELECT' ? field : field.querySelector('select')
-    if (select === null) return { changed: false, reason: 'no <select> in chat.reasoningEffort' }
+    // 轮询等控件可用：它的 disabled 取决于**渲染层 settingsStore 是否已水合**（不是配置本身），
+    // 而 disabled 元素上的 change 事件不冒泡 → setEffort 根本不执行 → 探针会假 FAIL。
+    // 最多等 2.5s，仍不可用就如实报错（不静默、不假装改过）。本段在模板字符串里，注释不能带反引号。
+    let select = null
+    for (let attempt = 0; attempt < 10 && select === null; attempt += 1) {
+      const field = document.querySelector('[data-field="chat.reasoningEffort"]')
+      const candidate =
+        field === null ? null : field.tagName === 'SELECT' ? field : field.querySelector('select')
+      if (candidate !== null && candidate.disabled !== true) {
+        select = candidate
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      }
+    }
+    if (select === null) {
+      return { changed: false, reason: 'chat.reasoningEffort 下拉始终不可用（settingsStore 未水合？）' }
+    }
 
     select.value = 'high'
     select.dispatchEvent(new Event('change', { bubbles: true }))
@@ -703,6 +757,11 @@ export const CHAT_THINKING_LEVEL_ACT = `(async () => {
  *
  * 只断言配置变了不够（可能界面根本没接线），只断言 DOM 也不够（可能只是本地 state）——
  * 所以两处都读，并要求 option 数量是 4（`auto/low/medium/high`）。
+ *
+ * ⚠️ `pass` **包含 `restored === true`**：写回原值是这个场景的责任（docs/07 §5.3 承诺会还原），
+ * 只上报不判定等于没断言 —— 写回失败会把 `reasoningEffort: 'high'` 留给后面的场景。
+ * 恢复目标用 ACT 记下的 `probe.active`（而不是此刻的 `llm.active`）：中途 active 若被别的场景改过，
+ * 按当前 active 回写会写错 provider。
  */
 export const CHAT_THINKING_LEVEL_CHECK = `(async () => {
   try {
@@ -724,19 +783,23 @@ export const CHAT_THINKING_LEVEL_CHECK = `(async () => {
     if (probe !== undefined && probe.active !== '' && probe.before !== null) {
       const providers = state.value.llm.providers
       const target = providers[probe.active]
-      if (target !== undefined && target.reasoningEffort !== probe.before) {
+      if (target === undefined || target.reasoningEffort === probe.before) {
+        // 本来就是我们创建/没改动的值：无需写回，视为已还原
+        restored = true
+      } else {
         const result = await window.aurora.settings.update({
           llm: {
-            active,
+            active: state.value.llm.active,
             providers: { ...providers, [probe.active]: { ...target, reasoningEffort: probe.before } },
           },
         })
-        restored = result.ok
+        restored = result.ok === true
       }
     }
 
     return {
-      pass: configValue === 'high' && domValue === 'high' && optionCount === 4,
+      pass:
+        configValue === 'high' && domValue === 'high' && optionCount === 4 && restored === true,
       configValue,
       domValue,
       optionCount,
@@ -860,10 +923,22 @@ export const CHAT_MODEL_PICKER_ACT = `(async () => {
       await new Promise((resolve) => setTimeout(resolve, 600))
     }
 
-    const field = document.querySelector('[data-field="chat.model"]')
-    if (field === null) return { changed: false, reason: 'no chat.model field' }
-    const select = field.tagName === 'SELECT' ? field : field.querySelector('select')
-    if (select === null) return { changed: false, reason: 'no <select> inside chat.model' }
+    // 轮询等控件可用（同思考等级那条）：disabled 取决于渲染层 store 是否已水合，
+    // disabled 元素上的 change 事件不冒泡，会变成假 FAIL。本段在模板字符串里，注释不能带反引号。
+    let select = null
+    for (let attempt = 0; attempt < 10 && select === null; attempt += 1) {
+      const field = document.querySelector('[data-field="chat.model"]')
+      const candidate =
+        field === null ? null : field.tagName === 'SELECT' ? field : field.querySelector('select')
+      if (candidate !== null && candidate.disabled !== true) {
+        select = candidate
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      }
+    }
+    if (select === null) {
+      return { changed: false, reason: 'chat.model 下拉始终不可用（settingsStore 未水合？）' }
+    }
     const optionValues = Array.from(select.options).map((item) => item.value)
     if (optionValues.indexOf('deepseek-reasoner') === -1) {
       // 目标不在选项里就不硬切：切开只会静默拿到一个不是我们想要的值
@@ -903,18 +978,31 @@ export const CHAT_MODEL_PICKER_CHECK = `(async () => {
     if (probe !== undefined && probe.active !== '' && probe.before !== null) {
       const providers = state.value.llm.providers
       const target = providers[probe.active]
-      if (target !== undefined && target.model !== probe.before) {
+      const list = target === undefined ? undefined : target.modelList
+      const listSame =
+        probe.beforeList === null ||
+        (list !== undefined &&
+          list.length === probe.beforeList.length &&
+          list.every((item, index) => item === probe.beforeList[index]))
+      if (target === undefined || (target.model === probe.before && listSame)) {
+        // 本来就已经是原值（我们只是补了 modelList 的除外）：无需写回
+        restored = true
+      } else {
         const patch = { ...target, model: probe.before }
         if (probe.beforeList !== null) patch.modelList = probe.beforeList
         const result = await window.aurora.settings.update({
-          llm: { active, providers: { ...providers, [probe.active]: patch } },
+          llm: { active: state.value.llm.active, providers: { ...providers, [probe.active]: patch } },
         })
-        restored = result.ok
+        restored = result.ok === true
       }
     }
 
     return {
-      pass: configModel === 'deepseek-reasoner' && domValue === 'deepseek-reasoner' && optionCount >= 2,
+      pass:
+        configModel === 'deepseek-reasoner' &&
+        domValue === 'deepseek-reasoner' &&
+        optionCount >= 2 &&
+        restored === true,
       configModel,
       domValue,
       optionCount,
@@ -1249,6 +1337,12 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
     file: 'edge-bar-after-click.png',
     act: EDGE_BAR_CLICK_SCRIPT,
     check: EDGE_BAR_CLICK_SCRIPT,
+    // ⚠️ 先**隐藏**交互窗再点击竖条：否则这条会退化成空转 —— 计划前面已经有一次 `manager.show('chat')`
+    //（`chat.png` 场景），状态机里 `chat:true / primary:'chat'` 在点击**之前**就成立，探针不再依赖点击。
+    // 删掉 `mini-chat.png` 场景后窗口互斥不再自动把它藏起来，所以这里显式复位。
+    prepare: () => {
+      manager.hide('chat')
+    },
   })
   return plan
 }
