@@ -5,8 +5,8 @@
 - 创建时间：2026-09-25 00:38
 - 执行模式：单个
 - 基线提交：3ba9aaba0567d2ab6604bdee532fc7be036f53c0
-- 归档目录：（完成后填写：`step/archive/<YYYYMMDD-HHMMSS>-aurora-visual-themes`）
-- 归档时间：（完成后填写）
+- 归档目录：`step/archive/20260925-035034-aurora-visual-themes`
+- 归档时间：2026-09-25 03:50:34
 
 ## 完成标准
 
@@ -49,7 +49,7 @@
 | 5 | step-05-onboarding.md | 引导页与完成状态 | done | step 4 | `apps/desktop/src/renderer/onboarding/App.vue`、`apps/desktop/src/main/capture.ts`、`docs/07-ui-spec.md` |
 | 6 | step-06-light-theme.md | 系统浅色主题与双主题截图 | done | step 5 | `docs/07-ui-spec.md`、`apps/desktop/src/renderer/`、`apps/desktop/src/main/{window-manager,index,capture}.ts` |
 | 7 | step-07-verify.md | 全量回归与逐图复核 | done | step 6 | 只读（执行记录回填由执行器管理） |
-| 8 | step-08-archive.md | 归档清理 | pending | step 1..7 | `step/` |
+| 8 | step-08-archive.md | 归档清理 | done | step 1..7 | `step/` |
 
 ## 执行记录
 
