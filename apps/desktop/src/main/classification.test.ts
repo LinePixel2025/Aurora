@@ -99,6 +99,8 @@ function settingsWith(overrides: {
       windowState: {},
     },
     llm: { active: 'x', providers: {} },
+    // TTS 配置段（CONFIG_VERSION 7，docs/06 §13）：本用例不涉及语音，保持默认空态
+    tts: { enabled: true, active: '', autoRead: false, maxChars: 2000, providers: {} },
     modes: {
       current: 'classroom',
       classroom: {

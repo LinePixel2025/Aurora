@@ -10,6 +10,8 @@ import type {
   LlmSettings,
   ModeId,
   Settings,
+  TtsFormat,
+  TtsSettings,
   WindowName,
 } from '../config/schema.js'
 
@@ -82,6 +84,13 @@ export interface SettingsPatch {
      * 同一个 patch 里既声明删除、又在 `providers` 里给出同一个 id 时，字段以**给出的**为准：
      * 给出的条目带非空密文则保留它，否则（含空串）按**新建**处理，旧密文与缓存照样清理。
      */
+    removedProviders?: string[]
+  }
+  /**
+   * 语音合成（TTS，docs/06 §13）。`tts.providers` 同样是 record，
+   * 删除语义与 `llm.removedProviders` **完全一致**：缺项 ≠ 删除，删除必须显式声明。
+   */
+  tts?: Partial<TtsSettings> & {
     removedProviders?: string[]
   }
   advanced?: Partial<AdvancedSettings>
@@ -180,6 +189,47 @@ export interface TestConnectionResult {
 export interface ModelInfo {
   id: string
   ownedBy?: string
+}
+
+// ───────────────────────── 语音合成（TTS，docs/06 §13） ─────────────────────────
+
+export interface TtsSynthesizeRequest {
+  text: string
+  /** 缺省用 `tts.active` */
+  providerId?: string
+}
+
+export interface TtsSynthesizeResult {
+  audioBase64: string
+  /** 由输出格式推导：mp3→audio/mpeg、opus→audio/ogg、aac→audio/aac、flac→audio/flac、wav→audio/wav、pcm→audio/L16 */
+  mimeType: string
+  bytes: number
+  latencyMs: number
+  /** 实际送出的字符数 */
+  chars: number
+  /** 是否被 `tts.maxChars` 截断 */
+  truncated: boolean
+}
+
+export interface TtsTestRequest {
+  providerId?: string
+  baseUrl?: string
+  /** 页面草稿里的明文；为空则回落已保存凭据 */
+  apiKey?: string
+  model?: string
+  voice?: string
+  speed?: number
+  format?: TtsFormat
+  /** 缺省用内置样例句「你好，我是 Aurora。」 */
+  text?: string
+}
+
+export interface TtsTestResult {
+  ok: boolean
+  latencyMs: number
+  message: string
+  bytes?: number
+  httpStatus?: number
 }
 
 // ───────────────────────── 窗口 ─────────────────────────
@@ -512,6 +562,12 @@ export interface AuroraApi {
   llm: {
     testConnection(request: TestConnectionRequest): Promise<Result<TestConnectionResult>>
     listModels(request: TestConnectionRequest): Promise<Result<ModelInfo[]>>
+  }
+  tts: {
+    /** 合成语音并回传 base64 音频（渲染层不持有明文密钥） */
+    synthesize(request: TtsSynthesizeRequest): Promise<Result<TtsSynthesizeResult>>
+    /** 连接测试 / 试听（不回传音频，只回结果文字；试听播放走 synthesize） */
+    testConnection(request: TtsTestRequest): Promise<Result<TtsTestResult>>
   }
   window: {
     show(name: WindowName): Promise<Result<WindowState>>

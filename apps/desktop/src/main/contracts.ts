@@ -26,6 +26,10 @@ import type {
   Settings,
   SkillSummary,
   SkillsStatus,
+  TtsSynthesizeRequest,
+  TtsSynthesizeResult,
+  TtsTestRequest,
+  TtsTestResult,
   UpdateState,
   WindowName,
   WindowState,
@@ -178,6 +182,12 @@ export interface LlmTesterLike {
     apiKey?: string
     model?: string
   }): Promise<Array<{ id: string; ownedBy?: string }>>
+}
+
+/** 语音合成（TTS 朗读，docs/06 §13）：`TtsSynthesizer` 结构上满足 */
+export interface TtsSynthesizerLike {
+  synthesize(request: TtsSynthesizeRequest): Promise<TtsSynthesizeResult>
+  test(request: TtsTestRequest): Promise<TtsTestResult>
 }
 
 export interface SkillsInfoLike {

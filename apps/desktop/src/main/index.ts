@@ -47,6 +47,7 @@ import { PerceptionHub } from './perception.js'
 import { DesktopAgentHost, createConfirmTool, createProviderFactory } from './agent-host.js'
 import { McpController } from './mcp.js'
 import { LlmTester } from './llm-tester.js'
+import { TtsSynthesizer } from './tts.js'
 import { registerIpc, createSettingsWriter, type DesktopDeps } from './ipc.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { ProactiveScheduler } from './proactive.js'
@@ -523,6 +524,11 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('llm'),
     resolveFetch: () => netFetch,
   })
+  const tts = new TtsSynthesizer({
+    settings,
+    logger: logger.child('tts'),
+    resolveFetch: () => netFetch,
+  })
 
   // 7.2 分类管线装配（docs/05 §3、docs/02 §5.2）
   //     chokidar 监听 → 并发队列 → utilityProcess 内容提取 → 规则/LLM 判定 → 落盘 → 通知
@@ -661,6 +667,7 @@ async function bootstrap(): Promise<void> {
     agent,
     perception,
     llm,
+    tts,
     skills: skillsService,
     sessions,
     classification,

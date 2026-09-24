@@ -53,6 +53,7 @@ import type {
   GuideRunnerLike,
   HotkeyControllerLike,
   LlmTesterLike,
+  TtsSynthesizerLike,
   ModeManagerLike,
   PerceptionLike,
   ProactiveLike,
@@ -77,6 +78,8 @@ export interface DesktopDeps {
   agent: AgentHost
   perception: PerceptionLike
   llm: LlmTesterLike
+  /** 语音合成（tts:*，docs/06 §13） */
+  tts: TtsSynthesizerLike
   skills: SkillsInfoLike
   /** 会话历史（chat:history 水合，docs/06 §4） */
   sessions: SessionStore
@@ -248,6 +251,23 @@ export function registerIpc(deps: DesktopDeps): () => void {
       .listModels(request)
       .then(ok, (error: unknown) =>
         err('E_NETWORK', error instanceof Error ? error.message : String(error)),
+      )
+  })
+
+  // ───────────────────────── tts（语音合成，docs/06 §13） ─────────────────────────
+
+  handle(IPC.tts.synthesize, (request: Parameters<TtsSynthesizerLike['synthesize']>[0]) => {
+    return deps.tts
+      .synthesize(request)
+      .then(ok, (error: unknown) =>
+        err('E_INVALID_STATE', error instanceof Error ? error.message : String(error)),
+      )
+  })
+  handle(IPC.tts.testConnection, (request: Parameters<TtsSynthesizerLike['test']>[0]) => {
+    return deps.tts
+      .test(request)
+      .then(ok, (error: unknown) =>
+        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
       )
   })
 
@@ -611,6 +631,11 @@ export function redactSettings(settings: SettingsStoreLike, source: Settings): S
   for (const [id, provider] of Object.entries(clone.llm.providers)) {
     const draft = provider as unknown as Record<string, unknown>
     draft['apiKeySet'] = settings.getSecret(`llm.providers.${id}.apiKey`) !== ''
+    draft['apiKeyEnc'] = ''
+  }
+  for (const [id, provider] of Object.entries(clone.tts.providers)) {
+    const draft = provider as unknown as Record<string, unknown>
+    draft['apiKeySet'] = settings.getSecret(`tts.providers.${id}.apiKey`) !== ''
     draft['apiKeyEnc'] = ''
   }
   for (const server of clone.mcp.servers) {

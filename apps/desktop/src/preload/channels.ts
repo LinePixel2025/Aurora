@@ -50,6 +50,10 @@ const CHANNELS = {
     testConnection: 'llm:testConnection',
     listModels: 'llm:listModels',
   },
+  tts: {
+    synthesize: 'tts:synthesize',
+    testConnection: 'tts:testConnection',
+  },
   window: {
     show: 'window:show',
     hide: 'window:hide',

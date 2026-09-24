@@ -35,6 +35,11 @@ export const IPC = {
     testConnection: 'llm:testConnection',
     listModels: 'llm:listModels',
   },
+  /** 语音合成（TTS 朗读，docs/06 §13） */
+  tts: {
+    synthesize: 'tts:synthesize',
+    testConnection: 'tts:testConnection',
+  },
   window: {
     show: 'window:show',
     hide: 'window:hide',
@@ -103,6 +108,7 @@ export type IpcChannel =
   | (typeof IPC.settings)[keyof typeof IPC.settings]
   | (typeof IPC.mode)[keyof typeof IPC.mode]
   | (typeof IPC.llm)[keyof typeof IPC.llm]
+  | (typeof IPC.tts)[keyof typeof IPC.tts]
   | (typeof IPC.window)[keyof typeof IPC.window]
   | (typeof IPC.perception)[keyof typeof IPC.perception]
   | (typeof IPC.skills)[keyof typeof IPC.skills]

@@ -73,6 +73,10 @@ const api: AuroraApi = {
     testConnection: (request) => invoke(IPC.llm.testConnection, request),
     listModels: (request) => invoke(IPC.llm.listModels, request),
   },
+  tts: {
+    synthesize: (request) => invoke(IPC.tts.synthesize, request),
+    testConnection: (request) => invoke(IPC.tts.testConnection, request),
+  },
   window: {
     show: (name) => invoke(IPC.window.show, name),
     hide: (name) => invoke(IPC.window.hide, name),
