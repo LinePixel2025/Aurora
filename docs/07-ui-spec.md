@@ -297,6 +297,10 @@
   check 结尾把刚加的那一行删掉恢复行数。上面的隔离仍然必须——其余几条探针确实会改配置。
 - 引导页是欢迎 → AI 模型 → 选择模式 → 模式设置 → 完成五段（§2.6 的简写不省略实际中间阶段）。捕获依次输出 `onboarding-welcome.png`、`onboarding-llm.png`、`onboarding-modes.png`、`onboarding-guide.png`、`onboarding-done.png`，每张图的探针核对当前步骤标识、标题和页脚主动作在窗口可视范围内。自动化在隔离 userData 中通过现有按钮前进；模型页仅填入测试用本地凭据后保存，不伪造离线连接测试成功；模式设置页选择“稍后设置”进入完成页。五段不改变正式引导的数据或分支行为。
 - 产物：`<目录>/<窗口或场景>.png` 与 `report.json`（每张图的渲染层探针结果）。
+  `report.json` 的字段：`dir` / `requestedTheme`（本次请求的档位，未指定为 `system`）/ `theme`（实际生效档位）
+  / `files` / `checks`；每条 `check` 带 `name` / `file` / `result?` / `checked` / `ok` / `error?`。
+  `checked` 区分「纯截图场景（没配探针）」与「配了探针」：**配了探针却拿不到返回值会判失败**
+  （退出码 2），避免脚本提前 `return` 让断言静默失效 —— 只看 `result.pass === false` 会漏掉这一类。
 - 三类动作（`main/capture.ts` 的 `CaptureTarget`）：`prepare`（主进程侧准备）、
   `act`（在渲染层派发真实 `mouseenter` / `click`）、`check`（截图后取一份可判定结果）。
   面板是渲染层 hover 驱动的，**只从主进程改窗口尺寸会拍到空面板**，所以提示条展开态走 `act`。
@@ -381,8 +385,10 @@
     该条会判 FAIL。此时**不要**把探针改成永远 PASS，而是把判定退化为「按 `regions` 的存在性与尺寸」，
     并在 `report.json` 里保留 `region` / `regionValue` 原始值，同时在本文档注明该属性不可读
     （真实拖动仍可手测）——处置结论必须写进该步的执行记录。
-  - **交互窗场景的全局顺序（本轮定死）**：`chat-thinking-level` → `chat-model-picker` →
-    `chat-drag` → `chat-collapse` → `chat.png`。
+  - **交互窗场景的全局顺序（step-06 更新）**：`theme-chat`（双主题）→ `chat-thinking-level` →
+    `chat-model-picker` → `chat-tts` → `chat-drag` → `chat-collapse` → `chat.png`
+    （`theme-chat` 排在全部交互窗场景之前，因为主题图要拍"未配置模型"的基线态；
+    `chat-tts` 的现场由 `seedChatTtsHistory` 在跑计划前种好）。
     真正的约束只有一条：**不要在同一条场景的 `act` 里隐藏窗口**——`act` 在截图之前跑，
     窗口若先被 `hide()`，紧接着的 `capturePage()` 在已隐藏窗口上**不返回**（实测整轮卡死）。
     跨场景之间没有这个限制：每换一条场景 `captureWindows` 会重新 `manager.show()`，

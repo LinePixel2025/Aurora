@@ -72,6 +72,14 @@ export interface CaptureCheck {
   file: string
   /** `check` 脚本的返回值（未提供 check 时为空） */
   result?: unknown
+  /**
+   * 该目标是否**配了** `check`。
+   *
+   * 必须单列一个字段：`result === undefined` 有两种含义 —— 「本来就没配探针」（纯截图场景，正常）
+   * 与「配了探针但脚本静默返回 undefined」（断言根本没生效）。只靠 `result` 分不出来，
+   * 后者会被当成通过（见 `failed` 的判定与下面的注释）。
+   */
+  checked: boolean
   /** 该目标整体是否成功（截图写出 + check 无异常） */
   ok: boolean
   error?: string
@@ -81,7 +89,7 @@ export interface CaptureResult {
   dir: string
   files: string[]
   checks: CaptureCheck[]
-  /** 是否存在 `pass === false` 的探针（主进程据此决定退出码，见 index.ts） */
+  /** 是否存在失败项：探针 `pass === false`、截图/探针抛错，或**配了 check 却返回 undefined** */
   failed: boolean
 }
 
@@ -152,23 +160,34 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
         name: target.name,
         file,
         result: mergeCheckResults(rendererResult, target.nativeCheck?.()),
+        checked: target.check !== undefined || target.nativeCheck !== undefined,
         ok: true,
       })
     } catch (error) {
       logger?.warn('窗口截图失败', { window: target.name, error: String(error) })
-      checks.push({ name: target.name, file, ok: false, error: String(error) })
+      checks.push({
+        name: target.name,
+        file,
+        checked: target.check !== undefined || target.nativeCheck !== undefined,
+        ok: false,
+        error: String(error),
+      })
     }
   }
   return {
     dir,
     files,
     checks,
-    // 判定要同时覆盖两种情况：探针明确返回 `pass:false`，以及**探针根本没跑起来**
-    //（`executeJavaScript` 抛错 / 元素没拿到而提前 return → `result` 为 `undefined`）。
-    // 只看后者 `pass === false` 的话，这类「静默丢一条」会以退出码 0 结束。
+    // 判定要同时覆盖三种情况：探针明确返回 `pass:false`；截图 / 探针抛错（`ok:false`）；
+    // 以及**配了探针却静默返回 `undefined`**（脚本提前 return 或没写 return —— 断言等于没跑）。
+    // 前两版只看 `pass === false`：`result` 为 `undefined` 时一律算通过，
+    // 「静默丢一条」会以退出码 0 结束。所以 `checked` 字段必须参与判定
+    //（`result === undefined` 且 `checked === false` 才是正常的纯截图场景）。
     failed: checks.some(
       (item) =>
-        item.ok === false || (item.result as { pass?: unknown } | undefined)?.pass === false,
+        item.ok === false ||
+        (item.checked && item.result === undefined) ||
+        (item.result as { pass?: unknown } | undefined)?.pass === false,
     ),
   }
 }

@@ -851,13 +851,29 @@ async function runCapture(dir: string): Promise<void> {
   // 渲染层探针结果与截图一起落盘：截图回答"长什么样"，探针回答"能不能点"。
   // 用与 AURORA_SMOKE 相同的前缀，方便在同一条命令链里 grep 结果。
   try {
-    const report = { dir, files: result.files, checks: result.checks }
+    const report = {
+      dir,
+      // 档位要能**自证**：`AURORA_CAPTURE_THEME` 拼错（如 'LIGHT'）会静默回落 system，
+      // 只留 PNG 的话两份报告的目录名与实际档位对不上也看不出来，所以请求值与实际生效值都落盘。
+      requestedTheme: (process.env['AURORA_CAPTURE_THEME'] ?? '').trim() || 'system',
+      theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+      files: result.files,
+      checks: result.checks,
+    }
     await fs.writeFile(join(dir, 'report.json'), JSON.stringify(report, null, 2), 'utf8')
   } catch (error) {
     logger?.warn('截图报告写出失败', { error: String(error) })
   }
   for (const item of result.checks) {
-    if (item.result === undefined) continue
+    if (item.result === undefined) {
+      // 配了探针却拿不到返回值 = 断言没生效，必须显式报出来（`failed` 也会因此判失败）
+      if (item.checked) {
+        logger?.error(
+          `${SMOKE_RESULT_PREFIX} FAIL 截图探针 ${item.name} — 未返回结果（断言未生效）`,
+        )
+      }
+      continue
+    }
     // 探针脚本可以返回 `pass: boolean` 表达一条明确断言；没有 pass 时只当作信息记录
     const verdict = (item.result as { pass?: unknown }).pass
     const label = verdict === undefined ? 'INFO' : verdict === true ? 'PASS' : 'FAIL'
