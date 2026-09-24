@@ -203,7 +203,7 @@
 
 ## 5. 视觉方向与设计令牌（SSOT）
 
-方向：**Apple 风格深色玻璃** —— 分层填充 + 大圆角 + 柔和阴影 + 弹性缓动，品牌极光渐变作唯一点缀。
+方向：**克制的深色桌面界面** —— 静止卡片靠 1px 边界与留白区分层次，阴影留给悬停和浮层；品牌极光渐变只用于品牌标识、主动作和引导完成页。浅色随系统切换的实现与双主题验收在 Step 06 完成。
 
 ### 5.1 设计令牌
 
@@ -212,24 +212,27 @@
 | 类别 | 令牌 | 值 / 说明 |
 |---|---|---|
 | 品牌 | `--aurora-green` / `--aurora-blue` / `--aurora-gradient` | `#38d196` / `#5684ff`，渐变呼应 Aurora；**全局唯一点缀色** |
-| 底色 | `--bg-base` / `--bg-raised` / `--bg-overlay` / `--bg-glass` | `#0b0c0f` / `#141519` / `rgba(20,21,25,.78)` / `.72` |
+| 原始中性阶 | `--neutral-900/850/800/700/600/500/400/300/200/100/50` | `#000000` 到 `#f5f5f7`；850 为 Aurora 自有 `#0b0c0f`；仅语义层消费原始阶 |
+| 底色 | `--bg-base` / `--bg-raised` / `--bg-overlay` / `--bg-glass` | `var(--neutral-850)` / 保留 `#141519` / `rgba(20,21,25,.78)` / `.72`；浅色主题另行定义 |
 | 分层填充 | `--fill-1` / `--fill-2` / `--fill-3` | 悬浮层 → 卡片 → 悬停/选中，逐层变亮 |
 | 分隔线 | `--border-subtle` / `--border-strong` | `rgba(255,255,255,.07)` / `.14` |
-| 文本 | `--text-primary` / `--text-secondary` / `--text-muted` | `#f5f5f7` / `#a1a1aa` / `#6e6e73` |
+| 文本 | `--text-primary` / `--text-secondary` / `--text-muted` | `var(--neutral-50)` / `var(--neutral-300)` / `var(--neutral-500)`；正文与说明分别用 `--leading-normal(1.5)` / `--leading-relaxed(1.55)` |
 | 状态 | `--status-idle` / `-running` / `-unread` / `-error` / `-ok` | 灰 / 蓝 / 橙 / 红 / 绿，**四个窗口语义一致** |
-| 字体 | `--font-ui` / `--font-display` / `--font-mono` | 系统 UI 栈（`SF Pro Text` → `Segoe UI Variable` → 雅黑）；标题用 display 字体 + `-0.01em` |
+| 字体 | `--font-ui` / `--font-display` / `--font-mono` | 系统 UI 栈（`SF Pro Text` → `Segoe UI Variable` → 雅黑）；标题 `--tracking-display(-0.02em)`，分区标签 `--tracking-eyebrow(0.08em)`，数字 `--num-tabular` |
 | 字号 | `--text-xs(11)` / `sm(12.5)` / `base(13.5)` / `lg(15)` / `xl(20)` / `2xl(26)` | 正文基准 `--text-base`；`--leading-tight(1.25)` / `normal(1.5)` |
 | 字重 | `--weight-regular(400)` / `medium(500)` / `semibold(600)` | |
 | 圆角 | `--radius-xs(6)` / `sm(10)` / `md(14)` / `lg(20)` / `xl(28)` / `pill(999)` | |
-| 间距 | `--space-1..6`（4/8/12/16/24/32） | 8px 栅格 |
+| 间距 | `--space-1..10`（4/8/12/16/24/32/48/64/96/128） | 4px 栅格；大阶用于空状态与引导留白 |
 | 材质 | `--blur-thin(12)` / `--blur(24)` / `--blur-thick(40)` | `.glass` = 模糊 + `saturate(180%)` + 1px 内描边 + `--shadow-2`；不支持 `backdrop-filter` 时回落实色 |
-| 阴影 | `--shadow-1` / `-2` / `-3` | 越靠上层越散越深 |
-| 缓动 | `--ease-standard` / `--ease-spring` | 颜色/透明度用 standard；出现/展开用 spring（快起慢收、不回弹） |
-| 时长 | `--dur-fast(140)` / `base(220)` / `slow(340)`；`--transition-fast|base` | 后者是前者的组合别名 |
+| 阴影 | `--shadow-hairline` / `--shadow-1/2/3` | 静止卡片只用细描边与 hairline；浮层/悬停用带负 spread 的 2，模态用 3 |
+| 控件 | `--control-h-sm/md/lg` / `--hit-target` | 32/40/48px 按钮高度、40px 图标命中目标；动作圆角统一 `--radius-pill`，输入框使用 `--radius-sm/md`，卡片使用 `--radius-md/lg` |
+| 语义色 | `--on-accent` / `--accent-ring` / `--status-running-ring` / `--danger-*` / `--error-*` / `--warning-*` / `--ok-*` / `--overlay-scrim` | 前景、焦点、状态和遮罩只由语义层提供；状态色只用于状态，不用来装饰卡片 |
+| 缓动 | `--ease-standard` / `--ease-spring` / `--ease-smooth` | 颜色/透明度用 standard，大面积位移用 smooth，出现/展开用 spring |
+| 时长 | `--dur-fast(150)` / `base(250)` / `slow(350)`；`--transition-fast|base` | 后者是前者的组合别名 |
 
 **硬约束**：既有令牌名（`--bg-*`、`--border-*`、`--text-*`、`--status-*`、`--radius-sm|md|lg`、
 `--space-1..6`、`--transition-fast|base`、`--font-ui|mono`、`--aurora-gradient`）**只增不删**——
-它们散落在各窗口的 scoped 样式里，删名字不会报错，只会静默掉样式。
+它们散落在各窗口的 scoped 样式里，删名字不会报错，只会静默掉样式。组件只引用语义令牌，不直接引用原始中性阶或另写颜色字面量。分层卡片用 `--fill-1`，悬停用 `--fill-2`，选中用 `--fill-3`；输入框用 1px 紧聚焦环。每屏一个主动作，其余使用次要或弱动作。玻璃材质用于悬浮面板，不铺满页面；静止卡片保持边界清楚、正文不降低透明度。
 
 ### 5.2 动效规范
 
@@ -237,7 +240,7 @@
   `.anim-rise`（`translateY(6px)` 淡入）、`.anim-pop`（`scale(.96)` 弹入）。
 - Vue `<Transition>` 预设：`.sheet-*`（右侧滑入，提示条面板 / 抽屉）、`.rise-*`（气泡与列表项）、
   `.fade-*`（内容切换）、`.collapse-*`（`max-height` 展开，工具卡片 / 折叠区块）。
-- **硬约定**：所有过渡/动画必须走 `--transition-*` 或 `--dur-*` + `--ease-*`，不写死时长；
+- **硬约定**：快 / 标准 / 慢动作分别为 150 / 250 / 350ms；颜色和透明度走 standard、大面积位移走 smooth、进场展开走 spring。所有过渡/动画必须走 `--transition-*` 或 `--dur-*` + `--ease-*`，不写死时长；
   `prefers-reduced-motion: reduce` 下把三个时长压到 1ms 并让位移动画立刻落位（theme.css 里已全局兜底）。
 - 页面骨架统一用 `.page` / `.page-title` / `.page-sub`；页面需要不同内边距时在自己的 scoped 样式里覆盖
   （scoped 选择器优先级更高，覆盖安全）。

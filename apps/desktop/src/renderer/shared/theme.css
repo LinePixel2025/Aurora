@@ -14,13 +14,26 @@
 :root {
   color-scheme: dark;
 
+  /* ───────── 原始中性阶：组件只消费下方语义令牌 ───────── */
+  --neutral-900: #000000;
+  --neutral-850: #0b0c0f;
+  --neutral-800: #1c1c1e;
+  --neutral-700: #3a3a3c;
+  --neutral-600: #48484a;
+  --neutral-500: #6e6e73;
+  --neutral-400: #8e8e93;
+  --neutral-300: #aeaeb2;
+  --neutral-200: #c7c7cc;
+  --neutral-100: #e3e3e8;
+  --neutral-50: #f5f5f7;
+
   /* ───────── 品牌 ───────── */
   --aurora-green: #38d196;
   --aurora-blue: #5684ff;
   --aurora-gradient: linear-gradient(135deg, var(--aurora-green), var(--aurora-blue));
 
   /* ───────── 底色与材质（Apple 灰阶） ───────── */
-  --bg-base: #0b0c0f;
+  --bg-base: var(--neutral-850);
   --bg-raised: #141519;
   --bg-overlay: rgba(20, 21, 25, 0.78);
   --bg-glass: rgba(20, 21, 25, 0.72);
@@ -32,9 +45,9 @@
   --border-strong: rgba(255, 255, 255, 0.14);
 
   /* ───────── 文本 ───────── */
-  --text-primary: #f5f5f7;
-  --text-secondary: #a1a1aa;
-  --text-muted: #6e6e73;
+  --text-primary: var(--neutral-50);
+  --text-secondary: var(--neutral-300);
+  --text-muted: var(--neutral-500);
 
   /* ───────── 状态语义（全局同色，docs/07 §1） ───────── */
   --status-idle: #6e6e73;
@@ -42,6 +55,27 @@
   --status-unread: #f5a524;
   --status-error: #f2555a;
   --status-ok: #38d196;
+
+  /* ───────── 控件与状态语义 ───────── */
+  --on-accent: #08131a;
+  --accent-ring: rgba(86, 132, 255, 0.22);
+  --focus-ring: rgba(86, 132, 255, 0.7);
+  --selection-fill: rgba(86, 132, 255, 0.35);
+  --status-running-ring: rgba(86, 132, 255, 0.16);
+  --danger-fill: rgba(242, 85, 90, 0.14);
+  --danger-fill-hover: rgba(242, 85, 90, 0.22);
+  --danger-text: #ff9ca0;
+  --danger-border: rgba(242, 85, 90, 0.3);
+  --error-fill: rgba(242, 85, 90, 0.16);
+  --error-text: #ff9ca0;
+  --warning-fill: rgba(245, 165, 36, 0.16);
+  --warning-text: #f7c568;
+  --ok-fill: rgba(56, 209, 150, 0.14);
+  --ok-text: #6fe0b4;
+  --overlay-scrim: rgba(0, 0, 0, 0.5);
+  --scrollbar-hover: rgba(255, 255, 255, 0.24);
+  --glass-highlight: rgba(255, 255, 255, 0.06);
+  --glass-fallback: rgba(20, 21, 25, 0.96);
 
   /* ───────── 字体 ───────── */
   /* Windows 上没有真 SF，用系统 UI 字体栈近似；中文回落到雅黑 */
@@ -60,6 +94,10 @@
   --text-2xl: 26px;
   --leading-tight: 1.25;
   --leading-normal: 1.5;
+  --leading-relaxed: 1.55;
+  --tracking-display: -0.02em;
+  --tracking-eyebrow: 0.08em;
+  --num-tabular: tabular-nums;
   --weight-regular: 400;
   --weight-medium: 500;
   --weight-semibold: 600;
@@ -79,6 +117,15 @@
   --space-4: 16px;
   --space-5: 24px;
   --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+  --space-10: 128px;
+
+  --control-h-sm: 32px;
+  --control-h-md: 40px;
+  --control-h-lg: 48px;
+  --hit-target: 40px;
 
   /* ───────── 毛玻璃 ───────── */
   --blur-thin: 12px;
@@ -86,17 +133,19 @@
   --blur-thick: 40px;
 
   /* ───────── 阴影（越上层越散、越深） ───────── */
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.24);
-  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.32);
-  --shadow-3: 0 24px 64px rgba(0, 0, 0, 0.44);
+  --shadow-hairline: 0 1px 2px -1px rgba(0, 0, 0, 0.3);
+  --shadow-1: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 8px 24px -8px rgba(0, 0, 0, 0.5), 0 4px 8px -4px rgba(0, 0, 0, 0.4);
+  --shadow-3: 0 24px 64px -12px rgba(0, 0, 0, 0.6);
 
   /* ───────── 缓动与时长 ───────── */
   /* spring 用于"出现/展开"（快起慢收，观感有弹性但不回弹），standard 用于颜色与透明度 */
   --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
-  --dur-fast: 140ms;
-  --dur-base: 220ms;
-  --dur-slow: 340ms;
+  --ease-smooth: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-fast: 150ms;
+  --dur-base: 250ms;
+  --dur-slow: 350ms;
   --transition-fast: var(--dur-fast) var(--ease-standard);
   --transition-base: var(--dur-base) var(--ease-spring);
 }
@@ -145,13 +194,13 @@ select {
 
 /* 键盘可达性：只在键盘导航时显形，鼠标点击不出现描边 */
 :focus-visible {
-  outline: 2px solid rgba(86, 132, 255, 0.7);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: inherit;
 }
 
 ::selection {
-  background: rgba(86, 132, 255, 0.35);
+  background: var(--selection-fill);
   color: var(--text-primary);
 }
 
@@ -166,7 +215,7 @@ select {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.24);
+  background: var(--scrollbar-hover);
 }
 
 /* ───────── 材质 ───────── */
@@ -181,13 +230,13 @@ select {
   -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
   border: 1px solid var(--border-subtle);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 1px 0 var(--glass-highlight),
     var(--shadow-2);
 }
 
 @supports not (backdrop-filter: blur(1px)) {
   .glass {
-    background: rgba(20, 21, 25, 0.96);
+    background: var(--glass-fallback);
   }
 }
 
@@ -260,24 +309,32 @@ select {
 }
 
 .badge.warn {
-  background: rgba(245, 165, 36, 0.16);
-  color: #f7c568;
+  background: var(--warning-fill);
+  color: var(--warning-text);
 }
 
 .badge.error {
-  background: rgba(242, 85, 90, 0.16);
-  color: #ff9ca0;
+  background: var(--error-fill);
+  color: var(--error-text);
 }
 
 .badge.ok {
-  background: rgba(56, 209, 150, 0.14);
-  color: #6fe0b4;
+  background: var(--ok-fill);
+  color: var(--ok-text);
 }
 
 .divider {
   height: 1px;
   background: var(--border-subtle);
   margin: var(--space-3) 0;
+}
+
+/* 静止卡片使用细边界；交互抬升由 .interactive 提供。 */
+.surface-card {
+  background: var(--fill-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-hairline);
 }
 
 /**
@@ -299,7 +356,7 @@ select {
   font-family: var(--font-display);
   font-size: var(--text-xl);
   font-weight: var(--weight-semibold);
-  letter-spacing: -0.01em;
+  letter-spacing: var(--tracking-display);
   line-height: var(--leading-tight);
 }
 
