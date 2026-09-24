@@ -17,9 +17,63 @@ const props = withDefaults(
   defineProps<{
     messages: ChatMessage[]
     emptyHint?: string
+    /**
+     * 该窗口当前是否「可朗读」（docs/06 §13）：没有 TTS 配置时为 false，
+     * 此时**根本不渲染**朗读按钮（不是 disabled）——与文档门控口径一致。
+     */
+    ttsAvailable?: boolean
+    /** 正在播放的消息 id；与按钮的 key 比对决定显示「朗读」还是「停止」 */
+    speakingId?: string | null
+    /** 正在合成（等待主进程回包）的消息 id */
+    ttsLoadingId?: string | null
   }>(),
-  { emptyHint: '开始一段对话吧' },
+  { emptyHint: '开始一段对话吧', ttsAvailable: false, speakingId: null, ttsLoadingId: null },
 )
+
+const emit = defineEmits<{
+  (event: 'speak', text: string, id: string): void
+  (event: 'stopSpeak'): void
+}>()
+
+/**
+ * 朗读按钮是否该出现在这条消息上。
+ *
+ * 四个条件缺一不可：已配置 TTS、是助手消息、不是仍在占位的流式消息、正文非空。
+ * 空白正文没有可合成的文本，渲染一个点了没反应的按钮不如不渲染。
+ */
+function canSpeak(message: ChatMessage): boolean {
+  return (
+    props.ttsAvailable &&
+    message.role === 'assistant' &&
+    message.pending !== true &&
+    message.content.trim() !== ''
+  )
+}
+
+/** 这条消息正在合成 / 正在播放；两者互斥，由 `useTts` 的状态决定。 */
+function isSpeaking(id: string): boolean {
+  return props.speakingId === id
+}
+
+function isTtsLoading(id: string): boolean {
+  return props.ttsLoadingId === id
+}
+
+/** 按钮文案：合成中 → 停止 → 朗读（同一时刻只有一个音频，所以「停止」是全局动作）。 */
+function speakLabel(message: ChatMessage): string {
+  if (isTtsLoading(message.id)) return '合成中…'
+  if (isSpeaking(message.id)) return '停止'
+  return '朗读'
+}
+
+/** 点一次按钮：正在播这条就停，否则让父级去合成并播放。 */
+function onSpeakClick(message: ChatMessage): void {
+  if (isSpeaking(message.id)) {
+    emit('stopSpeak')
+    return
+  }
+  emit('speak', message.content, message.id)
+}
 
 // ───────────────────────── 跟随最新（自动滚底） ─────────────────────────
 
@@ -257,6 +311,23 @@ async function onContentClick(event: MouseEvent): Promise<void> {
           <!-- eslint-disable-next-line vue/no-v-html -->
           <div v-else-if="message.content !== ''" class="md" v-html="message.html" />
 
+          <!--
+            朗读按钮（docs/06 §13）：正文之后、工具卡片之前。
+            只在 `canSpeak` 成立时渲染 —— 未配置 TTS 时按钮**不存在**（不是 disabled）。
+            播放实现只有 `useTts` 一份，这里只发事件，不碰 Audio。
+          -->
+          <button
+            v-if="canSpeak(message)"
+            type="button"
+            class="speak-btn tiny"
+            :class="{ active: isSpeaking(message.id) }"
+            :disabled="isTtsLoading(message.id)"
+            :data-action="isSpeaking(message.id) ? 'stop-speak' : 'speak-message'"
+            @click="onSpeakClick(message)"
+          >
+            {{ speakLabel(message) }}
+          </button>
+
           <!-- 工具执行卡片：折叠头行 + 展开细节（docs/06 §5） -->
           <div v-if="(message.toolCalls?.length ?? 0) > 0" class="tools">
             <article
@@ -436,6 +507,39 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   background: color-mix(in srgb, var(--status-error) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--status-error) 32%, transparent);
   color: var(--status-error);
+}
+
+/* ── 朗读按钮（docs/06 §13） ── */
+/* 助手消息正文之后的次要动作：低调的胶囊，hover 才浮出来，不跟正文抢注意力 */
+.speak-btn {
+  align-self: flex-start;
+  margin-top: var(--space-1);
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: var(--fill-2);
+  color: var(--text-secondary);
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.speak-btn:hover:not(:disabled) {
+  background: var(--fill-3);
+  color: var(--text-primary);
+}
+
+/* 播放中：用品牌色描边表达「这是当前唯一在响的那条」 */
+.speak-btn.active {
+  border-color: var(--aurora-blue);
+  color: var(--aurora-blue);
+}
+
+.speak-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 /* ── 工具执行卡片（docs/06 §5） ── */

@@ -22,7 +22,6 @@ import { join } from 'node:path'
 import type { BrowserWindow } from 'electron'
 import type { Logger, WindowName } from '@aurora/shared'
 import type { WindowManager } from './window-manager.js'
-
 /** 设置页可深链的页面 id，需与 `renderer/settings/App.vue` 的 `PageId` 保持一致 */
 export const SETTINGS_PAGE_IDS = [
   'general',
@@ -59,7 +58,6 @@ export interface CaptureOptions {
   /** 每张截图前的等待（默认 700ms，等过渡动画结束） */
   delayMs?: number
 }
-
 export interface CaptureCheck {
   name: WindowName
   file: string
@@ -1078,6 +1076,183 @@ export const CHAT_MODEL_PICKER_CHECK = `(async () => {
 })()`
 
 /**
+ * 对话窗「朗读」按钮探针 · 前半（step-06）：在渲染层点一次 [data-action="speak-message"]。
+ *
+ * ⚠️ **act 只负责触发点击**，不断言真的出声：截图跑在隔离 userData + 离线环境上，
+ * 合成必然失败（且顺序上「缺 API Key」先于「请求失败」——`tts.error` 的文案与它无关）。
+ * 「点完之后按钮有没有回到朗读态」由 check 断言。
+ *
+ * 按钮**没有强制造出来**，这是刻意的取舍：
+ * - 不做配置改写：本场景在真实 userData 下也会被跑（`AURORA_CAPTURE_WINDOWS=chat`），
+ *   从 0 造一个 TTS provider 再删掉会动到用户的 `tts.providers` / `tts.active` / 明文凭据缓存；
+ * - 即便造了也未必成：按钮的出现取决于渲染层的 `ttsReady`，而它读的是**本窗口** `settingsStore`
+ *   已水合的 settings。探针里点一次侧栏「新会话」会让 `chat.switchSession` 走一遍
+ *   `hydrate` + `loadSessions` 的长往返，期间「对话」侧栏短暂空白，窗口宽度随之伸缩，反而更不稳。
+ *
+ * 所以「没有按钮」是**预期分支**：如实返回说明，交给 check 用退化判据处理（不抛错、不假 PASS）。
+ */
+export const CHAT_TTS_SPEAK_ACT = `(async () => {
+  try {
+    const buttons = () => Array.from(document.querySelectorAll('[data-action^="speak"]'))
+    const snapshot = () =>
+      buttons().map((item) => ({
+        action: item.getAttribute('data-action'),
+        label: (item.textContent || '').trim(),
+        disabled: item.disabled === true,
+      }))
+    // 0) 先把 TTS 配置写成「可朗读」（总开关 + 三要素齐全的 provider），否则按钮按设计不渲染。
+    //    必须走 settings:update IPC，不能像会话那样写文件：SettingsStore 在启动时就把
+    //    config.json 读进内存并长期缓存，启动后写文件对运行中的进程无效（实测踩到）。
+    //    凭据故意留空：离线合成必然失败，那正是本探针要验证的复位路径。
+    const seeded = { ok: true, already: false, error: null }
+    const state = await window.aurora.settings.get()
+    if (!state.ok) {
+      seeded.ok = false
+      seeded.error = state.message
+    } else if (state.value.tts.enabled !== true || state.value.tts.providers['capture'] === undefined) {
+      const result = await window.aurora.settings.update({
+        tts: {
+          enabled: true,
+          active: 'capture',
+          providers: {
+            ...state.value.tts.providers,
+            capture: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.openai.com/v1',
+              apiKeyEnc: '',
+              model: 'tts-1',
+              voice: 'alloy',
+              speed: 1,
+              format: 'mp3',
+            },
+          },
+        },
+      })
+      if (!result.ok) {
+        seeded.ok = false
+        seeded.error = result.message
+      }
+    } else {
+      seeded.already = true
+    }
+    window.__auroraTtsSeed = seeded
+    // 等渲染层 store 收到 settings:changed 广播并重算 ttsReady
+    if (seeded.ok && !seeded.already) await new Promise((resolve) => setTimeout(resolve, 400))
+    // 与 check 同款：等渲染层水合出助手消息上的朗读按钮（最多 2s，每 200ms 一次）
+    let target = null
+    for (let attempt = 0; attempt < 10 && target === null; attempt += 1) {
+      const found = buttons().filter((item) => item.getAttribute('data-action') === 'speak-message')
+      if (found.length > 0) target = found[0]
+      else await new Promise((resolve) => setTimeout(resolve, 200))
+    }
+    if (target === null) {
+      // 未配置 TTS 模型 / 没有助手消息时按钮**根本不渲染**（不是 disabled）：如实上报，不假 PASS
+      return {
+        clicked: false,
+        seeded,
+        reason: 'no [data-action="speak-message"]（没有助手消息，或 TTS 配置未生效？）',
+        found: snapshot(),
+      }
+    }
+    const label = (target.textContent || '').trim()
+    target.click()
+    // 点完不停顿：紧接着的 delayMs 与截图耗时正好留给合成走完（离线时会失败并复位）
+    return { clicked: true, seeded, label }
+  } catch (error) {
+    return { clicked: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 对话窗「朗读」按钮探针 · 后半（step-06）：按钮存在，且点击后**回到「朗读」态**。
+ *
+ * 两条判据二选一，用到的哪条写在返回值的 `criterion` 里（排查假 FAIL 先看它）：
+ * - `'ready'`（首选）：act 点过按钮之后，它必须在 1.5s 内回到 `data-action="speak-message"`
+ *   且文案是「朗读」——说明 `useTts` 的 `loading` 有复位、没有卡死在「合成中…」。
+ *   离线环境下合成会失败，但失败路径同样会清 `loading`，所以这条判据离线可跑。
+ * - `'presence'`（退化）：页面上确实有助手消息（`.message.r-assistant` 非空），
+ *   但 READY 所要求的前提不成立（act 没点到 / 渲染层 `settingsStore` 尚未水合出 TTS 配置），
+ *   此时**只断言按钮存在性**，不去冤枉「loading 没复位」。
+ *
+ * `pass` 与判据解耦，两种情况下都是「该看到的按钮确实看到了」：
+ * `'ready'` 要它存在**且**已复位，`'presence'` 只要它存在。
+ * 注意这条断言不覆盖「没有回复时按钮不该有」这一面 —— 那个前提在 capture 计划里不成立
+ *（见 `CHAT_TTS_SPEAK_ACT` 的注释），单靠本探针无法区分「按设计不渲染」与「渲染漏了」，
+ * 所以不把它写进 `pass`，只在返回值里如实上报。
+ *
+ * ⚠️ 轮询是必须的，且**不能在 check 里重新点击**：check 跑在**截图之后**（见 `captureWindows`
+ * 的顺序 show → act → wait → capturePage → check），此刻 `data-action` 可能已经被 act
+ * 触发过状态变化。这里最多等 1.5s、每 100ms 查一次，与 `CHAT_THINKING_LEVEL_ACT` 的
+ * 轮询同构。本段在模板字符串里，注释里不能出现反引号。
+ */
+export const CHAT_TTS_SPEAK_CHECK = `(async () => {
+  try {
+    const all = () => Array.from(document.querySelectorAll('[data-action^="speak"]'))
+    const read = (item) => ({
+      action: item.getAttribute('data-action'),
+      label: (item.textContent || '').trim(),
+      disabled: item.disabled === true,
+    })
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+    const assistantMessages = document.querySelectorAll('.message.r-assistant').length
+    const findButton = (action) =>
+      all().find((item) => item.getAttribute('data-action') === action) || null
+    // 轮询前先看一次：已经复位就直接记 0 次等待
+    let reviveMs = 0
+    let ready = findButton('speak-message')
+    while (ready === null && reviveMs < 1500) {
+      await wait(100)
+      reviveMs += 100
+      ready = findButton('speak-message')
+    }
+    ready = findButton('speak-message') || null
+    const speaking = findButton('stop-speak')
+    const found = all().map(read)
+
+    const present = ready !== null || speaking !== null
+    const label = ready === null ? (speaking === null ? null : read(speaking).label) : read(ready).label
+    // 首选用「回到朗读态」；它要求的前提不成立时退化成存在性
+    const preferReady = present && assistantMessages > 0
+    const criterion = preferReady ? 'ready' : 'presence'
+    const result = {
+      pass: preferReady ? ready !== null && label === '朗读' : present,
+      criterion,
+      present,
+      assistantMessages,
+      speakButtons: found.length,
+      reviveMs,
+      ready,
+      found,
+      seed: window.__auroraTtsSeed === undefined ? null : window.__auroraTtsSeed,
+    }
+
+    // 收尾：act 动过 TTS 配置（settings:update），这里把它摘掉。
+    // 本场景在真实 userData 下也会被跑到（AURORA_CAPTURE_WINDOWS=chat），不能留下种下的 provider。
+    // 只在「是 act 自己造的那一个」时清，用户原有的配置一律不动。
+    const seed = window.__auroraTtsSeed
+    if (seed !== undefined && seed.ok === true && seed.already === false) {
+      const state = await window.aurora.settings.get()
+      if (state.ok) {
+        const providers = { ...state.value.tts.providers }
+        delete providers['capture']
+        await window.aurora.settings.update({
+          tts: {
+            enabled: state.value.tts.enabled,
+            // active 还指着被摘掉的 capture 时必须一起复位，否则会留下悬空引用
+            active: state.value.tts.active === 'capture' ? '' : state.value.tts.active,
+            providers,
+          },
+        })
+      }
+    }
+    return result
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
  * 「AI 模型」页「模型设置」区探针 · 前半（step-05）：点开第一行的「编辑」并点一次「+ 手动添加」。
  *
  * `+ 手动添加` 只改**本地 draft**（加一行空行，保存时才落盘），所以这一步不动配置；
@@ -1397,8 +1572,58 @@ export const SETTINGS_TTS_CARD_CHECK = `(async () => {
  *
  * ⚠️ 交互窗场景的**顺序约束**：凡是要在交互窗里操作 DOM 的场景，都必须排在 `chat-collapse.png` **之前**——
  * 收起会把窗口隐藏，之后再 `capturePage()` 只会卡死。因此顺序固定为
- * `chat-thinking-level` → `chat-model-picker`（step 5 加）→ `chat-drag` → `chat-collapse` → `chat.png`。
+ * `chat-thinking-level` → `chat-model-picker`（step 5 加）→ `chat-tts`（step 6 加）→ `chat-drag`
+ * → `chat-collapse` → `chat.png`。
  */
+/**
+ * 为 `chat-tts` 场景准备一条「可朗读」的历史（主进程侧，在跑计划之前调用一次）。
+ *
+ * 为什么必须种数据（而不是让探针去点出来）：
+ * 隔离 userData 下 `chat:history` 必然是空的，而 `chat-tts` 需要**一条助手消息**
+ * 才会渲染「朗读」按钮；离线环境 `chat:send` 只会回 error 事件（没有可用 LLM），
+ * 不会产生助手消息。
+ *
+ * ⚠️ 只种**会话**，不种配置：`SettingsStore.init()` 在启动时就把 `config.json` 读进内存并
+ * 长期缓存（`this.current`），启动之后再写文件对运行中的进程毫无影响（实测踩到）。
+ * TTS 配置改由 `CHAT_TTS_SPEAK_ACT` 走 `settings:update` IPC 写 —— 那是唯一能让渲染层
+ * 立刻看到新配置的路径（与 `CHAT_MODEL_PICKER_ACT` 同一套路）。
+ *
+ * 会话则相反：`SessionStore` 是按会话**惰性**读盘的，所以启动后写文件是安全的 ——
+ * 但必须在交互窗第一次 `chat:history` 之前，否则缓存里已经是空数组。
+ * 隔离目录退出时会被整体删除，因此不会污染用户数据。
+ */
+export async function seedChatTtsHistory(userData: string | undefined): Promise<void> {
+  if (userData === undefined || userData === '') return
+  /**
+   * ⚠️ 会话 id 必须与交互窗用的那个一致：`chat/App.vue` 是 `useChat('chat', 'main')`，
+   * 也就是 `main`。种成别的 id（首版种的 `capture-tts`）文件写成功了也没人读 ——
+   * 窗口水合的是 `main.json`（首跑实测 `assistantMessages: 0` 就是这个原因）。
+   */
+  const sessionId = 'main'
+  const now = new Date().toISOString()
+
+  // 1) 会话历史：一条助手消息即可（`MessageList` 只对 assistant 渲染朗读按钮）
+  const session = {
+    version: 1,
+    sessionId,
+    updatedAt: now,
+    messages: [
+      {
+        id: 'capture-tts-a1',
+        role: 'assistant',
+        content: '这是截图探针种下的一条助手回复，用来验证「朗读」按钮的渲染与状态复位。',
+        createdAt: now,
+      },
+    ],
+  }
+  await mkdir(join(userData, 'sessions'), { recursive: true })
+  await writeFile(
+    join(userData, 'sessions', `${sessionId}.json`),
+    JSON.stringify(session, null, 2),
+    'utf8',
+  )
+}
+
 export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
   const plan: CaptureTarget[] = [
     { name: 'edge-bar', file: 'edge-bar.png' },
@@ -1424,6 +1649,21 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       file: 'chat-model-picker.png',
       act: CHAT_MODEL_PICKER_ACT,
       check: CHAT_MODEL_PICKER_CHECK,
+    },
+    // 朗读按钮（step-06）：act 点一次 [data-action="speak-message"]（离线合成必然失败，
+    // 只触发点击、不断言出声），check 断言按钮存在且点击后回到「朗读」态；
+    // 「没有可用助手消息」时退化成只断言按钮存在性，判据写在返回值的 criterion 里。
+    // 同样排在 chat-collapse 之前（窗口一被 hide，紧接着的 capturePage 会永不返回）。
+    {
+      name: 'chat',
+      file: 'chat-tts.png',
+      // 现场由 `runCapture` 在跑计划前种好（见 `seedChatTtsHistory`）；这里只需要
+      // reload 一次让渲染层重新水合 —— 本场景没有 `query`，`captureWindows` 不会替我们 reload。
+      prepare: async () => {
+        await manager.reload('chat', {})
+      },
+      act: CHAT_TTS_SPEAK_ACT,
+      check: CHAT_TTS_SPEAK_CHECK,
     },
     { name: 'chat', file: 'chat-drag.png', check: WINDOW_DRAG_SCRIPT },
     { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },

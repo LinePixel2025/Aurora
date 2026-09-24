@@ -70,7 +70,12 @@ import { createTray, type TrayController } from './tray.js'
 import { SMOKE_FLAG, SMOKE_RESULT_PREFIX, smokeScript } from './smoke.js'
 import { STUB_API_KEY, STUB_MODEL, startStubLlmServer, type StubLlmServer } from './smoke-llm.js'
 import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
-import { captureWindows, defaultCapturePlan, filterCapturePlan } from './capture.js'
+import {
+  captureWindows,
+  defaultCapturePlan,
+  filterCapturePlan,
+  seedChatTtsHistory,
+} from './capture.js'
 import {
   registerComputerTools,
   registerSettingsTool,
@@ -819,6 +824,10 @@ async function runCapture(dir: string): Promise<void> {
     return
   }
   const manager = windows
+  // TTS 场景的现场准备必须在跑计划**之前**做完：`SessionStore` 首次读会话即缓存，
+  // 而交互窗 onMounted 就会读一次，计划开始后再写文件已经晚了（见 defaultCapturePlan 注释）。
+  // `app.getPath('userData')` 在隔离模式下就是那个临时目录（见文件头注释）。
+  await seedChatTtsHistory(app.getPath('userData'))
   const plan = filterCapturePlan(defaultCapturePlan(manager), process.env['AURORA_CAPTURE_WINDOWS'])
   logger?.info('开始窗口截图', { dir, count: plan.length })
   const result = await captureWindows({

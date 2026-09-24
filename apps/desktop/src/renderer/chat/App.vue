@@ -17,7 +17,7 @@
  * 输入区是独立的圆角容器（聚焦加品牌光晕），会话列表/工具卡片走 `.sheet-*` / `.collapse-*`。
  * 交互语义（会话切换、发送、中断、附件拖拽、工具卡片、敏感工具确认）保持不变。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ChatMessageDto, LlmProviderConfig, SensitiveToolRequest } from '@aurora/shared'
 import { DEFAULT_REASONING_EFFORT, type ReasoningEffort } from '@aurora/shared/browser'
 import AppButton from '../shared/components/AppButton.vue'
@@ -29,6 +29,7 @@ import SensitiveToolCard from '../shared/components/SensitiveToolCard.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import ThinkingLevelSelect from '../shared/components/ThinkingLevelSelect.vue'
 import { useChat } from '../shared/composables/useChat.js'
+import { useTts } from '../shared/composables/useTts.js'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 
@@ -46,7 +47,7 @@ const {
   hydrate,
   loadQuickPreview,
   loadSessions,
-  switchSession,
+  switchSession: rawSwitchSession,
   newSession,
 } = chat
 const windowStore = useWindowStore()
@@ -176,6 +177,99 @@ function flashPickerHint(text: string): void {
     pickerHint.value = null
     pickerHintTimer = null
   }, 2000)
+}
+
+// ───────────────────────── 语音朗读（TTS，docs/06 §13） ─────────────────────────
+
+const tts = useTts()
+
+/**
+ * 当前是否「可朗读」——朗读按钮出不出现的**唯一**口径（docs/06 §13）。
+ *
+ * 四个条件缺一不可：总开关打开、`tts.active` 指向一个存在的 provider、
+ * 且该 provider 的 `baseUrl` / `model` / `voice` 都填了。
+ * 没有配置时按钮**根本不渲染**（不是 disabled），用户不会看到一个点了必然失败的入口。
+ */
+const ttsReady = computed<boolean>(() => {
+  const settings = settingsStore.settings
+  if (!settings) return false
+  const { enabled, active, providers } = settings.tts
+  if (!enabled || active === '') return false
+  const provider = providers[active]
+  if (provider === undefined) return false
+  return (
+    provider.baseUrl.trim() !== '' && provider.model.trim() !== '' && provider.voice.trim() !== ''
+  )
+})
+
+/**
+ * 已自动朗读过的消息 id。
+ *
+ * 自动朗读只在「本轮从 `streaming=true` 变为 `false`」时触发；单靠这个边沿还不够稳——
+ * watch 可能因别的原因重跑，同一条回复被读第二遍比不读更糟。记一个 id 即可去重。
+ */
+let lastReadId: string | null = null
+
+/**
+ * 回复结束 → 自动朗读（仅在 `tts.autoRead` 打开时）。
+ *
+ * 只读**本轮刚结束**的那条助手消息（`chat.lastAssistant`），且：
+ * - `before && !now` 才是「这一轮结束」的边沿（历史水合不会触发，因为 streaming 一直是 false）；
+ * - 同一 id 不重复朗读；
+ * - 内容为空 / 未配置可朗读条件 / 用户已手动读过 → 静默跳过（不弹错、不打断对话）。
+ */
+watch(
+  () => streaming.value,
+  (now, before) => {
+    if (!before || now) return
+    if (!ttsReady.value || settingsStore.settings?.tts.autoRead !== true) return
+    const message = chat.lastAssistant.value
+    if (message === null || message.id === lastReadId) return
+    const text = message.content.trim()
+    if (text === '') return
+    lastReadId = message.id
+    void tts.speak(text, message.id)
+  },
+)
+
+/**
+ * 朗读失败提示：`tts.error` 是渲染层瞬时状态（不落盘、不进会话记录）。
+ *
+ * 与 `pickerHint`（输入区那行 muted 小字）刻意分开：朗读失败是**独立于输入区**的错误，
+ * 挤在下拉旁边既看不见也容易被误读成模型选择失败，所以走独立 `AppToast tone="error"`。
+ * 拿到就清空 `tts.error`——否则下一次同样的失败因为值没变而不再触发 watch。
+ */
+const ttsErrorToast = ref<string | null>(null)
+let ttsErrorTimer: number | null = null
+
+watch(
+  () => tts.error.value,
+  (message) => {
+    if (message === null) return
+    ttsErrorToast.value = message
+    tts.error.value = null
+    if (ttsErrorTimer !== null) window.clearTimeout(ttsErrorTimer)
+    ttsErrorTimer = window.setTimeout(() => {
+      ttsErrorToast.value = null
+      ttsErrorTimer = null
+    }, 4000)
+  },
+)
+
+/**
+ * 切换会话时停掉播放：切走之后那条消息已经不在屏幕上，
+ * 让音频继续响着会让人以为串台了。包一层是为了让**所有**切换入口
+ * （侧栏点选、openQuick）自动带上这个副作用，而不是逐个记得加。
+ */
+async function switchSession(id: string): Promise<void> {
+  tts.stop()
+  lastReadId = null
+  await rawSwitchSession(id)
+}
+
+/** 朗读按钮：合成并播放；同一条再点一次由 MessageList 转成 `stopSpeak`。 */
+function speakMessage(text: string, id: string): void {
+  void tts.speak(text, id)
 }
 
 /**
@@ -480,9 +574,17 @@ function formatTime(iso: string): string {
 
         <p v-if="dragging" class="drop-hint tiny">松开即可把文件内容附带发送</p>
 
+        <!-- 朗读失败：独立 toast，4 秒后自动收起（不长时间驻留） -->
+        <AppToast v-if="ttsErrorToast" tone="error">朗读失败：{{ ttsErrorToast }}</AppToast>
+
         <MessageList
           :messages="messages"
           empty-hint="这是完整对话窗口：可以问系统状态、让 Aurora 帮忙整理资料，也可以直接把文件拖进来。"
+          :tts-available="ttsReady"
+          :speaking-id="tts.speaking.value"
+          :tts-loading-id="tts.loading.value"
+          @speak="speakMessage"
+          @stop-speak="tts.stop"
         />
       </main>
     </div>
