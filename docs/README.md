@@ -46,6 +46,16 @@
   （`v4 → v5` 迁移补齐新字段，幂等且不覆盖用户已写值）。关键字段：`agent.tools.enabled`、
   `agent.tools.workspaceDir`、`agent.tools.terminal.{enabled,timeoutMs,maxOutputChars}`、
   `agent.tools.files.{enabled,maxReadBytes}`、`agent.tools.open.enabled`。
+- **语音合成朗读（TTS）**：助手消息下方新增「朗读」按钮（播完/停止自动复位），设置页新增
+  **「语音」页**（侧栏「AI 能力」组第 2 项）可添加 / 编辑 / 删除任意 **OpenAI 兼容**的
+  TTS 服务，支持「自动朗读新回复」与单次字数上限。合成在**主进程**完成
+  （`POST <baseUrl>/audio/speech`，走 `main/net.ts` 的 `netFetch` 以受系统代理影响），
+  音频以 base64 过 IPC、渲染层转 Blob 播放；**渲染层与日志永远看不到明文密钥**。
+  配置 Schema 升到 **v7**（新增 `tts.*` 段，`v6 → v7` 迁移幂等补齐、不覆盖用户已写值）。
+  关键字段：`tts.enabled`、`tts.active`、`tts.autoRead`、`tts.maxChars`、
+  `tts.providers.<id>.{baseUrl,model,voice,speed,format}`（凭据密文在 `apiKeyEnc`）。
+  详见 [06-agent-core.md §13](./06-agent-core.md)、[08-settings-onboarding.md §6](./08-settings-onboarding.md)。
+  **语音输入（STT）不在本轮范围**。
 
 鼠标键盘模拟、截图录屏、持久交互式 shell、命令黑名单、Anthropic 等非 OpenAI 兼容协议
 **仍属后续范围**。

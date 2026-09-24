@@ -104,6 +104,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   「快速会话」（`sessionId = quick`）与历史会话列表都搬到交互窗侧栏（「快速 / 会话」双栏），
   提示条面板操作入口由 4 个减为 3 个；配置迁移到 v6（`v5 → v6` 删除 `general.windowState['mini-chat']`）。
 - MCP HTTP 传输暂不支持自定义鉴权头（凭据仅经 stdio `env` 注入）。
+- **语音只做 TTS 输出，语音输入（STT）未开始**：助手消息的「朗读」按钮与「自动朗读新回复」
+  都依赖 `tts.enabled` + `tts.active` 指向一个 `baseUrl`/`model`/`voice` 都填齐的 provider；
+  **未配置时对话窗连按钮都不渲染**（不是 disabled）——这是文档门控口径，别当 bug 修。
 - Skill 的 `scripts/` 永不自动执行（只注入指令正文）；图片 OCR 未启用（只取文件名与尺寸）。
 - Work / Code Mode 为占位实现；多语言、ARM64 / 便携版、macOS / Linux 未开始。
 - `integrations/classisland-bridge` **CI 不编译**（流水线没有 .NET SDK）。
@@ -129,3 +132,23 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   JSON 回落，正好把 Proxy 变成纯数据）；只传字面量 / 字符串的通道不用处理。
 - **ClassIsland 联动只认 `main/classisland.ts` 的 JSON 契约**，桥接端的实现细节不得泄漏到
   provider 与消费链；桥接数据的一切异常都必须降级为空课表 + 告警。
+- **渲染层播放合成音频依赖 CSP 的 `media-src 'self' blob:`**（`main/index.ts` 两条 CSP 都要有）：
+  生产 CSP 的 `default-src 'self'` 会拦掉 `blob:`，而开发态 `default-src` 里本来就带 `blob:` ——
+  漏掉生产那条的症状是「**开发能播、打包不能播**」，属最难排查的一类假阳性。
+  TTS 出网必须走 `main/net.ts` 的 `netFetch`（否则 `advanced.proxy` 对它无效），
+  `TtsSynthesizer` 用 `resolveFetch` 注入；它**不得 import electron**，否则 vitest 收不了它的单测。
+- **`tts.providers` 是凭据路径**，已进 `SETTINGS_READONLY_PREFIXES`（AI 的 `set_setting` 一律拒绝）。
+  新增任何 shared 的密文路径时，`SettingsStore` 的 4 处（`canonicalSecretPath` / `readSecretField` /
+  `writeSecretField` / `toPersisted`）**外加**主进程 `redactSettings` **必须同时改**：
+  漏改 `writeSecretField` = 凭据静默丢失，漏改 `redactSettings` = 密文泄漏进渲染层。
+  另注意 `SENSITIVE_KEY_PATTERN` 原本是**整体锚定**的，`apiKeyEnc` 这类**派生字段名**不命中 ——
+  它已补 `.*api[-_]?key.*` 分支，日志脱敏才盖得住密文。
+- **改了 `packages/shared/src/**` 之后必须先 `pnpm --filter @aurora/shared build` 再跑下游 typecheck**：
+  该包的 `types` 指向 `dist/index.d.ts`，不重建的话 `apps/desktop` 会对着**旧类型**报
+  「no exported member」（看着像自己写错了，其实只是没编译）。
+- **capture / smoke 的探针改配置时注意两个缓存**：`SettingsStore.init()` 启动即把 `config.json`
+  读进内存并长期缓存 —— 启动后**写文件对运行中的进程无效**，改配置只能走 `settings:update` IPC；
+  而 `SessionStore` 是按会话**惰性**读盘且首次读即缓存，种会话文件必须赶在窗口第一次
+  `chat:history` **之前**（`runCapture` 里、`captureWindows` 之前）。两者时机相反，容易搞混。
+- **`capture.ts` 里那些探针是 template literal 字符串**：字符串**内部**的注释写反引号 `` ` ``
+  会提前终止字符串，直接 `TS1005` 且报错位置极具误导性。写注释用「」或单引号。
