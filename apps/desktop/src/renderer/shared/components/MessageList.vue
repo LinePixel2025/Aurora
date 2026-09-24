@@ -768,7 +768,9 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 }
 
 .md :deep(.md-link) {
-  color: var(--aurora-blue);
+  /* 链接是正文文本：用可读的语义强调色，浅色档 --accent-text 是深蓝（#3157bb，6.0:1），
+     直接写 --aurora-blue 在浅色基座上只有 3.14:1 */
+  color: var(--accent-text);
   word-break: break-all;
 }
 </style>

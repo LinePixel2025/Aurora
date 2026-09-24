@@ -844,7 +844,8 @@ function formatTime(iso: string): string {
 .drop-hint {
   margin: 0;
   text-align: center;
-  color: var(--aurora-blue);
+  /* 提示文案属正文：用语义强调色（浅色档为深蓝），直接写品牌蓝在浅色基座上只有 3.14:1 */
+  color: var(--accent-text);
 }
 
 /**
