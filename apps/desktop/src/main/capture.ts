@@ -673,7 +673,7 @@ export const SETTINGS_CLASSROOM_PATCH_CHECK = `(async () => {
  *
  * 截图用的是**隔离 userData**（`index.ts` 的 `AURORA_CAPTURE` 分支），起步时一个
  * provider 都没有，所以先经 `settings.update` 造一个带 `reasoningEffort: 'high'` 的；
- * 等 `settings:changed` 推送把卡片画出来，再点开第一张卡片上的 `.more`
+ * 等 `settings:changed` 推送把卡片画出来，再点开**生效 provider 那一行**的「编辑」与卡内 `.more`
  * （「高级参数与连接测试」）—— 下拉只在折叠区展开后才在 DOM 里。
  */
 export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
@@ -712,16 +712,21 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
       await new Promise((resolve) => setTimeout(resolve, 600))
     }
     // step-04 之后模型页是「provider 行列表 + 一次只开一张编辑卡」：高级参数区在**卡内**，
-    // 列表态 querySelector('.more') 只会拿到 null。所以先按真实用户路径点开第一行的
-    // 「编辑」（data-action="edit-provider"），再点卡内的 .more。行上刻意没有折叠箭头，
-    // 就是为了让「展开高级参数」只有一个入口、一次仍只有一张卡。
+    // 列表态 querySelector('.more') 只会拿到 null。所以先按真实用户路径点开「编辑」，
+    // 再点卡内的 .more。行上刻意没有折叠箭头，就是为了让「展开高级参数」只有一个入口、
+    // 一次仍只有一张卡。
+    // ⚠️ 必须点**当前生效 provider 那一行**的编辑按钮，不能取第一个 data-action="edit-provider"：
+    // 全量截图里 onboarding 会先种一个 local provider，行首未必是 active 的那个 ——
+    // 取错行会打开别人的卡，断言读到的是别人的 reasoningEffort（实测全量跑必 FAIL、单跑 settings 反而 PASS）。
     // 注意：本段在模板字符串里，注释不能出现反引号。
-    const editButton = document.querySelector('[data-action="edit-provider"]')
+    const row = document.querySelector('[data-field="llm.providers.' + active + '"]')
+    if (row === null) return { ok: false, reason: 'no row for active provider ' + active }
+    const editButton = row.querySelector('[data-action="edit-provider"]')
     if (editButton === null) return { ok: false, reason: 'no edit-provider button' }
     editButton.click()
     await new Promise((resolve) => setTimeout(resolve, 500))
 
-    const more = document.querySelector('.more')
+    const more = row.querySelector('.more')
     if (more === null) return { ok: false, reason: 'no .more after opening editor' }
     more.click()
     await new Promise((resolve) => setTimeout(resolve, 600))
@@ -739,18 +744,30 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
  *
  * ⚠️ `pass` 含 `restored === true`：这条场景会把 `reasoningEffort` 写成 `high`（甚至为断言造一个 provider），
  * 必须写回原值 —— 否则在真实 userData 下跑 `AURORA_CAPTURE_WINDOWS=settings` 会永久改掉用户配置。
+ *
+ * ⚠️ DOM 读数**按 ACT 记录的生效 provider 限定在那一行内部**（`[data-field="llm.providers.<active>"]`）：
+ * 全量截图里 onboarding 会先种一个 local provider，行首未必是 active 那个，
+ * 全局取第一个 `.reasoningEffort` 会读到别人的卡 → 假 FAIL（已在全量捕获里复现并修掉）。
  */
 export const SETTINGS_LLM_EFFORT_CHECK = `(async () => {
   try {
-    const effortFields = document.querySelectorAll('[data-field$=".reasoningEffort"]')
-    const temperatureFields = document.querySelectorAll('[data-field$=".temperature"]')
+    const probe = window.__auroraEffortSettingsProbe
+    // 与 ACT 同一套定位：编辑卡（含 .reasoningEffort / .temperature）渲染在
+    // [data-field="llm.providers.<id>"] 这一行**内部**，所以按生效 provider 限定范围。
+    // 全局 querySelectorAll 会数到别人的卡：全量截图里 onboarding 先种了 local provider，
+    // 行首未必是 active 那个 —— 那时会读到别人的 auto，探针假 FAIL（真实缺陷，已实测复现）。
+    const scope =
+      probe === undefined
+        ? document
+        : document.querySelector('[data-field="llm.providers.' + probe.active + '"]')
+    const effortFields = scope === null ? [] : scope.querySelectorAll('[data-field$=".reasoningEffort"]')
+    const temperatureFields = scope === null ? [] : scope.querySelectorAll('[data-field$=".temperature"]')
     const first = effortFields[0]
     const select = first === undefined ? null : first.querySelector('select')
     const value = select === null ? null : select.value
     const domOk = effortFields.length > 0 && temperatureFields.length > 0 && value === 'high'
 
     // DOM 断言必须先读（写回会触发 settings:changed 重新渲染，之后就读不到 high 了）
-    const probe = window.__auroraEffortSettingsProbe
     let restored = null
     const state = await window.aurora.settings.get()
     if (state.ok && probe !== undefined) {
@@ -770,6 +787,7 @@ export const SETTINGS_LLM_EFFORT_CHECK = `(async () => {
     }
 
     return {
+      active: probe === undefined ? null : probe.active,
       effortFields: effortFields.length,
       temperatureFields: temperatureFields.length,
       value,
