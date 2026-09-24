@@ -203,7 +203,7 @@
 
 ## 5. 视觉方向与设计令牌（SSOT）
 
-方向：**克制的深色桌面界面** —— 静止卡片靠 1px 边界与留白区分层次，阴影留给悬停和浮层；品牌极光渐变只用于品牌标识、主动作和引导完成页。浅色随系统切换的实现与双主题验收在 Step 06 完成。
+方向：**克制的深色桌面界面** —— 静止卡片靠 1px 边界与留白区分层次，阴影留给悬停和浮层；品牌极光渐变只用于品牌标识、主动作和引导完成页。**明暗跟随系统**：默认深色，Windows 外观切到浅色时四窗同步切换（令牌与窗口底色口径见 §5.1「系统明暗双档」，截图验收见 §5.3）；不提供手动主题开关。
 
 ### 5.1 设计令牌
 
@@ -226,13 +226,15 @@
 | 材质 | `--blur-thin(12)` / `--blur(24)` / `--blur-thick(40)` | `.glass` = 模糊 + `saturate(180%)` + 1px 内描边 + `--shadow-2`；不支持 `backdrop-filter` 时回落实色 |
 | 阴影 | `--shadow-hairline` / `--shadow-1/2/3` | 静止卡片只用细描边与 hairline；浮层/悬停用带负 spread 的 2，模态用 3 |
 | 控件 | `--control-h-sm/md/lg` / `--hit-target` | 32/40/48px 按钮高度、40px 图标命中目标；动作圆角统一 `--radius-pill`，输入框使用 `--radius-sm/md`，卡片使用 `--radius-md/lg` |
-| 语义色 | `--on-accent` / `--accent-ring` / `--status-running-ring` / `--danger-*` / `--error-*` / `--warning-*` / `--ok-*` / `--overlay-scrim` | 前景、焦点、状态和遮罩只由语义层提供；状态色只用于状态，不用来装饰卡片 |
+| 语义色 | `--on-accent` / `--accent-text` / `--accent-ring` / `--status-running-ring` / `--danger-*` / `--error-*` / `--warning-*` / `--ok-*` / `--overlay-scrim` | 前景、焦点、状态和遮罩只由语义层提供；状态色只用于状态，不用来装饰卡片 |
 | 缓动 | `--ease-standard` / `--ease-spring` / `--ease-smooth` | 颜色/透明度用 standard，大面积位移用 smooth，出现/展开用 spring |
 | 时长 | `--dur-fast(150)` / `base(250)` / `slow(350)`；`--transition-fast|base` | 后者是前者的组合别名 |
 
 **硬约束**：既有令牌名（`--bg-*`、`--border-*`、`--text-*`、`--status-*`、`--radius-sm|md|lg`、
 `--space-1..6`、`--transition-fast|base`、`--font-ui|mono`、`--aurora-gradient`）**只增不删**——
 它们散落在各窗口的 scoped 样式里，删名字不会报错，只会静默掉样式。组件只引用语义令牌，不直接引用原始中性阶或另写颜色字面量。分层卡片用 `--fill-1`，悬停用 `--fill-2`，选中用 `--fill-3`；输入框用 1px 紧聚焦环。每屏一个主动作，其余使用次要或弱动作。玻璃材质用于悬浮面板，不铺满页面；静止卡片保持边界清楚、正文不降低透明度。
+
+**系统明暗双档**：默认深色保留上表值；`@media (prefers-color-scheme: light)` 覆盖语义层及 `color-scheme: light`，基座 `#f5f5f7`、抬升面 `#ffffff`、玻璃白 `rgba(255,255,255,.92)`、主字 `#1d1d1f`、次字 `#4a4a50`、弱字 `#62626a`、描边深灰透明度 `.10/.18`。浅色状态采用可读的深蓝/深橙/深红/深绿，品牌渐变仍为 Aurora 原色；焦点、危险按钮、选区、玻璃回退及阴影成对覆盖。Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观 `updated` 后非透明的交互/设置/引导窗口底色与 CSS 基座一致（深 `#0b0c0f`、浅 `#f5f5f7`），提示条始终透明，所有窗口几何与用户配置不随主题改变。
 
 ### 5.2 动效规范
 
@@ -242,13 +244,27 @@
   `.fade-*`（内容切换）、`.collapse-*`（`max-height` 展开，工具卡片 / 折叠区块）。
 - **硬约定**：快 / 标准 / 慢动作分别为 150 / 250 / 350ms；颜色和透明度走 standard、大面积位移走 smooth、进场展开走 spring。所有过渡/动画必须走 `--transition-*` 或 `--dur-*` + `--ease-*`，不写死时长；
   `prefers-reduced-motion: reduce` 下把三个时长压到 1ms 并让位移动画立刻落位（theme.css 里已全局兜底）。
+- 系统实时切换主题时只更新语义色与非透明原生底色，不改变窗体几何、配置或转场路径；`prefers-reduced-motion: reduce` 在明暗两档均将动画/过渡压到 1ms，状态灯停止呼吸。
 - 页面骨架统一用 `.page` / `.page-title` / `.page-sub`；页面需要不同内边距时在自己的 scoped 样式里覆盖
   （scoped 选择器优先级更高，覆盖安全）。
 
 ### 5.3 截图核对工具（AURORA_CAPTURE）
 
-- `AURORA_CAPTURE=<目录> pnpm dev`：把四个窗口、提示条两态、设置页各页与各条 DOM 探针场景
-  （面板 / 收起 / 自动滚底 / 门控 / 拖动 / 思考等级 / 模型列表与模型选择 / 真实写盘 / 提示条收尾图）
+- **双主题截图（step-06）**：只在**同时**指定 `AURORA_CAPTURE_THEME=dark|light` 与 `AURORA_CAPTURE=<目录>` 的
+  开发截图运行里，`bootstrap()` 会在**创建任何窗口之前**把 `nativeTheme.themeSource` 设为该档；
+  普通启动（含只设 `AURORA_CAPTURE`、不指定档位）一律回到 `system`，即跟随 Windows 外观。
+  每窗各有一张主题场景：`theme-edge-bar.png` / `theme-chat.png` / `theme-settings.png` / `theme-onboarding.png`
+  （引导那张排在五段序列**之前**：只等第 0 段就位、不点页脚按钮，因此阶段推进与原有五条断言不受影响；
+  交互窗那张排在最前，仍在 `chat-collapse.png` 之前）。主题探针 `themeProbeScript` 断言四件事：
+  ① `matchMedia('(prefers-color-scheme: light|dark)')` 命中目标档；② 文档根的计算值 `color-scheme` 等于目标档；
+  ③ `--bg-base` 等于该档基座（深 `#0b0c0f` / 浅 `#f5f5f7`），且非透明窗的 `body` 背景不透明、与基座同色
+  （提示条反过来必须 alpha 0，整窗保持透明）；④ 正文与基座的对比度 ≥ 4.5:1，且明暗极性正确
+  （浅色不许白字、深色不许黑字）。**原生窗口底色渲染层读不到**，由同一条 `checks` 记录里的 `native` 字段断言
+  （主进程侧 `themeNativeCheck` 读 `BrowserWindow.getBackgroundColor()`），`pass` 取渲染层与主进程结果相与 ——
+  原有交互探针各自独立执行、不被替换。两份 `report.json` 均要求每条 `ok:true` 且存在的 `result.pass:true`，
+  并逐张比对文字、卡片、按钮和引导完成页。
+- `AURORA_CAPTURE=<目录> pnpm dev`：把四个窗口、提示条两态、设置页各页、每窗一张双主题场景
+  与各条 DOM 探针场景（面板 / 收起 / 自动滚底 / 门控 / 拖动 / 思考等级 / 模型列表与模型选择 / 真实写盘 / 提示条收尾图）
   截成一批 PNG 后退出。
   **张数与具体构成以 `report.json` 的实际条目为准，文档里不写死**：本轮（对话窗 UX 修复）是**净增**——
   新增 `chat-thinking-level.png` / `settings-llm-params.png` / `settings-llm-structure.png` /

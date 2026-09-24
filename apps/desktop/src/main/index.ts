@@ -14,6 +14,7 @@ import {
   app,
   dialog,
   globalShortcut,
+  nativeTheme,
   screen,
   session,
   shell,
@@ -218,6 +219,14 @@ if (!gotLock) {
 }
 
 async function bootstrap(): Promise<void> {
+  // 仅开发截图运行可强制主题；其余启动始终回到系统外观，且在建窗前生效。
+  const captureTheme =
+    isDev && (process.env['AURORA_CAPTURE'] ?? '').trim() !== ''
+      ? process.env['AURORA_CAPTURE_THEME']
+      : undefined
+  nativeTheme.themeSource =
+    captureTheme === 'dark' || captureTheme === 'light' ? captureTheme : 'system'
+
   // 1. 日志。自测的 userData 是临时目录且退出即删，因此自测日志写到固定位置，
   //    方便 `Get-Content "$env:TEMP\aurora-smoke-logs\aurora-*.log"` 查看断言结果。
   const userData = app.getPath('userData')

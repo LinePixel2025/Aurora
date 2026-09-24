@@ -476,7 +476,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 
 .r-assistant .avatar {
   background: var(--aurora-gradient);
-  color: var(--bg-base);
+  color: var(--on-accent);
   font-weight: var(--weight-semibold);
 }
 
@@ -535,8 +535,8 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 
 /* 播放中：用品牌色描边表达「这是当前唯一在响的那条」 */
 .speak-btn.active {
-  border-color: var(--aurora-blue);
-  color: var(--aurora-blue);
+  border-color: var(--accent-text);
+  color: var(--accent-text);
 }
 
 .speak-btn:disabled {

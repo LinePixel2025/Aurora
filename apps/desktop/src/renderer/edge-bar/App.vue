@@ -379,8 +379,8 @@ onUnmounted(clearTimers)
   font-size: 8px;
   font-weight: var(--weight-semibold);
   letter-spacing: 2px;
-  /* 渐变底上的暗色字：用底色令牌而不是新写死一个 RGBA（不新增硬编码颜色） */
-  color: var(--bg-base);
+  /* 极光渐变上的文字在明暗两档都使用专用深色前景。 */
+  color: var(--on-accent);
 }
 
 /* ───────── 展开面板（220px 预算） ───────── */

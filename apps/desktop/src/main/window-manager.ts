@@ -7,7 +7,7 @@
  * - 位置 / 尺寸写入 `general.windowState`，跨启动保留。
  */
 import { join } from 'node:path'
-import { BrowserWindow, screen } from 'electron'
+import { BrowserWindow, nativeTheme, screen } from 'electron'
 import {
   WINDOW_NAMES,
   createInitialWindowState,
@@ -91,6 +91,13 @@ const SPECS: Record<WindowName, WindowSpec> = {
   },
 }
 
+const DARK_BACKGROUND = '#0b0c0f'
+const LIGHT_BACKGROUND = '#f5f5f7'
+
+function windowBackgroundColor(): string {
+  return nativeTheme.shouldUseDarkColors ? DARK_BACKGROUND : LIGHT_BACKGROUND
+}
+
 export class WindowManager {
   private readonly windows = new Map<WindowName, BrowserWindow>()
   private state: WindowState = createInitialWindowState()
@@ -100,9 +107,29 @@ export class WindowManager {
   private readonly loadTasks = new Map<WindowName, Promise<void>>()
   /** 提示条是否处于展开（面板）态；默认收起为 8px 竖条（docs/07 §2.2） */
   private edgeBarExpanded = false
+  private themeListenerActive = true
+  private readonly syncWindowBackgrounds = (): void => {
+    const color = windowBackgroundColor()
+    for (const name of ['chat', 'settings', 'onboarding'] as const) {
+      const win = this.windows.get(name)
+      if (win && !win.isDestroyed()) win.setBackgroundColor(color)
+    }
+    // 系统外观切换是低频事件，也是「浅色下先闪一层深色底」唯一能查的现场记录，因此按 info 落盘
+    this.options.logger.info('系统外观已切换，同步窗口底色', {
+      dark: nativeTheme.shouldUseDarkColors,
+      color,
+    })
+  }
 
   constructor(options: WindowManagerOptions) {
     this.options = options
+    nativeTheme.on('updated', this.syncWindowBackgrounds)
+  }
+
+  private disposeThemeListener(): void {
+    if (!this.themeListenerActive) return
+    nativeTheme.off('updated', this.syncWindowBackgrounds)
+    this.themeListenerActive = false
   }
 
   getState(): WindowState {
@@ -131,6 +158,14 @@ export class WindowManager {
     const win = this.windows.get(name)
     if (!win || win.isDestroyed()) return undefined
     return win.getBounds()
+  }
+
+  /** 截图核对读取真实原生底色；Electron 33 返回 #RRGGBB，不包含透明度。 */
+  getBackgroundColor(name: WindowName): string | undefined {
+    if (name === 'edge-bar') return undefined
+    const win = this.windows.get(name)
+    if (!win || win.isDestroyed()) return undefined
+    return win.getBackgroundColor()
   }
 
   /**
@@ -184,7 +219,7 @@ export class WindowManager {
       minimizable: false,
       maximizable: false,
       fullscreenable: false,
-      backgroundColor: name === 'edge-bar' ? '#00000000' : '#12141a',
+      backgroundColor: name === 'edge-bar' ? '#00000000' : windowBackgroundColor(),
       title: titleFor(name),
       webPreferences: {
         preload: this.options.preloadPath,
@@ -354,6 +389,7 @@ export class WindowManager {
 
   /** 退出前：允许窗口真正关闭并落盘几何信息。 */
   prepareQuit(): void {
+    this.disposeThemeListener()
     this.quitting = true
     for (const [name, win] of this.windows) {
       if (win.isDestroyed()) continue
@@ -362,6 +398,7 @@ export class WindowManager {
   }
 
   destroyAll(): void {
+    this.disposeThemeListener()
     this.quitting = true
     for (const win of this.windows.values()) {
       if (!win.isDestroyed()) win.destroy()

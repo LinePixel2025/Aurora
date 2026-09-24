@@ -58,6 +58,7 @@
 
   /* ───────── 控件与状态语义 ───────── */
   --on-accent: #08131a;
+  --accent-text: var(--aurora-blue);
   --accent-ring: rgba(86, 132, 255, 0.22);
   --focus-ring: rgba(86, 132, 255, 0.7);
   --selection-fill: rgba(86, 132, 255, 0.35);
@@ -150,6 +151,62 @@
   --transition-base: var(--dur-base) var(--ease-spring);
 }
 
+/* 浅色只改语义角色；原始中性阶、品牌色与尺寸令牌两档共用。 */
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    /* 页面基座与原生非透明窗口底色保持一致；浮层玻璃保留白色不发灰。 */
+    --bg-base: var(--neutral-50);
+    --bg-raised: #ffffff;
+    --bg-overlay: rgba(255, 255, 255, 0.96);
+    --bg-glass: rgba(255, 255, 255, 0.92);
+    --fill-1: rgba(29, 29, 31, 0.035);
+    --fill-2: rgba(29, 29, 31, 0.065);
+    --fill-3: rgba(29, 29, 31, 0.095);
+    --border-subtle: rgba(29, 29, 31, 0.1);
+    --border-strong: rgba(29, 29, 31, 0.18);
+
+    --text-primary: #1d1d1f;
+    --text-secondary: #4a4a50;
+    --text-muted: #62626a;
+
+    /* 状态在白色或浅灰底上保持可辨；文字态再配浅色背景。 */
+    --status-idle: #62626a;
+    --status-running: #315ac6;
+    --status-unread: #955600;
+    --status-error: #b32631;
+    --status-ok: #126843;
+
+    /* 品牌渐变的浅绿端仍使用深色前景。 */
+    --on-accent: #08131a;
+    --accent-text: #3157bb;
+    --accent-ring: rgba(49, 90, 198, 0.2);
+    --focus-ring: rgba(49, 90, 198, 0.85);
+    --selection-fill: rgba(49, 90, 198, 0.24);
+    --status-running-ring: rgba(49, 90, 198, 0.16);
+    --danger-fill: rgba(179, 38, 49, 0.09);
+    --danger-fill-hover: rgba(179, 38, 49, 0.16);
+    --danger-text: #a51f2b;
+    --danger-border: rgba(179, 38, 49, 0.3);
+    --error-fill: rgba(179, 38, 49, 0.1);
+    --error-text: #a51f2b;
+    --warning-fill: rgba(149, 86, 0, 0.1);
+    --warning-text: #895000;
+    --ok-fill: rgba(18, 104, 67, 0.09);
+    --ok-text: #126843;
+    --overlay-scrim: rgba(29, 29, 31, 0.35);
+    --scrollbar-hover: rgba(29, 29, 31, 0.28);
+    --glass-highlight: rgba(255, 255, 255, 0.85);
+    --glass-fallback: rgba(255, 255, 255, 0.98);
+
+    --shadow-hairline: 0 1px 2px -1px rgba(29, 29, 31, 0.1);
+    --shadow-1: 0 1px 2px 0 rgba(29, 29, 31, 0.1);
+    --shadow-2: 0 8px 24px -8px rgba(29, 29, 31, 0.2), 0 4px 8px -4px rgba(29, 29, 31, 0.1);
+    --shadow-3: 0 24px 64px -12px rgba(29, 29, 31, 0.28);
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -167,6 +224,8 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* 透明提示条须同时清除根元素画布底色；其它窗口继续使用主题基座。 */
+html:has(body.transparent),
 body.transparent {
   background: transparent;
 }

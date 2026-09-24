@@ -19,7 +19,7 @@
  */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { BrowserWindow } from 'electron'
+import { nativeTheme, type BrowserWindow } from 'electron'
 import type { Logger, WindowName } from '@aurora/shared'
 import type { WindowManager } from './window-manager.js'
 /** 设置页可深链的页面 id，需与 `renderer/settings/App.vue` 的 `PageId` 保持一致 */
@@ -48,6 +48,15 @@ export interface CaptureTarget {
   act?: string
   /** 截图后在目标窗口渲染层执行的 JS；返回值写入 `report.json` */
   check?: string
+  /**
+   * 截图后在**主进程侧**断言渲染层读不到的窗口属性（目前只有原生底色，见 docs/07 §5.3 双主题）。
+   *
+   * 为什么需要它：`prefers-color-scheme` 只改了 CSS，若原生底色没跟着换，窗口在浅色下仍会
+   * 先闪一层深色底再画出页面 —— 而这件事在渲染层里根本读不到（`backgroundColor` 是 BrowserWindow 的）。
+   * 返回值与 `check` 合并进**同一条** `checks` 记录（渲染层结果放原字段、主进程结果放 `native`），
+   * `pass` 取两者相与，因此原有交互断言不会被替换、也不会多出一条记录。
+   */
+  nativeCheck?: () => { pass: boolean } & Record<string, unknown>
 }
 
 export interface CaptureOptions {
@@ -135,11 +144,16 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
       files.push(file)
       logger?.info('窗口截图已写出', { window: target.name, file, bytes: png.length })
 
-      const result =
+      const rendererResult =
         target.check === undefined
           ? undefined
           : await win.webContents.executeJavaScript(target.check, true)
-      checks.push({ name: target.name, file, result, ok: true })
+      checks.push({
+        name: target.name,
+        file,
+        result: mergeCheckResults(rendererResult, target.nativeCheck?.()),
+        ok: true,
+      })
     } catch (error) {
       logger?.warn('窗口截图失败', { window: target.name, error: String(error) })
       checks.push({ name: target.name, file, ok: false, error: String(error) })
@@ -157,6 +171,26 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
         item.ok === false || (item.result as { pass?: unknown } | undefined)?.pass === false,
     ),
   }
+}
+
+/**
+ * 把渲染层 `check` 与主进程 `nativeCheck` 合成一条探针结果。
+ *
+ * 两者都在才要求双通过；只有 `nativeCheck`（没有渲染层 check）时以它为准。
+ * 渲染层返回非对象（理论上不会）时降级成 `{ renderer, native, pass:false }`，
+ * 避免静默把一次失败当成通过。
+ */
+function mergeCheckResults(
+  renderer: unknown,
+  native: ({ pass: boolean } & Record<string, unknown>) | undefined,
+): unknown {
+  if (native === undefined) return renderer
+  if (renderer === undefined) return { native, pass: native.pass }
+  const record =
+    typeof renderer === 'object' && renderer !== null
+      ? (renderer as Record<string, unknown>)
+      : { renderer }
+  return { ...record, native, pass: record['pass'] === true && native.pass === true }
 }
 
 /**
@@ -1570,6 +1604,172 @@ export const SETTINGS_TTS_CARD_CHECK = `(async () => {
 })()`
 
 /**
+ * 双主题探针（step-06，docs/07 §5.3）。
+ *
+ * 深/浅两档各跑一遍完整截图时，每窗多一张 `theme-*.png`，用同一条探针回答三件事：
+ * ① 渲染层真的处在目标档位（`matchMedia` + 文档根 `color-scheme`）；
+ * ② 语义令牌与正文背景是目标档位（`--bg-base` 等于该档基座、非透明窗的 `body` 背景不透明且同色）；
+ * ③ 正文与基座的对比度 ≥ 4.5:1、且明暗极性正确（浅色不许白字、深色不许黑字）。
+ *
+ * 原生窗口底色渲染层读不到，所以那半条由 `themeNativeCheck()` 在主进程侧断言 —— 它才是
+ * 「浅色下先闪一层深色底」的真正防线。
+ */
+export type ThemeName = 'dark' | 'light'
+
+/** 与 `window-manager.ts` 的 `DARK_BACKGROUND` / `LIGHT_BACKGROUND` 及 theme.css 基座一致 */
+const THEME_BASE_COLORS: Record<ThemeName, string> = {
+  dark: '#0b0c0f',
+  light: '#f5f5f7',
+}
+
+/** 目标档位对应的基座色（`null` 之外的调用方都能拿到确定值）。 */
+export function themeBaseColor(theme: ThemeName): string {
+  return THEME_BASE_COLORS[theme]
+}
+
+/** 当前运行档位：`bootstrap()` 已按 `AURORA_CAPTURE_THEME` 设好 `themeSource`，这里读的就是真值。 */
+export function activeTheme(): ThemeName {
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+}
+
+/**
+ * 生成主题探针脚本。
+ *
+ * 写成工厂而不是常量：期望档位要注入进去，探针才可能**失败**（否则它只会复述"当前是当前"）。
+ * 颜色归一化走「挂一个临时元素读 computed style」，比手写 hex/rgba 解析稳：令牌值可能是
+ * `var(--neutral-850)`、hex 或 `rgba()`，交给 Chromium 统一输出 `rgb()/rgba()`。
+ * 注意本段在模板字符串里，注释里不能出现反引号。
+ */
+export function themeProbeScript(options: { theme: ThemeName; transparent: boolean }): string {
+  const expected = {
+    theme: options.theme,
+    base: THEME_BASE_COLORS[options.theme],
+    transparent: options.transparent,
+  }
+  return `(() => {
+  const normalizer = document.createElement('div')
+  try {
+    const expected = ${JSON.stringify(expected)}
+    const root = document.documentElement
+    const body = document.body
+    const rootStyle = getComputedStyle(root)
+    const bodyStyle = getComputedStyle(body)
+
+    normalizer.style.display = 'none'
+    document.body.appendChild(normalizer)
+    const toRgba = (value) => {
+      normalizer.style.color = ''
+      normalizer.style.color = value
+      const computed = getComputedStyle(normalizer).color
+      const match = computed.match(/rgba?\\(([^)]+)\\)/)
+      if (match === null) return null
+      const parts = match[1].split(/[,\\s]+/).filter((item) => item !== '')
+      if (parts.length < 3) return null
+      return {
+        r: Number(parts[0]),
+        g: Number(parts[1]),
+        b: Number(parts[2]),
+        a: parts.length > 3 ? Number(parts[3]) : 1,
+        css: computed,
+      }
+    }
+    const sameRgb = (a, b) => a !== null && b !== null && a.r === b.r && a.g === b.g && a.b === b.b
+    const channel = (value) => {
+      const v = value / 255
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+    }
+    const luminance = (color) => 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+    const contrast = (a, b) => {
+      const la = luminance(a)
+      const lb = luminance(b)
+      return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+    }
+
+    const mediaLight = window.matchMedia('(prefers-color-scheme: light)').matches
+    const mediaDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+    const colorScheme = (rootStyle.colorScheme || '').trim()
+    const baseToken = toRgba(rootStyle.getPropertyValue('--bg-base').trim())
+    const textToken = toRgba(rootStyle.getPropertyValue('--text-primary').trim())
+    const expectedBase = toRgba(expected.base)
+    const bodyBackground = toRgba(bodyStyle.backgroundColor)
+    const bodyColor = toRgba(bodyStyle.color)
+
+    const themeOk = expected.theme === 'dark' ? mediaDark && !mediaLight : mediaLight && !mediaDark
+    const schemeOk = colorScheme === expected.theme
+    const baseOk = sameRgb(baseToken, expectedBase)
+    // 提示条必须整窗透明；其余窗口的正文背景必须不透明且与原生底色同色，否则会闪底
+    const bodyOk = expected.transparent
+      ? bodyBackground !== null && bodyBackground.a === 0
+      : bodyBackground !== null && bodyBackground.a === 1 && sameRgb(bodyBackground, expectedBase)
+    const ratio =
+      textToken === null || expectedBase === null
+        ? null
+        : Math.round(contrast(textToken, expectedBase) * 100) / 100
+    const polarityOk =
+      textToken !== null &&
+      expectedBase !== null &&
+      (expected.theme === 'dark'
+        ? luminance(textToken) > luminance(expectedBase)
+        : luminance(textToken) < luminance(expectedBase))
+    const textOk = ratio !== null && ratio >= 4.5 && polarityOk
+
+    const reasons = []
+    if (!themeOk) reasons.push('matchMedia 不是 ' + expected.theme + '（light=' + mediaLight + ' dark=' + mediaDark + '）')
+    if (!schemeOk) reasons.push('color-scheme=' + colorScheme + '，期望 ' + expected.theme)
+    if (!baseOk) reasons.push('--bg-base=' + (baseToken === null ? 'unparsed' : baseToken.css) + '，期望 ' + expected.base)
+    if (!bodyOk) reasons.push('正文背景=' + (bodyBackground === null ? 'unparsed' : bodyBackground.css) + '（transparent=' + expected.transparent + '）')
+    if (!textOk) reasons.push('正文对比度=' + ratio + '，极性=' + polarityOk)
+
+    return {
+      pass: themeOk && schemeOk && baseOk && bodyOk && textOk,
+      expectedTheme: expected.theme,
+      transparent: expected.transparent,
+      mediaLight,
+      mediaDark,
+      colorScheme,
+      baseToken: baseToken === null ? null : baseToken.css,
+      textToken: textToken === null ? null : textToken.css,
+      bodyBackground: bodyBackground === null ? null : bodyBackground.css,
+      bodyColor: bodyColor === null ? null : bodyColor.css,
+      expectedBase: expected.base,
+      contrastRatio: ratio,
+      polarityOk,
+      checks: { themeOk, schemeOk, baseOk, bodyOk, textOk },
+      reason: reasons.join('；') || null,
+    }
+  } catch (error) {
+    return { pass: false, reason: '主题探针异常：' + String(error) }
+  } finally {
+    normalizer.remove()
+  }
+})()`
+}
+
+/**
+ * 主进程侧断言：非透明窗口的**真实原生底色**必须是目标档位。
+ *
+ * 提示条传 `transparent: true` 时 Electron 读不到底色（`getBackgroundColor()` 对
+ * `#00000000` 无意义），所以那种窗口不挂这条断言 —— 它的透明由渲染层探针的 `bodyOk` 管。
+ */
+export function themeNativeCheck(
+  manager: WindowManager,
+  name: WindowName,
+  theme: ThemeName,
+): () => { pass: boolean } & Record<string, unknown> {
+  const expected = THEME_BASE_COLORS[theme]
+  return () => {
+    const observed = manager.getBackgroundColor(name)
+    return {
+      pass:
+        observed !== undefined && observed.trim().toLowerCase() === expected.trim().toLowerCase(),
+      window: name,
+      expected,
+      observed: observed ?? null,
+    }
+  }
+}
+
+/**
  * 引导的五张图复用同一个窗口实例：各 target 都不带 query，也不调用 reload，
  * 否则 Vue 的 stepIndex 会在每张图之间复位。每段只通过页面现有按钮前进。
  * 等待进度与 pane 标题同时出现，避免 Vue 的 out-in 过渡期拍到上一段或空白。
@@ -1677,14 +1877,18 @@ function onboardingCheckScript(index: number): string {
 
 /**
  * 默认截图清单：四个窗口 + 提示条两态 + 设置页各页深链（含思考等级参数面板）+ 若干 DOM 断言场景
- * （门控计数 / 对话自动滚底 / 收起即消失 / 思考等级 / 电脑拖动区 / 电脑操控页，见下面各条的 `check`）。
+ * （门控计数 / 对话自动滚底 / 收起即消失 / 思考等级 / 电脑拖动区 / 电脑操控页，见下面各条的 `check`）
+ * + 每窗一张双主题场景（`theme-*.png`，深/浅各跑一遍整批）。
  * 独立的快速对话窗口已从全仓删除：快速会话并入交互窗侧栏，故清单里不再有它的场景。
  * `AURORA_CAPTURE_WINDOWS` 可以只截其中一部分（逗号分隔）。
  *
  * ⚠️ 交互窗场景的**顺序约束**：凡是要在交互窗里操作 DOM 的场景，都必须排在 `chat-collapse.png` **之前**——
  * 收起会把窗口隐藏，之后再 `capturePage()` 只会卡死。因此顺序固定为
- * `chat-thinking-level` → `chat-model-picker`（step 5 加）→ `chat-tts`（step 6 加）→ `chat-drag`
- * → `chat-collapse` → `chat.png`。
+ * `theme-chat`（step 6 双主题）→ `chat-thinking-level` → `chat-model-picker`（step 5 加）
+ * → `chat-tts`（step 6 加）→ `chat-drag` → `chat-collapse` → `chat.png`。
+ *
+ * 双主题（step 6）另在 edge-bar / chat / settings / onboarding 各加一张 `theme-*.png`：
+ * 期望档位由 `activeTheme()` 读取（`bootstrap()` 已按 `AURORA_CAPTURE_THEME` 设好 `themeSource`）。
  */
 /**
  * 为 `chat-tts` 场景准备一条「可朗读」的历史（主进程侧，在跑计划之前调用一次）。
@@ -1736,8 +1940,16 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
 }
 
 export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
+  const theme = activeTheme()
   const plan: CaptureTarget[] = [
     { name: 'edge-bar', file: 'edge-bar.png' },
+    // 双主题（step-06）：每窗一张主题场景，断言令牌档位、正文背景与原生底色一致。
+    // 提示条整窗透明，所以只断言渲染层（`body` 背景 alpha 必须为 0）+ 不挂原生底色断言。
+    {
+      name: 'edge-bar',
+      file: 'theme-edge-bar.png',
+      check: themeProbeScript({ theme, transparent: true }),
+    },
     {
       name: 'edge-bar',
       file: 'edge-bar-expanded.png',
@@ -1749,6 +1961,12 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
     // 的 checks 是**数组**、靠 `file` 区分），所以靠文件名与 `AURORA_CAPTURE_WINDOWS=chat` 过滤。
     // 「收起即消失」**不设 act**：点击放在 check 里（原因见 `CHAT_COLLAPSE_CHECK` 的注释——
     // 窗口先被 hide 掉会让紧接着的 capturePage 永不返回，整轮截图卡死）。
+    {
+      name: 'chat',
+      file: 'theme-chat.png',
+      check: themeProbeScript({ theme, transparent: false }),
+      nativeCheck: themeNativeCheck(manager, 'chat', theme),
+    },
     {
       name: 'chat',
       file: 'chat-thinking-level.png',
@@ -1780,6 +1998,15 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
     { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },
     { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
     // 五段共用同一窗口，不能加 query / reload；本地占位凭据只在隔离 userData 中保存，绝不测试连接。
+    // 双主题场景（step-06）刻意排在五段**之前**：它只等第 0 段就位、不点任何页脚按钮，
+    // 因此引导的阶段推进与既有五条断言完全不受影响。
+    {
+      name: 'onboarding',
+      file: 'theme-onboarding.png',
+      act: onboardingWaitScript(0),
+      check: themeProbeScript({ theme, transparent: false }),
+      nativeCheck: themeNativeCheck(manager, 'onboarding', theme),
+    },
     {
       name: 'onboarding',
       file: 'onboarding-welcome.png',
@@ -1811,6 +2038,14 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       check: onboardingCheckScript(4),
     },
   ]
+  // 双主题（step-06）：设置窗先落在「常规」页拍一张主题场景，后面的深链循环不受影响。
+  plan.push({
+    name: 'settings',
+    file: 'theme-settings.png',
+    query: { page: 'general' },
+    check: themeProbeScript({ theme, transparent: false }),
+    nativeCheck: themeNativeCheck(manager, 'settings', theme),
+  })
   for (const page of SETTINGS_PAGE_IDS) {
     plan.push({
       name: 'settings',
