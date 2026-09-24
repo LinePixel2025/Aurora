@@ -43,7 +43,7 @@
 | # | 文件 | 标题 | 状态 | 依赖 | 写范围 |
 |---|------|------|------|------|--------|
 | 1 | step-01-tokens.md | 深色令牌层与视觉规范 | done | - | `docs/07-ui-spec.md`、`apps/desktop/src/renderer/shared/theme.css` |
-| 2 | step-02-components-edge.md | 共享组件和提示条 | pending | step 1 | `apps/desktop/src/renderer/shared/components/{AppButton,SettingField,StatusDot,AppToast}.vue`、`apps/desktop/src/renderer/edge-bar/App.vue` |
+| 2 | step-02-components-edge.md | 共享组件和提示条 | done | step 1 | `apps/desktop/src/renderer/shared/components/{AppButton,SettingField,StatusDot,AppToast}.vue`、`apps/desktop/src/renderer/edge-bar/App.vue` |
 | 3 | step-03-chat.md | 交互窗和内容组件 | pending | step 2 | `apps/desktop/src/renderer/chat/App.vue`、`apps/desktop/src/renderer/shared/components/{MessageList,SensitiveToolCard,ClassificationLedger,ModelPickerSelect,ThinkingLevelSelect}.vue` |
 | 4 | step-04-settings.md | 设置页与表单密度 | pending | step 3 | `apps/desktop/src/renderer/settings/` |
 | 5 | step-05-onboarding.md | 引导页与完成状态 | pending | step 4 | `apps/desktop/src/renderer/onboarding/App.vue`、`apps/desktop/src/main/capture.ts`、`docs/07-ui-spec.md` |
@@ -53,4 +53,5 @@
 
 ## 执行记录
 
+- Step 02：`819dbde feat(ui): 统一共享控件与提示条视觉`。两个不交叠分片分别由子代理实现共享组件和提示条，主代理复核并运行 typecheck/build、4 张提示条截图与 4 条 PASS 检查；详见 `step-02-components-edge.md`。
 - Step 01：`0dcbcf6 feat(ui): 建立深色语义令牌与视觉规范`。`pnpm build`、Prettier 检查、完整深色捕获第二次执行通过（27 图/27 检查）；第一次完整捕获的交互窗自动滚底探针间歇失败，详见 `step-01-tokens.md` 执行记录。子代理只读核查捕获机制与用户既有改动，主代理实现并复跑验收。保留既有五份 `package.json` 修改和未跟踪 `.dsh/`、`Design/`。
