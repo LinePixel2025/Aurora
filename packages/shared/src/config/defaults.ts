@@ -33,6 +33,38 @@ export const LOCAL_PRESET = {
 export const PROVIDER_PRESETS = [DEEPSEEK_PRESET, OPENAI_PRESET, LOCAL_PRESET] as const
 
 /**
+ * TTS provider 预设（docs/08 §1、docs/06 §13）：设置页「添加 TTS 模型」的 chips。
+ *
+ * 与 `PROVIDER_PRESETS` 一样只提供 id / label / baseUrl / model / voice 五个字段，
+ * 其余字段（语速 / 输出格式）由新建流程用 `DEFAULT_TTS` 之外的页面默认值补齐。
+ */
+export const TTS_PRESETS = [
+  {
+    id: 'openai',
+    label: 'OpenAI TTS',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'tts-1',
+    voice: 'alloy',
+  },
+  {
+    id: 'siliconflow',
+    label: 'SiliconFlow 语音',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    model: 'FunAudioLLM/CosyVoice2-0.5B',
+    voice: 'alex',
+  },
+] as const
+
+/** TTS 配置默认值（docs/08 §1）：默认无 provider（`active` 空 = 未配置，朗读入口不出现）。 */
+export const DEFAULT_TTS = {
+  enabled: true,
+  active: '',
+  autoRead: false,
+  maxChars: 2000,
+  providers: {},
+} as const
+
+/**
  * 新建 provider 时的思考等级默认值（docs/08 §1、docs/06 §11）。
  *
  * 单独抽成常量而不是到处写字符串 `'auto'`：`auto` 表示「请求体里不带 `reasoning_effort`」，
@@ -103,6 +135,7 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     active: '',
     providers: {},
   },
+  tts: { ...DEFAULT_TTS },
   modes: {
     current: 'classroom',
     classroom: {

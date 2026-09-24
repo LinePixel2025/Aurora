@@ -69,8 +69,8 @@ describe('配置迁移链', () => {
         modes: { current: 'classroom', classroom: { watchDir: 'D:\\感知', subjects: [] } },
       })
       expect(outcome.fromVersion).toBe(1)
-      // v1 → v2 → v3 → v4 → v5 → v6：链式执行，五版迁移都会跑
-      expect(outcome.applied).toHaveLength(5)
+      // v1 → v2 → v3 → v4 → v5 → v6 → v7：链式执行，六版迁移都会跑
+      expect(outcome.applied).toHaveLength(6)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
@@ -130,8 +130,8 @@ describe('配置迁移链', () => {
         modes: { classroom: { schedule: { provider: 'manual', lessons: [lesson] } } },
       })
       expect(outcome.fromVersion).toBe(2)
-      // v2 → v3 → v4 → v5 → v6：链式执行
-      expect(outcome.applied).toHaveLength(4)
+      // v2 → v3 → v4 → v5 → v6 → v7：链式执行
+      expect(outcome.applied).toHaveLength(5)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
         string,
@@ -191,9 +191,9 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(3)
-      // v3 → v4 → v5 → v6：链式执行
-      expect(outcome.applied).toHaveLength(3)
-      expect(outcome.data['version']).toBe(6)
+      // v3 → v4 → v5 → v6 → v7：链式执行
+      expect(outcome.applied).toHaveLength(4)
+      expect(outcome.data['version']).toBe(7)
 
       const windowState = loadWindowState(outcome.data)
       expect(windowState['service-dock']).toBeUndefined()
@@ -216,7 +216,7 @@ describe('配置迁移链', () => {
     it('缺少 general / windowState 分组时不抛错', () => {
       const outcome = migrate({ version: 3 })
       expect(outcome.warnings).toEqual([])
-      expect(outcome.data['version']).toBe(6)
+      expect(outcome.data['version']).toBe(7)
       expect(loadWindowState(outcome.data)).toEqual({})
     })
   })
@@ -245,8 +245,8 @@ describe('配置迁移链', () => {
     it('补齐 reasoningEffort 与 agent.tools，且用户已写入的其它字段原样保留', () => {
       const outcome = migrate(V4_CONFIG)
       expect(outcome.fromVersion).toBe(4)
-      expect(outcome.applied).toHaveLength(2)
-      expect(outcome.data['version']).toBe(6)
+      expect(outcome.applied).toHaveLength(3)
+      expect(outcome.data['version']).toBe(7)
 
       const llm = outcome.data['llm'] as Record<string, unknown>
       expect(llm['active']).toBe('custom')
@@ -343,7 +343,7 @@ describe('配置迁移链', () => {
     it('缺少 llm / agent 分组时不抛错', () => {
       const outcome = migrate({ version: 4 })
       expect(outcome.warnings).toEqual([])
-      expect(outcome.data['version']).toBe(6)
+      expect(outcome.data['version']).toBe(7)
       // 没有 providers 就不凭空造 llm.providers（既有的「空 llm 迁移后仍为空」语义）
       expect(outcome.data['llm']).toBeUndefined()
       expect((outcome.data['agent'] as Record<string, unknown>)['tools']).toEqual({
@@ -385,8 +385,8 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(5)
-      expect(outcome.applied).toHaveLength(1)
-      expect(outcome.data['version']).toBe(6)
+      expect(outcome.applied).toHaveLength(2)
+      expect(outcome.data['version']).toBe(7)
       // describe 变更（补了 modelList 字样）不影响既有断言：仍是一条 v5 → v6 迁移
       expect(outcome.applied[0]).toContain('v5 → v6')
       expect(outcome.applied[0]).toContain('readonlyPrefixes')
@@ -441,8 +441,8 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(5)
-      expect(outcome.applied).toHaveLength(1)
-      expect(outcome.data['version']).toBe(6)
+      expect(outcome.applied).toHaveLength(2)
+      expect(outcome.data['version']).toBe(7)
       expect(outcome.applied[0]).toContain('modelList')
 
       const providers = loadProviders(outcome.data)
@@ -502,12 +502,97 @@ describe('配置迁移链', () => {
     it('缺少 general / windowState 时不抛错，也不凭空造出 windowState / llm.providers', () => {
       const outcome = migrate({ version: 5 })
       expect(outcome.warnings).toEqual([])
-      expect(outcome.data['version']).toBe(6)
+      expect(outcome.data['version']).toBe(7)
       expect(outcome.data['general']).toBeUndefined()
       // 没有 providers 就不凭空造出 llm.providers（与 v4 → v5 对 llm 的语义一致）
       expect(outcome.data['llm']).toBeUndefined()
       // advanced 半边是**无条件**补默认值（与 general 的「有则改」不对称，见迁移注释）
       expect(loadReadonlyPrefixes(outcome.data)).toEqual([...SETTINGS_READONLY_PREFIXES])
+    })
+  })
+
+  describe('v6 → v7（补齐 tts.*：语音合成配置）', () => {
+    /** 一份「完整 v6 配置」：用户改过的黑名单 + 已有 llm provider（v6 → v7 都不该动） */
+    const V6_CONFIG: Record<string, unknown> = {
+      version: 6,
+      general: { language: 'zh-CN', hotkey: 'Ctrl+Alt+A' },
+      llm: {
+        active: 'deepseek',
+        providers: { deepseek: { model: 'deepseek-chat', modelList: ['deepseek-chat'] } },
+      },
+      advanced: { readonlyPrefixes: ['custom.path'] },
+    }
+    const loadTts = (raw: Record<string, unknown>): Record<string, unknown> =>
+      raw['tts'] as Record<string, unknown>
+
+    it('补齐 tts 段默认值，且用户已写值（readonlyPrefixes / llm）原样保留', () => {
+      const outcome = migrate(V6_CONFIG)
+      expect(outcome.fromVersion).toBe(6)
+      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied[0]).toContain('v6 → v7')
+      expect(outcome.data['version']).toBe(7)
+
+      const tts = loadTts(outcome.data)
+      expect(tts['enabled']).toBe(true)
+      expect(tts['active']).toBe('')
+      expect(tts['autoRead']).toBe(false)
+      expect(tts['maxChars']).toBe(2000)
+      expect(tts['providers']).toEqual({})
+
+      // 只碰 tts 与 version：其它分组一个字不改
+      expect(outcome.data['advanced']).toEqual({ readonlyPrefixes: ['custom.path'] })
+      expect(outcome.data['general']).toEqual({ language: 'zh-CN', hotkey: 'Ctrl+Alt+A' })
+      expect(outcome.data['llm']).toEqual(V6_CONFIG['llm'])
+    })
+
+    it('用户已写过的 tts 值（含 provider 条目）不被覆盖', () => {
+      const provider = {
+        type: 'openai-compat',
+        baseUrl: 'https://api.siliconflow.cn/v1',
+        apiKeyEnc: 'cipher',
+        model: 'FunAudioLLM/CosyVoice2-0.5B',
+        voice: 'alex',
+        speed: 1.25,
+        format: 'opus',
+      }
+      const outcome = migrate({
+        version: 6,
+        tts: {
+          enabled: false,
+          active: 'sf',
+          autoRead: true,
+          maxChars: 800,
+          providers: { sf: provider },
+        },
+      })
+      const tts = loadTts(outcome.data)
+      expect(tts['enabled']).toBe(false)
+      expect(tts['active']).toBe('sf')
+      expect(tts['autoRead']).toBe(true)
+      expect(tts['maxChars']).toBe(800)
+      expect((tts['providers'] as Record<string, unknown>)['sf']).toEqual(provider)
+    })
+
+    it('重复执行结果一致（幂等）', () => {
+      const once = migrate(V6_CONFIG)
+      const twice = migrate({ ...once.data, version: 6 })
+      expect(twice.data).toEqual(once.data)
+      // providers 每轮都是新对象，不与 DEFAULT_TTS 共享引用（否则后续写入会串味）
+      expect(twice.data['tts']).not.toBe(once.data['tts'])
+      expect(loadTts(twice.data)['providers']).not.toBe(loadTts(once.data)['providers'])
+    })
+
+    it('缺少 tts 分组时补出完整默认段，不抛错也不留 undefined', () => {
+      const outcome = migrate({ version: 6 })
+      expect(outcome.warnings).toEqual([])
+      expect(outcome.data['version']).toBe(7)
+      expect(loadTts(outcome.data)).toEqual({
+        enabled: true,
+        active: '',
+        autoRead: false,
+        maxChars: 2000,
+        providers: {},
+      })
     })
   })
 })

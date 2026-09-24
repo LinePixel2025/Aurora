@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 6 as const
+export const CONFIG_VERSION = 7 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -99,6 +99,43 @@ export const LlmSchema = z.object({
   providers: z.record(z.string(), LlmProviderSchema),
 })
 export type LlmSettings = z.infer<typeof LlmSchema>
+
+/** TTS 输出音频格式（docs/06 §13、docs/08 §1）——决定请求体的 `response_format` 与播放的 MIME。 */
+export const TTS_FORMATS = ['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'] as const
+export type TtsFormat = (typeof TTS_FORMATS)[number]
+
+/**
+ * TTS provider（docs/06 §13、docs/08 §1）。
+ *
+ * 与 `llm.providers.<id>` **同构但独立**：聊天模型与语音合成服务的可用性互不绑定，
+ * 共用一份配置会让「换聊天模型」顺手把朗读也弄坏。
+ */
+export const TtsProviderSchema = z.object({
+  type: z.enum(['openai-compat']),
+  baseUrl: z.string(),
+  /** safeStorage 密文；明文只走 `settings:setSecrets`，渲染层与日志永远看不到明文。 */
+  apiKeyEnc: z.string(),
+  model: z.string(),
+  /** 音色 id，如 `alloy` / `FunAudioLLM/CosyVoice2-0.5B:alex`。 */
+  voice: z.string(),
+  /** 语速倍率。 */
+  speed: z.number().min(0.25).max(4),
+  format: z.enum(TTS_FORMATS),
+})
+export type TtsProviderConfig = z.infer<typeof TtsProviderSchema>
+
+export const TtsSchema = z.object({
+  /** 语音功能总开关。 */
+  enabled: z.boolean(),
+  /** 默认 TTS provider id；空串表示尚未配置（此时对话窗连朗读按钮都不出现）。 */
+  active: z.string(),
+  /** 回复结束后自动朗读。 */
+  autoRead: z.boolean(),
+  /** 单次朗读的文本上限（按字符截断，超出部分不合成）。 */
+  maxChars: z.number().int().min(50).max(4096),
+  providers: z.record(z.string(), TtsProviderSchema),
+})
+export type TtsSettings = z.infer<typeof TtsSchema>
 
 export const SubjectSchema = z.object({
   name: z.string().min(1),
@@ -218,6 +255,8 @@ export const SETTINGS_READONLY_PREFIXES = [
   // 凭据与密文：绝不让 AI 读回或改写（凭据只经 safeStorage / setSecret 落库）
   'llm.providers',
   'mcp.servers',
+  // 同上：TTS provider 也含凭据密文（`tts.providers.*.apiKeyEnc`）
+  'tts.providers',
   // Schema 版本与窗口几何：改坏会让配置迁移 / 窗口位置出现难以复现的怪状
   'version',
   'general.windowState',
@@ -306,6 +345,7 @@ export const SettingsSchema = z.object({
   version: z.number().int().min(0),
   general: GeneralSchema,
   llm: LlmSchema,
+  tts: TtsSchema,
   modes: ModesSchema,
   skills: SkillsSchema,
   mcp: McpSchema,
@@ -319,6 +359,7 @@ export type Settings = z.infer<typeof SettingsSchema>
 const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number], string> = {
   'llm.providers': '凭据字段不允许通过工具修改',
   'mcp.servers': '凭据字段不允许通过工具修改',
+  'tts.providers': '凭据字段不允许通过工具修改',
   version: '配置版本由迁移链维护，不允许通过工具修改',
   'general.windowState': '窗口位置由系统维护，不允许通过工具修改',
   'advanced.proxy': '代理设置写错会立即断网，不允许通过工具修改',

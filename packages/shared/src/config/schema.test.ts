@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createDefaultSettings, PROVIDER_PRESETS } from './defaults.js'
+import { createDefaultSettings, DEFAULT_TTS, PROVIDER_PRESETS, TTS_PRESETS } from './defaults.js'
 import {
   COMPUTER_TOOL_NAMES,
   CONFIG_VERSION,
@@ -7,6 +7,7 @@ import {
   MODE_IDS,
   SETTINGS_READONLY_PREFIXES,
   SettingsSchema,
+  TTS_FORMATS,
   canWriteSettingPath,
   fieldAccepts,
   schemaPathCount,
@@ -232,6 +233,113 @@ describe('SettingsSchema / defaults 一致性', () => {
     ok.agent.tools.files.maxReadBytes = 4_194_304
     expect(SettingsSchema.safeParse(ok).success).toBe(true)
   })
+
+  it('语音（TTS）配置：默认段与 DEFAULT_TTS 一致、默认无 provider（v7）', () => {
+    const tts = createDefaultSettings().tts
+    expect(tts).toEqual({
+      enabled: true,
+      active: '',
+      autoRead: false,
+      maxChars: 2000,
+      providers: {},
+    })
+    expect(tts).toEqual({ ...DEFAULT_TTS })
+    // `active` 为空 = 未配置：对话窗朗读入口不出现（docs/07 §2.3）
+    expect(tts.active).toBe('')
+    expect(tts.providers).toEqual({})
+  })
+
+  it('TTS 预设字段完整（设置页「添加 TTS 模型」的 chips）（v7）', () => {
+    expect(TTS_PRESETS.length).toBeGreaterThan(0)
+    for (const preset of TTS_PRESETS) {
+      expect(preset.baseUrl.startsWith('https://')).toBe(true)
+      expect(preset.model.length).toBeGreaterThan(0)
+      expect(preset.voice.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('TTS provider 字段类型与枚举值校验（v7）', () => {
+    expect([...TTS_FORMATS]).toEqual(['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'])
+    expect(fieldAccepts('tts.providers.sf.speed', 1)).toBe(true)
+    expect(fieldAccepts('tts.providers.sf.speed', 'fast')).toBe(false)
+    expect(fieldAccepts('tts.providers.sf.apiKeyEnc', 'cipher')).toBe(true)
+    expect(fieldAccepts('tts.providers.sf.apiKeyEnc', 42)).toBe(false)
+    // 枚举必须按值校验：非法格式若被放行，会一路活到 parse 把整份配置判为损坏
+    expect(fieldAccepts('tts.providers.sf.format', 'mp3')).toBe(true)
+    expect(fieldAccepts('tts.providers.sf.format', 'ogg')).toBe(false)
+    expect(fieldAccepts('tts.providers.sf.type', 'openai-compat')).toBe(true)
+    expect(fieldAccepts('tts.providers.sf.type', 'azure')).toBe(false)
+
+    const settings = createDefaultSettings()
+    settings.tts.providers['sf'] = {
+      type: 'openai-compat',
+      baseUrl: 'https://api.siliconflow.cn/v1',
+      apiKeyEnc: 'cipher',
+      model: 'FunAudioLLM/CosyVoice2-0.5B',
+      voice: 'alex',
+      speed: 1,
+      format: 'mp3',
+    }
+    expect(SettingsSchema.safeParse(settings).success).toBe(true)
+  })
+
+  it('TTS 越界值被 Schema 拒绝：maxChars 50–4096、speed 0.25–4（v7）', () => {
+    const provider = {
+      type: 'openai-compat' as const,
+      baseUrl: 'https://api.siliconflow.cn/v1',
+      apiKeyEnc: 'cipher',
+      model: 'FunAudioLLM/CosyVoice2-0.5B',
+      voice: 'alex',
+      speed: 1,
+      format: 'mp3' as const,
+    }
+
+    const charTooSmall = createDefaultSettings()
+    charTooSmall.tts.maxChars = 49
+    expect(SettingsSchema.safeParse(charTooSmall).success).toBe(false)
+
+    const charTooLarge = createDefaultSettings()
+    charTooLarge.tts.maxChars = 4097
+    expect(SettingsSchema.safeParse(charTooLarge).success).toBe(false)
+
+    const speedTooSlow = createDefaultSettings()
+    speedTooSlow.tts.providers['sf'] = { ...provider, speed: 0.2 }
+    expect(SettingsSchema.safeParse(speedTooSlow).success).toBe(false)
+
+    const speedTooFast = createDefaultSettings()
+    speedTooFast.tts.providers['sf'] = { ...provider, speed: 4.5 }
+    expect(SettingsSchema.safeParse(speedTooFast).success).toBe(false)
+
+    const unknownFormat = createDefaultSettings()
+    unknownFormat.tts.providers['sf'] = { ...provider, format: 'ogg' as unknown as 'mp3' }
+    expect(SettingsSchema.safeParse(unknownFormat).success).toBe(false)
+
+    // 边界值本身合法
+    const ok = createDefaultSettings()
+    ok.tts.maxChars = 50
+    ok.tts.providers['sf'] = { ...provider, speed: 0.25, format: 'pcm' }
+    expect(SettingsSchema.safeParse(ok).success).toBe(true)
+  })
+
+  it('TTS 与聊天 provider 解耦：tts 段独立存在，llm 段不受影响（v7）', () => {
+    const settings = createDefaultSettings()
+    expect(settings.llm.active).toBe('')
+    expect(settings.llm.providers).toEqual({})
+    expect(settings.tts.active).toBe('')
+    expect(settings.tts.providers).toEqual({})
+
+    settings.llm.providers['deepseek'] = {
+      type: 'openai-compat',
+      baseUrl: 'https://api.deepseek.com',
+      apiKeyEnc: 'cipher',
+      model: 'deepseek-chat',
+      temperature: 0.7,
+      reasoningEffort: 'auto',
+    }
+    // 只配了聊天模型时，语音仍然是「未配置」——两者不共用一份 provider
+    expect(SettingsSchema.parse(settings).tts.active).toBe('')
+    expect(SettingsSchema.parse(settings).tts.providers).toEqual({})
+  })
 })
 
 describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () => {
@@ -329,5 +437,20 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
   it('拼错路径必须拒绝（Schema 识别不了，防悄悄写进配置）', () => {
     expect(canWriteSettingPath('modes.classrom.typo')).toBe(false)
     expect(settingsReadonlyReason('modes.classrom.typo')).toBe('未知配置路径')
+  })
+
+  it('TTS 凭据路径不可由 AI 读写，且不牵连 tts 的其它字段（v7）', () => {
+    // `tts.providers` 含 safeStorage 密文，与 llm.providers / mcp.servers 同级封禁
+    expect(canWriteSettingPath('tts.providers.sf.apiKeyEnc')).toBe(false)
+    expect(settingsReadonlyReason('tts.providers.sf.apiKeyEnc')).toBe('凭据字段不允许通过工具修改')
+    expect(canWriteSettingPath('tts.providers')).toBe(false)
+    expect(canWriteSettingPath('tts.providers.sf.model')).toBe(false)
+    // 同段里的非凭据字段仍可写（别把整个 tts 分组一起封死）
+    expect(canWriteSettingPath('tts.enabled')).toBe(true)
+    expect(canWriteSettingPath('tts.active')).toBe(true)
+    expect(canWriteSettingPath('tts.autoRead')).toBe(true)
+    expect(canWriteSettingPath('tts.maxChars')).toBe(true)
+    // 段名相近的字段不被误伤（`tts.providerSuffix` 不是 `tts.providers` 的子路径）
+    expect(settingsReadonlyReason('tts.providerSuffix')).toBe('未知配置路径')
   })
 })

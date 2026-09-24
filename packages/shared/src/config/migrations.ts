@@ -9,6 +9,7 @@ import {
   DEFAULT_CLASSIFICATION,
   DEFAULT_CLASSISLAND_SCHEDULE,
   DEFAULT_REASONING_EFFORT,
+  DEFAULT_TTS,
 } from './defaults.js'
 import type { Logger } from '../utils/logger.js'
 
@@ -262,6 +263,33 @@ const migrateV5ToV6: Migration = {
   },
 }
 
+/**
+ * v6 → v7：为语音合成（TTS 朗读）补齐 `tts.*`（docs/06 §13、docs/08 §1）。
+ *
+ * 照 v4 → v5 对 `agent` 的做法**无条件**补默认值：`fillMissing` 对**已存在**的值一律保留，
+ * 所以用户/设置页写过的 `enabled` / `active` / `autoRead` / `maxChars` 与已有 provider 条目
+ * 一个都不动，重复执行结果也一致（幂等）。
+ * 唯一被补出来的是缺失字段——老配置因此拿到「关闭自动朗读、无 provider」的干净默认态，
+ * 不会被凭空打开朗读。
+ */
+const migrateV6ToV7: Migration = {
+  from: 6,
+  to: 7,
+  describe:
+    'v6 → v7：补齐 tts.*（语音合成配置：总开关 / 默认模型 / 自动朗读 / 截断上限 / providers）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    next['tts'] = fillMissing(
+      asRecord(raw['tts']) ?? {},
+      DEFAULT_TTS as unknown as Record<string, unknown>,
+    )
+
+    next['version'] = 7
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -269,6 +297,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV3ToV4,
   migrateV4ToV5,
   migrateV5ToV6,
+  migrateV6ToV7,
 ]
 
 export interface MigrationOutcome {
