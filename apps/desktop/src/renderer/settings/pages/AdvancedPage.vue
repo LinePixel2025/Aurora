@@ -235,6 +235,19 @@ async function resetAll(): Promise<void> {
 </template>
 
 <style scoped>
+.page > .section-card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-hairline);
+}
+
+.page > .section-card:last-of-type {
+  border-color: var(--danger-border);
+}
+
+.page > .section-card :is(input[type='number'], .mono) {
+  font-variant-numeric: var(--num-tabular);
+}
+
 .wrap {
   flex-wrap: wrap;
 }
@@ -244,7 +257,7 @@ async function resetAll(): Promise<void> {
   overflow: auto;
   margin: 0;
   padding: var(--space-3);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
   font-size: var(--text-sm);

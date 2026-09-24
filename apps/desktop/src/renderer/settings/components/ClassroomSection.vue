@@ -190,15 +190,11 @@ const summary = computed(() => {
   gap: var(--space-4);
 }
 
-/* 分组卡片自己排版：头部整行可点，正文缩进一级 */
+/* 分组卡片沿用设置页描边与静止阴影；只有可交互的头部响应悬停。 */
 .group {
   padding: 0;
+  gap: 0;
   overflow: hidden;
-  transition: border-color var(--transition-fast);
-}
-
-.group:hover {
-  border-color: var(--border-strong);
 }
 
 .group-head {
@@ -206,6 +202,7 @@ const summary = computed(() => {
   align-items: center;
   gap: var(--space-2);
   width: 100%;
+  min-height: var(--control-h-lg);
   padding: var(--space-3) var(--space-4);
   text-align: left;
   transition: background var(--transition-fast);
@@ -217,6 +214,7 @@ const summary = computed(() => {
 
 .chevron {
   display: inline-block;
+  flex: none;
   color: var(--text-muted);
   transition: transform var(--transition-fast);
 }
@@ -227,6 +225,7 @@ const summary = computed(() => {
 
 .group-summary {
   text-align: right;
+  font-variant-numeric: var(--num-tabular);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -235,7 +234,8 @@ const summary = computed(() => {
 .group-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: 0 var(--space-4) var(--space-4);
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border-top: 1px solid var(--border-subtle);
 }
 </style>

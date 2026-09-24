@@ -784,6 +784,20 @@ function stopPreview(): void {
 </template>
 
 <style scoped>
+.page > .section-card,
+.page > .provider-list .section-card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-hairline);
+}
+
+.page > .empty-state {
+  padding-block: var(--space-6);
+}
+
+.page :is(input[type='number'], .badge) {
+  font-variant-numeric: var(--num-tabular);
+}
+
 .summary {
   margin: var(--space-2) 0 0;
   color: var(--text-secondary);
@@ -858,9 +872,9 @@ function stopPreview(): void {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-xs);
-  border: 1px solid var(--status-error);
-  background: var(--fill-1);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--danger-border);
+  background: var(--danger-fill);
 }
 
 .confirm-text {
@@ -881,12 +895,12 @@ function stopPreview(): void {
 .voices {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 /* 音色候选 chip：与 LlmPage 的模型 chip 同一套观感 */
 .model-chip {
-  padding: 3px 9px;
+  padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-pill);
   font-size: var(--text-sm);
   font-family: var(--font-mono);

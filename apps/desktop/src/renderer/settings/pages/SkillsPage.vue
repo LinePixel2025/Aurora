@@ -220,6 +220,15 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.page > .section-card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-hairline);
+}
+
+.page > .empty-state {
+  padding-block: var(--space-6);
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -228,7 +237,7 @@ onMounted(() => {
 
 .table th,
 .table td {
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-3);
   text-align: left;
   border-bottom: 1px solid var(--border-subtle);
   vertical-align: top;
@@ -236,8 +245,22 @@ onMounted(() => {
 
 .table th {
   color: var(--text-muted);
-  font-weight: var(--weight-medium);
-  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+}
+
+.table tbody tr {
+  transition: background var(--transition-fast);
+}
+
+.table tbody tr:hover {
+  background: var(--fill-2);
+}
+
+.table :is(.badge, input, code) {
+  font-variant-numeric: var(--num-tabular);
 }
 
 .table p {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 设置窗口（docs/07 §2.5、docs/08 §5/§6）：单窗口分栏
- * 常规 / 模式 / AI 模型 / Skill / MCP / 高级。
+ * 常规 / 模式 / AI 模型 / 语音 / Skill / MCP / 电脑操控 / 高级。
  *
  * 本窗无系统标题栏（`frame: false`），拖动能力由 `useWindowDrag('settings')` 统一提供
  * （docs/07 §1），共三处：侧栏顶部透明条（16px）、侧栏品牌行（min-height 36px，实测 ≈39px）、
@@ -43,7 +43,7 @@ const nav: NavItem[] = [
 ]
 
 /**
- * 侧栏分组（docs/07 §2.5）：页面本身不变，只是把 7 项按「基础 / AI 能力 / 系统」
+ * 侧栏分组（docs/07 §2.5）：页面本身不变，只是把 8 项按「基础 / AI 能力 / 系统」
  * 分层，避免同级项平铺时看不出主次。
  */
 const navGroups: Array<{ title: string; ids: PageId[] }> = [
@@ -134,6 +134,7 @@ function select(id: PageId): void {
             type="button"
             class="nav-item"
             :class="{ active: active === item.id }"
+            :aria-current="active === item.id ? 'page' : undefined"
             @click="select(item.id)"
           >
             <span class="label">{{ item.label }}</span>
@@ -241,8 +242,8 @@ function select(id: PageId): void {
 }
 
 .close:hover {
-  background: rgba(242, 85, 90, 0.18);
-  color: #ff9ca0;
+  background: var(--danger-fill-hover);
+  color: var(--danger-text);
 }
 
 nav {
@@ -254,10 +255,11 @@ nav {
 /* 分组标题：小字号 + 弱色 + 字间距，只承担分层，不与可点条目抢注意力 */
 .nav-group {
   margin: var(--space-3) 0 var(--space-1);
-  padding: 0 10px;
+  padding: 0 var(--space-3);
   font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
   color: var(--text-muted);
-  letter-spacing: 0.08em;
+  letter-spacing: var(--tracking-eyebrow);
   text-transform: uppercase;
 }
 
@@ -270,9 +272,11 @@ nav > .nav-group:first-child {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  justify-content: center;
   gap: 1px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
+  height: var(--control-h-md);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
   text-align: left;
   transition:
     background var(--transition-fast),
@@ -280,12 +284,18 @@ nav > .nav-group:first-child {
 }
 
 .nav-item:hover {
-  background: var(--fill-1);
+  background: var(--fill-2);
 }
 
 /* 当前项：分层填充 + 左侧品牌色指示条（不靠纯色块区分，色觉障碍下也可辨） */
 .nav-item.active {
-  background: var(--fill-2);
+  background: var(--fill-3);
+}
+
+.nav-item:focus-visible,
+.close:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .nav-item.active::before {
@@ -300,7 +310,7 @@ nav > .nav-group:first-child {
 }
 
 .nav-item .label {
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 
 .foot {

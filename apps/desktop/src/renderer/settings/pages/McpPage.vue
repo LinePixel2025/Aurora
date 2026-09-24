@@ -341,10 +341,24 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
 </template>
 
 <style scoped>
+.page > .section-card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-hairline);
+}
+
+.page > .empty-state {
+  padding-block: var(--space-6);
+}
+
 .server-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+.server-head .badge {
+  font-variant-numeric: var(--num-tabular);
 }
 
 .target {
@@ -357,6 +371,7 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
   align-items: center;
   gap: var(--space-2);
   width: 100%;
+  min-height: var(--control-h-sm);
   color: var(--text-secondary);
   font-size: var(--text-sm);
   transition: color var(--transition-fast);

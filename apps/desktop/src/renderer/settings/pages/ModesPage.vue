@@ -160,6 +160,15 @@ async function markDone(id: ModeId): Promise<void> {
 </template>
 
 <style scoped>
+.page > .section-card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-hairline);
+}
+
+.page > .empty-state {
+  padding-block: var(--space-6);
+}
+
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -171,9 +180,10 @@ async function markDone(id: ModeId): Promise<void> {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
+  box-shadow: var(--shadow-hairline);
   transition:
     border-color var(--transition-fast),
     background var(--transition-fast);
@@ -185,7 +195,11 @@ async function markDone(id: ModeId): Promise<void> {
 }
 
 .card.placeholder {
-  opacity: 0.78;
+  border-style: dashed;
+}
+
+.card.placeholder .badge {
+  color: var(--text-secondary);
 }
 
 .card-head {
@@ -200,10 +214,11 @@ async function markDone(id: ModeId): Promise<void> {
 
 .fields {
   margin: 0;
-  padding-left: 16px;
+  padding-left: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
+  line-height: var(--leading-normal);
 }
 
 /* 次级操作：与主按钮同一行但视觉更弱，展开后单独占一行 */

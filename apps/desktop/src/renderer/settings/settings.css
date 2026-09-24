@@ -19,9 +19,14 @@
  */
 .settings .page {
   padding: 0;
-  padding-bottom: 32px;
+  padding-bottom: var(--space-6);
   height: auto;
   max-width: 860px;
+}
+
+.settings .page-title {
+  letter-spacing: var(--tracking-display);
+  line-height: var(--leading-tight);
 }
 
 /* ───────── 分组卡片 ───────── */
@@ -31,9 +36,10 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
+  box-shadow: var(--shadow-hairline);
 }
 
 /* 当前生效 / 默认对象（当前模式卡片、默认 provider）的强调描边 */
@@ -46,11 +52,12 @@
   font-size: var(--text-lg);
   font-weight: var(--weight-semibold);
   line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-display);
 }
 
 .section-desc {
   margin: 0;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
 }
@@ -59,17 +66,19 @@
 
 .empty-state {
   gap: var(--space-3);
+  padding: var(--space-7) var(--space-6);
   border-style: dashed;
-  border-color: var(--border-strong);
+  border-color: var(--border-subtle);
+  align-items: flex-start;
 }
 
 /* ───────── 统一内联控件（拆出的 classroom 子组件与各页共用） ───────── */
 
 .settings .input {
   width: 100%;
-  height: 32px;
-  padding: 0 10px;
-  border-radius: var(--radius-xs);
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
   color: var(--text-primary);
@@ -85,11 +94,14 @@
 }
 
 .settings .input:focus {
-  border-color: var(--aurora-blue);
+  border-color: var(--focus-ring);
   background: var(--fill-2);
-  /* 与 SettingField.vue 内控件的聚焦光晕取同一个值：行内控件包不包 SettingField 观感一致。
-     主题里没有"聚焦光晕"令牌，此处刻意与既有共享组件保持逐字一致，而不是新造一个色值。 */
-  box-shadow: 0 0 0 3px rgba(86, 132, 255, 0.22);
+}
+
+.settings .input:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 1px var(--accent-ring);
 }
 
 .settings .input[type='range'] {

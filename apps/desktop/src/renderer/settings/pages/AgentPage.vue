@@ -348,6 +348,23 @@ async function openWorkspace(): Promise<void> {
 </template>
 
 <style scoped>
+.page > .section-card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-hairline);
+}
+
+.page > .section-card [data-empty] {
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+}
+
+.page > .section-card input[type='number'] {
+  font-variant-numeric: var(--num-tabular);
+}
+
 .wrap {
   flex-wrap: wrap;
 }

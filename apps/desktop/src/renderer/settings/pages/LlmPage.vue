@@ -851,6 +851,20 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
 </template>
 
 <style scoped>
+.page > .section-card,
+.page > .provider-list .section-card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-hairline);
+}
+
+.page > .empty-state {
+  padding-block: var(--space-6);
+}
+
+.page :is(input[type='number'], .badge) {
+  font-variant-numeric: var(--num-tabular);
+}
+
 .summary {
   margin: var(--space-2) 0 0;
   color: var(--text-secondary);
@@ -966,7 +980,7 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-xs);
+  border-radius: var(--radius-sm);
   transition: background var(--transition-fast);
 }
 
@@ -1020,8 +1034,8 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
 /* 空态：一句话说清两条路，不摆一排空行（与 provider 空状态同一套虚线观感，弱化到行内尺寸） */
 .model-empty {
   margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-xs);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
   border: 1px dashed var(--border-strong);
   color: var(--text-secondary);
   font-size: var(--text-sm);
@@ -1040,9 +1054,9 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-xs);
-  border: 1px solid var(--status-error);
-  background: var(--fill-1);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--danger-border);
+  background: var(--danger-fill);
 }
 
 .confirm-text {
@@ -1071,11 +1085,11 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
 .models {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .model-chip {
-  padding: 3px 9px;
+  padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-pill);
   font-size: var(--text-sm);
   font-family: var(--font-mono);

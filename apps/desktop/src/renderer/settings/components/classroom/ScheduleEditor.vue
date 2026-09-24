@@ -354,9 +354,9 @@ async function removeLesson(index: number): Promise<void> {
 .scroll-x {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1);
   overflow-x: auto;
-  padding-bottom: 2px;
+  padding-bottom: var(--space-1);
 }
 
 .lesson-grid {
@@ -365,10 +365,28 @@ async function removeLesson(index: number): Promise<void> {
   gap: var(--space-2);
   align-items: center;
   min-width: 620px;
+  font-variant-numeric: var(--num-tabular);
 }
 
 .lesson-grid.head {
-  padding-bottom: 2px;
+  padding: var(--space-1) var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-eyebrow);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.lesson-grid:not(.head) {
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--fill-1);
+  transition: background var(--transition-fast);
+}
+
+.lesson-grid:not(.head):hover {
+  background: var(--fill-2);
 }
 
 .dash {

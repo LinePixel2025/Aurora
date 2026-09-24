@@ -121,5 +121,13 @@ async function setFallbackFolder(value: string): Promise<void> {
 <style scoped>
 .slider {
   flex: 1;
+  min-width: 0;
+}
+
+.badge {
+  min-width: var(--control-h-md);
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-variant-numeric: var(--num-tabular);
 }
 </style>

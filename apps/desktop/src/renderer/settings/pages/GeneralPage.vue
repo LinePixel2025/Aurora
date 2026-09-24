@@ -346,7 +346,23 @@ async function toggleEdgeBar(): Promise<void> {
 </template>
 
 <style scoped>
-/* 页面骨架（.page / .page-title / .page-sub / .section-*）走 settings.css 与 theme.css */
+/* 页面骨架由设置窗口提供；页面卡片沿用同一半径和静止边界。 */
+.page > .section-card {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-hairline);
+}
+
+.page [data-empty] {
+  padding: var(--space-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+}
+
+.page :is(input[type='number'], .mono, .progress) {
+  font-variant-numeric: var(--num-tabular);
+}
+
 .progress {
   position: relative;
   height: 6px;
