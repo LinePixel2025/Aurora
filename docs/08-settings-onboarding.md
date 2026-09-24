@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v6）
+## 1. 配置 Schema（config.json，v7）
 
 ```jsonc
 {
-  "version": 6,
+  "version": 7,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -27,6 +27,23 @@
         "reasoningEffort": "auto", // auto | low | medium | high；auto = 不下发该参数
         // v6 新增：**候选**模型 id 列表（设置页「模型列表」与对话窗模型选择器共用，见 §5）
         "modelList": ["deepseek-chat", "deepseek-reasoner"]
+      }
+    }
+  },
+  "tts": {
+    "enabled": true,           // 语音功能总开关；false 时对话窗不显示朗读按钮
+    "active": "",              // 默认 TTS provider id；空串 = 未配置（此时对话窗的朗读按钮不出现）
+    "autoRead": false,         // 助手回复结束后自动朗读
+    "maxChars": 2000,          // 单次朗读的文本上限（50–4096，超出截断）
+    "providers": {
+      "siliconflow": {
+        "type": "openai-compat",
+        "baseUrl": "https://api.siliconflow.cn/v1",
+        "apiKeyEnc": "<safeStorage 密文>",
+        "model": "FunAudioLLM/CosyVoice2-0.5B",  // 唯一生效值：合成请求实际用的模型就是它
+        "voice": "alex",       // 音色 id，如 alloy / FunAudioLLM/CosyVoice2-0.5B:alex
+        "speed": 1,            // 0.25–4
+        "format": "mp3"        // mp3 | opus | aac | flac | wav | pcm
       }
     }
   },
@@ -69,7 +86,7 @@
     // v6 新增：AI 改配置（set_setting）的路径黑名单，按路径段匹配，见 06 §12。
     // 只能在默认项之上追加限制：默认项始终生效，删掉或清空都不能放开（判定的第二道用的是硬编码常量）
     "readonlyPrefixes": [
-      "llm.providers", "mcp.servers", "version", "general.windowState", "advanced.proxy",
+      "llm.providers", "tts.providers", "mcp.servers", "version", "general.windowState", "advanced.proxy",
       "general.onboarded", "general.firstRun", "general.launchAtLogin", "general.hotkey",
       "advanced.confirmSensitiveTools"
     ]
@@ -108,8 +125,10 @@
   `SETTINGS_READONLY_PREFIXES`，**从不读取用户配置**。所以把 `general.hotkey` 从数组里删掉、
   甚至把数组清空，`general.hotkey` 这条路径**仍然被拒**（清空 = 回到默认项，而不是放开）。
   另一条兜底同样不随它变化：「Schema 不认识的路径一律拒绝」，防模型拼错字段名后悄悄写进配置。
-  `v5 → v6` 迁移会为旧配置补齐这一项，`CONFIG_VERSION` 仍为 **6**（本字段是本轮 v6 内追加的，
-  没有另起新版本号）。
+  `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
+  当前 `CONFIG_VERSION` 已是 **7**，见 §2）。
+  **`tts.providers` 含凭据密文**（`apiKeyEnc`），同样在默认黑名单里，
+  因此 AI 的 `set_setting` 对它的任何写入**一律拒绝**。
 - `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
   `auto` 表示请求里**不带 `reasoning_effort` 字段**，用于兼容不认该参数的厂商；
   其余三档按值下发（见 06 §3）。它是 **provider 级**字段：作用于该 provider 下的**所有**模型，
@@ -122,7 +141,16 @@
   回落行为：`modelList` 为空（或当前 `model` 不在其中）时，选择器**只显示当前 `model`**
   并标注「（不在列表中）」，**不会**悄悄替换成列表里的第一个模型；对话窗同样显示为
   `<model>（不在列表中）`。`v5 → v6` 迁移会为旧配置的每个 provider 补齐 `modelList: []`
-  （已存在的值不动），`CONFIG_VERSION` 仍为 **6**（本字段是本轮 v6 内追加的，没有另起新版本号）。
+  （已存在的值不动；本字段是在 v6 内追加的，当时没有另起新版本号）。
+- `tts`（**v7 新增**，见 06 §13）：**语音输出（TTS）**，本轮**不含语音输入（STT）**。
+  `tts.enabled` 是整个语音功能的**总开关**（`false` 时对话窗不显示朗读按钮）；
+  `tts.active` 是默认 TTS provider id，**为空串 = 未配置**，此时对话窗的朗读按钮**不出现**；
+  `tts.autoRead` 控制助手回复结束后是否自动朗读；`tts.maxChars` 是**单次朗读的截断上限**
+  （50–4096，默认 2000，超出部分先截断再送合成）。
+  `tts.providers.<id>`（`{ type, baseUrl, apiKeyEnc, model, voice, speed, format }`）与
+  `llm.providers.<id>` **结构同构但彼此独立**：两边的 provider 列表不共享、不联动，
+  改一边不影响另一边；`apiKeyEnc` 同为 safeStorage 密文（回传口径见 §1.1）。
+  `v6 → v7` 迁移会为旧配置补齐 `tts.*`（`fillMissing` 对已存在的值一律保留，因此天然幂等）。
 - `agent.tools`（v5 新增，见 06 §11）：4 个开关 + 3 个上限 ——
   `enabled` 是电脑操控工具**总开关**（`false` 时 5 个工具都不注册）；`workspaceDir` 是 **`run_command`
   的缺省 `cwd`**（空串 = 用户主目录，只作**默认值**、不是沙箱；文件类工具不读它，见 06 §11.1）；`terminal.enabled` 开关终端工具、
@@ -138,7 +166,7 @@
 
 | 字段 | 位置 | 说明 |
 |---|---|---|
-| `apiKeySet` | `llm.providers.<id>` | `true` 表示该 provider 已保存 API Key（`apiKeyEnc` 始终回传空串） |
+| `apiKeySet` | `llm.providers.<id>` / `tts.providers.<id>` | `true` 表示该 provider 已保存 API Key（`apiKeyEnc` 始终回传空串） |
 | `envSet` | `mcp.servers[]` | 已配置的环境变量名列表（`envEnc` 始终回传空对象） |
 
 两者由主进程在回传前计算，不写入 `config.json`，因此不参与版本迁移。
@@ -168,15 +196,16 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 6`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 7`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
   `v3 → v4`（移除 `general.windowState['service-dock']`，AI 悬浮窗已删除）、
   `v4 → v5`（补齐 `llm.providers.*.reasoningEffort` 与 `agent.tools.*`）、
   `v5 → v6`（移除 `general.windowState['mini-chat']`，独立小窗已删除；
-  补齐 `llm.providers.*.modelList` 与 `advanced.readonlyPrefixes`）。
-  六条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
+  补齐 `llm.providers.*.modelList` 与 `advanced.readonlyPrefixes`）、
+  `v6 → v7`（补齐 `tts.*`）。
+  七条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -287,8 +316,8 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   - 凭据保真（本轮修）：列表里「环境变量：…（值已加密存储）」读的是主进程补的**只读标记**
     `envSet`（§1.1），不是永远为空对象的 `envEnc`；任何一次保存（添加 / 停用 / 删除）回传的
     空 `envEnc` 都按「本次不改凭据」处理，不再清掉磁盘上的密文。
-- **电脑操控**（`agent.tools.*`，v0.7.0）：侧栏「AI 能力」组第 4 项（该组依序为
-  `llm` / `skills` / `mcp` / `agent`）。页面提供电脑操控工具的开关与上限：「总开关」、「工作目录」、
+- **电脑操控**（`agent.tools.*`，v0.7.0）：侧栏「AI 能力」组第 5 项（该组依序为
+  `llm` / `tts` / `skills` / `mcp` / `agent`）。页面提供电脑操控工具的开关与上限：「总开关」、「工作目录」、
   终端（开关 / 超时 ms / 输出字符上限）、文件（开关 / 单次读取字节上限）、打开（开关）；
   字段路径见 §1，工具能力与安全边界见 06 §11。
   - 总开关 `agent.tools.enabled` 关闭后 `run_command` / `read_file` / `write_file` /
@@ -304,6 +333,16 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   - 逐次确认沿用 `sensitivity` 判定：`run_command` / `write_file` / `open_path` 为 `confirm`
     （走 06 §5 的确认链路，勿扰时段或确认超时一律按拒绝），`read_file` / `list_dir` 为 `safe`；
     由 `advanced.confirmSensitiveTools` 统一开关，关闭后敏感工具不再询问（见 §1）。
+- **语音**（`tts.*`，v0.8.0）：侧栏「AI 能力」组第 2 项（该组依序为 `llm` / `tts` / `skills` / `mcp` / `agent`）。
+  页面提供「总开关」（`tts.enabled`）、「默认 TTS 模型」（`tts.active`）、「自动朗读」（`tts.autoRead`）、
+  「截断上限」（`tts.maxChars`），以及 provider 列表的**增 / 改 / 删 + 「试听」**
+  （用当前表单值合成一小段试听音频）。字段路径见 §1，请求协议与失败降级见 06 §13。
+  - provider 表单与 `llm.providers` **同构但独立**（`baseUrl` / `apiKey` / `model` / `voice` / `speed` / `format`）：
+    两边的列表不共享、不联动，改一边不影响另一边（见 §1）。
+  - 凭据沿用 §1.1 的只读标记口径：列表里只显示 `apiKeySet`（`凭据已保存` / `缺少凭据`），
+    密文**永不回显**，编辑卡里的 API Key 是 write-only 输入，**留空 = 本次不修改**。
+  - 列表为空时是 `data-empty="tts.providers"` 的**空状态卡**，不画一排空行。
+  - 本轮**不含语音输入（STT）**：不录音、不转写、不申请麦克风权限。
 - **高级**：日志查看与导出、代理设置、日志级别、勿扰时段、重置为默认配置。
   分组为「网络 / 日志 / 勿扰 / 安全 / 危险操作」；「重置为默认配置」需**就地二次确认**
   （按钮变为「确认重置？」+ 取消），不再用原生 `confirm`。
@@ -343,6 +382,9 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 | `agent.tools.enabled` | 常显（否则无法重新启用） |
 | `agent.tools.workspaceDir` | 常显（总开关关着时也要能改默认工作目录） |
 | `agent.tools.terminal.*` / `files.*` / `open.enabled` | `agent.tools.enabled === true` |
+| `tts.enabled` | 常显（否则无法重新启用） |
+| `tts.providers.*` | `tts.providers` 至少一项，否则整块换成 `data-empty="tts.providers"` |
+| `tts.autoRead` / `tts.maxChars` | `tts.providers` 至少一项（没有 provider 时朗读无从发生） |
 
 校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针按页断言——
 `settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0；

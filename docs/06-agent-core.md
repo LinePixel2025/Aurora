@@ -413,3 +413,80 @@ AI 彻底失能、连改回来的机会都没有」是一条必须堵死的路�
   端口聚合逻辑遇到它们直接返回失败；工具也因此**没有**删除 provider / MCP 服务器的能力。
 - **单次 `set` 是全有或全无**：跨分组的多条改动聚合成**一个** patch 一次性交给 `applyPatch`，
   不存在「写一半」的中间态；但两次 `set` 调用之间当然不是事务。
+
+## 13. 语音输出（TTS，v0.8.0）
+
+v0.8.0 起助手回复可以「读出来」：把助手消息的纯文本交给**用户自己配置**的 TTS 服务合成音频，
+由渲染层播放。本节只约定**出网协议与边界**；字段与设置页见 docs/08 §1 / §6，
+交互窗的按钮与状态见 07 §2.3，联网范围见 11 §4。
+它与 §3 的 LLM 提供者是**同构但完全独立**的两套 provider：`tts.providers.<id>` **不复用**
+`llm.providers.<id>`（可以是同一家厂商、同一个 Key，也可以是另一家），
+`tts.active` 指向默认 TTS provider，空串 = 未配置。
+
+### 13.1 配置面
+
+| 字段 | 语义 |
+|---|---|
+| `tts.enabled` | 语音功能总开关；`false` 时朗读入口整体消失（不发请求） |
+| `tts.active` | 默认 TTS provider id；**空串 = 未配置**（此时不合成，交互窗的朗读按钮也不出现） |
+| `tts.autoRead` | 回复结束后自动朗读最后一条助手消息（默认 `false`） |
+| `tts.maxChars` | 单次朗读的文本上限，默认 2000、Schema 限 50–4096，超出截断（见 §13.4） |
+| `tts.providers.<id>.{type,baseUrl,apiKeyEnc,model,voice,speed,format}` | provider 条目；`type` 目前只有 `openai-compat` |
+
+- `type` 是枚举：未识别的类型视为**不可用**，不猜测、不回落（不把它当 `openai-compat` 试一次）。
+- `format` 取 `mp3 | opus | aac | flac | wav | pcm`（`TTS_FORMATS`），`speed` 限 0.25–4；
+  `voice` 是厂商自己的音色 id（如 `alloy`、`FunAudioLLM/CosyVoice2-0.5B:alex`），Aurora 不维护音色字典。
+- `tts.providers` 与 `llm.providers` 一样是**动态 record**：缺项 ≠ 删除（见 §12.4 的合并语义）。
+
+### 13.2 请求协议（OpenAI 兼容 `/audio/speech`）
+
+```http
+POST <baseUrl>/audio/speech
+Authorization: Bearer <apiKey>
+Content-Type: application/json
+
+{ "model": "<model>", "input": "<被朗读的文本>", "voice": "<voice>", "speed": 1, "response_format": "<format>" }
+```
+
+- 端点由**用户填的地址 + 固定路径**拼出（与 §3 的 chat 端点同一个套路）：
+  `baseUrl` 的尾部斜杠要先规整，避免出现 `//audio/speech`。
+- 成功响应体是**音频二进制**（不是 JSON），直接交给渲染层播放；只有**错误**响应才按 JSON 解析原因。
+- 出网必须走主进程的 `netFetch`（见 AGENTS.md「网络出网统一走 `main/net.ts` 的 `netFetch`」），
+  这样 `advanced.proxy` 对它同样生效；`agent-core` 侧只接受注入的 `fetchImpl`，
+  **不得 import electron**（§2 分层）。
+- 主进程侧只有**超时取消**：合成请求用 `AbortController` 兜住默认 30s（试听 15s）超时，
+  超时按失败降级处理（见 §13.5）。渲染层的「停止」**不取消已发出的请求** ——
+  它只停掉播放并**丢弃过期回包**（合成结果回来时若已经换代，直接丢掉不播），
+  不为一次朗读引入端到端取消通道。
+
+### 13.3 凭据来源
+
+- `tts.providers.<id>.apiKeyEnc` 存的是 Electron `safeStorage` **密文**（形如 `v10:…`），
+  与 `llm.providers` / `mcp.servers` 同一套；明文路径约定为 `tts.providers.<id>.apiKey`，
+  **明文只走 `settings:setSecrets`**（渲染层提交 → 主进程加密落盘）。
+- **渲染层不持有明文**：`settings:get` / `settings:changed` 只回传 `apiKeySet` 标记，
+  `apiKeyEnc` 在渲染层始终是空串（同 docs/08 §1.1，因此回传里的「空」= 本次不改凭据）；
+  解密只发生在主进程即将发起请求的那一刻。
+- `tts.providers` 在 `SETTINGS_READONLY_PREFIXES` 里：AI 的 `set_setting` **一律拒绝**读写它（§12.2），
+  provider 的增删改只能由用户在设置页完成。
+- 日志与「导出脱敏配置」里的该凭据一律 `***`（11 §5）。
+
+### 13.4 `maxChars` 截断语义
+
+- 朗读文本取自**助手消息的 `content`**（助手回复的原始正文），先 `trim()` 丢掉首尾空白；
+  本轮**不剥离 Markdown 标记**（`**`、代码块围栏、链接语法都会原样送去合成），这是已知取舍。
+- 长度按**字符数**计算；超出 `tts.maxChars` 时从**尾部截断**，超出部分不下发，
+  结果里用 `truncated: true` 回报（渲染层据此可提示「已截断」；**不改写**被朗读的文本、
+  也不往文本里补任何提示串）。
+- 截断发生在**发送前**：超长回复不会整段出网，`maxChars` 同时是一条隐私边界（见 11 §4）。
+
+### 13.5 失败降级与「不做 STT」的边界
+
+- **合成失败只提示，不影响对话**：网络错误 / 4xx / 5xx / 超时 / 音频无法播放，一律降级为
+  在那条消息旁显示失败状态 + 一句简短原因，**不抛进工具循环、不写会话历史、不弹系统级错误、不自动重试**；
+  流式回复与后续对话完全不受影响，重试由用户再点一次按钮。
+- **无可用 provider 就不发请求**：`tts.enabled = false`、`tts.active` 为空、或指向不存在的条目时，
+  朗读按钮不渲染（07 §2.3），`tts.autoRead` 也一并静默跳过——不能退化成「每个 provider 都试一遍」。
+- **本轮不做 STT（语音输入）**：没有麦克风采集、没有语音转文字、也没有「语音对话」循环，
+  不为它预留配置字段。TTS 是**纯输出**通道：文本进、音频出；音频是**即时播放**的产物，**不落盘**，
+  会话历史里仍然只有文本。
