@@ -329,6 +329,9 @@ export class SettingsStore {
     for (const provider of Object.values(clone.llm.providers)) {
       provider.apiKeyEnc = provider.apiKeyEnc === '' ? '' : '***'
     }
+    for (const provider of Object.values(clone.tts.providers)) {
+      provider.apiKeyEnc = provider.apiKeyEnc === '' ? '' : '***'
+    }
     for (const server of clone.mcp.servers) {
       for (const envKey of Object.keys(server.envEnc)) {
         server.envEnc[envKey] = '***'
@@ -497,6 +500,14 @@ export class SettingsStore {
       }
     }
 
+    for (const [id, provider] of Object.entries(this.current.tts.providers)) {
+      const next = encryptIfPlain(provider.apiKeyEnc)
+      if (next !== provider.apiKeyEnc) {
+        this.logger.info('已为存量 TTS API Key 补加密', { provider: id })
+        provider.apiKeyEnc = next
+      }
+    }
+
     for (const server of this.current.mcp.servers) {
       for (const [envKey, value] of Object.entries(server.envEnc)) {
         const next = encryptIfPlain(value)
@@ -509,7 +520,6 @@ export class SettingsStore {
 
     return count
   }
-
   private isDecryptable(value: string): boolean {
     try {
       this.crypto.decrypt(value)
@@ -522,6 +532,8 @@ export class SettingsStore {
   private readSecretField(key: string): string | undefined {
     const providerId = matchProviderKey(key)
     if (providerId !== undefined) return this.current.llm.providers[providerId]?.apiKeyEnc
+    const ttsId = matchTtsProviderKey(key)
+    if (ttsId !== undefined) return this.current.tts.providers[ttsId]?.apiKeyEnc
     const envMatch = matchMcpEnvKey(key)
     if (envMatch) {
       const server = this.current.mcp.servers.find((s) => s.name === envMatch.server)
@@ -533,6 +545,9 @@ export class SettingsStore {
   private writeSecretField(key: string, cipher: string): boolean {
     const providerId = matchProviderKey(key)
     if (providerId !== undefined) {
+      // 条目不存在时必须返回 false：mutate 本身会成功返回（守卫是空操作），
+      // 只看返回值会把「凭据没落盘」误报成写入成功。
+      if (this.current.llm.providers[providerId] === undefined) return false
       return (
         this.mutate((draft) => {
           const provider = draft.llm.providers[providerId]
@@ -541,8 +556,20 @@ export class SettingsStore {
         }) !== undefined
       )
     }
+    const ttsId = matchTtsProviderKey(key)
+    if (ttsId !== undefined) {
+      if (this.current.tts.providers[ttsId] === undefined) return false
+      return (
+        this.mutate((draft) => {
+          const provider = draft.tts.providers[ttsId]
+          if (provider === undefined) return
+          provider.apiKeyEnc = cipher
+        }) !== undefined
+      )
+    }
     const envMatch = matchMcpEnvKey(key)
     if (envMatch) {
+      if (!this.current.mcp.servers.some((s) => s.name === envMatch.server)) return false
       return (
         this.mutate((draft) => {
           const server = draft.mcp.servers.find((s) => s.name === envMatch.server)
@@ -563,6 +590,7 @@ export class SettingsStore {
     if (this.crypto.isAvailable()) return settings
     const clone = deepClone(settings)
     for (const provider of Object.values(clone.llm.providers)) provider.apiKeyEnc = ''
+    for (const provider of Object.values(clone.tts.providers)) provider.apiKeyEnc = ''
     for (const server of clone.mcp.servers) server.envEnc = {}
     return clone
   }
@@ -575,17 +603,27 @@ function matchProviderKey(key: string): string | undefined {
   return matched?.[1]
 }
 
+function matchTtsProviderKey(key: string): string | undefined {
+  const matched = /^tts\.providers\.([^.]+)\.apiKey$/.exec(key)
+  return matched?.[1]
+}
+
 function matchMcpEnvKey(key: string): { server: string; envKey: string } | undefined {
   const matched = /^mcp\.servers\.([^.]+)\.env\.(.+)$/.exec(key)
   if (!matched) return undefined
   return { server: matched[1] as string, envKey: matched[2] as string }
 }
 
-/** `llm.providers.<id>.apiKey` / `mcp.servers.<name>.env.<KEY>` → 内部规范路径 */
+/**
+ * `llm.providers.<id>.apiKey` / `tts.providers.<id>.apiKey` / `mcp.servers.<name>.env.<KEY>`
+ * → 内部规范路径
+ */
 export function canonicalSecretPath(path: string): string {
   const trimmed = path.trim().replace(/\.$/, '')
   const provider = /^llm\.providers\.([^.]+)\.apiKey(Enc)?$/.exec(trimmed)
   if (provider) return `llm.providers.${provider[1]}.apiKey`
+  const tts = /^tts\.providers\.([^.]+)\.apiKey(Enc)?$/.exec(trimmed)
+  if (tts) return `tts.providers.${tts[1]}.apiKey`
   const env = /^mcp\.servers\.([^.]+)\.env(Enc)?\.(.+)$/.exec(trimmed)
   if (env) return `mcp.servers.${env[1]}.env.${env[3]}`
   return trimmed
@@ -594,9 +632,12 @@ export function canonicalSecretPath(path: string): string {
 /**
  * 递归脱敏：apiKey / 各类 token / secret / password / authorization / envEnc 替换为 ***。
  * 注意不要用宽泛的 `key` 匹配——`keywords`（科目关键词）属正常业务字段。
+ *
+ * `.*api[-_]?key.*` 分支专门覆盖 `apiKeyEnc`（密文，绝不能随日志落盘）与 `apiKeySet`
+ * （布尔标记，被判敏感后置 `***` 无害）；原分支是整体锚定的，两者都不命中。
  */
 const SENSITIVE_KEY_PATTERN =
-  /^(api[-_]?key|apikey|token|access[-_]?token|refresh[-_]?token|authorization|secret|client[-_]?secret|password|passwd|credential|envEnc|.*secret.*|.*password.*|.*credential.*)$/i
+  /^(.*api[-_]?key.*|api[-_]?key|apikey|token|access[-_]?token|refresh[-_]?token|authorization|secret|client[-_]?secret|password|passwd|credential|envEnc|.*secret.*|.*password.*|.*credential.*)$/i
 
 export function redactKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => redactKeys(item))

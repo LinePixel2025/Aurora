@@ -463,6 +463,13 @@ describe('SettingsStore · 凭据安全', () => {
     expect(() => store.setSecret('general.language', 'x')).toThrowError(/无法识别/)
   })
 
+  it('路径可识别但条目不存在时同样抛错，不静默成功', async () => {
+    const { store } = setup()
+    await store.init()
+    expect(() => store.setSecret('llm.providers.ghost.apiKey', 'sk-x')).toThrowError(/无法识别/)
+    expect(() => store.setSecret('mcp.servers.ghost.env.TOKEN', 'tok-x')).toThrowError(/无法识别/)
+  })
+
   it('canonicalSecretPath 归一化各种写法', () => {
     expect(canonicalSecretPath('llm.providers.deepseek.apiKey')).toBe(
       'llm.providers.deepseek.apiKey',
@@ -470,6 +477,8 @@ describe('SettingsStore · 凭据安全', () => {
     expect(canonicalSecretPath('llm.providers.deepseek.apiKeyEnc')).toBe(
       'llm.providers.deepseek.apiKey',
     )
+    expect(canonicalSecretPath('tts.providers.sf.apiKey')).toBe('tts.providers.sf.apiKey')
+    expect(canonicalSecretPath('tts.providers.sf.apiKeyEnc')).toBe('tts.providers.sf.apiKey')
     expect(canonicalSecretPath('mcp.servers.foo.env.TOKEN')).toBe('mcp.servers.foo.env.TOKEN')
     expect(canonicalSecretPath('mcp.servers.foo.envEnc.TOKEN')).toBe('mcp.servers.foo.env.TOKEN')
     expect(canonicalSecretPath(' llm.providers.a.apiKey ')).toBe('llm.providers.a.apiKey')
@@ -504,6 +513,133 @@ describe('SettingsStore · 凭据安全', () => {
   })
 })
 
+/** 建一个 TTS provider 条目（凭据留空，由用例自己 setSecret）。 */
+function seedTtsProvider(store: SettingsStore, id: string): void {
+  store.mutate((draft) => {
+    draft.tts.providers[id] = {
+      type: 'openai-compat',
+      baseUrl: 'https://api.siliconflow.cn/v1',
+      apiKeyEnc: '',
+      model: 'FunAudioLLM/CosyVoice2-0.5B',
+      voice: 'alex',
+      speed: 1,
+      format: 'mp3',
+    }
+  })
+}
+
+describe('SettingsStore · TTS 凭据', () => {
+  it('setSecret 加密落盘，磁盘无明文，getSecret 可还原', async () => {
+    const { store, fsPort, configPath, crypto } = setup()
+    await store.init()
+    seedTtsProvider(store, 'sf')
+
+    const persisted = store.setSecret('tts.providers.sf.apiKey', 'sk-plain')
+    await store.flush()
+
+    expect(persisted).toBe(true)
+    expect(store.getSecret('tts.providers.sf.apiKey')).toBe('sk-plain')
+    const raw = (await fsPort.readFile(configPath)) as string
+    expect(raw).not.toContain('sk-plain')
+    const parsed = JSON.parse(raw) as {
+      tts: { providers: Record<string, { apiKeyEnc: string }> }
+    }
+    const enc = parsed.tts.providers['sf']?.apiKeyEnc
+    expect(enc).not.toBe('')
+    expect(enc).not.toBe('sk-plain')
+    expect(crypto.encryptCalls).toContain('sk-plain')
+  })
+
+  it('clearSecret 后 getSecret 返回空串且落盘 apiKeyEnc 为空', async () => {
+    const { store, fsPort, configPath } = setup()
+    await store.init()
+    seedTtsProvider(store, 'sf')
+    store.setSecret('tts.providers.sf.apiKey', 'sk-plain')
+    store.clearSecret('tts.providers.sf.apiKey')
+    await store.flush()
+
+    expect(store.getSecret('tts.providers.sf.apiKey')).toBe('')
+    const raw = (await fsPort.readFile(configPath)) as string
+    expect(JSON.parse(raw).tts.providers.sf.apiKeyEnc).toBe('')
+  })
+
+  it('exportRedacted 抹掉 TTS 密文', async () => {
+    const { store } = setup()
+    await store.init()
+    seedTtsProvider(store, 'sf')
+    store.setSecret('tts.providers.sf.apiKey', 'sk-plain')
+    expect(store.exportRedacted().tts.providers['sf']?.apiKeyEnc).toBe('***')
+  })
+
+  it('加密不可用时 TTS 密文不落盘，重写配置会清空磁盘上的旧密文', async () => {
+    const degraded = setup({ crypto: false })
+    await degraded.store.init()
+    seedTtsProvider(degraded.store, 'sf')
+    const persisted = degraded.store.setSecret('tts.providers.sf.apiKey', 'sk-memory-only')
+    await degraded.store.flush()
+
+    expect(persisted).toBe(false)
+    expect(degraded.store.getSecret('tts.providers.sf.apiKey')).toBe('sk-memory-only')
+    const raw = (await degraded.fsPort.readFile(degraded.configPath)) as string
+    expect(raw).not.toContain('sk-memory-only')
+    expect(JSON.parse(raw).tts.providers.sf.apiKeyEnc).toBe('')
+
+    // 已有密文的配置在加密不可用的实例里重写 → 密文被清空
+    const healthy = setup()
+    await healthy.store.init()
+    seedTtsProvider(healthy.store, 'sf')
+    healthy.store.setSecret('tts.providers.sf.apiKey', 'sk-old')
+    await healthy.store.flush()
+    expect(JSON.parse(await healthy.fsPort.readFile(healthy.configPath)).tts.providers.sf.apiKeyEnc)
+      .not.toBe('')
+
+    const fallback = new SettingsStore({
+      dir: DIR,
+      fs: healthy.fsPort,
+      crypto: createFakeCrypto(false),
+      writeDebounceMs: 0,
+    })
+    await fallback.init()
+    fallback.update({ general: { ...fallback.get().general, language: 'en-US' } })
+    await fallback.flush()
+    const raw2 = (await healthy.fsPort.readFile(healthy.configPath)) as string
+    expect(raw2).not.toContain('fakestorage:v1:')
+    expect(JSON.parse(raw2).tts.providers.sf.apiKeyEnc).toBe('')
+  })
+
+  it('手改配置里的存量 TTS 明文会被补加密', async () => {
+    const { store, fsPort, configPath } = setup()
+    await store.init()
+    seedTtsProvider(store, 'sf')
+    await store.flush()
+    // 模拟用户手改配置文件写入明文
+    const seeded = JSON.parse(await fsPort.readFile(configPath)) as Record<string, unknown> & {
+      tts: { providers: Record<string, { apiKeyEnc: string }> }
+    }
+    seeded.tts.providers['sf']!.apiKeyEnc = 'sk-handwritten'
+    await fsPort.writeFileAtomic(configPath, JSON.stringify(seeded, null, 2))
+
+    const reopened = new SettingsStore({
+      dir: DIR,
+      fs: fsPort,
+      crypto: createFakeCrypto(true),
+      writeDebounceMs: 0,
+    })
+    await reopened.init()
+    expect(reopened.getSecret('tts.providers.sf.apiKey')).toBe('sk-handwritten')
+    await reopened.flush()
+    const raw = (await fsPort.readFile(configPath)) as string
+    expect(raw).not.toContain('sk-handwritten')
+    expect(raw).toContain('fakestorage:v1:')
+  })
+
+  it('TTS provider 条目不存在时 setSecret 抛 SettingsSecretError', async () => {
+    const { store } = setup()
+    await store.init()
+    expect(() => store.setSecret('tts.providers.ghost.apiKey', 'sk-x')).toThrowError(/无法识别/)
+  })
+})
+
 describe('redactKeys', () => {
   it('递归脱敏敏感字段名，不动正常业务字段', () => {
     const redacted = redactKeys({
@@ -517,6 +653,30 @@ describe('redactKeys', () => {
       keywords: ['函数', '导数'],
       nested: { Authorization: '***', accessToken: '***', normal: 'keep' },
       list: [{ secret: '***' }],
+    })
+  })
+
+  it('apiKeyEnc / apiKeySet 这类派生字段也必须脱敏', () => {
+    const redacted = redactKeys({
+      tts: { providers: { sf: { apiKeyEnc: 'cipher', apiKeySet: true, voice: 'alex' } } },
+    })
+    expect(redacted).toEqual({
+      tts: { providers: { sf: { apiKeyEnc: '***', apiKeySet: '***', voice: 'alex' } } },
+    })
+  })
+
+  it('不含 api key 语义的字段名不受影响', () => {
+    const redacted = redactKeys({
+      monolingual: true,
+      keywordCount: 3,
+      keywords: ['函数'],
+      hotkeys: ['Alt+Space'],
+    })
+    expect(redacted).toEqual({
+      monolingual: true,
+      keywordCount: 3,
+      keywords: ['函数'],
+      hotkeys: ['Alt+Space'],
     })
   })
 })
