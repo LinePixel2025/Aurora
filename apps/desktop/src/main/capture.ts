@@ -1228,8 +1228,12 @@ export const CHAT_TTS_SPEAK_CHECK = `(async () => {
     }
 
     // 收尾：act 动过 TTS 配置（settings:update），这里把它摘掉。
-    // 本场景在真实 userData 下也会被跑到（AURORA_CAPTURE_WINDOWS=chat），不能留下种下的 provider。
     // 只在「是 act 自己造的那一个」时清，用户原有的配置一律不动。
+    //
+    // ⚠️ 必须带 removedProviders：tts.providers 是 record，「缺项 ≠ 删除」——
+    // 只把键从传回去的对象里删掉，主进程合并时缺项会被当成「本次不动这一项」，
+    // provider 照样留在配置里（实测 cleared=[] 且 providers 仍含该键）。
+    // capture 目前恒跑在隔离 userData 下（index.ts 的 isolatedRun），这里属纵深防御。
     const seed = window.__auroraTtsSeed
     if (seed !== undefined && seed.ok === true && seed.already === false) {
       const state = await window.aurora.settings.get()
@@ -1242,6 +1246,7 @@ export const CHAT_TTS_SPEAK_CHECK = `(async () => {
             // active 还指着被摘掉的 capture 时必须一起复位，否则会留下悬空引用
             active: state.value.tts.active === 'capture' ? '' : state.value.tts.active,
             providers,
+            removedProviders: ['capture'],
           },
         })
       }

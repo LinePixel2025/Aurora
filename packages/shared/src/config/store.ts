@@ -293,6 +293,11 @@ export class SettingsStore {
 
   /**
    * 写入凭据：加密后落盘。
+   *
+   * 内存明文的写入**必须晚于**路径存在性校验：`writeSecretField` 失败时抛错不回滚，
+   * 提前 `set` 会把明文永久留在 `memorySecrets` 里 —— 表现为「抛了错但 `getSecret` 还读得出」，
+   * 且该路径之后若真的建出同名条目，会凭空继承这份明文（磁盘却是空的 → `apiKeySet` 误报）。
+   *
    * @returns true = 已加密落盘；false = 加密不可用，仅缓存在内存（绝不落盘明文）。
    */
   setSecret(path: string, plain: string): boolean {
@@ -308,10 +313,11 @@ export class SettingsStore {
       this.memorySecrets.set(key, plain)
       return false
     }
-    this.memorySecrets.set(key, plain)
+    // 先落盘（内部做路径存在性校验）再写内存：失败时抛错，内存里不会留下这份明文。
     if (!this.writeSecretField(key, cipher)) {
       throw new SettingsSecretError(`无法识别的凭据路径：${key}`)
     }
+    this.memorySecrets.set(key, plain)
     return true
   }
 

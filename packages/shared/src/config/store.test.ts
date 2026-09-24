@@ -470,6 +470,26 @@ describe('SettingsStore · 凭据安全', () => {
     expect(() => store.setSecret('mcp.servers.ghost.env.TOKEN', 'tok-x')).toThrowError(/无法识别/)
   })
 
+  it('写入失败时不在内存里留下明文（llm / tts / mcp 三条路径）', async () => {
+    const { store } = setup()
+    await store.init()
+
+    // 抛错的同时必须不留明文：否则 getSecret / hasSecret 会对着一个磁盘上没有密文的路径
+    // 报「已有凭据」，且该路径之后真的建出同名条目时会凭空继承这份明文（磁盘仍是空的）。
+    expect(() => store.setSecret('llm.providers.ghost.apiKey', 'sk-ghost-llm')).toThrowError()
+    expect(store.getSecret('llm.providers.ghost.apiKey')).toBe('')
+
+    expect(() => store.setSecret('tts.providers.ghost.apiKey', 'sk-ghost-tts')).toThrowError()
+    expect(store.getSecret('tts.providers.ghost.apiKey')).toBe('')
+
+    expect(() => store.setSecret('mcp.servers.ghost.env.TOKEN', 'tok-ghost-mcp')).toThrowError()
+    expect(store.getSecret('mcp.servers.ghost.env.TOKEN')).toBe('')
+
+    // 之后真的建出同名条目时，不继承任何幽灵明文
+    seedTtsProvider(store, 'ghost')
+    expect(store.getSecret('tts.providers.ghost.apiKey')).toBe('')
+  })
+
   it('canonicalSecretPath 归一化各种写法', () => {
     expect(canonicalSecretPath('llm.providers.deepseek.apiKey')).toBe(
       'llm.providers.deepseek.apiKey',

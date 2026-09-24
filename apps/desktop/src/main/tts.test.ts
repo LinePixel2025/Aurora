@@ -199,11 +199,12 @@ describe('TtsSynthesizer · synthesize', () => {
     expect(result.chars).toBe(50)
   })
 
-  it('参数里的明文 Key 优先于已保存凭据', async () => {
+  it('synthesize 不接受 apiKey 参数（渲染层不持有明文），始终用已保存凭据', async () => {
     const { fetchImpl, requests } = stubFetch(audioResponse([0]))
     const tts = make(fakeSettings({ secret: 'sk-saved' }), fetchImpl)
     await tts.synthesize({ text: 'hi' })
-    // synthesize 不接受 apiKey，走已保存值 —— 这条断言守住「渲染层不持有明文」的边界
+    // `TtsSynthesizeRequest` 只有 `{ text, providerId }`：这是「渲染层不持有明文密钥」的边界，
+    // 明文 Key 只允许经 `test()`（设置页草稿）传入。
     const headers = requests[0]!.init.headers as Record<string, string>
     expect(headers['Authorization']).toBe('Bearer sk-saved')
   })
@@ -383,22 +384,65 @@ describe('TtsSynthesizer · test', () => {
 })
 
 describe('TtsSynthesizer · 出网路径', () => {
+  /**
+   * 把 `globalThis.fetch` 换成一个「一旦被调用就抛错」的哨兵，
+   * 用来证明请求真的走了注入的 fetch —— 只断言「注入的被调用了」拿不到这个结论：
+   * 那样一个误用 `globalThis.fetch` 的实现照样能通过。
+   */
+  async function withGlobalFetchTrap<T>(body: (trap: { calls: number }) => Promise<T>): Promise<T> {
+    const original = globalThis.fetch
+    const trap = { calls: 0 }
+    globalThis.fetch = (() => {
+      trap.calls += 1
+      throw new Error('globalThis.fetch 被调用了 —— 说明没有走注入的 fetch')
+    }) as typeof fetch
+    try {
+      return await body(trap)
+    } finally {
+      globalThis.fetch = original
+    }
+  }
+
   it('使用注入的 resolveFetch（advanced.proxy 生效的前提），而不是 globalThis.fetch', async () => {
     const { fetchImpl, requests } = stubFetch(audioResponse([0]))
     let resolveCalls = 0
-    const tts = new TtsSynthesizer({
-      settings: fakeSettings(),
-      logger: createMemoryLogger(),
-      resolveFetch: () => {
-        resolveCalls += 1
-        return fetchImpl
-      },
+
+    await withGlobalFetchTrap(async (trap) => {
+      const tts = new TtsSynthesizer({
+        settings: fakeSettings(),
+        logger: createMemoryLogger(),
+        resolveFetch: () => {
+          resolveCalls += 1
+          return fetchImpl
+        },
+      })
+
+      await tts.synthesize({ text: 'hi' })
+
+      // 两半都要断言：注入的**被用上**，全局的**一次都没被碰**
+      expect(resolveCalls).toBeGreaterThan(0)
+      expect(requests).toHaveLength(1)
+      expect(trap.calls).toBe(0)
     })
+  })
 
-    await tts.synthesize({ text: 'hi' })
-
-    expect(resolveCalls).toBeGreaterThan(0)
-    expect(requests).toHaveLength(1)
+  it('resolveFetch 返回 undefined 时才回落 globalThis.fetch（哨兵会被打到）', async () => {
+    const { fetchImpl, requests } = stubFetch(audioResponse([1]))
+    const original = globalThis.fetch
+    globalThis.fetch = fetchImpl
+    try {
+      const tts = new TtsSynthesizer({
+        settings: fakeSettings(),
+        logger: createMemoryLogger(),
+        resolveFetch: () => undefined,
+      })
+      const result = await tts.synthesize({ text: 'hi' })
+      // 这条用例锁住回落的**存在**（与上一条互为对照），免得将来把回落删了没人知道
+      expect(result.bytes).toBe(1)
+      expect(requests).toHaveLength(1)
+    } finally {
+      globalThis.fetch = original
+    }
   })
 
   it('resolveFetch 抛错时回落默认实现，不把异常冒到调用方', async () => {
