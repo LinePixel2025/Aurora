@@ -261,7 +261,8 @@
   （提示条反过来必须 alpha 0，整窗保持透明）；④ 正文与基座的对比度 ≥ 4.5:1，且明暗极性正确
   （浅色不许白字、深色不许黑字）。**原生窗口底色渲染层读不到**，由同一条 `checks` 记录里的 `native` 字段断言
   （主进程侧 `themeNativeCheck` 读 `BrowserWindow.getBackgroundColor()`），`pass` 取渲染层与主进程结果相与 ——
-  原有交互探针各自独立执行、不被替换。两份 `report.json` 均要求每条 `ok:true` 且存在的 `result.pass:true`，
+  原有交互探针各自独立执行、不被替换。两份 `report.json` 均要求每条 `ok:true`、存在的 `result.pass:true`，
+  且**配了探针的条目必须有 `result`**（`checked === true` 时 `result` 不得为空，见下面「产物」一段），
   并逐张比对文字、卡片、按钮和引导完成页。
 - `AURORA_CAPTURE=<目录> pnpm dev`：把四个窗口、提示条两态、设置页各页、每窗一张双主题场景
   与各条 DOM 探针场景（面板 / 收起 / 自动滚底 / 门控 / 拖动 / 思考等级 / 模型列表与模型选择 / 真实写盘 / 提示条收尾图）
@@ -280,7 +281,9 @@
   另有「电脑操控」页的门控探针，后者不额外出图）；
   `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）。
   仅开发态生效；与 `AURORA_SMOKE` 同时设置时**截图优先**（自测不会执行）。
-  进程退出码：0 = 全部成功，1 = 一张图都没写出，2 = 有探针 `pass === false`。
+  进程退出码：0 = 全部成功，1 = 一张图都没写出，2 = **存在失败项**——
+  截图/探针抛错（`ok:false`）、探针 `pass === false`，或 `checked` 为真却拿不到 `result`
+  （配了探针但脚本静默返回 `undefined`，见下面「产物」一段）。
 - **userData 会自动隔离（必须，不是可选）**：**多条**探针会**临时改写真实配置**——
   至少包括：门控场景（切到 Work 模式、翻 `classification.autoMove`）、
   `chat-thinking-level`（改 `reasoningEffort`，check 结尾写回原值）、

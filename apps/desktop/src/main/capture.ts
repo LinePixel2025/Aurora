@@ -73,10 +73,10 @@ export interface CaptureCheck {
   /** `check` 脚本的返回值（未提供 check 时为空） */
   result?: unknown
   /**
-   * 该目标是否**配了** `check`。
+   * 该目标是否**配了**探针（`check` 或 `nativeCheck`）。
    *
-   * 必须单列一个字段：`result === undefined` 有两种含义 —— 「本来就没配探针」（纯截图场景，正常）
-   * 与「配了探针但脚本静默返回 undefined」（断言根本没生效）。只靠 `result` 分不出来，
+   * 必须单列一个字段：`result` 为空有两种含义 —— 「本来就没配探针」（纯截图场景，正常）
+   * 与「配了探针却没返回结果」（断言根本没生效）。只靠 `result` 分不出来，
    * 后者会被当成通过（见 `failed` 的判定与下面的注释）。
    */
   checked: boolean
@@ -179,14 +179,15 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
     files,
     checks,
     // 判定要同时覆盖三种情况：探针明确返回 `pass:false`；截图 / 探针抛错（`ok:false`）；
-    // 以及**配了探针却静默返回 `undefined`**（脚本提前 return 或没写 return —— 断言等于没跑）。
-    // 前两版只看 `pass === false`：`result` 为 `undefined` 时一律算通过，
+    // 以及**配了探针却没拿到结果**（脚本提前 return / 没写 return / 返回 `null` —— 断言等于没跑）。
+    // 前两版只看 `pass === false`：`result` 为空时一律算通过，
     // 「静默丢一条」会以退出码 0 结束。所以 `checked` 字段必须参与判定
-    //（`result === undefined` 且 `checked === false` 才是正常的纯截图场景）。
+    //（`result` 为空且 `checked === false` 才是正常的纯截图场景）。
+    // 空值判据用 `== null` 同时覆盖 `undefined` 与 `null`（ESLint 的 eqeqeq 允许 `== null` 写法）。
     failed: checks.some(
       (item) =>
         item.ok === false ||
-        (item.checked && item.result === undefined) ||
+        (item.checked && item.result == null) ||
         (item.result as { pass?: unknown } | undefined)?.pass === false,
     ),
   }
@@ -1955,6 +1956,10 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
   const now = new Date().toISOString()
 
   // 1) 会话历史：一条助手消息即可（`MessageList` 只对 assistant 渲染朗读按钮）
+  //    内容里刻意带一个**裸 URL** 与行内代码：`markdown.ts` 只把裸 URL 转成 `.md-link`
+  //    （不认 `[文字](url)` 语法），而链接色必须用可读的 `--accent-text`
+  //    （浅色档直接写品牌蓝只有 3.14:1）—— 这样两处样式都能在 `theme-chat.png` /
+  //    `chat.png` 里被逐张目视核对，否则它们在两份报告里没有任何可视证据。
   const session = {
     version: 1,
     sessionId,
@@ -1963,7 +1968,9 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
       {
         id: 'capture-tts-a1',
         role: 'assistant',
-        content: '这是截图探针种下的一条助手回复，用来验证「朗读」按钮的渲染与状态复位。',
+        content:
+          '这是截图探针种下的一条助手回复，用来验证「朗读」按钮的渲染与状态复位。' +
+          '参考 https://example.com/aurora 与 `pnpm typecheck` 的说明。',
         createdAt: now,
       },
     ],

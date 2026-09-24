@@ -220,9 +220,11 @@ if (!gotLock) {
 
 async function bootstrap(): Promise<void> {
   // 仅开发截图运行可强制主题；其余启动始终回到系统外观，且在建窗前生效。
+  // 值两侧留空格也照收（`.trim()`）：否则 `AURORA_CAPTURE_THEME='dark '` 会静默回落 system，
+  // 而 report.json 的 requestedTheme 又记着 `dark`，两边口径对不上（审查提出过）。
   const captureTheme =
     isDev && (process.env['AURORA_CAPTURE'] ?? '').trim() !== ''
-      ? process.env['AURORA_CAPTURE_THEME']
+      ? (process.env['AURORA_CAPTURE_THEME'] ?? '').trim()
       : undefined
   nativeTheme.themeSource =
     captureTheme === 'dark' || captureTheme === 'light' ? captureTheme : 'system'
@@ -865,11 +867,13 @@ async function runCapture(dir: string): Promise<void> {
     logger?.warn('截图报告写出失败', { error: String(error) })
   }
   for (const item of result.checks) {
-    if (item.result === undefined) {
-      // 配了探针却拿不到返回值 = 断言没生效，必须显式报出来（`failed` 也会因此判失败）
+    if (item.result == null) {
+      // 配了探针却没拿到结果（undefined / null）= 断言没生效，必须显式报出来
+      //（`failed` 也会因此判失败）。日志带上文件名：8 条 settings-* 场景的 name 都是 settings，
+      // 只打 name 时定位不到是哪张图。
       if (item.checked) {
         logger?.error(
-          `${SMOKE_RESULT_PREFIX} FAIL 截图探针 ${item.name} — 未返回结果（断言未生效）`,
+          `${SMOKE_RESULT_PREFIX} FAIL 截图探针 ${item.name}（${basename(item.file)}）— 未返回结果（断言未生效）`,
         )
       }
       continue
