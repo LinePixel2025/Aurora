@@ -126,8 +126,8 @@ async function decide(approved: boolean): Promise<void> {
   margin: 0 var(--space-3) var(--space-2);
   padding: var(--space-3);
   border-radius: var(--radius-md);
-  border: 1px solid color-mix(in srgb, var(--status-error) 32%, transparent);
-  background: color-mix(in srgb, var(--status-error) 10%, var(--bg-raised));
+  border: 1px solid var(--danger-border);
+  background: var(--bg-raised);
   box-shadow: var(--shadow-3);
   transition: border-color var(--transition-base);
 }
@@ -138,7 +138,7 @@ async function decide(approved: boolean): Promise<void> {
 
 .intro {
   margin: 0;
-  line-height: var(--leading-normal);
+  line-height: var(--leading-relaxed);
 }
 
 .tool {
@@ -153,9 +153,9 @@ async function decide(approved: boolean): Promise<void> {
   max-height: 160px;
   overflow: auto;
   padding: 8px 10px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
-  background: var(--bg-base);
+  background: var(--fill-1);
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
   white-space: pre-wrap;
@@ -165,6 +165,7 @@ async function decide(approved: boolean): Promise<void> {
 .countdown {
   color: var(--text-secondary);
   flex: 0 0 auto;
+  font-variant-numeric: var(--num-tabular);
 }
 
 /* ≤15s：倒计时与进度条转错误语义色（docs/06 §5） */

@@ -12,7 +12,7 @@
  * option 集合直接取 Schema 的 `REASONING_EFFORT_LEVELS`：以后加等级不会只漏掉这个入口；
  * 文案与 `settings/pages/LlmPage.vue` **逐字一致**——同一个值在两个入口不能有两套说法。
  *
- * 尺寸：高度 22px、宽度自适应（约 96-128px），要和 420px 宽的交互窗输入区里的发送按钮同行。
+ * 尺寸：高度与输入区按钮同为 40px、宽度自适应（约 96-128px），要和 420px 宽的交互窗输入区里的发送按钮同行。
  * `data-field` 挂在 `<select>` 自己身上：capture 探针按它定位后**直接读 `.value`**。
  */
 import { REASONING_EFFORT_LEVELS, type ReasoningEffort } from '@aurora/shared/browser'
@@ -72,9 +72,9 @@ function onChange(event: Event): void {
   width: auto;
   min-width: 68px;
   max-width: 128px;
-  height: 22px;
-  padding: 0 2px;
-  border-radius: var(--radius-xs);
+  height: var(--control-h-md);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
   color: var(--text-secondary);
@@ -98,11 +98,11 @@ function onChange(event: Event): void {
   color: var(--text-primary);
 }
 
-/* 聚焦光晕与 SettingField / settings.css 的行内控件取同一组值（主题里没有该令牌） */
+/* 聚焦时用主题语义环，保留键盘聚焦可见性。 */
 .thinking-level:focus-visible {
-  border-color: var(--aurora-blue);
+  border-color: var(--focus-ring);
   background: var(--fill-2);
-  box-shadow: 0 0 0 3px rgba(86, 132, 255, 0.22);
+  box-shadow: 0 0 0 1px var(--accent-ring);
 }
 
 /* 无可用 provider 时保持可见但禁用（用户抱怨的是「找不到按钮」，藏起来会让抱怨复现） */

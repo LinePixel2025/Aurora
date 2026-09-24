@@ -185,8 +185,11 @@ async function clearAll(): Promise<void> {
 
 <style scoped>
 .ledger {
-  border-top: 1px solid var(--border-subtle);
-  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--fill-1);
+  box-shadow: var(--shadow-hairline);
+  overflow: hidden;
 }
 
 .head {
@@ -200,7 +203,14 @@ async function clearAll(): Promise<void> {
 }
 
 .head:hover {
-  background: var(--fill-1);
+  background: var(--fill-2);
+}
+
+.head strong {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--text-secondary);
 }
 
 .chevron {
@@ -239,9 +249,15 @@ async function clearAll(): Promise<void> {
   flex-direction: column;
   gap: 2px;
   padding: 6px 8px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
+  box-shadow: var(--shadow-hairline);
+  transition: background var(--transition-fast);
+}
+
+.item:hover {
+  background: var(--fill-2);
 }
 
 .line {
@@ -254,6 +270,7 @@ async function clearAll(): Promise<void> {
 .time {
   color: var(--text-muted);
   flex: 0 0 auto;
+  font-variant-numeric: var(--num-tabular);
 }
 
 .name {
@@ -270,7 +287,7 @@ async function clearAll(): Promise<void> {
 }
 
 .dot.s-done {
-  background: var(--aurora-green);
+  background: var(--status-ok);
 }
 
 .dot.s-fallback {
@@ -289,13 +306,17 @@ async function clearAll(): Promise<void> {
 .dot.s-extracting,
 .dot.s-classifying,
 .dot.s-moving {
-  background: var(--aurora-blue);
-  animation: ledger-pulse 1.2s ease-in-out infinite;
+  background: var(--status-running);
 }
 
 .badge.run {
-  background: rgba(86, 132, 255, 0.16);
-  color: #a8c0ff;
+  background: var(--status-running-ring);
+  color: var(--status-running);
+}
+
+.head .badge,
+.detail .tag {
+  font-variant-numeric: var(--num-tabular);
 }
 
 .pick {
@@ -313,8 +334,8 @@ async function clearAll(): Promise<void> {
 }
 
 .pick:focus {
-  border-color: var(--aurora-blue);
-  box-shadow: 0 0 0 3px rgba(86, 132, 255, 0.22);
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 1px var(--accent-ring);
   outline: none;
 }
 
@@ -354,30 +375,11 @@ async function clearAll(): Promise<void> {
 
 .err {
   margin: 0;
-  color: #ff9ca0;
+  color: var(--error-text);
 }
 
 .ok {
   margin: 0;
-  color: #6fe0b4;
-}
-
-@keyframes ledger-pulse {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .dot.s-queued,
-  .dot.s-extracting,
-  .dot.s-classifying,
-  .dot.s-moving {
-    animation: none;
-  }
+  color: var(--ok-text);
 }
 </style>

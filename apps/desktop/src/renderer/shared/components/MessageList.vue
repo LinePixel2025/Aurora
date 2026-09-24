@@ -374,7 +374,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
       用户上滚后（`following === false`）才出现的回底入口：跟随中不显示，
       既不遮挡最后一条消息，也不改变"自动到底"的默认体验。
     -->
-    <button v-if="!following" type="button" class="jump-latest" @click="jumpToLatest">
+    <button v-if="!following" type="button" class="jump-latest anim-pop" @click="jumpToLatest">
       ↓ 回到最新
     </button>
   </div>
@@ -433,7 +433,8 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   bottom: var(--space-1);
   align-self: center;
   margin-top: var(--space-2);
-  padding: 3px 12px;
+  min-height: var(--control-h-sm);
+  padding: 0 var(--space-3);
   border-radius: var(--radius-pill);
   border: 1px solid var(--border-strong);
   background: var(--bg-raised);
@@ -483,12 +484,13 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   min-width: 0;
   max-width: 78%;
   font-size: var(--text-base);
-  line-height: var(--leading-normal);
+  line-height: var(--leading-relaxed);
   word-break: break-word;
 }
 
 .r-user .bubble {
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   background: var(--fill-2);
 }
@@ -569,7 +571,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 }
 
 .tool-card {
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
   overflow: hidden;
@@ -609,7 +611,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 
 .tool-time {
   flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: var(--num-tabular);
 }
 
 .chevron {
@@ -692,7 +694,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 
 /* ── Markdown ── */
 .md :deep(.md-p) {
-  margin: 0 0 6px;
+  margin: 0 0 var(--space-3);
 }
 
 .md :deep(.md-p:last-child) {
@@ -718,8 +720,8 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 .md :deep(.md-code) {
   margin: 0;
   padding: 10px 12px;
-  border-radius: var(--radius-sm);
-  background: var(--fill-2);
+  border-radius: var(--radius-md);
+  background: var(--fill-1);
   border: 1px solid var(--border-subtle);
   overflow-x: auto;
   font-family: var(--font-mono);

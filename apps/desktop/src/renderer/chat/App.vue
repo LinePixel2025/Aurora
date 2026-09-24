@@ -897,8 +897,9 @@ function formatTime(iso: string): string {
   align-items: center;
   gap: var(--space-1);
   padding: 2px 8px;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--aurora-blue) 18%, transparent);
+  background: var(--fill-2);
 }
 
 .chip-remove {
@@ -924,10 +925,10 @@ function formatTime(iso: string): string {
     box-shadow var(--transition-base);
 }
 
-/* 聚焦：边框转品牌色 + 柔和光晕（docs/07 §5 允许的品牌精确值） */
+/* 聚焦时以语义令牌提供紧凑的 1px 边界。 */
 .composer-box:focus-within {
   border-color: var(--aurora-blue);
-  box-shadow: 0 0 0 3px rgba(86, 132, 255, 0.18);
+  box-shadow: 0 0 0 1px var(--accent-ring);
 }
 
 .composer textarea {
@@ -949,7 +950,20 @@ function formatTime(iso: string): string {
 .composer-bar {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/* 模型与思考控件在本窗口内同高；宽度仍可退让到组件已有的最小值。 */
+.composer-bar :deep(.model-picker),
+.composer-bar :deep(.thinking-level) {
+  height: var(--control-h-md);
+  border-radius: var(--radius-sm);
+}
+
+.composer-bar > :deep(.aurora-button) {
+  min-height: var(--control-h-md);
 }
 
 .meta {
@@ -963,15 +977,9 @@ function formatTime(iso: string): string {
 /**
  * 「模型」「思考」两个标签与提示（docs/07 §2.3）。
  *
- * 420px 宽的交互窗里这一行很紧：圆角输入框内的可用宽度约 **370px**
- * （420 − `.composer` 两侧 12px − `.composer-box` 两侧 12px − 边框 2px），
- * 而固定内容在**流式**时约 **358px**（模型标签 22 + 模型下拉 110 + 思考标签 22 +
- * 思考下拉 ≤128 + 「停止」46 + 发送 30），再加 6 个 8px 间距 = **406px**——必然超出。
- * 所以降级顺序是「提示文本（shrink 100）→ 模型下拉（110 → 最低 72）」；
- * 两个标签与发送按钮都是 `flex: 0 0 auto`、永不收缩——**发送按钮必须留在圆角框内**。
- * 非流式时（无「停止」按钮）固定内容 312px + 5 个间距 = 352px，模型下拉保持 110px，
- * 余下的约 18px 全归 `.meta`（它就是那个被省略号截掉的「可省略文本」）。
- * `white-space: nowrap` 是必须的：CJK 允许逐字断行，标签被压时会折成两行撑高输入区。
+ * 420px 宽时输入框内约有 370px；流式状态下先让提示文本退让，
+ * 模型下拉可从 110px 缩至组件现有的 72px，操作行间距保持 4px。
+ * 两个标签与发送按钮不收缩；`white-space: nowrap` 防止标签折行。
  */
 .picker-label {
   flex: 0 0 auto;
@@ -996,10 +1004,10 @@ function formatTime(iso: string): string {
   flex: 0 0 auto;
 }
 
-/* 发送按钮：渐变圆形（AppButton 的 primary 底色 + 这里的尺寸覆盖） */
+/* 发送按钮与两处下拉同高，始终保留固定宽度。 */
 .send-slot :deep(.aurora-button) {
-  width: 30px;
-  height: 30px;
+  width: var(--control-h-md);
+  height: var(--control-h-md);
   padding: 0;
   border-radius: var(--radius-pill);
 }

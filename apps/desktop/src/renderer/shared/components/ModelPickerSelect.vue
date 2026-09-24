@@ -11,7 +11,7 @@
  * 与 `ThinkingLevelSelect.vue` 的分工：那个管 `reasoningEffort`，这个管 `model`；
  * 两者的尺寸 / 边框 / 聚焦样式逐字对齐，才像同一条工具带上的两个控件。
  *
- * 尺寸：高度 22px、基准宽度 110px，要和 420px 宽的交互窗输入区里的发送按钮同行。
+ * 尺寸：高度与输入区按钮同为 40px、基准宽度 110px，要和 420px 宽的交互窗输入区里的发送按钮同行。
  * `data-field` 挂在 `<select>` 自己身上：capture 探针按它定位后**直接读 / 写 `.value`**。
  */
 import { computed } from 'vue'
@@ -99,7 +99,7 @@ function onChange(event: Event): void {
 
 <style scoped>
 /**
- * 紧凑下拉，视觉与 `ThinkingLevelSelect.vue` 保持同一套（高 22px、同色同边框同聚焦光晕）。
+ * 紧凑下拉，视觉与 `ThinkingLevelSelect.vue` 保持同一套（同高、同边框与聚焦环）。
  * `.input` 这个类名只为与设置页的控件叫法对齐——它的样式定义在 `settings.css` 的
  * `.settings .input` 作用域内，在对话窗**不生效**，实际外观全部由这里给出。
  *
@@ -115,9 +115,9 @@ function onChange(event: Event): void {
   width: 110px;
   min-width: 72px;
   max-width: 110px;
-  height: 22px;
-  padding: 0 2px;
-  border-radius: var(--radius-xs);
+  height: var(--control-h-md);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
   color: var(--text-secondary);
@@ -141,11 +141,11 @@ function onChange(event: Event): void {
   color: var(--text-primary);
 }
 
-/* 聚焦光晕与 SettingField / settings.css 的行内控件取同一组值（主题里没有该令牌） */
+/* 聚焦时用主题语义环，保留键盘聚焦可见性。 */
 .model-picker:focus-visible {
-  border-color: var(--aurora-blue);
+  border-color: var(--focus-ring);
   background: var(--fill-2);
-  box-shadow: 0 0 0 3px rgba(86, 132, 255, 0.22);
+  box-shadow: 0 0 0 1px var(--accent-ring);
 }
 
 /* 无可用 provider 时保持可见但禁用（用户抱怨的是「找不到按钮」，藏起来会让抱怨复现） */
