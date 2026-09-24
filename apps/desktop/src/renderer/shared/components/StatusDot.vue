@@ -7,19 +7,17 @@
  */
 type StatusTone = 'idle' | 'running' | 'unread' | 'error'
 
-const props = withDefaults(defineProps<{ tone?: StatusTone; title?: string; size?: number }>(), {
+withDefaults(defineProps<{ tone?: StatusTone; title?: string; size?: number }>(), {
   tone: 'idle',
   title: '',
   size: 8,
 })
-
-const toneClass = `dot-${props.tone}`
 </script>
 
 <template>
   <span
     class="status-dot"
-    :class="toneClass"
+    :class="`dot-${tone}`"
     :style="{ width: `${size}px`, height: `${size}px` }"
     :title="title"
     role="status"
@@ -37,7 +35,7 @@ const toneClass = `dot-${props.tone}`
 
 .dot-running {
   background: var(--status-running);
-  box-shadow: 0 0 0 3px rgba(86, 132, 255, 0.16);
+  box-shadow: 0 0 0 3px var(--status-running-ring);
   animation: breathe 1.8s ease-in-out infinite;
 }
 

@@ -32,8 +32,8 @@ import {
 const EXPAND_DELAY_MS = 120
 /** 移开多久才收起：给用户从竖条移到面板的容错时间 */
 const COLLAPSE_DELAY_MS = 220
-/** 面板退出动画时长，与 theme.css 的 --transition-base 对齐；收窗口必须晚于它，否则面板被裁掉 */
-const PANEL_EXIT_MS = 220
+/** 面板退出动画时长，与 theme.css 的 --dur-base 对齐；收窗口必须晚于它，否则面板被裁掉 */
+const PANEL_EXIT_MS = 250
 /** 面板里最多铺几条最近消息：再多会把下面的信息块挤出可视区 */
 const RECENT_LIMIT = 5
 
@@ -434,8 +434,8 @@ onUnmounted(clearTimers)
   flex-direction: column;
   gap: var(--space-1);
   min-width: 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
   background: var(--fill-1);
 }
 
@@ -449,13 +449,15 @@ onUnmounted(clearTimers)
   margin: 0;
   font-size: var(--text-xs);
   font-weight: var(--weight-medium);
-  letter-spacing: 0.04em;
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
   color: var(--text-muted);
 }
 
 /* 卡片内的计数徽标要浮在卡片底色之上，否则和 --fill-1 同色看不见 */
 .card .badge {
   background: var(--fill-2);
+  font-variant-numeric: var(--num-tabular);
 }
 
 .status-text {
@@ -491,6 +493,7 @@ onUnmounted(clearTimers)
   font-size: var(--text-sm);
   color: var(--text-secondary);
   text-align: right;
+  font-variant-numeric: var(--num-tabular);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -525,6 +528,11 @@ onUnmounted(clearTimers)
   flex-direction: column;
   gap: 1px;
   min-width: 0;
+  border-radius: var(--radius-xs);
+}
+
+.msg:hover {
+  background: var(--fill-2);
 }
 
 .msg-role {
@@ -566,6 +574,7 @@ onUnmounted(clearTimers)
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
+  font-variant-numeric: var(--num-tabular);
 }
 
 .lesson-subject {
@@ -601,6 +610,7 @@ onUnmounted(clearTimers)
   min-width: 0;
   margin: 0;
   text-align: right;
+  font-variant-numeric: var(--num-tabular);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -617,7 +627,7 @@ onUnmounted(clearTimers)
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   padding: var(--space-1);
   border-radius: var(--radius-md);
   background: var(--fill-1);

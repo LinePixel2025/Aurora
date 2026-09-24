@@ -28,20 +28,20 @@ withDefaults(defineProps<{ tone?: 'info' | 'warn' | 'error' | 'ok' }>(), { tone:
 }
 
 .t-warn {
-  border-color: rgba(245, 165, 36, 0.35);
-  background: rgba(245, 165, 36, 0.12);
-  color: #f7c568;
+  border-color: color-mix(in srgb, var(--status-unread) 35%, transparent);
+  background: var(--warning-fill);
+  color: var(--warning-text);
 }
 
 .t-error {
-  border-color: rgba(242, 85, 90, 0.35);
-  background: rgba(242, 85, 90, 0.12);
-  color: #ff9ca0;
+  border-color: var(--danger-border);
+  background: var(--error-fill);
+  color: var(--error-text);
 }
 
 .t-ok {
-  border-color: rgba(56, 209, 150, 0.3);
-  background: rgba(56, 209, 150, 0.1);
-  color: #6fe0b4;
+  border-color: color-mix(in srgb, var(--status-ok) 30%, transparent);
+  background: var(--ok-fill);
+  color: var(--ok-text);
 }
 </style>
