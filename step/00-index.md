@@ -46,13 +46,14 @@
 | 2 | step-02-components-edge.md | 共享组件和提示条 | done | step 1 | `apps/desktop/src/renderer/shared/components/{AppButton,SettingField,StatusDot,AppToast}.vue`、`apps/desktop/src/renderer/edge-bar/App.vue` |
 | 3 | step-03-chat.md | 交互窗和内容组件 | done | step 2 | `apps/desktop/src/renderer/chat/App.vue`、`apps/desktop/src/renderer/shared/components/{MessageList,SensitiveToolCard,ClassificationLedger,ModelPickerSelect,ThinkingLevelSelect}.vue` |
 | 4 | step-04-settings.md | 设置页与表单密度 | done | step 3 | `apps/desktop/src/renderer/settings/` |
-| 5 | step-05-onboarding.md | 引导页与完成状态 | pending | step 4 | `apps/desktop/src/renderer/onboarding/App.vue`、`apps/desktop/src/main/capture.ts`、`docs/07-ui-spec.md` |
+| 5 | step-05-onboarding.md | 引导页与完成状态 | done | step 4 | `apps/desktop/src/renderer/onboarding/App.vue`、`apps/desktop/src/main/capture.ts`、`docs/07-ui-spec.md` |
 | 6 | step-06-light-theme.md | 系统浅色主题与双主题截图 | pending | step 5 | `docs/07-ui-spec.md`、`apps/desktop/src/renderer/`、`apps/desktop/src/main/{window-manager,index,capture}.ts` |
 | 7 | step-07-verify.md | 全量回归与逐图复核 | pending | step 6 | 只读（执行记录回填由执行器管理） |
 | 8 | step-08-archive.md | 归档清理 | pending | step 1..7 | `step/` |
 
 ## 执行记录
 
+- Step 05：`f67bb9d feat(ui): 统一引导五阶段视觉与截图探针`。主代理先更新文档，两个子代理分别实现引导样式与捕获脚本；主代理复跑 typecheck/build、稳定捕获 5 图/5 检查全 PASS，详见 `step-05-onboarding.md`。现状为实际五段，原计划四段简写已按代码校正。
 - Step 04：`dcdbfaa feat(ui): 统一设置页卡片与表单视觉`。三组子代理处理外壳、页面和 ClassRoom，主代理复跑 typecheck/build 与 16 图/16 检查全 PASS，详见 `step-04-settings.md`。
 - Step 03：`04c4051 feat(ui): 统一交互窗消息和输入控件视觉`。三个互不交叠分片由子代理实施，主代理去重样式并复跑 typecheck/build、交互窗 6 图/6 检查全 PASS；详见 `step-03-chat.md`。
 - Step 02：`819dbde feat(ui): 统一共享控件与提示条视觉`。两个不交叠分片分别由子代理实现共享组件和提示条，主代理复核并运行 typecheck/build、4 张提示条截图与 4 条 PASS 检查；详见 `step-02-components-edge.md`。
