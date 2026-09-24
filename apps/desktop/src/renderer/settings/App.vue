@@ -14,6 +14,7 @@ import AppToast from '../shared/components/AppToast.vue'
 import GeneralPage from './pages/GeneralPage.vue'
 import ModesPage from './pages/ModesPage.vue'
 import LlmPage from './pages/LlmPage.vue'
+import TtsPage from './pages/TtsPage.vue'
 import SkillsPage from './pages/SkillsPage.vue'
 import McpPage from './pages/McpPage.vue'
 import AgentPage from './pages/AgentPage.vue'
@@ -21,7 +22,7 @@ import AdvancedPage from './pages/AdvancedPage.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 
-type PageId = 'general' | 'modes' | 'llm' | 'skills' | 'mcp' | 'agent' | 'advanced'
+type PageId = 'general' | 'modes' | 'llm' | 'tts' | 'skills' | 'mcp' | 'agent' | 'advanced'
 
 interface NavItem {
   id: PageId
@@ -34,6 +35,7 @@ const nav: NavItem[] = [
   { id: 'general', label: '常规', hint: '开机自启、快捷键、提示条' },
   { id: 'modes', label: '模式', hint: '三种模式与引导' },
   { id: 'llm', label: 'AI 模型', hint: 'Provider 与连接测试' },
+  { id: 'tts', label: '语音', hint: 'TTS 朗读与音色' },
   { id: 'skills', label: 'Skill', hint: '内置与用户技能' },
   { id: 'mcp', label: 'MCP', hint: '外部工具服务' },
   { id: 'agent', label: '电脑操控', hint: '终端与文件操控' },
@@ -46,7 +48,7 @@ const nav: NavItem[] = [
  */
 const navGroups: Array<{ title: string; ids: PageId[] }> = [
   { title: '基础', ids: ['general', 'modes'] },
-  { title: 'AI 能力', ids: ['llm', 'skills', 'mcp', 'agent'] },
+  { title: 'AI 能力', ids: ['llm', 'tts', 'skills', 'mcp', 'agent'] },
   { title: '系统', ids: ['advanced'] },
 ]
 
@@ -158,6 +160,7 @@ function select(id: PageId): void {
       <GeneralPage v-if="active === 'general'" />
       <ModesPage v-else-if="active === 'modes'" />
       <LlmPage v-else-if="active === 'llm'" />
+      <TtsPage v-else-if="active === 'tts'" />
       <SkillsPage v-else-if="active === 'skills'" />
       <McpPage v-else-if="active === 'mcp'" />
       <AgentPage v-else-if="active === 'agent'" />

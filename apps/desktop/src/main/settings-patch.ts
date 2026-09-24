@@ -14,8 +14,9 @@
  *   否则设置页保存一次就会把磁盘上的密文清空（同进程被 `memorySecrets` 掩盖，重启才暴露）。
  * - MCP 的 `envEnc` 是**逐键**合并的：空对象 = 一个键也不改；空串值 = 该键保留已有密文
  *   （新增服务器时它是「占位」，随后由 `settings:setSecrets` 写成真密文）。
- * - 删除语义按容器类型区分：`llm.providers` 是 **record**，缺项 ≠ 删除（必须显式声明
- *   `llm.removedProviders`）；`mcp.servers` 是**数组**，整数组权威（不在数组里 = 删除）。
+ * - 删除语义按容器类型区分：`llm.providers`（以及同构的 `tts.providers`）是 **record**，
+ *   缺项 ≠ 删除（必须显式声明 `llm.removedProviders` / `tts.removedProviders`）；
+ *   `mcp.servers` 是**数组**，整数组权威（不在数组里 = 删除）。
  */
 import {
   deepClone,
@@ -39,7 +40,11 @@ export interface PatchSecrets {
  * 也可能来自工具端口自己构造的对象，就地修改会改到调用方的数据。
  */
 export function extractPatchSecrets(patch: SettingsPatch): PatchSecrets {
-  if (patch.llm?.providers === undefined && patch.mcp?.servers === undefined) {
+  if (
+    patch.llm?.providers === undefined &&
+    patch.mcp?.servers === undefined &&
+    patch.tts?.providers === undefined
+  ) {
     return { patch, secrets: {} }
   }
 
@@ -52,6 +57,15 @@ export function extractPatchSecrets(patch: SettingsPatch): PatchSecrets {
     if (typeof apiKey === 'string') {
       delete draft['apiKey']
       if (apiKey !== '') secrets[`llm.providers.${id}.apiKey`] = apiKey
+    }
+  }
+
+  for (const [id, provider] of Object.entries(next.tts?.providers ?? {})) {
+    const draft = provider as unknown as Record<string, unknown>
+    const apiKey = draft['apiKey']
+    if (typeof apiKey === 'string') {
+      delete draft['apiKey']
+      if (apiKey !== '') secrets[`tts.providers.${id}.apiKey`] = apiKey
     }
   }
 
@@ -106,6 +120,27 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
     if ((providers[id]?.apiKeyEnc ?? '') === '') cleared.push(`llm.providers.${id}.apiKey`)
   }
 
+  // TTS provider 级：与 `llm.providers` **同一套语义**（两者都是 record，缺项 ≠ 删除），
+  // 因此这里逐句照搬上面的两个环节，只是容器换成 `draft.tts.providers`。
+  const ttsProviders = { ...draft.tts.providers }
+  const ttsRemovals = [...(patch.tts?.removedProviders ?? [])]
+  for (const id of ttsRemovals) delete ttsProviders[id]
+
+  for (const [id, provider] of Object.entries(patch.tts?.providers ?? {})) {
+    const existing = ttsProviders[id]
+    const incoming = { ...provider } as Record<string, unknown>
+    // 空串只能理解为「本次不改凭据」；新建 provider 时保留空串（`TtsProviderSchema` 要求字段存在）。
+    if (existing !== undefined && incoming['apiKeyEnc'] === '') delete incoming['apiKeyEnc']
+    ttsProviders[id] = {
+      ...(existing ?? {}),
+      ...incoming,
+    } as Settings['tts']['providers'][string]
+  }
+
+  for (const id of ttsRemovals) {
+    if ((ttsProviders[id]?.apiKeyEnc ?? '') === '') cleared.push(`tts.providers.${id}.apiKey`)
+  }
+
   // MCP 级：`patch.mcp.servers` 是**整数组权威**（不在数组里 = 删除），
   // 但每个服务器的 `envEnc` 逐键合并（见 `mergeMcpServer`）。
   const before = draft.mcp.servers
@@ -138,6 +173,13 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
     Object.assign(draft.llm, llmPatch)
   }
   draft.llm.providers = providers
+  if (patch.tts !== undefined) {
+    // 同 `llm`：`removedProviders` 是删除指令，落进 `draft.tts` 会进 Zod 解析。
+    const ttsPatch = { ...patch.tts } as Record<string, unknown>
+    delete ttsPatch['removedProviders']
+    Object.assign(draft.tts, ttsPatch)
+  }
+  draft.tts.providers = ttsProviders
   if (patch.advanced !== undefined) Object.assign(draft.advanced, patch.advanced)
   if (patch.skills !== undefined) Object.assign(draft.skills, patch.skills)
   if (patch.mcp !== undefined) Object.assign(draft.mcp, patch.mcp)

@@ -28,6 +28,7 @@ export const SETTINGS_PAGE_IDS = [
   'general',
   'modes',
   'llm',
+  'tts',
   'skills',
   'mcp',
   'agent',
@@ -470,6 +471,69 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(() => {
         toggle !== null &&
         (enabled !== true ||
           (terminalFields > 0 && filesFields > 0 && openFields > 0 && emptyStates.length === 0)),
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 「语音」设置页门控探针（docs/08 §6.1、step 5）。
+ *
+ * 与 `SETTINGS_AGENT_FIELDS_SCRIPT` 同一套路。**常显字段与列表空态是两件事，别混**：
+ * - `tts.enabled` / `tts.autoRead` / `tts.maxChars` 都是**常显**的
+ *   （总开关关掉也要能开回来；后两个是「语音」页的固定设置项，与有没有模型无关），
+ *   三种状态下都必须存在 —— 它们**不**参与二选一。
+ * - provider 列表为空时**多出来**的断言只有一个：`data-empty="tts.providers"` 必须在
+ *   （空状态卡整块替换列表）；列表非空时反过来，空状态必须消失。
+ *
+ * ⚠️ 首版曾把 `autoRead` / `maxChars` 写进二选一（「列表为空 → 这两个必须为 0」），
+ * 与 step-05「常显区」的要求自相矛盾，导致空列表下 `pass` **永远为 false**（实测抓到）。
+ *
+ * 「列表是否为空」的判据用**两个信号取或**（`emptyStates` 含 `tts.providers`，或存在
+ * `tts.providers.<id>` 行容器）并把用到的判据回传在 `listState` 字段里 ——
+ * 只认其中一个的话，页面把空状态从 `data-empty` 改成别的写法就会让探针假 FAIL。
+ * 行容器的判定与 `SETTINGS_LLM_STRUCTURE_CHECK` 同构：`data-field` 以
+ * `tts.providers.` 开头、且**后面不再有点**（卡内字段多一层，不会被算成行）。
+ */
+export const SETTINGS_TTS_FIELDS_SCRIPT = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const toggle = document.querySelector('[data-field="tts.enabled"] input[type="checkbox"]')
+    const emptyStates = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
+      el.getAttribute('data-empty'),
+    )
+    const providersEmpty = emptyStates.indexOf('tts.providers') !== -1
+    const providerRows = Array.from(document.querySelectorAll('[data-field]')).filter((el) => {
+      const value = el.getAttribute('data-field') || ''
+      return value.indexOf('tts.providers.') === 0 && value.slice('tts.providers.'.length).indexOf('.') === -1
+    }).length
+    // 两个信号取或：任一成立都算「列表非空」；都看到空状态 / 都没有行才按空处理
+    const listEmpty = providersEmpty || providerRows === 0
+    const listState = providersEmpty ? 'empty-state' : providerRows > 0 ? 'rows' : 'neither'
+    const autoReadFields = count('[data-field="tts.autoRead"]')
+    const maxCharsFields = count('[data-field="tts.maxChars"]')
+    const activeNav = document.querySelector('.nav-item.active')
+    return {
+      page: activeNav === null ? 'unknown' : (activeNav.textContent || '').trim(),
+      togglePresent: toggle !== null,
+      enabled: toggle === null ? null : toggle.checked,
+      providerFields: count('[data-field^="tts.providers"]'),
+      providerRows,
+      autoReadFields,
+      maxCharsFields,
+      emptyStates,
+      // 用的是哪条判据（排查假 FAIL 时先看它）
+      listState,
+      listEmpty,
+      // 总开关与 autoRead / maxChars 都是**常显字段**（关掉就再也开不回来），
+      // 因此三种列表状态下都必须存在 —— 它们**不**参与列表空/非空的二选一。
+      // 空列表唯一多出来的断言是：data-empty 必须含 'tts.providers'。
+      pass:
+        toggle !== null &&
+        autoReadFields > 0 &&
+        maxCharsFields > 0 &&
+        (listEmpty ? providersEmpty : !providersEmpty),
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -1208,6 +1272,124 @@ export const SETTINGS_LLM_STRUCTURE_CHECK = `(async () => {
 })()`
 
 /**
+ * 「语音」页编辑卡探针 · 前半（step-05）：进「添加」态 → 点「+ 空白配置」让编辑卡出现。
+ *
+ * ⚠️ 三条硬约束（第一条是首跑实测踩出来的）：
+ * - **必须先进入添加态**：`+ 空白配置` 渲染在 `<section v-if="mode === 'add'">` 里，
+ *   页面初始是列表态（列表为空时更是只有一张空状态卡），直接找这个按钮必然找不到
+ *   （首跑实测 `act: null`、六字段全 0）。所以先点「添加 TTS 模型」/「+ 添加 TTS 模型」
+ *   进添加态，再点「+ 空白配置」。
+ * - **不得点「应用」**：capture 在真实 userData 下也会被跑（`AURORA_CAPTURE_WINDOWS=settings`），
+ *   而「+ 空白配置」只往**本地 `drafts`** 里加一行、保存时才落盘，所以这一步不动配置
+ *   （与 `SETTINGS_LLM_MODELS_ACT` 同一取舍）。因此这里**不需要任何恢复动作**。
+ * - 定位优先按**按钮文案**：`data-action` 是 TtsPage 的加分项但**没有冻结进 DOM 契约**，
+ *   靠它一条路会在页面没写这个属性时变成静默找不到。反过来「+ 空白配置」是 step-05 明确的
+ *   用户可见文案，改了文案这条断言本就该失败并报出实际按钮文案（不静默成功）。
+ *   匹配时统一去掉首尾空白与「+」前缀，`+ 空白配置` / `空白配置` 两种写法都命中。
+ */
+export const SETTINGS_TTS_ADD_ACT = `(async () => {
+  try {
+    const normalize = (text) => (text || '').replace(/\\s+/g, '').replace(/^\\+/, '')
+    // ⚠️ 每次都**重新查询**按钮：进入添加态后会出现全新的按钮节点，
+    //    在点击前查一次就把结果缓存下来的话，新节点永远不在那个数组里（首跑实测踩到）。
+    const allButtons = () => Array.from(document.querySelectorAll('button'))
+    const blankButton = () =>
+      allButtons().find((item) => item.getAttribute('data-action') === 'add-blank-tts') ||
+      allButtons().find((item) => normalize(item.textContent) === '空白配置')
+    const record = (value) => {
+      window.__auroraTtsActResult = value
+      return value
+    }
+    // 1) 先进入「添加」态：「+ 空白配置」只在添加区（空状态里的「添加 TTS 模型」或
+    //    工具行的「+ 添加 TTS 模型」点下去之后）才渲染 —— 直接找它会一无所获。
+    let opened = null
+    if (blankButton() === undefined) {
+      const opener =
+        allButtons().find((item) => normalize(item.textContent) === '添加TTS模型') ||
+        allButtons().find((item) => item.getAttribute('data-action') === 'add-tts-provider')
+      if (opener === undefined) {
+        return record({
+          ok: false,
+          reason: 'no 添加 TTS 模型 opener',
+          labels: allButtons()
+            .map((item) => (item.textContent || '').trim())
+            .filter((item) => item !== ''),
+        })
+      }
+      opener.click()
+      opened = normalize(opener.textContent)
+      // 等添加区渲染（Vue 的 DOM 更新是微任务，这里留够一帧）
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+    // 2) 再点「+ 空白配置」进编辑卡
+    const target = blankButton()
+    if (target === undefined) {
+      return record({
+        ok: false,
+        reason: 'no 空白配置 button',
+        opened,
+        labels: allButtons()
+          .map((item) => (item.textContent || '').trim())
+          .filter((item) => item !== ''),
+      })
+    }
+    target.click()
+    // 等编辑卡渲染
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const rows = document.querySelectorAll('[data-field$=".baseUrl"]').length
+    window.__auroraTtsCardProbe = { clicked: true, label: normalize(target.textContent) }
+    return record({
+      ok: true,
+      opened,
+      label: normalize(target.textContent),
+      editorFields: rows,
+    })
+  } catch (error) {
+    window.__auroraTtsActResult = { ok: false, reason: String(error) }
+    return window.__auroraTtsActResult
+  }
+})()`
+
+/**
+ * 「语音」页编辑卡探针 · 后半（step-05）：六字段的 `data-field` 必须全在。
+ *
+ * 用**后缀**选择器（`[data-field$=".baseUrl"]`）而不是写死 provider id：
+ * 点「+ 空白配置」之后 id 由页面决定（LlmPage 同款流程用的是 `custom`），
+ * 探针假设 id 等于把契约里没冻结的东西当成事实。
+ *
+ * 「在」的判定是**可见**（`getBoundingClientRect` 有尺寸），不是只数选择器命中数：
+ * 一个 `display:none` 的卡也数得出来，那样断言就退化成空转（与 `SETTINGS_LLM_STRUCTURE_CHECK` 同口径）。
+ */
+export const SETTINGS_TTS_CARD_CHECK = `(async () => {
+  try {
+    const fields = ['baseUrl', 'apiKey', 'model', 'voice', 'speed', 'format']
+    const found = {}
+    for (const name of fields) {
+      const hit = Array.from(document.querySelectorAll('[data-field$=".' + name + '"]')).filter(
+        (el) => {
+          const rect = el.getBoundingClientRect()
+          return rect.width > 0 && rect.height > 0
+        },
+      )
+      found[name] = hit.length
+    }
+    const missing = fields.filter((name) => found[name] === 0)
+    const probe = window.__auroraTtsCardProbe
+    return {
+      pass: missing.length === 0,
+      fields: found,
+      missing,
+      // act 的结论一并回传：失败时能一眼看出是「没进添加态」还是「没找到空白配置」，
+      // 不用再改代码重跑一次（首跑就是靠它定位到缓存按钮节点的）。
+      act: probe === undefined ? null : probe,
+      actResult: window.__auroraTtsActResult === undefined ? null : window.__auroraTtsActResult,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
  * 默认截图清单：四个窗口 + 提示条两态 + 设置页各页深链（含思考等级参数面板）+ 若干 DOM 断言场景
  * （门控计数 / 对话自动滚底 / 收起即消失 / 思考等级 / 电脑拖动区 / 电脑操控页，见下面各条的 `check`）。
  * 独立的快速对话窗口已从全仓删除：快速会话并入交互窗侧栏，故清单里不再有它的场景。
@@ -1255,13 +1437,16 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       query: { page },
       // 「常规」页是 `general.*` 门控的现场：死字段 general.language 必须为 0，
       // 提示条透明度 / 静默时段要跟着 general.edgeBar.enabled 出现或消失；
-      // 「电脑操控」页同理，另加"总开关状态 → 分栏详情是否出现"的断言（step 5）
+      // 「电脑操控」页同理，另加"总开关状态 → 分栏详情是否出现"的断言（step 5）；
+      // 「语音」页是**互斥门控**（provider 列表空 → autoRead / maxChars 整块消失）
       check:
         page === 'general'
           ? SETTINGS_FIELDS_SCRIPT
           : page === 'agent'
             ? SETTINGS_AGENT_FIELDS_SCRIPT
-            : undefined,
+            : page === 'tts'
+              ? SETTINGS_TTS_FIELDS_SCRIPT
+              : undefined,
     })
   }
   // 设置窗拖动区（step-06）：侧栏顶部 / `.brand` / 内容区顶部三处至少要有一条 ≥ 32px 的可见拖动区，
@@ -1299,6 +1484,18 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
     query: { page: 'llm' },
     act: SETTINGS_LLM_STRUCTURE_ACT,
     check: SETTINGS_LLM_STRUCTURE_CHECK,
+  })
+  // 「语音」页编辑卡（step-05）：点「+ 空白配置」→ 断言六个字段的 data-field 都在。
+  // 只动**本地 draft**、不点「应用」，所以无需恢复动作。
+  // ⚠️ `settings-tts.png` 不在这里 push：上面的 `SETTINGS_PAGE_IDS` 循环已经为每个 page
+  // 生成 `settings-<page>.png`（含 `tts`），再 push 一张同名图会多截一次、`report.json` 里
+  // 出现两条同名且后者把前者的 check 顶掉，所以要拍的只有这张卡场景。
+  plan.push({
+    name: 'settings',
+    file: 'settings-tts-card.png',
+    query: { page: 'tts' },
+    act: SETTINGS_TTS_ADD_ACT,
+    check: SETTINGS_TTS_CARD_CHECK,
   })
   // 设置页门控断言：classroom 配置在；切到 Work 后 classroom 配置必须消失
   plan.push({

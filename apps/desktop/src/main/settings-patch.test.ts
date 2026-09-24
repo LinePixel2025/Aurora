@@ -8,7 +8,13 @@
  */
 import { describe, expect, it } from 'vitest'
 import { SettingsSchema, createDefaultSettings } from '@aurora/shared'
-import type { LlmProviderConfig, McpServerConfig, Settings, SettingsPatch } from '@aurora/shared'
+import type {
+  LlmProviderConfig,
+  McpServerConfig,
+  Settings,
+  SettingsPatch,
+  TtsProviderConfig,
+} from '@aurora/shared'
 import { extractPatchSecrets, mergeSettingsPatch } from './settings-patch.js'
 
 function mcpServer(overrides: Partial<McpServerConfig> = {}): McpServerConfig {
@@ -36,16 +42,31 @@ function provider(overrides: Partial<LlmProviderConfig> = {}): LlmProviderConfig
   }
 }
 
+function ttsProvider(overrides: Partial<TtsProviderConfig> = {}): TtsProviderConfig {
+  return {
+    type: 'openai-compat',
+    baseUrl: 'https://api.example.com/v1',
+    apiKeyEnc: 'CIPHER-TTS',
+    model: 'tts-model',
+    voice: 'alloy',
+    speed: 1,
+    format: 'mp3',
+    ...overrides,
+  }
+}
+
 /** 造一份合法配置（走 Schema，保证与真实落盘形状一致）。 */
 function settingsWith(
   overrides: {
     servers?: McpServerConfig[]
     providers?: Record<string, LlmProviderConfig>
+    ttsProviders?: Record<string, TtsProviderConfig>
   } = {},
 ): Settings {
   const base = createDefaultSettings()
   if (overrides.servers !== undefined) base.mcp.servers = overrides.servers
   if (overrides.providers !== undefined) base.llm.providers = overrides.providers
+  if (overrides.ttsProviders !== undefined) base.tts.providers = overrides.ttsProviders
   return SettingsSchema.parse(base)
 }
 
@@ -206,7 +227,101 @@ describe('mergeSettingsPatch —— 删除 provider 必须显式声明', () => {
   })
 })
 
+describe('mergeSettingsPatch —— TTS provider 与 llm 同一套合并 / 删除语义', () => {
+  it('回传空 apiKeyEnc 时保留已有密文，其余字段照常覆盖（改一次音色不该清凭据）', () => {
+    const draft = settingsWith({
+      ttsProviders: { demo: ttsProvider({ apiKeyEnc: 'CIPHER-TTS' }) },
+    })
+
+    const cleared = mergeSettingsPatch(draft, {
+      tts: { providers: { demo: ttsProvider({ apiKeyEnc: '', voice: 'nova' }) } },
+    })
+
+    expect(draft.tts.providers['demo']?.apiKeyEnc).toBe('CIPHER-TTS')
+    expect(draft.tts.providers['demo']?.voice).toBe('nova')
+    expect(cleared).toEqual([])
+  })
+
+  it('缺项的 providers 回传不会误删其它 TTS provider（删除必须显式声明）', () => {
+    const draft = settingsWith({
+      ttsProviders: { a: ttsProvider(), b: ttsProvider({ model: 'b-model' }) },
+    })
+
+    const cleared = mergeSettingsPatch(draft, {
+      tts: { providers: { a: ttsProvider({ model: 'a-next' }) } },
+    })
+
+    expect(Object.keys(draft.tts.providers).sort()).toEqual(['a', 'b'])
+    expect(cleared).toEqual([])
+  })
+
+  it('removedProviders 真的删掉 TTS provider，并声明清理它的凭据', () => {
+    const draft = settingsWith({
+      ttsProviders: { a: ttsProvider({ apiKeyEnc: 'CIPHER-A' }), b: ttsProvider() },
+    })
+
+    const cleared = mergeSettingsPatch(draft, {
+      tts: { removedProviders: ['a'], providers: { b: ttsProvider() } },
+    })
+
+    expect(Object.keys(draft.tts.providers)).toEqual(['b'])
+    expect(cleared).toEqual(['tts.providers.a.apiKey'])
+  })
+
+  it('被删的 id 在最终状态里没有密文才清；同一 patch 里「删了又给出新密文」则不清', () => {
+    const draft = settingsWith({
+      ttsProviders: { a: ttsProvider({ apiKeyEnc: 'OLD-CIPHER' }) },
+    })
+
+    const cleared = mergeSettingsPatch(draft, {
+      tts: { removedProviders: ['a'], providers: { a: ttsProvider({ apiKeyEnc: 'NEW-CIPHER' }) } },
+    })
+
+    expect(draft.tts.providers['a']?.apiKeyEnc).toBe('NEW-CIPHER')
+    expect(cleared).toEqual([])
+  })
+
+  it('removedProviders 是删除指令，不会渗进 tts 配置对象；其它字段照常浅合并', () => {
+    const draft = settingsWith({ ttsProviders: { a: ttsProvider() } })
+
+    mergeSettingsPatch(draft, {
+      tts: { removedProviders: ['a'], enabled: false, autoRead: true, maxChars: 500 },
+    })
+
+    expect('removedProviders' in (draft.tts as unknown as Record<string, unknown>)).toBe(false)
+    expect(draft.tts.enabled).toBe(false)
+    expect(draft.tts.autoRead).toBe(true)
+    expect(draft.tts.maxChars).toBe(500)
+    // 只改开关的 patch 不带 providers，也不该碰 provider 列表
+    expect('a' in draft.tts.providers).toBe(false)
+  })
+})
+
 describe('extractPatchSecrets', () => {
+  it('抽出 TTS provider 的 apiKey 明文并摘掉字段，空串不入 secrets', () => {
+    const patch = {
+      tts: {
+        providers: {
+          a: { ...ttsProvider(), apiKey: 'tts-plain' },
+          b: { ...ttsProvider(), apiKey: '' },
+        },
+      },
+    } as unknown as SettingsPatch
+
+    const { patch: cleaned, secrets } = extractPatchSecrets(patch)
+
+    expect(secrets).toEqual({ 'tts.providers.a.apiKey': 'tts-plain' })
+    expect('apiKey' in (cleaned.tts?.providers?.['a'] as unknown as Record<string, unknown>)).toBe(
+      false,
+    )
+    expect('apiKey' in (cleaned.tts?.providers?.['b'] as unknown as Record<string, unknown>)).toBe(
+      false,
+    )
+    // 纯函数：不改调用方对象
+    const original = patch.tts?.providers?.['a'] as unknown as Record<string, unknown>
+    expect('apiKey' in original).toBe(true)
+  })
+
   it('抽出非空 MCP env 明文，并从 patch 副本里摘掉 env 字段', () => {
     // `env`（明文）只存在于 IPC 进站数据里，不在 Schema 上，因此这里显式构造 + 断言
     const incoming = { ...mcpServer({ name: 'demo' }), env: { TOKEN: 'plain-token', EMPTY: '' } }
