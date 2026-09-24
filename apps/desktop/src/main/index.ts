@@ -231,6 +231,9 @@ async function bootstrap(): Promise<void> {
 
   // 1.1 渲染层 CSP（docs/06 §10）。开发环境需放宽以允许 Vite dev server 的
   //     inline 预置脚本与 HMR websocket；生产环境只加载本地打包资源。
+  //     放行 `blob:` 是 TTS 朗读的硬前提（docs/06 §13）：合成音频走 Blob 对象 URL，
+  //     生产 CSP 的 `default-src 'self'` 会把它拦掉 —— 表现为「开发能播、打包不能播」。
+  //     两态各一条指令，缺任何一条都会让对应环境静音。
   const csp = isDev
     ? [
         "default-src 'self' data: blob: http://localhost:5173 ws://localhost:5173",
@@ -238,12 +241,14 @@ async function bootstrap(): Promise<void> {
         "style-src 'self' 'unsafe-inline'",
         "connect-src 'self' http://localhost:5173 ws://localhost:5173",
         "img-src 'self' data:",
+        "media-src 'self' blob: data:",
       ].join('; ')
     : [
         "default-src 'self'",
         "script-src 'self'",
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data:",
+        "media-src 'self' blob:",
         "connect-src 'self'",
         "object-src 'none'",
         "base-uri 'none'",
