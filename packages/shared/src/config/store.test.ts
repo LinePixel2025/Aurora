@@ -590,8 +590,9 @@ describe('SettingsStore · TTS 凭据', () => {
     seedTtsProvider(healthy.store, 'sf')
     healthy.store.setSecret('tts.providers.sf.apiKey', 'sk-old')
     await healthy.store.flush()
-    expect(JSON.parse(await healthy.fsPort.readFile(healthy.configPath)).tts.providers.sf.apiKeyEnc)
-      .not.toBe('')
+    expect(
+      JSON.parse(await healthy.fsPort.readFile(healthy.configPath)).tts.providers.sf.apiKeyEnc,
+    ).not.toBe('')
 
     const fallback = new SettingsStore({
       dir: DIR,
