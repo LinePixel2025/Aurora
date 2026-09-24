@@ -1570,6 +1570,112 @@ export const SETTINGS_TTS_CARD_CHECK = `(async () => {
 })()`
 
 /**
+ * 引导的五张图复用同一个窗口实例：各 target 都不带 query，也不调用 reload，
+ * 否则 Vue 的 stepIndex 会在每张图之间复位。每段只通过页面现有按钮前进。
+ * 等待进度与 pane 标题同时出现，避免 Vue 的 out-in 过渡期拍到上一段或空白。
+ */
+const ONBOARDING_STAGES = [
+  { label: '欢迎', title: '欢迎使用 Aurora', cta: '下一步' },
+  { label: 'AI 模型', title: '配置 AI 模型', cta: '下一步' },
+  { label: '选择模式', title: '选择使用模式', cta: '下一步' },
+  { label: '模式设置', title: 'ClassRoom Mode 设置', cta: '保存并继续' },
+  { label: '完成', title: '一切就绪', cta: '开始使用' },
+] as const
+
+function onboardingWaitScript(index: number, action?: 'next' | 'skip' | 'model'): string {
+  const previous = index > 0 ? ONBOARDING_STAGES[index - 1] : undefined
+  return `(async () => {
+    const stages = ${JSON.stringify(ONBOARDING_STAGES)}
+    const expected = stages[${index}]
+    const previous = ${previous === undefined ? 'null' : JSON.stringify(previous)}
+    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    const state = () => ({
+      label: (document.querySelector('.progress-text')?.textContent || '').trim(),
+      title: (document.querySelector('.pane .pane-title')?.textContent || '').trim(),
+      active: Array.from(document.querySelectorAll('.progress-item')).findIndex((el) => el.classList.contains('active')),
+    })
+    async function ready(stage, number) {
+      for (let attempt = 0; attempt < 160; attempt += 1) {
+        const found = state()
+        if (found.label === stage.label && found.active === number && found.title.includes(stage.title)) return
+        await pause(50)
+      }
+      const feedback = (document.querySelector('.foot-note .toast')?.textContent || '').trim()
+      throw new Error('引导阶段未就绪：预期 ' + stage.label + ' / ' + stage.title + '，实际 ' + JSON.stringify(state()) + (feedback ? '；页脚提示：' + feedback : ''))
+    }
+    function button(label) {
+      const hit = Array.from(document.querySelectorAll('.foot button')).find((el) =>
+        (el.textContent || '').trim() === label)
+      if (!hit) throw new Error('引导页脚缺少按钮「' + label + '」：' +
+        Array.from(document.querySelectorAll('.foot button')).map((el) => (el.textContent || '').trim()).join('、'))
+      if (hit.disabled) throw new Error('引导按钮「' + label + '」已禁用')
+      return hit
+    }
+    ${action === undefined ? '' : `await ready(previous, ${index - 1})`}
+    ${
+      action === 'model'
+        ? `
+    const preset = Array.from(document.querySelectorAll('.pane button')).find((el) =>
+      (el.textContent || '').includes('本地 / 自定义'))
+    if (!preset) throw new Error('AI 模型页缺少本地 / 自定义预设')
+    preset.click()
+    await pause(50)
+    const key = document.querySelector('input[placeholder="sk-..."]')
+    if (!key) throw new Error('AI 模型页缺少 API Key 输入框')
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+    setter.call(key, 'capture-local-placeholder')
+    key.dispatchEvent(new Event('input', { bubbles: true }))
+    await pause(50)
+    button('下一步').click()
+    `
+        : action === 'skip'
+          ? `button('稍后设置').click()`
+          : action === 'next'
+            ? `button('下一步').click()`
+            : ''
+    }
+    await ready(expected, ${index})
+    return { stage: expected.label, action: ${JSON.stringify(action ?? 'ready')} }
+  })()`
+}
+
+function onboardingCheckScript(index: number): string {
+  return `(() => {
+    try {
+      const expected = ${JSON.stringify(ONBOARDING_STAGES[index])}
+      const label = (document.querySelector('.progress-text')?.textContent || '').trim()
+      const active = Array.from(document.querySelectorAll('.progress-item')).findIndex((el) => el.classList.contains('active'))
+      const titleEl = document.querySelector('.pane .pane-title')
+      const title = (titleEl?.textContent || '').trim()
+      const cta = Array.from(document.querySelectorAll('.foot button')).find((el) =>
+        (el.textContent || '').trim() === expected.cta)
+      const visible = (el) => {
+        if (!el) return false
+        const rect = el.getBoundingClientRect()
+        const style = getComputedStyle(el)
+        return rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0 &&
+          rect.right <= innerWidth && rect.bottom <= innerHeight &&
+          style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0'
+      }
+      const rect = cta?.getBoundingClientRect()
+      const hit = rect ? document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) : null
+      const clickable = !!cta && !cta.disabled && !!hit && (hit === cta || cta.contains(hit))
+      const reasons = []
+      if (label !== expected.label || active !== ${index}) reasons.push('阶段标识不符：期望 ' + expected.label + ' / ' + ${index} + '，实际 ' + label + ' / ' + active)
+      if (!title.includes(expected.title) || !visible(titleEl)) reasons.push('标题不可见或不符：期望 ' + expected.title + '，实际 ' + title)
+      if (!cta) reasons.push('缺少页脚主 CTA「' + expected.cta + '」')
+      else {
+        if (!visible(cta)) reasons.push('主 CTA「' + expected.cta + '」超出窗口或不可见')
+        if (!clickable) reasons.push('主 CTA「' + expected.cta + '」禁用或中心无法命中')
+      }
+      return { pass: reasons.length === 0, stage: label, active, title, cta: (cta?.textContent || '').trim(), visible: visible(cta), clickable, reason: reasons.join('；') || null }
+    } catch (error) {
+      return { pass: false, reason: '引导阶段检查异常：' + String(error) }
+    }
+  })()`
+}
+
+/**
  * 默认截图清单：四个窗口 + 提示条两态 + 设置页各页深链（含思考等级参数面板）+ 若干 DOM 断言场景
  * （门控计数 / 对话自动滚底 / 收起即消失 / 思考等级 / 电脑拖动区 / 电脑操控页，见下面各条的 `check`）。
  * 独立的快速对话窗口已从全仓删除：快速会话并入交互窗侧栏，故清单里不再有它的场景。
@@ -1673,7 +1779,37 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
     { name: 'chat', file: 'chat-drag.png', check: WINDOW_DRAG_SCRIPT },
     { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },
     { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
-    { name: 'onboarding', file: 'onboarding.png' },
+    // 五段共用同一窗口，不能加 query / reload；本地占位凭据只在隔离 userData 中保存，绝不测试连接。
+    {
+      name: 'onboarding',
+      file: 'onboarding-welcome.png',
+      act: onboardingWaitScript(0),
+      check: onboardingCheckScript(0),
+    },
+    {
+      name: 'onboarding',
+      file: 'onboarding-llm.png',
+      act: onboardingWaitScript(1, 'next'),
+      check: onboardingCheckScript(1),
+    },
+    {
+      name: 'onboarding',
+      file: 'onboarding-modes.png',
+      act: onboardingWaitScript(2, 'model'),
+      check: onboardingCheckScript(2),
+    },
+    {
+      name: 'onboarding',
+      file: 'onboarding-guide.png',
+      act: onboardingWaitScript(3, 'next'),
+      check: onboardingCheckScript(3),
+    },
+    {
+      name: 'onboarding',
+      file: 'onboarding-done.png',
+      act: onboardingWaitScript(4, 'skip'),
+      check: onboardingCheckScript(4),
+    },
   ]
   for (const page of SETTINGS_PAGE_IDS) {
     plan.push({

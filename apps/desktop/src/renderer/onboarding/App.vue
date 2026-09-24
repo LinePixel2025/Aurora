@@ -205,7 +205,7 @@ const lastStep = computed(() => steps.length - 1)
 </script>
 
 <template>
-  <div class="onboarding glass">
+  <div class="onboarding">
     <!-- 标题栏：整行可拖动（窗口无系统边框），右侧是步骤圆点进度 -->
     <header class="head" :class="dragClass">
       <div class="brand">
@@ -236,11 +236,11 @@ const lastStep = computed(() => steps.length - 1)
         <!-- ① 欢迎 -->
         <section v-if="stepIndex === 0" key="welcome" class="pane">
           <h2 class="pane-title anim-rise">欢迎使用 Aurora</h2>
-          <p class="lead anim-rise" style="animation-delay: 40ms">
+          <p class="lead anim-rise">
             Aurora 常驻系统托盘，从屏幕右侧的提示条提供服务：悬停展开面板、点击呼出完整对话窗口；
             配合智慧感知文件夹自动整理你的文件。整个引导约 2 分钟。
           </p>
-          <div class="cards anim-rise" style="animation-delay: 80ms">
+          <div class="cards anim-rise">
             <article class="card">
               <h3>ClassRoom Mode</h3>
               <p class="tiny muted">
@@ -261,24 +261,25 @@ const lastStep = computed(() => steps.length - 1)
         <!-- ② AI 模型（必填） -->
         <section v-else-if="stepIndex === 1" key="llm" class="pane">
           <h2 class="pane-title anim-rise">配置 AI 模型 <span class="badge warn">必填</span></h2>
-          <p class="lead anim-rise" style="animation-delay: 40ms">
+          <p class="lead anim-rise">
             支持任何 OpenAI 兼容服务（DeepSeek / OpenAI / Ollama /
             vLLM…），凭据使用系统安全存储加密后仅保存在本机。
           </p>
 
-          <div class="row wrap anim-rise" style="animation-delay: 60ms">
+          <div class="row wrap anim-rise">
             <AppButton
               v-for="preset in PROVIDER_PRESETS"
               :key="preset.id"
               size="sm"
-              :variant="form.providerId === preset.id ? 'primary' : 'secondary'"
+              variant="secondary"
+              :class="{ 'preset-active': form.providerId === preset.id }"
               @click="applyPreset(preset.id)"
             >
               {{ preset.label }}
             </AppButton>
           </div>
 
-          <div class="field-grid anim-rise" style="animation-delay: 80ms">
+          <div class="field-grid anim-rise">
             <SettingField label="baseURL" required hint="多数服务需以 /v1 结尾">
               <input
                 v-model="form.baseUrl"
@@ -308,7 +309,7 @@ const lastStep = computed(() => steps.length - 1)
             </SettingField>
           </div>
 
-          <div class="row test-row anim-rise" style="animation-delay: 100ms">
+          <div class="row test-row anim-rise">
             <AppButton
               variant="secondary"
               :disabled="testing || !modelReady"
@@ -329,15 +330,14 @@ const lastStep = computed(() => steps.length - 1)
         <!-- ③ 模式选择 -->
         <section v-else-if="stepIndex === 2" key="modes" class="pane">
           <h2 class="pane-title anim-rise">选择使用模式</h2>
-          <p class="lead anim-rise" style="animation-delay: 40ms">
-            同一时刻只启用一个模式，之后可在设置中随时切换或重新引导。
-          </p>
-          <div class="mode-list anim-rise" style="animation-delay: 80ms">
+          <p class="lead anim-rise">同一时刻只启用一个模式，之后可在设置中随时切换或重新引导。</p>
+          <div class="mode-list anim-rise">
             <button
               v-for="mode in modeStore.modes"
               :key="mode.id"
               class="mode-card interactive"
               :class="{ active: form.mode === mode.id, placeholder: mode.placeholder }"
+              :aria-pressed="form.mode === mode.id"
               type="button"
               @click="form.mode = mode.id"
             >
@@ -353,11 +353,11 @@ const lastStep = computed(() => steps.length - 1)
         <section v-else-if="stepIndex === 3" key="guide" class="pane">
           <h2 class="pane-title anim-rise">{{ selectedMode?.displayName ?? form.mode }} 设置</h2>
           <template v-if="form.mode === 'classroom'">
-            <p class="lead anim-rise" style="animation-delay: 40ms">
+            <p class="lead anim-rise">
               设置「智慧感知文件夹」与科目列表；也可以稍后通过对话式引导完成（设置 → 模式 →
               重新引导）。
             </p>
-            <div class="anim-rise" style="animation-delay: 80ms">
+            <div class="anim-rise">
               <SettingField
                 label="智慧感知文件夹"
                 hint="留空则在首次激活时使用 用户目录\Aurora\感知文件夹"
@@ -377,7 +377,7 @@ const lastStep = computed(() => steps.length - 1)
               </SettingField>
             </div>
           </template>
-          <p v-else class="lead anim-rise" style="animation-delay: 40ms">
+          <p v-else class="lead anim-rise">
             该模式目前为占位实现，无需额外配置；激活后仅注入提示词片段，具体能力将在后续版本提供。
           </p>
         </section>
@@ -385,15 +385,15 @@ const lastStep = computed(() => steps.length - 1)
         <!-- ⑤ 完成 -->
         <section v-else key="done" class="pane done-pane">
           <span class="brand-mark xl anim-rise" />
-          <h2 class="pane-title anim-rise" style="animation-delay: 60ms">一切就绪</h2>
-          <p class="lead anim-rise" style="animation-delay: 120ms">
+          <h2 class="pane-title anim-rise">一切就绪</h2>
+          <p class="lead anim-rise">
             Aurora 已常驻系统托盘。默认模型：<strong>{{
               settingsStore.activeProvider?.model ?? '未配置'
             }}</strong>
             ；当前模式：<strong>{{ modeStore.current?.displayName ?? form.mode }}</strong
             >。
           </p>
-          <p class="tiny muted anim-rise" style="animation-delay: 180ms">
+          <p class="tiny muted anim-rise">
             提示：屏幕右侧提示条悬停展开面板，点击可拉出完整对话窗口；托盘右键可切换模式与打开设置。
           </p>
         </section>
@@ -425,6 +425,7 @@ const lastStep = computed(() => steps.length - 1)
       <AppButton
         v-if="stepIndex === 3 && form.mode === 'classroom'"
         variant="primary"
+        size="lg"
         :disabled="saving"
         @click="finishClassroomGuide"
       >
@@ -433,13 +434,16 @@ const lastStep = computed(() => steps.length - 1)
       <AppButton
         v-else-if="stepIndex < lastStep"
         variant="primary"
+        size="lg"
         :disabled="saving"
         @click="next"
       >
         <StatusDot v-if="saving" tone="running" :size="8" />
         {{ saving ? '保存中…' : '下一步' }}
       </AppButton>
-      <AppButton v-else variant="primary" class="anim-rise" @click="complete">开始使用</AppButton>
+      <AppButton v-else variant="primary" size="lg" class="anim-rise" @click="complete"
+        >开始使用</AppButton
+      >
     </footer>
   </div>
 </template>
@@ -450,7 +454,9 @@ const lastStep = computed(() => steps.length - 1)
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
+  background: var(--bg-raised);
 }
 
 /* ───────── 顶部：拖动区 + 步骤圆点进度 ───────── */
@@ -460,7 +466,8 @@ const lastStep = computed(() => steps.length - 1)
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  padding: var(--space-3) var(--space-5);
+  min-height: var(--space-8);
+  padding: var(--space-3) var(--space-6);
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -474,9 +481,9 @@ const lastStep = computed(() => steps.length - 1)
 .brand h1 {
   margin: 0;
   font-family: var(--font-display);
-  font-size: 18px;
+  font-size: var(--text-lg);
   font-weight: var(--weight-semibold);
-  letter-spacing: 0.02em;
+  letter-spacing: var(--tracking-display);
 }
 
 .brand-sub {
@@ -491,12 +498,11 @@ const lastStep = computed(() => steps.length - 1)
   height: 28px;
   border-radius: 50%;
   background: var(--aurora-gradient);
-  filter: drop-shadow(0 0 12px var(--aurora-blue));
 }
 
 .brand-mark.xl {
-  width: 64px;
-  height: 64px;
+  width: var(--space-8);
+  height: var(--space-8);
 }
 
 .progress-wrap {
@@ -546,7 +552,7 @@ const lastStep = computed(() => steps.length - 1)
 }
 
 .progress-item.active .dot {
-  background: var(--aurora-gradient);
+  background: var(--aurora-blue);
   transform: scale(1.3);
   box-shadow: 0 0 0 4px var(--fill-1);
 }
@@ -561,7 +567,7 @@ const lastStep = computed(() => steps.length - 1)
 .body {
   flex: 1;
   min-height: 0;
-  padding: var(--space-4) var(--space-5);
+  padding: var(--space-5) var(--space-6);
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -569,7 +575,7 @@ const lastStep = computed(() => steps.length - 1)
 .pane {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
   min-width: 0;
 }
 
@@ -581,7 +587,7 @@ const lastStep = computed(() => steps.length - 1)
   font-family: var(--font-display);
   font-size: var(--text-xl);
   font-weight: var(--weight-semibold);
-  letter-spacing: -0.01em;
+  letter-spacing: var(--tracking-display);
   line-height: var(--leading-tight);
 }
 
@@ -589,7 +595,7 @@ const lastStep = computed(() => steps.length - 1)
   margin: 0;
   color: var(--text-secondary);
   font-size: var(--text-sm);
-  line-height: var(--leading-normal);
+  line-height: var(--leading-relaxed);
 }
 
 .cards {
@@ -600,30 +606,38 @@ const lastStep = computed(() => steps.length - 1)
 
 .card,
 .mode-card {
-  padding: var(--space-3);
+  padding: var(--space-4);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
+  box-shadow: var(--shadow-hairline);
   text-align: left;
 }
 
 .card h3,
 .mode-card strong {
-  margin: 0 0 4px;
-  font-size: 14px;
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-display);
 }
 
 .card p {
   margin: 0;
+  line-height: var(--leading-relaxed);
 }
 
 .card.dim {
-  opacity: 0.6;
+  background: transparent;
+}
+
+.card.dim h3 {
+  color: var(--text-secondary);
 }
 
 .mode-list {
   display: grid;
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 
 .mode-card {
@@ -632,7 +646,7 @@ const lastStep = computed(() => steps.length - 1)
   grid-template-areas:
     'title tag spacer'
     'desc desc desc';
-  gap: 4px var(--space-2);
+  gap: var(--space-1) var(--space-2);
   cursor: pointer;
 }
 
@@ -648,16 +662,25 @@ const lastStep = computed(() => steps.length - 1)
 .mode-card p {
   grid-area: desc;
   margin: 0;
+  line-height: var(--leading-relaxed);
+}
+
+.mode-card:hover {
+  background: var(--fill-2);
 }
 
 .mode-card.active {
   border-color: var(--aurora-blue);
-  background: var(--fill-2);
-  box-shadow: 0 0 0 3px var(--fill-1);
+  background: var(--fill-3);
 }
 
-.mode-card.placeholder {
-  opacity: 0.75;
+.mode-card.placeholder:not(.active) strong {
+  color: var(--text-secondary);
+}
+
+.preset-active {
+  border-color: var(--aurora-blue);
+  background: var(--fill-3);
 }
 
 /* AI 模型页：两列栅格，四个字段在两行内排完（固定高度里装得下） */
@@ -684,7 +707,13 @@ const lastStep = computed(() => steps.length - 1)
 }
 
 .test-row {
-  align-items: flex-start;
+  align-items: center;
+  min-height: var(--control-h-md);
+}
+
+.test-row :deep(.toast) {
+  min-width: 0;
+  line-height: var(--leading-normal);
 }
 
 /* 完成页：品牌渐变 + 居中收束 */
@@ -693,16 +722,25 @@ const lastStep = computed(() => steps.length - 1)
   justify-content: center;
   height: 100%;
   text-align: center;
-  gap: var(--space-3);
+  gap: var(--space-5);
+}
+
+.done-pane .pane-title {
+  font-size: var(--text-2xl);
+  background: var(--aurora-gradient);
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .done-pane .lead {
   max-width: 460px;
+  font-size: var(--text-base);
 }
 
 .done-pane .tiny {
   margin: 0;
   max-width: 460px;
+  line-height: var(--leading-relaxed);
 }
 
 /* ───────── 步骤切换：方向与操作一致（下一步 = 从右侧滑入） ───────── */
@@ -711,14 +749,14 @@ const lastStep = computed(() => steps.length - 1)
 .sheet-prev-enter-active {
   transition:
     opacity var(--dur-base) var(--ease-standard),
-    transform var(--dur-base) var(--ease-spring);
+    transform var(--dur-base) var(--ease-smooth);
 }
 
 .sheet-next-leave-active,
 .sheet-prev-leave-active {
   transition:
     opacity var(--dur-fast) var(--ease-standard),
-    transform var(--dur-fast) var(--ease-standard);
+    transform var(--dur-fast) var(--ease-smooth);
 }
 
 .sheet-next-enter-from,
@@ -740,7 +778,8 @@ const lastStep = computed(() => steps.length - 1)
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-5);
+  min-height: var(--space-8);
+  padding: var(--space-3) var(--space-6);
   border-top: 1px solid var(--border-subtle);
 }
 
