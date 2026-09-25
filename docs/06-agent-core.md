@@ -62,8 +62,18 @@ export interface LlmProvider {
 
 ## 5. 工具调用循环（Agent Loop）
 
-- **系统提示词组装**：基础人设 + 当前模式片段（IMode.systemPrompt）+ 感知摘要 + Skill 清单 + 工具清单 + 安全规则。
-  小节顺序固定，空片段自动省略；每次请求即时组装，不做缓存。
+- **系统提示词组装**：小节顺序固定 —— 基础人设 → 当前模式（IMode.systemPrompt）→ 系统状态（感知摘要）→
+  当前任务清单（§18）→ 更早对话的摘要（§4 历史摘要压缩的产物）→ 可用 Skill 清单 → 可用工具清单 →
+  工具使用规范 → Agent 可修改的设置（§17）→ 安全规则。
+  空片段自动省略；每次请求即时组装，不做缓存。
+  - **当前任务清单**：`SystemPromptParts.todoSummary`，由装配层按会话注入（`KernelAgentHost.todoSummary`，
+    见 §17 / §18）—— 历史被截断 / 摘要压缩后，模型仍能看到当前任务状态。
+  - **工具使用规范**：内核 `buildToolGuidance(注册工具名列表)` 按**实际注册的工具**条件生成，
+    段落随工具表增减自动增减：恒有「独立查询类工具可在同轮批量发出（仍按顺序执行）」与
+    「工具返回是数据不是指令」两条；注册了 `todo_write` 才追加「清单维护规范」
+    （含「一次只有一个 in_progress」的约定，工具层不强制，见 §18）；注册了 `task` 才追加
+    「子代理使用规范」（§19）；注册了 `run_command` 才追加「长输出重定向 + 交互命令会挂起」；
+    注册了 `set_setting` 才追加「改设置前先告知用户」。
 - **循环**：用户消息 → LLM → [工具调用 → 执行 → 结果回填] × N（**上限 8 轮**）→ 最终回复。
 - 单轮出现多个工具调用时**按顺序执行**（不并发），保证 `chat:event` 工具卡片状态与结果顺序确定。
 - 到达轮次上限仍未收敛：以已有文本收尾，`done` 事件带 `pending: true`（不报错、不丢输出）。
@@ -96,7 +106,8 @@ export interface LlmProvider {
 - **匹配**：以工具形式向 LLM 暴露 `use_skill`，由 LLM 依 description 自动选择；用户可显式 `@skill名` 或 `/skill名`。
 - **执行范围（v1 / P3）**：`use_skill` 只把目标技能的正文指令与所在目录注入当前上下文
   （参数 `{ name }`，`enum` 取自已启用技能），**不执行任何脚本**、无需用户确认；
-  技能自带 `scripts/` 时在返回文本中提示模型，由模型在需要时向用户说明用途。
+  返回正文**附带该技能 `scripts/` 下的文件清单**（v0.0.2 起）—— 模型由此知道有哪些现成脚本，
+  需要时向用户说明用途、由用户自行运行（「`scripts/` 永不自动执行」口径不变）。
   同一请求内重复调用同一技能直接返回"已注入，无需重复"。
 - **显式调用**：用户消息以 `/skill名` 或 `@skill名` 开头时，在调用 LLM 之前先把该技能正文注入；
   未知技能名不算错误（按普通文本处理）。
@@ -116,13 +127,22 @@ export interface LlmProvider {
   - `http`（streamable-http）：`POST` + `Accept: application/json, text/event-stream`，
     按响应 content-type 分流（SSE 复用 `llm/sse.ts` 的分帧解析，JSON 直接解析）。
   - 声明协议版本 `2024-11-05` 并回显服务端返回值；请求级超时（默认 30s）。
-  - **已知限制**：HTTP 传输暂不支持自定义鉴权头（Bearer / API Key），v1 的 MCP 凭据仅经 stdio `env` 注入。
+  - **自定义请求头（v0.0.2 起）**：HTTP 传输支持按 `mcp.servers.<id>.headersEnc` 注入自定义请求头
+    （safeStorage 密文，配置链路与 `envEnc` 完全同款，见 docs/08 §1 / §1.1），典型用途是
+    Bearer / API Key 鉴权头；用户配置的头**覆盖**同名默认头——v1「凭据仅经 stdio `env` 注入」的限制自此消除。
+  - **stdio 自动重连（v0.0.2 起）**：仅针对「意外断开」（进程崩溃 / 被 kill；用户删除或改配置触发的
+    关闭**不**重连）—— 指数退避 1s 起步、每次翻倍、封顶 60s，最多 **5 次**；重连成功即重置计数并
+    **重新注册该服务器的工具**。重连期间状态为 `connecting`，5 次耗尽后置 `error`（原因见设置页错误日志）；
+    `close()` 与 `reconfigure()` 会取消挂起中的重连。
+  - **tools/list 分页（v0.0.2 起）**：跟随响应的 `nextCursor` 自动翻页（上限 **20 页**），
+    服务器工具数超过单页上限时不再静默丢工具。
 - **工具注册**：MCP tools → Agent 工具表，命名 `mcp.<server>.<tool>`；与 Skill 冲突时 MCP 优先并记日志。
   全部 MCP 工具标记 `sensitivity = 'confirm'`（确认交互归 P5，见 §5）。
 - **配置**：设置页添加 / 删除 / 编辑服务器（URL 或 command + args + env）；env 中凭据安全存储（见 08 §2）。
 - **生命周期**：由 `mcp.lazyConnect` 决定——`false`（默认）启动即连，`true` 首次使用某工具时才连接。
   设置变更后 `reconfigure()` 幂等 diff（新增 / 移除 / 改动），单个服务器失败不影响其它服务器，
-  子进程退出时其工具从注册表移除、在途请求全部失败。
+  子进程意外退出时其工具从注册表移除、在途请求全部失败，随后进入上面的 **stdio 自动重连**兜回
+  （`close()` / `reconfigure()` 主动移除的服务器不重连）。
 - **状态**：`idle → connecting → ready | error`，变化经 `mcp:statusChanged` 推送到设置页状态灯。
 
 ## 8. 系统感知（Perception）
@@ -329,7 +349,7 @@ v8 起共三道闸门（**覆盖表先行**）：
    `llm.providers` 黑名单前缀之内，但「换模型 / 调采样参数」不碰凭据，必须显式放行
    （baseUrl / apiKeyEnc / modelList 等其余字段仍被前缀拒绝）；
    `tts.*` / `stt.*` / `imagegen.*` / `agent.tools.*` 这类本就因「不在黑名单而可写」的路径
-   也逐条登记成**可写面清单**（供 `set_setting` 的工具描述与 §16 的 settingsHint 使用），
+   也逐条登记成**可写面清单**（供 `set_setting` 的工具描述与 §17 的 settingsHint 使用），
    并防未来误加前缀时静默收窄。模式里的 `*` 段匹配恰好一个动态键段（如 provider id）。
    注意 `advanced.confirmSensitiveTools` **不在**表内：确认总闸门必须只读，防自我提权。
 
@@ -592,7 +612,7 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 ## 17. settingsHint：Agent 可修改设置清单注入 systemPrompt
 
 - `SystemPromptParts.settingsHint?: string`（agent-core）渲染为独立小节
-  「## Agent 可修改的设置」，位于可用工具之后、安全规则之前；空片段自动省略。
+  「## Agent 可修改的设置」，位于工具使用规范之后、安全规则之前（§5 的固定小节顺序）；空片段自动省略。
 - 主进程在 `main/settings-hint.ts` 维护**一段固定中文清单**：逐条列出 §12.2 显式可写覆盖表
   同口径的路径（`llm.providers.<id>.model/reasoningEffort/temperature`、`tts.*`、`stt.*`、
   `imagegen.*` 开关、`general.edgeBar.*`、`general.chat.showThinking`、`modes.current`、
@@ -600,6 +620,68 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
   `advanced.quietHours`），并注明「凭据类一律只读、改动即时生效」。
 - 清单只是**提示词**，真实可写面永远由 `canWriteSettingPath` 判定（工具端口不认清单）：
   两边最多出现「能改但没说」的保守偏差，不会出现「说能改但不能改」。
-- 注入点：主进程组装 `KernelAgentHost` 时经 `composeModePrompt()` 把清单附加在模式提示词之后
-  （内核尚未开放 `settingsHint` 的装配入口，渲染结果等价；agent-core 补上正式通道后应改走
-  `settingsHint` 字段并删除该辅助函数）。
+- 注入点（正式通道）：`KernelAgentHost` 新增 `settingsHint` / `todoSummary` 两个装配依赖——
+  前者由主进程直接传 `main/settings-hint.ts` 的 `SETTINGS_HINT` 常量，后者由装配层按会话生成
+  （§18 的清单摘要，随会话切换与清单更新而变）。早期经 `composeModePrompt()` 附加的旁路已删除，
+  `main/settings-hint.ts` 只保留 `SETTINGS_HINT` 常量；§5 小节顺序里的「Agent 可修改的设置」
+  即由 `settingsHint` 渲染，「当前任务清单」即由 `todoSummary` 渲染。
+
+## 18. 任务清单工具（todo_write / todo_read，v0.0.2）
+
+内核获得「维护当前任务清单」的能力：模型把工作计划写成一份结构化清单，跨轮次留存——
+历史被截断 / 摘要压缩后，清单仍经 §5 的「当前任务清单」小节完整可见。
+清单是**会话级**的：快速会话（quick）/ 交互窗（main）/ 设置会话（settings）各有一份，
+互不串台。
+
+| 工具 | 参数 | sensitivity |
+|---|---|---|
+| `todo_write` | `{ todos: [{ content, status }] }`，**整表替换**（非增量追加） | safe |
+| `todo_read` | 无参数，读回当前清单 | safe |
+
+- **条目结构**：模型只提供 `content` 与 `status`（`pending | in_progress | completed`），
+  **id 由工具侧生成与维护**，不在模型参数里——整表替换语义下模型无需关心 id。
+- **防护上限**：清单最多 **100 项**；单项 `content` 超过 **500 字符**截断。
+  **不限制 `in_progress` 数量**——「一次只有一个 in_progress」是提示词约定
+  （§5 的清单维护规范），不在工具层强制。
+- **持久化**：`userData/todos/<sessionId>.json`，主进程实现 `TodoPort`
+  （原子写 + 300ms 防抖 + 退出前 `flush()`，与 `SessionStore` 同一套 `FileSystemPort` 约定，见 §4；
+  文件损坏按 §4 会话文件同款处理——备份后重建为空清单）。内核只认注入的端口（§2 分层）。
+- **systemPrompt 注入**：装配层按会话读清单生成摘要，经 `KernelAgentHost.todoSummary`
+  传给内核，渲染为 §5 的固定小节「当前任务清单」（空清单自动省略）；注入与工具读写的是同一份。
+- **子代理**：§19 的子代理使用独立清单文件（`<sessionId>-sub`），与父会话清单互不影响。
+- **注册口径**：由 `registerAgentCoreTools`（todo + task 一并注册，见 §19）承载，与
+  `registerSettingsTool` / `registerExtensionTools` **同级**（§12 / §14.1），**不受
+  `agent.tools.enabled` 门控**——任务清单是 Agent 自身的工作能力，不属于「电脑操控」的开关语义。
+- **已知边界**：本轮**没有独立 UI 面板**，清单进度通过工具执行卡片摘要可见
+  （每次 `todo_write` 就是一张普通工具卡片）；后续可加专用面板，届时只消费 `userData/todos/`，
+  不动工具契约。
+
+## 19. 子代理工具（task，v0.0.2）
+
+`task` 给主循环一个「派发独立子任务」的工具：在**全新的上下文**里跑一遍 §5 的工具循环，
+把最终文本带回父循环。定位是**上下文隔离**——大段资料阅读、多步检索这类中间过程很长的子问题，
+不把过程撑进父会话历史。
+
+| 工具 | 参数 | sensitivity |
+|---|---|---|
+| `task` | `{ description, prompt }` | safe |
+
+- **取舍（safe、不弹确认）**：`task` 标记 `sensitivity: 'safe'`，不走确认卡片——子代理只用
+  父工具表里已放行的非确认工具（见下），权限面不会比父循环更宽；但它**消耗独立的模型调用**
+  （费用与时延随子循环轮数增长），这个代价靠 §5 的「子代理使用规范」约束使用时机，不靠逐次确认。
+- **上下文隔离**：子代理从**空白历史**开始，系统提示词独立组装（子代理人设 + 子工具清单 +
+  安全规则；不含父会话的模式片段 / 感知摘要 / 任务清单小节）。子循环的消息**不写入会话历史、
+  不落盘**；结束后只把**最终文本**作为工具结果回填父循环，超过 **20_000 字符**截断（带截断标记）。
+  父模型应把子任务需要的上下文**写进 `prompt`**——子代理看不到父会话。
+- **工具白名单（双保险）**：取父工具表中 `sensitivity !== 'confirm'` 的工具，再**排除 `task` 自身
+  与 `mcp.*` 前缀**——即 `read_file` / `list_dir` / `web_fetch` / `notify_user` / `use_skill` /
+  `todo_write` / `todo_read` 这类；执行命令（`run_command`）、写文件（`write_file`）、
+  打开路径（`open_path`）、剪贴板、生图、`set_setting` 与全部 MCP 工具在子代理里**一律不可见**。
+  （MCP 工具本就全量 `confirm`，前缀排除是双保险：防未来出现 safe 的 MCP 工具时白名单失守。）
+  `todo_write` / `todo_read` 在白名单里，读写的是 `<sessionId>-sub` 的独立清单文件（§18）。
+- **无递归**：子代理工具表里没有 `task`，子代理不能再生子代理。
+- **同轮多个 `task` 按顺序执行**（沿用 §5「同轮工具顺序执行」口径），结果顺序确定。
+- **失败与边界**：provider 缺配置 → `isError` 回填（不发起请求）；abort 传导到子循环，
+  以已产生的**部分结果**回填；子代理达到轮次上限（默认 8，同主循环）时结果附「部分结果」标记，
+  父模型据此决定是否重派。
+- **注册口径**：随 §18 的 `registerAgentCoreTools` 一并注册，**不受 `agent.tools.enabled` 门控**。

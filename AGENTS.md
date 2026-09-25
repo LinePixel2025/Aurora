@@ -105,7 +105,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **独立小窗（mini-chat）已于本轮删除**：交互窗标题栏「收起」= **直接隐藏窗口**（正在进行的流式回复不中止）；
   「快速会话」（`sessionId = quick`）与历史会话列表都搬到交互窗侧栏（「快速 / 会话」双栏），
   提示条面板操作入口由 4 个减为 3 个；配置迁移到 v6（`v5 → v6` 删除 `general.windowState['mini-chat']`）。
-- MCP HTTP 传输暂不支持自定义鉴权头（凭据仅经 stdio `env` 注入）。
+- MCP HTTP 传输已支持自定义请求头（含鉴权头，`mcp.servers.<id>.headersEnc`，凭据链路与 env 同款，见 docs/08 §1）。
 - **语音输入（STT）已实装（v0.0.1）**：对话窗 composer 的麦克风按钮（`data-field="chat.mic"`）
   门控口径同 TTS —— `stt.enabled` + `stt.active` 指向一个 `baseUrl`/`model` 齐全的 provider
   **才渲染按钮，未配置时连按钮都不渲染**（不是 disabled）——这是文档门控口径，别当 bug 修
@@ -147,12 +147,15 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   漏改 `writeSecretField` = 凭据静默丢失，漏改 `redactSettings` = 密文泄漏进渲染层。
   另注意 `SENSITIVE_KEY_PATTERN` 原本是**整体锚定**的，`apiKeyEnc` 这类**派生字段名**不命中 ——
   它已补 `.*api[-_]?key.*` 分支，日志脱敏才盖得住密文。
+  v9 起新增的 `mcp.servers.<id>.headersEnc` 与 `envEnc` 同款、位置并列（同样要过这 5 处）。
 - **BetaV2 新能力的注册口径**：STT / 生图 / 新工具五件套（`web_fetch` / `notify_user` /
   `clipboard_read` / `clipboard_write` / `generate_image`）**不走 `agent.tools.enabled` 门控**
   （那个总开关只管终端 / 文件 / 打开三件套），敏感项靠 `sensitivity: 'confirm'` 逐次确认；
   `set_setting` 的可写面由 `packages/shared/src/config/schema.ts` 的 `WRITABLE_PATH_OVERRIDES`
   显式覆盖表驱动（先于 readonly 前缀判定）——要新增「Agent 可写的设置路径」先改该表，
   再同步 `set_setting` 的工具 description 与 systemPrompt 的 settingsHint。
+  v9 起 `todo_write` / `todo_read` / `task` 由 `registerAgentCoreTools` 注册（见 docs/06 §18 / §19），
+  同样**不受 `agent.tools.enabled` 门控**。
 - **主界面 `chat` 窗口是 1120×720、`alwaysOnTop=false` 的常驻大窗**（三栏布局 + 右栏模式感知，
   关闭仍 = 隐藏），别按旧版 420×640 侧弹交互窗的心智模型理解它的几何、层级与探针坐标。
 - **改了 `packages/shared/src/**` 之后必须先 `pnpm --filter @aurora/shared build` 再跑下游 typecheck**：

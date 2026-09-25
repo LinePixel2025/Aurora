@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v8）
+## 1. 配置 Schema（config.json，v9）
 
 ```jsonc
 {
-  "version": 8,
+  "version": 9,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -106,7 +106,16 @@
   "mcp": {
     "lazyConnect": false,
     "servers": [
-      { "name": "example", "transport": "stdio", "command": "npx", "args": [], "envEnc": {} }
+      {
+        "name": "example",
+        "transport": "stdio",
+        "command": "npx",
+        "args": [],
+        "envEnc": {},
+        // v9 新增：自定义请求头（键 = header 名，值 = safeStorage 密文；HTTP 传输消费，
+        // stdio 条目上同样存在但通常用不到），见 06 §7
+        "headersEnc": {}
+      }
     ]
   },
   "advanced": {
@@ -142,6 +151,15 @@
 - `mcp.lazyConnect`：连接策略（见 06 §7）。`false`（默认）= 启动即连；`true` = 首次使用某个 MCP 工具时才连接。
 - MCP 环境变量的**变量名**由 `envEnc` 的键表达，设置页据此展示"已配置的变量名"，
   因此 Schema 不额外维护一份 `env` 列表（避免两处数据不一致）。
+  自定义请求头（`headersEnc`，v9 新增）同款：header 名由键表达，设置页展示"已配置的请求头名"。
+- `mcp.servers.<id>.headersEnc`（**v9 新增**，见 06 §7）：MCP **HTTP 传输的自定义请求头**，
+  键 = header 名、值 = safeStorage 密文，与 `envEnc` **完全同构**：明文只经 `settings:setSecrets`
+  （路径 `mcp.servers.<name>.headers.<key>`）加密落盘；渲染层只见 `headersSet` 只读标记
+  （已配置的 header 名数组，§1.1），`headersEnc` 恒回传空对象——「空 = 本次不改」的逐键合并语义、
+  `settings:clearSecret` 清单键、删除服务器时清凭据缓存，全部与 `envEnc` 同款。
+  用户配置的头**覆盖**同名默认头（典型用途：Bearer / API Key 鉴权头，传输侧行为见 06 §7）。
+  字段在 stdio / HTTP 两种传输的条目上都存在（`v8 → v9` 迁移为每个已有条目补 `headersEnc: {}`），
+  但只有 HTTP 传输消费它；`mcp.servers` 整棵子树仍在凭据黑名单里，AI 的 `set_setting` 改不动。
 - `modes.classroom.classification`（v2 新增，见 05 §3.2）：`autoMove` 关闭时只写分类流水、
   不移动文件；`confidenceThreshold` 是进「待分类」的置信度下限；`fallbackFolder` 是兜底目录
   （相对 `watchDir` 或绝对路径）。
@@ -158,7 +176,7 @@
   甚至把数组清空，`general.hotkey` 这条路径**仍然被拒**（清空 = 回到默认项，而不是放开）。
   另一条兜底同样不随它变化：「Schema 不认识的路径一律拒绝」，防模型拼错字段名后悄悄写进配置。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **8**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **9**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
@@ -234,17 +252,20 @@
 |---|---|---|
 | `apiKeySet` | `llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>` / `imagegen.providers.<id>` | `true` 表示该 provider 已保存 API Key（`apiKeyEnc` 始终回传空串） |
 | `envSet` | `mcp.servers[]` | 已配置的环境变量名列表（`envEnc` 始终回传空对象） |
+| `headersSet` | `mcp.servers[]` | 已配置的自定义请求头名列表（`headersEnc` 始终回传空对象；v9 新增） |
 
 两者由主进程在回传前计算，不写入 `config.json`，因此不参与版本迁移。
 
-**回传语义（踩过的坑）**：`apiKeyEnc` 恒为空串、`envEnc` 恒为空对象，所以渲染层回传里的
+**回传语义（踩过的坑）**：`apiKeyEnc` 恒为空串、`envEnc` / `headersEnc` 恒为空对象，所以渲染层回传里的
 「空」只能被主进程理解为**本次不改凭据**（`applyPatch` 的合并规则，见 06 §12.4）。其中 MCP 的
 `envEnc` 是**逐键**合并的：空对象 = 一个键也不改；某个键的值是空串 = 该键保留已有密文
-（新增服务器时它是占位，随后由 `settings:setSecrets` 写成真密文）。渲染层**表达不了**
-「只删凭据」这种操作：删除单个 MCP 环境变量只能走 `settings:clearSecret`（`envEnc` 的键随之消失）；
+（新增服务器时它是占位，随后由 `settings:setSecrets` 写成真密文）；v9 起 `headersEnc` 同款逐键合并。
+渲染层**表达不了**
+「只删凭据」这种操作：删除单个 MCP 环境变量或自定义请求头只能走 `settings:clearSecret`
+（`envEnc` / `headersEnc` 的键随之消失）；
 MCP 服务器整体删除由 `mcp.servers` 数组的权威语义表达（不在数组里 = 删除），
 provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）——
-两种删除的凭据（密文 + 内存明文缓存）都由主进程在删除**成功之后**一并清理。
+两种删除的凭据（密文 + 内存明文缓存，env 与 headers 并列清理）都由主进程在删除**成功之后**一并清理。
 
 ### 1.2 不属于 config.json 的本地数据
 
@@ -262,7 +283,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 8`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 9`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -273,9 +294,10 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   `v6 → v7`（补齐 `tts.*`）、
   `v7 → v8`（补齐 `stt.*` 与 `imagegen.*`（语音输入 / 生图）、`modes.work.workspaceDir`、
   `modes.classroom.preClassOpenFolder`、`general.chat.showThinking`；新增顶层分组无条件补默认值，
-  已存在分组只补缺失键、不凭空造出半截对象）。
-  八条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
-- 凭据：`apiKeyEnc` / `envEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
+  已存在分组只补缺失键、不凭空造出半截对象）、
+  `v8 → v9`（为每个已有 `mcp.servers` 条目补 `headersEnc: {}`，HTTP 传输自定义请求头，见 06 §7）。
+  九条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
+- 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
 
@@ -402,6 +424,10 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   - 凭据保真（本轮修）：列表里「环境变量：…（值已加密存储）」读的是主进程补的**只读标记**
     `envSet`（§1.1），不是永远为空对象的 `envEnc`；任何一次保存（添加 / 停用 / 删除）回传的
     空 `envEnc` 都按「本次不改凭据」处理，不再清掉磁盘上的密文。
+  - **自定义请求头（v9）**：服务器编辑新增「自定义请求头」输入（多行 `Key: Value`、每行一个，
+    编辑交互与「环境变量」完全同款）；已配置的头在服务器条目上按名字列出并注明「值已加密存储」
+    （读只读标记 `headersSet`，§1.1），留空 = 不改动已有值，删除某一行 = 删除该头。
+    字段与凭据链路见 §1 / §1.1，传输侧行为见 06 §7。
 - **电脑操控**（`agent.tools.*`，v0.7.0）：目标 6 页 IA 下并入「智能与工具」页（`agent`，
   与技能、MCP 区组同页折叠；v8 前为「AI 能力」组独立页）。页面提供电脑操控工具的开关与上限：「总开关」、「工作目录」、
   终端（开关 / 超时 ms / 输出字符上限）、文件（开关 / 单次读取字节上限）、打开（开关）；

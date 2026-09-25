@@ -187,6 +187,11 @@
   provider 的 baseUrl / model / apiKey / language，锚点 `stt.*`）。
   凭据行的展示规则与 AI 模型页一致（只显示「凭据已保存 / 缺少凭据」，密文不进渲染层）。
   字段与门控矩阵见 docs/08 §1 / §6.1。
+- **MCP 区组（本轮增补）**：服务器编辑新增「自定义请求头」输入 —— 多行 `Key: Value`、每行一个
+  （HTTP 传输的鉴权头等场景，`mcp.servers.<id>.headersEnc`，v9 新增）；已配置的头在服务器条目上
+  按名字列出并注明「值已加密存储」（读主进程补的只读标记 `headersSet`，与 env 的 `envSet` 同款），
+  留空 = 不改动已有值，删除某一行 = 删除该头。编辑交互与「环境变量」完全同款，
+  字段与凭据链路见 docs/08 §1 / §1.1。
 - **视觉（前端刷新轮）**：页面骨架统一用 theme.css 的 `.page` / `.page-title` / `.page-sub`，
   分组卡片用 `settings/settings.css` 的 `.section-card` / `.section-title` / `.section-desc`
   （该样式表只被设置窗 import，不影响其它窗口）；空状态用 `.empty-state`。

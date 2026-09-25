@@ -54,8 +54,7 @@
   理由：协议子集很小，自研可避免 SDK 快速演进带来的升级成本，且能直接在 Node 里单测
   （stdio 用 `Content-Length` 分帧、http 复用 `llm/sse.ts` 的分帧解析）。
 - 服务器工具自动注册进 Agent 工具表（命名 `mcp.<server>.<tool>`）；与 Skill 冲突时 MCP 优先并记日志。
-- 服务器列表与凭据存本机配置，敏感 env 用 safeStorage 加密。
-- **已知限制**：HTTP 传输暂不支持自定义鉴权头（Bearer / API Key），v1 凭据仅经 stdio `env` 注入。
+- 服务器列表与凭据存本机配置，敏感 env 与 HTTP 自定义请求头（`headersEnc`，v9 起）用 safeStorage 加密。
 
 ### ADR-005 Skill：SKILL.md 约定
 
