@@ -375,4 +375,85 @@ describe('PreClassReminder', () => {
     // tick 内部会捕获并记日志（不外抛），但必须留下痕迹
     await expect(reminder.tick(MONDAY)).resolves.toEqual([])
   })
+
+  // ───────────────── 课前提前分钟数可配（v10，docs/05 §3.4 / docs/08 §1） ─────────────────
+
+  /** `getLookaheadMinutes` 生效时的最小装配（只关心推送出去的标题） */
+  function reminderWithLead(lead: () => number): {
+    reminder: PreClassReminder
+    notifications: string[]
+  } {
+    const notifications: string[] = []
+    const reminder = new PreClassReminder({
+      provider: createManualScheduleProvider(() => [lesson()]),
+      enabled: () => true,
+      quietHours: () => null,
+      notify: (title) => notifications.push(title),
+      openPath: async () => undefined,
+      resolveSubjectDir: () => 'D:\\感知\\分类\\数学',
+      logger: createMemoryLogger(),
+      getLookaheadMinutes: lead,
+    })
+    return { reminder, notifications }
+  }
+
+  it('getLookaheadMinutes 生效：10 分钟提前量在 07:50 就触发（而不是 07:55）', async () => {
+    const { reminder, notifications } = reminderWithLead(() => 10)
+    // 07:50 = 08:00 前 10 分钟，落在 10 分钟窗口内
+    expect(await reminder.tick(dayAt(7, 50))).toHaveLength(1)
+    expect(notifications).toEqual(['课前提醒：数学'])
+  })
+
+  it('getLookaheadMinutes 生效：1 分钟提前量时 07:50 不触发，07:59 才触发', async () => {
+    const { reminder, notifications } = reminderWithLead(() => 1)
+    expect(await reminder.tick(dayAt(7, 50))).toEqual([])
+    expect(notifications).toEqual([])
+
+    const results = await reminder.tick(dayAt(7, 59))
+    expect(results).toHaveLength(1)
+    expect(notifications).toEqual(['课前提醒：数学'])
+  })
+
+  it('每次 tick 即时读取（设置页改完无需重建实例）', async () => {
+    let lead = 1
+    const { reminder, notifications } = reminderWithLead(() => lead)
+    expect(await reminder.tick(dayAt(7, 50))).toEqual([])
+
+    // 用户把提前分钟数改成 15：同一个实例的下一次 tick 就按新值判定
+    lead = 15
+    expect(await reminder.tick(dayAt(7, 50))).toHaveLength(1)
+    expect(notifications).toEqual(['课前提醒：数学'])
+  })
+
+  it('非法值（0 / 负数 / NaN / 抛错）一律回落兜底常量 5 分钟', async () => {
+    for (const bad of [0, -3, Number.NaN]) {
+      const { reminder, notifications } = reminderWithLead(() => bad)
+      // 07:50 在 5 分钟窗口外（08:00 前 5 分钟是 07:55）
+      expect(await reminder.tick(dayAt(7, 50))).toEqual([])
+      expect(await reminder.tick(dayAt(7, 55))).toHaveLength(1)
+      expect(notifications).toEqual(['课前提醒：数学'])
+    }
+
+    const throwing = reminderWithLead(() => {
+      throw new Error('读取配置失败')
+    })
+    expect(await throwing.reminder.tick(dayAt(7, 50))).toEqual([])
+    expect(await throwing.reminder.tick(dayAt(7, 55))).toHaveLength(1)
+  })
+
+  it('只注入 lookaheadMinutes（无 getter）时沿用构造值', async () => {
+    const notifications: string[] = []
+    const reminder = new PreClassReminder({
+      provider: createManualScheduleProvider(() => [lesson()]),
+      enabled: () => true,
+      quietHours: () => null,
+      notify: (title) => notifications.push(title),
+      openPath: async () => undefined,
+      resolveSubjectDir: () => '',
+      logger: createMemoryLogger(),
+      lookaheadMinutes: 20,
+    })
+    expect(await reminder.tick(dayAt(7, 45))).toHaveLength(1)
+    expect(notifications).toEqual(['课前提醒：数学'])
+  })
 })

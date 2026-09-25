@@ -48,8 +48,19 @@ export interface PreClassReminderOptions {
   logger: Logger
   /** 检查间隔，默认 30s */
   intervalMs?: number
-  /** 课前进度窗口，默认 5 分钟 */
+  /**
+   * 课前进度窗口（分钟）。**构造期固定值**，仅作 `getLookaheadMinutes` 未注入时的兜底
+   * （默认 `DEFAULT_LOOKAHEAD_MINUTES = 5`）。
+   */
   lookaheadMinutes?: number
+  /**
+   * 课前进度窗口（分钟），每次 tick 即时读取（设置项 `modes.classroom.preClassLeadMinutes`，
+   * v10 新增，docs/05 §3.4）。优先于 `lookaheadMinutes`。
+   *
+   * 用 getter 而不是构造期常量：这个值来自设置页，用户改完必须立即生效 ——
+   * 「改了没反应、要重启」是配置项最容易踩的坑（同 `enabled` / `quietHours` 的既有约定）。
+   */
+  getLookaheadMinutes?: () => number
   /**
    * 每次成功触发后的回调（通知 + 打开目录都已完成）。
    *
@@ -69,7 +80,8 @@ const DEFAULT_INTERVAL_MS = 30_000
 export class PreClassReminder {
   private readonly options: PreClassReminderOptions
   private readonly intervalMs: number
-  private readonly lookaheadMinutes: number
+  /** 兜底窗口（`getLookaheadMinutes` 未注入时使用） */
+  private readonly fallbackLookaheadMinutes: number
   /** 已触发集合：`<weekday>-<startTime>-<subject>`，保证同一节课只提醒一次 */
   private readonly firedKeys = new Set<string>()
   private timer: NodeJS.Timeout | undefined
@@ -78,7 +90,21 @@ export class PreClassReminder {
   constructor(options: PreClassReminderOptions) {
     this.options = options
     this.intervalMs = Math.max(1_000, options.intervalMs ?? DEFAULT_INTERVAL_MS)
-    this.lookaheadMinutes = options.lookaheadMinutes ?? DEFAULT_LOOKAHEAD_MINUTES
+    this.fallbackLookaheadMinutes = options.lookaheadMinutes ?? DEFAULT_LOOKAHEAD_MINUTES
+  }
+
+  /** 当前生效的课前进度窗口（分钟）：每次调用即时解析，非法值回落兜底常量。 */
+  private lookahead(): number {
+    const getter = this.options.getLookaheadMinutes
+    if (getter === undefined) return this.fallbackLookaheadMinutes
+    try {
+      const value = getter()
+      if (!Number.isFinite(value) || value <= 0) return this.fallbackLookaheadMinutes
+      return value
+    } catch (error) {
+      this.options.logger.warn('读取课前提前分钟数失败，按兜底值处理', { error: String(error) })
+      return this.fallbackLookaheadMinutes
+    }
   }
 
   /** 启动：立即检查一次（启动补偿）+ 周期检查。重复调用幂等。 */
@@ -96,7 +122,7 @@ export class PreClassReminder {
     this.options.logger.debug('课前提醒已启动', {
       provider: this.safeProviderId(),
       intervalMs: this.intervalMs,
-      lookaheadMinutes: this.lookaheadMinutes,
+      lookaheadMinutes: this.lookahead(),
     })
   }
 
@@ -138,7 +164,7 @@ export class PreClassReminder {
     const triggers = preClassTrigger({
       lessons,
       now,
-      lookaheadMinutes: this.lookaheadMinutes,
+      lookaheadMinutes: this.lookahead(),
       firedKeys: this.firedKeys,
     })
     if (triggers.length === 0) return []
@@ -172,7 +198,7 @@ export class PreClassReminder {
   private async collectLessons(now: Date): Promise<Lesson[]> {
     const provider = this.resolveProvider()
     const today = await provider.getToday(now)
-    if (!needsNextDayLessons(now, this.lookaheadMinutes)) return today
+    if (!needsNextDayLessons(now, this.lookahead())) return today
     const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000)
     const nextDay = await provider.getToday(tomorrow)
     return [...today, ...nextDay]

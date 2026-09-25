@@ -159,14 +159,19 @@ export function createClassroomMode(): IMode {
         classroom.schedule.provider === 'classisland'
           ? '课程表：来自 ClassIsland 桥接插件——感知摘要包含今日课程与当前 / 下节课状态，回答课程安排时以其为准。'
           : `课程表：手动维护（${classroom.schedule.lessons.length} 节课）`
+      const remindLine = classroom.preClassReminder
+        ? `课前提醒：已开启（提前 ${classroom.preClassLeadMinutes ?? 5} 分钟）`
+        : '课前提醒：已关闭'
       return [
         '当前模式：ClassRoom Mode（课堂学习）。',
         `智慧感知文件夹：${watchDir}`,
         `科目列表：${subjects || '（尚未配置）'}`,
-        `课前提醒：${classroom.preClassReminder ? '已开启' : '已关闭'}`,
+        remindLine,
         scheduleLine,
         '职责：帮助学生把资料归类到正确科目；回答时优先引用上述科目；',
         '涉及移动 / 删除文件的操作必须先说明将要做什么并等待用户确认。',
+        '需要把提醒送到 ClassIsland（教室屏幕上的提醒 / 课前提醒）时用 `classisland_remind` 工具，',
+        '而不是 `notify_user`（后者只弹 Aurora 自己的系统通知）；桥接未配置时该工具不会出现在工具表里。',
         '',
         '你可以修改的 ClassRoom 设置（用 set_setting 工具，改动即时生效并按需重挂监听）：',
         '- modes.classroom.watchDir：智慧感知文件夹路径；',
@@ -175,6 +180,7 @@ export function createClassroomMode(): IMode {
         '- modes.classroom.schedule.lessons：手动课程表（weekday / startTime / endTime / subject）；',
         '- modes.classroom.schedule.classisland.endpoint：ClassIsland 桥接数据源（文件路径或 HTTP 端点）；',
         '- modes.classroom.preClassReminder：课前提醒开关；',
+        '- modes.classroom.preClassLeadMinutes：课前提前多少分钟提醒（1–30，默认 5）；',
         '- modes.classroom.preClassOpenFolder：课前提醒时是否自动打开科目文件夹；',
         '- modes.classroom.classification.autoMove：判定成功后是否自动移动文件；',
         '- modes.classroom.classification.confidenceThreshold：分类置信度阈值；',

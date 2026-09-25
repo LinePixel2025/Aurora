@@ -200,6 +200,8 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
       },
       preClassReminder: true,
       preClassOpenFolder: true,
+      // v10 新增：课前提前分钟数（装配层注入 PreClassReminder，改完即时生效）
+      preClassLeadMinutes: 5,
       classification: { ...DEFAULT_CLASSIFICATION },
     },
     work: { guideCompleted: false, workspaceDir: '' },

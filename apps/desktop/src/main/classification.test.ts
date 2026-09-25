@@ -122,6 +122,8 @@ function settingsWith(overrides: {
         },
         preClassReminder: true,
         preClassOpenFolder: true,
+        // v10 新增：课前提前分钟数（Schema 必填，fixture 必须补上）
+        preClassLeadMinutes: 5,
         classification: {
           autoMove: overrides.autoMove ?? true,
           confidenceThreshold: overrides.threshold ?? 0.6,

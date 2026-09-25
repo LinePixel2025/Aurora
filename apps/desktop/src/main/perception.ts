@@ -12,7 +12,7 @@ import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promises as dns } from 'node:dns'
 import si from 'systeminformation'
-import type { Logger, PerceptionSummary } from '@aurora/shared'
+import type { ClassIslandBridgeSnapshot, Logger, PerceptionSummary } from '@aurora/shared'
 import { parseClock, type Lesson } from './schedule.js'
 
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'] as const
@@ -69,6 +69,15 @@ export interface PerceptionOptions {
   displayProvider?: () => PerceptionSummary['display']
   /** 今日课程（主进程注入 `IScheduleProvider`）；未注入时 `课程表` 保持 `unknown` */
   scheduleProvider?: () => Promise<Lesson[] | undefined>
+  /**
+   * ClassIsland 桥接的课堂状态快照（v2/v3，docs/05 §3.4）；未注入 / 桥接未提供时该行省略。
+   *
+   * **刷新时机**：`summary()` 先读课程表（`readLessons`，走同一个桥接 provider，
+   * 会顺带刷新它缓存的最近一次快照），再取本回调 —— 因此这里拿到的快照与
+   * `lessons` 是**同一批数据**，最大滞后一个感知刷新周期（默认 30s，
+   * 也随每次系统提示词组装即时触发）。桥接侧本身 30s 写一次，粒度一致。
+   */
+  classStatusProvider?: () => ClassIslandBridgeSnapshot | undefined
 }
 
 export class PerceptionHub {
@@ -122,6 +131,9 @@ export class PerceptionHub {
 
     const display = this.readDisplay()
     const lessons = await this.readLessons(now)
+    // 教室状态：**必须在 readLessons 之后取**（那一步会刷新桥接 provider 缓存的快照，
+    // 保证 classStatus 与 lessons 同源同批，见 classStatusProvider 的注释）
+    const classStatus = this.readClassStatus()
 
     const unknown: string[] = []
     if (this.power === undefined) unknown.push('电源状态')
@@ -139,6 +151,7 @@ export class PerceptionHub {
       ...(this.foreground === undefined ? {} : { foreground: this.foreground }),
       ...(display === undefined ? {} : { display }),
       ...(lessons === undefined ? {} : { lessons }),
+      ...(classStatus === undefined ? {} : { classStatus }),
       unknown,
     }
   }
@@ -172,6 +185,9 @@ export class PerceptionHub {
       const suffix = summary.lessons.length > shown.length ? ' 等' : ''
       parts.push(`今日课程：${shown.join('、')}${suffix}`)
     }
+    // 课堂状态行（v3）：不在上课且没有下节课时整行省略（不制造"无信息噪音"）
+    const classLine = describeClassStatus(summary.classStatus)
+    if (classLine !== '') parts.push(classLine)
     parts.push(`主机：${os.hostname()} / ${os.platform()} ${os.release()}`)
     return parts.join('；')
   }
@@ -256,6 +272,18 @@ export class PerceptionHub {
     }
   }
 
+  /** 课堂状态快照（v2/v3）：未注入 / 桥接未提供 / 抛错时一律 undefined（不写进 unknown）。 */
+  private readClassStatus(): ClassIslandBridgeSnapshot | undefined {
+    const provider = this.options.classStatusProvider
+    if (provider === undefined) return undefined
+    try {
+      return provider()
+    } catch (error) {
+      this.logger.debug('课堂状态快照不可用，已降级为未知', { error: String(error) })
+      return undefined
+    }
+  }
+
   private async runForegroundProbe(): Promise<string> {
     if (this.options.foregroundProbe !== undefined) return this.options.foregroundProbe()
     if (process.platform !== 'win32') throw new Error('前台窗口采集仅支持 Windows')
@@ -302,6 +330,51 @@ export function parseForegroundProbe(stdout: string): PerceptionSummary['foregro
     return { app: app === '' ? '未知应用' : app, title }
   }
   return undefined
+}
+
+/**
+ * 纯函数：把桥接的课堂状态快照描述成**一行人类可读文本**（进系统提示词，
+ * 由 `contextSummary()` 消费；`PerceptionSummary.classStatus` 保留原始字段）。
+ *
+ * 输出示例（docs/05 §3.4 v3）：
+ * - 上课中且有下节课：`课堂状态：上课中（数学 08:00-08:45）；下节课 语文 09:20-10:05`
+ * - 仅上课中：`课堂状态：上课中（数学 08:00-08:45）`
+ * - 课间且有下节课：`课堂状态：不在上课；下节课 语文 09:20-10:05`
+ * - 两者都无（快照只有版本号 / 时间戳）：`''` —— 调用方据此**省略整行**
+ *
+ * 所有字段都是可选的（桥接取不到就不写），因此这里逐段拼接、缺哪段少哪段，
+ * 绝不补默认值（编造"下一节是数学"比不说更糟）。
+ */
+export function describeClassStatus(status: ClassIslandBridgeSnapshot | undefined): string {
+  if (status === undefined) return ''
+
+  const segments: string[] = []
+  if (status.onClass === true) {
+    const range = timeRange(status.currentStartTime, status.currentEndTime)
+    const subject = status.currentSubject ?? ''
+    segments.push(`上课中（${subject}${subject === '' || range === '' ? '' : ' '}${range}）`)
+  }
+
+  const nextRange = timeRange(status.nextStartTime, status.nextEndTime)
+  if (status.nextSubject !== undefined || nextRange !== '') {
+    const subject = status.nextSubject ?? ''
+    const gap = subject !== '' && nextRange !== '' ? ' ' : ''
+    segments.push(`下节课 ${subject}${gap}${nextRange}`)
+  }
+
+  if (segments.length === 0) {
+    // 不在上课、也没有下节课：整行省略（课间 / 放学后不制造噪音）
+    return ''
+  }
+  if (status.onClass !== true) segments.unshift('不在上课')
+  return `课堂状态：${segments.join('；')}`
+}
+
+/** `08:00-08:45` / 只有一端时只给一端 / 两端都缺时为空串 */
+function timeRange(start: string | undefined, end: string | undefined): string {
+  if (start === undefined) return end ?? ''
+  if (end === undefined) return start
+  return `${start}-${end}`
 }
 
 /** 执行 PowerShell 脚本并返回 stdout（超时/失败一律抛错，由调用方降级）。 */

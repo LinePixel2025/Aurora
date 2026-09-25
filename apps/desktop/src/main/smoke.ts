@@ -443,6 +443,89 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     record('续接后历史累积到 5 条', Array.isArray(history2) && history2.length === 5, 'len=' + (history2 ? history2.length : '?'))
     record('第二轮无 error', !secondEvents.some((e) => e.type === 'error'), secondEvents.find((e) => e.type === 'error')?.message ?? '')
 
+    // 9.4 子代理链路（docs/06 §19 / §16.1）：父对话派 task → 子代理跑两轮 → 报告回传。
+    //     桩服务按标记分流（见 smoke-llm.ts 的 SUBAGENT_TASK_MARKER / SUBAGENT_REPORT_MARKER），
+    //     会话 id 单开一个，免得动到上面按条数断言的 quick 会话。
+    const subevents = []
+    const offSub = window.aurora.chat.onEvent((event) => subevents.push(event))
+    const sentSub = expectOk(
+      'chat.send(子代理)',
+      await window.aurora.chat.send({
+        sessionId: 'smoke-subagent',
+        text: 'STUB_TASK_MARKER 派个子代理看看',
+        origin: 'edge-bar',
+      }),
+    )
+    if (sentSub) {
+      for (
+        let i = 0;
+        i < 400 && !subevents.some((e) => e.type === 'done' || e.type === 'error');
+        i += 1
+      ) {
+        await wait(50)
+      }
+    }
+    offSub()
+    const subProgress = subevents.filter((e) => e.type === 'subagent')
+    const subTool = subevents.filter((e) => e.type === 'tool' && e.call.name === 'task')
+    const seqs = subevents.map((e) => e.seq)
+    record(
+      '子代理进度事件到达（≥2 次：开始与终态）',
+      subProgress.length >= 2,
+      'count=' + subProgress.length,
+    )
+    record(
+      '子代理事件早于 task 工具终态卡片',
+      subProgress.length > 0 &&
+        subTool.some((e) => e.call.state === 'success') &&
+        subevents.indexOf(subProgress[0]) <
+          subevents.indexOf(subTool.find((e) => e.call.state === 'success')),
+      '',
+    )
+    record(
+      '子代理终态带报告与工具步骤',
+      (() => {
+        const last = subProgress[subProgress.length - 1]
+        const snapshot = last?.subagent
+        return (
+          snapshot?.status === 'success' &&
+          (snapshot.report ?? '').includes('STUB_SUB_OK') &&
+          snapshot.steps.some((step) => step.kind === 'tool' && step.name === 'list_dir')
+        )
+      })(),
+      JSON.stringify(subProgress[subProgress.length - 1]?.subagent ?? {}).slice(0, 160),
+    )
+    record(
+      'task 工具卡快照随历史持久化（subagent.report）',
+      await (async () => {
+        const subHistory = expectOk(
+          'chat.history(子代理)',
+          await window.aurora.chat.history({ sessionId: 'smoke-subagent' }),
+        )
+        const call = (subHistory ?? [])
+          .flatMap((item) => item.toolCalls ?? [])
+          .find((item) => item.name === 'task')
+        return (call?.subagent?.report ?? '').includes('STUB_SUB_OK')
+      })(),
+      '',
+    )
+    record(
+      '事件序号单调递增（渲染层排序依据，docs/06 §16.1）',
+      seqs.length > 3 && seqs.every((value, index) => index === 0 || value > seqs[index - 1]),
+      'n=' + seqs.length,
+    )
+    // round 只挂在「内容类」事件上：queued / done / user-message 没有轮次概念
+    const roundEvents = subevents.filter((e) =>
+      ['text', 'tool', 'reasoning', 'subagent'].includes(e.type),
+    )
+    record(
+      '内容类事件都带轮次 round，工具事件都带 messageId',
+      roundEvents.length > 0 &&
+        roundEvents.every((e) => Number.isInteger(e.round) && e.round >= 0) &&
+        subTool.every((e) => typeof e.messageId === 'string' && e.messageId.length > 0),
+      'n=' + roundEvents.length,
+    )
+
     // 9.2 MCP 状态接口（即使没有配置服务器也必须返回结构化结果而不是抛错）
     const mcpStatus = expectOk('mcp.status', await window.aurora.mcp.status())
     record('mcp.status 返回数组', Array.isArray(mcpStatus), 'len=' + (mcpStatus ? mcpStatus.length : '?'))
@@ -688,6 +771,56 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       'ClassIsland 状态显示已启用且同步成功',
       Boolean(bridgeStatus && bridgeStatus.enabled && bridgeStatus.ok),
       JSON.stringify(bridgeStatus),
+    )
+
+    // status 快照 v3（docs/05 §3.4）：夹具里种了 onClass + 当前 / 下节课与三个时间字段，
+    // 这里断言它真的透到了 IPC（契约字段，不再是运行时透传）。
+    const snapshot = bridgeStatus?.status
+    record(
+      'ClassIsland 状态透出 v3 快照（含当前的起止时间）',
+      snapshot?.version === 3 &&
+        snapshot.onClass === true &&
+        snapshot.currentSubject === '数学' &&
+        typeof snapshot.currentStartTime === 'string' &&
+        typeof snapshot.currentEndTime === 'string' &&
+        typeof snapshot.nextEndTime === 'string',
+      JSON.stringify(snapshot),
+    )
+    record(
+      'classisland:test 也带上同一份快照',
+      bridgeTest.ok === true && bridgeTest.value.status?.version === 3,
+      JSON.stringify(bridgeTest.ok ? bridgeTest.value.status : bridgeTest),
+    )
+
+    // 感知摘要里的课堂状态（v3）：桥接快照 → provider 缓存 → PerceptionSummary.classStatus。
+    // 这一条把「装配真的接通了」钉住：只测解析器证明不了 perception 拿到了它。
+    const perceptionSummary = expectOk(
+      'perception.summary',
+      await window.aurora.perception.summary(),
+    )
+    const classStatus = perceptionSummary?.classStatus
+    record(
+      '感知摘要包含课堂状态快照（与桥接夹具一致）',
+      classStatus?.version === 3 &&
+        classStatus.onClass === true &&
+        classStatus.currentSubject === '数学',
+      JSON.stringify(classStatus),
+    )
+
+    // 提醒通道（v3）：夹具没有真实的 ClassIsland 在监听命令，
+    // 因此这里只断言「未配置 / 不可达时也是结构化失败而不是抛错」——
+    // 真实的端到端弹出验证在真机上做（见桥接插件 README 的「已验证程度」）。
+    const notifyAttempt = await window.aurora.classisland.notify({
+      title: 'Aurora 自测',
+      body: '自测提醒通道（预期：结构化失败，因为自测没有 ClassIsland 消费命令）',
+      channel: 'custom',
+    })
+    record(
+      'classisland:notify 通道可用且回结构化结果（不抛错）',
+      notifyAttempt.ok === true &&
+        typeof notifyAttempt.value.ok === 'boolean' &&
+        typeof notifyAttempt.value.elapsedMs === 'number',
+      JSON.stringify(notifyAttempt.ok ? notifyAttempt.value : notifyAttempt),
     )
 
     // ─────────────── 日志目录通道（原死通道） ───────────────

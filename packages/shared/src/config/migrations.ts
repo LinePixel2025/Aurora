@@ -380,6 +380,36 @@ const migrateV8ToV9: Migration = {
   },
 }
 
+/**
+ * v9 → v10：为已存在的 `modes.classroom` 补 `preClassLeadMinutes: 5`（课前提早分钟数，
+ * docs/05 §3.4、docs/08 §1）。
+ *
+ * 照 v7 → v8 对「已存在分组里的新字段」的口径：**只在 `modes.classroom` 已存在时**补，
+ * 不凭空造出半截对象（缺失时由默认配置兜底）；已写过的值原样保留（幂等）。
+ * 这里**不做范围修正** —— 越界值由 Schema 校验回退默认（迁移只负责补缺）。
+ */
+const migrateV9ToV10: Migration = {
+  from: 9,
+  to: 10,
+  describe: 'v9 → v10：为 modes.classroom 补 preClassLeadMinutes: 5（课前提前分钟数）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const modes = asRecord(raw['modes'])
+    if (modes !== undefined) {
+      const nextModes = { ...modes }
+      const classroom = asRecord(nextModes['classroom'])
+      if (classroom !== undefined) {
+        nextModes['classroom'] = fillMissing(classroom, { preClassLeadMinutes: 5 })
+      }
+      next['modes'] = nextModes
+    }
+
+    next['version'] = 10
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -390,6 +420,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV6ToV7,
   migrateV7ToV8,
   migrateV8ToV9,
+  migrateV9ToV10,
 ]
 
 export interface MigrationOutcome {

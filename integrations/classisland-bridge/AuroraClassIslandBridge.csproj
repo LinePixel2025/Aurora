@@ -19,6 +19,15 @@
     <RootNamespace>Aurora.ClassIslandBridge</RootNamespace>
     <!-- 插件作为类库由宿主加载，不需要可执行入口 -->
     <EnableDynamicLoading>true</EnableDynamicLoading>
+    <!--
+      MSB3277（"发现无法解析的 X 的不同版本之间存在冲突"）是**引用宿主程序集的必然结果**：
+      ClassIsland 2.1.0.1 自带的 dll 依赖 System.Text.Json 9 / System.Diagnostics.DiagnosticSource 10 /
+      Avalonia 的 WindowsBase 6 等，而本项目目标框架是 net8.0（ref 程序集是 8/4）。
+      我们所有程序集都是 Private=false（由宿主统一加载），所以这些冲突不产生任何实际影响；
+      已用 v2 源码在 SDK 10.0.301 下复现（同样 3 条），与源码改动无关。
+      降级为 message：普通构建输出 0 warning；`-v:n` 仍可看到完整明细。
+    -->
+    <MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>
   </PropertyGroup>
 
   <!-- 1) 确定 ClassIsland 安装目录 -->

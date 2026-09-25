@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 9 as const
+export const CONFIG_VERSION = 10 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -286,6 +286,12 @@ export const ClassroomModeSchema = z.object({
   preClassReminder: z.boolean(),
   /** 课前提醒触发时是否自动打开科目文件夹（v8 新增；通知照发，docs/05 §3.3）。 */
   preClassOpenFolder: z.boolean(),
+  /**
+   * 课前提前多少分钟提醒（v10 新增，docs/05 §3.4）：整数 1–30，默认 5。
+   * 装配层把它作为 `PreClassReminder.getLookaheadMinutes` 注入 —— 每次 tick 即时读取，
+   * 因此设置页改完即时生效（此前恒为模块常量 5 分钟）。越界值由 Schema 拒绝。
+   */
+  preClassLeadMinutes: z.number().int().min(1).max(30),
   classification: ClassificationSchema,
 })
 export type ClassroomModeConfig = z.infer<typeof ClassroomModeSchema>
@@ -521,6 +527,7 @@ export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
   // 模式
   { pattern: 'modes.current', reason: '切换当前模式' },
   { pattern: 'modes.work.workspaceDir', reason: '设置 Work 模式的工作目录' },
+  { pattern: 'modes.classroom.preClassLeadMinutes', reason: '调整课前提醒的提前分钟数' },
   // 电脑操控工具（advanced.confirmSensitiveTools 确认总闸门**不在**表内，仍只读防自我提权）
   { pattern: 'agent.tools.enabled', reason: '开关电脑操控工具' },
   { pattern: 'agent.tools.workspaceDir', reason: '设置电脑操控工具的默认工作目录' },

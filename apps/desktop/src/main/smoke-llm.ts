@@ -26,6 +26,15 @@ export const CLASSIFY_PROMPT_MARKER = '你是一个文件归类助手'
 /** 文件名含此标记 → 桩服务返回低置信度，用于覆盖「待分类」兜底分支 */
 export const LOW_CONFIDENCE_MARKER = '低置信'
 
+/**
+ * 用户消息含此标记 → 对话分流改走**子代理链路**（docs/06 §19）：
+ * 父对话第 1 轮派 `task` → 子代理跑两轮（先要一次工具、再给报告）→ 父对话第 2 轮收尾。
+ * 自测用它把「子代理进度事件 + 快照持久化」跑到真实 IPC 上（而不只是夹具）。
+ */
+export const SUBAGENT_TASK_MARKER = 'STUB_TASK_MARKER'
+/** 子代理最终报告里的标记 */
+export const SUBAGENT_REPORT_MARKER = 'STUB_SUB_OK'
+
 export interface StubRequest {
   path: string
   body: { messages?: Array<{ role?: string; content?: unknown }>; tools?: unknown[] } | null
@@ -100,6 +109,99 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
         return
       }
 
+      // ── 子代理分流（docs/06 §19）：第 1 轮要一次工具，第 2 轮给报告 ──
+      if (isSubagentRequest(record)) {
+        const hasToolResult = (record.body?.messages ?? []).some(
+          (message) => message.role === 'tool',
+        )
+        if (!hasToolResult) {
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_smoke_sub_1',
+                      type: 'function',
+                      function: { name: 'list_dir', arguments: '{"path":"."}' },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
+        } else {
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: { content: `已列出目录。${SUBAGENT_REPORT_MARKER} 子代理报告完成。` },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+        }
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+
+      // ── 父对话的 task 分流：用户消息带标记时派一次子代理，拿到结果后收尾 ──
+      const lastUser = [...(record.body?.messages ?? [])]
+        .reverse()
+        .find((message) => message.role === 'user')
+      const wantsTask =
+        typeof lastUser?.content === 'string' && lastUser.content.includes(SUBAGENT_TASK_MARKER)
+      if (wantsTask) {
+        const taskDone = (record.body?.messages ?? []).some((message) => message.role === 'tool')
+        if (!taskDone) {
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_smoke_task_1',
+                      type: 'function',
+                      function: {
+                        name: 'task',
+                        arguments: JSON.stringify({
+                          description: '冒烟子代理',
+                          prompt: '列一下当前目录并给一句汇总。',
+                        }),
+                      },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
+        } else {
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: { content: `${STUB_MARKER} 子代理已完成。` },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+        }
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+
       // ── 对话分流（沿用 P3 行为：第一次触发工具调用） ──
       const toolCallRound = chatRequests().length === 1
       if (toolCallRound) {
@@ -160,6 +262,26 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
       await new Promise<void>((resolve) => server.close(() => resolve()))
     },
   }
+}
+
+/**
+ * 子代理人设里的独有句（`SUBAGENT_PERSONA` 第二句）。
+ *
+ * **不能只搜「子代理」三个字**：主对话的系统提示词里有「子代理使用规范」小节
+ * （`buildToolGuidance` 在注册了 `task` 时生成），只按两个字判断会把普通对话
+ * 误判成子代理请求 —— 实测直接把整条对话链路带偏。
+ */
+const SUBAGENT_PROMPT_MARKER = '你看不到主对话的任何上下文'
+
+/** 请求是否为子代理请求：系统提示词里带子代理人设的独有句 */
+function isSubagentRequest(request: StubRequest): boolean {
+  const messages = request.body?.messages ?? []
+  return messages.some(
+    (message) =>
+      message.role === 'system' &&
+      typeof message.content === 'string' &&
+      message.content.includes(SUBAGENT_PROMPT_MARKER),
+  )
 }
 
 /** 请求是否为分类请求：系统提示词里带分类标记 */

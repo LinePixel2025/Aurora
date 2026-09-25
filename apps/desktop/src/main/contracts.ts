@@ -237,7 +237,12 @@ export interface HotkeyControllerLike {
 export interface ClassIslandControllerLike {
   /** 桥接是否启用（配置里选了 classisland 且填了端点） */
   enabled(): boolean
-  status(): ClassIslandStatus
+  /**
+   * 桥接状态（最后一次读取结果 + 缓存过期时的按需重读）。
+   * 异步：缓存过期时接口自己会读一次桥接源（见 `ClassIslandProvider.refreshIfStale`），
+   * 否则刚切到 ClassIsland 时右栏状态卡会空着等下一次感知摘要。
+   */
+  status(): Promise<ClassIslandStatus>
   /** 立即按当前配置解析一次 */
   test(): Promise<ClassIslandTestResult>
 }

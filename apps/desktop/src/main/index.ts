@@ -65,7 +65,7 @@ import { PreClassReminder } from './pre-class-reminder.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
 import { HotkeyManager } from './hotkey.js'
 import { SkillsService } from './skills.js'
-import { ClassIslandProvider } from './classisland.js'
+import { ClassIslandNotifier, ClassIslandProvider } from './classisland.js'
 import { applyProxy, createNetFetch } from './net.js'
 import { resolveScheduleProvider, type IScheduleProvider } from './schedule.js'
 import { resolveSubjectFolder } from './paths.js'
@@ -85,13 +85,16 @@ import {
   defaultCapturePlan,
   filterCapturePlan,
   seedChatTtsHistory,
+  seedClassIslandFixture,
 } from './capture.js'
 import {
   registerAgentCoreTools,
+  registerClassIslandTools,
   registerComputerTools,
   registerExtensionTools,
   registerSettingsTool,
   type AgentCoreToolsRegistry,
+  type ClassIslandToolsRegistry,
   type ComputerTools,
   type ExtensionToolsRegistry,
   type SettingsToolRegistry,
@@ -195,6 +198,8 @@ let skillsService: SkillsService | undefined
 let netFetch: typeof fetch | undefined
 /** ClassIsland 桥接 provider（配置里选 classisland 且已填端点时才有值） */
 let classIslandProvider: ClassIslandProvider | undefined
+/** ClassIsland 提醒通道（v3，docs/05 §3.4）：进程内单例，状态经 `classisland:status` 回显 */
+let classIslandNotifier: ClassIslandNotifier | undefined
 /** 构造当前 provider 用的配置签名（变化时重建） */
 let classIslandSignature = ''
 let disposeIpc: (() => void) | undefined
@@ -203,6 +208,8 @@ let tools: ToolRegistry | undefined
 let computerTools: ComputerTools | undefined
 /** `set_setting` 装配器（docs/06 §12）：与电脑操控工具分开注册，互不摘除 */
 let settingsTool: SettingsToolRegistry | undefined
+/** `classisland_remind` 装配器（docs/05 §3.4 v3）：按桥接可用性注册 / 摘除 */
+let classIslandTools: ClassIslandToolsRegistry | undefined
 /** 扩展工具五件套装配器（docs/06 §14）：与 set_setting 同级，不受 agent.tools.enabled 门控 */
 let extensionTools: ExtensionToolsRegistry | undefined
 /** Agent 内核自带工具装配器（todo / task，docs/06 §18/§19）：同样不受门控 */
@@ -373,6 +380,17 @@ async function bootstrap(): Promise<void> {
         return await currentScheduleProvider().getToday(new Date())
       } catch (error) {
         logger?.debug('课程表不可用，已降级为未知', { error: String(error) })
+        return undefined
+      }
+    },
+    // 课堂状态快照（docs/05 §3.4 v3）：取桥接 provider 缓存的最近一次快照。
+    // 上面的 scheduleProvider 刚读过一次（内容变化时顺带刷新了缓存），
+    // 因此这里拿到的是同一批数据；未启用桥接 / 桥接未提供 status 时为 undefined。
+    classStatusProvider: () => {
+      try {
+        return classIslandProviderFor()?.getStatus().status
+      } catch (error) {
+        logger?.debug('课堂状态快照不可用，已降级为未知', { error: String(error) })
         return undefined
       }
     },
@@ -571,6 +589,18 @@ async function bootstrap(): Promise<void> {
     todoPort,
     provider: agentProvider,
   })
+  // 7.1.6 ClassIsland 提醒工具（docs/05 §3.4 v3）：`classisland_remind`。
+  //     与扩展工具五件套同级——不受 `agent.tools.enabled` 门控；但**按可用性注册**：
+  //     桥接未配置时先不进工具表（模型看不到就不会承诺），用户填完端点后
+  //     `settings:changed` 触发 `syncToolRegistries()` 自动补上，无需重启。
+  classIslandTools = registerClassIslandTools({
+    tools,
+    logger: logger.child('tools'),
+    port: {
+      notify: (request) => classIslandNotifierFor().notify(request),
+      available: () => isClassIslandActive(),
+    },
+  })
   syncToolRegistries()
 
   mcp = new McpController({
@@ -746,6 +776,9 @@ async function bootstrap(): Promise<void> {
     getProvider: () => currentScheduleProvider(),
     enabled: () => settings!.get().modes.classroom.preClassReminder,
     quietHours: () => settings!.get().advanced.quietHours,
+    // 课前提前分钟数（v10，docs/05 §3.4）：**每次 tick 即时读取**（getter 而非构造期常量），
+    // 因此设置页改完立即生效；此前恒为 schedule.ts 的 DEFAULT_LOOKAHEAD_MINUTES = 5。
+    getLookaheadMinutes: () => settings!.get().modes.classroom.preClassLeadMinutes,
     // 自动打开科目文件夹受 `preClassOpenFolder` 门控（Design/betav2-spec.md §8.7）：
     // 通知照发，只是不再主动弹资源管理器
     openFolderEnabled: () => settings!.get().modes.classroom.preClassOpenFolder,
@@ -795,6 +828,8 @@ async function bootstrap(): Promise<void> {
       enabled: () => isClassIslandActive(),
       status: () => classIslandStatus(),
       test: () => testClassIsland(),
+      // 提醒通道（v3，docs/05 §3.4）：`classisland:notify` 与 `classisland_remind` 工具共用
+      notify: (request) => classIslandNotifierFor().notify(request),
     },
     mcpStatus: () => mcp?.statuses() ?? [],
     onMcpStatusChanged: (listener) => {
@@ -936,7 +971,12 @@ async function runCapture(dir: string): Promise<void> {
   // 而交互窗 onMounted 就会读一次，计划开始后再写文件已经晚了（见 defaultCapturePlan 注释）。
   // `app.getPath('userData')` 在隔离模式下就是那个临时目录（见文件头注释）。
   await seedChatTtsHistory(app.getPath('userData'))
-  const plan = filterCapturePlan(defaultCapturePlan(manager), process.env['AURORA_CAPTURE_WINDOWS'])
+  // ClassIsland 课堂状态卡的夹具（同上：必须在窗口首次读之前落盘）
+  await seedClassIslandFixture(app.getPath('userData'))
+  const plan = filterCapturePlan(
+    defaultCapturePlan(manager, app.getPath('userData')),
+    process.env['AURORA_CAPTURE_WINDOWS'],
+  )
   logger?.info('开始窗口截图', { dir, count: plan.length })
   const result = await captureWindows({
     dir,
@@ -1129,9 +1169,16 @@ async function runSmokeTest(userData: string): Promise<void> {
   // 2. 主进程侧断言：工具循环真的走了两轮，且第二轮带回了 tool 结果
   //    只统计**对话**请求：分类管线也会打桩服务，不能混在一起数。
   const chatRequests = stub.chatRequestCount()
-  // 第一轮 2 次（工具调用 + 最终回复）、第二轮 1 次（纯文本）= 3 次；
+  // 基础对话 3 次：第一轮 2 次（工具调用 + 最终回复）、第二轮 1 次（纯文本）；
+  // 子代理场景（renderer 侧 9.4）另加 4 次：父对话 2 次（派 task + 收尾）
+  // + 子代理自己 2 次（先要一次 list_dir、再给报告）。
   // "第二次请求带回 tool 结果"证明工具循环真实走通。
-  record('桩 LLM 收到 3 轮 chat 请求（工具循环成立）', chatRequests === 3, `count=${chatRequests}`)
+  const expectedChatRequests = 3 + 4
+  record(
+    `桩 LLM 收到 ${expectedChatRequests} 轮 chat 请求（工具循环 + 子代理成立）`,
+    chatRequests === expectedChatRequests,
+    `count=${chatRequests}`,
+  )
   record('第二次请求带回了 tool 结果', stub.sawToolResult(), '')
   record('请求携带了工具清单（use_skill 已注册）', stub.sawTools(), '')
   // 分类管线确实调用过模型（低置信文件走了 LLM 分支）
@@ -1524,7 +1571,10 @@ async function seedSmokeClassroom(userData: string): Promise<string> {
   const endTime = new Date(startTime.getTime() + 45 * 60_000)
   const endClock = `${pad2(endTime.getHours())}:${pad2(endTime.getMinutes())}`
 
-  // 3. 桥接夹具：与真实插件写出的契约完全一致（docs/05 §3.4 v2）
+  // 3. 桥接夹具：与真实插件写出的契约完全一致（docs/05 §3.4 v2/v3）。
+  //    夹具里带上 status v3（含 v3 新增的三个时间字段），这样自测能断言
+  //    「桥接快照 → provider 缓存 → 感知摘要（classStatus + 课堂状态行）」整条链路，
+  //    而不只是课表数组。onClass / 当前科目与夹具的那节课一致（同一份数据两处输出）。
   const bridgePath = join(userData, 'classisland-bridge.json')
   await fs.writeFile(
     bridgePath,
@@ -1540,6 +1590,17 @@ async function seedSmokeClassroom(userData: string): Promise<string> {
             subject: '数学',
           },
         ],
+        status: {
+          version: 3,
+          generatedAt: new Date().toISOString(),
+          onClass: true,
+          currentSubject: '数学',
+          currentStartTime: clock,
+          currentEndTime: endClock,
+          nextSubject: '语文',
+          nextStartTime: endClock,
+          nextEndTime: endClock,
+        },
       },
       null,
       2,
@@ -1629,12 +1690,40 @@ function classIslandProviderFor(): ClassIslandProvider | undefined {
   return classIslandProvider
 }
 
-function classIslandStatus(): ClassIslandStatus {
+/**
+ * ClassIsland 提醒通道单例（v3，docs/05 §3.4）。
+ *
+ * 与 provider **分开实例**：提醒通道不依赖课表读取（端点填了就能用），
+ * 且「最近一次结果」要跨设置页反复开合长期保留，因此不随 provider 的配置签名重建。
+ * 配置每次调用即时读取（`getConfig`），端点 / 来源改完无需重启。
+ * 出网走 `netFetch`（`advanced.proxy` 对它生效）。
+ */
+function classIslandNotifierFor(): ClassIslandNotifier {
+  classIslandNotifier ??= new ClassIslandNotifier({
+    getConfig: () =>
+      settings?.get().modes.classroom.schedule.classisland ?? {
+        source: 'file' as const,
+        endpoint: '',
+        timeoutMs: 3000,
+      },
+    fetchImpl: () => netFetch ?? globalThis.fetch,
+    logger: logger?.child('classisland-notify'),
+  })
+  return classIslandNotifier
+}
+
+async function classIslandStatus(): Promise<ClassIslandStatus> {
   const schedule = settings?.get().modes.classroom.schedule
   const config = schedule?.classisland ?? { source: 'file' as const, endpoint: '', timeoutMs: 3000 }
   const enabled = isClassIslandActive()
   const provider = enabled ? classIslandProviderFor() : undefined
+  // 缓存过期就重读一次：右栏课堂状态卡是 30 秒轮询这个接口的，
+  // 不主动刷新的话，刚切到 ClassIsland 时卡片会空着等下一次感知摘要（见 provider.refreshIfStale）
+  await provider?.refreshIfStale()
   const status = provider?.getStatus()
+  const notifier = classIslandNotifierFor()
+  // 端点变化时刷新「通道是否可用」的回显（未配置端点 = 不可用）
+  notifier.refreshAvailability()
   return {
     enabled,
     source: config.source,
@@ -1644,10 +1733,11 @@ function classIslandStatus(): ClassIslandStatus {
     lessonCount: status?.lessonCount ?? 0,
     warnings: status?.warnings ?? [],
     ...(status?.error === undefined ? {} : { error: status.error }),
-    // 桥接 v2 的当前课状态快照（payload.status，Design/betav2-spec.md §8.8）：
-    // shared 的 `ClassIslandStatus` 类型暂未收录该字段，经展开**运行时透出**，
-    // `classisland:status` IPC 会把它原样带给渲染层；shared 增补后收紧为具名字段。
+    // 桥接 v2 起内嵌的当前课状态快照（payload.status，docs/05 §3.4）：
+    // `ClassIslandStatus.status` 已是 shared 的具名字段（v3 契约），不再是运行时透传。
     ...(status?.status === undefined ? {} : { status: status.status }),
+    // 提醒通道状态（v3）：可用性与最近一次结果，设置页就地回显
+    notify: notifier.getState(),
   }
 }
 
@@ -1664,6 +1754,8 @@ async function testClassIsland(): Promise<ClassIslandTestResult> {
     lessons: result.lessons,
     warnings: result.warnings,
     ...(result.error === undefined ? {} : { error: result.error }),
+    // 桥接快照（v2/v3）：测试连接时一并回传，设置页可以顺手显示「当前 / 下节课」
+    ...(result.status === undefined ? {} : { status: result.status }),
     elapsedMs: result.elapsedMs,
   }
 }
@@ -1809,6 +1901,8 @@ function syncToolRegistries(): void {
   settingsTool?.sync()
   extensionTools?.sync()
   agentCoreTools?.sync()
+  // ClassIsland 提醒工具（v3）：端点填了 / 改了就即时注册或摘除（无需重启）
+  classIslandTools?.sync()
 }
 
 function syncClassification(): void {

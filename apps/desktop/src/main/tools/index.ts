@@ -43,6 +43,11 @@ import {
   type ToolRegistry,
   type WebFetchPort,
 } from '@aurora/agent-core'
+import {
+  CLASSISLAND_REMIND_TOOL_NAME,
+  createClassIslandRemindTool,
+  type ClassIslandNotifyPort,
+} from './classisland-remind.js'
 
 export interface ComputerToolsDeps {
   tools: ToolRegistry
@@ -217,7 +222,6 @@ export function registerExtensionTools(deps: ExtensionToolsDeps): ExtensionTools
  * Agent 内核自带工具的固定名字集合：注册 / 摘除 / 文档共用，避免多处各写一份字符串。
  */
 export const AGENT_CORE_TOOL_NAMES = ['todo_write', 'todo_read', 'task'] as const
-
 export interface AgentCoreToolsDeps {
   tools: ToolRegistry
   logger: Logger
@@ -256,6 +260,51 @@ export function registerAgentCoreTools(deps: AgentCoreToolsDeps): AgentCoreTools
 
       const names = AGENT_CORE_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
       deps.logger.info('已同步 Agent 内核工具', { names: [...names] })
+      return [...names]
+    },
+  }
+}
+
+/**
+ * `classisland_remind` 的固定名字：注册 / 摘除 / 文档共用，避免多处各写一份字符串。
+ */
+export const CLASSISLAND_TOOL_NAMES = [CLASSISLAND_REMIND_TOOL_NAME] as const
+
+export interface ClassIslandToolsDeps {
+  tools: ToolRegistry
+  logger: Logger
+  /** 提醒端口（`main/classisland.ts` 的 `ClassIslandNotifier` 适配） */
+  port: ClassIslandNotifyPort
+}
+
+export interface ClassIslandToolsRegistry {
+  /** 重建 ClassIsland 工具表，返回本次注册的工具名 */
+  sync(): string[]
+}
+
+/**
+ * `classisland_remind` 装配器（docs/05 §3.4 v3、docs/06 §14 同款口径）。
+ *
+ * 两条与既有装配器一致的约定：
+ * - **不受 `agent.tools.enabled` 门控** —— 它不在 `COMPUTER_TOOL_NAMES` 里，
+ *   且「发一条课表提醒」不属于「电脑操控」的开关语义（与 `notify_user` 同级）；
+ * - **按可用性注册**（而不是无条件注册后让调用失败）：桥接未配置 / 未选 classisland 来源时
+ *   把工具从表里摘掉 —— 模型看不到用不了的工具，就不会先承诺再报错。
+ *   `sync()` 在启动与每次 `settings:changed` 时被调用，因此用户填完端点**无需重启**即可用。
+ */
+export function registerClassIslandTools(deps: ClassIslandToolsDeps): ClassIslandToolsRegistry {
+  return {
+    sync(): string[] {
+      for (const name of CLASSISLAND_TOOL_NAMES) deps.tools.unregister(name)
+
+      if (!deps.port.available()) {
+        deps.logger.debug('ClassIsland 桥接未配置：classisland_remind 不注册')
+        return []
+      }
+
+      deps.tools.register(createClassIslandRemindTool({ port: deps.port }))
+      const names = CLASSISLAND_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
+      deps.logger.info('已同步 ClassIsland 工具', { names: [...names] })
       return [...names]
     },
   }

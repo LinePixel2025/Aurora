@@ -23,7 +23,7 @@ export const SETTINGS_HINT = [
   '- general.chat.showThinking（对话界面是否展示思考过程）',
   '- modes.current（切换当前模式）',
   '- modes.work.workspaceDir（Work 模式的工作目录）',
-  '- modes.classroom.*（课堂模式设置：watchDir、subjects、schedule.*、preClassReminder、preClassOpenFolder、classification.*）',
+  '- modes.classroom.*（课堂模式设置：watchDir、subjects、schedule.*、preClassReminder、preClassLeadMinutes、preClassOpenFolder、classification.*）',
   '- agent.tools.enabled / workspaceDir / terminal.* / files.* / open.*（电脑操控工具的开关与上限）',
   '- skills.userDir / disabled（用户技能目录与停用列表）',
   '- advanced.quietHours（全局勿扰时段）',

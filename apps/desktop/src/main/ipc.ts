@@ -20,6 +20,8 @@ import {
   type ChatHistoryRequest,
   type ChatMessageDto,
   type ChatSessionSummary,
+  type ClassIslandNotifyRequest,
+  type ClassIslandNotifyResult,
   type ClassIslandStatus,
   type ClassIslandTestResult,
   type ClassificationCorrection,
@@ -96,8 +98,8 @@ export interface DesktopDeps {
   proactive: ProactiveLike
   /** 全局快捷键状态（hotkey:*，docs/07 §5） */
   hotkey: HotkeyControllerLike
-  /** ClassIsland 桥接（classisland:*，docs/05 §3.4 v2） */
-  classisland: ClassIslandControllerLike
+  /** ClassIsland 桥接（classisland:*，docs/05 §3.4 v2/v3） */
+  classisland: ClassIslandController
   /** MCP 状态（mcp:status，docs/06 §7） */
   mcpStatus: () => McpServerStatus[]
   onMcpStatusChanged: (listener: (statuses: McpServerStatus[]) => void) => () => void
@@ -128,6 +130,37 @@ export interface AttachmentDigest {
   text?: string
   /** 提取失败 / 不支持时的原因（会一并告给模型，避免它假装读过） */
   note?: string
+}
+
+/**
+ * ClassIsland 控制器（`ClassIslandControllerLike` + v3 的提醒通道）。
+ *
+ * 提醒方法在这里**就地扩展**而不是改 `contracts.ts` 的 `ClassIslandControllerLike`：
+ * 那个接口是「主进程对 IPC 层的稳定切片」，`notify` 目前只有本文件一个消费方，
+ * 扩展留在消费方一侧可把改动面收在 IPC 层内（本任务的文件归属要求）。
+ */
+type ClassIslandController = ClassIslandControllerLike & {
+  /** 让 ClassIsland 弹出提醒（docs/05 §3.4 v3，`classisland:notify`） */
+  notify(request: ClassIslandNotifyRequest): Promise<ClassIslandNotifyResult>
+}
+
+/**
+ * 归一 IPC 传来的提醒请求：只取三个已知字段、逐字段校验类型。
+ *
+ * 跨 IPC 的入参来自渲染层，**不能假设形状正确**；显式挑字段也顺手避免把未知字段透到桥接端。
+ */
+function normalizeNotifyRequest(input: unknown): ClassIslandNotifyRequest {
+  const record =
+    typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {}
+  const normalized: ClassIslandNotifyRequest = {
+    title: typeof record['title'] === 'string' ? record['title'] : '',
+    body: typeof record['body'] === 'string' ? record['body'] : '',
+  }
+  const channel = record['channel']
+  if (channel === 'class-started' || channel === 'pre-class' || channel === 'custom') {
+    normalized.channel = channel
+  }
+  return normalized
 }
 
 export function registerIpc(deps: DesktopDeps): () => void {
@@ -418,13 +451,29 @@ export function registerIpc(deps: DesktopDeps): () => void {
   )
   handle<SkillsStatus>(IPC.skills.status, () => ok(deps.skills.status()))
   handle<HotkeyStatus>(IPC.hotkey.status, () => ok(deps.hotkey.getStatus()))
-  handle<ClassIslandStatus>(IPC.classisland.status, () => ok(deps.classisland.status()))
+  // 状态接口会按需重读桥接（缓存 15 秒，见 `STATUS_MAX_AGE_MS`）：因此是异步的
+  handle<ClassIslandStatus>(IPC.classisland.status, () =>
+    deps.classisland
+      .status()
+      .then(ok, (error: unknown) =>
+        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      ),
+  )
   handle<ClassIslandTestResult>(IPC.classisland.test, () =>
     deps.classisland
       .test()
       .then(ok, (error: unknown) =>
         err('E_NETWORK', error instanceof Error ? error.message : String(error)),
       ),
+  )
+  // 让 ClassIsland 弹提醒（docs/05 §3.4 v3）：与 `classisland:test` 同款 Result 口径，
+  // 但**失败原因走 result.value.error**（`ok: false` 是通道的业务结果，例如插件不是 v3、
+  // 命令通道关闭、等待回执超时），只有依赖注入缺失这类意外才落到 `E_UNKNOWN`。
+  handle<ClassIslandNotifyResult>(IPC.classisland.notify, (request?: ClassIslandNotifyRequest) =>
+    Promise.resolve(deps.classisland.notify(normalizeNotifyRequest(request))).then(
+      ok,
+      (error: unknown) => err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+    ),
   )
   handle<McpServerStatus[]>(IPC.mcp.status, () => ok(deps.mcpStatus()))
 

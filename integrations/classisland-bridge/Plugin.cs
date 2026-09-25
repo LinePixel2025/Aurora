@@ -14,6 +14,7 @@ using ClassIsland.Shared.Models.Profile;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Aurora.ClassIslandBridge;
 
@@ -30,8 +31,14 @@ namespace Aurora.ClassIslandBridge;
 ///   课程切换（<c>ILessonsService.OnClass</c>）与课前 N 分钟弹 ClassIsland 自己的提醒；
 ///   通知服务不可用时自动降级为仅刷新课表导出 + 日志。
 ///
-/// 可选同时暴露一个仅监听 127.0.0.1 的只读 HTTP 端点。
-/// 不修改 ClassIsland 的任何行为，也不向 Aurora 反向写数据。
+/// v3 追加：
+/// - 状态快照升到 version 3（新增 `currentStartTime` / `currentEndTime` / `nextEndTime`）；
+/// - **入站提醒命令通道**：Aurora 通过 `command.json`（文件模式）或 `POST /notify`（HTTP 模式）
+///   让本插件经 ClassIsland 的通知服务弹提醒，结果回写 `command-result.json` /
+///   作为响应体返回（见 <see cref="NotifyCommandChannel"/>）。
+///
+/// 可选同时暴露一个仅监听 127.0.0.1 的端点（`GET /schedule` 只读课表，`POST /notify` 收命令）。
+/// 不修改 ClassIsland 的任何行为。
 ///
 /// 本实现基于 ClassIsland 2.1 的**真实 API**（已用真实程序集编译验证）：
 /// - 生命周期没有 OnStartup/OnShutdown 虚方法，需要挂 <see cref="AppBase.AppStarted"/> /
@@ -48,14 +55,21 @@ public class Plugin : PluginBase
     /// （v2 起仅额外内嵌一个可选的 `status` 属性，Aurora 对多余字段宽容）。</summary>
     private const int PayloadVersion = 1;
 
-    /// <summary>status.json 的格式版本（v2 新增时即为 2）。</summary>
-    private const int StatusVersion = 2;
+    /// <summary>status.json 的格式版本：v2 为 2，v3 起为 3（新增当前节起止 / 下节课结束）。</summary>
+    private const int StatusVersion = 3;
 
-    /// <summary>兜底刷新间隔。课表变更另有事件，这里主要覆盖"临时调课"等低频变化。</summary>
+    /// <summary>兜底刷新间隔。课表变更另有事件，这里主要覆盖"临时调课"等低频变化；
+    /// 提醒命令通道也搭这个 tick 做兜底检查（正常路径是 FileSystemWatcher + 防抖）。</summary>
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(30);
+
+    /// <summary>命令通道的响应版本（与 command.json / command-result.json 的 version 一致）。</summary>
+    private const int CommandVersion = 1;
 
     /// <summary>时间点类型：0 = 上课（见 TimeLayoutItem.TimeType 文档）。</summary>
     private const int TimeTypeClass = 0;
+
+    /// <summary>POST /notify 的请求体上限（超过直接 413，避免无界读取）。</summary>
+    private const long MaxNotifyBodyBytes = 64 * 1024;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -65,12 +79,23 @@ public class Plugin : PluginBase
     };
 
     private ILogger? _logger;
+
+    /// <summary>
+    /// 日志器：**惰性解析**。
+    ///
+    /// `Initialize` 阶段容器还没建好，那时 `IAppHost.TryGetService&lt;ILogger&lt;Plugin&gt;&gt;()`
+    /// 会返回 null —— 若就此定稿，插件的所有诊断日志都会静默消失（真机排查时等于睁眼瞎）。
+    /// 因此第一次要写日志时再解析，仍拿不到才退回 <see cref="NullLogger.Instance"/>。
+    /// </summary>
+    private ILogger Log => _logger ??= TryResolve<ILogger<Plugin>>() ?? (ILogger)NullLogger.Instance;
+
     private BridgeOptionsStore? _store;
     private BridgeOptions? _options;
     private ILessonsService? _lessonsService;
     private IProfileService? _profileService;
     private IExactTimeService? _exactTimeService;
     private AuroraNotificationProvider? _notification;
+    private NotifyCommandChannel? _commandChannel;
     private Timer? _timer;
     private HttpListener? _httpListener;
     private CancellationTokenSource? _httpCts;
@@ -104,7 +129,7 @@ public class Plugin : PluginBase
         var app = AppBase.Current;
         if (app is null)
         {
-            _logger?.LogError("Aurora 桥接：AppBase.Current 不可用，无法启动导出");
+            Log.LogError("Aurora 桥接：AppBase.Current 不可用，无法启动导出");
             return;
         }
 
@@ -126,13 +151,13 @@ public class Plugin : PluginBase
 
             if (_lessonsService is null)
             {
-                _logger?.LogWarning("Aurora 桥接：未取到 ILessonsService，课表将为空");
+                Log.LogWarning("Aurora 桥接：未取到 ILessonsService，课表将为空");
             }
 
             if (_notification is null)
             {
                 // 降级路径：没有提醒提供方（注册被宿主拒绝 / 程序集缺失）时只影响提醒，不影响导出。
-                _logger?.LogWarning(
+                Log.LogWarning(
                     "Aurora 桥接：提醒提供方不可用，课程提醒降级为仅刷新课表导出与日志（详见 README「已验证程度」）");
             }
 
@@ -146,6 +171,18 @@ public class Plugin : PluginBase
                 _lessonsService.CurrentTimeStateChanged += OnScheduleChanged;
             }
 
+            // v3：入站提醒命令通道（FileSystemWatcher + 防抖；30s tick 兜底）
+            if (_options.EnableCommandChannel)
+            {
+                _commandChannel = new NotifyCommandChannel(
+                    _options.OutputPath, HandleNotifyCommand, Log);
+                _commandChannel.Start();
+            }
+            else
+            {
+                Log.LogInformation("Aurora 桥接：提醒命令通道已关闭（enableCommandChannel = false）");
+            }
+
             _timer = new Timer(_ => TickOnce(), null, RefreshInterval, RefreshInterval);
 
             if (_options.EnableHttpEndpoint)
@@ -153,17 +190,18 @@ public class Plugin : PluginBase
                 StartHttpEndpoint();
             }
 
-            _logger?.LogInformation(
-                "Aurora 桥接已启动：输出 {Path}，状态 {Status}，课前提醒 {Remind} 分钟，HTTP 端点 {Http}",
+            Log.LogInformation(
+                "Aurora 桥接已启动：输出 {Path}，状态 {Status}，课前提醒 {Remind} 分钟，HTTP 端点 {Http}，命令通道 {Command}",
                 _options.OutputPath,
                 _statusPath,
                 _options.RemindBeforeClassMinutes <= 0 ? "关闭" : _options.RemindBeforeClassMinutes.ToString(),
-                _options.EnableHttpEndpoint ? $"http://127.0.0.1:{_options.HttpPort}/schedule" : "关闭");
+                _options.EnableHttpEndpoint ? $"http://127.0.0.1:{_options.HttpPort}/schedule" : "关闭",
+                _options.EnableCommandChannel ? "开启" : "关闭");
         }
         catch (Exception ex)
         {
             // 插件失败不得影响 ClassIsland 本体
-            _logger?.LogError(ex, "Aurora 桥接启动失败");
+            Log.LogError(ex, "Aurora 桥接启动失败");
         }
     }
 
@@ -181,6 +219,9 @@ public class Plugin : PluginBase
             _timer?.Dispose();
             _timer = null;
 
+            _commandChannel?.Dispose();
+            _commandChannel = null;
+
             _httpCts?.Cancel();
             _httpCts?.Dispose();
             _httpCts = null;
@@ -196,7 +237,7 @@ public class Plugin : PluginBase
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Aurora 桥接关闭时出错");
+            Log.LogWarning(ex, "Aurora 桥接关闭时出错");
         }
     }
 
@@ -209,10 +250,21 @@ public class Plugin : PluginBase
         NotifyClassStarted();
     }
 
-    /// <summary>30s 周期任务：刷新导出（含 status.json）+ 检查课前提醒。</summary>
+    /// <summary>30s 周期任务：刷新导出（含 status.json）+ 检查课前提醒 + 兜底检查提醒命令。</summary>
     private void TickOnce()
     {
         SafeWriteOnce();
+
+        // 命令通道的兜底：FileSystemWatcher 在个别环境（网络盘 / 目录被重建）会丢事件，
+        // 这里比较命令文件原文，内容变了就补处理（正常路径仍是事件 + 防抖，1–2 秒内）。
+        try
+        {
+            _commandChannel?.PumpOnce();
+        }
+        catch (Exception ex)
+        {
+            Log.LogDebug(ex, "Aurora 桥接：提醒命令兜底检查失败");
+        }
 
         try
         {
@@ -220,7 +272,7 @@ public class Plugin : PluginBase
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Aurora 桥接：课前提醒检查失败");
+            Log.LogWarning(ex, "Aurora 桥接：课前提醒检查失败");
         }
     }
 
@@ -234,7 +286,7 @@ public class Plugin : PluginBase
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Aurora 桥接写文件失败，将在下个周期重试");
+            Log.LogWarning(ex, "Aurora 桥接写文件失败，将在下个周期重试");
         }
     }
 
@@ -280,7 +332,7 @@ public class Plugin : PluginBase
             }
             catch (Exception ex)
             {
-                _logger?.LogDebug(ex, "Aurora 桥接：取 {Date} 的课表失败", date);
+                Log.LogDebug(ex, "Aurora 桥接：取 {Date} 的课表失败", date);
                 continue;
             }
 
@@ -360,7 +412,7 @@ public class Plugin : PluginBase
         }
         catch (Exception ex)
         {
-            _logger?.LogDebug(ex, "Aurora 桥接：读取科目字典失败，科目名将用 ID 兜底");
+            Log.LogDebug(ex, "Aurora 桥接：读取科目字典失败，科目名将用 ID 兜底");
         }
         return map;
     }
@@ -429,22 +481,25 @@ public class Plugin : PluginBase
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Aurora 桥接：解析提醒提供方失败");
+            Log.LogWarning(ex, "Aurora 桥接：解析提醒提供方失败");
             return null;
         }
     }
 
     /// <summary>
     /// 组装当前课状态快照（schedule.json 内嵌 `status` 与 status.json 共用同一份）：
-    /// 是否上课 + 当前科目来自 <c>IPublicLessonsService</c> 的实时状态；
+    /// 是否上课 + 当前科目 + **当前节起止**（v3）来自 <c>ILessonsService</c> 的实时状态；
     /// 「下一节」与 schedule.json 同源 —— 从今天的课表（GetClassPlanByDate）里取
-    /// 开始时间严格晚于当前时刻的第一节"上课"类型节次（上课中取的是下一节，课间取的是紧接着的那节）。
+    /// 开始时间严格晚于当前时刻的第一节"上课"类型节次（上课中取的是下一节，课间取的是紧接着的那节），
+    /// v3 起同时给出它的结束时间。
     /// 取不到的字段一律空串，不编造。
     /// </summary>
     private BridgeStatus BuildStatus()
     {
         var now = Now();
         string currentSubject = string.Empty;
+        string currentStart = string.Empty;
+        string currentEnd = string.Empty;
         var onClass = false;
 
         if (_lessonsService is not null)
@@ -456,37 +511,49 @@ public class Plugin : PluginBase
                 {
                     var raw = _lessonsService.CurrentSubject?.Name;
                     if (!string.IsNullOrWhiteSpace(raw)) currentSubject = TranslateSubject(raw);
+
+                    // 当前节起止：只有真正落在"上课"类型的时间点上才写（课间 / 休息不写）
+                    var item = _lessonsService.CurrentTimeLayoutItem;
+                    if (item is not null && item != TimeLayoutItem.Empty && item.TimeType == TimeTypeClass)
+                    {
+                        currentStart = FormatClock(item.StartTime);
+                        currentEnd = FormatClock(item.EndTime);
+                    }
                 }
             }
             catch (Exception ex)
             {
-                _logger?.LogDebug(ex, "Aurora 桥接：读取实时课程状态失败，按无课处理");
+                Log.LogDebug(ex, "Aurora 桥接：读取实时课程状态失败，按无课处理");
             }
         }
 
-        var (nextSubject, nextStart) = NextLessonToday(now);
+        var (nextSubject, nextStart, nextEnd) = NextLessonToday(now);
         return new BridgeStatus
         {
             Version = StatusVersion,
             GeneratedAt = DateTimeOffset.Now,
             OnClass = onClass,
             CurrentSubject = currentSubject,
+            CurrentStartTime = currentStart,
+            CurrentEndTime = currentEnd,
             NextSubject = nextSubject,
             NextStartTime = nextStart,
+            NextEndTime = nextEnd,
         };
     }
 
-    /// <summary>今天（按对时时钟）下一节"上课"类型节次的科目名与开始时间；没有则为空串。</summary>
-    private (string Subject, string Start) NextLessonToday(DateTime now)
+    /// <summary>今天（按对时时钟）下一节"上课"类型节次的科目名与起止时间；没有则为空串。</summary>
+    private (string Subject, string Start, string End) NextLessonToday(DateTime now)
     {
         try
         {
             var plan = _lessonsService?.GetClassPlanByDate(now.Date, out _);
-            if (plan?.Classes is null) return (string.Empty, string.Empty);
+            if (plan?.Classes is null) return (string.Empty, string.Empty, string.Empty);
 
             var subjects = ResolveSubjects();
             var nowTime = now.TimeOfDay;
             TimeSpan? bestStart = null;
+            TimeSpan? bestEnd = null;
             string bestSubject = string.Empty;
 
             foreach (var info in plan.Classes)
@@ -498,17 +565,20 @@ public class Plugin : PluginBase
                 if (bestStart is not null && item.StartTime >= bestStart) continue;
 
                 bestStart = item.StartTime;
+                bestEnd = item.EndTime;
                 bestSubject = SubjectName(info.SubjectId, subjects) ?? string.Empty;
             }
 
-            return bestStart is null
-                ? (string.Empty, string.Empty)
-                : (bestSubject, FormatClock(bestStart.GetValueOrDefault()));
+            if (bestStart is null) return (string.Empty, string.Empty, string.Empty);
+            return (
+                bestSubject,
+                FormatClock(bestStart.GetValueOrDefault()),
+                bestEnd is null ? string.Empty : FormatClock(bestEnd.GetValueOrDefault()));
         }
         catch (Exception ex)
         {
-            _logger?.LogDebug(ex, "Aurora 桥接：计算下一节课失败");
-            return (string.Empty, string.Empty);
+            Log.LogDebug(ex, "Aurora 桥接：计算下一节课失败");
+            return (string.Empty, string.Empty, string.Empty);
         }
     }
 
@@ -539,7 +609,7 @@ public class Plugin : PluginBase
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Aurora 桥接：上课提醒发送失败");
+            Log.LogWarning(ex, "Aurora 桥接：上课提醒发送失败");
         }
     }
 
@@ -553,7 +623,7 @@ public class Plugin : PluginBase
         if (_notification is null || _options is null) return;
         if (_options.RemindBeforeClassMinutes <= 0) return;
 
-        var (subject, startText) = NextLessonToday(now);
+        var (subject, startText, _) = NextLessonToday(now);
         if (string.IsNullOrEmpty(subject) || string.IsNullOrEmpty(startText)) return;
         if (!TimeSpan.TryParse(startText, out var start)) return;
 
@@ -569,10 +639,62 @@ public class Plugin : PluginBase
         _notification.ShowPreClass(subject, startText, minutesLeft);
     }
 
+    // ───────────────────────── 入站提醒命令（v3） ─────────────────────────
+
+    /// <summary>
+    /// 命令通道的处理入口（文件模式与 HTTP 模式共用同一份逻辑）。
+    /// 只做三件事：校验参数 → 交给提醒提供方 → 把结果如实包成 <see cref="NotifyCommandResult"/>；
+    /// **绝不抛错**（异常会在 <see cref="NotifyCommandChannel"/> 里兜住）。
+    /// </summary>
+    private NotifyCommandResult HandleNotifyCommand(NotifyCommand command)
+    {
+        var id = command.Id ?? string.Empty;
+
+        if (!string.Equals(command.Kind?.Trim(), "notify", StringComparison.OrdinalIgnoreCase))
+        {
+            return NotifyCommandChannel.Failure(
+                id, $"不支持的命令类型：{command.Kind ?? "(空)"}（当前只支持 notify）");
+        }
+
+        if (command.Version != 0 && command.Version != CommandVersion)
+        {
+            // 版本号只记录不拒绝：未来契约演进时老插件仍应尽力处理
+            Log.LogWarning(
+                "Aurora 桥接：提醒命令 {Id} 的 version={Version} 不是已知的 {Known}，仍按当前契约处理",
+                id, command.Version, CommandVersion);
+        }
+
+        var title = command.Title?.Trim() ?? string.Empty;
+        var body = command.Body?.Trim() ?? string.Empty;
+        if (title.Length == 0 && body.Length == 0)
+        {
+            return NotifyCommandChannel.Failure(id, "提醒标题与正文均为空");
+        }
+
+        if (_notification is null)
+        {
+            return NotifyCommandChannel.Failure(
+                id, "提醒提供方不可用（ClassIsland 未注册本插件的通知提供方），仅记录本条命令");
+        }
+
+        var channel = NotifyCommandChannel.NormalizeChannel(command.Channel);
+        var (ok, error) = _notification.ShowCommand(channel, title, body);
+        return ok
+            ? new NotifyCommandResult { Version = CommandVersion, Id = id, Ok = true, HandledAt = DateTimeOffset.Now }
+            : NotifyCommandChannel.Failure(id, error);
+    }
+
     // ───────────────────────── HTTP 端点 ─────────────────────────
 
-    /// <summary>仅监听回环地址的只读端点：<c>GET /schedule</c> 返回当前桥接 JSON
-    /// （与 schedule.json 同契约，含内嵌 `status` 快照，请求时现场计算）。</summary>
+    /// <summary>
+    /// 仅监听回环地址的端点，按 **method + path** 路由（v3 起；此前不看请求内容，一律回课表）：
+    /// - `GET /schedule`（以及其它非 POST 请求）：返回当前桥接 JSON
+    ///   （与 schedule.json 同契约，含内嵌 `status` 快照，请求时现场计算）；
+    /// - `POST /notify`：请求体 = <see cref="NotifyCommand"/>，响应体 = <see cref="NotifyCommandResult"/>
+    ///   （命令通道关闭时返回 404；请求体非法返回 400）。
+    ///
+    /// 整个处理过程 try/catch 兜住：单个坏请求绝不能让监听循环退出。
+    /// </summary>
     private void StartHttpEndpoint()
     {
         if (_options is null) return;
@@ -602,23 +724,114 @@ public class Plugin : PluginBase
 
                 try
                 {
-                    var bytes = Encoding.UTF8.GetBytes(
-                        JsonSerializer.Serialize(BuildPayload(), JsonOptions));
-                    context.Response.StatusCode = 200;
-                    context.Response.ContentType = "application/json; charset=utf-8";
-                    context.Response.ContentLength64 = bytes.Length;
-                    await context.Response.OutputStream.WriteAsync(bytes, token);
+                    await RouteHttpRequest(context, token);
                 }
                 catch (Exception ex)
                 {
-                    _logger?.LogWarning(ex, "Aurora 桥接处理 HTTP 请求失败");
+                    Log.LogWarning(ex, "Aurora 桥接处理 HTTP 请求失败");
                 }
                 finally
                 {
-                    context.Response.Close();
+                    try
+                    {
+                        context.Response.Close();
+                    }
+                    catch
+                    {
+                        // 客户端提前断开：无需处理
+                    }
                 }
             }
         }, _httpCts.Token);
+    }
+
+    /// <summary>HTTP 路由（见 <see cref="StartHttpEndpoint"/> 的契约说明）。</summary>
+    private async Task RouteHttpRequest(HttpListenerContext context, CancellationToken token)
+    {
+        var path = context.Request.Url?.AbsolutePath ?? "/";
+        var isNotifyPath = path.TrimEnd('/').Equals("/notify", StringComparison.OrdinalIgnoreCase);
+
+        if (!context.Request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+        {
+            // GET（含 /schedule 与其它路径）保持 v2 行为：返回完整桥接载荷
+            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(BuildPayload(), JsonOptions));
+            context.Response.StatusCode = 200;
+            context.Response.ContentType = "application/json; charset=utf-8";
+            context.Response.ContentLength64 = bytes.Length;
+            await context.Response.OutputStream.WriteAsync(bytes, token);
+            return;
+        }
+
+        if (!isNotifyPath)
+        {
+            await WriteJsonResponse(context, 404, NotifyCommandChannel.Failure(string.Empty, $"未知的 POST 路径：{path}"), token);
+            return;
+        }
+
+        if (_options is null || !_options.EnableCommandChannel)
+        {
+            Log.LogInformation("Aurora 桥接：收到 /notify 但命令通道已关闭，返回 404");
+            await WriteJsonResponse(context, 404, NotifyCommandChannel.Failure(string.Empty, "命令通道已关闭（enableCommandChannel = false）"), token);
+            return;
+        }
+
+        // 读 body：ContentLength64 明确时先按它把明显过大的请求挡掉（避免无界读取）
+        var declaredLength = context.Request.ContentLength64;
+        if (declaredLength > MaxNotifyBodyBytes)
+        {
+            await WriteJsonResponse(context, 413, NotifyCommandChannel.Failure(string.Empty, "请求体过大"), token);
+            return;
+        }
+
+        string text;
+        try
+        {
+            using var reader = new StreamReader(
+                context.Request.InputStream,
+                context.Request.ContentEncoding ?? Encoding.UTF8);
+            text = await reader.ReadToEndAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.LogWarning(ex, "Aurora 桥接：读取 /notify 请求体失败");
+            await WriteJsonResponse(context, 400, NotifyCommandChannel.Failure(string.Empty, "请求体读取失败"), token);
+            return;
+        }
+
+        NotifyCommand? command;
+        try
+        {
+            command = JsonSerializer.Deserialize<NotifyCommand>(text, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            Log.LogWarning(ex, "Aurora 桥接：/notify 请求体不是合法 JSON");
+            await WriteJsonResponse(context, 400, NotifyCommandChannel.Failure(string.Empty, "请求体不是合法 JSON"), token);
+            return;
+        }
+
+        if (command is null || string.IsNullOrWhiteSpace(command.Id))
+        {
+            await WriteJsonResponse(context, 400, NotifyCommandChannel.Failure(string.Empty, "缺少 id"), token);
+            return;
+        }
+
+        // HTTP 模式不写 command-result.json（响应体就是结果），但仍走同一套 id 去重
+        var result = _commandChannel?.Handle(command, persist: false) ?? HandleNotifyCommand(command);
+        await WriteJsonResponse(context, 200, result, token);
+    }
+
+    private static async Task WriteJsonResponse(
+        HttpListenerContext context,
+        int statusCode,
+        NotifyCommandResult result,
+        CancellationToken token)
+    {
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(result, JsonOptions));
+        context.Response.StatusCode = statusCode;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        context.Response.ContentLength64 = bytes.Length;
+        await context.Response.OutputStream.WriteAsync(bytes, token);
     }
 
     // ───────────────────────── 工具 ─────────────────────────
@@ -669,10 +882,10 @@ public sealed class BridgePayload
     public BridgeStatus? Status { get; init; }
 }
 
-/// <summary>当前课状态快照（v2 新增，Aurora 侧用于课堂卡与提醒联动）。</summary>
+/// <summary>当前课状态快照（v2 新增，v3 扩充；Aurora 侧用于课堂卡与提醒联动）。</summary>
 public sealed class BridgeStatus
 {
-    /// <summary>状态格式版本，当前为 2。</summary>
+    /// <summary>状态格式版本：v2 为 2，v3 起为 3（新增当前节起止 / 下节课结束）。</summary>
     public int Version { get; init; }
 
     public DateTimeOffset GeneratedAt { get; init; }
@@ -683,11 +896,20 @@ public sealed class BridgeStatus
     /// <summary>当前上课的科目名（Aurora 侧命名，映射后）；不在上课或未知时为空串。</summary>
     public string CurrentSubject { get; init; } = string.Empty;
 
+    /// <summary>当前节次开始时间 `HH:mm`（v3 新增）；不在上课 / 取不到时为空串（不编造）。</summary>
+    public string CurrentStartTime { get; init; } = string.Empty;
+
+    /// <summary>当前节次结束时间 `HH:mm`（v3 新增）；不在上课 / 取不到时为空串。</summary>
+    public string CurrentEndTime { get; init; } = string.Empty;
+
     /// <summary>下一节课的科目名；今天没有下一节或未知时为空串。</summary>
     public string NextSubject { get; init; } = string.Empty;
 
-    /// <summary>下一节课的开始时间 HH:mm；没有下一节时为空串。</summary>
+    /// <summary>下一节课的开始时间 `HH:mm`；没有下一节时为空串。</summary>
     public string NextStartTime { get; init; } = string.Empty;
+
+    /// <summary>下一节课的结束时间 `HH:mm`（v3 新增）；没有下一节 / 取不到时为空串。</summary>
+    public string NextEndTime { get; init; } = string.Empty;
 }
 
 public sealed class BridgeLesson

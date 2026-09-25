@@ -461,6 +461,201 @@ export const CHAT_COLLAPSE_CHECK = `(async () => {
 })()`
 
 /**
+ * ClassIsland 课堂状态卡的现场准备（docs/05 §3.4 v3、docs/07 §2.3）。
+ *
+ * 状态卡只在「模式 = classroom **且** 课表来源 = classisland」时渲染，出厂配置下
+ * 它整卡不存在 —— 所以要有真实桥接数据才能拍到它。这里在主进程侧写一份**符合桥接契约的
+ * 假产出**（`version: 1` + 内嵌 `status.version: 3`）到隔离 userData 下，供捕获场景使用：
+ * 文件模式读的是磁盘，因此不需要真的装 ClassIsland。
+ */
+export function classislandFixturePath(userData: string): string {
+  return join(userData, 'classisland-fixture', 'schedule.json')
+}
+
+export async function seedClassIslandFixture(userData: string): Promise<string> {
+  const path = classislandFixturePath(userData)
+  const weekday = new Date().getDay()
+  const payload = {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    lessons: [
+      { weekday, startTime: '08:00', endTime: '08:45', subject: '数学' },
+      { weekday, startTime: '09:20', endTime: '10:05', subject: '语文' },
+    ],
+    status: {
+      version: 3,
+      generatedAt: new Date().toISOString(),
+      onClass: true,
+      currentSubject: '数学',
+      currentStartTime: '08:00',
+      currentEndTime: '08:45',
+      nextSubject: '语文',
+      nextStartTime: '09:20',
+      nextEndTime: '10:05',
+    },
+  }
+  await mkdir(join(userData, 'classisland-fixture'), { recursive: true })
+  await writeFile(path, JSON.stringify(payload, null, 2), 'utf8')
+  return path
+}
+
+/**
+ * 把课表来源切到「ClassIsland 联动 + 文件模式 + 夹具路径」，让课堂状态卡出现。
+ *
+ * 必须走 `settings:update` IPC：`SettingsStore.init()` 启动即把 config.json 读进内存并长期缓存，
+ * 启动后写文件对运行中的进程无效。`check` 收尾会还原成 `manual`，后续场景读到的仍是出厂门控。
+ */
+export function chatClassislandAct(endpoint: string): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { ok: false, reason: state.message }
+    const result = await window.aurora.settings.update({
+      modes: {
+        classroom: {
+          ...state.value.modes.classroom,
+          schedule: {
+            ...state.value.modes.classroom.schedule,
+            provider: 'classisland',
+            classisland: {
+              ...state.value.modes.classroom.schedule.classisland,
+              source: 'file',
+              endpoint: ${JSON.stringify(endpoint)},
+            },
+          },
+        },
+      },
+    })
+    if (!result.ok) return { ok: false, reason: result.message }
+    // 等卡片按 watch(showClassislandCard) 拉一次 classisland:status
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      if (document.querySelector('[data-field="context.classisland-card"]') !== null) break
+      await wait(150)
+    }
+    return { ok: true, endpoint: ${JSON.stringify(endpoint)} }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+}
+
+/**
+ * 课堂状态卡探针：卡在、上课中徽章在、当前与下节课都带上了时段（v3 新增字段的落点）。
+ * 收尾把课表来源还原成 `manual`，避免污染后续场景。
+ */
+export const CHAT_CLASSISLAND_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const text = (selector) => {
+      const el = document.querySelector(selector)
+      return el === null ? '' : (el.textContent || '').replace(/\\s+/g, ' ').trim()
+    }
+    const current = text('[data-field="context.classisland-current"]')
+    const next = text('[data-field="context.classisland-next"]')
+    const result = {
+      card: count('[data-field="context.classisland-card"]'),
+      onClass: count('[data-field="context.classisland-onclass"]'),
+      current,
+      next,
+      empty: count('[data-field="context.classisland-empty"]'),
+      pass:
+        count('[data-field="context.classisland-card"]') === 1 &&
+        count('[data-field="context.classisland-onclass"]') === 1 &&
+        current.indexOf('数学') !== -1 &&
+        current.indexOf('08:00') !== -1 &&
+        next.indexOf('语文') !== -1 &&
+        next.indexOf('09:20') !== -1 &&
+        count('[data-field="context.classisland-empty"]') === 0,
+    }
+    const state = await window.aurora.settings.get()
+    if (state.ok) {
+      await window.aurora.settings.update({
+        modes: {
+          classroom: {
+            ...state.value.modes.classroom,
+            schedule: { ...state.value.modes.classroom.schedule, provider: 'manual' },
+          },
+        },
+      })
+    }
+    await wait(250)
+    result.restored = count('[data-field="context.classisland-card"]') === 0
+    result.pass = result.pass === true && result.restored === true
+    return result
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 「子代理」页面探针（docs/07 §2.4）。
+ *
+ * act 点左栏固定项 `[data-field="chat.subagent-item"]` 把主区切到子代理页面；
+ * check 断言：页面在、命中 seed 的那 1 次运行（`chat.subagent-run`）、轨迹有进度条 +
+ * 步骤时间线 + 报告，并且**切回对话流**（后续场景依赖 composer 与消息区）。
+ *
+ * 快照来自 `seedChatTtsHistory` 种下的 `task` 工具卡（含 `subagent` 字段）——
+ * 也就是说这条断言同时验证了「快照随工具卡持久化 → 由子代理页面读回」这条链路，
+ * 而不只是「实时事件画得出来」。
+ */
+export const CHAT_SUBAGENT_OPEN_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const item = document.querySelector('[data-field="chat.subagent-item"]')
+    if (item === null) return { clicked: false, reason: 'no [data-field="chat.subagent-item"]' }
+    item.click()
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (document.querySelector('[data-field="chat.subagent-page"]') !== null) break
+      await wait(100)
+    }
+    return { clicked: true }
+  } catch (error) {
+    return { clicked: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const page = document.querySelector('[data-field="chat.subagent-page"]')
+    const runs = count('[data-field="chat.subagent-run"]')
+    const steps = count('.trace-step')
+    const reports = document.querySelectorAll('[data-field="chat.subagent-report"]')
+    const reportText = reports.length > 0 ? (reports[0].textContent || '').trim() : ''
+    const result = {
+      page: page !== null,
+      runs,
+      steps,
+      reportChars: reportText.length,
+      bar: count('.trace-bar'),
+      summary: count('[data-field="chat.subagent-summary"]'),
+      // 导航项此时应是激活态（否则说明 view 状态没接上）
+      navActive:
+        document.querySelector('[data-field="chat.subagent-item"]') !== null &&
+        document.querySelector('[data-field="chat.subagent-item"]').classList.contains('active'),
+      pass:
+        page !== null &&
+        runs === 1 &&
+        steps >= 3 &&
+        reportText.length > 10 &&
+        count('.trace-bar') === 1,
+    }
+    // 收尾：切回对话流（composer 与消息区必须在后续场景里可用）
+    const back = document.querySelector('[data-action="chat.subagent-back"]')
+    if (back !== null) back.click()
+    await wait(250)
+    result.restored = document.querySelector('[data-field="chat.subagent-page"]') === null
+    result.pass = result.pass === true && result.navActive === true && result.restored === true
+    return result
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
  * 主界面左栏结构 + 门控探针（BetaV2，spec §11）：三栏重构后左栏的固定锚点必须全部在。
  *
  * 断言六件事：
@@ -503,6 +698,8 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
       headTitle: headName,
       quickItem: quickItem !== null,
       quickActive: quickItem === null ? null : quickItem.classList.contains('active'),
+      subagentItem: count('[data-field="chat.subagent-item"]'),
+      subagentCount: count('[data-field="chat.subagent-count"]'),
       sessionList: sessionList !== null,
       sessionListVisible: visible(sessionList),
       sessionRows: count('[data-field="chat.session-list"] .nav-item'),
@@ -513,6 +710,10 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
       todoCard: count('[data-field="chat.todo-card"]'),
       todoRows,
       taskCard: count('[data-field="chat.task-card"]'),
+      // 工具卡语义图标（lucide）：每张卡头恰好一枚，数少了说明图标没渲染、
+      // 数多了说明把状态点也画成了 svg（那会挤掉标题的横向空间）
+      toolIcons: count('.tool-card .tool-head .tool-icon'),
+      toolCards: count('.tool-card'),
       captionMinimize: count('[data-caption-btn="minimize"]'),
       captionClose: count('[data-caption-btn="close"]'),
       // stt 未配置（enabled=false 且无 provider）时麦克风必须不存在：探针不改 stt 配置，
@@ -533,6 +734,9 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
         count('[data-field="context.todo-card"]') > 0 &&
         todoRows === 3 &&
         count('[data-field="chat.task-card"]') > 0 &&
+        count('[data-field="chat.subagent-item"]') === 1 &&
+        count('[data-field="chat.subagent-count"]') === 1 &&
+        count('.tool-card .tool-head .tool-icon') === count('.tool-card') &&
         count('[data-caption-btn="minimize"]') > 0 &&
         count('[data-caption-btn="close"]') > 0 &&
         count('[data-field="chat.mic"]') === 0,
@@ -1071,6 +1275,112 @@ export const SETTINGS_MODES_EXPAND_ACT = `(async () => {
     return { ok: true, preClassVisible: ready }
   } catch (error) {
     return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * ClassIsland 联动（v3）新设置项的现场准备：把课表来源切成 classisland 并塞一节今天的课。
+ *
+ * 两个新项的门控是 `provider === 'classisland'`（提醒通道）与 `lessons.length > 0`
+ * （提前分钟数），出厂配置（manual + 空课表）下它们**根本不渲染**，因此必须造现场。
+ * 只能走 `settings:update` IPC（SettingsStore 启动即把 config.json 读进内存缓存，
+ * 直接写文件对运行中的进程无效）。
+ */
+export const SETTINGS_CLASSISLAND_SEED_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { ok: false, reason: state.message }
+    const weekday = new Date().getDay()
+    const result = await window.aurora.settings.update({
+      modes: {
+        classroom: {
+          ...state.value.modes.classroom,
+          schedule: {
+            ...state.value.modes.classroom.schedule,
+            provider: 'classisland',
+            lessons: [{ weekday, startTime: '08:00', endTime: '08:45', subject: '数学' }],
+            classisland: {
+              ...state.value.modes.classroom.schedule.classisland,
+              source: 'http',
+              endpoint: 'http://127.0.0.1:17945/schedule',
+            },
+          },
+        },
+      },
+    })
+    if (!result.ok) return { ok: false, reason: result.message }
+    // 等渲染层 store 收到 settings:changed 后重算门控
+    await wait(400)
+    // 展开「课表与课前提醒」分组（提前分钟数与提醒通道都在这一组里）
+    const heads = Array.from(document.querySelectorAll('.group-head'))
+    const head = heads.find((item) =>
+      (((item.querySelector('.section-title') || {}).textContent || '')).indexOf('课程表与课前提醒') !== -1,
+    )
+    if (head !== undefined) head.click()
+    await wait(300)
+    // 把两个新字段一起滚进视野：设置窗只有 720 高，ClassRoom 配置在折叠区下方，
+    // 不滚动的话截图拍不到它们（探针能数到，但视觉验收看不到证据）。
+    // 逐个 scrollIntoView 只会让最后一个可见，因此按两者中点定位一次。
+    const anchors = [
+      document.querySelector('[data-field="modes.classroom.preClassLeadMinutes"]'),
+      document.querySelector('[data-field="settings.classisland-notify-test"]'),
+    ].filter((el) => el !== null)
+    if (anchors.length > 0) {
+      const rects = anchors.map((el) => el.getBoundingClientRect())
+      const middle = (Math.min(...rects.map((r) => r.top)) + Math.max(...rects.map((r) => r.bottom))) / 2
+      window.scrollBy({ top: middle - window.innerHeight / 2 })
+    }
+    await wait(250)
+    return { ok: true, anchors: anchors.length }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * ClassIsland 联动（v3）设置项探针：提前分钟数 + 提醒通道（状态回显 + 发送测试按钮）两处都在。
+ *
+ * check 收尾把课表来源还原成 manual、课表清空 —— 否则后续场景会带着「classisland 端点」
+ * 继续跑（那些场景断言的是出厂门控）。
+ */
+export const SETTINGS_CLASSISLAND_FIELDS_SCRIPT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const lead = count('[data-field="modes.classroom.preClassLeadMinutes"]')
+    const notify = count('[data-field="settings.classisland-notify-test"]')
+    const notifyState = count('[data-field="settings.classisland-notify-state"]')
+    const notifyButton = count('[data-field="settings.classisland-notify-test-button"]')
+    const result = {
+      leadMinutes: lead,
+      notifyGroup: notify,
+      notifyState,
+      notifyButton,
+      pass: lead === 1 && notify === 1 && notifyState === 1 && notifyButton === 1,
+    }
+    // 收尾还原：provider 回 manual、清空课表（端点留着无妨，门控看的是 provider）
+    const state = await window.aurora.settings.get()
+    if (state.ok) {
+      await window.aurora.settings.update({
+        modes: {
+          classroom: {
+            ...state.value.modes.classroom,
+            schedule: {
+              ...state.value.modes.classroom.schedule,
+              provider: 'manual',
+              lessons: [],
+            },
+          },
+        },
+      })
+    }
+    await wait(200)
+    result.restored = count('[data-field="settings.classisland-notify-test"]') === 0
+    result.pass = result.pass === true && result.restored === true
+    return result
+  } catch (error) {
+    return { reason: String(error), pass: false }
   }
 })()`
 
@@ -2573,6 +2883,38 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
             },
             state: 'success',
             outputSummary: '子代理：汇总系统状态',
+            // 子代理运行快照（docs/06 §19）：随工具卡持久化，重启后仍能回看。
+            // 截图与探针证据：工具卡展开体里的「运行轨迹」，以及「子代理」独立页面。
+            subagent: {
+              taskId: 'sub-capture-1',
+              callId: 'capture-task-1',
+              description: '汇总系统状态',
+              prompt: '读取当前的系统状态（时间 / 电量 / 网络 / 前台应用），汇总成一段话。',
+              status: 'success',
+              startedAt: Date.parse(now),
+              endedAt: Date.parse(now) + 4200,
+              toolCalls: 2,
+              steps: [
+                { id: 's1', kind: 'text', text: '先看系统状态采集项，再各取一次。' },
+                {
+                  id: 'capture-tool-1',
+                  kind: 'tool',
+                  name: 'list_dir',
+                  state: 'success',
+                  summary: '已列出 12 个条目',
+                },
+                {
+                  id: 'capture-tool-2',
+                  kind: 'tool',
+                  name: 'read_file',
+                  state: 'success',
+                  summary: '已读取 1.2 KB',
+                },
+              ],
+              report:
+                '当前时间 09:20，已接通电源（82%，非充电）；网络在线（Wi-Fi）；' +
+                '前台应用为 Code.exe。整体状态正常，未发现需要处理的事项。',
+            },
           },
         ],
         createdAt: now,
@@ -2610,7 +2952,7 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
   await writeFile(join(userData, 'sessions', 'quick.json'), JSON.stringify(quick, null, 2), 'utf8')
 }
 
-export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
+export function defaultCapturePlan(manager: WindowManager, userData: string): CaptureTarget[] {
   const theme = activeTheme()
   const plan: CaptureTarget[] = [
     { name: 'edge-bar', file: 'edge-bar.png' },
@@ -2710,6 +3052,20 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       act: CHAT_TTS_SPEAK_ACT,
       check: CHAT_TTS_SPEAK_CHECK,
     },
+    {
+      name: 'chat',
+      file: 'chat-subagent-page.png',
+      act: CHAT_SUBAGENT_OPEN_ACT,
+      check: CHAT_SUBAGENT_OPEN_CHECK,
+    },
+    // ClassIsland 课堂状态卡：需要真实桥接产出，因此主进程侧先种夹具（见 seedClassIslandFixture），
+    // 再由 act 把课表来源切到 classisland + 文件模式指向它；check 收尾还原成 manual。
+    {
+      name: 'chat',
+      file: 'chat-classisland-status.png',
+      act: chatClassislandAct(classislandFixturePath(userData)),
+      check: CHAT_CLASSISLAND_CHECK,
+    },
     { name: 'chat', file: 'chat-drag.png', check: WINDOW_DRAG_SCRIPT },
     { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },
     { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
@@ -2761,6 +3117,18 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
     query: { page: 'general' },
     check: themeProbeScript({ theme, transparent: false }),
     nativeCheck: themeNativeCheck(manager, 'settings', theme),
+  })
+  // ClassIsland 联动（v3）：新增的设置项只在「provider = classisland + 至少一节课程」时渲染，
+  // 出厂默认（manual + lessons: []) 数不到它们，因此单独补一个场景：
+  // 先经 settings:update 造出该现场并拍图，check 断言两项都在、随后**还原配置**。
+  // 必须排在 settings-modes.png 之前吗？不必 —— 它由自己的 query 重新落页，
+  // 且 check 收尾已还原，后续场景读到的仍是出厂门控。
+  plan.push({
+    name: 'settings',
+    file: 'settings-classisland-notify.png',
+    query: { page: 'modes' },
+    act: SETTINGS_CLASSISLAND_SEED_ACT,
+    check: SETTINGS_CLASSISLAND_FIELDS_SCRIPT,
   })
   for (const page of SETTINGS_PAGE_IDS) {
     plan.push({

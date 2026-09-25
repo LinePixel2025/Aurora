@@ -14,11 +14,24 @@ public sealed class BridgeOptionsStore
 {
     private const string FileName = "bridge.json";
 
+    /// <summary>已知配置键（用于判断旧配置是否缺 v3 新增项，缺失时补写一份）。</summary>
+    private static readonly string[] KnownKeys =
+    {
+        "outputPath",
+        "enableHttpEndpoint",
+        "httpPort",
+        "subjectMap",
+        "remindBeforeClassMinutes",
+        "enableCommandChannel",
+    };
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        // 手工编辑过的配置可能写成 PascalCase：读取宽容，不回写时按 camelCase 统一
+        PropertyNameCaseInsensitive = true,
     };
 
     private readonly string _configPath;
@@ -41,10 +54,14 @@ public sealed class BridgeOptionsStore
         {
             if (File.Exists(_configPath))
             {
-                var loaded = JsonSerializer.Deserialize<BridgeOptions>(File.ReadAllText(_configPath), JsonOptions);
+                var text = File.ReadAllText(_configPath);
+                var loaded = JsonSerializer.Deserialize<BridgeOptions>(text, JsonOptions);
                 if (loaded is not null)
                 {
                     _cached = loaded.Normalize();
+                    // 旧配置缺新字段时补写（只补缺失键，已写值原样保留）——否则用户
+                    // 在 bridge.json 里看不到 v3 新增的 enableCommandChannel，无从调整。
+                    if (HasMissingKeys(text)) Save(_cached);
                     return _cached;
                 }
             }
@@ -57,6 +74,25 @@ public sealed class BridgeOptionsStore
         _cached = BridgeOptions.CreateDefault();
         Save(_cached);
         return _cached;
+    }
+
+    /// <summary>文件里是否缺少任一已知键（键名比较忽略大小写）。</summary>
+    private static bool HasMissingKeys(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return false;
+
+            var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in document.RootElement.EnumerateObject()) present.Add(property.Name);
+            return KnownKeys.Any((key) => !present.Contains(key));
+        }
+        catch
+        {
+            // 解析不了就按「不缺」处理，交给上面的反序列化分支兜底
+            return false;
+        }
     }
 
     /// <summary>保存配置（临时文件 + 覆盖重命名，避免写坏后无法启动）。</summary>
@@ -108,6 +144,14 @@ public sealed class BridgeOptions
     /// </summary>
     public int RemindBeforeClassMinutes { get; set; } = 2;
 
+    /// <summary>
+    /// 是否开启**入站提醒命令通道**（v3 新增，默认开启）：Aurora 通过输出目录里的
+    /// <c>command.json</c>（或 HTTP <c>POST /notify</c>）让本插件经 ClassIsland 的通知服务弹提醒。
+    /// 关闭后本插件既不监听命令文件、也不响应 <c>POST /notify</c>（返回 404），
+    /// 课表导出与课程提醒不受影响。
+    /// </summary>
+    public bool EnableCommandChannel { get; set; } = true;
+
     public static BridgeOptions CreateDefault()
     {
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -118,6 +162,7 @@ public sealed class BridgeOptions
             HttpPort = 17945,
             SubjectMap = new Dictionary<string, string>(StringComparer.Ordinal),
             RemindBeforeClassMinutes = 2,
+            EnableCommandChannel = true,
         };
     }
 

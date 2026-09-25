@@ -69,8 +69,8 @@ describe('配置迁移链', () => {
         modes: { current: 'classroom', classroom: { watchDir: 'D:\\感知', subjects: [] } },
       })
       expect(outcome.fromVersion).toBe(1)
-      // v1 → v2 → … → v9：链式执行，八版迁移都会跑
-      expect(outcome.applied).toHaveLength(8)
+      // v1 → v2 → … → v10：链式执行，九版迁移都会跑
+      expect(outcome.applied).toHaveLength(9)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
@@ -130,8 +130,8 @@ describe('配置迁移链', () => {
         modes: { classroom: { schedule: { provider: 'manual', lessons: [lesson] } } },
       })
       expect(outcome.fromVersion).toBe(2)
-      // v2 → v3 → … → v9：链式执行
-      expect(outcome.applied).toHaveLength(7)
+      // v2 → v3 → … → v10：链式执行
+      expect(outcome.applied).toHaveLength(8)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
         string,
@@ -191,8 +191,8 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(3)
-      // v3 → v4 → … → v9：链式执行
-      expect(outcome.applied).toHaveLength(6)
+      // v3 → v4 → … → v10：链式执行
+      expect(outcome.applied).toHaveLength(7)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const windowState = loadWindowState(outcome.data)
@@ -245,7 +245,7 @@ describe('配置迁移链', () => {
     it('补齐 reasoningEffort 与 agent.tools，且用户已写入的其它字段原样保留', () => {
       const outcome = migrate(V4_CONFIG)
       expect(outcome.fromVersion).toBe(4)
-      expect(outcome.applied).toHaveLength(5)
+      expect(outcome.applied).toHaveLength(6)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const llm = outcome.data['llm'] as Record<string, unknown>
@@ -389,7 +389,7 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(5)
-      expect(outcome.applied).toHaveLength(4)
+      expect(outcome.applied).toHaveLength(5)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       // describe 变更（补了 modelList 字样）不影响既有断言：仍是一条 v5 → v6 迁移
       expect(outcome.applied[0]).toContain('v5 → v6')
@@ -445,7 +445,7 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(5)
-      expect(outcome.applied).toHaveLength(4)
+      expect(outcome.applied).toHaveLength(5)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.applied[0]).toContain('modelList')
 
@@ -532,7 +532,7 @@ describe('配置迁移链', () => {
     it('补齐 tts 段默认值，且用户已写值（readonlyPrefixes / llm）原样保留', () => {
       const outcome = migrate(V6_CONFIG)
       expect(outcome.fromVersion).toBe(6)
-      expect(outcome.applied).toHaveLength(3)
+      expect(outcome.applied).toHaveLength(4)
       expect(outcome.applied[0]).toContain('v6 → v7')
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
@@ -618,7 +618,7 @@ describe('配置迁移链', () => {
       }
       const outcome = migrate({ version: 8, mcp: { lazyConnect: false, servers: [server] } })
       expect(outcome.fromVersion).toBe(8)
-      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied).toHaveLength(2)
       expect(outcome.applied[0]).toContain('headersEnc')
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
@@ -660,6 +660,63 @@ describe('配置迁移链', () => {
       const outcome = migrate({ version: 8, mcp: { servers: ['oops', null] } })
       expect(outcome.warnings).toEqual([])
       expect(loadServers(outcome.data)).toEqual(['oops', null])
+    })
+  })
+
+  describe('v9 → v10（课前提前分钟数 preClassLeadMinutes）', () => {
+    const loadClassroom = (raw: Record<string, unknown>): Record<string, unknown> =>
+      (raw['modes'] as Record<string, unknown>)['classroom'] as Record<string, unknown>
+
+    it('为已存在的 modes.classroom 补 preClassLeadMinutes: 5，其余字段原样保留', () => {
+      const outcome = migrate({
+        version: 9,
+        modes: {
+          current: 'classroom',
+          classroom: {
+            watchDir: 'D:\\感知',
+            preClassReminder: false,
+            preClassOpenFolder: false,
+            subjects: [{ name: '数学', folder: '分类/数学', keywords: [] }],
+          },
+        },
+      })
+      expect(outcome.fromVersion).toBe(9)
+      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied[0]).toContain('v9 → v10')
+      expect(outcome.applied[0]).toContain('preClassLeadMinutes')
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+
+      const classroom = loadClassroom(outcome.data)
+      expect(classroom['preClassLeadMinutes']).toBe(5)
+      // 用户写过的值一个不动（含两个布尔开关的 false）
+      expect(classroom['watchDir']).toBe('D:\\感知')
+      expect(classroom['preClassReminder']).toBe(false)
+      expect(classroom['preClassOpenFolder']).toBe(false)
+      expect(classroom['subjects']).toEqual([{ name: '数学', folder: '分类/数学', keywords: [] }])
+    })
+
+    it('用户已写过的 preClassLeadMinutes 不被覆盖（幂等）', () => {
+      const once = migrate({
+        version: 9,
+        modes: { classroom: { preClassLeadMinutes: 12, watchDir: 'D:\\x' } },
+      })
+      expect(loadClassroom(once.data)['preClassLeadMinutes']).toBe(12)
+
+      const twice = migrate({ ...once.data, version: 9 })
+      expect(twice.data).toEqual(once.data)
+      expect(loadClassroom(twice.data)['preClassLeadMinutes']).toBe(12)
+    })
+
+    it('modes / classroom 分组不存在时不凭空造对象，不抛错', () => {
+      const noModes = migrate({ version: 9, general: {} })
+      expect(noModes.warnings).toEqual([])
+      expect(noModes.data['version']).toBe(CONFIG_VERSION)
+      expect(noModes.data['modes']).toBeUndefined()
+
+      const noClassroom = migrate({ version: 9, modes: { current: 'work' } })
+      expect(noClassroom.warnings).toEqual([])
+      expect((noClassroom.data['modes'] as Record<string, unknown>)['classroom']).toBeUndefined()
+      expect(noClassroom.data['version']).toBe(CONFIG_VERSION)
     })
   })
 })
