@@ -17,7 +17,7 @@
  * SettingsPatch 注释），`agent` 这一层不递归补全 —— 只传 `{ terminal: {...} }` 会让
  * `files` / `open` 被整块替换掉，等于静默丢配置（capture 里已有同类回归探针，别重犯）。
  * 所以本页所有保存都走 `save(patch)`：先读当前 tree，再 `{ ...currentTools, ...patch }`；
- * 改子对象时（terminal / files）patch 里也要带**完整子对象**，否则同级的 timeoutMs 等会被丢掉。
+ * 改子对象时（terminal / files / search）patch 里也要带**完整子对象**，否则同级的 timeoutMs 等会被丢掉。
  *
  * 为什么 workspaceDir 不是沙箱（这条与页内安全文案同源，改文案别只改一处）：
  * 它只是工具的**默认**工作目录（空串 = 用户主目录），模型仍可显式传入任意绝对路径。
@@ -116,6 +116,11 @@ async function saveTerminal(patch: Partial<AgentToolsConfig['terminal']>): Promi
 /** 改文件子对象：同上，带完整 files 子树 */
 async function saveFiles(patch: Partial<AgentToolsConfig['files']>): Promise<void> {
   await save({ files: { ...tools.value.files, ...patch } })
+}
+
+/** 改文件检索子对象：同上，带完整 search 子树（否则 maxResults 与 enabled 会互相丢） */
+async function saveSearch(patch: Partial<AgentToolsConfig['search']>): Promise<void> {
+  await save({ search: { ...tools.value.search, ...patch } })
 }
 
 /** 数字输入解析：非数字回落原值，越界夹到 Schema 的 min/max（主进程还会再校验一次） */
@@ -365,6 +370,57 @@ async function openWorkspace(): Promise<void> {
             <p v-else class="tiny muted" data-empty="agent.tools.files">
               关闭总开关后文件工具不会注册：模型看不到 read_file / write_file / list_dir。
             </p>
+          </div>
+
+          <!-- 文件检索 -->
+          <div class="sub">
+            <h3 class="sub-title">文件检索</h3>
+            <p class="section-desc">
+              按文件名模式或正则内容检索（<code class="mono">grep</code>、<code class="mono"
+                >glob</code
+              >）：<strong>只读</strong>工具（不弹确认），但它们会递归扫描整个搜索目录（自动跳过
+              <code class="mono">node_modules</code> / <code class="mono">.git</code> 等）——
+              只读不等于无开销。搜索根缺省用上面的「工作目录」（留空 = 用户主目录）。
+            </p>
+
+            <template v-if="tools.enabled">
+              <SettingField
+                data-field="agent.tools.search.enabled"
+                label="启用文件检索工具"
+                hint="关闭后模型看不到 grep / glob，其余工具不受影响"
+              >
+                <label class="row tiny">
+                  <input
+                    type="checkbox"
+                    :checked="tools.search.enabled"
+                    @change="saveSearch({ enabled: ($event.target as HTMLInputElement).checked })"
+                  />
+                  <span>允许模型按文件名模式或正则内容检索（默认开启）</span>
+                </label>
+              </SettingField>
+
+              <SettingField
+                data-field="agent.tools.search.maxResults"
+                label="结果条数上限"
+                hint="1 ～ 1000；单次检索的结果上限（grep 按命中行、glob 按文件计），超出即截断并标注（默认 200）"
+              >
+                <input
+                  class="input input-num"
+                  type="number"
+                  min="1"
+                  max="1000"
+                  step="10"
+                  :value="tools.search.maxResults"
+                  @change="
+                    saveSearch({
+                      maxResults: clampNumber($event, 1, 1000, tools.search.maxResults),
+                    })
+                  "
+                />
+              </SettingField>
+            </template>
+
+            <p v-else class="tiny muted">关闭总开关后检索工具不会注册：模型看不到 grep / glob。</p>
           </div>
 
           <!-- 打开 -->

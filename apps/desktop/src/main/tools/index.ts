@@ -8,7 +8,8 @@
  * 因此不进本文件的依赖 —— 由 `main/index.ts` 直接构造后注入。）
  *
  * 本文件现有四个装配器：
- * - `registerComputerTools`：电脑操控五件套，受 `agent.tools.enabled` 门控（docs/06 §11）；
+ * - `registerComputerTools`：电脑操控工具（8 个，含 `grep` / `glob`），受 `agent.tools.enabled` 门控
+ *   （docs/06 §11）；
  * - `registerSettingsTool`：`set_setting`，不受门控（docs/06 §12）；
  * - `registerExtensionTools`：扩展工具五件套，不受门控（docs/06 §14）；
  * - `registerAgentCoreTools`：todo_write / todo_read / task，不受门控（docs/06 §18/§19）
@@ -26,6 +27,7 @@ import {
   createImageGenTool,
   createNotifyTool,
   createOpenTool,
+  createSearchTools,
   createSettingsTool,
   createTaskTool,
   createTerminalTool,
@@ -70,13 +72,13 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
 
   return {
     sync(): string[] {
-      // 先全量摘掉这 5 个名字（含上一次注册、以及被关掉的分支），再按当前配置重建。
+      // 先全量摘掉全部 8 个名字（含上一次注册、以及被关掉的分支），再按当前配置重建。
       // 不存在的名字 `unregister` 返回 false，忽略即可。
       for (const name of toolNames) deps.tools.unregister(name)
 
       const cfg = deps.getSettings().agent.tools
       if (!cfg.enabled) {
-        deps.logger.info('电脑操控工具总开关已关闭：5 个工具全部不注册', {
+        deps.logger.info('电脑操控工具总开关已关闭：全部工具都不注册', {
           names: [...toolNames],
         })
         return []
@@ -104,6 +106,18 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
           maxReadBytes: cfg.files.maxReadBytes,
         })) {
           if (tool.name !== 'open_path') deps.tools.register(tool)
+        }
+      }
+
+      if (cfg.search.enabled) {
+        // 搜索工具（grep / glob，docs/06 §11.5）：默认搜索根与文件类工具同一个 workspaceDir
+        // （空串时已在上方回落成用户主目录）。
+        for (const tool of createSearchTools({
+          files: deps.files,
+          maxResults: cfg.search.maxResults,
+          defaultRoot: workspaceDir,
+        })) {
+          deps.tools.register(tool)
         }
       }
 

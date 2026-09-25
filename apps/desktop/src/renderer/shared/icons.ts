@@ -67,6 +67,9 @@ export {
   ClipboardCopy,
   Image as ImageIcon,
   ListChecks,
+  // 搜索层（grep / glob，v12）
+  Search,
+  FolderSearch,
   // 子代理（独立页面）
   Bot,
   // ClassIsland 联动

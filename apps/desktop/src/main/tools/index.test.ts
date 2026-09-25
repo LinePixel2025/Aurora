@@ -45,6 +45,8 @@ const IMPLEMENTED_COMPUTER_TOOLS = [
   'write_file',
   'list_dir',
   'open_path',
+  'grep',
+  'glob',
 ] as const
 
 function makeSettings(): Settings {
@@ -85,6 +87,26 @@ function fakeFilePort(): FilePort {
     },
     async list(path) {
       return { absolutePath: `C:\\abs\\${path}`, entries: [], truncated: false }
+    },
+    async findFiles(options) {
+      // 本文件只验证「按开关注册哪些工具」，搜索行为由 file-port.test.ts / search.test.ts 覆盖
+      return {
+        root: `C:\\abs\\${options.root}`,
+        files: [],
+        truncated: false,
+        scannedFiles: 0,
+        budgetExceeded: false,
+      }
+    },
+    async searchText(options) {
+      return {
+        root: `C:\\abs\\${options.root}`,
+        matches: [],
+        truncated: false,
+        scannedFiles: 0,
+        skippedBinary: 0,
+        budgetExceeded: false,
+      }
     },
   }
 }
@@ -129,8 +151,13 @@ function setup(settings: Settings, runner: CommandRunner = fakeRunner()) {
 describe('registerComputerTools', () => {
   it('全开时注册当前已实现的全部工具，顺序与 COMPUTER_TOOL_NAMES 一致', () => {
     const { tools, registry } = setup(makeSettings())
+    // `sync()` 的返回值按 `COMPUTER_TOOL_NAMES` 顺序；`tools.list()` 是**注册顺序**
+    // （open_path 归独立开关、在最后单独注册），两者顺序本就不同，这里比集合。
+    // 真正面向模型的 tools 数组顺序由 step 6 的 `toLlmTools()` 统一排序。
     expect(registry.sync()).toEqual([...IMPLEMENTED_COMPUTER_TOOLS])
-    expect(tools.list().map((tool) => tool.name)).toEqual([...IMPLEMENTED_COMPUTER_TOOLS])
+    expect([...tools.list().map((tool) => tool.name)].sort()).toEqual(
+      [...IMPLEMENTED_COMPUTER_TOOLS].sort(),
+    )
   })
 
   it('工具默认使用注入的主目录作为工作目录（空串 = 用户主目录）', async () => {
@@ -160,6 +187,8 @@ describe('registerComputerTools', () => {
     expect(tools.get('write_file')).toBeUndefined()
     expect(tools.get('list_dir')).toBeUndefined()
     expect(tools.get('open_path')).toBeUndefined()
+    expect(tools.get('grep')).toBeUndefined()
+    expect(tools.get('glob')).toBeUndefined()
     expect(tools.get('use_skill')).toBeDefined()
   })
 
@@ -188,6 +217,43 @@ describe('registerComputerTools', () => {
     expect(tools.get('write_file')).toBeUndefined()
     expect(tools.get('list_dir')).toBeUndefined()
     expect(tools.get('open_path')).toBeDefined()
+  })
+
+  it('关掉文件检索 → grep / glob 消失，其余已实现工具仍注册', () => {
+    const settings = makeSettings()
+    settings.agent.tools.search.enabled = false
+    const { tools, registry } = setup(settings)
+    const names = registry.sync()
+    expect(names).toEqual(
+      IMPLEMENTED_COMPUTER_TOOLS.filter((name) => name !== 'grep' && name !== 'glob'),
+    )
+    expect(tools.get('grep')).toBeUndefined()
+    expect(tools.get('glob')).toBeUndefined()
+    expect(tools.get('run_command')).toBeDefined()
+    expect(tools.get('read_file')).toBeDefined()
+  })
+
+  it('文件检索默认开启 → grep / glob 都在，且敏感级为 safe', () => {
+    const settings = makeSettings()
+    expect(settings.agent.tools.search.enabled).toBe(true)
+    const { tools, registry } = setup(settings)
+    expect(registry.sync()).toContain('grep')
+    expect(registry.sync()).toContain('glob')
+    expect(tools.get('grep')?.sensitivity).toBe('safe')
+    expect(tools.get('glob')?.sensitivity).toBe('safe')
+  })
+
+  it('关掉文件检索后总开关再打开也不会把 grep / glob 带回来（开关相互独立）', () => {
+    const settings = makeSettings()
+    settings.agent.tools.search.enabled = false
+    settings.agent.tools.enabled = false
+    const { tools, registry } = setup(settings)
+    registry.sync()
+    settings.agent.tools.enabled = true
+    registry.sync()
+    expect(tools.get('grep')).toBeUndefined()
+    expect(tools.get('glob')).toBeUndefined()
+    expect(tools.get('run_command')).toBeDefined()
   })
 
   it('关掉「打开」→ open_path 消失，其余已实现工具仍在', () => {
