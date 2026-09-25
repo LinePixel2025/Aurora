@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   ToolRegistry,
+  type ClipboardPort,
   type CommandRunner,
   type FilePort,
+  type ImageGenPort,
+  type NotifyPort,
   type OpenPort,
   type SettingsToolPort,
   type SettingsWriteOutcome,
+  type WebFetchPort,
 } from '@aurora/agent-core'
 import {
   COMPUTER_TOOL_NAMES,
@@ -13,7 +17,12 @@ import {
   createMemoryLogger,
   type Settings,
 } from '@aurora/shared'
-import { registerComputerTools, registerSettingsTool } from './index.js'
+import {
+  EXTENSION_TOOL_NAMES,
+  registerComputerTools,
+  registerExtensionTools,
+  registerSettingsTool,
+} from './index.js'
 
 const HOME = 'C:\\Users\\tester'
 
@@ -245,5 +254,80 @@ describe('registerSettingsTool', () => {
     const { tools, registry } = setupSettings()
     expect(registry.sync()).toEqual(['set_setting'])
     expect(tools.get('set_setting')).toBeDefined()
+  })
+})
+
+describe('registerExtensionTools', () => {
+  function fakePorts() {
+    return {
+      webFetch: { fetch: async () => ({ status: 200, text: '' }) } as WebFetchPort,
+      clipboard: { read: async () => '', write: async () => undefined } as ClipboardPort,
+      notify: { show: async () => undefined } as NotifyPort,
+      imageGen: { generate: async () => ({ filePath: 'C:\\g\\1.png' }) } as ImageGenPort,
+    }
+  }
+
+  function setupExtension(tools = new ToolRegistry()) {
+    const registry = registerExtensionTools({ tools, logger: createMemoryLogger(), ...fakePorts() })
+    return { tools, registry }
+  }
+
+  it('注册扩展工具五件套，敏感级与文档一致（clipboard / generate_image = confirm）', () => {
+    const { tools, registry } = setupExtension()
+    expect(registry.sync()).toEqual([...EXTENSION_TOOL_NAMES])
+    expect(tools.get('web_fetch')?.sensitivity).toBe('safe')
+    expect(tools.get('notify_user')?.sensitivity).toBe('safe')
+    expect(tools.get('clipboard_read')?.sensitivity).toBe('confirm')
+    expect(tools.get('clipboard_write')?.sensitivity).toBe('confirm')
+    expect(tools.get('generate_image')?.sensitivity).toBe('confirm')
+  })
+
+  it('不受 agent.tools.enabled 门控（与 set_setting 同级），且不影响其它工具', () => {
+    const settings = makeSettings()
+    settings.agent.tools.enabled = false
+    const tools = new ToolRegistry()
+    tools.register({
+      name: 'use_skill',
+      description: '占位',
+      parameters: { type: 'object', properties: {} },
+      async execute() {
+        return { content: '' }
+      },
+    })
+    const computerRegistry = registerComputerTools({
+      tools,
+      getSettings: () => settings,
+      logger: createMemoryLogger(),
+      homeDir: () => HOME,
+      run: fakeRunner(),
+      files: fakeFilePort(),
+      open: fakeOpenPort(),
+    })
+    const extensionRegistry = registerExtensionTools({
+      tools,
+      logger: createMemoryLogger(),
+      ...fakePorts(),
+    })
+
+    computerRegistry.sync()
+    extensionRegistry.sync()
+    expect(COMPUTER_TOOL_NAMES.every((name) => tools.get(name) === undefined)).toBe(true)
+    expect(EXTENSION_TOOL_NAMES.every((name) => tools.get(name) !== undefined)).toBe(true)
+    expect(tools.get('use_skill')).toBeDefined()
+
+    // 电脑操控开关回开后，扩展工具不被误摘
+    settings.agent.tools.enabled = true
+    computerRegistry.sync()
+    extensionRegistry.sync()
+    expect(EXTENSION_TOOL_NAMES.every((name) => tools.get(name) !== undefined)).toBe(true)
+  })
+
+  it('sync 幂等：重复调用不产生重复注册', () => {
+    const { tools, registry } = setupExtension()
+    registry.sync()
+    const sizeAfterFirst = tools.list().length
+    registry.sync()
+    expect(tools.list().length).toBe(sizeAfterFirst)
+    expect(tools.list().filter((tool) => tool.name === 'web_fetch')).toHaveLength(1)
   })
 })

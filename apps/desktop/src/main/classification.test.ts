@@ -96,11 +96,16 @@ function settingsWith(overrides: {
       launchAtLogin: false,
       hotkey: 'Alt+Space',
       edgeBar: { enabled: true, opacity: 0.9, quietHours: null },
+      // CONFIG_VERSION 8 新增子组：本用例不涉及对话展示，保持默认态
+      chat: { showThinking: true },
       windowState: {},
     },
     llm: { active: 'x', providers: {} },
     // TTS 配置段（CONFIG_VERSION 7，docs/06 §13）：本用例不涉及语音，保持默认空态
     tts: { enabled: true, active: '', autoRead: false, maxChars: 2000, providers: {} },
+    // STT / 生图配置段（CONFIG_VERSION 8，Design/betav2-spec.md §4）：保持默认空态
+    stt: { enabled: false, active: '', providers: {} },
+    imagegen: { enabled: false, active: '', providers: {} },
     modes: {
       current: 'classroom',
       classroom: {
@@ -116,13 +121,14 @@ function settingsWith(overrides: {
           classisland: { source: 'file', endpoint: '', timeoutMs: 3000 },
         },
         preClassReminder: true,
+        preClassOpenFolder: true,
         classification: {
           autoMove: overrides.autoMove ?? true,
           confidenceThreshold: overrides.threshold ?? 0.6,
           fallbackFolder: '待分类',
         },
       },
-      work: { guideCompleted: false },
+      work: { guideCompleted: false, workspaceDir: '' },
       code: { guideCompleted: false },
     },
     skills: { userDir: '', disabled: [] },

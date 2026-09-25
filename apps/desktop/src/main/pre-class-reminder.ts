@@ -37,6 +37,12 @@ export interface PreClassReminderOptions {
   notify: (title: string, body: string, openPath?: string) => void
   /** 打开科目文件夹（主进程注入 `shell.openPath`） */
   openPath: (target: string) => Promise<void>
+  /**
+   * 是否自动打开科目文件夹（设置项 `modes.classroom.preClassOpenFolder`），
+   * 每次 tick 即时读取；**只门控自动打开**，系统通知照发（点击通知仍可打开目录）。
+   * 未注入时保持原行为（始终自动打开）。
+   */
+  openFolderEnabled?: () => boolean
   /** 科目 → 绝对目录（复用 `paths.resolveSubjectFolder` + 设置里的科目映射） */
   resolveSubjectDir: (subjectName: string) => string
   logger: Logger
@@ -146,7 +152,7 @@ export class PreClassReminder {
         const minutesUntil = Math.max(0, Math.round(trigger.minutesUntil))
         const dir = this.resolveDir(trigger.lesson.subject)
         this.notify(trigger.lesson, minutesUntil, dir)
-        if (dir !== '') await this.openDir(dir, trigger.lesson.subject)
+        if (dir !== '' && this.shouldOpenDir()) await this.openDir(dir, trigger.lesson.subject)
         this.reportFired(trigger.lesson.subject, minutesUntil, dir)
         results.push({ lesson: trigger.lesson, minutesUntil: trigger.minutesUntil })
       }
@@ -194,6 +200,17 @@ export class PreClassReminder {
     } catch (error) {
       this.options.logger.warn('解析科目目录失败', { subject, error: String(error) })
       return ''
+    }
+  }
+
+  /** 自动打开科目的开关：`preClassOpenFolder`（缺省注入时视为开）。 */
+  private shouldOpenDir(): boolean {
+    if (this.options.openFolderEnabled === undefined) return true
+    try {
+      return this.options.openFolderEnabled()
+    } catch (error) {
+      this.options.logger.warn('读取打开文件夹开关失败，按打开处理', { error: String(error) })
+      return true
     }
   }
 

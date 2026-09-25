@@ -39,6 +39,9 @@ export interface WindowManagerOptions {
 interface WindowSpec {
   width: number
   height: number
+  /** 最小尺寸（可选；chat 主界面 940×600，见 betav2 规格 §2） */
+  minWidth?: number
+  minHeight?: number
   resizable: boolean
   transparent: boolean
   alwaysOnTop: boolean
@@ -60,14 +63,18 @@ const SPECS: Record<WindowName, WindowSpec> = {
     place: 'edge',
   },
   chat: {
-    width: 420,
-    height: 640,
+    // BetaV2（Design/betav2-spec.md §2）：chat 从小交互窗升级为**主界面**（1120×720），
+    // 不再置顶、居中显示；frame:false / 几何持久化 / 关闭=隐藏 机制不变。
+    width: 1120,
+    height: 720,
+    minWidth: 940,
+    minHeight: 600,
     resizable: true,
     transparent: false,
-    alwaysOnTop: true,
+    alwaysOnTop: false,
     skipTaskbar: true,
     focusable: true,
-    place: 'chat',
+    place: 'center',
   },
   settings: {
     width: 900,
@@ -91,7 +98,7 @@ const SPECS: Record<WindowName, WindowSpec> = {
   },
 }
 
-const DARK_BACKGROUND = '#0b0c0f'
+const DARK_BACKGROUND = '#000000'
 const LIGHT_BACKGROUND = '#f5f5f7'
 
 function windowBackgroundColor(): string {
@@ -209,6 +216,8 @@ export class WindowManager {
       ...bounds,
       width: bounds.width ?? size.width,
       height: bounds.height ?? size.height,
+      ...(spec.minWidth === undefined ? {} : { minWidth: spec.minWidth }),
+      ...(spec.minHeight === undefined ? {} : { minHeight: spec.minHeight }),
       show: false,
       frame: false,
       resizable: spec.resizable,
@@ -534,8 +543,10 @@ export class WindowManager {
     return {
       x: clamp(x, area.x - width + 40, area.x + area.width - 40),
       y: clamp(y, area.y, area.y + area.height - 40),
-      width: Math.max(120, width),
-      height: Math.max(48, height),
+      // 旧版本持久化的尺寸可能小于 BetaV2 的最小规格（如升级前的 chat 420×640），
+      // 这里按 spec 的 minWidth / minHeight 抬底，避免「恢复出来的窗口比最小值还小」。
+      width: Math.max(SPECS[name].minWidth ?? 120, width),
+      height: Math.max(SPECS[name].minHeight ?? 48, height),
     }
   }
 

@@ -14,8 +14,8 @@
  *   否则设置页保存一次就会把磁盘上的密文清空（同进程被 `memorySecrets` 掩盖，重启才暴露）。
  * - MCP 的 `envEnc` 是**逐键**合并的：空对象 = 一个键也不改；空串值 = 该键保留已有密文
  *   （新增服务器时它是「占位」，随后由 `settings:setSecrets` 写成真密文）。
- * - 删除语义按容器类型区分：`llm.providers`（以及同构的 `tts.providers`）是 **record**，
- *   缺项 ≠ 删除（必须显式声明 `llm.removedProviders` / `tts.removedProviders`）；
+ * - 删除语义按容器类型区分：`llm.providers`（以及同构的 `tts` / `stt` / `imagegen` 的
+ *   `providers`）是 **record**，缺项 ≠ 删除（必须显式声明各自的 `removedProviders`）；
  *   `mcp.servers` 是**数组**，整数组权威（不在数组里 = 删除）。
  */
 import {
@@ -43,7 +43,9 @@ export function extractPatchSecrets(patch: SettingsPatch): PatchSecrets {
   if (
     patch.llm?.providers === undefined &&
     patch.mcp?.servers === undefined &&
-    patch.tts?.providers === undefined
+    patch.tts?.providers === undefined &&
+    patch.stt?.providers === undefined &&
+    patch.imagegen?.providers === undefined
   ) {
     return { patch, secrets: {} }
   }
@@ -51,23 +53,26 @@ export function extractPatchSecrets(patch: SettingsPatch): PatchSecrets {
   const next = deepClone(patch)
   const secrets: SecretEntries = {}
 
-  for (const [id, provider] of Object.entries(next.llm?.providers ?? {})) {
-    const draft = provider as unknown as Record<string, unknown>
-    const apiKey = draft['apiKey']
-    if (typeof apiKey === 'string') {
-      delete draft['apiKey']
-      if (apiKey !== '') secrets[`llm.providers.${id}.apiKey`] = apiKey
+  const extractProviderKeys = (
+    providers: Record<string, unknown> | undefined,
+    prefix: string,
+  ): void => {
+    for (const [id, provider] of Object.entries(providers ?? {})) {
+      const draft = provider as Record<string, unknown>
+      const apiKey = draft['apiKey']
+      if (typeof apiKey === 'string') {
+        delete draft['apiKey']
+        if (apiKey !== '') secrets[`${prefix}.${id}.apiKey`] = apiKey
+      }
     }
   }
 
-  for (const [id, provider] of Object.entries(next.tts?.providers ?? {})) {
-    const draft = provider as unknown as Record<string, unknown>
-    const apiKey = draft['apiKey']
-    if (typeof apiKey === 'string') {
-      delete draft['apiKey']
-      if (apiKey !== '') secrets[`tts.providers.${id}.apiKey`] = apiKey
-    }
-  }
+  // llm / tts / stt / imagegen 四组 provider 同构：明文 `apiKey` 只经这里落库，
+  // 合并进 draft 的副本里永远不带它（Schema 里只有 `apiKeyEnc` 字段）。
+  extractProviderKeys(next.llm?.providers, 'llm.providers')
+  extractProviderKeys(next.tts?.providers, 'tts.providers')
+  extractProviderKeys(next.stt?.providers, 'stt.providers')
+  extractProviderKeys(next.imagegen?.providers, 'imagegen.providers')
 
   for (const server of next.mcp?.servers ?? []) {
     const draft = server as unknown as Record<string, unknown>
@@ -141,6 +146,49 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
     if ((ttsProviders[id]?.apiKeyEnc ?? '') === '') cleared.push(`tts.providers.${id}.apiKey`)
   }
 
+  // STT / 生图 provider 级：与 `tts.providers` **完全同一套** record 合并语义
+  // （缺项 ≠ 删除、空 `apiKeyEnc` 回传 = 本次不改凭据、removedProviders 显式删除）。
+  // 四组 provider（llm / tts / stt / imagegen）逐句照搬是刻意的：形状一致但配置独立，
+  // 抽象成通用循环反而会把「每组都要有删除语义」这层契约藏进泛型里。
+
+  const sttProviders = { ...draft.stt.providers }
+  const sttRemovals = [...(patch.stt?.removedProviders ?? [])]
+  for (const id of sttRemovals) delete sttProviders[id]
+
+  for (const [id, provider] of Object.entries(patch.stt?.providers ?? {})) {
+    const existing = sttProviders[id]
+    const incoming = { ...provider } as Record<string, unknown>
+    if (existing !== undefined && incoming['apiKeyEnc'] === '') delete incoming['apiKeyEnc']
+    sttProviders[id] = {
+      ...(existing ?? {}),
+      ...incoming,
+    } as Settings['stt']['providers'][string]
+  }
+
+  for (const id of sttRemovals) {
+    if ((sttProviders[id]?.apiKeyEnc ?? '') === '') cleared.push(`stt.providers.${id}.apiKey`)
+  }
+
+  const imageGenProviders = { ...draft.imagegen.providers }
+  const imageGenRemovals = [...(patch.imagegen?.removedProviders ?? [])]
+  for (const id of imageGenRemovals) delete imageGenProviders[id]
+
+  for (const [id, provider] of Object.entries(patch.imagegen?.providers ?? {})) {
+    const existing = imageGenProviders[id]
+    const incoming = { ...provider } as Record<string, unknown>
+    if (existing !== undefined && incoming['apiKeyEnc'] === '') delete incoming['apiKeyEnc']
+    imageGenProviders[id] = {
+      ...(existing ?? {}),
+      ...incoming,
+    } as Settings['imagegen']['providers'][string]
+  }
+
+  for (const id of imageGenRemovals) {
+    if ((imageGenProviders[id]?.apiKeyEnc ?? '') === '') {
+      cleared.push(`imagegen.providers.${id}.apiKey`)
+    }
+  }
+
   // MCP 级：`patch.mcp.servers` 是**整数组权威**（不在数组里 = 删除），
   // 但每个服务器的 `envEnc` 逐键合并（见 `mergeMcpServer`）。
   const before = draft.mcp.servers
@@ -180,6 +228,19 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
     Object.assign(draft.tts, ttsPatch)
   }
   draft.tts.providers = ttsProviders
+  if (patch.stt !== undefined) {
+    // 同 `tts`：`removedProviders` 是删除指令，不能落进 `draft.stt` 进 Zod 解析。
+    const sttPatch = { ...patch.stt } as Record<string, unknown>
+    delete sttPatch['removedProviders']
+    Object.assign(draft.stt, sttPatch)
+  }
+  draft.stt.providers = sttProviders
+  if (patch.imagegen !== undefined) {
+    const imageGenPatch = { ...patch.imagegen } as Record<string, unknown>
+    delete imageGenPatch['removedProviders']
+    Object.assign(draft.imagegen, imageGenPatch)
+  }
+  draft.imagegen.providers = imageGenProviders
   if (patch.advanced !== undefined) Object.assign(draft.advanced, patch.advanced)
   if (patch.skills !== undefined) Object.assign(draft.skills, patch.skills)
   if (patch.mcp !== undefined) Object.assign(draft.mcp, patch.mcp)

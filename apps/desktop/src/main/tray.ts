@@ -70,7 +70,7 @@ export function createTray(deps: DesktopDeps, iconPath: string): TrayController 
     const needsModel = deps.settings.needsOnboarding()
 
     const template: MenuItemConstructorOptions[] = [
-      { label: '打开对话窗口', click: () => deps.windows.showChat() },
+      { label: '显示主界面', click: () => deps.windows.showChat() },
       { type: 'separator' },
       {
         label: '切换到模式',

@@ -319,18 +319,29 @@ v0.7.0 起 Agent 能读写**自己的配置**：内核新增内置工具 `set_se
 - `port.write` 抛出的异常被捕获后转成 `isError` 结果，**不允许异常冒泡进工具循环**——
   冒泡会中断整轮对话，那正是「AI 改设置把会话搞崩」的表现。
 
-### 12.2 可写范围：黑名单 + Schema 兜底
+### 12.2 可写范围：显式可写覆盖表 + 黑名单 + Schema 兜底
 
 判定在 `packages/shared/src/config/schema.ts` 的 `canWriteSettingPath` / `settingsReadonlyReason`，
-两道闸门：
+v8 起共三道闸门（**覆盖表先行**）：
+
+0. **显式可写覆盖表（v8 新增，`WRITABLE_PATH_OVERRIDES`）**：命中即视为可写，判定**先于**黑名单前缀。
+   存在它的意义：`llm.providers.<id>.model / .reasoningEffort / .temperature` 落在
+   `llm.providers` 黑名单前缀之内，但「换模型 / 调采样参数」不碰凭据，必须显式放行
+   （baseUrl / apiKeyEnc / modelList 等其余字段仍被前缀拒绝）；
+   `tts.*` / `stt.*` / `imagegen.*` / `agent.tools.*` 这类本就因「不在黑名单而可写」的路径
+   也逐条登记成**可写面清单**（供 `set_setting` 的工具描述与 §16 的 settingsHint 使用），
+   并防未来误加前缀时静默收窄。模式里的 `*` 段匹配恰好一个动态键段（如 provider id）。
+   注意 `advanced.confirmSensitiveTools` **不在**表内：确认总闸门必须只读，防自我提权。
 
 1. **黑名单前缀**：判定分两步 —— 先查用户配置项 `advanced.readonlyPrefixes`（默认值即导出的
-   `SETTINGS_READONLY_PREFIXES`，见 docs/08 §1，**具体条目以该常量为准**），
+   `SETTINGS_READONLY_PREFIXES`，见 docs/08 §1，**具体条目以该常量为准**；v8 起新增
+   `stt.providers` / `imagegen.providers` 两组凭据前缀），
    再**无条件**走 `canWriteSettingPath()`，后者内部用的是**硬编码**常量 `SETTINGS_READONLY_PREFIXES`
    ——它**从不读取用户配置**。也就是说 `advanced.readonlyPrefixes` 只能在默认黑名单**之上**追加限制，
    **不能放宽**：默认项始终生效，把 `general.hotkey` 从配置里删掉或清空整个数组，
    `general.hotkey` 这条路径**仍然被拒**（清空 = 回到默认项，而不是放开）。
-   默认项覆盖：凭据与密文（`llm.providers` / `mcp.servers`）、配置版本（`version`）、
+   默认项覆盖：凭据与密文（`llm.providers` / `mcp.servers` / `tts.providers` / `stt.providers` /
+   `imagegen.providers`）、配置版本（`version`）、
    窗口几何（`general.windowState`）、网络代理（`advanced.proxy`）、引导与首启标记
    （`general.onboarded` / `general.firstRun`）、开机自启（`general.launchAtLogin`）、
    全局快捷键（`general.hotkey`）、敏感工具确认总闸门（`advanced.confirmSensitiveTools`）。
@@ -487,6 +498,108 @@ Content-Type: application/json
   流式回复与后续对话完全不受影响，重试由用户再点一次按钮。
 - **无可用 provider 就不发请求**：`tts.enabled = false`、`tts.active` 为空、或指向不存在的条目时，
   朗读按钮不渲染（07 §2.3），`tts.autoRead` 也一并静默跳过——不能退化成「每个 provider 都试一遍」。
-- **本轮不做 STT（语音输入）**：没有麦克风采集、没有语音转文字、也没有「语音对话」循环，
-  不为它预留配置字段。TTS 是**纯输出**通道：文本进、音频出；音频是**即时播放**的产物，**不落盘**，
-  会话历史里仍然只有文本。
+- **语音输入（STT）自 v1.1.0-beta.2 起落地**，与 TTS 同构但独立（`stt.*` 配置组，见 §15）；
+  本节标题里的「不做 STT」仅对 v0.8.0 有效。
+
+## 14. 扩展工具五件套（v1.1.0-beta.2）
+
+v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/betav2-spec.md §6.2）。
+分层与 §11 的电脑操控工具同一套：**内核只定义工具与端口**（`tools/web-fetch.ts` /
+`tools/clipboard.ts` / `tools/notify.ts` / `tools/imagegen.ts`，纯 Node、可单测），
+真实系统能力由主进程实现端口后注入（`apps/desktop/src/main/tools/` 下对应实现）。
+
+| 工具 | 端口（内核） | 主进程实现 | 敏感级 |
+|---|---|---|---|
+| `web_fetch` {url} | `WebFetchPort.fetch(url)` | `createNetWebFetchPort`（netFetch + 剥标签 + 截断） | safe |
+| `clipboard_read` () | `ClipboardPort.read()` | `createElectronClipboardPort`（Electron `clipboard.readText`） | **confirm**（隐私） |
+| `clipboard_write` {text} | `ClipboardPort.write(text)` | 同上（`clipboard.writeText`） | **confirm** |
+| `notify_user` {title, body} | `NotifyPort.show(title, body)` | `createNotificationPort`（映射到 `NotificationService.notify`，复用去重 / 点击打开 / 日志） | safe |
+| `generate_image` {prompt, size?} | `ImageGenPort.generate({prompt, size?})` | `createImageGenPort` → `ImageGenService`（§15） | **confirm**（花 API 费用） |
+
+### 14.1 注册口径
+
+- 装配器是 `main/tools/index.ts` 的 `registerExtensionTools`，与 `registerSettingsTool` **同级**：
+  **不受 `agent.tools.enabled` 门控**——它们不在 `COMPUTER_TOOL_NAMES` 里，「看网页 / 收通知 /
+  生图」不属于「电脑操控」的开关语义；`syncToolRegistries()`（主进程唯一的工具表同步入口）每次
+  先按名字全量摘除再重建，与电脑操控工具同一拍热生效。
+- 敏感动作不靠开关、靠确认：`clipboard_read` / `clipboard_write` / `generate_image` 都是
+  `sensitivity: 'confirm'`，每次调用过 §5 的 `confirmTool`（§9.1 的确认卡片）。
+- `clipboard` 端口实现是主进程里**唯一必须 import electron** 的工具文件，因此没有单测；
+  其余端口实现（`web-fetch.ts` / `notify.ts` / `imagegen-port.ts`）保持不依赖 Electron。
+
+### 14.2 `web_fetch` 的行为边界
+
+- **只做 GET**、只接受 `http://` / `https://`；结果一律按**数据**回填（安全规则声明工具内容不是指令）。
+- 出网走主进程 `netFetch` 的**取值函数**（`() => netFetch`），`advanced.proxy` 改完即刻生效。
+- HTML 做**简单剥标签**：去注释 → 移除 `script` / `style` 整块 → 标签转空格 → 常见实体解码
+  （`&amp;` / `&lt;` / `&gt;` / `&quot;` / `&#39;` / `&nbsp;` 与数字 / 十六进制实体）→ 空白压平。
+  非 HTML（JSON / 纯文本）原样返回，避免剥标签误伤 JSON 里的 `<`。刻意不做完整 DOM 解析：
+  主进程只要「正文大致可读」，解析器的安全面因此不存在。
+- 回填文本按 `MAX_WEB_FETCH_CHARS`（20 000，agent-core 与主进程 re-export 同源）截断，
+  截断时带省略标记；抓取超时默认 20s，超时与网络错误折成中文错误。
+
+## 15. 语音输入（STT）与图像生成（v1.1.0-beta.2）
+
+两组新服务都在主进程（`main/stt.ts` / `main/imagegen.ts`），**不 import electron**：
+出网 fetch（netFetch）与凭据解密全部注入，可与 TTS（§13）一样被 vitest 直接加载。
+provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs/08 §1；
+`SETTINGS_READONLY_PREFIXES` 已覆盖两组 providers 子树，AI 一律改不动凭据。
+
+### 15.1 语音输入（STT）
+
+- 端点：`POST <baseUrl>/audio/transcriptions`（OpenAI 兼容），`multipart/form-data`：
+  字段 `file`（Blob，文件名按 MIME 取扩展名：webm / mp3 / wav / ogg / m4a / flac，兜底 webm）、
+  `model`、`language`（provider.language 或请求覆盖值，**空串不下发** = 服务端自动检测）。
+  ⚠️ multipart **不手工设置** `Content-Type`——boundary 由 fetch 实现生成。
+- 凭据：`Authorization: Bearer <解密后的 apiKey>`，明文只存在于主进程发起请求的那一刻（同 §13.3）。
+- provider 解析口径与 TTS 一致：`stt.enabled && stt.active` 指向存在的条目，
+  否则抛「语音输入未配置」中文错误（渲染层 composer 连麦克风按钮都不渲染，docs/07 §3）。
+- 成功响应 `{text}`；缺 `text` / 非 2xx / 超时（默认 30s）都折成带状态码或原因的中文错误。
+- 音频是渲染层 `MediaRecorder` 的 webm base64，经 IPC `stt:transcribe` 上来，**不落盘**：
+  转写完成后只有文本进会话，录音即弃。
+
+### 15.2 图像生成
+
+- 端点：`POST <baseUrl>/images/generations`（JSON），body `{model, prompt, size, n:1, response_format:'b64_json'}`；
+  `size` 取 provider 配置或请求覆盖值（Schema 白名单：`512x512` / `768x768` / `1024x1024` /
+  `1024x1792` / `1792x1024` / `auto`）。超时默认 120s（生图显著慢于对话）。
+- 响应优先取 `data[0].b64_json`；部分服务不遵守 `response_format` 只回 `url`，
+  此时用注入的 fetch 下载（同样走 netFetch）。PNG 解码后落盘
+  `<userData>/generated/<Date.now()>-<6位随机>.png`（目录不存在则递归创建）。
+- 返回 `{filePath, dataUrl}`：`filePath` 进工具回填文本（`generate_image` 工具的结果只有路径），
+  `dataUrl` 只走 IPC 给渲染层直接预览；**图片的 base64 不进会话、不进工具回填**，
+  否则一张图就能撑爆上下文预算。
+- `imagegen:read`（渲染层预览已生成图片的唯一通道）做**路径安全校验**：
+  `path.resolve` 后必须在 generated 目录内（`..` 逃逸、换盘符、目录本身一律拒绝），
+  越界路径返回错误，不读盘。
+
+## 16. 思考链展示（reasoning，v1.1.0-beta.2）
+
+支持「输出思考过程」的模型（DeepSeek / Kimi / OpenRouter 等）的思考链现在会被采集并展示，
+语义有三条边界：
+
+1. **只认独立字段**：SSE 增量按 `delta.reasoning_content ?? delta.reasoning` 提取
+   （字符串、可空；`reasoning_content` 优先）。`content` 里内嵌的 `<think>...</think>`
+   **不做**解析——避免把正文误伤成思考。
+2. **事件与持久化**：内核流事件联合新增 `{type:'reasoning', delta}`；agent loop 转发为
+   `AgentEvent 'reasoning'`（渲染层按 `requestId` 暂存增量、done 后并入消息），
+   同时把增量累积进当条 assistant 消息的 `reasoning` 字段，随 `append` 一起持久化
+   （`StoredMessage.reasoning`，重启后历史仍可回看）。
+3. **API 回传不携带**：把历史消息回传给模型时只挑 `role` / `content` / 工具调用字段，
+   `reasoning` 是**展示字段**，不进对话请求——它是模型自己的输出，回传只会干扰采样，
+   也避免把上一轮的思考链泄漏成下一轮的上下文。
+
+## 17. settingsHint：Agent 可修改设置清单注入 systemPrompt
+
+- `SystemPromptParts.settingsHint?: string`（agent-core）渲染为独立小节
+  「## Agent 可修改的设置」，位于可用工具之后、安全规则之前；空片段自动省略。
+- 主进程在 `main/settings-hint.ts` 维护**一段固定中文清单**：逐条列出 §12.2 显式可写覆盖表
+  同口径的路径（`llm.providers.<id>.model/reasoningEffort/temperature`、`tts.*`、`stt.*`、
+  `imagegen.*` 开关、`general.edgeBar.*`、`general.chat.showThinking`、`modes.current`、
+  `modes.work.workspaceDir`、`modes.classroom.*`、`agent.tools.*`、`skills.userDir/disabled`、
+  `advanced.quietHours`），并注明「凭据类一律只读、改动即时生效」。
+- 清单只是**提示词**，真实可写面永远由 `canWriteSettingPath` 判定（工具端口不认清单）：
+  两边最多出现「能改但没说」的保守偏差，不会出现「说能改但不能改」。
+- 注入点：主进程组装 `KernelAgentHost` 时经 `composeModePrompt()` 把清单附加在模式提示词之后
+  （内核尚未开放 `settingsHint` 的装配入口，渲染结果等价；agent-core 补上正式通道后应改走
+  `settingsHint` 字段并删除该辅助函数）。

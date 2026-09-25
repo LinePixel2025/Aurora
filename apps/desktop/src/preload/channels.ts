@@ -54,6 +54,14 @@ const CHANNELS = {
     synthesize: 'tts:synthesize',
     testConnection: 'tts:testConnection',
   },
+  // v8 新增（Design/betav2-spec.md §5）：与 shared 的 IPC 同步维护，编译期双向断言会兜住
+  stt: {
+    transcribe: 'stt:transcribe',
+  },
+  imagegen: {
+    generate: 'imagegen:generate',
+    read: 'imagegen:read',
+  },
   window: {
     show: 'window:show',
     hide: 'window:hide',

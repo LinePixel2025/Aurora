@@ -28,6 +28,7 @@ import {
   type GuideAnswerResult,
   type GuideSession,
   type HotkeyStatus,
+  type ImageGenReadRequest,
   type Logger,
   type McpServerStatus,
   type ModeId,
@@ -52,7 +53,9 @@ import type {
   ClassificationControllerLike,
   GuideRunnerLike,
   HotkeyControllerLike,
+  ImageGenServiceLike,
   LlmTesterLike,
+  SttServiceLike,
   TtsSynthesizerLike,
   ModeManagerLike,
   PerceptionLike,
@@ -80,6 +83,10 @@ export interface DesktopDeps {
   llm: LlmTesterLike
   /** 语音合成（tts:*，docs/06 §13） */
   tts: TtsSynthesizerLike
+  /** 语音输入（stt:transcribe，Design/betav2-spec.md §8.2、docs/06 §15） */
+  stt: SttServiceLike
+  /** 图像生成（imagegen:*，Design/betav2-spec.md §8.3、docs/06 §15） */
+  imagegen: ImageGenServiceLike
   skills: SkillsInfoLike
   /** 会话历史（chat:history 水合，docs/06 §4） */
   sessions: SessionStore
@@ -268,6 +275,30 @@ export function registerIpc(deps: DesktopDeps): () => void {
       .test(request)
       .then(ok, (error: unknown) =>
         err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      )
+  })
+
+  // ───────────────── stt / imagegen（v8 新增，Design/betav2-spec.md §5 / §8） ─────────────────
+
+  handle(IPC.stt.transcribe, (request: Parameters<SttServiceLike['transcribe']>[0]) => {
+    return deps.stt
+      .transcribe(request)
+      .then(ok, (error: unknown) =>
+        err('E_INVALID_STATE', error instanceof Error ? error.message : String(error)),
+      )
+  })
+  handle(IPC.imagegen.generate, (request: Parameters<ImageGenServiceLike['generate']>[0]) => {
+    return deps.imagegen
+      .generate(request)
+      .then(ok, (error: unknown) =>
+        err('E_INVALID_STATE', error instanceof Error ? error.message : String(error)),
+      )
+  })
+  handle(IPC.imagegen.read, (request: ImageGenReadRequest) => {
+    return deps.imagegen
+      .read(request)
+      .then(ok, (error: unknown) =>
+        err('E_INVALID_ARGUMENT', error instanceof Error ? error.message : String(error)),
       )
   })
 
@@ -625,18 +656,24 @@ function redactSettingsForRenderer(deps: DesktopDeps, source: Settings): Setting
  * 脱敏主体：只依赖 `SettingsStoreLike`（取凭据"是否已设置"），
  * 因此 `set_setting` 的端口（`tools/settings-port.ts`）能复用**同一份**逻辑，
  * 不会出现"两处脱敏，改一处漏一处"。
+ *
+ * **凭据 checklist**：`llm` / `tts` / `stt` / `imagegen` 四组 provider 的密文都在这里折成
+ * `apiKeySet` 标记——漏掉任何一组 = 该组密文随 `settings:get` 泄漏进渲染层（AGENTS.md）。
  */
 export function redactSettings(settings: SettingsStoreLike, source: Settings): Settings {
   const clone = structuredClone(source)
-  for (const [id, provider] of Object.entries(clone.llm.providers)) {
-    const draft = provider as unknown as Record<string, unknown>
-    draft['apiKeySet'] = settings.getSecret(`llm.providers.${id}.apiKey`) !== ''
-    draft['apiKeyEnc'] = ''
-  }
-  for (const [id, provider] of Object.entries(clone.tts.providers)) {
-    const draft = provider as unknown as Record<string, unknown>
-    draft['apiKeySet'] = settings.getSecret(`tts.providers.${id}.apiKey`) !== ''
-    draft['apiKeyEnc'] = ''
+  const providerGroups = [
+    { providers: clone.llm.providers, prefix: 'llm' },
+    { providers: clone.tts.providers, prefix: 'tts' },
+    { providers: clone.stt.providers, prefix: 'stt' },
+    { providers: clone.imagegen.providers, prefix: 'imagegen' },
+  ] as const
+  for (const { providers, prefix } of providerGroups) {
+    for (const [id, provider] of Object.entries(providers)) {
+      const draft = provider as unknown as Record<string, unknown>
+      draft['apiKeySet'] = settings.getSecret(`${prefix}.providers.${id}.apiKey`) !== ''
+      draft['apiKeyEnc'] = ''
+    }
   }
   for (const server of clone.mcp.servers) {
     const draft = server as unknown as Record<string, unknown>

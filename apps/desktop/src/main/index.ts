@@ -49,6 +49,9 @@ import { DesktopAgentHost, createConfirmTool, createProviderFactory } from './ag
 import { McpController } from './mcp.js'
 import { LlmTester } from './llm-tester.js'
 import { TtsSynthesizer } from './tts.js'
+import { createSttService } from './stt.js'
+import { createImageGenService } from './imagegen.js'
+import { composeModePrompt } from './settings-hint.js'
 import { registerIpc, createSettingsWriter, type DesktopDeps } from './ipc.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { ProactiveScheduler } from './proactive.js'
@@ -79,10 +82,16 @@ import {
 } from './capture.js'
 import {
   registerComputerTools,
+  registerExtensionTools,
   registerSettingsTool,
   type ComputerTools,
+  type ExtensionToolsRegistry,
   type SettingsToolRegistry,
 } from './tools/index.js'
+import { createNetWebFetchPort } from './tools/web-fetch.js'
+import { createElectronClipboardPort } from './tools/clipboard.js'
+import { createNotificationPort } from './tools/notify.js'
+import { createImageGenPort } from './tools/imagegen-port.js'
 import { createSettingsPort } from './tools/settings-port.js'
 import { createCommandRunner } from './tools/command-runner.js'
 import { createNodeFilePort } from './tools/file-port.js'
@@ -185,6 +194,8 @@ let tools: ToolRegistry | undefined
 let computerTools: ComputerTools | undefined
 /** `set_setting` 装配器（docs/06 §12）：与电脑操控工具分开注册，互不摘除 */
 let settingsTool: SettingsToolRegistry | undefined
+/** 扩展工具五件套装配器（docs/06 §14）：与 set_setting 同级，不受 agent.tools.enabled 门控 */
+let extensionTools: ExtensionToolsRegistry | undefined
 /** MCP 状态订阅（IPC 层与主进程内部共用，避免为状态再引入一次事件总线） */
 const mcpStatusListeners = new Set<(statuses: McpServerStatus[]) => void>()
 
@@ -278,6 +289,22 @@ async function bootstrap(): Promise<void> {
         'Content-Security-Policy': [csp],
       },
     })
+  })
+
+  // 1.2 权限请求（Design/betav2-spec.md §8.6）：只显式放行**自身窗口**的 `media`
+  //     （麦克风，STT 录音依赖 getUserMedia），其余权限维持 Electron / Chromium 的
+  //     默认语义（callback(true) = 与没有 handler 时的现状一致，不额外收窄）。
+  //     保守取舍的理由：此前从未注册过权限 handler，所有请求都走默认路径；
+  //     这里如果改成「未列出一律拒绝」，会静默改变若干内嵌页面的行为（最难排查的一类回归）。
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission === 'media') {
+      const isOwnWindow = BrowserWindow.getAllWindows().some(
+        (win) => !win.isDestroyed() && win.webContents.id === webContents.id,
+      )
+      callback(isOwnWindow)
+      return
+    }
+    callback(true)
   })
 
   // 2. 配置（Schema 校验 + 迁移 + safeStorage 凭据）
@@ -473,6 +500,33 @@ async function bootstrap(): Promise<void> {
     open: createShellOpenPort(),
   })
   settingsTool = registerSettingsTool({ tools, port: settingsPort, logger: logger.child('tools') })
+  // 7.1.2 STT / 生图服务（docs/06 §15）：出网走注入的 netFetch（代理生效），
+  //     生图落盘到 `userData/generated`（imagegen:read 的白名单根，见 ipc.ts 的路径校验）。
+  const sttService = createSttService({
+    settings,
+    logger: logger.child('stt'),
+    resolveFetch: () => netFetch,
+  })
+  const imageGenService = createImageGenService({
+    settings,
+    logger: logger.child('imagegen'),
+    generatedDir: join(userData, 'generated'),
+    resolveFetch: () => netFetch,
+  })
+  // 7.1.3 扩展工具五件套（docs/06 §14）：web_fetch / clipboard_read / clipboard_write /
+  //     notify_user / generate_image。与 set_setting 同级——不受 `agent.tools.enabled` 门控，
+  //     敏感动作靠工具自身的 `sensitivity: 'confirm'` 逐次确认。
+  //     NotificationService 在下方 7.2 才装配，这里按调用时点取值（工具执行时必然已就绪）。
+  extensionTools = registerExtensionTools({
+    tools,
+    logger: logger.child('tools'),
+    webFetch: createNetWebFetchPort({ fetchImpl: () => netFetch }),
+    clipboard: createElectronClipboardPort(),
+    notify: createNotificationPort({
+      notify: (request) => notifications?.notify(request) ?? false,
+    }),
+    imageGen: createImageGenPort(imageGenService),
+  })
   syncToolRegistries()
 
   mcp = new McpController({
@@ -525,7 +579,9 @@ async function bootstrap(): Promise<void> {
     tools,
     skills: skillBridge,
     logger: logger.child('agent'),
-    modePrompt: () => modes.systemPrompt(),
+    // settingsHint（docs/06 §16）：「Agent 可修改的设置」清单随模式提示词一并注入
+    // （composeModePrompt 附加为独立小节；agent-core 开放正式通道后改走 settingsHint 字段）
+    modePrompt: () => composeModePrompt(modes.systemPrompt()),
     perceptionSummary: () => perception?.contextSummary() ?? Promise.resolve(''),
     // 长上下文摘要（docs/06 §4）：被截断的旧消息交给当前 provider 压成一段摘要。
     // 装配层实现、内核只接受注入 —— agent-core 保持不依赖网络与 Electron。
@@ -654,6 +710,9 @@ async function bootstrap(): Promise<void> {
     getProvider: () => currentScheduleProvider(),
     enabled: () => settings!.get().modes.classroom.preClassReminder,
     quietHours: () => settings!.get().advanced.quietHours,
+    // 自动打开科目文件夹受 `preClassOpenFolder` 门控（Design/betav2-spec.md §8.7）：
+    // 通知照发，只是不再主动弹资源管理器
+    openFolderEnabled: () => settings!.get().modes.classroom.preClassOpenFolder,
     notify: (title, body, openPath) => notify(title, body, openPath),
     openPath: async (target) => {
       if (smokeMode) {
@@ -689,6 +748,8 @@ async function bootstrap(): Promise<void> {
     perception,
     llm,
     tts,
+    stt: sttService,
+    imagegen: imageGenService,
     skills: skillsService,
     sessions,
     classification,
@@ -1547,6 +1608,10 @@ function classIslandStatus(): ClassIslandStatus {
     lessonCount: status?.lessonCount ?? 0,
     warnings: status?.warnings ?? [],
     ...(status?.error === undefined ? {} : { error: status.error }),
+    // 桥接 v2 的当前课状态快照（payload.status，Design/betav2-spec.md §8.8）：
+    // shared 的 `ClassIslandStatus` 类型暂未收录该字段，经展开**运行时透出**，
+    // `classisland:status` IPC 会把它原样带给渲染层；shared 增补后收紧为具名字段。
+    ...(status?.status === undefined ? {} : { status: status.status }),
   }
 }
 
@@ -1690,17 +1755,19 @@ function adaptProactive(scheduler: ProactiveScheduler): ProactiveLike {
  * 感知文件夹变化时重建监听（`watch()` 本身幂等）。
  */
 /**
- * 工具注册表的**唯一**同步入口（docs/06 §11、§12）。 *
- * 两个装配器必须一起同步：
+ * 工具注册表的**唯一**同步入口（docs/06 §11、§12、§14）。 *
+ * 三个装配器必须一起同步：
  * - `computerTools`：按 `agent.tools.*` 重建 5 个电脑操控工具；
- * - `settingsTool`：重建 `set_setting`（不受 `agent.tools.enabled` 影响，见 tools/index.ts）。
+ * - `settingsTool`：重建 `set_setting`（不受 `agent.tools.enabled` 影响，见 tools/index.ts）；
+ * - `extensionTools`：重建扩展工具五件套（同样不受 `agent.tools.enabled` 影响）。
  *
- * 拆开写会让「改开关后工具表变化」的时机不一致：`set_setting` 是否注册不再依赖
- * `agent.tools.enabled`，但它读的是同一份配置，必须和电脑操控工具在同一拍完成重建。
+ * 拆开写会让「改开关后工具表变化」的时机不一致：后两者不依赖 `agent.tools.enabled`，
+ * 但都与电脑操控工具共用同一张注册表，必须在同一拍完成重建。
  */
 function syncToolRegistries(): void {
   computerTools?.sync()
   settingsTool?.sync()
+  extensionTools?.sync()
 }
 
 function syncClassification(): void {

@@ -22,17 +22,15 @@ import { join } from 'node:path'
 import { nativeTheme, type BrowserWindow } from 'electron'
 import type { Logger, WindowName } from '@aurora/shared'
 import type { WindowManager } from './window-manager.js'
-/** 设置页可深链的页面 id，需与 `renderer/settings/App.vue` 的 `PageId` 保持一致 */
-export const SETTINGS_PAGE_IDS = [
-  'general',
-  'modes',
-  'llm',
-  'tts',
-  'skills',
-  'mcp',
-  'agent',
-  'advanced',
-] as const
+/**
+ * 设置页可深链的页面 id，需与 `renderer/settings/App.vue` 的 `PageId` 保持一致。
+ *
+ * BetaV2 六页 IA（spec §9）：8 页合并为 6 页 —— TtsPage 并入 voice（与 STT 同页）、
+ * SkillsPage / McpPage 并入 agent。旧深链（`?page=tts|skills|mcp`）由渲染层的
+ * `LEGACY_PAGE_ALIASES` 单向映射到新页，深链清单本身只保留新 id；
+ * 别名映射由 `settings-legacy-tts-alias.png` 场景单独钉住（见 defaultCapturePlan）。
+ */
+export const SETTINGS_PAGE_IDS = ['general', 'modes', 'llm', 'voice', 'agent', 'advanced'] as const
 
 export type SettingsPageId = (typeof SETTINGS_PAGE_IDS)[number]
 
@@ -452,10 +450,330 @@ export const CHAT_COLLAPSE_CHECK = `(async () => {
 })()`
 
 /**
+ * 主界面左栏结构 + 门控探针（BetaV2，spec §11）：三栏重构后左栏的固定锚点必须全部在。
+ *
+ * 断言四件事：
+ * ① 左栏三件套：`chat.quick-item`（固定顶置的「快速对话」）、`chat.session-list`（会话列表
+ *    容器，且**有会话行**——隔离 userData 由 `seedChatTtsHistory` 种了 main 会话）、
+ *    `data-action="chat.new-session"`；
+ * ② 右栏开关 `chat.right-panel-toggle` 在，且右栏 `.context` 默认展开（1120px 宽三栏并存）、
+ *    classroom 模式的「今日课程」与通用「系统状态」两张卡都渲染
+ *    （ContextPanel 无 data-field 锚点，按卡头文案定位）；
+ * ③ **麦克风门控**：`stt` 未配置时 `[data-field="chat.mic"]` 必须**不存在**
+ *    （docs/07 §2.3 口径：连按钮都不渲染，不是 disabled）——反向断言，数到就是坏；
+ * ④ 主区标题 `.head-name` 非空（默认 main 会话无用户消息 → 显示「新会话」，不作硬断言只回传）。
+ *
+ * 本场景不改任何状态，排在 chat 场景最前（theme-chat 之后、一切改配置/改会话的场景之前），
+ * 保证读到的是出厂门控现场。
+ */
+export const CHAT_SIDEBAR_SCRIPT = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const visible = (el) => {
+      if (el === null) return false
+      const rect = el.getBoundingClientRect()
+      return rect.width > 0 && rect.height > 0
+    }
+    const quickItem = document.querySelector('[data-field="chat.quick-item"]')
+    const sessionList = document.querySelector('[data-field="chat.session-list"]')
+    const rightToggle = document.querySelector('[data-field="chat.right-panel-toggle"]')
+    const context = document.querySelector('.context')
+    const ctxCards = Array.from(
+      document.querySelectorAll('.context .ctx-card .ctx-head strong'),
+    ).map((el) => (el.textContent || '').trim())
+    const headName = (
+      (document.querySelector('.head-name') || {}).textContent || ''
+    ).trim()
+    return {
+      headTitle: headName,
+      quickItem: quickItem !== null,
+      quickActive: quickItem === null ? null : quickItem.classList.contains('active'),
+      sessionList: sessionList !== null,
+      sessionListVisible: visible(sessionList),
+      sessionRows: count('[data-field="chat.session-list"] .nav-item.session'),
+      newSessionButton: count('[data-action="chat.new-session"]'),
+      rightToggle: rightToggle !== null,
+      contextCollapsed: context === null ? null : context.classList.contains('collapsed'),
+      contextCards: ctxCards,
+      // stt 未配置（enabled=false 且无 provider）时麦克风必须不存在：探针不改 stt 配置，
+      // 所以这里恒为 0；若渲染层把门控写成 disabled 而不是不渲染，这条就会失败。
+      micCount: count('[data-field="chat.mic"]'),
+      pass:
+        quickItem !== null &&
+        sessionList !== null &&
+        visible(sessionList) &&
+        count('[data-field="chat.session-list"] .nav-item.session') > 0 &&
+        count('[data-action="chat.new-session"]') > 0 &&
+        rightToggle !== null &&
+        context !== null &&
+        context.classList.contains('collapsed') === false &&
+        ctxCards.some((name) => name.indexOf('系统状态') !== -1) &&
+        ctxCards.some((name) => name.indexOf('今日课程') !== -1) &&
+        count('[data-field="chat.mic"]') === 0,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 右栏开关探针 · 前半（BetaV2）：点两次 `chat.right-panel-toggle` 走「展开 → 收起 → 展开」。
+ *
+ * 点击走真实 DOM 链路（按钮 → emit → App.vue 的 `contextOpen` → `.context.collapsed` 宽度过渡）。
+ * 两次点击让场景**自恢复**：截图时右栏回到展开态（截图本身就是三栏默认布局的证据），
+ * 收起态只活在 act 内部的记录里，由 check 判定 —— 不用为它多拍一张图。
+ */
+export const CHAT_RIGHT_PANEL_TOGGLE_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const toggle = document.querySelector('[data-field="chat.right-panel-toggle"]')
+    const panel = document.querySelector('.context')
+    if (toggle === null || panel === null) {
+      return { ok: false, reason: 'no right-panel toggle or .context' }
+    }
+    const isOpen = () => panel.classList.contains('collapsed') === false
+    const before = isOpen()
+    toggle.click()
+    await wait(600)
+    const afterHide = !isOpen()
+    toggle.click()
+    await wait(600)
+    const afterShow = isOpen()
+    window.__auroraRightPanelProbe = { before, afterHide, afterShow }
+    return { ok: true, before, afterHide, afterShow }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 右栏开关探针 · 后半：act 记录的「收起又展开」三态必须全部成立，且此刻右栏仍是展开的
+ * （展开态 = 截图里的布局，收起只允许存在于两次点击之间的瞬时）。
+ */
+export const CHAT_RIGHT_PANEL_TOGGLE_CHECK = `(() => {
+  try {
+    const probe = window.__auroraRightPanelProbe
+    const panel = document.querySelector('.context')
+    const openNow = panel !== null && panel.classList.contains('collapsed') === false
+    return {
+      act: probe === undefined ? null : probe,
+      openNow,
+      contextWidth: panel === null ? null : Math.round(panel.getBoundingClientRect().width),
+      pass:
+        probe !== undefined &&
+        probe.before === true &&
+        probe.afterHide === true &&
+        probe.afterShow === true &&
+        openNow,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 右栏模式感知探针（BetaV2，spec §3/§11）：把模式切到 Work，右栏必须整体换成办公卡片。
+ *
+ * 「非当前模式的功能一律不渲染」钉的是这条：work 态右栏要有「工作目录」卡、
+ * 不得再有 classroom 的「今日课程」卡。ContextPanel 没有 data-field 锚点（按卡头文案定位）；
+ * 切模式走 `window.aurora.mode.set`（与设置页「启用」同一条 IPC），主进程会广播
+ * mode:changed → 渲染层 modeStore / ContextPanel 随之更新。
+ *
+ * ⚠️ 引导副作用是安全的：work 引导未完成时 `mode.set` 会触发 `requestGuideIfNeeded`，
+ * 但主进程的 proactive 实现只是 `showChat()` + 日志（见 index.ts），不写会话、不弹窗体，
+ * 不会污染 seed 会话。check 收尾把模式切回 classroom 并等「今日课程」卡回来，
+ * 后续场景（chat-tts / auto-scroll）的 classroom 现场不受影响。
+ */
+export const CHAT_RIGHT_PANEL_WORK_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { ok: false, reason: 'settings.get failed' }
+    window.__auroraWorkPanelProbe = { previousMode: state.value.modes.current }
+    if (state.value.modes.current === 'work') return { ok: true, alreadyWork: true }
+    const result = await window.aurora.mode.set('work')
+    if (!result.ok) return { ok: false, reason: 'mode.set failed: ' + result.message }
+    let found = false
+    for (let attempt = 0; attempt < 20 && !found; attempt += 1) {
+      const heads = Array.from(
+        document.querySelectorAll('.context .ctx-card .ctx-head strong'),
+      ).map((el) => (el.textContent || '').trim())
+      found = heads.some((name) => name.indexOf('工作目录') !== -1)
+      if (!found) await wait(200)
+    }
+    return { ok: true, workCardShown: found }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/** 右栏模式感知探针 · 后半：work 卡在、课堂卡不在，收尾切回 classroom 并等课堂卡恢复。 */
+export const CHAT_RIGHT_PANEL_WORK_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const ctxCards = () =>
+    Array.from(document.querySelectorAll('.context .ctx-card .ctx-head strong')).map((el) =>
+      (el.textContent || '').trim(),
+    )
+  try {
+    const probe = window.__auroraWorkPanelProbe
+    const cards = ctxCards()
+    const hasWork = cards.some((name) => name.indexOf('工作目录') !== -1)
+    const hasClassroom = cards.some((name) => name.indexOf('今日课程') !== -1)
+
+    // 收尾：切回 classroom（模式是全局状态，不还原会带进后面的场景）
+    let restored = null
+    const state = await window.aurora.settings.get()
+    if (state.ok && state.value.modes.current === 'work') {
+      const back = await window.aurora.mode.set('classroom')
+      if (!back.ok) {
+        restored = false
+      } else {
+        restored = false
+        for (let attempt = 0; attempt < 10 && !restored; attempt += 1) {
+          restored = ctxCards().some((name) => name.indexOf('今日课程') !== -1)
+          if (!restored) await wait(200)
+        }
+      }
+    } else if (state.ok) {
+      restored = true
+    }
+    return {
+      previousMode: probe === undefined ? null : probe.previousMode,
+      workCards: cards,
+      hasWork,
+      hasClassroom,
+      restored,
+      pass: probe !== undefined && hasWork && !hasClassroom && restored === true,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 思考过程折叠块探针（BetaV2，spec §9/§11）：MessageList 对带 `reasoning` 的助手消息
+ * 渲染可折叠「思考过程」块，受 `general.chat.showThinking` 门控。
+ *
+ * 前提由 `seedChatTtsHistory` 提供：main 会话的助手消息带 `reasoning`（含探针标记文本），
+ * `rendererHistory` 会把它透传回渲染层（agent-core store 的 StoredMessage 支持 `reasoning?`）。
+ * 历史水合出的思考块**默认收起**（「已深度思考」摘要行）——act 先记录收起态再点开，
+ * 截图拍到展开后的全文；check 断言「曾收起 + 现已展开 + 正文含标记 + 块在正文上方」。
+ */
+export const CHAT_THINKING_BLOCK_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const block = document.querySelector('.message.r-assistant .thinking')
+    if (block === null) {
+      return {
+        ok: false,
+        reason: 'no .thinking block（seed 会话缺 reasoning，或 general.chat.showThinking 被关？）',
+      }
+    }
+    const head = block.querySelector('.thinking-head')
+    if (head === null) return { ok: false, reason: 'no .thinking-head' }
+    const collapsedBefore =
+      block.classList.contains('open') === false && block.querySelector('.thinking-body') === null
+    const label = (head.textContent || '').trim()
+    const labelOk = label.indexOf('已深度思考') !== -1
+    head.click()
+    await wait(500)
+    window.__auroraThinkingProbe = { collapsedBefore, label, labelOk }
+    return { ok: true, collapsedBefore, label, labelOk }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/** 思考过程折叠块探针 · 后半：展开态全文可见、文本是 seed 的标记内容，且块位于正文上方。 */
+export const CHAT_THINKING_BLOCK_CHECK = `(() => {
+  try {
+    const probe = window.__auroraThinkingProbe
+    const block = document.querySelector('.message.r-assistant .thinking')
+    if (block === null) return { pass: false, reason: 'no .thinking block' }
+    const open = block.classList.contains('open')
+    const body = block.querySelector('.thinking-body')
+    const textNode = body === null ? null : body.querySelector('.thinking-text')
+    const text = textNode === null ? '' : (textNode.textContent || '')
+    const rect = textNode === null ? null : textNode.getBoundingClientRect()
+    const visible = rect !== null && rect.width > 0 && rect.height > 0
+    // 块在正文上方（docs/07 §2.3）：DOM 顺序上 .thinking 必须先于同气泡内的 .md
+    const content = block.parentElement === null ? null : block.parentElement.querySelector('.md')
+    const aboveContent =
+      content !== null &&
+      (block.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    return {
+      act: probe === undefined ? null : probe,
+      open,
+      bodyVisible: visible,
+      textLength: text.length,
+      textPreview: text.slice(0, 48),
+      aboveContent,
+      pass:
+        probe !== undefined &&
+        probe.collapsedBefore === true &&
+        probe.labelOk === true &&
+        open === true &&
+        visible &&
+        text.indexOf('capture-reasoning-probe') !== -1 &&
+        aboveContent,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 快速会话探针（BetaV2，spec §3/§11）：点左栏固定项「快速对话」必须切到 sessionId='quick'。
+ *
+ * 激活的判据有二：`chat.quick-item` 拿到 `.active` 态，且主区标题 `.head-name` 变成
+ * 固定名「快速对话」（`currentTitle` 对 quick 会话短路返回）。act 里轮询等标题变化
+ * （switchSession 的水合是异步往返），check 再读一次激活态兜住时序。
+ *
+ * 场景结束后停在 quick 会话：后续场景里 `chat-tts` 自带 reload（回到默认 main 会话），
+ * 思考等级 / 模型选择两条只依赖 provider 配置、与会话无关，因此无需专门还原。
+ */
+export const CHAT_QUICK_SESSION_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const item = document.querySelector('[data-field="chat.quick-item"]')
+    if (item === null) return { ok: false, reason: 'no chat.quick-item' }
+    item.click()
+    let title = ''
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      title = (((document.querySelector('.head-name') || {}).textContent || '')).trim()
+      if (title === '快速对话') break
+      await wait(200)
+    }
+    return { ok: true, headTitle: title }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/** 快速会话探针 · 后半：固定项激活 + 主区标题为「快速对话」。 */
+export const CHAT_QUICK_SESSION_CHECK = `(() => {
+  try {
+    const item = document.querySelector('[data-field="chat.quick-item"]')
+    const title = (((document.querySelector('.head-name') || {}).textContent || '')).trim()
+    return {
+      quickActive: item !== null && item.classList.contains('active'),
+      headTitle: title,
+      pass: item !== null && item.classList.contains('active') && title === '快速对话',
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
  * 设置页门控探针（docs/08 §6.1）：每个控件带 `data-field="<配置路径>"`，
  * 条件不成立时**整个控件不在 DOM 里**（不是 disabled、也不是靠 CSS 藏），位置改为 `data-empty` 说明块。
  *
  * 这一条钉住的是用户原话里的第三个诉求：「用户无法设置的内容不要显示」。
+ *
+ * BetaV2（六页 IA）：「勿扰时段」（`advanced.quietHours`）自 AdvancedPage 迁到 general 页，
+ * 与提示条自己的静默时段同区 —— 所以这里**新增** `advanced.quietHours.start/.end` 两个字段的
+ * 存在性断言（AdvancedPage 不再渲染它们， 数到 >0 才是回归）。
  */
 export const SETTINGS_FIELDS_SCRIPT = `(() => {
   try {
@@ -469,6 +787,8 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
     const edgeBarDetail = count(
       '[data-field="general.edgeBar.opacity"],[data-field^="general.edgeBar.quietHours"]',
     )
+    // BetaV2：全局勿扰时段（advanced.quietHours.start/.end）迁到 general 页且常显
+    const quietHoursFields = count('[data-field^="advanced.quietHours"]')
     const activeMode = document.querySelector('.cards .card.active .card-head strong')
     const activeNav = document.querySelector('.nav-item.active')
     return {
@@ -477,11 +797,14 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
       languageFields,
       edgeBarToggle,
       edgeBarDetail,
+      quietHoursFields,
       activeMode: activeMode === null ? null : (activeMode.textContent || '').trim(),
       emptyStates,
-      // 死字段（general.language）在任何页面都不该出现；提示条详情跟着开关走
+      // 死字段（general.language）在任何页面都不该出现；提示条详情跟着开关走；
+      // 全局勿扰时段两个字段必须随页常在
       pass:
         languageFields === 0 &&
+        quietHoursFields === 2 &&
         (edgeBarToggle === 0 ? edgeBarDetail === 0 : edgeBarDetail > 0),
     }
   } catch (error) {
@@ -490,11 +813,17 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
 })()`
 
 /**
- * 「电脑操控」设置页门控探针（docs/08 §6.1、step 5）。
+ * 「智能与工具」设置页门控探针（docs/08 §6.1、step 5；BetaV2 六页 IA）。
  *
  * 与 `SETTINGS_FIELDS_SCRIPT` 同一套路：`data-field` 计数 + `data-empty` 列表，
  * 但这里要额外读**总开关的实际状态**——`agent.tools.enabled` 为 false 时三个分栏控件
  * 本来就该整块消失（只剩总开关与工作目录两个常显字段）。
+ *
+ * ⚠️ BetaV2 变更（spec §9）：技能页与 MCP 页并入本页，「空配置下 emptyStates 为空」的旧断言
+ * 不再成立 —— MCP 无服务器时整页**必然**多出 `data-empty="mcp.servers"`（空状态卡整块替换
+ * 列表），技能一个都没发现时还会有 `data-empty="skills.disabled"`。所以断言改成：
+ * 这两个**预期**空状态允许出现（MCP 必须二选一：空状态或服务器行），
+ * 之外的任何 `data-empty` 都算回归（比如 agent.tools.* 的分栏空态在总开关开启时不该出现）。
  */
 export const SETTINGS_AGENT_FIELDS_SCRIPT = `(() => {
   try {
@@ -508,6 +837,15 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(() => {
     const emptyStates = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
       el.getAttribute('data-empty'),
     )
+    // 合并区组的预期空状态：MCP 无服务器（空状态）或有服务器（行容器）二选一；
+    // 技能同理（内置技能发现不到才会有 skills.disabled 空状态）
+    const mcpEmpty = emptyStates.indexOf('mcp.servers') !== -1
+    const mcpRows = count('[data-field^="mcp.servers."]')
+    const skillsEmpty = emptyStates.indexOf('skills.disabled') !== -1
+    const skillsRows = count('[data-field^="skills.disabled."]')
+    const unexpected = emptyStates.filter(
+      (name) => name !== 'mcp.servers' && name !== 'skills.disabled',
+    )
     const activeNav = document.querySelector('.nav-item.active')
     return {
       page: activeNav === null ? 'unknown' : (activeNav.textContent || '').trim(),
@@ -517,12 +855,22 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(() => {
       terminalFields,
       filesFields,
       openFields,
+      mcpEmpty,
+      mcpRows,
+      skillsEmpty,
+      skillsRows,
+      unexpected,
       emptyStates,
-      // 总开关必须在（否则用户再也开不回来）；开着时三个分栏的详情字段都得在
+      // 总开关必须在（否则用户再也开不回来）；开着时三个分栏的详情字段都得在，
+      // MCP 区组必须给出「空状态或行」之一，且不得出现两块预期空态之外的 data-empty
       pass:
         toggle !== null &&
         (enabled !== true ||
-          (terminalFields > 0 && filesFields > 0 && openFields > 0 && emptyStates.length === 0)),
+          (terminalFields > 0 &&
+            filesFields > 0 &&
+            openFields > 0 &&
+            (mcpEmpty || mcpRows > 0) &&
+            unexpected.length === 0)),
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -530,75 +878,237 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(() => {
 })()`
 
 /**
- * 「语音」设置页门控探针（docs/08 §6.1、step 5）。
+ * 「语音」设置页门控探针（docs/08 §6.1、BetaV2 六页 IA；原 `SETTINGS_TTS_FIELDS_SCRIPT` 扩展）。
  *
- * 与 `SETTINGS_AGENT_FIELDS_SCRIPT` 同一套路。**常显字段与列表空态是两件事，别混**：
- * - `tts.enabled` / `tts.autoRead` / `tts.maxChars` 都是**常显**的
- *   （总开关关掉也要能开回来；后两个是「语音」页的固定设置项，与有没有模型无关），
- *   三种状态下都必须存在 —— 它们**不**参与二选一。
- * - provider 列表为空时**多出来**的断言只有一个：`data-empty="tts.providers"` 必须在
- *   （空状态卡整块替换列表）；列表非空时反过来，空状态必须消失。
+ * BetaV2（spec §9）：voice 页 = TTS 区组（原 TtsPage 整体迁入，`tts.*` 锚点不变）
+ * + STT 区组（新增，`stt.*`）。两组各自折叠（默认展开）、各自为**常显字段 + 列表空态二选一**：
+ * - `tts.enabled` / `tts.autoRead` / `tts.maxChars` 与 `stt.enabled` / `stt.active` 都是**常显**
+ *   （总开关关掉也要能开回来），任何列表状态下都必须存在；
+ * - 列表为空时**多出来**的断言是 `data-empty="tts.providers"` / `data-empty="stt.providers"`
+ *   必须在；列表非空时反过来，空状态必须消失。
  *
- * ⚠️ 首版曾把 `autoRead` / `maxChars` 写进二选一（「列表为空 → 这两个必须为 0」），
- * 与 step-05「常显区」的要求自相矛盾，导致空列表下 `pass` **永远为 false**（实测抓到）。
+ * ⚠️ 首版（旧 TtsPage 探针）曾把 `autoRead` / `maxChars` 写进二选一，导致空列表下 `pass`
+ * 永远为 false（实测抓到）—— 常显字段与列表空态是两件事，别再混。
  *
- * 「列表是否为空」的判据用**两个信号取或**（`emptyStates` 含 `tts.providers`，或存在
- * `tts.providers.<id>` 行容器）并把用到的判据回传在 `listState` 字段里 ——
- * 只认其中一个的话，页面把空状态从 `data-empty` 改成别的写法就会让探针假 FAIL。
- * 行容器的判定与 `SETTINGS_LLM_STRUCTURE_CHECK` 同构：`data-field` 以
- * `tts.providers.` 开头、且**后面不再有点**（卡内字段多一层，不会被算成行）。
+ * 「列表是否为空」的判据用**两个信号取或**（`emptyStates` 含对应键，或存在
+ * `tts|stt.providers.<id>` 行容器）；行容器判定与 `SETTINGS_LLM_STRUCTURE_CHECK` 同构：
+ * `data-field` 以 `tts.providers.` / `stt.providers.` 开头、且**后面不再有点**。
  */
-export const SETTINGS_TTS_FIELDS_SCRIPT = `(() => {
+export const SETTINGS_VOICE_FIELDS_SCRIPT = `(() => {
   try {
     const count = (selector) => document.querySelectorAll(selector).length
-    const toggle = document.querySelector('[data-field="tts.enabled"] input[type="checkbox"]')
     const emptyStates = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
       el.getAttribute('data-empty'),
     )
-    const providersEmpty = emptyStates.indexOf('tts.providers') !== -1
-    const providerRows = Array.from(document.querySelectorAll('[data-field]')).filter((el) => {
-      const value = el.getAttribute('data-field') || ''
-      return value.indexOf('tts.providers.') === 0 && value.slice('tts.providers.'.length).indexOf('.') === -1
-    }).length
-    // 两个信号取或：任一成立都算「列表非空」；都看到空状态 / 都没有行才按空处理
-    const listEmpty = providersEmpty || providerRows === 0
-    const listState = providersEmpty ? 'empty-state' : providerRows > 0 ? 'rows' : 'neither'
+    const countRows = (prefix) =>
+      Array.from(document.querySelectorAll('[data-field]')).filter((el) => {
+        const value = el.getAttribute('data-field') || ''
+        return value.indexOf(prefix) === 0 && value.slice(prefix.length).indexOf('.') === -1
+      }).length
+    const activeNav = document.querySelector('.nav-item.active')
+
+    // ── TTS 区组（原 TtsPage 锚点，逐字未动） ──
+    const ttsToggle = document.querySelector('[data-field="tts.enabled"] input[type="checkbox"]')
+    const ttsProvidersEmpty = emptyStates.indexOf('tts.providers') !== -1
+    const ttsRows = countRows('tts.providers.')
+    const ttsListEmpty = ttsProvidersEmpty || ttsRows === 0
     const autoReadFields = count('[data-field="tts.autoRead"]')
     const maxCharsFields = count('[data-field="tts.maxChars"]')
-    const activeNav = document.querySelector('.nav-item.active')
+
+    // ── STT 区组（BetaV2 新增） ──
+    const sttToggle = document.querySelector('[data-field="stt.enabled"] input[type="checkbox"]')
+    const sttActiveFields = count('[data-field="stt.active"]')
+    const sttProvidersEmpty = emptyStates.indexOf('stt.providers') !== -1
+    const sttRows = countRows('stt.providers.')
+    const sttListEmpty = sttProvidersEmpty || sttRows === 0
+
     return {
       page: activeNav === null ? 'unknown' : (activeNav.textContent || '').trim(),
-      togglePresent: toggle !== null,
-      enabled: toggle === null ? null : toggle.checked,
-      providerFields: count('[data-field^="tts.providers"]'),
-      providerRows,
-      autoReadFields,
-      maxCharsFields,
+      tts: {
+        togglePresent: ttsToggle !== null,
+        enabled: ttsToggle === null ? null : ttsToggle.checked,
+        providerFields: count('[data-field^="tts.providers"]'),
+        providerRows: ttsRows,
+        autoReadFields,
+        maxCharsFields,
+        listEmpty: ttsListEmpty,
+        emptyStateMarked: ttsProvidersEmpty,
+      },
+      stt: {
+        togglePresent: sttToggle !== null,
+        enabled: sttToggle === null ? null : sttToggle.checked,
+        activeFields: sttActiveFields,
+        providerFields: count('[data-field^="stt.providers"]'),
+        providerRows: sttRows,
+        listEmpty: sttListEmpty,
+        emptyStateMarked: sttProvidersEmpty,
+      },
       emptyStates,
-      // 用的是哪条判据（排查假 FAIL 时先看它）
-      listState,
-      listEmpty,
-      // 总开关与 autoRead / maxChars 都是**常显字段**（关掉就再也开不回来），
-      // 因此三种列表状态下都必须存在 —— 它们**不**参与列表空/非空的二选一。
-      // 空列表唯一多出来的断言是：data-empty 必须含 'tts.providers'。
       pass:
-        toggle !== null &&
+        ttsToggle !== null &&
         autoReadFields > 0 &&
         maxCharsFields > 0 &&
-        (listEmpty ? providersEmpty : !providersEmpty),
+        (ttsListEmpty ? ttsProvidersEmpty : !ttsProvidersEmpty) &&
+        sttToggle !== null &&
+        sttActiveFields > 0 &&
+        (sttListEmpty ? sttProvidersEmpty : !sttProvidersEmpty),
     }
   } catch (error) {
     return { reason: String(error), pass: false }
   }
 })()`
 
-/** 把模式切到 Work（未选中 ClassRoom 时不应出现任何 classroom 控件） */
+/**
+ * 「AI 模型」页新区组探针（BetaV2，spec §9）：「对话展示」与「生图模型」。
+ *
+ * - `general.chat.showThinking`（v8 新字段）：对话窗思考折叠块的唯一门控，开关必须常在；
+ * - `imagegen.enabled` / `imagegen.active`（v8 新 provider 体系）：同样常在；
+ * - 生图 provider 列表与 TTS / STT 同一套二选一：空 → `data-empty="imagegen.providers"`，
+ *   非空 → 行容器（`imagegen.providers.<id>`，后面不再有点）。
+ */
+export const SETTINGS_LLM_FIELDS_SCRIPT = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const emptyStates = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
+      el.getAttribute('data-empty'),
+    )
+    const imagegenEmpty = emptyStates.indexOf('imagegen.providers') !== -1
+    const imagegenRows = Array.from(document.querySelectorAll('[data-field]')).filter((el) => {
+      const value = el.getAttribute('data-field') || ''
+      return value.indexOf('imagegen.providers.') === 0 && value.slice('imagegen.providers.'.length).indexOf('.') === -1
+    }).length
+    const activeNav = document.querySelector('.nav-item.active')
+    return {
+      page: activeNav === null ? 'unknown' : (activeNav.textContent || '').trim(),
+      showThinkingFields: count('[data-field="general.chat.showThinking"]'),
+      imagegenEnabledFields: count('[data-field="imagegen.enabled"]'),
+      imagegenActiveFields: count('[data-field="imagegen.active"]'),
+      imagegenEmpty,
+      imagegenRows,
+      emptyStates,
+      pass:
+        count('[data-field="general.chat.showThinking"]') > 0 &&
+        count('[data-field="imagegen.enabled"]') > 0 &&
+        count('[data-field="imagegen.active"]') > 0 &&
+        (imagegenEmpty || imagegenRows > 0),
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 「模式」页探针 · 前半（BetaV2）：展开「课程表与课前提醒」分组。
+ *
+ * ClassroomSection 的四个分组里「课表」与「分类行为」**默认收起**（组件局部状态，非配置），
+ * `modes.classroom.preClassOpenFolder`（含其空状态替身 `data-empty="modes.classroom.preClassReminder"`）
+ * 只在分组展开后才进 DOM —— 不展开的话「课前提醒组二选一」断言两侧都是 0，探针必然假 FAIL。
+ * 按分组标题定位（与 `SETTINGS_TTS_ADD_ACT` 的「用户可见文案优先」同一取舍，class 索引会随
+ * 分组增删漂移）；点开的是组件局部状态，`settings-modes.png` 场景之间各自 reload，互不影响、
+ * 无需还原。
+ */
+export const SETTINGS_MODES_EXPAND_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const heads = Array.from(document.querySelectorAll('.group-head'))
+    const target = heads.find((head) =>
+      (((head.querySelector('.section-title') || {}).textContent || '')).indexOf('课程表与课前提醒') !== -1,
+    )
+    if (target === undefined) {
+      return { ok: false, reason: 'no 课程表与课前提醒 group head' }
+    }
+    target.click()
+    // 等分组体渲染出课前提醒字段（或其「先添加节次」空状态），最多 2s
+    let ready = false
+    for (let attempt = 0; attempt < 10 && !ready; attempt += 1) {
+      ready =
+        document.querySelectorAll('[data-field="modes.classroom.preClassOpenFolder"]').length > 0 ||
+        document.querySelectorAll('[data-empty="modes.classroom.preClassReminder"]').length > 0
+      if (!ready) await wait(200)
+    }
+    return { ok: true, preClassVisible: ready }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 「模式」页（ClassRoom 生效态）结构探针（BetaV2）：模式卡下方只渲染当前模式的配置区。
+ *
+ * 前半由 `SETTINGS_MODES_EXPAND_ACT` 展开「课表」分组，否则课前提醒字段不在 DOM。
+ * 三个断言：
+ * ① ClassRoom 生效 → classroom 区组在（`modes.classroom.watchDir` 恰好一行，「感知文件夹」
+ *    分组默认展开，可直接数）；
+ * ② **work 区组整块不在**（WorkSection 只在当前模式为 work 时渲染，BetaV2 起它有真字段，
+ *    数到 `modes.work.*` 说明互斥渲染被破坏）；
+ * ③ 课前提醒组按课表节次二选一：默认配置 `lessons: []` → `preClassOpenFolder` 不渲染
+ *    （ScheduleEditor 门控），取而代之的是 `data-empty="modes.classroom.preClassReminder"`；
+ *    用户配了节次则反过来 —— 探针对两种形态都接受，但必须出现其一。
+ */
+export const SETTINGS_MODES_CLASSROOM_SCRIPT = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const emptyStates = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
+      el.getAttribute('data-empty'),
+    )
+    const classroomFields = count('[data-field^="modes.classroom"]')
+    const watchDir = count('[data-field="modes.classroom.watchDir"]')
+    const workFields = count('[data-field^="modes.work"]')
+    const preClassOpen = count('[data-field="modes.classroom.preClassOpenFolder"]')
+    const preClassEmpty = emptyStates.indexOf('modes.classroom.preClassReminder') !== -1
+    const activeMode = document.querySelector('.cards .card.active .card-head strong')
+    const activeNav = document.querySelector('.nav-item.active')
+    return {
+      page: activeNav === null ? 'unknown' : (activeNav.textContent || '').trim(),
+      activeMode: activeMode === null ? null : (activeMode.textContent || '').trim(),
+      classroomFields,
+      watchDir,
+      workFields,
+      preClassOpen,
+      preClassEmpty,
+      emptyStates,
+      pass:
+        classroomFields > 0 &&
+        watchDir === 1 &&
+        workFields === 0 &&
+        (preClassOpen > 0 || preClassEmpty),
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 设置页旧深链别名探针（BetaV2）：`?page=tts` 必须经渲染层 `LEGACY_PAGE_ALIASES`
+ * 落到合并后的「语音」页 —— TTS 与 STT 两个区组的常显开关都要在。
+ * 深链清单（`SETTINGS_PAGE_IDS`）只保留新 id，旧链接的兼容行为由本场景单独钉住；
+ * `skills|mcp → agent` 走同一张映射表，机制验证一条即可代表。
+ */
+export const SETTINGS_LEGACY_ALIAS_SCRIPT = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const title = (((document.querySelector('.page-title') || {}).textContent || '')).trim()
+    return {
+      pageTitle: title,
+      ttsToggle: count('[data-field="tts.enabled"]'),
+      sttToggle: count('[data-field="stt.enabled"]'),
+      pass: count('[data-field="tts.enabled"]') > 0 && count('[data-field="stt.enabled"]') > 0,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/** 把模式切到 Work：切换后 Work 区组应出现、classroom 区组应消失（见 `SETTINGS_WORK_GATING_SCRIPT`） */
 export const SETTINGS_SWITCH_TO_WORK_SCRIPT = `(() => {
   try {
     const cards = Array.from(document.querySelectorAll('.cards .card'))
-    const target = cards.find((card) =>
-      ((card.querySelector('.card-head strong') || {}).textContent || '').toLowerCase().includes('work'),
-    )
+    const target = cards.find((card) => {
+      const head = (((card.querySelector('.card-head strong') || {}).textContent || '')).trim()
+      // BetaV2 的 displayName 是「工作模式」（旧版是 Work Mode）：两种写法都认，
+      // 只认英文会在改名后静默找不到卡片（探针空转比失败更糟）
+      return head.indexOf('工作模式') !== -1 || head.toLowerCase().indexOf('work') !== -1
+    })
     if (target === undefined) return { switched: false, reason: 'no work card' }
     const button = Array.from(target.querySelectorAll('button')).find(
       (item) => (item.textContent || '').trim() === '启用',
@@ -612,19 +1122,29 @@ export const SETTINGS_SWITCH_TO_WORK_SCRIPT = `(() => {
 })()`
 
 /**
- * 切到非 ClassRoom 模式后：classroom 字段必须为 0，并出现「暂无可配置项」空状态。
- * 这条是 step-06 的核心验收，靠真实 DOM 而不是"看代码应该有 v-if"。
+ * 切到 Work 模式后的门控探针（BetaV2 重写；原 `SETTINGS_CLASSROOM_GATING_SCRIPT`）。
+ *
+ * BetaV2 起 Work 模式**实装**（`WorkSection`）：切过去之后不再是「暂无可配置项」空状态卡，
+ * 而是 `modes.work.workspaceDir` 字段出现、classroom 区组整块消失。三个断言：
+ * ① classroom 字段数必须为 0；② `modes.work.workspaceDir` 恰好一行；
+ * ③ 任何 `data-empty^="modes."` 的空状态卡（占位模式的「暂无可配置项」）都不该有 ——
+ *    Work 不再是占位实现，出现空状态说明互斥渲染或模式实装被破坏。
  */
-export const SETTINGS_CLASSROOM_GATING_SCRIPT = `(() => {
+export const SETTINGS_WORK_GATING_SCRIPT = `(() => {
   try {
-    const classroomFields = document.querySelectorAll('[data-field^="modes.classroom"]').length
+    const count = (selector) => document.querySelectorAll(selector).length
+    const classroomFields = count('[data-field^="modes.classroom"]')
+    const workFields = count('[data-field^="modes.work"]')
+    const workspaceDir = count('[data-field="modes.work.workspaceDir"]')
     const empty = document.querySelector('[data-empty^="modes."]')
     const active = document.querySelector('.cards .card.active .card-head strong')
     return {
       classroomFields,
-      emptyState: empty === null ? null : empty.getAttribute('data-empty'),
+      workFields,
+      workspaceDir,
+      modesEmptyState: empty === null ? null : empty.getAttribute('data-empty'),
       activeMode: active === null ? null : (active.textContent || '').trim(),
-      pass: classroomFields === 0 && empty !== null,
+      pass: classroomFields === 0 && workFields > 0 && workspaceDir === 1 && empty === null,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -1656,7 +2176,7 @@ export type ThemeName = 'dark' | 'light'
 
 /** 与 `window-manager.ts` 的 `DARK_BACKGROUND` / `LIGHT_BACKGROUND` 及 theme.css 基座一致 */
 const THEME_BASE_COLORS: Record<ThemeName, string> = {
-  dark: '#0b0c0f',
+  dark: '#000000',
   light: '#f5f5f7',
 }
 
@@ -1914,26 +2434,33 @@ function onboardingCheckScript(index: number): string {
 }
 
 /**
- * 默认截图清单：四个窗口 + 提示条两态 + 设置页各页深链（含思考等级参数面板）+ 若干 DOM 断言场景
- * （门控计数 / 对话自动滚底 / 收起即消失 / 思考等级 / 电脑拖动区 / 电脑操控页，见下面各条的 `check`）
+ * 默认截图清单：四个窗口 + 提示条两态 + 设置页六页深链（含各页门控探针）+ 若干 DOM 断言场景
+ * （门控计数 / 左栏与右栏 / 思考块 / 快速会话 / 对话自动滚底 / 收起即消失 / 思考等级 /
+ * 模型列表 / tts seed / 窗口拖动区 / 模式页门控与真实写盘，见下面各条的 `check`）
  * + 每窗一张双主题场景（`theme-*.png`，深/浅各跑一遍整批）。
- * 独立的快速对话窗口已从全仓删除：快速会话并入交互窗侧栏，故清单里不再有它的场景。
+ * BetaV2（spec §11）：设置页 8 → 6 页；旧深链 `?page=tts` 的别名映射由
+ * `settings-legacy-tts-alias.png` 单独钉住；chat 主界面（三栏）新增左栏 / 右栏 /
+ * 思考块 / 快速会话四个场景，麦克风门控（未配置时按钮不存在）并入 `chat-sidebar` 场景。
  * `AURORA_CAPTURE_WINDOWS` 可以只截其中一部分（逗号分隔）。
  *
  * ⚠️ 交互窗场景的**顺序约束**：凡是要在交互窗里操作 DOM 的场景，都必须排在 `chat-collapse.png` **之前**——
  * 收起会把窗口隐藏，之后再 `capturePage()` 只会卡死。因此顺序固定为
- * `theme-chat`（step 6 双主题）→ `chat-thinking-level` → `chat-model-picker`（step 5 加）
- * → `chat-tts`（step 6 加）→ `chat-drag` → `chat-collapse` → `chat.png`。
+ * `theme-chat`（step 6 双主题）→ `chat-sidebar`（BetaV2 左栏结构 + 麦克风门控）
+ * → `chat-right-panel-toggle` → `chat-right-panel-work`（两者自恢复，不动会话）
+ * → `chat-thinking-block`（reload 后展开 seed 的思考块）→ `chat-quick-session`（切到 quick 会话）
+ * → `chat-thinking-level` → `chat-model-picker`（step 5 加）→ `chat-tts`（step 6 加，
+ * 自带 reload 回到 main 会话）→ `chat-drag` → `chat-collapse` → `chat.png`。
  *
  * 双主题（step 6）另在 edge-bar / chat / settings / onboarding 各加一张 `theme-*.png`：
  * 期望档位由 `activeTheme()` 读取（`bootstrap()` 已按 `AURORA_CAPTURE_THEME` 设好 `themeSource`）。
  */
 /**
- * 为 `chat-tts` 场景准备一条「可朗读」的历史（主进程侧，在跑计划之前调用一次）。
+ * 为 chat 窗口的多个场景准备「可朗读 / 可展开思考」的历史（主进程侧，在跑计划之前调用一次）。
  *
  * 为什么必须种数据（而不是让探针去点出来）：
  * 隔离 userData 下 `chat:history` 必然是空的，而 `chat-tts` 需要**一条助手消息**
- * 才会渲染「朗读」按钮；离线环境 `chat:send` 只会回 error 事件（没有可用 LLM），
+ * 才会渲染「朗读」按钮、`chat-thinking-block` 需要一条带 `reasoning` 的助手消息
+ * 才会渲染思考折叠块；离线环境 `chat:send` 只会回 error 事件（没有可用 LLM），
  * 不会产生助手消息。
  *
  * ⚠️ 只种**会话**，不种配置：`SettingsStore.init()` 在启动时就把 `config.json` 读进内存并
@@ -1955,11 +2482,15 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
   const sessionId = 'main'
   const now = new Date().toISOString()
 
-  // 1) 会话历史：一条助手消息即可（`MessageList` 只对 assistant 渲染朗读按钮）
+  // 1) 会话历史：一条助手消息即可（`MessageList` 只对 assistant 渲染朗读按钮与思考块）
   //    内容里刻意带一个**裸 URL** 与行内代码：`markdown.ts` 只把裸 URL 转成 `.md-link`
   //    （不认 `[文字](url)` 语法），而链接色必须用可读的 `--accent-text`
   //    （浅色档直接写品牌蓝只有 3.14:1）—— 这样两处样式都能在 `theme-chat.png` /
   //    `chat.png` 里被逐张目视核对，否则它们在两份报告里没有任何可视证据。
+  // 2) `reasoning`（BetaV2）：`StoredMessage` / `ChatMessageDto` 的可选字段，经
+  //    `rendererHistory` 透传后由 MessageList 渲染成思考折叠块。正文里带探针标记
+  //    `capture-reasoning-probe`，`CHAT_THINKING_BLOCK_CHECK` 靠它确认「展开后看到的就是
+  //    seed 的思考全文」而不是别的节点文本。
   const session = {
     version: 1,
     sessionId,
@@ -1971,6 +2502,9 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
         content:
           '这是截图探针种下的一条助手回复，用来验证「朗读」按钮的渲染与状态复位。' +
           '参考 https://example.com/aurora 与 `pnpm typecheck` 的说明。',
+        reasoning:
+          'capture-reasoning-probe：这是探针种下的思考过程全文。' +
+          '历史水合出的思考块默认收起为「已深度思考」摘要行，点开应能看到本段全文。',
         createdAt: now,
       },
     ],
@@ -1981,6 +2515,29 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
     JSON.stringify(session, null, 2),
     'utf8',
   )
+
+  // 快速会话（BetaV2）：提示条「最近消息」与主界面左栏「快速对话」都读 `quick.json`。
+  // 不种的话 edge-bar-expanded.png 的最近消息卡是一片大空白（视觉验收判过 fail）。
+  const quick = {
+    version: 1,
+    sessionId: 'quick',
+    updatedAt: now,
+    messages: [
+      {
+        id: 'capture-quick-u1',
+        role: 'user',
+        content: '帮我看看现在系统状态怎么样？',
+        createdAt: now,
+      },
+      {
+        id: 'capture-quick-a1',
+        role: 'assistant',
+        content: '系统一切正常：电量 99%（充电中），网络已连接。有需要随时叫我。',
+        createdAt: now,
+      },
+    ],
+  }
+  await writeFile(join(userData, 'sessions', 'quick.json'), JSON.stringify(quick, null, 2), 'utf8')
 }
 
 export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
@@ -2010,6 +2567,51 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       file: 'theme-chat.png',
       check: themeProbeScript({ theme, transparent: false }),
       nativeCheck: themeNativeCheck(manager, 'chat', theme),
+    },
+    // 左栏结构 + 出厂门控现场（BetaV2）：quick-item / session-list / new-session 锚点、
+    // 右栏默认展开且 classroom 卡在、麦克风按钮**不存在**（stt 未配置时连按钮都不渲染）。
+    // 必须排在一会改配置/改会话的场景之前，保证读到的是隔离 userData 的默认状态。
+    {
+      name: 'chat',
+      file: 'chat-sidebar.png',
+      check: CHAT_SIDEBAR_SCRIPT,
+    },
+    // 右栏开关（BetaV2）：act 内点两次（收起 → 展开）自恢复，截图回到三栏默认布局，
+    // 收起态由 check 依据 act 的记录判定。
+    {
+      name: 'chat',
+      file: 'chat-right-panel-toggle.png',
+      act: CHAT_RIGHT_PANEL_TOGGLE_ACT,
+      check: CHAT_RIGHT_PANEL_TOGGLE_CHECK,
+    },
+    // 右栏模式感知（BetaV2）：mode.set('work') 后右栏整体换成工作目录卡、课堂卡消失；
+    // check 收尾切回 classroom，不影响后续场景。
+    {
+      name: 'chat',
+      file: 'chat-right-panel-work.png',
+      act: CHAT_RIGHT_PANEL_WORK_ACT,
+      check: CHAT_RIGHT_PANEL_WORK_CHECK,
+    },
+    // 思考过程折叠块（BetaV2）：seed 会话的助手消息带 `reasoning`，历史水合后默认收起；
+    // act 点开展开态拍进截图，check 断言「曾收起 + 现已展开 + 全文可见 + 块在正文上方」。
+    {
+      name: 'chat',
+      file: 'chat-thinking-block.png',
+      // 现场由 `runCapture` 在跑计划前种好（见 `seedChatTtsHistory`）；这里 reload 一次
+      // 让渲染层重新水合 main 会话 —— 本场景没有 `query`，`captureWindows` 不会替我们 reload。
+      prepare: async () => {
+        await manager.reload('chat', {})
+      },
+      act: CHAT_THINKING_BLOCK_ACT,
+      check: CHAT_THINKING_BLOCK_CHECK,
+    },
+    // 快速会话（BetaV2）：点左栏固定项切到 sessionId='quick'，主区标题变「快速对话」。
+    // 停在 quick 会话没有影响：chat-tts 自带 reload 回到 main，其余场景只依赖 provider 配置。
+    {
+      name: 'chat',
+      file: 'chat-quick-session.png',
+      act: CHAT_QUICK_SESSION_ACT,
+      check: CHAT_QUICK_SESSION_CHECK,
     },
     {
       name: 'chat',
@@ -2096,19 +2698,36 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       file: `settings-${page}.png`,
       query: { page },
       // 「常规」页是 `general.*` 门控的现场：死字段 general.language 必须为 0，
-      // 提示条透明度 / 静默时段要跟着 general.edgeBar.enabled 出现或消失；
-      // 「电脑操控」页同理，另加"总开关状态 → 分栏详情是否出现"的断言（step 5）；
-      // 「语音」页是**互斥门控**（provider 列表空 → autoRead / maxChars 整块消失）
+      // 提示条透明度 / 静默时段要跟着 general.edgeBar.enabled 出现或消失，
+      // BetaV2 迁入的全局勿扰时段（advanced.quietHours）两字段必须常在；
+      // 「模式」页（ClassRoom 生效）：classroom 区组在、work 区组整块不在（BetaV2 互斥渲染），
+      // 前置 act 展开「课表」分组（默认收起，否则课前提醒字段不在 DOM）；
+      // 「AI 模型」页（BetaV2）：对话展示开关 + 生图模型区组；
+      // 「语音」页（BetaV2 合并 TTS + STT）：两个区组各自的常显字段与列表空态二选一；
+      // 「智能与工具」页（BetaV2 合并技能 + MCP）：预期空状态见 SETTINGS_AGENT_FIELDS_SCRIPT。
+      act: page === 'modes' ? SETTINGS_MODES_EXPAND_ACT : undefined,
       check:
         page === 'general'
           ? SETTINGS_FIELDS_SCRIPT
-          : page === 'agent'
-            ? SETTINGS_AGENT_FIELDS_SCRIPT
-            : page === 'tts'
-              ? SETTINGS_TTS_FIELDS_SCRIPT
-              : undefined,
+          : page === 'modes'
+            ? SETTINGS_MODES_CLASSROOM_SCRIPT
+            : page === 'llm'
+              ? SETTINGS_LLM_FIELDS_SCRIPT
+              : page === 'voice'
+                ? SETTINGS_VOICE_FIELDS_SCRIPT
+                : page === 'agent'
+                  ? SETTINGS_AGENT_FIELDS_SCRIPT
+                  : undefined,
     })
   }
+  // 旧深链别名（BetaV2）：`?page=tts` 应映射到「语音」页（TTS + STT 都在）；
+  // skills|mcp → agent 走同一张 LEGACY_PAGE_ALIASES 映射表，机制由本场景代表验证。
+  plan.push({
+    name: 'settings',
+    file: 'settings-legacy-tts-alias.png',
+    query: { page: 'tts' },
+    check: SETTINGS_LEGACY_ALIAS_SCRIPT,
+  })
   // 设置窗拖动区（step-06）：侧栏顶部 / `.brand` / 内容区顶部三处至少要有一条 ≥ 32px 的可见拖动区，
   // 且拖动区里的按钮仍能被 elementFromPoint 命中（不被 `-webkit-app-region: drag` 吃掉点击）。
   plan.push({
@@ -2147,9 +2766,10 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
   })
   // 「语音」页编辑卡（step-05）：点「+ 空白配置」→ 断言六个字段的 data-field 都在。
   // 只动**本地 draft**、不点「应用」，所以无需恢复动作。
-  // ⚠️ `settings-tts.png` 不在这里 push：上面的 `SETTINGS_PAGE_IDS` 循环已经为每个 page
-  // 生成 `settings-<page>.png`（含 `tts`），再 push 一张同名图会多截一次、`report.json` 里
+  // ⚠️ `settings-voice.png` 不在这里 push：上面的 `SETTINGS_PAGE_IDS` 循环已经为每个 page
+  // 生成 `settings-<page>.png`（含 `voice`），再 push 一张同名图会多截一次、`report.json` 里
   // 出现两条同名且后者把前者的 check 顶掉，所以要拍的只有这张卡场景。
+  // 深链用旧 id `tts`（别名场景同款）：顺带覆盖「旧链接打开的页面上编辑卡流程照常可用」。
   plan.push({
     name: 'settings',
     file: 'settings-tts-card.png',
@@ -2157,15 +2777,10 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
     act: SETTINGS_TTS_ADD_ACT,
     check: SETTINGS_TTS_CARD_CHECK,
   })
-  // 设置页门控断言：classroom 配置在；切到 Work 后 classroom 配置必须消失
-  plan.push({
-    name: 'settings',
-    file: 'settings-modes-classroom-gating.png',
-    query: { page: 'modes' },
-    check: SETTINGS_FIELDS_SCRIPT,
-  })
   // 真实写盘：改一个 classroom 字段后其它字段不能丢（浅合并语义回归）。
   // 必须排在「切到 Work」之前 —— 切走之后 classroom 控件就不在 DOM 里了。
+  // （ClassRoom 生效态的结构断言已由上面循环里的 `settings-modes.png` 承担，
+  // 这里只保留「真实写盘」与「切 Work 门控」两个会改状态的动作场景。）
   plan.push({
     name: 'settings',
     file: 'settings-classroom-patch.png',
@@ -2173,12 +2788,14 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
     act: SETTINGS_CLASSROOM_PATCH_ACT,
     check: SETTINGS_CLASSROOM_PATCH_CHECK,
   })
+  // 模式页门控（BetaV2 重写）：切到 Work 后 `modes.work.workspaceDir` 必须出现，
+  // classroom 区组与 modes.* 空状态卡必须消失 —— Work 已实装，不再是「暂无可配置项」。
   plan.push({
     name: 'settings',
     file: 'settings-modes-work-gating.png',
     query: { page: 'modes' },
     act: SETTINGS_SWITCH_TO_WORK_SCRIPT,
-    check: SETTINGS_CLASSROOM_GATING_SCRIPT,
+    check: SETTINGS_WORK_GATING_SCRIPT,
   })
   // 收尾两件事：面板收起（不留展开态）、点击竖条能呼出交互窗（回归 line 1 的 bug）
   plan.push({

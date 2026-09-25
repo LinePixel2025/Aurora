@@ -13,11 +13,15 @@
  * 契约（`ClassIslandPayload`）：
  * ```json
  * { "version": 1, "generatedAt": "2026-09-19T07:30:00Z",
- *   "lessons": [{ "weekday": 1, "startTime": "08:00", "endTime": "08:45", "subject": "数学" }] }
+ *   "lessons": [{ "weekday": 1, "startTime": "08:00", "endTime": "08:45", "subject": "数学" }],
+ *   "status": { "version": 2, "onClass": true, "currentSubject": "数学",
+ *               "nextSubject": "物理", "nextStartTime": "09:55" } }
  * ```
  * `weekday` 沿用 `Lesson` 语义（0=周日 … 6=周六），**一次给全周**，
  * 由 `getToday` 按当天过滤 —— 与 `IScheduleProvider` 的既有契约天然对齐，
  * 因此感知摘要、课前提醒、`timetable` Skill 三条消费链无需任何改动。
+ * 可选的 `status` 快照（v2）宽容解析：缺省 undefined，经 `getStatus()` 随
+ * `classisland:status` IPC 透出。
  *
  * 工程约定（ADR-007）：桥接数据缺失 / 格式非法 / 超时一律**降级为空课表并记日志**，
  * 绝不抛出到调用方 —— 课前提醒是增强能力，不能影响主流程。
@@ -34,16 +38,36 @@ export interface ClassIslandPayloadLesson {
   subject: string
 }
 
+/**
+ * 桥接的当前课状态快照（v2，Design/betav2-spec.md §8.8 / §10）。
+ *
+ * 由 ClassIsland 桥接插件产出：`onClass` / `currentSubject` 来自它的实时课程状态，
+ * `nextSubject` / `nextStartTime` 与课表同源。所有字段**宽容解析**——
+ * 缺失 / 类型不对一律按 undefined 处理，绝不让一个坏字段废掉整份课表（ADR-007）。
+ */
+export interface ClassIslandBridgeStatus {
+  version?: number
+  generatedAt?: string
+  onClass?: boolean
+  currentSubject?: string
+  nextSubject?: string
+  nextStartTime?: string
+}
+
 export interface ClassIslandPayload {
   version?: number
   generatedAt?: string
   lessons: ClassIslandPayloadLesson[]
+  /** 当前课状态（v2 桥接可选携带；缺省 undefined = 桥接端未提供） */
+  status?: ClassIslandBridgeStatus
 }
 
 export interface ClassIslandParseResult {
   lessons: Lesson[]
   /** 逐行校验失败的原因（带行号），供设置页「测试连接」展示 */
   warnings: string[]
+  /** 桥接附带的当前课状态（payload 未携带 / 字段坏掉时为 undefined，宽容处理） */
+  status?: ClassIslandBridgeStatus
 }
 
 /** 单个源读取超时下限 / 上限（Schema 已约束，这里再兜一层防注入非法值） */
@@ -81,7 +105,7 @@ export function parseClassislandPayload(raw: unknown): ClassIslandParseResult {
     lessons.push(parsed)
   })
 
-  return { lessons: sortLessons(lessons), warnings }
+  return { lessons: sortLessons(lessons), warnings, status: parseBridgeStatus(raw) }
 }
 
 function extractLessonArray(raw: unknown): unknown[] | undefined {
@@ -89,6 +113,47 @@ function extractLessonArray(raw: unknown): unknown[] | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
   const lessons = (raw as { lessons?: unknown }).lessons
   return Array.isArray(lessons) ? lessons : undefined
+}
+
+/**
+ * 宽容解析 payload 里的可选 `status` 快照：对象缺失 → undefined；
+ * 逐字段校验类型（`onClass` 布尔、时间 / 科目字符串、`version` 数字），
+ * 坏字段按缺失处理并丢弃，**不产生 warnings**（缺状态是常态，不是数据错误）。
+ */
+function parseBridgeStatus(raw: unknown): ClassIslandBridgeStatus | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
+  const source = (raw as { status?: unknown }).status
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) return undefined
+  const record = source as Record<string, unknown>
+
+  const version =
+    typeof record['version'] === 'number' && Number.isFinite(record['version'])
+      ? record['version']
+      : undefined
+  const generatedAt = typeof record['generatedAt'] === 'string' ? record['generatedAt'] : undefined
+  const onClass = typeof record['onClass'] === 'boolean' ? record['onClass'] : undefined
+  const currentSubject =
+    typeof record['currentSubject'] === 'string' && record['currentSubject'].trim() !== ''
+      ? record['currentSubject']
+      : undefined
+  const nextSubject =
+    typeof record['nextSubject'] === 'string' && record['nextSubject'].trim() !== ''
+      ? record['nextSubject']
+      : undefined
+  const nextStartTime =
+    typeof record['nextStartTime'] === 'string' && record['nextStartTime'].trim() !== ''
+      ? record['nextStartTime']
+      : undefined
+
+  const status: ClassIslandBridgeStatus = {
+    ...(version === undefined ? {} : { version }),
+    ...(generatedAt === undefined ? {} : { generatedAt }),
+    ...(onClass === undefined ? {} : { onClass }),
+    ...(currentSubject === undefined ? {} : { currentSubject }),
+    ...(nextSubject === undefined ? {} : { nextSubject }),
+    ...(nextStartTime === undefined ? {} : { nextStartTime }),
+  }
+  return Object.keys(status).length === 0 ? undefined : status
 }
 
 function parseLesson(item: unknown): Lesson | string {
@@ -265,6 +330,8 @@ export interface ClassIslandProviderStatus {
   lessonCount: number
   warnings: string[]
   error?: string
+  /** 桥接附带的当前课状态快照（v2；桥接未提供时为 undefined） */
+  status?: ClassIslandBridgeStatus
 }
 
 /**
@@ -285,13 +352,19 @@ export class ClassIslandProvider implements IScheduleProvider {
   /** 上次读取到的原始文本（用于跳过重复解析） */
   private lastRaw: string | undefined
   private lastLessons: Lesson[] = []
+  /** 上次解析出的当前课状态（随 payload 缓存，`getStatus()` 透出） */
+  private lastStatus: ClassIslandBridgeStatus | undefined
 
   constructor(options: ClassIslandSourceOptions) {
     this.options = options
   }
 
   getStatus(): ClassIslandProviderStatus {
-    return { ...this.status, warnings: [...this.status.warnings] }
+    return {
+      ...this.status,
+      warnings: [...this.status.warnings],
+      ...(this.lastStatus === undefined ? {} : { status: this.lastStatus }),
+    }
   }
 
   async getToday(now: Date): Promise<Lesson[]> {
@@ -359,7 +432,9 @@ export class ClassIslandProvider implements IScheduleProvider {
 
   /** 文本未变则复用上次解析结果（跳过重复解析与重复告警） */
   private parseSafely(raw: string): ClassIslandParseResult {
-    if (this.lastRaw === raw) return { lessons: this.lastLessons, warnings: this.status.warnings }
+    if (this.lastRaw === raw) {
+      return { lessons: this.lastLessons, warnings: this.status.warnings, status: this.lastStatus }
+    }
     this.lastRaw = raw
 
     let parsed: unknown
@@ -367,12 +442,14 @@ export class ClassIslandProvider implements IScheduleProvider {
       parsed = JSON.parse(raw)
     } catch (error) {
       this.lastLessons = []
+      this.lastStatus = undefined
       this.options.logger?.warn('ClassIsland 桥接数据不是合法 JSON', { error: String(error) })
       return { lessons: [], warnings: ['桥接数据不是合法 JSON'] }
     }
 
     const result = parseClassislandPayload(parsed)
     this.lastLessons = result.lessons
+    this.lastStatus = result.status
     return result
   }
 

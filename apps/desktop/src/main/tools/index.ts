@@ -4,6 +4,8 @@
  * 职责边界：本文件**不 import electron**，只做「按配置把工具注册进工具表」这一件事，
  * 因此可以在 Node 环境里完整单测。真实系统调用（进程 / 文件系统 / shell）全部由
  * `command-runner.ts` / `file-port.ts` / `open-port.ts` 通过构造参数注入。
+ * （`clipboard.ts` 是唯一的例外：它实现 Electron `clipboard` 端口，必须 import electron，
+ * 因此不进本文件的依赖 —— 由 `main/index.ts` 直接构造后注入。）
  *
  * `sync()` 是**唯一**的开关落地点：启动时调一次，`settings:changed` 时再调一次，
  * 于是「改开关 / 改上限」立即生效（下一次请求的系统提示词就会看到新的工具表），无需重启。
@@ -11,15 +13,23 @@
  */
 import { COMPUTER_TOOL_NAMES, type Logger, type Settings } from '@aurora/shared'
 import {
+  createClipboardTools,
   createFileTools,
+  createImageGenTool,
+  createNotifyTool,
   createOpenTool,
   createSettingsTool,
   createTerminalTool,
+  createWebFetchTool,
+  type ClipboardPort,
   type CommandRunner,
   type FilePort,
+  type ImageGenPort,
+  type NotifyPort,
   type OpenPort,
   type SettingsToolPort,
   type ToolRegistry,
+  type WebFetchPort,
 } from '@aurora/agent-core'
 
 export interface ComputerToolsDeps {
@@ -127,6 +137,66 @@ export function registerSettingsTool(deps: SettingsToolDeps): SettingsToolRegist
       deps.tools.register(createSettingsTool({ port: deps.port, logger: deps.logger }))
       deps.logger.info('已同步 set_setting 工具', { name: SETTINGS_TOOL_NAME })
       return [SETTINGS_TOOL_NAME]
+    },
+  }
+}
+
+/** 扩展工具的固定名字集合：注册 / 摘除 / 文档共用，避免多处各写一份字符串。 */
+export const EXTENSION_TOOL_NAMES = [
+  'web_fetch',
+  'clipboard_read',
+  'clipboard_write',
+  'notify_user',
+  'generate_image',
+] as const
+
+export interface ExtensionToolsDeps {
+  tools: ToolRegistry
+  logger: Logger
+  /** 网页抓取端口（`web_fetch`，main/tools/web-fetch.ts 的 netFetch 实现） */
+  webFetch: WebFetchPort
+  /** 剪贴板端口（`clipboard_read` / `clipboard_write`，main/tools/clipboard.ts） */
+  clipboard: ClipboardPort
+  /** 系统通知端口（`notify_user`，main/tools/notify.ts → NotificationService） */
+  notify: NotifyPort
+  /** 生图端口（`generate_image`，main/tools/imagegen-port.ts → ImageGenService） */
+  imageGen: ImageGenPort
+}
+
+export interface ExtensionToolsRegistry {
+  /** 重建扩展工具表，返回本次注册的工具名 */
+  sync(): string[]
+}
+
+/**
+ * 扩展工具五件套装配器（Design/betav2-spec.md §6.2、docs/06 §14）。
+ *
+ * 与 `registerSettingsTool` 同级：**不受 `agent.tools.enabled` 门控**——
+ * 它们不在 `COMPUTER_TOOL_NAMES` 里，且「看网页 / 收通知 / 生图」不属于
+ * 「电脑操控」的开关语义；其中会碰隐私或花钱的
+ * （`clipboard_read` / `clipboard_write` / `generate_image`）由工具自身的
+ * `sensitivity: 'confirm'` 逐次过用户确认。
+ */
+export function registerExtensionTools(deps: ExtensionToolsDeps): ExtensionToolsRegistry {
+  return {
+    sync(): string[] {
+      // 先全量摘掉再重建（幂等），与电脑操控工具同一套时序约定
+      for (const name of EXTENSION_TOOL_NAMES) deps.tools.unregister(name)
+
+      deps.tools.register(
+        createWebFetchTool({
+          port: deps.webFetch,
+        }),
+      )
+      for (const tool of createClipboardTools({ port: deps.clipboard })) {
+        deps.tools.register(tool)
+      }
+      deps.tools.register(createNotifyTool({ port: deps.notify }))
+      deps.tools.register(createImageGenTool({ port: deps.imageGen }))
+
+      const names = EXTENSION_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
+      deps.logger.info('已同步扩展工具', { names: [...names] })
+      return [...names]
     },
   }
 }

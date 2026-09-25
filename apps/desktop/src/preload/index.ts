@@ -77,6 +77,13 @@ const api: AuroraApi = {
     synthesize: (request) => invoke(IPC.tts.synthesize, request),
     testConnection: (request) => invoke(IPC.tts.testConnection, request),
   },
+  stt: {
+    transcribe: (request) => invoke(IPC.stt.transcribe, request),
+  },
+  imagegen: {
+    generate: (request) => invoke(IPC.imagegen.generate, request),
+    read: (request) => invoke(IPC.imagegen.read, request),
+  },
   window: {
     show: (name) => invoke(IPC.window.show, name),
     hide: (name) => invoke(IPC.window.hide, name),

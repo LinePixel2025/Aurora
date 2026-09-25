@@ -88,6 +88,13 @@ export function fileSignature(file: { path: string; sizeBytes: number; mtimeMs: 
   return `${file.path}|${file.sizeBytes}|${file.mtimeMs}`
 }
 
+/** 小写扩展名（含点）；无扩展名返回空串。给 LLM 分类 prompt 做文件类型元数据用。 */
+export function extOf(fileName: string): string {
+  const dot = fileName.lastIndexOf('.')
+  if (dot <= 0 || dot === fileName.length - 1) return ''
+  return fileName.slice(dot).toLowerCase()
+}
+
 export class ClassificationService {
   private readonly deps: ClassificationServiceDeps
   private readonly logger: Logger
@@ -394,6 +401,8 @@ export class ClassificationService {
           .corrected()
           .slice(0, 5)
           .map((item) => ({ fileName: item.fileName, subject: item.subject })),
+        fileExt: extOf(job.fileName),
+        sizeBytes: job.sizeBytes,
       },
       { provider: built.provider, model: built.model, signal: undefined, logger: this.logger },
     )

@@ -14,6 +14,10 @@ import type {
   GuideAnswerResult,
   GuideSession,
   HotkeyStatus,
+  ImageGenGenerateRequest,
+  ImageGenReadRequest,
+  ImageGenReadResult,
+  ImageGenResult,
   Lesson,
   Logger,
   ModeChangedEvent,
@@ -26,6 +30,8 @@ import type {
   Settings,
   SkillSummary,
   SkillsStatus,
+  SttTranscribeRequest,
+  SttTranscribeResult,
   TtsSynthesizeRequest,
   TtsSynthesizeResult,
   TtsTestRequest,
@@ -188,6 +194,17 @@ export interface LlmTesterLike {
 export interface TtsSynthesizerLike {
   synthesize(request: TtsSynthesizeRequest): Promise<TtsSynthesizeResult>
   test(request: TtsTestRequest): Promise<TtsTestResult>
+}
+
+/** 语音输入（STT 转写，Design/betav2-spec.md §8.2）：`createSttService` 的返回值满足 */
+export interface SttServiceLike {
+  transcribe(request: SttTranscribeRequest): Promise<SttTranscribeResult>
+}
+
+/** 图像生成（Design/betav2-spec.md §8.3）：`createImageGenService` 的返回值满足 */
+export interface ImageGenServiceLike {
+  generate(request: ImageGenGenerateRequest): Promise<ImageGenResult>
+  read(request: ImageGenReadRequest): Promise<ImageGenReadResult>
 }
 
 export interface SkillsInfoLike {
