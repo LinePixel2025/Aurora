@@ -35,11 +35,11 @@ doom-loop 检测、显式 `cache_control`、`websearch` / `question` / `plan` �
 - [x] `pnpm typecheck && pnpm test && pnpm build` 全绿，且新增用例覆盖：
       glob 模式编译器、`edit_file` 的 EOL 保真与唯一性拒绝、allow 模式匹配器、
       配置迁移 v11 → v12（幂等）、缓存命中量的解析（两种字段名）、系统提示词静态前缀逐字节稳定。
-- [ ] `$env:AURORA_SMOKE='1'; pnpm dev` 的 `%TEMP%\aurora-smoke-logs\AURORA_SMOKE_RESULT` 无 FAIL，
+- [x] `$env:AURORA_SMOKE='1'; pnpm dev` 的 `%TEMP%\aurora-smoke-logs\AURORA_SMOKE_RESULT` 无 FAIL，
       且新增断言至少三条：三个新工具（`edit_file` / `grep` / `glob`）已注册且敏感级正确；
       命中 allow 模式的命令**没有**推送确认卡片（对比未命中的命令推了卡片）；
       同一会话连续两轮请求，假 LLM 服务端收到的**系统提示词静态前缀逐字节相同**。
-- [ ] `$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev` 退出码 0、`report.json` 无 FAIL，
+- [x] `$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev` 退出码 0、`report.json` 无 FAIL，
       「智能与工具」页探针报告 `agent.tools.terminal.allowPatterns` 与 `agent.tools.search.*` 字段存在；
       张数与探针条数以 `report.json` 实际条目为准，并同步 `AGENTS.md` 与 `docs/07 §5.3` 的计数。
 
