@@ -12,6 +12,7 @@
  * `lazyConnect` 收进「高级」折叠；新增服务器表单默认收起（空状态时由主按钮展开）。
  */
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { ChevronRight } from '../../shared/icons.js'
 import type { McpServerConfig, McpServerStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import SettingField from '../../shared/components/SettingField.vue'
@@ -227,7 +228,13 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
   <!-- data-group：capture 探针的组锚点（SETTINGS_AGENT_FIELDS_SCRIPT 据此先展开再计数） -->
   <section class="group section-card" data-group="mcp">
     <button class="group-head" type="button" :aria-expanded="open" @click="open = !open">
-      <span class="chevron" :class="{ open }" aria-hidden="true">▸</span>
+      <ChevronRight
+        class="chevron"
+        :class="{ open }"
+        :size="14"
+        :stroke-width="1.8"
+        aria-hidden="true"
+      />
       <span class="section-title">MCP 服务器</span>
       <span class="group-summary tiny muted grow">
         {{
@@ -313,7 +320,13 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
               :aria-expanded="showAdvanced"
               @click="showAdvanced = !showAdvanced"
             >
-              <span class="chevron" :class="{ open: showAdvanced }" aria-hidden="true">▸</span>
+              <ChevronRight
+                class="chevron"
+                :class="{ open: showAdvanced }"
+                :size="14"
+                :stroke-width="1.8"
+                aria-hidden="true"
+              />
               高级：连接策略
             </button>
             <Transition name="collapse">

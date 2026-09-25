@@ -11,6 +11,7 @@
  * 对话窗才渲染麦克风按钮 —— 未配置时连按钮都不出现（不是 disabled）。
  */
 import { computed, ref, watch } from 'vue'
+import { ChevronRight } from '../../shared/icons.js'
 import { STT_PRESETS, type SttProviderConfig } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
@@ -289,7 +290,13 @@ async function setActive(id: string): Promise<void> {
 <template>
   <section class="group section-card">
     <button class="group-head" type="button" :aria-expanded="open" @click="open = !open">
-      <span class="chevron" :class="{ open }" aria-hidden="true">▸</span>
+      <ChevronRight
+        class="chevron"
+        :class="{ open }"
+        :size="14"
+        :stroke-width="1.8"
+        aria-hidden="true"
+      />
       <span class="section-title">语音输入（STT）</span>
       <span class="group-summary tiny muted grow">
         {{ enabled ? '已启用' : '已停用' }} ·

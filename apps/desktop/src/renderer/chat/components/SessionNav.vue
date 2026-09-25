@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * 主界面左栏（2026-09 重构，docs/07 §2.3）：品牌行 → 新对话 → 固定项「快速对话」
- * （点击切到 quick 会话）→ 会话列表 → 底部（模式徽章 / 右栏开关 / 设置齿轮）。
+ * 主界面左栏（2026-09 重构，docs/07 §2.3）：品牌行 → 新对话 → 固定项（快速对话 / 子代理）
+ * → 会话列表 → 底部（模式徽章 / 右栏开关 / 设置齿轮）。
  *
  * 面板内的快速对话入口在**桌面提示条**（悬停展开的面板，docs/07 §2.2）；
- * 主界面左栏的固定项沿用「点击切换主区会话」口径，与普通会话共用同一窗口。
+ * 主界面左栏的固定项沿用「点击切换主区内容」口径：快速对话切到 `quick` 会话，
+ * 子代理切到主区的「子代理」页面（`view` 由 App.vue 持有）。
  *
  * 会话列表项是单行设计（标题 + 相对时间），去掉旧的「· N 条」统计——
  * 列表要扫读的是「哪段对话、什么时候」，条数是噪音。
@@ -17,6 +18,7 @@ import type { ChatSessionSummary } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import { useWindowDrag } from '../../shared/composables/useWindowDrag.js'
 import { useModeStore } from '../../shared/stores.js'
+import { Bot, PanelRight, Settings, Sparkles, SquarePen, Zap } from '../../shared/icons.js'
 
 const props = defineProps<{
   /** 会话列表（普通会话；quick 由上方固定项的面板承载） */
@@ -25,11 +27,18 @@ const props = defineProps<{
   activeId: string
   /** 右栏是否展开（开关图标的方向 / 激活态） */
   rightOpen: boolean
+  /** 主区正在展示的内容：对话流 / 子代理页面（2026-09 新增，docs/07 §2.4） */
+  view: 'chat' | 'subagents'
+  /** 本会话已记录的子代理运行数（固定项上的角标） */
+  subagentCount: number
+  /** 其中是否还有在跑的（角标用 running 色） */
+  subagentRunning: boolean
 }>()
 
 const emit = defineEmits<{
   (event: 'newSession'): void
   (event: 'select', id: string): void
+  (event: 'openSubagents'): void
   (event: 'toggleRightPanel'): void
   (event: 'openSettings'): void
 }>()
@@ -62,9 +71,7 @@ function formatRelativeTime(iso: string): string {
     <!-- 品牌行：拖动区（窗口 frame:false）；区内按钮由全局规则自动 no-drag -->
     <div class="brand" :class="dragClass">
       <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 16 16">
-          <path d="M8 2.4v11.2M2.4 8h11.2M3.9 3.9l8.2 8.2M12.1 3.9l-8.2 8.2" />
-        </svg>
+        <Sparkles :size="13" :stroke-width="1.6" />
       </span>
       <strong class="brand-name">Aurora</strong>
     </div>
@@ -78,9 +85,7 @@ function formatRelativeTime(iso: string): string {
         data-action="chat.new-session"
         @click="emit('newSession')"
       >
-        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M8 3.5v9M3.5 8h9" />
-        </svg>
+        <SquarePen class="icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
         新对话
       </AppButton>
     </div>
@@ -90,13 +95,34 @@ function formatRelativeTime(iso: string): string {
       type="button"
       class="quick-item hover-fill press"
       data-field="chat.quick-item"
-      :class="{ active: activeId === 'quick' }"
+      :class="{ active: props.view === 'chat' && activeId === 'quick' }"
       @click="emit('select', 'quick')"
     >
-      <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M8.8 1.8 3.5 9h3.4l-.7 5.2L11.5 7H8.1l.7-5.2Z" />
-      </svg>
+      <Zap class="icon" :size="14" :stroke-width="1.6" aria-hidden="true" />
       <span class="item-title">快速对话</span>
+    </button>
+
+    <!--
+      固定顶置项：子代理（2026-09 新增，docs/07 §2.4）。
+      主区切到子代理页面 —— 它不是会话（不能切换 sessionId），因此走独立的 view 状态。
+      角标显示本会话记录到的运行数；有在跑的用 running 色 + 呼吸，一眼看出后台在干活。
+    -->
+    <button
+      type="button"
+      class="quick-item hover-fill press"
+      data-field="chat.subagent-item"
+      :class="{ active: props.view === 'subagents' }"
+      @click="emit('openSubagents')"
+    >
+      <Bot class="icon" :size="14" :stroke-width="1.6" aria-hidden="true" />
+      <span class="item-title">子代理</span>
+      <span
+        v-if="props.subagentCount > 0"
+        class="count-badge tiny"
+        :class="{ running: props.subagentRunning }"
+        data-field="chat.subagent-count"
+        >{{ props.subagentCount }}</span
+      >
     </button>
 
     <nav class="nav-scroll">
@@ -132,10 +158,7 @@ function formatRelativeTime(iso: string): string {
         :title="rightOpen ? '收起右栏' : '展开右栏'"
         @click="emit('toggleRightPanel')"
       >
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <rect x="2" y="2.8" width="12" height="10.4" rx="2" />
-          <path d="M10 2.8v10.4" />
-        </svg>
+        <PanelRight :size="15" :stroke-width="1.5" aria-hidden="true" />
       </button>
       <button
         type="button"
@@ -144,12 +167,7 @@ function formatRelativeTime(iso: string): string {
         aria-label="设置"
         @click="emit('openSettings')"
       >
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="8" r="2.2" />
-          <path
-            d="M8 1.8v1.7M8 12.5v1.7M14.2 8h-1.7M3.5 8H1.8M12.4 3.6l-1.2 1.2M4.8 11.2l-1.2 1.2M12.4 12.4l-1.2-1.2M4.8 4.8 3.6 3.6"
-          />
-        </svg>
+        <Settings :size="15" :stroke-width="1.5" aria-hidden="true" />
       </button>
     </footer>
   </div>
@@ -187,12 +205,8 @@ function formatRelativeTime(iso: string): string {
 
 /* 单色 mark：强调色底 + 白色光芒线，BetaV2 禁用双色品牌渐变 */
 .brand-mark svg {
-  width: 13px;
-  height: 13px;
-  fill: none;
+  flex: 0 0 auto;
   stroke: var(--on-accent);
-  stroke-width: 1.4;
-  stroke-linecap: round;
 }
 
 .brand-name {
@@ -206,14 +220,12 @@ function formatRelativeTime(iso: string): string {
   flex: 0 0 auto;
 }
 
-/* 按钮里的加号 svg 只有 viewBox、没有固有尺寸（默认 300×150），不钉死会把按钮撑成巨椭圆 */
+/* 按钮里的图标：lucide 自带 width/height 属性，这里只保证不被 flex 压缩 */
 .new-session :deep(svg.icon) {
-  width: 13px;
-  height: 13px;
   flex: none;
 }
 
-/* ── 快速对话固定项：单行图标 + 文案 + 展开箭头 ── */
+/* ── 固定项（快速对话 / 子代理）：单行图标 + 文案 ── */
 .quick-item {
   display: flex;
   align-items: center;
@@ -223,22 +235,37 @@ function formatRelativeTime(iso: string): string {
   font-weight: var(--weight-medium);
   color: var(--text-secondary);
   text-align: left;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .quick-item .icon {
   flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
-  fill: none;
   stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .quick-item.active {
   background: var(--fill-2);
   color: var(--text-primary);
+}
+
+/* 子代理运行数角标：有在跑的用 running 色并呼吸，否则中性灰 */
+.count-badge {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--fill-3);
+  color: var(--text-muted);
+  text-align: center;
+  font-variant-numeric: var(--num-tabular);
+}
+
+.count-badge.running {
+  background: color-mix(in srgb, var(--aurora-blue) 22%, transparent);
+  color: var(--accent-text);
+  animation: aurora-confirm var(--dur-base) var(--ease-spring) both;
 }
 
 /* ── 会话滚动区 ── */
@@ -347,12 +374,7 @@ function formatRelativeTime(iso: string): string {
 }
 
 .icon-btn svg {
-  width: 15px;
-  height: 15px;
-  fill: none;
+  flex: 0 0 auto;
   stroke: currentColor;
-  stroke-width: 1.4;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 </style>

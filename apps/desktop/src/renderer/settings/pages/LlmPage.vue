@@ -22,6 +22,7 @@
  * 页面底部新增「生图模型」区组（`ImageGenSection`，`imagegen.*`，独立 provider 体系）。
  */
 import { computed, reactive, ref, watch } from 'vue'
+import { ChevronRight } from '../../shared/icons.js'
 import {
   DEFAULT_REASONING_EFFORT,
   PROVIDER_PRESETS,
@@ -807,7 +808,13 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
           :aria-expanded="advancedOf(draft.id)"
           @click="toggleAdvanced(draft.id)"
         >
-          <span class="chevron" :class="{ open: advancedOf(draft.id) }" aria-hidden="true">▸</span>
+          <ChevronRight
+            class="chevron"
+            :class="{ open: advancedOf(draft.id) }"
+            :size="14"
+            :stroke-width="1.8"
+            aria-hidden="true"
+          />
           高级参数与连接测试
         </button>
 

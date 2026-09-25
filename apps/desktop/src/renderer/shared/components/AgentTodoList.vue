@@ -9,6 +9,7 @@
  * 状态圈语义与全局状态灯一致：进行中 = 强调蓝（呼吸），完成 = ok 绿，待办 = 中性灰。
  * 组件只读（勾选由 Agent 在会话里 `todo_write` 驱动），没有任何交互。
  */
+import { Check, Circle, LoaderCircle } from '../icons.js'
 import type { TodoRow } from '../agentTodo.js'
 
 /** 进度摘要由调用方的卡头承担（消息流卡「N 项」/ 右栏卡「n/m」），列表本身只渲染条目 */
@@ -29,18 +30,15 @@ withDefaults(
     <template v-else>
       <div v-for="(todo, index) in todos" :key="index" class="todo-row">
         <span class="todo-mark" :class="todo.status" aria-hidden="true">
-          <!-- 待办：空心圈；进行中：强调色半环；完成：ok 实心对勾 -->
-          <svg v-if="todo.status === 'pending'" viewBox="0 0 14 14">
-            <circle cx="7" cy="7" r="5.2" />
-          </svg>
-          <svg v-else-if="todo.status === 'in_progress'" viewBox="0 0 14 14">
-            <circle cx="7" cy="7" r="5.2" class="ring" />
-            <path d="M7 3.4A3.6 3.6 0 0 1 10.6 7" class="arc" />
-          </svg>
-          <svg v-else viewBox="0 0 14 14">
-            <circle cx="7" cy="7" r="6.2" class="done-bg" />
-            <path d="M4.4 7.2 6.3 9l3.3-3.8" class="done-check" />
-          </svg>
+          <!-- 待办：中性空心圈；进行中：强调色旋转弧；完成：ok 实心圈 + 对勾 -->
+          <Circle v-if="todo.status === 'pending'" :size="13" :stroke-width="1.5" />
+          <LoaderCircle
+            v-else-if="todo.status === 'in_progress'"
+            class="spin"
+            :size="13"
+            :stroke-width="1.7"
+          />
+          <span v-else class="todo-done"><Check :size="9" :stroke-width="3.2" /></span>
         </span>
         <span class="todo-content" :class="{ done: todo.status === 'completed' }">{{
           todo.content
@@ -65,7 +63,7 @@ withDefaults(
   min-width: 0;
 }
 
-/* 状态圈：14px 与正文基线对齐 */
+/* 状态圈：14px 与正文基线对齐；图标走 lucide，尺寸由组件 size 决定 */
 .todo-mark {
   flex: 0 0 auto;
   display: grid;
@@ -75,50 +73,25 @@ withDefaults(
   margin-top: 2px;
 }
 
-.todo-mark svg {
+/* 待办：中性空心圈 */
+.todo-mark.pending {
+  color: var(--text-muted);
+}
+
+/* 进行中：强调色旋转弧（语义同全局 running 状态灯；旋转关键帧在 theme.css 的 `.spin`） */
+.todo-mark.in_progress {
+  color: var(--aurora-blue);
+}
+
+/* 完成：ok 实心圈 + 对勾 */
+.todo-done {
+  display: grid;
+  place-items: center;
   width: 14px;
   height: 14px;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-/* 待办：中性空心圈 */
-.todo-mark.pending svg {
-  stroke: var(--text-muted);
-  stroke-width: 1.4;
-}
-
-/* 进行中：强调色环 + 运动弧（呼吸），语义同全局 running 状态灯 */
-.todo-mark.in_progress svg {
-  stroke: var(--aurora-blue);
-  stroke-width: 1.6;
-}
-
-.todo-mark.in_progress .ring {
-  opacity: 0.35;
-}
-
-.todo-mark.in_progress .arc {
-  animation: todo-arc-spin 1.4s linear infinite;
-  transform-origin: 7px 7px;
-}
-
-@keyframes todo-arc-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* 完成：ok 实心圈 + 白色对勾 */
-.todo-mark.completed .done-bg {
-  fill: var(--status-ok);
-  stroke: none;
-}
-
-.todo-mark.completed .done-check {
-  stroke: var(--on-accent);
-  stroke-width: 1.6;
+  border-radius: 50%;
+  background: var(--status-ok);
+  color: var(--on-accent);
 }
 
 .todo-content {
@@ -147,8 +120,14 @@ withDefaults(
   margin-top: 1px;
 }
 
-.dense .todo-mark svg {
+.dense .todo-done {
   width: 12px;
   height: 12px;
+}
+
+/* 紧凑版把图标一并缩小一档（lucide 的宽高是 SVG 属性，这里用 CSS 覆写对齐） */
+.dense .todo-mark svg {
+  width: 11px;
+  height: 11px;
 }
 </style>

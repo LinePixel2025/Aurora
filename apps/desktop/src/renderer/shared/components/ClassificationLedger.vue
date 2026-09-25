@@ -6,6 +6,7 @@
  * 折叠时标题行仍展示条数与「处理中」状态，用户能感知后台在归类。
  */
 import { computed, onMounted, ref } from 'vue'
+import { ChevronRight } from '../icons.js'
 import type { ClassificationState } from '@aurora/shared'
 import type { ClassificationRow } from '../composables/useClassification.js'
 import {
@@ -100,7 +101,7 @@ async function clearAll(): Promise<void> {
 <template>
   <section class="ledger" :class="{ open }">
     <button class="head" type="button" @click="open = !open">
-      <span class="chevron" aria-hidden="true">▸</span>
+      <ChevronRight class="chevron" :size="14" :stroke-width="1.8" aria-hidden="true" />
       <strong>{{ title }}</strong>
       <span v-if="rows.length > 0" class="badge">{{ rows.length }} 条</span>
       <span v-if="activeCount > 0 || running > 0" class="badge run">处理中</span>

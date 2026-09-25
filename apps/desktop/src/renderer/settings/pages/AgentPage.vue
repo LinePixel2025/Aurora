@@ -27,6 +27,7 @@
  * 依赖 `node:fs`，一旦被拉进渲染层 bundle，Electron 构建会直接失败（AGENTS.md 架构硬约束 4）。
  */
 import { computed, ref } from 'vue'
+import { ChevronRight } from '../../shared/icons.js'
 import type { AgentToolsConfig, ComputerToolName } from '@aurora/shared/browser'
 import { COMPUTER_TOOL_NAMES, DEFAULT_AGENT_TOOLS } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
@@ -151,7 +152,13 @@ async function openWorkspace(): Promise<void> {
         :aria-expanded="openTools"
         @click="openTools = !openTools"
       >
-        <span class="chevron" :class="{ open: openTools }" aria-hidden="true">▸</span>
+        <ChevronRight
+          class="chevron"
+          :class="{ open: openTools }"
+          :size="14"
+          :stroke-width="1.8"
+          aria-hidden="true"
+        />
         <span class="section-title">电脑操控工具</span>
         <span class="group-summary tiny muted grow">{{ toolsSummary }}</span>
       </button>

@@ -17,6 +17,7 @@
  * 先 `saveProvider` → 再 `synthesize`；两个动作合成一个按钮会让"测试通则播放"变成必然失败的路径。
  */
 import { computed, reactive, ref, watch } from 'vue'
+import { ChevronRight } from '../../shared/icons.js'
 import {
   TTS_FORMATS,
   TTS_PRESETS,
@@ -489,7 +490,13 @@ function stopPreview(): void {
 <template>
   <section class="group section-card">
     <button class="group-head" type="button" :aria-expanded="open" @click="open = !open">
-      <span class="chevron" :class="{ open }" aria-hidden="true">▸</span>
+      <ChevronRight
+        class="chevron"
+        :class="{ open }"
+        :size="14"
+        :stroke-width="1.8"
+        aria-hidden="true"
+      />
       <span class="section-title">语音合成（TTS）</span>
       <span class="group-summary tiny muted grow">
         {{ activeDraft ? `${activeDraft.id} · ${activeDraft.model}` : '未配置' }}

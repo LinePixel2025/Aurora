@@ -14,6 +14,7 @@
  * `data-caption-btn` 是 capture 探针定位的唯一抓手（`CHAT_COLLAPSE_CHECK`）。
  */
 import type { WindowName } from '@aurora/shared'
+import { Minus, X } from '../icons.js'
 import { useWindowStore } from '../stores.js'
 
 const props = withDefaults(
@@ -48,7 +49,7 @@ function onClose(): void {
       aria-label="最小化窗口"
       @click="onMinimize"
     >
-      <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0.5 5h9" /></svg>
+      <Minus :size="12" :stroke-width="1" aria-hidden="true" />
     </button>
     <button
       type="button"
@@ -58,9 +59,7 @@ function onClose(): void {
       aria-label="关闭窗口"
       @click="onClose"
     >
-      <svg viewBox="0 0 10 10" aria-hidden="true">
-        <path d="M0.7 0.7l8.6 8.6M9.3 0.7L0.7 9.3" />
-      </svg>
+      <X :size="12" :stroke-width="1.1" aria-hidden="true" />
     </button>
   </div>
 </template>
@@ -96,12 +95,10 @@ function onClose(): void {
   color: #ffffff;
 }
 
+/* 图标走 lucide（24 视框），缩到 caption 规格需要稍收描边，保持 Windows 那股利落感 */
 .caption-btn svg {
-  width: 10px;
-  height: 10px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1;
-  stroke-linecap: round;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
 }
 </style>

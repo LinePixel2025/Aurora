@@ -24,6 +24,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppButton from '../shared/components/AppButton.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
+import { ArrowUp, ChevronRight, MessageSquare, Settings, Square } from '../shared/icons.js'
 import { useChat } from '../shared/composables/useChat.js'
 import {
   useModeStore,
@@ -364,9 +365,7 @@ onUnmounted(() => {
                 aria-label="停止回复"
                 @click="chat.abort()"
               >
-                <svg viewBox="0 0 12 12" aria-hidden="true">
-                  <rect x="2.5" y="2.5" width="7" height="7" rx="1.4" />
-                </svg>
+                <Square :size="12" :stroke-width="2" aria-hidden="true" />
               </button>
               <button
                 v-else
@@ -378,9 +377,7 @@ onUnmounted(() => {
                 aria-label="发送快速对话"
                 @click="sendQuick"
               >
-                <svg viewBox="0 0 12 12" aria-hidden="true">
-                  <path d="M6 10V2.2M6 2.2 2.8 5.4M6 2.2l3.2 3.2" />
-                </svg>
+                <ArrowUp :size="13" :stroke-width="2.2" aria-hidden="true" />
               </button>
             </div>
           </section>
@@ -419,26 +416,15 @@ onUnmounted(() => {
         <!-- 操作区：3 个入口，主入口用 primary（capture 面板探针按 `.actions button` 做命中测试） -->
         <section class="actions">
           <AppButton variant="primary" size="sm" block class="press" @click="openChat">
-            <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-              <path
-                d="M3 3.5h10a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H7.6L4.6 13v-2.5H3a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1Z"
-              />
-            </svg>
+            <MessageSquare class="icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
             打开主界面
           </AppButton>
           <AppButton variant="ghost" size="sm" block class="press" @click="openSettings">
-            <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-              <circle cx="8" cy="8" r="2.2" />
-              <path
-                d="M8 1.8v1.5M8 12.7v1.5M1.8 8h1.5M12.7 8h1.5M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1"
-              />
-            </svg>
+            <Settings class="icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
             设置
           </AppButton>
           <AppButton variant="ghost" size="sm" block class="press" @click="hideSelf">
-            <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M6 3.5 10.5 8 6 12.5" />
-            </svg>
+            <ChevronRight class="icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
             隐藏提示条
           </AppButton>
         </section>
@@ -770,13 +756,8 @@ onUnmounted(() => {
 }
 
 .qc-send svg {
-  width: 12px;
-  height: 12px;
-  fill: none;
+  flex: 0 0 auto;
   stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 /* 停止态：中性填充 + 方块图标（停止不是主动作，不抢强调色） */
@@ -879,12 +860,6 @@ onUnmounted(() => {
 
 .icon {
   flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
-  fill: none;
   stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 </style>

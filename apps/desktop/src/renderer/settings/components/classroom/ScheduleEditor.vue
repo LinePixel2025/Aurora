@@ -1,15 +1,17 @@
 <script setup lang="ts">
 /**
  * 课程表（docs/05 §3.4）：`schedule.provider` 切换、`lessons[]` 编辑、
- * ClassIsland 桥接子配置（`schedule.classisland.*`，含连接测试与状态），
- * 以及 `preClassReminder` / `preClassOpenFolder` 两个开关。拆分自 `ClassroomSection.vue`。
+ * ClassIsland 桥接子配置（`schedule.classisland.*`，含连接测试、**提醒通道测试**与状态），
+ * 以及 `preClassReminder` / `preClassLeadMinutes` / `preClassOpenFolder`。拆分自 `ClassroomSection.vue`。
  *
  * 门控（step-06 B）：
  * - `classisland.*` 只在 `schedule.provider === 'classisland'` 时存在；
- * - `preClassReminder` / `preClassOpenFolder` 只在 `lessons.length > 0` 时存在（没有节次就没有「课前」）。
+ * - `preClassReminder` / `preClassLeadMinutes` / `preClassOpenFolder` 只在 `lessons.length > 0` 时存在
+ *   （没有节次就没有「课前」）。
  */
 import { onMounted, ref, watch } from 'vue'
 import type {
+  ClassIslandNotifyState,
   ClassIslandStatus,
   ClassIslandTestResult,
   ClassroomModeConfig,
@@ -54,7 +56,10 @@ const bridgeStatus = ref<ClassIslandStatus | null>(null)
 
 async function refreshBridgeStatus(): Promise<void> {
   const status = await window.aurora.classisland.status()
-  if (status.ok) bridgeStatus.value = status.value
+  if (status.ok) {
+    bridgeStatus.value = status.value
+    notifyState.value = status.value.notify ?? null
+  }
 }
 
 onMounted(() => {
@@ -102,10 +107,59 @@ async function testClassisland(): Promise<void> {
       lessonCount: result.value.lessons.length,
       warnings: result.value.warnings,
       ...(result.value.error === undefined ? {} : { error: result.value.error }),
+      ...(result.value.status === undefined ? {} : { status: result.value.status }),
     }
   } finally {
     testing.value = false
   }
+}
+
+// ───────────────────────── 提醒通道（v3，docs/05 §3.4） ─────────────────────────
+
+/** 最近一次的提醒通道状态（来自 `classisland:status` 的 `notify` 字段） */
+const notifyState = ref<ClassIslandNotifyState | null>(null)
+/** 「发送测试提醒」的就地结果 */
+const notifyResult = ref<{ ok: boolean; text: string } | null>(null)
+const notifyTesting = ref(false)
+
+async function sendTestReminder(): Promise<void> {
+  notifyTesting.value = true
+  try {
+    // 只传字面量：Vue 的 reactive 代理不可结构化克隆（AGENTS.md 的 DataCloneError 坑），
+    // 这里刻意不用任何 ref / reactive 对象，`deepClone` 因此不必要
+    const result = await window.aurora.classisland.notify({
+      title: 'Aurora 测试提醒',
+      body: '来自 Aurora 设置页的提醒通道测试',
+      channel: 'custom',
+    })
+    if (!result.ok) {
+      notifyResult.value = { ok: false, text: result.message }
+      return
+    }
+    notifyResult.value = {
+      ok: result.value.ok,
+      text: result.value.ok
+        ? `已发送（耗时 ${result.value.elapsedMs}ms）：请确认 ClassIsland 上是否弹出提醒`
+        : `发送失败（耗时 ${result.value.elapsedMs}ms）：${result.value.error ?? '未知原因'}`,
+    }
+    // 结果会同时落到主进程的 notify 状态里，刷新一次把它显示出来
+    await refreshBridgeStatus()
+  } finally {
+    notifyTesting.value = false
+  }
+}
+
+/** 提醒通道状态文案（可用性 + 最近一次结果） */
+function describeNotifyState(state: ClassIslandNotifyState): string {
+  const parts: string[] = []
+  if (!state.available) parts.push('不可用')
+  else if (state.ok) parts.push('可用（最近一次发送成功）')
+  else parts.push('可用（尚未成功发送过）')
+  if (state.error !== undefined && state.error !== '') parts.push(`最近错误：${state.error}`)
+  if (state.lastAt !== null) {
+    parts.push(`最近一次：${new Date(state.lastAt).toLocaleTimeString()}`)
+  }
+  return parts.join(' · ')
 }
 
 // ───────────────────────── 课程行 ─────────────────────────
@@ -251,6 +305,35 @@ async function removeLesson(index: number): Promise<void> {
         （最近同步 {{ new Date(bridgeStatus.lastSyncAt).toLocaleTimeString() }}）
       </template>
     </AppToast>
+
+    <!-- 提醒通道（v3，docs/05 §3.4）：Aurora → ClassIsland 的提醒是否可用 + 最近一次结果 -->
+    <SettingField
+      data-field="settings.classisland-notify-test"
+      label="提醒通道"
+      hint="让 Aurora 调用 ClassIsland 的提醒（需要桥接插件 v3）；是否弹出与是否朗读由 ClassIsland 的提醒设置决定"
+    >
+      <div class="row grow">
+        <span class="tiny muted grow" data-field="settings.classisland-notify-state">
+          {{ notifyState ? describeNotifyState(notifyState) : '尚未获取提醒通道状态' }}
+        </span>
+        <AppButton
+          size="sm"
+          data-field="settings.classisland-notify-test-button"
+          :disabled="notifyTesting"
+          @click="sendTestReminder"
+        >
+          {{ notifyTesting ? '发送中…' : '发送测试提醒' }}
+        </AppButton>
+      </div>
+    </SettingField>
+
+    <AppToast
+      v-if="notifyResult"
+      :tone="notifyResult.ok ? 'ok' : 'error'"
+      data-field="settings.classisland-notify-result"
+    >
+      {{ notifyResult.text }}
+    </AppToast>
   </template>
 
   <div class="row">
@@ -333,7 +416,7 @@ async function removeLesson(index: number): Promise<void> {
     <SettingField
       data-field="modes.classroom.preClassReminder"
       label="课前提醒"
-      hint="课前 5 分钟系统通知；是否同时打开科目文件夹见下一项"
+      :hint="`课前 ${classroom.preClassLeadMinutes ?? 5} 分钟系统通知；是否同时打开科目文件夹见下一项`"
     >
       <label class="row tiny">
         <input
@@ -343,6 +426,30 @@ async function removeLesson(index: number): Promise<void> {
         />
         <span>开启课前提醒</span>
       </label>
+    </SettingField>
+
+    <!-- v10 新增（docs/08 §1）：提前分钟数可配，改完即时生效（每次 tick 即时读取） -->
+    <SettingField
+      data-field="modes.classroom.preClassLeadMinutes"
+      label="提前分钟数"
+      hint="1–30 分钟；改完即时生效。设得太大时同一天的多节课会同时进入提醒窗口"
+    >
+      <input
+        class="input"
+        type="number"
+        min="1"
+        max="30"
+        step="1"
+        :value="classroom.preClassLeadMinutes ?? 5"
+        @change="
+          patch({
+            preClassLeadMinutes: Math.min(
+              30,
+              Math.max(1, Math.round(Number(($event.target as HTMLInputElement).value) || 5)),
+            ),
+          })
+        "
+      />
     </SettingField>
 
     <!-- v8 新增（docs/08 §1）：打开动作单独门控，通知照发（main/pre-class-reminder.ts） -->

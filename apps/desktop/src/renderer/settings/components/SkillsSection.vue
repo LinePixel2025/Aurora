@@ -10,6 +10,7 @@
  * 页级 AppToast（本区组默认收起，常驻 Toast 也不可见，更没有本地渲染的理由）。
  */
 import { computed, onMounted, ref } from 'vue'
+import { ChevronRight } from '../../shared/icons.js'
 import type { SkillSummary, SkillsStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import SettingField from '../../shared/components/SettingField.vue'
@@ -131,7 +132,13 @@ onMounted(() => {
   <!-- data-group：capture 探针的组锚点（SETTINGS_AGENT_FIELDS_SCRIPT 据此先展开再计数） -->
   <section class="group section-card" data-group="skills">
     <button class="group-head" type="button" :aria-expanded="open" @click="open = !open">
-      <span class="chevron" :class="{ open }" aria-hidden="true">▸</span>
+      <ChevronRight
+        class="chevron"
+        :class="{ open }"
+        :size="14"
+        :stroke-width="1.8"
+        aria-hidden="true"
+      />
       <span class="section-title">技能（Skill）</span>
       <span class="group-summary tiny muted grow">
         {{ skills.length === 0 ? '未发现' : `已启用 ${enabledCount} / 共 ${skills.length}` }}

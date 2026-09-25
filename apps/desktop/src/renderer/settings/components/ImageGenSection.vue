@@ -16,6 +16,7 @@
  * - 删除必须显式声明 `removedProviders: [id]`（record 缺项 ≠ 删除）。
  */
 import { computed, ref, watch } from 'vue'
+import { ChevronRight } from '../../shared/icons.js'
 import {
   IMAGEGEN_PRESETS,
   IMAGEGEN_SIZES,
@@ -299,7 +300,13 @@ async function setActive(id: string): Promise<void> {
 <template>
   <section class="group section-card">
     <button class="group-head" type="button" :aria-expanded="open" @click="open = !open">
-      <span class="chevron" :class="{ open }" aria-hidden="true">▸</span>
+      <ChevronRight
+        class="chevron"
+        :class="{ open }"
+        :size="14"
+        :stroke-width="1.8"
+        aria-hidden="true"
+      />
       <span class="section-title">生图模型</span>
       <span class="group-summary tiny muted grow">
         {{ enabled ? '已启用' : '已停用' }} ·

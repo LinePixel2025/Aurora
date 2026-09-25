@@ -19,6 +19,9 @@
  * BetaV2 新增：思考过程展示（useChat 聚合 reasoning，MessageList 折叠块，受
  * `general.chat.showThinking` 门控）；麦克风语音输入（stt 门控口径同 TTS——未配置时
  * **连按钮都不渲染**，MediaRecorder webm → base64 → `stt:transcribe`）。
+ *
+ * 2026-09 动画轮新增：主区可在「对话流 / 子代理页面」之间切换（`view` ref，
+ * docs/07 §2.4；子代理页不属于任何会话，切过去不动 chat 的会话状态）。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { LlmProviderConfig, SensitiveToolRequest, SttProviderConfig } from '@aurora/shared'
@@ -33,11 +36,13 @@ import ThinkingLevelSelect from '../shared/components/ThinkingLevelSelect.vue'
 import WindowCaption from '../shared/components/WindowCaption.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import SessionNav from './components/SessionNav.vue'
+import SubagentPage from './components/SubagentPage.vue'
 import { useChat } from '../shared/composables/useChat.js'
 import { useTts } from '../shared/composables/useTts.js'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
+import { ArrowUp, Mic, PanelLeft, Trash2, X } from '../shared/icons.js'
 
 const chat = useChat('chat', 'main')
 const {
@@ -48,6 +53,7 @@ const {
   error: chatError,
   statusTone,
   reasoningTargetId,
+  subagentRuns,
   send: sendMessage,
   abort,
   clear,
@@ -67,6 +73,20 @@ const input = ref('')
 const navOpen = ref(true)
 /** 右栏显隐（同上；默认展开，1120px 宽下三栏并存） */
 const contextOpen = ref(true)
+/**
+ * 主区内容（2026-09 新增，docs/07 §2.4）：对话流 / 子代理页面。
+ *
+ * 刻意**不做成会话切换** —— 子代理页不属于任何 `sessionId`，切过去不该动 chat 的
+ * 会话状态（否则会触发水合、清空正在看的消息）。它只替换 `.thread` 区域，
+ * 输入区与右栏保持原样，随时可以切回来继续问。
+ */
+const view = ref<'chat' | 'subagents'>('chat')
+/** 子代理页副标题：当前会话在列表里的标题（列表尚未加载时退化为固定文案） */
+const currentSessionTitle = computed(
+  () => sessions.value.find((item) => item.id === sessionId.value)?.title ?? '当前会话',
+)
+/** 是否还有子代理在跑（左栏角标用 running 色 + 子代理页概览） */
+const subagentRunning = computed(() => subagentRuns.value.some((run) => run.status === 'running'))
 
 /** 待确认的敏感工具调用（主进程同一时刻最多推一条） */
 const sensitiveRequest = ref<SensitiveToolRequest | null>(null)
@@ -159,6 +179,15 @@ async function startNewSession(): Promise<void> {
   lastReadId = null
   disposeRecording()
   await newSession()
+}
+
+/**
+ * 左栏点选会话（含「快速对话」固定项）：切会话并把主区切回对话流 ——
+ * 用户点会话的意图是「看这段对话」，若还停在子代理页会显得点了没反应。
+ */
+async function selectSession(id: string): Promise<void> {
+  view.value = 'chat'
+  await switchSession(id)
 }
 
 // ────────────── 头部的两个 provider 控件：模型 / 思考等级（docs/06 §3） ──────────────
@@ -559,8 +588,12 @@ async function markGuideDone(): Promise<void> {
         :sessions="sessionItems"
         :active-id="sessionId"
         :right-open="contextOpen"
+        :view="view"
+        :subagent-count="subagentRuns.length"
+        :subagent-running="subagentRunning"
         @new-session="startNewSession"
-        @select="switchSession"
+        @select="selectSession"
+        @open-subagents="view = 'subagents'"
         @toggle-right-panel="contextOpen = !contextOpen"
         @open-settings="windowStore.show('settings')"
       />
@@ -581,10 +614,7 @@ async function markGuideDone(): Promise<void> {
           :aria-expanded="navOpen"
           @click="navOpen = !navOpen"
         >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <rect x="2" y="2.8" width="12" height="10.4" rx="2" />
-            <path d="M6 2.8v10.4" />
-          </svg>
+          <PanelLeft :size="15" :stroke-width="1.5" aria-hidden="true" />
         </button>
         <StatusDot :tone="statusTone" title="AI 状态" />
         <strong class="head-name">{{ currentTitle }}</strong>
@@ -598,11 +628,7 @@ async function markGuideDone(): Promise<void> {
             aria-label="清空当前消息区"
             @click="clear"
           >
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <path
-                d="M3 4.2h10M6.6 4V2.8h2.8V4M4.4 4.4l.6 8.2c0 .5.4.9.9.9h4.2c.5 0 .9-.4.9-.9l.6-8.2M6.6 6.6v4.6M9.4 6.6v4.6"
-              />
-            </svg>
+            <Trash2 :size="15" :stroke-width="1.5" aria-hidden="true" />
           </button>
         </div>
         <!--
@@ -621,6 +647,7 @@ async function markGuideDone(): Promise<void> {
       />
 
       <div
+        v-if="view === 'chat'"
         class="thread"
         :class="{ dragging, streaming }"
         @dragenter.prevent="dragging = true"
@@ -660,7 +687,7 @@ async function markGuideDone(): Promise<void> {
         />
       </div>
 
-      <footer class="composer">
+      <footer v-if="view === 'chat'" class="composer">
         <div class="composer-inner">
           <div v-if="attachments.length > 0" class="attachments">
             <span v-for="path in attachments" :key="path" class="chip tiny">
@@ -671,7 +698,7 @@ async function markGuideDone(): Promise<void> {
                 aria-label="移除附件"
                 @click="removeAttachment(path)"
               >
-                ×
+                <X :size="11" :stroke-width="2.4" aria-hidden="true" />
               </button>
             </span>
           </div>
@@ -700,10 +727,7 @@ async function markGuideDone(): Promise<void> {
                 @click="toggleRecording"
               >
                 <span v-if="recording" class="mic-ring pulse-ring" aria-hidden="true" />
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                  <rect x="6" y="1.8" width="4" height="7.4" rx="2" />
-                  <path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.2M5.6 14h4.8" />
-                </svg>
+                <Mic :size="15" :stroke-width="1.6" aria-hidden="true" />
               </button>
               <!-- 模型 / 思考等级（2026-09 移入 composer 工具行）：data-field 锚点不变 -->
               <ModelPickerSelect
@@ -735,9 +759,7 @@ async function markGuideDone(): Promise<void> {
                   :disabled="streaming || (input.trim() === '' && attachments.length === 0)"
                   @click="send"
                 >
-                  <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-                    <path d="M8 13V3.6M8 3.6 4.2 7.4M8 3.6l3.8 3.8" />
-                  </svg>
+                  <ArrowUp class="icon" :size="15" :stroke-width="2.2" aria-hidden="true" />
                 </AppButton>
               </span>
             </div>
@@ -746,6 +768,17 @@ async function markGuideDone(): Promise<void> {
 
         <AppToast v-if="chatError" tone="error">{{ chatError }}</AppToast>
       </footer>
+      <template v-else>
+        <!--
+          子代理页面（docs/07 §2.4）：替换主区内容，输入区与右栏照旧。
+          上面那段 thread + composer 用 v-if 收在 view === 'chat' 分支里。
+        -->
+        <SubagentPage
+          :runs="subagentRuns"
+          :session-title="currentSessionTitle"
+          @back="view = 'chat'"
+        />
+      </template>
     </main>
 
     <!-- ── 右栏：模式感知上下文 + 任务清单 ── -->
@@ -922,18 +955,20 @@ async function markGuideDone(): Promise<void> {
   vertical-align: -0.15em;
   border-radius: 1px;
   background: var(--aurora-blue);
-  animation: caret 1.1s steps(1, end) infinite;
+  animation: aurora-caret var(--dur-caret) steps(1, end) infinite;
 }
 
-@keyframes caret {
-  0%,
-  45% {
-    opacity: 1;
-  }
-  46%,
-  100% {
-    opacity: 0.15;
-  }
+/**
+ * 流式正文的「湿润边缘」：最后一行微微淡出，像墨还没干。
+ *
+ * 为什么不做逐字打字机：正文是 `v-html` 渲染的 markdown，每个 delta 都会整体重设
+ * `innerHTML`（Vue 对 v-html 不做 DOM diff）——按节点挂进场动画会在每个 chunk 上重放，
+ * 快速流式时整块一直停在半透明；按帧做真正的打字机则要每帧重解析 markdown。
+ * 用一层跟随内容增长的遮罩，既有"还在写"的观感，又零额外开销、不误伤已读内容。
+ * 流式结束（`.streaming` 摘掉）遮罩一并消失，正文回到全清晰。
+ */
+.thread.streaming :deep(.message.r-assistant:last-of-type .md) {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.4em), rgba(0, 0, 0, 0.45));
 }
 
 /* ── 输入区 ── */
@@ -973,13 +1008,18 @@ async function markGuideDone(): Promise<void> {
 }
 
 .chip-remove {
+  display: grid;
+  place-items: center;
   border: 0;
   background: transparent;
   color: inherit;
   cursor: pointer;
-  font-size: var(--text-base);
   line-height: 1;
   padding: 0;
+}
+
+.chip-remove:hover {
+  color: var(--text-primary);
 }
 
 .composer-box {

@@ -25,44 +25,25 @@ import AdvancedPage from './pages/AdvancedPage.vue'
 import WindowCaption from '../shared/components/WindowCaption.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
+import { AudioLines, Cpu, House, LayoutGrid, Puzzle, Settings, Sparkles } from '../shared/icons.js'
 
 type PageId = 'general' | 'modes' | 'llm' | 'voice' | 'agent' | 'advanced'
 
 interface NavItem {
   id: PageId
   label: string
-  /** 16px 描边图标的 path 数据（stroke 风格与其余窗口图标一致） */
-  icon: string
+  /** 侧栏图标（lucide 组件；尺寸与描边由模板统一给，docs/07 §5） */
+  icon: Component
 }
 
 /** 扁平清单同时是「页面 id → 标签 / 图标」的查表数据（深链校验也用它） */
 const nav: NavItem[] = [
-  { id: 'general', label: '通用', icon: 'M2.5 7.6 8 2.8l5.5 4.8M4 6.9V13h8V6.9' },
-  {
-    id: 'modes',
-    label: '模式',
-    icon: 'M2.5 2.5h4.6v4.6H2.5zM8.9 2.5h4.6v4.6H8.9zM2.5 8.9h4.6v4.6H2.5zM8.9 8.9h4.6v4.6H8.9z',
-  },
-  {
-    id: 'llm',
-    label: 'AI 模型',
-    icon: 'M4.6 4.6h6.8v6.8H4.6zM6.5 4.6V2.4M9.5 4.6V2.4M6.5 13.6v-2.2M9.5 13.6v-2.2M4.6 6.5H2.4M4.6 9.5H2.4M13.6 6.5h-2.2M13.6 9.5h-2.2',
-  },
-  {
-    id: 'voice',
-    label: '语音',
-    icon: 'M2.5 6.4v3.2M5.5 4.4v7.2M8 2.6v10.8M10.5 4.4v7.2M13.5 6.4v3.2',
-  },
-  {
-    id: 'agent',
-    label: '智能与工具',
-    icon: 'M8 2.2 9.4 6.6 13.8 8 9.4 9.4 8 13.8 6.6 9.4 2.2 8 6.6 6.6Z',
-  },
-  {
-    id: 'advanced',
-    label: '系统',
-    icon: 'M2.5 5h5.6M11.6 5h1.9M2.5 11h1.9M7.9 11h5.6M9.6 5a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0M4.4 11a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0',
-  },
+  { id: 'general', label: '通用', icon: House },
+  { id: 'modes', label: '模式', icon: LayoutGrid },
+  { id: 'llm', label: 'AI 模型', icon: Cpu },
+  { id: 'voice', label: '语音', icon: AudioLines },
+  { id: 'agent', label: '智能与工具', icon: Puzzle },
+  { id: 'advanced', label: '系统', icon: Settings },
 ]
 
 /**
@@ -157,9 +138,7 @@ function select(id: PageId): void {
       <div class="sidebar-drag" :class="dragClass" aria-hidden="true" />
       <div class="brand" :class="dragClass">
         <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 16 16">
-            <path d="M8 2.4v11.2M2.4 8h11.2M3.9 3.9l8.2 8.2M12.1 3.9l-8.2 8.2" />
-          </svg>
+          <Sparkles :size="12" :stroke-width="1.6" />
         </span>
         <div class="brand-text">
           <strong>Aurora</strong>
@@ -180,9 +159,13 @@ function select(id: PageId): void {
             :aria-current="active === item.id ? 'page' : undefined"
             @click="select(item.id)"
           >
-            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
-              <path :d="item.icon" />
-            </svg>
+            <component
+              :is="item.icon"
+              class="nav-icon"
+              :size="15"
+              :stroke-width="1.6"
+              aria-hidden="true"
+            />
             <span class="label">{{ item.label }}</span>
           </button>
         </template>
@@ -275,12 +258,8 @@ function select(id: PageId): void {
 }
 
 .brand-mark svg {
-  width: 12px;
-  height: 12px;
-  fill: none;
+  flex: 0 0 auto;
   stroke: var(--on-accent);
-  stroke-width: 1.4;
-  stroke-linecap: round;
 }
 
 .brand p {
@@ -331,13 +310,7 @@ nav > .nav-group:first-child {
 /* 16px 描边图标：与主界面头部图标同一套笔触 */
 .nav-icon {
   flex: 0 0 auto;
-  width: 15px;
-  height: 15px;
-  fill: none;
   stroke: currentColor;
-  stroke-width: 1.3;
-  stroke-linecap: round;
-  stroke-linejoin: round;
   color: var(--text-muted);
   transition: color var(--transition-fast);
 }

@@ -14,6 +14,7 @@
  * 因此非 ClassRoom 模式下 DOM 里不存在任何 `modes.classroom.*` 控件。
  */
 import { computed, reactive, ref } from 'vue'
+import { ChevronRight } from '../../shared/icons.js'
 import type { ClassroomModeConfig } from '@aurora/shared'
 import AppToast from '../../shared/components/AppToast.vue'
 import ClassificationBehavior from './classroom/ClassificationBehavior.vue'
@@ -113,7 +114,13 @@ const summary = computed(() => {
           :aria-expanded="open.perception"
           @click="toggle('perception')"
         >
-          <span class="chevron" :class="{ open: open.perception }" aria-hidden="true">▸</span>
+          <ChevronRight
+            class="chevron"
+            :class="{ open: open.perception }"
+            :size="14"
+            :stroke-width="1.8"
+            aria-hidden="true"
+          />
           <span class="section-title">感知文件夹</span>
           <span class="group-summary tiny muted grow">{{ summary.perception }}</span>
         </button>
@@ -131,7 +138,13 @@ const summary = computed(() => {
           :aria-expanded="open.subjects"
           @click="toggle('subjects')"
         >
-          <span class="chevron" :class="{ open: open.subjects }" aria-hidden="true">▸</span>
+          <ChevronRight
+            class="chevron"
+            :class="{ open: open.subjects }"
+            :size="14"
+            :stroke-width="1.8"
+            aria-hidden="true"
+          />
           <span class="section-title">科目与目标文件夹</span>
           <span class="group-summary tiny muted grow">{{ summary.subjects }}</span>
         </button>
@@ -149,7 +162,13 @@ const summary = computed(() => {
           :aria-expanded="open.schedule"
           @click="toggle('schedule')"
         >
-          <span class="chevron" :class="{ open: open.schedule }" aria-hidden="true">▸</span>
+          <ChevronRight
+            class="chevron"
+            :class="{ open: open.schedule }"
+            :size="14"
+            :stroke-width="1.8"
+            aria-hidden="true"
+          />
           <span class="section-title">课程表与课前提醒</span>
           <span class="group-summary tiny muted grow">{{ summary.schedule }}</span>
         </button>
@@ -167,7 +186,13 @@ const summary = computed(() => {
           :aria-expanded="open.classification"
           @click="toggle('classification')"
         >
-          <span class="chevron" :class="{ open: open.classification }" aria-hidden="true">▸</span>
+          <ChevronRight
+            class="chevron"
+            :class="{ open: open.classification }"
+            :size="14"
+            :stroke-width="1.8"
+            aria-hidden="true"
+          />
           <span class="section-title">分类行为与流水</span>
           <span class="group-summary tiny muted grow">{{ summary.classification }}</span>
         </button>

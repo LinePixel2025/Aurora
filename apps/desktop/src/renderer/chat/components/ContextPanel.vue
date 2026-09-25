@@ -14,10 +14,11 @@
  * 组件卸载即停；`window.aurora` 的 Result 一律降级为空态文案，不抛错。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { ClassIslandStatus, Lesson } from '@aurora/shared'
+import type { ClassIslandBridgeSnapshot, Lesson } from '@aurora/shared'
 import ClassificationLedger from '../../shared/components/ClassificationLedger.vue'
 import AgentTodoList from '../../shared/components/AgentTodoList.vue'
 import AppButton from '../../shared/components/AppButton.vue'
+import { CalendarClock, FolderOpen, School } from '../../shared/icons.js'
 import type { TodoRow } from '../../shared/agentTodo.js'
 import {
   useModeStore,
@@ -53,18 +54,10 @@ const showClassislandCard = computed(
 )
 
 /**
- * ClassIsland 桥接的实时课堂快照（v2 payload 的 `status` 组：onClass / currentSubject /
- * nextSubject / nextStartTime）。主进程 `classisland:status` 运行时会带出该组，
- * 但 shared 的 `ClassIslandStatus` 契约尚未收录（向后兼容旧桥接），这里做局部收窄：
- * 缺组 / 缺字段都按「暂无课堂状态」降级。
+ * ClassIsland 桥接的实时课堂快照（`schedule.json` 内嵌的 `status`，契约见
+ * `ClassIslandBridgeSnapshot`）：`onClass` / `currentSubject` / `nextSubject` 等。
+ * 桥接 v3 起还带当前课与下节课的起止时间；缺失字段一律按「暂无」降级，不编造。
  */
-interface ClassIslandBridgeSnapshot {
-  onClass?: boolean
-  currentSubject?: string
-  nextSubject?: string
-  nextStartTime?: string
-}
-
 const bridgeSnapshot = ref<ClassIslandBridgeSnapshot | null>(null)
 
 async function refreshClassisland(): Promise<void> {
@@ -74,14 +67,28 @@ async function refreshClassisland(): Promise<void> {
     bridgeSnapshot.value = null
     return
   }
-  const status = result.value as ClassIslandStatus & { status?: ClassIslandBridgeSnapshot }
-  bridgeSnapshot.value = status.status ?? null
+  bridgeSnapshot.value = result.value.status ?? null
 }
 
 const onClass = computed(() => bridgeSnapshot.value?.onClass === true)
 const currentSubject = computed(() => bridgeSnapshot.value?.currentSubject ?? '')
 const nextSubject = computed(() => bridgeSnapshot.value?.nextSubject ?? '')
-const nextStartTime = computed(() => bridgeSnapshot.value?.nextStartTime ?? '')
+/** 「下节 语文 · 09:20–10:05」的时段部分（桥接给出时间才拼，缺就只显示科目） */
+const nextTimeRange = computed(() => {
+  const start = bridgeSnapshot.value?.nextStartTime ?? ''
+  const end = bridgeSnapshot.value?.nextEndTime ?? ''
+  if (start === '' && end === '') return ''
+  if (end === '') return start
+  return start === '' ? `至 ${end}` : `${start}–${end}`
+})
+/** 当前课时段（上课中才显示） */
+const currentTimeRange = computed(() => {
+  const start = bridgeSnapshot.value?.currentStartTime ?? ''
+  const end = bridgeSnapshot.value?.currentEndTime ?? ''
+  if (start === '' && end === '') return ''
+  if (end === '') return start
+  return start === '' ? `至 ${end}` : `${start}–${end}`
+})
 
 const classislandReady = computed(
   () => onClass.value || currentSubject.value !== '' || nextSubject.value !== '',
@@ -174,25 +181,37 @@ watch(showClassislandCard, (now) => {
 
     <!-- ── classroom：课堂上下文 ── -->
     <template v-if="mode === 'classroom'">
-      <section v-if="showClassislandCard" class="ctx-card">
+      <section v-if="showClassislandCard" class="ctx-card" data-field="context.classisland-card">
         <header class="ctx-head">
+          <School :size="15" :stroke-width="1.6" class="ctx-icon" aria-hidden="true" />
           <strong>课堂状态</strong>
-          <span v-if="onClass" class="badge ok">上课中</span>
+          <span v-if="onClass" class="badge ok" data-field="context.classisland-onclass"
+            >上课中</span
+          >
         </header>
-        <p v-if="!classislandReady" class="tiny muted ctx-line">暂无课堂状态（等待桥接数据）</p>
+        <p
+          v-if="!classislandReady"
+          class="tiny muted ctx-line"
+          data-field="context.classisland-empty"
+        >
+          暂无课堂状态（等待桥接数据）
+        </p>
         <template v-else>
           <div class="ctx-line">
             <span class="tiny muted">当前</span>
-            <span class="ctx-value">{{
-              onClass && currentSubject !== '' ? currentSubject : '—'
-            }}</span>
+            <span class="ctx-value" data-field="context.classisland-current">
+              {{ onClass && currentSubject !== '' ? currentSubject : '—' }}
+              <span v-if="onClass && currentTimeRange !== ''" class="tiny muted ctx-range">
+                {{ currentTimeRange }}
+              </span>
+            </span>
           </div>
           <div class="ctx-line">
             <span class="tiny muted">下节</span>
-            <span class="ctx-value">
+            <span class="ctx-value" data-field="context.classisland-next">
               {{
                 nextSubject !== ''
-                  ? `${nextSubject}${nextStartTime !== '' ? ` · ${nextStartTime}` : ''}`
+                  ? `${nextSubject}${nextTimeRange !== '' ? ` · ${nextTimeRange}` : ''}`
                   : '—'
               }}
             </span>
@@ -200,8 +219,9 @@ watch(showClassislandCard, (now) => {
         </template>
       </section>
 
-      <section class="ctx-card">
+      <section class="ctx-card" data-field="context.lesson-card">
         <header class="ctx-head">
+          <CalendarClock :size="15" :stroke-width="1.6" class="ctx-icon" aria-hidden="true" />
           <strong>今日课程</strong>
           <span v-if="todayLessons.length > 0" class="badge">{{ todayLessons.length }} 节</span>
         </header>
@@ -220,9 +240,10 @@ watch(showClassislandCard, (now) => {
 
       <ClassificationLedger :limit="8" class="ctx-ledger" />
 
-      <AppButton size="sm" variant="secondary" block @click="openWatchDir"
-        >打开感知文件夹</AppButton
-      >
+      <AppButton size="sm" variant="secondary" block @click="openWatchDir">
+        <FolderOpen :size="13" :stroke-width="1.7" aria-hidden="true" />
+        打开感知文件夹
+      </AppButton>
     </template>
 
     <!-- ── work：办公上下文 ── -->
@@ -334,6 +355,17 @@ watch(showClassislandCard, (now) => {
 
 .ctx-progress {
   font-variant-numeric: var(--num-tabular);
+}
+
+/* 卡头图标：次要信息，比标题低一档存在感 */
+.ctx-icon {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+/* 当前课的时间段跟在科目后面，比科目弱一档 */
+.ctx-range {
+  margin-left: 6px;
 }
 
 .ctx-line {

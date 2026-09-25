@@ -156,6 +156,14 @@
   /* BetaV2 新增：按下微缩与脉冲环各自的时长令牌（避免写死时长） */
   --dur-press: 120ms;
   --dur-pulse: 1600ms;
+  /*
+   * 2026-09 动画轮新增：**无限循环**类动画的时长。
+   * 循环动画与「出现」动画的节奏要求不同（出现要快、循环要稳），因此单列令牌，
+   * 不再在组件里散落 1.1s / 1.4s / 1.8s 这类写死常量。
+   */
+  --dur-spin: 1200ms;
+  --dur-caret: 1100ms;
+  --dur-bounce: 1000ms;
   --transition-fast: var(--dur-fast) var(--ease-standard);
   --transition-base: var(--dur-base) var(--ease-spring);
 }
@@ -563,6 +571,127 @@ select {
 
 .pulse-ring {
   animation: pulse-ring var(--dur-pulse) var(--ease-standard) infinite;
+}
+
+/* ───────────────── 2026-09 动画轮新增 ─────────────────
+ * 目标是「让正在进行的事看得出来，让刚完成的事有个交代」：
+ * 流式光标、三点等待、运行中扫光、完成闪一下、子代理进度条。
+ * 全部走时长令牌，`prefers-reduced-motion` 由文末的全局兜底统一压掉。
+ */
+
+/** 流式正文末尾的光标：只闪不占位（配合 `display: inline-block`） */
+@keyframes aurora-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+.streaming-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.12em;
+  background: currentColor;
+  border-radius: 1px;
+  animation: aurora-caret var(--dur-caret) steps(1, end) infinite;
+}
+
+/** 三点等待（助手还没吐出第一个字时） */
+@keyframes aurora-typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+/** 运行中卡片的扫光：一条低对比度亮带自左向右扫过（`position: relative` 容器上叠 ::after） */
+@keyframes aurora-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/** 状态刚变好时轻轻放大一下（对勾 / 状态点），给完成一个"交代" */
+@keyframes aurora-confirm {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.5;
+  }
+  55% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/** 子代理进度条：不定长推进感的滑动块 */
+@keyframes aurora-track {
+  from {
+    transform: translateX(-60%);
+  }
+  to {
+    transform: translateX(160%);
+  }
+}
+
+/** 思考文本逐段浮现（每行一点点上浮，避免整块硬切） */
+@keyframes aurora-think-line {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/**
+ * 无限旋转（加载指示器）。
+ * 注意：**scoped 样式里的 `@keyframes` 会被 Vue 改名**（`name-<hash>`），
+ * 因此跨组件复用的关键帧必须放在这份全局样式里，组件统一挂 `.spin`。
+ */
+@keyframes aurora-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: aurora-spin var(--dur-spin) linear infinite;
+}
+
+/* 工具类：给正在运行的元素叠一层扫光（父级需 position: relative + overflow: hidden） */
+.shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--text-primary) 7%, transparent),
+    transparent
+  );
+  animation: aurora-shimmer var(--dur-pulse) var(--ease-standard) infinite;
+  pointer-events: none;
+}
+
+/* 工具类：完成瞬间的一次性弹一下（配 `.confirm` 在状态翻到 success 时挂上） */
+.confirm {
+  animation: aurora-confirm var(--dur-base) var(--ease-spring) both;
 }
 
 /* Vue <Transition> 预设：name="sheet|rise|fade|collapse|page" */

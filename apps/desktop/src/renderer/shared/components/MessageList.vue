@@ -16,7 +16,12 @@
  * - `todo_write` 工具卡渲染为**结构化任务清单卡**（`data-field="chat.todo-card"`），
  *   解析见 `shared/agentTodo.ts`；解析失败 / 非 todo_write 回落通用工具卡；
  * - `task` 工具卡渲染为**子代理卡**（`data-field="chat.task-card"`，卡头是任务简述，
- *   展开体多一段「指令」）。
+ *   展开体是**实时运行轨迹** `SubagentTrace`：进度条 + 步骤时间线 + 报告）。
+ *
+ * 2026-09 动画轮追加（docs/07 §5.2）：
+ * - 工具卡进场上浮 + 卡片逐个错开；运行中的卡叠扫光；状态翻到终态时状态点弹一下；
+ * - 思考块流式期间显示尾部光标与「思考中」扫光，正文跟随滚动到最新一行；
+ * - 图标统一走 lucide（`shared/icons.ts`），工具卡按工具名给语义图标（`shared/toolIcons.ts`）。
  */
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import type { AgentToolCall } from '@aurora/shared'
@@ -24,8 +29,11 @@ import type { ChatMessage } from '../composables/useChat.js'
 import { useStickToBottom } from '../composables/useStickToBottom.js'
 import { renderMarkdown } from '../markdown.js'
 import { parseTaskInput, parseTodoWriteInput, type TodoRow } from '../agentTodo.js'
+import { toolIconOf } from '../toolIcons.js'
+import { ArrowDown, ChevronRight, LoaderCircle, Square, Volume2 } from '../icons.js'
 import AgentTodoList from './AgentTodoList.vue'
 import StatusDot from './StatusDot.vue'
+import SubagentTrace from './SubagentTrace.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -150,6 +158,21 @@ function thinkingLabel(message: ChatMessage): string {
   return props.thinkingTargetId === message.id ? '思考中…' : '已深度思考'
 }
 
+/**
+ * 思考块流式期间把**块内**滚动条跟到最新一行。
+ *
+ * 整块正文是 `white-space: pre-wrap` 的一整段，若不跟随，长了以后新内容在视口外，
+ * 看起来像「卡住不动」。只滚 `.thinking-body`，不动消息区（消息区由 useStickToBottom 管）。
+ * 依赖写成「所有消息 reasoning 长度之和」：思考增量一定让它变化，且没有增量时不触发。
+ */
+watch(
+  () => props.messages.reduce((total, message) => total + (message.reasoning?.length ?? 0), 0),
+  () => {
+    const body = rootEl.value?.querySelector<HTMLElement>('.thinking.streaming .thinking-text')
+    if (body !== null && body !== undefined) body.scrollTop = body.scrollHeight
+  },
+)
+
 // ───────────────────────── 跟随最新（自动滚底） ─────────────────────────
 
 /**
@@ -193,8 +216,15 @@ function jumpToLatest(): void {
  * `markdown.ts` 的输出形状固定（先转义再套白名单标记），这里只在渲染结果上补一层结构：
  * `<pre class="md-code">` 外包一层定位容器并塞入按钮。转义保证了代码正文里不可能出现
  * 字面量 `</pre>`，因此按标记切分是安全的；不引入依赖、也不改 `markdown.ts` 的输出契约。
+ *
+ * 图标是 lucide 的 `Copy` / `Check` 路径原样内联：这枚按钮由**字符串**注入到 markdown
+ * 输出里（不是模板节点），用不了组件；形状与其余图标一致，改图标时两处一起改。
  */
-const COPY_BUTTON = '<button type="button" class="code-copy" aria-label="复制代码">复制</button>'
+const ICON_COPY =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>'
+const ICON_CHECK =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>'
+const COPY_BUTTON = `<button type="button" class="code-copy" aria-label="复制代码">${ICON_COPY}<span class="code-copy-label">复制</span></button>`
 
 function withCodeCopy(html: string): string {
   return html
@@ -248,10 +278,40 @@ function cardField(call: AgentToolCall): string | undefined {
   return undefined
 }
 
+/** 工具语义图标（docs/07 §5）：读文件 / 跑命令 / 派子代理一眼可分，未知工具走兜底 */
+function toolIcon(call: AgentToolCall) {
+  return toolIconOf(call.name)
+}
+
+/** 子代理卡头显示步骤数（`task` 以外的卡返回 null，不渲染该段） */
+function subagentStepCount(call: AgentToolCall): number | null {
+  if (call.subagent === undefined) return null
+  return call.subagent.steps.length
+}
+
+/**
+ * 卡片里那枚子代理快照：仅 `task` 卡有。用来渲染实时轨迹与报告。
+ */
+function subagentOf(call: AgentToolCall) {
+  return call.subagent ?? null
+}
+
 // ───────────────────────── 工具卡片：折叠态 + 耗时 ─────────────────────────
 
 /** 已展开的卡片 id（默认全部折叠，保持消息区干净） */
 const openedIds = ref<string[]>([])
+
+/**
+ * 已经「翻到终态」并播放过确认动画的卡片 id。
+ *
+ * 一次性动画靠「类只加一次」实现：状态从 running 翻到 success/error 时把 id 记下来，
+ * 之后即使组件重渲染也不会重放（`aurora-confirm` 在类存在期间只跑一次）。
+ */
+const settledIds = reactive(new Set<string>())
+
+function isSettled(id: string): boolean {
+  return settledIds.has(id)
+}
 
 function isOpen(id: string): boolean {
   return openedIds.value.includes(id)
@@ -288,6 +348,10 @@ function syncTimings(): void {
         else if (record.end !== null) record.end = null
       } else if (record !== undefined && record.end === null) {
         record.end = Date.now()
+        // 状态刚翻到终态：记下来给状态点挂一次性确认动画（见 `settledIds`）
+        settledIds.add(call.id)
+      } else if (record === undefined) {
+        // 历史水合出来的卡片本就没有计时记录：不伪造耗时，也不放确认动画
       }
     }
   }
@@ -417,12 +481,18 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   const code = button.parentElement?.querySelector('code')
   const text = code?.textContent ?? ''
   if (text === '' || !(await copyText(text))) return
-  button.textContent = '已复制'
+  // 只换标签与图标，不动按钮结构（图标是字符串内联的 SVG）
+  const label = button.querySelector('.code-copy-label')
+  if (label !== null) label.textContent = '已复制'
+  button.querySelector('svg')?.remove()
+  button.insertAdjacentHTML('afterbegin', ICON_CHECK)
   button.classList.add('copied')
   window.setTimeout(() => {
-    button.textContent = '复制'
+    if (label !== null) label.textContent = '复制'
+    button.querySelector('svg')?.remove()
+    button.insertAdjacentHTML('afterbegin', ICON_COPY)
     button.classList.remove('copied')
-  }, 1200)
+  }, 1400)
 }
 </script>
 
@@ -459,7 +529,10 @@ async function onContentClick(event: MouseEvent): Promise<void> {
           <div
             v-if="showThinking && message.role === 'assistant' && (message.reasoning ?? '') !== ''"
             class="thinking"
-            :class="{ open: isThinkingOpen(message.id) }"
+            :class="[
+              { open: isThinkingOpen(message.id), streaming: thinkingTargetId === message.id },
+            ]"
+            :data-field="thinkingTargetId === message.id ? 'chat.thinking-live' : undefined"
           >
             <button
               type="button"
@@ -467,12 +540,18 @@ async function onContentClick(event: MouseEvent): Promise<void> {
               :aria-expanded="isThinkingOpen(message.id)"
               @click="toggleThinking(message.id)"
             >
-              <span class="chevron" aria-hidden="true">›</span>
+              <ChevronRight class="chevron" :size="13" :stroke-width="1.8" aria-hidden="true" />
               <span class="tiny">{{ thinkingLabel(message) }}</span>
             </button>
             <Transition name="collapse">
               <div v-if="isThinkingOpen(message.id)" class="thinking-body">
+                <!-- 流式期间尾部带光标，读起来是"还在写"而不是"卡住了" -->
                 <p class="thinking-text">{{ message.reasoning }}</p>
+                <span
+                  v-if="thinkingTargetId === message.id"
+                  class="streaming-caret thinking-caret"
+                  aria-hidden="true"
+                />
               </div>
             </Transition>
           </div>
@@ -497,16 +576,39 @@ async function onContentClick(event: MouseEvent): Promise<void> {
             :data-action="isSpeaking(message.id) ? 'stop-speak' : 'speak-message'"
             @click="onSpeakClick(message)"
           >
+            <!-- 合成中给个旋转指示：按钮是 disabled 的，不动的话看不出还在等 -->
+            <LoaderCircle
+              v-if="isTtsLoading(message.id)"
+              class="spin"
+              :size="12"
+              :stroke-width="1.8"
+              aria-hidden="true"
+            />
+            <Square
+              v-else-if="isSpeaking(message.id)"
+              :size="11"
+              :stroke-width="2"
+              aria-hidden="true"
+            />
+            <Volume2 v-else :size="12" :stroke-width="1.8" aria-hidden="true" />
             {{ speakLabel(message) }}
           </button>
 
           <!-- 工具执行卡片：todo_write / task 有结构化卡头，其余为通用卡（docs/06 §5） -->
-          <div v-if="(message.toolCalls?.length ?? 0) > 0" class="tools">
+          <TransitionGroup
+            v-if="(message.toolCalls?.length ?? 0) > 0"
+            name="tool"
+            tag="div"
+            class="tools"
+          >
             <article
               v-for="call in message.toolCalls"
               :key="call.id"
               class="tool-card"
-              :class="[`t-${call.state}`, { open: isOpen(call.id) }]"
+              :class="[
+                `t-${call.state}`,
+                { open: isOpen(call.id), running: call.state === 'running' },
+              ]"
               :data-field="cardField(call)"
             >
               <button
@@ -515,17 +617,27 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 :aria-expanded="isOpen(call.id)"
                 @click="toggle(call.id)"
               >
-                <StatusDot
-                  :tone="toolTone(call.state)"
-                  :size="6"
-                  :title="toolStateLabel(call.state)"
+                <span class="tool-dot" :class="{ confirm: isSettled(call.id) }">
+                  <StatusDot
+                    :tone="toolTone(call.state)"
+                    :size="6"
+                    :title="toolStateLabel(call.state)"
+                  />
+                </span>
+                <!-- 工具语义图标：读文件 / 跑命令 / 派子代理一眼可分 -->
+                <component
+                  :is="toolIcon(call)"
+                  class="tool-icon"
+                  :size="13"
+                  :stroke-width="1.7"
+                  aria-hidden="true"
                 />
                 <!-- 任务清单卡头：固定标题 + 条目数（结构化清单常驻卡身） -->
                 <template v-if="todosOf(call)">
                   <span class="tool-title">任务清单</span>
                   <span class="tiny muted">{{ todosOf(call)!.length }} 项</span>
                 </template>
-                <!-- 子代理卡头：任务简述（入参 description） -->
+                <!-- 子代理卡头：任务简述（入参 description）+ 已跑步骤数 -->
                 <template v-else-if="taskOf(call)">
                   <span class="tool-title">
                     {{
@@ -533,6 +645,9 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                     }}
                   </span>
                   <span class="tiny tool-state-label">{{ toolStateLabel(call.state) }}</span>
+                  <span v-if="subagentStepCount(call) !== null" class="tiny muted tool-time">
+                    {{ subagentStepCount(call) }} 步
+                  </span>
                 </template>
                 <!-- 通用卡头：工具名 + 状态 -->
                 <template v-else>
@@ -543,7 +658,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                   {{ toolDuration(call) }}
                 </span>
                 <span class="grow" />
-                <span class="chevron" aria-hidden="true">›</span>
+                <ChevronRight class="chevron" :size="14" :stroke-width="1.8" aria-hidden="true" />
               </button>
               <!--
                 结构化任务清单（todo_write）：常驻卡身（不折叠就能看到清单状态），
@@ -569,6 +684,11 @@ async function onContentClick(event: MouseEvent): Promise<void> {
               />
               <Transition name="collapse">
                 <div v-if="isOpen(call.id)" class="tool-body">
+                  <!-- 子代理卡：实时运行轨迹（进度 + 步骤 + 报告），docs/07 §2.4 -->
+                  <template v-if="subagentOf(call)">
+                    <span class="tiny muted tool-label">运行轨迹</span>
+                    <SubagentTrace :snapshot="subagentOf(call)!" dense />
+                  </template>
                   <!-- 子代理卡：完整指令单列一段（prompt 常是自包含长文） -->
                   <template v-if="taskOf(call)">
                     <span class="tiny muted tool-label">指令</span>
@@ -581,7 +701,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 </div>
               </Transition>
             </article>
-          </div>
+          </TransitionGroup>
         </div>
       </article>
     </TransitionGroup>
@@ -592,7 +712,8 @@ async function onContentClick(event: MouseEvent): Promise<void> {
       既不遮挡最后一条消息，也不改变"自动到底"的默认体验。
     -->
     <button v-if="!following" type="button" class="jump-latest anim-pop" @click="jumpToLatest">
-      ↓ 回到最新
+      <ArrowDown :size="13" :stroke-width="2" aria-hidden="true" />
+      回到最新
     </button>
   </div>
 </template>
@@ -649,6 +770,9 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   position: sticky;
   bottom: var(--space-1);
   align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   margin-top: var(--space-2);
   min-height: var(--control-h-sm);
   padding: 0 var(--space-3);
@@ -733,6 +857,9 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 /* 助手消息正文之后的次要动作：低调的胶囊，hover 才浮出来，不跟正文抢注意力 */
 .speak-btn {
   align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   margin-top: var(--space-1);
   padding: 2px 10px;
   border-radius: var(--radius-pill);
@@ -764,11 +891,23 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 
 /* ── 思考过程折叠块（BetaV2）：正文上方的次要信息，视觉上刻意退后一档 ── */
 .thinking {
+  position: relative;
   margin-bottom: var(--space-2);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--fill-1);
   overflow: hidden;
+}
+
+/* 流式接收中：一条低对比度亮带在卡头扫过，明确「还在思考」 */
+.thinking.streaming::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: var(--aurora-gradient);
+  animation: aurora-shimmer var(--dur-pulse) var(--ease-standard) infinite;
+  pointer-events: none;
 }
 
 .thinking-head {
@@ -789,9 +928,17 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   color: var(--text-secondary);
 }
 
-/* 流式接收中：用 running 语义色点明「思考还没结束」 */
+/* 流式接收中：用强调色点明「思考还没结束」 */
+.thinking.streaming > .thinking-head {
+  color: var(--accent-text);
+}
+
 .thinking.open > .thinking-head {
   color: var(--text-secondary);
+}
+
+.thinking.streaming.open > .thinking-head {
+  color: var(--accent-text);
 }
 
 .thinking.open > .thinking-head .chevron {
@@ -799,6 +946,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 }
 
 .thinking-body {
+  position: relative;
   padding: 0 var(--space-3) var(--space-2);
 }
 
@@ -815,6 +963,14 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   line-height: var(--leading-relaxed);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 光标贴在滚动区右下角：正文在滚，光标始终可见 */
+.thinking-caret {
+  position: absolute;
+  right: var(--space-4);
+  bottom: var(--space-3);
+  color: var(--accent-text);
 }
 
 /* ── 工具执行卡片（docs/06 §5） ── */
@@ -844,10 +1000,29 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 }
 
 .tool-card {
+  position: relative;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
   overflow: hidden;
+}
+
+/*
+ * 运行中的卡片：一层低对比度扫光自左向右反复划过（`.shimmer` 在 theme.css）。
+ * 不用旋转指示器：卡片已经有状态点，扫光只负责表达「这里在动」。
+ */
+.tool-card.running::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--aurora-blue) 10%, transparent),
+    transparent
+  );
+  animation: aurora-shimmer var(--dur-pulse) var(--ease-standard) infinite;
+  pointer-events: none;
 }
 
 .tool-card.open {
@@ -866,6 +1041,31 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 
 .tool-head:hover {
   background: var(--fill-2);
+}
+
+/* 状态点外面套一层：翻到终态时整枚弹一下（一次性，见 settledIds） */
+.tool-dot {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 10px;
+}
+
+.tool-icon {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.t-running .tool-icon {
+  color: var(--aurora-blue);
+}
+
+.t-success .tool-icon {
+  color: color-mix(in srgb, var(--status-ok) 75%, var(--text-muted));
+}
+
+.t-error .tool-icon {
+  color: var(--status-error);
 }
 
 .tool-name {
@@ -907,13 +1107,51 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 .chevron {
   flex: 0 0 auto;
   color: var(--text-muted);
-  font-size: var(--text-base);
-  line-height: 1;
   transition: transform var(--transition-base);
 }
 
 .tool-card.open .chevron {
   transform: rotate(90deg);
+}
+
+/*
+ * 工具卡进场（TransitionGroup name="tool"）：轻微上浮 + 淡入。
+ * 比消息气泡的 `rise` 更短更轻 —— 一轮里可能连续长出好几张卡，
+ * 动作太重会让消息区像在"跳"。
+ */
+.tool-enter-active {
+  transition:
+    opacity var(--dur-base) var(--ease-standard),
+    transform var(--dur-base) var(--ease-spring);
+}
+
+.tool-leave-active {
+  transition:
+    opacity var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
+}
+
+.tool-enter-from {
+  opacity: 0;
+  transform: translateY(6px) scale(0.985);
+}
+
+.tool-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+/* 同一批卡片错开 40ms 出现（`.tools` 里的第 2、3… 张） */
+.tools > .tool-card:nth-child(2) {
+  transition-delay: 40ms;
+}
+
+.tools > .tool-card:nth-child(3) {
+  transition-delay: 80ms;
+}
+
+.tools > .tool-card:nth-child(n + 4) {
+  transition-delay: 120ms;
 }
 
 .tool-body {
@@ -973,7 +1211,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   height: 5px;
   border-radius: 50%;
   background: var(--aurora-blue);
-  animation: bounce 1s infinite ease-in-out;
+  animation: aurora-typing-bounce var(--dur-bounce) infinite ease-in-out;
 }
 
 .typing i:nth-child(2) {
@@ -982,18 +1220,6 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 
 .typing i:nth-child(3) {
   animation-delay: 0.3s;
-}
-
-@keyframes bounce {
-  0%,
-  100% {
-    opacity: 0.35;
-    transform: translateY(0);
-  }
-  50% {
-    opacity: 1;
-    transform: translateY(-3px);
-  }
 }
 
 /* ── Markdown ── */
@@ -1036,6 +1262,9 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   position: absolute;
   top: 6px;
   right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 2px 8px;
   border-radius: var(--radius-xs);
   background: var(--fill-3);
@@ -1046,6 +1275,12 @@ async function onContentClick(event: MouseEvent): Promise<void> {
     opacity var(--transition-fast),
     color var(--transition-fast),
     background var(--transition-fast);
+}
+
+.md :deep(.code-copy svg) {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
 }
 
 .md :deep(.code-block:hover .code-copy),
