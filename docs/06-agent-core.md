@@ -89,6 +89,11 @@ export interface LlmProvider {
     注册了 `set_setting` 才追加「改设置前先告知用户」。
 - **循环**：用户消息 → LLM → [工具调用 → 执行 → 结果回填] × N（**上限 8 轮**）→ 最终回复。
 - 单轮出现多个工具调用时**按顺序执行**（不并发），保证 `chat:event` 工具卡片状态与结果顺序确定。
+- **事件顺序与归属（2026-09 增强，详见 §16.1）**：循环事件带 `round`（第几个工具调用轮次），
+  `AgentEvent` 再统一带 `seq`（会话内单调序号）。渲染层据此排序消息、丢弃陈旧请求的迟到事件、
+  把思考链绑到正确的那条助手消息上。**长任务的进度也走这条流**：工具执行期间经
+  `emitProgress` 上报的进度（目前只有 `task` 子代理）由 `runToolStreaming` 边收边转成
+  `subagent` 事件，不必等工具跑完。
 - 到达轮次上限仍未收敛：以已有文本收尾，`done` 事件带 `pending: true`（不报错、不丢输出）。
 - 工具执行异常 / 工具名不存在：以「工具错误」文本回填模型，循环继续；渲染层卡片置 `error`。
 - 工具执行状态实时推送渲染层（运行中 / 成功 / 失败 + 输出摘要），渲染为执行卡片。
@@ -174,9 +179,11 @@ export interface LlmProvider {
 - 前台窗口**不引入 `active-win`**：该原生模块预编译产物杀软误报多（03 §3），v1 直接用 PowerShell 探针；
   探针 stdout 由**导出的纯函数** `parseForegroundProbe` 解析，因此解析逻辑可单测、
   探测失败只降级为 `unknown`（ADR-007）。
-- ClassIsland 联动（`provider: 'classisland'`，v0.6.0 落地）：读桥接插件写出的本地 JSON
-  或本机回环端点，**读取失败一律降级为空课表、不抛错不阻塞**（见 05 §3.4）。
+- ClassIsland 联动（`provider: 'classisland'`，v0.6.0 落地；v3 见 05 §3.4）：
+  读桥接插件写出的本地 JSON 或本机回环端点，**读取失败一律降级为空课表、不抛错不阻塞**。
   未配置端点时仍走空实现——语义从「功能未实现」变为「已配置但尚未接线」。
+  桥接 v2 起同一份 payload 内嵌**课堂状态快照**（`onClass` / `currentSubject` /
+  `nextSubject` 与各自的起止时间），采集进 `PerceptionSummary.classStatus`。
 
 ### 8.2 实现与消费
 
@@ -186,7 +193,11 @@ export interface LlmProvider {
 - **降级契约（ADR-007）**：任何采集失败都只记 debug 日志并把该项留在 `unknown`，
   `summary()` 永不抛错；采集成功的项一律从 `unknown` 中移除。
 - **三类消费**：
-  1. **上下文注入**：`contextSummary()` 生成系统提示词片段（时间 / 电源 / 网络 / 前台应用 / 显示器 / 今日课程）；
+  1. **上下文注入**：`contextSummary()` 生成系统提示词片段（时间 / 电源 / 网络 / 前台应用 /
+     显示器 / 今日课程 / **课堂状态**）。课堂状态一行由 `describeClassStatus` 渲染，形如
+     「课堂状态：上课中（数学 08:00–08:45）；下节课 语文 09:20–10:05」；
+     **不在上课且没有下节课时整行省略**（而不是打一行"无状态"占位）。
+     刷新手感：随每次感知摘要组装读取（桥接侧 30s 粒度），不额外起定时器。
   2. **事件总线**：课前 5 分钟触发（§9）、模式 / 触发器订阅；
   3. **工具查询**：`system-status` / `timetable` Skill 直接读取当前值回答用户。
 
@@ -200,7 +211,7 @@ export interface LlmProvider {
 
 | 触发器 | 实现 | 载体 |
 |---|---|---|
-| 课前 5 分钟 | `PreClassReminder`（`pre-class-reminder.ts`）+ 纯函数 `preClassTrigger` | 系统通知 + 自动打开科目文件夹 |
+| 课前 N 分钟 | `PreClassReminder`（`pre-class-reminder.ts`）+ 纯函数 `preClassTrigger` | 系统通知 + 自动打开科目文件夹 |
 | 敏感工具确认 | `ProactiveScheduler`（`proactive.ts`）+ IPC `proactive:sensitiveTool` / `proactive:resolveSensitiveTool` | 交互窗确认卡片 |
 | 模式引导 / 分类完成 | 模式系统（05 §1）与分类管线（05 §3.3）各自触发 | 交互窗 AI 消息 / 系统通知 |
 
@@ -211,14 +222,23 @@ export interface LlmProvider {
   ⚠️ **已知缺口**：`rejectAll()` 目前**没有**接到 `chat:abort`（会话中止只中断内核循环，
   在途确认卡片仍可点击、并在 60s 前一直有效）——所以「会话中止 = 确认作废」这句话目前不成立，
   待接线后才会。设置项 `advanced.confirmSensitiveTools` 关闭时直接放行（内核仍按 `sensitivity` 写日志留痕）。
-- **课前提醒**：默认每 30s 检查一次课程表，命中「课前 5 分钟」窗口时发系统通知并自动打开
+- **课前提醒**：默认每 30s 检查一次课程表，命中「课前 N 分钟」窗口时发系统通知并自动打开
   该科目文件夹（`explorer`）。同一节课以 `<weekday>-<startTime>-<subject>` 去重、只提醒一次；
   支持**启动补偿**（启动时已进入窗口，例如只剩 2 分钟）与**跨天**（23:5x 时次日 00:0x 的课）；
   多节课同时进入窗口时按剩余时间升序提醒。勿扰时段静默跳过；通知 / 打开文件夹失败只降级为日志。
+  **N 可配**（2026-09）：`modes.classroom.preClassLeadMinutes`（1–30，默认 5），
+  每次 tick 即时读取（改设置无需重启，非法值回落 5）。
 - **勿扰时段**：`isQuietHour` 纯函数判定（支持跨天，如 22:30–07:00）；时段缺失或时间非法时不静默。
+- **ClassIsland 提醒的反向通道（v3，见 05 §3.4）**：Aurora 侧新增工具
+  `classisland_remind(body, title?, channel?)` —— 把提醒交给 ClassIsland 自己的提醒服务弹出。
+  `sensitivity: 'safe'`（与 `notify_user` 同款理由：只弹提醒，不碰文件与系统状态；
+  打扰性由用户侧的 ClassIsland 提醒设置决定），**不受 `agent.tools.enabled` 门控**，
+  且**按可用性注册**：桥接未配置时该工具不进工具表（模型看不到就不会承诺），
+  配好后经 `settings:changed` 自动补上，无需重启。
 - 未完成项：Work / Code Mode 的日程与待办类新触发器（P7）。
-  ClassIsland 联动已于 v0.6.0 完成，其课程变更仍走 30s 轮询而非事件推送
-  （桥接为单向数据源，没有反向事件通道）。
+  ClassIsland 联动的**课程变更**仍走 30s 轮询而非事件推送：桥接 v3 确实新增了反向的
+  **提醒命令**通道（Aurora → ClassIsland），但那是"让它弹一条通知"的一次性命令，
+  不是"课表变了推给我"的订阅 —— 课表仍然是 Aurora 轮询读取的那份快照。
 
 ## 10. 安全
 
@@ -695,6 +715,22 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
    `reasoning` 是**展示字段**，不进对话请求——它是模型自己的输出，回传只会干扰采样，
    也避免把上一轮的思考链泄漏成下一轮的上下文。
 
+### 16.1 事件契约：`seq` 与 `round`（2026-09）
+
+展示层此前踩过两类"顺序错乱"，根因都不在界面代码，而在事件本身缺少**顺序与归属信息**：
+
+| 症状 | 根因 | 现在怎么防 |
+|---|---|---|
+| 工具卡挂到了别的回复里 / 跑到列表末尾 | 事件没有任何序号，渲染层只能"到一条建一条、新建就 push 到末尾" | 每个 `AgentEvent` 带 `seq`（主进程 `emit` 统一分配、会话内单调递增）；渲染层按 `seq` **插入到正确位置** |
+| 多轮工具调用时，第二条助手消息带上了第一轮的思考全文 | `reasoning` 增量没有 `messageId`（那轮消息要等流结束才落盘），渲染层只能按 `requestId` 全局累积 | 循环事件带 `round`；渲染层按 `(requestId, round)` 分桶累积，再由**同一轮**的 `text` / `tool` 事件把该桶绑到具体消息上 |
+| 请求结束（`done`）之后仍有事件进来，界面继续长内容 | `requestId` 过滤在 `activeRequest === null` 的窗口期形同虚设 | 渲染层记 `finishedRequests`（最近 64 条），**同一 requestId 在 done/error 之后的事件一律丢弃**；本地主动 abort 也立即把该请求标记为已结束 |
+| 历史水合把正在流式的消息对象换掉，`pending` / 工具卡闪一下甚至消失 | 水合是「服务端快照整体替换本地」 | 水合改为**按 id 合并**：内容取更长的一份，本地流式状态（`pending` / `error` / 附件 / 思考）优先保留 |
+
+- **事件形状**（`packages/shared/src/ipc/types.ts`）：`text` / `tool` / `reasoning` / `subagent`
+  都带 `seq` 与 `round`，`text` / `tool` / `subagent` 另带 `messageId`。
+- **`seq` 由 agentHost 的 `emit` 统一分配**（`AgentEventInput` 类型在编译期禁止调用点自带序号）——
+  序号是"发出顺序"的单一事实来源，散在各调用点迟早会不一致。
+
 ## 17. settingsHint：Agent 可修改设置清单注入 systemPrompt
 
 - `SystemPromptParts.settingsHint?: string`（agent-core）渲染为独立小节
@@ -771,3 +807,24 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
   以已产生的**部分结果**回填；子代理达到轮次上限（默认 8，同主循环）时结果附「部分结果」标记，
   父模型据此决定是否重派。
 - **注册口径**：随 §18 的 `registerAgentCoreTools` 一并注册，**不受 `agent.tools.enabled` 门控**。
+
+### 19.1 实时进度与「子代理」页面（2026-09）
+
+子代理的对话过程**不落会话存储**（刻意的上下文隔离），因此此前在界面上只能看到一张工具卡：
+既不知道它在干什么，也读不到它的报告全文（报告只回传给主代理）。现在有两条改动补上这一点：
+
+- **进度上报**：`ToolContext` 新增 `emitProgress?(payload)` 与 `toolCallId`。`task` 工具在子循环
+  每个事件（文本段 / 工具调用开始与结束）后组一份 `SubagentSnapshot` 上报：
+  `{ taskId, callId, description, prompt, status, startedAt, endedAt?, steps[], toolCalls, report? }`。
+  步骤按 `call.id` 原地更新（同一工具调用不会出现两条），步骤数上限 60、单步文本 4000 字符、
+  报告随累积实时带上（上限同 `MAX_TASK_RESULT_CHARS = 20_000`）。**过期保护与限额只影响展示**，
+  回传主代理的报告口径不变。
+- **流转**：`runToolStreaming`（§5）把上报的进度转成 `subagent` 事件流；agentHost 补上
+  `sessionId` / `requestId` / `seq` / `messageId` 后照常广播。工具结束时，最终快照随
+  `ToolResult.subagent` 一起落到**工具卡**里（`StoredToolCall.subagent` → 会话 JSON），
+  因此重启后仍能回看。
+- **界面**（`07 §2.3` / `§2.4`）：`task` 工具卡展开体里是「运行轨迹」（进度条 + 步骤时间线 + 报告）；
+  左栏固定项「子代理」把主区切到**子代理页面**，集中展示本会话的全部运行
+  （数据 = 实时事件与工具卡持久化快照按 `callId` 合并，实时优先）。
+- **失败路径不变**：进度上报是**可选端口**（未注入时静默丢弃，直接调用工具的单测不受影响）；
+  上报本身抛错不影响子代理执行与结果回传。

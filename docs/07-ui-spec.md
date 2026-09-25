@@ -96,9 +96,14 @@
     工具行 = 麦克风（STT）+ 模型下拉 + 思考等级下拉 +（右侧）停止 / 发送；
     旧「会话：xxx · 可调用 Skill 与 MCP 工具」常驻 meta 文案移除，仅保存操作的瞬时提示保留。
   - **右栏（模式感知上下文栏）**：顶部任务清单卡（当前会话最后一次 `todo_write` 的结构化清单，
-    无清单不渲染）；classroom = 当前 / 下节课卡（非 classisland provider 时隐藏）+
-    今日课程 + 分类流水（紧凑）+ 感知文件夹打开；work = 工作目录卡（打开 + 前往设置）+ 办公提示卡；
+    无清单不渲染）；classroom = 课堂状态卡（`data-field="context.classisland-card"`，
+    非 classisland provider 时整卡不渲染；内含 `context.classisland-onclass` 徽章、
+    `context.classisland-current` / `context.classisland-next` 两行、无数据时
+    `context.classisland-empty`）+ 今日课程卡（`data-field="context.lesson-card"`）+
+    分类流水（紧凑）+ 感知文件夹打开；work = 工作目录卡（打开 + 前往设置）+ 办公提示卡；
     通用 = 系统状态卡（时间 / 电量 / 网络 / 前台应用）。**非当前模式的功能一律不渲染**。
+    课堂状态卡的数据来自桥接的快照（`05 §3.4 v3`）：上课中才显示当前科目与时段，
+    下节课显示「科目 · 起–止」；字段缺失按「暂无课堂状态」降级，不编造。
 - **麦克风（STT，BetaV2）**：composer 的麦克风按钮（`data-field="chat.mic"`）门控口径同 TTS：
   `stt.enabled && stt.active` 指向 baseUrl / model 齐全的 provider 才渲染按钮，
   **否则连按钮都不渲染**（不是 disabled）；录音走 MediaRecorder → `stt:transcribe`，
@@ -130,8 +135,36 @@
 - **任务清单与子代理卡（2026-09 新增）**：`todo_write` 工具卡渲染为**结构化清单卡**
   （`data-field="chat.todo-card"`：状态圈（待办 ○ / 进行中 ◐ / 完成 ✓）+ 条目 + 进度摘要），
   展开体仍是原始参数 / 结果；`task` 工具卡渲染为**子代理卡**（`data-field="chat.task-card"`：
-  任务简述 + 运行态 + 可展开的指令与报告摘要）。右栏顶部新增「任务清单」卡
-  （数据 = 当前会话消息流里最后一次 `todo_write` 的入参，随流式实时更新；无清单时不渲染）。
+  任务简述 + 运行态 + 步骤数 + 展开后的**实时运行轨迹**：进度条 + 步骤时间线 + 报告）。
+  右栏顶部新增「任务清单」卡（数据 = 当前会话消息流里最后一次 `todo_write` 的入参，
+  随流式实时更新；无清单时不渲染）。
+- **子代理独立页面（2026-09 新增，见 `06 §19`）**：左栏固定项「子代理」
+  （`data-field="chat.subagent-item"`，角标 `data-field="chat.subagent-count"` 显示本会话运行数，
+  有在跑的用强调色）把**主区**切到子代理页面（`data-field="chat.subagent-page"`）。
+  - 页面内容：概览条（运行数 / 进行中数 / 工具调用总数，`data-field="chat.subagent-summary"`）+
+    每次运行一张卡（`data-field="chat.subagent-run"`：状态点 + 任务简述 + 状态 + 工具调用数 +
+    相对时间与耗时 + 「任务指令」折叠（点 `›` 展开）+ 运行轨迹 + 报告
+    `data-field="chat.subagent-report"`）；无运行时给空状态说明。
+  - **它不是会话**：`view` 是 `chat/App.vue` 的独立状态（`'chat' | 'subagents'`），
+    切过去**不动** `sessionId`、不触发水合、不清空消息；输入区与右栏照旧，随时可切回
+    （页头「回到对话」按钮 `data-action="chat.subagent-back"`，左栏点任意会话也会切回）。
+  - 数据来源：`useChat().subagentRuns` —— 实时 `subagent` 事件（本会话内存）与
+    消息流里 `task` 工具卡的持久化快照（重启后仍可回看）按 `callId` 合并，实时那份优先。
+- **工具卡的生命周期动效（2026-09）**：正在运行的卡叠一层低对比度扫光；状态翻到终态时
+  状态点弹一下（一次性，靠 `settledIds` 只加一次类）；卡片进场上浮淡入并按序错开
+  （`TransitionGroup name="tool"`，第 2/3/4 张依次 +40/80/120ms）。
+- **思考块的流式动效（2026-09）**：流式期间卡头扫光 + 尾部光标，块内滚动条自动跟到最新一行；
+  请求结束即收起为「已深度思考」摘要行（既有口径不变）。
+- **Agent 正文的流式动效（2026-09）**：正文末尾光标 + **尾部湿润边缘**
+  （`.thread.streaming` 下对最后一条助手消息的 `.md` 加底部渐隐遮罩，流式结束即摘掉）。
+  **刻意不做逐字打字机**：正文是 `v-html` 渲染的 markdown，Vue 对 `v-html` 不做 DOM diff，
+  按节点挂进场动画会在每个 chunk 上重放（快速流式时整块停在半透明），按帧做真打字机则要
+  每帧重解析 markdown —— 遮罩方案既有「还在写」的观感，又零额外开销。
+- **图标体系（2026-09）**：渲染层图标统一走 [lucide](https://lucide.dev)（`lucide-vue-next`），
+  经 `renderer/shared/icons.ts` **具名再导出**（只登记用到的，Vite 摇树）；
+  工具卡按工具名给语义图标（`renderer/shared/toolIcons.ts`，未知工具退到扳手、MCP 退到拼图）；
+  新图标不再手写内联 SVG（唯一例外：代码块「复制」按钮的图标 —— 它由字符串注入
+  `v-html` 输出里，用不了组件，路径与 lucide 保持一致）。
 - **消息区跟随最新（v0.6.0 修复「对话不会自动拉到底」）**：滚动容器是窗口自己的 `.thread`，
   跟随逻辑在 `MessageList.vue` + `composables/useStickToBottom.ts`：
   - **默认跟随**：新消息 / 流式增量 / 历史水合导致内容变高时自动滚到底。
@@ -207,6 +240,17 @@
 - 模式页（**BetaV2**）：三模式卡片选择 + 引导状态；**只渲染当前模式的配置内容** ——
   ClassRoom 区组不变；Work 已实装，提供工作目录 `workspaceDir`（`data-field="modes.work.workspaceDir"`）
   等配置；Code 仍显示「暂无可配置项」空状态。
+- **ClassIsland 提醒通道与课前提前分钟数（2026-09 新增，见 `05 §3.4 v3`）**：
+  ClassRoom →「课程表与课前提醒」分组内新增两项，门控口径：
+  - `modes.classroom.preClassLeadMinutes`（数字输入 1–30，默认 5）——门控与
+    `preClassReminder` / `preClassOpenFolder` 同款（`schedule.lessons.length > 0`，
+    否则整组替换为 `data-empty="modes.classroom.preClassReminder"`）；
+  - 提醒通道区（`data-field="settings.classisland-notify-test"`）——门控
+    `schedule.provider === 'classisland'`，内含状态回显 `settings.classisland-notify-state`
+    与「发送测试提醒」按钮 `settings.classisland-notify-test-button`，结果 Toast 为
+    `settings.classisland-notify-result`。按钮调用 `classisland:notify`（固定 `channel: 'custom'`），
+    成功显示耗时并刷新回显，失败就地给出原因（插件不是 v3 / 命令通道关闭 / 超时）。
+    **渲染层发送时只传字面量对象**：Vue 的 `reactive` / `ref` 代理过不了结构化克隆（`AGENTS.md`）。
 - **AI 模型页（本轮重写；BetaV2 增补）**：**目录行列表 + 一次只开一张编辑卡**（`editingId` 单值），不再平铺所有卡片——
   行上只有名称 + 凭据状态 badge（`凭据已保存` / `缺少凭据`）+ 是否默认 + 行操作
   （`编辑` / `设为默认` / `删除`）；当前默认行带 `.accent` 描边与左侧 3px 强调色指示条，行 hover 用 `--fill-2`；
@@ -357,6 +401,16 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
   新页从右进、旧页往左退）**。
 - **硬约定**：快 / 标准 / 慢动作分别为 150 / 250 / 350ms；颜色和透明度走 standard、大面积位移走 smooth、进场展开走 spring。所有过渡/动画必须走 `--transition-*` 或 `--dur-*` + `--ease-*`，不写死时长；
   `prefers-reduced-motion: reduce` 下把三个时长压到 1ms 并让位移动画立刻落位（theme.css 里已全局兜底）。
+- **2026-09 动画轮新增**（对话区与子代理页面为主）：
+  - **循环类时长令牌**：`--dur-spin`（1200ms，加载指示器）、`--dur-caret`（1100ms，流式光标）、
+    `--dur-bounce`（1000ms，三点等待）——循环动画与「出现」动画的节奏要求不同，因此单列令牌，
+    取代此前散落在组件里的 `1s` / `1.1s` / `1.4s` 写死值。
+  - **新 keyframes / 工具类**：`aurora-caret`（流式光标）、`aurora-typing-bounce`（三点等待）、
+    `aurora-shimmer`（运行中扫光，配 `.shimmer` 或组件内 `::before` / `::after`）、
+    `aurora-confirm`（完成确认的一次性弹跳，配 `.confirm`）、`aurora-track`（子代理进度条滑动块）、
+    `aurora-think-line`（步骤逐条浮现）、`aurora-spin` + `.spin`（无限旋转，**放全局**——
+    scoped 样式里的 `@keyframes` 会被 Vue 改名，跨组件复用必须走全局）。
+  - **`.tool-*` 过渡**：工具卡进场上浮淡入（`TransitionGroup`），第 2/3/4 张按 40/80/120ms 错开。
 - 系统实时切换主题时只更新语义色与非透明原生底色，不改变窗体几何、配置或转场路径；`prefers-reduced-motion: reduce` 在明暗两档均将动画/过渡压到 1ms，状态灯停止呼吸。
 - 页面骨架统一用 `.page` / `.page-title` / `.page-sub`；页面需要不同内边距时在自己的 scoped 样式里覆盖
   （scoped 选择器优先级更高，覆盖安全）。
@@ -387,6 +441,7 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
   2. **主界面（chat，BetaV2 三栏）**——顺序有约束（见下面「全局顺序」一条）：
      `theme-chat.png`（双主题）→ `chat-sidebar.png`（左栏结构 + **出厂门控现场**）→
      `chat-right-panel-toggle.png` → `chat-right-panel-work.png`（两者自恢复、不动会话）→
+     `chat-subagent-page.png`（点左栏「子代理」固定项进页面，check 收尾切回对话流）→
      `chat-thinking-block.png`（reload 水合 seed 思考块后点开）→ `chat-quick-session.png`（展开侧栏快速对话面板）→
      `chat-thinking-level.png` → `chat-model-picker.png` → `chat-tts.png`（reload，朗读按钮）→
      `chat-drag.png` → `chat-collapse.png`（点击写在 check 里，见下）→ `chat.png`（自动滚底）。
@@ -463,7 +518,16 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     （1120px 宽三栏并存）且 classroom「今日课程」与通用「系统状态」两卡都渲染（ContextPanel 无
     data-field 锚点，按卡头文案定位）。**含麦克风门控反向断言**：`stt` 未配置时
     `[data-field="chat.mic"]` 必须**不存在**（数到即坏 —— 钉「未配置连按钮都不渲染，不是 disabled」口径）。
+    另外断言 2026-09 新增的两条：`chat.subagent-item` 恰好 1 个、角标 `chat.subagent-count`
+    恰好 1 个（seed 的 `task` 工具卡带子代理快照），以及**每张工具卡头恰好一枚语义图标**
+    （`.tool-card .tool-head .tool-icon` 数 == `.tool-card` 数）。
     本场景不改任何状态，必须排在一切改配置 / 改会话的场景之前，保证读到出厂门控现场；
+  - **子代理页面**（`CHAT_SUBAGENT_OPEN_ACT` / `CHAT_SUBAGENT_OPEN_CHECK`，
+    产物 `chat-subagent-page.png`，2026-09）：「子代理」固定项点击后主区切到页面，断言
+    `chat.subagent-page` 在、`chat.subagent-run` 恰好 1 张（来自 seed 的 `task` 工具卡快照）、
+    轨迹步骤 ≥ 3、进度条 1 条、报告文本非空、导航项为激活态；check 收尾点「回到对话」并断言页面已消失
+    —— 后续场景（composer / 自动滚底）依赖对话流在前台。
+    这条同时验证「子代理快照随工具卡持久化 → 页面读回」这条链路（`06 §19`）；
   - **右栏开关**（`CHAT_RIGHT_PANEL_TOGGLE_ACT` / `CHAT_RIGHT_PANEL_TOGGLE_CHECK`，
     产物 `chat-right-panel-toggle.png`，BetaV2）：act 内点两次 `chat.right-panel-toggle`
     走「展开 → 收起 → 展开」，三态记录暂存渲染层；check 断言三态全部成立、且截图时刻右栏
@@ -484,6 +548,24 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     激活判据有二 —— `chat.quick-item` 拿到 `.active` 态 + 主区标题 `.head-name` 变固定名「快速对话」
     （act 内轮询等水合往返，check 再读一次兜住时序）。场景停在 quick 会话无需还原：
     后面 `chat-tts` 自带 reload 回 main，其余 chat 场景只依赖 provider 配置；
+  - **ClassIsland 课堂状态卡**（`chatClassislandAct` / `CHAT_CLASSISLAND_CHECK`，
+    产物 `chat-classisland-status.png`，2026-09）：状态卡只在「模式 = classroom **且**
+    课表来源 = classisland」时渲染，出厂配置下整卡不存在。因此主进程侧先按桥接契约写一份
+    假产出（`seedClassIslandFixture` → `<userData>/classisland-fixture/schedule.json`，
+    含内嵌 `status.version = 3`），act 再把课表来源切到 classisland + 文件模式指向它；
+    check 断言卡在、`上课中` 徽章在、`当前 / 下节` 两行分别带上科目与**时段**
+    （`数学 08:00–08:45` / `语文 · 09:20–10:05`，v3 新增字段的落点）、空状态替身不在，
+    收尾把来源还原成 `manual` 并断言卡片消失。
+    **这条依赖 `classisland:status` 的按需重读**：状态快照原本只在感知摘要组装时才刷新，
+    刚切过来会拍到一张空卡（本轮实测就是这么发现的），现在该接口在缓存过期（15 秒）时
+    自己重读一次（`ClassIslandProvider.refreshIfStale`）。
+  - **ClassIsland 联动设置项**（`SETTINGS_CLASSISLAND_SEED_ACT` / `SETTINGS_CLASSISLAND_FIELDS_SCRIPT`，
+    产物 `settings-classisland-notify.png`，2026-09）：新增的两项（提前分钟数、提醒通道）门控要求
+    `provider = classisland` + 至少一节课程，出厂配置下**不渲染**，因此本场景先经 `settings:update`
+    造现场、展开「课表与课前提醒」分组、把提醒通道区滚进视野再拍图；check 断言
+    `modes.classroom.preClassLeadMinutes` / `settings.classisland-notify-test` /
+    `settings.classisland-notify-state` / `settings.classisland-notify-test-button` 各恰好 1 个，
+    收尾把 provider 还原为 `manual`、清空课表并断言提醒通道区已消失（后续场景读到的仍是出厂门控）。
   - 设置页门控（BetaV2 六页 IA：每页一条 `settings-<page>.png`，general / modes / llm / voice / agent
     五页挂探针、advanced 纯截图）：`data-field` / `data-empty` 计数，各页口径 ——
     **general 页**（`SETTINGS_FIELDS_SCRIPT`）：死字段 `general.language` 必须为 0、提示条详情跟随
@@ -575,13 +657,14 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     并在 `report.json` 里保留 `region` / `regionValue` 原始值，同时在本文档注明该属性不可读
     （真实拖动仍可手测）——处置结论必须写进该步的执行记录。
   - **交互窗场景的全局顺序（BetaV2 更新）**：`theme-chat`（双主题）→ `chat-sidebar` →
-    `chat-right-panel-toggle` → `chat-right-panel-work` → `chat-thinking-block` →
-    `chat-quick-session` → `chat-thinking-level` → `chat-model-picker` → `chat-tts` →
-    `chat-drag` → `chat-collapse` → `chat.png`
+    `chat-right-panel-toggle` → `chat-right-panel-work` → `chat-subagent-page` →
+    `chat-thinking-block` → `chat-quick-session` → `chat-thinking-level` → `chat-model-picker` →
+    `chat-tts` → `chat-drag` → `chat-collapse` → `chat.png`
     （`theme-chat` 排在全部交互窗场景之前，因为主题图要拍"未配置模型"的基线态；
     `chat-sidebar` 排在一切改配置 / 改会话的场景之前，它断言的是隔离 userData 的**出厂门控现场**；
     `chat-tts` / `chat-thinking-block` 的现场由 `seedChatTtsHistory` 在跑计划前种好、各自 reload 重新水合；
-    `chat-right-panel-toggle` / `chat-right-panel-work` 自恢复，`chat-quick-session` 停在 quick 会话
+    `chat-right-panel-toggle` / `chat-right-panel-work` / `chat-subagent-page` 自恢复
+    （子代理页面在 check 里点「回到对话」切回主区），`chat-quick-session` 停在 quick 会话
     —— 后面 `chat-tts` 自带 reload 回 main，无需专门还原）。
     真正的约束有两条：**凡要在窗口里操作 DOM 的场景都必须排在 `chat-collapse.png` 之前**
     ——收起会隐藏窗口，之后再 `capturePage()` 只会卡死（BetaV2 起顺序整体前移就是为这条服务）；

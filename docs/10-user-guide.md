@@ -155,15 +155,45 @@ Aurora 会提取其中的文字交给模型（单个文件最多取 8000 字，�
 
 1. 构建并安装桥接插件：见
    [`integrations/classisland-bridge/README.md`](../integrations/classisland-bridge/README.md)
-   （需要 .NET SDK 8.0+，用 `dotnet build -c Release`，把产物复制到
-   `%APPDATA%\ClassIsland\Plugins\AuroraClassIslandBridge\`）。
-2. 在 ClassIsland 里启用插件，确认它写出了 JSON 文件
-   （默认 `%APPDATA%\ClassIsland\aurora-bridge\schedule.json`）。
+   （需要 .NET SDK 8.0+，用
+   `dotnet build -c Release -p:ClassIslandDir="<ClassIsland 安装目录>"` 构建，
+   然后把 `AuroraClassIslandBridge.dll` 与 `manifest.yml` 复制到 **ClassIsland 的插件目录**：
+
+   ```
+   <ClassIsland 安装目录>\data\Plugins\aurora-classisland-bridge\
+   ```
+
+   注意不是 `%APPDATA%\ClassIsland\...` —— 应用数据目录下的 `data\Plugins\` 才是插件位置
+   （`<ClassIsland 安装目录>\data\Config\Plugins\<插件 id>\bridge.json` 是它的配置）。
+   也可以直接用随仓库发布的插件包 `dist/AuroraClassIslandBridge-v3.0.zip`
+   （压缩包根目录含 `manifest.yml` + 插件 dll）。
+2. 重启 ClassIsland，确认插件被加载（「设置 → 插件」里能看到「Aurora 桥接 3.0.0.0」，
+   日志里也有加载记录），并确认它写出了 JSON 文件
+   （默认 `%APPDATA%\ClassIsland\aurora-bridge\schedule.json` 与同目录 `status.json`）。
 3. 在 Aurora：「设置 → 模式 → ClassRoom → 课程表」
    - 「课程表来源」选 **ClassIsland 联动**
    - 「数据来源」选 **JSON 文件**（填上面那个文件路径）或 **本地 HTTP 端点**
      （填 `http://127.0.0.1:17945/schedule`）
 4. 点「**测试连接**」。成功会显示今天有几节课；失败会给出具体原因。
+5. 想让 Aurora（或它背后的 AI）**通过 ClassIsland 弹提醒**时：插件版本需为 **v3**，
+   同一设置区里有「**发送测试提醒**」按钮 —— 点一下，ClassIsland 上应弹出提醒，
+   按钮旁会显示结果；失败会给出原因（插件不是 v3 / 命令通道关闭 / 端点不可达 / 超时）。
+
+### 让 Aurora 调用 ClassIsland 的提醒（v3）
+
+桥接插件 v3 起开放一条**入站提醒通道**（Aurora → ClassIsland），两个入口：
+
+- 设置页的「发送测试提醒」按钮；
+- 让 AI 用 `classisland_remind` 工具发（例如「用 ClassIsland 提醒我十分钟后交作业」）。
+
+它把提醒交给 ClassIsland 自己的提醒服务弹出（提供方名为「Aurora 桥接」，
+自定义提醒走其中新增的「Aurora 提醒」渠道），因此**是否弹出、是否朗读仍由
+ClassIsland 的「设置 → 提醒」决定**：如果你在那边关掉了这个提供方或渠道，
+Aurora 会收到一条「已发送但未展示」的失败结果 —— 这是提示，不是故障。
+
+> **不会重复提醒**：Aurora 自己的课前提醒（系统托盘通知 + 打开科目文件夹）与
+> ClassIsland 的课程提醒（插件按它对时服务自己发）是**两条独立通道**，
+> 默认不会互相触发。Aurora 在课前提醒触发时**不会**顺手再往 ClassIsland 发一条。
 
 ### 需要注意
 
@@ -173,6 +203,8 @@ Aurora 会提取其中的文字交给模型（单个文件最多取 8000 字，�
 - **课表里没有今天** → 显示 0 节课，课前提醒自然不触发（这是正常的，不是坏了）。
 - 桥接不可用（插件没装 / 文件被删 / 端点超时）时，Aurora 会**当作今天没有课**继续运行，
   不会影响其他功能。
+- **课前提前分钟数**可在「设置 → 模式 → ClassRoom → 课前提醒」里改（1–30，默认 5），
+  改完即时生效；它同时也决定 Aurora 读取桥接数据的超时口径（`读取超时`）。
 - 目前只同步「星期 × 节次 → 科目」，单双周、临时调课不在此列。
 
 ---

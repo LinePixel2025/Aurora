@@ -57,6 +57,31 @@
   详见 [06-agent-core.md §13](./06-agent-core.md)、[08-settings-onboarding.md §6](./08-settings-onboarding.md)。
   **语音输入（STT）不在本轮范围**。
 
+**v0.1.0（ClassIsland v3 + 对话展示 + 子代理页 + 动效/图标轮）本轮新增**：
+
+- **ClassIsland 联动升级 v3（双向）**：桥接插件 v2 的「课堂状态快照」补齐起止时间
+  （`currentStartTime` / `currentEndTime` / `nextEndTime`，状态版本 3），并新增**入站提醒命令通道**
+  （文件模式写 `command.json` + 轮询 `command-result.json`，HTTP 模式 `POST /notify`，
+  按 id 去重 + 过期保护），Aurora 因此可以调用 ClassIsland 的提醒功能。
+  Aurora 侧：新增 IPC `classisland:notify`、Agent 工具 **`classisland_remind`**（桥接未配置时不注册）、
+  设置页「发送测试提醒」；**课堂状态进感知摘要**（`PerceptionSummary.classStatus` +
+  `contextSummary()` 的「课堂状态」行）与主界面右栏「课堂状态」卡实时显示当前 / 下节课；
+  **课前提前分钟数可配**（`modes.classroom.preClassLeadMinutes`，Schema **v10**）。
+  插件 v3 已**真机部署并实跑验证**（加载、状态 v3、提醒弹出、解析对拍）。详见
+  [05 §3.4](./05-mode-system.md)、[06 §8.2 / §9.1](./06-agent-core.md)、
+  [07 §2.3 / §2.5](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)。
+- **对话展示的「顺序」修复**（docs/06 §16.1）：`AgentEvent` 新增 `seq`（会话内单调序号）与
+  `round`（工具调用轮次）——修掉「工具卡挂错消息 / 跑到列表末尾」「多轮时第二条回复带上一轮
+  思考全文」「请求结束后界面继续长内容」三类真实错乱，并让历史水合改为按 id 合并（不再整体替换）。
+- **子代理独立页面**（docs/06 §19.1、docs/07 §2.4）：`task` 子代理的每一步进度经
+  `ToolContext.emitProgress` 实时上报（新事件 `subagent`），左栏固定项「子代理」把主区切到
+  集中页面（状态 / 耗时 / 步骤时间线 / 报告，重启后仍可回看）；工具卡展开体同步显示运行轨迹。
+- **动效与图标体系**（docs/07 §2.3 / §5.2）：思考块流式扫光与尾部光标、工具卡运行扫光与
+  完成弹跳 / 入场上浮错开、Agent 正文的「湿润边缘」；循环类动画改用
+  `--dur-spin` / `--dur-caret` / `--dur-bounce` 令牌；
+  **渲染层图标统一换成 [lucide](https://lucide.dev)**（`renderer/shared/icons.ts` 具名再导出，
+  工具卡按工具名给语义图标），不再手写内联 SVG。
+
 **v0.0.5（DashScope 原生 TTS 轮）本轮新增**：
 
 - **TTS 供应商新增 `dashscope` 原生类型**（docs/06 §13.6、docs/08 §1 / §6）：`TtsProviderSchema.type`

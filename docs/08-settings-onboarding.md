@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v9）
+## 1. 配置 Schema（config.json，v10）
 
 ```jsonc
 {
-  "version": 9,
+  "version": 10,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -92,6 +92,8 @@
       "preClassReminder": true,
       // v8 新增：课前提醒触发时是否自动打开科目文件夹（通知照发，仅门控打开动作）
       "preClassOpenFolder": true,
+      // v10 新增：课前提前分钟数（整数，1–30，默认 5）；pre-class-reminder 的 lookahead 直接用它
+      "preClassLeadMinutes": 5,
       "classification": {
         "autoMove": true,
         "confidenceThreshold": 0.6,
@@ -176,7 +178,7 @@
   甚至把数组清空，`general.hotkey` 这条路径**仍然被拒**（清空 = 回到默认项，而不是放开）。
   另一条兜底同样不随它变化：「Schema 不认识的路径一律拒绝」，防模型拼错字段名后悄悄写进配置。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **9**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **10**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
@@ -236,6 +238,14 @@
 - `modes.classroom.preClassOpenFolder`（**v8 新增**，见 05 §3.3）：课前提醒触发时是否自动打开
   科目文件夹（默认 `true`；通知照发，本字段只门控「打开文件夹」动作）。
   `modes.classroom.*` 本就不在黑名单，Agent 可写。
+- `modes.classroom.preClassLeadMinutes`（**v10 新增**，见 05 §3.4）：课前**提前多少分钟**提醒
+  （整数，范围 **1–30**，默认 **5**）。装配层 `main/index.ts` 构造 `PreClassReminder` 时把它作为
+  `getLookaheadMinutes` getter 注入（**每次 tick 即时读取** → 设置页改完即时生效；此前恒为
+  模块常量 `DEFAULT_LOOKAHEAD_MINUTES = 5`）。设置页「模式 → ClassRoom → 课程表」区有数字输入
+  （`data-field="modes.classroom.preClassLeadMinutes"`）。Schema 层已 `min(1).max(30).int()` 约束，
+  越界值在写入时被拒（渲染层输入框 `min`/`max` 同步限制）。Agent 可写（`modes.classroom.*` 不在黑名单）。
+- `modes.classroom.schedule.classisland.timeoutMs` 同时是**提醒命令通道**（05 §3.4 v3）文件模式
+  轮询 `command-result.json` 的超时预算 —— 桥接不可用时按此超时返回 `ok: false`，不阻塞调用方。
 - `agent.tools`（v5 新增，见 06 §11）：4 个开关 + 3 个上限 ——
   `enabled` 是电脑操控工具**总开关**（`false` 时 5 个工具都不注册）；`workspaceDir` 是 **`run_command`
   的缺省 `cwd`**（空串 = 用户主目录，只作**默认值**、不是沙箱；文件类工具不读它，见 06 §11.1）；`terminal.enabled` 开关终端工具、
@@ -284,7 +294,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 9`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 10`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -296,8 +306,10 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   `v7 → v8`（补齐 `stt.*` 与 `imagegen.*`（语音输入 / 生图）、`modes.work.workspaceDir`、
   `modes.classroom.preClassOpenFolder`、`general.chat.showThinking`；新增顶层分组无条件补默认值，
   已存在分组只补缺失键、不凭空造出半截对象）、
-  `v8 → v9`（为每个已有 `mcp.servers` 条目补 `headersEnc: {}`，HTTP 传输自定义请求头，见 06 §7）。
-  九条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
+  `v8 → v9`（为每个已有 `mcp.servers` 条目补 `headersEnc: {}`，HTTP 传输自定义请求头，见 06 §7）、
+  `v9 → v10`（为已存在的 `modes.classroom` 补 `preClassLeadMinutes: 5`，课前提早分钟数；
+  只补缺失键、不覆盖用户已写值，且不做范围修正 —— 越界值由 Schema 校验回退默认）。
+  十条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -498,6 +510,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 | `modes.code.*` | 无字段：Code 选中时只显示「暂无可配置项」空状态（`data-empty="modes.code"`） |
 | `modes.classroom.schedule.classisland.*` | `schedule.provider === 'classisland'` |
 | `modes.classroom.preClassReminder` | `schedule.lessons.length > 0` |
+| `modes.classroom.preClassLeadMinutes` | 与 `preClassReminder` 同组同条件（`schedule.lessons.length > 0`；v10 新增） |
 | `modes.classroom.preClassOpenFolder` | 与 `preClassReminder` 同组同条件（`schedule.lessons.length > 0`；v8 新增） |
 | `modes.classroom.classification.confidenceThreshold` | `subjects.length > 0` |
 | `modes.classroom.classification.fallbackFolder` | `classification.autoMove === true` |
@@ -543,7 +556,16 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
     测试连接会立即按当前配置解析一次，回传**今日课程预览 + 逐行告警 + 错误原因 + 耗时**；
     页面同时显示最近一次同步状态（是否成功、今日课程数、最近同步时间）。
     改动端点或来源时会清空上一次的测试结果，避免把「旧地址的成功状态」误读为当前可用。
-- **课前提醒**：`modes.classroom.preClassReminder` 开关 + 「提醒时自动打开科目文件夹」
+  - **提醒通道（v3 新增，05 §3.4）**：同一子配置区新增
+    - 「**发送测试提醒**」按钮（`data-field="settings.classisland-notify-test"`）：
+      调 `classisland:notify` 发一条固定文案的自定义提醒（`channel: 'custom'`），
+      成功 / 失败（含原因与耗时）就地回显；
+    - **提醒通道状态回显**：来自 `classisland:status` 的 `notify` 字段
+      （`available` / `ok` / `lastAt` / `error`），显示「可用 / 不可用 + 最近一次结果」，
+      不可用时提示去桥接插件 README 排障（插件未装 v3 / 端点未配 / 命令通道被关）。
+- **课前提醒**：`modes.classroom.preClassReminder` 开关 +「**提前分钟数**」
+  （`modes.classroom.preClassLeadMinutes`，数字输入 1–30，默认 5，v10 新增：改完即时生效）
+  + 「提醒时自动打开科目文件夹」
   （`modes.classroom.preClassOpenFolder`，v8 新增：通知照发，仅门控打开动作，见 05 §3.3）。
 - **分类行为**：`classification.autoMove`（自动移动）、`confidenceThreshold`（0–1 滑条）、
   `fallbackFolder`（兜底目录）。

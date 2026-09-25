@@ -158,8 +158,21 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
   通道预留给后续 caption 最大化按钮。最大化状态下几何不写入 `general.windowState`）。
   `window:setEdgeBarExpanded` 驱动提示条两态宽度（收起 8px / 展开 228px，右缘固定，见 07 §2.2）；
   它只改窗口几何、不改可见性，因此**不广播** `stateChanged`。
+- **ClassIsland 联动通道**（2026-09 新增 `classisland:notify`）：让 ClassIsland 弹出提醒。
+  入参 `ClassIslandNotifyRequest`（`title` / `body` / `channel?`），出参
+  `Result<ClassIslandNotifyResult>`（`ok` / `error?` / `elapsedMs`）——
+  **`ok: false` 是业务结果不是异常**：桥接未装、命令通道关闭、回执超时都走这条路径，
+  由设置页 / 工具如实回显原因。
+  文件模式下主进程原子写 `<课表文件同目录>/command.json` 并轮询同目录 `command-result.json`
+  （按 `id` 匹配，超时用 `modes.classroom.schedule.classisland.timeoutMs`）；
+  HTTP 模式下 `POST <端点 origin>/notify`，出网走 `main/net.ts` 的 `netFetch`
+  （因此 `advanced.proxy` 生效）。实现见 `main/classisland.ts` 的 `ClassIslandNotifier`；
+  契约细节见 `05 §3.4 v3`。
 - 跨进程类型统一定义于 `packages/shared`；preload 只暴露白名单方法。
 - 事件推送使用 `on/off` 成对暴露，渲染层卸载时自动解绑。
+- **`chat:event` 事件带 `seq` 与 `round`**（2026-09）：`seq` 是会话内单调序号（主进程 `emit`
+  统一分配），`round` 是本次请求的工具调用轮次。渲染层据此排序消息、丢弃陈旧请求的迟到事件、
+  把思考链绑到正确的助手消息上（口径见 `06 §16.1`）。
 - 大 payload（文件全文）只在主进程 / utilityProcess 内部流转，不进渲染进程。
 
 ## 7. 生命周期与容错

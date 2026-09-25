@@ -141,7 +141,7 @@ export interface ModeGuide {
 
 ### 3.4 上课前自动打开科目文件夹
 
-- **v1（手动课程表）**：设置中维护每周课程表（星期 × 节次 → 科目）；课前 5 分钟系统通知 + 自动打开该科目文件夹（explorer）。
+- **v1（手动课程表）**：设置中维护每周课程表（星期 × 节次 → 科目）；课前 N 分钟系统通知 + 自动打开该科目文件夹（explorer）。N = `modes.classroom.preClassLeadMinutes`（默认 5，范围 1–30，v10 起可配）。
 - **v2（ClassIsland 联动）**：通过 ClassIsland（开源桌面课程表应用）读取课程表，替代手动课程表。预留接口，实现可插拔：
 
 ```ts
@@ -157,6 +157,8 @@ export interface IScheduleProvider {
 > `parseClock()`、`lessonKey()` 与 `needsNextDayLessons()`。
 > 定时与副作用在 `pre-class-reminder.ts`（30s tick）：命中后先记 `firedKeys` 再发通知 / 打开目录，
 > 因此通知或打开失败都不会每 30s 重复刷屏；受 `modes.classroom.preClassReminder` 与勿扰时段约束。
+> 课前进度窗口自 **v10** 起取自 `modes.classroom.preClassLeadMinutes`（默认 5 分钟，
+> 装配层 `main/index.ts` 每次构造时注入；此前是常量 `DEFAULT_LOOKAHEAD_MINUTES = 5`）。
 
 #### v2 实现说明（v0.6.0）：ClassIsland 联动
 
@@ -225,8 +227,67 @@ ClassIsland ──(C# 插件)──▶ 本地 JSON 契约 ──(读文件 / 读
   通知服务（`INotificationService`）弹课程提醒；通知服务不可用时**降级**为仅写 status.json +
   日志告警。它与 Aurora 自己的课前提醒相互独立、可并存。
 
+**桥接插件 v3**：
+
+- **状态快照升级到 version 3**：新增 `currentStartTime` / `currentEndTime`（上课中当前节的起止
+  `HH:mm`）与 `nextEndTime`（下节课结束时间）。取不到的字段**不写**，绝不编造。
+  `schedule.json` 的 `version`（课表结构版本）**保持 1 不变**，只动内嵌 `status.version`。
+
+status v3 字段表（`schedule.json` 内嵌 `status` 与同目录 `status.json` 内容完全一致）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `version` | number | 状态格式版本：v2 为 `2`，v3 起为 `3`（与 schedule.json 的 `version` 互不相干） |
+| `generatedAt` | string | 快照生成时间（ISO 时间戳） |
+| `onClass` | boolean | 是否处于上课状态（ClassIsland 实时课程状态 `CurrentState == OnClass`） |
+| `currentSubject` | string | 当前课科目（经桥接侧 `subjectMap` 映射后的 Aurora 侧名称）；不在上课 / 未知时缺省 |
+| `currentStartTime` / `currentEndTime` | string | **v3 新增**：当前节次起止 `HH:mm`（上课中才有）；取不到则缺省 |
+| `nextSubject` / `nextStartTime` | string | 今天下一节「上课」类型节次的科目与开始时间（「下一节」= 开始时间严格晚于当前时刻的最近一节） |
+| `nextEndTime` | string | **v3 新增**：下节课结束时间 `HH:mm`；没有下一节 / 取不到则缺省 |
+
+版本宽容：Aurora 侧 `parseBridgeStatus` **不按版本分派** —— 字段逐个宽容解析、坏字段丢弃，
+版本号只记录不拒绝，因此老 Aurora 读 v3 数据、新 Aurora 读 v2 数据都不会整份作废。
+
+**提醒命令通道（v3 新增，Aurora → ClassIsland）**：让 Aurora 能调用 ClassIsland 的提醒能力
+（`classisland:notify` IPC 与 `classisland_remind` 工具）。
+
+- **文件模式**：Aurora 原子写入 `<桥接输出目录>/command.json`：
+
+  ```json
+  { "version": 1, "id": "<唯一串>", "kind": "notify",
+    "channel": "custom | class-started | pre-class",
+    "title": "…", "body": "…", "createdAt": "<ISO>" }
+  ```
+
+  插件以 `FileSystemWatcher` + 防抖读取（另有 30s 兜底 tick 比较 id / mtime），
+  经 ClassIsland 通知服务弹出，并把结果原子写入同目录 `command-result.json`：
+
+  ```json
+  { "version": 1, "id": "<回显>", "ok": true, "error": "<可选>", "handledAt": "<ISO>" }
+  ```
+
+  **按 `id` 去重**（同 id 不重复弹出、不重复写结果）；命令文件本身**不删除**
+  （Aurora 可能回读），已处理 id 记在插件内存里，因此 id 变化才处理。
+  启动补救有**过期保护**：`createdAt` 距今超过 10 分钟的命令跳过不弹（否则重启会弹出
+  上一节课的提醒）；缺 `createdAt` 时无法判断新旧，照常处理。
+- **HTTP 模式**（`enableHttpEndpoint` 打开时）：`POST /notify`，请求体与 `command.json` 同构，
+  响应体与 `command-result.json` 同构（`Content-Type: application/json`）；
+  `GET /schedule`（及其它 GET）行为**保持不变**，仍返回含内嵌 `status` 的课表 JSON。
+  路由按 method + path 分派（v3 之前该 handler 完全不看 `context.Request`）。
+- **渠道映射**：`custom` → 「Aurora 提醒」渠道（v3 新增渠道）；`class-started` / `pre-class` →
+  v2 已有的两个课程提醒渠道。提醒不可用（提供方未注册 / 通知服务不可用）时**降级为
+  仅写 `command-result.json` + 日志**（`ok: false` + `error`），绝不抛出、绝不影响课表导出。
+- `enableCommandChannel`（v3 新增，默认 `true`）：为 `false` 时既不起 `FileSystemWatcher`、
+  也不响应 `POST /notify`（返回 404），课表导出与课程提醒不受影响。
+
+Aurora 侧：文件模式写 `command.json` 到**课表文件同目录**并轮询 `command-result.json` 等
+`id` 匹配（超时用 `modes.classroom.schedule.classisland.timeoutMs`）；HTTP 模式
+`POST <端点 origin>/notify`（端点带路径时按 origin 拼接，即
+`http://127.0.0.1:17945/schedule` → `http://127.0.0.1:17945/notify`）。
+
 **已知未实现**：单双周、临时调课、班级区分等 ClassIsland 高级课表特性未映射到 Aurora 的
-四字段 `Lesson` 模型；OCR 仍未启用。
+四字段 `Lesson` 模型；OCR 仍未启用。桥接插件**没有注册 ClassIsland 设置页**（README 曾称可在
+插件设置页调整，与实现不符，v3 起如实修正）：`bridge.json` 需手工编辑。
 
 ### 3.5 Agent 可修改的 ClassRoom 设置（BetaV2）
 
@@ -242,6 +303,7 @@ ClassRoom 的系统提示词会附上「你可以修改的 ClassRoom 设置」�
 | `modes.classroom.schedule.lessons` | 手动课程表（weekday / startTime / endTime / subject） |
 | `modes.classroom.schedule.classisland.endpoint` | ClassIsland 桥接数据源（文件路径或 HTTP 端点） |
 | `modes.classroom.preClassReminder` | 课前提醒开关 |
+| `modes.classroom.preClassLeadMinutes` | 课前提前分钟数（1–30，默认 5；v10 新增） |
 | `modes.classroom.preClassOpenFolder` | 课前提醒是否自动打开科目文件夹 |
 | `modes.classroom.classification.autoMove` | 判定成功后是否自动移动文件 |
 | `modes.classroom.classification.confidenceThreshold` | 分类置信度阈值（低于则进「待分类」） |
