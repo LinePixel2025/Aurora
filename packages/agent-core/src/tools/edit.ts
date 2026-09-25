@@ -17,8 +17,8 @@
  *
  * 设计取向：**宁可失败一次，不可改错一次**。因此本文件不做模糊匹配、不做自动重试：
  * 找不到就如实报错让模型重新读取；命中多处就拒绝，绝不猜「想改哪一处」。
- * 四种拒绝（找不到 / 多处命中 / 空 `oldString` / 新旧相同）与两种行尾拒绝
- * （孤立回车 / 混合行尾）全部返回 `isError` 且**不写盘**。
+ * 四种拒绝（找不到 / 多处命中 / 空 `oldString` / 新旧相同）与三种行尾拒绝
+ * （文件含孤立回车 / `newString` 含孤立回车 / 混合行尾）全部返回 `isError` 且**不写盘**。
  */
 import { MAX_EDIT_BYTES } from './files.js'
 import type { FilePort, ReadWholeTextResult } from './files.js'
@@ -77,7 +77,11 @@ export function createEditTool(options: EditToolOptions): ToolDefinition {
           description:
             '要被替换的原文，必须与 read_file 输出**去掉行号前缀后**的内容逐字一致，且在本文件内唯一',
         },
-        newString: { type: 'string', description: '替换成的新文本；传空串表示删除该片段' },
+        newString: {
+          type: 'string',
+          description:
+            '替换成的新文本；传空串表示删除该片段。换行请用普通换行符（LF 或 CRLF），不要用孤立的回车符',
+        },
         replaceAll: {
           type: 'boolean',
           description:
@@ -115,6 +119,15 @@ export function createEditTool(options: EditToolOptions): ToolDefinition {
       }
       if (oldString === newString) {
         return failure('新旧内容相同，无需改动。', '新旧内容相同')
+      }
+      // `newString` 里若含孤立的回车符（旧 Mac 行尾），归一（CRLF → LF）处理不了它，写进文件后
+      // 该文件就会**被本工具自己永久拒绝**（下一次调用先撞上「文件含孤立的回车符」）——
+      // 等于工具把用户文件改成了自己再也改不了的状态。因此**在归一之前**按原始串判，命中即拒。
+      if (ISOLATED_CR.test(newString)) {
+        return failure(
+          'newString 含孤立的回车符（旧 Mac 行尾），写进去会让整个文件的行尾风格不一致，已放弃改动。请把 newString 里的换行改成 LF 或 CRLF。',
+          '行尾异常，已放弃改动',
+        )
       }
       // 非布尔真值（含字符串 'true'）一律按 false 处理：不猜模型的意图
       const replaceAll = record?.['replaceAll'] === true

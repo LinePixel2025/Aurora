@@ -51,6 +51,9 @@ function createFakes(): Fakes {
     readText: async () => {
       throw new Error('内核不该调用 readText')
     },
+    readWholeText: async () => {
+      throw new Error('内核不该调用 readWholeText')
+    },
     writeText: async () => {
       throw new Error('内核不该调用 writeText')
     },
@@ -230,6 +233,82 @@ describe('grep 参数校验', () => {
       { root: DEFAULT_ROOT, pattern: 'foo', maxResults: 200 },
       { root: 'D:\\other', pattern: 'foo', maxResults: 200, include: '*.{ts,tsx}' },
     ])
+  })
+
+  it('include 超长（超 MAX_GLOB_LENGTH）→ isError 且不触碰端口；恰好等于上限则照常放行', async () => {
+    const fakes = createFakes()
+    const grep = toolOf(toolsOf(fakes), 'grep')
+
+    const tooLong = await grep.execute(
+      { pattern: 'foo', include: '*'.repeat(MAX_GLOB_LENGTH + 1) },
+      ctx,
+    )
+    expect(tooLong.isError).toBe(true)
+    // 与 pattern 的 200 字符上限对称：include 也是 glob 模式
+    expect(tooLong.content).toContain('模式过长')
+    expect(tooLong.content).toContain(String(MAX_GLOB_LENGTH))
+    expect(tooLong.summary).toBe('include 参数超长')
+    expect(fakes.calls.searchText).toEqual([])
+
+    // 边界不放宽：恰好等于上限是合法的（否则 off-by-one 会把正常模式也拒掉）
+    const atLimit = '*'.repeat(MAX_GLOB_LENGTH)
+    const ok = await grep.execute({ pattern: 'foo', include: atLimit }, ctx)
+    expect(ok.isError).toBeUndefined()
+    expect(fakes.calls.searchText.map((call) => call.include)).toEqual([atLimit])
+  })
+})
+
+describe('grep 正则嵌套无界量词静态过滤', () => {
+  it('(a+)+$ / ^(\\s*[\\w-]+\\s*)+$ / (\\w+\\s+)+= / (a*)* / (x+){2,} → isError 且端口未被调用', async () => {
+    const fakes = createFakes()
+    const grep = toolOf(toolsOf(fakes), 'grep')
+
+    const patterns = ['(a+)+$', '^(\\s*[\\w-]+\\s*)+$', '(\\w+\\s+)+=', '(a*)*', '(x+){2,}']
+    for (const pattern of patterns) {
+      const result = await grep.execute({ pattern }, ctx)
+      expect(result.isError).toBe(true)
+      // 文案要给出可操作的替换建议，不能只说「不行」
+      expect(result.content).toContain('灾难性回溯')
+      expect(result.content).toContain('避免在量词内部再用量词')
+      expect(result.summary).toBe('正则含嵌套无界量词')
+    }
+    expect(fakes.calls.searchText).toEqual([])
+  })
+
+  it('(ab)+ / (a|b)+ / (a+) / (\\d{3})+ / a+ / .* / [a-z]* / ([*+])+ → 不因这条规则被拒（端口确实被调用）', async () => {
+    const patterns = [
+      '(ab)+',
+      '(a|b)+',
+      '(a+)',
+      '(\\d{3})+',
+      'a+',
+      '.*',
+      '[a-z]*',
+      // 字符类里的 `*` / `+` 是字面字符，不是量词
+      '([*+])+',
+    ]
+    for (const pattern of patterns) {
+      const fakes = createFakes()
+      const result = await toolOf(toolsOf(fakes), 'grep').execute({ pattern }, ctx)
+
+      expect(result.isError).toBeUndefined()
+      expect(fakes.calls.searchText.map((call) => call.pattern)).toEqual([pattern])
+    }
+  })
+
+  it('只判「无界 × 无界」：外层有界（(a+){2}）放行，惰性无界（(a+)+?）仍拒绝', async () => {
+    const bounded = createFakes()
+    const boundedResult = await toolOf(toolsOf(bounded), 'grep').execute(
+      { pattern: '(a+){2}' },
+      ctx,
+    )
+    expect(boundedResult.isError).toBeUndefined()
+    expect(bounded.calls.searchText).toHaveLength(1)
+
+    const lazy = createFakes()
+    const lazyResult = await toolOf(toolsOf(lazy), 'grep').execute({ pattern: '(a+)+?' }, ctx)
+    expect(lazyResult.isError).toBe(true)
+    expect(lazy.calls.searchText).toEqual([])
   })
 })
 

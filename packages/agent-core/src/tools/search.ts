@@ -10,6 +10,12 @@
  * 模式匹配一律复用 `globPattern.ts`（**不要另写第二份匹配逻辑**）；
  * 结果上限、单行长度、预算等常量一律来自 `files.ts`（与主进程实现共用一份）。
  *
+ * `grep` 另有一道**静态过滤**：拒绝「嵌套无界量词」形态的正则（`describeQuantifierNestingError`）。
+ * 它是第一道防线——`grep` 是 `safe` 级（不弹确认），而 `regex.test` 是**同步**调用，
+ * 回溯型模式（形如 (a+)+）撞上长重复行时单次 `test` 就能把主进程事件循环占满（窗口无响应）。
+ * 第二道是主进程的墙钟预算护栏（`file-port.ts` 的 `SEARCH_TIME_BUDGET_MS`，遍历层面到点即停），
+ * 但**单次 `test` 一旦开始就无法打断**，所以这一层静态过滤必须存在。
+ *
  * ⚠️ 本文件的**块注释里不许出现**星号紧跟斜杠的字符序列（模式示例一律写进字符串或行注释）：
  * 那会提前结束块注释，报 `TS1109` 且位置极具误导性。
  */
@@ -51,7 +57,7 @@ export function createSearchTools(options: SearchToolOptions): ToolDefinition[] 
  *
  * 只回带「路径 + 行号 + 命中行」与条数统计，**不提供计数功能**——
  * 要统计命中数量得用 `run_command`（逐次确认），因此 description 里明确拒掉这个期待。
- * 参数非法（空 / 超长 / 编译不过）一律 `isError` 且**不触碰端口**。
+ * 参数非法（空 / 超长 / 编译不过 / 嵌套无界量词 / `include` 超长）一律 `isError` 且**不触碰端口**。
  */
 function createGrepTool(files: FilePort, maxResults: number, defaultRoot: string): ToolDefinition {
   return {
@@ -61,6 +67,8 @@ function createGrepTool(files: FilePort, maxResults: number, defaultRoot: string
       'path 是搜索根（缺省用配置里的默认工作目录），include 是文件名过滤，支持 *.js / *.{ts,tsx} 这类模式。',
       `会自动跳过 node_modules / .git 等目录与二进制文件；结果条数上限 ${maxResults}，超出会明确标注。`,
       '只读工具，不弹确认。不提供计数功能：要统计命中数量请改用 run_command。',
+      '不支持「嵌套无界量词」的写法（如 (a+)+、(a*)*），这类模式在长重复行上会触发灾难性回溯、把主进程卡住，会被直接拒绝；请改用更具体的字符类或先缩小搜索范围。',
+      '单次搜索还有时间预算：超时会停止扫描并在结果里标注「结果可能不完整」，那时请缩小 path 或 include 重试。',
     ].join(''),
     parameters: {
       type: 'object',
@@ -76,7 +84,7 @@ function createGrepTool(files: FilePort, maxResults: number, defaultRoot: string
         },
         include: {
           type: 'string',
-          description: '只在这些文件里检索：文件名 glob 过滤，如 *.js / *.{ts,tsx}；缺省不过滤',
+          description: `只在这些文件里检索：文件名 glob 过滤，如 *.js / *.{ts,tsx}；最长 ${MAX_GLOB_LENGTH} 字符；缺省不过滤`,
         },
       },
       required: ['pattern'],
@@ -108,9 +116,26 @@ function createGrepTool(files: FilePort, maxResults: number, defaultRoot: string
           summary: '正则不合法',
         }
       }
+      // 第一道静态过滤：回溯型正则的 `test` 是同步的，一旦开始就会占满主进程事件循环
+      const nesting = describeQuantifierNestingError(pattern)
+      if (nesting !== undefined) {
+        return {
+          content: `正则过于复杂：${nesting}`,
+          isError: true,
+          summary: '正则含嵌套无界量词',
+        }
+      }
 
       const root = readOptionalString(record, 'path') ?? defaultRoot
       const include = readOptionalString(record, 'include')
+      // 与 `pattern` 的长度上限对称：`include` 也是 glob 模式（同一个 `MAX_GLOB_LENGTH`）
+      if (include !== undefined && include.length > MAX_GLOB_LENGTH) {
+        return {
+          content: `参数 include 超长：文件名模式过长（上限 ${MAX_GLOB_LENGTH} 字符）。`,
+          isError: true,
+          summary: 'include 参数超长',
+        }
+      }
       try {
         const result = await files.searchText({
           root,
@@ -296,6 +321,123 @@ function describePatternError(pattern: string): string | undefined {
     return describeError(error)
   }
 }
+
+/**
+ * 静态拦掉「嵌套无界量词」形态的正则（第一道过滤）：命中返回可读原因，否则返回 `undefined`。
+ *
+ * 拒绝条件：某个分组（`(` 与配对的 `)`）**内部**含**无界**量词（`*` / `+` / `{n,}`），
+ * **且**该分组自身后面**紧跟**一个**无界**量词。形如 (a+)+ / (a*)* / (x+){2,} 都会被拒。
+ *
+ * 只判「无界 × 无界」这一种组合，因此**不误伤**这些常见写法：
+ * 组内没有量词（(ab)+ / (a|b)+）、组自己没被量化（(a+)）、内层是**有界**量词（(\d{3})+）、
+ * 压根没有分组（a+ / .* / [a-z]*）。
+ *
+ * ⚠️ 这是**启发式**（例如重叠交替写法 ^(a|a)*b$ 这类仍能构造指数级回溯），**不声称完备**：
+ * 它只是第一道静态过滤，第二道是主进程 `file-port.ts` 的墙钟预算护栏（遍历层面到点即停）。
+ * 之所以必须有这一道，是因为 `regex.test` 是**同步**调用，单次回溯一旦开始就无法打断。
+ *
+ * 调用前必须已经过 `new RegExp` 校验（括号不配对等由 `describePatternError` 先报）。
+ */
+function describeQuantifierNestingError(pattern: string): string | undefined {
+  if (!hasNestedUnboundedQuantifier(pattern)) return undefined
+  return [
+    '分组内部的量词不允许再被无界量词修饰（形如 (a+)+ / (a*)* / (x+){2,} 的写法）：',
+    '这类模式在长重复行上会灾难性回溯、把主进程卡住，已直接拒绝。',
+    '请避免在量词内部再用量词；可改用更具体的字符类或先缩小范围。',
+  ].join('')
+}
+
+/**
+ * 是否存在「分组内部有无界量词，且该分组自己被无界量词修饰」的形态。
+ *
+ * 一遍扫描 + 一个分组栈（栈里每一项表示「这个还没闭合的分组内部出现过无界量词」）：
+ * - 遇到无界量词 → 把**栈上所有**未闭合分组都标记（内层的东西也在外层分组内部）；
+ * - 遇到 `)` → 弹出本组的标记，再看紧随其后的字符是不是无界量词，是则命中。
+ *
+ * 转义（`\+`）与字符类（`[*+]`、`[)]`）内部一律按字面处理，不当作量词或括号。
+ */
+function hasNestedUnboundedQuantifier(pattern: string): boolean {
+  const openGroups: boolean[] = []
+  let index = 0
+  while (index < pattern.length) {
+    const char = pattern[index]
+    if (char === '\\') {
+      // 转义字符与其后一个字符整体跳过：`\+` 是字面的加号，不是量词
+      index += 2
+      continue
+    }
+    if (char === '[') {
+      // 字符类内部的一切都是字面字符（`[*+]` 不是量词，`[)]` 也不闭合分组）
+      index = skipCharClass(pattern, index)
+      continue
+    }
+    if (char === '(') {
+      openGroups.push(false)
+      index += 1
+      continue
+    }
+    if (char === ')') {
+      const innerHasUnbounded = openGroups.pop() === true
+      index += 1
+      const outerLength = unboundedQuantifierLengthAt(pattern, index)
+      if (innerHasUnbounded && outerLength > 0) return true
+      // 分组自己被无界量化：对更外层的分组来说，它同样是一个「内部的无界量词」
+      if (outerLength > 0) openGroups.fill(true)
+      index += outerLength
+      continue
+    }
+    const length = unboundedQuantifierLengthAt(pattern, index)
+    if (length > 0) {
+      openGroups.fill(true)
+      index += length
+      continue
+    }
+    index += 1
+  }
+  return false
+}
+
+/**
+ * 从 `index` 起若是一段**无界**量词（`*` / `+` / `{n,}`）则返回其长度，否则返回 `0`。
+ *
+ * `{n,}` 必须至少有一个数字：`{,m}` / `{,}` / 未闭合的花括号在非 u 模式下按**字面字符**处理；
+ * **有界**量词（`{n}` / `{n,m}`）同样不算无界——`(\d{3})+` 这类常见写法因此不会被误伤。
+ */
+function unboundedQuantifierLengthAt(pattern: string, index: number): number {
+  const char = pattern[index]
+  if (char === '*' || char === '+') return 1
+  if (char !== '{') return 0
+  const matched = UNBOUNDED_BRACE_QUANTIFIER.exec(pattern.slice(index))
+  return matched === null ? 0 : matched[0].length
+}
+
+/**
+ * 跳过一段字符类 `[...]`，返回它右侧第一个字符的下标（未闭合时返回模式末尾）。
+ *
+ * 按 ECMAScript 口径：`[^]` 是「匹配任意字符的空否定类」（`]` 紧跟 `[^` 就是类结束，
+ * 不是字面字符）；类内的 `\]` 是转义，要跳过它、直到出现未被转义的 `]` 才算类结束。
+ */
+function skipCharClass(pattern: string, start: number): number {
+  let index = start + 1
+  if (pattern[index] === '^') index += 1
+  while (index < pattern.length) {
+    if (pattern[index] === '\\') {
+      index += 2
+      continue
+    }
+    if (pattern[index] === ']') return index + 1
+    index += 1
+  }
+  return pattern.length
+}
+
+/**
+ * `{n,}` 形态的无界量词。
+ *
+ * 不能用 `^\{\d*,\}`：那会把非 u 模式下按字面处理的 `{,}` 也算成量词。
+ * 正则片段只写在行注释 / 字符串里，本文件的**块注释里一个都不写**，避免提前结束注释。
+ */
+const UNBOUNDED_BRACE_QUANTIFIER = /^\{\d+,\}/
 
 /** 工厂里钳制一次 `maxResults`：非数字回落缺省值，其余取整后钳到 `1..MAX_SEARCH_MAX_RESULTS` */
 function clampMaxResults(value: number): number {

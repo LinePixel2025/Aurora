@@ -221,6 +221,21 @@ describe('edit_file 参数校验', () => {
     expectNoWrite(fakes)
   })
 
+  it('newString 含孤立 \\r（旧 Mac 行尾）→ isError 且未读未写（参数校验阶段就拒）', async () => {
+    const fakes = createFakes({ text: 'a\r\nb\r\n' })
+    const tool = toolOf(fakes)
+
+    const result = await tool.execute({ path: 'a.txt', oldString: 'b', newString: 'x\ry' }, ctx)
+
+    expect(result.isError).toBe(true)
+    expect(result.content).toContain('newString 含孤立的回车符')
+    expect(result.content).toContain('已放弃改动')
+    expect(result.summary).toBe('行尾异常，已放弃改动')
+    // 参数校验阶段：连整文件读都不该碰
+    expect(fakes.calls.readWholeText).toEqual([])
+    expectNoWrite(fakes)
+  })
+
   it('replaceAll 传非布尔真值（字符串 "true"）按 false 处理：多处命中仍拒绝', async () => {
     const fakes = createFakes({ text: THREE_HITS })
     const tool = toolOf(fakes)
@@ -404,6 +419,26 @@ describe('edit_file 行尾保真', () => {
 
     expect(result.isError).toBeUndefined()
     expect(soleWrite(fakes).content).toBe('a\nB\nC\n')
+  })
+
+  it('newString 里的正常换行（LF / CRLF）照常成功：先归一成 LF，再按原文行尾整体还原', async () => {
+    // LF 文件 + LF 形态的 newString
+    const lf = createFakes({ text: 'a\nb\n' })
+    const lfResult = await toolOf(lf).execute(
+      { path: 'a.txt', oldString: 'b', newString: 'x\ny' },
+      ctx,
+    )
+    expect(lfResult.isError).toBeUndefined()
+    expect(soleWrite(lf).content).toBe('a\nx\ny\n')
+
+    // CRLF 文件 + CRLF 形态的 newString：newString 里的 \r\n 会先归一成 \n，再按文件行尾还原
+    const crlf = createFakes({ text: 'a\r\nb\r\n' })
+    const crlfResult = await toolOf(crlf).execute(
+      { path: 'a.txt', oldString: 'b', newString: 'x\r\ny' },
+      ctx,
+    )
+    expect(crlfResult.isError).toBeUndefined()
+    expect(soleWrite(crlf).content).toBe('a\r\nx\r\ny\r\n')
   })
 
   it('孤立 \\r（旧 Mac 行尾）→ isError 且未写盘', async () => {
