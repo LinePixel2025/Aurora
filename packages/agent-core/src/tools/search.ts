@@ -1,0 +1,352 @@
+/**
+ * 搜索类工具 `grep` / `glob`（docs/06 §11.5、§20）。
+ *
+ * 分层与 `files.ts` / `terminal.ts` 同一套：内核只做参数校验与结果渲染，
+ * 真正的递归遍历在主进程（`apps/desktop/src/main/tools/file-port.ts`）经 `FilePort` 注入，
+ * 因此本文件保持纯 Node、可在 Node 里完整单测（`search.test.ts`，全程不碰磁盘）。
+ *
+ * 两个工具都是 `sensitivity: 'safe'`（只读、不弹确认），但**只读不等于无开销**：
+ * 它们会递归扫描整个搜索根（自动跳过 `DEFAULT_SEARCH_IGNORE` 里的目录与二进制文件）。
+ * 模式匹配一律复用 `globPattern.ts`（**不要另写第二份匹配逻辑**）；
+ * 结果上限、单行长度、预算等常量一律来自 `files.ts`（与主进程实现共用一份）。
+ *
+ * ⚠️ 本文件的**块注释里不许出现**星号紧跟斜杠的字符序列（模式示例一律写进字符串或行注释）：
+ * 那会提前结束块注释，报 `TS1109` 且位置极具误导性。
+ */
+import {
+  DEFAULT_SEARCH_MAX_RESULTS,
+  MAX_MATCH_LINE_CHARS,
+  MAX_SEARCH_MAX_RESULTS,
+} from './files.js'
+import type { FilePort, FindFilesResult, SearchMatch, SearchTextResult } from './files.js'
+import { isValidGlobPattern, MAX_GLOB_LENGTH } from './globPattern.js'
+import type { ToolDefinition, ToolResult } from './registry.js'
+
+/** `grep.pattern` 的长度上限：正则源码过长多半是误传（与 glob 模式上限同值，但各自独立） */
+export const MAX_GREP_PATTERN_LENGTH = 200
+
+export interface SearchToolOptions {
+  files: FilePort
+  /** `agent.tools.search.maxResults`（钳制到 1..MAX_SEARCH_MAX_RESULTS） */
+  maxResults: number
+  /** 搜索根缺省值（装配层注入：`agent.tools.workspaceDir`，空串时回落用户主目录） */
+  defaultRoot: string
+}
+
+/**
+ * 搜索类工具：`grep` / `glob`，**恰好 2 个**（由 `agent.tools.search.enabled` 分派）。
+ *
+ * `maxResults` 在工厂里**钳制一次**，两个工具共用同一个值（`glob.limit` 的上限也取它）。
+ */
+export function createSearchTools(options: SearchToolOptions): ToolDefinition[] {
+  const maxResults = clampMaxResults(options.maxResults)
+  return [
+    createGrepTool(options.files, maxResults, options.defaultRoot),
+    createGlobTool(options.files, maxResults, options.defaultRoot),
+  ]
+}
+
+/**
+ * `grep`：正则内容检索（docs/06 §11.5）。
+ *
+ * 只回带「路径 + 行号 + 命中行」与条数统计，**不提供计数功能**——
+ * 要统计命中数量得用 `run_command`（逐次确认），因此 description 里明确拒掉这个期待。
+ * 参数非法（空 / 超长 / 编译不过）一律 `isError` 且**不触碰端口**。
+ */
+function createGrepTool(files: FilePort, maxResults: number, defaultRoot: string): ToolDefinition {
+  return {
+    name: 'grep',
+    description: [
+      '按正则表达式检索文件内容，返回每个命中处的「文件路径 + 行号 + 命中行」；行号与 read_file 的行号前缀同一口径，拿到位置后用 read_file 的 offset 精确读那一段。',
+      'path 是搜索根（缺省用配置里的默认工作目录），include 是文件名过滤，支持 *.js / *.{ts,tsx} 这类模式。',
+      `会自动跳过 node_modules / .git 等目录与二进制文件；结果条数上限 ${maxResults}，超出会明确标注。`,
+      '只读工具，不弹确认。不提供计数功能：要统计命中数量请改用 run_command。',
+    ].join(''),
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: `要检索的正则表达式源码（不含分隔符），最长 ${MAX_GREP_PATTERN_LENGTH} 字符`,
+        },
+        path: {
+          type: 'string',
+          description:
+            '搜索根目录（可为相对路径，结果里回带解析后的绝对路径）；缺省用配置里的默认工作目录',
+        },
+        include: {
+          type: 'string',
+          description: '只在这些文件里检索：文件名 glob 过滤，如 *.js / *.{ts,tsx}；缺省不过滤',
+        },
+      },
+      required: ['pattern'],
+      additionalProperties: false,
+    },
+    sensitivity: 'safe',
+    execute: async (input): Promise<ToolResult> => {
+      const record = asRecord(input)
+      const pattern = readPatternString(record, 'pattern')
+      if (pattern === undefined) {
+        return {
+          content: '缺少参数 pattern（要检索的正则表达式源码）。',
+          isError: true,
+          summary: '缺少 pattern 参数',
+        }
+      }
+      if (pattern.length > MAX_GREP_PATTERN_LENGTH) {
+        return {
+          content: `参数 pattern 超长（上限 ${MAX_GREP_PATTERN_LENGTH} 字符）。`,
+          isError: true,
+          summary: 'pattern 参数超长',
+        }
+      }
+      const reason = describePatternError(pattern)
+      if (reason !== undefined) {
+        return {
+          content: `正则不合法：${reason}`,
+          isError: true,
+          summary: '正则不合法',
+        }
+      }
+
+      const root = readOptionalString(record, 'path') ?? defaultRoot
+      const include = readOptionalString(record, 'include')
+      try {
+        const result = await files.searchText({
+          root,
+          pattern,
+          maxResults,
+          ...(include === undefined ? {} : { include }),
+        })
+        return renderGrepResult(result, pattern, maxResults)
+      } catch (error) {
+        return {
+          content: `搜索失败：${describeError(error)}`,
+          isError: true,
+          summary: '搜索失败',
+        }
+      }
+    },
+  }
+}
+
+/**
+ * `glob`：按文件名模式找文件（docs/06 §11.5）。
+ *
+ * 模式语法与匹配逻辑全部来自 `globPattern.ts`（`include` 过滤、主进程遍历、
+ * `run_command` 免确认列表共用同一份），这里只做「长度 + 花括号配对」的合法性把关。
+ */
+function createGlobTool(files: FilePort, maxResults: number, defaultRoot: string): ToolDefinition {
+  return {
+    name: 'glob',
+    description: [
+      '按文件名模式查找文件，返回匹配到的文件路径（只回路径、不回内容；要找文件内容请用 grep）。',
+      '模式语法：**/*.js 匹配任意层目录（含当前目录一层）、src/**/*.ts 限定起始目录、{a,b} 表示交替、? 匹配单个字符；整体全串匹配、大小写不敏感，正则元字符按字面处理。',
+      'path 是搜索根（缺省用配置里的默认工作目录），limit 控制本次最多返回几个文件。',
+      `只读工具，不弹确认；会自动跳过 node_modules / .git 等目录，结果上限 ${maxResults} 个。`,
+    ].join(''),
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: `文件名模式，如 **/*.js / src/**/*.ts / *.{ts,tsx}；最长 ${MAX_GLOB_LENGTH} 字符`,
+        },
+        path: {
+          type: 'string',
+          description:
+            '搜索根目录（可为相对路径，结果里回带解析后的绝对路径）；缺省用配置里的默认工作目录',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: maxResults,
+          description: `最多返回的文件数，取值 1–${maxResults}，缺省为 ${maxResults}`,
+        },
+      },
+      required: ['pattern'],
+      additionalProperties: false,
+    },
+    sensitivity: 'safe',
+    execute: async (input): Promise<ToolResult> => {
+      const record = asRecord(input)
+      const pattern = readPatternString(record, 'pattern')
+      if (pattern === undefined) {
+        return {
+          content: '缺少参数 pattern（文件名模式，如 **/*.js）。',
+          isError: true,
+          summary: '缺少 pattern 参数',
+        }
+      }
+      if (pattern.length > MAX_GLOB_LENGTH) {
+        return {
+          content: `参数 pattern 超长（上限 ${MAX_GLOB_LENGTH} 字符）。`,
+          isError: true,
+          summary: 'pattern 参数超长',
+        }
+      }
+      if (!isValidGlobPattern(pattern)) {
+        return {
+          content:
+            '参数 pattern 非法：花括号不配对（花括号内不支持嵌套，如 {a,{b,c}} 请拆成两条模式）。',
+          isError: true,
+          summary: 'pattern 参数非法',
+        }
+      }
+      const limit = resolveClamped(record?.['limit'], 1, maxResults, maxResults)
+      if (limit === undefined) {
+        return {
+          content: `参数 limit 必须是数字（1–${maxResults} 的整数）。`,
+          isError: true,
+          summary: 'limit 参数非法',
+        }
+      }
+
+      const root = readOptionalString(record, 'path') ?? defaultRoot
+      try {
+        const result = await files.findFiles({ root, pattern, maxResults: limit })
+        return renderGlobResult(result, pattern, limit)
+      } catch (error) {
+        return {
+          content: `查找文件失败：${describeError(error)}`,
+          isError: true,
+          summary: '查找文件失败',
+        }
+      }
+    },
+  }
+}
+
+/**
+ * 渲染 `grep` 结果（docs/06 §11.5）：头部 `搜索根：<绝对路径>（匹配 n 处，已扫描 m 个文件）`，
+ * 正文每行 `<相对路径>:<行号>: <命中行>`，尾部按需追加三种标注。
+ *
+ * 搜索根一律回带端口解析后的**绝对路径**（越界不静默的既有口径）；
+ * 无命中**不是错误**，只是一句「未找到匹配」——模型据此换模式或换搜索根即可。
+ */
+function renderGrepResult(
+  result: SearchTextResult,
+  pattern: string,
+  maxResults: number,
+): ToolResult {
+  const head = `搜索根：${result.root}（匹配 ${result.matches.length} 处，已扫描 ${result.scannedFiles} 个文件）`
+  const lines = result.matches.map(renderMatch)
+  if (lines.length === 0) lines.push(`未找到匹配「${pattern}」的内容。`)
+  // 标注只在端口真的报告了对应情况时出现（预算触顶时端口返回的是**已收集的结果**，不是空结果）
+  if (result.truncated) {
+    lines.push(`…（结果已达上限 ${maxResults} 条，可能还有更多；请缩小 pattern 或 include）…`)
+  }
+  if (result.budgetExceeded) {
+    lines.push(`…（搜索预算已用完，仅扫描了 ${result.scannedFiles} 个文件，结果可能不完整）…`)
+  }
+  if (result.skippedBinary > 0) {
+    lines.push(`（已跳过 ${result.skippedBinary} 个二进制文件）`)
+  }
+  return {
+    content: [head, lines.join('\n')].join('\n\n'),
+    summary: result.matches.length === 0 ? '未找到匹配' : `找到 ${result.matches.length} 处匹配`,
+  }
+}
+
+/**
+ * 渲染 `glob` 结果：头部 `搜索根：<绝对路径>（匹配 n 个文件）`，正文每行一个相对路径。
+ * 无命中**不是错误**；`truncated`（达上限）与 `budgetExceeded`（遍历预算触顶）都如实标注，
+ * 理由是 `FindFilesResult` 带回的是**已收集的结果**——不标注的话模型会把不完整当完整。
+ */
+function renderGlobResult(result: FindFilesResult, pattern: string, limit: number): ToolResult {
+  const head = `搜索根：${result.root}（匹配 ${result.files.length} 个文件）`
+  const lines = [...result.files]
+  if (lines.length === 0) lines.push(`未找到匹配「${pattern}」的文件。`)
+  if (result.truncated) {
+    lines.push(`…（已达上限 ${limit} 个，可能还有更多）…`)
+  }
+  if (result.budgetExceeded) {
+    lines.push(`…（搜索预算已用完，仅扫描了 ${result.scannedFiles} 个文件，结果可能不完整）…`)
+  }
+  return {
+    content: [head, lines.join('\n')].join('\n\n'),
+    summary: result.files.length === 0 ? '未找到匹配' : `找到 ${result.files.length} 个文件`,
+  }
+}
+
+/**
+ * `<相对路径>:<行号>: <命中行>`。
+ *
+ * 同一行**只输出一条**（一行内多次命中由端口去重后只回带一条，内核不展开也不重排）；
+ * 行首空白**原样保留**（缩进是定位信息），但超长判断可以用去掉空白后的长度——
+ * 纯空白不算内容，没必要为它截断一行。
+ */
+function renderMatch(match: SearchMatch): string {
+  const text = match.text
+  if (text.trim().length <= MAX_MATCH_LINE_CHARS) return `${match.path}:${match.line}: ${text}`
+  return `${match.path}:${match.line}: ${text.slice(0, MAX_MATCH_LINE_CHARS)}…（本行超长已截断）…`
+}
+
+/**
+ * 只用 `new RegExp` **校验**正则能不能编译：能编译返回 `undefined`，否则返回可读原因。
+ *
+ * 内核**不执行**正则（真正执行在主进程的 `searchText` 里），也**不把 RegExp 对象跨端口传**
+ * ——端口的 `pattern` 参数始终是原始源码字符串。
+ */
+function describePatternError(pattern: string): string | undefined {
+  try {
+    new RegExp(pattern)
+    return undefined
+  } catch (error) {
+    return describeError(error)
+  }
+}
+
+/** 工厂里钳制一次 `maxResults`：非数字回落缺省值，其余取整后钳到 `1..MAX_SEARCH_MAX_RESULTS` */
+function clampMaxResults(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_SEARCH_MAX_RESULTS
+  return Math.min(Math.max(Math.floor(value), 1), MAX_SEARCH_MAX_RESULTS)
+}
+
+/**
+ * 缺省或非法值时给出可读的回落（`undefined` 表示参数类型非法，调用方按校验失败处理）。
+ * 与 `files.ts` 的 `resolveClamped` 同一口径（那份未导出，这里保持同款语义）。
+ */
+function resolveClamped(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  fallback: number,
+): number | undefined {
+  if (value === undefined || value === null) return Math.min(Math.max(fallback, minimum), maximum)
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  return Math.min(Math.max(Math.floor(value), minimum), maximum)
+}
+
+function asRecord(input: unknown): Record<string, unknown> | undefined {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return undefined
+  return input as Record<string, unknown>
+}
+
+/**
+ * `pattern` 一律是字符串且去空白后非空，但**不做 trim**：
+ * 正则源码里的首尾空白可能是模式的一部分（行尾空格、锚点前的空格）。
+ */
+function readPatternString(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = record?.[key]
+  if (typeof value !== 'string') return undefined
+  return value.trim() === '' ? undefined : value
+}
+
+/** 可选字符串参数：非字符串或纯空白一律视为没传（由缺省值接管） */
+function readOptionalString(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = record?.[key]
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}

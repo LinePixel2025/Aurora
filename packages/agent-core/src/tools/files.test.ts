@@ -21,10 +21,12 @@ import type {
   DirEntry,
   FilePort,
   FileToolOptions,
+  FindFilesOptions,
   OpenPort,
   ReadLine,
   ReadTextOptions,
   ReadTextResult,
+  SearchTextOptions,
 } from './files.js'
 import type { ToolContext, ToolDefinition } from './registry.js'
 
@@ -43,6 +45,9 @@ interface FakeCalls {
   writeText: Array<{ path: string; content: string; mode: 'overwrite' | 'append' }>
   list: Array<{ path: string; limit: number }>
   open: string[]
+  /** 搜索两方法由 `search.test.ts` 的假端口覆盖，这里的桩只为让类型过（回带空结果） */
+  findFiles: FindFilesOptions[]
+  searchText: SearchTextOptions[]
 }
 
 interface Fakes {
@@ -56,7 +61,14 @@ function createFakes(
   overrides: Partial<FilePort> = {},
   openImpl?: (target: string) => Promise<void>,
 ): Fakes {
-  const calls: FakeCalls = { readText: [], writeText: [], list: [], open: [] }
+  const calls: FakeCalls = {
+    readText: [],
+    writeText: [],
+    list: [],
+    open: [],
+    findFiles: [],
+    searchText: [],
+  }
   const files: FilePort = {
     async readText(path, options) {
       calls.readText.push({ path, options })
@@ -76,6 +88,27 @@ function createFakes(
     async list(path, limit) {
       calls.list.push({ path, limit })
       return { absolutePath: `${CWD}\\${path}`, entries: SAMPLE_ENTRIES, truncated: false }
+    },
+    async findFiles(options) {
+      calls.findFiles.push(options)
+      return {
+        root: options.root,
+        files: [],
+        truncated: false,
+        scannedFiles: 0,
+        budgetExceeded: false,
+      }
+    },
+    async searchText(options) {
+      calls.searchText.push(options)
+      return {
+        root: options.root,
+        matches: [],
+        truncated: false,
+        scannedFiles: 0,
+        skippedBinary: 0,
+        budgetExceeded: false,
+      }
     },
     ...overrides,
   }

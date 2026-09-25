@@ -24,6 +24,10 @@ export * from './tools/registry.js'
 // 电脑操控工具（docs/06 §11）：内核侧纯逻辑，真实系统调用在主进程注入。
 export * from './tools/terminal.js'
 export * from './tools/files.js'
+// glob 模式编译器（docs/06 §11.5）：`grep` / `glob` / `run_command` 免确认列表共用同一份纯函数。
+export * from './tools/globPattern.js'
+// 搜索工具（docs/06 §11.5）：grep / glob，同样只做参数校验与结果格式化，遍历在主进程。
+export * from './tools/search.js'
 // 扩展工具（Design/betav2-spec.md §6）：同上，端口由主进程注入。
 export * from './tools/web-fetch.js'
 export * from './tools/clipboard.js'

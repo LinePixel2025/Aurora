@@ -90,6 +90,78 @@ export interface FilePort {
     path: string,
     limit: number,
   ): Promise<{ absolutePath: string; entries: DirEntry[]; truncated: boolean }>
+  /** 按文件名 glob 模式递归找文件（`glob` 工具，docs/06 §11.5） */
+  findFiles(options: FindFilesOptions): Promise<FindFilesResult>
+  /** 按正则递归搜文件内容（`grep` 工具，docs/06 §11.5） */
+  searchText(options: SearchTextOptions): Promise<SearchTextResult>
+}
+
+/** `agent.tools.search.maxResults` 的缺省值与硬上限（docs/06 §11.5） */
+export const DEFAULT_SEARCH_MAX_RESULTS = 200
+export const MAX_SEARCH_MAX_RESULTS = 1_000
+/** 单文件扫描上限：超过即跳过（不扫大文件，避免一次搜索吃掉整个预算） */
+export const MAX_FILE_SCAN_BYTES = 1024 * 1024
+/** 命中行的展示上限（超出截断并标记） */
+export const MAX_MATCH_LINE_CHARS = 400
+/**
+ * 遍历预算：文件数与总字节数**双重**上限，任一触顶即停止遍历，
+ * 把**已收集的结果**照常返回并置 `budgetExceeded`（绝不无限遍历，也不让整次搜索变成空结果）。
+ */
+export const SEARCH_BUDGET = { maxFiles: 20_000, maxBytes: 64 * 1024 * 1024 } as const
+/**
+ * 默认忽略的目录名（**整棵子树跳过**，按名字精确匹配、不做模式匹配）。
+ * 内核持有、可注入覆盖（`NodeFilePortOptions.searchIgnore`）。
+ */
+export const DEFAULT_SEARCH_IGNORE = [
+  'node_modules',
+  '.git',
+  'dist',
+  'out',
+  'build',
+  '.next',
+  'coverage',
+  '.turbo',
+] as const
+
+export interface FindFilesOptions {
+  root: string
+  /** 文件名 glob（`**\/*.ts` / `src/**\/*.ts` / `*.{ts,tsx}`，走 `matchesGlob` 的路径模式） */
+  pattern: string
+  maxResults: number
+}
+
+export interface FindFilesResult {
+  root: string
+  /** 相对 root 的路径，**正斜杠分隔**（跨平台一致，便于测试与展示） */
+  files: string[]
+  truncated: boolean
+  scannedFiles: number
+  budgetExceeded: boolean
+}
+
+export interface SearchTextOptions {
+  root: string
+  /** 正则源码（内核已验过能编译；**不跨端口传 RegExp 对象**） */
+  pattern: string
+  /** 可选的文件名 glob 过滤（相对 root 的路径） */
+  include?: string
+  maxResults: number
+}
+
+export interface SearchMatch {
+  /** 相对 root 的**正斜杠**路径；`line` 是 1 起始行号（与 `ReadLine.number` 同一口径） */
+  path: string
+  line: number
+  text: string
+}
+
+export interface SearchTextResult {
+  root: string
+  matches: SearchMatch[]
+  truncated: boolean
+  scannedFiles: number
+  skippedBinary: number
+  budgetExceeded: boolean
 }
 
 export interface DirEntry {
