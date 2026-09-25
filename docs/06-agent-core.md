@@ -725,6 +725,8 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 | 多轮工具调用时，第二条助手消息带上了第一轮的思考全文 | `reasoning` 增量没有 `messageId`（那轮消息要等流结束才落盘），渲染层只能按 `requestId` 全局累积 | 循环事件带 `round`；渲染层按 `(requestId, round)` 分桶累积，再由**同一轮**的 `text` / `tool` 事件把该桶绑到具体消息上 |
 | 请求结束（`done`）之后仍有事件进来，界面继续长内容 | `requestId` 过滤在 `activeRequest === null` 的窗口期形同虚设 | 渲染层记 `finishedRequests`（最近 64 条），**同一 requestId 在 done/error 之后的事件一律丢弃**；本地主动 abort 也立即把该请求标记为已结束 |
 | 历史水合把正在流式的消息对象换掉，`pending` / 工具卡闪一下甚至消失 | 水合是「服务端快照整体替换本地」 | 水合改为**按 id 合并**：内容取更长的一份，本地流式状态（`pending` / `error` / 附件 / 思考）优先保留 |
+| 同一会话第二轮起，刚发出的用户消息被压到整轮回复之后 | 本地发送的 user 气泡没有 `seq`（seq 是主进程的事件序号），`insertOrdered` 按 seq 扫描时**跳过无 seq 消息继续前扫**，此后每条新回复都越过气泡插到它前面 | `user-message` 广播到达时把发送方本地气泡**补上 seq**（它就是同一条消息）；`insertOrdered` 扫描遇到无 seq 的本地消息**即停在它后面**，不再越过 |
+| 最后一轮没有思考增量时，收尾消息带上前一轮的思考全文（「已深度思考」重复出现两次） | 收尾固化直接灌 `reasoningLive`，而它只在收到思考增量时更新——最后一轮若没有思考，它保留的是更早轮次的残留镜像 | 收尾只固化**从未绑定到消息**的思考草稿（`roundDrafts` 中 `roundOwners` 无主的最后一桶）；有主的桶已经完整落在对应消息上，不再重复灌入 |
 
 - **事件形状**（`packages/shared/src/ipc/types.ts`）：`text` / `tool` / `reasoning` / `subagent`
   都带 `seq` 与 `round`，`text` / `tool` / `subagent` 另带 `messageId`。

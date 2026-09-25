@@ -35,7 +35,8 @@ export interface ChatMessage {
   createdAt: number
   /**
    * 创建这条消息的事件序号（主进程分配的会话内单调序号）。
-   * 本地消息（自己发的 user 气泡、发送失败提示）没有 seq，保持数组原位。
+   * 本地消息（自己发的 user 气泡、发送失败提示）push 时没有 seq、保持数组原位；
+   * user 气泡随后会由 `user-message` 广播补上 seq（同一条消息的确认）。
    */
   seq?: number
   /** 工具执行卡片（运行中 / 成功 / 失败） */
@@ -161,24 +162,33 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         // 刻意不动 streaming / assistantId / activeRequest 等流式状态。
         const content = event.content
         const cutoff = event.createdAt - 30_000
-        let duplicate = false
+        let duplicateIndex = -1
         for (let index = messages.value.length - 1; index >= 0; index -= 1) {
           const message = messages.value[index]
           if (message === undefined || message.createdAt < cutoff) break
           if (message.role === 'user' && message.content === content) {
-            duplicate = true
+            duplicateIndex = index
             break
           }
         }
-        if (!duplicate) {
-          messages.value.push({
-            id: `u-evt-${event.requestId}`,
-            role: 'user',
-            content,
-            createdAt: event.createdAt,
-            seq: event.seq,
-          })
+        if (duplicateIndex >= 0) {
+          // 命中的是发送方本地 push 的气泡（临时 id、无 seq）：把主进程分配的 seq /
+          // 时间对齐回去 —— 它就是同一条消息。不补 seq 的话，后续按 seq 插入的回复
+          // 会越过这条气泡排到它前面（用户消息被压到整轮回复之后，2026-09-25 报告）。
+          const existing = messages.value[duplicateIndex]
+          if (existing) {
+            existing.seq = event.seq
+            existing.createdAt = event.createdAt
+          }
+          break
         }
+        messages.value.push({
+          id: `u-evt-${event.requestId}`,
+          role: 'user',
+          content,
+          createdAt: event.createdAt,
+          seq: event.seq,
+        })
         break
       }
       case 'text': {
@@ -307,7 +317,14 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     return created
   }
 
-  /** 按 seq 插入：放在最后一个 seq 更小的消息之后；没有可比对象时追加到末尾 */
+  /**
+   * 按 seq 插入：放在最后一个 seq 更小的消息之后；尾部有无 seq 的本地消息时停在它后面。
+   *
+   * 无 seq 的消息（发送方本地 push 的 user 气泡、发送失败提示）在时间上晚于列表中
+   * 它之前的所有内容 —— 新消息**不能越过它**往前插。曾经跳过无 seq 消息继续前扫，
+   * 结果同一会话第二轮起每条新回复都插到用户气泡前面，看起来就是「消息顺序错乱」
+   * （2026-09-25 报告；见 docs/06 §16.1 症状表）。
+   */
   function insertOrdered(message: ChatMessage): void {
     const seq = message.seq
     if (seq === undefined) {
@@ -316,7 +333,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     }
     for (let index = messages.value.length - 1; index >= 0; index -= 1) {
       const candidate = messages.value[index]
-      if (candidate?.seq !== undefined && candidate.seq < seq) {
+      if (candidate === undefined) break
+      if (candidate.seq === undefined || candidate.seq < seq) {
         messages.value.splice(index + 1, 0, message)
         return
       }
@@ -339,11 +357,22 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     return messageById(assistantId)
   }
 
-  /** 请求收尾（done / error / abort）：复位按轮聚合的思考状态，界面随之收起「思考中」 */
+  /**
+   * 请求收尾（done / error / abort）：固化「从未绑定到消息」的思考尾巴，复位聚合状态。
+   *
+   * 只处理**无主**的轮次草稿：有主的桶（`roundOwners` 已绑定）已经完整落在对应消息上。
+   * 不能直接灌 `reasoningLive` —— 它只在收到思考增量时更新，最后一轮若没有思考，
+   * 它保留的是更早轮次的残留镜像，灌进收尾时活跃的消息就是「已深度思考」重复出现
+   * 两次（2026-09-25 报告；见 docs/06 §16.1 症状表）。
+   */
   function settleReasoning(message: ChatMessage | null | undefined): void {
-    if (message !== null && message !== undefined && reasoningLive.value !== '') {
-      if ((message.reasoning ?? '').length < reasoningLive.value.length) {
-        message.reasoning = reasoningLive.value
+    let orphanDraft: string | undefined
+    for (const [round, draft] of roundDrafts) {
+      if (draft !== '' && roundOwners.get(round) === undefined) orphanDraft = draft
+    }
+    if (message !== null && message !== undefined && orphanDraft !== undefined) {
+      if ((message.reasoning ?? '').length < orphanDraft.length) {
+        message.reasoning = orphanDraft
       }
     }
     resetReasoning()
