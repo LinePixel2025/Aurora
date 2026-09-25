@@ -139,6 +139,15 @@ export const MAX_MATCH_LINE_CHARS = 400
  */
 export const SEARCH_BUDGET = { maxFiles: 20_000, maxBytes: 64 * 1024 * 1024 } as const
 /**
+ * 内容扫描的**墙钟预算**：单次 `searchText` 的遍历耗时超过它即停止并置 `budgetExceeded`
+ * （返回已收集的结果，不抛错）。
+ *
+ * 为什么需要它：`regex.test` 是**同步**调用，一个回溯型正则（`(a+)+$` 这类）撞上长重复行时
+ * 单次调用就可能卡住事件循环很久 —— 那属于病态模式，`search.ts` 已用静态检查挡掉最典型的形态，
+ * 这里是第二道：**到点就不再继续扫**（它不是精确的 CPU 限额，只保证"不会无限扫下去"）。
+ */
+export const SEARCH_TIME_BUDGET_MS = 10_000
+/**
  * 默认忽略的目录名（**整棵子树跳过**，按名字精确匹配、不做模式匹配）。
  * 内核持有、可注入覆盖（`NodeFilePortOptions.searchIgnore`）。
  */
@@ -345,7 +354,9 @@ function createReadFileTool(
         const result = await files.readText(path, { offsetLines, limitLines, maxBytes })
         // 读过就给 `edit_file` 放行（docs/06 §11.6）；**以端口回带的绝对路径为键**，
         // 这样模型写 `a/../b` 与写 `b` 记的是同一个文件。
-        readTracker?.mark(ctx.sessionId, result.absolutePath)
+        // ⚠️ 只有**真的看到内容**才算读过：`offset` 越界时返回的是空窗口（不是错误），
+        // 那时模型手里没有任何基线，放行等于让 `edit_file` 在没有基线的情况下改文件。
+        if (result.lines.length > 0) readTracker?.mark(ctx.sessionId, result.absolutePath)
         return renderReadResult(result)
       } catch (error) {
         return {

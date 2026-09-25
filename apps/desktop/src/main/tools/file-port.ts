@@ -11,9 +11,9 @@
  * 覆盖写走「同目录临时文件 + rename」原子写；错误信息一律带绝对路径（越界不静默）。
  *
  * 搜索层（`findFiles` / `searchText`，docs/06 §11.5）与读文件走**同一个递归 walker**：
- * 忽略目录、符号链接、预算、结果顺序这些口径只写一份；单文件的大小上限与遍历预算常量
- * （`MAX_FILE_SCAN_BYTES` / `SEARCH_BUDGET` / `DEFAULT_SEARCH_IGNORE`）同样来自内核，
- * 这里只引用，不另抄一份字面量（可经 `NodeFilePortOptions` 收紧，便于单测）。
+ * 忽略目录、符号链接、预算、结果顺序这些口径只写一份；单文件的大小上限、遍历预算与墙钟预算
+ * 常量（`MAX_FILE_SCAN_BYTES` / `SEARCH_BUDGET` / `SEARCH_TIME_BUDGET_MS` / `DEFAULT_SEARCH_IGNORE`）
+ * 同样来自内核，这里只引用，不另抄一份字面量（可经 `NodeFilePortOptions` 收紧，便于单测）。
  */
 import {
   appendFile,
@@ -37,6 +37,8 @@ import {
   MAX_READ_LINES,
   MAX_READ_SCAN_BYTES,
   SEARCH_BUDGET,
+  SEARCH_TIME_BUDGET_MS,
+  compileGlob,
   matchesGlob,
 } from '@aurora/agent-core'
 import type {
@@ -49,9 +51,10 @@ import type {
 } from '@aurora/agent-core'
 
 /**
- * 搜索层的可选注入（docs/06 §11.5）：三个字段都只是**收紧护栏**用的，
+ * 搜索层的可选注入（docs/06 §11.5）：四个字段都只是**收紧护栏**用的，
  * 缺省时取内核导出的常量。单测据此把预算 / 单文件上限调到极小，
- * 不必真造 2 万个文件或 1 MiB 的文本就能验证「触顶仍返回已收集结果」「大文件跳过」这些行为。
+ * 不必真造 2 万个文件、1 MiB 的文本或一个病态正则就能验证「触顶仍返回已收集结果」
+ * 「大文件跳过」「时间护栏到点不再扫」这些行为。
  */
 export interface NodeFilePortOptions {
   /** 忽略的目录名（整棵子树跳过；按名字**精确匹配**，不做模式匹配） */
@@ -60,6 +63,8 @@ export interface NodeFilePortOptions {
   searchBudget?: { maxFiles: number; maxBytes: number }
   /** 单文件扫描上限（字节）：超过即**静默**跳过（不扫内容） */
   maxFileScanBytes?: number
+  /** 内容扫描的墙钟预算（毫秒）：缺省取内核的 `SEARCH_TIME_BUDGET_MS` */
+  searchTimeBudgetMs?: number
 }
 
 /** 二进制探测范围：只扫前 8 KiB，避免为判定类型读入整个大文件 */
@@ -68,13 +73,25 @@ const NUL_SCAN_BYTES = 8 * 1024
 /** 含 NUL 字节即按二进制处理（文本文件不该出现 NUL） */
 const BINARY_MESSAGE = '这是二进制文件，无法按文本读取（可改用 run_command 处理）'
 
+/**
+ * 非 UTF-8 文本的拒绝原因（只给 `readWholeText` 用）。
+ *
+ * 文案里必须出现「UTF-8」：调用方（模型）要据此知道该换工具，而不是重试同一次读取。
+ */
+const NOT_UTF8_MESSAGE =
+  '文件不是 UTF-8 文本（无法保证逐字节保真，已放弃读取）：GBK / GB18030 / UTF-16 等编码或二进制内容在 UTF-8 编解码往返后会丢失原始字节'
+
 export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort {
-  // 搜索层的三条护栏在工厂里**一次性**规范化：遍历期间不再重算，也不信任调用方给的怪值
+  // 搜索层的四条护栏在工厂里**一次性**规范化：遍历期间不再重算，也不信任调用方给的怪值
   const searchIgnore: ReadonlySet<string> = new Set(options.searchIgnore ?? DEFAULT_SEARCH_IGNORE)
   const searchBudgetLimits = options.searchBudget ?? SEARCH_BUDGET
   const maxFileScanBytes = resolveLimit(
     options.maxFileScanBytes ?? MAX_FILE_SCAN_BYTES,
     MAX_FILE_SCAN_BYTES,
+  )
+  const searchTimeBudgetMs = resolveLimit(
+    options.searchTimeBudgetMs ?? SEARCH_TIME_BUDGET_MS,
+    SEARCH_TIME_BUDGET_MS,
   )
 
   return {
@@ -142,10 +159,14 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort 
      *   只会诱使它"就用这一段改吧"。`maxBytes` 的非有限值回落 `MAX_EDIT_BYTES`、非正值按 1 处理
      *   （沿用 `resolveLimit` 的既有口径：端口是独立入口，调用方给的怪值不该让护栏失效）。
      * - 文本**逐字节原样**：CRLF 不归一、末尾换行保留、BOM 不动（改写要"除目标片段外不变"，
-     *   任何归一都是对全文件的改写）。
-     * - 二进制（前 8 KiB 含 NUL，复用 `hasNulByte` / `BINARY_MESSAGE`）与目录**抛错**（同 `readText`）：
-     *   二进制文件若被当作文本读入并以 UTF-8 原文写回，就是**静默损坏且不报错**
-     *   ——一个 1 MiB 以内的 `.png` / 压缩包只要字节里恰好出现一段能被当成 `oldString` 的序列即可触发。
+     *   任何归一都是对全文件的改写）。这句承诺**不是尽力而为**——下方三条不变量（读满、
+     *   整缓冲区无 NUL、UTF-8 编解码往返一致）任一不成立就抛错：宁可拒绝读取，
+     *   也不交出一份"看着像全文、写回却会改坏文件"的文本。
+     * - 二进制（**整缓冲区**含 NUL，见 `containsNulByte`）与非 UTF-8 文本（GBK / GB18030 /
+     *   UTF-16 等，见 `NOT_UTF8_MESSAGE`）与目录**抛错**（同 `readText`）：
+     *   它们若被当作文本读入并以 UTF-8 原文写回，就是**静默损坏且不报错**
+     *   ——一个 1 MiB 以内的 `.png` / 压缩包只要字节里恰好出现一段能被当成 `oldString` 的序列，
+     *   或某个 GBK 文本文件的非 ASCII 字节被 `toString('utf8')` 换成 U+FFFD，即可触发。
      */
     async readWholeText(path, maxBytes) {
       const absolutePath = resolve(path)
@@ -158,8 +179,25 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort 
           return { absolutePath, text: '', bytes: size, refused: true }
         }
         const buffer = await readHead(absolutePath, size)
-        if (hasNulByte(buffer)) throw new Error(BINARY_MESSAGE)
-        return { absolutePath, text: buffer.toString('utf8'), bytes: size, refused: false }
+        // 不变量 ①：真的读满 size 字节。短读（并发截断 / 读期间被改写）会让我们手里只有
+        // 文件的开头一段，而调用方拿到的 `bytes` 仍是完整大小 —— 它把这段写回就等于
+        // **静默丢掉尾部**，且没有任何迹象提示它内容不完整。
+        if (buffer.length !== size) {
+          throw new Error(
+            `文件在读取期间发生变化（应有 ${size} 字节、实读 ${buffer.length} 字节），已放弃读取`,
+          )
+        }
+        // 不变量 ②：**整缓冲区**扫 NUL（不是 `readText` 的 8 KiB 口径，原因见 `containsNulByte`）
+        if (containsNulByte(buffer)) throw new Error(BINARY_MESSAGE)
+        const text = buffer.toString('utf8')
+        // 不变量 ③：UTF-8 编解码往返必须一致。`toString('utf8')` 会把所有非法序列换成
+        // U+FFFD（再编码成 EF BF BD），于是「读进来 - 换个词 - 写回」就把整个文件的
+        // 非 ASCII 内容**静默替换成另一种字节**（GBK 的「你好」→ 6 个替换字符）。
+        // ② 与 ③ 合起来覆盖三条已知的坏输入：NUL 在任意位置（②）、GBK / GB18030 / UTF-16
+        // 这类"另类编码但无 NUL"的文本、以及 UTF-8 里被截断的多字节序列（③）。
+        // 注意 ③ **挡不住** NUL 本身（U+0000 是合法字符、能原样往返），别把两者混为一谈。
+        if (!Buffer.from(text, 'utf8').equals(buffer)) throw new Error(NOT_UTF8_MESSAGE)
+        return { absolutePath, text, bytes: size, refused: false }
       } catch (error) {
         throw withPath('读取文件失败', absolutePath, error)
       }
@@ -268,6 +306,12 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort 
      * - 同一行**只记一条**（一行内多次命中不重复 push）：grep 的用途是「定位到行」，
      *   同一行重复出现对模型没有增量信息，还会把 `maxResults` 的名额浪费掉。
      * - 二进制（前 8 KiB 含 NUL，复用 `hasNulByte`）计入 `skippedBinary` 后跳过。
+     * - 墙钟护栏：遍历耗时超过 `SEARCH_TIME_BUDGET_MS`（可经 `NodeFilePortOptions` 收紧）
+     *   即停止遍历并置 `budgetExceeded`，**已收集的结果照常返回**（不抛错、也不是空结果）。
+     *   它防的是"很多个慢匹配累积"而不是"单次匹配本身很慢"：`regex.test` 是同步调用，
+     *   一旦开始就**无法被打断**，所以到点只能保证「不再进入下一个文件」——单次调用仍会跑完。
+     * - `include` 的 glob **只在开始遍历前编译一次**（`compileGlob` 每次调用都会 `new RegExp`，
+     *   放在 visitor 里就是每个文件重编译一遍）；匹配语义与 `matchesGlob` 的缺省口径一致。
      */
     async searchText(options): Promise<SearchTextResult> {
       const absoluteRoot = resolve(options.root)
@@ -276,18 +320,31 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort 
       const matches: SearchMatch[] = []
       let skippedBinary = 0
       let truncated = false
+      // 时间护栏的起点：整次遍历共用一个预算（不是每个文件各给一份）
+      const startedAt = Date.now()
       const walk = createSearchWalk(searchIgnore, searchBudgetLimits)
       try {
         await requireDirectory(absoluteRoot)
         // 内核只用 `new RegExp` 校验；编译失败（理论上到不了这里）按普通错误抛出，由 withPath 带上路径
         const regex = new RegExp(options.pattern)
+        // `include` 按**相对 root 的路径**过滤（`globPattern.ts` 的路径模式）。
+        // `compileGlob` 已是全串锚定、路径模式、大小写不敏感 —— 与 `matchesGlob` 的缺省完全同款；
+        // 这里只做「编译一次、复用同一个正则」，不引入第二套匹配语义
+        //（visitor 收到的 `relativePath` 已由 `toPosixPath` 归一过，所以不必再调 `matchesGlob`
+        // 的值归一化那一步）。
+        const includeRegex = include === undefined ? undefined : compileGlob(include)
         await walkDirectory(
           absoluteRoot,
           '',
           walk,
           async (relativePath, absolutePath, sizeBytes) => {
-            // `include` 同样按**相对 root 的路径**过滤（`globPattern.ts` 的路径模式）
-            if (include !== undefined && !matchesGlob(include, relativePath)) return true
+            // 时间护栏：进入下一个文件之前先看是否到点。到点就停止遍历并如实置 `budgetExceeded`
+            //（内核会为它渲染「搜索预算已用完」的标注），已收集的结果原样带回去。
+            if (Date.now() - startedAt > searchTimeBudgetMs) {
+              walk.budget.exceeded = true
+              return false
+            }
+            if (includeRegex !== undefined && !includeRegex.test(relativePath)) return true
             // 内容扫描的单文件上限：超大文件（构建产物 / 日志 / 媒体）不读进来，
             // 避免一个文件吃掉整个字节预算。**静默跳过**，不单独计数也不标注（避免噪声）
             if (sizeBytes > maxFileScanBytes) return true
@@ -505,6 +562,19 @@ async function readHead(path: string, bytes: number): Promise<Buffer> {
 
 function hasNulByte(buffer: Buffer): boolean {
   return buffer.subarray(0, NUL_SCAN_BYTES).includes(0)
+}
+
+/**
+ * **整缓冲区**的 NUL 判定（只给 `readWholeText` 用，口径与 `hasNulByte` 刻意不同）。
+ *
+ * 为什么不是"复用 `hasNulByte` 更省事"：`readText` 是**行窗口** API，文件可以大到 16 MiB，
+ * 为了判定类型把整个文件扫一遍不划算 —— 它在 8 KiB 处止步是既有的性能取舍（别动）。
+ * `readWholeText` 不一样：它的文件上限是 1 MiB（`MAX_EDIT_BYTES` / `MAX_READ_SCAN_BYTES`
+ * 二者取小），全量扫一遍的成本可忽略；而这里的漏判是**破坏性**的 ——
+ * 后段的 NUL 让一个二进制文件被当成文本读入，`edit_file` 再以 UTF-8 原文写回整篇。
+ */
+function containsNulByte(buffer: Buffer): boolean {
+  return buffer.includes(0)
 }
 
 /**

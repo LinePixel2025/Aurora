@@ -10,10 +10,13 @@
  * 整文件读（`readWholeText`，docs/06 §11.6）与 `edit_file` 的**真实磁盘往返**同样在这里：
  * 那是全仓唯一把「内核的替换逻辑」接到「真实文件字节」上的地方——替换承诺
  * 「除目标片段外逐字节不变」，只有落盘后逐字节比对才证明得了。
+ * 拒绝口径也钉在这里：非 UTF-8（GBK 字节）与 NUL 出现在 8 KiB 之后都**不返回内容**，
+ * 宁可报错也不交出会被写坏的文本。
  *
  * 搜索层（`findFiles` / `searchText`，docs/06 §11.5）同样用真实临时目录验证：
  * 正斜杠相对路径、忽略目录子树、行号与 CRLF、一行只记一条、二进制与超限文件跳过、
- * 预算触顶（仍返回已收集结果）、`include` 过滤、符号链接环（建不了 symlink 就跳过）。
+ * 预算触顶（仍返回已收集结果）、墙钟护栏到点不再扫、`include` 过滤（含与 `matchesGlob` 的等价性）、
+ * 符号链接环（建不了 symlink 就跳过）。
  */
 import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -26,6 +29,7 @@ import {
   MAX_READ_LINES,
   MAX_READ_SCAN_BYTES,
   createEditTool,
+  matchesGlob,
   type ReadTracker,
 } from '@aurora/agent-core'
 import { createNodeFilePort } from './file-port.js'
@@ -129,6 +133,27 @@ describe('readWholeText：整文件读（edit_file 专用）', () => {
     expect(read.text.split('\r\n')).toEqual(['第一行', 'second', '', '末尾换行保留', ''])
   })
 
+  it('合法 UTF-8（中文 + emoji + CRLF + BOM）逐字节往返：往返判定不误伤正常文件', async () => {
+    const port = createNodeFilePort()
+    const file = join(root, 'utf8-ok.txt')
+    const raw = Buffer.from('中文 🙂 带制表符\t\r\n第二行\r\n', 'utf8')
+    await fs.writeFile(file, raw)
+
+    const read = await port.readWholeText(file, MAX_EDIT_BYTES)
+    expect(read.refused).toBe(false)
+    expect(read.bytes).toBe(raw.length)
+    expect(Buffer.from(read.text, 'utf8').equals(raw)).toBe(true)
+
+    // BOM 是合法 UTF-8（EF BB BF），编解码一致 —— 不能被往返判定误伤（BOM 原样保留）
+    const bomFile = join(root, 'bom.txt')
+    const bom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('a\r\n', 'utf8')])
+    await fs.writeFile(bomFile, bom)
+    const bomRead = await port.readWholeText(bomFile, MAX_EDIT_BYTES)
+    expect(bomRead.refused).toBe(false)
+    expect(Buffer.from(bomRead.text, 'utf8').equals(bom)).toBe(true)
+    expect(bomRead.text.startsWith('\uFEFF')).toBe(true)
+  })
+
   it('超过 maxBytes：refused 为 true、text 为空串、bytes 是文件真实大小；正好等于上限则放行', async () => {
     const port = createNodeFilePort()
     const file = join(root, 'too-big.txt')
@@ -167,6 +192,32 @@ describe('readWholeText：整文件读（edit_file 专用）', () => {
     // 伪二进制：前后都是能当文本读的内容，只有中间夹一个 NUL
     // （这段序列若被当成 oldString 匹配上，就会以 UTF-8 原文写回 = 静默损坏且不报错）
     await fs.writeFile(file, Buffer.from('HEAD\0TAIL-png-ish', 'utf8'))
+
+    await expect(port.readWholeText(file, MAX_EDIT_BYTES)).rejects.toThrow('二进制')
+    await expect(port.readWholeText(file, MAX_EDIT_BYTES)).rejects.toThrow(resolve(file))
+  })
+
+  it('非 UTF-8（GBK 字节）文件抛错：错误信息含「UTF-8」，不交出会被写坏的文本', async () => {
+    const port = createNodeFilePort()
+    const file = join(root, 'legacy-gbk.txt')
+    // GBK 的「你好\r\na=1\r\n」：0xC4 0xE3 0xBA 0xC3 就是 GBK 的「你好」
+    // （按 UTF-8 解码会变成 3 个 U+FFFD；再编码回 UTF-8 就成了 EF BF BD 那 9 个字节）
+    const raw = Buffer.from([0xc4, 0xe3, 0xba, 0xc3, 0x0d, 0x0a, 0x61, 0x3d, 0x31, 0x0d, 0x0a])
+    await fs.writeFile(file, raw)
+    // 前提校验：这份字节确实不是 UTF-8 往返可保真的（否则下面的断言就没有意义）
+    expect(Buffer.from(raw.toString('utf8'), 'utf8').equals(raw)).toBe(false)
+
+    await expect(port.readWholeText(file, MAX_EDIT_BYTES)).rejects.toThrow('UTF-8')
+    await expect(port.readWholeText(file, MAX_EDIT_BYTES)).rejects.toThrow(resolve(file))
+  })
+
+  it('NUL 出现在 8 KiB 之后：整文件读仍按二进制拒绝（8 KiB 口径只属于 readText）', async () => {
+    const port = createNodeFilePort()
+    const file = join(root, 'late-nul.bin')
+    // NUL 在 9000 字节处：`hasNulByte` 的前 8 KiB 口径扫不到它，`readWholeText` 必须全量扫
+    const raw = Buffer.from(`${'a'.repeat(9_000)}\0b`, 'utf8')
+    expect(raw.length).toBe(9_002)
+    await fs.writeFile(file, raw)
 
     await expect(port.readWholeText(file, MAX_EDIT_BYTES)).rejects.toThrow('二进制')
     await expect(port.readWholeText(file, MAX_EDIT_BYTES)).rejects.toThrow(resolve(file))
@@ -252,6 +303,29 @@ describe('edit_file 真实磁盘往返（端口 + 内核替换逻辑）', () => 
     expect(after.length - before.length).toBe(
       Buffer.byteLength('SECOND LINE 改', 'utf8') - Buffer.byteLength('second line', 'utf8'),
     )
+  })
+
+  it('GBK 文件改不动：edit_file 报错且磁盘字节一个都没变（不静默改成另一种编码）', async () => {
+    const port = createNodeFilePort()
+    const file = join(root, 'gbk-edit.txt')
+    const absolutePath = resolve(file)
+    const raw = Buffer.from([0xc4, 0xe3, 0xba, 0xc3, 0x0d, 0x0a, 0x61, 0x3d, 0x31, 0x0d, 0x0a])
+    await fs.writeFile(file, raw)
+
+    const tracker = createFakeReadTracker()
+    tracker.mark('s1', absolutePath)
+    const edit = createEditTool({ files: port, readTracker: tracker })
+    // `oldString` 用的是**按 UTF-8 解码后的样子**（'a=1' 是纯 ASCII，两种编码下都一样）：
+    // 即便目标片段本身能匹配上，整篇写回也会把「你好」那 4 个字节换成 9 个替换字符
+    const result = await edit.execute(
+      { path: absolutePath, oldString: 'a=1', newString: 'a=2' },
+      { sessionId: 's1' },
+    )
+    expect(result.isError).toBe(true)
+    expect(result.content).toContain('UTF-8')
+
+    const after = await fs.readFile(file)
+    expect(after.equals(raw)).toBe(true)
   })
 })
 
@@ -671,6 +745,46 @@ describe('searchText：递归搜内容', () => {
     })
     expect(deep.matches.map((match) => match.path)).toEqual(['hit.txt', 'nested/deep.txt'])
   })
+
+  it('include 一次编译后语义不变：多个模式的命中集合与 matchesGlob 缺省口径逐一相同', async () => {
+    // 端口把 include 的 glob **编译一次**复用（不再每文件 `new RegExp`）；
+    // 这条用例把「编译一次」与 `matchesGlob` 的缺省口径钉在一起，防止优化顺手改了匹配语义
+    const port = createNodeFilePort()
+    await fs.mkdir(join(root, 'src', 'deep'), { recursive: true })
+    // 文件名两两不同（Windows 文件系统大小写不敏感，`A.TXT` 与 `a.txt` 会落到同一个文件上）；
+    // 大小写不敏感的**匹配**语义靠下面的 `*.TXT` 模式来钉（比的是字符串，与文件系统无关）
+    for (const relative of [
+      'a.txt',
+      'b.md',
+      'C.TXT',
+      'src/d.txt',
+      'src/e.md',
+      'src/deep/f.txt',
+      'src/deep/g.json',
+    ]) {
+      await fs.writeFile(join(root, ...relative.split('/')), `NEEDLE ${relative}\n`, 'utf8')
+    }
+    const all = await port.findFiles({ root, pattern: '**', maxResults: 100 })
+    expect(all.files).toHaveLength(7)
+
+    for (const include of [
+      '*.txt',
+      '**/*.txt',
+      '*.{txt,md}',
+      'src/*.md',
+      'src/**/*.txt',
+      '**/deep/*.txt',
+      '*.TXT',
+      'src/deep/*.json',
+    ]) {
+      const expected = all.files.filter((relative) => matchesGlob(include, relative))
+      // 模式本身要有区分度，否则这条用例什么都没钉住（空集等于空集）
+      expect(expected.length).toBeGreaterThan(0)
+      const result = await port.searchText({ root, pattern: 'NEEDLE', include, maxResults: 100 })
+      expect(result.matches.map((match) => match.path)).toEqual(expected)
+      expect(result.budgetExceeded).toBe(false)
+    }
+  })
 })
 
 describe('搜索预算：触顶仍返回已收集的结果', () => {
@@ -699,6 +813,53 @@ describe('搜索预算：触顶仍返回已收集的结果', () => {
     expect(result.scannedFiles).toBe(2)
     expect(result.files).toEqual(['a.txt', 'b.txt'])
     expect(result.truncated).toBe(false)
+  })
+})
+
+describe('搜索时间护栏：到点不再继续扫', () => {
+  it('预算收到 1 ms：提前停止遍历、budgetExceeded 为 true，且返回的是已收集结果的前缀', async () => {
+    // 30 个各约 60 KiB 的文件（每个只留一条命中）：全量扫完远超 1 ms，
+    // 因此护栏必然在最后一个文件之前到点。「第二个文件」不靠精确计数断言
+    //（那会依赖机器速度变成假红），只断言「更少」+「恰好是前缀」。
+    const total = 30
+    for (let index = 0; index < total; index += 1) {
+      const name = `f${String(index).padStart(2, '0')}.txt`
+      await fs.writeFile(join(root, name), `${'x'.repeat(120)}\n`.repeat(500) + `NEEDLE ${name}\n`)
+    }
+
+    // 先跑一次预算充裕的基准：默认预算（10 s）下全部文件都被扫到，护栏不误伤
+    const full = await createNodeFilePort().searchText({
+      root,
+      pattern: 'NEEDLE',
+      maxResults: 500,
+    })
+    expect(full.budgetExceeded).toBe(false)
+    expect(full.matches).toHaveLength(total)
+
+    const cut = await createNodeFilePort({ searchTimeBudgetMs: 1 }).searchText({
+      root,
+      pattern: 'NEEDLE',
+      maxResults: 500,
+    })
+    expect(cut.budgetExceeded).toBe(true)
+    // 提前停了：手里留下的命中少于全部，但**不是抛错、也不是空结果**——
+    // 已收集的那几条原样返回（完整结果的前缀，顺序与内容都没变）
+    expect(cut.matches.length).toBeLessThan(full.matches.length)
+    expect(full.matches.slice(0, cut.matches.length)).toEqual(cut.matches)
+    // `truncated` 表示的是「结果数到了 maxResults」，与时间护栏是两回事，不该被顺手置上
+    expect(cut.truncated).toBe(false)
+  }, 30_000)
+
+  it('预算充裕时（默认 10 s）护栏不触发：全部文件扫完、budgetExceeded 为 false', async () => {
+    const port = createNodeFilePort()
+    for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+      await fs.writeFile(join(root, name), 'NEEDLE\n', 'utf8')
+    }
+
+    const result = await port.searchText({ root, pattern: 'NEEDLE', maxResults: 50 })
+    expect(result.matches).toHaveLength(3)
+    expect(result.budgetExceeded).toBe(false)
+    expect(result.scannedFiles).toBe(3)
   })
 })
 
