@@ -26,6 +26,8 @@ export * from './tools/terminal.js'
 export * from './tools/files.js'
 // glob 模式编译器（docs/06 §11.5）：`grep` / `glob` / `run_command` 免确认列表共用同一份纯函数。
 export * from './tools/globPattern.js'
+// run_command 免确认模式列表（docs/06 §11.7）：匹配器与校验，复用上面那个 glob 编译器。
+export * from './tools/command-allow.js'
 // 搜索工具（docs/06 §11.5）：grep / glob，同样只做参数校验与结果格式化，遍历在主进程。
 export * from './tools/search.js'
 // 精确替换工具（docs/06 §11.6）：edit_file + 会话级「改前先读」守卫契约。

@@ -458,7 +458,20 @@ export const AgentToolsSchema = z.object({
      * 空数组 = 全部逐次确认（默认值 = v12 之前的行为）。
      * 命中只跳过确认卡片，**仍写审计日志**，属于「减少打扰」而非安全加固。
      */
-    allowPatterns: z.array(z.string().max(200)).max(100),
+    allowPatterns: z
+      .array(
+        z
+          .string()
+          .max(200)
+          // 纵深防御的第一道（第二道在 agent-core 的 `describeInvalidPattern`）：
+          // **先整类拒绝花括号**，再要求至少含一个具体字符。只判后者会被 `{a,*}` 绕过 ——
+          // 它去掉通配符后还剩 `a`，却编译成 `(?:a|.*)` = 放行全部命令。
+          .refine(
+            (value) => !/[{}]/.test(value) && /[^*?\s]/.test(value),
+            '命令模式只允许字面字符与 * / ?（不支持花括号，且必须至少包含一个具体字符）',
+          ),
+      )
+      .max(100),
   }),
   files: z.object({
     enabled: z.boolean(),
