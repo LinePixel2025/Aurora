@@ -2147,11 +2147,18 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
     if (result.seedInMain === true) problems.push('seed 的已归档会话仍出现在主列表')
     if (result.seedInArchive !== true) problems.push('seed 的已归档会话不在归档列表里')
 
-    // 3) 通过真实 UI 归档一条未归档会话（主列表第一行）
+    // 3) 通过真实 UI 归档一条未归档会话（**优先取当前正在看的那条**）
+    //    为什么优先 active 行：归档当前会话时，主区头部必须出现「已归档 + 取消归档」提示条
+    //    —— 那是这条链路上唯一会显示提示条的时机，也是 docs/07 §2.3 明确写下的行为。
+    //    取第一行的话，被归档的可能不是当前会话，提示条那条判据就永远测不到。
     const beforeMain = result.mainRows
     const beforeArchive = result.archiveRows
-    const targetRow = document.querySelector('[data-field="chat.session-list"] .nav-row')
-    const archiveButton = targetRow === null ? null : targetRow.querySelector('[data-action="chat.archive-session"]')
+    const activeRow = document.querySelector('[data-field="chat.session-list"] .nav-row.active')
+    const targetRow =
+      activeRow !== null ? activeRow : document.querySelector('[data-field="chat.session-list"] .nav-row')
+    result.targetWasActive = activeRow !== null
+    const archiveButton =
+      targetRow === null ? null : targetRow.querySelector('[data-action="chat.archive-session"]')
     const movedTitle = targetRow === null ? '' : textOf(targetRow.querySelector('.nav-item'))
     result.movedTitle = movedTitle
     if (archiveButton === null) {
@@ -2179,6 +2186,24 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
         result.afterArchive.inMain === true
       ) {
         problems.push('归档后计数 / 归属不符：' + JSON.stringify(result.afterArchive))
+      }
+
+      // 3b) 归档的是当前会话 → 主区头部必须出现「已归档 + 取消归档」提示条
+      if (result.targetWasActive === true) {
+        const banner = document.querySelector('[data-field="chat.archived-banner"]')
+        result.bannerAfterArchive = {
+          present: banner !== null,
+          text: banner === null ? '' : textOf(banner),
+          hasUnarchive:
+            banner !== null && banner.querySelector('[data-action="chat.unarchive-current"]') !== null,
+        }
+        if (result.bannerAfterArchive.present !== true) {
+          problems.push('归档当前会话后头部没有「已归档」提示条')
+        } else if (result.bannerAfterArchive.text.indexOf('已归档') === -1) {
+          problems.push('提示条文案不含「已归档」：' + result.bannerAfterArchive.text)
+        } else if (result.bannerAfterArchive.hasUnarchive !== true) {
+          problems.push('提示条上没有「取消归档」按钮')
+        }
       }
 
       // 4) 再点一次撤销（必须做：后面的场景不该看到被改过的左栏）
@@ -2217,6 +2242,16 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
           result.afterUnarchive.inArchive === true
         ) {
           problems.push('撤销归档后计数 / 归属不符：' + JSON.stringify(result.afterUnarchive))
+        }
+        // 撤销之后提示条必须消失（否则它会常驻挂着，误导「这个会话还是归档的」）
+        if (result.targetWasActive === true) {
+          let bannerGone = false
+          for (let attempt = 0; attempt < 15 && !bannerGone; attempt += 1) {
+            bannerGone = count('[data-field="chat.archived-banner"]') === 0
+            if (!bannerGone) await wait(120)
+          }
+          result.bannerGoneAfterUnarchive = bannerGone
+          if (bannerGone !== true) problems.push('撤销归档后「已归档」提示条没有消失')
         }
       }
     }
