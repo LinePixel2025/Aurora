@@ -121,6 +121,7 @@ const api: AuroraApi = {
     history: (request) => invoke(IPC.chat.history, request),
     sessions: () => invoke(IPC.chat.sessions),
     newSession: () => invoke(IPC.chat.newSession),
+    archiveSession: (request) => invoke(IPC.chat.archiveSession, request),
     // 附件拖拽：同步返回路径，渲染层再把它放进 chat.send 的 attachments
     filePath: (file) => filePathOf(file),
   },

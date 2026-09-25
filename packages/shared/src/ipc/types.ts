@@ -498,6 +498,19 @@ export interface ChatSessionSummary {
   messageCount: number
   /** 当前窗口正在使用的会话 */
   active?: boolean
+  /**
+   * 已归档（`sessions/<id>.json` 的 `meta.archived`）。
+   *
+   * **按 `=== true` 判定**：`false`（显式取消归档过）与 `undefined`（从未归档 / v1 老文件）
+   * 都表示「不在归档分组」，语义等价。归档会话**照常出现在列表里**，由渲染层分组，不做过滤。
+   */
+  archived?: boolean
+}
+
+/** 归档 / 取消归档请求（`chat:archiveSession`，docs/06 §4） */
+export interface ChatArchiveRequest {
+  sessionId: string
+  archived: boolean
 }
 
 // ───────────────────────── 感知（P5 补全） ─────────────────────────
@@ -909,6 +922,14 @@ export interface AuroraApi {
     sessions(): Promise<Result<ChatSessionSummary[]>>
     /** 新建会话并返回其 id */
     newSession(): Promise<Result<string>>
+    /**
+     * 归档 / 取消归档一个会话（docs/06 §4）。
+     *
+     * 状态写在会话文件自身的 `meta` 里；**幂等**，且主进程会等到落盘完成才返回，
+     * 因此调用后紧跟一次 `sessions()` 一定能读到新状态。
+     * 归档不删除任何消息、会话仍可继续对话；返回 `{ ok: false, error }` 不抛错。
+     */
+    archiveSession(request: ChatArchiveRequest): Promise<Result<{ archived: boolean }>>
     /**
      * 拖拽文件的绝对路径（docs/07 §2.3）。
      *

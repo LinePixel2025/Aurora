@@ -80,6 +80,11 @@ export const IPC = {
     /** 会话列表 / 新建会话（docs/06 §4） */
     sessions: 'chat:sessions',
     newSession: 'chat:newSession',
+    /**
+     * 归档 / 取消归档（docs/06 §4）。状态存在会话文件自身的 `meta` 里，
+     * **不是**配置项，所以这条通道与 settings 无关、也不进 `SETTINGS_READONLY_PREFIXES`。
+     */
+    archiveSession: 'chat:archiveSession',
   },
   /** 全局快捷键注册状态（docs/07 §5、docs/08 §1） */
   hotkey: {
