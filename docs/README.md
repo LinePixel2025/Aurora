@@ -57,6 +57,25 @@
   详见 [06-agent-core.md §13](./06-agent-core.md)、[08-settings-onboarding.md §6](./08-settings-onboarding.md)。
   **语音输入（STT）不在本轮范围**。
 
+**v0.0.4（体验修复轮）本轮新增**：
+
+- **TTS 语音 404 根治 + 「获取模型列表」**（docs/06 §13.2、docs/08 §6）：`speechEndpoint`
+  规整——剥掉误填的端点尾巴（`/chat/completions` 等）、只填域名时按 OpenAI 惯例自动补
+  `/v1`、带自定义路径尊重不动，修掉「baseUrl 漏 /v1 即 404」；404 文案带**实际请求的完整
+  URL** 与排查建议；新增 `tts:listModels` 全链路（`GET {baseUrl}/models`，走 `netFetch`
+  受代理影响），设置页模型名输入框挂 datalist 直接下拉选择，手填仍可用。
+- **提示条快速对话实时刷新与 5 分钟滑动上下文**（docs/06 §4、docs/07 §2.2）：面板展开即
+  强制重拉最近 20 条并贴底，展开期间每 5 分钟自动刷新（流式中跳过）；新增 `user-message`
+  事件广播，主界面的提问实时同步到提示条（渲染层按 30s 内同文本去重）；quick 会话上下文
+  滑动窗口 5 分钟（装配层 `quickContextWindowMs`），窗外消息不进 LLM、不再注入滚动摘要——
+  旧上下文不再污染快速对话；修主界面二次进入同一会话显示空列表的 bug。
+- **设置「智能与工具」页信息架构收拢**（docs/07 §2.5）：技能 / MCP 区组默认收起，组头摘要
+  承载状态（「已启用 x / 共 y」「n 台服务器 / m 台启用」）；同一安全告诫收敛为一处；MCP
+  启停改 checkbox 与其它区组统一；Toast 归一为页级一处；技能表 6 列 → 4 列；
+  capture 探针联动改 async（先展开再计数），PNG 仍拍默认收起态。
+- **发布流程**：`scripts/release.mjs` 支持 `--notes-file` 上传详细 Release Notes
+  （存档于 [`docs/release-notes/`](./release-notes/)）。
+
 **v0.0.3（前端重构）本轮新增**：
 
 - **主界面 Apple 风格重构**（docs/07 §2.3）：头部精简（清空改图标钮、Windows 式窗口按钮），
