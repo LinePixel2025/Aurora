@@ -317,3 +317,17 @@ doom-loop 检测、显式 `cache_control`、`websearch` / `question` / `plan` �
 - `docs/08 §1` 标题与 JSON 示例里的 `version` 仍写 `10`（历史滞后）。
 - 设置页「免确认命令模式」卡的**非空列表态**无 capture 现场证据。
 - `grep` 病态正则的**根因**（同步执行）未消除，只加了静态过滤 + 墙钟护栏。
+
+### 修复后的全量复验（主代理复跑，2026-09-26）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm build:packages` / `pnpm typecheck` / `pnpm build` | 全部 exit 0 |
+| `pnpm test` | **72 文件 / 1307 用例全绿**（修复过程中新增 15 条：编码防线 3 + 搜索护栏/嵌套量词 5 + `newString` 回车 2 + `readCommand` trim 2 等） |
+| `pnpm verify` | **26/26 项通过** |
+| `pnpm lint` / `pnpm exec prettier --check "**/*.{ts,md,json,vue}"` | 均通过 |
+| `$env:AURORA_SMOKE='1'; pnpm dev` | **SUMMARY 146/146 passed**、0 FAIL |
+| `$env:AURORA_CAPTURE=…; pnpm dev` | 退出码 0、**48 张 PNG / 48 条 checks（45 条带探针）/ 0 FAIL**；`settings-agent` 实测 `total=11 / terminalFields=4 / allowPatternsFields=1 / searchFields=2 / filesFields=2 / openFields=1 / pass=true`；`chat-stream` 实测 `512 / 128k  · 缓存命中 512（100%）`、`累计 528` |
+| P1 复验（真实端口，临时用例跑完即删） | GBK 文件被拒**且磁盘字节未变**、NUL 出现在 8 KiB 之后被拒、合规 UTF-8（中文 + emoji + CRLF）仍逐字节往返 ✅ |
+
+修复提交：`dcc6554`、`6493f1e`、`9e8ef56`、`19dab77`（+ `1541ee0` 审查记录）。
