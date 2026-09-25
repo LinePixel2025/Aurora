@@ -9,12 +9,57 @@
  *
  * 约定（与 `packages/shared/src/config/store.ts` 一致）：
  * 覆盖写走「同目录临时文件 + rename」原子写；错误信息一律带绝对路径（越界不静默）。
+ *
+ * 搜索层（`findFiles` / `searchText`，docs/06 §11.5）与读文件走**同一个递归 walker**：
+ * 忽略目录、符号链接、预算、结果顺序这些口径只写一份；单文件的大小上限与遍历预算常量
+ * （`MAX_FILE_SCAN_BYTES` / `SEARCH_BUDGET` / `DEFAULT_SEARCH_IGNORE`）同样来自内核，
+ * 这里只引用，不另抄一份字面量（可经 `NodeFilePortOptions` 收紧，便于单测）。
  */
-import { appendFile, mkdir, open, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import type { Stats } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-import { DEFAULT_READ_LINES, MAX_READ_LINES, MAX_READ_SCAN_BYTES } from '@aurora/agent-core'
-import type { DirEntry, FilePort, ReadLine } from '@aurora/agent-core'
+import {
+  appendFile,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
+import type { Dirent, Stats } from 'node:fs'
+import { dirname, join, resolve, sep } from 'node:path'
+import {
+  DEFAULT_READ_LINES,
+  DEFAULT_SEARCH_IGNORE,
+  DEFAULT_SEARCH_MAX_RESULTS,
+  MAX_FILE_SCAN_BYTES,
+  MAX_READ_LINES,
+  MAX_READ_SCAN_BYTES,
+  SEARCH_BUDGET,
+  matchesGlob,
+} from '@aurora/agent-core'
+import type {
+  DirEntry,
+  FilePort,
+  FindFilesResult,
+  ReadLine,
+  SearchMatch,
+  SearchTextResult,
+} from '@aurora/agent-core'
+
+/**
+ * 搜索层的可选注入（docs/06 §11.5）：三个字段都只是**收紧护栏**用的，
+ * 缺省时取内核导出的常量。单测据此把预算 / 单文件上限调到极小，
+ * 不必真造 2 万个文件或 1 MiB 的文本就能验证「触顶仍返回已收集结果」「大文件跳过」这些行为。
+ */
+export interface NodeFilePortOptions {
+  /** 忽略的目录名（整棵子树跳过；按名字**精确匹配**，不做模式匹配） */
+  searchIgnore?: readonly string[]
+  /** 遍历预算：文件数与总字节数双重上限，任一触顶即停止遍历 */
+  searchBudget?: { maxFiles: number; maxBytes: number }
+  /** 单文件扫描上限（字节）：超过即**静默**跳过（不扫内容） */
+  maxFileScanBytes?: number
+}
 
 /** 二进制探测范围：只扫前 8 KiB，避免为判定类型读入整个大文件 */
 const NUL_SCAN_BYTES = 8 * 1024
@@ -22,7 +67,15 @@ const NUL_SCAN_BYTES = 8 * 1024
 /** 含 NUL 字节即按二进制处理（文本文件不该出现 NUL） */
 const BINARY_MESSAGE = '这是二进制文件，无法按文本读取（可改用 run_command 处理）'
 
-export function createNodeFilePort(): FilePort {
+export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort {
+  // 搜索层的三条护栏在工厂里**一次性**规范化：遍历期间不再重算，也不信任调用方给的怪值
+  const searchIgnore: ReadonlySet<string> = new Set(options.searchIgnore ?? DEFAULT_SEARCH_IGNORE)
+  const searchBudgetLimits = options.searchBudget ?? SEARCH_BUDGET
+  const maxFileScanBytes = resolveLimit(
+    options.maxFileScanBytes ?? MAX_FILE_SCAN_BYTES,
+    MAX_FILE_SCAN_BYTES,
+  )
+
   return {
     /**
      * 读**行窗口**（docs/06 §11、§20）。
@@ -124,7 +177,280 @@ export function createNodeFilePort(): FilePort {
         throw withPath('读取目录失败', absolutePath, error)
       }
     },
+
+    /**
+     * 按文件名 glob 递归找文件（docs/06 §11.5，`glob` 工具）。
+     *
+     * - 匹配的是**相对 root 的正斜杠路径**（如 `src/a.ts`）；模式里的 `**\/` 会编译成
+     *   「任意层目录（含零层）」，所以 `**\/*.ts` 命中 `a.ts`（编译规则见 `globPattern.ts`）。
+     * - 只比名字、**不读内容**，因此**不受 `maxFileScanBytes` 约束**：一个 2 MiB 的
+     *   `pnpm-lock.yaml` 是真实存在且常被按名字查找的文件，让它「按名字也找不到」才是反直觉的
+     *   （那个阈值是**内容扫描**的上限，只对 `searchText` 生效）。
+     *   其余遍历口径与 `searchText` 完全一致：忽略目录、符号链接、文件数与字节数双预算。
+     * - 命中数达 `maxResults` 即停止遍历并置 `truncated`（此时可能还有更多，模型据此收窄模式）。
+     */
+    async findFiles(options): Promise<FindFilesResult> {
+      const absoluteRoot = resolve(options.root)
+      const maxResults = resolveMaxResults(options.maxResults)
+      const pattern = options.pattern
+      const files: string[] = []
+      let truncated = false
+      const walk = createSearchWalk(searchIgnore, searchBudgetLimits)
+      try {
+        await requireDirectory(absoluteRoot)
+        await walkDirectory(absoluteRoot, '', walk, (relativePath) => {
+          // 模式匹配一律复用 `globPattern.ts`（本文件不含第二份匹配逻辑）
+          if (!matchesGlob(pattern, relativePath)) return true
+          files.push(relativePath)
+          if (files.length >= maxResults) {
+            truncated = true
+            return false
+          }
+          return true
+        })
+      } catch (error) {
+        throw withPath('查找文件失败', absoluteRoot, error)
+      }
+      return {
+        root: absoluteRoot,
+        files,
+        truncated,
+        scannedFiles: walk.budget.files,
+        budgetExceeded: walk.budget.exceeded,
+      }
+    },
+
+    /**
+     * 按正则递归搜文件内容（docs/06 §11.5，`grep` 工具）。
+     *
+     * - `pattern` 是**正则源码**（内核已用 `new RegExp` 校验过能编译），真正编译执行在这里：
+     *   `RegExp` 对象不跨端口传。
+     * - 行切分与 `readText` **同一口径**（复用 `splitTextLines`）：逐行走 `\n` 切分并去掉行尾 `\r`，
+     *   行号 **1 起始**；因此 CRLF 文件的命中行是干净的（不会夹一个看不见的回车），
+     *   末尾换行符也**不产生**一个虚假的末行（否则 `^$` 这类模式会报出一条不存在的命中）。
+     * - 同一行**只记一条**（一行内多次命中不重复 push）：grep 的用途是「定位到行」，
+     *   同一行重复出现对模型没有增量信息，还会把 `maxResults` 的名额浪费掉。
+     * - 二进制（前 8 KiB 含 NUL，复用 `hasNulByte`）计入 `skippedBinary` 后跳过。
+     */
+    async searchText(options): Promise<SearchTextResult> {
+      const absoluteRoot = resolve(options.root)
+      const maxResults = resolveMaxResults(options.maxResults)
+      const include = options.include
+      const matches: SearchMatch[] = []
+      let skippedBinary = 0
+      let truncated = false
+      const walk = createSearchWalk(searchIgnore, searchBudgetLimits)
+      try {
+        await requireDirectory(absoluteRoot)
+        // 内核只用 `new RegExp` 校验；编译失败（理论上到不了这里）按普通错误抛出，由 withPath 带上路径
+        const regex = new RegExp(options.pattern)
+        await walkDirectory(
+          absoluteRoot,
+          '',
+          walk,
+          async (relativePath, absolutePath, sizeBytes) => {
+            // `include` 同样按**相对 root 的路径**过滤（`globPattern.ts` 的路径模式）
+            if (include !== undefined && !matchesGlob(include, relativePath)) return true
+            // 内容扫描的单文件上限：超大文件（构建产物 / 日志 / 媒体）不读进来，
+            // 避免一个文件吃掉整个字节预算。**静默跳过**，不单独计数也不标注（避免噪声）
+            if (sizeBytes > maxFileScanBytes) return true
+            let content: Buffer
+            try {
+              content = await readFile(absolutePath)
+            } catch {
+              // 单个文件读不了（权限 / 竞态删除 / 断链）只跳过它，不让整次搜索失败
+              return true
+            }
+            if (hasNulByte(content)) {
+              skippedBinary += 1
+              return true
+            }
+            const lines = splitTextLines(content.toString('utf8'))
+            for (let index = 0; index < lines.length; index += 1) {
+              const text = lines[index] ?? ''
+              if (!regex.test(text)) continue
+              matches.push({ path: relativePath, line: index + 1, text })
+              if (matches.length >= maxResults) {
+                truncated = true
+                return false
+              }
+            }
+            return true
+          },
+        )
+      } catch (error) {
+        throw withPath('搜索文件失败', absoluteRoot, error)
+      }
+      return {
+        root: absoluteRoot,
+        matches,
+        truncated,
+        scannedFiles: walk.budget.files,
+        skippedBinary,
+        budgetExceeded: walk.budget.exceeded,
+      }
+    },
   }
+}
+
+/**
+ * 遍历预算的运行态：上限在建立时规范化一次，之后只累加与判定。
+ * `exceeded` 为真时**已收集的结果照常返回**（不是抛错、也不是空结果）。
+ */
+interface SearchBudget {
+  maxFiles: number
+  maxBytes: number
+  files: number
+  bytes: number
+  exceeded: boolean
+}
+
+/** 一次遍历的共享上下文：`findFiles` 与 `searchText` 走同一个 walker，只有 visitor 不同 */
+interface SearchWalk {
+  /** 忽略的目录名集合（精确匹配，整棵子树跳过） */
+  ignore: ReadonlySet<string>
+  budget: SearchBudget
+}
+
+/**
+ * visitor 返回 `false` 表示「收集够了，停止遍历」（结果数达上限 / 预算触顶）。
+ * `relativePath` 已是**正斜杠**分隔的相对 root 路径。
+ */
+type WalkVisitor = (
+  relativePath: string,
+  absolutePath: string,
+  /** 文件大小（字节，遍历时已 stat 过，visitor 不必再查一次） */
+  sizeBytes: number,
+) => boolean | Promise<boolean>
+
+/**
+ * 递归遍历 `absoluteDir` 下的普通文件，逐个交给 `visit`（docs/06 §11.5）。
+ *
+ * 四条口径缺一不可：
+ * 1. **符号链接一律跳过**（文件与目录都跳）——这是防目录环的**唯一**手段：
+ *    `dir/loop -> dir` 这类自指环会让递归永不返回，而且 `readdir` 不会报错、只会一直往下走，
+ *    所以没有「靠错误退出」或「靠深度护栏」的替代方案（深度上限还会误伤真实目录树）。
+ * 2. **条目先按名字字典序排序再处理**：配合命中行按行号升序，结果**天然有序**、
+ *    不需要事后全局排序；预算提前中止时返回的也是稳定前缀（前缀稳定才谈得上可复现）。
+ * 3. **忽略目录名命中即整棵子树跳过**（按名字**精确匹配**，不做模式匹配）：
+ *    既不进结果、也不计入 `scannedFiles`（`node_modules` 动辄上万文件，计进去会瞬间吃光预算）。
+ * 4. **预算（文件数 / 字节数）任一触顶立即停止遍历**并置 `budget.exceeded`，
+ *    已收集的结果照常返回——不是抛错、也不是空结果（内核的 `budgetExceeded` 标注依赖这个标记）。
+ *
+ * 文件大小**不在本函数判定**：`sizeBytes` 原样交给 `visit`，由各工具自己决定上限怎么用
+ * （`searchText` 用 `maxFileScanBytes` 静默跳过超大文件，`findFiles` 只比名字、不看大小）。
+ *
+ * `visit` 返回 `false` 时本函数返回 `true`；自然结束或预算触顶返回 `false`（两者由 `budget.exceeded` 区分）。
+ * 单个子目录 / 单个文件出错（权限、竞态删除、断链）只跳过它，**不**让整次搜索失败；
+ * 根目录（`relativeDir` 为空串）读不了则抛给调用方，由 `withPath` 补上绝对路径（越界不静默）。
+ */
+async function walkDirectory(
+  absoluteDir: string,
+  relativeDir: string,
+  walk: SearchWalk,
+  visit: WalkVisitor,
+): Promise<boolean> {
+  let dirents: Dirent[]
+  try {
+    dirents = await readdir(absoluteDir, { withFileTypes: true })
+  } catch (error) {
+    if (relativeDir === '') throw error
+    return false
+  }
+  for (const dirent of [...dirents].sort(compareDirentNames)) {
+    if (walk.budget.exceeded) return false
+    const name = dirent.name
+    // 口径 1：符号链接一律跳过（目录环、指向树外的链、断链都在这里一次性挡住）
+    if (dirent.isSymbolicLink()) continue
+    const absolutePath = join(absoluteDir, name)
+    const relativePath = toPosixPath(relativeDir === '' ? name : join(relativeDir, name))
+    if (dirent.isDirectory()) {
+      // 口径 3：忽略目录整棵子树跳过
+      if (walk.ignore.has(name)) continue
+      if (await walkDirectory(absolutePath, relativePath, walk, visit)) return true
+      continue
+    }
+    // 其它条目类型（设备 / 管道等）不入结果
+    if (!dirent.isFile()) continue
+    if (walk.budget.files + 1 > walk.budget.maxFiles) {
+      walk.budget.exceeded = true
+      return false
+    }
+    walk.budget.files += 1
+    let sizeBytes: number
+    try {
+      sizeBytes = (await stat(absolutePath)).size
+    } catch {
+      // 竞态删除 / 权限：跳过该条（它已占掉一个文件名额，不再计入字节预算）
+      continue
+    }
+    if (walk.budget.bytes + sizeBytes > walk.budget.maxBytes) {
+      walk.budget.exceeded = true
+      return false
+    }
+    walk.budget.bytes += sizeBytes
+    if (!(await visit(relativePath, absolutePath, sizeBytes))) return true
+  }
+  return false
+}
+
+/** 搜索层的初始上下文：预算上限在这里规范化一次（遍历期间只累加，不重算） */
+function createSearchWalk(
+  ignore: ReadonlySet<string>,
+  limits: { maxFiles: number; maxBytes: number },
+): SearchWalk {
+  return {
+    ignore,
+    budget: {
+      maxFiles: resolveLimit(limits.maxFiles, SEARCH_BUDGET.maxFiles),
+      maxBytes: resolveLimit(limits.maxBytes, SEARCH_BUDGET.maxBytes),
+      files: 0,
+      bytes: 0,
+      exceeded: false,
+    },
+  }
+}
+
+/**
+ * 注入口径的规范化：非数字 / NaN 回落缺省值，其余取整后**不小于 1**。
+ * 端口是独立入口，调用方给的怪值不该让遍历失去护栏（0 或负数会让「触顶」变得毫无意义）。
+ */
+function resolveLimit(value: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.max(Math.floor(value), 1)
+}
+
+/**
+ * `maxResults` 的取整与钳制：非数字回落 `DEFAULT_SEARCH_MAX_RESULTS`，其余不小于 1。
+ * 上限（`MAX_SEARCH_MAX_RESULTS`）由内核 / 装配层钳制——端口只保证拿到的是正整数，
+ * 这样「结果的条数策略」只在一处定义。
+ */
+function resolveMaxResults(value: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_SEARCH_MAX_RESULTS
+  return Math.max(Math.floor(value), 1)
+}
+
+/**
+ * 搜索根必须是**目录**：不存在（`stat` 抛 ENOENT）或不是目录都抛出，
+ * 由调用方 `withPath` 补上绝对的搜索根路径（越界不静默的既有口径）。
+ * 端口是独立入口，不假设调用方已经检查过。
+ */
+async function requireDirectory(absoluteRoot: string): Promise<void> {
+  const info = await stat(absoluteRoot)
+  if (!info.isDirectory()) throw new Error('搜索根不是目录（这里要的是一个文件夹）')
+}
+
+/**
+ * 相对路径一律**正斜杠**（`split(sep).join('/')`）：模式匹配、结果展示、跨平台测试
+ * 都按同一口径走，Windows 上不会突然冒出 `src\a.ts`。
+ */
+function toPosixPath(relativePath: string): string {
+  return relativePath.split(sep).join('/')
+}
+
+/** 条目按名字字典序（与 `list` 的排序口径一致）；先排序再处理才有确定性的结果顺序 */
+function compareDirentNames(a: Dirent, b: Dirent): number {
+  return a.name.localeCompare(b.name)
 }
 
 /** 只读文件头部 `bytes` 个字节（大文件不整体载入内存） */

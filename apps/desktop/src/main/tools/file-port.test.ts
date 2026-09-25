@@ -6,11 +6,15 @@
  *
  * 行窗口语义（`offsetLines` / `limitLines` / `maxBytes` / CRLF / 扫描上限）逐条钉在这里；
  * 内核侧的渲染与参数钳制在 `packages/agent-core/src/tools/files.test.ts`。
+ *
+ * 搜索层（`findFiles` / `searchText`，docs/06 §11.5）同样用真实临时目录验证：
+ * 正斜杠相对路径、忽略目录子树、行号与 CRLF、一行只记一条、二进制与超限文件跳过、
+ * 预算触顶（仍返回已收集结果）、`include` 过滤、符号链接环（建不了 symlink 就跳过）。
  */
 import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 // 常量与内核同源（不在这里另抄一份字面量）
 import { DEFAULT_READ_LINES, MAX_READ_LINES, MAX_READ_SCAN_BYTES } from '@aurora/agent-core'
 import { createNodeFilePort } from './file-port.js'
@@ -359,4 +363,232 @@ describe('错误路径', () => {
     await expect(port.readText(file, { maxBytes: 65_536 })).rejects.toThrow('二进制')
     await expect(port.readText(file, { maxBytes: 65_536 })).rejects.toThrow(resolve(file))
   })
+})
+
+describe('findFiles：递归找文件名', () => {
+  it('嵌套目录下 **/*.ts 返回正斜杠相对路径，且连续两次调用结果一致（顺序确定）', async () => {
+    const port = createNodeFilePort()
+    await fs.mkdir(join(root, 'src', 'deep'), { recursive: true })
+    await fs.writeFile(join(root, 'a.ts'), '')
+    await fs.writeFile(join(root, 'src', 'b.ts'), '')
+    await fs.writeFile(join(root, 'src', 'deep', 'c.ts'), '')
+    await fs.writeFile(join(root, 'src', 'd.js'), '')
+
+    const first = await port.findFiles({ root, pattern: '**/*.ts', maxResults: 50 })
+    expect(first.root).toBe(resolve(root))
+    // 目录与文件都按名字字典序处理 → 深度优先、天然有序（不需要事后全局排序）
+    expect(first.files).toEqual(['a.ts', 'src/b.ts', 'src/deep/c.ts'])
+    for (const file of first.files) expect(file).not.toContain('\\')
+    expect(first.truncated).toBe(false)
+    expect(first.budgetExceeded).toBe(false)
+    expect(first.scannedFiles).toBe(4)
+
+    const second = await port.findFiles({ root, pattern: '**/*.ts', maxResults: 50 })
+    expect(second.files).toEqual(first.files)
+  })
+
+  it('node_modules / .git 子树不被扫到（无结果，且不计入扫描数）', async () => {
+    const port = createNodeFilePort()
+    await fs.mkdir(join(root, 'node_modules', 'x'), { recursive: true })
+    await fs.mkdir(join(root, '.git'), { recursive: true })
+    await fs.writeFile(join(root, 'node_modules', 'x', 'y.ts'), 'NEEDLE_hidden')
+    await fs.writeFile(join(root, '.git', 'z.ts'), 'NEEDLE_hidden')
+    await fs.writeFile(join(root, 'keep.ts'), 'visible')
+
+    const found = await port.findFiles({ root, pattern: '**/*.ts', maxResults: 50 })
+    expect(found.files).toEqual(['keep.ts'])
+    // 忽略目录是**整棵子树跳过**：里面的文件连扫描数都不算（否则预算会被瞬间吃光）
+    expect(found.scannedFiles).toBe(1)
+
+    const searched = await port.searchText({ root, pattern: 'NEEDLE_hidden', maxResults: 50 })
+    expect(searched.matches).toEqual([])
+    expect(searched.scannedFiles).toBe(1)
+  })
+
+  it('搜索根不存在或不是目录时抛错，且错误信息带绝对路径', async () => {
+    const port = createNodeFilePort()
+    const missing = join(root, 'nope')
+
+    await expect(
+      port.findFiles({ root: missing, pattern: '**/*.ts', maxResults: 10 }),
+    ).rejects.toThrow(resolve(missing))
+
+    const file = join(root, 'note.txt')
+    await fs.writeFile(file, 'x', 'utf8')
+    await expect(
+      port.findFiles({ root: file, pattern: '**/*.ts', maxResults: 10 }),
+    ).rejects.toThrow('不是目录')
+    await expect(port.searchText({ root: file, pattern: 'x', maxResults: 10 })).rejects.toThrow(
+      resolve(file),
+    )
+  })
+})
+
+describe('searchText：递归搜内容', () => {
+  it('行号 1 起始（第 5 行命中），CRLF 文件的命中行不含 \\r', async () => {
+    const port = createNodeFilePort()
+    await fs.writeFile(join(root, 'lf.txt'), 'l1\nl2\nl3\nl4\ntarget here\nl6\n', 'utf8')
+    await fs.writeFile(
+      join(root, 'crlf.txt'),
+      'c1\r\nc2\r\nc3\r\nc4\r\ntarget here\r\nc6\r\n',
+      'utf8',
+    )
+
+    const result = await port.searchText({ root, pattern: 'target here', maxResults: 50 })
+    expect(result.root).toBe(resolve(root))
+    expect(result.matches).toEqual([
+      { path: 'crlf.txt', line: 5, text: 'target here' },
+      { path: 'lf.txt', line: 5, text: 'target here' },
+    ])
+    for (const match of result.matches) expect(match.text).not.toContain('\r')
+    expect(result.truncated).toBe(false)
+    expect(result.skippedBinary).toBe(0)
+    expect(result.scannedFiles).toBe(2)
+  })
+
+  it('同一行多次命中只记一条', async () => {
+    const port = createNodeFilePort()
+    await fs.writeFile(join(root, 'repeat.txt'), 'dup dup dup\nnone\n', 'utf8')
+
+    const result = await port.searchText({ root, pattern: 'dup', maxResults: 50 })
+    expect(result.matches).toHaveLength(1)
+    expect(result.matches[0]).toEqual({ path: 'repeat.txt', line: 1, text: 'dup dup dup' })
+  })
+
+  it('二进制文件（含 NUL 字节）被跳过并计入 skippedBinary', async () => {
+    const port = createNodeFilePort()
+    // 二进制里也有 NEEDLE，但它必须被 NUL 探测挡住
+    await fs.writeFile(join(root, 'blob.bin'), Buffer.from('NEEDLE\0binary', 'utf8'))
+    await fs.writeFile(join(root, 'text.txt'), 'NEEDLE text\n', 'utf8')
+
+    const result = await port.searchText({ root, pattern: 'NEEDLE', maxResults: 50 })
+    expect(result.matches).toEqual([{ path: 'text.txt', line: 1, text: 'NEEDLE text' }])
+    expect(result.skippedBinary).toBe(1)
+  })
+
+  it('findFiles 只比名字、不受 maxFileScanBytes 约束：超大文件按名字仍然找得到', async () => {
+    // 内容扫描阈值不该让一个 2 MiB 的 pnpm-lock.yaml 在 glob 里「按名字也找不到」
+    await fs.writeFile(join(root, 'big.json'), `{"marker":"${'x'.repeat(1_500_000)}"}`, 'utf8')
+    const port = createNodeFilePort({ maxFileScanBytes: 1_024 })
+
+    const found = await port.findFiles({ root, pattern: '**/*.json', maxResults: 50 })
+    expect(found.files).toContain('big.json')
+
+    // 而内容扫描仍然跳过它（同一个上限对 searchText 生效）
+    const searched = await port.searchText({ root, pattern: 'marker', maxResults: 50 })
+    expect(searched.matches).toEqual([])
+  })
+
+  it('超过 maxFileScanBytes 的文件被跳过：其中的标记串不会被找到，且静默不计数', async () => {
+    const port = createNodeFilePort({ maxFileScanBytes: 1_024 })
+    // 标记串放在**开头**：确认跳过是按大小，而不是"没读到那个位置"
+    await fs.writeFile(join(root, 'big.txt'), `NEEDLE_${'x'.repeat(2_048)}\n`, 'utf8')
+    await fs.writeFile(join(root, 'small.txt'), 'NEEDLE small\n', 'utf8')
+
+    const result = await port.searchText({ root, pattern: 'NEEDLE', maxResults: 50 })
+    expect(result.matches).toEqual([{ path: 'small.txt', line: 1, text: 'NEEDLE small' }])
+    // 大文件跳过是**刻意静默**的：计入了扫描数，但不单独开一个"已跳过 N 个大文件"的标注
+    expect(result.scannedFiles).toBe(2)
+    expect(result.skippedBinary).toBe(0)
+    expect(result.budgetExceeded).toBe(false)
+  })
+
+  it('include 过滤生效：*.txt 只命中根目录的 txt，嵌套文件要用 **/*.txt', async () => {
+    const port = createNodeFilePort()
+    await fs.writeFile(join(root, 'hit.txt'), 'NEEDLE in txt\n', 'utf8')
+    await fs.writeFile(join(root, 'hit.md'), 'NEEDLE in md\n', 'utf8')
+    await fs.mkdir(join(root, 'nested'))
+    await fs.writeFile(join(root, 'nested', 'deep.txt'), 'NEEDLE deep\n', 'utf8')
+
+    // `include` 按**相对 root 的路径**全串匹配，`*` 不跨 `/`：所以 `*.txt` 只覆盖根目录一层
+    const shallow = await port.searchText({
+      root,
+      pattern: 'NEEDLE',
+      include: '*.txt',
+      maxResults: 50,
+    })
+    expect(shallow.matches).toEqual([{ path: 'hit.txt', line: 1, text: 'NEEDLE in txt' }])
+
+    const deep = await port.searchText({
+      root,
+      pattern: 'NEEDLE',
+      include: '**/*.txt',
+      maxResults: 50,
+    })
+    expect(deep.matches.map((match) => match.path)).toEqual(['hit.txt', 'nested/deep.txt'])
+  })
+})
+
+describe('搜索预算：触顶仍返回已收集的结果', () => {
+  it('searchBudget.maxFiles 收到 3：budgetExceeded 为 true，且前 3 个文件的结果照常返回', async () => {
+    const port = createNodeFilePort({ searchBudget: { maxFiles: 3, maxBytes: 1_048_576 } })
+    for (const name of ['a.txt', 'b.txt', 'c.txt', 'd.txt']) {
+      await fs.writeFile(join(root, name), 'NEEDLE\n', 'utf8')
+    }
+
+    const result = await port.searchText({ root, pattern: 'NEEDLE', maxResults: 50 })
+    expect(result.budgetExceeded).toBe(true)
+    expect(result.scannedFiles).toBe(3)
+    // 不是抛错、也不是空结果：预算触顶时返回的是**已收集的结果**（稳定前缀）
+    expect(result.matches.map((match) => match.path)).toEqual(['a.txt', 'b.txt', 'c.txt'])
+    expect(result.truncated).toBe(false)
+  })
+
+  it('findFiles 同样受预算约束：maxFiles 收到 2 时返回前 2 个匹配文件', async () => {
+    const port = createNodeFilePort({ searchBudget: { maxFiles: 2, maxBytes: 1_048_576 } })
+    for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+      await fs.writeFile(join(root, name), 'x', 'utf8')
+    }
+
+    const result = await port.findFiles({ root, pattern: '**/*.txt', maxResults: 50 })
+    expect(result.budgetExceeded).toBe(true)
+    expect(result.scannedFiles).toBe(2)
+    expect(result.files).toEqual(['a.txt', 'b.txt'])
+    expect(result.truncated).toBe(false)
+  })
+})
+
+describe('符号链接：一律不跟随（防目录环）', () => {
+  let loopRoot = ''
+  let symlinkError = ''
+
+  beforeAll(async () => {
+    loopRoot = await fs.mkdtemp(join(tmpdir(), 'aurora-files-loop-'))
+    try {
+      // 自指环：<root>/loop -> <root>。遍历若跟随它就会无限递归（永不返回）
+      await fs.symlink(loopRoot, join(loopRoot, 'loop'), 'dir')
+    } catch (error) {
+      // Windows 未开开发者模式 / 非管理员时建 symlink 会抛 EPERM；
+      // 这条用例按环境跳过并打印原因，**不让它因环境变红**（docs/06 §11.5 的风险 ②）
+      const code = (error as NodeJS.ErrnoException).code
+      symlinkError =
+        `${code ?? ''} ${error instanceof Error ? error.message : String(error)}`.trim()
+    }
+  })
+
+  afterAll(async () => {
+    if (loopRoot !== '') await fs.rm(loopRoot, { recursive: true, force: true, maxRetries: 3 })
+    loopRoot = ''
+  })
+
+  it('自指环下 5 秒内返回，且不重复访问同一目录', async (ctx) => {
+    if (symlinkError !== '') {
+      console.warn(`跳过符号链接环用例：当前环境无法创建符号链接（${symlinkError}）`)
+      ctx.skip()
+    }
+    const port = createNodeFilePort()
+    await fs.writeFile(join(loopRoot, 'only.txt'), 'NEEDLE in loop root\n', 'utf8')
+
+    const found = await port.findFiles({ root: loopRoot, pattern: '**/*.txt', maxResults: 50 })
+    expect(found.files).toEqual(['only.txt'])
+    // 扫描数等于真实文件数：那个指向自己的目录没有（也一次都不该）被再次进入；
+    // 若跟随了环，扫描数会一路涨到预算上限并把 budgetExceeded 置为 true
+    expect(found.scannedFiles).toBe(1)
+    expect(found.budgetExceeded).toBe(false)
+
+    const searched = await port.searchText({ root: loopRoot, pattern: 'NEEDLE', maxResults: 50 })
+    expect(searched.matches).toEqual([{ path: 'only.txt', line: 1, text: 'NEEDLE in loop root' }])
+    expect(searched.scannedFiles).toBe(1)
+    expect(searched.budgetExceeded).toBe(false)
+  }, 5_000)
 })
