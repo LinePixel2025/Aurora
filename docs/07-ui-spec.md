@@ -314,7 +314,12 @@
   `chat.context` / `chat.context-usage` / `chat.context-detail`；
   旧的 `chat.model` / `chat.reasoningEffort` / `chat.mic` 位置变了但锚点不变。
   左栏归档（2026-09-26 新增）：`chat.archive-group` / `chat.archive-toggle` / `chat.archive-list` /
-  `chat.archived-banner`，动作锚点 `data-action="chat.archive-session"` / `"chat.unarchive-session"`。
+  `chat.archived-banner`，动作锚点 `data-action="chat.archive-session"` / `"chat.unarchive-session"`
+  / `"chat.unarchive-current"`（最后一个在已归档提示条上）。
+  会话项与 hover 归档钮是**同一行里的两个兄弟 `<button>`**（`.nav-row` 包 `.nav-item` + `.row-action`）：
+  按钮不能嵌套（无效 HTML，浏览器会把内层甩出去），`.nav-item` 与 `data-field="chat.session-list"`
+  的契约因此原样保留。空态「还没有会话」只在**两份列表都空**时出现（全部归档时主列表为空、
+  归档分组仍在，此时提示「还没有会话」自相矛盾）。
   钉住它们的探针场景见 §5.3：`chat-composer-slash.png`（浮层 + 权限钮文案 + 上下文条 +
   **textarea 自动增高** 28px→170px→28px，含 200px 上限与「上限后改为内部滚动」）、
   `chat-composer-permission.png`（权限下拉两段式：点一次不写配置、`settings:get` 回报仍为 `true`）、
