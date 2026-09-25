@@ -97,31 +97,69 @@ const toolsSummary = computed(() =>
     : '已停用',
 )
 
-async function save(patch: Partial<AgentToolsConfig>): Promise<void> {
+/**
+ * 保存工具配置：失败时的回执口径全页统一（Toast 展示 `settingsStore.error`）。
+ * 返回是否写盘成功 —— 只给「免确认命令模式」的输入框用（失败时把原文留在框里便于改）。
+ */
+async function save(patch: Partial<AgentToolsConfig>): Promise<boolean> {
   const current = settingsStore.settings?.agent.tools
   // 未加载完就写等于用兜底默认值把已保存的配置整棵覆盖掉，宁可先不写
-  if (!current) return
+  if (!current) return false
   const ok = await settingsStore.update({ agent: { tools: { ...current, ...patch } } })
   if (!ok) {
     if (settingsStore.error) showToast('error', settingsStore.error)
   } else {
     showToast('ok', '已保存')
   }
+  return ok
 }
 
 /** 改终端子对象：patch 里带完整 terminal 子树，避免丢掉 timeoutMs / maxOutputChars */
-async function saveTerminal(patch: Partial<AgentToolsConfig['terminal']>): Promise<void> {
-  await save({ terminal: { ...tools.value.terminal, ...patch } })
+async function saveTerminal(patch: Partial<AgentToolsConfig['terminal']>): Promise<boolean> {
+  return save({ terminal: { ...tools.value.terminal, ...patch } })
 }
 
 /** 改文件子对象：同上，带完整 files 子树 */
-async function saveFiles(patch: Partial<AgentToolsConfig['files']>): Promise<void> {
-  await save({ files: { ...tools.value.files, ...patch } })
+async function saveFiles(patch: Partial<AgentToolsConfig['files']>): Promise<boolean> {
+  return save({ files: { ...tools.value.files, ...patch } })
 }
 
 /** 改文件检索子对象：同上，带完整 search 子树（否则 maxResults 与 enabled 会互相丢） */
-async function saveSearch(patch: Partial<AgentToolsConfig['search']>): Promise<void> {
-  await save({ search: { ...tools.value.search, ...patch } })
+async function saveSearch(patch: Partial<AgentToolsConfig['search']>): Promise<boolean> {
+  return save({ search: { ...tools.value.search, ...patch } })
+}
+
+/**
+ * 「免确认命令模式」的输入草稿与即时提示（docs/06 §11.7、docs/08 §6）。
+ *
+ * 即时只判「非空」：**「必须含具体字符 / 不支持花括号」这类规则不在渲染层重复实现** ——
+ * 它由 Schema 的 `allowPatterns` refine 兜底，保存失败时 `save()` 会把
+ * `settings:update` 返回的「配置校验失败：…」原样送进 Toast。两处各写一份规则迟早会漂移，
+ * 而漂移的后果是「界面说合法、存下去却永不生效」或反过来。
+ */
+const newAllowPattern = ref('')
+const allowPatternHint = ref('')
+
+/** 添加一条：去空白后为空只提示不添加；否则整表回写（完整 terminal 子树见 saveTerminal） */
+async function addAllowPattern(): Promise<void> {
+  const pattern = newAllowPattern.value.trim()
+  if (pattern === '') {
+    allowPatternHint.value = '模式不能为空，未添加。'
+    return
+  }
+  allowPatternHint.value = ''
+  const ok = await saveTerminal({
+    allowPatterns: [...tools.value.terminal.allowPatterns, pattern],
+  })
+  // 写盘成功才清空输入框：被 Schema 拒掉时把原文留着，用户照着 Toast 的提示改就行
+  if (ok) newAllowPattern.value = ''
+}
+
+/** 删除第 index 条：越界直接忽略，避免拿陈旧下标删掉相邻的一条 */
+async function removeAllowPattern(index: number): Promise<void> {
+  const patterns = tools.value.terminal.allowPatterns
+  if (index < 0 || index >= patterns.length) return
+  await saveTerminal({ allowPatterns: patterns.filter((_, i) => i !== index) })
 }
 
 /** 数字输入解析：非数字回落原值，越界夹到 Schema 的 min/max（主进程还会再校验一次） */
@@ -322,6 +360,75 @@ async function openWorkspace(): Promise<void> {
             </p>
           </div>
 
+          <!--
+            免确认命令模式（v12，docs/06 §11.7）：只作用于 run_command，所以紧跟在终端之后。
+            它是「减少打扰」而不是「安全加固」—— 口径文案就在下面这一段，改文案别只改一处。
+          -->
+          <div class="sub">
+            <h3 class="sub-title">免确认命令模式</h3>
+            <p class="section-desc">
+              <code class="mono">run_command</code> 的命令串按 glob <strong>全串</strong>匹配
+              （大小写不敏感，<code class="mono">*</code> 匹配任意字符、<code class="mono">?</code>
+              匹配单字符）：命中即跳过确认卡片，未命中照旧逐次确认；审计日志照写。
+            </p>
+            <!-- 口径说明（docs/06 §11.7）：这段是本页唯一一处表述，且必须成句完整出现 -->
+            <p class="tiny">
+              命中这些模式的命令不再弹出确认卡片；这是减少打扰，不是安全加固。该列表只能在这里修改，AI
+              无法改动。
+            </p>
+
+            <template v-if="tools.enabled">
+              <!--
+                容器**恰好一个**挂 data-field（值为 agent.tools.terminal.allowPatterns）：
+                capture 的 SETTINGS_AGENT_FIELDS_SCRIPT 按数量断言（=== 1），列表行与输入框
+                都放在这个容器**内部**，不要再各自挂同前缀的 data-field（多一个就破坏计数）。
+              -->
+              <div class="allow-patterns" data-field="agent.tools.terminal.allowPatterns">
+                <!-- 空状态用普通文案元素：本页多出一个空状态锚点会被 capture 判成回归 -->
+                <p v-if="tools.terminal.allowPatterns.length === 0" class="tiny muted">
+                  暂未添加，所有命令都会逐次确认。
+                </p>
+
+                <ul v-else class="pattern-list">
+                  <li
+                    v-for="(pattern, index) in tools.terminal.allowPatterns"
+                    :key="`${index}:${pattern}`"
+                    class="row tiny"
+                  >
+                    <code class="mono grow">{{ pattern }}</code>
+                    <AppButton
+                      size="sm"
+                      variant="ghost"
+                      :data-action="`agent.tools.terminal.allowPatterns.remove.${index}`"
+                      @click="removeAllowPattern(index)"
+                    >
+                      删除
+                    </AppButton>
+                  </li>
+                </ul>
+
+                <div class="row wrap">
+                  <input
+                    v-model="newAllowPattern"
+                    class="input"
+                    type="text"
+                    spellcheck="false"
+                    placeholder="例如 git status*（全串匹配，不区分大小写）"
+                    @input="allowPatternHint = ''"
+                    @keydown.enter="addAllowPattern"
+                  />
+                  <AppButton size="sm" @click="addAllowPattern">添加</AppButton>
+                </div>
+                <!-- 即时校验只报「非空」；其余非法形态由保存时的 Schema 校验经 Toast 回显 -->
+                <p v-if="allowPatternHint" class="tiny muted">{{ allowPatternHint }}</p>
+              </div>
+            </template>
+
+            <p v-else class="tiny muted">
+              关闭总开关后这一栏不生效：所有命令都会逐次确认（保留已填内容，下次开启仍然生效）。
+            </p>
+          </div>
+
           <!-- 文件 -->
           <div class="sub">
             <h3 class="sub-title">文件</h3>
@@ -505,5 +612,22 @@ async function openWorkspace(): Promise<void> {
 
 .wrap {
   flex-wrap: wrap;
+}
+
+/* 「免确认命令模式」：列表 + 输入行竖排；容器本身挂 data-field，探针按数量断言（见 capture.ts） */
+.allow-patterns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* 去列表默认的符号与缩进：每行是「模式串 + 删除」，行距比 gap 更紧一点 */
+.pattern-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 </style>

@@ -2625,6 +2625,11 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
  * collapse 动画（max-height 过渡）走完，再做全部计数与断言。`executeJavaScript` 会 await
  * 这里返回的 Promise（captureWindows 的 check 调用点无需改动）；点击发生在截图**之后**，
  * `settings-agent.png` 拍到的仍是默认收起态。工具组默认展开，无需处理。
+ *
+ * ⚠️ 2026-09 step 5：终端栏下新增「免确认命令模式」列表（`agent.tools.terminal.allowPatterns`，
+ * v12）。探针只数**容器**（`allowPatternsFields === 1`）—— 列表行与输入框都在容器内部且不带
+ * 同前缀的 `data-field`，所以这个数在空列表 / 非空列表下都恒为 1；列表的空状态用的是普通
+ * 文案元素（**不是** `data-empty`），否则本页会多出一块 `unexpected` 直接 FAIL。
  */
 export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -2643,6 +2648,9 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
     const filesFields = count('[data-field^="agent.tools.files"]')
     const searchFields = count('[data-field^="agent.tools.search"]')
     const openFields = count('[data-field^="agent.tools.open"]')
+    // 免确认命令模式容器（v12，docs/06 §11.7）：**恰好一个** ——
+    // 列表行与输入框都在它内部，都**不带**这个前缀的 data-field，所以这里永远该是 1。
+    const allowPatternsFields = count('[data-field^="agent.tools.terminal.allowPatterns"]')
     const emptyStates = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
       el.getAttribute('data-empty'),
     )
@@ -2662,6 +2670,7 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
       enabled,
       total,
       terminalFields,
+      allowPatternsFields,
       filesFields,
       searchFields,
       openFields,
@@ -2673,11 +2682,16 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
       emptyStates,
       // 总开关必须在（否则用户再也开不回来）；开着时四个分栏的详情字段都得在
       // （终端 / 文件 / 文件检索 / 打开），MCP 区组必须给出「空状态或行」之一，
-      // 且不得出现两块预期空态之外的 data-empty
+      // 且不得出现两块预期空态之外的 data-empty。
+      // v12 起终端栏下多一个「免确认命令模式」容器（allowPatternsFields）——
+      // 它挂在终端卡片之后并跟随总开关渲染，所以断言写进 enabled !== true 的那一支；
+      // ⚠️ terminalFields 刻意**不写死数值**（> 0 即可）：这个子前缀下还会继续加字段，
+      // 写死数值会让探针在下一次扩展时无谓变红，而它要守的只是「终端栏的详情字段在不在」。
       pass:
         toggle !== null &&
         (enabled !== true ||
           (terminalFields > 0 &&
+            allowPatternsFields === 1 &&
             filesFields > 0 &&
             searchFields >= 2 &&
             openFields > 0 &&

@@ -645,6 +645,9 @@ async function bootstrap(): Promise<void> {
     proactive: proactiveScheduler,
     // 每次调用即时判断：设置页改开关无需重启
     enabled: () => settings!.get().advanced.confirmSensitiveTools,
+    // 免确认命令模式（docs/06 §11.7）：与 `enabled` 同款闭包 —— 每次调用即时读设置，
+    // 用户在设置页加完模式立刻生效，无需重启（该字段是只读前缀，AI 改不动）。
+    allowPatterns: () => settings!.get().agent.tools.terminal.allowPatterns,
     logger: logger.child('confirm'),
   })
 
@@ -1268,9 +1271,11 @@ async function runSmokeTest(userData: string): Promise<void> {
   const chatRequests = stub.chatRequestCount()
   // 基础对话 3 次：第一轮 2 次（工具调用 + 最终回复）、第二轮 1 次（纯文本）；
   // 子代理场景（renderer 侧 9.4）另加 4 次：父对话 2 次（派 task + 收尾）
-  // + 子代理自己 2 次（先要一次 list_dir、再给报告）。
+  // + 子代理自己 2 次（先要一次 list_dir、再给报告）；
+  // 免确认命令模式的两条断言（renderer 侧 9.5）各加 2 次：run_command 工具调用轮 + 收尾轮
+  // （未命中那条命令被拒后循环照常继续，同样要一次收尾轮）。
   // "第二次请求带回 tool 结果"证明工具循环真实走通。
-  const expectedChatRequests = 3 + 4
+  const expectedChatRequests = 3 + 4 + 2 * 2
   record(
     `桩 LLM 收到 ${expectedChatRequests} 轮 chat 请求（工具循环 + 子代理成立）`,
     chatRequests === expectedChatRequests,
