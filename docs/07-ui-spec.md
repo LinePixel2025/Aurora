@@ -818,16 +818,21 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
   - **「智能与工具」页门控**（`SETTINGS_AGENT_FIELDS_SCRIPT`；BetaV2 六页 IA 下原「电脑操控」页
     并入技能 + MCP 两区组）：读 `agent.tools.enabled` 复选框的**实际状态**，
     开着时要求终端 / 文件 / **文件检索** / 打开**四栏**的详情字段都在
-    （`terminalFields/filesFields > 0`、`searchFields >= 2`、`openFields > 0`）、
+    （`terminalFields/filesFields > 0`、`searchFields >= 2`、`openFields > 0`，
+    外加终端栏下「免确认命令模式」容器 `allowPatternsFields === 1`）、
     MCP 区组必须给出「空状态（`data-empty="mcp.servers"`）或服务器行」之一，
     且不得出现这两个**预期**空状态之外的任何 `data-empty`（技能同理，`skills.disabled` 允许出现）；
     关着时只要求总开关本身仍在 —— 否则用户再也开不回来；
   - **本轮（工具面扩展）的探针条目与实测值**（2026-09 `AURORA_CAPTURE` 实跑：
     **48 张 PNG / 48 条 `checks` / 0 FAIL / 退出码 0**，12 条 DOM 探针全 PASS）：
-    - `settings-agent.png`（`SETTINGS_AGENT_FIELDS_SCRIPT`）：新增「文件检索」栏后，开总开关时的实测值
-      `total=10`、`terminalFields=3`、`filesFields=2`、**`searchFields=2`**、`openFields=1`
-      （`pass` 条件要求 `searchFields >= 2`）。终端卡片下「免确认命令模式」列表的
-      `agent.tools.terminal.allowPatterns` 落地后 `terminalFields` 预期由 3 变 4，届时按新实测值更新本行；
+    - `settings-agent.png`（`SETTINGS_AGENT_FIELDS_SCRIPT`）：开总开关时的实测值
+      `total=11`、`terminalFields=4`、**`allowPatternsFields=1`**、`filesFields=2`、
+      **`searchFields=2`**、`openFields=1`
+      （`pass` 条件要求 `allowPatternsFields === 1` 且 `searchFields >= 2`；`terminalFields` 只要求 `> 0`
+      ——它不写死数值，免得下一次扩栏时无谓变红）。终端卡片下「免确认命令模式」列表
+      （`agent.tools.terminal.allowPatterns`，06 §11.7）**只数容器**：列表行与输入框都在容器内部、
+      不带同前缀的 `data-field`，所以这个数在空列表与非空列表下**恒为 1**；
+      列表的空状态用的是普通文案元素（**不是** `data-empty`），否则本页会多出一块 `unexpected` 直接 FAIL。
       总开关关着时仍只要求总开关自己还在；
     - `chat.context-usage`（对话窗输入框底部的上下文条）：折叠态文案含**缓存命中 token 数**
       （`cachedTokens`，见 §2.3 与 06 §21.4）——桩 LLM 回传命中量时才出现，未回传则整项不显示。

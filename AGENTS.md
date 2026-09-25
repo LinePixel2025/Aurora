@@ -118,6 +118,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   门控口径同 TTS —— `stt.enabled` + `stt.active` 指向一个 `baseUrl`/`model` 齐全的 provider
   **才渲染按钮，未配置时连按钮都不渲染**（不是 disabled）——这是文档门控口径，别当 bug 修
   （TTS「朗读」按钮同款口径，见 docs/07 §2.3）。
+- **电脑操控工具已由 5 个扩到 8 个**（2026-09 新增 `edit_file` / `grep` / `glob`，
+  见 docs/06 §11.5 / §11.6）：三者都在 `agent.tools.enabled` 总开关与各自子开关
+  （`edit_file` 随 `files.enabled`、`grep` / `glob` 随 `search.enabled`）之下 ——
+  与「扩展工具五件套不受门控」的口径**相反**，别按五件套理解它们。
 - Skill 的 `scripts/` 永不自动执行（只注入指令正文）；图片 OCR 未启用（只取文件名与尺寸）。
 - Code Mode 为占位实现；Work Mode 已初步实装（v0.0.1，guide + systemPrompt + workspaceDir）。
   多语言、ARM64 / 便携版、macOS / Linux 未开始。
@@ -156,9 +160,16 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   另注意 `SENSITIVE_KEY_PATTERN` 原本是**整体锚定**的，`apiKeyEnc` 这类**派生字段名**不命中 ——
   它已补 `.*api[-_]?key.*` 分支，日志脱敏才盖得住密文。
   v9 起新增的 `mcp.servers.<id>.headersEnc` 与 `envEnc` 同款、位置并列（同样要过这 5 处）。
+- **`agent.tools.terminal.allowPatterns`（免确认命令模式）属只读前缀**：AI 的 `set_setting` 一律拒绝
+  （否则 AI 给自己加一条 `git*` 就等于摘掉自己的确认闸门 = 自我提权），
+  只能由用户在设置页的「免确认命令模式」栏里维护（设置页走 `settings:update`，不受该黑名单影响）。
+  命中即跳过确认卡片、但仍写 `info` 级审计日志 —— 语义是「减少打扰」而非安全加固（见 docs/06 §11.7）。
 - **BetaV2 新能力的注册口径**：STT / 生图 / 新工具五件套（`web_fetch` / `notify_user` /
   `clipboard_read` / `clipboard_write` / `generate_image`）**不走 `agent.tools.enabled` 门控**
-  （那个总开关只管终端 / 文件 / 打开三件套），敏感项靠 `sensitivity: 'confirm'` 逐次确认；
+  （那个总开关管的是 8 个电脑操控工具），敏感项靠 `sensitivity: 'confirm'` 逐次确认；
+  ⚠️ **反例与它们同期**：2026-09 新增的 `edit_file` / `grep` / `glob` **是电脑操控工具、受总开关门控**
+  （分别随 `files.enabled` / `search.enabled`，见「尚未生效 / 已知限制」那条）——
+  不要因为"同期落地"就把它们也当成不受门控的扩展工具；
   `set_setting` 的可写面由 `packages/shared/src/config/schema.ts` 的 `WRITABLE_PATH_OVERRIDES`
   显式覆盖表驱动（先于 readonly 前缀判定）——要新增「Agent 可写的设置路径」先改该表，
   再同步 `set_setting` 的工具 description 与 systemPrompt 的 settingsHint。
