@@ -780,6 +780,40 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       String(newSessionId),
     )
 
+    // ─────────── 归档 / 取消归档往返（docs/06 §4） ───────────
+    // 状态写在会话文件自身的 meta 里，而不是配置或 sidecar 索引：因此
+    // 「归档 → 重新拉列表」必须能读到标记。这条同时钉住 store 的落盘（await 后才返回）
+    // 与 summaries 的透出；取消归档必须可逆（否则归档等于单向删除）。
+    const archiveResult = expectOk(
+      'chat.archiveSession(归档)',
+      await window.aurora.chat.archiveSession({ sessionId: newSessionId, archived: true }),
+    )
+    const afterArchive = expectOk('chat.sessions(归档后)', await window.aurora.chat.sessions())
+    const foundArchived =
+      Array.isArray(afterArchive) &&
+      afterArchive.find((item) => item.id === newSessionId) !== undefined &&
+      afterArchive.find((item) => item.id === newSessionId).archived === true
+    record(
+      '会话可归档且列表里带 archived 标记',
+      archiveResult !== null && archiveResult.archived === true && foundArchived === true,
+      JSON.stringify({ archiveResult, foundArchived }),
+    )
+
+    const unarchiveResult = expectOk(
+      'chat.archiveSession(取消归档)',
+      await window.aurora.chat.archiveSession({ sessionId: newSessionId, archived: false }),
+    )
+    const afterUnarchive = expectOk('chat.sessions(取消归档后)', await window.aurora.chat.sessions())
+    const foundUnarchived =
+      Array.isArray(afterUnarchive) &&
+      afterUnarchive.find((item) => item.id === newSessionId) !== undefined &&
+      afterUnarchive.find((item) => item.id === newSessionId).archived !== true
+    record(
+      '取消归档可逆（列表里不再带归档标记）',
+      unarchiveResult !== null && unarchiveResult.archived === false && foundUnarchived === true,
+      JSON.stringify({ unarchiveResult, foundUnarchived }),
+    )
+
     // ─────────────── ClassIsland 桥接（docs/05 §3.4 v2） ───────────────
     // 自测前置（seedSmokeClassroom）会把课表来源切到 classisland 并写一份夹具 JSON，
     // 因此这里断言的是**真实读取链路**：写文件 → provider 解析 → 今日课程。

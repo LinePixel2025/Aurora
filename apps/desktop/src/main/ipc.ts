@@ -17,6 +17,7 @@ import {
   ok,
   type AppInfo,
   type AuroraApi,
+  type ChatArchiveRequest,
   type ChatHistoryRequest,
   type ChatMessageDto,
   type ChatSessionSummary,
@@ -442,6 +443,25 @@ export function registerIpc(deps: DesktopDeps): () => void {
         err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
       ),
   )
+  /**
+   * 归档 / 取消归档（docs/06 §4）。
+   *
+   * `setArchived` **幂等且 await 落盘完成**，所以调用方（渲染层）在拿到 ok 之后立刻
+   * 再拉一次 `chat:sessions` 就能读到新状态 —— 探针的「归档 → 列表里带标记」正是靠这条确定性。
+   * 归档不做任何删除：消息仍在、会话仍可继续对话，只是多了个标记。
+   */
+  handle<{ archived: boolean }>(IPC.chat.archiveSession, (request: ChatArchiveRequest) => {
+    const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+    const archived = request?.archived === true
+    // 空 id 是调用方的错误，如实报错而不是静默 ok（静默成功会掩盖渲染层的 bug）
+    if (sessionId === '') {
+      return Promise.resolve(err('E_INVALID_ARGUMENT', 'sessionId 不能为空'))
+    }
+    return deps.sessions.setArchived(sessionId, archived).then(
+      () => ok({ archived }),
+      (error: unknown) => err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+    )
+  })
   handle<SkillSummary[]>(IPC.skills.list, () => ok(deps.skills.list()))
   handle<SkillsStatus>(IPC.skills.rescan, () =>
     deps.skills
