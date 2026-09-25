@@ -676,10 +676,13 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
   - **高密度流式（本轮性能修复的回归防线）**（`CHAT_STREAM_BURST_ACT` / `CHAT_STREAM_BURST_CHECK`，
     产物 `chat-stream-burst.png`，2026-09-26）：桩服务按提示词里的 `burst-probe` 标记
     各发 150 条 `reasoning_content` / `content` 分片（间隔 5ms，贴近推理模型 100+ token/s 的密度），
+    **外加两轮各 2 万字的前文堆量**（代价与「整份 transcript」成正比，不堆量时连修复前都只测出空闲水平）；
     act 在**流式进行中**截图（思考块此时应在增长），check 断言收尾后正文与思考块的**首尾标记都在**
-    （证明三层合并没有丢内容），并用 `PerformanceObserver` 的 `longtask` 把
-    「最长任务 / 总阻塞时间」钉成预算（阈值按 2026-09-26 实测值 × 约 3 倍标定，留机器抖动余量）。
-    **为什么必须有这一条**：原有 `chat-stream.png` 的桩只发 2 条分片，密度低到
+    （证明三层合并没有丢内容），并把长任务、**20ms 心跳漂移**与 **rAF 帧间隔**三组数
+    与阈值比对 —— 真正的判据是后两组（longtask 对「每片几毫秒的持续饱和」没有分辨力，
+    详见 06 §16.3 的实测表与「证什么、不证什么」一段）。阈值按修复后实测值 × 约 3 倍标定，
+    实测为 0 的项给绝对下限；**改桩密度或 transcript 规模必须重新标定**。
+    为什么必须有这一条：原有 `chat-stream.png` 的桩只发 2 条分片，密度低到
     「每条增量都重解析整份对话」也来得及 —— 这类 BUG 在它面前**必然 PASS**（见 06 §16.3）。
   - **主界面左栏结构 + 门控现场**（`CHAT_SIDEBAR_SCRIPT`，产物 `chat-sidebar.png`，BetaV2）：
     断言三栏重构后左栏的固定锚点全在 —— `chat.quick-item`（固定顶置「快速对话」）、
