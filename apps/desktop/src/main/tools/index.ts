@@ -1,15 +1,23 @@
 /**
- * 电脑操控工具装配器（docs/06 §11、step 5）。
+ * 工具装配器合集（docs/06 §11、§12、§14、§18/§19）。
  *
- * 职责边界：本文件**不 import electron**，只做「按配置把工具注册进工具表」这一件事，
+ * 职责边界：本文件**不 import electron**，只做「把工具注册进工具表」这一件事，
  * 因此可以在 Node 环境里完整单测。真实系统调用（进程 / 文件系统 / shell）全部由
  * `command-runner.ts` / `file-port.ts` / `open-port.ts` 通过构造参数注入。
  * （`clipboard.ts` 是唯一的例外：它实现 Electron `clipboard` 端口，必须 import electron，
  * 因此不进本文件的依赖 —— 由 `main/index.ts` 直接构造后注入。）
  *
+ * 本文件现有四个装配器：
+ * - `registerComputerTools`：电脑操控五件套，受 `agent.tools.enabled` 门控（docs/06 §11）；
+ * - `registerSettingsTool`：`set_setting`，不受门控（docs/06 §12）；
+ * - `registerExtensionTools`：扩展工具五件套，不受门控（docs/06 §14）；
+ * - `registerAgentCoreTools`：todo_write / todo_read / task，不受门控（docs/06 §18/§19）
+ *   —— todo / task 是 Agent 自身的工作能力（维护任务清单、派生上下文隔离的子代理），
+ *   不是「电脑操控」，与 set_setting / 扩展工具同级。
+ *
  * `sync()` 是**唯一**的开关落地点：启动时调一次，`settings:changed` 时再调一次，
  * 于是「改开关 / 改上限」立即生效（下一次请求的系统提示词就会看到新的工具表），无需重启。
- * 每次都用当前配置**重建**工具实例（构造很便宜），所以 cwd / 超时 / 上限也能热改。
+ * 每次都**重建**工具实例（构造很便宜），所以 cwd / 超时 / 上限也能热改。
  */
 import { COMPUTER_TOOL_NAMES, type Logger, type Settings } from '@aurora/shared'
 import {
@@ -19,8 +27,11 @@ import {
   createNotifyTool,
   createOpenTool,
   createSettingsTool,
+  createTaskTool,
   createTerminalTool,
+  createTodoTools,
   createWebFetchTool,
+  type AgentProviderFactory,
   type ClipboardPort,
   type CommandRunner,
   type FilePort,
@@ -28,6 +39,7 @@ import {
   type NotifyPort,
   type OpenPort,
   type SettingsToolPort,
+  type TodoPort,
   type ToolRegistry,
   type WebFetchPort,
 } from '@aurora/agent-core'
@@ -196,6 +208,54 @@ export function registerExtensionTools(deps: ExtensionToolsDeps): ExtensionTools
 
       const names = EXTENSION_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
       deps.logger.info('已同步扩展工具', { names: [...names] })
+      return [...names]
+    },
+  }
+}
+
+/**
+ * Agent 内核自带工具的固定名字集合：注册 / 摘除 / 文档共用，避免多处各写一份字符串。
+ */
+export const AGENT_CORE_TOOL_NAMES = ['todo_write', 'todo_read', 'task'] as const
+
+export interface AgentCoreToolsDeps {
+  tools: ToolRegistry
+  logger: Logger
+  /** 任务清单端口（`todo_write` / `todo_read` 的按会话落盘实现，main/tools/todo-port.ts） */
+  todoPort: TodoPort
+  /** provider 工厂：`task` 子代理按次即时构造；与 KernelAgentHost 共享同一实例（含启动自愈） */
+  provider: AgentProviderFactory
+}
+
+export interface AgentCoreToolsRegistry {
+  /** 重建 Agent 内核自带工具表，返回本次注册的工具名 */
+  sync(): string[]
+}
+
+/**
+ * Agent 内核自带工具装配器（todo_write / todo_read / task，docs/06 §18/§19）。
+ *
+ * 与 `registerSettingsTool` / `registerExtensionTools` 同级：**不受
+ * `agent.tools.enabled` 门控**——任务清单与子代理是 Agent 自身的工作能力，
+ * 不属于「电脑操控」的开关语义；`task` 消耗模型调用但不碰系统，
+ * 子代理的工具面在执行时从父表过滤（confirm 敏感工具 / task 自身 / mcp.*
+ * 一律不可见，过滤逻辑在 agent-core 的 `tools/task.ts`，装配层只负责注册）。
+ */
+export function registerAgentCoreTools(deps: AgentCoreToolsDeps): AgentCoreToolsRegistry {
+  return {
+    sync(): string[] {
+      // 先全量摘掉再重建（幂等），与电脑操控 / 扩展工具同一套时序约定
+      for (const name of AGENT_CORE_TOOL_NAMES) deps.tools.unregister(name)
+
+      for (const tool of createTodoTools({ port: deps.todoPort })) {
+        deps.tools.register(tool)
+      }
+      deps.tools.register(
+        createTaskTool({ provider: deps.provider, tools: deps.tools, logger: deps.logger }),
+      )
+
+      const names = AGENT_CORE_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
+      deps.logger.info('已同步 Agent 内核工具', { names: [...names] })
       return [...names]
     },
   }

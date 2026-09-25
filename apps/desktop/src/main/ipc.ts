@@ -646,7 +646,7 @@ function toRendererSettings(deps: DesktopDeps): Settings {
 /**
  * 密文 → "是否已设置"标记。
  * `settings:get` 与 `settings:changed` 广播共用，保证任何路径都不把
- * `apiKeyEnc` / `envEnc` 的值送进渲染进程（docs/08 §1.1）。
+ * `apiKeyEnc` / `envEnc` / `headersEnc` 的值送进渲染进程（docs/08 §1.1）。
  */
 function redactSettingsForRenderer(deps: DesktopDeps, source: Settings): Settings {
   return redactSettings(deps.settings, source)
@@ -658,7 +658,8 @@ function redactSettingsForRenderer(deps: DesktopDeps, source: Settings): Setting
  * 不会出现"两处脱敏，改一处漏一处"。
  *
  * **凭据 checklist**：`llm` / `tts` / `stt` / `imagegen` 四组 provider 的密文都在这里折成
- * `apiKeySet` 标记——漏掉任何一组 = 该组密文随 `settings:get` 泄漏进渲染层（AGENTS.md）。
+ * `apiKeySet` 标记，MCP 服务器的 `envEnc` / `headersEnc` 折成 `envSet` / `headersSet` 名单
+ * ——漏掉任何一组 = 该组密文随 `settings:get` 泄漏进渲染层（AGENTS.md）。
  */
 export function redactSettings(settings: SettingsStoreLike, source: Settings): Settings {
   const clone = structuredClone(source)
@@ -680,6 +681,9 @@ export function redactSettings(settings: SettingsStoreLike, source: Settings): S
     const env = (server as unknown as { envEnc?: Record<string, string> }).envEnc ?? {}
     draft['envSet'] = Object.keys(env)
     draft['envEnc'] = {}
+    const headers = (server as unknown as { headersEnc?: Record<string, string> }).headersEnc ?? {}
+    draft['headersSet'] = Object.keys(headers)
+    draft['headersEnc'] = {}
   }
   return clone
 }

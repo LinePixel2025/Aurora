@@ -24,6 +24,7 @@ function mcpServer(overrides: Partial<McpServerConfig> = {}): McpServerConfig {
     command: 'npx',
     args: ['-y', 'server'],
     envEnc: {},
+    headersEnc: {},
     enabled: true,
     ...overrides,
   }
@@ -128,6 +129,85 @@ describe('mergeSettingsPatch —— MCP envEnc 不能因脱敏回传而丢失', 
     expect(draft.mcp.lazyConnect).toBe(true)
     expect(draft.mcp.servers[0]?.envEnc).toEqual({ TOKEN: 'CIPHER-A' })
     expect(cleared).toEqual([])
+  })
+})
+
+describe('mergeSettingsPatch —— MCP headersEnc 与 envEnc 同款语义（v9）', () => {
+  it('回传空 headersEnc（脱敏回传的真实形状）保留已有密文，其余字段照常更新', () => {
+    const draft = settingsWith({
+      servers: [mcpServer({ headersEnc: { Authorization: 'CIPHER-H' } })],
+    })
+
+    const cleared = mergeSettingsPatch(draft, {
+      mcp: { servers: [mcpServer({ headersEnc: {}, enabled: false })] },
+    })
+
+    expect(draft.mcp.servers[0]?.headersEnc).toEqual({ Authorization: 'CIPHER-H' })
+    expect(draft.mcp.servers[0]?.enabled).toBe(false)
+    expect(cleared).toEqual([])
+  })
+
+  it('headersEnc 逐键合并：空串保留旧密文、非空覆盖、新键并入（并集）', () => {
+    const draft = settingsWith({
+      servers: [mcpServer({ headersEnc: { Authorization: 'CIPHER-H' } })],
+    })
+
+    mergeSettingsPatch(draft, {
+      mcp: {
+        servers: [mcpServer({ headersEnc: { Authorization: '', 'X-Api-Key': 'CIPHER-H2' } })],
+      },
+    })
+
+    expect(draft.mcp.servers[0]?.headersEnc).toEqual({
+      Authorization: 'CIPHER-H',
+      'X-Api-Key': 'CIPHER-H2',
+    })
+  })
+
+  it('新增服务器：headers 空串占位保留下来，等 setSecrets 写真密文', () => {
+    const draft = settingsWith({ servers: [] })
+
+    const cleared = mergeSettingsPatch(draft, {
+      mcp: { servers: [mcpServer({ name: 'fresh', headersEnc: { Authorization: '' } })] },
+    })
+
+    expect(draft.mcp.servers[0]?.headersEnc).toEqual({ Authorization: '' })
+    expect(cleared).toEqual([])
+  })
+
+  it('服务器被删：headers 明文缓存与 env 一并要求清理', () => {
+    const draft = settingsWith({
+      servers: [
+        mcpServer({
+          envEnc: { TOKEN: 'CIPHER-A' },
+          headersEnc: { Authorization: 'CIPHER-H', 'X-Api-Key': 'CIPHER-H2' },
+        }),
+        mcpServer({ name: 'keep' }),
+      ],
+    })
+
+    const cleared = mergeSettingsPatch(draft, { mcp: { servers: [mcpServer({ name: 'keep' })] } })
+
+    expect(draft.mcp.servers.map((server) => server.name)).toEqual(['keep'])
+    expect(cleared.sort()).toEqual([
+      'mcp.servers.demo.env.TOKEN',
+      'mcp.servers.demo.headers.Authorization',
+      'mcp.servers.demo.headers.X-Api-Key',
+    ])
+  })
+
+  it('该键最终仍为空占位（密文从未写入）时要求清理明文缓存；密文保留的键不动', () => {
+    const draft = settingsWith({
+      servers: [mcpServer({ headersEnc: { Authorization: '', KEEP: 'CIPHER-K' } })],
+    })
+
+    const cleared = mergeSettingsPatch(draft, {
+      mcp: { servers: [mcpServer({ headersEnc: { Authorization: '', KEEP: 'CIPHER-K' } })] },
+    })
+
+    // Authorization 最终仍是空占位 → 与 env 同款要求清理（丢弃可能的旧明文缓存）；
+    // KEEP 的密文被原样保留 → 不能出现在 cleared 里。
+    expect(cleared).toEqual(['mcp.servers.demo.headers.Authorization'])
   })
 })
 
@@ -335,6 +415,24 @@ describe('extractPatchSecrets', () => {
     // 纯函数：不改调用方对象（否则工具端口自己构造的 patch 会被就地改坏）
     const originalServer = patch.mcp?.servers?.[0] as unknown as Record<string, unknown>
     expect('env' in originalServer).toBe(true)
+  })
+
+  it('抽出非空 MCP headers 明文，并从 patch 副本里摘掉 headers 字段', () => {
+    // `headers`（明文）与 `env` 同款：只存在于 IPC 进站数据里，不在 Schema 上
+    const incoming = {
+      ...mcpServer({ name: 'demo' }),
+      headers: { Authorization: 'Bearer plain-x', EMPTY: '' },
+    }
+    const patch = { mcp: { servers: [incoming] } } as unknown as SettingsPatch
+
+    const { patch: cleaned, secrets } = extractPatchSecrets(patch)
+
+    expect(secrets).toEqual({ 'mcp.servers.demo.headers.Authorization': 'Bearer plain-x' })
+    const cleanedServer = cleaned.mcp?.servers?.[0] as unknown as Record<string, unknown>
+    expect('headers' in cleanedServer).toBe(false)
+    // 纯函数：不改调用方对象
+    const originalServer = patch.mcp?.servers?.[0] as unknown as Record<string, unknown>
+    expect('headers' in originalServer).toBe(true)
   })
 
   it('抽出 provider 的 apiKey 明文并摘掉字段，空串不入 secrets', () => {

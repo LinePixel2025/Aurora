@@ -346,6 +346,40 @@ const migrateV7ToV8: Migration = {
   },
 }
 
+/**
+ * v8 → v9：为每个已有 `mcp.servers` 条目补 `headersEnc: {}`（HTTP 传输自定义请求头，
+ * docs/08 §1 / docs/06 §7）。
+ *
+ * 照 v7 → v8 对「已存在分组里的新字段」的口径：**只在 `mcp` 分组已存在时**补，
+ * 不凭空造出半截对象（缺失时由默认配置兜底）；`headersEnc` 已存在的条目原样保留（幂等）。
+ */
+const migrateV8ToV9: Migration = {
+  from: 8,
+  to: 9,
+  describe: 'v8 → v9：为每个已有 mcp.servers 条目补 headersEnc: {}（HTTP 传输自定义请求头）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const mcp = asRecord(raw['mcp'])
+    const serversRaw = mcp?.['servers']
+    if (mcp !== undefined && Array.isArray(serversRaw)) {
+      const servers = serversRaw.map((value) => {
+        const server = asRecord(value)
+        if (server === undefined) return value
+        // 每轮新建 `{}`：不同服务器之间不共享同一个对象实例
+        if (asRecord(server['headersEnc']) === undefined) {
+          return { ...server, headersEnc: {} }
+        }
+        return server
+      })
+      next['mcp'] = { ...mcp, servers }
+    }
+
+    next['version'] = 9
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -355,6 +389,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV5ToV6,
   migrateV6ToV7,
   migrateV7ToV8,
+  migrateV8ToV9,
 ]
 
 export interface MigrationOutcome {

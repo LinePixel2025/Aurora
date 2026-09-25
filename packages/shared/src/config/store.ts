@@ -6,8 +6,9 @@
  * - 整份文件解析失败：备份为 `config.corrupt-<ts>.json` 后重建默认（不静默丢数据）。
  * - 写入：原子写 + 300ms 防抖；`flush()` 可强制立刻落盘（退出前调用）。
  * - 凭据：`llm.providers.<id>.apiKey`、`tts.providers.<id>.apiKey`、`stt.providers.<id>.apiKey`、
- *   `imagegen.providers.<id>.apiKey`、`mcp.servers.<name>.env.<KEY>` 为敏感路径，
- *   写盘时加密为 `apiKeyEnc` / `envEnc`；加密不可用时凭据只驻留内存，绝不落盘明文。
+ *   `imagegen.providers.<id>.apiKey`、`mcp.servers.<name>.env.<KEY>`、
+ *   `mcp.servers.<name>.headers.<KEY>` 为敏感路径，
+ *   写盘时加密为 `apiKeyEnc` / `envEnc` / `headersEnc`；加密不可用时凭据只驻留内存，绝不落盘明文。
  */
 import { join } from 'node:path'
 import {
@@ -349,6 +350,9 @@ export class SettingsStore {
       for (const envKey of Object.keys(server.envEnc)) {
         server.envEnc[envKey] = '***'
       }
+      for (const headerKey of Object.keys(server.headersEnc)) {
+        server.headersEnc[headerKey] = '***'
+      }
     }
     return clone
   }
@@ -545,6 +549,13 @@ export class SettingsStore {
           server.envEnc[envKey] = next
         }
       }
+      for (const [headerKey, value] of Object.entries(server.headersEnc)) {
+        const next = encryptIfPlain(value)
+        if (next !== value) {
+          this.logger.info('已为存量 MCP 请求头补加密', { server: server.name, headerKey })
+          server.headersEnc[headerKey] = next
+        }
+      }
     }
 
     return count
@@ -570,7 +581,12 @@ export class SettingsStore {
     const envMatch = matchMcpEnvKey(key)
     if (envMatch) {
       const server = this.current.mcp.servers.find((s) => s.name === envMatch.server)
-      return server?.envEnc[envMatch.envKey]
+      if (server !== undefined) return server.envEnc[envMatch.envKey]
+    }
+    const headerMatch = matchMcpHeaderKey(key)
+    if (headerMatch) {
+      const server = this.current.mcp.servers.find((s) => s.name === headerMatch.server)
+      if (server !== undefined) return server.headersEnc[headerMatch.headerKey]
     }
     return undefined
   }
@@ -634,6 +650,18 @@ export class SettingsStore {
         }) !== undefined
       )
     }
+    const headerMatch = matchMcpHeaderKey(key)
+    if (headerMatch) {
+      if (!this.current.mcp.servers.some((s) => s.name === headerMatch.server)) return false
+      return (
+        this.mutate((draft) => {
+          const server = draft.mcp.servers.find((s) => s.name === headerMatch.server)
+          if (server === undefined) return
+          if (cipher === '') delete server.headersEnc[headerMatch.headerKey]
+          else server.headersEnc[headerMatch.headerKey] = cipher
+        }) !== undefined
+      )
+    }
     return false
   }
 
@@ -648,7 +676,10 @@ export class SettingsStore {
     for (const provider of Object.values(clone.tts.providers)) provider.apiKeyEnc = ''
     for (const provider of Object.values(clone.stt.providers)) provider.apiKeyEnc = ''
     for (const provider of Object.values(clone.imagegen.providers)) provider.apiKeyEnc = ''
-    for (const server of clone.mcp.servers) server.envEnc = {}
+    for (const server of clone.mcp.servers) {
+      server.envEnc = {}
+      server.headersEnc = {}
+    }
     return clone
   }
 }
@@ -681,9 +712,16 @@ function matchMcpEnvKey(key: string): { server: string; envKey: string } | undef
   return { server: matched[1] as string, envKey: matched[2] as string }
 }
 
+function matchMcpHeaderKey(key: string): { server: string; headerKey: string } | undefined {
+  const matched = /^mcp\.servers\.([^.]+)\.headers\.(.+)$/.exec(key)
+  if (!matched) return undefined
+  return { server: matched[1] as string, headerKey: matched[2] as string }
+}
+
 /**
  * `llm.providers.<id>.apiKey` / `tts.providers.<id>.apiKey` / `stt.providers.<id>.apiKey` /
- * `imagegen.providers.<id>.apiKey` / `mcp.servers.<name>.env.<KEY>` → 内部规范路径
+ * `imagegen.providers.<id>.apiKey` / `mcp.servers.<name>.env.<KEY>` /
+ * `mcp.servers.<name>.headers.<KEY>` → 内部规范路径
  */
 export function canonicalSecretPath(path: string): string {
   const trimmed = path.trim().replace(/\.$/, '')
@@ -697,18 +735,21 @@ export function canonicalSecretPath(path: string): string {
   if (imagegen) return `imagegen.providers.${imagegen[1]}.apiKey`
   const env = /^mcp\.servers\.([^.]+)\.env(Enc)?\.(.+)$/.exec(trimmed)
   if (env) return `mcp.servers.${env[1]}.env.${env[3]}`
+  const headers = /^mcp\.servers\.([^.]+)\.headers(Enc)?\.(.+)$/.exec(trimmed)
+  if (headers) return `mcp.servers.${headers[1]}.headers.${headers[3]}`
   return trimmed
 }
 
 /**
- * 递归脱敏：apiKey / 各类 token / secret / password / authorization / envEnc 替换为 ***。
+ * 递归脱敏：apiKey / 各类 token / secret / password / authorization / envEnc / headersEnc 替换为 ***。
  * 注意不要用宽泛的 `key` 匹配——`keywords`（科目关键词）属正常业务字段。
  *
  * `.*api[-_]?key.*` 分支专门覆盖 `apiKeyEnc`（密文，绝不能随日志落盘）与 `apiKeySet`
  * （布尔标记，被判敏感后置 `***` 无害）；原分支是整体锚定的，两者都不命中。
+ * `envEnc` / `headersEnc` 同理是整体锚定的派生字段名（`.*secret.*` 等分支盖不住），须逐个列出。
  */
 const SENSITIVE_KEY_PATTERN =
-  /^(.*api[-_]?key.*|api[-_]?key|apikey|token|access[-_]?token|refresh[-_]?token|authorization|secret|client[-_]?secret|password|passwd|credential|envEnc|.*secret.*|.*password.*|.*credential.*)$/i
+  /^(.*api[-_]?key.*|api[-_]?key|apikey|token|access[-_]?token|refresh[-_]?token|authorization|secret|client[-_]?secret|password|passwd|credential|envEnc|headersEnc|.*secret.*|.*password.*|.*credential.*)$/i
 
 export function redactKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => redactKeys(item))

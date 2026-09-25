@@ -12,7 +12,7 @@
  * - 渲染层**永远看不到密文**：`settings:get` 把 `apiKeyEnc` 置空串、`envEnc` 置空对象
  *   （docs/08 §1.1）。因此回传里的「空」只能理解为**本次不改凭据**，
  *   否则设置页保存一次就会把磁盘上的密文清空（同进程被 `memorySecrets` 掩盖，重启才暴露）。
- * - MCP 的 `envEnc` 是**逐键**合并的：空对象 = 一个键也不改；空串值 = 该键保留已有密文
+ * - MCP 的 `envEnc` / `headersEnc` 是**逐键**合并的：空对象 = 一个键也不改；空串值 = 该键保留已有密文
  *   （新增服务器时它是「占位」，随后由 `settings:setSecrets` 写成真密文）。
  * - 删除语义按容器类型区分：`llm.providers`（以及同构的 `tts` / `stt` / `imagegen` 的
  *   `providers`）是 **record**，缺项 ≠ 删除（必须显式声明各自的 `removedProviders`）；
@@ -82,6 +82,15 @@ export function extractPatchSecrets(patch: SettingsPatch): PatchSecrets {
         if (value !== '') secrets[`mcp.servers.${server.name}.env.${name}`] = value
       }
       delete draft['env']
+    }
+    // 明文 headers 与 env 同款：只经 setSecrets 落库（路径 `mcp.servers.<name>.headers.<key>`），
+    // 合并进 draft 的副本里永远不带它（Schema 里只有 `headersEnc` 字段，docs/08 §1）。
+    const headers = draft['headers']
+    if (headers !== null && typeof headers === 'object') {
+      for (const [name, value] of Object.entries(headers as Record<string, string>)) {
+        if (value !== '') secrets[`mcp.servers.${server.name}.headers.${name}`] = value
+      }
+      delete draft['headers']
     }
   }
 
@@ -209,6 +218,13 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
           cleared.push(`mcp.servers.${server.name}.env.${envKey}`)
         }
       }
+      // headers 与 env 并列：删除服务器 / 清键时同样要丢弃内存明文缓存。
+      for (const headerKey of Object.keys(server.headersEnc)) {
+        const cipher = after?.headersEnc[headerKey]
+        if (typeof cipher !== 'string' || cipher === '') {
+          cleared.push(`mcp.servers.${server.name}.headers.${headerKey}`)
+        }
+      }
     }
   }
 
@@ -254,13 +270,13 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
 }
 
 /**
- * 单个 MCP 服务器的合并：字段级覆盖 + `envEnc` **逐键**合并。
+ * 单个 MCP 服务器的合并：字段级覆盖 + `envEnc` / `headersEnc` **逐键**合并。
  *
- * 「空对象 = 本次不改凭据」直接落在键上：以已有 `envEnc` 为底，incoming 里的键
+ * 「空对象 = 本次不改凭据」直接落在键上：以已有密文为底，incoming 里的键
  *  - 值为空串且已有密文 → 保留已有密文（渲染层的占位 / 未修改标记）；
  *  - 值为空串且没有密文 → 保留空占位（新增服务器时由 `settings:setSecrets` 写入真密文）；
  *  - 值为非空密文 → 覆盖。
- * 于是渲染层回传一份脱敏过的服务器列表（每个 `envEnc` 都是 `{}`）不会动任何密文。
+ * 于是渲染层回传一份脱敏过的服务器列表（每个 `envEnc` / `headersEnc` 都是 `{}`）不会动任何密文。
  */
 function mergeMcpServer(before: McpServerConfig[], incoming: McpServerConfig): McpServerConfig {
   const existing = before.find((server) => server.name === incoming.name)
@@ -269,5 +285,11 @@ function mergeMcpServer(before: McpServerConfig[], incoming: McpServerConfig): M
     if (cipher === '' && envEnc[envKey] !== undefined) continue
     envEnc[envKey] = cipher
   }
-  return { ...(existing ?? {}), ...incoming, envEnc }
+  // `headersEnc` 与 `envEnc` 完全同款（v9，docs/08 §1.1）：逐键合并，空串 = 保留已有密文。
+  const headersEnc: Record<string, string> = { ...(existing?.headersEnc ?? {}) }
+  for (const [headerKey, cipher] of Object.entries(incoming.headersEnc ?? {})) {
+    if (cipher === '' && headersEnc[headerKey] !== undefined) continue
+    headersEnc[headerKey] = cipher
+  }
+  return { ...(existing ?? {}), ...incoming, envEnc, headersEnc }
 }

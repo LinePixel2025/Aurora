@@ -1,16 +1,16 @@
 /**
- * 「Agent 可修改的设置」清单（Design/betav2-spec.md §6.4、docs/06 §16）。
+ * 「Agent 可修改的设置」清单（docs/06 §17）。
  *
- * 固定的中文清单，注入 systemPrompt 让模型知道自己能用 `set_setting` 改什么：
- * 与 shared 的 `WRITABLE_PATH_OVERRIDES`（显式可写覆盖表）保持同一口径，
- * 凭据类路径（`*.providers.*`）一律只读。清单是静态的 —— 覆盖表由 Schema 兜底校验，
- * 工具端口（tools/settings-port.ts）无论清单怎么说都只认 `canWriteSettingPath` 的判定，
- * 因此提示词与真实可写面不会出现「说能改但不能改」的安全缺口（最多是「能改但没说」）。
+ * 固定的中文清单，经 `KernelAgentHost` 的 `settingsHint` 依赖**注入（正式通道）**，
+ * 由 agent-core 的 buildSystemPrompt 渲染成独立小节，让模型知道自己能用
+ * `set_setting` 改什么：与 shared 的 `WRITABLE_PATH_OVERRIDES`（显式可写覆盖表）
+ * 保持同一口径，凭据类路径（`*.providers.*`）一律只读。清单是静态的 ——
+ * 覆盖表由 Schema 兜底校验，工具端口（tools/settings-port.ts）无论清单怎么说
+ * 都只认 `canWriteSettingPath` 的判定，因此提示词与真实可写面不会出现
+ * 「说能改但不能改」的安全缺口（最多是「能改但没说」）。
  *
- * 注入方式：`agent-core` 的 `SystemPromptParts.settingsHint` 已定义，但
- * `KernelAgentHost` 尚未开放该字段的装配入口（v8 中间态）—— 因此主进程把这段
- * 清单**附加在 modePrompt 之后**携带（buildSystemPrompt 会把它渲染成独立小节）；
- * agent-core 补上正式通道后应改走 `settingsHint` 字段并删除 `composeModePrompt`。
+ * 注：早期经 `composeModePrompt()` 附加在 modePrompt 之后的旁路已删除
+ * （docs/06 §17），本文件只保留 `SETTINGS_HINT` 常量。
  */
 
 export const SETTINGS_HINT = [
@@ -30,14 +30,3 @@ export const SETTINGS_HINT = [
   '所有凭据类路径（llm/tts/stt/imagegen 的 providers 子树、mcp.servers）一律只读：',
   '用户要求修改密钥时，请引导他去设置页操作。',
 ].join('\n')
-
-/**
- * 把「Agent 可修改的设置」小节附加到模式提示词之后（作为独立 `##` 小节渲染）。
- * 模式提示词为空时返回空串 —— `buildSystemPrompt` 对空 modePrompt 会整段省略，
- * 此时设置清单随之下省（实际模式的 systemPrompt 永远非空，这里是防御）。
- */
-export function composeModePrompt(modePrompt: string): string {
-  const base = modePrompt.trim()
-  if (base === '') return ''
-  return `${base}\n\n## Agent 可修改的设置\n${SETTINGS_HINT}`
-}

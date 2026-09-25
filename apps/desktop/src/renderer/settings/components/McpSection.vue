@@ -3,7 +3,7 @@
  * MCP 区组（docs/06 §7、docs/08 §6）：服务器配置增删改 + **真实连接状态灯**。
  * 由原 `McpPage.vue` 整体迁入（BetaV2 8 → 6 页，spec §9），锚点与行为原样保留。
  *
- * env 凭据通过 settings:setSecrets 加密存储，列表只显示已配置的变量名；
+ * env / headers 凭据通过 settings:setSecrets 加密存储，列表只显示已配置的变量名与请求头名；
  * `lazyConnect` 收进「高级」折叠；新增服务器表单默认收起（空状态时由主按钮展开）。
  */
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
@@ -83,6 +83,7 @@ const form = reactive({
   args: '-y @modelcontextprotocol/server-filesystem D:\\',
   url: '',
   envText: '',
+  headersText: '',
 })
 
 const servers = computed<McpServerConfig[]>(() => settingsStore.settings?.mcp.servers ?? [])
@@ -97,6 +98,18 @@ const lazyConnect = computed(() => settingsStore.settings?.mcp.lazyConnect ?? fa
  */
 function envNames(server: McpServerConfig): string[] {
   const marked = (server as McpServerConfig & { envSet?: string[] }).envSet
+  return Array.isArray(marked) ? marked : []
+}
+
+/**
+ * 该服务器已配置的自定义请求头名（v9）。
+ *
+ * 数据源必须是主进程补的**只读标记** `headersSet`（docs/08 §1.1），不能读 `server.headersEnc` ——
+ * `settings:get` / `settings:changed` 会把 `headersEnc` 一律回传成空对象（密文永不进渲染进程），
+ * 按它判断会永远显示成「没有请求头」。与 `envNames` 完全同款。
+ */
+function headerNames(server: McpServerConfig): string[] {
+  const marked = (server as McpServerConfig & { headersSet?: string[] }).headersSet
   return Array.isArray(marked) ? marked : []
 }
 
@@ -151,6 +164,19 @@ async function add(): Promise<void> {
     secrets[`mcp.servers.${name}.env.${key}`] = value
   }
 
+  // 自定义请求头（v9）：明文只走 settings:setSecrets（路径 `mcp.servers.<name>.headers.<key>`），
+  // `headersEnc` 里只放空串占位。按第一个 `:` 分隔（与 env 按 `=` 分隔同款容错）。
+  const headers: Record<string, string> = {}
+  for (const line of form.headersText.split(/\r?\n/)) {
+    const separator = line.indexOf(':')
+    if (separator <= 0) continue
+    const key = line.slice(0, separator).trim()
+    const value = line.slice(separator + 1).trim()
+    if (key === '' || value === '') continue
+    headers[key] = ''
+    secrets[`mcp.servers.${name}.headers.${key}`] = value
+  }
+
   const server: McpServerConfig = {
     name,
     transport: form.transport,
@@ -158,6 +184,7 @@ async function add(): Promise<void> {
       ? { command: form.command.trim(), args: form.args.split(/\s+/).filter((item) => item !== '') }
       : { url: form.url.trim() }),
     envEnc: env,
+    headersEnc: headers,
     enabled: true,
   }
 
@@ -166,6 +193,7 @@ async function add(): Promise<void> {
   message.value = `已添加 ${name}（连接状态见下方状态灯）`
   form.name = ''
   form.envText = ''
+  form.headersText = ''
   showAdd.value = false
 }
 
@@ -254,6 +282,9 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
               <p v-if="envNames(server).length > 0" class="tiny muted">
                 环境变量：{{ envNames(server).join('、') }}（值已加密存储）
               </p>
+              <p v-if="headerNames(server).length > 0" class="tiny muted">
+                请求头：{{ headerNames(server).join('、') }}（值已加密存储）
+              </p>
             </article>
           </div>
 
@@ -340,6 +371,17 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
             <SettingField label="环境变量" hint="每行 KEY=VALUE；值会加密存储，不回显">
               <textarea v-model="form.envText" spellcheck="false" placeholder="TOKEN=xxxx" />
             </SettingField>
+            <SettingField
+              v-if="form.transport === 'http'"
+              label="自定义请求头"
+              hint="每行 Key: Value；值会加密存储，不回显"
+            >
+              <textarea
+                v-model="form.headersText"
+                spellcheck="false"
+                placeholder="Authorization: Bearer xxx"
+              />
+            </SettingField>
 
             <footer class="row">
               <AppButton variant="primary" @click="add">添加</AppButton>
@@ -349,7 +391,7 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
 
         <p class="tiny muted">
           提示：MCP 服务器以你填写的 argv 数组启动，<strong>不经过 shell</strong>；HTTP
-          传输暂不支持自定义鉴权头。
+          传输支持自定义请求头（含鉴权头），值加密存储。
         </p>
       </div>
     </Transition>

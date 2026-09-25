@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ToolRegistry,
+  type AgentProviderFactory,
   type ClipboardPort,
   type CommandRunner,
   type FilePort,
@@ -9,6 +10,8 @@ import {
   type OpenPort,
   type SettingsToolPort,
   type SettingsWriteOutcome,
+  type TodoItem,
+  type TodoPort,
   type WebFetchPort,
 } from '@aurora/agent-core'
 import {
@@ -18,7 +21,9 @@ import {
   type Settings,
 } from '@aurora/shared'
 import {
+  AGENT_CORE_TOOL_NAMES,
   EXTENSION_TOOL_NAMES,
+  registerAgentCoreTools,
   registerComputerTools,
   registerExtensionTools,
   registerSettingsTool,
@@ -329,5 +334,91 @@ describe('registerExtensionTools', () => {
     registry.sync()
     expect(tools.list().length).toBe(sizeAfterFirst)
     expect(tools.list().filter((tool) => tool.name === 'web_fetch')).toHaveLength(1)
+  })
+})
+
+describe('registerAgentCoreTools', () => {
+  /** 内存版 TodoPort：只记录读写，本文件验证的是"装配接线"，不是落盘（见 todo-port.test.ts） */
+  function memoryTodoPort(): TodoPort & { data: Map<string, TodoItem[]> } {
+    const data = new Map<string, TodoItem[]>()
+    return {
+      data,
+      async read(sessionId) {
+        return [...(data.get(sessionId) ?? [])]
+      },
+      async write(sessionId, todos) {
+        data.set(sessionId, todos)
+      },
+    }
+  }
+
+  function setupCore(tools = new ToolRegistry()) {
+    const todoPort = memoryTodoPort()
+    const registry = registerAgentCoreTools({
+      tools,
+      logger: createMemoryLogger(),
+      todoPort,
+      // create() 只在 task 执行时被调用，注册期不需要真实 provider
+      provider: { create: () => undefined } satisfies AgentProviderFactory,
+    })
+    return { tools, registry, todoPort }
+  }
+
+  it('注册 todo_write / todo_read / task 三个工具，敏感级均为 safe', () => {
+    const { tools, registry } = setupCore()
+    expect(registry.sync()).toEqual([...AGENT_CORE_TOOL_NAMES])
+    expect(tools.get('todo_write')?.sensitivity).toBe('safe')
+    expect(tools.get('todo_read')?.sensitivity).toBe('safe')
+    expect(tools.get('task')?.sensitivity).toBe('safe')
+  })
+
+  it('sync 幂等：unregister + 重建后三个工具仍在，且不重复注册', () => {
+    const { tools, registry } = setupCore()
+    registry.sync()
+    const sizeAfterFirst = tools.list().length
+    registry.sync()
+    expect(tools.list().length).toBe(sizeAfterFirst)
+    for (const name of AGENT_CORE_TOOL_NAMES) {
+      expect(tools.list().filter((tool) => tool.name === name)).toHaveLength(1)
+    }
+  })
+
+  it('todo 工具经注入的 TodoPort 读写（装配接线验证）', async () => {
+    const { tools, registry, todoPort } = setupCore()
+    registry.sync()
+    const result = await tools
+      .get('todo_write')!
+      .execute({ todos: [{ content: '第一步', status: 'in_progress' }] }, { sessionId: 'main' })
+    expect(result.isError).toBeUndefined()
+    expect(todoPort.data.get('main')).toEqual([
+      { id: 't1', content: '第一步', status: 'in_progress' },
+    ])
+
+    const read = await tools.get('todo_read')!.execute({}, { sessionId: 'main' })
+    expect(read.content).toContain('第一步')
+  })
+
+  it('task 工具存在（父表含 confirm 敏感工具时照常注册；过滤细节在 agent-core task.test.ts）', () => {
+    const tools = new ToolRegistry()
+    tools.register({
+      name: 'run_command',
+      description: '假敏感工具占位',
+      parameters: { type: 'object', properties: {} },
+      sensitivity: 'confirm',
+      async execute() {
+        return { content: '' }
+      },
+    })
+    const { registry } = setupCore(tools)
+    expect(registry.sync()).toEqual([...AGENT_CORE_TOOL_NAMES])
+    expect(tools.get('task')).toBeDefined()
+    // 装配层不动父表：confirm 工具仍留给主代理
+    expect(tools.get('run_command')?.sensitivity).toBe('confirm')
+  })
+
+  it('不受 agent.tools.enabled 门控（装配器没有配置依赖，与 set_setting / 扩展工具同级）', () => {
+    const { tools, registry } = setupCore()
+    expect(registry.sync()).toEqual([...AGENT_CORE_TOOL_NAMES])
+    expect(AGENT_CORE_TOOL_NAMES.every((name) => tools.get(name) !== undefined)).toBe(true)
   })
 })

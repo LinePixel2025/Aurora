@@ -20,8 +20,14 @@ import {
   shell,
   utilityProcess,
 } from 'electron'
-import { KernelAgentHost, SessionStore, SkillsBridge, ToolRegistry } from '@aurora/agent-core'
-import type { SettingsToolPort, ToolDefinition } from '@aurora/agent-core'
+import {
+  KernelAgentHost,
+  SessionStore,
+  SkillsBridge,
+  ToolRegistry,
+  renderTodoList,
+} from '@aurora/agent-core'
+import type { AgentProviderFactory, SettingsToolPort, ToolDefinition } from '@aurora/agent-core'
 import {
   COMPUTER_TOOL_NAMES,
   SettingsSchema,
@@ -51,7 +57,7 @@ import { LlmTester } from './llm-tester.js'
 import { TtsSynthesizer } from './tts.js'
 import { createSttService } from './stt.js'
 import { createImageGenService } from './imagegen.js'
-import { composeModePrompt } from './settings-hint.js'
+import { SETTINGS_HINT } from './settings-hint.js'
 import { registerIpc, createSettingsWriter, type DesktopDeps } from './ipc.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { ProactiveScheduler } from './proactive.js'
@@ -81,13 +87,16 @@ import {
   seedChatTtsHistory,
 } from './capture.js'
 import {
+  registerAgentCoreTools,
   registerComputerTools,
   registerExtensionTools,
   registerSettingsTool,
+  type AgentCoreToolsRegistry,
   type ComputerTools,
   type ExtensionToolsRegistry,
   type SettingsToolRegistry,
 } from './tools/index.js'
+import { createFileTodoPort, type FileTodoPort } from './tools/todo-port.js'
 import { createNetWebFetchPort } from './tools/web-fetch.js'
 import { createElectronClipboardPort } from './tools/clipboard.js'
 import { createNotificationPort } from './tools/notify.js'
@@ -196,6 +205,10 @@ let computerTools: ComputerTools | undefined
 let settingsTool: SettingsToolRegistry | undefined
 /** 扩展工具五件套装配器（docs/06 §14）：与 set_setting 同级，不受 agent.tools.enabled 门控 */
 let extensionTools: ExtensionToolsRegistry | undefined
+/** Agent 内核自带工具装配器（todo / task，docs/06 §18/§19）：同样不受门控 */
+let agentCoreTools: AgentCoreToolsRegistry | undefined
+/** 任务清单端口（docs/06 §18）：`<userData>/todos/<sessionId>.json`，退出前 flush */
+let todoPort: FileTodoPort | undefined
 /** MCP 状态订阅（IPC 层与主进程内部共用，避免为状态再引入一次事件总线） */
 const mcpStatusListeners = new Set<(statuses: McpServerStatus[]) => void>()
 
@@ -527,6 +540,37 @@ async function bootstrap(): Promise<void> {
     }),
     imageGen: createImageGenPort(imageGenService),
   })
+  // 7.1.4 Agent 内核自带工具（docs/06 §18/§19）：todo_write / todo_read / task。
+  //     与 set_setting / 扩展工具五件套同级——不受 `agent.tools.enabled` 门控
+  //     （todo / task 是 Agent 自身能力，不是电脑操控）。
+  //     清单按会话落盘到 `<userData>/todos/`（子代理用 `<sessionId>-sub` 独立清单）。
+  todoPort = createFileTodoPort({
+    dir: join(userData, 'todos'),
+    logger: logger.child('todos'),
+    onWriteError: (error) => logger?.error('任务清单写入失败', { error: error.message }),
+  })
+  // 7.1.5 provider 工厂提取成常量：KernelAgentHost 与 `task` 子代理共享同一实例，
+  //     「常规构造失败 → 临时回退可用条目」的启动自愈语义（docs/06 §12、step 02 第 6 条）
+  //     两处一致；create() 每次请求即时构造，设置页改 Key 后无需重启即生效。
+  const providerFactory = createProviderFactory(settings, logger.child('llm'), () => netFetch)
+  const agentProvider: AgentProviderFactory = {
+    create: () => {
+      try {
+        const config = providerFactory.create()
+        if (config !== undefined) return config
+        return providerFactory.create({ allowFallback: true })
+      } catch (error) {
+        logger?.warn('默认模型配置构造失败，尝试回退到可用条目', { error: String(error) })
+        return providerFactory.create({ allowFallback: true })
+      }
+    },
+  }
+  agentCoreTools = registerAgentCoreTools({
+    tools,
+    logger: logger.child('tools'),
+    todoPort,
+    provider: agentProvider,
+  })
   syncToolRegistries()
 
   mcp = new McpController({
@@ -558,30 +602,20 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('confirm'),
   })
 
-  const providerFactory = createProviderFactory(settings, logger.child('llm'), () => netFetch)
   const kernel = new KernelAgentHost({
     sessions,
-    // 启动自愈（docs/06 §12、step 02 第 6 条）：常规构造失败时（`llm.active` 为空 / 指向不存在的
-    // provider / 当前条目缺 Key），临时借一个可用条目把请求建起来，而不是让 Agent 彻底失能。
-    // 回退只影响本次请求构造，不写配置。
-    provider: {
-      create: () => {
-        try {
-          const config = providerFactory.create()
-          if (config !== undefined) return config
-          return providerFactory.create({ allowFallback: true })
-        } catch (error) {
-          logger?.warn('默认模型配置构造失败，尝试回退到可用条目', { error: String(error) })
-          return providerFactory.create({ allowFallback: true })
-        }
-      },
-    },
+    // 启动自愈（docs/06 §12、step 02 第 6 条）：与 task 子代理共享同一 provider 实例
+    // （见上方 agentProvider 注释），常规构造失败时回退到可用条目，不让 Agent 彻底失能。
+    provider: agentProvider,
     tools,
     skills: skillBridge,
     logger: logger.child('agent'),
-    // settingsHint（docs/06 §16）：「Agent 可修改的设置」清单随模式提示词一并注入
-    // （composeModePrompt 附加为独立小节；agent-core 开放正式通道后改走 settingsHint 字段）
-    modePrompt: () => composeModePrompt(modes.systemPrompt()),
+    // settingsHint / todoSummary 走 agent-core 正式通道（docs/06 §17/§18）：
+    // 前者是「Agent 可修改的设置」固定清单，后者按会话读任务清单摘要——
+    // 空清单 renderTodoList 返回空串，buildSystemPrompt 会自动省略该节。
+    settingsHint: () => SETTINGS_HINT,
+    todoSummary: async (sessionId) => renderTodoList(await todoPort!.read(sessionId)),
+    modePrompt: () => modes.systemPrompt(),
     perceptionSummary: () => perception?.contextSummary() ?? Promise.resolve(''),
     // 长上下文摘要（docs/06 §4）：被截断的旧消息交给当前 provider 压成一段摘要。
     // 装配层实现、内核只接受注入 —— agent-core 保持不依赖网络与 Electron。
@@ -1703,9 +1737,12 @@ async function shutdown(): Promise<void> {
   await classification?.drain().catch(() => undefined)
   await classification?.close().catch(() => undefined)
   extractPool?.close()
-  // 会话与 MCP 子进程必须在退出前收尾（docs/06 §4 / §7）
+  // 会话与任务清单必须在退出前收尾（docs/06 §4 / §18，同一套防抖 + flush 约定）
   await sessions?.flush().catch((error: unknown) => {
     logger?.warn('退出前落盘会话失败', { error: String(error) })
+  })
+  await todoPort?.flush().catch((error: unknown) => {
+    logger?.warn('退出前落盘任务清单失败', { error: String(error) })
   })
   await mcp?.close().catch((error: unknown) => {
     logger?.warn('退出前关闭 MCP 连接失败', { error: String(error) })
@@ -1755,19 +1792,21 @@ function adaptProactive(scheduler: ProactiveScheduler): ProactiveLike {
  * 感知文件夹变化时重建监听（`watch()` 本身幂等）。
  */
 /**
- * 工具注册表的**唯一**同步入口（docs/06 §11、§12、§14）。 *
- * 三个装配器必须一起同步：
+ * 工具注册表的**唯一**同步入口（docs/06 §11、§12、§14、§18/§19）。 *
+ * 四个装配器必须一起同步：
  * - `computerTools`：按 `agent.tools.*` 重建 5 个电脑操控工具；
  * - `settingsTool`：重建 `set_setting`（不受 `agent.tools.enabled` 影响，见 tools/index.ts）；
- * - `extensionTools`：重建扩展工具五件套（同样不受 `agent.tools.enabled` 影响）。
+ * - `extensionTools`：重建扩展工具五件套（同样不受 `agent.tools.enabled` 影响）；
+ * - `agentCoreTools`：重建 todo_write / todo_read / task（同样不受门控，见 tools/index.ts）。
  *
- * 拆开写会让「改开关后工具表变化」的时机不一致：后两者不依赖 `agent.tools.enabled`，
+ * 拆开写会让「改开关后工具表变化」的时机不一致：后三者不依赖 `agent.tools.enabled`，
  * 但都与电脑操控工具共用同一张注册表，必须在同一拍完成重建。
  */
 function syncToolRegistries(): void {
   computerTools?.sync()
   settingsTool?.sync()
   extensionTools?.sync()
+  agentCoreTools?.sync()
 }
 
 function syncClassification(): void {

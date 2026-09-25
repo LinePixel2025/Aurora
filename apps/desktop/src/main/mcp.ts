@@ -1,7 +1,7 @@
 /**
  * MCP 装配层（docs/06 §7）。
  *
- * 主进程负责：把设置里的 MCP 服务器配置与**解密后的**环境变量交给
+ * 主进程负责：把设置里的 MCP 服务器配置与**解密后的**环境变量 / HTTP 自定义请求头交给
  * `McpClientHub`，并把状态变化推给设置页。协议细节全在 agent-core。
  */
 import { McpClientHub, toServerDefinitions, type ToolRegistry } from '@aurora/agent-core'
@@ -57,7 +57,14 @@ export class McpController {
 
     const definitions = toServerDefinitions(settings.mcp.servers, (server) =>
       this.decryptEnv(server),
-    )
+    ).map((definition, index) => {
+      // headers 与 env 同款只在主进程解密（内核 `toServerDefinitions` 不碰凭据）：
+      // 逐个挂上解密结果，由 hub 透传给 HttpTransport（docs/06 §7）。
+      const server = settings.mcp.servers[index]
+      return server === undefined
+        ? definition
+        : { ...definition, headers: this.decryptHeaders(server) }
+    })
     try {
       await this.hub.reconfigure(definitions, {
         lazyConnect: settings.mcp.lazyConnect,
@@ -87,6 +94,16 @@ export class McpController {
     }
     return env
   }
+
+  /** 解密 HTTP 自定义请求头（docs/06 §7）：与 `decryptEnv` 同构，键名进日志、值绝不落日志。 */
+  private decryptHeaders(server: McpServerConfig): Record<string, string> {
+    const headers: Record<string, string> = {}
+    for (const name of Object.keys(server.headersEnc)) {
+      const value = this.settings.getSecret(`mcp.servers.${server.name}.headers.${name}`)
+      if (value !== '') headers[name] = value
+    }
+    return headers
+  }
 }
 
 /** 只关心会影响连接的字段，避免无关设置变更触发重连。 */
@@ -101,6 +118,7 @@ function signatureOf(settings: Settings): string {
       url: server.url,
       enabled: server.enabled,
       envKeys: Object.keys(server.envEnc).sort(),
+      headerKeys: Object.keys(server.headersEnc).sort(),
     })),
   })
 }

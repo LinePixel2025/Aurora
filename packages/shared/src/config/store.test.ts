@@ -522,6 +522,7 @@ describe('SettingsStore · 凭据安全', () => {
         command: 'npx',
         args: [],
         envEnc: { TOKEN: '' },
+        headersEnc: {},
         enabled: true,
       })
     })
@@ -530,6 +531,74 @@ describe('SettingsStore · 凭据安全', () => {
     const redacted = store.exportRedacted()
     expect(redacted.llm.providers['deepseek']?.apiKeyEnc).toBe('***')
     expect(redacted.mcp.servers[0]?.envEnc['TOKEN']).toBe('***')
+  })
+})
+
+describe('SettingsStore · MCP headers 凭据（v9）', () => {
+  /** 建一个 MCP 服务器条目（凭据占位为空串，由用例自己 setSecret）。 */
+  function seedMcpServer(store: SettingsStore, name: string): void {
+    store.mutate((draft) => {
+      draft.mcp.servers.push({
+        name,
+        transport: 'http',
+        url: 'https://example.com/mcp',
+        envEnc: {},
+        headersEnc: { Authorization: '' },
+        enabled: true,
+      })
+    })
+  }
+
+  it('headers 凭据 roundtrip：setSecret 加密落盘，磁盘无明文，getSecret 可还原', async () => {
+    const { store, fsPort, configPath, crypto } = setup()
+    await store.init()
+    seedMcpServer(store, 'demo')
+
+    const persisted = store.setSecret('mcp.servers.demo.headers.Authorization', 'Bearer sk-x')
+    await store.flush()
+
+    expect(persisted).toBe(true)
+    expect(store.getSecret('mcp.servers.demo.headers.Authorization')).toBe('Bearer sk-x')
+    const raw = (await fsPort.readFile(configPath)) as string
+    expect(raw).not.toContain('Bearer sk-x')
+    expect(raw).toContain('fakestorage:v1:')
+    expect(crypto.encryptCalls).toContain('Bearer sk-x')
+  })
+
+  it('canonicalSecretPath 归一化 headers 与 headersEnc 两种写法', () => {
+    expect(canonicalSecretPath('mcp.servers.foo.headers.AUTH')).toBe('mcp.servers.foo.headers.AUTH')
+    expect(canonicalSecretPath('mcp.servers.foo.headersEnc.AUTH')).toBe(
+      'mcp.servers.foo.headers.AUTH',
+    )
+  })
+
+  it('clearSecret 清空该键的密文与占位', async () => {
+    const { store } = setup()
+    await store.init()
+    seedMcpServer(store, 'demo')
+    store.setSecret('mcp.servers.demo.headers.Authorization', 'Bearer sk-x')
+    store.clearSecret('mcp.servers.demo.headers.Authorization')
+    await store.flush()
+    expect(store.getSecret('mcp.servers.demo.headers.Authorization')).toBe('')
+    expect(store.get().mcp.servers[0]?.headersEnc['Authorization']).toBeUndefined()
+  })
+
+  it('服务器条目不存在时 setSecret 抛 SettingsSecretError', async () => {
+    const { store } = setup()
+    await store.init()
+    expect(() =>
+      store.setSecret('mcp.servers.ghost.headers.Authorization', 'Bearer x'),
+    ).toThrowError(/无法识别/)
+    expect(store.getSecret('mcp.servers.ghost.headers.Authorization')).toBe('')
+  })
+
+  it('exportRedacted 抹掉 headers 密文', async () => {
+    const { store } = setup()
+    await store.init()
+    seedMcpServer(store, 'demo')
+    store.setSecret('mcp.servers.demo.headers.Authorization', 'Bearer sk-x')
+    const redacted = store.exportRedacted()
+    expect(redacted.mcp.servers[0]?.headersEnc['Authorization']).toBe('***')
   })
 })
 

@@ -231,6 +231,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
           transport: 'http',
           url: 'http://127.0.0.1:9/mcp',
           envEnc: { TOKEN: '' },
+          headersEnc: {},
           enabled: false,
         }],
       },

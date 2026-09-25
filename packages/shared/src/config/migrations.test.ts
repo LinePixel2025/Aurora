@@ -69,8 +69,8 @@ describe('配置迁移链', () => {
         modes: { current: 'classroom', classroom: { watchDir: 'D:\\感知', subjects: [] } },
       })
       expect(outcome.fromVersion).toBe(1)
-      // v1 → v2 → v3 → v4 → v5 → v6 → v7：链式执行，六版迁移都会跑
-      expect(outcome.applied).toHaveLength(7)
+      // v1 → v2 → … → v9：链式执行，八版迁移都会跑
+      expect(outcome.applied).toHaveLength(8)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
@@ -130,8 +130,8 @@ describe('配置迁移链', () => {
         modes: { classroom: { schedule: { provider: 'manual', lessons: [lesson] } } },
       })
       expect(outcome.fromVersion).toBe(2)
-      // v2 → v3 → v4 → v5 → v6 → v7：链式执行
-      expect(outcome.applied).toHaveLength(6)
+      // v2 → v3 → … → v9：链式执行
+      expect(outcome.applied).toHaveLength(7)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
         string,
@@ -191,8 +191,8 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(3)
-      // v3 → v4 → v5 → v6 → v7：链式执行
-      expect(outcome.applied).toHaveLength(5)
+      // v3 → v4 → … → v9：链式执行
+      expect(outcome.applied).toHaveLength(6)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const windowState = loadWindowState(outcome.data)
@@ -245,7 +245,7 @@ describe('配置迁移链', () => {
     it('补齐 reasoningEffort 与 agent.tools，且用户已写入的其它字段原样保留', () => {
       const outcome = migrate(V4_CONFIG)
       expect(outcome.fromVersion).toBe(4)
-      expect(outcome.applied).toHaveLength(4)
+      expect(outcome.applied).toHaveLength(5)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const llm = outcome.data['llm'] as Record<string, unknown>
@@ -389,7 +389,7 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(5)
-      expect(outcome.applied).toHaveLength(3)
+      expect(outcome.applied).toHaveLength(4)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       // describe 变更（补了 modelList 字样）不影响既有断言：仍是一条 v5 → v6 迁移
       expect(outcome.applied[0]).toContain('v5 → v6')
@@ -445,7 +445,7 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(5)
-      expect(outcome.applied).toHaveLength(3)
+      expect(outcome.applied).toHaveLength(4)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.applied[0]).toContain('modelList')
 
@@ -532,7 +532,7 @@ describe('配置迁移链', () => {
     it('补齐 tts 段默认值，且用户已写值（readonlyPrefixes / llm）原样保留', () => {
       const outcome = migrate(V6_CONFIG)
       expect(outcome.fromVersion).toBe(6)
-      expect(outcome.applied).toHaveLength(2)
+      expect(outcome.applied).toHaveLength(3)
       expect(outcome.applied[0]).toContain('v6 → v7')
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
@@ -601,6 +601,65 @@ describe('配置迁移链', () => {
         maxChars: 2000,
         providers: {},
       })
+    })
+  })
+
+  describe('v8 → v9（MCP HTTP 自定义请求头 headersEnc）', () => {
+    const loadServers = (raw: Record<string, unknown>): Array<Record<string, unknown>> =>
+      ((raw['mcp'] as Record<string, unknown>)['servers'] as Array<Record<string, unknown>>) ?? []
+
+    it('为每个已有 mcp.servers 条目补 headersEnc: {}，其余字段原样保留', () => {
+      const server = {
+        name: 'remote',
+        transport: 'http',
+        url: 'https://example.com/mcp',
+        envEnc: {},
+        enabled: true,
+      }
+      const outcome = migrate({ version: 8, mcp: { lazyConnect: false, servers: [server] } })
+      expect(outcome.fromVersion).toBe(8)
+      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied[0]).toContain('headersEnc')
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+
+      const servers = loadServers(outcome.data)
+      expect(servers[0]?.['headersEnc']).toEqual({})
+      // 其余字段一个不动
+      expect(servers[0]).toEqual({ ...server, headersEnc: {} })
+    })
+
+    it('已有 headersEnc 的条目原样保留（幂等）', () => {
+      const server = {
+        name: 'remote',
+        transport: 'http',
+        url: 'https://example.com/mcp',
+        envEnc: {},
+        headersEnc: { Authorization: 'cipher' },
+        enabled: true,
+      }
+      const once = migrate({ version: 8, mcp: { servers: [server] } })
+      expect(loadServers(once.data)[0]?.['headersEnc']).toEqual({ Authorization: 'cipher' })
+
+      const twice = migrate({ ...once.data, version: 8 })
+      expect(twice.data).toEqual(once.data)
+    })
+
+    it('mcp 分组不存在时不凭空造对象；servers 不是数组时不抛错', () => {
+      const noMcp = migrate({ version: 8, general: {} })
+      expect(noMcp.warnings).toEqual([])
+      expect(noMcp.data['version']).toBe(CONFIG_VERSION)
+      expect(noMcp.data['mcp']).toBeUndefined()
+
+      const badServers = migrate({ version: 8, mcp: { servers: 'oops' } })
+      expect(badServers.warnings).toEqual([])
+      expect((badServers.data['mcp'] as Record<string, unknown>)['servers']).toBe('oops')
+      expect(badServers.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('数组里的非对象条目原样跳过，不抛错', () => {
+      const outcome = migrate({ version: 8, mcp: { servers: ['oops', null] } })
+      expect(outcome.warnings).toEqual([])
+      expect(loadServers(outcome.data)).toEqual(['oops', null])
     })
   })
 })

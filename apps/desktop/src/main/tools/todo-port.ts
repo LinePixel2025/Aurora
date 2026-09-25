@@ -1,0 +1,254 @@
+/**
+ * FileTodoPort —— 任务清单持久化（docs/06 §18）。
+ *
+ * 实现内核的 `TodoPort`：一个会话一份清单，`<dir>/<sessionId>.json`。
+ * 子代理（docs/06 §19）的 sessionId 带 `-sub` 后缀，经同一套归一后天然落在
+ * 独立清单文件（`<sessionId>-sub.json`）上，与主对话清单互不影响。
+ *
+ * 与 SessionStore（agent-core `session/store.ts`）同一套持久化约定：
+ * - `sessionId` 白名单归一（防路径穿越）；
+ * - 懒加载（首次访问读盘）+ 300ms 防抖原子写 + `flush()`（退出前调用）；
+ * - 解析失败：备份为 `<sessionId>.corrupt-<ts>.json`（最多 3 份）后按空清单继续
+ *   —— 清单不是关键数据，读失败不抛错、只 warn 留痕。
+ * - 纯 Node：文件系统经 `FileSystemPort` 注入，不 import electron，可完整单测。
+ */
+import { join } from 'node:path'
+import { nodeFileSystem, type FileSystemPort } from '@aurora/shared'
+import type { Logger } from '@aurora/shared'
+import { createNoopLogger } from '@aurora/shared'
+import { normalizeSessionId, type TodoItem, type TodoPort } from '@aurora/agent-core'
+
+export const TODO_WRITE_DEBOUNCE_MS = 300
+/** 损坏备份上限（同 SessionStore） */
+const MAX_BACKUPS = 3
+const TODO_FILE_VERSION = 1
+
+/** 清单文件结构：version 仅用于将来迁移；todos 是整表快照 */
+interface StoredTodos {
+  version: typeof TODO_FILE_VERSION
+  sessionId: string
+  updatedAt: string
+  todos: TodoItem[]
+}
+
+export interface FileTodoPortOptions {
+  /** 清单目录（主进程传 `<userData>/todos`） */
+  dir: string
+  fs?: FileSystemPort
+  logger?: Logger
+  /** 防抖写盘间隔，测试可传 0 立即写 */
+  writeDebounceMs?: number
+  onWriteError?: (error: Error) => void
+}
+
+export class FileTodoPort implements TodoPort {
+  private readonly dir: string
+  private readonly fs: FileSystemPort
+  private readonly logger: Logger
+  private readonly writeDebounceMs: number
+  private readonly onWriteError: ((error: Error) => void) | undefined
+
+  private readonly cache = new Map<string, TodoItem[]>()
+  private readonly loaded = new Set<string>()
+  private readonly dirty = new Set<string>()
+  private readonly writing = new Map<string, Promise<void>>()
+  private readonly timers = new Map<string, NodeJS.Timeout>()
+  /** 目录是否已确保存在（首次写盘前 mkdirp 一次） */
+  private dirEnsured = false
+
+  constructor(options: FileTodoPortOptions) {
+    this.dir = options.dir
+    this.fs = options.fs ?? nodeFileSystem
+    this.logger = options.logger ?? createNoopLogger()
+    this.writeDebounceMs = options.writeDebounceMs ?? TODO_WRITE_DEBOUNCE_MS
+    this.onWriteError = options.onWriteError
+  }
+
+  get directory(): string {
+    return this.dir
+  }
+
+  /** 读取某会话的任务清单；文件不存在返回空数组，**不创建任何文件**。 */
+  async read(sessionId: string): Promise<TodoItem[]> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    return [...(this.cache.get(id) ?? [])]
+  }
+
+  /** 整表写入某会话的任务清单（todo_write 的整表替换语义），防抖落盘。 */
+  async write(sessionId: string, todos: TodoItem[]): Promise<void> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    // 浅拷贝入缓存：防止调用方就地改动数组污染缓存快照
+    this.cache.set(
+      id,
+      todos.map((todo) => ({ ...todo })),
+    )
+    this.dirty.add(id)
+    this.scheduleWrite(id)
+  }
+
+  /**
+   * 立即落盘（退出前 / 单测使用）。
+   *
+   * 与 SessionStore 同一套「反复排空」语义：先等在途写入排队完成，
+   * 再对仍然脏的会话重试，最后再等一次在途写入——
+   * 因此"写失败 → flush 重试"是可靠语义，而不是碰时序运气。
+   */
+  async flush(): Promise<void> {
+    for (const [id, timer] of this.timers) {
+      clearTimeout(timer)
+      this.timers.delete(id)
+    }
+    await Promise.all([...this.writing.values()].map((task) => task.catch(() => undefined)))
+    for (const id of [...this.dirty]) {
+      await this.writeNow(id)
+    }
+    await Promise.all([...this.writing.values()].map((task) => task.catch(() => undefined)))
+  }
+
+  dispose(): void {
+    for (const timer of this.timers.values()) clearTimeout(timer)
+    this.timers.clear()
+  }
+
+  // ───────────────────────── 内部 ─────────────────────────
+
+  private async ensureLoaded(id: string): Promise<void> {
+    if (this.loaded.has(id)) return
+    this.loaded.add(id)
+    this.cache.set(id, await this.readFromDisk(id))
+  }
+
+  private async readFromDisk(id: string): Promise<TodoItem[]> {
+    const path = todoFilePath(this.dir, id)
+    let raw: string
+    try {
+      raw = await this.fs.readFile(path)
+    } catch {
+      return [] // 首次运行：清单文件尚不存在（read 不创建文件）
+    }
+
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      const todos = (parsed as StoredTodos | null)?.todos
+      if (!Array.isArray(todos)) throw new Error('todos 不是数组')
+      return todos.filter(isTodoItem)
+    } catch (error) {
+      this.logger.warn('任务清单文件解析失败，已备份并按空清单继续', {
+        sessionId: id,
+        error: String(error),
+      })
+      await this.backupCorrupt(id, path)
+      return []
+    }
+  }
+
+  private async backupCorrupt(id: string, path: string): Promise<void> {
+    try {
+      const backup = join(this.dir, `${id}.corrupt-${Date.now()}.json`)
+      await this.fs.rename(path, backup)
+      await this.pruneBackups(id)
+    } catch (error) {
+      this.logger.warn('备份损坏的任务清单文件失败', { sessionId: id, error: String(error) })
+    }
+  }
+
+  private async pruneBackups(id: string): Promise<void> {
+    try {
+      const entries = (await this.fs.readdir(this.dir))
+        .filter((name) => name.startsWith(`${id}.corrupt-`))
+        .sort()
+      while (entries.length > MAX_BACKUPS) {
+        const oldest = entries.shift()
+        if (oldest !== undefined) await this.fs.remove(join(this.dir, oldest))
+      }
+    } catch {
+      /* 清理失败不影响主流程 */
+    }
+  }
+
+  private scheduleWrite(id: string, delayMs = this.writeDebounceMs): void {
+    if (delayMs <= 0) {
+      const existing = this.timers.get(id)
+      if (existing) {
+        clearTimeout(existing)
+        this.timers.delete(id)
+      }
+      void this.writeNow(id)
+      return
+    }
+    const existing = this.timers.get(id)
+    if (existing) clearTimeout(existing)
+    const timer = setTimeout(() => {
+      this.timers.delete(id)
+      void this.writeNow(id)
+    }, delayMs)
+    timer.unref?.()
+    this.timers.set(id, timer)
+  }
+
+  /**
+   * 串行排队写盘：排到队时才读取最新内存快照，因此不会写旧内容。
+   * 多个来源（防抖定时器 / flush）天然合并为一次写。
+   *
+   * 注意：`run` 内部在**检查脏标记之前**不 await 任何东西，
+   * 因此同步调用 `scheduleWrite(id, 0)` 后等待微任务排空即可观察到写入结果（单测依赖）。
+   */
+  private writeNow(id: string): Promise<void> {
+    if (!this.dirty.has(id)) return this.writing.get(id) ?? Promise.resolve()
+    const run = (this.writing.get(id) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(async () => {
+        if (!this.dirty.has(id)) return
+        this.dirty.delete(id)
+        const payload: StoredTodos = {
+          version: TODO_FILE_VERSION,
+          sessionId: id,
+          updatedAt: new Date().toISOString(),
+          todos: this.cache.get(id) ?? [],
+        }
+        try {
+          await this.ensureDir()
+          await this.fs.writeFileAtomic(
+            todoFilePath(this.dir, id),
+            `${JSON.stringify(payload, null, 2)}\n`,
+          )
+        } catch (error) {
+          const wrapped = error instanceof Error ? error : new Error(String(error))
+          this.dirty.add(id) // 保持脏标记，下次重试
+          this.logger.error('任务清单写入失败', { sessionId: id, error: wrapped.message })
+          this.onWriteError?.(wrapped)
+        }
+      })
+    this.writing.set(id, run)
+    return run
+  }
+
+  private async ensureDir(): Promise<void> {
+    if (this.dirEnsured) return
+    await this.fs.mkdirp(this.dir)
+    this.dirEnsured = true
+  }
+}
+
+/** 工厂：主进程装配用（`<userData>/todos`），返回值同时满足 TodoPort 与 flush / directory。 */
+export function createFileTodoPort(options: FileTodoPortOptions): FileTodoPort {
+  return new FileTodoPort(options)
+}
+
+function todoFilePath(dir: string, sessionId: string): string {
+  return join(dir, `${normalizeSessionId(sessionId)}.json`)
+}
+
+function isTodoItem(value: unknown): value is TodoItem {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Record<string, unknown>
+  return (
+    typeof candidate['id'] === 'string' &&
+    typeof candidate['content'] === 'string' &&
+    (candidate['status'] === 'pending' ||
+      candidate['status'] === 'in_progress' ||
+      candidate['status'] === 'completed')
+  )
+}

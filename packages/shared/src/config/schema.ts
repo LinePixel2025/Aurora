@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 8 as const
+export const CONFIG_VERSION = 9 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -319,6 +319,13 @@ export const McpServerSchema = z.object({
   url: z.string().optional(),
   /** key 为环境变量名，value 为 safeStorage 密文。 */
   envEnc: z.record(z.string(), z.string()),
+  /**
+   * key 为 HTTP 请求头名，value 为 safeStorage 密文（v9）；明文只经
+   * `settings:setSecrets`（路径 `mcp.servers.<name>.headers.<key>`）。
+   * 与 `envEnc` 完全同构（docs/08 §1 / §1.1）：字段在 stdio / HTTP 两种传输的条目上都存在，
+   * 但只有 HTTP 传输消费它；渲染层只见 `headersSet` 只读标记，`headersEnc` 恒回传空对象。
+   */
+  headersEnc: z.record(z.string(), z.string()),
   enabled: z.boolean(),
 })
 export type McpServerConfig = z.infer<typeof McpServerSchema>
