@@ -55,10 +55,12 @@ describe('SessionStore', () => {
       sessionId: string
       messages: StoredMessage[]
     }
-    expect(persisted.version).toBe(1)
+    expect(persisted.version).toBe(2)
     expect(persisted.sessionId).toBe('quick')
     expect(persisted.messages).toHaveLength(3)
     expect(persisted.messages[2]?.toolCallId).toBe('c1')
+    // 没有 meta 的会话不该凭空多出一个 `"meta": {}`（老文件形状保持不变）
+    expect('meta' in persisted).toBe(false)
   })
 
   it('append 尊重传入的 id，且与 nextMessageId 预领的 id 一致（正文流式的前提）', async () => {
@@ -329,5 +331,192 @@ describe('SessionStore · 会话列表与新建（chat:sessions / chat:newSessio
     const first = await store.createSession()
     const second = await store.createSession()
     expect(first).not.toBe(second)
+  })
+})
+
+/** 读回某会话文件的原始 JSON（断言落盘形状用） */
+function readFile(fs: TestFileSystem, id: string): Record<string, unknown> {
+  const raw = fs.files.get(sessionFilePath(SESSION_DIR, id))
+  expect(raw).toBeDefined()
+  return JSON.parse(raw ?? '{}') as Record<string, unknown>
+}
+
+function metaOf(fs: TestFileSystem, id: string): Record<string, unknown> {
+  return (readFile(fs, id)['meta'] ?? {}) as Record<string, unknown>
+}
+
+describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 §4）', () => {
+  it('归档写盘可往返：重新从磁盘装载仍带 archived 与 archivedAt', async () => {
+    const { store, fs } = setup()
+    await store.append('quick', { role: 'user', content: 'hi' })
+    await store.setArchived('quick', true)
+
+    // setArchived 是 await 写盘的（不靠 300ms 防抖），因此此刻盘上已是最终内容
+    const persisted = readFile(fs, 'quick')
+    expect(persisted['version']).toBe(2)
+    expect(metaOf(fs, 'quick')['archived']).toBe(true)
+    expect(typeof metaOf(fs, 'quick')['archivedAt']).toBe('string')
+
+    // 模拟重启：同一份磁盘内容、新的 store 实例
+    const reloaded = new SessionStore({
+      dir: SESSION_DIR,
+      fs,
+      writeDebounceMs: 0,
+      maxMessages: 5,
+    })
+    expect((await reloaded.summaries()).find((item) => item.id === 'quick')?.archived).toBe(true)
+    expect(await reloaded.get('quick')).toHaveLength(1)
+    expect(await reloaded.get('quick')).toMatchObject([{ content: 'hi' }])
+  })
+
+  it('v1 老文件（无 meta）宽容读出：视为未归档，消息一条不少', async () => {
+    const path = sessionFilePath(SESSION_DIR, 'main')
+    const { store, fs } = setup({
+      [path]: JSON.stringify({
+        version: 1,
+        sessionId: 'main',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '老提问'), message('assistant', '老回答')],
+      }),
+    })
+    const messages = await store.get('main')
+    expect(messages.map((item) => item.content)).toEqual(['老提问', '老回答'])
+    const main = (await store.summaries()).find((item) => item.id === 'main')
+    expect(main?.archived).toBeUndefined()
+    // 只读不该顺手重写老文件（v1 无需迁移）
+    expect(fs.writeLog).toHaveLength(0)
+    expect(readFile(fs, 'main')['version']).toBe(1)
+  })
+
+  it('setArchived 幂等：状态未变不写盘（归档与取消归档两侧都是）', async () => {
+    const { store, fs } = setup()
+    await store.append('quick', { role: 'user', content: 'a' })
+    await store.setArchived('quick', true)
+    const afterArchive = fs.writeLog.length
+
+    await store.setArchived('quick', true)
+    expect(fs.writeLog.length).toBe(afterArchive)
+    expect(typeof metaOf(fs, 'quick')['archivedAt']).toBe('string')
+
+    await store.setArchived('quick', false)
+    expect(fs.writeLog.length).toBe(afterArchive + 1)
+    const afterUnarchive = fs.writeLog.length
+    await store.setArchived('quick', false)
+    expect(fs.writeLog.length).toBe(afterUnarchive)
+  })
+
+  it('取消归档会清掉 archivedAt（不留空值）', async () => {
+    const { store, fs } = setup()
+    await store.append('quick', { role: 'user', content: 'a' })
+    await store.setArchived('quick', true)
+    await store.setArchived('quick', false)
+
+    const meta = metaOf(fs, 'quick')
+    expect(meta['archived']).toBe(false)
+    expect(meta['archivedAt']).toBeUndefined()
+    expect((await store.summaries()).find((item) => item.id === 'quick')?.archived).toBe(false)
+  })
+
+  it('归档从未落盘的空会话：写出只含 meta、messages 为空的文件（归档需要落点）', async () => {
+    const { store, fs } = setup()
+    await store.setArchived('empty-one', true)
+
+    const persisted = readFile(fs, 'empty-one')
+    expect(persisted['version']).toBe(2)
+    expect(persisted['messages']).toEqual([])
+    expect(metaOf(fs, 'empty-one')['archived']).toBe(true)
+    expect((await store.summaries()).find((item) => item.id === 'empty-one')?.title).toBe('新会话')
+
+    // 取消归档一个从未归档过的会话被幂等挡住：不写盘、也不凭空造出文件
+    const before = fs.writeLog.length
+    await store.setArchived('never-archived', false)
+    expect(fs.writeLog.length).toBe(before)
+    expect(fs.files.has(sessionFilePath(SESSION_DIR, 'never-archived'))).toBe(false)
+  })
+
+  it('归档不改变排序：仍按 updatedAt 倒序，归档会话照常留在列表里', async () => {
+    const { store } = setup()
+    await store.append('older', {
+      role: 'user',
+      content: 'a',
+      createdAt: '2020-01-01T00:00:00.000Z',
+    })
+    await store.append('newer', {
+      role: 'user',
+      content: 'b',
+      createdAt: '2099-01-01T00:00:00.000Z',
+    })
+    await store.setArchived('older', true)
+
+    const summaries = await store.summaries()
+    // 归档不做过滤、也不参与排序（分组是渲染层的事）
+    expect(summaries.map((item) => item.id)).toEqual(['newer', 'older'])
+    expect(summaries.find((item) => item.id === 'older')?.archived).toBe(true)
+    expect(summaries.find((item) => item.id === 'older')?.messageCount).toBe(1)
+    expect(summaries.find((item) => item.id === 'newer')?.archived).toBeUndefined()
+  })
+
+  it('meta 畸形（字符串 / 数字 / 数组）时消息照旧读出，视为未归档且不触发损坏备份', async () => {
+    const badString = sessionFilePath(SESSION_DIR, 'bad-string')
+    const badNumber = sessionFilePath(SESSION_DIR, 'bad-number')
+    const badArray = sessionFilePath(SESSION_DIR, 'bad-array')
+    const { store, fs, logger } = setup({
+      [badString]: JSON.stringify({
+        version: 2,
+        sessionId: 'bad-string',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '消息还在')],
+        meta: 'x',
+      }),
+      [badNumber]: JSON.stringify({
+        version: 2,
+        sessionId: 'bad-number',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '消息还在')],
+        meta: 42,
+      }),
+      [badArray]: JSON.stringify({
+        version: 2,
+        sessionId: 'bad-array',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '消息还在')],
+        meta: [{ archived: true }],
+      }),
+    })
+
+    for (const id of ['bad-string', 'bad-number', 'bad-array']) {
+      expect((await store.get(id)).map((item) => item.content)).toEqual(['消息还在'])
+      expect((await store.summaries()).find((item) => item.id === id)?.archived).toBeUndefined()
+    }
+    // 只归化为空 meta：不备份、不重建（那会丢消息）
+    expect([...fs.files.keys()].filter((item) => item.includes('.corrupt-'))).toEqual([])
+    expect(logger.entries.some((line) => line.includes('会话文件解析失败'))).toBe(false)
+  })
+
+  it('clear 清空消息但不抹掉归档状态（已装载与未装载两条路径）', async () => {
+    const { store, fs } = setup()
+    await store.append('quick', { role: 'user', content: 'a' })
+    await store.setArchived('quick', true)
+    await store.clear('quick')
+    expect(await store.get('quick')).toEqual([])
+    expect(readFile(fs, 'quick')['messages']).toEqual([])
+    expect(metaOf(fs, 'quick')['archived']).toBe(true)
+  })
+
+  it('clear 一个尚未装载过的会话时会先读回盘上 meta（不静默丢归档）', async () => {
+    const path = sessionFilePath(SESSION_DIR, 'main')
+    const { store, fs } = setup({
+      [path]: JSON.stringify({
+        version: 2,
+        sessionId: 'main',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '历史提问')],
+        meta: { archived: true, archivedAt: '2025-01-01T00:00:00.000Z' },
+      }),
+    })
+    await store.clear('main')
+    expect(await store.get('main')).toEqual([])
+    expect(metaOf(fs, 'main')['archived']).toBe(true)
+    expect(metaOf(fs, 'main')['archivedAt']).toBe('2025-01-01T00:00:00.000Z')
   })
 })

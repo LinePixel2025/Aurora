@@ -45,12 +45,35 @@ export interface StoredMessage {
   reasoning?: string
 }
 
-/** `userData/sessions/<sessionId>.json` 的结构 */
+/**
+ * 会话级元信息（`userData/sessions/<sessionId>.json` 的 `meta` 字段，docs/06 §4）。
+ *
+ * 刻意存在**会话文件自身**里，不做 sidecar 索引：`listSessions()` 把 `sessions/`
+ * 下任何 `*.json` 都当作会话 id，放 `index.json` 会立刻多出一个假会话。
+ * 也正因如此它**不进 `config.json`**，不需要配置迁移。
+ */
+export interface SessionMeta {
+  /** 已归档：从主列表移入「已归档」分组，但会话本身照常可读可继续对话 */
+  archived?: boolean
+  /** 归档时刻（ISO）；取消归档时清掉 */
+  archivedAt?: string
+  /**
+   * 预留：置顶（**本轮不实现**，不加 IPC / UI）。
+   *
+   * 留类型不留实现，是为了让「未来加置顶」不必再动一次会话文件格式 ——
+   * 读取侧已按字段白名单宽容归化，写入侧也只写已知字段，因此现在留着零成本。
+   */
+  pinned?: boolean
+}
+
+/** `userData/sessions/<sessionId>.json` 的结构（v1 无 `meta`，读取侧必须容忍） */
 export interface StoredSession {
-  version: 1
+  version: typeof SESSION_FILE_VERSION
   sessionId: string
   updatedAt: string
   messages: StoredMessage[]
+  /** 会话级元信息；空 meta 不写这个键（老文件形状保持不变） */
+  meta?: SessionMeta
 }
 
 /** 追加一条消息的输入（`id` 缺省时由 SessionStore 生成） */
@@ -73,4 +96,10 @@ export interface NewMessage {
   createdAt?: string
 }
 
-export const SESSION_FILE_VERSION = 1 as const
+/**
+ * 会话文件格式版本（与 `CONFIG_VERSION` 是两条独立的链，别混）。
+ *
+ * v1 → v2：新增可选 `meta`（归档等会话级元信息）。读取对 v1 **宽容**（缺 `meta` = 未归档），
+ * 因此**不存在迁移脚本**，旧文件也无需重写。
+ */
+export const SESSION_FILE_VERSION = 2 as const

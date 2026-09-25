@@ -4,7 +4,9 @@
  * 约定：
  * - 一个会话一个文件：`<dir>/<sessionId>.json`；`sessionId` 白名单归一（防路径穿越）。
  * - 懒加载（首次访问读盘）+ 300ms 防抖原子写 + `flush()`（退出前调用）。
- * - 解析失败：备份为 `<sessionId>.corrupt-<ts>.json` 后重建为空会话（不静默丢数据）。
+ * - 会话级元信息（`meta`：归档等）与消息同文件、同缓存、同脏标记；空 `meta` 不落键。
+ * - 解析失败：备份为 `<sessionId>.corrupt-<ts>.json` 后重建为空会话（不静默丢数据）；
+ *   但 `meta` 畸形**不算**解析失败（只归化为空 meta，避免为一个旁路字段丢消息）。
  * - 系统提示词**不落盘**，每次请求由 context 层重新组装。
  * - 纯 Node：文件系统经 `FileSystemPort` 注入，单测可替换。
  */
@@ -21,6 +23,7 @@ import { DEFAULT_MAX_MESSAGES, truncateHistory, type TruncateOptions } from './h
 import {
   SESSION_FILE_VERSION,
   type NewMessage,
+  type SessionMeta,
   type StoredMessage,
   type StoredSession,
   type StoredToolCall,
@@ -28,6 +31,19 @@ import {
 
 export const SESSION_WRITE_DEBOUNCE_MS = 300
 const MAX_BACKUPS = 3
+
+/**
+ * 会话摘要（`chat:sessions`，docs/06 §4）。
+ *
+ * 与 shared 的 `ChatSessionSummary`（`packages/shared/src/ipc/types.ts`）**结构兼容**
+ * （多出的 `archived` 是可选字段，因此可以直接回给该通道），
+ * 这里之所以在 store 内再声明一次：归档是会话存储层的概念，而本轮不允许改 shared。
+ * 等 shared 的 `ChatSessionSummary` 补上 `archived?: boolean` 后，这个接口可以直接并过去。
+ */
+export interface SessionSummary extends ChatSessionSummary {
+  /** 已归档（照常出现在列表里，只是带标记；渲染层据此分组） */
+  archived?: boolean
+}
 
 export interface SessionStoreOptions {
   /** 会话目录（主进程传 `<userData>/sessions`） */
@@ -62,6 +78,8 @@ export class SessionStore {
   private readonly onWriteError: ((error: Error) => void) | undefined
 
   private readonly cache = new Map<string, StoredMessage[]>()
+  /** 会话级元信息（归档等）：与 `cache` / `loaded` / `dirty` 同一套懒加载 + 脏标记 */
+  private readonly metaCache = new Map<string, SessionMeta>()
   private readonly loaded = new Set<string>()
   private readonly dirty = new Set<string>()
   private readonly writing = new Map<string, Promise<void>>()
@@ -185,12 +203,46 @@ export class SessionStore {
     }
   }
 
+  /**
+   * 清空某会话的消息（会话本身与 meta 保留）。
+   *
+   * `ensureLoaded` 不是可省的：metaCache 可能还没装载过，
+   * 直接写盘会因为拿不到 meta 而**把归档状态悄悄抹掉**（写出的 payload 里没有 `meta`）。
+   */
   async clear(sessionId: string): Promise<void> {
     const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
     this.cache.set(id, [])
     this.loaded.add(id)
     this.dirty.add(id)
     this.scheduleWrite(id, 0)
+  }
+
+  /**
+   * 归档 / 取消归档（`chat:archiveSession`，docs/06 §4）。
+   *
+   * - **幂等**：当前状态已等于目标值 → 直接返回，不写盘；
+   * - 归档写 `archivedAt`，取消归档**删掉**它（不留一个空值）；
+   * - 先 `ensureLoaded`：别把已在盘上的消息冲掉（写盘时 payload 用内存快照）；
+   * - **await 写盘完成**：IPC 之后调用方要立刻能读到新状态（探针依赖这个确定性），
+   *   所以走 `scheduleWrite(id, 0)` 而不是 300ms 防抖（该性质见 `writeNow` 注释）；
+   * - 给一个**从未落盘的空会话**归档会因此首次写出一个只有 meta、`messages: []` 的文件 ——
+   *   这是**预期行为**：归档这件事本身就需要一个落点，否则重启后归档状态无处可读。
+   */
+  async setArchived(id: string, archived: boolean): Promise<void> {
+    const sessionId = normalizeSessionId(id)
+    await this.ensureLoaded(sessionId)
+    const current = this.metaCache.get(sessionId) ?? {}
+    // 幂等判定按「是否已归档」而非字段原值：v1 老文件没有 archived 字段，同样算未归档
+    if ((current.archived === true) === archived) return
+
+    const next: SessionMeta = { ...current, archived }
+    if (archived) next.archivedAt = new Date().toISOString()
+    else delete next.archivedAt
+    this.metaCache.set(sessionId, next)
+    this.dirty.add(sessionId)
+    this.scheduleWrite(sessionId, 0)
+    await (this.writing.get(sessionId) ?? Promise.resolve())
   }
 
   /** 已落盘 / 已缓存的会话 id 列表。 */
@@ -215,11 +267,14 @@ export class SessionStore {
    * 也不需要额外请求；空会话回落为「新会话」。
    * 排序：有消息的按最后一条消息时间倒序，空会话排最后（新建会话在顶部更符合直觉，
    * 但用户此时期待看到的是「刚建的会话」，因此空会话用其 id 的生成时间参与排序）。
+   * 归档**不参与排序**：归档会话照常出现在列表里，只是多一个 `archived` 标记，
+   * 由渲染层决定分组（storage 层不做过滤，避免「归档后从磁盘消失了」这类误判）。
    */
-  async summaries(activeId?: string): Promise<ChatSessionSummary[]> {
-    const items: ChatSessionSummary[] = []
+  async summaries(activeId?: string): Promise<SessionSummary[]> {
+    const items: SessionSummary[] = []
     for (const id of await this.listSessions()) {
       const messages = await this.get(id)
+      const meta = this.metaCache.get(id) ?? {}
       const firstUser = messages.find((message) => message.role === 'user')
       const last = messages[messages.length - 1]
       items.push({
@@ -230,6 +285,7 @@ export class SessionStore {
           (message) => message.role === 'user' || message.role === 'assistant',
         ).length,
         ...(activeId === undefined ? {} : { active: id === normalizeSessionId(activeId) }),
+        ...(meta.archived === undefined ? {} : { archived: meta.archived }),
       })
     }
     return items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
@@ -284,27 +340,43 @@ export class SessionStore {
   private async ensureLoaded(id: string): Promise<void> {
     if (this.loaded.has(id)) return
     this.loaded.add(id)
-    this.cache.set(id, await this.readFromDisk(id))
+    const { messages, meta } = await this.readFromDisk(id)
+    this.cache.set(id, messages)
+    this.metaCache.set(id, meta)
   }
 
-  private async readFromDisk(id: string): Promise<StoredMessage[]> {
+  /**
+   * 读盘：消息与会话级 meta 一次读出（两者在同一个文件里，没有理由读两遍）。
+   *
+   * 宽容口径（docs/06 §4）：
+   * - 文件不存在 → 空 messages + 空 meta（首次运行，不是错误）；
+   * - `messages` 不是数组 → 走既有损坏备份路径（文件结构已不可信）；
+   * - `meta` 畸形（不是对象 / 是数组 / 字段类型不对）→ 只当空 meta，**备份都不做** ——
+   *   meta 是新加的旁路信息，绝不能因为它坏了就把整份会话备份重建（那等于丢消息）。
+   */
+  private async readFromDisk(
+    id: string,
+  ): Promise<{ messages: StoredMessage[]; meta: SessionMeta }> {
     const path = sessionFilePath(this.dir, id)
     let raw: string
     try {
       raw = await this.fs.readFile(path)
     } catch {
-      return [] // 首次运行：会话文件尚不存在
+      return { messages: [], meta: {} } // 首次运行：会话文件尚不存在
     }
 
     try {
       const parsed: unknown = JSON.parse(raw)
       const messages = (parsed as StoredSession | null)?.messages
       if (!Array.isArray(messages)) throw new Error('messages 不是数组')
-      return messages.filter(isStoredMessage)
+      return {
+        messages: messages.filter(isStoredMessage),
+        meta: normalizeMeta((parsed as StoredSession | null)?.meta),
+      }
     } catch (error) {
       this.logger.error('会话文件解析失败，已备份并重建', { sessionId: id, error: String(error) })
       await this.backupCorrupt(id, path)
-      return []
+      return { messages: [], meta: {} }
     }
   }
 
@@ -367,11 +439,14 @@ export class SessionStore {
       .then(async () => {
         if (!this.dirty.has(id)) return
         this.dirty.delete(id)
+        const meta = this.metaCache.get(id) ?? {}
         const payload: StoredSession = {
           version: SESSION_FILE_VERSION,
           sessionId: id,
           updatedAt: new Date().toISOString(),
           messages: this.cache.get(id) ?? [],
+          // 空 meta 不写这个键：老文件（v1）的形状保持不变，不让每个会话文件都多一行 `"meta": {}`
+          ...(isEmptyMeta(meta) ? {} : { meta }),
         }
         try {
           await this.fs.writeFileAtomic(
@@ -400,6 +475,28 @@ function isStoredMessage(value: unknown): value is StoredMessage {
     typeof candidate['createdAt'] === 'string' &&
     (role === 'user' || role === 'assistant' || role === 'tool' || role === 'system')
   )
+}
+
+/**
+ * meta 归化：只保留**已知且类型正确**的字段，其余一概丢弃。
+ *
+ * 非对象（字符串 / 数字 / 数组 / null）一律当空 meta —— 这条宽容是刻意的：
+ * meta 是旁路信息，畸形时把整个会话当损坏备份重建就等于丢消息（与 `messages` 的
+ * 严格口径不同，那边结构不可信就真的没法读了）。
+ */
+function normalizeMeta(value: unknown): SessionMeta {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+  const candidate = value as Record<string, unknown>
+  const meta: SessionMeta = {}
+  if (typeof candidate['archived'] === 'boolean') meta.archived = candidate['archived']
+  if (typeof candidate['archivedAt'] === 'string') meta.archivedAt = candidate['archivedAt']
+  if (typeof candidate['pinned'] === 'boolean') meta.pinned = candidate['pinned']
+  return meta
+}
+
+/** 空 meta（无字段或字段全 undefined）判定：决定要不要往 payload 里写 `meta` 键 */
+function isEmptyMeta(meta: SessionMeta): boolean {
+  return meta.archived === undefined && meta.archivedAt === undefined && meta.pinned === undefined
 }
 
 /** 会话标题最大长度（中文字符按 1 计） */
