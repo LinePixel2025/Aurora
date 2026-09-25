@@ -1,7 +1,11 @@
 <script setup lang="ts">
 /**
- * 设置窗口（docs/07 §2.5、docs/08 §5/§6）：单窗口分栏
- * 常规 / 模式 / AI 模型 / 语音 / Skill / MCP / 电脑操控 / 高级。
+ * 设置窗口（docs/07 §2.5、docs/08 §5/§6）：单窗口分栏六页
+ * 通用 / 模式 / AI 模型 / 语音 / 智能与工具 / 高级（BetaV2 由 8 页合并而来，spec §9）。
+ *
+ * 合并去向：TtsPage → voice（与 STT 同页）；SkillsPage / McpPage → agent；
+ * AdvancedPage 的勿扰时段 → general。旧深链（`?page=tts|skills|mcp`）经
+ * `LEGACY_PAGE_ALIASES` 映射到新页，截图核对工具与新老调用方都不受影响。
  *
  * 本窗无系统标题栏（`frame: false`），拖动能力由 `useWindowDrag('settings')` 统一提供
  * （docs/07 §1），共三处：侧栏顶部透明条（16px）、侧栏品牌行（min-height 36px，实测 ≈39px）、
@@ -9,20 +13,18 @@
  * 品牌行同时提供「✕ 隐藏」按钮（`Esc` 等效）。按 docs/02 §2.2 约定，
  * 此处「关闭」= 隐藏窗口（不退出应用，退出只走托盘菜单）。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, type Component } from 'vue'
 import AppToast from '../shared/components/AppToast.vue'
 import GeneralPage from './pages/GeneralPage.vue'
 import ModesPage from './pages/ModesPage.vue'
 import LlmPage from './pages/LlmPage.vue'
-import TtsPage from './pages/TtsPage.vue'
-import SkillsPage from './pages/SkillsPage.vue'
-import McpPage from './pages/McpPage.vue'
+import VoicePage from './pages/VoicePage.vue'
 import AgentPage from './pages/AgentPage.vue'
 import AdvancedPage from './pages/AdvancedPage.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 
-type PageId = 'general' | 'modes' | 'llm' | 'tts' | 'skills' | 'mcp' | 'agent' | 'advanced'
+type PageId = 'general' | 'modes' | 'llm' | 'voice' | 'agent' | 'advanced'
 
 interface NavItem {
   id: PageId
@@ -32,23 +34,20 @@ interface NavItem {
 
 /** 扁平清单同时是「页面 id → 标签 / 说明」的查表数据（深链校验也用它） */
 const nav: NavItem[] = [
-  { id: 'general', label: '常规', hint: '开机自启、快捷键、提示条' },
+  { id: 'general', label: '通用', hint: '启动、提示条与勿扰' },
   { id: 'modes', label: '模式', hint: '三种模式与引导' },
-  { id: 'llm', label: 'AI 模型', hint: 'Provider 与连接测试' },
-  { id: 'tts', label: '语音', hint: 'TTS 朗读与音色' },
-  { id: 'skills', label: 'Skill', hint: '内置与用户技能' },
-  { id: 'mcp', label: 'MCP', hint: '外部工具服务' },
-  { id: 'agent', label: '电脑操控', hint: '终端与文件操控' },
-  { id: 'advanced', label: '高级', hint: '代理、日志、勿扰' },
+  { id: 'llm', label: 'AI 模型', hint: 'Provider、思考与生图' },
+  { id: 'voice', label: '语音', hint: '朗读与语音输入' },
+  { id: 'agent', label: '智能与工具', hint: '工具、技能与 MCP' },
+  { id: 'advanced', label: '系统', hint: '网络、日志与安全' },
 ]
 
 /**
- * 侧栏分组（docs/07 §2.5）：页面本身不变，只是把 8 项按「基础 / AI 能力 / 系统」
- * 分层，避免同级项平铺时看不出主次。
+ * 侧栏分组（BetaV2 六页两级）：基础（本机行为）/ 智能（AI 能力）/ 系统（运维）。
  */
 const navGroups: Array<{ title: string; ids: PageId[] }> = [
   { title: '基础', ids: ['general', 'modes'] },
-  { title: 'AI 能力', ids: ['llm', 'tts', 'skills', 'mcp', 'agent'] },
+  { title: '智能', ids: ['llm', 'voice', 'agent'] },
   { title: '系统', ids: ['advanced'] },
 ]
 
@@ -62,14 +61,38 @@ const grouped = computed(() =>
   })),
 )
 
+/** 页面 id → 组件：`<component :is>` 渲染当前页，配合 `<Transition name="page">` 做切换动画 */
+const pages: Record<PageId, Component> = {
+  general: GeneralPage,
+  modes: ModesPage,
+  llm: LlmPage,
+  voice: VoicePage,
+  agent: AgentPage,
+  advanced: AdvancedPage,
+}
+
+/**
+ * 旧版 8 页的深链兼容映射（spec §9）：`?page=tts` 等老链接落到合并后的新页。
+ * 只做单向映射；6 个新 id 直接生效，不在表里的值回落「通用」。
+ */
+const LEGACY_PAGE_ALIASES: Record<string, PageId> = {
+  tts: 'voice',
+  skills: 'agent',
+  mcp: 'agent',
+}
+
 /**
  * 初始页面：支持 `?page=<id>` 深链（截图核对工具按页出图，docs/07 §5）。
- * 正常启动不带 query，回落到「常规」；未知值同样回落，避免白屏。
+ * 正常启动不带 query，回落到「通用」；未知值同样回落，避免白屏。
  */
 function initialPage(): PageId {
   const requested = new URLSearchParams(window.location.search).get('page')
-  const match = nav.find((item) => item.id === requested)
-  return match?.id ?? 'general'
+  if (requested !== null) {
+    const aliased = LEGACY_PAGE_ALIASES[requested]
+    if (aliased !== undefined) return aliased
+    if (nav.some((item) => item.id === requested)) return requested as PageId
+  }
+  return 'general'
 }
 
 const active = ref<PageId>(initialPage())
@@ -158,14 +181,10 @@ function select(id: PageId): void {
         当前系统未提供安全存储：API Key 只在本次运行的内存中有效。
       </AppToast>
 
-      <GeneralPage v-if="active === 'general'" />
-      <ModesPage v-else-if="active === 'modes'" />
-      <LlmPage v-else-if="active === 'llm'" />
-      <TtsPage v-else-if="active === 'tts'" />
-      <SkillsPage v-else-if="active === 'skills'" />
-      <McpPage v-else-if="active === 'mcp'" />
-      <AgentPage v-else-if="active === 'agent'" />
-      <AdvancedPage v-else />
+      <!-- 页切换动画（theme.css `page` 预设）：out-in 保证同一时刻只有一页参与布局，不产生双页跳动 -->
+      <Transition name="page" mode="out-in">
+        <component :is="pages[active]" :key="active" />
+      </Transition>
     </main>
   </div>
 </template>
@@ -267,6 +286,10 @@ nav > .nav-group:first-child {
   margin-top: 0;
 }
 
+/**
+ * 侧栏条目（BetaV2）：背景 / 文字快速过渡 + 按下微缩（`.press` 的手动展开 ——
+ * 这里不直接挂全局 `.press` 类，因为 transition 声明要与本条的 background / color 合并）。
+ */
 .nav-item {
   position: relative;
   display: flex;
@@ -280,14 +303,19 @@ nav > .nav-group:first-child {
   text-align: left;
   transition:
     background var(--transition-fast),
-    color var(--transition-fast);
+    color var(--transition-fast),
+    transform var(--dur-press) var(--ease-standard);
 }
 
 .nav-item:hover {
   background: var(--fill-2);
 }
 
-/* 当前项：分层填充 + 左侧品牌色指示条（不靠纯色块区分，色觉障碍下也可辨） */
+.nav-item:active {
+  transform: scale(0.98);
+}
+
+/* 当前项：分层填充 + 左侧强调色指示条（不靠纯色块区分，色觉障碍下也可辨） */
 .nav-item.active {
   background: var(--fill-3);
 }

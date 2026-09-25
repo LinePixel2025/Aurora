@@ -1,6 +1,10 @@
 <script setup lang="ts">
 /**
- * 常规设置页（docs/08 §1/§6）：启动、提示条、系统感知、关于与更新。
+ * 常规设置页（docs/08 §1/§6，BetaV2 六页 IA）：启动、提示条、勿扰时段、系统感知、关于与更新。
+ *
+ * 勿扰时段（`advanced.quietHours`）从 AdvancedPage 迁来：与「提示条」自己的静默时段
+ * （`general.edgeBar.quietHours`）在视觉上是两个小组，但同在这一页 —— 前者拦截主动打扰
+ * （课前提醒、敏感工具确认），后者只控制提示条本身的显隐，两者互不影响。
  *
  * `general.language` 是**没有 i18n 消费方的死字段**（docs/08 §1）：
  * 本页不再提供任何入口，但保存时仍原样回传当前值 —— `settings:update` 是
@@ -100,6 +104,24 @@ async function saveEdgeQuiet(which: 'start' | 'end', value: string): Promise<voi
   else error.value = settingsStore.error
 }
 
+/** 全局勿扰时段（`advanced.quietHours`，自 AdvancedPage 迁入）：保存语义与其原实现一致 */
+async function saveQuiet(which: 'start' | 'end', value: string): Promise<void> {
+  const current = settingsStore.settings?.advanced ?? null
+  if (!current) return
+  let next: { start: string; end: string } | null
+  if (which === 'start') {
+    const start = value.trim()
+    // 留空 = 不启用；只填开始时结束时间先按默认「07:00」落一个完整时段
+    next = start === '' ? null : { start, end: current.quietHours?.end ?? '07:00' }
+  } else {
+    const end = value.trim()
+    next = current.quietHours?.start ? { start: current.quietHours.start, end } : null
+  }
+  const ok = await settingsStore.update({ advanced: { ...current, quietHours: next } })
+  if (ok) saved.value = '已保存'
+  else error.value = settingsStore.error
+}
+
 onMounted(async () => {
   detachUpdate = update.bind()
   await update.load()
@@ -151,8 +173,10 @@ async function toggleEdgeBar(): Promise<void> {
 <template>
   <section class="page">
     <header>
-      <h1 class="page-title">常规</h1>
-      <p class="page-sub">开机自启、全局快捷键与右侧提示条；系统感知与更新状态也在这里查看。</p>
+      <h1 class="page-title">通用</h1>
+      <p class="page-sub">
+        开机自启、全局快捷键、右侧提示条与全局勿扰时段；系统感知与更新状态也在这里查看。
+      </p>
     </header>
 
     <section class="section-card">
@@ -243,6 +267,41 @@ async function toggleEdgeBar(): Promise<void> {
       <p v-else class="section-desc" data-empty="general.edgeBar">
         提示条已停用：透明度与静默时段暂不可配，重新启用后即可继续调整。
       </p>
+    </section>
+
+    <!-- 全局勿扰时段（advanced.quietHours）：与提示条静默时段同区但分属两组（spec §9） -->
+    <section class="section-card">
+      <h2 class="section-title">勿扰时段</h2>
+      <p class="section-desc">
+        全局勿扰只拦截主动打扰（课前提醒、敏感工具确认），不影响提示条显示；两端都填才生效。
+        提示条自己的静默时段在上方「提示条」里单独设置。
+      </p>
+
+      <SettingField
+        data-field="advanced.quietHours.start"
+        label="勿扰时段开始"
+        hint="格式 HH:mm；留空表示不启用"
+      >
+        <input
+          class="input"
+          type="text"
+          spellcheck="false"
+          placeholder="22:30"
+          :value="settingsStore.settings?.advanced?.quietHours?.start ?? ''"
+          @change="saveQuiet('start', ($event.target as HTMLInputElement).value)"
+        />
+      </SettingField>
+
+      <SettingField data-field="advanced.quietHours.end" label="勿扰时段结束">
+        <input
+          class="input"
+          type="text"
+          spellcheck="false"
+          placeholder="07:00"
+          :value="settingsStore.settings?.advanced?.quietHours?.end ?? ''"
+          @change="saveQuiet('end', ($event.target as HTMLInputElement).value)"
+        />
+      </SettingField>
     </section>
 
     <section class="section-card">

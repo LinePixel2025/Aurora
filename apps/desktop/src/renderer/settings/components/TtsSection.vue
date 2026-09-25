@@ -1,15 +1,14 @@
 <script setup lang="ts">
 /**
- * 语音（TTS）设置页（docs/06 §13、docs/08 §1/§5）：provider **目录行列表 + 一次只开一张编辑卡**。
+ * 语音合成（TTS）区组（docs/06 §13、docs/08 §1/§5）：provider **目录行列表 + 一次只开一张编辑卡**。
  *
- * 信息架构与 `LlmPage.vue` 完全对齐（那页是同类页面的模板，改这里前先看它）：
- * 页头摘要（当前默认 provider · 音色）→ **常显区**（总开关 / 默认 provider / 自动朗读 / 字数上限）
- * → 工具行（+ 添加 TTS 模型）→ provider 行列表（id + 凭据状态 + 是否默认 + 编辑 / 设为默认 / 删除）
- * → 空状态；危险操作走**就地二次确认**，凭据是 write-only 输入，页面永不回显明文。
+ * 由 `TtsPage.vue` 整体迁入（BetaV2 8 → 6 页，spec §9），provider CRUD 的行为与锚点
+ * （`tts.*` 的 data-field / data-action）原样保留；信息架构与 `LlmPage.vue` 完全对齐：
+ * 常显区（总开关 / 默认 provider / 自动朗读 / 字数上限）→ 工具行（+ 添加 TTS 模型）
+ * → 行列表 → 空状态；危险操作走**就地二次确认**，凭据是 write-only 输入，页面永不回显明文。
  *
- * 为什么常显区**不跟着 `tts.enabled` 门控**（与 AgentPage 的子开关不同）：
- * 这四项里就有总开关自己 —— 跟着它门控等于「一关就再也开不回来」，只能改配置文件自救。
- * 子开关（终端 / 文件 / 打开）可以门控，是因为它们的父开关不会被自己关掉。
+ * 为什么常显区**不跟着 `tts.enabled` 门控**：这四项里就有总开关自己 ——
+ * 跟着它门控等于「一关就再也开不回来」，只能改配置文件自救。
  *
  * 为什么「连接测试」与「保存并试听」是两个按钮：
  * `tts:testConnection` 只回 `ok / latencyMs / message / bytes`，**不回音频**；
@@ -49,7 +48,7 @@ const MIN_MAX_CHARS = 50
 const MAX_MAX_CHARS = 4096
 
 const settingsStore = useSettingsStore()
-/** 播放实现只有 `useTts` 一份，本页**不**自己 `new Audio` */
+/** 播放实现只有 `useTts` 一份，本区组**不**自己 `new Audio` */
 const tts = useTts()
 
 const newProviderId = ref('')
@@ -62,6 +61,9 @@ const mode = ref<PageMode>('list')
 const editingId = ref<string | null>(null)
 /** 删除的二次确认：待确认的 provider id（单值，同一时刻只确认一个） */
 const pendingRemoveId = ref<string | null>(null)
+
+/** 区组折叠状态（默认展开：字段与探针锚点常在 DOM 里） */
+const open = ref(true)
 
 const ttsSettings = computed(() => settingsStore.settings?.tts ?? null)
 const activeId = computed(() => ttsSettings.value?.active ?? '')
@@ -427,382 +429,360 @@ function stopPreview(): void {
 </script>
 
 <template>
-  <section class="page">
-    <header>
-      <h1 class="page-title">语音</h1>
-      <p class="page-sub">
-        让 Aurora 朗读回复。支持任何 OpenAI 兼容的语音合成服务；凭据加密保存在本机。
-      </p>
-      <!-- 页头摘要：当前默认模型来自哪个 provider、用哪个音色，一眼可见 -->
-      <p class="summary tiny">
-        <template v-if="activeDraft">
-          当前默认：<span class="mono">{{ activeDraft.id }}</span> ·
-          <span class="mono">{{ activeDraft.model }}</span> · 音色
-          <span class="mono">{{ activeDraft.voice }}</span>
-        </template>
-        <template v-else>尚未配置 TTS 模型</template>
-      </p>
-    </header>
+  <section class="group section-card">
+    <button class="group-head" type="button" :aria-expanded="open" @click="open = !open">
+      <span class="chevron" :class="{ open }" aria-hidden="true">▸</span>
+      <span class="section-title">语音合成（TTS）</span>
+      <span class="group-summary tiny muted grow">
+        {{ activeDraft ? `${activeDraft.id} · ${activeDraft.model}` : '未配置' }}
+      </span>
+    </button>
 
-    <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
-    <AppToast v-if="error" tone="error">{{ error }}</AppToast>
+    <Transition name="collapse">
+      <div v-if="open" class="group-body">
+        <p class="section-desc">
+          让 Aurora 朗读回复。总开关决定对话窗里是否出现朗读按钮；关掉后已保存的模型不会被删除，
+          随时可以再打开。
+        </p>
 
-    <!-- 常显区：四项**都不门控**（总开关就在其中，跟着它藏起来就再也开不回来） -->
-    <section class="section-card">
-      <h2 class="section-title">朗读</h2>
-      <p class="section-desc">
-        总开关决定对话窗里是否出现朗读按钮；关掉后已保存的模型不会被删除，随时可以再打开。
-      </p>
+        <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
+        <AppToast v-if="error" tone="error">{{ error }}</AppToast>
 
-      <SettingField
-        data-field="tts.enabled"
-        label="启用语音朗读"
-        hint="关闭后对话窗不再提供朗读入口（已保存的 TTS 模型保留）"
-      >
-        <label class="row tiny">
-          <input
-            type="checkbox"
-            :checked="enabled"
-            @change="saveTts({ enabled: ($event.target as HTMLInputElement).checked })"
-          />
-          <span>允许 Aurora 朗读回复</span>
-        </label>
-      </SettingField>
-
-      <SettingField
-        data-field="tts.active"
-        label="默认 TTS 模型"
-        hint="朗读时默认使用它；留空表示尚未配置"
-      >
-        <select
-          class="input"
-          :value="activeId"
-          :disabled="drafts.length === 0"
-          @change="setActive(($event.target as HTMLSelectElement).value)"
+        <!-- 常显区：四项**都不门控**（总开关就在其中，跟着它藏起来就再也开不回来） -->
+        <SettingField
+          data-field="tts.enabled"
+          label="启用语音朗读"
+          hint="关闭后对话窗不再提供朗读入口（已保存的 TTS 模型保留）"
         >
-          <option value="">（未配置）</option>
-          <option v-for="draft in drafts" :key="draft.id" :value="draft.id">{{ draft.id }}</option>
-        </select>
-      </SettingField>
-      <p v-if="drafts.length === 0" class="tiny muted">
-        还没有可选的模型：先在下面「添加 TTS 模型」。
-      </p>
+          <label class="row tiny">
+            <input
+              type="checkbox"
+              :checked="enabled"
+              @change="saveTts({ enabled: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>允许 Aurora 朗读回复</span>
+          </label>
+        </SettingField>
 
-      <SettingField
-        data-field="tts.autoRead"
-        label="自动朗读新回复"
-        hint="回复结束后自动合成并播放；长回复按下面的上限截断"
-      >
-        <label class="row tiny">
-          <input
-            type="checkbox"
-            :checked="autoRead"
-            @change="saveTts({ autoRead: ($event.target as HTMLInputElement).checked })"
-          />
-          <span>新回复自动朗读</span>
-        </label>
-      </SettingField>
-
-      <SettingField
-        data-field="tts.maxChars"
-        label="单次朗读文本上限"
-        hint="按字符截断，50 ～ 4096；超出部分不合成，避免一次朗读消耗过多额度"
-      >
-        <input
-          class="input"
-          type="number"
-          min="50"
-          max="4096"
-          step="50"
-          :value="maxChars"
-          @change="saveMaxChars($event)"
-        />
-      </SettingField>
-    </section>
-
-    <!-- 空状态：没有任何 TTS 模型时不摆一排空行，直接给主入口 -->
-    <section v-if="drafts.length === 0" class="section-card empty-state" data-empty="tts.providers">
-      <h2 class="section-title">还没有 TTS 模型</h2>
-      <p class="section-desc">添加一个 OpenAI 兼容的语音合成服务并设为默认后，就能朗读回复。</p>
-      <div class="row">
-        <AppButton variant="primary" @click="startAdd">添加 TTS 模型</AppButton>
-      </div>
-    </section>
-
-    <!-- 工具行：新增入口（列表非空时它才需要；空列表由上面的空状态卡承担） -->
-    <div v-if="drafts.length > 0" class="row wrap toolbar">
-      <AppButton size="sm" :disabled="mode === 'add'" @click="startAdd">+ 添加 TTS 模型</AppButton>
-      <span class="grow" />
-      <span class="tiny muted">{{ drafts.length }} 个 TTS 模型</span>
-    </div>
-
-    <!-- 添加流程（mode === 'add'）：预设 chips 来自 TTS_PRESETS，选中即进编辑卡 -->
-    <section v-if="mode === 'add'" class="section-card">
-      <div class="row">
-        <h2 class="section-title grow">添加 TTS 模型</h2>
-        <AppButton size="sm" variant="ghost" @click="closeEditor">取消</AppButton>
-      </div>
-      <p class="section-desc">
-        选一个预设快速填好 Base URL、模型名与音色，或填自定义 id 后手动配置。
-      </p>
-      <div class="add-row">
-        <input
-          v-model="newProviderId"
-          class="input"
-          type="text"
-          spellcheck="false"
-          placeholder="自定义 id（可选）"
-        />
-        <AppButton
-          v-for="preset in TTS_PRESETS"
-          :key="preset.id"
-          size="sm"
-          @click="addPreset(preset.id)"
+        <SettingField
+          data-field="tts.active"
+          label="默认 TTS 模型"
+          hint="朗读时默认使用它；留空表示尚未配置"
         >
-          + {{ preset.label }}
-        </AppButton>
-        <AppButton size="sm" variant="ghost" @click="addPreset('custom')">+ 空白配置</AppButton>
-      </div>
-    </section>
+          <select
+            class="input"
+            :value="activeId"
+            :disabled="drafts.length === 0"
+            @change="setActive(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="">（未配置）</option>
+            <option v-for="draft in drafts" :key="draft.id" :value="draft.id">
+              {{ draft.id }}
+            </option>
+          </select>
+        </SettingField>
+        <p v-if="drafts.length === 0" class="tiny muted">
+          还没有可选的模型：先在下面「添加 TTS 模型」。
+        </p>
 
-    <!-- provider 目录行列表：容器上标 `tts.providers`，每行标 `tts.providers.<id>` -->
-    <div v-if="drafts.length > 0" class="provider-list" data-field="tts.providers">
-      <article
-        v-for="draft in drafts"
-        :key="draft.id"
-        class="section-card provider-row"
-        :class="{ accent: activeId === draft.id, editing: isEditing(draft.id) }"
-        :data-field="`tts.providers.${draft.id}`"
-      >
-        <header class="provider-head">
-          <strong class="mono">{{ draft.id }}</strong>
-          <span v-if="draft.apiKeySet" class="badge ok">凭据已保存</span>
-          <span v-else class="badge warn">缺少凭据</span>
-          <span v-if="activeId === draft.id" class="badge ok">默认</span>
-          <span class="grow" />
-          <AppButton
-            size="sm"
-            variant="ghost"
-            data-action="edit-tts-provider"
-            @click="openEditor(draft.id)"
-          >
-            编辑
-          </AppButton>
-          <AppButton
-            size="sm"
-            variant="ghost"
-            :disabled="activeId === draft.id"
-            @click="setActive(draft.id)"
-          >
-            {{ activeId === draft.id ? '已是默认' : '设为默认' }}
-          </AppButton>
-          <AppButton
-            size="sm"
-            :variant="pendingRemoveId === draft.id ? 'danger' : 'ghost'"
-            data-action="remove-tts-provider"
-            @click="requestRemove(draft.id)"
-          >
-            删除
-          </AppButton>
-        </header>
+        <SettingField
+          data-field="tts.autoRead"
+          label="自动朗读新回复"
+          hint="回复结束后自动合成并播放；长回复按下面的上限截断"
+        >
+          <label class="row tiny">
+            <input
+              type="checkbox"
+              :checked="autoRead"
+              @change="saveTts({ autoRead: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>新回复自动朗读</span>
+          </label>
+        </SettingField>
 
-        <!-- 危险操作二次确认：确认条就地出现，点「确认删除」才真的删 -->
-        <div v-if="pendingRemoveId === draft.id" class="confirm-bar">
-          <span class="tiny confirm-text">
-            删除 TTS 模型「{{ draft.id }}」？{{
-              draft.apiKeySet ? '它的 API Key 密文会一并清除。' : '它还没有保存凭据。'
-            }}
-          </span>
-          <AppButton
-            size="sm"
-            variant="danger"
-            data-action="confirm-remove-tts-provider"
-            @click="removeProvider(draft.id)"
-          >
-            确认删除
-          </AppButton>
-          <AppButton
-            size="sm"
-            variant="ghost"
-            data-action="cancel-remove-tts-provider"
-            @click="pendingRemoveId = null"
-          >
-            取消
-          </AppButton>
+        <SettingField
+          data-field="tts.maxChars"
+          label="单次朗读文本上限"
+          hint="按字符截断，50 ～ 4096；超出部分不合成，避免一次朗读消耗过多额度"
+        >
+          <input
+            class="input"
+            type="number"
+            min="50"
+            max="4096"
+            step="50"
+            :value="maxChars"
+            @change="saveMaxChars($event)"
+          />
+        </SettingField>
+
+        <!-- 空状态：没有 TTS 模型时不摆一排空行，直接给主入口 -->
+        <p v-if="drafts.length === 0" class="empty-inline" data-empty="tts.providers">
+          还没有 TTS 模型：添加一个 OpenAI 兼容的语音合成服务并设为默认后，就能朗读回复。
+        </p>
+        <div v-if="drafts.length === 0" class="row">
+          <AppButton variant="primary" @click="startAdd">添加 TTS 模型</AppButton>
         </div>
 
-        <!-- 编辑卡：一次只渲染一张（editingId 是单值） -->
-        <template v-if="isEditing(draft.id) && pendingRemoveId !== draft.id">
-          <p v-if="isCreating(draft.id)" class="tiny pending-note">
-            这条还没有保存：点「应用」后才写入配置。
+        <!-- 工具行：新增入口（列表非空时它才需要；空列表由上面的空状态承担） -->
+        <div v-if="drafts.length > 0" class="row wrap toolbar">
+          <AppButton size="sm" :disabled="mode === 'add'" @click="startAdd">
+            + 添加 TTS 模型
+          </AppButton>
+          <span class="grow" />
+          <span class="tiny muted">{{ drafts.length }} 个 TTS 模型</span>
+        </div>
+
+        <!-- 添加流程（mode === 'add'）：预设 chips 来自 TTS_PRESETS，选中即进编辑卡 -->
+        <section v-if="mode === 'add'" class="form-block">
+          <div class="row">
+            <h3 class="block-title grow">添加 TTS 模型</h3>
+            <AppButton size="sm" variant="ghost" @click="closeEditor">取消</AppButton>
+          </div>
+          <p class="section-desc">
+            选一个预设快速填好 Base URL、模型名与音色，或填自定义 id 后手动配置。
           </p>
-
-          <SettingField
-            :data-field="`tts.providers.${draft.id}.baseUrl`"
-            label="baseURL"
-            required
-            hint="OpenAI 兼容端点，例如 https://api.openai.com/v1"
-          >
-            <input v-model="draft.baseUrl" class="input" type="text" spellcheck="false" />
-          </SettingField>
-
-          <SettingField
-            :data-field="`tts.providers.${draft.id}.apiKey`"
-            label="API Key"
-            :hint="
-              draft.apiKeySet
-                ? '已保存（留空表示不修改）'
-                : '必填；明文只写入系统安全存储，页面不回显'
-            "
-          >
+          <div class="add-row">
             <input
-              v-model="draft.apiKey"
-              class="input"
-              type="password"
-              spellcheck="false"
-              placeholder="sk-..."
-            />
-          </SettingField>
-
-          <SettingField
-            :data-field="`tts.providers.${draft.id}.model`"
-            label="模型名"
-            required
-            hint="例：tts-1；SiliconFlow 例：FunAudioLLM/CosyVoice2-0.5B"
-          >
-            <input v-model="draft.model" class="input" type="text" spellcheck="false" />
-          </SettingField>
-
-          <SettingField
-            :data-field="`tts.providers.${draft.id}.voice`"
-            label="音色"
-            required
-            hint="服务端定义的音色 id，例：alloy / alex；可直接填写"
-          >
-            <!-- 刻意不用 `v-model`：与音色 chips 共用同一个写入口（见 onVoiceInput） -->
-            <input
-              :value="draft.voice"
+              v-model="newProviderId"
               class="input"
               type="text"
               spellcheck="false"
-              @input="onVoiceInput(draft, $event)"
+              placeholder="自定义 id（可选）"
             />
-          </SettingField>
-
-          <!-- 候选音色 chips：只有整套预设都对得上同一个 id 时才给，自定义 id 不猜 -->
-          <div v-if="voicesOf(draft.id).length > 0" class="voices">
-            <button
-              v-for="voice in voicesOf(draft.id)"
-              :key="voice"
-              type="button"
-              class="model-chip interactive"
-              @click="selectVoice(draft, voice)"
-            >
-              {{ voice }}
-            </button>
-          </div>
-
-          <SettingField
-            :data-field="`tts.providers.${draft.id}.speed`"
-            label="语速"
-            hint="0.25 ～ 4，默认 1；越小越慢"
-          >
-            <input
-              v-model.number="draft.speed"
-              class="input"
-              type="number"
-              min="0.25"
-              max="4"
-              step="0.05"
-            />
-          </SettingField>
-
-          <SettingField
-            :data-field="`tts.providers.${draft.id}.format`"
-            label="输出格式"
-            hint="请求体的 response_format；决定播放时的 MIME 类型"
-          >
-            <select v-model="draft.format" class="input">
-              <option v-for="format in TTS_FORMATS" :key="format" :value="format">
-                {{ format }}
-              </option>
-            </select>
-          </SettingField>
-
-          <!-- 「连接测试」与「保存并试听」是两个独立按钮：前者只回文字，后者才出声音 -->
-          <div class="row wrap">
-            <AppButton size="sm" :disabled="testing !== null" @click="testProvider(draft)">
-              {{ testing === draft.id ? '测试中…' : '连接测试' }}
-            </AppButton>
-            <AppButton size="sm" :disabled="testing !== null" @click="previewDraft(draft)">
-              {{
-                previewing === 'loading'
-                  ? '合成中…'
-                  : previewing === 'playing'
-                    ? '重新试听'
-                    : '保存并试听'
-              }}
-            </AppButton>
             <AppButton
-              v-if="previewing === 'playing'"
+              v-for="preset in TTS_PRESETS"
+              :key="preset.id"
               size="sm"
-              variant="ghost"
-              @click="stopPreview"
+              @click="addPreset(preset.id)"
             >
-              停止
+              + {{ preset.label }}
             </AppButton>
-            <AppToast v-if="resultOf(draft.id)" :tone="resultOf(draft.id)?.ok ? 'ok' : 'error'">
-              {{ resultOf(draft.id)?.message }}（{{ resultOf(draft.id)?.latencyMs }}ms{{
-                resultOf(draft.id)?.bytes !== undefined
-                  ? ` · ${resultOf(draft.id)?.bytes} 字节`
-                  : ''
-              }}）
-            </AppToast>
+            <AppButton size="sm" variant="ghost" @click="addPreset('custom')">+ 空白配置</AppButton>
           </div>
+        </section>
 
-          <!-- 卡片底部：只提交这一张卡 -->
-          <footer class="row wrap card-actions">
-            <AppButton
-              size="sm"
-              variant="primary"
-              :disabled="testing !== null"
-              @click="applyDraft(draft)"
-            >
-              应用
-            </AppButton>
-            <AppButton size="sm" variant="ghost" @click="closeEditor">取消</AppButton>
-          </footer>
-        </template>
-      </article>
-    </div>
+        <!-- provider 目录行列表：容器上标 `tts.providers`，每行标 `tts.providers.<id>` -->
+        <div v-if="drafts.length > 0" class="provider-list" data-field="tts.providers">
+          <article
+            v-for="draft in drafts"
+            :key="draft.id"
+            class="provider-row"
+            :class="{ accent: activeId === draft.id, editing: isEditing(draft.id) }"
+            :data-field="`tts.providers.${draft.id}`"
+          >
+            <header class="provider-head">
+              <strong class="mono">{{ draft.id }}</strong>
+              <span v-if="draft.apiKeySet" class="badge ok">凭据已保存</span>
+              <span v-else class="badge warn">缺少凭据</span>
+              <span v-if="activeId === draft.id" class="badge ok">默认</span>
+              <span class="grow" />
+              <AppButton
+                size="sm"
+                variant="ghost"
+                data-action="edit-tts-provider"
+                @click="openEditor(draft.id)"
+              >
+                编辑
+              </AppButton>
+              <AppButton
+                size="sm"
+                variant="ghost"
+                :disabled="activeId === draft.id"
+                @click="setActive(draft.id)"
+              >
+                {{ activeId === draft.id ? '已是默认' : '设为默认' }}
+              </AppButton>
+              <AppButton
+                size="sm"
+                :variant="pendingRemoveId === draft.id ? 'danger' : 'ghost'"
+                data-action="remove-tts-provider"
+                @click="requestRemove(draft.id)"
+              >
+                删除
+              </AppButton>
+            </header>
 
-    <p v-if="drafts.length > 0" class="tiny muted">
-      改动在点「应用」（保存这一张卡）后落盘；编辑卡里的 API Key
-      留空表示不修改已保存的凭据，试听会使用已保存的模型配置。
-    </p>
+            <!-- 危险操作二次确认：确认条就地出现，点「确认删除」才真的删 -->
+            <div v-if="pendingRemoveId === draft.id" class="confirm-bar">
+              <span class="tiny confirm-text">
+                删除 TTS 模型「{{ draft.id }}」？{{
+                  draft.apiKeySet ? '它的 API Key 密文会一并清除。' : '它还没有保存凭据。'
+                }}
+              </span>
+              <AppButton
+                size="sm"
+                variant="danger"
+                data-action="confirm-remove-tts-provider"
+                @click="removeProvider(draft.id)"
+              >
+                确认删除
+              </AppButton>
+              <AppButton
+                size="sm"
+                variant="ghost"
+                data-action="cancel-remove-tts-provider"
+                @click="pendingRemoveId = null"
+              >
+                取消
+              </AppButton>
+            </div>
+
+            <!-- 编辑卡：一次只渲染一张（editingId 是单值） -->
+            <template v-if="isEditing(draft.id) && pendingRemoveId !== draft.id">
+              <p v-if="isCreating(draft.id)" class="tiny pending-note">
+                这条还没有保存：点「应用」后才写入配置。
+              </p>
+
+              <SettingField
+                :data-field="`tts.providers.${draft.id}.baseUrl`"
+                label="baseURL"
+                required
+                hint="OpenAI 兼容端点，例如 https://api.openai.com/v1"
+              >
+                <input v-model="draft.baseUrl" class="input" type="text" spellcheck="false" />
+              </SettingField>
+
+              <SettingField
+                :data-field="`tts.providers.${draft.id}.apiKey`"
+                label="API Key"
+                :hint="
+                  draft.apiKeySet
+                    ? '已保存（留空表示不修改）'
+                    : '必填；明文只写入系统安全存储，页面不回显'
+                "
+              >
+                <input
+                  v-model="draft.apiKey"
+                  class="input"
+                  type="password"
+                  spellcheck="false"
+                  placeholder="sk-..."
+                />
+              </SettingField>
+
+              <SettingField
+                :data-field="`tts.providers.${draft.id}.model`"
+                label="模型名"
+                required
+                hint="例：tts-1；SiliconFlow 例：FunAudioLLM/CosyVoice2-0.5B"
+              >
+                <input v-model="draft.model" class="input" type="text" spellcheck="false" />
+              </SettingField>
+
+              <SettingField
+                :data-field="`tts.providers.${draft.id}.voice`"
+                label="音色"
+                required
+                hint="服务端定义的音色 id，例：alloy / alex；可直接填写"
+              >
+                <!-- 刻意不用 `v-model`：与音色 chips 共用同一个写入口（见 onVoiceInput） -->
+                <input
+                  :value="draft.voice"
+                  class="input"
+                  type="text"
+                  spellcheck="false"
+                  @input="onVoiceInput(draft, $event)"
+                />
+              </SettingField>
+
+              <!-- 候选音色 chips：只有整套预设都对得上同一个 id 时才给，自定义 id 不猜 -->
+              <div v-if="voicesOf(draft.id).length > 0" class="voices">
+                <button
+                  v-for="voice in voicesOf(draft.id)"
+                  :key="voice"
+                  type="button"
+                  class="model-chip interactive"
+                  @click="selectVoice(draft, voice)"
+                >
+                  {{ voice }}
+                </button>
+              </div>
+
+              <SettingField
+                :data-field="`tts.providers.${draft.id}.speed`"
+                label="语速"
+                hint="0.25 ～ 4，默认 1；越小越慢"
+              >
+                <input
+                  v-model.number="draft.speed"
+                  class="input"
+                  type="number"
+                  min="0.25"
+                  max="4"
+                  step="0.05"
+                />
+              </SettingField>
+
+              <SettingField
+                :data-field="`tts.providers.${draft.id}.format`"
+                label="输出格式"
+                hint="请求体的 response_format；决定播放时的 MIME 类型"
+              >
+                <select v-model="draft.format" class="input">
+                  <option v-for="format in TTS_FORMATS" :key="format" :value="format">
+                    {{ format }}
+                  </option>
+                </select>
+              </SettingField>
+
+              <!-- 「连接测试」与「保存并试听」是两个独立按钮：前者只回文字，后者才出声音 -->
+              <div class="row wrap">
+                <AppButton size="sm" :disabled="testing !== null" @click="testProvider(draft)">
+                  {{ testing === draft.id ? '测试中…' : '连接测试' }}
+                </AppButton>
+                <AppButton size="sm" :disabled="testing !== null" @click="previewDraft(draft)">
+                  {{
+                    previewing === 'loading'
+                      ? '合成中…'
+                      : previewing === 'playing'
+                        ? '重新试听'
+                        : '保存并试听'
+                  }}
+                </AppButton>
+                <AppButton
+                  v-if="previewing === 'playing'"
+                  size="sm"
+                  variant="ghost"
+                  @click="stopPreview"
+                >
+                  停止
+                </AppButton>
+                <AppToast v-if="resultOf(draft.id)" :tone="resultOf(draft.id)?.ok ? 'ok' : 'error'">
+                  {{ resultOf(draft.id)?.message }}（{{ resultOf(draft.id)?.latencyMs }}ms{{
+                    resultOf(draft.id)?.bytes !== undefined
+                      ? ` · ${resultOf(draft.id)?.bytes} 字节`
+                      : ''
+                  }}）
+                </AppToast>
+              </div>
+
+              <!-- 卡片底部：只提交这一张卡 -->
+              <footer class="row wrap card-actions">
+                <AppButton
+                  size="sm"
+                  variant="primary"
+                  :disabled="testing !== null"
+                  @click="applyDraft(draft)"
+                >
+                  应用
+                </AppButton>
+                <AppButton size="sm" variant="ghost" @click="closeEditor">取消</AppButton>
+              </footer>
+            </template>
+          </article>
+        </div>
+
+        <p v-if="drafts.length > 0" class="tiny muted">
+          改动在点「应用」（保存这一张卡）后落盘；编辑卡里的 API Key
+          留空表示不修改已保存的凭据，试听会使用已保存的模型配置。
+        </p>
+      </div>
+    </Transition>
   </section>
 </template>
 
 <style scoped>
-.page > .section-card,
-.page > .provider-list .section-card {
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-hairline);
-}
-
-.page > .empty-state {
-  padding-block: var(--space-6);
-}
-
-.page :is(input[type='number'], .badge) {
-  font-variant-numeric: var(--num-tabular);
-}
-
-.summary {
-  margin: var(--space-2) 0 0;
-  color: var(--text-secondary);
-}
-
 .toolbar {
   align-items: center;
 }
@@ -819,6 +799,12 @@ function stopPreview(): void {
   width: auto;
 }
 
+.block-title {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+}
+
 /* provider 行列表容器：只承担 `data-field` 抓手与行间距，本身不画卡片 */
 .provider-list {
   display: flex;
@@ -829,6 +815,7 @@ function stopPreview(): void {
 .provider-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 
@@ -836,15 +823,27 @@ function stopPreview(): void {
   font-size: var(--text-base);
 }
 
-/* 目录行：hover 用分层填充；默认行沿用 .accent 描边，再补左侧 3px 品牌色指示条 */
+/* 目录行：区组内的轻量卡（比 section-card 小一号的半径与内边距，避免卡中卡） */
 .provider-row {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--fill-1);
   transition: background var(--transition-fast);
 }
 
 .provider-row:hover,
 .provider-row.editing {
   background: var(--fill-2);
+}
+
+/* 默认行沿用 .accent 描边 + 左侧 3px 强调色指示条 */
+.provider-row.accent {
+  border-color: var(--aurora-blue);
 }
 
 .provider-row.accent::before {

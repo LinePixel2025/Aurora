@@ -5,8 +5,10 @@
  * 行为契约（step-02 落地，本步只换外观与动效，事件绑定与 IPC 调用保持不变）：
  * - 悬停 → 主进程把窗口加宽到 228px（`window:setEdgeBarExpanded`），面板从右滑入；
  *   移开鼠标 → 面板淡出后再把窗口收回 8px（否则屏幕右侧会留一块看不见却挡鼠标的区域）；
- * - 点击竖条 → 呼出完整交互窗（`window:showChat`）；展开态下竖条仍贴着屏幕右缘，仍是有效点击目标；
- * - 面板内容：AI 状态 → 当前模式 → 最近消息 → 今日课程 → 系统状态，底部是三个操作入口。
+ * - 点击竖条 → 呼出主界面（`window:showChat`，chat 窗即主界面）；展开态下竖条仍贴着屏幕右缘，
+ *   仍是有效点击目标；
+ * - 面板内容：AI 状态 → 当前模式 → 最近消息 → 今日课程（仅 ClassRoom 模式）→ 系统状态，
+ *   底部是三个操作入口。Work 等非 ClassRoom 模式下课堂卡不渲染，面板自然更矮；
  *   快速会话已并入交互窗侧栏（「快速」栏），面板不再有独立的快速对话入口；
  *   「最近消息」展示的仍是快速会话（与交互窗侧栏同一会话）。
  *
@@ -132,7 +134,7 @@ const modelLabel = computed(() => settingsStore.activeProvider?.model ?? '未配
 const modeHint = computed(() => {
   const current = modeStore.current
   if (!current) return '尚未激活任何模式'
-  if (!current.guideCompleted) return '引导未完成：点「打开对话窗口」继续'
+  if (!current.guideCompleted) return '引导未完成：点「打开主界面」继续'
   if (!current.ready) return current.readinessHint ?? ''
   return ''
 })
@@ -209,7 +211,7 @@ onUnmounted(clearTimers)
 
 <template>
   <div class="edge" :class="{ expanded }" @mouseenter="onPointerEnter" @mouseleave="onPointerLeave">
-    <button class="strip" type="button" title="打开 Aurora 对话" @click="openChat">
+    <button class="strip" type="button" title="打开 Aurora 主界面" @click="openChat">
       <span class="strip-dot">
         <StatusDot :tone="statusTone" :size="6" :title="statusLabel" />
       </span>
@@ -259,7 +261,7 @@ onUnmounted(clearTimers)
                 <p class="msg-text">{{ previewOf(message) }}</p>
               </li>
             </ul>
-            <p v-else class="empty">还没有消息：点「打开对话窗口」开始</p>
+            <p v-else class="empty">还没有消息：点「打开主界面」开始</p>
           </section>
 
           <!-- ④ 今日课程（仅 ClassRoom 模式） -->
@@ -293,17 +295,17 @@ onUnmounted(clearTimers)
           </section>
         </div>
 
-        <!-- 操作区：3 个入口，主入口用 primary -->
+        <!-- 操作区：3 个入口，主入口用 primary（capture 面板探针按 `.actions button` 做命中测试） -->
         <section class="actions">
-          <AppButton variant="primary" size="sm" block @click="openChat">
+          <AppButton variant="primary" size="sm" block class="press" @click="openChat">
             <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
               <path
                 d="M3 3.5h10a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H7.6L4.6 13v-2.5H3a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1Z"
               />
             </svg>
-            打开对话窗口
+            打开主界面
           </AppButton>
-          <AppButton variant="ghost" size="sm" block @click="openSettings">
+          <AppButton variant="ghost" size="sm" block class="press" @click="openSettings">
             <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
               <circle cx="8" cy="8" r="2.2" />
               <path
@@ -312,7 +314,7 @@ onUnmounted(clearTimers)
             </svg>
             设置
           </AppButton>
-          <AppButton variant="ghost" size="sm" block @click="hideSelf">
+          <AppButton variant="ghost" size="sm" block class="press" @click="hideSelf">
             <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
               <path d="M6 3.5 10.5 8 6 12.5" />
             </svg>
@@ -529,6 +531,8 @@ onUnmounted(clearTimers)
   gap: 1px;
   min-width: 0;
   border-radius: var(--radius-xs);
+  /* hover 填充走 --transition-fast（与 theme 的 .hover-fill 同一节奏） */
+  transition: background-color var(--transition-fast);
 }
 
 .msg:hover {
@@ -622,7 +626,7 @@ onUnmounted(clearTimers)
   color: var(--text-muted);
 }
 
-/* 操作区：同样用 --fill-1 卡片分组，主入口（打开对话窗口）用 primary 变体 */
+/* 操作区：同样用 --fill-1 卡片分组，主入口（打开主界面）用 primary 变体 */
 .actions {
   flex: 0 0 auto;
   display: flex;

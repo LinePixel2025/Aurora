@@ -1,7 +1,13 @@
 <script setup lang="ts">
 /**
  * 首次安装引导（docs/08 §3）：
- *  欢迎 → AI 模型（必填）→ 模式选择 → ClassRoom 模式引导（表单式）→ 完成
+ *  欢迎 → AI 模型（必填）→ 模式选择 → 模式引导（按所选模式渲染）→ 完成
+ *
+ * 「模式引导」步骤不是按 guide steps 逐条渲染的对话流，而是表单式 Shortcut：
+ * - ClassRoom：感知文件夹 / 科目 / 课前提醒表单（保存即置 guideCompleted）；
+ * - Work：工作目录一项（保存即置 guideCompleted，等效其两步对话引导的收集结果）；
+ * - 占位模式（code）：无配置项，「下一步」直接通过。
+ * 跳过（「稍后设置」）不置 guideCompleted，对话式引导（GuideRunner 驱动）在模式内随时可重跑。
  *
  * 规则：AI 模型未完成不允许进入主界面；测试连接失败允许先保存但持续提示。
  *
@@ -41,6 +47,7 @@ const form = reactive({
   temperature: 0.7,
   mode: 'classroom' as ModeId,
   watchDir: '',
+  workspaceDir: '',
   subjects: '语文,数学,英语,物理,化学,生物,历史,地理,政治',
   preClassReminder: true,
 })
@@ -185,6 +192,27 @@ async function finishClassroomGuide(): Promise<void> {
   goToStep(steps.length - 1, true)
 }
 
+async function finishWorkGuide(): Promise<void> {
+  // 表单式引导（Work）：写入工作目录并置 guideCompleted —— 等效其两步对话引导
+  // （工作目录问答 + 确认）的收集结果；对话式引导在 Work Mode 内随时可重跑
+  const updated = await settingsStore.update({
+    modes: {
+      ...(settingsStore.settings?.modes ?? ({} as never)),
+      work: {
+        ...(settingsStore.settings?.modes.work ?? ({} as never)),
+        guideCompleted: true,
+        workspaceDir: form.workspaceDir.trim(),
+      },
+    },
+  } as never)
+  if (!updated) {
+    error.value = settingsStore.error ?? '保存模式设置失败'
+    return
+  }
+  await modeStore.load()
+  goToStep(steps.length - 1, true)
+}
+
 async function complete(): Promise<void> {
   await settingsStore.refreshAppInfo()
   // 常驻入口是提示条（AI 服务窗已移除）；用户关掉了提示条时直接打开交互窗，避免引导结束后没有落脚处
@@ -197,11 +225,14 @@ async function complete(): Promise<void> {
   await window.aurora.window.hide('onboarding')
 }
 
-function skipClassroomGuide(): void {
+/** 跳过模式引导：不置 guideCompleted，对话式引导（GuideRunner）稍后在模式内补跑 */
+function skipModeGuide(): void {
   goToStep(steps.length - 1, true)
 }
 
 const lastStep = computed(() => steps.length - 1)
+/** 「模式引导」步骤有表单可填的模式：ClassRoom / Work（占位模式只有一句说明 + 下一步） */
+const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'work')
 </script>
 
 <template>
@@ -247,9 +278,12 @@ const lastStep = computed(() => steps.length - 1)
                 课堂学习：把新文件拖入「智慧感知文件夹」，自动分析并归类到对应科目；课前提醒并打开科目文件夹。
               </p>
             </article>
-            <article class="card dim">
+            <article class="card">
               <h3>Work Mode</h3>
-              <p class="tiny muted">办公场景（建设中）：日程、文档摘要、会议纪要。</p>
+              <p class="tiny muted">
+                办公场景已实装：Office 文档 / 表格 / 演示文稿与 PDF 的处理、总结与生成（PowerShell
+                COM 自动化）。
+              </p>
             </article>
             <article class="card dim">
               <h3>Code Mode</h3>
@@ -349,7 +383,7 @@ const lastStep = computed(() => steps.length - 1)
           </div>
         </section>
 
-        <!-- ④ 模式引导 -->
+        <!-- ④ 模式引导（按所选模式渲染，不硬编码 ClassRoom 的步骤数） -->
         <section v-else-if="stepIndex === 3" key="guide" class="pane">
           <h2 class="pane-title anim-rise">{{ selectedMode?.displayName ?? form.mode }} 设置</h2>
           <template v-if="form.mode === 'classroom'">
@@ -377,6 +411,26 @@ const lastStep = computed(() => steps.length - 1)
               </SettingField>
             </div>
           </template>
+          <template v-else-if="form.mode === 'work'">
+            <p class="lead anim-rise">
+              工作模式已实装：Office 文档、表格、演示文稿与 PDF
+              的处理、总结与生成，产出文件默认保存到「工作目录」；也可以稍后通过对话式引导完成（设置
+              → 模式 → 重新引导）。
+            </p>
+            <div class="anim-rise">
+              <SettingField
+                label="工作目录"
+                hint="留空则使用 用户目录\Aurora\工作目录，产出文件默认保存在这里"
+              >
+                <input
+                  v-model="form.workspaceDir"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="D:\Aurora\工作目录"
+                />
+              </SettingField>
+            </div>
+          </template>
           <p v-else class="lead anim-rise">
             该模式目前为占位实现，无需额外配置；激活后仅注入提示词片段，具体能力将在后续版本提供。
           </p>
@@ -384,7 +438,7 @@ const lastStep = computed(() => steps.length - 1)
 
         <!-- ⑤ 完成 -->
         <section v-else key="done" class="pane done-pane">
-          <span class="brand-mark xl anim-rise" />
+          <span class="brand-mark xl anim-pop" />
           <h2 class="pane-title anim-rise">一切就绪</h2>
           <p class="lead anim-rise">
             Aurora 已常驻系统托盘。默认模型：<strong>{{
@@ -394,7 +448,7 @@ const lastStep = computed(() => steps.length - 1)
             >。
           </p>
           <p class="tiny muted anim-rise">
-            提示：屏幕右侧提示条悬停展开面板，点击可拉出完整对话窗口；托盘右键可切换模式与打开设置。
+            提示：屏幕右侧提示条悬停展开面板，点击可呼出主界面；托盘右键可切换模式与打开设置。
           </p>
         </section>
       </transition>
@@ -412,13 +466,18 @@ const lastStep = computed(() => steps.length - 1)
         </AppToast>
         <span v-else class="tiny muted">步骤 {{ stepIndex + 1 }} / {{ steps.length }}</span>
       </div>
-      <AppButton v-if="stepIndex > 0 && stepIndex < lastStep" variant="ghost" @click="back"
+      <AppButton
+        v-if="stepIndex > 0 && stepIndex < lastStep"
+        variant="ghost"
+        class="press"
+        @click="back"
         >上一步</AppButton
       >
       <AppButton
-        v-if="stepIndex === 3 && form.mode === 'classroom'"
+        v-if="stepIndex === 3 && hasModeForm"
         variant="ghost"
-        @click="skipClassroomGuide"
+        class="press"
+        @click="skipModeGuide"
       >
         稍后设置
       </AppButton>
@@ -426,8 +485,19 @@ const lastStep = computed(() => steps.length - 1)
         v-if="stepIndex === 3 && form.mode === 'classroom'"
         variant="primary"
         size="lg"
+        class="press"
         :disabled="saving"
         @click="finishClassroomGuide"
+      >
+        保存并继续
+      </AppButton>
+      <AppButton
+        v-else-if="stepIndex === 3 && form.mode === 'work'"
+        variant="primary"
+        size="lg"
+        class="press"
+        :disabled="saving"
+        @click="finishWorkGuide"
       >
         保存并继续
       </AppButton>
@@ -435,13 +505,14 @@ const lastStep = computed(() => steps.length - 1)
         v-else-if="stepIndex < lastStep"
         variant="primary"
         size="lg"
+        class="press"
         :disabled="saving"
         @click="next"
       >
         <StatusDot v-if="saving" tone="running" :size="8" />
         {{ saving ? '保存中…' : '下一步' }}
       </AppButton>
-      <AppButton v-else variant="primary" size="lg" class="anim-rise" @click="complete"
+      <AppButton v-else variant="primary" size="lg" class="press anim-rise" @click="complete"
         >开始使用</AppButton
       >
     </footer>

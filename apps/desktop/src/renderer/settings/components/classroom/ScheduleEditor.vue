@@ -2,11 +2,11 @@
 /**
  * 课程表（docs/05 §3.4）：`schedule.provider` 切换、`lessons[]` 编辑、
  * ClassIsland 桥接子配置（`schedule.classisland.*`，含连接测试与状态），
- * 以及 `preClassReminder` 开关。拆分自 `ClassroomSection.vue`。
+ * 以及 `preClassReminder` / `preClassOpenFolder` 两个开关。拆分自 `ClassroomSection.vue`。
  *
  * 门控（step-06 B）：
  * - `classisland.*` 只在 `schedule.provider === 'classisland'` 时存在；
- * - `preClassReminder` 只在 `lessons.length > 0` 时存在（没有节次就没有「课前」）。
+ * - `preClassReminder` / `preClassOpenFolder` 只在 `lessons.length > 0` 时存在（没有节次就没有「课前」）。
  */
 import { onMounted, ref, watch } from 'vue'
 import type {
@@ -333,7 +333,7 @@ async function removeLesson(index: number): Promise<void> {
     <SettingField
       data-field="modes.classroom.preClassReminder"
       label="课前提醒"
-      hint="课前 5 分钟系统通知 + 自动打开科目文件夹"
+      hint="课前 5 分钟系统通知；是否同时打开科目文件夹见下一项"
     >
       <label class="row tiny">
         <input
@@ -342,6 +342,22 @@ async function removeLesson(index: number): Promise<void> {
           @change="patch({ preClassReminder: ($event.target as HTMLInputElement).checked })"
         />
         <span>开启课前提醒</span>
+      </label>
+    </SettingField>
+
+    <!-- v8 新增（docs/08 §1）：打开动作单独门控，通知照发（main/pre-class-reminder.ts） -->
+    <SettingField
+      data-field="modes.classroom.preClassOpenFolder"
+      label="自动打开科目文件夹"
+      hint="课前提醒时自动打开对应科目文件夹；关闭后只发通知"
+    >
+      <label class="row tiny">
+        <input
+          type="checkbox"
+          :checked="classroom.preClassOpenFolder"
+          @change="patch({ preClassOpenFolder: ($event.target as HTMLInputElement).checked })"
+        />
+        <span>课前提醒时自动打开对应科目文件夹</span>
       </label>
     </SettingField>
   </template>

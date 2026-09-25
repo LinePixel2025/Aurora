@@ -9,12 +9,16 @@
  * - 所有过渡必须走 `--transition-fast|base` 或 `--dur-*` + `--ease-*`，**不要写死时长** ——
  *   否则 `prefers-reduced-motion` 降级会漏掉它们。
  *
- * 风格取向：Apple 风格深色玻璃（分层填充 + 大圆角 + 柔和阴影 + 弹性缓动），品牌极光渐变作唯一点缀。
+ * 风格取向（BetaV2，Apple HIG / Pinguo tokens）：系统色锚点（蓝 #007AFF/#0A84FF、绿 #34C759/#30D158、
+ * 红 #FF3B30/#FF453A、橙 #FF9500/#FF9F0A）+ iOS 灰阶中性面（亮 #f5f5f7 / 暗 #000000）+ 分层填充 +
+ * 大圆角 + 更淡更扩散的柔和阴影；留白充足，不用霓虹 / 渐变彩带 / 拟物。
+ * **品牌不再使用双色渐变**：`--aurora-gradient` 即纯强调色值，全仓禁用 aurora 绿×蓝的
+ * 135° 斜向品牌 linear-gradient（功能性渐变如遮罩渐隐允许，须注释说明）。
  */
 :root {
   color-scheme: dark;
 
-  /* ───────── 原始中性阶：组件只消费下方语义令牌 ───────── */
+  /* ───────── 原始中性阶（iOS 灰阶锚点）：组件只消费下方语义令牌 ───────── */
   --neutral-900: #000000;
   --neutral-850: #0b0c0f;
   --neutral-800: #1c1c1e;
@@ -27,56 +31,58 @@
   --neutral-100: #e3e3e8;
   --neutral-50: #f5f5f7;
 
-  /* ───────── 品牌 ───────── */
-  --aurora-green: #38d196;
-  --aurora-blue: #5684ff;
-  --aurora-gradient: linear-gradient(135deg, var(--aurora-green), var(--aurora-blue));
+  /* ───────── 品牌（Apple 系统色暗档）───────── */
+  /* BetaV2：强调色对齐 Apple HIG；--aurora-gradient 保留名字但取纯强调色值，双色渐变已废弃 */
+  --aurora-green: #30d158;
+  --aurora-blue: #0a84ff;
+  --aurora-gradient: var(--aurora-blue);
 
-  /* ───────── 底色与材质（Apple 灰阶） ───────── */
-  --bg-base: var(--neutral-850);
-  --bg-raised: #141519;
-  --bg-overlay: rgba(20, 21, 25, 0.78);
-  --bg-glass: rgba(20, 21, 25, 0.72);
+  /* ───────── 底色与材质（iOS 中性面）───────── */
+  --bg-base: var(--neutral-900);
+  --bg-raised: var(--neutral-800);
+  --bg-overlay: #2c2c2e;
+  --bg-glass: rgba(28, 28, 30, 0.72);
   /* 分层填充：越靠上层越亮（卡片 → 悬停 → 选中） */
-  --fill-1: rgba(255, 255, 255, 0.045);
-  --fill-2: rgba(255, 255, 255, 0.075);
-  --fill-3: rgba(255, 255, 255, 0.11);
-  --border-subtle: rgba(255, 255, 255, 0.07);
-  --border-strong: rgba(255, 255, 255, 0.14);
+  --fill-1: rgba(255, 255, 255, 0.07);
+  --fill-2: rgba(255, 255, 255, 0.1);
+  --fill-3: rgba(255, 255, 255, 0.14);
+  --border-subtle: #38383a;
+  --border-strong: #48484a;
 
-  /* ───────── 文本 ───────── */
+  /* ───────── 文本（iOS label 三级）───────── */
   --text-primary: var(--neutral-50);
   --text-secondary: var(--neutral-300);
-  --text-muted: var(--neutral-500);
+  /* muted 在玻璃面板上也要可读（v1.1.0-beta.2 视觉验收：#7c7c80 在提示条面板几乎隐形） */
+  --text-muted: #98989d;
 
-  /* ───────── 状态语义（全局同色，docs/07 §1） ───────── */
-  --status-idle: #6e6e73;
-  --status-running: #5684ff;
-  --status-unread: #f5a524;
-  --status-error: #f2555a;
-  --status-ok: #38d196;
+  /* ───────── 状态语义（Apple 系统色，全局同色，docs/07 §1）───────── */
+  --status-idle: var(--neutral-400);
+  --status-running: var(--aurora-blue);
+  --status-unread: #ff9f0a;
+  --status-error: #ff453a;
+  --status-ok: #30d158;
 
-  /* ───────── 控件与状态语义 ───────── */
-  --on-accent: #08131a;
+  /* ───────── 控件与状态语义（点 / 面用系统原色，文字态用可读的提亮变体）───────── */
+  --on-accent: #ffffff;
   --accent-text: var(--aurora-blue);
-  --accent-ring: rgba(86, 132, 255, 0.22);
-  --focus-ring: rgba(86, 132, 255, 0.7);
-  --selection-fill: rgba(86, 132, 255, 0.35);
-  --status-running-ring: rgba(86, 132, 255, 0.16);
-  --danger-fill: rgba(242, 85, 90, 0.14);
-  --danger-fill-hover: rgba(242, 85, 90, 0.22);
-  --danger-text: #ff9ca0;
-  --danger-border: rgba(242, 85, 90, 0.3);
-  --error-fill: rgba(242, 85, 90, 0.16);
-  --error-text: #ff9ca0;
-  --warning-fill: rgba(245, 165, 36, 0.16);
-  --warning-text: #f7c568;
-  --ok-fill: rgba(56, 209, 150, 0.14);
-  --ok-text: #6fe0b4;
+  --accent-ring: rgba(10, 132, 255, 0.24);
+  --focus-ring: rgba(10, 132, 255, 0.75);
+  --selection-fill: rgba(10, 132, 255, 0.35);
+  --status-running-ring: rgba(10, 132, 255, 0.16);
+  --danger-fill: rgba(255, 69, 58, 0.14);
+  --danger-fill-hover: rgba(255, 69, 58, 0.22);
+  --danger-text: #ff6961;
+  --danger-border: rgba(255, 69, 58, 0.3);
+  --error-fill: rgba(255, 69, 58, 0.16);
+  --error-text: #ff6961;
+  --warning-fill: rgba(255, 159, 10, 0.16);
+  --warning-text: #ffb340;
+  --ok-fill: rgba(48, 209, 88, 0.14);
+  --ok-text: #30d158;
   --overlay-scrim: rgba(0, 0, 0, 0.5);
   --scrollbar-hover: rgba(255, 255, 255, 0.24);
   --glass-highlight: rgba(255, 255, 255, 0.06);
-  --glass-fallback: rgba(20, 21, 25, 0.96);
+  --glass-fallback: rgba(28, 28, 30, 0.96);
 
   /* ───────── 字体 ───────── */
   /* Windows 上没有真 SF，用系统 UI 字体栈近似；中文回落到雅黑 */
@@ -103,7 +109,7 @@
   --weight-medium: 500;
   --weight-semibold: 600;
 
-  /* ───────── 圆角（Apple 的连续圆角观感靠大半径 + 小元素用 pill） ───────── */
+  /* ───────── 圆角（Apple 的连续圆角观感靠大半径 + 小元素用 pill；档位不变）───────── */
   --radius-xs: 6px;
   --radius-sm: 10px;
   --radius-md: 14px;
@@ -111,7 +117,7 @@
   --radius-xl: 28px;
   --radius-pill: 999px;
 
-  /* ───────── 间距（沿用旧值，不要改：四个窗口的排布都基于它） ───────── */
+  /* ───────── 间距（沿用旧值，不要改：四个窗口的排布都基于它）───────── */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -133,11 +139,11 @@
   --blur: 24px;
   --blur-thick: 40px;
 
-  /* ───────── 阴影（越上层越散、越深） ───────── */
-  --shadow-hairline: 0 1px 2px -1px rgba(0, 0, 0, 0.3);
-  --shadow-1: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
-  --shadow-2: 0 8px 24px -8px rgba(0, 0, 0, 0.5), 0 4px 8px -4px rgba(0, 0, 0, 0.4);
-  --shadow-3: 0 24px 64px -12px rgba(0, 0, 0, 0.6);
+  /* ───────── 阴影（BetaV2：更淡、更扩散；越上层越散）───────── */
+  --shadow-hairline: 0 1px 2px -1px rgba(0, 0, 0, 0.4);
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 12px 32px -8px rgba(0, 0, 0, 0.5), 0 4px 12px -4px rgba(0, 0, 0, 0.4);
+  --shadow-3: 0 32px 80px -16px rgba(0, 0, 0, 0.6);
 
   /* ───────── 缓动与时长 ───────── */
   /* spring 用于"出现/展开"（快起慢收，观感有弹性但不回弹），standard 用于颜色与透明度 */
@@ -147,63 +153,70 @@
   --dur-fast: 150ms;
   --dur-base: 250ms;
   --dur-slow: 350ms;
+  /* BetaV2 新增：按下微缩与脉冲环各自的时长令牌（避免写死时长） */
+  --dur-press: 120ms;
+  --dur-pulse: 1600ms;
   --transition-fast: var(--dur-fast) var(--ease-standard);
   --transition-base: var(--dur-base) var(--ease-spring);
 }
 
-/* 浅色只改语义角色；原始中性阶、品牌色与尺寸令牌两档共用。 */
+/*
+ * 浅色档覆盖语义角色（含 Apple 系统色的亮档强调 / 状态色，BetaV2 起品牌色随档位切换）；
+ * 原始中性阶与尺寸令牌两档共用。--aurora-gradient 引用 --aurora-blue，自动跟随档位。
+ */
 @media (prefers-color-scheme: light) {
   :root {
     color-scheme: light;
+
+    --aurora-green: #34c759;
+    --aurora-blue: #007aff;
 
     /* 页面基座与原生非透明窗口底色保持一致；浮层玻璃保留白色不发灰。 */
     --bg-base: var(--neutral-50);
     --bg-raised: #ffffff;
     --bg-overlay: rgba(255, 255, 255, 0.96);
-    --bg-glass: rgba(255, 255, 255, 0.92);
-    --fill-1: rgba(29, 29, 31, 0.035);
-    --fill-2: rgba(29, 29, 31, 0.065);
-    --fill-3: rgba(29, 29, 31, 0.095);
-    --border-subtle: rgba(29, 29, 31, 0.1);
-    --border-strong: rgba(29, 29, 31, 0.18);
+    --bg-glass: rgba(255, 255, 255, 0.72);
+    --fill-1: rgba(0, 0, 0, 0.045);
+    --fill-2: rgba(0, 0, 0, 0.07);
+    --fill-3: rgba(0, 0, 0, 0.1);
+    --border-subtle: #d1d1d6;
+    --border-strong: #c7c7cc;
 
     --text-primary: #1d1d1f;
-    --text-secondary: #4a4a50;
-    --text-muted: #62626a;
+    --text-secondary: #6e6e73;
+    /* iOS secondaryLabel 档：#aeaeb2 在浅色玻璃上只有约 1.9:1，muted 文本一律用这档 */
+    --text-muted: #8e8e93;
 
-    /* 状态在白色或浅灰底上保持可辨；文字态再配浅色背景。 */
-    --status-idle: #62626a;
-    --status-running: #315ac6;
-    --status-unread: #955600;
-    --status-error: #b32631;
-    --status-ok: #126843;
+    /* 状态点 / 面用 Apple 亮档系统原色；文字态（--*-text）用可读的加深变体。 */
+    --status-unread: #ff9500;
+    --status-error: #ff3b30;
+    --status-ok: #34c759;
 
-    /* 品牌渐变的浅绿端仍使用深色前景。 */
-    --on-accent: #08131a;
-    --accent-text: #3157bb;
-    --accent-ring: rgba(49, 90, 198, 0.2);
-    --focus-ring: rgba(49, 90, 198, 0.85);
-    --selection-fill: rgba(49, 90, 198, 0.24);
-    --status-running-ring: rgba(49, 90, 198, 0.16);
-    --danger-fill: rgba(179, 38, 49, 0.09);
-    --danger-fill-hover: rgba(179, 38, 49, 0.16);
-    --danger-text: #a51f2b;
-    --danger-border: rgba(179, 38, 49, 0.3);
-    --error-fill: rgba(179, 38, 49, 0.1);
-    --error-text: #a51f2b;
-    --warning-fill: rgba(149, 86, 0, 0.1);
-    --warning-text: #895000;
-    --ok-fill: rgba(18, 104, 67, 0.09);
-    --ok-text: #126843;
-    --overlay-scrim: rgba(29, 29, 31, 0.35);
-    --scrollbar-hover: rgba(29, 29, 31, 0.28);
-    --glass-highlight: rgba(255, 255, 255, 0.85);
+    --on-accent: #ffffff;
+    --accent-text: var(--aurora-blue);
+    --accent-ring: rgba(0, 122, 255, 0.22);
+    --focus-ring: rgba(0, 122, 255, 0.8);
+    --selection-fill: rgba(0, 122, 255, 0.25);
+    --status-running-ring: rgba(0, 122, 255, 0.16);
+    --danger-fill: rgba(255, 59, 48, 0.1);
+    --danger-fill-hover: rgba(255, 59, 48, 0.18);
+    --danger-text: #d70015;
+    --danger-border: rgba(255, 59, 48, 0.3);
+    --error-fill: rgba(255, 59, 48, 0.12);
+    --error-text: #d70015;
+    --warning-fill: rgba(255, 149, 0, 0.12);
+    --warning-text: #c93400;
+    --ok-fill: rgba(52, 199, 89, 0.12);
+    --ok-text: #248a3d;
+    --overlay-scrim: rgba(0, 0, 0, 0.3);
+    --scrollbar-hover: rgba(0, 0, 0, 0.28);
+    --glass-highlight: rgba(255, 255, 255, 0.08);
     --glass-fallback: rgba(255, 255, 255, 0.98);
 
-    --shadow-hairline: 0 1px 2px -1px rgba(29, 29, 31, 0.1);
-    --shadow-1: 0 1px 2px 0 rgba(29, 29, 31, 0.1);
-    --shadow-2: 0 8px 24px -8px rgba(29, 29, 31, 0.2), 0 4px 8px -4px rgba(29, 29, 31, 0.1);
-    --shadow-3: 0 24px 64px -12px rgba(29, 29, 31, 0.28);
+    --shadow-hairline: 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+    --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.06);
+    --shadow-2: 0 8px 24px -8px rgba(0, 0, 0, 0.1), 0 4px 8px -4px rgba(0, 0, 0, 0.05);
+    --shadow-3: 0 24px 64px -12px rgba(0, 0, 0, 0.14);
   }
 }
 
@@ -280,7 +293,7 @@ select {
 /* ───────── 材质 ───────── */
 
 /**
- * 玻璃层：模糊 + 提饱和 + 1px 内描边（顶部亮边）+ 柔和外阴影。
+ * 玻璃层（BetaV2 更克制）：模糊 24 + 提饱和 180% + 1px 内描边高光 + 柔和外阴影。
  * 不支持 backdrop-filter 的环境回落到几乎不透明的实色，避免文字糊在背景上。
  */
 .glass {
@@ -446,6 +459,30 @@ select {
   box-shadow: var(--shadow-1);
 }
 
+/**
+ * 按下微缩（BetaV2 新增）：按钮类元素挂 `.press`，active 缩到 0.97、120ms 回弹。
+ * 与 `.interactive` 可叠加；不要给卡片用（卡片反馈走 `.interactive`）。
+ */
+.press {
+  transition: transform var(--dur-press) var(--ease-standard);
+}
+
+.press:active {
+  transform: scale(0.97);
+}
+
+/**
+ * 侧栏类列表项 hover（BetaV2 新增）：150ms 背景过渡 + hover 填充 `--fill-2`。
+ * 需要自定义底色时覆盖 `.hover-fill:hover` 即可；已带 `.interactive` 的元素不必再挂。
+ */
+.hover-fill {
+  transition: background-color var(--transition-fast);
+}
+
+.hover-fill:hover {
+  background-color: var(--fill-2);
+}
+
 @keyframes aurora-rise-in {
   from {
     opacity: 0;
@@ -468,6 +505,45 @@ select {
   }
 }
 
+/* BetaV2 新增：横向滑入（左 / 右），供侧栏条目、方向性内容切换使用 */
+@keyframes aurora-slide-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes aurora-slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/**
+ * BetaV2 新增：录音麦克风的扩散环（脉冲）。
+ * 用法：在按钮上叠一层绝对定位的圆环（::after 或独立节点）挂 `.pulse-ring`，
+ * 需要自定义尺寸 / 颜色时只用 keyframes `pulse-ring` 自己写 animation。
+ */
+@keyframes pulse-ring {
+  from {
+    opacity: 0.6;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.9);
+  }
+}
+
 /** 进场：内容块逐个出现时用 `.anim-rise`，弹出层用 `.anim-pop` */
 .anim-rise {
   animation: aurora-rise-in var(--dur-base) var(--ease-spring) both;
@@ -477,7 +553,19 @@ select {
   animation: aurora-pop-in var(--dur-base) var(--ease-spring) both;
 }
 
-/* Vue <Transition> 预设：name="sheet|rise|fade|collapse" */
+.anim-slide-left {
+  animation: aurora-slide-in-left var(--dur-base) var(--ease-spring) both;
+}
+
+.anim-slide-right {
+  animation: aurora-slide-in-right var(--dur-base) var(--ease-spring) both;
+}
+
+.pulse-ring {
+  animation: pulse-ring var(--dur-pulse) var(--ease-standard) infinite;
+}
+
+/* Vue <Transition> 预设：name="sheet|rise|fade|collapse|page" */
 
 /* 从右侧滑入（提示条面板 / 交互窗内的抽屉） */
 .sheet-enter-active,
@@ -542,6 +630,27 @@ select {
   opacity: 1;
 }
 
+/**
+ * BetaV2 新增：设置页等横向页签切换（name="page"）。
+ * fade + 12px 平移：新页从右进、旧页往左退（方向感与「下一页」一致）。
+ */
+.page-enter-active,
+.page-leave-active {
+  transition:
+    opacity var(--dur-base) var(--ease-standard),
+    transform var(--dur-base) var(--ease-standard);
+}
+
+.page-enter-from {
+  opacity: 0;
+  transform: translateX(12px);
+}
+
+.page-leave-to {
+  opacity: 0;
+  transform: translateX(-12px);
+}
+
 /* ───────── 系统偏好降级 ───────── */
 
 /**
@@ -554,6 +663,8 @@ select {
     --dur-fast: 1ms;
     --dur-base: 1ms;
     --dur-slow: 1ms;
+    --dur-press: 1ms;
+    --dur-pulse: 1ms;
   }
 
   *,
@@ -565,12 +676,15 @@ select {
   }
 
   .interactive:hover,
-  .interactive:active {
+  .interactive:active,
+  .press:active {
     transform: none;
   }
 
   .anim-rise,
-  .anim-pop {
+  .anim-pop,
+  .anim-slide-left,
+  .anim-slide-right {
     animation: none;
     opacity: 1;
     transform: none;

@@ -11,6 +11,10 @@
  * 多会话（docs/06 §4）：`sessionId` 是可切换的 ref；`chat:sessions` 提供列表，
  * `chat:newSession` 新建。默认会话由入参 `context` 决定（`main` / `quick` / `settings`），
  * 会话 id 与旧版一致，老数据继续可读。
+ *
+ * BetaV2 追加：`reasoning` 事件的思考过程增量按 requestId 聚合（`reasoningLive` /
+ * `reasoningTargetId`），done / error / abort 后并入当条助手消息；历史水合的消息自带
+ * `reasoning?` 字段（packages/shared/src/ipc/types.ts 的 ChatMessageDto）。
  */
 import { computed, onScopeDispose, ref } from 'vue'
 import { deepClone } from '@aurora/shared/browser'
@@ -33,6 +37,12 @@ export interface ChatMessage {
   toolCalls?: AgentToolCall[]
   /** 本条用户消息携带的附件文件名（仅用于气泡内展示） */
   attachments?: string[]
+  /**
+   * 模型思考过程（reasoning_content 聚合，BetaV2）。
+   * 流式期间由 `reasoning` 事件实时同步进当前助手消息；请求收尾后固化，
+   * 历史（`chat:history`）水合的消息自带该字段。
+   */
+  reasoning?: string
 }
 
 /** 对话上下文（原为窗口名映射；mini-chat 删除后改为显式声明，会话 id 保持不变） */
@@ -75,6 +85,17 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   let assistantId: string | null = null
   /** 已水合过的会话 id（切换会话时按新 id 重新水合） */
   const hydrated = new Set<string>()
+  /**
+   * 思考过程（reasoning，BetaV2）的聚合状态：
+   * - `reasoningDrafts` 按 requestId 累积增量——增量事件**不带 messageId**，
+   *   同一次请求又可能产生多条助手消息（多轮工具调用），只能按请求聚合；
+   * - `reasoningLive` 是当前请求聚合文本的响应式镜像（流式期间实时展示用）；
+   * - `reasoningTargetId` 是「正在接收思考过程」的助手消息 id（首条 text/tool
+   *   事件到达前渲染层还不知道 messageId，故可能暂时为 null），供 MessageList 自动展开。
+   */
+  const reasoningDrafts = new Map<string, string>()
+  const reasoningLive = ref('')
+  const reasoningTargetId = ref<string | null>(null)
 
   const statusTone = computed<'idle' | 'running' | 'unread' | 'error'>(() => {
     if (error.value) return 'error'
@@ -99,19 +120,37 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       case 'text': {
         const message = messageFor(event.messageId)
         if (message) {
+          seedReasoning(message)
           message.content += event.delta
           message.pending = false
         }
         break
       }
+      case 'reasoning': {
+        // 增量事件不带 messageId：先按请求聚合，助手消息出现后（text/tool 先到）
+        // 再把聚合文本同步进消息体，供 MessageList 流式展示
+        const text = (reasoningDrafts.get(event.requestId) ?? '') + event.delta
+        reasoningDrafts.set(event.requestId, text)
+        reasoningLive.value = text
+        const message = currentAssistant()
+        if (message) {
+          message.reasoning = text
+          reasoningTargetId.value = message.id
+        }
+        break
+      }
       case 'tool': {
         const message = messageFor(event.messageId)
-        if (message) upsertToolCall(message, event.call)
+        if (message) {
+          seedReasoning(message)
+          upsertToolCall(message, event.call)
+        }
         break
       }
       case 'done': {
         streaming.value = false
         const message = currentAssistant()
+        settleReasoning(message)
         if (message) {
           message.pending = false
           if (message.content === '') message.content = '（暂无回复）'
@@ -125,6 +164,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         streaming.value = false
         error.value = event.message
         const message = currentAssistant() ?? lastAssistant.value
+        settleReasoning(message)
         if (message) {
           message.pending = false
           message.error = true
@@ -159,6 +199,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       content: '',
       pending: true,
       createdAt: Date.now(),
+      // 思考过程先于正文到达：消息此刻才出现，把已聚合的文本一并补上
+      ...(reasoningLive.value === '' ? {} : { reasoning: reasoningLive.value }),
     }
     messages.value.push(created)
     return created
@@ -167,6 +209,38 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   function currentAssistant(): ChatMessage | undefined {
     if (assistantId === null) return undefined
     return messages.value.find((message) => message.id === assistantId)
+  }
+
+  /** 消息刚被认领时补种已聚合的思考文本，并把它标记为流式思考的展示目标 */
+  function seedReasoning(message: ChatMessage): void {
+    if (reasoningLive.value === '') return
+    if ((message.reasoning ?? '').length < reasoningLive.value.length) {
+      message.reasoning = reasoningLive.value
+    }
+    reasoningTargetId.value = message.id
+  }
+
+  /**
+   * 请求收尾（done / error / abort）：把聚合文本固化进当条助手消息（本地），
+   * 随后复位流式思考状态——MessageList 的「思考中」自动展开随之收起为摘要。
+   * `lastAssistant` 的 computed 以 null 表示「没有助手消息」，入参一并兼容。
+   */
+  function settleReasoning(message: ChatMessage | null | undefined): void {
+    if (message !== null && message !== undefined && reasoningLive.value !== '') {
+      if ((message.reasoning ?? '').length < reasoningLive.value.length) {
+        message.reasoning = reasoningLive.value
+      }
+    }
+    reasoningDrafts.clear()
+    reasoningLive.value = ''
+    reasoningTargetId.value = null
+  }
+
+  /** 切换会话 / 发起新请求前复位思考聚合（旧请求的增量不能泄进新请求） */
+  function resetReasoning(): void {
+    reasoningDrafts.clear()
+    reasoningLive.value = ''
+    reasoningTargetId.value = null
   }
 
   /** 同一 call id 原地更新状态（running → success/error） */
@@ -237,6 +311,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     streaming.value = false
     activeRequest = null
     assistantId = null
+    resetReasoning()
     await hydrate()
     await loadSessions()
   }
@@ -271,6 +346,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     unread.value = false
     activeRequest = null
     assistantId = null
+    resetReasoning()
 
     const request: SendMessageRequest = {
       sessionId: sessionId.value,
@@ -317,6 +393,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     await window.aurora.chat.abort(activeRequest)
     streaming.value = false
     const message = currentAssistant()
+    settleReasoning(message)
     if (message) message.pending = false
     activeRequest = null
     assistantId = null
@@ -326,6 +403,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     messages.value = []
     unread.value = false
     error.value = null
+    resetReasoning()
   }
 
   function markRead(): void {
@@ -341,6 +419,10 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     error,
     statusTone,
     lastAssistant,
+    /** 流式期间的思考过程聚合文本（请求结束后为空串，增量已并入消息） */
+    reasoningLive,
+    /** 正在接收思考过程的助手消息 id（供 MessageList 自动展开思考块）；空闲时为 null */
+    reasoningTargetId,
     hydrate,
     loadQuickPreview,
     loadSessions,
@@ -360,6 +442,7 @@ function toChatMessage(dto: ChatMessageDto): ChatMessage {
     content: dto.content,
     createdAt: Date.parse(dto.createdAt) || Date.now(),
     ...(dto.toolCalls === undefined ? {} : { toolCalls: dto.toolCalls }),
+    ...(dto.reasoning === undefined || dto.reasoning === '' ? {} : { reasoning: dto.reasoning }),
   }
 }
 

@@ -1,33 +1,35 @@
 <script setup lang="ts">
 /**
- * AI 交互窗口（docs/07 §2.3）：完整对话窗，约 420×640，贴右缘滑出。
+ * Aurora 主界面（BetaV2，Design/betav2-spec.md §2/§3）：1120×720 的三栏布局。
  *
- * P3 范围：真实模型流式对话、工具执行卡片、会话历史水合（`chat:history`）、模式引导面板。
- * P5 追加：敏感工具确认卡片（docs/06 §5）与分类流水面板（docs/05 §3.3）——
- * 交互窗是主动引导的**主载体**，两者都挂在这里。
- * P6 追加：多会话列表 / 切换（docs/06 §4）与附件拖拽发送（docs/07 §2.3）。
- * 本轮：侧栏改为「快速 / 会话」双栏（快速会话与提示条共用同一会话），
- * 「收起」= 只隐藏窗口（`windowStore.hide('chat')`），不做任何会话动作、也不 abort 流式回复。
- * 本轮追加：输入区加「思考等级」下拉（与设置页 AI 模型卡写的是**同一个** `reasoningEffort`，
- * 改完对下一次请求立即生效，不用进设置页）。
- * 本轮追加：「思考」旁边再加「模型」下拉（`ModelPickerSelect.vue`）——候选来自同一个 provider 的
- * `modelList`，选定值写进 `model`（与设置页「模型名」输入框同一份数据），下一次请求即生效。
+ * 左栏（SessionNav）：品牌 / 新对话 / 固定项「快速对话」/ 会话列表 / 模式徽章 + 右栏开关 + 设置。
+ * 主区：头部（会话标题 + 模型与思考等级下拉 + 清空 + 收起）→ MessageList → composer。
+ * 右栏（ContextPanel）：模式感知上下文（classroom 课堂卡 / work 工作目录卡 / 通用系统状态）。
  *
- * 视觉（docs/07 §5）：玻璃容器 + 分层头尾（`--fill-1`），用户气泡右对齐、助手正文铺开，
- * 输入区是独立的圆角容器（聚焦加品牌光晕），会话列表/工具卡片走 `.sheet-*` / `.collapse-*`。
- * 交互语义（会话切换、发送、中断、附件拖拽、工具卡片、敏感工具确认）保持不变。
+ * 旧版 152px 历史 sheet 与「快速 / 会话」双栏 tab 已删除：快速会话是左栏第一个固定项，
+ * 点击直接 `switchSession('quick')`，事件按 sessionId + requestId 双重过滤不会串流。
+ *
+ * 保留的既有能力：敏感工具确认卡片与 `proactive.onSensitiveTool` 订阅、TTS 自动朗读
+ * （streaming false 边沿）与朗读按钮、附件拖拽 + chips、模型 / 思考等级写 provider
+ * （`stripSecretFields` 剔除 apiKeyEnc/apiKeySet 后经 `settingsStore.update` 落盘）、
+ * 收起 = 隐藏窗口（不 abort 正在进行的流式回复）。
+ *
+ * BetaV2 新增：思考过程展示（useChat 聚合 reasoning，MessageList 折叠块，受
+ * `general.chat.showThinking` 门控）；麦克风语音输入（stt 门控口径同 TTS——未配置时
+ * **连按钮都不渲染**，MediaRecorder webm → base64 → `stt:transcribe`）。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { ChatMessageDto, LlmProviderConfig, SensitiveToolRequest } from '@aurora/shared'
+import type { LlmProviderConfig, SensitiveToolRequest, SttProviderConfig } from '@aurora/shared'
 import { DEFAULT_REASONING_EFFORT, type ReasoningEffort } from '@aurora/shared/browser'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
-import ClassificationLedger from '../shared/components/ClassificationLedger.vue'
 import MessageList from '../shared/components/MessageList.vue'
 import ModelPickerSelect from '../shared/components/ModelPickerSelect.vue'
 import SensitiveToolCard from '../shared/components/SensitiveToolCard.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import ThinkingLevelSelect from '../shared/components/ThinkingLevelSelect.vue'
+import ContextPanel from './components/ContextPanel.vue'
+import SessionNav from './components/SessionNav.vue'
 import { useChat } from '../shared/composables/useChat.js'
 import { useTts } from '../shared/composables/useTts.js'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
@@ -41,11 +43,11 @@ const {
   streaming,
   error: chatError,
   statusTone,
+  reasoningTargetId,
   send: sendMessage,
   abort,
   clear,
   hydrate,
-  loadQuickPreview,
   loadSessions,
   switchSession: rawSwitchSession,
   newSession,
@@ -53,16 +55,14 @@ const {
 const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
-// 拖动统一走显式清单（step 6）：交互窗可拖，按钮区显式 no-drag，不靠模板写死 class
+// 拖动统一走显式清单：主窗口头部 / 左栏品牌行可拖，按钮区显式 no-drag
 const { dragClass, noDragClass } = useWindowDrag('chat')
 
 const input = ref('')
-/** 侧栏显隐（头部「历史」按钮切换）；默认收起，不挤占消息区 */
-const showSidebar = ref(false)
-/** 侧栏栏目：「快速」= 快速会话预览，「会话」= 完整会话列表 */
-const sidebarTab = ref<'quick' | 'sessions'>('sessions')
-/** 「快速」栏的只读预览（`loadQuickPreview()`，不改变当前会话） */
-const quickPreview = ref<ChatMessageDto[]>([])
+/** 左栏显隐（宽度收 0 过渡，内容固定宽被裁剪） */
+const navOpen = ref(true)
+/** 右栏显隐（同上；默认展开，1120px 宽下三栏并存） */
+const contextOpen = ref(true)
 
 /** 待确认的敏感工具调用（主进程同一时刻最多推一条） */
 const sensitiveRequest = ref<SensitiveToolRequest | null>(null)
@@ -73,25 +73,30 @@ const attachments = ref<string[]>([])
 /** 是否正有文件悬停在窗口上（用于描边提示） */
 const dragging = ref(false)
 
+/** 会话列表给左栏用：剔除 'quick'（它是左栏固定项，避免重复出现两条） */
+const sessionItems = computed(() => sessions.value.filter((item) => item.id !== 'quick'))
+
+/** 标题栏里的当前会话名：快速会话固定名，其余用主进程摘要（空标题 =「新会话」） */
+const currentTitle = computed(() => {
+  if (sessionId.value === 'quick') return '快速对话'
+  const current = sessions.value.find((item) => item.id === sessionId.value)
+  return sessionTitle(current?.title ?? '')
+})
+
 onMounted(() => {
   offSensitiveTool = window.aurora.proactive.onSensitiveTool((request) => {
     sensitiveRequest.value = request
   })
-  // 水合当前会话（main）→ 会话列表 → 快速会话预览：让侧栏「快速」栏一打开就有内容
+  // 水合当前会话（main）→ 会话列表：左栏立刻有内容
   void hydrate().then(() => loadSessions())
-  void refreshQuickPreview()
 })
-
-/** 刷新「快速」栏预览（只读，不切换当前会话） */
-async function refreshQuickPreview(): Promise<void> {
-  quickPreview.value = await loadQuickPreview()
-}
 
 onUnmounted(() => {
   offSensitiveTool?.()
   offSensitiveTool = null
   if (pickerHintTimer !== null) window.clearTimeout(pickerHintTimer)
   pickerHintTimer = null
+  disposeRecording()
 })
 
 function resolveSensitive(): void {
@@ -104,13 +109,33 @@ const guide = computed(() => {
   return mode
 })
 
-/** 标题栏里的当前会话名（空标题显示为「新会话」，与主进程摘要一致） */
-const currentTitle = computed(() => {
-  const current = sessions.value.find((item) => item.id === sessionId.value)
-  return sessionTitle(current?.title ?? '')
-})
+/** 会话标题：空会话显示为「新会话」，与主进程的摘要保持一致 */
+function sessionTitle(title: string): string {
+  return title.trim() === '' ? '新会话' : title
+}
 
-// ────────────── 输入区的两个 provider 控件：模型 / 思考等级（docs/06 §3、docs/07 §2.3） ──────────────
+// ───────────────────────── 会话切换（所有入口统一副作用） ─────────────────────────
+
+/**
+ * 切换会话：停掉朗读与录音（切走后它们已经不属于当前视口），
+ * 并复位自动朗读去重标记。侧栏点选、快速对话都走这里。
+ */
+async function switchSession(id: string): Promise<void> {
+  tts.stop()
+  lastReadId = null
+  disposeRecording()
+  await rawSwitchSession(id)
+}
+
+/** 左栏「新对话」：同样是切会话，带上同一组副作用 */
+async function startNewSession(): Promise<void> {
+  tts.stop()
+  lastReadId = null
+  disposeRecording()
+  await newSession()
+}
+
+// ────────────── 头部的两个 provider 控件：模型 / 思考等级（docs/06 §3） ──────────────
 
 /**
  * 「模型」与「思考等级」两个下拉读写的是**同一个 provider 子树**，只是字段不同：
@@ -118,10 +143,7 @@ const currentTitle = computed(() => {
  *
  * 与设置页「AI 模型」卡写的是同一份数据（单一事实来源），**没有按会话覆盖**；
  * 保存成功后 `settings:changed` 会把新配置推回 store，两个控件随之更新。
- *
- * ⚠️ 不需要改主进程 / 不需要额外接线：`createProviderFactory()` 返回的对象里，每次
- * `create()` 都重新读一遍 `settings.get().llm`（`main/agent-host.ts:212-228`），
- * 所以写完配置后**下一次发送**就用新的 `model`（`reasoningEffort` 同理），不用重启也不用重装 provider。
+ * 每次发送时主进程都会重读配置，因此写完**下一次发送**立即生效。
  */
 const activeProviderId = computed(() => settingsStore.settings?.llm.active ?? '')
 
@@ -135,12 +157,7 @@ const activeProvider = computed<LlmProviderConfig | null>(() => {
 /** 模型下拉的当前值（`model` 是唯一生效值；空串 = 还没填） */
 const currentModel = computed<string>(() => activeProvider.value?.model ?? '')
 
-/**
- * 模型下拉的候选列表。
- *
- * `modelList` 在 Schema 里带 `.default([])`，但拉取 / 手工维护都可能留下空串或重复项，
- * 这里只做 `?? []` 兜底（去重与空串过滤是 `ModelPickerSelect` 的事，两个入口共用同一套规则）。
- */
+/** 模型下拉的候选列表（去重与空串过滤是 `ModelPickerSelect` 的事） */
 const modelOptions = computed<string[]>(() => activeProvider.value?.modelList ?? [])
 
 /** 当前生效 provider 的思考等级；没有可用 provider 时为 `null`（此时控件禁用而不是隐藏） */
@@ -152,7 +169,7 @@ const effortValue = computed<ReasoningEffort>(() => effort.value ?? DEFAULT_REAS
 /** 无 provider 时两个下拉共用的 tooltip / 提示文案（与设置页口径一致：指向修复路径） */
 const missingProviderTitle = '先在「设置 → AI 模型」里配置并选中一个模型'
 
-/** 模型下拉的 tooltip（挂在这行提示上时也用它：Chromium 不给禁用态的原生控件弹 title） */
+/** 模型下拉的 tooltip（Chromium 不给禁用态的原生控件弹 title） */
 const modelTitle = computed(() =>
   activeProvider.value === null
     ? missingProviderTitle
@@ -179,107 +196,12 @@ function flashPickerHint(text: string): void {
   }, 2000)
 }
 
-// ───────────────────────── 语音朗读（TTS，docs/06 §13） ─────────────────────────
-
-const tts = useTts()
-
-/**
- * 当前是否「可朗读」——朗读按钮出不出现的**唯一**口径（docs/06 §13）。
- *
- * 四个条件缺一不可：总开关打开、`tts.active` 指向一个存在的 provider、
- * 且该 provider 的 `baseUrl` / `model` / `voice` 都填了。
- * 没有配置时按钮**根本不渲染**（不是 disabled），用户不会看到一个点了必然失败的入口。
- */
-const ttsReady = computed<boolean>(() => {
-  const settings = settingsStore.settings
-  if (!settings) return false
-  const { enabled, active, providers } = settings.tts
-  if (!enabled || active === '') return false
-  const provider = providers[active]
-  if (provider === undefined) return false
-  return (
-    provider.baseUrl.trim() !== '' && provider.model.trim() !== '' && provider.voice.trim() !== ''
-  )
-})
-
-/**
- * 已自动朗读过的消息 id。
- *
- * 自动朗读只在「本轮从 `streaming=true` 变为 `false`」时触发；单靠这个边沿还不够稳——
- * watch 可能因别的原因重跑，同一条回复被读第二遍比不读更糟。记一个 id 即可去重。
- */
-let lastReadId: string | null = null
-
-/**
- * 回复结束 → 自动朗读（仅在 `tts.autoRead` 打开时）。
- *
- * 只读**本轮刚结束**的那条助手消息（`chat.lastAssistant`），且：
- * - `before && !now` 才是「这一轮结束」的边沿（历史水合不会触发，因为 streaming 一直是 false）；
- * - 同一 id 不重复朗读；
- * - 内容为空 / 未配置可朗读条件 / 用户已手动读过 → 静默跳过（不弹错、不打断对话）。
- */
-watch(
-  () => streaming.value,
-  (now, before) => {
-    if (!before || now) return
-    if (!ttsReady.value || settingsStore.settings?.tts.autoRead !== true) return
-    const message = chat.lastAssistant.value
-    if (message === null || message.id === lastReadId) return
-    const text = message.content.trim()
-    if (text === '') return
-    lastReadId = message.id
-    void tts.speak(text, message.id)
-  },
-)
-
-/**
- * 朗读失败提示：`tts.error` 是渲染层瞬时状态（不落盘、不进会话记录）。
- *
- * 与 `pickerHint`（输入区那行 muted 小字）刻意分开：朗读失败是**独立于输入区**的错误，
- * 挤在下拉旁边既看不见也容易被误读成模型选择失败，所以走独立 `AppToast tone="error"`。
- * 拿到就清空 `tts.error`——否则下一次同样的失败因为值没变而不再触发 watch。
- */
-const ttsErrorToast = ref<string | null>(null)
-let ttsErrorTimer: number | null = null
-
-watch(
-  () => tts.error.value,
-  (message) => {
-    if (message === null) return
-    ttsErrorToast.value = message
-    tts.error.value = null
-    if (ttsErrorTimer !== null) window.clearTimeout(ttsErrorTimer)
-    ttsErrorTimer = window.setTimeout(() => {
-      ttsErrorToast.value = null
-      ttsErrorTimer = null
-    }, 4000)
-  },
-)
-
-/**
- * 切换会话时停掉播放：切走之后那条消息已经不在屏幕上，
- * 让音频继续响着会让人以为串台了。包一层是为了让**所有**切换入口
- * （侧栏点选、openQuick）自动带上这个副作用，而不是逐个记得加。
- */
-async function switchSession(id: string): Promise<void> {
-  tts.stop()
-  lastReadId = null
-  await rawSwitchSession(id)
-}
-
-/** 朗读按钮：合成并播放；同一条再点一次由 MessageList 转成 `stopSpeak`。 */
-function speakMessage(text: string, id: string): void {
-  void tts.speak(text, id)
-}
-
 /**
  * 去掉只在渲染层存在的两个字段，其余字段原样透传（将来给 provider 加业务字段不会被漏掉）。
  *
  * 为什么必须去掉：渲染层拿到的 `apiKeyEnc` 按设计永远是空串（主进程 `redactSettings()` 脱敏），
  * 而主进程 `applyPatch()` 对每个出现在 patch 里的 provider 做 `{ ...已有, ...patch }` 逐字段合并——
- * 把空串带回去就等于"把磁盘上的密文覆盖成空"。同进程内 `SettingsStore.setSecret` 写的
- * `memorySecrets` 缓存会继续供出正确凭据，所以现象是「用起来没事、重启后 API Key 没了」
- * （主进程 `smoke.ts` 的注释对 patch 有同样的要求）。
+ * 把空串带回去就等于"把磁盘上的密文覆盖成空"，现象是「用起来没事、重启后 API Key 没了」。
  */
 function stripSecretFields(provider: LlmProviderConfig): LlmProviderConfig {
   const {
@@ -294,11 +216,8 @@ function stripSecretFields(provider: LlmProviderConfig): LlmProviderConfig {
  * 更新当前 provider 的若干字段——「模型」与「思考等级」两个下拉共用的写入路径。
  *
  * patch 必须**原样回传 `llm.active` 与全部 `providers`**（`settings:update` 只有顶层浅合并，
- * 分组级局部更新缺一条就丢配置），但每一个 provider 都要先过 `stripSecretFields()`：
- * 只覆盖当前那一个，其余 provider 的**空密文**一样会覆盖磁盘上的对应凭据。
- * 只有当前 provider 用 patch 覆盖（`{ ...当前, ...patch }`），其余原样透传。
- *
- * 返回值 = 是否成功写入；失败时把 store 的错误挂到 `chatError`（调用方只管提示成功文案）。
+ * 分组级局部更新缺一条就丢配置），但每一个 provider 都要先过 `stripSecretFields()`。
+ * deepClone 由 `settingsStore.update()` 统一处理（Proxy 不可结构化克隆）。
  */
 async function updateActiveProvider(patch: Partial<LlmProviderConfig>): Promise<boolean> {
   const settings = settingsStore.settings
@@ -321,11 +240,7 @@ async function updateActiveProvider(patch: Partial<LlmProviderConfig>): Promise<
   return true
 }
 
-/**
- * 写入当前 provider 的思考等级（只在用户真的改了值时写，挂载 / 切 provider 都不产生空写）。
- *
- * `auto` 由主进程装配层映射成「不下发 `reasoning_effort`」（docs/06 §3），这里只负责落盘。
- */
+/** 写入思考等级（`auto` 由主进程装配层映射成「不下发」）；只在值真的变了时写 */
 async function setEffort(next: ReasoningEffort): Promise<void> {
   const provider = activeProvider.value
   if (provider === null || provider.reasoningEffort === next) return
@@ -334,14 +249,7 @@ async function setEffort(next: ReasoningEffort): Promise<void> {
   }
 }
 
-/**
- * 写入当前 provider 的模型（`model` 是唯一生效值；`modelList` 只是候选，不跟着改）。
- *
- * 切换后**下一次发送**就用新模型：`createProviderFactory().create()` 每次都重读配置
- * （`main/agent-host.ts:212-228`），所以这里不需要通知主进程，也不需要重建 provider。
- * 若新模型不在 `modelList` 里也照样写入——设置页的「模型名」输入框允许填任意 id，
- * 下拉里会把它显示成「（不在列表中）」，不允许静默替换。
- */
+/** 写入当前 provider 的模型（`modelList` 只是候选，不跟着改）；下一次发送即生效 */
 async function setModel(next: string): Promise<void> {
   const provider = activeProvider.value
   if (provider === null || provider.model === next) return
@@ -350,14 +258,215 @@ async function setModel(next: string): Promise<void> {
   }
 }
 
+// ───────────────────────── 语音朗读（TTS，docs/06 §13） ─────────────────────────
+
+const tts = useTts()
+
+/**
+ * 当前是否「可朗读」——朗读按钮出不出现的**唯一**口径（docs/06 §13）。
+ * 四个条件缺一不可：总开关打开、`tts.active` 指向一个存在的 provider、
+ * 且该 provider 的 `baseUrl` / `model` / `voice` 都填了。没配置时按钮**根本不渲染**。
+ */
+const ttsReady = computed<boolean>(() => {
+  const settings = settingsStore.settings
+  if (!settings) return false
+  const { enabled, active, providers } = settings.tts
+  if (!enabled || active === '') return false
+  const provider = providers[active]
+  if (provider === undefined) return false
+  return (
+    provider.baseUrl.trim() !== '' && provider.model.trim() !== '' && provider.voice.trim() !== ''
+  )
+})
+
+/** 是否展示思考过程（MessageList 思考折叠块的唯一门控；配置缺失时默认开） */
+const showThinking = computed<boolean>(
+  () => settingsStore.settings?.general.chat.showThinking ?? true,
+)
+
+/**
+ * 已自动朗读过的消息 id。
+ * 自动朗读只在「本轮从 streaming=true 变为 false」的边沿触发；记 id 去重防重复朗读。
+ */
+let lastReadId: string | null = null
+
+watch(
+  () => streaming.value,
+  (now, before) => {
+    if (!before || now) return
+    if (!ttsReady.value || settingsStore.settings?.tts.autoRead !== true) return
+    const message = chat.lastAssistant.value
+    if (message === null || message.id === lastReadId) return
+    const text = message.content.trim()
+    if (text === '') return
+    lastReadId = message.id
+    void tts.speak(text, message.id)
+  },
+)
+
+/** 朗读失败提示：独立 toast，4 秒后自动收起（与输入区提示刻意分开） */
+const ttsErrorToast = ref<string | null>(null)
+let ttsErrorTimer: number | null = null
+
+watch(
+  () => tts.error.value,
+  (message) => {
+    if (message === null) return
+    ttsErrorToast.value = message
+    tts.error.value = null
+    if (ttsErrorTimer !== null) window.clearTimeout(ttsErrorTimer)
+    ttsErrorTimer = window.setTimeout(() => {
+      ttsErrorToast.value = null
+      ttsErrorTimer = null
+    }, 4000)
+  },
+)
+
+/** 朗读按钮：合成并播放；同一条再点一次由 MessageList 转成 `stopSpeak`。 */
+function speakMessage(text: string, id: string): void {
+  void tts.speak(text, id)
+}
+
+// ───────────────────── 语音输入（STT，BetaV2；门控口径同 TTS） ─────────────────────
+
+/**
+ * 麦克风按钮出不出现的**唯一**口径：`stt.enabled` 且 `stt.active` 指向一个存在的
+ * provider、`baseUrl` / `model` 齐全、且已存有 API Key（`apiKeySet` 由主进程脱敏时给出）。
+ * 未满足时按钮**根本不渲染**（不是 disabled）——点一个必然失败的入口不如不给。
+ */
+const sttReady = computed<boolean>(() => {
+  const settings = settingsStore.settings
+  if (!settings) return false
+  const { enabled, active, providers } = settings.stt
+  if (!enabled || active === '') return false
+  const provider = providers[active] as (SttProviderConfig & { apiKeySet?: boolean }) | undefined
+  if (provider === undefined) return false
+  return (
+    provider.baseUrl.trim() !== '' && provider.model.trim() !== '' && provider.apiKeySet === true
+  )
+})
+
+const recording = ref(false)
+/** 转写请求在途（按钮显示忙碌态，避免重复触发） */
+const sttBusy = ref(false)
+let mediaStream: MediaStream | null = null
+let recorder: MediaRecorder | null = null
+let recordChunks: Blob[] = []
+
+/** MediaRecorder 的容器：优先 webm（主进程按 mime 拼 multipart），浏览器不支持再回落 */
+function pickRecorderMime(): string | undefined {
+  const candidates = ['audio/webm', 'audio/webm;codecs=opus', 'audio/mp4']
+  for (const mime of candidates) {
+    if (MediaRecorder.isTypeSupported(mime)) return mime
+  }
+  return undefined
+}
+
+async function startRecording(): Promise<void> {
+  if (sttBusy.value) return
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  } catch {
+    chatError.value = '无法开始录音：请检查麦克风连接，并允许 Aurora 使用麦克风'
+    return
+  }
+  const mimeType = pickRecorderMime()
+  try {
+    recorder = new MediaRecorder(mediaStream, mimeType === undefined ? undefined : { mimeType })
+  } catch (cause) {
+    releaseStream()
+    chatError.value = `无法开始录音：${cause instanceof Error ? cause.message : String(cause)}`
+    return
+  }
+  recordChunks = []
+  recorder.ondataavailable = (event) => {
+    if (event.data.size > 0) recordChunks.push(event.data)
+  }
+  recorder.onstop = () => {
+    void finishRecording()
+  }
+  recorder.start()
+  recording.value = true
+}
+
+/** 停止录音并进入转写（`recorder.stop()` 会冲刷数据，onstop 里接续） */
+function stopRecording(): void {
+  if (recorder !== null && recorder.state !== 'inactive') recorder.stop()
+  recording.value = false
+  releaseStream()
+}
+
+/** 录音 Blob → base64 → `stt:transcribe` → 文本追加进输入框；失败走 AppToast 通道 */
+async function finishRecording(): Promise<void> {
+  const chunks = recordChunks
+  recordChunks = []
+  const mime = recorder?.mimeType ?? 'audio/webm'
+  recorder = null
+  if (chunks.length === 0) return
+  sttBusy.value = true
+  try {
+    const blob = new Blob(chunks, { type: mime })
+    const audioBase64 = bytesToBase64(new Uint8Array(await blob.arrayBuffer()))
+    const result = await window.aurora.stt.transcribe({ audioBase64, mime })
+    if (!result.ok) {
+      chatError.value = `语音识别失败：${result.message}`
+      return
+    }
+    const text = result.value.text.trim()
+    if (text === '') return
+    input.value = input.value.trim() === '' ? text : `${input.value.trimEnd()} ${text}`
+  } catch (cause) {
+    chatError.value = `语音识别失败：${cause instanceof Error ? cause.message : String(cause)}`
+  } finally {
+    sttBusy.value = false
+  }
+}
+
+/** 停掉媒体轨道；三条路径（正常停止 / 失败 / 卸载）都收敛到这里 */
+function releaseStream(): void {
+  for (const track of mediaStream?.getTracks() ?? []) track.stop()
+  mediaStream = null
+}
+
+/**
+ * 彻底丢弃录音（组件卸载 / 切会话）：不再触发转写，只释放资源。
+ * 与 `stopRecording()` 的差别是**不**冲刷数据——离开视口后的转写没有意义。
+ */
+function disposeRecording(): void {
+  if (recorder !== null && recorder.state !== 'inactive') {
+    recorder.onstop = null
+    recorder.stop()
+  }
+  recorder = null
+  recordChunks = []
+  recording.value = false
+  releaseStream()
+}
+
+/** base64（分块编码，避免长录音撑爆函数调用栈） */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
+  }
+  return btoa(binary)
+}
+
+function toggleRecording(): void {
+  if (recording.value) {
+    stopRecording()
+    return
+  }
+  void startRecording()
+}
+
 // ───────────────────────── 附件拖拽（docs/07 §2.3） ─────────────────────────
 
 /**
  * 取拖入文件路径。
- *
- * 路径解析必须走 preload（`webUtils.getPathForFile`）：Electron 32 起
- * `File.path` 已移除，渲染层自己拿不到本地路径。拿不到路径的条目（如从
- * 浏览器拖来的虚拟文件）直接跳过，不假装已附加。
+ * 路径解析必须走 preload（`webUtils.getPathForFile`）：Electron 32 起 `File.path` 已移除。
+ * 拿不到路径的条目（如从浏览器拖来的虚拟文件）直接跳过，不假装已附加。
  */
 function onDrop(event: DragEvent): void {
   dragging.value = false
@@ -392,31 +501,11 @@ async function send(): Promise<void> {
   input.value = ''
   attachments.value = []
   await sendMessage(text, files)
-  // 新会话此时才有标题，刷新列表让侧栏显示出来
+  // 新会话此时才有标题，刷新列表让左栏显示出来
   void loadSessions()
 }
 
-/**
- * 切换侧栏栏目。
- *
- * 切到「快速」时顺带刷新预览（只读，不影响当前会话）：否则在快速会话里发完消息后，
- * 预览会一直停在挂载时的那几条。
- */
-function selectTab(tab: 'quick' | 'sessions'): void {
-  sidebarTab.value = tab
-  if (tab === 'quick') void refreshQuickPreview()
-}
-
-/** 「继续快速对话」：切到快速会话（栏目保持不变，用户还在「快速」栏里） */
-async function openQuick(): Promise<void> {
-  await switchSession('quick')
-}
-
-/** 「快速」栏的预览正文：折叠空白 + 截断（侧栏只有 152px 宽，不做多行渲染） */
-function previewText(content: string): string {
-  const flat = content.replace(/\s+/g, ' ').trim()
-  return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat
-}
+// ───────────────────────── 模式引导（交互语义不变） ─────────────────────────
 
 async function startGuide(): Promise<void> {
   if (!guide.value) return
@@ -434,124 +523,94 @@ async function markGuideDone(): Promise<void> {
   if (!guide.value) return
   await modeStore.completeGuide(guide.value.id)
 }
-
-/** 会话标题：空会话显示为「新会话」，与主进程的摘要保持一致 */
-function sessionTitle(title: string): string {
-  return title.trim() === '' ? '新会话' : title
-}
-
-function formatTime(iso: string): string {
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return ''
-  const today = new Date()
-  const sameDay =
-    date.getFullYear() === today.getFullYear() &&
-    date.getMonth() === today.getMonth() &&
-    date.getDate() === today.getDate()
-  return sameDay
-    ? date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-    : date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
-}
 </script>
 
 <template>
-  <div class="chat glass">
-    <header class="head" :class="dragClass">
-      <div class="head-title">
-        <StatusDot :tone="statusTone" title="AI 状态" />
-        <strong class="head-name">对话</strong>
-        <span class="badge">{{ modeStore.current?.displayName ?? '未激活' }}</span>
-        <span v-if="settingsStore.needsOnboarding" class="badge warn">未配置模型</span>
-        <span class="tiny muted session">{{ currentTitle }}</span>
-      </div>
-      <div class="head-actions" :class="noDragClass">
-        <AppButton size="sm" variant="ghost" @click="showSidebar = !showSidebar">历史</AppButton>
-        <AppButton size="sm" variant="ghost" @click="newSession">新建</AppButton>
-        <AppButton size="sm" variant="ghost" @click="clear">清空</AppButton>
-        <AppButton size="sm" variant="ghost" @click="windowStore.show('settings')">设置</AppButton>
-        <!--
-          收起 = **直接隐藏窗口**：只隐藏，正在进行的流式回复不会被 abort
-          （`hide()` 不触碰 `chat:abort`，docs/02 §2.2「关闭 = 隐藏」）。
-        -->
-        <AppButton
-          size="sm"
-          variant="ghost"
-          title="收起对话窗口（对话仍在后台继续）"
-          @click="windowStore.hide('chat')"
+  <div class="app-shell">
+    <!-- ── 左栏：品牌 / 新对话 / 快速对话 / 会话列表 / 底部工具 ── -->
+    <aside class="nav" :class="{ collapsed: !navOpen }">
+      <SessionNav
+        :sessions="sessionItems"
+        :active-id="sessionId"
+        :right-open="contextOpen"
+        @new-session="startNewSession"
+        @select="switchSession"
+        @toggle-right-panel="contextOpen = !contextOpen"
+        @open-settings="windowStore.show('settings')"
+      />
+    </aside>
+
+    <!-- ── 主区 ── -->
+    <main class="main">
+      <header class="head" :class="dragClass">
+        <button
+          type="button"
+          class="icon-btn press"
+          :title="navOpen ? '收起侧栏' : '展开侧栏'"
+          :aria-expanded="navOpen"
+          @click="navOpen = !navOpen"
         >
-          收起
-        </AppButton>
-      </div>
-    </header>
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="2" y="2.8" width="12" height="10.4" rx="2" />
+            <path d="M6 2.8v10.4" />
+          </svg>
+        </button>
+        <StatusDot :tone="statusTone" title="AI 状态" />
+        <strong class="head-name">{{ currentTitle }}</strong>
+        <span v-if="settingsStore.needsOnboarding" class="badge warn">未配置模型</span>
+        <span class="grow" />
+        <div class="head-actions" :class="noDragClass">
+          <label class="tiny muted picker-label" for="chat-model-picker">模型</label>
+          <!-- 下拉自己带 `data-field="chat.model"`：capture 探针与 UI 断言的唯一抓手 -->
+          <ModelPickerSelect
+            id="chat-model-picker"
+            :model-value="currentModel"
+            :models="modelOptions"
+            :disabled="activeProvider === null"
+            :title="modelTitle"
+            @update:model-value="setModel"
+          />
+          <label class="tiny muted picker-label" for="chat-thinking-level">思考</label>
+          <!-- 下拉自己带 `data-field="chat.reasoningEffort"`：capture 探针与 UI 断言的唯一抓手 -->
+          <ThinkingLevelSelect
+            id="chat-thinking-level"
+            :model-value="effortValue"
+            :disabled="effort === null"
+            :title="effortTitle"
+            @update:model-value="setEffort"
+          />
+          <AppButton
+            size="sm"
+            variant="ghost"
+            title="清空当前消息区（不影响已保存的会话历史）"
+            @click="clear"
+          >
+            清空
+          </AppButton>
+          <!--
+            收起 = **直接隐藏窗口**：只隐藏，正在进行的流式回复不会被 abort
+            （`hide()` 不触碰 `chat:abort`，docs/02 §2.2「关闭 = 隐藏」）。
+          -->
+          <AppButton
+            size="sm"
+            variant="ghost"
+            title="收起主界面（对话仍在后台继续）"
+            @click="windowStore.hide('chat')"
+          >
+            收起
+          </AppButton>
+        </div>
+      </header>
 
-    <SensitiveToolCard
-      v-if="sensitiveRequest"
-      :key="sensitiveRequest.confirmId"
-      :request="sensitiveRequest"
-      class="sensitive-host"
-      @resolved="resolveSensitive"
-    />
+      <SensitiveToolCard
+        v-if="sensitiveRequest"
+        :key="sensitiveRequest.confirmId"
+        :request="sensitiveRequest"
+        class="sensitive-host"
+        @resolved="resolveSensitive"
+      />
 
-    <div class="body">
-      <Transition name="sheet">
-        <aside v-if="showSidebar" class="history">
-          <!-- 双栏：「快速」= 快速会话预览（与提示条共用同一会话），「会话」= 完整会话列表 -->
-          <div class="sidebar-tabs">
-            <button
-              type="button"
-              class="tab interactive"
-              :class="{ active: sidebarTab === 'quick' }"
-              @click="selectTab('quick')"
-            >
-              快速
-            </button>
-            <button
-              type="button"
-              class="tab interactive"
-              :class="{ active: sidebarTab === 'sessions' }"
-              @click="selectTab('sessions')"
-            >
-              会话
-            </button>
-          </div>
-
-          <template v-if="sidebarTab === 'quick'">
-            <p v-if="quickPreview.length === 0" class="tiny muted">快速会话还没有消息</p>
-            <div v-for="item in quickPreview" :key="item.id" class="history-item quick-item">
-              <strong class="tiny">{{ item.role === 'user' ? '我' : 'Aurora' }}</strong>
-              <span class="tiny muted">{{ previewText(item.content) }}</span>
-            </div>
-            <div class="sidebar-foot">
-              <AppButton size="sm" variant="primary" block @click="openQuick">
-                继续快速对话
-              </AppButton>
-            </div>
-          </template>
-
-          <template v-else>
-            <div class="row">
-              <strong class="tiny grow">会话</strong>
-              <AppButton size="sm" variant="ghost" @click="newSession">新建</AppButton>
-            </div>
-            <p v-if="sessions.length === 0" class="tiny muted">还没有会话</p>
-            <button
-              v-for="item in sessions"
-              :key="item.id"
-              type="button"
-              class="history-item interactive"
-              :class="{ active: item.id === sessionId }"
-              @click="switchSession(item.id)"
-            >
-              <strong class="tiny">{{ sessionTitle(item.title) }}</strong>
-              <span class="tiny muted">
-                {{ formatTime(item.updatedAt) }} · {{ item.messageCount }} 条
-              </span>
-            </button>
-          </template>
-        </aside>
-      </Transition>
-
-      <main
+      <div
         class="thread"
         :class="{ dragging, streaming }"
         @dragenter.prevent="dragging = true"
@@ -579,259 +638,233 @@ function formatTime(iso: string): string {
 
         <MessageList
           :messages="messages"
-          empty-hint="这是完整对话窗口：可以问系统状态、让 Aurora 帮忙整理资料，也可以直接把文件拖进来。"
+          empty-hint="这是 Aurora 主界面：可以问系统状态、让 Aurora 帮忙整理资料，也可以直接把文件拖进来。"
           :tts-available="ttsReady"
           :speaking-id="tts.speaking.value"
           :tts-loading-id="tts.loading.value"
+          :streaming="streaming"
+          :show-thinking="showThinking"
+          :thinking-target-id="reasoningTargetId"
           @speak="speakMessage"
           @stop-speak="tts.stop"
         />
-      </main>
-    </div>
-
-    <ClassificationLedger class="ledger-host" :limit="20" />
-
-    <footer class="composer">
-      <div v-if="attachments.length > 0" class="attachments">
-        <span v-for="path in attachments" :key="path" class="chip tiny">
-          {{ fileNameOf(path) }}
-          <button
-            type="button"
-            class="chip-remove"
-            aria-label="移除附件"
-            @click="removeAttachment(path)"
-          >
-            ×
-          </button>
-        </span>
       </div>
 
-      <div class="composer-box">
-        <textarea
-          v-model="input"
-          spellcheck="false"
-          placeholder="输入消息，Ctrl + Enter 发送；可直接把文件拖进来"
-          @keydown.enter.exact.prevent="send"
-          @keydown.ctrl.enter.prevent="send"
-        />
-        <div class="composer-bar">
-          <span class="tiny muted meta"> 会话：{{ sessionId }} · 可调用 Skill 与 MCP 工具 </span>
-          <!--
-            顺序固定为：meta 文本 → 模型 → 思考 → 停止 / 发送（docs/07 §2.3）。
-            420px 宽下这一行很紧，能被压缩的只有可省略的文本（`.meta` 与 `.picker-hint`），
-            两个下拉、两个标签与发送按钮都不参与「挤出去」——发送按钮必须留在圆角框内。
-          -->
-          <label class="tiny muted picker-label" for="chat-model-picker">模型</label>
-          <!-- 下拉自己带 `data-field="chat.model"`：capture 探针与 UI 断言的唯一抓手 -->
-          <ModelPickerSelect
-            id="chat-model-picker"
-            :model-value="currentModel"
-            :models="modelOptions"
-            :disabled="activeProvider === null"
-            :title="modelTitle"
-            @update:model-value="setModel"
-          />
-          <label class="tiny muted picker-label" for="chat-thinking-level">思考</label>
-          <!-- 下拉自己带 `data-field="chat.reasoningEffort"`：capture 探针与 UI 断言的唯一抓手 -->
-          <ThinkingLevelSelect
-            id="chat-thinking-level"
-            :model-value="effortValue"
-            :disabled="effort === null"
-            :title="effortTitle"
-            @update:model-value="setEffort"
-          />
-          <!--
-            无可用 provider 时两个控件**保持可见**（只禁用、不隐藏）：用户抱怨的正是「找不到按钮」。
-            提示文字与 tooltip 都指向修复路径；tooltip 挂在这行提示上是因为 Chromium 不给
-            禁用态的原生控件弹 title。
-          -->
-          <span v-if="activeProvider === null" class="tiny muted picker-hint" :title="modelTitle">
-            未配置模型
-          </span>
-          <span v-else-if="pickerHint" class="tiny muted picker-hint">{{ pickerHint }}</span>
-          <AppButton v-if="streaming" size="sm" @click="abort">停止</AppButton>
-          <span class="send-slot">
-            <AppButton
-              class="send"
-              size="sm"
-              variant="primary"
-              aria-label="发送"
-              title="发送（Ctrl + Enter）"
-              :disabled="streaming || (input.trim() === '' && attachments.length === 0)"
-              @click="send"
+      <footer class="composer">
+        <div v-if="attachments.length > 0" class="attachments">
+          <span v-for="path in attachments" :key="path" class="chip tiny">
+            {{ fileNameOf(path) }}
+            <button
+              type="button"
+              class="chip-remove"
+              aria-label="移除附件"
+              @click="removeAttachment(path)"
             >
-              <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M8 13V3.6M8 3.6 4.2 7.4M8 3.6l3.8 3.8" />
-              </svg>
-            </AppButton>
+              ×
+            </button>
           </span>
         </div>
-      </div>
 
-      <AppToast v-if="chatError" tone="error">{{ chatError }}</AppToast>
-    </footer>
+        <div class="composer-box">
+          <textarea
+            v-model="input"
+            spellcheck="false"
+            placeholder="输入消息，Ctrl + Enter 发送；可直接把文件拖进来"
+            @keydown.enter.exact.prevent="send"
+            @keydown.ctrl.enter.prevent="send"
+          />
+          <div class="composer-bar">
+            <span class="tiny muted meta">
+              {{ pickerHint ?? `会话：${sessionId} · 可调用 Skill 与 MCP 工具` }}
+            </span>
+            <!--
+              麦克风（STT）：门控口径同 TTS——未配置可用的 provider 时**不渲染**（不是 disabled）。
+              录音态套 `.pulse-ring` 扩散环（theme.css 动效基线）。
+            -->
+            <button
+              v-if="sttReady"
+              type="button"
+              class="icon-btn mic press"
+              data-field="chat.mic"
+              :class="{ recording, busy: sttBusy }"
+              :title="recording ? '停止录音并转写' : '语音输入'"
+              :aria-label="recording ? '停止录音' : '开始语音输入'"
+              @click="toggleRecording"
+            >
+              <span v-if="recording" class="mic-ring pulse-ring" aria-hidden="true" />
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <rect x="6" y="1.8" width="4" height="7.4" rx="2" />
+                <path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.2M5.6 14h4.8" />
+              </svg>
+            </button>
+            <AppButton v-if="streaming" size="sm" @click="abort">停止</AppButton>
+            <span class="send-slot">
+              <AppButton
+                class="send"
+                size="sm"
+                variant="primary"
+                aria-label="发送"
+                title="发送（Ctrl + Enter）"
+                :disabled="streaming || (input.trim() === '' && attachments.length === 0)"
+                @click="send"
+              >
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M8 13V3.6M8 3.6 4.2 7.4M8 3.6l3.8 3.8" />
+                </svg>
+              </AppButton>
+            </span>
+          </div>
+        </div>
+
+        <AppToast v-if="chatError" tone="error">{{ chatError }}</AppToast>
+      </footer>
+    </main>
+
+    <!-- ── 右栏：模式感知上下文 ── -->
+    <aside class="context" :class="{ collapsed: !contextOpen }">
+      <ContextPanel />
+    </aside>
   </div>
 </template>
 
 <style scoped>
-.chat {
-  display: flex;
-  flex-direction: column;
+/**
+ * 三栏 grid（spec §3）：左栏 232px 可折叠 · 主区自适应 · 右栏 264px 可折叠。
+ * 折叠用「宽度收 0 + 内容固定宽被裁剪」而不是 v-show：display:none 没有过渡，
+ * 而宽度过渡能让侧栏沿 --ease-spring 滑入滑出（prefers-reduced-motion 全局降级）。
+ */
+.app-shell {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   height: 100vh;
-  border-radius: var(--radius-lg);
   overflow: hidden;
+  background: var(--bg-base);
+  color: var(--text-primary);
 }
 
-/* ── 标题栏：两行（标题 / 操作），靠分层填充与内容区区分，不加粗边框 ── */
+/* ── 左栏 / 右栏的公共折叠语义 ── */
+.nav,
+.context {
+  overflow: hidden;
+  transition:
+    width var(--dur-base) var(--ease-spring),
+    opacity var(--dur-base) var(--ease-standard),
+    border-color var(--dur-base) var(--ease-standard);
+}
+
+.nav {
+  width: 232px;
+  background: var(--fill-1);
+  border-right: 1px solid var(--border-subtle);
+}
+
+.context {
+  width: 264px;
+  background: var(--fill-1);
+  border-left: 1px solid var(--border-subtle);
+}
+
+.nav.collapsed,
+.context.collapsed {
+  width: 0;
+  opacity: 0;
+  border-color: transparent;
+}
+
+/* ── 主区：头部（拖动）/ 消息滚动区 / composer ── */
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100vh;
+}
+
 .head {
   flex: 0 0 auto;
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  min-height: 52px;
   background: var(--fill-1);
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.head-title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
 .head-name {
-  flex: 0 0 auto;
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
   font-weight: var(--weight-semibold);
-}
-
-/* 标题栏只有会话名可被压缩（窄窗时不挤掉状态点与 badge） */
-.head-title .badge,
-.head-title .status-dot {
-  flex: 0 0 auto;
-}
-
-.session {
-  flex: 0 1 auto;
-  margin-left: auto;
-  min-width: 0;
+  letter-spacing: var(--tracking-display);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.head .badge.warn {
+  flex: 0 0 auto;
+}
+
+/* 头部下拉压到 32px，与 ghost 按钮同高（组件默认 40px 是输入区规格） */
+.head-actions :deep(.model-picker),
+.head-actions :deep(.thinking-level) {
+  height: var(--control-h-sm);
 }
 
 .head-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-1);
+  gap: var(--space-2);
 }
 
-/* 头部本身是 --fill-1 层：中性 badge 要再亮一层才有底（语义色 badge 保留全局样式） */
-.head .badge:not(.warn):not(.error):not(.ok) {
+.picker-label {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* 头部 / composer 共用的圆形图标按钮 */
+.icon-btn {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.icon-btn:hover {
   background: var(--fill-2);
+  color: var(--text-primary);
 }
 
-.body {
-  flex: 1;
-  display: flex;
-  min-height: 0;
+.icon-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .sensitive-host {
   flex: 0 0 auto;
+  margin: var(--space-2) var(--space-4) 0;
 }
 
-.ledger-host {
-  flex: 0 0 auto;
-}
-
-/* ── 侧栏：快速 / 会话双栏 ── */
-.history {
-  flex: 0 0 auto;
-  width: 152px;
-  padding: var(--space-2);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  overflow-y: auto;
-  background: var(--fill-1);
-  border-right: 1px solid var(--border-subtle);
-}
-
-.history-item {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  padding: 6px 8px 6px 12px;
-  border-radius: var(--radius-sm);
-  text-align: left;
-  color: var(--text-secondary);
-  /* 会话标题来自首条用户消息，可能是长 URL：允许在任意位置折行，不撑破 152px 侧栏 */
-  overflow-wrap: anywhere;
-}
-
-.history-item.active {
-  background: var(--fill-2);
-  color: var(--text-primary);
-}
-
-/* 当前项：左侧 3px 品牌色指示条 */
-.history-item.active::before {
-  content: '';
-  position: absolute;
-  left: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 60%;
-  border-radius: var(--radius-pill);
-  background: var(--aurora-blue);
-}
-
-/* ── 侧栏栏目切换（快速 / 会话）：分段控件，与全局 .interactive 悬停共用 ── */
-.sidebar-tabs {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--radius-sm);
-  background: var(--fill-2);
-}
-
-.tab {
-  flex: 1;
-  padding: 3px 0;
-  border-radius: var(--radius-xs);
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  text-align: center;
-}
-
-.tab.active {
-  background: var(--fill-1);
-  color: var(--text-primary);
-}
-
-/* 「快速」栏的预览条目是只读快照，不响应点击（切换走底部主按钮） */
-.quick-item {
-  cursor: default;
-}
-
-/* 「继续快速对话」贴侧栏底部，与上方预览拉开距离 */
-.sidebar-foot {
-  margin-top: auto;
-  padding-top: var(--space-1);
-}
-
+/* 消息滚动区：useStickToBottom 从 MessageList 向上找到的第一个 overflow-y 容器 */
 .thread {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   overflow-y: auto;
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-4);
 }
 
 /* 拖拽悬停反馈：对话区整体描边，避免用户不确定有没有拖对地方 */
@@ -882,9 +915,8 @@ function formatTime(iso: string): string {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3) var(--space-3);
-  background: var(--bg-raised);
-  border-top: 1px solid var(--border-subtle);
+  padding: var(--space-2) var(--space-4) var(--space-4);
+  background: var(--bg-base);
 }
 
 .attachments {
@@ -917,7 +949,7 @@ function formatTime(iso: string): string {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
@@ -951,49 +983,13 @@ function formatTime(iso: string): string {
 .composer-bar {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-2);
   min-width: 0;
   white-space: nowrap;
-}
-
-/* 模型与思考控件在本窗口内同高；宽度仍可退让到组件已有的最小值。 */
-.composer-bar :deep(.model-picker),
-.composer-bar :deep(.thinking-level) {
-  height: var(--control-h-md);
-  border-radius: var(--radius-sm);
-}
-
-.composer-bar > :deep(.aurora-button) {
-  min-height: var(--control-h-md);
 }
 
 .meta {
   flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/**
- * 「模型」「思考」两个标签与提示（docs/07 §2.3）。
- *
- * 420px 宽时输入框内约有 370px；流式状态下先让提示文本退让，
- * 模型下拉可从 110px 缩至组件现有的 72px，操作行间距保持 4px。
- * 两个标签与发送按钮不收缩；`white-space: nowrap` 防止标签折行。
- */
-.picker-label {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-/**
- * 提示文本是这一行的**第一顺位收缩者**（`shrink: 100` 远大于模型下拉的 `1`）：
- * 「模型已切换为 deepseek-reasoner」这类文案比 meta 长得多，让它先省略，
- * 模型下拉才能在非流式时稳稳保持 110px（不会随提示出现而抽动）。
- */
-.picker-hint {
-  flex: 0 100 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1005,10 +1001,10 @@ function formatTime(iso: string): string {
   flex: 0 0 auto;
 }
 
-/* 发送按钮与两处下拉同高，始终保留固定宽度。 */
+/* 发送按钮为圆形图标钮，与 mic 同高 */
 .send-slot :deep(.aurora-button) {
-  width: var(--control-h-md);
-  height: var(--control-h-md);
+  width: 32px;
+  height: 32px;
   padding: 0;
   border-radius: var(--radius-pill);
 }
@@ -1021,5 +1017,35 @@ function formatTime(iso: string): string {
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+/* ── 麦克风（STT）：录音态红描边 + `.pulse-ring` 扩散环（theme.css 动效基线） ── */
+.icon-btn.mic {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+}
+
+.icon-btn.mic:hover {
+  border-color: var(--border-strong);
+}
+
+.icon-btn.mic.busy {
+  color: var(--text-muted);
+}
+
+.icon-btn.mic.recording {
+  color: var(--status-error);
+  border-color: var(--status-error);
+  background: var(--error-fill);
+}
+
+.mic-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--status-error);
+  pointer-events: none;
 }
 </style>

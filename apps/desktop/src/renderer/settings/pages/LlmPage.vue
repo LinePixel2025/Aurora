@@ -17,6 +17,9 @@
  *
  * 行上只有「名称 + 凭据状态 + 是否默认 + 编辑 / 设为默认 / 删除」四个动作，没有多余的折叠箭头：
  * 展开高级参数是**卡内**那颗 `.more` 的职责（capture 的 `SETTINGS_LLM_EFFORT_ACT` 会先点开卡再点它）。
+ *
+ * BetaV2 增量（spec §9）：页头下方新增「对话展示」小节（`general.chat.showThinking`）；
+ * 页面底部新增「生图模型」区组（`ImageGenSection`，`imagegen.*`，独立 provider 体系）。
  */
 import { computed, reactive, ref, watch } from 'vue'
 import {
@@ -28,6 +31,7 @@ import {
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
+import ImageGenSection from '../components/ImageGenSection.vue'
 import { useSettingsStore } from '../../shared/stores.js'
 
 interface ProviderDraft extends LlmProviderConfig {
@@ -64,6 +68,26 @@ const activeId = computed(() => settingsStore.settings?.llm.active ?? '')
 const activeDraft = computed(
   () => drafts.value.find((draft) => draft.id === activeId.value) ?? null,
 )
+
+/**
+ * 「显示思考过程」（`general.chat.showThinking`，v8 新增）：对话窗思考折叠块的门控。
+ * 保存走 `general` 分组的局部更新 —— 主进程 `applyPatch` 对分组做 Object.assign，
+ * 只带 `chat` 子对象不会丢 `general` 的其它字段（launchAtLogin 等原样保留）。
+ */
+const showThinking = computed(() => settingsStore.settings?.general.chat.showThinking ?? true)
+
+async function setShowThinking(next: boolean): Promise<void> {
+  const settings = settingsStore.settings
+  if (!settings) return
+  const ok = await settingsStore.update({
+    general: { chat: { ...settings.general.chat, showThinking: next } },
+  })
+  if (!ok) error.value = settingsStore.error
+  else {
+    message.value = '已保存'
+    error.value = null
+  }
+}
 
 function resultOf(id: string): TestConnectionResult | undefined {
   return results[id]
@@ -498,6 +522,27 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
     <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
     <AppToast v-if="error" tone="error">{{ error }}</AppToast>
 
+    <!-- 「显示思考过程」（v8 新增）：独立小节，改动即时保存 -->
+    <section class="section-card">
+      <h2 class="section-title">对话展示</h2>
+      <p class="section-desc">对话窗里模型推理内容的呈现方式。</p>
+
+      <SettingField
+        data-field="general.chat.showThinking"
+        label="显示思考过程"
+        hint="展示模型的思考过程，需模型支持 reasoning 输出"
+      >
+        <label class="row tiny">
+          <input
+            type="checkbox"
+            :checked="showThinking"
+            @change="setShowThinking(($event.target as HTMLInputElement).checked)"
+          />
+          <span>在回复上方显示可折叠的思考过程</span>
+        </label>
+      </SettingField>
+    </section>
+
     <!-- 空状态：没有任何 provider 时不摆一排空行，直接给主入口（文案与主按钮保持不变） -->
     <section v-if="drafts.length === 0" class="section-card empty-state" data-empty="llm.providers">
       <h2 class="section-title">还没有 AI 模型配置</h2>
@@ -847,6 +892,9 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
       改动在点「应用」（保存这一张卡）或工具行的「保存全部」后落盘；编辑卡里的 API Key
       留空表示不修改已保存的凭据。
     </p>
+
+    <!-- 生图模型区组（v8 新增）：独立 provider 体系，与聊天模型互不绑定 -->
+    <ImageGenSection />
   </section>
 </template>
 

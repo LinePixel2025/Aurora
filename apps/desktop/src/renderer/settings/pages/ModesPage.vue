@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * 模式设置页（docs/07 §2.5）：三模式卡片 + 引导状态。
+ * 模式设置页（docs/07 §2.5，BetaV2 六页 IA）：三模式卡片 + 引导状态。
  *
  * 页面下半部分**只渲染当前模式**的内容：
  * - ClassRoom → 完整配置区（`ClassroomSection`）；
- * - Work / Code → 占位实现说明，不得出现任何 `modes.classroom.*` 控件（docs/05 §2）。
+ * - Work → 办公工作目录（`WorkSection`，BetaV2 实装）；
+ * - Code → 占位实现说明，不得出现任何 `modes.classroom.*` / `modes.work.*` 控件（docs/05 §2）。
  * 卡片上的「重新引导 / 标记完成」是次级操作，默认收起，避免与「启用」抢视觉重心。
  */
 import { computed, ref } from 'vue'
@@ -12,6 +13,7 @@ import type { ModeId } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import ClassroomSection from '../components/ClassroomSection.vue'
+import WorkSection from '../components/WorkSection.vue'
 import { useModeStore, useSettingsStore, useWindowStore } from '../../shared/stores.js'
 
 const modeStore = useModeStore()
@@ -98,7 +100,7 @@ async function markDone(id: ModeId): Promise<void> {
         <footer class="row">
           <AppButton
             size="sm"
-            :variant="mode.active ? 'secondary' : 'primary'"
+            :variant="mode.active || mode.placeholder ? 'secondary' : 'primary'"
             :disabled="busy !== null || mode.active"
             @click="choose(mode.id)"
           >
@@ -138,8 +140,9 @@ async function markDone(id: ModeId): Promise<void> {
       </article>
     </div>
 
-    <!-- 只渲染当前模式的内容：ClassRoom 是唯一有配置项的实现 -->
+    <!-- 只渲染当前模式的内容：ClassRoom 与 Work 各有配置区，Code 仍是占位 -->
     <ClassroomSection v-if="currentMode === 'classroom'" />
+    <WorkSection v-else-if="currentMode === 'work'" />
     <section
       v-else-if="currentMode !== null"
       class="section-card empty-state"
@@ -148,7 +151,7 @@ async function markDone(id: ModeId): Promise<void> {
       <h2 class="section-title">{{ currentLabel }} 暂无可配置项</h2>
       <p class="section-desc">
         该模式仍是占位实现（docs/04 路线图）：对话可用，但没有专属设置项。切到 ClassRoom
-        后这里会出现感知文件夹、科目与课表等配置。
+        后这里会出现感知文件夹、科目与课表等配置；切到 Work 则有工作目录设置。
       </p>
       <div class="row">
         <AppButton size="sm" :disabled="busy !== null" @click="choose('classroom')">

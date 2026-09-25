@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
- * 电脑操控设置页（docs/06 §11、docs/08 §1）：总开关、默认工作目录、
- * 终端 / 文件 / 打开三个子开关与上限、当前生效工具预览。
+ * 智能与工具设置页（docs/06 §11、docs/08 §1，BetaV2 六页 IA）：
+ * 「电脑操控工具」「技能」「MCP 服务器」三个可折叠区组同页（spec §9）。
  *
  * 「电脑操控」是给模型装上"手"的一组工具（run_command / read_file / write_file /
  * list_dir / open_path）：默认全开，但命令执行与文件写入是敏感工具，逐次确认后才执行。
@@ -29,6 +29,8 @@ import { COMPUTER_TOOL_NAMES, DEFAULT_AGENT_TOOLS } from '@aurora/shared/browser
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
+import McpSection from '../components/McpSection.vue'
+import SkillsSection from '../components/SkillsSection.vue'
 import { useSettingsStore } from '../../shared/stores.js'
 
 const settingsStore = useSettingsStore()
@@ -36,6 +38,9 @@ const error = ref<string | null>(null)
 const message = ref<string | null>(null)
 /** 「打开工作目录」成功回执里的真实路径（主进程解析后的绝对路径） */
 const openedWorkspace = ref('')
+
+/** 区组折叠状态（默认展开：字段与探针锚点常在 DOM 里） */
+const openTools = ref(true)
 
 /**
  * 当前工具配置。settings 未加载完时为 `null`，这里回落到 Schema 默认值 ——
@@ -63,6 +68,13 @@ const activeToolNames = computed<ComputerToolName[]>(() => {
   if (!current.enabled) return []
   return COMPUTER_TOOL_NAMES.filter((name) => TOOL_GATES[name](current))
 })
+
+/** 区组头部摘要：收起时也能看出工具的启停状态 */
+const toolsSummary = computed(() =>
+  tools.value.enabled
+    ? `${activeToolNames.value.length} / ${COMPUTER_TOOL_NAMES.length} 个工具生效`
+    : '已停用',
+)
 
 async function save(patch: Partial<AgentToolsConfig>): Promise<void> {
   const current = settingsStore.settings?.agent.tools
@@ -109,260 +121,303 @@ async function openWorkspace(): Promise<void> {
 <template>
   <section class="page">
     <header>
-      <h1 class="page-title">电脑操控</h1>
+      <h1 class="page-title">智能与工具</h1>
       <p class="page-sub">
-        让模型能执行命令、读写文件与打开路径（docs/06 §11）。默认全开，但敏感工具逐次确认后才执行。
+        电脑操控工具、技能与 MCP 服务器。默认全开，但敏感工具逐次确认后才执行。
       </p>
     </header>
 
     <AppToast v-if="error" tone="error">{{ error }}</AppToast>
     <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
 
-    <section class="section-card">
-      <h2 class="section-title">总开关</h2>
-      <p class="section-desc">
-        关闭后模型<strong>完全看不到</strong>这 5 个工具：
-        <code class="mono">run_command</code>、<code class="mono">read_file</code>、<code
-          class="mono"
-          >write_file</code
-        >、<code class="mono">list_dir</code>、<code class="mono">open_path</code>
-        —— 系统提示词与工具表里都不再出现，保存后立即生效，无需重启。
-      </p>
-
-      <SettingField
-        data-field="agent.tools.enabled"
-        label="启用电脑操控"
-        hint="关掉是最彻底的「刹车」：工具根本不注册，模型无从请求（默认开启）"
+    <!-- ───────── 区组一：电脑操控工具 ───────── -->
+    <section class="group section-card">
+      <button
+        class="group-head"
+        type="button"
+        :aria-expanded="openTools"
+        @click="openTools = !openTools"
       >
-        <label class="row tiny">
-          <input
-            type="checkbox"
-            :checked="tools.enabled"
-            @change="save({ enabled: ($event.target as HTMLInputElement).checked })"
-          />
-          <span>允许模型使用终端、文件与打开路径工具</span>
-        </label>
-      </SettingField>
+        <span class="chevron" :class="{ open: openTools }" aria-hidden="true">▸</span>
+        <span class="section-title">电脑操控工具</span>
+        <span class="group-summary tiny muted grow">{{ toolsSummary }}</span>
+      </button>
 
-      <AppToast tone="warn">
-        警示：若在高级页关闭了「敏感工具确认」，命令与文件写入将不经确认直接执行（docs/06 §5）。
-      </AppToast>
+      <Transition name="collapse">
+        <div v-if="openTools" class="group-body">
+          <p class="section-desc">让模型能执行命令、读写文件与打开路径（docs/06 §11）。</p>
+
+          <!-- 总开关 -->
+          <div class="sub">
+            <h3 class="sub-title">总开关</h3>
+            <p class="section-desc">
+              关闭后模型<strong>完全看不到</strong>这 5 个工具：
+              <code class="mono">run_command</code>、<code class="mono">read_file</code>、<code
+                class="mono"
+                >write_file</code
+              >、<code class="mono">list_dir</code>、<code class="mono">open_path</code>
+              —— 系统提示词与工具表里都不再出现，保存后立即生效，无需重启。
+            </p>
+
+            <SettingField
+              data-field="agent.tools.enabled"
+              label="启用电脑操控"
+              hint="关掉是最彻底的「刹车」：工具根本不注册，模型无从请求（默认开启）"
+            >
+              <label class="row tiny">
+                <input
+                  type="checkbox"
+                  :checked="tools.enabled"
+                  @change="save({ enabled: ($event.target as HTMLInputElement).checked })"
+                />
+                <span>允许模型使用终端、文件与打开路径工具</span>
+              </label>
+            </SettingField>
+
+            <AppToast tone="warn">
+              警示：若在「系统」页关闭了「敏感工具确认」，命令与文件写入将不经确认直接执行（docs/06
+              §5）。
+            </AppToast>
+          </div>
+
+          <!-- 工作目录 -->
+          <div class="sub">
+            <h3 class="sub-title">工作目录</h3>
+            <p class="section-desc">
+              <strong>命令</strong
+              >的缺省工作目录：执行命令时若未显式指定路径，就在它下面运行。这<strong
+                >不是沙箱</strong
+              >
+              —— 模型仍可显式传入其它路径，安全边界是「逐次确认 + 输出上限 + 总开关」。
+              文件类工具（读 / 写 / 列目录）不读此项，它们的相对路径按应用自身目录解析，
+              因此只适合用绝对路径。
+            </p>
+
+            <SettingField
+              data-field="agent.tools.workspaceDir"
+              label="默认工作目录"
+              hint="留空 = 用户主目录（如 C:\Users\you）；只作用于命令的缺省 cwd，且不是沙箱"
+            >
+              <input
+                class="input"
+                type="text"
+                spellcheck="false"
+                placeholder="留空 = 用户主目录，例如 D:\Projects"
+                :value="tools.workspaceDir"
+                @change="save({ workspaceDir: ($event.target as HTMLInputElement).value })"
+              />
+            </SettingField>
+
+            <div class="row wrap">
+              <AppButton size="sm" @click="openWorkspace">打开工作目录</AppButton>
+              <span v-if="openedWorkspace" class="tiny muted mono">{{ openedWorkspace }}</span>
+            </div>
+          </div>
+
+          <!-- 终端 -->
+          <div class="sub">
+            <h3 class="sub-title">终端</h3>
+            <p class="section-desc">
+              执行命令（<code class="mono">run_command</code
+              >）：敏感工具，执行前需要确认；超时到点即杀进程。
+            </p>
+
+            <template v-if="tools.enabled">
+              <SettingField
+                data-field="agent.tools.terminal.enabled"
+                label="启用终端工具"
+                hint="关闭后模型看不到 run_command，其余工具不受影响"
+              >
+                <label class="row tiny">
+                  <input
+                    type="checkbox"
+                    :checked="tools.terminal.enabled"
+                    @change="saveTerminal({ enabled: ($event.target as HTMLInputElement).checked })"
+                  />
+                  <span>允许模型执行命令（默认开启）</span>
+                </label>
+              </SettingField>
+
+              <SettingField
+                data-field="agent.tools.terminal.timeoutMs"
+                label="命令超时"
+                hint="单位毫秒，1000 ～ 300000；超时后强制结束进程并回传已捕获的输出（默认 60000）"
+              >
+                <input
+                  class="input"
+                  type="number"
+                  min="1000"
+                  max="300000"
+                  step="1000"
+                  :value="tools.terminal.timeoutMs"
+                  @change="
+                    saveTerminal({
+                      timeoutMs: clampNumber($event, 1000, 300000, tools.terminal.timeoutMs),
+                    })
+                  "
+                />
+              </SettingField>
+
+              <SettingField
+                data-field="agent.tools.terminal.maxOutputChars"
+                label="输出上限"
+                hint="单位字符，500 ～ 100000；超出部分截断，避免一次命令灌爆上下文（默认 8000）"
+              >
+                <input
+                  class="input"
+                  type="number"
+                  min="500"
+                  max="100000"
+                  step="500"
+                  :value="tools.terminal.maxOutputChars"
+                  @change="
+                    saveTerminal({
+                      maxOutputChars: clampNumber(
+                        $event,
+                        500,
+                        100000,
+                        tools.terminal.maxOutputChars,
+                      ),
+                    })
+                  "
+                />
+              </SettingField>
+            </template>
+
+            <p v-else class="tiny muted" data-empty="agent.tools.terminal">
+              关闭总开关后终端工具不会注册：模型看不到 run_command。
+            </p>
+          </div>
+
+          <!-- 文件 -->
+          <div class="sub">
+            <h3 class="sub-title">文件</h3>
+            <p class="section-desc">
+              读取 / 写入 / 列目录（<code class="mono">read_file</code>、<code class="mono"
+                >write_file</code
+              >、<code class="mono">list_dir</code>）：写入是敏感工具，执行前需要确认。
+            </p>
+
+            <template v-if="tools.enabled">
+              <SettingField
+                data-field="agent.tools.files.enabled"
+                label="启用文件工具"
+                hint="关闭后模型看不到 read_file / write_file / list_dir，其余工具不受影响"
+              >
+                <label class="row tiny">
+                  <input
+                    type="checkbox"
+                    :checked="tools.files.enabled"
+                    @change="saveFiles({ enabled: ($event.target as HTMLInputElement).checked })"
+                  />
+                  <span>允许模型读写文件与列目录（默认开启）</span>
+                </label>
+              </SettingField>
+
+              <SettingField
+                data-field="agent.tools.files.maxReadBytes"
+                label="单次读取上限"
+                hint="单位字节，1024 ～ 4194304；超出即拒绝并提示用分段读取（默认 262144 = 256 KiB）"
+              >
+                <input
+                  class="input"
+                  type="number"
+                  min="1024"
+                  max="4194304"
+                  step="1024"
+                  :value="tools.files.maxReadBytes"
+                  @change="
+                    saveFiles({
+                      maxReadBytes: clampNumber($event, 1024, 4194304, tools.files.maxReadBytes),
+                    })
+                  "
+                />
+              </SettingField>
+            </template>
+
+            <p v-else class="tiny muted" data-empty="agent.tools.files">
+              关闭总开关后文件工具不会注册：模型看不到 read_file / write_file / list_dir。
+            </p>
+          </div>
+
+          <!-- 打开 -->
+          <div class="sub">
+            <h3 class="sub-title">打开</h3>
+            <p class="section-desc">
+              用系统默认程序打开路径（<code class="mono">open_path</code
+              >）：敏感工具，执行前需要确认。
+            </p>
+
+            <template v-if="tools.enabled">
+              <SettingField
+                data-field="agent.tools.open.enabled"
+                label="启用打开工具"
+                hint="关闭后模型看不到 open_path，其余工具不受影响"
+              >
+                <label class="row tiny">
+                  <input
+                    type="checkbox"
+                    :checked="tools.open.enabled"
+                    @change="
+                      save({ open: { enabled: ($event.target as HTMLInputElement).checked } })
+                    "
+                  />
+                  <span>允许模型打开文件、目录或链接（默认开启）</span>
+                </label>
+              </SettingField>
+            </template>
+
+            <p v-else class="tiny muted" data-empty="agent.tools.open">
+              关闭总开关后打开工具不会注册：模型看不到 open_path。
+            </p>
+          </div>
+
+          <!-- 当前生效工具 -->
+          <div class="sub">
+            <h3 class="sub-title">当前生效工具</h3>
+            <p class="section-desc">
+              按当前配置实时计算：模型下一次请求的工具表就是这些（共
+              {{ activeToolNames.length }} / {{ COMPUTER_TOOL_NAMES.length }} 个）。
+            </p>
+
+            <div v-if="activeToolNames.length > 0" class="row wrap">
+              <code v-for="name in activeToolNames" :key="name" class="mono">{{ name }}</code>
+            </div>
+            <p v-else class="tiny muted">总开关已关闭：5 个电脑操控工具一个都不会注册。</p>
+          </div>
+
+          <p class="tiny muted">
+            安全提示：默认工作目录只影响命令的缺省
+            cwd（不是沙箱，也不影响文件类工具）；请务必保留「敏感工具确认」，
+            或至少清楚关闭它的后果。
+          </p>
+        </div>
+      </Transition>
     </section>
 
-    <section class="section-card">
-      <h2 class="section-title">工作目录</h2>
-      <p class="section-desc">
-        <strong>命令</strong>的缺省工作目录：执行命令时若未显式指定路径，就在它下面运行。这<strong
-          >不是沙箱</strong
-        >
-        —— 模型仍可显式传入其它路径，安全边界是「逐次确认 + 输出上限 + 总开关」。 文件类工具（读 /
-        写 / 列目录）不读此项，它们的相对路径按应用自身目录解析， 因此只适合用绝对路径。
-      </p>
-
-      <SettingField
-        data-field="agent.tools.workspaceDir"
-        label="默认工作目录"
-        hint="留空 = 用户主目录（如 C:\Users\you）；只作用于命令的缺省 cwd，且不是沙箱"
-      >
-        <input
-          class="input"
-          type="text"
-          spellcheck="false"
-          placeholder="留空 = 用户主目录，例如 D:\Projects"
-          :value="tools.workspaceDir"
-          @change="save({ workspaceDir: ($event.target as HTMLInputElement).value })"
-        />
-      </SettingField>
-
-      <div class="row wrap">
-        <AppButton size="sm" @click="openWorkspace">打开工作目录</AppButton>
-        <span v-if="openedWorkspace" class="tiny muted mono">{{ openedWorkspace }}</span>
-      </div>
-    </section>
-
-    <section class="section-card">
-      <h2 class="section-title">终端</h2>
-      <p class="section-desc">
-        执行命令（<code class="mono">run_command</code
-        >）：敏感工具，执行前需要确认；超时到点即杀进程。
-      </p>
-
-      <template v-if="tools.enabled">
-        <SettingField
-          data-field="agent.tools.terminal.enabled"
-          label="启用终端工具"
-          hint="关闭后模型看不到 run_command，其余工具不受影响"
-        >
-          <label class="row tiny">
-            <input
-              type="checkbox"
-              :checked="tools.terminal.enabled"
-              @change="saveTerminal({ enabled: ($event.target as HTMLInputElement).checked })"
-            />
-            <span>允许模型执行命令（默认开启）</span>
-          </label>
-        </SettingField>
-
-        <SettingField
-          data-field="agent.tools.terminal.timeoutMs"
-          label="命令超时"
-          hint="单位毫秒，1000 ～ 300000；超时后强制结束进程并回传已捕获的输出（默认 60000）"
-        >
-          <input
-            class="input"
-            type="number"
-            min="1000"
-            max="300000"
-            step="1000"
-            :value="tools.terminal.timeoutMs"
-            @change="
-              saveTerminal({
-                timeoutMs: clampNumber($event, 1000, 300000, tools.terminal.timeoutMs),
-              })
-            "
-          />
-        </SettingField>
-
-        <SettingField
-          data-field="agent.tools.terminal.maxOutputChars"
-          label="输出上限"
-          hint="单位字符，500 ～ 100000；超出部分截断，避免一次命令灌爆上下文（默认 8000）"
-        >
-          <input
-            class="input"
-            type="number"
-            min="500"
-            max="100000"
-            step="500"
-            :value="tools.terminal.maxOutputChars"
-            @change="
-              saveTerminal({
-                maxOutputChars: clampNumber($event, 500, 100000, tools.terminal.maxOutputChars),
-              })
-            "
-          />
-        </SettingField>
-      </template>
-
-      <p v-else class="tiny muted" data-empty="agent.tools.terminal">
-        关闭总开关后终端工具不会注册：模型看不到 run_command。
-      </p>
-    </section>
-
-    <section class="section-card">
-      <h2 class="section-title">文件</h2>
-      <p class="section-desc">
-        读取 / 写入 / 列目录（<code class="mono">read_file</code>、<code class="mono"
-          >write_file</code
-        >、<code class="mono">list_dir</code>）：写入是敏感工具，执行前需要确认。
-      </p>
-
-      <template v-if="tools.enabled">
-        <SettingField
-          data-field="agent.tools.files.enabled"
-          label="启用文件工具"
-          hint="关闭后模型看不到 read_file / write_file / list_dir，其余工具不受影响"
-        >
-          <label class="row tiny">
-            <input
-              type="checkbox"
-              :checked="tools.files.enabled"
-              @change="saveFiles({ enabled: ($event.target as HTMLInputElement).checked })"
-            />
-            <span>允许模型读写文件与列目录（默认开启）</span>
-          </label>
-        </SettingField>
-
-        <SettingField
-          data-field="agent.tools.files.maxReadBytes"
-          label="单次读取上限"
-          hint="单位字节，1024 ～ 4194304；超出即拒绝并提示用分段读取（默认 262144 = 256 KiB）"
-        >
-          <input
-            class="input"
-            type="number"
-            min="1024"
-            max="4194304"
-            step="1024"
-            :value="tools.files.maxReadBytes"
-            @change="
-              saveFiles({
-                maxReadBytes: clampNumber($event, 1024, 4194304, tools.files.maxReadBytes),
-              })
-            "
-          />
-        </SettingField>
-      </template>
-
-      <p v-else class="tiny muted" data-empty="agent.tools.files">
-        关闭总开关后文件工具不会注册：模型看不到 read_file / write_file / list_dir。
-      </p>
-    </section>
-
-    <section class="section-card">
-      <h2 class="section-title">打开</h2>
-      <p class="section-desc">
-        用系统默认程序打开路径（<code class="mono">open_path</code>）：敏感工具，执行前需要确认。
-      </p>
-
-      <template v-if="tools.enabled">
-        <SettingField
-          data-field="agent.tools.open.enabled"
-          label="启用打开工具"
-          hint="关闭后模型看不到 open_path，其余工具不受影响"
-        >
-          <label class="row tiny">
-            <input
-              type="checkbox"
-              :checked="tools.open.enabled"
-              @change="save({ open: { enabled: ($event.target as HTMLInputElement).checked } })"
-            />
-            <span>允许模型打开文件、目录或链接（默认开启）</span>
-          </label>
-        </SettingField>
-      </template>
-
-      <p v-else class="tiny muted" data-empty="agent.tools.open">
-        关闭总开关后打开工具不会注册：模型看不到 open_path。
-      </p>
-    </section>
-
-    <section class="section-card">
-      <h2 class="section-title">当前生效工具</h2>
-      <p class="section-desc">
-        按当前配置实时计算：模型下一次请求的工具表就是这些（共
-        {{ activeToolNames.length }} / {{ COMPUTER_TOOL_NAMES.length }} 个）。
-      </p>
-
-      <div v-if="activeToolNames.length > 0" class="row wrap">
-        <code v-for="name in activeToolNames" :key="name" class="mono">{{ name }}</code>
-      </div>
-      <p v-else class="tiny muted">总开关已关闭：5 个电脑操控工具一个都不会注册。</p>
-    </section>
-
-    <p class="tiny muted">
-      安全提示：默认工作目录只影响命令的缺省
-      cwd（不是沙箱，也不影响文件类工具）；请务必保留「敏感工具确认」， 或至少清楚关闭它的后果。
-    </p>
+    <!-- ───────── 区组二 / 三：技能、MCP（原 SkillsPage / McpPage 迁入） ───────── -->
+    <SkillsSection />
+    <McpSection />
   </section>
 </template>
 
 <style scoped>
-.page > .section-card {
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-hairline);
+/* 区组内的小节：细标题 + 分隔线，代替原来的嵌套 section-card（避免卡中卡） */
+.sub {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
-.page > .section-card [data-empty] {
-  margin: var(--space-2) 0;
-  padding: var(--space-3);
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
+.sub + .sub {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-3);
 }
 
-.page > .section-card input[type='number'] {
-  font-variant-numeric: var(--num-tabular);
+.sub-title {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
 }
 
 .wrap {

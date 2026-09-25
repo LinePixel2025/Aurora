@@ -1,10 +1,16 @@
 <script setup lang="ts">
 /**
- * 消息列表（交互窗的消息流）。
+ * 消息列表（对话窗的消息流）。
  *
  * 视觉（docs/07 §5）：用户消息右对齐胶囊气泡，助手消息左对齐纯文本块（Apple 风格：不套气泡），
  * 代码块单独成卡并带 hover 显隐的「复制」；工具执行卡片默认折叠，展开走 `.collapse-*`。
  * props / 插槽契约：`messages`（消息数组）+ `emptyHint`（空状态提示语）。
+ *
+ * BetaV2 追加：
+ * - 「思考过程」折叠块（`message.reasoning`，受 `showThinking` 门控）：流式中有新思考时
+ *   自动展开（`thinkingTargetId`），请求结束后收起为「已深度思考」摘要行，手动可开合；
+ * - `generate_image` 工具卡成功态渲染图片预览（`imagegen:read` 换 dataUrl，
+ *   提取 / 读取失败维持纯文本，绝不阻塞消息流）。
  */
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import type { AgentToolCall } from '@aurora/shared'
@@ -26,8 +32,22 @@ const props = withDefaults(
     speakingId?: string | null
     /** 正在合成（等待主进程回包）的消息 id */
     ttsLoadingId?: string | null
+    /** 该窗口是否处于流式接收中（结束边沿用于把思考块收起为摘要） */
+    streaming?: boolean
+    /** 是否展示「思考过程」块（`general.chat.showThinking`；关闭时整块不渲染） */
+    showThinking?: boolean
+    /** 正在接收思考过程的助手消息 id（useChat 的 reasoningTargetId；自动展开依据） */
+    thinkingTargetId?: string | null
   }>(),
-  { emptyHint: '开始一段对话吧', ttsAvailable: false, speakingId: null, ttsLoadingId: null },
+  {
+    emptyHint: '开始一段对话吧',
+    ttsAvailable: false,
+    speakingId: null,
+    ttsLoadingId: null,
+    streaming: false,
+    showThinking: true,
+    thinkingTargetId: null,
+  },
 )
 
 const emit = defineEmits<{
@@ -73,6 +93,53 @@ function onSpeakClick(message: ChatMessage): void {
     return
   }
   emit('speak', message.content, message.id)
+}
+
+// ───────────────────────── 思考过程折叠块（BetaV2） ─────────────────────────
+
+/**
+ * 已展开「思考过程」的消息 id（默认收起；流式期间由 `thinkingTargetId` 自动展开）。
+ * 历史水合出的 reasoning 默认折叠为「已深度思考」摘要行，点开可看全文。
+ */
+const thinkingOpen = ref<string[]>([])
+
+function isThinkingOpen(id: string): boolean {
+  return thinkingOpen.value.includes(id)
+}
+
+function toggleThinking(id: string): void {
+  thinkingOpen.value = isThinkingOpen(id)
+    ? thinkingOpen.value.filter((item) => item !== id)
+    : [...thinkingOpen.value, id]
+}
+
+/**
+ * 流式中有新思考时自动展开：`thinkingTargetId` 变化（useChat 在首个 reasoning /
+ * 或消息被认领时设置）即展开对应消息的思考块。
+ */
+watch(
+  () => props.thinkingTargetId,
+  (id) => {
+    if (id === null || id === '') return
+    if (!thinkingOpen.value.includes(id)) thinkingOpen.value = [...thinkingOpen.value, id]
+  },
+  { immediate: true },
+)
+
+/**
+ * 请求结束（streaming true → false 边沿）把已展开的思考块收起为摘要行：
+ * 完整内容仍可手动点开，但默认视图回到「回答优先」。
+ */
+watch(
+  () => props.streaming,
+  (now, before) => {
+    if (before === true && now === false) thinkingOpen.value = []
+  },
+)
+
+/** 摘要行文案：正在接收思考 → 「思考中…」；已完成 → 「已深度思考」 */
+function thinkingLabel(message: ChatMessage): string {
+  return props.thinkingTargetId === message.id ? '思考中…' : '已深度思考'
 }
 
 // ───────────────────────── 跟随最新（自动滚底） ─────────────────────────
@@ -207,6 +274,56 @@ function syncTimings(): void {
 
 watch(toolSignature, syncTimings, { immediate: true })
 
+// ───────────────────── 生图工具卡：图片预览（BetaV2） ─────────────────────
+
+/**
+ * `generate_image` 成功后从 `outputSummary`（形如「已保存到 <路径>」）提取落盘路径。
+ * 正则刻意宽容（冒号可有可无、允许句号收尾），提取失败就维持纯文本，不阻塞消息流。
+ */
+function extractGeneratedImagePath(outputSummary: string | undefined): string | null {
+  if (outputSummary === undefined) return null
+  const match = outputSummary.match(/已保存到[:：]?\s*(.+?)\s*[。.]?\s*$/)
+  const path = match?.[1]?.trim() ?? ''
+  return path === '' ? null : path
+}
+
+function isGeneratedImage(call: AgentToolCall): boolean {
+  return call.name === 'generate_image' && call.state === 'success'
+}
+
+/** call.id → dataUrl；空串表示已尝试但失败（不再重试），缺项表示尚未尝试 */
+const imagePreviews = reactive(new Map<string, string>())
+
+async function loadImagePreview(callId: string, filePath: string): Promise<void> {
+  try {
+    const result = await window.aurora.imagegen.read({ filePath })
+    imagePreviews.set(callId, result.ok ? result.value.dataUrl : '')
+  } catch {
+    imagePreviews.set(callId, '')
+  }
+}
+
+/** 该工具卡的预览 dataUrl；未加载 / 加载失败都返回 undefined（卡片维持纯文本） */
+function imagePreviewFor(call: AgentToolCall): string | undefined {
+  const dataUrl = imagePreviews.get(call.id)
+  return dataUrl === undefined || dataUrl === '' ? undefined : dataUrl
+}
+
+/** 与耗时统计共用同一签名（call id + state）：卡片翻到 success 时触发一次加载 */
+watch(toolSignature, () => {
+  for (const message of props.messages) {
+    for (const call of message.toolCalls ?? []) {
+      if (!isGeneratedImage(call) || imagePreviews.has(call.id)) continue
+      const filePath = extractGeneratedImagePath(call.outputSummary)
+      if (filePath === null) {
+        imagePreviews.set(call.id, '')
+        continue
+      }
+      void loadImagePreview(call.id, filePath)
+    }
+  }
+})
+
 onUnmounted(() => {
   if (ticker !== null) window.clearInterval(ticker)
 })
@@ -304,6 +421,31 @@ async function onContentClick(event: MouseEvent): Promise<void> {
               {{ name }}
             </span>
           </div>
+          <!--
+            思考过程折叠块（BetaV2）：受 `showThinking`（general.chat.showThinking）门控，
+            关闭时整块不渲染。流式接收中自动展开、请求结束后收起为「已深度思考」摘要行，
+            手动可开合；位置在正文上方（docs/07 §2.3）。
+          -->
+          <div
+            v-if="showThinking && message.role === 'assistant' && (message.reasoning ?? '') !== ''"
+            class="thinking"
+            :class="{ open: isThinkingOpen(message.id) }"
+          >
+            <button
+              type="button"
+              class="thinking-head"
+              :aria-expanded="isThinkingOpen(message.id)"
+              @click="toggleThinking(message.id)"
+            >
+              <span class="chevron" aria-hidden="true">›</span>
+              <span class="tiny">{{ thinkingLabel(message) }}</span>
+            </button>
+            <Transition name="collapse">
+              <div v-if="isThinkingOpen(message.id)" class="thinking-body">
+                <p class="thinking-text">{{ message.reasoning }}</p>
+              </div>
+            </Transition>
+          </div>
           <span v-if="message.pending && message.content === ''" class="typing">
             <i /><i /><i />
           </span>
@@ -355,6 +497,18 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 <span class="grow" />
                 <span class="chevron" aria-hidden="true">›</span>
               </button>
+              <!--
+                生图预览（BetaV2）：成功卡片直接展示图片（懒加载、固定宽高比 + object-fit
+                cover 防加载抖动）。路径提取失败 / imagegen:read 失败时不渲染，
+                卡片维持「已保存到 …」纯文本。
+              -->
+              <img
+                v-if="isGeneratedImage(call) && imagePreviewFor(call) !== undefined"
+                class="tool-image"
+                :src="imagePreviewFor(call)"
+                alt="生成的图片"
+                loading="lazy"
+              />
               <Transition name="collapse">
                 <div v-if="isOpen(call.id)" class="tool-body">
                   <span class="tiny muted tool-label">参数</span>
@@ -544,6 +698,61 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   opacity: 0.6;
 }
 
+/* ── 思考过程折叠块（BetaV2）：正文上方的次要信息，视觉上刻意退后一档 ── */
+.thinking {
+  margin-bottom: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--fill-1);
+  overflow: hidden;
+}
+
+.thinking-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  padding: 4px 10px;
+  text-align: left;
+  color: var(--text-muted);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.thinking-head:hover {
+  background: var(--fill-2);
+  color: var(--text-secondary);
+}
+
+/* 流式接收中：用 running 语义色点明「思考还没结束」 */
+.thinking.open > .thinking-head {
+  color: var(--text-secondary);
+}
+
+.thinking.open > .thinking-head .chevron {
+  transform: rotate(90deg);
+}
+
+.thinking-body {
+  padding: 0 var(--space-3) var(--space-2);
+}
+
+/* 长思考滚动查看，不把回答顶出可视区 */
+.thinking-text {
+  margin: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: var(--space-2);
+  border-radius: var(--radius-xs);
+  background: var(--fill-2);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ── 工具执行卡片（docs/06 §5） ── */
 .tools {
   display: flex;
@@ -657,6 +866,20 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 生图预览（BetaV2）：固定宽高比 + cover，加载前后占位一致不抖动 */
+.tool-image {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  margin: 0 var(--space-2) var(--space-2);
+  aspect-ratio: 1 / 1;
+  max-height: 320px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  object-fit: cover;
+  background: var(--fill-2);
 }
 
 .typing {

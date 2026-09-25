@@ -1,7 +1,10 @@
 <script setup lang="ts">
 /**
- * 高级设置页（docs/08 §6）：网络（代理）、日志、勿扰、安全（敏感工具确认）、
+ * 高级设置页（docs/08 §6，BetaV2 六页 IA）：网络（代理）、日志、安全（敏感工具确认）、
  * 危险操作（打开目录 / 导出脱敏配置 / 重置）。
+ *
+ * 勿扰时段（`advanced.quietHours`）已迁往「通用」页（与提示条静默时段同区，spec §9），
+ * 本页不再提供入口；字段本身仍在 Schema 里，其它写入路径不受影响。
  *
  * 「重置全部设置」必须二次确认：第一次点击只是把按钮就地变成「确认重置？」，
  * 再点一次才真的执行（原先走原生 `window.confirm`，在无边框窗口里观感割裂且不可测）。
@@ -77,8 +80,8 @@ async function resetAll(): Promise<void> {
 <template>
   <section class="page">
     <header>
-      <h1 class="page-title">高级</h1>
-      <p class="page-sub">网络代理、日志与勿扰时段；排障时可导出脱敏配置。</p>
+      <h1 class="page-title">系统</h1>
+      <p class="page-sub">网络代理、日志与安全；排障时可导出脱敏配置。勿扰时段已移至「通用」页。</p>
     </header>
 
     <AppToast v-if="error" tone="error">{{ error }}</AppToast>
@@ -124,57 +127,6 @@ async function resetAll(): Promise<void> {
       <div class="row">
         <AppButton size="sm" @click="openLogs">打开日志目录</AppButton>
       </div>
-    </section>
-
-    <section class="section-card">
-      <h2 class="section-title">勿扰</h2>
-      <p class="section-desc">
-        仅拦截主动打扰（课前提醒、敏感工具确认），不影响提示条显示；两端都填才生效。
-      </p>
-
-      <SettingField
-        data-field="advanced.quietHours.start"
-        label="勿扰时段开始"
-        hint="格式 HH:mm；留空表示不启用"
-      >
-        <input
-          class="input"
-          type="text"
-          spellcheck="false"
-          placeholder="22:30"
-          :value="advanced?.quietHours?.start ?? ''"
-          @change="
-            save({
-              quietHours: ($event.target as HTMLInputElement).value
-                ? {
-                    start: ($event.target as HTMLInputElement).value,
-                    end: advanced?.quietHours?.end ?? '07:00',
-                  }
-                : null,
-            })
-          "
-        />
-      </SettingField>
-
-      <SettingField data-field="advanced.quietHours.end" label="勿扰时段结束">
-        <input
-          class="input"
-          type="text"
-          spellcheck="false"
-          placeholder="07:00"
-          :value="advanced?.quietHours?.end ?? ''"
-          @change="
-            save({
-              quietHours: advanced?.quietHours?.start
-                ? {
-                    start: advanced.quietHours.start,
-                    end: ($event.target as HTMLInputElement).value,
-                  }
-                : null,
-            })
-          "
-        />
-      </SettingField>
     </section>
 
     <section class="section-card">
