@@ -76,8 +76,9 @@ export function createEventBuffer(
         streamKey(tail) === streamKey(event)
       ) {
         queue[queue.length - 1] = { ...tail, delta: tail.delta + event.delta }
-        // 队尾本来就在等这个窗口；这里再 schedule 一次是为了兜住「定时器刚被 flush 清掉」
-        schedule()
+        // 不需要重排定时器：`queue` 非空 ⇒ 定时器已经在等这个窗口
+        // （入队必定 schedule，而 flush / dispose 都会把队列摘空），
+        // 这里再 schedule 只会撞上 `timer !== null` 提前返回。
         return
       }
       queue.push(event)

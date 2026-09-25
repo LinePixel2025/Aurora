@@ -321,9 +321,12 @@ watch(
  */
 const { following, stick } = useStickToBottom(() => rootEl.value)
 
-/** 展开 / 收起一律走实测高度（终点写进 `--collapse-h`，见 docs/07 §2.3 / §5.2） */
-const { beforeEnter: beforeCollapseEnter, beforeLeave: beforeCollapseLeave } =
-  useCollapseTransition()
+/**
+ * 展开 / 收起一律走实测高度（终点写进 `--collapse-h`，见 docs/07 §2.3 / §5.2）。
+ * 进入方向挂 `@enter`（**不是** `@before-enter`）：Vue 的 `beforeEnter` 在元素插入文档之前调用，
+ * 游离元素的 `scrollHeight` 恒为 0，会把终点钉成 0（展开变成「冻结再瞬跳」）。
+ */
+const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransition()
 
 /**
  * 整表被替换（历史水合 / 切会话 / 清空）的那一帧关掉进出场动画。
@@ -743,11 +746,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 {{ thinkingSeconds }}s
               </span>
             </button>
-            <Transition
-              name="collapse"
-              @before-enter="beforeCollapseEnter"
-              @before-leave="beforeCollapseLeave"
-            >
+            <Transition name="collapse" @enter="collapseEnter" @before-leave="collapseLeave">
               <div v-if="isThinkingOpen(message.id)" class="thinking-body">
                 <!-- 流式期间尾部带光标，读起来是"还在写"而不是"卡住了" -->
                 <p class="thinking-text" @scroll.passive="onThinkScroll">{{ message.reasoning }}</p>
@@ -886,11 +885,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 alt="生成的图片"
                 loading="lazy"
               />
-              <Transition
-                name="collapse"
-                @before-enter="beforeCollapseEnter"
-                @before-leave="beforeCollapseLeave"
-              >
+              <Transition name="collapse" @enter="collapseEnter" @before-leave="collapseLeave">
                 <div v-if="isOpen(call.id)" class="tool-body">
                   <!-- 子代理卡：实时运行轨迹（进度 + 步骤 + 报告），docs/07 §2.4 -->
                   <template v-if="subagentOf(call)">

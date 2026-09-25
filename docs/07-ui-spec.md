@@ -184,8 +184,18 @@
   （思考块正文），终点远大于内容时 `min(内容高, max-height)` 会让**全部可见位移挤在时间轴的
   一小段里**（展开表现为「飞快长满再空转」，收起表现为「先空转、末尾猛缩」），观感就是乱跳。
   改为**实测高度**动画：终点不再是 `70vh`，而是 `var(--collapse-h, 70vh)` —— 由
-  `renderer/shared/composables/useCollapseTransition.ts` 的 `before-enter` / `before-leave`
-  钩子在**过渡类挂上之前**把 `el.scrollHeight` 写进该变量（此刻量到的就是内容真实高度）。
+  `renderer/shared/composables/useCollapseTransition.ts` 的 `enter` / `before-leave`
+  钩子把 `el.scrollHeight` 写进该变量。
+  ⚠️ **进入方向必须挂 `@enter`，绝不能挂 `@before-enter`**（这条踩过）：Vue 的 `beforeEnter`
+  在元素**插入文档之前**调用（`runtime-core` 的 `mountElement` 里
+  `transition.beforeEnter(el)` 先于 `hostInsert(el, …)`），游离元素的 `scrollHeight` 恒为 0，
+  写进去就是 `--collapse-h: 0px` —— 起点与终点同为 0，整个 250ms 高度都不动
+  （只剩 opacity 在变、`overflow: hidden` 把内容挡住），过渡类一摘再瞬跳到内容高度，
+  比原来的曲线**更糟**。`enter` 由 post-render effect 在插入**之后**调用、且 `-enter-to`
+  还没挂上（类交换在 `nextFrame` 的双 rAF 里），所以在这里写下的终点会被完整地过渡到；
+  `before-leave` 时元素仍在文档里，本来就准。
+  另有一道防护：元素尚未布局（父级 `display:none`、窗口隐藏）时 `scrollHeight` 为 0，
+  此时**不写**变量、让缺省的 `70vh` 兜底 —— 把终点钉成 0 是比不写更坏的结果。
   之所以用 CSS 变量而不是直接动画 `height`：既不必在结束后把内联高度复位成 `auto`
   （`after-enter` 一旦早于过渡结束触发，元素会当场跳到全高，比原来的曲线更跳），
   内容在动画期间继续长高（思考块正在流式就是这个场景）也不会被写死的高度截住；
@@ -536,11 +546,15 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
 - **硬约定**：快 / 标准 / 慢动作分别为 150 / 250 / 350ms；颜色和透明度走 standard、大面积位移走 smooth、进场展开走 spring。所有过渡/动画必须走 `--transition-*` 或 `--dur-*` + `--ease-*`，不写死时长；
   `prefers-reduced-motion: reduce` 下把三个时长压到 1ms 并让位移动画立刻落位（theme.css 里已全局兜底）。
 - **硬约定（2026-09 性能轮新增两条，都是踩过坑的）**：
-  1. **展开 / 收起一律用实测高度动画**：`.collapse-*` 的终点走 `var(--collapse-h, 70vh)`，
-     由 `useCollapseTransition` 的 `before-enter` / `before-leave` 钩子写入实测内容高度。
-     **禁止**用与内容无关的固定 `max-height`（如写死 `70vh`）当终点：内容比终点小得多时，
-     `min(内容高, max-height)` 会把全部可见位移挤进时间轴的一小段，看起来就是「先卡住、再猛跳」
-     （见 §2.3「展开 / 收起的高度动画」）；
+  1. **展开 / 收起要用实测高度动画**：`.collapse-*` 的终点走 `var(--collapse-h, 70vh)`，
+     由 `useCollapseTransition` 的 `enter` / `before-leave` 钩子写入实测内容高度
+     （**进入方向不能挂 `@before-enter`** —— 那时元素还没插入文档、`scrollHeight` 为 0，
+     见 §2.3「展开 / 收起的高度动画」）。
+     **禁止**用与内容无关的固定 `max-height`（如写死 `70vh`）当**新增**折叠区的终点：内容比终点小得多时，
+     `min(内容高, max-height)` 会把全部可见位移挤进时间轴的一小段，看起来就是「先卡住、再猛跳」。
+     现状：对话窗的三处（思考块、工具卡展开体、子代理页指令折叠）已接钩子；
+     **设置页仍有十几处 `.collapse` 只回落 `70vh`**（未接钩子，行为与改前一致），
+     属于逐个接线的存量，别把「要用」读成「已全部用上」；
   2. **输入区浮层必须锚在 `.composer-box` 上并走 `--z-flyout`**，不许自己写 z-index 魔数、
      更不许锚到工具行**内部**的元素上 —— 锚点错位会让浮层盖住触发它的那排控件
      （`.ctx-card` 把整条工具行连同发送键盖死过一次，属实测事故）。

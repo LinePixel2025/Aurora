@@ -7,12 +7,19 @@ import { createDeltaBuffer, type DeltaBatch } from './useChatDeltaBuffer.js'
  */
 function createFakeScheduler() {
   const frames = new Map<number, () => void>()
+  /**
+   * 句柄 → 回调的**永久**记录：`cancelFrame` 只从 `frames` 摘，不从这里删。
+   * 专门用来验「flush 已取消在途帧之后，那个陈旧回调若被触发也不该二次 apply」——
+   * 若只从 `frames` 取，取消后根本取不到回调，断言会恒真（这条用例曾经就是这样空转的）。
+   */
+  const issued = new Map<number, () => void>()
   let nextHandle = 0
   return {
     scheduler: {
       requestFrame: (callback: () => void): number => {
         nextHandle += 1
         frames.set(nextHandle, callback)
+        issued.set(nextHandle, callback)
         return nextHandle
       },
       cancelFrame: (handle: number): void => {
@@ -27,9 +34,14 @@ function createFakeScheduler() {
       frames.clear()
       for (const callback of callbacks) callback()
     },
-    /** 不管有没有被取消，把句柄对应的回调抓出来跑（验「flush 后重复 apply」用） */
-    runHandle: (handle: number): void => {
-      const callback = frames.get(handle)
+    /** 最近一次排出的句柄（上面那些用例要拿到「真正排出来的那个」而不是写死 1） */
+    lastHandle: (): number => nextHandle,
+    /**
+     * 绕过「已取消」直接触发某个历史回调：`cancelFrame` 摘掉的是 `frames`，
+     * 而 `issued` 留着 —— 这正是「陈旧帧回调晚到」这一场景的等价物。
+     */
+    runIssued: (handle: number): void => {
+      const callback = issued.get(handle)
       if (callback !== undefined) callback()
     },
   }
@@ -82,18 +94,20 @@ describe('createDeltaBuffer', () => {
     expect(applied).toHaveLength(1)
   })
 
-  it('flush() 之后手跑被取消的帧回调不再重复 apply', () => {
+  it('flush() 之后陈旧帧回调再被触发也不会重复 apply', () => {
     const applied: DeltaBatch<number>[][] = []
     const fake = createFakeScheduler()
     const buffer = createDeltaBuffer<number>((batch) => applied.push(batch), fake.scheduler)
 
     buffer.push('x', 1)
-    // 记下这次排出的句柄，flush 之后再手动触发它
-    const handle = 1
+    const handle = fake.lastHandle()
     buffer.flush()
     expect(applied).toHaveLength(1)
 
-    fake.runHandle(handle)
+    // 绕过「回调已被 cancelFrame 摘掉」直接触发它：真正兜住这条的是 apply 前的空缓冲判定，
+    // 而不是「回调找不到了」。此前这里写的是 runHandle(写死的 1)，取消后取不到回调，
+    // 断言恒真、什么都没验到（2026-09-26 复核指出）。
+    fake.runIssued(handle)
     expect(applied).toHaveLength(1)
   })
 

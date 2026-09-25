@@ -28,8 +28,12 @@ const emit = defineEmits<{
   (event: 'back'): void
 }>()
 
-/** 「任务指令」折叠走实测高度动画（docs/07 §2.3 / §5.2） */
-const { beforeEnter, beforeLeave } = useCollapseTransition()
+/**
+ * 「任务指令」折叠走实测高度动画（docs/07 §2.3 / §5.2）。
+ * 进入方向挂 `@enter`（不是 `@before-enter`）：Vue 的 `beforeEnter` 在元素插入文档之前调用，
+ * 游离元素的 `scrollHeight` 恒为 0，会把终点钉成 0。
+ */
+const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransition()
 
 /** 已展开「任务指令」的运行（默认收起：报告与轨迹才是主体，指令通常是长文） */
 const openedRuns = ref<string[]>([])
@@ -139,7 +143,7 @@ function statusLabel(status: SubagentRun['status']): string {
           </button>
         </div>
 
-        <Transition name="collapse" @before-enter="beforeEnter" @before-leave="beforeLeave">
+        <Transition name="collapse" @enter="collapseEnter" @before-leave="collapseLeave">
           <p v-if="isOpen(runKey(run))" class="run-prompt">{{ run.prompt }}</p>
         </Transition>
 
