@@ -708,7 +708,7 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
    （字符串、可空；`reasoning_content` 优先）。`content` 里内嵌的 `<think>...</think>`
    **不做**解析——避免把正文误伤成思考。
 2. **事件与持久化**：内核流事件联合新增 `{type:'reasoning', delta}`；agent loop 转发为
-   `AgentEvent 'reasoning'`（渲染层按 `requestId` 暂存增量、done 后并入消息），
+   `AgentEvent 'reasoning'`（**带该轮助手消息的 `messageId`**，见 §16.2），
    同时把增量累积进当条 assistant 消息的 `reasoning` 字段，随 `append` 一起持久化
    （`StoredMessage.reasoning`，重启后历史仍可回看）。
 3. **API 回传不携带**：把历史消息回传给模型时只挑 `role` / `content` / 工具调用字段，
@@ -722,16 +722,65 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 | 症状 | 根因 | 现在怎么防 |
 |---|---|---|
 | 工具卡挂到了别的回复里 / 跑到列表末尾 | 事件没有任何序号，渲染层只能"到一条建一条、新建就 push 到末尾" | 每个 `AgentEvent` 带 `seq`（主进程 `emit` 统一分配、会话内单调递增）；渲染层按 `seq` **插入到正确位置** |
-| 多轮工具调用时，第二条助手消息带上了第一轮的思考全文 | `reasoning` 增量没有 `messageId`（那轮消息要等流结束才落盘），渲染层只能按 `requestId` 全局累积 | 循环事件带 `round`；渲染层按 `(requestId, round)` 分桶累积，再由**同一轮**的 `text` / `tool` 事件把该桶绑到具体消息上 |
+| 多轮工具调用时，第二条助手消息带上了第一轮的思考全文 | `reasoning` 增量没有 `messageId`（那轮消息要等流结束才落盘），渲染层只能按 `requestId` 全局累积 | 增量事件**自带该轮预领的 `messageId`**（§16.2），一条增量对应一条消息，不再需要按轮次分桶 |
 | 请求结束（`done`）之后仍有事件进来，界面继续长内容 | `requestId` 过滤在 `activeRequest === null` 的窗口期形同虚设 | 渲染层记 `finishedRequests`（最近 64 条），**同一 requestId 在 done/error 之后的事件一律丢弃**；本地主动 abort 也立即把该请求标记为已结束 |
 | 历史水合把正在流式的消息对象换掉，`pending` / 工具卡闪一下甚至消失 | 水合是「服务端快照整体替换本地」 | 水合改为**按 id 合并**：内容取更长的一份，本地流式状态（`pending` / `error` / 附件 / 思考）优先保留 |
 | 同一会话第二轮起，刚发出的用户消息被压到整轮回复之后 | 本地发送的 user 气泡没有 `seq`（seq 是主进程的事件序号），`insertOrdered` 按 seq 扫描时**跳过无 seq 消息继续前扫**，此后每条新回复都越过气泡插到它前面 | `user-message` 广播到达时把发送方本地气泡**补上 seq**（它就是同一条消息）；`insertOrdered` 扫描遇到无 seq 的本地消息**即停在它后面**，不再越过 |
-| 最后一轮没有思考增量时，收尾消息带上前一轮的思考全文（「已深度思考」重复出现两次） | 收尾固化直接灌 `reasoningLive`，而它只在收到思考增量时更新——最后一轮若没有思考，它保留的是更早轮次的残留镜像 | 收尾只固化**从未绑定到消息**的思考草稿（`roundDrafts` 中 `roundOwners` 无主的最后一桶）；有主的桶已经完整落在对应消息上，不再重复灌入 |
 
 - **事件形状**（`packages/shared/src/ipc/types.ts`）：`text` / `tool` / `reasoning` / `subagent`
-  都带 `seq` 与 `round`，`text` / `tool` / `subagent` 另带 `messageId`。
+  都带 `seq` 与 `round`，**四者都带 `messageId`**（`reasoning` 自 §16.2 起补齐），
+  `usage` 带 `seq` 与 `round` 但不带 `messageId`（它描述的是**一次请求**的用量，不属于某条消息）。
 - **`seq` 由 agentHost 的 `emit` 统一分配**（`AgentEventInput` 类型在编译期禁止调用点自带序号）——
   序号是"发出顺序"的单一事实来源，散在各调用点迟早会不一致。
+
+> **历史注记（2026-09 流式轮前的做法，已废弃）**：思考增量不带 `messageId` 时，渲染层按
+> `(requestId, round)` 分桶累积、再由同轮的 `text` / `tool` 事件把桶绑到消息上，并在收尾时
+> 加固"无主草稿"。那套机制连同它的两个边界（收尾重复灌入 `reasoningLive`、纯思考阶段界面
+> 一片空白）在 §16.2 里被**预领 `messageId`** 一条取代：既然 id 在流开始前就有，增量就能
+> 直接落到它自己的消息上，分桶与"无主草稿"都不再存在。
+
+### 16.2 正文流式渲染与 token 用量（2026-09）
+
+**问题**：交互窗此前是「等模型把这一轮全部说完才出现回复」——`runAgentLoop` 把流里的
+`text` 增量 **只累积不转发**，等这一轮结束、助手消息落盘拿到 `messageId` 之后，
+才把**整段正文**作为**一条** `text` 事件发出去。思考链反而是边收边转发的，于是「模型在思考」
+时界面有动静（后来又发现纯思考阶段连消息都还没建、什么都看不到），而**正文一直是空等到最后**。
+
+**解法：id 预领 + 增量直达**。落盘与展示对 id 的需求顺序是反的（展示要**先有** id，落盘
+在流结束时才发生），因此把 id 的分配从 `append` 里**提前**出来：
+
+- `SessionStore.nextMessageId()`：只发号不落盘，与 `append` 共用同一个计数器；
+  `NewMessage.id` 可显式指定，`append` 原样沿用（不给就照旧自动生成，老调用点无感）。
+  循环内部还有个 `msg-local-…` 兜底生成器，供**没注入** `nextMessageId` 的单测使用 ——
+  前缀刻意与 store 的 `msg-<ts>-<n>` 不同，两条计数器互不可见，同毫秒撞 id 会让界面把两条
+  消息当成同一条。
+- `runAgentLoop`：每轮**先领 id**（`messageId`），`text` 与 `reasoning` 增量都**立即转发**并带上它；
+  该轮结束时 `append` 用**同一个 id** 落盘。于是渲染层那条"边流边渲染的半成品"与磁盘上的最终
+  消息**就是同一条**，水合按 id 合并时不会把它换掉、也不会重复出现。
+
+由此带来三个直接的界面结果（见 docs/07 §2.3）：
+
+1. **正文逐字出现**（对齐主流 Agent Desktop），流式光标与"湿润边缘"遮罩落在最后一条助手消息上；
+2. **纯思考阶段可见**：`reasoning` 也带 `messageId`，思考能在正文之前就建出那条消息并展开思考块
+   （这是「正在思考」有东西可看的**前提**——消息不存在时，思考块无从渲染）；
+3. `message.pending` **只在 `done` / `error` / abort 收尾时清除**（不再随第一条增量清掉），
+   于是「朗读」按钮等依赖 `pending === false` 的入口不会在流式途中闪出来；
+   收尾时把**所有**还在 `pending` 的消息一并清掉（`settlePending()`），而不是只清当前那条 ——
+   一轮只调工具、不产出正文时那条消息由 `tool` 事件建立，只清「当前助手消息」会把它漏下，
+   界面上表现为「已结束的消息上三点动画一直转」（2026-09 复核发现并修掉）。
+
+**token 用量（`usage` 事件）**：`ChatEvent` 的 `done` 本来就带 `provider` 报回的
+`TokenUsage`（`promptTokens` / `completionTokens` / `totalTokens`），此前被循环整个丢掉。
+现在每轮结束时转发一条 `AgentEvent { type: 'usage', round, usage }`：
+
+- `promptTokens` 就是**这一轮真实占用的上下文长度**（系统提示词 + 历史 + 本轮内容），
+  是输入框底部「上下文详解」的唯一分子来源；逐轮累加即本会话消耗；
+- **只用于展示、不落盘**：它是「本轮请求的上下文占用」，重放历史时重新收集没有意义；
+- provider 没回传 `usage` 时**整条不发**，界面如实显示「暂无用量数据」（不拿字符数换算冒充 token）；
+- `openai-compat` 在流式请求体里带上 `stream_options: { include_usage: true }`（OpenAI 规范：
+  流式下只在**最后一片**给 usage，且要先显式索取）。**不认这个字段的网关会直接 400**，
+  因此 `openStream()` 对「报文点名了 `stream_options` / `include_usage` 的 400」**去掉该字段重试一次**
+  ——「整个对话打不开」比「拿不到 token 用量」严重得多。其它 400（模型名错等）不重试，如实报错。
 
 ## 17. settingsHint：Agent 可修改设置清单注入 systemPrompt
 

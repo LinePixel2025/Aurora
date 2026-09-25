@@ -188,6 +188,49 @@
 - 配置 Schema 升到 **v8**（`v7 → v8` 迁移：新增 `stt.*` / `imagegen.*` / `general.chat.*` /
   `modes.work.workspaceDir` / `preClassOpenFolder`，幂等补默认值、不覆盖用户已写值）。
 
+**v0.1.2 本轮新增：输入框重做 + 正文流式**
+
+> 面向用户的更新说明见 [release-notes/v0.1.2.md](./release-notes/v0.1.2.md)（每个版本一份，随 Release 发布）。
+
+- **正文流式渲染**（[06 §16.2](./06-agent-core.md)）：不再「等模型把这一轮说完才出现回复」——
+  `runAgentLoop` 每轮**先领**助手消息 id（`SessionStore.nextMessageId()` + `NewMessage.id`），
+  `text` 增量**逐条**转发并带上它，该轮结束时 `append` 沿用**同一个 id**，
+  于是"边流边渲染的半成品"与磁盘上的最终消息就是同一条（水合按 id 合并不会把它换掉）。
+  思考增量子此轮**同样带 `messageId`**，「正在思考」因此在正文之前就可见
+  ——此前纯思考阶段那条消息还没建出来，界面一片空白。
+- **token 用量**（06 §16.2）：新增 `AgentEvent 'usage'`（每轮 LLM 调用的
+  prompt / completion / total tokens，`promptTokens` 即该轮真实上下文占用）；
+  `openai-compat` 流式请求带 `stream_options.include_usage`，**不认该字段的网关**
+  （点名 `stream_options` 的 400）会去掉它**重试一次** —— 拿不到用量事小，打不开对话事大。
+- **输入框重做**（[07 §2.3「输入框规格」](./07-ui-spec.md)）：textarea 自动增高（1 行起步 /
+  200px 上限）、`Enter` 发送 / `Shift + Enter` 换行；工具行 = **权限模式** + 模型 + 思考等级 +
+  （右侧）麦克风 + 停止 / 发送；底下是**上下文详解条**。
+  - **斜杠命令**（`data-field="chat.slash-menu"`）：`/new` `/clear` `/stop` `/subagents` `/settings`
+    + 全部 enabled 的 Skill，分「命令 / 技能」两组；`↑↓` 移动、`Enter` / `Tab` 确认、`Esc` 关闭；
+    命令**选中即执行**，技能**只补全**成 `/技能名 `（与内核 `/` 前缀显式调用同一套）。
+  - **权限模式**（`data-field="chat.permission"`）：变更前确认 / 完全权限，写
+    `advanced.confirmSensitiveTools`（与设置页同一份配置）。切到完全权限是**两段式**
+    ——这条路径是唯一能关掉确认闸门的地方，一次误点不该放权；完全权限档用警示色常驻。
+  - **上下文详解条**（`data-field="chat.context"`）：`已用 / 窗口 <进度条> <百分比>` + 累计，
+    点开是明细（输入 / 输出 / 累计 / 窗口 / 条数 / 字符数 / 模型）；占用 ≥60% 警示色、≥85% 错误色。
+    **没有用量数据就如实说「暂无用量数据」**（不拿字符数换算冒充 token），窗口未知只显示分子。
+- **思考块动效加强**（07 §2.3）：块内自动翻滚改为 `requestAnimationFrame` 合并 + 手动上滚接管
+  （离底 >24px 暂停跟随）；块头加公转指示点与已思考秒数，正文一开始写就把文案翻成「已深度思考」。
+- 配置 Schema 升到 **v11**（[08 §2](./08-settings-onboarding.md) `v10 → v11`：为每个已有 provider
+  补 `contextWindow: 0`）；设置页「AI 模型」编辑卡的高级参数新增**上下文窗口**
+  （`data-field="llm.contextWindow"`，0 = 未知；它是上下文占用比例的**唯一**分母来源，
+  刻意不做内置「模型名 → 窗口」对照表）。
+- **验证**（全部无头可跑，见 07 §5.3）：
+  - `AURORA_CAPTURE` 新增三个探针场景 —— `chat-composer-slash.png`（斜杠浮层 + 权限钮文案 +
+    上下文条 + textarea 自动增高 28→170→28px，含 200px 上限）、
+    `chat-composer-permission.png`（权限两段式：点一次不写配置）、
+    `chat-stream.png`（**DOM 级端到端**：capture 临时竖起本地桩 LLM → 探针经 textarea + 发送键
+    真发一条 → 断言助手气泡画出回复、上下文条显示真实 token `128 / 128k`）。
+  - `AURORA_SMOKE`（130 条断言）新增四条流式契约断言：正文按**增量**逐条下发（≥2 条 text 事件，
+    旧行为只会 1 条）、每条增量**同轮同 id 且等于落盘的助手消息 id**、`usage` 事件下发
+    （`promptTokens` 即本轮上下文占用）；桩服务同步补上结束片的 usage，
+    否则这条链路在离线自测里永远是盲区。
+
 鼠标键盘模拟、截图录屏、持久交互式 shell、命令黑名单、Anthropic 等非 OpenAI 兼容协议
 **仍属后续范围**。
 

@@ -27,6 +27,7 @@
         "model": "deepseek-chat",  // 唯一生效值：请求实际用的模型就是它
         "temperature": 0.7,
         "reasoningEffort": "auto", // auto | low | medium | high；auto = 不下发该参数
+        "contextWindow": 128000, // 上下文窗口（token，v11 新增）；0 = 未知，见 §1.2
         // v6 新增：**候选**模型 id 列表（设置页「模型列表」与对话窗模型选择器共用，见 §5）
         "modelList": ["deepseek-chat", "deepseek-reasoner"]
       }
@@ -194,6 +195,15 @@
   并标注「（不在列表中）」，**不会**悄悄替换成列表里的第一个模型；对话窗同样显示为
   `<model>（不在列表中）`。`v5 → v6` 迁移会为旧配置的每个 provider 补齐 `modelList: []`
   （已存在的值不动；本字段是在 v6 内追加的，当时没有另起新版本号）。
+- `llm.providers.<id>.contextWindow`（**v11 新增**）：该模型的**上下文窗口**（token，整数，
+  `0 … 2_000_000`，`.default(0)`）。**唯一用途**是对话窗输入框底部「上下文详解」条的
+  **占用比例分母**（`promptTokens / contextWindow`，见 07 §2.3 与 06 §16.2）。
+  - `0` = **未知**：此时只显示 token 数与字符数，**不显示进度条与百分比** —— 分母不知道就不编；
+  - 刻意**不做内置的「模型名 → 窗口大小」对照表**：模型名千变万化，猜错一个数量级比不显示更误导
+    （用户会以为快爆上下文了，或以为还很空）。取值来源就是用户在设置页照服务商文档填；
+  - 设置页入口在「AI 模型」卡的**编辑表单 → 高级参数**折叠区（`data-field="llm.contextWindow"`），
+    只读态在该 provider 卡上以「上下文窗口 128K」的形式显示（为 0 时不渲染这一行）；
+  - `v10 → v11` 迁移为旧配置的每个 provider 补 `contextWindow: 0`（已写过的值不动）。
 - `tts`（**v7 新增**，见 06 §13）：**语音输出（TTS）**；语音输入（STT）自 **v8** 起见下一条 `stt`。
   `tts.enabled` 是整个语音功能的**总开关**（`false` 时对话窗不显示朗读按钮）；
   `tts.active` 是默认 TTS provider id，**为空串 = 未配置**，此时对话窗的朗读按钮**不出现**；
@@ -294,7 +304,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 10`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 11`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -307,9 +317,11 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   `modes.classroom.preClassOpenFolder`、`general.chat.showThinking`；新增顶层分组无条件补默认值，
   已存在分组只补缺失键、不凭空造出半截对象）、
   `v8 → v9`（为每个已有 `mcp.servers` 条目补 `headersEnc: {}`，HTTP 传输自定义请求头，见 06 §7）、
-  `v9 → v10`（为已存在的 `modes.classroom` 补 `preClassLeadMinutes: 5`，课前提早分钟数；
-  只补缺失键、不覆盖用户已写值，且不做范围修正 —— 越界值由 Schema 校验回退默认）。
-  十条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
+  `v9 → v10`（为已存在的 `modes.classroom` 补 `preClassLeadMinutes: 5`，课前提早分钟数）、
+  `v10 → v11`（为每个已有 `llm.providers.<id>` 补 `contextWindow: 0`，上下文窗口，
+  只用于对话窗底部的上下文占用比例，见 §1.2）。
+  十一条迁移都**幂等且不覆盖用户已写入的值**（`v10 → v11` 同理：只补缺失键、
+  用户填过的窗口值原样保留），重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程

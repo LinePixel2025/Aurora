@@ -425,11 +425,41 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     record('触发了工具调用（use_skill）', toolEvents.some((e) => e.call.name === 'use_skill'), toolEvents.map((e) => e.call.name).join(','))
     record('工具卡片状态 running→success', toolStates.includes('running') && toolStates.includes('success'), toolStates)
     record('工具卡片带 messageId', toolEvents.every((e) => typeof e.messageId === 'string' && e.messageId.length > 0), '')
+
     off()
 
     const history = expectOk('chat.history', await window.aurora.chat.history({ sessionId: 'quick' }))
     record('chat.history 含 user + 两轮助手（3 条）', Array.isArray(history) && history.length === 3, 'len=' + (history ? history.length : '?'))
     record('chat.history 保留工具卡片状态', history?.[1]?.toolCalls?.[0]?.state === 'success', JSON.stringify(history?.[1]?.toolCalls ?? []))
+
+    // 9.1 正文流式（2026-09，docs/06 §16.2）：桩服务把最后一段回复拆成**两条** content 分片，
+    //     因此「逐条增量下发」在事件层面必须是 ≥2 条 text 事件 —— 旧的「攒完整段发一次」
+    //     在这里只会看到 1 条，是最直接的回归判据。
+    const textEvents = events.filter((e) => e.type === 'text')
+    record(
+      '正文按增量逐条下发（不是等整段说完才发一次）',
+      textEvents.length >= 2,
+      'textEvents=' + textEvents.length + ' deltas=' + JSON.stringify(textEvents.map((e) => e.delta)),
+    )
+    // 流式身份：每条增量带的 messageId 必须是**同一轮那一条**，且就是落盘后的助手消息 id ——
+    // 这是「边流边渲染的那条消息与磁盘上的是同一条」的依据（id 预领，见 06 §16.2）。
+    const textIds = [...new Set(textEvents.map((e) => e.messageId))]
+    const storedAssistant = (history ?? []).filter((item) => item.role === 'assistant')
+    record(
+      '正文增量同轮同 id，且该 id 就是落盘的助手消息 id',
+      textIds.length === 1 &&
+        typeof textIds[0] === 'string' &&
+        textIds[0].length > 0 &&
+        storedAssistant.some((item) => item.id === textIds[0]),
+      'textIds=' + JSON.stringify(textIds) + ' stored=' + JSON.stringify(storedAssistant.map((i) => i.id)),
+    )
+    // token 用量：桩服务的结束片带 usage → 必须转成 usage 事件（输入 token = 本轮上下文占用）
+    const usageEvents = events.filter((e) => e.type === 'usage')
+    record(
+      'usage 事件下发（promptTokens 为本轮上下文占用）',
+      usageEvents.length >= 1 && usageEvents.every((e) => e.usage.promptTokens > 0 && Number.isInteger(e.round)),
+      JSON.stringify(usageEvents.map((e) => ({ round: e.round, usage: e.usage }))),
+    )
 
     // 9.1 第二轮对话：证明上下文可续接（tool 结果留在会话里）
     const secondEvents = []
@@ -516,7 +546,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     )
     // round 只挂在「内容类」事件上：queued / done / user-message 没有轮次概念
     const roundEvents = subevents.filter((e) =>
-      ['text', 'tool', 'reasoning', 'subagent'].includes(e.type),
+      ['text', 'tool', 'reasoning', 'subagent', 'usage'].includes(e.type),
     )
     record(
       '内容类事件都带轮次 round，工具事件都带 messageId',
@@ -763,7 +793,13 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     record(
       'ClassIsland 今日课程含夹具里的数学课',
       bridgeLessons.some((lesson) => lesson.subject === '数学'),
-      JSON.stringify(bridgeLessons.map((lesson) => lesson.startTime + ' ' + lesson.subject)),
+      JSON.stringify(bridgeLessons.map((lesson) => lesson.startTime + ' ' + lesson.subject)) +
+        '｜本地 ' +
+        new Date().toLocaleString('zh-CN') +
+        ' weekday=' +
+        new Date().getDay() +
+        '（夹具按今天 / 明天各写一份同一节课：本接口只返回「今日」课程，而课前提醒同时看今天与明天；' +
+        '若这条在跨零点时失败，先看这里的时间与夹具的 weekday）',
     )
 
     const bridgeStatus = expectOk('classisland.status', await window.aurora.classisland.status())

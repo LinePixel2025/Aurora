@@ -78,14 +78,24 @@ import { UpdateService } from './updater.js'
 import { createUpdaterPort } from './updater-port.js'
 import { createTray, type TrayController } from './tray.js'
 import { SMOKE_FLAG, SMOKE_RESULT_PREFIX, smokeScript } from './smoke.js'
-import { STUB_API_KEY, STUB_MODEL, startStubLlmServer, type StubLlmServer } from './smoke-llm.js'
+import {
+  REASONING_MARKER,
+  STUB_API_KEY,
+  STUB_MARKER,
+  STUB_MODEL,
+  startStubLlmServer,
+  type StubLlmServer,
+} from './smoke-llm.js'
 import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
 import {
   captureWindows,
+  chatStreamAct,
+  chatStreamCheck,
   defaultCapturePlan,
   filterCapturePlan,
   seedChatTtsHistory,
   seedClassIslandFixture,
+  type CaptureTarget,
 } from './capture.js'
 import {
   registerAgentCoreTools,
@@ -960,6 +970,9 @@ async function bootstrap(): Promise<void> {
  * 只用 `webContents.capturePage()`，不依赖屏幕是否可见 / 是否被别的窗口遮挡，
  * 因此可以在自动化流程里跑，也不会把用户的桌面状态当成断言依据。
  */
+/** 截图模式下的本地桩 LLM（只有 `chat-stream.png` 场景会用；进程退出即结束） */
+let captureStub: StubLlmServer | undefined
+
 async function runCapture(dir: string): Promise<void> {
   if (windows === undefined) {
     logger?.error('截图失败：窗口管理器尚未就绪')
@@ -973,8 +986,45 @@ async function runCapture(dir: string): Promise<void> {
   await seedChatTtsHistory(app.getPath('userData'))
   // ClassIsland 课堂状态卡的夹具（同上：必须在窗口首次读之前落盘）
   await seedClassIslandFixture(app.getPath('userData'))
+  // 输入框 → 真实（离线桩）模型往返场景：**排在计划最后**，因为它在 prepare 里把
+  // `llm.active` 换成桩服务（前面的场景读到的是「未配置模型」的出厂态，不受影响）。
+  // 为什么值得单列一个场景：`AURORA_SMOKE` 的断言跑在引导窗里、读不到对话窗 DOM，
+  // 而两个模式互斥 —— 「事件层对了但界面没画出来」只有这里能抓到（见 capture.ts 的探针注释）。
+  const chatStreamTarget: CaptureTarget = {
+    name: 'chat',
+    file: 'chat-stream.png',
+    prepare: async () => {
+      captureStub ??= await startStubLlmServer(logger?.child('capture-llm'))
+      // `llm.providers` 是 record：给新 id 是「新增」，既有的 capture provider 不受影响
+      settings?.update({
+        llm: {
+          active: 'capture-stub',
+          providers: {
+            'capture-stub': {
+              type: 'openai-compat',
+              baseUrl: captureStub.baseUrl,
+              apiKeyEnc: '',
+              model: STUB_MODEL,
+              modelList: [STUB_MODEL],
+              temperature: 0.7,
+              reasoningEffort: 'auto',
+              // 故意给一个窗口值：本场景顺带钉住「占用比例」那一半（分母来自配置）
+              contextWindow: 128_000,
+            },
+          },
+        },
+      } as Partial<Settings>)
+      settings?.setSecret('llm.providers.capture-stub.apiKey', STUB_API_KEY)
+      await settings?.flush()
+      // 配置改完必须 reload 让渲染层重新水合：`SettingsStore` 启动就把 config.json 读进内存，
+      // 计划开始后再改文件对已运行的进程无效（AGENTS.md 的「两个缓存」那条）。
+      await manager.reload('chat', {})
+    },
+    act: chatStreamAct('/system-status 我电脑现在什么状态'),
+    check: chatStreamCheck(STUB_MARKER, REASONING_MARKER),
+  }
   const plan = filterCapturePlan(
-    defaultCapturePlan(manager, app.getPath('userData')),
+    [...defaultCapturePlan(manager, app.getPath('userData')), chatStreamTarget],
     process.env['AURORA_CAPTURE_WINDOWS'],
   )
   logger?.info('开始窗口截图', { dir, count: plan.length })
@@ -1072,6 +1122,9 @@ async function runSmokeTest(userData: string): Promise<void> {
             modelList: [STUB_MODEL, `${STUB_MODEL}-alt`],
             temperature: 0.7,
             reasoningEffort: 'auto',
+            // `contextWindow` 同为 output 必填（zod `.default(0)`）：0 = 未知，
+            // 界面此时只显示 token 数、不显示占用比例
+            contextWindow: 0,
           },
         },
       },
@@ -1564,7 +1617,16 @@ async function seedSmokeClassroom(userData: string): Promise<string> {
 
   // 2. 一节 3 分钟后开始的课：落在课前 5 分钟窗口内，
   //    首轮 tick（默认 30s 间隔）就会命中，无需等待真实时刻
-  const startTime = new Date(Date.now() + 3 * 60_000)
+  //
+  //
+  //    跨零点：这一节课按**今天与明天各写一份**（weekday 两个值），因为两个消费方的「天」口径不同 ——
+  //    `classisland:test` 只返回**今日**课程（`getTodayLessons()` 按 `now.getDay()` 过滤），
+  //    而 `preClassTrigger` 同时看今天与明天（dayOffset [0, 1]）。只写一份时，
+  //    「3 分钟后」在 23:57 之后属于次日：今日课程里没有它（断言假 FAIL），
+  //    或反过来今天有它但提醒窗口落在明天（提醒断言假 FAIL）。两份覆盖两种口径，
+  //    且任一时刻只有一份能被 `getTodayLessons` 选中（同一 clock 只有一个日期匹配）。
+  const now = new Date()
+  const startTime = new Date(now.getTime() + 3 * 60_000)
   const clock = `${pad2(startTime.getHours())}:${pad2(startTime.getMinutes())}`
   // 用 Date 推进 45 分钟：手算 `分钟 + 45` 在 [HH:15, HH:59] 会溢出成 "HH:60+"，
   // 被桥接解析器判为非法时间（endTime 需 HH:mm）而丢弃整节课，导致课前提醒断言假失败。
@@ -1585,6 +1647,13 @@ async function seedSmokeClassroom(userData: string): Promise<string> {
         lessons: [
           {
             weekday: startTime.getDay(),
+            startTime: clock,
+            endTime: endClock,
+            subject: '数学',
+          },
+          {
+            // 明天那一份（跨零点的兜底，见上）：weekday 取次日
+            weekday: (startTime.getDay() + 1) % 7,
             startTime: clock,
             endTime: endClock,
             subject: '数学',

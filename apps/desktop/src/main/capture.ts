@@ -747,6 +747,317 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
 })()`
 
 /**
+ * 输入框（composer）探针 · 前半（2026-09 输入框重做，docs/07 §2.3）：斜杠命令浮层 + 权限钮 + 上下文条。
+ *
+ * act 把 textarea 的内容设成单个斜杠（走真实 input 事件 → v-model → slashQuery），
+ * 截图即「命令浮层展开」现场。
+ *
+ * check 断言四件事：
+ * ① 浮层 `chat.slash-menu` 在，且含内置命令项（`chat.slash-new`）与技能分组（有技能时）；
+ * ② 权限钮 `chat.permission` 在，文案必须是「变更前确认」——隔离 userData 的默认值
+ *    （`confirmSensitiveTools: true`），读错档位等于闸门状态显示错误；
+ * ③ 上下文条 `chat.context` 在，且 `chat.context-usage` 显示「暂无用量数据」：
+ *    离线跑没有真实 LLM，也就没有 usage 事件 —— 这条同时钉住「没有用量就不编造 token 数」；
+ * ④ **textarea 自动增高**：塞 8 行文本后高度明显变大且不超过 CSS 上限，清空后回到一行高。
+ *
+ * 收尾清空输入框（后续场景依赖空输入），且本场景**不改任何配置**。
+ */
+export const CHAT_COMPOSER_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const box = document.querySelector('.composer-input')
+    if (box === null) return { ready: false, reason: 'composer-input 不存在' }
+    box.focus()
+    box.value = '/'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    // 技能清单来自 skills:list（渲染层 onMounted 发起）：轮询等技能分组出现再截图，
+    // 否则扫描慢一点就会拍到一个只有命令组的浮层，check 里的技能断言随之假 FAIL。
+    let skills = 0
+    for (let attempt = 0; attempt < 12 && skills === 0; attempt += 1) {
+      skills = document.querySelectorAll('[data-kind="skill"]').length
+      if (skills === 0) await wait(250)
+    }
+    return { ready: true, skillItems: skills }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_COMPOSER_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const textOf = (selector) => {
+      const el = document.querySelector(selector)
+      return el === null ? '' : (el.textContent || '').trim()
+    }
+    // 浮层相关的计数必须在**动 textarea 之前**取完：下面测自动增高时会把输入清空，
+    // 一清空斜杠浮层就自行关闭（slashQuery 不再匹配），此时再查就是 0（这条踩过一次）。
+    const menu = document.querySelector('[data-field="chat.slash-menu"]')
+    const slashItems = count('[data-field="chat.slash-menu"] .slash-item')
+    const slashNew = count('[data-field="chat.slash-new"]')
+    const slashCommandItems = count('[data-field="chat.slash-menu"] [data-kind="command"]')
+    const slashSkillItems = count('[data-field="chat.slash-menu"] [data-kind="skill"]')
+    const permissionLabel = textOf('[data-field="chat.permission"]')
+    const usageText = textOf('[data-field="chat.context-usage"]')
+
+    // 自动增高：独立 try —— 一个探针不该因为某一步抛错就整条返回 undefined
+    //（executeJavaScript 会把它当成「脚本执行失败」，报告里只剩一句无信息量的话）
+    const grow = { oneLine: 0, grown: 0, capped: 0, reset: 0, scrolls: false, error: null }
+    const box = document.querySelector('.composer-input')
+    if (box === null) {
+      grow.error = 'no .composer-input'
+    } else {
+      try {
+        const fill = async (count) => {
+          const lines = []
+          for (let index = 0; index < count; index += 1) lines.push('第' + (index + 1) + ' 行内容')
+          box.value = lines.join(String.fromCharCode(10))
+          box.dispatchEvent(new Event('input', { bubbles: true }))
+          await wait(300)
+          return box.getBoundingClientRect().height
+        }
+        grow.oneLine = box.getBoundingClientRect().height
+        grow.grown = await fill(8)
+        // 30 行足以顶到 200px 上限：这一步同时钉住「上限之后不再长高」与「改为内部滚动」
+        grow.capped = await fill(30)
+        grow.scrolls = box.scrollHeight > box.clientHeight + 1
+        box.value = ''
+        box.dispatchEvent(new Event('input', { bubbles: true }))
+        await wait(300)
+        grow.reset = box.getBoundingClientRect().height
+      } catch (inner) {
+        grow.error = String(inner)
+      }
+    }
+
+    return {
+      slashMenu: menu !== null,
+      slashItems,
+      slashNew,
+      slashCommandItems,
+      slashSkillItems,
+      permissionLabel,
+      permissionMenuClosed: count('[data-field="chat.permission-menu"]'),
+      contextBar: count('[data-field="chat.context"]'),
+      contextUsage: usageText,
+      grow,
+      pass:
+        menu !== null &&
+        slashNew > 0 &&
+        // 命令组恒有 4 条内置命令；技能组取决于内置 skills 目录（扫到几个列几个）
+        slashCommandItems === 4 &&
+        slashSkillItems >= 1 &&
+        permissionLabel.indexOf('变更前确认') !== -1 &&
+        count('[data-field="chat.permission-menu"]') === 0 &&
+        count('[data-field="chat.context"]') === 1 &&
+        usageText.indexOf('暂无用量数据') !== -1 &&
+        grow.error === null &&
+        grow.grown > grow.oneLine * 1.5 &&
+        // 上限：30 行时必须停在 200px 附近（不能继续长高），且 overflow 生效（内部可滚）
+        grow.capped >= 190 &&
+        grow.capped <= 205 &&
+        grow.grown <= grow.capped + 1 &&
+        grow.scrolls === true &&
+        grow.reset <= grow.oneLine + 2,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 输入框探针 · 后半：权限下拉的**两段式**关闭（照「一个误点不该摘掉确认闸门」的口径钉住）。
+ *
+ * act 点开 `chat.permission`（截图即下拉展开现场）；check 断言：
+ * ① 下拉在、两个选项都在（变更前确认 / 完全权限）；
+ * ② 点一次「完全权限」**不写配置**（只翻成二次确认文案），且 `settings:get` 回报的
+ *    `confirmSensitiveTools` 仍是 true —— 这是本探针的核心：一次误点不能放权；
+ * ③ 收尾再点一次权限钮把下拉关掉，**并确认配置一字未改**（为后续场景留干净状态）。
+ */
+/**
+ * 输入框 → 真实（离线桩）模型往返探针（2026-09 输入框重做：**这是本轮唯一能验证
+ * 「发出去 → 流式回来 → 落到 DOM」整条链路的探针**）。
+ *
+ * 为什么必须由 capture 承担：`AURORA_SMOKE` 的脚本跑在引导窗里，只能从事件层断言流式
+ * （docs/06 §16.2 的 text / usage 事件），**读不到对话窗的 DOM**；而两个模式互斥（见
+ * `index.ts` 的启动分支），所以「事件层对了、界面没画出来」这类问题只有这里能抓到。
+ *
+ * 由 `defaultCapturePlan` 在跑本场景前竖起本地桩 LLM 并把配置指向它（只在这一段生效，
+ * 排在 chat 组最后，前面的场景读到的仍是「未配置模型」的出厂态）。
+ *
+ * act：把提示词写进 textarea → 点发送（走 `send()`，与用户手点同一条路径）→ 轮询等
+ *      流式结束（`.thread.streaming` 摘掉）。截图即「一问一答 + 上下文条有真实 token」现场。
+ * check 断言四件事：
+ * ① 助手气泡出现且正文含桩服务的标记（回复真的画到了 DOM 上，而不只是事件里有）；
+ * ② 用户气泡也在（发送路径把提问渲染出来了）；
+ * ③ 上下文条显示**真实 token 数**（桩服务的结束片带 usage → 界面必须不再是「暂无用量数据」），
+ *    且累计同样非零 —— 这条同时钉住 usage 事件 → useChat → 上下文条整条链；
+ * ④ 流式已收尾（`.thread.streaming` 不存在），即「流式态不会卡住」。
+ */
+export function chatStreamAct(question: string): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const box = document.querySelector('.composer-input')
+    if (box === null) return { ready: false, reason: 'composer-input 不存在' }
+    const sendButton = document.querySelector('.composer-box [aria-label="发送"]')
+    if (sendButton === null) return { ready: false, reason: '发送按钮不存在' }
+    box.focus()
+    box.value = ${JSON.stringify(question)}
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await wait(200)
+    sendButton.click()
+    // 等整轮结束：流式类摘掉 + 至少一条助手消息
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const streaming = document.querySelector('.thread.streaming')
+      const replied = document.querySelectorAll('.message.r-assistant').length > 0
+      if (streaming === null && replied) return { ready: true, waited: attempt * 250 }
+      await wait(250)
+    }
+    return { ready: false, reason: '等待流式结束超时' }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+}
+
+export function chatStreamCheck(marker: string, reasoningMarker: string): string {
+  // 先把两个标记求值成**真实 JS 字面量**（模板里只能插值，ESLint 看不到字符串里的引用）
+  const markerLiteral = JSON.stringify(marker)
+  const reasoningLiteral = JSON.stringify(reasoningMarker)
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const textOf = (selector) => {
+      const el = document.querySelector(selector)
+      return el === null ? '' : (el.textContent || '').trim()
+    }
+    const assistants = Array.from(document.querySelectorAll('.message.r-assistant'))
+    const reply = assistants.map((el) => (el.textContent || '').trim()).join(' | ')
+    const users = document.querySelectorAll('.message.r-user').length
+    const usageText = textOf('[data-field="chat.context-usage"]')
+    const totals = textOf('.ctx-total')
+    const stillStreaming = document.querySelector('.thread.streaming') !== null
+    // 思考增量归属（docs/06 §16.1）：思考块只在 message.reasoning 非空时渲染，
+    // 因此「最后一条助手消息带思考块」= 桩服务产出的 reasoning 增量确实绑到了**它自己那条**消息上
+    //（不是前一条、也不是没人要）。请求结束后块已收起为摘要行，所以只断言块头文案。
+    const lastAssistant = assistants[assistants.length - 1]
+    const lastThinking = lastAssistant === undefined ? null : lastAssistant.querySelector('.thinking')
+    const lastThinkingLabel =
+      lastThinking === null ? '' : (lastThinking.querySelector('.thinking-head')?.textContent ?? '').trim()
+    // 展开它把思考正文读出来：请求结束后块是收起态，正文不在 DOM 里，得点开才看得到。
+    // 这一步比「块存在」更硬 —— 它证明桩服务的 reasoning 增量**内容**真的落在这一条消息上。
+    let lastThinkingText = ''
+    if (lastThinking !== null) {
+      const head = lastThinking.querySelector('.thinking-head')
+      if (head !== null) head.click()
+      await wait(350)
+      const body = lastThinking.querySelector('.thinking-text')
+      lastThinkingText = body === null ? '' : (body.textContent || '').trim()
+      if (head !== null) head.click()
+      await wait(150)
+    }
+    return {
+      assistantCount: assistants.length,
+      userCount: users,
+      replyHasMarker: reply.indexOf(${markerLiteral}) !== -1,
+      replyHead: reply.slice(0, 60),
+      usageText,
+      totals,
+      stillStreaming,
+      lastThinkingLabel,
+      lastThinkingHasMarker: lastThinkingText.indexOf(${reasoningLiteral}) !== -1,
+      pass:
+        assistants.length >= 1 &&
+        users >= 1 &&
+        reply.indexOf(${markerLiteral}) !== -1 &&
+        // 桩服务的结束片带 usage：界面必须显示真实数字，而不是「暂无用量数据」
+        usageText !== '' &&
+        usageText.indexOf('暂无用量数据') === -1 &&
+        /[0-9]/.test(usageText) &&
+        /[0-9]/.test(totals) &&
+        stillStreaming === false &&
+        lastThinkingLabel.indexOf('已深度思考') !== -1 &&
+        lastThinkingText.indexOf(${reasoningLiteral}) !== -1,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+}
+
+export const CHAT_PERMISSION_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    // 轮询等钮可用：它的 disabled 取决于渲染层 settingsStore 是否已水合（不是配置本身），
+    // 而 disabled 元素上的 click 不触发处理函数 → 探针会假 FAIL（同 chat.reasoningEffort 的教训）。
+    let button = null
+    for (let attempt = 0; attempt < 10 && button === null; attempt += 1) {
+      const candidate = document.querySelector('[data-field="chat.permission"]')
+      if (candidate !== null && candidate.disabled !== true) button = candidate
+      else await wait(250)
+    }
+    if (button === null) return { opened: false, reason: 'chat.permission 始终不可用（settingsStore 未水合？）' }
+    button.click()
+    await wait(300)
+    return { opened: document.querySelector('[data-field="chat.permission-menu"]') !== null }
+  } catch (error) {
+    return { opened: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_PERMISSION_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const textOf = (selector) => {
+      const el = document.querySelector(selector)
+      return el === null ? '' : (el.textContent || '').trim()
+    }
+    const menuOpen = count('[data-field="chat.permission-menu"]') === 1
+    const confirmItem = textOf('[data-field="chat.permission-confirm"]')
+    const fullItemBefore = textOf('[data-field="chat.permission-full"]')
+
+    const fullButton = document.querySelector('[data-field="chat.permission-full"]')
+    if (fullButton !== null) fullButton.click()
+    await wait(300)
+    const fullItemAfter = textOf('[data-field="chat.permission-full"]')
+
+    const state = await window.aurora.settings.get()
+    const stillConfirm = state.ok ? state.value.advanced.confirmSensitiveTools === true : null
+
+    // 收尾：再点一次权限钮收起下拉（不影响配置），并轮询确认它真的关掉了 ——
+    // leave transition 是 --dur-fast（150ms），固定等 200ms 在高负载下余量太小会假 FAIL。
+    const button = document.querySelector('[data-field="chat.permission"]')
+    if (button !== null) button.click()
+    let closed = false
+    for (let attempt = 0; attempt < 12 && !closed; attempt += 1) {
+      closed = document.querySelectorAll('[data-field="chat.permission-menu"]').length === 0
+      if (!closed) await wait(150)
+    }
+
+    return {
+      menuOpen,
+      confirmOption: confirmItem.indexOf('变更前确认') !== -1,
+      fullOption: fullItemBefore.indexOf('完全权限') !== -1,
+      askedAgain: fullItemAfter.indexOf('再点一次确认') !== -1,
+      confirmSensitiveTools: stillConfirm,
+      menuClosedAfter: closed,
+      pass:
+        menuOpen &&
+        confirmItem.indexOf('变更前确认') !== -1 &&
+        fullItemBefore.indexOf('完全权限') !== -1 &&
+        fullItemAfter.indexOf('再点一次确认') !== -1 &&
+        stillConfirm === true &&
+        count('[data-field="chat.permission-menu"]') === 0,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
  * 右栏开关探针 · 前半（BetaV2）：点两次 `chat.right-panel-toggle` 走「展开 → 收起 → 展开」。
  *
  * 点击走真实 DOM 链路（按钮 → emit → App.vue 的 `contextOpen` → `.context.collapsed` 宽度过渡）。
@@ -3036,6 +3347,20 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       file: 'chat-model-picker.png',
       act: CHAT_MODEL_PICKER_ACT,
       check: CHAT_MODEL_PICKER_CHECK,
+    },
+    // 输入区（2026-09 输入框重做）：斜杠命令浮层 + 权限钮 + 上下文条，以及权限下拉的两段式关闭。
+    // 两段都自己收尾（清空输入框 / 收起下拉），不改任何配置，因此可以插在朗读场景之前。
+    {
+      name: 'chat',
+      file: 'chat-composer-slash.png',
+      act: CHAT_COMPOSER_ACT,
+      check: CHAT_COMPOSER_CHECK,
+    },
+    {
+      name: 'chat',
+      file: 'chat-composer-permission.png',
+      act: CHAT_PERMISSION_ACT,
+      check: CHAT_PERMISSION_CHECK,
     },
     // 朗读按钮（step-06）：act 点一次 [data-action="speak-message"]（离线合成必然失败，
     // 只触发点击、不断言出声），check 断言按钮存在且点击后回到「朗读」态；

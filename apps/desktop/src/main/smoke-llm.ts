@@ -32,6 +32,9 @@ export const LOW_CONFIDENCE_MARKER = '低置信'
  * 自测用它把「子代理进度事件 + 快照持久化」跑到真实 IPC 上（而不只是夹具）。
  */
 export const SUBAGENT_TASK_MARKER = 'STUB_TASK_MARKER'
+
+/** 桩服务产出的思考链标记（断言「思考增量绑到了它自己那条助手消息」用） */
+export const REASONING_MARKER = 'STUB_REASONING_OK'
 /** 子代理最终报告里的标记 */
 export const SUBAGENT_REPORT_MARKER = 'STUB_SUB_OK'
 
@@ -103,7 +106,7 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
             },
           ],
         })
-        sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+        sendSseStop(res)
         res.write('data: [DONE]\n\n')
         res.end()
         return
@@ -144,7 +147,7 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
               },
             ],
           })
-          sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+          sendSseStop(res)
         }
         res.write('data: [DONE]\n\n')
         res.end()
@@ -195,7 +198,7 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
               },
             ],
           })
-          sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+          sendSseStop(res)
         }
         res.write('data: [DONE]\n\n')
         res.end()
@@ -225,6 +228,22 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
         })
         sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
       } else {
+        // 思考链增量（docs/06 §16）：桩服务也产出 `reasoning_content`，端到端自测与截图探针
+        // 才能验证「思考增量绑到**它自己那条**助手消息上」—— 纯正文的桩永远测不到这条链路。
+        sendSse(res, {
+          choices: [
+            { index: 0, delta: { reasoning_content: REASONING_MARKER + ' ' }, finish_reason: null },
+          ],
+        })
+        sendSse(res, {
+          choices: [
+            {
+              index: 0,
+              delta: { reasoning_content: '思考增量第二段：确认工具返回。' },
+              finish_reason: null,
+            },
+          ],
+        })
         sendSse(res, {
           choices: [{ index: 0, delta: { content: `${STUB_MARKER} ` }, finish_reason: null }],
         })
@@ -233,7 +252,7 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
             { index: 0, delta: { content: '已按技能指令读取系统状态。' }, finish_reason: null },
           ],
         })
-        sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+        sendSseStop(res)
       }
       res.write('data: [DONE]\n\n')
       res.end()
@@ -326,6 +345,20 @@ function classifyVerdict(request: StubRequest): {
     return { subject: '', confidence: 0, reason: '桩服务：文件名无法判定' }
   }
   return { subject: matched, confidence: 0.95, reason: `桩服务：文件名含「${matched}」` }
+}
+
+/**
+ * 「本轮结束」分片：附一份 token 用量。
+ *
+ * 真实服务在这一片回传 usage（且流式下要先在请求体里要 `stream_options.include_usage`，
+ * 见 06 §16.2），桩服务跟着给出，端到端自测才能覆盖 `usage` 事件这条链路 ——
+ * 不附的话 `AURORA_SMOKE` 永远只验证「拿不到用量时界面降级」那一半。
+ */
+function sendSseStop(res: ServerResponse): void {
+  sendSse(res, {
+    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 128, completion_tokens: 16, total_tokens: 144 },
+  })
 }
 
 function sendSse(res: ServerResponse, payload: unknown): void {
