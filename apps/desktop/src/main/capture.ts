@@ -987,6 +987,368 @@ export function chatStreamCheck(marker: string, reasoningMarker: string): string
 })()`
 }
 
+/**
+ * 爆发场景在渲染层存放观测结果的槽位（act 装仪器、check 读结果，两段脚本不共享作用域）
+ */
+const BURST_PROBE_SLOT = '__auroraStreamBurstProbe'
+
+/** 心跳间隔（ms）：比帧间隔略粗，读的是「主线程还剩下多少空档」，不是帧率 */
+const BURST_HEARTBEAT_MS = 20
+
+/**
+ * 爆发场景的探针阈值（2026-09-26 实测标定，详见 chatStreamBurstCheck 的注释）。
+ *
+ * 三个 longtask 数值是任务书要求的原始口径，但**它在本 BUG 上分辨不出差异**：
+ * Chromium 只上报单任务 > 50ms 的 longtask，而本 BUG 的代价形态是「每片几毫秒、
+ * 5ms 一片 → 持续饱和」，单任务永远够不到 50ms 下限（修复前实测恒为 0/0/0）。
+ * 因此真正参与判定的是 heartbeat / frame 两组（同样是原始实测值标定的）。
+ */
+const BURST_LONG_TASK_LIMITS = {
+  count: 12,
+  maxMs: 260,
+  blockingMs: 900,
+}
+
+/** 心跳与帧的口径阈值（修复后实测 × 约 3 倍余量，见 chatStreamBurstCheck 注释） */
+const BURST_LAG_LIMITS = {
+  maxHeartbeatMs: 150,
+  heartbeatOverrunMs: 600,
+  maxFrameGapMs: 150,
+  droppedFrames: 20,
+}
+
+/**
+ * 思考 / 正文**高密度爆发**探针 · 前半（1-D 场景）。
+ *
+ * 为什么要有这一场：默认对话桩只发 2 条 reasoning + 2 条 content 分片，密度远低于真实推理
+ * 模型（100+ token/s）——「渲染跟不上输出」这类问题在那个密度下根本不会出现，
+ * 现有 chatStream 探针因此**测不出**该症状。这里让桩服务按真实密度喷 150 + 150 片。
+ *
+ * 与 chatStreamAct 的关键差别：**不等流式结束**。本场景要拍的是「流式进行中」的现场
+ *（思考块已展开、正文还在长），所以点完发送只等 600ms 就返回。
+ *
+ * 仪器必须在这里装好（而不是 check 里）：check 跑在流式收尾之后，
+ * 那时再装 PerformanceObserver / 心跳只能观测到空气。结果挂在 window 上给 check 读。
+ */
+export function chatStreamBurstAct(question: string): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const box = document.querySelector('.composer-input')
+    if (box === null) return { ready: false, reason: 'composer-input 不存在' }
+    const sendButton = document.querySelector('.composer-box [aria-label="发送"]')
+    if (sendButton === null) return { ready: false, reason: '发送按钮不存在' }
+
+    const probe = {
+      entries: [],
+      supported: true,
+      error: null,
+      observer: null,
+      heartbeat: { samples: [], hidden: [], last: performance.now(), timer: 0 },
+      frames: { times: [], hidden: [], handle: 0 },
+      visibility: [],
+    }
+    window['${BURST_PROBE_SLOT}'] = probe
+    try {
+      probe.observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          probe.entries.push({ start: entry.startTime, duration: entry.duration })
+        }
+      })
+      probe.observer.observe({ entryTypes: ['longtask'] })
+    } catch (error) {
+      // 环境不支持 longtask：如实标记，不让它把功能断言一起拖失败
+      probe.supported = false
+      probe.error = String(error)
+    }
+
+    // 可见性变化必须留痕：窗口一旦被判定为隐藏/遮挡，Chromium 会把定时器与 rAF 双双节流，
+    // 那时的「心跳 9 秒」不是主线程被占，而是渲染被暂停 —— 两种现象在数值上长得一样，
+    // 不记下来就没法判断这轮数据是否有效。
+    probe.visibility.push({ at: 0, state: document.hidden === true ? 'hidden' : 'visible' })
+    document.addEventListener('visibilitychange', () => {
+      probe.visibility.push({
+        at: Math.round(performance.now()),
+        state: document.hidden === true ? 'hidden' : 'visible',
+      })
+    })
+
+    // 只从**爆发轮**开始采样：前面还有几轮堆量（一次性往里灌几十 KB 的旧消息），
+    // 那几轮的一次性开销（首次解析 / 首次布局）不是本 BUG 要测的东西，留在样本里
+    // 会把 max 值抬成「首屏开销」。爆发轮的可靠信号 = 流式思考块的正文出现
+    //（堆量轮只发正文、不发 reasoning，因此思考块只在爆发轮存在）。
+    probe.armed = true
+    probe.reset = () => {
+      if (probe.armed !== true) return
+      if (document.querySelector('.thinking.streaming') === null) return
+      probe.armed = false
+      probe.entries.length = 0
+      probe.heartbeat.samples.length = 0
+      probe.heartbeat.hidden.length = 0
+      probe.frames.times.length = 0
+      probe.frames.hidden.length = 0
+      probe.heartbeat.last = performance.now()
+      probe.resetAt = Math.round(performance.now())
+    }
+
+    // 主线程占用度的读数：心跳的实际间隔被拉长多少。5ms 一片的流式下，
+    // 单任务永远够不到 longtask 的 50ms 下限，但「排满主线程」会立刻反映成心跳漂移。
+    probe.heartbeat.timer = setInterval(() => {
+      probe.reset()
+      const now = performance.now()
+      probe.heartbeat.samples.push(now - probe.heartbeat.last)
+      probe.heartbeat.hidden.push(document.hidden === true)
+      probe.heartbeat.last = now
+    }, ${BURST_HEARTBEAT_MS})
+
+    // 帧间隔的读数：渲染被拖慢最直接的证据（每帧的预算只有约 16.7ms）
+    const onFrame = (stamp) => {
+      probe.reset()
+      probe.frames.times.push(stamp)
+      probe.frames.hidden.push(document.hidden === true)
+      probe.frames.handle = requestAnimationFrame(onFrame)
+    }
+    probe.frames.handle = requestAnimationFrame(onFrame)
+
+    box.focus()
+    box.value = ${JSON.stringify(question)}
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await wait(200)
+    sendButton.click()
+
+    // 等**思考块开始长字**再返回（而不是固定等 600ms）：本场景前面还有几轮堆量，
+    // 固定延时会把截图拍到「前文还在灌」或者「思考已经写完」上，现场就不确定了。
+    // 判据是流式思考块里的正文有了一小段内容；拿不到（桩挂了 / 思考没开始）也不阻塞，
+    // 固定等一次后照样返回，让 check 去报失败原因。
+    let reasoningChars = 0
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const live = document.querySelector('.thinking.streaming .thinking-text')
+      reasoningChars = live === null ? 0 : (live.textContent || '').length
+      if (reasoningChars >= 120) break
+      await wait(100)
+    }
+    await wait(220)
+    return {
+      ready: true,
+      streaming: document.querySelector('.thread.streaming') !== null,
+      reasoningChars,
+      observed: probe.entries.length,
+      heartbeats: probe.heartbeat.samples.length,
+      frames: probe.frames.times.length,
+    }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+}
+
+/**
+ * 爆发场景 · 后半：等收尾 → 收仪器 → 先断言首末标记都到了 → 返回观测原始数值。
+ *
+ * 三步顺序不能换：
+ * 1. **先等流式收尾**（`.thread.streaming` 摘除）。check 在截图之后跑，而截图落在流式中段，
+ *    不等就会在「思考还在长」时去读收尾态；
+ * 2. **收仪器要抢在点开思考块之前**：那一步有几百毫秒的等待，混进采样会把主线程占用稀释成 0；
+ * 3. 读正文标记必须走 `.md` 元素（而不是整条消息的 textContent）——思考块展开后它的正文也在
+ *    textContent 里，两边混在一起就分不清哪个标记落在哪一块。
+ *
+ * 三组数值的口径与取舍（这是本探针最需要说清的地方）：
+ * - `longTask*`：任务书要求的原始口径。**它在修复前后都是 0** —— Chromium 只上报单任务 > 50ms
+ *   的 longtask，而本 BUG 的代价形态是「每片几毫秒 + 5ms 一片」的持续占用，单任务永远够不到
+ *   50ms。留着它是为了如实留档，判定上只当作「没有离谱的巨型卡顿」；
+ * - `heartbeat*`：20ms 心跳的实际间隔漂移 —— 主线程被占满时下一拍会被推迟，这是与 BUG 同量级的读数；
+ * - `frame*`：rAF 帧间隔 —— 每帧预算约 16.7ms，超出的部分累计即「掉帧代价」，最贴近肉眼观感。
+ *
+ * 阈值在 BURST_LAG_LIMITS / BURST_LONG_TASK_LIMITS，按 2026-09-26 本机实测留约 3 倍余量。
+ */
+export function chatStreamBurstCheck(markers: {
+  textStart: string
+  textEnd: string
+  reasoningStart: string
+  reasoningEnd: string
+}): string {
+  const markerLiteral = JSON.stringify(markers)
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    // 1) 等流式收尾（爆发流约 1.5s，给足 20s 余量：机器抖动 / 首帧 markdown 解析都可能慢）
+    let stillStreaming = true
+    for (let attempt = 0; attempt < 80 && stillStreaming; attempt += 1) {
+      stillStreaming = document.querySelector('.thread.streaming') !== null
+      if (stillStreaming) await wait(250)
+    }
+
+    // 2) 立刻收掉仪器再读 DOM：下面点开思考块会引入几百毫秒的空闲等待，
+    //    混进采样里会把「主线程占用」稀释成接近 0，指标就废了。
+    const probe = window['${BURST_PROBE_SLOT}']
+    const usable = probe !== null && probe !== undefined
+    if (usable) {
+      if (probe.observer !== null && probe.observer !== undefined) {
+        probe.observer.disconnect()
+        probe.observer = null
+      }
+      if (probe.heartbeat !== null && probe.heartbeat !== undefined) {
+        clearInterval(probe.heartbeat.timer)
+      }
+      if (probe.frames !== null && probe.frames !== undefined) {
+        cancelAnimationFrame(probe.frames.handle)
+      }
+    }
+
+    // 3) 正文首末标记：只看最后一条助手消息的 .md（思考块正文不在这个节点里）
+    const markers = ${markerLiteral}
+    const assistants = Array.from(document.querySelectorAll('.message.r-assistant'))
+    const lastAssistant = assistants[assistants.length - 1]
+    const lastMarkdown = lastAssistant === undefined ? null : lastAssistant.querySelector('.md')
+    const lastContent = lastMarkdown === null ? '' : (lastMarkdown.textContent || '')
+    const contentHasStart = lastContent.indexOf(markers.textStart) !== -1
+    const contentHasEnd = lastContent.indexOf(markers.textEnd) !== -1
+
+    // 4) 思考块首末标记：收尾后块已收起为摘要行，正文不在 DOM 里，得点开才读得到
+    const lastThinking = lastAssistant === undefined ? null : lastAssistant.querySelector('.thinking')
+    const lastThinkingLabel =
+      lastThinking === null ? '' : (lastThinking.querySelector('.thinking-head')?.textContent ?? '').trim()
+    let lastThinkingText = ''
+    if (lastThinking !== null) {
+      const head = lastThinking.querySelector('.thinking-head')
+      if (head !== null) head.click()
+      await wait(400)
+      const body = lastThinking.querySelector('.thinking-text')
+      lastThinkingText = body === null ? '' : (body.textContent || '').trim()
+      if (head !== null) head.click()
+      await wait(150)
+    }
+    const thinkingHasStart = lastThinkingText.indexOf(markers.reasoningStart) !== -1
+    const thinkingHasEnd = lastThinkingText.indexOf(markers.reasoningEnd) !== -1
+
+    // 5) longtask 口径（任务书要求的三个原始数值）
+    const entries =
+      usable !== true || Array.isArray(probe.entries) !== true ? [] : probe.entries
+    let maxLongTaskMs = 0
+    let totalBlockingMs = 0
+    for (const entry of entries) {
+      if (entry.duration > maxLongTaskMs) maxLongTaskMs = entry.duration
+      // 阻塞时长口径：单条长任务超出 50ms 的部分才算「卡住主线程」
+      totalBlockingMs += Math.max(0, entry.duration - 50)
+    }
+    const longTaskCount = entries.length
+    const longTaskSupported = usable !== true ? false : probe.supported !== false
+
+    // 6) 心跳漂移：主线程在流式期间被占掉多少（单任务够不到 longtask 下限时的替代口径）
+    const heartbeats =
+      usable !== true || Array.isArray(probe.heartbeat.samples) !== true ? [] : probe.heartbeat.samples
+    const hiddenFlags =
+      usable !== true || Array.isArray(probe.heartbeat.hidden) !== true ? [] : probe.heartbeat.hidden
+    let maxHeartbeatMs = 0
+    let maxUnhiddenHeartbeatMs = 0
+    let heartbeatOverrunMs = 0
+    let hiddenHeartbeats = 0
+    let heartbeatTotalMs = 0
+    const gaps = []
+    for (let index = 0; index < heartbeats.length; index += 1) {
+      const sample = heartbeats[index]
+      heartbeatTotalMs += sample
+      if (hiddenFlags[index] === true) hiddenHeartbeats += 1
+      if (sample > maxHeartbeatMs) maxHeartbeatMs = sample
+      // 超过 2 倍心跳间隔才算「这一拍被挤掉」，避免把正常的调度抖动算进来
+      // 被节流（窗口隐藏）的那几拍单独剔除：那是渲染被暂停，不是主线程被占满
+      if (hiddenFlags[index] !== true) {
+        if (sample > maxUnhiddenHeartbeatMs) maxUnhiddenHeartbeatMs = sample
+        heartbeatOverrunMs += Math.max(0, sample - ${BURST_HEARTBEAT_MS * 2})
+      }
+      gaps.push({ index, delta: Math.round(sample * 10) / 10, hidden: hiddenFlags[index] === true })
+    }
+    // 只留最大的 5 段：完整时间线太长，报告里看最大的几段就够定位
+    gaps.sort((left, right) => right.delta - left.delta)
+    const heartbeatCount = heartbeats.length
+    const visibility = usable !== true || Array.isArray(probe.visibility) !== true ? [] : probe.visibility
+
+    // 7) 帧间隔：渲染是否还跟得上（每帧预算约 16.7ms，超出的部分累计即「掉帧代价」）
+    const frames = usable !== true || Array.isArray(probe.frames.times) !== true ? [] : probe.frames.times
+    const frameHidden =
+      usable !== true || Array.isArray(probe.frames.hidden) !== true ? [] : probe.frames.hidden
+    let maxFrameGapMs = 0
+    let droppedFrames = 0
+    let hiddenFrameGaps = 0
+    for (let index = 1; index < frames.length; index += 1) {
+      // 跨越隐藏期的帧间隔同样是「渲染被暂停」，不是「渲染跟不上」——剔除并计数
+      if (frameHidden[index] === true || frameHidden[index - 1] === true) {
+        hiddenFrameGaps += 1
+        continue
+      }
+      const gap = frames[index] - frames[index - 1]
+      if (gap > maxFrameGapMs) maxFrameGapMs = gap
+      if (gap > 33) droppedFrames += Math.floor(gap / 16.7) - 1
+    }
+    const frameCount = frames.length
+
+    // 采样是否真的从爆发轮开始（false = 样本里混着堆量轮的首屏开销，数值不可信）
+    const phaseResetAt = usable !== true || typeof probe.resetAt !== 'number' ? null : probe.resetAt
+
+    return {
+      assistantCount: assistants.length,
+      reasoningChars: lastThinkingText.length,
+      contentChars: lastContent.length,
+      contentHasStart,
+      contentHasEnd,
+      thinkingHasStart,
+      thinkingHasEnd,
+      lastThinkingLabel,
+      stillStreaming,
+      phaseResetAt,
+      longTaskSupported,
+      longTaskCount,
+      maxLongTaskMs: Math.round(maxLongTaskMs * 10) / 10,
+      totalBlockingMs: Math.round(totalBlockingMs * 10) / 10,
+      heartbeatCount,
+      heartbeatTotalMs: Math.round(heartbeatTotalMs),
+      hiddenHeartbeats,
+      visibility,
+      topHeartbeatGaps: gaps.slice(0, 5),
+      maxHeartbeatMs: Math.round(maxHeartbeatMs * 10) / 10,
+      maxUnhiddenHeartbeatMs: Math.round(maxUnhiddenHeartbeatMs * 10) / 10,
+      heartbeatOverrunMs: Math.round(heartbeatOverrunMs * 10) / 10,
+      frameCount,
+      hiddenFrameGaps,
+      maxFrameGapMs: Math.round(maxFrameGapMs * 10) / 10,
+      droppedFrames,
+      limits: {
+        longTask: ${JSON.stringify(BURST_LONG_TASK_LIMITS)},
+        lag: ${JSON.stringify(BURST_LAG_LIMITS)},
+      },
+      pass:
+        assistants.length >= 1 &&
+        lastThinking !== null &&
+        // 首末标记都到齐 = 桩服务的 150 片既没丢、也没被合并逻辑吃掉
+        contentHasStart &&
+        contentHasEnd &&
+        thinkingHasStart &&
+        thinkingHasEnd &&
+        stillStreaming === false &&
+        lastThinkingLabel.indexOf('已深度思考') !== -1 &&
+        // 性能门限：按 2026-09-26 实测留约 3 倍余量（防止 CI 机器抖动假 FAIL），
+        // 数值随机器档位浮动，断言的只有「数量级」。
+        heartbeatCount > 0 &&
+        frameCount > 0 &&
+        // 采样起点必须是爆发轮：否则下面的数值是「堆量轮首屏开销」而不是本 BUG 的代价
+        phaseResetAt !== null &&
+        // 窗口被判定隐藏时的那几拍不计入：节流不是主线程占用（hiddenHeartbeats 会一并落盘）
+        hiddenHeartbeats <= heartbeatCount / 2 &&
+        (longTaskSupported !== true ||
+          (longTaskCount <= ${BURST_LONG_TASK_LIMITS.count} &&
+            maxLongTaskMs <= ${BURST_LONG_TASK_LIMITS.maxMs} &&
+            totalBlockingMs <= ${BURST_LONG_TASK_LIMITS.blockingMs})) &&
+        maxUnhiddenHeartbeatMs <= ${BURST_LAG_LIMITS.maxHeartbeatMs} &&
+        heartbeatOverrunMs <= ${BURST_LAG_LIMITS.heartbeatOverrunMs} &&
+        maxFrameGapMs <= ${BURST_LAG_LIMITS.maxFrameGapMs} &&
+        droppedFrames <= ${BURST_LAG_LIMITS.droppedFrames},
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+}
+
 export const CHAT_PERMISSION_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {

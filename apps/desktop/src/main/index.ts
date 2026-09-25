@@ -79,6 +79,10 @@ import { createUpdaterPort } from './updater-port.js'
 import { createTray, type TrayController } from './tray.js'
 import { SMOKE_FLAG, SMOKE_RESULT_PREFIX, smokeScript } from './smoke.js'
 import {
+  BURST_REASONING_END_MARKER,
+  BURST_REASONING_START_MARKER,
+  BURST_TEXT_END_MARKER,
+  BURST_TEXT_START_MARKER,
   REASONING_MARKER,
   STUB_API_KEY,
   STUB_MARKER,
@@ -90,6 +94,8 @@ import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
 import {
   captureWindows,
   chatStreamAct,
+  chatStreamBurstAct,
+  chatStreamBurstCheck,
   chatStreamCheck,
   defaultCapturePlan,
   filterCapturePlan,
@@ -1023,8 +1029,46 @@ async function runCapture(dir: string): Promise<void> {
     act: chatStreamAct('/system-status 我电脑现在什么状态'),
     check: chatStreamCheck(STUB_MARKER, REASONING_MARKER),
   }
+  // 1-D 爆发场景：与 chat-stream 同一条离线桩链路，但按真实推理模型的密度（150 + 150 片、
+  // 5ms 一片）喷思考与正文 —— 这是「渲染跟不上输出」唯一能复现的现场，measure 见探针注释。
+  // 排在 chat-stream **之后**：它沿用同一条会话（main），前面的现场对后续无害。
+  const burstProbeQuestion = 'burst-probe 请把这段话一字不差地念完'
+  const chatBurstTarget: CaptureTarget = {
+    name: 'chat',
+    file: 'chat-stream-burst.png',
+    prepare: async () => {
+      captureStub ??= await startStubLlmServer(logger?.child('capture-llm'))
+      settings?.update({
+        llm: {
+          active: 'capture-stub',
+          providers: {
+            'capture-stub': {
+              type: 'openai-compat',
+              baseUrl: captureStub.baseUrl,
+              apiKeyEnc: '',
+              model: STUB_MODEL,
+              modelList: [STUB_MODEL],
+              temperature: 0.7,
+              reasoningEffort: 'auto',
+              contextWindow: 128_000,
+            },
+          },
+        },
+      } as Partial<Settings>)
+      settings?.setSecret('llm.providers.capture-stub.apiKey', STUB_API_KEY)
+      await settings?.flush()
+      await manager.reload('chat', {})
+    },
+    act: chatStreamBurstAct(burstProbeQuestion),
+    check: chatStreamBurstCheck({
+      textStart: BURST_TEXT_START_MARKER,
+      textEnd: BURST_TEXT_END_MARKER,
+      reasoningStart: BURST_REASONING_START_MARKER,
+      reasoningEnd: BURST_REASONING_END_MARKER,
+    }),
+  }
   const plan = filterCapturePlan(
-    [...defaultCapturePlan(manager, app.getPath('userData')), chatStreamTarget],
+    [...defaultCapturePlan(manager, app.getPath('userData')), chatStreamTarget, chatBurstTarget],
     process.env['AURORA_CAPTURE_WINDOWS'],
   )
   logger?.info('开始窗口截图', { dir, count: plan.length })

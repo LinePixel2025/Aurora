@@ -38,6 +38,48 @@ export const REASONING_MARKER = 'STUB_REASONING_OK'
 /** 子代理最终报告里的标记 */
 export const SUBAGENT_REPORT_MARKER = 'STUB_SUB_OK'
 
+/**
+ * 爆发模式标记（`burst-probe`）：**本次请求最后一条 user 消息**含它才走爆发分流。
+ *
+ * 刻意按请求内容而不是环境变量分流：`AURORA_CAPTURE` 一轮里前面的场景（chat-stream /
+ * 分类 / 子代理）都必须走各自的老路径，环境变量是进程级的、会一起改掉它们的行为。
+ */
+export const BURST_MARKER = 'burst-probe'
+
+/**
+ * 爆发分片的首末标记：探针据此断言「首片与末片都真的落到了渲染层」，
+ * 而不是只证明「流式大体上跑通了」。
+ */
+export const BURST_REASONING_START_MARKER = '【爆发思考开始】'
+export const BURST_REASONING_END_MARKER = '【爆发思考结束】'
+export const BURST_TEXT_START_MARKER = '【爆发正文开始】'
+export const BURST_TEXT_END_MARKER = '【爆发正文结束】'
+
+/**
+ * 爆发密度：150 片 × 5ms ≈ 0.75s 一阶段，思考 + 正文合计约 1.5s。
+ *
+ * 这个密度是**测量基线的一部分**，不是随便定的：它对应真实推理模型 100+ token/s 的
+ * 分片节奏，缩水（比如降到 20 片）就测不出「每片一次全量重渲染」的累积代价。
+ * 改它等于改基线的量纲，阈值必须重新标定。
+ */
+const BURST_CHUNK_COUNT = 150
+const BURST_CHUNK_GAP_MS = 5
+
+/**
+ * 爆发场景的「前文堆量」：先跑几轮长回复，把 transcript 堆到真实长会话的量级。
+ *
+ * 为什么必须堆：本 BUG 的代价是「每片增量 × **整份 transcript** 的 markdown 全量重解析
+ * （并连带整份 DOM 重建）」（见 MessageList.vue 的 `htmlOf`）。只有一条 1.2k 字的爆发消息时
+ * 这个乘积太小 —— 实测修复前 longtask / 心跳 / 帧三组数值全是「空闲」水平，探针等于什么都没测到。
+ * 长会话里真正被反复重解析的是那些**内容不再变**的旧助手消息，所以这里让它们先堆起来。
+ *
+ * 堆量的方式是「一次写完一条几十 KB 的回复」：它只负责把现场堆起来，不承担节奏复刻
+ * （真实节奏由最后的爆发轮承担：150 + 150 片、5ms）。探针也只从爆发轮开始采样
+ * （见 capture.ts 的 `reset` 注释），因此堆量轮自身的一次性开销不进基线数值。
+ */
+const BURST_PRELUDE_ROUNDS = 2
+const BURST_PRELUDE_CHARS = 20_000
+
 export interface StubRequest {
   path: string
   body: { messages?: Array<{ role?: string; content?: unknown }>; tools?: unknown[] } | null
@@ -205,6 +247,14 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
         return
       }
 
+      // ── 1-D 爆发分流：高密度思考 + 正文分片，测量渲染层跟不跟得上 ──
+      // 必须排在下面的 `toolCallRound` 之前：那一支按「第几次对话请求」决定要不要发工具调用，
+      // 而爆发场景只有一次请求、且要的是纯分片（不能先插一轮工具调用把时序搅乱）。
+      if (isBurstRequest(record)) {
+        void sendBurst(res, burstPreludesDone(record))
+        return
+      }
+
       // ── 对话分流（沿用 P3 行为：第一次触发工具调用） ──
       const toolCallRound = chatRequests().length === 1
       if (toolCallRound) {
@@ -312,6 +362,154 @@ function isClassifyRequest(request: StubRequest): boolean {
       typeof message.content === 'string' &&
       message.content.includes(CLASSIFY_PROMPT_MARKER),
   )
+}
+
+/** 请求是否为爆发模式：最后一条 user 消息含 `BURST_MARKER` */
+function isBurstRequest(request: StubRequest): boolean {
+  const lastUser = [...(request.body?.messages ?? [])]
+    .reverse()
+    .find((message) => message.role === 'user')
+  return typeof lastUser?.content === 'string' && lastUser.content.includes(BURST_MARKER)
+}
+
+/**
+ * 爆发模式：先按 `BURST_PRELUDE_ROUNDS` 轮堆起 transcript，再 150 片 `reasoning_content`、
+ * 150 片 `content`，每片间隔 5ms。
+ *
+ * 用 `reasoning_content` / `content` 两条独立字段而不是一条混合流：
+ * 渲染层的思考块与正文是两条不同的渲染路径（思考块是 `white-space: pre-wrap` 的纯文本，
+ * 正文要过 markdown），混在一起就看不出「哪一条被拖慢」。
+ *
+ * 客户端中途断开（切会话 / 关窗）会让写失败：那是正常路径，**不是**桩服务异常，
+ * 因此这里只销毁连接、不抛错（抛出去会变成未处理的 rejection，把整轮 capture 打断）。
+ */
+async function sendBurst(res: ServerResponse, preludesDone: number): Promise<void> {
+  try {
+    // 堆量轮：一条长正文 + 一次 `use_skill`（与默认分流同一个「能续下一轮」的抓手）
+    if (preludesDone < BURST_PRELUDE_ROUNDS) {
+      sendSse(res, {
+        choices: [
+          {
+            index: 0,
+            delta: { content: burstPreludeContent(preludesDone) },
+            finish_reason: null,
+          },
+        ],
+      })
+      sendSse(res, {
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: `call_burst_prelude_${preludesDone}`,
+                  type: 'function',
+                  function: { name: 'use_skill', arguments: '{"name":"system-status"}' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      })
+      sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
+      res.write('data: [DONE]\n\n')
+      res.end()
+      return
+    }
+
+    for (let index = 0; index < BURST_CHUNK_COUNT; index += 1) {
+      const head = index === 0 ? BURST_REASONING_START_MARKER : ''
+      const tail = index === BURST_CHUNK_COUNT - 1 ? BURST_REASONING_END_MARKER : ''
+      sendSse(res, {
+        choices: [
+          {
+            index: 0,
+            delta: { reasoning_content: `${head}${burstChunk(index)}${tail}` },
+            finish_reason: null,
+          },
+        ],
+      })
+      if (!(await gap(res, BURST_CHUNK_GAP_MS))) {
+        res.destroy()
+        return
+      }
+    }
+    for (let index = 0; index < BURST_CHUNK_COUNT; index += 1) {
+      const head = index === 0 ? BURST_TEXT_START_MARKER : ''
+      const tail = index === BURST_CHUNK_COUNT - 1 ? BURST_TEXT_END_MARKER : ''
+      sendSse(res, {
+        choices: [
+          {
+            index: 0,
+            delta: { content: `${head}${burstChunk(index)}${tail}` },
+            finish_reason: null,
+          },
+        ],
+      })
+      if (!(await gap(res, BURST_CHUNK_GAP_MS))) {
+        res.destroy()
+        return
+      }
+    }
+    // 结束片带 usage：与默认对话分流同口径，本次现场也能顺带覆盖用量链路
+    sendSseStop(res)
+    res.write('data: [DONE]\n\n')
+    res.end()
+  } catch {
+    res.destroy()
+  }
+}
+
+/**
+ * 本轮请求之前已经跑过几轮堆量。
+ *
+ * **只数最后一条 user 消息之后的 tool 结果**：会话历史里还留着更早的对话（chat-stream
+ * 场景那一轮的 use_skill 结果），按整份 messages 数会把它们算进来 —— 现场直接从第 N 轮
+ * 起步，堆量一片都不会发。
+ */
+function burstPreludesDone(request: StubRequest): number {
+  const messages = request.body?.messages ?? []
+  let lastUserIndex = -1
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') {
+      lastUserIndex = index
+      break
+    }
+  }
+  return messages.slice(lastUserIndex + 1).filter((message) => message.role === 'tool').length
+}
+
+/**
+ * 堆量轮的正文：按行生成、条数确定，长度约 `BURST_PRELUDE_CHARS`。
+ *
+ * 刻意做成「带加粗 / 行内代码 / 链接的列表」——它就是 markdown 解析器的真实输入形状
+ *（每行都要过 `inline()` 的三条正则），用纯文本堆同样长度会低估解析成本。
+ */
+function burstPreludeContent(round: number): string {
+  const lines: string[] = []
+  let length = 0
+  while (length < BURST_PRELUDE_CHARS) {
+    const line = `- 第 ${round + 1} 轮第 ${lines.length + 1} 条：已读完一份文件并记下要点，含 **加粗**、\`src/path/file.ts\` 与 https://example.com/doc/${lines.length} 。`
+    lines.push(line)
+    length += line.length
+  }
+  return lines.join('\n')
+}
+
+/** 一片 6–10 个字（首末片另外拼标记，因此会比这个区间略长）；长度按片号轮转 */
+function burstChunk(index: number): string {
+  const body = `推演${String(index % 100).padStart(2, '0')}`
+  return body.padEnd(6 + (index % 5), '。')
+}
+
+/** 间隔 `ms` 毫秒；返回 false 表示连接已断，调用方应停止推进 */
+function gap(res: ServerResponse, ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(!res.writableEnded && !res.destroyed), ms)
+  })
 }
 
 /**
