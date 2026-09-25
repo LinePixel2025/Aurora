@@ -41,7 +41,12 @@ pnpm verify           # 真实磁盘配置层验收（需先 pnpm build）
 pnpm package          # 构建 + electron-builder NSIS 安装包
 ```
 
-- **跑单个/单包测试**：`pnpm vitest run <文件路径>`，或 `pnpm --filter @aurora/agent-core test`。
+- **跑单个/单包测试**：`pnpm vitest run <文件路径>`（如
+  `pnpm vitest run packages/agent-core/src/session/store.test.ts`）；按目录过滤就写目录
+  （如 `pnpm vitest run packages/agent-core/src`）。
+  ⚠️ **别用 `pnpm --filter @aurora/agent-core test`**：根 `vitest.config.ts` 的 `include`
+  是**根相对**路径，在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败
+  （2026-09-26 实测；各包 package.json 里的 `test: vitest run` 只在仓库根调用时才对）。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：PowerShell 下 `$env:AURORA_SMOKE='1'; pnpm dev`，结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`。调试渲染层加 `AURORA_DEVTOOLS=1`。
 - **窗口截图核对（前端视觉验收）**：`$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev`，会把四个窗口、
   提示条两态、设置页各页与各条 DOM 探针场景（面板 / 收起 / 自动滚底 / 门控 / 拖动 / 思考等级 /
