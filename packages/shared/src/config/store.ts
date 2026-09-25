@@ -5,7 +5,8 @@
  * - 读取：读盘 → JSON 解析 → 迁移 → 字段级 sanitize（非法字段回退默认并记日志）。
  * - 整份文件解析失败：备份为 `config.corrupt-<ts>.json` 后重建默认（不静默丢数据）。
  * - 写入：原子写 + 300ms 防抖；`flush()` 可强制立刻落盘（退出前调用）。
- * - 凭据：`llm.providers.<id>.apiKey`、`mcp.servers.<name>.env.<KEY>` 为敏感路径，
+ * - 凭据：`llm.providers.<id>.apiKey`、`tts.providers.<id>.apiKey`、`stt.providers.<id>.apiKey`、
+ *   `imagegen.providers.<id>.apiKey`、`mcp.servers.<name>.env.<KEY>` 为敏感路径，
  *   写盘时加密为 `apiKeyEnc` / `envEnc`；加密不可用时凭据只驻留内存，绝不落盘明文。
  */
 import { join } from 'node:path'
@@ -338,6 +339,12 @@ export class SettingsStore {
     for (const provider of Object.values(clone.tts.providers)) {
       provider.apiKeyEnc = provider.apiKeyEnc === '' ? '' : '***'
     }
+    for (const provider of Object.values(clone.stt.providers)) {
+      provider.apiKeyEnc = provider.apiKeyEnc === '' ? '' : '***'
+    }
+    for (const provider of Object.values(clone.imagegen.providers)) {
+      provider.apiKeyEnc = provider.apiKeyEnc === '' ? '' : '***'
+    }
     for (const server of clone.mcp.servers) {
       for (const envKey of Object.keys(server.envEnc)) {
         server.envEnc[envKey] = '***'
@@ -514,6 +521,22 @@ export class SettingsStore {
       }
     }
 
+    for (const [id, provider] of Object.entries(this.current.stt.providers)) {
+      const next = encryptIfPlain(provider.apiKeyEnc)
+      if (next !== provider.apiKeyEnc) {
+        this.logger.info('已为存量 STT API Key 补加密', { provider: id })
+        provider.apiKeyEnc = next
+      }
+    }
+
+    for (const [id, provider] of Object.entries(this.current.imagegen.providers)) {
+      const next = encryptIfPlain(provider.apiKeyEnc)
+      if (next !== provider.apiKeyEnc) {
+        this.logger.info('已为存量生图 API Key 补加密', { provider: id })
+        provider.apiKeyEnc = next
+      }
+    }
+
     for (const server of this.current.mcp.servers) {
       for (const [envKey, value] of Object.entries(server.envEnc)) {
         const next = encryptIfPlain(value)
@@ -540,6 +563,10 @@ export class SettingsStore {
     if (providerId !== undefined) return this.current.llm.providers[providerId]?.apiKeyEnc
     const ttsId = matchTtsProviderKey(key)
     if (ttsId !== undefined) return this.current.tts.providers[ttsId]?.apiKeyEnc
+    const sttId = matchSttProviderKey(key)
+    if (sttId !== undefined) return this.current.stt.providers[sttId]?.apiKeyEnc
+    const imageGenId = matchImageGenProviderKey(key)
+    if (imageGenId !== undefined) return this.current.imagegen.providers[imageGenId]?.apiKeyEnc
     const envMatch = matchMcpEnvKey(key)
     if (envMatch) {
       const server = this.current.mcp.servers.find((s) => s.name === envMatch.server)
@@ -573,6 +600,28 @@ export class SettingsStore {
         }) !== undefined
       )
     }
+    const sttId = matchSttProviderKey(key)
+    if (sttId !== undefined) {
+      if (this.current.stt.providers[sttId] === undefined) return false
+      return (
+        this.mutate((draft) => {
+          const provider = draft.stt.providers[sttId]
+          if (provider === undefined) return
+          provider.apiKeyEnc = cipher
+        }) !== undefined
+      )
+    }
+    const imageGenId = matchImageGenProviderKey(key)
+    if (imageGenId !== undefined) {
+      if (this.current.imagegen.providers[imageGenId] === undefined) return false
+      return (
+        this.mutate((draft) => {
+          const provider = draft.imagegen.providers[imageGenId]
+          if (provider === undefined) return
+          provider.apiKeyEnc = cipher
+        }) !== undefined
+      )
+    }
     const envMatch = matchMcpEnvKey(key)
     if (envMatch) {
       if (!this.current.mcp.servers.some((s) => s.name === envMatch.server)) return false
@@ -597,6 +646,8 @@ export class SettingsStore {
     const clone = deepClone(settings)
     for (const provider of Object.values(clone.llm.providers)) provider.apiKeyEnc = ''
     for (const provider of Object.values(clone.tts.providers)) provider.apiKeyEnc = ''
+    for (const provider of Object.values(clone.stt.providers)) provider.apiKeyEnc = ''
+    for (const provider of Object.values(clone.imagegen.providers)) provider.apiKeyEnc = ''
     for (const server of clone.mcp.servers) server.envEnc = {}
     return clone
   }
@@ -614,6 +665,16 @@ function matchTtsProviderKey(key: string): string | undefined {
   return matched?.[1]
 }
 
+function matchSttProviderKey(key: string): string | undefined {
+  const matched = /^stt\.providers\.([^.]+)\.apiKey$/.exec(key)
+  return matched?.[1]
+}
+
+function matchImageGenProviderKey(key: string): string | undefined {
+  const matched = /^imagegen\.providers\.([^.]+)\.apiKey$/.exec(key)
+  return matched?.[1]
+}
+
 function matchMcpEnvKey(key: string): { server: string; envKey: string } | undefined {
   const matched = /^mcp\.servers\.([^.]+)\.env\.(.+)$/.exec(key)
   if (!matched) return undefined
@@ -621,8 +682,8 @@ function matchMcpEnvKey(key: string): { server: string; envKey: string } | undef
 }
 
 /**
- * `llm.providers.<id>.apiKey` / `tts.providers.<id>.apiKey` / `mcp.servers.<name>.env.<KEY>`
- * → 内部规范路径
+ * `llm.providers.<id>.apiKey` / `tts.providers.<id>.apiKey` / `stt.providers.<id>.apiKey` /
+ * `imagegen.providers.<id>.apiKey` / `mcp.servers.<name>.env.<KEY>` → 内部规范路径
  */
 export function canonicalSecretPath(path: string): string {
   const trimmed = path.trim().replace(/\.$/, '')
@@ -630,6 +691,10 @@ export function canonicalSecretPath(path: string): string {
   if (provider) return `llm.providers.${provider[1]}.apiKey`
   const tts = /^tts\.providers\.([^.]+)\.apiKey(Enc)?$/.exec(trimmed)
   if (tts) return `tts.providers.${tts[1]}.apiKey`
+  const stt = /^stt\.providers\.([^.]+)\.apiKey(Enc)?$/.exec(trimmed)
+  if (stt) return `stt.providers.${stt[1]}.apiKey`
+  const imagegen = /^imagegen\.providers\.([^.]+)\.apiKey(Enc)?$/.exec(trimmed)
+  if (imagegen) return `imagegen.providers.${imagegen[1]}.apiKey`
   const env = /^mcp\.servers\.([^.]+)\.env(Enc)?\.(.+)$/.exec(trimmed)
   if (env) return `mcp.servers.${env[1]}.env.${env[3]}`
   return trimmed

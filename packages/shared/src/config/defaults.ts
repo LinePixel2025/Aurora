@@ -65,6 +65,52 @@ export const DEFAULT_TTS = {
 } as const
 
 /**
+ * STT provider 预设（docs/08 §1）：设置页「添加语音输入模型」的 chips。
+ *
+ * 与 `TTS_PRESETS` 一样只提供 id / label / baseUrl / model / language，
+ * 其余字段由新建流程用页面默认值补齐。
+ */
+export const STT_PRESETS = [
+  {
+    id: 'openai',
+    label: 'OpenAI 语音识别',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'whisper-1',
+    language: 'zh',
+  },
+] as const
+
+/**
+ * 生图 provider 预设（docs/08 §1）：设置页「添加生图模型」的 chips。
+ */
+export const IMAGEGEN_PRESETS = [
+  {
+    id: 'openai',
+    label: 'OpenAI 生图',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'dall-e-3',
+    size: '1024x1024',
+  },
+] as const
+
+/**
+ * STT 配置默认值（docs/08 §1）：默认**关闭**且无 provider ——
+ * 未配置时对话窗连麦克风按钮都不渲染（门控口径同 TTS，docs/07 §2.3）。
+ */
+export const DEFAULT_STT = {
+  enabled: false,
+  active: '',
+  providers: {},
+} as const
+
+/** 生图配置默认值（docs/08 §1）：默认关闭且无 provider。 */
+export const DEFAULT_IMAGEGEN = {
+  enabled: false,
+  active: '',
+  providers: {},
+} as const
+
+/**
  * 新建 provider 时的思考等级默认值（docs/08 §1、docs/06 §11）。
  *
  * 单独抽成常量而不是到处写字符串 `'auto'`：`auto` 表示「请求体里不带 `reasoning_effort`」，
@@ -130,12 +176,17 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
       quietHours: null,
     },
     windowState: {},
+    chat: {
+      showThinking: true,
+    },
   },
   llm: {
     active: '',
     providers: {},
   },
   tts: { ...DEFAULT_TTS },
+  stt: { ...DEFAULT_STT },
+  imagegen: { ...DEFAULT_IMAGEGEN },
   modes: {
     current: 'classroom',
     classroom: {
@@ -148,9 +199,10 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
         classisland: { ...DEFAULT_CLASSISLAND_SCHEDULE },
       },
       preClassReminder: true,
+      preClassOpenFolder: true,
       classification: { ...DEFAULT_CLASSIFICATION },
     },
-    work: { guideCompleted: false },
+    work: { guideCompleted: false, workspaceDir: '' },
     code: { guideCompleted: false },
   },
   skills: {

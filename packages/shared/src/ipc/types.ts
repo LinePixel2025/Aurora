@@ -6,10 +6,12 @@ import type { Result } from '../utils/result.js'
 import type {
   AdvancedSettings,
   GeneralSettings,
+  ImageGenSettings,
   Lesson,
   LlmSettings,
   ModeId,
   Settings,
+  SttSettings,
   TtsFormat,
   TtsSettings,
   WindowName,
@@ -91,6 +93,14 @@ export interface SettingsPatch {
    * 删除语义与 `llm.removedProviders` **完全一致**：缺项 ≠ 删除，删除必须显式声明。
    */
   tts?: Partial<TtsSettings> & {
+    removedProviders?: string[]
+  }
+  /** 语音输入（STT）。`stt.providers` 是 record，删除语义与 `tts.removedProviders` 一致。 */
+  stt?: Partial<SttSettings> & {
+    removedProviders?: string[]
+  }
+  /** 图像生成。`imagegen.providers` 是 record，删除语义与 `tts.removedProviders` 一致。 */
+  imagegen?: Partial<ImageGenSettings> & {
     removedProviders?: string[]
   }
   advanced?: Partial<AdvancedSettings>
@@ -230,6 +240,47 @@ export interface TtsTestResult {
   message: string
   bytes?: number
   httpStatus?: number
+}
+
+// ───────────────────────── 语音输入（STT，docs/08 §1） ─────────────────────────
+
+export interface SttTranscribeRequest {
+  /** 录音内容的 base64（渲染层 MediaRecorder 产物） */
+  audioBase64: string
+  /** 录音 MIME 类型（如 `audio/webm;codecs=opus`），主进程据此拼 multipart */
+  mime: string
+  /** 覆盖 provider 配置的识别语言；缺省用 `stt.providers.<id>.language` */
+  language?: string
+}
+
+export interface SttTranscribeResult {
+  /** 识别出的文本 */
+  text: string
+}
+
+// ───────────────────────── 图像生成（docs/08 §1） ─────────────────────────
+
+export interface ImageGenGenerateRequest {
+  prompt: string
+  /** 覆盖 provider 配置的尺寸；缺省用 `imagegen.providers.<id>.size` */
+  size?: string
+}
+
+export interface ImageGenResult {
+  /** 落盘的绝对路径（`userData/generated/<ts>-<rand>.png`） */
+  filePath: string
+  /** `data:image/png;base64,...`，供渲染层直接预览 */
+  dataUrl: string
+}
+
+export interface ImageGenReadRequest {
+  /** `ImageGenResult.filePath`；仅允许 `userData/generated` 目录内的文件（主进程做路径校验） */
+  filePath: string
+}
+
+export interface ImageGenReadResult {
+  /** `data:image/png;base64,...` */
+  dataUrl: string
 }
 
 // ───────────────────────── 窗口 ─────────────────────────
@@ -492,6 +543,8 @@ export interface ChatMessageDto {
   createdAt: string
   /** assistant 消息发起的工具调用（含最终状态），供渲染层显示执行卡片 */
   toolCalls?: AgentToolCall[]
+  /** 模型思考过程（reasoning_content 聚合），供「思考过程」折叠块展示 */
+  reasoning?: string
 }
 
 export interface ChatHistoryRequest {
@@ -511,6 +564,7 @@ export interface ChatHistoryRequest {
 export type AgentEvent =
   | { type: 'queued'; sessionId: string; requestId: string }
   | { type: 'text'; sessionId: string; requestId: string; messageId: string; delta: string }
+  | { type: 'reasoning'; sessionId: string; requestId: string; delta: string }
   | {
       type: 'tool'
       sessionId: string
@@ -568,6 +622,16 @@ export interface AuroraApi {
     synthesize(request: TtsSynthesizeRequest): Promise<Result<TtsSynthesizeResult>>
     /** 连接测试 / 试听（不回传音频，只回结果文字；试听播放走 synthesize） */
     testConnection(request: TtsTestRequest): Promise<Result<TtsTestResult>>
+  }
+  stt: {
+    /** 语音输入：上传录音片段转写为文本（渲染层不持有明文密钥） */
+    transcribe(request: SttTranscribeRequest): Promise<Result<SttTranscribeResult>>
+  }
+  imagegen: {
+    /** 生图：调用生图模型并把图片落盘 userData/generated */
+    generate(request: ImageGenGenerateRequest): Promise<Result<ImageGenResult>>
+    /** 读取 generated 目录内已生成图片的 dataUrl（路径校验在主进程） */
+    read(request: ImageGenReadRequest): Promise<Result<ImageGenReadResult>>
   }
   window: {
     show(name: WindowName): Promise<Result<WindowState>>

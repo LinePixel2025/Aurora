@@ -1,6 +1,6 @@
 {
   "name": "@aurora/shared",
-  "version": "1.1.0-beta.1",
+  "version": "1.1.0-beta.2",
   "private": true,
   "type": "module",
   "description": "Aurora 共享类型、配置 Schema、SettingsStore 与 IPC 契约",

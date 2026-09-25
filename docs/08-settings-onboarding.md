@@ -2,16 +2,18 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v7）
+## 1. 配置 Schema（config.json，v8）
 
 ```jsonc
 {
-  "version": 7,
+  "version": 8,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
     "hotkey": "Alt+Space",
     "edgeBar": { "enabled": true, "opacity": 0.9, "quietHours": null },
+    // v8 新增：对话窗展示偏好
+    "chat": { "showThinking": true }, // 对话界面展示思考过程（MessageList 可折叠思考块的门控，docs/07 §2.3）
     // 各窗口位置 / 尺寸记忆，key 集合见 WINDOW_NAMES（edge-bar / chat / settings / onboarding）
     "windowState": {}
   },
@@ -47,6 +49,32 @@
       }
     }
   },
+  "stt": {
+    "enabled": false,          // 语音输入总开关；false 时对话窗连麦克风按钮都不渲染（门控口径同 TTS）
+    "active": "",              // 默认 STT provider id；空串 = 未配置（此时麦克风按钮不出现）
+    "providers": {
+      "openai": {
+        "type": "openai-compat",
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKeyEnc": "<safeStorage 密文>",
+        "model": "whisper-1",  // 唯一生效值：转写请求实际用的模型就是它
+        "language": "zh"       // 识别语言（zh / en 等，默认 zh）；空串 = 交给服务端自动检测
+      }
+    }
+  },
+  "imagegen": {
+    "enabled": false,          // 生图功能总开关
+    "active": "",              // 默认生图 provider id；空串 = 未配置
+    "providers": {
+      "openai": {
+        "type": "openai-compat",
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKeyEnc": "<safeStorage 密文>",
+        "model": "dall-e-3",   // 唯一生效值
+        "size": "1024x1024"    // 512x512 | 768x768 | 1024x1024 | 1024x1792 | 1792x1024 | auto（auto = 交给服务端决定）
+      }
+    }
+  },
   "modes": {
     "current": "classroom",
     "classroom": {
@@ -62,13 +90,16 @@
         "classisland": { "source": "file", "endpoint": "", "timeoutMs": 3000 }
       },
       "preClassReminder": true,
+      // v8 新增：课前提醒触发时是否自动打开科目文件夹（通知照发，仅门控打开动作）
+      "preClassOpenFolder": true,
       "classification": {
         "autoMove": true,
         "confidenceThreshold": 0.6,
         "fallbackFolder": "待分类"
       }
     },
-    "work": { "guideCompleted": false },
+    // v8 起 Work 实装：workspaceDir = 办公工作目录，空串 = 未配置（由引导 / 设置页收集）
+    "work": { "guideCompleted": false, "workspaceDir": "" },
     "code": { "guideCompleted": false }
   },
   "skills": { "userDir": "", "disabled": [] },
@@ -86,7 +117,8 @@
     // v6 新增：AI 改配置（set_setting）的路径黑名单，按路径段匹配，见 06 §12。
     // 只能在默认项之上追加限制：默认项始终生效，删掉或清空都不能放开（判定的第二道用的是硬编码常量）
     "readonlyPrefixes": [
-      "llm.providers", "tts.providers", "mcp.servers", "version", "general.windowState", "advanced.proxy",
+      "llm.providers", "tts.providers", "stt.providers", "imagegen.providers", "mcp.servers", "version",
+      "general.windowState", "advanced.proxy",
       "general.onboarded", "general.firstRun", "general.launchAtLogin", "general.hotkey",
       "advanced.confirmSensitiveTools"
     ]
@@ -126,9 +158,9 @@
   甚至把数组清空，`general.hotkey` 这条路径**仍然被拒**（清空 = 回到默认项，而不是放开）。
   另一条兜底同样不随它变化：「Schema 不认识的路径一律拒绝」，防模型拼错字段名后悄悄写进配置。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **7**，见 §2）。
-  **`tts.providers` 含凭据密文**（`apiKeyEnc`），同样在默认黑名单里，
-  因此 AI 的 `set_setting` 对它的任何写入**一律拒绝**。
+  当前 `CONFIG_VERSION` 已是 **8**，见 §2）。
+  **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
+  同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
   `auto` 表示请求里**不带 `reasoning_effort` 字段**，用于兼容不认该参数的厂商；
   其余三档按值下发（见 06 §3）。它是 **provider 级**字段：作用于该 provider 下的**所有**模型，
@@ -142,7 +174,7 @@
   并标注「（不在列表中）」，**不会**悄悄替换成列表里的第一个模型；对话窗同样显示为
   `<model>（不在列表中）`。`v5 → v6` 迁移会为旧配置的每个 provider 补齐 `modelList: []`
   （已存在的值不动；本字段是在 v6 内追加的，当时没有另起新版本号）。
-- `tts`（**v7 新增**，见 06 §13）：**语音输出（TTS）**，本轮**不含语音输入（STT）**。
+- `tts`（**v7 新增**，见 06 §13）：**语音输出（TTS）**；语音输入（STT）自 **v8** 起见下一条 `stt`。
   `tts.enabled` 是整个语音功能的**总开关**（`false` 时对话窗不显示朗读按钮）；
   `tts.active` 是默认 TTS provider id，**为空串 = 未配置**，此时对话窗的朗读按钮**不出现**；
   `tts.autoRead` 控制助手回复结束后是否自动朗读；`tts.maxChars` 是**单次朗读的截断上限**
@@ -151,6 +183,40 @@
   `llm.providers.<id>` **结构同构但彼此独立**：两边的 provider 列表不共享、不联动，
   改一边不影响另一边；`apiKeyEnc` 同为 safeStorage 密文（回传口径见 §1.1）。
   `v6 → v7` 迁移会为旧配置补齐 `tts.*`（`fillMissing` 对已存在的值一律保留，因此天然幂等）。
+- `WRITABLE_PATH_OVERRIDES`（**v8 新增**，见 06 §12）：AI 的 `set_setting` **显式可写覆盖表**，
+  判定**先于** `advanced.readonlyPrefixes` 黑名单前缀。两类登记：
+  ① **真的放开** —— `llm.providers.<id>.model / .reasoningEffort / .temperature` 落在 `llm.providers`
+  黑名单前缀之内，但「换模型 / 调参数」不碰凭据，显式放行（baseUrl / apiKeyEnc / modelList 等
+  其余字段仍被前缀拒绝）；② **显式登记** —— `tts.enabled|active|autoRead|maxChars`、
+  `stt.enabled|active`、`imagegen.enabled|active`、`general.edgeBar.enabled|opacity|quietHours`、
+  `general.chat.showThinking`、`modes.current`、`modes.work.workspaceDir`、`agent.tools.*`、
+  `skills.userDir|disabled`、`advanced.quietHours` 等本就可写的路径逐条入表
+  （供 `set_setting` 工具描述与审计使用，也防未来误加前缀时静默收窄）。
+  注意 `advanced.confirmSensitiveTools` 总闸门**不在**表内，仍只读（防 AI 自我提权）。
+  **具体条目以该常量为准**。
+- `stt`（**v8 新增**）：**语音输入（STT，录音 → 文本）**，与 `tts` **同构但独立** ——
+  语音输入与语音输出的可用性互不绑定，共用一份配置会让「换朗读服务」顺手把转写弄坏。
+  `stt.enabled` 是总开关（`false` 时对话窗连麦克风按钮都不渲染，门控口径同 TTS，docs/07 §2.3）；
+  `stt.active` 是默认 STT provider id，**空串 = 未配置**（麦克风按钮同样不出现）。
+  `stt.providers.<id>`（`{ type, baseUrl, apiKeyEnc, model, language }`）：`apiKeyEnc` 为 safeStorage
+  密文（回传口径见 §1.1）；`language` 是识别语言（如 `zh` / `en`，默认 `zh`，空串 = 交给服务端自动检测）。
+  **Agent 写权限**：`stt.enabled` / `stt.active` 可写（显式登记，见上）；
+  `stt.providers` 在默认黑名单（凭据），`set_setting` 一律拒绝。
+  `v7 → v8` 迁移为旧配置补齐 `stt.*`（默认关闭、无 provider）。
+- `imagegen`（**v8 新增**）：**图像生成**，与 `llm.providers` **同构但独立**。
+  `imagegen.enabled` / `imagegen.active` 语义同 `stt`（Agent 均可写，显式登记）；
+  `imagegen.providers.<id>`（`{ type, baseUrl, apiKeyEnc, model, size }`）：`size` 是生成尺寸白名单
+  `512x512 | 768x768 | 1024x1024 | 1024x1792 | 1792x1024 | auto`（默认 `1024x1024`；
+  `auto` = 尺寸决定权交给服务端）。`imagegen.providers` 同样在凭据黑名单里（Agent 只读）。
+  `v7 → v8` 迁移为旧配置补齐 `imagegen.*`（默认关闭、无 provider）。
+- `general.chat.showThinking`（**v8 新增**）：对话界面是否展示思考过程（MessageList 可折叠思考块的
+  门控，docs/07 §2.3，默认 `true`）。Agent 可写（显式登记）。设置页入口在「AI 模型」页（见 §5 / §6）。
+- `modes.work.workspaceDir`（**v8 新增**）：Work 模式的办公工作目录，空串 = 未配置
+  （由引导问答 / 设置页收集）。它与电脑操控工具的 `agent.tools.workspaceDir` **是两个字段**：
+  前者是 Work 模式的场景目录，后者只是 `run_command` 的缺省 `cwd`（见 06 §11）。Agent 可写（显式登记）。
+- `modes.classroom.preClassOpenFolder`（**v8 新增**，见 05 §3.3）：课前提醒触发时是否自动打开
+  科目文件夹（默认 `true`；通知照发，本字段只门控「打开文件夹」动作）。
+  `modes.classroom.*` 本就不在黑名单，Agent 可写。
 - `agent.tools`（v5 新增，见 06 §11）：4 个开关 + 3 个上限 ——
   `enabled` 是电脑操控工具**总开关**（`false` 时 5 个工具都不注册）；`workspaceDir` 是 **`run_command`
   的缺省 `cwd`**（空串 = 用户主目录，只作**默认值**、不是沙箱；文件类工具不读它，见 06 §11.1）；`terminal.enabled` 开关终端工具、
@@ -166,7 +232,7 @@
 
 | 字段 | 位置 | 说明 |
 |---|---|---|
-| `apiKeySet` | `llm.providers.<id>` / `tts.providers.<id>` | `true` 表示该 provider 已保存 API Key（`apiKeyEnc` 始终回传空串） |
+| `apiKeySet` | `llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>` / `imagegen.providers.<id>` | `true` 表示该 provider 已保存 API Key（`apiKeyEnc` 始终回传空串） |
 | `envSet` | `mcp.servers[]` | 已配置的环境变量名列表（`envEnc` 始终回传空对象） |
 
 两者由主进程在回传前计算，不写入 `config.json`，因此不参与版本迁移。
@@ -196,7 +262,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 7`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 8`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -204,8 +270,11 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   `v4 → v5`（补齐 `llm.providers.*.reasoningEffort` 与 `agent.tools.*`）、
   `v5 → v6`（移除 `general.windowState['mini-chat']`，独立小窗已删除；
   补齐 `llm.providers.*.modelList` 与 `advanced.readonlyPrefixes`）、
-  `v6 → v7`（补齐 `tts.*`）。
-  七条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
+  `v6 → v7`（补齐 `tts.*`）、
+  `v7 → v8`（补齐 `stt.*` 与 `imagegen.*`（语音输入 / 生图）、`modes.work.workspaceDir`、
+  `modes.classroom.preClassOpenFolder`、`general.chat.showThinking`；新增顶层分组无条件补默认值，
+  已存在分组只补缺失键、不凭空造出半截对象）。
+  八条迁移都**幂等且不覆盖用户已写入的值**，重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -215,7 +284,8 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   → AI 模型配置【必填】：provider 预设（DeepSeek / OpenAI / 自定义）+ baseURL + API key + 模型名
         → “测试连接”（展示延迟；可选拉取模型列表）
   → 模式选择（ClassRoom 推荐）
-  → 模式引导（若选 ClassRoom）：感知文件夹 + 科目列表 → 完成（见 05 §2）
+  → 模式引导（若选 ClassRoom）：感知文件夹 + 科目列表；（若选 Work）：工作目录问答（v8 起实装）
+  → 完成（见 05 §2）
   → 完成页 → 进入托盘常驻，显示提示条
 ```
 
@@ -225,8 +295,9 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - **规则**：AI 模型配置未完成不允许进入主界面（需求：第一次安装要求用户填写）；测试连接失败允许先保存，但持续提示未通过。
 - 引导可重跑：设置 → 模式 → “重新引导”。
 - **实现状态（v0.1.0）**：引导窗共 5 步（欢迎 → AI 模型 → 模式选择 → 模式设置 → 完成），
-  其中「模式设置」对 ClassRoom 为表单式（感知文件夹 / 科目列表 / 课前提醒），
-  Work / Code 只显示占位说明；「重新引导」会重置 `guideCompleted` 并唤起对话窗口。
+  其中「模式设置」对 ClassRoom 为表单式（感知文件夹 / 科目列表 / 课前提醒）；
+  Work 自 v8 起改为「工作目录（`modes.work.workspaceDir`）问答 + 确认」（目标口径，UI 由另一任务实施），
+  Code 仍只显示占位说明；「重新引导」会重置 `guideCompleted` 并唤起对话窗口。
 
 ## 4. 模式切换后的主动引导
 
@@ -292,6 +363,11 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
    （`reactive` 里的数组是 Proxy，直接传会 `DataCloneError`）。
 8. 支持范围：DeepSeek / OpenAI / 其他 OpenAI 兼容（含 Ollama 本地）；P2 再评估更多协议（Anthropic 等）。
 9. 测试连接：展示延迟与可用模型列表（可选拉取）。
+10. **v8 目标口径增量（UI 由另一任务实施）**：本页在 6 页 IA（见 §6「页面结构」）下还承载 ——
+    「显示思考过程」开关（`general.chat.showThinking`，门控对话窗可折叠思考块，docs/07 §2.3）与
+    **生图模型区组**（`imagegen.*`：总开关 / 默认生图模型 / provider 增改删；provider 表单为
+    `baseUrl` / `apiKey` / `model` / `size`，与 `llm.providers` 同构但独立，见 §1；
+    凭据沿用 §1.1 的 `apiKeySet` 只读标记口径，编辑卡 API Key 留空 = 本次不修改）。
 
 ## 6. 其他设置页
 
@@ -301,7 +377,17 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - **页面骨架**：所有页面统一「标题 + 一句话说明 + 分组卡片」（`theme.css` 的
   `.page` / `.page-title` / `.page-sub` + `settings/settings.css` 的 `.section-card` /
   `.section-title` / `.section-desc` / `.empty-state`）；侧栏按「基础 / AI 能力 / 系统」三组排列。
-- **Skill 管理**：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。
+- **页面结构（v8 目标口径，UI 由另一任务实施，本节为目标 IA）**：设置页由 8 页并为 **6 页**
+  （`SETTINGS_PAGE_IDS = ['general', 'modes', 'llm', 'voice', 'agent', 'advanced']`），侧栏仍三组排列：
+  - **基础**：`general` 通用（启动与快捷键 / 提示条 / 勿扰时段——全局 + 提示条两组同区 / 关于与更新）、
+    `modes` 模式（模式卡 + ClassRoom 区组 + Work 区组，见 §7）；
+  - **AI 能力**：`llm` AI 模型（provider 管理 + 「显示思考过程」开关 + 生图模型区组，见 §5）、
+    `voice` 语音（TTS 区组 + STT 区组）、
+    `agent` 智能与工具（`agent.tools` 区组 + 技能区组 + MCP 区组，三组同页折叠）；
+  - **系统**：`advanced` 系统（网络 / 日志 / 安全 / 危险操作）。
+  - 旧页深链兼容映射：`?page=tts` → `voice`、`?page=skills|mcp` → `agent`；
+    `general` / `modes` / `llm` / `advanced` 页 id 不变，旧深链继续可用。
+- **Skill 管理**（目标 6 页 IA 下为「智能与工具」页的技能区组）：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。
   - 实现状态（v0.6.0）：`skills.userDir` **真正生效**（此前运行时硬编码 `userData/skills`，
     配置项是死字段）。空串回落 `userData/skills`；填自定义目录后保存会**按新目录重扫**。
     页面显示「当前生效目录」与「上次扫描时间」，并提供**真实的**「重新扫描」
@@ -309,15 +395,15 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
     `skills:status` 的 `failed` / `warnings` 并在页面提示，不再静默吞掉。
     另：目录切换复用**同一个注册表实例**（`setUserDir` + 重扫）——`use_skill` 工具的闭包
     与提示词组装都持有该实例，换实例会让它们继续指向旧表，表现为「改了目录但模型仍看到旧技能」。
-- **MCP 管理**：服务器列表、添加（stdio 命令 / HTTP URL）、连接状态灯、错误日志。
+- **MCP 管理**（目标 6 页 IA 下为「智能与工具」页的 MCP 区组）：服务器列表、添加（stdio 命令 / HTTP URL）、连接状态灯、错误日志。
   - 实现状态（v0.3.0）：列表读写与凭据脱敏沿用 v0.1.0；**状态灯**由 `mcp:status` /
     `mcp:statusChanged` 驱动（`ready` / `connecting` / `error` 三态，`error` 时展示
     最近一次失败原因），`lazyConnect` 可在设置页切换（收在「高级」折叠里）。
   - 凭据保真（本轮修）：列表里「环境变量：…（值已加密存储）」读的是主进程补的**只读标记**
     `envSet`（§1.1），不是永远为空对象的 `envEnc`；任何一次保存（添加 / 停用 / 删除）回传的
     空 `envEnc` 都按「本次不改凭据」处理，不再清掉磁盘上的密文。
-- **电脑操控**（`agent.tools.*`，v0.7.0）：侧栏「AI 能力」组第 5 项（该组依序为
-  `llm` / `tts` / `skills` / `mcp` / `agent`）。页面提供电脑操控工具的开关与上限：「总开关」、「工作目录」、
+- **电脑操控**（`agent.tools.*`，v0.7.0）：目标 6 页 IA 下并入「智能与工具」页（`agent`，
+  与技能、MCP 区组同页折叠；v8 前为「AI 能力」组独立页）。页面提供电脑操控工具的开关与上限：「总开关」、「工作目录」、
   终端（开关 / 超时 ms / 输出字符上限）、文件（开关 / 单次读取字节上限）、打开（开关）；
   字段路径见 §1，工具能力与安全边界见 06 §11。
   - 总开关 `agent.tools.enabled` 关闭后 `run_command` / `read_file` / `write_file` /
@@ -333,19 +419,23 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   - 逐次确认沿用 `sensitivity` 判定：`run_command` / `write_file` / `open_path` 为 `confirm`
     （走 06 §5 的确认链路，勿扰时段或确认超时一律按拒绝），`read_file` / `list_dir` 为 `safe`；
     由 `advanced.confirmSensitiveTools` 统一开关，关闭后敏感工具不再询问（见 §1）。
-- **语音**（`tts.*`，v0.8.0）：侧栏「AI 能力」组第 2 项（该组依序为 `llm` / `tts` / `skills` / `mcp` / `agent`）。
-  页面提供「总开关」（`tts.enabled`）、「默认 TTS 模型」（`tts.active`）、「自动朗读」（`tts.autoRead`）、
-  「截断上限」（`tts.maxChars`），以及 provider 列表的**增 / 改 / 删 + 「试听」**
-  （用当前表单值合成一小段试听音频）。字段路径见 §1，请求协议与失败降级见 06 §13。
+- **语音**（`tts.*` / `stt.*`，v0.8.0 起）：目标 6 页 IA 下为「语音」页（`voice`，TTS 区组 + STT 区组；
+  v8 前为「AI 能力」组第 2 项、仅 TTS）。TTS 区组提供「总开关」（`tts.enabled`）、「默认 TTS 模型」
+  （`tts.active`）、「自动朗读」（`tts.autoRead`）、「截断上限」（`tts.maxChars`），以及 provider 列表的
+  **增 / 改 / 删 + 「试听」**（用当前表单值合成一小段试听音频）。字段路径见 §1，请求协议与失败降级见 06 §13。
   - provider 表单与 `llm.providers` **同构但独立**（`baseUrl` / `apiKey` / `model` / `voice` / `speed` / `format`）：
     两边的列表不共享、不联动，改一边不影响另一边（见 §1）。
   - 凭据沿用 §1.1 的只读标记口径：列表里只显示 `apiKeySet`（`凭据已保存` / `缺少凭据`），
     密文**永不回显**，编辑卡里的 API Key 是 write-only 输入，**留空 = 本次不修改**。
   - 列表为空时是 `data-empty="tts.providers"` 的**空状态卡**，不画一排空行。
-  - 本轮**不含语音输入（STT）**：不录音、不转写、不申请麦克风权限。
-- **高级**：日志查看与导出、代理设置、日志级别、勿扰时段、重置为默认配置。
-  分组为「网络 / 日志 / 勿扰 / 安全 / 危险操作」；「重置为默认配置」需**就地二次确认**
-  （按钮变为「确认重置？」+ 取消），不再用原生 `confirm`。
+  - **STT 区组（v8 目标口径，UI 由另一任务实施）**：「总开关」（`stt.enabled`）、「默认 STT 模型」
+    （`stt.active`）与 provider 列表增 / 改 / 删（表单 `baseUrl` / `apiKey` / `model` / `language`，见 §1）。
+    门控口径同 TTS：未配置时对话窗连麦克风按钮都不渲染（docs/07 §2.3）；
+    麦克风（`media`）权限仅对自身窗口放行（主进程 `setPermissionRequestHandler`）。
+- **系统**（`advanced`，旧称「高级」）：日志查看与导出、代理设置、日志级别、重置为默认配置。
+  目标 6 页 IA 下分组为「网络 / 日志 / 安全 / 危险操作」，勿扰时段控件移至「通用」页
+  （全局 + 提示条两组同区；字段仍是 `advanced.quietHours` / `general.edgeBar.quietHours`）；
+  「重置为默认配置」需**就地二次确认**（按钮变为「确认重置？」+ 取消），不再用原生 `confirm`。
   - 实现状态（v0.5.0）：**勿扰时段已实际拦截主动行为**——敏感工具确认在时段内直接拒绝
     （`ProactiveScheduler.isQuietHour`），课前提醒在时段内静默跳过。新增
     「敏感工具确认」开关（`advanced.confirmSensitiveTools`，默认开启）：关闭后敏感工具
@@ -369,9 +459,11 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 | 设置项（`data-field` 前缀） | 显示条件 |
 |---|---|
 | `modes.classroom.*` | `modes.current === 'classroom'` |
-| `modes.work.*` / `modes.code.*` | 无字段：对应模式选中时只显示「暂无可配置项」空状态（`data-empty="modes.work"` / `"modes.code"`） |
+| `modes.work.workspaceDir` | `modes.current === 'work'`（v8 起 Work 区组有字段，与 ClassRoom 区组同口径；`data-empty="modes.work"` 空状态随之取消） |
+| `modes.code.*` | 无字段：Code 选中时只显示「暂无可配置项」空状态（`data-empty="modes.code"`） |
 | `modes.classroom.schedule.classisland.*` | `schedule.provider === 'classisland'` |
 | `modes.classroom.preClassReminder` | `schedule.lessons.length > 0` |
+| `modes.classroom.preClassOpenFolder` | 与 `preClassReminder` 同组同条件（`schedule.lessons.length > 0`；v8 新增） |
 | `modes.classroom.classification.confidenceThreshold` | `subjects.length > 0` |
 | `modes.classroom.classification.fallbackFolder` | `classification.autoMove === true` |
 | `general.edgeBar.opacity` / `general.edgeBar.quietHours.*` | `general.edgeBar.enabled === true`（`enabled` 开关本身常显，否则无法重新启用） |
@@ -385,11 +477,18 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 | `tts.enabled` | 常显（否则无法重新启用） |
 | `tts.providers.*` | `tts.providers` 至少一项，否则整块换成 `data-empty="tts.providers"` |
 | `tts.autoRead` / `tts.maxChars` | `tts.providers` 至少一项（没有 provider 时朗读无从发生） |
+| `stt.enabled` | 常显（否则无法重新启用；v8 新增，目标口径） |
+| `stt.providers.*` | `stt.providers` 至少一项，否则整块换成 `data-empty="stt.providers"` |
+| `imagegen.enabled` | 常显（否则无法重新启用；v8 新增，目标口径） |
+| `imagegen.providers.*` | `imagegen.providers` 至少一项，否则整块换成 `data-empty="imagegen.providers"` |
+| `general.chat.showThinking` | 常显（「AI 模型」页） |
 
 校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针按页断言——
 `settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0；
 `settings?page=modes` 在 ClassRoom 下必须能数到 `modes.classroom.*` 字段（具体条数随科目数与展开分组变化，
-探针只断言 `> 0` 与「切走必须为 0」），切到 Work 后必须为 0 且出现 `data-empty="modes.work"`；
+探针只断言 `> 0` 与「切走必须为 0」），切到 Work 后 classroom 字段必须为 0，且出现 Work 区组的
+`modes.work.workspaceDir`（v8 起 Work 有可配置字段，`data-empty="modes.work"` 空状态随之取消；
+探针断言由 capture 适配任务同步更新）；
 `settings?page=agent` 读 `agent.tools.enabled` 复选框的**实际状态**：开着时终端 / 文件 / 打开三栏的
 详情字段都必须存在（且 `data-empty` 为空），关着时只要求总开关自己还在。
 探针结果写 `<目录>/report.json` 并以 `AURORA_SMOKE_RESULT:` 前缀落日志，存在 FAIL 时进程退出码为 2。
@@ -409,7 +508,8 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
     测试连接会立即按当前配置解析一次，回传**今日课程预览 + 逐行告警 + 错误原因 + 耗时**；
     页面同时显示最近一次同步状态（是否成功、今日课程数、最近同步时间）。
     改动端点或来源时会清空上一次的测试结果，避免把「旧地址的成功状态」误读为当前可用。
-- **课前提醒**：`modes.classroom.preClassReminder` 开关。
+- **课前提醒**：`modes.classroom.preClassReminder` 开关 + 「提醒时自动打开科目文件夹」
+  （`modes.classroom.preClassOpenFolder`，v8 新增：通知照发，仅门控打开动作，见 05 §3.3）。
 - **分类行为**：`classification.autoMove`（自动移动）、`confidenceThreshold`（0–1 滑条）、
   `fallbackFolder`（兜底目录）。
 - **分类流水**：内嵌 `ClassificationLedger`（默认展开，50 条），可就地修正与打开文件夹。

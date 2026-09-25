@@ -70,7 +70,7 @@ describe('配置迁移链', () => {
       })
       expect(outcome.fromVersion).toBe(1)
       // v1 → v2 → v3 → v4 → v5 → v6 → v7：链式执行，六版迁移都会跑
-      expect(outcome.applied).toHaveLength(6)
+      expect(outcome.applied).toHaveLength(7)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
@@ -131,7 +131,7 @@ describe('配置迁移链', () => {
       })
       expect(outcome.fromVersion).toBe(2)
       // v2 → v3 → v4 → v5 → v6 → v7：链式执行
-      expect(outcome.applied).toHaveLength(5)
+      expect(outcome.applied).toHaveLength(6)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
         string,
@@ -192,8 +192,8 @@ describe('配置迁移链', () => {
       })
       expect(outcome.fromVersion).toBe(3)
       // v3 → v4 → v5 → v6 → v7：链式执行
-      expect(outcome.applied).toHaveLength(4)
-      expect(outcome.data['version']).toBe(7)
+      expect(outcome.applied).toHaveLength(5)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const windowState = loadWindowState(outcome.data)
       expect(windowState['service-dock']).toBeUndefined()
@@ -216,7 +216,7 @@ describe('配置迁移链', () => {
     it('缺少 general / windowState 分组时不抛错', () => {
       const outcome = migrate({ version: 3 })
       expect(outcome.warnings).toEqual([])
-      expect(outcome.data['version']).toBe(7)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(loadWindowState(outcome.data)).toEqual({})
     })
   })
@@ -245,8 +245,8 @@ describe('配置迁移链', () => {
     it('补齐 reasoningEffort 与 agent.tools，且用户已写入的其它字段原样保留', () => {
       const outcome = migrate(V4_CONFIG)
       expect(outcome.fromVersion).toBe(4)
-      expect(outcome.applied).toHaveLength(3)
-      expect(outcome.data['version']).toBe(7)
+      expect(outcome.applied).toHaveLength(4)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const llm = outcome.data['llm'] as Record<string, unknown>
       expect(llm['active']).toBe('custom')
@@ -265,7 +265,11 @@ describe('配置迁移链', () => {
         confirmSensitiveTools: false,
         readonlyPrefixes: [...SETTINGS_READONLY_PREFIXES],
       })
-      expect(outcome.data['general']).toEqual({ language: 'en-US', hotkey: 'Ctrl+Alt+A' })
+      expect(outcome.data['general']).toEqual({
+        language: 'en-US',
+        hotkey: 'Ctrl+Alt+A',
+        chat: { showThinking: true },
+      })
 
       // agent.tools 为默认值
       expect(outcome.data['agent']).toEqual({
@@ -343,7 +347,7 @@ describe('配置迁移链', () => {
     it('缺少 llm / agent 分组时不抛错', () => {
       const outcome = migrate({ version: 4 })
       expect(outcome.warnings).toEqual([])
-      expect(outcome.data['version']).toBe(7)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
       // 没有 providers 就不凭空造 llm.providers（既有的「空 llm 迁移后仍为空」语义）
       expect(outcome.data['llm']).toBeUndefined()
       expect((outcome.data['agent'] as Record<string, unknown>)['tools']).toEqual({
@@ -385,8 +389,8 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(5)
-      expect(outcome.applied).toHaveLength(2)
-      expect(outcome.data['version']).toBe(7)
+      expect(outcome.applied).toHaveLength(3)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
       // describe 变更（补了 modelList 字样）不影响既有断言：仍是一条 v5 → v6 迁移
       expect(outcome.applied[0]).toContain('v5 → v6')
       expect(outcome.applied[0]).toContain('readonlyPrefixes')
@@ -441,8 +445,8 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(5)
-      expect(outcome.applied).toHaveLength(2)
-      expect(outcome.data['version']).toBe(7)
+      expect(outcome.applied).toHaveLength(3)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.applied[0]).toContain('modelList')
 
       const providers = loadProviders(outcome.data)
@@ -502,7 +506,7 @@ describe('配置迁移链', () => {
     it('缺少 general / windowState 时不抛错，也不凭空造出 windowState / llm.providers', () => {
       const outcome = migrate({ version: 5 })
       expect(outcome.warnings).toEqual([])
-      expect(outcome.data['version']).toBe(7)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['general']).toBeUndefined()
       // 没有 providers 就不凭空造出 llm.providers（与 v4 → v5 对 llm 的语义一致）
       expect(outcome.data['llm']).toBeUndefined()
@@ -528,9 +532,9 @@ describe('配置迁移链', () => {
     it('补齐 tts 段默认值，且用户已写值（readonlyPrefixes / llm）原样保留', () => {
       const outcome = migrate(V6_CONFIG)
       expect(outcome.fromVersion).toBe(6)
-      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied).toHaveLength(2)
       expect(outcome.applied[0]).toContain('v6 → v7')
-      expect(outcome.data['version']).toBe(7)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const tts = loadTts(outcome.data)
       expect(tts['enabled']).toBe(true)
@@ -541,7 +545,11 @@ describe('配置迁移链', () => {
 
       // 只碰 tts 与 version：其它分组一个字不改
       expect(outcome.data['advanced']).toEqual({ readonlyPrefixes: ['custom.path'] })
-      expect(outcome.data['general']).toEqual({ language: 'zh-CN', hotkey: 'Ctrl+Alt+A' })
+      expect(outcome.data['general']).toEqual({
+        language: 'zh-CN',
+        hotkey: 'Ctrl+Alt+A',
+        chat: { showThinking: true },
+      })
       expect(outcome.data['llm']).toEqual(V6_CONFIG['llm'])
     })
 
@@ -585,7 +593,7 @@ describe('配置迁移链', () => {
     it('缺少 tts 分组时补出完整默认段，不抛错也不留 undefined', () => {
       const outcome = migrate({ version: 6 })
       expect(outcome.warnings).toEqual([])
-      expect(outcome.data['version']).toBe(7)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(loadTts(outcome.data)).toEqual({
         enabled: true,
         active: '',

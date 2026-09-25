@@ -40,6 +40,15 @@ export const IPC = {
     synthesize: 'tts:synthesize',
     testConnection: 'tts:testConnection',
   },
+  /** 语音输入（STT 转写，docs/08 §1） */
+  stt: {
+    transcribe: 'stt:transcribe',
+  },
+  /** 图像生成（docs/08 §1）：`read` 仅允许 userData/generated 下的文件（主进程路径校验） */
+  imagegen: {
+    generate: 'imagegen:generate',
+    read: 'imagegen:read',
+  },
   window: {
     show: 'window:show',
     hide: 'window:hide',
@@ -109,6 +118,8 @@ export type IpcChannel =
   | (typeof IPC.mode)[keyof typeof IPC.mode]
   | (typeof IPC.llm)[keyof typeof IPC.llm]
   | (typeof IPC.tts)[keyof typeof IPC.tts]
+  | (typeof IPC.stt)[keyof typeof IPC.stt]
+  | (typeof IPC.imagegen)[keyof typeof IPC.imagegen]
   | (typeof IPC.window)[keyof typeof IPC.window]
   | (typeof IPC.perception)[keyof typeof IPC.perception]
   | (typeof IPC.skills)[keyof typeof IPC.skills]

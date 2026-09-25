@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 7 as const
+export const CONFIG_VERSION = 8 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -57,6 +57,11 @@ export const GeneralSchema = z.object({
   edgeBar: EdgeBarSchema,
   /** 各窗口位置 / 尺寸记忆（docs/02 §2.2、docs/07 §2）。 */
   windowState: z.record(WindowNameSchema, z.record(z.string(), z.unknown())),
+  /** 对话窗展示偏好（v8 新增）。 */
+  chat: z.object({
+    /** 对话界面展示思考过程（MessageList 可折叠思考块的门控，docs/07 §2.3）。 */
+    showThinking: z.boolean(),
+  }),
 })
 export type GeneralSettings = z.infer<typeof GeneralSchema>
 
@@ -137,6 +142,72 @@ export const TtsSchema = z.object({
 })
 export type TtsSettings = z.infer<typeof TtsSchema>
 
+/** 语音输入（STT）识别语言的最大长度（BCP-47 风格短码足够，超出视为手改配置写错）。 */
+export const STT_LANGUAGE_MAX_CHARS = 32
+
+/**
+ * STT provider（docs/08 §1、Betav2 规格 §4）。
+ *
+ * 与 `tts.providers.<id>` **同构但独立**：语音输入（录音 → 文本）与语音输出（文本 → 语音）
+ * 的可用性互不绑定，共用一份配置会让「换朗读服务」顺手把麦克风转写也弄坏。
+ */
+export const SttProviderSchema = z.object({
+  type: z.enum(['openai-compat']),
+  baseUrl: z.string(),
+  /** safeStorage 密文；明文只走 `settings:setSecrets`，渲染层与日志永远看不到明文。 */
+  apiKeyEnc: z.string(),
+  model: z.string(),
+  /**
+   * 识别语言（如 `zh` / `en`），随转写请求的 `language` 字段下发；空串表示交给服务端自动检测。
+   * `.default('zh')` 与 `modelList` 同理：`stt.providers` 是 `z.record`，字段级回退管不到它的子树，
+   * 手改配置漏了该字段时由 parse 直接补齐，不让整份配置被判损坏。
+   */
+  language: z.string().max(STT_LANGUAGE_MAX_CHARS).default('zh'),
+})
+export type SttProviderConfig = z.infer<typeof SttProviderSchema>
+
+export const SttSchema = z.object({
+  /** 语音输入功能总开关（`false` 时 composer 连麦克风按钮都不渲染，docs/07 §2.3）。 */
+  enabled: z.boolean(),
+  /** 默认 STT provider id；空串表示尚未配置（此时对话窗的麦克风按钮不出现）。 */
+  active: z.string(),
+  providers: z.record(z.string(), SttProviderSchema),
+})
+export type SttSettings = z.infer<typeof SttSchema>
+
+/** 生图尺寸白名单（docs/08 §1）：`auto` 表示把尺寸决定权交给服务端。 */
+export const IMAGEGEN_SIZES = [
+  '512x512',
+  '768x768',
+  '1024x1024',
+  '1024x1792',
+  '1792x1024',
+  'auto',
+] as const
+export type ImageGenSize = (typeof IMAGEGEN_SIZES)[number]
+export const ImageGenSizeSchema = z.enum(IMAGEGEN_SIZES)
+
+/** 图像生成 provider（docs/08 §1、Betav2 规格 §4），与 `llm.providers.<id>` 同构但独立。 */
+export const ImageGenProviderSchema = z.object({
+  type: z.enum(['openai-compat']),
+  baseUrl: z.string(),
+  /** safeStorage 密文；明文只走 `settings:setSecrets`，渲染层与日志永远看不到明文。 */
+  apiKeyEnc: z.string(),
+  model: z.string(),
+  /** 生成尺寸；enum 白名单 + 默认值（理由同 `language` / `modelList`：record 子树没有逐字段回退）。 */
+  size: ImageGenSizeSchema.default('1024x1024'),
+})
+export type ImageGenProviderConfig = z.infer<typeof ImageGenProviderSchema>
+
+export const ImageGenSchema = z.object({
+  /** 图像生成功能总开关。 */
+  enabled: z.boolean(),
+  /** 默认生图 provider id；空串表示尚未配置。 */
+  active: z.string(),
+  providers: z.record(z.string(), ImageGenProviderSchema),
+})
+export type ImageGenSettings = z.infer<typeof ImageGenSchema>
+
 export const SubjectSchema = z.object({
   name: z.string().min(1),
   /** 目标文件夹，相对 watchDir 或绝对路径。 */
@@ -204,6 +275,8 @@ export const ClassroomModeSchema = z.object({
   subjects: z.array(SubjectSchema),
   schedule: ScheduleSchema,
   preClassReminder: z.boolean(),
+  /** 课前提醒触发时是否自动打开科目文件夹（v8 新增；通知照发，docs/05 §3.3）。 */
+  preClassOpenFolder: z.boolean(),
   classification: ClassificationSchema,
 })
 export type ClassroomModeConfig = z.infer<typeof ClassroomModeSchema>
@@ -213,10 +286,20 @@ export const PlaceholderModeSchema = z.object({
 })
 export type PlaceholderModeConfig = z.infer<typeof PlaceholderModeSchema>
 
+/**
+ * Work 模式配置（v8 起实装，docs/05 §6）：占位字段 + 办公工作目录。
+ * `workspaceDir` 为空串表示未配置（由引导 / 设置页收集）。
+ */
+export const WorkModeSchema = z.object({
+  guideCompleted: z.boolean(),
+  workspaceDir: z.string(),
+})
+export type WorkModeConfig = z.infer<typeof WorkModeSchema>
+
 export const ModesSchema = z.object({
   current: ModeIdSchema,
   classroom: ClassroomModeSchema,
-  work: PlaceholderModeSchema,
+  work: WorkModeSchema,
   code: PlaceholderModeSchema,
 })
 export type ModesSettings = z.infer<typeof ModesSchema>
@@ -255,8 +338,10 @@ export const SETTINGS_READONLY_PREFIXES = [
   // 凭据与密文：绝不让 AI 读回或改写（凭据只经 safeStorage / setSecret 落库）
   'llm.providers',
   'mcp.servers',
-  // 同上：TTS provider 也含凭据密文（`tts.providers.*.apiKeyEnc`）
+  // 同上：TTS / STT / 生图 provider 也含凭据密文（`*.providers.*.apiKeyEnc`）
   'tts.providers',
+  'stt.providers',
+  'imagegen.providers',
   // Schema 版本与窗口几何：改坏会让配置迁移 / 窗口位置出现难以复现的怪状
   'version',
   'general.windowState',
@@ -346,6 +431,8 @@ export const SettingsSchema = z.object({
   general: GeneralSchema,
   llm: LlmSchema,
   tts: TtsSchema,
+  stt: SttSchema,
+  imagegen: ImageGenSchema,
   modes: ModesSchema,
   skills: SkillsSchema,
   mcp: McpSchema,
@@ -360,6 +447,8 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'llm.providers': '凭据字段不允许通过工具修改',
   'mcp.servers': '凭据字段不允许通过工具修改',
   'tts.providers': '凭据字段不允许通过工具修改',
+  'stt.providers': '凭据字段不允许通过工具修改',
+  'imagegen.providers': '凭据字段不允许通过工具修改',
   version: '配置版本由迁移链维护，不允许通过工具修改',
   'general.windowState': '窗口位置由系统维护，不允许通过工具修改',
   'advanced.proxy': '代理设置写错会立即断网，不允许通过工具修改',
@@ -368,6 +457,85 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'general.launchAtLogin': '开机自启不允许通过工具修改',
   'general.hotkey': '全局快捷键不允许通过工具修改',
   'advanced.confirmSensitiveTools': '关闭它等于摘掉敏感工具的确认闸门，不允许通过工具修改',
+}
+
+/** 显式可写覆盖表的一条登记：模式 + 中文说明。 */
+export interface WritablePathOverride {
+  /**
+   * 路径模式：按**路径段**匹配（与 `matchReadonlyPrefix` 同一套段语义），
+   * `*` 段匹配恰好一个动态键段（如 provider id），其余段必须逐段相等。
+   */
+  pattern: string
+  /** 给审计日志与 `set_setting` 工具描述看的中文说明。 */
+  reason: string
+}
+
+/**
+ * AI 改配置（`set_setting`）的**显式可写覆盖表**（docs/06 §12、Betav2 规格 §6.3）。
+ *
+ * 判定顺序在 `SETTINGS_READONLY_PREFIXES` **之前**：命中即视为可写。登记的意义有两类：
+ * 1. **真的放开**：`llm.providers.<id>.model / reasoningEffort / temperature` 落在
+ *    `llm.providers` 黑名单前缀之内，但「换模型 / 调参数」不碰凭据，必须显式放行
+ *    （baseUrl / apiKeyEnc / modelList 等其余字段仍被前缀拒绝）；
+ * 2. **显式登记**：`tts.enabled` / `agent.tools.*` 这类本就因「不在黑名单而可写」的路径，
+ *    逐条登记成可写面清单（供工具 description 与审计使用），也防未来误加前缀时静默收窄。
+ *
+ * 注意：模式里的 `*` 只是本表的匹配语法，`canWriteSettingPath` 收到的**实际路径**仍必须是
+ * 具体路径（`isConcreteSettingPath` 会先拦掉带 `*` / `[]` 的输入）。
+ */
+export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
+  // llm.providers.*：黑名单内显式放开三个「模型行为」字段（凭据与连接字段仍只读）
+  { pattern: 'llm.providers.*.model', reason: '切换该 provider 实际使用的模型（不碰凭据）' },
+  { pattern: 'llm.providers.*.reasoningEffort', reason: '调整该 provider 的思考等级（不碰凭据）' },
+  { pattern: 'llm.providers.*.temperature', reason: '调整该 provider 的采样温度（不碰凭据）' },
+  // tts / stt / imagegen：总开关与默认 provider 选择对 AI 开放（providers 凭据子树仍只读）
+  { pattern: 'tts.enabled', reason: '开关语音朗读' },
+  { pattern: 'tts.active', reason: '切换默认 TTS provider' },
+  { pattern: 'tts.autoRead', reason: '开关回复结束后自动朗读' },
+  { pattern: 'tts.maxChars', reason: '调整单次朗读的截断上限' },
+  { pattern: 'stt.enabled', reason: '开关语音输入' },
+  { pattern: 'stt.active', reason: '切换默认 STT provider' },
+  { pattern: 'imagegen.enabled', reason: '开关图像生成' },
+  { pattern: 'imagegen.active', reason: '切换默认生图 provider' },
+  // 提示条与对话展示
+  { pattern: 'general.edgeBar.enabled', reason: '开关提示条' },
+  { pattern: 'general.edgeBar.opacity', reason: '调整提示条透明度' },
+  { pattern: 'general.edgeBar.quietHours', reason: '调整提示条的勿扰时段' },
+  { pattern: 'general.chat.showThinking', reason: '开关对话界面的思考过程展示' },
+  // 模式
+  { pattern: 'modes.current', reason: '切换当前模式' },
+  { pattern: 'modes.work.workspaceDir', reason: '设置 Work 模式的工作目录' },
+  // 电脑操控工具（advanced.confirmSensitiveTools 确认总闸门**不在**表内，仍只读防自我提权）
+  { pattern: 'agent.tools.enabled', reason: '开关电脑操控工具' },
+  { pattern: 'agent.tools.workspaceDir', reason: '设置电脑操控工具的默认工作目录' },
+  { pattern: 'agent.tools.terminal.enabled', reason: '开关终端工具' },
+  { pattern: 'agent.tools.terminal.timeoutMs', reason: '调整终端命令超时' },
+  { pattern: 'agent.tools.terminal.maxOutputChars', reason: '调整终端输出截断上限' },
+  { pattern: 'agent.tools.files.enabled', reason: '开关文件读写工具' },
+  { pattern: 'agent.tools.files.maxReadBytes', reason: '调整单次文件读取上限' },
+  { pattern: 'agent.tools.open.enabled', reason: '开关「打开路径」工具' },
+  // 技能 / 全局勿扰时段
+  { pattern: 'skills.userDir', reason: '切换用户技能目录' },
+  { pattern: 'skills.disabled', reason: '启用 / 停用技能' },
+  { pattern: 'advanced.quietHours', reason: '调整全局勿扰时段' },
+]
+
+/**
+ * 显式可写覆盖匹配：与 `matchReadonlyPrefix` 同一套「逐段相等」语义，另支持 `*` 段
+ * （匹配恰好一个动态键段），且要求**整条路径与模式的段数一致** ——
+ * 因此 `llm.providers.*.model` 命中 `llm.providers.deepseek.model`，但不命中
+ * `llm.providers.deepseek.modelList`（段名不同）也不命中 `llm.providers.a.model.x`（多一段）。
+ */
+function matchWritableOverride(path: string): WritablePathOverride | undefined {
+  const segments = path.split('.')
+  for (const override of WRITABLE_PATH_OVERRIDES) {
+    const patternSegments = override.pattern.split('.')
+    if (patternSegments.length !== segments.length) continue
+    if (patternSegments.every((segment, index) => segment === '*' || segment === segments[index])) {
+      return override
+    }
+  }
+  return undefined
 }
 
 /**
@@ -418,6 +586,10 @@ function isConcreteSettingPath(path: string): boolean {
 export function settingsReadonlyReason(path: string): string | undefined {
   // 先做路径合法性检查（见 `isConcreteSettingPath`）：通配 / 畸形路径一律按未知路径拒绝
   if (!isConcreteSettingPath(path)) return '未知配置路径'
+  // 显式可写覆盖表（v8）**先于**黑名单前缀判定：`llm.providers.<id>.model` 要能穿过
+  // `llm.providers` 前缀放行（Betav2 规格 §6.3）。表内全部是 Schema 登记过的具体路径，
+  // 因此命中后不需要再过 `isKnownSettingPath`。
+  if (matchWritableOverride(path) !== undefined) return undefined
   const prefix = matchReadonlyPrefix(path)
   if (prefix !== undefined) return READONLY_PREFIX_REASONS[prefix]
   // `fieldAccepts` 对**未登记**的路径默认放行（见该函数注释「未登记的路径默认接受」），
@@ -429,8 +601,9 @@ export function settingsReadonlyReason(path: string): string | undefined {
 
 /**
  * AI 改配置（`set_setting` 工具）的路径是否可写（docs/06 §12）。
- * 规则：① 命中 `SETTINGS_READONLY_PREFIXES` → 拒绝；
- *      ② 路径必须能被 Schema 识别（`lookupSpec` 登记过，或 `isDynamicPath` 认的通配路径）→ 否则拒绝
+ * 规则：① 命中 `WRITABLE_PATH_OVERRIDES` → 放行（先于黑名单判定）；
+ *      ② 命中 `SETTINGS_READONLY_PREFIXES` → 拒绝；
+ *      ③ 路径必须能被 Schema 识别（`lookupSpec` 登记过，或 `isDynamicPath` 认的通配路径）→ 否则拒绝
  *         （防拼错字段悄悄写进配置；**不能**用 `fieldAccepts`，它对未登记路径默认放行）。
  */
 export function canWriteSettingPath(path: string): boolean {

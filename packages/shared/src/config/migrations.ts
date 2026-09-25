@@ -8,7 +8,9 @@ import {
   DEFAULT_AGENT_TOOLS,
   DEFAULT_CLASSIFICATION,
   DEFAULT_CLASSISLAND_SCHEDULE,
+  DEFAULT_IMAGEGEN,
   DEFAULT_REASONING_EFFORT,
+  DEFAULT_STT,
   DEFAULT_TTS,
 } from './defaults.js'
 import type { Logger } from '../utils/logger.js'
@@ -290,6 +292,60 @@ const migrateV6ToV7: Migration = {
   },
 }
 
+/**
+ * v7 → v8：补齐语音输入（`stt.*`）、图像生成（`imagegen.*`）、Work 模式工作目录
+ * （`modes.work.workspaceDir`）、课前提醒打开文件夹（`modes.classroom.preClassOpenFolder`）
+ * 与对话思考过程开关（`general.chat.showThinking`）（Betav2 规格 §4）。
+ *
+ * 分三种既有套路：
+ * - `stt` / `imagegen` 是**新增顶层分组**：照 v6 → v7 对 `tts` 的做法**无条件**补默认值
+ *   （`fillMissing` 对已存在的值一律保留，幂等）；
+ * - `modes.classroom` / `modes.work` 是**已存在分组里的新字段**：照 v5 → v6 对 `llm.providers`
+ *   的做法**只在分组已存在时**补缺失键，不凭空造出半截对象（缺失时由默认配置兜底）；
+ * - `general.chat` 是**已存在分组里的新子组**：同样只在 `general` 已存在时补，
+ *   保持「缺少 general 分组时迁移不凭空造出 general」的既有语义。
+ */
+const migrateV7ToV8: Migration = {
+  from: 7,
+  to: 8,
+  describe:
+    'v7 → v8：补齐 stt.* 与 imagegen.*（语音输入 / 生图）、modes.work.workspaceDir、modes.classroom.preClassOpenFolder、general.chat.showThinking',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    next['stt'] = fillMissing(
+      asRecord(raw['stt']) ?? {},
+      DEFAULT_STT as unknown as Record<string, unknown>,
+    )
+    next['imagegen'] = fillMissing(
+      asRecord(raw['imagegen']) ?? {},
+      DEFAULT_IMAGEGEN as unknown as Record<string, unknown>,
+    )
+
+    const modes = asRecord(raw['modes'])
+    if (modes !== undefined) {
+      const nextModes = { ...modes }
+      const classroom = asRecord(nextModes['classroom'])
+      if (classroom !== undefined) {
+        nextModes['classroom'] = fillMissing(classroom, { preClassOpenFolder: true })
+      }
+      const work = asRecord(nextModes['work'])
+      if (work !== undefined) {
+        nextModes['work'] = fillMissing(work, { workspaceDir: '' })
+      }
+      next['modes'] = nextModes
+    }
+
+    const general = asRecord(raw['general'])
+    if (general !== undefined) {
+      next['general'] = fillMissing(general, { chat: { showThinking: true } })
+    }
+
+    next['version'] = 8
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -298,6 +354,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV4ToV5,
   migrateV5ToV6,
   migrateV6ToV7,
+  migrateV7ToV8,
 ]
 
 export interface MigrationOutcome {
