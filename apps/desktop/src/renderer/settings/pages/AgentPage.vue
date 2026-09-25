@@ -7,8 +7,9 @@
  * （组头摘要承载状态，capture 探针先展开再计数）；安全告诫只在本组说明里完整表述一次；
  * 技能 / MCP 区组的操作回执经 `notify` 事件上抛，由本页唯一的 AppToast 统一渲染。
  *
- * 「电脑操控」是给模型装上"手"的一组工具（run_command / read_file / write_file /
- * list_dir / open_path）：默认全开，但命令执行与文件写入是敏感工具，逐次确认后才执行。
+ * 「电脑操控」是给模型装上"手"的一组工具（`COMPUTER_TOOL_NAMES` 里那 8 个：run_command /
+ * read_file / write_file / edit_file / list_dir / open_path / grep / glob）：默认全开，
+ * 但命令执行与文件写入（含 edit_file）是敏感工具，逐次确认后才执行。
  * 本页是这套工具的**唯一**开关面，保存后由主进程 `onSettingsChanged` →
  * `computerTools.sync()` 立即重注册，无需重启。
  *
@@ -325,16 +326,18 @@ async function openWorkspace(): Promise<void> {
           <div class="sub">
             <h3 class="sub-title">文件</h3>
             <p class="section-desc">
-              读取 / 写入 / 列目录（<code class="mono">read_file</code>、<code class="mono"
+              读取 / 写入 / 精确替换 / 列目录（<code class="mono">read_file</code>、<code
+                class="mono"
                 >write_file</code
-              >、<code class="mono">list_dir</code>）：写入是敏感工具，执行前需要确认。
+              >、<code class="mono">edit_file</code>、<code class="mono">list_dir</code>）：
+              写入与替换是敏感工具，执行前需要确认。
             </p>
 
             <template v-if="tools.enabled">
               <SettingField
                 data-field="agent.tools.files.enabled"
                 label="启用文件工具"
-                hint="关闭后模型看不到 read_file / write_file / list_dir，其余工具不受影响"
+                hint="关闭后模型看不到 read_file / write_file / edit_file / list_dir，其余工具不受影响"
               >
                 <label class="row tiny">
                   <input
@@ -368,7 +371,8 @@ async function openWorkspace(): Promise<void> {
             </template>
 
             <p v-else class="tiny muted" data-empty="agent.tools.files">
-              关闭总开关后文件工具不会注册：模型看不到 read_file / write_file / list_dir。
+              关闭总开关后文件工具不会注册：模型看不到 read_file / write_file / edit_file /
+              list_dir。
             </p>
           </div>
 

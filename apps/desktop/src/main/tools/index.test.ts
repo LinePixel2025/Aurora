@@ -35,14 +35,15 @@ const HOME = 'C:\\Users\\tester'
  * 当前装配器能**真正创建出来**的电脑操控工具（顺序照 `COMPUTER_TOOL_NAMES`）。
  *
  * 与 `COMPUTER_TOOL_NAMES`（v12 起 8 个名字）刻意区分开：常量是「对外承诺的工具名全集」，
- * 本列表是「`registerComputerTools` 眼下真的能造出来的子集」——`grep` / `glob` 由 step 3、
- * `edit_file` 由 step 4 交付，在那之前它们不在注册结果里。显式列出而不写死长度：
- * 新增工具时同步加名字，断言仍逐条精确（不用 `toContain` 这类弱断言）。
+ * 本列表是「`registerComputerTools` 眼下真的能造出来的子集」——v12 起 8 个全部交付
+ * （`grep` / `glob` 由 step 3、`edit_file` 由 step 4），两者一致但**仍然显式列出**：
+ * 新增工具时同步加名字，断言保持逐条精确（不用 `toContain` 这类弱断言）。
  */
 const IMPLEMENTED_COMPUTER_TOOLS = [
   'run_command',
   'read_file',
   'write_file',
+  'edit_file',
   'list_dir',
   'open_path',
   'grep',
@@ -68,9 +69,18 @@ function fakeSettingsPort(): SettingsToolPort & { writes: unknown[][] } {
   }
 }
 
-/** 不改真实文件系统：记录调用即可（本文件只验证"按开关注册哪些工具"） */
-function fakeFilePort(): FilePort {
+/**
+ * 不改真实文件系统：记录调用即可（本文件只验证"按开关注册哪些工具"与守卫的接线）。
+ *
+ * `wholeText` 是**整文件读**（`edit_file` 走的 `readWholeText`）返回的内容：守卫用例需要
+ * 一段「读得到、也换得掉」的中性文本，而「按开关注册哪些工具」的用例不关心内容（缺省空串）。
+ * 注意端口回带的绝对路径是 `C:\\abs\\<path>` 形式，因此守卫的键由**同一个 path 参数**决定
+ * ——「读」与「改」必须用同一个 path，否则键对不上。
+ */
+function fakeFilePort(wholeText = ''): FilePort & { written: string[] } {
+  const written: string[] = []
   return {
+    written,
     async readText(path) {
       // 形状按 `ReadTextResult`：v12 起 `read_file` 走「行窗口」读，不再返回整篇 text
       return {
@@ -82,7 +92,17 @@ function fakeFilePort(): FilePort {
         totalBytes: 2,
       }
     },
-    async writeText(path) {
+    async readWholeText(path) {
+      // 行窗口读（`readText`）**之外**的独立入口，`refused: false` = 拿到了全文
+      return {
+        absolutePath: `C:\\abs\\${path}`,
+        text: wholeText,
+        bytes: wholeText.length,
+        refused: false,
+      }
+    },
+    async writeText(path, content) {
+      written.push(content)
       return { absolutePath: `C:\\abs\\${path}`, bytes: 2 }
     },
     async list(path) {
@@ -133,7 +153,11 @@ function fakeRunner(stdout = 'AURORA_FAKE_OK'): CommandRunner & { calls: unknown
   return runner
 }
 
-function setup(settings: Settings, runner: CommandRunner = fakeRunner()) {
+function setup(
+  settings: Settings,
+  runner: CommandRunner = fakeRunner(),
+  files: FilePort = fakeFilePort(),
+) {
   const tools = new ToolRegistry()
   const port = fakeSettingsPort()
   const registry = registerComputerTools({
@@ -142,7 +166,7 @@ function setup(settings: Settings, runner: CommandRunner = fakeRunner()) {
     logger: createMemoryLogger(),
     homeDir: () => HOME,
     run: runner,
-    files: fakeFilePort(),
+    files,
     open: fakeOpenPort(),
   })
   return { tools, registry, port }
@@ -185,6 +209,7 @@ describe('registerComputerTools', () => {
     expect(tools.get('run_command')).toBeUndefined()
     expect(tools.get('read_file')).toBeUndefined()
     expect(tools.get('write_file')).toBeUndefined()
+    expect(tools.get('edit_file')).toBeUndefined()
     expect(tools.get('list_dir')).toBeUndefined()
     expect(tools.get('open_path')).toBeUndefined()
     expect(tools.get('grep')).toBeUndefined()
@@ -202,19 +227,25 @@ describe('registerComputerTools', () => {
     expect(tools.get('run_command')).toBeUndefined()
   })
 
-  it('关掉文件 → read/write/list 消失但 open_path 还在', () => {
+  it('关掉文件 → read/write/edit/list 消失但 open_path 还在', () => {
     const settings = makeSettings()
     settings.agent.tools.files.enabled = false
     const { tools, registry } = setup(settings)
     const names = registry.sync()
-    // 文件类三件消失（open_path 归 `agent.tools.open` 开关，不受 files.enabled 影响）
+    // 文件类四个消失（open_path 归 `agent.tools.open` 开关，不受 files.enabled 影响）；
+    // `edit_file` **不单独设开关**，与 read_file / write_file 同受这一个开关（docs/06 §11、docs/08 §1）
     expect(names).toEqual(
       IMPLEMENTED_COMPUTER_TOOLS.filter(
-        (name) => name !== 'read_file' && name !== 'write_file' && name !== 'list_dir',
+        (name) =>
+          name !== 'read_file' &&
+          name !== 'write_file' &&
+          name !== 'edit_file' &&
+          name !== 'list_dir',
       ),
     )
     expect(tools.get('read_file')).toBeUndefined()
     expect(tools.get('write_file')).toBeUndefined()
+    expect(tools.get('edit_file')).toBeUndefined()
     expect(tools.get('list_dir')).toBeUndefined()
     expect(tools.get('open_path')).toBeDefined()
   })
@@ -289,6 +320,45 @@ describe('registerComputerTools', () => {
 
     const after = await tools.get('run_command')!.execute({ command: 'echo' }, { sessionId: 't' })
     expect(after.content).toContain('已截断')
+  })
+
+  it('文件工具默认开启 → edit_file 在表里，敏感级为 confirm（不单独设开关，确认卡片是它的安全边界）', () => {
+    const settings = makeSettings()
+    expect(settings.agent.tools.files.enabled).toBe(true)
+    const { tools, registry } = setup(settings)
+    expect(registry.sync()).toContain('edit_file')
+    expect(tools.get('edit_file')?.sensitivity).toBe('confirm')
+  })
+
+  it('读前守卫跨 sync() 存活：读过的文件在工具重建后仍被 edit_file 放行', async () => {
+    // 假端口的整文件读给一段「读得到、也换得掉」的中性文本
+    const files = fakeFilePort('目标行\n')
+    const { tools, registry } = setup(makeSettings(), fakeRunner(), files)
+    registry.sync()
+    const context = { sessionId: 'main' }
+    // 「读」与「改」必须用**同一个 path**：守卫的键是端口回带的绝对路径（`C:\abs\<path>`），
+    // 两处 path 不一致时键对不上，断言会假红
+    const params = { path: 'C:\\work\\note.txt', oldString: '目标行', newString: '改过的行' }
+
+    // ① 本会话没读过 → 守卫拒绝，且一个字都不写盘
+    const blocked = await tools.get('edit_file')!.execute(params, context)
+    expect(blocked.isError).toBe(true)
+    expect(blocked.content).toContain('必须先')
+    expect(files.written).toEqual([])
+
+    // ② 用 read_file 真读一次（装配层把标记打在守卫上）
+    const read = await tools.get('read_file')!.execute({ path: params.path }, context)
+    expect(read.isError).toBeUndefined()
+
+    // ③ 关键时序：`settings:changed` 会触发 `sync()` 重建全部工具实例
+    //    —— 守卫若跟着重建，② 的标记就被清空，下一步会退化成 ①（用户看到的是「工具坏了」）
+    registry.sync()
+
+    // ④ 读记录仍在 → 放行到真正写盘
+    const edited = await tools.get('edit_file')!.execute(params, context)
+    expect(edited.isError).toBeUndefined()
+    expect(edited.content).toContain('已修改')
+    expect(files.written).toEqual(['改过的行\n'])
   })
 })
 

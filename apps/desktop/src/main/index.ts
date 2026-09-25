@@ -1352,12 +1352,13 @@ async function runSmokeTest(userData: string): Promise<void> {
   //    「模型真的能操控电脑」这条链路在主进程装配下是通的。
   //
   //    这里断言的是**已装配**的清单而不是 `COMPUTER_TOOL_NAMES` 全量：后者是「开关要认的名字」，
-  //    它的元素要等对应工具真正被创建出来才算数（`edit_file` 由后续步骤交付）。
+  //    它的元素要等对应工具真正被创建出来才算数（v12 起 8 个全部交付，两处一致但仍显式列出）。
   //    显式列出而不写死长度：新增工具时同步加名字，断言仍是逐条精确的。
   const SMOKE_IMPLEMENTED_TOOLS = [
     'run_command',
     'read_file',
     'write_file',
+    'edit_file',
     'list_dir',
     'open_path',
     'grep',
@@ -1375,17 +1376,19 @@ async function runSmokeTest(userData: string): Promise<void> {
     // 敏感级直接钉住 step 1 文档里写的值：这几个工具的每一次调用都必须弹确认卡片
     const runCommand = tools?.get('run_command')
     const writeFile = tools?.get('write_file')
+    const editFile = tools?.get('edit_file')
     const readFile = tools?.get('read_file')
     const grep = tools?.get('grep')
     const glob = tools?.get('glob')
     record(
-      '敏感级与文档一致（run_command / write_file = confirm，read_file / grep / glob = safe）',
+      '敏感级与文档一致（run_command / write_file / edit_file = confirm，read_file / grep / glob = safe）',
       runCommand?.sensitivity === 'confirm' &&
         writeFile?.sensitivity === 'confirm' &&
+        editFile?.sensitivity === 'confirm' &&
         readFile?.sensitivity === 'safe' &&
         grep?.sensitivity === 'safe' &&
         glob?.sensitivity === 'safe',
-      `run_command=${runCommand?.sensitivity ?? 'missing'} write_file=${writeFile?.sensitivity ?? 'missing'} read_file=${readFile?.sensitivity ?? 'missing'} grep=${grep?.sensitivity ?? 'missing'} glob=${glob?.sensitivity ?? 'missing'}`,
+      `run_command=${runCommand?.sensitivity ?? 'missing'} write_file=${writeFile?.sensitivity ?? 'missing'} edit_file=${editFile?.sensitivity ?? 'missing'} read_file=${readFile?.sensitivity ?? 'missing'} grep=${grep?.sensitivity ?? 'missing'} glob=${glob?.sensitivity ?? 'missing'}`,
     )
 
     // 真实执行一条命令并读回产物。

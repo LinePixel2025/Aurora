@@ -23,6 +23,7 @@
 import { COMPUTER_TOOL_NAMES, type Logger, type Settings } from '@aurora/shared'
 import {
   createClipboardTools,
+  createEditTool,
   createFileTools,
   createImageGenTool,
   createNotifyTool,
@@ -40,6 +41,7 @@ import {
   type ImageGenPort,
   type NotifyPort,
   type OpenPort,
+  type ReadTracker,
   type SettingsToolPort,
   type TodoPort,
   type ToolRegistry,
@@ -69,6 +71,34 @@ export interface ComputerTools {
 
 export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
   const toolNames = COMPUTER_TOOL_NAMES as readonly string[]
+
+  // 会话级「读过哪些文件」守卫（docs/06 §11.6）：**在闭包里建一次**，于是整个进程只有这一份，
+  // 且 `read_file` 与 `edit_file` 共享同一个实例。
+  //
+  // 为什么必须在 `sync()` **之外**建（关键时序）：`sync()` 会在每次 `settings:changed` 时
+  // 重建全部工具实例（构造很便宜，是为了让上限 / cwd 热改）。守卫若跟着 `sync()` 一起重建，
+  // 「本会话已读过的文件」就被清空 —— 表现是用户改一个**完全无关**的开关（比如关掉终端）后，
+  // 模型刚 `read_file` 过的文件立刻被 `edit_file` 以「修改前必须先读」拒绝，看起来像工具坏了。
+  // 所以守卫的生命周期是**装配器**（进程级），不是 `sync()`（每次配置变更）。
+  /** 只保留最近 N 个会话的读记录（Map 的插入序天然是 LRU 近似），防无界增长 */
+  const MAX_TRACKED_SESSIONS = 16
+  const readFiles = new Map<string, Set<string>>()
+  const readTracker: ReadTracker = {
+    has: (sessionId, absolutePath) => readFiles.get(sessionId)?.has(absolutePath) === true,
+    mark: (sessionId, absolutePath) => {
+      const set = readFiles.get(sessionId) ?? new Set<string>()
+      set.add(absolutePath)
+      readFiles.set(sessionId, set)
+      while (readFiles.size > MAX_TRACKED_SESSIONS) {
+        const oldest = readFiles.keys().next().value
+        if (oldest === undefined) break
+        readFiles.delete(oldest)
+      }
+    },
+    clear: (sessionId, absolutePath) => {
+      readFiles.get(sessionId)?.delete(absolutePath)
+    },
+  }
 
   return {
     sync(): string[] {
@@ -100,13 +130,19 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
       if (cfg.files.enabled) {
         // 文件工具工厂返回 read_file / write_file / list_dir / open_path 四个；
         // 打开类工具受**独立开关**控制，因此这里按名字挑出前三个。
+        // `readTracker` 传进去：`read_file` 读成功就为本会话打标记（docs/06 §11.6）。
         for (const tool of createFileTools({
           files: deps.files,
           open: deps.open,
           maxReadBytes: cfg.files.maxReadBytes,
+          readTracker,
         })) {
           if (tool.name !== 'open_path') deps.tools.register(tool)
         }
+        // `edit_file` 由 `createEditTool` **单独**产出（`createFileTools` 的「恰好 4 个」契约不变），
+        // 与 read_file / write_file / list_dir 共用 `files.enabled` 这一个开关，
+        // **不单独加开关**（docs/06 §11、docs/08 §1）——它的安全边界是 `sensitivity: 'confirm'`。
+        deps.tools.register(createEditTool({ files: deps.files, readTracker }))
       }
 
       if (cfg.search.enabled) {

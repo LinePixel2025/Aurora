@@ -61,6 +61,7 @@ export {
   Wrench,
   Terminal,
   FileText,
+  FilePenLine,
   FolderOpen,
   Globe,
   Bell,
