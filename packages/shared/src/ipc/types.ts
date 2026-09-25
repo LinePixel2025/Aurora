@@ -399,7 +399,31 @@ export interface HotkeyStatus {
 }
 
 /**
- * ClassIsland 桥接状态（`classisland:status`，docs/05 §3.4 v2）。
+ * 桥接插件写出的**课堂状态快照**（`schedule.json` 内嵌的 `status`，docs/05 §3.4 v3）。
+ *
+ * 由桥接插件一处计算：`onClass` / `currentSubject` 来自 ClassIsland 的实时课程状态，
+ * 其余时间与科目来自同一份课表。所有字段宽容解析，取不到就不出现（不编造）。
+ */
+export interface ClassIslandBridgeSnapshot {
+  /** 状态格式版本（v2 起为 2，v3 起为 3） */
+  version: number
+  /** 快照生成时间（ISO 时间戳） */
+  generatedAt?: string
+  /** 是否处于上课状态 */
+  onClass: boolean
+  /** 当前上课的科目名（经桥接侧 `subjectMap` 映射后；不在上课或未知时缺省） */
+  currentSubject?: string
+  /** 当前课的起止时间 `HH:mm`（v3 新增；不在上课时缺省） */
+  currentStartTime?: string
+  currentEndTime?: string
+  /** 今天下一节课的科目与起止时间 `HH:mm`（没有则缺省） */
+  nextSubject?: string
+  nextStartTime?: string
+  nextEndTime?: string
+}
+
+/**
+ * ClassIsland 桥接状态（`classisland:status`，docs/05 §3.4 v2/v3）。
  * 未启用 classisland provider 时 `enabled` 为 false，其余字段表示「最后一次尝试」。
  */
 export interface ClassIslandStatus {
@@ -414,6 +438,21 @@ export interface ClassIslandStatus {
   lessonCount: number
   /** 桥接数据里的告警（逐行校验失败等） */
   warnings: string[]
+  /** 课堂状态快照（桥接 v2+ 提供；缺失 = 桥接未输出该字段） */
+  status?: ClassIslandBridgeSnapshot
+  /** 提醒通道（v3）：Aurora → ClassIsland 的提醒是否可用，以及最近一次结果 */
+  notify?: ClassIslandNotifyState
+  error?: string
+}
+
+/** 提醒通道状态（`classisland:notify` 的结果会更新这里，供设置页回显） */
+export interface ClassIslandNotifyState {
+  /** 桥接是否具备接收提醒命令的能力（v3 插件 + 端点/目录可达） */
+  available: boolean
+  /** 最近一次发送是否成功 */
+  ok: boolean
+  /** 最近一次发送时间（ISO 时间戳） */
+  lastAt: string | null
   error?: string
 }
 
@@ -424,7 +463,27 @@ export interface ClassIslandTestResult {
   endpoint: string
   /** 今日课程预览（已按开始时间升序） */
   lessons: Lesson[]
+  /** 桥接给出的课堂状态快照（v2+；缺失表示桥接未输出） */
+  status?: ClassIslandBridgeSnapshot
   warnings: string[]
+  error?: string
+  elapsedMs: number
+}
+
+/** 让 ClassIsland 弹出提醒（`classisland:notify`，docs/05 §3.4 v3） */
+export interface ClassIslandNotifyRequest {
+  title: string
+  body: string
+  /**
+   * 提醒渠道：`class-started`（上课提醒）/ `pre-class`（课前提醒）/ `custom`（自定义）。
+   * 桥接侧按渠道发送，实际是否弹出与是否朗读由 ClassIsland 的提醒设置决定。
+   */
+  channel?: 'class-started' | 'pre-class' | 'custom'
+}
+
+export interface ClassIslandNotifyResult {
+  ok: boolean
+  /** 失败原因（桥接未安装 / 端点不可达 / 命令文件不可写 / 超时） */
   error?: string
   elapsedMs: number
 }
@@ -456,6 +515,8 @@ export interface PerceptionSummary {
   display?: { width: number; height: number; scaleFactor: number; count: number }
   /** 今天剩余的课程（来自课程表 provider，docs/05 §3.4） */
   lessons?: Lesson[]
+  /** 课堂状态快照（classisland provider 的 v2+ 输出，docs/05 §3.4 v3） */
+  classStatus?: ClassIslandBridgeSnapshot
   /** 未实现的采集项统一为 unknown，绝不抛错（ADR-007） */
   unknown: string[]
 }
@@ -550,6 +611,55 @@ export interface AgentToolCall {
   input?: unknown
   state: 'running' | 'success' | 'error'
   outputSummary?: string
+  /**
+   * `task` 子代理工具的运行快照（docs/06 §19、docs/07 §2.4）。
+   * 随工具卡状态一起持久化，因此「子代理」页面在重启后仍能回看历史运行。
+   */
+  subagent?: SubagentSnapshot
+}
+
+// ───────────────────────── 子代理（`task` 工具） ─────────────────────────
+
+/**
+ * 子代理的一个执行步骤：一段思考 / 文本，或一次工具调用。
+ * 只用于展示（子代理的原始消息不落会话存储），字段一律可缺省。
+ */
+export interface SubagentStep {
+  id: string
+  kind: 'text' | 'tool'
+  /** 工具名（`kind === 'tool'`） */
+  name?: string
+  /** 文本内容（`kind === 'text'`，随流式增量累积） */
+  text?: string
+  /** 工具状态（`kind === 'tool'`） */
+  state?: 'running' | 'success' | 'error'
+  /** 工具结果单行摘要（`kind === 'tool'`） */
+  summary?: string
+}
+
+/**
+ * 子代理运行快照（`task` 工具的实时进度，docs/06 §19）。
+ *
+ * 子代理的对话过程**不落会话存储**（见 `tools/task.ts`），这份快照是它唯一的对外可见形态：
+ * 内存里随事件流实时推给渲染层，结束时随工具卡一起持久化。
+ */
+export interface SubagentSnapshot {
+  /** 子代理内部会话标识（`sub-1` 这类，用于日志对齐） */
+  taskId: string
+  /** 父对话里发起它的工具调用 id（渲染层据此与工具卡配对） */
+  callId: string
+  description: string
+  prompt: string
+  status: 'running' | 'success' | 'error'
+  /** 毫秒时间戳 */
+  startedAt: number
+  endedAt?: number
+  /** 已观察到的步骤（按发生顺序；上限见子代理实现） */
+  steps: SubagentStep[]
+  /** 已执行的工具调用次数 */
+  toolCalls: number
+  /** 最终报告（完成后才有；与回传给主代理的文本同源、可能截断） */
+  report?: string
 }
 
 /**
@@ -579,28 +689,72 @@ export interface ChatHistoryRequest {
  * 事件一律携带 `sessionId`：快速会话与完整会话共用一个交互窗，
  * 只按 `requestId` 过滤会串会话（docs/06 §4）。
  *
- * `messageId`（text / tool）：该轮助手消息在会话存储中的 id。
+ * 顺序与归属（2026-09 增强，docs/06 §16.1）：
+ * - `seq`：**会话内单调递增序号**，由主进程在事件发出时分配。渲染层据此排序消息、
+ *   丢弃陈旧请求的迟到事件 —— 此前事件没有任何序号，消息顺序完全依赖 IPC 到达顺序。
+ * - `round`：该事件属于本次请求的第几个工具调用轮次（从 0 起）。思考链增量自身没有
+ *   `messageId`（那轮助手消息要等流结束才落盘），渲染层按 `(requestId, round)` 聚合，
+ *   再用同一个 `round` 的文本 / 工具事件把思考绑到正确的消息上 —— 此前思考按 requestId
+ *   全局累积，多轮时第二轮的消息会带上第一轮的思考全文。
+ *
+ * `messageId`（text / tool / subagent）：该轮助手消息在会话存储中的 id。
  * 多轮工具调用会产生多条助手消息，渲染层据此把文本与工具卡片
  * 归到正确的消息上（首轮前渲染层还不知道 id，收到后再认领）。
  */
 export type AgentEvent =
-  | { type: 'queued'; sessionId: string; requestId: string }
-  | { type: 'text'; sessionId: string; requestId: string; messageId: string; delta: string }
-  | { type: 'reasoning'; sessionId: string; requestId: string; delta: string }
+  | { type: 'queued'; sessionId: string; requestId: string; seq: number }
+  | {
+      type: 'text'
+      sessionId: string
+      requestId: string
+      seq: number
+      round: number
+      messageId: string
+      delta: string
+    }
+  | {
+      type: 'reasoning'
+      sessionId: string
+      requestId: string
+      seq: number
+      round: number
+      delta: string
+    }
   | {
       type: 'tool'
       sessionId: string
       requestId: string
+      seq: number
+      round: number
       messageId: string
       call: AgentToolCall
     }
-  | { type: 'done'; sessionId: string; requestId: string; pending?: boolean }
-  | { type: 'error'; sessionId: string; requestId: string; code: string; message: string }
+  | {
+      /** `task` 子代理的实时进度（docs/06 §19）；`messageId` 为发起它的助手消息 */
+      type: 'subagent'
+      sessionId: string
+      requestId: string
+      seq: number
+      round: number
+      messageId: string
+      callId: string
+      subagent: SubagentSnapshot
+    }
+  | { type: 'done'; sessionId: string; requestId: string; seq: number; pending?: boolean }
+  | {
+      type: 'error'
+      sessionId: string
+      requestId: string
+      seq: number
+      code: string
+      message: string
+    }
   | {
       /** 用户消息落盘前的实时同步广播；渲染层按内容 + 时间去重 */
       type: 'user-message'
       sessionId: string
       requestId: string
+      seq: number
       content: string
       createdAt: number
     }
@@ -696,10 +850,15 @@ export interface AuroraApi {
     onChanged(listener: (status: HotkeyStatus) => void): () => void
   }
   classisland: {
-    /** 桥接状态（最后一次读取结果，docs/05 §3.4 v2） */
+    /** 桥接状态（最后一次读取结果，docs/05 §3.4 v2/v3） */
     status(): Promise<Result<ClassIslandStatus>>
     /** 立即按当前配置解析一次，回传今日课程预览与错误 */
     test(): Promise<Result<ClassIslandTestResult>>
+    /**
+     * 让 ClassIsland 弹出提醒（过桥接插件的提醒通道，docs/05 §3.4 v3）。
+     * 桥接不可用时返回 `{ ok: false, error }`，不抛错。
+     */
+    notify(request: ClassIslandNotifyRequest): Promise<Result<ClassIslandNotifyResult>>
   }
   chat: {
     send(request: SendMessageRequest): Promise<Result<{ requestId: string }>>

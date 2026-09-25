@@ -11,19 +11,23 @@
  * 安全取舍：`sensitivity: 'safe'` —— 子代理会消耗模型调用，但它是 Agent 核心能力，
  * 且只能使用查询与只读类工具（敏感操作在过滤这一层就被挡住），不做逐次确认。
  */
-import type { Logger } from '@aurora/shared'
+import type { AgentToolCall, Logger, SubagentSnapshot, SubagentStep } from '@aurora/shared'
 import { buildSystemPrompt, describeTools } from '../context/systemPrompt.js'
 import { DEFAULT_MAX_ROUNDS, runAgentLoop } from '../loop/agentLoop.js'
 import type { AgentProviderFactory } from '../host/agentHost.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
 import { ToolRegistry } from './registry.js'
-import type { ToolDefinition, ToolResult } from './registry.js'
+import type { ToolDefinition, ToolProgress, ToolResult } from './registry.js'
 
 export const TASK_TOOL_NAME = 'task'
 /** 回传给主代理的报告长度上限：超过从尾部截断（防子代理结果刷爆主对话上下文） */
 export const MAX_TASK_RESULT_CHARS = 20_000
 /** 子代理会话 id 后缀：todo 等按会话隔离的端口据此与主对话分清单 */
 export const SUBAGENT_SESSION_SUFFIX = '-sub'
+/** 快照里保留的步骤上限（超出丢弃最早的中间步骤，保留首步与最近若干步） */
+export const MAX_SUBAGENT_STEPS = 60
+/** 单个步骤文本上限（快照只用于展示） */
+const MAX_STEP_CHARS = 4_000
 
 /**
  * 子代理人设（docs/06 §19）：主代理派生、上下文隔离、对用户不可见、
@@ -87,6 +91,8 @@ export function createTaskTool(options: TaskToolOptions): ToolDefinition {
           description,
           prompt,
           sessionId: ctx.sessionId,
+          ...(ctx.toolCallId === undefined ? {} : { toolCallId: ctx.toolCallId }),
+          ...(ctx.emitProgress === undefined ? {} : { emitProgress: ctx.emitProgress }),
           ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
         })
       } catch (error) {
@@ -107,6 +113,8 @@ interface SubagentRequest {
   description: string
   prompt: string
   sessionId: string
+  toolCallId?: string
+  emitProgress?(payload: ToolProgress): void
   signal?: AbortSignal
 }
 
@@ -184,14 +192,48 @@ async function runSubagent(
     onToolCall: (info) => options.logger?.info('子代理工具调用', info),
   })
 
-  // 遍历循环事件：文本 delta 累积成最终报告；首个 error 留痕；tool 只计数
+  // 运行快照（docs/06 §19）：子代理的过程不落盘，这份快照是它唯一的对外可见形态。
+  // 内存里随事件流实时推给渲染层（「子代理」页面），结束时随工具卡一起持久化。
+  const startedAt = Date.now()
+  const taskId = `sub-${startedAt.toString(36)}-${(taskSequence += 1)}`
+  const callId = request.toolCallId ?? ''
+  const steps: SubagentStep[] = []
+  let stepSequence = 0
   let report = ''
   let firstError: string | undefined
   let pending = false
-  let toolEvents = 0
+  let status: SubagentSnapshot['status'] = 'running'
+
+  /** 组一份快照；`endedAt` 只在收尾时给（运行中不给，页面据此显示已运行时长） */
+  const snapshot = (endedAt?: number): SubagentSnapshot => ({
+    taskId,
+    callId,
+    description: request.description,
+    prompt: request.prompt,
+    status,
+    startedAt,
+    ...(endedAt === undefined ? {} : { endedAt }),
+    steps: steps.map((step) => ({ ...step })),
+    toolCalls: steps.filter((step) => step.kind === 'tool').length,
+    ...(report === '' ? {} : { report: truncateReport(report, MAX_TASK_RESULT_CHARS) }),
+  })
+  const publish = (endedAt?: number): void => {
+    request.emitProgress?.({ kind: 'subagent', snapshot: snapshot(endedAt) })
+  }
+  // 立刻推一份「已开始」的空快照：页面上卡片要在派生的瞬间就出现，而不是等第一个事件
+  publish()
+
+  // 遍历循环事件：文本 delta 累积成最终报告；工具调用落成步骤；首个 error 留痕
   for await (const event of events) {
     if (event.type === 'text') {
       report += event.delta
+      steps.push({
+        id: `s${(stepSequence += 1)}`,
+        kind: 'text',
+        text: truncateReport(event.delta, MAX_STEP_CHARS),
+      })
+      pruneSteps(steps)
+      publish()
       continue
     }
     if (event.type === 'error') {
@@ -202,17 +244,18 @@ async function runSubagent(
       pending = event.pending === true
       continue
     }
-    if (event.type === 'tool') toolEvents += 1
+    if (event.type === 'tool') {
+      upsertToolStep(steps, event.call, `s${(stepSequence += 1)}`)
+      pruneSteps(steps)
+      publish()
+    }
   }
 
   // 结果组装：报告为主；异常路径转 isError；截断与附注按口径追加
   let content: string
   let isError: boolean | undefined
   if (report !== '') {
-    content =
-      report.length > MAX_TASK_RESULT_CHARS
-        ? report.slice(0, MAX_TASK_RESULT_CHARS) + '…（子代理结果过长，已截断）'
-        : report
+    content = truncateReport(report, MAX_TASK_RESULT_CHARS, '…（子代理结果过长，已截断）')
     if (firstError !== undefined) {
       content += `\n\n（子代理执行中出现过一次错误：${firstError}）`
     }
@@ -226,17 +269,55 @@ async function runSubagent(
     content += '\n\n（子代理已到轮次上限，以上为部分结果。）'
   }
 
+  status = isError === true ? 'error' : 'success'
+  const endedAt = Date.now()
+  publish(endedAt)
+
   options.logger?.info('子代理任务完成', {
     description: request.description,
-    toolCalls: toolEvents,
+    toolCalls: steps.filter((step) => step.kind === 'tool').length,
     reportChars: report.length,
+    elapsedMs: endedAt - startedAt,
   })
 
   return {
     content,
     ...(isError === undefined ? {} : { isError }),
     summary: `子代理：${request.description}`,
+    subagent: snapshot(endedAt),
   }
+}
+
+/** 子代理任务序号（同进程内保证 taskId 唯一；仅用于日志与页面展示） */
+let taskSequence = 0
+
+/**
+ * 工具事件 → 步骤：同一个 `call.id` 先 `running` 后终态，
+ * 因此按 id 原地更新而不是重复追加（否则工具卡会在子代理页面上出现两遍）。
+ */
+function upsertToolStep(steps: SubagentStep[], call: AgentToolCall, fallbackId: string): void {
+  const existing = steps.find((step) => step.kind === 'tool' && step.id === call.id)
+  const next: SubagentStep = {
+    id: call.id === '' ? fallbackId : call.id,
+    kind: 'tool',
+    name: call.name,
+    state: call.state,
+    ...(call.outputSummary === undefined ? {} : { summary: call.outputSummary }),
+  }
+  if (existing === undefined) {
+    steps.push(next)
+    return
+  }
+  Object.assign(existing, next)
+}
+
+/** 步骤上限：超出时丢弃最早的中间步骤（保留首步与最近的部分，进度感不丢） */
+function pruneSteps(steps: SubagentStep[]): void {
+  while (steps.length > MAX_SUBAGENT_STEPS) steps.splice(1, 1)
+}
+
+function truncateReport(text: string, max: number, suffix = '…（已截断）'): string {
+  return text.length <= max ? text : `${text.slice(0, max)}${suffix}`
 }
 
 function asRecord(input: unknown): Record<string, unknown> | undefined {

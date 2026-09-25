@@ -99,6 +99,7 @@ const CHANNELS = {
   classisland: {
     status: 'classisland:status',
     test: 'classisland:test',
+    notify: 'classisland:notify',
   },
   classification: {
     history: 'classification:history',

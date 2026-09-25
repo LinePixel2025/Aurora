@@ -9,7 +9,12 @@
  * - 纯 Node：文件系统经 `FileSystemPort` 注入，单测可替换。
  */
 import { join } from 'node:path'
-import { nodeFileSystem, type ChatSessionSummary, type FileSystemPort } from '@aurora/shared'
+import {
+  nodeFileSystem,
+  type AgentToolCall,
+  type ChatSessionSummary,
+  type FileSystemPort,
+} from '@aurora/shared'
 import type { Logger } from '@aurora/shared'
 import { createNoopLogger } from '@aurora/shared'
 import { DEFAULT_MAX_MESSAGES, truncateHistory, type TruncateOptions } from './history.js'
@@ -111,6 +116,10 @@ export class SessionStore {
   /**
    * 供渲染层水合的消息列表：过滤掉 `tool` 回填消息与 `system`，
    * 只保留用户与助手（助手带工具卡片状态）。
+   *
+   * 工具卡片在这里就从存储形状（`arguments` 是 JSON 字符串）转成渲染层形状
+   * （`input` 是解析后的对象，见 `AgentToolCall`）：渲染层的参数折叠、「子代理」页面
+   * 的指令与报告、todo 卡片的清单反推都直接读 `input`，不转的话水合出来的卡片是空的。
    */
   async rendererHistory(
     sessionId: string,
@@ -121,7 +130,7 @@ export class SessionStore {
       role: 'user' | 'assistant'
       content: string
       createdAt: string
-      toolCalls?: StoredToolCall[]
+      toolCalls?: AgentToolCall[]
       reasoning?: string
     }>
   > {
@@ -136,7 +145,9 @@ export class SessionStore {
       role: message.role,
       content: message.content,
       createdAt: message.createdAt,
-      ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls }),
+      ...(message.toolCalls === undefined
+        ? {}
+        : { toolCalls: message.toolCalls.map((call) => toAgentToolCall(call)) }),
       ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
     }))
   }
@@ -376,6 +387,36 @@ function isStoredMessage(value: unknown): value is StoredMessage {
 
 /** 会话标题最大长度（中文字符按 1 计） */
 const TITLE_MAX_LENGTH = 24
+
+/**
+ * 存储形状 → 渲染层形状：`arguments`（JSON 字符串）解析成 `input` 对象。
+ *
+ * 宽容两种输入：正常落盘的消息只有 `arguments`；而**夹具 / 手工构造**的历史
+ * （截图探针的 seed、早期版本写入的数据）可能已经带着渲染层的 `input` 字段。
+ * 缺了这层宽容，`arguments.trim()` 会抛错 → 整个 `chat:history` 失败 →
+ * 界面表现为「历史全空」（截图探针正是这样抓到的）。
+ */
+function toAgentToolCall(call: StoredToolCall & { input?: unknown }): AgentToolCall {
+  const input = call.input !== undefined ? call.input : parseArguments(call.arguments)
+  return {
+    id: call.id,
+    name: call.name,
+    ...(input === undefined ? {} : { input }),
+    state: call.state,
+    ...(call.outputSummary === undefined ? {} : { outputSummary: call.outputSummary }),
+    ...(call.subagent === undefined ? {} : { subagent: call.subagent }),
+  }
+}
+
+/** 参数解析：空串与非字符串都视为无参数；非法 JSON 保留原文（与循环侧同款口径） */
+function parseArguments(raw: unknown): unknown {
+  if (typeof raw !== 'string' || raw.trim() === '') return undefined
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return { _raw: raw }
+  }
+}
 
 function titleFor(firstUser: StoredMessage | undefined): string {
   if (firstUser === undefined) return '新会话'

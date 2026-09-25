@@ -4,12 +4,26 @@
  * 本模块只负责注册与查询；调用循环在 `loop/agentLoop.ts`。
  * （`loop` 模块会消费本文件暴露的工具表，MCP / Skill 都往这里注册）。
  */
+import type { SubagentSnapshot } from '@aurora/shared'
 import type { LlmToolDefinition, LlmToolParameterSchema } from '../llm/types.js'
+
+/**
+ * 工具执行过程中的进度上报（docs/06 §19）。
+ *
+ * 目前只有 `task` 子代理使用：子代理的对话过程不落会话存储，唯一对外可见形态就是
+ * 这份快照。循环把它转成 `subagent` 事件流实时推给渲染层，结束时随工具卡一起持久化。
+ * （做成带 `kind` discriminated union，是为了将来别的长任务工具能复用同一条通道。）
+ */
+export type ToolProgress = { kind: 'subagent'; snapshot: SubagentSnapshot }
 
 export interface ToolContext {
   /** 调用来源会话 */
   sessionId: string
+  /** 本次调用的工具调用 id（子代理快照据此与工具卡配对） */
+  toolCallId?: string
   signal?: AbortSignal
+  /** 进度上报端口；未注入时（直接调用工具）静默丢弃 */
+  emitProgress?(payload: ToolProgress): void
 }
 
 export interface ToolResult {
@@ -19,6 +33,11 @@ export interface ToolResult {
   isError?: boolean
   /** 展示给用户的摘要（渲染执行卡片） */
   summary?: string
+  /**
+   * 工具自报的最终子代理快照（仅 `task`）：随工具卡一起持久化，
+   * 让「子代理」页面在重启后仍能回看历史运行。
+   */
+  subagent?: SubagentSnapshot
 }
 
 export interface ToolDefinition {

@@ -8,22 +8,35 @@
  * 每个 LLM 轮次产生的助手消息（文本 + 工具调用）**立即持久化**：
  * 工具结果必须能对应到发起它的 assistant 消息，否则续接上下文时服务端会拒绝请求。
  */
-import type { AgentToolCall } from '@aurora/shared'
+import type { AgentToolCall, SubagentSnapshot } from '@aurora/shared'
 import type {
   ChatEvent,
   ChatRequestMessage,
   LlmToolDefinition,
   ReasoningEffortLevel,
 } from '../llm/types.js'
-import type { ToolRegistry } from '../tools/registry.js'
+import type { ToolProgress, ToolRegistry } from '../tools/registry.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
 
 export const DEFAULT_MAX_ROUNDS = 8
 
+/**
+ * 循环事件（docs/06 §5、§16.1）。
+ *
+ * `round`：本事件属于第几个工具调用轮次（从 0 起）。思考链增量自身没有 `messageId`
+ * （那轮助手消息要等流结束才落盘），带 `round` 后渲染层才能把思考绑到正确的消息上。
+ */
 export type AgentLoopEvent =
-  | { type: 'reasoning'; delta: string }
-  | { type: 'text'; messageId: string; delta: string }
-  | { type: 'tool'; messageId: string; call: AgentToolCall }
+  | { type: 'reasoning'; round: number; delta: string }
+  | { type: 'text'; round: number; messageId: string; delta: string }
+  | { type: 'tool'; round: number; messageId: string; call: AgentToolCall }
+  | {
+      type: 'subagent'
+      round: number
+      messageId: string
+      callId: string
+      snapshot: SubagentSnapshot
+    }
   | { type: 'done'; pending?: boolean }
   | { type: 'error'; code: string; message: string }
 
@@ -130,10 +143,10 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       options.signal,
     )) {
       if (event.type === 'reasoning') {
-        // 思考链增量边到边转发（转发时还没有 messageId，渲染层按 requestId 聚合），
+        // 思考链增量边到边转发（转发时还没有 messageId，渲染层按 requestId + round 聚合），
         // 同时累积进本轮助手消息的 reasoning 字段，随 append 一起持久化
         reasoning += event.delta
-        yield { type: 'reasoning', delta: event.delta }
+        yield { type: 'reasoning', round, delta: event.delta }
         continue
       }
       if (event.type === 'text') {
@@ -165,7 +178,7 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
     }
 
     const assistant = await appendAssistant(options, text, calls, reasoning)
-    if (text !== '') yield { type: 'text', messageId: assistant.id, delta: text }
+    if (text !== '') yield { type: 'text', round, messageId: assistant.id, delta: text }
 
     if (calls.length === 0) {
       yield { type: 'done' }
@@ -182,15 +195,29 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       }
 
       const running = toAgentToolCall(call)
-      yield { type: 'tool', messageId: assistant.id, call: running }
+      yield { type: 'tool', round, messageId: assistant.id, call: running }
 
-      const outcome = await runTool(options, call)
+      // 工具执行与进度事件并行推进：`task` 子代理在执行期间持续上报进度快照，
+      // 由 runToolStreaming 边收边转成 `subagent` 事件（否则要等工具跑完才看得到）
+      const streaming = runToolStreaming(options, call, assistant.id, round)
+      let outcome: ToolOutcome
+      for (;;) {
+        const step = await streaming.next()
+        if (step.done === true) {
+          outcome = step.value
+          break
+        }
+        yield step.value
+      }
+
       call.state = outcome.state
       call.outputSummary = outcome.summary
+      // 子代理快照随工具卡一起持久化（渲染层「子代理」页面据此回看历史运行）
+      if (outcome.subagent !== undefined) call.subagent = outcome.subagent
       // 持久化工具卡片状态（同一 messageId 原地更新，渲染层据此刷新）
       await options.updateToolCall(assistant.id, { ...call })
 
-      yield { type: 'tool', messageId: assistant.id, call: toAgentToolCall(call) }
+      yield { type: 'tool', round, messageId: assistant.id, call: toAgentToolCall(call) }
 
       const toolMessage = await options.append({
         role: 'tool',
@@ -297,6 +324,7 @@ function toAgentToolCall(call: StoredToolCall): AgentToolCall {
       : { input: parseArguments(call.arguments) }),
     state: call.state,
     ...(call.outputSummary === undefined ? {} : { outputSummary: call.outputSummary }),
+    ...(call.subagent === undefined ? {} : { subagent: call.subagent }),
   }
 }
 
@@ -313,9 +341,91 @@ interface ToolOutcome {
   content: string
   summary: string
   state: 'success' | 'error'
+  /** 工具自报的最终子代理快照（仅 `task`；随工具卡一起持久化） */
+  subagent?: SubagentSnapshot
 }
 
-async function runTool(options: AgentLoopOptions, call: StoredToolCall): Promise<ToolOutcome> {
+/**
+ * 执行一次工具调用，并把工具在执行期间上报的进度（`emitProgress`）转成循环事件。
+ *
+ * 异步生成器的返回值是最终 `ToolOutcome`：消费方一路 `yield` 出去即可，
+ * 既拿到实时进度、又拿到结果，不必等工具跑完才看得到中间过程。
+ */
+async function* runToolStreaming(
+  options: AgentLoopOptions,
+  call: StoredToolCall,
+  messageId: string,
+  round: number,
+): AsyncGenerator<AgentLoopEvent, ToolOutcome> {
+  const queue: ToolProgress[] = []
+  let wake: (() => void) | undefined
+  let finished = false
+  let outcome: ToolOutcome | undefined
+  let latest: SubagentSnapshot | undefined
+
+  const notify = (): void => {
+    const resume = wake
+    wake = undefined
+    resume?.()
+  }
+  const emitProgress = (payload: ToolProgress): void => {
+    if (payload.kind === 'subagent') latest = payload.snapshot
+    queue.push(payload)
+    notify()
+  }
+
+  void runTool(options, call, emitProgress).then(
+    (result) => {
+      outcome = result
+      finished = true
+      notify()
+    },
+    (error: unknown) => {
+      // runTool 自身不抛；这里只是兜底，保证消费方不会永久挂起
+      const message = error instanceof Error ? error.message : String(error)
+      outcome = { content: `工具执行失败：${message}`, summary: '工具执行失败', state: 'error' }
+      finished = true
+      notify()
+    },
+  )
+
+  while (!finished || queue.length > 0) {
+    if (queue.length === 0) {
+      // 单线程：`wake` 在下一个 await 之前就已赋值，生产者的 notify 不会丢唤醒
+      await new Promise<void>((resolve) => {
+        wake = resolve
+      })
+      continue
+    }
+    const payload = queue.shift()
+    if (payload === undefined) continue
+    if (payload.kind === 'subagent') {
+      yield {
+        type: 'subagent',
+        round,
+        messageId,
+        callId: call.id,
+        snapshot: payload.snapshot,
+      }
+    }
+  }
+
+  const result = outcome ?? {
+    content: '工具没有返回结果',
+    summary: '工具没有返回结果',
+    state: 'error' as const,
+  }
+  // 工具自报的最终快照优先（那是终态：status / endedAt / report 都齐），
+  // 只在工具没自报时回落到「最后一条进度快照」，避免把运行中的中间态当成终态。
+  if (result.subagent !== undefined) return result
+  return latest === undefined ? result : { ...result, subagent: latest }
+}
+
+async function runTool(
+  options: AgentLoopOptions,
+  call: StoredToolCall,
+  emitProgress?: (payload: ToolProgress) => void,
+): Promise<ToolOutcome> {
   const tool = options.tools.get(call.name)
   if (tool === undefined) {
     const message = `工具 "${call.name}" 不存在；请从可用工具清单中选择。`
@@ -365,7 +475,9 @@ async function runTool(options: AgentLoopOptions, call: StoredToolCall): Promise
   try {
     const result = await tool.execute(input, {
       sessionId: options.sessionId,
+      toolCallId: call.id,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(emitProgress === undefined ? {} : { emitProgress }),
     })
     const isError = result.isError === true
     options.onToolCall?.({ name: call.name, sensitivity: tool.sensitivity ?? 'safe', isError })
@@ -379,6 +491,8 @@ async function runTool(options: AgentLoopOptions, call: StoredToolCall): Promise
           : result.content,
       summary,
       state: isError ? 'error' : 'success',
+      // 工具自报的最终子代理快照（仅 `task`）原样带上，随工具卡持久化
+      ...(result.subagent === undefined ? {} : { subagent: result.subagent }),
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

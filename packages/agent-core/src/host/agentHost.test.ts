@@ -141,6 +141,117 @@ describe('KernelAgentHost', () => {
     expect(text?.type === 'text' && text.messageId.length > 0).toBe(true)
   })
 
+  // ── docs/06 §16.1：事件顺序、轮次归属与子代理进度 ─────────────────
+
+  it('每个事件都带单调递增的 seq（渲染层据此排序）', async () => {
+    const harness = await createHarness({
+      rounds: [
+        { reasoning: ['想', '一下'], text: '先看文件', toolCalls: [{ id: 'c1', name: 'echo' }] },
+        { text: '好了' },
+      ],
+    })
+    await harness.send('x')
+    await harness.waitForDone()
+    const seqs = harness.events.map((event) => event.seq)
+    expect(seqs.length).toBeGreaterThan(3)
+    for (let index = 1; index < seqs.length; index += 1) {
+      expect(seqs[index]).toBeGreaterThan(seqs[index - 1] as number)
+    }
+  })
+
+  it('事件带轮次 round：思考与同一轮的文本 / 工具卡同号', async () => {
+    const harness = await createHarness({
+      rounds: [
+        { reasoning: ['第一轮思考'], text: '第一轮话', toolCalls: [{ id: 'c1', name: 'echo' }] },
+        { reasoning: ['第二轮思考'], text: '第二轮话' },
+      ],
+    })
+    await harness.send('x')
+    await harness.waitForDone()
+    const reasoning = harness.events.filter((event) => event.type === 'reasoning')
+    const texts = harness.events.filter(
+      (event): event is AgentEvent & { type: 'text' } => event.type === 'text',
+    )
+    expect(reasoning.map((event) => event.round)).toEqual([0, 1])
+    expect(texts.map((event) => event.round)).toEqual([0, 1])
+    expect(harness.events.find((event) => event.type === 'tool')?.round).toBe(0)
+    // 每轮一条助手消息：渲染层靠 round ↔ messageId 绑定思考归属
+    expect(texts[0]?.messageId).not.toBe(texts[1]?.messageId)
+  })
+
+  it('工具上报的进度转成 subagent 事件，最终快照随工具卡回传', async () => {
+    const harness = await createHarness({
+      rounds: [
+        {
+          toolCalls: [
+            {
+              id: 'call-1',
+              name: 'fake-task',
+              arguments: '{"description":"查资料","prompt":"..."}',
+            },
+          ],
+        },
+        { text: '完成' },
+      ],
+    })
+    harness.tools.register({
+      name: 'fake-task',
+      description: '假子代理',
+      parameters: { type: 'object' },
+      execute: async (_input, ctx) => {
+        ctx.emitProgress?.({
+          kind: 'subagent',
+          snapshot: {
+            taskId: 'task-1',
+            callId: ctx.toolCallId ?? '',
+            description: '查资料',
+            prompt: '...',
+            status: 'running',
+            startedAt: 1,
+            steps: [{ id: 's1', kind: 'tool', name: 'echo', state: 'running' }],
+            toolCalls: 1,
+          },
+        })
+        return {
+          content: '报告',
+          summary: '子代理：查资料',
+          subagent: {
+            taskId: 'task-1',
+            callId: ctx.toolCallId ?? '',
+            description: '查资料',
+            prompt: '...',
+            status: 'success',
+            startedAt: 1,
+            endedAt: 2,
+            steps: [{ id: 's1', kind: 'tool', name: 'echo', state: 'success' }],
+            toolCalls: 1,
+            report: '报告',
+          },
+        }
+      },
+    })
+    await harness.send('x')
+    await harness.waitForDone()
+
+    const progress = harness.events.filter(
+      (event): event is AgentEvent & { type: 'subagent' } => event.type === 'subagent',
+    )
+    expect(progress).toHaveLength(1)
+    expect(progress[0]).toMatchObject({ round: 0, callId: 'call-1', sessionId: 'quick' })
+    expect(progress[0]?.messageId.length).toBeGreaterThan(0)
+    expect(progress[0]?.subagent.status).toBe('running')
+
+    // 进度事件必须早于该工具的终态卡片（渲染层据此在卡片上就地长出进度）
+    const finalTool = harness.events.find(
+      (event): event is AgentEvent & { type: 'tool' } =>
+        event.type === 'tool' && event.call.state === 'success',
+    )
+    expect(finalTool?.call.subagent?.status).toBe('success')
+    expect(harness.events.indexOf(progress[0] as AgentEvent)).toBeLessThan(
+      harness.events.indexOf(finalTool as AgentEvent),
+    )
+  })
+
   it('无可用模型 → E_NO_MODEL，且不发起任何请求', async () => {
     const harness = await createHarness({ rounds: [], withProvider: false })
     await harness.send('x')

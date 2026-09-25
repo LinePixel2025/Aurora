@@ -140,6 +140,50 @@ describe('SessionStore', () => {
     expect(messages[0]?.toolCalls?.[0]?.outputSummary).toBe('已加载')
   })
 
+  it('rendererHistory 把工具卡片转成渲染层形状（arguments → input，子代理快照透传）', async () => {
+    const { store } = setup()
+    await store.append('quick', {
+      role: 'assistant',
+      content: 'a1',
+      toolCalls: [
+        {
+          id: 'c1',
+          name: 'task',
+          arguments: '{"description":"查资料","prompt":"..."}',
+          state: 'success',
+          outputSummary: '子代理：查资料',
+          subagent: {
+            taskId: 't1',
+            callId: 'c1',
+            description: '查资料',
+            prompt: '...',
+            status: 'success',
+            startedAt: 1,
+            endedAt: 2,
+            steps: [],
+            toolCalls: 1,
+            report: '报告',
+          },
+        },
+        // 夹具 / 早期数据可能已经是渲染层形状（只有 input、没有 arguments）：
+        // 曾经在这里直接读 `arguments.trim()`，抛错会让整份历史读不出来（界面全空）
+        { id: 'c2', name: 'read_file', input: { path: 'a.txt' }, state: 'success' } as never,
+      ],
+    })
+
+    const history = await store.rendererHistory('quick')
+    const calls = history[0]?.toolCalls ?? []
+    expect(calls[0]).toMatchObject({
+      id: 'c1',
+      name: 'task',
+      state: 'success',
+      input: { description: '查资料', prompt: '...' },
+      outputSummary: '子代理：查资料',
+    })
+    expect(calls[0]?.subagent?.report).toBe('报告')
+    expect(calls[1]?.input).toEqual({ path: 'a.txt' })
+  })
+
   it('rendererHistory 过滤工具与 system 消息，limit 取最近 N 条', async () => {
     const { store } = setup()
     await store.append('quick', { role: 'user', content: 'q1' })

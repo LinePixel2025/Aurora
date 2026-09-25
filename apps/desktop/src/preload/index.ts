@@ -112,6 +112,7 @@ const api: AuroraApi = {
   classisland: {
     status: () => invoke(IPC.classisland.status),
     test: () => invoke(IPC.classisland.test),
+    notify: (request) => invoke(IPC.classisland.notify, request),
   },
   chat: {
     send: (request) => invoke(IPC.chat.send, request),

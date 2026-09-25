@@ -1,6 +1,6 @@
 {
   "name": "@aurora/agent-core",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Aurora Agent 内核（纯 Node，不依赖 Electron / DOM）",

@@ -91,6 +91,16 @@ export interface AgentHostDeps {
 export const ERROR_NO_MODEL = 'E_NO_MODEL'
 export const ERROR_BUSY = 'E_BUSY'
 
+/**
+ * 发出事件时的入参形状：`seq` 由 `emit` 统一分配（docs/06 §16.1），
+ * 调用点不必、也不该自己编号 —— 序号是「发出顺序」的单一事实来源。
+ */
+type AgentEventInput = AgentEvent extends infer T
+  ? T extends { seq: number }
+    ? Omit<T, 'seq'>
+    : never
+  : never
+
 export class KernelAgentHost implements AgentHostContract {
   private readonly deps: AgentHostDeps
   private readonly logger: Logger
@@ -99,6 +109,12 @@ export class KernelAgentHost implements AgentHostContract {
   /** 每个会话的累计历史摘要（内存态；进程重启后由后续轮次重新压缩得出） */
   private readonly summaries = new Map<string, string>()
   private counter = 0
+  /**
+   * 事件序号（docs/06 §16.1）：单调递增，随每个 `AgentEvent` 下发。
+   * 渲染层据此排序消息、识别陈旧请求的迟到事件 —— 事件本身没有时间戳，
+   * 只靠 IPC 到达顺序无法区分「新一轮」与「上一轮的迟到事件」。
+   */
+  private seqCounter = 0
 
   constructor(deps: AgentHostDeps) {
     this.deps = deps
@@ -326,12 +342,14 @@ export class KernelAgentHost implements AgentHostContract {
       for await (const event of loop) {
         switch (event.type) {
           case 'reasoning': {
-            // 思考链增量（Design/betav2-spec.md §5/§6）：AgentEvent 侧只带
-            // sessionId / requestId / delta（无 messageId），渲染层按 requestId 聚合。
+            // 思考链增量（Design/betav2-spec.md §5/§6）：AgentEvent 侧不带 messageId
+            // （那轮助手消息要等流结束才落盘），渲染层按 requestId + round 聚合，
+            // 再用同一个 round 的文本 / 工具事件把思考绑到正确的消息上（docs/06 §16.1）。
             this.emit({
               type: 'reasoning',
               sessionId,
               requestId,
+              round: event.round,
               delta: event.delta,
             })
             break
@@ -341,6 +359,7 @@ export class KernelAgentHost implements AgentHostContract {
               type: 'text',
               sessionId,
               requestId,
+              round: event.round,
               messageId: event.messageId,
               delta: event.delta,
             })
@@ -351,8 +370,22 @@ export class KernelAgentHost implements AgentHostContract {
               type: 'tool',
               sessionId,
               requestId,
+              round: event.round,
               messageId: event.messageId,
               call: event.call,
+            })
+            break
+          }
+          case 'subagent': {
+            // 子代理进度（docs/06 §19）：只转发，不落盘 —— 最终快照会随工具卡持久化
+            this.emit({
+              type: 'subagent',
+              sessionId,
+              requestId,
+              round: event.round,
+              messageId: event.messageId,
+              callId: event.callId,
+              subagent: event.snapshot,
             })
             break
           }
@@ -389,10 +422,11 @@ export class KernelAgentHost implements AgentHostContract {
     }
   }
 
-  private emit(event: AgentEvent): void {
+  private emit(event: AgentEventInput): void {
+    const withSeq = { ...event, seq: (this.seqCounter += 1) } as AgentEvent
     for (const listener of this.listeners) {
       try {
-        listener(event)
+        listener(withSeq)
       } catch (error) {
         this.logger.warn('Agent 事件监听器抛错', { error: String(error) })
       }

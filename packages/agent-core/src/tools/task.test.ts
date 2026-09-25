@@ -16,6 +16,7 @@ import { createTodoTools } from './todo.js'
 import type { TodoItem, TodoPort } from './todo.js'
 import { ToolRegistry } from './registry.js'
 import type { ToolDefinition } from './registry.js'
+import type { SubagentSnapshot } from '@aurora/shared'
 import { createFakeProvider } from '../testing/fakeProvider.js'
 import type { ScriptRound } from '../testing/fakeProvider.js'
 
@@ -107,6 +108,60 @@ describe('createTaskTool', () => {
     const result = await tool.execute({ description: DESCRIPTION, prompt: PROMPT }, CONTEXT)
     expect(result.isError).toBeUndefined()
     expect(result.content).toBe('a'.repeat(MAX_TASK_RESULT_CHARS) + '…（子代理结果过长，已截断）')
+  })
+
+  it('进度上报：初始快照 + 每步一次 + 终态（含报告），callId 取自工具上下文', async () => {
+    const { tool } = createHarness({
+      rounds: [
+        // 子代理第 1 轮：一段文本 + 一次工具调用
+        { text: '先读目录', toolCalls: [{ id: 'sub-call-1', name: 'probe' }] },
+        { text: '结论：模块清单如下。' },
+      ],
+      extraTools: [makeTool('probe')],
+    })
+    const snapshots: SubagentSnapshot[] = []
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT },
+      {
+        sessionId: 'quick',
+        toolCallId: 'call-parent-1',
+        emitProgress: (payload) => {
+          expect(payload.kind).toBe('subagent')
+          snapshots.push(payload.snapshot)
+        },
+      },
+    )
+
+    // ① 派生瞬间先推一份「已开始」的空快照（卡片要立刻出现，而不是等第一个事件）
+    expect(snapshots.length).toBeGreaterThanOrEqual(3)
+    expect(snapshots[0]).toMatchObject({ status: 'running', toolCalls: 0, callId: 'call-parent-1' })
+    expect(snapshots[0]?.steps).toEqual([])
+    // ② 中途快照：文本步骤 + 工具步骤（running 与终态各一次，按 call.id 原地更新不重复）
+    const running = snapshots.find((item) =>
+      item.steps.some((step) => step.kind === 'tool' && step.state === 'running'),
+    )
+    expect(running?.status).toBe('running')
+    expect(running?.toolCalls).toBe(1)
+    // ③ 终态快照：状态收尾、有耗时、报告全文（与回传主代理的文本同源）
+    const last = snapshots[snapshots.length - 1]
+    expect(last).toMatchObject({ status: 'success', callId: 'call-parent-1' })
+    expect(last?.endedAt).toBeGreaterThanOrEqual(last?.startedAt ?? 0)
+    expect(last?.report).toBe('先读目录结论：模块清单如下。')
+    expect(last?.steps.filter((step) => step.kind === 'tool')).toHaveLength(1)
+    expect(last?.steps.filter((step) => step.kind === 'tool')[0]).toMatchObject({
+      name: 'probe',
+      state: 'success',
+    })
+    // ④ 最终快照也随工具结果回传（渲染层据此持久化到工具卡）
+    expect(result.subagent?.report).toBe('先读目录结论：模块清单如下。')
+    expect(result.subagent?.callId).toBe('call-parent-1')
+  })
+
+  it('没有 emitProgress 端口（直接调用工具）时静默跳过，不影响结果', async () => {
+    const { tool } = createHarness({ rounds: [{ text: '报告' }] })
+    const result = await tool.execute({ description: DESCRIPTION, prompt: PROMPT }, CONTEXT)
+    expect(result.content).toBe('报告')
+    expect(result.subagent?.report).toBe('报告')
   })
 
   it('provider 缺省（create 返回 undefined）→ isError，不发起请求', async () => {

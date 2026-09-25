@@ -86,10 +86,11 @@ export const IPC = {
     status: 'hotkey:status',
     changed: 'hotkey:changed',
   },
-  /** ClassIsland 桥接（docs/05 §3.4 v2） */
+  /** ClassIsland 桥接（docs/05 §3.4 v2/v3） */
   classisland: {
     status: 'classisland:status',
     test: 'classisland:test',
+    notify: 'classisland:notify',
   },
   /** ClassRoom 分类管线（docs/05 §3、docs/02 §5.2） */
   classification: {

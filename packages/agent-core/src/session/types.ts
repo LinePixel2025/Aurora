@@ -5,6 +5,7 @@
  * 前者是 Aurora 自己的存储 / IPC 形状（带时间戳与工具卡片状态），
  * 后者是 LLM 侧线上形状，两者由 `history.ts` 负责转换。
  */
+import type { SubagentSnapshot } from '@aurora/shared'
 
 export type StoredRole = 'user' | 'assistant' | 'tool' | 'system'
 
@@ -15,6 +16,13 @@ export interface StoredToolCall {
   arguments: string
   state: 'running' | 'success' | 'error'
   outputSummary?: string
+  /**
+   * `task` 子代理的运行快照（docs/06 §19）。
+   *
+   * 子代理的对话过程不落会话存储，这份快照是它唯一的留痕：随工具卡一起持久化后，
+   * 「子代理」页面在重启后仍能回看历史运行（步骤、耗时与最终报告）。
+   */
+  subagent?: SubagentSnapshot
 }
 
 export interface StoredMessage {
