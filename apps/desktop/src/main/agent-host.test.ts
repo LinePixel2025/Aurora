@@ -180,6 +180,46 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     expect(requests).toHaveLength(3)
   })
 
+  it('命令首尾带空白：按 trim 后的串匹配（「被匹配的命令」=「被执行的命令」）', async () => {
+    const logger = createRecordingLogger()
+    const { proactive, requests } = createFakeProactive(true)
+    const confirm = createConfirmTool({
+      proactive,
+      enabled: () => true,
+      allowPatterns: () => ['git status*'],
+      logger,
+    })
+
+    // 真正执行时 terminal.ts 用的是 `rawCommand.trim()`；匹配侧若拿未 trim 的原串，
+    // 下面这些写法都会白弹一张卡片 —— fail-safe（不会误放行），但"加了模式却有时不生效"难排查
+    for (const command of ['  git status', 'git status  ', '\n\tgit status  ']) {
+      const approved = await confirm(confirmInfo('run_command', { command }))
+      expect(approved).toBe(true)
+    }
+
+    expect(requests).toHaveLength(0)
+    // 审计日志记的也是 trim 后的命令：与真正执行的那条串一致，排查时不会对不上
+    expect(logger.records).toHaveLength(3)
+    expect(metaOf(logger.records)).toMatchObject({
+      pattern: 'git status*',
+      command: 'git status',
+    })
+  })
+
+  it('命令首尾带空白但未命中：走确认，且卡片看到的是**原串**（匹配用的 trim 不污染展示）', async () => {
+    const { proactive, requests } = createFakeProactive(true)
+    const confirm = createConfirmTool({
+      proactive,
+      enabled: () => true,
+      allowPatterns: () => ['git status*'],
+    })
+
+    await confirm(confirmInfo('run_command', { command: '  git diff  ' }))
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.input).toEqual({ command: '  git diff  ' })
+  })
+
   it('name 不是 run_command（write_file）：入参里带着命中模式的 command 也走确认', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({

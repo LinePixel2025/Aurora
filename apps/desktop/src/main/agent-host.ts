@@ -313,13 +313,20 @@ export function createConfirmTool(options: {
  *
  * 调用方拿到 `undefined` 时的行为是**走正常确认**，绝不放行：
  * "解析不出命令"不能被当成"命中免确认"，否则模型只要换一种参数写法就能摘掉确认闸门。
+ *
+ * 返回值**去掉首尾空白**（`trim()`）：真正执行时 `terminal.ts` 用的是 `rawCommand.trim()`，
+ * 若这里拿未 trim 的原串去匹配，模型传 `'  git status'`（前导空格）就对 `git status*`
+ * 不命中、白弹一张卡片 —— 是 fail-safe（不会误放行），但"加了模式却有时不生效"极难排查，
+ * 所以「被匹配的命令」与「被执行的命令」必须是**同一个串**。注意只改**匹配用的副本**：
+ * 传给确认卡片的 `info.input` 保持原样，用户看到的仍是他实际要执行的那条命令（含空白）。
  */
 function readCommand(input: unknown): string | undefined {
   if (typeof input !== 'object' || input === null) return undefined
   const command = (input as Record<string, unknown>)['command']
   if (typeof command !== 'string') return undefined
-  if (command.trim() === '') return undefined
-  return command
+  const trimmed = command.trim()
+  if (trimmed === '') return undefined
+  return trimmed
 }
 
 /** LLM 错误 → 可操作的中文提示（IPC 层只做透传，文案集中在这里）。 */
