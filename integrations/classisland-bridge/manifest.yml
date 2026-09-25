@@ -1,9 +1,9 @@
 id: aurora-classisland-bridge
 name: Aurora 桥接
-description: 把 ClassIsland 的课表写成 Aurora 可读的本地 JSON / HTTP 端点，让 Aurora 的课前提醒与今日课程感知跟随 ClassIsland。
+description: 把 ClassIsland 的课表与当前课状态写成 Aurora 可读的本地 JSON / HTTP 端点，并通过 ClassIsland 的提醒服务发出上课与课前提醒，让 Aurora 的课前提醒与今日课程感知跟随 ClassIsland。
 entranceAssembly: AuroraClassIslandBridge.dll
 apiVersion: 2.0.0.0
-version: 1.0.0.0
+version: 2.0.0.0
 author: Aurora
 url: https://github.com/aurora-desktop/aurora
 readme: README.md

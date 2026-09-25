@@ -102,6 +102,12 @@ public sealed class BridgeOptions
     /// <summary>ClassIsland 科目名 → Aurora 科目名（两边叫法不同时才需要填）。</summary>
     public Dictionary<string, string> SubjectMap { get; set; } = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// 课前提前多少分钟发提醒（0 = 关闭课前提醒）。
+    /// 上课提醒始终随课程切换发出；是否真正弹出还取决于 ClassIsland 通知服务的开关。
+    /// </summary>
+    public int RemindBeforeClassMinutes { get; set; } = 2;
+
     public static BridgeOptions CreateDefault()
     {
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -111,6 +117,7 @@ public sealed class BridgeOptions
             EnableHttpEndpoint = false,
             HttpPort = 17945,
             SubjectMap = new Dictionary<string, string>(StringComparer.Ordinal),
+            RemindBeforeClassMinutes = 2,
         };
     }
 
@@ -124,6 +131,9 @@ public sealed class BridgeOptions
         if (HttpPort is < 1024 or > 65535) HttpPort = defaults.HttpPort;
 
         SubjectMap ??= new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // 0 是合法值（= 关闭课前提醒）；负数视为配置错误，回落默认值
+        if (RemindBeforeClassMinutes < 0) RemindBeforeClassMinutes = defaults.RemindBeforeClassMinutes;
 
         return this;
     }

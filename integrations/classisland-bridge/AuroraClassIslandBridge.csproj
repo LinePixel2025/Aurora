@@ -81,6 +81,14 @@
         <Private>false</Private>
       </Reference>
       <!--
+        NotificationRequest 的基类链上有 CommunityToolkit.Mvvm 的 ObservableRecipient，
+        new NotificationRequest { ... } 即触发 CS0012；用 ClassIsland 自带的那份，避免版本错配。
+      -->
+      <Reference Include="CommunityToolkit.Mvvm">
+        <HintPath>$(ClassIslandCoreDir)/CommunityToolkit.Mvvm.dll</HintPath>
+        <Private>false</Private>
+      </Reference>
+      <!--
         AppBase 继承自 Avalonia.Application，因此引用它是一种**类型依赖**：
         即使我们不写 UI，编译器也需要它才能解析 AppBase 的成员。
       -->
