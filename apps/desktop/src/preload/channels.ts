@@ -53,6 +53,7 @@ const CHANNELS = {
   tts: {
     synthesize: 'tts:synthesize',
     testConnection: 'tts:testConnection',
+    listModels: 'tts:listModels',
   },
   // v8 新增（Design/betav2-spec.md §5）：与 shared 的 IPC 同步维护，编译期双向断言会兜住
   stt: {

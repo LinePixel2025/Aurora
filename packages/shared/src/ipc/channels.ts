@@ -39,6 +39,8 @@ export const IPC = {
   tts: {
     synthesize: 'tts:synthesize',
     testConnection: 'tts:testConnection',
+    /** 拉取模型列表（GET {baseUrl}/models，设置页「获取模型列表」） */
+    listModels: 'tts:listModels',
   },
   /** 语音输入（STT 转写，docs/08 §1） */
   stt: {

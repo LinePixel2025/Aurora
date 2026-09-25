@@ -453,6 +453,11 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
     两边的列表不共享、不联动，改一边不影响另一边（见 §1）。
   - 凭据沿用 §1.1 的只读标记口径：列表里只显示 `apiKeySet`（`凭据已保存` / `缺少凭据`），
     密文**永不回显**，编辑卡里的 API Key 是 write-only 输入，**留空 = 本次不修改**。
+  - **「获取模型列表」（编辑卡内，模型名输入框旁）**：调 `tts:listModels`
+    （`GET {baseUrl}/models`，端点规整见 06 §13.2），把返回的模型 id 填进模型名输入框的
+    datalist 作下拉候选，按钮旁显示「共 n 个」；baseUrl / apiKey 用**编辑中的草稿值**，
+    留空则由主进程回落已保存配置与凭据。失败走 toast 提示、**不改任何配置**；
+    模型名始终可直接手填，列表只是候选不是必经步骤。
   - 列表为空时是 `data-empty="tts.providers"` 的**空状态卡**，不画一排空行。
   - **STT 区组（v8 目标口径，UI 由另一任务实施）**：「总开关」（`stt.enabled`）、「默认 STT 模型」
     （`stt.active`）与 provider 列表增 / 改 / 删（表单 `baseUrl` / `apiKey` / `model` / `language`，见 §1）。

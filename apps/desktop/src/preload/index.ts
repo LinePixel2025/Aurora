@@ -76,6 +76,7 @@ const api: AuroraApi = {
   tts: {
     synthesize: (request) => invoke(IPC.tts.synthesize, request),
     testConnection: (request) => invoke(IPC.tts.testConnection, request),
+    listModels: (request) => invoke(IPC.tts.listModels, request),
   },
   stt: {
     transcribe: (request) => invoke(IPC.stt.transcribe, request),

@@ -32,6 +32,8 @@ import type {
   SkillsStatus,
   SttTranscribeRequest,
   SttTranscribeResult,
+  TtsListModelsRequest,
+  TtsListModelsResult,
   TtsSynthesizeRequest,
   TtsSynthesizeResult,
   TtsTestRequest,
@@ -198,6 +200,8 @@ export interface LlmTesterLike {
 export interface TtsSynthesizerLike {
   synthesize(request: TtsSynthesizeRequest): Promise<TtsSynthesizeResult>
   test(request: TtsTestRequest): Promise<TtsTestResult>
+  /** 「获取模型列表」（tts:listModels）：不抛，失败折 `ok: false + message` */
+  listModels(request: TtsListModelsRequest): Promise<TtsListModelsResult>
 }
 
 /** 语音输入（STT 转写，Design/betav2-spec.md §8.2）：`createSttService` 的返回值满足 */

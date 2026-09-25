@@ -314,6 +314,149 @@ describe('TtsSynthesizer · 错误处理', () => {
   })
 })
 
+describe('TtsSynthesizer · baseUrl 规整（404 根治，docs/06 §13.2）', () => {
+  /** 借 synthesize 捕获实际请求 URL：speechEndpoint 是模块内私有函数，从外部行为断言 */
+  async function endpointOf(baseUrl: string): Promise<string> {
+    const { fetchImpl, requests } = stubFetch(audioResponse([0]))
+    const tts = make(fakeSettings({ provider: { baseUrl } }), fetchImpl)
+    await tts.synthesize({ text: 'hi' })
+    return requests[0]!.url
+  }
+
+  it('只填域名根时自动补 /v1（漏写 /v1 的 404 根因）', async () => {
+    expect(await endpointOf('https://api.siliconflow.cn')).toBe(
+      'https://api.siliconflow.cn/v1/audio/speech',
+    )
+  })
+
+  it('带 /v1 与尾斜杠时正常拼接', async () => {
+    expect(await endpointOf('https://api.openai.com/v1/')).toBe(
+      'https://api.openai.com/v1/audio/speech',
+    )
+  })
+
+  it('误把 chat 端点整段当 baseUrl 时剥掉尾巴', async () => {
+    expect(await endpointOf('https://x.com/v1/chat/completions')).toBe(
+      'https://x.com/v1/audio/speech',
+    )
+  })
+
+  it('带路径（非域名根）尊重不动', async () => {
+    expect(await endpointOf('https://x.com/api/v1')).toBe('https://x.com/api/v1/audio/speech')
+  })
+
+  it('已以 /audio/speech 结尾时不重复拼（也不补 /v1）', async () => {
+    expect(await endpointOf('https://x.com/audio/speech')).toBe('https://x.com/audio/speech')
+  })
+
+  it('非法 URL 按原样拼接不抛（错误交给服务端报）', async () => {
+    expect(await endpointOf('not-a-url')).toBe('not-a-url/audio/speech')
+  })
+
+  it('404 文案带实际请求的 endpoint，用户可自诊断', async () => {
+    const { fetchImpl } = stubFetch(errorResponse(404, 'not found'))
+    const tts = make(fakeSettings(), fetchImpl)
+    await expect(tts.synthesize({ text: 'hi' })).rejects.toThrow(
+      /接口不存在.*api\.siliconflow\.cn\/v1\/audio\/speech/,
+    )
+  })
+})
+
+describe('TtsSynthesizer · listModels', () => {
+  function modelsResponse(body: string, init: ResponseInit = {}): Response {
+    return new Response(body, { status: 200, ...init })
+  }
+
+  it('GET {baseUrl}/models，带 Bearer 头，解析 data[].id', async () => {
+    const { fetchImpl, requests } = stubFetch(
+      modelsResponse(
+        JSON.stringify({ data: [{ id: 'tts-1' }, { id: 'FunAudioLLM/CosyVoice2-0.5B' }] }),
+      ),
+    )
+    const tts = make(fakeSettings(), fetchImpl)
+
+    const result = await tts.listModels({})
+
+    expect(requests[0]!.url).toBe(`${BASE_URL}/models`)
+    expect(requests[0]!.init.method).toBe('GET')
+    const headers = requests[0]!.init.headers as Record<string, string>
+    expect(headers['Authorization']).toBe('Bearer sk-saved')
+    expect(result.ok).toBe(true)
+    expect(result.models).toEqual(['tts-1', 'FunAudioLLM/CosyVoice2-0.5B'])
+    expect(result.message).toBeUndefined()
+  })
+
+  it('草稿值优先（含剥掉误填的 chat 端点尾巴），密钥用草稿明文', async () => {
+    const { fetchImpl, requests } = stubFetch(
+      modelsResponse(JSON.stringify({ data: [{ id: 'm' }] })),
+    )
+    const tts = make(fakeSettings({ secret: 'sk-saved' }), fetchImpl)
+
+    const result = await tts.listModels({
+      providerId: 'draft',
+      baseUrl: 'https://x.com/v1/chat/completions',
+      apiKey: 'sk-draft',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(requests[0]!.url).toBe('https://x.com/v1/models')
+    const headers = requests[0]!.init.headers as Record<string, string>
+    expect(headers['Authorization']).toBe('Bearer sk-draft')
+  })
+
+  it('baseUrl 已以 /models 结尾时不重复拼接', async () => {
+    const { fetchImpl, requests } = stubFetch(modelsResponse(JSON.stringify({ data: [] })))
+    const tts = make(fakeSettings({ provider: { baseUrl: `${BASE_URL}/models/` } }), fetchImpl)
+    await tts.listModels({})
+    expect(requests[0]!.url).toBe(`${BASE_URL}/models`)
+  })
+
+  it('data 非数组折成 ok: false + 中文提示（防御性解析不抛）', async () => {
+    const { fetchImpl } = stubFetch(modelsResponse(JSON.stringify({ models: ['x'] })))
+    const tts = make(fakeSettings(), fetchImpl)
+    const result = await tts.listModels({})
+    expect(result.ok).toBe(false)
+    expect(result.models).toEqual([])
+    expect(result.message).toContain('data')
+  })
+
+  it('条目缺 id / 非 id 条目被跳过，取能取到的', async () => {
+    const { fetchImpl } = stubFetch(
+      modelsResponse(
+        JSON.stringify({ data: [{ id: 'a' }, { nope: 1 }, 'junk', { id: '' }, { id: 'b' }] }),
+      ),
+    )
+    const tts = make(fakeSettings(), fetchImpl)
+    const result = await tts.listModels({})
+    expect(result.ok).toBe(true)
+    expect(result.models).toEqual(['a', 'b'])
+  })
+
+  it('HTTP 401 折成 describeHttpFailure 文案，不抛', async () => {
+    const { fetchImpl } = stubFetch(errorResponse(401, 'bad key'))
+    const tts = make(fakeSettings(), fetchImpl)
+    const result = await tts.listModels({})
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/401/)
+  })
+
+  it('网络异常折成中文提示，不抛', async () => {
+    const failing = (() => Promise.reject(new Error('ECONNREFUSED'))) as typeof fetch
+    const tts = make(fakeSettings(), failing)
+    const result = await tts.listModels({})
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('获取模型列表请求失败')
+  })
+
+  it('未配置 provider 时折成 ok: false 的中文提示', async () => {
+    const { fetchImpl } = stubFetch(audioResponse([0]))
+    const tts = make(fakeSettings({ active: '', omitProvider: true }), fetchImpl)
+    const result = await tts.listModels({})
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('尚未配置 TTS 模型')
+  })
+})
+
 describe('TtsSynthesizer · test', () => {
   it('成功回 ok + 字节数 + httpStatus', async () => {
     const { fetchImpl } = stubFetch(audioResponse([1, 2, 3]))

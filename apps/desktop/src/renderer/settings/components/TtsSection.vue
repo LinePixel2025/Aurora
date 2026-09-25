@@ -56,6 +56,10 @@ const testing = ref<string | null>(null)
 const results = reactive<Record<string, TtsTestResult>>({})
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
+/** 正在「获取模型列表」的 provider id（与「连接测试」互不相干，各自独立转圈） */
+const fetchingModels = ref<string | null>(null)
+/** 各 provider 最近一次拉到的模型候选（只进 datalist，不改任何配置） */
+const modelLists = reactive<Record<string, string[]>>({})
 
 const mode = ref<PageMode>('list')
 const editingId = ref<string | null>(null)
@@ -295,6 +299,38 @@ async function applyDraft(draft: ProviderDraft): Promise<void> {
   if (!(await saveProvider(draft))) return
   message.value = `已保存 ${draft.id}`
   closeEditor()
+}
+
+/**
+ * 「获取模型列表」：`tts:listModels` → 主进程 `GET {baseUrl}/models`（docs/06 §13.2）。
+ * 编辑中的草稿值优先；baseUrl / apiKey 留空则不传，由主进程回落已保存配置与凭据。
+ * 结果只填进模型名输入框的 datalist 作候选，不改任何配置；模型名始终可以直接手填。
+ */
+async function fetchModels(draft: ProviderDraft): Promise<void> {
+  fetchingModels.value = draft.id
+  error.value = null
+  const baseUrl = draft.baseUrl.trim()
+  const apiKey = draft.apiKey.trim()
+  const result = await window.aurora.tts.listModels({
+    providerId: draft.id,
+    baseUrl: baseUrl === '' ? undefined : baseUrl,
+    apiKey: apiKey === '' ? undefined : apiKey,
+  })
+  fetchingModels.value = null
+  if (!result.ok) {
+    error.value = result.message
+    return
+  }
+  if (!result.value.ok) {
+    error.value = result.value.message ?? '获取模型列表失败'
+    return
+  }
+  modelLists[draft.id] = result.value.models
+}
+
+/** 该 provider 编辑卡上当前可用的模型候选（datalist 数据源） */
+function modelsOf(id: string): string[] {
+  return modelLists[id] ?? []
 }
 
 /**
@@ -665,9 +701,31 @@ function stopPreview(): void {
                 :data-field="`tts.providers.${draft.id}.model`"
                 label="模型名"
                 required
-                hint="例：tts-1；SiliconFlow 例：FunAudioLLM/CosyVoice2-0.5B"
+                hint="例：tts-1；SiliconFlow 例：FunAudioLLM/CosyVoice2-0.5B；可点「获取模型列表」拉取候选"
               >
-                <input v-model="draft.model" class="input" type="text" spellcheck="false" />
+                <div class="row wrap model-row">
+                  <input
+                    v-model="draft.model"
+                    class="input grow"
+                    type="text"
+                    spellcheck="false"
+                    :list="`tts-model-options-${draft.id}`"
+                  />
+                  <!-- 候选模型：来自「获取模型列表」，只是候选，模型名始终可直接手填 -->
+                  <datalist :id="`tts-model-options-${draft.id}`">
+                    <option v-for="model in modelsOf(draft.id)" :key="model" :value="model" />
+                  </datalist>
+                  <AppButton
+                    size="sm"
+                    :disabled="fetchingModels !== null"
+                    @click="fetchModels(draft)"
+                  >
+                    {{ fetchingModels === draft.id ? '获取中…' : '获取模型列表' }}
+                  </AppButton>
+                  <span v-if="modelsOf(draft.id).length > 0" class="tiny muted">
+                    共 {{ modelsOf(draft.id).length }} 个
+                  </span>
+                </div>
               </SettingField>
 
               <SettingField
@@ -885,6 +943,11 @@ function stopPreview(): void {
   margin-top: var(--space-2);
   padding-top: var(--space-3);
   border-top: 1px solid var(--border-subtle);
+}
+
+/* 模型名输入行：输入框吃满剩余宽度，按钮与「共 n 个」贴在右边 */
+.model-row .input {
+  min-width: 160px;
 }
 
 .wrap {

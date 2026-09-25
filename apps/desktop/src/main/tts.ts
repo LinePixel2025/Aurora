@@ -6,7 +6,13 @@
  *
  * 本文件**不得 import electron**：它必须能被 vitest 直接加载（见 vitest.config.ts 的 include）。
  */
-import type { Logger, TtsFormat, TtsSynthesizeResult, TtsTestResult } from '@aurora/shared'
+import type {
+  Logger,
+  TtsFormat,
+  TtsListModelsResult,
+  TtsSynthesizeResult,
+  TtsTestResult,
+} from '@aurora/shared'
 import type { SettingsStoreLike } from './contracts.js'
 
 export interface TtsSynthesizerOptions {
@@ -36,6 +42,16 @@ export interface TtsTestRequest {
   speed?: number
   format?: TtsFormat
   text?: string
+}
+
+/**
+ * 「获取模型列表」（设置页编辑卡按钮）的请求：草稿值优先，缺省回落已保存配置。
+ * 只需要 baseUrl + apiKey，不要求 model / voice（拉列表时它们还没填很正常）。
+ */
+export interface TtsListModelsRequest {
+  providerId?: string
+  baseUrl?: string
+  apiKey?: string
 }
 
 /** 设置页「试听 / 连接测试」的缺省样例句。 */
@@ -86,11 +102,12 @@ export class TtsSynthesizer {
     const input = truncated ? text.slice(0, maxChars) : text
 
     const startedAt = Date.now()
-    const response = await this.post(resolved, input, this.timeoutMs)
+    const endpoint = speechEndpoint(resolved.provider.baseUrl)
+    const response = await this.post(resolved, endpoint, input, this.timeoutMs)
 
     if (!response.ok) {
       const detail = await this.readErrorDetail(response)
-      const message = describeHttpFailure(response.status, detail)
+      const message = describeHttpFailure(response.status, detail, endpoint)
       this.logger.warn('TTS 合成失败', { provider: provider.id, status: response.status })
       throw new Error(message)
     }
@@ -128,7 +145,8 @@ export class TtsSynthesizer {
       const maxChars = this.settings.get().tts.maxChars
       const input = text.length > maxChars ? text.slice(0, maxChars) : text
 
-      const response = await this.post(resolved, input, TEST_TIMEOUT_MS)
+      const endpoint = speechEndpoint(resolved.provider.baseUrl)
+      const response = await this.post(resolved, endpoint, input, TEST_TIMEOUT_MS)
       const latencyMs = Date.now() - startedAt
 
       if (!response.ok) {
@@ -140,7 +158,7 @@ export class TtsSynthesizer {
         return {
           ok: false,
           latencyMs,
-          message: describeHttpFailure(response.status, detail),
+          message: describeHttpFailure(response.status, detail, endpoint),
           httpStatus: response.status,
         }
       }
@@ -162,6 +180,55 @@ export class TtsSynthesizer {
       return {
         ok: false,
         latencyMs: Date.now() - startedAt,
+        message: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
+  /**
+   * 拉取模型列表（设置页「获取模型列表」，`GET {baseUrl}/models`，docs/06 §13.2）。
+   * 与 `test` 同款「不抛」口径：配置缺失、网络错误、HTTP 失败、响应畸形
+   * 一律折成 `{ ok: false, models: [], message }` 供设置页直接 toast。
+   */
+  async listModels(request: TtsListModelsRequest): Promise<TtsListModelsResult> {
+    try {
+      const resolved = this.resolveListInputs(request)
+      const endpoint = modelsEndpoint(resolved.baseUrl)
+      const response = await this.get(endpoint, resolved.apiKey, TEST_TIMEOUT_MS)
+
+      if (!response.ok) {
+        const detail = await this.readErrorDetail(response)
+        this.logger.warn('TTS 拉取模型列表失败', {
+          provider: resolved.providerId,
+          status: response.status,
+        })
+        return {
+          ok: false,
+          models: [],
+          message: describeHttpFailure(response.status, detail, endpoint),
+        }
+      }
+
+      let body: unknown
+      try {
+        body = await response.json()
+      } catch {
+        return { ok: false, models: [], message: '模型列表响应不是合法 JSON' }
+      }
+      const parsed = parseModelList(body)
+      if (!parsed.ok) {
+        this.logger.warn('TTS 模型列表响应格式异常', { provider: resolved.providerId })
+        return { ok: false, models: [], message: parsed.message }
+      }
+      this.logger.info('TTS 拉取模型列表成功', {
+        provider: resolved.providerId,
+        count: parsed.models.length,
+      })
+      return { ok: true, models: parsed.models }
+    } catch (error) {
+      return {
+        ok: false,
+        models: [],
         message: error instanceof Error ? error.message : String(error),
       }
     }
@@ -226,14 +293,47 @@ export class TtsSynthesizer {
     }
   }
 
-  /** 发一次 `POST <baseUrl>/audio/speech`；超时统一折成固定中文文案。 */
+  /**
+   * `listModels` 专用的轻量解析：与 `resolve` 同一套「草稿优先 → 回落已保存配置」思路，
+   * 但只要 baseUrl + apiKey，不要求 model / voice。
+   */
+  private resolveListInputs(request: TtsListModelsRequest): {
+    providerId: string
+    baseUrl: string
+    apiKey: string
+  } {
+    const settings = this.settings.get()
+    const providerId = request.providerId ?? settings.tts.active
+    if (providerId === '') throw new Error('尚未配置 TTS 模型')
+
+    const saved = settings.tts.providers[providerId]
+    if (saved === undefined && request.baseUrl === undefined) {
+      throw new Error(`TTS 模型「${providerId}」不存在`)
+    }
+
+    const baseUrl = (request.baseUrl ?? saved?.baseUrl ?? '').trim()
+    if (baseUrl === '') throw new Error('请先填写 baseURL')
+
+    const apiKey =
+      request.apiKey !== undefined && request.apiKey !== ''
+        ? request.apiKey
+        : saved === undefined
+          ? ''
+          : this.settings.getSecret(`tts.providers.${providerId}.apiKey`)
+
+    if (apiKey === '') throw new Error('缺少 API Key：请填写密钥')
+
+    return { providerId, baseUrl, apiKey }
+  }
+
+  /** 发一次 `POST <endpoint>`；超时统一折成固定中文文案。 */
   private async post(
     resolved: ReturnType<TtsSynthesizer['resolve']>,
+    endpoint: string,
     input: string,
     timeoutMs: number,
   ): Promise<Response> {
     const { provider, apiKey } = resolved
-    const endpoint = speechEndpoint(provider.baseUrl)
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     const seconds = Math.round(timeoutMs / 1000)
@@ -264,6 +364,29 @@ export class TtsSynthesizer {
     }
   }
 
+  /** 发一次 `GET <endpoint>`（拉模型列表）；超时 / 网络异常折成固定中文文案，模式与 post 同款。 */
+  private async get(endpoint: string, apiKey: string, timeoutMs: number): Promise<Response> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    const seconds = Math.round(timeoutMs / 1000)
+
+    try {
+      const fetchImpl = this.netFetch()
+      return await fetchImpl(endpoint, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: controller.signal,
+      })
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error(`获取模型列表超时（${seconds}s）`)
+      throw new Error(
+        `获取模型列表请求失败：${error instanceof Error ? error.message : String(error)}`,
+      )
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   private async readErrorDetail(response: Response): Promise<string> {
     try {
       const body = await response.text()
@@ -287,19 +410,69 @@ export class TtsSynthesizer {
   }
 }
 
-/** `<baseUrl>` 去尾斜杠后拼 `/audio/speech`；已经以它结尾时不重复拼。 */
+/**
+ * 误填成 baseUrl 的已知端点尾巴（长尾在前，避免 `/chat/completions` 只被剥掉一半的 `/completions`）。
+ * `/audio/speech` 也在列：拉模型列表等场景要把误粘的合成端点剥掉。
+ */
+const KNOWN_ENDPOINT_TAILS = [
+  '/audio/transcriptions',
+  '/chat/completions',
+  '/audio/speech',
+  '/completions',
+  '/models',
+] as const
+
+/**
+ * baseUrl 规整（docs/06 §13.2）：去尾斜杠 → 剥误填的已知端点尾巴 → 域名根自动补 `/v1`。
+ * 带路径（`/api/v1`、`/compatible-mode/v1` 等）尊重不动；URL 非法则原样返回，
+ * 把错误交给服务端报出来（不在这里抛）。
+ */
+function normalizeBaseUrl(baseUrl: string): string {
+  let trimmed = baseUrl.replace(/\/+$/, '')
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const tail of KNOWN_ENDPOINT_TAILS) {
+      if (trimmed.length > tail.length && trimmed.endsWith(tail)) {
+        trimmed = trimmed.slice(0, -tail.length).replace(/\/+$/, '')
+        changed = true
+        break
+      }
+    }
+  }
+  try {
+    const url = new URL(trimmed)
+    // 只填了域名根（如 https://api.siliconflow.cn）：自动补 /v1（漏写 /v1 是 404 的最大来源）
+    if (url.pathname === '' || url.pathname === '/') return `${trimmed}/v1`
+  } catch {
+    return trimmed
+  }
+  return trimmed
+}
+
+/** `<baseUrl>` 规整后拼 `/audio/speech`；已经以它结尾时不重复拼（也不补 /v1）。 */
 function speechEndpoint(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/, '')
-  return trimmed.endsWith('/audio/speech') ? trimmed : `${trimmed}/audio/speech`
+  if (trimmed.endsWith('/audio/speech')) return trimmed
+  return `${normalizeBaseUrl(trimmed)}/audio/speech`
+}
+
+/** `<baseUrl>` 规整后拼 `/models`；已经以它结尾时不重复拼（也不补 /v1）。 */
+function modelsEndpoint(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, '')
+  if (trimmed.endsWith('/models')) return trimmed
+  return `${normalizeBaseUrl(trimmed)}/models`
 }
 
 /** 按状态码给中文前缀，并把服务端返回的 body 尾巴拼上（便于用户自查）。 */
-function describeHttpFailure(status: number, detail: string): string {
+function describeHttpFailure(status: number, detail: string, endpoint?: string): string {
   const prefix =
     status === 401 || status === 403
       ? 'API Key 无效或没有权限'
       : status === 404
-        ? '接口或模型不存在（请检查 baseURL 与模型名）'
+        ? endpoint === undefined
+          ? '接口或模型不存在（请检查 baseURL 与模型名）'
+          : `接口不存在：实际请求了 ${endpoint}。请检查 baseURL 是否以 /v1 结尾、模型名是否正确；部分网关不支持 OpenAI 兼容端点`
         : status === 429
           ? '请求过于频繁，已被限流'
           : status >= 500
@@ -307,4 +480,29 @@ function describeHttpFailure(status: number, detail: string): string {
             : '语音合成失败'
   const suffix = detail.trim() === '' ? '' : `：${detail.trim()}`
   return `${prefix}（HTTP ${status}）${suffix}`
+}
+
+/**
+ * 防御性解析 OpenAI `GET /models` 响应的 `data[].id`：
+ * 畸形响应（非对象 / 缺 data 数组）不抛，折成失败 + 中文提示；
+ * 数组里个别缺 id / 非 id 条目直接跳过（取能取到的）。
+ */
+function parseModelList(
+  body: unknown,
+): { ok: true; models: string[] } | { ok: false; message: string } {
+  if (typeof body !== 'object' || body === null) {
+    return { ok: false, message: '模型列表响应不是 JSON 对象' }
+  }
+  const data = (body as { data?: unknown }).data
+  if (!Array.isArray(data)) {
+    return { ok: false, message: '模型列表响应缺少 data 数组（非 OpenAI 兼容格式）' }
+  }
+  const models: string[] = []
+  for (const item of data) {
+    if (typeof item === 'object' && item !== null) {
+      const id = (item as { id?: unknown }).id
+      if (typeof id === 'string' && id !== '') models.push(id)
+    }
+  }
+  return { ok: true, models }
 }

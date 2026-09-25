@@ -277,6 +277,13 @@ export function registerIpc(deps: DesktopDeps): () => void {
         err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
       )
   })
+  handle(IPC.tts.listModels, (request: Parameters<TtsSynthesizerLike['listModels']>[0]) => {
+    return deps.tts
+      .listModels(request)
+      .then(ok, (error: unknown) =>
+        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      )
+  })
 
   // ───────────────── stt / imagegen（v8 新增，Design/betav2-spec.md §5 / §8） ─────────────────
 

@@ -242,6 +242,23 @@ export interface TtsTestResult {
   httpStatus?: number
 }
 
+export interface TtsListModelsRequest {
+  /** 缺省用 `tts.active` */
+  providerId?: string
+  /** 页面草稿里的 baseURL；为空则回落已保存配置 */
+  baseUrl?: string
+  /** 页面草稿里的明文；为空则回落已保存凭据 */
+  apiKey?: string
+}
+
+export interface TtsListModelsResult {
+  ok: boolean
+  /** OpenAI 格式 `data[].id`；失败时为空数组 */
+  models: string[]
+  /** 失败原因（防御性解析 / HTTP 错误），渲染层直接 toast */
+  message?: string
+}
+
 // ───────────────────────── 语音输入（STT，docs/08 §1） ─────────────────────────
 
 export interface SttTranscribeRequest {
@@ -549,7 +566,7 @@ export interface ChatMessageDto {
 
 export interface ChatHistoryRequest {
   sessionId: string
-  /** 返回最近 N 条；缺省返回全部 */
+  /** 返回最近 N 条；缺省 100（与 main/ipc.ts 的 handler 对齐） */
   limit?: number
 }
 
@@ -574,6 +591,14 @@ export type AgentEvent =
     }
   | { type: 'done'; sessionId: string; requestId: string; pending?: boolean }
   | { type: 'error'; sessionId: string; requestId: string; code: string; message: string }
+  | {
+      /** 用户消息落盘前的实时同步广播；渲染层按内容 + 时间去重 */
+      type: 'user-message'
+      sessionId: string
+      requestId: string
+      content: string
+      createdAt: number
+    }
 
 // ───────────────────────── preload 暴露面 ─────────────────────────
 
@@ -622,6 +647,8 @@ export interface AuroraApi {
     synthesize(request: TtsSynthesizeRequest): Promise<Result<TtsSynthesizeResult>>
     /** 连接测试 / 试听（不回传音频，只回结果文字；试听播放走 synthesize） */
     testConnection(request: TtsTestRequest): Promise<Result<TtsTestResult>>
+    /** 拉取模型列表（`GET {baseUrl}/models`，供模型名 datalist 候选；不抛，失败折 message） */
+    listModels(request: TtsListModelsRequest): Promise<Result<TtsListModelsResult>>
   }
   stt: {
     /** 语音输入：上传录音片段转写为文本（渲染层不持有明文密钥） */
