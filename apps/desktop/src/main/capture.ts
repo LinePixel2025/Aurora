@@ -1016,17 +1016,22 @@ const BURST_LONG_TASK_LIMITS = {
  *
  * | 指标 | 修复前 | 修复后 | 阈值 | 说明 |
  * | --- | --- | --- | --- | --- |
- * | maxUnhiddenHeartbeatMs | 661.4 | 51.0 | 160 | 3.1 倍余量 |
- * | heartbeatOverrunMs | 4749.4 | 108.8 | 400 | 3.7 倍余量 |
+ * | maxUnhiddenHeartbeatMs | 661.4 | 51.0 | 160 | **主判据**：3.1 倍余量 |
+ * | heartbeatOverrunMs | 4749.4 | 108.8 | 1200 | 累计量，见下面的争用说明 |
  * | maxFrameGapMs | 137.5 | 29.2 | 110 | 3.8 倍余量，仍低于修复前值（能抓住回归） |
  * | droppedFrames | 238 | 0 | 25 | 修复后为 0，只能给绝对下限（约 0.4s 的掉帧代价） |
  *
  * 阈值按「修复后 × 约 3 倍」取宽松余量，防 CI 机器抖动假 FAIL；数值随机器档位浮动，
  * 断言的只有数量级 —— 改桩的密度 / transcript 规模等于改基线的量纲，必须重新标定。
+ *
+ * **`heartbeatOverrunMs` 是累计量、对 CPU 争用明显更敏感**（同一份代码实测：只跑 chat 组 69ms、
+ * 单独重跑 108ms、另一个代理并发跑时 182ms、**四窗口全开 552ms**；修复前是 4749ms）。
+ * 因此它取 1200 —— 仍比修复前低约 4 倍，真回归照样 FAIL，但旁边多开两个窗口不会假 FAIL。
+ * 需要判断「渲染是否跟不上」时看 `maxUnhiddenHeartbeatMs`（最坏单次，661 → 65，差一个数量级）。
  */
 const BURST_LAG_LIMITS = {
   maxHeartbeatMs: 160,
-  heartbeatOverrunMs: 400,
+  heartbeatOverrunMs: 1200,
   maxFrameGapMs: 110,
   droppedFrames: 25,
 }
