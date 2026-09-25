@@ -15,10 +15,10 @@ apps/desktop/
   src/preload/       沙箱化 contextBridge 白名单（自包含，见下）
   src/renderer/      四个窗口入口：edge-bar / chat /
                      settings / onboarding + shared/ 共享组件
-                     （快速会话没有独立窗口，并入交互窗侧栏的「快速」栏）
+                     （chat 即主界面：1120×720 常驻三栏，快速会话是左栏固定顶置项，无独立快捷窗口）
 packages/shared/     配置 Schema、SettingsStore、IPC 契约、模式/窗口类型
 packages/agent-core/ Agent 内核：LLM / 会话 / 工具循环 / Skill / MCP / Prompt 组装
-packages/modes/      IMode 框架、ClassRoom 完整实现、Work/Code 占位
+packages/modes/      IMode 框架、ClassRoom 完整实现、Work 初步实装（BetaV2）/ Code 占位
 skills/              内置 SKILL.md（file-classify / system-status / timetable）
 scripts/             图标生成、验收、发布脚本
 docs/                项目文档（SSOT，01–09 分册）
@@ -44,6 +44,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **窗口截图核对（前端视觉验收）**：`$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev`，会把四个窗口、
   提示条两态、设置页各页与各条 DOM 探针场景（面板 / 收起 / 自动滚底 / 门控 / 拖动 / 思考等级 /
   模型列表与模型选择 / 真实写盘 / 提示条收尾图）截成一批 PNG ——
+  BetaV2 起另有主界面三栏场景（左栏门控 / 右栏开关与 Work / 思考块 / 快速会话）、
+  设置六页新门控与旧深链别名（`settings-legacy-tts-alias`）场景；
   **张数与具体构成以 `report.json` 的实际条目为准，不要按固定张数校验**，
   并写 `report.json`（渲染层 DOM 探针结果：
   面板按钮命中测试、点击竖条后的窗口状态、设置页 `data-field` 门控计数；探针返回 `pass` 时按 PASS/FAIL 落日志，
@@ -104,11 +106,13 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   「快速会话」（`sessionId = quick`）与历史会话列表都搬到交互窗侧栏（「快速 / 会话」双栏），
   提示条面板操作入口由 4 个减为 3 个；配置迁移到 v6（`v5 → v6` 删除 `general.windowState['mini-chat']`）。
 - MCP HTTP 传输暂不支持自定义鉴权头（凭据仅经 stdio `env` 注入）。
-- **语音只做 TTS 输出，语音输入（STT）未开始**：助手消息的「朗读」按钮与「自动朗读新回复」
-  都依赖 `tts.enabled` + `tts.active` 指向一个 `baseUrl`/`model`/`voice` 都填齐的 provider；
-  **未配置时对话窗连按钮都不渲染**（不是 disabled）——这是文档门控口径，别当 bug 修。
+- **语音输入（STT）已实装（v1.1.0-beta.2）**：对话窗 composer 的麦克风按钮（`data-field="chat.mic"`）
+  门控口径同 TTS —— `stt.enabled` + `stt.active` 指向一个 `baseUrl`/`model` 齐全的 provider
+  **才渲染按钮，未配置时连按钮都不渲染**（不是 disabled）——这是文档门控口径，别当 bug 修
+  （TTS「朗读」按钮同款口径，见 docs/07 §2.3）。
 - Skill 的 `scripts/` 永不自动执行（只注入指令正文）；图片 OCR 未启用（只取文件名与尺寸）。
-- Work / Code Mode 为占位实现；多语言、ARM64 / 便携版、macOS / Linux 未开始。
+- Code Mode 为占位实现；Work Mode 已初步实装（v1.1.0-beta.2，guide + systemPrompt + workspaceDir）。
+  多语言、ARM64 / 便携版、macOS / Linux 未开始。
 - `integrations/classisland-bridge` **CI 不编译**（流水线没有 .NET SDK）。
   它已用 ClassIsland 2.1.0.1 的真实程序集在本机编译并实跑验证过（见该目录 README 的「已验证程度」），
   改动后请在装有 .NET SDK 与 ClassIsland 的机器上重新验证：
@@ -143,6 +147,14 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   漏改 `writeSecretField` = 凭据静默丢失，漏改 `redactSettings` = 密文泄漏进渲染层。
   另注意 `SENSITIVE_KEY_PATTERN` 原本是**整体锚定**的，`apiKeyEnc` 这类**派生字段名**不命中 ——
   它已补 `.*api[-_]?key.*` 分支，日志脱敏才盖得住密文。
+- **BetaV2 新能力的注册口径**：STT / 生图 / 新工具五件套（`web_fetch` / `notify_user` /
+  `clipboard_read` / `clipboard_write` / `generate_image`）**不走 `agent.tools.enabled` 门控**
+  （那个总开关只管终端 / 文件 / 打开三件套），敏感项靠 `sensitivity: 'confirm'` 逐次确认；
+  `set_setting` 的可写面由 `packages/shared/src/config/schema.ts` 的 `WRITABLE_PATH_OVERRIDES`
+  显式覆盖表驱动（先于 readonly 前缀判定）——要新增「Agent 可写的设置路径」先改该表，
+  再同步 `set_setting` 的工具 description 与 systemPrompt 的 settingsHint。
+- **主界面 `chat` 窗口是 1120×720、`alwaysOnTop=false` 的常驻大窗**（三栏布局 + 右栏模式感知，
+  关闭仍 = 隐藏），别按旧版 420×640 侧弹交互窗的心智模型理解它的几何、层级与探针坐标。
 - **改了 `packages/shared/src/**` 之后必须先 `pnpm --filter @aurora/shared build` 再跑下游 typecheck**：
   该包的 `types` 指向 `dist/index.d.ts`，不重建的话 `apps/desktop` 会对着**旧类型**报
   「no exported member」（看着像自己写错了，其实只是没编译）。

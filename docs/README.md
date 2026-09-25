@@ -57,10 +57,40 @@
   详见 [06-agent-core.md §13](./06-agent-core.md)、[08-settings-onboarding.md §6](./08-settings-onboarding.md)。
   **语音输入（STT）不在本轮范围**。
 
+**v1.1.0-beta.2（BetaV2）本轮新增**：
+
+- **主界面三栏**：`chat` 窗升级为常驻主界面（默认 **1120×720**、`alwaysOnTop` 关闭），三栏布局
+  （左栏品牌 + 新对话 + 会话列表 / 中区对话 / 右栏模式感知上下文栏，两侧均可折叠）；
+  **「快速会话」融入左栏**成为固定顶置项，旧的「快速 / 会话」双栏 tab 与历史 sheet 移除；
+  右栏按当前模式渲染（classroom：当前 / 下节课 + 今日课程 + 分类流水；work：工作目录卡；
+  通用：系统状态卡），非当前模式的功能一律不渲染。
+- **Apple HIG 主题**：设计令牌全面转向 Apple 系统色（强调色 `#007AFF` / `#0A84FF` 系），
+  **废弃 aurora 双色渐变**，明暗双档底色 / 分层填充按 HIG 重写（CSS 变量名不变，组件零改动跟随）；
+  动画扩充：设置页横向切换、侧栏 / 右栏弹簧滑入、思考块 collapse、麦克风录音 pulse、
+  模式切换 cross-fade（全部尊重 `prefers-reduced-motion` 全局覆盖）。
+- **设置页 8 → 6**：`general / modes / llm / voice / agent / advanced` 六页 IA ——
+  TTS 页并入 voice（与 STT 同页）、Skill / MCP 页并入 agent；旧深链 `?page=tts|skills|mcp`
+  单向映射到新页，兼容旧链接。
+- **Work Mode 初步实装**：guide 两步（工作目录问答 + 确认）+ 办公场景 systemPrompt
+  （文档 / 表格 / PPT / PDF 处理，PowerShell COM 自动化 Office）+ `modes.work.workspaceDir`。
+- **ClassIsland 桥接 v2**：`schedule.json` 根对象**内嵌可选 `status` 快照**（当前 / 下节课，
+  另写同目录 `status.json` 兄弟文件供人工查看），经 `classisland:status` IPC 透出、
+  主界面右栏「当前 / 下节课」卡消费；课程切换与课前提醒改经 **ClassIsland 自己的提醒服务**弹出，
+  插件 zip 随 release 一并发布；课前提醒新增「自动打开科目文件夹」开关
+  （`modes.classroom.preClassOpenFolder`）。
+- **Agent 强化**：`set_setting` 可写面扩大（v8 显式可写覆盖表，可切模式 / 改模型参数 / 开关功能组）；
+  新工具五件套 `web_fetch` / `clipboard_read` / `clipboard_write` / `notify_user` / `generate_image`
+  （不走 `agent.tools.enabled` 门控，敏感项靠逐次确认）；**生图**（`imagegen.*` provider 体系 +
+  工具卡图片预览）；**语音输入 STT**（`stt.*`，composer 麦克风按钮，门控口径同 TTS ——
+  未配置时连按钮都不渲染）；**思考过程展示**（`reasoning` 流事件 + 持久化 + 可折叠思考块，
+  `general.chat.showThinking` 门控）。
+- 配置 Schema 升到 **v8**（`v7 → v8` 迁移：新增 `stt.*` / `imagegen.*` / `general.chat.*` /
+  `modes.work.workspaceDir` / `preClassOpenFolder`，幂等补默认值、不覆盖用户已写值）。
+
 鼠标键盘模拟、截图录屏、持久交互式 shell、命令黑名单、Anthropic 等非 OpenAI 兼容协议
 **仍属后续范围**。
 
-仍待做：代码签名证书、启动耗时 / 内存优化、Work / Code Mode 功能实现、OCR、多语言。
+仍待做：代码签名证书、启动耗时 / 内存优化、Code Mode 功能实现（Work 已于 1.1.0-beta.2 初步实装）、OCR、多语言。
 详见 [04-roadmap.md](./04-roadmap.md) 的阶段状态与「实现说明」。
 实际工程结构见根目录 [README.md](../README.md)；端到端验证见 `pnpm verify`、
 `pnpm verify:release`、`pnpm verify:update` 与 `AURORA_SMOKE=1 pnpm dev`。
