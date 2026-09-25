@@ -817,23 +817,22 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     `?page=tts` 必须经 `LEGACY_PAGE_ALIASES` 落到合并后的「语音」页（`tts.enabled` 与 `stt.enabled` 都在）；
   - **「智能与工具」页门控**（`SETTINGS_AGENT_FIELDS_SCRIPT`；BetaV2 六页 IA 下原「电脑操控」页
     并入技能 + MCP 两区组）：读 `agent.tools.enabled` 复选框的**实际状态**，
-    开着时要求终端 / 文件 / 打开三栏的详情字段都在（`terminalFields/filesFields/openFields > 0`）、
+    开着时要求终端 / 文件 / **文件检索** / 打开**四栏**的详情字段都在
+    （`terminalFields/filesFields > 0`、`searchFields >= 2`、`openFields > 0`）、
     MCP 区组必须给出「空状态（`data-empty="mcp.servers"`）或服务器行」之一，
     且不得出现这两个**预期**空状态之外的任何 `data-empty`（技能同理，`skills.disabled` 允许出现）；
     关着时只要求总开关本身仍在 —— 否则用户再也开不回来；
-  - **本轮（工具面扩展）预期新增 / 变化的探针条目（数值待回填）**：新增工具与字段会同时动
-    「智能与工具」页与对话窗上下文条两处探针口径，**条目名与计数一律以 `report.json` 的实际条目为准、
-    端到端实跑后回填**，这里只登记口径、不写死数值：
-    - `settings-agent.png`（`SETTINGS_AGENT_FIELDS_SCRIPT`）：详情字段数（上一条的
-      `terminalFields` / `filesFields` / `openFields` 口径）预期把新增的两组计入 ——
-      「文件检索」栏的 `agent.tools.search.enabled` / `agent.tools.search.maxResults`，
-      与终端卡片下「免确认命令模式」列表的 `agent.tools.terminal.allowPatterns`
-      （出厂默认是空数组，此时该栏是空状态提示，与上面「空状态 / 行容器二选一」同款口径）；
+  - **本轮（工具面扩展）的探针条目与实测值**（2026-09 `AURORA_CAPTURE` 实跑：
+    **48 张 PNG / 48 条 `checks` / 0 FAIL / 退出码 0**，12 条 DOM 探针全 PASS）：
+    - `settings-agent.png`（`SETTINGS_AGENT_FIELDS_SCRIPT`）：新增「文件检索」栏后，开总开关时的实测值
+      `total=10`、`terminalFields=3`、`filesFields=2`、**`searchFields=2`**、`openFields=1`
+      （`pass` 条件要求 `searchFields >= 2`）。终端卡片下「免确认命令模式」列表的
+      `agent.tools.terminal.allowPatterns` 落地后 `terminalFields` 预期由 3 变 4，届时按新实测值更新本行；
       总开关关着时仍只要求总开关自己还在；
-    - `chat.context-usage`（对话窗输入框底部的上下文条）：折叠态文案预期含**缓存命中 token 数**
-      （`cachedTokens`，见 §2.3 与 06 §21.4）——桩 LLM 回传命中量时才会出现，未回传则整项不显示。
-      它的实测文案与 `chat-stream.png` 里那条真实 token 断言（`128 / 128k`）一样**按实跑回填**，
-      不要照推算写死。
+    - `chat.context-usage`（对话窗输入框底部的上下文条）：折叠态文案含**缓存命中 token 数**
+      （`cachedTokens`，见 §2.3 与 06 §21.4）——桩 LLM 回传命中量时才出现，未回传则整项不显示。
+      该断言要等桩 LLM 回传 `cachedTokens` 之后才加；`chat-stream.png` 现有的真实 token 断言
+      仍按那次实跑实测值保留（`128 / 128k` + `累计 144`）。
   - **「模式」页切 Work 门控**（`SETTINGS_SWITCH_TO_WORK_SCRIPT` + `SETTINGS_WORK_GATING_SCRIPT`，
     产物 `settings-modes-work-gating.png`，BetaV2 重写）：点「工作模式」卡「启用」后，
     `modes.work.workspaceDir` 必须**恰好一行**（Work 已实装，不再是「暂无可配置项」空状态卡）、

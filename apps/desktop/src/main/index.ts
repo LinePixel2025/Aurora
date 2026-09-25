@@ -522,7 +522,7 @@ async function bootstrap(): Promise<void> {
   const skillBridge = new SkillsBridge(skills)
   skillBridge.registerInto(tools)
 
-  // 7.1 电脑操控工具（docs/06 §11）：按 `agent.tools.*` 注册 5 个工具。
+  // 7.1 电脑操控工具（docs/06 §11）：按 `agent.tools.*` 注册 8 个工具。
   //     必须在内核（KernelAgentHost）构造前装配，否则第一次请求的工具表是空的。
   //     `sync()` 是唯一的开关落地点：这里一次、`onSettingsChanged` 一次 → 改完立即生效。
   //     runner 的 `defaultCwd` 只作兜底，真正的工作目录由工具层每次按配置传入
@@ -1350,25 +1350,42 @@ async function runSmokeTest(userData: string): Promise<void> {
 
   // 4. 电脑操控工具（docs/06 §11）：用**真实的 Windows 进程与文件系统**证明
   //    「模型真的能操控电脑」这条链路在主进程装配下是通的。
+  //
+  //    这里断言的是**已装配**的清单而不是 `COMPUTER_TOOL_NAMES` 全量：后者是「开关要认的名字」，
+  //    它的元素要等对应工具真正被创建出来才算数（`edit_file` 由后续步骤交付）。
+  //    显式列出而不写死长度：新增工具时同步加名字，断言仍是逐条精确的。
+  const SMOKE_IMPLEMENTED_TOOLS = [
+    'run_command',
+    'read_file',
+    'write_file',
+    'list_dir',
+    'open_path',
+    'grep',
+    'glob',
+  ] as const
   {
     const names = tools ? tools.list().map((tool) => tool.name) : []
-    const missing = COMPUTER_TOOL_NAMES.filter((name) => !names.includes(name))
+    const missing = SMOKE_IMPLEMENTED_TOOLS.filter((name) => !names.includes(name))
     record(
-      '电脑操控工具已注册（5 个）',
+      `电脑操控工具已注册（${SMOKE_IMPLEMENTED_TOOLS.length} 个）`,
       missing.length === 0,
       `names=${names.join(',')}${missing.length === 0 ? '' : ` missing=${missing.join(',')}`}`,
     )
 
-    // 敏感级直接钉住 step 1 文档里写的值：这两个工具的每一次调用都必须弹确认卡片
+    // 敏感级直接钉住 step 1 文档里写的值：这几个工具的每一次调用都必须弹确认卡片
     const runCommand = tools?.get('run_command')
     const writeFile = tools?.get('write_file')
     const readFile = tools?.get('read_file')
+    const grep = tools?.get('grep')
+    const glob = tools?.get('glob')
     record(
-      '敏感级与文档一致（run_command / write_file = confirm，read_file = safe）',
+      '敏感级与文档一致（run_command / write_file = confirm，read_file / grep / glob = safe）',
       runCommand?.sensitivity === 'confirm' &&
         writeFile?.sensitivity === 'confirm' &&
-        readFile?.sensitivity === 'safe',
-      `run_command=${runCommand?.sensitivity ?? 'missing'} write_file=${writeFile?.sensitivity ?? 'missing'} read_file=${readFile?.sensitivity ?? 'missing'}`,
+        readFile?.sensitivity === 'safe' &&
+        grep?.sensitivity === 'safe' &&
+        glob?.sensitivity === 'safe',
+      `run_command=${runCommand?.sensitivity ?? 'missing'} write_file=${writeFile?.sensitivity ?? 'missing'} read_file=${readFile?.sensitivity ?? 'missing'} grep=${grep?.sensitivity ?? 'missing'} glob=${glob?.sensitivity ?? 'missing'}`,
     )
 
     // 真实执行一条命令并读回产物。
@@ -1419,6 +1436,60 @@ async function runSmokeTest(userData: string): Promise<void> {
     record('list_dir 能在该目录看到刚写入的文件', listedOk, commandDetail)
     await fs.rm(probeDir, { recursive: true, force: true }).catch(() => undefined)
 
+    // 4.1 搜索层（docs/06 §11.5）：`glob` 按名字找、`grep` 按内容找，都走真实文件系统。
+    //     两层子目录 + 一个 node_modules 里的同名文件，用来同时证明「递归」与「忽略目录」。
+    let globOk = false
+    let grepOk = false
+    let grepIgnoredOk = false
+    let searchDetail = ''
+    const searchDir = join(tmpdir(), `aurora-smoke-search-${Date.now()}`)
+    try {
+      await fs.mkdir(join(searchDir, 'src', 'deep'), { recursive: true })
+      await fs.mkdir(join(searchDir, 'node_modules', 'pkg'), { recursive: true })
+      await fs.writeFile(
+        join(searchDir, 'src', 'deep', 'marker.txt'),
+        'first\nAURORA_GREP_OK\n',
+        'utf8',
+      )
+      await fs.writeFile(
+        join(searchDir, 'node_modules', 'pkg', 'skipped.txt'),
+        'AURORA_GREP_OK\n',
+        'utf8',
+      )
+
+      const globbed = await tools
+        ?.get('glob')
+        ?.execute({ path: searchDir, pattern: '**/*.txt' }, { sessionId: 'smoke' })
+      const globText = globbed?.content ?? ''
+      globOk =
+        globbed !== undefined &&
+        globbed.isError !== true &&
+        globText.includes('src/deep/marker.txt') &&
+        // 忽略目录整棵子树跳过：node_modules 里的文件不该出现在结果里
+        !globText.includes('skipped.txt')
+
+      const grepped = await tools
+        ?.get('grep')
+        ?.execute({ path: searchDir, pattern: 'AURORA_GREP_OK' }, { sessionId: 'smoke' })
+      const grepText = grepped?.content ?? ''
+      // 命中行格式是 `<相对路径>:<行号>: <内容>`，行号 1 起始（marker.txt 的命中在第 2 行）
+      grepOk =
+        grepped !== undefined &&
+        grepped.isError !== true &&
+        grepText.includes('src/deep/marker.txt:2: AURORA_GREP_OK')
+      grepIgnoredOk = !grepText.includes('skipped.txt')
+      searchDetail = globText.slice(0, 100)
+    } catch (error) {
+      searchDetail = `异常：${String(error)}`
+    }
+    record('glob 递归找到嵌套文件（正斜杠相对路径）且不扫 node_modules', globOk, searchDetail)
+    record(
+      'grep 命中行带「相对路径:行号」且不扫 node_modules',
+      grepOk && grepIgnoredOk,
+      `match=${grepOk ? 'ok' : 'fail'} ignored=${grepIgnoredOk ? 'ok' : 'fail'}`,
+    )
+    await fs.rm(searchDir, { recursive: true, force: true }).catch(() => undefined)
+
     // 开关热生效：`settings:update` 是顶层浅合并，必须带**完整**的 agent.tools 子树，
     // 否则会把 files / open 配置写丢 —— 这条断言顺带回归这一点。
     let hotSwitchOk = false
@@ -1450,23 +1521,25 @@ async function runSmokeTest(userData: string): Promise<void> {
       hotSwitchOk ? '' : `subtreeKept=${subtreeKept}`,
     )
 
-    // 总开关：`00-index.md` 完成标准点名的那一条 —— 关闭后 5 个工具**一个都不剩**，
-    // 且不能误伤其它工具（`unregister` 只按这 5 个名字摘，`use_skill` / `mcp.*` 不受影响）。
+    // 总开关：`00-index.md` 完成标准点名的那一条 —— 关闭后全部电脑操控工具**一个都不剩**，
+    // 且不能误伤其它工具（`unregister` 只按 `COMPUTER_TOOL_NAMES` 摘，`use_skill` / `mcp.*` 不受影响）。
     let masterOffOk = false
     if (settings !== undefined) {
       const before = settings.get().agent.tools
       settings.update({ agent: { tools: { ...before, enabled: false } } })
       syncToolRegistries()
+      // 「关掉后一个都不剩」按 `COMPUTER_TOOL_NAMES` 全量断言（比已装配清单更宽：
+      // 连将来才装配的名字也要求被摘掉）；「改回即恢复」只能按**已装配**清单断言。
       const allGone = COMPUTER_TOOL_NAMES.every((name) => tools?.get(name) === undefined)
       const othersKept = tools?.get('use_skill') !== undefined
 
       settings.update({ agent: { tools: { ...before, enabled: true } } })
       syncToolRegistries()
-      const restored = COMPUTER_TOOL_NAMES.every((name) => tools?.get(name) !== undefined)
+      const restored = SMOKE_IMPLEMENTED_TOOLS.every((name) => tools?.get(name) !== undefined)
       masterOffOk = allGone && othersKept && restored
     }
     record(
-      '总开关热生效：关闭后 5 个工具全部从注册表移除（其它工具不受影响），改回即恢复',
+      `总开关热生效：关闭后 ${SMOKE_IMPLEMENTED_TOOLS.length} 个工具全部从注册表移除（其它工具不受影响），改回即恢复`,
       masterOffOk,
       masterOffOk ? '' : '总开关断言失败',
     )
@@ -2001,7 +2074,7 @@ function adaptProactive(scheduler: ProactiveScheduler): ProactiveLike {
 /**
  * 工具注册表的**唯一**同步入口（docs/06 §11、§12、§14、§18/§19）。 *
  * 四个装配器必须一起同步：
- * - `computerTools`：按 `agent.tools.*` 重建 5 个电脑操控工具；
+ * - `computerTools`：按 `agent.tools.*` 重建 8 个电脑操控工具；
  * - `settingsTool`：重建 `set_setting`（不受 `agent.tools.enabled` 影响，见 tools/index.ts）；
  * - `extensionTools`：重建扩展工具五件套（同样不受 `agent.tools.enabled` 影响）；
  * - `agentCoreTools`：重建 todo_write / todo_read / task（同样不受门控，见 tools/index.ts）。

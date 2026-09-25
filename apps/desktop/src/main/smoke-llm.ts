@@ -285,24 +285,44 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
             { index: 0, delta: { reasoning_content: REASONING_MARKER + ' ' }, finish_reason: null },
           ],
         })
-        sendSse(res, {
-          choices: [
-            {
-              index: 0,
-              delta: { reasoning_content: '思考增量第二段：确认工具返回。' },
-              finish_reason: null,
-            },
-          ],
-        })
-        sendSse(res, {
-          choices: [{ index: 0, delta: { content: `${STUB_MARKER} ` }, finish_reason: null }],
-        })
-        sendSse(res, {
-          choices: [
-            { index: 0, delta: { content: '已按技能指令读取系统状态。' }, finish_reason: null },
-          ],
-        })
-        sendSseStop(res)
+        // 分片之间必须隔开一帧再发：主进程的**事件合并缓冲**按 16ms 窗口把相邻的
+        // text / reasoning 增量合并成一条（`main/event-buffer.ts`，那是刻意的降载设计），
+        // 零延迟连发两片在这条链路上必然被合并成一条，「逐条增量下发」的判据就成了随机失败。
+        // 隔开之后判据才是确定的：真出现「攒完整段发一次」的回归时，事件数仍然是 1。
+        sendSseDelayed(
+          res,
+          {
+            choices: [
+              {
+                index: 0,
+                delta: { reasoning_content: '思考增量第二段：确认工具返回。' },
+                finish_reason: null,
+              },
+            ],
+          },
+          FRAME_GAP_MS,
+        )
+        sendSseDelayed(
+          res,
+          { choices: [{ index: 0, delta: { content: `${STUB_MARKER} ` }, finish_reason: null }] },
+          FRAME_GAP_MS * 2,
+        )
+        sendSseDelayed(
+          res,
+          {
+            choices: [
+              { index: 0, delta: { content: '已按技能指令读取系统状态。' }, finish_reason: null },
+            ],
+          },
+          FRAME_GAP_MS * 3,
+        )
+        // 收尾（终态帧）压在最后一片之后：否则终态会越过它前面的增量先到
+        setTimeout(() => {
+          sendSseStop(res)
+          res.write('data: [DONE]\n\n')
+          res.end()
+        }, FRAME_GAP_MS * 4)
+        return
       }
       res.write('data: [DONE]\n\n')
       res.end()
@@ -572,6 +592,14 @@ function sendSseStop(res: ServerResponse): void {
   })
 }
 
+/** 分片间隔：必须大于主进程事件合并缓冲的 16ms 窗口（`main/event-buffer.ts`） */
+const FRAME_GAP_MS = 40
+
 function sendSse(res: ServerResponse, payload: unknown): void {
   res.write(`data: ${JSON.stringify(payload)}\n\n`)
+}
+
+/** 隔 `delayMs` 再发一片（见「分片之间必须隔开一帧再发」的说明） */
+function sendSseDelayed(res: ServerResponse, payload: unknown, delayMs: number): void {
+  setTimeout(() => sendSse(res, payload), delayMs)
 }

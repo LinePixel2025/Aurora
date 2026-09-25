@@ -2641,6 +2641,7 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
     const total = count('[data-field^="agent.tools"]')
     const terminalFields = count('[data-field^="agent.tools.terminal"]')
     const filesFields = count('[data-field^="agent.tools.files"]')
+    const searchFields = count('[data-field^="agent.tools.search"]')
     const openFields = count('[data-field^="agent.tools.open"]')
     const emptyStates = Array.from(document.querySelectorAll('[data-empty]')).map((el) =>
       el.getAttribute('data-empty'),
@@ -2662,6 +2663,7 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
       total,
       terminalFields,
       filesFields,
+      searchFields,
       openFields,
       mcpEmpty,
       mcpRows,
@@ -2669,13 +2671,15 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
       skillsRows,
       unexpected,
       emptyStates,
-      // 总开关必须在（否则用户再也开不回来）；开着时三个分栏的详情字段都得在，
-      // MCP 区组必须给出「空状态或行」之一，且不得出现两块预期空态之外的 data-empty
+      // 总开关必须在（否则用户再也开不回来）；开着时四个分栏的详情字段都得在
+      // （终端 / 文件 / 文件检索 / 打开），MCP 区组必须给出「空状态或行」之一，
+      // 且不得出现两块预期空态之外的 data-empty
       pass:
         toggle !== null &&
         (enabled !== true ||
           (terminalFields > 0 &&
             filesFields > 0 &&
+            searchFields >= 2 &&
             openFields > 0 &&
             (mcpEmpty || mcpRows > 0) &&
             unexpected.length === 0)),
