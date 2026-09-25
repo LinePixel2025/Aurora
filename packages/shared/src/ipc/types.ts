@@ -13,6 +13,7 @@ import type {
   Settings,
   SttSettings,
   TtsFormat,
+  TtsProviderType,
   TtsSettings,
   WindowName,
 } from '../config/schema.js'
@@ -230,6 +231,8 @@ export interface TtsTestRequest {
   voice?: string
   speed?: number
   format?: TtsFormat
+  /** 页面草稿的接口类型；缺省回落已保存配置，再缺省按 openai-compat（docs/06 §13.6） */
+  type?: TtsProviderType
   /** 缺省用内置样例句「你好，我是 Aurora。」 */
   text?: string
 }
@@ -249,6 +252,8 @@ export interface TtsListModelsRequest {
   baseUrl?: string
   /** 页面草稿里的明文；为空则回落已保存凭据 */
   apiKey?: string
+  /** 页面草稿的接口类型；缺省回落已保存配置，再缺省按 openai-compat（docs/06 §13.6） */
+  type?: TtsProviderType
 }
 
 export interface TtsListModelsResult {

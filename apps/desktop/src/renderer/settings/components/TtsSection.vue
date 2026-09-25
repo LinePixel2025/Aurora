@@ -22,6 +22,7 @@ import {
   TTS_PRESETS,
   type TtsFormat,
   type TtsProviderConfig,
+  type TtsProviderType,
   type TtsTestResult,
 } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
@@ -39,6 +40,12 @@ interface ProviderDraft extends TtsProviderConfig {
 
 /** 页面三态：目录列表 / 添加（选预设）/ 编辑（最多一张卡，由单值 `editingId` 决定是哪一张） */
 type PageMode = 'list' | 'add' | 'edit'
+
+/** 接口类型 → 下拉文案（docs/06 §13.1 / §13.6）；新建草稿默认仍是 `openai-compat` */
+const TYPE_LABELS: Record<TtsProviderType, string> = {
+  'openai-compat': 'OpenAI 兼容（/audio/speech）',
+  dashscope: 'DashScope 原生（百炼 / 千问AI平台）',
+}
 
 /** 新建 provider 的页面默认值（`DEFAULT_TTS` 里没有 provider 级默认，所以在这里定义一次） */
 const DEFAULT_SPEED = 1
@@ -250,7 +257,8 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
       providers: {
         ...settings.tts.providers,
         [draft.id]: {
-          type: 'openai-compat',
+          // 接口类型跟草稿走（编辑既有 provider 时不能把它硬掰回 openai-compat）
+          type: draft.type,
           baseUrl: draft.baseUrl.trim(),
           apiKeyEnc: '',
           model: draft.model.trim(),
@@ -292,6 +300,18 @@ function clampSpeed(value: number): number {
   return Math.min(4, Math.max(0.25, speed))
 }
 
+/** 编辑卡按接口类型切换的 baseURL 提示（docs/06 §13.2 / §13.6） */
+function baseUrlHint(type: TtsProviderType): string {
+  return type === 'dashscope'
+    ? 'DashScope 原生根地址，例：https://maas.qianwenaiapi.com/api/v1 或 https://dashscope.aliyuncs.com/api/v1（裸域名 / 以 /api 结尾会自动补齐）；主进程自动拼 /services/aigc/multimodal-generation/generation'
+    : 'OpenAI 兼容端点，例如 https://api.openai.com/v1'
+}
+
+/** 编辑卡按接口类型切换的 baseURL 占位符 */
+function baseUrlPlaceholder(type: TtsProviderType): string {
+  return type === 'dashscope' ? 'https://maas.qianwenaiapi.com/api/v1' : 'https://api.openai.com/v1'
+}
+
 /** 「应用」：只提交这一张卡；成功后回到列表态 */
 async function applyDraft(draft: ProviderDraft): Promise<void> {
   message.value = null
@@ -315,6 +335,7 @@ async function fetchModels(draft: ProviderDraft): Promise<void> {
     providerId: draft.id,
     baseUrl: baseUrl === '' ? undefined : baseUrl,
     apiKey: apiKey === '' ? undefined : apiKey,
+    type: draft.type,
   })
   fetchingModels.value = null
   if (!result.ok) {
@@ -355,6 +376,7 @@ async function testProvider(draft: ProviderDraft): Promise<void> {
     voice: draft.voice.trim(),
     speed: clampSpeed(draft.speed),
     format: draft.format,
+    type: draft.type,
   })
   testing.value = null
   if (result.ok) results[draft.id] = result.value
@@ -671,12 +693,30 @@ function stopPreview(): void {
               </p>
 
               <SettingField
+                :data-field="`tts.providers.${draft.id}.type`"
+                label="接口类型"
+                hint="决定主进程按哪套协议发合成请求；DashScope 原生走百炼 / 千问AI平台的生成端点"
+              >
+                <select v-model="draft.type" class="input">
+                  <option v-for="(label, value) in TYPE_LABELS" :key="value" :value="value">
+                    {{ label }}
+                  </option>
+                </select>
+              </SettingField>
+
+              <SettingField
                 :data-field="`tts.providers.${draft.id}.baseUrl`"
                 label="baseURL"
                 required
-                hint="OpenAI 兼容端点，例如 https://api.openai.com/v1"
+                :hint="baseUrlHint(draft.type)"
               >
-                <input v-model="draft.baseUrl" class="input" type="text" spellcheck="false" />
+                <input
+                  v-model="draft.baseUrl"
+                  class="input"
+                  type="text"
+                  spellcheck="false"
+                  :placeholder="baseUrlPlaceholder(draft.type)"
+                />
               </SettingField>
 
               <SettingField
@@ -760,7 +800,11 @@ function stopPreview(): void {
               <SettingField
                 :data-field="`tts.providers.${draft.id}.speed`"
                 label="语速"
-                hint="0.25 ～ 4，默认 1；越小越慢"
+                :hint="
+                  draft.type === 'dashscope'
+                    ? 'DashScope 原生协议没有语速参数，此项不会发送'
+                    : '0.25 ～ 4，默认 1；越小越慢'
+                "
               >
                 <input
                   v-model.number="draft.speed"
@@ -775,7 +819,11 @@ function stopPreview(): void {
               <SettingField
                 :data-field="`tts.providers.${draft.id}.format`"
                 label="输出格式"
-                hint="请求体的 response_format；决定播放时的 MIME 类型"
+                :hint="
+                  draft.type === 'dashscope'
+                    ? 'DashScope 仅下发 wav / mp3 / opus，其余格式按服务端默认；决定播放时的 MIME 类型'
+                    : '请求体的 response_format；决定播放时的 MIME 类型'
+                "
               >
                 <select v-model="draft.format" class="input">
                   <option v-for="format in TTS_FORMATS" :key="format" :value="format">

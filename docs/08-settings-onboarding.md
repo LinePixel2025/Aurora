@@ -39,7 +39,7 @@
     "maxChars": 2000,          // 单次朗读的文本上限（50–4096，超出截断）
     "providers": {
       "siliconflow": {
-        "type": "openai-compat",
+        "type": "openai-compat",  // openai-compat | dashscope（DashScope 原生协议，见 docs/06 §13.6）
         "baseUrl": "https://api.siliconflow.cn/v1",
         "apiKeyEnc": "<safeStorage 密文>",
         "model": "FunAudioLLM/CosyVoice2-0.5B",  // 唯一生效值：合成请求实际用的模型就是它
@@ -197,7 +197,8 @@
   `tts.active` 是默认 TTS provider id，**为空串 = 未配置**，此时对话窗的朗读按钮**不出现**；
   `tts.autoRead` 控制助手回复结束后是否自动朗读；`tts.maxChars` 是**单次朗读的截断上限**
   （50–4096，默认 2000，超出部分先截断再送合成）。
-  `tts.providers.<id>`（`{ type, baseUrl, apiKeyEnc, model, voice, speed, format }`）与
+  `tts.providers.<id>`（`{ type, baseUrl, apiKeyEnc, model, voice, speed, format }`，
+  `type` 为 `openai-compat`（06 §13.2）或 `dashscope`（06 §13.6，DashScope 原生协议））与
   `llm.providers.<id>` **结构同构但彼此独立**：两边的 provider 列表不共享、不联动，
   改一边不影响另一边；`apiKeyEnc` 同为 safeStorage 密文（回传口径见 §1.1）。
   `v6 → v7` 迁移会为旧配置补齐 `tts.*`（`fillMissing` 对已存在的值一律保留，因此天然幂等）。
@@ -449,8 +450,11 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   v8 前为「AI 能力」组第 2 项、仅 TTS）。TTS 区组提供「总开关」（`tts.enabled`）、「默认 TTS 模型」
   （`tts.active`）、「自动朗读」（`tts.autoRead`）、「截断上限」（`tts.maxChars`），以及 provider 列表的
   **增 / 改 / 删 + 「试听」**（用当前表单值合成一小段试听音频）。字段路径见 §1，请求协议与失败降级见 06 §13。
-  - provider 表单与 `llm.providers` **同构但独立**（`baseUrl` / `apiKey` / `model` / `voice` / `speed` / `format`）：
-    两边的列表不共享、不联动，改一边不影响另一边（见 §1）。
+  - provider 表单与 `llm.providers` **同构但独立**（`type` / `baseUrl` / `apiKey` / `model` /
+    `voice` / `speed` / `format`）：两边的列表不共享、不联动，改一边不影响另一边（见 §1）。
+    「接口类型」（`tts.providers.<id>.type`）下拉切换两套请求协议：`openai-compat` →
+    OpenAI 兼容 `/audio/speech`；`dashscope` → DashScope 原生生成端点（baseURL 提示与
+    输出格式说明随类型切换，协议细节见 06 §13.6）；新建草稿默认 `openai-compat`。
   - 凭据沿用 §1.1 的只读标记口径：列表里只显示 `apiKeySet`（`凭据已保存` / `缺少凭据`），
     密文**永不回显**，编辑卡里的 API Key 是 write-only 输入，**留空 = 本次不修改**。
   - **「获取模型列表」（编辑卡内，模型名输入框旁）**：调 `tts:listModels`

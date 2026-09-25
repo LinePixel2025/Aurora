@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createMemoryLogger } from '@aurora/shared'
-import type { Settings, TtsFormat } from '@aurora/shared'
+import type { Settings, TtsFormat, TtsProviderType } from '@aurora/shared'
 import { TtsSynthesizer } from './tts.js'
 import type { SettingsStoreLike } from './contracts.js'
 
@@ -11,6 +11,7 @@ interface FakeSettingsOptions {
   maxChars?: number
   secret?: string
   provider?: Partial<{
+    type: TtsProviderType
     baseUrl: string
     model: string
     voice: string
@@ -362,6 +363,346 @@ describe('TtsSynthesizer · baseUrl 规整（404 根治，docs/06 §13.2）', ()
   })
 })
 
+describe('TtsSynthesizer · dashscope（docs/06 §13.6）', () => {
+  const DASH_BASE = 'https://maas.qianwenaiapi.com/api/v1'
+  const GENERATION_TAIL = '/services/aigc/multimodal-generation/generation'
+
+  /**
+   * 依次回放多个响应：dashscope 合成是两段请求（先 POST 拿 output.audio.url，
+   * 再 GET 下载音频），与 `stubFetch` 的单响应回放不同；越界时重复最后一个响应。
+   */
+  function sequenceFetch(responses: Response[]): {
+    fetchImpl: typeof fetch
+    requests: CapturedRequest[]
+  } {
+    const requests: CapturedRequest[] = []
+    const fetchImpl = ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const index = requests.length
+      requests.push({ url: String(input), init: init ?? {} })
+      return Promise.resolve(responses[Math.min(index, responses.length - 1)]!)
+    }) as typeof fetch
+    return { fetchImpl, requests }
+  }
+
+  /** dashscope 合成响应（2xx JSON，音频在 output.audio.url，24h 有效） */
+  function dashJsonResponse(url: string): Response {
+    return new Response(
+      JSON.stringify({ output: { audio: { url, expires_at: 0 }, finish_reason: 'success' } }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
+
+  /** 借 synthesize 捕获 dashscope 实际请求的第一跳 URL：端点函数是模块内私有，从行为断言 */
+  async function dashEndpointOf(baseUrl: string): Promise<string> {
+    const { fetchImpl, requests } = sequenceFetch([
+      dashJsonResponse('https://oss.example.com/a.mp3'),
+      audioResponse([0]),
+    ])
+    const tts = make(fakeSettings({ provider: { type: 'dashscope', baseUrl } }), fetchImpl)
+    await tts.synthesize({ text: 'hi' })
+    return requests[0]!.url
+  }
+
+  it('端点规整：裸域名自动补 /api/v1 再拼生成端点', async () => {
+    expect(await dashEndpointOf('https://dashscope.aliyuncs.com')).toBe(
+      `https://dashscope.aliyuncs.com/api/v1${GENERATION_TAIL}`,
+    )
+  })
+
+  it('端点规整：以 /api 结尾自动补 /v1（千问AI平台少写 /v1 的高频错误）', async () => {
+    expect(await dashEndpointOf('https://maas.qianwenaiapi.com/api')).toBe(
+      `https://maas.qianwenaiapi.com/api/v1${GENERATION_TAIL}`,
+    )
+  })
+
+  it('端点规整：完整原生路径（/api/v1）尊重不动', async () => {
+    expect(await dashEndpointOf(DASH_BASE)).toBe(`${DASH_BASE}${GENERATION_TAIL}`)
+  })
+
+  it('端点规整：已以完整生成端点结尾时不重复拼（也不补 /api/v1）', async () => {
+    const full = `${DASH_BASE}${GENERATION_TAIL}`
+    expect(await dashEndpointOf(`${full}/`)).toBe(full)
+  })
+
+  it('两段请求：POST body 含 input.text / input.voice，mp3 携带 audio.format；GET 下载不带 Authorization', async () => {
+    const audio = [1, 2, 3, 4]
+    const signedUrl = 'https://oss.example.com/audio/signed?Expires=1&Signature=SECRET'
+    const { fetchImpl, requests } = sequenceFetch([
+      dashJsonResponse(signedUrl),
+      new Response(new Uint8Array(audio), {
+        status: 200,
+        headers: { 'Content-Type': 'audio/mpeg' },
+      }),
+    ])
+    const tts = make(
+      fakeSettings({
+        provider: {
+          type: 'dashscope',
+          baseUrl: DASH_BASE,
+          model: 'qwen-audio-3.1-tts-flash',
+          voice: 'longanlufeng',
+          format: 'mp3',
+        },
+      }),
+      fetchImpl,
+    )
+
+    const result = await tts.synthesize({ text: '你好' })
+
+    expect(requests).toHaveLength(2)
+    const post = requests[0]!
+    expect(post.url).toBe(`${DASH_BASE}${GENERATION_TAIL}`)
+    expect(post.init.method).toBe('POST')
+    const postHeaders = post.init.headers as Record<string, string>
+    expect(postHeaders['Authorization']).toBe('Bearer sk-saved')
+    const body = JSON.parse(String(post.init.body)) as {
+      model: string
+      input: { text: string; voice: string }
+      audio?: { format: string }
+    }
+    expect(body.model).toBe('qwen-audio-3.1-tts-flash')
+    expect(body.input.text).toBe('你好')
+    expect(body.input.voice).toBe('longanlufeng')
+    expect(body.audio?.format).toBe('mp3')
+
+    const download = requests[1]!
+    expect(download.url).toBe(signedUrl)
+    expect(download.init.method).toBe('GET')
+    const downloadHeaders = (download.init.headers ?? {}) as Record<string, string>
+    expect(downloadHeaders['Authorization']).toBeUndefined()
+
+    expect(result.bytes).toBe(audio.length)
+    expect(result.mimeType).toBe('audio/mpeg')
+  })
+
+  it('format=flac 时不携带 audio 字段，且 dashscope 协议永不发送 speed', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      dashJsonResponse('https://oss.example.com/a.wav'),
+      audioResponse([0]),
+    ])
+    const tts = make(fakeSettings({ provider: { type: 'dashscope', format: 'flac' } }), fetchImpl)
+    await tts.synthesize({ text: 'hi' })
+    const body = JSON.parse(String(requests[0]!.init.body)) as Record<string, unknown>
+    expect(body['audio']).toBeUndefined()
+    expect(body['speed']).toBeUndefined()
+    expect(body['response_format']).toBeUndefined()
+  })
+
+  it('mimeType：content-type 非 audio/* 时按 URL 扩展名，再回落 provider.format', async () => {
+    // content-type 是 application/octet-stream（非 audio/*）→ 丢弃，按 URL 扩展名 .wav 推导
+    const octet = sequenceFetch([
+      dashJsonResponse('https://oss.example.com/a/b.wav'),
+      new Response(new Uint8Array([0]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/octet-stream' },
+      }),
+    ])
+    const first = await make(
+      fakeSettings({ provider: { type: 'dashscope', format: 'mp3' } }),
+      octet.fetchImpl,
+    ).synthesize({ text: 'hi' })
+    expect(first.mimeType).toBe('audio/wav')
+
+    // 无 content-type、URL 无扩展名 → 回落 provider.format 对应的 MIME
+    const fallback = sequenceFetch([
+      dashJsonResponse('https://oss.example.com/a/b'),
+      new Response(new Uint8Array([0])),
+    ])
+    const second = await make(
+      fakeSettings({ provider: { type: 'dashscope', format: 'flac' } }),
+      fallback.fetchImpl,
+    ).synthesize({ text: 'hi' })
+    expect(second.mimeType).toBe('audio/flac')
+  })
+
+  it('output.audio.url 缺失时抛中文错误，附响应体尾巴便于自查', async () => {
+    const { fetchImpl } = sequenceFetch([
+      new Response(JSON.stringify({ output: {} }), { status: 200 }),
+    ])
+    const tts = make(
+      fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
+      fetchImpl,
+    )
+    await expect(tts.synthesize({ text: 'hi' })).rejects.toThrow(/output\.audio\.url/)
+  })
+
+  it('2xx 但响应不是合法 JSON 时抛中文错误', async () => {
+    const { fetchImpl } = sequenceFetch([new Response('not-json', { status: 200 })])
+    const tts = make(
+      fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
+      fetchImpl,
+    )
+    await expect(tts.synthesize({ text: 'hi' })).rejects.toThrow('不是合法 JSON')
+  })
+
+  it('POST 404：文案含实际请求的 endpoint 与 /api/v1 提示', async () => {
+    const { fetchImpl } = sequenceFetch([errorResponse(404, 'not found')])
+    const tts = make(
+      fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
+      fetchImpl,
+    )
+    await expect(tts.synthesize({ text: 'hi' })).rejects.toThrow(
+      /接口不存在.*maas\.qianwenaiapi\.com\/api\/v1\/services\/aigc\/multimodal-generation\/generation[\s\S]*以 \/api\/v1 结尾/,
+    )
+  })
+
+  it('400 url error（模型不走 HTTP 合成端点）：文案提示更换模型而不是笼统失败', async () => {
+    const { fetchImpl } = sequenceFetch([
+      errorResponse(400, '{"code":"InvalidParameter","message":"url error, please check url！"}'),
+    ])
+    const tts = make(
+      fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
+      fetchImpl,
+    )
+    await expect(tts.synthesize({ text: 'hi' })).rejects.toThrow(/WebSocket 实时专用/)
+  })
+
+  it('listModels() 404：文案按 dashscope 取词（/api/v1 提示），不串用 openai-compat 文案', async () => {
+    const { fetchImpl } = sequenceFetch([errorResponse(404, 'not found')])
+    const tts = make(
+      fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
+      fetchImpl,
+    )
+    const result = await tts.listModels({})
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('/api/v1 结尾（DashScope 原生地址）')
+    expect(result.message).not.toContain('OpenAI 兼容端点')
+  })
+
+  it('output.audio.url 存在但非法时，响应体尾巴里的签名参数值先脱敏再进错误文案', async () => {
+    const { fetchImpl } = sequenceFetch([
+      new Response(
+        JSON.stringify({
+          output: {
+            audio: {
+              url: 'ftp://oss.example.com/a.wav?Expires=1&Signature=TOPSECRET&OSSAccessKeyId=KEYID',
+            },
+          },
+        }),
+        { status: 200 },
+      ),
+    ])
+    const tts = make(
+      fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
+      fetchImpl,
+    )
+    const error = (await tts.synthesize({ text: 'hi' }).catch((reason: unknown) => reason)) as Error
+    expect(error.message).toContain('Signature=<redacted>')
+    expect(error.message).not.toContain('TOPSECRET')
+    expect(error.message).not.toContain('KEYID')
+  })
+
+  it('下载非 2xx：报错只带 host，不泄漏带签名参数的完整 URL', async () => {
+    const signedUrl = 'https://oss.example.com/audio/x.mp3?Expires=1&Signature=SECRET&KeyId=k'
+    const { fetchImpl } = sequenceFetch([
+      dashJsonResponse(signedUrl),
+      errorResponse(403, 'forbidden'),
+    ])
+    const tts = make(
+      fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
+      fetchImpl,
+    )
+    const error = (await tts.synthesize({ text: 'hi' }).catch((reason: unknown) => reason)) as Error
+    expect(error.message).toContain('音频下载失败（HTTP 403）：oss.example.com')
+    expect(error.message).not.toContain('Signature')
+  })
+
+  it('test()：两段成功折成 ok + 字节数，httpStatus 取 POST 状态', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      dashJsonResponse('https://oss.example.com/a.mp3'),
+      new Response(new Uint8Array([7, 7]), {
+        status: 200,
+        headers: { 'Content-Type': 'audio/mpeg' },
+      }),
+    ])
+    const tts = make(
+      fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
+      fetchImpl,
+    )
+    const result = await tts.test({})
+    expect(result.ok).toBe(true)
+    expect(result.bytes).toBe(2)
+    expect(result.httpStatus).toBe(200)
+    expect(requests[0]!.url).toBe(`${DASH_BASE}${GENERATION_TAIL}`)
+  })
+
+  it('listModels()：/api 规整成 /api/v1/models 且带翻页参数；顶层 models 回落解析（字符串与 {model}/{id}/{name} 对象都收）', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      new Response(
+        JSON.stringify({
+          models: [
+            'qwen-audio-3.1-tts-flash',
+            { model: 'qwen-tts' },
+            { id: 'cosyvoice-v2' },
+            { name: 'sambert-zhichu' },
+            { nope: 1 },
+          ],
+        }),
+        { status: 200 },
+      ),
+    ])
+    const tts = make(
+      fakeSettings({
+        provider: { type: 'dashscope', baseUrl: 'https://maas.qianwenaiapi.com/api' },
+      }),
+      fetchImpl,
+    )
+    const result = await tts.listModels({})
+    expect(requests[0]!.url).toBe(
+      'https://maas.qianwenaiapi.com/api/v1/models?page_no=1&page_size=100',
+    )
+    expect(result.ok).toBe(true)
+    expect(result.models).toEqual([
+      'qwen-audio-3.1-tts-flash',
+      'qwen-tts',
+      'cosyvoice-v2',
+      'sambert-zhichu',
+    ])
+  })
+
+  it('listModels()：DashScope 原生 output.models 按 output.total 翻页拉全', async () => {
+    const { fetchImpl, requests } = sequenceFetch([
+      new Response(
+        JSON.stringify({
+          output: {
+            total: 3,
+            page_no: 1,
+            models: [{ model: 'qwen-tts' }, { model: 'qwen3-tts-flash' }],
+          },
+        }),
+        { status: 200 },
+      ),
+      new Response(
+        JSON.stringify({ output: { total: 3, page_no: 2, models: [{ model: 'cosyvoice-v2' }] } }),
+        { status: 200 },
+      ),
+    ])
+    const tts = make(
+      fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
+      fetchImpl,
+    )
+    const result = await tts.listModels({})
+    expect(requests).toHaveLength(2)
+    expect(requests[0]!.url).toContain('page_no=1&page_size=100')
+    expect(requests[1]!.url).toContain('page_no=2&page_size=100')
+    expect(result.ok).toBe(true)
+    expect(result.models).toEqual(['qwen-tts', 'qwen3-tts-flash', 'cosyvoice-v2'])
+  })
+
+  it('listModels()：响应仍是 OpenAI data[].id 时主路径照常解析', async () => {
+    const { fetchImpl } = sequenceFetch([
+      new Response(JSON.stringify({ data: [{ id: 'm1' }, { nope: 2 }] }), { status: 200 }),
+    ])
+    const tts = make(
+      fakeSettings({ provider: { type: 'dashscope', baseUrl: DASH_BASE } }),
+      fetchImpl,
+    )
+    const result = await tts.listModels({})
+    expect(result.ok).toBe(true)
+    expect(result.models).toEqual(['m1'])
+  })
+})
+
 describe('TtsSynthesizer · listModels', () => {
   function modelsResponse(body: string, init: ResponseInit = {}): Response {
     return new Response(body, { status: 200, ...init })
@@ -411,8 +752,9 @@ describe('TtsSynthesizer · listModels', () => {
     expect(requests[0]!.url).toBe(`${BASE_URL}/models`)
   })
 
-  it('data 非数组折成 ok: false + 中文提示（防御性解析不抛）', async () => {
-    const { fetchImpl } = stubFetch(modelsResponse(JSON.stringify({ models: ['x'] })))
+  it('data / models 皆缺时折成 ok: false + 中文提示（防御性解析不抛）', async () => {
+    // 顶层 models 数组已是合法回落（DashScope 形状），这里换一个真正无形状的响应
+    const { fetchImpl } = stubFetch(modelsResponse(JSON.stringify({ items: ['x'] })))
     const tts = make(fakeSettings(), fetchImpl)
     const result = await tts.listModels({})
     expect(result.ok).toBe(false)

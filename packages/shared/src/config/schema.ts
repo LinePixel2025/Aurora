@@ -110,13 +110,22 @@ export const TTS_FORMATS = ['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'] as const
 export type TtsFormat = (typeof TTS_FORMATS)[number]
 
 /**
+ * TTS provider 的接口协议类型（docs/06 §13.1 / §13.6）：
+ * - `openai-compat`：OpenAI 兼容 `POST <baseUrl>/audio/speech`；
+ * - `dashscope`：DashScope 原生非实时合成协议（百炼 / 千问AI平台等网关）。
+ * 纯增量枚举，旧配置天然合法，无需版本迁移。
+ */
+export const TTS_PROVIDER_TYPES = ['openai-compat', 'dashscope'] as const
+export type TtsProviderType = (typeof TTS_PROVIDER_TYPES)[number]
+
+/**
  * TTS provider（docs/06 §13、docs/08 §1）。
  *
  * 与 `llm.providers.<id>` **同构但独立**：聊天模型与语音合成服务的可用性互不绑定，
  * 共用一份配置会让「换聊天模型」顺手把朗读也弄坏。
  */
 export const TtsProviderSchema = z.object({
-  type: z.enum(['openai-compat']),
+  type: z.enum(TTS_PROVIDER_TYPES),
   baseUrl: z.string(),
   /** safeStorage 密文；明文只走 `settings:setSecrets`，渲染层与日志永远看不到明文。 */
   apiKeyEnc: z.string(),
