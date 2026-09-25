@@ -23,10 +23,11 @@
  * - 思考块流式期间显示尾部光标与「思考中」扫光，正文跟随滚动到最新一行；
  * - 图标统一走 lucide（`shared/icons.ts`），工具卡按工具名给语义图标（`shared/toolIcons.ts`）。
  */
-import { computed, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
 import type { AgentToolCall } from '@aurora/shared'
 import type { ChatMessage } from '../composables/useChat.js'
 import { useStickToBottom } from '../composables/useStickToBottom.js'
+import { useCollapseTransition } from '../composables/useCollapseTransition.js'
 import { renderMarkdown } from '../markdown.js'
 import { parseTaskInput, parseTodoWriteInput, type TodoRow } from '../agentTodo.js'
 import { toolIconOf } from '../toolIcons.js'
@@ -320,6 +321,20 @@ watch(
  */
 const { following, stick } = useStickToBottom(() => rootEl.value)
 
+/** 展开 / 收起一律走实测高度（终点写进 `--collapse-h`，见 docs/07 §2.3 / §5.2） */
+const { beforeEnter: beforeCollapseEnter, beforeLeave: beforeCollapseLeave } =
+  useCollapseTransition()
+
+/**
+ * 整表被替换（历史水合 / 切会话 / 清空）的那一帧关掉进出场动画。
+ *
+ * `<TransitionGroup name="rise">` 的 leave 只改 opacity / transform，被换掉的消息在
+ * 250ms 内**仍然占位**，而新消息同时进场 —— 列表高度瞬时接近翻倍，滚动条跟着跳两次。
+ * 整表替换本来就是「内容整体换掉」，不需要「一条条浮现」的语义；流式追加不换数组引用，
+ * 因此仍然保留逐条进场动画。
+ */
+const swapping = ref(false)
+
 /**
  * 自己发的消息必须能看到回复：即使此前正在翻历史，也强制恢复跟随。
  * 助手消息追加**不**强制 —— 多轮工具调用会把正在回看历史的用户一次次拽回底部。
@@ -336,10 +351,21 @@ watch(
  * 消息数组**被整体替换**（历史水合 / 切换会话 / 清空）时强制恢复跟随：
  * 上一个会话里"翻历史"的状态不能带到新会话，否则打开会话会停在顶部。
  * 流式增量与追加都不换引用，所以不会走到这里。
+ *
+ * 同一条路径上关掉这一帧的进出场动画：替换过程中新旧两套消息会同时占位
+ * （leave 只改透明度、不移出文档流），列表高度接近翻倍、滚动跟着跳两次（见 `swapping`）。
+ * 复位放在 `nextTick`：要保证「这一帧的 patch」用的是关掉动画的配置，
+ * 之后恢复，流式追加的逐条进场不受影响。
  */
 watch(
   () => props.messages,
-  () => stick(),
+  () => {
+    swapping.value = true
+    void nextTick(() => {
+      swapping.value = false
+    })
+    stick()
+  },
 )
 
 /** 「回到最新」用平滑滚动，但尊重系统「减少动态效果」 */
@@ -659,7 +685,11 @@ async function onContentClick(event: MouseEvent): Promise<void> {
       <p class="empty-hint tiny muted">{{ emptyHint }}</p>
     </div>
 
-    <TransitionGroup name="rise">
+    <!--
+      整表替换（切会话 / 水合 / 清空）时 `swapping` 为真 → `:css="false"` 临时关掉进出场：
+      否则被换掉的消息会以「只改透明度、不脱离文档流」的方式占位 250ms，与新消息同时存在。
+    -->
+    <TransitionGroup name="rise" :css="!swapping">
       <article
         v-for="message in messages"
         :key="message.id"
@@ -713,7 +743,11 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 {{ thinkingSeconds }}s
               </span>
             </button>
-            <Transition name="collapse">
+            <Transition
+              name="collapse"
+              @before-enter="beforeCollapseEnter"
+              @before-leave="beforeCollapseLeave"
+            >
               <div v-if="isThinkingOpen(message.id)" class="thinking-body">
                 <!-- 流式期间尾部带光标，读起来是"还在写"而不是"卡住了" -->
                 <p class="thinking-text" @scroll.passive="onThinkScroll">{{ message.reasoning }}</p>
@@ -852,7 +886,11 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 alt="生成的图片"
                 loading="lazy"
               />
-              <Transition name="collapse">
+              <Transition
+                name="collapse"
+                @before-enter="beforeCollapseEnter"
+                @before-leave="beforeCollapseLeave"
+              >
                 <div v-if="isOpen(call.id)" class="tool-body">
                   <!-- 子代理卡：实时运行轨迹（进度 + 步骤 + 报告），docs/07 §2.4 -->
                   <template v-if="subagentOf(call)">
@@ -1345,16 +1383,23 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   transform: translateY(-4px);
 }
 
-/* 同一批卡片错开 40ms 出现（`.tools` 里的第 2、3… 张） */
-.tools > .tool-card:nth-child(2) {
+/*
+ * 同一批卡片错开 40ms 出现（`.tools` 里的第 2、3… 张）。
+ * 必须挂在 enter / leave 的 active 类下：`transition-delay` 是**常驻生效**的，
+ * 只写 `.tool-card:nth-child(2)` 会让这张卡上此后任何过渡都晚 40ms 起步（误伤别的动效）。
+ */
+.tools > .tool-card:nth-child(2).tool-enter-active,
+.tools > .tool-card:nth-child(2).tool-leave-active {
   transition-delay: 40ms;
 }
 
-.tools > .tool-card:nth-child(3) {
+.tools > .tool-card:nth-child(3).tool-enter-active,
+.tools > .tool-card:nth-child(3).tool-leave-active {
   transition-delay: 80ms;
 }
 
-.tools > .tool-card:nth-child(n + 4) {
+.tools > .tool-card:nth-child(n + 4).tool-enter-active,
+.tools > .tool-card:nth-child(n + 4).tool-leave-active {
   transition-delay: 120ms;
 }
 
