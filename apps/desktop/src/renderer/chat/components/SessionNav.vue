@@ -148,7 +148,16 @@ function formatRelativeTime(iso: string): string {
 
     <nav class="nav-scroll">
       <p class="nav-caption tiny muted">会话</p>
-      <p v-if="props.sessions.length === 0" class="tiny muted nav-empty">还没有会话</p>
+      <!--
+        空态只在**两份列表都空**时出现：全部会话都被归档时主列表是空的、但归档分组还在，
+        此时再说「还没有会话」会与下面看得见的归档项自相矛盾。
+      -->
+      <p
+        v-if="props.sessions.length === 0 && props.archivedSessions.length === 0"
+        class="tiny muted nav-empty"
+      >
+        还没有会话
+      </p>
 
       <!-- capture 探针锚点（契约）：data-field="chat.session-list" 挂在滚动容器上 -->
       <div class="session-list" data-field="chat.session-list">
