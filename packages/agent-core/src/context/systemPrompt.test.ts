@@ -187,6 +187,54 @@ describe('buildToolGuidance', () => {
     expect(guidance).toContain('修改任何设置前先向用户说明要改什么')
   })
 
+  it('含 edit_file 时附「先读再改 + oldString 唯一」规范', () => {
+    const guidance = buildToolGuidance(['edit_file'])
+    expect(guidance).toContain('改文件前必须先用 `read_file` 读过它（否则 `edit_file` 会拒绝）')
+    expect(guidance).toContain('要带足上下文保证在文件里唯一，命中多处会被拒绝')
+    expect(guidance).toContain('要全局改名用 `replaceAll`')
+  })
+
+  it('含 grep 或 glob 时附「用 grep / glob 定位，不要逐层翻目录」规范', () => {
+    for (const toolNames of [['grep'], ['glob'], ['grep', 'glob']]) {
+      const guidance = buildToolGuidance(toolNames)
+      expect(guidance).toContain(
+        '找代码位置先用 `grep` 搜内容、`glob` 找文件名，不要用 `list_dir` 逐层翻目录',
+      )
+      expect(guidance).toContain('两者都会自动跳过 `node_modules` / `.git` 等目录')
+    }
+  })
+
+  it('含 grep 时附「拿到路径与行号后再用 offset 读那一段」规范', () => {
+    const guidance = buildToolGuidance(['grep'])
+    expect(guidance).toContain(
+      '`grep` 返回的是路径与行号，拿到位置后再用 `read_file` 的 `offset` 读那一段',
+    )
+    // 只注册 glob 时不该出现这条（它是 grep 专属，不是搜索层通用）
+    expect(buildToolGuidance(['glob'])).not.toContain('返回的是路径与行号')
+  })
+
+  it('只注册 todo_write 时不出现 edit_file / grep / glob 的规范', () => {
+    const guidance = buildToolGuidance(['todo_write'])
+    expect(guidance).toContain('多步/多项任务先调用 todo_write 建立清单')
+    expect(guidance).not.toContain('edit_file')
+    expect(guidance).not.toContain('oldString')
+    expect(guidance).not.toContain('grep')
+    expect(guidance).not.toContain('glob')
+    expect(guidance).not.toContain('list_dir')
+  })
+
+  it('注册 edit_file / grep / glob 时三条新条目都出现', () => {
+    const guidance = buildToolGuidance(['edit_file', 'grep', 'glob'])
+    expect(guidance).toContain('改文件前必须先用 `read_file` 读过它')
+    expect(guidance).toContain('要带足上下文保证在文件里唯一，命中多处会被拒绝')
+    expect(guidance).toContain('要全局改名用 `replaceAll`')
+    expect(guidance).toContain(
+      '找代码位置先用 `grep` 搜内容、`glob` 找文件名，不要用 `list_dir` 逐层翻目录',
+    )
+    expect(guidance).toContain('两者都会自动跳过 `node_modules` / `.git` 等目录')
+    expect(guidance).toContain('拿到位置后再用 `read_file` 的 `offset` 读那一段')
+  })
+
   it('组合工具时各条目都出现', () => {
     const guidance = buildToolGuidance(['todo_write', 'task', 'run_command', 'set_setting'])
     expect(guidance).toContain('todo_write 建立清单')
