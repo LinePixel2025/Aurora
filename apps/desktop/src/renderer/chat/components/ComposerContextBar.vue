@@ -28,6 +28,8 @@ const props = withDefaults(
     totals: TokenUsage
     /** 上下文窗口（token）；0 = 未知（不显示比例） */
     contextWindow: number
+    /** 展开的详情卡是否打开（受控；由调用方保证与另外两个输入区浮层互斥） */
+    open: boolean
     /** 当前生效模型（缺省显示为空） */
     model?: string
     /** 本会话可见消息条数 */
@@ -40,22 +42,22 @@ const props = withDefaults(
   { model: '', messageCount: 0, charCount: 0, streaming: false },
 )
 
-/** 展开的详情卡（默认收起，避免输入区常驻一大块信息） */
-const open = ref(false)
+const emit = defineEmits<{ 'update:open': [open: boolean] }>()
+
 const rootEl = ref<HTMLElement | null>(null)
 
 /** 点面板外部 / Esc 收起（与输入框工具行上的权限下拉同一套行为） */
 function onDocumentPointerDown(event: PointerEvent): void {
-  if (!open.value) return
+  if (!props.open) return
   const target = event.target
   if (target instanceof Node && rootEl.value?.contains(target) === true) return
-  open.value = false
+  emit('update:open', false)
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key !== 'Escape' || !open.value) return
+  if (event.key !== 'Escape' || !props.open) return
   event.stopPropagation()
-  open.value = false
+  emit('update:open', false)
 }
 
 onMounted(() => {
@@ -173,7 +175,7 @@ const summary = computed(() => {
           ? '模型未回传 token 用量；点开看本会话消息与字符数'
           : '上下文占用与 token 用量；点开看明细'
       "
-      @click="open = !open"
+      @click="emit('update:open', !props.open)"
     >
       <Gauge class="ctx-icon" :size="13" :stroke-width="1.7" aria-hidden="true" />
       <span class="ctx-label tiny">上下文</span>
@@ -191,8 +193,12 @@ const summary = computed(() => {
 </template>
 
 <style scoped>
+/*
+ * 与权限下拉同款：刻意**不设** `position: relative`，让详情卡锚在 `.composer-box` 上。
+ * 这里是本轮「工具行被盖死」事故的原点 —— 详情卡此前锚在 `.ctx`（工具行**下方**）上向上弹，
+ * 底边正好落在工具行内部，把权限 / 模型 / 思考 / 麦克风 / 停止 / 发送整条盖住且不可点。
+ */
 .ctx {
-  position: relative;
   border-top: 1px solid var(--border-subtle);
   margin-top: var(--space-2);
 }
@@ -308,13 +314,13 @@ const summary = computed(() => {
   transform: rotate(180deg);
 }
 
-/* 详情卡（向上弹） */
+/* 详情卡（向上弹、锚在**输入卡**上；与另外两个输入区浮层共用 `--z-flyout`） */
 .ctx-card {
   position: absolute;
   left: 0;
   right: 0;
   bottom: calc(100% + 6px);
-  z-index: 20;
+  z-index: var(--z-flyout);
   padding: var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-strong);

@@ -166,6 +166,19 @@
   --dur-bounce: 1000ms;
   --transition-fast: var(--dur-fast) var(--ease-standard);
   --transition-base: var(--dur-base) var(--ease-spring);
+
+  /* ───────── 层级（2026-09 性能轮新增，见 docs/07 §5.1）───────── */
+  /*
+   * 浮出物的**唯一**来源：新代码不许再写 z-index 字面量。
+   * 起因是一次实测事故 —— 输入区三个浮层各自写死 20 / 20 / 30，加上各自的锚点不一致，
+   * 上下文详解卡（锚在工具行**下方**的 `.ctx` 上）向上弹时把整条工具行盖住，
+   * 权限 / 模型 / 思考 / 麦克风 / 停止 / 发送全部不可点。
+   * 现在的口径：三个输入区浮层锚在同一个 `.composer-box` 上、共用 `--z-flyout`、且互斥打开。
+   */
+  --z-sticky: 1;
+  --z-flyout: 20;
+  --z-popover: 30;
+  --z-toast: 200;
 }
 
 /*

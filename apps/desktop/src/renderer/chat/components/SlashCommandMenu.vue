@@ -116,13 +116,18 @@ function indexOf(item: SlashItem): number {
 </template>
 
 <style scoped>
-/* 浮层贴在输入卡上方：输入框在窗口底部，向下弹没有空间 */
+/*
+ * 浮层贴在**输入卡**（`.composer-box`，唯一的定位祖先）上方：
+ * 输入框在窗口底部，向下弹没有空间。
+ * 三个输入区浮层（斜杠 / 权限 / 上下文详解）共用这套锚点与层级令牌，且由调用方保证互斥
+ * —— 它们高度重合，同时开着必然互相遮挡（docs/07 §2.3）。
+ */
 .slash {
   position: absolute;
   left: 0;
   right: 0;
   bottom: calc(100% + 6px);
-  z-index: 30;
+  z-index: var(--z-flyout);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-strong);
   background: var(--bg-raised);

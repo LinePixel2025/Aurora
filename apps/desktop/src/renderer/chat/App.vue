@@ -143,6 +143,7 @@ onMounted(() => {
   offSensitiveTool = window.aurora.proactive.onSensitiveTool((request) => {
     sensitiveRequest.value = request
   })
+  document.addEventListener('pointerdown', onComposerPointerDown)
   // 水合当前会话（main）→ 会话列表：左栏立刻有内容
   void hydrate().then(() => loadSessions())
   // 斜杠命令的 Skill 候选（`/` 浮层的技能分组）：失败只是没有技能项，不影响输入
@@ -155,6 +156,7 @@ onMounted(() => {
 onUnmounted(() => {
   offSensitiveTool?.()
   offSensitiveTool = null
+  document.removeEventListener('pointerdown', onComposerPointerDown)
   if (pickerHintTimer !== null) window.clearTimeout(pickerHintTimer)
   pickerHintTimer = null
   disposeRecording()
@@ -654,6 +656,42 @@ const slashItems = computed<SlashItem[]>(() => {
 })
 
 const slashOpen = computed(() => slashQuery.value !== null && slashItems.value.length > 0)
+
+/**
+ * 输入区浮层的归属（docs/07 §2.3「三个浮层的锚点与层级」）。
+ *
+ * 三个浮层（斜杠 / 权限 / 上下文详解）锚在**同一张输入卡**上、共用 `--z-flyout`，
+ * 因此必须**互斥** —— 同时开着两个只会互相遮挡（曾经斜杠浮层压住权限下拉、
+ * 上下文详解卡把整条工具行连同发送键盖死）。斜杠是「输入隐含触发」的，
+ * 另外两个是「点击显式打开」的，所以这里只存显式的那一个；
+ * 斜杠的可见性由 `showSlash` 把它们一并算进去，避免两处状态各说各话。
+ */
+const openFlyout = ref<'permission' | 'context' | null>(null)
+
+/** 斜杠浮层是否可见：候选存在，且没有被另外两个显式浮层挤掉 */
+const showSlash = computed(() => slashOpen.value && openFlyout.value === null)
+
+/** 一开始输入 `/`（斜杠浮层冒出来）就让另外两个浮层让位 —— 它俩占的是同一块地方 */
+watch(slashOpen, (open) => {
+  if (open) openFlyout.value = null
+})
+
+/** 输入卡根节点：斜杠浮层「点击外部关闭」的判定边界（另两个浮层各自管自己的） */
+const composerBoxEl = ref<HTMLElement | null>(null)
+
+/**
+ * 点击输入卡外部收起斜杠浮层。
+ *
+ * 它由输入内容隐含触发、没有「关掉」按钮，所以关闭只能走 `slashDismissed`
+ * （与 Esc 同一条通道，输入内容一变即复位重新打开）。
+ */
+function onComposerPointerDown(event: PointerEvent): void {
+  if (!showSlash.value) return
+  const target = event.target
+  if (target instanceof Node && composerBoxEl.value?.contains(target) === true) return
+  slashDismissed.value = true
+}
+
 /** 高亮项：`slashItems` 变短时（继续输入）自动收到末项，不会指到数组外 */
 const slashIndex = ref(0)
 const activeSlashIndex = computed(() =>
@@ -708,7 +746,7 @@ function applySlash(item: SlashItem): void {
  * 其余情况 `Enter` 发送、`Shift + Enter` 换行（`Ctrl + Enter` 与 `Enter` 等价，历史习惯保留）。
  */
 function onComposerKeydown(event: KeyboardEvent): void {
-  if (slashOpen.value) {
+  if (showSlash.value) {
     const total = slashItems.value.length
     if (event.key === 'ArrowDown') {
       event.preventDefault()
@@ -898,14 +936,15 @@ async function markGuideDone(): Promise<void> {
             </span>
           </div>
 
-          <div class="composer-box" :class="{ streaming }">
+          <div ref="composerBoxEl" class="composer-box" :class="{ streaming }">
             <!--
               斜杠命令浮层（2026-09 输入框重做）：贴在输入卡上方。
               键盘（↑↓ / Enter / Tab / Esc）由下面 textarea 的 onComposerKeydown 统一处理，
               浮层只是键位操作的可视反馈，焦点始终留在输入框里。
+              与另外两个浮层**互斥**：`showSlash` 已经把「权限 / 上下文详解 正开着」排除在外。
             -->
             <SlashCommandMenu
-              v-if="slashOpen"
+              v-if="showSlash"
               :items="slashItems"
               :active-index="activeSlashIndex"
               @select="applySlash"
@@ -930,8 +969,10 @@ async function markGuideDone(): Promise<void> {
               <!-- 权限模式（变更前确认 / 完全权限）：写 advanced.confirmSensitiveTools -->
               <ComposerPermissionSelect
                 :confirm="permissionConfirm"
+                :open="openFlyout === 'permission'"
                 :disabled="settingsStore.settings === null"
                 @change="setPermission"
+                @update:open="openFlyout = $event ? 'permission' : null"
               />
               <!-- 模型 / 思考等级（2026-09 移入 composer 工具行）：data-field 锚点不变 -->
               <ModelPickerSelect
@@ -991,10 +1032,12 @@ async function markGuideDone(): Promise<void> {
               :latest="usage.latest"
               :totals="usage.totals"
               :context-window="currentContextWindow"
+              :open="openFlyout === 'context'"
               :model="currentModel"
               :message-count="messages.length"
               :char-count="contentChars"
               :streaming="streaming"
+              @update:open="openFlyout = $event ? 'context' : null"
             />
           </div>
         </div>

@@ -16,27 +16,45 @@
  *
  * 值始终来自 props（配置 = 单一事实来源），组件不保存本地副本；
  * 落盘由调用方完成（`settings:update` 的 `advanced` 是顶层浅合并，patch 只需带这一个字段）。
+ *
+ * 展开状态是**受控**的（`open` + `update:open`）：输入区三个浮层锚在同一张输入卡上、
+ * 共用 `--z-flyout`、必须互斥打开，因此「谁开着」只能有一个所有者 —— 归 `chat/App.vue`
+ * 的 `openFlyout`（docs/07 §2.3「三个浮层的锚点与层级」）。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ChevronDown, ShieldCheck, ShieldOff } from '../../shared/icons.js'
 
 const props = withDefaults(
   defineProps<{
     /** 是否要求敏感工具执行前确认（`advanced.confirmSensitiveTools`） */
     confirm: boolean
+    /** 下拉是否展开（受控；由调用方保证与另外两个输入区浮层互斥） */
+    open: boolean
     /** 配置还没读回来时禁用（避免用户点了一个「保存后会覆盖真实值」的假开关） */
     disabled?: boolean
   }>(),
   { disabled: false },
 )
 
-const emit = defineEmits<{ change: [confirm: boolean] }>()
+const emit = defineEmits<{
+  change: [confirm: boolean]
+  'update:open': [open: boolean]
+}>()
 
-/** 下拉是否展开（点击外部 / Esc / 选中后收起） */
-const open = ref(false)
 /** 「切到完全权限」的二次确认态：第一次点只把那一项变成确认按钮 */
 const pendingDanger = ref(false)
 const rootEl = ref<HTMLElement | null>(null)
+
+/**
+ * 收起时丢掉半途的二次确认态。放在 watcher 里而不是每个关闭路径各写一遍：
+ * 关闭可能来自点击外部 / Esc / 选中 / **别的浮层把它挤掉**，四条路径都要复位。
+ */
+watch(
+  () => props.open,
+  (open) => {
+    if (!open) pendingDanger.value = false
+  },
+)
 
 const label = computed(() => (props.confirm ? '变更前确认' : '完全权限'))
 
@@ -48,14 +66,12 @@ const title = computed(() =>
 
 function toggle(): void {
   if (props.disabled) return
-  open.value = !open.value
-  if (!open.value) pendingDanger.value = false
+  emit('update:open', !props.open)
 }
 
 /** 选「变更前确认」：立即生效并收起 */
 function chooseConfirm(): void {
-  open.value = false
-  pendingDanger.value = false
+  emit('update:open', false)
   if (!props.confirm) emit('change', true)
 }
 
@@ -68,25 +84,22 @@ function chooseFullAccess(): void {
     pendingDanger.value = true
     return
   }
-  open.value = false
-  pendingDanger.value = false
+  emit('update:open', false)
   if (props.confirm) emit('change', false)
 }
 
 function onDocumentPointerDown(event: PointerEvent): void {
-  if (!open.value) return
+  if (!props.open) return
   const target = event.target
   if (target instanceof Node && rootEl.value?.contains(target) === true) return
-  open.value = false
-  pendingDanger.value = false
+  emit('update:open', false)
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key !== 'Escape' || !open.value) return
+  if (event.key !== 'Escape' || !props.open) return
   // 只收起自己的下拉，不冒泡到窗口层（那里 Esc 另有语义）
   event.stopPropagation()
-  open.value = false
-  pendingDanger.value = false
+  emit('update:open', false)
 }
 
 onMounted(() => {
@@ -167,8 +180,11 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/*
+ * 刻意**不设** `position: relative`：下拉要锚在整张输入卡（`.composer-box`）上，
+ * 这样它永远浮在输入卡上方，绝不会盖住自己所在的这条工具行（docs/07 §2.3）。
+ */
 .perm {
-  position: relative;
   flex: 0 0 auto;
 }
 
@@ -233,12 +249,16 @@ onBeforeUnmount(() => {
   transform: rotate(180deg);
 }
 
-/* 下拉向上弹（输入框贴着窗口底部，向下弹会被裁掉） */
+/*
+ * 下拉向上弹、锚在**输入卡**上（输入框贴着窗口底部，向下弹会被裁掉）。
+ * `left: 0` 相对的是 `.composer-box` 的左内边距 —— 与另外两个输入区浮层共用同一套锚点
+ * 与 `--z-flyout` 层级；宽度保持紧凑，两个选项铺满整卡反而难扫读。
+ */
 .perm-menu {
   position: absolute;
   left: 0;
   bottom: calc(100% + 6px);
-  z-index: 20;
+  z-index: var(--z-flyout);
   width: 320px;
   padding: var(--space-1);
   border-radius: var(--radius-md);
