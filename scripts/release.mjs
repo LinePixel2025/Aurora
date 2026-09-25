@@ -10,6 +10,7 @@
  *   node scripts/release.mjs --publish       # 额外用 gh 上传产物到 releases 仓库
  *   node scripts/release.mjs --publish --push # 再把 tag 推到 origin
  *   node scripts/release.mjs --skip-package  # 只校验已有产物 + 打 tag
+ *   --notes-file docs/release-notes/v<版本>.md # 详细 Release Notes（约定必传，见 docs/release-notes/）
  *
  * 环境变量：
  *   GH_TOKEN  —— `--publish` 时 gh CLI 需要（repo 权限即可）
@@ -30,6 +31,21 @@ const args = new Set(process.argv.slice(2))
 const shouldPublish = args.has('--publish')
 const shouldPush = args.has('--push')
 const skipPackage = args.has('--skip-package')
+
+/**
+ * 详细 Release Notes（约定：每个版本必须在 docs/release-notes/ 存档一份，
+ * 上传时用它作为 Release 正文，不要用单行默认文案）。
+ * 用法：node scripts/release.mjs --publish --push --notes-file docs/release-notes/v0.0.4.md
+ */
+const notesFileFlag = process.argv.indexOf('--notes-file')
+let notesFile = notesFileFlag === -1 ? undefined : process.argv[notesFileFlag + 1]
+if (notesFile !== undefined) {
+  notesFile = resolve(root, notesFile)
+  if (!(await exists(notesFile))) {
+    console.error(`--notes-file 指定的文件不存在：${notesFile}`)
+    process.exit(2)
+  }
+}
 
 const packageJson = JSON.parse(await fs.readFile(join(root, 'package.json'), 'utf8'))
 const version = packageJson.version
@@ -140,7 +156,12 @@ if (shouldPublish) {
   try {
     run('gh', ['release', 'view', tag, '--repo', RELEASES_REPO])
     console.log(`release ${tag} 已存在，将上传/覆盖产物`)
+    // 已存在的 release 也要把正文刷成详细 notes（如上次上传时还没写好说明）
+    if (notesFile !== undefined) {
+      run('gh', ['release', 'edit', tag, '--repo', RELEASES_REPO, '--notes-file', notesFile])
+    }
   } catch {
+    const notesArgs = notesFile !== undefined ? ['--notes-file', notesFile] : ['--notes', `Aurora ${tag}（Windows x64 安装包，未签名）`]
     run('gh', [
       'release',
       'create',
@@ -149,8 +170,7 @@ if (shouldPublish) {
       RELEASES_REPO,
       '--title',
       `Aurora ${tag}`,
-      '--notes',
-      `Aurora ${tag}（Windows x64 安装包，未签名）`,
+      ...notesArgs,
     ])
   }
 
@@ -174,7 +194,7 @@ if (shouldPublish) {
     apps/desktop/release/Aurora-Setup-${version}.exe.blockmap \\
     apps/desktop/release/latest.yml
 
-或直接：node scripts/release.mjs --publish --push
+或直接：node scripts/release.mjs --publish --push --notes-file docs/release-notes/v<版本>.md
 ──────────────────────────────────────────────────────────────`)
 }
 
