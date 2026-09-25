@@ -1434,6 +1434,823 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
 })()`
 
 /**
+ * 输入区三个浮层的「互斥 + 几何不相交 + 工具行可点」探针 · 前半（2026-09-26 修复的回归断言）。
+ *
+ * 现场：三个浮层（斜杠 `chat.slash-menu` / 权限 `chat.permission-menu` / 上下文详解
+ * `chat.context-detail`）统一锚在 `.composer-box` 上、共用 `--z-flyout`、互斥打开。
+ * 修复前 `chat.context-detail` 锚在工具行**下方**的 `.ctx` 上向上弹，底边正好落在工具行内部，
+ * 把权限 / 模型 / 思考 / 麦克风 / 停止 / 发送整条盖住且不可点 —— 本场景就是那条事故的运行时证据。
+ *
+ * act 只做两件事，两步都是真实交互链路（focus + input 事件 / 指针点击 → Vue handler）：
+ * ① 往 textarea 写 `/` 并派发 `input`（斜杠浮层冒出来）→ 取「斜杠开着」时刻的快照；
+ * ② 点权限钮（权限下拉打开、斜杠浮层让位）→ 取「权限开着」时刻的快照。
+ *
+ * ⚠️ 每一刻都必须**等过渡稳定**再取数：进出场是 `pop` 的 150ms（`--dur-fast`）缩放 + 4px 位移，
+ * 只按「元素存在」判定会拍到中间帧（矩形偏小、位置低 4px），几何断言就变成对中间态下结论。
+ * 因此这里按「连续两次采样的矩形完全一致」判稳定，而不是固定等待。
+ *
+ * 快照（含矩形、可见性、层级、`elementFromPoint` 命中描述）挂在 window 上给 check 读 ——
+ * act 的返回值会被 `captureWindows` 丢掉，只有 check 的返回值进 `report.json`。
+ * 收尾（关浮层 / 清空输入）在 check 里做，因为截图必须先拍到「浮层开着」的现场。
+ */
+export const CHAT_COMPOSER_FLYOUTS_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const KEYS = ['slash', 'permission', 'context']
+    const SELECTORS = {
+      slash: '[data-field="chat.slash-menu"]',
+      permission: '[data-field="chat.permission-menu"]',
+      context: '[data-field="chat.context-detail"]',
+    }
+    const round = (value) => Math.round(value * 10) / 10
+    const rectOf = (el) => {
+      const rect = el.getBoundingClientRect()
+      return {
+        top: round(rect.top),
+        bottom: round(rect.bottom),
+        left: round(rect.left),
+        right: round(rect.right),
+        width: round(rect.width),
+        height: round(rect.height),
+      }
+    }
+    const snapshot = () => {
+      const items = {}
+      const visible = []
+      for (const key of KEYS) {
+        const el = document.querySelector(SELECTORS[key])
+        if (el === null) {
+          items[key] = { present: false, visible: false, rect: null, zIndex: null }
+          continue
+        }
+        const rect = el.getBoundingClientRect()
+        const shown = rect.width > 0 && rect.height > 0
+        items[key] = {
+          present: true,
+          visible: shown,
+          rect: rectOf(el),
+          zIndex: getComputedStyle(el).zIndex,
+        }
+        if (shown) visible.push(key)
+      }
+      const bar = document.querySelector('.composer-bar')
+      const box = document.querySelector('.composer-box')
+      return {
+        visible,
+        visibleCount: visible.length,
+        items,
+        barRect: bar === null ? null : rectOf(bar),
+        boxRect: box === null ? null : rectOf(box),
+      }
+    }
+    // 发送键的中心命中测试：修复前命中的是浮层（这就是「发送键点不动」的直接读数）
+    const sendHit = () => {
+      const send = document.querySelector('.composer-bar .send')
+      if (send === null) return { found: false, hitSelf: false, hit: 'no .composer-bar .send' }
+      const rect = send.getBoundingClientRect()
+      const x = Math.round(rect.left + rect.width / 2)
+      const y = Math.round(rect.top + rect.height / 2)
+      const hit = document.elementFromPoint(x, y)
+      const classes =
+        hit === null ? '' : String(hit.className || '').split(' ').filter(Boolean).join('.')
+      const field = hit === null ? null : hit.getAttribute('data-field')
+      return {
+        found: true,
+        x,
+        y,
+        hitSelf: hit === send || send.contains(hit),
+        hit:
+          hit === null
+            ? 'null'
+            : hit.tagName.toLowerCase() +
+              (classes === '' ? '' : '.' + classes) +
+              (field === null ? '' : ' [' + field + ']'),
+        sendRect: rectOf(send),
+      }
+    }
+    const moment = () => {
+      const snap = snapshot()
+      snap.hit = sendHit()
+      return snap
+    }
+    /** 等某浮层出现且矩形连续两次采样一致（进出场 150ms，拍中间帧会让几何断言失真） */
+    const settle = async (selector, attempts) => {
+      let last = null
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        const el = document.querySelector(selector)
+        const rect = el === null ? null : el.getBoundingClientRect()
+        if (rect !== null && rect.width > 0 && rect.height > 0) {
+          const key =
+            Math.round(rect.top * 10) +
+            ':' +
+            Math.round(rect.bottom * 10) +
+            ':' +
+            Math.round(rect.width * 10)
+          if (key === last) return true
+          last = key
+        } else {
+          last = null
+        }
+        await wait(80)
+      }
+      return false
+    }
+    const box = document.querySelector('.composer-input')
+    if (box === null) return { ready: false, reason: 'composer-input 不存在' }
+    box.focus()
+    box.value = '/'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await settle(SELECTORS.slash, 12)
+    // 技能候选来自 skills:list（异步）：等它到了再取快照，浮层高度才是最终态（与 chat-composer-slash 同款）
+    let skills = 0
+    for (let attempt = 0; attempt < 12 && skills === 0; attempt += 1) {
+      skills = document.querySelectorAll('[data-kind="skill"]').length
+      if (skills === 0) await wait(250)
+    }
+    await settle(SELECTORS.slash, 6)
+    const slashMoment = moment()
+
+    // 权限钮可能因 settingsStore 未水合而 disabled（禁用元素上的 click 不触发处理函数）
+    let button = null
+    for (let attempt = 0; attempt < 10 && button === null; attempt += 1) {
+      const candidate = document.querySelector('[data-field="chat.permission"]')
+      if (candidate !== null && candidate.disabled !== true) button = candidate
+      else await wait(250)
+    }
+    if (button === null) {
+      window.__auroraFlyoutProbe = { slash: slashMoment }
+      return { ready: false, reason: 'chat.permission 始终不可用（settingsStore 未水合？）', slashMoment }
+    }
+    button.click()
+    await settle(SELECTORS.permission, 12)
+    const permissionMoment = moment()
+    window.__auroraFlyoutProbe = { slash: slashMoment, permission: permissionMoment }
+    return { ready: true, skillItems: skills, slash: slashMoment, permission: permissionMoment }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 输入区三个浮层探针 · 后半（几何断言，不数元素个数）。
+ *
+ * 四个时刻各取一次「可见浮层集合 + 每层矩形 + 发送键命中」：
+ * ① 斜杠开着（act 记录）→ ② 权限开着（act 记录的现场，即截图那一刻）→
+ * ③ 权限开着（此刻实时复测，与 ② 互为旁证）→ ④ 上下文详解开着（check 里现开，本场景跑在截图之后，
+ *    拍不到不影响证据链；事故的元凶正是这一层，所以必须有一个真实测量点）。
+ *
+ * 断言四件事：
+ * 1. **任一时刻最多一个浮层可见**（可见判定 = `getBoundingClientRect()` 宽高都 > 0），
+ *    且「权限开着」时斜杠浮层必须不可见、「上下文详解开着」时权限下拉必须不可见 —— 互斥真的生效；
+ * 2. **浮层不压工具行**：可见浮层的矩形与 `.composer-bar` 的矩形**不相交**，
+ *    并且整个矩形都在 `.composer-box` **上方**（`bottom <= box.top + 1`）——
+ *    后者是「统一锚在输入卡上」这条修复的几何表达（锚在 `.ctx` 上向上弹时它的底边必然伸进输入卡内部）；
+ * 3. **发送键可点**：`.composer-bar .send` 矩形中心的 `elementFromPoint` 命中它自己或它的后代
+ *    —— 事故现场这里命中的是浮层；
+ * 4. 收尾：按**当前** `aria-expanded` 逐个关掉还开着的显式浮层、清空输入框（斜杠浮层随之消失）、
+ *    再点一次输入卡外部兜底，轮询确认三者都不可见 —— 关闭判据不能用过期快照：三个浮层互斥，
+ *    打开上下文卡时权限下拉已经被挤掉了，拿着旧快照去点权限钮只会把它重新打开（首跑实测踩到）。
+ *    收尾过程留痕在 `cleanupTrace` 里。
+ *
+ * 返回值带上每个时刻的可见集合、每层矩形（含 z-index）、命中元素描述与两次计数 ——
+ * 失败时能一眼看出是谁挡住了谁，而不是只知道「断言没过」。
+ */
+export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const KEYS = ['slash', 'permission', 'context']
+    const SELECTORS = {
+      slash: '[data-field="chat.slash-menu"]',
+      permission: '[data-field="chat.permission-menu"]',
+      context: '[data-field="chat.context-detail"]',
+    }
+    const round = (value) => Math.round(value * 10) / 10
+    const rectOf = (el) => {
+      const rect = el.getBoundingClientRect()
+      return {
+        top: round(rect.top),
+        bottom: round(rect.bottom),
+        left: round(rect.left),
+        right: round(rect.right),
+        width: round(rect.width),
+        height: round(rect.height),
+      }
+    }
+    const snapshot = () => {
+      const items = {}
+      const visible = []
+      for (const key of KEYS) {
+        const el = document.querySelector(SELECTORS[key])
+        if (el === null) {
+          items[key] = { present: false, visible: false, rect: null, zIndex: null }
+          continue
+        }
+        const rect = el.getBoundingClientRect()
+        const shown = rect.width > 0 && rect.height > 0
+        items[key] = {
+          present: true,
+          visible: shown,
+          rect: rectOf(el),
+          zIndex: getComputedStyle(el).zIndex,
+        }
+        if (shown) visible.push(key)
+      }
+      const bar = document.querySelector('.composer-bar')
+      const box = document.querySelector('.composer-box')
+      return {
+        visible,
+        visibleCount: visible.length,
+        items,
+        barRect: bar === null ? null : rectOf(bar),
+        boxRect: box === null ? null : rectOf(box),
+      }
+    }
+    const sendHit = () => {
+      const send = document.querySelector('.composer-bar .send')
+      if (send === null) return { found: false, hitSelf: false, hit: 'no .composer-bar .send' }
+      const rect = send.getBoundingClientRect()
+      const x = Math.round(rect.left + rect.width / 2)
+      const y = Math.round(rect.top + rect.height / 2)
+      const hit = document.elementFromPoint(x, y)
+      const classes =
+        hit === null ? '' : String(hit.className || '').split(' ').filter(Boolean).join('.')
+      const field = hit === null ? null : hit.getAttribute('data-field')
+      return {
+        found: true,
+        x,
+        y,
+        hitSelf: hit === send || send.contains(hit),
+        hit:
+          hit === null
+            ? 'null'
+            : hit.tagName.toLowerCase() +
+              (classes === '' ? '' : '.' + classes) +
+              (field === null ? '' : ' [' + field + ']'),
+        sendRect: rectOf(send),
+      }
+    }
+    // 矩形相交（留 0.5px 容差，避免亚像素把「贴边」算成「相交」）
+    const intersects = (left, right) =>
+      left !== null &&
+      right !== null &&
+      left.left < right.right - 0.5 &&
+      right.left < left.right - 0.5 &&
+      left.top < right.bottom - 0.5 &&
+      right.top < left.bottom - 0.5
+    const audit = (label, moment) => {
+      const rows = []
+      for (const key of moment.visible) {
+        const rect = moment.items[key].rect
+        rows.push({
+          key: key,
+          zIndex: moment.items[key].zIndex,
+          rect: rect,
+          barClear: intersects(rect, moment.barRect) === false,
+          aboveComposerBox: moment.boxRect !== null && rect.bottom <= moment.boxRect.top + 1,
+        })
+      }
+      return {
+        moment: label,
+        visible: moment.visible,
+        visibleCount: moment.visibleCount,
+        hidden: KEYS.filter((key) => moment.visible.indexOf(key) === -1),
+        rows: rows,
+        barClear: rows.every((row) => row.barClear === true),
+        aboveComposerBox: rows.every((row) => row.aboveComposerBox === true),
+        hit: moment.hit,
+      }
+    }
+    const probe = window.__auroraFlyoutProbe
+    if (probe === undefined || probe === null || probe.slash === undefined) {
+      return { pass: false, reason: 'act 未留下 __auroraFlyoutProbe（浮层从未出现？），无几何可断言' }
+    }
+    // ③ 权限下拉（截图现场）此刻的实时复测：act 的快照与它互为旁证
+    const permissionNow = snapshot()
+    permissionNow.hit = sendHit()
+    // ④ 第三个时刻：上下文详解卡 —— 事故的元凶，必须有一次真实测量。
+    //    「aria-expanded」是「组件自认为开着」的权威信号，比矩形可靠：leaving 中的节点矩形仍 > 0，
+    //    只看矩形会对着一个正在消失的浮层下结论（甚至把已关掉的再点开）。
+    const triggered = (selector) => {
+      const el = document.querySelector(selector)
+      return el !== null && el.getAttribute('aria-expanded') === 'true'
+    }
+    const contextButton = document.querySelector('[data-field="chat.context"]')
+    if (contextButton !== null && triggered('[data-field="chat.context"]') === false) {
+      contextButton.click()
+    }
+    await wait(450)
+    const contextMoment = snapshot()
+    contextMoment.hit = sendHit()
+
+    // 收尾：反复按**当前**状态关掉可见浮层 —— 不能用过期快照决定点谁：
+    // 打开上下文卡时权限下拉已经被挤掉了（openFlyout 只有一个值），此时再点权限钮会把它又打开。
+    const box = document.querySelector('.composer-input')
+    const cleanupTrace = []
+    let cleared = false
+    for (let round = 0; round < 6 && !cleared; round += 1) {
+      const contextOpen = triggered('[data-field="chat.context"]')
+      const permissionOpen = triggered('[data-field="chat.permission"]')
+      cleanupTrace.push({
+        round: round,
+        contextOpen: contextOpen,
+        permissionOpen: permissionOpen,
+        visible: snapshot().visible,
+      })
+      if (contextOpen) {
+        const button = document.querySelector('[data-field="chat.context"]')
+        if (button !== null) button.click()
+      }
+      if (permissionOpen) {
+        const button = document.querySelector('[data-field="chat.permission"]')
+        if (button !== null) button.click()
+      }
+      // 斜杠浮层由输入内容隐含触发、没有关闭按钮：清空输入即消失
+      if (box !== null && box.value !== '') {
+        box.value = ''
+        box.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      await wait(160)
+      cleared =
+        snapshot().visibleCount === 0 &&
+        triggered('[data-field="chat.context"]') === false &&
+        triggered('[data-field="chat.permission"]') === false
+    }
+    // 兜底：点一次输入卡外部（两个显式浮层各自的 pointerdown 关闭路径）
+    const outside = document.querySelector('.thread') || document.body
+    outside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+    for (let attempt = 0; attempt < 20 && !cleared; attempt += 1) {
+      cleared = snapshot().visibleCount === 0
+      if (!cleared) await wait(120)
+    }
+    // 清空输入（后续场景依赖空输入）：收尾里可能又因为某次点击把斜杠浮层带出来
+    if (box !== null && box.value !== '') {
+      box.value = ''
+      box.dispatchEvent(new Event('input', { bubbles: true }))
+      await wait(200)
+    }
+    const finalMoment = snapshot()
+
+
+    const audits = [
+      audit('slash-open(act)', probe.slash),
+      audit('permission-open(act)', probe.permission),
+      audit('permission-open(now)', permissionNow),
+      audit('context-open(check)', contextMoment),
+    ]
+    const oneAtMost = audits.every((row) => row.visibleCount <= 1)
+    const mutual =
+      audits[0].visible.indexOf('slash') !== -1 &&
+      audits[2].visible.indexOf('permission') !== -1 &&
+      audits[2].visible.indexOf('slash') === -1 &&
+      audits[3].visible.indexOf('context') !== -1 &&
+      audits[3].visible.indexOf('permission') === -1
+    const barClear = audits.every((row) => row.barClear === true)
+    const aboveComposerBox = audits.every((row) => row.aboveComposerBox === true)
+    const sendClickable = audits.every(
+      (row) =>
+        row.hit !== undefined && row.hit !== null && row.hit.found === true && row.hit.hitSelf === true,
+    )
+    return {
+      audits,
+      oneAtMost,
+      mutual,
+      barClear,
+      aboveComposerBox,
+      sendClickable,
+      cleared,
+      cleanupTrace,
+      finalVisible: finalMoment.visible,
+      inputAfter:
+        box === null ? null : box.value === '' ? 'empty' : JSON.stringify(box.value.slice(0, 24)),
+      pass:
+        oneAtMost && mutual && barClear && aboveComposerBox && sendClickable && cleared === true,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 工具卡展开高度的「实测终点」探针 · 前半（2026-09-26 修复的回归断言）。
+ *
+ * 背景：`.collapse-*` 的终点此前写死 `70vh`，内容只有约 140px 的工具卡对 504px 的终点做动画，
+ * 可见位移全挤在时间轴前一小段（展开「飞快长满再空转」、收起「先空转、末尾猛缩」）。
+ * 现在终点取实测值：`useCollapseTransition` 的 `before-enter` / `before-leave` 把
+ * `el.scrollHeight` 写进元素内联的 `--collapse-h`，全局 CSS 用 `var(--collapse-h, 70vh)`。
+ *
+ * act 点 seed 出来的工具卡卡头（优先 `task` 卡，展开体最大：运行轨迹 + 指令 + 参数 + 结果），
+ * 中途按 60 / 120 / 180 / 280 / 400ms 采样可见高度（**只作信息、不作 pass 条件**——曲线平滑度
+ * 无法从快照可靠断言），最后轮询到「连续两次高度一致且 > 0」才算稳定，把采样与稳定高度挂 window
+ * 给 check 读（act 的返回值进不了 report.json）。
+ *
+ * **不在这里收起卡片**：截图就是展开现场，且展开态只影响这张卡自身，后续场景不受影响
+ *（`chat-tts` 自带 reload）。
+ */
+export const CHAT_TOOL_CARD_OPEN_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    // 优先 task 卡（有子代理轨迹 + 指令 + 参数 + 结果，展开体最长），回落 todo 卡再回落任意工具卡
+    const card =
+      document.querySelector('[data-field="chat.task-card"]') ||
+      document.querySelector('[data-field="chat.todo-card"]') ||
+      document.querySelector('.tool-card')
+    if (card === null) {
+      return { ready: false, reason: '没有 .tool-card（seed 的工具卡没渲染？）' }
+    }
+    const head = card.querySelector('.tool-head')
+    if (head === null) return { ready: false, reason: 'no .tool-head' }
+    const field = card.getAttribute('data-field')
+    const openBefore = card.classList.contains('open')
+    const bodyBefore = card.querySelector('.tool-body') !== null
+    if (openBefore === true) {
+      // 已经展开（默认是折叠的，走到这里说明前面的场景动过）：不再点，避免把它收起来
+      window.__auroraToolCardProbe = { field, openBefore, bodyBefore, samples: [], stableHeight: 0, clicked: false }
+      return { ready: true, field, openBefore, clicked: false }
+    }
+    const started = Date.now()
+    head.click()
+    const samples = []
+    for (const target of [60, 120, 180, 280, 400]) {
+      const elapsed = Date.now() - started
+      if (target > elapsed) await wait(target - elapsed)
+      const body = card.querySelector('.tool-body')
+      const rect = body === null ? null : body.getBoundingClientRect()
+      samples.push({
+        at: Date.now() - started,
+        height: rect === null ? 0 : Math.round(rect.height * 10) / 10,
+      })
+    }
+    // 稳定判据：连续两次采样高度一致且 > 0（0 是过渡起点，不能当成稳定）
+    let stableHeight = 0
+    let last = -1
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const body = card.querySelector('.tool-body')
+      const height = body === null ? -1 : Math.round(body.getBoundingClientRect().height)
+      if (height > 0 && height === last) {
+        stableHeight = height
+        break
+      }
+      last = height
+      await wait(80)
+    }
+    const probe = {
+      field: field,
+      openBefore: openBefore,
+      bodyBefore: bodyBefore,
+      clicked: true,
+      samples: samples,
+      stableHeight: stableHeight,
+      waitedMs: Date.now() - started,
+    }
+    window.__auroraToolCardProbe = probe
+    return { ready: true, ...probe }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 工具卡展开探针 · 后半（「实测高度」这条机制的直接断言）。
+ *
+ * 断言：
+ * ① 卡处于展开态（`.open` + `aria-expanded="true"`）且展开体 `.tool-body` 在且可见；
+ * ② 展开体的**内联** `--collapse-h` 存在、是可解析的 px 数值，且与该元素的 `scrollHeight`
+ *    相差 ≤ 2px —— 有人把钩子摘掉（回落 70vh）或改回写死值，这条立刻 FAIL；
+ * ③ 稳定后展开体的可见高度 ≈ `scrollHeight`（没有被 `max-height` 截住）；
+ * ④ 中途采样只回传、不参与判定（曲线平滑度不能从快照断言）。
+ * ② 的口径**刻意从严**：它同时是「测量发生在何时」的回归防线 —— 首跑就靠它抓到
+ * 「进入方向把 `scrollHeight` 量在**游离**元素上 → `--collapse-h: 0px`」这个真实 bug
+ * （Vue 的 `beforeEnter` 在 `hostInsert` 之前调用；已由渲染层改挂 `enter` 修掉）。
+ * 因此这里的 `≤ 2px` 不能放宽成「接受 0 / 接受一个区间」。
+ *
+ * 场景自带两条**只回传、不参与 pass** 的诊断（`diagnostic` / `detachedMeasureProbe`），
+ * 用来把「钩子量到了什么」变成可复核的读数：
+ * - `diagnostic.leaveVar`：收起方向（`before-leave` 时元素尚在文档里）写下的实测值；
+ * - `diagnostic.mid` / `diagnostic.settled`：再展开时「进入后约 70ms」与「稳定后」两次布局快照
+ *   （`--collapse-h`、元素宽度、`scrollHeight`、`.thread` 的 clientWidth / 有无滚动条、各子元素高度）
+ *   —— 用于区分「钩子量错了」与「量的时候布局还没稳」；
+ * - `detachedMeasureProbe`：现造一个同款盒子，未入文档 / 已入文档各量一次 `scrollHeight`
+ *   （钉住「游离元素 scrollHeight 恒为 0」这条前提）。
+ */
+export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const probe = window.__auroraToolCardProbe
+    const pick = () =>
+      document.querySelector('[data-field="chat.task-card"]') ||
+      document.querySelector('[data-field="chat.todo-card"]') ||
+      document.querySelector('.tool-card')
+    const card = pick()
+    if (card === null) return { pass: false, reason: 'no .tool-card' }
+    const head = card.querySelector('.tool-head')
+    const body = card.querySelector('.tool-body')
+    const raw = body === null ? '' : body.style.getPropertyValue('--collapse-h')
+    const match = /^([0-9]+(\\.[0-9]+)?)px$/.exec(raw.trim())
+    const measuredPx = match === null ? null : Number(match[1])
+    const scrollHeight = body === null ? 0 : body.scrollHeight
+    const visibleHeight =
+      body === null ? 0 : Math.round(body.getBoundingClientRect().height * 10) / 10
+    const open = card.classList.contains('open')
+    const ariaExpanded = head === null ? null : head.getAttribute('aria-expanded')
+    const varMatches = measuredPx !== null && Math.abs(measuredPx - scrollHeight) <= 2
+    const notClipped = body !== null && visibleHeight > 0 && Math.abs(visibleHeight - scrollHeight) <= 2
+
+    // ── 诊断（信息，不参与 pass）：两个方向的实测值 + 展开中途 / 稳定后的布局对比 ──
+    // 实测（含 c5fd1fa 的 enter 钩子）：leaveVar 467px（对），而 enter 侧只写 401px。
+    // 中途与稳定后的两次布局快照把差值定到了具体节点：只有「溢出容器」那个子元素变了
+    //（.tool-args：中途 13px → 稳定 79px，正好 66px），宽度与 .thread 滚动条状态两次完全一致。
+    // 原因是 .tool-body 是 flex 列容器：enter 钩子跑的时候「.collapse-enter-from」的 max-height: 0
+    // 已经挂上，容器没有可用高度，flex 收缩把唯一的滚动容器子项（.tool-args，overflow: auto，
+    // 其 min-height: auto 对滚动容器解析为 0）压到 padding + 边框的最小高度，于是量出来的
+    // scrollHeight 比稳定值少这一项的差值；非滚动容器的子项（.trace / 各 label）不被压缩。
+    let diagnostic = null
+    if (head !== null && body !== null) {
+      try {
+        const layoutOf = (label) => {
+          const current = card.querySelector('.tool-body')
+          const thread = document.querySelector('.thread')
+          if (current === null) return { label: label, missing: true }
+          return {
+            label: label,
+            var: current.style.getPropertyValue('--collapse-h'),
+            width: Math.round(current.getBoundingClientRect().width * 10) / 10,
+            scrollHeight: current.scrollHeight,
+            threadClientWidth: thread === null ? null : thread.clientWidth,
+            threadScrollbar:
+              thread === null ? null : thread.offsetWidth - thread.clientWidth > 0,
+            children: Array.from(current.children).map((child) => ({
+              cls: String(child.className || '').split(' ')[0],
+              height: Math.round(child.getBoundingClientRect().height),
+            })),
+          }
+        }
+        head.click()
+        await wait(80) // 收起刚开始：此时 before-leave 已把实测高度写进内联变量
+        const leavingBody = card.querySelector('.tool-body')
+        const leaveVar = leavingBody === null ? null : leavingBody.style.getPropertyValue('--collapse-h')
+        for (let attempt = 0; attempt < 15 && card.querySelector('.tool-body') !== null; attempt += 1) {
+          await wait(80)
+        }
+        const collapsedTo = card.querySelector('.tool-body') === null ? 'unmounted' : 'still-present'
+        // 再展开：中途（enter 之后约 70ms）与稳定后各取一次布局，把「量得早」这件事显影
+        head.click()
+        await wait(70)
+        const mid = layoutOf('enter+70ms')
+        await wait(700)
+        const settled = layoutOf('settled')
+        diagnostic = {
+          leaveVar: leaveVar,
+          collapsedTo: collapsedTo,
+          mid: mid,
+          settled: settled,
+          reexpandedVar: settled.missing === true ? null : settled.var,
+          reexpandedHeight: settled.missing === true ? 0 : settled.scrollHeight,
+          reexpandedScrollHeight: settled.missing === true ? 0 : settled.scrollHeight,
+        }
+      } catch (inner) {
+        diagnostic = { error: String(inner) }
+      }
+    }
+    // ── 根因旁证（信息，不参与 pass）：游离元素的 scrollHeight 恒为 0 ──
+    // 现场造一个与「.tool-body」同款（flex 列 + 同 padding）的盒子，先量「未入文档」、
+    // 再量「已入文档」：若前者为 0 而内容高度确实是 120，就说明「before-enter」里量到 0
+    // 只能是「量在游离元素上」，而不是探针读错了节点。
+    let detachedMeasureProbe = null
+    try {
+      const sample = document.createElement('div')
+      sample.style.cssText = 'display:flex;flex-direction:column;gap:4px;padding:0 8px 8px;'
+      const inner = document.createElement('div')
+      inner.style.cssText = 'height:120px;'
+      sample.appendChild(inner)
+      const whileDetached = sample.scrollHeight
+      document.body.appendChild(sample)
+      const whileAttached = sample.scrollHeight
+      sample.remove()
+      detachedMeasureProbe = { whileDetached, whileAttached }
+    } catch (inner) {
+      detachedMeasureProbe = { error: String(inner) }
+    }
+
+    const stillExpanded = card.classList.contains('open') === true && card.querySelector('.tool-body') !== null
+    return {
+      act: probe === undefined ? null : probe,
+      cardField: card.getAttribute('data-field'),
+      open,
+      ariaExpanded,
+      collapseVar: raw,
+      measuredPx,
+      scrollHeight,
+      visibleHeight,
+      varMatchesScrollHeight: varMatches,
+      notClipped,
+      diagnostic,
+      detachedMeasureProbe,
+      stillExpanded,
+      pass:
+        probe !== undefined &&
+        open === true &&
+        ariaExpanded === 'true' &&
+        body !== null &&
+        varMatches === true &&
+        notClipped === true &&
+        stillExpanded === true,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 左栏归档分组探针 · 前半（2026-09-26 归档 UI 的运行时证据）。
+ *
+ * act 只展开归档分组（点 `chat.archive-toggle`，轮询等 `chat.archive-list` 出现），
+ * 截图即「分组展开、已归档会话列在里面」的现场。归档 / 取消归档这条会改状态的往返放在 check 里
+ * （截图先拍，动作后做），并由 check 收尾还原 —— 否则后面的场景看到的会是被改过的左栏。
+ */
+export const CHAT_ARCHIVE_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const toggle = document.querySelector('[data-field="chat.archive-toggle"]')
+    if (toggle === null) {
+      return {
+        ready: false,
+        reason: 'no [data-field="chat.archive-toggle"]（seed 的已归档会话没被读到？）',
+      }
+    }
+    toggle.click()
+    let rows = 0
+    for (let attempt = 0; attempt < 15 && rows === 0; attempt += 1) {
+      rows = document.querySelectorAll('[data-field="chat.archive-list"] .nav-item').length
+      if (rows === 0) await wait(120)
+    }
+    return {
+      ready: true,
+      expanded: toggle.getAttribute('aria-expanded'),
+      label: (toggle.textContent || '').replace(/\\s+/g, ' ').trim(),
+      rows: rows,
+    }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 左栏归档探针 · 后半：分组结构 + 「不混进主列表」+ **通过真实 UI 走一遍归档 / 取消归档**。
+ *
+ * 断言五件事：
+ * 1. `chat.archive-group` 在、`chat.archive-toggle` 的 `aria-expanded === 'true'`、
+ *    `chat.archive-list` 里的 `.nav-item` ≥ 1、分组标题带计数（「已归档 · N」）；
+ * 2. seed 的那条已归档会话**不在** `chat.session-list` 里（按它的唯一标题文本判定），
+ *    而在 `chat.archive-list` 里 —— 归档分组不是把同一条渲染两遍；
+ * 3. 点主列表某一行的 `[data-action="chat.archive-session"]`（真实 DOM click → Vue emit →
+ *    `chat:archiveSession` IPC → 重拉列表）后：它离开主列表、出现在归档列表，两边计数各 ±1；
+ * 4. 再点该行 `[data-action="chat.unarchive-session"]` 撤销：回到主列表、计数还原
+ *    —— 这一步必须做，否则后面的场景看到的就是被改过的左栏；
+ * 5. 收尾收起归档分组（不留展开态）、确认没有浮层与输入残留。
+ *
+ * 计数变化与最终状态一并回传，失败时不用去猜是哪一步偏了。
+ */
+export const CHAT_ARCHIVE_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const MAIN = '[data-field="chat.session-list"] .nav-item'
+    const ARCH = '[data-field="chat.archive-list"] .nav-item'
+    const count = (selector) => document.querySelectorAll(selector).length
+    const textOf = (el) => ((el === null ? '' : el.textContent) || '').replace(/\\s+/g, ' ').trim()
+    const toggle = document.querySelector('[data-field="chat.archive-toggle"]')
+    const problems = []
+    const result = {
+      groupPresent: count('[data-field="chat.archive-group"]') === 1,
+      togglePresent: toggle !== null,
+      ariaExpanded: toggle === null ? null : toggle.getAttribute('aria-expanded'),
+      toggleLabel: toggle === null ? '' : textOf(toggle),
+      mainRows: count(MAIN),
+      archiveRows: count(ARCH),
+      seedInMain: textOf(document.querySelector('[data-field="chat.session-list"]')).indexOf('archive-seed') !== -1,
+      seedInArchive: textOf(document.querySelector('[data-field="chat.archive-list"]')).indexOf('archive-seed') !== -1,
+    }
+    if (result.groupPresent !== true) problems.push('chat.archive-group 不存在')
+    if (result.togglePresent !== true) problems.push('chat.archive-toggle 不存在')
+    if (result.ariaExpanded !== 'true') problems.push('归档分组未展开（aria-expanded=' + result.ariaExpanded + '）')
+    if (result.archiveRows < 1) problems.push('归档列表里没有会话行')
+    // 计数与锚点（标题文案「已归档 · N」里的 N 必须与实际行数一致）
+    const countMatch = /已归档[^0-9]*([0-9]+)/.exec(result.toggleLabel)
+    result.toggleCount = countMatch === null ? null : Number(countMatch[1])
+    if (result.toggleCount !== result.archiveRows) {
+      problems.push('分组计数与实际行数不符：' + result.toggleCount + ' vs ' + result.archiveRows)
+    }
+    if (result.seedInMain === true) problems.push('seed 的已归档会话仍出现在主列表')
+    if (result.seedInArchive !== true) problems.push('seed 的已归档会话不在归档列表里')
+
+    // 3) 通过真实 UI 归档一条未归档会话（主列表第一行）
+    const beforeMain = result.mainRows
+    const beforeArchive = result.archiveRows
+    const targetRow = document.querySelector('[data-field="chat.session-list"] .nav-row')
+    const archiveButton = targetRow === null ? null : targetRow.querySelector('[data-action="chat.archive-session"]')
+    const movedTitle = targetRow === null ? '' : textOf(targetRow.querySelector('.nav-item'))
+    result.movedTitle = movedTitle
+    if (archiveButton === null) {
+      problems.push('主列表里没有可归档的行（archive-session 按钮未找到）')
+    } else {
+      archiveButton.click()
+      let archived = false
+      for (let attempt = 0; attempt < 25 && !archived; attempt += 1) {
+        await wait(120)
+        archived =
+          count(MAIN) === beforeMain - 1 &&
+          count(ARCH) === beforeArchive + 1 &&
+          textOf(document.querySelector('[data-field="chat.archive-list"]')).indexOf(movedTitle) !== -1
+      }
+      result.afterArchive = {
+        mainRows: count(MAIN),
+        archiveRows: count(ARCH),
+        inArchive: textOf(document.querySelector('[data-field="chat.archive-list"]')).indexOf(movedTitle) !== -1,
+        inMain: textOf(document.querySelector('[data-field="chat.session-list"]')).indexOf(movedTitle) !== -1,
+      }
+      if (
+        result.afterArchive.mainRows !== beforeMain - 1 ||
+        result.afterArchive.archiveRows !== beforeArchive + 1 ||
+        result.afterArchive.inArchive !== true ||
+        result.afterArchive.inMain === true
+      ) {
+        problems.push('归档后计数 / 归属不符：' + JSON.stringify(result.afterArchive))
+      }
+
+      // 4) 再点一次撤销（必须做：后面的场景不该看到被改过的左栏）
+      const archiveRows = Array.from(document.querySelectorAll('[data-field="chat.archive-list"] .nav-row'))
+      let movedRow = null
+      for (const candidate of archiveRows) {
+        const item = candidate.querySelector('.nav-item')
+        if (item !== null && textOf(item).indexOf(movedTitle) === 0) {
+          movedRow = candidate
+          break
+        }
+      }
+      const unarchiveButton = movedRow === null ? null : movedRow.querySelector('[data-action="chat.unarchive-session"]')
+      if (unarchiveButton === null) {
+        problems.push('归档列表里没找到刚归档那条的「取消归档」按钮')
+      } else {
+        unarchiveButton.click()
+        let restored = false
+        for (let attempt = 0; attempt < 25 && !restored; attempt += 1) {
+          await wait(120)
+          restored =
+            count(MAIN) === beforeMain &&
+            count(ARCH) === beforeArchive &&
+            textOf(document.querySelector('[data-field="chat.session-list"]')).indexOf(movedTitle) !== -1
+        }
+        result.afterUnarchive = {
+          mainRows: count(MAIN),
+          archiveRows: count(ARCH),
+          inMain: textOf(document.querySelector('[data-field="chat.session-list"]')).indexOf(movedTitle) !== -1,
+          inArchive: textOf(document.querySelector('[data-field="chat.archive-list"]')).indexOf(movedTitle) !== -1,
+        }
+        if (
+          result.afterUnarchive.mainRows !== beforeMain ||
+          result.afterUnarchive.archiveRows !== beforeArchive ||
+          result.afterUnarchive.inMain !== true ||
+          result.afterUnarchive.inArchive === true
+        ) {
+          problems.push('撤销归档后计数 / 归属不符：' + JSON.stringify(result.afterUnarchive))
+        }
+      }
+    }
+
+    // 5) 收尾：收起归档分组 + 清掉任何浮层 / 输入残留
+    if (toggle !== null && toggle.getAttribute('aria-expanded') === 'true') toggle.click()
+    let collapsed = false
+    for (let attempt = 0; attempt < 15 && !collapsed; attempt += 1) {
+      collapsed = count('[data-field="chat.archive-list"]') === 0
+      if (!collapsed) await wait(120)
+    }
+    const outside = document.querySelector('.thread') || document.body
+    outside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+    const box = document.querySelector('.composer-input')
+    if (box !== null && box.value !== '') {
+      box.value = ''
+      box.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    await wait(200)
+    const leftovers = [
+      '[data-field="chat.slash-menu"]',
+      '[data-field="chat.permission-menu"]',
+      '[data-field="chat.context-detail"]',
+    ].filter((selector) => count(selector) > 0)
+    result.collapsed = collapsed
+    result.leftovers = leftovers
+    result.inputEmpty = box === null ? null : box.value === ''
+    result.problems = problems
+    if (collapsed !== true) problems.push('归档分组没收起（会留下展开态给后续场景）')
+    if (leftovers.length > 0) problems.push('仍有浮层残留：' + leftovers.join(','))
+    if (result.inputEmpty !== true) problems.push('输入框有残留内容')
+    result.pass = problems.length === 0
+    return result
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
  * 右栏开关探针 · 前半（BetaV2）：点两次 `chat.right-panel-toggle` 走「展开 → 收起 → 展开」。
  *
  * 点击走真实 DOM 链路（按钮 → emit → App.vue 的 `contextOpen` → `.context.collapsed` 宽度过渡）。
@@ -3487,8 +4304,13 @@ function onboardingCheckScript(index: number): string {
  * `theme-chat`（step 6 双主题）→ `chat-sidebar`（BetaV2 左栏结构 + 麦克风门控）
  * → `chat-right-panel-toggle` → `chat-right-panel-work`（两者自恢复，不动会话）
  * → `chat-thinking-block`（reload 后展开 seed 的思考块）→ `chat-quick-session`（切到 quick 会话）
- * → `chat-thinking-level` → `chat-model-picker`（step 5 加）→ `chat-tts`（step 6 加，
- * 自带 reload 回到 main 会话）→ `chat-drag` → `chat-collapse` → `chat.png`。
+ * → `chat-thinking-level` → `chat-model-picker`（step 5 加）
+ * → `chat-composer-slash` → `chat-composer-permission` → `chat-composer-flyouts`（输入区三浮层的
+ * 互斥与几何）→ `chat-tool-card-open`（reload 回 main 后展开工具卡）→ `chat-archive`（左栏归档分组，
+ * 自还原）→ `chat-tts`（step 6 加，自带 reload 回到 main 会话）→ `chat-subagent-page`
+ * → `chat-classisland-status` → `chat-drag` → `chat-collapse` → `chat.png`。
+ * 三个新场景都排在 chat-collapse 之前，且都排在不改配置 / 不用模型的那一段里；
+ * `chat-archive` 会改左栏状态（归档再撤销），它自己收尾还原。
  *
  * 双主题（step 6）另在 edge-bar / chat / settings / onboarding 各加一张 `theme-*.png`：
  * 期望档位由 `activeTheme()` 读取（`bootstrap()` 已按 `AURORA_CAPTURE_THEME` 设好 `themeSource`）。
@@ -3637,6 +4459,40 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
     ],
   }
   await writeFile(join(userData, 'sessions', 'quick.json'), JSON.stringify(quick, null, 2), 'utf8')
+
+  // 3) 归档分组（2026-09 归档 UI，docs/07 §2.3）：再种一条**已归档**会话
+  //    （`meta.archived = true`），让左栏「已归档 · N」分组在隔离 userData 里就有内容 ——
+  //    `chat-archive.png` 场景点开分组要看到它，且它**不得**出现在主列表容器
+  //    `chat.session-list` 里（渲染层按 `archived === true` 分两份，storage 层不过滤）。
+  //    标题取首条用户消息前 24 字（`SessionStore.titleFor`）：这里把标记写在开头，
+  //    且整段文本恰好 23 字（不触发省略号），探针按唯一的子串 `archive-seed` 定位它。
+  //    时间戳比 main 早两天：主列表里 main 仍排第一，归档分组自身的顺序不受影响。
+  const archivedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
+  const archived = {
+    version: 2,
+    sessionId: 'chat-seed-archived',
+    updatedAt: archivedAt,
+    messages: [
+      {
+        id: 'capture-archived-u1',
+        role: 'user',
+        content: 'archive-seed 探针种下的已归档会话',
+        createdAt: archivedAt,
+      },
+      {
+        id: 'capture-archived-a1',
+        role: 'assistant',
+        content: '这条会话已被归档，用来验证左栏归档分组的分组、计数与可逆往返。',
+        createdAt: archivedAt,
+      },
+    ],
+    meta: { archived: true, archivedAt },
+  }
+  await writeFile(
+    join(userData, 'sessions', 'chat-seed-archived.json'),
+    JSON.stringify(archived, null, 2),
+    'utf8',
+  )
 }
 
 export function defaultCapturePlan(manager: WindowManager, userData: string): CaptureTarget[] {
@@ -3737,6 +4593,37 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       file: 'chat-composer-permission.png',
       act: CHAT_PERMISSION_ACT,
       check: CHAT_PERMISSION_CHECK,
+    },
+    // 输入区三个浮层（2026-09-26 修复）：统一锚在 `.composer-box` 上、共用 `--z-flyout`、互斥打开。
+    // act 走「输入 / → 点权限钮」，check 对两个时刻 + 实时复测 + 上下文详解卡共四个时刻做几何断言
+    //（最多一个可见 / 不与 `.composer-bar` 相交 / 整个矩形在输入卡上方 / 发送键中心命中的是它自己）。
+    // 必须排在 chat-collapse 之前（窗口一被 hide，后面的 DOM 操作就没了）。
+    {
+      name: 'chat',
+      file: 'chat-composer-flyouts.png',
+      act: CHAT_COMPOSER_FLYOUTS_ACT,
+      check: CHAT_COMPOSER_FLYOUTS_CHECK,
+    },
+    // 工具卡展开的「实测高度」终点（2026-09-26 修复）：`--collapse-h` 必须是内联 px 且等于 scrollHeight。
+    // 需要 main 会话里的 seed 工具卡（todo_write / task），而前面的 `chat-quick-session` 停在 quick 会话
+    //（quick 没有工具卡），所以这里像 `chat-tts` 那样 reload 一次回到 main。
+    // 截图即展开现场，**不收卡片**；展开态只影响这张卡自身，后续场景不受影响（chat-tts 自带 reload）。
+    {
+      name: 'chat',
+      file: 'chat-tool-card-open.png',
+      prepare: async () => {
+        await manager.reload('chat', {})
+      },
+      act: CHAT_TOOL_CARD_OPEN_ACT,
+      check: CHAT_TOOL_CARD_OPEN_CHECK,
+    },
+    // 左栏归档分组（2026-09 新增）：act 展开分组拍图，check 在做完「真实 UI 归档 → 撤销归档」
+    // 的往返后收尾（收起分组、清残留），不留被改过的左栏给后续场景。
+    {
+      name: 'chat',
+      file: 'chat-archive.png',
+      act: CHAT_ARCHIVE_ACT,
+      check: CHAT_ARCHIVE_CHECK,
     },
     // 朗读按钮（step-06）：act 点一次 [data-action="speak-message"]（离线合成必然失败，
     // 只触发点击、不断言出声），check 断言按钮存在且点击后回到「朗读」态；
