@@ -620,6 +620,8 @@ async function bootstrap(): Promise<void> {
     // 长上下文摘要（docs/06 §4）：被截断的旧消息交给当前 provider 压成一段摘要。
     // 装配层实现、内核只接受注入 —— agent-core 保持不依赖网络与 Electron。
     summarize: createSummarizer(settings, logger.child('summary')),
+    // 快速会话上下文只带最近 5 分钟，防旧上下文污染（docs/06 §4 滑动窗口）
+    quickContextWindowMs: 5 * 60_000,
     confirmTool,
   })
   agent = new DesktopAgentHost({

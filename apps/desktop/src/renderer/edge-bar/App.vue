@@ -164,6 +164,33 @@ async function scrollToQuickBottom(): Promise<void> {
   if (el !== null) el.scrollTop = el.scrollHeight
 }
 
+/** 快速会话自动刷新间隔（docs/07 §2.2）：面板展开期间每 5 分钟重拉一次 */
+const QUICK_REFRESH_INTERVAL_MS = 5 * 60_000
+let quickRefreshTimer: ReturnType<typeof setInterval> | undefined
+
+/**
+ * 展开态强制重拉快速会话（最近 20 条）并贴底（docs/07 §2.2）：
+ * 窗口常驻，只在挂载时水合一次的话，主界面 / 其它窗口发出的新消息永远进不来。
+ * 守卫：仅展开中且非流式时执行 —— 流式重拉会把正在输出的回复搅乱。
+ */
+function refreshQuickSession(): void {
+  if (!expanded.value || chat.streaming.value) return
+  void chat.hydrate({ force: true, limit: 20 }).then(() => scrollToQuickBottom())
+}
+
+watch(expanded, (isOpen) => {
+  // 收起：停掉自动刷新，避免后台空转
+  if (!isOpen) {
+    clearInterval(quickRefreshTimer)
+    quickRefreshTimer = undefined
+    return
+  }
+  if (!chat.streaming.value)
+    void chat.hydrate({ force: true, limit: 20 }).then(() => scrollToQuickBottom())
+  clearInterval(quickRefreshTimer)
+  quickRefreshTimer = setInterval(refreshQuickSession, QUICK_REFRESH_INTERVAL_MS)
+})
+
 /** 面板里发送快速对话：同一 `quick` 会话，主界面左栏固定项点开即见全量 */
 async function sendQuick(): Promise<void> {
   const text = quickInput.value.trim()
@@ -250,7 +277,10 @@ onMounted(() => {
   void chat.hydrate()
 })
 
-onUnmounted(clearTimers)
+onUnmounted(() => {
+  clearTimers()
+  clearInterval(quickRefreshTimer)
+})
 </script>
 
 <template>
@@ -299,9 +329,7 @@ onUnmounted(clearTimers)
           <section class="card recent-card anim-rise" style="animation-delay: 60ms">
             <div class="card-head">
               <p class="card-title">快速对话</p>
-              <span v-if="quickMessages.length > 0" class="badge">{{
-                quickMessages.length
-              }}</span>
+              <span v-if="quickMessages.length > 0" class="badge">{{ quickMessages.length }}</span>
             </div>
             <div ref="quickListEl" class="qc-list">
               <p v-if="quickMessages.length === 0 && !chat.streaming.value" class="empty">
@@ -336,7 +364,9 @@ onUnmounted(clearTimers)
                 aria-label="停止回复"
                 @click="chat.abort()"
               >
-                <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" rx="1.4" /></svg>
+                <svg viewBox="0 0 12 12" aria-hidden="true">
+                  <rect x="2.5" y="2.5" width="7" height="7" rx="1.4" />
+                </svg>
               </button>
               <button
                 v-else
@@ -348,7 +378,9 @@ onUnmounted(clearTimers)
                 aria-label="发送快速对话"
                 @click="sendQuick"
               >
-                <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2.2M6 2.2 2.8 5.4M6 2.2l3.2 3.2" /></svg>
+                <svg viewBox="0 0 12 12" aria-hidden="true">
+                  <path d="M6 10V2.2M6 2.2 2.8 5.4M6 2.2l3.2 3.2" />
+                </svg>
               </button>
             </div>
           </section>

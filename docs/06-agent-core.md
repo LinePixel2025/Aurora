@@ -58,6 +58,19 @@ export interface LlmProvider {
 - 渲染层挂载时通过 `chat:history` 水合消息列表，因此重启后交互窗仍能看到历史。
 - 上下文窗口管理：超长自动摘要压缩（P1）；v1 先按 **字符上限（默认 60k）** 截断旧消息并保留系统提示词，
   且截断时保证「assistant(toolCalls) + 其后 tool 结果」成对保留。
+- **quick 会话滑动窗口（2026-09 起）**：快速会话（`sessionId = 'quick'`）组装 LLM 上下文时
+  只保留**最近 5 分钟内**的消息（窗口常量 `5 * 60_000` ms 写死在装配层，不进配置 Schema），
+  更早的消息仅留在存储与界面历史里，不进 LLM；过滤后为空就按「只有本轮输入」组装。
+  窗口模式下**跳过滚动摘要**：不读、不写累计摘要（summaries），`systemPrompt` 不注入
+  「更早对话的摘要」小节 —— 旧摘要本身就是同样的污染源。其余会话不受影响，仍全量组装。
+  装配开关是 `AgentHostDeps.quickContextWindowMs`（默认 0 = 不启用，行为与从前完全一致）。
+- **user-message 事件（2026-09 起）**：`AgentEvent` 新增变体
+  `{ type: 'user-message', sessionId, requestId, content, createdAt: number }` ——
+  `content` 是用户原文（trim 后，不含技能改写），不带消息 id；内核在 `run()` 开始时广播。
+  此前 user 消息没有任何事件，主界面发出的提问在提示条面板里看不到（assistant 流式事件
+  只在面板空闲时才被放行）。渲染层去重口径：**末尾 30 秒内已存在同文本的 user 消息则跳过，
+  否则追加**。不能按 requestId 过滤：事件早于 `chat:send` 的 invoke 返回到达，发送方
+  还没拿到 requestId，且发送方在 send() 里已本地 push 过同一条消息。
 - 同一会话并发请求返回 `E_BUSY`（不排队），避免历史交错。
 
 ## 5. 工具调用循环（Agent Loop）
@@ -479,8 +492,21 @@ Content-Type: application/json
 { "model": "<model>", "input": "<被朗读的文本>", "voice": "<voice>", "speed": 1, "response_format": "<format>" }
 ```
 
-- 端点由**用户填的地址 + 固定路径**拼出（与 §3 的 chat 端点同一个套路）：
-  `baseUrl` 的尾部斜杠要先规整，避免出现 `//audio/speech`。
+- 端点由**用户填的地址 + 固定路径**拼出（与 §3 的 chat 端点同一个套路），拼接前在主进程
+  `speechEndpoint()` 里按下面的规则规整 `baseUrl`（实测 404 大多来自「漏写 /v1」或
+  「误把完整端点当 baseUrl 粘贴」，规则是根治这两类填法）：
+  1. 去尾部斜杠，避免出现 `//audio/speech`；
+  2. 剥掉误填的已知端点尾巴：`/chat/completions`、`/completions`、`/models`、
+     `/audio/transcriptions`（`/audio/speech` 保留「已以它结尾不重复拼」的现有行为）；
+  3. 用 `new URL()` 解析：`pathname` 为空或 `/`（用户只填了域名根，如 `https://api.siliconflow.cn`）
+     自动补 `/v1`；带路径（`/api/v1`、`/compatible-mode/v1` 等）尊重不动；
+     URL 非法则按原样拼接，把错误交给服务端报出来（不在这里抛）。
+- 模型列表：`GET <baseUrl>/models`（同一套规整：剥尾巴后拼 `/models`，已以 `/models` 结尾不重复拼），
+  `Authorization: Bearer` 同款；响应按 OpenAI 格式解析 `data[].id`（防御性解析，畸形响应折成
+  失败 + 中文提示，不抛）。设置页「获取模型列表」按钮走 `tts:listModels` 通道（见 docs/08 §6）。
+- **404 文案带实际请求的 endpoint**：`describeHttpFailure` 在 404 时回传实际请求的完整 URL
+  （如「接口不存在：实际请求了 https://…/v1/audio/speech…」），用户无需开日志即可自查
+  baseURL 是否漏了 /v1、网关是否不支持该端点。
 - 成功响应体是**音频二进制**（不是 JSON），直接交给渲染层播放；只有**错误**响应才按 JSON 解析原因。
 - 出网必须走主进程的 `netFetch`（见 AGENTS.md「网络出网统一走 `main/net.ts` 的 `netFetch`」），
   这样 `advanced.proxy` 对它同样生效；`agent-core` 侧只接受注入的 `fetchImpl`，

@@ -117,6 +117,34 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     if (activeRequest !== null && event.requestId !== activeRequest) return
 
     switch (event.type) {
+      case 'user-message': {
+        // user 消息广播（docs/06 §4）：主界面 / 提示条任一侧发出的提问，另一侧实时可见。
+        // **不能按 requestId 过滤**：该事件在内核 run() 开始时广播，早于 chat:send 的
+        // invoke 返回 —— 发送方此刻的 activeRequest 还没拿到这个 requestId，而且发送方
+        // 在 send() 里已本地 push 过同一条消息。因此按内容去重：事件时间戳往前 30 秒内
+        // 已存在同文本的 user 消息就跳过，否则（其它窗口发的）追加一条。
+        // 刻意不动 streaming / assistantId / activeRequest 等流式状态。
+        const content = event.content
+        const cutoff = event.createdAt - 30_000
+        let duplicate = false
+        for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+          const message = messages.value[index]
+          if (message === undefined || message.createdAt < cutoff) break
+          if (message.role === 'user' && message.content === content) {
+            duplicate = true
+            break
+          }
+        }
+        if (!duplicate) {
+          messages.value.push({
+            id: `u-evt-${event.requestId}`,
+            role: 'user',
+            content,
+            createdAt: event.createdAt,
+          })
+        }
+        break
+      }
       case 'text': {
         const message = messageFor(event.messageId)
         if (message) {
@@ -253,12 +281,25 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     message.pending = message.content === ''
   }
 
-  /** 挂载时水合历史（docs/06 §4：重启后交互窗仍能看到历史）。 */
-  async function hydrate(): Promise<void> {
+  /**
+   * 挂载时水合历史（docs/06 §4：重启后交互窗仍能看到历史）。
+   *
+   * - `options.force`：绕过 `hydrated` 守卫强制重拉 —— 窗口常驻，只在挂载时水合一次的话，
+   *   切回同一会话 / 其它窗口发出的新消息永远进不来（docs/07 §2.2 提示条实时刷新）；
+   * - `options.limit`：只拉最近 N 条（220px 提示条面板装不下长历史）。
+   *
+   * 水合结果与本地消息合并：服务端没有的本地消息保底保留。注意本地 user 消息
+   * （send() 里 push 的 `u-` 临时 id）与服务端存储的同一条消息 id 不同，
+   * 仅按 id 去重会显示成两条，因此同 role 同文本也视为同一条。
+   */
+  async function hydrate(options?: { force?: boolean; limit?: number }): Promise<void> {
     const target = sessionId.value
-    if (hydrated.has(target)) return
+    if (options?.force !== true && hydrated.has(target)) return
     hydrated.add(target)
-    const result = await window.aurora.chat.history({ sessionId: target })
+    const result = await window.aurora.chat.history({
+      sessionId: target,
+      ...(options?.limit === undefined ? {} : { limit: options.limit }),
+    })
     // 水合期间用户可能已经切走了会话：丢弃这次结果，避免把 A 的历史塞进 B
     if (sessionId.value !== target) return
     if (!result.ok) {
@@ -267,7 +308,11 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     }
     // 水合期间可能已有新消息进来（用户在窗口刚打开时就开始输入）
     const incoming = messages.value.filter(
-      (message) => !result.value.some((item) => item.id === message.id),
+      (message) =>
+        !result.value.some((item) => item.id === message.id) &&
+        !result.value.some(
+          (item) => item.role === message.role && item.content === message.content,
+        ),
     )
     messages.value = [...result.value.map(toChatMessage), ...incoming]
   }
@@ -312,7 +357,9 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     activeRequest = null
     assistantId = null
     resetReasoning()
-    await hydrate()
+    // force：目标会话可能已在 hydrated 里（二次进入同一会话），不强制的话
+    // 守卫会吞掉这次水合，界面停在刚清空的空列表上
+    await hydrate({ force: true })
     await loadSessions()
   }
 

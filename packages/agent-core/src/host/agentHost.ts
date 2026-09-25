@@ -11,7 +11,12 @@ import { buildSystemPrompt, buildToolGuidance, describeTools } from '../context/
 import { runAgentLoop, type LoopProvider } from '../loop/agentLoop.js'
 import type { ReasoningEffortLevel } from '../llm/types.js'
 import type { SkillsBridge } from '../skills/bridge.js'
-import { compressHistory, DEFAULT_MAX_CHARS, type SummarizeFn } from '../session/history.js'
+import {
+  compressHistory,
+  DEFAULT_MAX_CHARS,
+  filterMessagesWithinWindow,
+  type SummarizeFn,
+} from '../session/history.js'
 import type { SessionStore } from '../session/store.js'
 import type { NewMessage, StoredToolCall } from '../session/types.js'
 import type { ToolRegistry } from '../tools/registry.js'
@@ -52,6 +57,13 @@ export interface AgentHostDeps {
    * 跨轮次累计后注入系统提示词。未注入 / 失败时行为与纯截断一致。
    */
   summarize?: SummarizeFn
+  /**
+   * quick 会话滑动窗口（docs/06 §4）：> 0 时，`sessionId === 'quick'` 的请求只把
+   * 最近 `quickContextWindowMs` 内的消息交给上下文组装，更早的仅留在存储 / 界面历史；
+   * 窗口模式下同步跳过滚动摘要（不读、不写 summaries）。缺省 0 = 不启用，
+   * 行为与从前完全一致（全量历史进组装）。
+   */
+  quickContextWindowMs?: number
   /** 工具调用轮次上限 */
   maxRounds?: number
   /**
@@ -202,6 +214,17 @@ export class KernelAgentHost implements AgentHostContract {
   }): Promise<void> {
     const { sessionId, requestId } = input
     try {
+      // user 消息广播（docs/06 §4）：user 消息此前没有任何事件，其它窗口（如提示条面板）
+      // 看不到主界面发出的提问。content 用 trim 后的原始输入（不含技能改写），不带消息 id。
+      // 事件早于 send 的 invoke 返回到达，渲染层按「末尾 30 秒内同文本 user 消息已存在则
+      // 跳过」去重 —— requestId 过滤在这里不可靠（发送方此刻还没拿到 requestId）。
+      this.emit({
+        type: 'user-message',
+        sessionId,
+        requestId,
+        content: input.text,
+        createdAt: Date.now(),
+      })
       const explicit = this.deps.skills.parseExplicitInvocation(input.text)
       const userInput =
         explicit === undefined ? input.text : explicit.rest === '' ? input.text : explicit.rest
@@ -213,14 +236,30 @@ export class KernelAgentHost implements AgentHostContract {
 
       // 会话压缩：超预算时把丢弃的旧消息压成摘要（跨轮次累计，存在内存里）。
       // summarizer 缺失 / 抛错时 compressHistory 会退回纯截断，不会让请求失败。
-      const compression = await compressHistory(await this.deps.sessions.get(sessionId), {
+      //
+      // quick 会话滑动窗口（docs/06 §4）：窗口启用时先把窗外消息滤掉再交给压缩组装，
+      // 更早的仅留在存储 / 界面历史（过滤后为空 = 只有本轮输入，compressHistory 对
+      // 空输入安全返回空历史）。窗口模式下同步跳过滚动摘要 —— 旧摘要本身就是同样的
+      // 污染源：不读 previousSummary、不写 summaries，compression.summary 恒为
+      // undefined，buildSystemPrompt 的 historySummary 小节随之自动省略。
+      const quickWindowMs = this.deps.quickContextWindowMs ?? 0
+      const quickWindowActive = sessionId === 'quick' && quickWindowMs > 0
+      const storedMessages = await this.deps.sessions.get(sessionId)
+      const scopedMessages = quickWindowActive
+        ? filterMessagesWithinWindow(storedMessages, quickWindowMs)
+        : storedMessages
+      const compression = await compressHistory(scopedMessages, {
         maxChars: this.deps.maxChars ?? DEFAULT_MAX_CHARS,
-        ...(this.deps.summarize === undefined ? {} : { summarize: this.deps.summarize }),
-        ...(this.summaries.get(sessionId) === undefined
+        ...(quickWindowActive || this.deps.summarize === undefined
+          ? {}
+          : { summarize: this.deps.summarize }),
+        ...(quickWindowActive || this.summaries.get(sessionId) === undefined
           ? {}
           : { previousSummary: this.summaries.get(sessionId) }),
       })
-      if (compression.summary !== undefined) this.summaries.set(sessionId, compression.summary)
+      if (!quickWindowActive && compression.summary !== undefined) {
+        this.summaries.set(sessionId, compression.summary)
+      }
       if (compression.compressed) {
         this.logger.info('已完成历史摘要压缩', {
           sessionId,

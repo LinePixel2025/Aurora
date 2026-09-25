@@ -48,6 +48,8 @@ async function createHarness(options: {
   settingsHint?: () => string
   /** 任务清单摘要注入（docs/06 §18） */
   todoSummary?: (sessionId: string) => Promise<string>
+  /** quick 会话滑动窗口（docs/06 §4）；缺省 0 = 不启用 */
+  quickContextWindowMs?: number
 }): Promise<Harness> {
   const fs = new TestFileSystem()
   const sessions = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
@@ -88,6 +90,9 @@ async function createHarness(options: {
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
     ...(options.settingsHint === undefined ? {} : { settingsHint: options.settingsHint }),
     ...(options.todoSummary === undefined ? {} : { todoSummary: options.todoSummary }),
+    ...(options.quickContextWindowMs === undefined
+      ? {}
+      : { quickContextWindowMs: options.quickContextWindowMs }),
   })
   host.onEvent((event) => events.push(event))
 
@@ -112,6 +117,11 @@ function types(events: AgentEvent[]): string[] {
   return events.map((event) => event.type)
 }
 
+/** 相对当前时刻的 ISO 时间戳（ageMs 之前），供 quick 滑动窗口用例构造 createdAt */
+function ago(ageMs: number): string {
+  return new Date(Date.now() - ageMs).toISOString()
+}
+
 describe('KernelAgentHost', () => {
   it('send 立即返回 requestId，并先推 queued', async () => {
     const harness = await createHarness({ rounds: [{ text: '你好' }] })
@@ -119,7 +129,7 @@ describe('KernelAgentHost', () => {
     expect(result.requestId).toMatch(/^req-/)
     expect(harness.events[0]).toMatchObject({ type: 'queued', sessionId: 'quick' })
     await harness.waitForDone()
-    expect(types(harness.events)).toEqual(['queued', 'text', 'done'])
+    expect(types(harness.events)).toEqual(['queued', 'user-message', 'text', 'done'])
   })
 
   it('事件携带 sessionId 与 messageId', async () => {
@@ -165,7 +175,14 @@ describe('KernelAgentHost', () => {
       .filter((event) => event.type === 'tool')
       .map((event) => event.call.state)
     expect(states).toEqual(['running', 'success'])
-    expect(types(harness.events)).toEqual(['queued', 'tool', 'tool', 'text', 'done'])
+    expect(types(harness.events)).toEqual([
+      'queued',
+      'user-message',
+      'tool',
+      'tool',
+      'text',
+      'done',
+    ])
     expect(harness.provider.calls).toHaveLength(2)
     expect(harness.provider.calls[1]?.messages.some((item) => item.role === 'tool')).toBe(true)
     // 会话落盘：user → assistant(toolCalls) → tool → assistant(最终文本)
@@ -195,13 +212,41 @@ describe('KernelAgentHost', () => {
       expect(event.requestId).toMatch(/^req-/)
       expect('messageId' in event).toBe(false)
     }
-    expect(types(harness.events)).toEqual(['queued', 'reasoning', 'reasoning', 'text', 'done'])
+    expect(types(harness.events)).toEqual([
+      'queued',
+      'user-message',
+      'reasoning',
+      'reasoning',
+      'text',
+      'done',
+    ])
 
     // 思考链随 assistant 消息持久化（全文累积）
     const stored = await harness.sessions.get('quick')
     const assistant = stored.find((message) => message.role === 'assistant')
     expect(assistant?.reasoning).toBe('思考中')
     expect(assistant?.content).toBe('答案')
+  })
+
+  it('run 开始时广播 user-message 事件（content 为 trim 后原文，先于流式事件）', async () => {
+    const harness = await createHarness({ rounds: [{ text: '答' }] })
+    await harness.send('  你好  ')
+    await harness.waitForDone()
+    // shared 的 AgentEvent 联合尚未收编 'user-message' 变体，测试侧用局部联合观察事件形状
+    type UserMessageAgentEvent = {
+      type: 'user-message'
+      sessionId: string
+      requestId: string
+      content: string
+      createdAt: number
+    }
+    const all = harness.events as ReadonlyArray<AgentEvent | UserMessageAgentEvent>
+    const userMessage = all.find(
+      (event): event is UserMessageAgentEvent => event.type === 'user-message',
+    )
+    expect(userMessage).toMatchObject({ type: 'user-message', sessionId: 'quick', content: '你好' })
+    expect(typeof userMessage?.createdAt).toBe('number')
+    expect(types(harness.events)).toEqual(['queued', 'user-message', 'text', 'done'])
   })
 
   it('系统提示词包含模式片段、感知摘要与危险操作规则', async () => {
@@ -410,6 +455,7 @@ describe('KernelAgentHost · 历史摘要压缩（docs/06 §4）', () => {
       dropped: Array<{ role: string; content: string }>
       previousSummary?: string
     }) => Promise<string>,
+    options?: { quickContextWindowMs?: number },
   ): Promise<SummaryHarness> {
     const fs = new TestFileSystem()
     const sessions = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
@@ -440,6 +486,9 @@ describe('KernelAgentHost · 历史摘要压缩（docs/06 §4）', () => {
             : { previousSummary: input.previousSummary }),
         })
       },
+      ...(options?.quickContextWindowMs === undefined
+        ? {}
+        : { quickContextWindowMs: options.quickContextWindowMs }),
     })
     host.onEvent((event) => events.push(event))
 
@@ -491,5 +540,132 @@ describe('KernelAgentHost · 历史摘要压缩（docs/06 §4）', () => {
     expect(harness.events.some((event) => event.type === 'text')).toBe(true)
     const systemPrompt = harness.provider.calls[0]?.messages[0]?.content ?? ''
     expect(systemPrompt).not.toContain('更早对话的摘要')
+  })
+
+  it('quick 窗口模式下 summaries 不注入、不跨轮次累计（docs/06 §4 滑动窗口）', async () => {
+    const harness = await createSummaryHarness(async () => '不该出现的累计摘要', {
+      quickContextWindowMs: 5 * 60_000,
+    })
+    // 窗口内的长消息撑爆 10 字符预算：若未跳过摘要，这里本应触发 summarizer
+    await harness.sessions.append('quick', {
+      role: 'user',
+      content: '一段足够长的新历史内容用来撑爆字符预算触发截断',
+      createdAt: ago(60_000),
+    })
+    await harness.sessions.append('quick', {
+      role: 'assistant',
+      content: '好的',
+      createdAt: ago(59_000),
+    })
+    await harness.send('第一问')
+    await harness.waitForDone()
+    expect(harness.counter.summaryCalls).toBe(0)
+    const firstSystem = harness.provider.calls[0]?.messages[0]?.content ?? ''
+    expect(firstSystem).not.toContain('更早对话的摘要')
+    expect(firstSystem).not.toContain('不该出现的累计摘要')
+
+    harness.events.length = 0
+    await harness.send('第二问')
+    await harness.waitForDone()
+    expect(harness.counter.summaryCalls).toBe(0)
+    const secondSystem = harness.provider.calls[1]?.messages[0]?.content ?? ''
+    expect(secondSystem).not.toContain('更早对话的摘要')
+  })
+})
+
+describe('KernelAgentHost · quick 会话滑动窗口（docs/06 §4）', () => {
+  /** 与装配层一致的窗口常量（5 分钟） */
+  const WINDOW_MS = 5 * 60_000
+
+  function sentContents(harness: Harness): string[] {
+    return (harness.provider.calls[0]?.messages ?? []).map((item) => item.content)
+  }
+
+  it('quick 会话启用窗口：窗外消息不进上下文组装', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: '答' }],
+      quickContextWindowMs: WINDOW_MS,
+    })
+    await harness.sessions.append('quick', {
+      role: 'user',
+      content: '十分钟前的旧问题',
+      createdAt: ago(WINDOW_MS + 5 * 60_000),
+    })
+    await harness.sessions.append('quick', {
+      role: 'assistant',
+      content: '很久之前的回答',
+      createdAt: ago(WINDOW_MS + 5 * 60_000 - 1_000),
+    })
+    await harness.send('现在的问题')
+    await harness.waitForDone()
+    const contents = sentContents(harness)
+    expect(contents).not.toContain('十分钟前的旧问题')
+    expect(contents).not.toContain('很久之前的回答')
+  })
+
+  it('窗口内的历史保留', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: '答' }],
+      quickContextWindowMs: WINDOW_MS,
+    })
+    await harness.sessions.append('quick', {
+      role: 'user',
+      content: '一分钟前的旧问题',
+      createdAt: ago(60_000),
+    })
+    await harness.sessions.append('quick', {
+      role: 'assistant',
+      content: '一分钟前的回答',
+      createdAt: ago(59_000),
+    })
+    await harness.send('现在的问题')
+    await harness.waitForDone()
+    const contents = sentContents(harness)
+    expect(contents).toContain('一分钟前的旧问题')
+    expect(contents).toContain('一分钟前的回答')
+  })
+
+  it('全部消息都在窗外 → 空历史（仅本轮输入）', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: '答' }],
+      quickContextWindowMs: WINDOW_MS,
+    })
+    await harness.sessions.append('quick', {
+      role: 'user',
+      content: '十分钟前的旧问题',
+      createdAt: ago(WINDOW_MS + 60_000),
+    })
+    await harness.send('现在的问题')
+    await harness.waitForDone()
+    const messages = harness.provider.calls[0]?.messages ?? []
+    expect(messages.map((item) => item.role)).toEqual(['system', 'user'])
+    expect(messages[1]?.content).toBe('现在的问题')
+  })
+
+  it('非 quick 会话不受窗口影响（全量进组装）', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: '答' }],
+      quickContextWindowMs: WINDOW_MS,
+    })
+    await harness.sessions.append('main', {
+      role: 'user',
+      content: '十分钟前的 main 旧问题',
+      createdAt: ago(WINDOW_MS + 60_000),
+    })
+    await harness.send('现在的问题', 'main')
+    await harness.waitForDone()
+    expect(sentContents(harness)).toContain('十分钟前的 main 旧问题')
+  })
+
+  it('未启用窗口（缺省 0）时 quick 会话仍全量进组装，行为与从前一致', async () => {
+    const harness = await createHarness({ rounds: [{ text: '答' }] })
+    await harness.sessions.append('quick', {
+      role: 'user',
+      content: '十分钟前的 quick 旧问题',
+      createdAt: ago(WINDOW_MS + 60_000),
+    })
+    await harness.send('现在的问题')
+    await harness.waitForDone()
+    expect(sentContents(harness)).toContain('十分钟前的 quick 旧问题')
   })
 })

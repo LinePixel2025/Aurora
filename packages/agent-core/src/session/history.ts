@@ -111,6 +111,26 @@ export function truncateHistory(
   return { messages: kept, dropped, truncated: dropped > 0 }
 }
 
+/**
+ * quick 会话滑动窗口（docs/06 §4）：只保留 `createdAt` 落在 `[now - windowMs, …]` 内的消息。
+ *
+ * 由调用方在 `compressHistory` **之前**过滤 —— 更早的消息仅留在存储 / 界面历史，
+ * 不进 LLM 组装。时间戳解析失败的消息视为窗外（宁缺勿污）；返回新数组，不改入参。
+ * `now` 可注入，单测不必对着真实时钟写断言。
+ */
+export function filterMessagesWithinWindow(
+  messages: readonly StoredMessage[],
+  windowMs: number,
+  now: number = Date.now(),
+): StoredMessage[] {
+  if (windowMs <= 0) return [...messages]
+  const cutoff = now - windowMs
+  return messages.filter((message) => {
+    const timestamp = Date.parse(message.createdAt)
+    return Number.isFinite(timestamp) && timestamp >= cutoff
+  })
+}
+
 /** 生成 / 更新摘要的注入点（由装配层用当前 provider 实现，内核不引入网络耦合） */
 export type SummarizeFn = (input: {
   /** 本次被截断丢弃的消息（已按时间升序） */
