@@ -321,10 +321,15 @@
   命令名都很短，模糊匹配会让 `/s` 命中一堆不相干的技能，反而要多按几次方向键。
   `@` 提及、MCP 工具补全**仍未实现**（技能与命令之外没有第二类候选）。
 - **上下文详解条**（`ComposerContextBar.vue`，`data-field="chat.context"`）：卡片最底部一条细状态栏，
-  折叠态显示 `上下文 <已用> / <窗口> <进度条> <百分比>` + 本会话累计，点开在上方弹出明细
-  （`data-field="chat.context-detail"`：最近一轮输入 / 输出、本会话累计、上下文窗口、消息条数与字符数、
-  当前模型）。
+  折叠态显示 `上下文 <已用> / <窗口> <进度条> <百分比>` + 本会话累计，最近一轮有缓存命中量时
+  紧凑文案里一并带出命中 token 数（探针锚点 `chat.context-usage` 的文案因此含「缓存命中」）。
+  点开在上方弹出明细（`data-field="chat.context-detail"`：最近一轮输入 / 输出、缓存命中、
+  本会话累计、上下文窗口、消息条数与字符数、当前模型）。
   - **分子**：最近一轮的 `promptTokens`（`usage` 事件，06 §16.2）——就是这一轮真实送进模型的上下文长度；
+  - **缓存命中**：最近一轮的缓存命中 token 数（`cachedTokens`，06 §21.4）——来自 provider 回传的
+    `prompt_tokens_details.cached_tokens`（OpenAI 形态）或 `prompt_cache_hit_tokens`（DeepSeek 形态），
+    明细里另给出占比（命中量 / 本轮的 `promptTokens`）。**两者都缺就整项不显示** ——
+    既不写「缓存命中 0」也不占位：那会把「provider 没回传」显示成「一条都没命中」，两者必须可区分；
   - **分母**：`llm.providers.<active>.contextWindow`（v11 新增，08 §1）。**0 = 未知**，此时
     不显示进度条与百分比，明细里给出去设置页填的路径——不编造分母；
   - provider 没回传用量时整条显示「暂无用量数据」，明细里说明原因，**绝不拿字符数换算冒充 token**；
@@ -431,7 +436,8 @@
   section-card，折叠策略 —— 「电脑操控工具」**默认展开**（本页主配置面，`agent.tools.*` 探针依赖），
   「技能」「MCP 服务器」**默认收起**（组锚点 `data-group="skills"` / `data-group="mcp"`，
   capture 探针先点开两组、等渲染与折叠动画走完再计数，见 §5.3）。**组头摘要承载状态**（收起也能看清）：
-  工具组「x / 5 个工具生效」（总开关关闭时显示「已停用」）、技能「已启用 x / 共 y」（未发现显示「未发现」）、
+  工具组「x / y 个工具生效」（`y` 取 `COMPUTER_TOOL_NAMES.length`、**不写死数字**，当前 8 个；
+  总开关关闭时显示「已停用」）、技能「已启用 x / 共 y」（未发现显示「未发现」）、
   MCP「n 台服务器 / m 台启用」（未配置显示「未配置」）。
   **安全文案收敛为一处**：本页操作直接影响真实系统、工作目录不是沙箱（只是命令的缺省 cwd）、
   敏感工具需逐次确认（确认开关在「系统」页，关闭后不经确认直接执行）只在工具组说明里完整表述一次；
@@ -815,6 +821,19 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     MCP 区组必须给出「空状态（`data-empty="mcp.servers"`）或服务器行」之一，
     且不得出现这两个**预期**空状态之外的任何 `data-empty`（技能同理，`skills.disabled` 允许出现）；
     关着时只要求总开关本身仍在 —— 否则用户再也开不回来；
+  - **本轮（工具面扩展）预期新增 / 变化的探针条目（数值待回填）**：新增工具与字段会同时动
+    「智能与工具」页与对话窗上下文条两处探针口径，**条目名与计数一律以 `report.json` 的实际条目为准、
+    端到端实跑后回填**，这里只登记口径、不写死数值：
+    - `settings-agent.png`（`SETTINGS_AGENT_FIELDS_SCRIPT`）：详情字段数（上一条的
+      `terminalFields` / `filesFields` / `openFields` 口径）预期把新增的两组计入 ——
+      「文件检索」栏的 `agent.tools.search.enabled` / `agent.tools.search.maxResults`，
+      与终端卡片下「免确认命令模式」列表的 `agent.tools.terminal.allowPatterns`
+      （出厂默认是空数组，此时该栏是空状态提示，与上面「空状态 / 行容器二选一」同款口径）；
+      总开关关着时仍只要求总开关自己还在；
+    - `chat.context-usage`（对话窗输入框底部的上下文条）：折叠态文案预期含**缓存命中 token 数**
+      （`cachedTokens`，见 §2.3 与 06 §21.4）——桩 LLM 回传命中量时才会出现，未回传则整项不显示。
+      它的实测文案与 `chat-stream.png` 里那条真实 token 断言（`128 / 128k`）一样**按实跑回填**，
+      不要照推算写死。
   - **「模式」页切 Work 门控**（`SETTINGS_SWITCH_TO_WORK_SCRIPT` + `SETTINGS_WORK_GATING_SCRIPT`，
     产物 `settings-modes-work-gating.png`，BetaV2 重写）：点「工作模式」卡「启用」后，
     `modes.work.workspaceDir` 必须**恰好一行**（Work 已实装，不再是「暂无可配置项」空状态卡）、

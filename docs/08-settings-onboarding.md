@@ -137,10 +137,19 @@
   },
   "agent": {
     "tools": {
-      "enabled": true,          // 电脑操控工具总开关；false 时 5 个工具都不注册
+      "enabled": true,          // 电脑操控工具总开关；false 时 8 个工具都不注册
       "workspaceDir": "",       // 工具默认工作目录；空串 = 用户主目录
-      "terminal": { "enabled": true, "timeoutMs": 60000, "maxOutputChars": 8000 },
+      "terminal": {
+        "enabled": true,
+        "timeoutMs": 60000,
+        "maxOutputChars": 8000,
+        // v12 新增：命中即免确认的命令模式（glob 全串匹配、大小写不敏感）；空数组 = 全部逐次确认
+        // 只读：AI 的 set_setting 一律拒绝读写它（防自我提权），只能由用户在设置页维护，见 06 §11.7
+        "allowPatterns": []
+      },
       "files": { "enabled": true, "maxReadBytes": 262144 },
+      // v12 新增：文件检索（grep / glob）的开关与单次检索的结果条数上限
+      "search": { "enabled": true, "maxResults": 200 },
       "open": { "enabled": true }
     }
   }
@@ -179,7 +188,7 @@
   甚至把数组清空，`general.hotkey` 这条路径**仍然被拒**（清空 = 回到默认项，而不是放开）。
   另一条兜底同样不随它变化：「Schema 不认识的路径一律拒绝」，防模型拼错字段名后悄悄写进配置。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **10**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **12**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
@@ -220,7 +229,8 @@
   黑名单前缀之内，但「换模型 / 调参数」不碰凭据，显式放行（baseUrl / apiKeyEnc / modelList 等
   其余字段仍被前缀拒绝）；② **显式登记** —— `tts.enabled|active|autoRead|maxChars`、
   `stt.enabled|active`、`imagegen.enabled|active`、`general.edgeBar.enabled|opacity|quietHours`、
-  `general.chat.showThinking`、`modes.current`、`modes.work.workspaceDir`、`agent.tools.*`、
+  `general.chat.showThinking`、`modes.current`、`modes.work.workspaceDir`、`agent.tools.*`
+  （`terminal.allowPatterns` **除外** —— 它在黑名单里，见 §1）、
   `skills.userDir|disabled`、`advanced.quietHours` 等本就可写的路径逐条入表
   （供 `set_setting` 工具描述与审计使用，也防未来误加前缀时静默收窄）。
   注意 `advanced.confirmSensitiveTools` 总闸门**不在**表内，仍只读（防 AI 自我提权）。
@@ -256,12 +266,33 @@
   越界值在写入时被拒（渲染层输入框 `min`/`max` 同步限制）。Agent 可写（`modes.classroom.*` 不在黑名单）。
 - `modes.classroom.schedule.classisland.timeoutMs` 同时是**提醒命令通道**（05 §3.4 v3）文件模式
   轮询 `command-result.json` 的超时预算 —— 桥接不可用时按此超时返回 `ok: false`，不阻塞调用方。
-- `agent.tools`（v5 新增，见 06 §11）：4 个开关 + 3 个上限 ——
-  `enabled` 是电脑操控工具**总开关**（`false` 时 5 个工具都不注册）；`workspaceDir` 是 **`run_command`
-  的缺省 `cwd`**（空串 = 用户主目录，只作**默认值**、不是沙箱；文件类工具不读它，见 06 §11.1）；`terminal.enabled` 开关终端工具、
+- `agent.tools`（v5 新增，见 06 §11）：5 个开关 + 4 个上限 + 1 份免确认模式列表 ——
+  `enabled` 是电脑操控工具**总开关**（`false` 时 8 个工具都不注册）；`workspaceDir` 是 **`run_command`
+  的缺省 `cwd`**，同时也是 `grep` / `glob` 的**缺省搜索根**（空串 = 用户主目录，只作**默认值**、
+  不是沙箱；其余文件类工具不读它，见 06 §11.1 / §11.5）；`terminal.enabled` 开关终端工具、
   `terminal.timeoutMs` 是单次命令超时（毫秒）、`terminal.maxOutputChars` 是回传输出的截断上限；
   `files.enabled` 开关文件读写、`files.maxReadBytes` 是单次读取上限（字节）；
+  `search.enabled` 开关文件检索（`grep` / `glob`，**v12 新增**）、`search.maxResults` 是**单次检索的
+  结果条数上限**（1–1000，默认 200，超出即截断并在结果里标注）；
   `open.enabled` 开关「打开路径」工具。
+- `agent.tools.search.*`（**v12 新增**，见 06 §11.5）：文件检索工具 —— `grep`（按**正则**搜文件内容，
+  回带路径 / 行号 / 命中行）与 `glob`（按**文件名模式**找文件，只回路径），两个都是 `safe` 级只读工具，
+  用来替代「用 `list_dir` 逐层翻目录」。这两个字段**均可写**（显式登记在 `WRITABLE_PATH_OVERRIDES`，
+  见上一条）：开关检索能力或调整结果上限不碰凭据、也不动任何确认闸门。它们仍归 `agent.tools.enabled`
+  总开关管辖 —— 总开关关闭时 `grep` / `glob` 与其余 6 个工具一样不注册。
+- `agent.tools.terminal.allowPatterns`（**v12 新增**，见 06 §11.7）：命中即**跳过确认卡片**的命令模式
+  列表（`string[]`，默认空数组 = 现状不变、全部逐次确认；每条最长 200 字符、最多 100 条），
+  匹配语义是 **glob 全串匹配、大小写不敏感**（`*` 匹配任意字符含空、`?` 匹配单字符，与
+  `grep` / `glob` 共用同一个模式编译器；全串锚定意味着 `git *` 不命中 `echo git`）。
+  它是**白名单**而不是黑名单：命中只是免确认，**审计日志照写**（含命令与被命中的模式），
+  与 `advanced.confirmSensitiveTools = false` 同属「减少打扰」，**不是安全加固**。
+  非法模式一律拒绝保存与匹配：空串 / 纯空白 / **不含任何字面字符**的模式（`*` / `**` / `?*`）
+  以及含 `{` `}` 的模式 —— 纯通配等于「全部放行」，花括号交替（如 `{a,*}`）能绕过字面字符检查，
+  两者都必须在保存与匹配两处拒掉。
+  **它本身在默认黑名单里**（`SETTINGS_READONLY_PREFIXES`，即 `advanced.readonlyPrefixes` 的默认项）：
+  **只读，AI 的 `set_setting` 一律拒绝读写它**，只能由用户在设置页手动维护 ——
+  否则 AI 可以给自己加一条 `git*` 直接摘掉自己的确认闸门，属于**自我提权**
+  （与 `advanced.confirmSensitiveTools` 只读同款理由）。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -300,7 +331,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 因而不新增存储面，也不会与流水出现两处数据不一致。
 
 **对话归档状态同样不进 config.json**：它写在会话文件自身（`sessions/<id>.json` 的
-`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前仍为 11）。
+`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 12）。
 会话文件自己的版本号 `SESSION_FILE_VERSION` 由 1 提到 2，读取对 v1 宽容（缺 `meta` = 未归档），
 不存在需要执行的迁移脚本 —— 「会话文件版本」与「配置版本」是两条独立的链，别混。
 
@@ -309,7 +340,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 11`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 12`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -324,9 +355,12 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   `v8 → v9`（为每个已有 `mcp.servers` 条目补 `headersEnc: {}`，HTTP 传输自定义请求头，见 06 §7）、
   `v9 → v10`（为已存在的 `modes.classroom` 补 `preClassLeadMinutes: 5`，课前提早分钟数）、
   `v10 → v11`（为每个已有 `llm.providers.<id>` 补 `contextWindow: 0`，上下文窗口，
-  只用于对话窗底部的上下文占用比例，见 §1.2）。
-  十一条迁移都**幂等且不覆盖用户已写入的值**（`v10 → v11` 同理：只补缺失键、
-  用户填过的窗口值原样保留），重复执行结果一致。
+  只用于对话窗底部的上下文占用比例，见 §1.2）、
+  `v11 → v12`（为 `agent.tools` 补 `search.enabled / search.maxResults`（文件检索，见 06 §11.5）
+  与 `terminal.allowPatterns: []`（免确认命令模式，见 06 §11.7）；缺字段就补默认值、
+  `agent.tools` 分组本身缺失时交给默认配置兜底，不凭空造半截对象）。
+  十二条迁移都**幂等且不覆盖用户已写入的值**（`v10 → v11` / `v11 → v12` 同理：只补缺失键、
+  用户填过的窗口值或免确认模式原样保留），重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -460,20 +494,32 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
     字段与凭据链路见 §1 / §1.1，传输侧行为见 06 §7。
 - **电脑操控**（`agent.tools.*`，v0.7.0）：目标 6 页 IA 下并入「智能与工具」页（`agent`，
   与技能、MCP 区组同页折叠；v8 前为「AI 能力」组独立页）。页面提供电脑操控工具的开关与上限：「总开关」、「工作目录」、
-  终端（开关 / 超时 ms / 输出字符上限）、文件（开关 / 单次读取字节上限）、打开（开关）；
+  终端（开关 / 超时 ms / 输出字符上限 / **免确认命令模式列表**）、文件（开关 / 单次读取字节上限）、
+  **文件检索**（开关 / 结果条数上限，`agent.tools.search.*`，v12 新增）、打开（开关）；
   字段路径见 §1，工具能力与安全边界见 06 §11。
-  - 总开关 `agent.tools.enabled` 关闭后 `run_command` / `read_file` / `write_file` /
-    `list_dir` / `open_path` 5 个工具都不注册（模型看不到它们）；总开关本身**常显**，
+  - 终端卡片下新增**「免确认命令模式」列表**（`agent.tools.terminal.allowPatterns`，v12 新增）：
+    逐条增删模式（glob 全串匹配、大小写不敏感，语义与非法模式的拒绝规则见 §1 与 06 §11.7），
+    默认空列表 = 全部逐次确认；列表为空时是空状态提示，不画一排空行。
+    它是**只读路径**：AI 的 `set_setting` 读写它一律被拒，只能由用户在这里维护。
+  - 新增**「文件检索」栏**（`agent.tools.search.*`，v12 新增）：总开关（`search.enabled`）与
+    结果条数上限（`search.maxResults`）两项，控制 `grep` / `glob` 两个只读检索工具是否注册
+    与单次返回多少条结果（见 06 §11.5）。
+  - 总开关 `agent.tools.enabled` 关闭后 `run_command` / `read_file` / `write_file` / `edit_file` /
+    `list_dir` / `open_path` / `grep` / `glob` 8 个工具都不注册（模型看不到它们）；总开关本身**常显**，
     否则关掉就再也无法启用（门控见 §6.1）。
   - 总开关**不是把 AI 锁死**：`set_setting` 仍会注册，AI 仍可（在用户确认后）改 `agent.tools.*`
     把总开关打回来（见 06 §12.6）。`set_setting` 写 `agent.tools.<子字段>` 时
-    **以当前分组值为基底深合并**，只覆盖被点名的字段 —— 不会把 `terminal` / `files` / `open`
+    **以当前分组值为基底深合并**，只覆盖被点名的字段 —— 不会把 `terminal` / `files` / `search` / `open`
     的现有值抹掉。
-  - 「工作目录」为空串时回落用户主目录；它只是 **`run_command` 的缺省 `cwd`**，**不是沙箱** ——
-    越界不静默，结果里回带真实的绝对路径。注意 `read_file` / `write_file` / `list_dir` **不读**该字段
-    （相对路径按主进程 CWD 解析，打包应用该值不可预期，故文件类工具只适合用绝对路径；见 06 §11.4）。
-  - 逐次确认沿用 `sensitivity` 判定：`run_command` / `write_file` / `open_path` 为 `confirm`
-    （走 06 §5 的确认链路，勿扰时段或确认超时一律按拒绝），`read_file` / `list_dir` 为 `safe`；
+  - 「工作目录」为空串时回落用户主目录；它只是 **`run_command` 的缺省 `cwd`**（也是 `grep` / `glob`
+    的缺省搜索根，见 06 §11.5），**不是沙箱** ——
+    越界不静默，结果里回带真实的绝对路径。注意 `read_file` / `write_file` / `edit_file` / `list_dir`
+    **不读**该字段（相对路径按主进程 CWD 解析，打包应用该值不可预期，故文件类工具只适合用绝对路径；
+    见 06 §11.4）。
+  - 逐次确认沿用 `sensitivity` 判定：`run_command` / `write_file` / `edit_file` / `open_path` 为
+    `confirm`（走 06 §5 的确认链路，勿扰时段或确认超时一律按拒绝；唯一的例外是命中
+    `agent.tools.terminal.allowPatterns` 的 `run_command`，见 06 §11.7），
+    `read_file` / `list_dir` / `grep` / `glob` 为 `safe`；
     由 `advanced.confirmSensitiveTools` 统一开关，关闭后敏感工具不再询问（见 §1）。
 - **语音**（`tts.*` / `stt.*`，v0.8.0 起）：目标 6 页 IA 下为「语音」页（`voice`，TTS 区组 + STT 区组；
   v8 前为「AI 能力」组第 2 项、仅 TTS）。TTS 区组提供「总开关」（`tts.enabled`）、「默认 TTS 模型」
@@ -538,7 +584,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 | `llm.providers.*`（含 `temperature` / `reasoningEffort` / `modelList`） | `llm.providers` 至少一项 |
 | `agent.tools.enabled` | 常显（否则无法重新启用） |
 | `agent.tools.workspaceDir` | 常显（总开关关着时也要能改默认工作目录） |
-| `agent.tools.terminal.*` / `files.*` / `open.enabled` | `agent.tools.enabled === true` |
+| `agent.tools.terminal.*`（含只读的 `allowPatterns`）/ `files.*` / `search.*` / `open.enabled` | `agent.tools.enabled === true` |
 | `tts.enabled` | 常显（否则无法重新启用） |
 | `tts.providers.*` | `tts.providers` 至少一项，否则整块换成 `data-empty="tts.providers"` |
 | `tts.autoRead` / `tts.maxChars` | `tts.providers` 至少一项（没有 provider 时朗读无从发生） |
@@ -554,8 +600,10 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 探针只断言 `> 0` 与「切走必须为 0」），切到 Work 后 classroom 字段必须为 0，且出现 Work 区组的
 `modes.work.workspaceDir`（v8 起 Work 有可配置字段，`data-empty="modes.work"` 空状态随之取消；
 探针断言由 capture 适配任务同步更新）；
-`settings?page=agent` 读 `agent.tools.enabled` 复选框的**实际状态**：开着时终端 / 文件 / 打开三栏的
-详情字段都必须存在（且 `data-empty` 为空），关着时只要求总开关自己还在。
+`settings?page=agent` 读 `agent.tools.enabled` 复选框的**实际状态**：开着时终端 / 文件 / 检索 / 打开
+四栏的详情字段都必须存在（且 `data-empty` 为空；**检索栏**（`agent.tools.search.*`）与终端卡片下的
+**免确认命令模式**列表（`agent.tools.terminal.allowPatterns`）随 v12 新增，探针条目同步扩展，
+**具体计数以 `report.json` 的实际条目为准**），关着时只要求总开关自己还在。
 探针结果写 `<目录>/report.json` 并以 `AURORA_SMOKE_RESULT:` 前缀落日志，存在 FAIL 时进程退出码为 2。
 
 ## 7. ClassRoom 模式设置页（v0.4.0）
