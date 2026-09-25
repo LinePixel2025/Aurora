@@ -70,7 +70,15 @@ function fakeSettingsPort(): SettingsToolPort & { writes: unknown[][] } {
 function fakeFilePort(): FilePort {
   return {
     async readText(path) {
-      return { absolutePath: `C:\\abs\\${path}`, text: 'ok', truncated: false, bytes: 2 }
+      // 形状按 `ReadTextResult`：v12 起 `read_file` 走「行窗口」读，不再返回整篇 text
+      return {
+        absolutePath: `C:\\abs\\${path}`,
+        lines: [{ number: 1, text: 'ok' }],
+        totalLines: 1,
+        truncated: false,
+        bytes: 2,
+        totalBytes: 2,
+      }
     },
     async writeText(path) {
       return { absolutePath: `C:\\abs\\${path}`, bytes: 2 }

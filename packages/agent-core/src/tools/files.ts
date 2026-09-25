@@ -19,12 +19,67 @@ const MAX_LIST_LIMIT = 500
 /** `list_dir` 未指定 limit 时的默认条数 */
 const DEFAULT_LIST_LIMIT = 200
 
+/** `read_file` 未指定 `limit` 时返回的行数（docs/06 §11、§20） */
+export const DEFAULT_READ_LINES = 2_000
+/** `read_file` 单次可请求的最大行数 */
+export const MAX_READ_LINES = 5_000
+/** 单行展示上限：超出即截断（对齐 opencode `read.txt` 的 2000 字符） */
+export const MAX_LINE_CHARS = 2_000
+/** 端口单次可扫描的文件上限：超过即拒绝并提示改用 `grep` / `run_command` */
+export const MAX_READ_SCAN_BYTES = 16 * 1024 * 1024
+/**
+ * `offset` 的内核防护上限：超过它的行号一定落在任何可读文件的末尾之外，
+ * 端口按「超出文件末尾」返回空窗口即可，不需要在这里报错。
+ */
+const MAX_READ_OFFSET = 10_000_000
+
+export interface ReadTextOptions {
+  /**
+   * 起始行号（**1 起始**，相对文件开头）；缺省 1。
+   * 非数字 / NaN / 小于 1 一律按 1 处理（见 `resolveLineParam`）。
+   */
+  offsetLines?: number
+  /** 最多返回多少行；缺省 `DEFAULT_READ_LINES`，上限 `MAX_READ_LINES` */
+  limitLines?: number
+  /**
+   * 返回窗口的字节上限：对**切片之后的窗口**生效（不再是从文件头截断）。
+   * 窗口里**至少保留一行** —— 即使第一行单独就超过它，也要带回来，
+   * 否则模型拿到空结果且无从推进。
+   */
+  maxBytes: number
+}
+
+export interface ReadLine {
+  /** 行号（1 起始，相对文件开头，**不随 `offset` 改变**） */
+  number: number
+  /** 行内容（已去掉行尾的 `\r`，不含换行符） */
+  text: string
+}
+
+export interface ReadTextResult {
+  absolutePath: string
+  /** 本次返回的行窗口（已按 `offsetLines` / `limitLines` / `maxBytes` 裁剪） */
+  lines: ReadLine[]
+  /** 文件总行数；命中扫描上限时为 `undefined`（无法准确统计） */
+  totalLines?: number
+  /** 后面是否还有未返回的内容（被 `limitLines` / `maxBytes` / 扫描上限截断） */
+  truncated: boolean
+  /** 是否因文件超过 `MAX_READ_SCAN_BYTES` 而没读完（此时 `totalLines` 为 `undefined`） */
+  scanLimitHit?: boolean
+  /** 本次返回窗口的字节数 */
+  bytes: number
+  /** 文件总字节数 */
+  totalBytes: number
+}
+
 export interface FilePort {
-  /** 读文本；超 maxBytes 时截断并回带 truncated 标记；二进制（含 NUL）由实现抛错 */
-  readText(
-    path: string,
-    maxBytes: number,
-  ): Promise<{ absolutePath: string; text: string; truncated: boolean; bytes: number }>
+  /**
+   * 读文本的**行窗口**；二进制（含 NUL）与目录由实现抛错。
+   *
+   * 与既有 `readText(path, maxBytes)` 的差别：`maxBytes` 现在是对**窗口**的字节上限，
+   * 不再是从文件头截断——因此大文件的后半段可以被读到（`offsetLines`）。
+   */
+  readText(path: string, options: ReadTextOptions): Promise<ReadTextResult>
   /** 写文本；mode='append' 追加；实现负责建父目录 + 原子写 */
   writeText(
     path: string,
@@ -116,7 +171,13 @@ function createReadFileTool(files: FilePort, configuredMaxBytes: number): ToolDe
   const maximum = Math.max(MIN_READ_BYTES, Math.floor(configuredMaxBytes))
   return {
     name: 'read_file',
-    description: `按 UTF-8 读取文本文件内容。单次最多读取 ${maximum} 字节，超出部分被截断（二进制文件无法读取，请改用 run_command 处理）。`,
+    description: [
+      `按 UTF-8 读取文本文件内容，返回的每一行都带 \`<行号>: \` 前缀（后续用它引用原文，注意引用时不要把前缀带进去）。`,
+      `默认返回开头 ${DEFAULT_READ_LINES} 行；大文件不必整篇读进来——用 offset（**1 起始**的行号）从任意位置继续读，用 limit 控制本次行数（最多 ${MAX_READ_LINES} 行）。`,
+      `单行超过 ${MAX_LINE_CHARS} 字符会被截断。`,
+      '不知道文件名先用 glob 找，要找内容是 grep 更快（它直接给路径与行号，再回到这里按 offset 读那一段）。',
+      '二进制文件读不了，请改用 run_command 处理。',
+    ].join(''),
     parameters: {
       type: 'object',
       properties: {
@@ -124,11 +185,22 @@ function createReadFileTool(files: FilePort, configuredMaxBytes: number): ToolDe
           type: 'string',
           description: '要读取的文件路径（可为相对路径，结果里回带解析后的绝对路径）',
         },
+        offset: {
+          type: 'integer',
+          minimum: 1,
+          description: `起始行号（**1 起始**，相对文件开头），缺省 1；用于读大文件的后半段`,
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: MAX_READ_LINES,
+          description: `本次最多返回的行数，取值 1–${MAX_READ_LINES}，缺省 ${DEFAULT_READ_LINES}`,
+        },
         maxBytes: {
           type: 'integer',
           minimum: MIN_READ_BYTES,
           maximum: maximum,
-          description: `本次读取的字节上限，取值 ${MIN_READ_BYTES}–${maximum}，缺省为 ${maximum}`,
+          description: `本次返回窗口的字节上限，取值 ${MIN_READ_BYTES}–${maximum}，缺省为 ${maximum}`,
         },
       },
       required: ['path'],
@@ -145,6 +217,10 @@ function createReadFileTool(files: FilePort, configuredMaxBytes: number): ToolDe
           summary: '缺少 path 参数',
         }
       }
+      // 行窗口参数是「怎么读」不是「读什么」：写坏时给一个可用窗口比直接报错更有用，
+      // 所以非数字 / NaN / 越界一律钳制回落（与 maxBytes 的严格口径不同，见 §20 措辞规范）。
+      const offsetLines = resolveLineParam(record?.['offset'], 1, MAX_READ_OFFSET, 1)
+      const limitLines = resolveLineParam(record?.['limit'], 1, MAX_READ_LINES, DEFAULT_READ_LINES)
       const maxBytes = resolveClamped(record?.['maxBytes'], MIN_READ_BYTES, maximum, maximum)
       if (maxBytes === undefined) {
         return {
@@ -154,15 +230,8 @@ function createReadFileTool(files: FilePort, configuredMaxBytes: number): ToolDe
         }
       }
       try {
-        const result = await files.readText(path, maxBytes)
-        const head = `文件：${result.absolutePath}（${result.bytes} 字节）`
-        const tail = result.truncated ? ['…（已按 maxBytes 截断）…'] : []
-        return {
-          content: [head, result.text, ...tail].join('\n\n'),
-          summary: result.truncated
-            ? `读取 ${result.bytes} 字节（已截断）`
-            : `读取 ${result.bytes} 字节`,
-        }
+        const result = await files.readText(path, { offsetLines, limitLines, maxBytes })
+        return renderReadResult(result)
       } catch (error) {
         return {
           content: `读取文件失败：${describeError(error)}`,
@@ -172,6 +241,87 @@ function createReadFileTool(files: FilePort, configuredMaxBytes: number): ToolDe
       }
     },
   }
+}
+
+/**
+ * 把端口回带的行窗口渲染成结果文本（docs/06 §11、§20）。
+ *
+ * 头部三态：正常窗口 / 窗口为空（offset 越界）/ 文件过大（`totalLines` 未知）。
+ * 结果为空**不是错误**（`isError` 由调用方不设），模型据此换 offset 继续读即可。
+ */
+function renderReadResult(result: ReadTextResult): ToolResult {
+  const first = result.lines[0]
+  const last = result.lines[result.lines.length - 1]
+  const mib = Math.round(MAX_READ_SCAN_BYTES / 1024 / 1024)
+
+  let head: string
+  if (result.totalLines === undefined) {
+    head = `文件：${result.absolutePath}（${result.totalBytes} 字节；文件超过 ${mib} MiB 只解析了开头，建议用 grep 定位）`
+  } else if (first === undefined || last === undefined) {
+    head = `文件：${result.absolutePath}（共 ${result.totalLines} 行 / ${result.totalBytes} 字节）`
+  } else {
+    head = `文件：${result.absolutePath}（共 ${result.totalLines} 行 / ${result.totalBytes} 字节；本次显示第 ${first.number}–${last.number} 行）`
+  }
+
+  const lines = result.lines.map(renderReadLine)
+  const tail: string[] = []
+  if (result.scanLimitHit === true) {
+    tail.push(`…（文件超过 ${mib} MiB，仅解析了开头；请用 grep 定位或改用 run_command）…`)
+  }
+  if (first === undefined || last === undefined) {
+    if (result.totalLines === 0) tail.push('（空文件）')
+    else if (result.totalLines !== undefined) {
+      tail.push(`offset 超出文件末尾（共 ${result.totalLines} 行）`)
+    }
+  } else if (result.truncated) {
+    tail.push(
+      result.totalLines === undefined
+        ? '…（还有未显示的内容，可用更大的 offset 继续读）…'
+        : `…（还有 ${result.totalLines - last.number} 行未显示，用 offset 继续读）…`,
+    )
+  }
+
+  return {
+    content: [head, ...lines, ...tail].join('\n\n'),
+    summary: describeReadSummary(result, first, last),
+  }
+}
+
+function describeReadSummary(
+  result: ReadTextResult,
+  first: ReadLine | undefined,
+  last: ReadLine | undefined,
+): string {
+  if (first === undefined || last === undefined) {
+    return result.totalLines === 0 ? '空文件' : '未读到内容（offset 超出文件末尾）'
+  }
+  if (result.totalLines === undefined) {
+    return `读取第 ${first.number}–${last.number} 行（文件过大仅开头）`
+  }
+  return `读取第 ${first.number}–${last.number} 行 / 共 ${result.totalLines} 行`
+}
+
+/** `12: 内容`；超长行截断并标注原长（截断标记在**这一行**上，模型一眼能看出是哪行的问题） */
+function renderReadLine(line: ReadLine): string {
+  if (line.text.length <= MAX_LINE_CHARS) return `${line.number}: ${line.text}`
+  return `${line.number}: ${line.text.slice(0, MAX_LINE_CHARS)}…（本行共 ${line.text.length} 字符已截断）…`
+}
+
+/**
+ * 行窗口参数的宽松解析：非数字 / NaN 回落到 `fallback`，其余取整后钳到 `[minimum, maximum]`。
+ *
+ * 与 `resolveClamped` 的差别只在「非数字」这一支：后者返回 `undefined` 让调用方报错，
+ * 这里按缺省值处理——`offset` / `limit` 传错时退回默认窗口仍能读到东西，而 `maxBytes`
+ * 关系着"会不会把上下文刷爆"，保持严格。
+ */
+function resolveLineParam(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  fallback: number,
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.min(Math.max(Math.floor(value), minimum), maximum)
 }
 
 function createWriteFileTool(files: FilePort): ToolDefinition {
