@@ -347,7 +347,7 @@
   新增浮层时必须复用这套锚点与令牌，**不要新写 z-index 魔数**（层级令牌见 §5.1）。
 - **`data-field` 锚点清单（capture 探针依赖）**：`chat.permission` / `chat.permission-menu` /
   `chat.permission-confirm` / `chat.permission-full` / `chat.slash-menu` / `chat.slash-<name>` /
-  `chat.context` / `chat.context-usage` / `chat.context-detail`；
+  `chat.context` / `chat.context-usage` / `chat.context-cache` / `chat.context-detail`；
   旧的 `chat.model` / `chat.reasoningEffort` / `chat.mic` 位置变了但锚点不变。
   左栏归档（2026-09-26 新增）：`chat.archive-group` / `chat.archive-toggle` / `chat.archive-list` /
   `chat.archived-banner`，动作锚点 `data-action="chat.archive-session"` / `"chat.unarchive-session"`
@@ -363,7 +363,8 @@
   `chat-archive.png`（归档分组）；
   以及 `chat-stream.png`（**唯一一条 DOM 级端到端**：capture 在跑这一段前竖起本地桩 LLM 并把
   `llm.active` 指向它 → 探针把提示词写进 textarea、点发送 → 断言助手气泡里出现了桩服务的回复文本、
-  且上下文条显示**真实 token**（`128 / 128k`）而不是「暂无用量数据」。
+  且上下文条显示**真实 token**（`512 / 128k`）与**缓存命中片段**（`缓存命中 512（100%）`，
+  `data-field="chat.context-cache"`）而不是「暂无用量数据」。
   为什么这条必须有：`AURORA_SMOKE` 的脚本跑在引导窗里，只能从**事件层**断言流式
   （06 §16.2 的 text / usage 事件），读不到对话窗 DOM；而两个模式互斥 ——
   「事件对了、界面没画出来」这类问题只有这里能抓到），
@@ -823,8 +824,10 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     MCP 区组必须给出「空状态（`data-empty="mcp.servers"`）或服务器行」之一，
     且不得出现这两个**预期**空状态之外的任何 `data-empty`（技能同理，`skills.disabled` 允许出现）；
     关着时只要求总开关本身仍在 —— 否则用户再也开不回来；
-  - **本轮（工具面扩展）的探针条目与实测值**（2026-09 `AURORA_CAPTURE` 实跑：
-    **48 张 PNG / 48 条 `checks` / 0 FAIL / 退出码 0**，12 条 DOM 探针全 PASS）：
+  - **本轮（工具面扩展 + prompt caching）的探针条目与实测值**（2026-09-26 `AURORA_CAPTURE` 实跑：
+    **48 张 PNG / 48 条 `checks`（45 条配了探针、3 条纯截图）/ 0 FAIL / 退出码 0**，
+    45 条探针**全部 PASS**。计数口径与上文「不按固定张数校验」同款：这里的数字是**那一次实跑**
+    的实测值，不是校验目标 —— 加场景就重跑，别照着它数）：
     - `settings-agent.png`（`SETTINGS_AGENT_FIELDS_SCRIPT`）：开总开关时的实测值
       `total=11`、`terminalFields=4`、**`allowPatternsFields=1`**、`filesFields=2`、
       **`searchFields=2`**、`openFields=1`
@@ -834,10 +837,19 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
       不带同前缀的 `data-field`，所以这个数在空列表与非空列表下**恒为 1**；
       列表的空状态用的是普通文案元素（**不是** `data-empty`），否则本页会多出一块 `unexpected` 直接 FAIL。
       总开关关着时仍只要求总开关自己还在；
-    - `chat.context-usage`（对话窗输入框底部的上下文条）：折叠态文案含**缓存命中 token 数**
-      （`cachedTokens`，见 §2.3 与 06 §21.4）——桩 LLM 回传命中量时才出现，未回传则整项不显示。
-      该断言要等桩 LLM 回传 `cachedTokens` 之后才加；`chat-stream.png` 现有的真实 token 断言
-      仍按那次实跑实测值保留（`128 / 128k` + `累计 144`）。
+    - `chat-stream.png` 的**缓存命中片段**（`data-field="chat.context-cache"`，折叠态嵌在
+      `chat.context-usage` 里面；`cachedTokens` 见 §2.3 与 06 §21.4）：桩 LLM 在本轮固定回
+      `prompt_tokens = 512` + `prompt_tokens_details.cached_tokens = 512`，因此实测文案是
+      `512 / 128k  · 缓存命中 512（100%）`（`chat.context-usage`）、`累计 528`（`.ctx-total`）。
+      探针要求 `chat.context-cache` 的文案同时含「缓存命中」「512」「100%」三个子串 ——
+      只断言「含缓存命中」时，命中量丢了（只剩标题）或百分比算错都照样能过。
+      **分母与分子必须自洽**（桩数据 `cached <= prompt`）：写反会算出大于 100% 的占比，
+      展示侧的 `Math.min(100, …)` 虽然夹住了，桩数据也不该自相矛盾。
+      未回传 `cachedTokens` 时整段不渲染（不写「缓存命中 0」，那会把「没回传」显示成「一条都没命中」）；
+  - **缓存前缀稳定性的端到端断言在 `AURORA_SMOKE` 侧**（`index.ts` 的 `runSmokeTest`，06 §21.1）：
+    capture **只**覆盖「命中量落到 DOM」这一半，另两条 —— 连续两轮的系统提示词静态前缀逐字节
+    相同、`tools` 数组逐个相同且已排序 —— 读的是**桩服务收到的请求体**，只有 smoke 能拿到，
+    capture 侧不重复造（2026-09-26 实跑：`SUMMARY 146/146 passed`，三条新记录全 PASS）。
   - **「模式」页切 Work 门控**（`SETTINGS_SWITCH_TO_WORK_SCRIPT` + `SETTINGS_WORK_GATING_SCRIPT`，
     产物 `settings-modes-work-gating.png`，BetaV2 重写）：点「工作模式」卡「启用」后，
     `modes.work.workspaceDir` 必须**恰好一行**（Work 已实装，不再是「暂无可配置项」空状态卡）、

@@ -98,7 +98,7 @@ export interface LlmProvider {
     按**最长公共前缀**命中，而「系统状态」每轮都带时间与前台窗口、「任务清单」「历史摘要」随对话变化
     —— 把易变小节排在中间，它**后面**的全部静态文本（数千字符）每轮都被顶出缓存、重复计费。
     因此易变段一律留在末尾：**不要把易变小节往前挪**。改动这一顺序等于改缓存命中率，
-    回归判据是「同一会话连续两轮的系统提示词静态前缀逐字节相同」（§21.1）。
+    回归判据是「同一会话连续两轮的系统提示词静态前缀逐字节相同」（精确边界见 §21.1）。
   - **当前任务清单**：`SystemPromptParts.todoSummary`，由装配层按会话注入（`KernelAgentHost.todoSummary`，
     见 §17 / §18）—— 历史被截断 / 摘要压缩后，模型仍能看到当前任务状态。
   - **工具使用规范**：内核 `buildToolGuidance(注册工具名列表)` 按**实际注册的工具**条件生成，
@@ -320,6 +320,24 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   `glob.limit` 钳到 `1 .. agent.tools.search.maxResults`（缺省取该值）；
   `run_command.timeoutMs` 钳到 `1000 .. 300000`。
   参数非法（缺必填 / 类型不对）一律返回 `isError` 且**不触碰**真实系统调用。
+- **内核硬上限常量（不进配置，表中数值即实现取值）**：这些上限是「正确性与资源保护」的前提，
+  刻意不做成配置字段（沿用 `MAX_TASK_RESULT_CHARS` / `MAX_WEB_FETCH_CHARS` 的先例）：
+
+  | 常量 | 值 | 约束对象 |
+  |---|---|---|
+  | `MAX_EDIT_BYTES` | `1_048_576`（1 MiB） | `edit_file` 的整文件读入上限，超过即**拒绝改动**（§11.6） |
+  | `DEFAULT_READ_LINES` | `2_000` | `read_file.limit` 的缺省值 |
+  | `MAX_READ_LINES` | `5_000` | `read_file.limit` 的上限（`offset` 与它共同界定行窗口） |
+  | `MAX_LINE_CHARS` | `2_000` | `read_file` 单行渲染长度，超出截断并标注原长 |
+  | `MAX_READ_SCAN_BYTES` | `16 * 1024 * 1024`（16 MiB） | `read_file` 只解析开头的阈值；超出时不给 `totalLines` 并提示改用 `grep` 定位 |
+  | `MAX_FILE_SCAN_BYTES` | `1024 * 1024`（1 MiB） | **`grep` 内容扫描**的单文件上限（超过即跳过）；`glob` 只比文件名，**不受它约束** |
+  | `MAX_MATCH_LINE_CHARS` | `400` | `grep` 命中行的展示长度，超出先截断再输出并标注 |
+  | `SEARCH_BUDGET` | `{ maxFiles: 20_000, maxBytes: 64 * 1024 * 1024 }`（2 万文件 / 64 MiB） | `grep` / `glob` 遍历的**双重**预算，任一触顶即停止并返回已收集结果（标注 `truncated`） |
+  | `DEFAULT_SEARCH_IGNORE` | `node_modules` / `.git` / `dist` / `out` / `build` / `.next` / `coverage` / `.turbo`（8 个） | `grep` / `glob` 默认**整棵子树**跳过的目录名（按名字精确匹配、可注入覆盖） |
+  | `DEFAULT_SEARCH_MAX_RESULTS` | `200` | `agent.tools.search.maxResults` 的缺省值 |
+  | `MAX_SEARCH_MAX_RESULTS` | `1_000` | `agent.tools.search.maxResults` 的上限（Schema 与运行时都钳到它） |
+  | `MAX_ALLOW_PATTERNS` | `100` | `agent.tools.terminal.allowPatterns` 的条数上限（由 Schema 裁剪） |
+  | `MAX_ALLOW_PATTERN_LENGTH` | `200` | 单条免确认命令模式的长度上限（§11.7） |
 - **配置字段（不改名）**：`agent.tools.enabled`（总开关）、`agent.tools.workspaceDir`（命令的默认 cwd，
   见 §11.1）、`agent.tools.terminal.{enabled,timeoutMs,maxOutputChars,allowPatterns}`、
   `agent.tools.files.{enabled,maxReadBytes}`、`agent.tools.search.{enabled,maxResults}`、
@@ -425,9 +443,11 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 - **默认忽略目录（内核常量 `DEFAULT_SEARCH_IGNORE`，可注入覆盖）**：`node_modules` / `.git` / `dist` /
   `out` / `build` / `.next` / `coverage` / `.turbo` —— 整棵子树跳过，不进结果也不计入扫描数。
 - **不跟随符号链接**：遍历时直接跳过所有 `isSymbolicLink()` 的条目（目录环会让递归死循环）。
-- **预算与上限（内核常量，不进配置）**：单文件超过扫描阈值（`MAX_FILE_SCAN_BYTES`，1 MiB）即
-  **跳过不扫**；命中行超长截断并标注；
-  结果条数按 `agent.tools.search.maxResults`（缺省 **200**，上限 **1000**）截断并明确标注；
+- **预算与上限（内核常量，不进配置；完整取值见 §11 的常量表）**：单文件超过扫描阈值
+  （`MAX_FILE_SCAN_BYTES` = 1 MiB）即**跳过不扫**（**只约束内容扫描**：`glob` 只比名字、不受它约束）；
+  命中行超过 `MAX_MATCH_LINE_CHARS`（400 字符）截断并标注；
+  结果条数按 `agent.tools.search.maxResults`（缺省 `DEFAULT_SEARCH_MAX_RESULTS` = **200**，
+  上限 `MAX_SEARCH_MAX_RESULTS` = **1000**）截断并明确标注；
   遍历另有**文件数与字节数双重预算**（`SEARCH_BUDGET`：文件数 20 000 / 总字节 64 MiB），
   任一触顶即停止，**返回已收集的结果并标注 `truncated`**，
   **绝不无限遍历**。
@@ -465,7 +485,10 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   也是**按会话隔离**的。标记规则：`read_file` 成功后打标记、`edit_file` 成功后**保留**标记、
   `write_file` 成功后**清除**标记（整篇覆盖后旧基线失效，留着会静默套用过期内容）。
   守卫是内核的**可注入端口**：未注入时不拦截（供直接调用工具的单测使用，与 `confirmTool` 同款），
-  **不做成配置项**。
+  **不做成配置项**。装配侧（`registerComputerTools`）把它建成**进程级单例**——建在 `sync()`
+  **之外**的闭包里，`read_file` 与 `edit_file` 共享同一份：`sync()` 在每次 `settings:changed`
+  时重建全部工具实例，守卫若跟着重建，「本会话读过的文件」会被清空，表现为用户改一个无关开关后
+  刚读过的文件立刻被拒（详见 `AGENTS.md` 的接线点）。记录按会话裁剪（只保留最近 16 个会话）。
 - **四种拒绝（全部 `isError`，任何一条命中都立即返回且不写盘）**：
   - `oldString` **在文件里找不到** → 文案含「未找到」并提示「确认原文（**不要**带 `N: ` 行号前缀）」
     与「比对已按 LF 归一，行尾差异不是原因」；
@@ -484,7 +507,9 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
     行尾还原」这套做法在混合行尾文件上会把所有 LF 行也改成 CRLF = **整个文件每一行的行尾都被
     改写**（`git diff` 全文变色、用户的 stash 全部冲突），与本节「其余部分逐字节不变」的承诺相反。
 - **整文件读取（不得用行窗口）**：为做替换必须拿到完整内容，因此走**独立的整文件读入口**
-  （端口上的 `readWholeText`，语义是「要么给全文，要么明确拒绝」），
+  （端口上的 `readWholeText`，返回 `ReadWholeTextResult`：`text` / `bytes` / **`refused: boolean`**
+  —— 它的语义是「要么给全文，要么明确拒绝」，**只有这两态**：
+  `refused === true` 时 `text` 为空串，**不存在「读了但被截断」的中间态**），
   **不能用 `read_file` 的行窗口截断读取**——单文件上限是内核常量 **`MAX_EDIT_BYTES = 1_048_576`**
   （1 MiB），超过即 `isError` 并建议改用 `run_command` 或分块 `write_file`。
   **「截断后替换再写回」= 静默损坏文件**，是本工具最必须堵死的路径；
@@ -970,6 +995,8 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 - `promptTokens` 就是**这一轮真实占用的上下文长度**（系统提示词 + 历史 + 本轮内容），
   是输入框底部「上下文详解」的唯一分子来源；逐轮累加即本会话消耗；
 - **只用于展示、不落盘**：它是「本轮请求的上下文占用」，重放历史时重新收集没有意义；
+- `TokenUsage` 另有一个可选字段 `cachedTokens`（命中服务端前缀缓存的 prompt token 数）——
+  解析口径、缺省语义与展示位置见 §21.4；它同样只用于展示、不落盘；
 - provider 没回传 `usage` 时**整条不发**，界面如实显示「暂无用量数据」（不拿字符数换算冒充 token）；
 - `openai-compat` 在流式请求体里带上 `stream_options: { include_usage: true }`（OpenAI 规范：
   流式下只在**最后一片**给 usage，且要先显式索取）。**不认这个字段的网关会直接 400**，
@@ -1182,26 +1209,36 @@ Aurora 只讲 OpenAI 兼容协议，而主流网关（DeepSeek / OpenAI / 硅基
 - 理由：前缀缓存按**最长公共前缀**命中，而「系统状态」每轮都带时间与前台窗口、
   「任务清单」与「历史摘要」随对话变化——易变小节排在中间时，它**之后**的全部静态文本
   （数千字符）每轮都要重新计费。把它们挪到末尾后，`[静态段]` 本身成为可复用的稳定前缀。
-- 回归判据是一条**公共前缀断言**：同一会话连续两轮的系统提示词，「静态段 + 一个接缝」逐字节相同，
-  且接缝之后紧邻的第一个小节就是易变段的第一个（「更早对话的摘要」）。
-  这条断言把「顺序」变成可执行的口径，往后改顺序只改这一处。
+- 回归判据是一条**公共前缀断言**，它的**精确边界**是：
+  `最长公共前缀 = 静态段 + '\n\n' + '## 更早对话的摘要' + '\n'`（**精确到第一个易变小节的标题行末尾**）。
+  注意「静态段 + 一个接缝」（`stat + '\n\n'`）只是这个前缀的**下界**、不是它：
+  第一个易变小节的**标题行在两轮里逐字节相同**（它是共用文案），因此它必然也落在公共前缀里，
+  公共前缀比接缝长一个标题行；真正分清两轮的第一个字符是易变**正文**的第一个字。
+  断言同时钉住「接缝之后紧邻的第一个小节就是易变段的第一个（「更早对话的摘要」）」，
+  把「前缀长度」变成语义断言——往后改顺序只改这一处。
 
 ### 21.2 工具数组：按工具名排序
 
 - `ToolRegistry.toLlmTools()` 改为**按工具名排序**返回（字典序比较，**不用 `localeCompare`**
-  ——它是 locale 相关的，跨机器可能给出不同结果）。
+  ——它是 locale 相关的，跨机器可能给出不同结果）。排序的**唯一实现**就在这个方法里，
+  `toLlmTools()` 是请求链路上的唯一来源：改排序只改它。
+- 排序的**生效点在工具循环**（不是注册表本身）：`runAgentLoop` 调 `options.tools.toLlmTools()`
+  取发给 provider 的 `tools` 数组——此前那份同文件私有的 `toLlmTools` helper 已删除，
+  避免两份实现漂移（只改 `registry.ts` 而不改 `agentLoop.ts` 的写法**不会改变请求体**，是假 PASS）。
 - 理由：`registerComputerTools.sync()` 的语义是「先按名字全量摘除、再按当前配置重建」，
   按 Map 插入序返回会让任何一次设置变更把工具挪到数组末尾 → 请求体里的 `tools` 数组顺序变化 →
   **整个前缀失效**（缓存白建）。排序后顺序只取决于名字集合，与注册先后无关。
-- 系统提示词里的工具清单（`describeTools`）必须用**同一个有序列表**生成，
+- 系统提示词里的工具清单（`describeTools`）用**同一个有序列表**生成
+  （`agentHost` 传的是 `this.deps.tools.toLlmTools()` 的返回值），
   否则「提示词里的顺序」与「请求体的顺序」不一致，缓存与展示都会拧。
 
 ### 21.3 请求侧：不需要改动
 
 `runAgentLoop` 组装的消息已经是 `[system, ...history, user, extraContext]`：
 易变的本轮附加上下文 `extraContext` 已在**尾部**，`[system, ...history]` 天然就是稳定前缀。
-**这一处不做任何改动**（含 `messages` 的元素顺序），只补一条回归断言把它钉住：
-`messages[0]` 是 system（内容即传入的系统提示词）、有历史时历史依次紧随、最后一条是本轮输入。
+**这一处不做任何改动**（含 `messages` 的元素顺序），只补一组回归断言把它钉住：
+`messages[0]` 是 system 且内容就是传入的系统提示词；有历史时 `messages[1..n-1]` 依次是历史、
+最后一条是本轮用户输入；给了 `extraContext` 时它是**最后一条**（易变内容在尾部）。
 
 ### 21.4 命中观测：`TokenUsage.cachedTokens`
 
@@ -1210,9 +1247,20 @@ Aurora 只讲 OpenAI 兼容协议，而主流网关（DeepSeek / OpenAI / 硅基
 - 解析口径（两种厂商形态都要认）：优先 `prompt_tokens_details.cached_tokens`（OpenAI 形态），
   否则 `prompt_cache_hit_tokens`（DeepSeek 形态）；取值必须经有限性与非负检查，
   **两者都缺 → `undefined`，不拿其它数字冒充**（例如拿 `prompt_tokens` 填进去）——
-  0 与「没回传」在界面上必须可区分。
-- 展示口径：只在对话窗的「上下文详解」条展示**最近一轮**的命中量（有绝对数与占比），
-  **不落盘**——它是可再生的观测值，写进会话存储只会让持久化契约多一个可变字段。
+  0 与「没回传」在界面上必须可区分。实现上 `cachedTokens` 在缺省时**整个字段不出现在 `usage`
+  事件里**（不是带一个 `undefined` 的键），与同目录 `done` 事件的缺省口径一致。
+- 展示口径：只在对话窗的「上下文详解」条展示**最近一轮**的命中量，**不落盘**——
+  它是可再生的观测值，写进会话存储只会让持久化契约多一个可变字段。
+  折叠态文案形如 `512 / 128k · 缓存命中 512（100%）`（命中片段是
+  `data-field="chat.context-cache"`，嵌在 `chat.context-usage` 文案里；展开的详解卡里是独立一行
+  「缓存命中（最近一轮）」）：
+  - 百分比 = `Math.min(100, Math.round(cachedTokens / promptTokens * 100))`——
+    `cachedTokens` 是**服务端报的命中数**，正常不会超过 `promptTokens`，但桩服务 / 异常网关
+    可能给出不一致的数据，界面不显示「缓存命中 512（400%）」这类荒谬值；
+  - `promptTokens` 为 0 或缺失时**只显示绝对数、不显示百分比**（不编造分母）；
+  - `cachedTokens` **缺省时整段不渲染**（不显示「缓存命中 0」——那会与「没回传」混淆）。
+- 累计口径：渲染层把每轮 `cachedTokens` 累加进 `usage.totals.cachedTokens`（缺省按 0 累加），
+  与 prompt / completion / total 三个累计量同一条 `usage` 事件路径。
 
 ### 21.5 明确不做
 

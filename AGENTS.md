@@ -164,6 +164,13 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   （否则 AI 给自己加一条 `git*` 就等于摘掉自己的确认闸门 = 自我提权），
   只能由用户在设置页的「免确认命令模式」栏里维护（设置页走 `settings:update`，不受该黑名单影响）。
   命中即跳过确认卡片、但仍写 `info` 级审计日志 —— 语义是「减少打扰」而非安全加固（见 docs/06 §11.7）。
+- **`edit_file` 的「改前必须先读」守卫是会话级单例、建在 `registerComputerTools` 的闭包里
+  （`sync()` 之外）**：`read_file` 与 `edit_file` 共享同一份「本会话读过哪些文件」的记录
+  （键是**解析后的绝对路径**，按会话裁剪、只留最近 16 个会话）。`sync()` 会在每次
+  `settings:changed` 时重建**全部工具实例**（这是让上限 / cwd 热改的必要设计）——
+  **不要把这个守卫挪进 `sync()`**：挪进去后用户改一个无关开关（比如关掉终端）就会清空读记录，
+  模型刚 `read_file` 过的文件立刻被 `edit_file` 拒绝「修改前必须先读」，看起来像工具坏了。
+  守卫是内核的可注入端口（未注入时不拦截，供单测直接调工具），见 docs/06 §11.6。
 - **BetaV2 新能力的注册口径**：STT / 生图 / 新工具五件套（`web_fetch` / `notify_user` /
   `clipboard_read` / `clipboard_write` / `generate_image`）**不走 `agent.tools.enabled` 门控**
   （那个总开关管的是 8 个电脑操控工具），敏感项靠 `sensitivity: 'confirm'` 逐次确认；

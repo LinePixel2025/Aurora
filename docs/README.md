@@ -225,7 +225,8 @@
     上下文条 + textarea 自动增高 28→170→28px，含 200px 上限）、
     `chat-composer-permission.png`（权限两段式：点一次不写配置）、
     `chat-stream.png`（**DOM 级端到端**：capture 临时竖起本地桩 LLM → 探针经 textarea + 发送键
-    真发一条 → 断言助手气泡画出回复、上下文条显示真实 token `128 / 128k`）。
+    真发一条 → 断言助手气泡画出回复、上下文条显示真实 token `512 / 128k  · 缓存命中 512（100%）`、
+    累计 `528`）。
   - `AURORA_SMOKE`（130 条断言）新增四条流式契约断言：正文按**增量**逐条下发（≥2 条 text 事件，
     旧行为只会 1 条）、每条增量**同轮同 id 且等于落盘的助手消息 id**、`usage` 事件下发
     （`promptTokens` 即本轮上下文占用）；桩服务同步补上结束片的 usage，
@@ -270,6 +271,47 @@
   `chat-tool-card-open.png`（展开终点的 `--collapse-h` 必须等于该元素的 `scrollHeight`，
   差 ≤ 2px）、`chat-archive.png`（归档分组 + 真实 UI「归档 → 撤销」往返）。
   全量截图（四个窗口）48 张全部通过；`pnpm verify` 26/26。
+
+**2026-09 工具面扩充轮（+ prompt caching）本轮新增**
+
+> 本轮对齐 opencode 的**工具提示词契约**（只借用文本约定、不缝合它的代码，逐条对照见
+> [06 §20](./06-agent-core.md)），把内核从「能读写文件」推到「能改代码」，
+> 并让「缓存生效」这件事可观测。配置 Schema 升到 **v12**。
+
+- **电脑操控工具由 5 个扩到 8 个**（[06 §11](./06-agent-core.md)）：
+  - **`edit_file`（精确替换，`confirm` 级）**：只替换指定的那一小段，其余部分逐字节不变——
+    **改前必须先 `read_file` 过该文件**、`oldString` 命中多处即拒绝（要全局改名显式用
+    `replaceAll`）、EOL 保真（混合行尾 / 孤立 `\r` 直接拒绝改动）、单文件上限 1 MiB、
+    **没有备份也没有撤销**。它补上的是「为改两行而整篇重写」（token 翻几十倍且极易改坏）
+    这个缺口 —— 这也是 Code Mode 至今仍是占位实现的直接技术原因。
+  - **`grep` / `glob`（只读检索，`safe` 级）**：`grep` 按正则搜内容（返回 `路径:行号: 命中行`），
+    `glob` 按文件名模式找文件。走**自写递归遍历**（零新增依赖），默认跳过
+    `node_modules` / `.git` / `dist` 等 8 个目录、不跟随符号链接，
+    并有文件数与字节数双重预算（2 万文件 / 64 MiB）——**绝不无限遍历**，触顶如实标注截断。
+    新增 `agent.tools.search.{enabled,maxResults}` 组与设置页「文件检索」栏。
+- **`read_file` 升级为行窗口契约**：内容每行带 `<行号>: ` 前缀，新增 `offset`（1 起始）/
+  `limit`（缺省 2000、上限 5000），单行超 2000 字符截断；关闭「只能读文件开头」的真实缺口
+  （大文件后半段现在读得到），超过 16 MiB 的文件只解析开头并提示改用 `grep` 定位。
+- **`run_command` 免确认命令模式**（[06 §11.7](./06-agent-core.md)）：在「逐次确认」与
+  「全局关掉确认」之间补上中间档 —— 用户在设置页维护一份命令模式白名单
+  （`agent.tools.terminal.allowPatterns`，glob **全串**匹配、大小写不敏感），
+  命中即跳过确认卡片但**仍写 `info` 级审计日志**。只允许字面字符 + `*` + `?`，
+  含花括号（`{a,*}` 这类能编译成「放行全部」的绕过写法）或纯通配一律拒绝，**Schema 与匹配器双层拒绝**；
+  该字段属 `SETTINGS_READONLY_PREFIXES`（AI 改不动，防自我提权）。
+  定位是「**减少打扰**」而非安全加固（见 [10 §10](./10-user-guide.md) 的用户侧说明）。
+- **prompt caching：前缀稳定化 + 命中观测**（[06 §21](./06-agent-core.md)）：
+  系统提示词改成「**静态在前、易变在后**」（易变三节 = 更早对话的摘要 / 当前任务清单 / 系统状态
+  一律排末尾），`ToolRegistry.toLlmTools()` 按工具名**字典序**返回且 `agentLoop` 与 `agentHost`
+  共用这一份有序清单（工具顺序不再随设置变更漂移），请求侧 `messages` 形状不变；
+  `TokenUsage` 新增 `cachedTokens`（认 `prompt_tokens_details.cached_tokens` 与
+  `prompt_cache_hit_tokens` 两种形态，都缺时**不冒充 0**），在对话窗「上下文详解」条展示
+  最近一轮的命中量与占比。**不引入显式 `cache_control`、不加任何配置字段**。
+- **验证**：`pnpm test` 72 文件 / **1292** 用例全绿；
+  `AURORA_SMOKE` **146/146 passed**（新增三条断言：两轮系统提示词静态前缀逐字节相同、
+  两轮 `tools` 顺序相同且已排序、`usage` 事件带 `cachedTokens=512`；
+  另有「命中免确认不弹卡片 / 未命中仍弹卡片」成对断言）；
+  `AURORA_CAPTURE` 48 张 PNG / 48 条 checks / 0 FAIL
+  （`chat-stream` 场景实测上下文条文案 `512 / 128k  · 缓存命中 512（100%）`、累计 `528`）。
 
 鼠标键盘模拟、截图录屏、持久交互式 shell、命令黑名单、Anthropic 等非 OpenAI 兼容协议
 **仍属后续范围**。

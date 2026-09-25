@@ -8,6 +8,11 @@ P7 的 **ClassIsland 联动已提前落地**；进度随开发更新
 **窗口 UX 修复轮（v1.0 前）**：独立小窗已删除，「快速会话」并入交互窗侧栏（配置 Schema **v6**），
 交互窗「收起」= 直接隐藏窗口 —— 历史阶段行仍按当时实现记录，能力以 §5 变更记录与 07 / 08 为准。
 
+**2026-09 工具面扩充轮**（详见 §5 变更记录）：电脑操控工具由 5 个扩到 **8 个**
+（新增 `edit_file` 精确替换与 `grep` / `glob` 检索），`read_file` 升级为**行窗口契约**
+（行号前缀 + `offset` / `limit`，能读大文件后半段），`run_command` 补上**免确认命令模式**中间档，
+并把系统提示词与 `tools` 数组做成**可缓存前缀**、把缓存命中量显示到界面上（配置 Schema → **v12**）。
+
 版本策略：v0.x 内部迭代 → **v1.0.0** 首个对外版本。优先级：P0 必须 / P1 尽量 / P2 后续。
 工作量按 **1 名全职开发** 估算，共约 9～10 周到 v1.0.0；多人协作可并行压缩。
 
@@ -349,3 +354,42 @@ v0.6.0 的重点不是新增大功能，而是**把"设置里能改、运行时�
   配置迁移到 **v6**（`v5 → v6` 移除 `general.windowState['mini-chat']`）；截图清单去掉 `mini-chat.png`，
   新增交互窗 `chat-collapse.png` 探针（钉住「收起后窗口隐藏、`primary === null`」）。
   上述历史阶段行的描述（P2 等）保持当时原样，实际能力以本节与 07 / 08 为准。
+- **2026-09（工具面扩充 + prompt caching / 配置 v12）**：电脑操控工具由 5 个扩到 **8 个**，
+  内核第一次具备「改代码」的能力；同时把系统提示词与工具数组做成可复用前缀（对齐 opencode 的
+  工具提示词契约，**只借用文本约定、不缝合它的代码**，对照表见 [06 §20](./06-agent-core.md)）。
+  - **三条新工具**（`agent.tools.enabled` 总开关之下，各自还有子开关）：
+    `edit_file`（**精确局部替换**：改前必须先 `read_file` 过该文件、`oldString` 命中多处即拒绝、
+    `replaceAll` 供全局改名、EOL 保真、混合行尾与孤立 `\r` 拒绝；`sensitivity: confirm`，
+    随 `files.enabled`）、`grep`（正则搜内容，返回 `路径:行号: 命中行`）与 `glob`（按文件名模式
+    找文件）——后两者是 `safe` 级只读工具，新增 `agent.tools.search.{enabled,maxResults}` 组
+    （缺省开启 / 单次 200 条、上限 1000）。搜索走**自写递归遍历**（零新增依赖），
+    默认跳过 `node_modules` / `.git` / `dist` 等 8 个目录、不跟随符号链接，
+    并有文件数与字节数双重预算（2 万文件 / 64 MiB），**绝不无限遍历**。
+  - **`read_file` 契约升级**：内容每行带 `<行号>: ` 前缀（行号 1 起始、相对文件开头），
+    新增 `offset`（1 起始）与 `limit`（缺省 2000、上限 5000）行窗口，单行超 2000 字符截断；
+    关闭「只能读文件开头」的缺口 —— 大文件后半段现在读得到；超过 16 MiB 的文件只解析开头
+    并提示改用 `grep` 定位。
+  - **`run_command` 免确认命令模式**（`agent.tools.terminal.allowPatterns`，缺省空数组 =
+    行为与从前完全一致）：glob **全串**匹配、大小写不敏感的**命令白名单**，命中即跳过确认卡片，
+    但**仍写 `info` 级审计日志**。模式只允许字面字符 + `*` + `?`，含花括号（`{a,*}` 这类能
+    编译成「放行全部」的绕过写法）或纯通配一律拒绝 —— **Schema 与匹配器双层拒绝**。
+    该字段属 `SETTINGS_READONLY_PREFIXES`（AI 的 `set_setting` 一律拒绝，防自我提权），
+    只能由用户在设置页维护。定位是「**减少打扰**」，**不是安全加固**（详见
+    [06 §11.7](./06-agent-core.md)）。
+  - **prompt caching：前缀稳定化 + 命中观测**：系统提示词改成「**静态在前、易变在后**」
+    （易变三节 = 更早对话的摘要 / 当前任务清单 / 系统状态一律排末尾），
+    `ToolRegistry.toLlmTools()` 按工具名**字典序**返回（`agentLoop` 与 `agentHost` 共用这一份
+    有序清单），于是同一会话连续两轮的请求前缀逐字节相同；`TokenUsage` 新增 `cachedTokens`，
+    认 `prompt_tokens_details.cached_tokens`（OpenAI 形态）与 `prompt_cache_hit_tokens`
+    （DeepSeek 形态），在对话窗「上下文详解」条展示最近一轮的命中量与占比（缺省时整段不渲染）。
+    **不引入显式 `cache_control`、不加任何配置字段**（见 [06 §21](./06-agent-core.md)）。
+  - **配置 Schema → v12**：`v11 → v12` 迁移补齐 `agent.tools.search.*` 与
+    `agent.tools.terminal.allowPatterns`（幂等、不覆盖用户已写值）；
+    设置页「智能与工具」页新增「文件检索」与「免确认命令模式」两栏。
+  - **验证**：`pnpm test` 72 文件 / **1292** 用例全绿（含 glob 模式编译器、`edit_file` 的 EOL
+    保真与唯一性拒绝、免确认匹配器的花括号绕过负例、缓存命中的两种字段名解析、系统提示词的
+    公共前缀断言）；`AURORA_SMOKE` **146/146 passed**（三条本轮新增断言：两轮系统提示词静态
+    前缀逐字节相同、两轮 `tools` 顺序相同且已排序、`usage` 事件带 `cachedTokens=512`）；
+    `AURORA_CAPTURE` 48 张 PNG / 48 条 checks / 0 FAIL。
+  - **明确不做**：`apply_patch`、LSP 诊断与符号检索、git snapshot / revert、doom-loop 检测、
+    显式 `cache_control`、命令黑名单、权限模型整体重构、Code Mode 实装、Anthropic 原生协议。
