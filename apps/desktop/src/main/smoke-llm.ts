@@ -106,9 +106,37 @@ export interface StubRequest {
   body: { messages?: Array<{ role?: string; content?: unknown }>; tools?: unknown[] } | null
 }
 
+/**
+ * 一次 `/chat/completions` 请求体的**定型快照**（prompt caching 回归用，docs/06 §21.1）。
+ *
+ * 与 `requests` 的分工：`requests` 是「收到的所有请求 + 原始 body」的流水账（分类 / 子代理 /
+ * 爆发 / `/models` 都在里面），本数组只收对话请求，并把两条断言真正要读的东西
+ * ——**系统提示词**与**工具清单**——摘出来，免得每个消费方各自往 `unknown` 里钻。
+ */
+export interface StubChatRequestRecord {
+  /** 请求体 `messages`（原样引用） */
+  messages: Array<{ role?: string; content?: unknown }>
+  /** 请求体 `tools`（原样引用；非数组时为空数组） */
+  tools: Array<{ function?: { name?: unknown } }>
+  /** 第一条 `system` 消息的文本（没有 system 消息时为空串） */
+  systemPrompt: string
+  /** 是否走了分类分流 */
+  classify: boolean
+  /** 是否为子代理请求 */
+  subagent: boolean
+}
+
 export interface StubLlmServer {
   baseUrl: string
   requests: StubRequest[]
+  /**
+   * 对话请求体历史（按到达顺序）。
+   *
+   * 为什么要单开一份：缓存前缀稳定性是**跨请求**的性质（连续两轮的静态前缀逐字节相同、
+   * `tools` 顺序相同），只有把请求体按顺序留档才能断言；`requests` 虽然也存了 body，
+   * 但混着分类 / 子代理 / `/models`，且字段是 `unknown`，断言侧每次都得多写一层筛选与收窄。
+   */
+  getRecordedRequests(): StubChatRequestRecord[]
   /** 第二次请求是否带回了 tool 结果（证明工具循环成立） */
   sawToolResult(): boolean
   /** 第一次请求是否带上了工具清单（use_skill 已注册） */
@@ -123,6 +151,8 @@ export interface StubLlmServer {
 export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer> {
   const log = logger ?? createNoopLogger()
   const requests: StubRequest[] = []
+  /** 对话请求体历史（见 `StubChatRequestRecord` 与 `getRecordedRequests`） */
+  const recordedRequests: StubChatRequestRecord[] = []
 
   const chatRequests = (): StubRequest[] =>
     requests.filter((item) => item.path.endsWith('/chat/completions') && !isClassifyRequest(item))
@@ -143,6 +173,19 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
       const path = req.url ?? ''
       const record: StubRequest = { path, body }
       requests.push(record)
+      // 对话请求另存一份定型快照（**在分流之前**：分流只决定回什么，不影响"收到了什么"）。
+      // 只收 `/chat/completions`：`/models` 没有 messages，分类与子代理由标记字段区分。
+      if (path.endsWith('/chat/completions')) {
+        recordedRequests.push({
+          messages: body?.messages ?? [],
+          tools: Array.isArray(body?.tools)
+            ? (body.tools as Array<{ function?: { name?: unknown } }>)
+            : [],
+          systemPrompt: systemPromptOf(record),
+          classify: isClassifyRequest(record),
+          subagent: isSubagentRequest(record),
+        })
+      }
       log.debug('桩 LLM 收到请求', { path, count: requests.length })
 
       if (path.endsWith('/models')) {
@@ -422,6 +465,7 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
   return {
     baseUrl: `http://127.0.0.1:${port}`,
     requests,
+    getRecordedRequests: () => recordedRequests,
     sawToolResult: () =>
       requests.some((item) =>
         (item.body?.messages ?? []).some((message) => message.role === 'tool'),
@@ -465,6 +509,17 @@ function isClassifyRequest(request: StubRequest): boolean {
       typeof message.content === 'string' &&
       message.content.includes(CLASSIFY_PROMPT_MARKER),
   )
+}
+
+/**
+ * 请求的第一条 `system` 消息文本（没有 system 消息 / 内容不是字符串时为空串）。
+ *
+ * 缓存前缀断言的取样点：`messages[0].content` 就是 `buildSystemPrompt` 的产物
+ * （见 `agentLoop.ts` 的 `messages = [system, …]`），因此它逐字节相同 ⇔ 网关能命中前缀缓存。
+ */
+function systemPromptOf(request: StubRequest): string {
+  const system = (request.body?.messages ?? []).find((message) => message.role === 'system')
+  return typeof system?.content === 'string' ? system.content : ''
 }
 
 /** 请求是否为爆发模式：最后一条 user 消息含 `BURST_MARKER` */
@@ -721,11 +776,24 @@ function classifyVerdict(request: StubRequest): {
  * 真实服务在这一片回传 usage（且流式下要先在请求体里要 `stream_options.include_usage`，
  * 见 06 §16.2），桩服务跟着给出，端到端自测才能覆盖 `usage` 事件这条链路 ——
  * 不附的话 `AURORA_SMOKE` 永远只验证「拿不到用量时界面降级」那一半。
+ *
+ * **`prompt_tokens` 与 `cached_tokens` 必须自洽**（前者 ≥ 后者）：桩服务是唯一能稳定造出
+ * 「缓存命中」现场的来源，它给出的数字就是界面百分比的分母与分子；写成 `cached > prompt`
+ * 会让界面算出大于 100% 的荒谬占比（展示侧虽然 `Math.min(100, …)` 夹住了，
+ * 桩数据本身也不该自相矛盾）。两者都取 512 = 100% 命中，说明「前缀一字不差」。
+ *
+ * 命中量用 **OpenAI 形态** `prompt_tokens_details.cached_tokens`：解析侧优先认它，
+ * 因此这一片同时钉住「优先分支真的被走到」（DeepSeek 形态由 openai-compat 的单测覆盖）。
  */
 function sendSseStop(res: ServerResponse): void {
   sendSse(res, {
     choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-    usage: { prompt_tokens: 128, completion_tokens: 16, total_tokens: 144 },
+    usage: {
+      prompt_tokens: 512,
+      completion_tokens: 16,
+      total_tokens: 528,
+      prompt_tokens_details: { cached_tokens: 512 },
+    },
   })
 }
 

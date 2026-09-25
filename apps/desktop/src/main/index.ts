@@ -22,9 +22,11 @@ import {
 } from 'electron'
 import {
   KernelAgentHost,
+  SAFETY_RULES,
   SessionStore,
   SkillsBridge,
   ToolRegistry,
+  VOLATILE_SECTION_TITLES,
   renderTodoList,
 } from '@aurora/agent-core'
 import type { AgentProviderFactory, SettingsToolPort, ToolDefinition } from '@aurora/agent-core'
@@ -39,6 +41,7 @@ import {
   type ModeContext,
   type Settings,
   type SettingsPatch,
+  type TokenUsage,
 } from '@aurora/shared'
 import {
   GuideRunner,
@@ -88,6 +91,7 @@ import {
   STUB_MARKER,
   STUB_MODEL,
   startStubLlmServer,
+  type StubChatRequestRecord,
   type StubLlmServer,
 } from './smoke-llm.js'
 import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
@@ -1192,6 +1196,18 @@ async function runSmokeTest(userData: string): Promise<void> {
     return
   }
 
+  // 2.0 主进程侧另订一份 Agent 事件流，收集整轮自测的 token 用量。
+  //
+  //     为什么主进程要自己订：`usage` 事件的形状由渲染层脚本断言（"有事件、轮次是整数"），
+  //     但**解析结果**（provider 回传的缓存命中量有没有变成 `cachedTokens`）只有这里能看 ——
+  //     渲染层拿到的是同一份 payload，读不出"解析丢了字段"与"provider 没回传"的区别。
+  //     订阅必须赶在渲染层脚本**之前**：`executeJavaScript` 是 await 整段跑完的，
+  //     等它返回再订就只能收到空气。
+  const usageEvents: TokenUsage[] = []
+  const offUsage = agent?.onEvent((event) => {
+    if (event.type === 'usage') usageEvents.push(event.usage)
+  })
+
   let payload: { results?: Array<{ name: string; ok: boolean; detail: string }>; fatal?: string }
   try {
     payload = (await target.webContents.executeJavaScript(
@@ -1200,9 +1216,11 @@ async function runSmokeTest(userData: string): Promise<void> {
     )) as typeof payload
   } catch (error) {
     logger?.error('自测脚本执行异常', { error: String(error) })
+    offUsage?.()
     app.exit(1)
     return
   }
+  offUsage?.()
 
   if (payload.fatal) {
     logger?.error(`${SMOKE_RESULT_PREFIX} FATAL ${payload.fatal}`)
@@ -1289,6 +1307,80 @@ async function runSmokeTest(userData: string): Promise<void> {
     stub.classifyRequestCount() > 0,
     `classify=${stub.classifyRequestCount()}`,
   )
+
+  // 2.1 缓存前缀稳定性与命中量（docs/06 §21.1 / §21.4）：三条**端到端**断言，读的是桩服务
+  //     实际收到的字节（请求体历史）与内核解析后的用量（上面那份事件订阅）。
+  //     单测覆盖不到这两条：`systemPrompt.test.ts` 那对确定性构造的 a / b 只证组装函数
+  //     正确，证不了「请求真的这么发出去了」；`toLlmTools()` 的排序单测同理证不了
+  //     agentLoop 的**生效路径**用的是它（step 6 的已知风险 ③）。
+  {
+    // 只取**父对话**请求：分类与子代理各走自己的分流，系统提示词不是同一份，混进来必然假 FAIL。
+    // 再要求"整份组装结果"（含安全规则 + 系统状态）才对：桩服务是公用的，将来若有别的场景
+    // 在对话之前打它（设置页的"测试连接"这类只发最小提示词），不筛就会拿它当第一轮。
+    // 这两条 `includes` 同时是断言的一部分（少一个小节会匹配不到 → 条数不足直接红），
+    // 不存在"筛掉之后就恒真"的口子。
+    const conversation = stub
+      .getRecordedRequests()
+      .filter(
+        (item) =>
+          !item.classify &&
+          !item.subagent &&
+          item.systemPrompt.includes(SAFETY_TITLE) &&
+          item.systemPrompt.includes(PERCEPTION_SECTION_TITLE),
+      )
+    // 「连续两轮」取前两条：第 1 轮的两个请求（带工具调用那一轮 + 拿到工具结果后的收尾轮）
+    // ——同一会话、同一轮上下文，静态段必然一致，且它们相隔最近。
+    const [first, second] = conversation
+    const promptA = first?.systemPrompt ?? ''
+    const promptB = second?.systemPrompt ?? ''
+    const sharedPrefix = commonPrefixLength(promptA, promptB)
+    const volatileAt = firstVolatileIndex(promptA)
+    // 静态段的末尾：安全规则小节是最后一个静态小节（易变段一律在它之后）
+    const safetyEnd = promptA.indexOf(SAFETY_TITLE) + SAFETY_TITLE.length
+    // 判据用 `公共前缀长度 >= 首个易变小节的位置`，**不是** `===`：`## 系统状态` 里的时间只到
+    // 分钟，两轮隔几秒时整份提示词可能一字不差（此时公共前缀 = 全长 > 该位置）。
+    // 反过来断言「两轮必须不同」才是随机失败 —— 假 FAIL 比假 PASS 更坏。
+    // 这个式子仍抓得住真回归：静态段少了/多了一个字节，公共前缀就会停在静态段中间。
+    // 防恒真由 `systemPrompt.test.ts` 那对构造的 a / b 承担（那里两轮**必然**不同），不靠这里。
+    record(
+      '两轮系统提示词静态前缀逐字节相同',
+      conversation.length >= 2 &&
+        volatileAt >= 0 &&
+        sharedPrefix >= volatileAt &&
+        volatileAt >= safetyEnd &&
+        promptA.includes(PERCEPTION_SECTION_TITLE) &&
+        promptB.includes(PERCEPTION_SECTION_TITLE),
+      `commonPrefix=${sharedPrefix} aLen=${promptA.length} bLen=${promptB.length} ` +
+        `firstVolatile@${volatileAt} safetyEnd@${safetyEnd} identical=${promptA === promptB}`,
+    )
+
+    // 工具顺序稳定（docs/06 §21.2）：排序的生效点在 `agentLoop`（走 `toLlmTools()`），
+    // 只改 registry 而漏改生效路径时，单测照样绿、这里必红。
+    const toolNamesA = toolNamesOf(first)
+    const toolNamesB = toolNamesOf(second)
+    // 与 `ToolRegistry.toLlmTools()` 同一条排序口径（**不用 localeCompare**：它依赖 locale，
+    // 跨机器可能给出不同结果）
+    const ordered = [...toolNamesA]
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+      .every((name, index) => name === toolNamesA[index])
+    record(
+      '两轮 tools 顺序相同且已排序',
+      toolNamesA.length > 0 &&
+        toolNamesA.length === toolNamesB.length &&
+        toolNamesA.every((name, index) => name === toolNamesB[index]) &&
+        ordered,
+      `a=[${toolNamesA.join(',')}] b=[${toolNamesB.join(',')}]`,
+    )
+
+    // 缓存命中可观测（docs/06 §21.4）：桩服务固定回 512（OpenAI 形态
+    // `prompt_tokens_details.cached_tokens`），内核必须把它解析成 `cachedTokens` 再发出来
+    // ——渲染层那侧只断言"有 usage 事件"，解析丢字段在那边看不出来。
+    record(
+      'usage 事件带 cachedTokens=512',
+      usageEvents.length > 0 && usageEvents.every((usage) => usage.cachedTokens === 512),
+      `events=${usageEvents.length} cached=${JSON.stringify(usageEvents.map((usage) => usage.cachedTokens ?? null))}`,
+    )
+  }
 
   // 3. 提示条两态：断言**真实 BrowserWindow 的几何**（不只状态机）。
   //    纯函数由 edge-bar-geometry.test.ts 覆盖；这里证明 setBounds 在主进程链路里真的生效，
@@ -1719,6 +1811,52 @@ async function runSmokeTest(userData: string): Promise<void> {
     await fs.rm(smokeWorkspace, { recursive: true, force: true }).catch(() => undefined)
   }
   app.exit(failed.length === 0 ? 0 : 2)
+}
+
+/**
+ * 安全规则小节的标题（`## 安全规则`）——静态段的**末尾**。取自 `SAFETY_RULES` 的首行，
+ * 不在自测里另写一份字面量：那个字符串就是被断言的产物本身，两处一旦漂移，
+ * 「易变段在静态段之后」这条断言会变成对着一份过期口径的自我确认。
+ */
+const SAFETY_TITLE = SAFETY_RULES.split('\n')[0] ?? ''
+
+/** 系统状态小节标题（`## 系统状态`）：易变段的最后一个，断言它确实渲染了（证明易变段在） */
+const PERCEPTION_SECTION_TITLE = VOLATILE_SECTION_TITLES[2]
+
+/**
+ * 两个字符串的**最长公共前缀长度**（逐字符比较）——缓存前缀断言的核心量。
+ *
+ * 刻意不复用 agent-core 测试里的同名私有实现：那是被测侧的测试工具，
+ * 主进程侧再引一份就成了「自己证明自己」，独立实现才有互相印证的价值。
+ */
+function commonPrefixLength(left: string, right: string): number {
+  const max = Math.min(left.length, right.length)
+  let index = 0
+  while (index < max && left[index] === right[index]) index += 1
+  return index
+}
+
+/**
+ * 文本里**第一个易变小节**的起始位置（`VOLATILE_SECTION_TITLES` 中位置最小的那个；
+ * 一个小节都没渲染时返回 `-1`）。
+ *
+ * 它是「静态前缀该有多长」的期望值：静态段逐字节相同 ⇔ 公共前缀至少覆盖到该位置。
+ */
+function firstVolatileIndex(text: string): number {
+  let found = -1
+  for (const title of VOLATILE_SECTION_TITLES) {
+    const at = text.indexOf(title)
+    if (at < 0) continue
+    if (found < 0 || at < found) found = at
+  }
+  return found
+}
+
+/** 一次请求里 `tools` 数组的工具名（名字非字符串的一律丢弃；请求缺失时为空数组） */
+function toolNamesOf(record: StubChatRequestRecord | undefined): string[] {
+  return (record?.tools ?? [])
+    .map((tool) => tool.function?.name)
+    .filter((name): name is string => typeof name === 'string')
 }
 
 /**

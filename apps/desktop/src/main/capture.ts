@@ -888,12 +888,17 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
  *
  * act：把提示词写进 textarea → 点发送（走 `send()`，与用户手点同一条路径）→ 轮询等
  *      流式结束（`.thread.streaming` 摘掉）。截图即「一问一答 + 上下文条有真实 token」现场。
- * check 断言四件事：
+ * check 断言五件事：
  * ① 助手气泡出现且正文含桩服务的标记（回复真的画到了 DOM 上，而不只是事件里有）；
  * ② 用户气泡也在（发送路径把提问渲染出来了）；
  * ③ 上下文条显示**真实 token 数**（桩服务的结束片带 usage → 界面必须不再是「暂无用量数据」），
  *    且累计同样非零 —— 这条同时钉住 usage 事件 → useChat → 上下文条整条链；
- * ④ 流式已收尾（`.thread.streaming` 不存在），即「流式态不会卡住」。
+ * ④ **缓存命中片段**（`data-field="chat.context-cache"`，docs/06 §21.4）：桩服务回传
+ *    `prompt_tokens_details.cached_tokens = 512`，折叠态文案里必须出现「缓存命中 512（100%）」
+ *    —— 512 = 分母 `promptTokens`，因此占比恰好 100%（桩数据自洽：`cached <= prompt`）。
+ *    这条钉的是「字段解析 → 事件 → 展示」整条链里**最后一段**：解析丢了字段时这里没有该节点，
+ *    百分比算错时数字对不上（`Math.min(100, …)` 夹住的那类荒谬值也因此不可能出现）；
+ * ⑤ 流式已收尾（`.thread.streaming` 不存在），即「流式态不会卡住」。
  */
 export function chatStreamAct(question: string): string {
   return `(async () => {
@@ -937,6 +942,7 @@ export function chatStreamCheck(marker: string, reasoningMarker: string): string
     const reply = assistants.map((el) => (el.textContent || '').trim()).join(' | ')
     const users = document.querySelectorAll('.message.r-user').length
     const usageText = textOf('[data-field="chat.context-usage"]')
+    const cacheText = textOf('[data-field="chat.context-cache"]')
     const totals = textOf('.ctx-total')
     const stillStreaming = document.querySelector('.thread.streaming') !== null
     // 思考增量归属（docs/06 §16.1）：思考块只在 message.reasoning 非空时渲染，
@@ -964,6 +970,7 @@ export function chatStreamCheck(marker: string, reasoningMarker: string): string
       replyHasMarker: reply.indexOf(${markerLiteral}) !== -1,
       replyHead: reply.slice(0, 60),
       usageText,
+      cacheText,
       totals,
       stillStreaming,
       lastThinkingLabel,
@@ -977,6 +984,12 @@ export function chatStreamCheck(marker: string, reasoningMarker: string): string
         usageText.indexOf('暂无用量数据') === -1 &&
         /[0-9]/.test(usageText) &&
         /[0-9]/.test(totals) &&
+        // 缓存命中片段（docs/06 §21.4）：桩服务固定回 512 命中 / 512 prompt，占比 100%。
+        // 三个子串都要在 —— 只断言「含缓存命中」时，算错的分母（或丢了命中量只剩标题）
+        // 照样能过；数字与占比是这条探针真正的信息量。
+        cacheText.indexOf('缓存命中') !== -1 &&
+        cacheText.indexOf('512') !== -1 &&
+        cacheText.indexOf('100%') !== -1 &&
         stillStreaming === false &&
         lastThinkingLabel.indexOf('已深度思考') !== -1 &&
         lastThinkingText.indexOf(${reasoningLiteral}) !== -1,
