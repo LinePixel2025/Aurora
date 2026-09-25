@@ -263,6 +263,13 @@
   无需迁移脚本），因此**不动 `CONFIG_VERSION`（仍为 11）**、不新增存储面。
   新增 IPC 通道 `chat:archiveSession`。已知边界：`chat:sessions` 没有推送通道，
   归档只在当前窗口即时生效。
+- **验证新增**（[07 §5.3](./07-ui-spec.md)）：三条截图探针场景 ——
+  `chat-composer-flyouts.png`（两个浮层交替打开 + **几何断言**：任一时刻最多一个可见、
+  浮层与工具行矩形**不相交**、发送键中心 `elementFromPoint` 命中它自己 ——
+  这是「浮层盖死工具行」那条修复的运行时证据，此前只有静态推演）、
+  `chat-tool-card-open.png`（展开终点的 `--collapse-h` 必须等于该元素的 `scrollHeight`，
+  差 ≤ 2px）、`chat-archive.png`（归档分组 + 真实 UI「归档 → 撤销」往返）。
+  全量截图（四个窗口）48 张全部通过；`pnpm verify` 26/26。
 
 鼠标键盘模拟、截图录屏、持久交互式 shell、命令黑名单、Anthropic 等非 OpenAI 兼容协议
 **仍属后续范围**。
