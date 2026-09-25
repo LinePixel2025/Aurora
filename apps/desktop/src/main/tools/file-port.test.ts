@@ -7,6 +7,10 @@
  * 行窗口语义（`offsetLines` / `limitLines` / `maxBytes` / CRLF / 扫描上限）逐条钉在这里；
  * 内核侧的渲染与参数钳制在 `packages/agent-core/src/tools/files.test.ts`。
  *
+ * 整文件读（`readWholeText`，docs/06 §11.6）与 `edit_file` 的**真实磁盘往返**同样在这里：
+ * 那是全仓唯一把「内核的替换逻辑」接到「真实文件字节」上的地方——替换承诺
+ * 「除目标片段外逐字节不变」，只有落盘后逐字节比对才证明得了。
+ *
  * 搜索层（`findFiles` / `searchText`，docs/06 §11.5）同样用真实临时目录验证：
  * 正斜杠相对路径、忽略目录子树、行号与 CRLF、一行只记一条、二进制与超限文件跳过、
  * 预算触顶（仍返回已收集结果）、`include` 过滤、符号链接环（建不了 symlink 就跳过）。
@@ -15,8 +19,15 @@ import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-// 常量与内核同源（不在这里另抄一份字面量）
-import { DEFAULT_READ_LINES, MAX_READ_LINES, MAX_READ_SCAN_BYTES } from '@aurora/agent-core'
+// 常量与内核工具同源（不在这里另抄一份字面量 / 不另写一份替换逻辑）
+import {
+  DEFAULT_READ_LINES,
+  MAX_EDIT_BYTES,
+  MAX_READ_LINES,
+  MAX_READ_SCAN_BYTES,
+  createEditTool,
+  type ReadTracker,
+} from '@aurora/agent-core'
 import { createNodeFilePort } from './file-port.js'
 
 let root = ''
@@ -98,6 +109,149 @@ describe('readText / writeText', () => {
     // 文件末尾的那个换行符不算进窗口
     expect(read.bytes).toBe(12)
     expect(read.truncated).toBe(false)
+  })
+})
+
+describe('readWholeText：整文件读（edit_file 专用）', () => {
+  it('逐字节原样读回：CRLF 不被归一、空行与末尾换行都保留', async () => {
+    const port = createNodeFilePort()
+    const file = join(root, 'whole.txt')
+    const raw = Buffer.from('第一行\r\nsecond\r\n\r\n末尾换行保留\r\n', 'utf8')
+    await fs.writeFile(file, raw)
+
+    const read = await port.readWholeText(file, MAX_EDIT_BYTES)
+    expect(read.absolutePath).toBe(resolve(file))
+    expect(read.refused).toBe(false)
+    expect(read.bytes).toBe(raw.length)
+    // 「逐字节相同」用编码回验：文本再编回 UTF-8 必须与磁盘上的原始字节完全一致
+    expect(Buffer.from(read.text, 'utf8').equals(raw)).toBe(true)
+    expect(read.text).toContain('\r\n')
+    expect(read.text.split('\r\n')).toEqual(['第一行', 'second', '', '末尾换行保留', ''])
+  })
+
+  it('超过 maxBytes：refused 为 true、text 为空串、bytes 是文件真实大小；正好等于上限则放行', async () => {
+    const port = createNodeFilePort()
+    const file = join(root, 'too-big.txt')
+    const content = `${'a'.repeat(499)}\n${'b'.repeat(499)}\n`
+    await fs.writeFile(file, content, 'utf8')
+    expect(Buffer.byteLength(content, 'utf8')).toBe(1_000)
+
+    const refused = await port.readWholeText(file, 999)
+    expect(refused.refused).toBe(true)
+    // 拒绝发生在读入之前：调用方拿不到任何"半截全文"，只能明确放弃改动
+    expect(refused.text).toBe('')
+    expect(refused.bytes).toBe(1_000)
+    expect(refused.absolutePath).toBe(resolve(file))
+
+    const exact = await port.readWholeText(file, 1_000)
+    expect(exact.refused).toBe(false)
+    expect(exact.text).toBe(content)
+  })
+
+  it('即便 maxBytes 放到极大，超过 MAX_READ_SCAN_BYTES 的文件仍然 refused', async () => {
+    const port = createNodeFilePort()
+    const file = join(root, 'huge.txt')
+    await fs.writeFile(file, 'a'.repeat(MAX_READ_SCAN_BYTES + 1), 'utf8')
+    const size = (await fs.stat(file)).size
+    expect(size).toBeGreaterThan(MAX_READ_SCAN_BYTES)
+
+    const read = await port.readWholeText(file, Number.MAX_SAFE_INTEGER)
+    expect(read.refused).toBe(true)
+    expect(read.text).toBe('')
+    expect(read.bytes).toBe(size)
+  }, 30_000)
+
+  it('含 NUL 字节的文件抛错（按二进制拒绝），错误信息含「二进制」与绝对路径', async () => {
+    const port = createNodeFilePort()
+    const file = join(root, 'blob.bin')
+    // 伪二进制：前后都是能当文本读的内容，只有中间夹一个 NUL
+    // （这段序列若被当成 oldString 匹配上，就会以 UTF-8 原文写回 = 静默损坏且不报错）
+    await fs.writeFile(file, Buffer.from('HEAD\0TAIL-png-ish', 'utf8'))
+
+    await expect(port.readWholeText(file, MAX_EDIT_BYTES)).rejects.toThrow('二进制')
+    await expect(port.readWholeText(file, MAX_EDIT_BYTES)).rejects.toThrow(resolve(file))
+  })
+
+  it('目录抛错并提示改用 list_dir，错误信息含绝对路径', async () => {
+    const port = createNodeFilePort()
+    const dir = join(root, 'a-dir')
+    await fs.mkdir(dir)
+
+    await expect(port.readWholeText(dir, MAX_EDIT_BYTES)).rejects.toThrow('这是目录')
+    await expect(port.readWholeText(dir, MAX_EDIT_BYTES)).rejects.toThrow(resolve(dir))
+  })
+
+  it('不存在的文件抛错，且错误信息含绝对路径', async () => {
+    const port = createNodeFilePort()
+    const missing = join(root, 'nope', 'missing.txt')
+
+    await expect(port.readWholeText(missing, MAX_EDIT_BYTES)).rejects.toThrow(resolve(missing))
+  })
+})
+
+/**
+ * 极简读前守卫假实现（只服务本文件的往返用例）：三个方法齐备，`mark` 后放行。
+ * 装配层那版是带 LRU 上限的会话级实现（`main/tools/index.ts`），这里不需要它。
+ */
+function createFakeReadTracker(): ReadTracker {
+  const read = new Set<string>()
+  const key = (sessionId: string, absolutePath: string): string =>
+    `${sessionId}\u0000${absolutePath}`
+  return {
+    has: (sessionId, absolutePath) => read.has(key(sessionId, absolutePath)),
+    mark: (sessionId, absolutePath) => {
+      read.add(key(sessionId, absolutePath))
+    },
+    clear: (sessionId, absolutePath) => {
+      read.delete(key(sessionId, absolutePath))
+    },
+  }
+}
+
+describe('edit_file 真实磁盘往返（端口 + 内核替换逻辑）', () => {
+  it('CRLF 文件替换一行：除目标行外逐字节不变，行尾仍是 CRLF', async () => {
+    const port = createNodeFilePort()
+    const file = join(root, 'roundtrip.txt')
+    const absolutePath = resolve(file)
+    // 四行 CRLF + 中文与 emoji（顺带证明 UTF-8 往返不丢字节）+ 末尾换行
+    const before = Buffer.from('第一行 🙂\r\nsecond line\r\nTHIRD LINE\r\n末行\r\n', 'utf8')
+    await fs.writeFile(file, before)
+
+    const read = await port.readWholeText(file, MAX_EDIT_BYTES)
+    expect(read.refused).toBe(false)
+    expect(Buffer.from(read.text, 'utf8').equals(before)).toBe(true)
+
+    const tracker = createFakeReadTracker()
+    tracker.mark('s1', absolutePath)
+    const edit = createEditTool({ files: port, readTracker: tracker })
+    const result = await edit.execute(
+      { path: absolutePath, oldString: 'second line', newString: 'SECOND LINE 改' },
+      { sessionId: 's1' },
+    )
+    expect(result.isError).toBeUndefined()
+    expect(result.content).toContain('替换 1 处')
+
+    const after = await fs.readFile(file)
+    const expected = Buffer.from('第一行 🙂\r\nSECOND LINE 改\r\nTHIRD LINE\r\n末行\r\n', 'utf8')
+    // ① 逐字节：落盘字节与「只改目标行」的预期完全一致
+    expect(after.equals(expected)).toBe(true)
+
+    const beforeLines = before.toString('utf8').split('\r\n')
+    const afterLines = after.toString('utf8').split('\r\n')
+    // ② 差异**只有目标行**一处：按 CRLF 切开后其余行逐字相同，行数不变（没多/少一个空行）
+    expect(afterLines).toHaveLength(beforeLines.length)
+    const changed = beforeLines
+      .map((line, index) => (line === afterLines[index] ? -1 : index))
+      .filter((index) => index !== -1)
+    expect(changed).toEqual([1])
+    expect(beforeLines[1]).toBe('second line')
+    expect(afterLines[1]).toBe('SECOND LINE 改')
+    // ③ 行尾没有漂移：去掉 CRLF 后不存在任何落单的 \n 或 \r
+    expect(after.toString('utf8').replace(/\r\n/g, '')).not.toMatch(/[\r\n]/)
+    // ④ 总长度变化正好等于目标行的字节差（没有隐藏的增删）
+    expect(after.length - before.length).toBe(
+      Buffer.byteLength('SECOND LINE 改', 'utf8') - Buffer.byteLength('second line', 'utf8'),
+    )
   })
 })
 

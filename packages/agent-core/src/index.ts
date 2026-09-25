@@ -28,6 +28,8 @@ export * from './tools/files.js'
 export * from './tools/globPattern.js'
 // 搜索工具（docs/06 §11.5）：grep / glob，同样只做参数校验与结果格式化，遍历在主进程。
 export * from './tools/search.js'
+// 精确替换工具（docs/06 §11.6）：edit_file + 会话级「改前先读」守卫契约。
+export * from './tools/edit.js'
 // 扩展工具（Design/betav2-spec.md §6）：同上，端口由主进程注入。
 export * from './tools/web-fetch.js'
 export * from './tools/clipboard.js'

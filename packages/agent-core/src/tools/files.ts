@@ -11,6 +11,9 @@
  * 结果里一律回带解析后的绝对路径，由用户据此决定是否放行。
  */
 import type { ToolDefinition, ToolResult } from './registry.js'
+// ⚠️ 必须 `import type`：`edit.ts` 对 `files.js` 是**运行时**导入（取 `MAX_EDIT_BYTES`），
+// 这里若写成值导入就会形成运行时循环依赖。类型导入编译后被完全擦除，无环。
+import type { ReadTracker } from './edit.js'
 
 /** `read_file` 单次读取下限：防止模型传 1 字节反复试探把上下文刷爆 */
 const MIN_READ_BYTES = 1_024
@@ -32,6 +35,23 @@ export const MAX_READ_SCAN_BYTES = 16 * 1024 * 1024
  * 端口按「超出文件末尾」返回空窗口即可，不需要在这里报错。
  */
 const MAX_READ_OFFSET = 10_000_000
+
+/**
+ * `edit_file` 单文件上限（docs/06 §11.6）：整文件读入内存做替换，超过即**拒绝改动**。
+ *
+ * 内核常量而不是配置字段（沿用 `MAX_TASK_RESULT_CHARS` / `MAX_WEB_FETCH_CHARS` 的先例）：
+ * 它保护的是"替换时手里必须握着全文"这条正确性前提，不是用户可调的性能参数。
+ */
+export const MAX_EDIT_BYTES = 1_048_576
+
+export interface ReadWholeTextResult {
+  absolutePath: string
+  /** 文件完整内容；`refused` 为 true 时为空串 */
+  text: string
+  bytes: number
+  /** 文件超过 `maxBytes`（或命中 `MAX_READ_SCAN_BYTES`）时为 true —— 调用方**必须**据此拒绝改动 */
+  refused: boolean
+}
 
 export interface ReadTextOptions {
   /**
@@ -80,6 +100,16 @@ export interface FilePort {
    * 不再是从文件头截断——因此大文件的后半段可以被读到（`offsetLines`）。
    */
   readText(path: string, options: ReadTextOptions): Promise<ReadTextResult>
+  /**
+   * 为**整文件替换**读取完整内容（`edit_file` 专用，docs/06 §11.6）。
+   *
+   * 为什么必须有这个方法：`readText` 是**行窗口** API（默认 2000 行、`maxBytes` 是对窗口的字节上限），
+   * 拿它做「读全文 → 替换 → 写回」会在文件超过窗口时把窗口外的内容**整段丢掉，且不报任何错**。
+   * 因此整文件替换走独立入口，语义是「要么给全文，要么明确拒绝」（`refused: true`）。
+   *
+   * 二进制（含 NUL）与目录同样由实现**抛错**（与 `readText` 同款，`BINARY_MESSAGE`）。
+   */
+  readWholeText(path: string, maxBytes: number): Promise<ReadWholeTextResult>
   /** 写文本；mode='append' 追加；实现负责建父目录 + 原子写 */
   writeText(
     path: string,
@@ -182,6 +212,12 @@ export interface FileToolOptions {
   maxReadBytes: number
   /** `list_dir` 的默认条数（缺省 200） */
   listLimit?: number
+  /**
+   * 会话级「读过哪些文件」的守卫（docs/06 §11.6）：
+   * `read_file` 成功后 `mark`、`write_file` 成功后 `clear`，`edit_file` 据此放行。
+   * 未注入时两条路径都静默跳过（供直接调用工具的单测使用）。
+   */
+  readTracker?: ReadTracker
 }
 
 /**
@@ -191,8 +227,8 @@ export interface FileToolOptions {
 export function createFileTools(options: FileToolOptions): ToolDefinition[] {
   const listLimit = clampListLimit(options.listLimit)
   return [
-    createReadFileTool(options.files, options.maxReadBytes),
-    createWriteFileTool(options.files),
+    createReadFileTool(options.files, options.maxReadBytes, options.readTracker),
+    createWriteFileTool(options.files, options.readTracker),
     createListDirTool(options.files, listLimit),
     createOpenTool({ open: options.open }),
   ]
@@ -239,7 +275,11 @@ export function createOpenTool(options: { open: OpenPort }): ToolDefinition {
   }
 }
 
-function createReadFileTool(files: FilePort, configuredMaxBytes: number): ToolDefinition {
+function createReadFileTool(
+  files: FilePort,
+  configuredMaxBytes: number,
+  readTracker: ReadTracker | undefined,
+): ToolDefinition {
   const maximum = Math.max(MIN_READ_BYTES, Math.floor(configuredMaxBytes))
   return {
     name: 'read_file',
@@ -279,7 +319,7 @@ function createReadFileTool(files: FilePort, configuredMaxBytes: number): ToolDe
       additionalProperties: false,
     },
     sensitivity: 'safe',
-    execute: async (input): Promise<ToolResult> => {
+    execute: async (input, ctx): Promise<ToolResult> => {
       const record = asRecord(input)
       const path = readNonEmptyString(record, 'path')
       if (path === undefined) {
@@ -303,6 +343,9 @@ function createReadFileTool(files: FilePort, configuredMaxBytes: number): ToolDe
       }
       try {
         const result = await files.readText(path, { offsetLines, limitLines, maxBytes })
+        // 读过就给 `edit_file` 放行（docs/06 §11.6）；**以端口回带的绝对路径为键**，
+        // 这样模型写 `a/../b` 与写 `b` 记的是同一个文件。
+        readTracker?.mark(ctx.sessionId, result.absolutePath)
         return renderReadResult(result)
       } catch (error) {
         return {
@@ -396,7 +439,10 @@ function resolveLineParam(
   return Math.min(Math.max(Math.floor(value), minimum), maximum)
 }
 
-function createWriteFileTool(files: FilePort): ToolDefinition {
+function createWriteFileTool(
+  files: FilePort,
+  readTracker: ReadTracker | undefined,
+): ToolDefinition {
   return {
     name: 'write_file',
     description:
@@ -419,7 +465,7 @@ function createWriteFileTool(files: FilePort): ToolDefinition {
       additionalProperties: false,
     },
     sensitivity: 'confirm',
-    execute: async (input): Promise<ToolResult> => {
+    execute: async (input, ctx): Promise<ToolResult> => {
       const record = asRecord(input)
       const path = readNonEmptyString(record, 'path')
       const content = readString(record, 'content')
@@ -447,6 +493,9 @@ function createWriteFileTool(files: FilePort): ToolDefinition {
       }
       try {
         const result = await files.writeText(path, content, mode)
+        // 整篇覆盖 / 追加后**必须清掉"读过"的标记**：否则模型拿着过期基线去 `edit_file`，
+        // 而守卫以为它读过当前内容 —— 会静默套用错误基线（`append` 同理，内容已变）。
+        readTracker?.clear(ctx.sessionId, result.absolutePath)
         return {
           content: `${result.absolutePath}（写入 ${result.bytes} 字节，mode=${mode}）`,
           summary: mode === 'append' ? `追加 ${result.bytes} 字节` : `写入 ${result.bytes} 字节`,

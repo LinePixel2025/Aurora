@@ -29,6 +29,7 @@ import type {
   SearchTextOptions,
 } from './files.js'
 import type { ToolContext, ToolDefinition } from './registry.js'
+import type { ReadTracker } from './edit.js'
 
 const ctx: ToolContext = { sessionId: 'test-session' }
 
@@ -42,6 +43,8 @@ const SAMPLE_ENTRIES: DirEntry[] = [
 
 interface FakeCalls {
   readText: Array<{ path: string; options: ReadTextOptions }>
+  /** `edit_file` 的整文件读由 `edit.test.ts` 的假端口覆盖，这里的桩只为让类型过（回带中性内容） */
+  readWholeText: Array<{ path: string; maxBytes: number }>
   writeText: Array<{ path: string; content: string; mode: 'overwrite' | 'append' }>
   list: Array<{ path: string; limit: number }>
   open: string[]
@@ -63,6 +66,7 @@ function createFakes(
 ): Fakes {
   const calls: FakeCalls = {
     readText: [],
+    readWholeText: [],
     writeText: [],
     list: [],
     open: [],
@@ -80,6 +84,10 @@ function createFakes(
         bytes: 6,
         totalBytes: 6,
       }
+    },
+    async readWholeText(path, maxBytes) {
+      calls.readWholeText.push({ path, maxBytes })
+      return { absolutePath: `${CWD}\\${path}`, text: '正文', bytes: 6, refused: false }
     },
     async writeText(path, content, mode) {
       calls.writeText.push({ path, content, mode })
@@ -166,7 +174,32 @@ function toolsOf(fakes: Fakes, options: Partial<FileToolOptions> = {}): ToolDefi
     open: fakes.open,
     maxReadBytes: options.maxReadBytes ?? 65_536,
     listLimit: options.listLimit,
+    readTracker: options.readTracker,
   })
+}
+
+/** 记录 `mark` / `clear` 调用的假守卫（docs/06 §11.6 的会话级读前守卫） */
+function fakeTracker(): ReadTracker & {
+  marks: string[]
+  clears: string[]
+} {
+  const marks: string[] = []
+  const clears: string[] = []
+  const marked = new Set<string>()
+  const key = (sessionId: string, absolutePath: string): string => `${sessionId}|${absolutePath}`
+  return {
+    marks,
+    clears,
+    has: (sessionId, absolutePath) => marked.has(key(sessionId, absolutePath)),
+    mark: (sessionId, absolutePath) => {
+      marks.push(key(sessionId, absolutePath))
+      marked.add(key(sessionId, absolutePath))
+    },
+    clear: (sessionId, absolutePath) => {
+      clears.push(key(sessionId, absolutePath))
+      marked.delete(key(sessionId, absolutePath))
+    },
+  }
 }
 
 function toolOf(tools: ToolDefinition[], name: string): ToolDefinition {
@@ -183,6 +216,59 @@ function toolOf(tools: ToolDefinition[], name: string): ToolDefinition {
  * 过滤条件必须显式说清「哪些是文件类」而不是「除了谁都是文件类」。
  */
 const FILE_TOOL_NAMES = ['read_file', 'write_file', 'list_dir', 'open_path'] as const
+
+describe('读前守卫的接线（read_file 打标记 / write_file 清标记，docs/06 §11.6）', () => {
+  it('read_file 成功后按**端口回带的绝对路径** mark（不是模型传入的原始串）', async () => {
+    const tracker = fakeTracker()
+    const tools = toolsOf(createFakes(), { readTracker: tracker })
+    // 桩回带的绝对路径是 `${CWD}\<原样传入的路径>`；关键是 mark 用的是**端口给的那个串**
+    const result = await toolOf(tools, 'read_file').execute({ path: 'sub/../a.txt' }, ctx)
+    expect(result.isError).toBeUndefined()
+    expect(tracker.marks).toEqual([`test-session|${CWD}\\sub/../a.txt`])
+  })
+
+  it('read_file 失败（端口抛错）时**不** mark，避免「没读到也算读过」', async () => {
+    const tracker = fakeTracker()
+    const failure = async (): Promise<never> => {
+      throw new Error('读不了')
+    }
+    const tools = toolsOf(createFakes({ readText: failure }), { readTracker: tracker })
+    const result = await toolOf(tools, 'read_file').execute({ path: 'a.txt' }, ctx)
+    expect(result.isError).toBe(true)
+    expect(tracker.marks).toEqual([])
+  })
+
+  it('write_file 成功后 clear（整篇覆盖后旧基线不可信），append 同样 clear', async () => {
+    const tracker = fakeTracker()
+    const tools = toolsOf(createFakes(), { readTracker: tracker })
+    const write = toolOf(tools, 'write_file')
+
+    await write.execute({ path: 'a.txt', content: 'x' }, ctx)
+    expect(tracker.clears).toEqual([`test-session|${CWD}\\a.txt`])
+
+    await write.execute({ path: 'a.txt', content: 'y', mode: 'append' }, ctx)
+    expect(tracker.clears).toEqual([`test-session|${CWD}\\a.txt`, `test-session|${CWD}\\a.txt`])
+  })
+
+  it('write_file 失败时**不** clear（没写成，原基线仍然有效）', async () => {
+    const tracker = fakeTracker()
+    const failure = async (): Promise<never> => {
+      throw new Error('写不了')
+    }
+    const tools = toolsOf(createFakes({ writeText: failure }), { readTracker: tracker })
+    const result = await toolOf(tools, 'write_file').execute({ path: 'a.txt', content: 'x' }, ctx)
+    expect(result.isError).toBe(true)
+    expect(tracker.clears).toEqual([])
+  })
+
+  it('未注入守卫时 read_file / write_file 照常工作（单测直调工具的既有形态）', async () => {
+    const tools = toolsOf(createFakes())
+    const read = await toolOf(tools, 'read_file').execute({ path: 'a.txt' }, ctx)
+    const write = await toolOf(tools, 'write_file').execute({ path: 'a.txt', content: 'x' }, ctx)
+    expect(read.isError).toBeUndefined()
+    expect(write.isError).toBeUndefined()
+  })
+})
 
 describe('createFileTools', () => {
   it('返回恰好这 4 个文件类工具，名字与 COMPUTER_TOOL_NAMES 的对应子集一致', () => {

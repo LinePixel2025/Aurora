@@ -32,6 +32,7 @@ import {
   DEFAULT_READ_LINES,
   DEFAULT_SEARCH_IGNORE,
   DEFAULT_SEARCH_MAX_RESULTS,
+  MAX_EDIT_BYTES,
   MAX_FILE_SCAN_BYTES,
   MAX_READ_LINES,
   MAX_READ_SCAN_BYTES,
@@ -123,6 +124,42 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort 
           bytes: window.bytes,
           totalBytes,
         }
+      } catch (error) {
+        throw withPath('读取文件失败', absolutePath, error)
+      }
+    },
+
+    /**
+     * **整文件**读入（`edit_file` 专用，docs/06 §11.6）。
+     *
+     * 语义与 `readText` 的行窗口正相反：这里不做任何裁剪，只有两种结果——
+     * 要么给出**逐字节原样**的全文（`bytes` 是文件真实大小），要么明确拒绝（`refused: true`）。
+     * 为什么必须有这个入口：`readText` 是行窗口 API（默认 2000 行、`maxBytes` 是对窗口的字节上限），
+     * 拿它做「读全文 → 替换 → 写回」会在文件超出窗口时把窗口外的内容**整段丢掉，而且不报任何错**。
+     *
+     * - `size > maxBytes` 或 `size > MAX_READ_SCAN_BYTES` → `refused: true` 且**不读内容**
+     *   （`text` 为空串，`bytes` 仍是真实大小）：拒绝要发生在读入之前，把读到的半截内容摆给调用方
+     *   只会诱使它"就用这一段改吧"。`maxBytes` 的非有限值回落 `MAX_EDIT_BYTES`、非正值按 1 处理
+     *   （沿用 `resolveLimit` 的既有口径：端口是独立入口，调用方给的怪值不该让护栏失效）。
+     * - 文本**逐字节原样**：CRLF 不归一、末尾换行保留、BOM 不动（改写要"除目标片段外不变"，
+     *   任何归一都是对全文件的改写）。
+     * - 二进制（前 8 KiB 含 NUL，复用 `hasNulByte` / `BINARY_MESSAGE`）与目录**抛错**（同 `readText`）：
+     *   二进制文件若被当作文本读入并以 UTF-8 原文写回，就是**静默损坏且不报错**
+     *   ——一个 1 MiB 以内的 `.png` / 压缩包只要字节里恰好出现一段能被当成 `oldString` 的序列即可触发。
+     */
+    async readWholeText(path, maxBytes) {
+      const absolutePath = resolve(path)
+      const limit = resolveLimit(maxBytes, MAX_EDIT_BYTES)
+      try {
+        const info = await stat(absolutePath)
+        if (info.isDirectory()) throw new Error('这是目录，不是文件（可改用 list_dir）')
+        const size = info.size
+        if (size > limit || size > MAX_READ_SCAN_BYTES) {
+          return { absolutePath, text: '', bytes: size, refused: true }
+        }
+        const buffer = await readHead(absolutePath, size)
+        if (hasNulByte(buffer)) throw new Error(BINARY_MESSAGE)
+        return { absolutePath, text: buffer.toString('utf8'), bytes: size, refused: false }
       } catch (error) {
         throw withPath('读取文件失败', absolutePath, error)
       }
