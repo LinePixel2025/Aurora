@@ -41,6 +41,13 @@ export {
   Copy,
   Check,
   Volume2,
+  // 输入框工具行（2026-09 输入框重做）：权限模式 / 上下文详解 / 斜杠命令
+  ShieldCheck,
+  ShieldOff,
+  Paperclip,
+  Gauge,
+  Command,
+  CornerDownLeft,
   // 状态与进度
   Circle,
   LoaderCircle,

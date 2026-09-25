@@ -72,6 +72,14 @@ const emit = defineEmits<{
 }>()
 
 /**
+ * 消息流根节点。两处消费：`useStickToBottom` 从它**向上**找滚动容器（窗口的 `.thread`）；
+ * 思考块内的滚动跟随从它**向下**查 `.thinking.streaming .thinking-text`。
+ * 声明放在这里（而不是「跟随最新」那段里），是为了让下面的思考块机制在自己的
+ * setup 期 watcher（`immediate`）里引用它时，一定在初始化之后。
+ */
+const rootEl = ref<HTMLElement | null>(null)
+
+/**
  * 朗读按钮是否该出现在这条消息上。
  *
  * 四个条件缺一不可：已配置 TTS、是助手消息、不是仍在占位的流式消息、正文非空。
@@ -123,21 +131,150 @@ function isThinkingOpen(id: string): boolean {
   return thinkingOpen.value.includes(id)
 }
 
+// ────────── 思考块内的自动翻滚（块内部的小滚动区，独立于消息区） ──────────
+
+/**
+ * 块内「跟随最新」的判定阈值（px）：与 `useStickToBottom` 同口径（默认 24），
+ * 覆盖亚像素误差与最后一行折行。**作用域只有块内的 `.thinking-text`**——
+ * 这里绝不碰消息区（`.thread`），消息区的跟随由 useStickToBottom 单独管。
+ */
+const THINKING_STICK_THRESHOLD = 24
+
+/**
+ * 块内是否仍在跟随最新。
+ *
+ * 用户在块内主动上滚（离底超过阈值）即置 false（**用户接管**），自己滚回底部再恢复 true ——
+ * 与 `useStickToBottom` 的「用户意图优先」语义一致，只是范围缩到这个块的小滚动区：
+ * 用户正在回看前面的思考时，下一次增量不许把它硬拽回底部。
+ */
+const thinkingFollowing = ref(true)
+
+/** 在途的 rAF 句柄：同一帧内的多次滚动请求合并成一次（卸载时必须取消） */
+let thinkingFrame: number | null = null
+
+/**
+ * 当前**正在流式**的思考正文元素。
+ *
+ * 搜索范围刻意收在 `.thinking.streaming` 内：既只认"正在思考"的那一块，
+ * 又天然避开已结束的历史块（用户点开历史块时应从顶部读起，不该被跳到底部）。
+ * 块未展开（`v-if` 为假）/ 不在流式时都返回 null，调用方据此跳过。
+ */
+function thinkingTextEl(): HTMLElement | null {
+  return rootEl.value?.querySelector<HTMLElement>('.thinking.streaming .thinking-text') ?? null
+}
+
+function thinkingDistanceToBottom(el: HTMLElement): number {
+  return el.scrollHeight - el.scrollTop - el.clientHeight
+}
+
+/**
+ * 块内滚动 → 重新判定是否跟随（用户接管 / 交还）。
+ * 程序触发的滚动也会走到这里，但那时距离为 0，判定结果仍是「跟随」，不会自己把自己关掉。
+ */
+function onThinkScroll(event: Event): void {
+  const el = event.target
+  if (!(el instanceof HTMLElement)) return
+  thinkingFollowing.value = thinkingDistanceToBottom(el) <= THINKING_STICK_THRESHOLD
+}
+
+/**
+ * 把「滚到思考正文最新一行」合并到**下一帧**执行。
+ *
+ * 走 rAF 而不是在 watcher 里同步滚，有三个原因：
+ * 1. 一条流式 delta 会触发多次请求（reasoning 变化 + 目标变化），逐次同步读写布局是白做功；
+ * 2. DOM 变更发生在布局之前，等一帧拿到的 `scrollHeight` / `clientHeight` 才是最终值；
+ * 3. 块**首次展开**那一帧 DOM 还不存在（`v-if` 刚翻真），延迟一帧才查得到元素 ——
+ *    这正是此前「长思考从展开起就停在顶部」的原因。
+ */
+function scheduleThinkingFollow(): void {
+  if (thinkingFrame !== null) return
+  thinkingFrame = window.requestAnimationFrame(() => {
+    thinkingFrame = null
+    const el = thinkingTextEl()
+    if (el === null) return
+    if (thinkingFollowing.value) {
+      el.scrollTop = el.scrollHeight
+      return
+    }
+    // 用户接管期间内容缩到不足一屏（切会话 / 收起块）时没有可滚动的距离，
+    // 「暂停跟随」就没有意义了 —— 恢复跟随，免得下一轮思考开始时仍停在旧状态。
+    // 注意：用户真的在翻前面的思考时距离远大于阈值，不会被这条误清。
+    if (thinkingDistanceToBottom(el) <= THINKING_STICK_THRESHOLD) thinkingFollowing.value = true
+  })
+}
+
+/**
+ * 新一轮思考开始 / 块刚展开：复位为「跟随」并滚一次。
+ * 与 `useStickToBottom` 的 `stick()` 同义 —— 新内容从底部开始看，
+ * 用户上一轮的上滚状态不带到这一轮。
+ */
+function beginThinkingFollow(): void {
+  thinkingFollowing.value = true
+  scheduleThinkingFollow()
+}
+
+// ────────── 思考耗时计数（块头「思考中… 3s」，仅流式期间显示） ──────────
+
+/** 本轮思考已进行的整秒数；只在 `thinkingTargetId` 指向某条消息（思考阶段）时递增 */
+const thinkingSeconds = ref(0)
+
+/** 本轮思考的起点（`Date.now()`）；`thinkingTimer === null` 时无意义 */
+let thinkingStartedAt = 0
+let thinkingTimer: number | null = null
+
+/** 停表并清零（三条清理路径共用：目标清空 / 请求结束 / 组件卸载） */
+function stopThinkingTimer(): void {
+  if (thinkingTimer !== null) window.clearInterval(thinkingTimer)
+  thinkingTimer = null
+  thinkingSeconds.value = 0
+}
+
+/**
+ * 开始（或重启）读秒。
+ *
+ * 每轮思考各自计时：`thinkingTargetId` 由 null 变为某条消息（新一轮思考开始）时清零重来，
+ * **不做跨轮累加**——跨工具调用的多轮里，「已经想了多久」指的是当前这一轮。
+ * 节奏与工具耗时 ticker（200ms）同量级，秒数变化看得出来、又不至于每帧刷。
+ */
+function startThinkingTimer(): void {
+  stopThinkingTimer()
+  thinkingStartedAt = Date.now()
+  thinkingTimer = window.setInterval(() => {
+    thinkingSeconds.value = Math.max(0, Math.floor((Date.now() - thinkingStartedAt) / 1000))
+  }, 200)
+}
+
 function toggleThinking(id: string): void {
-  thinkingOpen.value = isThinkingOpen(id)
-    ? thinkingOpen.value.filter((item) => item !== id)
-    : [...thinkingOpen.value, id]
+  if (isThinkingOpen(id)) {
+    thinkingOpen.value = thinkingOpen.value.filter((item) => item !== id)
+    return
+  }
+  thinkingOpen.value = [...thinkingOpen.value, id]
+  // 展开这一帧 DOM 还不存在（`v-if` 刚翻真），要等下一帧才滚得到；
+  // `thinkingTextEl()` 只认 `.thinking.streaming` 那块，历史块点开仍从顶部开始读。
+  scheduleThinkingFollow()
 }
 
 /**
  * 流式中有新思考时自动展开：`thinkingTargetId` 变化（useChat 在首个 reasoning /
  * 或消息被认领时设置）即展开对应消息的思考块。
+ *
+ * 这条 watcher 同时收口三件事，避免同一状态散落多处：
+ * 1. 目标清成 null（正文开始写 = 这一轮思考结束）→ 停表；**块保持展开**，
+ *    只换文案与动效类，收起留给请求结束时的 `streaming` 边沿（状态切换不闪）；
+ * 2. 目标被指到 → 展开该块，并滚到块内最新一行（DOM 下一帧才存在）；
+ * 3. 目标被指到 → 开始（或重启）本轮思考的读秒。
  */
 watch(
   () => props.thinkingTargetId,
   (id) => {
-    if (id === null || id === '') return
+    if (id === null || id === '') {
+      stopThinkingTimer()
+      return
+    }
     if (!thinkingOpen.value.includes(id)) thinkingOpen.value = [...thinkingOpen.value, id]
+    beginThinkingFollow()
+    startThinkingTimer()
   },
   { immediate: true },
 )
@@ -145,11 +282,15 @@ watch(
 /**
  * 请求结束（streaming true → false 边沿）把已展开的思考块收起为摘要行：
  * 完整内容仍可手动点开，但默认视图回到「回答优先」。
+ * 同一条路径上兜底停表：正常收尾 `useChat` 会先清 `thinkingTargetId`（上面已停过），
+ * 但出错 / 目标未被清时也不许留下定时器。
  */
 watch(
   () => props.streaming,
   (now, before) => {
-    if (before === true && now === false) thinkingOpen.value = []
+    if (before !== true || now !== false) return
+    thinkingOpen.value = []
+    stopThinkingTimer()
   },
 )
 
@@ -162,15 +303,13 @@ function thinkingLabel(message: ChatMessage): string {
  * 思考块流式期间把**块内**滚动条跟到最新一行。
  *
  * 整块正文是 `white-space: pre-wrap` 的一整段，若不跟随，长了以后新内容在视口外，
- * 看起来像「卡住不动」。只滚 `.thinking-body`，不动消息区（消息区由 useStickToBottom 管）。
- * 依赖写成「所有消息 reasoning 长度之和」：思考增量一定让它变化，且没有增量时不触发。
+ * 看起来像「卡住不动」。只滚 `.thinking-text`，不动消息区（消息区由 useStickToBottom 管）。
+ * 依赖写成「所有消息 reasoning 长度之和」：思考增量一定让它变化，且没有增量时不触发；
+ * 真正的读 / 写布局合并到一帧一次（见 `scheduleThinkingFollow`），不在这里碰 DOM。
  */
 watch(
   () => props.messages.reduce((total, message) => total + (message.reasoning?.length ?? 0), 0),
-  () => {
-    const body = rootEl.value?.querySelector<HTMLElement>('.thinking.streaming .thinking-text')
-    if (body !== null && body !== undefined) body.scrollTop = body.scrollHeight
-  },
+  () => scheduleThinkingFollow(),
 )
 
 // ───────────────────────── 跟随最新（自动滚底） ─────────────────────────
@@ -179,7 +318,6 @@ watch(
  * 滚动容器是窗口自己的 `.thread`（由 `useStickToBottom` 从本组件根节点向上查找），
  * 因此这里只负责"什么算新内容、什么时候强制回底"，容器结构不动。
  */
-const rootEl = ref<HTMLElement | null>(null)
 const { following, stick } = useStickToBottom(() => rootEl.value)
 
 /**
@@ -420,6 +558,11 @@ watch(toolSignature, () => {
 
 onUnmounted(() => {
   if (ticker !== null) window.clearInterval(ticker)
+  ticker = null
+  // 思考侧的两笔在途资源：合并滚动用的 rAF 与读秒 interval，卸载时都必须收掉
+  if (thinkingFrame !== null) window.cancelAnimationFrame(thinkingFrame)
+  thinkingFrame = null
+  stopThinkingTimer()
 })
 
 function toolDuration(call: AgentToolCall): string {
@@ -541,12 +684,27 @@ async function onContentClick(event: MouseEvent): Promise<void> {
               @click="toggleThinking(message.id)"
             >
               <ChevronRight class="chevron" :size="13" :stroke-width="1.8" aria-hidden="true" />
-              <span class="tiny">{{ thinkingLabel(message) }}</span>
+              <!--
+                流式期间的一枚**公转指示点**（旋转，不是工具卡那种横向平移扫光）：
+                旋转由全局 `.spin`（`aurora-spin` + `--dur-spin`）提供 —— scoped 里的
+                @keyframes 会被 Vue 改名，跨组件复用的关键帧必须走全局样式。
+                `prefers-reduced-motion` 由 theme.css 文末的全局兜底压掉（转 1 次即停）。
+              -->
+              <span
+                v-if="thinkingTargetId === message.id"
+                class="think-orbit spin"
+                aria-hidden="true"
+              />
+              <span class="tiny thinking-label">{{ thinkingLabel(message) }}</span>
+              <!-- 已思考的秒数：只在流式接收思考期间出现，结束后回到纯「已深度思考」文案 -->
+              <span v-if="thinkingTargetId === message.id" class="tiny thinking-elapsed">
+                {{ thinkingSeconds }}s
+              </span>
             </button>
             <Transition name="collapse">
               <div v-if="isThinkingOpen(message.id)" class="thinking-body">
                 <!-- 流式期间尾部带光标，读起来是"还在写"而不是"卡住了" -->
-                <p class="thinking-text">{{ message.reasoning }}</p>
+                <p class="thinking-text" @scroll.passive="onThinkScroll">{{ message.reasoning }}</p>
                 <span
                   v-if="thinkingTargetId === message.id"
                   class="streaming-caret thinking-caret"
@@ -943,6 +1101,40 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 
 .thinking.open > .thinking-head .chevron {
   transform: rotate(90deg);
+}
+
+/*
+ * 流式期间的公转指示点：一枚低对比度的环 + 环上一枚绕心旋转的点。
+ * 旋转走全局 `.spin`（`aurora-spin` + `--dur-spin`），与工具卡运行中的**横向扫光**
+ * 是两种不同机制（旋转 vs 平移），同屏出现不会看成同一个东西。
+ */
+.think-orbit {
+  position: relative;
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--accent-text) 32%, transparent);
+}
+
+.think-orbit::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 50%;
+  width: 3px;
+  height: 3px;
+  margin-left: -1.5px;
+  border-radius: 50%;
+  background: var(--accent-text);
+}
+
+/*
+ * 秒数：颜色继承块头（流式时块头是强调色，见 `.thinking.streaming > .thinking-head`），
+ * 只固定数字宽度 —— 每秒跳动时宽度不变，块头文字不会跟着左右抖。
+ */
+.thinking-elapsed {
+  font-variant-numeric: var(--num-tabular);
 }
 
 .thinking-body {

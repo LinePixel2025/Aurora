@@ -9,7 +9,13 @@
  * 编辑卡（`mode === 'edit' && editingId === id`，一次只渲染一张）从上到下是：
  * 必填区（baseURL / API Key / 模型名）→ **「模型设置」区**（候选模型列表：拉取 / 手动添加 /
  * 重命名 / 删除 / 点选「当前使用」）→ `.more`「高级参数与连接测试」折叠区
- * （temperature / 思考等级 / 连接测试 / 模型 chips，默认收起）→ 卡片底部「应用 / 取消」。
+ * （temperature / 思考等级 / 上下文窗口 / 连接测试 / 模型 chips，默认收起）
+ * → 卡片底部「应用 / 取消」。
+ *
+ * 「上下文窗口」（`llm.providers.<id>.contextWindow`，v11 新增，docs/08 §1）是**可选信息**：
+ * 它不进必填区（用户得先翻服务商文档才知道），放在折叠区与 temperature / 思考等级并列；
+ * 只读态在行标题下方以小字展示（0 = 未知，不渲染），编辑态在折叠区里改。非法输入一律
+ * 归一化（见 `clampContextWindow`），**不阻断保存** —— 缺了它对话窗只是不画占比进度条。
  *
  * 「当前使用」与「候选列表」的关系（唯一生效值只有 `model`，列表 `modelList` 只是候选项）：
  * 在「模型名」里填的 id 会自动补进列表；删掉当前使用的那一项**不换模型**，只提示
@@ -22,6 +28,7 @@
  * 页面底部新增「生图模型」区组（`ImageGenSection`，`imagegen.*`，独立 provider 体系）。
  */
 import { computed, reactive, ref, watch } from 'vue'
+import { formatTokenCount } from '@aurora/shared/browser'
 import { ChevronRight } from '../../shared/icons.js'
 import {
   DEFAULT_REASONING_EFFORT,
@@ -236,6 +243,37 @@ function normalizedModelList(draft: ProviderDraft): string[] {
   return mergeModelIds(draft.modelList, [currentModel(draft)])
 }
 
+/** 上下文窗口的上界：与 `LlmProviderSchema.contextWindow` 的 `.max(2_000_000)` 对齐。 */
+const CONTEXT_WINDOW_MAX = 2_000_000
+
+/**
+ * 「上下文窗口」的**唯一归一化入口**（输入框提交与落盘前各过一次）。
+ *
+ * 归一规则：空 / 非数字（NaN）→ 0；负数 → 0；小数四舍五入成整数；超过 2000000 → 截断到上限。
+ * 0 = 未知是**合法值**（Schema 的 `.min(0)` 同样允许），所以它不该像 baseURL / 模型名那样拦保存。
+ */
+/**
+ * 只读态那行小字里的 token 数显示：**复用 `@aurora/shared` 的唯一口径**
+ * （`utils/format.ts` 的 `formatTokenCount`，带单测，与对话窗底部「上下文详解」同款写法）——
+ * 这里刻意不再写第二份格式化：同一个「token 数 → K/M」在两处各写一遍，边界行为必然分叉。
+ */
+const formatContextWindow = formatTokenCount
+
+function clampContextWindow(value: unknown): number {
+  const raw = Number(value)
+  if (!Number.isFinite(raw)) return 0
+  return Math.min(CONTEXT_WINDOW_MAX, Math.max(0, Math.round(raw)))
+}
+
+/**
+ * 「上下文窗口」输入框：`@change` 提交（与 AgentPage 的 `clampNumber` 同一套路），
+ * **不逐键改写** —— `type=number` 下 `1.` / `-` 这类中间态的 `input.value` 是空串，
+ * 逐键钳成 0 会把用户正在敲的字符擦掉、连小数都打不进去。
+ */
+function commitContextWindow(draft: ProviderDraft, event: Event): void {
+  draft.contextWindow = clampContextWindow((event.target as HTMLInputElement).value)
+}
+
 function syncDrafts(): void {
   const settings = settingsStore.settings
   if (!settings) return
@@ -332,6 +370,8 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
           modelList: normalizedModelList(draft),
           temperature: Number(draft.temperature),
           reasoningEffort: draft.reasoningEffort,
+          // 落盘前再过一次归一化入口：可选信息，非法值一律归成合法整数而不是拦住保存
+          contextWindow: clampContextWindow(draft.contextWindow),
         },
       },
     },
@@ -394,6 +434,7 @@ function addPreset(id: string): void {
     modelList: model === '' ? [] : [model],
     temperature: 0.7,
     reasoningEffort: DEFAULT_REASONING_EFFORT,
+    contextWindow: 0,
     apiKey: '',
     apiKeySet: false,
   })
@@ -631,6 +672,15 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
         </AppButton>
       </header>
 
+      <!-- 只读态：上下文窗口（v11）有值才给一行小字；0 = 未知，不渲染（编辑态由折叠区输入框承担） -->
+      <p
+        v-if="!isEditing(draft.id) && draft.contextWindow > 0"
+        class="tiny muted"
+        data-field="llm.contextWindow.readout"
+      >
+        上下文窗口 {{ formatContextWindow(draft.contextWindow) }}
+      </p>
+
       <!-- 危险操作二次确认：确认条就地出现，点「确认删除」才真的删 -->
       <div v-if="pendingRemoveId === draft.id" class="confirm-bar">
         <span class="tiny confirm-text">
@@ -846,6 +896,23 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
                 <option value="medium">medium</option>
                 <option value="high">high（更深入）</option>
               </select>
+            </SettingField>
+
+            <!-- 上下文窗口（v11）：可选信息，唯一用途是对话窗输入框底部的「上下文占用比例」分母 -->
+            <SettingField
+              data-field="llm.contextWindow"
+              label="上下文窗口"
+              hint="单位 token；仅用于对话窗输入框底部的「上下文占用比例」分母。留空或 0 = 未知，此时只显示 token 数、不显示占比进度条；上限 2000000，超出按上限截断"
+            >
+              <input
+                class="input input-num"
+                type="number"
+                min="0"
+                max="2000000"
+                step="1000"
+                :value="draft.contextWindow"
+                @change="commitContextWindow(draft, $event)"
+              />
             </SettingField>
 
             <div class="row wrap">

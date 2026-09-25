@@ -23,8 +23,13 @@
  * 2026-09 动画轮新增：主区可在「对话流 / 子代理页面」之间切换（`view` ref，
  * docs/07 §2.4；子代理页不属于任何会话，切过去不动 chat 的会话状态）。
  */
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { LlmProviderConfig, SensitiveToolRequest, SttProviderConfig } from '@aurora/shared'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import type {
+  LlmProviderConfig,
+  SensitiveToolRequest,
+  SkillSummary,
+  SttProviderConfig,
+} from '@aurora/shared'
 import { DEFAULT_REASONING_EFFORT, type ReasoningEffort } from '@aurora/shared/browser'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
@@ -34,6 +39,9 @@ import SensitiveToolCard from '../shared/components/SensitiveToolCard.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import ThinkingLevelSelect from '../shared/components/ThinkingLevelSelect.vue'
 import WindowCaption from '../shared/components/WindowCaption.vue'
+import ComposerContextBar from './components/ComposerContextBar.vue'
+import ComposerPermissionSelect from './components/ComposerPermissionSelect.vue'
+import SlashCommandMenu from './components/SlashCommandMenu.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import SessionNav from './components/SessionNav.vue'
 import SubagentPage from './components/SubagentPage.vue'
@@ -42,6 +50,7 @@ import { useTts } from '../shared/composables/useTts.js'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
+import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.js'
 import { ArrowUp, Mic, PanelLeft, Trash2, X } from '../shared/icons.js'
 
 const chat = useChat('chat', 'main')
@@ -54,6 +63,7 @@ const {
   statusTone,
   reasoningTargetId,
   subagentRuns,
+  usage,
   send: sendMessage,
   abort,
   clear,
@@ -135,6 +145,11 @@ onMounted(() => {
   })
   // 水合当前会话（main）→ 会话列表：左栏立刻有内容
   void hydrate().then(() => loadSessions())
+  // 斜杠命令的 Skill 候选（`/` 浮层的技能分组）：失败只是没有技能项，不影响输入
+  void window.aurora.skills.list().then((result) => {
+    if (!result.ok) return
+    slashSkills.value = result.value
+  })
 })
 
 onUnmounted(() => {
@@ -552,6 +567,12 @@ function fileNameOf(path: string): string {
 async function send(): Promise<void> {
   const text = input.value.trim()
   if (text === '' && attachments.value.length === 0) return
+  // 流式期间 useChat.send 会直接返回：那样「敲了 Enter 没反应也没提示」。
+  // 这里给一句瞬时提示（发送按钮同时是 disabled 的，两处口径一致）。
+  if (streaming.value) {
+    flashPickerHint('正在回复中，先点「停止」或等它结束')
+    return
+  }
   const files = attachments.value
   input.value = ''
   attachments.value = []
@@ -559,6 +580,180 @@ async function send(): Promise<void> {
   // 新会话此时才有标题，刷新列表让左栏显示出来
   void loadSessions()
 }
+
+// ──────────────── 输入区重做（2026-09：对齐主流 Agent Desktop，docs/07 §2.3） ────────────────
+
+/**
+ * textarea 自动增高：先在 `auto` 下读 `scrollHeight` 再钉成固定高度。
+ *
+ * 为什么不用 CSS 的 `field-sizing: content`（Chromium 123+ 支持）：本项目 Electron 的
+ * 目标版本尚不稳定支持它，且需要与 `max-height` 配合才能正确出现滚动条 ——
+ * 一个 watch + 两行赋值更可控，也让「发送后回落到一行高」有确定的执行点。
+ */
+const textareaEl = ref<HTMLTextAreaElement | null>(null)
+/** 输入框最大高度（px）：超过就内部滚动，避免输入区把消息区挤没 */
+const COMPOSER_MAX_HEIGHT = 200
+
+function autoGrow(): void {
+  const el = textareaEl.value
+  if (el === null) return
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT)}px`
+}
+
+/** `input` 的任何变化（含 v-model 回写、发送后清空、语音转写追加）都要重算高度 */
+watch(input, () => {
+  void nextTick(autoGrow)
+})
+
+// ── 权限模式（`advanced.confirmSensitiveTools`，与设置页「智能与工具」同一份配置） ──
+
+/**
+ * 是否「变更前确认」。配置还没水合时按 `true` 显示 —— 这是 Schema 的默认值，
+ * 也是更安全的一侧（宁可先让用户看到「会确认」，也不默认显示成已放权）。
+ */
+const permissionConfirm = computed<boolean>(
+  () => settingsStore.settings?.advanced.confirmSensitiveTools ?? true,
+)
+
+/**
+ * 写入权限模式。这是**只有用户界面能走**的路径：`advanced.confirmSensitiveTools`
+ * 在 `SETTINGS_READONLY_PREFIXES` 里，AI 的 `set_setting` 一律拒绝改它。
+ * `advanced` 是顶层浅合并，patch 只需带这一个字段，`readonlyPrefixes` 等不会被清掉。
+ */
+async function setPermission(confirm: boolean): Promise<void> {
+  const ok = await settingsStore.update({ advanced: { confirmSensitiveTools: confirm } })
+  if (!ok) chatError.value = settingsStore.error
+}
+
+// ── 斜杠命令（`/`） ──
+
+/** Skill 清单（`skills:list`，只显示 enabled 的；渲染层不缓存第二份） */
+const slashSkills = ref<SkillSummary[]>([])
+
+/**
+ * 当前输入是否正处于「命令名」区间（`/xxx`）：判定与过滤都是 `slashCommands.ts` 的纯函数，
+ * 组件这层只负责把它接到响应式输入上。
+ */
+const slashQuery = computed<string | null>(() => slashQueryOf(input.value))
+
+/** Esc 关掉这一轮浮层（输入内容一变就重新打开） */
+const slashDismissed = ref(false)
+watch(
+  () => input.value,
+  () => {
+    slashDismissed.value = false
+  },
+)
+
+/** 候选：内置命令在前、技能在后（过滤规则见 `filterSlashItems`） */
+const slashItems = computed<SlashItem[]>(() => {
+  const query = slashQuery.value
+  if (query === null || slashDismissed.value) return []
+  return filterSlashItems(query, slashSkills.value, streaming.value)
+})
+
+const slashOpen = computed(() => slashQuery.value !== null && slashItems.value.length > 0)
+/** 高亮项：`slashItems` 变短时（继续输入）自动收到末项，不会指到数组外 */
+const slashIndex = ref(0)
+const activeSlashIndex = computed(() =>
+  Math.min(slashIndex.value, Math.max(0, slashItems.value.length - 1)),
+)
+watch(
+  () => slashItems.value.length,
+  () => {
+    slashIndex.value = 0
+  },
+)
+
+/** 选中一项：命令立即执行，技能补全成 `/技能名 `（焦点留在输入框，光标移到末尾） */
+function applySlash(item: SlashItem): void {
+  if (item.kind === 'skill') {
+    input.value = `/${item.name} `
+    void nextTick(() => {
+      const el = textareaEl.value
+      if (el === null) return
+      el.focus()
+      el.setSelectionRange(el.value.length, el.value.length)
+      autoGrow()
+    })
+    return
+  }
+  input.value = ''
+  switch (item.name) {
+    case 'new':
+      void startNewSession()
+      break
+    case 'clear':
+      clear()
+      break
+    case 'stop':
+      void abort()
+      break
+    case 'subagents':
+      view.value = 'subagents'
+      break
+    case 'settings':
+      windowStore.show('settings')
+      break
+    default:
+      break
+  }
+}
+
+/**
+ * 输入框的唯一键盘入口。
+ *
+ * 顺序很重要：**浮层打开时 Enter 属于浮层**（确认高亮项），不能同时把半截命令发出去。
+ * 其余情况 `Enter` 发送、`Shift + Enter` 换行（`Ctrl + Enter` 与 `Enter` 等价，历史习惯保留）。
+ */
+function onComposerKeydown(event: KeyboardEvent): void {
+  if (slashOpen.value) {
+    const total = slashItems.value.length
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      slashIndex.value = (activeSlashIndex.value + 1) % total
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      slashIndex.value = (activeSlashIndex.value - 1 + total) % total
+      return
+    }
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      event.preventDefault()
+      const item = slashItems.value[activeSlashIndex.value]
+      if (item !== undefined) applySlash(item)
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      slashDismissed.value = true
+      return
+    }
+  }
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault()
+    void send()
+  }
+}
+
+/** 上下文详解的「本会话内容」：正文字符数（把思考链也算进去，它同样进上下文） */
+const contentChars = computed(() =>
+  messages.value.reduce(
+    (total, message) => total + message.content.length + (message.reasoning?.length ?? 0),
+    0,
+  ),
+)
+
+/** 当前 provider 的上下文窗口（token）；0 = 未知，上下文条据此只显示用量不显示比例 */
+const currentContextWindow = computed<number>(() => activeProvider.value?.contextWindow ?? 0)
+
+const placeholder = computed(() =>
+  streaming.value
+    ? '正在回复中，可先继续输入；回复结束后按 Enter 发送'
+    : '输入消息，Enter 发送，Shift + Enter 换行；输入 / 调用命令与技能，可直接拖入文件',
+)
 
 // ───────────────────────── 模式引导（交互语义不变） ─────────────────────────
 
@@ -703,32 +898,41 @@ async function markGuideDone(): Promise<void> {
             </span>
           </div>
 
-          <div class="composer-box">
-            <textarea
-              v-model="input"
-              spellcheck="false"
-              placeholder="输入消息，Ctrl + Enter 发送；可直接把文件拖进来"
-              @keydown.enter.exact.prevent="send"
-              @keydown.ctrl.enter.prevent="send"
+          <div class="composer-box" :class="{ streaming }">
+            <!--
+              斜杠命令浮层（2026-09 输入框重做）：贴在输入卡上方。
+              键盘（↑↓ / Enter / Tab / Esc）由下面 textarea 的 onComposerKeydown 统一处理，
+              浮层只是键位操作的可视反馈，焦点始终留在输入框里。
+            -->
+            <SlashCommandMenu
+              v-if="slashOpen"
+              :items="slashItems"
+              :active-index="activeSlashIndex"
+              @select="applySlash"
+              @hover="slashIndex = $event"
             />
+
+            <!--
+              输入区：`rows=1` + 自动增高（`autoGrow`）——高度由 JS 按 scrollHeight 钉住，
+              因此 CSS 里不保留 `resize`（手动拖动会与自动增高互相打架）。
+            -->
+            <textarea
+              ref="textareaEl"
+              v-model="input"
+              class="composer-input"
+              rows="1"
+              spellcheck="false"
+              :placeholder="placeholder"
+              @keydown="onComposerKeydown"
+            />
+
             <div class="composer-bar">
-              <!--
-                麦克风（STT）：门控口径同 TTS——未配置可用的 provider 时**不渲染**（不是 disabled）。
-                录音态套 `.pulse-ring` 扩散环（theme.css 动效基线）。
-              -->
-              <button
-                v-if="sttReady"
-                type="button"
-                class="icon-btn mic press"
-                data-field="chat.mic"
-                :class="{ recording, busy: sttBusy }"
-                :title="recording ? '停止录音并转写' : '语音输入'"
-                :aria-label="recording ? '停止录音' : '开始语音输入'"
-                @click="toggleRecording"
-              >
-                <span v-if="recording" class="mic-ring pulse-ring" aria-hidden="true" />
-                <Mic :size="15" :stroke-width="1.6" aria-hidden="true" />
-              </button>
+              <!-- 权限模式（变更前确认 / 完全权限）：写 advanced.confirmSensitiveTools -->
+              <ComposerPermissionSelect
+                :confirm="permissionConfirm"
+                :disabled="settingsStore.settings === null"
+                @change="setPermission"
+              />
               <!-- 模型 / 思考等级（2026-09 移入 composer 工具行）：data-field 锚点不变 -->
               <ModelPickerSelect
                 class="composer-picker"
@@ -748,6 +952,24 @@ async function markGuideDone(): Promise<void> {
               <span class="grow" />
               <!-- 保存类操作的瞬时提示（2 秒自灭）；旧常驻「会话：xxx · 可调用 Skill…」meta 已移除 -->
               <span v-if="pickerHint" class="tiny muted picker-hint">{{ pickerHint }}</span>
+              <!--
+                麦克风（STT）：门控口径同 TTS——未配置可用的 provider 时**不渲染**（不是 disabled）。
+                录音态套 `.pulse-ring` 扩散环（theme.css 动效基线）。与发送键同侧，
+                对齐主流 Agent Desktop 的「输入动作在右」动线。
+              -->
+              <button
+                v-if="sttReady"
+                type="button"
+                class="icon-btn mic press"
+                data-field="chat.mic"
+                :class="{ recording, busy: sttBusy }"
+                :title="recording ? '停止录音并转写' : '语音输入'"
+                :aria-label="recording ? '停止录音' : '开始语音输入'"
+                @click="toggleRecording"
+              >
+                <span v-if="recording" class="mic-ring pulse-ring" aria-hidden="true" />
+                <Mic :size="15" :stroke-width="1.6" aria-hidden="true" />
+              </button>
               <AppButton v-if="streaming" size="sm" @click="abort">停止</AppButton>
               <span class="send-slot">
                 <AppButton
@@ -755,7 +977,7 @@ async function markGuideDone(): Promise<void> {
                   size="sm"
                   variant="primary"
                   aria-label="发送"
-                  title="发送（Ctrl + Enter）"
+                  title="发送（Enter）"
                   :disabled="streaming || (input.trim() === '' && attachments.length === 0)"
                   @click="send"
                 >
@@ -763,6 +985,17 @@ async function markGuideDone(): Promise<void> {
                 </AppButton>
               </span>
             </div>
+
+            <!-- 输入框最底部：上下文详解（占用比例 + token 用量，点开看明细） -->
+            <ComposerContextBar
+              :latest="usage.latest"
+              :totals="usage.totals"
+              :context-window="currentContextWindow"
+              :model="currentModel"
+              :message-count="messages.length"
+              :char-count="contentChars"
+              :streaming="streaming"
+            />
           </div>
         </div>
 
@@ -1023,10 +1256,11 @@ async function markGuideDone(): Promise<void> {
 }
 
 .composer-box {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-3) var(--space-4) var(--space-2);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
@@ -1041,19 +1275,33 @@ async function markGuideDone(): Promise<void> {
   box-shadow: 0 0 0 1px var(--accent-ring);
 }
 
-.composer textarea {
+/**
+ * 输入区（2026-09 输入框重做）。
+ *
+ * 高度由 `autoGrow()` 按 `scrollHeight` 钉住（1 行起步、最多 200px 后内部滚动），
+ * 因此这里**不设 min/max-height 也不留 `resize`** —— 手动拖动会和自动增高互相打架，
+ * 结果是「发完消息输入框还是刚才拖出来的高度」。
+ * `overflow-y: auto` 是超出上限后的兜底（此时才出现滚动条）。
+ */
+.composer-input {
+  display: block;
   width: 100%;
-  min-height: 44px;
-  max-height: 160px;
+  height: auto;
+  min-height: calc(var(--text-base) * var(--leading-normal) + 2 * var(--space-1));
+  max-height: 200px;
   padding: var(--space-1) 0;
   border: 0;
   background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-base);
   line-height: var(--leading-normal);
-  resize: vertical;
+  overflow-y: auto;
+  resize: none;
   outline: none;
 }
 
-.composer textarea::placeholder {
+.composer-input::placeholder {
   color: var(--text-muted);
 }
 

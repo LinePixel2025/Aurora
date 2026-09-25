@@ -111,6 +111,8 @@ async function persistModel(): Promise<boolean> {
           modelList: [],
           temperature: form.temperature,
           reasoningEffort: DEFAULT_REASONING_EFFORT,
+          // 上下文窗口（v11）：引导页不收集，留 0 = 未知（用户之后在「设置 → AI 模型」里填）
+          contextWindow: 0,
         },
       },
     },
