@@ -8,12 +8,7 @@
  * 纯函数、不碰磁盘。
  */
 import { describe, expect, it } from 'vitest'
-import {
-  compileGlob,
-  isValidGlobPattern,
-  matchesGlob,
-  MAX_GLOB_LENGTH,
-} from './globPattern.js'
+import { compileGlob, isValidGlobPattern, matchesGlob, MAX_GLOB_LENGTH } from './globPattern.js'
 
 /** 路径模式（缺省）的短写 */
 const hit = (pattern: string, value: string): boolean => matchesGlob(pattern, value)
