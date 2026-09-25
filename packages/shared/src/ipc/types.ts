@@ -644,6 +644,13 @@ export interface TokenUsage {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  /**
+   * 命中服务端前缀缓存的 prompt token 数；provider 未回传时缺省（docs/06 §21.4）。
+   *
+   * 与「回传了 0」必须可区分：缺省 = 这个 provider 不报缓存字段，0 = 报了但一个也没命中。
+   * 因此解析侧遇到非法值宁可整条省略，也**不要**填 0。
+   */
+  cachedTokens?: number
 }
 
 // ───────────────────────── 子代理（`task` 工具） ─────────────────────────

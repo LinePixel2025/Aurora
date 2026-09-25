@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http'
 import { describe, expect, it } from 'vitest'
 import { OpenAiCompatProvider, normalizeBaseUrl, statusToCode } from './openai-compat.js'
-import { isLlmError } from './types.js'
+import { isLlmError, type TokenUsage } from './types.js'
 import { collect, createFetchStub, sseLine } from '../testing/fetchStub.js'
 
 /** 启动测试用本地 HTTP 服务并等它真正开始监听 */
@@ -24,6 +24,30 @@ function provider(
     ...overrides,
   })
   return { instance, stub }
+}
+
+/**
+ * 取一轮流式响应里 `done` 事件携带的 usage。
+ *
+ * `extractUsage` 是模块私有函数（**不为测试放宽导出面**），所以走真实链路间接断言：
+ * 桩服务在最后一片里塞进 usage，解析结果只能从 `done` 事件读出来。
+ */
+async function usageFromStream(usage: Record<string, unknown>): Promise<TokenUsage | undefined> {
+  const { instance } = provider([
+    {
+      sseChunks: [
+        sseLine({ choices: [{ delta: { content: '好' } }] }),
+        sseLine({ choices: [{ delta: {}, finish_reason: 'stop' }], usage }),
+        'data: [DONE]\n\n',
+      ],
+    },
+  ])
+  const events = await collect(
+    instance.chat({ model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }] }),
+  )
+  const last = events.at(-1)
+  if (last?.type !== 'done') throw new Error('setup: 未收到 done 事件')
+  return last.usage
 }
 
 describe('normalizeBaseUrl / statusToCode', () => {
@@ -173,6 +197,71 @@ describe('OpenAiCompatProvider.chat', () => {
       type: 'done',
       usage: { promptTokens: 120, completionTokens: 8, totalTokens: 128 },
     })
+  })
+
+  /*
+   * 前缀缓存命中量的解析（docs/06 §21.4）。五条断言覆盖：两种厂商字段名、都缺 → 缺省、
+   * 优先级、非法值 → 缺省。「0 与没回传可区分」是这里的核心口径，所以第三条同时断言
+   * 整个 usage 的键集合（证明是「整条省略」而不是 `cachedTokens: undefined`）。
+   */
+  it('缓存命中：prompt_tokens_details.cached_tokens 解析为 cachedTokens（OpenAI 形态）', async () => {
+    const usage = await usageFromStream({
+      prompt_tokens: 1024,
+      completion_tokens: 8,
+      total_tokens: 1032,
+      prompt_tokens_details: { cached_tokens: 512 },
+    })
+    expect(usage?.cachedTokens).toBe(512)
+  })
+
+  it('缓存命中：只回传 prompt_cache_hit_tokens 也认（DeepSeek 形态）', async () => {
+    const usage = await usageFromStream({
+      prompt_tokens: 1024,
+      completion_tokens: 8,
+      total_tokens: 1032,
+      prompt_cache_hit_tokens: 300,
+    })
+    expect(usage?.cachedTokens).toBe(300)
+  })
+
+  it('缓存命中：两个字段都缺 → cachedTokens 缺省，不是 0', async () => {
+    const usage = await usageFromStream({
+      prompt_tokens: 128,
+      completion_tokens: 8,
+      total_tokens: 136,
+    })
+    expect(usage?.cachedTokens).toBeUndefined()
+    // 整条省略：`toEqual` 连键集合一起比，`cachedTokens: undefined` 这种写法过不了这一条
+    expect(usage).toEqual({ promptTokens: 128, completionTokens: 8, totalTokens: 136 })
+  })
+
+  it('缓存命中：两个字段同时存在 → 以 prompt_tokens_details.cached_tokens 为准', async () => {
+    const usage = await usageFromStream({
+      prompt_tokens: 1024,
+      completion_tokens: 8,
+      total_tokens: 1032,
+      prompt_tokens_details: { cached_tokens: 512 },
+      prompt_cache_hit_tokens: 300,
+    })
+    expect(usage?.cachedTokens).toBe(512)
+  })
+
+  it('缓存命中：cached_tokens 非数字或为负数 → 整条省略（不拿别的数字冒充）', async () => {
+    const notANumber = await usageFromStream({
+      prompt_tokens: 128,
+      completion_tokens: 8,
+      total_tokens: 136,
+      prompt_tokens_details: { cached_tokens: 'abc' },
+    })
+    expect(notANumber?.cachedTokens).toBeUndefined()
+
+    const negative = await usageFromStream({
+      prompt_tokens: 128,
+      completion_tokens: 8,
+      total_tokens: 136,
+      prompt_tokens_details: { cached_tokens: -5 },
+    })
+    expect(negative?.cachedTokens).toBeUndefined()
   })
 
   it('跨 chunk 分片的 JSON 仍能正确解析', async () => {

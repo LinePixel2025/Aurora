@@ -13,6 +13,11 @@
  * 分母（上下文窗口）来自 `llm.providers.<active>.contextWindow`，为 0 = 未知，
  * 同样只显示分子、不显示比例。
  *
+ * 前缀缓存命中量（`latest.cachedTokens`，docs/06 §21.4）是**另一个分子**：命中提示条上那一段
+ * 的百分比分母是**本轮的 `promptTokens`**（命中量 / 送进去的 prompt），
+ * 与上面「已用 / 窗口」的占用百分比不是一回事。字段缺省 = provider 没回传，
+ * 此时那一段**整段不渲染**（绝不写「缓存命中 0」——那会把「没回传」显示成「一条都没命中」）。
+ *
  * 数值全部来自 props，组件只做格式化与配色，不发任何请求。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
@@ -103,6 +108,34 @@ const summary = computed(() => {
   const used = formatTokens(props.latest.promptTokens)
   return props.contextWindow > 0 ? `${used} / ${formatTokens(props.contextWindow)}` : used
 })
+
+/** 最近一轮的缓存命中量；null = provider 没回传这个字段（与「回传了 0」不同） */
+const cachedTokens = computed<number | null>(() => props.latest?.cachedTokens ?? null)
+
+/**
+ * 命中占比（0–100 的整数）；没有命中量、或本轮 `promptTokens` 为 0 / 缺失时返回 null
+ * ——那种情况下只显示绝对数，不编造分母。
+ *
+ * 上限夹到 100：`cached` 是**服务端报的命中数**，正常不会超过 `promptTokens`，
+ * 但桩服务 / 异常网关可能给出不一致的数据，界面不能显示「缓存命中 512（400%）」这种荒谬值。
+ */
+const cachedPercent = computed<number | null>(() => {
+  const cached = cachedTokens.value
+  const prompt = props.latest?.promptTokens ?? 0
+  if (cached === null || prompt <= 0) return null
+  return Math.min(100, Math.round((cached / prompt) * 100))
+})
+
+/**
+ * 缓存命中文案（`chat.context-cache` 锚点）；缺省时为空串 —— 模板据此**整段不渲染**。
+ * 数字用紧凑写法（与折叠态的占用数字同口径），百分比只在能算出分母时附上。
+ */
+const cachedText = computed(() => {
+  const cached = cachedTokens.value
+  if (cached === null) return ''
+  const count = `缓存命中 ${formatTokens(cached)}`
+  return cachedPercent.value === null ? count : `${count}（${cachedPercent.value}%）`
+})
 </script>
 
 <template>
@@ -124,6 +157,15 @@ const summary = computed(() => {
             <dd>
               {{ latest === null ? '—' : formatExact(latest.completionTokens) }}
               <span class="tiny muted">tokens</span>
+            </dd>
+          </div>
+          <!-- 缓存命中（docs/07 §2.3）：缺省 = provider 没回传，整行不渲染（不写「缓存命中 0」） -->
+          <div v-if="cachedText !== ''" class="ctx-row">
+            <dt>缓存命中（最近一轮）</dt>
+            <dd>
+              {{ formatExact(cachedTokens ?? 0) }}
+              <span class="tiny muted">tokens</span>
+              <span v-if="cachedPercent !== null" class="tiny muted">· {{ cachedPercent }}%</span>
             </dd>
           </div>
           <div class="ctx-row">
@@ -179,7 +221,18 @@ const summary = computed(() => {
     >
       <Gauge class="ctx-icon" :size="13" :stroke-width="1.7" aria-hidden="true" />
       <span class="ctx-label tiny">上下文</span>
-      <span class="ctx-value tiny" data-field="chat.context-usage">{{ summary }}</span>
+      <!--
+        缓存命中片段嵌在 `chat.context-usage` **里面**（docs/07 §2.3）：探针读这一条的文案时
+        要能一并看到「缓存命中」，拆成兄弟节点就读不到了。分隔符放在锚点**外面**，
+        让 `chat.context-cache` 的文案就是纯文案本身（没有前导的「·」）。
+      -->
+      <span class="ctx-value tiny" data-field="chat.context-usage">
+        {{ summary }}
+        <template v-if="cachedText !== ''">
+          <span class="ctx-sep" aria-hidden="true"> · </span>
+          <span class="ctx-cache" data-field="chat.context-cache">{{ cachedText }}</span>
+        </template>
+      </span>
       <span v-if="ratio !== null" class="ctx-track" aria-hidden="true">
         <span class="ctx-fill" :style="{ width: `${(ratio * 100).toFixed(1)}%` }" />
       </span>
@@ -262,6 +315,14 @@ const summary = computed(() => {
 
 .ctx-percent {
   flex: 0 0 auto;
+  font-variant-numeric: var(--num-tabular);
+}
+
+/* 缓存命中片段：比占用数字再低一档（它是观测值，不该跟占用抢注意力）；数字同样等宽防抖动 */
+.ctx-sep,
+.ctx-cache {
+  color: var(--text-muted);
+  white-space: nowrap;
   font-variant-numeric: var(--num-tabular);
 }
 

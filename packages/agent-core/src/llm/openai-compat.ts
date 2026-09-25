@@ -421,6 +421,27 @@ function extractFinishReason(payload: unknown): FinishReason | undefined {
   return known.includes(raw as FinishReason) ? (raw as FinishReason) : 'unknown'
 }
 
+/**
+ * 前缀缓存命中量（docs/06 §21.4）：两种厂商形态都认 —— 优先
+ * `prompt_tokens_details.cached_tokens`（OpenAI 形态），否则 `prompt_cache_hit_tokens`（DeepSeek 形态）。
+ *
+ * 非法值（非数字 / 负数 / 非有限值）**整条省略**而不是填 0：
+ * 「回传了 0」（一个也没命中）与「没回传这个字段」（这个 provider 不报缓存）在界面上必须可区分，
+ * 拿别的数字冒充会把「缓存不生效」伪装成「缓存生效但没命中」，是最难查的一类假象。
+ */
+function extractCachedTokens(usage: Record<string, unknown>): number | undefined {
+  const details = usage['prompt_tokens_details']
+  const fromDetails =
+    details && typeof details === 'object'
+      ? (details as Record<string, unknown>)['cached_tokens']
+      : undefined
+  const raw = fromDetails ?? usage['prompt_cache_hit_tokens']
+  if (raw === undefined || raw === null) return undefined
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value < 0) return undefined
+  return value
+}
+
 function extractUsage(payload: unknown): TokenUsage | undefined {
   const usage = (payload as { usage?: Record<string, unknown> } | null)?.usage
   if (!usage || typeof usage !== 'object') return undefined
@@ -428,7 +449,15 @@ function extractUsage(payload: unknown): TokenUsage | undefined {
   const completion = Number(usage['completion_tokens'] ?? 0)
   const total = Number(usage['total_tokens'] ?? prompt + completion)
   if (!Number.isFinite(prompt) || !Number.isFinite(completion)) return undefined
-  return { promptTokens: prompt, completionTokens: completion, totalTokens: total }
+  const cached = extractCachedTokens(usage)
+  return {
+    promptTokens: prompt,
+    completionTokens: completion,
+    totalTokens: total,
+    // 缺省就整条不出现（不是 `cachedTokens: undefined`），与同目录 `done` 事件里
+    // `...(usage === undefined ? {} : { usage })` 同款写法：可选性由「键不存在」表达。
+    ...(cached === undefined ? {} : { cachedTokens: cached }),
+  }
 }
 
 export function statusToCode(status: number): LlmErrorCode {

@@ -133,7 +133,10 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     latest: TokenUsage | null
     /** 本会话累计（逐轮相加） */
     totals: TokenUsage
-  }>({ latest: null, totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } })
+  }>({
+    latest: null,
+    totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0 },
+  })
   /** 已计入 `usage.totals` 的 `(requestId, round)`，防重复累加（同一序号只来一次） */
   const countedUsage = new Set<string>()
 
@@ -280,6 +283,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       case 'usage': {
         // token 用量（docs/06 §16.2）：`latest` 供「上下文占用」展示，`totals` 逐轮累加。
         // 同一 (requestId, round) 只计一次 —— 事件重放 / 迟到事件不该把用量翻倍。
+        // 缓存命中量（docs/06 §21.4）provider 未回传时缺省，累加按 0 计 —— 但不影响
+        // `latest` 上「有没有这个字段」的判定（展示侧靠缺省决定整段渲不渲染）。
         const key = `${event.requestId}#${event.round}`
         if (!countedUsage.has(key)) {
           countedUsage.add(key)
@@ -289,6 +294,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
               promptTokens: usage.value.totals.promptTokens + event.usage.promptTokens,
               completionTokens: usage.value.totals.completionTokens + event.usage.completionTokens,
               totalTokens: usage.value.totals.totalTokens + event.usage.totalTokens,
+              cachedTokens:
+                (usage.value.totals.cachedTokens ?? 0) + (event.usage.cachedTokens ?? 0),
             },
           }
         }
@@ -449,7 +456,10 @@ export function useChat(windowName: WindowName, context: ChatContext) {
 
   /** 切换会话 / 清空会话时复位 token 用量（它记的是「这一个会话」的消耗） */
   function resetUsage(): void {
-    usage.value = { latest: null, totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }
+    usage.value = {
+      latest: null,
+      totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0 },
+    }
     countedUsage.clear()
   }
 
