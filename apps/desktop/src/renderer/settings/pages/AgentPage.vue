@@ -371,6 +371,19 @@ async function openWorkspace(): Promise<void> {
               （大小写不敏感，<code class="mono">*</code> 匹配任意字符、<code class="mono">?</code>
               匹配单字符）：命中即跳过确认卡片，未命中照旧逐次确认；审计日志照写。
             </p>
+            <!--
+              `*` 跨命令分隔符的披露（docs/06 §11.7）：模式是纯文本匹配，`*` 编译成 .*，
+              所以 `;` / `&&` / `|` 对它没有特殊含义 —— 不写清楚，用户会以为 `git status*`
+              只放行 `git status` 这一条命令。
+            -->
+            <p class="tiny muted">
+              <code class="mono">*</code> 也匹配 <code class="mono">;</code>、
+              <code class="mono">&amp;&amp;</code>、<code class="mono">|</code> 等命令分隔符：填
+              <code class="mono">git status*</code> 会连
+              <code class="mono">git status; 任意命令</code> 一起放行。要收窄就写完整命令
+              <code class="mono">git status</code>，或明确到参数级
+              <code class="mono">git log --oneline *</code>。
+            </p>
             <!-- 口径说明（docs/06 §11.7）：这段是本页唯一一处表述，且必须成句完整出现 -->
             <p class="tiny">
               命中这些模式的命令不再弹出确认卡片；这是减少打扰，不是安全加固。该列表只能在这里修改，AI
@@ -413,7 +426,7 @@ async function openWorkspace(): Promise<void> {
                     class="input"
                     type="text"
                     spellcheck="false"
-                    placeholder="例如 git status*（全串匹配，不区分大小写）"
+                    placeholder="例如 git status*（全串匹配，不区分大小写；* 也匹配 ; &amp;&amp; |）"
                     @input="allowPatternHint = ''"
                     @keydown.enter="addAllowPattern"
                   />
