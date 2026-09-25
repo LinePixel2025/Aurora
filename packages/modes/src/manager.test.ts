@@ -83,7 +83,12 @@ describe('ModeManager 注册与摘要', () => {
       guideResumeable: true,
     })
     expect(classroom?.guideSteps).toHaveLength(4)
-    expect(list.find((m) => m.id === 'work')?.placeholder).toBe(true)
+    expect(list.find((m) => m.id === 'work')).toMatchObject({
+      displayName: '工作模式',
+      placeholder: false,
+      guideResumeable: true,
+    })
+    expect(list.find((m) => m.id === 'code')?.placeholder).toBe(true)
   })
 
   it('重复注册被忽略', async () => {
@@ -251,6 +256,6 @@ describe('ModeManager 引导状态', () => {
     await manager.init(ctx)
     expect(manager.systemPrompt()).toContain('ClassRoom Mode')
     await manager.setCurrent('work')
-    expect(manager.systemPrompt()).toContain('Work Mode')
+    expect(manager.systemPrompt()).toContain('工作模式')
   })
 })

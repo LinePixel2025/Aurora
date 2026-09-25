@@ -1,22 +1,53 @@
-/** Work Mode —— v1 占位实现（docs/05 §4），能力位留给 P7。 */
-import type { IMode, ModeGuide } from '@aurora/shared'
+/**
+ * Work Mode（docs/05 §4）—— BetaV2 初步实装。
+ *
+ * 面向办公场景：Office 文档 / 表格 / 演示文稿 / PDF 的处理、总结与生成。
+ * 引导两步（工作目录 → 确认完成）；系统提示词指导 Agent 用 PowerShell COM
+ * 自动化 Office，并强调覆盖 / 删除 / 移动前确认、产出文件落入工作目录、
+ * 本模式不含课堂 / 课程表 / 课件分类功能（那些属于 ClassRoom Mode）。
+ */
+import type { IMode, ModeContext, ModeGuide, Settings } from '@aurora/shared'
 
 export const WORK_GUIDE_ID = 'work-setup'
+export const DEFAULT_WORK_DIR_NAME = 'Aurora/工作目录'
+
+/** 默认工作目录：`<home>/Aurora/工作目录`（与 classroom 的感知文件夹同一套路） */
+export function defaultWorkspaceDir(ctx: ModeContext): string {
+  return ctx.fs.resolveUserPath(DEFAULT_WORK_DIR_NAME)
+}
 
 export const workGuide: ModeGuide = {
   id: WORK_GUIDE_ID,
   resumeable: true,
   steps: [
     {
+      id: 'workspace-dir',
+      field: 'modes.work.workspaceDir',
+      question:
+        '先设置「工作目录」：文档、表格、演示文稿等产出文件默认保存在这里。\n默认是 用户目录\\Aurora\\工作目录，你也可以直接回复一个绝对路径。',
+      validate(answer, ctx) {
+        if (answer.trim() === '') return '路径不能为空'
+        const parsed = parsePathAnswer(answer, ctx)
+        if (parsed === '') return '路径不能为空'
+        return undefined
+      },
+      apply(answer, ctx) {
+        const target = parsePathAnswer(answer, ctx)
+        ctx.settings.mutate((draft) => {
+          draft.modes.work.workspaceDir = target
+        })
+      },
+    },
+    {
       id: 'acknowledge',
       field: 'modes.work.guideCompleted',
       question:
-        'Work Mode 目前处于建设中：后续会提供日程 / 邮件 / 待办、文档摘要与会议纪要能力。\n回复「知道了」即可完成本次引导。',
+        '工作模式配置完成：产出文件会保存到上面设定的工作目录，之后可随时在设置中修改。\n回复「知道了」结束本次引导。',
       validate(answer) {
         return answer.trim() === '' ? '请回复「知道了」以继续' : undefined
       },
       apply() {
-        /* 占位模式无需写入额外配置 */
+        /* guideCompleted 由 GuideRunner 在全部步骤完成时统一标记 */
       },
     },
   ],
@@ -25,22 +56,70 @@ export const workGuide: ModeGuide = {
 export function createWorkMode(): IMode {
   return {
     id: 'work',
-    displayName: 'Work Mode',
-    description: '办公场景（功能建设中）：日程、文档摘要、会议纪要等能力将在后续版本提供。',
-    placeholder: true,
+    displayName: '工作模式',
+    description: '办公场景：Office 文档、表格、演示文稿与 PDF 的处理、总结与生成。',
+    placeholder: false,
     guide: workGuide,
+    perceptionSubscriptions: [{ kind: 'clock', intervalMs: 60_000 }],
+
     async onActivate(ctx) {
-      ctx.logger.info('Work Mode 已激活（占位实现）')
+      const workspaceDir = ctx.settings.get().modes.work.workspaceDir
+      if (workspaceDir === '') {
+        ctx.logger.info('工作模式已激活（尚未配置工作目录）')
+        return
+      }
+      try {
+        // 工作目录按需创建，避免用户手动建目录（引导 apply 是同步契约，只能在激活钩子里建）
+        await ctx.fs.ensureDir(workspaceDir)
+        ctx.logger.info('工作模式已激活', { workspaceDir })
+      } catch (error) {
+        // 目录创建失败不阻断模式激活（docs/02 §7 降级原则）
+        ctx.logger.warn('工作目录创建失败', { workspaceDir, error: String(error) })
+      }
     },
+
     async onDeactivate(ctx) {
-      ctx.logger.info('Work Mode 已停用')
+      ctx.logger.info('工作模式已停用')
     },
-    systemPrompt() {
+
+    systemPrompt(ctx) {
+      const workspaceDir = ctx.settings.get().modes.work.workspaceDir
+      const dir = workspaceDir === '' ? '（尚未配置）' : workspaceDir
+      const saveLine =
+        workspaceDir === ''
+          ? '产出文件默认保存到工作目录（尚未配置，可在设置或引导中指定）。'
+          : `产出文件（生成的文档 / 表格 / 导出结果）默认保存到工作目录：${workspaceDir}`
       return [
-        '当前模式：Work Mode（办公，功能建设中）。',
-        '你可以正常对话与答疑；与该模式相关的日程 / 邮件 / 待办能力尚未接入，',
-        '若用户请求这些功能，请说明当前版本暂未提供，并给出可用的替代做法。',
+        '当前模式：工作模式（办公场景）。',
+        '你是一位办公文档助手：擅长 Word 文档、Excel 表格、PowerPoint 演示文稿与 PDF 的处理、总结与生成。',
+        `工作目录：${dir}`,
+        '工作方式：用 run_command 执行 PowerShell 完成任务，Office 自动化走 COM（如 New-Object -ComObject Excel.Application），',
+        '配合 read_file / write_file / list_dir 读取与生成文件；操作要点与常见坑参考 office-work 技能。',
+        saveLine,
+        '安全约束：覆盖 / 删除 / 移动用户的文件之前，必须先说明将要做什么并等待用户确认。',
+        '职责边界：本模式不含课堂 / 课程表 / 课件分类功能——那些属于 ClassRoom Mode；',
+        '若用户提出这类需求，请说明边界并引导其切换模式。',
       ].join('\n')
     },
   }
+}
+
+// ───────────────────────── 引导答案解析 ─────────────────────────
+
+function parsePathAnswer(answer: string, ctx: ModeContext): string {
+  const trimmed = answer.trim()
+  if (isDefaultAnswer(trimmed)) return defaultWorkspaceDir(ctx)
+  return ctx.fs.resolveUserPath(trimmed)
+}
+
+function isDefaultAnswer(answer: string): boolean {
+  const normalized = answer.trim().toLowerCase()
+  return normalized === '' || normalized === '默认' || normalized === 'default'
+}
+
+/** 供设置页展示：当前配置是否已具备办公场景的前提条件。 */
+export function workReadiness(settings: Settings): { ready: boolean; missing: string[] } {
+  const missing: string[] = []
+  if (settings.modes.work.workspaceDir.trim() === '') missing.push('工作目录')
+  return { ready: missing.length === 0, missing }
 }

@@ -11,7 +11,7 @@ import {
   createClassroomMode,
   classroomReadiness,
 } from './classroom.js'
-import { createWorkMode } from './work.js'
+import { WORK_GUIDE_ID, createWorkMode, workGuide, workReadiness } from './work.js'
 import { createCodeMode } from './code.js'
 
 function createContext(input: Settings = createDefaultSettings()) {
@@ -255,18 +255,127 @@ describe('ClassRoom 模式行为', () => {
   })
 })
 
-describe('占位模式', () => {
-  it('Work / Code 标记为占位且提示词说明建设中', () => {
-    for (const mode of [createWorkMode(), createCodeMode()]) {
-      expect(mode.placeholder).toBe(true)
-      expect(mode.systemPrompt({} as ModeContext)).toContain('建设中')
-      expect(mode.guide?.steps).toHaveLength(1)
+const workStep = (id: string) => {
+  const found = workGuide.steps.find((s) => s.id === id)
+  if (!found) throw new Error(`缺少引导步骤 ${id}`)
+  return found
+}
+
+describe('Work 引导定义', () => {
+  it('引导步骤为两步（工作目录 + 确认）且可续接', () => {
+    expect(workGuide.id).toBe(WORK_GUIDE_ID)
+    expect(workGuide.resumeable).toBe(true)
+    expect(workGuide.steps.map((s) => s.id)).toEqual(['workspace-dir', 'acknowledge'])
+  })
+
+  it('每一步都声明了配置字段与提问文案', () => {
+    for (const item of workGuide.steps) {
+      expect(item.field.length).toBeGreaterThan(0)
+      expect(item.question.length).toBeGreaterThan(0)
     }
+  })
+})
+
+describe('Work 工作目录', () => {
+  it('回复「默认」使用 用户目录\\Aurora\\工作目录', () => {
+    const { ctx, settings } = createContext()
+    expect(workStep('workspace-dir').validate?.('默认', ctx)).toBeUndefined()
+    workStep('workspace-dir').apply?.('默认', ctx)
+    expect(settings.modes.work.workspaceDir).toBe('C:\\Users\\tester\\Aurora\\工作目录')
+  })
+
+  it('接受绝对路径并原样写入', () => {
+    const { ctx, settings } = createContext()
+    workStep('workspace-dir').apply?.('D:\\办公', ctx)
+    expect(settings.modes.work.workspaceDir).toBe('D:\\办公')
+  })
+
+  it('空输入被拒绝', () => {
+    const { ctx } = createContext()
+    expect(workStep('workspace-dir').validate?.('   ', ctx)).toContain('不能为空')
+  })
+
+  it('确认步骤任意非空回答均通过', () => {
+    const { ctx } = createContext()
+    expect(workStep('acknowledge').validate?.('知道了', ctx)).toBeUndefined()
+    expect(workStep('acknowledge').validate?.('好', ctx)).toBeUndefined()
+    expect(workStep('acknowledge').validate?.('   ', ctx)).toContain('知道了')
+  })
+})
+
+describe('Work 模式行为', () => {
+  it('标记为非占位、感知订阅为 60s 时钟', () => {
+    const mode = createWorkMode()
+    expect(mode.placeholder).toBe(false)
+    expect(mode.displayName).toBe('工作模式')
+    expect(mode.perceptionSubscriptions).toEqual([{ kind: 'clock', intervalMs: 60_000 }])
+  })
+
+  it('激活时创建工作目录', async () => {
+    const settings = createDefaultSettings()
+    settings.modes.work.workspaceDir = 'D:\\Aurora\\工作目录'
+    const { ctx, dirs } = createContext(settings)
+    await createWorkMode().onActivate(ctx)
+    expect(dirs.has('D:\\Aurora\\工作目录')).toBe(true)
+  })
+
+  it('未配置工作目录时激活不报错', async () => {
+    const { ctx } = createContext()
+    await expect(createWorkMode().onActivate(ctx)).resolves.toBeUndefined()
+  })
+
+  it('工作目录创建失败不阻断激活', async () => {
+    const settings = createDefaultSettings()
+    settings.modes.work.workspaceDir = 'D:\\Aurora\\工作目录'
+    const { ctx, logger } = createContext(settings)
+    const failing: ModeContext = {
+      ...ctx,
+      fs: {
+        ...ctx.fs,
+        ensureDir: () => Promise.reject(new Error('EACCES')),
+      },
+    }
+    await expect(createWorkMode().onActivate(failing)).resolves.toBeUndefined()
+    expect(logger.entries.some((l) => l.includes('工作目录创建失败'))).toBe(true)
+  })
+
+  it('系统提示词包含办公职责、工作目录、确认约束与 ClassRoom 边界', () => {
+    const settings = createDefaultSettings()
+    settings.modes.work.workspaceDir = 'D:\\Aurora\\工作目录'
+    const { ctx } = createContext(settings)
+    const prompt = createWorkMode().systemPrompt(ctx)
+    expect(prompt).toContain('工作模式')
+    expect(prompt).toContain('D:\\Aurora\\工作目录')
+    expect(prompt).toContain('PowerShell')
+    expect(prompt).toContain('确认')
+    expect(prompt).toContain('ClassRoom Mode')
+  })
+
+  it('未配置工作目录时提示词声明尚未配置', () => {
+    const { ctx } = createContext()
+    const prompt = createWorkMode().systemPrompt(ctx)
+    expect(prompt).toContain('尚未配置')
+  })
+
+  it('workReadiness 指出缺失项', () => {
+    const settings = createDefaultSettings()
+    expect(workReadiness(settings)).toEqual({ ready: false, missing: ['工作目录'] })
+    settings.modes.work.workspaceDir = 'D:\\x'
+    expect(workReadiness(settings)).toEqual({ ready: true, missing: [] })
+  })
+})
+
+describe('占位模式', () => {
+  it('Code 标记为占位且提示词说明建设中', () => {
+    const mode = createCodeMode()
+    expect(mode.placeholder).toBe(true)
+    expect(mode.systemPrompt({} as ModeContext)).toContain('建设中')
+    expect(mode.guide?.steps).toHaveLength(1)
   })
 
   it('占位模式激活 / 停用不抛错', async () => {
     const { ctx } = createContext()
-    await expect(createWorkMode().onActivate(ctx)).resolves.toBeUndefined()
+    await expect(createCodeMode().onActivate(ctx)).resolves.toBeUndefined()
     await expect(createCodeMode().onDeactivate(ctx)).resolves.toBeUndefined()
   })
 })

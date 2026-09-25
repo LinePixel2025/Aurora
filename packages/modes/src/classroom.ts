@@ -155,13 +155,30 @@ export function createClassroomMode(): IMode {
       const classroom = settings.modes.classroom
       const subjects = classroom.subjects.map((s) => s.name).join('、')
       const watchDir = classroom.watchDir === '' ? '（尚未配置）' : classroom.watchDir
+      const scheduleLine =
+        classroom.schedule.provider === 'classisland'
+          ? '课程表：来自 ClassIsland 桥接插件——感知摘要包含今日课程与当前 / 下节课状态，回答课程安排时以其为准。'
+          : `课程表：手动维护（${classroom.schedule.lessons.length} 节课）`
       return [
         '当前模式：ClassRoom Mode（课堂学习）。',
         `智慧感知文件夹：${watchDir}`,
         `科目列表：${subjects || '（尚未配置）'}`,
-        `课前提醒：${classroom.preClassReminder ? '已开启' : '已关闭'}（课程表：${classroom.schedule.lessons.length} 节课）`,
+        `课前提醒：${classroom.preClassReminder ? '已开启' : '已关闭'}`,
+        scheduleLine,
         '职责：帮助学生把资料归类到正确科目；回答时优先引用上述科目；',
         '涉及移动 / 删除文件的操作必须先说明将要做什么并等待用户确认。',
+        '',
+        '你可以修改的 ClassRoom 设置（用 set_setting 工具，改动即时生效并按需重挂监听）：',
+        '- modes.classroom.watchDir：智慧感知文件夹路径；',
+        '- modes.classroom.subjects：科目列表（每项含 name / folder / keywords）；',
+        '- modes.classroom.schedule.provider：课程表来源（manual / classisland）；',
+        '- modes.classroom.schedule.lessons：手动课程表（weekday / startTime / endTime / subject）；',
+        '- modes.classroom.schedule.classisland.endpoint：ClassIsland 桥接数据源（文件路径或 HTTP 端点）；',
+        '- modes.classroom.preClassReminder：课前提醒开关；',
+        '- modes.classroom.preClassOpenFolder：课前提醒时是否自动打开科目文件夹；',
+        '- modes.classroom.classification.autoMove：判定成功后是否自动移动文件；',
+        '- modes.classroom.classification.confidenceThreshold：分类置信度阈值；',
+        '- modes.classroom.classification.fallbackFolder：待分类兜底目录。',
       ].join('\n')
     },
   }

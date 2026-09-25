@@ -18,6 +18,14 @@ when_to_use: 用户询问课程安排、下一节课、或需要触发课前提�
     （见仓库 `integrations/classisland-bridge/`）；桥接不可用时该列表为空。
 - `now`：当前本地时间
 
+## ClassIsland 联动（BetaV2）
+
+当 `provider = "classisland"` 时，课程表由 ClassIsland 桥接插件写出的本地 JSON 提供
+（`schedule.json`，见仓库 `integrations/classisland-bridge/`）。桥接插件 v2 起还会在同目录
+维护 `status.json`（`onClass` / `currentSubject` / `nextSubject` / `nextStartTime`），
+因此**当前正在上的课与下节课可直接从感知摘要读取**（Aurora 已透出该状态），
+不必根据 `now` 自行推算；`status.json` 缺失或滞后时，才按上面的步骤从课表推算。
+
 ## 步骤
 
 1. 过滤出今天（`weekday` 匹配）的课程，按 `startTime` 排序。

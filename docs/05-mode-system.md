@@ -1,6 +1,6 @@
 # 05 · 模式系统与 ClassRoom Mode 设计
 
-状态：`已定稿`（ClassRoom 部分为 v1 基线；Work/Code 为接口预留）
+状态：`已定稿`（ClassRoom 为 v1 基线 + BetaV2 增补；Work 为 BetaV2 初步实装；Code 为接口预留）
 
 ## 1. 模式框架（packages/modes）
 
@@ -41,7 +41,7 @@ export interface ModeGuide {
 
 ### 1.2 ModeManager 职责
 
-- 注册表：`register(mode)`；启动时装配全部三个模式（classroom 为完整实现，work / code 为占位实现）。
+- 注册表：`register(mode)`；启动时装配全部三个模式（classroom 为完整实现，work 为初步实装，code 为占位实现）。
 - 切换流程：前置校验 → 持久化 `modes.current` → `onDeactivate(旧)` → `onActivate(新)` → 广播 `mode:changed` → 若新模式 `guide` 未完成，触发主动引导（见 06 §9）。
 - 约束：同一时刻仅一个模式激活；切换失败回滚并提示。
 
@@ -59,6 +59,14 @@ export interface ModeGuide {
 ② 科目列表（默认模板：语文/数学/英语/物理/化学/生物/历史/地理/政治 + 自定义增删）
 ③ 每科目标文件夹（默认 <感知文件夹>/分类/<科目>）
 ④ 是否开启课前提醒（手动课程表）
+→ 完成
+```
+
+**Work Mode 引导步骤（BetaV2 起实装）**：
+
+```
+① 工作目录（默认 %USERPROFILE%\Aurora\工作目录，可改；激活时不存在则自动创建）
+② 确认完成（回复「知道了」，置 modes.work.guideCompleted）
 → 完成
 ```
 
@@ -206,20 +214,78 @@ ClassIsland ──(C# 插件)──▶ 本地 JSON 契约 ──(读文件 / 读
 > 查不到就**跳过该节次**而不是编造名字。
 > Aurora 侧契约不变，插件端调整范围限于 `Plugin.cs`。
 
+**桥接插件 v2（BetaV2）**：
+
+- **status.json（当前 / 下节课状态）**：与 `schedule.json` 同目录、原子写，30s tick 与课程切换
+  事件时刷新——`{ version, generatedAt, onClass, currentSubject, nextSubject, nextStartTime }`。
+  Aurora 侧 `main/classisland.ts` 读取并经 `getStatus()` 透出（`classisland:status` IPC），
+  交互窗右栏的「当前 / 下节课」卡直接消费；课程类问题优先信 status，缺失时回退按课表推算。
+- **ClassIsland 自身的提醒能力**：课程切换（OnClass）与课前 N 分钟
+  （`BridgeOptions.RemindBeforeClassMinutes`，默认 2，bridge.json 可配）通过 ClassIsland 的
+  通知服务（`INotificationService`）弹课程提醒；通知服务不可用时**降级**为仅写 status.json +
+  日志告警。它与 Aurora 自己的课前提醒相互独立、可并存。
+
 **已知未实现**：单双周、临时调课、班级区分等 ClassIsland 高级课表特性未映射到 Aurora 的
 四字段 `Lesson` 模型；OCR 仍未启用。
 
-## 4. Work Mode / Code Mode 接口预留
+### 3.5 Agent 可修改的 ClassRoom 设置（BetaV2）
 
-v1 两个模式均以**占位实现**注册（激活后仅注入提示词片段与占位引导），保证模式切换、引导、提示词注入全链路可用；具体能力通过 06 文档的扩展点预留：
+ClassRoom 的系统提示词会附上「你可以修改的 ClassRoom 设置」清单，指导 Agent 用 `set_setting`
+工具代用户调整；改动**即时生效**（watchDir / subjects / classisland.endpoint 变化会重挂文件
+监听、重建数据源）：
 
-| 模式 | v1 行为 | 预留能力位（P7 实现） |
+| 配置路径 | 含义 |
+|---|---|
+| `modes.classroom.watchDir` | 智慧感知文件夹路径 |
+| `modes.classroom.subjects` | 科目列表（每项 name / folder / keywords） |
+| `modes.classroom.schedule.provider` | 课程表来源（`manual` / `classisland`） |
+| `modes.classroom.schedule.lessons` | 手动课程表（weekday / startTime / endTime / subject） |
+| `modes.classroom.schedule.classisland.endpoint` | ClassIsland 桥接数据源（文件路径或 HTTP 端点） |
+| `modes.classroom.preClassReminder` | 课前提醒开关 |
+| `modes.classroom.preClassOpenFolder` | 课前提醒是否自动打开科目文件夹 |
+| `modes.classroom.classification.autoMove` | 判定成功后是否自动移动文件 |
+| `modes.classroom.classification.confidenceThreshold` | 分类置信度阈值（低于则进「待分类」） |
+| `modes.classroom.classification.fallbackFolder` | 待分类兜底目录 |
+
+`schedule.provider = classisland` 时，课程表来自 ClassIsland 桥接插件，感知摘要包含今日课程与
+当前 / 下节课状态（见 §3.4 v2）；此时课前提醒改用桥接课表，手动课表条目不再参与。
+
+## 4. Work Mode（BetaV2 初步实装）与 Code Mode（占位）
+
+### 4.1 Work Mode
+
+v1 占位的 Work Mode 在 BetaV2 完成**初步实装**（`packages/modes/src/work.ts`，`placeholder: false`，displayName「工作模式」）：
+
+- **引导（`work-setup`，两步、可续接）**：
+  1. 询问工作目录 → `modes.work.workspaceDir`（默认 `%USERPROFILE%\Aurora\工作目录`，可回复
+     绝对路径；引导的 `apply` 是同步契约，目录创建在模式激活时经 `ModeFsPort.ensureDir` 完成，
+     失败只告警、不阻断激活）；
+  2. 确认完成（回复「知道了」）→ 置 `modes.work.guideCompleted`。
+- **职责（systemPrompt）**：办公文档助手——擅长 Word 文档、Excel 表格、PowerPoint 演示文稿与
+  PDF 的处理、总结与生成；指导 Agent 用 `run_command` 执行 PowerShell 完成 Office 自动化
+  （COM：`New-Object -ComObject Excel.Application` 等，操作要点见 `skills/office-work`），
+  配合 `read_file` / `write_file` / `list_dir` 完成任务；**覆盖 / 删除 / 移动文件前必须先向
+  用户确认**；产出文件默认保存到工作目录。
+- **感知订阅**：`[{ kind: 'clock', intervalMs: 60000 }]`。
+- **与 ClassRoom 的功能边界**：工作模式**不包含**课堂 / 课程表 / 课件分类功能——那些属于
+  ClassRoom Mode；提示词明确声明边界并引导用户切换模式。切换到 Work 后，渲染层也不再渲染
+  课堂相关卡片（见 07 文档的主界面右栏规格）。
+- 局限：日程 / 邮件 / 待办、深度文档排版等能力仍未提供；`workReadiness()` 导出供设置页展示
+  缺失项（工作目录未配置不阻塞对话，只是产出落点未定）。
+
+### 4.2 Code Mode（仍为占位）
+
+Code Mode 保持**占位实现**：引导一步（确认知晓），提示词说明「功能建设中」；工作区项目识别、
+Git 状态感知、终端 / 命令执行工具组留待后续版本（能力位通过 06 文档的扩展点预留）。
+
+| 模式 | 当前状态 | 预留能力位（后续实现） |
 |---|---|---|
-| Work Mode | 占位注册，提示词说明“功能建设中” | 日程 / 邮件 / 待办、文档摘要、会议纪要 —— 对应 Skill / MCP 扩展点 |
+| Work Mode | 初步实装（guide + 办公 systemPrompt + workspaceDir） | 日程 / 邮件 / 待办、深度文档排版、会议纪要 |
 | Code Mode | 占位注册，提示词说明“功能建设中” | 工作区项目识别、Git 状态感知、终端 / 命令执行工具组 |
 
 ## 5. 模式相关配置（详见 08 §1）
 
 - `modes.current`：当前模式
-- `modes.classroom.*`：watchDir、subjects（科目→文件夹映射）、schedule（课程表）、preClassReminder、guideCompleted
-- `modes.work.*` / `modes.code.*`：v1 仅 `guideCompleted`
+- `modes.classroom.*`：watchDir、subjects（科目→文件夹映射）、schedule（课程表）、preClassReminder、preClassOpenFolder、classification（autoMove / confidenceThreshold / fallbackFolder）、guideCompleted
+- `modes.work.*`：guideCompleted、workspaceDir（BetaV2 起，办公工作目录）
+- `modes.code.*`：仅 `guideCompleted`（占位）

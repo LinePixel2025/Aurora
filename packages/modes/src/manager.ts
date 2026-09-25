@@ -255,8 +255,9 @@ export class ModeManager {
   }
 
   /**
-   * 模式核心能力前提。P1 只对 classroom 有实质校验（感知文件夹 + 科目），
-   * work / code 为占位模式，暂视为就绪。
+   * 模式核心能力前提。实质校验只做 classroom（感知文件夹 + 科目）；
+   * work 的 workspaceDir 未配置也能正常对话（产出落点待定），故暂视为就绪；
+   * 更细的缺失项由 classroomReadiness / workReadiness 供设置页展示。
    */
   private readiness(id: ModeId, settings: Settings): { ready: boolean; hint?: string } {
     if (id !== 'classroom') return { ready: true }

@@ -144,15 +144,29 @@ describe('GuideRunner', () => {
     expect(result.session.step?.stepId).toBe('subjects')
   })
 
-  it('占位模式引导各含一步并可完成', async () => {
+  it('work 引导两步：带当前值、逐步写入并置 guideCompleted', async () => {
     const { manager, runner, ctx, settings } = createHarness()
     await manager.init(ctx)
+    settings.modes.work.workspaceDir = 'D:\\Aurora\\工作目录'
+
     const session = runner.start('work')
-    expect(session.total).toBe(1)
-    const result = runner.answer('work', '知道了')
+    expect(session.total).toBe(2)
+    expect(session.step?.field).toBe('modes.work.workspaceDir')
+    expect(session.step?.currentValue).toBe('D:\\Aurora\\工作目录')
+
+    let result = runner.answer('work', 'D:\\办公')
+    expect(result.error).toBeUndefined()
+    expect(result.session.nextIndex).toBe(1)
+    expect(settings.modes.work.workspaceDir).toBe('D:\\办公')
+
+    result = runner.answer('work', '知道了')
     expect(result.session.completed).toBe(true)
     expect(settings.modes.work.guideCompleted).toBe(true)
+  })
 
+  it('code 占位引导一步并可完成', async () => {
+    const { manager, runner, ctx, settings } = createHarness()
+    await manager.init(ctx)
     settings.modes.current = 'code'
     runner.start('code')
     runner.answer('code', '知道了')

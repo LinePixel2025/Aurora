@@ -160,19 +160,25 @@ export class GuideRunner {
     }
   }
 
-  /** 让引导文案能显示当前值（如已有感知文件夹）。 */
+  /** 让引导文案能显示当前值（如已有感知文件夹 / 工作目录）。 */
   private currentValueFor(id: ModeId, field: string): string | undefined {
     const settings: Settings = this.ctx.settings.get()
-    if (id !== 'classroom') return undefined
-    if (field === 'modes.classroom.watchDir') {
-      const value = settings.modes.classroom.watchDir
+    if (id === 'classroom') {
+      if (field === 'modes.classroom.watchDir') {
+        const value = settings.modes.classroom.watchDir
+        return value === '' ? undefined : value
+      }
+      if (field === 'modes.classroom.subjects') {
+        return settings.modes.classroom.subjects.map((s) => s.name).join('、') || undefined
+      }
+      if (field === 'modes.classroom.preClassReminder') {
+        return settings.modes.classroom.preClassReminder ? '是' : '否'
+      }
+      return undefined
+    }
+    if (id === 'work' && field === 'modes.work.workspaceDir') {
+      const value = settings.modes.work.workspaceDir
       return value === '' ? undefined : value
-    }
-    if (field === 'modes.classroom.subjects') {
-      return settings.modes.classroom.subjects.map((s) => s.name).join('、') || undefined
-    }
-    if (field === 'modes.classroom.preClassReminder') {
-      return settings.modes.classroom.preClassReminder ? '是' : '否'
     }
     return undefined
   }
