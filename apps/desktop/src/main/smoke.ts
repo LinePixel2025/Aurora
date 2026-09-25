@@ -372,9 +372,15 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     record('classroom 变为就绪', readyList?.find((m) => m.id === 'classroom')?.ready === true, '')
     expectOk('mode.resetGuide', await window.aurora.mode.resetGuide('classroom'))
 
-    // 5. Skill 清单
+    // 5. Skill 清单（内置技能会随版本新增，断言名单存在而非硬编码总数）
     const skills = expectOk('skills.list', await window.aurora.skills.list())
-    record('skills.list 返回 3 个内置技能', Array.isArray(skills) && skills.length === 3, skills ? skills.map((s) => s.name).join(',') : '')
+    const skillNames = Array.isArray(skills) ? skills.map((s) => s.name) : []
+    const requiredSkills = ['file-classify', 'system-status', 'timetable']
+    record(
+      'skills.list 含全部基础内置技能',
+      requiredSkills.every((name) => skillNames.includes(name)),
+      skillNames.join(','),
+    )
 
     // 6. 系统感知
     const summary = expectOk('perception.summary', await window.aurora.perception.summary())
