@@ -32,7 +32,7 @@ doom-loop 检测、显式 `cache_control`、`websearch` / `question` / `plan` �
 
 ## 完成标准
 
-- [ ] `pnpm typecheck && pnpm test && pnpm build` 全绿，且新增用例覆盖：
+- [x] `pnpm typecheck && pnpm test && pnpm build` 全绿，且新增用例覆盖：
       glob 模式编译器、`edit_file` 的 EOL 保真与唯一性拒绝、allow 模式匹配器、
       配置迁移 v11 → v12（幂等）、缓存命中量的解析（两种字段名）、系统提示词静态前缀逐字节稳定。
 - [ ] `$env:AURORA_SMOKE='1'; pnpm dev` 的 `%TEMP%\aurora-smoke-logs\AURORA_SMOKE_RESULT` 无 FAIL，
