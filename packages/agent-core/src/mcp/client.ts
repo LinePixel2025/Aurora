@@ -2,10 +2,12 @@
  * MCP 客户端（docs/06 §7）：把一次 MCP 连接封装成"工具清单 + 工具调用"。
  *
  * v1 协议子集：`initialize` → `notifications/initialized` → `tools/list` → `tools/call`。
+ * `tools/list` 跟随 `nextCursor` 自动翻页（上限见 `MCP_TOOLS_LIST_MAX_PAGES`）。
  * 失败一律以 `McpError` 抛出，由 `McpClientHub` 降级为状态灯 + 日志。
  */
 import type { LlmToolParameterSchema } from '../llm/types.js'
 import type { ToolResult } from '../tools/registry.js'
+import { createNoopLogger, type Logger } from '@aurora/shared'
 import { McpError, toMcpError } from './errors.js'
 import { JsonRpcClient, type JsonRpcNotification, type McpTransport } from './jsonrpc.js'
 
@@ -13,6 +15,9 @@ import { JsonRpcClient, type JsonRpcNotification, type McpTransport } from './js
 export const MCP_PROTOCOL_VERSION = '2024-11-05'
 
 export const MCP_CLIENT_INFO = { name: 'aurora', version: '0.3.0' } as const
+
+/** tools/list 分页防护上限（docs/06 §7）：超出即停止翻页并记 warn，防止恶意 / 异常服务端拖垮建连 */
+export const MCP_TOOLS_LIST_MAX_PAGES = 20
 
 export interface McpToolInfo {
   name: string
@@ -25,6 +30,8 @@ export interface McpClientOptions {
   server: string
   transport: McpTransport
   timeoutMs?: number
+  /** 日志（分页防护等告警）；缺省为空实现 */
+  logger?: Logger
   onNotification?(notification: JsonRpcNotification): void
 }
 
@@ -37,6 +44,7 @@ interface RawTool {
 export class McpClient {
   readonly server: string
   private readonly rpc: JsonRpcClient
+  private readonly logger: Logger
   private tools: McpToolInfo[] = []
   private serverInfo: { name: string; version: string } | undefined
   private protocolVersion = MCP_PROTOCOL_VERSION
@@ -45,6 +53,7 @@ export class McpClient {
 
   constructor(options: McpClientOptions) {
     this.server = options.server
+    this.logger = options.logger ?? createNoopLogger()
     this.rpc = new JsonRpcClient({
       transport: options.transport,
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
@@ -95,10 +104,35 @@ export class McpClient {
     await this.refreshTools()
   }
 
-  /** 重新拉取工具清单（也用于 `notifications/tools/list_changed`）。 */
+  /**
+   * 重新拉取工具清单（也用于 `notifications/tools/list_changed`）。
+   * 跟随响应的 `nextCursor` 自动翻页并合并各页工具（docs/06 §7），
+   * 防护上限 `MCP_TOOLS_LIST_MAX_PAGES` 页——超出即停止并记 warn，不静默丢工具也不无限请求。
+   */
   async refreshTools(): Promise<McpToolInfo[]> {
-    const result = (await this.rpc.request('tools/list', {})) as { tools?: unknown }
-    const raw = Array.isArray(result?.tools) ? (result.tools as RawTool[]) : []
+    const raw: RawTool[] = []
+    let cursor: string | undefined
+    let pages = 0
+    for (;;) {
+      const result = (await this.rpc.request(
+        'tools/list',
+        cursor === undefined ? {} : { cursor },
+      )) as { tools?: unknown; nextCursor?: unknown }
+      if (Array.isArray(result?.tools)) raw.push(...(result.tools as RawTool[]))
+      pages += 1
+      const next = result?.nextCursor
+      cursor = typeof next === 'string' && next !== '' ? next : undefined
+      if (cursor === undefined) break
+      if (pages >= MCP_TOOLS_LIST_MAX_PAGES) {
+        // cursor 非凭据，但同样只落形状不落值
+        this.logger.warn('MCP tools/list 分页超过上限，已停止翻页', {
+          server: this.server,
+          pages,
+          nextCursorLength: cursor.length,
+        })
+        break
+      }
+    }
     this.tools = raw
       .filter((tool): tool is RawTool & { name: string } => typeof tool.name === 'string')
       .map((tool) => ({

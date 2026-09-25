@@ -3,8 +3,8 @@
  *
  * v1（P3）范围：**只注入指令，不执行脚本**。
  * `use_skill` 把目标技能的正文指令与目录返回给模型，由模型按指令行事；
- * 目录下若有 `scripts/`，只在文本里提示模型向用户说明用途，
- * 因此本模块没有任何命令执行路径，也不需要用户确认。
+ * 目录下若有 `scripts/`，在文本里列出脚本清单并提示模型向用户说明用途、
+ * 征得同意——本模块没有任何命令执行路径，也不需要用户确认。
  */
 import type { SkillsRegistry } from './registry.js'
 import type { ToolDefinition, ToolRegistry } from '../tools/registry.js'
@@ -52,7 +52,13 @@ export class SkillsBridge {
   render(skillName: string): string | undefined {
     const skill = this.registry.get(skillName)
     if (skill === undefined) return undefined
-    return renderSkill(skill.name, skill.description, skill.body, skill.dir, skill.hasScripts)
+    return renderSkill(
+      skill.name,
+      skill.description,
+      skill.body,
+      skill.dir,
+      this.registry.listScripts(skill.name),
+    )
   }
 
   private tool(): ToolDefinition {
@@ -97,7 +103,7 @@ export class SkillsBridge {
             skill.description,
             skill.body,
             skill.dir,
-            skill.hasScripts,
+            this.registry.listScripts(skill.name),
           ),
           summary: `已加载 Skill：${skill.name}`,
         }
@@ -117,12 +123,13 @@ function renderSkill(
   description: string,
   body: string,
   dir: string,
-  hasScripts: boolean,
+  scripts: string[],
 ): string {
   const lines = [`技能：${name}`, `说明：${description}`, `目录：${dir}`, body.trim()]
-  if (hasScripts) {
+  if (scripts.length > 0) {
     lines.push(
-      '附注：该技能目录下有 scripts/，当前版本不会自动执行脚本；如确需运行，请向用户说明用途并征求同意。',
+      `本技能附带脚本：${scripts.map((file) => `scripts/${file}`).join('、')}` +
+        '（当前版本不会自动执行脚本；确需运行请向用户说明用途并征得同意。）',
     )
   }
   return lines.filter((line) => line !== '').join('\n\n')

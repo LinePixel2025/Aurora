@@ -1,7 +1,9 @@
 import { createServer, type Server } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { createMemoryLogger } from '@aurora/shared'
 import { McpClient } from './client.js'
+import type { JsonRpcRequest, JsonRpcResponse, McpTransport } from './jsonrpc.js'
 import { HttpTransport, StdioTransport } from './transports.js'
 
 const FAKE_SERVER = fileURLToPath(new URL('./testing/fakeMcpServer.mjs', import.meta.url))
@@ -230,5 +232,95 @@ describe('HttpTransport + McpClient', () => {
     })
     await expect(client.connect()).rejects.toMatchObject({ code: 'E_HTTP' })
     await client.close()
+  })
+})
+
+/** 内存分页假传输：tools/list 按请求次数依次返回 pages；页数用尽后重复返回最后一页 */
+class PagedFakeTransport implements McpTransport {
+  readonly kind = 'stdio' as const
+  readonly toolListParams: unknown[] = []
+
+  constructor(private readonly pages: Array<{ tools: unknown[]; nextCursor?: string }>) {}
+
+  async send(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+    if (request.method === 'initialize') {
+      return {
+        jsonrpc: '2.0',
+        id: request.id,
+        result: { protocolVersion: '2024-11-05', serverInfo: { name: 'paged', version: '1' } },
+      }
+    }
+    if (request.method === 'tools/list') {
+      const page = this.pages[Math.min(this.toolListParams.length, this.pages.length - 1)]
+      this.toolListParams.push(request.params)
+      return {
+        jsonrpc: '2.0',
+        id: request.id,
+        result: {
+          tools: page?.tools ?? [],
+          ...(page?.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
+        },
+      }
+    }
+    return { jsonrpc: '2.0', id: request.id, result: {} }
+  }
+
+  notify(): void {}
+
+  async close(): Promise<void> {}
+}
+
+describe('tools/list 分页（nextCursor，docs/06 §7）', () => {
+  it('跟随 nextCursor 翻页并合并各页工具（首页无 cursor，翻页带 cursor）', async () => {
+    const transport = new PagedFakeTransport([
+      {
+        tools: [{ name: 'a', description: 'a', inputSchema: { type: 'object' } }],
+        nextCursor: 'page-2',
+      },
+      { tools: [{ name: 'b', description: 'b', inputSchema: { type: 'object' } }] },
+    ])
+    const client = new McpClient({ server: 'paged', transport })
+    try {
+      await client.connect()
+      expect(client.listTools().map((tool) => tool.name)).toEqual(['a', 'b'])
+      expect(transport.toolListParams[0]).toEqual({})
+      expect(transport.toolListParams[1]).toEqual({ cursor: 'page-2' })
+    } finally {
+      await client.close()
+    }
+  })
+
+  it('单页（无 nextCursor）只请求一次，行为不变', async () => {
+    const transport = new PagedFakeTransport([
+      { tools: [{ name: 'only', description: 'only', inputSchema: { type: 'object' } }] },
+    ])
+    const client = new McpClient({ server: 'single', transport })
+    try {
+      await client.connect()
+      expect(client.listTools().map((tool) => tool.name)).toEqual(['only'])
+      expect(transport.toolListParams).toHaveLength(1)
+    } finally {
+      await client.close()
+    }
+  })
+
+  it('分页超过 20 页上限即停止并记 warn', async () => {
+    // 单页 + 恒定 nextCursor：永远"还有下一页"
+    const transport = new PagedFakeTransport([
+      {
+        tools: [{ name: 't', description: 't', inputSchema: { type: 'object' } }],
+        nextCursor: 'more',
+      },
+    ])
+    const logger = createMemoryLogger()
+    const client = new McpClient({ server: 'paged', transport, logger })
+    try {
+      await client.connect()
+      expect(client.listTools()).toHaveLength(20)
+      expect(transport.toolListParams).toHaveLength(20)
+      expect(logger.entries.some((line) => line.includes('分页超过上限'))).toBe(true)
+    } finally {
+      await client.close()
+    }
   })
 })

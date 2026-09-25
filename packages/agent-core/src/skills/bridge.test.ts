@@ -34,6 +34,10 @@ async function createRegistry(): Promise<SkillsRegistry> {
     await nodeFs.mkdir(join(base, name), { recursive: true })
     await nodeFs.writeFile(join(base, name, 'SKILL.md'), skillFile(name, body), 'utf8')
   }
+  // system-status 附带脚本（验证正文渲染脚本清单）；file-classify 无脚本
+  await nodeFs.mkdir(join(base, 'system-status', 'scripts'), { recursive: true })
+  await nodeFs.writeFile(join(base, 'system-status', 'scripts', 'b.sh'), 'echo 1', 'utf8')
+  await nodeFs.writeFile(join(base, 'system-status', 'scripts', 'a.py'), 'print(1)', 'utf8')
   const registry = new SkillsRegistry({ builtinDir: base })
   await registry.scan()
   return registry
@@ -52,7 +56,7 @@ describe('SkillsBridge', () => {
     expect(name?.enum).toEqual(['file-classify', 'system-status'])
   })
 
-  it('use_skill 返回技能正文与目录，并标注 scripts 情况', async () => {
+  it('use_skill 返回技能正文与目录，附脚本清单与确认提醒', async () => {
     const { bridge } = await setup()
     const tools = new ToolRegistry()
     bridge.registerInto(tools)
@@ -61,8 +65,23 @@ describe('SkillsBridge', () => {
       ?.execute({ name: 'system-status' }, { sessionId: 's' })
     expect(result?.content).toContain('读取系统状态')
     expect(result?.content).toContain('技能：system-status')
+    expect(result?.content).toContain(
+      '本技能附带脚本：scripts/a.py、scripts/b.sh' +
+        '（当前版本不会自动执行脚本；确需运行请向用户说明用途并征得同意。）',
+    )
     expect(result?.summary).toBe('已加载 Skill：system-status')
     expect(result?.isError).toBeUndefined()
+  })
+
+  it('无脚本的技能正文不出现脚本清单提示', async () => {
+    const { bridge } = await setup()
+    expect(bridge.render('file-classify')).not.toContain('附带脚本')
+    expect(bridge.render('file-classify')).toContain('分类文件')
+  })
+
+  it('render 路径同样列出脚本清单', async () => {
+    const { bridge } = await setup()
+    expect(bridge.render('system-status')).toContain('本技能附带脚本：scripts/a.py、scripts/b.sh')
   })
 
   it('未知技能返回错误结果而不是抛错', async () => {

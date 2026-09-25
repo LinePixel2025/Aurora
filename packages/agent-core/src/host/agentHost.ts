@@ -7,7 +7,7 @@
 import type { AgentEvent, AgentHost as AgentHostContract, AgentToolCall } from '@aurora/shared'
 import type { Logger } from '@aurora/shared'
 import { createNoopLogger } from '@aurora/shared'
-import { buildSystemPrompt, describeTools } from '../context/systemPrompt.js'
+import { buildSystemPrompt, buildToolGuidance, describeTools } from '../context/systemPrompt.js'
 import { runAgentLoop, type LoopProvider } from '../loop/agentLoop.js'
 import type { ReasoningEffortLevel } from '../llm/types.js'
 import type { SkillsBridge } from '../skills/bridge.js'
@@ -64,6 +64,16 @@ export interface AgentHostDeps {
     sessionId: string
     sensitivity: 'confirm'
   }): Promise<boolean>
+  /**
+   * 「Agent 可修改的设置」清单（docs/06 §17 提到的正式通道）：
+   * 原样注入 systemPrompt 的独立小节；抛错时省略该节，不中断请求。
+   */
+  settingsHint?(): string
+  /**
+   * 当前会话任务清单摘要（docs/06 §18，`renderTodoList` 的结果）；
+   * 返回空串时整段省略；读取失败降级为省略，不中断请求。
+   */
+  todoSummary?(sessionId: string): Promise<string>
 }
 
 export const ERROR_NO_MODEL = 'E_NO_MODEL'
@@ -220,17 +230,27 @@ export class KernelAgentHost implements AgentHostContract {
       }
       const history = compression.messages
 
+      // 两个可选提示片段：读取失败一律降级为省略该小节，不让提示词问题拖垮请求
+      const settingsHint = this.readSettingsHint()
+      const todoSummary = await this.readTodoSummary(sessionId)
+
       const systemPrompt = buildSystemPrompt({
         ...(this.deps.modePrompt === undefined ? {} : { modePrompt: this.deps.modePrompt() }),
         ...(this.deps.perceptionSummary === undefined
           ? {}
           : { perceptionSummary: await this.deps.perceptionSummary() }),
         ...(compression.summary === undefined ? {} : { historySummary: compression.summary }),
+        ...(todoSummary === undefined ? {} : { todoSummary }),
         skillCatalog: this.deps.skills.catalogPrompt,
         ...(() => {
           const catalog = describeTools(this.deps.tools.list())
           return catalog === undefined ? {} : { toolCatalog: catalog }
         })(),
+        ...(() => {
+          const guidance = buildToolGuidance(this.deps.tools.list().map((tool) => tool.name))
+          return guidance === undefined ? {} : { toolGuidance: guidance }
+        })(),
+        ...(settingsHint === undefined ? {} : { settingsHint }),
       })
 
       const loop = runAgentLoop({
@@ -337,6 +357,33 @@ export class KernelAgentHost implements AgentHostContract {
       } catch (error) {
         this.logger.warn('Agent 事件监听器抛错', { error: String(error) })
       }
+    }
+  }
+
+  /** 「Agent 可修改的设置」清单：抛错时 warn 留痕并省略该节（不中断请求） */
+  private readSettingsHint(): string | undefined {
+    if (this.deps.settingsHint === undefined) return undefined
+    try {
+      return this.deps.settingsHint()
+    } catch (error) {
+      this.logger.warn('settingsHint 生成失败，本次请求省略该小节', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return undefined
+    }
+  }
+
+  /** 任务清单摘要：空串交由 buildSystemPrompt 的 normalize 省略；读取失败同样降级 */
+  private async readTodoSummary(sessionId: string): Promise<string | undefined> {
+    if (this.deps.todoSummary === undefined) return undefined
+    try {
+      return await this.deps.todoSummary(sessionId)
+    } catch (error) {
+      this.logger.warn('任务清单摘要读取失败，本次请求省略该小节', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return undefined
     }
   }
 }

@@ -44,6 +44,10 @@ async function createHarness(options: {
   maxRounds?: number
   /** 装配层透传给内核的思考等级（`undefined` 代表用户选了 `auto`） */
   reasoningEffort?: ReasoningEffortLevel
+  /** 「Agent 可修改的设置」清单注入（docs/06 §17 正式通道） */
+  settingsHint?: () => string
+  /** 任务清单摘要注入（docs/06 §18） */
+  todoSummary?: (sessionId: string) => Promise<string>
 }): Promise<Harness> {
   const fs = new TestFileSystem()
   const sessions = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
@@ -82,6 +86,8 @@ async function createHarness(options: {
     skills,
     logger,
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
+    ...(options.settingsHint === undefined ? {} : { settingsHint: options.settingsHint }),
+    ...(options.todoSummary === undefined ? {} : { todoSummary: options.todoSummary }),
   })
   host.onEvent((event) => events.push(event))
 
@@ -227,6 +233,78 @@ describe('KernelAgentHost', () => {
     expect(system?.content).toContain('08:00')
     expect(system?.content).toContain('安全规则')
     expect(system?.content).toContain('use_skill')
+  })
+
+  it('工具使用规范小节随工具表注入系统提示词', async () => {
+    const harness = await createHarness({ rounds: [{ text: 'ok' }] })
+    await harness.send('hi')
+    await harness.waitForDone()
+    const system = harness.provider.calls[0]?.messages[0]
+    expect(system?.content).toContain('工具使用规范')
+    // 工具表里没有 todo_write / task，相关条目不出现
+    expect(system?.content).not.toContain('建立清单')
+  })
+
+  it('settingsHint 注入系统提示词的独立小节', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: 'ok' }],
+      settingsHint: () => '- tts.enabled',
+    })
+    await harness.send('hi')
+    await harness.waitForDone()
+    const system = harness.provider.calls[0]?.messages[0]
+    expect(system?.content).toContain('Agent 可修改的设置')
+    expect(system?.content).toContain('- tts.enabled')
+  })
+
+  it('settingsHint 抛错时降级省略该节，请求照常完成', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: 'ok' }],
+      settingsHint: () => {
+        throw new Error('清单生成失败')
+      },
+    })
+    await harness.send('hi')
+    await harness.waitForDone()
+    expect(harness.events.some((event) => event.type === 'error')).toBe(false)
+    expect(harness.events.some((event) => event.type === 'done')).toBe(true)
+    expect(harness.provider.calls[0]?.messages[0]?.content).not.toContain('Agent 可修改的设置')
+  })
+
+  it('todoSummary 注入系统提示词的「当前任务清单」小节', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: 'ok' }],
+      todoSummary: async (sessionId) => `1. [~] ${sessionId} 的任务`,
+    })
+    await harness.send('hi')
+    await harness.waitForDone()
+    const system = harness.provider.calls[0]?.messages[0]
+    expect(system?.content).toContain('当前任务清单')
+    expect(system?.content).toContain('1. [~] quick 的任务')
+  })
+
+  it('todoSummary 返回空串时整段省略', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: 'ok' }],
+      todoSummary: async () => '',
+    })
+    await harness.send('hi')
+    await harness.waitForDone()
+    expect(harness.provider.calls[0]?.messages[0]?.content).not.toContain('当前任务清单')
+  })
+
+  it('todoSummary 抛错时降级省略该节，请求照常完成', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: 'ok' }],
+      todoSummary: async () => {
+        throw new Error('清单读取失败')
+      },
+    })
+    await harness.send('hi')
+    await harness.waitForDone()
+    expect(harness.events.some((event) => event.type === 'error')).toBe(false)
+    expect(harness.events.some((event) => event.type === 'done')).toBe(true)
+    expect(harness.provider.calls[0]?.messages[0]?.content).not.toContain('当前任务清单')
   })
 
   it('显式 /skill 调用把技能正文注入本次请求，但不写入历史', async () => {

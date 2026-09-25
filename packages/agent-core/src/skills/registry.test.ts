@@ -36,6 +36,10 @@ beforeAll(async () => {
   await fs.mkdir(join(builtinDir, 'system-status', 'scripts'), { recursive: true })
   await fs.writeFile(join(builtinDir, 'system-status', 'SKILL.md'), STATUS_SKILL, 'utf8')
   await fs.writeFile(join(builtinDir, 'system-status', 'scripts', 'read.ps1'), 'echo 1', 'utf8')
+  // 追加两个脚本用于验证排序，外加一个子目录验证「只列文件名」
+  await fs.writeFile(join(builtinDir, 'system-status', 'scripts', 'z.sh'), 'echo 2', 'utf8')
+  await fs.writeFile(join(builtinDir, 'system-status', 'scripts', 'a.py'), 'print(1)', 'utf8')
+  await fs.mkdir(join(builtinDir, 'system-status', 'scripts', 'nested'), { recursive: true })
 
   // 用户目录：覆盖同名技能 + 一个非法技能
   await fs.mkdir(join(userDir, 'file-classify'), { recursive: true })
@@ -72,6 +76,19 @@ describe('SkillsRegistry', () => {
     await registry.scan()
     expect(registry.get('system-status')?.hasScripts).toBe(true)
     expect(registry.get('file-classify')?.hasScripts).toBe(false)
+  })
+
+  it('listScripts 返回 scripts/ 一层内排序后的文件名（忽略子目录）', async () => {
+    const registry = new SkillsRegistry({ builtinDir })
+    await registry.scan()
+    expect(registry.listScripts('system-status')).toEqual(['a.py', 'read.ps1', 'z.sh'])
+  })
+
+  it('listScripts：无 scripts 目录或技能不存在返回空数组', async () => {
+    const registry = new SkillsRegistry({ builtinDir })
+    await registry.scan()
+    expect(registry.listScripts('file-classify')).toEqual([])
+    expect(registry.listScripts('nope')).toEqual([])
   })
 
   it('非法 SKILL.md 记入 issues 且不影响其它技能', async () => {

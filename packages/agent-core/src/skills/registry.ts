@@ -4,8 +4,9 @@
  * P1 范围：扫描内置 `skills/` 与用户技能目录、解析 SKILL.md、向设置页与
  * 上下文组装暴露清单。真正的"按 description 自动匹配 + 执行脚本"在 P3 落地。
  */
-import { promises as fs } from 'node:fs'
+import { promises as fs, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import type { Dirent } from 'node:fs'
 import { createNoopLogger, type Logger } from '@aurora/shared'
 import { isParseError, parseSkillMarkdown } from './parse.js'
 
@@ -118,6 +119,28 @@ export class SkillsRegistry {
 
   get(name: string): Skill | undefined {
     return this.skills.get(name)
+  }
+
+  /**
+   * 列出技能目录下 `scripts/` 一层内的文件名（排序）。
+   * 技能不存在或没有 scripts 目录（含不可读）时返回空数组。
+   *
+   * 为什么是同步：调用方是 `SkillsBridge` 的正文渲染路径（同步拼装注入文本），
+   * 与 `scan()` 的 readdir 同一套目录读取，只是换成同步形态。
+   */
+  listScripts(name: string): string[] {
+    const skill = this.skills.get(name)
+    if (skill === undefined) return []
+    let entries: Dirent[]
+    try {
+      entries = readdirSync(join(skill.dir, 'scripts'), { withFileTypes: true })
+    } catch {
+      return [] // 没有 scripts/ 目录（或不可读）视为没有附带脚本
+    }
+    return entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort()
   }
 
   get lastIssues(): readonly SkillScanIssue[] {

@@ -4,7 +4,8 @@
  * 职责：
  * - 按配置 diff（幂等）维护连接；`lazyConnect` 决定启动即连还是首次使用才连；
  * - 把每个服务器的工具注册为 `mcp.<server>.<tool>`（MCP 优先于同名 Skill）；
- * - 任何失败都降级为状态灯 + 日志，绝不抛出到 Agent 主流程。
+ * - 任何失败都降级为状态灯 + 日志，绝不抛出到 Agent 主流程；
+ * - stdio 意外断开自动重连（指数退避，docs/06 §7）；`close()` / `reconfigure()` 主动移除的不重连。
  */
 import type { McpServerConfig, McpServerStatus, Logger } from '@aurora/shared'
 import { createNoopLogger } from '@aurora/shared'
@@ -23,6 +24,19 @@ export interface McpServerDefinition {
   url?: string
   /** 解密后的环境变量（stdio 专用） */
   env?: Record<string, string>
+  /**
+   * 解密后的自定义 HTTP 请求头（http 专用，docs/06 §7；用户头覆盖默认头）。
+   * 凭据路径：日志与错误信息只允许出现 key 名（`Object.keys(headers)`），绝不落值。
+   */
+  headers?: Record<string, string>
+}
+
+/**
+ * 传输层生命周期回调：hub 借此感知 stdio 子进程退出，驱动「意外断开自动重连」（docs/06 §7）。
+ * 注意：主动 `close()` 触发的退出事件也会到达这里，是否重连由 hub 按连接身份判定。
+ */
+export interface TransportHooks {
+  onExit?(info: { code: number | null; signal: string | null }): void
 }
 
 export interface McpClientHubOptions {
@@ -37,8 +51,8 @@ export interface McpClientHubOptions {
    * 而 hub 只在构造时拿到一个引用。返回 `undefined` 时回落 `globalThis.fetch`。
    */
   resolveFetch?: () => typeof fetch | undefined
-  /** 注入传输实现（单测用假传输） */
-  createTransport?(definition: McpServerDefinition): McpTransport
+  /** 注入传输实现（单测用假传输）；`hooks.onExit` 用于 stdio 意外退出自动重连 */
+  createTransport?(definition: McpServerDefinition, hooks?: TransportHooks): McpTransport
   onStatusChanged?(statuses: McpServerStatus[]): void
 }
 
@@ -52,9 +66,18 @@ interface ServerEntry {
   connecting: Promise<void> | undefined
   /** 该服务器已注册的工具名（断开时按名单移除） */
   registered: string[]
+  /** 挂起中的自动重连定时器（close / reconfigure 时必须取消） */
+  reconnectTimer: NodeJS.Timeout | undefined
+  /** 已执行的自动重连次数（任一次建连成功后归零） */
+  reconnectAttempt: number
 }
 
 export const MCP_TOOL_PREFIX = 'mcp'
+
+/** stdio 意外断开的自动重连参数（docs/06 §7）：1s 起步指数退避、封顶 60s、最多 5 次 */
+const RECONNECT_BASE_MS = 1_000
+const RECONNECT_MAX_MS = 60_000
+const RECONNECT_MAX_ATTEMPTS = 5
 
 /** `mcp.<server>.<tool>`：服务器名中的 `.` 会破坏命名空间，统一为 `_` */
 export function mcpToolName(server: string, tool: string): string {
@@ -65,7 +88,10 @@ export class McpClientHub {
   private readonly tools: ToolRegistry
   private readonly logger: Logger
   private readonly timeoutMs: number
-  private readonly createTransport: (definition: McpServerDefinition) => McpTransport
+  private readonly createTransport: (
+    definition: McpServerDefinition,
+    hooks?: TransportHooks,
+  ) => McpTransport
   private readonly onStatusChanged: ((statuses: McpServerStatus[]) => void) | undefined
   private readonly resolveFetch: (() => typeof fetch | undefined) | undefined
   private readonly entries = new Map<string, ServerEntry>()
@@ -79,7 +105,7 @@ export class McpClientHub {
     this.resolveFetch = options.resolveFetch
     this.createTransport =
       options.createTransport ??
-      ((definition) => defaultTransport(definition, this.fetchFor(definition)))
+      ((definition, hooks) => defaultTransport(definition, this.fetchFor(definition), hooks))
     this.onStatusChanged = options.onStatusChanged
   }
 
@@ -138,6 +164,8 @@ export class McpClientHub {
         lastError: undefined,
         connecting: undefined,
         registered: [],
+        reconnectTimer: undefined,
+        reconnectAttempt: 0,
       })
     }
 
@@ -199,9 +227,15 @@ export class McpClientHub {
     this.emit()
 
     const task = (async () => {
+      // 退出回调先于 client 创建注册：用 holder 持有引用，供退出事件做连接身份判定
+      const holder: { client: McpClient | undefined } = { client: undefined }
       let transport: McpTransport
       try {
-        transport = this.createTransport(definition)
+        transport = this.createTransport(definition, {
+          onExit: (info) => {
+            if (holder.client !== undefined) this.handleTransportExit(entry, holder.client, info)
+          },
+        })
       } catch (error) {
         this.markError(entry, toMcpError(error, 'E_SPAWN'))
         return
@@ -211,6 +245,7 @@ export class McpClientHub {
         server: definition.name,
         transport,
         timeoutMs: this.timeoutMs,
+        logger: this.logger,
         onNotification: (notification) => {
           if (notification.method === 'notifications/tools/list_changed') {
             void client
@@ -225,6 +260,7 @@ export class McpClientHub {
           }
         },
       })
+      holder.client = client
 
       try {
         await client.connect()
@@ -237,11 +273,14 @@ export class McpClientHub {
       entry.client = client
       entry.state = 'ready'
       entry.lastError = undefined
+      entry.reconnectAttempt = 0
       this.registerTools(entry, client)
+      // headers 是凭据路径：日志只允许出现 key 名，绝不落值
       this.logger.info('MCP 服务器已连接', {
         server: definition.name,
         transport: definition.transport,
         tools: client.toolCount,
+        headerKeys: Object.keys(definition.headers ?? {}),
       })
       this.emit()
     })()
@@ -311,7 +350,93 @@ export class McpClientHub {
     this.emit()
   }
 
+  // ───────────────────── 意外断开自动重连（docs/06 §7） ─────────────────────
+
+  /**
+   * 传输层退出回调（stdio 子进程退出）：
+   * 仅当退出的连接**仍挂在本 hub 下**（未被 `close()` / `reconfigure` 移除或替换）时
+   * 视为「意外断开」——清理其工具后进入自动重连；主动关闭路径迟到的退出事件按身份判定忽略。
+   */
+  private handleTransportExit(
+    entry: ServerEntry,
+    client: McpClient,
+    info: { code: number | null; signal: string | null },
+  ): void {
+    if (this.closed) return
+    if (this.entries.get(entry.definition.name) !== entry) return
+    if (entry.client !== client) return
+    // 死连接与其工具先清理（在途请求已由传输层以 E_CLOSED 拒绝）
+    entry.client = undefined
+    entry.toolCount = 0
+    for (const name of entry.registered) this.tools.unregister(name)
+    entry.registered = []
+    entry.lastError = `连接意外断开（code=${info.code ?? 'null'}，signal=${info.signal ?? 'null'}）`
+    this.scheduleReconnect(entry)
+  }
+
+  /** 进入自动重连：指数退避 1s 起步、封顶 60s，最多 `RECONNECT_MAX_ATTEMPTS` 次。 */
+  private scheduleReconnect(entry: ServerEntry): void {
+    if (this.closed) return
+    if (entry.reconnectTimer !== undefined) return // 已在重连排队中，不叠加定时器
+    if (!entry.definition.enabled) {
+      // 防御：停用的服务器没有重连意义（正常路径 reconfigure 会先 teardown）
+      entry.state = 'idle'
+      this.emit()
+      return
+    }
+    const attempt = entry.reconnectAttempt + 1
+    if (attempt > RECONNECT_MAX_ATTEMPTS) {
+      entry.state = 'error'
+      entry.lastError = `连接中断，自动重连失败（已重试 ${RECONNECT_MAX_ATTEMPTS} 次）`
+      this.logger.warn('MCP 自动重连失败，已停止重试（下次 reconfigure 或使用工具时可再建连）', {
+        server: entry.definition.name,
+        attempts: RECONNECT_MAX_ATTEMPTS,
+      })
+      this.emit()
+      return
+    }
+    const delayMs = Math.min(RECONNECT_BASE_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS)
+    entry.state = 'connecting'
+    this.logger.warn('MCP 连接意外断开，将自动重连', {
+      server: entry.definition.name,
+      attempt,
+      nextRetryMs: delayMs,
+    })
+    this.emit()
+    const timer = setTimeout(() => {
+      entry.reconnectTimer = undefined
+      entry.reconnectAttempt = attempt
+      void this.attemptReconnect(entry)
+    }, delayMs)
+    timer.unref?.()
+    entry.reconnectTimer = timer
+  }
+
+  /** 执行一次重连尝试（复用「建连 → tools/list → 注册」路径）；失败则安排下一次。 */
+  private async attemptReconnect(entry: ServerEntry): Promise<void> {
+    if (this.closed) return
+    if (this.entries.get(entry.definition.name) !== entry) return
+    try {
+      await this.ensureConnected(entry)
+    } catch {
+      // connect 内部已降级为状态灯（不会抛出）；此处兜底，避免重连循环中断
+    }
+    if (entry.state === 'ready') {
+      this.logger.info('MCP 自动重连成功', {
+        server: entry.definition.name,
+        attempt: entry.reconnectAttempt,
+      })
+      return
+    }
+    this.scheduleReconnect(entry)
+  }
+
   private async teardown(entry: ServerEntry): Promise<void> {
+    // 主动移除 / 关闭的连接：取消挂起中的重连定时器，不留悬挂回调
+    if (entry.reconnectTimer !== undefined) {
+      clearTimeout(entry.reconnectTimer)
+      entry.reconnectTimer = undefined
+    }
     for (const name of entry.registered) this.tools.unregister(name)
     entry.registered = []
     entry.toolCount = 0
@@ -325,13 +450,18 @@ export class McpClientHub {
   }
 }
 
-function defaultTransport(definition: McpServerDefinition, fetchImpl?: typeof fetch): McpTransport {
+function defaultTransport(
+  definition: McpServerDefinition,
+  fetchImpl?: typeof fetch,
+  hooks?: TransportHooks,
+): McpTransport {
   if (definition.transport === 'http') {
     if ((definition.url ?? '') === '') {
       throw new McpError('E_PROTOCOL', 'HTTP 传输缺少 url')
     }
     return new HttpTransport({
       url: definition.url ?? '',
+      ...(definition.headers === undefined ? {} : { headers: definition.headers }),
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
     })
   }
@@ -342,7 +472,16 @@ function defaultTransport(definition: McpServerDefinition, fetchImpl?: typeof fe
     command: definition.command ?? '',
     ...(definition.args === undefined ? {} : { args: definition.args }),
     ...(definition.env === undefined ? {} : { env: definition.env }),
+    // 意外退出信号：hub 侧判定为「非主动关闭」时触发自动重连（docs/06 §7）
+    ...(hooks?.onExit === undefined ? {} : { onExit: hooks.onExit }),
   })
+}
+
+/** header 集合的稳定序列化：按 key 排序后比较，key 顺序不同不算配置变化 */
+function stableHeaders(headers: Record<string, string> | undefined): string {
+  return JSON.stringify(
+    Object.entries(headers ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  )
 }
 
 function sameDefinition(a: McpServerDefinition, b: McpServerDefinition): boolean {
@@ -352,7 +491,8 @@ function sameDefinition(a: McpServerDefinition, b: McpServerDefinition): boolean
     (a.command ?? '') === (b.command ?? '') &&
     (a.url ?? '') === (b.url ?? '') &&
     JSON.stringify(a.args ?? []) === JSON.stringify(b.args ?? []) &&
-    JSON.stringify(a.env ?? {}) === JSON.stringify(b.env ?? {})
+    JSON.stringify(a.env ?? {}) === JSON.stringify(b.env ?? {}) &&
+    stableHeaders(a.headers) === stableHeaders(b.headers)
   )
 }
 
