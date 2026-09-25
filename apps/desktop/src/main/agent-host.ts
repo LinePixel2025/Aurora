@@ -175,11 +175,12 @@ export function createProviderFactory(
           ? {}
           : { fetchImpl: fetchImplOf(resolveFetch) }),
         onRetry: (info) =>
-          logger.warn('LLM 请求重试', {
+          logger.warn(info.reason === undefined ? 'LLM 请求重试' : 'LLM 请求降级重试', {
             providerId,
             attempt: info.attempt,
             code: info.code,
             delayMs: info.delayMs,
+            ...(info.reason === undefined ? {} : { reason: info.reason }),
           }),
       }),
       model: config.model,

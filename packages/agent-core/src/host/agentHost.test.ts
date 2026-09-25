@@ -301,27 +301,18 @@ describe('KernelAgentHost', () => {
     expect(stored.map((item) => item.role)).toEqual(['user', 'assistant', 'tool', 'assistant'])
   })
 
-  it('思考链增量转发为 AgentEvent（sessionId / requestId / delta，无 messageId）', async () => {
+  it('思考链与正文增量都带预领的 messageId，且与落盘的助手消息同 id', async () => {
     const harness = await createHarness({ rounds: [{ reasoning: ['思考', '中'], text: '答案' }] })
     await harness.send('问题')
     await harness.waitForDone()
 
-    // shared 的 AgentEvent 联合尚未收编 'reasoning' 变体，测试侧用局部联合观察事件形状
-    type ReasoningAgentEvent = {
-      type: 'reasoning'
-      sessionId: string
-      requestId: string
-      delta: string
-    }
-    const all = harness.events as ReadonlyArray<AgentEvent | ReasoningAgentEvent>
-    const reasoning = all.filter(
-      (event): event is ReasoningAgentEvent => event.type === 'reasoning',
-    )
+    const reasoning = harness.events.filter((event) => event.type === 'reasoning')
     expect(reasoning.map((event) => event.delta)).toEqual(['思考', '中'])
     for (const event of reasoning) {
       expect(event.sessionId).toBe('quick')
       expect(event.requestId).toMatch(/^req-/)
-      expect('messageId' in event).toBe(false)
+      // 2026-09 流式轮：思考增量也带 messageId，界面才能在正文之前显示「正在思考」
+      expect(event.messageId).toMatch(/^msg-/)
     }
     expect(types(harness.events)).toEqual([
       'queued',
@@ -332,11 +323,52 @@ describe('KernelAgentHost', () => {
       'done',
     ])
 
-    // 思考链随 assistant 消息持久化（全文累积）
+    const texts = harness.events.filter(
+      (event): event is AgentEvent & { type: 'text' } => event.type === 'text',
+    )
+    // 同一轮的思考与正文指向同一条助手消息
+    expect(
+      new Set([...reasoning.map((event) => event.messageId), ...texts.map((e) => e.messageId)])
+        .size,
+    ).toBe(1)
+
+    // 思考链随 assistant 消息持久化（全文累积）；messageId 与流式事件所用 id **完全相同** ——
+    // 这正是「边流边渲染的那条消息不需要在落盘后被换掉」的依据（docs/06 §16.2）
     const stored = await harness.sessions.get('quick')
     const assistant = stored.find((message) => message.role === 'assistant')
     expect(assistant?.reasoning).toBe('思考中')
     expect(assistant?.content).toBe('答案')
+    expect(assistant?.id).toBe(texts[0]?.messageId)
+  })
+
+  it('正文增量逐条转发（不等本轮结束）：多个 delta 合成同一条消息的全文', async () => {
+    const harness = await createHarness({ rounds: [{ text: ['边', '流', '边', '渲染'] }] })
+    await harness.send('问题')
+    await harness.waitForDone()
+
+    const texts = harness.events.filter(
+      (event): event is AgentEvent & { type: 'text' } => event.type === 'text',
+    )
+    expect(texts.map((event) => event.delta)).toEqual(['边', '流', '边', '渲染'])
+    expect(new Set(texts.map((event) => event.messageId)).size).toBe(1)
+
+    const stored = await harness.sessions.get('quick')
+    const assistant = stored.find((message) => message.role === 'assistant')
+    expect(assistant?.content).toBe('边流边渲染')
+    expect(assistant?.id).toBe(texts[0]?.messageId)
+  })
+
+  it('token 用量按轮转发为 usage 事件（promptTokens 即该轮上下文占用）', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: '答', usage: { promptTokens: 120, completionTokens: 8, totalTokens: 128 } }],
+    })
+    await harness.send('问题')
+    await harness.waitForDone()
+
+    const usage = harness.events.filter((event) => event.type === 'usage')
+    expect(usage).toHaveLength(1)
+    expect(usage[0]?.round).toBe(0)
+    expect(usage[0]?.usage).toEqual({ promptTokens: 120, completionTokens: 8, totalTokens: 128 })
   })
 
   it('run 开始时广播 user-message 事件（content 为 trim 后原文，先于流式事件）', async () => {

@@ -618,6 +618,21 @@ export interface AgentToolCall {
   subagent?: SubagentSnapshot
 }
 
+// ───────────────────────── Token 用量（上下文详解，docs/07 §2.3） ─────────────────────────
+
+/**
+ * 一次 LLM 调用的 token 用量（由 provider 原样透传，不做估算）。
+ *
+ * 刻意定义在 `shared` 而不是 `@aurora/agent-core`：它要经 `AgentEvent` 走 IPC 到渲染层，
+ * 而 IPC 契约不得依赖内核包（docs/02 §6）。内核 `llm/types.ts` 再从本文件重导出，
+ * 保持「内核对外的 TokenUsage 只有一份定义」。
+ */
+export interface TokenUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
+
 // ───────────────────────── 子代理（`task` 工具） ─────────────────────────
 
 /**
@@ -713,11 +728,20 @@ export type AgentEvent =
       delta: string
     }
   | {
+      /**
+       * 思考链增量（docs/06 §16.1）。
+       *
+       * `messageId` 自 2026-09 流式轮起**必带**：该轮助手消息的 id 在流开始前就已预领
+       * （见 `text` 的说明），思考因此能在正文之前就挂到那条消息上 ——
+       * 早先思考增量不带 id，而助手消息要等本轮文本到达才创建，
+       * 于是「模型正在思考」这段**界面上完全看不到**，只有正文开始后思考才一起冒出来。
+       */
       type: 'reasoning'
       sessionId: string
       requestId: string
       seq: number
       round: number
+      messageId: string
       delta: string
     }
   | {
@@ -739,6 +763,21 @@ export type AgentEvent =
       messageId: string
       callId: string
       subagent: SubagentSnapshot
+    }
+  | {
+      /**
+       * 一轮 LLM 调用的 token 用量（docs/06 §16.2）。
+       *
+       * 每个工具轮次各推一条：`promptTokens` 就是**该轮的上下文占用**
+       * （历史 + 系统提示词 + 本轮到目前的全部内容），渲染层取最新一条作为
+       * 「当前上下文占用」，并逐轮累加得到本会话消耗。provider 未回传 `usage` 时整条不发。
+       */
+      type: 'usage'
+      sessionId: string
+      requestId: string
+      seq: number
+      round: number
+      usage: TokenUsage
     }
   | { type: 'done'; sessionId: string; requestId: string; seq: number; pending?: boolean }
   | {

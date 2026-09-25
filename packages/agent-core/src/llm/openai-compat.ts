@@ -33,7 +33,13 @@ export interface OpenAiCompatOptions {
   retryBaseDelayMs?: number
   /** 注入 fetch 便于单测 */
   fetchImpl?: typeof fetch
-  onRetry?: (info: { attempt: number; code: LlmErrorCode; delayMs: number }) => void
+  onRetry?: (info: {
+    attempt: number
+    code: LlmErrorCode
+    delayMs: number
+    /** 非退避重试时的原因说明（如「去掉 stream_options 降级」）；退避重试不带该字段 */
+    reason?: string
+  }) => void
 }
 
 const RETRYABLE: ReadonlySet<LlmErrorCode> = new Set<LlmErrorCode>([
@@ -126,15 +132,7 @@ export class OpenAiCompatProvider implements LlmProvider {
 
   async *chat(req: ChatRequest, signal?: AbortSignal): AsyncIterable<ChatEvent> {
     try {
-      const response = await this.fetchWithPolicy(
-        this.createRequest(
-          'POST',
-          '/chat/completions',
-          this.buildBody(req, true),
-          'text/event-stream',
-          signal,
-        ),
-      )
+      const response = await this.openStream(this.buildBody(req, true), signal)
       const reader = response.body?.getReader()
       if (!reader) throw new LlmError('E_UNKNOWN', '响应体为空，无法读取流')
 
@@ -196,6 +194,43 @@ export class OpenAiCompatProvider implements LlmProvider {
 
   // ───────────────────────── 内部 ─────────────────────────
 
+  /**
+   * 建立流式响应：先带 `stream_options.include_usage`（拿真实的 prompt / completion tokens，
+   * 对话窗输入框底部的「上下文详解」靠它），若服务端**明确拒绝这个字段**
+   * （400 且报文提到 `stream_options` / `include_usage`），去掉它重试一次。
+   *
+   * 为什么要降级：不少 OpenAI 兼容网关只认最基础的字段，带上未知字段直接 400 ——
+   * 「整个对话打不开」比「拿不到 token 用量」严重得多，所以这里必须能退回去。
+   * 只对**点名了这两个字段**的 400 重试：其它 400（模型名错、参数越界）重试也是白试。
+   */
+  private async openStream(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+    try {
+      return await this.postStream(body, signal)
+    } catch (error) {
+      const llmError = toLlmError(error)
+      if (llmError.code !== 'E_BAD_REQUEST' || !looksLikeRejectedField(llmError.message)) {
+        throw llmError
+      }
+      const withoutUsage = { ...body }
+      delete withoutUsage['stream_options']
+      // 这是**降级**不是重试：报文里没有延迟、也不是同一个请求。用 `reason` 把它与
+      // `fetchWithPolicy` 的退避重试区分开，否则排查时只看到「LLM 请求重试 delayMs:0」。
+      this.onRetry?.({
+        attempt: 1,
+        code: llmError.code,
+        delayMs: 0,
+        reason: '服务端拒绝 stream_options，已去掉该字段重试（本次不带 token 用量）',
+      })
+      return await this.postStream(withoutUsage, signal)
+    }
+  }
+
+  private postStream(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+    return this.fetchWithPolicy(
+      this.createRequest('POST', '/chat/completions', body, 'text/event-stream', signal),
+    )
+  }
+
   private failure(error: LlmError, started: number): TestConnectionResult {
     return {
       ok: false,
@@ -221,6 +256,9 @@ export class OpenAiCompatProvider implements LlmProvider {
       model: req.model || this.defaultModel,
       messages: req.messages.map(toOpenAiMessage),
       stream,
+      // 流式下 OpenAI 规范只在**最后一片**带 usage，且必须先显式索取；
+      // 服务端不认这个字段时由 `openStream` 去掉它重试（否则整个对话都用不了）
+      ...(stream ? { stream_options: { include_usage: true } } : {}),
       ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
       // 思考等级：`undefined` 时**完全不写**该字段（不认这个参数的厂商会直接 400）
       ...(req.reasoningEffort === undefined ? {} : { reasoning_effort: req.reasoningEffort }),
@@ -437,6 +475,22 @@ export function describeError(errorOrCode: LlmError | LlmErrorCode, message = ''
     default:
       return detail
   }
+}
+
+/**
+ * 「服务端拒绝了一个未知字段」的报文判定（`stream_options` 降级的触发条件）。
+ *
+ * 先认点名（`stream_options` / `include_usage`），再兜一层**不点名**的常见措辞：
+ * 不少网关只说 `Unknown parameter` / `Extra inputs are not permitted`，逐字匹配就退不回去，
+ * 用户看到的是「整个对话 400 打不开」—— 而这一层降级存在的唯一理由就是避免那个结果。
+ * 代价是可能白重试一次（若报文恰好回显了请求体），可接受：重试只发生在 `E_BAD_REQUEST` 上，
+ * 它不参与 `fetchWithPolicy` 的退避重试，最多多发一次请求。
+ */
+function looksLikeRejectedField(message: string): boolean {
+  if (/stream_options|include_usage/i.test(message)) return true
+  return /unknown|unexpected|unrecognized|not permitted|unsupported|extra fields|extra inputs|invalid[_ ]?parameter/i.test(
+    message,
+  )
 }
 
 function describeHttpError(status: number, body: string): string {

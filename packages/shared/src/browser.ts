@@ -15,6 +15,7 @@ export * from './config/defaults.js'
 // 纯状态机与工具
 export * from './mode/windowState.js'
 export * from './utils/object.js'
+export * from './utils/format.js'
 export * from './utils/result.js'
 export * from './utils/logger.js'
 

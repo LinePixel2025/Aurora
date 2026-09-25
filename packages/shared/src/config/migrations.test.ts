@@ -69,8 +69,8 @@ describe('配置迁移链', () => {
         modes: { current: 'classroom', classroom: { watchDir: 'D:\\感知', subjects: [] } },
       })
       expect(outcome.fromVersion).toBe(1)
-      // v1 → v2 → … → v10：链式执行，九版迁移都会跑
-      expect(outcome.applied).toHaveLength(9)
+      // v1 → v2 → … → 当前版本：链式执行，每一版迁移都会跑
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 1)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
@@ -130,8 +130,8 @@ describe('配置迁移链', () => {
         modes: { classroom: { schedule: { provider: 'manual', lessons: [lesson] } } },
       })
       expect(outcome.fromVersion).toBe(2)
-      // v2 → v3 → … → v10：链式执行
-      expect(outcome.applied).toHaveLength(8)
+      // v2 → v3 → … → 当前版本：链式执行
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 2)
 
       const classroom = (outcome.data['modes'] as Record<string, unknown>)['classroom'] as Record<
         string,
@@ -191,8 +191,8 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(3)
-      // v3 → v4 → … → v10：链式执行
-      expect(outcome.applied).toHaveLength(7)
+      // v3 → v4 → … → 当前版本：链式执行
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 3)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const windowState = loadWindowState(outcome.data)
@@ -245,7 +245,7 @@ describe('配置迁移链', () => {
     it('补齐 reasoningEffort 与 agent.tools，且用户已写入的其它字段原样保留', () => {
       const outcome = migrate(V4_CONFIG)
       expect(outcome.fromVersion).toBe(4)
-      expect(outcome.applied).toHaveLength(6)
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 4)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const llm = outcome.data['llm'] as Record<string, unknown>
@@ -389,7 +389,7 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(5)
-      expect(outcome.applied).toHaveLength(5)
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 5)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       // describe 变更（补了 modelList 字样）不影响既有断言：仍是一条 v5 → v6 迁移
       expect(outcome.applied[0]).toContain('v5 → v6')
@@ -445,7 +445,7 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(5)
-      expect(outcome.applied).toHaveLength(5)
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 5)
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.applied[0]).toContain('modelList')
 
@@ -532,7 +532,7 @@ describe('配置迁移链', () => {
     it('补齐 tts 段默认值，且用户已写值（readonlyPrefixes / llm）原样保留', () => {
       const outcome = migrate(V6_CONFIG)
       expect(outcome.fromVersion).toBe(6)
-      expect(outcome.applied).toHaveLength(4)
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 6)
       expect(outcome.applied[0]).toContain('v6 → v7')
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
@@ -550,7 +550,13 @@ describe('配置迁移链', () => {
         hotkey: 'Ctrl+Alt+A',
         chat: { showThinking: true },
       })
-      expect(outcome.data['llm']).toEqual(V6_CONFIG['llm'])
+      // llm 段除了**后续版本**（v10 → v11）按既定规则补的 `contextWindow: 0`，其余一字不改
+      expect(outcome.data['llm']).toEqual({
+        active: 'deepseek',
+        providers: {
+          deepseek: { model: 'deepseek-chat', modelList: ['deepseek-chat'], contextWindow: 0 },
+        },
+      })
     })
 
     it('用户已写过的 tts 值（含 provider 条目）不被覆盖', () => {
@@ -618,7 +624,7 @@ describe('配置迁移链', () => {
       }
       const outcome = migrate({ version: 8, mcp: { lazyConnect: false, servers: [server] } })
       expect(outcome.fromVersion).toBe(8)
-      expect(outcome.applied).toHaveLength(2)
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 8)
       expect(outcome.applied[0]).toContain('headersEnc')
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
@@ -681,7 +687,7 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(9)
-      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 9)
       expect(outcome.applied[0]).toContain('v9 → v10')
       expect(outcome.applied[0]).toContain('preClassLeadMinutes')
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
@@ -717,6 +723,67 @@ describe('配置迁移链', () => {
       expect(noClassroom.warnings).toEqual([])
       expect((noClassroom.data['modes'] as Record<string, unknown>)['classroom']).toBeUndefined()
       expect(noClassroom.data['version']).toBe(CONFIG_VERSION)
+    })
+  })
+
+  describe('v10 → v11（上下文窗口 contextWindow）', () => {
+    const loadProviders = (raw: Record<string, unknown>): Record<string, Record<string, unknown>> =>
+      (raw['llm'] as Record<string, unknown>)['providers'] as Record<
+        string,
+        Record<string, unknown>
+      >
+
+    it('为每个已有 provider 补 contextWindow: 0（0 = 未知），其余字段原样保留', () => {
+      const outcome = migrate({
+        version: 10,
+        llm: {
+          active: 'deepseek',
+          providers: {
+            deepseek: { model: 'deepseek-chat', modelList: ['deepseek-chat'], temperature: 0.7 },
+            qwen: { model: 'qwen3.8-flash' },
+          },
+        },
+      })
+      expect(outcome.fromVersion).toBe(10)
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 10)
+      expect(outcome.applied[0]).toContain('v10 → v11')
+      expect(outcome.applied[0]).toContain('contextWindow')
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+
+      const providers = loadProviders(outcome.data)
+      expect(providers['deepseek']?.['contextWindow']).toBe(0)
+      expect(providers['qwen']?.['contextWindow']).toBe(0)
+      // 用户写过的值一个不动
+      expect(providers['deepseek']?.['model']).toBe('deepseek-chat')
+      expect(providers['deepseek']?.['temperature']).toBe(0.7)
+      expect((outcome.data['llm'] as Record<string, unknown>)['active']).toBe('deepseek')
+    })
+
+    it('用户已写过的 contextWindow 不被覆盖（幂等）', () => {
+      const once = migrate({
+        version: 10,
+        llm: { providers: { deepseek: { contextWindow: 128000 } } },
+      })
+      expect(loadProviders(once.data)['deepseek']?.['contextWindow']).toBe(128000)
+
+      const twice = migrate({ ...once.data, version: 10 })
+      expect(twice.data).toEqual(once.data)
+      expect(loadProviders(twice.data)['deepseek']?.['contextWindow']).toBe(128000)
+    })
+
+    it('llm / providers 分组不存在或不合法时不凭空造对象，不抛错', () => {
+      const noLlm = migrate({ version: 10, general: {} })
+      expect(noLlm.warnings).toEqual([])
+      expect(noLlm.data['llm']).toBeUndefined()
+      expect(noLlm.data['version']).toBe(CONFIG_VERSION)
+
+      const noProviders = migrate({ version: 10, llm: { active: 'x' } })
+      expect(noProviders.warnings).toEqual([])
+      expect(noProviders.data['llm']).toEqual({ active: 'x' })
+
+      const badProviders = migrate({ version: 10, llm: { providers: 'oops' } })
+      expect(badProviders.warnings).toEqual([])
+      expect((badProviders.data['llm'] as Record<string, unknown>)['providers']).toBe('oops')
     })
   })
 })

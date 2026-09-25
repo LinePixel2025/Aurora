@@ -150,7 +150,10 @@ async function runSubagent(
   const append = async (message: NewMessage): Promise<StoredMessage> => {
     sequence += 1
     const stored: StoredMessage = {
-      id: `sub-${sequence}`,
+      // 循环预领的 id 优先（`NewMessage.id`，见 docs/06 §16.2）：子代理的 text / reasoning 增量
+      // 事件带的是**预领的那个 id**，落盘若另发一个 `sub-N`，同一轮就会出现两个 id —— 今天不炸
+      // 只是因为子代理不把这些事件的 messageId 往外发，但这属于「将来一转发就写错消息」的雷。
+      id: message.id ?? `sub-${sequence}`,
       role: message.role,
       content: message.content,
       createdAt: new Date().toISOString(),

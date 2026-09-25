@@ -53,8 +53,17 @@ export interface StoredSession {
   messages: StoredMessage[]
 }
 
-/** 追加一条消息的输入（id 由 SessionStore 生成） */
+/** 追加一条消息的输入（`id` 缺省时由 SessionStore 生成） */
 export interface NewMessage {
+  /**
+   * 指定的消息 id（缺省由 `SessionStore` 生成）。
+   *
+   * 存在的唯一理由：**流式正文**。助手消息要边收边渲染，就必须在正文还没收完时
+   * 就已经有一个稳定 id 下发给渲染层；而落盘发生在流结束之后。由循环先用
+   * `SessionStore.nextMessageId()` 领一个 id 边流边发，落盘时原样带上同一个 id ——
+   * 渲染层那份「半成品消息」与磁盘上的最终消息因此是同一条（docs/06 §16.2）。
+   */
+  id?: string
   role: StoredRole
   content: string
   toolCalls?: StoredToolCall[]

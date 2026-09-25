@@ -328,6 +328,9 @@ export class KernelAgentHost implements AgentHostContract {
         ...(this.deps.maxRounds === undefined ? {} : { maxRounds: this.deps.maxRounds }),
         ...(this.deps.confirmTool === undefined ? {} : { confirmTool: this.deps.confirmTool }),
         append: (message: NewMessage) => this.deps.sessions.append(sessionId, message),
+        // 正文流式的 id 预领（docs/06 §16.2）：与 append 共用同一个计数器，
+        // 因此「边流边发」用的 id 就是落盘后的 id，渲染层那条消息不需要被替换
+        nextMessageId: () => this.deps.sessions.nextMessageId(),
         updateToolCall: (messageId: string, call: StoredToolCall) =>
           this.deps.sessions.updateToolCall(messageId, call),
         onToolCall: (info) => {
@@ -342,14 +345,14 @@ export class KernelAgentHost implements AgentHostContract {
       for await (const event of loop) {
         switch (event.type) {
           case 'reasoning': {
-            // 思考链增量（Design/betav2-spec.md §5/§6）：AgentEvent 侧不带 messageId
-            // （那轮助手消息要等流结束才落盘），渲染层按 requestId + round 聚合，
-            // 再用同一个 round 的文本 / 工具事件把思考绑到正确的消息上（docs/06 §16.1）。
+            // 思考链增量（Design/betav2-spec.md §5/§6）：带该轮预领的 messageId，
+            // 渲染层据此把「正在思考」挂在正确的消息上（docs/06 §16.1）。
             this.emit({
               type: 'reasoning',
               sessionId,
               requestId,
               round: event.round,
+              messageId: event.messageId,
               delta: event.delta,
             })
             break
@@ -386,6 +389,18 @@ export class KernelAgentHost implements AgentHostContract {
               messageId: event.messageId,
               callId: event.callId,
               subagent: event.snapshot,
+            })
+            break
+          }
+          case 'usage': {
+            // token 用量（docs/06 §16.2）：只做展示（输入框底部的上下文详解），不落盘 ——
+            // 它是「这一轮请求的上下文占用」，重放历史时重新收集没有意义
+            this.emit({
+              type: 'usage',
+              sessionId,
+              requestId,
+              round: event.round,
+              usage: event.usage,
             })
             break
           }

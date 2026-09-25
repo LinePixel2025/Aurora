@@ -410,6 +410,41 @@ const migrateV9ToV10: Migration = {
   },
 }
 
+/**
+ * v10 → v11：为每个 `llm.providers.<id>` 补 `contextWindow: 0`（上下文窗口，docs/08 §1）。
+ *
+ * 补 `0`（= 未知）而不是某个猜测的窗口值：这个字段唯一的用途是「上下文占用比例」的分母，
+ * 猜错一个数量级会让用户以为快爆上下文了（或以为还很空）。用户在设置页填了才算数。
+ *
+ * 照 v9 → v10 的口径：只在 `llm.providers` 已存在时补，不凭空造出 provider；
+ * 已写过的值原样保留（幂等）。
+ */
+const migrateV10ToV11: Migration = {
+  from: 10,
+  to: 11,
+  describe: 'v10 → v11：为 llm.providers 各条目补 contextWindow: 0（上下文窗口，0 = 未知）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const llm = asRecord(raw['llm'])
+    if (llm !== undefined) {
+      const providers = asRecord(llm['providers'])
+      if (providers !== undefined) {
+        const nextProviders: Record<string, unknown> = {}
+        for (const [id, provider] of Object.entries(providers)) {
+          const entry = asRecord(provider)
+          nextProviders[id] =
+            entry === undefined ? provider : fillMissing(entry, { contextWindow: 0 })
+        }
+        next['llm'] = { ...llm, providers: nextProviders }
+      }
+    }
+
+    next['version'] = 11
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -421,6 +456,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV7ToV8,
   migrateV8ToV9,
   migrateV9ToV10,
+  migrateV10ToV11,
 ]
 
 export interface MigrationOutcome {

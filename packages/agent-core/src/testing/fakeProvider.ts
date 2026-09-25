@@ -1,4 +1,5 @@
 /** 测试用假 LLM provider：按脚本轮次产出 ChatEvent。 */
+import type { TokenUsage } from '@aurora/shared'
 import type {
   ChatEvent,
   ChatRequestMessage,
@@ -19,8 +20,11 @@ export interface RecordedCall {
 export interface ScriptRound {
   /** 思考链增量序列（每个元素一条 `reasoning` 事件，先于文本产出） */
   reasoning?: string[]
-  text?: string
+  /** 正文：字符串 = 一整段；数组 = 逐条增量（用来验证「边收边渲染」） */
+  text?: string | string[]
   toolCalls?: Array<{ id: string; name: string; arguments?: string }>
+  /** 本轮的 token 用量（`done` 事件带回，用于 usage 事件断言） */
+  usage?: TokenUsage
   error?: { code: string; message: string }
 }
 
@@ -58,8 +62,10 @@ async function* iterate(round: ScriptRound, signal?: AbortSignal): AsyncIterable
   for (const delta of round.reasoning ?? []) {
     yield { type: 'reasoning', delta }
   }
-  if (round.text !== undefined && round.text !== '') {
-    yield { type: 'text', delta: round.text }
+  const textDeltas = typeof round.text === 'string' ? [round.text] : (round.text ?? [])
+  for (const delta of textDeltas) {
+    if (delta === '') continue
+    yield { type: 'text', delta }
   }
   for (const call of round.toolCalls ?? []) {
     yield {
@@ -74,5 +80,6 @@ async function* iterate(round: ScriptRound, signal?: AbortSignal): AsyncIterable
   yield {
     type: 'done',
     finishReason: (round.toolCalls?.length ?? 0) > 0 ? 'tool_calls' : 'stop',
+    ...(round.usage === undefined ? {} : { usage: round.usage }),
   }
 }

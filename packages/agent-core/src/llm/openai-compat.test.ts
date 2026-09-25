@@ -75,6 +75,106 @@ describe('OpenAiCompatProvider.chat', () => {
     expect(body['model']).toBe('deepseek-chat')
   })
 
+  it('流式请求带上 stream_options.include_usage（否则拿不到 usage 事件）', async () => {
+    const { instance, stub } = provider([
+      { sseChunks: [sseLine({ choices: [{ delta: { content: '好' } }] }), 'data: [DONE]\n\n'] },
+    ])
+    await collect(
+      instance.chat({ model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }] }),
+    )
+    const body = stub.calls[0]?.body as Record<string, unknown>
+    expect(body['stream_options']).toEqual({ include_usage: true })
+  })
+
+  it('服务端点名拒绝 stream_options 时去掉它重试一次（不认这个字段的网关也能用）', async () => {
+    const { instance, stub } = provider([
+      {
+        status: 400,
+        text: '{"error":{"message":"Unrecognized request argument supplied: stream_options"}}',
+      },
+      { sseChunks: [sseLine({ choices: [{ delta: { content: '好' } }] }), 'data: [DONE]\n\n'] },
+    ])
+    const events = await collect(
+      instance.chat({ model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }] }),
+    )
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    expect(events.filter((event) => event.type === 'text')).toHaveLength(1)
+    expect(stub.calls).toHaveLength(2)
+    // 第一次带字段（被拒），第二次必须已经摘掉
+    expect((stub.calls[0]?.body as Record<string, unknown>)['stream_options']).toEqual({
+      include_usage: true,
+    })
+    expect('stream_options' in (stub.calls[1]?.body as Record<string, unknown>)).toBe(false)
+  })
+
+  it('不点名、只说「未知参数」的 400 也要降级（网关措辞五花八门）', async () => {
+    const { instance, stub } = provider([
+      { status: 400, text: '{"error":{"message":"Extra inputs are not permitted"}}' },
+      { sseChunks: [sseLine({ choices: [{ delta: { content: '好' } }] }), 'data: [DONE]'] },
+    ])
+    const events = await collect(
+      instance.chat({ model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }] }),
+    )
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    expect(stub.calls).toHaveLength(2)
+    expect('stream_options' in (stub.calls[1]?.body as Record<string, unknown>)).toBe(false)
+  })
+
+  it('降级用「降级」语义回报 onRetry（reason 有值，不是无延迟的退避重试）', async () => {
+    const retries: Array<{ attempt: number; reason?: string }> = []
+    const { instance } = provider(
+      [
+        { status: 400, text: '{"error":{"message":"unknown parameter: stream_options"}}' },
+        { sseChunks: [sseLine({ choices: [{ delta: { content: '好' } }] }), 'data: [DONE]'] },
+      ],
+      {
+        onRetry: (info) =>
+          retries.push({
+            attempt: info.attempt,
+            ...(info.reason === undefined ? {} : { reason: info.reason }),
+          }),
+      },
+    )
+    await collect(
+      instance.chat({ model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }] }),
+    )
+    expect(retries).toHaveLength(1)
+    expect(retries[0]?.reason).toContain('stream_options')
+  })
+
+  it('其它 400（报文未提 stream_options）不重试，如实报错', async () => {
+    const { instance, stub } = provider([
+      { status: 400, text: '{"error":{"message":"model not found"}}' },
+    ])
+    const events = await collect(
+      instance.chat({ model: 'nope', messages: [{ role: 'user', content: 'hi' }] }),
+    )
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'E_BAD_REQUEST' })
+    expect(stub.calls).toHaveLength(1)
+  })
+
+  it('usage 从最后一片透传到 done 事件（prompt/completion/total）', async () => {
+    const { instance } = provider([
+      {
+        sseChunks: [
+          sseLine({ choices: [{ delta: { content: '好' } }] }),
+          sseLine({
+            choices: [{ delta: {}, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 120, completion_tokens: 8, total_tokens: 128 },
+          }),
+          'data: [DONE]\n\n',
+        ],
+      },
+    ])
+    const events = await collect(
+      instance.chat({ model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }] }),
+    )
+    expect(events.at(-1)).toMatchObject({
+      type: 'done',
+      usage: { promptTokens: 120, completionTokens: 8, totalTokens: 128 },
+    })
+  })
+
   it('跨 chunk 分片的 JSON 仍能正确解析', async () => {
     const payload = sseLine({ choices: [{ delta: { content: '分片文本' } }] })
     const cut = Math.floor(payload.length / 2)

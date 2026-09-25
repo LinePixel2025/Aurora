@@ -1,5 +1,11 @@
 /** LLM 提供者抽象（docs/06 §3、ADR-003）。 */
-import type { ReasoningEffort } from '@aurora/shared'
+import type { ReasoningEffort, TokenUsage } from '@aurora/shared'
+
+/**
+ * token 用量的**唯一**定义在 `@aurora/shared`（它要经 IPC 到渲染层，IPC 契约不得依赖内核包）。
+ * 这里只重导出，让内核内部的 import 路径保持在本模块内。
+ */
+export type { TokenUsage }
 
 /**
  * 真正允许下发给模型的思考等级（v5）。
@@ -65,12 +71,6 @@ export type ChatEvent =
   | { type: 'tool_call'; call: ToolCallRequest }
   | { type: 'done'; finishReason: FinishReason; usage?: TokenUsage }
   | { type: 'error'; code: LlmErrorCode; message: string }
-
-export interface TokenUsage {
-  promptTokens: number
-  completionTokens: number
-  totalTokens: number
-}
 
 export interface ModelInfo {
   id: string

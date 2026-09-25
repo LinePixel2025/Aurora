@@ -8,7 +8,7 @@
  * 每个 LLM 轮次产生的助手消息（文本 + 工具调用）**立即持久化**：
  * 工具结果必须能对应到发起它的 assistant 消息，否则续接上下文时服务端会拒绝请求。
  */
-import type { AgentToolCall, SubagentSnapshot } from '@aurora/shared'
+import type { AgentToolCall, SubagentSnapshot, TokenUsage } from '@aurora/shared'
 import type {
   ChatEvent,
   ChatRequestMessage,
@@ -21,13 +21,18 @@ import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types
 export const DEFAULT_MAX_ROUNDS = 8
 
 /**
- * 循环事件（docs/06 §5、§16.1）。
+ * 循环事件（docs/06 §5、§16.1、§16.2）。
  *
  * `round`：本事件属于第几个工具调用轮次（从 0 起）。思考链增量自身没有 `messageId`
  * （那轮助手消息要等流结束才落盘），带 `round` 后渲染层才能把思考绑到正确的消息上。
+ *
+ * **正文 `text` 是增量**（2026-09 流式轮）：早先这里把一轮的正文攒完再整段发一次，
+ * 界面表现为「等模型全部说完才出现回复」。现在每个 delta 都带 `messageId` 立刻转发，
+ * 该 id 由 `nextMessageId` 在流开始前预领、落盘时原样沿用，因此边流边渲染的那条消息
+ * 与磁盘上的最终消息是**同一条**（docs/06 §16.2）。
  */
 export type AgentLoopEvent =
-  | { type: 'reasoning'; round: number; delta: string }
+  | { type: 'reasoning'; round: number; messageId: string; delta: string }
   | { type: 'text'; round: number; messageId: string; delta: string }
   | { type: 'tool'; round: number; messageId: string; call: AgentToolCall }
   | {
@@ -37,6 +42,7 @@ export type AgentLoopEvent =
       callId: string
       snapshot: SubagentSnapshot
     }
+  | { type: 'usage'; round: number; usage: TokenUsage }
   | { type: 'done'; pending?: boolean }
   | { type: 'error'; code: string; message: string }
 
@@ -95,6 +101,13 @@ export interface AgentLoopOptions {
   }): Promise<boolean>
   /** 落盘一条消息（用户 / 助手 / 工具结果） */
   append(message: NewMessage): Promise<StoredMessage>
+  /**
+   * 预领一个助手消息 id（正文流式的前提；缺省时循环内部生成一个）。
+   *
+   * 装配层注入 `SessionStore.nextMessageId`：与 `append` 共用同一计数器，
+   * 保证「边流边发」用的 id 与落盘时的 id 是同一个、且不会与其它消息相撞。
+   */
+  nextMessageId?(): string
   /** 原地更新某条助手消息里的工具卡片状态 */
   updateToolCall(messageId: string, call: StoredToolCall): Promise<void>
   /** 工具执行留痕（供主进程日志与后续权限确认使用） */
@@ -125,10 +138,15 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       return
     }
 
+    // 本轮助手消息的 id 在**流开始之前**就领好：正文要边收边发（docs/06 §16.2），
+    // 而落盘要等这条流结束 —— 见 `appendAssistant` 里把同一个 id 交给 append。
+    const messageId = options.nextMessageId?.() ?? localMessageId()
+
     let text = ''
     let reasoning = ''
     const calls: StoredToolCall[] = []
     let failed: { code: string; message: string } | null = null
+    let usage: TokenUsage | undefined
 
     for await (const event of options.provider.chat(
       {
@@ -143,14 +161,18 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       options.signal,
     )) {
       if (event.type === 'reasoning') {
-        // 思考链增量边到边转发（转发时还没有 messageId，渲染层按 requestId + round 聚合），
-        // 同时累积进本轮助手消息的 reasoning 字段，随 append 一起持久化
+        // 思考链增量边到边转发：与正文一样带上**预领的** messageId（2026-09 流式轮），
+        // 渲染层因此能在正文之前就把「正在思考」显示出来；同时累积进本轮助手消息的
+        // reasoning 字段，随 append 一起持久化
         reasoning += event.delta
-        yield { type: 'reasoning', round, delta: event.delta }
+        yield { type: 'reasoning', round, messageId, delta: event.delta }
         continue
       }
       if (event.type === 'text') {
+        // 正文增量边到边转发（2026-09 流式轮）：携带**预领的** messageId，
+        // 渲染层据此就地创建 / 追加那条助手消息
         text += event.delta
+        yield { type: 'text', round, messageId, delta: event.delta }
         continue
       }
       if (event.type === 'tool_call') {
@@ -162,6 +184,10 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
         })
         continue
       }
+      if (event.type === 'done') {
+        if (event.usage !== undefined) usage = event.usage
+        continue
+      }
       if (event.type === 'error') {
         failed = { code: event.code, message: event.message }
         break
@@ -171,14 +197,17 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
     if (failed) {
       // 已产出的文本与思考链先落盘，避免用户看到的内容在历史里消失
       if (text !== '' || reasoning !== '' || calls.length > 0) {
-        await appendAssistant(options, text, calls, reasoning)
+        await appendAssistant(options, messageId, text, calls, reasoning)
       }
       yield { type: 'error', code: failed.code, message: failed.message }
       return
     }
 
-    const assistant = await appendAssistant(options, text, calls, reasoning)
-    if (text !== '') yield { type: 'text', round, messageId: assistant.id, delta: text }
+    // 用量先于正文落盘转发：`promptTokens` 就是**本轮真实占用的上下文**，
+    // 是输入框底部「上下文详解」的唯一分母/分子来源（docs/06 §16.2）
+    if (usage !== undefined) yield { type: 'usage', round, usage }
+
+    const assistant = await appendAssistant(options, messageId, text, calls, reasoning)
 
     if (calls.length === 0) {
       yield { type: 'done' }
@@ -240,13 +269,27 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
 
 // ───────────────────────── 内部 ─────────────────────────
 
+/**
+ * 循环自带的 id 生成器：只在装配层没注入 `nextMessageId` 时使用（单测的常见情形）。
+ *
+ * 前缀刻意与 `SessionStore` 的 `msg-<ts>-<n>` 区分开：两条计数器互相看不见，
+ * 同一毫秒内数值恰好相同就会撞 id，而 id 撞了意味着界面把两条消息当成同一条。
+ */
+let localCounter = 0
+function localMessageId(): string {
+  localCounter += 1
+  return `msg-local-${Date.now()}-${localCounter}`
+}
+
 async function appendAssistant(
   options: AgentLoopOptions,
+  id: string,
   text: string,
   calls: StoredToolCall[],
   reasoning = '',
 ): Promise<StoredMessage> {
   return options.append({
+    id,
     role: 'assistant',
     content: text,
     ...(calls.length === 0 ? {} : { toolCalls: calls.map((call) => ({ ...call })) }),

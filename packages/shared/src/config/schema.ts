@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 10 as const
+export const CONFIG_VERSION = 11 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -95,6 +95,15 @@ export const LlmProviderSchema = z.object({
   temperature: z.number().min(0).max(2),
   /** 思考等级；由主进程装配层把 `auto` 映射成「不下发」（docs/06 §11）。 */
   reasoningEffort: ReasoningEffortSchema,
+  /**
+   * 该模型的上下文窗口（token），v11 新增（docs/08 §1）。
+   *
+   * 只用于对话窗输入框底部的**上下文占用**展示：`promptTokens / contextWindow` 即占用比例。
+   * 取值来源是用户填写（服务商文档里的 context length），**不做内置模型表** ——
+   * 模型名千变万化，猜错一个数量级比不显示更误导。
+   * `0` = 未知：此时只显示 token 数与字符数，不显示占比与进度条（不编造分母）。
+   */
+  contextWindow: z.number().int().min(0).max(2_000_000).default(0),
 })
 export type LlmProviderConfig = z.infer<typeof LlmProviderSchema>
 

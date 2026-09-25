@@ -61,6 +61,36 @@ describe('SessionStore', () => {
     expect(persisted.messages[2]?.toolCallId).toBe('c1')
   })
 
+  it('append 尊重传入的 id，且与 nextMessageId 预领的 id 一致（正文流式的前提）', async () => {
+    const { store } = setup()
+    // 流式渲染要求「边收边发」的 id 与落盘 id 相同：循环先领、append 原样用
+    const preallocated = store.nextMessageId()
+    const stored = await store.append('quick', {
+      id: preallocated,
+      role: 'assistant',
+      content: '边流边渲染',
+    })
+    expect(stored.id).toBe(preallocated)
+    const messages = await store.get('quick')
+    expect(messages.map((item) => item.id)).toEqual([preallocated])
+    // 未给 id 时仍然自动生成（旧调用点不受影响）
+    const generated = await store.append('quick', { role: 'user', content: '你好' })
+    expect(generated.id).toMatch(/^msg-\d+-\d+$/)
+    expect(generated.id).not.toBe(preallocated)
+  })
+
+  it('nextMessageId 不落盘、不与自动生成的 id 相撞', async () => {
+    const { store, fs } = setup()
+    const a = store.nextMessageId()
+    const b = store.nextMessageId()
+    expect(a).not.toBe(b)
+    // 预领一个 id 不该在磁盘上留下任何消息
+    expect(await store.get('quick')).toEqual([])
+    expect((await fs.readdir(SESSION_DIR)).length).toBe(0)
+    const appended = await store.append('quick', { role: 'user', content: 'x' })
+    expect([a, b]).not.toContain(appended.id)
+  })
+
   it('懒加载：第二次读取不再读盘', async () => {
     const { store, fs } = setup()
     await store.append('quick', { role: 'user', content: 'a' })

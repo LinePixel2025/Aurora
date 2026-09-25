@@ -88,12 +88,23 @@ export class SessionStore {
     return [...(this.cache.get(id) ?? [])]
   }
 
-  /** 追加一条消息并返回它（带生成好的 id）。 */
+  /**
+   * 预领一个消息 id（不落盘）。
+   *
+   * 流式正文用：助手消息在正文还没收完时就要有稳定 id 下发给渲染层，
+   * 而落盘要等这条流结束（见 `NewMessage.id` 与 docs/06 §16.2）。
+   * 与 `append` 共用同一个计数器，因此不会与自动生成的 id 相撞。
+   */
+  nextMessageId(): string {
+    return this.generateId()
+  }
+
+  /** 追加一条消息并返回它（带生成好的 id；`message.id` 给了就用给的）。 */
   async append(sessionId: string, message: NewMessage): Promise<StoredMessage> {
     const id = normalizeSessionId(sessionId)
     await this.ensureLoaded(id)
     const stored: StoredMessage = {
-      id: `msg-${Date.now()}-${(this.counter += 1)}`,
+      id: message.id ?? this.generateId(),
       role: message.role,
       content: message.content,
       createdAt: message.createdAt ?? new Date().toISOString(),
@@ -263,6 +274,12 @@ export class SessionStore {
   }
 
   // ───────────────────────── 内部 ─────────────────────────
+
+  /** 消息 id 生成：时间戳 + 进程内自增（同一毫秒内也不会重） */
+  private generateId(): string {
+    this.counter += 1
+    return `msg-${Date.now()}-${this.counter}`
+  }
 
   private async ensureLoaded(id: string): Promise<void> {
     if (this.loaded.has(id)) return

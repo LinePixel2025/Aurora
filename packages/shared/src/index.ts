@@ -4,6 +4,7 @@
 export * from './utils/result.js'
 export * from './utils/logger.js'
 export * from './utils/object.js'
+export * from './utils/format.js'
 
 // 配置
 export * from './config/schema.js'

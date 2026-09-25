@@ -8,9 +8,10 @@
  *
  * 顺序与归属（2026-09 增强）：
  * - 消息顺序由事件 `seq` 决定：新消息按 seq **插到正确位置**，而不是一律追加到末尾；
- * - 思考链按 `(requestId, round)` 聚合，再由同一 `round` 的文本 / 工具事件绑定到对应助手
- *   消息 —— 增量事件本身没有 messageId，早先按 requestId 全局累积，多轮工具调用时
- *   第二条助手消息会带上第一轮的思考全文。
+ * - 思考链与正文都**边收边写进同一条助手消息**（docs/06 §16.2）：该消息的 id 由内核在
+ *   这一轮流开始前预领，`reasoning` / `text` 事件都带着它，因此「正在思考」在正文之前
+ *   就能显示出来，也不需要再按轮次聚合（早先思考不带 messageId，只能先攒着、等正文到达
+ *   才绑到消息上，代价是**纯思考阶段界面一片空白**）。
  *
  * 多会话（docs/06 §4）：`sessionId` 是可切换的 ref；`chat:sessions` 提供列表，
  * `chat:newSession` 新建。默认会话由入参 `context` 决定（`main` / `quick` / `settings`）。
@@ -23,6 +24,7 @@ import type {
   ChatSessionSummary,
   SendMessageRequest,
   SubagentSnapshot,
+  TokenUsage,
   WindowName,
 } from '@aurora/shared'
 
@@ -97,18 +99,31 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   const finishedRequests = new Set<string>()
   const FINISHED_REQUEST_LIMIT = 64
   /**
-   * 思考链聚合（docs/06 §16.1）：按轮次分桶。
-   * - `roundDrafts`：`round` → 该轮已累积的思考文本（增量事件不带 messageId）；
-   * - `roundOwners`：`round` → 该轮的助手消息 id（由同轮 text / tool 事件绑定）；
-   * - `reasoningLive`：当前轮的文本（响应式镜像，供界面判断「正在思考」）；
-   * - `reasoningTargetId`：最近收到思考的助手消息 id（MessageList 自动展开依据）。
+   * 正在流式接收思考的助手消息 id（MessageList 的「自动展开 + 思考中动效」依据，docs/06 §16.1）。
+   *
+   * 该轮正文一开始写就把这里清空 —— 思考已经结束，块头文案随之从「思考中…」翻回
+   * 「已深度思考」，但已展开的思考内容不会自己收起来（收起来是请求结束的事）。
+   * 界面上「思考中」的判据就是这一个 ref（早先还有一个只增不减的 `reasoningLive` 镜像，
+   * 没有任何消费方，已删除）。
    */
-  const roundDrafts = new Map<number, string>()
-  const roundOwners = new Map<number, string>()
-  const reasoningLive = ref('')
   const reasoningTargetId = ref<string | null>(null)
   /** 本会话的子代理运行（实时，key = 工具调用 id）；切换会话时清空 */
   const liveSubagents = ref<SubagentRun[]>([])
+  /**
+   * 最近一轮 LLM 调用的 token 用量（输入框底部「上下文详解」的数据源，docs/07 §2.3）。
+   *
+   * `latest` 的 `promptTokens` 就是**当前上下文占用**（系统提示词 + 历史 + 本轮内容），
+   * `totals` 是本会话自窗口打开以来逐轮累加的消耗。provider 未回传 usage 时保持 null，
+   * 界面此时只显示条数与字符数，**不编造 token 数**。
+   */
+  const usage = ref<{
+    /** 最近一轮的用量（`promptTokens` 即当前上下文占用） */
+    latest: TokenUsage | null
+    /** 本会话累计（逐轮相加） */
+    totals: TokenUsage
+  }>({ latest: null, totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } })
+  /** 已计入 `usage.totals` 的 `(requestId, round)`，防重复累加（同一序号只来一次） */
+  const countedUsage = new Set<string>()
 
   const statusTone = computed<'idle' | 'running' | 'unread' | 'error'>(() => {
     if (error.value) return 'error'
@@ -192,44 +207,53 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         break
       }
       case 'text': {
-        const message = messageFor(event.messageId, event.round, event.seq)
+        const message = messageFor(event.messageId, event.seq)
         if (message) {
-          bindRound(event.round, message)
           message.content += event.delta
-          message.pending = false
+          // 正文开始写 = 这一轮的思考已经结束：撤掉「思考中…」的实时标记
+          // （块本身仍保持展开，直到请求结束才收起为摘要行）
+          if (reasoningTargetId.value === message.id) reasoningTargetId.value = null
         }
         break
       }
       case 'reasoning': {
-        // 增量事件不带 messageId：按「请求 + 轮次」分桶累积，等该轮的 text / tool 事件
-        // 到达后绑定到具体消息（docs/06 §16.1）。这样第二轮的消息不会带上第一轮的思考全文。
-        const draft = (roundDrafts.get(event.round) ?? '') + event.delta
-        roundDrafts.set(event.round, draft)
-        reasoningLive.value = draft
-        const owner = roundOwners.get(event.round)
-        const message = owner === undefined ? undefined : messageById(owner)
+        // 思考增量带该轮预领的 messageId，因此**在正文之前**就能建出这条助手消息并把
+        // 「正在思考」显示出来（纯思考阶段界面不再空白）。逐条增量直接累加到消息上，
+        // 不再需要按轮次聚合 —— 每条增量都明确属于哪条消息（docs/06 §16.2）。
+        const message = messageFor(event.messageId, event.seq)
         if (message) {
-          message.reasoning = draft
+          message.reasoning = (message.reasoning ?? '') + event.delta
           reasoningTargetId.value = message.id
         }
         break
       }
-      case 'tool': {
-        const message = messageFor(event.messageId, event.round, event.seq)
-        if (message) {
-          bindRound(event.round, message)
-          upsertToolCall(message, event.call)
+      case 'usage': {
+        // token 用量（docs/06 §16.2）：`latest` 供「上下文占用」展示，`totals` 逐轮累加。
+        // 同一 (requestId, round) 只计一次 —— 事件重放 / 迟到事件不该把用量翻倍。
+        const key = `${event.requestId}#${event.round}`
+        if (!countedUsage.has(key)) {
+          countedUsage.add(key)
+          usage.value = {
+            latest: event.usage,
+            totals: {
+              promptTokens: usage.value.totals.promptTokens + event.usage.promptTokens,
+              completionTokens: usage.value.totals.completionTokens + event.usage.completionTokens,
+              totalTokens: usage.value.totals.totalTokens + event.usage.totalTokens,
+            },
+          }
         }
+        break
+      }
+      case 'tool': {
+        const message = messageFor(event.messageId, event.seq)
+        if (message) upsertToolCall(message, event.call)
         break
       }
       case 'subagent': {
         // 子代理进度（docs/06 §19）：同时更新工具卡上的快照（卡片就地长出进度）
         // 与「子代理」页面的实时列表
-        const message = messageFor(event.messageId, event.round, event.seq)
-        if (message) {
-          bindRound(event.round, message)
-          patchToolCall(message, event.callId, event.subagent)
-        }
+        const message = messageFor(event.messageId, event.seq)
+        if (message) patchToolCall(message, event.callId, event.subagent)
         const run: SubagentRun = { ...event.subagent, messageId: event.messageId }
         const key = run.callId === '' ? run.taskId : run.callId
         const existingIndex = liveSubagents.value.findIndex(
@@ -242,9 +266,9 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       case 'done': {
         streaming.value = false
         const message = currentAssistant()
-        settleReasoning(message)
+        settleReasoning()
+        settlePending()
         if (message) {
-          message.pending = false
           if (message.content === '') message.content = '（暂无回复）'
         }
         unread.value = true
@@ -255,9 +279,9 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         streaming.value = false
         error.value = event.message
         const message = currentAssistant() ?? lastAssistant.value
-        settleReasoning(message)
+        settleReasoning()
+        settlePending()
         if (message) {
-          message.pending = false
           message.error = true
           message.content = message.content === '' ? `请求失败：${event.message}` : message.content
         }
@@ -293,7 +317,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
    * 早先一律 `push` 到末尾：一旦事件顺序略有出入（陈旧请求、水合竞态），
    * 工具卡就会挂到列表末尾的新消息上，看起来就是「顺序错乱」。
    */
-  function messageFor(messageId: string, round: number, seq: number): ChatMessage | undefined {
+  function messageFor(messageId: string, seq: number): ChatMessage | undefined {
     const existing = messageById(messageId)
     if (existing) {
       assistantId = messageId
@@ -306,11 +330,6 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       pending: true,
       createdAt: Date.now(),
       seq,
-      // 该轮的思考可能先于正文到达：消息此刻才出现，把这一轮已聚合的文本补上
-      ...(() => {
-        const draft = roundDrafts.get(round)
-        return draft === undefined || draft === '' ? {} : { reasoning: draft }
-      })(),
     }
     assistantId = messageId
     insertOrdered(created)
@@ -342,47 +361,44 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     messages.value.push(message)
   }
 
-  /** 把某一轮绑定到它的助手消息：该轮已聚合的思考文本一次性并入（长度只增不减） */
-  function bindRound(round: number, message: ChatMessage): void {
-    roundOwners.set(round, message.id)
-    const draft = roundDrafts.get(round)
-    if (draft !== undefined && draft !== '' && (message.reasoning ?? '').length < draft.length) {
-      message.reasoning = draft
-      reasoningTargetId.value = message.id
-    }
-  }
-
   function currentAssistant(): ChatMessage | undefined {
     if (assistantId === null) return undefined
     return messageById(assistantId)
   }
 
   /**
-   * 请求收尾（done / error / abort）：固化「从未绑定到消息」的思考尾巴，复位聚合状态。
+   * 请求收尾（done / error / abort）：复位思考的实时镜像。
    *
-   * 只处理**无主**的轮次草稿：有主的桶（`roundOwners` 已绑定）已经完整落在对应消息上。
-   * 不能直接灌 `reasoningLive` —— 它只在收到思考增量时更新，最后一轮若没有思考，
-   * 它保留的是更早轮次的残留镜像，灌进收尾时活跃的消息就是「已深度思考」重复出现
-   * 两次（2026-09-25 报告；见 docs/06 §16.1 症状表）。
+   * 思考文本从 2026-09 流式轮起**逐条累加在它自己的消息上**（增量自带 messageId），
+   * 因此收尾没有「无主草稿」可固化 —— 这里只剩下把「正在思考」的实时标记清掉，
+   * 免得下一个请求还带着上一轮的目标消息。
    */
-  function settleReasoning(message: ChatMessage | null | undefined): void {
-    let orphanDraft: string | undefined
-    for (const [round, draft] of roundDrafts) {
-      if (draft !== '' && roundOwners.get(round) === undefined) orphanDraft = draft
-    }
-    if (message !== null && message !== undefined && orphanDraft !== undefined) {
-      if ((message.reasoning ?? '').length < orphanDraft.length) {
-        message.reasoning = orphanDraft
-      }
-    }
+  function settleReasoning(): void {
     resetReasoning()
   }
 
-  /** 切换会话 / 发起新请求前复位思考聚合（旧请求的增量不能泄进新请求） */
+  /**
+   * 请求收尾（done / error / abort）：把**所有**还在 `pending` 的消息一次性收口。
+   *
+   * 为什么不能只清「当前那条助手消息」：一轮只调工具、没有正文时（模型直接 `read_file`），
+   * 那条消息由 `tool` 事件建出来，`currentAssistant()` 早已指向后面轮次的消息 ——
+   * 只清最后一条，前面那条会永远停在 `pending: true`，界面上的三点动画在已结束的消息上一直转
+   * （2026-09 复核发现；见 docs/06 §16.2）。
+   */
+  function settlePending(): void {
+    for (const message of messages.value) {
+      if (message.pending === true) message.pending = false
+    }
+  }
+
+  /** 切换会话 / 清空会话时复位 token 用量（它记的是「这一个会话」的消耗） */
+  function resetUsage(): void {
+    usage.value = { latest: null, totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }
+    countedUsage.clear()
+  }
+
+  /** 切换会话 / 发起新请求前复位思考镜像（旧请求的增量不能泄进新请求） */
   function resetReasoning(): void {
-    roundDrafts.clear()
-    roundOwners.clear()
-    reasoningLive.value = ''
     reasoningTargetId.value = null
   }
 
@@ -393,7 +409,10 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     if (index >= 0) list[index] = { ...call }
     else list.push({ ...call })
     message.toolCalls = [...list]
-    message.pending = message.content === ''
+    // 刻意**不碰 `pending`**：它表达的是「这条消息还在生成中」，只有请求收尾（done / error /
+    // abort）才该把它清掉。早先这里写 `pending = content === ''`，后果是「正文已到、工具还在跑」
+    // 的那一轮中途就把 pending 清成 false —— 依赖 `pending === false` 的入口（朗读按钮）
+    // 会在流式途中闪出来，而工具轮那条没正文的消息又永远清不掉（三点动画在已结束的消息上一直转）。
   }
 
   /** 把子代理快照补进已存在的工具卡（子代理进度事件不带完整工具调用） */
@@ -501,6 +520,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     assistantId = null
     finishedRequests.clear()
     liveSubagents.value = []
+    resetUsage()
     resetReasoning()
     // force：目标会话可能已在 hydrated 里（二次进入同一会话），不强制的话
     // 守卫会吞掉这次水合，界面停在刚清空的空列表上
@@ -585,9 +605,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     const requestId = activeRequest
     await window.aurora.chat.abort(requestId)
     streaming.value = false
-    const message = currentAssistant()
-    settleReasoning(message)
-    if (message) message.pending = false
+    settleReasoning()
+    settlePending()
     // 本地主动中止：紧随其后的内核事件一律丢弃（否则「已停止」之后还会继续长内容）
     finishRequest(requestId)
   }
@@ -597,6 +616,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     unread.value = false
     error.value = null
     liveSubagents.value = []
+    resetUsage()
     resetReasoning()
   }
 
@@ -613,10 +633,10 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     error,
     statusTone,
     lastAssistant,
-    /** 流式期间的思考过程聚合文本（当前轮；请求结束后为空串，增量已并入消息） */
-    reasoningLive,
     /** 正在接收思考过程的助手消息 id（供 MessageList 自动展开思考块）；空闲时为 null */
     reasoningTargetId,
+    /** 本会话 token 用量（输入框底部「上下文详解」的数据源，docs/07 §2.3） */
+    usage,
     /** 本会话的子代理运行（「子代理」页面用，新的在前） */
     subagentRuns,
     hydrate,

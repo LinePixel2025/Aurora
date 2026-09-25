@@ -39,6 +39,7 @@ function provider(overrides: Partial<LlmProviderConfig> = {}): LlmProviderConfig
     modelList: ['demo-model'],
     temperature: 0.7,
     reasoningEffort: 'auto',
+    contextWindow: 0,
     ...overrides,
   }
 }
