@@ -16,6 +16,7 @@ import { computed, ref } from 'vue'
 import type { SubagentRun } from '../../shared/composables/useChat.js'
 import { Bot, ChevronRight, Clock, MessageSquare } from '../../shared/icons.js'
 import SubagentTrace from '../../shared/components/SubagentTrace.vue'
+import { useCollapseTransition } from '../../shared/composables/useCollapseTransition.js'
 
 const props = defineProps<{
   runs: SubagentRun[]
@@ -26,6 +27,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'back'): void
 }>()
+
+/** 「任务指令」折叠走实测高度动画（docs/07 §2.3 / §5.2） */
+const { beforeEnter, beforeLeave } = useCollapseTransition()
 
 /** 已展开「任务指令」的运行（默认收起：报告与轨迹才是主体，指令通常是长文） */
 const openedRuns = ref<string[]>([])
@@ -135,7 +139,7 @@ function statusLabel(status: SubagentRun['status']): string {
           </button>
         </div>
 
-        <Transition name="collapse">
+        <Transition name="collapse" @before-enter="beforeEnter" @before-leave="beforeLeave">
           <p v-if="isOpen(runKey(run))" class="run-prompt">{{ run.prompt }}</p>
         </Transition>
 

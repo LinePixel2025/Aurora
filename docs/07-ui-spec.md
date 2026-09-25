@@ -183,10 +183,16 @@
   `max-height: 70vh` 当动画终点 —— 它的内容实测只有约 140px（工具卡展开体）与 220px
   （思考块正文），终点远大于内容时 `min(内容高, max-height)` 会让**全部可见位移挤在时间轴的
   一小段里**（展开表现为「飞快长满再空转」，收起表现为「先空转、末尾猛缩」），观感就是乱跳。
-  改为**实测高度**动画：enter 时 `height: 0 → el.scrollHeight`、enter 结束后归 `height: auto`，
-  leave 时 `scrollHeight → 0`，时长沿用 `--dur-base`(250ms) + `--ease-spring`。
-  实现收在 `renderer/shared/composables/useCollapseTransition.ts`（Vue `<Transition>` 的
-  enter / leave 钩子），三个使用点（思考块、工具卡展开体、子代理页的「任务指令」折叠）都要挂上；
+  改为**实测高度**动画：终点不再是 `70vh`，而是 `var(--collapse-h, 70vh)` —— 由
+  `renderer/shared/composables/useCollapseTransition.ts` 的 `before-enter` / `before-leave`
+  钩子在**过渡类挂上之前**把 `el.scrollHeight` 写进该变量（此刻量到的就是内容真实高度）。
+  之所以用 CSS 变量而不是直接动画 `height`：既不必在结束后把内联高度复位成 `auto`
+  （`after-enter` 一旦早于过渡结束触发，元素会当场跳到全高，比原来的曲线更跳），
+  内容在动画期间继续长高（思考块正在流式就是这个场景）也不会被写死的高度截住；
+  而**没挂钩子的使用点自动回落 `70vh`**（与改前行为逐字一致），因此可以一处一处接线，
+  不存在「CSS 改了、模板还没接」的破损中间态。时长仍是 `--dur-base`(250ms)。
+  三个使用点（`MessageList.vue` 的思考块与工具卡展开体、`SubagentPage.vue` 的「任务指令」折叠）
+  都要挂上这两个钩子；
   **不要改回固定 `max-height`**（见 §5.2 硬约定）。流式结束时思考块自动收起为摘要行
   （上文 §2.3「思考块的流式动效」）走的也是这条动画，不再是瞬抽 220px。
   另外 `.tool-card` 的进场错位延迟（第 2/3/4 张 +40/80/120ms）此前挂在
@@ -518,14 +524,16 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
   `.anim-slide-left` / `.anim-slide-right`（横向滑入 12px，方向性内容切换），
   以及 keyframes `pulse-ring`（录音麦克风的扩散环，配套 `.pulse-ring` 类按 `--dur-pulse` 无限循环）。
 - Vue `<Transition>` 预设：`.sheet-*`（右侧滑入，提示条面板 / 抽屉）、`.rise-*`（气泡与列表项）、
-  `.fade-*`（内容切换）、`.collapse-*`（`max-height` 展开，工具卡片 / 折叠区块）、
+  `.fade-*`（内容切换）、`.collapse-*`（`max-height` 展开，**终点取实测高度** `--collapse-h`，
+  见 §2.3 与下面的硬约定；工具卡片 / 折叠区块）、
   **`.page-*`（BetaV2 新增：设置页横向切换，fade + `translateX(12px)`，250ms `--ease-standard`，
   新页从右进、旧页往左退）**。
 - **硬约定**：快 / 标准 / 慢动作分别为 150 / 250 / 350ms；颜色和透明度走 standard、大面积位移走 smooth、进场展开走 spring。所有过渡/动画必须走 `--transition-*` 或 `--dur-*` + `--ease-*`，不写死时长；
   `prefers-reduced-motion: reduce` 下把三个时长压到 1ms 并让位移动画立刻落位（theme.css 里已全局兜底）。
 - **硬约定（2026-09 性能轮新增两条，都是踩过坑的）**：
-  1. **展开 / 收起一律用实测高度动画**（`useCollapseTransition` 的 enter / leave 钩子），
-     **禁止**拿与内容无关的固定 `max-height`（如 `70vh`）当动画终点：内容比终点小得多时，
+  1. **展开 / 收起一律用实测高度动画**：`.collapse-*` 的终点走 `var(--collapse-h, 70vh)`，
+     由 `useCollapseTransition` 的 `before-enter` / `before-leave` 钩子写入实测内容高度。
+     **禁止**用与内容无关的固定 `max-height`（如写死 `70vh`）当终点：内容比终点小得多时，
      `min(内容高, max-height)` 会把全部可见位移挤进时间轴的一小段，看起来就是「先卡住、再猛跳」
      （见 §2.3「展开 / 收起的高度动画」）；
   2. **输入区浮层必须锚在 `.composer-box` 上并走 `--z-flyout`**，不许自己写 z-index 魔数、

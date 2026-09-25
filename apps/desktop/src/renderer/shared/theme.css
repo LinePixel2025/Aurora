@@ -750,7 +750,15 @@ select {
 
 /**
  * 高度展开（工具执行卡片 / 折叠区块）。
- * 用 max-height 而不是 height：内容高度未知，动画结束会自然停在实际高度。
+ *
+ * 用 `max-height` 而不是 `height`：内容高度未知、动画结束自然停在内容高度，
+ * 也不需要结束后把内联高度复位成 `auto`。
+ *
+ * **终点取实测高度**：`var(--collapse-h, 70vh)` 由 `useCollapseTransition` 的钩子在过渡开始前写入。
+ * 固定写 `70vh` 时，可见高度是 `min(内容高, max-height)` —— 内容只有 140px 而终点 504px 时，
+ * 全部位移会被挤在时间轴的前一小段（展开表现为「飞快长满再空转」、收起表现为「先空转、末尾猛缩」），
+ * 观感就是乱跳（docs/07 §2.3 / §5.2）。
+ * 变量缺省仍是 `70vh`：**没挂钩子的使用点行为与从前逐字一致**，因此可以一处一处接线。
  */
 .collapse-enter-active,
 .collapse-leave-active {
@@ -768,7 +776,7 @@ select {
 
 .collapse-enter-to,
 .collapse-leave-from {
-  max-height: 70vh;
+  max-height: var(--collapse-h, 70vh);
   opacity: 1;
 }
 
