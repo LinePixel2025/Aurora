@@ -9,6 +9,7 @@ import {
   OpenAiCompatProvider,
   describeError,
   isLlmError,
+  matchAllowPatterns,
   type AgentProviderFactory,
   type ProviderConfig,
 } from '@aurora/agent-core'
@@ -250,15 +251,43 @@ function fetchImplOf(resolveFetch?: () => typeof fetch | undefined): typeof fetc
  *
  * - 设置项 `advanced.confirmSensitiveTools` 关闭时**每次调用即时判断**并直接放行
  *   （改设置无需重启；内核仍会按 `sensitivity` 写日志留痕）；
+ * - `run_command` 命中用户维护的**免确认模式列表**（docs/06 §11.7）时跳过确认卡片、直接放行。
+ *   这条路径是**减少打扰**、不是安全加固 —— 它只是少问一次，不增加任何权限，
+ *   也没有把"未命中"变成放行。命中时**仍然写 `info` 级审计日志**（含被命中的模式与命令前缀），
+ *   否则"为什么这次没弹卡片"将无从追溯；
+ * - 模式本身非法（纯通配 / 含花括号 / 语法不合法）时匹配器一律跳过，等价于没有这条模式；
  * - 确认链路自身失败时按"拒绝"处理：确认交互不可用时宁可不执行敏感工具。
  */
 export function createConfirmTool(options: {
   proactive: SensitiveToolConfirmerLike
   enabled: () => boolean
+  /**
+   * `run_command` 的免确认模式列表（每次调用即时判断，改设置无需重启，与 `enabled` 同款）。
+   * 未注入 / 返回空数组 = 没有免确认模式，所有命令都逐次确认。
+   */
+  allowPatterns?: () => readonly string[]
   logger?: Logger
 }): ConfirmToolDecision {
   return async (info) => {
     if (!options.enabled()) return true
+
+    // 免确认分支只在 `enabled()` 为真之后判定：总开关关掉的那条路径比本列表更宽，
+    // 语义由它自己负责（本步不改）。命中即跳过卡片，但审计日志照写 —— 见上方函数注释。
+    if (info.name === 'run_command') {
+      const command = readCommand(info.input)
+      if (command !== undefined) {
+        const matched = matchAllowPatterns(command, options.allowPatterns?.() ?? [])
+        if (matched !== undefined) {
+          options.logger?.info('命令命中免确认模式，已跳过确认卡片', {
+            tool: info.name,
+            pattern: matched,
+            command: command.slice(0, 200), // 超长命令只记前 200 字符
+          })
+          return true
+        }
+      }
+    }
+
     try {
       return await options.proactive.requestSensitiveToolConfirm({
         sessionId: info.sessionId,
@@ -273,6 +302,24 @@ export function createConfirmTool(options: {
       return false
     }
   }
+}
+
+/**
+ * 从工具入参里取 `run_command` 的命令串（`createConfirmTool` 的私有实现细节）。
+ *
+ * **只信任"确实是对象，且 `command` 是一个非空、非纯空白的字符串"这一种形态**；
+ * 其余情形 —— 入参不是对象（字符串 / 数字 / 数组 / null）、缺 `command` 字段、
+ * `command` 不是字符串（数字 / 对象 / 数组）、空串或纯空白 —— 一律返回 `undefined`。
+ *
+ * 调用方拿到 `undefined` 时的行为是**走正常确认**，绝不放行：
+ * "解析不出命令"不能被当成"命中免确认"，否则模型只要换一种参数写法就能摘掉确认闸门。
+ */
+function readCommand(input: unknown): string | undefined {
+  if (typeof input !== 'object' || input === null) return undefined
+  const command = (input as Record<string, unknown>)['command']
+  if (typeof command !== 'string') return undefined
+  if (command.trim() === '') return undefined
+  return command
 }
 
 /** LLM 错误 → 可操作的中文提示（IPC 层只做透传，文案集中在这里）。 */
