@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractDelta, parseSseChunk, parseSseData } from './sse.js'
+import { extractDelta, extractReasoningDelta, parseSseChunk, parseSseData } from './sse.js'
 
 describe('parseSseChunk', () => {
   it('解析单条完整事件', () => {
@@ -66,5 +66,45 @@ describe('extractDelta', () => {
     expect(extractDelta({ choices: [{ delta: { tool_calls: [{ index: 0 }] } }] })).toBe('')
     expect(extractDelta({ choices: [] })).toBe('')
     expect(extractDelta(null)).toBe('')
+  })
+})
+
+describe('extractReasoningDelta', () => {
+  it('读取 reasoning_content 字段（DeepSeek / Kimi 口径）', () => {
+    expect(extractReasoningDelta({ choices: [{ delta: { reasoning_content: '让我想' } }] })).toBe(
+      '让我想',
+    )
+  })
+
+  it('读取 reasoning 字段（OpenRouter 口径）', () => {
+    expect(extractReasoningDelta({ choices: [{ delta: { reasoning: '一下' } }] })).toBe('一下')
+  })
+
+  it('同一分片同时给两个字段时 reasoning_content 优先', () => {
+    expect(
+      extractReasoningDelta({
+        choices: [{ delta: { reasoning_content: 'A', reasoning: 'B' } }],
+      }),
+    ).toBe('A')
+  })
+
+  it('跨多条 choices 拼接', () => {
+    expect(
+      extractReasoningDelta({
+        choices: [{ delta: { reasoning: '你' } }, { delta: { reasoning: '好' } }],
+      }),
+    ).toBe('你好')
+  })
+
+  it('null 与缺失字段都视为没有思考链', () => {
+    expect(extractReasoningDelta({ choices: [{ delta: { reasoning_content: null } }] })).toBe('')
+    expect(extractReasoningDelta({ choices: [{ delta: { reasoning: null } }] })).toBe('')
+    expect(extractReasoningDelta({ choices: [{ delta: { content: '正文' } }] })).toBe('')
+    expect(extractReasoningDelta({ choices: [] })).toBe('')
+    expect(extractReasoningDelta(null)).toBe('')
+  })
+
+  it('非字符串的 reasoning 字段不参与拼接', () => {
+    expect(extractReasoningDelta({ choices: [{ delta: { reasoning: 42 } }] })).toBe('')
   })
 })

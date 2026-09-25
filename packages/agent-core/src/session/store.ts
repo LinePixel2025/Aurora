@@ -94,6 +94,7 @@ export class SessionStore {
       createdAt: message.createdAt ?? new Date().toISOString(),
       ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls }),
       ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
+      ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
     }
     const next = [...(this.cache.get(id) ?? []), stored]
     // 条数上限：与上下文截断同一套规则，保证不拆散工具调用组
@@ -121,6 +122,7 @@ export class SessionStore {
       content: string
       createdAt: string
       toolCalls?: StoredToolCall[]
+      reasoning?: string
     }>
   > {
     const messages = await this.get(sessionId)
@@ -135,6 +137,7 @@ export class SessionStore {
       content: message.content,
       createdAt: message.createdAt,
       ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls }),
+      ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
     }))
   }
 

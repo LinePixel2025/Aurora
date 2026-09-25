@@ -21,6 +21,7 @@ import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types
 export const DEFAULT_MAX_ROUNDS = 8
 
 export type AgentLoopEvent =
+  | { type: 'reasoning'; delta: string }
   | { type: 'text'; messageId: string; delta: string }
   | { type: 'tool'; messageId: string; call: AgentToolCall }
   | { type: 'done'; pending?: boolean }
@@ -112,6 +113,7 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
     }
 
     let text = ''
+    let reasoning = ''
     const calls: StoredToolCall[] = []
     let failed: { code: string; message: string } | null = null
 
@@ -127,6 +129,13 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       },
       options.signal,
     )) {
+      if (event.type === 'reasoning') {
+        // 思考链增量边到边转发（转发时还没有 messageId，渲染层按 requestId 聚合），
+        // 同时累积进本轮助手消息的 reasoning 字段，随 append 一起持久化
+        reasoning += event.delta
+        yield { type: 'reasoning', delta: event.delta }
+        continue
+      }
       if (event.type === 'text') {
         text += event.delta
         continue
@@ -147,15 +156,15 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
     }
 
     if (failed) {
-      // 已产出的文本先落盘，避免用户看到的内容在历史里消失
-      if (text !== '' || calls.length > 0) {
-        await appendAssistant(options, text, calls)
+      // 已产出的文本与思考链先落盘，避免用户看到的内容在历史里消失
+      if (text !== '' || reasoning !== '' || calls.length > 0) {
+        await appendAssistant(options, text, calls, reasoning)
       }
       yield { type: 'error', code: failed.code, message: failed.message }
       return
     }
 
-    const assistant = await appendAssistant(options, text, calls)
+    const assistant = await appendAssistant(options, text, calls, reasoning)
     if (text !== '') yield { type: 'text', messageId: assistant.id, delta: text }
 
     if (calls.length === 0) {
@@ -208,15 +217,19 @@ async function appendAssistant(
   options: AgentLoopOptions,
   text: string,
   calls: StoredToolCall[],
+  reasoning = '',
 ): Promise<StoredMessage> {
   return options.append({
     role: 'assistant',
     content: text,
     ...(calls.length === 0 ? {} : { toolCalls: calls.map((call) => ({ ...call })) }),
+    // 空串视为「没有思考链」，不落字段（与 toolCalls 的缺省口径一致）
+    ...(reasoning === '' ? {} : { reasoning }),
   })
 }
 
 function toMessages(history: readonly StoredMessage[]): ChatRequestMessage[] {
+  // 只挑 API 需要的字段（role / content / 工具调用）：`reasoning` 等展示字段一律不回传
   const out: ChatRequestMessage[] = []
   for (const message of history) {
     if (message.role === 'system') continue

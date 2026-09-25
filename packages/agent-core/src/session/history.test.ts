@@ -119,6 +119,19 @@ describe('toChatRequestMessages', () => {
     ]
     expect(toChatRequestMessages(messages, { excludeTail: 1 })).toHaveLength(1)
   })
+
+  it('reasoning（思考链）只用于展示，绝不进 API 请求消息', () => {
+    const messages: StoredMessage[] = [
+      msg({ id: 'a1', role: 'assistant', content: '上一轮回复', reasoning: '上一轮思考过程' }),
+      msg({ id: 'u', role: 'user', content: '继续' }),
+    ]
+    const converted = toChatRequestMessages(messages)
+    expect(converted).toHaveLength(2)
+    for (const message of converted) {
+      expect('reasoning' in message).toBe(false)
+    }
+    expect(converted[0]).toEqual({ role: 'assistant', content: '上一轮回复' })
+  })
 })
 
 describe('compressHistory（docs/06 §4 长上下文摘要）', () => {

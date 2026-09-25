@@ -30,6 +30,11 @@ export interface StoredMessage {
    * 因此它们与 assistant 消息一同持久化，但渲染层只展示 assistant 的工具卡片。
    */
   toolCallId?: string
+  /**
+   * assistant 消息的思考链全文（`reasoning_content` / `reasoning` 增量累积，
+   * Design/betav2-spec.md §6）。只用于渲染层展示；构造 API 请求时**绝不**回传给模型。
+   */
+  reasoning?: string
 }
 
 /** `userData/sessions/<sessionId>.json` 的结构 */
@@ -46,6 +51,8 @@ export interface NewMessage {
   content: string
   toolCalls?: StoredToolCall[]
   toolCallId?: string
+  /** assistant 消息的思考链全文（不参与 API 请求构造） */
+  reasoning?: string
   createdAt?: string
 }
 

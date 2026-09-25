@@ -266,6 +266,17 @@ export class KernelAgentHost implements AgentHostContract {
 
       for await (const event of loop) {
         switch (event.type) {
+          case 'reasoning': {
+            // 思考链增量（Design/betav2-spec.md §5/§6）：AgentEvent 侧只带
+            // sessionId / requestId / delta（无 messageId），渲染层按 requestId 聚合。
+            this.emit({
+              type: 'reasoning',
+              sessionId,
+              requestId,
+              delta: event.delta,
+            })
+            break
+          }
           case 'text': {
             this.emit({
               type: 'text',

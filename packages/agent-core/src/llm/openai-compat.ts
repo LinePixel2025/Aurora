@@ -18,7 +18,7 @@ import {
   type TokenUsage,
   type ToolCallRequest,
 } from './types.js'
-import { extractDelta, parseSseChunk, parseSseData } from './sse.js'
+import { extractDelta, extractReasoningDelta, parseSseChunk, parseSseData } from './sse.js'
 
 export interface OpenAiCompatOptions {
   id: string
@@ -162,6 +162,10 @@ export class OpenAiCompatProvider implements LlmProvider {
           for (const payload of parsed) {
             const text = extractDelta(payload)
             if (text !== '') yield { type: 'text', delta: text }
+
+            // 思考链增量与文本增量并列转发（分片通常只含其一，二者都按原样透传）
+            const reasoning = extractReasoningDelta(payload)
+            if (reasoning !== '') yield { type: 'reasoning', delta: reasoning }
 
             for (const call of extractToolCallDeltas(payload)) {
               const existing = toolCalls.get(call.index) ?? { id: '', name: '', arguments: '' }

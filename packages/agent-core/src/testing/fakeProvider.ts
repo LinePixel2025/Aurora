@@ -17,6 +17,8 @@ export interface RecordedCall {
 }
 
 export interface ScriptRound {
+  /** 思考链增量序列（每个元素一条 `reasoning` 事件，先于文本产出） */
+  reasoning?: string[]
   text?: string
   toolCalls?: Array<{ id: string; name: string; arguments?: string }>
   error?: { code: string; message: string }
@@ -36,7 +38,9 @@ export function createFakeProvider(
       index += 1
       calls.push({
         model: req.model,
-        messages: req.messages,
+        // 快照发送时的消息列表：loop 会在轮次之间原地 push 同一个数组，
+        // 不拷贝的话后面轮次的追加会"回填"进前面轮次的记录里
+        messages: req.messages.map((message) => ({ ...message })),
         ...(req.tools === undefined ? {} : { tools: req.tools }),
         ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
         ...(req.reasoningEffort === undefined ? {} : { reasoningEffort: req.reasoningEffort }),
@@ -50,6 +54,9 @@ async function* iterate(round: ScriptRound, signal?: AbortSignal): AsyncIterable
   if (signal?.aborted) {
     yield { type: 'done', finishReason: 'stop' }
     return
+  }
+  for (const delta of round.reasoning ?? []) {
+    yield { type: 'reasoning', delta }
   }
   if (round.text !== undefined && round.text !== '') {
     yield { type: 'text', delta: round.text }

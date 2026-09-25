@@ -19,6 +19,7 @@ function createRecorder() {
         createdAt: '2025-01-01T00:00:00.000Z',
         ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls }),
         ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
+        ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
       }
       messages.push(stored)
       return Promise.resolve(stored)
@@ -413,6 +414,146 @@ describe('runAgentLoop', () => {
     expect(sent.map((item) => item.role)).toEqual(['system', 'user', 'assistant', 'tool', 'user'])
     expect(sent[2]?.toolCalls?.[0]?.id).toBe('c9')
     expect(sent[3]?.toolCallId).toBe('c9')
+  })
+
+  describe('思考链（reasoning，Design/betav2-spec.md §6）', () => {
+    it('增量边到边转发，并累积持久化到当条 assistant 消息', async () => {
+      const rec = createRecorder()
+      const provider = createFakeProvider([{ reasoning: ['让我', '想想'], text: '答案是 4' }])
+      const events = await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: '2+2',
+          history: [],
+          tools: new ToolRegistry(),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+        }),
+      )
+
+      // 每个增量一条事件，且先于 text 事件
+      expect(events.map((event) => event.type)).toEqual(['reasoning', 'reasoning', 'text', 'done'])
+      expect(
+        events
+          .filter(
+            (event): event is Extract<AgentLoopEvent, { type: 'reasoning' }> =>
+              event.type === 'reasoning',
+          )
+          .map((event) => event.delta),
+      ).toEqual(['让我', '想想'])
+
+      const assistant = rec.messages.find((message) => message.role === 'assistant')
+      expect(assistant?.reasoning).toBe('让我想想')
+      expect(assistant?.content).toBe('答案是 4')
+    })
+
+    it('没有思考链时 assistant 消息不落 reasoning 字段', async () => {
+      const rec = createRecorder()
+      const provider = createFakeProvider([{ text: '你好' }])
+      await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: '在吗',
+          history: [],
+          tools: new ToolRegistry(),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+        }),
+      )
+      const assistant = rec.messages.find((message) => message.role === 'assistant')
+      expect(assistant?.reasoning).toBeUndefined()
+      expect('reasoning' in (assistant ?? {})).toBe(false)
+    })
+
+    it('reasoning 绝不回传给 API（含历史还原路径）', async () => {
+      const rec = createRecorder()
+      const provider = createFakeProvider([
+        { reasoning: ['第一轮思考'], toolCalls: [{ id: 'c1', name: 'nope' }] },
+        { reasoning: ['第二轮思考'], text: '最终回答' },
+      ])
+      // 历史里也种一条带 reasoning 的旧助手消息，模拟上一轮留下的痕迹
+      const history: StoredMessage[] = [
+        {
+          id: 'h1',
+          role: 'assistant',
+          content: '旧回复',
+          createdAt: '',
+          reasoning: '旧思考过程，绝不能出门',
+        },
+      ]
+      await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: '继续',
+          history,
+          tools: registryWithEcho(),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+        }),
+      )
+
+      // 每一轮请求里的全部消息都不允许出现 reasoning 字段
+      expect(provider.calls.length).toBe(2)
+      for (const call of provider.calls) {
+        for (const message of call.messages) {
+          expect('reasoning' in message).toBe(false)
+        }
+      }
+      // 第一轮：历史里的 assistant 按角色还原（reasoning 被丢弃）
+      expect(provider.calls[0]?.messages.map((message) => message.role)).toEqual([
+        'system',
+        'assistant',
+        'user',
+      ])
+      // 第二轮：首轮助手消息（带工具调用）同样不带 reasoning
+      expect(provider.calls[1]?.messages.map((message) => message.role)).toEqual([
+        'system',
+        'assistant',
+        'user',
+        'assistant',
+        'tool',
+      ])
+      // 但落盘的 assistant 消息必须保留 reasoning（只用于展示）
+      const persisted = rec.messages.filter((message) => message.role === 'assistant')
+      expect(persisted[0]?.reasoning).toBe('第一轮思考')
+      expect(persisted[1]?.reasoning).toBe('第二轮思考')
+    })
+
+    it('LLM 中途报错：已产出的思考链随文本一起落盘', async () => {
+      const rec = createRecorder()
+      const provider = createFakeProvider([
+        {
+          reasoning: [' partial'],
+          text: '部分输出',
+          error: { code: 'E_RATE_LIMIT', message: '限流' },
+        },
+      ])
+      await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: 'x',
+          history: [],
+          tools: new ToolRegistry(),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+        }),
+      )
+      const assistant = rec.messages.find((message) => message.role === 'assistant')
+      expect(assistant?.reasoning).toBe(' partial')
+      expect(assistant?.content).toBe('部分输出')
+    })
   })
 
   it('onToolCall 留痕（名称 / 敏感级 / 是否失败）', async () => {

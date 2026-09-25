@@ -240,6 +240,8 @@ function trimForSummary(messages: readonly StoredMessage[]): StoredMessage[] {
         continue
       case 'assistant': {
         const calls = message.toolCalls ?? []
+        // 注意：`message.reasoning`（思考链全文）刻意**不**进 ChatRequestMessage ——
+        // 它只供渲染层展示，回传给 API 既是浪费上下文也可能被部分服务拒绝。
         out.push({
           role: 'assistant',
           content: message.content,

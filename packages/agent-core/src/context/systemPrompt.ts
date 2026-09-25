@@ -1,7 +1,7 @@
 /**
  * 系统提示词组装（docs/06 §5）。
  *
- * 小节顺序固定：人设 → 当前模式 → 系统状态 → 可用 Skill → 可用工具 → 安全规则。
+ * 小节顺序固定：人设 → 当前模式 → 系统状态 → 可用 Skill → 可用工具 → Agent 可修改的设置 → 安全规则。
  * 空片段自动省略；每次请求即时组装（不缓存），保证感知与模式切换即时生效。
  */
 export const BASE_PERSONA = [
@@ -35,6 +35,11 @@ export interface SystemPromptParts {
   skillCatalog?: string
   /** 工具清单（由工具表生成；为空表示本次没有可用工具） */
   toolCatalog?: string
+  /**
+   * Agent 可修改的设置项清单（Design/betav2-spec.md §6）。
+   * 由装配层按 shared 的 `canWriteSettingPath` 生成，原样渲染成独立小节。
+   */
+  settingsHint?: string
 }
 
 export function buildSystemPrompt(parts: SystemPromptParts = {}): string {
@@ -70,6 +75,9 @@ export function buildSystemPrompt(parts: SystemPromptParts = {}): string {
 
   const tools = normalize(parts.toolCatalog)
   if (tools !== undefined) sections.push(`## 可用工具\n${tools}`)
+
+  const settings = normalize(parts.settingsHint)
+  if (settings !== undefined) sections.push(`## Agent 可修改的设置\n${settings}`)
 
   sections.push(SAFETY_RULES)
   return sections.join('\n\n')

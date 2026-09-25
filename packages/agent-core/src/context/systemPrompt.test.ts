@@ -31,6 +31,27 @@ describe('buildSystemPrompt', () => {
   it('自定义人设覆盖默认', () => {
     expect(buildSystemPrompt({ persona: '你是助教' }).startsWith('你是助教')).toBe(true)
   })
+
+  it('settingsHint 渲染为「Agent 可修改的设置」小节，位于可用工具之后、安全规则之前', () => {
+    const prompt = buildSystemPrompt({
+      toolCatalog: '- web_fetch：抓网页',
+      settingsHint: '- general.chat.showThinking\n- tts.enabled',
+    })
+    expect(prompt).toContain('## Agent 可修改的设置')
+    expect(prompt).toContain('- general.chat.showThinking')
+
+    const hint = prompt.indexOf('## Agent 可修改的设置')
+    const tools = prompt.indexOf('## 可用工具')
+    const safety = prompt.indexOf('## 安全规则')
+    expect(tools).toBeGreaterThanOrEqual(0)
+    expect(tools).toBeLessThan(hint)
+    expect(hint).toBeLessThan(safety)
+  })
+
+  it('settingsHint 缺省或为空白时不渲染该小节', () => {
+    expect(buildSystemPrompt()).not.toContain('Agent 可修改的设置')
+    expect(buildSystemPrompt({ settingsHint: '   ' })).not.toContain('Agent 可修改的设置')
+  })
 })
 
 describe('describeTools', () => {

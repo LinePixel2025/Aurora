@@ -60,6 +60,8 @@ export type FinishReason = 'stop' | 'length' | 'tool_calls' | 'content_filter' |
 
 export type ChatEvent =
   | { type: 'text'; delta: string }
+  /** 思考链增量（`reasoning_content` / `reasoning` 字段，Design/betav2-spec.md §6） */
+  | { type: 'reasoning'; delta: string }
   | { type: 'tool_call'; call: ToolCallRequest }
   | { type: 'done'; finishReason: FinishReason; usage?: TokenUsage }
   | { type: 'error'; code: LlmErrorCode; message: string }

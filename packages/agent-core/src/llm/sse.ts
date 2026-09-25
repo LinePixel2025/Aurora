@@ -57,3 +57,27 @@ export function extractDelta(payload: unknown): string {
   }
   return text
 }
+
+/**
+ * 从 OpenAI 兼容分片里取出**思考链**增量（Design/betav2-spec.md §6）。
+ *
+ * 各家字段名不统一：DeepSeek / Kimi 用 `reasoning_content`，OpenRouter 等用 `reasoning`，
+ * 两者都可为 null。取值口径：同一条 choice 里 `reasoning_content` 优先，缺省再看
+ * `reasoning`；都不是字符串就当没有。content 内嵌的 `<think>...</think>` **不做**解析
+ * （只认独立字段，避免误伤正文）。
+ */
+export function extractReasoningDelta(payload: unknown): string {
+  const choices = (payload as { choices?: unknown[] } | null)?.choices
+  if (!Array.isArray(choices)) return ''
+  let text = ''
+  for (const choice of choices) {
+    const delta = (choice as { delta?: { reasoning_content?: unknown; reasoning?: unknown } }).delta
+    if (!delta) continue
+    if (typeof delta.reasoning_content === 'string') {
+      text += delta.reasoning_content
+      continue
+    }
+    if (typeof delta.reasoning === 'string') text += delta.reasoning
+  }
+  return text
+}

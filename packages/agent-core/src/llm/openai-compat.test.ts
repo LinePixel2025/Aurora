@@ -86,6 +86,31 @@ describe('OpenAiCompatProvider.chat', () => {
     expect((events[0] as { delta: string }).delta).toBe('分片文本')
   })
 
+  it('思考链增量按 reasoning_content / reasoning 字段转发为 reasoning 事件', async () => {
+    const { instance } = provider([
+      {
+        sseChunks: [
+          sseLine({ choices: [{ delta: { reasoning_content: '先想' } }] }),
+          sseLine({ choices: [{ delta: { reasoning: '一下' } }] }),
+          sseLine({ choices: [{ delta: { reasoning_content: null, reasoning: null } }] }),
+          sseLine({ choices: [{ delta: { content: '答案是 4' } }] }),
+          sseLine({ choices: [{ delta: {}, finish_reason: 'stop' }] }),
+          'data: [DONE]\n\n',
+        ],
+      },
+    ])
+    const events = await collect(
+      instance.chat({ model: 'm', messages: [{ role: 'user', content: '2+2' }] }),
+    )
+    expect(
+      events.filter((e) => e.type === 'reasoning').map((e) => (e as { delta: string }).delta),
+    ).toEqual(['先想', '一下'])
+    expect(
+      events.filter((e) => e.type === 'text').map((e) => (e as { delta: string }).delta),
+    ).toEqual(['答案是 4'])
+    expect(events.at(-1)).toMatchObject({ type: 'done', finishReason: 'stop' })
+  })
+
   it('聚合分片的 tool_calls', async () => {
     const { instance } = provider([
       {

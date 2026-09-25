@@ -167,6 +167,37 @@ describe('KernelAgentHost', () => {
     expect(stored.map((item) => item.role)).toEqual(['user', 'assistant', 'tool', 'assistant'])
   })
 
+  it('思考链增量转发为 AgentEvent（sessionId / requestId / delta，无 messageId）', async () => {
+    const harness = await createHarness({ rounds: [{ reasoning: ['思考', '中'], text: '答案' }] })
+    await harness.send('问题')
+    await harness.waitForDone()
+
+    // shared 的 AgentEvent 联合尚未收编 'reasoning' 变体，测试侧用局部联合观察事件形状
+    type ReasoningAgentEvent = {
+      type: 'reasoning'
+      sessionId: string
+      requestId: string
+      delta: string
+    }
+    const all = harness.events as ReadonlyArray<AgentEvent | ReasoningAgentEvent>
+    const reasoning = all.filter(
+      (event): event is ReasoningAgentEvent => event.type === 'reasoning',
+    )
+    expect(reasoning.map((event) => event.delta)).toEqual(['思考', '中'])
+    for (const event of reasoning) {
+      expect(event.sessionId).toBe('quick')
+      expect(event.requestId).toMatch(/^req-/)
+      expect('messageId' in event).toBe(false)
+    }
+    expect(types(harness.events)).toEqual(['queued', 'reasoning', 'reasoning', 'text', 'done'])
+
+    // 思考链随 assistant 消息持久化（全文累积）
+    const stored = await harness.sessions.get('quick')
+    const assistant = stored.find((message) => message.role === 'assistant')
+    expect(assistant?.reasoning).toBe('思考中')
+    expect(assistant?.content).toBe('答案')
+  })
+
   it('系统提示词包含模式片段、感知摘要与危险操作规则', async () => {
     const fs = new TestFileSystem()
     const sessions = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
