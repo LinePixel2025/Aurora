@@ -641,6 +641,10 @@ export interface AuroraApi {
     setPosition(name: WindowName, position: { x: number; y: number }): Promise<Result<WindowState>>
     /** 提示条收起态（8px 竖条）/ 展开态（面板）切换（docs/07 §2.2） */
     setEdgeBarExpanded(expanded: boolean): Promise<Result<WindowState>>
+    /** Windows 式标题栏：真最小化进任务栏（chat / 设置；提示条等不可最小化窗口为 no-op） */
+    minimize(name: WindowName): Promise<Result<WindowState>>
+    /** 切换最大化（标题栏双击 / 后续按钮）；最大化期间几何不写入 `general.windowState` */
+    toggleMaximize(name: WindowName): Promise<Result<WindowState>>
     getState(): Promise<Result<WindowState>>
     onStateChanged(listener: (state: WindowState) => void): () => void
   }

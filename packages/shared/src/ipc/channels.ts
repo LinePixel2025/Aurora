@@ -56,6 +56,9 @@ export const IPC = {
     showChat: 'window:showChat',
     setPosition: 'window:setPosition',
     setEdgeBarExpanded: 'window:setEdgeBarExpanded',
+    /** Windows 式标题栏：真最小化（进任务栏）与最大化切换（frame:false，渲染层自绘按钮） */
+    minimize: 'window:minimize',
+    toggleMaximize: 'window:toggleMaximize',
     stateChanged: 'window:stateChanged',
     getState: 'window:getState',
   },

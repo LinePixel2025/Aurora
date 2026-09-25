@@ -7,7 +7,9 @@
 - **轻**：默认占用最小（提示条），完整窗口按需展开。
 - **顺**：所有展开 / 收起带过渡动画，不突兀。
 - **聚**：视觉统一（深色主题为主、跟随系统）、状态指示一致（AI 状态灯全局同色语义）。
-- **隐**：业务窗口无任务栏图标，托盘为唯一管理入口；所有窗口可一键隐藏。
+- **隐**：提示条与引导窗口无任务栏图标；**主界面与设置窗口显示任务栏图标**（可最小化，
+  2026-09 前端重构起对齐主流 Agent Desktop），托盘仍是统一管理入口；所有窗口可一键隐藏
+  （「关闭」= 隐藏，仅托盘「退出」真正退出）。
 - **拖**：能拖的窗口由**显式清单**决定（`DRAGGABLE_WINDOWS = ['chat', 'settings', 'onboarding']`，
   `useWindowDrag` composable），模板统一用 `:class="dragClass"` 挂 `drag-region`，
   不靠各窗自己记得加 class；拖动条**可见高度 ≥ 32px**（够用户抓住）。
@@ -39,7 +41,16 @@
     - **面板内容区 220px，`right: 8px`**：面板不能贴到窗口最右缘（否则会盖住 8px 竖条，
       「展开态竖条仍可点」就不成立、竖条的悬停反馈也看不见）。228 = 220 面板 + 8 竖条。
       面板内是 5 个 `--fill-1` 分组卡片（统一用卡片不用分隔线）+ 底部 3 个 `AppButton`；
-      「最近消息」列表 `flex: 1 1 auto` 吸收剩余高度，中部不留大片空白。
+      「快速对话」卡 `flex: 1 1 auto` 吸收剩余高度，中部不留大片空白。
+    - **快速对话（2026-09 起，取代只读的「最近消息」卡）**：面板里直接输入、与 Aurora 对话
+      （数据仍是 `sessionId = 'quick'`，独立 `useChat('edge-bar','quick')` 实例）。
+      - **可聚焦跟随展开**：本窗创建时 `focusable: false`（悬停不抢焦点），但那样输入框
+        拿不到键盘焦点——主进程 `setEdgeBarExpanded` 在**展开时 `setFocusable(true)`、
+        收起时 `setFocusable(false)` + blur**（`window-manager.ts`；setFocusable 不主动取焦，
+        只有用户真点输入框才激活窗口）。
+      - **输入框聚焦期间移开鼠标不收起**（正在打字）：`onPointerLeave` 查 `quickFocused`，
+        失焦时若鼠标已离开窗口则补走收起链（`watch(quickFocused)`）。
+      - 消息列表正序贴底、流式三点动画；空态提示「直接输入，与 Aurora 快速对话」。
     - 提示条**只持久化 y**：宽高由折叠态决定、水平位置恒定贴右缘，跨启动不复用持久化宽高
       （否则收起态会继承展开态的 228px 宽）。
   - 未实现：`可穿透性可配`（尚未接入 `setIgnoreMouseEvents`）——提示条仍然整块接收鼠标事件。
@@ -63,17 +74,25 @@
 - **主界面规格（BetaV2）**：默认 **1120×720**（min 940×600）、resizable、**alwaysOnTop 关闭**（false）、
   place **center**；`frame: false`、几何持久化、关闭 = 隐藏 均不变（见 docs/02 §2.2）。
   旧口径（约 420×640、alwaysOnTop 开启）自本轮废弃。
-- **三栏布局（BetaV2）**：`sidebar(232px, 可折叠) | main(1fr) | context(264px, 可折叠)`，
-  栏间用分隔而非悬浮卡片：
+- **三栏布局（2026-09 重构起）**：`sidebar(240px, 可折叠) | main(1fr) | context(264px, 可折叠)`，
+  栏间用分隔而非悬浮卡片；主区消息与 composer 居中排布（内容列最大宽 860px），
+  对齐主流 Agent Desktop 的阅读动线：
   - **左栏**：品牌行（单色 mark + Aurora）→「新对话」按钮（`data-action="chat.new-session"`）→
-    固定顶置项「快速对话」（`data-field="chat.quick-item"`，即 `sessionId = 'quick'`）→
-    会话列表（`data-field="chat.session-list"`，标题 + 时间 + 条数 + 激活态）→
+    固定顶置项「快速对话」（`data-field="chat.quick-item"`，点击切到 quick 会话；
+    **可直接输入的快速对话入口在桌面提示条面板**，见 §2.2）→
+    会话列表（`data-field="chat.session-list"`，单行标题 + 相对时间）→
     底部：模式徽章 + 右栏开关（`data-field="chat.right-panel-toggle"`）+ 设置齿轮。
-    **不再有独立快捷窗口，也不再有「快速 / 会话」双栏 tab**（旧的标题栏「历史」按钮 + 侧栏 sheet 口径废弃）。
-  - **主区**：头部拖拽区（会话标题 + 模型下拉 `data-field="chat.model"` + 思考等级下拉
-    `data-field="chat.reasoningEffort"` + 清空 / 设置）→ MessageList → composer
-    （附件 chips + textarea + 麦克风按钮 + 停止 / 发送）。
-  - **右栏（模式感知上下文栏）**：classroom = 当前 / 下节课卡（非 classisland provider 时隐藏）+
+  - **主区**：头部拖拽区（侧栏开关 + 状态灯 + 会话标题 + 未配置徽章 + 清空（图标钮）+
+    **Windows 式窗口按钮**：`最小化`（`data-caption-btn="minimize"`，真最小化进任务栏）与
+    `关闭`（`data-caption-btn="close"`，= 隐藏窗口）；双击头部拖动区切换最大化）→
+    MessageList → composer。**「模型 / 思考等级」两个下拉移入 composer 工具行**
+    （对齐 ChatGPT / Claude Desktop；`data-field="chat.model"` / `chat.reasoningEffort` 锚点不变，
+    仅位置变化），「收起」文字按钮由 caption「关闭」按钮取代（隐藏语义不变）。
+  - **composer**：单张悬浮卡（附件 chips → textarea → 工具行）；
+    工具行 = 麦克风（STT）+ 模型下拉 + 思考等级下拉 +（右侧）停止 / 发送；
+    旧「会话：xxx · 可调用 Skill 与 MCP 工具」常驻 meta 文案移除，仅保存操作的瞬时提示保留。
+  - **右栏（模式感知上下文栏）**：顶部任务清单卡（当前会话最后一次 `todo_write` 的结构化清单，
+    无清单不渲染）；classroom = 当前 / 下节课卡（非 classisland provider 时隐藏）+
     今日课程 + 分类流水（紧凑）+ 感知文件夹打开；work = 工作目录卡（打开 + 前往设置）+ 办公提示卡；
     通用 = 系统状态卡（时间 / 电量 / 网络 / 前台应用）。**非当前模式的功能一律不渲染**。
 - **麦克风（STT，BetaV2）**：composer 的麦克风按钮（`data-field="chat.mic"`）门控口径同 TTS：
@@ -104,6 +123,11 @@
   **没有可用 TTS provider（`tts.enabled = false`，或 `tts.active` 为空 / 指向不存在的条目）时整个按钮不出现**
   —— 不占位、不留 `disabled` 态（与「思考 / 模型」下拉的「不隐藏只禁用」策略不同：朗读是增强功能，
   未配置时连修复路径都不必指）。协议与失败降级见 06 §13，联网范围见 11 §4。
+- **任务清单与子代理卡（2026-09 新增）**：`todo_write` 工具卡渲染为**结构化清单卡**
+  （`data-field="chat.todo-card"`：状态圈（待办 ○ / 进行中 ◐ / 完成 ✓）+ 条目 + 进度摘要），
+  展开体仍是原始参数 / 结果；`task` 工具卡渲染为**子代理卡**（`data-field="chat.task-card"`：
+  任务简述 + 运行态 + 可展开的指令与报告摘要）。右栏顶部新增「任务清单」卡
+  （数据 = 当前会话消息流里最后一次 `todo_write` 的入参，随流式实时更新；无清单时不渲染）。
 - **消息区跟随最新（v0.6.0 修复「对话不会自动拉到底」）**：滚动容器是窗口自己的 `.thread`，
   跟随逻辑在 `MessageList.vue` + `composables/useStickToBottom.ts`：
   - **默认跟随**：新消息 / 流式增量 / 历史水合导致内容变高时自动滚到底。
@@ -117,11 +141,14 @@
     `min-height: 100%`，内容超过一屏后根节点的盒子被钉在一屏高、多出来的部分按**溢出**渲染 ——
     元素尺寸不再变化，只监听尺寸会漏掉每一次流式增量（若 `.thread` 是普通块级容器，其根节点会跟着内容长高，
     尺寸变化本身就能被观察到，因此不会复现这个问题）。`AURORA_CAPTURE` 的自动滚底探针正是靠"内容确实比窗口高"这条守卫把这个坑钉住的。
-- **收起（本轮窗口 UX 修复）**：标题栏「收起」= **直接隐藏窗口**，不再拉起独立小窗；
+- **关闭 / 最小化（2026-09 重构起）**：标题栏右侧是 Windows 式窗口按钮（`WindowCaption.vue`）——
+  「最小化」真最小化（进任务栏，可从任务栏恢复），「关闭」= **直接隐藏窗口**；
   正在进行的流式回复**不会**因此中止（`hide()` 不触碰 `chat:abort`，见 02 §2.2「关闭 = 隐藏」）。
-- **侧栏（BetaV2）**：三栏布局的左栏（232px，可折叠）常驻承载品牌行 / 新对话 / 「快速对话」顶置项 /
-  会话列表 / 底部操作（见上方三栏布局）；快速会话（`sessionId = 'quick'`）只是左栏里的一个固定顶置项，
-  与普通会话共用同一窗口 —— 旧的「标题栏『历史』按钮展开双栏侧栏」口径废弃。
+  双击头部拖动区 = 切换最大化（最大化时几何不落盘，还原后按原尺寸恢复）。
+- **侧栏（2026-09 重构起）**：三栏布局的左栏（240px，可折叠）常驻承载品牌行 / 新对话 /
+  「快速对话」固定顶置项（点击切 quick 会话）/ 会话列表 / 底部操作；
+  快速会话（`sessionId = 'quick'`）与提示条面板的快速对话共用同一份数据 ——
+  旧的「标题栏『历史』按钮展开双栏侧栏」口径废弃。
 - **思考等级（本轮）**：输入区（`.composer-bar`）含「思考等级」下拉
   （`data-field="chat.reasoningEffort"`，`ThinkingLevelSelect.vue`），读写**当前生效 provider** 的
   `llm.providers.<active>.reasoningEffort`：`auto` = **不下发**该参数（映射成 `undefined`），
@@ -157,15 +184,17 @@
 
 ### 2.5 设置窗口
 
-- 单窗口分栏（**BetaV2**：8 页合并为 **6 页**）：侧栏按三组排列 —— **基础**（常规 `general` /
+- 单窗口分栏（**BetaV2**：8 页合并为 **6 页**；2026-09 重构起条目为图标 + 单行文字）：侧栏按三组排列 —— **基础**（常规 `general` /
   模式 `modes`）／**AI 能力**（AI 模型 `llm` / 语音 `voice`）／**系统**（智能与工具 `agent` /
   高级 `advanced`）；`SETTINGS_PAGE_IDS = ['general','modes','llm','voice','agent','advanced']`。
   当前项用分层填充 + 左侧**强调色**指示条（不再用品牌渐变）。合并口径：Skill 与 MCP 并入 `agent` 页、
   STT 并入 `voice` 页、生图模型并入 `llm` 页、勿扰时段并入 `general` 页（全局 + 提示条两组同区）；
   旧深链兼容映射：`?page=tts→voice`、`?page=skills|mcp→agent`。
-- **关闭入口（v0.5.1 起）**：本窗无系统标题栏（`frame: false`），因此侧栏品牌区自担标题栏职责——
-  整行可拖动（`drag-region`），右侧提供「✕ 隐藏」按钮；按 `Esc` 等效。
-  按 docs/02 §2.2 约定，此处「关闭」= **隐藏窗口**（不退出应用，退出只走托盘菜单）。
+- **窗口按钮（2026-09 重构起）**：本窗无系统标题栏（`frame: false`），侧栏品牌行右侧提供
+  与主界面同款的 Windows 式「最小化 / 关闭」按钮（`WindowCaption.vue`，
+  `data-caption-btn="minimize" | "close"`）；「关闭」= **隐藏窗口**（Esc 等效；
+  不退出应用，退出只走托盘菜单），「最小化」真最小化进任务栏。
+  侧栏导航条目改为**图标 + 单行文字**（不再带两行说明文案）。
 - **可拖动区域（本轮补齐）**：侧栏顶部（`.sidebar-drag` 透明条 + 品牌行 `.brand`，
   `.brand` 增加 `min-height: 36px`）与内容区顶部的拖动带（`.content-drag`，高 10px）**都可以拖**；
   关闭按钮与其它交互元素挂 `no-drag`（`theme.css` 另有一条按标签兜底的规则）。
@@ -338,7 +367,7 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
   2. **主界面（chat，BetaV2 三栏）**——顺序有约束（见下面「全局顺序」一条）：
      `theme-chat.png`（双主题）→ `chat-sidebar.png`（左栏结构 + **出厂门控现场**）→
      `chat-right-panel-toggle.png` → `chat-right-panel-work.png`（两者自恢复、不动会话）→
-     `chat-thinking-block.png`（reload 水合 seed 思考块后点开）→ `chat-quick-session.png`（切 quick 会话）→
+     `chat-thinking-block.png`（reload 水合 seed 思考块后点开）→ `chat-quick-session.png`（展开侧栏快速对话面板）→
      `chat-thinking-level.png` → `chat-model-picker.png` → `chat-tts.png`（reload，朗读按钮）→
      `chat-drag.png` → `chat-collapse.png`（点击写在 check 里，见下）→ `chat.png`（自动滚底）。
      历史现场由 `runCapture` 在跑计划前经 `seedChatTtsHistory` 种进 `sessions/main.json`：
@@ -392,7 +421,7 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     （面板自身的 220px 只作为信息回报 `styled`）；
   - 点击竖条后的窗口状态（`chat` 可见、`primary === 'chat'`）；
   - **交互窗收起即隐藏**（`CHAT_COLLAPSE_CHECK`，产物 `chat-collapse.png`）：
-    在交互窗里真实点击标题栏「收起」按钮（按钮按文案「收起」定位），等 600ms 后
+    在交互窗里真实点击标题栏 caption「关闭」按钮（按 `data-caption-btn="close"` 定位），等 600ms 后
     `await window.aurora.window.getState()`（4s 超时兜底），要求 `visible['chat'] !== true && primary === null`
     （收起 = 直接隐藏窗口，不再拉起小窗；整个 state 一并回报便于排查）。
     ⚠️ 点击写在 **check** 里、该场景**不设 `act`**：`act` 在截图之前执行，窗口若先被 `hide()`，

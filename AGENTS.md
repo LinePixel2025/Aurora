@@ -15,7 +15,9 @@ apps/desktop/
   src/preload/       沙箱化 contextBridge 白名单（自包含，见下）
   src/renderer/      四个窗口入口：edge-bar / chat /
                      settings / onboarding + shared/ 共享组件
-                     （chat 即主界面：1120×720 常驻三栏，快速会话是左栏固定顶置项，无独立快捷窗口）
+                     （chat 即主界面：1120×720 常驻三栏；可直接输入的快速对话在**提示条面板**
+                     ——窗口 focusable 跟随展开/收起切换；主界面左栏固定项点击切 quick 会话；
+                     主界面与设置有 Windows 式「最小化 / 关闭」caption 按钮，关闭 = 隐藏）
 packages/shared/     配置 Schema、SettingsStore、IPC 契约、模式/窗口类型
 packages/agent-core/ Agent 内核：LLM / 会话 / 工具循环 / Skill / MCP / Prompt 组装
 packages/modes/      IMode 框架、ClassRoom 完整实现、Work 初步实装（BetaV2）/ Code 占位
@@ -102,8 +104,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **已从设置页与引导页移除**（Schema 里保留字段仅为兼容旧配置，改它不生效）。
 - **AI 悬浮窗（service-dock）已于本轮移除**，常驻入口为提示条 + 托盘；配置迁移到 v4
   （`v3 → v4` 删除 `general.windowState['service-dock']`）。提示条的悬停展开面板与点击呼出交互窗见 docs/07 §2.2。
-- **独立小窗（mini-chat）已于本轮删除**：交互窗标题栏「收起」= **直接隐藏窗口**（正在进行的流式回复不中止）；
-  「快速会话」（`sessionId = quick`）与历史会话列表都搬到交互窗侧栏（「快速 / 会话」双栏），
+- **独立小窗（mini-chat）已于早轮删除**；2026-09 重构起标题栏是 Windows 式 caption 按钮——
+  「关闭」= **直接隐藏窗口**（正在进行的流式回复不中止），「最小化」真最小化进任务栏；
+  「快速对话」（`sessionId = quick`）的输入入口在提示条面板（左栏固定项点击切会话），历史会话列表在左栏，
   提示条面板操作入口由 4 个减为 3 个；配置迁移到 v6（`v5 → v6` 删除 `general.windowState['mini-chat']`）。
 - MCP HTTP 传输已支持自定义请求头（含鉴权头，`mcp.servers.<id>.headersEnc`，凭据链路与 env 同款，见 docs/08 §1）。
 - **语音输入（STT）已实装（v0.0.1）**：对话窗 composer 的麦克风按钮（`data-field="chat.mic"`）

@@ -47,6 +47,9 @@ interface WindowSpec {
   alwaysOnTop: boolean
   skipTaskbar: boolean
   focusable: boolean
+  /** Windows 式标题栏：真最小化 / 最大化能力（渲染层自绘 caption 按钮，docs/07 §2.3/§2.5） */
+  minimizable: boolean
+  maximizable: boolean
   /** 单例窗口默认位置计算 */
   place: 'edge' | 'chat' | 'center'
 }
@@ -60,6 +63,8 @@ const SPECS: Record<WindowName, WindowSpec> = {
     alwaysOnTop: true,
     skipTaskbar: true,
     focusable: false,
+    minimizable: false,
+    maximizable: false,
     place: 'edge',
   },
   chat: {
@@ -72,8 +77,11 @@ const SPECS: Record<WindowName, WindowSpec> = {
     resizable: true,
     transparent: false,
     alwaysOnTop: false,
-    skipTaskbar: true,
+    // 主界面显示任务栏图标：Windows 式最小化需要可恢复入口（docs/02 §2.2，2026-09 起）
+    skipTaskbar: false,
     focusable: true,
+    minimizable: true,
+    maximizable: true,
     place: 'center',
   },
   settings: {
@@ -82,8 +90,10 @@ const SPECS: Record<WindowName, WindowSpec> = {
     resizable: true,
     transparent: false,
     alwaysOnTop: false,
-    skipTaskbar: true,
+    skipTaskbar: false,
     focusable: true,
+    minimizable: true,
+    maximizable: true,
     place: 'center',
   },
   onboarding: {
@@ -94,6 +104,8 @@ const SPECS: Record<WindowName, WindowSpec> = {
     alwaysOnTop: true,
     skipTaskbar: false,
     focusable: true,
+    minimizable: false,
+    maximizable: false,
     place: 'center',
   },
 }
@@ -225,8 +237,8 @@ export class WindowManager {
       alwaysOnTop: spec.alwaysOnTop,
       skipTaskbar: spec.skipTaskbar,
       focusable: spec.focusable,
-      minimizable: false,
-      maximizable: false,
+      minimizable: spec.minimizable,
+      maximizable: spec.maximizable,
       fullscreenable: false,
       backgroundColor: name === 'edge-bar' ? '#00000000' : windowBackgroundColor(),
       title: titleFor(name),
@@ -371,6 +383,7 @@ export class WindowManager {
     this.edgeBarExpanded = expanded
     const win = this.windows.get('edge-bar')
     if (!win || win.isDestroyed()) return this.getState()
+    this.applyEdgeBarFocusable(win, expanded)
     win.setBounds(
       resizeEdgeBarKeepingAnchor(
         win.getBounds(),
@@ -379,6 +392,49 @@ export class WindowManager {
       ),
     )
     this.persistGeometry('edge-bar', win)
+    return this.getState()
+  }
+
+  /**
+   * 提示条的可聚焦态跟随展开 / 收起切换（2026-09 快速对话上线）。
+   *
+   * 面板里有快速对话输入框，`focusable: false` 的窗口无法被激活，点输入框也拿不到键盘焦点；
+   * 展开时临时允许聚焦（**悬停仍不抢焦点**——setFocusable 不会主动取焦，只有用户真点输入框
+   * 才会激活窗口），收起时交还并主动失焦，避免 8px 竖条残留键盘焦点。
+   */
+  private applyEdgeBarFocusable(win: BrowserWindow, focusable: boolean): void {
+    try {
+      win.setFocusable(focusable)
+      if (!focusable && win.isFocused()) win.blur()
+    } catch (error) {
+      this.options.logger.debug('切换提示条可聚焦状态失败', {
+        focusable,
+        error: String(error),
+      })
+    }
+  }
+
+  /**
+   * Windows 式标题栏：真最小化（进任务栏，可从任务栏恢复）。
+   * 只有 spec 允许的窗口（chat / settings）响应；不可最小化窗口是 no-op（渲染层不渲染按钮）。
+   */
+  minimize(name: WindowName): WindowState {
+    const win = this.windows.get(name)
+    if (win === undefined || win.isDestroyed() || !SPECS[name].minimizable) {
+      return this.getState()
+    }
+    win.minimize()
+    return this.getState()
+  }
+
+  /** 切换最大化（标题栏双击 / caption 按钮）。最大化期间 `persistGeometry` 会跳过落盘。 */
+  toggleMaximize(name: WindowName): WindowState {
+    const win = this.windows.get(name)
+    if (win === undefined || win.isDestroyed() || !SPECS[name].maximizable) {
+      return this.getState()
+    }
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
     return this.getState()
   }
 
@@ -467,6 +523,7 @@ export class WindowManager {
     this.edgeBarExpanded = false
     const win = this.windows.get('edge-bar')
     if (!win || win.isDestroyed()) return
+    this.applyEdgeBarFocusable(win, false)
     win.setBounds(
       resizeEdgeBarKeepingAnchor(
         win.getBounds(),
@@ -556,6 +613,9 @@ export class WindowManager {
     // 若照写，鼠标每次掠过右缘的展开/收起都会触发一次配置写 + `settings:changed`，
     // 进而让主进程重建托盘菜单 —— 纯 UI 悬停不该有这种写入放大。
     if (name === 'edge-bar') return
+    // 最大化态的工作区尺寸是系统给的，落盘会把「还原后的窗口」撑满整屏 ——
+    // 只记录用户手动调整出来的常规几何，还原尺寸交给 isMaximized 判定。
+    if (win.isMaximized()) return
     this.options.settings.mutate((draft) => {
       draft.general.windowState[name] = {
         x: bounds.x,

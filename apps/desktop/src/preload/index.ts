@@ -91,6 +91,8 @@ const api: AuroraApi = {
     showChat: () => invoke(IPC.window.showChat),
     setPosition: (name, position) => invoke(IPC.window.setPosition, name, position),
     setEdgeBarExpanded: (expanded) => invoke(IPC.window.setEdgeBarExpanded, expanded),
+    minimize: (name) => invoke(IPC.window.minimize, name),
+    toggleMaximize: (name) => invoke(IPC.window.toggleMaximize, name),
     getState: () => invoke(IPC.window.getState),
     onStateChanged: (listener) => subscribe(IPC.window.stateChanged, listener),
   },

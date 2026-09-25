@@ -7,10 +7,12 @@
  *   移开鼠标 → 面板淡出后再把窗口收回 8px（否则屏幕右侧会留一块看不见却挡鼠标的区域）；
  * - 点击竖条 → 呼出主界面（`window:showChat`，chat 窗即主界面）；展开态下竖条仍贴着屏幕右缘，
  *   仍是有效点击目标；
- * - 面板内容：AI 状态 → 当前模式 → 最近消息 → 今日课程（仅 ClassRoom 模式）→ 系统状态，
+ * - 面板内容：AI 状态 → 当前模式 → **快速对话**（输入框直接在面板里与 Aurora 对话，
+ *   2026-09 起取代只读的「最近消息」）→ 今日课程（仅 ClassRoom 模式）→ 系统状态，
  *   底部是三个操作入口。Work 等非 ClassRoom 模式下课堂卡不渲染，面板自然更矮；
- *   快速会话已并入交互窗侧栏（「快速」栏），面板不再有独立的快速对话入口；
- *   「最近消息」展示的仍是快速会话（与交互窗侧栏同一会话）。
+ *   对话数据仍是快速会话（`sessionId = 'quick'`，独立 useChat 实例）。
+ *   窗口创建时 `focusable: false`（悬停不抢焦点），**展开时主进程临时 setFocusable(true)**——
+ *   否则输入框拿不到键盘焦点；收起时交还并失焦（见 window-manager）。
  *
  * 几何预算（不要突破）：展开窗口 228px = 竖条 8px + 面板 220px。
  * 面板宽度写死 220px，任何内部布局都在这个宽度内成立，否则会被窗口裁切。
@@ -19,7 +21,7 @@
  * 垂直居中 + 当前折叠态」推导（`window-manager.ts` 的 `edge` 分支），不参与用户拖动，
  * 因此模板里不挂 `drag-region`（不在 `useWindowDrag` 的清单里，docs/07 §2.2）。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppButton from '../shared/components/AppButton.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import { useChat } from '../shared/composables/useChat.js'
@@ -36,9 +38,6 @@ const EXPAND_DELAY_MS = 120
 const COLLAPSE_DELAY_MS = 220
 /** 面板退出动画时长，与 theme.css 的 --dur-base 对齐；收窗口必须晚于它，否则面板被裁掉 */
 const PANEL_EXIT_MS = 250
-/** 面板里最多铺几条最近消息：再多会把下面的信息块挤出可视区 */
-const RECENT_LIMIT = 5
-
 const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
@@ -47,6 +46,10 @@ const chat = useChat('edge-bar', 'quick')
 const { statusTone } = chat
 
 const expanded = ref(false)
+/** 鼠标是否在提示条窗口内（leave 触发后若输入框仍持有焦点，收起要等失焦再补） */
+const mouseInside = ref(false)
+/** 快速对话输入框是否持有焦点：聚焦期间移开鼠标**不收起面板**（正在打字） */
+const quickFocused = ref(false)
 let expandTimer: ReturnType<typeof setTimeout> | undefined
 let collapseTimer: ReturnType<typeof setTimeout> | undefined
 let shrinkTimer: ReturnType<typeof setTimeout> | undefined
@@ -69,6 +72,7 @@ function clearTimers(): void {
  * `setEdgeBarExpanded` 在主进程是幂等的，无条件调用即是最省事的自愈路径。
  */
 function onPointerEnter(): void {
+  mouseInside.value = true
   clearTimeout(collapseTimer)
   clearTimeout(shrinkTimer)
   collapseTimer = undefined
@@ -82,8 +86,8 @@ function onPointerEnter(): void {
   }, EXPAND_DELAY_MS)
 }
 
-/** 移开鼠标：面板先淡出，动画结束后再把窗口收回竖条 */
-function onPointerLeave(): void {
+/** 收起链：面板先淡出，动画结束后再把窗口收回竖条（enter / leave / 失焦三条路径共用） */
+function scheduleCollapse(): void {
   clearTimeout(expandTimer)
   expandTimer = undefined
   clearTimeout(collapseTimer)
@@ -98,9 +102,25 @@ function onPointerLeave(): void {
   }, COLLAPSE_DELAY_MS)
 }
 
+/** 移开鼠标：正在快速对话输入框里打字时不收起，等失焦再补收 */
+function onPointerLeave(): void {
+  mouseInside.value = false
+  if (quickFocused.value) return
+  scheduleCollapse()
+}
+
+/** 输入框失焦而鼠标早已离开窗口：补走一次收起，否则面板会悬在屏幕外等待不到离开事件 */
+watch(quickFocused, (focused) => {
+  if (focused || mouseInside.value || !expanded.value) return
+  scheduleCollapse()
+})
+
 /** 面板内的操作：立即收起（用户已经明确做了选择，不需要动画缓冲） */
 function collapseNow(): void {
   clearTimers()
+  // 显式复位输入框聚焦态：收起守卫（onPointerLeave 的 quickFocused 分支）不能依赖
+  // 「收起前 blur 必然先发生」这个隐含时序，否则残留 true 会让面板悬停不收
+  quickFocused.value = false
   expanded.value = false
   void windowStore.setEdgeBarExpanded(false)
 }
@@ -115,17 +135,41 @@ const statusLabel = computed(() =>
         : '闲置',
 )
 
-/** 面板只预览「快速会话」的最近几条：倒序（最新在上），空内容（仅在流式中）不进列表 */
-const recentMessages = computed(() =>
-  chat.messages.value
-    .filter((message) => message.content.trim() !== '')
-    .slice(-RECENT_LIMIT)
-    .reverse(),
+/** 快速对话输入内容（发送后清空） */
+const quickInput = ref('')
+/** 消息滚动容器（新内容贴底） */
+const quickListEl = ref<HTMLElement | null>(null)
+
+/**
+ * 快速对话的消息（正序，最近 20 条）：220px 面板装不下长历史，
+ * 更早的对话在主界面左栏点「快速对话」看全量。
+ */
+const quickMessages = computed(() =>
+  chat.messages.value.filter((message) => message.content.trim() !== '').slice(-20),
 )
 
-/** 预览文本：折叠空白后交给 CSS 的 -webkit-line-clamp 截断，不做定长 slice（避免半行文字） */
-function previewOf(message: { content: string }): string {
-  return message.content.replace(/\s+/g, ' ').trim()
+/** 新消息 / 流式增量贴底：迷你视图不做「用户接管」复杂度 */
+const quickTail = computed(() => {
+  const last = quickMessages.value.at(-1)
+  return `${quickMessages.value.length}:${last?.content.length ?? 0}`
+})
+
+watch(quickTail, () => {
+  void scrollToQuickBottom()
+})
+
+async function scrollToQuickBottom(): Promise<void> {
+  await nextTick()
+  const el = quickListEl.value
+  if (el !== null) el.scrollTop = el.scrollHeight
+}
+
+/** 面板里发送快速对话：同一 `quick` 会话，主界面左栏固定项点开即见全量 */
+async function sendQuick(): Promise<void> {
+  const text = quickInput.value.trim()
+  if (text === '' || chat.streaming.value) return
+  quickInput.value = ''
+  await chat.send(text)
 }
 
 const modelLabel = computed(() => settingsStore.activeProvider?.model ?? '未配置模型')
@@ -247,21 +291,66 @@ onUnmounted(clearTimers)
             </div>
           </section>
 
-          <!-- ③ 最近消息（撑满中部：flex 吸收面板剩余高度，列表内部滚动） -->
+          <!--
+            ③ 快速对话（2026-09 取代只读的「最近消息」）：输入框直接在面板里与 Aurora 对话。
+            撑满中部（flex 吸收剩余高度），消息列表内部滚动、新内容贴底；
+            输入框聚焦期间移开鼠标不收起（见 onPointerLeave / quickFocused 守卫）。
+          -->
           <section class="card recent-card anim-rise" style="animation-delay: 60ms">
             <div class="card-head">
-              <p class="card-title">最近消息</p>
-              <span v-if="recentMessages.length > 0" class="badge">{{
-                recentMessages.length
+              <p class="card-title">快速对话</p>
+              <span v-if="quickMessages.length > 0" class="badge">{{
+                quickMessages.length
               }}</span>
             </div>
-            <ul v-if="recentMessages.length > 0" class="msg-list">
-              <li v-for="message in recentMessages" :key="message.id" class="msg">
-                <span class="msg-role">{{ message.role === 'user' ? '我' : 'Aurora' }}</span>
-                <p class="msg-text">{{ previewOf(message) }}</p>
-              </li>
-            </ul>
-            <p v-else class="empty">还没有消息：点「打开主界面」开始</p>
+            <div ref="quickListEl" class="qc-list">
+              <p v-if="quickMessages.length === 0 && !chat.streaming.value" class="empty">
+                直接输入，与 Aurora 快速对话
+              </p>
+              <div
+                v-for="message in quickMessages"
+                :key="message.id"
+                class="qc-msg"
+                :class="`r-${message.role}`"
+              >
+                <p class="qc-text">{{ message.content.replace(/\s+/g, ' ').trim() }}</p>
+              </div>
+              <span v-if="chat.streaming.value" class="qc-typing"><i /><i /><i /></span>
+            </div>
+            <p v-if="chat.error.value !== null" class="qc-error">{{ chat.error.value }}</p>
+            <div class="qc-composer">
+              <input
+                v-model="quickInput"
+                type="text"
+                placeholder="快速提问…"
+                aria-label="快速对话输入"
+                @keydown.enter.prevent="sendQuick"
+                @focus="quickFocused = true"
+                @blur="quickFocused = false"
+              />
+              <button
+                v-if="chat.streaming.value"
+                type="button"
+                class="qc-send stop press"
+                title="停止"
+                aria-label="停止回复"
+                @click="chat.abort()"
+              >
+                <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" rx="1.4" /></svg>
+              </button>
+              <button
+                v-else
+                type="button"
+                class="qc-send press"
+                data-action="edge-bar.quick-send"
+                :disabled="quickInput.trim() === ''"
+                title="发送（Enter）"
+                aria-label="发送快速对话"
+                @click="sendQuick"
+              >
+                <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 10V2.2M6 2.2 2.8 5.4M6 2.2l3.2 3.2" /></svg>
+              </button>
+            </div>
           </section>
 
           <!-- ④ 今日课程（仅 ClassRoom 模式） -->
@@ -426,7 +515,7 @@ onUnmounted(clearTimers)
 }
 
 .panel-scroll::-webkit-scrollbar,
-.msg-list::-webkit-scrollbar {
+.qc-list::-webkit-scrollbar {
   width: 6px;
 }
 
@@ -501,10 +590,13 @@ onUnmounted(clearTimers)
   white-space: nowrap;
 }
 
-/* 最近消息吸收面板剩余高度，让全高面板看起来是刻意排版而不是留白 */
+/* 快速对话卡吸收面板剩余高度，让全高面板看起来是刻意排版而不是留白 */
 .recent-card {
   flex: 1 1 auto;
-  min-height: 88px;
+  min-height: 132px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 /* 空态在吸收来的高度里居中，避免出现「卡片很高、文字贴在顶上」 */
@@ -513,48 +605,152 @@ onUnmounted(clearTimers)
   text-align: center;
 }
 
-.msg-list {
+/* 消息列表：占满卡片剩余高度，内部滚动、新内容贴底 */
+.qc-list {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
   overflow-y: auto;
+  padding-right: 2px;
 }
 
-.msg {
+.qc-msg {
   display: flex;
   flex-direction: column;
-  gap: 1px;
   min-width: 0;
-  border-radius: var(--radius-xs);
-  /* hover 填充走 --transition-fast（与 theme 的 .hover-fill 同一节奏） */
-  transition: background-color var(--transition-fast);
 }
 
-.msg:hover {
-  background: var(--fill-2);
+.qc-msg.r-user {
+  align-items: flex-end;
 }
 
-.msg-role {
+/* 气泡：用户强调色浅填充右对齐，助手分层填充左对齐（与主界面 QuickChat 同一套语义） */
+.qc-text {
+  margin: 0;
+  max-width: 94%;
+  padding: 4px 9px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.r-user .qc-text {
+  background: color-mix(in srgb, var(--aurora-blue) 20%, transparent);
+}
+
+.r-assistant .qc-text {
+  background: var(--fill-1);
+}
+
+.qc-typing {
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px 2px 0;
+}
+
+.qc-typing i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--aurora-blue);
+  animation: qc-bounce 1s infinite ease-in-out;
+}
+
+.qc-typing i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.qc-typing i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes qc-bounce {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.qc-error {
+  margin: 0;
   font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+  color: var(--error-text);
+  overflow-wrap: anywhere;
+}
+
+/* 输入行：紧凑输入框 + 圆形发送 / 停止钮（面板宽只有 220px，控件必须收窄） */
+.qc-composer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.qc-composer input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--fill-1);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.qc-composer input:focus {
+  border-color: var(--aurora-blue);
+}
+
+.qc-composer input::placeholder {
   color: var(--text-muted);
 }
 
-.msg-text {
-  margin: 0;
-  font-size: var(--text-sm);
-  line-height: var(--leading-normal);
-  color: var(--text-secondary);
-  overflow-wrap: anywhere;
-  /* 截断交给 line-clamp（而不是 slice 字数），避免出现半行文字 */
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+.qc-send {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  background: var(--aurora-gradient);
+  color: var(--on-accent);
+  transition:
+    opacity var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.qc-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.qc-send svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 停止态：中性填充 + 方块图标（停止不是主动作，不抢强调色） */
+.qc-send.stop {
+  background: var(--fill-3);
+  color: var(--text-primary);
 }
 
 .lesson-list {

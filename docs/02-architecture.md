@@ -39,11 +39,11 @@
 |---|---|---|---|
 | 托盘 Tray | 主进程 | 1 | 系统托盘图标 + 菜单（打开对话 / 设置 / 切换模式 / 退出） |
 | 提示条 Edge Bar | WindowManager | 每显示器 1（v1 主屏 1） | 屏幕右缘超薄竖条，悬停展开面板、点击呼出交互窗 |
-| AI 交互窗口 | WindowManager | 1 | 完整对话窗（侧栏为「快速 / 会话」双栏），贴右缘滑出；唯一主对话窗口，「收起」= 隐藏 |
-| 设置窗口 | WindowManager | 1 | 单窗口分栏；无系统标题栏，侧栏品牌区可拖动 + 「✕ 隐藏」按钮（Esc 等效） |
+| 主界面（chat） | WindowManager | 1 | 1120×720 常驻三栏大窗（BetaV2，居中显示）；唯一主对话窗口；标题栏右侧有 Windows 式「最小化 / 关闭」按钮，关闭 = 隐藏 |
+| 设置窗口 | WindowManager | 1 | 单窗口分栏；无系统标题栏，侧栏顶部可拖动 + Windows 式「最小化 / 关闭」按钮（关闭 = 隐藏，Esc 等效） |
 | 首次引导窗口 | WindowManager | 1 | 向导式 |
 
-约定：业务窗口均 **`skipTaskbar` 隐藏任务栏图标**，统一由托盘管理生命周期；关闭按钮 = 隐藏（仅托盘“退出”真正退出）。
+约定：**主界面与设置窗口**显示任务栏图标（`skipTaskbar: false`）且可最小化 / 最大化（Windows 式标题栏按钮，2026-09 前端重构起）；提示条与引导窗口仍隐藏任务栏图标。所有窗口的「关闭」= 隐藏（仅托盘“退出”真正退出），托盘仍是统一管理入口。
 
 ## 3. 模块划分
 
@@ -151,7 +151,11 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
 
 - 通道命名：`namespace:action`，如 `chat:send`、`settings:get`、`classify:subscribe`。
 - 窗口控制（`window:*`）：`show` / `hide` / `toggle` / `showChat` / `setPosition` /
-  `setEdgeBarExpanded` / `getState`，事件推送 `window:stateChanged`。
+  `setEdgeBarExpanded` / `minimize` / `toggleMaximize` / `getState`，事件推送 `window:stateChanged`。
+  `minimize` 真最小化（进任务栏，chat / 设置可用）；`toggleMaximize` 切换最大化
+  （**当前无渲染层调用方**：frame:false 拖动区的双击最大化由 Windows 原生接管
+  ——`maximizable: true` 后的 HTCAPTION 语义，页面收不到 drag region 的鼠标事件；
+  通道预留给后续 caption 最大化按钮。最大化状态下几何不写入 `general.windowState`）。
   `window:setEdgeBarExpanded` 驱动提示条两态宽度（收起 8px / 展开 228px，右缘固定，见 07 §2.2）；
   它只改窗口几何、不改可见性，因此**不广播** `stateChanged`。
 - 跨进程类型统一定义于 `packages/shared`；preload 只暴露白名单方法。

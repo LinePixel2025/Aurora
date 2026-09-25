@@ -2,12 +2,14 @@
 /**
  * Aurora 主界面（BetaV2，Design/betav2-spec.md §2/§3）：1120×720 的三栏布局。
  *
- * 左栏（SessionNav）：品牌 / 新对话 / 固定项「快速对话」/ 会话列表 / 模式徽章 + 右栏开关 + 设置。
- * 主区：头部（会话标题 + 模型与思考等级下拉 + 清空 + 收起）→ MessageList → composer。
- * 右栏（ContextPanel）：模式感知上下文（classroom 课堂卡 / work 工作目录卡 / 通用系统状态）。
+ * 左栏（SessionNav）：品牌 / 新对话 / 固定项「快速对话」（切到 quick 会话）/
+ * 会话列表 / 模式徽章 + 右栏开关 + 设置。
+ * 主区：头部（侧栏开关 + 会话标题 + 清空 + Windows 式窗口按钮）→ MessageList → composer
+ * （模型 / 思考等级下拉已移入 composer 工具行，对齐主流 Agent Desktop）。
+ * 右栏（ContextPanel）：模式感知上下文 + 当前会话的任务清单卡。
  *
- * 旧版 152px 历史 sheet 与「快速 / 会话」双栏 tab 已删除：快速会话是左栏第一个固定项，
- * 点击直接 `switchSession('quick')`，事件按 sessionId + requestId 双重过滤不会串流。
+ * 旧口径（点击「快速对话」固定项切换主区会话）已废弃：快速对话在侧栏面板内完成，
+ * 主区只承载普通会话。标题栏「收起」文字按钮由 WindowCaption 的「关闭」取代（隐藏语义不变）。
  *
  * 保留的既有能力：敏感工具确认卡片与 `proactive.onSensitiveTool` 订阅、TTS 自动朗读
  * （streaming false 边沿）与朗读按钮、附件拖拽 + chips、模型 / 思考等级写 provider
@@ -28,12 +30,14 @@ import ModelPickerSelect from '../shared/components/ModelPickerSelect.vue'
 import SensitiveToolCard from '../shared/components/SensitiveToolCard.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import ThinkingLevelSelect from '../shared/components/ThinkingLevelSelect.vue'
+import WindowCaption from '../shared/components/WindowCaption.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import SessionNav from './components/SessionNav.vue'
 import { useChat } from '../shared/composables/useChat.js'
 import { useTts } from '../shared/composables/useTts.js'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
+import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
 
 const chat = useChat('chat', 'main')
 const {
@@ -73,8 +77,32 @@ const attachments = ref<string[]>([])
 /** 是否正有文件悬停在窗口上（用于描边提示） */
 const dragging = ref(false)
 
-/** 会话列表给左栏用：剔除 'quick'（它是左栏固定项，避免重复出现两条） */
+/** 会话列表给左栏用：quick 由侧栏面板承载，不再出现在普通会话列表里 */
 const sessionItems = computed(() => sessions.value.filter((item) => item.id !== 'quick'))
+
+/**
+ * 当前会话的任务清单（右栏「任务清单」卡的数据源，docs/07 §2.3）。
+ *
+ * 口径 = 消息流里**最后一次** `todo_write` 的入参（整表替换语义：最后一次提交就是当前状态）；
+ * 倒序找第一条能解析出条目的调用。没有清单 / 解析失败时返回空数组（右栏卡不渲染）。
+ * 流式期间 todo_write 的 input 随 running 事件先到，清单随之实时更新。
+ */
+const currentTodos = computed<TodoRow[]>(() => {
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const calls = messages.value[index]?.toolCalls ?? []
+    for (let callIndex = calls.length - 1; callIndex >= 0; callIndex -= 1) {
+      const call = calls[callIndex]
+      if (call === undefined || call.name !== 'todo_write' || call.state === 'error') continue
+      // 空清单（[]）是合法的「清空任务」提交：作为最终状态返回，右栏卡随之消失；
+      // 只有畸形入参（null）才继续前溯上一份清单
+      const rows = parseTodoWriteInput(call.input)
+      if (rows !== null) return rows
+    }
+  }
+  return []
+})
+
+
 
 /** 标题栏里的当前会话名：快速会话固定名，其余用主进程摘要（空标题 =「新会话」） */
 const currentTitle = computed(() => {
@@ -527,7 +555,7 @@ async function markGuideDone(): Promise<void> {
 
 <template>
   <div class="app-shell">
-    <!-- ── 左栏：品牌 / 新对话 / 快速对话 / 会话列表 / 底部工具 ── -->
+    <!-- ── 左栏：品牌 / 新对话 / 快速对话面板 / 会话列表 / 底部工具 ── -->
     <aside class="nav" :class="{ collapsed: !navOpen }">
       <SessionNav
         :sessions="sessionItems"
@@ -542,6 +570,11 @@ async function markGuideDone(): Promise<void> {
 
     <!-- ── 主区 ── -->
     <main class="main">
+      <!--
+        双击头部拖动区 = 切换最大化：frame:false 窗口的 drag region 双击由 Windows 原生接管
+        （`maximizable: true` 后 WM_NCLBUTTONDBLCLK 语义），页面侧不再挂 dblclick——
+        拖动区收不到页面鼠标事件，重复挂只会造成双重切换。最大化期间几何不落盘（persistGeometry 跳过）。
+      -->
       <header class="head" :class="dragClass">
         <button
           type="button"
@@ -560,46 +593,23 @@ async function markGuideDone(): Promise<void> {
         <span v-if="settingsStore.needsOnboarding" class="badge warn">未配置模型</span>
         <span class="grow" />
         <div class="head-actions" :class="noDragClass">
-          <label class="tiny muted picker-label" for="chat-model-picker">模型</label>
-          <!-- 下拉自己带 `data-field="chat.model"`：capture 探针与 UI 断言的唯一抓手 -->
-          <ModelPickerSelect
-            id="chat-model-picker"
-            :model-value="currentModel"
-            :models="modelOptions"
-            :disabled="activeProvider === null"
-            :title="modelTitle"
-            @update:model-value="setModel"
-          />
-          <label class="tiny muted picker-label" for="chat-thinking-level">思考</label>
-          <!-- 下拉自己带 `data-field="chat.reasoningEffort"`：capture 探针与 UI 断言的唯一抓手 -->
-          <ThinkingLevelSelect
-            id="chat-thinking-level"
-            :model-value="effortValue"
-            :disabled="effort === null"
-            :title="effortTitle"
-            @update:model-value="setEffort"
-          />
-          <AppButton
-            size="sm"
-            variant="ghost"
+          <button
+            type="button"
+            class="icon-btn press"
             title="清空当前消息区（不影响已保存的会话历史）"
+            aria-label="清空当前消息区"
             @click="clear"
           >
-            清空
-          </AppButton>
-          <!--
-            收起 = **直接隐藏窗口**：只隐藏，正在进行的流式回复不会被 abort
-            （`hide()` 不触碰 `chat:abort`，docs/02 §2.2「关闭 = 隐藏」）。
-          -->
-          <AppButton
-            size="sm"
-            variant="ghost"
-            title="收起主界面（对话仍在后台继续）"
-            @click="windowStore.hide('chat')"
-          >
-            收起
-          </AppButton>
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3 4.2h10M6.6 4V2.8h2.8V4M4.4 4.4l.6 8.2c0 .5.4.9.9.9h4.2c.5 0 .9-.4.9-.9l.6-8.2M6.6 6.6v4.6M9.4 6.6v4.6" />
+            </svg>
+          </button>
         </div>
+        <!--
+          Windows 式窗口按钮：「最小化」真最小化进任务栏；「关闭」= 隐藏窗口
+          （正在进行的流式回复不会中止，`hide()` 不触碰 `chat:abort`，docs/02 §2.2）。
+        -->
+        <WindowCaption window="chat" />
       </header>
 
       <SensitiveToolCard
@@ -651,68 +661,86 @@ async function markGuideDone(): Promise<void> {
       </div>
 
       <footer class="composer">
-        <div v-if="attachments.length > 0" class="attachments">
-          <span v-for="path in attachments" :key="path" class="chip tiny">
-            {{ fileNameOf(path) }}
-            <button
-              type="button"
-              class="chip-remove"
-              aria-label="移除附件"
-              @click="removeAttachment(path)"
-            >
-              ×
-            </button>
-          </span>
-        </div>
-
-        <div class="composer-box">
-          <textarea
-            v-model="input"
-            spellcheck="false"
-            placeholder="输入消息，Ctrl + Enter 发送；可直接把文件拖进来"
-            @keydown.enter.exact.prevent="send"
-            @keydown.ctrl.enter.prevent="send"
-          />
-          <div class="composer-bar">
-            <span class="tiny muted meta">
-              {{ pickerHint ?? `会话：${sessionId} · 可调用 Skill 与 MCP 工具` }}
-            </span>
-            <!--
-              麦克风（STT）：门控口径同 TTS——未配置可用的 provider 时**不渲染**（不是 disabled）。
-              录音态套 `.pulse-ring` 扩散环（theme.css 动效基线）。
-            -->
-            <button
-              v-if="sttReady"
-              type="button"
-              class="icon-btn mic press"
-              data-field="chat.mic"
-              :class="{ recording, busy: sttBusy }"
-              :title="recording ? '停止录音并转写' : '语音输入'"
-              :aria-label="recording ? '停止录音' : '开始语音输入'"
-              @click="toggleRecording"
-            >
-              <span v-if="recording" class="mic-ring pulse-ring" aria-hidden="true" />
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <rect x="6" y="1.8" width="4" height="7.4" rx="2" />
-                <path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.2M5.6 14h4.8" />
-              </svg>
-            </button>
-            <AppButton v-if="streaming" size="sm" @click="abort">停止</AppButton>
-            <span class="send-slot">
-              <AppButton
-                class="send"
-                size="sm"
-                variant="primary"
-                aria-label="发送"
-                title="发送（Ctrl + Enter）"
-                :disabled="streaming || (input.trim() === '' && attachments.length === 0)"
-                @click="send"
+        <div class="composer-inner">
+          <div v-if="attachments.length > 0" class="attachments">
+            <span v-for="path in attachments" :key="path" class="chip tiny">
+              {{ fileNameOf(path) }}
+              <button
+                type="button"
+                class="chip-remove"
+                aria-label="移除附件"
+                @click="removeAttachment(path)"
               >
-                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-                  <path d="M8 13V3.6M8 3.6 4.2 7.4M8 3.6l3.8 3.8" />
-                </svg>
-              </AppButton>
+                ×
+              </button>
             </span>
+          </div>
+
+          <div class="composer-box">
+            <textarea
+              v-model="input"
+              spellcheck="false"
+              placeholder="输入消息，Ctrl + Enter 发送；可直接把文件拖进来"
+              @keydown.enter.exact.prevent="send"
+              @keydown.ctrl.enter.prevent="send"
+            />
+            <div class="composer-bar">
+              <!--
+                麦克风（STT）：门控口径同 TTS——未配置可用的 provider 时**不渲染**（不是 disabled）。
+                录音态套 `.pulse-ring` 扩散环（theme.css 动效基线）。
+              -->
+              <button
+                v-if="sttReady"
+                type="button"
+                class="icon-btn mic press"
+                data-field="chat.mic"
+                :class="{ recording, busy: sttBusy }"
+                :title="recording ? '停止录音并转写' : '语音输入'"
+                :aria-label="recording ? '停止录音' : '开始语音输入'"
+                @click="toggleRecording"
+              >
+                <span v-if="recording" class="mic-ring pulse-ring" aria-hidden="true" />
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="6" y="1.8" width="4" height="7.4" rx="2" />
+                  <path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.2M5.6 14h4.8" />
+                </svg>
+              </button>
+              <!-- 模型 / 思考等级（2026-09 移入 composer 工具行）：data-field 锚点不变 -->
+              <ModelPickerSelect
+                class="composer-picker"
+                :model-value="currentModel"
+                :models="modelOptions"
+                :disabled="activeProvider === null"
+                :title="modelTitle"
+                @update:model-value="setModel"
+              />
+              <ThinkingLevelSelect
+                class="composer-picker"
+                :model-value="effortValue"
+                :disabled="effort === null"
+                :title="effortTitle"
+                @update:model-value="setEffort"
+              />
+              <span class="grow" />
+              <!-- 保存类操作的瞬时提示（2 秒自灭）；旧常驻「会话：xxx · 可调用 Skill…」meta 已移除 -->
+              <span v-if="pickerHint" class="tiny muted picker-hint">{{ pickerHint }}</span>
+              <AppButton v-if="streaming" size="sm" @click="abort">停止</AppButton>
+              <span class="send-slot">
+                <AppButton
+                  class="send"
+                  size="sm"
+                  variant="primary"
+                  aria-label="发送"
+                  title="发送（Ctrl + Enter）"
+                  :disabled="streaming || (input.trim() === '' && attachments.length === 0)"
+                  @click="send"
+                >
+                  <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 13V3.6M8 3.6 4.2 7.4M8 3.6l3.8 3.8" />
+                  </svg>
+                </AppButton>
+              </span>
+            </div>
           </div>
         </div>
 
@@ -720,9 +748,9 @@ async function markGuideDone(): Promise<void> {
       </footer>
     </main>
 
-    <!-- ── 右栏：模式感知上下文 ── -->
+    <!-- ── 右栏：模式感知上下文 + 任务清单 ── -->
     <aside class="context" :class="{ collapsed: !contextOpen }">
-      <ContextPanel />
+      <ContextPanel :todos="currentTodos" />
     </aside>
   </div>
 </template>
@@ -753,7 +781,7 @@ async function markGuideDone(): Promise<void> {
 }
 
 .nav {
-  width: 232px;
+  width: 240px;
   background: var(--fill-1);
   border-right: 1px solid var(--border-subtle);
 }
@@ -784,8 +812,9 @@ async function markGuideDone(): Promise<void> {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-4);
-  min-height: 52px;
+  /* 右侧不留内边距：WindowCaption 的悬停命中区要贴到窗口右缘（Windows 习惯） */
+  padding: var(--space-2) 0 var(--space-2) var(--space-4);
+  min-height: 48px;
   background: var(--fill-1);
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -804,21 +833,10 @@ async function markGuideDone(): Promise<void> {
   flex: 0 0 auto;
 }
 
-/* 头部下拉压到 32px，与 ghost 按钮同高（组件默认 40px 是输入区规格） */
-.head-actions :deep(.model-picker),
-.head-actions :deep(.thinking-level) {
-  height: var(--control-h-sm);
-}
-
 .head-actions {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-}
-
-.picker-label {
-  flex: 0 0 auto;
-  white-space: nowrap;
+  gap: var(--space-1);
 }
 
 /* 头部 / composer 共用的圆形图标按钮 */
@@ -865,6 +883,15 @@ async function markGuideDone(): Promise<void> {
   gap: var(--space-2);
   overflow-y: auto;
   padding: var(--space-3) var(--space-4);
+}
+
+/* 内容列居中（2026-09 重构）：消息与提示不铺满整宽，对齐主流 Agent Desktop 的阅读动线。
+   .messages 的 min-height: 100% 不受影响——高度仍由 .thread 决定，只是宽度收进列宽。 */
+.thread > * {
+  width: 100%;
+  max-width: 860px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* 拖拽悬停反馈：对话区整体描边，避免用户不确定有没有拖对地方 */
@@ -917,6 +944,16 @@ async function markGuideDone(): Promise<void> {
   gap: var(--space-2);
   padding: var(--space-2) var(--space-4) var(--space-4);
   background: var(--bg-base);
+}
+
+/* 输入卡与消息列同轴心：同一根 860px 中轴线上下贯通 */
+.composer-inner {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 .attachments {
@@ -988,12 +1025,12 @@ async function markGuideDone(): Promise<void> {
   white-space: nowrap;
 }
 
-.meta {
-  flex: 1;
+/* 保存类操作的瞬时提示：出现时挤占的是弹性空隙，不把发送按钮挤出行外 */
+.picker-hint {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* 发送按钮不允许被压缩：它被挤出圆角输入框是这一行最容易破的版 */

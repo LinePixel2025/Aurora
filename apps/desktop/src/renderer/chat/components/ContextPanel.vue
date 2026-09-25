@@ -2,6 +2,8 @@
 /**
  * 主界面右栏（BetaV2，Design/betav2-spec.md §3）：模式感知的上下文栏。
  *
+ * - 通用（顶部）：任务清单卡（当前会话最后一次 todo_write 的结构化清单，App 传入；
+ *   无清单时整卡不渲染）；
  * - classroom：当前/下节课卡（ClassIsland 桥接 status，非 classisland provider 时隐藏）、
  *   今日课程卡（perception lessons）、分类流水（ClassificationLedger 紧凑版）、打开感知文件夹；
  * - work：工作目录卡（workspaceDir + 打开 / 前往设置）、办公能力提示卡；
@@ -14,7 +16,9 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ClassIslandStatus, Lesson } from '@aurora/shared'
 import ClassificationLedger from '../../shared/components/ClassificationLedger.vue'
+import AgentTodoList from '../../shared/components/AgentTodoList.vue'
 import AppButton from '../../shared/components/AppButton.vue'
+import type { TodoRow } from '../../shared/agentTodo.js'
 import {
   useModeStore,
   usePerceptionStore,
@@ -26,6 +30,15 @@ const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
 const windowStore = useWindowStore()
 const perception = usePerceptionStore()
+
+/** 当前会话的任务清单（App.vue 从消息流里最后一次 todo_write 解析得出；空数组 = 无清单） */
+const props = withDefaults(defineProps<{ todos?: TodoRow[] }>(), { todos: () => [] })
+
+/** 进度摘要：已完成 / 总数（清单卡头右上角） */
+const todoProgress = computed(() => {
+  const done = props.todos.filter((item) => item.status === 'completed').length
+  return `${done}/${props.todos.length}`
+})
 
 const mode = computed(() => modeStore.current?.id ?? null)
 
@@ -148,6 +161,16 @@ watch(showClassislandCard, (now) => {
 <template>
   <div class="ctx-inner">
     <p class="ctx-caption tiny muted">上下文</p>
+
+    <!-- ── 任务清单（2026-09 新增）：Agent 在会话里 todo_write 驱动，无清单不渲染 ── -->
+    <section v-if="props.todos.length > 0" class="ctx-card" data-field="context.todo-card">
+      <header class="ctx-head">
+        <strong>任务清单</strong>
+        <span class="grow" />
+        <span class="tiny muted ctx-progress">{{ todoProgress }}</span>
+      </header>
+      <AgentTodoList :todos="props.todos" />
+    </section>
 
     <!-- ── classroom：课堂上下文 ── -->
     <template v-if="mode === 'classroom'">
@@ -302,6 +325,15 @@ watch(showClassislandCard, (now) => {
   gap: var(--space-2);
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
+}
+
+.ctx-head .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.ctx-progress {
+  font-variant-numeric: var(--num-tabular);
 }
 
 .ctx-line {

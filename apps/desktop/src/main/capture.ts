@@ -296,6 +296,11 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
         width: Math.round(rect.width),
       }
     })
+    // 快速对话（2026-09）：面板必须带输入框与发送钮（可直接在提示条里对话），
+    // 且 seed 的 quick 会话消息以气泡渲染出来
+    const quickInput = panel.querySelectorAll('.qc-composer input').length
+    const quickSend = panel.querySelectorAll('[data-action="edge-bar.quick-send"]').length
+    const quickBubbles = panel.querySelectorAll('.qc-msg').length
     return {
       panel: true,
       windowWidth: width,
@@ -303,10 +308,16 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       styled: getComputedStyle(panel).width,
       buttonCount: buttons.length,
       probes,
+      quickInput,
+      quickSend,
+      quickBubbles,
       allClickable: probes.length > 0 && probes.every((p) => p.hit && p.insideWindow),
       pass:
         buttons.length === 3 &&
         width <= 228 &&
+        quickInput > 0 &&
+        quickSend > 0 &&
+        quickBubbles > 0 &&
         probes.every((p) => p.hit && p.insideWindow && p.width > 0),
     }
   } catch (error) {
@@ -403,24 +414,25 @@ export const CHAT_AUTO_SCROLL_SCRIPT = `(async () => {
  * 因此 `chat-collapse.png` 拍到的是**点之前的交互窗**（含那颗「收起」按钮），
  * 「收起后窗口消失」这件事由本探针的 `pass` 负责，不靠截图。
  *
- * 按文本找按钮而不是按 class：`.head-actions` 里的按钮是同一个 `AppButton` 渲染的，只有文案能区分；
- * 找不到时把实际文案回传（而不是静默成功），否则改了文案会让这条断言变成空转。
+ * 按 `data-caption-btn="close"` 找按钮（Windows 式窗口按钮，2026-09 重构起取代旧「收起」文字钮；
+ * 语义同为隐藏窗口）。找不到时把头部实际按钮清单回传（而不是静默成功），
+ * 否则改了锚点会让这条断言变成空转。
  *
  * `primary === null` 是关键：残留的 `primary` 说明「隐藏」被实现成了「换成另一个主窗口」。
  * `getState()` 带 4s 超时兜底：窗口隐藏后渲染层可能被降频，万一读不回来也不能把整轮截图拖死。
  */
 export const CHAT_COLLAPSE_CHECK = `(async () => {
   try {
-    const actions = document.querySelector('.head-actions')
-    if (actions === null) return { pass: false, reason: 'no .head-actions' }
-    const buttons = Array.from(actions.querySelectorAll('button'))
-    const button = buttons.find((item) => (item.textContent || '').trim() === '收起')
-    if (button === undefined) {
-      return {
-        pass: false,
-        reason: 'no 收起 button',
-        labels: buttons.map((item) => (item.textContent || '').trim()),
-      }
+    const button = document.querySelector('[data-caption-btn="close"]')
+    if (button === null) {
+      const labels = Array.from(document.querySelectorAll('.head button')).map(
+        (item) =>
+          (item.textContent || '').trim() ||
+          item.getAttribute('aria-label') ||
+          item.getAttribute('data-caption-btn') ||
+          '',
+      )
+      return { pass: false, reason: 'no data-caption-btn=close button', labels }
     }
 
     button.click()
@@ -439,7 +451,6 @@ export const CHAT_COLLAPSE_CHECK = `(async () => {
     return {
       pass: visible['chat'] !== true && primary === null,
       clicked: true,
-      label: (button.textContent || '').trim(),
       chatVisible: visible['chat'] === true,
       primary,
       state,
@@ -452,7 +463,7 @@ export const CHAT_COLLAPSE_CHECK = `(async () => {
 /**
  * 主界面左栏结构 + 门控探针（BetaV2，spec §11）：三栏重构后左栏的固定锚点必须全部在。
  *
- * 断言四件事：
+ * 断言六件事：
  * ① 左栏三件套：`chat.quick-item`（固定顶置的「快速对话」）、`chat.session-list`（会话列表
  *    容器，且**有会话行**——隔离 userData 由 `seedChatTtsHistory` 种了 main 会话）、
  *    `data-action="chat.new-session"`；
@@ -461,7 +472,10 @@ export const CHAT_COLLAPSE_CHECK = `(async () => {
  *    （ContextPanel 无 data-field 锚点，按卡头文案定位）；
  * ③ **麦克风门控**：`stt` 未配置时 `[data-field="chat.mic"]` 必须**不存在**
  *    （docs/07 §2.3 口径：连按钮都不渲染，不是 disabled）——反向断言，数到就是坏；
- * ④ 主区标题 `.head-name` 非空（默认 main 会话无用户消息 → 显示「新会话」，不作硬断言只回传）。
+ * ④ 主区标题 `.head-name` 非空（默认 main 会话无用户消息 → 显示「新会话」，不作硬断言只回传）；
+ * ⑤ **窗口按钮**：`data-caption-btn="minimize"` 与 `"close"` 两枚都渲染（Windows 式标题栏）；
+ * ⑥ **结构化工具卡**：seed 的 todo_write 渲染 `data-field="chat.todo-card"`（3 行条目）、
+ *    task 渲染 `data-field="chat.task-card"`；右栏任务清单卡 `context.todo-card` 必须在。
  *
  * 本场景不改任何状态，排在 chat 场景最前（theme-chat 之后、一切改配置/改会话的场景之前），
  * 保证读到的是出厂门控现场。
@@ -484,17 +498,23 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
     const headName = (
       (document.querySelector('.head-name') || {}).textContent || ''
     ).trim()
+    const todoRows = count('[data-field="chat.todo-card"] .todo-row')
     return {
       headTitle: headName,
       quickItem: quickItem !== null,
       quickActive: quickItem === null ? null : quickItem.classList.contains('active'),
       sessionList: sessionList !== null,
       sessionListVisible: visible(sessionList),
-      sessionRows: count('[data-field="chat.session-list"] .nav-item.session'),
+      sessionRows: count('[data-field="chat.session-list"] .nav-item'),
       newSessionButton: count('[data-action="chat.new-session"]'),
       rightToggle: rightToggle !== null,
       contextCollapsed: context === null ? null : context.classList.contains('collapsed'),
       contextCards: ctxCards,
+      todoCard: count('[data-field="chat.todo-card"]'),
+      todoRows,
+      taskCard: count('[data-field="chat.task-card"]'),
+      captionMinimize: count('[data-caption-btn="minimize"]'),
+      captionClose: count('[data-caption-btn="close"]'),
       // stt 未配置（enabled=false 且无 provider）时麦克风必须不存在：探针不改 stt 配置，
       // 所以这里恒为 0；若渲染层把门控写成 disabled 而不是不渲染，这条就会失败。
       micCount: count('[data-field="chat.mic"]'),
@@ -502,13 +522,19 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
         quickItem !== null &&
         sessionList !== null &&
         visible(sessionList) &&
-        count('[data-field="chat.session-list"] .nav-item.session') > 0 &&
+        count('[data-field="chat.session-list"] .nav-item') > 0 &&
         count('[data-action="chat.new-session"]') > 0 &&
         rightToggle !== null &&
         context !== null &&
         context.classList.contains('collapsed') === false &&
         ctxCards.some((name) => name.indexOf('系统状态') !== -1) &&
         ctxCards.some((name) => name.indexOf('今日课程') !== -1) &&
+        ctxCards.some((name) => name.indexOf('任务清单') !== -1) &&
+        count('[data-field="context.todo-card"]') > 0 &&
+        todoRows === 3 &&
+        count('[data-field="chat.task-card"]') > 0 &&
+        count('[data-caption-btn="minimize"]') > 0 &&
+        count('[data-caption-btn="close"]') > 0 &&
         count('[data-field="chat.mic"]') === 0,
     }
   } catch (error) {
@@ -723,7 +749,9 @@ export const CHAT_THINKING_BLOCK_CHECK = `(() => {
 })()`
 
 /**
- * 快速会话探针（BetaV2，spec §3/§11）：点左栏固定项「快速对话」必须切到 sessionId='quick'。
+ * 快速会话探针（BetaV2 口径不变，2026-09 重构确认）：点左栏固定项「快速对话」
+ * 必须切到 sessionId='quick'（快速对话的**输入入口在桌面提示条面板**，docs/07 §2.2；
+ * 主界面左栏固定项沿用「点击切主区会话」）。
  *
  * 激活的判据有二：`chat.quick-item` 拿到 `.active` 态，且主区标题 `.head-name` 变成
  * 固定名「快速对话」（`currentTitle` 对 quick 会话短路返回）。act 里轮询等标题变化
@@ -2505,6 +2533,34 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
         reasoning:
           'capture-reasoning-probe：这是探针种下的思考过程全文。' +
           '历史水合出的思考块默认收起为「已深度思考」摘要行，点开应能看到本段全文。',
+        // 2026-09：一条 todo_write（3 项清单）+ 一条 task（子代理，已完成）——
+        // MessageList 的结构化任务清单卡与子代理卡由此获得截图与探针证据
+        // （CHAT_SIDEBAR_SCRIPT 断言 chat.todo-card 恰好 3 行 + chat.task-card 在）。
+        toolCalls: [
+          {
+            id: 'capture-todo-1',
+            name: 'todo_write',
+            input: {
+              todos: [
+                { content: '整理本周课程资料', status: 'completed' },
+                { content: '汇总系统状态报告', status: 'in_progress' },
+                { content: '检查感知文件夹新文件', status: 'pending' },
+              ],
+            },
+            state: 'success',
+            outputSummary: '已更新任务清单（3 项）',
+          },
+          {
+            id: 'capture-task-1',
+            name: 'task',
+            input: {
+              description: '汇总系统状态',
+              prompt: '读取当前的系统状态（时间 / 电量 / 网络 / 前台应用），汇总成一段话。',
+            },
+            state: 'success',
+            outputSummary: '子代理：汇总系统状态',
+          },
+        ],
         createdAt: now,
       },
     ],

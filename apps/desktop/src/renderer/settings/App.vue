@@ -10,8 +10,9 @@
  * 本窗无系统标题栏（`frame: false`），拖动能力由 `useWindowDrag('settings')` 统一提供
  * （docs/07 §1），共三处：侧栏顶部透明条（16px）、侧栏品牌行（min-height 36px，实测 ≈39px）、
  * 内容区顶部拖动带（10px）。
- * 品牌行同时提供「✕ 隐藏」按钮（`Esc` 等效）。按 docs/02 §2.2 约定，
- * 此处「关闭」= 隐藏窗口（不退出应用，退出只走托盘菜单）。
+ * 品牌行右侧是 Windows 式「最小化 / 关闭」按钮（WindowCaption，2026-09 起；
+ * 「关闭」= 隐藏窗口，`Esc` 等效；不退出应用，退出只走托盘菜单）。
+ * 侧栏导航条目为图标 + 单行文字（旧两行说明文案已删，docs/07 §2.5）。
  */
 import { computed, onMounted, onUnmounted, ref, type Component } from 'vue'
 import AppToast from '../shared/components/AppToast.vue'
@@ -21,6 +22,7 @@ import LlmPage from './pages/LlmPage.vue'
 import VoicePage from './pages/VoicePage.vue'
 import AgentPage from './pages/AgentPage.vue'
 import AdvancedPage from './pages/AdvancedPage.vue'
+import WindowCaption from '../shared/components/WindowCaption.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 
@@ -29,17 +31,38 @@ type PageId = 'general' | 'modes' | 'llm' | 'voice' | 'agent' | 'advanced'
 interface NavItem {
   id: PageId
   label: string
-  hint: string
+  /** 16px 描边图标的 path 数据（stroke 风格与其余窗口图标一致） */
+  icon: string
 }
 
-/** 扁平清单同时是「页面 id → 标签 / 说明」的查表数据（深链校验也用它） */
+/** 扁平清单同时是「页面 id → 标签 / 图标」的查表数据（深链校验也用它） */
 const nav: NavItem[] = [
-  { id: 'general', label: '通用', hint: '启动、提示条与勿扰' },
-  { id: 'modes', label: '模式', hint: '三种模式与引导' },
-  { id: 'llm', label: 'AI 模型', hint: 'Provider、思考与生图' },
-  { id: 'voice', label: '语音', hint: '朗读与语音输入' },
-  { id: 'agent', label: '智能与工具', hint: '工具、技能与 MCP' },
-  { id: 'advanced', label: '系统', hint: '网络、日志与安全' },
+  { id: 'general', label: '通用', icon: 'M2.5 7.6 8 2.8l5.5 4.8M4 6.9V13h8V6.9' },
+  {
+    id: 'modes',
+    label: '模式',
+    icon: 'M2.5 2.5h4.6v4.6H2.5zM8.9 2.5h4.6v4.6H8.9zM2.5 8.9h4.6v4.6H2.5zM8.9 8.9h4.6v4.6H8.9z',
+  },
+  {
+    id: 'llm',
+    label: 'AI 模型',
+    icon: 'M4.6 4.6h6.8v6.8H4.6zM6.5 4.6V2.4M9.5 4.6V2.4M6.5 13.6v-2.2M9.5 13.6v-2.2M4.6 6.5H2.4M4.6 9.5H2.4M13.6 6.5h-2.2M13.6 9.5h-2.2',
+  },
+  {
+    id: 'voice',
+    label: '语音',
+    icon: 'M2.5 6.4v3.2M5.5 4.4v7.2M8 2.6v10.8M10.5 4.4v7.2M13.5 6.4v3.2',
+  },
+  {
+    id: 'agent',
+    label: '智能与工具',
+    icon: 'M8 2.2 9.4 6.6 13.8 8 9.4 9.4 8 13.8 6.6 9.4 2.2 8 6.6 6.6Z',
+  },
+  {
+    id: 'advanced',
+    label: '系统',
+    icon: 'M2.5 5h5.6M11.6 5h1.9M2.5 11h1.9M7.9 11h5.6M9.6 5a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0M4.4 11a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0',
+  },
 ]
 
 /**
@@ -99,8 +122,9 @@ const active = ref<PageId>(initialPage())
 const settingsStore = useSettingsStore()
 const windowStore = useWindowStore()
 const perception = usePerceptionStore()
-/** 本窗可拖（docs/07 §1 / §2.5）：拖动区见模板里的 `.sidebar-drag` / `.brand` / `.content-drag` */
-const { dragClass, noDragClass } = useWindowDrag('settings')
+/** 本窗可拖（docs/07 §1 / §2.5）：拖动区见模板里的 `.sidebar-drag` / `.brand` / `.content-drag`；
+ *  WindowCaption 的按钮自带 no-drag（组件内部显式挂类），这里不再需要 noDragClass */
+const { dragClass } = useWindowDrag('settings')
 
 const needsOnboarding = computed(() => settingsStore.needsOnboarding)
 
@@ -132,21 +156,17 @@ function select(id: PageId): void {
       <!-- 侧栏顶部拖动条：透明、无内容，作用是把「能拖的区域」从品牌行往上顶到窗口最上缘 -->
       <div class="sidebar-drag" :class="dragClass" aria-hidden="true" />
       <div class="brand" :class="dragClass">
-        <span class="brand-mark" />
-        <div>
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 16 16">
+            <path d="M8 2.4v11.2M2.4 8h11.2M3.9 3.9l8.2 8.2M12.1 3.9l-8.2 8.2" />
+          </svg>
+        </span>
+        <div class="brand-text">
           <strong>Aurora</strong>
           <p class="tiny muted">设置</p>
         </div>
-        <button
-          class="close"
-          :class="noDragClass"
-          type="button"
-          title="隐藏设置窗口（Esc）"
-          aria-label="隐藏设置窗口"
-          @click="closeSettings"
-        >
-          ✕
-        </button>
+        <!-- Windows 式窗口按钮：最小化 + 关闭（= 隐藏，Esc 等效）；见 docs/07 §2.5 -->
+        <WindowCaption window="settings" />
       </div>
       <nav>
         <template v-for="group in grouped" :key="group.title">
@@ -160,14 +180,18 @@ function select(id: PageId): void {
             :aria-current="active === item.id ? 'page' : undefined"
             @click="select(item.id)"
           >
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path :d="item.icon" />
+            </svg>
             <span class="label">{{ item.label }}</span>
-            <span class="tiny muted">{{ item.hint }}</span>
           </button>
         </template>
       </nav>
       <div class="foot">
-        <p class="tiny muted">v{{ settingsStore.appInfo?.appVersion ?? '0.1.0' }}</p>
-        <p class="tiny muted">Electron {{ settingsStore.appInfo?.electronVersion ?? '-' }}</p>
+        <p class="tiny muted">
+          v{{ settingsStore.appInfo?.appVersion ?? '0.1.0' }} · Electron
+          {{ settingsStore.appInfo?.electronVersion ?? '-' }}
+        </p>
       </div>
     </aside>
 
@@ -225,44 +249,42 @@ function select(id: PageId): void {
   gap: var(--space-2);
   /* 拖动条高度的下限（探针要求 ≥ 32px）：品牌标记 22px，两行文案本身还会把它撑到 ≈39px */
   min-height: 36px;
-  padding: 0 var(--space-2);
+  padding: 0 0 0 var(--space-2);
 }
 
-.brand > div {
-  /* 让品牌文案占满剩余宽度，把关闭按钮推到最右 */
+.brand-text {
   flex: 1;
   min-width: 0;
 }
 
+.brand-text strong {
+  display: block;
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  letter-spacing: var(--tracking-display);
+}
+
 .brand-mark {
+  display: grid;
+  place-items: center;
   width: 22px;
   height: 22px;
   border-radius: 50%;
   background: var(--aurora-gradient);
+  box-shadow: var(--shadow-hairline);
+}
+
+.brand-mark svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: var(--on-accent);
+  stroke-width: 1.4;
+  stroke-linecap: round;
 }
 
 .brand p {
   margin: 0;
-}
-
-.close {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--text-secondary);
-  transition:
-    background var(--transition-fast),
-    color var(--transition-fast);
-}
-
-.close:hover {
-  background: var(--danger-fill-hover);
-  color: var(--danger-text);
 }
 
 nav {
@@ -293,18 +315,36 @@ nav > .nav-group:first-child {
 .nav-item {
   position: relative;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 1px;
-  height: var(--control-h-md);
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-h-sm);
   padding: 0 var(--space-3);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   text-align: left;
   transition:
     background var(--transition-fast),
     color var(--transition-fast),
     transform var(--dur-press) var(--ease-standard);
+}
+
+/* 16px 描边图标：与主界面头部图标同一套笔触 */
+.nav-icon {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--text-muted);
+  transition: color var(--transition-fast);
+}
+
+.nav-item:hover .nav-icon,
+.nav-item.active .nav-icon {
+  color: var(--aurora-blue);
 }
 
 .nav-item:hover {
@@ -320,8 +360,7 @@ nav > .nav-group:first-child {
   background: var(--fill-3);
 }
 
-.nav-item:focus-visible,
-.close:focus-visible {
+.nav-item:focus-visible {
   outline: 1px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -339,6 +378,9 @@ nav > .nav-group:first-child {
 
 .nav-item .label {
   font-size: var(--text-base);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .foot {

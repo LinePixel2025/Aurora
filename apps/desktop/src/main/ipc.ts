@@ -344,6 +344,12 @@ export function registerIpc(deps: DesktopDeps): () => void {
   handle<WindowState>(IPC.window.setEdgeBarExpanded, (expanded: boolean) =>
     withState(() => deps.windows.setEdgeBarExpanded(expanded)),
   )
+  handle<WindowState>(IPC.window.minimize, (name: WindowName) =>
+    withState(() => deps.windows.minimize(name)),
+  )
+  handle<WindowState>(IPC.window.toggleMaximize, (name: WindowName) =>
+    withState(() => deps.windows.toggleMaximize(name)),
+  )
 
   // ───────────────────────── perception / chat ─────────────────────────
 

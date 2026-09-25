@@ -1,13 +1,16 @@
 <script setup lang="ts">
 /**
- * 主界面左栏（BetaV2，Design/betav2-spec.md §3）：品牌行 → 新对话 → 固定项「快速对话」
- * → 会话列表 → 底部（模式徽章 / 右栏开关 / 设置齿轮）。
+ * 主界面左栏（2026-09 重构，docs/07 §2.3）：品牌行 → 新对话 → 固定项「快速对话」
+ * （点击切到 quick 会话）→ 会话列表 → 底部（模式徽章 / 右栏开关 / 设置齿轮）。
  *
- * 旧版「快速 / 会话」双栏 tab 与「继续快速对话」中间态已删除：快速会话就是列表里
- * 的第一个固定项（sessionId = 'quick'），点击直接切换，主区随之水合。
+ * 面板内的快速对话入口在**桌面提示条**（悬停展开的面板，docs/07 §2.2）；
+ * 主界面左栏的固定项沿用「点击切换主区会话」口径，与普通会话共用同一窗口。
+ *
+ * 会话列表项是单行设计（标题 + 相对时间），去掉旧的「· N 条」统计——
+ * 列表要扫读的是「哪段对话、什么时候」，条数是噪音。
  *
  * 本组件只负责展示与上报意图（emit），会话切换 / 建会话 / 开窗口都由 App.vue 落地；
- * `data-field` / `data-action` 锚点是 capture 探针契约（spec §9），不可改名。
+ * `data-field` / `data-action` 锚点是 capture 探针契约（spec §5.3），不可改名。
  */
 import { computed } from 'vue'
 import type { ChatSessionSummary } from '@aurora/shared'
@@ -16,7 +19,7 @@ import { useWindowDrag } from '../../shared/composables/useWindowDrag.js'
 import { useModeStore } from '../../shared/stores.js'
 
 const props = defineProps<{
-  /** 会话列表（App 已剔除 'quick'，避免与固定项重复） */
+  /** 会话列表（普通会话；quick 由上方固定项的面板承载） */
   sessions: ChatSessionSummary[]
   /** 当前会话 id（激活态判定） */
   activeId: string
@@ -82,21 +85,21 @@ function formatRelativeTime(iso: string): string {
       </AppButton>
     </div>
 
-    <nav class="nav-scroll">
-      <!-- 固定顶置项：快速会话（与提示条共用 sessionId='quick'） -->
-      <button
-        type="button"
-        class="nav-item hover-fill press"
-        data-field="chat.quick-item"
-        :class="{ active: activeId === 'quick' }"
-        @click="emit('select', 'quick')"
-      >
-        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M8.8 1.8 3.5 9h3.4l-.7 5.2L11.5 7H8.1l.7-5.2Z" />
-        </svg>
-        <span class="item-title">快速对话</span>
-      </button>
+    <!-- 固定顶置项：快速会话（sessionId = 'quick'；桌面提示条面板里可直接对话） -->
+    <button
+      type="button"
+      class="quick-item hover-fill press"
+      data-field="chat.quick-item"
+      :class="{ active: activeId === 'quick' }"
+      @click="emit('select', 'quick')"
+    >
+      <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8.8 1.8 3.5 9h3.4l-.7 5.2L11.5 7H8.1l.7-5.2Z" />
+      </svg>
+      <span class="item-title">快速对话</span>
+    </button>
 
+    <nav class="nav-scroll">
       <p class="nav-caption tiny muted">会话</p>
       <p v-if="props.sessions.length === 0" class="tiny muted nav-empty">还没有会话</p>
 
@@ -106,15 +109,13 @@ function formatRelativeTime(iso: string): string {
           v-for="item in props.sessions"
           :key="item.id"
           type="button"
-          class="nav-item session hover-fill press"
+          class="nav-item hover-fill press"
           :class="{ active: item.id === activeId }"
           :title="item.title"
           @click="emit('select', item.id)"
         >
           <span class="item-title">{{ item.title.trim() === '' ? '新会话' : item.title }}</span>
-          <span class="item-meta tiny muted">
-            {{ formatRelativeTime(item.updatedAt) }} · {{ item.messageCount }} 条
-          </span>
+          <span class="item-time tiny muted">{{ formatRelativeTime(item.updatedAt) }}</span>
         </button>
       </div>
     </nav>
@@ -155,14 +156,14 @@ function formatRelativeTime(iso: string): string {
 </template>
 
 <style scoped>
-/* 固定 232px：外层 aside 折叠时宽度收 0，这里保持内容不被压缩换行 */
+/* 固定 240px：外层 aside 折叠时宽度收 0，这里保持内容不被压缩换行 */
 .nav-inner {
   display: flex;
   flex-direction: column;
-  width: 232px;
+  width: 240px;
   height: 100%;
   padding: var(--space-3);
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 /* ── 品牌行 ── */
@@ -170,9 +171,8 @@ function formatRelativeTime(iso: string): string {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 32px;
+  min-height: 36px;
   padding: 0 var(--space-1);
-  /* 品牌行高度较薄仍可拖动；拖动条规范高度 ≥32px 由 min-height 保证 */
 }
 
 .brand-mark {
@@ -213,6 +213,34 @@ function formatRelativeTime(iso: string): string {
   flex: none;
 }
 
+/* ── 快速对话固定项：单行图标 + 文案 + 展开箭头 ── */
+.quick-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px var(--space-2) 6px var(--space-3);
+  border-radius: var(--radius-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.quick-item .icon {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.quick-item.active {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
 /* ── 会话滚动区 ── */
 .nav-scroll {
   flex: 1;
@@ -242,38 +270,16 @@ function formatRelativeTime(iso: string): string {
   gap: 2px;
 }
 
-/* ── 列表项：hover-fill 全局类提供底色过渡；激活态加强调色指示条 ── */
+/* ── 列表项：单行（标题省略 + 时间右对齐）；激活态保留强调色指示条 ── */
 .nav-item {
   position: relative;
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 1px;
+  align-items: center;
+  gap: var(--space-2);
   padding: 6px var(--space-2) 6px var(--space-3);
   border-radius: var(--radius-sm);
   text-align: left;
   color: var(--text-secondary);
-  /* 会话标题可能来自首条用户消息（长 URL 等）：任意位置折行，不撑破 232px 栏 */
-  overflow-wrap: anywhere;
-}
-
-/* 快速对话是单行项：图标 + 文案横排 */
-.nav-item:not(.session) {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-2);
-  font-weight: var(--weight-medium);
-}
-
-.nav-item .icon {
-  flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .nav-item.active {
@@ -295,13 +301,15 @@ function formatRelativeTime(iso: string): string {
 }
 
 .item-title {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.item-meta {
+.item-time {
+  flex: 0 0 auto;
   font-variant-numeric: var(--num-tabular);
 }
 

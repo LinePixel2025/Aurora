@@ -69,6 +69,8 @@ const CHANNELS = {
     showChat: 'window:showChat',
     setPosition: 'window:setPosition',
     setEdgeBarExpanded: 'window:setEdgeBarExpanded',
+    minimize: 'window:minimize',
+    toggleMaximize: 'window:toggleMaximize',
     stateChanged: 'window:stateChanged',
     getState: 'window:getState',
   },

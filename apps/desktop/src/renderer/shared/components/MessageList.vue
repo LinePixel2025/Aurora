@@ -11,12 +11,20 @@
  *   自动展开（`thinkingTargetId`），请求结束后收起为「已深度思考」摘要行，手动可开合；
  * - `generate_image` 工具卡成功态渲染图片预览（`imagegen:read` 换 dataUrl，
  *   提取 / 读取失败维持纯文本，绝不阻塞消息流）。
+ *
+ * 2026-09 重构追加（docs/07 §2.3「任务清单与子代理卡」）：
+ * - `todo_write` 工具卡渲染为**结构化任务清单卡**（`data-field="chat.todo-card"`），
+ *   解析见 `shared/agentTodo.ts`；解析失败 / 非 todo_write 回落通用工具卡；
+ * - `task` 工具卡渲染为**子代理卡**（`data-field="chat.task-card"`，卡头是任务简述，
+ *   展开体多一段「指令」）。
  */
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import type { AgentToolCall } from '@aurora/shared'
 import type { ChatMessage } from '../composables/useChat.js'
 import { useStickToBottom } from '../composables/useStickToBottom.js'
 import { renderMarkdown } from '../markdown.js'
+import { parseTaskInput, parseTodoWriteInput, type TodoRow } from '../agentTodo.js'
+import AgentTodoList from './AgentTodoList.vue'
 import StatusDot from './StatusDot.vue'
 
 const props = withDefaults(
@@ -216,6 +224,28 @@ function toolTone(state: AgentToolCall['state']): 'idle' | 'running' | 'error' {
   if (state === 'running') return 'running'
   if (state === 'error') return 'error'
   return 'idle'
+}
+
+/**
+ * `todo_write` 的结构化视图（docs/07 §2.3）：能解析出条目时工具卡升级为任务清单卡，
+ * 返回 null（参数畸形 / 非 todo_write）则回落通用工具卡——绝不因模型输出畸形而丢卡片。
+ */
+function todosOf(call: AgentToolCall): TodoRow[] | null {
+  if (call.name !== 'todo_write') return null
+  return parseTodoWriteInput(call.input)
+}
+
+/** `task` 的结构化视图：卡头显示任务简述，展开体显示完整指令 */
+function taskOf(call: AgentToolCall) {
+  if (call.name !== 'task') return null
+  return parseTaskInput(call.input)
+}
+
+/** 工具卡的探针锚点：todo / task 卡各有一个，其余卡不带（`undefined` 时 Vue 省略属性） */
+function cardField(call: AgentToolCall): string | undefined {
+  if (todosOf(call) !== null) return 'chat.todo-card'
+  if (taskOf(call) !== null) return 'chat.task-card'
+  return undefined
 }
 
 // ───────────────────────── 工具卡片：折叠态 + 耗时 ─────────────────────────
@@ -470,13 +500,14 @@ async function onContentClick(event: MouseEvent): Promise<void> {
             {{ speakLabel(message) }}
           </button>
 
-          <!-- 工具执行卡片：折叠头行 + 展开细节（docs/06 §5） -->
+          <!-- 工具执行卡片：todo_write / task 有结构化卡头，其余为通用卡（docs/06 §5） -->
           <div v-if="(message.toolCalls?.length ?? 0) > 0" class="tools">
             <article
               v-for="call in message.toolCalls"
               :key="call.id"
               class="tool-card"
               :class="[`t-${call.state}`, { open: isOpen(call.id) }]"
+              :data-field="cardField(call)"
             >
               <button
                 type="button"
@@ -489,14 +520,39 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                   :size="6"
                   :title="toolStateLabel(call.state)"
                 />
-                <span class="mono tiny tool-name">{{ call.name }}</span>
-                <span class="tiny tool-state-label">{{ toolStateLabel(call.state) }}</span>
+                <!-- 任务清单卡头：固定标题 + 条目数（结构化清单常驻卡身） -->
+                <template v-if="todosOf(call)">
+                  <span class="tool-title">任务清单</span>
+                  <span class="tiny muted">{{ todosOf(call)!.length }} 项</span>
+                </template>
+                <!-- 子代理卡头：任务简述（入参 description） -->
+                <template v-else-if="taskOf(call)">
+                  <span class="tool-title">
+                    {{ taskOf(call)!.description.trim() !== '' ? taskOf(call)!.description : '子代理' }}
+                  </span>
+                  <span class="tiny tool-state-label">{{ toolStateLabel(call.state) }}</span>
+                </template>
+                <!-- 通用卡头：工具名 + 状态 -->
+                <template v-else>
+                  <span class="mono tiny tool-name">{{ call.name }}</span>
+                  <span class="tiny tool-state-label">{{ toolStateLabel(call.state) }}</span>
+                </template>
                 <span v-if="toolDuration(call) !== ''" class="tiny muted tool-time">
                   {{ toolDuration(call) }}
                 </span>
                 <span class="grow" />
                 <span class="chevron" aria-hidden="true">›</span>
               </button>
+              <!--
+                结构化任务清单（todo_write）：常驻卡身（不折叠就能看到清单状态），
+                点击卡头展开的仍是原始参数 / 结果。解析失败时这里不渲染，回落纯卡头。
+              -->
+              <AgentTodoList
+                v-if="todosOf(call)"
+                :todos="todosOf(call)!"
+                dense
+                class="tool-todos"
+              />
               <!--
                 生图预览（BetaV2）：成功卡片直接展示图片（懒加载、固定宽高比 + object-fit
                 cover 防加载抖动）。路径提取失败 / imagegen:read 失败时不渲染，
@@ -511,6 +567,11 @@ async function onContentClick(event: MouseEvent): Promise<void> {
               />
               <Transition name="collapse">
                 <div v-if="isOpen(call.id)" class="tool-body">
+                  <!-- 子代理卡：完整指令单列一段（prompt 常是自包含长文） -->
+                  <template v-if="taskOf(call)">
+                    <span class="tiny muted tool-label">指令</span>
+                    <p class="tool-output">{{ taskOf(call)!.prompt }}</p>
+                  </template>
                   <span class="tiny muted tool-label">参数</span>
                   <pre class="mono tool-args">{{ prettyInput(call.input) }}</pre>
                   <span class="tiny muted tool-label">结果</span>
@@ -642,11 +703,12 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   word-break: break-word;
 }
 
+/* 用户气泡：强调色浅填充（iMessage 语义：这是「我」说的话），无重描边 */
 .r-user .bubble {
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  background: var(--fill-2);
+  background: color-mix(in srgb, var(--aurora-blue) 20%, transparent);
+  color: var(--text-primary);
 }
 
 /* Apple 风格：助手内容铺开、不套气泡，代码块自带卡片 */
@@ -807,6 +869,23 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 .tool-name {
   flex: 0 0 auto;
   color: var(--text-secondary);
+}
+
+/* 结构化卡头标题（任务清单 / 子代理）：比 mono 工具名更像「一条内容」 */
+.tool-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+}
+
+/* 常驻卡身的结构化清单（todo_write）：与卡头留出层次 */
+.tool-todos {
+  padding: 0 var(--space-3) var(--space-2);
 }
 
 .tool-state-label {

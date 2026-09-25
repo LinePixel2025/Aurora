@@ -194,13 +194,36 @@ export const useWindowStore = defineStore('windows', () => {
     if (result.ok) state.value = result.value
   }
 
+  /** Windows 式标题栏：真最小化进任务栏（chat / 设置可用） */
+  async function minimize(name: WindowName): Promise<void> {
+    const result = await window.aurora.window.minimize(name)
+    if (result.ok) state.value = result.value
+  }
+
+  /** 切换最大化（标题栏双击 / caption 按钮） */
+  async function toggleMaximize(name: WindowName): Promise<void> {
+    const result = await window.aurora.window.toggleMaximize(name)
+    if (result.ok) state.value = result.value
+  }
+
   function bind(): () => void {
     return window.aurora.window.onStateChanged((next) => {
       state.value = next
     })
   }
 
-  return { state, load, show, hide, toggle, showChat, setEdgeBarExpanded, bind }
+  return {
+    state,
+    load,
+    show,
+    hide,
+    toggle,
+    showChat,
+    setEdgeBarExpanded,
+    minimize,
+    toggleMaximize,
+    bind,
+  }
 })
 
 export const usePerceptionStore = defineStore('perception', () => {
