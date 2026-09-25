@@ -1,6 +1,6 @@
 {
   "name": "aurora",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "private": true,
   "description": "Aurora —— 将 Windows 接入 AI 生态的系统级 Agent 工具",
   "packageManager": "pnpm@11.15.1",

@@ -2,8 +2,8 @@
 
 将 Windows 接入 AI 生态的**系统级 Agent 工具**：常驻系统托盘，以「屏幕右缘提示条」的轻量形态提供无感、自主的 AI 服务。
 
-> 当前版本：**0.0.4（BetaV2）** —— TTS 语音 404 根治与「获取模型列表」、提示条快速对话
-> 实时刷新与 5 分钟滑动上下文（防旧上下文污染）、设置「智能与工具」页信息架构收拢；
+> 当前版本：**0.0.5（BetaV2）** —— TTS 供应商新增 DashScope 原生类型（千问AI平台等
+> 只提供 DashScope 协议的网关可直连语音合成），格式漂移修复；
 > 历史进度见 [`docs/README.md`](./docs/README.md)「当前实现状态」。
 > 需求源头见 [`Aurora.md`](./Aurora.md)，设计与验收标准见 [`docs/`](./docs/README.md)（单一事实来源）。
 > 用户手册见 [docs/10](./docs/10-user-guide.md)，隐私说明见 [docs/11](./docs/11-privacy.md)。

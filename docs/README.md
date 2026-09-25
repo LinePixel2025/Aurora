@@ -57,6 +57,28 @@
   详见 [06-agent-core.md §13](./06-agent-core.md)、[08-settings-onboarding.md §6](./08-settings-onboarding.md)。
   **语音输入（STT）不在本轮范围**。
 
+**v0.0.5（DashScope 原生 TTS 轮）本轮新增**：
+
+- **TTS 供应商新增 `dashscope` 原生类型**（docs/06 §13.6、docs/08 §1 / §6）：`TtsProviderSchema.type`
+  增至 `openai-compat | dashscope`（纯增量枚举、无迁移）。走 DashScope 原生非实时协议：
+  `POST <base>/services/aigc/multimodal-generation/generation` → 取 `output.audio.url`
+  （24h 签名地址）→ 二次 GET 下载（**不带鉴权头**、独立超时预算）；mimeType 按下载响应
+  `content-type` → URL 扩展名 → 配置格式三级推导。设置页编辑卡新增「接口类型」下拉，
+  baseURL / 输出格式 / 语速提示随类型切换（dashscope 无语速参数、明示不发送）。
+- **dashscope baseUrl 规整**：剥误填端点尾巴（复用 §13.2 同套规则）后，裸域名补 `/api/v1`、
+  以 `/api` 结尾补 `/v1`（千问AI平台网关漏写 `/v1` 的高频 404 直接根治）。
+- **模型列表适配**：DashScope 原生 `/models` 是 `output.models[]`（id 字段为 `model`）且
+  **分页**（qianwenai 实测 518 个模型）——按 `output.total` 翻页拉全（页数封顶 6、空页 /
+  无新增即停），与 OpenAI `data[].id` 共用同一防御式解析器。
+- **错误文案按类型区分**：404 提示按 provider type 取词（dashscope 提示 /api/v1）；
+  识别 DashScope 式 400 `url error`（模型不属于该端点族，如 WebSocket 实时专用模型），
+  提示更换模型；`output.audio.url` 的签名参数值脱敏后才进错误文案。
+- **千问AI平台（maas.qianwenaiapi.com）真实网关端到端实测**：`qwen-tts` / `qwen3-tts-flash`
+  合成成功（200 → 下载 WAV）；`qwen-audio-3.x-tts-*` / CosyVoice / Sambert 系列在该网关
+  只走 WebSocket 实时，HTTP 一律 400 `url error`；`qwen-tts` 只认内置音色，声音复刻 id
+  不被接受；网关忽略 `audio.format` 恒回 WAV。
+- **其它**：修复 10 个文件的 Prettier 格式漂移（CI 首步 `format:check` 恢复全绿）。
+
 **v0.0.4（体验修复轮）本轮新增**：
 
 - **TTS 语音 404 根治 + 「获取模型列表」**（docs/06 §13.2、docs/08 §6）：`speechEndpoint`
