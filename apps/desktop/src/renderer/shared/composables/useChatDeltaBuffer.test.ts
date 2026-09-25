@@ -1,0 +1,161 @@
+import { describe, expect, it } from 'vitest'
+import { createDeltaBuffer, type DeltaBatch } from './useChatDeltaBuffer.js'
+
+/**
+ * 假帧调度器：不真跑 rAF，把回调收起来由测试手动驱动 —— 单测要验的正是
+ * 「一帧内怎么合并」「flush 之后帧回调还有没有效」这类时序语义。
+ */
+function createFakeScheduler() {
+  const frames = new Map<number, () => void>()
+  let nextHandle = 0
+  return {
+    scheduler: {
+      requestFrame: (callback: () => void): number => {
+        nextHandle += 1
+        frames.set(nextHandle, callback)
+        return nextHandle
+      },
+      cancelFrame: (handle: number): void => {
+        frames.delete(handle)
+      },
+    },
+    /** 在途帧数（断言「只排一帧」用） */
+    pendingCount: (): number => frames.size,
+    /** 跑掉全部在途帧（正常一次 rAF 的等价物） */
+    runFrames: (): void => {
+      const callbacks = [...frames.values()]
+      frames.clear()
+      for (const callback of callbacks) callback()
+    },
+    /** 不管有没有被取消，把句柄对应的回调抓出来跑（验「flush 后重复 apply」用） */
+    runHandle: (handle: number): void => {
+      const callback = frames.get(handle)
+      if (callback !== undefined) callback()
+    },
+  }
+}
+
+describe('createDeltaBuffer', () => {
+  it('同一帧内同 key 的多次入队合并为一次 apply', () => {
+    const applied: DeltaBatch<string>[][] = []
+    const fake = createFakeScheduler()
+    const buffer = createDeltaBuffer<string>((batch) => applied.push(batch), fake.scheduler)
+
+    buffer.push('a', '一')
+    buffer.push('a', '二')
+    buffer.push('a', '三')
+    expect(applied).toHaveLength(0)
+
+    fake.runFrames()
+    expect(applied).toHaveLength(1)
+    expect(applied[0]).toEqual([{ key: 'a', values: ['一', '二', '三'] }])
+  })
+
+  it('不同 key 同帧合并为一次 apply，且按首次出现顺序排列', () => {
+    const applied: DeltaBatch<string>[][] = []
+    const fake = createFakeScheduler()
+    const buffer = createDeltaBuffer<string>((batch) => applied.push(batch), fake.scheduler)
+
+    buffer.push('b', 'b1')
+    buffer.push('a', 'a1')
+    buffer.push('b', 'b2')
+    fake.runFrames()
+
+    expect(applied).toHaveLength(1)
+    expect(applied[0]).toEqual([
+      { key: 'b', values: ['b1', 'b2'] },
+      { key: 'a', values: ['a1'] },
+    ])
+  })
+
+  it('flush() 立即 apply 且不等帧', () => {
+    const applied: DeltaBatch<number>[][] = []
+    const fake = createFakeScheduler()
+    const buffer = createDeltaBuffer<number>((batch) => applied.push(batch), fake.scheduler)
+
+    buffer.push('x', 1)
+    buffer.flush()
+
+    expect(applied).toEqual([[{ key: 'x', values: [1] }]])
+    // flush 已取消在途帧：再跑一次帧循环也不该重复 apply
+    fake.runFrames()
+    expect(applied).toHaveLength(1)
+  })
+
+  it('flush() 之后手跑被取消的帧回调不再重复 apply', () => {
+    const applied: DeltaBatch<number>[][] = []
+    const fake = createFakeScheduler()
+    const buffer = createDeltaBuffer<number>((batch) => applied.push(batch), fake.scheduler)
+
+    buffer.push('x', 1)
+    // 记下这次排出的句柄，flush 之后再手动触发它
+    const handle = 1
+    buffer.flush()
+    expect(applied).toHaveLength(1)
+
+    fake.runHandle(handle)
+    expect(applied).toHaveLength(1)
+  })
+
+  it('连续 push 只排一帧', () => {
+    const fake = createFakeScheduler()
+    const buffer = createDeltaBuffer<string>(() => undefined, fake.scheduler)
+
+    buffer.push('a', '1')
+    buffer.push('b', '2')
+    buffer.push('a', '3')
+    expect(fake.pendingCount()).toBe(1)
+  })
+
+  it('apply 过程中再次 push 能排下一帧（帧回调先清句柄）', () => {
+    const applied: DeltaBatch<string>[][] = []
+    const fake = createFakeScheduler()
+    // apply 回调里回写 buffer 自身：回调要等帧跑起来才会执行，此时 const 已经初始化完成
+    const buffer = createDeltaBuffer<string>((batch) => {
+      applied.push(batch)
+      // 典型场景：apply 里发现还要补一段（例如工具结果拼接）
+      if (applied.length === 1) buffer.push('later', '下一帧见')
+    }, fake.scheduler)
+
+    buffer.push('a', '1')
+    fake.runFrames()
+    expect(applied).toHaveLength(1)
+    // apply 里的 push 必须排上了新帧，且这时候还没被 apply
+    expect(fake.pendingCount()).toBe(1)
+    expect(applied).toHaveLength(1)
+
+    fake.runFrames()
+    expect(applied).toHaveLength(2)
+    expect(applied[1]).toEqual([{ key: 'later', values: ['下一帧见'] }])
+  })
+
+  it('句柄 0 也是合法句柄（不能用 0 表示「没有帧」）', () => {
+    const applied: DeltaBatch<string>[][] = []
+    const fake = createFakeScheduler()
+    const buffer = createDeltaBuffer<string>((batch) => applied.push(batch), {
+      requestFrame: () => 0,
+      cancelFrame: (handle) => fake.scheduler.cancelFrame(handle),
+    })
+
+    buffer.push('a', '1')
+    buffer.flush()
+    expect(applied).toHaveLength(1)
+  })
+
+  it('dispose() 取消在途帧且不再 apply', () => {
+    const applied: DeltaBatch<string>[][] = []
+    const fake = createFakeScheduler()
+    const buffer = createDeltaBuffer<string>((batch) => applied.push(batch), fake.scheduler)
+
+    buffer.push('a', '1')
+    expect(fake.pendingCount()).toBe(1)
+    buffer.dispose()
+
+    expect(fake.pendingCount()).toBe(0)
+    fake.runFrames()
+    expect(applied).toHaveLength(0)
+    // dispose 之后即使再入队也不会被 apply 到旧组件上（帧仍会排出，但调用方已不再需要）
+    buffer.flush()
+    expect(applied).toHaveLength(0)
+  })
+})

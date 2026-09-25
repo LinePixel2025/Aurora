@@ -27,6 +27,7 @@ import type {
   TokenUsage,
   WindowName,
 } from '@aurora/shared'
+import { createDeltaBuffer } from './useChatDeltaBuffer.js'
 
 export interface ChatMessage {
   id: string
@@ -57,6 +58,17 @@ export interface ChatMessage {
 export interface SubagentRun extends SubagentSnapshot {
   messageId: string
 }
+
+/**
+ * 一条待写入的流式增量（text / reasoning 两条链路共用同一个缓冲）。
+ *
+ * `kind` 不参与缓冲的分组键（键是 messageId）：同一条消息在同帧内的
+ * 思考增量与正文增量必须按**到达顺序**依次落库，否则「正文开始写就把思考中标记清掉」
+ * 这条语义会在帧边界上翻车。
+ */
+type ChatDelta =
+  | { kind: 'text'; messageId: string; seq: number; delta: string }
+  | { kind: 'reasoning'; messageId: string; seq: number; delta: string }
 
 /** 对话上下文（原为窗口名映射；mini-chat 删除后改为显式声明，会话 id 保持不变） */
 export type ChatContext = 'main' | 'quick' | 'settings'
@@ -162,10 +174,51 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     return [...merged.values()].sort((left, right) => right.startedAt - left.startedAt)
   })
 
+  /**
+   * 流式增量的按帧合并缓冲。
+   *
+   * 一个 SSE token = 一次 IPC 推送，真实推理模型 100+ token/s 时渲染层每秒被叫醒上百次；
+   * text / reasoning 只入队，真正的累加合并到**下一帧**一次做完（每帧一次组件渲染）。
+   * 语义与边界见 `useChatDeltaBuffer.ts`；这里只负责注入 rAF 与把批次写进消息。
+   */
+  const deltaBuffer = createDeltaBuffer<ChatDelta>(
+    (batches) => {
+      for (const batch of batches) {
+        for (const delta of batch.values) {
+          // messageFor 必须**在 apply 时**才调用：它可能新建消息并按 seq 插入，
+          // 提前调用会把「入队顺序」换成「到达顺序」，帧边界上的插入位置就会变
+          const message = messageFor(delta.messageId, delta.seq)
+          if (message === undefined) continue
+          if (delta.kind === 'text') {
+            message.content += delta.delta
+            // 正文开始写 = 这一轮的思考已经结束：撤掉「思考中…」的实时标记
+            //（块本身仍保持展开，直到请求结束才收起为摘要行）
+            if (reasoningTargetId.value === message.id) reasoningTargetId.value = null
+            continue
+          }
+          // 思考增量带该轮预领的 messageId，因此**在正文之前**就能建出这条助手消息并把
+          // 「正在思考」显示出来（纯思考阶段界面不再空白）。逐条增量直接累加到消息上，
+          // 不再需要按轮次聚合 —— 每条增量都明确属于哪条消息（docs/06 §16.2）。
+          message.reasoning = (message.reasoning ?? '') + delta.delta
+          reasoningTargetId.value = message.id
+        }
+      }
+    },
+    {
+      requestFrame: (callback) => window.requestAnimationFrame(callback),
+      cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+    },
+  )
+
   const dispose = window.aurora.chat.onEvent((event) => {
     if (event.sessionId !== sessionId.value) return
     if (finishedRequests.has(event.requestId)) return
     if (activeRequest !== null && event.requestId !== activeRequest) return
+
+    // text / reasoning 之外的事件一律**先把在途增量刷出去**再走原分支：它们的语义与顺序
+    // 必须逐字不变 —— 尤其 `done` 读的是消息终态（正文是否为空、还有没有 pending），
+    // 不先 flush 就会在「正文还在缓冲里」时判定成「暂无回复」。
+    if (event.type !== 'text' && event.type !== 'reasoning') deltaBuffer.flush()
 
     switch (event.type) {
       case 'user-message': {
@@ -207,24 +260,21 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         break
       }
       case 'text': {
-        const message = messageFor(event.messageId, event.seq)
-        if (message) {
-          message.content += event.delta
-          // 正文开始写 = 这一轮的思考已经结束：撤掉「思考中…」的实时标记
-          // （块本身仍保持展开，直到请求结束才收起为摘要行）
-          if (reasoningTargetId.value === message.id) reasoningTargetId.value = null
-        }
+        deltaBuffer.push(event.messageId, {
+          kind: 'text',
+          messageId: event.messageId,
+          seq: event.seq,
+          delta: event.delta,
+        })
         break
       }
       case 'reasoning': {
-        // 思考增量带该轮预领的 messageId，因此**在正文之前**就能建出这条助手消息并把
-        // 「正在思考」显示出来（纯思考阶段界面不再空白）。逐条增量直接累加到消息上，
-        // 不再需要按轮次聚合 —— 每条增量都明确属于哪条消息（docs/06 §16.2）。
-        const message = messageFor(event.messageId, event.seq)
-        if (message) {
-          message.reasoning = (message.reasoning ?? '') + event.delta
-          reasoningTargetId.value = message.id
-        }
+        deltaBuffer.push(event.messageId, {
+          kind: 'reasoning',
+          messageId: event.messageId,
+          seq: event.seq,
+          delta: event.delta,
+        })
         break
       }
       case 'usage': {
@@ -293,7 +343,13 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     }
   })
 
-  onScopeDispose(dispose)
+  onScopeDispose(() => {
+    // 先 flush 再 dispose：卸载瞬间已入队的增量不能丢（消息正文会缺尾），
+    // dispose 只负责取消在途帧与清空缓冲（组件已经没了，不再 apply）
+    deltaBuffer.flush()
+    deltaBuffer.dispose()
+    dispose()
+  })
 
   function finishRequest(requestId: string): void {
     activeRequest = null
@@ -511,6 +567,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   /** 切换到指定会话（重新水合）。切换会中断本地流式状态，但不 abort 服务端请求。 */
   async function switchSession(id: string): Promise<void> {
     if (id === sessionId.value) return
+    // 在途增量先落地：下面要整表换掉 messages，留着缓冲会在新会话里凭空插出一条旧消息
+    deltaBuffer.flush()
     sessionId.value = id
     messages.value = []
     error.value = null
@@ -612,6 +670,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   }
 
   function clear(): void {
+    // 同上：整表清空之前先把在途增量落地，否则清空后它会把消息又插回来
+    deltaBuffer.flush()
     messages.value = []
     unread.value = false
     error.value = null
