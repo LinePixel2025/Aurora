@@ -79,15 +79,27 @@ function toolOf(tools: ToolDefinition[], name: string): ToolDefinition {
   return found
 }
 
+/**
+ * `createFileTools` 交付的**文件类**工具（显式列出，不写死长度）。
+ *
+ * 刻意不用「`COMPUTER_TOOL_NAMES` 去掉 `run_command`」这种全局过滤：v12 的常量有 8 个名字，
+ * 其中 `edit_file`（step 4 交付）、`grep` / `glob`（step 3 交付）都不由本工厂创建，
+ * 过滤条件必须显式说清「哪些是文件类」而不是「除了谁都是文件类」。
+ */
+const FILE_TOOL_NAMES = ['read_file', 'write_file', 'list_dir', 'open_path'] as const
+
 describe('createFileTools', () => {
-  it('返回恰好 4 个工具，名字与 COMPUTER_TOOL_NAMES 的对应子集一致', () => {
+  it('返回恰好这 4 个文件类工具，名字与 COMPUTER_TOOL_NAMES 的对应子集一致', () => {
     const tools = toolsOf(createFakes())
     const names = tools.map((tool) => tool.name)
 
-    expect(names).toEqual(['read_file', 'write_file', 'list_dir', 'open_path'])
-    expect(tools).toHaveLength(4)
-    // 除 step 3 的 run_command 外与 step 1 的常量同源：改名字漏改常量会在这里炸
-    expect(COMPUTER_TOOL_NAMES.filter((name) => name !== 'run_command')).toEqual(names)
+    expect(names).toEqual([...FILE_TOOL_NAMES])
+    expect(tools).toHaveLength(FILE_TOOL_NAMES.length)
+    // 与共享常量同源：这份显式列表的名字必须都在 `COMPUTER_TOOL_NAMES` 里，
+    // 且按常量顺序筛出来与工具名逐条一致 —— 改名字漏改常量会在这里炸
+    expect(
+      COMPUTER_TOOL_NAMES.filter((name) => FILE_TOOL_NAMES.some((file) => file === name)),
+    ).toEqual([...FILE_TOOL_NAMES])
     const sensitivities = tools.map((tool) => tool.sensitivity)
     expect(sensitivities).toEqual(['safe', 'confirm', 'safe', 'confirm'])
   })

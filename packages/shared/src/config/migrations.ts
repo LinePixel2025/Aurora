@@ -445,6 +445,44 @@ const migrateV10ToV11: Migration = {
   },
 }
 
+/**
+ * v11 → v12：为已存在的 `agent.tools` 补 `search.*`（文件检索工具开关与结果上限）
+ * 与 `terminal.allowPatterns`（免确认命令模式，docs/06 §11.5 / §11.7、docs/08 §1）。
+ *
+ * 照 v9 → v10 对「已存在分组里的新字段」的口径：**只在 `agent.tools` 已存在时**补，
+ * 不凭空造出半截对象（缺失时由默认配置兜底）；两个字段都**只补缺不覆盖**，
+ * 用户已写过的模式列表与上限值原样保留（幂等）。这里**不做范围修正** ——
+ * 越界值由 Schema 校验回退默认（迁移只负责补缺）。
+ */
+const migrateV11ToV12: Migration = {
+  from: 11,
+  to: 12,
+  describe:
+    'v11 → v12：为 agent.tools 补 search.* 与 terminal.allowPatterns（文件检索与免确认模式）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const agent = asRecord(raw['agent'])
+    const tools = agent === undefined ? undefined : asRecord(agent['tools'])
+    if (agent !== undefined && tools !== undefined) {
+      // 每轮新建对象与数组：不与 `DEFAULT_AGENT_TOOLS` 共享实例
+      const terminal = asRecord(tools['terminal'])
+      const filled =
+        terminal === undefined
+          ? tools
+          : { ...tools, terminal: fillMissing(terminal, { allowPatterns: [] }) }
+      // `search` 缺失时由 `fillMissing` 递归补出整组；已存在时只补缺键
+      next['agent'] = {
+        ...agent,
+        tools: fillMissing(filled, { search: { enabled: true, maxResults: 200 } }),
+      }
+    }
+
+    next['version'] = 12
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -457,6 +495,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV8ToV9,
   migrateV9ToV10,
   migrateV10ToV11,
+  migrateV11ToV12,
 ]
 
 export interface MigrationOutcome {

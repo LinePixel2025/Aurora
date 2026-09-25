@@ -169,8 +169,14 @@ describe('SettingsStore · 初始化', () => {
     expect(store.get().agent.tools).toEqual({
       enabled: true,
       workspaceDir: '',
-      terminal: { enabled: true, timeoutMs: 60_000, maxOutputChars: 8000 },
+      terminal: {
+        enabled: true,
+        timeoutMs: 60_000,
+        maxOutputChars: 8000,
+        allowPatterns: [],
+      },
       files: { enabled: true, maxReadBytes: 262_144 },
+      search: { enabled: true, maxResults: 200 },
       open: { enabled: true },
     })
   })

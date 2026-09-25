@@ -31,6 +31,22 @@ import {
 
 const HOME = 'C:\\Users\\tester'
 
+/**
+ * 当前装配器能**真正创建出来**的电脑操控工具（顺序照 `COMPUTER_TOOL_NAMES`）。
+ *
+ * 与 `COMPUTER_TOOL_NAMES`（v12 起 8 个名字）刻意区分开：常量是「对外承诺的工具名全集」，
+ * 本列表是「`registerComputerTools` 眼下真的能造出来的子集」——`grep` / `glob` 由 step 3、
+ * `edit_file` 由 step 4 交付，在那之前它们不在注册结果里。显式列出而不写死长度：
+ * 新增工具时同步加名字，断言仍逐条精确（不用 `toContain` 这类弱断言）。
+ */
+const IMPLEMENTED_COMPUTER_TOOLS = [
+  'run_command',
+  'read_file',
+  'write_file',
+  'list_dir',
+  'open_path',
+] as const
+
 function makeSettings(): Settings {
   return structuredClone(createDefaultSettings())
 }
@@ -103,10 +119,10 @@ function setup(settings: Settings, runner: CommandRunner = fakeRunner()) {
 }
 
 describe('registerComputerTools', () => {
-  it('全开时注册全部 5 个工具，顺序与 COMPUTER_TOOL_NAMES 一致', () => {
+  it('全开时注册当前已实现的全部工具，顺序与 COMPUTER_TOOL_NAMES 一致', () => {
     const { tools, registry } = setup(makeSettings())
-    expect(registry.sync()).toEqual([...COMPUTER_TOOL_NAMES])
-    expect(tools.list().map((tool) => tool.name)).toEqual([...COMPUTER_TOOL_NAMES])
+    expect(registry.sync()).toEqual([...IMPLEMENTED_COMPUTER_TOOLS])
+    expect(tools.list().map((tool) => tool.name)).toEqual([...IMPLEMENTED_COMPUTER_TOOLS])
   })
 
   it('工具默认使用注入的主目录作为工作目录（空串 = 用户主目录）', async () => {
@@ -139,12 +155,12 @@ describe('registerComputerTools', () => {
     expect(tools.get('use_skill')).toBeDefined()
   })
 
-  it('关掉终端 → 只剩 4 个，run_command 消失', () => {
+  it('关掉终端 → run_command 消失，其余已实现工具仍注册', () => {
     const settings = makeSettings()
     settings.agent.tools.terminal.enabled = false
     const { tools, registry } = setup(settings)
     const names = registry.sync()
-    expect(names).toHaveLength(4)
+    expect(names).toEqual(IMPLEMENTED_COMPUTER_TOOLS.filter((name) => name !== 'run_command'))
     expect(names).not.toContain('run_command')
     expect(tools.get('run_command')).toBeUndefined()
   })
@@ -154,19 +170,24 @@ describe('registerComputerTools', () => {
     settings.agent.tools.files.enabled = false
     const { tools, registry } = setup(settings)
     const names = registry.sync()
-    expect(names).toEqual(['run_command', 'open_path'])
+    // 文件类三件消失（open_path 归 `agent.tools.open` 开关，不受 files.enabled 影响）
+    expect(names).toEqual(
+      IMPLEMENTED_COMPUTER_TOOLS.filter(
+        (name) => name !== 'read_file' && name !== 'write_file' && name !== 'list_dir',
+      ),
+    )
     expect(tools.get('read_file')).toBeUndefined()
     expect(tools.get('write_file')).toBeUndefined()
     expect(tools.get('list_dir')).toBeUndefined()
     expect(tools.get('open_path')).toBeDefined()
   })
 
-  it('关掉「打开」→ open_path 消失，其余 4 个还在', () => {
+  it('关掉「打开」→ open_path 消失，其余已实现工具仍在', () => {
     const settings = makeSettings()
     settings.agent.tools.open.enabled = false
     const { tools, registry } = setup(settings)
     const names = registry.sync()
-    expect(names).toHaveLength(4)
+    expect(names).toEqual(IMPLEMENTED_COMPUTER_TOOLS.filter((name) => name !== 'open_path'))
     expect(names).not.toContain('open_path')
     expect(tools.get('open_path')).toBeUndefined()
   })

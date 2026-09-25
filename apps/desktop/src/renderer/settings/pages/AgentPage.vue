@@ -74,8 +74,12 @@ const TOOL_GATES: Record<ComputerToolName, (t: AgentToolsConfig) => boolean> = {
   run_command: (t) => t.terminal.enabled,
   read_file: (t) => t.files.enabled,
   write_file: (t) => t.files.enabled,
+  edit_file: (t) => t.files.enabled,
   list_dir: (t) => t.files.enabled,
   open_path: (t) => t.open.enabled,
+  // 文件检索（grep / glob）归 v12 新增的 `agent.tools.search` 开关，与 files 分开
+  grep: (t) => t.search.enabled,
+  glob: (t) => t.search.enabled,
 }
 
 /** 当前配置下**会注册**的工具名，顺序照 `COMPUTER_TOOL_NAMES`（即注册顺序，便于比对） */
@@ -180,13 +184,15 @@ async function openWorkspace(): Promise<void> {
           <!-- 总开关 -->
           <div class="sub">
             <h3 class="sub-title">总开关</h3>
+            <!--
+              数量与名字都从 `COMPUTER_TOOL_NAMES` 派生（不写死）：加工具时自动跟上，
+              否则会出现「文案说 5 个、实际注册 8 个」这类只在下次加工具时才暴露的偏差。
+            -->
             <p class="section-desc">
-              关闭后模型<strong>完全看不到</strong>这 5 个工具：
-              <code class="mono">run_command</code>、<code class="mono">read_file</code>、<code
+              关闭后模型<strong>完全看不到</strong>这 {{ COMPUTER_TOOL_NAMES.length }} 个工具（<code
                 class="mono"
-                >write_file</code
-              >、<code class="mono">list_dir</code>、<code class="mono">open_path</code>
-              —— 系统提示词与工具表里都不再出现，保存后立即生效，无需重启。
+                >{{ COMPUTER_TOOL_NAMES.join('、') }}</code
+              >）—— 系统提示词与工具表里都不再出现，保存后立即生效，无需重启。
             </p>
 
             <SettingField
@@ -404,7 +410,9 @@ async function openWorkspace(): Promise<void> {
             <div v-if="activeToolNames.length > 0" class="row wrap">
               <code v-for="name in activeToolNames" :key="name" class="mono">{{ name }}</code>
             </div>
-            <p v-else class="tiny muted">总开关已关闭：5 个电脑操控工具一个都不会注册。</p>
+            <p v-else class="tiny muted">
+              总开关已关闭：{{ COMPUTER_TOOL_NAMES.length }} 个电脑操控工具一个都不会注册。
+            </p>
           </div>
         </div>
       </Transition>

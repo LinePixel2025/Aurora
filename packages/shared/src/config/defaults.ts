@@ -154,10 +154,22 @@ export const DEFAULT_AGENT_TOOLS = {
     enabled: true,
     timeoutMs: 60_000,
     maxOutputChars: 8000,
+    /**
+     * 命中即免确认的命令模式（v12，docs/06 §11.7）：默认空数组 = 全部逐次确认（v12 之前的行为）。
+     * 加 `as string[]` 是因为本对象是 `as const`：否则 `[]` 会被推断成只读空元组
+     * `readonly []`，无法赋给 Schema 推出的可变 `string[]`。
+     * 该字段在 `SETTINGS_READONLY_PREFIXES` 里（AI 改不动，防自我提权）。
+     */
+    allowPatterns: [] as string[],
   },
   files: {
     enabled: true,
     maxReadBytes: 262_144,
+  },
+  /** 文件检索（`grep` / `glob`）配置（v12，docs/06 §11.5）：默认开启、单次最多 200 条结果。 */
+  search: {
+    enabled: true,
+    maxResults: 200,
   },
   open: {
     enabled: true,

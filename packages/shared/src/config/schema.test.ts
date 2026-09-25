@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { createDefaultSettings, DEFAULT_TTS, PROVIDER_PRESETS, TTS_PRESETS } from './defaults.js'
+import {
+  createDefaultSettings,
+  DEFAULT_TOOLCHAIN_CONFIG,
+  DEFAULT_TTS,
+  PROVIDER_PRESETS,
+  TTS_PRESETS,
+} from './defaults.js'
 import {
   COMPUTER_TOOL_NAMES,
   CONFIG_VERSION,
@@ -182,19 +188,30 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(SettingsSchema.parse(settings).llm.providers['deepseek']?.modelList).toEqual([])
   })
 
-  it('电脑操控工具配置：默认值完整、字段路径可校验（v5）', () => {
+  it('电脑操控工具配置：默认值完整、字段路径可校验（v5；v12 起 8 个工具）', () => {
     expect([...COMPUTER_TOOL_NAMES]).toEqual([
       'run_command',
       'read_file',
       'write_file',
+      'edit_file',
       'list_dir',
       'open_path',
+      'grep',
+      'glob',
     ])
     expect(createDefaultSettings().agent.tools).toEqual({
       enabled: true,
       workspaceDir: '',
-      terminal: { enabled: true, timeoutMs: 60_000, maxOutputChars: 8000 },
+      terminal: {
+        enabled: true,
+        timeoutMs: 60_000,
+        maxOutputChars: 8000,
+        // v12：默认空数组 = 全部逐次确认（不改变 v12 之前的行为）
+        allowPatterns: [],
+      },
       files: { enabled: true, maxReadBytes: 262_144 },
+      // v12：文件检索（grep / glob）
+      search: { enabled: true, maxResults: 200 },
       open: { enabled: true },
     })
 
@@ -203,6 +220,46 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(fieldAccepts('agent.tools.enabled', false)).toBe(true)
     expect(fieldAccepts('agent.tools.workspaceDir', 'D:\\工作目录')).toBe(true)
     expect(fieldAccepts('agent.tools.workspaceDir', 123)).toBe(false)
+    // v12 新字段：模式列表是字符串数组、检索上限是数字
+    expect(fieldAccepts('agent.tools.terminal.allowPatterns', [])).toBe(true)
+    expect(fieldAccepts('agent.tools.terminal.allowPatterns', ['git status*'])).toBe(true)
+    expect(fieldAccepts('agent.tools.terminal.allowPatterns', 'git status*')).toBe(false)
+    expect(fieldAccepts('agent.tools.search.enabled', true)).toBe(true)
+    expect(fieldAccepts('agent.tools.search.enabled', 'yes')).toBe(false)
+    expect(fieldAccepts('agent.tools.search.maxResults', 200)).toBe(true)
+    expect(fieldAccepts('agent.tools.search.maxResults', '200')).toBe(false)
+  })
+
+  it('v12 新增字段：默认值本身能通过 Schema 校验（DEFAULT_TOOLCHAIN_CONFIG 即默认配置源）', () => {
+    // 直接校验常量本身（而不是 createDefaultSettings 的深拷贝）：默认值漏字段时这里先红
+    expect(SettingsSchema.safeParse(DEFAULT_TOOLCHAIN_CONFIG).success).toBe(true)
+  })
+
+  it('文件检索（grep / glob）上限越界被 Schema 拒绝（v12）', () => {
+    const tooSmall = createDefaultSettings()
+    tooSmall.agent.tools.search.maxResults = 0
+    expect(SettingsSchema.safeParse(tooSmall).success).toBe(false)
+
+    const tooLarge = createDefaultSettings()
+    tooLarge.agent.tools.search.maxResults = 1_001
+    expect(SettingsSchema.safeParse(tooLarge).success).toBe(false)
+
+    const patternTooLong = createDefaultSettings()
+    patternTooLong.agent.tools.terminal.allowPatterns = ['a'.repeat(201)]
+    expect(SettingsSchema.safeParse(patternTooLong).success).toBe(false)
+
+    const tooManyPatterns = createDefaultSettings()
+    tooManyPatterns.agent.tools.terminal.allowPatterns = Array.from(
+      { length: 101 },
+      (_, i) => `cmd${i}`,
+    )
+    expect(SettingsSchema.safeParse(tooManyPatterns).success).toBe(false)
+
+    // 边界值本身合法
+    const ok = createDefaultSettings()
+    ok.agent.tools.search.maxResults = 1
+    ok.agent.tools.terminal.allowPatterns = ['git status*']
+    expect(SettingsSchema.safeParse(ok).success).toBe(true)
   })
 
   it('电脑操控工具上限越界会被 Schema 拒绝（v5）', () => {
@@ -399,6 +456,27 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     )
     // 同组其它字段不受影响（别把整个 advanced 分组一起封死）
     expect(canWriteSettingPath('advanced.logLevel')).toBe(true)
+  })
+
+  it('免确认命令模式列表不可由 AI 读写（自我提权，v12）', () => {
+    // 命中即跳过确认卡片：AI 若能自己加一条 `git*`，就等于永久摘掉自己的确认闸门，
+    // 与 advanced.confirmSensitiveTools 同级封禁 → 只能由用户在设置页手加
+    expect(canWriteSettingPath('agent.tools.terminal.allowPatterns')).toBe(false)
+    const reason = settingsReadonlyReason('agent.tools.terminal.allowPatterns')
+    expect(reason).toBeDefined()
+    expect(reason).toContain('确认闸门')
+    // 同一条原因也证明拒绝来自黑名单（而不是「未知配置路径」那条兜底）
+    expect(reason).not.toBe('未知配置路径')
+    // 同一 terminal 组里的其它字段仍可写（别把整个 terminal 分组一起封死）
+    expect(canWriteSettingPath('agent.tools.terminal.enabled')).toBe(true)
+    expect(canWriteSettingPath('agent.tools.terminal.timeoutMs')).toBe(true)
+  })
+
+  it('文件检索（grep / glob）的开关与上限对 AI 开放（v12）', () => {
+    expect(canWriteSettingPath('agent.tools.search.enabled')).toBe(true)
+    expect(settingsReadonlyReason('agent.tools.search.enabled')).toBeUndefined()
+    expect(canWriteSettingPath('agent.tools.search.maxResults')).toBe(true)
+    expect(settingsReadonlyReason('agent.tools.search.maxResults')).toBeUndefined()
   })
 
   it('引导 / 首次运行 / 开机自启三个前缀不可被悄悄移出黑名单', () => {

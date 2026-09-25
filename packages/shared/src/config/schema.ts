@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 11 as const
+export const CONFIG_VERSION = 12 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -387,6 +387,10 @@ export const SETTINGS_READONLY_PREFIXES = [
   // `write_file` / 全部 MCP 工具 / `set_setting` 自身都不再弹确认卡片 —— 等于 AI 自我提权。
   // 只保留「用户在设置页手动关」这一条路径（设置页走 `settings:update`，不经过本黑名单）。
   'advanced.confirmSensitiveTools',
+  // run_command 的免确认模式列表（v12，docs/06 §11.7）：命中即跳过确认卡片，同样等于摘掉 AI 自己的
+  // 确认闸门 —— 否则 AI 给自己加一条 `git*` 就再也不用确认了，属自我提权。
+  // 只保留「用户在设置页手动加白名单」这一条路径（设置页走 `settings:update`，不经过本黑名单）。
+  'agent.tools.terminal.allowPatterns',
 ] as const
 
 export const AdvancedSchema = z.object({
@@ -409,6 +413,10 @@ export const AdvancedSchema = z.object({
    * 语义：**只能在默认黑名单之上追加限制，不能放宽** —— `settingsReadonlyReason` 在查过用户配置项之后
    * 仍会**无条件**再走一遍硬编码常量（`canWriteSettingPath` 从不接收用户配置），所以删掉默认项
    * 甚至把它清空都**不会**放开对应路径（清空 = 回到默认项）。「Schema 必须识别该路径」那条兜底同样不随它变化。
+   *
+   * ⚠️ 因此本字段的默认值是**持久化**的：老用户配置里存的是旧数组，不含后来新增的前缀
+   * （如 v12 的 `agent.tools.terminal.allowPatterns`）。这**不影响安全性**（硬编码常量那一遍照样命中），
+   * 上面那条「只能在默认之上追加」的语义也保证了这一点 —— 所以**不需要**为新增前缀写配置迁移。
    */
   readonlyPrefixes: z.array(z.string()).default([...SETTINGS_READONLY_PREFIXES]),
 })
@@ -422,8 +430,11 @@ export const COMPUTER_TOOL_NAMES = [
   'run_command',
   'read_file',
   'write_file',
+  'edit_file',
   'list_dir',
   'open_path',
+  'grep',
+  'glob',
 ] as const
 export type ComputerToolName = (typeof COMPUTER_TOOL_NAMES)[number]
 
@@ -434,17 +445,30 @@ export type ComputerToolName = (typeof COMPUTER_TOOL_NAMES)[number]
  * 模型仍可显式传入其它路径，安全靠"逐次确认 + 输出上限 + 总开关"而不是路径限制。
  */
 export const AgentToolsSchema = z.object({
-  /** 总开关；false 时 5 个工具一个都不注册。 */
+  /** 总开关；false 时 8 个工具一个都不注册。 */
   enabled: z.boolean(),
   workspaceDir: z.string(),
   terminal: z.object({
     enabled: z.boolean(),
     timeoutMs: z.number().int().min(1_000).max(300_000),
     maxOutputChars: z.number().int().min(500).max(100_000),
+    /**
+     * 命中即免确认的命令模式（v12，docs/06 §11.7）：glob **全串**匹配、大小写不敏感，
+     * `*` 匹配任意字符（含空）、`?` 匹配单字符；全串锚定意味着 `git *` 不会命中 `echo git`。
+     * 空数组 = 全部逐次确认（默认值 = v12 之前的行为）。
+     * 命中只跳过确认卡片，**仍写审计日志**，属于「减少打扰」而非安全加固。
+     */
+    allowPatterns: z.array(z.string().max(200)).max(100),
   }),
   files: z.object({
     enabled: z.boolean(),
     maxReadBytes: z.number().int().min(1_024).max(4_194_304),
+  }),
+  /** 文件检索（`grep` / `glob`）配置（v12，docs/06 §11.5）。 */
+  search: z.object({
+    enabled: z.boolean(),
+    /** 单次检索返回的结果条数上限（超出即截断并标注）。 */
+    maxResults: z.number().int().min(1).max(1_000),
   }),
   open: z.object({
     enabled: z.boolean(),
@@ -488,6 +512,8 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'general.launchAtLogin': '开机自启不允许通过工具修改',
   'general.hotkey': '全局快捷键不允许通过工具修改',
   'advanced.confirmSensitiveTools': '关闭它等于摘掉敏感工具的确认闸门，不允许通过工具修改',
+  'agent.tools.terminal.allowPatterns':
+    '免确认命令模式等于摘掉终端工具自己的确认闸门，不允许通过工具修改',
 }
 
 /** 显式可写覆盖表的一条登记：模式 + 中文说明。 */
@@ -545,6 +571,11 @@ export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
   { pattern: 'agent.tools.terminal.maxOutputChars', reason: '调整终端输出截断上限' },
   { pattern: 'agent.tools.files.enabled', reason: '开关文件读写工具' },
   { pattern: 'agent.tools.files.maxReadBytes', reason: '调整单次文件读取上限' },
+  // 文件检索（grep / glob）：开关与结果上限对 AI 开放。
+  // 相邻的 `agent.tools.terminal.allowPatterns` **刻意不登记** —— 覆盖表判定先于黑名单，
+  // 登记它等于把「免确认命令模式」放行给 AI（自我提权，见 SETTINGS_READONLY_PREFIXES）。
+  { pattern: 'agent.tools.search.enabled', reason: '开关文件检索工具' },
+  { pattern: 'agent.tools.search.maxResults', reason: '调整文件检索的结果上限' },
   { pattern: 'agent.tools.open.enabled', reason: '开关「打开路径」工具' },
   // 技能 / 全局勿扰时段
   { pattern: 'skills.userDir', reason: '切换用户技能目录' },

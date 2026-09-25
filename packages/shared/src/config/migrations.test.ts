@@ -271,13 +271,19 @@ describe('配置迁移链', () => {
         chat: { showThinking: true },
       })
 
-      // agent.tools 为默认值
+      // agent.tools 为默认值（含 v12 起补出的 search.* 与 terminal.allowPatterns）
       expect(outcome.data['agent']).toEqual({
         tools: {
           enabled: true,
           workspaceDir: '',
-          terminal: { enabled: true, timeoutMs: 60_000, maxOutputChars: 8000 },
+          terminal: {
+            enabled: true,
+            timeoutMs: 60_000,
+            maxOutputChars: 8000,
+            allowPatterns: [],
+          },
           files: { enabled: true, maxReadBytes: 262_144 },
+          search: { enabled: true, maxResults: 200 },
           open: { enabled: true },
         },
       })
@@ -337,8 +343,14 @@ describe('配置迁移链', () => {
         tools: {
           enabled: false,
           workspaceDir: '',
-          terminal: { enabled: true, timeoutMs: 5_000, maxOutputChars: 8000 },
+          terminal: {
+            enabled: true,
+            timeoutMs: 5_000,
+            maxOutputChars: 8000,
+            allowPatterns: [],
+          },
           files: { enabled: true, maxReadBytes: 262_144 },
+          search: { enabled: true, maxResults: 200 },
           open: { enabled: true },
         },
       })
@@ -353,8 +365,14 @@ describe('配置迁移链', () => {
       expect((outcome.data['agent'] as Record<string, unknown>)['tools']).toEqual({
         enabled: true,
         workspaceDir: '',
-        terminal: { enabled: true, timeoutMs: 60_000, maxOutputChars: 8000 },
+        terminal: {
+          enabled: true,
+          timeoutMs: 60_000,
+          maxOutputChars: 8000,
+          allowPatterns: [],
+        },
         files: { enabled: true, maxReadBytes: 262_144 },
+        search: { enabled: true, maxResults: 200 },
         open: { enabled: true },
       })
     })
@@ -784,6 +802,90 @@ describe('配置迁移链', () => {
       const badProviders = migrate({ version: 10, llm: { providers: 'oops' } })
       expect(badProviders.warnings).toEqual([])
       expect((badProviders.data['llm'] as Record<string, unknown>)['providers']).toBe('oops')
+    })
+  })
+
+  describe('v11 → v12（文件检索 search.* 与免确认命令模式 allowPatterns）', () => {
+    const loadTools = (raw: Record<string, unknown>): Record<string, unknown> =>
+      (raw['agent'] as Record<string, unknown>)['tools'] as Record<string, unknown>
+    const loadTerminal = (raw: Record<string, unknown>): Record<string, unknown> =>
+      loadTools(raw)['terminal'] as Record<string, unknown>
+
+    /** 一份 v11 配置：已有 agent.tools，但缺 v12 才有的 `search.*` 与 `allowPatterns`。 */
+    const V11_CONFIG: Record<string, unknown> = {
+      version: 11,
+      general: { language: 'zh-CN' },
+      agent: {
+        tools: {
+          enabled: true,
+          workspaceDir: 'D:\\工作',
+          terminal: { enabled: true, timeoutMs: 30_000, maxOutputChars: 4_000 },
+          files: { enabled: false, maxReadBytes: 131_072 },
+          open: { enabled: true },
+        },
+      },
+    }
+
+    it('为已存在的 agent.tools 补 search.* 与 terminal.allowPatterns，version 升到 12', () => {
+      const outcome = migrate(V11_CONFIG)
+      expect(outcome.fromVersion).toBe(11)
+      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied[0]).toContain('v11 → v12')
+      expect(outcome.applied[0]).toContain('allowPatterns')
+      expect(outcome.data['version']).toBe(12)
+      expect(outcome.warnings).toEqual([])
+
+      // 缺失的两处补成默认值
+      expect(loadTools(outcome.data)['search']).toEqual({ enabled: true, maxResults: 200 })
+      expect(loadTerminal(outcome.data)['allowPatterns']).toEqual([])
+      // 只补缺不覆盖：用户已写过的值一个不动
+      expect(loadTools(outcome.data)['workspaceDir']).toBe('D:\\工作')
+      expect(loadTools(outcome.data)['files']).toEqual({ enabled: false, maxReadBytes: 131_072 })
+      expect(loadTerminal(outcome.data)['timeoutMs']).toBe(30_000)
+      expect(loadTerminal(outcome.data)['maxOutputChars']).toBe(4_000)
+      expect(outcome.data['general']).toEqual({ language: 'zh-CN' })
+    })
+
+    it('重复执行结果一致（幂等）', () => {
+      const once = migrate(V11_CONFIG)
+      const twice = migrate({ ...once.data, version: 11 })
+      expect(twice.data).toEqual(once.data)
+      expect(loadTools(twice.data)).toEqual(loadTools(once.data))
+      expect(loadTerminal(twice.data)['allowPatterns']).toEqual([])
+    })
+
+    it('用户已写过的 allowPatterns 与 search.maxResults 原样保留，不被默认值覆盖', () => {
+      const config = structuredClone(V11_CONFIG)
+      const tools = (config['agent'] as Record<string, unknown>)['tools'] as Record<string, unknown>
+      ;(tools['terminal'] as Record<string, unknown>)['allowPatterns'] = ['git status*']
+      tools['search'] = { enabled: false, maxResults: 42 }
+
+      const outcome = migrate(config)
+      expect(loadTerminal(outcome.data)['allowPatterns']).toEqual(['git status*'])
+      expect(loadTools(outcome.data)['search']).toEqual({ enabled: false, maxResults: 42 })
+
+      const twice = migrate({ ...outcome.data, version: 11 })
+      expect(loadTerminal(twice.data)['allowPatterns']).toEqual(['git status*'])
+    })
+
+    it('agent / agent.tools 分组不存在时不凭空造对象，不抛错', () => {
+      const noAgent = migrate({ version: 11, general: {} })
+      expect(noAgent.warnings).toEqual([])
+      expect(noAgent.data['agent']).toBeUndefined()
+      expect(noAgent.data['version']).toBe(CONFIG_VERSION)
+
+      const noTools = migrate({ version: 11, agent: { other: 1 } })
+      expect(noTools.warnings).toEqual([])
+      expect(noTools.data['agent']).toEqual({ other: 1 })
+      expect(noTools.data['version']).toBe(CONFIG_VERSION)
+
+      // terminal 缺失时只补 search，不凭空造出半截 terminal
+      const noTerminal = migrate({ version: 11, agent: { tools: { enabled: true } } })
+      expect(noTerminal.warnings).toEqual([])
+      expect(loadTools(noTerminal.data)).toEqual({
+        enabled: true,
+        search: { enabled: true, maxResults: 200 },
+      })
     })
   })
 })
