@@ -1413,6 +1413,14 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   margin: 0;
   max-height: 140px;
   overflow: auto;
+  /*
+   * 不许被 flex 压扁（`.tool-body` 是 flex 列容器）。
+   * 展开动画期间容器身上挂着 `max-height: 0`，flex 会把**可收缩的子项**压到最小：
+   * 滚动容器（本元素 `overflow: auto`）的自动最小尺寸解析为 0，于是它从 79px 被压到 13px
+   * —— 内容在动画期间被压成一细条、过渡结束才弹回，同时让「实测高度」量少 66px
+   * （2026-09-26 实测 401 vs 467）。折叠动画要的是**裁剪**，不是让内容重新排版。
+   */
+  flex: 0 0 auto;
   padding: 6px 8px;
   border-radius: var(--radius-xs);
   background: var(--bg-base);
