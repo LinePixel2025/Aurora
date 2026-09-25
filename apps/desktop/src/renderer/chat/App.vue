@@ -3,9 +3,9 @@
  * Aurora 主界面（BetaV2，Design/betav2-spec.md §2/§3）：1120×720 的三栏布局。
  *
  * 左栏（SessionNav）：品牌 / 新对话 / 固定项「快速对话」（切到 quick 会话）/
- * 会话列表 / 模式徽章 + 右栏开关 + 设置。
- * 主区：头部（侧栏开关 + 会话标题 + 清空 + Windows 式窗口按钮）→ MessageList → composer
- * （模型 / 思考等级下拉已移入 composer 工具行，对齐主流 Agent Desktop）。
+ * 会话列表 →「已归档 · N」分组（2026-09 新增，归档从这里进出）/ 模式徽章 + 右栏开关 + 设置。
+ * 主区：头部（侧栏开关 + 会话标题 + 已归档提示条 + 清空 + Windows 式窗口按钮）→ MessageList →
+ * composer（模型 / 思考等级下拉已移入 composer 工具行，对齐主流 Agent Desktop）。
  * 右栏（ContextPanel）：模式感知上下文 + 当前会话的任务清单卡。
  *
  * 旧口径（点击「快速对话」固定项切换主区会话）已废弃：快速对话在侧栏面板内完成，
@@ -71,6 +71,7 @@ const {
   loadSessions,
   switchSession: rawSwitchSession,
   newSession,
+  setArchived,
 } = chat
 const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
@@ -108,7 +109,30 @@ const attachments = ref<string[]>([])
 const dragging = ref(false)
 
 /** 会话列表给左栏用：quick 由侧栏面板承载，不再出现在普通会话列表里 */
-const sessionItems = computed(() => sessions.value.filter((item) => item.id !== 'quick'))
+const sessionItems = computed(() =>
+  sessions.value.filter((item) => item.id !== 'quick' && item.archived !== true),
+)
+
+/**
+ * 已归档会话（左栏「已归档 · N」分组的数据源，docs/07 §2.3）。
+ *
+ * 归档判定严格按 `archived === true`：`false`（显式取消归档过）与 `undefined`（从未归档的
+ * v1 老文件）都算「不在归档分组」，语义等价。排序沿用 `chat:sessions` 给的 updatedAt 倒序，
+ * 渲染层不重排（主进程是唯一的排序口径）。
+ */
+const archivedSessionItems = computed(() =>
+  sessions.value.filter((item) => item.id !== 'quick' && item.archived === true),
+)
+
+/**
+ * 当前打开的会话是否处于归档态——主区头部「已归档」提示条的唯一门控。
+ *
+ * 快速会话（`quick`）不在 `chat:sessions` 里，这里自然为 false，符合 docs/07 §2.3
+ * 「quick / settings 两个伪会话不参与归档」的口径。
+ */
+const currentArchived = computed(
+  () => sessions.value.find((item) => item.id === sessionId.value)?.archived === true,
+)
 
 /**
  * 当前会话的任务清单（右栏「任务清单」卡的数据源，docs/07 §2.3）。
@@ -834,6 +858,7 @@ async function markGuideDone(): Promise<void> {
     <aside class="nav" :class="{ collapsed: !navOpen }">
       <SessionNav
         :sessions="sessionItems"
+        :archived-sessions="archivedSessionItems"
         :active-id="sessionId"
         :right-open="contextOpen"
         :view="view"
@@ -841,6 +866,7 @@ async function markGuideDone(): Promise<void> {
         :subagent-running="subagentRunning"
         @new-session="startNewSession"
         @select="selectSession"
+        @archive-session="(id, archived) => void setArchived(id, archived)"
         @open-subagents="view = 'subagents'"
         @toggle-right-panel="contextOpen = !contextOpen"
         @open-settings="windowStore.show('settings')"
@@ -866,6 +892,23 @@ async function markGuideDone(): Promise<void> {
         </button>
         <StatusDot :tone="statusTone" title="AI 状态" />
         <strong class="head-name">{{ currentTitle }}</strong>
+        <!--
+          已归档提示条（docs/07 §2.3）：归档只是标记——当前会话被归档时**不切走、不清空**，
+          对话内容留在原地继续可读，这里只给一条明确的状态 + 一次性撤销入口。
+          当前会话不在归档态时不渲染（含 quick / settings 两个伪会话，它们不参与归档）。
+        -->
+        <span v-if="currentArchived" class="badge archive-banner" data-field="chat.archived-banner">
+          已归档
+          <button
+            type="button"
+            class="archive-banner-action press"
+            data-action="chat.unarchive-current"
+            title="取消归档（对话内容不受影响）"
+            @click="void setArchived(sessionId, false)"
+          >
+            取消归档
+          </button>
+        </span>
         <span v-if="settingsStore.needsOnboarding" class="badge warn">未配置模型</span>
         <span class="grow" />
         <div class="head-actions" :class="noDragClass">
@@ -1155,6 +1198,29 @@ async function markGuideDone(): Promise<void> {
 
 .head .badge.warn {
   flex: 0 0 auto;
+}
+
+/**
+ * 已归档提示条（docs/07 §2.3）。
+ * 底色刻意不用 `.badge` 的默认 `--fill-1`——头部背景本身就是 `--fill-1`，那样整条看不见；
+ * 换成 `--fill-2` + 发丝描边，与「未配置模型」徽章并排时层级一致。
+ */
+.archive-banner {
+  flex: 0 0 auto;
+  gap: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  background: var(--fill-2);
+  color: var(--text-secondary);
+}
+
+/* 撤销入口：语义强调色（浅色档为深蓝），与左栏归档分组的中性灰刻意区分 */
+.archive-banner-action {
+  color: var(--accent-text);
+  font-weight: var(--weight-medium);
+}
+
+.archive-banner-action:hover {
+  text-decoration: underline;
 }
 
 .head-actions {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 主界面左栏（2026-09 重构，docs/07 §2.3）：品牌行 → 新对话 → 固定项（快速对话 / 子代理）
- * → 会话列表 → 底部（模式徽章 / 右栏开关 / 设置齿轮）。
+ * → 会话列表 →「已归档 · N」分组 → 底部（模式徽章 / 右栏开关 / 设置齿轮）。
  *
  * 面板内的快速对话入口在**桌面提示条**（悬停展开的面板，docs/07 §2.2）；
  * 主界面左栏的固定项沿用「点击切换主区内容」口径：快速对话切到 `quick` 会话，
@@ -10,19 +10,35 @@
  * 会话列表项是单行设计（标题 + 相对时间），去掉旧的「· N 条」统计——
  * 列表要扫读的是「哪段对话、什么时候」，条数是噪音。
  *
- * 本组件只负责展示与上报意图（emit），会话切换 / 建会话 / 开窗口都由 App.vue 落地；
+ * 会话归档（2026-09 新增，docs/07 §2.3）：会话项 hover 时右侧浮出「归档」图标钮
+ * （可逆、不弹确认），归档后的会话从主列表移入下方「已归档 · N」分组（默认收起、仍可点开继续对话）。
+ * 分组**由 App.vue 按 `archived` 判定后分两份传入**，本组件不做过滤，只负责展开态。
+ *
+ * 本组件只负责展示与上报意图（emit），会话切换 / 建会话 / 开窗口 / 归档都由 App.vue 落地；
  * `data-field` / `data-action` 锚点是 capture 探针契约（spec §5.3），不可改名。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { ChatSessionSummary } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import { useWindowDrag } from '../../shared/composables/useWindowDrag.js'
 import { useModeStore } from '../../shared/stores.js'
-import { Bot, PanelRight, Settings, Sparkles, SquarePen, Zap } from '../../shared/icons.js'
+import {
+  Archive,
+  ArchiveRestore,
+  Bot,
+  ChevronRight,
+  PanelRight,
+  Settings,
+  Sparkles,
+  SquarePen,
+  Zap,
+} from '../../shared/icons.js'
 
 const props = defineProps<{
-  /** 会话列表（普通会话；quick 由上方固定项的面板承载） */
+  /** 会话列表（未归档的普通会话；quick 由上方固定项的面板承载） */
   sessions: ChatSessionSummary[]
+  /** 已归档会话（同一 updatedAt 倒序；空数组时整个归档分组不渲染） */
+  archivedSessions: ChatSessionSummary[]
   /** 当前会话 id（激活态判定） */
   activeId: string
   /** 右栏是否展开（开关图标的方向 / 激活态） */
@@ -38,6 +54,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'newSession'): void
   (event: 'select', id: string): void
+  /** 归档 / 取消归档（`archived` 即目标状态；由 App.vue 调 useChat.setArchived 落地） */
+  (event: 'archiveSession', id: string, archived: boolean): void
   (event: 'openSubagents'): void
   (event: 'toggleRightPanel'): void
   (event: 'openSettings'): void
@@ -45,6 +63,9 @@ const emit = defineEmits<{
 
 const modeStore = useModeStore()
 const { dragClass } = useWindowDrag('chat')
+
+/** 归档分组展开态（组件内状态，默认收起；docs/07 §2.3 口径） */
+const archiveOpen = ref(false)
 
 const modeName = computed(() => modeStore.current?.displayName ?? '未激活')
 
@@ -131,19 +152,104 @@ function formatRelativeTime(iso: string): string {
 
       <!-- capture 探针锚点（契约）：data-field="chat.session-list" 挂在滚动容器上 -->
       <div class="session-list" data-field="chat.session-list">
-        <button
+        <!--
+          会话项 + hover 归档钮是**同一行里的两个兄弟 button**（不嵌套）：
+          `.nav-item` 仍是会话选择按钮本身（类名与既有语义不动），右侧 `.row-action` 只负责归档。
+          行的 hover 底色挂在外层 `.nav-row`（`.hover-fill`）上——按钮是兄弟而不是子元素，
+          挂在 `.nav-item` 上的话鼠标移到归档钮上时行底色会闪掉。
+        -->
+        <div
           v-for="item in props.sessions"
           :key="item.id"
-          type="button"
-          class="nav-item hover-fill press"
+          class="nav-row hover-fill"
           :class="{ active: item.id === activeId }"
-          :title="item.title"
-          @click="emit('select', item.id)"
         >
-          <span class="item-title">{{ item.title.trim() === '' ? '新会话' : item.title }}</span>
-          <span class="item-time tiny muted">{{ formatRelativeTime(item.updatedAt) }}</span>
-        </button>
+          <button
+            type="button"
+            class="nav-item press"
+            :class="{ active: item.id === activeId }"
+            :title="item.title"
+            @click="emit('select', item.id)"
+          >
+            <span class="item-title">{{ item.title.trim() === '' ? '新会话' : item.title }}</span>
+            <span class="item-time tiny muted">{{ formatRelativeTime(item.updatedAt) }}</span>
+          </button>
+          <!--
+            归档（可逆、不弹确认，docs/07 §2.3）：单击即归档。
+            `@click.stop` 是防御性的——两者已是兄弟按钮，但将来若有人把行包进可点容器，
+            少了它就会「顺手把会话也切了」。
+          -->
+          <button
+            type="button"
+            class="row-action press"
+            data-action="chat.archive-session"
+            title="归档"
+            aria-label="归档"
+            @click.stop="emit('archiveSession', item.id, true)"
+          >
+            <Archive :size="13" :stroke-width="1.6" aria-hidden="true" />
+          </button>
+        </div>
       </div>
+
+      <!--
+        归档分组（docs/07 §2.3）：会话列表之后、默认收起；`archivedSessions` 为空时整组不渲染（不占位）。
+        归档项的视觉与普通会话项**完全一致**（同一套 .nav-row / .nav-item），
+        只是列表容器换成 chat.archive-list、按钮换成「取消归档」；点会话项照常打开继续对话。
+      -->
+      <section
+        v-if="props.archivedSessions.length > 0"
+        class="archive"
+        data-field="chat.archive-group"
+      >
+        <button
+          type="button"
+          class="archive-toggle hover-fill press"
+          data-field="chat.archive-toggle"
+          :aria-expanded="archiveOpen"
+          :title="archiveOpen ? '收起已归档会话' : '展开已归档会话'"
+          @click="archiveOpen = !archiveOpen"
+        >
+          <ChevronRight
+            class="caret"
+            :class="{ open: archiveOpen }"
+            :size="13"
+            :stroke-width="1.8"
+            aria-hidden="true"
+          />
+          <span class="item-title">已归档 · {{ props.archivedSessions.length }}</span>
+        </button>
+
+        <div v-if="archiveOpen" class="session-list" data-field="chat.archive-list">
+          <div
+            v-for="item in props.archivedSessions"
+            :key="item.id"
+            class="nav-row hover-fill"
+            :class="{ active: item.id === activeId }"
+          >
+            <button
+              type="button"
+              class="nav-item press"
+              :class="{ active: item.id === activeId }"
+              :title="item.title"
+              @click="emit('select', item.id)"
+            >
+              <span class="item-title">{{ item.title.trim() === '' ? '新会话' : item.title }}</span>
+              <span class="item-time tiny muted">{{ formatRelativeTime(item.updatedAt) }}</span>
+            </button>
+            <button
+              type="button"
+              class="row-action press"
+              data-action="chat.unarchive-session"
+              title="取消归档"
+              aria-label="取消归档"
+              @click.stop="emit('archiveSession', item.id, false)"
+            >
+              <ArchiveRestore :size="13" :stroke-width="1.6" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </section>
     </nav>
 
     <footer class="nav-foot">
@@ -298,8 +404,25 @@ function formatRelativeTime(iso: string): string {
 }
 
 /* ── 列表项：单行（标题省略 + 时间右对齐）；激活态保留强调色指示条 ── */
+
+/**
+ * 行容器：会话选择按钮 + hover 归档钮的同一行外壳（两个兄弟 button）。
+ * hover 底色挂在这一层（`.hover-fill`），鼠标移到归档钮上时行底色不会闪掉。
+ */
+.nav-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+}
+
+.nav-row.active {
+  background: var(--fill-2);
+}
+
 .nav-item {
   position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -327,6 +450,47 @@ function formatRelativeTime(iso: string): string {
   background: var(--aurora-blue);
 }
 
+/**
+ * 行内动作钮（归档 / 取消归档）：hover 行时淡入。
+ *
+ * 展开态用**固定占位**（width/opacity 过渡）而不是收起时压成 0 宽：宽度变化会让
+ * 「标题省略号 + 相对时间」在每次移入移出时抖一下。占位恒定则布局不动，只有透明度变化。
+ * 不挂 `pointer-events: none`——保持可命中，探针与键盘都能稳定点到它
+ * （鼠标压到它上面时必然已触发行的 :hover，按钮此刻是可见的；键盘 Tab 到它时用
+ * `:focus-visible` 同样显形）。
+ */
+.row-action {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: var(--space-1);
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  opacity: 0;
+  transition:
+    opacity var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.row-action svg {
+  flex: 0 0 auto;
+  stroke: currentColor;
+}
+
+.nav-row:hover .row-action,
+.nav-row:focus-within .row-action,
+.row-action:focus-visible {
+  opacity: 1;
+}
+
+.row-action:hover {
+  background: var(--fill-3);
+  color: var(--text-primary);
+}
+
 .item-title {
   flex: 1;
   min-width: 0;
@@ -338,6 +502,40 @@ function formatRelativeTime(iso: string): string {
 .item-time {
   flex: 0 0 auto;
   font-variant-numeric: var(--num-tabular);
+}
+
+/* ── 归档分组：可点击的切换行（默认收起）+ 展开后的列表 ── */
+.archive {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* 与上方会话列表拉开一点：它是「另一类会话」，不是同一条流里的项 */
+  margin-top: var(--space-2);
+}
+
+.archive-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 5px var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  text-align: left;
+}
+
+.archive-toggle:hover {
+  color: var(--text-secondary);
+}
+
+/* 折叠箭头：展开时转 90°（时长走令牌，不写死 ms） */
+.archive-toggle .caret {
+  flex: 0 0 auto;
+  stroke: currentColor;
+  transition: transform var(--transition-fast);
+}
+
+.archive-toggle .caret.open {
+  transform: rotate(90deg);
 }
 
 /* ── 底部：模式徽章 + 右栏开关 + 设置齿轮 ── */

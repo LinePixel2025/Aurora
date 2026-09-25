@@ -564,6 +564,35 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     }))
   }
 
+  /**
+   * 归档 / 取消归档一个会话，随后重拉列表（分组由渲染层按 `archived` 判定）。
+   *
+   * 主进程侧是幂等且 await 落盘完成的（`SessionStore.setArchived`），所以这里紧接的
+   * `loadSessions()` 一定能读到新状态——不需要本地乐观改写，也就不会出现「界面已挪走、
+   * 磁盘还没写」的两份事实。
+   *
+   * 刻意**不碰** `sessionId` / `messages`：归档只是给会话文件挂一个标记（docs/07 §2.3），
+   * 当前正打开的那个会话被归档时要留在原地继续可读，不切走、不清空。
+   *
+   * 失败只把错误写进 `error`（与其它会话操作同一口径），不抛。
+   */
+  async function setArchived(targetId: string, archived: boolean): Promise<boolean> {
+    let result: Awaited<ReturnType<typeof window.aurora.chat.archiveSession>>
+    try {
+      result = await window.aurora.chat.archiveSession({ sessionId: targetId, archived })
+    } catch (cause) {
+      // invoke 本身也可能抛（序列化失败等），与 send() 同款兜底
+      error.value = String(cause)
+      return false
+    }
+    if (!result.ok) {
+      error.value = result.message
+      return false
+    }
+    await loadSessions()
+    return true
+  }
+
   /** 切换到指定会话（重新水合）。切换会中断本地流式状态，但不 abort 服务端请求。 */
   async function switchSession(id: string): Promise<void> {
     if (id === sessionId.value) return
@@ -702,6 +731,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     hydrate,
     loadQuickPreview,
     loadSessions,
+    /** 归档 / 取消归档（左栏分组与主区提示条共用，docs/07 §2.3） */
+    setArchived,
     switchSession,
     newSession,
     send,
