@@ -3,6 +3,10 @@
  * 智能与工具设置页（docs/06 §11、docs/08 §1，BetaV2 六页 IA）：
  * 「电脑操控工具」「技能」「MCP 服务器」三个可折叠区组同页（spec §9）。
  *
+ * 2026-09 信息架构收拢（docs/07 §2.5）：工具组默认展开、技能 / MCP 默认收起
+ * （组头摘要承载状态，capture 探针先展开再计数）；安全告诫只在本组说明里完整表述一次；
+ * 技能 / MCP 区组的操作回执经 `notify` 事件上抛，由本页唯一的 AppToast 统一渲染。
+ *
  * 「电脑操控」是给模型装上"手"的一组工具（run_command / read_file / write_file /
  * list_dir / open_path）：默认全开，但命令执行与文件写入是敏感工具，逐次确认后才执行。
  * 本页是这套工具的**唯一**开关面，保存后由主进程 `onSettingsChanged` →
@@ -15,10 +19,9 @@
  * 所以本页所有保存都走 `save(patch)`：先读当前 tree，再 `{ ...currentTools, ...patch }`；
  * 改子对象时（terminal / files）patch 里也要带**完整子对象**，否则同级的 timeoutMs 等会被丢掉。
  *
- * 为什么 workspaceDir 不是沙箱：
+ * 为什么 workspaceDir 不是沙箱（这条与页内安全文案同源，改文案别只改一处）：
  * 它只是工具的**默认**工作目录（空串 = 用户主目录），模型仍可显式传入任意绝对路径。
- * 安全边界是「逐次确认 + 输出上限 + 总开关」，不是路径限制 —— 文案必须说清楚，
- * 别让用户以为填了目录就"锁住了"。
+ * 安全边界是「逐次确认 + 输出上限 + 总开关」，不是路径限制。
  *
  * `COMPUTER_TOOL_NAMES` 必须从 `@aurora/shared/browser` 取：主入口 `@aurora/shared`
  * 依赖 `node:fs`，一旦被拉进渲染层 bundle，Electron 构建会直接失败（AGENTS.md 架构硬约束 4）。
@@ -33,14 +36,26 @@ import McpSection from '../components/McpSection.vue'
 import SkillsSection from '../components/SkillsSection.vue'
 import { useSettingsStore } from '../../shared/stores.js'
 
+type ToastTone = 'info' | 'warn' | 'error' | 'ok'
+type NotifyPayload = { tone: ToastTone; text: string }
+
 const settingsStore = useSettingsStore()
-const error = ref<string | null>(null)
-const message = ref<string | null>(null)
+/** 页级唯一 Toast：本页保存回执与技能 / MCP 区组上抛的 notify 都渲染在这里 */
+const toast = ref<NotifyPayload | null>(null)
 /** 「打开工作目录」成功回执里的真实路径（主进程解析后的绝对路径） */
 const openedWorkspace = ref('')
 
-/** 区组折叠状态（默认展开：字段与探针锚点常在 DOM 里） */
+/** 区组折叠状态：工具组默认展开（主配置面，探针字段常在 DOM）；技能 / MCP 默认收起 */
 const openTools = ref(true)
+
+function showToast(tone: ToastTone, text: string): void {
+  toast.value = { tone, text }
+}
+
+/** 子区组上抛的回执统一进页级 Toast（docs/07 §2.5 的 Toast 归一口径） */
+function onNotify(payload: NotifyPayload): void {
+  toast.value = payload
+}
 
 /**
  * 当前工具配置。settings 未加载完时为 `null`，这里回落到 Schema 默认值 ——
@@ -81,10 +96,10 @@ async function save(patch: Partial<AgentToolsConfig>): Promise<void> {
   // 未加载完就写等于用兜底默认值把已保存的配置整棵覆盖掉，宁可先不写
   if (!current) return
   const ok = await settingsStore.update({ agent: { tools: { ...current, ...patch } } })
-  if (!ok) error.value = settingsStore.error
-  else {
-    message.value = '已保存'
-    error.value = null
+  if (!ok) {
+    if (settingsStore.error) showToast('error', settingsStore.error)
+  } else {
+    showToast('ok', '已保存')
   }
 }
 
@@ -110,25 +125,23 @@ async function openWorkspace(): Promise<void> {
   const result = await window.aurora.app.openPath({ kind: 'workspace' })
   if (result.ok) {
     openedWorkspace.value = result.value
-    message.value = `工作目录：${result.value}`
-    error.value = null
-  } else {
-    error.value = result.message
+    showToast('info', `工作目录：${result.value}`)
+  } else if (result.message) {
+    showToast('error', result.message)
   }
 }
 </script>
 
 <template>
-  <section class="page">
+  <!-- page-agent：样式钩子，本页把 collapse 动画的高度上限抬高（见 settings.css） -->
+  <section class="page page-agent">
     <header>
       <h1 class="page-title">智能与工具</h1>
-      <p class="page-sub">
-        电脑操控工具、技能与 MCP 服务器。默认全开，但敏感工具逐次确认后才执行。
-      </p>
+      <p class="page-sub">电脑操控工具、技能与 MCP 服务器。</p>
     </header>
 
-    <AppToast v-if="error" tone="error">{{ error }}</AppToast>
-    <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
+    <!-- 页级唯一 Toast（技能 / MCP 区组的回执经 notify 上抛到这里） -->
+    <AppToast v-if="toast" :tone="toast.tone">{{ toast.text }}</AppToast>
 
     <!-- ───────── 区组一：电脑操控工具 ───────── -->
     <section class="group section-card">
@@ -145,7 +158,17 @@ async function openWorkspace(): Promise<void> {
 
       <Transition name="collapse">
         <div v-if="openTools" class="group-body">
-          <p class="section-desc">让模型能执行命令、读写文件与打开路径（docs/06 §11）。</p>
+          <!--
+            安全告诫全页唯一一处完整表述（docs/07 §2.5 文案收敛）：
+            直接影响真实系统 + 敏感工具逐次确认 + 工作目录不是沙箱，都在这里说清。
+          -->
+          <p class="section-desc">
+            让模型能执行命令、读写文件与打开路径（docs/06 §11）。
+            <strong>本页操作直接影响真实系统</strong
+            >：命令执行与文件写入是敏感工具，逐次确认后才执行
+            （确认开关在「系统」页，关闭后将不经确认直接执行）；工作目录<strong>不是沙箱</strong>
+            —— 模型仍可显式传入其它路径，安全边界是「逐次确认 + 输出上限 + 总开关」。
+          </p>
 
           <!-- 总开关 -->
           <div class="sub">
@@ -173,11 +196,6 @@ async function openWorkspace(): Promise<void> {
                 <span>允许模型使用终端、文件与打开路径工具</span>
               </label>
             </SettingField>
-
-            <AppToast tone="warn">
-              警示：若在「系统」页关闭了「敏感工具确认」，命令与文件写入将不经确认直接执行（docs/06
-              §5）。
-            </AppToast>
           </div>
 
           <!-- 工作目录 -->
@@ -185,18 +203,14 @@ async function openWorkspace(): Promise<void> {
             <h3 class="sub-title">工作目录</h3>
             <p class="section-desc">
               <strong>命令</strong
-              >的缺省工作目录：执行命令时若未显式指定路径，就在它下面运行。这<strong
-                >不是沙箱</strong
-              >
-              —— 模型仍可显式传入其它路径，安全边界是「逐次确认 + 输出上限 + 总开关」。
-              文件类工具（读 / 写 / 列目录）不读此项，它们的相对路径按应用自身目录解析，
-              因此只适合用绝对路径。
+              >的缺省工作目录：执行命令时若未显式指定路径，就在它下面运行。文件类工具（读 / 写 /
+              列目录）不读此项，它们的相对路径按应用自身目录解析，因此只适合用绝对路径。
             </p>
 
             <SettingField
               data-field="agent.tools.workspaceDir"
               label="默认工作目录"
-              hint="留空 = 用户主目录（如 C:\Users\you）；只作用于命令的缺省 cwd，且不是沙箱"
+              hint="留空 = 用户主目录（如 C:\Users\you）；只作用于命令的缺省 cwd"
             >
               <input
                 class="input"
@@ -244,7 +258,7 @@ async function openWorkspace(): Promise<void> {
                 hint="单位毫秒，1000 ～ 300000；超时后强制结束进程并回传已捕获的输出（默认 60000）"
               >
                 <input
-                  class="input"
+                  class="input input-num"
                   type="number"
                   min="1000"
                   max="300000"
@@ -264,7 +278,7 @@ async function openWorkspace(): Promise<void> {
                 hint="单位字符，500 ～ 100000；超出部分截断，避免一次命令灌爆上下文（默认 8000）"
               >
                 <input
-                  class="input"
+                  class="input input-num"
                   type="number"
                   min="500"
                   max="100000"
@@ -320,7 +334,7 @@ async function openWorkspace(): Promise<void> {
                 hint="单位字节，1024 ～ 4194304；超出即拒绝并提示用分段读取（默认 262144 = 256 KiB）"
               >
                 <input
-                  class="input"
+                  class="input input-num"
                   type="number"
                   min="1024"
                   max="4194304"
@@ -385,19 +399,13 @@ async function openWorkspace(): Promise<void> {
             </div>
             <p v-else class="tiny muted">总开关已关闭：5 个电脑操控工具一个都不会注册。</p>
           </div>
-
-          <p class="tiny muted">
-            安全提示：默认工作目录只影响命令的缺省
-            cwd（不是沙箱，也不影响文件类工具）；请务必保留「敏感工具确认」，
-            或至少清楚关闭它的后果。
-          </p>
         </div>
       </Transition>
     </section>
 
     <!-- ───────── 区组二 / 三：技能、MCP（原 SkillsPage / McpPage 迁入） ───────── -->
-    <SkillsSection />
-    <McpSection />
+    <SkillsSection @notify="onNotify" />
+    <McpSection @notify="onNotify" />
   </section>
 </template>
 

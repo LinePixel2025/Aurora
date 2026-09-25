@@ -852,9 +852,23 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
  * 列表），技能一个都没发现时还会有 `data-empty="skills.disabled"`。所以断言改成：
  * 这两个**预期**空状态允许出现（MCP 必须二选一：空状态或服务器行），
  * 之外的任何 `data-empty` 都算回归（比如 agent.tools.* 的分栏空态在总开关开启时不该出现）。
+ *
+ * ⚠️ 2026-09 收拢轮（docs/07 §2.5）：技能与 MCP 区组**默认收起**，折叠体是 v-if 不渲染 ——
+ * 上面的锚点与 `data-empty` 在收起态不在 DOM，直接计数会全 0、探针假 FAIL。所以本脚本改成
+ * **async IIFE**：先点开两组（`[data-group]` 组锚点 → `.group-head`），等 Vue 渲染 +
+ * collapse 动画（max-height 过渡）走完，再做全部计数与断言。`executeJavaScript` 会 await
+ * 这里返回的 Promise（captureWindows 的 check 调用点无需改动）；点击发生在截图**之后**，
+ * `settings-agent.png` 拍到的仍是默认收起态。工具组默认展开，无需处理。
  */
-export const SETTINGS_AGENT_FIELDS_SCRIPT = `(() => {
+export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
+    for (const group of ['skills', 'mcp']) {
+      const head = document.querySelector('[data-group="' + group + '"] .group-head')
+      if (head !== null && head.getAttribute('aria-expanded') === 'false') head.click()
+    }
+    // 等两组的 v-if 渲染 + collapse 折叠动画走完（动画是 max-height 过渡，见 theme.css）
+    await wait(400)
     const count = (selector) => document.querySelectorAll(selector).length
     const toggle = document.querySelector('[data-field="agent.tools.enabled"] input[type="checkbox"]')
     const enabled = toggle === null ? null : toggle.checked
@@ -2760,7 +2774,9 @@ export function defaultCapturePlan(manager: WindowManager): CaptureTarget[] {
       // 前置 act 展开「课表」分组（默认收起，否则课前提醒字段不在 DOM）；
       // 「AI 模型」页（BetaV2）：对话展示开关 + 生图模型区组；
       // 「语音」页（BetaV2 合并 TTS + STT）：两个区组各自的常显字段与列表空态二选一；
-      // 「智能与工具」页（BetaV2 合并技能 + MCP）：预期空状态见 SETTINGS_AGENT_FIELDS_SCRIPT。
+      // 「智能与工具」页（BetaV2 合并技能 + MCP）：预期空状态见 SETTINGS_AGENT_FIELDS_SCRIPT；
+      // 技能 / MCP 区组默认收起（docs/07 §2.5），探针在 check 里自己先展开再计数（async），
+      // 所以这里**不需要**像 modes 页那样配 act —— PNG 拍到的正是默认收起态。
       act: page === 'modes' ? SETTINGS_MODES_EXPAND_ACT : undefined,
       check:
         page === 'general'

@@ -3,26 +3,34 @@
  * MCP 区组（docs/06 §7、docs/08 §6）：服务器配置增删改 + **真实连接状态灯**。
  * 由原 `McpPage.vue` 整体迁入（BetaV2 8 → 6 页，spec §9），锚点与行为原样保留。
  *
+ * 2026-09 信息架构收拢（docs/07 §2.5）：默认**收起**（组锚点 `data-group="mcp"`，
+ * capture 探针先展开再计数）；组头摘要「n 台服务器 / m 台启用」承载状态（收起也能看清）；
+ * 行卡启停与工具 / 技能统一为 checkbox（绑 `enabled`，写入路径不变，StatusDot / 状态徽章 /
+ * 删除按钮保留）。操作回执不再本地渲染 Toast，统一经 `notify` 事件上抛给页级 AppToast。
+ *
  * env / headers 凭据通过 settings:setSecrets 加密存储，列表只显示已配置的变量名与请求头名；
  * `lazyConnect` 收进「高级」折叠；新增服务器表单默认收起（空状态时由主按钮展开）。
  */
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import type { McpServerConfig, McpServerStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
-import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
 import StatusDot from '../../shared/components/StatusDot.vue'
 import { useSettingsStore } from '../../shared/stores.js'
 
+type NotifyPayload = { tone: 'info' | 'warn' | 'error' | 'ok'; text: string }
+
+const emit = defineEmits<{
+  (event: 'notify', payload: NotifyPayload): void
+}>()
+
 const settingsStore = useSettingsStore()
-const error = ref<string | null>(null)
-const message = ref<string | null>(null)
 const statuses = ref<McpServerStatus[]>([])
 const showAdd = ref(false)
 const showAdvanced = ref(false)
 
-/** 区组折叠状态（默认展开：字段与探针锚点常在 DOM 里） */
-const open = ref(true)
+/** 区组折叠状态：默认收起（组头摘要承载状态，docs/07 §2.5） */
+const open = ref(false)
 
 let offStatus: (() => void) | null = null
 
@@ -89,6 +97,13 @@ const form = reactive({
 const servers = computed<McpServerConfig[]>(() => settingsStore.settings?.mcp.servers ?? [])
 const lazyConnect = computed(() => settingsStore.settings?.mcp.lazyConnect ?? false)
 
+/** 组头摘要用：已启用的服务器台数（docs/07 §2.5 的「n 台服务器 / m 台启用」） */
+const enabledCount = computed(() => servers.value.filter((server) => server.enabled).length)
+
+function notify(tone: NotifyPayload['tone'], text: string): void {
+  emit('notify', { tone, text })
+}
+
 /**
  * 该服务器已配置的环境变量名。
  *
@@ -114,9 +129,8 @@ function headerNames(server: McpServerConfig): string[] {
 }
 
 async function setLazyConnect(value: boolean): Promise<void> {
-  error.value = null
   if (!(await settingsStore.update({ mcp: { lazyConnect: value } }))) {
-    error.value = settingsStore.error
+    if (settingsStore.error) notify('error', settingsStore.error)
   }
 }
 
@@ -126,13 +140,13 @@ async function saveServers(
 ): Promise<boolean> {
   const ok = await settingsStore.update({ mcp: { servers: next } })
   if (!ok) {
-    error.value = settingsStore.error
+    if (settingsStore.error) notify('error', settingsStore.error)
     return false
   }
   if (Object.keys(secrets).length > 0) {
     const result = await window.aurora.settings.setSecrets(secrets)
     if (!result.ok) {
-      error.value = result.message
+      notify('error', result.message)
       return false
     }
   }
@@ -140,15 +154,13 @@ async function saveServers(
 }
 
 async function add(): Promise<void> {
-  error.value = null
-  message.value = null
   const name = form.name.trim()
   if (name === '') {
-    error.value = '请填写服务器名称'
+    notify('error', '请填写服务器名称')
     return
   }
   if (servers.value.some((server) => server.name === name)) {
-    error.value = `服务器「${name}」已存在`
+    notify('error', `服务器「${name}」已存在`)
     return
   }
 
@@ -190,7 +202,7 @@ async function add(): Promise<void> {
 
   const saved = await saveServers([...servers.value, server], secrets)
   if (!saved) return
-  message.value = `已添加 ${name}（连接状态见下方状态灯）`
+  notify('ok', `已添加 ${name}（连接状态见下方状态灯）`)
   form.name = ''
   form.envText = ''
   form.headersText = ''
@@ -200,7 +212,7 @@ async function add(): Promise<void> {
 async function remove(name: string): Promise<void> {
   const next = servers.value.filter((server) => server.name !== name)
   const saved = await saveServers(next)
-  if (saved) message.value = `已删除 ${name}`
+  if (saved) notify('ok', `已删除 ${name}`)
 }
 
 async function toggleEnabled(server: McpServerConfig): Promise<void> {
@@ -212,12 +224,15 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
 </script>
 
 <template>
-  <section class="group section-card">
+  <!-- data-group：capture 探针的组锚点（SETTINGS_AGENT_FIELDS_SCRIPT 据此先展开再计数） -->
+  <section class="group section-card" data-group="mcp">
     <button class="group-head" type="button" :aria-expanded="open" @click="open = !open">
       <span class="chevron" :class="{ open }" aria-hidden="true">▸</span>
       <span class="section-title">MCP 服务器</span>
       <span class="group-summary tiny muted grow">
-        {{ servers.length === 0 ? '未配置' : `${servers.length} 个服务器` }}
+        {{
+          servers.length === 0 ? '未配置' : `${servers.length} 台服务器 / ${enabledCount} 台启用`
+        }}
       </span>
     </button>
 
@@ -228,9 +243,6 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
           <code class="mono">mcp.&lt;server&gt;.&lt;tool&gt;</code> 注册进 Agent 工具表；与 Skill
           重名时 MCP 优先。连接失败只影响该服务器，不会阻塞对话。
         </p>
-
-        <AppToast v-if="error" tone="error">{{ error }}</AppToast>
-        <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
 
         <!-- 空状态：没有服务器时不显示 lazyConnect 等无对象的配置项 -->
         <template v-if="servers.length === 0">
@@ -264,9 +276,15 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
                   {{ stateLabel(statusOf(server.name)) }}
                 </span>
                 <span class="grow" />
-                <AppButton size="sm" variant="ghost" @click="toggleEnabled(server)">
-                  {{ server.enabled ? '停用' : '启用' }}
-                </AppButton>
+                <!-- 启停与工具 / 技能统一为 checkbox（绑 enabled，写路径走 saveServers 不变） -->
+                <label class="row tiny enable-toggle">
+                  <input
+                    type="checkbox"
+                    :checked="server.enabled"
+                    @change="toggleEnabled(server)"
+                  />
+                  {{ server.enabled ? '已启用' : '已停用' }}
+                </label>
                 <AppButton size="sm" variant="danger" @click="remove(server.name)">删除</AppButton>
               </header>
               <p class="tiny muted mono target">
@@ -436,6 +454,12 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
 
 .server-head .badge {
   font-variant-numeric: var(--num-tabular);
+}
+
+/* 行卡启停 checkbox：小号行内控件，不随 flex 行拉伸（与工具 / 技能的 checkbox 同款口径） */
+.enable-toggle {
+  flex: none;
+  cursor: pointer;
 }
 
 .target {

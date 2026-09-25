@@ -117,6 +117,13 @@
   accent-color: var(--aurora-blue);
 }
 
+/* 数字输入框（命令超时 / 输出上限 / 单次读取上限等）：取值尺度小，定宽不吃满行（docs/07 §2.5）。
+ * 双类名提权，盖过上面 `.settings .input` 的 width: 100%。 */
+.settings .input.input-num {
+  width: 120px;
+  flex: none;
+}
+
 /* 行内代码（各页原本各自写了一套，这里收敛） */
 .settings code {
   padding: 1px 4px;
@@ -187,6 +194,16 @@
   color: var(--text-secondary);
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
+}
+
+/* ───────── 「智能与工具」页（AgentPage，.page-agent）专属 ─────────
+ * collapse 动画的 enter-to / leave-from 上限（theme.css 全局 70vh）对这页不够用：
+ * 三个区组的展开内容都可远超 70vh，收起再展开时会在动画收尾从上限突跳到实际高度
+ * （2026-09 收拢轮实测）。只在 `.page-agent` 内把上限抬高，其它窗口 / 其它页的同名
+ * 动画观感不变；AgentPage 根元素挂 `page-agent` 类。 */
+.settings .page-agent .collapse-enter-to,
+.settings .page-agent .collapse-leave-from {
+  max-height: 400vh;
 }
 
 /* 区组内的添加 / 新建表单块：虚线框标示「尚未保存的临时输入」 */
