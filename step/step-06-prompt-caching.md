@@ -2,7 +2,7 @@
 
 - Task: opencode-parity
 - Step: 6 / 7
-- Status: pending
+- Status: done
 - Depends on: step 5（工具面与设置页均已定稿，工具清单固定为 8 个电脑操控工具）
 - Produces: 系统提示词「静态在前、易变在后」的渲染顺序与回归测试；`toLlmTools()` 的确定性排序；
   `TokenUsage.cachedTokens` 的解析与端到端展示；本轮全部文档收口与全量验收
@@ -262,3 +262,71 @@ fixture 间接断言，**不要**为了测试而放宽导出面）：
   并在给用户的收尾说明里列出来。
 - 归档前请主代理复跑一遍完整验收命令（`typecheck` / `test` / `build` / `verify` / `smoke` / `capture`）
   并把结果写进 `00-index.md` 的执行记录——step 7 的前置检查会读它。
+
+## 执行记录
+
+执行时间：2026-09-26（会话内连续执行）
+
+### 分片与结果
+
+三个写范围不重叠的分片并行：
+
+| 分片 | 负责文件 | 结果 |
+| --- | --- | --- |
+| 前缀稳定化 | `context/systemPrompt.ts` + `.test.ts`、`tools/registry.ts` + `registry.test.ts`、`loop/agentLoop.ts` + `.test.ts`、`skills/registry.test.ts`、`host/agentHost.ts` | 小节顺序改成「静态在前、易变在后」；`toLlmTools()` 按**名字**排序（不用 `localeCompare`）；**生效点修好**（删掉 `agentLoop.ts` 的私有 helper、改走 `registry.toLlmTools()`）；`agentHost` 的工具清单改用同一有序列表；`skills/registry.test.ts` 的注册序断言改成字典序（改断言、没改被测代码） |
+| 命中观测 | `shared/ipc/types.ts`、`llm/openai-compat.ts` + `.test.ts`、`renderer/.../useChat.ts`、`ComposerContextBar.vue` | `TokenUsage.cachedTokens`；优先 `prompt_tokens_details.cached_tokens`、其次 `prompt_cache_hit_tokens`，都缺则**整条省略**（不是 0）；`data-field="chat.context-cache"`，百分比 `Math.min(100, …)` 夹取，`promptTokens` 为 0 时不给百分比，缺省整段不渲染。`buildBody` 未动（无新增请求字段） |
+| 端到端 | `main/smoke-llm.ts`、`main/index.ts`、`main/capture.ts`、`docs/07` | 桩服务加**请求体历史**（`getRecordedRequests()`）、`prompt_tokens` 128 → 512 并回传 `cached_tokens: 512`；三条 smoke 断言；capture 的 `chat-stream` 探针补 `cacheText` |
+| 文档收口 | `docs/04` / `06` / `10` / `11` / `README`、`AGENTS.md` | §11 新增 13 个内核常量的实测值表；§21 判据就地订正；`docs/10` 新增 §10「让 AI 改代码」；README 的 `128 / 128k` → 实测 `512 / 128k · 缓存命中 512（100%）` |
+
+### 验收命令与真实结果（主代理复跑）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm build:packages` / `pnpm typecheck` / `pnpm build` | 全部 exit 0 |
+| `pnpm test` | **72 文件 / 1292 用例全绿** |
+| `pnpm verify` | **26/26 项通过**，含 `执行了 v0 → 当前版本的迁移链 — count=12/12` |
+| `pnpm lint` / `pnpm exec prettier --check "**/*.{ts,md,json,vue}"` | 均通过 |
+| `$env:AURORA_SMOKE='1'; pnpm dev` | **SUMMARY 146/146 passed**、0 FAIL。三条新记录原样：`两轮系统提示词静态前缀逐字节相同 — commonPrefix=6944 aLen=6944 bLen=6944 firstVolatile@6738 safetyEnd@6615 identical=true`；`两轮 tools 顺序相同且已排序 — a=[classisland_remind,clipboard_read,clipboard_write,edit_file,generate_image,glob,grep,list_dir,notify_user,open_path,read_file,run_command,set_setting,task,todo_read,todo_write,use_skill,web_fetch,write_file] b=[同一串]`；`usage 事件带 cachedTokens=512 — events=5 cached=[512,512,512,512,512]` |
+| `$env:AURORA_CAPTURE=…; pnpm dev` | 退出码 0、**48 张 PNG / 48 条 checks（45 条带探针）/ 0 FAIL**；`chat-stream` 探针 `usageText="512 / 128k  · 缓存命中 512（100%）"`、`cacheText="缓存命中 512（100%）"`、`totals="累计 528"` |
+
+### 与计划的偏差
+
+1. **计划「操作 5」的最长公共前缀断言字面值不可满足，已订正**：
+   计划写 `expect(commonPrefix(a, b)).toBe(stat + '\n\n')`，但它下一行又要求
+   `a.slice(commonPrefix(a,b).length).startsWith('## 更早对话的摘要')` —— 两者矛盾：
+   **第一个易变小节的标题行在两轮里逐字节相同**，因此必然也在公共前缀里。
+   实测 `commonPrefix.length = 276`、`stat.length = 263`、`stat + '\n\n' = 265`，差额正是
+   `'## 更早对话的摘要' + '\n'` 的长度。已改成精确边界
+   `expect(commonPrefix(a, b)).toBe(\`${stat}\n\n## 更早对话的摘要\n\`)`（**更严、不是放宽**），
+   并保留 `a !== b` 的防恒真断言；`docs/06 §21.1` 的措辞同步订正。
+   另：计划示例给的 `historySummary: 'H1' / 'H2'` 共用首字符，公共前缀会合理地越进易变正文 ——
+   测试改用首字符即不同的取值，否则那条断言测不到边界。
+2. **smoke 的公共前缀判据用「≥ 首个易变小节的 `indexOf`」而不是「=」**：
+   实测两轮系统提示词**一字不差**（`identical=true`，6944 = 6944 —— `## 系统状态` 里的时间只到分钟，
+   两轮相隔约 1 秒），严格相等会**稳定失败**，正好撞上计划自己禁止的「断言两轮不同」。
+   现判据 = 「首个易变小节之前的字节全同」：静态段若真漂移一个字节，公共前缀会截在静态段中间而被抓住；
+   另外两条（两轮都含 `## 系统状态`、`volatileAt >= 安全规则位置 + 其长度`）照旧。
+3. **`smoke.ts` 本步未改**：三条断言写在 `main/index.ts` 的 `runSmokeTest`（订一份 `agent.onEvent`
+   收集 `usage` 事件），符合计划的宿主指定。
+4. **桩 LLM 的 `prompt_tokens` 128 → 512、`total_tokens` 144 → 528**：连带把文档里
+   `128 / 128k` / `累计 144` 同步成实测值（`docs/07` / `docs/README`）。代码侧**没有**既有断言因此需要改
+   （`smoke.ts` 那条 token 断言是相对判据 `> 0`，实测仍 PASS）。
+5. **capture 的 `chat-stream` 探针比规格更严**：额外要求文案含 `512` 与 `100%`（只判「含缓存命中」
+   会放过「命中量丢了也能过」的情况）。
+
+### 已登记、未修
+
+- `packages/agent-core/src/tools/task.ts` 子代理的工具清单仍用 `describeTools(subTools.list())`
+  （注册序）。子代理另建请求、不进主请求体的 `tools`，对主前缀缓存无影响；
+  「提示词清单与请求体同序」的口径在子代理路径上不成立，建议后续统一。
+- `agentHost.ts` 里 `buildToolGuidance(this.deps.tools.list().map(...))` 仍是 `list()`：
+  该函数输出顺序由代码固定、只用 `includes` 判存在，顺序无影响，未做无谓改动。
+- `docs/README.md` 的 v0.1.2 历史块里「`AURORA_SMOKE`（130 条断言）」保留为那一轮的历史计数
+  （本轮 146/146 已写进新块）。
+- 设置页「免确认命令模式」卡的**非空列表态**仍无 capture 现场证据（见 step 5 记录）。
+
+### 交接
+
+- `00-index.md` 的完成标准已全部可勾选；剩余工作只有 step 7 归档。
+- 归档前主代理已复跑：`typecheck` / `test` / `build` / `verify` / `lint` / `prettier` / `smoke` / `capture`
+  全部通过，结果见上表。

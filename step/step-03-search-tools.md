@@ -2,7 +2,7 @@
 
 - Task: opencode-parity
 - Step: 3 / 7
-- Status: pending
+- Status: done
 - Depends on: step 2（`FilePort` 的行窗口形状与 `MAX_READ_SCAN_BYTES` 等常量已就位）
 - Produces: `packages/agent-core/src/tools/globPattern.ts`（可复用的 glob 编译器，step 5 也用它）、
   `packages/agent-core/src/tools/search.ts`（`grep` / `glob` 两个工具 + 上限常量）、
@@ -324,3 +324,88 @@ const searchFields = count('[data-field^="agent.tools.search"]')
   与 step 2 的 `ReadLine.number` 口径一致，后续若做「grep 结果点击跳转读」直接可用。
 - `registerComputerTools.sync()` 现在返回**实际注册的名字列表**（不再是写死的 5 个），
   step 4 / step 5 加工具或改门控时无需再动返回值逻辑。
+
+## 执行记录
+
+执行时间：2026-09-26（会话内连续执行）
+
+### 分片与结果
+
+主代理先**亲自定稿两个共享契约**（`globPattern.ts` 的编译器、`FilePort` 的 `findFiles` / `searchText`
+与全部搜索常量，以及 `index.ts` 的导出面）—— 三者同时被 `search.ts`、主进程 walker、后面的 step 5 消费，
+分头写必然漂移；随后派三个写范围互不重叠的分片并行。
+
+| 分片 | 负责文件 | 结果 |
+| --- | --- | --- |
+| 主代理 | `globPattern.ts` + `globPattern.test.ts`（23 用例）、`files.ts` 的端口与常量、`index.ts` 导出 | 编译器一遍扫描实现（无「先转义再换回」的顺序坑）；导出面确认 `createSearchTools` / `matchesGlob` / `DEFAULT_SEARCH_IGNORE` 等均可用 |
+| 内核工具 | `search.ts` + `search.test.ts`（22 用例）、`files.test.ts` 桩同步 | 两个 `safe` 工具；参数非法时**不触碰端口**；三种尾注（truncated / budgetExceeded / skippedBinary）各有用例 |
+| 主进程 walker | `file-port.ts` + `file-port.test.ts`（+11 用例，21 → 32） | 字典序遍历、符号链接跳过、忽略目录整棵子树、双预算触顶仍返回已收集结果；**符号链接环用例本机真跑了**（`fs.symlink` 成功，非 skip） |
+| 装配 + UI | `tools/index.ts` + `index.test.ts`、`AgentPage.vue`、`toolIcons.ts`、`icons.ts` | `search.enabled` 分派 + 三条开关注册用例；设置页「文件检索」栏（`data-field` 两个、`saveSearch` 带完整子树、**未新增 `data-empty`**） |
+| 主代理 | `capture.ts` 探针、`index.ts` 的 smoke 断言与文案、`docs/07 §5.3` | `searchFields` 计数纳入 `pass`；smoke 补两条真实文件系统断言 |
+
+### 验收命令与真实结果（主代理复跑）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm build` | exit 0（三个包 + Electron 产物） |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | **67 文件 / 1182 用例全绿**（step 2 结束时尚为 1122） |
+| `pnpm lint` / `pnpm exec prettier --check "**/*.{ts,md,json}"` | 均通过 |
+| `pnpm vitest run packages/agent-core/src/tools/globPattern.test.ts` | 23 用例全绿（含 `**/*.ts` 命中 `a.ts`、`a.b` 不命中 `axb`） |
+| `pnpm vitest run apps/desktop/src/main/tools` | 6 文件 / 87 用例全绿 |
+| `$env:AURORA_SMOKE='1'; pnpm dev` | **SUMMARY 134/134 passed**、退出码 0。新增可指认条目：`glob 递归找到嵌套文件（正斜杠相对路径）且不扫 node_modules`、`grep 命中行带「相对路径:行号」且不扫 node_modules`、`电脑操控工具已注册（7 个）`、`敏感级与文档一致（…read_file / grep / glob = safe）` |
+| `$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev` | 退出码 0、**48 张 PNG / 48 条 `checks` / 0 FAIL**、12 条 DOM 探针全 PASS。`settings-agent` 实测 `{"total":10,"terminalFields":3,"filesFields":2,"searchFields":2,"openFields":1,"pass":true}` |
+
+`docs/07 §5.3` 已按上表**实测值**回填（不再写「待回填」）。
+
+### git 提交
+
+| SHA | 说明 |
+| --- | --- |
+| `12430c1` | `feat(agent-core): 新增 glob 模式编译器与单测（search / walker / 免确认列表共用）` |
+| `5fd5ed9` | `feat(agent-core): 新增 grep / glob 搜索工具与 FilePort 搜索端口` |
+| `e3b942e` | `style: 修正 globPattern.test.ts 的 Prettier 格式` |
+| `c54913b` | `feat(tools): FilePort 实现递归遍历（findFiles / searchText，预算与符号链接防护）` |
+| `ed2241a` | `feat(settings): 装配 grep / glob（agent.tools.search 门控）+ 设置页「文件检索」栏与工具图标` |
+| `0f854f0` | `test(e2e): smoke 补 glob/grep 端到端断言、capture 补检索字段探针，桩 LLM 分片隔帧下发` |
+
+### 与计划的偏差
+
+1. **`maxFileScanBytes` 只对 `searchText` 生效，`findFiles` 不受它约束**（计划「操作 4」把它写成
+   walker 级的统一跳过）。原因：`glob` 只比文件名、不读内容，让一个 2 MiB 的 `pnpm-lock.yaml`
+   「按名字也找不到」是反直觉的；那个阈值按 SSOT 的措辞是**内容扫描**上限。
+   实现上把 `sizeBytes` 交给 visitor，由各工具自己决定。已补用例
+   `findFiles 只比名字、不受 maxFileScanBytes 约束：超大文件按名字仍然找得到` 钉住。
+2. **`glob` 也渲染 `budgetExceeded`**（计划只要求 `truncated`）。理由：`FindFilesResult.budgetExceeded`
+   在内核侧没有第二个消费方，不渲染就等于把「预算触顶的不完整前缀」静默当完整结果。
+3. **`globPattern.test.ts` 由主代理补写**（`globPattern.ts` 由主代理实现，其单测随实现一起交付）。
+   其中一条断言初版写错（把 `x{a,{b}c}` 当成能匹配 `x{b}c`）—— **是断言错、不是实现错**：
+   外层花括号在**第一个** `}` 处收口，该模式的语义是 `x` + (`a` | `{b`) + `c` + `}`，
+   已改成断言这一真实语义（并借此把「不支持嵌套」的可观测后果钉住）。
+4. **smoke 的「正文按增量逐条下发」判据一度稳定失败，已修根因**：桩服务零延迟连发两条 `content`
+   分片，而主进程的事件合并缓冲按 **16ms 窗口**把相邻增量合并（`main/event-buffer.ts`，刻意的降载设计），
+   于是事件数恒为 1、判据变成随机失败。改法是**让桩的分片之间隔 40ms 再发**
+   （`FRAME_GAP_MS`），判据就变确定了 —— 真出现「攒完整段发一次」的回归时事件数仍会是 1。
+   `main/event-buffer.ts` 本身**未改**（它的合并语义是对的，不该为了测试放宽）。
+5. **smoke 的注册清单断言改为「已装配」的显式常量** `SMOKE_IMPLEMENTED_TOOLS`（7 个）：
+   `edit_file` 要到 step 4 才创建得出来，断言 `COMPUTER_TOOL_NAMES` 全量必然红。
+   step 4 加名字后即变 8 个。总开关断言的「关掉后一个都不剩」仍用 `COMPUTER_TOOL_NAMES`（更宽更强）。
+
+### 已登记、未修
+
+- `grep.include` 不做内核校验（非法 `include` 会按字面口径匹配、可能得到「未找到匹配」而无提示）。
+  按既定分工（匹配只在 `globPattern.ts`）保留。
+- `include` 按「相对 root 的路径」全串锚定，因此 `include: '*.txt'` 只覆盖根目录一层，
+  嵌套文件要写 `**/*.txt`（已有用例钉住语义）。
+- `maxFileScanBytes` 之外，「字节预算按文件 size 记账、`findFiles` 不读内容也记账」等三条记账口径
+  是规格未明说、由实现定的，已写进注释。
+
+### 对后续步骤的影响
+
+- **`matchesGlob(pattern, value, { pathMode: false })` 就是 step 5 的免确认匹配器**：
+  全串锚定 + 大小写不敏感 + `*`/`?` 都已具备，step 5 只需再加「必须含字面字符」与「整类拒绝花括号」。
+- **`registerComputerTools.sync()` 返回的仍是「实际注册成功的名字」**（按 `COMPUTER_TOOL_NAMES` 顺序过滤），
+  step 4 加 `edit_file` 时无需再动返回值逻辑，但 `IMPLEMENTED_COMPUTER_TOOLS`
+  （`tools/index.test.ts`）与 `SMOKE_IMPLEMENTED_TOOLS`（`main/index.ts`）两处都要加名字。
+- `SETTINGS_AGENT_FIELDS_SCRIPT` 本步已把 `searchFields >= 2` 纳入 `pass`；
+  step 5 再加 `allowPatternsFields === 1` 与 `terminalFields` 的期望值 4。

@@ -2,7 +2,7 @@
 
 - Task: opencode-parity
 - Step: 5 / 7
-- Status: pending
+- Status: done
 - Depends on: step 4（`registerComputerTools` 的依赖清单与 `main/index.ts` 的装配点已稳定）
 - Produces: `packages/agent-core/src/tools/command-allow.ts`（匹配器 + 校验，复用 step 3 的 glob 编译器）、
   `createConfirmTool` 的免确认分支与审计日志、设置页「免确认命令模式」栏、capture 探针与 smoke 断言
@@ -254,3 +254,63 @@ const searchFields = count('[data-field^="agent.tools.search"]')
   step 6 会在同一个桩里加一份"收到的请求体历史"，本步**不要**提前删掉或重构现有的分流结构。
 - `SETTINGS_AGENT_FIELDS_SCRIPT` 在 step 3（search 字段）与本步（allowPatterns 字段）各改一次，
   两次都要保证 `pass` 条件与实测数值自洽；**最终数值以 `report.json` 为准**。
+
+## 执行记录
+
+执行时间：2026-09-26（会话内连续执行）
+
+### 分片与结果
+
+主代理先**亲自实现安全核心**（`command-allow.ts` 的匹配器与 `describeInvalidPattern`、`schema.ts` 的元素级
+refine、`index.ts` 导出）并用 30 条对抗性脚本自查通过，再派三个写范围不重叠的分片并行。
+
+| 分片 | 负责文件 | 结果 |
+| --- | --- | --- |
+| 主代理 | `command-allow.ts`、`schema.ts` 的 refine、`index.ts` | 双层拒绝（配置层 + 匹配层）。自查 30 条全 PASS，含 `{a,*}` / `{*,x}` / `{x}*` / `a{,b}` 四条花括号绕过、`*` / `**` / `?*` / `  *  ` 四条纯通配、全串锚定、大小写、`?`、首条命中优先。**实现期自查抓到一个真 bug**：纯通配判定原本写成 `^[^*?\s]*$` 去测「去掉通配符后的串」，那是**恒真**表达式（等于该规则没生效），已改为 `pattern.replace(/[*?\s]/g, '') === ''` |
+| 匹配器单测 | `command-allow.test.ts`（33 用例） | 逐条覆盖验收清单；**反向自证**：注释掉花括号那一行后 **7 条变红**（含三条回归），还原后 `git hash-object` 与改前一致。自我提权闸门做了 7 条，含「标量写法」「夹带批量写入」「数组下标路径」「读也拒绝」与**正对照**（同端口下 `timeoutMs` 能写） |
+| 确认链路 | `agent-host.ts` + `agent-host.test.ts`（新建，18 用例） | `allowPatterns` 闭包 + `info` 级审计；`readCommand` 对「非对象 / 缺字段 / 非字符串 / 空串与纯空白」一律返回 `undefined` → **走确认**。含纯通配负对照（`*` / `**` / `?*` / `{a,*}` 等六种写法仍走确认）。反向自证：删掉判定后 **5 条变红**，已还原 |
+| 设置页 + 探针 | `AgentPage.vue`、`capture.ts` | 「免确认命令模式」卡（**恰好 1 个** `data-field` 容器、**未新增 `data-empty`**、口径文案含「减少打扰，不是安全加固」）；`allowPatternsFields` 纳入 `pass`，`terminalFields` 保持 `> 0` 宽口径 |
+| 接线 + 端到端 | `main/index.ts`、`smoke-llm.ts`、`smoke.ts`、`docs/07`、`AGENTS.md` | `allowPatterns` 即时读设置闭包；桩 LLM 加 `RUN_COMMAND_MARKER` 分流；smoke 加 9 条记录（成对断言 + 负对照） |
+
+### 验收命令与真实结果（主代理复跑）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm build:packages` / `pnpm typecheck` | exit 0 |
+| `pnpm test` | **71 文件 / 1277 用例全绿** |
+| `pnpm lint` / `pnpm exec prettier --check "**/*.{ts,md,json,vue}"` | 均通过 |
+| `$env:AURORA_SMOKE='1'; pnpm dev` | **SUMMARY 143/143 passed**、0 FAIL（实现分片跑了两轮 + **主代理复跑一轮**，三轮一致）。两条关键记录：`命中免确认模式不弹卡片（整轮无 proactive:sensitiveTool 事件） — confirm=[]`、`负对照未命中仍然弹卡片（收到 proactive:sensitiveTool） — {"toolName":"run_command","input":{"command":"echo AURORA_ALLOW_OK"},"sessionId":"smoke-allow-deny",…}` |
+| `$env:AURORA_CAPTURE=…; pnpm dev` | 退出码 0、48 张 PNG / 48 条 checks / 0 FAIL；`settings-agent` 实测 `{"total":11,"terminalFields":4,"allowPatternsFields":1,"filesFields":2,"searchFields":2,"openFields":1,"unexpected":[],"pass":true}` |
+
+### 与计划的偏差
+
+1. **三条端到端断言的宿主是 `smoke.ts`（渲染层注入脚本）而不是 `index.ts` 的 `runSmokeTest`**。
+   计划「操作 6」指定 `index.ts`，但那三条断言要用 `settings.update` / `chat.send` /
+   `proactive.onSensitiveTool` / `resolveSensitiveTool` —— 全是**渲染层暴露面**，而既有的
+   chat 流式与 token 用量断言本来就在 `smoke.ts` 里。因此 `smoke.ts` 进了本步写范围
+   （计划把它算在 step 6），并在「交接」里已注明。
+2. **`expectedChatRequests` 从 `3 + 4` 改为 `3 + 4 + 2 * 2`（= 11）**：两条新断言各消耗 2 次桩请求
+   （工具调用轮 + 收尾轮）。这是必然的连带改动（不改这条既有断言会直接 FAIL），不是放松。
+3. **桩 LLM 把工具结果的 stdout 段回显进收尾文本**：`tool` 事件只带 `outputSummary`（`退出码 0 · 12ms`）、
+   `chat:history` 又过滤掉 `role: 'tool'`，渲染层拿不到命令输出；不回显就没有「命令真的执行了」的
+   可断言证据。回显**故意不带命令行头部**（避免「命令里的字符串」造成假阳性），
+   负对照同时断言回显里**没有** `AURORA_ALLOW_OK`，两者合起来才能区分「执行了」与「被拒了」。
+4. **`readCommand` 对纯空白也返回 `undefined`**（计划只说"非空字符串"）：方向更保守（落回确认而非放行）。
+
+### 已登记、未修
+
+- 设置页那张卡的**非空列表态**（`v-for` 行 + 删除按钮）没有 capture 现场证据 —— capture 的配置里
+  `allowPatterns` 为空，只渲染了空状态分支。若要覆盖需新增一个「先种一条模式再截图」的场景，
+  会改变 `report.json` 的条目构成，超出本步范围。
+- 匹配器不承担条数裁剪（`MAX_ALLOW_PATTERNS = 100` 由 Schema 负责）。
+- 命令串**含换行**时 `*` 不跨行（JS 正则无 `s` 标志）：方向保守（不命中 → 照旧弹卡片），不是安全缺口。
+- `allowPatterns()` 抛错未在 `createConfirmTool` 内捕获：会冒泡到内核，内核按「拒绝执行」处理（fail-closed），
+  但会绕过本分支的审计日志。
+
+### 对后续步骤的影响
+
+- `createConfirmTool` 的 options 现在有 `enabled` 与 `allowPatterns` 两个「即时读设置」闭包 —— step 6 不碰它们。
+- `smoke-llm.ts` 的 `RUN_COMMAND_MARKER` 分流与既有的 `FRAME_GAP_MS` / `sendSseDelayed` 是 step 6
+  做缓存前缀断言时要复用的基础设施（step 6 还要在同一处加「请求体历史」）。
+- `SETTINGS_AGENT_FIELDS_SCRIPT` 的 `pass` 现为 `allowPatternsFields === 1`；
+  实测 `total=11` / `terminalFields=4`（step 6 若再改探针需同步这两个数）。

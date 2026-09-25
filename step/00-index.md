@@ -151,12 +151,12 @@ doom-loop 检测、显式 `cache_control`、`websearch` / `question` / `plan` �
 
 | # | 文件 | 标题 | 状态 | 依赖 | 写范围 |
 |---|------|------|------|------|--------|
-| 1 | step-01-contract-and-config.md | 工具契约与提示词基线（docs 先行）+ 配置 Schema v12 | pending | - | `docs/06`、`docs/07`、`docs/08`、`packages/shared/src/config/**`、`apps/desktop/src/main/settings-hint.ts`、配置调用点 |
-| 2 | step-02-read-file-contract.md | `read_file` 契约对齐：行号前缀 + `offset` / `limit` + 工具规范条目 | pending | step 1 | `packages/agent-core/src/tools/files.ts`、`files.test.ts`、`packages/agent-core/src/context/systemPrompt.ts`、`systemPrompt.test.ts`、`apps/desktop/src/main/tools/file-port.ts`、`file-port.test.ts` |
-| 3 | step-03-search-tools.md | 搜索层端到端：glob 模式编译器 + `grep` / `glob` 两个工具 + 主进程 walker + 设置页 | pending | step 2 | `packages/agent-core/src/tools/globPattern.ts`、`globPattern.test.ts`、`search.ts`、`search.test.ts`、`files.ts`、`files.test.ts`、`packages/agent-core/src/index.ts`、`apps/desktop/src/main/tools/file-port.ts`、`file-port.test.ts`、`index.ts`、`index.test.ts`、`apps/desktop/src/renderer/settings/pages/AgentPage.vue`、`apps/desktop/src/main/capture.ts` |
-| 4 | step-04-edit-tool.md | `edit_file`：精确替换 + EOL 保真 + 唯一性拒绝 + 读前守卫 | pending | step 3 | `packages/agent-core/src/tools/edit.ts`、`edit.test.ts`、`files.ts`、`files.test.ts`、`packages/agent-core/src/index.ts`、`apps/desktop/src/main/tools/file-port.ts`、`file-port.test.ts`、`index.ts`、`index.test.ts`、`apps/desktop/src/main/index.ts` |
-| 5 | step-05-command-allowlist.md | `run_command` 免确认模式列表（内核匹配器 + 主进程接线 + 设置页 + 审计） | pending | step 4 | `packages/agent-core/src/tools/command-allow.ts`、`command-allow.test.ts`、`packages/agent-core/src/index.ts`、`packages/shared/src/config/schema.ts`、`schema.test.ts`、`apps/desktop/src/main/agent-host.ts`、`agent-host.test.ts`、`index.ts`、`smoke.ts`、`smoke-llm.ts`、`capture.ts`、`apps/desktop/src/renderer/settings/pages/AgentPage.vue` |
-| 6 | step-06-prompt-caching.md | prompt caching：提示词前缀稳定化 + 工具顺序稳定 + 命中观测 + 全量文档收口 | pending | step 5 | `packages/agent-core/src/context/systemPrompt.ts`、`systemPrompt.test.ts`、`packages/agent-core/src/tools/registry.ts`、`packages/agent-core/src/host/agentHost.ts`、`packages/agent-core/src/llm/openai-compat.ts`、`openai-compat.test.ts`、`packages/shared/src/ipc/types.ts`、`apps/desktop/src/renderer/shared/composables/useChat.ts`、`apps/desktop/src/renderer/chat/components/ComposerContextBar.vue`、`apps/desktop/src/main/smoke.ts`、`smoke-llm.ts`、`capture.ts`、`AGENTS.md`、`docs/04`、`docs/06`、`docs/07`、`docs/10`、`docs/11`、`docs/README.md` |
+| 1 | step-01-contract-and-config.md | 工具契约与提示词基线（docs 先行）+ 配置 Schema v12 | done | - | `docs/06`、`docs/07`、`docs/08`、`packages/shared/src/config/**`、`apps/desktop/src/main/settings-hint.ts`、配置调用点 |
+| 2 | step-02-read-file-contract.md | `read_file` 契约对齐：行号前缀 + `offset` / `limit` + 工具规范条目 | done | step 1 | `packages/agent-core/src/tools/files.ts`、`files.test.ts`、`packages/agent-core/src/context/systemPrompt.ts`、`systemPrompt.test.ts`、`apps/desktop/src/main/tools/file-port.ts`、`file-port.test.ts` |
+| 3 | step-03-search-tools.md | 搜索层端到端：glob 模式编译器 + `grep` / `glob` 两个工具 + 主进程 walker + 设置页 | done | step 2 | `packages/agent-core/src/tools/globPattern.ts`、`globPattern.test.ts`、`search.ts`、`search.test.ts`、`files.ts`、`files.test.ts`、`packages/agent-core/src/index.ts`、`apps/desktop/src/main/tools/file-port.ts`、`file-port.test.ts`、`index.ts`、`index.test.ts`、`apps/desktop/src/renderer/settings/pages/AgentPage.vue`、`apps/desktop/src/main/capture.ts` |
+| 4 | step-04-edit-tool.md | `edit_file`：精确替换 + EOL 保真 + 唯一性拒绝 + 读前守卫 | done | step 3 | `packages/agent-core/src/tools/edit.ts`、`edit.test.ts`、`files.ts`、`files.test.ts`、`packages/agent-core/src/index.ts`、`apps/desktop/src/main/tools/file-port.ts`、`file-port.test.ts`、`index.ts`、`index.test.ts`、`apps/desktop/src/main/index.ts` |
+| 5 | step-05-command-allowlist.md | `run_command` 免确认模式列表（内核匹配器 + 主进程接线 + 设置页 + 审计） | done | step 4 | `packages/agent-core/src/tools/command-allow.ts`、`command-allow.test.ts`、`packages/agent-core/src/index.ts`、`packages/shared/src/config/schema.ts`、`schema.test.ts`、`apps/desktop/src/main/agent-host.ts`、`agent-host.test.ts`、`index.ts`、`smoke.ts`、`smoke-llm.ts`、`capture.ts`、`apps/desktop/src/renderer/settings/pages/AgentPage.vue` |
+| 6 | step-06-prompt-caching.md | prompt caching：提示词前缀稳定化 + 工具顺序稳定 + 命中观测 + 全量文档收口 | done | step 5 | `packages/agent-core/src/context/systemPrompt.ts`、`systemPrompt.test.ts`、`packages/agent-core/src/tools/registry.ts`、`packages/agent-core/src/host/agentHost.ts`、`packages/agent-core/src/llm/openai-compat.ts`、`openai-compat.test.ts`、`packages/shared/src/ipc/types.ts`、`apps/desktop/src/renderer/shared/composables/useChat.ts`、`apps/desktop/src/renderer/chat/components/ComposerContextBar.vue`、`apps/desktop/src/main/smoke.ts`、`smoke-llm.ts`、`capture.ts`、`AGENTS.md`、`docs/04`、`docs/06`、`docs/07`、`docs/10`、`docs/11`、`docs/README.md` |
 | 7 | step-07-archive.md | 归档清理 | pending | step 1..6 | `step/` |
 
 **为什么没有同波并行**（按修订后的 `Writes` 重新核过）：共享文件比初版估计的多，且**贯穿多步**——
@@ -197,3 +197,61 @@ doom-loop 检测、显式 `cache_control`、`websearch` / `question` / `plan` �
 ## 执行记录
 
 （供执行阶段追加：每步的实际改动与验证结果、git 提交清单、代码审查结论与处置）
+
+## 执行记录
+
+### step 1 — 工具契约与提示词基线 + 配置 Schema v12
+
+- 提交：`c320096`（计划落盘）、`f769e0a`（docs 规格）、`088b91b`（配置 Schema v12）
+- 验收：`pnpm build:packages` / `pnpm typecheck` exit 0；`pnpm test` 66 文件 1094 用例全绿；
+  `pnpm lint` 与 `pnpm exec prettier --check "**/*.{ts,md,json}"` 通过；
+  `COMPUTER_TOOL_NAMES` 精确数组断言（`schema.test.ts:192`）8 元素；
+  `allowPatterns` 恰好 2 处命中且未被覆盖表放行；`docs/06` 五个新节全部落盘。
+- 偏差与「已登记、未修」详见 `step-01-contract-and-config.md` 的「执行记录」一节。
+
+### step 2 — read_file 行窗口契约 + 工具规范三条
+
+- 提交：`8aeb2cf`（read_file 行窗口契约）、`02b078e`（工具使用规范三条件条目）
+- 验收：`pnpm build:packages` / `pnpm typecheck` exit 0；`pnpm test` 66 文件 **1122** 用例全绿；
+  `pnpm lint` 与 prettier 通过；`grep "已按 maxBytes 截断"` 无残留；
+  端到端（真实端口 + 真实内核工具）对 5000 行 CRLF 文件读第 4000–4002 行成功。
+- 偏差与「已登记、未修」详见 `step-02-read-file-contract.md` 的「执行记录」一节。
+
+### step 3 — 搜索层端到端（glob 编译器 + grep / glob + 主进程 walker + 设置页）
+
+- 提交：`12430c1`、`5fd5ed9`、`e3b942e`、`c54913b`、`ed2241a`、`0f854f0`
+- 验收：`pnpm build` / `pnpm typecheck` exit 0；`pnpm test` 67 文件 **1182** 用例全绿；
+  `pnpm lint` 与 prettier 通过；
+  `AURORA_SMOKE` **134/134 passed**（含 glob / grep 真实文件系统断言）；
+  `AURORA_CAPTURE` 48 张 PNG / 48 条 checks / 0 FAIL、`settings-agent` 实测 `searchFields=2`。
+- 偏差（`maxFileScanBytes` 只约束内容扫描、smoke 分片隔帧、smoke 断言改用已装配清单）与
+  「已登记、未修」详见 `step-03-search-tools.md` 的「执行记录」一节。
+
+### step 4 — edit_file（精确替换 + EOL 保真 + 唯一性 + 读前守卫）
+
+- 提交：`5855a86`、`a3835c2`、`078b6bc`、`300e47b`
+- 验收：`pnpm build:packages` / `pnpm typecheck` exit 0；`pnpm test` 69 文件 **1226** 用例全绿；
+  `pnpm lint` 与 prettier 通过；`AURORA_SMOKE` **134/134 passed**（`edit_file` 已注册且 `confirm`）；
+  `grep readWholeText` 三处命中（证明替换不走行窗口 API，不会静默截断）。
+- 偏差（守卫建在装配器闭包内、设置页文案连带补 `edit_file`）与「已登记、未修」详见
+  `step-04-edit-tool.md` 的「执行记录」一节。
+
+### step 5 — run_command 免确认模式列表
+
+- 提交：`28a554d`、`0a9c7ac`、`bb4a907`、`b5b6419`、`6910f6c`、`30ba8ad`
+- 验收：`pnpm test` 71 文件 **1277** 用例全绿；`pnpm typecheck` / `pnpm lint` / prettier 通过；
+  `AURORA_SMOKE` **143/143 passed**（含「命中免确认不弹卡片」与「负对照未命中仍弹卡片」成对断言，
+  三轮一致）；`AURORA_CAPTURE` 48 张 / 48 条 / 0 FAIL、`terminalFields=4`、`allowPatternsFields=1`。
+- 实现期自查抓到并修掉一个真 bug（纯通配判定写成恒真表达式，等于该规则没生效）；
+  偏差（smoke 宿主改 `smoke.ts`、桩回显 stdout）与「已登记、未修」详见
+  `step-05-command-allowlist.md` 的「执行记录」一节。
+
+### step 6 — prompt caching（前缀稳定化 + 工具顺序 + 命中观测）+ 文档收口
+
+- 提交：`35ec301`、`2ac3228`、`9a7b935`、`887ff08`
+- 验收：`pnpm build:packages` / `typecheck` / `build` exit 0；`pnpm test` 72 文件 **1292** 用例全绿；
+  `pnpm verify` **26/26**（迁移链 12/12）；`pnpm lint` 与 prettier 通过；
+  `AURORA_SMOKE` **146/146 passed**（含三条新断言）；`AURORA_CAPTURE` 48 张 / 48 条 / 0 FAIL。
+- 计划的两处规格错误已就地订正：最长公共前缀判据（标题行也在前缀里）、smoke 的相等判据
+  （两轮提示词实测一字不差，用「≥ 首个易变位置」）。详见
+  `step-06-prompt-caching.md` 的「执行记录」一节。

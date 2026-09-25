@@ -2,7 +2,7 @@
 
 - Task: opencode-parity
 - Step: 1 / 7
-- Status: pending
+- Status: done
 - Depends on: none
 - Produces: `docs/06` 的 §5 顺序表 + §11 工具表 + §11.5/§11.6/§11.7/§20/§21 五个新小节；`docs/07` / `docs/08` 的字段与门控同步；`packages/shared` 的 Schema v12 + 迁移 + 单测
 - Phase: 基础与配置
@@ -309,3 +309,70 @@ const migrateV11ToV12: Migration = {
   （`packages/shared/src/ipc/types.ts` 的改动也在 step 6，不在本步）。
 - 若实现中发现规格本身有误（例如某个上限取值不现实），**就地改 `docs/06` 对应节并把改动写进执行记录**，
   不要默默按别的做法实现。
+
+## 执行记录
+
+执行时间：2026-09-26（会话内连续执行）
+
+### 实际改动
+
+四个互不重叠的写范围分片并行完成（子代理各领一片，主代理集成 + 复跑验收）：
+
+| 分片 | 负责文件 | 结果 |
+| --- | --- | --- |
+| 配置包 | `packages/shared/src/config/{schema,defaults,migrations}.ts` + 三个 `.test.ts` | `CONFIG_VERSION=12`、`COMPUTER_TOOL_NAMES` 8 个、`search.*` 与 `terminal.allowPatterns` 字段、只读前缀 + 原因、覆盖表两条、`migrateV11ToV12`。**145 用例全绿** |
+| `docs/06` | `docs/06-agent-core.md` | §5 顺序表改「静态在前、易变在后」+ 三条工具规范条目；§11 工具表 8 行；新增 §11.5 / §11.6 / §11.7 / §20（4 列 8 行对照表）/ §21；§12.2 / §12.6 / §17 / §19 同步。951 → 1224 行 |
+| `docs/07` + `docs/08` | 两个文件 | §1 三行新字段 + JSON 示例 + `v11 → v12` + 「十二条」；§6 门控与栏位；§5.3 探针清单加「预期新增/变化」条与 `chat.context-cache`；§2.3 补缓存命中说明 |
+| 应用层适配 | `settings-hint.ts`、`AgentPage.vue`、`files.test.ts`、`tools/index.test.ts` | `SETTINGS_HINT` 逐条列举（不再用 `terminal.*` 通配，理由：`allowPatterns` 只读）；`TOOL_GATES` 补三键、两处计数改 `COMPUTER_TOOL_NAMES.length`；两处测试断言改为显式列表派生（不写死 8 个，因为工具要到 step 3/4 才创建得出来） |
+
+### 验收命令与真实结果（主代理复跑）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm build:packages` | exit 0（shared / agent-core / modes 三个包 Done） |
+| `pnpm typecheck` | exit 0（含 `apps/desktop` 的 `vue-tsc`） |
+| `pnpm test` | **66 文件 / 1094 用例全绿**，13.17s |
+| `pnpm lint` | exit 0 |
+| `pnpm exec prettier --check "**/*.{ts,md,json}"` | All matched files use Prettier code style! |
+| `grep -n "'agent.tools.terminal.allowPatterns'" packages/shared/src/config/schema.ts` | 恰好 **2 处**（`:393` 黑名单、`:515` 原因表）✅ |
+| `grep allowPatterns schema.ts \| grep WRITABLE` | 无命中 ✅（没被覆盖表放行） |
+| `grep -n "^## 20\.\|^## 21\.\|^### 11\.5\|^### 11\.6\|^### 11\.7" docs/06-agent-core.md` | 5 处全命中 ✅ |
+| `grep -c "read.txt\|edit.txt\|grep.txt\|glob.txt\|todowrite.txt\|task.txt" docs/06-agent-core.md` | **8**（≥ 6）✅ |
+| `grep -c "静态在前" docs/06-agent-core.md` | 4 ✅ |
+| `grep -rn "terminal\.\*" apps/desktop/src/main/settings-hint.ts` | 无命中 ✅ |
+| `COMPUTER_TOOL_NAMES` 精确数组断言 | `packages/shared/src/config/schema.test.ts:192` 的 `toEqual` 8 元素完整数组，随 `pnpm vitest run packages/shared` 通过 ✅（不是 `toContain`） |
+
+### git 提交
+
+| SHA | 说明 |
+| --- | --- |
+| `c320096` | `docs(step): 落盘 opencode 对齐任务计划（工具面 + 免确认模式 + prompt caching）` |
+| `f769e0a` | `docs: 落盘工具面扩充规格（§11.5 grep/glob、§11.6 edit_file、§11.7 免确认模式、§20 契约对照、§21 prompt caching）` |
+| `088b91b` | `feat(config): 配置 Schema v12（agent.tools.search.* 与 terminal.allowPatterns），电脑操控工具扩到 8 个` |
+
+### 与计划的偏差
+
+1. **`DEFAULT_AGENT_TOOLS.terminal.allowPatterns` 写成 `[] as string[]`**（计划原文是裸 `[]`）。
+   原因：该对象是 `as const`，裸 `[]` 被推断成只读空元组 `readonly []`，赋给 Schema 推出的可变
+   `string[]` 会 `TS2322` 编译失败。已由子代理用隔离 `tsc --strict` 实测确认。
+2. **`tools/index.test.ts` 的适配写法**用了**显式本地常量** `IMPLEMENTED_COMPUTER_TOOLS`（5 个名字）
+   而不是计划里说的"当前配置下注册的名字集合"——后者无法在不写死的情况下表达，
+   而写死 8 个立刻会红（`edit_file` / `grep` / `glob` 要到 step 3/4 才创建得出来）。
+   常量带注释说明"新增工具时同步加名字"，step 3 / step 4 各加一条。
+3. **`docs/07` 顺带订正了三处会变成事实错误的陈述**（`workspaceDir` 兼作 `grep`/`glob` 缺省搜索根、
+   `sensitivity` 枚举含 `edit_file` / `grep` / `glob`、`agent.tools.*` 可写例外的注释）——超出 step-01 字面清单，
+   但不改就与 `docs/06 §11.1/§11.4/§11.5` 直接冲突。
+4. **`docs/06 §11` 正文里落盘了 `read_file` 的新输出契约**（行号前缀 + `offset`/`limit` + 常量默认值），
+   因为 step-02 的 `Writes` 不含 `docs/06`，而 §20 要求 read 契约「落到 §11 与 step 2」。
+
+### 已登记、未修
+
+- `docs/08 §1` 的标题与 JSON 示例里 `version` 仍写 `10`（改动前就是 10，上一次 `v10 → v11` 迁移提交
+  同样没动它们，见 `2e848f5`）。属既有滞后，与本轮无关，未顺手改。
+- `AgentPage.vue` 脚本头注释（`:10-13`）里对「五个工具」的枚举与「文件」小节说明里
+  只提 `read_file / write_file / list_dir` 的文案仍待 step 3 / step 4 更新。
+
+### 对后续步骤的影响
+
+- **本步之后 UI 会短暂显示「5 / 8 个工具生效」**：`grep` / `glob`（step 3）、`edit_file`（step 4）
+  尚未装配。这是预期内状态，不是 bug。

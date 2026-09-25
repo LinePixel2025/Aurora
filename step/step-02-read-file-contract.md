@@ -2,7 +2,7 @@
 
 - Task: opencode-parity
 - Step: 2 / 7
-- Status: pending
+- Status: done
 - Depends on: step 1（`docs/06 §20` 的 read 契约与 §5 的工具规范清单已定稿）
 - Produces: `read_file` 的新输出契约（`<行号>: <内容>` + `offset` / `limit`）与可读大文件后半段的能力；`buildToolGuidance` 的 edit/grep/glob 条件条目
 - Phase: 核心链路
@@ -207,3 +207,81 @@ export interface FilePort {
 - 内核常量 `DEFAULT_READ_LINES` / `MAX_READ_LINES` / `MAX_LINE_CHARS` / `MAX_READ_SCAN_BYTES`
   从 `files.ts` 导出，step 3 / 4 的 description 与文档若引用这些数字，**引用常量而不是再写一遍字面量**。
 - 本步**不动** `buildSystemPrompt` 的小节渲染顺序（那是 step 6）。
+
+## 执行记录
+
+执行时间：2026-09-26（会话内连续执行）
+
+### 分片与结果
+
+主代理先**亲自定稿 `FilePort` 的共享接口**（`readText(path, options)` 与 `ReadTextResult` / `ReadLine`
+—— step 3 / 4 都依赖它，两个子代理分头写会漂移），再派三个写范围互不重叠的分片并行：
+
+| 分片 | 负责文件 | 结果 |
+| --- | --- | --- |
+| 主进程端口 | `apps/desktop/src/main/tools/file-port.ts` + `.test.ts` | 行窗口实现（CRLF 去 `\r`、末行不补空行、首行强制保留、扫描上限三态）。**21 用例**。新增用例可指认：`大文件后半段可读：5000 行文件用 offsetLines=4000 / limitLines=10 取第 4000–4009 行`、`末行没有换行符时不凭空补空行："a\nb" → totalLines 2（不是 3）`、`CRLF 文件：lines[].text 不含 \r，行号为 1 / 2`、`超过上限的文件：scanLimitHit 为 true、totalLines 为 undefined、truncated 为 true` |
+| 内核单测 | `packages/agent-core/src/tools/files.test.ts` | 桩改新签名 + 12 条新用例（**20 → 32**）。可指认：`把行窗口渲染成 <行号>: 内容 行…`、`offset: 3 / limit: 2 时头部显示 本次显示第 3–4 行…`、`offset 超出文件末尾时回带空窗口并说明，不置 isError`、`单行超过 MAX_LINE_CHARS 时截断，并在该行标注原长`、`offset 非数字 / 小于 1 时钳到 1，端口收到的仍是合法值`、`limit 非数字回落缺省值、负数钳到 1、超上限钳到 MAX_READ_LINES`、`端口对二进制文件抛错时折成 isError 并回带原因，异常不冒泡`、`description 写清行号前缀、offset 续读与 glob / grep 定位（§20 契约）` |
+| 工具规范 | `packages/agent-core/src/context/systemPrompt.ts` + `.test.ts` | 三条条件条目 + 顶部注释块更新（**渲染顺序一行未动，那是 step 6**）。**20 → 25 用例**，含负例 `只注册 todo_write 时不出现 edit_file / grep / glob 的规范` |
+| 主代理 | `apps/desktop/src/main/tools/index.test.ts` | 假的 `FilePort` 桩改成 `ReadTextResult` 形状（**计划未把它列进 `Writes`，但改签名后它必然编译失败**，属必要连带改动） |
+
+### 验收命令与真实结果（主代理复跑）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm build:packages` | exit 0 |
+| `pnpm typecheck` | exit 0 |
+| `pnpm vitest run packages/agent-core/src/tools/files.test.ts apps/desktop/src/main/tools/file-port.test.ts packages/agent-core/src/context/systemPrompt.test.ts` | **3 文件 / 78 用例全绿**（32 + 21 + 25） |
+| `pnpm test` | **66 文件 / 1122 用例全绿**（较 step 1 的 1094 增至 1122） |
+| `pnpm lint` | exit 0 |
+| `pnpm exec prettier --check "**/*.{ts,md,json}"` | All matched files use Prettier code style! |
+| `grep -rn "已按 maxBytes 截断" apps packages --include=*.ts` | 无命中 ✅ |
+
+### 端到端证据（主代理自建的临时集成用例，跑完即删）
+
+真实 `createNodeFilePort()` + 真实 `createFileTools()`，对 5000 行 **CRLF** 文件读 `offset: 4000, limit: 3`：
+
+```
+文件：C:\...\big.txt（共 5000 行 / 103891 字节；本次显示第 4000–4002 行）
+
+4000: 第4000行的内容
+4001: 第4001行的内容
+4002: 第4002行的内容
+
+…（还有 998 行未显示，用 offset 继续读）…
+```
+
+`summary: 读取第 4000–4002 行 / 共 5000 行`、`isError` 为 `undefined`，且结果文本**不含 `\r`**。
+这是「只能读开头」缺口的关闭证据。
+
+### git 提交
+
+| SHA | 说明 |
+| --- | --- |
+| `8aeb2cf` | `feat(tools): read_file 改「行窗口」契约（行号前缀 + offset/limit），关闭只能读开头的缺口` |
+| `02b078e` | `feat(agent-core): 工具使用规范补 edit_file / grep / glob 三条条件条目` |
+
+### 与计划的偏差
+
+1. **`apps/desktop/src/main/tools/index.test.ts` 是本步的必要连带改动**（计划 `Writes` 里没有它）：
+   `FilePort.readText` 签名变了，该文件里的假端口桩必然编译失败。
+2. **`offset` / `limit` 用「宽松钳制」而不是 `resolveClamped` 的严格口径**：计划「操作 1」写的是
+   「非数字 / NaN / 负数**按缺省处理**」，`resolveClamped` 对非数字返回 `undefined`（让调用方报错），
+   两者不一致。按验收标准那条「参数非法时**被钳制**，端口收到的仍是合法值」取了宽松口径，
+   并新写 `resolveLineParam` 实现；`maxBytes` 保持严格（它关系着"会不会把上下文刷爆"）。
+   口径已写进该助手的 JSDoc。
+3. **`node_modules` / `.git` 的反引号按 `docs/06 §5`（SSOT）两者都加**，
+   与 step-02「操作 4」原文（只给 `.git` 加）不同。
+
+### 已登记、未修
+
+- `>MAX_READ_SCAN_BYTES` 的文件里，前 16 MiB 的**最后一行可能是被切断的半行**（行号仍正确）。
+  按规格「只读前 16 MiB 用于定位行」保留，未额外丢弃；`scanLimitHit: true` 已告知调用方只解析了开头。
+- `read_file` 单行窗口的 `summary` 文案是 `读取第 12–12 行 / 共 31 行`（同数字重复），纯文案瑕疵。
+- `maxBytes` 未写进 `read_file` 的 `description`（参数 Schema 里有、运行时校验也有）。
+
+### 对后续步骤的影响
+
+- `ReadTextResult.lines[].number` 与 `SearchMatch.line`（step 3）口径一致，都是 **1 起始、相对文件开头**。
+- 行号前缀格式 `N: 内容` 是 step 4 的 `edit_file` 的 `oldString` 基础（引用时要**去掉**前缀）。
+- `DEFAULT_READ_LINES` / `MAX_READ_LINES` / `MAX_LINE_CHARS` / `MAX_READ_SCAN_BYTES` 已从
+  `files.ts` 导出并被 `file-port.ts` 引用（**引用常量，不重抄字面量**）。

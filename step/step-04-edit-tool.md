@@ -2,7 +2,7 @@
 
 - Task: opencode-parity
 - Step: 4 / 7
-- Status: pending
+- Status: done
 - Depends on: step 3（`FilePort` 的端口范式与常量导出已就位；`registerComputerTools.sync()` 已能返回实际注册名）
 - Produces: `packages/agent-core/src/tools/edit.ts`（`edit_file` 工具 + `ReadTracker` 守卫契约）、
   `FilePort.readWholeText`（整文件读，专供替换用）、装配层的会话级读前守卫
@@ -261,3 +261,58 @@ const readTracker: ReadTracker = {
   **本步不要**自己给工具表排序。
 - `createFileTools` 仍然只产 4 个工具、`edit_file` 单独产出——step 6 核对工具清单数量时按 8 个算
   （`run_command` / `read_file` / `write_file` / `edit_file` / `list_dir` / `open_path` / `grep` / `glob`）。
+
+## 执行记录
+
+执行时间：2026-09-26（会话内连续执行）
+
+### 分片与结果
+
+主代理先定稿端口契约（`MAX_EDIT_BYTES` / `ReadWholeTextResult` / `FilePort.readWholeText` + `index.ts` 导出），
+再派两个写范围不重叠的分片并行，主代理自己也承担一块（守卫在 `files.ts` 的接线）。
+
+| 分片 | 负责文件 | 结果 |
+| --- | --- | --- |
+| 内核工具 | `edit.ts` + `edit.test.ts`（**30 用例**）、`files.test.ts` 桩补 `readWholeText` | 严格按规格的九步顺序；四种拒绝（找不到 / 多处 / 空 oldString / 新旧相同）+ 孤立 `\r` + 混合行尾全部 `isError` 且**不写盘**；无正则匹配、无模糊匹配、无自动重试。假端口把 `readText` 做成「抛错 + 留痕」，从测试侧封死「走行窗口 API」这条静默截断路径 |
+| 真实磁盘往返 | `file-port.ts` 的 `readWholeText` + `file-port.test.ts`（+8 用例，32 → 40） | 超过上限走 `refused` **不读内容**；NUL 命中**抛错**（防 `.png` 被当文本写回）；往返用例断言落盘字节 `after.equals(expected)`、按 `\r\n` 切开后除目标行外逐字相同、行尾未漂移。子代理还做了**变异验证**：把 `text` 归一成 LF → 对应用例 RED；删掉扫描上限判定 → 对应用例 RED |
+| 装配 | `tools/index.ts` + `index.test.ts`、`main/index.ts`（smoke 清单）、`toolIcons.ts` + `icons.ts` | `readTracker` 单例建在 `sync()` **之外**（含 `MAX_TRACKED_SESSIONS = 16` 的 LRU 修剪）；`edit_file` 与文件类同开关；冒烟 **134/134 passed** |
+| 主代理 | `files.ts` 的守卫接线 + `files.test.ts`（+5 用例，32 → 37）、`AgentPage.vue` 文案、`docs/11` | `read_file` 成功后 `mark`、`write_file` 成功后 `clear`（**仅成功路径**，失败不 mark/clear，各有用例钉住）；`import type { ReadTracker } from './edit.js'` **必须 type-only**（`edit.ts` 对 `files.js` 是运行时导入，值导入会成运行时环） |
+
+### 验收命令与真实结果（主代理复跑）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm build:packages` / `pnpm typecheck` | exit 0 |
+| `pnpm test` | **69 文件 / 1226 用例全绿** |
+| `pnpm vitest run edit.test.ts file-port.test.ts index.test.ts files.test.ts` | **132 用例全绿**（30 + 40 + 25 + 37） |
+| `pnpm lint` / `pnpm exec prettier --check "**/*.{ts,md,json,vue}"` | 均通过 |
+| `grep -n "sensitivity: 'confirm'" packages/agent-core/src/tools/edit.ts` | 命中（`:90` 工具定义 + `:13` 注释） |
+| `grep -n readWholeText files.ts edit.ts file-port.ts` | 三处都命中 ✅（证明没走行窗口 API） |
+| `$env:AURORA_SMOKE='1'; pnpm dev` | **134/134 passed**，`[tools] 已同步电脑操控工具 names=[... "edit_file" ...]`、`edit_file=confirm` |
+
+### 与计划的偏差
+
+1. **`readTracker` 建在 `registerComputerTools` 的闭包里**，而不是「`main/index.ts` 构造后经
+   `ComputerToolsDeps` 注入」。计划「操作 4」这两句自相矛盾（既说"在闭包里建一次"、又说"由 main 传入"），
+   取了前者：效果等价（进程内一份、`read_file` / `edit_file` 共享、跨 `sync()` 存活且有单测钉住），
+   且 `main/index.ts` 不必为此改接线。`main/index.ts` 本步只改了 smoke 清单。
+2. **`edit_file` 不加独立卡片 / 独立开关**（与计划一致），但设置页「文件」卡的说明文案、
+   脚本头注释里原本只列了 `read_file / write_file / list_dir`，本步一并补上 `edit_file`
+   —— 属必然的文案连带改动（不改就是事实错误）。
+3. **`MAX_EDIT_BYTES` 由 `files.ts` 导出**（`edit.ts` 值导入），因此 `index.ts` 的
+   `export * from './tools/files.js'` 已经覆盖它，`edit.ts` 不重复导出。
+
+### 已登记、未修
+
+- `readWholeText` 的分支覆盖只到「`refused` / NUL / 目录 / 不存在 / 逐字节往返」；
+  「>1 MiB 且 `maxBytes` 传 NaN」这类纯防御分支没有专门用例（子代理在实现里多了一层
+  `resolveLimit(maxBytes, MAX_EDIT_BYTES)`，方向只会更保守）。
+- 真实磁盘往返用例覆盖的是 CRLF 单行替换；「混合行尾拒绝」在真实磁盘上的路径由
+  `edit.test.ts` 的假端口用例覆盖（两者合计已覆盖，但不在同一个用例里）。
+
+### 对后续步骤的影响
+
+- `SMOKE_IMPLEMENTED_TOOLS`（`main/index.ts`）现为 **8 个**，与 `COMPUTER_TOOL_NAMES` 全量一致；
+  `IMPLEMENTED_COMPUTER_TOOLS`（`tools/index.test.ts`）同理。
+- tool 清单固定为 8 个：`run_command` / `read_file` / `write_file` / `edit_file` / `list_dir` /
+  `open_path` / `grep` / `glob` —— step 6 的 `toLlmTools()` 排序与「两轮 tools 数组相同」断言按这 8 个写。
