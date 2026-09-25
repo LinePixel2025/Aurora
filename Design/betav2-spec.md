@@ -1,4 +1,4 @@
-# Aurora BetaV2 总体规格（1.1.0-beta.2）
+# Aurora BetaV2 总体规格（0.0.1）
 
 > 本文件是本轮升级的唯一执行规格。所有子任务以本文件为准；与旧文档冲突处，改完代码后由对应任务同步文档（docs-first：改 Schema/IPC/窗口交互前先改 docs 对应分册）。
 > 用户原始需求：外观（快速会话融入侧边栏、新增主界面、Apple 风格、设置页合并、更多动画）+ 功能（ClassRoom 完善 + ClassIsland 插件、Work Mode 初步实装、Agent 对齐：更多可改设置/更多工具/生图/语音输入/思考过程展示）+ 产出 BetaV2 安装包并上传 GitHub。
@@ -158,7 +158,7 @@ imagegen: {
 
 ## 12. 发布
 
-1. 全部 package.json 版本 → `1.1.0-beta.2`（root、apps/desktop、packages/*）。
-2. `pnpm typecheck && pnpm test && pnpm build`；`AURORA_CAPTURE` 截图视觉验收；`pnpm package` 出 `Aurora-Setup-1.1.0-beta.2.exe`。
+1. 全部 package.json 版本 → `0.0.1`（root、apps/desktop、packages/*）。
+2. `pnpm typecheck && pnpm test && pnpm build`；`AURORA_CAPTURE` 截图视觉验收；`pnpm package` 出 `Aurora-Setup-0.0.1.exe`。
 3. ClassIsland 插件 zip 一并作为 release 资产。
-4. git 分主题提交（Conventional Commits 中文）；push 走代理 `http://127.0.0.1:7897`；`gh release create v1.1.0-beta.2`（若联通）。
+4. git 分主题提交（Conventional Commits 中文）；push 走代理 `http://127.0.0.1:7897`；`gh release create v0.0.1`（若联通）。

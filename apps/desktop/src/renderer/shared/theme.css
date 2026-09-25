@@ -52,7 +52,7 @@
   /* ───────── 文本（iOS label 三级）───────── */
   --text-primary: var(--neutral-50);
   --text-secondary: var(--neutral-300);
-  /* muted 在玻璃面板上也要可读（v1.1.0-beta.2 视觉验收：#7c7c80 在提示条面板几乎隐形） */
+  /* muted 在玻璃面板上也要可读（v0.0.1 视觉验收：#7c7c80 在提示条面板几乎隐形） */
   --text-muted: #98989d;
 
   /* ───────── 状态语义（Apple 系统色，全局同色，docs/07 §1）───────── */

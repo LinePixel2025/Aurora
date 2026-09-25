@@ -19,7 +19,7 @@
  *
  * `flex: none` 必须保留：全局 `.page` 还带 `min-height: 0`，而 `.content` 是
  * 定高 flex 滚动容器 —— 不禁收缩的话页面会被压到视口高度（`.content` 永不滚动），
- * 超高卡片再被孙级 `.group` 的 `overflow: hidden` 裁掉内容（v1.1.0-beta.2
+ * 超高卡片再被孙级 `.group` 的 `overflow: hidden` 裁掉内容（v0.0.1
  * 「智能与工具」页实测踩过：警示条与技能目录行被拦腰截断）。
  */
 .settings .page {

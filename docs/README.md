@@ -57,7 +57,7 @@
   详见 [06-agent-core.md §13](./06-agent-core.md)、[08-settings-onboarding.md §6](./08-settings-onboarding.md)。
   **语音输入（STT）不在本轮范围**。
 
-**v1.1.0-beta.2（BetaV2）本轮新增**：
+**v0.0.1（BetaV2）本轮新增**：
 
 - **主界面三栏**：`chat` 窗升级为常驻主界面（默认 **1120×720**、`alwaysOnTop` 关闭），三栏布局
   （左栏品牌 + 新对话 + 会话列表 / 中区对话 / 右栏模式感知上下文栏，两侧均可折叠）；
@@ -90,7 +90,7 @@
 鼠标键盘模拟、截图录屏、持久交互式 shell、命令黑名单、Anthropic 等非 OpenAI 兼容协议
 **仍属后续范围**。
 
-仍待做：代码签名证书、启动耗时 / 内存优化、Code Mode 功能实现（Work 已于 1.1.0-beta.2 初步实装）、OCR、多语言。
+仍待做：代码签名证书、启动耗时 / 内存优化、Code Mode 功能实现（Work 已于 0.0.1 初步实装）、OCR、多语言。
 详见 [04-roadmap.md](./04-roadmap.md) 的阶段状态与「实现说明」。
 实际工程结构见根目录 [README.md](../README.md)；端到端验证见 `pnpm verify`、
 `pnpm verify:release`、`pnpm verify:update` 与 `AURORA_SMOKE=1 pnpm dev`。

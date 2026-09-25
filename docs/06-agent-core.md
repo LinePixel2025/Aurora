@@ -498,10 +498,10 @@ Content-Type: application/json
   流式回复与后续对话完全不受影响，重试由用户再点一次按钮。
 - **无可用 provider 就不发请求**：`tts.enabled = false`、`tts.active` 为空、或指向不存在的条目时，
   朗读按钮不渲染（07 §2.3），`tts.autoRead` 也一并静默跳过——不能退化成「每个 provider 都试一遍」。
-- **语音输入（STT）自 v1.1.0-beta.2 起落地**，与 TTS 同构但独立（`stt.*` 配置组，见 §15）；
+- **语音输入（STT）自 v0.0.1 起落地**，与 TTS 同构但独立（`stt.*` 配置组，见 §15）；
   本节标题里的「不做 STT」仅对 v0.8.0 有效。
 
-## 14. 扩展工具五件套（v1.1.0-beta.2）
+## 14. 扩展工具五件套（v0.0.1）
 
 v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/betav2-spec.md §6.2）。
 分层与 §11 的电脑操控工具同一套：**内核只定义工具与端口**（`tools/web-fetch.ts` /
@@ -538,7 +538,7 @@ v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/b
 - 回填文本按 `MAX_WEB_FETCH_CHARS`（20 000，agent-core 与主进程 re-export 同源）截断，
   截断时带省略标记；抓取超时默认 20s，超时与网络错误折成中文错误。
 
-## 15. 语音输入（STT）与图像生成（v1.1.0-beta.2）
+## 15. 语音输入（STT）与图像生成（v0.0.1）
 
 两组新服务都在主进程（`main/stt.ts` / `main/imagegen.ts`），**不 import electron**：
 出网 fetch（netFetch）与凭据解密全部注入，可与 TTS（§13）一样被 vitest 直接加载。
@@ -573,7 +573,7 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
   `path.resolve` 后必须在 generated 目录内（`..` 逃逸、换盘符、目录本身一律拒绝），
   越界路径返回错误，不读盘。
 
-## 16. 思考链展示（reasoning，v1.1.0-beta.2）
+## 16. 思考链展示（reasoning，v0.0.1）
 
 支持「输出思考过程」的模型（DeepSeek / Kimi / OpenRouter 等）的思考链现在会被采集并展示，
 语义有三条边界：

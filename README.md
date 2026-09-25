@@ -2,7 +2,7 @@
 
 将 Windows 接入 AI 生态的**系统级 Agent 工具**：常驻系统托盘，以「屏幕右缘提示条」的轻量形态提供无感、自主的 AI 服务。
 
-> 当前版本：**1.1.0-beta.2（BetaV2）** —— 主界面三栏（快速会话融入左栏）、Apple HIG 主题、
+> 当前版本：**0.0.1（BetaV2）** —— 主界面三栏（快速会话融入左栏）、Apple HIG 主题、
 > 设置页 8 → 6、Work Mode 初步实装、ClassIsland 桥接 v2、Agent 强化（STT 语音输入 / 生图 /
 > 新工具五件套 / 思考过程展示）；历史进度见 [`docs/README.md`](./docs/README.md)「当前实现状态」。
 > 需求源头见 [`Aurora.md`](./Aurora.md)，设计与验收标准见 [`docs/`](./docs/README.md)（单一事实来源）。
@@ -115,7 +115,7 @@ docs/                   项目文档（SSOT）
 |---|---|
 | 代码签名证书 | 待证书；接入时把 `signAndEditExecutable` 改回 `true` 即可 |
 | 启动耗时 / 内存优化 | P6 余下打磨项 |
-| Code Mode | 仍为占位（提示词 + 引导），能力位见 docs/05 §4；Work Mode 已于 1.1.0-beta.2 初步实装 |
+| Code Mode | 仍为占位（提示词 + 引导），能力位见 docs/05 §4；Work Mode 已于 0.0.1 初步实装 |
 | OCR 图片识别 | 图片目前只取文件名与尺寸，不识别文字 |
 | 多语言 / macOS / Linux / ARM64 / 便携版 | 未开始 |
 

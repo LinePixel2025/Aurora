@@ -106,12 +106,12 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   「快速会话」（`sessionId = quick`）与历史会话列表都搬到交互窗侧栏（「快速 / 会话」双栏），
   提示条面板操作入口由 4 个减为 3 个；配置迁移到 v6（`v5 → v6` 删除 `general.windowState['mini-chat']`）。
 - MCP HTTP 传输暂不支持自定义鉴权头（凭据仅经 stdio `env` 注入）。
-- **语音输入（STT）已实装（v1.1.0-beta.2）**：对话窗 composer 的麦克风按钮（`data-field="chat.mic"`）
+- **语音输入（STT）已实装（v0.0.1）**：对话窗 composer 的麦克风按钮（`data-field="chat.mic"`）
   门控口径同 TTS —— `stt.enabled` + `stt.active` 指向一个 `baseUrl`/`model` 齐全的 provider
   **才渲染按钮，未配置时连按钮都不渲染**（不是 disabled）——这是文档门控口径，别当 bug 修
   （TTS「朗读」按钮同款口径，见 docs/07 §2.3）。
 - Skill 的 `scripts/` 永不自动执行（只注入指令正文）；图片 OCR 未启用（只取文件名与尺寸）。
-- Code Mode 为占位实现；Work Mode 已初步实装（v1.1.0-beta.2，guide + systemPrompt + workspaceDir）。
+- Code Mode 为占位实现；Work Mode 已初步实装（v0.0.1，guide + systemPrompt + workspaceDir）。
   多语言、ARM64 / 便携版、macOS / Linux 未开始。
 - `integrations/classisland-bridge` **CI 不编译**（流水线没有 .NET SDK）。
   它已用 ClassIsland 2.1.0.1 的真实程序集在本机编译并实跑验证过（见该目录 README 的「已验证程度」），
