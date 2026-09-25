@@ -57,6 +57,27 @@
   详见 [06-agent-core.md §13](./06-agent-core.md)、[08-settings-onboarding.md §6](./08-settings-onboarding.md)。
   **语音输入（STT）不在本轮范围**。
 
+**v0.0.3（前端重构）本轮新增**：
+
+- **主界面 Apple 风格重构**（docs/07 §2.3）：头部精简（清空改图标钮、Windows 式窗口按钮），
+  模型 / 思考等级下拉移入 composer 工具行，消息与 composer 收进 860px 居中内容列，
+  会话列表单行化（标题 + 相对时间），用户气泡改强调色浅填充。
+- **Windows 式窗口按钮**（docs/02 §2.2、docs/07 §2.3/§2.5）：主界面与设置窗新增
+  「最小化 / 关闭」（关闭 = 隐藏）；新增 `window:minimize` / `window:toggleMaximize` 通道
+  （shared/preload/main 四方同步），chat / settings 显示任务栏图标、可真最小化；
+  最大化期间几何不写入 `general.windowState`。`toggleMaximize` 当前无渲染层调用方
+  （拖动区双击最大化由 Windows 原生接管），通道预留给 caption 最大化按钮。
+- **提示条面板快速对话**（docs/07 §2.2）：面板「最近消息」升级为可直接输入的对话卡
+  （数据仍是 `quick` 会话）；窗口 `focusable` 跟随展开 / 收起切换（输入框可拿到键盘焦点），
+  打字中移开鼠标不收起、失焦后补收起。
+- **Agent 界面可视化**（docs/07 §2.3）：`todo_write` 渲染结构化任务清单卡（状态圈 + 进度）、
+  `task` 渲染子代理卡（任务简述 + 可展开指令）；右栏新增「任务清单」卡
+  （数据 = 当前会话最后一次 `todo_write`，空清单为合法的「清空提交」）。
+- **设置窗**（docs/07 §2.5）：侧栏导航改图标 + 单行文字（去两行说明文案），
+  品牌行换 Windows 式窗口按钮。
+- capture 探针同步扩展：收起探针改点 caption 关闭钮、面板探针加快速对话输入断言、
+  sidebar 探针加 caption / 任务清单卡 / 子代理卡断言，seed 现场含 todo / task 工具调用。
+
 **v0.0.2（Agent 内核强化）本轮新增**：
 
 - **任务清单工具**：`todo_write`（整表替换）/ `todo_read`（docs/06 §18），按会话持久化到

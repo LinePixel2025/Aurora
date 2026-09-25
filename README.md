@@ -2,8 +2,8 @@
 
 将 Windows 接入 AI 生态的**系统级 Agent 工具**：常驻系统托盘，以「屏幕右缘提示条」的轻量形态提供无感、自主的 AI 服务。
 
-> 当前版本：**0.0.2（BetaV2）** —— Agent 内核强化（任务清单 `todo_write`/`todo_read`、子代理
-> `task`、工具使用规范提示词）、MCP 升级（HTTP 自定义鉴权头 / 断线自动重连 / 工具列表分页）；
+> 当前版本：**0.0.3（BetaV2）** —— 前端重构：Apple 风格主界面（居中内容列 / composer 工具行）、
+> Windows 式「最小化 / 关闭」窗口按钮、提示条面板快速对话、Todo / 子代理可视化；
 > 历史进度见 [`docs/README.md`](./docs/README.md)「当前实现状态」。
 > 需求源头见 [`Aurora.md`](./Aurora.md)，设计与验收标准见 [`docs/`](./docs/README.md)（单一事实来源）。
 > 用户手册见 [docs/10](./docs/10-user-guide.md)，隐私说明见 [docs/11](./docs/11-privacy.md)。

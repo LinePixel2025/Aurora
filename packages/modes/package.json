@@ -1,6 +1,6 @@
 {
   "name": "@aurora/modes",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "type": "module",
   "description": "Aurora 模式系统（classroom 完整实现，work / code 占位）",
