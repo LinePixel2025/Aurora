@@ -129,7 +129,9 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
     messages.push({ role: 'system', content: options.extraContext })
   }
 
-  const llmTools = toLlmTools(options.tools)
+  // 工具数组走注册表的**唯一**实现：它按工具名排序返回（docs/06 §21.2），
+  // 顺序只取决于名字集合，与注册先后无关 —— 请求体的 tools 因此是稳定前缀的一部分。
+  const llmTools = options.tools.toLlmTools()
   let pending = false
 
   for (let round = 0; round < maxRounds; round += 1) {
@@ -348,14 +350,6 @@ function toAssistantMessage(message: StoredMessage): ChatRequestMessage {
           })),
         }),
   }
-}
-
-function toLlmTools(tools: ToolRegistry): LlmToolDefinition[] {
-  return tools.list().map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    parameters: tool.parameters,
-  }))
 }
 
 function toAgentToolCall(call: StoredToolCall): AgentToolCall {

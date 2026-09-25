@@ -298,7 +298,9 @@ export class KernelAgentHost implements AgentHostContract {
         ...(todoSummary === undefined ? {} : { todoSummary }),
         skillCatalog: this.deps.skills.catalogPrompt,
         ...(() => {
-          const catalog = describeTools(this.deps.tools.list())
+          // 用**同一个**有序列表（toLlmTools 已按名字排序）生成提示词里的工具清单：
+          // 与请求体的 tools 数组同序，否则缓存与展示会拧（docs/06 §21.2）
+          const catalog = describeTools(this.deps.tools.toLlmTools())
           return catalog === undefined ? {} : { toolCatalog: catalog }
         })(),
         ...(() => {

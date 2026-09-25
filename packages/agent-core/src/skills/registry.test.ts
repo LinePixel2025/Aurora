@@ -145,7 +145,8 @@ describe('ToolRegistry', () => {
     registry.register(makeTool('read_file'))
     expect(registry.list()).toHaveLength(2)
     expect(registry.get('system_status')?.description).toBe('tool system_status')
-    expect(registry.toLlmTools().map((t) => t.name)).toEqual(['system_status', 'read_file'])
+    // `toLlmTools()` 按工具名排序（docs/06 §21.2）：与注册序无关
+    expect(registry.toLlmTools().map((t) => t.name)).toEqual(['read_file', 'system_status'])
   })
 
   it('同名冲突：先到先得（Skill 不覆盖已有实现）', () => {

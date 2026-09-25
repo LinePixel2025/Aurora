@@ -1,17 +1,22 @@
 /**
  * 系统提示词组装（docs/06 §5）。
  *
- * **目标小节顺序（docs/06 §5 定稿，原则是「静态在前、易变在后」，理由见 §21.1）**：
+ * **小节顺序（docs/06 §5 / §21.1 定稿，原则是「静态在前、易变在后」）**：
  * 基础人设 → 当前模式 → 可用 Skill 清单 → 可用工具清单 → 工具使用规范 →
  * Agent 可修改的设置 → 安全规则 → 更早对话的摘要 → 当前任务清单 → 系统状态。
- * 静态段（人设 / 模式 / Skill / 工具 / 规范 / 设置 / 安全规则）构成可复用的缓存前缀；
- * 每轮都变的感知摘要、任务清单、历史摘要一律留在末尾，**不要再把易变小节往前挪**。
- * 空片段自动省略；每次请求即时组装（不缓存），保证感知与模式切换即时生效。
  *
- * ⚠️ 现状：`buildSystemPrompt` 的下方渲染顺序**仍是旧顺序**（人设 → 当前模式 → 系统状态 →
- * 当前任务清单 → 更早对话的摘要 → 可用 Skill → 可用工具 → 工具使用规范 →
- * Agent 可修改的设置 → 安全规则），与本注释的目标顺序尚不一致；小节重排由后续步骤完成
- * （step 6，对照 §21.1 的公共前缀回归断言），本步只更新本注释与 `buildToolGuidance`。
+ * ─────────────────────── 易变段必须留在最后（缓存前缀，改动前先读） ───────────────────────
+ * OpenAI 兼容网关的前缀缓存按**最长公共前缀**命中；`## 系统状态` 每轮都带时间与前台窗口，
+ * 把它排在中间会让其后所有静态文本（本文件里约三千字符）每轮重新计费。
+ * **不要把易变小节往前挪。**
+ *
+ * 静态段（人设 / 模式 / Skill / 工具 / 规范 / 设置 / 安全规则）构成可复用的缓存前缀；
+ * 每轮都变的感知摘要、任务清单、历史摘要一律留在末尾，顺序见 `VOLATILE_SECTION_TITLES`。
+ * 回归判据是 `systemPrompt.test.ts` 的公共前缀断言（docs/06 §21.1）——它把「顺序」变成
+ * 可执行的口径，往后改顺序只改一处。
+ * ───────────────────────────────────────────────────────────────────────────────────────
+ *
+ * 空片段自动省略；每次请求即时组装（不缓存），保证感知与模式切换即时生效。
  */
 export const BASE_PERSONA = [
   '你是 Aurora，常驻 Windows 的桌面 AI 助手。',
@@ -34,20 +39,6 @@ export interface SystemPromptParts {
   persona?: string
   /** 当前模式的系统提示词片段（IMode.systemPrompt） */
   modePrompt?: string
-  /** 系统感知摘要（PerceptionHub.contextSummary） */
-  perceptionSummary?: string
-  /**
-   * 当前会话的任务清单摘要（docs/06 §18，`renderTodoList` 的结果）。
-   * 渲染为「## 当前任务清单」小节，正文后附一行更新提醒；
-   * 让模型跨轮次记住清单内容，完成一项立即用 todo_write 更新。
-   */
-  todoSummary?: string
-  /**
-   * 更早对话的压缩摘要（docs/06 §4 长上下文）。
-   * 与感知摘要分成两节：模型需要知道「这段是回忆，不是当前状态」，
-   * 否则会把历史里的时间/科目误当成实时信息。
-   */
-  historySummary?: string
   /** 技能清单（SkillsRegistry.toCatalogPrompt） */
   skillCatalog?: string
   /** 工具清单（由工具表生成；为空表示本次没有可用工具） */
@@ -62,38 +53,40 @@ export interface SystemPromptParts {
    * 由装配层经 `AgentHostDeps.settingsHint` 注入，原样渲染成独立小节。
    */
   settingsHint?: string
+  /**
+   * 更早对话的压缩摘要（docs/06 §4 长上下文）——**易变段**，渲染在末尾。
+   * 与感知摘要分成两节：模型需要知道「这段是回忆，不是当前状态」，
+   * 否则会把历史里的时间/科目误当成实时信息。
+   */
+  historySummary?: string
+  /**
+   * 当前会话的任务清单摘要（docs/06 §18，`renderTodoList` 的结果）——**易变段**，渲染在末尾。
+   * 渲染为「## 当前任务清单」小节，正文后附一行更新提醒；
+   * 让模型跨轮次记住清单内容，完成一项立即用 todo_write 更新。
+   */
+  todoSummary?: string
+  /** 系统感知摘要（PerceptionHub.contextSummary）——**易变段**，渲染在末尾 */
+  perceptionSummary?: string
 }
 
+/**
+ * 易变小节的标题（**渲染顺序即数组顺序**，一律排在 `## 安全规则` 之后）。
+ *
+ * 供回归测试指认「静态段 / 易变段的边界」：这三个标题的位置必须大于 `## 安全规则`，
+ * 且相对顺序为 历史摘要 → 任务清单 → 系统状态。改标题或改顺序都要同步改这里。
+ */
+export const VOLATILE_SECTION_TITLES = [
+  '## 更早对话的摘要',
+  '## 当前任务清单',
+  '## 系统状态',
+] as const
+
 export function buildSystemPrompt(parts: SystemPromptParts = {}): string {
+  // ── 静态 / 半静态段：构成可复用的缓存前缀（顺序即缓存命中率，见文件顶部说明）──
   const sections: string[] = [normalize(parts.persona) ?? BASE_PERSONA]
 
   const mode = normalize(parts.modePrompt)
   if (mode !== undefined) sections.push(`## 当前模式\n${mode}`)
-
-  const perception = normalize(parts.perceptionSummary)
-  if (perception !== undefined) sections.push(`## 系统状态\n${perception}`)
-
-  const todo = normalize(parts.todoSummary)
-  if (todo !== undefined) {
-    sections.push(
-      [
-        '## 当前任务清单',
-        todo,
-        '（完成一项立即用 todo_write 更新状态；全部完成后可清空清单。）',
-      ].join('\n'),
-    )
-  }
-
-  const history = normalize(parts.historySummary)
-  if (history !== undefined) {
-    sections.push(
-      [
-        '## 更早对话的摘要',
-        history,
-        '（以上是被压缩的历史上下文，仅供回忆；与当前系统状态冲突时以系统状态为准。）',
-      ].join('\n'),
-    )
-  }
 
   const skills = normalize(parts.skillCatalog)
   if (skills !== undefined) {
@@ -116,6 +109,34 @@ export function buildSystemPrompt(parts: SystemPromptParts = {}): string {
   if (settings !== undefined) sections.push(`## Agent 可修改的设置\n${settings}`)
 
   sections.push(SAFETY_RULES)
+
+  // ── 易变段（本轮/本会话会变，一律排在最后；顺序见 VOLATILE_SECTION_TITLES）──
+
+  const history = normalize(parts.historySummary)
+  if (history !== undefined) {
+    sections.push(
+      [
+        '## 更早对话的摘要',
+        history,
+        '（以上是被压缩的历史上下文，仅供回忆；与当前系统状态冲突时以系统状态为准。）',
+      ].join('\n'),
+    )
+  }
+
+  const todo = normalize(parts.todoSummary)
+  if (todo !== undefined) {
+    sections.push(
+      [
+        '## 当前任务清单',
+        todo,
+        '（完成一项立即用 todo_write 更新状态；全部完成后可清空清单。）',
+      ].join('\n'),
+    )
+  }
+
+  const perception = normalize(parts.perceptionSummary)
+  if (perception !== undefined) sections.push(`## 系统状态\n${perception}`)
+
   return sections.join('\n\n')
 }
 

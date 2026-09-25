@@ -88,13 +88,26 @@ export class ToolRegistry {
     return [...this.tools.values()]
   }
 
-  /** 暴露给 LLM 的工具清单 */
+  /**
+   * 暴露给 LLM 的工具清单（docs/06 §21.2）。
+   *
+   * **按工具名字典序**返回，与注册先后无关：`sync()` 的语义是「先全量摘除、再按当前配置
+   * 重建」，按 Map 插入序返回会让任何一次设置变更把工具挪到数组末尾 → 请求体里的 `tools`
+   * 顺序变化 → 前缀缓存整体失效。排序后顺序只取决于名字集合。
+   * 系统提示词里的工具清单（`describeTools`）必须用**这一个**有序列表生成，两处才同序。
+   */
   toLlmTools(): LlmToolDefinition[] {
-    return this.list().map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-    }))
+    return (
+      this.list()
+        .map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+        }))
+        // 按名字排序（**不用 localeCompare**：它是 locale 相关的，跨机器可能给不同结果）。
+        // 顺序稳定 = tools 数组成为可缓存前缀的一部分；先摘除再重建的 sync() 不会再打乱它。
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    )
   }
 
   get conflicts(): ReadonlyArray<{ message: string; detail?: string }> {

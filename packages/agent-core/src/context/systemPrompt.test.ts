@@ -2,13 +2,39 @@ import { describe, expect, it } from 'vitest'
 import {
   BASE_PERSONA,
   SAFETY_RULES,
+  VOLATILE_SECTION_TITLES,
   buildSystemPrompt,
   buildToolGuidance,
   describeTools,
+  type SystemPromptParts,
 } from './systemPrompt.js'
 
+/**
+ * 最长公共前缀（逐字符比较）。
+ *
+ * 本步的核心判据是「同一会话连续两轮的系统提示词，静态前缀逐字节相同」——
+ * 用公共前缀长度直接表达，比逐个 contains 更贴近网关的前缀缓存语义。
+ * 测试内私有，不为此放宽 `systemPrompt.ts` 的导出面。
+ */
+function commonPrefix(a: string, b: string): string {
+  const max = Math.min(a.length, b.length)
+  let index = 0
+  while (index < max && a[index] === b[index]) index += 1
+  return a.slice(0, index)
+}
+
+/** 静态 / 半静态段（构成可缓存前缀的那一半），供公共前缀断言复用 */
+const STATIC_PARTS: SystemPromptParts = {
+  persona: '你是助教',
+  modePrompt: '课堂模式说明',
+  skillCatalog: '- system-status：读状态',
+  toolCatalog: '- todo_write：记任务',
+  toolGuidance: buildToolGuidance(['todo_write']),
+  settingsHint: '- tts.enabled',
+}
+
 describe('buildSystemPrompt', () => {
-  it('小节顺序固定：人设 → 模式 → 感知 → Skill → 工具 → 安全规则', () => {
+  it('小节顺序固定：人设 → 模式 → Skill → 工具 → 安全规则 → 系统状态（静态在前、易变在后）', () => {
     const prompt = buildSystemPrompt({
       modePrompt: '课堂模式说明',
       perceptionSummary: '当前时间 08:00',
@@ -20,42 +46,124 @@ describe('buildSystemPrompt', () => {
     const order = [
       'Aurora',
       '## 当前模式',
-      '## 系统状态',
       '## 可用 Skill',
       '## 可用工具',
       '## 安全规则',
+      '## 系统状态',
     ]
     const positions = order.map((token) => prompt.indexOf(token))
     expect(positions.every((value) => value >= 0)).toBe(true)
     expect([...positions].sort((a, b) => a - b)).toEqual(positions)
   })
 
-  it('全部小节齐备时的最终顺序（docs/06 §18/§19）', () => {
+  it('全部小节齐备时的最终顺序：静态段在前、三个易变小节在末尾（docs/06 §5 / §21.1）', () => {
     const prompt = buildSystemPrompt({
-      modePrompt: '课堂模式说明',
+      ...STATIC_PARTS,
       perceptionSummary: '当前时间 08:00',
       todoSummary: '1. [~] 收集资料',
       historySummary: '此前聊过课程表',
-      skillCatalog: '- system-status：读状态',
-      toolCatalog: '- todo_write：记任务',
-      toolGuidance: buildToolGuidance(['todo_write']),
-      settingsHint: '- tts.enabled',
     })
     const order = [
-      'Aurora',
+      // STATIC_PARTS 自定义了人设，因此首位 token 是那句人设而不是默认的 Aurora
+      '你是助教',
       '## 当前模式',
-      '## 系统状态',
-      '## 当前任务清单',
-      '## 更早对话的摘要',
       '## 可用 Skill',
       '## 可用工具',
       '## 工具使用规范',
       '## Agent 可修改的设置',
       '## 安全规则',
+      '## 更早对话的摘要',
+      '## 当前任务清单',
+      '## 系统状态',
     ]
     const positions = order.map((token) => prompt.indexOf(token))
     expect(positions.every((value) => value >= 0)).toBe(true)
     expect([...positions].sort((a, b) => a - b)).toEqual(positions)
+  })
+
+  it('静态段构成可缓存前缀：两轮易变字段不同，公共前缀 = 静态段 + 一个接缝（docs/06 §21.1）', () => {
+    const stat = buildSystemPrompt({ ...STATIC_PARTS })
+    // 易变字段的取值必须**首字符就不同**：取值共用开头（如 'H1' / 'H2'）时公共前缀会
+    // 合理地越进易变段，这条断言就不再测边界（那是取值的问题，不是顺序的问题）
+    const a = buildSystemPrompt({
+      ...STATIC_PARTS,
+      perceptionSummary: '甲时状态',
+      todoSummary: '甲份清单',
+      historySummary: '甲段回忆',
+    })
+    const b = buildSystemPrompt({
+      ...STATIC_PARTS,
+      perceptionSummary: '乙时状态',
+      todoSummary: '乙份清单',
+      historySummary: '乙段回忆',
+    })
+
+    // 防恒真：易变段确实不同，公共前缀断言才有意义
+    expect(a === b).toBe(false)
+
+    // 静态段之内逐字节相同 —— 接缝（sections.join('\n\n')）也是公共前缀的一部分
+    const seam = stat + '\n\n'
+    expect(a.startsWith(seam)).toBe(true)
+    expect(b.startsWith(seam)).toBe(true)
+
+    // 公共前缀的**真实边界**：接缝 + 第一个易变小节的标题行。
+    // 注意边界比 `seam` 长 11 个字符 —— 标题 `## 更早对话的摘要` 是共用文案，两边逐字节相同，
+    // 因此 `expect(commonPrefix(a, b)).toBe(seam)` 是**假断言**（它只是前缀的下界）；
+    // 真正分清两轮的第一个字符是易变正文的第一个字。
+    expect(commonPrefix(a, b)).toBe(`${seam}## 更早对话的摘要\n`)
+
+    // 静态段之后紧邻的第一个小节就是易变段的第一个（把「前缀长度」变成语义断言）
+    expect(a.slice(stat.length).startsWith('\n\n## 更早对话的摘要')).toBe(true)
+    expect(b.slice(stat.length).startsWith('\n\n## 更早对话的摘要')).toBe(true)
+
+    // 两轮的第一个差异落在易变正文里，且三处易变内容都不同（顺序没变、内容变了）
+    const boundary = commonPrefix(a, b).length
+    expect(a.slice(boundary)).not.toBe(b.slice(boundary))
+    for (const [left, right] of [
+      ['甲段回忆', '乙段回忆'],
+      ['甲份清单', '乙份清单'],
+      ['甲时状态', '乙时状态'],
+    ]) {
+      expect(a).toContain(left)
+      expect(b).toContain(right)
+      expect(b).not.toContain(left)
+    }
+  })
+
+  it('三个易变小节都排在「## 安全规则」之后，相对顺序是 历史摘要 → 任务清单 → 系统状态', () => {
+    const prompt = buildSystemPrompt({
+      ...STATIC_PARTS,
+      perceptionSummary: '当前时间 08:00',
+      todoSummary: '1. [~] 收集资料',
+      historySummary: '此前聊过课程表',
+    })
+    const safety = prompt.indexOf('## 安全规则')
+    expect(safety).toBeGreaterThanOrEqual(0)
+
+    const positions = VOLATILE_SECTION_TITLES.map((title) => prompt.indexOf(title))
+    for (const position of positions) {
+      // -1（没渲染）也不会大于 safety，因此这一条同时覆盖「三个小节都渲染了」
+      expect(position).toBeGreaterThan(safety)
+    }
+    // 相对顺序即数组顺序
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions)
+  })
+
+  it('只传易变字段时静态段照常渲染，且易变段仍在末尾', () => {
+    const prompt = buildSystemPrompt({
+      perceptionSummary: 'P',
+      todoSummary: 'T',
+      historySummary: 'H',
+    })
+    expect(prompt.startsWith(BASE_PERSONA)).toBe(true)
+    expect(prompt).toContain(SAFETY_RULES)
+
+    const safety = prompt.indexOf('## 安全规则')
+    for (const title of VOLATILE_SECTION_TITLES) {
+      expect(prompt.indexOf(title)).toBeGreaterThan(safety)
+    }
+    // 最后一个易变小节就是整段的末尾
+    expect(prompt.endsWith('## 系统状态\nP')).toBe(true)
   })
 
   it('空片段与非字符串内容会被省略', () => {
@@ -86,7 +194,7 @@ describe('buildSystemPrompt', () => {
     expect(buildSystemPrompt({ persona: '你是助教' }).startsWith('你是助教')).toBe(true)
   })
 
-  it('todoSummary 渲染为「当前任务清单」小节：位于系统状态之后、更早对话摘要之前，附更新提醒', () => {
+  it('todoSummary 渲染为「当前任务清单」小节：位于历史摘要之后、系统状态之前，附更新提醒', () => {
     const prompt = buildSystemPrompt({
       perceptionSummary: '当前时间 08:00',
       todoSummary: '1. [~] 收集资料\n2. [ ] 写报告',
@@ -96,12 +204,12 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('1. [~] 收集资料')
     expect(prompt).toContain('（完成一项立即用 todo_write 更新状态；全部完成后可清空清单。）')
 
-    const perception = prompt.indexOf('## 系统状态')
-    const todo = prompt.indexOf('## 当前任务清单')
     const history = prompt.indexOf('## 更早对话的摘要')
-    expect(perception).toBeGreaterThanOrEqual(0)
-    expect(perception).toBeLessThan(todo)
-    expect(todo).toBeLessThan(history)
+    const todo = prompt.indexOf('## 当前任务清单')
+    const perception = prompt.indexOf('## 系统状态')
+    expect(history).toBeGreaterThanOrEqual(0)
+    expect(history).toBeLessThan(todo)
+    expect(todo).toBeLessThan(perception)
   })
 
   it('todoSummary 缺省或为空白时不渲染该小节', () => {

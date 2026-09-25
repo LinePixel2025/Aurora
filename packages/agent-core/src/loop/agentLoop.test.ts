@@ -416,6 +416,120 @@ describe('runAgentLoop', () => {
     expect(sent[3]?.toolCallId).toBe('c9')
   })
 
+  /**
+   * 请求形状回归（docs/06 §21）：
+   * 系统提示词稳居首位、历史依次紧随、本轮输入与易变上下文都在尾部，
+   * 且发给 provider 的 `tools` 数组已按工具名字典序 —— 这四条合起来就是「前缀可缓存」。
+   */
+  describe('请求形状：系统提示词与 tools 数组的顺序稳定性（docs/06 §21）', () => {
+    /** 按给定顺序注册一组工具（名字刻意非字典序，用来暴露「按注册序返回」的旧行为） */
+    function registryWithTools(names: readonly string[]): ToolRegistry {
+      const tools = new ToolRegistry()
+      for (const name of names) {
+        tools.register({
+          name,
+          description: `tool ${name}`,
+          parameters: { type: 'object', properties: {} },
+          execute: async () => ({ content: 'ok' }),
+        })
+      }
+      return tools
+    }
+
+    it('messages[0] 是 system 且内容就是传入的 systemPrompt', async () => {
+      const rec = createRecorder()
+      const provider = createFakeProvider([{ text: 'ok' }])
+      await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: '完整系统提示词',
+          userInput: '在吗',
+          history: [],
+          tools: new ToolRegistry(),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+        }),
+      )
+      const sent = provider.calls[0]?.messages ?? []
+      expect(sent[0]?.role).toBe('system')
+      expect(sent[0]?.content).toBe('完整系统提示词')
+    })
+
+    it('有历史时 messages[1..n-1] 依次是历史，最后一条是本轮输入', async () => {
+      const rec = createRecorder()
+      const provider = createFakeProvider([{ text: 'ok' }])
+      const history: StoredMessage[] = [
+        { id: 'h1', role: 'user', content: '旧提问', createdAt: '' },
+        { id: 'h2', role: 'assistant', content: '旧回复', createdAt: '' },
+      ]
+      await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: '新提问',
+          history,
+          tools: new ToolRegistry(),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+        }),
+      )
+      const sent = provider.calls[0]?.messages ?? []
+      expect(sent.map((item) => item.role)).toEqual(['system', 'user', 'assistant', 'user'])
+      expect(sent.slice(1, -1).map((item) => item.content)).toEqual(['旧提问', '旧回复'])
+      expect(sent.at(-1)).toMatchObject({ role: 'user', content: '新提问' })
+    })
+
+    it('extraContext 是最后一条（易变内容靠尾部）', async () => {
+      const rec = createRecorder()
+      const provider = createFakeProvider([{ text: 'ok' }])
+      await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: '问题',
+          extraContext: '技能正文',
+          history: [{ id: 'h1', role: 'user', content: '旧提问', createdAt: '' }],
+          tools: new ToolRegistry(),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+        }),
+      )
+      const sent = provider.calls[0]?.messages ?? []
+      expect(sent.map((item) => item.content)).toEqual(['sys', '旧提问', '问题', '技能正文'])
+      expect(sent.at(-1)).toMatchObject({ role: 'system', content: '技能正文' })
+    })
+
+    it('tools 数组已按工具名字典序（排序的生效点在循环里，不在注册表之外）', async () => {
+      const rec = createRecorder()
+      const provider = createFakeProvider([{ text: 'ok' }])
+      await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: 'x',
+          history: [],
+          tools: registryWithTools(['read_file', 'grep', 'glob', 'edit_file']),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+        }),
+      )
+      expect(provider.calls[0]?.tools?.map((tool) => tool.name)).toEqual([
+        'edit_file',
+        'glob',
+        'grep',
+        'read_file',
+      ])
+    })
+  })
+
   describe('思考链（reasoning，Design/betav2-spec.md §6）', () => {
     it('增量边到边转发，并累积持久化到当条 assistant 消息', async () => {
       const rec = createRecorder()
