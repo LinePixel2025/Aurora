@@ -69,6 +69,7 @@ import type {
 } from './contracts.js'
 import { resolveSubjectFolder } from './paths.js'
 import { extractPatchSecrets, mergeSettingsPatch } from './settings-patch.js'
+import { createEventBuffer } from './event-buffer.js'
 
 /** 附件正文入上下文的字符上限（超出截断，避免一个 PDF 吃掉整个上下文预算） */
 const MAX_ATTACHMENT_CHARS = 8_000
@@ -539,8 +540,15 @@ export function registerIpc(deps: DesktopDeps): () => void {
   const offWindows = deps.windows.onStateChanged((state) => {
     broadcast(IPC.window.stateChanged, state)
   })
-  const offAgent = deps.agent.onEvent((event) => {
+  // 对话事件是**逐 token** 到达的：这里不逐条直发，而是按约一帧的窗口合并后再广播
+  //（一个 token = 一次广播 = 每个窗口一次渲染，100+ token/s 时渲染层直接被叫垮）。
+  // 合并只作用于相邻的 text / reasoning；done / error / user-message 先 flush 再同步发，
+  // 保证终态不会越过它前面的增量先到（见 event-buffer.ts 的语义说明）。
+  const eventBuffer = createEventBuffer((event) => {
     broadcast(IPC.chat.event, event)
+  })
+  const offAgent = deps.agent.onEvent((event) => {
+    eventBuffer.push(event)
   })
   const offClassification = deps.classification.onEvent((event) => {
     broadcast(IPC.classification.event, event)
@@ -564,6 +572,8 @@ export function registerIpc(deps: DesktopDeps): () => void {
     offModes()
     offWindows()
     offAgent()
+    // 在途增量不再下发（窗口正在销毁 / 进程要退出）
+    eventBuffer.dispose()
     offClassification()
     offSensitive()
     offMcp()
