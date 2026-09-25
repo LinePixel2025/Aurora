@@ -8,10 +8,13 @@
  * 设计取舍：
  * - **滚动容器由内容向上查找**（第一个 `overflow-y: auto|scroll` 的祖先），
  *   不要求调用方传 ref：窗口模板结构不变、`MessageList` 的 props / 插槽契约保持原样。
- * - **两条信号合并到"每帧最多滚一次"**（`schedule()` + `requestAnimationFrame`）：
+ * - **三条信号合并到"每帧最多滚一次"**（`schedule()` / `settle()` + `requestAnimationFrame`）：
  *   1. `MutationObserver`（subtree 的 `childList` / `characterData`）—— 新消息、流式文本、
  *      工具卡片都是 DOM 变更，这是**唯一在交互窗里也成立**的信号；
- *   2. `ResizeObserver`（内容根 + 滚动容器）—— 覆盖容器尺寸变化（窗口从隐藏到显示、用户缩放）。
+ *   2. `ResizeObserver`（内容根 + 滚动容器）—— 覆盖容器尺寸变化（窗口从隐藏到显示、用户缩放）；
+ *   3. `transitionend`（内容根，靠冒泡覆盖全部后代，2026-09 新增）—— 展开 / 收起工具卡与
+ *      思考块走的是 CSS `height` 过渡，它在「DOM 变更那一帧」之后**继续**长高或缩短，
+ *      前两条信号都收不到；收到信号后由 `settle()` 逐帧核对到高度稳定为止。
  *
  *   ⚠️ **只监听内容元素的高度是不够的**（实测踩过）：交互窗的 `.thread` 是定高 flex 列，
  *   `MessageList` 的根节点带 `min-height: 100%`，内容一旦超过一屏，根节点的盒子就被
@@ -45,6 +48,13 @@ function isScrollable(node: HTMLElement): boolean {
   return overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay'
 }
 
+/**
+ * 高度过渡后「继续跟随」的帧数上限（≈400ms @60fps）。
+ * 取在最大时长令牌（350ms）之上，保证过渡结束后还能多跟几帧；
+ * 这只是兜底 —— 正常路径由「连续两帧 `scrollHeight` 不变」自终止。
+ */
+const MAX_SETTLE_FRAMES = 24
+
 export function useStickToBottom(
   content: () => HTMLElement | null,
   options: StickToBottomOptions = {},
@@ -57,6 +67,10 @@ export function useStickToBottom(
   let resizeObserver: ResizeObserver | null = null
   let mutationObserver: MutationObserver | null = null
   let frame: number | null = null
+  /** 过渡后自终止跟随：已排的帧 / 剩余帧数 / 上一帧的 `scrollHeight` */
+  let settleHandle: number | null = null
+  let settleFramesLeft = 0
+  let settleLastHeight = -1
 
   /** 距底部的像素距离；容器还没接上时按「在底部」处理 */
   function distanceToBottom(): number {
@@ -106,6 +120,41 @@ export function useStickToBottom(
     })
   }
 
+  /**
+   * 高度过渡结束后继续跟随，直到高度真的不动为止。
+   *
+   * 为什么需要它：展开 / 收起工具卡与思考块走的是 CSS `height` 过渡，它在「DOM 变更那一帧」
+   * 之后**继续**长高或缩短，而 `MutationObserver` / `ResizeObserver` 都收不到（内容根带
+   * `min-height: 100%`，尺寸信号本就不可靠，见文件头注释）—— 结果是动画还在动、滚动条已经
+   * 停在半路。`transitionend` 只报「某一段过渡结束」，而高度变化可能由多段过渡串联
+   * （展开体里还有别的过渡），所以收到信号后**逐帧核对** `scrollHeight`：
+   * 只要还在变就继续滚，连续两帧不变即停。
+   *
+   * 帧数上限是兜底：宁可少跟几帧，也不要留下一个常驻的 rAF 空转。
+   * `following` 每帧都重新判断，所以用户在过渡期间上滚接管仍然有效。
+   */
+  function settle(): void {
+    settleFramesLeft = MAX_SETTLE_FRAMES
+    if (settleHandle !== null) return
+    settleLastHeight = -1
+    const step = (): void => {
+      settleHandle = null
+      if (settleFramesLeft <= 0 || scroller === null) return
+      settleFramesLeft -= 1
+      const height = scroller.scrollHeight
+      const stable = height === settleLastHeight
+      settleLastHeight = height
+      if (following.value) scrollToBottom()
+      if (stable) return
+      settleHandle = window.requestAnimationFrame(step)
+    }
+    settleHandle = window.requestAnimationFrame(step)
+  }
+
+  function onTransitionEnd(): void {
+    settle()
+  }
+
   function findScroller(): HTMLElement | null {
     let node = content()?.parentElement ?? null
     while (node !== null) {
@@ -127,17 +176,23 @@ export function useStickToBottom(
     resizeObserver.observe(scroller)
     mutationObserver = new MutationObserver(schedule)
     mutationObserver.observe(contentEl, { childList: true, characterData: true, subtree: true })
+    // 第三条信号：高度过渡的结束瞬间（`transitionend` 会从后代冒泡上来，一次监听覆盖全部子元素）
+    contentEl.addEventListener('transitionend', onTransitionEnd)
     scrollToBottom()
   })
 
   onUnmounted(() => {
     scroller?.removeEventListener('scroll', onScroll)
+    contentEl?.removeEventListener('transitionend', onTransitionEnd)
     resizeObserver?.disconnect()
     mutationObserver?.disconnect()
     resizeObserver = null
     mutationObserver = null
     if (frame !== null) window.cancelAnimationFrame(frame)
     frame = null
+    if (settleHandle !== null) window.cancelAnimationFrame(settleHandle)
+    settleHandle = null
+    settleFramesLeft = 0
     contentEl = null
     scroller = null
   })
