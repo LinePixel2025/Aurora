@@ -144,6 +144,7 @@ onMounted(() => {
     sensitiveRequest.value = request
   })
   document.addEventListener('pointerdown', onComposerPointerDown)
+  document.addEventListener('keydown', onDocumentEscape)
   // 水合当前会话（main）→ 会话列表：左栏立刻有内容
   void hydrate().then(() => loadSessions())
   // 斜杠命令的 Skill 候选（`/` 浮层的技能分组）：失败只是没有技能项，不影响输入
@@ -157,6 +158,7 @@ onUnmounted(() => {
   offSensitiveTool?.()
   offSensitiveTool = null
   document.removeEventListener('pointerdown', onComposerPointerDown)
+  document.removeEventListener('keydown', onDocumentEscape)
   if (pickerHintTimer !== null) window.clearTimeout(pickerHintTimer)
   pickerHintTimer = null
   disposeRecording()
@@ -689,6 +691,19 @@ function onComposerPointerDown(event: PointerEvent): void {
   if (!showSlash.value) return
   const target = event.target
   if (target instanceof Node && composerBoxEl.value?.contains(target) === true) return
+  slashDismissed.value = true
+}
+
+/**
+ * Esc 收斜杠浮层 —— 必须挂在 document 上，不能只靠 textarea 的 `onComposerKeydown`。
+ *
+ * 原因是一个真实可达的状态：输入 `/sys` 让浮层出现 → 点权限钮（`openFlyout` 抢走，浮层隐藏）
+ * → 再关掉权限下拉，浮层会**重新出现**，而此刻焦点在权限钮上、不在输入框里，
+ * textarea 上的 keydown 收不到 Esc，用户会以为「Esc 坏了」。
+ * 判定与 textarea 里那条同源（都写 `slashDismissed`，输入一变即复位），重复触发无副作用。
+ */
+function onDocumentEscape(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || !showSlash.value) return
   slashDismissed.value = true
 }
 
