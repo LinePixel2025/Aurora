@@ -39,6 +39,27 @@ export const REASONING_MARKER = 'STUB_REASONING_OK'
 export const SUBAGENT_REPORT_MARKER = 'STUB_SUB_OK'
 
 /**
+ * 用户消息含此标记 → 对话分流改走**终端工具链路**（docs/06 §11.7 的免确认模式）：
+ * 第 1 轮返回一个 `run_command` 的 `tool_calls`，拿到工具结果后的第 2 轮回一句收尾文本。
+ *
+ * **命令内容由标记约定**：标记之后的那一行就是命令（去掉首尾空白）。
+ * 标记后没有命令行时命令为空串 —— 工具会回 `缺少 command 参数` 而不是静默跑别的命令，
+ * 因此写错提问会直接断言失败，不会变成一次"看起来正常"的空跑。
+ *
+ * 自测用它在**真实 IPC + 真实确认链路**上断言「命中免确认模式不弹卡片 / 未命中仍然弹卡片」。
+ */
+export const RUN_COMMAND_MARKER = 'AURORA_RUN_CMD'
+
+/**
+ * 收尾片把工具结果回显给渲染层时带的说明前缀。
+ *
+ * 为什么需要回显：工具事件只带 `outputSummary`（`退出码 0 · 12ms`，见 agent-core 的 `summarize`），
+ * stdout **不在**里面；命令输出只有模型看得到的工具结果里才有。渲染层因此拿不到
+ * 「命令真的产出了什么」的证据，由桩服务代读、原样回显（见 `lastToolContent`）。
+ */
+export const RUN_COMMAND_ECHO_PREFIX = 'STUB_RUN_CMD_RESULT:'
+
+/**
  * 爆发模式标记（`burst-probe`）：**本次请求最后一条 user 消息**含它才走爆发分流。
  *
  * 刻意按请求内容而不是环境变量分流：`AURORA_CAPTURE` 一轮里前面的场景（chat-stream /
@@ -247,6 +268,68 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
         return
       }
 
+      // ── 终端工具分流（docs/06 §11.7）：第 1 轮要一次 run_command，第 2 轮收尾 ──
+      // 必须排在下面的 `toolCallRound`（`chatRequests().length === 1`）之前：
+      // 那一支按「第几次对话请求」分派，是**计数寻址**，只在现有调用顺序下碰巧不冲突
+      // （前面的对话场景已经消耗掉第 1 次）；本支按提问内容寻址。
+      // 内容寻址一旦被计数寻址抢走就会返回 `use_skill`，本轮断言随之变成"工具根本没被调用"，
+      // 而且失败与否取决于"这条提问排在第几个"——所以它必须排在前面（与爆发分流同理）。
+      if (isRunCommandRequest(record)) {
+        const previousToolResult = lastToolContent(record)
+        if (previousToolResult === undefined) {
+          // 第 1 轮：只发工具调用，命令来自标记之后那一行
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_smoke_run_1',
+                      type: 'function',
+                      function: {
+                        name: 'run_command',
+                        arguments: JSON.stringify({ command: runCommandOf(record) }),
+                      },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
+        } else {
+          // 第 2 轮：只回显工具结果的 **stdout 段**（见 `RUN_COMMAND_ECHO_PREFIX` 的说明）——
+          // 命令真的跑出来了什么，因此能在渲染层断言。刻意**不带**头部：
+          // 头部里有命令行本身，带上它会让"回显里出现了命令里的字符串"变成假阳性。
+          // 命令被拒时工具结果是拒绝文本、没有 stdout 段，回显里自然没有命令产物。
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  content: `${STUB_MARKER} ${RUN_COMMAND_ECHO_PREFIX}${stdoutOf(previousToolResult)}`,
+                },
+                finish_reason: null,
+              },
+            ],
+          })
+          // 收尾帧压在最后一片之后（同默认对话分流）：主进程的**事件合并缓冲**按 16ms 窗口
+          // 合并相邻增量，终态越过它前面的增量先到会让「逐条增量」类判据随机失败。
+          setTimeout(() => {
+            sendSseStop(res)
+            res.write('data: [DONE]\n\n')
+            res.end()
+          }, FRAME_GAP_MS)
+          return
+        }
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+
       // ── 1-D 爆发分流：高密度思考 + 正文分片，测量渲染层跟不跟得上 ──
       // 必须排在下面的 `toolCallRound` 之前：那一支按「第几次对话请求」决定要不要发工具调用，
       // 而爆发场景只有一次请求、且要的是纯分片（不能先插一轮工具调用把时序搅乱）。
@@ -390,6 +473,60 @@ function isBurstRequest(request: StubRequest): boolean {
     .reverse()
     .find((message) => message.role === 'user')
   return typeof lastUser?.content === 'string' && lastUser.content.includes(BURST_MARKER)
+}
+
+/** 最后一条 user 消息的文本内容（非字符串一律当空串） */
+function lastUserContent(request: StubRequest): string {
+  const lastUser = [...(request.body?.messages ?? [])]
+    .reverse()
+    .find((message) => message.role === 'user')
+  return typeof lastUser?.content === 'string' ? lastUser.content : ''
+}
+
+/**
+ * 请求是否为终端工具场景：最后一条 user 消息含 `RUN_COMMAND_MARKER`（与 `isBurstRequest` 同款判定）。
+ *
+ * 只看 user 消息是有意的：第 2 轮请求的 messages 末尾是工具结果，但最后一条 **user** 消息
+ * 仍是那条带标记的提问，因此两轮请求都能命中同一支分流。
+ */
+function isRunCommandRequest(request: StubRequest): boolean {
+  return lastUserContent(request).includes(RUN_COMMAND_MARKER)
+}
+
+/**
+ * 标记之后的第一行就是命令（见 `RUN_COMMAND_MARKER`）。
+ * 没有命令行时返回空串：工具会回 `缺少 command 参数`，不会静默执行别的命令。
+ */
+function runCommandOf(request: StubRequest): string {
+  const lines = lastUserContent(request).split('\n')
+  const markerIndex = lines.findIndex((line) => line.includes(RUN_COMMAND_MARKER))
+  return markerIndex < 0 ? '' : (lines[markerIndex + 1] ?? '').trim()
+}
+
+/**
+ * 请求里最后一条 `tool` 结果的文本内容；**还没带回工具结果时返回 `undefined`**
+ * —— 那一轮就是「要工具」的那一轮（与既有分流用 `role === 'tool'` 判断同一个口径）。
+ */
+function lastToolContent(request: StubRequest): string | undefined {
+  const toolMessages = (request.body?.messages ?? []).filter((message) => message.role === 'tool')
+  const last = toolMessages[toolMessages.length - 1]
+  if (last === undefined) return undefined
+  return typeof last.content === 'string' ? last.content : ''
+}
+
+/**
+ * 从工具结果里取 **stdout 段**（`formatCommandOutput` 的分段格式：头部四行，随后
+ * `stdout：` / `stderr：` 各占一段，空段省略）。取不到时返回空串。
+ *
+ * 逐行解析而不用正则：`\r\n` 行尾只需 `trim()` 一次，且"段的边界"在这里就是空行。
+ */
+function stdoutOf(toolContent: string): string {
+  const lines = toolContent.split('\n')
+  const start = lines.findIndex((line) => line.startsWith('stdout'))
+  if (start < 0) return ''
+  const rest = lines.slice(start + 1)
+  const end = rest.findIndex((line) => line.trim() === '' || line.startsWith('stderr'))
+  return (end < 0 ? rest : rest.slice(0, end)).join('\n').trim()
 }
 
 /**

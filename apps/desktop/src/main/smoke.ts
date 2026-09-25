@@ -9,6 +9,7 @@
  * 结果以 `AURORA_SMOKE_RESULT:` 前缀打印到主进程日志。
  */
 import { CONFIG_VERSION } from '@aurora/shared'
+import { RUN_COMMAND_MARKER } from './smoke-llm.js'
 
 export const SMOKE_FLAG = 'AURORA_SMOKE'
 export const SMOKE_RESULT_PREFIX = 'AURORA_SMOKE_RESULT:'
@@ -26,6 +27,8 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
   const STUB_BASE = ${JSON.stringify(stubBaseUrl)}
   const STUB_MODEL = ${JSON.stringify(stubModel)}
   const WATCH_DIR = ${JSON.stringify(watchDir)}
+  // 终端工具场景的提问标记（标记之后那一行就是命令）：与桩 LLM 共用同一个常量，避免两处各写一份
+  const RUN_COMMAND_MARKER = ${JSON.stringify(RUN_COMMAND_MARKER)}
   // 期望的配置版本由主进程注入（不再写死数字：Schema 升版时这里必须跟着走，否则自测会假 FAIL）
   const EXPECTED_CONFIG_VERSION = ${CONFIG_VERSION}
   const results = []
@@ -555,6 +558,185 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
         subTool.every((e) => typeof e.messageId === 'string' && e.messageId.length > 0),
       'n=' + roundEvents.length,
     )
+
+    // 9.5 免确认命令模式（docs/06 §11.7，v12）：命中列表 → 直接执行、不弹卡片；未命中 → 仍然弹卡片。
+    //     两条断言必须成对：只断言「没收到卡片」证明不了什么 —— 整条链路没走（工具压根没被调用、
+    //     或走了 enabled() 为假的那条更宽的放行路径）同样收不到卡片，负对照才是这条断言的本体。
+    //     提问里标记之后那一行就是命令（见 smoke-llm.ts 的 RUN_COMMAND_MARKER）；
+    //     桩服务收到工具结果后把它的 **stdout 段**回显进收尾文本，命令是否真的执行因此可断言。
+    const ALLOW_SESSION = 'smoke-allow'
+    const DENY_SESSION = 'smoke-allow-deny'
+    const ALLOW_COMMAND = 'echo AURORA_ALLOW_OK'
+    // 桩服务只回显 stdout 段（不带命令行头部），所以它出现在收尾文本里 === 命令真的跑出产物
+    const ALLOW_OUTPUT_MARKER = 'AURORA_ALLOW_OK'
+    const ALLOW_PROMPT = RUN_COMMAND_MARKER + '\n' + ALLOW_COMMAND
+
+    /**
+     * 写 agent.tools.terminal.allowPatterns。
+     * ⚠️ settings:update 对 agent 分组是**整棵子树覆盖**，patch 必须带完整的 agent.tools 树，
+     * 否则 files / search / open 会被静默写丢（后面几条门控断言会跟着一起假 FAIL）。
+     */
+    const writeAllowPatterns = async (patterns) => {
+      const current = await window.aurora.settings.get()
+      const tools = current && current.ok ? current.value.agent.tools : null
+      if (tools === null) return null
+      return window.aurora.settings.update({
+        agent: { tools: { ...tools, terminal: { ...tools.terminal, allowPatterns: patterns } } },
+      })
+    }
+
+    // 订阅确认卡片：贯穿两条断言共用一个收集器（命中那条要求它**始终为空**）
+    const confirmRequests = []
+    const offConfirm = window.aurora.proactive.onSensitiveTool((request) =>
+      confirmRequests.push(request),
+    )
+
+    // 1) 命中免确认：echo AURORA_ALLOW* 命中 echo AURORA_ALLOW_OK
+    const allowSaved = await writeAllowPatterns(['echo AURORA_ALLOW*'])
+    record(
+      '免确认模式已保存（settings:update 对终端子树生效）',
+      Boolean(
+        allowSaved &&
+          allowSaved.ok &&
+          allowSaved.value.agent.tools.terminal.allowPatterns.length === 1,
+      ),
+      JSON.stringify(
+        allowSaved && allowSaved.ok ? allowSaved.value.agent.tools.terminal.allowPatterns : allowSaved,
+      ),
+    )
+    await wait(120)
+
+    const allowEvents = []
+    // 按会话过滤：chat:event 是**全窗口广播**，只收本轮会话的事件才不会被别处的流串味
+    const offAllow = window.aurora.chat.onEvent((event) => {
+      if (event.sessionId === ALLOW_SESSION) allowEvents.push(event)
+    })
+    const sentAllow = expectOk(
+      'chat.send(免确认命中)',
+      await window.aurora.chat.send({
+        sessionId: ALLOW_SESSION,
+        text: ALLOW_PROMPT,
+        origin: 'edge-bar',
+      }),
+    )
+    if (sentAllow) {
+      for (
+        let i = 0;
+        i < 400 && !allowEvents.some((e) => e.type === 'done' || e.type === 'error');
+        i += 1
+      ) {
+        await wait(50)
+      }
+    }
+    offAllow()
+    const allowText = allowEvents
+      .filter((e) => e.type === 'text')
+      .map((e) => e.delta)
+      .join('')
+    const allowRuns = allowEvents.filter((e) => e.type === 'tool' && e.call.name === 'run_command')
+    record(
+      '命中免确认模式：run_command 卡片 success 且命令与提问一致（命令真的执行了）',
+      allowRuns.some((e) => e.call.state === 'success') &&
+        allowRuns.every((e) => (e.call.input || {}).command === ALLOW_COMMAND),
+      'states=' +
+        allowRuns.map((e) => e.call.state).join('>') +
+        ' cmds=' +
+        JSON.stringify(allowRuns.map((e) => (e.call.input || {}).command)),
+    )
+    record(
+      '命中免确认模式：工具结果带回了命令输出 AURORA_ALLOW_OK',
+      allowText.indexOf(ALLOW_OUTPUT_MARKER) >= 0,
+      'text=' + allowText.slice(0, 160),
+    )
+    record(
+      '命中免确认模式不弹卡片（整轮无 proactive:sensitiveTool 事件）',
+      confirmRequests.length === 0,
+      'confirm=' + JSON.stringify(confirmRequests.map((item) => item.toolName)),
+    )
+
+    // 2) 负对照：清空列表后**另开一个会话**发同样的提问 —— 必须弹卡片。
+    //    另开会话是必须的：桩 LLM 按「这一轮之前有没有带回工具结果」判断第几轮，
+    //    复用上一轮会话（历史里已有工具结果）会直接跳到收尾片，工具根本不会被调用。
+    const denySaved = await writeAllowPatterns([])
+    record(
+      '负对照前置：免确认模式已清空为 []',
+      Boolean(
+        denySaved &&
+          denySaved.ok &&
+          denySaved.value.agent.tools.terminal.allowPatterns.length === 0,
+      ),
+      JSON.stringify(
+        denySaved && denySaved.ok ? denySaved.value.agent.tools.terminal.allowPatterns : denySaved,
+      ),
+    )
+    await wait(120)
+
+    const denyEvents = []
+    const offDeny = window.aurora.chat.onEvent((event) => {
+      if (event.sessionId === DENY_SESSION) denyEvents.push(event)
+    })
+    const sentDeny = expectOk(
+      'chat.send(负对照·未命中)',
+      await window.aurora.chat.send({
+        sessionId: DENY_SESSION,
+        text: ALLOW_PROMPT,
+        origin: 'edge-bar',
+      }),
+    )
+    const denyConfirm = sentDeny
+      ? await waitFor(
+          async () => confirmRequests[0],
+          (value) => value !== undefined,
+          20000,
+        )
+      : undefined
+    record(
+      '负对照未命中仍然弹卡片（收到 proactive:sensitiveTool）',
+      Boolean(denyConfirm && denyConfirm.toolName === 'run_command'),
+      JSON.stringify(denyConfirm || null),
+    )
+    // 收到就**立即**结掉：确认超时是 60s（main/proactive.ts 的 DEFAULT_CONFIRM_TIMEOUT_MS），
+    // 挂着不结会让请求挂到后续断言上，并让整轮自测多等一分钟。
+    if (denyConfirm !== undefined) {
+      const resolved = await window.aurora.proactive.resolveSensitiveTool(denyConfirm.confirmId, false)
+      record(
+        '负对照：确认卡片已结掉（拒绝执行，不挂到 60s 超时）',
+        Boolean(resolved && resolved.ok && resolved.value === true),
+        JSON.stringify(resolved || null),
+      )
+    }
+    if (sentDeny) {
+      for (
+        let i = 0;
+        i < 400 && !denyEvents.some((e) => e.type === 'done' || e.type === 'error');
+        i += 1
+      ) {
+        await wait(50)
+      }
+    }
+    offDeny()
+    const denyText = denyEvents
+      .filter((e) => e.type === 'text')
+      .map((e) => e.delta)
+      .join('')
+    record(
+      '负对照：命令没有被执行（工具结果里没有命令输出）',
+      denyText.indexOf(ALLOW_OUTPUT_MARKER) < 0,
+      'text=' + denyText.slice(0, 160),
+    )
+
+    // 3) 复原：列表清回空数组并断言，收尾不留残留（此刻它已由负对照写成 []，这一条是收口检查）
+    const allowRestored = await writeAllowPatterns([])
+    record(
+      '免确认模式已复原为空数组（本次断言不留残留配置）',
+      Boolean(
+        allowRestored &&
+          allowRestored.ok &&
+          allowRestored.value.agent.tools.terminal.allowPatterns.length === 0,
+      ),
+      '',
+    )
+    offConfirm()
 
     // 9.2 MCP 状态接口（即使没有配置服务器也必须返回结构化结果而不是抛错）
     const mcpStatus = expectOk('mcp.status', await window.aurora.mcp.status())
