@@ -251,7 +251,7 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
       // 必须排在下面的 `toolCallRound` 之前：那一支按「第几次对话请求」决定要不要发工具调用，
       // 而爆发场景只有一次请求、且要的是纯分片（不能先插一轮工具调用把时序搅乱）。
       if (isBurstRequest(record)) {
-        void sendBurst(res, burstPreludesDone(record))
+        void sendBurst(res, burstPreludesDone(record), log)
         return
       }
 
@@ -383,7 +383,18 @@ function isBurstRequest(request: StubRequest): boolean {
  * 客户端中途断开（切会话 / 关窗）会让写失败：那是正常路径，**不是**桩服务异常，
  * 因此这里只销毁连接、不抛错（抛出去会变成未处理的 rejection，把整轮 capture 打断）。
  */
-async function sendBurst(res: ServerResponse, preludesDone: number): Promise<void> {
+async function sendBurst(res: ServerResponse, preludesDone: number, log?: Logger): Promise<void> {
+  // 桩服务这一侧的**发送耗时**要能测：探针测到的是「渲染层观察到流式收尾」的耗时，
+  // 两者一比才知道那多出来的时间是渲染跟不上、还是发送侧本身就被拖慢了。
+  const startedAt = Date.now()
+  const logElapsed = (stage: 'prelude' | 'burst', chunks: number): void => {
+    log?.info('爆发流发送完成', {
+      stage,
+      preludesDone,
+      chunks,
+      elapsedMs: Date.now() - startedAt,
+    })
+  }
   try {
     // 堆量轮：一条长正文 + 一次 `use_skill`（与默认分流同一个「能续下一轮」的抓手）
     if (preludesDone < BURST_PRELUDE_ROUNDS) {
@@ -417,6 +428,7 @@ async function sendBurst(res: ServerResponse, preludesDone: number): Promise<voi
       sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
       res.write('data: [DONE]\n\n')
       res.end()
+      logElapsed('prelude', 1)
       return
     }
 
@@ -458,6 +470,7 @@ async function sendBurst(res: ServerResponse, preludesDone: number): Promise<voi
     sendSseStop(res)
     res.write('data: [DONE]\n\n')
     res.end()
+    logElapsed('burst', BURST_CHUNK_COUNT * 2)
   } catch {
     res.destroy()
   }

@@ -996,25 +996,39 @@ const BURST_PROBE_SLOT = '__auroraStreamBurstProbe'
 const BURST_HEARTBEAT_MS = 20
 
 /**
- * 爆发场景的探针阈值（2026-09-26 实测标定，详见 chatStreamBurstCheck 的注释）。
+ * 爆发场景的 longtask 阈值（任务书要求的原始口径）。
  *
- * 三个 longtask 数值是任务书要求的原始口径，但**它在本 BUG 上分辨不出差异**：
- * Chromium 只上报单任务 > 50ms 的 longtask，而本 BUG 的代价形态是「每片几毫秒、
- * 5ms 一片 → 持续饱和」，单任务永远够不到 50ms 下限（修复前实测恒为 0/0/0）。
- * 因此真正参与判定的是 heartbeat / frame 两组（同样是原始实测值标定的）。
+ * **它在本 BUG 上分辨不出差异**：Chromium 只上报单任务 > 50ms 的 longtask，而本 BUG 的代价
+ * 形态是「每片几毫秒、5ms 一片 → 持续饱和」，单任务够不到 50ms 下限 —— 2026-09-26 实测
+ * 修复前 0/0/0、修复后 1/50/0，两组都是「没有巨型卡顿」。因此它们只当兜底门限
+ *（防止出现真正离谱的单次卡顿），真正参与判定的是下面的心跳 / 帧两组。
+ *
+ * 口径：修复后实测值 × 约 3 倍；实测为 0 的那项给绝对下限（0 × 3 = 0 会把机器抖动判成 FAIL）。
  */
 const BURST_LONG_TASK_LIMITS = {
-  count: 12,
-  maxMs: 260,
-  blockingMs: 900,
+  count: 6,
+  maxMs: 160,
+  blockingMs: 150,
 }
 
-/** 心跳与帧的口径阈值（修复后实测 × 约 3 倍余量，见 chatStreamBurstCheck 注释） */
+/**
+ * 心跳 / 帧的口径阈值（2026-09-26 本机实测标定，修复后值 → 阈值）：
+ *
+ * | 指标 | 修复前 | 修复后 | 阈值 | 说明 |
+ * | --- | --- | --- | --- | --- |
+ * | maxUnhiddenHeartbeatMs | 661.4 | 51.0 | 160 | 3.1 倍余量 |
+ * | heartbeatOverrunMs | 4749.4 | 108.8 | 400 | 3.7 倍余量 |
+ * | maxFrameGapMs | 137.5 | 29.2 | 110 | 3.8 倍余量，仍低于修复前值（能抓住回归） |
+ * | droppedFrames | 238 | 0 | 25 | 修复后为 0，只能给绝对下限（约 0.4s 的掉帧代价） |
+ *
+ * 阈值按「修复后 × 约 3 倍」取宽松余量，防 CI 机器抖动假 FAIL；数值随机器档位浮动，
+ * 断言的只有数量级 —— 改桩的密度 / transcript 规模等于改基线的量纲，必须重新标定。
+ */
 const BURST_LAG_LIMITS = {
-  maxHeartbeatMs: 150,
-  heartbeatOverrunMs: 600,
-  maxFrameGapMs: 150,
-  droppedFrames: 20,
+  maxHeartbeatMs: 160,
+  heartbeatOverrunMs: 400,
+  maxFrameGapMs: 110,
+  droppedFrames: 25,
 }
 
 /**
