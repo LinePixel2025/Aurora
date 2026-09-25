@@ -166,9 +166,11 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   同样**不受 `agent.tools.enabled` 门控**。
 - **主界面 `chat` 窗口是 1120×720、`alwaysOnTop=false` 的常驻大窗**（三栏布局 + 右栏模式感知，
   关闭仍 = 隐藏），别按旧版 420×640 侧弹交互窗的心智模型理解它的几何、层级与探针坐标。
-- **改了 `packages/shared/src/**` 之后必须先 `pnpm --filter @aurora/shared build` 再跑下游 typecheck**：
-  该包的 `types` 指向 `dist/index.d.ts`，不重建的话 `apps/desktop` 会对着**旧类型**报
-  「no exported member」（看着像自己写错了，其实只是没编译）。
+- **改了 `packages/shared/src/**` 或 `packages/agent-core/src/**` 之后必须先 build 那个包再跑下游 typecheck**：
+  两个包的 `types` 都指向 `dist/*.d.ts`，不重建的话 `apps/desktop` 会对着**旧类型**报错 ——
+  常见症状是共享包「no exported member」、agent-core 新加的方法在 `main/ipc.ts` 里报
+  `TS2339 Property 'xxx' does not exist on type 'SessionStore'`（看着像自己写错了，其实只是没编译）。
+  命令：`pnpm --filter @aurora/shared build` / `pnpm --filter @aurora/agent-core build`。
 - **capture / smoke 的探针改配置时注意两个缓存**：`SettingsStore.init()` 启动即把 `config.json`
   读进内存并长期缓存 —— 启动后**写文件对运行中的进程无效**，改配置只能走 `settings:update` IPC；
   而 `SessionStore` 是按会话**惰性**读盘且首次读即缓存，种会话文件必须赶在窗口第一次
