@@ -161,7 +161,10 @@ if (shouldPublish) {
       run('gh', ['release', 'edit', tag, '--repo', RELEASES_REPO, '--notes-file', notesFile])
     }
   } catch {
-    const notesArgs = notesFile !== undefined ? ['--notes-file', notesFile] : ['--notes', `Aurora ${tag}（Windows x64 安装包，未签名）`]
+    const notesArgs =
+      notesFile !== undefined
+        ? ['--notes-file', notesFile]
+        : ['--notes', `Aurora ${tag}（Windows x64 安装包，未签名）`]
     run('gh', [
       'release',
       'create',

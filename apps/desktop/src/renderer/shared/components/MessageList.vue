@@ -528,7 +528,9 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 <!-- 子代理卡头：任务简述（入参 description） -->
                 <template v-else-if="taskOf(call)">
                   <span class="tool-title">
-                    {{ taskOf(call)!.description.trim() !== '' ? taskOf(call)!.description : '子代理' }}
+                    {{
+                      taskOf(call)!.description.trim() !== '' ? taskOf(call)!.description : '子代理'
+                    }}
                   </span>
                   <span class="tiny tool-state-label">{{ toolStateLabel(call.state) }}</span>
                 </template>

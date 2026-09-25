@@ -102,8 +102,6 @@ const currentTodos = computed<TodoRow[]>(() => {
   return []
 })
 
-
-
 /** 标题栏里的当前会话名：快速会话固定名，其余用主进程摘要（空标题 =「新会话」） */
 const currentTitle = computed(() => {
   if (sessionId.value === 'quick') return '快速对话'
@@ -601,7 +599,9 @@ async function markGuideDone(): Promise<void> {
             @click="clear"
           >
             <svg viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M3 4.2h10M6.6 4V2.8h2.8V4M4.4 4.4l.6 8.2c0 .5.4.9.9.9h4.2c.5 0 .9-.4.9-.9l.6-8.2M6.6 6.6v4.6M9.4 6.6v4.6" />
+              <path
+                d="M3 4.2h10M6.6 4V2.8h2.8V4M4.4 4.4l.6 8.2c0 .5.4.9.9.9h4.2c.5 0 .9-.4.9-.9l.6-8.2M6.6 6.6v4.6M9.4 6.6v4.6"
+              />
             </svg>
           </button>
         </div>

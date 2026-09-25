@@ -58,7 +58,9 @@ function onClose(): void {
       aria-label="关闭窗口"
       @click="onClose"
     >
-      <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0.7 0.7l8.6 8.6M9.3 0.7L0.7 9.3" /></svg>
+      <svg viewBox="0 0 10 10" aria-hidden="true">
+        <path d="M0.7 0.7l8.6 8.6M9.3 0.7L0.7 9.3" />
+      </svg>
     </button>
   </div>
 </template>
