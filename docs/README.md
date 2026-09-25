@@ -57,6 +57,20 @@
   详见 [06-agent-core.md §13](./06-agent-core.md)、[08-settings-onboarding.md §6](./08-settings-onboarding.md)。
   **语音输入（STT）不在本轮范围**。
 
+**v0.0.2（Agent 内核强化）本轮新增**：
+
+- **任务清单工具**：`todo_write`（整表替换）/ `todo_read`（docs/06 §18），按会话持久化到
+  `userData/todos/`，当前清单注入 systemPrompt（历史被压缩后模型仍能看到任务状态）。
+- **子代理工具 `task`**（docs/06 §19）：独立上下文派生（空白历史 + 子人设 + 白名单工具表，
+  禁递归、拿不到敏感工具与 MCP 工具），最终报告作为工具结果回填主循环（20k 截断）。
+- **系统提示词工程**：小节顺序扩为 10 段，新增「当前任务清单」「工具使用规范」（按注册工具
+  条件生成）；`settingsHint` 改走 `KernelAgentHost` 正式通道（`composeModePrompt` 旁路删除）。
+- **Skill**：`use_skill` 返回正文附带 `scripts/` 文件清单（「永不自动执行脚本」口径不变）。
+- **MCP 强化**（docs/06 §7）：HTTP 传输自定义请求头（`headersEnc`，凭据与 env 同构，设置页
+  可编辑）；stdio 意外断开自动重连（指数退避 1s→60s、最多 5 次）；`tools/list` 跟随
+  `nextCursor` 自动分页（上限 20 页）。
+- 配置 Schema 升到 **v9**（`v8 → v9` 迁移：为每个 MCP 服务器补 `headersEnc: {}`，幂等）。
+
 **v0.0.1（BetaV2）本轮新增**：
 
 - **主界面三栏**：`chat` 窗升级为常驻主界面（默认 **1120×720**、`alwaysOnTop` 关闭），三栏布局
