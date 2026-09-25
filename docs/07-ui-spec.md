@@ -85,7 +85,18 @@
     固定顶置项「快速对话」（`data-field="chat.quick-item"`，点击切到 quick 会话；
     **可直接输入的快速对话入口在桌面提示条面板**，见 §2.2）→
     会话列表（`data-field="chat.session-list"`，单行标题 + 相对时间）→
+    **「已归档 · N」分组**（`data-field="chat.archive-group"`，默认收起；展开后的列表是
+    `data-field="chat.archive-list"`）→
     底部：模式徽章 + 右栏开关（`data-field="chat.right-panel-toggle"`）+ 设置齿轮。
+  - **会话归档（2026-09 新增）**：会话项 hover 时右侧浮出一枚「归档」图标钮
+    （`data-action="chat.archive-session"`，单击即归档、**可逆、不弹确认**）；
+    归档后该会话从主列表移入底部「已归档 · N」分组，**仍可点开继续对话**，此时主区头部给一条
+    「已归档 · 取消归档」提示（`data-field="chat.archived-banner"`）。
+    归档状态写在**会话文件自身**（`sessions/<id>.json` 的 `meta.archived`，见 06 §4），
+    **不进 config.json**、不改 `CONFIG_VERSION`（仍为 11）。
+    已知边界：`chat:sessions` 目前**没有推送通道**，归档只在发出请求的那个窗口即时生效，
+    其它窗口（提示条用 quick 会话）要等下次拉列表才看得到；quick / settings 两个伪会话
+    不出现在列表里，因此也不参与归档。
   - **主区**：头部拖拽区（侧栏开关 + 状态灯 + 会话标题 + 未配置徽章 + 清空（图标钮）+
     **Windows 式窗口按钮**：`最小化`（`data-caption-btn="minimize"`，真最小化进任务栏）与
     `关闭`（`data-caption-btn="close"`，= 隐藏窗口）；双击头部拖动区切换最大化）→
@@ -168,6 +179,19 @@
   **刻意不做逐字打字机**：正文是 `v-html` 渲染的 markdown，Vue 对 `v-html` 不做 DOM diff，
   按节点挂进场动画会在每个 chunk 上重放（快速流式时整块停在半透明），按帧做真打字机则要
   每帧重解析 markdown —— 遮罩方案既有「还在写」的观感，又零额外开销。
+- **展开 / 收起的高度动画（2026-09 修复「动画乱跳」）**：`.collapse-*` 不再拿写死的
+  `max-height: 70vh` 当动画终点 —— 它的内容实测只有约 140px（工具卡展开体）与 220px
+  （思考块正文），终点远大于内容时 `min(内容高, max-height)` 会让**全部可见位移挤在时间轴的
+  一小段里**（展开表现为「飞快长满再空转」，收起表现为「先空转、末尾猛缩」），观感就是乱跳。
+  改为**实测高度**动画：enter 时 `height: 0 → el.scrollHeight`、enter 结束后归 `height: auto`，
+  leave 时 `scrollHeight → 0`，时长沿用 `--dur-base`(250ms) + `--ease-spring`。
+  实现收在 `renderer/shared/composables/useCollapseTransition.ts`（Vue `<Transition>` 的
+  enter / leave 钩子），三个使用点（思考块、工具卡展开体、子代理页的「任务指令」折叠）都要挂上；
+  **不要改回固定 `max-height`**（见 §5.2 硬约定）。流式结束时思考块自动收起为摘要行
+  （上文 §2.3「思考块的流式动效」）走的也是这条动画，不再是瞬抽 220px。
+  另外 `.tool-card` 的进场错位延迟（第 2/3/4 张 +40/80/120ms）此前挂在
+  `.tools > .tool-card:nth-child(n)` 上、**常驻生效**，会误伤卡片上任何别的过渡 ——
+  已收窄到只挂在 `.tool-enter-active` / `.tool-leave-active` 下。
 - **图标体系（2026-09）**：渲染层图标统一走 [lucide](https://lucide.dev)（`lucide-vue-next`），
   经 `renderer/shared/icons.ts` **具名再导出**（只登记用到的，Vite 摇树）；
   工具卡按工具名给语义图标（`renderer/shared/toolIcons.ts`，未知工具退到扳手、MCP 退到拼图）；
@@ -176,9 +200,14 @@
 - **消息区跟随最新（v0.6.0 修复「对话不会自动拉到底」）**：滚动容器是窗口自己的 `.thread`，
   跟随逻辑在 `MessageList.vue` + `composables/useStickToBottom.ts`：
   - **默认跟随**：新消息 / 流式增量 / 历史水合导致内容变高时自动滚到底。
-    信号有两条、合并到"每帧最多滚一次"：`MutationObserver` 看消息 DOM 的增删与文本变更
+    信号有**三条**、合并到"每帧最多滚一次"：`MutationObserver` 看消息 DOM 的增删与文本变更
     （流式是原地改 `content`，工具卡片是插节点），`ResizeObserver` 看内容根与滚动容器的尺寸
-    （窗口从隐藏到显示、用户缩放）；
+    （窗口从隐藏到显示、用户缩放），**`transitionend`（2026-09 新增）** 看高度过渡的结束
+    —— 展开 / 收起工具卡与思考块走的是 CSS `height` 过渡，它在「DOM 变更那一帧」之后**继续**长高或缩短，
+    而上面两条信号都收不到（内容根带 `min-height: 100%`，`ResizeObserver` 本就不可靠，见下一条），
+    此前的结果就是「动画还在动、滚动条已经停在半路」。
+    过渡结束后若仍处于跟随态就再补一帧滚底，并以「连续两帧 `scrollHeight` 不变」自终止
+    （上限约 350ms，避免留下常驻 rAF 空转）；
   - **用户接管**：用户主动上滚、离底部超过 24px 即**暂停跟随**（否则回看历史时会被流式输出拽走），
     此时右下角浮出「↓ 回到最新」胶囊；点它或**自己发一条消息**（发完必然想看到回复）恢复跟随。
   - 判定与滚动都只读 `scrollHeight / scrollTop / clientHeight`，不引入新依赖，也不改 props / 插槽契约。
@@ -263,19 +292,35 @@
     不显示进度条与百分比，明细里给出去设置页填的路径——不编造分母；
   - provider 没回传用量时整条显示「暂无用量数据」，明细里说明原因，**绝不拿字符数换算冒充 token**；
   - 占用 ≥60% 转警示色、≥85% 转错误色（在输入框上就能看出该开新会话了）。
+- **三个浮层的锚点与层级（2026-09 修复「浮层互相遮挡」）**：斜杠命令、权限下拉、上下文详解卡
+  三者**一律锚在输入卡 `.composer-box` 上**（`.perm` / `.ctx` 都是 `position: static`，
+  浮层用 `left/right: 0` + `bottom: calc(100% + 6px)` + `z-index: var(--z-flyout)`），
+  于是它们永远浮在**整张输入卡上方**、**绝不覆盖工具行**。
+  这条是有具体事故的：此前 `.ctx-card` 锚在工具行**下方**的 `.ctx` 上向上弹，
+  底边落在工具行内部，把权限 / 模型 / 思考 / 麦克风 / 停止 / 发送**整条盖住且不可点**
+  （`z-index: 20` 在同一个层叠上下文里压住了全是 `z-index: auto` 的工具行内容）。
+  三者**互斥**：打开任一个自动关闭其余两个（`chat/App.vue` 持有唯一的 `openFlyout`，三个浮层受控）；
+  三者都支持**点击外部**与 `Esc` 关闭（此前斜杠浮层只能靠「输入内容变化」或 `Esc` 关闭，
+  于是输入 `/` 之后再点权限钮，权限下拉会被 z-index 更高的斜杠浮层压住）。
+  新增浮层时必须复用这套锚点与令牌，**不要新写 z-index 魔数**（层级令牌见 §5.1）。
 - **`data-field` 锚点清单（capture 探针依赖）**：`chat.permission` / `chat.permission-menu` /
   `chat.permission-confirm` / `chat.permission-full` / `chat.slash-menu` / `chat.slash-<name>` /
   `chat.context` / `chat.context-usage` / `chat.context-detail`；
   旧的 `chat.model` / `chat.reasoningEffort` / `chat.mic` 位置变了但锚点不变。
-  三个探针场景钉住它们：`chat-composer-slash.png`（浮层 + 权限钮文案 + 上下文条 +
+  左栏归档（2026-09-26 新增）：`chat.archive-group` / `chat.archive-toggle` / `chat.archive-list` /
+  `chat.archived-banner`，动作锚点 `data-action="chat.archive-session"` / `"chat.unarchive-session"`。
+  钉住它们的探针场景见 §5.3：`chat-composer-slash.png`（浮层 + 权限钮文案 + 上下文条 +
   **textarea 自动增高** 28px→170px→28px，含 200px 上限与「上限后改为内部滚动」）、
   `chat-composer-permission.png`（权限下拉两段式：点一次不写配置、`settings:get` 回报仍为 `true`）、
-  `chat-stream.png`（**唯一一条 DOM 级端到端**：capture 在跑这一段前竖起本地桩 LLM 并把
+  `chat-composer-flyouts.png`（浮层互斥 + 几何不相交 + 发送键 `elementFromPoint` 命中自己）、
+  `chat-archive.png`（归档分组）；
+  以及 `chat-stream.png`（**唯一一条 DOM 级端到端**：capture 在跑这一段前竖起本地桩 LLM 并把
   `llm.active` 指向它 → 探针把提示词写进 textarea、点发送 → 断言助手气泡里出现了桩服务的回复文本、
-  且上下文条显示**真实 token**（`128 / 128k`）而不是「暂无用量数据」）。
+  且上下文条显示**真实 token**（`128 / 128k`）而不是「暂无用量数据」。
   为什么这条必须有：`AURORA_SMOKE` 的脚本跑在引导窗里，只能从**事件层**断言流式
   （06 §16.2 的 text / usage 事件），读不到对话窗 DOM；而两个模式互斥 ——
-  「事件对了、界面没画出来」这类问题只有这里能抓到。
+  「事件对了、界面没画出来」这类问题只有这里能抓到），
+  以及 `chat-stream-burst.png`（高密度流式回归，见 §5.3 该条）。
 
 > **踩坑记（写 capture 探针必看）**：`capture.ts` 里的探针是**模板字面量字符串**，
 > 字符串里写 `'\n'` 会给注入脚本留一个**真换行**（→ 被注入的 JS 在字符串里断行 →
@@ -445,6 +490,7 @@
 | 语义色 | `--on-accent` / `--accent-text` / `--accent-ring` / `--status-running-ring` / `--danger-*` / `--error-*` / `--warning-*` / `--ok-*` / `--overlay-scrim` | 强调色上的前景为白色；点 / 面用系统原色，文字态（`--*-text`）用可读的加深 / 提亮变体；状态色只用于状态，不用来装饰卡片 |
 | 缓动 | `--ease-standard` / `--ease-spring` / `--ease-smooth` | 颜色/透明度用 standard，大面积位移用 smooth，出现/展开用 spring |
 | 时长 | `--dur-fast(150)` / `base(250)` / `slow(350)` / `press(120)` / `pulse(1600)`；`--transition-fast\|base` | `--dur-press` / `--dur-pulse` 为 BetaV2 新增（按下微缩 / 脉冲环），`--transition-*` 是前两者的组合别名 |
+| 层级 | `--z-sticky` / `--z-flyout` / `--z-popover` / `--z-toast` | **2026-09 新增**（1 / 20 / 30 / 200）：浮出物的唯一来源。此前是散落在三个组件里的 `z-index: 20/20/30` 魔数，直接后果是输入区浮层互相遮挡（见 §2.3「三个浮层的锚点与层级」）。**新代码不许再写 z-index 字面量**（`edge-bar` 内部那处 `z-index: 1` 是窗内分层，保持原样） |
 
 **硬约束**：既有令牌名（`--bg-*`、`--border-*`、`--text-*`、`--status-*`、`--radius-sm|md|lg`、
 `--space-1..6`、`--transition-fast|base`、`--font-ui|mono`、`--aurora-gradient`）**只增不删**——
@@ -477,6 +523,14 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
   新页从右进、旧页往左退）**。
 - **硬约定**：快 / 标准 / 慢动作分别为 150 / 250 / 350ms；颜色和透明度走 standard、大面积位移走 smooth、进场展开走 spring。所有过渡/动画必须走 `--transition-*` 或 `--dur-*` + `--ease-*`，不写死时长；
   `prefers-reduced-motion: reduce` 下把三个时长压到 1ms 并让位移动画立刻落位（theme.css 里已全局兜底）。
+- **硬约定（2026-09 性能轮新增两条，都是踩过坑的）**：
+  1. **展开 / 收起一律用实测高度动画**（`useCollapseTransition` 的 enter / leave 钩子），
+     **禁止**拿与内容无关的固定 `max-height`（如 `70vh`）当动画终点：内容比终点小得多时，
+     `min(内容高, max-height)` 会把全部可见位移挤进时间轴的一小段，看起来就是「先卡住、再猛跳」
+     （见 §2.3「展开 / 收起的高度动画」）；
+  2. **输入区浮层必须锚在 `.composer-box` 上并走 `--z-flyout`**，不许自己写 z-index 魔数、
+     更不许锚到工具行**内部**的元素上 —— 锚点错位会让浮层盖住触发它的那排控件
+     （`.ctx-card` 把整条工具行连同发送键盖死过一次，属实测事故）。
 - **2026-09 动画轮新增**（对话区与子代理页面为主）：
   - **循环类时长令牌**：`--dur-spin`（1200ms，加载指示器）、`--dur-caret`（1100ms，流式光标）、
     `--dur-bounce`（1000ms，三点等待）——循环动画与「出现」动画的节奏要求不同，因此单列令牌，
@@ -521,6 +575,9 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
      `chat-thinking-block.png`（reload 水合 seed 思考块后点开）→ `chat-quick-session.png`（展开侧栏快速对话面板）→
      `chat-thinking-level.png` → `chat-model-picker.png` → `chat-tts.png`（reload，朗读按钮）→
      `chat-drag.png` → `chat-collapse.png`（点击写在 check 里，见下）→ `chat.png`（自动滚底）。
+     2026-09-26 新增四条（**顺序以 `report.json` 为准**；两条 `chat-stream*` 排在本组最后）：
+     `chat-composer-flyouts.png`（两个浮层 + 几何断言）、`chat-tool-card-open.png`（点开工具卡展开体）、
+     `chat-archive.png`（左栏归档分组）、`chat-stream-burst.png`（高密度流式，见下面各条说明）。
      历史现场由 `runCapture` 在跑计划前经 `seedChatTtsHistory` 种进 `sessions/main.json`：
      一条助手消息，内容含裸 URL 与行内代码（核对链接样式），并带 `reasoning` 字段
      （**探针标记 `capture-reasoning-probe`**，思考块探针靠它确认「展开后看到的就是 seed 的思考全文」）；
@@ -587,6 +644,30 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     （`position: sticky` 在"内容按溢出渲染"的交互窗里是否真吸得住，只有真实 DOM 能回答）。
     探针放在 `check`（截图**之后**执行），不污染 PNG，执行完移除节点、归位滚动；注：探针节点是
     **合成内容**，只验证滚动机制本身，不需要配置模型；
+  - **输入区浮层不遮挡**（`CHAT_FLYOUTS_ACT` / `CHAT_FLYOUTS_CHECK`，产物 `chat-composer-flyouts.png`，
+    2026-09-26）：同时打开两个浮层（斜杠 + 权限），check 做的是**几何断言**而不是只数个数 ——
+    ①**任一时刻最多一个浮层可见**（互斥口径：后开的那个会关掉前一个）、
+    ②可见浮层与 `.composer-bar` 的矩形**不相交**（浮层只许盖在输入卡上方，不许压工具行）、
+    ③在**发送键中心**做 `elementFromPoint`，命中的必须是发送键自己或其后代。
+    第 ③ 条直接钉住本轮的事故：`.ctx-card` 锚在工具行下方时把整条工具行盖住，那时命中的是浮层。
+    断言前必须等过渡结束（`--dur-fast` 150ms，照本文件既有的轮询范式），否则会拍到中间态假 FAIL。
+  - **工具卡展开**（`CHAT_TOOL_CARD_OPEN_ACT` / `CHAT_TOOL_CARD_OPEN_CHECK`，
+    产物 `chat-tool-card-open.png`，2026-09-26）：点 seed 的 `task` / `todo_write` 卡头展开，
+    断言展开体可见，且**过渡结束后**卡片高度稳定在实测内容高度附近（而不是停在 `70vh` 方向上的
+    某个中间值）—— 这是「实测高度动画」这条硬约定的回归防线。
+  - **左栏归档分组**（`CHAT_ARCHIVE_ACT` / `CHAT_ARCHIVE_CHECK`，产物 `chat-archive.png`，
+    2026-09-26）：经 `window.aurora.chat.archiveSession` 归档 seed 里的一条会话 →
+    断言它离开 `chat.session-list`、出现在 `chat.archive-list`（分组默认收起，点
+    `chat.archive-toggle` 后展开、标题带计数），收尾**取消归档**把现场还原
+    （后续场景读到的仍是种子会话）。
+  - **高密度流式（本轮性能修复的回归防线）**（`CHAT_STREAM_BURST_ACT` / `CHAT_STREAM_BURST_CHECK`，
+    产物 `chat-stream-burst.png`，2026-09-26）：桩服务按提示词里的 `burst-probe` 标记
+    各发 150 条 `reasoning_content` / `content` 分片（间隔 5ms，贴近推理模型 100+ token/s 的密度），
+    act 在**流式进行中**截图（思考块此时应在增长），check 断言收尾后正文与思考块的**首尾标记都在**
+    （证明三层合并没有丢内容），并用 `PerformanceObserver` 的 `longtask` 把
+    「最长任务 / 总阻塞时间」钉成预算（阈值按 2026-09-26 实测值 × 约 3 倍标定，留机器抖动余量）。
+    **为什么必须有这一条**：原有 `chat-stream.png` 的桩只发 2 条分片，密度低到
+    「每条增量都重解析整份对话」也来得及 —— 这类 BUG 在它面前**必然 PASS**（见 06 §16.3）。
   - **主界面左栏结构 + 门控现场**（`CHAT_SIDEBAR_SCRIPT`，产物 `chat-sidebar.png`，BetaV2）：
     断言三栏重构后左栏的固定锚点全在 —— `chat.quick-item`（固定顶置「快速对话」）、
     `chat.session-list`（**有会话行**：隔离 userData 由 `seedChatTtsHistory` 种了 main 会话）、
@@ -736,6 +817,10 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     `chat-right-panel-toggle` → `chat-right-panel-work` → `chat-subagent-page` →
     `chat-thinking-block` → `chat-quick-session` → `chat-thinking-level` → `chat-model-picker` →
     `chat-tts` → `chat-drag` → `chat-collapse` → `chat.png`
+    （上面这条链只是**已知条目**，不是清单全集：`chat-composer-slash` / `chat-composer-permission` /
+    `chat-classisland-status` 也属于本组，2026-09-26 又新增了 `chat-composer-flyouts` /
+    `chat-tool-card-open` / `chat-archive` / `chat-stream-burst`。**真实顺序与条数以 `report.json` 为准**，
+    改顺序时不要照这份清单核对。）
     （`theme-chat` 排在全部交互窗场景之前，因为主题图要拍"未配置模型"的基线态；
     `chat-sidebar` 排在一切改配置 / 改会话的场景之前，它断言的是隔离 userData 的**出厂门控现场**；
     `chat-tts` / `chat-thinking-block` 的现场由 `seedChatTtsHistory` 在跑计划前种好、各自 reload 重新水合；

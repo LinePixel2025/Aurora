@@ -52,9 +52,21 @@ export interface LlmProvider {
   （「快速 / 会话」双栏）切换；独立小窗已删除，后续可扩展多会话列表。
 - 会话 id 由显式对话上下文映射（`main` / `quick` / `settings`，`useChat(windowName, context)`），
   仅允许 `[A-Za-z0-9_-]`；非法值归一为 `settings`（防路径穿越）。
-- 持久化：`userData/sessions/<sessionId>.json`（含工具消息），结构 `{ version, sessionId, updatedAt, messages }`，
+- 持久化：`userData/sessions/<sessionId>.json`（含工具消息），结构
+  `{ version, sessionId, updatedAt, messages, meta? }`，
   原子写 + 300ms 防抖（与 `SettingsStore` 同一套 `FileSystemPort` 约定），退出前 `flush()`；
   文件损坏时备份为 `<sessionId>.corrupt-<ts>.json` 并重建为空会话。系统提示词**不落盘**，每次请求重新组装。
+- **会话 meta 与归档（2026-09 新增，`SESSION_FILE_VERSION` 1 → 2）**：
+  `meta?: { archived?: boolean; archivedAt?: string; pinned?: boolean }` 写在**会话文件自身**里。
+  刻意**不做 sidecar 索引**：`listSessions()` 把 `sessions/` 下任何 `*.json` 都当作会话 id，
+  在里面放 `index.json` 会立刻多出一个假会话，放目录外又要维护第二套读写与一致性。
+  也正因如此，归档**不进 `config.json`**、`CONFIG_VERSION` 保持不变、不需要配置迁移；
+  读取对 v1 文件**宽容**（缺 `meta` 即视为未归档），旧文件无需重写。
+  `SessionStore.setArchived(id, archived)` 幂等，沿用同一套防抖 + 原子写；
+  给一个从未落盘的**空会话**归档会因此首次写出一个只有 meta、`messages: []` 的文件（符合预期：
+  归档这件事本身就需要一个落点）。`summaries()` 把 `archived` 透出给 `ChatSessionSummary`，
+  渲染层据此分组（见 07 §2.3）。IPC 通道 `chat:archiveSession` 对普通会话与 quick 一视同仁。
+  **已知边界**：`chat:sessions` 目前没有推送通道，归档只在发出请求的那个窗口即时生效。
 - 渲染层挂载时通过 `chat:history` 水合消息列表，因此重启后交互窗仍能看到历史。
 - 上下文窗口管理：超长自动摘要压缩（P1）；v1 先按 **字符上限（默认 60k）** 截断旧消息并保留系统提示词，
   且截断时保证「assistant(toolCalls) + 其后 tool 结果」成对保留。
@@ -781,6 +793,41 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
   流式下只在**最后一片**给 usage，且要先显式索取）。**不认这个字段的网关会直接 400**，
   因此 `openStream()` 对「报文点名了 `stream_options` / `include_usage` 的 400」**去掉该字段重试一次**
   ——「整个对话打不开」比「拿不到 token 用量」严重得多。其它 400（模型名错等）不重试，如实报错。
+
+### 16.3 增量下发与渲染吞吐（2026-09 性能轮）
+
+**问题**：§16.2 保证的是「增量确实发下去了」，**不保证界面画得过来**。实测报告的现场是
+「思考内容还没渲染完，Agent 已经把整个任务做完了」。两个叠加的放大器：
+
+1. **每条增量都让整份对话的 markdown 重解析**：渲染层 `MessageList.vue` 的 `rendered` computed
+   用 `{ ...message }` 展开，顺带把 `reasoning` 也读了进去 —— 思考增量**根本不需要 markdown**，
+   却按「整份 transcript」的代价付费，全过程退化成 O(n²)；
+2. **全链路没有任何合并**：1 个 SSE token = 1 次 `webContents.send`（`broadcast` 还发给**所有**
+   存活窗口）= 1 次渲染层回调 = 1 次 Vue flush。推理模型思考阶段常 80–150 token/s，
+   这个密度下「每条增量都做一件 O(整个会话) 的事」必然崩。
+
+**解法：三层各管一段，都不改变语义与顺序。**
+
+| 层 | 位置 | 做什么 |
+|---|---|---|
+| 主进程 | `main/event-buffer.ts` | 相邻（队列尾）且 `(sessionId, requestId, messageId, type)` 全同的 `text` / `reasoning` 增量拼接合并为一条（保留**首条**的 `seq`），窗口 **16ms** 批量下发 |
+| 渲染层状态 | `renderer/shared/composables/useChatDeltaBuffer.ts` | 同一帧内同 `messageId` 的增量合并为一次消息写入，**每帧最多 apply 一次** |
+| 渲染层视图 | `MessageList.vue` | markdown 结果按**消息对象**（`WeakMap`）缓存，只有该条 `content` 变了才重跑解析 |
+
+三条硬约束（改这三层时不许破）：
+- **顺序与终态不能变**：主进程的 `done` / `error` / `user-message` 与渲染层的任何**非增量**事件
+  都必须**先 flush 已缓冲的增量、再处理自己** —— 否则工具卡会插到正文前面、`done` 会先于最后一段正文落地。
+- **不丢内容**：合并只是拼接 `delta` + 保留首条 `seq`，事件条数变少但文本一字不少；
+  非增量事件**永不**与前后增量合并（顺序即真相）。
+- **不延迟终态**：`done` / `error` 同步下发，不排在 16ms 窗口之后。
+
+**为什么仍然不做逐字打字机**：正文是 `v-html` 渲染的 markdown，Vue 对 `v-html` 不做 DOM diff
+（见 07 §2.3）；按帧做真打字机等于每帧重解析 markdown，与本轮「把每 token 的重活降下来」的目标相反。
+
+**回归防线**：原有流式探针只发 2 条分片，密度太低、**必然测不出**这个 BUG。新增爆发探针
+（`chat-stream-burst`：桩服务按 `burst-probe` 标记各发 150 条 reasoning / content、间隔 5ms），
+在页面里用 `PerformanceObserver` 采集长任务，把「最长任务 / 总阻塞时间」钉成预算
+（阈值按实测标定、留约 3 倍余量，见 07 §5.3）。
 
 ## 17. settingsHint：Agent 可修改设置清单注入 systemPrompt
 

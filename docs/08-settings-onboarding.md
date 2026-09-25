@@ -299,6 +299,11 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 规则缓存**不单独持久化**，启动时由流水中的用户修正记录重建（见 05 §3.2），
 因而不新增存储面，也不会与流水出现两处数据不一致。
 
+**对话归档状态同样不进 config.json**：它写在会话文件自身（`sessions/<id>.json` 的
+`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前仍为 11）。
+会话文件自己的版本号 `SESSION_FILE_VERSION` 由 1 提到 2，读取对 v1 宽容（缺 `meta` = 未归档），
+不存在需要执行的迁移脚本 —— 「会话文件版本」与「配置版本」是两条独立的链，别混。
+
 ## 2. 存储与安全
 
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
