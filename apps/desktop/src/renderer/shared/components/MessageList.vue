@@ -373,12 +373,24 @@ function withCodeCopy(html: string): string {
     .replace(/<\/pre>/g, '</pre></div>')
 }
 
-const rendered = computed(() =>
-  props.messages.map((message) => ({
-    ...message,
-    html: withCodeCopy(renderMarkdown(message.content)),
-  })),
-)
+/**
+ * markdown 渲染结果按消息缓存。
+ *
+ * 键是消息对象本身（WeakMap：消息被丢弃后自动回收），只有 `content` 变了才重跑解析。
+ *
+ * ⚠️ 不要改回早先那种 `computed(() => messages.map((m) => ({ ...m, html: ... })))`：
+ * `{ ...message }` 会把 `reasoning` 一起读成依赖，于是**每条思考增量都会让整份对话的
+ * markdown 全量重解析**（增量 × transcript 长度）。本函数只读 `id` 与 `content`。
+ */
+const htmlCache = new WeakMap<ChatMessage, { content: string; html: string }>()
+
+function htmlOf(message: ChatMessage): string {
+  const cached = htmlCache.get(message)
+  if (cached !== undefined && cached.content === message.content) return cached.html
+  const html = withCodeCopy(renderMarkdown(message.content))
+  htmlCache.set(message, { content: message.content, html })
+  return html
+}
 
 /** 工具卡片的展示文案（docs/06 §5：运行中 / 成功 / 失败 + 输出摘要） */
 function toolStateLabel(state: AgentToolCall['state']): string {
@@ -649,7 +661,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 
     <TransitionGroup name="rise">
       <article
-        v-for="message in rendered"
+        v-for="message in messages"
         :key="message.id"
         class="message"
         :class="[`r-${message.role}`, { error: message.error, pending: message.pending }]"
@@ -718,7 +730,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
           </span>
           <!-- 安全说明：内容先经 renderMarkdown 转义，再套用白名单标记（见 shared/markdown.ts） -->
           <!-- eslint-disable-next-line vue/no-v-html -->
-          <div v-else-if="message.content !== ''" class="md" v-html="message.html" />
+          <div v-else-if="message.content !== ''" class="md" v-html="htmlOf(message)" />
 
           <!--
             朗读按钮（docs/06 §13）：正文之后、工具卡片之前。
