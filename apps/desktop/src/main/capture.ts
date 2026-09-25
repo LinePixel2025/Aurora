@@ -1016,13 +1016,14 @@ const BURST_LONG_TASK_LIMITS = {
  *
  * | 指标 | 修复前 | 修复后 | 阈值 | 说明 |
  * | --- | --- | --- | --- | --- |
- * | maxUnhiddenHeartbeatMs | 661.4 | 51.0 | 160 | **主判据**：3.1 倍余量 |
+ * | maxUnhiddenHeartbeatMs | 661.4 | 51.0（四窗口全开 65） | 160 | **主判据**：3.1 倍余量 |
  * | heartbeatOverrunMs | 4749.4 | 108.8 | 1200 | 累计量，见下面的争用说明 |
  * | maxFrameGapMs | 137.5 | 29.2 | 110 | 3.8 倍余量，仍低于修复前值（能抓住回归） |
  * | droppedFrames | 238 | 0 | 25 | 修复后为 0，只能给绝对下限（约 0.4s 的掉帧代价） |
  *
- * 阈值按「修复后 × 约 3 倍」取宽松余量，防 CI 机器抖动假 FAIL；数值随机器档位浮动，
- * 断言的只有数量级 —— 改桩的密度 / transcript 规模等于改基线的量纲，必须重新标定。
+ * 阈值按「修复后 × 约 3 倍」取宽松余量，防 CI 机器抖动假 FAIL（**`heartbeatOverrunMs` 例外**，
+ * 见下）；数值随机器档位浮动，断言的只有数量级 —— 改桩的密度 / transcript 规模等于改基线的量纲，
+ * 必须重新标定。
  *
  * **`heartbeatOverrunMs` 是累计量、对 CPU 争用明显更敏感**（同一份代码实测：只跑 chat 组 69ms、
  * 单独重跑 108ms、另一个代理并发跑时 182ms、**四窗口全开 552ms**；修复前是 4749ms）。
@@ -1840,13 +1841,17 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
  *
  * 背景：`.collapse-*` 的终点此前写死 `70vh`，内容只有约 140px 的工具卡对 504px 的终点做动画，
  * 可见位移全挤在时间轴前一小段（展开「飞快长满再空转」、收起「先空转、末尾猛缩」）。
- * 现在终点取实测值：`useCollapseTransition` 的 `before-enter` / `before-leave` 把
- * `el.scrollHeight` 写进元素内联的 `--collapse-h`，全局 CSS 用 `var(--collapse-h, 70vh)`。
+ * 现在终点取实测值：`useCollapseTransition` 的 **`@enter`** / `@before-leave` 钩子在量之前
+ * 先把元素内联的 `max-height` 临时摘成 `none`（否则被钳制的 flex 列容器会把可收缩子项
+ * `.tool-args` 压扁、量少 66px），量完立刻还原，把真实内容高度写进 `--collapse-h`，
+ * 全局 CSS 用 `var(--collapse-h, 70vh)`。**进入方向不能挂 `before-enter`** ——
+ * 那时元素还没插入文档、`scrollHeight` 恒为 0（2026-09-26 实测踩过）。
  *
  * act 点 seed 出来的工具卡卡头（优先 `task` 卡，展开体最大：运行轨迹 + 指令 + 参数 + 结果），
- * 中途按 60 / 120 / 180 / 280 / 400ms 采样可见高度（**只作信息、不作 pass 条件**——曲线平滑度
- * 无法从快照可靠断言），最后轮询到「连续两次高度一致且 > 0」才算稳定，把采样与稳定高度挂 window
- * 给 check 读（act 的返回值进不了 report.json）。
+ * 中途按 60 / 120 / 180 / 280 / 400ms 采样可见高度，最后轮询到「连续两次高度一致且 > 0」
+ * 才算稳定，把采样与稳定高度挂 window 给 check 读（act 的返回值进不了 report.json）。
+ * 采样里 **60ms 那次参与 pass 判定**（必须严格小于稳定高度）：终值在「正常过渡」与
+ * 「退化成瞬跳」两种实现下相同，只有中间样本能区分它们。
  *
  * **不在这里收起卡片**：截图就是展开现场，且展开态只影响这张卡自身，后续场景不受影响
  *（`chat-tts` 自带 reload）。
@@ -1960,14 +1965,16 @@ export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
     const varMatches = measuredPx !== null && Math.abs(measuredPx - scrollHeight) <= 2
     const notClipped = body !== null && visibleHeight > 0 && Math.abs(visibleHeight - scrollHeight) <= 2
 
-    // ── 诊断（信息，不参与 pass）：两个方向的实测值 + 展开中途 / 稳定后的布局对比 ──
-    // 实测（含 c5fd1fa 的 enter 钩子）：leaveVar 467px（对），而 enter 侧只写 401px。
-    // 中途与稳定后的两次布局快照把差值定到了具体节点：只有「溢出容器」那个子元素变了
-    //（.tool-args：中途 13px → 稳定 79px，正好 66px），宽度与 .thread 滚动条状态两次完全一致。
-    // 原因是 .tool-body 是 flex 列容器：enter 钩子跑的时候「.collapse-enter-from」的 max-height: 0
-    // 已经挂上，容器没有可用高度，flex 收缩把唯一的滚动容器子项（.tool-args，overflow: auto，
-    // 其 min-height: auto 对滚动容器解析为 0）压到 padding + 边框的最小高度，于是量出来的
-    // scrollHeight 比稳定值少这一项的差值；非滚动容器的子项（.trace / 各 label）不被压缩。
+    // ── 诊断（信息，不参与 pass）：展开中途 / 稳定后的布局对比 ──
+    // 保留这段快照是为了让「f77a842 之前 enter 侧少写 66px」那个坑可复现：
+    // 当时中途与稳定后的宽度、.thread 的滚动条状态两次**完全一致**，只有 .tool-args
+    // 从 13px 变成 79px（正好 66px）。原因是 .tool-body 是 flex 列容器：enter 钩子跑的时候
+    // .collapse-enter-from 的 max-height:0 已经挂上，容器没有可用高度，flex 收缩把
+    // 唯一的滚动容器子项（.tool-args，overflow:auto，其 min-height:auto 对滚动容器
+    // 解析为 0）压到 padding + 边框的最小高度 —— 量到的是「被钳制后的布局」而不是真实内容高，
+    // 而且该偏差在整段过渡期间恒定，所以「逐帧轮询到连续两帧相等」也追不到它。
+    // 修法：量之前把元素内联的 max-height 临时摘成 none（见 useCollapseTransition）。
+    // 注意：本文件这些探针是模板字面量字符串，字符串**内部**的注释不能出现反引号。
     let diagnostic = null
     if (head !== null && body !== null) {
       try {
@@ -2016,10 +2023,10 @@ export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
         diagnostic = { error: String(inner) }
       }
     }
-    // ── 根因旁证（信息，不参与 pass）：游离元素的 scrollHeight 恒为 0 ──
-    // 现场造一个与「.tool-body」同款（flex 列 + 同 padding）的盒子，先量「未入文档」、
-    // 再量「已入文档」：若前者为 0 而内容高度确实是 120，就说明「before-enter」里量到 0
-    // 只能是「量在游离元素上」，而不是探针读错了节点。
+    // ── 旁证（信息，不参与 pass）：游离元素的 scrollHeight 恒为 0 ──
+    // 现场造一个与 .tool-body 同款（flex 列 + 同 padding）的盒子，先量「未入文档」、
+    // 再量「已入文档」：前者为 0、后者是真实内容高。这条守着「进入方向不能挂 @before-enter」
+    // 那个坑 —— Vue 的 beforeEnter 在 hostInsert **之前**调用，量到的是游离元素。
     let detachedMeasureProbe = null
     try {
       const sample = document.createElement('div')
@@ -2037,6 +2044,14 @@ export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
     }
 
     const stillExpanded = card.classList.contains('open') === true && card.querySelector('.tool-body') !== null
+    // 展开**确实在动**的判据：第一帧采样（点击后 60ms）必须严格小于稳定高度。
+    // 终值在「正常过渡」与「退化成瞬跳」两种实现下相同（都已等于内容高），
+    // 所以只有中间样本能区分它们 —— 把「过渡类挂上了但 max-height 不可插值 → 直接落位」
+    // 这一档也钉住（这种退化的终值照样正确，但观感是瞬跳）。
+    // 只取 60ms 那一帧：更晚的样本在慢机器上可能已越过 250ms 的过渡窗口而误判。
+    const samples = probe === undefined || probe === null ? [] : probe.samples || []
+    const firstSample = samples.length > 0 ? samples[0].height : null
+    const animating = firstSample !== null && firstSample < visibleHeight - 2
     return {
       act: probe === undefined ? null : probe,
       cardField: card.getAttribute('data-field'),
@@ -2048,6 +2063,8 @@ export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
       visibleHeight,
       varMatchesScrollHeight: varMatches,
       notClipped,
+      firstSampleHeight: firstSample,
+      animating,
       diagnostic,
       detachedMeasureProbe,
       stillExpanded,
@@ -2058,6 +2075,7 @@ export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
         body !== null &&
         varMatches === true &&
         notClipped === true &&
+        animating === true &&
         stillExpanded === true,
     }
   } catch (error) {

@@ -16,7 +16,6 @@ import { computed, ref } from 'vue'
 import type { SubagentRun } from '../../shared/composables/useChat.js'
 import { Bot, ChevronRight, Clock, MessageSquare } from '../../shared/icons.js'
 import SubagentTrace from '../../shared/components/SubagentTrace.vue'
-import { useCollapseTransition } from '../../shared/composables/useCollapseTransition.js'
 
 const props = defineProps<{
   runs: SubagentRun[]
@@ -27,13 +26,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'back'): void
 }>()
-
-/**
- * 「任务指令」折叠走实测高度动画（docs/07 §2.3 / §5.2）。
- * 进入方向挂 `@enter`（不是 `@before-enter`）：Vue 的 `beforeEnter` 在元素插入文档之前调用，
- * 游离元素的 `scrollHeight` 恒为 0，会把终点钉成 0。
- */
-const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransition()
 
 /** 已展开「任务指令」的运行（默认收起：报告与轨迹才是主体，指令通常是长文） */
 const openedRuns = ref<string[]>([])
@@ -143,7 +135,14 @@ function statusLabel(status: SubagentRun['status']): string {
           </button>
         </div>
 
-        <Transition name="collapse" @enter="collapseEnter" @before-leave="collapseLeave">
+        <!--
+          「任务指令」折叠走**纯淡入**，刻意不做高度动画：`.run-prompt` 自己带
+          `max-height: 160px; overflow-y: auto`（长指令内部滚动），它的可见高度由**自身样式**
+          决定，`--collapse-h` 在它身上没有可表达的东西；而且真要动画它，就得先摘掉它自己的
+          `max-height` 才能量到真实内容高（600px 级），动画会冲到 600 再弹回 160。
+          这是「过渡根自带 max-height / 本身是滚动容器时不做高度动画」这条口径的实例，见 docs/07 §5.2。
+        -->
+        <Transition name="fade">
           <p v-if="isOpen(runKey(run))" class="run-prompt">{{ run.prompt }}</p>
         </Transition>
 

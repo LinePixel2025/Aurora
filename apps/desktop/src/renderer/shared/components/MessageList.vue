@@ -746,7 +746,19 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 {{ thinkingSeconds }}s
               </span>
             </button>
-            <Transition name="collapse" @enter="collapseEnter" @before-leave="collapseLeave">
+            <!--
+              正在接收这一轮思考时用**纯淡入**（`fade`），不做高度动画。
+              原因：这时内容正以 token 速率持续长高，而高度动画的终点是「点开那一刻量到的高度」，
+              过渡期间 `.collapse-*-active` 的 `overflow: hidden` 会把后长出来的部分裁掉 ——
+              过渡类一摘就是一次可见的补跳。**思考块的自动展开恰好落在这个场景**
+              （流式一开始就展开），所以这里必须走淡入。
+              内容已经稳定（历史块手动点开）时才用实测高度动画，那时终点是准的。
+            -->
+            <Transition
+              :name="thinkingTargetId === message.id ? 'fade' : 'collapse'"
+              @enter="collapseEnter"
+              @before-leave="collapseLeave"
+            >
               <div v-if="isThinkingOpen(message.id)" class="thinking-body">
                 <!-- 流式期间尾部带光标，读起来是"还在写"而不是"卡住了" -->
                 <p class="thinking-text" @scroll.passive="onThinkScroll">{{ message.reasoning }}</p>
