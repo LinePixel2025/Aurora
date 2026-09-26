@@ -130,3 +130,12 @@
 - 计划偏差：`AgentJob` / `JobSummary` 等形状放 `@aurora/shared`（跨 IPC 只能一份定义）；`E_JOB_STATE` 登记在 `shared/utils/result.ts` 的 `ErrorCode`；jobs 侧 `normalizeSessionId` 不导出（避免与 session 侧同名星号导出撞车）；左栏任务入口在**底部**固定项而非「子代理」那一组（有意偏差，不改 `SessionNav.vue`）；额外给设置页加了「Agent 循环」栏。
 - 过程：smoke 抓到"预算形同虚设"（桩服务只在最后一段纯文本回 usage，而预算判定发生在工具轮结束）；`E_BUSY` 用例靠调度运气，改 3 版后用可控闸门稳定；capture 夹具时序踩了 job 存储「首读即缓存」的坑（种在 prepare 里看不到，改到跑计划前）。
 - 未覆盖：**"两次独立启动"的重启续跑手工脚本**没做（smoke 的 userData 每次新建、无跨启动 harness）；现有证据是同进程续跑 + 落盘实据（`cursor.nextRound=3`、`stepsDone=3`）+ 换实例读同一份存储的单测。详见 `step-04-durable-jobs.md`。
+### Step 5 — 端到端集成验证与文档收口（Status: done）
+
+- 完成时间：2026-09-26；执行模式：全部连续执行。
+- 提交清单：`484872a` `test(e2e): 跨特性集成断言、综合截图场景与两次启动的续跑验证`、`cd81b65` `docs: 本轮文档收口（README / roadmap / AGENTS.md）与陈旧锚点修正`、`docs(step): 回填 step 5 执行记录`。
+- 验收结果：`typecheck` / `lint` / `format:check` / `build` 全绿；`pnpm test` **79 文件 / 1496 用例**（基线 72 文件 / 1307，净增 189）；`pnpm verify` **26/26**（version=15）；`AURORA_SMOKE` **163/163**，含六条跨特性断言（项目 AGENTS.md 进请求体且**父目录**不进 / auto 档根内写文件不弹卡且落盘且留快照 / readonly 档写不动文件 / 一键回滚还原 + 新增 rollback 快照 / 事件白名单含 `job` / 为第二次启动留 paused job）；**两次启动续跑实测**：`paused → done`、`stepsDone 2→3`、`cursor 2→3`、用户消息 `1→1`（`AURORA_SMOKE_WORKSPACE` 固定工作区 + `AURORA_SMOKE_PHASE=resume`，均仅自测生效）；`AURORA_CAPTURE` **53 张 PNG / 53 条 checks / 0 FAIL**（step 1–4 四个新场景 + 新增综合图 `chat-agent-prod-overview.png`）。
+- 过程：本步挖出并修掉一个**真 bug** —— `runSmokeTest` 的收尾无条件删掉自测工作区，而固定工作区正是第二次启动要读的（症状"第一次 file=yes、第二次 found=0"，且 `rm -rf` 与收尾写入抢时序导致偶尔剩几个文件，看起来像随机丢数据）；修法是两处删除加 pinned 守卫 + 2.7 块加落盘自检。另修：第二次启动没起桩服务 → `E_NO_MODEL`（表现为"点了继续没反应"）。
+- **独立审查未完成**（如实记录）：两次派只读审查子代理均**无回报结束**；已改为主代理对同样三个最高风险问题定向自查，并在 `step-05` 记录里标明"这是自查、不是独立审查"。自查发现两条 **P1**（均只记录未修，属 step 2/3 范围）：①项目根内的符号链接 / 目录联接可绕过 realpath 前缀校验（写路径本身缺 `lstat` 判定，快照侧已经是安全的）；②`exists:false` 快照回滚**无条件删除**该路径（用户后来新建的同名文件会被删；界面有「当时不存在」标注 + 两段式确认，但文案未说明"当前有文件将被删除"）。
+- 计划偏差：六条断言写在主进程 `runSmokeTest` 而不是渲染层脚本模块 `smoke.ts`（后者拿不到桩请求体与 job 存储）；新增两个自测专用环境变量与桩的 `AURORA_WRITE_FILE` 分流；`capture.ts` 新增 `CapturePlanHooks.setProject` 钩子；`docs/07 §2.4` 选"改引用"而非"补建已废弃编号"。
+- 逐条验收对照见 `step-05-verify-integrate.md` 的「执行记录」；遗留（自测开关未写进用户文档、渲染层缺单测、`snapshots:prune` 无界面入口、两条 perf 探针帧饥饿偶发红）见该文件末尾。
