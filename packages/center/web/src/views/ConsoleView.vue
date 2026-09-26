@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import ClientList from '../components/ClientList.vue'
+import RemoteControlPanel from '../components/RemoteControlPanel.vue'
 import SessionView from '../components/SessionView.vue'
 import TokenPanel from '../components/TokenPanel.vue'
 import {
@@ -42,6 +43,7 @@ async function create(): Promise<void> {
     />
 
     <section class="session-pane">
+      <RemoteControlPanel :entry="selectedEntry" />
       <SessionView
         v-if="activeSession && selectedEntry"
         :session="activeSession"

@@ -398,6 +398,30 @@ export async function abortSession(session: SessionState): Promise<void> {
 // ───────────────────────── 登录 / 启动 ─────────────────────────
 
 /** 页面加载时调用：恢复本地登录态（过期则清除），并尝试水合客户端列表 */
+/** 远程切换客户端模式（docs/12 §6.2：客户端侧白名单最终裁决） */
+export async function switchMode(clientId: string, mode: ClientStatus['mode']): Promise<void> {
+  await command<void>({
+    type: 'mode.switch',
+    requestId: nextRequestId(),
+    clientId,
+    mode,
+  })
+  // 成功后客户端会回推新的 client.status；这里不重复改本地状态
+}
+
+/** 远程更新客户端配置（仅白名单路径：agent.tools.* 开关等） */
+export async function updateConfig(
+  clientId: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  await command<void>({
+    type: 'config.update',
+    requestId: nextRequestId(),
+    clientId,
+    patch,
+  })
+}
+
 export async function boot(): Promise<void> {
   const stored = loadStoredAuth()
   if (stored) {

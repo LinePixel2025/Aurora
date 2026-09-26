@@ -124,6 +124,26 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     }, HELLO_TIMEOUT_MS)
     helloTimer.unref?.()
 
+    // ⚠️ 竞态防线：hello 校验是异步的（令牌哈希查表 + 落盘绑定），期间客户端发来的
+    // status / result 若无人监听就**永久丢失**（真实连接器在 open 后立刻连发 hello +
+    // status）。这里先挂统一监听把"未注册期"的消息排队，注册完成后回放。
+    const queuedBeforeRegister: Array<Record<string, unknown>> = []
+    let registeredClient = ''
+    let pongHook: () => void = () => {}
+    ws.on('message', (data) => {
+      const parsed = parseMessage(data)
+      if (parsed === undefined || parsed['type'] === 'hello') return
+      if (parsed['type'] === 'pong') {
+        pongHook()
+        return
+      }
+      if (registeredClient === '') {
+        queuedBeforeRegister.push(parsed)
+        return
+      }
+      hub.handleClientMessage(registeredClient, parsed as Parameters<Hub['handleClientMessage']>[1])
+    })
+
     ws.once('message', (data) => {
       clearTimeout(helloTimer)
       const hello = parseMessage(data)
@@ -157,13 +177,20 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
           // 先挂常规消息监听（hello 被过滤、命令类消息到 registerClient 前无害），
           // 再注册进 hub：保证 welcome 发出前监听已就位
           let missedPongs = 0
-          const conn = makeClientConn(ws, body.clientId, {
-            pong: (): void => {
-              missedPongs = 0
-            },
-          })
+          const conn = makeClientConn(ws, body.clientId)
           conn.bind()
           hub.registerClient(conn, helloToStatus(body))
+          // 统一监听切换到"已注册"：pong 归心跳计数、排队的消息按序回放
+          pongHook = (): void => {
+            missedPongs = 0
+          }
+          registeredClient = body.clientId
+          for (const pending of queuedBeforeRegister.splice(0)) {
+            hub.handleClientMessage(
+              registeredClient,
+              pending as Parameters<Hub['handleClientMessage']>[1],
+            )
+          }
           logger?.info('客户端已连接', { clientId: body.clientId, name: body.name })
           // 心跳：30s 一次 ping，连续 2 次无 pong 判死（半开连接兜底）
           const heartbeat = setInterval(() => {
@@ -190,25 +217,14 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     })
   }
 
-  function makeClientConn(
-    ws: WebSocket,
-    clientId: string,
-    hooks: { pong: () => void },
-  ): ClientConn & { bind(): void } {
+  function makeClientConn(ws: WebSocket, clientId: string): ClientConn & { bind(): void } {
     const conn: ClientConn & { bind(): void } = {
       clientId,
       send: (message) => ws.send(JSON.stringify(message)),
       close: () => ws.close(),
+      // 消息监听由 beginClientSession 的统一监听负责（防配对异步窗口丢消息）；
+      // bind 只负责注册后的清理钩子
       bind: () => {
-        ws.on('message', (data) => {
-          const parsed = parseMessage(data)
-          if (parsed === undefined || parsed['type'] === 'hello') return
-          if (parsed['type'] === 'pong') {
-            hooks.pong()
-            return
-          }
-          hub.handleClientMessage(clientId, parsed as Parameters<Hub['handleClientMessage']>[1])
-        })
         ws.on('close', () => {
           hub.removeClient(clientId)
           hub.dropClientSessions(clientId)

@@ -183,6 +183,66 @@ describe('Aurora Center · 配对与客户端上线', () => {
     expect(listAdmin.clients.some((c) => c.clientId === 'client-e2e-1')).toBe(true)
   }, 20_000)
 
+  it('hello 后立刻连发的 status 不因配对异步窗口丢失（竞态回归，docs/12）', async () => {
+    // 用 alice 建令牌：竞态客户端属主 = alice，下面的网页端（alice）才能收到它的 status
+    const created = await fetch(`${base}/api/tokens`, {
+      method: 'POST',
+      headers: { ...authed((await login(USER)).token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: 'race' }),
+    })
+    const { token: raceToken } = (await created.json()) as { token: string }
+    // 与真实连接器同款：open 后**同一批**发 hello + status，status 必须被排队回放而非丢弃
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/client`, {
+      headers: { Authorization: `Bearer ${raceToken}` },
+    })
+    const waitForRace = collector(ws)
+    ws.on('open', () => {
+      ws.send(
+        JSON.stringify({
+          type: 'hello',
+          hello: {
+            clientId: 'client-race',
+            name: '竞态机',
+            version: '0.1.6',
+            platform: 'win32',
+            mode: 'work',
+            capabilities: { session: true, remoteConfig: true, fileTransfer: true },
+          },
+        }),
+      )
+      ws.send(
+        JSON.stringify({
+          type: 'status',
+          status: {
+            mode: 'work',
+            version: '0.1.6',
+            platform: 'win32',
+            agent: {
+              permissionMode: 'confirm',
+              tools: { enabled: true, files: true, search: true, open: true, terminal: true },
+            },
+            center: { allowRemoteSession: true, allowRemoteConfig: true, allowFileTransfer: true },
+          },
+        }),
+      )
+    })
+    await waitForRace((m) => m['type'] === 'welcome')
+    // 网页端收到的 status 必须是真实快照（hello 占位里的 tools 全 false 被覆盖）
+    const web = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${userToken}`)
+    const waitForWeb = collector(web)
+    await new Promise<void>((resolveOpen, reject) => {
+      web.once('open', () => resolveOpen())
+      web.once('error', reject)
+    })
+    const status = await waitForWeb(
+      (m) => m['type'] === 'client.status' && m['clientId'] === 'client-race',
+    )
+    const agent = (status['status'] as { agent: { tools: { files: boolean } } }).agent
+    expect(agent.tools.files).toBe(true)
+    ws.close()
+    web.close()
+  }, 20_000)
+
   it('非法配对令牌的 hello 被拒绝（连接关闭）', async () => {
     await expect(
       connectClient('ac-not-a-real-token', {
