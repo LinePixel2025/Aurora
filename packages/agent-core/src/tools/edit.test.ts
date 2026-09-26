@@ -26,6 +26,11 @@ const ABS = `${CWD}\\a.txt`
 interface FakeCalls {
   readWholeText: Array<{ path: string; maxBytes: number }>
   writeText: Array<{ path: string; content: string; mode: 'overwrite' | 'append' }>
+  /**
+   * 端口收到的越界放行标记（按调用顺序，`undefined` = 内核没带放行标记）。
+   * 单独记一份：缺省时传的是**空对象**，并进上面的参数里会让既有的逐字断言全部变红。
+   */
+  outside: Array<{ method: string; allowOutside: boolean | undefined }>
   /** 除 `readWholeText` 之外被碰到的端口方法（碰了就是契约被破坏，非空即失败） */
   forbidden: string[]
 }
@@ -46,7 +51,7 @@ interface FakeOptions {
 }
 
 function createFakes(options: FakeOptions = {}): Fakes {
-  const calls: FakeCalls = { readWholeText: [], writeText: [], forbidden: [] }
+  const calls: FakeCalls = { readWholeText: [], writeText: [], outside: [], forbidden: [] }
   let current = options.text ?? ''
   const absolutePath = options.absolutePath ?? ABS
   const files: FilePort = {
@@ -55,8 +60,9 @@ function createFakes(options: FakeOptions = {}): Fakes {
       calls.forbidden.push('readText')
       throw new Error('edit_file 不得使用行窗口 API（readText）')
     },
-    async readWholeText(path, maxBytes) {
+    async readWholeText(path, maxBytes, guard) {
       calls.readWholeText.push({ path, maxBytes })
+      calls.outside.push({ method: 'readWholeText', allowOutside: guard?.allowOutside })
       if (options.readError !== undefined) throw options.readError
       return {
         absolutePath,
@@ -65,8 +71,9 @@ function createFakes(options: FakeOptions = {}): Fakes {
         refused: options.refused === true,
       }
     },
-    async writeText(path, content, mode) {
+    async writeText(path, content, mode, guard) {
       calls.writeText.push({ path, content, mode })
+      calls.outside.push({ method: 'writeText', allowOutside: guard?.allowOutside })
       if (options.writeError !== undefined) throw options.writeError
       current = content
       return { absolutePath: `${CWD}\\${path}`, bytes: Buffer.byteLength(content, 'utf8') }
@@ -608,5 +615,45 @@ describe('edit_file 读前守卫', () => {
     const again = await tool.execute({ path: 'a.txt', oldString: 'A', newString: 'AA' }, ctx)
     expect(again.isError).toBeUndefined()
     expect(fakes.calls.writeText).toHaveLength(2)
+  })
+})
+
+/**
+ * 三档权限的越界放行透传（docs/06 §11.2）。
+ *
+ * `edit_file` 一次调用要碰两个端口（整文件读 + 原子写），**两边都要带**
+ * 同一个放行结论：只放行读会让写入被拦（半个改动），只放行写更危险
+ * （读了根内、写到了根外）。因此两条断言绑在同一个用例里。
+ */
+describe('edit_file 的越界放行标记（docs/06 §11.2）', () => {
+  it('未注入 approvedByUser → 读写两次调用都不带 allowOutside（行为与今天一致）', async () => {
+    const fakes = createFakes({ text: 'a\n' })
+    const tool = toolOf(fakes)
+
+    const result = await tool.execute({ path: 'a.txt', oldString: 'a', newString: 'A' }, ctx)
+
+    expect(result.isError).toBeUndefined()
+    expect(fakes.calls.outside).toEqual([
+      { method: 'readWholeText', allowOutside: undefined },
+      { method: 'writeText', allowOutside: undefined },
+    ])
+  })
+
+  it('approvedByUser === true → 整文件读与写回都带 allowOutside: true', async () => {
+    const fakes = createFakes({ text: 'a\n' })
+    const tool = toolOf(fakes)
+    const approvedCtx: ToolContext = { sessionId: ctx.sessionId, approvedByUser: true }
+
+    const result = await tool.execute(
+      { path: 'a.txt', oldString: 'a', newString: 'A' },
+      approvedCtx,
+    )
+
+    expect(result.isError).toBeUndefined()
+    expect(soleWrite(fakes).content).toBe('A\n')
+    expect(fakes.calls.outside).toEqual([
+      { method: 'readWholeText', allowOutside: true },
+      { method: 'writeText', allowOutside: true },
+    ])
   })
 })

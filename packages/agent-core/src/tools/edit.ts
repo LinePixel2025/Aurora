@@ -134,7 +134,13 @@ export function createEditTool(options: EditToolOptions): ToolDefinition {
 
       let read: ReadWholeTextResult
       try {
-        read = await options.files.readWholeText(path, maxEditBytes)
+        // 已获用户批准（确认卡放行 / 免确认命中 / auto 档判定根内）时带上越界放行标记；
+        // 未批准时不带 —— 缺省即"没批准"，端口照旧按越界拦截
+        read = await options.files.readWholeText(
+          path,
+          maxEditBytes,
+          ctx.approvedByUser === true ? { allowOutside: true } : {},
+        )
       } catch (error) {
         // 二进制（含 NUL）与目录由端口抛错，这里折成 isError，不冒泡进工具循环
         return failure(`读取文件失败：${describeError(error)}`, '读取文件失败')
@@ -201,7 +207,12 @@ export function createEditTool(options: EditToolOptions): ToolDefinition {
       const out = usesCrlf ? replaced.replace(/\n/g, '\r\n') : replaced
 
       try {
-        const written = await options.files.writeText(path, out, 'overwrite')
+        const written = await options.files.writeText(
+          path,
+          out,
+          'overwrite',
+          ctx.approvedByUser === true ? { allowOutside: true } : {},
+        )
         // 成功后**保留**守卫标记：模型刚主动改过它，知道当前内容（清掉只会逼它白读一次）
         return {
           content: `已修改：${written.absolutePath}（替换 ${count} 处，共 ${written.bytes} 字节）`,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { runAgentLoop, type AgentLoopEvent } from './agentLoop.js'
+import { runAgentLoop, type AgentLoopEvent, type ConfirmDecision } from './agentLoop.js'
 import { ToolRegistry } from '../tools/registry.js'
 import { createFakeProvider } from '../testing/fakeProvider.js'
 import type { NewMessage, StoredMessage } from '../session/types.js'
@@ -694,16 +694,23 @@ describe('runAgentLoop', () => {
   })
 
   describe('confirmTool（敏感工具确认，docs/06 §5）', () => {
-    /** 注册一个 sensitivity=confirm 的工具，并记录它是否真的被执行 */
-    function registryWithSensitive(executed: { count: number }): ToolRegistry {
+    /**
+     * 注册一个 sensitivity=confirm 的工具，并记录它是否真的被执行、
+     * 以及执行时拿到的 `ctx.approvedByUser`（三档权限透传的唯一观察点）。
+     */
+    function registryWithSensitive(
+      executed: { count: number },
+      approvals?: Array<boolean | undefined>,
+    ): ToolRegistry {
       const tools = new ToolRegistry()
       tools.register({
         name: 'danger',
         description: '危险操作',
         parameters: { type: 'object', properties: {} },
         sensitivity: 'confirm',
-        execute: async () => {
+        execute: async (_input, ctx) => {
           executed.count += 1
+          approvals?.push(ctx.approvedByUser)
           return { content: '已执行危险操作', summary: '已执行' }
         },
       })
@@ -717,7 +724,9 @@ describe('runAgentLoop', () => {
         input: unknown
         sessionId: string
         sensitivity: 'confirm'
-      }) => Promise<boolean>
+      }) => Promise<ConfirmDecision>
+      /** 收集工具执行时拿到的 `ctx.approvedByUser` */
+      approvals?: Array<boolean | undefined>
     }): Promise<{ events: AgentLoopEvent[]; rec: ReturnType<typeof createRecorder> }> {
       const rec = createRecorder()
       const provider = createFakeProvider([
@@ -731,7 +740,7 @@ describe('runAgentLoop', () => {
           systemPrompt: 'sys',
           userInput: '删掉它',
           history: [],
-          tools: registryWithSensitive(options.executed),
+          tools: registryWithSensitive(options.executed, options.approvals),
           sessionId: 'quick',
           append: rec.append,
           updateToolCall: rec.updateToolCall,
@@ -774,12 +783,56 @@ describe('runAgentLoop', () => {
         .filter((event) => event.type === 'tool')
         .map((event) => event.call.state)
       expect(states).toEqual(['running', 'error'])
-      // 拒绝文本回填给模型，而不是直接中断
+      // 拒绝文本回填给模型，而不是直接中断（逐字断言：只有 `false` 才是拒绝）
       const toolMessage = rec.messages.find((message) => message.role === 'tool')
-      expect(toolMessage?.content).toContain('用户拒绝执行')
+      expect(toolMessage?.content).toBe(
+        '用户拒绝执行工具 "danger"，请勿重复调用；如确有必要，请先向用户说明原因并征得同意。',
+      )
       expect(events.at(-1)?.type).toBe('done')
       // 工具留痕标记为失败
       expect(rec.toolLog).toEqual([{ name: 'danger', sensitivity: 'confirm', isError: true }])
+    })
+
+    it("用户选「本会话不再询问」（'always'）→ 本次照常执行，不是拒绝", async () => {
+      const executed = { count: 0 }
+      const { events, rec } = await runWithConfirm({
+        executed,
+        confirmTool: async () => 'always',
+      })
+
+      expect(executed.count).toBe(1)
+      const states = events
+        .filter((event) => event.type === 'tool')
+        .map((event) => event.call.state)
+      expect(states).toEqual(['running', 'success'])
+      expect(rec.messages.find((message) => message.role === 'tool')?.content).toBe(
+        '已执行危险操作',
+      )
+      expect(events.at(-1)?.type).toBe('done')
+    })
+
+    it('放行时把 approvedByUser 透传给工具；未注入确认钩子时保持 undefined', async () => {
+      // ① 确认卡片放行（true）→ true
+      const approved: Array<boolean | undefined> = []
+      await runWithConfirm({
+        executed: { count: 0 },
+        confirmTool: async () => true,
+        approvals: approved,
+      })
+      // ② 'always' 同样算"已获批准"
+      const always: Array<boolean | undefined> = []
+      await runWithConfirm({
+        executed: { count: 0 },
+        confirmTool: async () => 'always',
+        approvals: always,
+      })
+      // ③ 没接确认钩子时并没有"用户批准"这回事 → 字段整个不出现（保持今天的行为）
+      const none: Array<boolean | undefined> = []
+      await runWithConfirm({ executed: { count: 0 }, approvals: none })
+
+      expect(approved).toEqual([true])
+      expect(always).toEqual([true])
+      expect(none).toEqual([undefined])
     })
 
     it('确认链路抛错 → 按拒绝处理（不越权执行）', async () => {

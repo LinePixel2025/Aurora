@@ -47,6 +47,12 @@ interface FakeCalls {
   readWholeText: Array<{ path: string; maxBytes: number }>
   writeText: Array<{ path: string; content: string; mode: 'overwrite' | 'append' }>
   list: Array<{ path: string; limit: number }>
+  /**
+   * 端口收到的越界放行标记（按调用顺序，`undefined` = 内核没带这个键）。
+   * 单独记一份而不是并进上面的调用参数：`allowOutside` 缺省时传的是**空对象**，
+   * 并进去会让既有那些逐字断言（`toEqual({ path, content, mode })`）全部变红。
+   */
+  outside: Array<{ method: string; allowOutside: boolean | undefined }>
   open: string[]
   /** 搜索两方法由 `search.test.ts` 的假端口覆盖，这里的桩只为让类型过（回带空结果） */
   findFiles: FindFilesOptions[]
@@ -69,6 +75,7 @@ function createFakes(
     readWholeText: [],
     writeText: [],
     list: [],
+    outside: [],
     open: [],
     findFiles: [],
     searchText: [],
@@ -76,6 +83,7 @@ function createFakes(
   const files: FilePort = {
     async readText(path, options) {
       calls.readText.push({ path, options })
+      calls.outside.push({ method: 'readText', allowOutside: options.allowOutside })
       return {
         absolutePath: `${CWD}\\${path}`,
         lines: [{ number: 1, text: '正文' }],
@@ -89,12 +97,14 @@ function createFakes(
       calls.readWholeText.push({ path, maxBytes })
       return { absolutePath: `${CWD}\\${path}`, text: '正文', bytes: 6, refused: false }
     },
-    async writeText(path, content, mode) {
+    async writeText(path, content, mode, options) {
       calls.writeText.push({ path, content, mode })
+      calls.outside.push({ method: 'writeText', allowOutside: options?.allowOutside })
       return { absolutePath: `${CWD}\\${path}`, bytes: Buffer.byteLength(content, 'utf8') }
     },
-    async list(path, limit) {
+    async list(path, limit, options) {
       calls.list.push({ path, limit })
+      calls.outside.push({ method: 'list', allowOutside: options?.allowOutside })
       return { absolutePath: `${CWD}\\${path}`, entries: SAMPLE_ENTRIES, truncated: false }
     },
     async findFiles(options) {
@@ -162,6 +172,7 @@ function windowFakes(result: ReadTextResult): Fakes {
   const fakes = createFakes()
   fakes.files.readText = async (path, options) => {
     fakes.calls.readText.push({ path, options })
+    fakes.calls.outside.push({ method: 'readText', allowOutside: options.allowOutside })
     return result
   }
   return fakes
@@ -736,5 +747,63 @@ describe('端口错误统一判定', () => {
       expect(result.isError).toBe(true)
       expect(result.content).toContain('磁盘炸了')
     }
+  })
+})
+
+/**
+ * 三档权限的越界放行透传（docs/06 §11.2）。
+ *
+ * 内核这一层的职责只有"透传"：`ctx.approvedByUser` 为 `true` 时给端口带上
+ * `allowOutside`，其余情况**一个键都不多**——端口据此决定拦不拦（第二道边界）。
+ * 未注入字段的用例是反向自证：任何忘记透传的调用点都只会更保守。
+ */
+describe('越界放行标记 allowOutside 的透传（docs/06 §11.2）', () => {
+  /** 已获用户批准的上下文（由内核在确认放行后置位） */
+  const approvedCtx: ToolContext = { sessionId: 'test-session', approvedByUser: true }
+
+  it('未注入 approvedByUser → 端口参数里没有 allowOutside 键（与今天一字不差）', async () => {
+    const fakes = windowFakes(readResultOf(lineRange(1, 2)))
+    const tools = toolsOf(fakes)
+
+    await toolOf(tools, 'read_file').execute({ path: 'a.txt' }, ctx)
+    await toolOf(tools, 'write_file').execute({ path: 'a.txt', content: 'x' }, ctx)
+    await toolOf(tools, 'list_dir').execute({ path: '.' }, ctx)
+
+    // 逐字断言旧参数不变，另加"放行标记整个不出现"
+    expect(fakes.calls.readText).toEqual([
+      {
+        path: 'a.txt',
+        options: { offsetLines: 1, limitLines: DEFAULT_READ_LINES, maxBytes: 65_536 },
+      },
+    ])
+    expect(fakes.calls.outside).toEqual([
+      { method: 'readText', allowOutside: undefined },
+      { method: 'writeText', allowOutside: undefined },
+      { method: 'list', allowOutside: undefined },
+    ])
+  })
+
+  it('approvedByUser === true → read_file / write_file / list_dir 都带 allowOutside: true', async () => {
+    const fakes = windowFakes(readResultOf(lineRange(1, 2)))
+    const tools = toolsOf(fakes)
+
+    await toolOf(tools, 'read_file').execute({ path: 'a.txt' }, approvedCtx)
+    await toolOf(tools, 'write_file').execute({ path: 'a.txt', content: 'x' }, approvedCtx)
+    await toolOf(tools, 'list_dir').execute({ path: '.' }, approvedCtx)
+
+    expect(fakes.calls.outside).toEqual([
+      { method: 'readText', allowOutside: true },
+      { method: 'writeText', allowOutside: true },
+      { method: 'list', allowOutside: true },
+    ])
+  })
+
+  it('approvedByUser 显式为 false 时不放行（只有 true 才是批准）', async () => {
+    const fakes = windowFakes(readResultOf(lineRange(1, 2)))
+    const read = toolOf(toolsOf(fakes), 'read_file')
+
+    await read.execute({ path: 'a.txt' }, { sessionId: 'test-session', approvedByUser: false })
+
+    expect(fakes.calls.outside).toEqual([{ method: 'readText', allowOutside: undefined }])
   })
 })

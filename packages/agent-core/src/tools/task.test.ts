@@ -53,6 +53,8 @@ function createHarness(options: {
   /** 让 provider.create() 直接抛错（验证意外异常转 isError） */
   createThrows?: unknown
   maxRounds?: number
+  /** 只读档下装配层注入的「子代理可见工具名白名单」（docs/06 §11.2） */
+  subagentToolNames?: () => readonly string[]
 }): Harness {
   const provider = createFakeProvider(options.rounds)
   const parent = new ToolRegistry()
@@ -68,6 +70,9 @@ function createHarness(options: {
     },
     tools: parent,
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
+    ...(options.subagentToolNames === undefined
+      ? {}
+      : { subagentToolNames: options.subagentToolNames }),
   })
   parent.register(tool)
   return { tool, provider, parent }
@@ -99,6 +104,49 @@ describe('createTaskTool', () => {
     expect(system?.role).toBe('system')
     expect(system?.content).toContain('子代理')
     expect(system?.content).toContain('probe')
+  })
+
+  it('注入白名单（只读档）→ 子代理工具表只剩白名单内的名字（交集）', async () => {
+    const { tool, provider } = createHarness({
+      rounds: [{ text: '报告内容' }],
+      extraTools: [makeTool('read_file'), makeTool('list_dir'), makeTool('grep')],
+      subagentToolNames: () => ['read_file', 'list_dir'],
+    })
+    const result = await tool.execute({ description: DESCRIPTION, prompt: PROMPT }, CONTEXT)
+
+    expect(result.isError).toBeUndefined()
+    const tools = provider.calls[0]?.tools?.map((item) => item.name) ?? []
+    expect(tools).toEqual(['list_dir', 'read_file'])
+    // 提示词里的工具目录与请求体的 tools 同源（都来自过滤后的子表）
+    expect(provider.calls[0]?.messages[0]?.content).not.toContain('grep')
+  })
+
+  it('白名单含 confirm 级 / task / mcp 工具名时依然拿不到（白名单只做减法）', async () => {
+    const { tool, provider } = createHarness({
+      rounds: [{ text: '报告内容' }],
+      extraTools: [
+        makeTool('read_file'),
+        makeTool('write_file', 'confirm'),
+        makeTool('mcp.demo.tool'),
+      ],
+      // 装配层写错时也不能放开：白名单与既有三道过滤取交集
+      subagentToolNames: () => ['read_file', 'write_file', 'mcp.demo.tool', TASK_TOOL_NAME],
+    })
+    const result = await tool.execute({ description: DESCRIPTION, prompt: PROMPT }, CONTEXT)
+
+    expect(result.isError).toBeUndefined()
+    expect(provider.calls[0]?.tools?.map((item) => item.name)).toEqual(['read_file'])
+  })
+
+  it('未注入白名单 → 工具表与今天完全一致（不过滤）', async () => {
+    const { tool, provider } = createHarness({
+      rounds: [{ text: '报告内容' }],
+      extraTools: [makeTool('read_file'), makeTool('grep')],
+    })
+    const result = await tool.execute({ description: DESCRIPTION, prompt: PROMPT }, CONTEXT)
+
+    expect(result.isError).toBeUndefined()
+    expect(provider.calls[0]?.tools?.map((item) => item.name)).toEqual(['grep', 'read_file'])
   })
 
   it(`报告超过 ${MAX_TASK_RESULT_CHARS} 字符时从尾部截断并附说明`, async () => {

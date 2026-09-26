@@ -557,3 +557,40 @@ describe('description 契约（§20）', () => {
     expect(glob.description).toContain('.git')
   })
 })
+
+/**
+ * 三档权限的越界放行透传（docs/06 §11.2）。
+ *
+ * `grep` / `glob` 是 safe 级（不弹确认卡），但 `auto` 档"根内免确认"同样要能把
+ * 搜索根指到项目之外——放行结论一律由内核经 `ctx.approvedByUser` 承载，
+ * 工具层不认识档位，只做透传。
+ */
+describe('grep / glob 的越界放行标记（docs/06 §11.2）', () => {
+  const approvedCtx: ToolContext = { sessionId: 'test-session', approvedByUser: true }
+
+  it('未注入 approvedByUser → 端口参数里没有 allowOutside 键（与今天一字不差）', async () => {
+    const fakes = searchFakes(searchResult([]), findResult([]))
+    const tools = toolsOf(fakes)
+
+    await toolOf(tools, 'grep').execute({ pattern: 'foo' }, ctx)
+    await toolOf(tools, 'glob').execute({ pattern: '**/*.ts' }, ctx)
+
+    expect(fakes.calls.searchText).toEqual([
+      { root: DEFAULT_ROOT, pattern: 'foo', maxResults: 200 },
+    ])
+    expect(fakes.calls.findFiles).toEqual([
+      { root: DEFAULT_ROOT, pattern: '**/*.ts', maxResults: 200 },
+    ])
+  })
+
+  it('approvedByUser === true → grep 与 glob 都带 allowOutside: true', async () => {
+    const fakes = searchFakes(searchResult([]), findResult([]))
+    const tools = toolsOf(fakes)
+
+    await toolOf(tools, 'grep').execute({ pattern: 'foo' }, approvedCtx)
+    await toolOf(tools, 'glob').execute({ pattern: '**/*.ts' }, approvedCtx)
+
+    expect(fakes.calls.searchText[0]?.allowOutside).toBe(true)
+    expect(fakes.calls.findFiles[0]?.allowOutside).toBe(true)
+  })
+})

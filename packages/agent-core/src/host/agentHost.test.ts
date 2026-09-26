@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createMemoryLogger } from '@aurora/shared'
 import { KernelAgentHost, ERROR_BUSY, ERROR_NO_MODEL } from './agentHost.js'
+import type { AgentHostDeps } from './agentHost.js'
 import { SessionStore } from '../session/store.js'
 import { SkillsBridge } from '../skills/bridge.js'
 import { SkillsRegistry } from '../skills/registry.js'
@@ -52,6 +53,8 @@ async function createHarness(options: {
   projectInstructions?: () => Promise<string | undefined>
   /** quick 会话滑动窗口（docs/06 §4）；缺省 0 = 不启用 */
   quickContextWindowMs?: number
+  /** 敏感工具确认钩子（docs/06 §5）；缺省不注入 = 不拦截 */
+  confirmTool?: AgentHostDeps['confirmTool']
 }): Promise<Harness> {
   const fs = new TestFileSystem()
   const sessions = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
@@ -98,6 +101,7 @@ async function createHarness(options: {
     ...(options.quickContextWindowMs === undefined
       ? {}
       : { quickContextWindowMs: options.quickContextWindowMs }),
+    ...(options.confirmTool === undefined ? {} : { confirmTool: options.confirmTool }),
   })
   host.onEvent((event) => events.push(event))
 
@@ -632,6 +636,141 @@ describe('KernelAgentHost', () => {
     await harness.waitForDone()
     const roles = harness.provider.calls[1]?.messages.map((item) => item.role)
     expect(roles).toEqual(['system', 'user', 'assistant', 'user'])
+  })
+})
+
+/**
+ * 会话级「本会话不再询问」（docs/06 §5、docs/06 §11.2）。
+ *
+ * `'always'` 的记忆必须落在**内核的 AgentHost**：循环一趟请求一个实例，记住它等于没记住。
+ * 授权表的键就是 `sessionId` —— 因此"换会话要重新问"是天然行为，不需要额外判断。
+ */
+describe('KernelAgentHost · 会话级 always 授权（docs/06 §5）', () => {
+  /** 注册一个 confirm 级工具，并记录它真的被执行过几次 */
+  function registerDanger(harness: Harness, executed: { count: number }): void {
+    harness.tools.register({
+      name: 'danger',
+      description: '危险操作',
+      parameters: { type: 'object' },
+      sensitivity: 'confirm',
+      execute: async () => {
+        executed.count += 1
+        return { content: '已执行危险操作', summary: '已执行' }
+      },
+    })
+  }
+
+  /** 两次「问 danger 然后收尾」的脚本：跨两次 send 依次消费（假 provider 的轮次是全局序号） */
+  const twoCalls: ScriptRound[] = [
+    { toolCalls: [{ id: 'c1', name: 'danger', arguments: '{}' }] },
+    { text: '第一次完成' },
+    { toolCalls: [{ id: 'c2', name: 'danger', arguments: '{}' }] },
+    { text: '第二次完成' },
+  ]
+
+  it("confirmTool 返回 'always' → 工具真的被执行（不是拒绝）", async () => {
+    const executed = { count: 0 }
+    const harness = await createHarness({
+      rounds: [{ toolCalls: [{ id: 'c1', name: 'danger', arguments: '{}' }] }, { text: '完成' }],
+      confirmTool: async () => 'always',
+    })
+    registerDanger(harness, executed)
+
+    await harness.send('删掉它')
+    await harness.waitForDone()
+
+    expect(executed.count).toBe(1)
+    const states = harness.events
+      .filter((event) => event.type === 'tool')
+      .map((event) => event.call.state)
+    expect(states).toEqual(['running', 'success'])
+  })
+
+  it('同一会话同名工具的第二次调用不再询问（confirmTool 只被调用 1 次）', async () => {
+    const executed = { count: 0 }
+    const asked: string[] = []
+    const harness = await createHarness({
+      rounds: twoCalls,
+      confirmTool: async (info) => {
+        asked.push(info.name)
+        return 'always'
+      },
+    })
+    registerDanger(harness, executed)
+
+    await harness.send('第一次')
+    await harness.waitForDone()
+    harness.events.length = 0
+    await harness.send('第二次')
+    await harness.waitForDone()
+
+    // 授权表命中：第二次**根本不调用** deps.confirmTool（否则等于又弹了一张卡）
+    expect(asked).toEqual(['danger'])
+    expect(executed.count).toBe(2)
+  })
+
+  it('换一个会话要重新询问（授权按 sessionId 隔离）', async () => {
+    const executed = { count: 0 }
+    let asked = 0
+    const harness = await createHarness({
+      rounds: twoCalls,
+      confirmTool: async () => {
+        asked += 1
+        return 'always'
+      },
+    })
+    registerDanger(harness, executed)
+
+    await harness.send('第一次', 'session-a')
+    await harness.waitForDone()
+    harness.events.length = 0
+    await harness.send('第二次', 'session-b')
+    await harness.waitForDone()
+
+    expect(asked).toBe(2)
+    expect(executed.count).toBe(2)
+  })
+
+  it('clearSessionApprovals 之后重新询问（会话删除 / 重建时不继承旧授权）', async () => {
+    const executed = { count: 0 }
+    let asked = 0
+    const harness = await createHarness({
+      rounds: twoCalls,
+      confirmTool: async () => {
+        asked += 1
+        return 'always'
+      },
+    })
+    registerDanger(harness, executed)
+
+    await harness.send('第一次')
+    await harness.waitForDone()
+    harness.host.clearSessionApprovals('quick')
+    harness.events.length = 0
+    await harness.send('第二次')
+    await harness.waitForDone()
+
+    expect(asked).toBe(2)
+  })
+
+  it('confirmTool 返回 false 的行为与从前一字不差：不执行、拒绝文本回填', async () => {
+    const executed = { count: 0 }
+    const harness = await createHarness({
+      rounds: [{ toolCalls: [{ id: 'c1', name: 'danger', arguments: '{}' }] }, { text: '收尾' }],
+      confirmTool: async () => false,
+    })
+    registerDanger(harness, executed)
+
+    await harness.send('删掉它')
+    await harness.waitForDone()
+
+    expect(executed.count).toBe(0)
+    const states = harness.events
+      .filter((event) => event.type === 'tool')
+      .map((event) => event.call.state)
+    expect(states).toEqual(['running', 'error'])
+    const stored = await harness.sessions.get('quick')
+    expect(stored.find((message) => message.role === 'tool')?.content).toContain('用户拒绝执行')
   })
 })
 

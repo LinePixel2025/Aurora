@@ -9,6 +9,10 @@
  * 安全边界（docs/06 §11.1）：`write_file` / `open_path` 为 `sensitivity: 'confirm'`，
  * 逐次调用都要过 `confirmTool` 钩子；路径**不设沙箱**，越界不静默——
  * 结果里一律回带解析后的绝对路径，由用户据此决定是否放行。
+ *
+ * 三档权限（docs/06 §11.2）在本文件的落点只有一处：`ctx.approvedByUser === true` 时
+ * 给端口带上 `allowOutside`。**真正拦不拦由端口决定**（`main/tools/file-port.ts` 的
+ * `resolveWithin` 是"能不能碰"的边界），内核只回答"这一次要不要问用户"。
  */
 import type { ToolDefinition, ToolResult } from './registry.js'
 // ⚠️ 必须 `import type`：`edit.ts` 对 `files.js` 是**运行时**导入（取 `MAX_EDIT_BYTES`），
@@ -51,6 +55,31 @@ export interface ReadWholeTextResult {
   bytes: number
   /** 文件超过 `maxBytes`（或命中 `MAX_READ_SCAN_BYTES`）时为 true —— 调用方**必须**据此拒绝改动 */
   refused: boolean
+}
+
+/**
+ * 越界放行标记（docs/06 §11.2 三档权限）：仅当内核已确认（`ToolContext.approvedByUser`）
+ * 时由工具层传 `true`。
+ *
+ * 为什么做成**可选**参数而不是新方法：端口（`main/tools/file-port.ts`）的越界判定
+ * （`resolveWithin` / realpath）是**能不能碰**的边界，本标记只回答「这一次要不要拦」。
+ * 两者分离后，未注入标记的调用点（单测直接调工具、老调用方）行为一字不变 ——
+ * 缺省即"没批准"，端口照旧拦截。
+ */
+export interface OutsideGuardOptions {
+  /** 用户已批准本次越界（缺省 `false`/缺省不传 = 按越界拦截） */
+  allowOutside?: boolean
+}
+
+/**
+ * 把「本次已获用户批准」折成端口参数：批准才带键，否则返回空对象。
+ *
+ * 刻意**不带 `allowOutside: false`**：端口的参数是「有没有放行标记」，
+ * 多带一个 false 会让既有的逐字断言（`toEqual({ path, options: {...} })`）与
+ * 老端口实现都要跟着改，属于白噪声改动。
+ */
+function outsideGuard(ctx: { approvedByUser?: boolean }): OutsideGuardOptions {
+  return ctx.approvedByUser === true ? { allowOutside: true } : {}
 }
 
 export interface ReadTextOptions {
@@ -99,7 +128,7 @@ export interface FilePort {
    * 与既有 `readText(path, maxBytes)` 的差别：`maxBytes` 现在是对**窗口**的字节上限，
    * 不再是从文件头截断——因此大文件的后半段可以被读到（`offsetLines`）。
    */
-  readText(path: string, options: ReadTextOptions): Promise<ReadTextResult>
+  readText(path: string, options: ReadTextOptions & OutsideGuardOptions): Promise<ReadTextResult>
   /**
    * 为**整文件替换**读取完整内容（`edit_file` 专用，docs/06 §11.6）。
    *
@@ -109,21 +138,27 @@ export interface FilePort {
    *
    * 二进制（含 NUL）与目录同样由实现**抛错**（与 `readText` 同款，`BINARY_MESSAGE`）。
    */
-  readWholeText(path: string, maxBytes: number): Promise<ReadWholeTextResult>
+  readWholeText(
+    path: string,
+    maxBytes: number,
+    options?: OutsideGuardOptions,
+  ): Promise<ReadWholeTextResult>
   /** 写文本；mode='append' 追加；实现负责建父目录 + 原子写 */
   writeText(
     path: string,
     content: string,
     mode: 'overwrite' | 'append',
+    options?: OutsideGuardOptions,
   ): Promise<{ absolutePath: string; bytes: number }>
   list(
     path: string,
     limit: number,
+    options?: OutsideGuardOptions,
   ): Promise<{ absolutePath: string; entries: DirEntry[]; truncated: boolean }>
   /** 按文件名 glob 模式递归找文件（`glob` 工具，docs/06 §11.5） */
-  findFiles(options: FindFilesOptions): Promise<FindFilesResult>
+  findFiles(options: FindFilesOptions & OutsideGuardOptions): Promise<FindFilesResult>
   /** 按正则递归搜文件内容（`grep` 工具，docs/06 §11.5） */
-  searchText(options: SearchTextOptions): Promise<SearchTextResult>
+  searchText(options: SearchTextOptions & OutsideGuardOptions): Promise<SearchTextResult>
 }
 
 /** `agent.tools.search.maxResults` 的缺省值与硬上限（docs/06 §11.5） */
@@ -351,7 +386,13 @@ function createReadFileTool(
         }
       }
       try {
-        const result = await files.readText(path, { offsetLines, limitLines, maxBytes })
+        const result = await files.readText(path, {
+          offsetLines,
+          limitLines,
+          maxBytes,
+          // 用户已批准（确认卡放行 / 免确认命中 / auto 档判定根内）时才带上放行标记
+          ...outsideGuard(ctx),
+        })
         // 读过就给 `edit_file` 放行（docs/06 §11.6）；**以端口回带的绝对路径为键**，
         // 这样模型写 `a/../b` 与写 `b` 记的是同一个文件。
         // ⚠️ 只有**真的看到内容**才算读过：`offset` 越界时返回的是空窗口（不是错误），
@@ -503,7 +544,7 @@ function createWriteFileTool(
         }
       }
       try {
-        const result = await files.writeText(path, content, mode)
+        const result = await files.writeText(path, content, mode, outsideGuard(ctx))
         // 整篇覆盖 / 追加后**必须清掉"读过"的标记**：否则模型拿着过期基线去 `edit_file`，
         // 而守卫以为它读过当前内容 —— 会静默套用错误基线（`append` 同理，内容已变）。
         readTracker?.clear(ctx.sessionId, result.absolutePath)
@@ -542,7 +583,7 @@ function createListDirTool(files: FilePort, defaultLimit: number): ToolDefinitio
       additionalProperties: false,
     },
     sensitivity: 'safe',
-    execute: async (input): Promise<ToolResult> => {
+    execute: async (input, ctx): Promise<ToolResult> => {
       const record = asRecord(input)
       const path = readNonEmptyString(record, 'path')
       if (path === undefined) {
@@ -561,7 +602,7 @@ function createListDirTool(files: FilePort, defaultLimit: number): ToolDefinitio
         }
       }
       try {
-        const result = await files.list(path, limit)
+        const result = await files.list(path, limit, outsideGuard(ctx))
         const lines = result.entries.map(renderEntry)
         if (lines.length === 0) lines.push('（空目录）')
         if (result.truncated) lines.push('还有更多条目，已按 limit 截断')

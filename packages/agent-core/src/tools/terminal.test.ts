@@ -205,6 +205,32 @@ describe('createTerminalTool', () => {
 
     expect(calls[0]?.signal).toBe(controller.signal)
   })
+
+  /**
+   * 三档权限的越界放行透传（docs/06 §11.2）。
+   *
+   * 真正拦不拦 `cwd` 由实现侧（`main/tools/command-runner.ts`）决定；内核只把
+   * "用户已批准"这一结论原样带进请求里，且**缺省一个键都不多**。
+   */
+  it('approvedByUser 未注入 / 为 false 时请求里没有 allowOutside 键', async () => {
+    const { tool, calls } = createHarness()
+
+    await tool.execute({ command: 'dir' }, CONTEXT)
+    await tool.execute({ command: 'dir' }, { sessionId: 's', approvedByUser: false })
+
+    expect(calls).toHaveLength(2)
+    for (const request of calls) {
+      expect('allowOutside' in request).toBe(false)
+    }
+  })
+
+  it('approvedByUser === true → 请求带 allowOutside: true', async () => {
+    const { tool, calls } = createHarness()
+
+    await tool.execute({ command: 'dir' }, { sessionId: 's', approvedByUser: true })
+
+    expect(calls[0]?.allowOutside).toBe(true)
+  })
 })
 
 describe('formatCommandOutput', () => {

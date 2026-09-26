@@ -91,7 +91,7 @@ function createGrepTool(files: FilePort, maxResults: number, defaultRoot: string
       additionalProperties: false,
     },
     sensitivity: 'safe',
-    execute: async (input): Promise<ToolResult> => {
+    execute: async (input, ctx): Promise<ToolResult> => {
       const record = asRecord(input)
       const pattern = readPatternString(record, 'pattern')
       if (pattern === undefined) {
@@ -142,6 +142,8 @@ function createGrepTool(files: FilePort, maxResults: number, defaultRoot: string
           pattern,
           maxResults,
           ...(include === undefined ? {} : { include }),
+          // 已获用户批准时才带上越界放行标记（缺省不带 = 端口照旧拦截）
+          ...(ctx.approvedByUser === true ? { allowOutside: true } : {}),
         })
         return renderGrepResult(result, pattern, maxResults)
       } catch (error) {
@@ -193,7 +195,7 @@ function createGlobTool(files: FilePort, maxResults: number, defaultRoot: string
       additionalProperties: false,
     },
     sensitivity: 'safe',
-    execute: async (input): Promise<ToolResult> => {
+    execute: async (input, ctx): Promise<ToolResult> => {
       const record = asRecord(input)
       const pattern = readPatternString(record, 'pattern')
       if (pattern === undefined) {
@@ -229,7 +231,13 @@ function createGlobTool(files: FilePort, maxResults: number, defaultRoot: string
 
       const root = readOptionalString(record, 'path') ?? defaultRoot
       try {
-        const result = await files.findFiles({ root, pattern, maxResults: limit })
+        const result = await files.findFiles({
+          root,
+          pattern,
+          maxResults: limit,
+          // 与 grep 同款：仅已获批准时带放行标记
+          ...(ctx.approvedByUser === true ? { allowOutside: true } : {}),
+        })
         return renderGlobResult(result, pattern, limit)
       } catch (error) {
         return {

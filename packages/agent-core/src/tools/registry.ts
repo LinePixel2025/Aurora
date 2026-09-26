@@ -24,6 +24,22 @@ export interface ToolContext {
   signal?: AbortSignal
   /** 进度上报端口；未注入时（直接调用工具）静默丢弃 */
   emitProgress?(payload: ToolProgress): void
+  /**
+   * 「这次调用已经获得用户批准」（docs/06 §11.2 三档权限）。
+   *
+   * 由**内核**（`loop/agentLoop.ts`）置位，且只在工具 `sensitivity === 'confirm'`
+   * 且确认钩子给出放行结论时置 `true` —— 三条来源对工具层是同一件事：
+   * ① 用户在确认卡片上点了放行；② 免确认模式（`terminal.allowPatterns` 之类）直接命中；
+   * ③ `auto` 档判定目标落在项目根内。三者都在 `confirmTool` 里合成 `true` / `'always'`。
+   *
+   * 消费方是文件类 / 终端类工具：它们据此把 `allowOutside: true` 透传给端口
+   * （端口层的越界拦截是第二道边界，内核不能替它做决定）。
+   *
+   * **未注入时（直接调用工具的单测）字段为 `undefined`，行为与今天完全一致**：
+   * 端口看不到 `allowOutside`，越界仍然被拦 —— 缺省一律按"没批准"处理，
+   * 这样任何忘记透传的调用点都只会更保守，而不会意外放宽边界。
+   */
+  approvedByUser?: boolean
 }
 
 export interface ToolResult {

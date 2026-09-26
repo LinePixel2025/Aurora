@@ -21,6 +21,19 @@ import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types
 export const DEFAULT_MAX_ROUNDS = 8
 
 /**
+ * 确认结果：`false` = 拒绝；`true` = 本次放行；`'always'` = 本次放行 + 本会话内同名工具不再询问。
+ *
+ * 为什么要 `'always'`：敏感工具（写文件、跑命令）在一次任务里往往要连用十几次，
+ * 逐次弹同一张卡片会逼用户"闭眼点确定"——那比不确认更危险。`'always'` 把"信任"的粒度
+ * 定成**会话 × 工具名**：换会话、换工具都会重新问。
+ *
+ * `'always'` 的**记忆不在本文件**：循环是一次请求一个实例、跑完即弃，记住它等于没记住。
+ * 会话级记忆落在 `host/agentHost.ts`（`KernelAgentHost.sessionApprovals`，只存内存、不落盘），
+ * 由它包装 `confirmTool` 后交进来——循环这一层只认"这次放行没放行"。
+ */
+export type ConfirmDecision = boolean | 'always'
+
+/**
  * 循环事件（docs/06 §5、§16.1、§16.2）。
  *
  * `round`：本事件属于第几个工具调用轮次（从 0 起）。思考链增量自身没有 `messageId`
@@ -88,6 +101,8 @@ export interface AgentLoopOptions {
    *
    * 返回 `false` 表示用户拒绝：不执行工具，以「用户拒绝执行」文本回填模型，
    * 工具卡片置 `error`，循环继续（模型可以改走别的路径或向用户说明）。
+   * 返回 `true` / `'always'` 都继续执行；两者的差别（本会话内同名工具不再询问）
+   * 由 `KernelAgentHost` 的包装层承担，见 `ConfirmDecision`。
    *
    * **未提供时保持 v0.3.0 行为**：不拦截、只记日志留痕。
    * 这样既不会让 P3 的 MCP 路径意外变成"必然被拒"，
@@ -98,7 +113,7 @@ export interface AgentLoopOptions {
     input: unknown
     sessionId: string
     sensitivity: 'confirm'
-  }): Promise<boolean>
+  }): Promise<ConfirmDecision>
   /** 落盘一条消息（用户 / 助手 / 工具结果） */
   append(message: NewMessage): Promise<StoredMessage>
   /**
@@ -485,10 +500,16 @@ async function runTool(
 
   // 敏感工具执行前的用户确认（docs/06 §5）。
   // 未接确认钩子时保持既有行为（仅标记 sensitivity + 日志留痕）。
+  //
+  // `approvedByUser` 只在"真的问过、且没被拒"时置位：它会被传给工具上下文，
+  // 文件 / 终端类工具据此把 `allowOutside` 透给端口（越界的第二道边界在端口里）。
+  // 没接确认钩子时字段保持 `undefined` —— 那时并没有"用户批准"这回事，
+  // 端口也就照旧按越界拦截（缺省一律按没批准处理）。
+  let approvedByUser = false
   if (tool.sensitivity === 'confirm' && options.confirmTool !== undefined) {
-    let approved = false
+    let decision: ConfirmDecision = false
     try {
-      approved = await options.confirmTool({
+      decision = await options.confirmTool({
         name: call.name,
         input,
         sessionId: options.sessionId,
@@ -496,17 +517,20 @@ async function runTool(
       })
     } catch (error) {
       // 确认链路本身出错按"拒绝"处理：宁可不动敏感操作，也不越权执行
-      approved = false
+      decision = false
       options.onToolCall?.({ name: call.name, sensitivity: 'confirm', isError: true })
       const message = `用户确认流程异常，已取消执行：${error instanceof Error ? error.message : String(error)}`
       return { content: message, summary: message, state: 'error' }
     }
 
-    if (!approved) {
+    // 只有明确的 `false` 才是拒绝：`true` 与 `'always'` 都继续执行
+    //（`'always'` 的"本会话不再问"已由上层包装层消化，这里看到的仍是一次放行）
+    if (decision === false) {
       options.onToolCall?.({ name: call.name, sensitivity: 'confirm', isError: true })
       const message = `用户拒绝执行工具 "${call.name}"，请勿重复调用；如确有必要，请先向用户说明原因并征得同意。`
       return { content: message, summary: '用户拒绝执行', state: 'error' }
     }
+    approvedByUser = true
   }
 
   try {
@@ -515,6 +539,7 @@ async function runTool(
       toolCallId: call.id,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(emitProgress === undefined ? {} : { emitProgress }),
+      ...(approvedByUser ? { approvedByUser: true } : {}),
     })
     const isError = result.isError === true
     options.onToolCall?.({ name: call.name, sensitivity: tool.sensitivity ?? 'safe', isError })

@@ -5,6 +5,7 @@
  * - 子代理复用同一个 Agent 循环（`loop/agentLoop.ts`），最终文本报告作为工具结果回传主代理；
  * - 工具表从父表过滤：拿不到 confirm 敏感工具、不能递归派生 task、碰不到 MCP 工具
  *   （MCP 工具全是 confirm，前缀判断是双保险）——子代理拿不到敏感工具与递归派生能力；
+ *   只读档下装配层可再注入一份工具名白名单（`subagentToolNames`），作为**交集**叠加；
  * - 会话**不落盘**（内存收集器），sessionId 加 `-sub` 后缀，
  *   因此 todo 等按会话隔离的端口天然落在独立清单上，与主对话互不干扰。
  *
@@ -48,6 +49,19 @@ export interface TaskToolOptions {
   /** 子代理轮次上限，缺省 `DEFAULT_MAX_ROUNDS` */
   maxRounds?: number
   logger?: Logger
+  /**
+   * 只读档下由装配层传入「子代理可见的工具名白名单」；未注入 = 不过滤（保持今天的行为）。
+   *
+   * 语义是**交集**：注入时子代理只拿到这些名字的工具，原有的三道过滤
+   * （confirm 敏感工具 / `task` 自身 / `mcp.*`）继续生效 —— 白名单只做减法，
+   * 不可能因为装配层写错而让子代理多拿到一个工具。
+   *
+   * 为什么做成钩子而不是在这里判档位：三档权限的解析在 `apps/desktop/src/main`
+   * （`resolvePermissionMode`），内核不认识 `settings`，也不该认识"只读档"这个词；
+   * 钩子抛错时整次派生直接失败（`isError`），**不做静默放行**——
+   * 拿不到白名单就等于不知道子代理能用什么，此时放行比失败危险得多。
+   */
+  subagentToolNames?: () => readonly string[]
 }
 
 export function createTaskTool(options: TaskToolOptions): ToolDefinition {
@@ -133,12 +147,16 @@ async function runSubagent(
 
   // 子工具表：从父表过滤出查询与只读类工具。
   // 子代理拿不到敏感工具（confirm）、不能递归派生（task 自身）、碰不到 MCP 工具。
+  // 只读档下装配层再叠一层白名单（`subagentToolNames`）：白名单只做减法，未注入即不过滤。
+  const allowedNames =
+    options.subagentToolNames === undefined ? undefined : new Set(options.subagentToolNames())
   const subTools = new ToolRegistry()
   for (const tool of options.tools.list()) {
     if (
       tool.sensitivity !== 'confirm' &&
       tool.name !== TASK_TOOL_NAME &&
-      !tool.name.startsWith('mcp.')
+      !tool.name.startsWith('mcp.') &&
+      (allowedNames === undefined || allowedNames.has(tool.name))
     ) {
       subTools.register(tool)
     }

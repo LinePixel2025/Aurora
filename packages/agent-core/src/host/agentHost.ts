@@ -8,7 +8,7 @@ import type { AgentEvent, AgentHost as AgentHostContract, AgentToolCall } from '
 import type { Logger } from '@aurora/shared'
 import { createNoopLogger } from '@aurora/shared'
 import { buildSystemPrompt, buildToolGuidance, describeTools } from '../context/systemPrompt.js'
-import { runAgentLoop, type LoopProvider } from '../loop/agentLoop.js'
+import { runAgentLoop, type ConfirmDecision, type LoopProvider } from '../loop/agentLoop.js'
 import type { ReasoningEffortLevel } from '../llm/types.js'
 import type { SkillsBridge } from '../skills/bridge.js'
 import {
@@ -69,13 +69,17 @@ export interface AgentHostDeps {
   /**
    * 敏感工具执行前的用户确认（docs/06 §5）。
    * 未注入时保持 v0.3.0 行为（不拦截，仅由 `onToolCall` 留痕）。
+   *
+   * 返回 `'always'` 表示「本次放行，且本会话内同名工具不再询问」——那份会话级记忆
+   * 由本类持有（`sessionApprovals`），**不会再问第二遍**：确认卡片的语义是"减少打扰"，
+   * 逐次弹同一张卡只会训练用户闭眼点确定。
    */
   confirmTool?(info: {
     name: string
     input: unknown
     sessionId: string
     sensitivity: 'confirm'
-  }): Promise<boolean>
+  }): Promise<ConfirmDecision>
   /**
    * 「Agent 可修改的设置」清单（docs/06 §17 提到的正式通道）：
    * 原样注入 systemPrompt 的独立小节；抛错时省略该节，不中断请求。
@@ -113,6 +117,17 @@ export class KernelAgentHost implements AgentHostContract {
   private readonly active = new Map<string, { requestId: string; controller: AbortController }>()
   /** 每个会话的累计历史摘要（内存态；进程重启后由后续轮次重新压缩得出） */
   private readonly summaries = new Map<string, string>()
+  /**
+   * 会话级「已授权不再询问」的工具名表（`confirmTool` 返回 `'always'` 时写入）。
+   *
+   * 为什么放在这里而不是主进程：许可的粒度是**会话 × 工具名**，而"会话"这个概念
+   * 在内核里就有（`sessionId`）、在主进程里反而要靠 IPC 上下文去猜；放在内核既少一层
+   * 跨进程状态，也让"换会话就重新问"成为天然行为（键就是会话）。
+   *
+   * **只存内存、不落盘**：它是"用户此刻愿意信任这个工具"的表达，
+   * 不该跨进程重启继承——重启后重新问一次是刻意的保守选择。
+   */
+  private readonly sessionApprovals = new Map<string, Set<string>>()
   private counter = 0
   /**
    * 事件序号（docs/06 §16.1）：单调递增，随每个 `AgentEvent` 下发。
@@ -220,6 +235,17 @@ export class KernelAgentHost implements AgentHostContract {
   /** 当前是否已有请求在跑（供测试与状态展示） */
   isBusy(sessionId: string): boolean {
     return this.active.has(sessionId)
+  }
+
+  /**
+   * 清空某会话的「不再询问」授权（会话被删除 / 新建同名会话时由主进程调用）。
+   *
+   * 为什么必须有这个出口：授权表的键只有 `sessionId`，会话删掉又重建（或换个项目复用
+   * 同一个 id）时，旧授权会**静默继承**到新会话上——那是"用户批准过一次，之后永久免检"，
+   * 与"会话 × 工具名"的口径不符。
+   */
+  clearSessionApprovals(sessionId: string): void {
+    this.sessionApprovals.delete(sessionId)
   }
 
   // ───────────────────────── 内部 ─────────────────────────
@@ -335,7 +361,9 @@ export class KernelAgentHost implements AgentHostContract {
         sessionId,
         signal: input.controller.signal,
         ...(this.deps.maxRounds === undefined ? {} : { maxRounds: this.deps.maxRounds }),
-        ...(this.deps.confirmTool === undefined ? {} : { confirmTool: this.deps.confirmTool }),
+        ...(this.deps.confirmTool === undefined
+          ? {}
+          : { confirmTool: this.wrapConfirmTool(sessionId) }),
         append: (message: NewMessage) => this.deps.sessions.append(sessionId, message),
         // 正文流式的 id 预领（docs/06 §16.2）：与 append 共用同一个计数器，
         // 因此「边流边发」用的 id 就是落盘后的 id，渲染层那条消息不需要被替换
@@ -454,6 +482,41 @@ export class KernelAgentHost implements AgentHostContract {
       } catch (error) {
         this.logger.warn('Agent 事件监听器抛错', { error: String(error) })
       }
+    }
+  }
+
+  /**
+   * 包一层 `confirmTool`：给循环的那份钩子自带「本会话已授权」的短路。
+   *
+   * 三条口径（缺一不可）：
+   * ① 该会话已授权该工具名 → **直接返回 `true`，不调用 `deps.confirmTool`**
+   *    （不再打扰用户是 `'always'` 的全部意义，多调一次就可能多弹一张卡）；
+   * ② 否则照常问；答 `'always'` 时记入授权表并原样返回 `'always'`（调用方仍按一次放行处理）；
+   * ③ 其余（`true` / `false` / 抛错）原样透传 —— 拒绝与异常的处理**只在循环那一层**，
+   *    这里不做二次解释，否则两处判定迟早漂移。
+   *
+   * 每次 `run()` 现包一个闭包：钩子本身绑定了 `sessionId`，不会串会话。
+   */
+  private wrapConfirmTool(
+    sessionId: string,
+  ): (info: {
+    name: string
+    input: unknown
+    sessionId: string
+    sensitivity: 'confirm'
+  }) => Promise<ConfirmDecision> {
+    const confirm = this.deps.confirmTool
+    return async (info) => {
+      // `run()` 只在 deps.confirmTool 存在时才包装；这里再判一次是为了让类型收窄不依赖调用点
+      if (confirm === undefined) return true
+      if (this.sessionApprovals.get(sessionId)?.has(info.name) === true) return true
+      const decision = await confirm(info)
+      if (decision === 'always') {
+        const approved = this.sessionApprovals.get(sessionId) ?? new Set<string>()
+        approved.add(info.name)
+        this.sessionApprovals.set(sessionId, approved)
+      }
+      return decision
     }
   }
 

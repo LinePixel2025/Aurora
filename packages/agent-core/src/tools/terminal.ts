@@ -15,6 +15,15 @@ export interface CommandRequest {
   cwd?: string
   timeoutMs?: number
   signal?: AbortSignal
+  /**
+   * 越界放行标记（docs/06 §11.2 三档权限）：`cwd` 落在项目根之外时，
+   * 由实现侧（`main/tools/command-runner.ts`）决定拦不拦。
+   *
+   * 为什么放在请求里而不是另开一个钩子：`cwd` 校验天然属于"这次执行要用哪个目录"，
+   * 与 `cwd` 同路传递最不容易漏；**内核不判档位、也不判越界**，只把内核的确认结论原样透传。
+   * 缺省不传（`undefined`）= 维持既有行为——实现侧若本来不拦，就仍不拦。
+   */
+  allowOutside?: boolean
 }
 
 export interface CommandResult {
@@ -106,6 +115,8 @@ export function createTerminalTool(options: TerminalToolOptions): ToolDefinition
           cwd,
           timeoutMs,
           ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
+          // 已获用户批准时才带上放行标记：缺省不带（老调用方与直接调工具的单测行为不变）
+          ...(ctx.approvedByUser === true ? { allowOutside: true } : {}),
         })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
