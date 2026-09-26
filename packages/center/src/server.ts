@@ -76,7 +76,11 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
 
   const http: Server = createServer((req, res) => {
     void dispatch(req, res).catch((error) => {
-      logger?.error('请求处理失败', { url: req.url, error: String(error) })
+      // 剥掉查询串：?token= 的登录令牌（文件下载直链场景）不能进日志
+      logger?.error('请求处理失败', {
+        url: (req.url ?? '').split('?')[0],
+        error: String(error),
+      })
       if (!res.headersSent) sendJson(res, 500, { error: 'E_INTERNAL' })
     })
   })
@@ -546,15 +550,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** hello 字符段上限：登记表 / clients 快照都要落它们，超长即拒绝（防恶意撑爆） */
+const HELLO_STRING_MAX = 128
+
+function bounded(value: string): string {
+  return value.length > HELLO_STRING_MAX ? value.slice(0, HELLO_STRING_MAX) : value
+}
+
 function readHello(raw: Record<string, unknown>): HelloBody | undefined {
   const clientId = raw['clientId']
   if (typeof clientId !== 'string' || clientId.trim() === '') return undefined
+  const trimmed = clientId.trim()
+  if (trimmed.length > HELLO_STRING_MAX) return undefined
   const capabilitiesRaw = isRecord(raw['capabilities']) ? raw['capabilities'] : {}
   return {
-    clientId: clientId.trim(),
-    name: typeof raw['name'] === 'string' && raw['name'] !== '' ? raw['name'] : clientId.trim(),
-    version: typeof raw['version'] === 'string' ? raw['version'] : '',
-    platform: typeof raw['platform'] === 'string' ? raw['platform'] : '',
+    clientId: trimmed,
+    name: typeof raw['name'] === 'string' && raw['name'] !== '' ? bounded(raw['name']) : trimmed,
+    version: typeof raw['version'] === 'string' ? bounded(raw['version']) : '',
+    platform: typeof raw['platform'] === 'string' ? bounded(raw['platform']) : '',
     mode: typeof raw['mode'] === 'string' ? (raw['mode'] as ModeId) : 'work',
     capabilities: {
       session: capabilitiesRaw['session'] !== false,
