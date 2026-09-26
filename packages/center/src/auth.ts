@@ -285,6 +285,16 @@ export class AuthStore {
     if (record === undefined) return undefined
     if (record.revokedAt !== undefined) return undefined
     if (record.clientId === '') {
+      // 首次绑定的属主护栏（与 /api/client/login 的 E_CLIENT_BOUND 同款）：该 clientId
+      // 已有**其他用户**的有效令牌时拒绝绑定，否则任何人可用自己新建的配对令牌把
+      // 他人设备抢绑定到自己名下（upsert 属主跟随令牌后 = 直接翻走属主）。
+      const conflicting = this.tokenCache.find(
+        (entry) =>
+          entry.clientId === clientId &&
+          entry.revokedAt === undefined &&
+          entry.userId !== record.userId,
+      )
+      if (conflicting !== undefined) return undefined
       record.clientId = clientId
       await this.tokens.save(this.tokenCache)
       this.logger?.info('配对令牌已绑定客户端', { tokenId: record.id, clientId })

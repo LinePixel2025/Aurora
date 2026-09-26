@@ -491,6 +491,53 @@ describe('Aurora Center · 客户端账号登录（v0.2.1，docs/12 §3）', () 
     expect(owner.status).toBe(200)
   })
 
+  it('配对令牌首次绑定他人 clientId 被拒（属主护栏，与登录 409 同款）', async () => {
+    // client-e2e-1 已绑定 alice 的有效令牌（前序用例）；root 另建一枚新令牌来抢绑定
+    const webToken = await login({ ...ADMIN }).then((r) => r.token)
+    const res = await fetch(`${base}/api/tokens`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authed(webToken) },
+      body: JSON.stringify({ label: '抢绑' }),
+    })
+    const { token } = (await res.json()) as { token: string }
+    await expect(
+      connectClient(token, { clientId: 'client-e2e-1', name: '抢绑机' }),
+    ).rejects.toThrow()
+  })
+
+  it('设备释放后换账号登录：属主跟随当前有效令牌（hello upsert 更新归属）', async () => {
+    const CID = 'owner-move-e2e'
+    // 1) alice 登录绑定设备
+    const first = await clientLogin({ username: USER.username, password: USER.password, clientId: CID })
+    expect(first.status).toBe(200)
+    const ws1 = await connectClient(first.data['token'] as string, { clientId: CID, name: '迁移机' })
+    ws1.close()
+    // 2) alice 吊销自己的令牌（释放设备；属主未释放前别人登录会被 409 拦截）
+    const aliceSession = await login({ ...USER }).then((r) => r.token)
+    const tokenList = await fetch(`${base}/api/tokens`, { headers: authed(aliceSession) }).then(
+      (r) => r.json(),
+    ) as { tokens: Array<{ id: string; clientId: string }> }
+    const mine = tokenList.tokens.find((t) => t.clientId === CID)
+    expect(mine).toBeDefined()
+    await fetch(`${base}/api/tokens/${(mine as { id: string }).id}/revoke`, {
+      method: 'POST',
+      headers: authed(aliceSession),
+    })
+    // 3) root 登录同一设备 → hello 后属主变为 root
+    const second = await clientLogin({ username: ADMIN.username, password: ADMIN.password, clientId: CID })
+    expect(second.status).toBe(200)
+    const ws2 = await connectClient(second.data['token'] as string, { clientId: CID, name: '迁移机' })
+    try {
+      const adminSession = await login({ ...ADMIN }).then((r) => r.token)
+      const list = await fetch(`${base}/api/clients`, { headers: authed(adminSession) }).then(
+        (r) => r.json(),
+      ) as { clients: Array<{ clientId: string; ownerUsername: string }> }
+      expect(list.clients.find((c) => c.clientId === CID)?.ownerUsername).toBe(ADMIN.username)
+    } finally {
+      ws2.close()
+    }
+  })
+
   it('错误口令 401；缺 clientId / 缺口令 400', async () => {
     const bad = await clientLogin({ username: USER.username, password: 'wrong-pass', clientId: CLIENT_ID })
     expect(bad.status).toBe(401)

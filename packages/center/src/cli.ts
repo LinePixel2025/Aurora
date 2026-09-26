@@ -158,7 +158,13 @@ async function runStart(
   }
   // Web UI 构建产物与 dist 同级；不存在时服务器仅提供 API（界面未构建的提示）
   const webDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist-web')
-  const server = createCenterServer({ dataDir, webDir: existsSync(webDir) ? webDir : undefined })
+  // 服务器日志直落 stdout/stderr（docker logs 可观测）：此前未传 logger，全局异常
+  // 兜底（500 E_INTERNAL）完全不可见——真实事故排查时只能靠猜（2026-09-27）。
+  const server = createCenterServer({
+    dataDir,
+    webDir: existsSync(webDir) ? webDir : undefined,
+    logger: createCliLogger(),
+  })
   const { port: actualPort } = await server.listen(port, host)
   out(`Aurora Center 已启动：http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${actualPort}`)
   out(`数据目录：${dataDir}`)
@@ -358,4 +364,29 @@ async function promptPassword(): Promise<string> {
   const answer = await rl.question('请输入口令（至少 6 位）: ')
   rl.close()
   return answer
+}
+
+/** CLI 运行期的轻量日志器：info 走 stdout、warn/error 走 stderr（docker logs 都收）。 */
+export function createCliLogger(): Logger {
+  const line = (
+    write: (text: string) => void,
+    level: string,
+    message: string,
+    meta?: unknown,
+  ): void => {
+    const extra = meta === undefined ? '' : ` ${JSON.stringify(meta)}`
+    write(`[${new Date().toISOString()}] [${level}] ${message}${extra}
+`)
+  }
+  const make = (scope?: string): Logger => {
+    const prefix = scope === undefined ? '' : `[${scope}] `
+    return {
+      debug: (message, meta) => line((t) => process.stdout.write(t), 'debug', `${prefix}${message}`, meta),
+      info: (message, meta) => line((t) => process.stdout.write(t), 'info', `${prefix}${message}`, meta),
+      warn: (message, meta) => line((t) => process.stderr.write(t), 'warn', `${prefix}${message}`, meta),
+      error: (message, meta) => line((t) => process.stderr.write(t), 'error', `${prefix}${message}`, meta),
+      child: (childScope) => make(childScope),
+    }
+  }
+  return make()
 }

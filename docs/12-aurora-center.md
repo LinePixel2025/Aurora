@@ -75,6 +75,9 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
   后需在设置页重新登录。
 - 手动创建配对令牌（CLI `aurora-center token create --user <名>` 或 Web 管理端）**仍可用**，
   作为兼容路径：首次连接时绑定 `clientId` 的语义不变。
+- **属主跟随当前有效令牌**：客户端 hello 登记时 `ownerUserId` 以其令牌属主为准 ——
+  设备被释放（令牌吊销）后由另一账号登录即可接管归属；属主未释放前，登录（409
+  `E_CLIENT_BOUND`）与配对令牌首次绑定都会拒绝抢注。
 - Web 会话令牌与客户端 / 配对令牌都只存哈希，泄露数据库不等于泄露凭据。
 
 ## 4. 协议（`packages/shared/src/center/protocol.ts`）
