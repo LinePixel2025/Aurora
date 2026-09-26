@@ -2,7 +2,7 @@
 
 - Task: agent-prod-mainline
 - Step: 3 / 6
-- Status: pending
+- Status: done
 - Depends on: step 2
 - Produces: `SnapshotPort` 抽象 + `FileSnapshotPort` 实现（环形保留 + 索引 + 损坏恢复）、`writeText` 写前快照钩子（`write_file` 与 `edit_file` 共用）、`snapshots:*` IPC 与界面回滚、配置字段 `agent.snapshots.*`、单测与文档
 - Phase: 安全与边界
@@ -103,4 +103,98 @@
 
 ## 执行记录
 
-（执行后填写：实际改动、验证结果、遗留问题）
+执行时间：2026-09-26（本会话）。执行模式：全部连续执行。依赖 step 2（done）。
+
+### 提交清单
+
+| SHA | 提交 |
+|---|---|
+| `5bf3849` | `feat(config): 配置 v14 —— agent.snapshots 写前快照策略（开关/保留份数/单份与目录上限）` |
+| `0eb2f1f` | `feat(agent-core): 写前快照端口（环形保留 + 索引 + 损坏恢复）与工具层透传` |
+| `bd9bad5` | `feat(settings): 写前快照钩子、snapshots IPC 与一键回滚链路 + 端到端探针` |
+| `30ef046` | `feat(settings): 右栏「文件备份」卡与设置页「文件备份」区组（两段式回滚）` |
+| `48e5169` | `docs: 写前快照与回滚落文档（06 §11.8 / §11.4 / §11.6、07 右栏卡与探针、08 §1 与迁移、11 披露）` |
+
+### 实际改动
+
+- **配置 v14**：`agent.snapshots = { enabled, keepPerFile(20), maxSnapshotBytes(512 KiB), totalBudgetBytes(200 MiB) }`；
+  挂在 `agent` 下（不是 `agent.tools`，避免与工具注册门控混淆）；可写但不进 `WRITABLE_PATH_OVERRIDES`；
+  `migrateV13ToV14` 只补缺不覆盖、幂等。
+- **快照端口（agent-core，纯 Node）**：`snapshots/types.ts` + `snapshots/snapshot-port.ts`。
+  布局 `<backups>/<sid>/<ISO 时间戳>-<8 位内容哈希>.snap` + `index.json`（**不用原文件名**）；
+  `capture` 走 `stat`（lstat 语义）→ 目录/软链跳过、超上限跳过、不存在记 `exists:false`；
+  两层淘汰（每文件环形 `keepPerFile` + 每会话目录 `totalBudgetBytes`，都从最旧删）；
+  懒加载用 in-flight promise；per-session 串行链 + 300ms 防抖 + `flush()`；
+  索引损坏备份 3 份并清孤儿 `.snap`；**任何 fs 异常只降级不抛**。26 个单测。
+- **写盘钩子**：`file-port.writeText` 在 `resolveWithin` 之后、`mkdir`/写盘之前 `capture`；
+  主写失败**不回滚快照**并把 id 带进错误信息；快照端口抛错降级为"未留底"且不阻断写盘。
+- **工具层**：`write_file` / `edit_file` 带 `snapshot: { sessionId, toolCallId, origin, mode }`，
+  结果里回带 `已保存快照：<id>` 或如实的 `未保存快照：…`（文件过大 / 已关闭 / 原文件读不到）。
+- **IPC 与装配**：`snapshots:list` / `snapshots:restore` / `snapshots:prune`；
+  装配在 `<userData>/backups`，`stat` 用 **lstat**（跟随软链会把链接目标内容存成快照、回滚又写回链接路径 = 静默篡改类型）；
+  配置变了换端口实例，但 file-port 手里是**模块级初始化的稳定代理**。
+- **界面**：右栏「文件备份」卡（`chat.snapshot-card`，通用档、空态也渲染、逐条两段式回滚、卡头手动刷新、
+  `exists:false` 标注"当时不存在"）；设置页「文件备份」区组四个字段 + 关闭时的 `data-empty="agent.snapshots"`；
+  `useSnapshots()` 组合式（每会话缓存 + 手动刷新）。
+- **探针/自测**：capture 新增 `chat-snapshot-card.png`（prepare 走真实端口种快照 + `flush()` + reload，
+  act 点一次回滚停在待确认态）并给 settings-agent 探针加 `agent.snapshots.*` 计数与白名单；
+  smoke 新增四条端到端断言。
+
+### 与计划的偏差
+
+1. **`contentPath` 存的是相对快照根目录的 `<sessionId>/<id>.snap`**（计划只说"内容文件名"）；
+   回滚链路统一走 `port.readContent(ref)`，不自己拼路径。
+2. **`totalBudgetBytes` 是"每会话目录"口径**（不是全局）：与 `prune(sessionId)` 的粒度一致；
+   文档里写清了口径。
+3. **额外改了 `apps/desktop/src/main/ipc.ts` 的导出面**（`restoreSnapshot` 导出）：smoke 要调**与界面同一条**
+   回滚链路，另写一份就只是自证副本。
+4. **额外改了 `packages/shared/src/index.ts` / `browser.ts` 之外的 `agent-core/src/index.ts`**：
+   补 `snapshots/*` 的 re-export（否则 desktop 侧无法从包入口 import）。
+5. **`SnapshotRef` 的唯一定义放在 `@aurora/shared`**（跨 IPC 序列化，渲染层与内核必须同一个形状）；
+   `agent-core/src/snapshots/types.ts` 只再导出。
+6. **设置页新增了「文件备份」区组**（计划 Writes 未列 `AgentPage.vue`）：四个新配置字段若没有界面就是死字段，
+   而这一页正是 `agent.tools.*` 的落点。
+7. **`prune` 的界面入口没做**：渲染层拿不到"当前会话 id"（会话 id 是 `useChat()` 里的局部 ref，
+   没传进 `ContextPanel`），而 `prune` 需要 sessionId；IPC 通道已就绪，接上只需给 ContextPanel 加一个 prop。
+8. **右栏卡不按会话过滤**（同上原因）：展示全部会话最近若干条，代码注释里写明了原因。
+
+### 验证结果（全部由主代理亲自复跑）
+
+| 验收项 | 结果 |
+|---|---|
+| `pnpm vitest run packages/agent-core/src/snapshots` | **26 passed**（含环形淘汰只剩 N 份且最旧被删、总量预算从最旧删、`Promise.all` 并发首读不返回空索引、`append` 快照是追加前内容） |
+| `pnpm vitest run apps/desktop/src/main/tools/file-port.test.ts` | **59 passed**（新增 4 条：注入后写前内容进快照且结果回带 id、append 留追加前全文、未注入时行为与 v13 一致、快照端口抛错时不阻断写盘） |
+| `pnpm vitest run packages/shared/src/config` | **138 passed**（含 `migrate({version:14})` 恒等、v13→v14 补默认/不覆盖已写值/幂等/缺分组不报错） |
+| `pnpm typecheck` / `pnpm lint` / `pnpm format:check` | 均 exit 0 |
+| `pnpm test` | **78 文件 / 1454 用例全绿**（step 2 后为 1420） |
+| `pnpm verify` | 26/26（`version=14`、`v0 → 当前版本` 14 条迁移） |
+| `AURORA_SMOKE=1 pnpm dev` | **153/153 passed，exit 0**；四条新增断言全绿：`写前快照：write_file 结果回带快照 id… — listed=1 restored=true rollback=true append=true edit=true snaps=20`、`一键回滚：内容还原到写前，且回滚自身留下 origin=rollback 的快照（可再撤回）`、`append 的快照是追加前内容；edit_file 同样留底`、`每文件环形保留生效（连写 30 次后 .snap 数 ≤ 20）` |
+| `AURORA_CAPTURE=$env:TEMP\aurora-capture-09 pnpm dev` | **51 张 PNG / 51 条 checks / 0 FAIL / exit 0**；`chat-snapshot-card.png` → `{card:1, rows:1, text:"文件备份 刷新 报告.txt13:08:07 · 写文件 确认回滚？", pass:true}`；`settings-agent.png` → `snapshotFields:4, snapshotEmpty:false` |
+
+**验收标准第 7 条（目录上限真的生效）**：由 smoke 第 5 段直接证明 —— 连写同一文件 30 次、`flush()` 后
+`<userData>/backups/smoke-snapshot/*.snap` 计数 = **20**（默认 `keepPerFile`）。
+
+**验收标准第 8 条（回滚可撤回）**：由 smoke 第 ②③ 步证明 —— 回滚后磁盘内容 = 写前内容，
+且索引里出现 `origin: 'rollback'` 的那一份（即"回滚前状态"已被留底）。
+
+### 过程中的问题与处置
+
+1. **配置装配顺序 bug（已修）**：`filePortSnapshots` 一开始在 bootstrap 里赋值，而它晚于
+   `registerComputerTools` 的调用点 → file-port 拿到 `undefined`，症状是"写文件从不留底、一条报错都没有"。
+   改成**模块级初始化**并在注释里写明这个坑（smoke 第一轮正是这样红的：`listed=0 … snaps=0`）。
+2. **子代理中途"变异测试"残留（已确认清理）**：快照端口里曾出现 `TEMP-MUTATION` 行，
+   复查时已被作者移除，`grep` 确认无残留、26 用例全绿。
+3. **`agent` 组的严格 `toEqual` 断言再次被打红**（v14 加 `snapshots`）：三处改成 `toMatchObject`，
+   理由写进注释 —— 这个分组会随版本持续长字段，断言该守"键的值"而不是"没有别的键"。
+
+### 遗留问题
+
+1. `prune` 没有界面入口、右栏卡不按会话过滤（都卡在"渲染层拿不到当前会话 id"）；
+   接上只需给 `ContextPanel` 加 `sessionId` prop（`chat/App.vue` 里已有该 ref）。
+2. `snapshots.ts` 组合式无单测（渲染层测试目录当前只有 useChatDeltaBuffer 一个文件）；
+   建议补一个 stub `window.aurora.snapshots` 的用例。
+3. 快照的 `contentPath` 相对快照**根目录**（含 sessionId 段）：回滚链路不自己拼路径，
+   但如果将来有别的消费者，需要按这条口径读。
+4. 索引损坏备份名用 13 位毫秒做字典序（到 2286 年成立）；同毫秒连续损坏两次会覆盖同一个备份名。
+5. 快照的 `enabled:false` 只挡 `capture`（`list`/`readContent`/`prune` 照常），
+   这样用户关掉开关后仍能回滚**此前**留下的快照。
