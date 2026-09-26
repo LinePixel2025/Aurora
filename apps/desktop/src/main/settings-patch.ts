@@ -262,6 +262,8 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
   if (patch.mcp !== undefined) Object.assign(draft.mcp, patch.mcp)
   draft.mcp.servers = servers
   if (patch.modes !== undefined) Object.assign(draft.modes, patch.modes)
+  // 项目机制（v13）：顶层浅合并 —— 只传 `{ current }` 时 `list` / `maxAgentsBytes` 原样保留。
+  if (patch.projects !== undefined) Object.assign(draft.projects, patch.projects)
   // 电脑操控工具：`SettingsPatch.agent` 是**整棵** tools 子树，直接覆盖即可
   // （只传 `{ terminal: {...} }` 会把 files / open 静默丢掉，设置页必须带完整的树）。
   if (patch.agent !== undefined) Object.assign(draft.agent, patch.agent)

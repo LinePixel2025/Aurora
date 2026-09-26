@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 12 as const
+export const CONFIG_VERSION = 13 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -364,6 +364,37 @@ export const McpSchema = z.object({
 })
 export type McpSettings = z.infer<typeof McpSchema>
 
+export const ProjectSchema = z.object({
+  /** 项目 id（设置页生成，稳定不变，`projects.current` 引用它）。 */
+  id: z.string(),
+  /** 展示名（设置页可改；为空时界面回落成根目录末段）。 */
+  name: z.string(),
+  /** 项目根目录；绝对路径直接采用，相对路径按进程 cwd 解析（v13）。 */
+  root: z.string(),
+})
+export type ProjectConfig = z.infer<typeof ProjectSchema>
+
+/**
+ * 项目机制（v13，docs/06 §5.1、docs/08 §1）。
+ *
+ * 「当前项目」决定两件事：① 每轮注入哪份项目级 `AGENTS.md`（项目根 → 当前工作目录逐层收集）；
+ * ② 权限层判定「项目根之内 / 之外」的边界（step 2 的路径前缀校验）。
+ *
+ * 因此本分组在 `SETTINGS_READONLY_PREFIXES` 里 —— 切项目等于改 Agent 的权限面与指令面，
+ * 属自我提权路径，只能由用户在设置页 / 界面改（走 `settings:update`，不经过该黑名单）。
+ *
+ * 每个字段都带 `.default()`：顶层分组整段缺失时，Schema 走"整体保留候选对象"路径，
+ * 没有默认值会把整份配置判为非法并备份重建。
+ */
+export const ProjectsSchema = z.object({
+  /** 当前项目 id；空串 = 无项目（行为与 v13 之前完全一致）。 */
+  current: z.string().default(''),
+  list: z.array(ProjectSchema).default([]),
+  /** 每轮注入的项目级 AGENTS.md 字节预算（超出即截断并在注入文本里标注）。 */
+  maxAgentsBytes: z.number().int().min(0).max(1_048_576).default(32768),
+})
+export type ProjectsSettings = z.infer<typeof ProjectsSchema>
+
 /** AI 改配置（settings 工具）一律禁止触碰的路径前缀（docs/06 §12）。 */
 export const SETTINGS_READONLY_PREFIXES = [
   // 凭据与密文：绝不让 AI 读回或改写（凭据只经 safeStorage / setSecret 落库）
@@ -391,6 +422,11 @@ export const SETTINGS_READONLY_PREFIXES = [
   // 确认闸门 —— 否则 AI 给自己加一条 `git*` 就再也不用确认了，属自我提权。
   // 只保留「用户在设置页手动加白名单」这一条路径（设置页走 `settings:update`，不经过本黑名单）。
   'agent.tools.terminal.allowPatterns',
+  // 项目机制（v13，docs/06 §5.1）：切项目会同时改「注入给模型的指令」与「权限层认定的项目根」，
+  // 等于改 Agent 的权限面与行为面，属自我提权路径 —— 只能由用户在设置页 / 界面触发。
+  'projects',
+  // 三档权限（v13，docs/06 §12.2）：改档位等于自己给自己放宽确认闸门，同样只读。
+  'agent.permissionMode',
 ] as const
 
 export const AdvancedSchema = z.object({
@@ -493,6 +529,18 @@ export type AgentToolsConfig = z.infer<typeof AgentToolsSchema>
 
 export const AgentSchema = z.object({
   tools: AgentToolsSchema,
+  /**
+   * 三档权限（v13，docs/06 §12.2）：
+   * - `readonly`：写 / 执行 / 有系统副作用的工具**根本不注册**，模型在工具清单里看不到它们；
+   * - `confirm`：默认档，行为与三档之前完全一致（敏感工具逐次确认）；
+   * - `auto`：只在项目根之内免确认，越界仍逐次确认。
+   *
+   * 与 `advanced.confirmSensitiveTools` 双开关并存，优先级见 docs/06 §12.2：
+   * `confirmSensitiveTools === false` 时非 readonly 档被强制按 `auto` 处理；readonly 档下该布尔无效。
+   *
+   * 本字段在 `SETTINGS_READONLY_PREFIXES` 里（AI 不可自我提权）。
+   */
+  permissionMode: z.enum(['readonly', 'confirm', 'auto']).default('confirm'),
 })
 export type AgentSettings = z.infer<typeof AgentSchema>
 
@@ -506,6 +554,7 @@ export const SettingsSchema = z.object({
   modes: ModesSchema,
   skills: SkillsSchema,
   mcp: McpSchema,
+  projects: ProjectsSchema,
   advanced: AdvancedSchema,
   agent: AgentSchema,
 })
@@ -529,6 +578,8 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'advanced.confirmSensitiveTools': '关闭它等于摘掉敏感工具的确认闸门，不允许通过工具修改',
   'agent.tools.terminal.allowPatterns':
     '免确认命令模式等于摘掉终端工具自己的确认闸门，不允许通过工具修改',
+  projects: '项目根同时决定注入的指令与权限边界，不允许通过工具修改',
+  'agent.permissionMode': '权限档位等于 Agent 自己的确认闸门，不允许通过工具修改',
 }
 
 /** 显式可写覆盖表的一条登记：模式 + 中文说明。 */

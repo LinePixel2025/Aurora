@@ -67,6 +67,11 @@ export const IPC = {
   perception: {
     summary: 'perception:summary',
   },
+  /** 项目机制（v13，docs/06 §5.1）：当前项目状态探测与目录选择 */
+  project: {
+    status: 'project:status',
+    pickDirectory: 'project:pickDirectory',
+  },
   skills: {
     list: 'skills:list',
     rescan: 'skills:rescan',
@@ -133,6 +138,7 @@ export type IpcChannel =
   | (typeof IPC.imagegen)[keyof typeof IPC.imagegen]
   | (typeof IPC.window)[keyof typeof IPC.window]
   | (typeof IPC.perception)[keyof typeof IPC.perception]
+  | (typeof IPC.project)[keyof typeof IPC.project]
   | (typeof IPC.skills)[keyof typeof IPC.skills]
   | (typeof IPC.chat)[keyof typeof IPC.chat]
   | (typeof IPC.hotkey)[keyof typeof IPC.hotkey]

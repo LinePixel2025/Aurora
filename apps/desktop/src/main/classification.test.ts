@@ -135,6 +135,8 @@ function settingsWith(overrides: {
     },
     skills: { userDir: '', disabled: [] },
     mcp: { servers: [], lazyConnect: false },
+    // v13 新增顶层分组（项目机制，docs/06 §5.1）：本用例不涉及项目，保持"无项目"默认态
+    projects: { current: '', list: [], maxAgentsBytes: 32768 },
     advanced: {
       proxy: '',
       logLevel: 'info',
@@ -143,7 +145,8 @@ function settingsWith(overrides: {
       // step 2 新增：`Settings` 里是 zod `.default()`，输出类型必填，fixture 必须补上
       readonlyPrefixes: [],
     },
-    agent: { tools: { ...DEFAULT_AGENT_TOOLS } },
+    // v13 起 `agent` 多了 permissionMode（zod `.default()` ⇒ 输出类型必填）
+    agent: { tools: { ...DEFAULT_AGENT_TOOLS }, permissionMode: 'confirm' },
   }
 }
 

@@ -227,6 +227,16 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     servers: [],
     lazyConnect: false,
   },
+  /**
+   * 项目机制（v13，docs/06 §5.1）：默认**无项目**（`current: ''` + 空列表），
+   * 行为与 v13 之前完全一致；AGENTS.md 只在用户显式登记项目后才注入。
+   * `maxAgentsBytes` 是每轮注入的字节预算（32 KiB，够放一份长 AGENTS.md）。
+   */
+  projects: {
+    current: '',
+    list: [],
+    maxAgentsBytes: 32768,
+  },
   advanced: {
     proxy: '',
     logLevel: 'info',
@@ -236,6 +246,8 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
   },
   agent: {
     tools: { ...DEFAULT_AGENT_TOOLS },
+    // 三档权限默认 `confirm` = 与 v13 之前的行为完全一致（敏感工具逐次确认）
+    permissionMode: 'confirm',
   },
 }
 

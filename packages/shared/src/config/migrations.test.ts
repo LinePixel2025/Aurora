@@ -271,7 +271,8 @@ describe('配置迁移链', () => {
         chat: { showThinking: true },
       })
 
-      // agent.tools 为默认值（含 v12 起补出的 search.* 与 terminal.allowPatterns）
+      // agent.tools 为默认值（含 v12 起补出的 search.* 与 terminal.allowPatterns）；
+      // permissionMode 由 v12 → v13 补成默认档 `confirm`（本步只验证"补缺不覆盖"）
       expect(outcome.data['agent']).toEqual({
         tools: {
           enabled: true,
@@ -286,6 +287,7 @@ describe('配置迁移链', () => {
           search: { enabled: true, maxResults: 200 },
           open: { enabled: true },
         },
+        permissionMode: 'confirm',
       })
     })
 
@@ -353,6 +355,8 @@ describe('配置迁移链', () => {
           search: { enabled: true, maxResults: 200 },
           open: { enabled: true },
         },
+        // v12 → v13 补出的新键（缺失即补默认，已写过的值不覆盖）
+        permissionMode: 'confirm',
       })
     })
 
@@ -829,10 +833,11 @@ describe('配置迁移链', () => {
     it('为已存在的 agent.tools 补 search.* 与 terminal.allowPatterns，version 升到 12', () => {
       const outcome = migrate(V11_CONFIG)
       expect(outcome.fromVersion).toBe(11)
-      expect(outcome.applied).toHaveLength(1)
+      // v11 → v12 补 search / allowPatterns，v12 → v13 补 projects / permissionMode
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 11)
       expect(outcome.applied[0]).toContain('v11 → v12')
       expect(outcome.applied[0]).toContain('allowPatterns')
-      expect(outcome.data['version']).toBe(12)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.warnings).toEqual([])
 
       // 缺失的两处补成默认值
@@ -876,7 +881,8 @@ describe('配置迁移链', () => {
 
       const noTools = migrate({ version: 11, agent: { other: 1 } })
       expect(noTools.warnings).toEqual([])
-      expect(noTools.data['agent']).toEqual({ other: 1 })
+      // v12 → v13 只补 permissionMode，不认得的键原样保留
+      expect(noTools.data['agent']).toEqual({ other: 1, permissionMode: 'confirm' })
       expect(noTools.data['version']).toBe(CONFIG_VERSION)
 
       // terminal 缺失时只补 search，不凭空造出半截 terminal
@@ -886,6 +892,73 @@ describe('配置迁移链', () => {
         enabled: true,
         search: { enabled: true, maxResults: 200 },
       })
+    })
+  })
+
+  describe('v12 → v13（新增 projects 项目机制与 agent.permissionMode 三档权限）', () => {
+    const V12_CONFIG: Record<string, unknown> = {
+      version: 12,
+      general: { language: 'zh-CN' },
+      agent: { tools: { enabled: true } },
+    }
+
+    const loadProjects = (data: Record<string, unknown>): Record<string, unknown> =>
+      data['projects'] as Record<string, unknown>
+
+    it('为已存在的 projects / agent 补默认值，version 升到 13', () => {
+      const config = structuredClone(V12_CONFIG)
+      config['projects'] = { current: '' }
+      const outcome = migrate(config)
+      expect(outcome.fromVersion).toBe(12)
+      // 相对算术：后续新增迁移（step 3/4 的 v14 / v15）不会打红这条
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 12)
+      expect(outcome.applied[0]).toContain('v12 → v13')
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+      expect(outcome.warnings).toEqual([])
+
+      // projects 已存在时只补缺键
+      expect(loadProjects(outcome.data)).toEqual({ current: '', list: [], maxAgentsBytes: 32768 })
+      // agent 已存在时只补 permissionMode
+      expect((outcome.data['agent'] as Record<string, unknown>)['permissionMode']).toBe('confirm')
+    })
+
+    it('用户已写过的 current / list / permissionMode 原样保留，不被默认值覆盖', () => {
+      const config = structuredClone(V12_CONFIG)
+      config['projects'] = {
+        current: 'proj-1',
+        list: [{ id: 'proj-1', name: '演示', root: 'D:\\demo' }],
+        maxAgentsBytes: 4096,
+      }
+      ;(config['agent'] as Record<string, unknown>)['permissionMode'] = 'readonly'
+
+      const outcome = migrate(config)
+      const projects = loadProjects(outcome.data)
+      expect(projects['current']).toBe('proj-1')
+      expect(projects['maxAgentsBytes']).toBe(4096)
+      expect(projects['list']).toEqual([{ id: 'proj-1', name: '演示', root: 'D:\\demo' }])
+      expect((outcome.data['agent'] as Record<string, unknown>)['permissionMode']).toBe('readonly')
+    })
+
+    it('重复执行结果一致（幂等）', () => {
+      const config = structuredClone(V12_CONFIG)
+      config['projects'] = { current: '' }
+      const once = migrate(config)
+      const twice = migrate({ ...once.data, version: 12 })
+      expect(twice.data).toEqual(once.data)
+    })
+
+    it('projects / agent 分组不存在时不凭空造对象，不抛错', () => {
+      const noProjects = migrate({ version: 12, general: {} })
+      expect(noProjects.warnings).toEqual([])
+      expect(noProjects.data['projects']).toBeUndefined()
+      expect(noProjects.data['agent']).toBeUndefined()
+      expect(noProjects.data['version']).toBe(CONFIG_VERSION)
+
+      // agent 存在但不是对象（手改配置写坏）时同样不抛错
+      const badAgent = migrate({ version: 12, agent: 'broken' })
+      expect(badAgent.warnings).toEqual([])
+      expect(badAgent.data['agent']).toBe('broken')
+      expect(badAgent.data['version']).toBe(CONFIG_VERSION)
     })
   })
 })

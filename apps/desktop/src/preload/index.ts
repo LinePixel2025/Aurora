@@ -49,6 +49,10 @@ const api: AuroraApi = {
     getSmokeDiagnostics: () => invoke(IPC.app.smokeDiagnostics),
     smokeDropFile: (request) => invoke(IPC.app.smokeDropFile, request),
   },
+  project: {
+    status: () => invoke(IPC.project.status),
+    pickDirectory: () => invoke(IPC.project.pickDirectory),
+  },
   settings: {
     get: () => invoke(IPC.settings.get),
     update: (patch) => invoke(IPC.settings.update, patch),

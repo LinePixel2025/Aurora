@@ -72,6 +72,36 @@ function settingsWith(
   return SettingsSchema.parse(base)
 }
 
+describe('mergeSettingsPatch —— projects 顶层浅合并（v13）', () => {
+  it('只传 projects.current 时 list 与 maxAgentsBytes 原样保留', () => {
+    const draft = settingsWith()
+    draft.projects.list = [{ id: 'p1', name: '演示', root: 'D:\\demo' }]
+    draft.projects.maxAgentsBytes = 4096
+
+    const cleared = mergeSettingsPatch(draft, { projects: { current: 'p1' } })
+
+    expect(draft.projects.current).toBe('p1')
+    expect(draft.projects.list).toEqual([{ id: 'p1', name: '演示', root: 'D:\\demo' }])
+    expect(draft.projects.maxAgentsBytes).toBe(4096)
+    expect(cleared).toEqual([])
+  })
+
+  it('projects 是组内浅合并：与 agent 的「整棵 tools 子树被替换」语义不同', () => {
+    // `agent` 那层用 Object.assign 合并，`tools` 会被整棵替换（设置页必须带完整工具树）；
+    // `projects` 的 `list` 同理是数组整体覆盖 —— 只传 current 不会碰它，传 list 则整数组权威。
+    const draft = settingsWith()
+    draft.projects.list = [{ id: 'p1', name: '甲', root: 'D:\\a' }]
+
+    mergeSettingsPatch(draft, {
+      projects: { list: [{ id: 'p2', name: '乙', root: 'D:\\b' }] },
+    })
+
+    expect(draft.projects.list).toEqual([{ id: 'p2', name: '乙', root: 'D:\\b' }])
+    // 没传的键保持原值（current 仍是默认空串）
+    expect(draft.projects.current).toBe('')
+  })
+})
+
 describe('mergeSettingsPatch —— MCP envEnc 不能因脱敏回传而丢失', () => {
   it('回传空 envEnc（设置页保存的真实形状）保留已有密文，其余字段照常更新', () => {
     const draft = settingsWith({ servers: [mcpServer({ envEnc: { TOKEN: 'CIPHER-A' } })] })

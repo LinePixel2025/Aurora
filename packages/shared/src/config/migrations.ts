@@ -483,6 +483,38 @@ const migrateV11ToV12: Migration = {
   },
 }
 
+/**
+ * v12 → v13：新增 `projects`（项目机制）与 `agent.permissionMode`（三档权限）
+ * （docs/06 §5.1 / §12.2、docs/08 §1）。
+ *
+ * 口径与 v9 → v10 / v11 → v12 一致：**只补缺、不覆盖**。
+ * - `projects` 整组缺失时不凭空造半截对象（由默认配置兜底），已存在时只补缺键；
+ * - `agent` 已存在时只补 `permissionMode`，用户已写过的档位原样保留（幂等）；
+ * - 两者都缺失时什么都不做 —— 默认配置会把它们补齐（默认 = 无项目 + `confirm` 档，
+ *   即与 v12 的行为完全一致）。
+ */
+const migrateV12ToV13: Migration = {
+  from: 12,
+  to: 13,
+  describe: 'v12 → v13：新增 projects（项目机制）与 agent.permissionMode（三档权限）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const projects = asRecord(raw['projects'])
+    if (projects !== undefined) {
+      next['projects'] = fillMissing(projects, { current: '', list: [], maxAgentsBytes: 32768 })
+    }
+
+    const agent = asRecord(raw['agent'])
+    if (agent !== undefined) {
+      next['agent'] = fillMissing(agent, { permissionMode: 'confirm' })
+    }
+
+    next['version'] = 13
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -496,6 +528,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV9ToV10,
   migrateV10ToV11,
   migrateV11ToV12,
+  migrateV12ToV13,
 ]
 
 export interface MigrationOutcome {

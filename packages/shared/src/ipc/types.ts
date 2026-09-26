@@ -39,9 +39,30 @@ export interface AppInfo {
 }
 
 export interface OpenPathRequest {
-  kind: 'logs' | 'config' | 'watchDir' | 'subject' | 'workspace'
+  /**
+   * `project` = **当前项目根**（v13，docs/06 §5.1）：与 `workspace` 不同，
+   * 后者打开的是 `agent.tools.workspaceDir`（工具默认工作目录），项目根另有归属。
+   */
+  kind: 'logs' | 'config' | 'watchDir' | 'subject' | 'workspace' | 'project'
   /** kind = subject 时使用：科目名 */
   subject?: string
+}
+
+/**
+ * 「当前项目」的运行时状态（v13，docs/06 §5.1）。
+ *
+ * 渲染层没有文件系统能力，而"项目根是否存在"必须可见（假设 7：失效要有可见提示，
+ * 不能只在日志里 warn），因此由主进程探测后经 IPC 回传，而不是让界面自己猜。
+ */
+export interface ProjectStatus {
+  /** 当前项目 id；空串 = 无项目（此时其余字段均为空 / false） */
+  currentId: string
+  /** 当前项目展示名；未命名时为空串（界面回落成根目录末段） */
+  name: string
+  /** 归一后的项目根绝对路径；无项目时为空串 */
+  root: string
+  /** 项目根是否存在且是目录；false 时界面显示「项目目录不可用」 */
+  rootAvailable: boolean
 }
 
 /**
@@ -108,6 +129,11 @@ export interface SettingsPatch {
   skills?: Partial<Settings['skills']>
   mcp?: Partial<Settings['mcp']>
   modes?: Partial<Settings['modes']>
+  /**
+   * 项目机制（v13，docs/06 §5.1）：顶层浅合并，调用方只传改动的键即可
+   * （例如只传 `{ current: 'a' }`，`list` 原样保留）。
+   */
+  projects?: Partial<Settings['projects']>
   /** 电脑操控工具（docs/06 §11）：顶层浅合并，调用方必须带上完整的 `tools` 子树 */
   agent?: Partial<Settings['agent']>
 }
@@ -835,6 +861,13 @@ export interface AuroraApi {
      * chokidar add 事件验证，因此留这一个受 `smokeMode` 保护的口子。
      */
     smokeDropFile(request: { fileName: string; content: string }): Promise<Result<string>>
+  }
+  /** 项目机制（v13，docs/06 §5.1） */
+  project: {
+    /** 读当前项目状态（含项目根是否可用）；无项目时 `currentId` 为空串 */
+    status(): Promise<Result<ProjectStatus>>
+    /** 弹系统目录选择框；用户取消时 `value` 为 null（不是错误） */
+    pickDirectory(): Promise<Result<string | null>>
   }
   settings: {
     get(): Promise<Result<Settings>>

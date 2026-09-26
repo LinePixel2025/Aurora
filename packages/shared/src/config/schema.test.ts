@@ -93,6 +93,23 @@ describe('SettingsSchema / defaults 一致性', () => {
     }
   })
 
+  it('v13 新增字段的逐字段校验（projects / agent.permissionMode）', () => {
+    // ⚠️ 上一条对**顶层分组**是空转的：`walk()` 对 ZodObject 只递归子键、不给分组自身登记，
+    // `lookupSpec('projects')` 返回 undefined 时 `fieldAccepts` 直接放行。真正要验证新分组，
+    // 必须断言子路径（否则「配置写坏只剩备份重建」这类问题不会被这层拦到）。
+    expect(fieldAccepts('projects.current', 'proj-1')).toBe(true)
+    expect(fieldAccepts('projects.current', 1)).toBe(false)
+    expect(fieldAccepts('projects.list', [])).toBe(true)
+    expect(fieldAccepts('projects.list', {})).toBe(false)
+    expect(fieldAccepts('projects.maxAgentsBytes', 32768)).toBe(true)
+    expect(fieldAccepts('projects.maxAgentsBytes', '32768')).toBe(false)
+    // 枚举按值校验：类型对不代表值合法
+    expect(fieldAccepts('agent.permissionMode', 'auto')).toBe(true)
+    expect(fieldAccepts('agent.permissionMode', 'readonly')).toBe(true)
+    expect(fieldAccepts('agent.permissionMode', 'full')).toBe(false)
+    expect(fieldAccepts('agent.permissionMode', 42)).toBe(false)
+  })
+
   it('非法字段被识别为非法（供 sanitize 回退默认值）', () => {
     expect(fieldAccepts('general.language', 12)).toBe(false)
     expect(fieldAccepts('general.language', 'x')).toBe(true)
@@ -470,6 +487,28 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     // 同一 terminal 组里的其它字段仍可写（别把整个 terminal 分组一起封死）
     expect(canWriteSettingPath('agent.tools.terminal.enabled')).toBe(true)
     expect(canWriteSettingPath('agent.tools.terminal.timeoutMs')).toBe(true)
+  })
+
+  it('项目分组不可由 AI 读写（切项目 = 改指令面与权限面，v13）', () => {
+    // 项目根同时决定「注入给模型的 AGENTS.md」与「权限层认定的边界」，
+    // 让 AI 自己切项目等于让它改自己的指令面与权限面 → 整组封禁
+    expect(canWriteSettingPath('projects')).toBe(false)
+    expect(canWriteSettingPath('projects.current')).toBe(false)
+    expect(canWriteSettingPath('projects.list')).toBe(false)
+    expect(canWriteSettingPath('projects.maxAgentsBytes')).toBe(false)
+    const reason = settingsReadonlyReason('projects.current')
+    expect(reason).toContain('权限边界')
+    // 拒绝来自黑名单，而不是「未知配置路径」那条兜底
+    expect(reason).not.toBe('未知配置路径')
+  })
+
+  it('三档权限不可由 AI 读写（自我提权，v13）', () => {
+    expect(canWriteSettingPath('agent.permissionMode')).toBe(false)
+    const reason = settingsReadonlyReason('agent.permissionMode')
+    expect(reason).toContain('确认闸门')
+    expect(reason).not.toBe('未知配置路径')
+    // 同一 agent 组里的工具字段仍可写（别把整个 agent 分组一起封死）
+    expect(canWriteSettingPath('agent.tools.enabled')).toBe(true)
   })
 
   it('文件检索（grep / glob）的开关与上限对 AI 开放（v12）', () => {

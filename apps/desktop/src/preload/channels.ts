@@ -78,6 +78,10 @@ const CHANNELS = {
   perception: {
     summary: 'perception:summary',
   },
+  project: {
+    status: 'project:status',
+    pickDirectory: 'project:pickDirectory',
+  },
   skills: {
     list: 'skills:list',
     rescan: 'skills:rescan',
