@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { createMemoryLogger } from '@aurora/shared'
-import { KernelAgentHost, ERROR_BUSY, ERROR_NO_MODEL } from './agentHost.js'
+import { KernelAgentHost, ERROR_BUSY, ERROR_JOB_STATE, ERROR_NO_MODEL } from './agentHost.js'
 import type { AgentHostDeps } from './agentHost.js'
+import { createFileJobStore, type JobStore } from '../jobs/store.js'
+import type { AgentJob } from '../jobs/types.js'
 import { SessionStore } from '../session/store.js'
+import type { NewMessage } from '../session/types.js'
 import { SkillsBridge } from '../skills/bridge.js'
 import { SkillsRegistry } from '../skills/registry.js'
 import { ToolRegistry } from '../tools/registry.js'
@@ -35,14 +38,34 @@ interface Harness {
   sessions: SessionStore
   tools: ToolRegistry
   provider: ReturnType<typeof createFakeProvider>
-  send(text: string, sessionId?: string): Promise<{ requestId: string }>
+  /** 内存日志器（断言"必须留痕"的行为，如自动续轮） */
+  logger: ReturnType<typeof createMemoryLogger>
+  send(
+    text: string,
+    sessionId?: string,
+    options?: { resumeJobId?: string },
+  ): Promise<{ requestId: string }>
   waitForDone(timeoutMs?: number): Promise<void>
 }
 
 async function createHarness(options: {
   rounds: ScriptRound[]
+  /** 复用同一份内存 fs（跨 host 实例模拟"重启"时必须传） */
+  fs?: TestFileSystem
+  /**
+   * Job 存储（v15）。**不注入时行为与 v15 之前完全一致**：不落 job、不发 `job` 事件 ——
+   * 既有用例的断言（精确的事件序列）因此不受本轮改动影响。
+   */
+  jobs?: JobStore
   withProvider?: boolean
-  maxRounds?: number
+  /** 轮次上限 **getter**（v15：热改即生效，不是构造时常量） */
+  maxRounds?: () => number
+  /** 累计 token 预算 getter（0 = 不限） */
+  maxTotalTokens?: () => number
+  /** 自动续轮额度 getter（0 = 不自动续，落 paused 等用户点继续） */
+  autoContinueRounds?: () => number
+  /** 时钟注入（v15） */
+  clock?: () => Date
   /** 装配层透传给内核的思考等级（`undefined` 代表用户选了 `auto`） */
   reasoningEffort?: ReasoningEffortLevel
   /** 「Agent 可修改的设置」清单注入（docs/06 §17 正式通道） */
@@ -56,7 +79,7 @@ async function createHarness(options: {
   /** 敏感工具确认钩子（docs/06 §5）；缺省不注入 = 不拦截 */
   confirmTool?: AgentHostDeps['confirmTool']
 }): Promise<Harness> {
-  const fs = new TestFileSystem()
+  const fs = options.fs ?? new TestFileSystem()
   const sessions = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
   const logger = createMemoryLogger()
   const skills = new SkillsBridge(await createSkills())
@@ -92,7 +115,13 @@ async function createHarness(options: {
     tools,
     skills,
     logger,
+    ...(options.jobs === undefined ? {} : { jobs: options.jobs }),
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
+    ...(options.maxTotalTokens === undefined ? {} : { maxTotalTokens: options.maxTotalTokens }),
+    ...(options.autoContinueRounds === undefined
+      ? {}
+      : { autoContinueRounds: options.autoContinueRounds }),
+    ...(options.clock === undefined ? {} : { clock: options.clock }),
     ...(options.settingsHint === undefined ? {} : { settingsHint: options.settingsHint }),
     ...(options.todoSummary === undefined ? {} : { todoSummary: options.todoSummary }),
     ...(options.projectInstructions === undefined
@@ -111,7 +140,14 @@ async function createHarness(options: {
     sessions,
     tools,
     provider,
-    send: (text, sessionId = 'quick') => host.send({ sessionId, text, origin: 'chat' }),
+    logger,
+    send: (text, sessionId = 'quick', sendOptions) =>
+      host.send({
+        sessionId,
+        text,
+        origin: 'chat',
+        ...(sendOptions?.resumeJobId === undefined ? {} : { resumeJobId: sendOptions.resumeJobId }),
+      }),
     async waitForDone(timeoutMs = 2_000) {
       const deadline = Date.now() + timeoutMs
       while (Date.now() < deadline) {
@@ -606,7 +642,7 @@ describe('KernelAgentHost', () => {
     const rounds: ScriptRound[] = Array.from({ length: 2 }, () => ({
       toolCalls: [{ id: 'c', name: 'echo', arguments: '{"text":"x"}' }],
     }))
-    const harness = await createHarness({ rounds, maxRounds: 2 })
+    const harness = await createHarness({ rounds, maxRounds: () => 2 })
     await harness.send('循环')
     await harness.waitForDone()
     const done = harness.events.find((event) => event.type === 'done')
@@ -997,5 +1033,644 @@ describe('KernelAgentHost · quick 会话滑动窗口（docs/06 §4）', () => {
     await harness.send('现在的问题')
     await harness.waitForDone()
     expect(sentContents(harness)).toContain('十分钟前的 quick 旧问题')
+  })
+})
+
+/**
+ * Job 生命周期（v15，docs/06 §4.1）：一次请求 = 一条可查询、可续跑的 job。
+ *
+ * 这里覆盖的是**装配层**的口径 —— 什么时候建 job、每轮怎么落游标、什么时候
+ * paused / done / aborted / error、续跑从哪里接上、自动续轮额度怎么算。
+ * 循环自身的行为由 `loop/agentLoop.test.ts` 覆盖（那边一行存储都不碰）。
+ *
+ * JobStore 用 `createFileJobStore` + 内存 `TestFileSystem`：真实落盘路径、零磁盘 IO。
+ */
+describe('job 生命周期（v15）', () => {
+  const JOBS_DIR = 'C:\\aurora-test\\jobs'
+
+  function createJobs(fs: TestFileSystem, clock?: () => Date): JobStore {
+    return createFileJobStore({
+      dir: JOBS_DIR,
+      fs,
+      writeDebounceMs: 0,
+      ...(clock === undefined ? {} : { clock }),
+    })
+  }
+
+  /** 单调递增的注入时钟：`updatedAt` 可预期，存储的排序也不会抖 */
+  function tickingClock(): () => Date {
+    let tick = 0
+    return () => new Date(Date.UTC(2026, 0, 2, 3, 4, 5) + (tick += 1_000))
+  }
+
+  /**
+   * 等某条 job 落盘到满足条件的那个状态。
+   *
+   * 为什么必须轮询：`done` / `error` **事件**先到，job 的终态更新是紧随其后的一次异步落盘 ——
+   * 收到事件的瞬间去读存储，读到的还是上一个状态。
+   */
+  async function waitForJob(
+    jobs: JobStore,
+    predicate: (job: AgentJob) => boolean,
+    timeoutMs = 2_000,
+  ): Promise<AgentJob> {
+    const deadline = Date.now() + timeoutMs
+    let seen: string[] = []
+    while (Date.now() < deadline) {
+      // limit 0 = 不限制：测试要看全部会话的 job
+      const all = await jobs.list({ limit: 0 })
+      seen = all.map((job) => `${job.id}:${job.status}`)
+      const found = all.find(predicate)
+      if (found !== undefined) return found
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    throw new Error(`等 job 落盘超时（当前：${seen.join(', ') || '空'}）`)
+  }
+
+  /** 可控闸门：让工具停在执行中，用来制造"会话正在跑"与"跑到一半被中断"两种时序 */
+  function createGate(): { promise: Promise<void>; open: () => void } {
+    let open: () => void = () => {}
+    const promise = new Promise<void>((resolve) => {
+      open = resolve
+    })
+    return { promise, open }
+  }
+
+  /** 注册一个会挂起的工具；`started` 在 execute 真正进来时打开 */
+  function registerHangingTool(harness: Harness, started: () => void, gate: Promise<void>): void {
+    harness.tools.register({
+      name: 'hang',
+      description: '挂起直到被放行',
+      parameters: { type: 'object' },
+      execute: async () => {
+        started()
+        await gate
+        return { content: '已放行', summary: '已放行' }
+      },
+    })
+  }
+
+  it('一次普通 send：建 job、落 done，stepsDone 记下工具步，事件流里有 job 事件', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({
+      fs,
+      jobs,
+      rounds: [
+        { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{"text":"q"}' }] },
+        { text: '完成' },
+      ],
+    })
+
+    await harness.send('帮我回显')
+    await harness.waitForDone()
+
+    const job = await waitForJob(jobs, (item) => item.status === 'done')
+    expect(job.status).toBe('done')
+    expect(job.pendingReason).toBeUndefined()
+    expect(job.sessionId).toBe('quick')
+    expect(job.text).toBe('帮我回显')
+    // 第 0 轮跑完把游标推到 1；第 1 轮正常收敛（没有工具调用，不经过 onRoundComplete）
+    expect(job.cursor.nextRound).toBe(1)
+    expect(job.stepsDone).toHaveLength(1)
+    expect(job.stepsDone[0]).toMatchObject({ round: 0, tool: 'echo', ok: true })
+
+    const summaries = harness.events.filter(
+      (event): event is AgentEvent & { type: 'job' } => event.type === 'job',
+    )
+    // 建档一条 + 每轮结束一条 + 终态一条
+    expect(summaries.length).toBeGreaterThanOrEqual(3)
+    expect(summaries[0]?.job.status).toBe('running')
+    expect(summaries.at(-1)?.job.status).toBe('done')
+    expect(summaries.at(-1)?.job.stepCount).toBe(1)
+    expect(summaries.at(-1)?.job.lastStep).toBe('echo ✓')
+  })
+
+  it('轮次用尽且没有自动续轮额度 → job 落 paused / pendingReason max-rounds', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({
+      fs,
+      jobs,
+      maxRounds: () => 2,
+      autoContinueRounds: () => 0,
+      rounds: [
+        { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }] },
+        { toolCalls: [{ id: 'c2', name: 'echo', arguments: '{}' }] },
+        { text: '本来还能继续' },
+      ],
+    })
+
+    await harness.send('一直循环')
+    await harness.waitForDone()
+
+    const job = await waitForJob(jobs, (item) => item.status === 'paused')
+    expect(job.pendingReason).toBe('max-rounds')
+    expect(job.round).toBe(1)
+    expect(job.cursor.nextRound).toBe(2)
+    expect(harness.provider.calls).toHaveLength(2)
+    // `done` 事件把原因原样带出去：渲染层据此给出「继续」入口而不是静默收尾
+    expect(harness.events.find((event) => event.type === 'done')).toMatchObject({
+      pending: true,
+      pendingReason: 'max-rounds',
+      round: 1,
+    })
+  })
+
+  it('续跑 paused 的 job：接上游标、不重复落盘用户消息、最终 done', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({
+      fs,
+      jobs,
+      maxRounds: () => 2,
+      autoContinueRounds: () => 0,
+      rounds: [
+        { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }] },
+        { toolCalls: [{ id: 'c2', name: 'echo', arguments: '{}' }] },
+        { text: '续跑完成' },
+      ],
+    })
+    // 桩：统计真正落盘的 user 消息（续跑最经典的 bug 就是又问一遍）
+    const appended: string[] = []
+    const append = harness.sessions.append.bind(harness.sessions)
+    harness.sessions.append = async (sessionId: string, message: NewMessage) => {
+      if (message.role === 'user') appended.push(message.content)
+      return append(sessionId, message)
+    }
+
+    await harness.send('第一问')
+    await harness.waitForDone()
+    const paused = await waitForJob(jobs, (item) => item.status === 'paused')
+    expect(appended).toEqual(['第一问'])
+
+    harness.events.length = 0
+    await harness.send('继续', 'quick', { resumeJobId: paused.id })
+    await harness.waitForDone()
+
+    const resumed = await waitForJob(
+      jobs,
+      (item) => item.id === paused.id && item.status === 'done',
+    )
+    // 同一条 job，不是新建的一条：origin / createdAt / 已完成的步都原样保留
+    expect(resumed.id).toBe(paused.id)
+    expect(resumed.origin).toBe('chat')
+    expect(resumed.createdAt).toBe(paused.createdAt)
+    expect(resumed.stepsDone).toHaveLength(2)
+    expect(resumed.cursor.nextRound).toBe(2)
+    // **续跑不重复落盘**：落盘过的 user 消息始终只有那一条
+    expect(appended).toEqual(['第一问'])
+    const stored = await harness.sessions.get('quick')
+    expect(stored.filter((message) => message.role === 'user')).toHaveLength(1)
+    // 但那条提问必须在上下文里（靠 history 带进去，而不是重新 push）
+    const lastCall = harness.provider.calls.at(-1)
+    expect(lastCall?.messages.filter((item) => item.role === 'user')).toHaveLength(1)
+  })
+
+  it('续跑一条已完成的 job → E_JOB_STATE，且一次 provider 都不再调', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({ fs, jobs, rounds: [{ text: '答' }] })
+
+    await harness.send('第一问')
+    await harness.waitForDone()
+    const finished = await waitForJob(jobs, (item) => item.status === 'done')
+    const callsBefore = harness.provider.calls.length
+
+    harness.events.length = 0
+    const first = await harness.send('继续', 'quick', { resumeJobId: finished.id })
+    expect(harness.events.find((event) => event.type === 'error')).toMatchObject({
+      requestId: first.requestId,
+      code: ERROR_JOB_STATE,
+    })
+    expect(harness.provider.calls).toHaveLength(callsBefore)
+
+    // 不存在的 job id 同款拒绝（不给"假装续跑、实际从头再来一遍"留缝隙）
+    harness.events.length = 0
+    await harness.send('继续', 'quick', { resumeJobId: 'job-not-exist' })
+    expect(harness.events.find((event) => event.type === 'error')).toMatchObject({
+      code: ERROR_JOB_STATE,
+    })
+    expect(harness.provider.calls).toHaveLength(callsBefore)
+    // 被拒的续跑不占用会话：紧接着还能正常发新消息
+    expect(harness.host.isBusy('quick')).toBe(false)
+  })
+
+  it('续跑时同会话已有请求在跑 → E_BUSY（不会两条一起跑）', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({
+      fs,
+      jobs,
+      maxRounds: () => 1,
+      autoContinueRounds: () => 0,
+      rounds: [
+        { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }] },
+        { toolCalls: [{ id: 'c2', name: 'hang', arguments: '{}' }] },
+      ],
+    })
+    const started = createGate()
+    const gate = createGate()
+    registerHangingTool(harness, started.open, gate.promise)
+
+    await harness.send('第一问')
+    await harness.waitForDone()
+    const paused = await waitForJob(jobs, (item) => item.status === 'paused')
+
+    // 第二条请求挂在 hang 工具上：会话此刻确实"正在跑"
+    await harness.send('占住会话', 'quick')
+    await started.promise
+
+    harness.events.length = 0
+    const { requestId } = await harness.send('继续', 'quick', { resumeJobId: paused.id })
+    expect(harness.events.find((event) => event.type === 'error')).toMatchObject({
+      requestId,
+      code: ERROR_BUSY,
+    })
+    // E_BUSY 优先于续跑校验：那条 paused job 原样躺在那里，没被改坏
+    expect((await jobs.get(paused.id))?.status).toBe('paused')
+
+    gate.open()
+    await waitForJob(jobs, (item) => item.text === '占住会话' && item.status === 'paused')
+  })
+
+  it('连点两次「继续」：第二次 E_BUSY，同会话不会跑起两条循环', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({
+      fs,
+      jobs,
+      maxRounds: () => 1,
+      autoContinueRounds: () => 0,
+      rounds: [
+        { toolCalls: [{ id: 'c1', name: 'hang', arguments: '{}' }] },
+        // 续跑那次（第 2 次 provider 调用）同样要一次工具：这样"续跑正在跑"有一个**可控的**
+        // 停留点，第二次发送必然撞上 active（否则桩会瞬间跑完，测的就成了调度运气）
+        { toolCalls: [{ id: 'c2', name: 'hang', arguments: '{}' }] },
+        { text: '续跑收敛' },
+      ],
+    })
+    // 两道闸门：第 1 次 hang 立刻放行（首发要能跑完并落到 paused），第 2 次 hang 挂在第二道闸门上，
+    // 等我们打完"连点"再放行。
+    const firstGate = createGate()
+    const secondGate = createGate()
+    const gates = [firstGate.promise, secondGate.promise]
+    let hangCalls = 0
+    harness.tools.register({
+      name: 'hang',
+      description: '挂起直到被放行',
+      parameters: { type: 'object' },
+      execute: async () => {
+        const index = Math.min(hangCalls, gates.length - 1)
+        hangCalls += 1
+        await gates[index]
+        return { content: '已放行', summary: '已放行' }
+      },
+    })
+    firstGate.open()
+
+    await harness.send('第一问')
+    await harness.waitForDone()
+    const paused = await waitForJob(jobs, (item) => item.status === 'paused')
+
+    harness.events.length = 0
+    const hangBefore = hangCalls
+    const first = harness.send('继续', 'quick', { resumeJobId: paused.id })
+    // 等续跑真的进到工具执行（此刻 `active` 里一定有这条会话）
+    for (let attempt = 0; attempt < 200 && hangCalls === hangBefore; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    const second = await harness.send('继续', 'quick', { resumeJobId: paused.id })
+    secondGate.open()
+    await Promise.all([first, second])
+
+    expect(
+      harness.events.filter((event) => event.type === 'error' && event.code === ERROR_BUSY),
+    ).toHaveLength(1)
+    // 续跑只推进了一轮就又停下（maxRounds=1 且没有自动续轮额度）：游标恰好多 1 ——
+    // 既证明"它真的接着上一轮的游标跑"，也证明"第二次发送没有另起一条循环"
+    const resumed = await waitForJob(
+      jobs,
+      (item) => item.id === paused.id && item.cursor.nextRound === paused.cursor.nextRound + 1,
+    )
+    expect(resumed.status).toBe('paused')
+    // 只有一条真的跑了：首发 1 次 + 续跑 1 次（被 E_BUSY 挡下的那次没有打 provider）
+    expect(harness.provider.calls).toHaveLength(2)
+    const stored = await harness.sessions.get('quick')
+    expect(stored.filter((message) => message.role === 'user')).toHaveLength(1)
+  })
+
+  it('续跑判定等完 `jobs.get` 会再确认一次会话空闲（否则连点会跑两条循环）', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({
+      fs,
+      jobs,
+      maxRounds: () => 1,
+      autoContinueRounds: () => 0,
+      rounds: [
+        { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }] },
+        { toolCalls: [{ id: 'c2', name: 'hang', arguments: '{}' }] },
+      ],
+    })
+    const started = createGate()
+    const gate = createGate()
+    registerHangingTool(harness, started.open, gate.promise)
+
+    await harness.send('第一问')
+    await harness.waitForDone()
+    const paused = await waitForJob(jobs, (item) => item.status === 'paused')
+
+    /** 轮询等条件成立（只用来把并发交错**钉成**确定时序，不赌调度） */
+    const waitUntil = async (predicate: () => boolean, timeoutMs = 2_000): Promise<void> => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        if (predicate()) return
+        await new Promise((resolve) => setTimeout(resolve, 1))
+      }
+      throw new Error(
+        `等条件成立超时 DEBUG reads=${reads} busy=${String(
+          harness.host.isBusy('quick'),
+        )} agents=${harness.provider.calls.length} trace=${trace.join(',')} logs=${harness.logger.entries.join(
+          '|',
+        )}`,
+      )
+    }
+
+    // 把交错钉死：让**第二次**的续跑校验读到"第一次已把它置成 running 之前"的快照
+    //（两次 `jobs.get` 都在第一次落盘之前取到，真实并发下本就可能），并等第一条真的
+    // 占住会话之后再返回 —— 于是第二个请求必然走过"是不是 paused"这一关、撞上
+    // 等待之后的二次确认；少了那道确认，两个请求会各跑一条循环（provider 会被调 3 次）
+    const trace: string[] = []
+    const read = jobs.get.bind(jobs)
+    let reads = 0
+    jobs.get = async (id: string) => {
+      const mine = (reads += 1)
+      trace.push(`g${mine}:in`)
+      const snapshot = await read(id)
+      trace.push(`g${mine}:out=${snapshot?.status ?? 'none'}`)
+      if (mine === 2) await waitUntil(() => harness.host.isBusy('quick'))
+      return snapshot
+    }
+
+    harness.events.length = 0
+    const first = harness.send('继续', 'quick', { resumeJobId: paused.id })
+    const second = harness.send('继续', 'quick', { resumeJobId: paused.id })
+    await Promise.all([first, second])
+    await started.promise
+
+    // 交错确实走到了"读到 paused 快照 + 会话已忙"这一支
+    expect(reads).toBe(2)
+    expect(
+      harness.events.filter((event) => event.type === 'error' && event.code === ERROR_BUSY),
+    ).toHaveLength(1)
+    expect(harness.provider.calls).toHaveLength(2)
+
+    gate.open()
+    await waitForJob(jobs, (item) => item.id === paused.id && item.cursor.nextRound === 2)
+    expect(harness.provider.calls).toHaveLength(2)
+  })
+
+  it('maxRounds 是 getter：热改后新 job 用新上限，不是构造时常量', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    let limit = 2
+    const harness = await createHarness({
+      fs,
+      jobs,
+      maxRounds: () => limit,
+      autoContinueRounds: () => 0,
+      rounds: [
+        { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }] },
+        { toolCalls: [{ id: 'c2', name: 'echo', arguments: '{}' }] },
+        { text: '完成' },
+      ],
+    })
+
+    await harness.send('第一问')
+    await harness.waitForDone()
+    const first = await waitForJob(jobs, (item) => item.status === 'paused')
+    expect(first.maxRounds).toBe(2)
+
+    // 像用户在设置页把轮次上限改成 5：下一次请求就该用 5（v15 之前这里必须重启）
+    limit = 5
+    harness.events.length = 0
+    await harness.send('第二问')
+    await harness.waitForDone()
+    const second = await waitForJob(jobs, (item) => item.id !== first.id && item.status === 'done')
+    expect(second.maxRounds).toBe(5)
+  })
+
+  it('自动续轮：maxRounds=1 + 额度 2 → 跑满 3 轮才 paused，autoContinued=2', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({
+      fs,
+      jobs,
+      maxRounds: () => 1,
+      autoContinueRounds: () => 2,
+      rounds: [
+        { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }] },
+        { toolCalls: [{ id: 'c2', name: 'echo', arguments: '{}' }] },
+        { toolCalls: [{ id: 'c3', name: 'echo', arguments: '{}' }] },
+      ],
+    })
+
+    await harness.send('长任务')
+    await harness.waitForDone()
+
+    const job = await waitForJob(jobs, (item) => item.status === 'paused')
+    // 首发 1 轮 + 自动续 2 轮
+    expect(harness.provider.calls).toHaveLength(3)
+    expect(job.budget.autoContinued).toBe(2)
+    expect(job.pendingReason).toBe('max-rounds')
+    // 续轮是"接着跑"而不是从头来：三轮各占一个**绝对**轮次
+    expect(job.stepsDone.map((step) => step.round)).toEqual([0, 1, 2])
+    expect(job.cursor.nextRound).toBe(3)
+    // 自动续轮必须留痕：用户没盯着也继续跑，日志是唯一的审计点
+    expect(harness.logger.entries.filter((entry) => entry.includes('自动续轮额度'))).toHaveLength(2)
+    // 用户消息只落一次：续轮同样不能把提问重复写进历史
+    const stored = await harness.sessions.get('quick')
+    expect(stored.filter((message) => message.role === 'user')).toHaveLength(1)
+  })
+
+  it('用量按差值累加：每个 attempt 的累计值不会被重复计入总额', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const usage = { promptTokens: 40, completionTokens: 10, totalTokens: 50 }
+    const harness = await createHarness({
+      fs,
+      jobs,
+      maxRounds: () => 3,
+      maxTotalTokens: () => 150,
+      autoContinueRounds: () => 0,
+      rounds: [
+        { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }], usage },
+        { toolCalls: [{ id: 'c2', name: 'echo', arguments: '{}' }], usage },
+        { text: '完成' },
+      ],
+    })
+
+    await harness.send('两轮工具')
+    await harness.waitForDone()
+
+    const job = await waitForJob(jobs, (item) => item.status === 'done')
+    // 循环给的 `usedTokens` 是**本次 attempt** 的累计（50 → 100），只有按差值累加才是
+    // 真实总量；直接相加会得到 150（第 0 轮的 50 被计了两遍）
+    expect(job.budget.usedTokens).toBe(100)
+    expect(job.budget.maxTotalTokens).toBe(150)
+    expect(job.stepsDone).toHaveLength(2)
+  })
+
+  it('预算触顶 → job 落 paused / pendingReason budget，且不再自动续轮', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({
+      fs,
+      jobs,
+      maxRounds: () => 3,
+      maxTotalTokens: () => 50,
+      autoContinueRounds: () => 2,
+      rounds: [
+        {
+          toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }],
+          usage: { promptTokens: 40, completionTokens: 10, totalTokens: 50 },
+        },
+        { text: '不该跑到这里' },
+      ],
+    })
+
+    await harness.send('很贵的任务')
+    await harness.waitForDone()
+
+    const job = await waitForJob(jobs, (item) => item.status === 'paused')
+    expect(job.pendingReason).toBe('budget')
+    expect(job.budget.usedTokens).toBe(50)
+    // 预算触顶**不**走自动续轮（额度还在也不续）：那正是预算存在的意义
+    expect(job.budget.autoContinued).toBe(0)
+    expect(harness.provider.calls).toHaveLength(1)
+    expect(harness.events.find((event) => event.type === 'done')).toMatchObject({
+      pending: true,
+      pendingReason: 'budget',
+    })
+  })
+
+  it('重启后 autoContinued 不重置：额度用尽即 paused，不会重新发一份', async () => {
+    const fs = new TestFileSystem()
+    const rounds: ScriptRound[] = [
+      { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }] },
+      { toolCalls: [{ id: 'c2', name: 'echo', arguments: '{}' }] },
+      { toolCalls: [{ id: 'c3', name: 'echo', arguments: '{}' }] },
+    ]
+
+    // 第一个"进程"：额度 1，跑光后落 paused（autoContinued = 1）
+    const firstStore = createJobs(fs, tickingClock())
+    const first = await createHarness({
+      fs,
+      jobs: firstStore,
+      rounds,
+      maxRounds: () => 1,
+      autoContinueRounds: () => 1,
+    })
+    await first.send('长任务')
+    await first.waitForDone()
+    const paused = await waitForJob(firstStore, (item) => item.status === 'paused')
+    expect(paused.budget.autoContinued).toBe(1)
+    await firstStore.flush()
+
+    // 第二个"进程"：新的 store 实例读同一份磁盘（内存 fs）
+    const secondStore = createJobs(fs, tickingClock())
+    expect((await secondStore.get(paused.id))?.budget.autoContinued).toBe(1)
+
+    const second = await createHarness({
+      fs,
+      jobs: secondStore,
+      rounds,
+      maxRounds: () => 1,
+      autoContinueRounds: () => 1,
+    })
+    await second.send('继续', 'quick', { resumeJobId: paused.id })
+    await second.waitForDone()
+
+    const again = await waitForJob(
+      secondStore,
+      (item) => item.id === paused.id && item.status === 'paused',
+    )
+    // 额度已经在上一个进程里用掉了：再续跑只跑 1 轮就停，**不会**重新拿到额度
+    expect(again.budget.autoContinued).toBe(1)
+    expect(second.provider.calls).toHaveLength(1)
+    expect(again.cursor.nextRound).toBe(3)
+  })
+
+  it('abort → job 落 aborted，已完成的那几步不丢', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({
+      fs,
+      jobs,
+      rounds: [
+        { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }] },
+        { toolCalls: [{ id: 'c2', name: 'hang', arguments: '{}' }] },
+      ],
+    })
+    const started = createGate()
+    const gate = createGate()
+    registerHangingTool(harness, started.open, gate.promise)
+
+    const { requestId } = await harness.send('长任务')
+    await started.promise
+    expect(harness.host.abort(requestId)).toBe(true)
+
+    // abort 立刻把 job 乐观落 aborted（不等循环收尾）
+    const aborted = await waitForJob(jobs, (item) => item.status === 'aborted')
+    expect(aborted.pendingReason).toBe('aborted')
+    expect(aborted.stepsDone).toHaveLength(1)
+
+    // 放掉挂起的工具，循环这一趟才真正收尾
+    gate.open()
+    await waitForJob(jobs, (item) => item.id === aborted.id && item.pendingReason === 'aborted')
+    await harness.waitForDone()
+    expect(harness.host.isBusy('quick')).toBe(false)
+    // 中断后那条 job 不能被改回 running / paused
+    expect((await jobs.get(aborted.id))?.status).toBe('aborted')
+  })
+
+  it('循环报 error 事件 → job 落 error / 原文入 error 字段（不是 done）', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({
+      fs,
+      jobs,
+      rounds: [{ error: { code: 'E_LLM', message: '上游 500' } }],
+    })
+
+    await harness.send('会失败的一问')
+    await harness.waitForDone()
+
+    const job = await waitForJob(jobs, (item) => item.status === 'error')
+    expect(job.error).toBe('上游 500')
+    expect(job.pendingReason).toBeUndefined()
+    expect(job.stepsDone).toHaveLength(0)
+  })
+
+  it('请求途中抛错 → job 同样落 error（不会永远停在 running）', async () => {
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({ fs, jobs, rounds: [{ text: '答' }] })
+    // 组装历史时炸掉（此刻 job 已经建档）：异常路径也必须落终态，
+    // 否则界面上这条任务"一直在跑"，而续跑入口只认 paused —— 既看不到结束也接不上
+    harness.sessions.get = async () => {
+      throw new Error('会话读取失败')
+    }
+
+    await harness.send('会失败的一问')
+    await harness.waitForDone()
+
+    const job = await waitForJob(jobs, (item) => item.status === 'error')
+    expect(job.error).toBe('会话读取失败')
+    expect(
+      harness.events.some((event) => event.type === 'error' && event.code === 'E_UNKNOWN'),
+    ).toBe(true)
+    expect(harness.provider.calls).toHaveLength(0)
   })
 })

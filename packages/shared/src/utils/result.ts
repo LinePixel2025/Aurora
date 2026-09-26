@@ -34,6 +34,8 @@ export type ErrorCode =
   | 'E_NOT_IMPLEMENTED'
   | 'E_CRYPTO_UNAVAILABLE'
   | 'E_IO'
+  /** 续跑时 job 不在 `paused`（已完成 / 在跑 / 属于别的会话）：拒绝而不是"假装续跑"（v15） */
+  | 'E_JOB_STATE'
   | 'E_UNKNOWN'
 
 export function ok<T>(value: T): Ok<T> {

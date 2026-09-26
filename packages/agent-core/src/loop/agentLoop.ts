@@ -56,7 +56,22 @@ export type AgentLoopEvent =
       snapshot: SubagentSnapshot
     }
   | { type: 'usage'; round: number; usage: TokenUsage }
-  | { type: 'done'; pending?: boolean }
+  /**
+   * 收尾事件（docs/06 §4.1，v15）。
+   *
+   * - `pending: true` 表示"没有正常收敛就结束了"（轮次用尽 / 预算用尽 / 被中断）；
+   * - `pendingReason` 说明**停在哪**（v15 新增）：`'max-rounds'` 轮次用尽、`'budget'` token 预算用尽、
+   *   `'aborted'` 用户取消。客户端据此把"静默收尾"变成"可解释的暂停"，并给出「继续」入口。
+   * - `round` 是**收尾时的轮次**（从 0 起，续跑时是绝对轮次不是相对轮次）；`usedTokens` 是本请求
+   *   累计消耗（预算判定用的同一个数）。
+   */
+  | {
+      type: 'done'
+      pending?: boolean
+      pendingReason?: 'max-rounds' | 'budget' | 'aborted'
+      round: number
+      usedTokens?: number
+    }
   | { type: 'error'; code: string; message: string }
 
 /** 只依赖 `chat()` 的 provider 形状（便于测试注入假实现） */
@@ -127,18 +142,63 @@ export interface AgentLoopOptions {
   updateToolCall(messageId: string, call: StoredToolCall): Promise<void>
   /** 工具执行留痕（供主进程日志与后续权限确认使用） */
   onToolCall?(info: { name: string; sensitivity: string; isError: boolean }): void
+  /**
+   * 续跑（docs/06 §4.1，v15）：从 `nextRound` 继续，而不是从第 0 轮重来。
+   *
+   * 循环本身**不做持久化**：谁调用它、谁负责在 `onRoundComplete` 里落游标。
+   * `stepsDone` 只用于日志与一致性校验，不参与执行。
+   */
+  resume?: { nextRound: number; stepsDone: number }
+  /**
+   * 是否落盘本轮用户消息（**缺省 `true`**）。
+   *
+   * 续跑时必须传 `false`：那次请求的用户消息在**上一个 job** 里已经落过盘了，
+   * 再 append 一次会话历史里就会出现两条一模一样的提问 —— 这是续跑最容易踩的坑。
+   */
+  appendUserMessage?: boolean
+  /** 累计 token 预算（`maxTotalTokens = 0` 表示不限）。触顶即停止进入下一轮并置 `pendingReason: 'budget'` */
+  budget?: { maxTotalTokens: number }
+  /**
+   * 每轮结束（工具都跑完、结果都已回填）时回调一次：调用方在这里把**游标**落盘。
+   *
+   * 语义是"先把这一轮记下来，再决定要不要继续"——所以它在轮次/预算判定**之前**被调用，
+   * 崩溃或重启时最坏情况只是重跑最后那一轮，不会丢掉整段进度。
+   */
+  onRoundComplete?(info: {
+    round: number
+    usage?: TokenUsage
+    usedTokens: number
+    pendingCalls: StoredToolCall[]
+  }): Promise<void> | void
 }
 
 export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<AgentLoopEvent> {
-  const maxRounds = Math.max(1, options.maxRounds ?? DEFAULT_MAX_ROUNDS)
+  /**
+   * 轮次区间：**续跑时从游标继续**，而不是从第 0 轮重来（docs/06 §4.1）。
+   * 上界是"起点 + maxRounds"，至少给一轮 —— 否则 `resume.nextRound >= maxRounds` 时
+   * 循环体一次都不进，直接静默结束（用户会看到"点了继续但什么都没发生"）。
+   */
+  const startRound = Math.max(0, options.resume?.nextRound ?? 0)
+  const endRound = Math.max(
+    startRound + 1,
+    startRound + Math.max(1, options.maxRounds ?? DEFAULT_MAX_ROUNDS),
+  )
   const messages: ChatRequestMessage[] = [
     { role: 'system', content: options.systemPrompt },
     ...toMessages(options.history),
   ]
 
-  // 用户消息先落盘，保证即使后续失败也能在历史里看到提问
-  await options.append({ role: 'user', content: options.userInput })
-  messages.push({ role: 'user', content: options.userInput })
+  // 用户消息先落盘，保证即使后续失败也能在历史里看到提问。
+  // **续跑时 `appendUserMessage` 为 false**：那条提问在上一个 job 里已经落过盘了，
+  // 再 append 一次历史里就会有两份同样的用户消息（续跑最经典的重复落盘 bug）。
+  if (options.appendUserMessage !== false) {
+    await options.append({ role: 'user', content: options.userInput })
+  }
+  // 续跑时那条用户消息已经在 `history` 里（上一次请求写下的），不能重复 push 进 messages；
+  // 非续跑时才补上本轮输入。
+  if (options.appendUserMessage !== false) {
+    messages.push({ role: 'user', content: options.userInput })
+  }
   // 技能正文等一次性上下文：放在用户消息之后，只影响本次请求，不写入历史
   if (options.extraContext !== undefined && options.extraContext.trim() !== '') {
     messages.push({ role: 'system', content: options.extraContext })
@@ -148,10 +208,14 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
   // 顺序只取决于名字集合，与注册先后无关 —— 请求体的 tools 因此是稳定前缀的一部分。
   const llmTools = options.tools.toLlmTools()
   let pending = false
+  let pendingReason: 'max-rounds' | 'budget' | 'aborted' | undefined
+  /** 本次请求累计消耗（预算判定的唯一依据；只累加 provider 回传的真实用量，不估算） */
+  let usedTokens = 0
+  const maxTotalTokens = Math.max(0, options.budget?.maxTotalTokens ?? 0)
 
-  for (let round = 0; round < maxRounds; round += 1) {
+  for (let round = startRound; round < endRound; round += 1) {
     if (options.signal?.aborted) {
-      yield { type: 'done' }
+      yield { type: 'done', pending: true, pendingReason: 'aborted', round, usedTokens }
       return
     }
 
@@ -222,12 +286,18 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
 
     // 用量先于正文落盘转发：`promptTokens` 就是**本轮真实占用的上下文**，
     // 是输入框底部「上下文详解」的唯一分母/分子来源（docs/06 §16.2）
-    if (usage !== undefined) yield { type: 'usage', round, usage }
+    if (usage !== undefined) {
+      yield { type: 'usage', round, usage }
+      // 预算累计（v15）：只认 provider 回传的 `totalTokens`，缺字段时按输入+输出近似
+      usedTokens +=
+        usage.totalTokens > 0 ? usage.totalTokens : usage.promptTokens + usage.completionTokens
+    }
 
     const assistant = await appendAssistant(options, messageId, text, calls, reasoning)
 
     if (calls.length === 0) {
-      yield { type: 'done' }
+      // 模型不再要用工具 = 正常收敛：这不是"暂停"，不带 pendingReason
+      yield { type: 'done', round, usedTokens }
       return
     }
 
@@ -236,7 +306,7 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
     // 同轮多个工具调用：顺序执行，保证事件与结果顺序确定（docs/06 §5）
     for (const call of calls) {
       if (options.signal?.aborted) {
-        yield { type: 'done' }
+        yield { type: 'done', pending: true, pendingReason: 'aborted', round, usedTokens }
         return
       }
 
@@ -277,11 +347,34 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       })
     }
 
-    if (round === maxRounds - 1) pending = true
+    // 本轮结束（工具都跑完、结果都回填了）：**先把这一轮记下来再决定要不要继续**。
+    // 顺序不能反 —— 反过来的话，最后一轮的进度会随着"暂停"一起丢掉，续跑会重跑它。
+    await options.onRoundComplete?.({
+      round,
+      ...(usage === undefined ? {} : { usage }),
+      usedTokens,
+      pendingCalls: calls,
+    })
+
+    // 预算触顶：停止进入下一轮，并明确告诉调用方"停在哪"（不是静默收尾）
+    if (maxTotalTokens > 0 && usedTokens >= maxTotalTokens) {
+      yield { type: 'done', pending: true, pendingReason: 'budget', round, usedTokens }
+      return
+    }
+
+    // 轮次用尽：同上，标成 max-rounds（v15 之前这里只置 pending、没有原因）
+    if (round === endRound - 1) pending = true
   }
 
-  // 轮次用尽仍未收敛：保留已产出的输出，标记 pending（不报错、不丢内容）
-  yield { type: 'done', ...(pending ? { pending: true } : {}) }
+  // 轮次用尽仍未收敛：保留已产出的输出，标记 pending + 原因（不报错、不丢内容）
+  if (pending) pendingReason = 'max-rounds'
+  yield {
+    type: 'done',
+    ...(pending ? { pending: true } : {}),
+    ...(pendingReason === undefined ? {} : { pendingReason }),
+    round: endRound - 1,
+    usedTokens,
+  }
 }
 
 // ───────────────────────── 内部 ─────────────────────────

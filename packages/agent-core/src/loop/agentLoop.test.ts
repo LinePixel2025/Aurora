@@ -936,3 +936,169 @@ describe('runAgentLoop', () => {
     })
   })
 })
+
+/**
+ * 续跑、预算与暂停原因（docs/06 §4.1，v15）。
+ *
+ * 这一组钉的是"长任务停下来时有说法、能接着跑"：
+ * - `resume.nextRound` 从游标继续，且**不重复落盘用户消息**（续跑最经典的 bug）；
+ * - 轮次用尽 / 预算用尽 / 被中断分别给 `pendingReason = 'max-rounds' | 'budget' | 'aborted'`；
+ * - `onRoundComplete` 每轮被调用一次且带本轮工具，让调用方能在"决定继续之前"落游标。
+ */
+describe('runAgentLoop · 续跑与预算（v15）', () => {
+  /** 每轮都发起一次工具调用的桩：rd-1 → rd-2 → … → 最后一段纯文本 */
+  function toolRounds(count: number) {
+    return Array.from({ length: count }, (_, index) => ({
+      toolCalls: [
+        {
+          id: `call-${index + 1}`,
+          name: 'echo',
+          arguments: JSON.stringify({ text: `r${index + 1}` }),
+        },
+      ],
+      // 每轮 100 token：预算用例据此在**第一轮结束之后**触顶
+      usage: { promptTokens: 60, completionTokens: 40, totalTokens: 100 },
+    }))
+  }
+
+  it('resume.nextRound：从游标轮次继续，且不重复落盘用户消息', async () => {
+    const rec = createRecorder()
+    const provider = createFakeProvider([{ text: '收尾' }])
+    const events = await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: '原始提问',
+        history: [{ id: 'msg-0', role: 'user', content: '原始提问', createdAt: 't' }],
+        tools: registryWithEcho(),
+        sessionId: 's1',
+        resume: { nextRound: 3, stepsDone: 3 },
+        appendUserMessage: false,
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+      }),
+    )
+
+    // 没落盘任何用户消息：续跑的那条提问在上一个 job 里已经写过了
+    expect(rec.messages.filter((item) => item.role === 'user')).toHaveLength(0)
+    // 轮次是**绝对**轮次（续跑不把它当成第 0 轮）
+    const text = events.find((event) => event.type === 'text')
+    expect(text).toMatchObject({ type: 'text', round: 3 })
+    // 历史里那条用户消息仍作为上下文送出（不重复 push，也不丢）
+    const sent = provider.calls[0]?.messages ?? []
+    expect(sent.filter((item) => item.role === 'user')).toHaveLength(1)
+    expect(events.at(-1)).toMatchObject({ type: 'done', round: 3 })
+  })
+
+  it('轮次用尽：done 带 pending + pendingReason=max-rounds，且已产出的输出不丢', async () => {
+    const rec = createRecorder()
+    const provider = createFakeProvider(toolRounds(2))
+    const events = await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: '干活',
+        history: [],
+        tools: registryWithEcho(),
+        sessionId: 's1',
+        maxRounds: 2,
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+      }),
+    )
+
+    expect(events.at(-1)).toMatchObject({
+      type: 'done',
+      pending: true,
+      pendingReason: 'max-rounds',
+      round: 1,
+    })
+    // 两轮的工具结果都回了填（不是"到点直接掐断"）
+    expect(rec.messages.filter((item) => item.role === 'tool')).toHaveLength(2)
+  })
+
+  it('预算触顶：done 带 pendingReason=budget，且不再进入下一轮', async () => {
+    const rec = createRecorder()
+    // 桩的 usage 固定：每轮 100 token
+    const provider = createFakeProvider(toolRounds(3))
+    const events = await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: '干活',
+        history: [],
+        tools: registryWithEcho(),
+        sessionId: 's1',
+        maxRounds: 8,
+        budget: { maxTotalTokens: 100 },
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+      }),
+    )
+
+    const done = events.at(-1)
+    expect(done).toMatchObject({ type: 'done', pending: true, pendingReason: 'budget' })
+    // 触顶发生在**第一轮结束之后**：只跑了一轮，不再进第二轮
+    expect(provider.calls).toHaveLength(1)
+    expect((done as { usedTokens?: number }).usedTokens).toBeGreaterThanOrEqual(100)
+  })
+
+  it('中断：done 带 pendingReason=aborted', async () => {
+    const rec = createRecorder()
+    const controller = new AbortController()
+    controller.abort()
+    const provider = createFakeProvider([{ text: '不该发出去' }])
+    const events = await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: '干活',
+        history: [],
+        tools: registryWithEcho(),
+        sessionId: 's1',
+        signal: controller.signal,
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+      }),
+    )
+
+    expect(events.at(-1)).toMatchObject({ type: 'done', pending: true, pendingReason: 'aborted' })
+    expect(provider.calls).toHaveLength(0)
+  })
+
+  it('onRoundComplete 每轮调一次，带轮次、用量与本轮工具（调用方据此落游标）', async () => {
+    const rec = createRecorder()
+    const provider = createFakeProvider(toolRounds(2))
+    const rounds: Array<{ round: number; tools: string[]; usedTokens: number }> = []
+    await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: '干活',
+        history: [],
+        tools: registryWithEcho(),
+        sessionId: 's1',
+        maxRounds: 2,
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+        onRoundComplete: (info) => {
+          rounds.push({
+            round: info.round,
+            tools: info.pendingCalls.map((call) => call.name),
+            usedTokens: info.usedTokens,
+          })
+        },
+      }),
+    )
+
+    expect(rounds.map((item) => item.round)).toEqual([0, 1])
+    expect(rounds.every((item) => item.tools.includes('echo'))).toBe(true)
+    // 游标数据在"决定继续之前"就已就绪（最后一轮同样回调过）
+    expect(rounds[1]?.usedTokens).toBeGreaterThan(0)
+  })
+})

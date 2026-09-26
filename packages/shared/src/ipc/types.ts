@@ -642,6 +642,11 @@ export interface SendMessageRequest {
    * 主进程用 `extract.ts` 提取文本后拼进本轮用户消息；提取失败按降级处理，不阻断发送。
    */
   attachments?: string[]
+  /**
+   * 续跑哪条 job（v15，docs/06 §4.1）：只接受 `status === 'paused'` 的 job；
+   * 其余状态主进程回 `E_JOB_STATE`。给了它时**不会重复落盘**那条用户消息。
+   */
+  resumeJobId?: string
 }
 
 export interface AgentToolCall {
@@ -788,6 +793,67 @@ export interface SnapshotRestoreRequest {
   snapshotId: string
 }
 
+/** Job 状态（docs/06 §4.1，v15）：一次 Agent 请求就是一条 job。 */
+export type AgentJobStatus = 'queued' | 'running' | 'paused' | 'done' | 'error' | 'aborted'
+/** 为什么停在 `paused`：轮次用尽 / 预算用尽 / 被用户取消 */
+export type JobPendingReason = 'max-rounds' | 'budget' | 'aborted'
+/** job 已完成的一步（工具调用）—— 界面画时间线用 */
+export interface JobStep {
+  round: number
+  tool: string
+  ok: boolean
+  at: string
+}
+/**
+ * 一条 Agent job（可查询、可续跑，docs/06 §4.1）。
+ *
+ * 定义在 shared（渲染层要经 IPC 读它、`AgentEvent` 也带它），内核的 `jobs/types.ts` 只再导出
+ * —— 与 `SnapshotRef` 同款口径：跨进程的形状只能有一份定义。
+ */
+export interface AgentJob {
+  id: string
+  sessionId: string
+  requestId?: string
+  status: AgentJobStatus
+  origin: 'chat' | 'edge-bar' | 'resume'
+  /** 本 job 的用户消息原文（续跑不再重复落盘，靠它还原上下文） */
+  text: string
+  /** 已经跑到第几轮（从 0 起） */
+  round: number
+  maxRounds: number
+  stepsDone: JobStep[]
+  todos: Array<{ id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }>
+  /** 游标：下一轮从哪里开始（续跑的起点） */
+  cursor: { nextRound: number; note?: string }
+  budget: {
+    maxTotalTokens: number
+    usedTokens: number
+    /** 已自动续轮的次数 —— **必须持久化**，否则重启后会重新拿到一份额度 */
+    autoContinued: number
+  }
+  pendingReason?: JobPendingReason
+  createdAt: string
+  updatedAt: string
+  error?: string
+}
+
+/** 推给渲染层的轻量形状（不含 todos / stepsDone 全量，避免事件里带一整份账本） */
+export interface JobSummary {
+  id: string
+  sessionId: string
+  status: AgentJobStatus
+  round: number
+  maxRounds: number
+  usedTokens: number
+  maxTotalTokens: number
+  autoContinued: number
+  pendingReason?: JobPendingReason
+  stepCount: number
+  lastStep?: string
+  updatedAt: string
+  error?: string
+}
+
 /**
  * 事件一律携带 `sessionId`：快速会话与完整会话共用一个交互窗，
  * 只按 `requestId` 过滤会串会话（docs/06 §4）。
@@ -867,7 +933,28 @@ export type AgentEvent =
       round: number
       usage: TokenUsage
     }
-  | { type: 'done'; sessionId: string; requestId: string; seq: number; pending?: boolean }
+  | {
+      type: 'done'
+      sessionId: string
+      requestId: string
+      seq: number
+      pending?: boolean
+      /** 为什么没收敛就结束了（v15）：轮次用尽 / 预算用尽 / 被取消 */
+      pendingReason?: JobPendingReason
+      round?: number
+      usedTokens?: number
+    }
+  | {
+      /**
+       * job 生命周期事件（v15，docs/06 §4.1）：创建 / 每轮游标更新 / 落终态时各推一条。
+       * **不走 text 合并通路** —— 暂停事件被 16ms 合并吞掉的话，用户就看不到"任务停了"。
+       */
+      type: 'job'
+      sessionId: string
+      requestId: string
+      seq: number
+      job: JobSummary
+    }
   | {
       type: 'error'
       sessionId: string
@@ -1024,6 +1111,21 @@ export interface AuroraApi {
      * 归档不删除任何消息、会话仍可继续对话；返回 `{ ok: false, error }` 不抛错。
      */
     archiveSession(request: ChatArchiveRequest): Promise<Result<{ archived: boolean }>>
+    /**
+     * Job（任务）列表（v15，docs/06 §4.1）。
+     *
+     * 缺省按 `updatedAt` 倒序；给了 `sessionId` 就只看该会话。界面的「任务」面板靠它水合 ——
+     * 重启后 `paused` 的 job 依然列在这里，用户点「继续」即可跑完。
+     */
+    jobs(request?: {
+      sessionId?: string
+      status?: AgentJobStatus
+      limit?: number
+    }): Promise<Result<AgentJob[]>>
+    /** 续跑一条 `paused` 的 job（等价于带着 `resumeJobId` 再发一次）；返回新的 requestId */
+    resumeJob(request: { sessionId: string; jobId: string }): Promise<Result<{ requestId: string }>>
+    /** 取消一条未结束的 job（落 `aborted`；与「停止」按钮同一语义） */
+    cancelJob(request: { sessionId: string; jobId: string }): Promise<Result<boolean>>
     /**
      * 拖拽文件的绝对路径（docs/07 §2.3）。
      *

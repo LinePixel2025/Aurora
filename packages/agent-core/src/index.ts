@@ -27,6 +27,10 @@ export * from './project/nodeFs.js'
 export * from './snapshots/types.js'
 export * from './snapshots/snapshot-port.js'
 
+// Job（任务）持久化（docs/06 §4.1，v15）：类型 + 纯映射 + 文件存储
+export * from './jobs/types.js'
+export * from './jobs/store.js'
+
 // 能力层（docs/06 §6 / §7）
 export * from './skills/parse.js'
 export * from './skills/registry.js'

@@ -96,6 +96,10 @@ export const IPC = {
      * **不是**配置项，所以这条通道与 settings 无关、也不进 `SETTINGS_READONLY_PREFIXES`。
      */
     archiveSession: 'chat:archiveSession',
+    /** Job（任务）列表 / 续跑 / 取消（v15，docs/06 §4.1） */
+    jobs: 'chat:jobs',
+    resumeJob: 'chat:resumeJob',
+    cancelJob: 'chat:cancelJob',
   },
   /** 全局快捷键注册状态（docs/07 §5、docs/08 §1） */
   hotkey: {
