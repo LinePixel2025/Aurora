@@ -667,6 +667,11 @@ async function bootstrap(): Promise<void> {
   // 项目根边界（v13，docs/06 §11.1）：**只在配置了当前项目时启用** ——
   // `workspaceRoot()` 返回 undefined 时 file-port / command-runner 的行为与 v13 之前一字不差
   //（无项目 = 无边界），这也是 step 1「无项目时行为不变」那条完成标准的落点。
+  // ⚠️ 声明顺序承重：`projectLogger` 必须在 `projectRoot` **之前**声明 —— 缺省工作目录接线后
+  //（step 3，`registerComputerTools` 的 `sync()` 在下面的启动序里就会调用本 getter），
+  // 若把它留在 764 行之后，这里就是 TDZ `Cannot access 'projectLogger' before initialization`，
+  // 表现为**启动直接失败**（单测全用假装配器发现不了，只有 AURORA_SMOKE 抓得到）。
+  const projectLogger = logger?.child('project')
   const projectRoot = (): string | undefined =>
     resolveProject(settings!.get(), {
       cwd: process.cwd(),
@@ -822,7 +827,7 @@ async function bootstrap(): Promise<void> {
   // 项目机制（v13，docs/06 §5.1）：每轮按「项目根 → 当前工作目录」逐层收集 AGENTS.md
   // （同目录 AGENTS.override.md 优先）。取用器内部按 root + 文件 mtime 缓存，
   // 无项目 / 读不到文件一律降级为不注入 —— 装配层只提供"当前值"的取值闭包。
-  const projectLogger = logger?.child('project')
+  // （`projectLogger` 已上移到 `projectRoot` 之前声明，原因见那里的承重注释。）
   const projectInstructions = createProjectInstructionsSource({
     fs: nodeProjectFs,
     ...(projectLogger === undefined ? {} : { logger: projectLogger }),
