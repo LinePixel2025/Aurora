@@ -7,7 +7,8 @@
  * - classroom：当前/下节课卡（ClassIsland 桥接 status，非 classisland provider 时隐藏）、
  *   今日课程卡（perception lessons）、分类流水（ClassificationLedger 紧凑版）、打开感知文件夹；
  * - work：工作目录卡（workspaceDir + 打开 / 前往设置）、办公能力提示卡；
- * - 通用：系统状态卡（时间 / 电量 / 网络 / 前台应用）。
+ * - 通用：当前项目卡（v13，docs/06 §5.1；无当前项目时不渲染）、系统状态卡
+ *   （时间 / 电量 / 网络 / 前台应用）。
  * 非当前模式的功能**一律不渲染**（不是 disabled）。
  *
  * 感知数据由本组件自取（chat 窗引导未开 trackPerception）：挂载时刷新 + 30s 轮询，
@@ -140,6 +141,34 @@ const networkLabel = computed(() => {
 
 const foregroundLabel = computed(() => summary.value?.foreground?.app ?? '不可用')
 
+// ───────────────────────── 通用：当前项目（v13） ─────────────────────────
+
+/**
+ * 当前项目（docs/06 §5.1）：从配置里取「当前那一条」，无项目 / id 对不上都不渲染。
+ *
+ * 与 `agent.tools.workspaceDir`（work 模式的「工作目录」卡）**不是一个东西**：
+ * 项目根是 AGENTS.md 的注入来源，也是权限层判定「根内 / 根外」的边界。
+ */
+const project = computed(() => {
+  const projects = settingsStore.settings?.projects
+  if (!projects || projects.current === '') return null
+  return projects.list.find((item) => item.id === projects.current) ?? null
+})
+
+/** 项目根是否可用由主进程探测（渲染层没有 fs）；拿不到状态时按「可用」处理，不显示假警报 */
+const projectAvailable = ref(true)
+
+async function refreshProjectStatus(): Promise<void> {
+  if (project.value === null) return
+  const result = await window.aurora.project.status()
+  projectAvailable.value = result.ok ? result.value.rootAvailable : true
+}
+
+async function openProjectRoot(): Promise<void> {
+  // 打不开时静默（右栏没有提示位）；设置页的项目区组才是排查入口
+  await window.aurora.app.openPath({ kind: 'project' })
+}
+
 // ───────────────────────── 轮询 ─────────────────────────
 
 let timer: number | null = null
@@ -147,6 +176,7 @@ let timer: number | null = null
 function refreshAll(): void {
   void perception.refresh()
   void refreshClassisland()
+  void refreshProjectStatus()
 }
 
 onMounted(() => {
@@ -162,6 +192,11 @@ onUnmounted(() => {
 // 模式 / provider 切换导致卡片出现时立即取一次，不等下一轮轮询
 watch(showClassislandCard, (now) => {
   if (now) void refreshClassisland()
+})
+
+// 项目卡出现（切项目 / 新登记）时立刻探测一次根目录
+watch(project, () => {
+  void refreshProjectStatus()
 })
 </script>
 
@@ -283,6 +318,38 @@ watch(showClassislandCard, (now) => {
         </ul>
       </section>
     </template>
+
+    <!-- ── 通用：当前项目（v13，docs/06 §5.1；任何模式都渲染，无项目整卡不渲染） ── -->
+    <section v-if="project !== null" class="ctx-card" data-field="context.project-card">
+      <header class="ctx-head">
+        <FolderOpen :size="15" :stroke-width="1.6" class="ctx-icon" aria-hidden="true" />
+        <strong>当前项目</strong>
+        <span v-if="!projectAvailable" class="badge error" data-field="context.project-unavailable">
+          项目目录不可用
+        </span>
+      </header>
+      <p class="tiny muted ctx-line">
+        {{
+          projectAvailable
+            ? '每轮对话都会注入「项目根 → 当前工作目录」的 AGENTS.md：'
+            : '项目根不存在或不是目录，AGENTS.md 不会被注入：'
+        }}
+      </p>
+      <div class="ctx-line">
+        <span class="tiny muted">项目</span>
+        <span class="ctx-value" :title="project.name">{{ project.name }}</span>
+      </div>
+      <p class="ctx-path mono tiny" :title="project.root">{{ project.root }}</p>
+      <!-- 项目根失效时不提供「打开」：点了只会弹系统错误，反而让人以为路径没问题 -->
+      <div v-if="projectAvailable" class="ctx-actions">
+        <AppButton size="sm" variant="secondary" @click="openProjectRoot">打开文件夹</AppButton>
+      </div>
+      <div v-else class="ctx-actions">
+        <AppButton size="sm" variant="secondary" @click="windowStore.show('settings')">
+          去设置里重新选择目录
+        </AppButton>
+      </div>
+    </section>
 
     <!-- ── 通用：系统状态（任何模式都渲染） ── -->
     <section class="ctx-card">

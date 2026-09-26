@@ -9,9 +9,14 @@
  * `general.language` 是**没有 i18n 消费方的死字段**（docs/08 §1）：
  * 本页不再提供任何入口，但保存时仍原样回传当前值 —— `settings:update` 是
  * 顶层分组浅合并，`general` 整对象被替换，漏掉 language 会被 Schema 默认值重置。
+ *
+ * v13 起新增「项目」区组（docs/06 §5.1）：项目 = 名字 + 根目录，`projects.current` 指当前那一个。
+ * 它同时决定「每轮注入哪份项目级 AGENTS.md」与「权限层认定的项目根」，因此是**只读前缀**
+ * （AI 改不动），只能在这里维护。列表类编辑沿用本仓库既定的**即时保存**口径（无「保存」按钮，
+ * 与 WorkSection / SubjectsEditor 一致），并且每次都带**完整子树** —— `projects` 是顶层浅合并。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { HotkeyStatus } from '@aurora/shared'
+import type { HotkeyStatus, ProjectConfig, ProjectStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
@@ -131,6 +136,8 @@ onMounted(async () => {
   detachHotkey = window.aurora.hotkey.onChanged((next) => {
     hotkeyStatus.value = next
   })
+  // 项目根是否可用只有主进程知道（渲染层没有 fs）；进页面取一次，配置变化后再取
+  await refreshProjectStatus()
 })
 
 watch(
@@ -141,6 +148,8 @@ watch(
     hotkey.value = next.general.hotkey
     edgeEnabled.value = next.general.edgeBar.enabled
     edgeOpacity.value = next.general.edgeBar.opacity
+    // 项目配置一变就重新探测根目录（失败静默：按"无警示"处理）
+    void refreshProjectStatus()
   },
   { immediate: true },
 )
@@ -167,6 +176,113 @@ async function save(): Promise<void> {
 
 async function toggleEdgeBar(): Promise<void> {
   await windowStore.toggle('edge-bar')
+}
+
+// ───────────────────────── 项目机制（v13，docs/06 §5.1）─────────────────────────
+
+const projects = computed(() => settingsStore.settings?.projects ?? null)
+
+/** 主进程探测的「当前项目」状态：渲染层没有文件系统能力，根目录是否可用只能问主进程 */
+const projectStatus = ref<ProjectStatus | null>(null)
+
+/** 项目根不可用**且确实有当前项目**时才算警示态（无项目不是异常） */
+const currentProjectUnavailable = computed(() => {
+  const status = projectStatus.value
+  return status !== null && status.currentId !== '' && !status.rootAvailable
+})
+
+/** 项目 id 只是本机标识（`projects.current` 引用它），不必全局唯一，但要够随机以免撞车 */
+function newProjectId(): string {
+  return `proj-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** 目录末段作为默认项目名（同时兼容 `\` 与 `/`；全是分隔符时回落成路径原文） */
+function folderNameOf(path: string): string {
+  const parts = path.split(/[\\/]+/).filter((part) => part !== '')
+  return parts[parts.length - 1] ?? path
+}
+
+async function refreshProjectStatus(): Promise<void> {
+  const result = await window.aurora.project.status()
+  // 探测失败按"无警示"处理：拿不到状态就显示假警报比不显示更糟
+  projectStatus.value = result.ok ? result.value : null
+}
+
+/**
+ * 保存项目改动：**必须带完整子树**（顶层浅合并），且未加载完不写 —— 否则等于用兜底默认值
+ * 把已保存的项目列表整棵覆盖掉。
+ */
+async function saveProjects(
+  next: Partial<{ current: string; list: ProjectConfig[] }>,
+): Promise<void> {
+  const current = projects.value
+  if (!current) return
+  error.value = null
+  saved.value = null
+  const ok = await settingsStore.update({ projects: { ...current, ...next } })
+  if (ok) {
+    saved.value = '已保存'
+    await refreshProjectStatus()
+  } else {
+    error.value = settingsStore.error
+  }
+}
+
+/** 添加项目：目录由主进程弹系统选择框（渲染层没有文件系统能力），选中即设为当前项目 */
+async function addProject(): Promise<void> {
+  const current = projects.value
+  if (!current) return
+  const picked = await window.aurora.project.pickDirectory()
+  if (!picked.ok) {
+    error.value = picked.message
+    return
+  }
+  if (picked.value === null) return // 用户取消：不是错误，什么都不做
+  const root = picked.value
+  const id = newProjectId()
+  await saveProjects({
+    list: [...current.list, { id, name: folderNameOf(root), root }],
+    // 刚添加的项目就是用户想用的那一个，省掉一次点击
+    current: id,
+  })
+}
+
+async function updateProjectField(id: string, patch: Partial<ProjectConfig>): Promise<void> {
+  const current = projects.value
+  if (!current) return
+  await saveProjects({
+    list: current.list.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+  })
+}
+
+async function setCurrentProject(id: string): Promise<void> {
+  await saveProjects({ current: id })
+}
+
+/** 删除项目：删掉的正是当前项目时一并把 `current` 清空（否则它会指向一个不存在的 id） */
+async function removeProject(id: string): Promise<void> {
+  const current = projects.value
+  if (!current) return
+  await saveProjects({
+    list: current.list.filter((item) => item.id !== id),
+    current: current.current === id ? '' : current.current,
+  })
+}
+
+/** 项目根失效时的「重新选择目录」（假设 7：失效必须有可见出口，不能只在日志里 warn） */
+async function repickProjectRoot(id: string): Promise<void> {
+  const picked = await window.aurora.project.pickDirectory()
+  if (!picked.ok) {
+    error.value = picked.message
+    return
+  }
+  if (picked.value === null) return
+  await updateProjectField(id, { root: picked.value })
+}
+
+async function openProjectRoot(): Promise<void> {
+  const result = await window.aurora.app.openPath({ kind: 'project' })
+  if (!result.ok) error.value = result.message
 }
 </script>
 
@@ -209,6 +325,108 @@ async function toggleEdgeBar(): Promise<void> {
           </AppToast>
         </div>
       </SettingField>
+    </section>
+
+    <!-- 项目机制（v13，docs/06 §5.1）：项目根同时决定注入的 AGENTS.md 与权限边界 -->
+    <section class="section-card">
+      <h2 class="section-title">项目</h2>
+      <p class="section-desc">
+        登记项目后，每一轮对话都会把「项目根 → 当前工作目录」逐层收集的 AGENTS.md 注入系统提示词
+        （同一目录里 AGENTS.override.md 优先）；项目根也是权限层判定「根内 / 根外」的边界。 留空 /
+        不添加 = 无项目，行为与以前完全一致。
+      </p>
+
+      <div v-for="item in projects?.list ?? []" :key="item.id" class="project-row">
+        <SettingField data-field="projects.name" label="项目名">
+          <input
+            class="input grow"
+            type="text"
+            spellcheck="false"
+            placeholder="例如：Aurora"
+            :value="item.name"
+            @change="
+              updateProjectField(item.id, {
+                name: ($event.target as HTMLInputElement).value.trim(),
+              })
+            "
+          />
+        </SettingField>
+
+        <SettingField
+          data-field="projects.root"
+          label="项目根目录"
+          hint="绝对路径，或相对当前工作目录的路径；目录不存在时该项目降级为无项目"
+        >
+          <input
+            class="input grow"
+            type="text"
+            spellcheck="false"
+            placeholder="D:\Projects\Aurora"
+            :value="item.root"
+            @change="
+              updateProjectField(item.id, {
+                root: ($event.target as HTMLInputElement).value.trim(),
+              })
+            "
+          />
+        </SettingField>
+
+        <div class="row project-actions">
+          <AppButton
+            data-field="projects.current"
+            size="sm"
+            :disabled="item.id === (projects?.current ?? '')"
+            @click="setCurrentProject(item.id)"
+          >
+            {{ item.id === (projects?.current ?? '') ? '已启用' : '设为当前' }}
+          </AppButton>
+          <AppButton
+            data-field="projects.repick"
+            size="sm"
+            variant="ghost"
+            @click="repickProjectRoot(item.id)"
+          >
+            重新选择目录
+          </AppButton>
+          <AppButton
+            data-field="projects.remove"
+            size="sm"
+            variant="ghost"
+            @click="removeProject(item.id)"
+          >
+            删除
+          </AppButton>
+        </div>
+
+        <AppToast
+          v-if="item.id === (projects?.current ?? '') && currentProjectUnavailable"
+          tone="error"
+        >
+          项目目录不可用：{{ item.root }} 不存在或不是目录，AGENTS.md
+          不会被注入。请重新选择目录或改正路径。
+        </AppToast>
+      </div>
+
+      <p v-if="(projects?.list.length ?? 0) === 0" class="section-desc" data-empty="projects.list">
+        尚未添加项目
+      </p>
+
+      <div class="row project-actions">
+        <AppButton data-field="projects.add" size="sm" variant="primary" @click="addProject">
+          添加项目
+        </AppButton>
+        <AppButton
+          size="sm"
+          variant="ghost"
+          :disabled="(projects?.current ?? '') === ''"
+          @click="openProjectRoot"
+        >
+          打开当前项目目录
+        </AppButton>
+        <span class="tiny muted">
+          AGENTS.md 注入上限 {{ projects?.maxAgentsBytes ?? 32768 }} 字节
+        </span>
+      </div>
     </section>
 
     <section class="section-card">
@@ -439,6 +657,24 @@ async function toggleEdgeBar(): Promise<void> {
 
 .wrap {
   flex-wrap: wrap;
+}
+
+/* 项目列表：一行一个项目，行间用发丝线分隔（最后一行不留线） */
+.project-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.project-row:last-of-type {
+  border-bottom: none;
+}
+
+.project-actions {
+  flex-wrap: wrap;
+  align-items: center;
 }
 
 footer {
