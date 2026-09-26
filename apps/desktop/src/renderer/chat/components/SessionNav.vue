@@ -43,7 +43,7 @@ const props = defineProps<{
   activeId: string
   /** 右栏是否展开（开关图标的方向 / 激活态） */
   rightOpen: boolean
-  /** 主区正在展示的内容：对话流 / 子代理页面（2026-09 新增，docs/07 §2.4） */
+  /** 主区正在展示的内容：对话流 / 子代理页面（2026-09 新增，docs/07 §2.3） */
   view: 'chat' | 'subagents'
   /** 本会话已记录的子代理运行数（固定项上的角标） */
   subagentCount: number
@@ -124,7 +124,7 @@ function formatRelativeTime(iso: string): string {
     </button>
 
     <!--
-      固定顶置项：子代理（2026-09 新增，docs/07 §2.4）。
+      固定顶置项：子代理（2026-09 新增，docs/07 §2.3）。
       主区切到子代理页面 —— 它不是会话（不能切换 sessionId），因此走独立的 view 状态。
       角标显示本会话记录到的运行数；有在跑的用 running 色 + 呼吸，一眼看出后台在干活。
     -->

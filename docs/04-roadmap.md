@@ -12,6 +12,8 @@ P7 的 **ClassIsland 联动已提前落地**；进度随开发更新
 （新增 `edit_file` 精确替换与 `grep` / `glob` 检索），`read_file` 升级为**行窗口契约**
 （行号前缀 + `offset` / `limit`，能读大文件后半段），`run_command` 补上**免确认命令模式**中间档，
 并把系统提示词与 `tools` 数组做成**可缓存前缀**、把缓存命中量显示到界面上（配置 Schema → **v12**）。
+其后是**Agent 生产化主线轮**（2026-09-26，配置 Schema → **v15**：项目机制 + 三档权限 + 写前快照与回滚 +
+Task/Job 持久化与续跑），详见 §5 变更记录最后一条。
 
 版本策略：v0.x 内部迭代 → **v1.0.0** 首个对外版本。优先级：P0 必须 / P1 尽量 / P2 后续。
 工作量按 **1 名全职开发** 估算，共约 9～10 周到 v1.0.0；多人协作可并行压缩。
@@ -393,3 +395,59 @@ v0.6.0 的重点不是新增大功能，而是**把"设置里能改、运行时�
     `AURORA_CAPTURE` 48 张 PNG / 48 条 checks / 0 FAIL。
   - **明确不做**：`apply_patch`、LSP 诊断与符号检索、git snapshot / revert、doom-loop 检测、
     显式 `cache_control`、命令黑名单、权限模型整体重构、Code Mode 实装、Anthropic 原生协议。
+- **2026-09-26（Agent 生产化主线：项目机制 + 三档权限 + 写前快照 + Task/Job 续跑 / 配置 v15）**：
+  这一轮把 Agent 从「能改代码」推到「可托付地跑长任务」——**知道自己工作在哪个项目、按用户选的档位动手、
+  改动前留底、跑到一半停下还能接着跑**；配置 Schema **v12 → v15**（三条迁移
+  `v12 → v13` / `v13 → v14` / `v14 → v15`）。
+  - **项目机制（v13）**：顶层新增 `projects` 分组（`current` / `list[{id,name,root}]` /
+    `maxAgentsBytes: 32768`）。当前项目同时决定**项目根**与**项目级约定注入** ——
+    从**项目根到当前工作目录逐层**收集 `AGENTS.md`（同目录 `AGENTS.override.md` 优先），
+    作为系统提示词的「项目约定」小节注入（在静态段之后、系统状态之前，见
+    [06 §5.1 / §21.1](./06-agent-core.md)），单次收集上限 **24 层 / 32 KiB**、超限截断并标注。
+    设置页新增「项目」区组、右栏新增「当前项目」卡（项目根不可用时标红并给「重新选择目录」）。
+    `openPath` 新增 `kind: 'project'`（`kind: 'workspace'` 打开的是 `agent.tools.workspaceDir`，
+    不是项目根，两者别混）。
+  - **三档权限（v13，`agent.permissionMode ∈ {readonly, confirm, auto}`，默认 `confirm`）**：
+    `readonly` 档**根本不注册**写入 / 执行类工具（含 `todo_write`，保留 `todo_read`），
+    因此不是"注册后再拒绝"；`confirm` 档与旧行为逐字一致；`auto` 档在**项目根之内**免确认
+    （写 `info` 级审计日志）、越界仍逐次确认。老的 `advanced.confirmSensitiveTools === false`
+    由 `auto` 档承接，且 **`readonly` 优先于该布尔**。确认卡片新增第三键「本会话都允许」
+    （会话 × 工具名，仅内存、不落盘）。项目根边界是**两层**：`auto` 档「要不要弹卡」用**字符串级
+    判定**（含 `..` 段、取不到目标路径的工具一律按越界）；「能不能真碰」由主进程对已存在的最近
+    父目录做 **realpath 前缀校验**（越界即 `E_PATH_OUTSIDE_WORKSPACE`），六个文件类入口与
+    `run_command.cwd` 都走它。该边界**只在配置了当前项目时启用**（无项目时行为与 v12 之前一致）。
+    `auto` 档下 `run_command` 命令串里出现绝对路径时一律回到确认卡片（见
+    [06 §11.1 / §11.2 / §12.2](./06-agent-core.md)）。
+  - **写前自动快照与一键回滚（v14，`agent.snapshots.*`）**：`write_file` / `edit_file` 落盘**之前**
+    把原内容存进 `<userData>/backups/<sessionId>/`（一条一个 `<ISO 时间戳>-<8 位内容哈希>.snap`
+    + `index.json`）；两层淘汰 —— 每文件环形保留 `keepPerFile`（默认 20）+ 目录总预算
+    `totalBudgetBytes`（默认 200 MiB）；单份超 `maxSnapshotBytes`（默认 512 KiB）跳过，
+    且**在工具结果里如实说明**。右栏「文件备份」卡可两段式回滚，**回滚本身也先留一份快照**
+    （可再撤回），`exists:false` 的快照回滚 = 删除该文件（见 [06 §11.8](./06-agent-core.md)）。
+  - **Task/Job 持久化与可续跑（v15，`agent.loop.*`）**：一次请求 = 一条 job，落在
+    `<userData>/jobs/<sessionId>.json`，每轮结束落游标；轮次用尽 / token 预算触顶 → 落 `paused`
+    并给出原因（`max-rounds` / `budget`）。右栏「任务」面板可看进度（第几轮 / token / 步骤 / 待办）
+    并点「继续」**接着上次的进度跑**（**不重复落盘**那条用户消息）；
+    `agent.loop = { maxRounds: 8, maxTotalTokens: 0(不限), autoContinueRounds: 2 }`，
+    预算内的自动续轮次数**持久化**（重启不会重新获得额度）；
+    **应用重启后 `paused` 的 job 仍在面板里，可直接继续**（见 [06 §4.1](./06-agent-core.md)）。
+  - **顺带修掉的既有 bug**：`SessionStore` 与待办清单端口的「首读竞态」（并发首读拿到空快照、
+    随后一次写入把磁盘历史整体覆盖）—— 改成 **in-flight promise 共享**并在读回时与在途写入合并。
+  - **验证**：`pnpm typecheck` / `pnpm lint` / `pnpm format:check` / `pnpm build` / `pnpm verify`
+    全绿（`verify` **26/26**，`version = 15`、`v0 → 当前版本` **15 条迁移**）；
+    `pnpm test` **79 个文件 / 1496 个用例全绿**（本轮起点 72 文件 / 1307 用例）；
+    `AURORA_SMOKE` **163/163 passed**，含六条跨特性集成断言（项目 `AGENTS.md` 进请求体且项目根
+    **父目录**的不进 / `auto` 档根内写文件不弹卡且落盘且留快照 / `readonly` 档同一条提问写不动 /
+    一键回滚还原且新增 `origin:'rollback'` 快照 / 事件类型白名单含新增的 `job` /
+    为第二次启动留下 `paused` job）；`AURORA_CAPTURE` **53 张 PNG / 53 条 checks / 0 FAIL**
+    （含 `chat-project-card.png` / `chat-permission-readonly.png` / `chat-snapshot-card.png` /
+    `chat-job-panel.png` 与综合概览 `chat-agent-prod-overview.png`）。
+  - **两次启动的续跑实测**：第一次启动留下 `paused`（游标 2、已完成步骤 2）→ 退出 →
+    第二次启动读回同一条 job（`found=1 status=paused`）→ 继续后 `status=done`、
+    `stepsDone 2→3`、`cursor 2→3`，会话里那条用户消息**仍只有一条**。
+  - **明确未做**：**仍无 OS 级沙箱** —— 三档权限与项目根 realpath 前缀校验**不是**沙箱
+    （没有作业对象 / 容器 / 受限令牌，`run_command` 仍是当前用户权限）；多模态输入与 Responses API、
+    子代理能力加强、上下文压缩修正**均未开始**（属第二批）；Code Mode 仍是占位实现。
+    另需说明：上面「第二次启动」的续跑验证走的是**自测专用开关**
+    `AURORA_SMOKE_WORKSPACE` + `AURORA_SMOKE_PHASE=resume` 拉起的两次启动，
+    它是验证手段，**不是面向用户的功能**——用户侧的正常用法是重启后在右栏「任务」面板点「继续」。

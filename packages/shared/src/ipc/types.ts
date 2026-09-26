@@ -656,7 +656,7 @@ export interface AgentToolCall {
   state: 'running' | 'success' | 'error'
   outputSummary?: string
   /**
-   * `task` 子代理工具的运行快照（docs/06 §19、docs/07 §2.4）。
+   * `task` 子代理工具的运行快照（docs/06 §19、docs/07 §2.3）。
    * 随工具卡状态一起持久化，因此「子代理」页面在重启后仍能回看历史运行。
    */
   subagent?: SubagentSnapshot

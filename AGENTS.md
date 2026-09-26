@@ -23,7 +23,7 @@ packages/agent-core/ Agent 内核：LLM / 会话 / 工具循环 / Skill / MCP / 
 packages/modes/      IMode 框架、ClassRoom 完整实现、Work 初步实装（BetaV2）/ Code 占位
 skills/              内置 SKILL.md（file-classify / system-status / timetable）
 scripts/             图标生成、验收、发布脚本
-docs/                项目文档（SSOT，01–09 分册）
+docs/                项目文档（SSOT，01–11 分册）
 ```
 
 版本号以各 `package.json` 为准，**根 `README.md` 的版本与状态可能滞后**，当前进度看 `docs/README.md` 与 `docs/04-roadmap.md`。
@@ -80,7 +80,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **日志**：业务包只依赖 `@aurora/shared` 的 `Logger` 接口；落盘实现在 `apps/desktop/src/main/logger.ts`（`userData/logs/`，按天轮转保留 7 天），所有输出统一脱敏。不要 `console.log` 当正式日志。
 - **凭据绝不落明文**：API Key / MCP env 经 Electron `safeStorage` 加密写入 `%APPDATA%/Aurora/config.json`；`settings:get` 与 `settings:changed` 两条通道都只回传 `apiKeySet` / `envSet` 标记。日志与「导出脱敏配置」中凭据一律 `***`。
 - **文件/命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
-- **配置改动**：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`。
+- **配置改动**（当前 `CONFIG_VERSION = 15`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 
 ## 文档先行（Docs-first）
 
@@ -122,6 +122,18 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   见 docs/06 §11.5 / §11.6）：三者都在 `agent.tools.enabled` 总开关与各自子开关
   （`edit_file` 随 `files.enabled`、`grep` / `glob` 随 `search.enabled`）之下 ——
   与「扩展工具五件套不受门控」的口径**相反**，别按五件套理解它们。
+- **三档权限与项目根边界已落地（2026-09-26），但仍无 OS 级沙箱**：`agent.permissionMode` 取值
+  `readonly` / `confirm` / `auto`（默认 `confirm`）—— `readonly` 档**不注册**写入 / 执行类工具
+  （含 `todo_write`，保留 `todo_read`），`auto` 档在**当前项目根之内**免确认、越界仍逐次确认；
+  项目根边界分**两层**：`auto` 档「要不要弹卡」用**字符串级判定**（含 `..` 段、取不到目标路径的
+  工具一律按越界）；「能不能真碰」由主进程对**已存在的最近父目录**做 realpath 前缀校验
+  （`file-port.resolveWithin`，越界即 `E_PATH_OUTSIDE_WORKSPACE`，六个文件类入口与
+  `run_command.cwd` 都走它）。
+  但**没有作业对象 / 容器 / 受限令牌**，`run_command` 仍是当前用户权限 —— 别把这两层说成"沙箱"。
+- **`agent.tools.workspaceDir` 仍然只是"默认 cwd / 搜索根"，不是安全边界**：安全边界是
+  **「当前项目根」**，且**只有配置了当前项目时才生效**（无项目时行为与 v12 之前完全一致）。
+  想当然地拿 `workspaceDir` 当护栏、或把 `openPath` 的 `kind: 'workspace'` 当成项目根，都是错的
+  （项目根走 `kind: 'project'`，见 docs/06 §5.1 / §11.1）。
 - Skill 的 `scripts/` 永不自动执行（只注入指令正文）；图片 OCR 未启用（只取文件名与尺寸）。
 - Code Mode 为占位实现；Work Mode 已初步实装（v0.0.1，guide + systemPrompt + workspaceDir）。
   多语言、ARM64 / 便携版、macOS / Linux 未开始。
@@ -171,6 +183,23 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **不要把这个守卫挪进 `sync()`**：挪进去后用户改一个无关开关（比如关掉终端）就会清空读记录，
   模型刚 `read_file` 过的文件立刻被 `edit_file` 拒绝「修改前必须先读」，看起来像工具坏了。
   守卫是内核的可注入端口（未注入时不拦截，供单测直接调工具），见 docs/06 §11.6。
+- **写前快照的钩子在 `file-port.writeText` 内部，顺序不能换**（v14）：顺序是 `resolveWithin`
+  （项目根 realpath 前缀校验）→ `capture`（把**原内容**存进 `<userData>/backups/<sessionId>/`）
+  → 真正写盘。换成"先写再备份"就等于"改完才备份"，回滚拿不到改动前的内容；
+  主写失败**不回滚快照**（文件可能已被部分改写，那份快照才是唯一退路），
+  改成把快照 id 带进错误信息（见 docs/06 §11.8）。
+- **`ensureLoaded` 的三处（会话 / 待办清单 / job 存储）都必须用 in-flight promise**：
+  写成"先置 `loaded` 再 `await` 读盘"会让并发首读拿到**空快照**，随后那一次写入
+  把磁盘上的历史**整体覆盖**（本仓库已修过两次，别再改回去）。job 存储还多一条：
+  **落盘前必须已 `ensureLoaded`**，否则内存里的空表会冲掉盘上数据。
+- **`agent.permissionMode` 是只读前缀**（AI 的 `set_setting` 一律拒绝：改档位等于自我提权，
+  与 `agent.tools.terminal.allowPatterns` 同款）。`agent.snapshots.*` / `agent.loop.*` 则是
+  "用户可写、AI 不可写"：它们**不在** `SETTINGS_READONLY_PREFIXES`，但同样**不在**
+  `WRITABLE_PATH_OVERRIDES`，所以默认 AI 改不动 —— 让 AI 给自己放大轮次 / token 预算，
+  等于绕过"该停下来问用户"的那道闸门。
+- **`agent.loop` 的三个上限是以 getter 注入内核的**（`() => settings.get().agent.loop.maxRounds`
+  这种形式）：写成构造时常量值就变成"改设置要重启才生效"的死字段 ——
+  与上面「配置字段"能写"不等于"生效"」是同一个坑，本仓库已修过一批。
 - **BetaV2 新能力的注册口径**：STT / 生图 / 新工具五件套（`web_fetch` / `notify_user` /
   `clipboard_read` / `clipboard_write` / `generate_image`）**不走 `agent.tools.enabled` 门控**
   （那个总开关管的是 8 个电脑操控工具），敏感项靠 `sensitivity: 'confirm'` 逐次确认；

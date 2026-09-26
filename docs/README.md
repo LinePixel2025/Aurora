@@ -7,6 +7,13 @@
 
 ## 当前实现状态
 
+**当前版本 v0.1.4，配置 Schema v15** —— 2026-09-26 的**生产化主线轮**把四项能力落地并验证：
+**项目机制**（顶层 `projects` 分组：当前项目决定项目根与项目级 `AGENTS.md` 注入）、
+**三档权限**（`agent.permissionMode ∈ {readonly, confirm, auto}`）、
+**写前快照与一键回滚**（`agent.snapshots.*`）、
+**Task/Job 持久化与可续跑**（`agent.loop.*`）；**仍无 OS 级沙箱**（见文末「仍待做」）。
+本轮细节见下方「2026-09-26 Agent 生产化主线轮」。
+
 **v0.6.0**：P0（脚手架）、P1（基础壳与设置，含首次引导）、P2（四种窗口外壳）、
 **P3（Agent 内核：真实对话、会话持久化、工具调用循环、Skill、MCP）**、
 **P4（模式系统 + ClassRoom Mode：智慧感知文件夹自动分类、分类流水与就地修正、规则缓存）**、
@@ -73,7 +80,7 @@
 - **对话展示的「顺序」修复**（docs/06 §16.1）：`AgentEvent` 新增 `seq`（会话内单调序号）与
   `round`（工具调用轮次）——修掉「工具卡挂错消息 / 跑到列表末尾」「多轮时第二条回复带上一轮
   思考全文」「请求结束后界面继续长内容」三类真实错乱，并让历史水合改为按 id 合并（不再整体替换）。
-- **子代理独立页面**（docs/06 §19.1、docs/07 §2.4）：`task` 子代理的每一步进度经
+- **子代理独立页面**（docs/06 §19.1、docs/07 §2.3）：`task` 子代理的每一步进度经
   `ToolContext.emitProgress` 实时上报（新事件 `subagent`），左栏固定项「子代理」把主区切到
   集中页面（状态 / 耗时 / 步骤时间线 / 报告，重启后仍可回看）；工具卡展开体同步显示运行轨迹。
 - **动效与图标体系**（docs/07 §2.3 / §5.2）：思考块流式扫光与尾部光标、工具卡运行扫光与
@@ -313,10 +320,74 @@
   `AURORA_CAPTURE` 48 张 PNG / 48 条 checks / 0 FAIL
   （`chat-stream` 场景实测上下文条文案 `512 / 128k  · 缓存命中 512（100%）`、累计 `528`）。
 
+**2026-09-26 Agent 生产化主线轮（配置 v12 → v15）本轮新增**
+
+> 把 Agent 从「能改代码」推到「可托付地跑长任务」：知道自己工作在哪个项目、按用户选的档位动手、
+> 改动前留底、跑到一半停下还能接着跑。设计口径见
+> [06 §4.1 / §5.1 / §11.2 / §11.8 / §12.2](./06-agent-core.md) 与
+> [07 §2.3 / §2.5](./07-ui-spec.md)、[08 §1](./08-settings-onboarding.md)。
+
+- **项目机制（v13）**（[06 §5.1](./06-agent-core.md) / [07 §2.5](./07-ui-spec.md)）：
+  配置新增顶层 `projects` 分组 —— `current` / `list[{id,name,root}]` / `maxAgentsBytes: 32768`。
+  当前项目决定两件事：① **项目级约定注入** —— 从**项目根到当前工作目录逐层**收集 `AGENTS.md`
+  （同目录有 `AGENTS.override.md` 时它优先），作为系统提示词的「项目约定」小节注入
+  （位置在静态段之后、系统状态之前，见 [06 §5.1 / §21.1](./06-agent-core.md)），
+  单次收集上限 **24 层 / 32 KiB**，超限**截断并标注**；② 权限层的「项目根之内 / 之外」判定（下一条）。
+  设置页新增「项目」区组、右栏新增「当前项目」卡（项目根不可用时标红并给「重新选择目录」）。
+  `openPath` 的 `kind` 新增 **`'project'`** —— 它打开的是**项目根**，
+  而 `kind: 'workspace'` 打开的是 `agent.tools.workspaceDir`，两者不是一回事。
+- **三档权限（v13，`agent.permissionMode`，默认 `confirm`）**（[06 §11.2 / §12.2](./06-agent-core.md)）：
+  老的 `advanced.confirmSensitiveTools === false` 由 `auto` 档承接，**`readonly` 优先于该布尔**。
+  确认卡片新增第三键「**本会话都允许**」（按 会话 × 工具名 记忆，**仅内存、不落盘**）。
+  项目根边界是**两层**（[06 §11.2](./06-agent-core.md)）：`auto` 档「要不要弹卡」用**字符串级判定**
+  （含 `..` 段、取不到目标路径的工具一律按越界）；「能不能真碰」由主进程对**已存在的最近父目录**
+  做 **realpath 前缀校验**（越界即 `E_PATH_OUTSIDE_WORKSPACE`），六个文件类入口与 `run_command.cwd`
+  都走它。这条边界**只在配置了当前项目时才启用** —— 没有项目时行为与 v12 之前完全一致。
+  `auto` 档下 `run_command` 的命令串里出现绝对路径时一律回到确认卡片。三档的差别是：
+  - `readonly` 档**根本不注册**写入 / 执行类工具（连 `todo_write` 也不注册，只保留 `todo_read`），
+    所以它不是"注册之后再拒绝"——模型在工具清单里就看不到它们；
+  - `confirm` 档与旧行为**逐字一致**；
+  - `auto` 档在**项目根之内**免确认（仍写 `info` 级审计日志），越界仍逐次确认。
+- **写前自动快照与一键回滚（v14，`agent.snapshots.*`）**（[06 §11.8](./06-agent-core.md)）：
+  `write_file` / `edit_file` 落盘**之前**把原内容存进 `<userData>/backups/<sessionId>/`
+  （一条一个 `<ISO 时间戳>-<8 位内容哈希>.snap` + `index.json`）；两层淘汰 ——
+  每文件环形保留 `keepPerFile`（默认 20）+ 目录总预算 `totalBudgetBytes`（默认 200 MiB）；
+  单份超过 `maxSnapshotBytes`（默认 512 KiB）即跳过，并**在工具结果里如实说明**。
+  右栏「文件备份」卡可两段式回滚，**回滚本身也先留一份快照**（因此还可以再撤回），
+  `exists:false` 的快照回滚 = 删除该文件。
+- **Task/Job 持久化与可续跑（v15，`agent.loop.*`）**（[06 §4.1](./06-agent-core.md)）：
+  一次请求 = 一条 job，落在 `<userData>/jobs/<sessionId>.json`，每轮结束落游标；
+  轮次用尽 / token 预算触顶时落 `paused` 并给出原因（`max-rounds` / `budget`）。
+  右栏「任务」面板可看进度（第几轮 / token / 步骤 / 待办）并点「继续」**接着上次的进度跑**
+  （**不重复落盘**那条用户消息）。`agent.loop` 三项 = `maxRounds: 8` / `maxTotalTokens: 0`（不限）/
+  `autoContinueRounds: 2`，预算内的自动续轮次数**持久化**（重启不会重新获得额度）；
+  **应用重启后 `paused` 的 job 仍在面板里，可直接继续**。配置 Schema 升到 **v15**
+  （`v12 → v13 → v14 → v15` 三条迁移）。
+- **顺带修掉一处既有竞态**：`SessionStore` 与待办清单端口的「首读竞态」——并发首读会拿到**空快照**，
+  随后一次写入把磁盘上的历史**整体覆盖**；改成 **in-flight promise 共享**，并在读回时与在途写入合并。
+- **验证**：`pnpm typecheck` / `pnpm lint` / `pnpm format:check` / `pnpm build` / `pnpm verify` 全绿
+  （`verify` **26/26**，`version = 15`、`v0 → 当前版本` **15 条迁移**）；
+  `pnpm test` **79 个文件 / 1496 个用例全绿**（本轮起点 72 文件 / 1307 用例）；
+  `AURORA_SMOKE` **163/163 passed**，含六条跨特性集成断言（项目 `AGENTS.md` 进请求体、
+  且只放在项目根**父目录**的那份不进 / `auto` 档根内写文件不弹卡 + 真落盘 + 留快照 /
+  `readonly` 档同一条提问写不动 / 一键回滚还原且新增 `origin:'rollback'` 快照 /
+  事件类型白名单含新增的 `job` / 为第二次启动留下 `paused` job）；
+  `AURORA_CAPTURE` **53 张 PNG / 53 条 checks / 0 FAIL**，含 step 1–4 的四个新场景
+  （`chat-project-card.png` / `chat-permission-readonly.png` / `chat-snapshot-card.png` /
+  `chat-job-panel.png`）与综合概览 `chat-agent-prod-overview.png`
+  （右栏同时有项目卡 + 文件备份卡 + 任务卡）。
+  **两次启动的续跑实测**：第一次启动留下 `paused`（游标 2、已完成步骤 2）→ 退出 →
+  第二次启动读回同一条 job（`found=1 status=paused`）→ 继续后 `status=done`、
+  `stepsDone 2→3`、`cursor 2→3`，会话里那条用户消息**仍只有一条**。
+
 鼠标键盘模拟、截图录屏、持久交互式 shell、命令黑名单、Anthropic 等非 OpenAI 兼容协议
 **仍属后续范围**。
 
-仍待做：代码签名证书、启动耗时 / 内存优化、Code Mode 功能实现（Work 已于 0.0.1 初步实装）、OCR、多语言。
+仍待做：**OS 级沙箱**（三档权限与项目根 realpath 前缀校验**不是**沙箱 —— 没有作业对象 / 容器 /
+受限令牌，`run_command` 仍是当前用户权限）、Code Mode 功能实现（Work 已于 0.0.1 初步实装）、
+多模态输入（图片进模型 + 附件预览）与 Responses API、子代理能力加强（多子代理 / 独立
+`model·effort` / 并行 / 可写工作区）、上下文压缩修正（工具参数计入权重、摘要落盘、
+预算按真实 token 校准）、代码签名证书、启动耗时 / 内存优化、OCR、多语言。
 详见 [04-roadmap.md](./04-roadmap.md) 的阶段状态与「实现说明」。
 实际工程结构见根目录 [README.md](../README.md)；端到端验证见 `pnpm verify`、
 `pnpm verify:release`、`pnpm verify:update` 与 `AURORA_SMOKE=1 pnpm dev`。

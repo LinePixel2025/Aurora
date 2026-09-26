@@ -21,7 +21,7 @@
  * **连按钮都不渲染**，MediaRecorder webm → base64 → `stt:transcribe`）。
  *
  * 2026-09 动画轮新增：主区可在「对话流 / 子代理页面」之间切换（`view` ref，
- * docs/07 §2.4；子代理页不属于任何会话，切过去不动 chat 的会话状态）。
+ * docs/07 §2.3；子代理页不属于任何会话，切过去不动 chat 的会话状态）。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
@@ -105,7 +105,7 @@ const jobsOpen = ref(true)
 /** 是否还有任务在跑（左栏入口角标用 running 色，与「子代理」角标同一口径） */
 const jobsRunning = computed(() => jobs.value.some((job) => job.status === 'running'))
 /**
- * 主区内容（2026-09 新增，docs/07 §2.4）：对话流 / 子代理页面。
+ * 主区内容（2026-09 新增，docs/07 §2.3）：对话流 / 子代理页面。
  *
  * 刻意**不做成会话切换** —— 子代理页不属于任何 `sessionId`，切过去不该动 chat 的
  * 会话状态（否则会触发水合、清空正在看的消息）。它只替换 `.thread` 区域，
@@ -1192,7 +1192,7 @@ async function markGuideDone(): Promise<void> {
       </footer>
       <template v-else>
         <!--
-          子代理页面（docs/07 §2.4）：替换主区内容，输入区与右栏照旧。
+          子代理页面（docs/07 §2.3）：替换主区内容，输入区与右栏照旧。
           上面那段 thread + composer 用 v-if 收在 view === 'chat' 分支里。
         -->
         <SubagentPage

@@ -899,7 +899,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
               />
               <Transition name="collapse" @enter="collapseEnter" @before-leave="collapseLeave">
                 <div v-if="isOpen(call.id)" class="tool-body">
-                  <!-- 子代理卡：实时运行轨迹（进度 + 步骤 + 报告），docs/07 §2.4 -->
+                  <!-- 子代理卡：实时运行轨迹（进度 + 步骤 + 报告），docs/07 §2.3 -->
                   <template v-if="subagentOf(call)">
                     <span class="tiny muted tool-label">运行轨迹</span>
                     <SubagentTrace :snapshot="subagentOf(call)!" dense />
