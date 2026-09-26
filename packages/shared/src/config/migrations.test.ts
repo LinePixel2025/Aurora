@@ -1038,10 +1038,11 @@ describe('配置迁移链', () => {
           },
         },
       })
-      // 恒等指的是「不重复应用同一条迁移」：从 14 出发只会应用 v14 → v15 与 v15 → v16
+      // 恒等指的是「不重复应用同一条迁移」：从 14 出发只会应用 v14 → v15、v15 → v16 与 v16 → v17
       expect(outcome.applied).toEqual([
         'v14 → v15：v14 → v15：为 agent 补 loop.*（轮次上限、token 预算与自动续轮）',
         'v15 → v16：v15 → v16：新增 center 分组（Aurora Center 连接，docs/12）',
+        'v16 → v17：v16 → v17：center 补 account（账号登录记住的账号名，docs/12 §7）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1070,12 +1071,14 @@ describe('配置迁移链', () => {
       })
       expect(outcome.applied).toEqual([
         'v15 → v16：v15 → v16：新增 center 分组（Aurora Center 连接，docs/12）',
+        'v16 → v17：v16 → v17：center 补 account（账号登录记住的账号名，docs/12 §7）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
         enabled: true,
         serverUrl: 'wss://center.example.com',
         tokenEnc: 'fakestorage:v1:tok',
+        account: '',
         clientId: '',
         displayName: '',
         allowRemoteSession: true,
@@ -1083,6 +1086,16 @@ describe('配置迁移链', () => {
         allowFileTransfer: true,
         maxFileMb: 64,
       })
+    })
+
+    it('已填 account（防手改）原样保留；重复迁移幂等', () => {
+      const raw = { version: 16, center: { enabled: true, account: 'alice', tokenEnc: 'x' } }
+      const first = migrate(raw)
+      expect((first.data['center'] as Record<string, unknown>)['account']).toBe('alice')
+      expect(first.data['version']).toBe(CONFIG_VERSION)
+      const second = migrate(first.data as Record<string, unknown>)
+      expect((second.data['center'] as Record<string, unknown>)['account']).toBe('alice')
+      expect(second.applied).toEqual([])
     })
 
     it('center 分组不存在时不凭空造对象，交给默认配置兜底', () => {

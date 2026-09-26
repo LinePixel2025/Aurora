@@ -184,8 +184,9 @@
   "center": {
     "enabled": false,           // 总开关；false 时不连接 Center，center_* 工具也不注册
     "serverUrl": "",            // Center 服务器地址（ws(s):// 或 http(s)://，连接时统一换 ws 协议）
-    "tokenEnc": "<safeStorage 密文>", // 配对令牌（凭据路径：center.token ⇄ center.tokenEnc，同 apiKey 链路）
-    "clientId": "",             // 本机客户端 id（首次启用时生成并持久化；非凭据）
+    "tokenEnc": "<safeStorage 密文>", // 客户端令牌（凭据路径：center.token ⇄ center.tokenEnc，同 apiKey 链路；由账号登录颁发，见 12 §3）
+    "account": "",              // 已登录的 Center 账号名（v17 新增；非凭据，仅展示与诊断）
+    "clientId": "",             // 本机客户端 id（首次登录时生成并持久化；非凭据）
     "displayName": "",          // 在 Center 展示的名字；空串 = 主机名
     "allowRemoteSession": true, // 允许 Center 远程开 session 对话（客户端侧最终闸门）
     "allowRemoteConfig": true,  // 允许 Center 远程改配置（仍受 12 §6.2 白名单约束）
@@ -426,7 +427,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 16`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 17`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -456,9 +457,11 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   —— `maxRounds: 8` / 预算不限 / 自动续 2 轮 —— 因此升级后既有的长任务表现不变，
   只是"停下来"现在会明确说是停在哪）、
   `v15 → v16`（新增顶层分组 `center`（Aurora Center 连接，docs/12）：整组缺失时补默认值，
-  已存在时只补缺失键；`center.token` 是凭据路径，迁移只补 `tokenEnc: ''` 不碰已有值）。
-  十六条迁移都**幂等且不覆盖用户已写入的值**（`v10 → v11` / `v11 → v12` / `v12 → v13` /
-  `v13 → v14` / `v14 → v15` / `v15 → v16` 同理：只补缺失键、用户填过的窗口值 / 免确认模式 / 项目列表 /
+  已存在时只补缺失键；`center.token` 是凭据路径，迁移只补 `tokenEnc: ''` 不碰已有值）、
+  `v16 → v17`（为已存在的 `center` 补 `account: ''`（账号登录后记住的账号名，见 12 §7）；
+  其余键原样保留，`center` 分组本身缺失时交给默认配置兜底）。
+  十七条迁移都**幂等且不覆盖用户已写入的值**（`v10 → v11` / `v11 → v12` / `v12 → v13` /
+  `v13 → v14` / `v14 → v15` / `v15 → v16` / `v16 → v17` 同理：只补缺失键、用户填过的窗口值 / 免确认模式 / 项目列表 /
   权限档位 / 快照策略 / 循环参数 / Center 连接配置原样保留），
   重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。

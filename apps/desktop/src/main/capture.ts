@@ -30,8 +30,17 @@ import type { WindowManager } from './window-manager.js'
  * SkillsPage / McpPage 并入 agent。旧深链（`?page=tts|skills|mcp`）由渲染层的
  * `LEGACY_PAGE_ALIASES` 单向映射到新页，深链清单本身只保留新 id；
  * 别名映射由 `settings-legacy-tts-alias.png` 场景单独钉住（见 defaultCapturePlan）。
+ * v0.2.0 起新增 Aurora Center 页共 7 页（docs/07 §2.5）。
  */
-export const SETTINGS_PAGE_IDS = ['general', 'modes', 'llm', 'voice', 'agent', 'advanced'] as const
+export const SETTINGS_PAGE_IDS = [
+  'general',
+  'modes',
+  'llm',
+  'voice',
+  'agent',
+  'center',
+  'advanced',
+] as const
 
 export type SettingsPageId = (typeof SETTINGS_PAGE_IDS)[number]
 
@@ -3286,6 +3295,56 @@ export const SETTINGS_VOICE_FIELDS_SCRIPT = `(() => {
 })()`
 
 /**
+ * 「Aurora Center」页探针（v0.2.1 账号登录改造后的卡片结构）：
+ * 连接设置卡必须含 开关 / 服务器地址 / 展示名 / 账号 / 密码（write-only）/「登录并连接」
+ * 按钮 / clientId 只读位；隔离 userData 无令牌 → 徽章必须是「未登录」、clientId 显示
+ * 「尚未生成」；连接状态卡（5s 轮询）必须常在。
+ */
+export const SETTINGS_CENTER_FIELDS_SCRIPT = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const activeNav = document.querySelector('.nav-item.active')
+    const enabledToggle = document.querySelector('[data-field="center.enabled"] input[type="checkbox"]')
+    const serverUrl = document.querySelector('[data-field="center.serverUrl"] input[type="text"]')
+    const displayName = document.querySelector('[data-field="center.displayName"] input[type="text"]')
+    const account = document.querySelector('[data-field="center.account"] input[type="text"]')
+    const password = document.querySelector('[data-field="center.password"] input[type="password"]')
+    const buttons = Array.from(document.querySelectorAll('button')).map((b) => (b.textContent || '').trim())
+    const loginButton = buttons.indexOf('登录并连接')
+    const badges = Array.from(document.querySelectorAll('.badge')).map((b) => (b.textContent || '').trim())
+    const statusField = count('[data-field="center.status"]')
+
+    return {
+      page: activeNav === null ? 'unknown' : (activeNav.textContent || '').trim(),
+      center: {
+        togglePresent: enabledToggle !== null,
+        serverUrlPresent: serverUrl !== null,
+        displayNamePresent: displayName !== null,
+        accountPresent: account !== null,
+        passwordWriteOnly: password !== null && password.getAttribute('type') === 'password',
+        loginButtonPresent: loginButton !== -1,
+        badgeNotLoggedIn: badges.indexOf('未登录') !== -1,
+        badgeLoggedInAbsent: badges.indexOf('已登录') === -1,
+        clientIdPlaceholder: (document.body.textContent || '').indexOf('尚未生成') !== -1,
+        statusSectionPresent: statusField > 0,
+      },
+      pass:
+        enabledToggle !== null &&
+        serverUrl !== null &&
+        displayName !== null &&
+        account !== null &&
+        password !== null &&
+        loginButton !== -1 &&
+        badges.indexOf('未登录') !== -1 &&
+        badges.indexOf('已登录') === -1 &&
+        statusField > 0,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
  * 「AI 模型」页新区组探针（BetaV2，spec §9）：「对话展示」与「生图模型」。
  *
  * - `general.chat.showThinking`（v8 新字段）：对话窗思考折叠块的唯一门控，开关必须常在；
@@ -5458,9 +5517,11 @@ export function defaultCapturePlan(
               ? SETTINGS_LLM_FIELDS_SCRIPT
               : page === 'voice'
                 ? SETTINGS_VOICE_FIELDS_SCRIPT
-                : page === 'agent'
-                  ? SETTINGS_AGENT_FIELDS_SCRIPT
-                  : undefined,
+                : page === 'center'
+                  ? SETTINGS_CENTER_FIELDS_SCRIPT
+                  : page === 'agent'
+                    ? SETTINGS_AGENT_FIELDS_SCRIPT
+                    : undefined,
     })
   }
   // 旧深链别名（BetaV2）：`?page=tts` 应映射到「语音」页（TTS + STT 都在）；

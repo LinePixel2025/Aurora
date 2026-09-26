@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 16 as const
+export const CONFIG_VERSION = 17 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -620,11 +620,14 @@ export const CenterSchema = z.object({
   /** Center 服务器地址（`ws(s)://` 或 `http(s)://`，连接时统一换成 ws 协议）。 */
   serverUrl: z.string().default(''),
   /**
-   * 配对令牌（safeStorage 密文）。**凭据路径**：`center.token` ⇄ `center.tokenEnc`，
+   * 客户端令牌（safeStorage 密文），由账号登录（`POST /api/client/login`）颁发或
+   * 手动配对粘贴。**凭据路径**：`center.token` ⇄ `center.tokenEnc`，
    * 与 `apiKeyEnc` 同链路 —— `SettingsStore` 的 4 处 + `redactSettings` / `redactKeys`
    * 同步维护（docs/12 §7）。
    */
   tokenEnc: z.string().default(''),
+  /** 已登录的 Center 账号名（v17；非凭据，仅展示与诊断；登录成功后由主进程写入）。 */
+  account: z.string().default(''),
   /** 本机客户端 id（首次启用时生成并持久化；标识符而非凭据）。 */
   clientId: z.string().default(''),
   /** 在 Center 展示的名字；空串 = 主机名。 */

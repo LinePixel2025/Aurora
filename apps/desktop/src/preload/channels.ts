@@ -138,6 +138,7 @@ const CHANNELS = {
   },
   center: {
     status: 'center:status',
+    login: 'center:login',
   },
 } as const
 

@@ -1,20 +1,16 @@
 <script setup lang="ts">
 /**
- * Aurora Center 连接设置区组（docs/12 §6/§7）：总开关 / 服务器地址 / 展示名 /
- * 配对令牌 / clientId 只读展示。折叠卡风格与 `TtsSection.vue` / `SttSection.vue` 一致。
+ * Aurora Center 连接设置区组（docs/12 §3/§7）：总开关 / 服务器地址 / 展示名 /
+ * 账号登录 / clientId 只读展示。折叠卡风格与 `TtsSection.vue` / `SttSection.vue` 一致。
  *
  * 保存链路分工（与 TTS provider 同一套口径）：
  * - 本卡字段走 `settings:update`（`center.*` 整组在 `SETTINGS_READONLY_PREFIXES` 黑名单里
  *   —— AI 的 set_setting 改不动；设置页走 settings:update，不受该黑名单影响）；
- * - 配对令牌是**凭据**，永不进 settings:update，只走 `settings:setSecrets`
- *   （路径 `center.token` ⇄ `center.tokenEnc`，与 apiKey 同链路，主进程加密落盘）；
- *   「已配置 / 未配置」标记用 `settings:hasSecret` 查询，页面永不回显明文与密文。
- *
- * ⚠️ 已知缺口（报告项，不在本文件修）：`SettingsPatch`（shared/ipc/types.ts）尚未登记
- * `center` 分组，主进程 `mergeSettingsPatch`（main/settings-patch.ts）也没有对应分支
- * —— 接线之前 `settings:update` 会**静默忽略** center 子树（返回成功但不落盘）。
- * 因此保存后用「回传 settings 与提交值比对」检测这一点，未生效时明确报错
- * （宁可信其无，不给用户一个假成功）；主进程补上分支后本页无需任何改动。
+ * - **配对方式是账号登录（v0.2.1）**：填服务器地址 + Center 账号口令 → 「登录并连接」
+ *   走 `center:login` IPC，主进程调 `/api/client/login` 换客户端令牌并写入凭据链路
+ *   （`center.token` ⇄ `center.tokenEnc`，与 apiKey 同链路）、记住账号名、自动启用连接。
+ *   口令只在登录请求里使用，页面不保存、不回显；「已登录 / 未登录」标记用
+ *   `settings:hasSecret` 查询。旧的手填配对令牌入口已移除（服务器端兼容路径保留）。
  */
 import { ref, watch } from 'vue'
 import { ChevronRight } from '../../shared/icons.js'
@@ -24,11 +20,8 @@ import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
 import { useSettingsStore } from '../../shared/stores.js'
 
-/**
- * 带尚未接线的 `center` 分组的补丁形状：与 `SettingsPatch` 结构相容（交集类型可赋给它），
- * 无需类型断言。主进程补登记后可直接收窄为 `SettingsPatch` 自身。
- */
-type CenterSettingsPatch = SettingsPatch & { center: Partial<CenterSettings> }
+/** 本卡可保存的字段即 `SettingsPatch.center`（主进程已登记该分组并运行期剥 `tokenEnc`） */
+type CenterSettingsPatch = SettingsPatch
 
 const settingsStore = useSettingsStore()
 
@@ -38,19 +31,22 @@ const open = ref(true)
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
 const saving = ref(false)
-const savingToken = ref(false)
+const loggingIn = ref(false)
 
 // 表单草稿：settings 是唯一水合来源；保存成功后主进程回传新 settings，草稿随之刷新。
 // `center` 组 AI 改不动，广播重灌的实际来源只有保存回传与远端配置下发。
 const enabled = ref(false)
 const serverUrl = ref('')
 const displayName = ref('')
+const account = ref('')
 
-// 配对令牌：write-only 输入（与 TTS/STT 的 API Key 同款），已配置标记走 hasSecret
-const token = ref('')
+// 登录密码：write-only（只在点「登录并连接」时随请求发给主进程），登录成功即清空
+const password = ref('')
+
+// 已登录标记 = 令牌已在凭据链路（hasSecret('center.token')）
 const tokenSet = ref(false)
 
-// clientId 只读展示（首次启用时由主进程生成并持久化；空 = 尚未生成）
+// clientId 只读展示（首次登录时由主进程生成并持久化；空 = 尚未生成）
 const clientId = ref('')
 
 function hydrate(): void {
@@ -59,6 +55,7 @@ function hydrate(): void {
   enabled.value = center.enabled
   serverUrl.value = center.serverUrl
   displayName.value = center.displayName
+  account.value = center.account
   clientId.value = center.clientId
 }
 
@@ -73,17 +70,16 @@ void refreshTokenSet()
 
 /**
  * 整卡保存：patch 只带本卡草稿值。
- * **不带** `tokenEnc`（密文，由 setSecret 管）与 `clientId`（主进程生成，页面不可覆写）
+ * **不带** `tokenEnc`（密文，由登录链路管）与 `clientId`（主进程生成，页面不可覆写）
  * —— 顶层浅合并下缺项 = 保留原值，二者不会被这次保存碰到。
  */
 async function save(): Promise<void> {
-  const patch: CenterSettingsPatch = {
-    center: {
-      enabled: enabled.value,
-      serverUrl: serverUrl.value.trim(),
-      displayName: displayName.value.trim(),
-    },
+  const center: Partial<CenterSettings> = {
+    enabled: enabled.value,
+    serverUrl: serverUrl.value.trim(),
+    displayName: displayName.value.trim(),
   }
+  const patch: CenterSettingsPatch = { center }
   message.value = null
   error.value = null
   saving.value = true
@@ -93,43 +89,55 @@ async function save(): Promise<void> {
     error.value = settingsStore.error
     return
   }
-  if (!tookEffect(patch.center)) {
+  if (!tookEffect(center)) {
     error.value = '保存未生效：主进程还没有接入 Center 配置的保存链路，本次改动不会持久化'
     return
   }
   message.value = '已保存'
 }
 
-/** 保存是否真的落了盘：逐字段比对回传 settings 与本次提交值（见文件头「已知缺口」） */
+/** 保存是否真的落了盘：逐字段比对回传 settings 与本次提交值 */
 function tookEffect(sent: Partial<CenterSettings>): boolean {
   const saved = settingsStore.settings?.center
   if (!saved) return false
   return Object.entries(sent).every(([key, value]) => saved[key as keyof CenterSettings] === value)
 }
 
-/** 「保存令牌」：明文只走 settings:setSecrets；落库成功后清输入框并刷新已配置标记 */
-async function saveToken(): Promise<void> {
-  const value = token.value.trim()
+/**
+ * 「登录并连接」：账号口令经 `center:login` 发给主进程，由主进程调 Center 的
+ * `/api/client/login` 换令牌。成功后主进程已写入令牌、记住账号并启用连接
+ * （连接器自动重连），这里只刷新展示并清空密码框。
+ */
+async function login(): Promise<void> {
+  // 重入守卫：Enter 与按钮共用本函数；并发登录会互相吊销令牌（每次登录重发并吊销
+  // 同 clientId 旧令牌），乱序回包会把已吊销的令牌写进凭据链路 —— 必须串行化。
+  if (loggingIn.value) return
   message.value = null
   error.value = null
-  if (value === '') {
-    error.value = '请先粘贴 Center 颁发的配对令牌'
+  const trimmedUrl = serverUrl.value.trim()
+  const trimmedAccount = account.value.trim()
+  if (trimmedUrl === '' || trimmedAccount === '' || password.value === '') {
+    error.value = '请先填写服务器地址、账号与密码'
     return
   }
-  savingToken.value = true
-  const result = await window.aurora.settings.setSecrets({ 'center.token': value })
-  savingToken.value = false
+  loggingIn.value = true
+  const result = await window.aurora.center.login({
+    serverUrl: trimmedUrl,
+    username: trimmedAccount,
+    password: password.value,
+  })
+  loggingIn.value = false
   if (!result.ok) {
     error.value = result.message
     return
   }
-  token.value = ''
+  password.value = ''
   await refreshTokenSet()
-  if (!result.value.persisted) {
-    error.value = '安全存储不可用：令牌只保留在本次运行的内存中'
+  if (!result.value.tokenPersisted) {
+    error.value = '安全存储不可用：本次运行内已连接，重启后需要重新登录'
     return
   }
-  message.value = '配对令牌已保存'
+  message.value = `已登录 ${result.value.account}，正在连接 Aurora Center`
 }
 </script>
 
@@ -153,8 +161,9 @@ async function saveToken(): Promise<void> {
     <Transition name="collapse">
       <div v-if="open" class="group-body">
         <p class="section-desc">
-          连接到 Aurora Center：桌面端作为客户端连上它之后，Center 可以查看本机状态、远程发起会话
-          （许可见下一卡）。连接目标与配对令牌只保存在本机，这里的任何配置 AI 都改不动。
+          连接到 Aurora Center：用 Center 账号登录后，桌面端会自动连上服务器并归属该账号 ——
+          同一账号在 Center 网页端登录即可远程查看本机状态、发起会话（许可见下一卡）。
+          连接目标与凭据只保存在本机，这里的任何配置 AI 都改不动。
         </p>
 
         <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
@@ -181,7 +190,7 @@ async function saveToken(): Promise<void> {
             class="input"
             type="text"
             spellcheck="false"
-            placeholder="wss://center.example.com"
+            placeholder="http://center.example.com:8787"
           />
         </SettingField>
 
@@ -200,25 +209,44 @@ async function saveToken(): Promise<void> {
         </SettingField>
 
         <SettingField
-          data-field="center.token"
-          label="配对令牌"
+          data-field="center.account"
+          label="Center 账号"
           :hint="
             tokenSet
-              ? '已保存（重新粘贴并保存可更换；页面不回显）'
-              : '由 Center 颁发；明文只写入系统安全存储，页面不回显'
+              ? '已登录（重新登录可更换账号 / 刷新凭据）'
+              : '由 Center 管理员创建的账号；登录后本机归属该账号（改动只在点「登录并连接」时生效，不随「保存」提交）'
           "
+        >
+          <input
+            v-model="account"
+            class="input"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="Center 账号名"
+          />
+        </SettingField>
+
+        <SettingField
+          data-field="center.password"
+          label="登录密码"
+          hint="只在点「登录并连接」时使用一次，不保存在本机；页面不回显"
         >
           <div class="row wrap token-row">
             <input
-              v-model="token"
+              v-model="password"
               class="input grow"
               type="password"
               spellcheck="false"
-              placeholder="粘贴配对令牌"
+              autocomplete="off"
+              placeholder="Center 账号密码"
+              @keydown.enter="login"
             />
-            <AppButton size="sm" :disabled="savingToken" @click="saveToken">保存令牌</AppButton>
+            <AppButton variant="primary" size="sm" :disabled="loggingIn" @click="login">
+              登录并连接
+            </AppButton>
             <span class="badge" :class="tokenSet ? 'ok' : 'warn'">
-              {{ tokenSet ? '已配置' : '未配置' }}
+              {{ tokenSet ? '已登录' : '未登录' }}
             </span>
           </div>
         </SettingField>
@@ -226,14 +254,14 @@ async function saveToken(): Promise<void> {
         <SettingField
           data-field="center.clientId"
           label="客户端 ID"
-          hint="首次启用后由本机生成并持久化；仅用于在 Center 侧标识本机，不可编辑"
+          hint="首次登录时由本机生成并持久化；仅用于在 Center 侧标识本机，不可编辑"
         >
           <span class="tiny muted mono">{{ clientId === '' ? '尚未生成' : clientId }}</span>
         </SettingField>
 
         <footer class="row wrap card-actions">
           <AppButton variant="primary" size="sm" :disabled="saving" @click="save">保存</AppButton>
-          <span class="tiny muted">改动在点「保存」后落盘</span>
+          <span class="tiny muted">开关 / 地址 / 展示名在点「保存」后落盘</span>
         </footer>
       </div>
     </Transition>
@@ -245,7 +273,7 @@ async function saveToken(): Promise<void> {
   flex-wrap: wrap;
 }
 
-/* 令牌行：输入框吃满剩余宽度，按钮与已配置徽章贴在右边 */
+/* 密码行：输入框吃满剩余宽度，按钮与已登录徽章贴在右边 */
 .token-row .input {
   min-width: 200px;
 }

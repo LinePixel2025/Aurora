@@ -136,9 +136,10 @@ export const IPC = {
     install: 'update:install',
     stateChanged: 'update:stateChanged',
   },
-  /** Aurora Center 连接状态（docs/12）：设置页展示在线 / 离线 / 错误 */
+  /** Aurora Center 连接（docs/12）：状态查询 + 账号登录（v0.2.1，§3/§7） */
   center: {
     status: 'center:status',
+    login: 'center:login',
   },
 } as const
 

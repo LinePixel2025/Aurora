@@ -247,6 +247,18 @@ export class AuthStore {
     return this.tokenCache.find((record) => record.id === id)
   }
 
+  /**
+   * 该 clientId 当前**有效**（未吊销）令牌的属主；无 → undefined。
+   * 账号登录用它拒绝「用别人 clientId 抢注」（会把对方有效令牌吊销 = 远端 DoS）。
+   */
+  activeOwnerOfClient(clientId: string): string | undefined {
+    const trimmed = clientId.trim()
+    const record = this.tokenCache.find(
+      (entry) => entry.clientId === trimmed && entry.revokedAt === undefined,
+    )
+    return record?.userId
+  }
+
   async revokePairingToken(id: string, actor: Pick<UserRecord, 'id' | 'role'>): Promise<void> {
     const record = this.tokenCache.find((entry) => entry.id === id)
     if (record === undefined) throw new AuthError('E_TOKEN_NOT_FOUND', '令牌不存在')
@@ -279,6 +291,41 @@ export class AuthStore {
       return record
     }
     return record.clientId === clientId ? record : undefined
+  }
+
+  /**
+   * 账号登录颁发客户端令牌（docs/12 §3，v0.2.1）：创建**归属 `userId`、创建即绑定
+   * `clientId`** 的令牌，并吊销同 `clientId` 的全部旧令牌（换账号 / 重新登录后旧凭据
+   * 立即失效）。明文只在本次返回值出现一次。
+   */
+  async mintClientToken(
+    userId: string,
+    clientId: string,
+    label: string,
+  ): Promise<{ record: PairingTokenView; token: string }> {
+    const trimmed = clientId.trim()
+    let changed = false
+    for (const record of this.tokenCache) {
+      if (record.clientId === trimmed && record.revokedAt === undefined) {
+        record.revokedAt = new Date().toISOString()
+        changed = true
+      }
+    }
+    const token = `ac-${randomBytes(24).toString('base64url')}`
+    const record: PairingTokenRecord = {
+      id: `t-${randomBytes(6).toString('hex')}`,
+      userId,
+      tokenHash: hashToken(token),
+      label: label.trim(),
+      clientId: trimmed,
+      createdAt: new Date().toISOString(),
+    }
+    this.tokenCache.push(record)
+    await this.tokens.save(this.tokenCache)
+    if (changed) {
+      this.logger?.info('账号登录重发令牌，旧令牌已吊销', { clientId })
+    }
+    return { record: toTokenView(record), token }
   }
 }
 

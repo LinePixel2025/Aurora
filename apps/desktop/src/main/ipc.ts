@@ -28,6 +28,8 @@ import {
   type ChatMessageDto,
   type ChatSessionSummary,
   type CenterConnectionStatus,
+  type CenterLoginRequest,
+  type CenterLoginResult,
   type ClassIslandNotifyRequest,
   type ClassIslandNotifyResult,
   type ClassIslandStatus,
@@ -619,6 +621,12 @@ export function registerIpc(deps: DesktopDeps): () => void {
         state: 'disabled' as const,
       },
     ),
+  )
+  // 账号登录（docs/12 §7）：实现装配在 index.ts（需要 settings / netFetch / logger），
+  // 这里只做转发；未装配时如实报错而不是静默失败。
+  handle<CenterLoginResult>(IPC.center.login, (request: CenterLoginRequest) =>
+    deps.center?.login(request) ??
+    Promise.resolve(err('E_INVALID_STATE', 'Aurora Center 连接尚未装配')),
   )
 
   // ───────────────────────── 更新（docs/09） ─────────────────────────

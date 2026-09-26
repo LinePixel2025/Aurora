@@ -5,6 +5,7 @@
  *  单实例锁 → 日志 → 配置（加密/迁移）→ 感知 → 窗口 → 模式装配 → IPC → 托盘
  *  → 首次引导判断（无可用模型配置则进入引导向导，否则显示服务窗与提示条）。
  */
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, promises as fs, readdirSync, rmSync, statSync } from 'node:fs'
 import { hostname as osHostname, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -44,7 +45,12 @@ import {
   nodeFileSystem,
   // 三档权限的生效档位（docs/06 §11.2）：确认判定与工具注册必须读同一个来源
   resolvePermissionMode,
+  err,
+  ok,
   type CenterConnectionStatus,
+  type CenterLoginRequest,
+  type CenterLoginResult,
+  type Result,
   type ClassIslandStatus,
   type ClassIslandTestResult,
   type Logger,
@@ -85,6 +91,7 @@ import { EdgeBarScheduler } from './edge-bar-scheduler.js'
 import { HotkeyManager } from './hotkey.js'
 import { SessionBridge } from './center/session-bridge.js'
 import { CenterConnector } from './center/connector.js'
+import { requestClientLogin } from './center/client-login.js'
 import { uploadFileToCenter } from './center/ingest.js'
 import { applyWhitelistedPaths, buildClientStatus } from './center/remote-control.js'
 import { SkillsService } from './skills.js'
@@ -1169,7 +1176,7 @@ async function bootstrap(): Promise<void> {
       }
     },
     updater,
-    center: { status: () => centerStatus() },
+    center: { status: () => centerStatus(), login: (request) => centerLogin(request) },
     logger: logger.child('ipc'),
     paths,
     isDev,
@@ -3504,6 +3511,51 @@ function centerStatus(): CenterConnectionStatus {
     state: conn?.state ?? 'disabled',
     ...(conn?.lastError === undefined ? {} : { lastError: conn.lastError }),
   }
+}
+
+/**
+ * Aurora Center 账号登录（center:login IPC，docs/12 §3/§7，v0.2.1）：
+ * 口令换客户端令牌（凭据链路落库）+ 记住账号名 + 自动启用连接。
+ * 口令只在本次请求里使用，不落配置、不进日志；`center:login` 不对 AI 的
+ * `set_setting` 通道开放（`center.*` 整组只读前缀不变）。
+ */
+async function centerLogin(request: CenterLoginRequest): Promise<Result<CenterLoginResult>> {
+  const serverUrl = request.serverUrl.trim()
+  const username = request.username.trim()
+  const password = request.password
+  if (serverUrl === '' || username === '' || password === '') {
+    return err('E_INVALID_ARGUMENT', '请填写服务器地址、账号与密码')
+  }
+  if (settings === undefined) {
+    return err('E_INVALID_STATE', '配置存储尚未就绪')
+  }
+  // clientId 首次登录时生成并持久化。旧版只有设置页展示、没有任何生成逻辑，
+  // 连接器因 clientId 为空永远停在「尚未配置」——那正是「配对两端没反应」的根因。
+  let clientId = settings.get().center.clientId.trim()
+  if (clientId === '') {
+    clientId = `aurora-${randomUUID()}`
+    const saved = settings.mutate((draft) => {
+      draft.center.clientId = clientId
+    })
+    if (saved === undefined) return err('E_IO', '无法保存客户端 ID，请重试')
+  }
+  const outcome = await requestClientLogin(
+    { serverUrl, username, password, clientId },
+    { fetchImpl: netFetch ?? fetch, logger: logger?.child('center') },
+  )
+  if (!outcome.ok) return err('E_AUTH', outcome.message)
+  // 令牌先进凭据链路（safeStorage 不可用时留在内存 = 本次运行有效），再落普通配置；
+  // enabled / serverUrl / account 变化经 settings:changed 驱动连接器自动重连。
+  const persisted = settings.setSecret('center.token', outcome.token)
+  const mutated = settings.mutate((draft) => {
+    draft.center.enabled = true
+    draft.center.serverUrl = serverUrl
+    draft.center.account = outcome.account
+  })
+  if (mutated === undefined) {
+    return err('E_IO', '登录成功但配置保存失败，请重试')
+  }
+  return ok({ account: outcome.account, tokenPersisted: persisted })
 }
 
 function syncToolRegistries(): void {

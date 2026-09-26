@@ -434,3 +434,82 @@ async function getAnyPairingToken(): Promise<string> {
   cachedPairing = pairingToken
   return pairingToken
 }
+
+describe('Aurora Center · 客户端账号登录（v0.2.1，docs/12 §3）', () => {
+  const CLIENT_ID = 'client-login-e2e'
+
+  async function clientLogin(
+    body: Record<string, unknown>,
+  ): Promise<{ status: number; data: Record<string, unknown> }> {
+    const res = await fetch(`${base}/api/client/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return { status: res.status, data: (await res.json()) as Record<string, unknown> }
+  }
+
+  it('口令换客户端令牌：创建即绑定 clientId 与属主，令牌可直接握手上线', async () => {
+    const { status, data } = await clientLogin({
+      username: USER.username,
+      password: USER.password,
+      clientId: CLIENT_ID,
+    })
+    expect(status).toBe(200)
+    expect(data['clientId']).toBe(CLIENT_ID)
+    expect((data['user'] as Record<string, unknown>)['username']).toBe(USER.username)
+    const token = data['token'] as string
+    expect(token.startsWith('ac-')).toBe(true)
+
+    // 颁发的令牌可直接完成 WS 握手，且客户端出现在登录用户自己的列表里
+    const ws = await connectClient(token, { clientId: CLIENT_ID, name: '登录机' })
+    try {
+      const webToken = await login({ ...USER }).then((r) => r.token)
+      const res = await fetch(`${base}/api/clients`, { headers: authed(webToken) })
+      const list = (await res.json()) as { clients: Array<{ clientId: string; name: string }> }
+      expect(list.clients.some((c) => c.clientId === CLIENT_ID && c.name === '登录机')).toBe(true)
+    } finally {
+      ws.close()
+    }
+  })
+
+  it('他人 clientId 已绑定有效令牌 → 409 拒绝抢注（管理员也不行）', async () => {
+    // 前序用例已把 CLIENT_ID 绑定到 alice 的有效令牌
+    const stolen = await clientLogin({
+      username: ADMIN.username,
+      password: ADMIN.password,
+      clientId: CLIENT_ID,
+    })
+    expect(stolen.status).toBe(409)
+    expect(stolen.data['error']).toBe('E_CLIENT_BOUND')
+    // 属主自己重新登录仍然放行（同账号换新令牌是正常路径）
+    const owner = await clientLogin({
+      username: USER.username,
+      password: USER.password,
+      clientId: CLIENT_ID,
+    })
+    expect(owner.status).toBe(200)
+  })
+
+  it('错误口令 401；缺 clientId / 缺口令 400', async () => {
+    const bad = await clientLogin({ username: USER.username, password: 'wrong-pass', clientId: CLIENT_ID })
+    expect(bad.status).toBe(401)
+    const noId = await clientLogin({ username: USER.username, password: USER.password })
+    expect(noId.status).toBe(400)
+    const noPass = await clientLogin({ username: USER.username, clientId: CLIENT_ID })
+    expect(noPass.status).toBe(400)
+  })
+
+  it('重新登录吊销同 clientId 旧令牌：旧令牌握手被拒、新令牌可连', async () => {
+    const first = await clientLogin({ username: USER.username, password: USER.password, clientId: CLIENT_ID })
+    const second = await clientLogin({ username: USER.username, password: USER.password, clientId: CLIENT_ID })
+    expect(first.status).toBe(200)
+    expect(second.status).toBe(200)
+
+    await expect(
+      connectClient(first.data['token'] as string, { clientId: CLIENT_ID, name: '旧令牌' }),
+    ).rejects.toThrow()
+    const ws = await connectClient(second.data['token'] as string, { clientId: CLIENT_ID, name: '新令牌' })
+    ws.close()
+  })
+})

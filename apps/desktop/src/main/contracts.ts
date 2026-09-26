@@ -7,6 +7,8 @@
 import type {
   CenterConnectionStatus,
   AgentEvent,
+  CenterLoginRequest,
+  CenterLoginResult,
   ChatSessionSummary,
   ClassIslandStatus,
   ClassIslandTestResult,
@@ -26,6 +28,7 @@ import type {
   ModeSummary,
   OpenPathRequest,
   PerceptionSummary,
+  Result,
   SensitiveToolRequest,
   SendMessageRequest,
   Settings,
@@ -259,9 +262,11 @@ export interface SessionListLike {
 }
 
 /** 自动更新（docs/09）：主进程用 UpdateService，IPC 只依赖这个最小面 */
-/** Aurora Center 连接器（docs/12）：ipc 只取展示用的状态快照 */
+/** Aurora Center 连接器（docs/12）：状态快照 + 账号登录（v0.2.1，docs/12 §7） */
 export interface CenterConnectionLike {
   status(): CenterConnectionStatus
+  /** 账号登录：换客户端令牌写入凭据链路 + 记住账号 + 自动启用连接 */
+  login(request: CenterLoginRequest): Promise<Result<CenterLoginResult>>
 }
 
 export interface UpdateControllerLike {

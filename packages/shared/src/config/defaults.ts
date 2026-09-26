@@ -269,13 +269,14 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     },
   },
   /**
-   * Aurora Center 连接（v16，docs/12）：默认**不启用**（`enabled: false` + 空 serverUrl）
+   * Aurora Center 连接（v16；v17 补 `account`，docs/12）：默认**不启用**（`enabled: false` + 空 serverUrl）
    * —— 不配置时零行为变化：不出站连接、不注册 Center 工具、设置页之外无任何入口。
    */
   center: {
     enabled: false,
     serverUrl: '',
     tokenEnc: '',
+    account: '',
     clientId: '',
     displayName: '',
     allowRemoteSession: true,

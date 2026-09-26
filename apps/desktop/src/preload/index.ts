@@ -163,6 +163,7 @@ const api: AuroraApi = {
   },
   center: {
     status: () => invoke(IPC.center.status),
+    login: (request) => invoke(IPC.center.login, request),
   },
 }
 

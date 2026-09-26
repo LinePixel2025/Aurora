@@ -992,6 +992,23 @@ export interface CenterConnectionStatus {
   lastError?: string
 }
 
+/**
+ * Aurora Center 账号登录（v0.2.1，docs/12 §3/§7）：渲染层 → 主进程的登录请求。
+ * `password` 只在本次请求里使用 —— 主进程拿它换客户端令牌（写入凭据链路），
+ * **不落配置、不进日志**；页面也不回显。
+ */
+export interface CenterLoginRequest {
+  serverUrl: string
+  username: string
+  password: string
+}
+
+/** 账号登录结果：`account` 是记住的账号名；`tokenPersisted` = 令牌是否已持久化（安全存储可用）。 */
+export interface CenterLoginResult {
+  account: string
+  tokenPersisted: boolean
+}
+
 export interface AuroraApi {
   app: {
     getInfo(): Promise<Result<AppInfo>>
@@ -1189,8 +1206,9 @@ export interface AuroraApi {
     install(): Promise<Result<boolean>>
     onStateChanged(listener: (state: UpdateState) => void): () => void
   }
-  /** Aurora Center 连接状态（docs/12）：设置页展示连接机与诊断信息 */
+  /** Aurora Center 连接（docs/12）：设置页展示连接机与诊断信息 + 账号登录（v0.2.1） */
   center: {
     status(): Promise<Result<CenterConnectionStatus>>
+    login(request: CenterLoginRequest): Promise<Result<CenterLoginResult>>
   }
 }

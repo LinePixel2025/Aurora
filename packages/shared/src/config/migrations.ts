@@ -605,6 +605,29 @@ const migrateV15ToV16: Migration = {
   },
 }
 
+/**
+ * v16 → v17：为 `center` 补 `account: ''`（账号登录后记住的账号名，docs/12 §7）。
+ *
+ * 口径同 v15 → v16：`center` 已存在时只补缺失键（幂等，令牌 / 服务器地址原样保留）；
+ * 整组缺失时**不凭空造对象**，交给默认配置兜底。`account` 非凭据，与 `tokenEnc` 互不干扰。
+ */
+const migrateV16ToV17: Migration = {
+  from: 16,
+  to: 17,
+  describe: 'v16 → v17：center 补 account（账号登录记住的账号名，docs/12 §7）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const center = asRecord(raw['center'])
+    if (center !== undefined) {
+      next['center'] = fillMissing(center, { account: '' })
+    }
+
+    next['version'] = 17
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -622,6 +645,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV13ToV14,
   migrateV14ToV15,
   migrateV15ToV16,
+  migrateV16ToV17,
 ]
 
 export interface MigrationOutcome {

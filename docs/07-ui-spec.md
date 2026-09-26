@@ -498,11 +498,14 @@
   关闭按钮与其它交互元素挂 `no-drag`（`theme.css` 另有一条按标签兜底的规则）。
   此前只有侧栏里约 22–30px 的品牌行能拖，正是「有些能拖有些不行」最直接的原因；
   现在侧栏空白处、品牌行、内容区顶部三处都能按住拖动窗口。
-- **Aurora Center 页（v0.2.0，docs/12）**：`CenterPage.vue` 三张卡：
+- **Aurora Center 页（v0.2.0；v0.2.1 起配对方式改为账号登录，docs/12 §7）**：`CenterPage.vue` 三张卡：
   - **连接设置**（`CenterConnectionSection.vue`）：`center.enabled` / `center.serverUrl` /
-    `center.displayName` / **配对令牌**（`data-field="center.token"` password 输入 + 「保存令牌」按钮；
-    令牌不进 `settings:update`，走 `settings.setSecrets({ 'center.token': 值 })`，页面按
-    `settings.hasSecret('center.token')` 展示「已配置 / 未配置」）、`center.clientId` 只读展示；
+    `center.displayName` / **登录账号**（`data-field="center.account"`，回显 `center.account`）+
+    **登录密码**（`data-field="center.password"`，write-only，永不落配置）+
+    「登录并连接」按钮（走 `center:login` IPC，主进程调 `/api/client/login` 换令牌写入
+    `center.token` 凭据链路并自动启用连接；页面按 `settings.hasSecret('center.token')`
+    展示「已登录 / 未登录」）、`center.clientId` 只读展示（首次登录时由主进程生成）；
+    手填配对令牌的旧入口已移除（服务器端兼容路径保留，见 docs/12 §3）；
   - **远程控制许可**（`CenterPermissionsSection.vue`）：`center.allowRemoteSession` /
     `center.allowRemoteConfig` / `center.allowFileTransfer` 三个开关 + `center.maxFileMb`
     （1–512，保存时夹取）——这些是 Center 远程操作本机的**最终闸门**（docs/12 §7）；
@@ -511,7 +514,7 @@
     disabled 灰。
   - **保存链路分工**：卡片字段整卡走 `settings:update`（`{ center: {...} }` 顶层浅合并，
     不含 `tokenEnc` / `clientId`；主进程合并时运行期剥 `tokenEnc` 防构造 patch 洗密文）；
-    令牌只走 `settings:setSecrets`。
+    令牌由 `center:login` 在主进程内直写凭据链路，页面不经手。
 - 模式页（**BetaV2**）：三模式卡片选择 + 引导状态；**只渲染当前模式的配置内容** ——
   ClassRoom 区组不变；Work 已实装，提供工作目录 `workspaceDir`（`data-field="modes.work.workspaceDir"`）
   等配置；Code 仍显示「暂无可配置项」空状态。

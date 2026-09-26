@@ -299,6 +299,41 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       return
     }
 
+    // 客户端账号登录（docs/12 §3，v0.2.1）：口令换客户端令牌（归属该用户、创建即绑定
+    // clientId）。与 /api/auth/login 一样是登录入口本身，放在鉴权段之前。
+    if (path === '/api/client/login' && req.method === 'POST') {
+      const body = await readJsonBody(req)
+      const username = String(body['username'] ?? '').trim()
+      const password = String(body['password'] ?? '')
+      const clientIdRaw = body['clientId']
+      const clientId =
+        typeof clientIdRaw === 'string' ? clientIdRaw.trim() : ''
+      if (username === '' || password === '' || clientId === '' || clientId.length > HELLO_STRING_MAX) {
+        sendJson(res, 400, { error: 'E_INVALID_ARGUMENT' })
+        return
+      }
+      const user = await auth.verifyPassword(username, password).catch(() => undefined)
+      if (user === undefined) {
+        sendJson(res, 401, { error: '用户名或口令不正确' })
+        return
+      }
+      // clientId 已绑定到**其他**账号的有效令牌 → 拒绝抢注（否则 mint 会吊销对方
+      // 的有效令牌，等于用一次登录把别人的机器踢下线）。
+      const activeOwner = auth.activeOwnerOfClient(clientId)
+      if (activeOwner !== undefined && activeOwner !== user.id) {
+        sendJson(res, 409, { error: 'E_CLIENT_BOUND' })
+        return
+      }
+      const { token } = await auth.mintClientToken(user.id, clientId, '账号登录')
+      logger?.info('客户端账号登录成功', { username: user.username, clientId })
+      sendJson(res, 200, {
+        token,
+        clientId,
+        user: { id: user.id, username: user.username },
+      })
+      return
+    }
+
     if (path === '/api/ingest/files' && req.method === 'POST') {
       await handleIngest(req, res, url)
       return

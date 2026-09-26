@@ -163,6 +163,7 @@ function settingsWith(overrides: {
       enabled: false,
       serverUrl: '',
       tokenEnc: '',
+      account: '',
       clientId: '',
       displayName: '',
       allowRemoteSession: true,

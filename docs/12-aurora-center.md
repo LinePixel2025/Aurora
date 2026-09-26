@@ -17,7 +17,7 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
 ## 1. 总体拓扑
 
 ```
-┌──────────────┐  WebSocket(出站, Bearer 配对令牌)  ┌───────────────────────────┐
+┌──────────────┐  WebSocket(出站, Bearer 登录令牌)  ┌───────────────────────────┐
 │ Aurora 桌面端 │ ────────────────────────────────▶ │ Aurora Center (packages/  │
 │ main/center/ │ ◀──────── cmd / event ─────────── │ center，纯 Node)          │
 └──────────────┘   HTTP POST /api/ingest/files    │  ├─ HTTP + WS 服务器       │
@@ -52,7 +52,7 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
 |---|---|
 | `config.json` | `{ version, port, host }` 服务器自身配置 |
 | `users.json` | 用户账户：`{ id, username, role: 'admin'\|'user', passHash, passSalt, createdAt }`（口令 scrypt 哈希，绝不存明文） |
-| `tokens.json` | 客户端配对令牌：`{ id, userId, tokenHash(SHA-256), label, clientId?, createdAt, revokedAt? }` —— **令牌明文只在创建时展示一次** |
+| `tokens.json` | 客户端令牌（配对令牌 / 账号登录颁发，§3）：`{ id, userId, tokenHash(SHA-256), label, clientId, createdAt, revokedAt? }` —— **令牌明文只在创建 / 登录响应时出现一次**；账号登录重发时同 `clientId` 旧令牌自动吊销 |
 | `clients.json` | 已登记客户端：`{ clientId, name, ownerUserId, version, platform, firstSeenAt, lastSeenAt, lastMode, revokedAt? }` |
 | `files/<fileId>-<name>` + `files/index.json` | 客户端上传文件的暂存与索引 |
 
@@ -64,12 +64,18 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
 |---|---|---|
 | 网页用户（`role: 'user'`） | REST `POST /api/auth/login` 换会话令牌（随机 32B hex，内存持有，7 天过期） | 看到**自己名下**的客户端；对自己的客户端发起会话 / 远程配置 / 收文件 |
 | 网页管理员（`role: 'admin'`） | 同上 | **看到并控制所有客户端**（跨属主"超限控制"）；管理用户（增删、重置口令）；吊销配对令牌 / 客户端 |
-| Aurora 客户端 | 配对令牌（WS 握手 `Authorization: Bearer`） | 维持长连接、收命令、传事件、上传文件；一个令牌**首次连接即绑定**一个 `clientId`，不得复用到第二台机器 |
+| Aurora 客户端 | 客户端令牌（WS 握手 `Authorization: Bearer`） | 维持长连接、收命令、传事件、上传文件；一个令牌**创建即绑定**一个 `clientId`，不得复用到第二台机器 |
 
 - 首个管理员由 CLI 创建（`aurora-center init` / 首次 `start` 自动生成并打印一次性口令）。
-- 配对令牌由 CLI（`aurora-center token create --user <名>`）或 Web 管理端创建，
-  归属某个用户 —— 该令牌连上的客户端即归属该用户。
-- Web 会话令牌与配对令牌都只存哈希，泄露数据库不等于泄露凭据。
+- **客户端配对主路径是账号登录（v0.2.1 起，替代"管理员发令牌 → 用户手填"的旧流程）**：
+  客户端在设置页填写服务器地址与 Center 账号口令 → `POST /api/client/login`（§4.2）校验
+  口令后颁发**归属该用户、创建即绑定该 `clientId`** 的客户端令牌 → 客户端存入安全存储
+  （`center.token` 凭据链路）并自动连接。每次登录都会重发新令牌并**吊销同 `clientId` 的旧令牌**
+  （换账号 / 重新登录后旧凭据立即失效）；口令本身**绝不落盘**，令牌失效（如服务器数据重置）
+  后需在设置页重新登录。
+- 手动创建配对令牌（CLI `aurora-center token create --user <名>` 或 Web 管理端）**仍可用**，
+  作为兼容路径：首次连接时绑定 `clientId` 的语义不变。
+- Web 会话令牌与客户端 / 配对令牌都只存哈希，泄露数据库不等于泄露凭据。
 
 ## 4. 协议（`packages/shared/src/center/protocol.ts`）
 
@@ -105,7 +111,8 @@ CenterCommand =
 
 ### 4.2 网页 ⇄ 服务器
 
-REST：`POST /api/auth/login`、`GET /api/me`、`GET /api/clients`（按角色过滤）、
+REST：`POST /api/auth/login`、`POST /api/client/login`（**无需已登录**：客户端用
+`{ username, password, clientId }` 换客户端令牌，见 §3）、`GET /api/me`、`GET /api/clients`（按角色过滤）、
 `GET /api/files/:fileId`（鉴权下载）、管理员 `POST /api/users`、`GET /api/admin/clients`、
 `POST /api/admin/tokens`、`POST /api/admin/tokens/:id/revoke`、`DELETE /api/users/:id`。
 
@@ -180,18 +187,24 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
 
 `config.get` 回传**脱敏后**的完整配置（复用主进程 `redactSettings`，密文一律 `***`）。
 
-## 7. 客户端配置（`center` 分组，CONFIG_VERSION 16）
+## 7. 客户端配置（`center` 分组，CONFIG_VERSION 17）
 
 Schema / 默认值 / 迁移见 docs/08 §1。要点：
 
+- **账号登录（v0.2.1 起）**：设置页填服务器地址 + 账号口令，经 `center:login` IPC 由主进程调
+  `POST /api/client/login`（出网走 `main/net.ts` 的 `netFetch`）；成功后主进程落三件事 ——
+  令牌写入 `center.token`（凭据链路）、`center.account` 记住账号名（**非凭据**，仅展示）、
+  `center.enabled = true`，连接器经 `settings:changed` 自动重连。`clientId` 为空时登录前先生成
+  并持久化（旧版只展示不生成，导致连接器永远停在"尚未配置"——已修复）。口令只在登录请求里
+  使用，**不落配置、不进日志**。
 - `center.tokenEnc` 是**凭据路径**（safeStorage 密文）：`canonicalSecretPath` 把
   `center.token` / `center.tokenEnc` 规范到 `center.token`；`SettingsStore` 的
   `readSecretField` / `writeSecretField` / `toPersisted`、`canonicalSecretPath`，
   以及主进程 `redactSettings` 与 `redactKeys` 的 `SENSITIVE_KEY_PATTERN`（`tokenEnc`
   派生名）**同步修改** —— 漏改 writeSecretField = 凭据静默丢失，漏改 redact = 密文泄漏。
 - `center.*` 整组进入 `SETTINGS_READONLY_PREFIXES`：AI 的 `set_setting` 一律拒绝。
-  理由：连接目标是**数据外发通道**，AI 自行启用 / 改向等于把本机数据发往任意服务器；
-  启用、改址、填令牌只能由用户在设置页（或 Center 远程通道之外的界面）操作。
+  理由：连接目标是**数据外发通道**，AI 自行启用 / 改向或换账号登录，等于把本机数据发往
+  任意服务器；启用、改址、登录只能由用户在设置页操作（`center:login` 也不对 AI 开放）。
 - 三个 `allow*` 开关是**客户端本地的最终闸门**：Center 发来的命令类别若被对应开关
   拒绝，客户端回 `result: { ok: false, error: 'E_REMOTE_DISABLED' }`，Center 端如实展示。
 
@@ -251,7 +264,11 @@ aurora-center version
 ## 11. 安全边界与非目标（v1）
 
 - **没有端到端加密**：Center 可见全部远程会话明文 —— 与"管理员可见所有客户端"的
-  产品语义一致，文档明示；敏感环境应自建 Center 于内网。
+  产品语义一致，文档明示；敏感环境应自建 Center 于内网。账号登录的口令与颁发的
+  客户端令牌同样走明文 HTTP，公网部署必须置于 TLS 反代之后（客户端填 `https://` 地址）。
+- **clientId 是设备标识，不可外泄**：知道他人 clientId 的账号无法用账号登录抢注
+  （`/api/client/login` 对"clientId 已绑定其他账号的有效令牌"返回 409 `E_CLIENT_BOUND`，
+  同属主重登放行），但泄露仍有社工与骚扰面。
 - **没有 OS 级沙箱增益**：远程会话里 Agent 的能力与本地完全相同（三档权限、项目根
   边界、确认卡片照常生效于客户端本机）。远程发起的会话中确认卡会弹在**客户端本机**
   —— 远程用户需在 `session.event` 里看到"等待确认"状态；v1 不做远程代批准
