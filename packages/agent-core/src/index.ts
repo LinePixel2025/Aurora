@@ -23,6 +23,10 @@ export * from './project/agentsFile.js'
 export * from './project/instructions.js'
 export * from './project/nodeFs.js'
 
+// 写前快照（docs/06 §11.8，v14）：端口与 DTO；真实落盘实现由主进程注入（磁盘布局在 agent-core，见 §11.8）
+export * from './snapshots/types.js'
+export * from './snapshots/snapshot-port.js'
+
 // 能力层（docs/06 §6 / §7）
 export * from './skills/parse.js'
 export * from './skills/registry.js'

@@ -20,7 +20,7 @@
  * 四种拒绝（找不到 / 多处命中 / 空 `oldString` / 新旧相同）与三种行尾拒绝
  * （文件含孤立回车 / `newString` 含孤立回车 / 混合行尾）全部返回 `isError` 且**不写盘**。
  */
-import { MAX_EDIT_BYTES } from './files.js'
+import { MAX_EDIT_BYTES, describeSnapshot } from './files.js'
 import type { FilePort, ReadWholeTextResult } from './files.js'
 import type { ToolDefinition, ToolResult } from './registry.js'
 
@@ -207,15 +207,23 @@ export function createEditTool(options: EditToolOptions): ToolDefinition {
       const out = usesCrlf ? replaced.replace(/\n/g, '\r\n') : replaced
 
       try {
-        const written = await options.files.writeText(
-          path,
-          out,
-          'overwrite',
-          ctx.approvedByUser === true ? { allowOutside: true } : {},
-        )
+        const written = await options.files.writeText(path, out, 'overwrite', {
+          ...(ctx.approvedByUser === true ? { allowOutside: true } : {}),
+          // 写前快照（docs/06 §11.8）：与 `write_file` 共用同一条通道，来源标记为 edit_file
+          ...(ctx.sessionId === undefined || ctx.sessionId === ''
+            ? {}
+            : {
+                snapshot: {
+                  sessionId: ctx.sessionId,
+                  ...(ctx.toolCallId === undefined ? {} : { toolCallId: ctx.toolCallId }),
+                  origin: 'edit_file' as const,
+                  mode: 'overwrite' as const,
+                },
+              }),
+        })
         // 成功后**保留**守卫标记：模型刚主动改过它，知道当前内容（清掉只会逼它白读一次）
         return {
-          content: `已修改：${written.absolutePath}（替换 ${count} 处，共 ${written.bytes} 字节）`,
+          content: `已修改：${written.absolutePath}（替换 ${count} 处，共 ${written.bytes} 字节）${describeSnapshot(written.snapshot)}`,
           summary: `替换 ${count} 处`,
         }
       } catch (error) {

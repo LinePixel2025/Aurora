@@ -82,6 +82,50 @@ function outsideGuard(ctx: { approvedByUser?: boolean }): OutsideGuardOptions {
   return ctx.approvedByUser === true ? { allowOutside: true } : {}
 }
 
+/**
+ * 写前快照的挂载参数（docs/06 §11.8，v14）：由工具层（`write_file` / `edit_file`）传入，
+ * 端口在**真正落盘之前**用它调一次快照端口。
+ *
+ * 为什么是端口参数而不是内核参数：快照的真正实现在主进程（需要 userData 目录与真实 fs），
+ * 内核只负责把"这次是哪次工具调用、什么来源、什么写模式"如实传下去。
+ */
+export interface SnapshotWriteOptions {
+  sessionId: string
+  toolCallId?: string
+  origin: 'write_file' | 'edit_file'
+  mode: 'overwrite' | 'append'
+}
+
+/** `writeText` 的端口参数：越界放行标记 + 写前快照 */
+export interface WriteTextOptions extends OutsideGuardOptions {
+  snapshot?: SnapshotWriteOptions
+}
+
+/**
+ * 端口回带的快照结果（docs/06 §11.8）：工具层据此在结果里写一行「已保存快照：<id>」，
+ * 或如实告知为什么**没**留底（`skipped`）—— 快照跳过**不许静默**。
+ */
+export interface SnapshotWriteOutcome {
+  id: string
+  skipped?: 'too-large' | 'disabled' | 'unreadable'
+}
+
+/**
+ * 快照结果 → 结果文本里的一行（docs/06 §11.8）。
+ *
+ * 三态都要说清：留下底了（给 id，用户能照着在界面上回滚）、跳过了（**为什么**跳过）、
+ * 没接线（端口没注入快照 = 这次没有留底）。**跳过绝不静默** ——
+ * 「以为有备份、其实没有」比"没有备份"更危险。
+ */
+export function describeSnapshot(outcome: SnapshotWriteOutcome | undefined): string {
+  if (outcome === undefined) return ''
+  if (outcome.skipped === undefined) return `\n已保存快照：${outcome.id}`
+  if (outcome.skipped === 'too-large')
+    return '\n未保存快照：文件过大（超过 agent.snapshots.maxSnapshotBytes）'
+  if (outcome.skipped === 'disabled') return '\n未保存快照：文件备份已在设置里关闭'
+  return '\n未保存快照：原文件读不到（可能已被删除或不是普通文件）'
+}
+
 export interface ReadTextOptions {
   /**
    * 起始行号（**1 起始**，相对文件开头）；缺省 1。
@@ -143,13 +187,13 @@ export interface FilePort {
     maxBytes: number,
     options?: OutsideGuardOptions,
   ): Promise<ReadWholeTextResult>
-  /** 写文本；mode='append' 追加；实现负责建父目录 + 原子写 */
+  /** 写文本；mode='append' 追加；实现负责建父目录 + 原子写。`snapshot` 存在时**先留底再写** */
   writeText(
     path: string,
     content: string,
     mode: 'overwrite' | 'append',
-    options?: OutsideGuardOptions,
-  ): Promise<{ absolutePath: string; bytes: number }>
+    options?: WriteTextOptions,
+  ): Promise<{ absolutePath: string; bytes: number; snapshot?: SnapshotWriteOutcome }>
   list(
     path: string,
     limit: number,
@@ -544,12 +588,26 @@ function createWriteFileTool(
         }
       }
       try {
-        const result = await files.writeText(path, content, mode, outsideGuard(ctx))
+        const result = await files.writeText(path, content, mode, {
+          ...outsideGuard(ctx),
+          // 写前快照（docs/06 §11.8）：由端口在真正落盘**之前**落底。
+          // 只有拿到 sessionId 才带 —— 单测直接调工具时没有会话，不该因此报错。
+          ...(ctx.sessionId === undefined || ctx.sessionId === ''
+            ? {}
+            : {
+                snapshot: {
+                  sessionId: ctx.sessionId,
+                  ...(ctx.toolCallId === undefined ? {} : { toolCallId: ctx.toolCallId }),
+                  origin: 'write_file' as const,
+                  mode,
+                },
+              }),
+        })
         // 整篇覆盖 / 追加后**必须清掉"读过"的标记**：否则模型拿着过期基线去 `edit_file`，
         // 而守卫以为它读过当前内容 —— 会静默套用错误基线（`append` 同理，内容已变）。
         readTracker?.clear(ctx.sessionId, result.absolutePath)
         return {
-          content: `${result.absolutePath}（写入 ${result.bytes} 字节，mode=${mode}）`,
+          content: `${result.absolutePath}（写入 ${result.bytes} 字节，mode=${mode}）${describeSnapshot(result.snapshot)}`,
           summary: mode === 'append' ? `追加 ${result.bytes} 字节` : `写入 ${result.bytes} 字节`,
         }
       } catch (error) {
