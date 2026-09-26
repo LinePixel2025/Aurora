@@ -7,7 +7,7 @@
 
 ## 当前实现状态
 
-**当前版本 v0.1.6+（Aurora Center 轮），配置 Schema v16** —— 2026-09-27 的 **Aurora Center 轮**落地[网页控制中心](./12-aurora-center.md)（独立服务器 + Web 控制台 + CLI，`packages/center`）与桌面端接入（远程会话 / 远程配置白名单 / 文件发送 / `center_status`·`center_send_file` 工具），并带来 **Agent 能力增强**（`create_skill` 内置技能 + 用户技能目录自动重扫、模式能力对齐 docs/05 §6）。
+**当前版本 v0.2.0（Aurora Center 轮），配置 Schema v16** —— 2026-09-27 的 **Aurora Center 轮**落地[网页控制中心](./12-aurora-center.md)（独立服务器 + Web 控制台 + CLI，`packages/center`）与桌面端接入（远程会话 / 远程配置白名单 / 文件发送 / `center_status`·`center_send_file` 工具），并带来 **Agent 能力增强**（`create_skill` 内置技能 + 用户技能目录自动重扫、模式能力对齐 docs/05 §6）。
 2026-09-26 的**生产化主线轮**把四项能力落地并验证（项目机制 / 三档权限 / 写前快照 / 可续跑任务），2026-09-27 的**安全加固轮**兑现 v0.1.5 披露的三个已知问题并封堵零弹卡越界写入逃逸链：
 **项目机制**（顶层 `projects` 分组：当前项目决定项目根与项目级 `AGENTS.md` 注入）、
 **三档权限**（`agent.permissionMode ∈ {readonly, confirm, auto}`）、
