@@ -590,6 +590,130 @@ export const CHAT_CLASSISLAND_CHECK = `(async () => {
 })()`
 
 /**
+ * 项目机制探针用的临时项目根（v13，docs/06 §5.1）。
+ *
+ * 每次跑 capture 都用同一个 userData 下的固定目录，可重复跑；场景的 `prepare` 里先建出它，
+ * 让"项目根可用"这个健康态成立 —— 否则右栏卡片会渲染成"项目目录不可用"警示态，
+ * 那条 pass 断言就会把警示态当健康态通过（假 PASS）。
+ */
+export function captureProjectRoot(userData: string): string {
+  return join(userData, 'capture-project')
+}
+
+/**
+ * 与 `captureProjectRoot` 同父目录、但**从不创建**的路径（v13，docs/06 §5.1）。
+ * 用来验"项目根失效要有可见提示"（假设 7）：把当前项目的 root 指向它，界面必须显示警示态。
+ */
+export function captureMissingProjectRoot(userData: string): string {
+  return join(userData, 'capture-project-missing')
+}
+
+/**
+ * 把「当前项目」指向临时目录（v13，docs/06 §5.1）。
+ *
+ * 必须走 `settings:update` IPC：`SettingsStore.init()` 启动即把 config.json 读进内存并长期缓存，
+ * 启动后写文件对运行中的进程无效。`projects` 是顶层浅合并，但 `list` 是数组整体权威 ——
+ * 所以这里显式给出**完整**的 projects 子树（其余键从当前配置展开，不动 `maxAgentsBytes`）。
+ * `check` 收尾会还原成"无项目"，后续场景读到的仍是出厂门控。
+ */
+export function chatProjectAct(root: string, name: string): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { ok: false, reason: state.message }
+    if (state.value.projects.current !== 'capture') {
+      const result = await window.aurora.settings.update({
+        projects: {
+          ...state.value.projects,
+          current: 'capture',
+          list: [{ id: 'capture', name: ${JSON.stringify(name)}, root: ${JSON.stringify(root)} }],
+        },
+      })
+      if (!result.ok) return { ok: false, reason: result.message }
+      // 等渲染层 store 收到 settings:changed 广播后重算卡片
+      await wait(400)
+    }
+    let cardShown = false
+    for (let attempt = 0; attempt < 15 && !cardShown; attempt += 1) {
+      cardShown = document.querySelector('[data-field="context.project-card"]') !== null
+      if (!cardShown) await wait(200)
+    }
+    return { ok: true, cardShown }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+}
+
+/**
+ * 右栏「当前项目」卡探针（v13，docs/06 §5.1）：卡恰好一张、文本含项目名与根目录、
+ * **不是**"项目目录不可用"警示态；收尾还原成无项目并把 restored 并入 pass。
+ */
+export function chatProjectCardCheck(name: string, missingRoot: string): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const text = (selector) => {
+      const el = document.querySelector(selector)
+      return el === null ? '' : (el.textContent || '').replace(/\\s+/g, ' ').trim()
+    }
+    const cardText = text('[data-field="context.project-card"]')
+    const result = {
+      card: count('[data-field="context.project-card"]'),
+      cardText,
+      unavailable: count('[data-field="context.project-unavailable"]'),
+      pass:
+        count('[data-field="context.project-card"]') === 1 &&
+        cardText.indexOf(${JSON.stringify(name)}) !== -1 &&
+        cardText.indexOf('capture-project') !== -1 &&
+        // prepare 已建出真实目录：这里必须是健康态，警示徽标一个都不该有
+        count('[data-field="context.project-unavailable"]') === 0,
+    }
+
+    // 第二阶段（假设 7）：把项目根改成一个**不存在**的目录，断言警示态真的出现 ——
+    // 只在日志里 warn 而界面没提示，用户会以为 AGENTS.md 生效了却什么都没发生。
+    // 判据两条：卡仍在（项目还登记着）+ 警示徽标恰好一个 + 文案里出现「不可用」。
+    const before = await window.aurora.settings.get()
+    if (before.ok && before.value.projects.current === 'capture') {
+      await window.aurora.settings.update({
+        projects: {
+          ...before.value.projects,
+          list: [{ id: 'capture', name: ${JSON.stringify(name)}, root: ${JSON.stringify(missingRoot)} }],
+        },
+      })
+      let warned = false
+      for (let attempt = 0; attempt < 15 && !warned; attempt += 1) {
+        warned = count('[data-field="context.project-unavailable"]') === 1
+        if (!warned) await wait(200)
+      }
+      result.warningCard = count('[data-field="context.project-card"]')
+      result.warningShown = warned
+      result.warningText = text('[data-field="context.project-card"]').indexOf('项目目录不可用') !== -1
+      result.pass = result.pass === true && warned === true && result.warningText === true
+    } else {
+      result.warningShown = null
+      result.pass = false
+    }
+
+    const state = await window.aurora.settings.get()
+    if (state.ok) {
+      await window.aurora.settings.update({
+        projects: { ...state.value.projects, current: '', list: [] },
+      })
+    }
+    await wait(250)
+    result.restored = count('[data-field="context.project-card"]') === 0
+    result.pass = result.pass === true && result.restored === true
+    return result
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+}
+
+/**
  * 「子代理」页面探针（docs/07 §2.4）。
  *
  * act 点左栏固定项 `[data-field="chat.subagent-item"]` 把主区切到子代理页面；
@@ -2596,6 +2720,16 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
     )
     // BetaV2：全局勿扰时段（advanced.quietHours.start/.end）迁到 general 页且常显
     const quietHoursFields = count('[data-field^="advanced.quietHours"]')
+    // v13 项目机制（docs/06 §5.1）：项目区组常显，列表可空可非空 —— 只断言「空态或至少一行」，
+    // 不写死条数（用户有几个项目都能过）。
+    const projectsFields = count('[data-field^="projects."]')
+    const projectsRows = count('[data-field="projects.name"]')
+    const projectsEmpty = emptyStates.indexOf('projects.list') !== -1
+    // 本页**预期**会出现的 data-empty：提示条停用时那一条，与"还没有项目"那一条。
+    // 其余任何空态出现都是回归（照 SETTINGS_AGENT_FIELDS_SCRIPT 的白名单口径）。
+    const unexpected = emptyStates.filter(
+      (name) => name !== 'general.edgeBar' && name !== 'projects.list',
+    )
     const activeMode = document.querySelector('.cards .card.active .card-head strong')
     const activeNav = document.querySelector('.nav-item.active')
     return {
@@ -2605,14 +2739,22 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
       edgeBarToggle,
       edgeBarDetail,
       quietHoursFields,
+      projectsFields,
+      projectsRows,
+      projectsEmpty,
+      unexpected,
       activeMode: activeMode === null ? null : (activeMode.textContent || '').trim(),
       emptyStates,
       // 死字段（general.language）在任何页面都不该出现；提示条详情跟着开关走；
-      // 全局勿扰时段两个字段必须随页常在
+      // 全局勿扰时段两个字段必须随页常在；项目区组要么给出空态、要么至少渲染一行；
+      // 且不得出现两块预期空态之外的 data-empty。
       pass:
         languageFields === 0 &&
         quietHoursFields === 2 &&
-        (edgeBarToggle === 0 ? edgeBarDetail === 0 : edgeBarDetail > 0),
+        (edgeBarToggle === 0 ? edgeBarDetail === 0 : edgeBarDetail > 0) &&
+        (projectsEmpty || projectsRows > 0) &&
+        (projectsEmpty || projectsFields > 0) &&
+        unexpected.length === 0,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -4338,20 +4480,28 @@ function onboardingWaitScript(index: number, action?: 'next' | 'skip' | 'model')
             : ''
     }
     await ready(expected, ${index})
+    // 进场动画（.anim-rise 的 aurora-rise-in）在窗口不产生帧时会**停在起始帧**（opacity: 0）：
+    // 采集环境里窗口可能被遮挡 / 未被合成，此时截图会拍到「布局好了但整块透明」的 pane，
+    // 后续 check 也会因为 opacity=0 判 FAIL（实测出现过「期望与实际是同一串标题却 FAIL」的偶发失败）。
+    // 这里把本步 pane 的进场动画显式推到终态 —— 不改变任何样式定义，只是不等那一帧。
+    for (const el of document.querySelectorAll('.pane .anim-rise')) {
+      for (const animation of el.getAnimations()) {
+        try {
+          animation.finish()
+        } catch {
+          /* 无限循环的动画不能 finish：忽略 */
+        }
+      }
+    }
+    await pause(50)
     return { stage: expected.label, action: ${JSON.stringify(action ?? 'ready')} }
   })()`
 }
 
 function onboardingCheckScript(index: number): string {
-  return `(() => {
+  return `(async () => {
     try {
       const expected = ${JSON.stringify(ONBOARDING_STAGES[index])}
-      const label = (document.querySelector('.progress-text')?.textContent || '').trim()
-      const active = Array.from(document.querySelectorAll('.progress-item')).findIndex((el) => el.classList.contains('active'))
-      const titleEl = document.querySelector('.pane .pane-title')
-      const title = (titleEl?.textContent || '').trim()
-      const cta = Array.from(document.querySelectorAll('.foot button')).find((el) =>
-        (el.textContent || '').trim() === expected.cta)
       const visible = (el) => {
         if (!el) return false
         const rect = el.getBoundingClientRect()
@@ -4360,18 +4510,67 @@ function onboardingCheckScript(index: number): string {
           rect.right <= innerWidth && rect.bottom <= innerHeight &&
           style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0'
       }
+      // ⚠️ 这里必须**先等到标题真正可见再断言**，不能进函数就采样：
+      // act 返回时 pane 的 .anim-rise 进场动画可能还没结束（opacity / transform 中途），
+      // 那时标题的几何与透明度都不满足下面的条件 —— 实测出现过「期望与实际都是同一串标题、
+      // 却判 FAIL」的偶发失败（一轮 0 FAIL、下一轮红一条）。断言本身不放宽：
+      // 1.5s 内始终不可见照样 FAIL，并报出真实几何（rect / 视口 / 滚动位置 / opacity）。
+      let waitedMs = 0
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        if (visible(document.querySelector('.pane .pane-title'))) break
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        waitedMs += 50
+      }
+      // act 已经把进场动画推到终态；这里再兜一次（check 可能被单独调试、或窗口恰好在这一刻失焦），
+      // 仍然只处理「动画没跑完」这一种情况 —— 真被样式藏起来的元素 finish() 也救不回来，照样 FAIL。
+      if (!visible(document.querySelector('.pane .pane-title'))) {
+        for (const el of document.querySelectorAll('.pane .anim-rise')) {
+          for (const animation of el.getAnimations()) {
+            try {
+              animation.finish()
+            } catch {
+              /* 无限循环的动画不能 finish：忽略 */
+            }
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      // 等完之后**重新取一次**元素：Vue 可能在这一小段时间里换掉了 pane 节点，
+      // 沿用等待前的引用会读到已卸载元素（几何为 0 → 又会是一条看不懂的 FAIL）
+      const titleEl = document.querySelector('.pane .pane-title')
+      const label = (document.querySelector('.progress-text')?.textContent || '').trim()
+      const active = Array.from(document.querySelectorAll('.progress-item')).findIndex((el) => el.classList.contains('active'))
+      const title = (titleEl?.textContent || '').trim()
+      const cta = Array.from(document.querySelectorAll('.foot button')).find((el) =>
+        (el.textContent || '').trim() === expected.cta)
       const rect = cta?.getBoundingClientRect()
       const hit = rect ? document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) : null
       const clickable = !!cta && !cta.disabled && !!hit && (hit === cta || cta.contains(hit))
       const reasons = []
       if (label !== expected.label || active !== ${index}) reasons.push('阶段标识不符：期望 ' + expected.label + ' / ' + ${index} + '，实际 ' + label + ' / ' + active)
-      if (!title.includes(expected.title) || !visible(titleEl)) reasons.push('标题不可见或不符：期望 ' + expected.title + '，实际 ' + title)
+      if (!title.includes(expected.title) || !visible(titleEl)) {
+        // 报出真实几何：失败原因里只写「期望 X，实际 X」时两条字符串长得一模一样，根本没法排查
+        // （真凶往往是被滚动容器推出可视区、透明度恰为 0、或元素还没布局出尺寸）
+        const box = titleEl === null ? null : titleEl.getBoundingClientRect()
+        const body = document.querySelector('.body')
+        reasons.push(
+          '标题不可见或不符：期望 ' + expected.title + '，实际 ' + title +
+            '；几何 ' + JSON.stringify(box === null ? null : {
+              top: Math.round(box.top), bottom: Math.round(box.bottom),
+              left: Math.round(box.left), right: Math.round(box.right),
+              width: Math.round(box.width), height: Math.round(box.height),
+            }) +
+            '；视口 ' + innerWidth + 'x' + innerHeight +
+            '；body.scrollTop=' + (body === null ? 'n/a' : String(body.scrollTop)) +
+            '；opacity=' + (titleEl === null ? 'n/a' : getComputedStyle(titleEl).opacity),
+        )
+      }
       if (!cta) reasons.push('缺少页脚主 CTA「' + expected.cta + '」')
       else {
         if (!visible(cta)) reasons.push('主 CTA「' + expected.cta + '」超出窗口或不可见')
         if (!clickable) reasons.push('主 CTA「' + expected.cta + '」禁用或中心无法命中')
       }
-      return { pass: reasons.length === 0, stage: label, active, title, cta: (cta?.textContent || '').trim(), visible: visible(cta), clickable, reason: reasons.join('；') || null }
+      return { pass: reasons.length === 0, stage: label, active, title, cta: (cta?.textContent || '').trim(), visible: visible(cta), clickable, waitedMs, reason: reasons.join('；') || null }
     } catch (error) {
       return { pass: false, reason: '引导阶段检查异常：' + String(error) }
     }
@@ -4635,6 +4834,19 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       file: 'chat-right-panel-work.png',
       act: CHAT_RIGHT_PANEL_WORK_ACT,
       check: CHAT_RIGHT_PANEL_WORK_CHECK,
+    },
+    // 右栏「当前项目」卡（v13，docs/06 §5.1；docs/07 §2.3）：
+    // prepare 先在 userData 下建出真实项目根（让"根可用"这个健康态成立），
+    // act 把 projects.current 指过去，check 先断言卡片出现且不是警示态、
+    // 再把根改成一个**不存在**的目录断言警示态出现（假设 7 的可见提示），最后还原成无项目。
+    {
+      name: 'chat',
+      file: 'chat-project-card.png',
+      prepare: async () => {
+        await mkdir(captureProjectRoot(userData), { recursive: true })
+      },
+      act: chatProjectAct(captureProjectRoot(userData), '截图项目'),
+      check: chatProjectCardCheck('截图项目', captureMissingProjectRoot(userData)),
     },
     // 思考过程折叠块（BetaV2）：seed 会话的助手消息带 `reasoning`，历史水合后默认收起；
     // act 点开展开态拍进截图，check 断言「曾收起 + 现已展开 + 全文可见 + 块在正文上方」。
