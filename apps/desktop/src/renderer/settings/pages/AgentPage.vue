@@ -327,7 +327,7 @@ function clampNumber(event: Event, min: number, max: number, fallback: number): 
   return Math.min(max, Math.max(min, Math.round(raw)))
 }
 
-/** 打开工作目录：主进程按当前 `workspaceDir`（空串回落用户主目录）解析出真实路径 */
+/** 打开工作目录：主进程按生效工作目录（三级回落：当前项目根 > workspaceDir > 用户主目录）解析出真实路径 */
 async function openWorkspace(): Promise<void> {
   const result = await window.aurora.app.openPath({ kind: 'workspace' })
   if (result.ok) {
@@ -425,7 +425,7 @@ async function openWorkspace(): Promise<void> {
             <SettingField
               data-field="agent.tools.workspaceDir"
               label="默认工作目录"
-              hint="留空 = 用户主目录（配置了当前项目时以项目根优先）；只作用于命令的缺省 cwd"
+              hint="留空 = 用户主目录（配置了当前项目时以项目根优先）；作用于命令缺省 cwd 与检索缺省根（按钮「打开工作目录」与此目录一致）"
             >
               <input
                 class="input"

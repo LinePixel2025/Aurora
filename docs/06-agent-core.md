@@ -255,9 +255,11 @@ export interface LlmProvider {
   配置了当前项目后，不显式传 `cwd` 的 `run_command` 与不传 `path` 的 `grep` / `glob` 落在**项目根**；
   未配置当前项目时与既往行为完全一致。§11.1 / §11.4 / §11.5 说的「缺省 `cwd` / 缺省搜索根」
   都指这条链的结果，**工具执行链上不再设第二套口径**。
-  ⚠️ 已知例外（刻意未接）：设置页「打开工作目录」按钮走的 `openPath kind:'workspace'`（`ipc.ts`）
-  仍按**字面** `workspaceDir` 解析（空串 = 主目录，项目根不参与）——它是展示入口、不是执行链消费方，
-  但「配了项目 + 工作目录留空」时按钮打开的目录与命令实际落地目录**分叉**，改法见 AGENTS.md 同条披露。
+  设置页「打开工作目录」按钮（`openPath kind:'workspace'`，`ipc.ts`）**已接同一链**（2026-09）：
+  解析抽为纯函数 `resolveWorkspaceOpenTarget`（`main/tools/workspace-target.ts`，不 import electron、可单测），
+  配了项目时按钮打开**项目根**，与命令缺省落地目录一致，早前的展示/执行分叉已消除；
+  无项目时行为与旧两级解析（字面 `workspaceDir`，空串 = 主目录）逐字一致。
+  注意 `kind:'workspace'` 与 `kind:'project'` 仍是两个入口：前者打开生效工作目录，后者固定打开当前项目根。
 
 - **循环**：用户消息 → LLM → [工具调用 → 执行 → 结果回填] × N → 最终回复。
   轮次上限**默认 8**，由 `agent.loop.maxRounds`（1–64）配置 —— 默认值刻意等于 v15 之前

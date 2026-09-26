@@ -138,10 +138,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   三级回落——**当前项目根（配置了当前项目时）> `workspaceDir` > 用户主目录**，这条链**已按 docs/06 §5.1
   的 `effectiveWorkspaceDir` 接线**（**工具执行链的唯一口径**，别在执行链上再写一套）：配了
   当前项目后，不显式传 `cwd` 的 `run_command` 与不传根的 `grep` / `glob` 落在**项目根**；
-  无项目时行为与之前一致。⚠️ **已知例外（刻意未接）**：设置页「打开工作目录」按钮
-  （`openPath kind:'workspace'`，`ipc.ts`）仍按**字面** `workspaceDir` 解析（空串 = 主目录、项目根不参与），
-  "配了项目 + 工作目录留空"时它与命令实际落地目录**分叉**——要接也接 `effectiveWorkspaceDir`，
-  别误改成 `kind:'project'` 把展示入口混进执行链。真正的安全边界是**「当前项目根」**，且**只有配置了当前项目时才生效**
+  无项目时行为与之前一致。设置页「打开工作目录」按钮（`openPath kind:'workspace'`，`ipc.ts`）
+  **也已接同一链**（2026-09，解析抽在 `main/tools/workspace-target.ts` 纯函数）：配了项目时打开项目根、
+  与命令缺省落地目录一致，早前的分叉已消除；不要误改成 `kind:'project'`（那是固定打开项目根的另一个入口）。
+  真正的安全边界是**「当前项目根」**，且**只有配置了当前项目时才生效**
   （无项目时行为与 v12 之前完全一致）。
   想当然地拿 `workspaceDir` 当护栏、或把 `openPath` 的 `kind: 'workspace'` 当成项目根，都是错的
   （项目根走 `kind: 'project'`，见 docs/06 §5.1 / §11.1）。
