@@ -59,6 +59,7 @@ export type CenterCommand =
 export type CenterClientMessage =
   | { type: 'hello'; hello: ClientHello }
   | { type: 'status'; status: ClientStatus }
+  | { type: 'pong' }
   /** 命令回执；`session.input` 成功时 `data` 携带 `{ agentRequestId }` */
   | { type: 'result'; requestId: string; ok: boolean; data?: unknown; error?: string }
   | { type: 'session.event'; sessionId: string; event: AgentEvent }

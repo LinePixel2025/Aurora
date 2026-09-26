@@ -9,6 +9,7 @@
  *
  * 纯函数 `resolveSkillsUserDir` 单独导出，便于单测与「设置页展示实际生效路径」。
  */
+import { watch, type FSWatcher } from 'node:fs'
 import { join } from 'node:path'
 import { SkillsRegistry } from '@aurora/agent-core'
 import type { Logger, Settings, SkillSummary, SkillsStatus } from '@aurora/shared'
@@ -103,6 +104,8 @@ export class SkillsService {
       })
       this.currentUserDir = nextDir
       this.registry.setUserDir(nextDir)
+      // 目录变了：旧目录的监听作废，改挂新目录（未 startWatching 时 no-op）
+      this.rearmWatcher()
     }
     this.registry.setDisabled(settings.skills.disabled)
     return this.rescan()
@@ -131,4 +134,51 @@ export class SkillsService {
       warnings: [...this.lastWarnings],
     }
   }
+
+  /**
+   * 监听用户技能目录（docs/06 §22.3）：create-skill 写完 SKILL.md、或用户手动
+   * 拖入技能包后**自动重扫**，新技能下一次请求就进 `use_skill` 清单，无需重启。
+   * 监听失败（目录被删 / 平台不支持）降级为日志告警，不影响既有技能表。
+   */
+  startWatching(onChanged?: () => void): void {
+    this.onSkillsChanged = onChanged
+    this.rearmWatcher()
+  }
+
+  stopWatching(): void {
+    this.watcher?.close()
+    this.watcher = undefined
+    if (this.watchDebounce !== undefined) {
+      clearTimeout(this.watchDebounce)
+      this.watchDebounce = undefined
+    }
+    this.onSkillsChanged = undefined
+  }
+
+  private rearmWatcher(): void {
+    this.watcher?.close()
+    this.watcher = undefined
+    try {
+      this.watcher = watch(this.currentUserDir, { recursive: true }, () => this.scheduleRescan())
+    } catch (error) {
+      this.options.logger.warn('技能目录监听失败，新技能需手动重扫或改设置触发', {
+        dir: this.currentUserDir,
+        error: String(error),
+      })
+    }
+  }
+
+  private scheduleRescan(): void {
+    // 防抖：编辑器保存常触发多轮事件，500ms 静默期后扫一次即可
+    if (this.watchDebounce !== undefined) return
+    this.watchDebounce = setTimeout(() => {
+      this.watchDebounce = undefined
+      void this.rescan().then(() => this.onSkillsChanged?.())
+    }, 500)
+    this.watchDebounce.unref?.()
+  }
+
+  private watcher: FSWatcher | undefined
+  private watchDebounce: NodeJS.Timeout | undefined
+  private onSkillsChanged: (() => void) | undefined
 }

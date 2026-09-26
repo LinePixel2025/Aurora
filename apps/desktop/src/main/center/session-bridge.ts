@@ -1,0 +1,99 @@
+/**
+ * 远程会话桥（docs/12 §5）：Center 的 `session.input` / `session.abort` 走与
+ * `chat:send` **同一条** `agent.send()` 通路（`origin: 'center'`），并把
+ * `center-` 前缀会话的 AgentEvent 原样转发给连接器（再发往 Center）。
+ *
+ * 不另开一条"远程专用"发送链 —— job 体系 / E_BUSY / 确认卡片 / 事件顺序
+ * 全部与本地发送一致，远程会话在主界面历史里也照常可见。
+ */
+import { CENTER_SESSION_PREFIX, type AgentEvent } from '@aurora/shared'
+import type { Logger } from '@aurora/shared'
+
+/** 内核 AgentHost 的最小依赖面（`DesktopAgentHost` 结构性满足） */
+export interface AgentLike {
+  send(request: {
+    sessionId: string
+    text: string
+    origin: 'center'
+  }): Promise<{ requestId: string }>
+  abort(requestId: string): boolean
+  onEvent(listener: (event: AgentEvent) => void): () => void
+}
+
+export interface SessionBridgeOptions {
+  agent: AgentLike
+  logger?: Logger
+}
+
+export interface SessionSendView {
+  requestId: string
+  sessionId: string
+}
+
+export interface SessionCommandResult {
+  ok: boolean
+  data?: { agentRequestId: string }
+  error?: string
+}
+
+export class SessionBridge {
+  private readonly agent: AgentLike
+  private readonly logger?: Logger
+  /** 连接器在线时的发送回调；离线时事件直接丢弃（服务器本来就收不到） */
+  private emit: ((message: unknown) => void) | undefined
+  private detach: (() => void) | undefined
+
+  constructor(options: SessionBridgeOptions) {
+    this.agent = options.agent
+    this.logger = options.logger
+    this.detach = options.agent.onEvent((event) => this.forward(event))
+  }
+
+  bindEmit(emit: ((message: unknown) => void) | undefined): void {
+    this.emit = emit
+  }
+
+  dispose(): void {
+    this.detach?.()
+    this.emit = undefined
+  }
+
+  isCenterSession(sessionId: string): boolean {
+    return sessionId.startsWith(CENTER_SESSION_PREFIX)
+  }
+
+  async handleInput(message: SessionSendView & { text: string }): Promise<SessionCommandResult> {
+    if (!this.isCenterSession(message.sessionId)) {
+      return { ok: false, error: 'E_BAD_SESSION' }
+    }
+    if (message.text.trim() === '') {
+      return { ok: false, error: 'E_INVALID_ARGUMENT' }
+    }
+    const result = await this.agent.send({
+      sessionId: message.sessionId,
+      text: message.text,
+      origin: 'center',
+    })
+    return { ok: true, data: { agentRequestId: result.requestId } }
+  }
+
+  handleAbort(message: SessionSendView & { agentRequestId: string }): SessionCommandResult {
+    if (!this.isCenterSession(message.sessionId)) {
+      return { ok: false, error: 'E_BAD_SESSION' }
+    }
+    const aborted = this.agent.abort(message.agentRequestId)
+    return { ok: aborted, ...(aborted ? {} : { error: 'E_NOT_RUNNING' }) }
+  }
+
+  /** 只转发 `center-` 前缀会话的事件；本地会话（quick / 普通会话）绝不出网 */
+  private forward(event: AgentEvent): void {
+    const emit = this.emit
+    if (emit === undefined) return
+    if (!('sessionId' in event) || !this.isCenterSession(event.sessionId)) return
+    try {
+      emit({ type: 'session.event', sessionId: event.sessionId, event })
+    } catch (error) {
+      this.logger?.warn('转发远程会话事件失败', { error: String(error) })
+    }
+  }
+}

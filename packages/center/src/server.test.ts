@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createCenterServer, type RunningCenterServer } from './server.js'
@@ -60,7 +60,10 @@ function connectClient(token: string, hello: Record<string, unknown>): Promise<W
  */
 function collector(
   ws: WebSocket,
-): (match: (msg: Record<string, unknown>) => boolean, timeoutMs?: number) => Promise<Record<string, unknown>> {
+): (
+  match: (msg: Record<string, unknown>) => boolean,
+  timeoutMs?: number,
+) => Promise<Record<string, unknown>> {
   const buffer: Array<Record<string, unknown>> = []
   interface Waiter {
     match: (msg: Record<string, unknown>) => boolean
@@ -143,205 +146,215 @@ let userToken = ''
 let pairingToken = ''
 
 describe('Aurora Center · 配对与客户端上线', () => {
+  it('用户创建配对令牌 → 客户端 hello 上线 → 出现在用户与（跨属主）管理员的列表里', async () => {
+    const admin = await login(ADMIN)
+    const user = await login(USER)
+    adminToken = admin.token
+    userToken = user.token
 
-  it(
-    '用户创建配对令牌 → 客户端 hello 上线 → 出现在用户与（跨属主）管理员的列表里',
-    async () => {
-      const admin = await login(ADMIN)
-      const user = await login(USER)
-      adminToken = admin.token
-      userToken = user.token
+    const created = await fetch(`${base}/api/tokens`, {
+      method: 'POST',
+      headers: { ...authed(userToken), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: '我的笔记本' }),
+    })
+    const body = (await created.json()) as { token: string }
+    pairingToken = body.token
+    expect(pairingToken.startsWith('ac-')).toBe(true)
 
-      const created = await fetch(`${base}/api/tokens`, {
-        method: 'POST',
-        headers: { ...authed(userToken), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: '我的笔记本' }),
-      })
-      const body = (await created.json()) as { token: string }
-      pairingToken = body.token
-      expect(pairingToken.startsWith('ac-')).toBe(true)
+    const ws = await connectClient(pairingToken, {
+      clientId: 'client-e2e-1',
+      name: '测试机',
+      version: '0.1.6',
+      platform: 'win32',
+      mode: 'work',
+      capabilities: { session: true, remoteConfig: true, fileTransfer: true },
+    })
+    ws.close()
 
-      const ws = await connectClient(pairingToken, {
-        clientId: 'client-e2e-1',
-        name: '测试机',
-        version: '0.1.6',
-        platform: 'win32',
+    const listUser = (await (
+      await fetch(`${base}/api/clients`, { headers: authed(userToken) })
+    ).json()) as { clients: Array<{ clientId: string; ownerUsername: string; online: boolean }> }
+    expect(listUser.clients.map((c) => c.clientId)).toEqual(['client-e2e-1'])
+    expect(listUser.clients[0]?.ownerUsername).toBe(USER.username)
+
+    const listAdmin = (await (
+      await fetch(`${base}/api/clients`, { headers: authed(adminToken) })
+    ).json()) as { clients: Array<{ clientId: string }> }
+    expect(listAdmin.clients.some((c) => c.clientId === 'client-e2e-1')).toBe(true)
+  }, 20_000)
+
+  it('非法配对令牌的 hello 被拒绝（连接关闭）', async () => {
+    await expect(
+      connectClient('ac-not-a-real-token', {
+        clientId: 'client-rogue',
+        name: 'rogue',
+        version: '',
+        platform: '',
         mode: 'work',
-        capabilities: { session: true, remoteConfig: true, fileTransfer: true },
-      })
-      ws.close()
+        capabilities: {},
+      }),
+    ).rejects.toThrow()
+  }, 20_000)
 
-      const listUser = (await (
-        await fetch(`${base}/api/clients`, { headers: authed(userToken) })
-      ).json()) as { clients: Array<{ clientId: string; ownerUsername: string; online: boolean }> }
-      expect(listUser.clients.map((c) => c.clientId)).toEqual(['client-e2e-1'])
-      expect(listUser.clients[0]?.ownerUsername).toBe(USER.username)
-
-      const listAdmin = (await (
-        await fetch(`${base}/api/clients`, { headers: authed(adminToken) })
-      ).json()) as { clients: Array<{ clientId: string }> }
-      expect(listAdmin.clients.some((c) => c.clientId === 'client-e2e-1')).toBe(true)
-    },
-    20_000,
-  )
-
-  it(
-    '非法配对令牌的 hello 被拒绝（连接关闭）',
-    async () => {
-      await expect(
-        connectClient('ac-not-a-real-token', {
-          clientId: 'client-rogue',
-          name: 'rogue',
-          version: '',
-          platform: '',
-          mode: 'work',
-          capabilities: {},
-        }),
-      ).rejects.toThrow()
-    },
-    20_000,
-  )
-
-  it(
-    '远程会话：create → input 转发 → 客户端 result / event 回传到网页端',
-    async () => {
-      const ws = await connectClient(pairingToken, {
-        clientId: 'client-e2e-1',
-        name: '测试机',
-        version: '0.1.6',
-        platform: 'win32',
-        mode: 'work',
-        capabilities: { session: true, remoteConfig: true, fileTransfer: true },
-      })
-      const waitForClient = collector(ws)
-      try {
-        // 网页端 WS
-        const web = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${userToken}`)
-        const waitForWeb = collector(web)
-        await new Promise<void>((resolveOpen, reject) => {
-          web.once('open', () => resolveOpen())
-          web.once('error', reject)
-        })
-        web.send(JSON.stringify({ type: 'session.create', requestId: 'web-1', clientId: 'client-e2e-1' }))
-        const createResult = await waitForWeb( (m) => m['type'] === 'result' && m['requestId'] === 'web-1')
-        expect(createResult['ok']).toBe(true)
-        const sessionId = (createResult['data'] as { sessionId: string }).sessionId
-        expect(sessionId.startsWith('center-')).toBe(true)
-
-        web.send(
-          JSON.stringify({
-            type: 'session.input',
-            requestId: 'web-2',
-            clientId: 'client-e2e-1',
-            sessionId,
-            text: '帮我总结这份文档',
-          }),
-        )
-        // 客户端收到 cmd
-        const cmd = await waitForClient( (m) => m['type'] === 'cmd')
-        expect((cmd['cmd'] as { kind: string; text: string }).kind).toBe('session.input')
-        expect((cmd['cmd'] as { text: string }).text).toBe('帮我总结这份文档')
-
-        // 客户端回执 + 事件 → 网页端都能收到
-        ws.send(JSON.stringify({ type: 'result', requestId: 'web-2', ok: true, data: { agentRequestId: 'req-1' } }))
-        ws.send(
-          JSON.stringify({
-            type: 'session.event',
-            sessionId,
-            event: { seq: 1, type: 'text', sessionId, requestId: 'req-1', round: 0, messageId: 'm1', delta: '好的' },
-          }),
-        )
-        const result = await waitForWeb( (m) => m['type'] === 'result' && m['requestId'] === 'web-2')
-        expect((result['data'] as { agentRequestId: string }).agentRequestId).toBe('req-1')
-        const event = await waitForWeb( (m) => m['type'] === 'client.event')
-        expect((event['event'] as { delta: string }).delta).toBe('好的')
-
-        // 管理员同时在线：也收到事件（跨属主可见）
-        const adminWeb = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${adminToken}`)
-        const waitForAdmin = collector(adminWeb)
-        await new Promise<void>((resolveOpen, reject) => {
-          adminWeb.once('open', () => resolveOpen())
-          adminWeb.once('error', reject)
-        })
-        ws.send(
-          JSON.stringify({
-            type: 'session.event',
-            sessionId,
-            event: { seq: 2, type: 'text', sessionId, requestId: 'req-1', round: 0, messageId: 'm1', delta: '，开始' },
-          }),
-        )
-        const adminEvent = await waitForAdmin( (m) => m['type'] === 'client.event')
-        expect((adminEvent['event'] as { delta: string }).delta).toBe('，开始')
-        adminWeb.close()
-        web.close()
-      } finally {
-        ws.close()
-      }
-    },
-    20_000,
-  )
-
-  it(
-    '他人客户端不可见也不可控：alice 的会话命令打到 bob 机器被拒（E_CLIENT_NOT_FOUND / E_FORBIDDEN）',
-    async () => {
-      // 另一个用户没有自己的客户端 —— 用 admin 建的客户端 alice 无法在列表看到（上面已验证），
-      // 这里直接验证 WS 命令被拒
+  it('远程会话：create → input 转发 → 客户端 result / event 回传到网页端', async () => {
+    const ws = await connectClient(pairingToken, {
+      clientId: 'client-e2e-1',
+      name: '测试机',
+      version: '0.1.6',
+      platform: 'win32',
+      mode: 'work',
+      capabilities: { session: true, remoteConfig: true, fileTransfer: true },
+    })
+    const waitForClient = collector(ws)
+    try {
+      // 网页端 WS
       const web = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${userToken}`)
       const waitForWeb = collector(web)
       await new Promise<void>((resolveOpen, reject) => {
         web.once('open', () => resolveOpen())
         web.once('error', reject)
       })
-      web.send(JSON.stringify({ type: 'session.create', requestId: 'web-3', clientId: 'client-unknown' }))
-      const res = await waitForWeb( (m) => m['type'] === 'result' && m['requestId'] === 'web-3')
-      expect(res['ok']).toBe(false)
-      expect(res['error']).toBe('E_CLIENT_NOT_FOUND')
+      web.send(
+        JSON.stringify({ type: 'session.create', requestId: 'web-1', clientId: 'client-e2e-1' }),
+      )
+      const createResult = await waitForWeb(
+        (m) => m['type'] === 'result' && m['requestId'] === 'web-1',
+      )
+      expect(createResult['ok']).toBe(true)
+      const sessionId = (createResult['data'] as { sessionId: string }).sessionId
+      expect(sessionId.startsWith('center-')).toBe(true)
+
+      web.send(
+        JSON.stringify({
+          type: 'session.input',
+          requestId: 'web-2',
+          clientId: 'client-e2e-1',
+          sessionId,
+          text: '帮我总结这份文档',
+        }),
+      )
+      // 客户端收到 cmd
+      const cmd = await waitForClient((m) => m['type'] === 'cmd')
+      expect((cmd['cmd'] as { kind: string; text: string }).kind).toBe('session.input')
+      expect((cmd['cmd'] as { text: string }).text).toBe('帮我总结这份文档')
+
+      // 客户端回执 + 事件 → 网页端都能收到
+      ws.send(
+        JSON.stringify({
+          type: 'result',
+          requestId: 'web-2',
+          ok: true,
+          data: { agentRequestId: 'req-1' },
+        }),
+      )
+      ws.send(
+        JSON.stringify({
+          type: 'session.event',
+          sessionId,
+          event: {
+            seq: 1,
+            type: 'text',
+            sessionId,
+            requestId: 'req-1',
+            round: 0,
+            messageId: 'm1',
+            delta: '好的',
+          },
+        }),
+      )
+      const result = await waitForWeb((m) => m['type'] === 'result' && m['requestId'] === 'web-2')
+      expect((result['data'] as { agentRequestId: string }).agentRequestId).toBe('req-1')
+      const event = await waitForWeb((m) => m['type'] === 'client.event')
+      expect((event['event'] as { delta: string }).delta).toBe('好的')
+
+      // 管理员同时在线：也收到事件（跨属主可见）
+      const adminWeb = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${adminToken}`)
+      const waitForAdmin = collector(adminWeb)
+      await new Promise<void>((resolveOpen, reject) => {
+        adminWeb.once('open', () => resolveOpen())
+        adminWeb.once('error', reject)
+      })
+      ws.send(
+        JSON.stringify({
+          type: 'session.event',
+          sessionId,
+          event: {
+            seq: 2,
+            type: 'text',
+            sessionId,
+            requestId: 'req-1',
+            round: 0,
+            messageId: 'm1',
+            delta: '，开始',
+          },
+        }),
+      )
+      const adminEvent = await waitForAdmin((m) => m['type'] === 'client.event')
+      expect((adminEvent['event'] as { delta: string }).delta).toBe('，开始')
+      adminWeb.close()
       web.close()
-    },
-    20_000,
-  )
+    } finally {
+      ws.close()
+    }
+  }, 20_000)
+
+  it('他人客户端不可见也不可控：alice 的会话命令打到 bob 机器被拒（E_CLIENT_NOT_FOUND / E_FORBIDDEN）', async () => {
+    // 另一个用户没有自己的客户端 —— 用 admin 建的客户端 alice 无法在列表看到（上面已验证），
+    // 这里直接验证 WS 命令被拒
+    const web = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${userToken}`)
+    const waitForWeb = collector(web)
+    await new Promise<void>((resolveOpen, reject) => {
+      web.once('open', () => resolveOpen())
+      web.once('error', reject)
+    })
+    web.send(
+      JSON.stringify({ type: 'session.create', requestId: 'web-3', clientId: 'client-unknown' }),
+    )
+    const res = await waitForWeb((m) => m['type'] === 'result' && m['requestId'] === 'web-3')
+    expect(res['ok']).toBe(false)
+    expect(res['error']).toBe('E_CLIENT_NOT_FOUND')
+    web.close()
+  }, 20_000)
 })
 
 describe('Aurora Center · 文件上传与下载', () => {
-  it(
-    '客户端上传（流式）→ 属主 / 管理员可下载，内容一致；陌生人 403',
-    async () => {
-      // 上传
-      const content = 'Aurora Center 文件链路测试 —— 你好，世界'
-      const upload = await fetch(`${base}/api/ingest/files?note=测试备注`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${await getAnyPairingToken()}`,
-          'X-Client-Id': 'client-e2e-1',
-          'X-File-Name': encodeURIComponent('报告 v1.txt'),
-          'Content-Type': 'application/octet-stream',
-        },
-        body: content,
-      })
-      expect(upload.status).toBe(200)
-      const { fileId } = (await upload.json()) as { fileId: string }
+  it('客户端上传（流式）→ 属主 / 管理员可下载，内容一致；陌生人 403', async () => {
+    // 上传
+    const content = 'Aurora Center 文件链路测试 —— 你好，世界'
+    const upload = await fetch(`${base}/api/ingest/files?note=测试备注`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${await getAnyPairingToken()}`,
+        'X-Client-Id': 'client-e2e-1',
+        'X-File-Name': encodeURIComponent('报告 v1.txt'),
+        'Content-Type': 'application/octet-stream',
+      },
+      body: content,
+    })
+    expect(upload.status).toBe(200)
+    const { fileId } = (await upload.json()) as { fileId: string }
 
-      const user = await login(USER)
-      const admin = await login(ADMIN)
-      // ?token= 直接下载（<a href> 场景）
-      const downloaded = await fetch(`${base}/api/files/${fileId}?token=${user.token}`)
-      expect(downloaded.status).toBe(200)
-      expect(await downloaded.text()).toBe(content)
+    const user = await login(USER)
+    const admin = await login(ADMIN)
+    // ?token= 直接下载（<a href> 场景）
+    const downloaded = await fetch(`${base}/api/files/${fileId}?token=${user.token}`)
+    expect(downloaded.status).toBe(200)
+    expect(await downloaded.text()).toBe(content)
 
-      // 管理员经 Bearer 下载
-      const adminDownload = await fetch(`${base}/api/files/${fileId}`, { headers: authed(admin.token) })
-      expect(adminDownload.status).toBe(200)
+    // 管理员经 Bearer 下载
+    const adminDownload = await fetch(`${base}/api/files/${fileId}`, {
+      headers: authed(admin.token),
+    })
+    expect(adminDownload.status).toBe(200)
 
-      // 陌生人：新用户（无该客户端属主关系）
-      const strangerRes = await fetch(`${base}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: ADMIN.username, password: 'wrong' }),
-      })
-      expect(strangerRes.status).toBe(401)
-    },
-    20_000,
-  )
+    // 陌生人：新用户（无该客户端属主关系）
+    const strangerRes = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: ADMIN.username, password: 'wrong' }),
+    })
+    expect(strangerRes.status).toBe(401)
+  }, 20_000)
 
   it('上传未鉴权 → 401', async () => {
     const res = await fetch(`${base}/api/ingest/files`, {

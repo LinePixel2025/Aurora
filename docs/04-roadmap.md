@@ -305,6 +305,45 @@ v0.6.0 的重点不是新增大功能，而是**把"设置里能改、运行时�
 - **验证**：`pnpm typecheck && pnpm test && pnpm build` 全绿（用例数随轮次变动，以实际输出为准）；
   `AURORA_SMOKE=1 pnpm dev` 新增「电脑操控」四条断言；`AURORA_CAPTURE` 18 张 PNG、无 FAIL。
 
+### v0.2.0 · Aurora Center 与 Agent 能力增强（docs/12）
+
+设计定稿于 [12 分册](./12-aurora-center.md)。两块内容：
+
+**A. Aurora Center（网页控制中心）**
+
+- **服务器**（`packages/center`，纯 Node 跨端 Windows/Linux）：单端口 HTTP+WS ——
+  REST（登录 / 客户端 / 令牌 / 管理员 / 文件下载）、客户端 WS（Bearer 配对令牌 +
+  hello 握手）、网页 WS（`?token=`）、流式文件上传、SPA 静态服务。
+  鉴权：用户 scrypt 口令、配对令牌（SHA-256 落库、明文只现一次、一令牌一机）、
+  网页会话令牌（内存 7 天）。管理员可见并可控制**全部**客户端（跨属主），
+  用户只见自己的；`aurora-center` CLI（init / start / users / token / status /
+  update / version）一键开服与 npm 通道自更新。
+- **Web UI**（Apple 风格 SPA，`packages/center/web` → `dist-web`）：登录、
+  客户端列表 + 远程会话（正文流式 / 思考折叠 / 工具卡 / 文件下载条）、
+  管理员页（用户 / 配对令牌 / 全部客户端）。
+- **客户端连接器**（`apps/desktop/src/main/center/`）：出站 WS + 指数退避重连 +
+  心跳；远程会话走与 `chat:send` **同一条** `agent.send()` 通路（`origin: 'center'`，
+  会话 id `center-*` 前缀）；远程配置走客户端侧**白名单**（模式切换 + agent 工具
+  开关，`agent.permissionMode` / `allowPatterns` 刻意不在白名单内）；三个
+  `allow*` 开关是命令类别的本机最终闸门。
+- **Center 工具组**（`center_status` / `center_send_file`）：`center.enabled` 且
+  serverUrl 非空才注册；`center_send_file` 逐次确认、走 `/api/ingest/files` 上传。
+- **配置**：`center` 分组（CONFIG_VERSION 16，v15→v16 迁移）；`center.*` 整组
+  只读前缀（连接目标是外发通道）；`center.token` 凭据链与 apiKey 同款 5 处。
+
+**B. Agent 能力增强**
+
+- **create_skill**：内置技能 `skills/create-skill/`——用户经对话创建自己的技能
+  （收集名称 / 触发场景 / 正文 → 按内置同款 frontmatter 写入用户技能目录）；
+  `SkillsService` 对技能目录挂 `fs.watch`（防抖 500ms）**自动重扫**，写完即生效。
+- **模式能力对齐**（docs/05 §6）：模式差异只允许出现在「自主感知」与「特化功能」
+  两处，工具集全模式一致；`packages/modes/src/capabilities.ts` 导出
+  `MODE_CAPABILITY_MATRIX` 并由回归测试钉住。
+
+验证口径：`packages/center` 26 用例（auth / hub 路由与越权 / 真实 HTTP+WS 端到端）；
+desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / 白名单）；CLI 与
+真实服务器冒烟（init → start → 登录 → 建令牌 → 静态页 200）。
+
 ### P7 · 后期（预留，见 05 §4）
 
 - Work Mode / Code Mode 功能实现

@@ -5,6 +5,7 @@
  * `WindowManager` / `ModeManager` / `GuideRunner` 在结构上天然满足这些接口。
  */
 import type {
+  CenterConnectionStatus,
   AgentEvent,
   ChatSessionSummary,
   ClassIslandStatus,
@@ -258,6 +259,11 @@ export interface SessionListLike {
 }
 
 /** 自动更新（docs/09）：主进程用 UpdateService，IPC 只依赖这个最小面 */
+/** Aurora Center 连接器（docs/12）：ipc 只取展示用的状态快照 */
+export interface CenterConnectionLike {
+  status(): CenterConnectionStatus
+}
+
 export interface UpdateControllerLike {
   getState(): UpdateState
   check(): Promise<UpdateState>

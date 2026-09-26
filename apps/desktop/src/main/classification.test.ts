@@ -158,6 +158,18 @@ function settingsWith(overrides: {
       // v15 起 agent 还多了 loop（zod .default() ⇒ 输出类型必填）
       loop: { maxRounds: 8, maxTotalTokens: 0, autoContinueRounds: 2 },
     },
+    // v16 新增顶层分组（Aurora Center 连接，docs/12）：本用例不涉及远程控制，保持默认空态
+    center: {
+      enabled: false,
+      serverUrl: '',
+      tokenEnc: '',
+      clientId: '',
+      displayName: '',
+      allowRemoteSession: true,
+      allowRemoteConfig: true,
+      allowFileTransfer: true,
+      maxFileMb: 64,
+    },
   }
 }
 

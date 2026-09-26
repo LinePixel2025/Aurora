@@ -21,6 +21,9 @@ apps/desktop/
 packages/shared/     配置 Schema、SettingsStore、IPC 契约、模式/窗口类型
 packages/agent-core/ Agent 内核：LLM / 会话 / 工具循环 / Skill / MCP / Prompt 组装
 packages/modes/      IMode 框架、ClassRoom 完整实现、Work 初步实装（BetaV2）/ Code 占位
+                     packages/modes/src/capabilities.ts：模式能力矩阵（docs/05 §6）
+packages/center/     Aurora Center 服务器 + `aurora-center` CLI + Web UI（docs/12），
+                     纯 Node 可跨端；构建 = tsc + vite（web/ → dist-web/）
 skills/              内置 SKILL.md（file-classify / system-status / timetable）
 scripts/             图标生成、验收、发布脚本
 docs/                项目文档（SSOT，01–11 分册）
@@ -39,6 +42,9 @@ pnpm test             # vitest 全量单测
 pnpm lint             # ESLint        pnpm format  # Prettier
 pnpm verify           # 真实磁盘配置层验收（需先 pnpm build）
 pnpm package          # 构建 + electron-builder NSIS 安装包
+# Aurora Center 服务器（docs/12）：开发态直接 node 跑
+# node packages/center/bin/aurora-center.js start --port 8787 --data <目录>
+# （数据目录默认 ~/.aurora-center；CLI 子命令 init/users/token/status/update）
 ```
 
 - **跑单个/单包测试**：`pnpm vitest run <文件路径>`（如
@@ -237,6 +243,25 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   常见症状是共享包「no exported member」、agent-core 新加的方法在 `main/ipc.ts` 里报
   `TS2339 Property 'xxx' does not exist on type 'SessionStore'`（看着像自己写错了，其实只是没编译）。
   命令：`pnpm --filter @aurora/shared build` / `pnpm --filter @aurora/agent-core build`。
+- **Aurora Center（docs/12，v16）的四处坑**：
+  ① `packages/center` 的 CLI `start` 必须**常驻**（`await` 信号后才 return）——
+  bin 启动器在 `runCli` 返回后 `process.exit`，写成"注册完信号处理器就 return"服务器会秒退；
+  ② `ws` 库**手动** `handleUpgrade` 时回调**替代**了 `'connection'` 事件
+  （库内只有自动挂 upgrade 监听的那条路径会 emit），服务器端客户端握手是
+  `beginClientSession(ws, token)` 直调，别改成依赖 `clientWss.on('connection')`；
+  ③ `center.token` 是凭据路径（`center.token` ⇄ `center.tokenEnc`），与 apiKey 同款
+  5 处同步；`center.*` 整组在 `SETTINGS_READONLY_PREFIXES`（连接目标是外发通道），
+  但 Center 的**远程配置**走 `main/center/remote-control.ts` 的独立白名单
+  （`CENTER_REMOTE_CONFIG_PREFIXES`），两条通道语义不同别混改；
+  ④ 远程补丁应用前必须先在 `structuredClone` 副本上演练——`SettingsStore.mutate`
+  的 draft 是**活对象**，失败半写会污染内存态。
+- **远程会话与本地发送是同一条链**：Center 的 `session.input` → `SessionBridge` →
+  `agent.send({ origin: 'center' })`（`SendMessageRequest.origin` 已放宽）。
+  只转发 `center-` 前缀会话的事件；别在别处再写一条"远程专用"发送通路。
+- **SkillsService 的目录监听**（`startWatching`）：改 `skills.userDir` 走 `reconfigure`
+  时会 `rearmWatcher`，新增监听路径时记得同样处理；create-skill 技能写文件后
+  依赖这个监听自动重扫，没有任何"刷新"仪式。
+
 - **capture / smoke 的探针改配置时注意两个缓存**：`SettingsStore.init()` 启动即把 `config.json`
   读进内存并长期缓存 —— 启动后**写文件对运行中的进程无效**，改配置只能走 `settings:update` IPC；
   而 `SessionStore` 是按会话**惰性**读盘且首次读即缓存，种会话文件必须赶在窗口第一次

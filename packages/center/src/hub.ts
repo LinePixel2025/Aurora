@@ -45,8 +45,6 @@ export interface HubDeps {
 /** 待回执命令的超时：session.input 的回执是"客户端收下了"（毫秒级），15s 足够宽裕 */
 const PENDING_TIMEOUT_MS = 15_000
 
-let webConnSeq = 0
-
 export class Hub {
   private readonly clientConns = new Map<string, ClientConn>()
   private readonly webConns = new Map<string, WebConn>()
@@ -273,7 +271,14 @@ export class Hub {
    * 发给属主与全部管理员（server.ts 已知属主，这里只管路由）。
    */
   broadcastFileReceived(
-    record: { fileId: string; clientId: string; name: string; size: number; note?: string; at: string },
+    record: {
+      fileId: string
+      clientId: string
+      name: string
+      size: number
+      note?: string
+      at: string
+    },
     ownerUserId: string,
   ): void {
     for (const web of this.webConns.values()) {
@@ -300,7 +305,8 @@ export class Hub {
       online: this.clientConns.has(record.clientId),
       version: record.version,
       platform: record.platform,
-      mode: (this.statusByClient.get(record.clientId)?.mode ?? record.lastMode) as ClientInfo['mode'],
+      mode: (this.statusByClient.get(record.clientId)?.mode ??
+        record.lastMode) as ClientInfo['mode'],
       ownerUserId: record.ownerUserId,
       ownerUsername: this.deps.usernameOf(record.ownerUserId),
       lastSeenAt: record.lastSeenAt,

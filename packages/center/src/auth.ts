@@ -92,11 +92,7 @@ export class AuthStore {
 
   constructor(options: AuthStoreOptions) {
     this.logger = options.logger
-    this.users = new JsonStore<UserRecord[]>(
-      `${options.dataDir}/users.json`,
-      () => [],
-      this.logger,
-    )
+    this.users = new JsonStore<UserRecord[]>(`${options.dataDir}/users.json`, () => [], this.logger)
     this.tokens = new JsonStore<PairingTokenRecord[]>(
       `${options.dataDir}/tokens.json`,
       () => [],
@@ -134,7 +130,12 @@ export class AuthStore {
   }
 
   listUsers(): Array<Pick<UserRecord, 'id' | 'username' | 'role' | 'createdAt'>> {
-    return this.userCache.map(({ id, username, role, createdAt }) => ({ id, username, role, createdAt }))
+    return this.userCache.map(({ id, username, role, createdAt }) => ({
+      id,
+      username,
+      role,
+      createdAt,
+    }))
   }
 
   getUser(id: string): UserRecord | undefined
@@ -180,7 +181,10 @@ export class AuthStore {
   }
 
   /** 首个管理员不存在时创建（CLI init / start 的自动引导）。返回 created 与一次性口令。 */
-  async ensureAdmin(username: string, password?: string): Promise<{ created: boolean; password?: string }> {
+  async ensureAdmin(
+    username: string,
+    password?: string,
+  ): Promise<{ created: boolean; password?: string }> {
     const existing = this.userCache.find((record) => record.role === 'admin')
     if (existing !== undefined) return { created: false }
     const generated = password ?? randomBytes(9).toString('base64url')
@@ -215,7 +219,10 @@ export class AuthStore {
   // ─────────────── 配对令牌 ───────────────
 
   /** 创建配对令牌；明文只在本返回值出现一次（调用方负责展示 / 打印）。 */
-  async createPairingToken(userId: string, label: string): Promise<{ record: PairingTokenView; token: string }> {
+  async createPairingToken(
+    userId: string,
+    label: string,
+  ): Promise<{ record: PairingTokenView; token: string }> {
     const token = `ac-${randomBytes(24).toString('base64url')}`
     const record: PairingTokenRecord = {
       id: `t-${randomBytes(6).toString('hex')}`,
@@ -231,7 +238,8 @@ export class AuthStore {
   }
 
   listPairingTokens(userId?: string): PairingTokenView[] {
-    const source = userId === undefined ? this.tokenCache : this.tokenCache.filter((t) => t.userId === userId)
+    const source =
+      userId === undefined ? this.tokenCache : this.tokenCache.filter((t) => t.userId === userId)
     return source.map(toTokenView)
   }
 
@@ -255,7 +263,10 @@ export class AuthStore {
    * 用明文凭据校验配对令牌；`clientId` 是首次连接时绑定（之后同一令牌只认它）。
    * 返回令牌记录；非法 / 已吊销 / 已绑定到别的客户端 → undefined。
    */
-  async verifyPairingToken(token: string, clientId: string): Promise<PairingTokenRecord | undefined> {
+  async verifyPairingToken(
+    token: string,
+    clientId: string,
+  ): Promise<PairingTokenRecord | undefined> {
     if (clientId.trim() === '') return undefined
     const tokenHash = hashToken(token)
     const record = this.tokenCache.find((entry) => entry.tokenHash === tokenHash)

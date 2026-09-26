@@ -6,7 +6,7 @@
  *  → 首次引导判断（无可用模型配置则进入引导向导，否则显示服务窗与提示条）。
  */
 import { existsSync, mkdirSync, promises as fs, readdirSync, rmSync, statSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { hostname as osHostname, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import {
   BrowserWindow,
@@ -44,6 +44,7 @@ import {
   nodeFileSystem,
   // 三档权限的生效档位（docs/06 §11.2）：确认判定与工具注册必须读同一个来源
   resolvePermissionMode,
+  type CenterConnectionStatus,
   type ClassIslandStatus,
   type ClassIslandTestResult,
   type Logger,
@@ -82,6 +83,10 @@ import { ProactiveScheduler } from './proactive.js'
 import { PreClassReminder } from './pre-class-reminder.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
 import { HotkeyManager } from './hotkey.js'
+import { SessionBridge } from './center/session-bridge.js'
+import { CenterConnector } from './center/connector.js'
+import { uploadFileToCenter } from './center/ingest.js'
+import { applyWhitelistedPaths, buildClientStatus } from './center/remote-control.js'
 import { SkillsService } from './skills.js'
 import { ClassIslandNotifier, ClassIslandProvider } from './classisland.js'
 import { applyProxy, createNetFetch } from './net.js'
@@ -128,6 +133,7 @@ import {
 } from './capture.js'
 import {
   registerAgentCoreTools,
+  registerCenterTools,
   registerClassIslandTools,
   registerComputerTools,
   registerExtensionTools,
@@ -351,6 +357,10 @@ let computerTools: ComputerTools | undefined
 let settingsTool: SettingsToolRegistry | undefined
 /** `classisland_remind` 装配器（docs/05 §3.4 v3）：按桥接可用性注册 / 摘除 */
 let classIslandTools: ClassIslandToolsRegistry | undefined
+// Aurora Center（docs/12）：连接器 / 会话桥 / 工具表
+let centerConnector: CenterConnector | undefined
+let sessionBridge: SessionBridge | undefined
+let centerTools: { sync(): string[] } | undefined
 /** 扩展工具五件套装配器（docs/06 §14）：与 set_setting 同级，不受 agent.tools.enabled 门控 */
 let extensionTools: ExtensionToolsRegistry | undefined
 /** Agent 内核自带工具装配器（todo / task，docs/06 §18/§19）：同样不受门控 */
@@ -561,6 +571,8 @@ async function bootstrap(): Promise<void> {
     settings.get(),
   )
   await skillsService.init(settings.get())
+  // 用户技能目录监听（docs/06 §22.3）：create-skill / 手动放入的技能自动重扫
+  skillsService.startWatching()
   const skills = skillsService.kernel
   if (skillsService.status().failed > 0) {
     logger.warn('部分技能解析失败，已跳过', { count: skillsService.status().failed })
@@ -787,6 +799,36 @@ async function bootstrap(): Promise<void> {
       available: () => isClassIslandActive(),
     },
   })
+  centerTools = registerCenterTools({
+    tools,
+    logger: logger.child('tools'),
+    port: {
+      status: () =>
+        centerConnector?.status() ?? {
+          enabled: false,
+          connected: false,
+          serverUrl: '',
+          displayName: '',
+        },
+      sendFile: (path, note) =>
+        uploadFileToCenter({
+          serverUrl: settings!.get().center.serverUrl,
+          token: settings!.getSecret('center.token'),
+          clientId: settings!.get().center.clientId,
+          path,
+          ...(note === undefined ? {} : { note }),
+        }),
+    },
+    config: () => {
+      const center = settings!.get().center
+      return {
+        enabled: center.enabled,
+        serverUrl: center.serverUrl,
+        allowFileTransfer: center.allowFileTransfer,
+        maxFileMb: center.maxFileMb,
+      }
+    },
+  })
   syncToolRegistries()
 
   mcp = new McpController({
@@ -885,6 +927,72 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('tts'),
     resolveFetch: () => netFetch,
   })
+
+  // 7.1a Aurora Center 连接（docs/12）：出站 WS + 远程会话桥 + 远程配置。
+  //     远程会话与本地 chat:send 走同一个 DesktopAgentHost；远程配置先在副本上
+  //     演练再落库（mutate 的 draft 是活对象，半写会污染内存态）。
+  sessionBridge = new SessionBridge({ agent, logger: logger.child('center-bridge') })
+  centerConnector = new CenterConnector({
+    logger: logger.child('center'),
+    config: () => {
+      const center = settings!.get().center
+      return {
+        enabled: center.enabled,
+        serverUrl: center.serverUrl,
+        token: settings!.getSecret('center.token'),
+        clientId: center.clientId,
+        displayName: center.displayName,
+        allowRemoteSession: center.allowRemoteSession,
+        allowRemoteConfig: center.allowRemoteConfig,
+        allowFileTransfer: center.allowFileTransfer,
+      }
+    },
+    statusSnapshot: () => buildClientStatus(settings!.get(), app.getVersion(), process.platform),
+    version: app.getVersion(),
+    platform: process.platform,
+    hostname: () => osHostname(),
+    applyRemotePatch: async (patch) => {
+      const rehearsal = structuredClone(settings!.get())
+      if (!applyWhitelistedPaths(rehearsal, patch)) return '配置结构无法应用该补丁'
+      const updated = settings!.mutate((draft) => {
+        void applyWhitelistedPaths(draft, patch)
+      })
+      if (updated === undefined) return '配置校验失败：请检查补丁内容'
+      logger?.info('已应用来自 Aurora Center 的远程配置', { paths: Object.keys(patch) })
+      return undefined
+    },
+    getRedactedConfig: () =>
+      JSON.parse(JSON.stringify(settings!.exportRedacted())) as Record<string, unknown>,
+    switchMode: async (mode) => {
+      const result = await modes.setCurrent(mode)
+      if (!result.ok) return result.message
+      if (result.guideRequired) modes.requestGuideIfNeeded(mode, 'user-switch')
+      logger?.info('已切换到来自 Aurora Center 的远程模式', { mode })
+      return undefined
+    },
+    sessionHandler: {
+      handleInput: async (message) => {
+        const result = await sessionBridge!.handleInput(message)
+        return {
+          ok: result.ok,
+          ...(result.data === undefined ? {} : { data: result.data }),
+          ...(result.error === undefined ? {} : { error: result.error }),
+        }
+      },
+      handleAbort: (message) => {
+        const result = sessionBridge!.handleAbort(message)
+        return {
+          ok: result.ok,
+          ...(result.data === undefined ? {} : { data: result.data }),
+          ...(result.error === undefined ? {} : { error: result.error }),
+        }
+      },
+    },
+    bindSessionEmit: (emit) => sessionBridge?.bindEmit(emit),
+    onStatusChange: () => tray?.refresh(),
+  })
+  centerConnector.start()
+  settings.onChange(() => centerConnector?.onConfigChanged())
 
   // 7.2 分类管线装配（docs/05 §3、docs/02 §5.2）
   //     chokidar 监听 → 并发队列 → utilityProcess 内容提取 → 规则/LLM 判定 → 落盘 → 通知
@@ -1061,6 +1169,7 @@ async function bootstrap(): Promise<void> {
       }
     },
     updater,
+    center: { status: () => centerStatus() },
     logger: logger.child('ipc'),
     paths,
     isDev,
@@ -3294,6 +3403,8 @@ function createSummarizer(
 async function shutdown(): Promise<void> {
   logger?.info('Aurora 退出中')
   disposeIpc?.()
+  centerConnector?.dispose()
+  sessionBridge?.dispose()
   perception?.stop()
   agent?.dispose()
   updater?.dispose()
@@ -3310,6 +3421,7 @@ async function shutdown(): Promise<void> {
   await classification?.close().catch(() => undefined)
   extractPool?.close()
   // 会话与任务清单必须在退出前收尾（docs/06 §4 / §18，同一套防抖 + flush 约定）
+  skillsService?.stopWatching()
   await sessions?.flush().catch((error: unknown) => {
     logger?.warn('退出前落盘会话失败', { error: String(error) })
   })
@@ -3380,6 +3492,20 @@ function adaptProactive(scheduler: ProactiveScheduler): ProactiveLike {
  * 拆开写会让「改开关后工具表变化」的时机不一致：后三者不依赖 `agent.tools.enabled`，
  * 但都与电脑操控工具共用同一张注册表，必须在同一拍完成重建。
  */
+/** Aurora Center 连接状态（center:status IPC 的展示口径，docs/12） */
+function centerStatus(): CenterConnectionStatus {
+  const info = centerConnector?.status()
+  const conn = centerConnector?.connectionState()
+  return {
+    enabled: info?.enabled ?? false,
+    connected: info?.connected ?? false,
+    serverUrl: info?.serverUrl ?? '',
+    displayName: info?.displayName ?? '',
+    state: conn?.state ?? 'disabled',
+    ...(conn?.lastError === undefined ? {} : { lastError: conn.lastError }),
+  }
+}
+
 function syncToolRegistries(): void {
   computerTools?.sync()
   settingsTool?.sync()
@@ -3387,6 +3513,8 @@ function syncToolRegistries(): void {
   agentCoreTools?.sync()
   // ClassIsland 提醒工具（v3）：端点填了 / 改了就即时注册或摘除（无需重启）
   classIslandTools?.sync()
+  // Aurora Center 工具（docs/12 §8）：enabled / serverUrl 变了就即时注册或摘除
+  centerTools?.sync()
 }
 
 function syncClassification(): void {

@@ -79,4 +79,6 @@ export {
   // 技能与扩展
   Puzzle,
   MessageSquare,
+  // Aurora Center（设置页导航，docs/12）
+  MonitorSmartphone,
 } from 'lucide-vue-next'

@@ -36,11 +36,7 @@ export class FileStore {
 
   constructor(private readonly options: FileStoreOptions) {
     this.dir = join(options.dataDir, 'files')
-    this.index = new JsonStore<FileRecord[]>(
-      join(this.dir, 'index.json'),
-      () => [],
-      options.logger,
-    )
+    this.index = new JsonStore<FileRecord[]>(join(this.dir, 'index.json'), () => [], options.logger)
     this.logger = options.logger
   }
 
@@ -155,6 +151,8 @@ class TransformCounter extends Transform {
 
 function basenameSafe(name: string): string {
   const raw = name.replaceAll('\\', '/').split('/').pop() ?? 'file'
+  // 文件名里的控制字符替换成下划线（no-control-regex 豁免：这是刻意的安全清洗）
+  // eslint-disable-next-line no-control-regex
   const cleaned = raw.replace(/[\u0000-\u001f<>:"|?*]/g, '_').trim()
   return cleaned === '' || cleaned === '.' || cleaned === '..' ? 'file' : cleaned
 }

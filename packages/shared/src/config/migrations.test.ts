@@ -1062,9 +1062,15 @@ describe('配置迁移链', () => {
     it('为已存在的 center 补默认值，用户已写的 serverUrl / tokenEnc 原样保留', () => {
       const outcome = migrate({
         version: 15,
-        center: { enabled: true, serverUrl: 'wss://center.example.com', tokenEnc: 'fakestorage:v1:tok' },
+        center: {
+          enabled: true,
+          serverUrl: 'wss://center.example.com',
+          tokenEnc: 'fakestorage:v1:tok',
+        },
       })
-      expect(outcome.applied).toEqual(['v15 → v16：v15 → v16：新增 center 分组（Aurora Center 连接，docs/12）'])
+      expect(outcome.applied).toEqual([
+        'v15 → v16：v15 → v16：新增 center 分组（Aurora Center 连接，docs/12）',
+      ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
         enabled: true,

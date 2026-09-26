@@ -136,6 +136,9 @@ const CHANNELS = {
     install: 'update:install',
     stateChanged: 'update:stateChanged',
   },
+  center: {
+    status: 'center:status',
+  },
 } as const
 
 /**

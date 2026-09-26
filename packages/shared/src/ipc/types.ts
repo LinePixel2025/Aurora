@@ -635,8 +635,8 @@ export interface SensitiveToolRequest {
 export interface SendMessageRequest {
   sessionId: string
   text: string
-  /** 系统提示词会被注入的来源窗口，用于日志与后续多窗口路由 */
-  origin: WindowName
+  /** 系统提示词会被注入的来源窗口，用于日志与后续多窗口路由；'center' = 远程会话（docs/12） */
+  origin: WindowName | 'center'
   /**
    * 附件绝对路径列表（拖拽发送，docs/07 §2.3）。
    * 主进程用 `extract.ts` 提取文本后拼进本轮用户消息；提取失败按降级处理，不阻断发送。
@@ -976,6 +976,16 @@ export type AgentEvent =
 
 // ───────────────────────── preload 暴露面 ─────────────────────────
 
+/** Aurora Center 连接状态（渲染层展示口径，docs/12 §7） */
+export interface CenterConnectionStatus {
+  enabled: boolean
+  connected: boolean
+  serverUrl: string
+  displayName: string
+  state: 'disabled' | 'connecting' | 'connected' | 'error'
+  lastError?: string
+}
+
 export interface AuroraApi {
   app: {
     getInfo(): Promise<Result<AppInfo>>
@@ -1172,5 +1182,9 @@ export interface AuroraApi {
     /** 退出并安装；调用后进程会结束 */
     install(): Promise<Result<boolean>>
     onStateChanged(listener: (state: UpdateState) => void): () => void
+  }
+  /** Aurora Center 连接状态（docs/12）：设置页展示连接机与诊断信息 */
+  center: {
+    status(): Promise<Result<CenterConnectionStatus>>
   }
 }

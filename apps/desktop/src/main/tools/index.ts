@@ -48,7 +48,10 @@ import {
   createWebFetchTool,
   effectiveWorkspaceDir,
   TODO_WRITE_TOOL_NAME,
+  createCenterSendFileTool,
+  createCenterStatusTool,
   type AgentProviderFactory,
+  type CenterPort,
   type ClipboardPort,
   type CommandRunner,
   type FilePort,
@@ -453,6 +456,54 @@ export function registerClassIslandTools(deps: ClassIslandToolsDeps): ClassIslan
       deps.tools.register(createClassIslandRemindTool({ port: deps.port }))
       const names = CLASSISLAND_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
       deps.logger.info('已同步 ClassIsland 工具', { names: [...names] })
+      return [...names]
+    },
+  }
+}
+
+/**
+ * Aurora Center 工具组（docs/12 §8、docs/06 §22.1）。
+ *
+ * 门控口径：`center.enabled` 且 `center.serverUrl` 非空**才注册**（未配置时连
+ * 工具都不出现，与 STT/TTS 同口径）；**不受** `agent.tools.enabled` 门控
+ * （与扩展工具五件套同口径）。`sync()` 每次重建实例：设置热改（开关 / 上限 /
+ * 传输许可）立即生效，无需重启。
+ */
+export interface CenterToolsDeps {
+  tools: ToolRegistry
+  logger: Logger
+  port: CenterPort
+  /** 每次调用即时取值（sync 之外的工具执行期也用它判定） */
+  config: () => {
+    enabled: boolean
+    serverUrl: string
+    allowFileTransfer: boolean
+    maxFileMb: number
+  }
+}
+
+export const CENTER_TOOL_NAMES = ['center_status', 'center_send_file'] as const
+
+export function registerCenterTools(deps: CenterToolsDeps): { sync(): string[] } {
+  return {
+    sync(): string[] {
+      for (const name of CENTER_TOOL_NAMES) deps.tools.unregister(name)
+
+      const config = deps.config()
+      if (!config.enabled || config.serverUrl.trim() === '') {
+        deps.logger.debug('Aurora Center 未启用：center_* 工具不注册')
+        return []
+      }
+      const maxFileBytes = (): number => Math.max(1, deps.config().maxFileMb) * 1024 * 1024
+      const options = {
+        port: deps.port,
+        maxFileBytes,
+        fileTransferEnabled: () => deps.config().allowFileTransfer,
+      }
+      deps.tools.register(createCenterStatusTool(options))
+      deps.tools.register(createCenterSendFileTool(options))
+      const names = CENTER_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
+      deps.logger.info('已同步 Aurora Center 工具', { names: [...names] })
       return [...names]
     },
   }

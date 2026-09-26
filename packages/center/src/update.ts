@@ -16,8 +16,14 @@ export interface UpdateCheckResult {
 
 /** 语义化版本比较（只取 major.minor.patch；预发布标签忽略，按发布版对待） */
 export function compareVersions(a: string, b: string): number {
-  const pa = a.replace(/^v/, '').split('.').map((part) => Number.parseInt(part, 10) || 0)
-  const pb = b.replace(/^v/, '').split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const pa = a
+    .replace(/^v/, '')
+    .split('.')
+    .map((part) => Number.parseInt(part, 10) || 0)
+  const pb = b
+    .replace(/^v/, '')
+    .split('.')
+    .map((part) => Number.parseInt(part, 10) || 0)
   for (let i = 0; i < 3; i += 1) {
     const diff = (pa[i] ?? 0) - (pb[i] ?? 0)
     if (diff !== 0) return diff
@@ -36,10 +42,7 @@ export async function fetchLatestVersion(registry: string): Promise<string> {
   return body.version
 }
 
-export async function checkUpdate(
-  current: string,
-  registry: string,
-): Promise<UpdateCheckResult> {
+export async function checkUpdate(current: string, registry: string): Promise<UpdateCheckResult> {
   try {
     const latest = await fetchLatestVersion(registry)
     return { current, latest, updateAvailable: compareVersions(latest, current) > 0 }

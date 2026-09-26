@@ -4,7 +4,7 @@ import { ClientRegistry } from './clients.js'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { CenterWebMessage, ClientStatus } from '@aurora/shared'
+import type { ClientStatus } from '@aurora/shared'
 
 interface Harness {
   hub: Hub
@@ -87,18 +87,32 @@ describe('Hub · 会话命令路由', () => {
     stranger.sent.length = 0
     admin.sent.length = 0
 
-    harness.hub.handleWebMessage(
-      { ...owner.conn, id: owner.id } as WebConn,
-      { type: 'session.create', requestId: 'web-1', clientId: 'c1' },
-    )
+    harness.hub.handleWebMessage({ ...owner.conn, id: owner.id } as WebConn, {
+      type: 'session.create',
+      requestId: 'web-1',
+      clientId: 'c1',
+    })
     const result = owner.sent.at(-1) as { type: string; ok: boolean; data: { sessionId: string } }
     expect(result.ok).toBe(true)
     expect(result.data.sessionId.startsWith('center-')).toBe(true)
 
     // 客户端回事件 → 属主与管理员收到，陌生人收不到
-    const event = { seq: 1, type: 'user-message', sessionId: result.data.sessionId, requestId: 'r', content: 'hi', createdAt: 0 } as never
-    harness.hub.handleClientMessage('c1', { type: 'session.event', sessionId: result.data.sessionId, event })
-    expect(stranger.sent.filter((m) => (m as { type: string }).type === 'client.event')).toHaveLength(0)
+    const event = {
+      seq: 1,
+      type: 'user-message',
+      sessionId: result.data.sessionId,
+      requestId: 'r',
+      content: 'hi',
+      createdAt: 0,
+    } as never
+    harness.hub.handleClientMessage('c1', {
+      type: 'session.event',
+      sessionId: result.data.sessionId,
+      event,
+    })
+    expect(
+      stranger.sent.filter((m) => (m as { type: string }).type === 'client.event'),
+    ).toHaveLength(0)
     const ownerEvents = owner.sent.filter((m) => (m as { type: string }).type === 'client.event')
     const adminEvents = admin.sent.filter((m) => (m as { type: string }).type === 'client.event')
     expect(ownerEvents).toHaveLength(1)
@@ -152,7 +166,10 @@ describe('Hub · 会话命令路由', () => {
       requestId: 'web-5',
       clientId: 'c-off',
     })
-    const forwarded = client.sent.at(-1) as { type: string; cmd: { kind: string; requestId: string } }
+    const forwarded = client.sent.at(-1) as {
+      type: string
+      cmd: { kind: string; requestId: string }
+    }
     expect(forwarded.cmd.kind).toBe('config.get')
     harness.hub.handleClientMessage('c-off', {
       type: 'result',
@@ -229,7 +246,9 @@ describe('Hub · 状态与文件通知', () => {
     const u1Snap = u1.sent.filter((m) => (m as { type: string }).type === 'clients').at(-1) as {
       clients: Array<{ clientId: string; online: boolean; ownerUsername: string }>
     }
-    const adminSnap = admin.sent.filter((m) => (m as { type: string }).type === 'clients').at(-1) as {
+    const adminSnap = admin.sent
+      .filter((m) => (m as { type: string }).type === 'clients')
+      .at(-1) as {
       clients: Array<{ clientId: string; online: boolean }>
     }
     expect(u1Snap.clients.map((c) => c.clientId)).toEqual(['c1'])
@@ -251,9 +270,15 @@ describe('Hub · 状态与文件通知', () => {
       { fileId: 'f-1', clientId: 'c1', name: 'report.pdf', size: 12, at: new Date().toISOString() },
       'u1',
     )
-    expect(owner.sent.filter((m) => (m as { type: string }).type === 'file.received')).toHaveLength(1)
-    expect(admin.sent.filter((m) => (m as { type: string }).type === 'file.received')).toHaveLength(1)
-    expect(stranger.sent.filter((m) => (m as { type: string }).type === 'file.received')).toHaveLength(0)
+    expect(owner.sent.filter((m) => (m as { type: string }).type === 'file.received')).toHaveLength(
+      1,
+    )
+    expect(admin.sent.filter((m) => (m as { type: string }).type === 'file.received')).toHaveLength(
+      1,
+    )
+    expect(
+      stranger.sent.filter((m) => (m as { type: string }).type === 'file.received'),
+    ).toHaveLength(0)
   })
 
   it('客户端断开后会话记账被清理，事件不再外发', async () => {
@@ -267,7 +292,7 @@ describe('Hub · 状态与文件通知', () => {
       requestId: 'web-9',
       clientId: 'c1',
     })
-    const { sessionId } = ((owner.sent.at(-1) as { data: { sessionId: string } }).data)
+    const { sessionId } = (owner.sent.at(-1) as { data: { sessionId: string } }).data
     harness.hub.removeClient('c1')
     harness.hub.dropClientSessions('c1')
     owner.sent.length = 0
@@ -276,6 +301,8 @@ describe('Hub · 状态与文件通知', () => {
       sessionId,
       event: { seq: 1 } as never,
     })
-    expect(owner.sent.filter((m) => (m as { type: string }).type === 'client.event')).toHaveLength(0)
+    expect(owner.sent.filter((m) => (m as { type: string }).type === 'client.event')).toHaveLength(
+      0,
+    )
   })
 })

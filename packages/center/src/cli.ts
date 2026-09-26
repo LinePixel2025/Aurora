@@ -118,7 +118,11 @@ async function openAuth(dataDir: string, logger?: Logger): Promise<AuthStore> {
   return auth
 }
 
-async function runInit(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
+async function runInit(
+  argv: string[],
+  out: (s: string) => void,
+  err: (s: string) => void,
+): Promise<number> {
   const dataDir = dataDirOf(argv)
   const auth = await openAuth(dataDir)
   const username = flagOf(argv, '--admin-user') ?? 'admin'
@@ -126,14 +130,19 @@ async function runInit(argv: string[], out: (s: string) => void, err: (s: string
   const result = await auth.ensureAdmin(username, password)
   if (result.created) {
     out(`已创建数据目录与首个管理员：${username}`)
-    if (password === undefined) out(`初始口令（只显示这一次，请立即修改）：${result.password ?? ''}`)
+    if (password === undefined)
+      out(`初始口令（只显示这一次，请立即修改）：${result.password ?? ''}`)
     return 0
   }
   err(`管理员已存在，跳过（数据目录：${dataDir}）`)
   return 0
 }
 
-async function runStart(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
+async function runStart(
+  argv: string[],
+  out: (s: string) => void,
+  err: (s: string) => void,
+): Promise<number> {
   const dataDir = dataDirOf(argv)
   const port = Number.parseInt(flagOf(argv, '--port') ?? '8787', 10)
   const host = flagOf(argv, '--host') ?? '0.0.0.0'
@@ -168,7 +177,11 @@ async function runStart(argv: string[], out: (s: string) => void, err: (s: strin
   return 0
 }
 
-async function runUsers(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
+async function runUsers(
+  argv: string[],
+  out: (s: string) => void,
+  err: (s: string) => void,
+): Promise<number> {
   const action = positional(argv, 0)
   const rest = argv.slice(1)
   const auth = await openAuth(dataDirOf(rest))
@@ -228,7 +241,11 @@ async function runUsers(argv: string[], out: (s: string) => void, err: (s: strin
   }
 }
 
-async function runToken(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
+async function runToken(
+  argv: string[],
+  out: (s: string) => void,
+  err: (s: string) => void,
+): Promise<number> {
   const action = positional(argv, 0)
   const rest = argv.slice(1)
   const auth = await openAuth(dataDirOf(rest))
@@ -288,7 +305,11 @@ async function runToken(argv: string[], out: (s: string) => void, err: (s: strin
   }
 }
 
-async function runStatus(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
+async function runStatus(
+  argv: string[],
+  out: (s: string) => void,
+  _err: (s: string) => void,
+): Promise<number> {
   const dataDir = dataDirOf(argv)
   const auth = await openAuth(dataDir)
   const clients = new ClientRegistry({ dataDir })
@@ -300,7 +321,11 @@ async function runStatus(argv: string[], out: (s: string) => void, err: (s: stri
   return 0
 }
 
-async function runUpdate(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
+async function runUpdate(
+  argv: string[],
+  out: (s: string) => void,
+  err: (s: string) => void,
+): Promise<number> {
   const registry = flagOf(argv, '--registry') ?? DEFAULT_REGISTRY
   const check = await checkUpdate(serverVersion(), registry)
   if (check.error !== undefined) {

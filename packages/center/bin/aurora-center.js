@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global process */
 /**
  * `aurora-center` 启动器：定位编译产物 `dist/cli.js` 并执行 `runCli`。
  * 全局安装（npm i -g）与工作区内直接 node 运行都适用。

@@ -370,5 +370,5 @@ Git 状态感知、终端 / 命令执行工具组留待后续版本（能力位�
      声明"本模式的特化能力边界"（如 code 的"功能建设中"），但**不得声明或暗示**
      基础工具（文件 / 命令 / 检索 / Center 等）在当前模式不可用。
 3. **回归护栏**：`packages/modes/src/manager.test.ts` 的能力矩阵用例断言三个模式
-   `capabilities.tools` 恒等（`modeCapabilityMatrix()` 导出，见 `helpers.ts`），
+   `capabilities.tools` 恒等（`MODE_CAPABILITY_MATRIX` 导出，见 `packages/modes/src/capabilities.ts`），
    防止未来有人给某个模式加"工具裁剪"。

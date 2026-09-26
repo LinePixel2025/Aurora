@@ -27,6 +27,7 @@ import {
   type ChatHistoryRequest,
   type ChatMessageDto,
   type ChatSessionSummary,
+  type CenterConnectionStatus,
   type ClassIslandNotifyRequest,
   type ClassIslandNotifyResult,
   type ClassIslandStatus,
@@ -79,6 +80,7 @@ import type {
   SkillsInfoLike,
   UpdateControllerLike,
   WindowManagerLike,
+  CenterConnectionLike,
 } from './contracts.js'
 import { resolveSubjectFolder } from './paths.js'
 import { extractPatchSecrets, mergeSettingsPatch } from './settings-patch.js'
@@ -127,6 +129,8 @@ export interface DesktopDeps {
   onMcpStatusChanged: (listener: (statuses: McpServerStatus[]) => void) => () => void
   /** 自动更新（update:*，docs/09） */
   updater: UpdateControllerLike
+  /** Aurora Center 连接（center:status，docs/12）。未装配时（理论上不会）按未启用回答 */
+  center?: CenterConnectionLike
   logger: Logger
   paths: { userData: string; logs: string; config: string; builtinSkills: string }
   isDev: boolean
@@ -601,6 +605,20 @@ export function registerIpc(deps: DesktopDeps): () => void {
     IPC.proactive.resolveSensitiveTool,
     (confirmId: string, approved: boolean, always = false) =>
       ok(deps.proactive.resolve(confirmId, approved, always)),
+  )
+
+  // ───────────────────────── Aurora Center（docs/12） ─────────────────────────
+
+  handle<CenterConnectionStatus>(IPC.center.status, () =>
+    ok(
+      deps.center?.status() ?? {
+        enabled: false,
+        connected: false,
+        serverUrl: '',
+        displayName: '',
+        state: 'disabled' as const,
+      },
+    ),
   )
 
   // ───────────────────────── 更新（docs/09） ─────────────────────────

@@ -127,10 +127,7 @@ describe('AuthStore · 网页会话', () => {
     const first = new AuthStore({ dataDir: dir })
     await first.init()
     await first.createUser({ username: 'root', password: 'secret-123', role: 'admin' })
-    const { token } = await first.createPairingToken(
-      first.getUser('root', 'username')!.id,
-      '持久',
-    )
+    const { token } = await first.createPairingToken(first.getUser('root', 'username')!.id, '持久')
 
     const second = new AuthStore({ dataDir: dir })
     await second.init()

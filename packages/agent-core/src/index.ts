@@ -51,6 +51,7 @@ export * from './tools/edit.js'
 export * from './tools/web-fetch.js'
 export * from './tools/clipboard.js'
 export * from './tools/notify.js'
+export * from './tools/center.js'
 export * from './tools/imagegen.js'
 // Agent 核心能力工具（docs/06 §18/§19）：任务清单与子代理派生。
 export * from './tools/todo.js'

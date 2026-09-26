@@ -13,7 +13,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createReadStream, promises as fs } from 'node:fs'
 import { extname, join, normalize } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
-import type { ClientStatus, Logger, ModeId } from '@aurora/shared'
+import type { CenterServerMessage, ClientStatus, Logger, ModeId } from '@aurora/shared'
 import { AuthError, AuthStore, type UserRecord } from './auth.js'
 import { ClientRegistry } from './clients.js'
 import { FileStore, FileTooLargeError } from './files.js'
@@ -156,10 +156,31 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
           })
           // 先挂常规消息监听（hello 被过滤、命令类消息到 registerClient 前无害），
           // 再注册进 hub：保证 welcome 发出前监听已就位
-          const conn = makeClientConn(ws, body.clientId)
+          let missedPongs = 0
+          const conn = makeClientConn(ws, body.clientId, {
+            pong: (): void => {
+              missedPongs = 0
+            },
+          })
           conn.bind()
           hub.registerClient(conn, helloToStatus(body))
           logger?.info('客户端已连接', { clientId: body.clientId, name: body.name })
+          // 心跳：30s 一次 ping，连续 2 次无 pong 判死（半开连接兜底）
+          const heartbeat = setInterval(() => {
+            missedPongs += 1
+            if (missedPongs > 2) {
+              logger?.info('客户端心跳超时，已断开', { clientId: body.clientId })
+              ws.terminate()
+              return
+            }
+            try {
+              ws.send(JSON.stringify({ type: 'ping' } satisfies CenterServerMessage))
+            } catch {
+              /* 发送失败等 close/terminate 收尾 */
+            }
+          }, 30_000)
+          heartbeat.unref?.()
+          ws.once('close', () => clearInterval(heartbeat))
         })
         .catch((error) => {
           pendingHello.delete(ws)
@@ -169,7 +190,11 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     })
   }
 
-  function makeClientConn(ws: WebSocket, clientId: string): ClientConn & { bind(): void } {
+  function makeClientConn(
+    ws: WebSocket,
+    clientId: string,
+    hooks: { pong: () => void },
+  ): ClientConn & { bind(): void } {
     const conn: ClientConn & { bind(): void } = {
       clientId,
       send: (message) => ws.send(JSON.stringify(message)),
@@ -178,6 +203,10 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         ws.on('message', (data) => {
           const parsed = parseMessage(data)
           if (parsed === undefined || parsed['type'] === 'hello') return
+          if (parsed['type'] === 'pong') {
+            hooks.pong()
+            return
+          }
           hub.handleClientMessage(clientId, parsed as Parameters<Hub['handleClientMessage']>[1])
         })
         ws.on('close', () => {
@@ -363,14 +392,12 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
   }
 
   /** 客户端上传（`center_send_file` 的对端）：配对令牌 + X-Client-Id 双因子，流式落盘 */
-  async function handleIngest(
-    req: IncomingMessage,
-    res: ServerResponse,
-    url: URL,
-  ): Promise<void> {
+  async function handleIngest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const token = bearerOf(req)
     const clientIdHeader = req.headers['x-client-id']
-    const clientId = Array.isArray(clientIdHeader) ? (clientIdHeader[0] ?? '') : (clientIdHeader ?? '')
+    const clientId = Array.isArray(clientIdHeader)
+      ? (clientIdHeader[0] ?? '')
+      : (clientIdHeader ?? '')
     const pair = await auth.verifyPairingToken(token, clientId).catch(() => undefined)
     if (pair === undefined) {
       sendJson(res, 401, { error: 'E_UNAUTHORIZED' })
@@ -444,7 +471,10 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     }
     try {
       const index = await fs.readFile(join(webDir, 'index.html'))
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' })
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache',
+      })
       res.end(index)
     } catch {
       sendJson(res, 404, { error: 'E_NOT_FOUND' })
@@ -551,4 +581,3 @@ function sendAuthError(res: ServerResponse, error: unknown): void {
       : 500
   sendJson(res, status, { error: error instanceof Error ? error.message : String(error) })
 }
-

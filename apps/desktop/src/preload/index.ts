@@ -161,6 +161,9 @@ const api: AuroraApi = {
     install: () => invoke(IPC.update.install),
     onStateChanged: (listener) => subscribe(IPC.update.stateChanged, listener),
   },
+  center: {
+    status: () => invoke(IPC.center.status),
+  },
 }
 
 contextBridge.exposeInMainWorld('aurora', api)
