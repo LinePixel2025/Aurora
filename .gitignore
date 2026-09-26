@@ -23,3 +23,9 @@ Thumbs.db
 # ClassIsland 桥接插件的 .NET 构建产物（源码在 integrations/ 下）
 integrations/classisland-bridge/bin/
 integrations/classisland-bridge/obj/
+# 编码代理的本地状态（DSH 会话/缓存），不属于项目源码
+.dsh/
+
+# 本地设计素材副本（不参与构建，也不需要进版本库）
+Design/Apple Copy.zip
+Design/Apple Copy/

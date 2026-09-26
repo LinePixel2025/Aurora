@@ -1,7 +1,7 @@
 {
   "name": "@aurora/desktop",
   "productName": "Aurora",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Aurora Electron 桌面壳",
   "main": "./out/main/index.js",
