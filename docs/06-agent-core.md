@@ -290,6 +290,13 @@ export interface LlmProvider {
 >   在 `sensitivity === 'confirm'` 且钩子存在时，**先确认再执行**。返回 `false` →
 >   不执行工具、以「用户拒绝执行」文本回填模型、工具卡片置 `error`、**循环继续**
 >   （模型可改走别的路径或向用户说明）。
+> - **确认判定返回四态 decision（2026-09，`ConfirmDecision`）**：`false`（拒绝，见上）/
+>   `true`（用户**当次**在确认卡片上点放行）/ `'always'`（用户**当次**点「总是允许」：
+>   本次放行且本会话记住该工具名，见 §11.2 的会话级授权表）/ `'machine'`（**机器放行**：
+>   auto 档根内字符串判定、auto 档无项目、`allowPatterns` 命中、已记住 `'always'` 后的会话
+>   授权短路 —— 照常执行但不算用户批准）。仅 `true | 'always'` 由内核置 `ctx.approvedByUser`；
+>   `'machine'` 不置位，工具拿不到 `allowOutside`，端口层的项目根 realpath 兜底**保留**
+>   （出处语义与边界效果见 §11.2）。
 > - **确认链路本身抛错按拒绝处理**：确认交互不可用时宁可不执行敏感操作。
 > - **未注入钩子时保持 P3 行为**（不拦截，仅留痕）——避免 P3 的 MCP 路径在确认载体
 >   尚未接好时意外变成"必然被拒"。
@@ -570,10 +577,11 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 - **只读档的语义是"根本不在清单里"**，不是"注册后拒绝"：模型看不到这些工具，也就不会先承诺再被拒
   （`§11` 的既有口径）。`todo_write` 虽然 `sensitivity = 'safe'`，但它会往 `<userData>/todos/<sid>.json`
   落盘，因此在只读档下也要摘掉 —— 否则"只读 = 无系统副作用"这句话就是假的。`todo_read` 保留。
-- **确认结果三个值**：拒绝 / 放行一次 / **本会话内同名工具都放行**（卡片第三颗按钮，
+- **用户可选的确认结果三个值**：拒绝 / 放行一次 / **本会话内同名工具都放行**（卡片第三颗按钮，
   `data-action="chat.confirm-always"`）。会话级授权表在**内核**（`KernelAgentHost`，进程内 `Map`，
   不落盘、不给渲染层也不给 AI），随会话存在；`'always'` 只由用户点按钮产生，
   超时 / 勿扰 / 推送失败一律是拒绝，**拒绝永远不会被升级成会话级授权**。
+  （内核的确认判定是四态 decision，机器放行不是用户可选取值，出处语义见下。）
 - **`auto` 档的保守方向**（`reasonWithinRoot`）：取不到目标路径的工具（除 `run_command` 外）一律按越界处理；
   `run_command` 缺省 `cwd` 视为根内（它会回落到项目根），但**命令串里出现绝对路径时一律回到确认卡片** ——
   我们不做 shell 解析，猜错一次就是静默越权，多问一次只是打扰。
@@ -584,18 +592,20 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
      越界抛 `E_PATH_OUTSIDE_WORKSPACE`，工具层转成 `isError` 结果。
      这条校验只在**配置了当前项目**时启用（`workspaceRoot()` 返回 undefined = 行为与 v13 之前一字不差）。
      六个文件类入口（`readText` / `readWholeText` / `writeText` / `list` / `findFiles` / `searchText`）
-     与 `run_command.cwd` 都走它；确认钩子返回任何非 `false` 的那一次调用由内核置 `approvedByUser`，
-     工具层据此透传 `allowOutside: true` 放行 —— 于是"越界必须被确认后才可写"是可测的。
-- **⚠️ `approvedByUser` 不区分出处（2026-09 独立安全审查指出的残留，非本轮引入，待专门工单修）**：
-  置位条件是「确认钩子返回任何非 `false`」——除用户在卡片上放行，还涵盖 `auto` 档根内的
-  **机器**放行、`allowPatterns` 命中、无项目全放行与会话级 `'always'` 短路，它们都同样带来
-  `allowOutside` 免校验的副作用。于是 `auto` 档配了项目时可构造**零弹卡**逃逸链：根内建指向根外的
+     与 `run_command.cwd` 都走它；确认钩子返回 `true | 'always'`（用户当次批准）的那一次调用
+     由内核置 `approvedByUser`，工具层据此透传 `allowOutside: true` 放行 ——
+     于是"越界必须被确认后才可写"是可测的。
+- **`approvedByUser` 已区分出处（2026-09，四态 decision）**：确认判定 `ConfirmDecision` 取值
+  `false | true | 'always' | 'machine'` —— `false` = 拒绝；`true` = 用户**当次**在确认卡片上点放行；
+  `'always'` = 用户**当次**点「总是允许」（本次放行且本会话记住该工具名）；`'machine'` =
+  **无人参与或历史授权的机器放行**（`auto` 档根内字符串判定、`auto` 档无项目、`allowPatterns`
+  命中、已记住 `'always'` 后的会话授权短路）。仅 `true | 'always'` 置 `ctx.approvedByUser`
+  并免掉 realpath 兜底；`'machine'` **照常执行但边界兜底保留**：内核不置 `approvedByUser`，
+  工具拿不到 `allowOutside`，`resolveWithin` 照常校验。于是此前披露的「根内建指向根外的
   junction / 符号链接（`run_command` 里 `%USERPROFILE%\…` 形态不被 `containsAbsolutePath` 识别），
-  再对链接路径 `write_file` —— 字符串判定在根内 → 机器放行 → realpath 兜底恰被跳过。
-  修法方向：确认判定返回**出处**，仅"用户对本次调用放行"才带 `allowOutside`，机器放行保留
-  realpath 兜底（真根内目标照常通过、无 UX 回归，并顺带堵死「判定与执行取值时刻不同步」的竞态：
-  用户中途切项目时按新根判定、按旧实例执行）。修时同步更新冒烟里以 `approvedByUser: true`
-  断言 auto 根内写入的条目（`main/index.ts` 权限集成组）。
+  再对链接路径写文件」在机器放行路径下被 realpath **拒绝且不弹卡**（零静默越权）；
+  这条出处区分还顺带兜住「判定与执行取值时刻不同步」的竞态（用户中途切项目时按新根判定、
+  按旧实例烘焙目录执行）—— 机器放行 fail-closed 落回 realpath 校验，不再存在免校验窗口。
 - **`advanced.confirmSensitiveTools = false` 时的语义**（沿用既有行为，§5 / §9.1）：由 **`auto` 档**承接 ——
   有项目时根内免确认、根外仍询问；无项目时直接放行不推卡片（与从前一致），内核仍按 `sensitivity`
   写日志留痕。此时代码路径与用户自己在 PowerShell 里敲同样的命令**能力相当**（甚至略宽：命令以
@@ -935,8 +945,10 @@ AI **改不动它**：`set` 的 `value` 只接受 `string | number | boolean`，
 `set_setting` 标记 `sensitivity = 'confirm'`，**每一次调用**都走 §5 的 `confirmTool` 钩子
 （主进程侧由 §9.1 的 `ProactiveScheduler` 推确认卡片）。超时（默认 60s）、勿扰时段、
 卡片推送失败一律按拒绝处理，拒绝后以「用户拒绝执行」文本回填模型、工具卡片置 `error`、循环继续。
-`advanced.confirmSensitiveTools = false` 时**直接放行**，内核仍按 `sensitivity` 写日志留痕
-——语义与 §11.2 一致：那是「减少打扰」，不是安全加固。
+放行同样按 §11.2 的四态 decision 带出处：只有用户**当次**在卡片上批准（`true` / 首次 `'always'`）
+才置 `approvedByUser`；`advanced.confirmSensitiveTools = false` 时的**直接放行**属于
+`'machine'` 机器放行（照常执行、不置 `approvedByUser`、项目根 realpath 兜底保留），
+内核仍按 `sensitivity` 写日志留痕 —— 语义与 §11.2 一致：那是「减少打扰」，不是安全加固。
 
 ### 12.4 唯一落地点：`applyPatch` + 审计日志
 

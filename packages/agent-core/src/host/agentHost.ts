@@ -846,10 +846,12 @@ export class KernelAgentHost implements AgentHostContract {
    * 包一层 `confirmTool`：给循环的那份钩子自带「本会话已授权」的短路。
    *
    * 三条口径（缺一不可）：
-   * ① 该会话已授权该工具名 → **直接返回 `true`，不调用 `deps.confirmTool`**
-   *    （不再打扰用户是 `'always'` 的全部意义，多调一次就可能多弹一张卡）；
-   * ② 否则照常问；答 `'always'` 时记入授权表并原样返回 `'always'`（调用方仍按一次放行处理）；
-   * ③ 其余（`true` / `false` / 抛错）原样透传 —— 拒绝与异常的处理**只在循环那一层**，
+   * ① 该会话已授权该工具名 → **直接返回 `'machine'`，不调用 `deps.confirmTool`**
+   *    （不再打扰用户是 `'always'` 的全部意义，多调一次就可能多弹一张卡；
+   *    但这是**历史授权**的机器放行，不是用户当次看卡片——不得免项目根边界，docs/06 §11.2）；
+   * ② 否则照常问；答 `'always'` 时记入授权表并原样返回 `'always'`（首次仍是用户当次批准，
+   *    调用方按一次带 `approvedByUser` 的放行处理）；
+   * ③ 其余（`true` / `'machine'` / `false` / 抛错）原样透传 —— 拒绝与异常的处理**只在循环那一层**，
    *    这里不做二次解释，否则两处判定迟早漂移。
    *
    * 每次 `run()` 现包一个闭包：钩子本身绑定了 `sessionId`，不会串会话。
@@ -864,9 +866,11 @@ export class KernelAgentHost implements AgentHostContract {
   }) => Promise<ConfirmDecision> {
     const confirm = this.deps.confirmTool
     return async (info) => {
-      // `run()` 只在 deps.confirmTool 存在时才包装；这里再判一次是为了让类型收窄不依赖调用点
-      if (confirm === undefined) return true
-      if (this.sessionApprovals.get(sessionId)?.has(info.name) === true) return true
+      // `run()` 只在 deps.confirmTool 存在时才包装；这里再判一次是为了让类型收窄不依赖调用点。
+      // 返回 `'machine'` 而非 `true`：没有人看过卡片，不得算作"用户当次批准"
+      if (confirm === undefined) return 'machine'
+      // 已记住的会话授权是历史放行：照常跳过卡片，但出处算机器放行
+      if (this.sessionApprovals.get(sessionId)?.has(info.name) === true) return 'machine'
       const decision = await confirm(info)
       if (decision === 'always') {
         const approved = this.sessionApprovals.get(sessionId) ?? new Set<string>()

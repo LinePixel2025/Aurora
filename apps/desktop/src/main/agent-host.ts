@@ -303,12 +303,15 @@ export function createConfirmTool(options: {
       if (command !== undefined) {
         const matched = matchAllowPatterns(command, options.allowPatterns?.() ?? [])
         if (matched !== undefined) {
-          options.logger?.info('命令命中免确认模式，已跳过确认卡片', {
-            tool: info.name,
-            pattern: matched,
-            command: command.slice(0, 200), // 超长命令只记前 200 字符
-          })
-          return true
+          options.logger?.info(
+            '命令命中免确认模式，已跳过确认卡片（边界校验仍生效，不带 allowOutside）',
+            {
+              tool: info.name,
+              pattern: matched,
+              command: command.slice(0, 200), // 超长命令只记前 200 字符
+            },
+          )
+          return 'machine'
         }
       }
     }
@@ -319,17 +322,25 @@ export function createConfirmTool(options: {
       if (root === undefined || root.trim() === '') {
         // 无项目：没有"根内"的判据。保持 v13 之前"关掉确认总开关 = 不再逐次询问"的语义，
         // 否则老用户会因为这次升级突然被反复询问（静默的行为回退）。
-        options.logger?.info('auto 档且未配置项目，按免确认放行', { tool: info.name })
-        return true
+        options.logger?.info(
+          'auto 档且未配置项目，按免确认放行（边界校验仍生效，不带 allowOutside）',
+          {
+            tool: info.name,
+          },
+        )
+        return 'machine'
       }
       const approved = reasonWithinRoot(info, root)
       if (approved !== undefined) {
-        options.logger?.info('调用落在项目根内，auto 档免确认放行', {
-          tool: info.name,
-          root,
-          target: approved,
-        })
-        return true
+        options.logger?.info(
+          '调用落在项目根内，auto 档免确认放行（边界校验仍生效，不带 allowOutside）',
+          {
+            tool: info.name,
+            root,
+            target: approved,
+          },
+        )
+        return 'machine'
       }
     }
 

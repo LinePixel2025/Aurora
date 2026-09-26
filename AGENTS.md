@@ -130,10 +130,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   （`file-port.resolveWithin`，越界即 `E_PATH_OUTSIDE_WORKSPACE`，六个文件类入口与
   `run_command.cwd` 都走它）。
   但**没有作业对象 / 容器 / 受限令牌**，`run_command` 仍是当前用户权限 —— 别把这两层说成"沙箱"。
-  且两层之外还有一条**已披露未封堵的逃逸**（2026-09 独立安全审查指出，详见 docs/06 §11.2，待专门工单）：
-  批准位 `approvedByUser` **不区分出处** —— auto 档根内机器放行、`allowPatterns` 命中、会话级 `'always'`
-  短路同会透传 `allowOutside` 把 realpath 兜底**整段跳过**（配合根内既有 junction / 符号链接可零弹卡写到根外），
-  即「越界必须先被确认」目前仅在**真的弹过卡片并由用户批准**时才成立。
+  早前的确认判定逃逸**已封堵（2026-09）**：确认判定改为四态 decision，
+  `approvedByUser` 仅当用户**当次**卡片批准 / 首次「总是允许」置位，机器放行不置位、
+  realpath 兜底保留（根内链接指向根外在机器放行路径下被 realpath 拒绝且不弹卡）；
+  详见 docs/06 §11.2。
 - **`agent.tools.workspaceDir` 仍然只是"默认 cwd / 搜索根"，不是安全边界**：缺省工作目录 / 搜索根按
   三级回落——**当前项目根（配置了当前项目时）> `workspaceDir` > 用户主目录**，这条链**已按 docs/06 §5.1
   的 `effectiveWorkspaceDir` 接线**（**工具执行链的唯一口径**，别在执行链上再写一套）：配了

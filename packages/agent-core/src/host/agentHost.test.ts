@@ -682,15 +682,20 @@ describe('KernelAgentHost', () => {
  * 授权表的键就是 `sessionId` —— 因此"换会话要重新问"是天然行为，不需要额外判断。
  */
 describe('KernelAgentHost · 会话级 always 授权（docs/06 §5）', () => {
-  /** 注册一个 confirm 级工具，并记录它真的被执行过几次 */
-  function registerDanger(harness: Harness, executed: { count: number }): void {
+  /** 注册一个 confirm 级工具，并记录它真的被执行过几次；可选地捕获每次执行的工具上下文 */
+  function registerDanger(
+    harness: Harness,
+    executed: { count: number },
+    contexts?: Array<{ approvedByUser?: boolean }>,
+  ): void {
     harness.tools.register({
       name: 'danger',
       description: '危险操作',
       parameters: { type: 'object' },
       sensitivity: 'confirm',
-      execute: async () => {
+      execute: async (_input, ctx) => {
         executed.count += 1
+        contexts?.push({ approvedByUser: ctx.approvedByUser })
         return { content: '已执行危险操作', summary: '已执行' }
       },
     })
@@ -720,6 +725,28 @@ describe('KernelAgentHost · 会话级 always 授权（docs/06 §5）', () => {
       .filter((event) => event.type === 'tool')
       .map((event) => event.call.state)
     expect(states).toEqual(['running', 'success'])
+  })
+
+  it("首次 'always' 是用户当次批准（ctx 带 approvedByUser），记住后的二次短路不再带（出处 = 'machine'）", async () => {
+    const executed = { count: 0 }
+    const contexts: Array<{ approvedByUser?: boolean }> = []
+    const harness = await createHarness({
+      rounds: twoCalls,
+      confirmTool: async () => 'always',
+    })
+    registerDanger(harness, executed, contexts)
+
+    await harness.send('第一次')
+    await harness.waitForDone()
+    harness.events.length = 0
+    await harness.send('第二次')
+    await harness.waitForDone()
+
+    expect(executed.count).toBe(2)
+    // 首次：用户在卡片上点了「总是允许」→ 属于当次批准，免项目根边界的特权成立
+    expect(contexts[0]?.approvedByUser).toBe(true)
+    // 第二次：会话授权表短路返回 'machine'（历史授权，不是当次看卡片）→ 不再免边界
+    expect(contexts[1]?.approvedByUser).toBeUndefined()
   })
 
   it('同一会话同名工具的第二次调用不再询问（confirmTool 只被调用 1 次）', async () => {

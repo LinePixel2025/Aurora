@@ -73,7 +73,7 @@ function metaOf(records: LogRecord[], index = 0): Record<string, unknown> {
 }
 
 describe('createConfirmTool 的免确认模式分支（run_command）', () => {
-  it('命中免确认模式：不调用确认卡片，直接放行（返回 true）', async () => {
+  it('命中免确认模式：不调用确认卡片，机器放行（返回 machine，不免项目根边界）', async () => {
     const { proactive, requests } = createFakeProactive(false)
     const confirm = createConfirmTool({
       proactive,
@@ -83,7 +83,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
 
     const approved = await confirm(confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK' }))
 
-    expect(approved).toBe(true)
+    expect(approved).toBe('machine')
     expect(requests).toHaveLength(0)
   })
 
@@ -194,7 +194,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     // 下面这些写法都会白弹一张卡片 —— fail-safe（不会误放行），但"加了模式却有时不生效"难排查
     for (const command of ['  git status', 'git status  ', '\n\tgit status  ']) {
       const approved = await confirm(confirmInfo('run_command', { command }))
-      expect(approved).toBe(true)
+      expect(approved).toBe('machine')
     }
 
     expect(requests).toHaveLength(0)
@@ -288,7 +288,8 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
 
     const approved = await confirm(confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK' }))
 
-    expect(approved).toBe(true)
+    // 机器放行（出处不是用户当次卡片）：返回 'machine'，端口层项目根 realpath 兜底保留
+    expect(approved).toBe('machine')
     expect(requests).toHaveLength(0)
     // 放行路径**会**留痕（info）：无项目时的 auto 放行必须可追溯，否则"为什么这次没弹卡片"无从查起
     expect(logger.records).toHaveLength(1)
@@ -450,7 +451,7 @@ describe('createConfirmTool 的三档权限判定', () => {
 
     const approved = await confirm(confirmInfo('write_file', { path: 'D:\\proj\\sub\\a.txt' }))
 
-    expect(approved).toBe(true)
+    expect(approved).toBe('machine')
     expect(requests).toHaveLength(0)
     expect(logger.records[0]?.level).toBe('info')
     expect(metaOf(logger.records)).toMatchObject({
@@ -485,8 +486,10 @@ describe('createConfirmTool 的三档权限判定', () => {
       projectRoot: () => root,
     })
 
-    // cwd 在根内、命令是相对命令 → 免确认
-    expect(await confirm(confirmInfo('run_command', { command: 'npm test', cwd: root }))).toBe(true)
+    // cwd 在根内、命令是相对命令 → 免确认（机器放行，返回 'machine'）
+    expect(await confirm(confirmInfo('run_command', { command: 'npm test', cwd: root }))).toBe(
+      'machine',
+    )
     // cwd 缺省（回落到根）但命令里带了绝对路径 → 保守起见回到确认卡片
     expect(
       await confirm(confirmInfo('run_command', { command: 'type C:\\Windows\\win.ini' })),
@@ -508,7 +511,8 @@ describe('createConfirmTool 的三档权限判定', () => {
       logger,
     })
 
-    expect(await confirm(confirmInfo('run_command', { command: 'npm test' }))).toBe(true)
+    // 机器放行（出处不是用户当次卡片），但审计留痕不变
+    expect(await confirm(confirmInfo('run_command', { command: 'npm test' }))).toBe('machine')
     expect(requests).toHaveLength(0)
     // 机器放行同样留 info 审计痕
     expect(logger.records[0]?.level).toBe('info')

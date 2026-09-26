@@ -21,17 +21,28 @@ import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types
 export const DEFAULT_MAX_ROUNDS = 8
 
 /**
- * 确认结果：`false` = 拒绝；`true` = 本次放行；`'always'` = 本次放行 + 本会话内同名工具不再询问。
+ * 确认结果（四态，docs/06 §5、§11.2）：
+ * - `false` = 拒绝；
+ * - `true` = 用户**当次**在确认卡片上点放行；
+ * - `'always'` = 用户**当次**点「总是允许」（本次放行 + 本会话内同名工具不再询问）；
+ * - `'machine'` = 无人参与或历史授权的机器放行（auto 档根内判定、无项目、免确认模式、
+ *   已记住 `'always'` 后的会话授权短路）——照常执行，但**不置 `ctx.approvedByUser`**，
+ *   工具拿不到 `allowOutside`，端口层的项目根 realpath 兜底保留。
  *
  * 为什么要 `'always'`：敏感工具（写文件、跑命令）在一次任务里往往要连用十几次，
  * 逐次弹同一张卡片会逼用户"闭眼点确定"——那比不确认更危险。`'always'` 把"信任"的粒度
  * 定成**会话 × 工具名**：换会话、换工具都会重新问。
  *
+ * 为什么要 `'machine'`：`approvedByUser` 会被文件 / 终端类工具透成 `allowOutside`，
+ * 免掉端口层的项目根 realpath 兜底——这个特权必须只属于"用户当次真的看过卡片并点放行"。
+ * 机器放行若也返回 `true`，根内指向根外的 junction / 符号链接就能零弹卡写到根外
+ * （2026-09 独立安全审查指出的逃逸链），故以独立变体与用户批准区分出处。
+ *
  * `'always'` 的**记忆不在本文件**：循环是一次请求一个实例、跑完即弃，记住它等于没记住。
  * 会话级记忆落在 `host/agentHost.ts`（`KernelAgentHost.sessionApprovals`，只存内存、不落盘），
  * 由它包装 `confirmTool` 后交进来——循环这一层只认"这次放行没放行"。
  */
-export type ConfirmDecision = boolean | 'always'
+export type ConfirmDecision = boolean | 'always' | 'machine'
 
 /**
  * 循环事件（docs/06 §5、§16.1、§16.2）。
@@ -594,8 +605,10 @@ async function runTool(
   // 敏感工具执行前的用户确认（docs/06 §5）。
   // 未接确认钩子时保持既有行为（仅标记 sensitivity + 日志留痕）。
   //
-  // `approvedByUser` 只在"真的问过、且没被拒"时置位：它会被传给工具上下文，
+  // `approvedByUser` 只在"用户当次批准（含首次 'always'）"时置位：它会被传给工具上下文，
   // 文件 / 终端类工具据此把 `allowOutside` 透给端口（越界的第二道边界在端口里）。
+  // `'machine'`（auto 根内 / 无项目 / 免确认模式 / 已记住 'always' 的会话授权短路）
+  // 照常执行但不置位 —— 机器放行不得免掉项目根的 realpath 兜底（docs/06 §11.2）。
   // 没接确认钩子时字段保持 `undefined` —— 那时并没有"用户批准"这回事，
   // 端口也就照旧按越界拦截（缺省一律按没批准处理）。
   let approvedByUser = false
@@ -616,14 +629,16 @@ async function runTool(
       return { content: message, summary: message, state: 'error' }
     }
 
-    // 只有明确的 `false` 才是拒绝：`true` 与 `'always'` 都继续执行
+    // 只有明确的 `false` 才是拒绝：`true` / `'always'` / `'machine'` 都继续执行
     //（`'always'` 的"本会话不再问"已由上层包装层消化，这里看到的仍是一次放行）
     if (decision === false) {
       options.onToolCall?.({ name: call.name, sensitivity: 'confirm', isError: true })
       const message = `用户拒绝执行工具 "${call.name}"，请勿重复调用；如确有必要，请先向用户说明原因并征得同意。`
       return { content: message, summary: '用户拒绝执行', state: 'error' }
     }
-    approvedByUser = true
+    // 出处只在这一处收敛：仅用户当次卡片批准（含首次 'always'）才置位；
+    // `'machine'` 是机器放行，照常执行但免不了端口层的项目根边界（docs/06 §11.2）。
+    if (decision === true || decision === 'always') approvedByUser = true
   }
 
   try {

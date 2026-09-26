@@ -835,6 +835,29 @@ describe('runAgentLoop', () => {
       expect(none).toEqual([undefined])
     })
 
+    it("confirmTool 返回 'machine'（机器放行）→ 工具照常执行，但 ctx 不带 approvedByUser", async () => {
+      const executed = { count: 0 }
+      const approvals: Array<boolean | undefined> = []
+      const { events, rec } = await runWithConfirm({
+        executed,
+        confirmTool: async () => 'machine',
+        approvals,
+      })
+
+      // 机器放行不是拒绝：工具照常执行（auto 根内 / 免确认模式 / 会话授权短路都走这里）
+      expect(executed.count).toBe(1)
+      const states = events
+        .filter((event) => event.type === 'tool')
+        .map((event) => event.call.state)
+      expect(states).toEqual(['running', 'success'])
+      expect(rec.messages.find((message) => message.role === 'tool')?.content).toBe(
+        '已执行危险操作',
+      )
+      expect(events.at(-1)?.type).toBe('done')
+      // 但出处不是用户当次看卡片 → 不置 approvedByUser，端口层项目根 realpath 兜底保留
+      expect(approvals).toEqual([undefined])
+    })
+
     it('确认链路抛错 → 按拒绝处理（不越权执行）', async () => {
       const executed = { count: 0 }
       const { events } = await runWithConfirm({
