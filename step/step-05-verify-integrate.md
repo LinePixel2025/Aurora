@@ -172,57 +172,102 @@ SUMMARY 3/3 passed
 
 ### 独立审查结论与处置
 
-**独立审查没能完成，如实记录原因**：计划要求派一个**只读**子代理做对抗性审查。本步派了**两次**：
-第一次（宽口径，8 个问题）与第二次（收窄到三个最高风险问题、给了 20 文件时间盒）——
-**两次都没有留下任何回报就结束**（`list_agents` 里消失、`send_message` 返回 "active teammate not found"）。
-按"失联即视为未完成"，这里**不假称做过独立审查**。
+**独立审查做了，而且是三份**（本步共派了 3 个只读审查子代理：宽口径 8 问、三个最高风险问题收窄版、
+单点软链问题版）。三份回报都**迟到**——主代理在归档前先等到 1 份、另 2 份在之后才到，
+期间曾一度按"失联即未完成"记录，此处以**三份全部到达后的实际结论**为准。
 
-替代做法：主代理对**同样那三个最高风险问题**做了定向自查（读代码 + 行号），结论如下 ——
-但请明确：**这是自查，不是独立审查**，它缺少"另一个视角证伪"的价值。
+三份结论一致的部分（各自独立复核）：**四步能力的端到端证据是真的**（审查者在
+`%TEMP%\aurora-smoke-logs\aurora-2026-09-26.log` 里独立核到 `SUMMARY 163/163`、两次启动续跑
+`status=paused → done steps=2→3 cursor=2→3 users=1→1`；`aurora-capture-12\report.json` 53/53/0 fail），
+**但有三条 P0 说明"文档承诺 > 实现"**。
 
-#### P1-1 项目根内的**符号链接**可以绕过边界（真实缺口，本步只记录、未修）
+#### P0-1 自动续轮的第二次 attempt **丢失全部上下文**（最严重，实机复现）
 
-- 位置：`apps/desktop/src/main/tools/file-port.ts:121-142` 的 `resolveWithin`。
-- 事实：边界判定是"对目标的**已存在的最近父目录**做 `fs.realpath`，再把不存在的尾部拼回去，然后比前缀"。
-  当**目标自身**就是一个指向根外的符号链接 / 目录联接（Windows 上 `mklink /J` 很常见）时，
-  最近已存在父目录是**根内**那个目录 → 前缀校验通过 → 随后 `writeFileAtomic(path)` 会**跟随链接**
-  写到根外。`read_file` / `list_dir` 同理。
-- 影响：Agent 在 `auto` 档下可以经由根内的一个联接写到项目根之外而**没有任何确认**。
-  触发前提是根内已经存在这样一个链接（用户自己建的、或仓库里带的）。
-  注意快照侧已经是安全的（`stat` 用 `lstat`，符号链接按 `unreadable` 跳过），缺的是**写路径本身的 lstat 判定**。
-- 建议修法（一行级）：在 `resolveWithin` 里对**最终路径**再 `lstat` 一次 —— 若目标已存在且是符号链接 /
-  目录联接，按越界处理（除非 `allowOutside`）；对不存在的目标则逐段检查已有的父目录链里没有链接。
-- 为什么本步不改：step 5 的硬约束是"只做整合与收口，发现功能缺陷回到对应 step 修，或记成遗留问题并说明"。
-  这是 **step 2 的边界实现**的缺口，改它要连带改 `resolveWithin` 的 6 个调用点与测试，超出本步范围。
+- `packages/agent-core/src/host/agentHost.ts:478-501`：`history`（`compression.messages`）在
+  `for(;;)` 循环**之外**只取一次；`:533` 首次判断 `appendUserMessage = input.resumeJob === undefined`，
+  `:720` 自动续轮时置 `false`。于是第二轮 attempt：**既不 append、也不 push 用户消息**（
+  `agentLoop.ts:194-201`），拿到的又是请求开始时的旧 history —— 请求体退化成 `[system]`。
+- 审查者的运行时复现（内存 FileSystemPort + 假 provider，`maxRounds=1` / `autoContinueRounds=2`）：
+  `attempt 1: count=2 roles=[system,user]` / `attempt 2: count=1 roles=[system]` / `attempt 3: 同上`。
+- 影响：默认 `autoContinueRounds = 2`，**任何跑满轮次的任务都会再发两次"没有提问、没有工具结果"的请求**；
+  模型看不到自己上一轮干了什么，最可能把写文件 / 跑命令**再做一遍**（重复副作用）。
+  `docs/06 §4.1` 却写它"等价于一次自动 resume"，属于承诺不实。
+- **当前零覆盖**：`agentHost.test.ts` 的自动续轮用例只断言计数 / 游标 / 落盘消息数；
+  本步 smoke 的五个块都把 `autoContinueRounds` 设为 0 —— 所以 163/163 全绿也照不到这条。
+- 建议修法：每个 attempt 重新取 history（或在 attempt 之间把已产生的助手 / 工具消息并进下一次的 messages），
+  并补一条"第二次 attempt 的请求体含用户消息与上一轮工具结果"的断言。
 
-#### P1-2 `exists:false` 的快照回滚会**无条件删除**该路径（本步只记录、未修）
+#### P0-2 `agent.loop.*` / `agent.snapshots.*` **其实 AI 改得动**（"AI 不可写"是假的）
 
-- 位置：`apps/desktop/src/main/ipc.ts:907-908`（`if (!target.exists) await nodeFs.rm(target.path, { force: true })`）。
-- 事实：快照记的是"写入前该文件不存在"，回滚语义是"删掉它"。若用户在快照之后**自己新建**了同名文件，
-  回滚会把这个**用户自己的文件**删掉。界面有缓解措施：这类记录额外标注「当时不存在」，
-  且回滚是两段式确认（`data-field="chat.snapshot-restore"`，第一下变「确认回滚？」）。
-- 缺口：确认文案**没有**说明"当前磁盘上有一个文件，回滚会删除它"，
-  用户无法从界面分辨"这里现在什么都没有"与"这里有你刚建的文件"。
-- 建议修法（小改）：回滚前 `stat` 一下目标 —— 若存在且内容与快照时刻不同，把确认文案换成
-  "将删除当前文件（<大小> 字节）"；或者干脆要求显式二次确认（现有两段式已经够位置）。
-- 为什么本步不改：同上，属 step 3 的功能语义，不在本步范围内。
+- 审查者用 `canWriteSettingPath` 实测：`agent.loop.maxRounds|maxTotalTokens|autoContinueRounds` 与
+  `agent.snapshots.enabled|keepPerFile|maxSnapshotBytes|totalBudgetBytes` **七个字段全部 `true`**
+  （对照：`agent.permissionMode` / `projects.*` 为 `false`，这两个是对的）。
+- 机制：`packages/shared/src/config/schema.ts:766-791` 的判定顺序是「可写覆盖表放行 → 只读前缀拒绝 →
+  否则只要 Schema 认识就放行」，而这两个分组既不在 `SETTINGS_READONLY_PREFIXES` 也不在
+  `WRITABLE_PATH_OVERRIDES`。
+- 影响：AI 能给自己放大轮次 / token 预算（正是本轮要防的"绕过该停下来问用户"），
+  也能在写文件前把 `agent.snapshots.enabled` 关掉、拆掉回滚兜底。虽然 `set_setting` 是 confirm 级
+  （不是静默），但 `AGENTS.md` / `schema.ts` / `docs/08` **四处**都写着"AI 默认改不动" —— 承诺不成立。
+- 建议修法：把两组加进 `SETTINGS_READONLY_PREFIXES` + `READONLY_PREFIX_REASONS`（与
+  `agent.permissionMode` 同款），或改文档承认可写。**二者必须选一个，不能让文档与代码相反。**
 
-#### 已确认**成立**的两条（回答计划里的疑问）
+#### P0-3 `effectiveWorkspaceDir()` 从未接线 → 缺省 cwd / 搜索根在项目根之外
 
-- **自动续轮不会重复落盘用户消息**：`packages/agent-core/src/host/agentHost.ts:533` 的
-  `let appendUserMessage = input.resumeJob === undefined`，并在 `:720` 的自动续轮分支里显式置 `false`
-  —— 第二轮 attempt 与续跑走同一条"不再 append"的口径。
-- **跳过快照**不静默**：`packages/agent-core/src/tools/files.ts` 的 `describeSnapshot` 对
-  `too-large` / `disabled` / `unreadable` 三种跳过分别给出可读文案，工具层与 `edit_file` 都会带上它
-  （`file-port.writeText` 返回 `snapshot: { id, skipped }`，主写失败时还会把快照 id 写进错误信息）。
+- 生产代码里零消费（只有 `index.ts` 再导出 + 自测）：`apps/desktop/src/main/tools/index.ts:153` 仍是
+  `workspaceDir || homeDir`；`agent-host.ts:365-375` 把"没给 cwd"当成根内；`terminal.ts:108` 的
+  `defaultCwd` 由装配层给了 `process.cwd()`（`index.ts:679`）。
+- 后果（默认配置：有项目 + `workspaceDir` 为空 + 不给 cwd）：(a) auto 档把"没有 cwd"判成根内 →
+  免确认 → `approvedByUser` → `allowOutside: true` → 命令**在用户主目录里无确认执行**；
+  (b) confirm 档下同类命令一律回"cwd 在项目根之外，本次命令未执行"（功能不可用）；
+  (c) `grep` / `glob` 缺省搜索根同为主目录且是 `safe` 级（永远拿不到放行位）→ **缺省搜索必然越界报错**；
+  (d) 模型侧拿不到项目根的绝对路径，补不出根内路径 —— 全新会话里四件能力难以串起来
+  （smoke 全绿是因为自测直接喂绝对路径）。
+- 这是 **step 1 / step 2 的接线缺口**（`step-01` 与 `step-02` 都写明"由 step 2 消费"），不是 step 5 引入的。
+- 建议修法：接线 `effectiveWorkspaceDir`（缺省 cwd / 搜索根）并在系统提示词的「项目约定」里带上项目根绝对路径。
 
-#### 未查 / 无法判定（交给下一批或后续步骤）
+#### 对主代理自查结论的**更正**（重要）
 
-- `run_command` 命令串里的相对跳转（`cd ..`、`..\..\`）是否完全被"绝对路径回确认卡"覆盖：
-  计划把它定成**保守回确认**而不是硬拦，文档已写明这是有意取舍；但"相对跳转不受 cwd 校验约束"
-  这一点在本步**没有实测**（需要真实命令执行 + 观测）。
-- `snapshots:prune` 的用户可见语义（IPC 存在、无界面入口）在文档里只写了 IPC 口径。
-- 独立审查本应覆盖的其余维度（文档与代码逐条一致性、`readonly` 档对 MCP / 扩展工具是否也摘除）未查。
+- 主代理在"独立审查未完成"阶段自查出的 **P1-1「项目根内的符号链接可绕过边界」不成立**：
+  `canonicalize`（`file-port.ts:217-233`）对"第一个真实存在的祖先"做 `fs.realpath`，而 Windows 的
+  realpath **会穿透 symlink 与 junction**，再把不存在的尾部拼回去判定 —— 所以"目标自身是链接"与
+  "目标在联接目录里"两种情形都会被判越界。仓库里本来就有这条用例
+  （`file-port.test.ts:992-1034`，junction 兜底），审查者本机实跑该文件 **59 passed、无 skip**。
+  **本条按误记撤销**（执行记录里保留撤销痕迹，避免后来者当成真缺口去"修"）。
+- 主代理自查出的 **P1-2（`exists:false` 回滚会无条件删除该路径）成立**，但两位审查者都指出
+  缓解比自查描述的更多：回滚前会先 `capture` 一份 `origin:'rollback'`（`ipc.ts:900-904`，内容可再撤回）
+  + 两段式确认 + 行内标注「当时不存在」。**严重度下调为 P2**，真缺口是"当前内容已变"的判定与文案。
+
+#### 其余 P1（三份报告的并集，去重后）
+
+| # | 结论 | 位置 |
+|---|---|---|
+| P1-1 | `restoreSnapshot` **完全没过项目根边界**（直接 `rm` / `writeFile`），而该函数注释与 `docs/06 §11.8` 都写"回滚路径同样过边界校验" | `main/ipc.ts:887` vs `:899-914` |
+| P1-2 | `run_command` 命令串里的**相对跳转**（`cd ..\..`）两层都不拦：`containsAbsolutePath` 只认盘符 / `\\` / 前导分隔符 | `main/agent-host.ts:384-390`、`tools/command-runner.ts:91-116` |
+| P1-3 | 崩溃 / 强杀后 job 永久停在 `running`：`send({resumeJobId})` 只接受 `paused`，**没有启动期回收**，`docs/06 §4.1` 承诺的"最坏只重跑最后一轮"无实现路径 | `agentHost.ts:275`、`main/index.ts` |
+| P1-4 | readonly 档仍是"注册后拒绝"的一批：`set_setting` / 全部 `mcp.*` / `clipboard_write` / `generate_image`；而 `notify_user` / `classisland_remind` 是 `safe` 级 → **readonly 下仍会弹系统通知** | `main/tools/index.ts:158-209`、`registry.ts:73` 的 5 个注册入口 |
+| P1-5 | 续跑会在聊天界面**多出一条用户气泡**（内核每次 run 都广播 `user-message`，渲染层只按"30 秒内同文本"去重；暂停任务几乎必然超 30 秒） | `agentHost.ts:411-417`、`useChat.ts:269-301` |
+| P1-6 | 根"配了但目录不存在"时硬边界**静默 fail-open**（只记 warn，界面仍显示项目已配置） | `file-port.ts:190-205` |
+| P1-7 | 快照**没有任何"保护某一份"的机制**（无 `pinned` 字段），回滚自身产生的快照也参与淘汰 | `snapshot-port.ts:556-611` |
+| P1-8 | 轮中 abort → 续跑**整轮重跑**（`onRoundComplete` 未执行，游标停在本轮），已成功执行的工具会再跑一遍 | `agentLoop.ts:307-311` vs `:350-357` |
+| P1-9 | `docs/08` 的 SSOT 示例仍写 `"version": 13` 与 `## 1. 配置 Schema（config.json，v13）` | `docs/08:5,9` |
+| P1-10 | `enforceWorkspace` 生产从未接线（"限制在项目内"这个开关**不存在**），但注释里写它会生效 | `file-port.ts:102,113` |
+
+#### P2 / 观察（择要）
+
+`jobs/store.ts` 的 `listResumable()` 生产零消费；"未保存快照：…"只在工具 `content` 而不在 `summary`
+（卡片第一眼看不到降级）；手动续跑的 token 预算每次都从 0 重新起算（`maxTotalTokens` 对**手动**续跑
+不构成硬上限，文档未写这条差异）；强杀在工具轮中途会留下"带 toolCalls 但无 tool 结果"的 assistant 消息
+（既有问题）；本步验收⑥按字面未兑现（`smoke.ts:552` 是 round 事件过滤，真正的白名单是
+`index.ts` 里的局部字面量，主代理已在「与计划的偏差 7」如实纠正）。
+
+#### 处置（按用户决定）
+
+用户已决定：**先归档，这些修复另开一轮**。因此本步**不修**以上任何一条，
+它们全部作为**带行号与建议修法的遗留项**写进本记录与归档里的 `REPORT.md`，
+并在下一轮的 step 计划里按 P0 → P1 排序。三份审查报告的可重跑方式：
+`pnpm vitest run apps/desktop/src/main/tools/file-port.test.ts`（59 passed）、
+`node --input-type=module -e "import {canWriteSettingPath} from './packages/shared/dist/index.js'; console.log(canWriteSettingPath('agent.loop.maxRounds'))"`（`true` 即复现 P0-2）、
+以及用内存 `FileSystemPort` + 假 provider 记录 `req.messages` 复现自动续轮（P0-1）。
 
 ### 过程中的问题与处置
 
