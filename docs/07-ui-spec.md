@@ -114,6 +114,7 @@
     `context.classisland-empty`）+ 今日课程卡（`data-field="context.lesson-card"`）+
     分类流水（紧凑）+ 感知文件夹打开；work = 工作目录卡（打开 + 前往设置）+ 办公提示卡；
     通用 = **当前项目卡（v13 新增，`data-field="context.project-card"`；无当前项目时整卡不渲染）**
+    + **文件备份卡（v14 新增，`data-field="chat.snapshot-card"`；没有快照时整卡仍渲染、显示空态文案）**
     + 系统状态卡（时间 / 电量 / 网络 / 前台应用）。**非当前模式的功能一律不渲染**。
     课堂状态卡的数据来自桥接的快照（`05 §3.4 v3`）：上课中才显示当前科目与时段，
     下节课显示「科目 · 起–止」；字段缺失按「暂无课堂状态」降级，不编造。
@@ -389,6 +390,16 @@
   `projects.current` 指过去 → 断言右栏卡**恰好一张**、文本含项目名与根目录、**不是**警示态 →
   收尾还原成无项目再断言卡消失）；设置页 general 页探针则数 `[data-field^="projects."]`
   并要求「空态或至少一行」，`data-empty` 白名单为 `general.edgeBar` 与 `projects.list`。
+  文件备份（v14 新增）：右栏卡锚点 `chat.snapshot-card`（空态整卡仍渲染，空态元素用
+  `.snapshot-empty` class，**不是** `data-empty`），每条记录一个
+  `data-field="chat.snapshot-restore"` 的「回滚」按钮（**两段式**：第一下变「确认回滚？」，
+  第二下才执行），卡头另有一个 `data-action="chat.snapshot-refresh"` 的手动刷新。
+  设置页「智能与工具」页的文件备份区组字段锚点沿用配置路径原文：`agent.snapshots.enabled` /
+  `agent.snapshots.keepPerFile` / `agent.snapshots.maxSnapshotBytes` / `agent.snapshots.totalBudgetBytes`
+  （关掉开关时三个数字字段换成 `data-empty="agent.snapshots"`）。
+  钉住它们的探针场景见 §5.3：`chat-snapshot-card.png`（prepare 走**真实快照端口**种一份快照并
+  `flush()` 落索引 → reload 让卡片重新水合 → act 点一次「回滚」→ 断言卡恰好一张、
+  至少一条记录、来源译成「写文件」、按钮停在待确认文案）。
   钉住它们的探针场景见 §5.3：`chat-composer-slash.png`（浮层 + 权限钮文案 + 上下文条 +
   **textarea 自动增高** 28px→170px→28px，含 200px 上限与「上限后改为内部滚动」）、
   `chat-composer-permission.png`（权限下拉三档：只读 / 变更前确认 / 完全权限三项都在；
@@ -668,7 +679,8 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
   2. **主界面（chat，BetaV2 三栏）**——顺序有约束（见下面「全局顺序」一条）：
      `theme-chat.png`（双主题）→ `chat-sidebar.png`（左栏结构 + **出厂门控现场**）→
      `chat-right-panel-toggle.png` → `chat-right-panel-work.png` → `chat-project-card.png`
-     （右栏模式感知两条 + 项目卡一条，均自恢复、不动会话）→
+     （右栏模式感知两条 + 项目卡一条，均自恢复、不动会话）→ `chat-snapshot-card.png`
+     （v14 文件备份卡：prepare 种真实快照并 flush 落索引 + reload，act 点一次「回滚」停在待确认态）→
      `chat-subagent-page.png`（点左栏「子代理」固定项进页面，check 收尾切回对话流）→
      `chat-thinking-block.png`（reload 水合 seed 思考块后点开）→ `chat-quick-session.png`（展开侧栏快速对话面板）→
      `chat-thinking-level.png` → `chat-model-picker.png` → `chat-tts.png`（reload，朗读按钮）→

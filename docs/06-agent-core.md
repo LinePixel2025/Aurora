@@ -500,7 +500,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   只有 `run_command` 的缺省 `cwd` 用 `agent.tools.workspaceDir`，`grep` / `glob` 的缺省搜索根
   也用 `agent.tools.workspaceDir`（为空回落用户主目录，见 §11.1 / §11.5）。
 - `write_file` 的 `overwrite` 是「同目录临时文件 + `rename`」原子写；`append` 直接追加。
-  `edit_file` 写回复用同一套原子写，但它**没有备份、没有撤销**（§11.6 的已知边界）。
+  `edit_file` 写回复用同一套原子写。**v14 起两者写入前都会留一份内容快照**（§11.8），
+  因此"改错了只能自己想办法"这句话不再成立（前提是快照没被用户关掉 / 文件没超上限）。
 
 ### 11.5 `grep` / `glob`：搜索层规格（2026-09）
 
@@ -610,10 +611,55 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   变成「整篇静默改坏」。① 与 ② 是**两条独立护栏**（U+0000 是合法字符、能原样往返，② 挡不住 NUL）。
 - **写入与结果**：复用既有原子写（同目录临时文件 + `rename`，`overwrite` 语义）；
   写盘异常被折成 `isError`，不冒泡进工具循环。结果回带**解析后的绝对路径**与替换次数
-  （如 `已修改：<绝对路径>（替换 <n> 处，共 <bytes> 字节）`）。
-- **已知边界（安全披露）**：`edit_file` **没有备份、没有撤销**——原子写只保证「写盘过程不会写坏」，
-  **不保证改动内容可回滚**；改错了只能靠用户自己恢复（`git checkout` / 备份 / 编辑历史）。
-  原子写与「孤立 `\r` 拒绝」这两条**不是**回滚机制。
+  （如 `已修改：<绝对路径>（替换 <n> 处，共 <bytes> 字节）`），**v14 起另回带一行
+  `已保存快照：<id>`**（没留底时如实写"未保存快照：…"，见 §11.8）。
+- **可回滚性（v14 更新）**：`edit_file` 写入前会由 `writeText` 留一份内容快照（§11.8），
+  用户可在右栏「文件备份」卡上把文件回滚到任意一份快照，**回滚本身也会先留一份快照**，
+  所以回滚是可撤回的。原子写与「孤立 `\r` 拒绝」这两条**不是**回滚机制，
+  它们保证的是"写盘过程不会写坏"，与"改动可撤销"是两件事。
+  快照被关掉（`agent.snapshots.enabled = false`）或文件超过 `maxSnapshotBytes` 时不留底 ——
+  此时才回到旧口径：改错了只能靠用户自己的版本控制 / 备份恢复。
+
+### 11.8 写前快照与回滚（v14）
+
+`write_file`（`overwrite` 与 `append` 都算）与 `edit_file` 在**真正落盘之前**，把磁盘上的
+**原内容**存进 `<userData>/backups/<sessionId>/`；用户在右栏「文件备份」卡上把某个文件回到某一份快照。
+
+- **目录布局（唯一形状口径）**：一条快照 = `<backups>/<sessionId>/` 下的**一个内容文件**，
+  文件名就是快照 id：`<ISO 时间戳>-<8 位内容哈希>.snap`（例
+  `2026-09-26T10-52-31-123Z-3f9a1c07.snap`，ISO 里的 `:` / `.` 换成 `-` 以满足 Windows 文件名合法）。
+  索引是 `<backups>/<sessionId>/index.json`（`SnapshotRef[]`）。
+  **刻意不用原文件名**：同一路径可能被改多次（撞名）、原名可能含非法字符；
+  原名只存在索引的 `path` 字段里。id 里时间戳在前 ⇒ 同一文件下**字典序 = 时间序**。
+- **触发点与顺序**：`file-port.writeText` 里 `resolveWithin`（边界）→ **`capture`（留底）** →
+  `mkdir` → 原子写 / 追加。顺序不能换 —— 换过来就是"改完才备份"，备份里已是新内容，回滚等于没回滚。
+  主写失败时**不回滚快照**（保命优先：文件可能已被部分改写），并把快照 id 写进错误信息。
+- **跳过不静默**：目标不存在 → 记一条 `exists: false`（回滚它 = **删除**该文件）；
+  是目录 / 符号链接 → 跳过；超过 `agent.snapshots.maxSnapshotBytes` → 跳过；
+  `agent.snapshots.enabled = false` → 跳过。四种情况都会在**工具结果里**写明"未保存快照：…"，
+  因为"以为有备份、其实没有"比"没有备份"更危险。符号链接的判定必须用 `lstat`
+  （跟随链接会把链接目标的**内容**存成快照，回滚时又把内容写回链接路径 —— 静默把软链变成普通文件）。
+- **保留策略（两层上限，都要有单测）**：
+  ① 每个文件环形保留 `agent.snapshots.keepPerFile` 份（默认 20），按 `createdAt` 倒序淘汰最旧的；
+  ② 每个会话目录的总预算 `agent.snapshots.totalBudgetBytes`（默认 200 MiB），超出时**从最旧开始删**。
+  `agent.snapshots.*` **不在** `SETTINGS_READONLY_PREFIXES` 里（用户可以调），但也不在
+  `WRITABLE_PATH_OVERRIDES` 里（AI 默认改不动）。
+- **回滚语义（`snapshots:restore`）**：先把**当前磁盘状态**存成一份 `origin: 'rollback'` 的快照，
+  再把旧内容写回 —— 于是**回滚本身也可撤回**（点错了能回到回滚前的样子）。
+  `exists: false` 的快照回滚 = 删除该文件。回滚路径同样过项目根边界校验。
+- **索引与并发**：懒加载 + 300ms 防抖原子写 + `flush()`（退出前收尾）。
+  `ensureLoaded` 用 **in-flight promise** 共享 —— 不要写成"先置 `loaded` 再 `await`"：
+  那样第二个并发调用者会拿到**还没填的空索引**，随后一 append 就把磁盘上的历史整体覆盖掉
+  （同仓库的 `todo-port.ts` 有过这个 bug）。同一 `sessionId` 的索引改动走 per-session 串行链。
+- **损坏恢复**：`index.json` 解析失败 → 备份成 `index.corrupt-<ts>.json`（最多 3 份）→ 按空索引继续，
+  并清掉该会话目录里的孤儿 `.snap`；个别畸形条目只丢那一条。
+- **永不抛错**：快照是兜底能力，它坏掉不该让"写文件"整体失败 —— 任何 fs 异常都降级为
+  "没留底"并记 warning。
+- **实现落点**：端口与 DTO 在 `packages/agent-core/src/snapshots/`（`createFileSnapshotPort`，注入式
+  `FileSystemPort`，纯 Node 可单测）；写盘钩子在 `apps/desktop/src/main/tools/file-port.ts`
+  （`writeText` 的 `options.snapshot`）；工具层在 `files.ts` / `edit.ts` 带 `ctx.sessionId` 透传；
+  主进程装配在 `main/index.ts`（`<userData>/backups`，配置变了换端口实例但保持 `file-port` 手里的
+  引用有效）；IPC 是 `snapshots:list` / `snapshots:restore` / `snapshots:prune`。
 
 ### 11.7 `run_command` 免确认模式列表（2026-09）
 

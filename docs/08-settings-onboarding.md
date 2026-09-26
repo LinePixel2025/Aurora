@@ -149,6 +149,13 @@
     // v13 新增：三档权限 readonly | confirm | auto（默认 confirm = 与 v13 之前行为一致）
     // 只读：AI 的 set_setting 一律拒绝（自我提权），只能由用户在设置页 / 对话窗改，见 06 §12.2
     "permissionMode": "confirm",
+    // v14 新增：写前快照（见 06 §11.8）。写文件前把原内容留底，可在右栏「文件备份」卡回滚
+    "snapshots": {
+      "enabled": true,          // 关掉后写文件不再留底，改动将不可回滚
+      "keepPerFile": 20,        // 同一个文件最多留几份（环形淘汰，最旧的先删）
+      "maxSnapshotBytes": 524288,        // 单个文件超过这个大小就不留底（工具结果里会说明）
+      "totalBudgetBytes": 209715200      // 备份目录总预算，超出时从最旧开始删
+    },
     "tools": {
       "enabled": true,          // 电脑操控工具总开关；false 时 8 个工具都不注册
       "workspaceDir": "",       // 工具默认工作目录；空串 = 用户主目录
@@ -330,6 +337,14 @@
   非 readonly 档被强制按 `auto` 处理；`readonly` 档下该布尔**无效**（只读优先）。
   **只读**（`SETTINGS_READONLY_PREFIXES`）：改档位等于给自己放宽或收紧确认闸门，属自我提权，
   只能由用户在设置页 / 对话窗改。
+- `agent.snapshots`（**v14 新增**，见 06 §11.8）：写前快照 —— `enabled`（默认 `true`，
+  关掉后 `write_file` / `edit_file` 写盘前不再留底，**改动将不可回滚**）、
+  `keepPerFile`（同一文件最多留几份，1–200，默认 20，环形淘汰最旧的）、
+  `maxSnapshotBytes`（单个文件超过这个大小就不留底，默认 512 KiB —— **不静默**：
+  工具结果里会写"未保存快照：文件过大"）、`totalBudgetBytes`（备份目录总预算，默认 200 MiB，
+  超出时从最旧开始删）。快照落在 `<userData>/backups/<sessionId>/`。
+  **可写**（用户可在「智能与工具」页调整），但**不在** `WRITABLE_PATH_OVERRIDES` 里：
+  AI 的 `set_setting` 默认改不动它。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -368,7 +383,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 因而不新增存储面，也不会与流水出现两处数据不一致。
 
 **对话归档状态同样不进 config.json**：它写在会话文件自身（`sessions/<id>.json` 的
-`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 13）。
+`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 14）。
 会话文件自己的版本号 `SESSION_FILE_VERSION` 由 1 提到 2，读取对 v1 宽容（缺 `meta` = 未归档），
 不存在需要执行的迁移脚本 —— 「会话文件版本」与「配置版本」是两条独立的链，别混。
 
@@ -377,7 +392,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 13`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 14`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -399,9 +414,12 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   `v12 → v13`（新增顶层分组 `projects`（项目机制，见 06 §5.1）与 `agent.permissionMode`
   （三档权限，见 06 §12.2）；`projects` / `agent` 分组已存在时只补缺失键
   （`current: ''` / `list: []` / `maxAgentsBytes: 32768` / `permissionMode: 'confirm'`），
-  分组本身缺失时交给默认配置兜底，同样不凭空造半截对象）。
-  十三条迁移都**幂等且不覆盖用户已写入的值**（`v10 → v11` / `v11 → v12` / `v12 → v13` 同理：
-  只补缺失键、用户填过的窗口值 / 免确认模式 / 项目列表 / 权限档位原样保留），重复执行结果一致。
+  分组本身缺失时交给默认配置兜底，同样不凭空造半截对象）、
+  `v13 → v14`（为 `agent` 补 `snapshots.*`（写前快照的开关、保留份数与容量上限，见 06 §11.8）；
+  `agent` 已存在时只补缺键，用户调过的保留份数原样保留）。
+  十四条迁移都**幂等且不覆盖用户已写入的值**（`v10 → v11` / `v11 → v12` / `v12 → v13` / `v13 → v14`
+  同理：只补缺失键、用户填过的窗口值 / 免确认模式 / 项目列表 / 权限档位 / 快照策略原样保留），
+  重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -640,6 +658,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 | `general.chat.showThinking` | 常显（「AI 模型」页） |
 | `projects.*` | 常显（否则用户无法添加第一个项目；v13 新增）。`projects.list` 为空时列表区换成 `data-empty="projects.list"` 空状态（「尚未添加项目」），「添加项目」按钮**始终在** |
 | `agent.permissionMode` | 常显（权限档位必须随时能改回来；v13 新增） |
+| `agent.snapshots.*` | 常显（`enabled` 必须随时能改回来；v14 新增）。关掉 `enabled` 时三个数字字段整块换成 `data-empty="agent.snapshots"` |
 
 校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针按页断言——
 `settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0，
@@ -653,7 +672,9 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 `settings?page=agent` 读 `agent.tools.enabled` 复选框的**实际状态**：开着时终端 / 文件 / 检索 / 打开
 四栏的详情字段都必须存在（且 `data-empty` 为空；**检索栏**（`agent.tools.search.*`）与终端卡片下的
 **免确认命令模式**列表（`agent.tools.terminal.allowPatterns`）随 v12 新增，探针条目同步扩展，
-**具体计数以 `report.json` 的实际条目为准**），关着时只要求总开关自己还在。
+**具体计数以 `report.json` 的实际条目为准**），关着时只要求总开关自己还在；
+**文件备份区组**（`agent.snapshots.*`，v14 新增）要求"四个字段都在、或给出
+`data-empty="agent.snapshots"`"，且该页 `data-empty` 白名单里要放行它（默认开启时不会出现）。
 探针结果写 `<目录>/report.json` 并以 `AURORA_SMOKE_RESULT:` 前缀落日志，存在 FAIL 时进程退出码为 2。
 
 ## 7. ClassRoom 模式设置页（v0.4.0）
