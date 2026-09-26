@@ -1494,6 +1494,50 @@ describe('job 生命周期（v15）', () => {
     expect(stored.filter((message) => message.role === 'user')).toHaveLength(1)
   })
 
+  it('自动续轮的请求带本轮提问与上一轮工具结果（每 attempt 重读会话组装历史）', async () => {
+    // 报障现场：历史与系统提示曾在 attempt 循环**之外**只算一次，续轮拿着"请求前"的旧快照
+    // 新建循环，而 `appendUserMessage = false` 又不补提问 —— 第二轮既没有本轮提问、
+    // 也没有上一轮的工具结果，模型会重复已执行的操作。修复 = 每个 attempt 重读会话。
+    const fs = new TestFileSystem()
+    const jobs = createJobs(fs, tickingClock())
+    const harness = await createHarness({
+      fs,
+      jobs,
+      maxRounds: () => 1,
+      autoContinueRounds: () => 2,
+      rounds: [
+        { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{"text":"q"}' }] },
+        { toolCalls: [{ id: 'c2', name: 'echo', arguments: '{"text":"r"}' }] },
+        { text: '完成' },
+      ],
+    })
+
+    await harness.send('问题X')
+    await harness.waitForDone()
+    await waitForJob(jobs, (item) => item.status === 'done')
+
+    expect(harness.provider.calls).toHaveLength(3)
+    const serialized = harness.provider.calls.map((call) => JSON.stringify(call.messages))
+    // bug 现场就在续轮的首请求（calls[1]）：必须同时看到本轮提问与上一 attempt 的工具结果
+    expect(serialized[1]).toContain('问题X')
+    expect(serialized[1]).toContain('echo:q')
+    // 第二次续轮同理带上前一轮的结果
+    expect(serialized[2]).toContain('问题X')
+    expect(serialized[2]).toContain('echo:r')
+    // 防"重读后又重复 push"：每个请求里带提问的 user 消息恰好一条
+    for (const [index, call] of harness.provider.calls.entries()) {
+      const userAsks = call.messages.filter(
+        (message) => message.role === 'user' && JSON.stringify(message).includes('问题X'),
+      )
+      expect(userAsks, `第 ${index} 次请求的 user 提问条数`).toHaveLength(1)
+    }
+    // 会话侧同样只有一条提问：重读会话不等于重复落盘
+    const stored = await harness.sessions.get('quick')
+    expect(
+      stored.filter((message) => message.role === 'user' && message.content.includes('问题X')),
+    ).toHaveLength(1)
+  })
+
   it('用量按差值累加：每个 attempt 的累计值不会被重复计入总额', async () => {
     const fs = new TestFileSystem()
     const jobs = createJobs(fs, tickingClock())

@@ -192,6 +192,11 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   写成"先置 `loaded` 再 `await` 读盘"会让并发首读拿到**空快照**，随后那一次写入
   把磁盘上的历史**整体覆盖**（本仓库已修过两次，别再改回去）。job 存储还多一条：
   **落盘前必须已 `ensureLoaded`**，否则内存里的空表会冲掉盘上数据。
+- **自动续轮的 history / systemPrompt 必须在 `for (;;)` attempt 循环内、每 attempt 重算**（2026-09 修复，docs/06 §4.1）：
+  `agentLoop` 在 `appendUserMessage = false` 时**既不落盘也不 push** 用户消息，其语义前提是「提问已在 history 里」——
+  只有每轮重读会话组装才成立。整块外置到循环之前 = 续轮拿**请求前**的旧快照，第二轮既没有本轮提问、
+  也没有上一 attempt 的工具结果，模型会重复已执行的写 / 命令操作。回归护栏：
+  `agentHost.test.ts` 的「自动续轮的请求带本轮提问与上一轮工具结果」用例。
 - **`agent.permissionMode` 是只读前缀**（AI 的 `set_setting` 一律拒绝：改档位等于自我提权，
   与 `agent.tools.terminal.allowPatterns` 同款）。`agent.snapshots.*` / `agent.loop.*` 同为
   **`SETTINGS_READONLY_PREFIXES` 中的只读前缀**（用户可在设置页调，AI 一律拒绝）：

@@ -150,6 +150,10 @@ export interface LlmProvider {
 - **自动续轮**：轮次用尽但仍有 `agent.loop.autoContinueRounds` 额度（默认 2）且预算未触顶时，
   循环**不落 `paused`**，而是原地从 `cursor.nextRound` 接着跑一轮（等价于一次自动 resume），
   `budget.autoContinued += 1` 并**随游标一起落盘**；额度用完才落 `paused` 等用户点「继续」。
+  续轮既然等价于自动 resume，历史组装就必须与手动续跑**同一口径**：每个 attempt 开始前
+  **重新读取会话并按 `compressHistory` 组装历史**（系统提示同步重算），因此续轮请求一定带上
+  本轮提问与已回填的工具结果——否则 `appendUserMessage = false` 的语义前提（"提问已在 history 里"）
+  不成立，第二轮既没有提问也没有上一轮的工具输出，模型会重复已执行的写 / 命令操作。
   每一次自动续轮都写一条 `info` 日志（含 jobId、已续次数与额度）—— 这是"用户没盯着也继续往下跑"
   的行为，不给痕迹的话用户会觉得"轮次像没有上限"。
 - **续跑（`send({ resumeJobId })`）**：只接受**同会话**且 `status === 'paused'` 的 job；

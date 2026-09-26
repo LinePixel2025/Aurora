@@ -465,68 +465,6 @@ export class KernelAgentHost implements AgentHostContract {
         input.extraContext,
       ])
 
-      // 会话压缩：超预算时把丢弃的旧消息压成摘要（跨轮次累计，存在内存里）。
-      // summarizer 缺失 / 抛错时 compressHistory 会退回纯截断，不会让请求失败。
-      //
-      // quick 会话滑动窗口（docs/06 §4）：窗口启用时先把窗外消息滤掉再交给压缩组装，
-      // 更早的仅留在存储 / 界面历史（过滤后为空 = 只有本轮输入，compressHistory 对
-      // 空输入安全返回空历史）。窗口模式下同步跳过滚动摘要 —— 旧摘要本身就是同样的
-      // 污染源：不读 previousSummary、不写 summaries，compression.summary 恒为
-      // undefined，buildSystemPrompt 的 historySummary 小节随之自动省略。
-      const quickWindowMs = this.deps.quickContextWindowMs ?? 0
-      const quickWindowActive = sessionId === 'quick' && quickWindowMs > 0
-      const storedMessages = await this.deps.sessions.get(sessionId)
-      const scopedMessages = quickWindowActive
-        ? filterMessagesWithinWindow(storedMessages, quickWindowMs)
-        : storedMessages
-      const compression = await compressHistory(scopedMessages, {
-        maxChars: this.deps.maxChars ?? DEFAULT_MAX_CHARS,
-        ...(quickWindowActive || this.deps.summarize === undefined
-          ? {}
-          : { summarize: this.deps.summarize }),
-        ...(quickWindowActive || this.summaries.get(sessionId) === undefined
-          ? {}
-          : { previousSummary: this.summaries.get(sessionId) }),
-      })
-      if (!quickWindowActive && compression.summary !== undefined) {
-        this.summaries.set(sessionId, compression.summary)
-      }
-      if (compression.compressed) {
-        this.logger.info('已完成历史摘要压缩', {
-          sessionId,
-          dropped: compression.dropped,
-          summaryChars: compression.summary?.length ?? 0,
-        })
-      }
-      const history = compression.messages
-
-      // 三个可选提示片段：读取失败一律降级为省略该小节，不让提示词问题拖垮请求
-      const settingsHint = this.readSettingsHint()
-      const todoSummary = await this.readTodoSummary(sessionId)
-      const projectInstructions = await this.readProjectInstructions()
-
-      const systemPrompt = buildSystemPrompt({
-        ...(this.deps.modePrompt === undefined ? {} : { modePrompt: this.deps.modePrompt() }),
-        ...(this.deps.perceptionSummary === undefined
-          ? {}
-          : { perceptionSummary: await this.deps.perceptionSummary() }),
-        ...(compression.summary === undefined ? {} : { historySummary: compression.summary }),
-        ...(todoSummary === undefined ? {} : { todoSummary }),
-        ...(projectInstructions === undefined ? {} : { projectInstructions }),
-        skillCatalog: this.deps.skills.catalogPrompt,
-        ...(() => {
-          // 用**同一个**有序列表（toLlmTools 已按名字排序）生成提示词里的工具清单：
-          // 与请求体的 tools 数组同序，否则缓存与展示会拧（docs/06 §21.2）
-          const catalog = describeTools(this.deps.tools.toLlmTools())
-          return catalog === undefined ? {} : { toolCatalog: catalog }
-        })(),
-        ...(() => {
-          const guidance = buildToolGuidance(this.deps.tools.list().map((tool) => tool.name))
-          return guidance === undefined ? {} : { toolGuidance: guidance }
-        })(),
-        ...(settingsHint === undefined ? {} : { settingsHint }),
-      })
-
       // 一次请求可能跑好几个 attempt（自动续轮，docs/06 §4.1）：每个 attempt 都是
       // 「从游标起、最多 maxRounds 轮」的一个完整循环实例，因此事件映射被整段包进 `for (;;)`。
       /** 是否落盘本轮用户消息：只有本次请求的**第一次** attempt 落，续跑 / 自动续轮都不落 */
@@ -535,6 +473,75 @@ export class KernelAgentHost implements AgentHostContract {
       let pendingReason: JobPendingReason | undefined
       let errorMessage: string | undefined
       for (;;) {
+        // 历史与系统提示**在每个 attempt 内重算**（docs/06 §4.1）：自动续轮等价于一次自动
+        // resume，`appendUserMessage = false` 的语义前提正是"提问已在 history 里"——只有
+        // 在这里重读会话才成立。放在循环外算的话，续轮拿到的是**请求前**的旧快照：
+        // 既没有本轮提问、也没有上一 attempt 已落盘的助手 / 工具消息，模型会重复
+        // 已执行的写 / 命令操作。每 attempt 重算滚动摘要同样是本不变量的既定行为
+        // （超预算时每次可能多一次 summarize 调用、压缩日志可能多条），不是回归。
+        //
+        // 会话压缩：超预算时把丢弃的旧消息压成摘要（跨轮次累计，存在内存里）。
+        // summarizer 缺失 / 抛错时 compressHistory 会退回纯截断，不会让请求失败。
+        //
+        // quick 会话滑动窗口（docs/06 §4）：窗口启用时先把窗外消息滤掉再交给压缩组装，
+        // 更早的仅留在存储 / 界面历史（过滤后为空 = 只有本轮输入，compressHistory 对
+        // 空输入安全返回空历史）。窗口模式下同步跳过滚动摘要 —— 旧摘要本身就是同样的
+        // 污染源：不读 previousSummary、不写 summaries，compression.summary 恒为
+        // undefined，buildSystemPrompt 的 historySummary 小节随之自动省略。
+        const quickWindowMs = this.deps.quickContextWindowMs ?? 0
+        const quickWindowActive = sessionId === 'quick' && quickWindowMs > 0
+        const storedMessages = await this.deps.sessions.get(sessionId)
+        const scopedMessages = quickWindowActive
+          ? filterMessagesWithinWindow(storedMessages, quickWindowMs)
+          : storedMessages
+        const compression = await compressHistory(scopedMessages, {
+          maxChars: this.deps.maxChars ?? DEFAULT_MAX_CHARS,
+          ...(quickWindowActive || this.deps.summarize === undefined
+            ? {}
+            : { summarize: this.deps.summarize }),
+          ...(quickWindowActive || this.summaries.get(sessionId) === undefined
+            ? {}
+            : { previousSummary: this.summaries.get(sessionId) }),
+        })
+        if (!quickWindowActive && compression.summary !== undefined) {
+          this.summaries.set(sessionId, compression.summary)
+        }
+        if (compression.compressed) {
+          this.logger.info('已完成历史摘要压缩', {
+            sessionId,
+            dropped: compression.dropped,
+            summaryChars: compression.summary?.length ?? 0,
+          })
+        }
+        const history = compression.messages
+
+        // 三个可选提示片段：读取失败一律降级为省略该小节，不让提示词问题拖垮请求
+        const settingsHint = this.readSettingsHint()
+        const todoSummary = await this.readTodoSummary(sessionId)
+        const projectInstructions = await this.readProjectInstructions()
+
+        const systemPrompt = buildSystemPrompt({
+          ...(this.deps.modePrompt === undefined ? {} : { modePrompt: this.deps.modePrompt() }),
+          ...(this.deps.perceptionSummary === undefined
+            ? {}
+            : { perceptionSummary: await this.deps.perceptionSummary() }),
+          ...(compression.summary === undefined ? {} : { historySummary: compression.summary }),
+          ...(todoSummary === undefined ? {} : { todoSummary }),
+          ...(projectInstructions === undefined ? {} : { projectInstructions }),
+          skillCatalog: this.deps.skills.catalogPrompt,
+          ...(() => {
+            // 用**同一个**有序列表（toLlmTools 已按名字排序）生成提示词里的工具清单：
+            // 与请求体的 tools 数组同序，否则缓存与展示会拧（docs/06 §21.2）
+            const catalog = describeTools(this.deps.tools.toLlmTools())
+            return catalog === undefined ? {} : { toolCatalog: catalog }
+          })(),
+          ...(() => {
+            const guidance = buildToolGuidance(this.deps.tools.list().map((tool) => tool.name))
+            return guidance === undefined ? {} : { toolGuidance: guidance }
+          })(),
+          ...(settingsHint === undefined ? {} : { settingsHint }),
+        })
+
         /** 本次 attempt 的用量基准（见 `onRoundComplete` 里的差值累加） */
         let attemptUsedTokens = 0
         // 游标每个 attempt 现读一次：自动续轮刚刚把 `nextRound` 推到了下一轮。
