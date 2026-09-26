@@ -2,7 +2,7 @@
 
 - Task: agent-context-boundary-fixes
 - Step: 5 / 5
-- Status: pending
+- Status: done
 - Depends on: step 1, step 2, step 3, step 4
 - Produces: `step/archive/<YYYYMMDD-HHMMSS>-agent-context-boundary-fixes/`（7 个文件）与其中新写的 `REPORT.md`；顶层 `step/` 恢复只剩 `archive/`
 - Phase: 测试与文档
@@ -61,4 +61,7 @@
 
 ## 执行记录
 
-（执行后填写：实际改动、验证结果、遗留问题）
+- 前置检查：step 1–4 全 `done`、完成标准四项勾销、无悬而未决待确认项（遗留均已记录为「遗留工单」，不阻塞归档）。
+- 时间戳 `20260926-202830` 全程只取一次；无撞名（`step/archive/` 既有 7 个目录未动）；索引「归档目录 / 归档时间」与实际目录名字符级一致。
+- 移动 6 个文件（00-index + step-01..05）→ `step/archive/20260926-202830-agent-context-boundary-fixes/`；`REPORT.md` 在归档目录内新写（含五份审查结论与 P1/P2 处置）。
+- 归档提交：`docs(step)` 一条（见 00-index 执行记录追加与本目录 git 记录）。

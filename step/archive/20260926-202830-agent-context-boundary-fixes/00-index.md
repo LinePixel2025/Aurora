@@ -5,8 +5,8 @@
 - 创建时间：2026-09-26 18:04
 - 执行模式：（留空，执行阶段按剩余步数询问）
 - 基线提交：8da7f26d64e398b7f191de61b02e191996dddac3
-- 归档目录：（完成后填写：`step/archive/<YYYYMMDD-HHMMSS>-agent-context-boundary-fixes`）
-- 归档时间：（完成后填写）
+- 归档目录：`step/archive/20260926-202830-agent-context-boundary-fixes`
+- 归档时间：2026-09-26 20:28
 
 ## 完成标准
 
@@ -56,7 +56,7 @@
 | 2 | step-02-auto-continue-context.md | 自动续轮每轮重读会话组装历史（修「第二轮丢上下文」） | done | step 1 | `packages/agent-core/src/host/agentHost.ts`、`packages/agent-core/src/host/agentHost.test.ts`、`docs/06-agent-core.md`（§4.1）、`AGENTS.md` |
 | 3 | step-03-default-workspace-root.md | 缺省 cwd / 搜索根接上三级回落（项目根 > workspaceDir > 主目录） | done | step 2 | `apps/desktop/src/main/tools/index.ts`、`apps/desktop/src/main/tools/index.test.ts`、`apps/desktop/src/main/index.ts`、`apps/desktop/src/main/agent-host.ts`（仅注释）、`apps/desktop/src/main/tools/command-runner.ts`（仅注释）、`docs/06-agent-core.md`（§11.1/§11.5）、`docs/08-settings-onboarding.md`、`docs/10-user-guide.md`、`apps/desktop/src/renderer/settings/pages/AgentPage.vue`（仅文案）、`AGENTS.md` |
 | 4 | step-04-integration-verify.md | 集成验证：全量检查 + 冒烟 + 三问题场景核对 | done | step 1..3 | （只跑验证；除修复失败项外不改生产代码） |
-| 5 | step-05-archive.md | 归档清理 | pending | step 1..4 | `step/` |
+| 5 | step-05-archive.md | 归档清理 | done | step 1..4 | `step/` |
 
 ## 执行记录
 
@@ -72,3 +72,7 @@
   - **P2 清单（未在本批处理，供用户挑选）**：③-a 判定端缺「auto+有项目+无显式 cwd」用例，且 `tools/index.test.ts` 的「判定端配对」注释对该场景**过claim**（约 5 行用例 + 改注释即可修）；③-b 带项目用例 list root 与 getter 值同字，测不出「装配丢 getter」退化（错开字符串即可）；③-c 「systemPrompt 每 attempt 重算」无测试钉（注入可变 projectInstructions 断言 calls[1] 或计数≥3）；①-a quick 会话 + 单 attempt 超 5 分钟窗口时，续轮重读会被 `filterMessagesWithinWindow` 把本轮提问滤出窗外——与手动续跑同口径、非本批回归，需选「文档补豁免句」或「窗口豁免本次请求内落盘消息」；②-b `settings:changed` 竞态（判定新根 vs 旧实例烘焙 defaultCwd，修批准出处后天然被 realpath 兜住，否则按 live 根重解析）；②-c `settings-port.ts` 写后校验失败的回滚 `mutate` 不广播（补一次广播）；④-b docs/06 §5.1「决定两件事」未升三件事；④-c docs/07:534 工作目录句未随口径更新（口径 grep 扫描面应含全部 docs/*.md）。
   - **P3 抽样**（全量见各代理原文，已归档在本目录）：三处白名单外代码注释旧口径（schema.ts:484 / search.ts:38 / ipc.ts:996）；`advanced.readonlyPrefixes` 自身 AI 可写（只紧不松但可自我 DoS，建议进黑名单）；`tools/index.ts` sync 内两次调 `projectRoot()`（配错项目时重复 warn）；index.ts 内三份等价 `resolveProject` 闭包未复用；冒烟 reject 行不锁「值逐字未变」；命令串 `%USERPROFILE%\…` 不被 `containsAbsolutePath` 识别（属②-P1 攻击链一环，出处修复后由 realpath 兜底）；`docs/06:872`「本轮安全收紧再起新增」相对时间措辞；AgentPage hint「只作用于命令的缺省 cwd」与检索区矛盾；docs/06:195「每次请求即时组装」量纲未随每 attempt 更新；续轮组装块不响应 abort（仅延迟）；五条提交无 body；docs/08 §1 标题仍写 v13；动装配序的步骤验收应固定加冒烟。
   - **遗留工单（建议交 step-planner 立项）**：①**批准出处三元化**（含 ②-P1-1 攻击链、②-b 竞态、冒烟 `approvedByUser:true` 条目同步更新——一单收口）；②`openPath kind:'workspace'` 按钮接 `effectiveWorkspaceDir` 或改文案（与执行链不再分叉）；③quick 窗口续轮豁免口径定夺；④③ 组三条测试补强可与任一后续单合并。
+- **P2 处置（用户选定「先处理 P2 再归档」，提交 `265ae62` + `700e1ca`）**：
+  - `265ae62 test:`——③-a 判定端新用例「auto 档 + run_command 不带显式 cwd：按缺省落根内判定，免确认放行」（agent-host.test.ts，免卡 + requests=0 + info 审计，配对注释同步改准）；③-b `withProject` 的 list root 错开为 `C:\list-root`（getter 仍 `C:\proj-root`）——**变异验证**：临时把装配改为 `effectiveWorkspaceDir(settings, undefined, home)` 后两条带项目用例立刻红（`expected 'C:\list-root' to be 'C:\proj-root'`），撤销后复绿；③-c 续轮用例注入每次变号的 `projectInstructions` 并断言三个请求的 system 分别含 `续轮注入验证-1/2/3`——systemPrompt 每 attempt 重组自此有测试钉。全仓 **1504** 绿。
+  - `700e1ca docs:`——④-b docs/06 §5.1 与 docs/08 `projects` bullet「两件事」升「三件事（③缺省工作目录/搜索根第一级）」；④-c docs/07:534 工作目录句补三级口径与检索根；三处陈旧注释（`schema.ts` workspaceDir 头注释、`search.ts` defaultRoot、`ipc.ts` case 'workspace' 并明确"展示入口、刻意未接"）；①-a docs/06 §4.1 补「quick 窗口窗外消息（含本轮提问）不进续轮请求 = 与手动续跑同口径的已知豁免」句。处置后 format/lint/typecheck/build 全绿。
+  - **未处理（保留为遗留工单，非低成本可收口）**：②-P1-1 批准出处三元化（含 ②-b 竞态与冒烟条目联动）、②-c settings-port 回滚补广播（涉写路径语义，随①工单一并做更稳）、openPath 按钮接线（产品决定）。P3 全量清单维持上条记录。
