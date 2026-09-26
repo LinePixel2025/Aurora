@@ -16,6 +16,13 @@ export * from './loop/agentLoop.js'
 // 编排层（docs/06 §5）
 export * from './context/systemPrompt.js'
 
+// 项目机制（docs/06 §5.1，v13）：当前项目解析 + 项目级 AGENTS.md 逐层收集
+export * from './config/project.js'
+export * from './config/effectiveWorkspace.js'
+export * from './project/agentsFile.js'
+export * from './project/instructions.js'
+export * from './project/nodeFs.js'
+
 // 能力层（docs/06 §6 / §7）
 export * from './skills/parse.js'
 export * from './skills/registry.js'

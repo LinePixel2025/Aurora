@@ -48,6 +48,8 @@ async function createHarness(options: {
   settingsHint?: () => string
   /** 任务清单摘要注入（docs/06 §18） */
   todoSummary?: (sessionId: string) => Promise<string>
+  /** 项目级约定注入（docs/06 §5.1，v13） */
+  projectInstructions?: () => Promise<string | undefined>
   /** quick 会话滑动窗口（docs/06 §4）；缺省 0 = 不启用 */
   quickContextWindowMs?: number
 }): Promise<Harness> {
@@ -90,6 +92,9 @@ async function createHarness(options: {
     ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
     ...(options.settingsHint === undefined ? {} : { settingsHint: options.settingsHint }),
     ...(options.todoSummary === undefined ? {} : { todoSummary: options.todoSummary }),
+    ...(options.projectInstructions === undefined
+      ? {}
+      : { projectInstructions: options.projectInstructions }),
     ...(options.quickContextWindowMs === undefined
       ? {}
       : { quickContextWindowMs: options.quickContextWindowMs }),
@@ -493,6 +498,49 @@ describe('KernelAgentHost', () => {
     expect(harness.events.some((event) => event.type === 'error')).toBe(false)
     expect(harness.events.some((event) => event.type === 'done')).toBe(true)
     expect(harness.provider.calls[0]?.messages[0]?.content).not.toContain('当前任务清单')
+  })
+
+  it('projectInstructions 注入系统提示词的「项目约定」小节（v13，docs/06 §5.1）', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: 'ok' }],
+      projectInstructions: async () => '### AGENTS.md\n本项目用 pnpm workspace',
+    })
+    await harness.send('hi')
+    await harness.waitForDone()
+    const system = harness.provider.calls[0]?.messages[0]?.content ?? ''
+    expect(system).toContain('## 项目约定')
+    expect(system).toContain('本项目用 pnpm workspace')
+    // 易变段必须在静态段之后（docs/06 §21.1）
+    expect(system.indexOf('## 项目约定')).toBeGreaterThan(system.indexOf('## 安全规则'))
+  })
+
+  it('projectInstructions 未注入 / 返回空串时整段省略（无项目 = 现状不变）', async () => {
+    const noDep = await createHarness({ rounds: [{ text: 'ok' }] })
+    await noDep.send('hi')
+    await noDep.waitForDone()
+    expect(noDep.provider.calls[0]?.messages[0]?.content).not.toContain('## 项目约定')
+
+    const empty = await createHarness({
+      rounds: [{ text: 'ok' }],
+      projectInstructions: async () => '',
+    })
+    await empty.send('hi')
+    await empty.waitForDone()
+    expect(empty.provider.calls[0]?.messages[0]?.content).not.toContain('## 项目约定')
+  })
+
+  it('projectInstructions 抛错时降级省略该节，请求照常完成', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: 'ok' }],
+      projectInstructions: async () => {
+        throw new Error('AGENTS.md 读取失败')
+      },
+    })
+    await harness.send('hi')
+    await harness.waitForDone()
+    expect(harness.events.some((event) => event.type === 'error')).toBe(false)
+    expect(harness.events.some((event) => event.type === 'done')).toBe(true)
+    expect(harness.provider.calls[0]?.messages[0]?.content).not.toContain('## 项目约定')
   })
 
   it('显式 /skill 调用把技能正文注入本次请求，但不写入历史', async () => {

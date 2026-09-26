@@ -86,6 +86,11 @@ export interface AgentHostDeps {
    * 返回空串时整段省略；读取失败降级为省略，不中断请求。
    */
   todoSummary?(sessionId: string): Promise<string>
+  /**
+   * 项目级约定（docs/06 §5.1，v13）：从项目根到当前工作目录逐层收集的 `AGENTS.md` 文本。
+   * 返回空串 / undefined / 抛错时整段省略（降级为"无项目约定"，不中断请求）。
+   */
+  projectInstructions?(): Promise<string | undefined>
 }
 
 export const ERROR_NO_MODEL = 'E_NO_MODEL'
@@ -285,9 +290,10 @@ export class KernelAgentHost implements AgentHostContract {
       }
       const history = compression.messages
 
-      // 两个可选提示片段：读取失败一律降级为省略该小节，不让提示词问题拖垮请求
+      // 三个可选提示片段：读取失败一律降级为省略该小节，不让提示词问题拖垮请求
       const settingsHint = this.readSettingsHint()
       const todoSummary = await this.readTodoSummary(sessionId)
+      const projectInstructions = await this.readProjectInstructions()
 
       const systemPrompt = buildSystemPrompt({
         ...(this.deps.modePrompt === undefined ? {} : { modePrompt: this.deps.modePrompt() }),
@@ -296,6 +302,7 @@ export class KernelAgentHost implements AgentHostContract {
           : { perceptionSummary: await this.deps.perceptionSummary() }),
         ...(compression.summary === undefined ? {} : { historySummary: compression.summary }),
         ...(todoSummary === undefined ? {} : { todoSummary }),
+        ...(projectInstructions === undefined ? {} : { projectInstructions }),
         skillCatalog: this.deps.skills.catalogPrompt,
         ...(() => {
           // 用**同一个**有序列表（toLlmTools 已按名字排序）生成提示词里的工具清单：
@@ -471,6 +478,22 @@ export class KernelAgentHost implements AgentHostContract {
     } catch (error) {
       this.logger.warn('任务清单摘要读取失败，本次请求省略该小节', {
         sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return undefined
+    }
+  }
+
+  /**
+   * 项目级约定（docs/06 §5.1）：空串交由 buildSystemPrompt 的 normalize 省略；
+   * 无项目 / 读取失败同样降级为省略，**绝不因为读不到 AGENTS.md 就让整轮请求失败**。
+   */
+  private async readProjectInstructions(): Promise<string | undefined> {
+    if (this.deps.projectInstructions === undefined) return undefined
+    try {
+      return await this.deps.projectInstructions()
+    } catch (error) {
+      this.logger.warn('项目约定读取失败，本次请求省略该小节', {
         error: error instanceof Error ? error.message : String(error),
       })
       return undefined

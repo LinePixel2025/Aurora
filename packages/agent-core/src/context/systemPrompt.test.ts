@@ -56,11 +56,12 @@ describe('buildSystemPrompt', () => {
     expect([...positions].sort((a, b) => a - b)).toEqual(positions)
   })
 
-  it('全部小节齐备时的最终顺序：静态段在前、三个易变小节在末尾（docs/06 §5 / §21.1）', () => {
+  it('全部小节齐备时的最终顺序：静态段在前、四个易变小节在末尾（docs/06 §5 / §21.1）', () => {
     const prompt = buildSystemPrompt({
       ...STATIC_PARTS,
       perceptionSummary: '当前时间 08:00',
       todoSummary: '1. [~] 收集资料',
+      projectInstructions: '本仓库用 pnpm workspace',
       historySummary: '此前聊过课程表',
     })
     const order = [
@@ -74,6 +75,7 @@ describe('buildSystemPrompt', () => {
       '## 安全规则',
       '## 更早对话的摘要',
       '## 当前任务清单',
+      '## 项目约定',
       '## 系统状态',
     ]
     const positions = order.map((token) => prompt.indexOf(token))
@@ -130,11 +132,12 @@ describe('buildSystemPrompt', () => {
     }
   })
 
-  it('三个易变小节都排在「## 安全规则」之后，相对顺序是 历史摘要 → 任务清单 → 系统状态', () => {
+  it('四个易变小节都排在「## 安全规则」之后，相对顺序是 历史摘要 → 任务清单 → 项目约定 → 系统状态', () => {
     const prompt = buildSystemPrompt({
       ...STATIC_PARTS,
       perceptionSummary: '当前时间 08:00',
       todoSummary: '1. [~] 收集资料',
+      projectInstructions: '本仓库用 pnpm workspace',
       historySummary: '此前聊过课程表',
     })
     const safety = prompt.indexOf('## 安全规则')
@@ -142,10 +145,38 @@ describe('buildSystemPrompt', () => {
 
     const positions = VOLATILE_SECTION_TITLES.map((title) => prompt.indexOf(title))
     for (const position of positions) {
-      // -1（没渲染）也不会大于 safety，因此这一条同时覆盖「三个小节都渲染了」
+      // -1（没渲染）也不会大于 safety，因此这一条同时覆盖「四个小节都渲染了」
       expect(position).toBeGreaterThan(safety)
     }
     // 相对顺序即数组顺序
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions)
+  })
+
+  it('VOLATILE_SECTION_TITLES 冻结为四个易变小节，含「## 项目约定」', () => {
+    expect(VOLATILE_SECTION_TITLES).toHaveLength(4)
+    expect(VOLATILE_SECTION_TITLES).toContain('## 项目约定')
+    expect([...VOLATILE_SECTION_TITLES]).toEqual([
+      '## 更早对话的摘要',
+      '## 当前任务清单',
+      '## 项目约定',
+      '## 系统状态',
+    ])
+  })
+
+  it('四个易变小节的标题位置都大于「## 安全规则」，且相对顺序与 VOLATILE_SECTION_TITLES 一致', () => {
+    const prompt = buildSystemPrompt({
+      ...STATIC_PARTS,
+      historySummary: '此前聊过课程表',
+      todoSummary: '1. [~] 收集资料',
+      projectInstructions: '本仓库用 pnpm workspace',
+      perceptionSummary: '当前时间 08:00',
+    })
+    const safety = prompt.indexOf('## 安全规则')
+    expect(safety).toBeGreaterThanOrEqual(0)
+
+    const positions = VOLATILE_SECTION_TITLES.map((title) => prompt.indexOf(title))
+    expect(positions).toHaveLength(4)
+    expect(positions.every((position) => position > safety)).toBe(true)
     expect([...positions].sort((a, b) => a - b)).toEqual(positions)
   })
 
@@ -153,6 +184,7 @@ describe('buildSystemPrompt', () => {
     const prompt = buildSystemPrompt({
       perceptionSummary: 'P',
       todoSummary: 'T',
+      projectInstructions: 'C',
       historySummary: 'H',
     })
     expect(prompt.startsWith(BASE_PERSONA)).toBe(true)
@@ -214,6 +246,66 @@ describe('buildSystemPrompt', () => {
 
   it('todoSummary 缺省或为空白时不渲染该小节', () => {
     expect(buildSystemPrompt({ todoSummary: '   ' })).not.toContain('当前任务清单')
+  })
+
+  it('projectInstructions 渲染为「项目约定」小节：位于任务清单之后、系统状态之前，附「冲突时以用户为准」提醒', () => {
+    const prompt = buildSystemPrompt({
+      todoSummary: '1. [~] 收集资料',
+      projectInstructions: '本仓库用 pnpm workspace，提交信息用中文',
+      perceptionSummary: '当前时间 08:00',
+    })
+    expect(prompt).toContain('## 项目约定')
+    expect(prompt).toContain('本仓库用 pnpm workspace，提交信息用中文')
+    // 提醒必须点名约定来源（AGENTS.md）与冲突口径（以用户当前请求为准）
+    expect(prompt).toContain('AGENTS.md')
+    expect(prompt).toContain('与用户当前请求冲突时以用户为准')
+
+    const safety = prompt.indexOf('## 安全规则')
+    const todo = prompt.indexOf('## 当前任务清单')
+    const project = prompt.indexOf('## 项目约定')
+    const perception = prompt.indexOf('## 系统状态')
+    // 项目约定是易变段：必须落在「## 安全规则」之后
+    expect(project).toBeGreaterThan(safety)
+    expect(todo).toBeLessThan(project)
+    expect(project).toBeLessThan(perception)
+  })
+
+  it('projectInstructions 是易变段：带与不带的两次构建在「## 安全规则」之前逐字节相同', () => {
+    // 两份 parts 只差 projectInstructions 一项；易变字段取值首字符就不同，
+    // 保证公共前缀的差异确实落在易变正文里（沿用上方公共前缀用例的口径）
+    const base: SystemPromptParts = {
+      ...STATIC_PARTS,
+      historySummary: '甲段回忆',
+      todoSummary: '甲份清单',
+      perceptionSummary: '甲时状态',
+    }
+    const without = buildSystemPrompt(base)
+    const withoutAgain = buildSystemPrompt(base)
+    const withProject = buildSystemPrompt({ ...base, projectInstructions: '甲项目约定' })
+    const withProjectAgain = buildSystemPrompt({ ...base, projectInstructions: '甲项目约定' })
+
+    // 同一份 parts 连续构建两次必须完全一致（组装过程无隐藏状态）
+    expect(withoutAgain).toBe(without)
+    expect(withProjectAgain).toBe(withProject)
+
+    // 新增的小节不得污染缓存前缀：`## 安全规则` 之前（含安全规则与接缝）逐字节相同
+    const staticPrefix = without.slice(0, without.indexOf('## 更早对话的摘要'))
+    expect(staticPrefix.endsWith(`${SAFETY_RULES}\n\n`)).toBe(true)
+    for (const text of [withoutAgain, withProject, withProjectAgain]) {
+      expect(text.startsWith(staticPrefix)).toBe(true)
+    }
+    expect(commonPrefix(withProject, without).startsWith(staticPrefix)).toBe(true)
+
+    // 差异确实发生在安全规则之后（顺序没变、内容变了）
+    expect(withProject.slice(staticPrefix.length)).not.toBe(without.slice(staticPrefix.length))
+    expect(withProject).toContain('甲项目约定')
+    expect(without).not.toContain('## 项目约定')
+  })
+
+  it('projectInstructions 缺省、空串或为空白时不渲染该小节', () => {
+    expect(buildSystemPrompt()).not.toContain('## 项目约定')
+    expect(buildSystemPrompt({ projectInstructions: '' })).not.toContain('## 项目约定')
+    expect(buildSystemPrompt({ projectInstructions: '   ' })).not.toContain('## 项目约定')
   })
 
   it('toolGuidance 原样渲染为「工具使用规范」小节：位于可用工具之后、Agent 可修改的设置之前', () => {
