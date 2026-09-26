@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v10）
+## 1. 配置 Schema（config.json，v13）
 
 ```jsonc
 {
-  "version": 10,
+  "version": 13,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -121,6 +121,14 @@
       }
     ]
   },
+  // v13 新增：项目机制（见 06 §5.1）。current 为空串 = 无项目（默认，行为与 v13 之前完全一致）；
+  // list 里每条是 { id, name, root }，root 支持绝对路径或相对进程 cwd 的路径；
+  // maxAgentsBytes 是每轮注入的项目级 AGENTS.md 字节预算
+  "projects": {
+    "current": "",
+    "list": [],
+    "maxAgentsBytes": 32768
+  },
   "advanced": {
     "proxy": "",
     "logLevel": "info",
@@ -132,10 +140,15 @@
       "llm.providers", "tts.providers", "stt.providers", "imagegen.providers", "mcp.servers", "version",
       "general.windowState", "advanced.proxy",
       "general.onboarded", "general.firstRun", "general.launchAtLogin", "general.hotkey",
-      "advanced.confirmSensitiveTools"
+      "advanced.confirmSensitiveTools",
+      // v13 新增：项目根同时决定注入的指令与权限边界；权限档位等于 Agent 自己的确认闸门
+      "projects", "agent.permissionMode"
     ]
   },
   "agent": {
+    // v13 新增：三档权限 readonly | confirm | auto（默认 confirm = 与 v13 之前行为一致）
+    // 只读：AI 的 set_setting 一律拒绝（自我提权），只能由用户在设置页 / 对话窗改，见 06 §12.2
+    "permissionMode": "confirm",
     "tools": {
       "enabled": true,          // 电脑操控工具总开关；false 时 8 个工具都不注册
       "workspaceDir": "",       // 工具默认工作目录；空串 = 用户主目录
@@ -296,6 +309,27 @@
   **只读，AI 的 `set_setting` 一律拒绝读写它**，只能由用户在设置页手动维护 ——
   否则 AI 可以给自己加一条 `git*` 直接摘掉自己的确认闸门，属于**自我提权**
   （与 `advanced.confirmSensitiveTools` 只读同款理由）。
+- `projects`（**v13 新增**，见 06 §5.1）：项目机制 —— `projects.current` 是当前项目 id
+  （空串 = **无项目**，即默认态，行为与 v13 之前完全一致），`projects.list[]` 每条是
+  `{ id, name, root }`（`root` 可为绝对路径，或相对进程 cwd 的路径），
+  `projects.maxAgentsBytes` 是每轮注入的项目级 `AGENTS.md` 字节预算（1 字节 – 1 MiB，默认 32768）。
+  当前项目决定两件事：① 每轮把「项目根 → 当前工作目录」逐层收集的 `AGENTS.md`
+  （同目录 `AGENTS.override.md` 优先）注入系统提示词的「项目约定」小节；
+  ② 权限层判定「项目根之内 / 之外」的边界。
+  项目根不存在 / 被删除 / 不可读时**降级为无项目**：不抛错、不影响对话，
+  但界面必须有可见提示（设置页该项目行标红并显示「项目目录不可用」+「重新选择目录」，
+  右栏「当前项目」卡显示警示徽标）—— 只在日志里 warn 会让用户以为约定生效了却什么都没发生。
+  **整组在默认黑名单里**（`SETTINGS_READONLY_PREFIXES`，即 `advanced.readonlyPrefixes` 的默认项）：
+  **只读，AI 的 `set_setting` 一律拒绝读写它**，只能由用户在设置页「通用 → 项目」维护 ——
+  切项目等于同时改 Agent 的**指令面**与**权限面**，属自我提权。
+- `agent.permissionMode`（**v13 新增**，见 06 §12.2）：三档权限
+  `readonly`（只读：写 / 执行 / 有系统副作用的工具**根本不注册**，模型在工具清单里看不到它们）|
+  `confirm`（默认：与 v13 之前完全一致，敏感工具逐次确认）|
+  `auto`（只在项目根之内免确认，越界仍逐次确认）。
+  与 `advanced.confirmSensitiveTools` **双开关并存**，优先级是：`confirmSensitiveTools === false` 时
+  非 readonly 档被强制按 `auto` 处理；`readonly` 档下该布尔**无效**（只读优先）。
+  **只读**（`SETTINGS_READONLY_PREFIXES`）：改档位等于给自己放宽或收紧确认闸门，属自我提权，
+  只能由用户在设置页 / 对话窗改。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -334,7 +368,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 因而不新增存储面，也不会与流水出现两处数据不一致。
 
 **对话归档状态同样不进 config.json**：它写在会话文件自身（`sessions/<id>.json` 的
-`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 12）。
+`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 13）。
 会话文件自己的版本号 `SESSION_FILE_VERSION` 由 1 提到 2，读取对 v1 宽容（缺 `meta` = 未归档），
 不存在需要执行的迁移脚本 —— 「会话文件版本」与「配置版本」是两条独立的链，别混。
 
@@ -343,7 +377,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 12`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 13`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -361,9 +395,13 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   只用于对话窗底部的上下文占用比例，见 §1.2）、
   `v11 → v12`（为 `agent.tools` 补 `search.enabled / search.maxResults`（文件检索，见 06 §11.5）
   与 `terminal.allowPatterns: []`（免确认命令模式，见 06 §11.7）；缺字段就补默认值、
-  `agent.tools` 分组本身缺失时交给默认配置兜底，不凭空造半截对象）。
-  十二条迁移都**幂等且不覆盖用户已写入的值**（`v10 → v11` / `v11 → v12` 同理：只补缺失键、
-  用户填过的窗口值或免确认模式原样保留），重复执行结果一致。
+  `agent.tools` 分组本身缺失时交给默认配置兜底，不凭空造半截对象）、
+  `v12 → v13`（新增顶层分组 `projects`（项目机制，见 06 §5.1）与 `agent.permissionMode`
+  （三档权限，见 06 §12.2）；`projects` / `agent` 分组已存在时只补缺失键
+  （`current: ''` / `list: []` / `maxAgentsBytes: 32768` / `permissionMode: 'confirm'`），
+  分组本身缺失时交给默认配置兜底，同样不凭空造半截对象）。
+  十三条迁移都**幂等且不覆盖用户已写入的值**（`v10 → v11` / `v11 → v12` / `v12 → v13` 同理：
+  只补缺失键、用户填过的窗口值 / 免确认模式 / 项目列表 / 权限档位原样保留），重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -468,7 +506,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   `.section-title` / `.section-desc` / `.empty-state`）；侧栏按「基础 / AI 能力 / 系统」三组排列。
 - **页面结构（v8 目标口径，UI 由另一任务实施，本节为目标 IA）**：设置页由 8 页并为 **6 页**
   （`SETTINGS_PAGE_IDS = ['general', 'modes', 'llm', 'voice', 'agent', 'advanced']`），侧栏仍三组排列：
-  - **基础**：`general` 通用（启动与快捷键 / 提示条 / 勿扰时段——全局 + 提示条两组同区 / 关于与更新）、
+  - **基础**：`general` 通用（启动与快捷键 / **项目（v13 新增）** / 提示条 / 勿扰时段——全局 + 提示条两组同区 / 关于与更新）、
     `modes` 模式（模式卡 + ClassRoom 区组 + Work 区组，见 §7）；
   - **AI 能力**：`llm` AI 模型（provider 管理 + 「显示思考过程」开关 + 生图模型区组，见 §5）、
     `voice` 语音（TTS 区组 + STT 区组）、
@@ -600,9 +638,14 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 | `imagegen.enabled` | 常显（否则无法重新启用；v8 新增，目标口径） |
 | `imagegen.providers.*` | `imagegen.providers` 至少一项，否则整块换成 `data-empty="imagegen.providers"` |
 | `general.chat.showThinking` | 常显（「AI 模型」页） |
+| `projects.*` | 常显（否则用户无法添加第一个项目；v13 新增）。`projects.list` 为空时列表区换成 `data-empty="projects.list"` 空状态（「尚未添加项目」），「添加项目」按钮**始终在** |
+| `agent.permissionMode` | 常显（权限档位必须随时能改回来；v13 新增） |
 
 校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针按页断言——
-`settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0；
+`settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0，
+且**项目区组要么给出 `data-empty="projects.list"`、要么至少渲染一行 `projects.name`**
+（v13 新增；探针只断言「空态或 ≥ 1 行」，不写死条数 —— 用户有几个项目都能过），
+本页除 `general.edgeBar` 与 `projects.list` 之外的 `data-empty` 一律视为回归；
 `settings?page=modes` 在 ClassRoom 下必须能数到 `modes.classroom.*` 字段（具体条数随科目数与展开分组变化，
 探针只断言 `> 0` 与「切走必须为 0」），切到 Work 后 classroom 字段必须为 0，且出现 Work 区组的
 `modes.work.workspaceDir`（v8 起 Work 有可配置字段，`data-empty="modes.work"` 空状态随之取消；

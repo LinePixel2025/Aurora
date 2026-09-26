@@ -113,9 +113,17 @@
     `context.classisland-current` / `context.classisland-next` 两行、无数据时
     `context.classisland-empty`）+ 今日课程卡（`data-field="context.lesson-card"`）+
     分类流水（紧凑）+ 感知文件夹打开；work = 工作目录卡（打开 + 前往设置）+ 办公提示卡；
-    通用 = 系统状态卡（时间 / 电量 / 网络 / 前台应用）。**非当前模式的功能一律不渲染**。
+    通用 = **当前项目卡（v13 新增，`data-field="context.project-card"`；无当前项目时整卡不渲染）**
+    + 系统状态卡（时间 / 电量 / 网络 / 前台应用）。**非当前模式的功能一律不渲染**。
     课堂状态卡的数据来自桥接的快照（`05 §3.4 v3`）：上课中才显示当前科目与时段，
     下节课显示「科目 · 起–止」；字段缺失按「暂无课堂状态」降级，不编造。
+    当前项目卡（`06 §5.1`）显示项目名与项目根；根可用时「打开文件夹」走 `app:openPath` 的
+    **新 kind `project`**（打开的是**当前项目根**，与 `kind: 'workspace'` 不同 —— 后者打开的是
+    电脑操控工具的默认工作目录 `agent.tools.workspaceDir`）；根不可用（目录被删 / 不可读）时
+    显示 `class="badge error"` 的「项目目录不可用」徽标与「去设置里重新选择目录」，
+    **不渲染「打开文件夹」**（点了只会弹系统错误，反而让人以为路径没问题）。
+    "目录是否存在"由主进程经 `project:status` 回传（渲染进程没有文件系统能力），
+    取不到状态时按「可用」处理 —— 显示假警报比不显示更糟。
 - **麦克风（STT，BetaV2）**：composer 的麦克风按钮（`data-field="chat.mic"`）门控口径同 TTS：
   `stt.enabled && stt.active` 指向 baseUrl / model 齐全的 provider 才渲染按钮，
   **否则连按钮都不渲染**（不是 disabled）；录音走 MediaRecorder → `stt:transcribe`，
@@ -356,6 +364,15 @@
   按钮不能嵌套（无效 HTML，浏览器会把内层甩出去），`.nav-item` 与 `data-field="chat.session-list"`
   的契约因此原样保留。空态「还没有会话」只在**两份列表都空**时出现（全部归档时主列表为空、
   归档分组仍在，此时提示「还没有会话」自相矛盾）。
+  项目（v13 新增）：右栏卡锚点 `context.project-card`（警示徽标 `context.project-unavailable`）；
+  设置页「通用 → 项目」区组的字段锚点沿用**配置路径原文** —— `projects.name` / `projects.root` /
+  `projects.current`（「设为当前」按钮，当前项显示「已启用」并 disabled）/ `projects.repick`
+  （「重新选择目录」，仅根不可用的当前项目行）/ `projects.remove`（删除）/ `projects.add`（添加项目，
+  走 `project:pickDirectory` 弹系统目录选择框），列表为空时是 `data-empty="projects.list"`。
+  钉住它们的探针场景见 §5.3：`chat-project-card.png`（先建出真实项目根 → `settings:update` 把
+  `projects.current` 指过去 → 断言右栏卡**恰好一张**、文本含项目名与根目录、**不是**警示态 →
+  收尾还原成无项目再断言卡消失）；设置页 general 页探针则数 `[data-field^="projects."]`
+  并要求「空态或至少一行」，`data-empty` 白名单为 `general.edgeBar` 与 `projects.list`。
   钉住它们的探针场景见 §5.3：`chat-composer-slash.png`（浮层 + 权限钮文案 + 上下文条 +
   **textarea 自动增高** 28px→170px→28px，含 200px 上限与「上限后改为内部滚动」）、
   `chat-composer-permission.png`（权限下拉两段式：点一次不写配置、`settings:get` 回报仍为 `true`）、
@@ -629,7 +646,8 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
      `edge-bar-expanded.png`（act 派发真实 hover，面板三按钮命中测试）。
   2. **主界面（chat，BetaV2 三栏）**——顺序有约束（见下面「全局顺序」一条）：
      `theme-chat.png`（双主题）→ `chat-sidebar.png`（左栏结构 + **出厂门控现场**）→
-     `chat-right-panel-toggle.png` → `chat-right-panel-work.png`（两者自恢复、不动会话）→
+     `chat-right-panel-toggle.png` → `chat-right-panel-work.png` → `chat-project-card.png`
+     （右栏模式感知两条 + 项目卡一条，均自恢复、不动会话）→
      `chat-subagent-page.png`（点左栏「子代理」固定项进页面，check 收尾切回对话流）→
      `chat-thinking-block.png`（reload 水合 seed 思考块后点开）→ `chat-quick-session.png`（展开侧栏快速对话面板）→
      `chat-thinking-level.png` → `chat-model-picker.png` → `chat-tts.png`（reload，朗读按钮）→
@@ -768,6 +786,13 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     右栏必须**整体**换成「工作目录」卡、classroom 的「今日课程」卡消失
     （「非当前模式的功能一律不渲染」）；check 收尾切回 classroom 并等课堂卡恢复，
     后续场景的 classroom 现场不受影响；
+  - **右栏「当前项目」卡**（`chatProjectAct` / `chatProjectCardCheck`，
+    产物 `chat-project-card.png`，v13）：`prepare` 先在 `<userData>/capture-project` 建出**真实**项目根
+    （不建的话卡片会渲染成「项目目录不可用」警示态，那条断言就会把警示态当健康态通过 = 假 PASS），
+    act 走 `settings:update` 把 `projects.current` 指过去（`SettingsStore` 启动即缓存配置，
+    写文件对运行中的进程无效），check 断言卡**恰好一张** + 文本含项目名与根目录片段 +
+    `context.project-unavailable` 计数为 0；收尾还原成 `{ current: '', list: [] }` 并把
+    `restored`（卡片消失）并入 `pass`，后续场景读到的仍是「无项目」；
   - **思考过程折叠块**（`CHAT_THINKING_BLOCK_ACT` / `CHAT_THINKING_BLOCK_CHECK`，
     产物 `chat-thinking-block.png`，BetaV2）：前提是 `seedChatTtsHistory` 种下的带 `reasoning`
     （标记 `capture-reasoning-probe`）的助手消息 —— 本场景先 reload 让渲染层重新水合 main 会话，
@@ -801,7 +826,10 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     五页挂探针、advanced 纯截图）：`data-field` / `data-empty` 计数，各页口径 ——
     **general 页**（`SETTINGS_FIELDS_SCRIPT`）：死字段 `general.language` 必须为 0、提示条详情跟随
     `general.edgeBar.enabled` 开关、BetaV2 迁入的全局勿扰时段 `advanced.quietHours.start/.end`
-    两字段必须常在（AdvancedPage 不再渲染它们，数到 >0 才是回归）；
+    两字段必须常在（AdvancedPage 不再渲染它们，数到 >0 才是回归）、
+    **v13 的项目区组要么给出 `data-empty="projects.list"` 要么至少一行 `projects.name`**
+    （只断言「空态或 ≥ 1 行」，不写死条数），且本页 `data-empty` 白名单只有
+    `general.edgeBar` 与 `projects.list` 两个 —— 其余空态一律回归；
     **modes 页**（act `SETTINGS_MODES_EXPAND_ACT` 先展开默认收起的「课程表与课前提醒」分组 +
     `SETTINGS_MODES_CLASSROOM_SCRIPT`）：ClassRoom 生效时 classroom 区组在（`watchDir` 恰好一行）、
     work 区组**整块不在**（互斥渲染，BetaV2 起 WorkSection 有真字段，数到 `modes.work.*` 即回归）、
