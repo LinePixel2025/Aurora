@@ -84,8 +84,10 @@ export function createCommandRunner(options: CommandRunnerOptions): GuardedComma
 
   return async (request: CommandRunRequest): Promise<CommandResult> => {
     // cwd 边界校验（判定与 file-port 共用 `resolveWithin`，不另写一份）。
-    // 只有**请求里显式给了 cwd** 才校验：缺省时回落到装配层给的 `defaultCwd`，
-    // 那是"今天"的行为，不算越界（defaultCwd 由用户/装配层选定）。
+    // 承重事实（2026-09 纠偏注释）：工具层（`terminal.ts`）将缺省 cwd 解析成**绝对路径**后
+    // 恒传 `request.cwd`，所以这里几乎总是"显式给了 cwd"——缺省值本身即装配层按
+    // §5.1 三级回落算出的生效工作目录（配了项目 = 项目根，天然在根内）；
+    // 只有绕过工具层直调 runner 时才可能不带 cwd，那正是下面的 `defaultCwd` 兜底路径。
     // ⚠️ 校验发生在下面的 `existsSync` 回落**之前**：不存在的越界路径同样拒绝
     //（否则"探一个不存在的根外路径"会变成探测文件系统存在性的信道）。
     if (request.cwd !== undefined && request.cwd !== '') {

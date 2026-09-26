@@ -650,8 +650,10 @@ async function bootstrap(): Promise<void> {
   // 7.1 电脑操控工具（docs/06 §11）：按 `agent.tools.*` 注册 8 个工具。
   //     必须在内核（KernelAgentHost）构造前装配，否则第一次请求的工具表是空的。
   //     `sync()` 是唯一的开关落地点：这里一次、`onSettingsChanged` 一次 → 改完立即生效。
-  //     runner 的 `defaultCwd` 只作兜底，真正的工作目录由工具层每次按配置传入
-  //     （于是 `agent.tools.workspaceDir` 改完不用重建 runner）。
+  //     缺省工作目录 / 搜索根由装配层按 §5.1 三级回落现算（项目根 > workspaceDir > 主目录，
+  //     `effectiveWorkspaceDir` 与下面 `projectRoot` 同源）；runner 的 `defaultCwd` 只是
+  //     「缺省目录本身不存在」时的最后兜底，真正的边界校验在 command-runner / file-port
+  //     的 `resolveWithin`（于是 `agent.tools.workspaceDir` 改完不用重建 runner）。
   //
   // 7.1.1 `set_setting`（docs/06 §12）：AI 修改自身配置的唯一入口。
   //     写入复用 IPC 层同一个 `applyPatch`（局部合并 + 凭据抽取 + 广播）；
@@ -675,6 +677,8 @@ async function bootstrap(): Promise<void> {
     getSettings: () => settings!.get(),
     logger: logger.child('tools'),
     homeDir: () => app.getPath('home'),
+    // 缺省工作目录 / 搜索根的三级回落最高优先级输入（docs/06 §5.1，与边界校验同一个 getter）
+    projectRoot,
     run: createCommandRunner({
       defaultCwd: process.cwd(),
       maxOutputBytes: 1024 * 1024,

@@ -164,7 +164,7 @@
     },
     "tools": {
       "enabled": true,          // 电脑操控工具总开关；false 时 8 个工具都不注册
-      "workspaceDir": "",       // 工具默认工作目录；空串 = 用户主目录
+      "workspaceDir": "",       // 工具默认工作目录；空串 = 按 06 §5.1 三级回落（无项目时 = 用户主目录）
       "terminal": {
         "enabled": true,
         "timeoutMs": 60000,
@@ -294,8 +294,9 @@
   轮询 `command-result.json` 的超时预算 —— 桥接不可用时按此超时返回 `ok: false`，不阻塞调用方。
 - `agent.tools`（v5 新增，见 06 §11）：5 个开关 + 4 个上限 + 1 份免确认模式列表 ——
   `enabled` 是电脑操控工具**总开关**（`false` 时 8 个工具都不注册）；`workspaceDir` 是 **`run_command`
-  的缺省 `cwd`**，同时也是 `grep` / `glob` 的**缺省搜索根**（空串 = 用户主目录，只作**默认值**、
-  不是沙箱；其余文件类工具不读它，见 06 §11.1 / §11.5）；`terminal.enabled` 开关终端工具、
+  的缺省 `cwd`**，同时也是 `grep` / `glob` 的**缺省搜索根**（取值按 06 §5.1 的 `effectiveWorkspaceDir`
+  三级回落：**当前项目根（配置了当前项目时）> `workspaceDir` > 用户主目录**，没配当前项目时与既往一致；
+  它只作**默认值**、不是沙箱；其余文件类工具不读它，见 06 §11.1 / §11.5）；`terminal.enabled` 开关终端工具、
   `terminal.timeoutMs` 是单次命令超时（毫秒）、`terminal.maxOutputChars` 是回传输出的截断上限；
   `files.enabled` 开关文件读写、`files.maxReadBytes` 是单次读取上限（字节）；
   `search.enabled` 开关文件检索（`grep` / `glob`，**v12 新增**）、`search.maxResults` 是**单次检索的
@@ -595,9 +596,11 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
     把总开关打回来（见 06 §12.6）。`set_setting` 写 `agent.tools.<子字段>` 时
     **以当前分组值为基底深合并**，只覆盖被点名的字段 —— 不会把 `terminal` / `files` / `search` / `open`
     的现有值抹掉。
-  - 「工作目录」为空串时回落用户主目录；它只是 **`run_command` 的缺省 `cwd`**（也是 `grep` / `glob`
-    的缺省搜索根，见 06 §11.5），**不是沙箱** ——
-    越界不静默，结果里回带真实的绝对路径。注意 `read_file` / `write_file` / `edit_file` / `list_dir`
+  - 「工作目录」只是 **`run_command` 的缺省 `cwd`**（也是 `grep` / `glob` 的缺省搜索根，见 06 §11.5），
+    **不是沙箱** —— 缺省起点按 06 §5.1 的 `effectiveWorkspaceDir` 三级回落：**当前项目根
+    （配置了当前项目时）> 「工作目录」> 用户主目录**，「工作目录」为空串且没配当前项目时才落主目录；
+    未配置当前项目时与既往行为完全一致。越界不静默，结果里回带真实的绝对路径。
+    注意 `read_file` / `write_file` / `edit_file` / `list_dir`
     **不读**该字段（相对路径按主进程 CWD 解析，打包应用该值不可预期，故文件类工具只适合用绝对路径；
     见 06 §11.4）。
   - 逐次确认沿用 `sensitivity` 判定：`run_command` / `write_file` / `edit_file` / `open_path` 为

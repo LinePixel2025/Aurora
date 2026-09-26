@@ -245,6 +245,11 @@ export interface LlmProvider {
   `project/agentsFile.ts`（`collectProjectInstructions`，注入式 fs，永不抛错）、
   `project/instructions.ts`（`createProjectInstructionsSource`，按 root + mtime 缓存）；
   主进程在 `apps/desktop/src/main/index.ts` 用 `nodeProjectFs` 装配成 `projectInstructions` 依赖。
+- **缺省工作目录 / 搜索根的三级回落（以本节为准）**：`effectiveWorkspaceDir` 的取值顺序是
+  **当前项目根（配置了当前项目时）> `agent.tools.workspaceDir` > 用户主目录**。已接进装配层：
+  配置了当前项目后，不显式传 `cwd` 的 `run_command` 与不传 `path` 的 `grep` / `glob` 落在**项目根**；
+  未配置当前项目时与既往行为完全一致。§11.1 / §11.4 / §11.5 说的「缺省 `cwd` / 缺省搜索根」
+  都指这条链的结果，**不设第二套口径**。
 
 - **循环**：用户消息 → LLM → [工具调用 → 执行 → 结果回填] × N → 最终回复。
   轮次上限**默认 8**，由 `agent.loop.maxRounds`（1–64）配置 —— 默认值刻意等于 v15 之前
@@ -483,8 +488,9 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   | `MAX_SEARCH_MAX_RESULTS` | `1_000` | `agent.tools.search.maxResults` 的上限（Schema 与运行时都钳到它） |
   | `MAX_ALLOW_PATTERNS` | `100` | `agent.tools.terminal.allowPatterns` 的条数上限（由 Schema 裁剪） |
   | `MAX_ALLOW_PATTERN_LENGTH` | `200` | 单条免确认命令模式的长度上限（§11.7） |
-- **配置字段（不改名）**：`agent.tools.enabled`（总开关）、`agent.tools.workspaceDir`（命令的默认 cwd，
-  见 §11.1）、`agent.tools.terminal.{enabled,timeoutMs,maxOutputChars,allowPatterns}`、
+- **配置字段（不改名）**：`agent.tools.enabled`（总开关）、`agent.tools.workspaceDir`（缺省工作目录 /
+  搜索根，取值走 §5.1 的 `effectiveWorkspaceDir` 三级回落，见 §11.1）、
+  `agent.tools.terminal.{enabled,timeoutMs,maxOutputChars,allowPatterns}`、
   `agent.tools.files.{enabled,maxReadBytes}`、`agent.tools.search.{enabled,maxResults}`、
   `agent.tools.open.enabled`；**`agent.permissionMode`（v13）是工具面的总闸门**，见 §11.2。
   - **开关分派（`registerComputerTools.sync()` 是唯一落地点）**：`agent.tools.enabled` 是**总开关**
@@ -508,8 +514,10 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   ——**只对 `run_command` 生效**，跳过确认卡片但**仍写审计日志**，语义见 §11.7。
 - **总开关**：`agent.tools.enabled = false` 时 8 个工具**完全不注册**——模型在工具清单里看不到
   它们，系统提示词里也没有相应说明，因而不可能产生确认卡片或任何本机副作用。
-- **`workspaceDir` 只是默认工作目录，不是沙箱**：它只作为 `run_command` 的缺省 `cwd`
-  （为空串时回落用户主目录），工具**不限制**模型访问该目录之外的位置
+- **`workspaceDir` 只是默认工作目录，不是沙箱**：`run_command` 的缺省 `cwd`（`grep` / `glob` 的缺省
+  搜索根同理）取的是 §5.1 `effectiveWorkspaceDir` 那条三级回落链——**当前项目根（配置了当前项目时）>
+  `agent.tools.workspaceDir` > 用户主目录**；未配置当前项目时与既往行为完全一致。工具**不限制**模型
+  访问该目录之外的位置
   （⚠️ v13 起另有一层真正的边界：**配置了当前项目**时文件类工具与 `run_command.cwd` 都受
   项目根 realpath 前缀校验，见 §11.2 —— 那层边界挂在"项目"上，与 `workspaceDir` 无关）。
   越界**不静默**：
@@ -519,9 +527,10 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   **`read_file` / `write_file` / `edit_file` / `list_dir` 不读 `workspaceDir`**：它们的相对路径按
   **主进程 CWD**
   解析（`file-port.ts` 的 `resolve()`）——打包应用从开始菜单启动时 CWD 并不可预期，
-  因此文件类工具实际上只适合用绝对路径（`workspaceDir` 只影响命令的缺省 `cwd`）。
-  `grep` / `glob` 是例外：它们的 `path` 缺省值就是 `agent.tools.workspaceDir`
-  （为空回落用户主目录，显式传入的相对路径仍按主进程 CWD 解析），见 §11.5。
+  因此文件类工具实际上只适合用绝对路径（`workspaceDir` 只影响命令的缺省 `cwd` 与检索的缺省搜索根）。
+  `grep` / `glob` 是例外：它们的 `path` 缺省值走 §5.1 `effectiveWorkspaceDir` 的三级回落
+  （**当前项目根（配置了当前项目时）> `agent.tools.workspaceDir` > 用户主目录**），
+  显式传入的相对路径仍按主进程 CWD 解析，见 §11.5。
   另外配置的目录不存在时，`run_command` 会回落到装配层传入的 `defaultCwd`（主进程 CWD），
   结果头里回带真实 `cwd`，但这件事**事前**在确认卡片上看不到。
 - **输出上限**：命令输出（stdout + stderr）按 `agent.tools.terminal.maxOutputChars` 截断，
@@ -605,8 +614,9 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   `list_dir` 单次最多 500 项、缺省 200，超出部分不返回并标注已截断。
   `grep` / `glob` 的扫描上限与预算见 §11.5（**绝不无限遍历**：超预算时返回已收集的结果并标注）。
 - **文件类工具的相对路径按主进程 CWD 解析**（不是 `workspaceDir`）：模型应传绝对路径；
-  只有 `run_command` 的缺省 `cwd` 用 `agent.tools.workspaceDir`，`grep` / `glob` 的缺省搜索根
-  也用 `agent.tools.workspaceDir`（为空回落用户主目录，见 §11.1 / §11.5）。
+  `run_command` 的缺省 `cwd` 与 `grep` / `glob` 的缺省搜索根共用同一条三级回落——
+  **当前项目根（配置了当前项目时）> `agent.tools.workspaceDir` > 用户主目录**
+  （与 §5.1 的 `effectiveWorkspaceDir` 同源，见 §11.1 / §11.5），未配置当前项目时与既往行为一致。
 - `write_file` 的 `overwrite` 是「同目录临时文件 + `rename`」原子写；`append` 直接追加。
   `edit_file` 写回复用同一套原子写。**v14 起两者写入前都会留一份内容快照**（§11.8），
   因此"改错了只能自己想办法"这句话不再成立（前提是快照没被用户关掉 / 文件没超上限）。
@@ -659,7 +669,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   命中 `a.ts`）、`*` 与 `?` **不跨 `/`**、`{a,b}` 是交替（花括号内**不做嵌套**，不支持
   `{a,{b,c}}`）、整体**全串锚定**（`^…$`）、Windows 口径**大小写不敏感**、路径里的 `\` 归一为 `/`、
   正则元字符按字面处理；`path` 模式的长度上限 200 字符。
-- **`path` 是搜索根**：缺省用 `agent.tools.workspaceDir`（为空回落**用户主目录**）；
+- **`path` 是搜索根**：缺省走 §5.1 的 `effectiveWorkspaceDir` 三级回落——**当前项目根
+  （配置了当前项目时）> `agent.tools.workspaceDir` > 用户主目录**，未配置当前项目时与既往行为一致；
   显式传入的相对路径按主进程 CWD 解析（与 §11.1 的文件类工具同一条 `resolve()`），
   结果头回带解析后的**绝对**搜索根（越界不静默的既有口径）。
 

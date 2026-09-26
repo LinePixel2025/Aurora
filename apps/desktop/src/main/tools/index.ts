@@ -46,6 +46,7 @@ import {
   createTerminalTool,
   createTodoTools,
   createWebFetchTool,
+  effectiveWorkspaceDir,
   TODO_WRITE_TOOL_NAME,
   type AgentProviderFactory,
   type ClipboardPort,
@@ -85,8 +86,14 @@ export interface ComputerToolsDeps {
   tools: ToolRegistry
   getSettings: () => Settings
   logger: Logger
-  /** 用户主目录（`agent.tools.workspaceDir` 为空串时的默认工作目录） */
+  /** 用户主目录（三级回落的最后一级：无项目且未配 `agent.tools.workspaceDir` 时才用到） */
   homeDir: () => string
+  /**
+   * 当前项目根（`resolveProject().root`，无项目时 undefined）。
+   * 缺省工作目录 / 搜索根按 docs/06 §5.1 三级回落：项目根 > `agent.tools.workspaceDir` > `homeDir`
+   * （`effectiveWorkspaceDir` 是唯一口径，与 `agent-host.ts` 的 `auto` 档免确认判定同源）。
+   */
+  projectRoot: () => string | undefined
   run: CommandRunner
   files: FilePort
   open: OpenPort
@@ -150,7 +157,10 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
         return []
       }
 
-      const workspaceDir = cfg.workspaceDir.trim() === '' ? deps.homeDir() : cfg.workspaceDir.trim()
+      // 缺省工作目录 / 搜索根的**唯一口径**（docs/06 §5.1）：三级回落
+      // 当前项目根 > `agent.tools.workspaceDir` > 用户主目录。
+      // 项目切换 / workspaceDir 改动都触发 `settings:changed` → 本 `sync()` 重建，热生效。
+      const workspaceDir = effectiveWorkspaceDir(settings, deps.projectRoot(), deps.homeDir())
 
       // 只读档：`run_command` 能执行任意命令（写盘 / 改注册表 / 起进程 / 装软件），
       // 是「有系统副作用」的典型，因此**整个分支跳过**——不在只读清单里的工具
@@ -192,8 +202,8 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
       }
 
       // 搜索工具（grep / glob，docs/06 §11.5）**在只读档保留**：两者只读文件内容与目录名，
-      // 不落盘、不起进程 —— 正是只读档该留下的能力。默认搜索根与文件类工具同一个 workspaceDir
-      // （空串时已在上方回落成用户主目录）。
+      // 不落盘、不起进程 —— 正是只读档该留下的能力。默认搜索根与 `run_command` 的缺省 cwd
+      // 是同一个 `workspaceDir`（上面三级回落的产物：配了项目即项目根）。
       if (cfg.search.enabled) {
         for (const tool of createSearchTools({
           files: deps.files,
@@ -212,8 +222,14 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
 
       const names = toolNames.filter((name) => deps.tools.get(name) !== undefined)
       // `mode` 一并落日志：排查「为什么 write_file 不在表里」时第一眼就能看出是档位摘的，
-      // 还是子开关关的。
-      deps.logger.info('已同步电脑操控工具', { names, workspaceDir, mode })
+      // 还是子开关关的。`projectRoot` 也落进来：排查「命令到底跑在哪个目录」时，
+      // 三级回落里最高优先级的输入一眼可辨（空串 = 无项目）。
+      deps.logger.info('已同步电脑操控工具', {
+        names,
+        workspaceDir,
+        projectRoot: deps.projectRoot() ?? '',
+        mode,
+      })
       return names
     },
   }

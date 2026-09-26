@@ -130,8 +130,12 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   （`file-port.resolveWithin`，越界即 `E_PATH_OUTSIDE_WORKSPACE`，六个文件类入口与
   `run_command.cwd` 都走它）。
   但**没有作业对象 / 容器 / 受限令牌**，`run_command` 仍是当前用户权限 —— 别把这两层说成"沙箱"。
-- **`agent.tools.workspaceDir` 仍然只是"默认 cwd / 搜索根"，不是安全边界**：安全边界是
-  **「当前项目根」**，且**只有配置了当前项目时才生效**（无项目时行为与 v12 之前完全一致）。
+- **`agent.tools.workspaceDir` 仍然只是"默认 cwd / 搜索根"，不是安全边界**：缺省工作目录 / 搜索根按
+  三级回落——**当前项目根（配置了当前项目时）> `workspaceDir` > 用户主目录**，这条链**已按 docs/06 §5.1
+  的 `effectiveWorkspaceDir` 接线**（`effectiveWorkspaceDir` 是唯一口径，别在别处再写一套），所以配了
+  当前项目后，不显式传 `cwd` 的 `run_command` 与不传根的 `grep` / `glob` 落在**项目根**；
+  无项目时行为与之前一致。真正的安全边界是**「当前项目根」**，且**只有配置了当前项目时才生效**
+  （无项目时行为与 v12 之前完全一致）。
   想当然地拿 `workspaceDir` 当护栏、或把 `openPath` 的 `kind: 'workspace'` 当成项目根，都是错的
   （项目根走 `kind: 'project'`，见 docs/06 §5.1 / §11.1）。
 - Skill 的 `scripts/` 永不自动执行（只注入指令正文）；图片 OCR 未启用（只取文件名与尺寸）。

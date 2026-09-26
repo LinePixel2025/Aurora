@@ -354,7 +354,8 @@ export function createConfirmTool(options: {
  *
  * 保守方向永远是"不自动放行"：
  * - 取不到目标路径（`permissionTargetOf` 返回 undefined）时只有 `run_command` 例外 ——
- *   缺省 `cwd` 会回落项目根，所以按根内判定；其余工具一律按越界处理（走确认）；
+ *   缺省 `cwd` 回落到**生效工作目录**（配置了当前项目时即项目根——与 `registerComputerTools`
+ *   的装配同源，`effectiveWorkspaceDir`），所以按根内判定；其余工具一律按越界处理（走确认）；
  * - **命令串里出现绝对路径时一律按越界处理**：我们不做 shell 解析，猜错一次就是静默越权，
  *   多问一次只是打扰（`docs/06 §11.2` 已写明这个取舍）。
  */
@@ -368,7 +369,8 @@ function reasonWithinRoot(
   }
   const target = permissionTargetOf(info.name, info.input)
   if (target === undefined) {
-    // `run_command` 缺省 `cwd` 会回落到项目根（装配层的 `defaultCwd`），因此按根内处理；
+    // `run_command` 缺省 `cwd` 回落到生效工作目录；配置了当前项目时即项目根——与
+    // `registerComputerTools` 的装配同源（`effectiveWorkspaceDir`），因此按根内处理；
     // 其余工具拿不到目标路径就等于"不知道它要碰哪"，一律走确认。
     return info.name === 'run_command' ? root : undefined
   }

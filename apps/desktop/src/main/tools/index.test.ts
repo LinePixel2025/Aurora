@@ -77,10 +77,19 @@ function fakeSettingsPort(): SettingsToolPort & { writes: unknown[][] } {
  * 注意端口回带的绝对路径是 `C:\\abs\\<path>` 形式，因此守卫的键由**同一个 path 参数**决定
  * ——「读」与「改」必须用同一个 path，否则键对不上。
  */
-function fakeFilePort(wholeText = ''): FilePort & { written: string[] } {
+function fakeFilePort(wholeText = ''): FilePort & {
+  written: string[]
+  searchRoots: string[]
+  findRoots: string[]
+} {
   const written: string[] = []
+  // 「缺省工作目录三级回落」用例要看**端口实际收到的 root**（执行端证据，不是注册断言）
+  const searchRoots: string[] = []
+  const findRoots: string[] = []
   return {
     written,
+    searchRoots,
+    findRoots,
     async readText(path) {
       // 形状按 `ReadTextResult`：v12 起 `read_file` 走「行窗口」读，不再返回整篇 text
       return {
@@ -109,6 +118,7 @@ function fakeFilePort(wholeText = ''): FilePort & { written: string[] } {
       return { absolutePath: `C:\\abs\\${path}`, entries: [], truncated: false }
     },
     async findFiles(options) {
+      findRoots.push(options.root)
       // 本文件只验证「按开关注册哪些工具」，搜索行为由 file-port.test.ts / search.test.ts 覆盖
       return {
         root: `C:\\abs\\${options.root}`,
@@ -119,6 +129,7 @@ function fakeFilePort(wholeText = ''): FilePort & { written: string[] } {
       }
     },
     async searchText(options) {
+      searchRoots.push(options.root)
       return {
         root: `C:\\abs\\${options.root}`,
         matches: [],
@@ -171,6 +182,7 @@ function setup(
   settings: Settings,
   runner: CommandRunner = fakeRunner(),
   files: FilePort = fakeFilePort(),
+  projectRoot: () => string | undefined = () => undefined,
 ) {
   const tools = new ToolRegistry()
   const port = fakeSettingsPort()
@@ -179,6 +191,7 @@ function setup(
     getSettings: () => settings,
     logger: createMemoryLogger(),
     homeDir: () => HOME,
+    projectRoot,
     run: runner,
     files,
     open: fakeOpenPort(),
@@ -409,6 +422,7 @@ describe('registerSettingsTool', () => {
       getSettings: () => settings,
       logger: createMemoryLogger(),
       homeDir: () => HOME,
+      projectRoot: () => undefined,
       run: fakeRunner(),
       files: fakeFilePort(),
       open: fakeOpenPort(),
@@ -483,6 +497,7 @@ describe('registerExtensionTools', () => {
       getSettings: () => settings,
       logger: createMemoryLogger(),
       homeDir: () => HOME,
+      projectRoot: () => undefined,
       run: fakeRunner(),
       files: fakeFilePort(),
       open: fakeOpenPort(),
@@ -639,6 +654,7 @@ describe('readonly 档（只读 = 不进工具表）', () => {
       getSettings: () => settings,
       logger: createMemoryLogger(),
       homeDir: () => HOME,
+      projectRoot: () => undefined,
       run: fakeRunner(),
       files: fakeFilePort(),
       open: fakeOpenPort(),
@@ -751,5 +767,80 @@ describe('readonly 档（只读 = 不进工具表）', () => {
       expect(tools.get(name)).toBeDefined()
     }
     expect(tools.get('todo_write')).toBeDefined()
+  })
+})
+
+/**
+ * 缺省工作目录三级回落（docs/06 §5.1，2026-09 接线修复）：**当前项目根 > `agent.tools.workspaceDir` > 主目录**。
+ *
+ * 断言的是**端口实际收到的参数**（runner 的 `cwd`、file 端口的 `root`）—— 即"命令到底跑在哪 /
+ * 检索到底扫哪"的执行端证据；`agent-host.test.ts` 的 auto 档用例是判定端，两者配对构成
+ * 「判定 ↔ 执行一致」的报障修复证明。无项目的两条用例同时锁定"行为与接线前逐字一致"。
+ */
+describe('缺省工作目录三级回落', () => {
+  const PROJECT = 'C:\\proj-root'
+
+  function withProject(workspaceDir: string): Settings {
+    const settings = makeSettings()
+    settings.projects.current = 'p'
+    settings.projects.list = [{ id: 'p', name: 'x', root: PROJECT }]
+    settings.agent.tools.workspaceDir = workspaceDir
+    return settings
+  }
+
+  /** 装一遍工具并各执行一次**不传 cwd / path** 的调用，回传端口实际收到的目录 */
+  async function defaultTargets(settings: Settings, projectRoot: () => string | undefined) {
+    const runner = fakeRunner()
+    const files = fakeFilePort()
+    const { tools, registry } = setup(settings, runner, files, projectRoot)
+    registry.sync()
+    await tools.get('run_command')!.execute({ command: 'echo hi' }, { sessionId: 't' })
+    await tools.get('grep')!.execute({ pattern: 'x' }, { sessionId: 't' })
+    await tools.get('glob')!.execute({ pattern: 'x' }, { sessionId: 't' })
+    return {
+      cwd: (runner.calls[0] as { cwd?: string }).cwd,
+      grepRoot: files.searchRoots[0],
+      globRoot: files.findRoots[0],
+    }
+  }
+
+  it('配了当前项目：缺省 cwd 与缺省搜索根都落项目根（报障现场的反面）', async () => {
+    // 接线前这里看到的是 HOME —— 三级回落纯函数在生产代码零消费方，项目根从不参与
+    const targets = await defaultTargets(withProject(''), () => PROJECT)
+    expect(targets.cwd).toBe(PROJECT)
+    expect(targets.grepRoot).toBe(PROJECT)
+    expect(targets.globRoot).toBe(PROJECT)
+  })
+
+  it('项目根优先于 workspaceDir（第二级不得盖过第一级）', async () => {
+    const targets = await defaultTargets(withProject('D:\\elsewhere'), () => PROJECT)
+    expect(targets.cwd).toBe(PROJECT)
+    expect(targets.grepRoot).toBe(PROJECT)
+    expect(targets.globRoot).toBe(PROJECT)
+  })
+
+  it('无项目 + workspaceDir 空串：回落主目录（与接线前逐字一致）', async () => {
+    const targets = await defaultTargets(makeSettings(), () => undefined)
+    expect(targets.cwd).toBe(HOME)
+    expect(targets.grepRoot).toBe(HOME)
+    expect(targets.globRoot).toBe(HOME)
+  })
+
+  it('无项目 + 设了 workspaceDir：第二级直接生效（与接线前逐字一致）', async () => {
+    const settings = makeSettings()
+    settings.agent.tools.workspaceDir = 'D:\\ws'
+    const targets = await defaultTargets(settings, () => undefined)
+    expect(targets.cwd).toBe('D:\\ws')
+    expect(targets.grepRoot).toBe('D:\\ws')
+    expect(targets.globRoot).toBe('D:\\ws')
+  })
+
+  it('空白项目根（只有空格）视为无项目：按后续级别回落', async () => {
+    // `effectiveWorkspaceDir` 的 normalize 只 trim；不新增"相对根"用例，因为生产侧
+    // `resolveProject` 已把根归一成绝对路径，装配器拿不到相对根。
+    const targets = await defaultTargets(makeSettings(), () => '  ')
+    expect(targets.cwd).toBe(HOME)
+    expect(targets.grepRoot).toBe(HOME)
+    expect(targets.globRoot).toBe(HOME)
   })
 })

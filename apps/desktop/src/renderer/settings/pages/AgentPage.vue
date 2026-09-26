@@ -25,7 +25,9 @@
  * 保存也走独立的 `saveSnapshots()`（照 `save()` 的同一套回执口径）。
  *
  * 为什么 workspaceDir 不是沙箱（这条与页内安全文案同源，改文案别只改一处）：
- * 它只是工具的**默认**工作目录（空串 = 用户主目录），模型仍可显式传入任意绝对路径。
+ * 它只是工具的**默认**工作目录（缺省起点走 docs/06 §5.1 的 `effectiveWorkspaceDir` 三级回落：
+ * 当前项目根 > workspaceDir > 用户主目录，配置了当前项目时以项目根优先），
+ * 模型仍可显式传入任意绝对路径。
  * 安全边界是「逐次确认 + 输出上限 + 总开关」，不是路径限制。
  *
  * `COMPUTER_TOOL_NAMES` 必须从 `@aurora/shared/browser` 取：主入口 `@aurora/shared`
@@ -415,21 +417,21 @@ async function openWorkspace(): Promise<void> {
           <div class="sub">
             <h3 class="sub-title">工作目录</h3>
             <p class="section-desc">
-              <strong>命令</strong
-              >的缺省工作目录：执行命令时若未显式指定路径，就在它下面运行。文件类工具（读 / 写 /
+              <strong>命令</strong>的缺省工作目录：执行命令时若未显式指定路径，就在它下面运行
+              （配置了当前项目时以项目根优先）。文件类工具（读 / 写 /
               列目录）不读此项，它们的相对路径按应用自身目录解析，因此只适合用绝对路径。
             </p>
 
             <SettingField
               data-field="agent.tools.workspaceDir"
               label="默认工作目录"
-              hint="留空 = 用户主目录（如 C:\Users\you）；只作用于命令的缺省 cwd"
+              hint="留空 = 用户主目录（配置了当前项目时以项目根优先）；只作用于命令的缺省 cwd"
             >
               <input
                 class="input"
                 type="text"
                 spellcheck="false"
-                placeholder="留空 = 用户主目录，例如 D:\Projects"
+                placeholder="例如 D:\Projects（留空 = 用户主目录，有当前项目时项目根优先）"
                 :value="tools.workspaceDir"
                 @change="save({ workspaceDir: ($event.target as HTMLInputElement).value })"
               />
@@ -780,7 +782,8 @@ async function openWorkspace(): Promise<void> {
                 >glob</code
               >）：<strong>只读</strong>工具（不弹确认），但它们会递归扫描整个搜索目录（自动跳过
               <code class="mono">node_modules</code> / <code class="mono">.git</code> 等）——
-              只读不等于无开销。搜索根缺省用上面的「工作目录」（留空 = 用户主目录）。
+              只读不等于无开销。搜索根缺省按三级取：配置了当前项目时是项目根，否则用上面的
+              「工作目录」（该项留空时是用户主目录）。
             </p>
 
             <template v-if="tools.enabled">
