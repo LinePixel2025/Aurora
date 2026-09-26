@@ -349,17 +349,18 @@
   `maxSnapshotBytes`（单个文件超过这个大小就不留底，默认 512 KiB —— **不静默**：
   工具结果里会写"未保存快照：文件过大"）、`totalBudgetBytes`（备份目录总预算，默认 200 MiB，
   超出时从最旧开始删）。快照落在 `<userData>/backups/<sessionId>/`。
-  **可写**（用户可在「智能与工具」页调整），但**不在** `WRITABLE_PATH_OVERRIDES` 里：
-  AI 的 `set_setting` 默认改不动它。
+  **用户可写**（「智能与工具」页调整），**AI 不可写**：`agent.snapshots` 在
+  `SETTINGS_READONLY_PREFIXES` 里（与 `agent.permissionMode` 同款），AI 的 `set_setting` 一律拒绝——
+  关掉写前备份等于拆掉回滚保险。
 - `agent.loop`（**v15 新增**，见 06 §4.1）：Agent 循环的刹车与油门 ——
   `maxRounds`（一次请求内最多几轮「工具调用 → 结果回填」，1–64，默认 **8** = v15 之前写死的那个默认值）、
   `maxTotalTokens`（累计 token 预算，≥0，**0 = 不限**即默认；触顶时任务暂停而不是静默结束）、
   `autoContinueRounds`（轮次用完后允许自动再续几轮，0–8，默认 2；**0 = 不自动续**，
   直接落「已暂停」等用户点「继续」）。
   三个值都以 **getter** 注入装配层，设置页改完**下一次请求即生效**（v15 之前轮次上限是常量，改配置要重启）。
-  **可写**（用户在「智能与工具 → Agent 循环」里调），但**不在** `WRITABLE_PATH_OVERRIDES` 里：
-  AI 的 `set_setting` 默认改不动它 —— 让 AI 给自己放大预算，等于绕过"该停下来问用户"的那道闸门。
-  也不在 `SETTINGS_READONLY_PREFIXES` 里（用户当然可以调）。
+  **用户可写**（「智能与工具 → Agent 循环」里调），**AI 不可写**：`agent.loop` 在
+  `SETTINGS_READONLY_PREFIXES` 里（与 `agent.permissionMode` 同款）—— 让 AI 给自己放大预算，
+  等于绕过"该停下来问用户"的那道闸门。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）

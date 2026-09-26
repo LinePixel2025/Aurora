@@ -529,6 +529,32 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     expect(canWriteSettingPath('agent.tools.enabled')).toBe(true)
   })
 
+  it('agent.loop / agent.snapshots 进黑名单（放大预算与关快照均系自我提权）', () => {
+    // 循环预算：AI 给自己放大轮次 / token 上限 = 绕过"该停下来问用户"的闸门；
+    // 写前快照：AI 关掉 enabled 或压低预算 = 拆掉写文件后的回滚保险。
+    // 两者此前"不在黑名单也不在覆盖表"看似不可写，实际默认可写——本轮封进黑名单才对得上文档意图。
+    for (const path of [
+      'agent.loop',
+      'agent.loop.maxRounds',
+      'agent.loop.maxTotalTokens',
+      'agent.loop.autoContinueRounds',
+      'agent.snapshots',
+      'agent.snapshots.enabled',
+      'agent.snapshots.keepPerFile',
+      'agent.snapshots.maxSnapshotBytes',
+      'agent.snapshots.totalBudgetBytes',
+    ]) {
+      expect(canWriteSettingPath(path), path).toBe(false)
+      const reason = settingsReadonlyReason(path)
+      expect(reason, path).toMatch(/不允许/)
+      // 拒绝来自黑名单，而不是「未知配置路径」那条兜底
+      expect(reason).not.toBe('未知配置路径')
+    }
+    // 回归护栏：覆盖表内的 agent.tools.* 不受牵连（别误伤既定可写面）
+    expect(canWriteSettingPath('agent.tools.enabled')).toBe(true)
+    expect(canWriteSettingPath('agent.tools.workspaceDir')).toBe(true)
+  })
+
   it('文件检索（grep / glob）的开关与上限对 AI 开放（v12）', () => {
     expect(canWriteSettingPath('agent.tools.search.enabled')).toBe(true)
     expect(settingsReadonlyReason('agent.tools.search.enabled')).toBeUndefined()

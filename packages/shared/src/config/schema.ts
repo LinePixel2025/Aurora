@@ -427,6 +427,10 @@ export const SETTINGS_READONLY_PREFIXES = [
   'projects',
   // 三档权限（v13，docs/06 §12.2）：改档位等于自己给自己放宽确认闸门，同样只读。
   'agent.permissionMode',
+  // 循环预算（v15，docs/06 §4.1）：AI 给自己放大轮次 / token 预算，等于绕过"该停下来问用户"的那道闸门。
+  'agent.loop',
+  // 写前快照（v14，docs/06 §11.8）：AI 关掉 `enabled` 或压低预算，等于在自己写文件前拆掉回滚保险。
+  'agent.snapshots',
 ] as const
 
 export const AdvancedSchema = z.object({
@@ -548,8 +552,8 @@ export const AgentSchema = z.object({
    * `COMPUTER_TOOL_NAMES` 的门控语义牵连（那是"工具注册"的开关），而快照是**写盘行为的兜底**，
    * 与注册哪些工具无关。
    *
-   * 刻意**不**进 `SETTINGS_READONLY_PREFIXES`：调整保留份数 / 上限是用户的正当需求；
-   * 也**不**进 `WRITABLE_PATH_OVERRIDES`（默认 AI 改不动，确需开放另开一步）。
+   * 本分组在 `SETTINGS_READONLY_PREFIXES` 里（AI 改不动：关掉写备份 / 压低预算等于拆掉回滚保险）；
+   * 用户走设置页 / `settings:update` 不受影响（调整保留份数 / 上限是正当需求）。
    */
   snapshots: z
     .object({
@@ -579,8 +583,8 @@ export const AgentSchema = z.object({
    * 用户遇到"长任务跑到一半停下"既看不到原因也改不了。现在轮次与 token 预算都可配，
    * 且用尽时 job 进入 `paused`（附 `pendingReason`）而不是静默收尾。
    *
-   * **不要**进 `SETTINGS_READONLY_PREFIXES`（用户当然可以调），也**不要**进
-   * `WRITABLE_PATH_OVERRIDES` —— 让 AI 给自己放大预算，等于绕过"该停下来问用户"的那道闸门。
+   * 本分组在 `SETTINGS_READONLY_PREFIXES` 里（AI 改不动）：让 AI 给自己放大预算，
+   * 等于绕过"该停下来问用户"的那道闸门。用户当然可以调——设置页 / `settings:update` 不经过本黑名单。
    */
   loop: z
     .object({
@@ -631,6 +635,8 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
     '免确认命令模式等于摘掉终端工具自己的确认闸门，不允许通过工具修改',
   projects: '项目根同时决定注入的指令与权限边界，不允许通过工具修改',
   'agent.permissionMode': '权限档位等于 Agent 自己的确认闸门，不允许通过工具修改',
+  'agent.loop': '循环轮次与 token 预算等于 Agent 自己的停止闸门，不允许通过工具修改',
+  'agent.snapshots': '写前快照是改动可回滚的兜底，不允许通过工具关闭',
 }
 
 /** 显式可写覆盖表的一条登记：模式 + 中文说明。 */

@@ -193,10 +193,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   把磁盘上的历史**整体覆盖**（本仓库已修过两次，别再改回去）。job 存储还多一条：
   **落盘前必须已 `ensureLoaded`**，否则内存里的空表会冲掉盘上数据。
 - **`agent.permissionMode` 是只读前缀**（AI 的 `set_setting` 一律拒绝：改档位等于自我提权，
-  与 `agent.tools.terminal.allowPatterns` 同款）。`agent.snapshots.*` / `agent.loop.*` 则是
-  "用户可写、AI 不可写"：它们**不在** `SETTINGS_READONLY_PREFIXES`，但同样**不在**
-  `WRITABLE_PATH_OVERRIDES`，所以默认 AI 改不动 —— 让 AI 给自己放大轮次 / token 预算，
-  等于绕过"该停下来问用户"的那道闸门。
+  与 `agent.tools.terminal.allowPatterns` 同款）。`agent.snapshots.*` / `agent.loop.*` 同为
+  **`SETTINGS_READONLY_PREFIXES` 中的只读前缀**（用户可在设置页调，AI 一律拒绝）：
+  让 AI 给自己放大轮次 / token 预算，等于绕过"该停下来问用户"的那道闸门；关掉写前快照
+  等于拆掉回滚保险。
 - **`agent.loop` 的三个上限是以 getter 注入内核的**（`() => settings.get().agent.loop.maxRounds`
   这种形式）：写成构造时常量值就变成"改设置要重启才生效"的死字段 ——
   与上面「配置字段"能写"不等于"生效"」是同一个坑，本仓库已修过一批。
@@ -206,8 +206,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   ⚠️ **反例与它们同期**：2026-09 新增的 `edit_file` / `grep` / `glob` **是电脑操控工具、受总开关门控**
   （分别随 `files.enabled` / `search.enabled`，见「尚未生效 / 已知限制」那条）——
   不要因为"同期落地"就把它们也当成不受门控的扩展工具；
-  `set_setting` 的可写面由 `packages/shared/src/config/schema.ts` 的 `WRITABLE_PATH_OVERRIDES`
-  显式覆盖表驱动（先于 readonly 前缀判定）——要新增「Agent 可写的设置路径」先改该表，
+  `set_setting` 的判定顺序是：命中 `WRITABLE_PATH_OVERRIDES` 显式放行（先于黑名单）→ 命中
+  `SETTINGS_READONLY_PREFIXES` 拒绝 → **Schema 登记过的叶子路径默认可写**。覆盖表是
+  「黑名单内的显式放行 + 可写面清单」，**不是白名单**：新增安全敏感分组必须**显式进黑名单**，
+  只「不登记进覆盖表」挡不住——要新增「Agent 可写的设置路径」先改该表，
   再同步 `set_setting` 的工具 description 与 systemPrompt 的 settingsHint。
   v9 起 `todo_write` / `todo_read` / `task` 由 `registerAgentCoreTools` 注册（见 docs/06 §18 / §19），
   同样**不受 `agent.tools.enabled` 门控**。

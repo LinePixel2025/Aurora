@@ -34,11 +34,13 @@ export const SETTINGS_HINT = [
   '- agent.tools.open.enabled（「打开路径」工具开关）',
   '- skills.userDir / disabled（用户技能目录与停用列表）',
   '- advanced.quietHours（全局勿扰时段）',
-  // v13 起新增的三类路径**刻意不入上面的可改清单**：它们都是只读的自我提权路径
-  // （项目根同时决定注入的指令与权限边界、权限档位与各类确认闸门就是 Agent 自己的闸门），
-  // 这里只补一句话，免得模型反复尝试一个必然被拒绝的写入（docs/06 §12.2 / §5.1）。
+  // 只读的自我提权路径**刻意不入上面的可改清单**：项目根同时决定注入的指令与权限边界，
+  // 权限档位与各类确认闸门是 Agent 自己的闸门，循环预算与写前快照（`agent.loop.*` /
+  // `agent.snapshots.*`）则是"该停下来问用户"与"写坏了能回滚"的最后兜底（docs/06 §12.2 / §5.1 / §11.8）。
+  // 这里各补一句话，免得模型反复尝试必然被拒绝的写入。
   '项目（projects.*）、权限档位（agent.permissionMode）与确认闸门（advanced.confirmSensitiveTools、agent.tools.terminal.allowPatterns）一律只读：',
-  '改它们等于改你自己的指令面或摘掉自己的确认闸门，需要用户去设置页操作。',
+  '循环预算（agent.loop.*）与写前快照（agent.snapshots.*）同样一律只读：',
+  '改它们等于改你自己的指令面、摘掉自己的确认闸门，或绕过预算与回滚的兜底，需要用户去设置页操作。',
   '所有凭据类路径（llm/tts/stt/imagegen 的 providers 子树、mcp.servers）一律只读：',
   '用户要求修改密钥时，请引导他去设置页操作。',
 ].join('\n')

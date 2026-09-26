@@ -2613,6 +2613,8 @@ async function runSmokeTest(userData: string): Promise<void> {
       },
       { path: 'modes.classroom.typo', value: 1, expectReject: true },
       { path: 'llm.providers.x.apiKeyEnc', value: 'leak', expectReject: true },
+      { path: 'agent.loop.maxRounds', value: 64, expectReject: true },
+      { path: 'agent.snapshots.enabled', value: false, expectReject: true },
     ]
 
     for (const item of crashMatrix) {

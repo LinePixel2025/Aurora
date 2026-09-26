@@ -746,8 +746,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 - **保留策略（两层上限，都要有单测）**：
   ① 每个文件环形保留 `agent.snapshots.keepPerFile` 份（默认 20），按 `createdAt` 倒序淘汰最旧的；
   ② 每个会话目录的总预算 `agent.snapshots.totalBudgetBytes`（默认 200 MiB），超出时**从最旧开始删**。
-  `agent.snapshots.*` **不在** `SETTINGS_READONLY_PREFIXES` 里（用户可以调），但也不在
-  `WRITABLE_PATH_OVERRIDES` 里（AI 默认改不动）。
+  `agent.snapshots.*` 在 `SETTINGS_READONLY_PREFIXES` 里（与 `agent.permissionMode` 同款）：
+  用户可在设置页调整，AI 的 `set_setting` 一律拒绝——关掉写前备份等于拆掉回滚保险。
 - **回滚语义（`snapshots:restore`）**：先把**当前磁盘状态**存成一份 `origin: 'rollback'` 的快照，
   再把旧内容写回 —— 于是**回滚本身也可撤回**（点错了能回到回滚前的样子）。
   `exists: false` 的快照回滚 = 删除该文件。回滚路径同样过项目根边界校验。
@@ -854,7 +854,8 @@ v8 起共三道闸门（**覆盖表先行**）：
 1. **黑名单前缀**：判定分两步 —— 先查用户配置项 `advanced.readonlyPrefixes`（默认值即导出的
    `SETTINGS_READONLY_PREFIXES`，见 docs/08 §1，**具体条目以该常量为准**；v8 起新增
    `stt.providers` / `imagegen.providers` 两组凭据前缀；v13 起新增 `projects` 与
-   `agent.permissionMode` 两条自我提权路径），
+   `agent.permissionMode` 两条自我提权路径；本轮安全收紧再起新增
+   `agent.loop` 与 `agent.snapshots`（循环预算与写前快照），
    再**无条件**走 `canWriteSettingPath()`，后者内部用的是**硬编码**常量 `SETTINGS_READONLY_PREFIXES`
    ——它**从不读取用户配置**。也就是说 `advanced.readonlyPrefixes` 只能在默认黑名单**之上**追加限制，
    **不能放宽**：默认项始终生效，把 `general.hotkey` 从配置里删掉或清空整个数组，
@@ -865,7 +866,8 @@ v8 起共三道闸门（**覆盖表先行**）：
    （`general.onboarded` / `general.firstRun`）、开机自启（`general.launchAtLogin`）、
    全局快捷键（`general.hotkey`）、敏感工具确认总闸门（`advanced.confirmSensitiveTools`）、
    命令免确认模式列表（`agent.tools.terminal.allowPatterns`）、
-   项目分组（`projects`，v13）、三档权限（`agent.permissionMode`，v13）。
+   项目分组（`projects`，v13）、三档权限（`agent.permissionMode`，v13）、
+   循环预算（`agent.loop`）与写前快照（`agent.snapshots`）。
    按**路径段**前缀匹配（`llm.providers` 命中 `llm.providers.deepseek.apiKeyEnc`，
    但**不**命中 `llm.providerSettings` 这类仅开头相同的字段名）。
    被挡住的理由是分层的：凭据与密文只经 safeStorage / `setSecret` 落库；
@@ -879,7 +881,9 @@ v8 起共三道闸门（**覆盖表先行**）：
    `projects` 同时决定「注入给模型的 AGENTS.md」与「权限层认定的项目根」，
    让 AI 自己切项目 = 同时改自己的指令面与权限面（§5.1）；
    `agent.permissionMode` 是权限档位本身，改它 = 给自己放宽或收紧确认闸门。
-   后两条同样**只登记在黑名单里、不进 `WRITABLE_PATH_OVERRIDES`** —— 覆盖表判定**先于**黑名单，
+   `agent.loop.*` 与 `agent.snapshots.*` 是循环预算与写前快照：AI 放大轮次 / token 预算
+   等于绕过「该停下来问用户」的闸门，关掉快照等于拆掉回滚保险。
+   这几条同样**只登记在黑名单里、不进 `WRITABLE_PATH_OVERRIDES`** —— 覆盖表判定**先于**黑名单，
    登记进去就等于放行（与 `advanced.confirmSensitiveTools` / `allowPatterns` 同款陷阱）。
 2. **Schema 兜底：不认识的路径一律拒绝**。路径必须能被 Schema 识别
    （`schema.ts` 里 `lookupSpec()` 登记过的字段，或 `isDynamicPath()` 认的通配路径），

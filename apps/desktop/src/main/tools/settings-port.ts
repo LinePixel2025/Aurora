@@ -57,7 +57,7 @@ export function createSettingsPort(deps: SettingsPortDeps): SettingsToolPort {
   /**
    * 路径可写判定：用户配置的 `advanced.readonlyPrefixes` **只能追加**限制，
    * 之后还要无条件走 `canWriteSettingPath` —— 后者用的是硬编码常量（不接收用户配置），
-   * 因此默认九 / 十项永远生效，删掉或清空配置项都放不开它们。
+   * 因此默认全量前缀（含 `agent.loop` / `agent.snapshots`）永远生效，删掉或清空配置项都放不开它们。
    */
   const reasonOf = (path: string): string | undefined => {
     // 老配置 / 极端情况下该字段可能缺失：缺失按"没有额外黑名单"处理，
