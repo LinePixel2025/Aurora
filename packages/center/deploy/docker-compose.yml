@@ -1,0 +1,22 @@
+services:
+  aurora-center:
+    build: .
+    image: aurora-center:0.2.0
+    container_name: aurora-center
+    restart: unless-stopped
+    ports:
+      - '8787:8787'
+    environment:
+      - AURORA_CENTER_DATA=/data
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8787/').then(r => process.exit(0)).catch(() => process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

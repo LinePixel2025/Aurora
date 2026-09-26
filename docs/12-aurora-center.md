@@ -232,6 +232,9 @@ aurora-center version
   `--registry` 透传）。**没有**自替换二进制的黑魔法 —— 以 npm 为发布 / 更新通道，
   装不到 npm 的环境用 `git pull && pnpm install && pnpm build`（README 写明）。
 - 跨端：纯 Node ≥ 18，无原生依赖；`ws` 是唯一运行时依赖。
+- **Docker 离线部署**：`packages/center/deploy/`（构建机 `pnpm deploy` 打自包含产物 →
+  scp → `docker compose up -d --build`，服务器全程无需访问 npm）；步骤、更新与安全
+  注意（纯 HTTP 明文风险、反代 / cloudflared 加 TLS）见 `packages/center/deploy/README.md`。
 
 ## 10. Web UI（Apple 风格）
 
