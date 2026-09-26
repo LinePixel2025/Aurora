@@ -74,6 +74,20 @@ export const JOB_LOOP_MARKER = 'AURORA_JOB_LOOP'
 export const JOB_LOOP_TOOL_ROUNDS = 3
 
 /**
+ * 写文件链路的自测标记（docs/06 §11.2 / §11.8，step 5 的跨特性断言用）：
+ * 提问里标记**之后那一行**是目标绝对路径，桩服务第 1 轮返回一个 `write_file` 调用、
+ * 拿到工具结果后第 2 轮收尾。
+ *
+ * 为什么需要它：三档权限与写前快照的端到端断言必须让 Agent **真的去写一个文件** ——
+ * 直接调工具注册表只能证明"注册表里有什么"，证明不了"发一句话之后权限档位真的拦住了它 /
+ * auto 档真的没弹卡 / 快照真的产生了"。
+ */
+export const WRITE_FILE_MARKER = 'AURORA_WRITE_FILE'
+
+/** 桩服务让 Agent 写进去的内容（断言据此比对磁盘） */
+export const WRITE_FILE_CONTENT = 'AURORA_STUB_WRITTEN'
+
+/**
  * 爆发模式标记（`burst-probe`）：**本次请求最后一条 user 消息**含它才走爆发分流。
  *
  * 刻意按请求内容而不是环境变量分流：`AURORA_CAPTURE` 一轮里前面的场景（chat-stream /
@@ -328,6 +342,56 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
       // ── Job 分流（docs/06 §4.1，v15）：一直要工具，直到已回填的 tool 结果够数才收尾 ──
       // 同样按**提问内容**寻址并排在计数寻址（`toolCallRound`）之前：
       // 它需要"每一轮都要工具"，而计数寻址那支只在第 1 次对话请求里给工具。
+      // ── 写文件分流（docs/06 §11.2 / §11.8，step 5 跨特性断言）：第 1 轮写文件，第 2 轮收尾 ──
+      // 目标路径来自标记之后那一行；三档权限与写前快照的端到端断言靠它让 Agent **真的去写**。
+      if (lastUserContent(record).includes(WRITE_FILE_MARKER)) {
+        const previousToolResult = lastToolContent(record)
+        if (previousToolResult === undefined) {
+          const target = lastUserContent(record).split(WRITE_FILE_MARKER)[1]?.split('\n')[1]?.trim()
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_smoke_write_1',
+                      type: 'function',
+                      function: {
+                        name: 'write_file',
+                        arguments: JSON.stringify({
+                          path: target ?? '',
+                          content: WRITE_FILE_CONTENT,
+                          mode: 'overwrite',
+                        }),
+                      },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
+        } else {
+          // 把工具结果原样回显：断言据此区分"写成功"与"工具没注册 / 被拒"（只读档该看到后者）
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: { content: `写入结果：${previousToolResult}` },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSseStop(res)
+        }
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+
       if (isJobLoopRequest(record)) {
         const toolResults = (record.body?.messages ?? []).filter(
           (message) => message.role === 'tool',

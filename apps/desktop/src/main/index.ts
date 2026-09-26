@@ -5,7 +5,7 @@
  *  单实例锁 → 日志 → 配置（加密/迁移）→ 感知 → 窗口 → 模式装配 → IPC → 托盘
  *  → 首次引导判断（无可用模型配置则进入引导向导，否则显示服务窗与提示条）。
  */
-import { existsSync, promises as fs, readdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, promises as fs, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import {
@@ -103,6 +103,8 @@ import {
   BURST_TEXT_START_MARKER,
   REASONING_MARKER,
   JOB_LOOP_MARKER,
+  WRITE_FILE_CONTENT,
+  WRITE_FILE_MARKER,
   STUB_API_KEY,
   STUB_MARKER,
   STUB_MODEL,
@@ -183,12 +185,34 @@ app.setName('Aurora')
  * 注意：`AURORA_CAPTURE` 单独使用（不带 `AURORA_SMOKE`）也要隔离 —— 这是默认行为，不是可选项。
  */
 let smokeWorkspace: string | undefined
+/**
+ * 两次启动验证（v15，docs/06 §4.1）：把自测工作区**固定**到调用方给的目录，且退出时不删。
+ *
+ * 为什么需要它：`job` 的核心承诺是"**重启后**还能续跑"，而自测默认每次都用全新临时目录
+ * （见上），跨进程的持久化根本无处验证。设了 `AURORA_SMOKE_WORKSPACE` 就复用它，
+ * 于是「第一次启动跑到 paused → 退出 → 第二次启动接着跑完」成为可脚本化的两步。
+ *
+ * 只在 `AURORA_SMOKE=1` 下生效（`isolatedRun` 的判断已经把捕获模式算进来），
+ * 且**只在开发态**（`app.isPackaged` 为假）—— 打包后的应用不会因为环境变量改 userData 位置。
+ */
+const pinnedSmokeWorkspace = ((): string | undefined => {
+  if (app.isPackaged || process.env['AURORA_SMOKE'] !== '1') return undefined
+  const value = (process.env['AURORA_SMOKE_WORKSPACE'] ?? '').trim()
+  return value === '' ? undefined : value
+})()
+/**
+ * 第二次启动的阶段标记：`resume` = 只跑"重启续跑"那一段断言（其余断言依赖全新环境，
+ * 在同一个工作区上重跑必然失败 —— 那些断言的对象是"首次启动"的现场）。
+ */
+const smokePhase = (process.env['AURORA_SMOKE_PHASE'] ?? '').trim()
 const isolatedRun =
   !app.isPackaged &&
   (process.env['AURORA_SMOKE'] === '1' || (process.env['AURORA_CAPTURE'] ?? '').trim() !== '')
 if (isolatedRun) {
-  smokeWorkspace = join(tmpdir(), `aurora-smoke-${process.pid}-${Date.now()}`)
-  pruneSmokeWorkspaces()
+  smokeWorkspace =
+    pinnedSmokeWorkspace ?? join(tmpdir(), `aurora-smoke-${process.pid}-${Date.now()}`)
+  if (pinnedSmokeWorkspace === undefined) pruneSmokeWorkspaces()
+  mkdirSync(smokeWorkspace, { recursive: true })
   app.setPath('userData', smokeWorkspace)
 }
 
@@ -1249,7 +1273,23 @@ async function runCapture(dir: string): Promise<void> {
     }),
   }
   const plan = filterCapturePlan(
-    [...defaultCapturePlan(manager, app.getPath('userData')), chatStreamTarget, chatBurstTarget],
+    [
+      ...defaultCapturePlan(manager, app.getPath('userData'), {
+        // 综合概览场景要项目卡在场：由装配层改配置（capture.ts 不碰 SettingsStore）
+        setProject: (project) => {
+          const current = settings?.get().projects
+          if (current === undefined) return
+          settings?.update({
+            projects:
+              project === undefined
+                ? { ...current, current: '', list: [] }
+                : { ...current, current: project.id, list: [project] },
+          })
+        },
+      }),
+      chatStreamTarget,
+      chatBurstTarget,
+    ],
     process.env['AURORA_CAPTURE_WINDOWS'],
   )
   logger?.info('开始窗口截图', { dir, count: plan.length })
@@ -1305,7 +1345,8 @@ async function runCapture(dir: string): Promise<void> {
   // 一次性任务：写完就退出，不常驻（与 AURORA_SMOKE 同一约定）。
   // 隔离出来的临时 userData 也一并删掉，避免每跑一次截图就留一个目录。
   manager.prepareQuit()
-  if (smokeWorkspace !== undefined) {
+  // 固定工作区（两次启动验证）**不删**：第二次启动还要读它；普通自测照旧一跑一清
+  if (smokeWorkspace !== undefined && pinnedSmokeWorkspace === undefined) {
     await fs.rm(smokeWorkspace, { recursive: true, force: true }).catch(() => undefined)
   }
   if (result.files.length === 0) app.exit(1)
@@ -1323,6 +1364,15 @@ async function runSmokeTest(userData: string): Promise<void> {
   const target = BrowserWindow.getAllWindows()[0]
   if (!target) {
     logger?.error('自测失败：没有可用窗口')
+    return
+  }
+
+  // 第二次启动（`AURORA_SMOKE_PHASE=resume` + 固定工作区）：只跑"重启续跑"这一段。
+  // 其余断言的对象是"首次启动的全新现场"（科目模板、无历史会话、桩服务计数），
+  // 在同一个工作区上重跑必然红 —— 那不是缺陷，是断言写错了对象。因此按阶段分流，
+  // 而不是把整套自测跑两遍。
+  if (smokePhase === 'resume') {
+    await runResumePhase(userData)
     return
   }
 
@@ -1998,6 +2048,246 @@ async function runSmokeTest(userData: string): Promise<void> {
     record('Job：取消后状态是 aborted（不是 paused）', cancelOk, jobDetail)
   }
 
+  // 2.6 跨特性集成（step 5）：把四步串成一条链 —— 选项目 → 设权限档 → Agent 真的写文件（留快照）
+  //     → 只读档写不动 → 一键回滚。每条断言都必须能回答"这个特性坏了它会失败吗"：
+  //     于是写文件走**真实桩驱动**（标记之后那一行是目标路径），而不是直接调工具注册表。
+  {
+    const outerMarker = 'AURORA_AGENTS_OUTER_MARKER'
+    const innerMarker = 'AURORA_AGENTS_INNER_MARKER'
+    let scopeOk = false
+    let autoOk = false
+    let readonlyOk = false
+    let rollbackOk = false
+    let eventsOk = false
+    /** 本次观察到的所有事件类型（用于"白名单没被放宽"的断言） */
+    const seenTypes = new Set<string>()
+    let integrationDetail = ''
+    /** 等某个会话的请求跑完（done 事件；30s 兜底，避免自测整体挂死） */
+    const waitForSessionDone = async (
+      h: NonNullable<typeof agent>,
+      sessionId: string,
+    ): Promise<void> => {
+      await new Promise<void>((resolve) => {
+        const off = h.onEvent((event) => {
+          if (event.sessionId !== sessionId || event.type !== 'done') return
+          off()
+          resolve()
+        })
+        setTimeout(() => {
+          off()
+          resolve()
+        }, 30_000)
+      })
+    }
+    try {
+      const host = agent
+      const snapshotStore = ensureSnapshotPort()
+      const projectRoot = join(userData, 'smoke-integration-project')
+      const target = join(projectRoot, 'note.txt')
+      const readonlyTarget = join(projectRoot, 'blocked.txt')
+      const previousProjects = settings?.get().projects
+      const previousLoop = settings?.get().agent.loop
+      const previousAgent = settings?.get().agent
+      const projectId = 'smoke-integration'
+      if (
+        host !== undefined &&
+        settings !== undefined &&
+        desktopDeps !== undefined &&
+        previousProjects !== undefined &&
+        previousLoop !== undefined &&
+        previousAgent !== undefined
+      ) {
+        // AGENTS.md 两层：项目根里的必须进提示词，**项目根的父目录**里的绝不能进
+        // （收集范围是"项目根 → 当前工作目录"，父目录的内容漏进来就是边界破了）
+        await fs.mkdir(projectRoot, { recursive: true })
+        await fs.writeFile(join(projectRoot, 'AGENTS.md'), `# 项目内约定\n${innerMarker}\n`, 'utf8')
+        await fs.writeFile(join(userData, 'AGENTS.md'), `# 项目外约定\n${outerMarker}\n`, 'utf8')
+        await fs.writeFile(target, 'ORIGINAL', 'utf8')
+        await fs.writeFile(readonlyTarget, 'UNTOUCHED', 'utf8')
+
+        const off = host.onEvent((event) => seenTypes.add(event.type))
+        settings.update({
+          projects: {
+            ...previousProjects,
+            current: projectId,
+            list: [{ id: projectId, name: '集成自测项目', root: projectRoot }],
+          },
+          // 一轮工具就够：第 0 轮写文件、第 1 轮收尾；关掉自动续轮让行为确定
+          agent: {
+            ...previousAgent,
+            loop: { maxRounds: 2, maxTotalTokens: 0, autoContinueRounds: 0 },
+          },
+        })
+
+        // ① auto 档：根内写文件**不弹卡**、真的落盘、并且留下了快照
+        settings.update({
+          agent: {
+            ...settings.get().agent,
+            permissionMode: 'auto',
+            tools: settings.get().agent.tools,
+          },
+        })
+        const beforeSnapshots = await snapshotStore.list({ path: target })
+        const beforeRequests = stub.getRecordedRequests().length
+        await host.send({
+          sessionId: 'smoke-integration',
+          text: `${WRITE_FILE_MARKER}\n${target}`,
+          origin: 'chat',
+        })
+        await waitForSessionDone(host, 'smoke-integration')
+        await snapshotStore.flush()
+        const prompt = stub
+          .getRecordedRequests()
+          .slice(beforeRequests)
+          .find((item) => !item.classify && !item.subagent)?.systemPrompt
+        scopeOk =
+          (prompt ?? '').includes(innerMarker) &&
+          (prompt ?? '').includes('## 项目约定') &&
+          !(prompt ?? '').includes(outerMarker)
+        const written = await fs.readFile(target, 'utf8').catch(() => '')
+        const afterSnapshots = await snapshotStore.list({ path: target })
+        autoOk =
+          written === WRITE_FILE_CONTENT &&
+          (proactiveScheduler?.pendingCount ?? 0) === 0 &&
+          afterSnapshots.length > beforeSnapshots.length
+
+        // ③ readonly 档：同一条提问，工具不在清单 → 写不进去（文件内容一字未变）
+        settings.update({
+          agent: {
+            ...settings.get().agent,
+            permissionMode: 'readonly',
+            tools: settings.get().agent.tools,
+          },
+        })
+        await host.send({
+          sessionId: 'smoke-integration',
+          text: `${WRITE_FILE_MARKER}\n${readonlyTarget}`,
+          origin: 'chat',
+        })
+        await waitForSessionDone(host, 'smoke-integration')
+        const blockedContent = await fs.readFile(readonlyTarget, 'utf8').catch(() => '')
+        readonlyOk = blockedContent === 'UNTOUCHED'
+
+        // ⑤ 回滚：把 ① 里的写操作撤回，且回滚自身留下 origin:'rollback' 的快照
+        const first = afterSnapshots[0]
+        if (first !== undefined) {
+          const restored = await restoreSnapshot(desktopDeps, snapshotStore, {
+            snapshotId: first.id,
+          })
+          await snapshotStore.flush()
+          const backContent = await fs.readFile(target, 'utf8').catch(() => '')
+          const afterRollback = await snapshotStore.list({ path: target })
+          rollbackOk =
+            restored.ok &&
+            backContent === 'ORIGINAL' &&
+            afterRollback.some((item) => item.origin === 'rollback')
+        }
+
+        // ⑥ 事件白名单：本轮新增的 `job` 必须在其中，且断言不是"任意类型都算过"
+        const allowed = new Set([
+          'queued',
+          'user-message',
+          'reasoning',
+          'text',
+          'tool',
+          'subagent',
+          'usage',
+          'job',
+          'done',
+          'error',
+        ])
+        const unknown = [...seenTypes].filter((type) => !allowed.has(type))
+        eventsOk = seenTypes.has('job') && unknown.length === 0
+
+        off()
+        settings.update({
+          projects: { ...settings.get().projects, current: '', list: [] },
+          agent: { ...settings.get().agent, loop: previousLoop, permissionMode: 'confirm' },
+        })
+        integrationDetail = `scope=${scopeOk} auto=${autoOk} readonly=${readonlyOk} rollback=${rollbackOk} events=[${[...seenTypes].join(',')}] unknown=[${unknown.join(',')}]`
+      } else {
+        integrationDetail = 'settings / agent / deps 不可用'
+      }
+    } catch (error) {
+      integrationDetail = `异常：${String(error)}`
+    }
+    record(
+      '集成①：项目根的 AGENTS.md 进了请求体，**项目根父目录**的没进（收集边界没破）',
+      scopeOk,
+      integrationDetail,
+    )
+    record(
+      '集成②：auto 档根内写文件 —— 不弹确认卡、内容真的落盘、并留下快照',
+      autoOk,
+      integrationDetail,
+    )
+    record(
+      '集成③：只读档同一条提问写不动文件（工具不在清单，内容一字未变）',
+      readonlyOk,
+      integrationDetail,
+    )
+    record(
+      "集成⑤：一键回滚把内容还原，且新增一条 origin:'rollback' 的快照",
+      rollbackOk,
+      integrationDetail,
+    )
+    record(
+      '集成⑥：事件类型白名单含本轮新增的 job，且没有放宽到"任意类型"',
+      eventsOk,
+      integrationDetail,
+    )
+  }
+
+  // 2.7 给"第二次启动"留一条 paused 的 job（step 5 的跨进程续跑验证前置）：
+  //     轮次用尽 + 关掉自动续轮 + 这里**不**续跑 → 它就停在这个工作区里等下一次启动。
+  //     跨进程证据的另一半在 `runResumePhase`（`AURORA_SMOKE_PHASE=resume`）。
+  {
+    let prepared = false
+    let detail = ''
+    try {
+      const host = agent
+      const store = jobStore
+      const loopBefore = settings?.get().agent.loop
+      if (host !== undefined && store !== undefined && settings !== undefined) {
+        settings.update({
+          agent: {
+            ...settings!.get().agent,
+            loop: { maxRounds: 2, maxTotalTokens: 0, autoContinueRounds: 0 },
+          },
+        })
+        await host.send({ sessionId: 'smoke-job-restart', text: JOB_LOOP_MARKER, origin: 'chat' })
+        await new Promise<void>((resolve) => {
+          const off = host.onEvent((event) => {
+            if (event.sessionId !== 'smoke-job-restart' || event.type !== 'done') return
+            off()
+            resolve()
+          })
+          setTimeout(() => {
+            off()
+            resolve()
+          }, 30_000)
+        })
+        await store.flush()
+        const job = (await store.list({ sessionId: 'smoke-job-restart' }))[0]
+        // 落盘自检：这是"第二次启动能读到"的前提，必须当场确认文件真的在磁盘上 ——
+        // 只断言内存态的话，跨进程验证会在下一次启动以 `found=0` 的形式失败，且看不出原因。
+        const jobFile = join(userData, 'jobs', 'smoke-job-restart.json')
+        const onDisk = existsSync(jobFile)
+        prepared = job?.status === 'paused' && (job.cursor.nextRound ?? 0) > 0 && onDisk
+        detail = `status=${job?.status ?? '-'} cursor=${job?.cursor.nextRound ?? -1} steps=${job?.stepsDone.length ?? -1} file=${onDisk ? 'yes' : 'NO'}`
+        if (!onDisk) logger?.error('job 未落盘：第二次启动的续跑验证会失败', { jobFile })
+        if (loopBefore !== undefined) {
+          settings.update({ agent: { ...settings.get().agent, loop: loopBefore } })
+        }
+      } else {
+        detail = 'agent / jobStore / settings 不可用'
+      }
+    } catch (error) {
+      detail = `异常：${String(error)}`
+    }
+    record('为第二次启动留下一条 paused 的 job（重启续跑验证的前置）', prepared, detail)
+  }
+
   // 3. 提示条两态：断言**真实 BrowserWindow 的几何**（不只状态机）。
   //    纯函数由 edge-bar-geometry.test.ts 覆盖；这里证明 setBounds 在主进程链路里真的生效，
   //    且展开/收起保持右缘与 y 不变（docs/07 §2.2）。
@@ -2435,10 +2725,152 @@ async function runSmokeTest(userData: string): Promise<void> {
   }
 
   await logger?.close()
-  // 临时 userData 是整个自测的产物，清理掉避免堆在系统临时目录
-  if (smokeWorkspace !== undefined) {
+  // 临时 userData 是整个自测的产物，清理掉避免堆在系统临时目录。
+  // ⚠️ 固定工作区（两次启动验证）**绝不能删**：第二次启动正要读它 ——
+  // 不排除的话症状是"第一次启动明明 file=yes，第二次却 found=0"，而且因为是 `rm -rf`
+  // 与收尾写入抢时序，偶尔还能剩下几个文件，看起来像随机丢数据（实测踩过）。
+  if (smokeWorkspace !== undefined && pinnedSmokeWorkspace === undefined) {
     await fs.rm(smokeWorkspace, { recursive: true, force: true }).catch(() => undefined)
   }
+  app.exit(failed.length === 0 ? 0 : 2)
+}
+
+/**
+ * 第二次启动的续跑验证（step 5，`AURORA_SMOKE_PHASE=resume` + `AURORA_SMOKE_WORKSPACE=<同一个目录>`）。
+ *
+ * 这是 job 的核心承诺（docs/06 §4.1「重启后还能接着跑」）唯一的**跨进程**证据：
+ * 第一次启动把一条任务跑到 `paused` 就退出，第二次启动在**同一个 userData** 上把它读回来、
+ * 点「继续」跑完。前四步的断言都在同一次启动内，"进程内续跑"证明不了"重启后还在"。
+ *
+ * 只跑这一段：其余断言依赖全新环境（科目模板 9 科、无历史会话、桩请求计数），
+ * 在同一个工作区上重跑必然红 —— 那是断言写错了对象，不是缺陷。
+ */
+async function runResumePhase(userData: string): Promise<void> {
+  logger?.info('开始第二次启动的续跑验证（AURORA_SMOKE_PHASE=resume）')
+  const results: Array<{ label: string; ok: boolean; detail: string }> = []
+  const record = (label: string, ok: boolean, detail: string): void => {
+    results.push({ label, ok, detail })
+    logger?.[ok ? 'info' : 'error'](
+      `${SMOKE_RESULT_PREFIX} ${ok ? 'PASS' : 'FAIL'} ${label} — ${detail}`,
+    )
+  }
+  const host = agent
+  const store = jobStore
+  const sessionStore = sessions
+  const sessionId = 'smoke-job-restart'
+  // 第二次启动同样要有一个可用的模型：上一个进程的桩服务端口已经随进程消失，
+  // 而配置里记的还是那个死端口 —— 不重新起一个桩并改指向，续跑只会回 `E_NO_MODEL`，
+  // 表现为"点了继续但什么都没发生"（这正是本阶段第一版的现象）。
+  let resumeStub: StubLlmServer | undefined
+  try {
+    resumeStub = await startStubLlmServer(logger?.child('smoke-llm'))
+    if (settings !== undefined) {
+      settings.update({
+        llm: {
+          ...settings.get().llm,
+          active: 'smoke',
+          providers: {
+            ...settings.get().llm.providers,
+            smoke: {
+              type: 'openai-compat',
+              baseUrl: resumeStub.baseUrl,
+              apiKeyEnc: '',
+              model: STUB_MODEL,
+              modelList: [STUB_MODEL, `${STUB_MODEL}-alt`],
+              temperature: 0.7,
+              reasoningEffort: 'auto',
+              contextWindow: 0,
+            },
+          },
+        },
+      })
+      settings.setSecret('llm.providers.smoke.apiKey', STUB_API_KEY)
+      await settings.flush()
+    }
+  } catch (error) {
+    logger?.error('续跑验证准备失败：无法启动桩 LLM 服务', { error: String(error) })
+  }
+  // 读盘前的现场自检：把工作区与 jobs 目录的实际内容打进日志，
+  // 「第二次启动读不到」时一眼能区分"文件没写"还是"工作区不对"。
+  const jobsDir = join(userData, 'jobs')
+  logger?.info('续跑验证的工作区', {
+    userData,
+    jobFiles: await fs.readdir(jobsDir).catch(() => [] as string[]),
+  })
+  let persistedOk = false
+  let resumeOk = false
+  let stepsGrew = false
+  let oneUserMsg = false
+  let cursorMonotonic = false
+  let detail = ''
+  try {
+    if (host !== undefined && store !== undefined && sessionStore !== undefined) {
+      // 读盘：这一步本身就在证明"上一个进程写的 job 还在"
+      const paused = (await store.list({ sessionId })).find((item) => item.status === 'paused')
+      persistedOk =
+        paused !== undefined && paused.cursor.nextRound > 0 && paused.stepsDone.length > 0
+      detail = `found=${paused === undefined ? 0 : 1} status=${paused?.status ?? '-'}`
+      if (paused !== undefined) {
+        const stepsBefore = paused.stepsDone.length
+        const cursorBefore = paused.cursor.nextRound
+        const usersBefore = (await sessionStore.get(sessionId)).filter(
+          (item) => item.role === 'user',
+        ).length
+        const done = new Promise<void>((resolve) => {
+          const off = host.onEvent((event) => {
+            if (event.sessionId !== sessionId || event.type !== 'done') return
+            off()
+            resolve()
+          })
+          setTimeout(() => {
+            off()
+            resolve()
+          }, 30_000)
+        })
+        await host.send({
+          sessionId,
+          text: paused.text,
+          origin: 'chat',
+          resumeJobId: paused.id,
+        })
+        await done
+        await store.flush()
+        const after = await store.get(paused.id)
+        const usersAfter = (await sessionStore.get(sessionId)).filter(
+          (item) => item.role === 'user',
+        ).length
+        resumeOk = after?.status === 'done'
+        stepsGrew = (after?.stepsDone.length ?? 0) > stepsBefore
+        cursorMonotonic = (after?.cursor.nextRound ?? 0) >= cursorBefore
+        oneUserMsg = usersBefore === 1 && usersAfter === 1
+        detail = `${detail} → status=${after?.status ?? '-'} steps=${stepsBefore}→${after?.stepsDone.length ?? -1} cursor=${cursorBefore}→${after?.cursor.nextRound ?? -1} users=${usersBefore}→${usersAfter}`
+      }
+    } else {
+      detail = 'agent / jobStore / sessions 不可用'
+    }
+  } catch (error) {
+    detail = `异常：${String(error)}`
+  }
+  record('重启①：上一次启动留下的 paused job 仍能读回（游标与已完成步骤都在）', persistedOk, detail)
+  record(
+    '重启②：chat:resumeJob 之后这条 job 跑到 done，且已完成步骤增加',
+    resumeOk && stepsGrew,
+    detail,
+  )
+  record(
+    '重启③：游标单调不减，且会话文件里那条用户消息**仍然只有一条**',
+    cursorMonotonic && oneUserMsg,
+    detail,
+  )
+
+  const failed = results.filter((item) => !item.ok)
+  logger?.info(
+    `${SMOKE_RESULT_PREFIX} SUMMARY ${results.length - failed.length}/${results.length} passed`,
+  )
+  await resumeStub?.close().catch(() => undefined)
+  await logger?.close()
+  // 固定工作区**不删**：它是这两次启动的共同产物，留着便于人工复核 job 文件
+  void userData
   app.exit(failed.length === 0 ? 0 : 2)
 }
 

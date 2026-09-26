@@ -877,7 +877,44 @@ export const CHAT_JOB_PANEL_CHECK = `(async () => {
 })()`
 
 /**
- * 「子代理」页面探针（docs/07 §2.4）。
+ * 综合概览卡的探针（step 5）：右栏同时出现「当前项目 + 文件备份 + 任务」三张卡。
+ *
+ * 断言的是**布局不冲突**：三张卡各自恰好一张、都渲染出来了，且任务卡显示的是真内容
+ * （单独场景各自证明过"这张卡能出现"，这一张证明"三张同时出现时不会互相挤掉"）。
+ */
+export const CHAT_OVERVIEW_CHECK = `(async () => {
+  try {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    const count = (selector) => document.querySelectorAll(selector).length
+    let ready = false
+    for (let attempt = 0; attempt < 20 && !ready; attempt += 1) {
+      ready =
+        count('[data-field="context.project-card"]') === 1 &&
+        count('[data-field="chat.snapshot-card"]') === 1 &&
+        count('[data-field="chat.job-panel"]') === 1
+      if (!ready) await wait(150)
+    }
+    const panel = document.querySelector('[data-field="chat.job-panel"]')
+    const text = panel === null ? '' : (panel.textContent || '').replace(/\\s+/g, ' ').trim()
+    return {
+      project: count('[data-field="context.project-card"]'),
+      snapshots: count('[data-field="chat.snapshot-card"]'),
+      jobs: count('[data-field="chat.job-panel"]'),
+      text,
+      pass:
+        count('[data-field="context.project-card"]') === 1 &&
+        count('[data-field="chat.snapshot-card"]') === 1 &&
+        count('[data-field="chat.job-panel"]') === 1 &&
+        text.indexOf('已暂停') !== -1,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 「子代理」页面探针（docs/07 §2.3：子代理独立页面记在主界面小节里；`§2.4` 那个编号
+ * 随小 AI 交互窗删除而移除，见 docs/07 开头的编号说明）。
  *
  * act 点左栏固定项 `[data-field="chat.subagent-item"]` 把主区切到子代理页面；
  * check 断言：页面在、命中 seed 的那 1 次运行（`chat.subagent-run`）、轨迹有进度条 +
@@ -5092,7 +5129,23 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
   )
 }
 
-export function defaultCapturePlan(manager: WindowManager, userData: string): CaptureTarget[] {
+/**
+ * 场景可用的**配置层钩子**：`capture.ts` 本身不碰 `SettingsStore`（它只负责截图与 DOM 探针），
+ * 需要改配置的场景由装配层（`index.ts` 的 `runCapture`）把动作注进来。
+ *
+ * 目前只有"切换当前项目"一项：综合概览卡要同时展示项目卡 / 快照卡 / 任务卡，
+ * 而项目卡只在**配置了当前项目**时渲染。
+ */
+export interface CapturePlanHooks {
+  /** 把当前项目切到给定条目；传 `undefined` 表示还原成"无项目" */
+  setProject?(project: { id: string; name: string; root: string } | undefined): void
+}
+
+export function defaultCapturePlan(
+  manager: WindowManager,
+  userData: string,
+  hooks: CapturePlanHooks = {},
+): CaptureTarget[] {
   const theme = activeTheme()
   const plan: CaptureTarget[] = [
     { name: 'edge-bar', file: 'edge-bar.png' },
@@ -5182,6 +5235,24 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
         await manager.reload('chat', {})
       },
       check: CHAT_JOB_PANEL_CHECK,
+    },
+    // 综合概览（step 5）：右栏同时挂「当前项目 + 文件备份 + 任务」三张卡，用于人工核对布局。
+    // 现场三样都要现种：项目根 + 一份快照 + 一份 paused job，然后 reload 让三张卡一起水合。
+    {
+      name: 'chat',
+      file: 'chat-agent-prod-overview.png',
+      prepare: async () => {
+        await mkdir(captureProjectRoot(userData), { recursive: true })
+        await seedSnapshotFixture(userData)
+        await seedJobFixture(userData)
+        hooks.setProject?.({
+          id: 'capture-overview',
+          name: '截图项目',
+          root: captureProjectRoot(userData),
+        })
+        await manager.reload('chat', {})
+      },
+      check: CHAT_OVERVIEW_CHECK,
     },
     // 思考过程折叠块（BetaV2）：seed 会话的助手消息带 `reasoning`，历史水合后默认收起；
     // act 点开展开态拍进截图，check 断言「曾收起 + 现已展开 + 全文可见 + 块在正文上方」。
