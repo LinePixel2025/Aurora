@@ -774,8 +774,9 @@ describe('readonly 档（只读 = 不进工具表）', () => {
  * 缺省工作目录三级回落（docs/06 §5.1，2026-09 接线修复）：**当前项目根 > `agent.tools.workspaceDir` > 主目录**。
  *
  * 断言的是**端口实际收到的参数**（runner 的 `cwd`、file 端口的 `root`）—— 即"命令到底跑在哪 /
- * 检索到底扫哪"的执行端证据；`agent-host.test.ts` 的 auto 档用例是判定端，两者配对构成
- * 「判定 ↔ 执行一致」的报障修复证明。无项目的两条用例同时锁定"行为与接线前逐字一致"。
+ * 检索到底扫哪"的执行端证据；判定端由 `agent-host.test.ts`「auto 档 + run_command 不带显式 cwd」
+ * 用例钉住（同一"缺省=项目根"前提），两者配对构成「判定 ↔ 执行一致」的报障修复证明。
+ * 无项目的两条用例同时锁定"行为与接线前逐字一致"。
  */
 describe('缺省工作目录三级回落', () => {
   const PROJECT = 'C:\\proj-root'
@@ -783,7 +784,10 @@ describe('缺省工作目录三级回落', () => {
   function withProject(workspaceDir: string): Settings {
     const settings = makeSettings()
     settings.projects.current = 'p'
-    settings.projects.list = [{ id: 'p', name: 'x', root: PROJECT }]
+    // list 里的 root 刻意与 getter 返回值**不同字**：若装配丢掉 `deps.projectRoot()`（第一级），
+    // `effectiveWorkspaceDir` 的第②级会现查 list 拿到 `C:\list-root` —— 用例当场变红。
+    // （第②级不做绝对化，生产侧绝对路径根只能来自 `resolveProject` 的 getter，2026-09 审查加固）
+    settings.projects.list = [{ id: 'p', name: 'x', root: 'C:\\list-root' }]
     settings.agent.tools.workspaceDir = workspaceDir
     return settings
   }

@@ -1500,11 +1500,15 @@ describe('job 生命周期（v15）', () => {
     // 也没有上一轮的工具结果，模型会重复已执行的操作。修复 = 每个 attempt 重读会话。
     const fs = new TestFileSystem()
     const jobs = createJobs(fs, tickingClock())
+    // 每次读取都变一个版本号：钉住「systemPrompt 每 attempt 重组」——块若退回循环外，
+    // 三个请求的 system 会全是 `…-1`（2026-09 独立审查：该不变量此前只有注释宣称、无测试钉）
+    let instructionsReads = 0
     const harness = await createHarness({
       fs,
       jobs,
       maxRounds: () => 1,
       autoContinueRounds: () => 2,
+      projectInstructions: async () => `续轮注入验证-${(instructionsReads += 1)}`,
       rounds: [
         { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{"text":"q"}' }] },
         { toolCalls: [{ id: 'c2', name: 'echo', arguments: '{"text":"r"}' }] },
@@ -1517,6 +1521,10 @@ describe('job 生命周期（v15）', () => {
     await waitForJob(jobs, (item) => item.status === 'done')
 
     expect(harness.provider.calls).toHaveLength(3)
+    // 三个请求的系统提示各带自己 attempt 注入的版本（重算的直接证据，同时证明不是"整体重放"）
+    expect(harness.provider.calls[0]?.messages[0]?.content).toContain('续轮注入验证-1')
+    expect(harness.provider.calls[1]?.messages[0]?.content).toContain('续轮注入验证-2')
+    expect(harness.provider.calls[2]?.messages[0]?.content).toContain('续轮注入验证-3')
     const serialized = harness.provider.calls.map((call) => JSON.stringify(call.messages))
     // bug 现场就在续轮的首请求（calls[1]）：必须同时看到本轮提问与上一 attempt 的工具结果
     expect(serialized[1]).toContain('问题X')

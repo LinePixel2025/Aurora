@@ -494,6 +494,26 @@ describe('createConfirmTool 的三档权限判定', () => {
     expect(requests).toHaveLength(1)
   })
 
+  it('auto 档 + run_command 不带显式 cwd：按缺省落根内判定，免确认放行（判定端配对用例）', async () => {
+    // 执行端缺省 cwd 已按 docs/06 §5.1 三级回落接进装配层（配了项目 = 项目根，
+    // 见 tools/index.test.ts「缺省工作目录三级回落」）；本用例钉判定端同一场景：
+    // `permissionTargetOf` 取不到路径时 `run_command` 走「按根内」分支（其余工具仍一律走确认）。
+    // 2026-09 独立审查指出该分支此前只有显式 cwd 用例，「判定↔执行配对」对缺省场景是空档。
+    const logger = createRecordingLogger()
+    const { proactive, requests } = createFakeProactive(false)
+    const confirm = createConfirmTool({
+      proactive,
+      mode: () => 'auto',
+      projectRoot: () => root,
+      logger,
+    })
+
+    expect(await confirm(confirmInfo('run_command', { command: 'npm test' }))).toBe(true)
+    expect(requests).toHaveLength(0)
+    // 机器放行同样留 info 审计痕
+    expect(logger.records[0]?.level).toBe('info')
+  })
+
   it('confirm 档：行为与三档之前完全一致（一律走确认卡片）', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
