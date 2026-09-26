@@ -1709,6 +1709,8 @@ async function runSmokeTest(userData: string): Promise<void> {
     let autoInsideWritten = false
     let autoOutsideCard = false
     let outsideBlocked = false
+    let autoEscapeOk = false
+    let autoEscapeDetail = '前置不可用'
     let detail = ''
     const projectRoot = join(userData, 'smoke-permission-project')
     try {
@@ -1753,17 +1755,68 @@ async function runSmokeTest(userData: string): Promise<void> {
             sensitivity: 'confirm',
           })) !== false
         autoInsideNoCard = scheduler.pendingCount === 0
+        // 机器放行（'machine'）不带 approvedByUser：真根内写入靠 realpath 判定照常通过
+        //（出处修复后的"无 UX 回归"证据 —— 旧写法手工塞批准头衔会固化旧语义）
         const written = await tools
           ?.get('write_file')
           ?.execute(
             { path: insideFile, content: 'AURORA_PERMISSION_INSIDE' },
-            { sessionId: 'smoke-permission', approvedByUser: true },
+            { sessionId: 'smoke-permission' },
           )
         autoInsideWritten =
           written?.isError !== true &&
           (await fs.readFile(insideFile, 'utf8').catch(() => '')).includes(
             'AURORA_PERMISSION_INSIDE',
           )
+
+        // ②b auto 档 + 根内指向根外的链接：判定端机器放行（'machine'）、零弹卡，
+        //     端口层 realpath 兜底照常拒绝 —— 出处修复的端到端证据（docs/06 §11.2）。
+        const escapeTargetDir = join(userData, 'smoke-escape-target')
+        const escapeLink = join(projectRoot, 'escape-link')
+        const escapeProbe = join(escapeTargetDir, 'probe.txt')
+        let linkCreated = true
+        try {
+          await fs.mkdir(escapeTargetDir, { recursive: true })
+          await fs.rm(escapeProbe, { force: true })
+          await fs.rm(escapeLink, { force: true, recursive: true })
+          try {
+            // junction 不需要管理员；realpath 穿透到目标（file-port.test.ts 实测锚定）
+            await fs.symlink(escapeTargetDir, escapeLink, 'junction')
+          } catch {
+            await fs.symlink(escapeTargetDir, escapeLink, 'dir')
+          }
+        } catch {
+          linkCreated = false
+        }
+        if (linkCreated) {
+          // 取证一：判定层 —— linkPath 字符串落在根内，auto 档应机器放行且不产生在途卡片
+          const machineDecision = await confirmTool({
+            name: 'write_file',
+            input: { path: join(escapeLink, 'probe.txt') },
+            sessionId: 'smoke-permission',
+            sensitivity: 'confirm',
+          })
+          const escapeNoCard = scheduler.pendingCount === 0
+          // 取证二：执行端 —— ctx 不带头衔（机器放行），端口 realpath 应拒绝、根外不留文件
+          const escaped = await tools
+            ?.get('write_file')
+            ?.execute(
+              { path: join(escapeLink, 'probe.txt'), content: 'AURORA_ESCAPE' },
+              { sessionId: 'smoke-permission' },
+            )
+          const escapeBlocked =
+            escaped?.isError === true &&
+            (await fs.readFile(escapeProbe, 'utf8').catch(() => '')) === ''
+          autoEscapeOk = machineDecision === 'machine' && escapeNoCard && escapeBlocked
+          autoEscapeDetail = `machine:${machineDecision === 'machine'} noCard:${escapeNoCard} blocked:${escapeBlocked}`
+          // 收尾防悬挂
+          await fs.rm(escapeLink, { force: true, recursive: true })
+          await fs.rm(escapeTargetDir, { force: true, recursive: true })
+        } else {
+          // 建不出 junction / 符号链接的环境差异：记 SKIP 注记、不 FAIL（与端口测试 skip 语义一致）
+          autoEscapeOk = true
+          autoEscapeDetail = 'SKIP:建不出link'
+        }
 
         // ③ auto 档 + 项目根外：仍要弹卡片（有在途确认），且未经放行时写不进去。
         // ⚠️ 不能直接 `await confirmTool(...)`：它会一直等着用户回执（60s 超时）——
@@ -1798,7 +1851,8 @@ async function runSmokeTest(userData: string): Promise<void> {
         syncToolRegistries()
         detail =
           `readonlyKept=[${readonlyToolNames.join(',')}] ` +
-          `autoInside=approve:${autoInsideApproved} noCard:${autoInsideNoCard} written:${autoInsideWritten} ` +
+          `autoInside=approve:${autoInsideApproved} noCard:${autoInsideNoCard} written:${autoInsideWritten} noWaiver:true ` +
+          `escape=${autoEscapeDetail} ` +
           `autoOutside=card:${autoOutsideCard} blocked:${outsideBlocked}`
       } else {
         detail = 'settings / confirmTool 不可用'
@@ -1819,6 +1873,11 @@ async function runSmokeTest(userData: string): Promise<void> {
         autoOutsideCard &&
         outsideBlocked,
       detail,
+    )
+    record(
+      'auto 根内经指向根外的链接写入被 realpath 兜底拒绝（机器放行零弹卡）',
+      autoEscapeOk,
+      `escape=${autoEscapeDetail} noWaiver:true`,
     )
   }
 
@@ -2623,8 +2682,20 @@ async function runSmokeTest(userData: string): Promise<void> {
       },
       { path: 'modes.classroom.typo', value: 1, expectReject: true },
       { path: 'llm.providers.x.apiKeyEnc', value: 'leak', expectReject: true },
-      { path: 'agent.loop.maxRounds', value: 64, expectReject: true },
-      { path: 'agent.snapshots.enabled', value: false, expectReject: true },
+      {
+        path: 'agent.loop.maxRounds',
+        value: 64,
+        expectReject: true,
+        expect: (current) => current.agent.loop.maxRounds === 8,
+        expectNote: '拒绝后配置逐字未变',
+      },
+      {
+        path: 'agent.snapshots.enabled',
+        value: false,
+        expectReject: true,
+        expect: (current) => current.agent.snapshots.enabled === true,
+        expectNote: '拒绝后配置逐字未变',
+      },
     ]
 
     for (const item of crashMatrix) {

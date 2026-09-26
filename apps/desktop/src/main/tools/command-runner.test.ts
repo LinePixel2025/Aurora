@@ -256,4 +256,35 @@ describe.skipIf(process.platform !== 'win32')('createCommandRunner 的 cwd 边�
     },
     TIMEOUT,
   )
+
+  it(
+    '判定与执行取值时刻不同步（切项目竞态）：按新根判定、旧根烘焙的 cwd 被拒（fail-closed）',
+    async () => {
+      // 复现「sync() 之后烘焙」的时序：请求对象在旧根（R1）有效时构造，
+      // 随后用户切项目 → guard 的 workspaceRoot live getter 返回新根（R2）。
+      let liveRoot = mkdtempSync(join(tmpdir(), 'aurora-cmd-race-old-'))
+      const newRoot = mkdtempSync(join(tmpdir(), 'aurora-cmd-race-new-'))
+      const racing = createCommandRunner({ defaultCwd: liveRoot, workspaceRoot: () => liveRoot })
+      // 副作用文件写在**旧根**里：命令真的执行了才会出现
+      const staleMarker = join(liveRoot, 'aurora-race-marker.txt')
+      rmSync(staleMarker, { force: true })
+      // 「旧根烘焙」的请求：cwd 是真实的旧根目录（在新根视角下就是普通根外目录）
+      const bakedRequest = {
+        command: `Set-Content -LiteralPath '${staleMarker}' -Value ran`,
+        cwd: liveRoot,
+        timeoutMs: TIMEOUT,
+      }
+      // 模拟切换项目：判定根换成新根（两个都是真实目录，realpath 前缀校验可判）
+      liveRoot = newRoot
+
+      const result = await racing(bakedRequest)
+
+      // fail-closed：机器放行不再带 allowOutside，旧根 cwd 在新根视角下越界 → 不启动进程
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr).toContain('cwd 在项目根之外')
+      // 命令真的没跑：旧根里没有副作用文件
+      expect(existsSync(staleMarker)).toBe(false)
+    },
+    TIMEOUT,
+  )
 })
