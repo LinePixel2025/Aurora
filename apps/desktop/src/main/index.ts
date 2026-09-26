@@ -663,6 +663,8 @@ async function bootstrap(): Promise<void> {
     settings,
     applyPatch: () => createSettingsWriter(deps),
     logger: logger.child('settings-tool'),
+    // 回滚分支走 `mutate`（不广播）：补一次工具注册表重建，别让工具闭包停在坏值实例上
+    notifyChanged: () => syncToolRegistries(),
   })
   // 项目根边界（v13，docs/06 §11.1）：**只在配置了当前项目时启用** ——
   // `workspaceRoot()` 返回 undefined 时 file-port / command-runner 的行为与 v13 之前一字不差
@@ -817,11 +819,8 @@ async function bootstrap(): Promise<void> {
     // 用户在设置页加完模式立刻生效，无需重启（该字段是只读前缀，AI 改不动）。
     allowPatterns: () => settings!.get().agent.tools.terminal.allowPatterns,
     // auto 档的免确认边界 = 当前项目根（无项目时 auto 档与"关掉确认总开关"同义）
-    projectRoot: () =>
-      resolveProject(settings!.get(), {
-        cwd: process.cwd(),
-        ...(projectLogger === undefined ? {} : { logger: projectLogger }),
-      }).root,
+    // 复用上方 `projectRoot` getter（与缺省 cwd / projectInstructions 同源，别再抄第三份）
+    projectRoot,
     logger: logger.child('confirm'),
   })
 
@@ -832,11 +831,8 @@ async function bootstrap(): Promise<void> {
   const projectInstructions = createProjectInstructionsSource({
     fs: nodeProjectFs,
     ...(projectLogger === undefined ? {} : { logger: projectLogger }),
-    resolveRoot: () =>
-      resolveProject(settings!.get(), {
-        cwd: process.cwd(),
-        ...(projectLogger === undefined ? {} : { logger: projectLogger }),
-      }).root,
+    // 复用上方 `projectRoot` getter（与 confirmTool 的边界判定同源）
+    resolveRoot: () => projectRoot(),
     resolveCwd: () => process.cwd(),
     resolveMaxBytes: () => settings!.get().projects.maxAgentsBytes,
   })

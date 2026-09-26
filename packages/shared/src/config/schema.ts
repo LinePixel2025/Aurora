@@ -431,6 +431,9 @@ export const SETTINGS_READONLY_PREFIXES = [
   'agent.loop',
   // 写前快照（v14，docs/06 §11.8）：AI 关掉 `enabled` 或压低预算，等于在自己写文件前拆掉回滚保险。
   'agent.snapshots',
+  // 黑名单配置自身（v15）：AI 往里追加路径等于自己收紧自己的可写面（自我 DoS）；
+  // 放宽本就不生效（判定从不读用户配置）。用户经设置页 `settings:update` 修改不受影响。
+  'advanced.readonlyPrefixes',
 ] as const
 
 export const AdvancedSchema = z.object({
@@ -638,6 +641,8 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'agent.permissionMode': '权限档位等于 Agent 自己的确认闸门，不允许通过工具修改',
   'agent.loop': '循环轮次与 token 预算等于 Agent 自己的停止闸门，不允许通过工具修改',
   'agent.snapshots': '写前快照是改动可回滚的兜底，不允许通过工具关闭',
+  'advanced.readonlyPrefixes':
+    '只读黑名单的配置自身不允许通过工具修改（防自我收紧；放宽本就不生效）',
 }
 
 /** 显式可写覆盖表的一条登记：模式 + 中文说明。 */

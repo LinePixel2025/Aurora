@@ -19,7 +19,7 @@ import {
 } from '@aurora/shared'
 import { canWriteSettingPath, settingsReadonlyReason } from '@aurora/shared'
 import type { SettingsToolPort, SettingsWriteOutcome } from '@aurora/agent-core'
-import { redactSettings } from '../ipc.js'
+import { redactSettings } from '../settings-redact.js'
 import type { SettingsStoreLike } from '../contracts.js'
 
 /**
@@ -37,6 +37,13 @@ export interface SettingsPortDeps {
    */
   applyPatch: () => (patch: SettingsPatch) => Result<Settings>
   logger: Logger
+  /**
+   * 回滚后的变更通知（可选）。正常写入走 `applyPatch` 自带的广播；回滚分支用
+   * `settings.mutate` 把写前快照写回 —— `mutate` **不触发** `onSettingsChanged`，
+   * 不补这一次通知的话，工具闭包（`registerComputerTools` / 边界 getter 等）会停在坏值
+   * 实例上，直到下一次任意配置变更才恢复。
+   */
+  notifyChanged?: () => void
 }
 
 /** 配置顶层分组：只有这些前缀能进 `SettingsPatch`（`version` 等一律拒绝）。 */
@@ -151,6 +158,8 @@ export function createSettingsPort(deps: SettingsPortDeps): SettingsToolPort {
         deps.settings.mutate((draft) => {
           Object.assign(draft, before)
         })
+        // 回滚走的是 `mutate`（不广播）：手动补一次通知，让依赖配置的工具闭包按回滚值重建
+        deps.notifyChanged?.()
         return { ok: false, message: '配置写入后校验失败，已回滚到写入前的状态', applied: [] }
       }
 

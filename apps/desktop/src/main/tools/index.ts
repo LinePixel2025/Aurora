@@ -160,7 +160,10 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
       // 缺省工作目录 / 搜索根的**唯一口径**（docs/06 §5.1）：三级回落
       // 当前项目根 > `agent.tools.workspaceDir` > 用户主目录。
       // 项目切换 / workspaceDir 改动都触发 `settings:changed` → 本 `sync()` 重建，热生效。
-      const workspaceDir = effectiveWorkspaceDir(settings, deps.projectRoot(), deps.homeDir())
+      // 项目根只取一次（`resolveProject` 在 current 指向不存在 id 时会 warn，
+      // 读两次就落两条相同日志）；下面的 sync 日志字段复用同一个值。
+      const projectRoot = deps.projectRoot()
+      const workspaceDir = effectiveWorkspaceDir(settings, projectRoot, deps.homeDir())
 
       // 只读档：`run_command` 能执行任意命令（写盘 / 改注册表 / 起进程 / 装软件），
       // 是「有系统副作用」的典型，因此**整个分支跳过**——不在只读清单里的工具
@@ -227,7 +230,7 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
       deps.logger.info('已同步电脑操控工具', {
         names,
         workspaceDir,
-        projectRoot: deps.projectRoot() ?? '',
+        projectRoot: projectRoot ?? '',
         mode,
       })
       return names

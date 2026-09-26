@@ -2,7 +2,7 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v13）
+## 1. 配置 Schema（config.json，v15）
 
 ```jsonc
 {
@@ -213,6 +213,9 @@
   `SETTINGS_READONLY_PREFIXES`，**从不读取用户配置**。所以把 `general.hotkey` 从数组里删掉、
   甚至把数组清空，`general.hotkey` 这条路径**仍然被拒**（清空 = 回到默认项，而不是放开）。
   另一条兜底同样不随它变化：「Schema 不认识的路径一律拒绝」，防模型拼错字段名后悄悄写进配置。
+  **本字段自身也在 `SETTINGS_READONLY_PREFIXES` 里**（v15）：AI 往里追加路径等于自己收紧自己的
+  可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
+  `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
   当前 `CONFIG_VERSION` 已是 **12**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），

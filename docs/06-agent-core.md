@@ -899,8 +899,9 @@ v8 起共三道闸门（**覆盖表先行**）：
 1. **黑名单前缀**：判定分两步 —— 先查用户配置项 `advanced.readonlyPrefixes`（默认值即导出的
    `SETTINGS_READONLY_PREFIXES`，见 docs/08 §1，**具体条目以该常量为准**；v8 起新增
    `stt.providers` / `imagegen.providers` 两组凭据前缀；v13 起新增 `projects` 与
-   `agent.permissionMode` 两条自我提权路径；本轮安全收紧再起新增
-   `agent.loop` 与 `agent.snapshots`（循环预算与写前快照），
+   `agent.permissionMode` 两条自我提权路径；v15 配套的安全收紧再新增
+   `agent.loop` 与 `agent.snapshots`（循环预算与写前快照）与 `advanced.readonlyPrefixes`
+   （黑名单配置自身，防 AI 自我收紧），
    再**无条件**走 `canWriteSettingPath()`，后者内部用的是**硬编码**常量 `SETTINGS_READONLY_PREFIXES`
    ——它**从不读取用户配置**。也就是说 `advanced.readonlyPrefixes` 只能在默认黑名单**之上**追加限制，
    **不能放宽**：默认项始终生效，把 `general.hotkey` 从配置里删掉或清空整个数组，

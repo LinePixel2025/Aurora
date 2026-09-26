@@ -212,7 +212,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   与 `agent.tools.terminal.allowPatterns` 同款）。`agent.snapshots.*` / `agent.loop.*` 同为
   **`SETTINGS_READONLY_PREFIXES` 中的只读前缀**（用户可在设置页调，AI 一律拒绝）：
   让 AI 给自己放大轮次 / token 预算，等于绕过"该停下来问用户"的那道闸门；关掉写前快照
-  等于拆掉回滚保险。
+  等于拆掉回滚保险。`advanced.readonlyPrefixes`（黑名单配置自身）也已进黑名单（v15）：
+  AI 往里追加等于自我收紧（自我 DoS），放宽本就不生效。
 - **`agent.loop` 的三个上限是以 getter 注入内核的**（`() => settings.get().agent.loop.maxRounds`
   这种形式）：写成构造时常量值就变成"改设置要重启才生效"的死字段 ——
   与上面「配置字段"能写"不等于"生效"」是同一个坑，本仓库已修过一批。

@@ -493,6 +493,20 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     expect(canWriteSettingPath('advanced.logLevel')).toBe(true)
   })
 
+  it('只读黑名单的配置自身不可由 AI 修改（自我收紧 / DoS，v15）', () => {
+    // AI 往 `advanced.readonlyPrefixes` 里追加路径等于自己收紧自己的可写面（自我 DoS）；
+    // 放宽本就不生效（判定从不读用户配置）→ 两个方向都不该让 AI 碰它。
+    // 用户仍可在设置页改（settings:update 不经过本黑名单）。
+    expect(canWriteSettingPath('advanced.readonlyPrefixes')).toBe(false)
+    expect(settingsReadonlyReason('advanced.readonlyPrefixes')).toBe(
+      '只读黑名单的配置自身不允许通过工具修改（防自我收紧；放宽本就不生效）',
+    )
+    expect(settingsReadonlyReason('advanced.readonlyPrefixes')).not.toBe('未知配置路径')
+    // 护栏：别误伤同组可写字段与工具目录配置
+    expect(canWriteSettingPath('advanced.logLevel')).toBe(true)
+    expect(canWriteSettingPath('agent.tools.workspaceDir')).toBe(true)
+  })
+
   it('免确认命令模式列表不可由 AI 读写（自我提权，v12）', () => {
     // 命中即跳过确认卡片：AI 若能自己加一条 `git*`，就等于永久摘掉自己的确认闸门，
     // 与 advanced.confirmSensitiveTools 同级封禁 → 只能由用户在设置页手加

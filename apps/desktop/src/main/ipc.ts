@@ -82,6 +82,7 @@ import type {
 } from './contracts.js'
 import { resolveSubjectFolder } from './paths.js'
 import { extractPatchSecrets, mergeSettingsPatch } from './settings-patch.js'
+import { redactSettings } from './settings-redact.js'
 import { createEventBuffer } from './event-buffer.js'
 
 /** 附件正文入上下文的字符上限（超出截断，避免一个 PDF 吃掉整个上下文预算） */
@@ -815,42 +816,6 @@ function toRendererSettings(deps: DesktopDeps): Settings {
  */
 function redactSettingsForRenderer(deps: DesktopDeps, source: Settings): Settings {
   return redactSettings(deps.settings, source)
-}
-
-/**
- * 脱敏主体：只依赖 `SettingsStoreLike`（取凭据"是否已设置"），
- * 因此 `set_setting` 的端口（`tools/settings-port.ts`）能复用**同一份**逻辑，
- * 不会出现"两处脱敏，改一处漏一处"。
- *
- * **凭据 checklist**：`llm` / `tts` / `stt` / `imagegen` 四组 provider 的密文都在这里折成
- * `apiKeySet` 标记，MCP 服务器的 `envEnc` / `headersEnc` 折成 `envSet` / `headersSet` 名单
- * ——漏掉任何一组 = 该组密文随 `settings:get` 泄漏进渲染层（AGENTS.md）。
- */
-export function redactSettings(settings: SettingsStoreLike, source: Settings): Settings {
-  const clone = structuredClone(source)
-  const providerGroups = [
-    { providers: clone.llm.providers, prefix: 'llm' },
-    { providers: clone.tts.providers, prefix: 'tts' },
-    { providers: clone.stt.providers, prefix: 'stt' },
-    { providers: clone.imagegen.providers, prefix: 'imagegen' },
-  ] as const
-  for (const { providers, prefix } of providerGroups) {
-    for (const [id, provider] of Object.entries(providers)) {
-      const draft = provider as unknown as Record<string, unknown>
-      draft['apiKeySet'] = settings.getSecret(`${prefix}.providers.${id}.apiKey`) !== ''
-      draft['apiKeyEnc'] = ''
-    }
-  }
-  for (const server of clone.mcp.servers) {
-    const draft = server as unknown as Record<string, unknown>
-    const env = (server as unknown as { envEnc?: Record<string, string> }).envEnc ?? {}
-    draft['envSet'] = Object.keys(env)
-    draft['envEnc'] = {}
-    const headers = (server as unknown as { headersEnc?: Record<string, string> }).headersEnc ?? {}
-    draft['headersSet'] = Object.keys(headers)
-    draft['headersEnc'] = {}
-  }
-  return clone
 }
 
 /**
