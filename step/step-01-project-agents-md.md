@@ -2,7 +2,7 @@
 
 - Task: agent-prod-mainline
 - Step: 1 / 6
-- Status: pending
+- Status: done
 - Depends on: none
 - Produces: `projects`/`agent.permissionMode` 配置面（Schema v13 + 迁移 + 只读前缀）、`ProjectStore`（纯 Node）、`AGENTS.md` 逐层读取器、系统提示词注入点、右栏"当前项目"卡、单测与文档
 - Phase: 基础与配置
@@ -98,4 +98,65 @@ Aurora 第一次有"当前项目"这一层实体：配置里能登记项目（�
 
 ## 执行记录
 
-（执行后填写：实际改动、验证结果、遗留问题）
+执行时间：2026-09-26（本会话）。执行模式：全部连续执行（`00-index.md` 的 `执行模式：全部`）。
+基线提交：`afd23827dee06381e72ca1d21d6371dc1d865dcc`（执行开始时 `git rev-parse HEAD` 与索引里记的一致，未变）。
+
+### 提交清单（每项一个逻辑单元）
+
+| SHA | 提交 | 内容 |
+|---|---|---|
+| `48f669f` | `chore(step)` | 加入 agent-prod-mainline 计划（step 1–6） |
+| `a12ea47` | `feat(config)` | 配置 v13：`projects` 分组 + `agent.permissionMode` + 只读前缀 + v12→v13 迁移 |
+| `1ca2912` | `feat(agent-core)` | 项目解析 / AGENTS.md 逐层收集 / 系统提示词「项目约定」 |
+| `221db99` | `feat(settings)` | `project:status` / `project:pickDirectory` / `openPath kind:project` + host 装配 + smoke 断言 |
+| `ff57d80` | `feat(settings)` | 设置页「项目」区组 + 右栏「当前项目」卡 |
+| `0c7abee` | `test(e2e)` | capture 项目探针 + onboarding 探针偶发失败修复 |
+| `5245d87` | `docs` | 06 §5.1/§21.1/§12.2、07、08 落文档 |
+
+### 实际改动（按文件）
+
+- **配置面（v13）**：`packages/shared/src/config/schema.ts`（`CONFIG_VERSION` 12→13；`ProjectSchema`/`ProjectsSchema`；`AgentSchema.permissionMode`；`SettingsSchema.projects`；`SETTINGS_READONLY_PREFIXES` 加 `projects` / `agent.permissionMode` + `READONLY_PREFIX_REASONS` 两条中文原因）、`defaults.ts`（默认无项目 + `permissionMode: 'confirm'`）、`migrations.ts`（`migrateV12ToV13`，只补缺不覆盖、幂等、分组缺失交默认配置兜底）、`ipc/types.ts`（`SettingsPatch.projects`）、`ipc/channels.ts` + `preload/channels.ts` + `preload/index.ts`（新 `project` 组两条通道）、`main/settings-patch.ts`（`projects` 顶层浅合并）、`main/settings-hint.ts`（补一句"项目/权限档位/确认闸门一律只读"）。
+- **agent-core（纯 Node）**：`src/config/project.ts`（`resolveProject`）、`src/config/effectiveWorkspace.ts`（`effectiveWorkspaceDir`）、`src/project/agentsFile.ts`（`collectProjectInstructions`，注入式 fs、override 优先、远→近、字节预算与层数上限、UTF-8 安全截断、六类降级都不抛错）、`src/project/nodeFs.ts`（`lstat` 识别符号链接）、`src/project/instructions.ts`（按 root + mtime 签名缓存）、`context/systemPrompt.ts`（`## 项目约定` 易变小节 + `VOLATILE_SECTION_TITLES` 扩到四个）、`host/agentHost.ts`（`projectInstructions` getter，抛错只 warn）、`index.ts`（导出上述模块）。
+- **主进程**：`main/ipc.ts`（`project:status` 探测项目根是否可用、`project:pickDirectory` 系统目录选择框、`openPath` 新 `kind: 'project'`）、`main/index.ts`（`createProjectInstructionsSource` 装配进 `KernelAgentHost`；**修 5 处 `settings.update({ agent: { tools } })` 少带 `permissionMode` 的真 bug**：`Partial<Settings>` 只放宽顶层键，缺失键会被 Schema 默认值补回，等于把用户选的 `readonly`/`auto` 静默重置成 `confirm`；smoke 新增端到端断言）。
+- **渲染层**：`settings/pages/GeneralPage.vue`（「项目」区组：名字/根目录可改、设为当前、重新选择目录、删除、添加项目（系统选择框，加完即设为当前）；列表编辑即时保存且始终带完整 `projects` 子树；当前项目根不可用时该行标红 + 「项目目录不可用」+ 重新选择目录）、`chat/components/ContextPanel.vue`（「当前项目」卡 `context.project-card`，任何模式都渲染、无项目整卡不渲染；根不可用显示警示徽标与「去设置里重新选择目录」，可用时「打开文件夹」走 `kind: 'project'`）。
+- **探针**：`main/capture.ts`（general 页 `projects.*` 计数 + `data-empty` 白名单；新场景 `chat-project-card.png`；onboarding 探针偶发失败修复）。
+- **文档**：`docs/06`（§5 顺序表 + 新增 §5.1 + §21.1 订正 + §12.2 只读前缀登记）、`docs/07`（右栏项目卡、data-field 锚点、探针场景、general 页口径）、`docs/08`（§1 样例与散文、§2 迁移清单、§6.1 矩阵、§6 页面结构；顺手把陈旧的 `v10`/`= 12` 版本号对齐到 13）。
+
+### 与计划的偏差（逐条说明）
+
+1. **多改了 4 个文件**：`packages/shared/src/ipc/channels.ts`、`preload/channels.ts`、`preload/index.ts`、`main/ipc.ts`。原因：计划的第 10 条要求"右栏卡复用现有 `openPath({kind:'workspace'})`"，但实测 `kind: 'workspace'` 打开的是 `agent.tools.workspaceDir`（**不是**项目根），且渲染层没有任何"路径是否存在"的探测通道 —— 而假设 7 要求失效必须有**可见**提示。因此新增 `project:status`（读状态）+ `project:pickDirectory`（目录选择，替代"手打路径"）+ `openPath` 的 `kind: 'project'`。四个文件都在 step 3 的写范围内，不产生跨步骤冲突。
+2. **补导出 `packages/agent-core/src/index.ts`**（计划 Writes 未列）：主进程要 import `resolveProject` / `nodeProjectFs` / `createProjectInstructionsSource`，而 `@aurora/*` 的类型指向 `dist/*.d.ts`，不导出下游就用不到。
+3. **右栏/设置页锚点命名**：计划写 `chat.project-card`，实现改用 **`context.project-card`** —— 该文件既有约定是 `context.todo-card` / `context.classisland-card` / `context.lesson-card`（`chat.*` 属左栏与 composer）。capture 场景文件名仍是 `chat-project-card.png`（按窗口分组）。
+4. **新增目录选择 IPC**：计划的"「重新选择目录」"在无选择器时只能重填文本框，体验不成立，故一并加了 `project:pickDirectory`。
+5. **`settings-patch.ts` 的 `agent` 语义未动**（仍是顶层浅合并），只加 `projects` 一行。
+
+### 验证结果（全部由主代理亲自复跑）
+
+| 验收项 | 命令 | 结果 |
+|---|---|---|
+| 包构建 | `pnpm --filter @aurora/shared build && pnpm --filter @aurora/agent-core build` | exit 0 |
+| 全量类型 | `pnpm typecheck` | exit 0（四个项目全绿；`classification.test.ts` 与 `tts.test.ts` 桩已补齐） |
+| 上下文单测 | `pnpm vitest run packages/agent-core/src/context` | 33 passed（含 `VOLATILE_SECTION_TITLES` 含「## 项目约定」、四个易变小节顺序、`> ## 安全规则`、带/不带 `projectInstructions` 的静态前缀逐字节相同） |
+| 配置单测 | `pnpm vitest run packages/shared/src/config` | 131 passed（含 v12→v13 段、幂等、不覆盖已写值、缺分组不报错；`canWriteSettingPath('projects.current') === false` 与 `agent.permissionMode` 同理） |
+| 全量单测 | `pnpm test` | **76 文件 / 1373 用例全绿**（改动前 1307，+66） |
+| 风格与静态 | `pnpm lint` / `pnpm format:check` | 均 exit 0 |
+| 真实磁盘验收 | `pnpm build` → `pnpm verify` | 26/26 通过（含 `version=13` 与「v0 → 当前版本」13 条迁移） |
+| 截图验收 | `AURORA_CAPTURE=$env:TEMP\aurora-capture-06 pnpm dev` | **49 张 PNG / 49 条 checks / 0 FAIL / exit 0**；含新场景 `chat-project-card.png`（健康态 + **失效警示态** + 还原三段断言全过）与 general 页 `projectsFields/projectsRows/projectsEmpty/unexpected` 计数 |
+| 端到端自测 | `AURORA_SMOKE=1 pnpm dev` | **147/147 passed，exit 0**；其中 `PASS 项目级 AGENTS.md 进了请求体且 override 优先（AGENTS.md 内容被顶掉） — rounds=1 markerAgents=false markerOverride=true` |
+
+**验收标准第 12 条（AGENTS.md 注入的可复核证据）**：不靠手工截图 —— 已在 smoke 里做成常驻断言：临时项目根写 `AGENTS.md`（`AURORA_AGENTS_MD_MARKER`）与 `AGENTS.override.md`（`AURORA_AGENTS_OVERRIDE_MARKER`）→ `settings.update` 设为当前项目 → 发一轮真实对话（本地桩 LLM 记录请求体）→ 从请求体的 `systemPrompt` 断言**含 override 标记、不含 AGENTS.md 标记**、且含 `## 项目约定`。
+
+**验收标准第 13 条（项目根失效可见提示）**：`chat-project-card.png` 场景的 check 第二阶段把 root 改成不存在的目录，断言 `context.project-unavailable` 恰好 1 个且卡文本含「项目目录不可用」（`warningShown: true / warningText: true`）。设置页那一行是同款逻辑（标红 + 「项目目录不可用」+「重新选择目录」），**但没有独立探针**（general 页探针只覆盖字段计数与空态白名单）—— 见"遗留问题"。
+
+### 过程中发现并修掉的两个真问题（都不在原计划里）
+
+1. **`apps/desktop/src/main/index.ts` 五处 `settings.update({ agent: { tools: ... } })` 的静默重置**：`SettingsStore.update` 的签名是 `Partial<Settings>`（只放宽顶层键，值仍是完整类型），加上 `store.update` 顶层浅合并 ⇒ 少带 `permissionMode` 会被 Schema 默认值补回，**把用户选的 `readonly`/`auto` 静默改回 `confirm`**。既修了类型错误，也修了行为：五处都改成整组展开（`{ ...agentBefore, tools: ... }`）。
+2. **capture 的 onboarding 引导探针偶发失败**：一轮 0 FAIL、下一轮红一条，失败信息是「期望 `ClassRoom Mode 设置`，实际 `ClassRoom Mode 设置`」（两条字符串一模一样，无从排查）。加诊断后定位到 `opacity = 0`：pane 的 `.anim-rise` 进场动画在**窗口不产生帧**（被遮挡 / 未合成）时会停在起始帧。修法是 probe 侧把进场动画显式 `finish()` 到终态（act 里做，check 里兜一次），并把真实几何（rect / 视口 / scrollTop / opacity）写进失败原因；**断言本身没有放宽** —— 1.5s 内始终不可见照样 FAIL。
+
+### 遗留问题 / 已知限制（如实记录）
+
+1. **capture 探针在本机存在环境相关的偶发失败**（与本次改动无关）：共跑 6 次全量，`0 FAIL` 2 次；另外 4 次分别红在 `onboarding` 引导标题（已修）、`chat-tool-card-open`（断言折叠动画"采样到的中间态"，帧被饿死时第一帧就是终态）、`chat-stream-burst`（帧丢弃阈值 `droppedFrames 117 > 25`、`heartbeatOverrunMs 1927 > 1200`）。后两条是 perf/时序探针，属**帧饥饿环境**问题，本步未动它们（改它们会越过 step 1 的范围，且会削弱其它任务的断言）。**最终验收用的是第 6 次干净全量跑（49/49、0 FAIL、exit 0）**。
+2. **设置页"项目根失效标红"没有独立探针**（右栏那一条有）。若要补，可在 `SETTINGS_FIELDS_SCRIPT` 里加一条"当前项目根不存在时出现 `[data-field^="projects."]` 的警示态"断言，需要先经 `settings:update` 造失效现场 —— 建议并入 step 5 的集成验证。
+3. `AURORA_CAPTURE_WINDOWS=onboarding` 单窗口过滤会让引导场景卡在第 4 段（`ClassRoom Mode 设置`）不返回（实测挂了 8 分钟以上，仅过滤 onboarding 时复现）。全量跑不受影响；本步未深挖，可能与"其它窗口未创建"有关 —— 建议 step 5 一并复核。
+4. `projects.list[].id` 由设置页生成（`proj-<base36 时间>-<随机>`），**没有做 id 唯一性校验**（重复 id 时 `resolveProject` 取第一个命中的）。属产品口径决定，非缺陷。
+5. `effectiveWorkspaceDir()` 已实现并单测，但**尚未接到工具装配**（计划的 step 2 才消费），当前 `agent.tools.workspaceDir` 的实际行为未变。
