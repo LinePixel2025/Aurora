@@ -20,6 +20,10 @@
  * 所以本页所有保存都走 `save(patch)`：先读当前 tree，再 `{ ...currentTools, ...patch }`；
  * 改子对象时（terminal / files / search）patch 里也要带**完整子对象**，否则同级的 timeoutMs 等会被丢掉。
  *
+ * 「文件备份」区组（v14，docs/06 §11.8）是本页唯一**不在** `agent.tools` 下的配置：
+ * 快照是"写盘行为的兜底"而不是"注册哪些工具"，因此它既不跟总开关门控，
+ * 保存也走独立的 `saveSnapshots()`（照 `save()` 的同一套回执口径）。
+ *
  * 为什么 workspaceDir 不是沙箱（这条与页内安全文案同源，改文案别只改一处）：
  * 它只是工具的**默认**工作目录（空串 = 用户主目录），模型仍可显式传入任意绝对路径。
  * 安全边界是「逐次确认 + 输出上限 + 总开关」，不是路径限制。
@@ -29,10 +33,16 @@
  */
 import { computed, ref } from 'vue'
 import { ChevronRight } from '../../shared/icons.js'
-import type { AgentToolsConfig, ComputerToolName, PermissionMode } from '@aurora/shared/browser'
+import type {
+  AgentSettings,
+  AgentToolsConfig,
+  ComputerToolName,
+  PermissionMode,
+} from '@aurora/shared/browser'
 import {
   COMPUTER_TOOL_NAMES,
   DEFAULT_AGENT_TOOLS,
+  DEFAULT_TOOLCHAIN_CONFIG,
   resolvePermissionMode,
 } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
@@ -69,6 +79,20 @@ function onNotify(payload: NotifyPayload): void {
  */
 const tools = computed<AgentToolsConfig>(
   () => settingsStore.settings?.agent.tools ?? DEFAULT_AGENT_TOOLS,
+)
+
+/**
+ * 写前快照配置（`agent.snapshots`，v14，docs/06 §11.8）。
+ *
+ * 它**不在** `agent.tools` 里 —— 那是"注册哪些工具"的开关，而快照是"写盘行为的兜底"，
+ * 与注册集合无关：所以本区组不跟总开关门控，保存也走独立的 `saveSnapshots()`。
+ *
+ * 配置未水合时回落到 Schema 默认值：直接取 `DEFAULT_TOOLCHAIN_CONFIG.agent.snapshots`
+ * （与 `packages/shared/src/config/defaults.ts` 是同一份对象），不在这里抄第二遍常量。
+ * 与 `tools` 同一口径 —— 只是让控件有初值，保存时仍会再确认配置已就绪。
+ */
+const snapshots = computed<AgentSettings['snapshots']>(
+  () => settingsStore.settings?.agent.snapshots ?? DEFAULT_TOOLCHAIN_CONFIG.agent.snapshots,
 )
 
 /**
@@ -177,6 +201,46 @@ async function saveFiles(patch: Partial<AgentToolsConfig['files']>): Promise<boo
 async function saveSearch(patch: Partial<AgentToolsConfig['search']>): Promise<boolean> {
   return save({ search: { ...tools.value.search, ...patch } })
 }
+
+/**
+ * 保存写前快照配置（v14）：与工具区组同一套回执口径（失败时 Toast 展示 `settingsStore.error`）。
+ *
+ * `settings:update` 只有顶层浅合并 —— `agent` 整棵都要带上（只传 `{ snapshots }` 会把
+ * `tools` / `permissionMode` 整块替换掉），patch 里带完整的 `snapshots` 子树
+ * （否则同级的 keepPerFile / maxSnapshotBytes 会被一并丢掉）。
+ */
+async function saveSnapshots(patch: Partial<AgentSettings['snapshots']>): Promise<boolean> {
+  const current = settingsStore.settings?.agent
+  // 未加载完就写等于用兜底默认值把已保存的配置整棵覆盖掉，宁可先不写（与 save 同口径）
+  if (!current) return false
+  const ok = await settingsStore.update({
+    agent: { ...current, snapshots: { ...current.snapshots, ...patch } },
+  })
+  if (!ok) {
+    if (settingsStore.error) showToast('error', settingsStore.error)
+  } else {
+    showToast('ok', '已保存')
+  }
+  return ok
+}
+
+/**
+ * 切换文件备份总开关。
+ *
+ * 关掉是**不可逆方向**（此后的写文件不再留底），所以回执换成 warn 口径、把
+ * "改动将不可回滚"再说一次 —— 只回一句「已保存」在这条路径上没有信息量。
+ */
+async function setSnapshotsEnabled(enabled: boolean): Promise<void> {
+  const ok = await saveSnapshots({ enabled })
+  if (ok && !enabled) showToast('warn', '已关闭文件备份：此后的写文件改动将不可回滚')
+}
+
+/**
+ * `totalBudgetBytes` 的取值上限：Schema 里**只有下限**（≥ 1 MiB）、没有上限，
+ * 这里按 JS 安全整数收口 —— 拦的是 `Infinity` / `1e30` 这类会被 `Math.round` 原样带下去、
+ * 存进配置后所有容量比较都恒真的脏值。
+ */
+const MAX_TOTAL_BUDGET_BYTES = Number.MAX_SAFE_INTEGER
 
 /**
  * 「免确认命令模式」的输入草稿与即时提示（docs/06 §11.7、docs/08 §6）。
@@ -543,6 +607,126 @@ async function openWorkspace(): Promise<void> {
               关闭总开关后文件工具不会注册：模型看不到 read_file / write_file / edit_file /
               list_dir。
             </p>
+          </div>
+
+          <!--
+            文件备份（v14，docs/06 §11.8）：紧跟在「文件」之后 —— 它兜的正是
+            write_file / edit_file 的底。刻意**不**放进 `tools.enabled` 的门控：
+            快照是"写盘行为的兜底"，与注册哪些工具无关（工具关着时它自然不生效，
+            但配置项本身照常可改）。
+          -->
+          <div class="sub">
+            <h3 class="sub-title">文件备份</h3>
+            <p class="section-desc">
+              写文件 / 改文件（<code class="mono">write_file</code>、<code class="mono"
+                >edit_file</code
+              >）真正落盘前，先把磁盘上的<strong>原内容</strong>存一份到本机（docs/06 §11.8）：
+              改错了可以回到某一份快照；<strong>回滚本身也会先留一份快照</strong>，所以回滚同样可撤回。
+              备份只存本机（用户数据目录的 <code class="mono">backups</code> 下，按会话分目录），
+              不会上传；主界面右栏的「文件备份」卡能看到最近几条并一键回滚。
+            </p>
+
+            <SettingField
+              data-field="agent.snapshots.enabled"
+              label="启用文件备份"
+              hint="关掉后写文件不再留底，改动将不可回滚（默认开启）"
+            >
+              <label class="row tiny">
+                <input
+                  type="checkbox"
+                  :checked="snapshots.enabled"
+                  @change="setSnapshotsEnabled(($event.target as HTMLInputElement).checked)"
+                />
+                <span>写文件 / 改文件前自动留底（默认开启）</span>
+              </label>
+            </SettingField>
+
+            <template v-if="snapshots.enabled">
+              <SettingField
+                data-field="agent.snapshots.keepPerFile"
+                label="每文件保留份数"
+                hint="1 ～ 200；每个文件最多留几份，超了删最旧的（默认 20）"
+              >
+                <input
+                  class="input input-num"
+                  type="number"
+                  min="1"
+                  max="200"
+                  step="1"
+                  :value="snapshots.keepPerFile"
+                  @change="
+                    saveSnapshots({
+                      keepPerFile: clampNumber($event, 1, 200, snapshots.keepPerFile),
+                    })
+                  "
+                />
+              </SettingField>
+
+              <SettingField
+                data-field="agent.snapshots.maxSnapshotBytes"
+                label="单份快照上限"
+                hint="单位字节，1024 ～ 67108864；单个文件超过这个大小就不留底（工具结果里会明确告诉你，默认 524288 = 512 KiB）"
+              >
+                <input
+                  class="input input-num"
+                  type="number"
+                  min="1024"
+                  max="67108864"
+                  step="1024"
+                  :value="snapshots.maxSnapshotBytes"
+                  @change="
+                    saveSnapshots({
+                      maxSnapshotBytes: clampNumber(
+                        $event,
+                        1024,
+                        67108864,
+                        snapshots.maxSnapshotBytes,
+                      ),
+                    })
+                  "
+                />
+              </SettingField>
+
+              <SettingField
+                data-field="agent.snapshots.totalBudgetBytes"
+                label="备份总容量上限"
+                hint="单位字节，≥ 1048576；整个备份目录的总容量上限，超出时从最旧的开始删（默认 209715200 = 200 MiB）"
+              >
+                <input
+                  class="input input-num"
+                  type="number"
+                  min="1048576"
+                  :max="MAX_TOTAL_BUDGET_BYTES"
+                  step="1048576"
+                  :value="snapshots.totalBudgetBytes"
+                  @change="
+                    saveSnapshots({
+                      totalBudgetBytes: clampNumber(
+                        $event,
+                        1048576,
+                        MAX_TOTAL_BUDGET_BYTES,
+                        snapshots.totalBudgetBytes,
+                      ),
+                    })
+                  "
+                />
+              </SettingField>
+            </template>
+
+            <!-- 关闭态的说明：整块替换三个数字字段（照本页既有门控口径，控件不在 DOM） -->
+            <p v-else class="tiny muted" data-empty="agent.snapshots">
+              已关闭文件备份：写文件前不再留底，<strong>改动将不可回滚</strong>。上面的保留份数与容量上限维持原值，重新开启后立即生效。
+            </p>
+
+            <!--
+              「立即清理」（`agent.snapshots.prune`）刻意**不渲染**：该通道的契约要求 `sessionId`，
+              而设置窗口拿不到"当前会话"—— 会话 id 是 chat 窗口 `useChat()` 内部的 ref
+              （chat/App.vue 的 `sessionId`），既不落配置、也没有 store 暴露给别的窗口；
+              `chat.sessions()` 返回的 active 标记还是渲染层自己算的。
+              拿不到会话就不能编一个（传 `''` 或"最近更新的那条"都会清理到别人的备份）。
+              主进程本来就会按上面的两个上限自动淘汰，手动入口等会话 id 能传进设置页后再补 ——
+              `shared/composables/snapshots.ts` 的 `prune()` 已经写好，接上即可。
+            -->
           </div>
 
           <!-- 文件检索 -->
