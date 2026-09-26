@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 13 as const
+export const CONFIG_VERSION = 14 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -541,6 +541,37 @@ export const AgentSchema = z.object({
    * 本字段在 `SETTINGS_READONLY_PREFIXES` 里（AI 不可自我提权）。
    */
   permissionMode: z.enum(['readonly', 'confirm', 'auto']).default('confirm'),
+  /**
+   * 写前快照（docs/06 §11.8，v14）：`write_file` / `edit_file` 真正落盘前把**原内容**存一份。
+   *
+   * 注意它是 `agent.snapshots` 而**不是** `agent.tools.snapshots` —— 后者会被
+   * `COMPUTER_TOOL_NAMES` 的门控语义牵连（那是"工具注册"的开关），而快照是**写盘行为的兜底**，
+   * 与注册哪些工具无关。
+   *
+   * 刻意**不**进 `SETTINGS_READONLY_PREFIXES`：调整保留份数 / 上限是用户的正当需求；
+   * 也**不**进 `WRITABLE_PATH_OVERRIDES`（默认 AI 改不动，确需开放另开一步）。
+   */
+  snapshots: z
+    .object({
+      /** 关掉后写盘不再留快照（界面上明确告知"改动将不可回滚"）。 */
+      enabled: z.boolean().default(true),
+      /** 同一个文件最多保留几份（环形淘汰，最旧的先删）。 */
+      keepPerFile: z.number().int().min(1).max(200).default(20),
+      /** 单个快照的字节上限；超过即跳过（**不静默**：结果里回带"文件过大"）。 */
+      maxSnapshotBytes: z
+        .number()
+        .int()
+        .min(1024)
+        .max(64 * 1024 * 1024)
+        .default(524288),
+      /** 快照目录总预算；超出时从最旧开始删（每文件环形之外的第二层上限）。 */
+      totalBudgetBytes: z
+        .number()
+        .int()
+        .min(1024 * 1024)
+        .default(200 * 1024 * 1024),
+    })
+    .default({}),
 })
 export type AgentSettings = z.infer<typeof AgentSchema>
 

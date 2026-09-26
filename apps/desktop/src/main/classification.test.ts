@@ -145,8 +145,17 @@ function settingsWith(overrides: {
       // step 2 新增：`Settings` 里是 zod `.default()`，输出类型必填，fixture 必须补上
       readonlyPrefixes: [],
     },
-    // v13 起 `agent` 多了 permissionMode（zod `.default()` ⇒ 输出类型必填）
-    agent: { tools: { ...DEFAULT_AGENT_TOOLS }, permissionMode: 'confirm' },
+    // v13 起 `agent` 多了 permissionMode；v14 起多了 snapshots（zod `.default()` ⇒ 输出类型必填）
+    agent: {
+      tools: { ...DEFAULT_AGENT_TOOLS },
+      permissionMode: 'confirm',
+      snapshots: {
+        enabled: true,
+        keepPerFile: 20,
+        maxSnapshotBytes: 524288,
+        totalBudgetBytes: 200 * 1024 * 1024,
+      },
+    },
   }
 }
 

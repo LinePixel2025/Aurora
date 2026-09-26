@@ -248,6 +248,16 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     tools: { ...DEFAULT_AGENT_TOOLS },
     // 三档权限默认 `confirm` = 与 v13 之前的行为完全一致（敏感工具逐次确认）
     permissionMode: 'confirm',
+    /**
+     * 写前快照（v14，docs/06 §11.8）：默认开启、每文件留 20 份、单份 ≤512 KiB、
+     * 目录总预算 200 MiB。默认值刻意"够用不夸张"——用户第一次改文件就应该能回滚。
+     */
+    snapshots: {
+      enabled: true,
+      keepPerFile: 20,
+      maxSnapshotBytes: 524288,
+      totalBudgetBytes: 200 * 1024 * 1024,
+    },
   },
 }
 

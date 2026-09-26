@@ -108,6 +108,24 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(fieldAccepts('agent.permissionMode', 'readonly')).toBe(true)
     expect(fieldAccepts('agent.permissionMode', 'full')).toBe(false)
     expect(fieldAccepts('agent.permissionMode', 42)).toBe(false)
+    // v14 写前快照（docs/06 §11.8）
+    expect(fieldAccepts('agent.snapshots.enabled', false)).toBe(true)
+    expect(fieldAccepts('agent.snapshots.enabled', 'no')).toBe(false)
+    expect(fieldAccepts('agent.snapshots.keepPerFile', 5)).toBe(true)
+    expect(fieldAccepts('agent.snapshots.keepPerFile', '5')).toBe(false)
+    expect(fieldAccepts('agent.snapshots.maxSnapshotBytes', 1024)).toBe(true)
+    expect(fieldAccepts('agent.snapshots.totalBudgetBytes', 1048576)).toBe(true)
+    // 默认值：够用不夸张，且**默认开启**（用户第一次改文件就该能回滚）
+    expect(createDefaultSettings().agent.snapshots).toEqual({
+      enabled: true,
+      keepPerFile: 20,
+      maxSnapshotBytes: 524288,
+      totalBudgetBytes: 200 * 1024 * 1024,
+    })
+    // 越界由 Schema 拒绝（不是"存下来再回退"）
+    const bad = createDefaultSettings()
+    bad.agent.snapshots.keepPerFile = 0
+    expect(SettingsSchema.safeParse(bad).success).toBe(false)
   })
 
   it('非法字段被识别为非法（供 sanitize 回退默认值）', () => {

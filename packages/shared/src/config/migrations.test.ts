@@ -273,7 +273,9 @@ describe('配置迁移链', () => {
 
       // agent.tools 为默认值（含 v12 起补出的 search.* 与 terminal.allowPatterns）；
       // permissionMode 由 v12 → v13 补成默认档 `confirm`（本步只验证"补缺不覆盖"）
-      expect(outcome.data['agent']).toEqual({
+      // 用 toMatchObject 而不是 toEqual：`agent` 组会随版本持续长字段（v14 起还有 snapshots），
+      // 这里要守的是"这些键的值对不对"，不是"没有别的键"
+      expect(outcome.data['agent']).toMatchObject({
         tools: {
           enabled: true,
           workspaceDir: '',
@@ -341,7 +343,8 @@ describe('配置迁移链', () => {
       const config = structuredClone(V4_CONFIG)
       config['agent'] = { tools: { terminal: { timeoutMs: 5_000 }, enabled: false } }
       const outcome = migrate(config)
-      expect(outcome.data['agent']).toEqual({
+      // 同上一处：只断言本用例关心的键（agent 组会随版本长字段）
+      expect(outcome.data['agent']).toMatchObject({
         tools: {
           enabled: false,
           workspaceDir: '',
@@ -881,8 +884,8 @@ describe('配置迁移链', () => {
 
       const noTools = migrate({ version: 11, agent: { other: 1 } })
       expect(noTools.warnings).toEqual([])
-      // v12 → v13 只补 permissionMode，不认得的键原样保留
-      expect(noTools.data['agent']).toEqual({ other: 1, permissionMode: 'confirm' })
+      // v12 → v13 / v13 → v14 只补新键，不认得的键原样保留（用 toMatchObject：agent 组会长字段）
+      expect(noTools.data['agent']).toMatchObject({ other: 1, permissionMode: 'confirm' })
       expect(noTools.data['version']).toBe(CONFIG_VERSION)
 
       // terminal 缺失时只补 search，不凭空造出半截 terminal
@@ -959,6 +962,73 @@ describe('配置迁移链', () => {
       expect(badAgent.warnings).toEqual([])
       expect(badAgent.data['agent']).toBe('broken')
       expect(badAgent.data['version']).toBe(CONFIG_VERSION)
+    })
+  })
+
+  describe('v13 → v14（为 agent 补 snapshots.* 写前快照配置）', () => {
+    const V13_CONFIG: Record<string, unknown> = {
+      version: 13,
+      general: { language: 'zh-CN' },
+      agent: { tools: { enabled: true }, permissionMode: 'confirm' },
+    }
+
+    it('为已存在的 agent 补 snapshots 默认值，version 升到 14', () => {
+      const outcome = migrate(structuredClone(V13_CONFIG))
+      expect(outcome.fromVersion).toBe(13)
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 13)
+      expect(outcome.applied[0]).toContain('v13 → v14')
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+      expect(outcome.warnings).toEqual([])
+
+      const agent = outcome.data['agent'] as Record<string, unknown>
+      expect(agent['snapshots']).toEqual({
+        enabled: true,
+        keepPerFile: 20,
+        maxSnapshotBytes: 524288,
+        totalBudgetBytes: 200 * 1024 * 1024,
+      })
+      // 只补缺：同组的 permissionMode / tools 原样保留
+      expect(agent['permissionMode']).toBe('confirm')
+    })
+
+    it('用户已写过的 snapshots 值原样保留，不被默认值覆盖', () => {
+      const config = structuredClone(V13_CONFIG)
+      config['agent'] = {
+        tools: { enabled: true },
+        permissionMode: 'readonly',
+        snapshots: {
+          enabled: false,
+          keepPerFile: 3,
+          maxSnapshotBytes: 4096,
+          totalBudgetBytes: 1048576,
+        },
+      }
+      const outcome = migrate(config)
+      const agent = outcome.data['agent'] as Record<string, unknown>
+      expect(agent['snapshots']).toEqual({
+        enabled: false,
+        keepPerFile: 3,
+        maxSnapshotBytes: 4096,
+        totalBudgetBytes: 1048576,
+      })
+      expect(agent['permissionMode']).toBe('readonly')
+    })
+
+    it('幂等：连跑两次结果一致；缺 agent 分组时不凭空造对象', () => {
+      const once = migrate(structuredClone(V13_CONFIG))
+      const twice = migrate({ ...once.data, version: 13 })
+      expect(twice.data).toEqual(once.data)
+
+      const noAgent = migrate({ version: 13, general: {} })
+      expect(noAgent.warnings).toEqual([])
+      expect(noAgent.data['agent']).toBeUndefined()
+      expect(noAgent.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('当前版本配置原样通过（migrate({ version: 14 }) 恒等）', () => {
+      const outcome = migrate({ version: 14, general: { language: 'zh-CN' } })
+      expect(outcome.applied).toEqual([])
+      expect(outcome.data['version']).toBe(14)
     })
   })
 })

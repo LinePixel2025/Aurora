@@ -515,6 +515,36 @@ const migrateV12ToV13: Migration = {
   },
 }
 
+/**
+ * v13 → v14：为已存在的 `agent` 补 `snapshots.*`（写前快照与保留策略，docs/06 §11.8）。
+ *
+ * 口径与 v12 → v13 一致：**只在 `agent` 已存在时补，只补缺不覆盖**（用户已调过的保留份数
+ * 原样保留，幂等）；`agent` 整组缺失时交给默认配置兜底，不凭空造半截对象。
+ */
+const migrateV13ToV14: Migration = {
+  from: 13,
+  to: 14,
+  describe: 'v13 → v14：为 agent 补 snapshots.*（写前快照的开关、保留份数与容量上限）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const agent = asRecord(raw['agent'])
+    if (agent !== undefined) {
+      next['agent'] = fillMissing(agent, {
+        snapshots: {
+          enabled: true,
+          keepPerFile: 20,
+          maxSnapshotBytes: 524288,
+          totalBudgetBytes: 200 * 1024 * 1024,
+        },
+      })
+    }
+
+    next['version'] = 14
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -529,6 +559,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV10ToV11,
   migrateV11ToV12,
   migrateV12ToV13,
+  migrateV13ToV14,
 ]
 
 export interface MigrationOutcome {
