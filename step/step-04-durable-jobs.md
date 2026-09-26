@@ -2,7 +2,7 @@
 
 - Task: agent-prod-mainline
 - Step: 4 / 6
-- Status: pending
+- Status: done
 - Depends on: step 3
 - Produces: `AgentJob` 类型与 `JobStore`（游标/待办/已完成步骤/预算/终态）、内核 `paused` 事件与预算累计、`agentHost` 逐轮落游标与 `resume`、`session/store.ts` 首读竞态修复、`jobs:*` IPC 与「任务」面板、`agent.loop.*` 配置（`maxRounds` + token 预算）、单测与文档
 - Phase: 核心链路
@@ -93,4 +93,110 @@
 
 ## 执行记录
 
-（执行后填写：实际改动、验证结果、遗留问题）
+执行时间：2026-09-26（本会话）。执行模式：全部连续执行。依赖 step 3（done）。
+
+### 提交清单
+
+| SHA | 提交 |
+|---|---|
+| `681b705` | `fix(agent-core): 修会话与待办清单的首读竞态（并发首读会拿到空快照并覆盖磁盘历史）` |
+| `aad5c06` | `feat(config): 配置 v15 —— agent.loop.*（轮次上限 / token 预算 / 自动续轮）` |
+| `2e49525` | `feat(agent-core): Task/Job 持久化与预算内自动续轮（agent.loop，配置 v15）` |
+| `39d10ac` | `feat(desktop): 任务面板与续跑入口（chat.jobs / resumeJob / cancelJob + 端到端探针）` |
+
+### 实际改动
+
+- **首读竞态（顺带修的既有 bug，独立提交）**：`session/store.ts` 与 `main/tools/todo-port.ts` 的
+  `ensureLoaded` 改成 **in-flight promise map**（读盘成功后才登记 `loaded`），读盘结果与期间写入
+  **合并**而不是覆盖。原写法下 `Promise.all([get, append])` 的 `get` 会拿到**空快照**，
+  随后一次写入把磁盘历史整体覆盖。
+- **Job 形状与存储**：`jobs/types.ts`（形状定义在 `@aurora/shared`，内核只再导出 + `createJob` /
+  `toJobSummary`）与 `jobs/store.ts`（`<userData>/jobs/<sessionId>.json` = `{version, jobs}`；
+  懒加载 in-flight、300ms 防抖 + `flush()`、per-session 串行写、损坏备份 3 份、`update` 按 id
+  浅合并、任何 fs 异常只降级不抛）。`budget.autoContinued` 随 job 落盘。
+- **循环（`agentLoop.ts`）**：`resume.nextRound`（绝对轮次起点）、`appendUserMessage: false`
+  （续跑不再落盘用户消息）、预算累计（只认 provider 回传的真实用量，工具轮结束时即可判定）、
+  `onRoundComplete`（每轮结束、决定继续之前回调，调用方在此落游标）、
+  `done.pendingReason = 'max-rounds' | 'budget' | 'aborted'`（保留 `pending` 字段兼容既有断言）。
+- **Host（`agentHost.ts`）**：`jobs` / `maxRounds`（**getter**）/ `maxTotalTokens` /
+  `autoContinueRounds` / `clock` 注入；`send({resumeJobId})` 只接受 `paused`（否则 `E_JOB_STATE`）、
+  `E_BUSY` 语义不变；`abort()` 落 `aborted`；预算内**自动续轮**（`autoContinued` 持久化 + `info` 日志）；
+  `done` 事件转发 `pendingReason` / `round` / `usedTokens`；异常也落终态。
+- **IPC / 界面**：`chat.jobs` / `chat.resumeJob` / `chat.cancelJob`（三处镜像 + preload + handler）；
+  `AgentEvent` 新增 `job` 变体（**不走 text 合并通路**）；右栏「任务」面板 + 左栏入口 +
+  composer 区暂停提示（文案与面板共用一份）+ 设置页「Agent 循环」栏。
+- **探针/自测**：capture 新增 `chat-job-panel.png` 与 settings 的 `agent.loop.*` 计数；
+  smoke 桩服务按 `AURORA_JOB_LOOP` 一直要工具并**每轮带 usage**，四条新断言。
+
+### 与计划的偏差
+
+1. **`AgentJob` / `JobSummary` 等形状放在 `@aurora/shared`**（计划把它们放在
+   `packages/agent-core/src/jobs/types.ts`）：`AgentEvent` 要带 `JobSummary`、渲染层要经 IPC 读
+   `AgentJob`，跨进程形状只能有一份定义 —— 内核只再导出。
+2. **`E_JOB_STATE` 加进 `packages/shared/src/utils/result.ts` 的 `ErrorCode`**（计划只说"加在
+   `agentHost.ts` 的错误常量区并在 shared 的类型联合里登记"，登记点在 `result.ts` 而不是 `ipc/types.ts`）。
+3. **`normalizeSessionId` 在 jobs 侧不导出**：与 `session/store.ts` 的同名导出同时进 `index.ts`
+   星号再导出会让 `import { normalizeSessionId } from '@aurora/agent-core'` 的语义取决于解析器
+   （`todo-port.ts` 正是这样用的）—— 改为模块内私有，`TODO` 里那条"两者空 id 回落不同"的风险随之消失。
+4. **左栏入口位置**：计划说挂在「子代理」那一组固定项区（`SessionNav.vue`），实际实现放在
+   `aside.nav` 的**第二行 = 左栏底部固定项**（`App.vue` 内的 `.nav-jobs`），不改 `SessionNav.vue`
+   —— 功能等价、不参与会话列表滚动、三栏几何不变（`.nav` 改两行网格）。这是有意接受的偏差。
+5. **`JobPanel` 的 `prune`/`lastStep` 未使用**：面板展示完整 `stepsDone`（最近 3 条），
+   `JobSummary.lastStep` 留给别处一行摘要用。
+6. **设置页新增「Agent 循环」栏**（计划 Writes 未列 `AgentPage.vue`）：三个新配置字段没有界面
+   就是死字段，而这一页正是 `agent.*` 的落点。
+
+### 验证结果（全部由主代理亲自复跑）
+
+| 验收项 | 结果 |
+|---|---|
+| `pnpm vitest run packages/agent-core/src/jobs` | **18 passed**（含 `listResumable` 只回 paused、`update` 按 id 不误改其它 job、损坏索引恢复、`Promise.all([list(), create()])` 非空、`autoContinued` 换实例仍是 2） |
+| `pnpm vitest run packages/agent-core/src/loop` | **35 passed**（改前 28 → 现 35，未减少；新增 `resume` 不重复 append、`budget`、`max-rounds`、`aborted`、`onRoundComplete` 每轮一次） |
+| `pnpm vitest run packages/agent-core/src/host` | **58 passed**（含 `E_JOB_STATE`、续跑时 `E_BUSY`、`maxRounds` getter 热改、自动续轮达上限才 paused、**重启后 `autoContinued` 不重置**） |
+| `pnpm vitest run packages/agent-core/src/session apps/desktop/src/main/tools/todo-port.test.ts` | **63 passed**（49→51 / 10→12；修复前先复现 4 条红） |
+| `pnpm vitest run packages/shared/src/config` | **138 passed**（含 `migrate({version: CONFIG_VERSION})` 一条迁移都不应用、v14→v15 补缺不覆盖） |
+| `pnpm typecheck` / `pnpm lint` / `pnpm format:check` | 均 exit 0 |
+| `pnpm test` | **79 文件 / 1496 用例全绿**（step 3 后为 1454） |
+| `pnpm verify` | **26/26**（`version=15`、`v0 → 当前版本` 15 条迁移） |
+| `AURORA_SMOKE=1 pnpm dev` | **157/157 passed，exit 0**；四条新断言逐条可见，`oneUserMsg=true`（"用户消息只有一条"）在日志里 |
+| `AURORA_CAPTURE=$env:TEMP\aurora-capture-11 pnpm dev` | **52 张 PNG / 52 条 checks / 0 FAIL / exit 0**；`chat-job-panel.png` → `{panel:1, items:1, resume:1, resumeLabel:"继续", text:"…已暂停…第 1/2 轮…token 1284 / 不限…已达到轮次上限，已暂停…第 1 轮 write_file 成功…第 0 轮 read_file 成功"}`；`settings-agent.png` → `loopFields: 3` |
+
+**验收标准第 7 条（配置真的生效）**：`%TEMP%\aurora-smoke-<pid>-<ts>\jobs\smoke-job.json` 里
+`maxRounds = 2`（本次 smoke 把 `agent.loop.maxRounds` 设成 2）而**不是内核写死的 8** ——
+证明配置替代了常量，且 getter 热改生效。
+
+**验收标准第 6 条（重启续跑）**：本步拿到的证据是
+①同一次启动内 `paused → chat:resumeJob → done`（smoke 断言）；
+②落盘实据 `<userData>/jobs/smoke-job.json`：`status=done`、`cursor.nextRound=3`、`stepsDone=3`
+（正是验收要求的"`cursor.nextRound > 0`、`stepsDone` 非空"）；
+③单元级"换一个 host 实例 + 同一份存储"的 `autoContinued` 不重置与 `listResumable` 只回 paused。
+**未做**的是"两次独立启动"的手工脚本（smoke 的 userData 是每次新建的临时目录，没有跨启动 harness）——
+这一条如实记为未覆盖，不假称已验。
+
+### 过程中的问题与处置
+
+1. **预算形同虚设（只有 smoke 抓得到）**：桩服务原本只在最后一段纯文本回 `usage`，而预算判定发生在
+   **工具轮结束**时 —— 于是"预算触顶"这条断言第一轮 smoke 直接红。修法不是放宽断言，而是让桩服务
+   在工具轮也带回 `usage`（真实 provider 在 `include_usage` 下每轮都报），这条正好钉住了语义。
+2. **`E_BUSY` 用例靠调度运气（改了 3 版）**：原写法"两次 `send` 都不 await"在全量并行跑时红，
+   因为桩 provider 可能在第二次检查前就跑完。最终版用**可控闸门**把续跑请求真的停在工具执行里，
+   断言改成"游标恰好多 1 + provider 调用次数不变"，连跑 3 次稳定。
+3. **capture 夹具时序**：第一版把 `paused` job 种在场景 `prepare` 里 → 面板显示「暂无任务」，
+   因为**任务面板挂载时已经读过一次**（job 存储首读即缓存）。夹具改到 `runCapture` 跑计划之前
+   （与 `seedChatTtsHistory` 同一批），场景 `prepare` 只负责 reload。
+4. **host 子代理无遗言失败**：它把 job 生命周期写完就断了（未回报），我复跑发现一条红并接手修完
+   （见第 2 条）；其产出可用，但按"失联即未完成"一律重新验证过。
+5. **一处 PowerShell 转义事故**：用双引号字符串替换注释时反引号被当成转义符，把 `` `runCapture` ``
+   变成了换行 + 非法字符（TS1127）。已改用单引号/数组切片重写该段，并记下"注释里含反引号时不要
+   用 PowerShell 双引号字符串替换"。
+
+### 遗留问题
+
+1. **"两次独立启动"的重启续跑脚本未做**（原因见验收第 6 条）；`chat:jobs` 重启后可列出、
+   `resumeJob` 可续跑这一点由存储层与 host 层单测 + 同进程链路共同保证。
+2. 左栏入口在底部固定项而非常规固定项区（有意偏差，见偏差 4）。
+3. `JobStore` 接口没有 `dispose()`（实现里有，用于取消防抖定时器），主进程退出靠 `flush()`；
+   若将来要"未落盘即退出"的强保证，需要把它加进接口。
+4. `list()` 不带 `sessionId` 时会读盘上所有会话文件再内存过滤（会话多时是 O(会话数) 次读盘）；
+   当前会话数量级下可接受，需要时再加索引。
+5. `docs/06 §4.1` 在本步一度是**悬空引用**（三处文件头先引用了它），已由本步文档补齐。

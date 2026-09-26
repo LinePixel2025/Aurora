@@ -117,3 +117,16 @@
 - 验收结果：`pnpm typecheck` / `pnpm lint` / `pnpm format:check` 全绿；`pnpm test` 78 文件 **1454** 用例全绿（step 2 后 1420）；`pnpm verify` 26/26（version=14、14 条迁移）；`AURORA_SMOKE` **153/153**（写后留底 + 结果回带 id / 回滚内容还原且自身留 `rollback` 快照 / append 留追加前内容 + edit_file 同样留底 / 连写 30 次后 `.snap` 数 = 20 ≤ keepPerFile）；`AURORA_CAPTURE` **51 张 PNG / 51 条 checks / 0 FAIL**（新增 `chat-snapshot-card.png`、settings-agent 的 `snapshotFields:4`）。
 - 计划偏差：`contentPath` 存相对快照根目录（含 sessionId 段）；`totalBudgetBytes` 是**每会话**口径；`restoreSnapshot` 从 ipc.ts 导出以便 smoke 复用同一条链路；`SnapshotRef` 唯一定义在 `@aurora/shared`；额外给设置页加了「文件备份」区组（否则四个新字段是死字段）。
 - 遗留：`prune` 无界面入口、右栏卡不按会话过滤（都卡在"渲染层拿不到当前会话 id"）；`useSnapshots()` 无单测。详见 `step-03-write-snapshots.md`。
+### Step 4 — Task/Job 持久化与可续跑（Status: done）
+
+- 完成时间：2026-09-26；执行模式：全部连续执行。
+- 提交清单：
+  - `681b705` `fix(agent-core): 修会话与待办清单的首读竞态（并发首读会拿到空快照并覆盖磁盘历史）`
+  - `aad5c06` `feat(config): 配置 v15 —— agent.loop.*（轮次上限 / token 预算 / 自动续轮）`
+  - `2e49525` `feat(agent-core): Task/Job 持久化与预算内自动续轮（agent.loop，配置 v15）`
+  - `39d10ac` `feat(desktop): 任务面板与续跑入口（chat.jobs / resumeJob / cancelJob + 端到端探针）`
+  - `ee2196d` `docs: Job 持久化与续跑落文档（06 §4.1 新增、07 任务面板、08 §1 与迁移、10 用户指南）`
+- 验收结果：`pnpm typecheck` / `pnpm lint` / `pnpm format:check` 全绿；`pnpm test` 79 文件 **1496** 用例全绿（step 3 后 1454）；`pnpm verify` 26/26（version=15、15 条迁移）；`AURORA_SMOKE` **157/157**（轮次用尽落 paused + 游标与步骤落盘 / 续跑跑到 done 且**用户消息只有一条** / 预算触顶落 paused(budget) / 取消落 aborted）；`AURORA_CAPTURE` **52 张 PNG / 52 条 checks / 0 FAIL**（新增 `chat-job-panel.png`、settings-agent 的 `loopFields: 3`）。
+- 计划偏差：`AgentJob` / `JobSummary` 等形状放 `@aurora/shared`（跨 IPC 只能一份定义）；`E_JOB_STATE` 登记在 `shared/utils/result.ts` 的 `ErrorCode`；jobs 侧 `normalizeSessionId` 不导出（避免与 session 侧同名星号导出撞车）；左栏任务入口在**底部**固定项而非「子代理」那一组（有意偏差，不改 `SessionNav.vue`）；额外给设置页加了「Agent 循环」栏。
+- 过程：smoke 抓到"预算形同虚设"（桩服务只在最后一段纯文本回 usage，而预算判定发生在工具轮结束）；`E_BUSY` 用例靠调度运气，改 3 版后用可控闸门稳定；capture 夹具时序踩了 job 存储「首读即缓存」的坑（种在 prepare 里看不到，改到跑计划前）。
+- 未覆盖：**"两次独立启动"的重启续跑手工脚本**没做（smoke 的 userData 每次新建、无跨启动 harness）；现有证据是同进程续跑 + 落盘实据（`cursor.nextRound=3`、`stepsDone=3`）+ 换实例读同一份存储的单测。详见 `step-04-durable-jobs.md`。
