@@ -2,7 +2,7 @@
 
 - Task: agent-prod-mainline
 - Step: 2 / 6
-- Status: pending
+- Status: done
 - Depends on: step 1
 - Produces: 三档权限生效（只读档不注册写/执行类工具）、项目根 + realpath 前缀校验、确认卡"本会话允许此工具"、设置页与对话窗权限控件、探针与文档
 - Phase: 安全与边界
@@ -99,4 +99,95 @@
 
 ## 执行记录
 
-（执行后填写：实际改动、验证结果、遗留问题）
+执行时间：2026-09-26（本会话）。执行模式：全部连续执行。依赖 step 1（done）。
+
+### 提交清单
+
+| SHA | 提交 |
+|---|---|
+| `e9ed4e1` | `feat(agent-core): 三档权限判定与确认值「本会话都允许」` |
+| `12dca39` | `feat(agent-core): allowOutside 透传 + 只读档下子代理工具面收窄` |
+| `cf013ff` | `feat(settings): 项目根 realpath 边界校验 + 只读档工具门控与端到端断言` |
+| `c274838` | `feat(settings): 三档权限界面（下拉/设置页/确认卡第三键）与文档落笔` |
+
+### 实际改动
+
+- **纯判定（新文件 `packages/shared/src/config/permission.ts`）**：`PermissionMode`、`resolvePermissionMode`
+  （readonly 优先 → 显式 auto → 老开关 `confirmSensitiveTools === false` → confirm）、`permissionTargetOf`
+  （按工具名取目标路径，解析不出返回 `undefined`）、`isWithinRoot`（字符串级粗判，含 `..` 段一律按越界）。
+  主入口与 `browser` 子路径都导出，**主进程与渲染层读同一份**。
+- **确认判定（`apps/desktop/src/main/agent-host.ts`）**：`createConfirmTool` 的 `enabled()` → `mode()`；
+  只读档直接拒绝（warn）、`auto` 档按项目根内/外分流并对根内放行写 `info` 审计日志、
+  `confirm` 档与从前一字不差；无项目时 `auto` 保持"关掉确认总开关 = 不再逐次询问"的老语义。
+  另加 `containsAbsolutePath`：`run_command` 的命令串里出现绝对路径时**一律回到确认卡片**（保守）。
+- **确认值三态**：`ConfirmDecision = boolean | 'always'`（agent-core）+ `ConfirmResolution`（主进程 proactive）；
+  渲染层确认卡加第三颗按钮 `data-action="chat.confirm-always"`；IPC `proactive:resolveSensitiveTool`
+  扩第三个参数 `always?: boolean`。**会话级授权表在 `KernelAgentHost`**（进程内 `Map`，不落盘、
+  不给渲染层也不给 AI；`clearSessionApprovals()` 供会话清理）。
+- **路径边界**：`file-port.ts` 的 `resolveWithin`（对已存在最近父目录做 `realpath`，越界抛带
+  `code = 'E_PATH_OUTSIDE_WORKSPACE'` 的错误）+ 六个入口的 `allowOutside`；`command-runner.ts` 的
+  `cwd` 走同一套判定。装配层 `projectRoot` getter 同时喂给两者，**只在配置了当前项目时启用**
+  （`workspaceRoot()` 返回 undefined = 行为与 v13 之前一字不差）。
+- **工具门控**：`registerComputerTools.sync()` 按生效档位注册（只读档跳过 terminal / edit_file /
+  open_path / write_file，保留 read_file / list_dir / grep / glob）；
+  `registerAgentCoreTools` 只读档摘 `todo_write`、留 `todo_read`（它有 `safe` 级但仍会写
+  `<userData>/todos/`）。`task` 保留（子代理工具面从已收窄的父表过滤）。
+- **界面**：对话窗下拉三档 + 放宽两段式、收紧单击生效；设置页 `AdvancedPage` 三档单选；
+  `AgentPage` 摘要按生效档位写（只读档固定文案，capture 断言原文）。
+- **探针/自测**：capture 新增 `chat-permission-readonly.png` 场景、`chat-composer-permission` 探针改三档、
+  settings-agent 探针加"临时切只读档断言摘要与生效工具名单再还原"；smoke 新增两条端到端断言。
+- **文档**：docs/06 §11.2（新增三档语义表：只读档语义、auto 档保守方向、两层边界分工、老开关承接）、
+  §11 配置字段与 §11.1 边界口径；docs/07 权限模式/确认卡/锚点/探针条目；docs/10 用户侧说明；docs/11 披露。
+
+### 与计划的偏差
+
+1. **权限判定纯函数放在 `packages/shared`** 而不是主进程：主进程与渲染层必须看到同一个"生效档位"，
+   各写一份必然漂移（"界面说只读、实际还能写"）。计划写的是"放 `apps/desktop/src/main/agent-host.ts`
+   同目录的新文件"。
+2. **会话级授权表放在内核 `KernelAgentHost`** 而不是主进程：循环一趟请求一个实例，记忆放循环等于没记住；
+   放内核既不暴露给 AI 也不暴露给渲染层（安全属性与放主进程相同），且验收标准要的
+   "同会话第二次不再询问"能在内核单测里证明。
+3. **"越界仍确认"的通道**：由内核在确认放行时置 `ToolExecuteContext.approvedByUser`，工具层据此
+   透传 `allowOutside` —— 计划只写了"由工具层在用户已确认时传 true"，没说这条信息怎么到工具层。
+4. **边界启用条件按"有没有当前项目"**（不是 `workspaceDir` 非空）：`workspaceDir` 一直是"默认 cwd"，
+   把它变成硬边界会让老用户突然读不了自己的文档；step 1 的完成标准也明写"无项目时行为不变"。
+5. **`isWithinRoot` 对含 `..` 的路径直接判越界**：字符串级判定只决定"要不要问用户"，保守方向永远是问。
+6. **`command-runner` 的 cwd 校验复用 `file-port` 导出的 `resolveWithin`**（不复制两份判定）。
+7. **`tasks` 的子代理过滤做成可注入白名单**（`subagentToolNames`），而不是在 `task.ts` 里硬编码档位判断
+   —— 档位解析只在主进程。
+
+### 验证结果（全部由主代理亲自复跑）
+
+| 验收项 | 结果 |
+|---|---|
+| `pnpm vitest run apps/desktop/src/main/agent-host.test.ts` | 25 passed（含三档判定 5 条：readonly 拒绝不弹卡、auto 根内放行+info 日志、auto 根外弹卡、run_command 绝对路径保守、confirm 不变） |
+| `pnpm vitest run apps/desktop/src/main/tools/index.test.ts` | 33 passed（只读档完整名单、readonly+总开关=false → 空、confirm/auto 回归基线、只读优先压过老开关、切档立即生效；含 `todo_write` 摘除与 `todo_read` 保留） |
+| `pnpm vitest run apps/desktop/src/main/tools/file-port.test.ts` | 55 passed（含 `..` 穿越被拒 / 符号链接 / `allowOutside` 放行 / 未配置根时行为不变 / Windows 大小写实测结论） |
+| `pnpm vitest run apps/desktop/src/main/tools/command-runner.test.ts` | 14 passed（新增成对断言：cwd 越界不执行且副作用文件不出现 + `allowOutside` 放行时真的执行 + 未配置根时与从前一致） |
+| `pnpm vitest run packages/agent-core/src` | 全绿（含 `confirmTool` 返回 `'always'` 时执行 + 同会话第二次不再询问的计数断言） |
+| `pnpm typecheck` / `pnpm lint` / `pnpm format:check` | 均 exit 0 |
+| `pnpm test` | **77 文件 / 1420 用例全绿**（step 1 后为 1373） |
+| `AURORA_SMOKE=1 pnpm dev` | **149/149 passed，exit 0**；新增两条：`只读档：写 / 执行类工具不进注册表（含 todo_write），只读工具保留 — readonlyKept=[read_file,list_dir,grep,glob,todo_read]`、`auto 档：项目根内免确认且真的写成功；根外仍弹确认卡且未放行时写不进去 — autoInside=approve:true noCard:true written:true autoOutside=card:true blocked:true` |
+| `AURORA_CAPTURE=$env:TEMP\aurora-capture-08 pnpm dev` | **50 张 PNG / 50 条 checks / 0 FAIL / exit 0**，含 `chat-permission-readonly.png`（`permissionMode: readonly` + 文案「只读」+ 收尾还原成「变更前确认」）与 `settings-agent.png` 的 `readonlySummary/readonlyTools/readonlyRestored` 三条全 true；`chat-composer-permission.png` 三档与两段式全部通过 |
+
+### 过程中的问题与处置
+
+1. **三个子代理中途失败**（agent-core 管道 / file-port / 渲染层 各一个），主代理接手收尾：
+   - file-port 的 `createPathOutsideError` 类型错误（`Object.assign` 把字面量推成 `string`）→ 改 `as` + 赋值；
+   - `command-runner.test.ts` 的边界用例**没写完**（子代理死在最后一步）→ 补 4 条成对断言；
+   - 主进程装配缺口：`registerAgentCoreTools` 没传 `getSettings`（只读档摘不掉 `todo_write`）、
+     `createNodeFilePort` / `createCommandRunner` 没接 `workspaceRoot` → 主代理补线。
+2. **`resolvePermissionMode` 初版漏了"显式 auto 分支"**（只判 readonly 与老开关），被自己写的单测抓到 → 修正。
+3. **capture 只读摘要断言初版过粗**（拿整页文本判"不含写类工具名"，而页面上别处的工具箱标题本来就会提到）
+   → 改成只在「当前生效工具」块内读 `code` 名单。
+
+### 遗留问题
+
+1. `read_file` / `list_dir` / `grep` / `glob` 是 `safe` 级、不走确认卡片，因此**在项目根之外会被直接拒绝**
+   （没有"确认后越界读"的通道）。这是刻意取舍（只读工具没有确认载体），已写进 docs/06 §11.2 与 docs/11。
+2. `task`（子代理）在只读档下仍注册：它本身不碰系统，子代理工具面从已收窄的父表过滤；
+   但如果将来给 `task` 加了"子代理可写"能力，需要重新评估。
+3. `open_path` 在 `auto` 档下的目标判定用 `input.target`；非文件系统目标（HTTP 链接等）解析不出 → 走确认。
+   与"打开路径本身有副作用"一致，未额外放宽。
+4. capture 的 `chat-tool-card-open` / `chat-stream-burst` 两条 perf·时序探针仍存在**帧饥饿环境**下的偶发失败
+   （step 1 已记录，本步未动）。本步的验收用的是 `aurora-capture-08` 这次干净全量跑。
