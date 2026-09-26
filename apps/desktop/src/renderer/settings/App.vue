@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
- * 设置窗口（docs/07 §2.5、docs/08 §5/§6）：单窗口分栏六页
- * 通用 / 模式 / AI 模型 / 语音 / 智能与工具 / 高级（BetaV2 由 8 页合并而来，spec §9）。
+ * 设置窗口（docs/07 §2.5、docs/08 §5/§6）：单窗口分栏七页
+ * 通用 / 模式 / AI 模型 / 语音 / 智能与工具 / Aurora Center / 系统（BetaV2 由 8 页合并而来，spec §9）。
  *
  * 合并去向：TtsPage → voice（与 STT 同页）；SkillsPage / McpPage → agent；
  * AdvancedPage 的勿扰时段 → general。旧深链（`?page=tts|skills|mcp`）经
@@ -21,13 +21,23 @@ import ModesPage from './pages/ModesPage.vue'
 import LlmPage from './pages/LlmPage.vue'
 import VoicePage from './pages/VoicePage.vue'
 import AgentPage from './pages/AgentPage.vue'
+import CenterPage from './pages/CenterPage.vue'
 import AdvancedPage from './pages/AdvancedPage.vue'
 import WindowCaption from '../shared/components/WindowCaption.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
-import { AudioLines, Cpu, House, LayoutGrid, Puzzle, Settings, Sparkles } from '../shared/icons.js'
+import {
+  AudioLines,
+  Cpu,
+  House,
+  LayoutGrid,
+  MonitorSmartphone,
+  Puzzle,
+  Settings,
+  Sparkles,
+} from '../shared/icons.js'
 
-type PageId = 'general' | 'modes' | 'llm' | 'voice' | 'agent' | 'advanced'
+type PageId = 'general' | 'modes' | 'llm' | 'voice' | 'agent' | 'center' | 'advanced'
 
 interface NavItem {
   id: PageId
@@ -43,15 +53,18 @@ const nav: NavItem[] = [
   { id: 'llm', label: 'AI 模型', icon: Cpu },
   { id: 'voice', label: '语音', icon: AudioLines },
   { id: 'agent', label: '智能与工具', icon: Puzzle },
+  { id: 'center', label: 'Aurora Center', icon: MonitorSmartphone },
   { id: 'advanced', label: '系统', icon: Settings },
 ]
 
 /**
- * 侧栏分组（BetaV2 六页两级）：基础（本机行为）/ 智能（AI 能力）/ 系统（运维）。
+ * 侧栏分组（七页两级）：基础（本机行为）/ 智能（AI 能力）/ 连接（外部服务）/ 系统（运维）。
+ * Aurora Center 是独立的远程控制通道（docs/12），不属智能能力也不属本机运维，单独成组。
  */
 const navGroups: Array<{ title: string; ids: PageId[] }> = [
   { title: '基础', ids: ['general', 'modes'] },
   { title: '智能', ids: ['llm', 'voice', 'agent'] },
+  { title: '连接', ids: ['center'] },
   { title: '系统', ids: ['advanced'] },
 ]
 
@@ -72,6 +85,7 @@ const pages: Record<PageId, Component> = {
   llm: LlmPage,
   voice: VoicePage,
   agent: AgentPage,
+  center: CenterPage,
   advanced: AdvancedPage,
 }
 

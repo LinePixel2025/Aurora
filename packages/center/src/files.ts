@@ -125,11 +125,7 @@ class TransformCounter extends Transform {
 
   override _transform(chunk: Buffer, _enc: BufferEncoding, done: (error?: Error) => void): void {
     if (this.count + chunk.length > this.max) {
-      done(
-        new FileTooLargeError(
-          `文件超过上限（${Math.floor(this.max / 1024 / 1024)} MB）`,
-        ),
-      )
+      done(new FileTooLargeError(`文件超过上限（${Math.floor(this.max / 1024 / 1024)} MB）`))
       return
     }
     this.count += chunk.length

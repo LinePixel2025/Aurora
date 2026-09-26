@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -36,7 +36,7 @@ describe('FileStore · 上传暂存', () => {
     const { store, dir } = await makeStore(1024 * 1024)
     const record = await store.save({
       clientId: 'c1',
-      name: '..\..\evil\../../etc/passwd',
+      name: '../../../etc/passwd',
       content: contentOf('x'),
     })
     const path = store.pathOf(record.fileId)

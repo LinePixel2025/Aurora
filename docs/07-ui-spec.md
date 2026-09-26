@@ -482,9 +482,9 @@
 
 ### 2.5 设置窗口
 
-- 单窗口分栏（**BetaV2**：8 页合并为 **6 页**；2026-09 重构起条目为图标 + 单行文字）：侧栏按三组排列 —— **基础**（常规 `general` /
-  模式 `modes`）／**AI 能力**（AI 模型 `llm` / 语音 `voice`）／**系统**（智能与工具 `agent` /
-  高级 `advanced`）；`SETTINGS_PAGE_IDS = ['general','modes','llm','voice','agent','advanced']`。
+- 单窗口分栏（**BetaV2**：8 页合并为 **6 页**；2026-09 重构起条目为图标 + 单行文字；v0.2.0 起新增 **Aurora Center** 页共 **7 页**）：侧栏按四组排列 —— **基础**（常规 `general` /
+  模式 `modes`）／**智能**（AI 模型 `llm` / 语音 `voice` / 智能与工具 `agent`）／**连接**（Aurora Center `center`）／
+  **系统**（高级 `advanced`）；`SETTINGS_PAGE_IDS = ['general','modes','llm','voice','agent','center','advanced']`。
   当前项用分层填充 + 左侧**强调色**指示条（不再用品牌渐变）。合并口径：Skill 与 MCP 并入 `agent` 页、
   STT 并入 `voice` 页、生图模型并入 `llm` 页、勿扰时段并入 `general` 页（全局 + 提示条两组同区）；
   旧深链兼容映射：`?page=tts→voice`、`?page=skills|mcp→agent`。
@@ -498,6 +498,20 @@
   关闭按钮与其它交互元素挂 `no-drag`（`theme.css` 另有一条按标签兜底的规则）。
   此前只有侧栏里约 22–30px 的品牌行能拖，正是「有些能拖有些不行」最直接的原因；
   现在侧栏空白处、品牌行、内容区顶部三处都能按住拖动窗口。
+- **Aurora Center 页（v0.2.0，docs/12）**：`CenterPage.vue` 三张卡：
+  - **连接设置**（`CenterConnectionSection.vue`）：`center.enabled` / `center.serverUrl` /
+    `center.displayName` / **配对令牌**（`data-field="center.token"` password 输入 + 「保存令牌」按钮；
+    令牌不进 `settings:update`，走 `settings.setSecrets({ 'center.token': 值 })`，页面按
+    `settings.hasSecret('center.token')` 展示「已配置 / 未配置」）、`center.clientId` 只读展示；
+  - **远程控制许可**（`CenterPermissionsSection.vue`）：`center.allowRemoteSession` /
+    `center.allowRemoteConfig` / `center.allowFileTransfer` 三个开关 + `center.maxFileMb`
+    （1–512，保存时夹取）——这些是 Center 远程操作本机的**最终闸门**（docs/12 §7）；
+  - **连接状态**（`CenterStatusSection.vue`，`data-field="center.status"`）：轮询
+    `center:status`（5s），状态点 connected 绿 / connecting 黄 / error 红（附 `lastError`）/
+    disabled 灰。
+  - **保存链路分工**：卡片字段整卡走 `settings:update`（`{ center: {...} }` 顶层浅合并，
+    不含 `tokenEnc` / `clientId`；主进程合并时运行期剥 `tokenEnc` 防构造 patch 洗密文）；
+    令牌只走 `settings:setSecrets`。
 - 模式页（**BetaV2**）：三模式卡片选择 + 引导状态；**只渲染当前模式的配置内容** ——
   ClassRoom 区组不变；Work 已实装，提供工作目录 `workspaceDir`（`data-field="modes.work.workspaceDir"`）
   等配置；Code 仍显示「暂无可配置项」空状态。

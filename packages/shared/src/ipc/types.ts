@@ -136,6 +136,12 @@ export interface SettingsPatch {
   projects?: Partial<Settings['projects']>
   /** 电脑操控工具（docs/06 §11）：顶层浅合并，调用方必须带上完整的 `tools` 子树 */
   agent?: Partial<Settings['agent']>
+  /**
+   * Aurora Center 连接（v16，docs/12）：顶层浅合并。`tokenEnc` **刻意不出现在补丁类型里**
+   * —— 配对令牌是凭据，只走 `setSecrets({ 'center.token': ... })`（docs/12 §7）；
+   * 主进程合并时还会运行期剥一次（防构造出的 patch 洗掉已存密文）。
+   */
+  center?: Omit<Partial<Settings['center']>, 'tokenEnc'>
 }
 
 /** 敏感字段路径 → 明文值；由主进程加密后落盘（docs/08 §2）。 */

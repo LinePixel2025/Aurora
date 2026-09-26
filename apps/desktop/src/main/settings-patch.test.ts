@@ -494,3 +494,27 @@ describe('extractPatchSecrets', () => {
     expect(secrets).toEqual({})
   })
 })
+
+describe('mergeSettingsPatch · center 分组（v16，docs/12）', () => {
+  it('顶层浅合并：只传 enabled 时其余字段原样保留', () => {
+    const draft = createDefaultSettings()
+    draft.center.serverUrl = 'ws://original:8787'
+    draft.center.clientId = 'client-original'
+    mergeSettingsPatch(draft, { center: { enabled: true } })
+    expect(draft.center.enabled).toBe(true)
+    expect(draft.center.serverUrl).toBe('ws://original:8787')
+    expect(draft.center.clientId).toBe('client-original')
+  })
+
+  it('补丁里的 tokenEnc 被运行期剥掉，已存密文不被洗掉', () => {
+    const draft = createDefaultSettings()
+    draft.center.tokenEnc = 'cipher-keep-me'
+    // 类型上 center 补丁没有 tokenEnc；运行期剥除是对构造对象的防御（docs/12 §7）
+    mergeSettingsPatch(draft, {
+      center: { serverUrl: 'ws://new' } as SettingsPatch['center'] & { tokenEnc?: string },
+    })
+    // 密文原样保留，未被空串覆盖
+    expect(draft.center.tokenEnc).toBe('cipher-keep-me')
+    expect(draft.center.serverUrl).toBe('ws://new')
+  })
+})

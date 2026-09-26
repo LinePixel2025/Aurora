@@ -7,7 +7,8 @@
  * （vitest 只收不 import 'electron' 的主进程测试），故从 `ipc.ts` 拆出。
  *
  * **凭据 checklist**：`llm` / `tts` / `stt` / `imagegen` 四组 provider 的密文都在这里折成
- * `apiKeySet` 标记，MCP 服务器的 `envEnc` / `headersEnc` 折成 `envSet` / `headersSet` 名单
+ * `apiKeySet` 标记，MCP 服务器的 `envEnc` / `headersEnc` 折成 `envSet` / `headersSet` 名单，
+ * Center 的 `center.tokenEnc` 折成空串（v16，docs/12）
  * ——漏掉任何一组 = 该组密文随 `settings:get` 泄漏进渲染层（AGENTS.md）。
  */
 import type { Settings } from '@aurora/shared'
@@ -28,6 +29,9 @@ export function redactSettings(settings: SettingsStoreLike, source: Settings): S
       draft['apiKeyEnc'] = ''
     }
   }
+  // Aurora Center 配对令牌（v16，docs/12 §7）：与 provider 密文同款 —— 折掉密文本体；
+  // 「是否已配置」由设置页走 `settings:hasSecret('center.token')` 单独查询。
+  clone.center.tokenEnc = ''
   for (const server of clone.mcp.servers) {
     const draft = server as unknown as Record<string, unknown>
     const env = (server as unknown as { envEnc?: Record<string, string> }).envEnc ?? {}
