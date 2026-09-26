@@ -9,6 +9,12 @@
  * 视觉（docs/07 §5）：悬浮在对话区之上（`--shadow-3`）+ `.anim-pop` 弹入，
  * 倒计时 ≤15s 转 `--status-error`；确认 / 拒绝用 AppButton 的 primary / danger。
  * 行为链路（IPC 回执、超时按拒绝）保持原样。
+ *
+ * 三个出口（v13 新增第三个，「本会话都允许」）：
+ * - 拒绝 → `approved: false`；
+ * - 允许一次 → `approved: true`（只放行这一次，下一次同名工具照旧询问）；
+ * - 本会话都允许 → `approved: true` + `always: true`：本次放行，且**本会话内同名工具不再询问**
+ *   （主进程侧按会话记住名字，会话结束即失效 —— 它不是配置项，不写盘、不影响其它会话）。
  */
 import { computed, onUnmounted, ref } from 'vue'
 import type { SensitiveToolRequest } from '@aurora/shared'
@@ -61,13 +67,15 @@ onUnmounted(() => {
   window.clearInterval(timer)
 })
 
-async function decide(approved: boolean): Promise<void> {
+async function decide(approved: boolean, always = false): Promise<void> {
   if (busy.value) return
   busy.value = true
   error.value = null
+  // `always` 只在「允许」时有意义：主进程侧的判定是 `always === true && approved === true`
   const result = await window.aurora.proactive.resolveSensitiveTool(
     props.request.confirmId,
     approved,
+    approved && always,
   )
   busy.value = false
   if (!result.ok) {
@@ -111,6 +119,16 @@ async function decide(approved: boolean): Promise<void> {
     <footer class="row">
       <span class="tiny muted grow">60 秒不响应一律按「拒绝」处理。</span>
       <AppButton size="sm" variant="danger" :disabled="busy" @click="decide(false)">拒绝</AppButton>
+      <!-- 会话级放行：比「允许一次」宽、比改配置窄（会话结束即失效，不写盘） -->
+      <AppButton
+        size="sm"
+        variant="ghost"
+        :disabled="busy"
+        data-action="chat.confirm-always"
+        @click="decide(true, true)"
+      >
+        本会话都允许
+      </AppButton>
       <AppButton size="sm" variant="primary" :disabled="busy" @click="decide(true)">
         允许一次
       </AppButton>
@@ -199,5 +217,15 @@ async function decide(approved: boolean): Promise<void> {
 
 footer {
   gap: var(--space-2);
+  /* 三个出口 + 倒计时提示：窄卡片下允许换行，否则按钮会横向溢出卡片 */
+  flex-wrap: wrap;
+}
+
+/*
+ * 提示先让位：给提示一个最小宽度，装不下时整条按钮组换到下一行，
+ * 而不是把「本会话都允许」挤出可视区（`.grow` 默认 `flex: 1`，不设 basis 时它会被压到 0 宽）。
+ */
+footer .grow {
+  flex: 1 1 120px;
 }
 </style>

@@ -308,15 +308,30 @@
   瞬时提示 + 麦克风（STT，门控口径不变）+ 停止（流式中）+ 发送。
   压缩顺序与旧口径一致：先让瞬时提示让位，两个下拉可收缩到 72px，**发送按钮绝不能被挤出卡外**。
 - **权限模式**（`ComposerPermissionSelect.vue`，`data-field="chat.permission"`）：
-  写 `advanced.confirmSensitiveTools`，两档 —— **变更前确认**（`true`，默认）＝ 敏感工具
-  （写文件 / 执行命令 / MCP 工具 / 改设置）执行前弹确认卡；**完全权限**（`false`）＝
-  不再逐次询问、只写日志留痕。与设置页「智能与工具」页的同名字段读写**同一份配置**，没有第二份来源。
-  两个细节是有意的：
-  - 完全权限档用**警示色常驻**（不是一闪而过的 toast）——闸门开着这件事必须一直看得见；
-  - 切到完全权限是**两段式**：第一次点只把该项翻成「再点一次确认」，第二下才提交 ——
-    一个误点不该把闸门摘掉。AI 的 `set_setting` 对该路径**一律拒绝**（见 06 §12.2）。
-    注意另一处入口（设置 → 智能与工具的同名开关）仍是**单击即刻落盘**的老交互，
-    两处交互强度目前**不一致**（对话窗更严）；要对齐的话改设置页那一处，别把这里的二次确认去掉。
+  **三档**（v13，语义见 06 §11.2）—— **只读**（`readonly`，`data-field="chat.permission-mode-readonly"`）＝
+  写文件 / 执行命令类工具**根本不注册**给模型（设置页摘要写「只读模式：仅注册只读工具（不含写入与命令）」）；
+  **变更前确认**（`confirm`，默认，`data-field="chat.permission-confirm"`）＝ 敏感工具
+  （写文件 / 执行命令 / MCP 工具 / 改设置）执行前弹确认卡；**完全权限**
+  （`auto`，`data-field="chat.permission-full"`）＝ 有项目时**只在项目根之内**免确认、越界仍询问，
+  无项目时与从前一样不再逐次询问、只写日志留痕。
+  写盘时**同时写两个字段**（`agent.permissionMode` = 选中档，`advanced.confirmSensitiveTools` =
+  `档位 !== 'auto'`）：后者是老开关，两者由 `resolvePermissionMode()` 合成生效档位，
+  分开写会出现「界面选 confirm、实际生效 auto」的错位。与设置页「智能与工具」页读写的
+  **是同一份配置**，没有第二份来源。
+  三个细节是有意的：
+  - 放宽权限的档位（完全权限）用**警示色常驻**（不是一闪而过的 toast）——闸门开着这件事必须一直看得见；
+  - **放宽是两段式**：点「完全权限」只把该项翻成「再点一次确认」，第二下才提交 ——
+    一个误点不该把闸门摘掉；**收紧（只读 / 变更前确认）单击即生效**（收紧不需要摩擦）。
+    AI 的 `set_setting` 对 `agent.permissionMode` 与 `advanced.confirmSensitiveTools`
+    两条路径**一律拒绝**（见 06 §12.2）。
+  - 设置页那一处入口（`AdvancedPage.vue`，`data-field="agent.permissionMode"`）是**三档单选**、
+    同样走"同时写两个字段"的镜像规则；两处交互强度目前略有差异（对话窗对**放宽**更严），
+    因为对话窗是随手可点的位置。
+- **确认卡片**（`SensitiveToolCard.vue`）：三颗按钮 —— 「允许一次」、
+  **「本会话都允许」**（`data-action="chat.confirm-always"`，v13：本次放行 + 本会话内同名工具
+  不再询问）、「拒绝」。倒计时（≤15s 转错误色）与拒绝路径不变；
+  会话级授权表在**内核**（`KernelAgentHost`，不落盘），`'always'` 只由用户点按钮产生，
+  拒绝永远不会被升级成会话级授权（见 06 §11.2）。
 - **斜杠命令**（`SlashCommandMenu.vue` + `slashCommands.ts`，`data-field="chat.slash-menu"`）：
   输入框内容整串匹配 `/xxx`（无空格换行）时，在输入卡**上方**弹出候选浮层，分
   **命令** / **技能** 两组：
@@ -354,7 +369,8 @@
   于是输入 `/` 之后再点权限钮，权限下拉会被 z-index 更高的斜杠浮层压住）。
   新增浮层时必须复用这套锚点与令牌，**不要新写 z-index 魔数**（层级令牌见 §5.1）。
 - **`data-field` 锚点清单（capture 探针依赖）**：`chat.permission` / `chat.permission-menu` /
-  `chat.permission-confirm` / `chat.permission-full` / `chat.slash-menu` / `chat.slash-<name>` /
+  `chat.permission-confirm` / `chat.permission-full` / `chat.permission-mode-readonly`（v13 三档；
+  `-full` 仍是 auto 档的唯一锚点，不要给它换名）/ `chat.slash-menu` / `chat.slash-<name>` /
   `chat.context` / `chat.context-usage` / `chat.context-cache` / `chat.context-detail`；
   旧的 `chat.model` / `chat.reasoningEffort` / `chat.mic` 位置变了但锚点不变。
   左栏归档（2026-09-26 新增）：`chat.archive-group` / `chat.archive-toggle` / `chat.archive-list` /
@@ -375,7 +391,12 @@
   并要求「空态或至少一行」，`data-empty` 白名单为 `general.edgeBar` 与 `projects.list`。
   钉住它们的探针场景见 §5.3：`chat-composer-slash.png`（浮层 + 权限钮文案 + 上下文条 +
   **textarea 自动增高** 28px→170px→28px，含 200px 上限与「上限后改为内部滚动」）、
-  `chat-composer-permission.png`（权限下拉两段式：点一次不写配置、`settings:get` 回报仍为 `true`）、
+  `chat-composer-permission.png`（权限下拉三档：只读 / 变更前确认 / 完全权限三项都在；
+  点「完全权限」一次只翻成「再点一次确认」、**配置一动不动**（`settings:get` 回报 `agent.permissionMode`
+  仍是 `confirm`）、再收起下拉）、
+  `chat-permission-readonly.png`（v13 只读档：切到 `readonly` 后触发器与菜单项都显示「只读」、
+  `settings:get` 回报 `permissionMode === 'readonly'`，收尾还原成 `confirm` 并断言触发器回到
+  「变更前确认」）、
   `chat-composer-flyouts.png`（浮层互斥 + 几何不相交 + 发送键 `elementFromPoint` 命中自己）、
   `chat-archive.png`（归档分组）；
   以及 `chat-stream.png`（**唯一一条 DOM 级端到端**：capture 在跑这一段前竖起本地桩 LLM 并把
@@ -860,7 +881,13 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
       `total=11`、`terminalFields=4`、**`allowPatternsFields=1`**、`filesFields=2`、
       **`searchFields=2`**、`openFields=1`
       （`pass` 条件要求 `allowPatternsFields === 1` 且 `searchFields >= 2`；`terminalFields` 只要求 `> 0`
-      ——它不写死数值，免得下一次扩栏时无谓变红）。终端卡片下「免确认命令模式」列表
+      ——它不写死数值，免得下一次扩栏时无谓变红）。**v13 起这个探针还会临时切到只读档**，
+      断言区组摘要原文「只读模式：仅注册只读工具（不含写入与命令）」出现、
+      「当前生效工具」块里列出的名字只含只读项（`read_file` / `list_dir` 在，
+      `run_command` / `write_file` / `edit_file` / `open_path` / `todo_write` 一个都不在），
+      然后切回 `confirm` 并断言摘要消失 —— 这一条是"设置页摘要不骗人"的运行时证据
+      （摘要与实际注册表是两套代码，只断言主进程注册表时摘要写错也没人发现）。
+      终端卡片下「免确认命令模式」列表
       （`agent.tools.terminal.allowPatterns`，06 §11.7）**只数容器**：列表行与输入框都在容器内部、
       不带同前缀的 `data-field`，所以这个数在空列表与非空列表下**恒为 1**；
       列表的空状态用的是普通文案元素（**不是** `data-empty`），否则本页会多出一块 `unexpected` 直接 FAIL。

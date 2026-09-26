@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 高级设置页（docs/08 §6，BetaV2 六页 IA）：网络（代理）、日志、安全（敏感工具确认）、
+ * 高级设置页（docs/08 §6，BetaV2 六页 IA）：网络（代理）、日志、安全（权限档位）、
  * 危险操作（打开目录 / 导出脱敏配置 / 重置）。
  *
  * 勿扰时段（`advanced.quietHours`）已迁往「通用」页（与提示条静默时段同区，spec §9），
@@ -8,8 +8,20 @@
  *
  * 「重置全部设置」必须二次确认：第一次点击只是把按钮就地变成「确认重置？」，
  * 再点一次才真的执行（原先走原生 `window.confirm`，在无边框窗口里观感割裂且不可测）。
+ *
+ * 安全区组的「敏感工具确认」复选框已在 v13 换成**三档权限**（只读 / 变更前确认 / 完全权限）：
+ * - 锚点从 `advanced.confirmSensitiveTools` 改为 `agent.permissionMode` ——
+ *   **旧锚点已随两档口径一起废弃**（档位字段才是这一行的语义；把旧锚点挂到说明文本上会让
+ *   探针以为旧开关还在，属于误导），改探针请一起改；
+ * - 写盘走**镜像规则**：`agent.permissionMode` 与老开关 `advanced.confirmSensitiveTools`
+ *   同时写（`auto` ⇒ 老开关 `false`，其余 ⇒ `true`）。只写一个会出现「界面选变更前确认、
+ *   实际生效 auto」这类错位（老开关优先级见 packages/shared/src/config/permission.ts）；
+ * - 控件用原生下拉（与同页「日志级别」同一套 SettingField 样式），选完即存 ——
+ *   对话窗 composer 的「完全权限」另有二次确认摩擦，设置页沿用原复选框的单击即存口径。
  */
 import { computed, ref } from 'vue'
+import type { PermissionMode } from '@aurora/shared'
+import { resolvePermissionMode } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
@@ -24,10 +36,47 @@ const confirmingReset = ref(false)
 
 const advanced = computed(() => settingsStore.settings?.advanced ?? null)
 
+/** 三档下拉的选项（顺序固定：由严到宽，避免「默认档排在最后」这类误读） */
+const PERMISSION_MODES: ReadonlyArray<{ value: PermissionMode; label: string }> = [
+  { value: 'readonly', label: '只读' },
+  { value: 'confirm', label: '变更前确认（默认）' },
+  { value: 'auto', label: '完全权限' },
+]
+
+/**
+ * 当前**生效**档位：走 `resolvePermissionMode`，老配置里只有 `confirmSensitiveTools: false`
+ * 的情况会被承接成 `auto`（否则下拉会显示成「变更前确认」，与主进程实际行为不符）。
+ * 配置未水合时按默认档 `confirm` 显示。
+ */
+const permissionMode = computed<PermissionMode>(() => {
+  const settings = settingsStore.settings
+  if (settings === null) return 'confirm'
+  return resolvePermissionMode(settings)
+})
+
 async function save(patch: Partial<NonNullable<typeof advanced.value>>): Promise<void> {
   const current = advanced.value
   if (!current) return
   const ok = await settingsStore.update({ advanced: { ...current, ...patch } })
+  if (!ok) error.value = settingsStore.error
+  else {
+    message.value = '已保存'
+    error.value = null
+  }
+}
+
+/**
+ * 保存权限档位：**镜像规则** —— 两个字段同时写。
+ * `settings:update` 只有顶层浅合并语义，因此 `agent` / `advanced` 两组都整组展开，
+ * 别把 `agent.tools` / `advanced.readonlyPrefixes` 这类兄弟键写丢。
+ */
+async function savePermissionMode(mode: PermissionMode): Promise<void> {
+  const settings = settingsStore.settings
+  if (settings === null) return
+  const ok = await settingsStore.update({
+    agent: { ...settings.agent, permissionMode: mode },
+    advanced: { ...settings.advanced, confirmSensitiveTools: mode !== 'auto' },
+  })
   if (!ok) error.value = settingsStore.error
   else {
     message.value = '已保存'
@@ -132,22 +181,30 @@ async function resetAll(): Promise<void> {
     <section class="section-card">
       <h2 class="section-title">安全</h2>
       <p class="section-desc">
-        移动 / 删除文件、命令执行等敏感工具（MCP 工具一律如此）执行前需要你确认（docs/06 §5）。
+        权限档位决定敏感工具（写文件 / 执行命令 / MCP 工具 / 改设置）要不要先问你（docs/06 §11.2）：
+        <strong>只读</strong> = 写文件 /
+        执行命令类工具不会注册给模型；<strong>变更前确认</strong>（默认）=
+        每次执行前弹确认卡，你点「允许一次」才执行；<strong>完全权限</strong> =
+        仅在项目根之内免确认，越界仍会询问（只写日志留痕）。AI 改不动这一项，防自我提权。
       </p>
 
+      <!--
+        三档权限（v13）：data-field 用档位字段名 `agent.permissionMode`。
+        两档时代的 `advanced.confirmSensitiveTools` 锚点已随口径一起废弃（见文件头注释）。
+      -->
       <SettingField
-        data-field="advanced.confirmSensitiveTools"
-        label="敏感工具确认"
-        hint="关闭后只写日志留痕、不拦截；每次调用即时判断，改完无需重启"
+        data-field="agent.permissionMode"
+        label="权限档位"
+        hint="每次调用即时判断，改完无需重启；选「完全权限」等于放宽闸门，请确认你真的不需要逐次确认"
       >
-        <label class="row tiny">
-          <input
-            type="checkbox"
-            :checked="advanced?.confirmSensitiveTools ?? true"
-            @change="save({ confirmSensitiveTools: ($event.target as HTMLInputElement).checked })"
-          />
-          <span>执行前需要确认（默认开启）</span>
-        </label>
+        <select
+          :value="permissionMode"
+          @change="savePermissionMode(($event.target as HTMLSelectElement).value as PermissionMode)"
+        >
+          <option v-for="item in PERMISSION_MODES" :key="item.value" :value="item.value">
+            {{ item.label }}
+          </option>
+        </select>
       </SettingField>
     </section>
 

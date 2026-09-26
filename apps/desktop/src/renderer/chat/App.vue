@@ -26,11 +26,16 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
   LlmProviderConfig,
+  PermissionMode,
   SensitiveToolRequest,
   SkillSummary,
   SttProviderConfig,
 } from '@aurora/shared'
-import { DEFAULT_REASONING_EFFORT, type ReasoningEffort } from '@aurora/shared/browser'
+import {
+  DEFAULT_REASONING_EFFORT,
+  resolvePermissionMode,
+  type ReasoningEffort,
+} from '@aurora/shared/browser'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import MessageList from '../shared/components/MessageList.vue'
@@ -634,23 +639,43 @@ watch(input, () => {
   void nextTick(autoGrow)
 })
 
-// ── 权限模式（`advanced.confirmSensitiveTools`，与设置页「智能与工具」同一份配置） ──
+// ── 权限档位（三档 v13：`agent.permissionMode` + 老开关 `advanced.confirmSensitiveTools`） ──
 
 /**
- * 是否「变更前确认」。配置还没水合时按 `true` 显示 —— 这是 Schema 的默认值，
- * 也是更安全的一侧（宁可先让用户看到「会确认」，也不默认显示成已放权）。
+ * 当前**生效**档位（含老开关承接的情况）：
+ * `readonly` 优先；否则 `advanced.confirmSensitiveTools === false` → `auto`；再否则 `confirm`。
+ *
+ * 刻意走 `resolvePermissionMode` 而不是直接读 `agent.permissionMode`：老配置里只有
+ * `confirmSensitiveTools: false`，直接读会显示成「变更前确认」，而实际生效的是 auto ——
+ * 界面显示的档位必须与主进程注册工具 / 弹确认卡时用的那一档一致。
+ * 配置还没水合时按 `confirm` 显示：这是 Schema 的默认档，也是更安全的一侧
+ * （宁可先让用户看到「会确认」，也不默认显示成已放权）。
  */
-const permissionConfirm = computed<boolean>(
-  () => settingsStore.settings?.advanced.confirmSensitiveTools ?? true,
-)
+const permissionMode = computed<PermissionMode>(() => {
+  const settings = settingsStore.settings
+  if (settings === null) return 'confirm'
+  return resolvePermissionMode(settings)
+})
 
 /**
- * 写入权限模式。这是**只有用户界面能走**的路径：`advanced.confirmSensitiveTools`
- * 在 `SETTINGS_READONLY_PREFIXES` 里，AI 的 `set_setting` 一律拒绝改它。
- * `advanced` 是顶层浅合并，patch 只需带这一个字段，`readonlyPrefixes` 等不会被清掉。
+ * 写入权限档位（**镜像规则**：两个字段同时写，避免两处 UI / 两条解析路径各说各话）。
+ *
+ * - `agent.permissionMode` 是 v13 的档位字段本身；
+ * - `advanced.confirmSensitiveTools` 是老开关，保留是因为老配置与其它消费方仍读它：
+ *   `auto` ⇒ `false`（它是 auto 的历史表达），`readonly` / `confirm` ⇒ `true`。
+ *   只写一个会出现最坏的一类错位：「界面选变更前确认、实际按 auto 生效」。
+ *
+ * 这是**只有用户界面能走**的路径：两个字段都在 `SETTINGS_READONLY_PREFIXES` 里，
+ * AI 的 `set_setting` 一律拒绝改它们（防自我提权）。`settings:update` 只有顶层浅合并语义，
+ * 因此 `agent` / `advanced` 两组都要整组展开，别把兄弟键（`tools` / `readonlyPrefixes` 等）写丢。
  */
-async function setPermission(confirm: boolean): Promise<void> {
-  const ok = await settingsStore.update({ advanced: { confirmSensitiveTools: confirm } })
+async function setPermission(mode: PermissionMode): Promise<void> {
+  const settings = settingsStore.settings
+  if (settings === null) return
+  const ok = await settingsStore.update({
+    agent: { ...settings.agent, permissionMode: mode },
+    advanced: { ...settings.advanced, confirmSensitiveTools: mode !== 'auto' },
+  })
   if (!ok) chatError.value = settingsStore.error
 }
 
@@ -1024,9 +1049,9 @@ async function markGuideDone(): Promise<void> {
             />
 
             <div class="composer-bar">
-              <!-- 权限模式（变更前确认 / 完全权限）：写 advanced.confirmSensitiveTools -->
+              <!-- 权限档位（只读 / 变更前确认 / 完全权限）：两档时代写 advanced.confirmSensitiveTools，v13 起镜像写两个字段 -->
               <ComposerPermissionSelect
-                :confirm="permissionConfirm"
+                :mode="permissionMode"
                 :open="openFlyout === 'permission'"
                 :disabled="settingsStore.settings === null"
                 @change="setPermission"

@@ -29,8 +29,12 @@
  */
 import { computed, ref } from 'vue'
 import { ChevronRight } from '../../shared/icons.js'
-import type { AgentToolsConfig, ComputerToolName } from '@aurora/shared/browser'
-import { COMPUTER_TOOL_NAMES, DEFAULT_AGENT_TOOLS } from '@aurora/shared/browser'
+import type { AgentToolsConfig, ComputerToolName, PermissionMode } from '@aurora/shared/browser'
+import {
+  COMPUTER_TOOL_NAMES,
+  DEFAULT_AGENT_TOOLS,
+  resolvePermissionMode,
+} from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
@@ -70,6 +74,7 @@ const tools = computed<AgentToolsConfig>(
 /**
  * 每个工具名的门控，与主进程 `registerComputerTools()` 的注册条件一一对应：
  * 总开关关 → 一个都不注册；否则看各自的子开关。
+ * v13 起还多一层**权限档位**：`readonly` 档下写入与命令类工具一律不注册（见 `activeToolNames`）。
  */
 const TOOL_GATES: Record<ComputerToolName, (t: AgentToolsConfig) => boolean> = {
   run_command: (t) => t.terminal.enabled,
@@ -83,19 +88,63 @@ const TOOL_GATES: Record<ComputerToolName, (t: AgentToolsConfig) => boolean> = {
   glob: (t) => t.search.enabled,
 }
 
-/** 当前配置下**会注册**的工具名，顺序照 `COMPUTER_TOOL_NAMES`（即注册顺序，便于比对） */
+/**
+ * 当前**生效**权限档位（三档，v13）：走 `resolvePermissionMode`，老开关
+ * `advanced.confirmSensitiveTools === false` 会在这里被承接成 `auto` ——
+ * 本页摘要必须按**生效档位**写，不能按 `agent.permissionMode` 的字面值写，
+ * 否则老配置下会出现「摘要说还能写、实际模型看不到写工具」这类错位。
+ */
+const permissionMode = computed<PermissionMode>(() => {
+  const settings = settingsStore.settings
+  return settings === null ? 'confirm' : resolvePermissionMode(settings)
+})
+
+/** 是否处于只读档 */
+const permissionReadonly = computed(() => permissionMode.value === 'readonly')
+
+/**
+ * 只读档下**仍会注册**的电脑操控工具（四个只读项）：
+ * `run_command`（执行命令）/ `write_file` / `edit_file`（写入）/ `open_path`（用系统程序打开）
+ * 在只读档一律不注册，因此本表是 `TOOL_GATES` 之外的第二层过滤。
+ */
+const READONLY_COMPUTER_TOOL_NAMES: readonly ComputerToolName[] = [
+  'read_file',
+  'list_dir',
+  'grep',
+  'glob',
+]
+
+/**
+ * 当前档位 + 配置下**会注册**的工具名，顺序照 `COMPUTER_TOOL_NAMES`（即注册顺序，便于比对）。
+ *
+ * 这里只覆盖 `COMPUTER_TOOL_NAMES` 里的 8 个电脑操控工具。只读档另有三类**不在本表**的名字
+ * 仍会注册（因此只读档的小结不能只看这个数组）：`todo_read`（写入口 `todo_write` 在只读档不注册）
+ * 由内核工具装配器注册、`use_skill` 由技能装配器注册、`set_setting` 由配置工具装配器注册，
+ * 外加按服务器动态注册的 MCP 工具与扩展工具五件套 —— 它们都不受 `agent.tools.enabled` 门控，
+ * 在模板「当前生效工具」的只读分支里逐个列出。
+ */
 const activeToolNames = computed<ComputerToolName[]>(() => {
   const current = tools.value
   if (!current.enabled) return []
-  return COMPUTER_TOOL_NAMES.filter((name) => TOOL_GATES[name](current))
+  return COMPUTER_TOOL_NAMES.filter(
+    (name) =>
+      TOOL_GATES[name](current) &&
+      (!permissionReadonly.value || READONLY_COMPUTER_TOOL_NAMES.includes(name)),
+  )
 })
 
-/** 区组头部摘要：收起时也能看出工具的启停状态 */
-const toolsSummary = computed(() =>
-  tools.value.enabled
+/**
+ * 区组头部摘要：收起时也能看出工具的启停状态。
+ *
+ * 只读档用的是 capture 探针断言的**原文**（一个字都别改）：这一档下「几个 / 共几个」没有意义
+ * —— 注册集合已经被权限档位整体改写，报数量反而会让人以为只是少了一部分。
+ */
+const toolsSummary = computed(() => {
+  if (permissionReadonly.value) return '只读模式：仅注册只读工具（不含写入与命令）'
+  return tools.value.enabled
     ? `${activeToolNames.value.length} / ${COMPUTER_TOOL_NAMES.length} 个工具生效`
-    : '已停用',
-)
+    : '已停用'
+})
 
 /**
  * 保存工具配置：失败时的回执口径全页统一（Toast 展示 `settingsStore.error`）。
@@ -582,7 +631,16 @@ async function openWorkspace(): Promise<void> {
           <!-- 当前生效工具 -->
           <div class="sub">
             <h3 class="sub-title">当前生效工具</h3>
-            <p class="section-desc">
+            <!--
+              只读档（v13）：这里是探针断言的原文，一个字都别改。
+              下面列出的名字必须与主进程在只读档**实际注册**的集合一致 ——
+              写入 / 命令 / 打开 / 待办写入都不在其中，只读项与非门控工具照常在。
+            -->
+            <p v-if="permissionReadonly" class="section-desc">
+              只读模式：仅注册只读工具（不含写入与命令）—— 模型下一次请求的工具表里只有下面这
+              {{ activeToolNames.length }} 个电脑操控工具。
+            </p>
+            <p v-else class="section-desc">
               按当前配置实时计算：模型下一次请求的工具表就是这些（共
               {{ activeToolNames.length }} / {{ COMPUTER_TOOL_NAMES.length }} 个）。
             </p>
@@ -590,8 +648,25 @@ async function openWorkspace(): Promise<void> {
             <div v-if="activeToolNames.length > 0" class="row wrap">
               <code v-for="name in activeToolNames" :key="name" class="mono">{{ name }}</code>
             </div>
+            <p v-else-if="permissionReadonly" class="tiny muted">
+              总开关已关闭：只读档下 {{ COMPUTER_TOOL_NAMES.length }} 个电脑操控工具一个都不会注册。
+            </p>
             <p v-else class="tiny muted">
               总开关已关闭：{{ COMPUTER_TOOL_NAMES.length }} 个电脑操控工具一个都不会注册。
+            </p>
+
+            <!--
+              只读档的补集：这些名字不在 `COMPUTER_TOOL_NAMES` 里，因此上面的门控算不到它们，
+              但它们在只读档**照常注册**（不受总开关与权限档位门控）—— 摘要少了这一段，
+              就成了「说只读、又没说还剩什么」的半句口径。
+            -->
+            <p v-if="permissionReadonly" class="section-desc">
+              另外仍然注册：<code class="mono">todo_read</code>、<code class="mono">use_skill</code
+              >、<code class="mono">set_setting</code>，以及 MCP 与扩展工具（<code class="mono"
+                >web_fetch</code
+              >、<code class="mono">clipboard_read</code>、<code class="mono">clipboard_write</code
+              >、<code class="mono">notify_user</code>、<code class="mono">generate_image</code>）——
+              它们不受电脑操控总开关与权限档位门控，其中敏感的仍逐次确认。
             </p>
           </div>
         </div>

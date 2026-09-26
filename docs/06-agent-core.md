@@ -378,7 +378,7 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 - **配置字段（不改名）**：`agent.tools.enabled`（总开关）、`agent.tools.workspaceDir`（命令的默认 cwd，
   见 §11.1）、`agent.tools.terminal.{enabled,timeoutMs,maxOutputChars,allowPatterns}`、
   `agent.tools.files.{enabled,maxReadBytes}`、`agent.tools.search.{enabled,maxResults}`、
-  `agent.tools.open.enabled`。
+  `agent.tools.open.enabled`；**`agent.permissionMode`（v13）是工具面的总闸门**，见 §11.2。
   - **开关分派（`registerComputerTools.sync()` 是唯一落地点）**：`agent.tools.enabled` 是**总开关**
     （为 `false` 时 8 个工具一个都不注册）；`terminal.enabled` → `run_command`；
     `files.enabled` → `read_file` / `write_file` / `edit_file` / `list_dir`；
@@ -401,7 +401,10 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 - **总开关**：`agent.tools.enabled = false` 时 8 个工具**完全不注册**——模型在工具清单里看不到
   它们，系统提示词里也没有相应说明，因而不可能产生确认卡片或任何本机副作用。
 - **`workspaceDir` 只是默认工作目录，不是沙箱**：它只作为 `run_command` 的缺省 `cwd`
-  （为空串时回落用户主目录），工具**不限制**模型访问该目录之外的位置。越界**不静默**：
+  （为空串时回落用户主目录），工具**不限制**模型访问该目录之外的位置
+  （⚠️ v13 起另有一层真正的边界：**配置了当前项目**时文件类工具与 `run_command.cwd` 都受
+  项目根 realpath 前缀校验，见 §11.2 —— 那层边界挂在"项目"上，与 `workspaceDir` 无关）。
+  越界**不静默**：
   工具结果里回带解析后的绝对路径（命令的实际 `cwd`、文件的实际路径），
   确认卡片展示的则是模型的**原始参数**（要解析出绝对路径就得先执行，因此卡片里看到的是
   相对路径原文；解析结果在工具执行结果里回带）。
@@ -427,14 +430,44 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 - **不做命令黑名单**：黑名单必然漏（`cmd /c`、编码 / 转义、`$()`、别名、脚本文件都能绕过），
   安全边界由「**逐次确认 + 输出上限 + 总开关**」三道构成，而不是字符串匹配。
 
-### 11.2 `advanced.confirmSensitiveTools = false` 时的语义
+### 11.2 三档权限：`agent.permissionMode`（v13）
 
-沿用既有行为（§5 / §9.1）：**直接放行**，不推送确认卡片，内核仍按 `sensitivity` 写日志留痕。
-此时代码路径与用户自己在 PowerShell 里敲同样的命令**能力相当**（甚至略宽：命令以
-`-NoProfile -NonInteractive -ExecutionPolicy Bypass` 启动，比默认执行策略更宽松，但同样**不是**管理员提权）
-——`run_command` / `write_file` / `edit_file` / `open_path` 会在无人确认的情况下执行，
-包括删除文件、改注册表、装软件这类不可逆操作。命中 §11.7 免确认模式的命令也是同一种
-「少一次打扰」的语义，**不等于**它更安全。
+`agent.permissionMode ∈ {readonly, confirm, auto}`（默认 `confirm`）是**工具面**的总闸门；
+`advanced.confirmSensitiveTools` 这个老开关保留，两者由 `resolvePermissionMode()`
+（`packages/shared/src/config/permission.ts`，主进程与渲染层共用同一份）合成**生效档位**：
+
+| 生效档位 | 何时出现 | 注册哪些工具 | 确认行为 |
+|---|---|---|---|
+| `readonly` | `agent.permissionMode === 'readonly'`（**只读优先**，老开关在这档无效） | 只注册只读工具：`read_file` / `list_dir` / `grep` / `glob` / `todo_read` / `use_skill` / `set_setting` / MCP 与扩展工具。**不注册** `run_command` / `write_file` / `edit_file` / `open_path` / `todo_write` / `todo_read` 以外的待办写侧 | 敏感工具本就不在清单里；若仍被调用（例如刚好在切换档位），`createConfirmTool` 直接**拒绝**并写 warn（双保险） |
+| `confirm` | 默认档；或显式选了 `confirm` 且老开关为 `true` | 与三档之前完全一致 | 与三档之前完全一致：逐次弹卡；命中 `allowPatterns` 的 `run_command` 免确认 |
+| `auto` | 显式选了 `auto`；或 `advanced.confirmSensitiveTools === false`（老开关的语义由它承接） | 与三档之前完全一致 | **有项目时**：目标路径落在**项目根之内** → 免确认（写 `info` 审计日志）；根外 → 照常弹卡。**无项目时**：没有"根内"的判据，按老开关的语义**完全不弹卡**（否则老用户升级后会突然被逐次询问，等于静默改回了旧行为） |
+
+- **只读档的语义是"根本不在清单里"**，不是"注册后拒绝"：模型看不到这些工具，也就不会先承诺再被拒
+  （`§11` 的既有口径）。`todo_write` 虽然 `sensitivity = 'safe'`，但它会往 `<userData>/todos/<sid>.json`
+  落盘，因此在只读档下也要摘掉 —— 否则"只读 = 无系统副作用"这句话就是假的。`todo_read` 保留。
+- **确认结果三个值**：拒绝 / 放行一次 / **本会话内同名工具都放行**（卡片第三颗按钮，
+  `data-action="chat.confirm-always"`）。会话级授权表在**内核**（`KernelAgentHost`，进程内 `Map`，
+  不落盘、不给渲染层也不给 AI），随会话存在；`'always'` 只由用户点按钮产生，
+  超时 / 勿扰 / 推送失败一律是拒绝，**拒绝永远不会被升级成会话级授权**。
+- **`auto` 档的保守方向**（`reasonWithinRoot`）：取不到目标路径的工具（除 `run_command` 外）一律按越界处理；
+  `run_command` 缺省 `cwd` 视为根内（它会回落到项目根），但**命令串里出现绝对路径时一律回到确认卡片** ——
+  我们不做 shell 解析，猜错一次就是静默越权，多问一次只是打扰。
+- **项目根边界（两层，分工明确）**：
+  1. `auto` 档的"要不要问用户"用字符串级判定（`isWithinRoot`，含 `..` 段一律按越界）；
+  2. "能不能真碰"由主进程 `file-port.ts` 的 `resolveWithin` 用 **realpath** 判定：
+     对已存在的最近父目录做 `realpath`（新文件场景目标可能不存在）后比较前缀，
+     越界抛 `E_PATH_OUTSIDE_WORKSPACE`，工具层转成 `isError` 结果。
+     这条校验只在**配置了当前项目**时启用（`workspaceRoot()` 返回 undefined = 行为与 v13 之前一字不差）。
+     六个文件类入口（`readText` / `readWholeText` / `writeText` / `list` / `findFiles` / `searchText`）
+     与 `run_command.cwd` 都走它；**用户已在确认卡片上放行**的那一次调用由内核置 `approvedByUser`，
+     工具层据此透传 `allowOutside: true` 放行 —— 于是"越界必须被确认后才可写"是可测的。
+- **`advanced.confirmSensitiveTools = false` 时的语义**（沿用既有行为，§5 / §9.1）：由 **`auto` 档**承接 ——
+  有项目时根内免确认、根外仍询问；无项目时直接放行不推卡片（与从前一致），内核仍按 `sensitivity`
+  写日志留痕。此时代码路径与用户自己在 PowerShell 里敲同样的命令**能力相当**（甚至略宽：命令以
+  `-NoProfile -NonInteractive -ExecutionPolicy Bypass` 启动，比默认执行策略更宽松，但同样**不是**管理员提权）
+  ——`run_command` / `write_file` / `edit_file` / `open_path` 可能在无人确认的情况下执行，
+  包括删除文件、改注册表、装软件这类不可逆操作。命中 §11.7 免确认模式的命令也是同一种
+  「少一次打扰」的语义，**不等于**它更安全。
 因此该开关的定位是「减少打扰」，**不是安全加固**；需要安全边界时保持默认 `true`。
 
 ### 11.3 非目标（v0.7.0 明确不做）
