@@ -9,7 +9,7 @@
  *
  * 纯函数 `resolveSkillsUserDir` 单独导出，便于单测与「设置页展示实际生效路径」。
  */
-import { watch, type FSWatcher } from 'node:fs'
+import { mkdirSync, watch, type FSWatcher } from 'node:fs'
 import { join } from 'node:path'
 import { SkillsRegistry } from '@aurora/agent-core'
 import type { Logger, Settings, SkillSummary, SkillsStatus } from '@aurora/shared'
@@ -159,6 +159,9 @@ export class SkillsService {
     this.watcher?.close()
     this.watcher = undefined
     try {
+      // fs.watch 对不存在的目录直接抛 ENOENT；用户技能目录在首次创建技能前并不存在
+      //（create-skill / 设置页都会往里写）——先建出来，顺带让"目录在哪"肉眼可查。
+      mkdirSync(this.currentUserDir, { recursive: true })
       this.watcher = watch(this.currentUserDir, { recursive: true }, () => this.scheduleRescan())
     } catch (error) {
       this.options.logger.warn('技能目录监听失败，新技能需手动重扫或改设置触发', {
