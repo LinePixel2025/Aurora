@@ -481,7 +481,8 @@ export type ComputerToolName = (typeof COMPUTER_TOOL_NAMES)[number]
 /**
  * 电脑操控工具配置（docs/08 §1、docs/06 §11）。
  *
- * `workspaceDir` 只是工具的**默认**工作目录（空串 = 用户主目录），**不是沙箱**：
+ * `workspaceDir` 只是工具的**默认**工作目录（生效值走 docs/06 §5.1 三级回落：
+ * 项目根 > 本字段 > 用户主目录，本字段空串时按后两级），**不是沙箱**：
  * 模型仍可显式传入其它路径，安全靠"逐次确认 + 输出上限 + 总开关"而不是路径限制。
  */
 export const AgentToolsSchema = z.object({

@@ -35,7 +35,7 @@ export interface SearchToolOptions {
   files: FilePort
   /** `agent.tools.search.maxResults`（钳制到 1..MAX_SEARCH_MAX_RESULTS） */
   maxResults: number
-  /** 搜索根缺省值（装配层注入：`agent.tools.workspaceDir`，空串时回落用户主目录） */
+  /** 搜索根缺省值（装配层注入**生效工作目录**：docs/06 §5.1 三级回落 项目根 > workspaceDir > 主目录） */
   defaultRoot: string
 }
 

@@ -993,7 +993,10 @@ async function openPath(deps: DesktopDeps, request: OpenPathRequest): Promise<Re
       target = settings.modes.classroom.watchDir
       break
     case 'workspace': {
-      // 电脑操控工具的默认工作目录（docs/06 §11）：空串 = 用户主目录
+      // 设置页「打开工作目录」按钮：按**字面** `workspaceDir` 解析（空串 = 用户主目录）。
+      // ⚠️ 它是展示入口、不是工具执行链（docs/06 §5.1 三级回落）的消费方——
+      // "配了项目 + 工作目录留空"时与命令实际落地目录分叉，该分叉已在 AGENTS.md 披露，
+      // 接三级回落属「范围之外」的独立决定，别在这里顺手改。
       const configured = settings.agent.tools.workspaceDir.trim()
       target = configured === '' ? app.getPath('home') : configured
       break
