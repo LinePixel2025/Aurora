@@ -9,7 +9,12 @@
 import { dirname, join } from 'node:path'
 import { promises as nodeFs } from 'node:fs'
 import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
-import { resolveProject, type SessionStore, type SnapshotPort } from '@aurora/agent-core'
+import {
+  resolveProject,
+  type JobStore,
+  type SessionStore,
+  type SnapshotPort,
+} from '@aurora/agent-core'
 import {
   IPC,
   createDefaultSettings,
@@ -39,6 +44,8 @@ import {
   type OpenPathRequest,
   type ProjectStatus,
   type SnapshotListRequest,
+  type AgentJob,
+  type AgentJobStatus,
   type SnapshotRef,
   type SnapshotRestoreRequest,
   type Result,
@@ -109,6 +116,8 @@ export interface DesktopDeps {
    * 未注入时三条通道返回 `E_INVALID_STATE`（而不是静默成功）—— 界面据此如实报错。
    */
   snapshots?: SnapshotPort
+  /** Job 存储（chat:jobs / resumeJob / cancelJob，docs/06 §4.1，v15） */
+  jobs?: JobStore
   /** ClassIsland 桥接（classisland:*，docs/05 §3.4 v2/v3） */
   classisland: ClassIslandController
   /** MCP 状态（mcp:status，docs/06 §7） */
@@ -177,6 +186,7 @@ function normalizeNotifyRequest(input: unknown): ClassIslandNotifyRequest {
 export function registerIpc(deps: DesktopDeps): () => void {
   const handlers: Array<[string, (...args: never[]) => unknown]> = []
   const snapshots = deps.snapshots
+  const jobs = deps.jobs
 
   const handle = <T>(
     channel: string,
@@ -275,6 +285,23 @@ export function registerIpc(deps: DesktopDeps): () => void {
           (error: unknown) => err('E_IO', String(error)),
         )
       : err('E_INVALID_STATE', '快照端口尚未装配'),
+  )
+
+  // ───────────────────────── jobs（v15，docs/06 §4.1）─────────────────────────
+
+  handle<AgentJob[]>(
+    IPC.chat.jobs,
+    (request: { sessionId?: string; status?: AgentJobStatus; limit?: number } | undefined) =>
+      jobs === undefined
+        ? err('E_INVALID_STATE', '任务存储尚未装配')
+        : jobs.list(request ?? {}).then(ok, (error: unknown) => err('E_IO', String(error))),
+  )
+  handle<{ requestId: string }>(
+    IPC.chat.resumeJob,
+    (request: { sessionId: string; jobId: string }) => resumeJob(deps, jobs, request),
+  )
+  handle<boolean>(IPC.chat.cancelJob, (request: { sessionId: string; jobId: string }) =>
+    cancelJob(deps, jobs, request),
   )
 
   // ───────────────────────── settings ─────────────────────────
@@ -895,6 +922,61 @@ export async function restoreSnapshot(
   })
   // 回滚前那一份（`capture` 没留底时退回被回滚的那一份，保证调用方拿到一个 ref）
   return ok(before.snapshot ?? target)
+}
+
+/**
+ * 续跑一条 `paused` 的 job（v15，docs/06 §4.1）。
+ *
+ * 这里**不自己跑循环**：把 `resumeJobId` 交给与「发送」同一条 `agent.send()` 通路，
+ * 于是 `E_BUSY` / `E_NO_MODEL` / 事件顺序全都和用户在输入框里发一句话完全一致 ——
+ * 另开一条"续跑专用"通路迟早会和主通路漂移。
+ */
+async function resumeJob(
+  deps: DesktopDeps,
+  jobs: JobStore | undefined,
+  request: { sessionId: string; jobId: string },
+): Promise<Result<{ requestId: string }>> {
+  if (jobs === undefined) return err('E_INVALID_STATE', '任务存储尚未装配')
+  const job = await jobs.get(request.jobId)
+  if (job === undefined) return err('E_NOT_FOUND', `未找到任务：${request.jobId}`)
+  if (job.sessionId !== request.sessionId) {
+    return err('E_INVALID_ARGUMENT', '该任务不属于这个会话')
+  }
+  if (job.status !== 'paused') {
+    return err('E_JOB_STATE', `任务当前状态是 ${job.status}，只有「已暂停」的任务可以继续`)
+  }
+  // 续跑不再重复落盘那条用户消息（job.text 就是原文；内核按 resumeJobId 走 appendUserMessage=false）
+  const result = await deps.agent.send({
+    sessionId: request.sessionId,
+    text: job.text,
+    origin: 'chat',
+    resumeJobId: request.jobId,
+  })
+  return ok(result)
+}
+
+/** 取消一条未结束的 job：先 abort 正在跑的那条请求，再让 job 落 `aborted` */
+async function cancelJob(
+  deps: DesktopDeps,
+  jobs: JobStore | undefined,
+  request: { sessionId: string; jobId: string },
+): Promise<Result<boolean>> {
+  if (jobs === undefined) return err('E_INVALID_STATE', '任务存储尚未装配')
+  const job = await jobs.get(request.jobId)
+  if (job === undefined) return err('E_NOT_FOUND', `未找到任务：${request.jobId}`)
+  if (job.status !== 'running' && job.status !== 'paused' && job.status !== 'queued') {
+    return err('E_JOB_STATE', `任务已经结束（${job.status}），无需取消`)
+  }
+  if (job.status === 'running' && job.requestId !== undefined) {
+    deps.agent.abort(job.requestId)
+  }
+  // 渲染层几毫秒后就会重新拉列表，所以这里等落盘完成再返回（避免"点了取消却还显示进行中"）
+  await jobs.update(job.id, {
+    status: 'aborted',
+    pendingReason: 'aborted',
+    updatedAt: new Date().toISOString(),
+  })
+  return ok(true)
 }
 
 async function openPath(deps: DesktopDeps, request: OpenPathRequest): Promise<Result<string>> {

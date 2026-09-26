@@ -48,6 +48,7 @@ import ComposerContextBar from './components/ComposerContextBar.vue'
 import ComposerPermissionSelect from './components/ComposerPermissionSelect.vue'
 import SlashCommandMenu from './components/SlashCommandMenu.vue'
 import ContextPanel from './components/ContextPanel.vue'
+import JobPanel from './components/JobPanel.vue'
 import SessionNav from './components/SessionNav.vue'
 import SubagentPage from './components/SubagentPage.vue'
 import { useChat } from '../shared/composables/useChat.js'
@@ -56,7 +57,7 @@ import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
 import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.js'
-import { ArrowUp, Mic, PanelLeft, Trash2, X } from '../shared/icons.js'
+import { ArrowUp, ListChecks, Mic, PanelLeft, Trash2, X } from '../shared/icons.js'
 
 const chat = useChat('chat', 'main')
 const {
@@ -69,11 +70,16 @@ const {
   reasoningTargetId,
   subagentRuns,
   usage,
+  jobs,
+  pendingNotice,
   send: sendMessage,
   abort,
   clear,
   hydrate,
   loadSessions,
+  refreshJobs,
+  resumeJob,
+  cancelJob,
   switchSession: rawSwitchSession,
   newSession,
   setArchived,
@@ -89,6 +95,15 @@ const input = ref('')
 const navOpen = ref(true)
 /** 右栏显隐（同上；默认展开，1120px 宽下三栏并存） */
 const contextOpen = ref(true)
+/**
+ * 「任务」面板显隐（左栏固定项里的入口按钮切换，2026-09 新增，docs/06 §4.1）。
+ *
+ * 默认展开：长任务被暂停时用户必须**不用先点任何东西**就能看见「继续」——
+ * 面板收起后 `chat.jobs` 整块不渲染（入口按钮自带角标，收起了也看得出有几条任务）。
+ */
+const jobsOpen = ref(true)
+/** 是否还有任务在跑（左栏入口角标用 running 色，与「子代理」角标同一口径） */
+const jobsRunning = computed(() => jobs.value.some((job) => job.status === 'running'))
 /**
  * 主区内容（2026-09 新增，docs/07 §2.4）：对话流 / 子代理页面。
  *
@@ -176,6 +191,8 @@ onMounted(() => {
   document.addEventListener('keydown', onDocumentEscape)
   // 水合当前会话（main）→ 会话列表：左栏立刻有内容
   void hydrate().then(() => loadSessions())
+  // 任务（Job）列表与消息同样在挂载时水合：重启后暂停的长任务必须立刻可见（docs/06 §4.1）
+  void refreshJobs()
   // 斜杠命令的 Skill 候选（`/` 浮层的技能分组）：失败只是没有技能项，不影响输入
   void window.aurora.skills.list().then((result) => {
     if (!result.ok) return
@@ -236,6 +253,22 @@ async function startNewSession(): Promise<void> {
 async function selectSession(id: string): Promise<void> {
   view.value = 'chat'
   await switchSession(id)
+}
+
+// ───────────────────────── 任务（Job）：续跑 / 取消（docs/06 §4.1） ─────────────────────────
+
+/**
+ * 「任务」面板的两个动作：一律转发给 `useChat`（IPC 调用 + 重拉列表都在那里）。
+ *
+ * 组件层刻意**不做乐观改写**（点了就先把状态改成 running）：任务状态由主进程说了算，
+ * 本地先改会让「点了继续但其实没跑起来」看不出来 —— 与归档 / 取消归档同一口径。
+ */
+function onResumeJob(id: string): void {
+  void resumeJob(id)
+}
+
+function onCancelJob(id: string): void {
+  void cancelJob(id)
 }
 
 // ────────────── 头部的两个 provider 控件：模型 / 思考等级（docs/06 §3） ──────────────
@@ -896,6 +929,30 @@ async function markGuideDone(): Promise<void> {
         @toggle-right-panel="contextOpen = !contextOpen"
         @open-settings="windowStore.show('settings')"
       />
+
+      <!--
+        左栏固定项：任务面板开关（2026-09 新增，docs/06 §4.1）。
+        它固定在左栏底部、不随会话列表滚动；角标显示本会话的任务条数，
+        有在跑的用 running 色（与「子代理」角标同一套观感）。
+        注意：`chat.jobs-entry` 挂在这个按钮上，面板容器上的锚点是 `chat.jobs`（两者不同元素）。
+      -->
+      <div class="nav-jobs">
+        <button
+          type="button"
+          class="jobs-entry hover-fill press"
+          data-field="chat.jobs-entry"
+          :class="{ active: jobsOpen }"
+          :aria-expanded="jobsOpen"
+          :title="jobsOpen ? '收起任务面板' : '展开任务面板'"
+          @click="jobsOpen = !jobsOpen"
+        >
+          <ListChecks class="icon" :size="14" :stroke-width="1.6" aria-hidden="true" />
+          <span class="jobs-label">任务</span>
+          <span v-if="jobs.length > 0" class="jobs-count tiny" :class="{ running: jobsRunning }">{{
+            jobs.length
+          }}</span>
+        </button>
+      </div>
     </aside>
 
     <!-- ── 主区 ── -->
@@ -1125,6 +1182,12 @@ async function markGuideDone(): Promise<void> {
           </div>
         </div>
 
+        <!--
+          长任务暂停提示（`done` 的 pendingReason，docs/06 §4.1）：挂在 composer 里而不是
+          消息滚动区里 —— 滚动区的浮层会被自动滚底推走，而这条恰恰是「要你点继续」。
+          下一次发送 / 清空 / 切会话时由 useChat 复位。
+        -->
+        <AppToast v-if="pendingNotice" tone="warn">{{ pendingNotice }}</AppToast>
         <AppToast v-if="chatError" tone="error">{{ chatError }}</AppToast>
       </footer>
       <template v-else>
@@ -1140,8 +1203,16 @@ async function markGuideDone(): Promise<void> {
       </template>
     </main>
 
-    <!-- ── 右栏：模式感知上下文 + 任务清单 ── -->
+    <!-- ── 右栏：任务面板 + 模式感知上下文 + 任务清单 ── -->
     <aside class="context" :class="{ collapsed: !contextOpen }">
+      <!--
+        「任务（Job）」面板（2026-09 新增，docs/06 §4.1）：停在右栏顶部、上下文栏之上 ——
+        长任务被暂停是**要用户动手**的状态，位置比上下文信息更靠前。
+        `data-field="chat.jobs"` 挂在容器上，面板自身另有 `chat.job-panel`（同一元素只挂一个锚点）。
+      -->
+      <div v-if="jobsOpen" class="jobs-host" data-field="chat.jobs">
+        <JobPanel :jobs="jobs" @resume="onResumeJob" @cancel="onCancelJob" />
+      </div>
       <ContextPanel :todos="currentTodos" />
     </aside>
   </div>
@@ -1176,12 +1247,38 @@ async function markGuideDone(): Promise<void> {
   width: 240px;
   background: var(--fill-1);
   border-right: 1px solid var(--border-subtle);
+  /**
+   * 两行网格：SessionNav 占满剩余高度，任务入口是固定在左栏底部的固定项
+   * （不参与会话列表的滚动）。用网格而不是让 SessionNav 自己 flex 的原因：
+   * 它的根 `.nav-inner` 写死 `height: 100%`，只有在行高确定时才能被正确填满。
+   * 宽度不受影响 —— 两行的内容都固定 240px，三栏几何与折叠过渡口径不变。
+   */
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .context {
   width: 264px;
   background: var(--fill-1);
   border-left: 1px solid var(--border-subtle);
+  /**
+   * 两行网格：任务面板（按内容高度，超高时面板内部自己滚）+ 上下文栏（占满剩余高度）。
+   * 行号在下面两条规则里显式指定：任务面板收起（v-if）时上下文栏仍落在 `1fr` 那一行，
+   * 不会被 `auto` 行压扁 —— 百分比高度在 auto 行上的解析是不可靠的。
+   */
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+/* 任务面板容器（右栏第一行）：宽度跟着栏走（264px），高度由面板内容决定 */
+.jobs-host {
+  grid-row: 1;
+  min-width: 0;
+}
+
+/* ContextPanel 的根（`.ctx-inner`）恒在第二行：收起任务面板时它独占整列 */
+.context > .ctx-inner {
+  grid-row: 2;
 }
 
 .nav.collapsed,
@@ -1189,6 +1286,64 @@ async function markGuideDone(): Promise<void> {
   width: 0;
   opacity: 0;
   border-color: transparent;
+}
+
+/* ── 左栏固定项：任务面板开关（2026-09 新增，docs/06 §4.1） ── */
+
+/* 与 SessionNav 的 12px 内边距对齐；固定项自带底部留白，不参与列表滚动 */
+.nav-jobs {
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+/* 观感照 SessionNav 的 `.quick-item`（本组件自己的 scoped 样式，不跨组件借用类名） */
+.jobs-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 6px var(--space-2) 6px var(--space-3);
+  border-radius: var(--radius-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+  text-align: left;
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.jobs-entry.active {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+.jobs-entry .icon {
+  flex: 0 0 auto;
+  stroke: currentColor;
+}
+
+.jobs-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 任务数角标：有在跑的用 running 色（与左栏「子代理」角标同一套观感） */
+.jobs-count {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--fill-3);
+  color: var(--text-muted);
+  text-align: center;
+  font-variant-numeric: var(--num-tabular);
+}
+
+.jobs-count.running {
+  background: color-mix(in srgb, var(--aurora-blue) 22%, transparent);
+  color: var(--accent-text);
 }
 
 /* ── 主区：头部（拖动）/ 消息滚动区 / composer ── */

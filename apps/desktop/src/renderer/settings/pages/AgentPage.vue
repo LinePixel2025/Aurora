@@ -236,6 +236,49 @@ async function setSnapshotsEnabled(enabled: boolean): Promise<void> {
 }
 
 /**
+ * Agent 循环配置（`agent.loop`，v15，docs/06 §4.1）。
+ *
+ * 第三个**不在** `agent.tools` 下的配置：轮次 / token 预算 / 自动续轮描述的是
+ * 「一次请求怎么跑完」，与「注册哪些工具」无关，因此同样不跟总开关门控，
+ * 保存也走独立的 `saveLoop()`。
+ *
+ * 配置未水合时回落到 Schema 默认值（`DEFAULT_TOOLCHAIN_CONFIG` 与 `defaults.ts` 是同一份对象，
+ * 见 `snapshots` 的同一处理）：只是让控件有初值，保存时仍会再确认配置已就绪。
+ */
+const loop = computed<AgentSettings['loop']>(
+  () => settingsStore.settings?.agent.loop ?? DEFAULT_TOOLCHAIN_CONFIG.agent.loop,
+)
+
+/**
+ * 保存循环配置：与工具区组同一套回执口径（失败时 Toast 展示 `settingsStore.error`）。
+ *
+ * `settings:update` 只有顶层浅合并 —— `agent` 整棵都要带上（只传 `{ loop }` 会把
+ * `tools` / `permissionMode` / `snapshots` 整块替换掉），patch 里带完整的 `loop` 子树
+ * （否则同级的另外两个字段会被一并丢掉）。
+ */
+async function saveLoop(patch: Partial<AgentSettings['loop']>): Promise<boolean> {
+  const current = settingsStore.settings?.agent
+  // 未加载完就写等于用兜底默认值把已保存的配置整棵覆盖掉，宁可先不写（与 save 同口径）
+  if (!current) return false
+  const ok = await settingsStore.update({
+    agent: { ...current, loop: { ...current.loop, ...patch } },
+  })
+  if (!ok) {
+    if (settingsStore.error) showToast('error', settingsStore.error)
+  } else {
+    showToast('ok', '已保存')
+  }
+  return ok
+}
+
+/**
+ * `loop.maxTotalTokens` 的取值上限：Schema 里**只有下限**（≥ 0）、没有上限，
+ * 这里按 JS 安全整数收口 —— 拦的是 `Infinity` / `1e30` 这类会被原样存进配置、
+ * 之后所有预算比较都恒真的脏值。
+ */
+const MAX_LOOP_TOKENS = Number.MAX_SAFE_INTEGER
+
+/**
  * `totalBudgetBytes` 的取值上限：Schema 里**只有下限**（≥ 1 MiB）、没有上限，
  * 这里按 JS 安全整数收口 —— 拦的是 `Infinity` / `1e30` 这类会被 `Math.round` 原样带下去、
  * 存进配置后所有容量比较都恒真的脏值。
@@ -852,6 +895,78 @@ async function openWorkspace(): Promise<void> {
               >、<code class="mono">notify_user</code>、<code class="mono">generate_image</code>）——
               它们不受电脑操控总开关与权限档位门控，其中敏感的仍逐次确认。
             </p>
+          </div>
+
+          <!--
+            Agent 循环（v15，docs/06 §4.1）：与「文件备份」同一处境的非 `agent.tools` 配置 ——
+            它管的是「一次请求怎么停下来」，不是「注册哪些工具」，所以同样不跟总开关门控。
+            放在本组最后：前面都是具体工具的能力开关，这里是循环本身的刹车与油门。
+          -->
+          <div class="sub">
+            <h3 class="sub-title">Agent 循环</h3>
+            <p class="section-desc">
+              一次请求里「模型思考 → 调用工具 → 再思考」的循环上限（docs/06 §4.1）。
+            </p>
+            <p class="section-desc">
+              触顶时任务<strong>不会静默结束</strong>：它会停成「已暂停」，主界面右栏的「任务」面板给出原因与
+              「继续」按钮，可以从停下的那一轮接着往下跑。
+            </p>
+
+            <SettingField
+              data-field="agent.loop.maxRounds"
+              label="轮次上限"
+              hint="1 ～ 64；一次请求最多几轮工具调用，用完即暂停等续跑（默认 8）"
+            >
+              <input
+                class="input input-num"
+                type="number"
+                min="1"
+                max="64"
+                step="1"
+                :value="loop.maxRounds"
+                @change="saveLoop({ maxRounds: clampNumber($event, 1, 64, loop.maxRounds) })"
+              />
+            </SettingField>
+
+            <SettingField
+              data-field="agent.loop.maxTotalTokens"
+              label="token 预算"
+              hint="0 = 不限；本请求累计消耗达到预算即暂停（默认 0）"
+            >
+              <input
+                class="input input-num"
+                type="number"
+                min="0"
+                :max="MAX_LOOP_TOKENS"
+                step="1000"
+                :value="loop.maxTotalTokens"
+                @change="
+                  saveLoop({
+                    maxTotalTokens: clampNumber($event, 0, MAX_LOOP_TOKENS, loop.maxTotalTokens),
+                  })
+                "
+              />
+            </SettingField>
+
+            <SettingField
+              data-field="agent.loop.autoContinueRounds"
+              label="自动续轮"
+              hint="0 ～ 8；轮次用完后允许自动再续几轮，0 = 不自动续、直接暂停等用户点「继续」（默认 2）"
+            >
+              <input
+                class="input input-num"
+                type="number"
+                min="0"
+                max="8"
+                step="1"
+                :value="loop.autoContinueRounds"
+                @change="
+                  saveLoop({
+                    autoContinueRounds: clampNumber($event, 0, 8, loop.autoContinueRounds),
+                  })
+                "
+              />
+            </SettingField>
           </div>
         </div>
       </Transition>

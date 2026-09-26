@@ -60,6 +60,20 @@ export const RUN_COMMAND_MARKER = 'AURORA_RUN_CMD'
 export const RUN_COMMAND_ECHO_PREFIX = 'STUB_RUN_CMD_RESULT:'
 
 /**
+ * Job（任务）链路的自测标记（docs/06 §4.1，v15）：用户消息含它时，桩服务进入
+ * "**一直要工具**直到某个轮次再收尾"的分流。
+ *
+ * 为什么要这样一个分流：验证「轮次用尽 → job 暂停 → 续跑跑完」需要
+ * ①第一次请求**必然**把轮次额度用光（不能靠模型自觉），
+ * ②续跑那一次**必须能收敛**（否则永远停在 paused，断不出"续跑到达 done"）。
+ * 于是按"已回填的 tool 结果条数"决定：少于 `JOB_LOOP_TOOL_ROUNDS` 就再要一次工具，够了就给收尾文本。
+ */
+export const JOB_LOOP_MARKER = 'AURORA_JOB_LOOP'
+
+/** 桩服务在给收尾文本前先要几轮工具（默认 3：比 `maxRounds=2` 多一轮，让续跑有活干还能收敛） */
+export const JOB_LOOP_TOOL_ROUNDS = 3
+
+/**
  * 爆发模式标记（`burst-probe`）：**本次请求最后一条 user 消息**含它才走爆发分流。
  *
  * 刻意按请求内容而不是环境变量分流：`AURORA_CAPTURE` 一轮里前面的场景（chat-stream /
@@ -311,6 +325,64 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
         return
       }
 
+      // ── Job 分流（docs/06 §4.1，v15）：一直要工具，直到已回填的 tool 结果够数才收尾 ──
+      // 同样按**提问内容**寻址并排在计数寻址（`toolCallRound`）之前：
+      // 它需要"每一轮都要工具"，而计数寻址那支只在第 1 次对话请求里给工具。
+      if (isJobLoopRequest(record)) {
+        const toolResults = (record.body?.messages ?? []).filter(
+          (message) => message.role === 'tool',
+        ).length
+        if (toolResults < JOB_LOOP_TOOL_ROUNDS) {
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: `call_smoke_job_${toolResults + 1}`,
+                      type: 'function',
+                      // 用 list_dir 这个只读工具：job 链路的断言不该被"写盘 / 弹确认卡"干扰
+                      function: { name: 'list_dir', arguments: '{"path":"."}' },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSse(res, {
+            choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+            // 工具轮也带回用量：真实 provider 在 `include_usage` 下每一轮都报，而「预算触顶」
+            // 必须在**工具轮结束时**就能判定 —— 只在最后一次纯文本收尾给用量，预算就形同虚设
+            // （Job 的 budget 断言正是钉这一点）
+            usage: {
+              prompt_tokens: 512,
+              completion_tokens: 16,
+              total_tokens: 528,
+              prompt_tokens_details: { cached_tokens: 512 },
+            },
+          })
+        } else {
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  content: `${STUB_MARKER} 任务已收敛（第 ${toolResults} 轮工具结果之后）。`,
+                },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSseStop(res)
+        }
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+
       // ── 终端工具分流（docs/06 §11.7）：第 1 轮要一次 run_command，第 2 轮收尾 ──
       // 必须排在下面的 `toolCallRound`（`chatRequests().length === 1`）之前：
       // 那一支按「第几次对话请求」分派，是**计数寻址**，只在现有调用顺序下碰巧不冲突
@@ -546,6 +618,14 @@ function lastUserContent(request: StubRequest): string {
  */
 function isRunCommandRequest(request: StubRequest): boolean {
   return lastUserContent(request).includes(RUN_COMMAND_MARKER)
+}
+
+/**
+ * 只看最后一条 **user** 消息（而不是整段 messages）：续跑那次请求的历史里同样带着这条标记提问，
+ * 因此"第一轮"和"续跑那轮"都能命中同一支分流 —— 这正是 job 续跑要覆盖的路径。
+ */
+function isJobLoopRequest(request: StubRequest): boolean {
+  return lastUserContent(request).includes(JOB_LOOP_MARKER)
 }
 
 /**

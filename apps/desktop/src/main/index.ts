@@ -27,9 +27,11 @@ import {
   SkillsBridge,
   ToolRegistry,
   VOLATILE_SECTION_TITLES,
+  createFileJobStore,
   createFileSnapshotPort,
   createProjectInstructionsSource,
   nodeProjectFs,
+  type JobStore,
   type SnapshotPort,
   renderTodoList,
   resolveProject,
@@ -100,6 +102,7 @@ import {
   BURST_TEXT_END_MARKER,
   BURST_TEXT_START_MARKER,
   REASONING_MARKER,
+  JOB_LOOP_MARKER,
   STUB_API_KEY,
   STUB_MARKER,
   STUB_MODEL,
@@ -117,6 +120,7 @@ import {
   defaultCapturePlan,
   filterCapturePlan,
   seedChatTtsHistory,
+  seedJobFixture,
   seedClassIslandFixture,
   type CaptureTarget,
 } from './capture.js'
@@ -260,7 +264,7 @@ let snapshotConfigKey = ''
  * 早于快照端口那段装配，晚赋值会让 file-port 拿到 `undefined` —— 症状是"写文件从不留底、
  * 却一条报错都没有"，是最难排查的一类静默失效。
  */
-let filePortSnapshots: Pick<SnapshotPort, 'capture'> | undefined = {
+const filePortSnapshots: Pick<SnapshotPort, 'capture'> = {
   capture: (input) => ensureSnapshotPort().capture(input),
 }
 /**
@@ -268,6 +272,8 @@ let filePortSnapshots: Pick<SnapshotPort, 'capture'> | undefined = {
  * （`restoreSnapshot` 是 ipc.ts 导出的那个函数），另写一份就只是自证副本。
  */
 let desktopDeps: DesktopDeps | undefined
+/** Job 存储（docs/06 §4.1，v15）：bootstrap 里装配到 <userData>/jobs */
+let jobStore: JobStore | undefined
 
 function createSnapshotPortFor(config: Settings['agent']['snapshots']): SnapshotPort {
   return createFileSnapshotPort({
@@ -701,6 +707,13 @@ async function bootstrap(): Promise<void> {
   //     否则「改配置要重启」会成为又一个静默失效的配置字段。
   snapshotDir = join(userData, 'backups')
   snapshotPort = createSnapshotPortFor(settings.get().agent.snapshots)
+  // 7.1.4c Job（任务）持久化（docs/06 §4.1，v15）：`<userData>/jobs/<sessionId>.json`。
+  //     一次请求一条 job，每轮结束落游标；轮次 / 预算用尽落 `paused`，重启后可续跑。
+  jobStore = createFileJobStore({
+    dir: join(userData, 'jobs'),
+    fs: nodeFileSystem,
+    logger: logger.child('jobs'),
+  })
   // 7.1.5 provider 工厂提取成常量：KernelAgentHost 与 `task` 子代理共享同一实例，
   //     「常规构造失败 → 临时回退可用条目」的启动自愈语义（docs/06 §12、step 02 第 6 条）
   //     两处一致；create() 每次请求即时构造，设置页改 Key 后无需重启即生效。
@@ -816,6 +829,13 @@ async function bootstrap(): Promise<void> {
     // 快速会话上下文只带最近 5 分钟，防旧上下文污染（docs/06 §4 滑动窗口）
     quickContextWindowMs: 5 * 60_000,
     confirmTool,
+    // Job 持久化（docs/06 §4.1，v15）：一次请求 = 一条可查询 / 可续跑的 job。
+    // 三个上限都走 **getter** —— 设置页改完下一次请求即生效（v15 之前 maxRounds 是常量值，
+    // 改配置必须重启，属于"能写但不生效"的死字段）。
+    jobs: jobStore,
+    maxRounds: () => settings!.get().agent.loop.maxRounds,
+    maxTotalTokens: () => settings!.get().agent.loop.maxTotalTokens,
+    autoContinueRounds: () => settings!.get().agent.loop.autoContinueRounds,
   })
   agent = new DesktopAgentHost({
     settings,
@@ -988,6 +1008,7 @@ async function bootstrap(): Promise<void> {
     proactive: adaptProactive(proactiveScheduler),
     hotkey: hotkeys,
     // 写前快照（docs/06 §11.8）：ipc 的 snapshots:* 三条通道用它；配置变了由 ensureSnapshotPort 换实例
+    jobs: jobStore,
     snapshots: {
       capture: (input) => ensureSnapshotPort().capture(input),
       list: (query) => ensureSnapshotPort().list(query),
@@ -1148,6 +1169,10 @@ async function runCapture(dir: string): Promise<void> {
   await seedChatTtsHistory(app.getPath('userData'))
   // ClassIsland 课堂状态卡的夹具（同上：必须在窗口首次读之前落盘）
   await seedClassIslandFixture(app.getPath('userData'))
+  // 「任务」面板的 paused job 夹具（v15，docs/06 §4.1）：**同样必须在窗口首次读之前**——
+  // 任务面板挂载时会调 `chat:jobs`，而 `FileJobStore` 首读即缓存（读到空表后再写文件它看不见，
+  // 表现为"面板一直显示暂无任务"）。种在这里而不是场景 prepare 里，就是为了抢在那个首读之前。
+  await seedJobFixture(app.getPath('userData'))
   // 输入框 → 真实（离线桩）模型往返场景：**排在计划最后**，因为它在 prepare 里把
   // `llm.active` 换成桩服务（前面的场景读到的是「未配置模型」的出厂态，不受影响）。
   // 为什么值得单列一个场景：`AURORA_SMOKE` 的断言跑在引导窗里、读不到对话窗 DOM，
@@ -1838,6 +1863,139 @@ async function runSmokeTest(userData: string): Promise<void> {
       ringKept >= 0 && ringKept <= (settings?.get().agent.snapshots.keepPerFile ?? 20),
       detail,
     )
+  }
+
+  // 2.5 Job 持久化与续跑（v15，docs/06 §4.1）：走**真实链路** —— `kernel.send()` → 真循环 →
+  //     真 job 存储 → 磁盘。桩服务按 JOB_LOOP_MARKER 一直要工具，"轮次用尽 → paused"
+  //     因此是**确定发生**的，不依赖模型自觉。
+  {
+    const jobSession = 'smoke-job'
+    let pausedOk = false
+    let resumeOk = false
+    let singleUserMessage = false
+    let budgetOk = false
+    let cancelOk = false
+    let cursorOk = false
+    let jobDetail = ''
+    const previousLoop = settings?.get().agent.loop
+    // 收窄到局部常量：下面有闭包（事件回调）要引用它们，`let` 的可变绑定会让 TS 丢掉收窄
+    const host = agent
+    const store = jobStore
+    const settingsStore = settings
+    const sessionStore = sessions
+    /** 等某个会话的请求跑完（done 事件；30s 兜底，避免自测整体挂死） */
+    const waitDone = async (sessionId: string): Promise<void> => {
+      if (host === undefined) return
+      await new Promise<void>((resolve) => {
+        const off = host.onEvent((event) => {
+          if (event.sessionId !== sessionId || event.type !== 'done') return
+          off()
+          resolve()
+        })
+        setTimeout(() => {
+          off()
+          resolve()
+        }, 30_000)
+      })
+    }
+    try {
+      if (
+        store !== undefined &&
+        settingsStore !== undefined &&
+        sessionStore !== undefined &&
+        host !== undefined
+      ) {
+        const setLoop = (loop: {
+          maxRounds: number
+          maxTotalTokens: number
+          autoContinueRounds: number
+        }): void => {
+          settingsStore.update({ agent: { ...settingsStore.get().agent, loop } })
+        }
+
+        // ① 轮次用尽 → paused + pendingReason='max-rounds'（关掉自动续轮，否则它会自己跑完）
+        setLoop({ maxRounds: 2, maxTotalTokens: 0, autoContinueRounds: 0 })
+        await host.send({ sessionId: jobSession, text: JOB_LOOP_MARKER, origin: 'chat' })
+        await waitDone(jobSession)
+        await store.flush()
+        const first = (await store.list({ sessionId: jobSession }))[0]
+        pausedOk = first?.status === 'paused' && first.pendingReason === 'max-rounds'
+        cursorOk = (first?.cursor.nextRound ?? 0) > 0 && (first?.stepsDone.length ?? 0) > 0
+
+        // ② 续跑：跑到 done，且那条用户消息**只有一条**（续跑最容易踩的重复落盘）
+        const userBefore = (await sessionStore.get(jobSession)).filter(
+          (m) => m.role === 'user',
+        ).length
+        if (first !== undefined) {
+          await host.send({
+            sessionId: jobSession,
+            text: first.text,
+            origin: 'chat',
+            resumeJobId: first.id,
+          })
+          await waitDone(jobSession)
+          await store.flush()
+          const second = await store.get(first.id)
+          const userAfter = (await sessionStore.get(jobSession)).filter(
+            (m) => m.role === 'user',
+          ).length
+          resumeOk = second?.status === 'done'
+          singleUserMessage = userBefore === 1 && userAfter === 1
+        }
+
+        // ③ 预算触顶 → paused + pendingReason='budget'（桩每轮都带 usage）
+        setLoop({ maxRounds: 8, maxTotalTokens: 1, autoContinueRounds: 0 })
+        await host.send({ sessionId: 'smoke-job-budget', text: JOB_LOOP_MARKER, origin: 'chat' })
+        await waitDone('smoke-job-budget')
+        await store.flush()
+        const budgetJob = (await store.list({ sessionId: 'smoke-job-budget' }))[0]
+        budgetOk = budgetJob?.status === 'paused' && budgetJob.pendingReason === 'budget'
+
+        // ④ 取消 → aborted（不是 paused）：先等 job 真进入 running 再 abort
+        setLoop({ maxRounds: 8, maxTotalTokens: 0, autoContinueRounds: 0 })
+        const cancelSend = await host.send({
+          sessionId: 'smoke-job-cancel',
+          text: JOB_LOOP_MARKER,
+          origin: 'chat',
+        })
+        let runningJob = (await store.list({ sessionId: 'smoke-job-cancel' }))[0]
+        for (let attempt = 0; attempt < 40 && runningJob?.status !== 'running'; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50))
+          runningJob = (await store.list({ sessionId: 'smoke-job-cancel' }))[0]
+        }
+        host.abort(cancelSend.requestId)
+        await waitDone('smoke-job-cancel')
+        await store.flush()
+        cancelOk = (await store.list({ sessionId: 'smoke-job-cancel' }))[0]?.status === 'aborted'
+
+        jobDetail = `paused=${pausedOk} cursor=${cursorOk} resume=${resumeOk} oneUserMsg=${singleUserMessage} budget=${budgetOk} cancel=${cancelOk}`
+      } else {
+        jobDetail = 'jobStore / settings / agent 不可用'
+      }
+    } catch (error) {
+      jobDetail = `异常：${String(error)}`
+    } finally {
+      // 还原循环配置：后面的场景（提示条 / 分类）不该被 maxRounds=2 之类的临时值影响
+      if (previousLoop !== undefined && settings !== undefined) {
+        try {
+          settings.update({ agent: { ...settings.get().agent, loop: previousLoop } })
+        } catch {
+          // 还原失败不影响本次自测结论（配置本来就在临时 userData 里）
+        }
+      }
+    }
+    record(
+      "Job：轮次用尽落 paused 且 pendingReason='max-rounds'，游标与已完成步骤都已落盘",
+      pausedOk && cursorOk,
+      jobDetail,
+    )
+    record(
+      'Job 续跑：跑到 done，且会话文件里那条用户消息**只有一条**（不重复落盘）',
+      resumeOk && singleUserMessage,
+      jobDetail,
+    )
+    record("Job：预算触顶落 paused 且 pendingReason='budget'", budgetOk, jobDetail)
+    record('Job：取消后状态是 aborted（不是 paused）', cancelOk, jobDetail)
   }
 
   // 3. 提示条两态：断言**真实 BrowserWindow 的几何**（不只状态机）。
@@ -2649,6 +2807,9 @@ async function shutdown(): Promise<void> {
   })
   await snapshotPort?.flush().catch((error: unknown) => {
     logger?.warn('退出前落盘快照索引失败', { error: String(error) })
+  })
+  await jobStore?.flush().catch((error: unknown) => {
+    logger?.warn('退出前落盘任务失败', { error: String(error) })
   })
   await mcp?.close().catch((error: unknown) => {
     logger?.warn('退出前关闭 MCP 连接失败', { error: String(error) })

@@ -19,9 +19,11 @@
 import { computed, onScopeDispose, ref } from 'vue'
 import { deepClone } from '@aurora/shared/browser'
 import type {
+  AgentJob,
   AgentToolCall,
   ChatMessageDto,
   ChatSessionSummary,
+  JobSummary,
   SendMessageRequest,
   SubagentSnapshot,
   TokenUsage,
@@ -86,6 +88,18 @@ export function sessionIdFor(context: ChatContext): string {
 }
 
 /**
+ * 暂停原因 → 用户可读文案（docs/06 §4.1 的 Job 契约）。
+ *
+ * `done` 事件的提示与「任务」面板（`JobPanel.vue` 的「暂停原因」一行）**共用这一份**：
+ * 同一句话在两处各写一遍迟早会漂移（面板说「轮次上限」、提示说「预算」）。
+ */
+export const PENDING_REASON_TEXT: Record<NonNullable<AgentJob['pendingReason']>, string> = {
+  'max-rounds': '已达到轮次上限，已暂停',
+  budget: '已达到 token 预算，已暂停',
+  aborted: '已取消',
+}
+
+/**
  * `windowName` 仍然保留：它是 `chat:send` 的 `origin`（`SendMessageRequest.origin` 是 `WindowName`），
  * 主进程据此判断消息来自哪个窗口；会话 id 由显式的 `context` 决定。
  */
@@ -121,6 +135,21 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   const reasoningTargetId = ref<string | null>(null)
   /** 本会话的子代理运行（实时，key = 工具调用 id）；切换会话时清空 */
   const liveSubagents = ref<SubagentRun[]>([])
+  /**
+   * 本会话的**任务（Job）**列表（新的在前）：「任务」面板的数据源（docs/06 §4.1）。
+   *
+   * 两个来源合并进同一份状态：`chat:jobs` 水合（切换会话 / 挂载）+ `job` 事件推送
+   * （就地更新，见事件分支）。长任务暂停后用户必须能看到它并点「继续」——
+   * 因此这里存的是**完整** `AgentJob`（含 stepsDone / todos），不是事件里的 `JobSummary`。
+   */
+  const jobs = ref<AgentJob[]>([])
+  /**
+   * 长任务被暂停的一句话提示（`done` 事件的 `pendingReason`）。
+   *
+   * 只在**带了原因**时写值；没有原因（正常收尾 / 未落地的老事件）保持 null，
+   * 既有行为一字不变。下一次发送、清空消息区或切会话时复位。
+   */
+  const pendingNotice = ref<string | null>(null)
   /**
    * 最近一轮 LLM 调用的 token 用量（输入框底部「上下文详解」的数据源，docs/07 §2.3）。
    *
@@ -214,6 +243,15 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   )
 
   const dispose = window.aurora.chat.onEvent((event) => {
+    // 任务（Job）事件是**会话级**的、逐条到达，必须走在「在途请求」两道过滤之前：
+    // 暂停恰恰发生在请求收尾之后（`done` 已把 requestId 记进 finishedRequests），
+    // 按 requestId 过滤会让「任务已暂停」这条最该看到的更新永远进不来。
+    // 会话归属按事件里的 `job.sessionId` 判定（它一定带着，不依赖事件的公共字段）。
+    if (event.type === 'job') {
+      if (event.job.sessionId !== sessionId.value) return
+      applyJobSummary(event.job)
+      return
+    }
     if (event.sessionId !== sessionId.value) return
     if (finishedRequests.has(event.requestId)) return
     if (activeRequest !== null && event.requestId !== activeRequest) return
@@ -328,8 +366,16 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         if (message) {
           if (message.content === '') message.content = '（暂无回复）'
         }
+        // 暂停原因（Job 契约，docs/06 §4.1）：v15 起 `done` 会带 `pendingReason`，
+        // 文案由它决定；**没有它时保持 null**（既有行为一字不变）。
+        // 刻意不看保留字段 `pending`：它只能说「还有未完的轮次」，说不出是轮次用尽还是预算触顶。
+        pendingNotice.value =
+          event.pendingReason === undefined ? null : PENDING_REASON_TEXT[event.pendingReason]
         unread.value = true
         finishRequest(event.requestId)
+        // 任务可能刚进入 paused（轮次用尽 / 预算触顶）：立即对齐一次列表，
+        // 让「继续」按钮在回复结束的同一刻出现，而不是等下一次切会话。
+        void refreshJobs()
         break
       }
       case 'error': {
@@ -574,6 +620,133 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     }))
   }
 
+  // ───────────────────────── 任务（Job，docs/06 §4.1） ─────────────────────────
+
+  /**
+   * 把一条 `JobSummary`（`job` 事件 / 列表接口共用的小对象）**就地**合并进 `jobs`。
+   *
+   * 合并而不是替换：summary 里根本没有 `text` / `stepsDone` / `todos` / `cursor` / `origin`，
+   * 整条换掉会让面板上的进度账本与待办在每次状态推送时被清空。
+   *
+   * 列表里还没有这条（窗口刚打开、事件先于列表水合到达）时**插到最前**再回一次 `chat:jobs`：
+   * 先让「任务已暂停」这一类状态（summary 里都有）立刻可见，随后由服务端的完整对象替换。
+   * 占位行只活一个 IPC 往返 —— 服务端始终是这份数据的唯一事实来源。
+   */
+  function applyJobSummary(summary: JobSummary): void {
+    const index = jobs.value.findIndex((job) => job.id === summary.id)
+    if (index < 0) {
+      jobs.value = [placeholderFor(summary), ...jobs.value]
+      void refreshJobs()
+      return
+    }
+    const current = jobs.value[index]
+    if (current === undefined) return
+    jobs.value.splice(index, 1, {
+      ...current,
+      status: summary.status,
+      round: summary.round,
+      maxRounds: summary.maxRounds,
+      budget: {
+        maxTotalTokens: summary.maxTotalTokens,
+        usedTokens: summary.usedTokens,
+        autoContinued: summary.autoContinued,
+      },
+      updatedAt: summary.updatedAt,
+      // 这两个字段是「覆盖」而不是「有才写」：续跑后再暂停之前的原因/错误必须能被清掉
+      pendingReason: summary.pendingReason,
+      error: summary.error,
+    })
+  }
+
+  /**
+   * 用 `JobSummary` 拼一条**临时**卡（列表水合之前用）。
+   *
+   * 只有状态类字段是真的（状态 / 轮次 / token / 暂停原因 —— 也正是面板一行要显示的那些）；
+   * `text` / `stepsDone` / `todos` 事件里没有，留空由紧随的 `refreshJobs()` 补齐，
+   * `origin` 取本窗口名（发起这条 job 的窗口），`createdAt` 借用 `updatedAt`。
+   * 它**不是**持久数据：服务端列表一回来就会被同名 id 的完整对象替换。
+   */
+  function placeholderFor(summary: JobSummary): AgentJob {
+    return {
+      id: summary.id,
+      sessionId: summary.sessionId,
+      status: summary.status,
+      origin: windowName === 'edge-bar' ? 'edge-bar' : 'chat',
+      text: '',
+      round: summary.round,
+      maxRounds: summary.maxRounds,
+      stepsDone: [],
+      todos: [],
+      cursor: { nextRound: summary.round },
+      budget: {
+        maxTotalTokens: summary.maxTotalTokens,
+        usedTokens: summary.usedTokens,
+        autoContinued: summary.autoContinued,
+      },
+      ...(summary.pendingReason === undefined ? {} : { pendingReason: summary.pendingReason }),
+      createdAt: summary.updatedAt,
+      updatedAt: summary.updatedAt,
+      ...(summary.error === undefined ? {} : { error: summary.error }),
+    }
+  }
+
+  /**
+   * 拉取当前会话的任务列表（`chat:jobs`）。
+   *
+   * 失败**保留旧列表**（只 warn 一句）：面板宁可显示上一次的快照，也不要因为一次 IPC 抖动
+   * 整块变空 —— 空列表与「真的没有任务」在界面上是同一个样子。
+   * 切换会话期间到达的结果直接丢弃（与 `hydrate` 同一口径：别把 A 会话的任务显示在 B 会话里）。
+   */
+  async function refreshJobs(): Promise<void> {
+    const target = sessionId.value
+    const result = await window.aurora.chat.jobs({ sessionId: target })
+    if (!result.ok) {
+      window.console?.warn('任务列表读取失败', result.message)
+      return
+    }
+    if (sessionId.value !== target) return
+    jobs.value = result.value
+  }
+
+  /**
+   * 续跑一条暂停的任务（`chat:resumeJob`）：主进程从 `cursor.nextRound` 接着跑，
+   * 成功后重拉列表 —— 状态一律以主进程为准，渲染层不做乐观改写
+   * （否则「点了继续但其实没跑起来」会看不出来）。
+   *
+   * 失败把主进程给的原因写进既有错误通道（`error`，与 `setArchived` 同一口径），不抛。
+   */
+  async function resumeJob(jobId: string): Promise<void> {
+    let result: Awaited<ReturnType<typeof window.aurora.chat.resumeJob>>
+    try {
+      result = await window.aurora.chat.resumeJob({ sessionId: sessionId.value, jobId })
+    } catch (cause) {
+      // invoke 本身也可能抛（序列化失败等），与 send() / setArchived() 同款兜底
+      error.value = String(cause)
+      return
+    }
+    if (!result.ok) {
+      error.value = result.message
+      return
+    }
+    await refreshJobs()
+  }
+
+  /** 取消一条在跑 / 排队 / 暂停的任务（`chat:cancelJob`）；回执口径同上。 */
+  async function cancelJob(jobId: string): Promise<void> {
+    let result: Awaited<ReturnType<typeof window.aurora.chat.cancelJob>>
+    try {
+      result = await window.aurora.chat.cancelJob({ sessionId: sessionId.value, jobId })
+    } catch (cause) {
+      error.value = String(cause)
+      return
+    }
+    if (!result.ok) {
+      error.value = result.message
+      return
+    }
+    await refreshJobs()
+  }
+
   /**
    * 归档 / 取消归档一个会话，随后重拉列表（分组由渲染层按 `archived` 判定）。
    *
@@ -617,12 +790,17 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     assistantId = null
     finishedRequests.clear()
     liveSubagents.value = []
+    // 任务列表也是「本会话」的：旧会话的条目不能留在面板上（下面的 refreshJobs 重新拉）
+    jobs.value = []
+    pendingNotice.value = null
     resetUsage()
     resetReasoning()
     // force：目标会话可能已在 hydrated 里（二次进入同一会话），不强制的话
     // 守卫会吞掉这次水合，界面停在刚清空的空列表上
     await hydrate({ force: true })
     await loadSessions()
+    // 任务列表与消息一起水合：暂停的长任务必须在切进这个会话时就看得见
+    await refreshJobs()
   }
 
   /** 新建会话并切过去。新会话此时还没有标题，发完第一条消息后列表会刷新。 */
@@ -642,6 +820,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     if (streaming.value) return
 
     error.value = null
+    // 上一条「已暂停」提示在新请求发出后不再成立（它描述的是上一次收尾）
+    pendingNotice.value = null
     const names = attachments.map(fileNameOf)
     messages.value.push({
       id: `u-${Date.now()}-${messages.value.length}`,
@@ -714,6 +894,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     messages.value = []
     unread.value = false
     error.value = null
+    pendingNotice.value = null
     liveSubagents.value = []
     resetUsage()
     resetReasoning()
@@ -738,9 +919,19 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     usage,
     /** 本会话的子代理运行（「子代理」页面用，新的在前） */
     subagentRuns,
+    /** 本会话的任务列表（「任务」面板用，新的在前；docs/06 §4.1） */
+    jobs,
+    /** 长任务被暂停时的一句话提示（`done` 的 pendingReason；无原因时为 null） */
+    pendingNotice,
     hydrate,
     loadQuickPreview,
     loadSessions,
+    /** 重拉任务列表（挂载 / 切会话后对齐；失败保留旧列表） */
+    refreshJobs,
+    /** 续跑一条暂停的任务（渲染层唯一的「继续」入口） */
+    resumeJob,
+    /** 取消一条在跑 / 排队 / 暂停的任务 */
+    cancelJob,
     /** 归档 / 取消归档（左栏分组与主区提示条共用，docs/07 §2.3） */
     setArchived,
     switchSession,

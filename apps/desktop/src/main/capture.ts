@@ -797,6 +797,86 @@ export const CHAT_SNAPSHOT_CARD_CHECK = `(async () => {
 })()`
 
 /**
+ * 种一条 `paused` 的 job（v15，docs/06 §4.1），供 `chat-job-panel.png` 场景断言。
+ *
+ * 直接写文件（而不是走进程内的 `JobStore.create`）：这里要造的是「**上一次启动留下的** paused job」，
+ * 这条记录必须先于进程内的 job 存储存在，才等价于"重启后还能续跑"的现场。
+ * 场景的 `prepare` 会在种完之后 `reload('chat')`，让任务面板**重新挂载并首读**这份文件 ——
+ * 面板只在挂载时拉一次列表，不 reload 就什么都看不到。
+ */
+export async function seedJobFixture(userData: string, sessionId = 'main'): Promise<string> {
+  const dir = join(userData, 'jobs')
+  await mkdir(dir, { recursive: true })
+  const now = new Date().toISOString()
+  const job = {
+    id: 'job-capture-paused-1',
+    sessionId,
+    status: 'paused',
+    origin: 'chat',
+    text: '帮我把这份课表整理成一张表',
+    round: 1,
+    maxRounds: 2,
+    stepsDone: [
+      { round: 0, tool: 'read_file', ok: true, at: now },
+      { round: 1, tool: 'write_file', ok: true, at: now },
+    ],
+    todos: [
+      { id: 't1', text: '读取原始课表', status: 'completed' },
+      { id: 't2', text: '生成整理后的表格', status: 'in_progress' },
+    ],
+    cursor: { nextRound: 2, note: '轮次用尽，等待用户继续' },
+    budget: { maxTotalTokens: 0, usedTokens: 1284, autoContinued: 0 },
+    pendingReason: 'max-rounds',
+    createdAt: now,
+    updatedAt: now,
+  }
+  await writeFile(
+    join(dir, `${sessionId}.json`),
+    JSON.stringify({ version: 1, jobs: [job] }),
+    'utf8',
+  )
+  return join(dir, `${sessionId}.json`)
+}
+
+/**
+ * 「任务」面板探针（v15，docs/06 §4.1）：**只读**断言 —— 面板在、状态是「已暂停」、
+ * 暂停原因、步骤痕迹与「继续」按钮都渲染出来了。**不点任何按钮**：点「继续」会真的发起续跑，
+ * 那需要模型服务，不是截图阶段该干的事。
+ */
+export const CHAT_JOB_PANEL_CHECK = `(async () => {
+  try {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    let panel = null
+    for (let attempt = 0; attempt < 20 && panel === null; attempt += 1) {
+      panel = document.querySelector('[data-field="chat.job-panel"]')
+      if (panel === null) await wait(150)
+    }
+    const text = panel === null ? '' : (panel.textContent || '').replace(/\\s+/g, ' ').trim()
+    const items = document.querySelectorAll('[data-field="chat.job-item"]').length
+    const resume = document.querySelector('[data-field="chat.job-resume"]')
+    return {
+      panel: panel === null ? 0 : 1,
+      items,
+      text,
+      resume: resume === null ? 0 : 1,
+      resumeLabel: resume === null ? '' : (resume.textContent || '').trim(),
+      pass:
+        panel !== null &&
+        items >= 1 &&
+        text.indexOf('已暂停') !== -1 &&
+        // 暂停原因必须说清「停在哪」，而不是一句含糊的「未完成」
+        text.indexOf('轮次上限') !== -1 &&
+        // 面板的价值是「看得见进度」：步骤痕迹与 token 用量都要在
+        text.indexOf('read_file') !== -1 &&
+        text.indexOf('token') !== -1 &&
+        resume !== null,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
  * 「子代理」页面探针（docs/07 §2.4）。
  *
  * act 点左栏固定项 `[data-field="chat.subagent-item"]` 把主区切到子代理页面；
@@ -2985,6 +3065,8 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
     // v14 写前快照（docs/06 §11.8）：四个字段常显（enabled=false 时三块换成 data-empty="agent.snapshots"）
     const snapshotFields = count('[data-field^="agent.snapshots."]')
     const snapshotEmpty = emptyStates.indexOf('agent.snapshots') !== -1
+    // v15 Agent 循环（docs/06 §4.1）：三个字段常显（不跟 agent.tools.enabled 门控）
+    const loopFields = count('[data-field^="agent.loop."]')
     const unexpected = emptyStates.filter(
       (name) =>
         name !== 'mcp.servers' &&
@@ -3053,6 +3135,7 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
       readonlyRestored,
       snapshotFields,
       snapshotEmpty,
+      loopFields,
       // 总开关必须在（否则用户再也开不回来）；开着时四个分栏的详情字段都得在
       // （终端 / 文件 / 文件检索 / 打开），MCP 区组必须给出「空状态或行」之一，
       // 且不得出现两块预期空态之外的 data-empty。
@@ -3075,6 +3158,8 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
         readonlyRestored === true &&
         // 文件备份区组：开着时四个字段都在，关掉时是空态（两种形态都算过，不写死数字）
         (snapshotFields >= 4 || snapshotEmpty === true) &&
+        // v15：Agent 循环三个字段常显（关掉工具总开关也必须在）
+        loopFields >= 3 &&
         unexpected.length === 0,
     }
   } catch (error) {
@@ -5084,6 +5169,19 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       },
       act: CHAT_SNAPSHOT_CARD_ACT,
       check: CHAT_SNAPSHOT_CARD_CHECK,
+    },
+    // 右栏「任务」面板（v15，docs/06 §4.1）：
+    // 现场由 runCapture 在跑计划前种好（seedJobFixture，**必须早于面板首读** —— job 存储
+    // 首读即缓存，读到空表后再写文件面板是看不见的）；act 什么都不点（点「继续」会真的
+    // 发起续跑），check 只读断言面板与状态文案。
+    {
+      name: 'chat',
+      file: 'chat-job-panel.png',
+      // 本场景没有 query，captureWindows 不会替我们 reload：这里 reload 一次让面板重新挂载。
+      prepare: async () => {
+        await manager.reload('chat', {})
+      },
+      check: CHAT_JOB_PANEL_CHECK,
     },
     // 思考过程折叠块（BetaV2）：seed 会话的助手消息带 `reasoning`，历史水合后默认收起；
     // act 点开展开态拍进截图，check 断言「曾收起 + 现已展开 + 全文可见 + 块在正文上方」。

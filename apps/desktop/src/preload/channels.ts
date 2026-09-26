@@ -101,6 +101,9 @@ const CHANNELS = {
     // 通道表与 shared 契约同构：新增通道必须两处同步（编译期双向断言会兜住）
     newSession: 'chat:newSession',
     archiveSession: 'chat:archiveSession',
+    jobs: 'chat:jobs',
+    resumeJob: 'chat:resumeJob',
+    cancelJob: 'chat:cancelJob',
   },
   hotkey: {
     status: 'hotkey:status',
