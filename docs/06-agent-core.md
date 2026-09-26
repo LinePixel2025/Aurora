@@ -249,7 +249,10 @@ export interface LlmProvider {
   **当前项目根（配置了当前项目时）> `agent.tools.workspaceDir` > 用户主目录**。已接进装配层：
   配置了当前项目后，不显式传 `cwd` 的 `run_command` 与不传 `path` 的 `grep` / `glob` 落在**项目根**；
   未配置当前项目时与既往行为完全一致。§11.1 / §11.4 / §11.5 说的「缺省 `cwd` / 缺省搜索根」
-  都指这条链的结果，**不设第二套口径**。
+  都指这条链的结果，**工具执行链上不再设第二套口径**。
+  ⚠️ 已知例外（刻意未接）：设置页「打开工作目录」按钮走的 `openPath kind:'workspace'`（`ipc.ts`）
+  仍按**字面** `workspaceDir` 解析（空串 = 主目录，项目根不参与）——它是展示入口、不是执行链消费方，
+  但「配了项目 + 工作目录留空」时按钮打开的目录与命令实际落地目录**分叉**，改法见 AGENTS.md 同条披露。
 
 - **循环**：用户消息 → LLM → [工具调用 → 执行 → 结果回填] × N → 最终回复。
   轮次上限**默认 8**，由 `agent.loop.maxRounds`（1–64）配置 —— 默认值刻意等于 v15 之前
@@ -576,8 +579,18 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
      越界抛 `E_PATH_OUTSIDE_WORKSPACE`，工具层转成 `isError` 结果。
      这条校验只在**配置了当前项目**时启用（`workspaceRoot()` 返回 undefined = 行为与 v13 之前一字不差）。
      六个文件类入口（`readText` / `readWholeText` / `writeText` / `list` / `findFiles` / `searchText`）
-     与 `run_command.cwd` 都走它；**用户已在确认卡片上放行**的那一次调用由内核置 `approvedByUser`，
+     与 `run_command.cwd` 都走它；确认钩子返回任何非 `false` 的那一次调用由内核置 `approvedByUser`，
      工具层据此透传 `allowOutside: true` 放行 —— 于是"越界必须被确认后才可写"是可测的。
+- **⚠️ `approvedByUser` 不区分出处（2026-09 独立安全审查指出的残留，非本轮引入，待专门工单修）**：
+  置位条件是「确认钩子返回任何非 `false`」——除用户在卡片上放行，还涵盖 `auto` 档根内的
+  **机器**放行、`allowPatterns` 命中、无项目全放行与会话级 `'always'` 短路，它们都同样带来
+  `allowOutside` 免校验的副作用。于是 `auto` 档配了项目时可构造**零弹卡**逃逸链：根内建指向根外的
+  junction / 符号链接（`run_command` 里 `%USERPROFILE%\…` 形态不被 `containsAbsolutePath` 识别），
+  再对链接路径 `write_file` —— 字符串判定在根内 → 机器放行 → realpath 兜底恰被跳过。
+  修法方向：确认判定返回**出处**，仅"用户对本次调用放行"才带 `allowOutside`，机器放行保留
+  realpath 兜底（真根内目标照常通过、无 UX 回归，并顺带堵死「判定与执行取值时刻不同步」的竞态：
+  用户中途切项目时按新根判定、按旧实例执行）。修时同步更新冒烟里以 `approvedByUser: true`
+  断言 auto 根内写入的条目（`main/index.ts` 权限集成组）。
 - **`advanced.confirmSensitiveTools = false` 时的语义**（沿用既有行为，§5 / §9.1）：由 **`auto` 档**承接 ——
   有项目时根内免确认、根外仍询问；无项目时直接放行不推卡片（与从前一致），内核仍按 `sensitivity`
   写日志留痕。此时代码路径与用户自己在 PowerShell 里敲同样的命令**能力相当**（甚至略宽：命令以

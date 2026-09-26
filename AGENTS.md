@@ -130,11 +130,18 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   （`file-port.resolveWithin`，越界即 `E_PATH_OUTSIDE_WORKSPACE`，六个文件类入口与
   `run_command.cwd` 都走它）。
   但**没有作业对象 / 容器 / 受限令牌**，`run_command` 仍是当前用户权限 —— 别把这两层说成"沙箱"。
+  且两层之外还有一条**已披露未封堵的逃逸**（2026-09 独立安全审查指出，详见 docs/06 §11.2，待专门工单）：
+  批准位 `approvedByUser` **不区分出处** —— auto 档根内机器放行、`allowPatterns` 命中、会话级 `'always'`
+  短路同会透传 `allowOutside` 把 realpath 兜底**整段跳过**（配合根内既有 junction / 符号链接可零弹卡写到根外），
+  即「越界必须先被确认」目前仅在**真的弹过卡片并由用户批准**时才成立。
 - **`agent.tools.workspaceDir` 仍然只是"默认 cwd / 搜索根"，不是安全边界**：缺省工作目录 / 搜索根按
   三级回落——**当前项目根（配置了当前项目时）> `workspaceDir` > 用户主目录**，这条链**已按 docs/06 §5.1
-  的 `effectiveWorkspaceDir` 接线**（`effectiveWorkspaceDir` 是唯一口径，别在别处再写一套），所以配了
+  的 `effectiveWorkspaceDir` 接线**（**工具执行链的唯一口径**，别在执行链上再写一套）：配了
   当前项目后，不显式传 `cwd` 的 `run_command` 与不传根的 `grep` / `glob` 落在**项目根**；
-  无项目时行为与之前一致。真正的安全边界是**「当前项目根」**，且**只有配置了当前项目时才生效**
+  无项目时行为与之前一致。⚠️ **已知例外（刻意未接）**：设置页「打开工作目录」按钮
+  （`openPath kind:'workspace'`，`ipc.ts`）仍按**字面** `workspaceDir` 解析（空串 = 主目录、项目根不参与），
+  "配了项目 + 工作目录留空"时它与命令实际落地目录**分叉**——要接也接 `effectiveWorkspaceDir`，
+  别误改成 `kind:'project'` 把展示入口混进执行链。真正的安全边界是**「当前项目根」**，且**只有配置了当前项目时才生效**
   （无项目时行为与 v12 之前完全一致）。
   想当然地拿 `workspaceDir` 当护栏、或把 `openPath` 的 `kind: 'workspace'` 当成项目根，都是错的
   （项目根走 `kind: 'project'`，见 docs/06 §5.1 / §11.1）。

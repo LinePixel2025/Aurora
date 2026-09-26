@@ -668,9 +668,10 @@ async function bootstrap(): Promise<void> {
   // `workspaceRoot()` 返回 undefined 时 file-port / command-runner 的行为与 v13 之前一字不差
   //（无项目 = 无边界），这也是 step 1「无项目时行为不变」那条完成标准的落点。
   // ⚠️ 声明顺序承重：`projectLogger` 必须在 `projectRoot` **之前**声明 —— 缺省工作目录接线后
-  //（step 3，`registerComputerTools` 的 `sync()` 在下面的启动序里就会调用本 getter），
-  // 若把它留在 764 行之后，这里就是 TDZ `Cannot access 'projectLogger' before initialization`，
-  // 表现为**启动直接失败**（单测全用假装配器发现不了，只有 AURORA_SMOKE 抓得到）。
+  //（step 3，`registerComputerTools` 的 `sync()` 在启动序就会调用本 getter），若把它留在下方
+  // `registerComputerTools` 装配与首次 `syncToolRegistries()` 调用之后，getter 执行时即 TDZ
+  // `Cannot access 'projectLogger' before initialization`，表现为**启动直接失败**
+  //（单测全用假装配器，覆盖不到真实装配时序，只有 AURORA_SMOKE 抓得到）。
   const projectLogger = logger?.child('project')
   const projectRoot = (): string | undefined =>
     resolveProject(settings!.get(), {
