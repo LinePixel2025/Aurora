@@ -7,7 +7,7 @@
 
 ## 当前实现状态
 
-**当前版本 v0.1.5，配置 Schema v15** —— 2026-09-26 的**生产化主线轮**把四项能力落地并验证：
+**当前版本 v0.1.6，配置 Schema v15** —— 2026-09-26 的**生产化主线轮**把四项能力落地并验证（项目机制 / 三档权限 / 写前快照 / 可续跑任务），2026-09-27 的**安全加固轮**兑现 v0.1.5 披露的三个已知问题并封堵零弹卡越界写入逃逸链：
 **项目机制**（顶层 `projects` 分组：当前项目决定项目根与项目级 `AGENTS.md` 注入）、
 **三档权限**（`agent.permissionMode ∈ {readonly, confirm, auto}`）、
 **写前快照与一键回滚**（`agent.snapshots.*`）、
@@ -241,7 +241,7 @@
 
 **本轮（2026-09-26）修复三条对话体验 BUG**
 
-> 面向用户的更新说明见 [release-notes/v0.1.5.md](./release-notes/v0.1.5.md)（每个版本一份，随 Release 发布）。
+> 面向用户的更新说明见 [release-notes/v0.1.6.md](./release-notes/v0.1.6.md)（每个版本一份，随 Release 发布）。
 
 - **深度思考渲染跟上模型输出**（[06 §16.3](./06-agent-core.md)）：三条里最实质的一条。
   根因有二 —— 渲染层 `MessageList` 的 `rendered` computed 展开 `{ ...message }` 时把 `reasoning`
