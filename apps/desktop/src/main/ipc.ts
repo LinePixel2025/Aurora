@@ -7,9 +7,9 @@
  * - 密文字段不回传渲染层（只回传"是否已设置"）。
  */
 import { join } from 'node:path'
-import { promises as writeFs } from 'node:fs'
-import { BrowserWindow, app, ipcMain, shell } from 'electron'
-import { type SessionStore } from '@aurora/agent-core'
+import { promises as nodeFs } from 'node:fs'
+import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
+import { resolveProject, type SessionStore } from '@aurora/agent-core'
 import {
   IPC,
   createDefaultSettings,
@@ -37,6 +37,7 @@ import {
   type ModeId,
   type ModeSummary,
   type OpenPathRequest,
+  type ProjectStatus,
   type Result,
   type SecretEntries,
   type SendMessageRequest,
@@ -227,11 +228,25 @@ export function registerIpc(deps: DesktopDeps): () => void {
     }
     const target = join(watchDir, request.fileName)
     try {
-      await writeFs.writeFile(target, request.content, 'utf8')
+      await nodeFs.writeFile(target, request.content, 'utf8')
       return ok(target)
     } catch (error) {
       return err('E_IO', error instanceof Error ? error.message : String(error))
     }
+  })
+
+  // ───────────────────────── project（v13，docs/06 §5.1）─────────────────────────
+
+  handle<ProjectStatus>(IPC.project.status, async () => ok(await projectStatus(deps)))
+  handle<string | null>(IPC.project.pickDirectory, async () => {
+    // 渲染层没有文件系统能力（docs/07 §2.3 同款限制），目录只能由主进程弹选择框
+    const picked = await dialog.showOpenDialog({
+      title: '选择项目根目录',
+      buttonLabel: '选择此目录',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (picked.canceled) return ok(null)
+    return ok(picked.filePaths[0] ?? null)
   })
 
   // ───────────────────────── settings ─────────────────────────
@@ -780,6 +795,31 @@ export function redactSettings(settings: SettingsStoreLike, source: Settings): S
   return clone
 }
 
+/**
+ * 读「当前项目」状态（v13，docs/06 §5.1）。
+ *
+ * 渲染层没有文件系统能力，而项目根失效必须有**可见**提示（不能只在日志里 warn），
+ * 所以"根目录是否存在且是目录"由主进程探测后回传；根不可读一律降级为 `rootAvailable: false`
+ * （不抛错、不影响对话）。
+ */
+async function projectStatus(deps: DesktopDeps): Promise<ProjectStatus> {
+  const resolved = resolveProject(deps.settings.get(), {
+    cwd: process.cwd(),
+    logger: deps.logger,
+  })
+  const current = resolved.current
+  if (current === undefined || resolved.root === undefined) {
+    return { currentId: '', name: '', root: '', rootAvailable: false }
+  }
+  let rootAvailable = false
+  try {
+    rootAvailable = (await nodeFs.stat(resolved.root)).isDirectory()
+  } catch {
+    rootAvailable = false
+  }
+  return { currentId: current.id, name: current.name, root: resolved.root, rootAvailable }
+}
+
 async function openPath(deps: DesktopDeps, request: OpenPathRequest): Promise<Result<string>> {
   const settings = deps.settings.get()
   let target = ''
@@ -797,6 +837,12 @@ async function openPath(deps: DesktopDeps, request: OpenPathRequest): Promise<Re
       // 电脑操控工具的默认工作目录（docs/06 §11）：空串 = 用户主目录
       const configured = settings.agent.tools.workspaceDir.trim()
       target = configured === '' ? app.getPath('home') : configured
+      break
+    }
+    case 'project': {
+      // 当前项目根（v13，docs/06 §5.1）：与 `workspace` 是两个不同字段，
+      // 相对路径按进程 cwd 归一（与 `project:status` 同一套语义）
+      target = resolveProject(settings, { cwd: process.cwd(), logger: deps.logger }).root ?? ''
       break
     }
     case 'subject': {

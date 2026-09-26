@@ -27,7 +27,10 @@ import {
   SkillsBridge,
   ToolRegistry,
   VOLATILE_SECTION_TITLES,
+  createProjectInstructionsSource,
+  nodeProjectFs,
   renderTodoList,
+  resolveProject,
 } from '@aurora/agent-core'
 import type { AgentProviderFactory, SettingsToolPort, ToolDefinition } from '@aurora/agent-core'
 import {
@@ -655,6 +658,22 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('confirm'),
   })
 
+  // 项目机制（v13，docs/06 §5.1）：每轮按「项目根 → 当前工作目录」逐层收集 AGENTS.md
+  // （同目录 AGENTS.override.md 优先）。取用器内部按 root + 文件 mtime 缓存，
+  // 无项目 / 读不到文件一律降级为不注入 —— 装配层只提供"当前值"的取值闭包。
+  const projectLogger = logger?.child('project')
+  const projectInstructions = createProjectInstructionsSource({
+    fs: nodeProjectFs,
+    ...(projectLogger === undefined ? {} : { logger: projectLogger }),
+    resolveRoot: () =>
+      resolveProject(settings!.get(), {
+        cwd: process.cwd(),
+        ...(projectLogger === undefined ? {} : { logger: projectLogger }),
+      }).root,
+    resolveCwd: () => process.cwd(),
+    resolveMaxBytes: () => settings!.get().projects.maxAgentsBytes,
+  })
+
   const kernel = new KernelAgentHost({
     sessions,
     // 启动自愈（docs/06 §12、step 02 第 6 条）：与 task 子代理共享同一 provider 实例
@@ -663,11 +682,12 @@ async function bootstrap(): Promise<void> {
     tools,
     skills: skillBridge,
     logger: logger.child('agent'),
-    // settingsHint / todoSummary 走 agent-core 正式通道（docs/06 §17/§18）：
-    // 前者是「Agent 可修改的设置」固定清单，后者按会话读任务清单摘要——
-    // 空清单 renderTodoList 返回空串，buildSystemPrompt 会自动省略该节。
+    // settingsHint / todoSummary / projectInstructions 走 agent-core 正式通道
+    // （docs/06 §17/§18/§5.1）：前者是「Agent 可修改的设置」固定清单，后两者按会话 / 项目
+    // 即时读取——空值一律由 buildSystemPrompt 自动省略对应小节。
     settingsHint: () => SETTINGS_HINT,
     todoSummary: async (sessionId) => renderTodoList(await todoPort!.read(sessionId)),
+    projectInstructions,
     modePrompt: () => modes.systemPrompt(),
     perceptionSummary: () => perception?.contextSummary() ?? Promise.resolve(''),
     // 长上下文摘要（docs/06 §4）：被截断的旧消息交给当前 provider 压成一段摘要。
@@ -1382,6 +1402,87 @@ async function runSmokeTest(userData: string): Promise<void> {
     )
   }
 
+  // 2.2 项目机制（v13，docs/06 §5.1）：端到端证明「项目级 AGENTS.md 真的进了请求体」，
+  //     并且同目录的 `AGENTS.override.md` 顶掉了 `AGENTS.md`。
+  //     走的是**真实链路**：写盘 → `settings.update` → 发一轮真实对话（桩服务记录请求体）
+  //     → 从桩的 `systemPrompt` 里读回注入文本。单测只证收集器与渲染顺序，
+  //     证不了「装配层的闭包 + 每轮即时读取」这条生效路径。
+  //     位置必须在上面那组断言**之后**：那里有一条"桩共收到 11 轮 chat 请求"的精确计数，
+  //     本轮会多打一次桩 —— 让 record 先跑完就不会互相影响。
+  {
+    const projectRoot = join(userData, 'smoke-project')
+    const agentsMarker = 'AURORA_AGENTS_MD_MARKER'
+    const overrideMarker = 'AURORA_AGENTS_OVERRIDE_MARKER'
+    let injected = false
+    let overrideWins = false
+    let agentsDropped = false
+    let detail = ''
+    try {
+      await fs.mkdir(projectRoot, { recursive: true })
+      await fs.writeFile(join(projectRoot, 'AGENTS.md'), `# 项目约定\n${agentsMarker}\n`, 'utf8')
+      await fs.writeFile(
+        join(projectRoot, 'AGENTS.override.md'),
+        `# 覆盖约定\n${overrideMarker}\n`,
+        'utf8',
+      )
+
+      if (settings !== undefined && agent !== undefined) {
+        // 收窄到局部常量：下面有闭包（事件回调）要引用它，`let` 的可变绑定会让 TS 丢掉收窄
+        const host = agent
+        const projectsBefore = settings.get().projects
+        settings.update({
+          projects: {
+            ...projectsBefore,
+            current: 'smoke-project',
+            list: [{ id: 'smoke-project', name: '自测项目', root: projectRoot }],
+          },
+        })
+
+        // 等这一轮的 done 再断言：`send` 只入队，事件流才是"请求真的发出去了"的证据
+        let offDone: (() => void) | undefined
+        const done = new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            offDone?.()
+            resolve()
+          }, 15_000)
+          offDone = host.onEvent((event) => {
+            if (event.type === 'done' && event.sessionId === 'smoke-project') {
+              clearTimeout(timer)
+              offDone?.()
+              resolve()
+            }
+          })
+        })
+        const before = stub.getRecordedRequests().length
+        await host.send({ sessionId: 'smoke-project', text: '项目约定自测', origin: 'chat' })
+        await done
+
+        // 只看本轮新增、且是父对话的请求（子代理 / 分流各走自己的系统提示词）
+        const fresh = stub
+          .getRecordedRequests()
+          .slice(before)
+          .filter((item) => !item.classify && !item.subagent)
+        const prompt = fresh[0]?.systemPrompt ?? ''
+        injected = prompt.includes('## 项目约定') && prompt.includes(overrideMarker)
+        overrideWins = prompt.includes(overrideMarker)
+        agentsDropped = !prompt.includes(agentsMarker)
+        detail = `rounds=${fresh.length} markerAgents=${prompt.includes(agentsMarker)} markerOverride=${overrideWins}`
+
+        // 收尾：把项目还原成"无项目"，免得带进后面的断言
+        settings.update({ projects: { ...settings.get().projects, current: '', list: [] } })
+      } else {
+        detail = 'settings / agent 不可用'
+      }
+    } catch (error) {
+      detail = `异常：${String(error)}`
+    }
+    record(
+      '项目级 AGENTS.md 进了请求体且 override 优先（AGENTS.md 内容被顶掉）',
+      injected && overrideWins && agentsDropped,
+      detail,
+    )
+  }
+
   // 3. 提示条两态：断言**真实 BrowserWindow 的几何**（不只状态机）。
   //    纯函数由 edge-bar-geometry.test.ts 覆盖；这里证明 setBounds 在主进程链路里真的生效，
   //    且展开/收起保持右缘与 y 不变（docs/07 §2.2）。
@@ -1592,19 +1693,29 @@ async function runSmokeTest(userData: string): Promise<void> {
 
     // 开关热生效：`settings:update` 是顶层浅合并，必须带**完整**的 agent.tools 子树，
     // 否则会把 files / open 配置写丢 —— 这条断言顺带回归这一点。
+    // ⚠️ v13 起 `agent` 组还多了 `permissionMode`，而 `SettingsStore.update` 的 `Partial<Settings>`
+    // 只放宽顶层键、**值仍是完整类型**：少带一个兄弟键就会被 Schema 的默认值补回，
+    // 等于把用户选的 readonly / auto 档静默重置成 confirm。所以整组展开，别只写 tools。
     let hotSwitchOk = false
     let subtreeKept = false
     if (settings !== undefined) {
-      const before = settings.get().agent.tools
+      const agentBefore = settings.get().agent
+      const before = agentBefore.tools
       settings.update({
-        agent: { tools: { ...before, terminal: { ...before.terminal, enabled: false } } },
+        agent: {
+          ...agentBefore,
+          tools: { ...before, terminal: { ...before.terminal, enabled: false } },
+        },
       })
       syncToolRegistries()
       const offSoFar =
         tools?.get('run_command') === undefined && tools?.get('open_path') !== undefined
 
       settings.update({
-        agent: { tools: { ...before, terminal: { ...before.terminal, enabled: true } } },
+        agent: {
+          ...agentBefore,
+          tools: { ...before, terminal: { ...before.terminal, enabled: true } },
+        },
       })
       syncToolRegistries()
       const backOn = tools?.get('run_command') !== undefined
@@ -1625,15 +1736,17 @@ async function runSmokeTest(userData: string): Promise<void> {
     // 且不能误伤其它工具（`unregister` 只按 `COMPUTER_TOOL_NAMES` 摘，`use_skill` / `mcp.*` 不受影响）。
     let masterOffOk = false
     if (settings !== undefined) {
-      const before = settings.get().agent.tools
-      settings.update({ agent: { tools: { ...before, enabled: false } } })
+      // 同「开关热生效」：`agent` 整组展开，别把 permissionMode 这类兄弟键写丢
+      const agentBefore = settings.get().agent
+      const before = agentBefore.tools
+      settings.update({ agent: { ...agentBefore, tools: { ...before, enabled: false } } })
       syncToolRegistries()
       // 「关掉后一个都不剩」按 `COMPUTER_TOOL_NAMES` 全量断言（比已装配清单更宽：
       // 连将来才装配的名字也要求被摘掉）；「改回即恢复」只能按**已装配**清单断言。
       const allGone = COMPUTER_TOOL_NAMES.every((name) => tools?.get(name) === undefined)
       const othersKept = tools?.get('use_skill') !== undefined
 
-      settings.update({ agent: { tools: { ...before, enabled: true } } })
+      settings.update({ agent: { ...agentBefore, tools: { ...before, enabled: true } } })
       syncToolRegistries()
       const restored = SMOKE_IMPLEMENTED_TOOLS.every((name) => tools?.get(name) !== undefined)
       masterOffOk = allGone && othersKept && restored
@@ -1735,7 +1848,8 @@ async function runSmokeTest(userData: string): Promise<void> {
     // 让收尾清理与下一次 dev 运行看到的是正常状态。
     const afterMatrix = settings.get()
     settings.update({
-      agent: { tools: { ...afterMatrix.agent.tools, enabled: true } },
+      // `agent` 整组展开（同「开关热生效」那条）：少带 permissionMode 会被默认值补回
+      agent: { ...afterMatrix.agent, tools: { ...afterMatrix.agent.tools, enabled: true } },
       llm: { active: 'smoke', providers: afterMatrix.llm.providers },
     })
     syncToolRegistries()
@@ -1820,8 +1934,14 @@ async function runSmokeTest(userData: string): Promise<void> {
  */
 const SAFETY_TITLE = SAFETY_RULES.split('\n')[0] ?? ''
 
-/** 系统状态小节标题（`## 系统状态`）：易变段的最后一个，断言它确实渲染了（证明易变段在） */
-const PERCEPTION_SECTION_TITLE = VOLATILE_SECTION_TITLES[2]
+/**
+ * 系统状态小节标题（`## 系统状态`）：易变段的最后一个，断言它确实渲染了（证明易变段在）。
+ *
+ * ⚠️ 取**末位**而不是写死下标：`VOLATILE_SECTION_TITLES` 会随新易变小节增减
+ * （v13 就插入了「## 项目约定」），写死 `[2]` 会在加小节时静默指向别人
+ * ——`as const` 的字面量类型跟着变，编译器一句话都不会说。
+ */
+const PERCEPTION_SECTION_TITLE = VOLATILE_SECTION_TITLES.at(-1) ?? ''
 
 /**
  * 两个字符串的**最长公共前缀长度**（逐字符比较）——缓存前缀断言的核心量。
