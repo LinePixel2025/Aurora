@@ -88,12 +88,19 @@
     **「已归档 · N」分组**（`data-field="chat.archive-group"`，默认收起；展开后的列表是
     `data-field="chat.archive-list"`）→
     底部：模式徽章 + 右栏开关（`data-field="chat.right-panel-toggle"`）+ 设置齿轮。
+  - **左栏底部固定项「任务」（v15 新增）**：`data-field="chat.jobs-entry"`，
+    落在 `aside.nav` 网格的**第二行**（= SessionNav 自带页脚那一行**之下**、左栏的最底部），
+    不随会话列表滚动；角标是本会话的任务条数（内部 `.jobs-count`，有在跑的用强调色）。
+    点击展开 / 收起右栏的「任务」面板（`aria-expanded` 跟 `jobsOpen`）。
+    **它与「子代理」的位置刻意相反**：「子代理」（`chat.subagent-item`）是左栏**顶部**固定项
+    （在「快速对话」下面、会话列表之上，因为它把**主区**切走），而「任务」只切换**右栏**里一块面板，
+    放底部才不会与"切主区"的那组争夺视线。
   - **会话归档（2026-09 新增）**：会话项 hover 时右侧浮出一枚「归档」图标钮
     （`data-action="chat.archive-session"`，单击即归档、**可逆、不弹确认**）；
     归档后该会话从主列表移入底部「已归档 · N」分组，**仍可点开继续对话**，此时主区头部给一条
     「已归档 · 取消归档」提示（`data-field="chat.archived-banner"`）。
     归档状态写在**会话文件自身**（`sessions/<id>.json` 的 `meta.archived`，见 06 §4），
-    **不进 config.json**、不改 `CONFIG_VERSION`（仍为 11）。
+    **不进 config.json**、归档本身不改 `CONFIG_VERSION`（当前版本见 08 §2）。
     已知边界：`chat:sessions` 目前**没有推送通道**，归档只在发出请求的那个窗口即时生效，
     其它窗口（提示条用 quick 会话）要等下次拉列表才看得到；quick / settings 两个伪会话
     不出现在列表里，因此也不参与归档。
@@ -107,7 +114,30 @@
     （附件 chips → textarea → 工具行 → 上下文详解条）；工具行 = 权限模式 + 模型下拉 +
     思考等级下拉 +（右侧）麦克风 + 停止 / 发送；旧「会话：xxx · 可调用 Skill 与 MCP 工具」
     常驻 meta 文案移除，仅保存操作的瞬时提示保留。
-  - **右栏（模式感知上下文栏）**：顶部任务清单卡（当前会话最后一次 `todo_write` 的结构化清单，
+  - **右栏「任务」面板（v15 新增，`data-field="chat.jobs"`；面板自身 `chat.job-panel`）**：
+    停在右栏**最上方、`ContextPanel` 之上**（右栏是两行网格：任务面板按内容高度、上下文栏占满
+    剩余高度；面板收起时上下文栏独占整列）。位置比上下文信息更靠前，是因为"长任务停了"是
+    **要用户动手**的状态。默认展开（`jobsOpen = true`），由左栏底部入口按钮切换；
+    收起时整块**不渲染**（`v-if`），条数仍由入口按钮的角标兜住。
+    每条 job（`chat.job-item`）显示：状态徽标（`排队中` / `进行中` / `已暂停` / `已完成` /
+    `出错` / `已取消`）、本地时间（当天只给时刻，跨天带月日）、任务原文（单行省略、完整原文在
+    `title` 里）、`第 round/maxRounds 轮`、`token usedTokens/maxTotalTokens`
+    （`maxTotalTokens = 0` 显示「不限」，**不显示成 `0/0`**）、`已自动续 N 轮`（`autoContinued > 0`
+    才显示）、暂停原因、待办（最多 5 条，`completed` 划掉，余量折成一行「还有 N 项」）、
+    最近 3 条已完成步骤（`第 N 轮 · 工具名 · 成功/失败`）、`error` 文本（仅 `error` 状态）。
+    两颗按钮：**「继续」`chat.job-resume` 只在 `paused` 时渲染**（其余状态点了没有意义），
+    「取消」`chat.job-cancel` 在 `running` / `paused` / `queued` 时渲染 —— 与 `chat:cancelJob`
+    的受理范围同一口径（已结束的没有可取消的东西）。
+    暂停原因文案（`max-rounds`「已达到轮次上限，已暂停」/ `budget`「已达到 token 预算，已暂停」/
+    `aborted`「已取消」）**与 composer 那条提示共用同一份**（`useChat` 导出的
+    `PENDING_REASON_TEXT`），两处不许各写一套措辞。
+    空态（本会话没有任务）时**整块仍然渲染**并显示「暂无任务」—— 否则用户不知道这里会显示什么；
+    样式照文件备份卡空态（`.snapshot-empty`）的克制口径，类名是面板自己的 `.job-empty`，
+    **刻意不给 `data-empty` 锚点**：设置页探针把 `data-empty` 当作"门控空状态"白名单来断言，
+    这里的空态不是门控行为，多一个锚点只会把探针口径搅浑。
+    面板整体按内容增高，条目多了在自己的列表里滚（`max-height: 300px`），不把上下文栏挤没。
+  - **右栏（模式感知上下文栏）**：栏内（任务面板之下）第一张是任务清单卡
+    （当前会话最后一次 `todo_write` 的结构化清单，
     无清单不渲染）；classroom = 课堂状态卡（`data-field="context.classisland-card"`，
     非 classisland provider 时整卡不渲染；内含 `context.classisland-onclass` 徽章、
     `context.classisland-current` / `context.classisland-next` 两行、无数据时
@@ -358,6 +388,13 @@
     不显示进度条与百分比，明细里给出去设置页填的路径——不编造分母；
   - provider 没回传用量时整条显示「暂无用量数据」，明细里说明原因，**绝不拿字符数换算冒充 token**；
   - 占用 ≥60% 转警示色、≥85% 转错误色（在输入框上就能看出该开新会话了）。
+- **长任务暂停提示（v15）**：`useChat` 收到带 `pendingReason` 的 `done` 事件时，把它译成一句话
+  （`max-rounds`「已达到轮次上限，已暂停」/ `budget`「已达到 token 预算，已暂停」/
+  `aborted`「已取消」），以 `tone="warn"` 的 `AppToast` 挂在 composer 下方。
+  **挂在 composer 里而不是消息滚动区**：滚动区的浮层会被自动滚底推走，而这条恰恰是"要你点继续"。
+  下一次发送 / 清空 / 切会话时由 `useChat` 复位（`pendingNotice`）；动作入口是右栏「任务」面板里
+  那条 job 的「继续」，这条提示只负责把"为什么停了"说清楚。
+  文案与面板的「暂停原因」**共用同一份**（`PENDING_REASON_TEXT`），两处措辞不许漂移。
 - **三个浮层的锚点与层级（2026-09 修复「浮层互相遮挡」）**：斜杠命令、权限下拉、上下文详解卡
   三者**一律锚在输入卡 `.composer-box` 上**（`.perm` / `.ctx` 都是 `position: static`，
   浮层用 `left/right: 0` + `bottom: calc(100% + 6px)` + `z-index: var(--z-flyout)`），
@@ -400,6 +437,11 @@
   钉住它们的探针场景见 §5.3：`chat-snapshot-card.png`（prepare 走**真实快照端口**种一份快照并
   `flush()` 落索引 → reload 让卡片重新水合 → act 点一次「回滚」→ 断言卡恰好一张、
   至少一条记录、来源译成「写文件」、按钮停在待确认文案）。
+  任务面板（v15 新增）：右栏容器 `chat.jobs`（`jobsOpen` 为 false 时整块不渲染）、面板自身
+  `chat.job-panel`、每条 `chat.job-item`、「继续」`chat.job-resume`（**仅 `paused` 时渲染**）、
+  「取消」`chat.job-cancel`、左栏入口 `chat.jobs-entry`（角标是它内部的 `.jobs-count`，
+  不另设锚点）；面板空态**没有** `data-empty` 锚点（见上文右栏条目的理由）。
+  钉住它们的探针场景见 §5.3：`chat-job-panel.png`。
   钉住它们的探针场景见 §5.3：`chat-composer-slash.png`（浮层 + 权限钮文案 + 上下文条 +
   **textarea 自动增高** 28px→170px→28px，含 200px 上限与「上限后改为内部滚动」）、
   `chat-composer-permission.png`（权限下拉三档：只读 / 变更前确认 / 完全权限三项都在；
@@ -681,6 +723,8 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
      `chat-right-panel-toggle.png` → `chat-right-panel-work.png` → `chat-project-card.png`
      （右栏模式感知两条 + 项目卡一条，均自恢复、不动会话）→ `chat-snapshot-card.png`
      （v14 文件备份卡：prepare 种真实快照并 flush 落索引 + reload，act 点一次「回滚」停在待确认态）→
+     `chat-job-panel.png`（v15 右栏「任务」面板：夹具在跑计划前种下 `paused` 的
+     `<userData>/jobs/main.json`（**必须早于面板首读**），场景只 reload 让面板重新挂载，act **不点任何按钮**）→
      `chat-subagent-page.png`（点左栏「子代理」固定项进页面，check 收尾切回对话流）→
      `chat-thinking-block.png`（reload 水合 seed 思考块后点开）→ `chat-quick-session.png`（展开侧栏快速对话面板）→
      `chat-thinking-level.png` → `chat-model-picker.png` → `chat-tts.png`（reload，朗读按钮）→
@@ -826,6 +870,16 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     写文件对运行中的进程无效），check 断言卡**恰好一张** + 文本含项目名与根目录片段 +
     `context.project-unavailable` 计数为 0；收尾还原成 `{ current: '', list: [] }` 并把
     `restored`（卡片消失）并入 `pass`，后续场景读到的仍是「无项目」；
+  - **右栏「任务」面板**（`seedJobFixture` / `CHAT_JOB_PANEL_CHECK`，产物 `chat-job-panel.png`，v15）：
+    `runCapture` 在跑计划**之前**直接写文件种一份 `paused` 的 `<userData>/jobs/main.json`（不走进程内的
+    `JobStore.create` —— 要造的正是"上次启动留下的那条 paused job"，它必须先于进程内的 job 存储存在）；
+    场景的 `prepare` 只 `reload('chat')` 让面板重新挂载并首读这份文件（面板只在挂载 / 切会话时拉一次列表，
+    而 job 存储**首读即缓存** —— 先读过空表之后再写文件，面板是看不见的，所以夹具不能放在 `prepare` 里，
+    这与 `seedChatTtsHistory` / `seedClassIslandFixture` 同批）；**act 什么都不点**（点「继续」会真的发起续跑，
+    那需要模型服务，不是截图阶段该干的事）。check 轮询等面板出现后断言：`chat.job-panel` 在、
+    `chat.job-item` ≥ 1、面板文本含「已暂停」与「轮次上限」（暂停原因必须说清"停在哪"，
+    而不是一句含糊的"未完成"）、含 `read_file` 与 `token`（面板的价值是"看得见进度"）、
+    `chat.job-resume` 存在（返回值里另记了它的文案 `resumeLabel`，只作信息、不参与 `pass`）；
   - **思考过程折叠块**（`CHAT_THINKING_BLOCK_ACT` / `CHAT_THINKING_BLOCK_CHECK`，
     产物 `chat-thinking-block.png`，BetaV2）：前提是 `seedChatTtsHistory` 种下的带 `reasoning`
     （标记 `capture-reasoning-probe`）的助手消息 —— 本场景先 reload 让渲染层重新水合 main 会话，

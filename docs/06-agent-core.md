@@ -59,6 +59,14 @@ export interface LlmProvider {
   `{ version, sessionId, updatedAt, messages, meta? }`，
   原子写 + 300ms 防抖（与 `SettingsStore` 同一套 `FileSystemPort` 约定），退出前 `flush()`；
   文件损坏时备份为 `<sessionId>.corrupt-<ts>.json` 并重建为空会话。系统提示词**不落盘**，每次请求重新组装。
+- **并发首读不得返回空快照（v15 顺带修的既有 bug）**：`SessionStore` 与主进程
+  `apps/desktop/src/main/tools/todo-port.ts` 的 `ensureLoaded` 都改成了 **in-flight promise map** ——
+  `loaded` 只在**读盘成功之后**才登记，读盘期间并发调用复用同一个 promise。
+  此前的写法是"先置 `loaded` 再 `await` 读盘"，第二个并发调用者因此拿到一份**还没有内容的空快照**，
+  紧接着的一次写入就把磁盘上的历史整体覆盖掉（会话 / 清单凭空少掉一大截，且现场已经毁了）。
+  装填也由"覆盖"改成"**合并**"：磁盘历史为底，读盘期间并发写进内存的条目按原顺序补在后面、
+  同 id 取内存那份（它可能已经被就地更新过）。§11.8 的 `snapshots` 索引与 §4.1 的 job 存储
+  从一开始就是这套口径，别把其中任何一处改回去。
 - **会话 meta 与归档（2026-09 新增，`SESSION_FILE_VERSION` 1 → 2）**：
   `meta?: { archived?: boolean; archivedAt?: string; pinned?: boolean }` 写在**会话文件自身**里。
   刻意**不做 sidecar 索引**：`listSessions()` 把 `sessions/` 下任何 `*.json` 都当作会话 id，
@@ -87,6 +95,92 @@ export interface LlmProvider {
   否则追加**。不能按 requestId 过滤：事件早于 `chat:send` 的 invoke 返回到达，发送方
   还没拿到 requestId，且发送方在 send() 里已本地 push 过同一条消息。
 - 同一会话并发请求返回 `E_BUSY`（不排队），避免历史交错。
+
+### 4.1 Job（任务）生命周期（v15）
+
+**一次请求 = 一条 job**。`kernel.send()` 落盘那条用户消息之后就建一条记录，把「跑到第几轮、
+做过哪些工具步、花了多少 token、待办快照还剩什么、下一轮从哪接着跑」写进
+`<userData>/jobs/<sessionId>.json`（实现见 `packages/agent-core/src/jobs/`）。
+在这之前，轮次用尽只是一句 `pending: true` 收尾：用户看不出"它停了"，重启后进度也一起消失，
+更没法接着跑。
+
+- **形状**：唯一定义在 `@aurora/shared` 的 `AgentJob`（渲染层要经 IPC 读它、`AgentEvent` 也带它），
+  `jobs/types.ts` 只再导出 —— 跨进程的形状只能有一份，否则"界面看到的 job"与"内核写的 job"
+  迟早漂移（与 `SnapshotRef` 同款口径）。字段：`id` / `sessionId` / `requestId?` /
+  `status`（`queued` | `running` | `paused` | `done` | `error` | `aborted`）/
+  `origin`（`chat` | `edge-bar` | `resume`）/ `text`（本条任务的用户原文）/ `round` / `maxRounds` /
+  `stepsDone[{ round, tool, ok, at }]` / `todos[{ id, text, status }]` /
+  `cursor{ nextRound, note? }` / `budget{ maxTotalTokens, usedTokens, autoContinued }` /
+  `pendingReason?` / `createdAt` / `updatedAt` / `error?`。
+  其中 `todos` 是 `todo_write` 清单的**快照**（§18 的清单本体是会话级清单文件），
+  只用来画任务时间线，两边不互相回写。
+- **状态机**：新请求从 `running` 起（`queued` 留给"已建档但还没轮到执行"，当前实现不产生它），
+  终态四选一 —— 正常收敛（模型不再要工具）→ `done`；轮次用尽 / 预算触顶 → `paused`
+  （**必带 `pendingReason`**）；用户取消 → `aborted`；异常 → `error`（**必带 `error` 文本**）。
+  之所以做成"四选一的联合"而不是"一个 status 加几个可选字段"：后者允许落一条 `{ status: 'error' }`
+  却没有 error 的记录，界面上就只剩一个说不清缘由的红点。**只有 `paused` 能进续跑**。
+- **暂停原因（`pendingReason`）三态**：`'max-rounds'` 轮次用尽 / `'budget'` token 预算触顶 /
+  `'aborted'` 用户取消。循环的 `AgentLoopEvent.done` 与推给渲染层的 `AgentEvent.done`
+  **都会带上它**，界面据此把"静默收尾"变成"可解释的暂停"（文案见 07 §2.3）。
+  正常收敛时**没有** `pendingReason` —— `pending: true` 与 `pendingReason` 是"没收敛就结束"的标记，
+  不是所有收尾都有的字段。唯一的例外是 `abort()` 里**立即补发**的那条 `done`（它不带原因，
+  职责只是当场结束渲染层的 loading）：真正的取消原因由循环收尾时那条 `done`
+  （`pendingReason: 'aborted'`）与 job 的 `aborted` 状态给出。
+- **轮次与预算（配置项见 §5 与 08 §1）**：轮次上限取 `agent.loop.maxRounds`（默认 8，等于"可配之前"
+  写死的那个默认值），累计预算取 `agent.loop.maxTotalTokens`（**0 = 不限**）。
+  预算只累加 provider 回传的真实用量，触顶判定发生在**工具轮结束时**（工具都跑完、结果都已回填），
+  不等最后一段纯文本 —— 否则"预算用尽"会被一次不需要工具的收尾回复吃掉，
+  等于预算白设。触顶时 `done` 带 `pendingReason: 'budget'`。
+- **游标与「先记再决定」**：循环每跑完一个工具轮就回调一次 `onRoundComplete`
+  （在轮次 / 预算判定**之前**），装配层在这里落 `round` / `stepsDone` / `usedTokens` 与
+  `cursor.nextRound = round + 1`。顺序不能反：反过来的话，"暂停"会把最后一轮的进度一起丢掉，
+  续跑只能重跑它。崩溃 / 断电的最坏情况因此只是重跑最后那一轮，而不是丢掉整段进度。
+- **落盘布局（唯一形状口径）**：`<userData>/jobs/<sessionId>.json` =
+  `{ version: 1, jobs: AgentJob[] }` —— 一个会话一个文件，同会话的 job 按创建顺序排列（新的在后）。
+  读写约定与 `sessions/` 同款：懒加载 + 300ms 防抖原子写 + `flush()`（退出前收尾），
+  同一 `sessionId` 的写走 per-session 串行链；`sessionId` 走白名单归一（`[A-Za-z0-9_-]`，
+  其余字符归一为 `_`）防路径穿越。损坏（JSON 解析失败 / 顶层形状不对）→ 备份为
+  `<sessionId>.corrupt-<13 位毫秒>.json`（**最多留 3 份**）后按空表继续；
+  **任何 fs 异常都只降级不抛**（`get` → undefined、`list` → []）—— 进度落盘失败不该让对话整体失败。
+- **`update(id, patch)` 的合并口径**：按 id 定位，**只改补丁里出现的键**；`budget` 是**浅合并**，
+  因此只写 `{ usedTokens }` 不会把 `autoContinued` 清零。
+- **`budget.autoContinued` 必须持久化**：它记的是"这条任务已经自动续了几轮"。只放内存的话，
+  重启之后同一条任务又会拿到一整份额度 —— 用户设的 `agent.loop.autoContinueRounds` 就此失效，
+  等于一个没有上限的循环。
+- **自动续轮**：轮次用尽但仍有 `agent.loop.autoContinueRounds` 额度（默认 2）且预算未触顶时，
+  循环**不落 `paused`**，而是原地从 `cursor.nextRound` 接着跑一轮（等价于一次自动 resume），
+  `budget.autoContinued += 1` 并**随游标一起落盘**；额度用完才落 `paused` 等用户点「继续」。
+  每一次自动续轮都写一条 `info` 日志（含 jobId、已续次数与额度）—— 这是"用户没盯着也继续往下跑"
+  的行为，不给痕迹的话用户会觉得"轮次像没有上限"。
+- **续跑（`send({ resumeJobId })`）**：只接受**同会话**且 `status === 'paused'` 的 job；
+  其余（不存在 / 已完成 / 正在跑 / 属于别的会话）一律回新错误码 **`E_JOB_STATE`** 且不开始执行
+  —— **不降级成一次新请求**：那会让用户以为在续跑、实际从头再来一遍，还可能把那条提问写进历史两次。
+  检查次序不变：先空文本、再 `E_BUSY`（同会话已有请求在跑）、再 `E_NO_MODEL`，续跑判定排在
+  `E_BUSY` / `E_NO_MODEL` 之后、建 AbortController 之前；`jobs.get` 之后再确认一次"会话仍空闲"，
+  堵住"连点两次继续、两条循环并跑"的缝。续跑**不改写** `origin`（它记的是这条任务最初从哪来，
+  改写它会让一条从主界面发出的任务在界面上变成"resume 来源"），也不重置
+  `createdAt` / `stepsDone` / `budget.autoContinued`。
+- **续跑不重复落盘用户消息**：`AgentLoopOptions.appendUserMessage = false`，
+  否则同一条提问会在会话历史里落两份（续跑最容易踩的坑）。那条提问的原文就在 `job.text` 里，
+  恢复上下文靠它。
+- **取消**：`abort()` 把 job 落 `aborted`（**不是 `paused`**）—— 用户点「停止」的语义是
+  "这条任务结束了"，不是"可以接着跑"；同时保持既有行为：立即补发一条 `done`，让渲染层的
+  loading 当场结束（job 落盘**不 await**，落盘失败还有循环收尾时的那次兜底）。
+- **未注入 job 存储时行为与 v15 之前完全一致**：不落 job、不发 `job` 事件、不自动续轮
+  （`AgentHostDeps.jobs` 可选）。轮次 / 预算 / 自动续轮三个值都以 **getter** 形式注入
+  （`maxRounds` / `maxTotalTokens` / `autoContinueRounds`）—— 设置页改完**下一次请求即生效**；
+  v15 之前轮次上限是装配期的常量值，改配置必须重启。
+- **实现落点**：形状与纯函数 `packages/agent-core/src/jobs/types.ts`；文件存储 `jobs/store.ts`
+  （`createFileJobStore`，注入式 `FileSystemPort`，纯 Node 可单测）；循环侧 `loop/agentLoop.ts`
+  （`resume` / `appendUserMessage` / `budget` / `onRoundComplete`）；装配 `host/agentHost.ts`；
+  主进程在 `main/index.ts` 装配 `<userData>/jobs`，IPC 是 `chat:jobs` / `chat:resumeJob` /
+  `chat:cancelJob`（界面口径见 07 §2.3）：列表可带 `sessionId` / `status` / `limit`，
+  缺省 `limit = 50`、按 `updatedAt` 倒序（同 `updatedAt` 再按 `createdAt` / `id` 兜底 ——
+  排序必须是确定的，否则同一份数据两次 `list` 会给出不同顺序，界面上表现为列表自己抖动）。
+  端到端证据在 `AURORA_SMOKE`（桩服务按标记一直要工具，"轮次用尽"因此是确定发生的）：
+  ①轮次用尽落 `paused` + `pendingReason='max-rounds'` 且游标与已完成步骤落盘；
+  ②续跑跑到 `done` 且会话文件里那条用户消息**只有一条**；③预算触顶落 `paused` +
+  `pendingReason='budget'`；④取消后是 `aborted`。
 
 ## 5. 工具调用循环（Agent Loop）
 
@@ -148,14 +242,24 @@ export interface LlmProvider {
   `project/instructions.ts`（`createProjectInstructionsSource`，按 root + mtime 缓存）；
   主进程在 `apps/desktop/src/main/index.ts` 用 `nodeProjectFs` 装配成 `projectInstructions` 依赖。
 
-- **循环**：用户消息 → LLM → [工具调用 → 执行 → 结果回填] × N（**上限 8 轮**）→ 最终回复。
+- **循环**：用户消息 → LLM → [工具调用 → 执行 → 结果回填] × N → 最终回复。
+  轮次上限**默认 8**，由 `agent.loop.maxRounds`（1–64）配置 —— 默认值刻意等于 v15 之前
+  `DEFAULT_MAX_ROUNDS` 写死的那个 8，因此升级后既有的长任务表现不变（见 §4.1 与 08 §1）。
 - 单轮出现多个工具调用时**按顺序执行**（不并发），保证 `chat:event` 工具卡片状态与结果顺序确定。
 - **事件顺序与归属（2026-09 增强，详见 §16.1）**：循环事件带 `round`（第几个工具调用轮次），
   `AgentEvent` 再统一带 `seq`（会话内单调序号）。渲染层据此排序消息、丢弃陈旧请求的迟到事件、
   把思考链绑到正确的那条助手消息上。**长任务的进度也走这条流**：工具执行期间经
   `emitProgress` 上报的进度（目前只有 `task` 子代理）由 `runToolStreaming` 边收边转成
   `subagent` 事件，不必等工具跑完。
-- 到达轮次上限仍未收敛：以已有文本收尾，`done` 事件带 `pending: true`（不报错、不丢输出）。
+- 到达轮次上限仍未收敛：以已有文本收尾，`done` 事件带 `pending: true` 与
+  `pendingReason: 'max-rounds'`（v15 之前这里只置 `pending`、没有原因，不报错、不丢输出）；
+  有 job 存储时这条请求落 `paused`，可以从停下的那一轮续跑（§4.1）。
+- **收尾事件的字段（v15）**：`done` 现在带 `pending?: boolean`、`pendingReason?`（三态，见上）、
+  `round`（收尾时的轮次；续跑时是**绝对**轮次，不是本次 attempt 的相对轮次）与
+  `usedTokens`（本次请求累计消耗，预算判定用的同一个数）。**正常收敛时没有 `pendingReason`**：
+  它不是"每次结束都有的字段"，渲染层不能靠它来判断请求是否成功。
+- 累计 token 预算由 `agent.loop.maxTotalTokens` 给出（**0 = 不限**，默认）：只累加 provider
+  回传的真实用量，触顶即 `done` + `pendingReason: 'budget'`，并按 §4.1 落 `paused`。
 - 工具执行异常 / 工具名不存在：以「工具错误」文本回填模型，循环继续；渲染层卡片置 `error`。
 - 工具执行状态实时推送渲染层（运行中 / 成功 / 失败 + 输出摘要），渲染为执行卡片。
 - 敏感工具（文件移动 / 删除、命令执行）需用户确认：**v1（P3）尚未落地确认交互**，
@@ -650,7 +754,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 - **索引与并发**：懒加载 + 300ms 防抖原子写 + `flush()`（退出前收尾）。
   `ensureLoaded` 用 **in-flight promise** 共享 —— 不要写成"先置 `loaded` 再 `await`"：
   那样第二个并发调用者会拿到**还没填的空索引**，随后一 append 就把磁盘上的历史整体覆盖掉
-  （同仓库的 `todo-port.ts` 有过这个 bug）。同一 `sessionId` 的索引改动走 per-session 串行链。
+  （同仓库的 `todo-port.ts` 有过这个 bug，v15 已按同一口径修好，见 §4）。
+  同一 `sessionId` 的索引改动走 per-session 串行链。
 - **损坏恢复**：`index.json` 解析失败 → 备份成 `index.corrupt-<ts>.json`（最多 3 份）→ 按空索引继续，
   并清掉该会话目录里的孤儿 `.snap`；个别畸形条目只丢那一条。
 - **永不抛错**：快照是兜底能力，它坏掉不该让"写文件"整体失败 —— 任何 fs 异常都降级为

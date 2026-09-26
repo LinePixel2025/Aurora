@@ -156,6 +156,12 @@
       "maxSnapshotBytes": 524288,        // 单个文件超过这个大小就不留底（工具结果里会说明）
       "totalBudgetBytes": 209715200      // 备份目录总预算，超出时从最旧开始删
     },
+    // v15 新增：Agent 循环（见 06 §4.1）。轮次用尽 / 预算触顶时任务落「已暂停」，可续跑
+    "loop": {
+      "maxRounds": 8,           // 1–64；一次请求内最多几轮「工具调用 → 结果回填」（默认 8）
+      "maxTotalTokens": 0,      // ≥0；累计 token 预算，0 = 不限，触顶即暂停
+      "autoContinueRounds": 2   // 0–8；轮次用完后自动再续几轮，0 = 不自动续、直接暂停等点「继续」
+    },
     "tools": {
       "enabled": true,          // 电脑操控工具总开关；false 时 8 个工具都不注册
       "workspaceDir": "",       // 工具默认工作目录；空串 = 用户主目录
@@ -345,6 +351,15 @@
   超出时从最旧开始删）。快照落在 `<userData>/backups/<sessionId>/`。
   **可写**（用户可在「智能与工具」页调整），但**不在** `WRITABLE_PATH_OVERRIDES` 里：
   AI 的 `set_setting` 默认改不动它。
+- `agent.loop`（**v15 新增**，见 06 §4.1）：Agent 循环的刹车与油门 ——
+  `maxRounds`（一次请求内最多几轮「工具调用 → 结果回填」，1–64，默认 **8** = v15 之前写死的那个默认值）、
+  `maxTotalTokens`（累计 token 预算，≥0，**0 = 不限**即默认；触顶时任务暂停而不是静默结束）、
+  `autoContinueRounds`（轮次用完后允许自动再续几轮，0–8，默认 2；**0 = 不自动续**，
+  直接落「已暂停」等用户点「继续」）。
+  三个值都以 **getter** 注入装配层，设置页改完**下一次请求即生效**（v15 之前轮次上限是常量，改配置要重启）。
+  **可写**（用户在「智能与工具 → Agent 循环」里调），但**不在** `WRITABLE_PATH_OVERRIDES` 里：
+  AI 的 `set_setting` 默认改不动它 —— 让 AI 给自己放大预算，等于绕过"该停下来问用户"的那道闸门。
+  也不在 `SETTINGS_READONLY_PREFIXES` 里（用户当然可以调）。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -383,7 +398,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 因而不新增存储面，也不会与流水出现两处数据不一致。
 
 **对话归档状态同样不进 config.json**：它写在会话文件自身（`sessions/<id>.json` 的
-`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 14）。
+`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 15）。
 会话文件自己的版本号 `SESSION_FILE_VERSION` 由 1 提到 2，读取对 v1 宽容（缺 `meta` = 未归档），
 不存在需要执行的迁移脚本 —— 「会话文件版本」与「配置版本」是两条独立的链，别混。
 
@@ -392,7 +407,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 14`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 15`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -416,9 +431,14 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   （`current: ''` / `list: []` / `maxAgentsBytes: 32768` / `permissionMode: 'confirm'`），
   分组本身缺失时交给默认配置兜底，同样不凭空造半截对象）、
   `v13 → v14`（为 `agent` 补 `snapshots.*`（写前快照的开关、保留份数与容量上限，见 06 §11.8）；
-  `agent` 已存在时只补缺键，用户调过的保留份数原样保留）。
-  十四条迁移都**幂等且不覆盖用户已写入的值**（`v10 → v11` / `v11 → v12` / `v12 → v13` / `v13 → v14`
-  同理：只补缺失键、用户填过的窗口值 / 免确认模式 / 项目列表 / 权限档位 / 快照策略原样保留），
+  `agent` 已存在时只补缺键，用户调过的保留份数原样保留）、
+  `v14 → v15`（为 `agent` 补 `loop.*`（轮次上限、token 预算与自动续轮，见 06 §4.1）；
+  `agent` 已存在时只补缺键，用户调过的那三个值原样保留。默认值刻意等于 v15 之前写死的行为
+  —— `maxRounds: 8` / 预算不限 / 自动续 2 轮 —— 因此升级后既有的长任务表现不变，
+  只是"停下来"现在会明确说是停在哪）。
+  十五条迁移都**幂等且不覆盖用户已写入的值**（`v10 → v11` / `v11 → v12` / `v12 → v13` /
+  `v13 → v14` / `v14 → v15` 同理：只补缺失键、用户填过的窗口值 / 免确认模式 / 项目列表 /
+  权限档位 / 快照策略 / 循环参数原样保留），
   重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
@@ -659,6 +679,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 | `projects.*` | 常显（否则用户无法添加第一个项目；v13 新增）。`projects.list` 为空时列表区换成 `data-empty="projects.list"` 空状态（「尚未添加项目」），「添加项目」按钮**始终在** |
 | `agent.permissionMode` | 常显（权限档位必须随时能改回来；v13 新增） |
 | `agent.snapshots.*` | 常显（`enabled` 必须随时能改回来；v14 新增）。关掉 `enabled` 时三个数字字段整块换成 `data-empty="agent.snapshots"` |
+| `agent.loop.*` | 常显（**不跟 `agent.tools.enabled` 门控**：它管的是"一次请求怎么停下来"，不是"注册哪些工具"；v15 新增）。三个字段一次到位、没有空态 |
 
 校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针按页断言——
 `settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0，
@@ -675,6 +696,9 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 **具体计数以 `report.json` 的实际条目为准**），关着时只要求总开关自己还在；
 **文件备份区组**（`agent.snapshots.*`，v14 新增）要求"四个字段都在、或给出
 `data-empty="agent.snapshots"`"，且该页 `data-empty` 白名单里要放行它（默认开启时不会出现）。
+**Agent 循环区组**（`agent.loop.*`，v15 新增）要求 `[data-field^="agent.loop."]` 计数 **≥ 3**
+（轮次上限 / token 预算 / 自动续轮三个字段常显，不跟 `agent.tools.enabled` 门控），
+且**不为它放行任何 `data-empty`**（它没有空态，多一个就说明门控串了）。
 探针结果写 `<目录>/report.json` 并以 `AURORA_SMOKE_RESULT:` 前缀落日志，存在 FAIL 时进程退出码为 2。
 
 ## 7. ClassRoom 模式设置页（v0.4.0）
