@@ -5,8 +5,8 @@
 - 创建时间：2026-09-26 00:39
 - 执行模式：全部
 - 基线提交：`5f8339bab288e4214659209c346eb3ad37325fe1`
-- 归档目录：（完成后填写：`step/archive/<YYYYMMDD-HHMMSS>-opencode-parity`）
-- 归档时间：（完成后填写）
+- 归档目录：`step/archive/20260926-052221-opencode-parity`
+- 归档时间：2026-09-26 05:22:21
 
 ## 任务背景（为什么这么拆）
 
@@ -157,7 +157,7 @@ doom-loop 检测、显式 `cache_control`、`websearch` / `question` / `plan` �
 | 4 | step-04-edit-tool.md | `edit_file`：精确替换 + EOL 保真 + 唯一性拒绝 + 读前守卫 | done | step 3 | `packages/agent-core/src/tools/edit.ts`、`edit.test.ts`、`files.ts`、`files.test.ts`、`packages/agent-core/src/index.ts`、`apps/desktop/src/main/tools/file-port.ts`、`file-port.test.ts`、`index.ts`、`index.test.ts`、`apps/desktop/src/main/index.ts` |
 | 5 | step-05-command-allowlist.md | `run_command` 免确认模式列表（内核匹配器 + 主进程接线 + 设置页 + 审计） | done | step 4 | `packages/agent-core/src/tools/command-allow.ts`、`command-allow.test.ts`、`packages/agent-core/src/index.ts`、`packages/shared/src/config/schema.ts`、`schema.test.ts`、`apps/desktop/src/main/agent-host.ts`、`agent-host.test.ts`、`index.ts`、`smoke.ts`、`smoke-llm.ts`、`capture.ts`、`apps/desktop/src/renderer/settings/pages/AgentPage.vue` |
 | 6 | step-06-prompt-caching.md | prompt caching：提示词前缀稳定化 + 工具顺序稳定 + 命中观测 + 全量文档收口 | done | step 5 | `packages/agent-core/src/context/systemPrompt.ts`、`systemPrompt.test.ts`、`packages/agent-core/src/tools/registry.ts`、`packages/agent-core/src/host/agentHost.ts`、`packages/agent-core/src/llm/openai-compat.ts`、`openai-compat.test.ts`、`packages/shared/src/ipc/types.ts`、`apps/desktop/src/renderer/shared/composables/useChat.ts`、`apps/desktop/src/renderer/chat/components/ComposerContextBar.vue`、`apps/desktop/src/main/smoke.ts`、`smoke-llm.ts`、`capture.ts`、`AGENTS.md`、`docs/04`、`docs/06`、`docs/07`、`docs/10`、`docs/11`、`docs/README.md` |
-| 7 | step-07-archive.md | 归档清理 | pending | step 1..6 | `step/` |
+| 7 | step-07-archive.md | 归档清理 | done | step 1..6 | `step/` |
 
 **为什么没有同波并行**（按修订后的 `Writes` 重新核过）：共享文件比初版估计的多，且**贯穿多步**——
 `docs/06-agent-core.md` 被 step 1 / 4 / 5 / 6 改；
