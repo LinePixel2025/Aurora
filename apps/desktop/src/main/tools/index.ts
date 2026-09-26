@@ -16,11 +16,23 @@
  *   —— todo / task 是 Agent 自身的工作能力（维护任务清单、派生上下文隔离的子代理），
  *   不是「电脑操控」，与 set_setting / 扩展工具同级。
  *
+ * 另有一条**横切**规则：`agent.permissionMode = 'readonly'`（只读档）时，「写 / 执行 /
+ * 有系统副作用」的工具**根本不注册** —— `run_command` / `write_file` / `edit_file` /
+ * `open_path` / `todo_write`。只读档的口径是「不在工具表里」而不是「注册后再拒绝」：
+ * 模型在工具清单里看不到它们，就不会先答应用户、再在调用时被拒。
+ * 各装配器自己的子开关照旧生效（只读档只会让工具表**更小**，不会让哪个开关失效）。
+ *
  * `sync()` 是**唯一**的开关落地点：启动时调一次，`settings:changed` 时再调一次，
- * 于是「改开关 / 改上限」立即生效（下一次请求的系统提示词就会看到新的工具表），无需重启。
- * 每次都**重建**工具实例（构造很便宜），所以 cwd / 超时 / 上限也能热改。
+ * 于是「改开关 / 改档位 / 改上限」立即生效（下一次请求的系统提示词就会看到新的工具表），
+ * 无需重启。每次都**重建**工具实例（构造很便宜），所以 cwd / 超时 / 上限也能热改。
  */
-import { COMPUTER_TOOL_NAMES, type Logger, type Settings } from '@aurora/shared'
+import {
+  COMPUTER_TOOL_NAMES,
+  resolvePermissionMode,
+  type Logger,
+  type PermissionMode,
+  type Settings,
+} from '@aurora/shared'
 import {
   createClipboardTools,
   createEditTool,
@@ -34,6 +46,7 @@ import {
   createTerminalTool,
   createTodoTools,
   createWebFetchTool,
+  TODO_WRITE_TOOL_NAME,
   type AgentProviderFactory,
   type ClipboardPort,
   type CommandRunner,
@@ -52,6 +65,21 @@ import {
   createClassIslandRemindTool,
   type ClassIslandNotifyPort,
 } from './classisland-remind.js'
+
+/**
+ * 现读「生效档位」（`agent.permissionMode` + `advanced.confirmSensitiveTools` 的双开关判定
+ * 在 `@aurora/shared` 的 `resolvePermissionMode` 里，这里只补「没注入配置」的缺省值）。
+ *
+ * **绝不缓存**：`sync()` 在启动时调一次、每次 `settings:changed` 再调一次，档位若在装配时
+ * 算一次存下来，用户把档位改回 `readonly` 后工具表就不会跟着收窄 ——
+ * 那正是最坏的一类漂移（「界面说只读、实际还能写」）。
+ *
+ * `settings` 为 `undefined` 时按 `'confirm'` 处理：与三档权限落地**之前**的行为一字不差，
+ * 且 `registerAgentCoreTools` 的配置取值是可选注入（单测可直接构造装配器）。
+ */
+function currentPermissionMode(settings: Settings | undefined): PermissionMode {
+  return settings === undefined ? 'confirm' : resolvePermissionMode(settings)
+}
 
 export interface ComputerToolsDeps {
   tools: ToolRegistry
@@ -106,8 +134,16 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
       // 不存在的名字 `unregister` 返回 false，忽略即可。
       for (const name of toolNames) deps.tools.unregister(name)
 
-      const cfg = deps.getSettings().agent.tools
+      // 档位与配置**每次现读**（live getter）：`sync()` 是启动一次 + 每次 `settings:changed`
+      // 一次，所以改档位 / 改开关后下一次请求的工具表就变了，无需重启。
+      const settings = deps.getSettings()
+      const mode = currentPermissionMode(settings)
+      const readonly = mode === 'readonly'
+
+      const cfg = settings.agent.tools
       if (!cfg.enabled) {
+        // 既有第一条分支，**优先级高于档位**：总开关关掉时 8 个工具一个都不注册，
+        // 与档位是 readonly 还是 auto 无关（本来就关得更彻底，不必再看档位）。
         deps.logger.info('电脑操控工具总开关已关闭：全部工具都不注册', {
           names: [...toolNames],
         })
@@ -116,7 +152,10 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
 
       const workspaceDir = cfg.workspaceDir.trim() === '' ? deps.homeDir() : cfg.workspaceDir.trim()
 
-      if (cfg.terminal.enabled) {
+      // 只读档：`run_command` 能执行任意命令（写盘 / 改注册表 / 起进程 / 装软件），
+      // 是「有系统副作用」的典型，因此**整个分支跳过**——不在只读清单里的工具
+      // 就是不进工具表，而不是「注册好、调用时再拒绝」。
+      if (cfg.terminal.enabled && !readonly) {
         deps.tools.register(
           createTerminalTool({
             run: deps.run,
@@ -130,6 +169,8 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
       if (cfg.files.enabled) {
         // 文件工具工厂返回 read_file / write_file / list_dir / open_path 四个；
         // 打开类工具受**独立开关**控制，因此这里按名字挑出前三个。
+        // 只读档再摘掉 `write_file`（它落盘改文件）→ 只剩 `read_file` / `list_dir`，
+        // 判定写法与下面跳过 `open_path` 完全一致（同一个循环里按名字过滤）。
         // `readTracker` 传进去：`read_file` 读成功就为本会话打标记（docs/06 §11.6）。
         for (const tool of createFileTools({
           files: deps.files,
@@ -137,17 +178,23 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
           maxReadBytes: cfg.files.maxReadBytes,
           readTracker,
         })) {
-          if (tool.name !== 'open_path') deps.tools.register(tool)
+          if (tool.name === 'open_path') continue
+          if (readonly && tool.name === 'write_file') continue
+          deps.tools.register(tool)
         }
         // `edit_file` 由 `createEditTool` **单独**产出（`createFileTools` 的「恰好 4 个」契约不变），
         // 与 read_file / write_file / list_dir 共用 `files.enabled` 这一个开关，
         // **不单独加开关**（docs/06 §11、docs/08 §1）——它的安全边界是 `sensitivity: 'confirm'`。
-        deps.tools.register(createEditTool({ files: deps.files, readTracker }))
+        // 只读档**整行跳过**：它按 oldString/newString 改写既有文件，与 `write_file` 同类。
+        if (!readonly) {
+          deps.tools.register(createEditTool({ files: deps.files, readTracker }))
+        }
       }
 
+      // 搜索工具（grep / glob，docs/06 §11.5）**在只读档保留**：两者只读文件内容与目录名，
+      // 不落盘、不起进程 —— 正是只读档该留下的能力。默认搜索根与文件类工具同一个 workspaceDir
+      // （空串时已在上方回落成用户主目录）。
       if (cfg.search.enabled) {
-        // 搜索工具（grep / glob，docs/06 §11.5）：默认搜索根与文件类工具同一个 workspaceDir
-        // （空串时已在上方回落成用户主目录）。
         for (const tool of createSearchTools({
           files: deps.files,
           maxResults: cfg.search.maxResults,
@@ -157,12 +204,16 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
         }
       }
 
-      if (cfg.open.enabled) {
+      // 打开类工具（`open_path`）**在只读档跳过**：它让系统用默认程序打开文件 / 目录 / URL
+      // （可能拉起浏览器下载、启动外部程序），有系统副作用。
+      if (cfg.open.enabled && !readonly) {
         deps.tools.register(createOpenTool({ open: deps.open }))
       }
 
       const names = toolNames.filter((name) => deps.tools.get(name) !== undefined)
-      deps.logger.info('已同步电脑操控工具', { names, workspaceDir })
+      // `mode` 一并落日志：排查「为什么 write_file 不在表里」时第一眼就能看出是档位摘的，
+      // 还是子开关关的。
+      deps.logger.info('已同步电脑操控工具', { names, workspaceDir, mode })
       return names
     },
   }
@@ -279,6 +330,14 @@ export interface AgentCoreToolsDeps {
   todoPort: TodoPort
   /** provider 工厂：`task` 子代理按次即时构造；与 KernelAgentHost 共享同一实例（含启动自愈） */
   provider: AgentProviderFactory
+  /**
+   * 配置取值（live getter）。**只用来判定 `readonly` 档**该不该摘掉 `todo_write` ——
+   * 本装配器不受 `agent.tools.enabled` 门控，因此不读 `agent.tools.*` 的任何子开关。
+   *
+   * 可选：不注入时按 `'confirm'` 档处理（= 三档权限之前的行为），单测可以直接构造装配器；
+   * 生产接线（`main/index.ts`）**必须**注入，否则只读档摘不掉 todo_write（构造时会 warn）。
+   */
+  getSettings?: () => Settings
 }
 
 export interface AgentCoreToolsRegistry {
@@ -294,16 +353,36 @@ export interface AgentCoreToolsRegistry {
  * 不属于「电脑操控」的开关语义；`task` 消耗模型调用但不碰系统，
  * 子代理的工具面在执行时从父表过滤（confirm 敏感工具 / task 自身 / mcp.*
  * 一律不可见，过滤逻辑在 agent-core 的 `tools/task.ts`，装配层只负责注册）。
+ *
+ * 唯一的例外是**只读档**：`todo_write` 的 `sensitivity` 虽是 `safe`，但它会往
+ * `<userData>/todos/<sid>.json` 落盘 —— 档位叫「只读」就必须真的没有系统副作用，
+ * 否则口号是假的。`todo_read` / `task` 不碰系统，照常注册。
  */
 export function registerAgentCoreTools(deps: AgentCoreToolsDeps): AgentCoreToolsRegistry {
+  if (deps.getSettings === undefined) {
+    // 不给配置取值时 `currentPermissionMode` 按 confirm 档处理，于是只读档摘不掉 todo_write。
+    // 这里 warn 一次（构造期，不是每次 sync）：生产接线漏注入时能在启动日志里立刻看见。
+    deps.logger.warn('registerAgentCoreTools 未注入 getSettings：readonly 档不会摘掉 todo_write')
+  }
+
   return {
     sync(): string[] {
       // 先全量摘掉再重建（幂等），与电脑操控 / 扩展工具同一套时序约定
       for (const name of AGENT_CORE_TOOL_NAMES) deps.tools.unregister(name)
 
+      // 档位现读（live getter，绝不缓存）：先 confirm 后切 readonly 时，第二次 `sync()`
+      // 就把 `todo_write` 摘掉，用户不必重启。
+      const readonly = currentPermissionMode(deps.getSettings?.()) === 'readonly'
+
       for (const tool of createTodoTools({ port: deps.todoPort })) {
+        // 只读档：摘 `todo_write`（落盘），留 `todo_read`（纯读文件）。
+        // 名字比对用 agent-core 导出的常量，不手写字面量 —— 改名时由类型系统兜住。
+        if (readonly && tool.name === TODO_WRITE_TOOL_NAME) continue
         deps.tools.register(tool)
       }
+      // `task` 照常注册：它自己不碰系统（只派生一个上下文隔离的子代理），而且子代理的工具面
+      // 是执行时从**父表**过滤出来的（agent-core `tools/task.ts`）——只读档下父表里本就没有
+      // 写 / 执行类工具，子代理自然也拿不到。
       deps.tools.register(
         createTaskTool({ provider: deps.provider, tools: deps.tools, logger: deps.logger }),
       )

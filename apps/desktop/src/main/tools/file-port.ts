@@ -14,6 +14,9 @@
  * 忽略目录、符号链接、预算、结果顺序这些口径只写一份；单文件的大小上限、遍历预算与墙钟预算
  * 常量（`MAX_FILE_SCAN_BYTES` / `SEARCH_BUDGET` / `SEARCH_TIME_BUDGET_MS` / `DEFAULT_SEARCH_IGNORE`）
  * 同样来自内核，这里只引用，不另抄一份字面量（可经 `NodeFilePortOptions` 收紧，便于单测）。
+ *
+ * 项目根边界（docs/06 §11.1）：六个方法都先过 `resolveWithin`（realpath 前缀校验），
+ * 越界抛 `PATH_OUTSIDE_CODE`；`run_command` 的 cwd 校验复用**同一个**函数（见 `command-runner.ts`）。
  */
 import {
   appendFile,
@@ -21,13 +24,15 @@ import {
   open,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
   writeFile,
 } from 'node:fs/promises'
 import type { Dirent, Stats } from 'node:fs'
-import { dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { createNoopLogger, type Logger } from '@aurora/shared'
 import {
   DEFAULT_READ_LINES,
   DEFAULT_SEARCH_IGNORE,
@@ -44,11 +49,177 @@ import {
 import type {
   DirEntry,
   FilePort,
+  FindFilesOptions,
   FindFilesResult,
   ReadLine,
+  ReadTextOptions,
+  ReadTextResult,
+  ReadWholeTextResult,
   SearchMatch,
+  SearchTextOptions,
   SearchTextResult,
 } from '@aurora/agent-core'
+
+/* ───────────────────────── 项目根边界（docs/06 §11.1） ───────────────────────── */
+
+/**
+ * 越界错误码：`resolveWithin` 抛出的错误带这个 `code`。
+ *
+ * 为什么要有它：调用方（工具层 / `run_command`）必须能把「路径越界」与普通 IO 失败区分开
+ * ——两者的处置完全不同（越界要让用户改路径或显式放行，IO 失败要重试或换目标）。
+ */
+export const PATH_OUTSIDE_CODE = 'E_PATH_OUTSIDE_WORKSPACE'
+
+/** 越界错误（`code` 固定为 `PATH_OUTSIDE_CODE`） */
+export interface PathOutsideError extends Error {
+  code: typeof PATH_OUTSIDE_CODE
+}
+
+/**
+ * 显式放行位（与 `packages/agent-core/src/tools/files.ts` 上的同名字段对应）：
+ * `true` = 用户已在确认卡片里同意操作项目根之外的路径，**跳过边界校验**。
+ */
+export interface OutsideOption {
+  /** 显式放行到项目根之外；缺省 / `false` = 按项目根校验 */
+  allowOutside?: boolean
+}
+
+/**
+ * 项目根边界的三件套：`file-port` 与 `command-runner` **共用同一套判定**（不复制两份）。
+ *
+ * 两个 getter 都是**每次调用即时读**的 live getter（不是启动时快照）：用户在设置页改
+ * 「项目根 / 是否限制在项目内」后立刻生效，不需要重建端口（与 `registerComputerTools` 的 `sync()`
+ * 热重建是两条互补的路子——这里连重建都省了）。
+ */
+export interface WorkspaceGuardOptions {
+  /**
+   * 项目根（绝对路径）；返回 `undefined` / 空串 = **不做边界校验**
+   * （行为与没有边界校验时逐字一致）。
+   */
+  workspaceRoot?: () => string | undefined
+  /**
+   * 是否启用边界校验。缺省 = `workspaceRoot()` 有值就启用；
+   * 显式返回 `false` 时**完全等同于没配根**（用户在设置页关掉了「限制在项目内」）。
+   */
+  enforceWorkspace?: () => boolean
+  /** 根不可用（不存在 / 解析不出真实路径）时的留痕；缺省静默（no-op logger） */
+  logger?: Logger
+}
+
+/**
+ * 解析路径并做**项目根 realpath 前缀校验**（`FilePort` 六个方法与 `run_command` 的 cwd 共用）。
+ *
+ * ## 判定口径
+ * 1. `target = resolve(path)`：先按 `node:path` 归一（相对路径、`..` 段、混合分隔符），与既有口径一致。
+ * 2. **realpath 归一**：对目标的「已存在的最近父目录」做 `fs.realpath`，再把不存在的尾部原样拼回去
+ *    （`canonicalize`）——`write_file` 新建文件时目标还不存在，而"还不存在"恰恰是最需要校验的场景；
+ *    只做字符串比较的话，符号链接 / junction / 8.3 短名都能把路径指到根外。
+ *    `workspaceRoot()` 同样 realpath；**根不存在视为不可用 → 不启用校验**（记一条 warn，不抛错：
+ *    项目目录还没建好不该让所有文件工具都失效）。
+ * 3. 前缀判定用 `relative(root, target)`：结果以 `..` 段开头（或换盘符时是绝对路径）即越界。
+ *    ⚠️ 判据是 `rel === '..' || rel.startsWith('..' + sep)`，**不是** `rel.startsWith('..')`
+ *    ——后者会把根内一个合法的 `..foo` 条目误判成越界（`relative` 对它返回的正是 `..foo`）。
+ *    目标恰好就是根本身（`rel === ''`）**允许**：`list_dir` / `glob` / `grep` 的根常常就是项目根。
+ *
+ * ## 大小写（Windows 实测结论见 `file-port.test.ts` 的「项目根边界」用例注释）
+ * `fs.realpath` 会把 `c:\...` / `C:\...` / `\\?\C:\...` / 8.3 短名一律归一成**磁盘上的真实长名形态**
+ * （盘符也归成大写），而 `path.win32.relative` 的分段比较本身大小写不敏感 —— 所以这里**不需要**
+ * 再 `toLowerCase()`（加了是死代码，只会掩盖"判定其实靠 relative 的大小写不敏感"这个事实）。
+ *
+ * ## 返回值
+ * 返回 `resolve(path)`，**不是** realpath 之后的形态：回带路径与加边界之前逐字一致
+ * （模型看到的路径就是它自己写的那个）；realpath 形态只用于判定，不外泄。
+ *
+ * `allowOutside === true` 整段跳过（用户显式放行）；`guard` 缺省 / 根不可用 / 校验关闭时
+ * 直接返回 `resolve(path)`：**行为与没有边界校验时完全一致**。
+ */
+export async function resolveWithin(
+  path: string,
+  allowOutside: boolean,
+  guard?: WorkspaceGuardOptions,
+): Promise<string> {
+  const target = resolve(path)
+  if (allowOutside) return target
+  const root = await resolveWorkspaceRoot(guard)
+  if (root === undefined) return target
+  const rel = relative(root, await canonicalize(target))
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw createPathOutsideError(target, root)
+  }
+  return target
+}
+
+/** 越界判定：唯一的识别方式是错误上的 `code`（message 只给人看，不参与判定） */
+export function isPathOutsideError(error: unknown): error is PathOutsideError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === PATH_OUTSIDE_CODE
+  )
+}
+
+/** 越界错误：message 里带目标与根（**越界不静默**），并带上可识别的 `code` */
+function createPathOutsideError(target: string, root: string): PathOutsideError {
+  const error = new Error(
+    `该路径在项目根之外；如需操作请改用项目内路径（目标：${target}；项目根：${root}）`,
+  ) as PathOutsideError
+  // `as` 而不是 `Object.assign`：`Object.assign` 会把 `code` 推成 `string`，
+  // 与 `PathOutsideError` 上的字面量类型对不上（TS2322）
+  error.code = PATH_OUTSIDE_CODE
+  return error
+}
+
+/**
+ * 取**可用的**项目根（realpath 形态）：没配 / 显式关闭 / 根不存在 都返回 `undefined`
+ * = 不启用边界校验。
+ *
+ * 根必须真实存在才谈得上"边界"：`workspaceDir` 配了但目录还没建、或用户在设置页填了个错的路径时，
+ * 让全部文件工具直接报错是更糟的结果（连读都读不了），所以这里选择**退回无边界**并留一条 warn。
+ */
+async function resolveWorkspaceRoot(
+  guard: WorkspaceGuardOptions | undefined,
+): Promise<string | undefined> {
+  if (guard?.enforceWorkspace !== undefined && !guard.enforceWorkspace()) return undefined
+  const declared = guard?.workspaceRoot?.()
+  if (declared === undefined || declared.trim() === '') return undefined
+  try {
+    return await realpath(resolve(declared))
+  } catch (error) {
+    guard?.logger?.warn('项目根不可用（不存在或无法解析），已跳过路径边界校验', {
+      workspaceRoot: declared,
+      reason: error instanceof Error ? error.message : String(error),
+    })
+    return undefined
+  }
+}
+
+/**
+ * 目标路径的 realpath 形态：从目标本身逐级向上找到**第一个真实存在**的祖先，对它做 `fs.realpath`，
+ * 再把沿途不存在的名字按原样拼回去。
+ *
+ * 为什么不直接 `realpath(target)`：`write_file` 新建文件时目标不存在，`realpath` 会 `ENOENT`
+ * （Windows 实测就是 `ENOENT`，不是返回原路径），于是"最该校验的新建场景"反而漏掉。
+ *
+ * 为什么必须 realpath：`resolve()` 只做**字符串级**归一，根内一个指向根外的符号链接 / junction
+ * 会让"看着在根内"的路径实际落到根外——纯字符串前缀比较挡不住这一类。
+ */
+async function canonicalize(target: string): Promise<string> {
+  const tail: string[] = []
+  let current = target
+  for (;;) {
+    try {
+      const real = await realpath(current)
+      return tail.length === 0 ? real : join(real, ...tail.reverse())
+    } catch {
+      const parent = dirname(current)
+      // 上溯到盘符根（`C:\` 的 dirname 还是 `C:\`）仍不存在：放弃上溯，原样返回。
+      // 不在这里报错——路径本身不存在时，后面的 fs 调用会给出更准确的 ENOENT。
+      if (parent === current) return target
+      tail.push(basename(current))
+      current = parent
+    }
+  }
+}
 
 /**
  * 搜索层的可选注入（docs/06 §11.5）：四个字段都只是**收紧护栏**用的，
@@ -56,7 +227,7 @@ import type {
  * 不必真造 2 万个文件、1 MiB 的文本或一个病态正则就能验证「触顶仍返回已收集结果」
  * 「大文件跳过」「时间护栏到点不再扫」这些行为。
  */
-export interface NodeFilePortOptions {
+export interface NodeFilePortOptions extends WorkspaceGuardOptions {
   /** 忽略的目录名（整棵子树跳过；按名字**精确匹配**，不做模式匹配） */
   searchIgnore?: readonly string[]
   /** 遍历预算：文件数与总字节数双重上限，任一触顶即停止遍历 */
@@ -67,9 +238,37 @@ export interface NodeFilePortOptions {
   searchTimeBudgetMs?: number
 }
 
+/**
+ * 本实现的端口类型：比内核的 `FilePort` **每个方法多一个可选的放行位**（`OutsideOption`）。
+ *
+ * 为什么要显式声明而不是复用 `FilePort`：内核侧的同名字段是**同一波**由另一位同事加上的，
+ * 这里先把自己的类型钉住，两侧改动互不阻塞；字段是**可选**的，所以本类型可直接赋给 `FilePort`
+ * （`main/index.ts` 就是这么用的）。
+ */
+export interface NodeFilePort extends FilePort {
+  readText(path: string, options: ReadTextOptions & OutsideOption): Promise<ReadTextResult>
+  readWholeText(
+    path: string,
+    maxBytes: number,
+    options?: OutsideOption,
+  ): Promise<ReadWholeTextResult>
+  writeText(
+    path: string,
+    content: string,
+    mode: 'overwrite' | 'append',
+    options?: OutsideOption,
+  ): Promise<{ absolutePath: string; bytes: number }>
+  list(
+    path: string,
+    limit: number,
+    options?: OutsideOption,
+  ): Promise<{ absolutePath: string; entries: DirEntry[]; truncated: boolean }>
+  findFiles(options: FindFilesOptions & OutsideOption): Promise<FindFilesResult>
+  searchText(options: SearchTextOptions & OutsideOption): Promise<SearchTextResult>
+}
+
 /** 二进制探测范围：只扫前 8 KiB，避免为判定类型读入整个大文件 */
 const NUL_SCAN_BYTES = 8 * 1024
-
 /** 含 NUL 字节即按二进制处理（文本文件不该出现 NUL） */
 const BINARY_MESSAGE = '这是二进制文件，无法按文本读取（可改用 run_command 处理）'
 
@@ -81,7 +280,7 @@ const BINARY_MESSAGE = '这是二进制文件，无法按文本读取（可改�
 const NOT_UTF8_MESSAGE =
   '文件不是 UTF-8 文本（无法保证逐字节保真，已放弃读取）：GBK / GB18030 / UTF-16 等编码或二进制内容在 UTF-8 编解码往返后会丢失原始字节'
 
-export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort {
+export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFilePort {
   // 搜索层的四条护栏在工厂里**一次性**规范化：遍历期间不再重算，也不信任调用方给的怪值
   const searchIgnore: ReadonlySet<string> = new Set(options.searchIgnore ?? DEFAULT_SEARCH_IGNORE)
   const searchBudgetLimits = options.searchBudget ?? SEARCH_BUDGET
@@ -93,6 +292,13 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort 
     options.searchTimeBudgetMs ?? SEARCH_TIME_BUDGET_MS,
     SEARCH_TIME_BUDGET_MS,
   )
+  // 项目根边界：两个 getter 原样透传（**不在工厂里快照**，每次调用即时读）；
+  // 未注入 logger 时为 no-op，主进程装配层会注入真实 logger（根不可用时留痕）
+  const guard: WorkspaceGuardOptions = {
+    workspaceRoot: options.workspaceRoot,
+    enforceWorkspace: options.enforceWorkspace,
+    logger: options.logger ?? createNoopLogger(),
+  }
 
   return {
     /**
@@ -109,8 +315,10 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort 
      *   那一行的**行号仍正确**、内容不完整，调用方据 `scanLimitHit` 已知「只解析了开头」。
      * - 含 NUL 字节按二进制拒绝；目录提示改用 `list_dir`（两条口径与旧实现一致）。
      */
-    async readText(path, options) {
-      const absolutePath = resolve(path)
+    async readText(path: string, options: ReadTextOptions & OutsideOption) {
+      // 边界校验放在 try **之外**：越界错误要原样抛出（带 `PATH_OUTSIDE_CODE`），
+      // 不能被 `withPath` 包成一条普通 IO 失败（那样调用方就分不清"越界"与"读不到"了）
+      const absolutePath = await resolveWithin(path, options.allowOutside === true, guard)
       try {
         const info = await stat(absolutePath)
         if (info.isDirectory()) throw new Error('这是目录，不是文件（可改用 list_dir）')
@@ -168,8 +376,8 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort 
      *   ——一个 1 MiB 以内的 `.png` / 压缩包只要字节里恰好出现一段能被当成 `oldString` 的序列，
      *   或某个 GBK 文本文件的非 ASCII 字节被 `toString('utf8')` 换成 U+FFFD，即可触发。
      */
-    async readWholeText(path, maxBytes) {
-      const absolutePath = resolve(path)
+    async readWholeText(path: string, maxBytes: number, options?: OutsideOption) {
+      const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard)
       const limit = resolveLimit(maxBytes, MAX_EDIT_BYTES)
       try {
         const info = await stat(absolutePath)
@@ -203,8 +411,14 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort 
       }
     },
 
-    async writeText(path, content, mode) {
-      const absolutePath = resolve(path)
+    async writeText(
+      path: string,
+      content: string,
+      mode: 'overwrite' | 'append',
+      options?: OutsideOption,
+    ) {
+      // 校验在建父目录**之前**：越界时连 `mkdir -p` 都不该发生
+      const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard)
       const bytes = Buffer.byteLength(content, 'utf8')
       try {
         await mkdir(dirname(absolutePath), { recursive: true })
@@ -219,8 +433,8 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort 
       }
     },
 
-    async list(path, limit) {
-      const absolutePath = resolve(path)
+    async list(path: string, limit: number, options?: OutsideOption) {
+      const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard)
       try {
         const dirents = await readdir(absolutePath, { withFileTypes: true })
         const entries: DirEntry[] = []
@@ -264,8 +478,12 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort 
      *   其余遍历口径与 `searchText` 完全一致：忽略目录、符号链接、文件数与字节数双预算。
      * - 命中数达 `maxResults` 即停止遍历并置 `truncated`（此时可能还有更多，模型据此收窄模式）。
      */
-    async findFiles(options): Promise<FindFilesResult> {
-      const absoluteRoot = resolve(options.root)
+    async findFiles(options: FindFilesOptions & OutsideOption): Promise<FindFilesResult> {
+      // 只校验**遍历根**，遍历过程中**不**逐文件校验：每次校验都要 realpath（最坏情况逐级上溯多次
+      // 系统调用），给一次 glob 加上几千次 realpath 会把搜索拖垮。这个取舍是安全的——
+      // 子路径由 `join(根, 名字)` 拼出，而 walker 的**口径 1** 一律跳过符号链接
+      //（文件与目录都跳），所以"根内某个链接把我带到根外"这条路已经在遍历层堵住了。
+      const absoluteRoot = await resolveWithin(options.root, options.allowOutside === true, guard)
       const maxResults = resolveMaxResults(options.maxResults)
       const pattern = options.pattern
       const files: string[] = []
@@ -313,8 +531,9 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): FilePort 
      * - `include` 的 glob **只在开始遍历前编译一次**（`compileGlob` 每次调用都会 `new RegExp`，
      *   放在 visitor 里就是每个文件重编译一遍）；匹配语义与 `matchesGlob` 的缺省口径一致。
      */
-    async searchText(options): Promise<SearchTextResult> {
-      const absoluteRoot = resolve(options.root)
+    async searchText(options: SearchTextOptions & OutsideOption): Promise<SearchTextResult> {
+      // 同 `findFiles`：只校验遍历根，不在 visitor 里逐文件 realpath（取舍理由见那里的注释）
+      const absoluteRoot = await resolveWithin(options.root, options.allowOutside === true, guard)
       const maxResults = resolveMaxResults(options.maxResults)
       const include = options.include
       const matches: SearchMatch[] = []

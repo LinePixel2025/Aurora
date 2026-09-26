@@ -37,6 +37,8 @@ import {
   COMPUTER_TOOL_NAMES,
   SettingsSchema,
   SettingsStore,
+  // 三档权限的生效档位（docs/06 §11.2）：确认判定与工具注册必须读同一个来源
+  resolvePermissionMode,
   type ClassIslandStatus,
   type ClassIslandTestResult,
   type Logger,
@@ -57,7 +59,12 @@ import { FileLogger } from './logger.js'
 import { createSafeStorageCrypto } from './crypto.js'
 import { WindowManager } from './window-manager.js'
 import { PerceptionHub } from './perception.js'
-import { DesktopAgentHost, createConfirmTool, createProviderFactory } from './agent-host.js'
+import {
+  DesktopAgentHost,
+  createConfirmTool,
+  createProviderFactory,
+  type ConfirmToolDecision,
+} from './agent-host.js'
 import { McpController } from './mcp.js'
 import { LlmTester } from './llm-tester.js'
 import { TtsSynthesizer } from './tts.js'
@@ -228,6 +235,12 @@ let classIslandSignature = ''
 let disposeIpc: (() => void) | undefined
 /** 工具表与电脑操控装配器提到模块级：`runSmokeTest` 要在真实进程里断言它们（docs/06 §11） */
 let tools: ToolRegistry | undefined
+/**
+ * 三档权限的确认判定（v13，docs/06 §11.2）：同样提到模块级 ——
+ * `runSmokeTest` 要拿**注入内核的那个实例**断言「auto 档根内免确认 / 根外仍弹卡」，
+ * 另建一个 `createConfirmTool` 只会自证一个与生产无关的副本。
+ */
+let confirmTool: ConfirmToolDecision | undefined
 let computerTools: ComputerTools | undefined
 /** `set_setting` 装配器（docs/06 §12）：与电脑操控工具分开注册，互不摘除 */
 let settingsTool: SettingsToolRegistry | undefined
@@ -544,13 +557,26 @@ async function bootstrap(): Promise<void> {
     applyPatch: () => createSettingsWriter(deps),
     logger: logger.child('settings-tool'),
   })
+  // 项目根边界（v13，docs/06 §11.1）：**只在配置了当前项目时启用** ——
+  // `workspaceRoot()` 返回 undefined 时 file-port / command-runner 的行为与 v13 之前一字不差
+  //（无项目 = 无边界），这也是 step 1「无项目时行为不变」那条完成标准的落点。
+  const projectRoot = (): string | undefined =>
+    resolveProject(settings!.get(), {
+      cwd: process.cwd(),
+      ...(projectLogger === undefined ? {} : { logger: projectLogger }),
+    }).root
   computerTools = registerComputerTools({
     tools,
     getSettings: () => settings!.get(),
     logger: logger.child('tools'),
     homeDir: () => app.getPath('home'),
-    run: createCommandRunner({ defaultCwd: process.cwd(), maxOutputBytes: 1024 * 1024 }),
-    files: createNodeFilePort(),
+    run: createCommandRunner({
+      defaultCwd: process.cwd(),
+      maxOutputBytes: 1024 * 1024,
+      workspaceRoot: projectRoot,
+      logger: logger.child('tools'),
+    }),
+    files: createNodeFilePort({ workspaceRoot: projectRoot, logger: logger.child('tools') }),
     open: createShellOpenPort(),
   })
   settingsTool = registerSettingsTool({ tools, port: settingsPort, logger: logger.child('tools') })
@@ -611,6 +637,9 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('tools'),
     todoPort,
     provider: agentProvider,
+    // 只读档下摘掉 `todo_write`（safe 级但会往 userData/todos 落盘）——档位每次 sync 现读，
+    // 用户切档后由 `settings:changed` → `syncToolRegistries()` 立即生效
+    getSettings: () => settings!.get(),
   })
   // 7.1.6 ClassIsland 提醒工具（docs/05 §3.4 v3）：`classisland_remind`。
   //     与扩展工具五件套同级——不受 `agent.tools.enabled` 门控；但**按可用性注册**：
@@ -648,13 +677,19 @@ async function bootstrap(): Promise<void> {
       windows?.focus('chat')
     },
   })
-  const confirmTool = createConfirmTool({
+  confirmTool = createConfirmTool({
     proactive: proactiveScheduler,
-    // 每次调用即时判断：设置页改开关无需重启
-    enabled: () => settings!.get().advanced.confirmSensitiveTools,
-    // 免确认命令模式（docs/06 §11.7）：与 `enabled` 同款闭包 —— 每次调用即时读设置，
+    // 每次调用即时判断：设置页改档位无需重启（docs/06 §11.2）
+    mode: () => resolvePermissionMode(settings!.get()),
+    // 免确认命令模式（docs/06 §11.7）：与 `mode` 同款闭包 —— 每次调用即时读设置，
     // 用户在设置页加完模式立刻生效，无需重启（该字段是只读前缀，AI 改不动）。
     allowPatterns: () => settings!.get().agent.tools.terminal.allowPatterns,
+    // auto 档的免确认边界 = 当前项目根（无项目时 auto 档与"关掉确认总开关"同义）
+    projectRoot: () =>
+      resolveProject(settings!.get(), {
+        cwd: process.cwd(),
+        ...(projectLogger === undefined ? {} : { logger: projectLogger }),
+      }).root,
     logger: logger.child('confirm'),
   })
 
@@ -1479,6 +1514,131 @@ async function runSmokeTest(userData: string): Promise<void> {
     record(
       '项目级 AGENTS.md 进了请求体且 override 优先（AGENTS.md 内容被顶掉）',
       injected && overrideWins && agentsDropped,
+      detail,
+    )
+  }
+
+  // 2.3 三档权限（v13，docs/06 §11.2）：只读档"根本不在工具表里"、auto 档根内免确认 / 根外仍确认。
+  //     这里断言的是**真实装配实例**（`syncToolRegistries()` 重建出的注册表 + 注入内核的同一个
+  //     `confirmTool`）——单测各自覆盖过函数，但"改设置 → 注册表跟着变 → 确认判定跟着变"这条
+  //     生效路径只有整机跑得出来。
+  {
+    let readonlyToolNames: string[] = []
+    let readonlyRemoved = false
+    let autoInsideApproved = false
+    let autoInsideNoCard = false
+    let autoInsideWritten = false
+    let autoOutsideCard = false
+    let outsideBlocked = false
+    let detail = ''
+    const projectRoot = join(userData, 'smoke-permission-project')
+    try {
+      await fs.mkdir(projectRoot, { recursive: true })
+      const insideFile = join(projectRoot, 'inside.txt')
+      const outsideFile = join(userData, 'smoke-permission-outside.txt')
+      await fs.rm(insideFile, { force: true })
+      await fs.rm(outsideFile, { force: true })
+
+      if (settings !== undefined && confirmTool !== undefined && proactiveScheduler !== undefined) {
+        const scheduler = proactiveScheduler
+        const agentBefore = settings.get().agent
+        const projectsBefore = settings.get().projects
+        // 设一个当前项目：没有项目时 auto 档没有"根内"判据（那是老开关的等价路径）
+        settings.update({
+          projects: {
+            ...projectsBefore,
+            current: 'smoke-perm',
+            list: [{ id: 'smoke-perm', name: '权限自测', root: projectRoot }],
+          },
+        })
+
+        // ① 只读档：写 / 执行 / 有副作用的工具必须从注册表里消失
+        settings.update({ agent: { ...agentBefore, permissionMode: 'readonly' } })
+        syncToolRegistries()
+        const mustBeGone = ['run_command', 'write_file', 'edit_file', 'open_path', 'todo_write']
+        const gone = mustBeGone.filter((name) => tools?.get(name) === undefined)
+        readonlyRemoved = gone.length === mustBeGone.length
+        const kept = ['read_file', 'list_dir', 'grep', 'glob', 'todo_read'].filter(
+          (name) => tools?.get(name) !== undefined,
+        )
+        readonlyToolNames = kept
+
+        // ② auto 档 + 项目根内：确认判定直接放行（**不产生在途卡片**），且真的写得进去
+        settings.update({ agent: { ...agentBefore, permissionMode: 'auto' } })
+        syncToolRegistries()
+        autoInsideApproved =
+          (await confirmTool({
+            name: 'write_file',
+            input: { path: insideFile },
+            sessionId: 'smoke-permission',
+            sensitivity: 'confirm',
+          })) !== false
+        autoInsideNoCard = scheduler.pendingCount === 0
+        const written = await tools
+          ?.get('write_file')
+          ?.execute(
+            { path: insideFile, content: 'AURORA_PERMISSION_INSIDE' },
+            { sessionId: 'smoke-permission', approvedByUser: true },
+          )
+        autoInsideWritten =
+          written?.isError !== true &&
+          (await fs.readFile(insideFile, 'utf8').catch(() => '')).includes(
+            'AURORA_PERMISSION_INSIDE',
+          )
+
+        // ③ auto 档 + 项目根外：仍要弹卡片（有在途确认），且未经放行时写不进去。
+        // ⚠️ 不能直接 `await confirmTool(...)`：它会一直等着用户回执（60s 超时）——
+        // 先把 Promise 挂起、轮询「有在途卡片」，再 rejectAll 收尾并回收那个 Promise。
+        const outsidePromise = confirmTool({
+          name: 'write_file',
+          input: { path: outsideFile },
+          sessionId: 'smoke-permission',
+          sensitivity: 'confirm',
+        })
+        let cardSeen = false
+        for (let attempt = 0; attempt < 40 && !cardSeen; attempt += 1) {
+          cardSeen = scheduler.pendingCount === 1
+          if (!cardSeen) await new Promise((resolve) => setTimeout(resolve, 25))
+        }
+        scheduler.rejectAll('smoke-permission')
+        const outsideDecision = await outsidePromise
+        autoOutsideCard = cardSeen && outsideDecision === false
+        const blocked = await tools
+          ?.get('write_file')
+          ?.execute(
+            { path: outsideFile, content: 'AURORA_PERMISSION_OUTSIDE' },
+            { sessionId: 'smoke-permission' },
+          )
+        outsideBlocked =
+          blocked?.isError === true &&
+          (await fs.readFile(outsideFile, 'utf8').catch(() => '')) === ''
+
+        // 收尾：档位与项目都还原
+        settings.update({ agent: { ...agentBefore, permissionMode: 'confirm' } })
+        settings.update({ projects: { ...settings.get().projects, current: '', list: [] } })
+        syncToolRegistries()
+        detail =
+          `readonlyKept=[${readonlyToolNames.join(',')}] ` +
+          `autoInside=approve:${autoInsideApproved} noCard:${autoInsideNoCard} written:${autoInsideWritten} ` +
+          `autoOutside=card:${autoOutsideCard} blocked:${outsideBlocked}`
+      } else {
+        detail = 'settings / confirmTool 不可用'
+      }
+    } catch (error) {
+      detail = `异常：${String(error)}`
+    }
+    record(
+      '只读档：写 / 执行类工具不进注册表（含 todo_write），只读工具保留',
+      readonlyRemoved && readonlyToolNames.length >= 4,
+      detail,
+    )
+    record(
+      'auto 档：项目根内免确认且真的写成功；根外仍弹确认卡且未放行时写不进去',
+      autoInsideApproved &&
+        autoInsideNoCard &&
+        autoInsideWritten &&
+        autoOutsideCard &&
+        outsideBlocked,
       detail,
     )
   }
@@ -2326,7 +2486,7 @@ function syncLaunchAtLogin(enabled: boolean): void {
 function adaptProactive(scheduler: ProactiveScheduler): ProactiveLike {
   return {
     requestSensitiveToolConfirm: (input) => scheduler.requestSensitiveToolConfirm(input),
-    resolve: (confirmId, approved) => scheduler.resolve(confirmId, approved),
+    resolve: (confirmId, approved, always) => scheduler.resolve(confirmId, approved, always),
     rejectAll: (reason) => scheduler.rejectAll(reason),
     onRequest: (listener) => scheduler.onRequest(listener),
   }

@@ -153,6 +153,20 @@ function fakeRunner(stdout = 'AURORA_FAKE_OK'): CommandRunner & { calls: unknown
   return runner
 }
 
+/** 内存版 TodoPort：只记录读写，本文件验证的是"装配接线"，不是落盘（见 todo-port.test.ts） */
+function memoryTodoPort(): TodoPort & { data: Map<string, TodoItem[]> } {
+  const data = new Map<string, TodoItem[]>()
+  return {
+    data,
+    async read(sessionId) {
+      return [...(data.get(sessionId) ?? [])]
+    },
+    async write(sessionId, todos) {
+      data.set(sessionId, todos)
+    },
+  }
+}
+
 function setup(
   settings: Settings,
   runner: CommandRunner = fakeRunner(),
@@ -503,21 +517,7 @@ describe('registerExtensionTools', () => {
 })
 
 describe('registerAgentCoreTools', () => {
-  /** 内存版 TodoPort：只记录读写，本文件验证的是"装配接线"，不是落盘（见 todo-port.test.ts） */
-  function memoryTodoPort(): TodoPort & { data: Map<string, TodoItem[]> } {
-    const data = new Map<string, TodoItem[]>()
-    return {
-      data,
-      async read(sessionId) {
-        return [...(data.get(sessionId) ?? [])]
-      },
-      async write(sessionId, todos) {
-        data.set(sessionId, todos)
-      },
-    }
-  }
-
-  function setupCore(tools = new ToolRegistry()) {
+  function setupCore(tools = new ToolRegistry(), settings?: Settings) {
     const todoPort = memoryTodoPort()
     const registry = registerAgentCoreTools({
       tools,
@@ -525,6 +525,8 @@ describe('registerAgentCoreTools', () => {
       todoPort,
       // create() 只在 task 执行时被调用，注册期不需要真实 provider
       provider: { create: () => undefined } satisfies AgentProviderFactory,
+      // 不传 settings 时**不注入** `getSettings`：覆盖「未注入 = 按 confirm 档处理」的缺省路径
+      ...(settings === undefined ? {} : { getSettings: () => settings }),
     })
     return { tools, registry, todoPort }
   }
@@ -535,6 +537,27 @@ describe('registerAgentCoreTools', () => {
     expect(tools.get('todo_write')?.sensitivity).toBe('safe')
     expect(tools.get('todo_read')?.sensitivity).toBe('safe')
     expect(tools.get('task')?.sensitivity).toBe('safe')
+  })
+
+  it('readonly 档摘掉 todo_write、保留 todo_read（落盘的那半边才是有系统副作用的）', () => {
+    const settings = makeSettings()
+    settings.agent.permissionMode = 'readonly'
+    const { tools, registry } = setupCore(new ToolRegistry(), settings)
+
+    // `todo_write` 的 sensitivity 是 `safe`，但它会往 <userData>/todos/<sid>.json 落盘 ——
+    // 档位叫「只读」就必须真的没有系统副作用，否则口号是假的；
+    // `todo_read` 只读文件、`task` 只派生上下文隔离的子代理（子代理的工具面从**父表**过滤），
+    // 两者都不碰系统，照常注册。
+    expect(registry.sync()).toEqual(['todo_read', 'task'])
+    expect(tools.get('todo_write')).toBeUndefined()
+    expect(tools.get('todo_read')).toBeDefined()
+    expect(tools.get('task')).toBeDefined()
+  })
+
+  it('未注入 getSettings 时按 confirm 档处理：todo_write 照常注册（缺省 = 三档之前的行为）', () => {
+    const { tools, registry } = setupCore()
+    expect(registry.sync()).toEqual([...AGENT_CORE_TOOL_NAMES])
+    expect(tools.get('todo_write')).toBeDefined()
   })
 
   it('sync 幂等：unregister + 重建后三个工具仍在，且不重复注册', () => {
@@ -581,9 +604,152 @@ describe('registerAgentCoreTools', () => {
     expect(tools.get('run_command')?.sensitivity).toBe('confirm')
   })
 
-  it('不受 agent.tools.enabled 门控（装配器没有配置依赖，与 set_setting / 扩展工具同级）', () => {
+  it('不受 agent.tools.enabled 门控（读配置只为判定 readonly 档，与 agent.tools.* 开关无关）', () => {
     const { tools, registry } = setupCore()
     expect(registry.sync()).toEqual([...AGENT_CORE_TOOL_NAMES])
     expect(AGENT_CORE_TOOL_NAMES.every((name) => tools.get(name) !== undefined)).toBe(true)
+  })
+})
+
+/**
+ * 只读档（`agent.permissionMode = 'readonly'`）的注册口径：**写 / 执行 / 有系统副作用的工具
+ * 根本不注册**，而不是「注册好、调用时再拒绝」—— 模型在工具清单里看不到它们，
+ * 就不会先答应用户、再在调用时报错。
+ *
+ * 接线与 `main/index.ts` 同款：三个装配器共用同一个工具表；`settings` 由 live getter 现读，
+ * 因此「改档位 → 再 sync 立即生效」在这里能被直接断言。
+ */
+describe('readonly 档（只读 = 不进工具表）', () => {
+  /** 只读档下**仍在表里**的电脑操控工具：8 个里只剩这 4 个（都是只读的） */
+  const READONLY_COMPUTER_TOOLS = ['read_file', 'list_dir', 'grep', 'glob'] as const
+  /** 只读档下**被摘掉**的：写 / 执行 / 有系统副作用 */
+  const READONLY_BLOCKED_TOOLS = [
+    'run_command',
+    'write_file',
+    'edit_file',
+    'open_path',
+    // `todo_write` 的 sensitivity 是 `safe`，但它往 <userData>/todos/<sid>.json 落盘
+    'todo_write',
+  ] as const
+
+  function setupAll(settings = makeSettings()) {
+    const tools = new ToolRegistry()
+    const computer = registerComputerTools({
+      tools,
+      getSettings: () => settings,
+      logger: createMemoryLogger(),
+      homeDir: () => HOME,
+      run: fakeRunner(),
+      files: fakeFilePort(),
+      open: fakeOpenPort(),
+    })
+    const core = registerAgentCoreTools({
+      tools,
+      logger: createMemoryLogger(),
+      todoPort: memoryTodoPort(),
+      provider: { create: () => undefined } satisfies AgentProviderFactory,
+      getSettings: () => settings,
+    })
+    const settingsTool = registerSettingsTool({
+      tools,
+      port: fakeSettingsPort(),
+      logger: createMemoryLogger(),
+    })
+    /** 三个装配器一起 sync，等价于 `main/index.ts` 的 `syncToolRegistries()` */
+    const syncAll = (): string[] => [...computer.sync(), ...core.sync(), ...settingsTool.sync()]
+    return { tools, computer, core, settingsTool, syncAll }
+  }
+
+  it('只注册只读清单里的工具：不含写 / 执行 / 有系统副作用的任何一个', () => {
+    const settings = makeSettings()
+    settings.agent.permissionMode = 'readonly'
+    const { tools, syncAll } = setupAll(settings)
+
+    // 顺序：`COMPUTER_TOOL_NAMES` 过滤后在前，`AGENT_CORE_TOOL_NAMES` 过滤后在后，
+    // `set_setting` 最后（`task` 也在表里：它自己不碰系统，子代理的工具面执行时从这张
+    // **已收窄的**父表过滤，见 registerAgentCoreTools 的注释）。
+    expect(syncAll()).toEqual([...READONLY_COMPUTER_TOOLS, 'todo_read', 'task', 'set_setting'])
+    for (const name of READONLY_BLOCKED_TOOLS) {
+      expect(tools.get(name)).toBeUndefined()
+    }
+    // 只读的那几个一个都不能少（否则「只读档」变成了「什么都干不了」）
+    for (const name of ['read_file', 'list_dir', 'grep', 'glob', 'todo_read']) {
+      expect(tools.get(name)).toBeDefined()
+    }
+  })
+
+  it('readonly + 总开关关闭 → 电脑操控工具一个都不注册（既有第一条分支优先级更高）', () => {
+    const settings = makeSettings()
+    settings.agent.permissionMode = 'readonly'
+    settings.agent.tools.enabled = false
+    const { tools, computer, core } = setupAll(settings)
+
+    expect(computer.sync()).toEqual([])
+    expect(COMPUTER_TOOL_NAMES.every((name) => tools.get(name) === undefined)).toBe(true)
+    // 总开关管的是 8 个电脑操控工具，不碰 Agent 内核工具（既有口径，与档位无关）
+    expect(core.sync()).toEqual(['todo_read', 'task'])
+  })
+
+  it('confirm 档（默认）注册集合与改动前完全一致（回归基线）', () => {
+    const settings = makeSettings()
+    expect(settings.agent.permissionMode).toBe('confirm')
+    const { tools, syncAll } = setupAll(settings)
+
+    expect(syncAll()).toEqual([
+      ...IMPLEMENTED_COMPUTER_TOOLS,
+      ...AGENT_CORE_TOOL_NAMES,
+      'set_setting',
+    ])
+    // 整张表逐条对齐：写类工具一个都没被档位逻辑误摘
+    expect([...tools.list().map((tool) => tool.name)].sort()).toEqual(
+      [...IMPLEMENTED_COMPUTER_TOOLS, ...AGENT_CORE_TOOL_NAMES, 'set_setting'].sort(),
+    )
+  })
+
+  it('auto 档注册集合与 confirm 一致（注册层不看 confirm / auto 的差别）', () => {
+    const settings = makeSettings()
+    settings.agent.permissionMode = 'auto'
+    const { syncAll } = setupAll(settings)
+
+    expect(syncAll()).toEqual([
+      ...IMPLEMENTED_COMPUTER_TOOLS,
+      ...AGENT_CORE_TOOL_NAMES,
+      'set_setting',
+    ])
+  })
+
+  it('只读优先：advanced.confirmSensitiveTools = false 也放宽不了只读档', () => {
+    const settings = makeSettings()
+    settings.agent.permissionMode = 'readonly'
+    settings.advanced.confirmSensitiveTools = false
+    const { tools, syncAll } = setupAll(settings)
+
+    expect(syncAll()).toEqual([...READONLY_COMPUTER_TOOLS, 'todo_read', 'task', 'set_setting'])
+    expect(tools.get('write_file')).toBeUndefined()
+  })
+
+  it('切换档位后 sync() 立即生效：切到 readonly 写类工具当场消失，切回来又回来', () => {
+    const settings = makeSettings()
+    const { tools, syncAll } = setupAll(settings)
+
+    syncAll()
+    for (const name of [...IMPLEMENTED_COMPUTER_TOOLS, 'todo_write']) {
+      expect(tools.get(name)).toBeDefined()
+    }
+
+    // 用户在设置页改成「只读」→ `settings:changed` → 再 sync 一次（档位必须**现读**，不许缓存）
+    settings.agent.permissionMode = 'readonly'
+    expect(syncAll()).toEqual([...READONLY_COMPUTER_TOOLS, 'todo_read', 'task', 'set_setting'])
+    for (const name of READONLY_BLOCKED_TOOLS) {
+      expect(tools.get(name)).toBeUndefined()
+    }
+
+    // 改回 confirm：工具表跟着放宽（这条反过来证明档位没有被装配时算死）
+    settings.agent.permissionMode = 'confirm'
+    syncAll()
+    for (const name of IMPLEMENTED_COMPUTER_TOOLS) {
+      expect(tools.get(name)).toBeDefined()
+    }
+    expect(tools.get('todo_write')).toBeDefined()
   })
 })

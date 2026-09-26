@@ -14,19 +14,40 @@
  * 4. **`close` 可能永不到来**：孙进程若继承了 stdout 管道，父进程被杀后 `close` 仍不触发，
  *    所以杀了之后给一个宽限计时器强制收尾。
  * 5. **输出要有上限**：命令可以无限刷屏，必须按字节截断，否则撑爆上下文。
+ * 6. **cwd 也要过项目根边界**（docs/06 §11.1）：判定与 `file-port.ts` 共用 `resolveWithin`
+ *    （realpath 前缀校验，不复制第二份）；越界且未显式放行时**不启动进程**。
  */
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
-import type { CommandRequest, CommandResult, CommandRunner } from '@aurora/agent-core'
+import { createNoopLogger } from '@aurora/shared'
+import type { CommandRequest, CommandResult } from '@aurora/agent-core'
+import {
+  isPathOutsideError,
+  resolveWithin,
+  type OutsideOption,
+  type WorkspaceGuardOptions,
+} from './file-port.js'
 
-export interface CommandRunnerOptions {
+export interface CommandRunnerOptions extends WorkspaceGuardOptions {
   defaultCwd: string
   /** stdout+stderr 各自收集上限（字节），默认 1 MiB */
   maxOutputBytes?: number
   /** 终止进程树时的等待宽限，默认 500ms */
   killGraceMs?: number
 }
+
+/**
+ * 带边界放行位的执行请求：`allowOutside: true` = 用户已明确放行 cwd 越界
+ * （由工具层在确认之后传入）。缺省 / `false` = 按项目根校验。
+ */
+export type CommandRunRequest = CommandRequest & OutsideOption
+
+/**
+ * `createCommandRunner` 的返回类型：比内核的 `CommandRunner` 多认一个可选放行位。
+ * 因为多出来的字段是**可选**的，它仍可直接赋给 `TerminalToolOptions.run`（参数更宽 = 可赋值）。
+ */
+export type GuardedCommandRunner = (request: CommandRunRequest) => Promise<CommandResult>
 
 export const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
 export const DEFAULT_KILL_GRACE_MS = 500
@@ -51,12 +72,50 @@ const POWERSHELL_ARGS = [
   '-Command',
 ] as const
 
-export function createCommandRunner(options: CommandRunnerOptions): CommandRunner {
+export function createCommandRunner(options: CommandRunnerOptions): GuardedCommandRunner {
   const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
   const killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS
+  // 边界来源与 file-port **同一套 live getter**（每次执行即时读，配置改了立刻生效）
+  const guard: WorkspaceGuardOptions = {
+    workspaceRoot: options.workspaceRoot,
+    enforceWorkspace: options.enforceWorkspace,
+    logger: options.logger ?? createNoopLogger(),
+  }
 
-  return (request: CommandRequest): Promise<CommandResult> =>
-    new Promise<CommandResult>((resolve, reject) => {
+  return async (request: CommandRunRequest): Promise<CommandResult> => {
+    // cwd 边界校验（判定与 file-port 共用 `resolveWithin`，不另写一份）。
+    // 只有**请求里显式给了 cwd** 才校验：缺省时回落到装配层给的 `defaultCwd`，
+    // 那是"今天"的行为，不算越界（defaultCwd 由用户/装配层选定）。
+    // ⚠️ 校验发生在下面的 `existsSync` 回落**之前**：不存在的越界路径同样拒绝
+    //（否则"探一个不存在的根外路径"会变成探测文件系统存在性的信道）。
+    if (request.cwd !== undefined && request.cwd !== '') {
+      try {
+        await resolveWithin(request.cwd, request.allowOutside === true, guard)
+      } catch (error) {
+        // 只有"路径越界"才在这里收口；其它异常（读取配置本身出错之类）原样抛给内核，
+        // 由它渲染成「命令执行失败：…」——**都不会启动进程**（fail-closed）。
+        if (!isPathOutsideError(error)) throw error
+        guard.logger?.warn('run_command 的 cwd 在项目根之外，已拒绝执行', {
+          command: request.command,
+          cwd: request.cwd,
+        })
+        // 越界：进程**根本不启动**（命令的副作用一点都不该发生），按既有结果形状返回失败：
+        // 非零 / null 退出码让内核置 `isError`，中文原因走 `stderr`（内核会把 stderr 渲染出来）。
+        return {
+          command: request.command,
+          // 没有进程，也就没有退出码（`null` 的既有语义正是"没有正常退出码"）
+          exitCode: null,
+          stdout: '',
+          stderr: `cwd 在项目根之外，本次命令未执行：${error.message}`,
+          timedOut: false,
+          aborted: false,
+          durationMs: 0,
+          cwd: request.cwd,
+        }
+      }
+    }
+
+    return new Promise<CommandResult>((resolve, reject) => {
       // 工作目录兜底：默认目录可能已被用户删掉，此时 spawn 会抛 ENOENT，
       // 宁可回落到装配层给的默认目录，也不要让工具直接报错。
       const cwd =
@@ -151,6 +210,7 @@ export function createCommandRunner(options: CommandRunnerOptions): CommandRunne
         }
       }
     })
+  }
 }
 
 /**

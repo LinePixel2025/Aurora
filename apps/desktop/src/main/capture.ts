@@ -1526,6 +1526,82 @@ export const CHAT_PERMISSION_ACT = `(async () => {
   }
 })()`
 
+/**
+ * 只读档现场（v13，docs/06 §11.2）：把 `agent.permissionMode` 切到 `readonly` 并展开权限下拉。
+ *
+ * 必须走 `settings:update` IPC（`SettingsStore` 启动即缓存配置），并把下拉**打开**再截图 ——
+ * 「只读档下写类工具根本不注册」是运行时事实，界面能自证的只有下拉文案与设置页摘要，
+ * 所以这一条同时钉住"界面没说谎"。
+ */
+export const CHAT_PERMISSION_READONLY_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { ok: false, reason: state.message }
+    if (state.value.agent.permissionMode !== 'readonly') {
+      const result = await window.aurora.settings.update({
+        agent: { ...state.value.agent, permissionMode: 'readonly' },
+        advanced: { ...state.value.advanced, confirmSensitiveTools: true },
+      })
+      if (!result.ok) return { ok: false, reason: result.message }
+      // 等渲染层 store 收到 settings:changed 广播后重算下拉文案
+      await wait(400)
+    }
+    const button = document.querySelector('[data-field="chat.permission"]')
+    if (button !== null && button.disabled !== true) button.click()
+    await wait(300)
+    return { ok: true, opened: document.querySelector('[data-field="chat.permission-menu"]') !== null }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/** 只读档断言：下拉文案 = 只读、配置真的落成 readonly，收尾还原成 confirm 并收起下拉。 */
+export const CHAT_PERMISSION_READONLY_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const textOf = (selector) => {
+      const el = document.querySelector(selector)
+      return el === null ? '' : (el.textContent || '').replace(/\\s+/g, ' ').trim()
+    }
+    const result = {
+      trigger: textOf('[data-field="chat.permission"]'),
+      readonlyOption: textOf('[data-field="chat.permission-mode-readonly"]'),
+    }
+    const state = await window.aurora.settings.get()
+    result.permissionMode = state.ok ? state.value.agent.permissionMode : null
+    result.pass =
+      result.permissionMode === 'readonly' &&
+      result.trigger.indexOf('只读') !== -1 &&
+      result.readonlyOption.indexOf('只读') !== -1
+
+    // 收尾：还原成默认档（confirm）并把下拉收起，后续场景读到的仍是出厂门控
+    if (state.ok) {
+      await window.aurora.settings.update({
+        agent: { ...state.value.agent, permissionMode: 'confirm' },
+        advanced: { ...state.value.advanced, confirmSensitiveTools: true },
+      })
+    }
+    const button = document.querySelector('[data-field="chat.permission"]')
+    if (button !== null) button.click()
+    let closed = false
+    for (let attempt = 0; attempt < 12 && !closed; attempt += 1) {
+      closed = count('[data-field="chat.permission-menu"]') === 0
+      if (!closed) await wait(150)
+    }
+    result.restoredTrigger = textOf('[data-field="chat.permission"]')
+    result.restored =
+      closed &&
+      result.restoredTrigger.indexOf('变更前确认') !== -1 &&
+      count('[data-field="chat.permission-mode-readonly"]') === 0
+    result.pass = result.pass === true && result.restored === true
+    return result
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
 export const CHAT_PERMISSION_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
@@ -1535,16 +1611,20 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
       return el === null ? '' : (el.textContent || '').trim()
     }
     const menuOpen = count('[data-field="chat.permission-menu"]') === 1
+    // 三档（v13）：只读 / 变更前确认 / 完全权限（= auto，仍锚在 chat.permission-full 上）
+    const readonlyItem = textOf('[data-field="chat.permission-mode-readonly"]')
     const confirmItem = textOf('[data-field="chat.permission-confirm"]')
-    const fullItemBefore = textOf('[data-field="chat.permission-full"]')
+    const autoItemBefore = textOf('[data-field="chat.permission-full"]')
 
-    const fullButton = document.querySelector('[data-field="chat.permission-full"]')
-    if (fullButton !== null) fullButton.click()
+    const autoButton = document.querySelector('[data-field="chat.permission-full"]')
+    if (autoButton !== null) autoButton.click()
     await wait(300)
-    const fullItemAfter = textOf('[data-field="chat.permission-full"]')
+    const autoItemAfter = textOf('[data-field="chat.permission-full"]')
 
     const state = await window.aurora.settings.get()
-    const stillConfirm = state.ok ? state.value.advanced.confirmSensitiveTools === true : null
+    // 放宽权限是两段式：点一次只应停在「再点一次确认」，配置里的档位必须一动没动
+    const modeUnchanged = state.ok ? state.value.agent.permissionMode === 'confirm' : null
+    const legacyUnchanged = state.ok ? state.value.advanced.confirmSensitiveTools === true : null
 
     // 收尾：再点一次权限钮收起下拉（不影响配置），并轮询确认它真的关掉了 ——
     // leave transition 是 --dur-fast（150ms），固定等 200ms 在高负载下余量太小会假 FAIL。
@@ -1558,17 +1638,21 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
 
     return {
       menuOpen,
+      readonlyOption: readonlyItem.indexOf('只读') !== -1,
       confirmOption: confirmItem.indexOf('变更前确认') !== -1,
-      fullOption: fullItemBefore.indexOf('完全权限') !== -1,
-      askedAgain: fullItemAfter.indexOf('再点一次确认') !== -1,
-      confirmSensitiveTools: stillConfirm,
+      fullOption: autoItemBefore.indexOf('完全权限') !== -1,
+      askedAgain: autoItemAfter.indexOf('再点一次确认') !== -1,
+      permissionMode: state.ok ? state.value.agent.permissionMode : null,
+      confirmSensitiveTools: legacyUnchanged,
       menuClosedAfter: closed,
       pass:
         menuOpen &&
+        readonlyItem.indexOf('只读') !== -1 &&
         confirmItem.indexOf('变更前确认') !== -1 &&
-        fullItemBefore.indexOf('完全权限') !== -1 &&
-        fullItemAfter.indexOf('再点一次确认') !== -1 &&
-        stillConfirm === true &&
+        autoItemBefore.indexOf('完全权限') !== -1 &&
+        autoItemAfter.indexOf('再点一次确认') !== -1 &&
+        modeUnchanged === true &&
+        legacyUnchanged === true &&
         count('[data-field="chat.permission-menu"]') === 0,
     }
   } catch (error) {
@@ -2819,8 +2903,47 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
       (name) => name !== 'mcp.servers' && name !== 'skills.disabled',
     )
     const activeNav = document.querySelector('.nav-item.active')
+    const page = activeNav === null ? 'unknown' : (activeNav.textContent || '').trim()
+
+    // 只读档摘要（v13，docs/06 §11.2）：切到 readonly 后，区组摘要必须说"仅注册只读工具"，
+    // 且生效工具名集合里不能出现写 / 执行类。这一条是"界面摘要不骗人"的运行时证据 ——
+    // 设置页的摘要与实际注册表是两套代码，只断言主进程注册表的话，摘要写错也没人发现。
+    // 必须走 settings:update（SettingsStore 启动即缓存），收尾还原成 confirm。
+    let readonlySummary = null
+    let readonlyTools = null
+    let readonlyRestored = null
+    const before = await window.aurora.settings.get()
+    if (before.ok) {
+      await window.aurora.settings.update({
+        agent: { ...before.value.agent, permissionMode: 'readonly' },
+      })
+      await wait(400)
+      const bodyText = (document.body.textContent || '').replace(/\\s+/g, ' ')
+      readonlySummary = bodyText.indexOf('只读模式：仅注册只读工具（不含写入与命令）') !== -1
+      // 只断言「当前生效工具」那一块列出的名字：页面上别处仍会提到写类工具（各个工具箱的标题、
+      // 门控说明），拿整页文本判定会把正常的说明文字当成违规。
+      const activeBlock = Array.from(document.querySelectorAll('.sub')).find((el) => {
+        const title = el.querySelector('.sub-title')
+        return title !== null && (title.textContent || '').indexOf('当前生效工具') !== -1
+      })
+      const listed = activeBlock === undefined
+        ? []
+        : Array.from(activeBlock.querySelectorAll('code')).map((el) => (el.textContent || '').trim())
+      const forbidden = ['run_command', 'write_file', 'edit_file', 'open_path', 'todo_write']
+      readonlyTools =
+        listed.indexOf('read_file') !== -1 &&
+        listed.indexOf('list_dir') !== -1 &&
+        forbidden.every((name) => listed.indexOf(name) === -1)
+      await window.aurora.settings.update({
+        agent: { ...before.value.agent, permissionMode: 'confirm' },
+      })
+      await wait(300)
+      readonlyRestored =
+        (document.body.textContent || '').indexOf('只读模式：仅注册只读工具（不含写入与命令）') === -1
+    }
+
     return {
-      page: activeNav === null ? 'unknown' : (activeNav.textContent || '').trim(),
+      page,
       togglePresent: toggle !== null,
       enabled,
       total,
@@ -2835,6 +2958,9 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
       skillsRows,
       unexpected,
       emptyStates,
+      readonlySummary,
+      readonlyTools,
+      readonlyRestored,
       // 总开关必须在（否则用户再也开不回来）；开着时四个分栏的详情字段都得在
       // （终端 / 文件 / 文件检索 / 打开），MCP 区组必须给出「空状态或行」之一，
       // 且不得出现两块预期空态之外的 data-empty。
@@ -2851,7 +2977,10 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
             searchFields >= 2 &&
             openFields > 0 &&
             (mcpEmpty || mcpRows > 0) &&
-            unexpected.length === 0)),
+            unexpected.length === 0)) &&
+        readonlySummary === true &&
+        readonlyTools === true &&
+        readonlyRestored === true,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -4894,6 +5023,14 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       file: 'chat-composer-permission.png',
       act: CHAT_PERMISSION_ACT,
       check: CHAT_PERMISSION_CHECK,
+    },
+    // 只读档现场（v13，docs/06 §11.2）：切到 readonly + 展开下拉，断言文案与配置一致后还原。
+    // 必须排在 chat-collapse 之前（窗口一被 hide，后面的 DOM 操作就没了）。
+    {
+      name: 'chat',
+      file: 'chat-permission-readonly.png',
+      act: CHAT_PERMISSION_READONLY_ACT,
+      check: CHAT_PERMISSION_READONLY_CHECK,
     },
     // 输入区三个浮层（2026-09-26 修复）：统一锚在 `.composer-box` 上、共用 `--z-flyout`、互斥打开。
     // act 走「输入 / → 点权限钮」，check 对两个时刻 + 实时复测 + 上下文详解卡共四个时刻做几何断言

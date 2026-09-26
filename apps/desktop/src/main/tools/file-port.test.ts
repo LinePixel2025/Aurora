@@ -17,11 +17,15 @@
  * 正斜杠相对路径、忽略目录子树、行号与 CRLF、一行只记一条、二进制与超限文件跳过、
  * 预算触顶（仍返回已收集结果）、墙钟护栏到点不再扫、`include` 过滤（含与 `matchesGlob` 的等价性）、
  * 符号链接环（建不了 symlink 就跳过）。
+ *
+ * 项目根边界（docs/06 §11.1）在同一批真实目录上验证：`..` 穿越、指向根外的符号链接 / junction、
+ * `allowOutside` 放行、未配置根时行为不变、以及 Windows 大小写变体的实测结论（见该 describe 顶部）。
  */
 import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { createMemoryLogger } from '@aurora/shared'
 // 常量与内核工具同源（不在这里另抄一份字面量 / 不另写一份替换逻辑）
 import {
   DEFAULT_READ_LINES,
@@ -32,7 +36,7 @@ import {
   matchesGlob,
   type ReadTracker,
 } from '@aurora/agent-core'
-import { createNodeFilePort } from './file-port.js'
+import { PATH_OUTSIDE_CODE, createNodeFilePort } from './file-port.js'
 
 let root = ''
 
@@ -906,4 +910,285 @@ describe('符号链接：一律不跟随（防目录环）', () => {
     expect(searched.scannedFiles).toBe(1)
     expect(searched.budgetExceeded).toBe(false)
   }, 5_000)
+})
+
+/** 建链接失败时的短描述（只用于打印跳过原因，不把整段堆栈塞进日志） */
+function describeLinkError(...errors: unknown[]): string {
+  return errors
+    .map((error) => {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code
+      if (typeof code === 'string') return code
+      return error instanceof Error ? error.message : String(error)
+    })
+    .join(' / ')
+}
+
+/**
+ * 项目根边界（docs/06 §11.1）：`resolveWithin` 的 realpath 前缀校验。
+ *
+ * ## Windows 路径形态 spike（**实测**：Node 24 / win32 / NTFS，用 `mkdtemp` 造真实目录）
+ *
+ * | 传给 `fs.realpath` 的输入 | 实测返回 |
+ * | --- | --- |
+ * | `C:\Users\…\Temp`（原样） | `C:\Users\…\Temp` |
+ * | `C:\USERS\…\TEMP`（全大写） | `C:\Users\…\Temp` —— 归成**磁盘上的真实大小写** |
+ * | `c:\Users\…\Temp`（盘符小写） | `C:\Users\…\Temp` —— 盘符也归成大写 |
+ * | `\\?\C:\Users\…\Temp` | `C:\Users\…\Temp` —— `\\?\` 前缀被**剥掉** |
+ * | 8.3 短名（FSO 的 `ShortPath`，如 `…\AU7325~1`） | `…\aurora-realpath-spike-xxxxxxxx…` —— 展开成长名 |
+ * | 不存在的新文件 / 不存在的深层路径 | 抛 `ENOENT`（**不是**原样返回） |
+ * | 目录 junction（`fs.symlink(…, 'junction')`） | 穿透到目标真实路径 |
+ *
+ * 结论（决定了实现取舍）：
+ * 1. **不需要 `toLowerCase()`**：realpath 已经把「已存在部分」的大小写与长短名形态统一，
+ *    而 `path.win32.relative` 的分段比较本身大小写不敏感（实测 `relative('C:\Proj', 'c:\proj\a.txt')`
+ *    返回 `'a.txt'`、`relative('C:\PROJ', 'C:\Proj\Sub\a.txt')` 返回 `'Sub\a.txt'`）。
+ *    再加一层小写折叠在这台上是**死代码**，只会掩盖"判定其实还依赖 relative 的大小写不敏感"。
+ *    下面「大小写变体」用例正面钉住这条结论（不是靠"没人试过"）。
+ * 2. **必须"realpath 最近的存在祖先 + 拼回尾部"**：新文件在 realpath 上是 `ENOENT`，
+ *    直接 realpath 目标会把最需要校验的 `write_file` 新建场景整段跳过。
+ * 3. `\\?\` 与 8.3 短名**只有 realpath 处理得了**：纯字符串前缀比较会把它们判成根外。
+ * 4. 因此两边（根与目标）都过 realpath，再 `relative` 判前缀。
+ */
+describe('项目根边界：realpath 前缀校验', () => {
+  /** 根**之外**的真实目录（与 `root` 同级，互为兄弟，谁也不包含谁） */
+  let outside = ''
+
+  beforeAll(async () => {
+    outside = await fs.mkdtemp(join(tmpdir(), 'aurora-files-outside-'))
+  })
+
+  afterAll(async () => {
+    if (outside !== '') await fs.rm(outside, { recursive: true, force: true, maxRetries: 3 })
+    outside = ''
+  })
+
+  it('`..` 穿越：六个方法一律拒绝，错误 code = E_PATH_OUTSIDE_WORKSPACE', async () => {
+    const port = createNodeFilePort({ workspaceRoot: () => root })
+    const escaped = join(root, '..', basename(outside), 'escaped.txt')
+    await fs.writeFile(escaped, 'outside\n', 'utf8')
+    // 前提：这条路径 resolve 之后确实落在根外（否则下面的断言什么都没证明）
+    expect(resolve(escaped).startsWith(resolve(outside))).toBe(true)
+
+    const calls: Array<() => Promise<unknown>> = [
+      () => port.readText(escaped, { maxBytes: 65_536 }),
+      () => port.readWholeText(escaped, MAX_EDIT_BYTES),
+      () => port.writeText(escaped, '改写', 'overwrite'),
+      () => port.list(outside, 10),
+      () => port.findFiles({ root: outside, pattern: '**/*.txt', maxResults: 10 }),
+      () => port.searchText({ root: outside, pattern: 'outside', maxResults: 10 }),
+    ]
+    for (const call of calls) {
+      const error = await call().then(
+        () => undefined,
+        (reason: unknown) => reason as NodeJS.ErrnoException,
+      )
+      expect(error?.code).toBe(PATH_OUTSIDE_CODE)
+      expect(error?.message).toContain('该路径在项目根之外')
+    }
+    // 「拒绝」= 什么都没做：根外的文件一个字节都没被改写
+    expect(await fs.readFile(escaped, 'utf8')).toBe('outside\n')
+  })
+
+  it('根内符号链接指向根外：读与写都被拒（环境建不了链接时明确跳过）', async (ctx) => {
+    const port = createNodeFilePort({ workspaceRoot: () => root })
+    const secret = join(outside, 'secret.txt')
+    await fs.writeFile(secret, 'secret\n', 'utf8')
+    const link = join(root, 'link-outside')
+
+    let linkError = ''
+    try {
+      // 目录符号链接：Windows 需要开发者模式 / 管理员权限
+      await fs.symlink(outside, link, 'dir')
+    } catch (dirError) {
+      try {
+        // junction 不需要管理员（实测 realpath 同样穿透到目标）——用它兜底，
+        // 免得用例在受限环境里变成"看着绿其实没验"的假绿
+        await fs.symlink(outside, link, 'junction')
+      } catch (junctionError) {
+        linkError = describeLinkError(dirError, junctionError)
+      }
+    }
+    if (linkError !== '') {
+      // 明确跳过并打印原因（**不许静默通过**）：否则看起来像"符号链接越界已被覆盖"
+      console.warn(
+        `跳过「符号链接指向根外」用例：当前环境建不了符号链接 / junction（${linkError}）`,
+      )
+      ctx.skip()
+      return
+    }
+
+    // 读：`<root>\link-outside\secret.txt` 在字符串层面看着在根内，realpath 之后落在根外
+    const readError = await port.readText(join(link, 'secret.txt'), { maxBytes: 65_536 }).then(
+      () => undefined,
+      (reason: unknown) => reason as NodeJS.ErrnoException,
+    )
+    expect(readError?.code).toBe(PATH_OUTSIDE_CODE)
+
+    // 写：新建文件（目标还不存在）同样被拒，且根外**真的没有**多出这个文件
+    const writeError = await port.writeText(join(link, 'new.txt'), 'x', 'overwrite').then(
+      () => undefined,
+      (reason: unknown) => reason as NodeJS.ErrnoException,
+    )
+    expect(writeError?.code).toBe(PATH_OUTSIDE_CODE)
+    await expect(fs.stat(join(outside, 'new.txt'))).rejects.toThrow()
+  })
+
+  it('allowOutside: true 时同一路径可写可读；同端口不放行的调用仍被拒', async () => {
+    const port = createNodeFilePort({ workspaceRoot: () => root })
+    const target = join(outside, 'allowed.txt')
+
+    const written = await port.writeText(target, '放行写入', 'overwrite', { allowOutside: true })
+    expect(written.absolutePath).toBe(resolve(target))
+    expect(await fs.readFile(target, 'utf8')).toBe('放行写入')
+
+    const read = await port.readText(target, { maxBytes: 65_536, allowOutside: true })
+    expect(read.lines).toEqual([{ number: 1, text: '放行写入' }])
+    // 放行只影响**校验**，不改回带路径的形态
+    expect(read.absolutePath).toBe(resolve(target))
+
+    // 同一个端口、同一个路径：不放行就是拒（证明上一步走的是"显式放行"，而不是"边界没生效"）
+    const blocked = await port.readText(target, { maxBytes: 65_536 }).then(
+      () => undefined,
+      (reason: unknown) => reason as NodeJS.ErrnoException,
+    )
+    expect(blocked?.code).toBe(PATH_OUTSIDE_CODE)
+
+    // 搜索类同样认放行位（根落在根外时）
+    const found = await port.findFiles({
+      root: outside,
+      pattern: '**/*.txt',
+      maxResults: 10,
+      allowOutside: true,
+    })
+    expect(found.files).toContain('allowed.txt')
+  })
+
+  it('未配置 workspaceRoot（含空串 / 显式关闭）：行为与加边界之前完全一致', async () => {
+    const port = createNodeFilePort()
+    const target = join(outside, 'no-guard.txt')
+    const text = '未启用边界\n第二行'
+
+    const written = await port.writeText(target, text, 'overwrite')
+    expect(written.absolutePath).toBe(resolve(target))
+    expect(written.bytes).toBe(Buffer.byteLength(text, 'utf8'))
+
+    const read = await port.readText(target, { maxBytes: 65_536 })
+    expect(read.absolutePath).toBe(resolve(target))
+    expect(read.lines).toEqual([
+      { number: 1, text: '未启用边界' },
+      { number: 2, text: '第二行' },
+    ])
+    expect(read.totalLines).toBe(2)
+    expect(read.truncated).toBe(false)
+
+    const whole = await port.readWholeText(target, MAX_EDIT_BYTES)
+    expect(whole.text).toBe(text)
+
+    const listed = await port.list(outside, 50)
+    expect(listed.absolutePath).toBe(resolve(outside))
+    expect(listed.entries.map((entry) => entry.name)).toContain('no-guard.txt')
+
+    const found = await port.findFiles({ root: outside, pattern: '**/*.txt', maxResults: 50 })
+    expect(found.root).toBe(resolve(outside))
+    expect(found.files).toContain('no-guard.txt')
+
+    const searched = await port.searchText({ root: outside, pattern: '未启用边界', maxResults: 50 })
+    expect(searched.matches.map((match) => match.path)).toContain('no-guard.txt')
+
+    // 根为**空串**、以及根有值但 `enforceWorkspace()` 返回 false：两条都必须等同于没配根
+    const relaxedOptions = [
+      { workspaceRoot: () => '' },
+      { workspaceRoot: () => root, enforceWorkspace: () => false },
+    ] as const
+    for (const options of relaxedOptions) {
+      const relaxed = createNodeFilePort(options)
+      const again = await relaxed.readText(target, { maxBytes: 65_536 })
+      expect(again.lines).toEqual(read.lines)
+      const appended = await relaxed.writeText(join(outside, 'no-guard-2.txt'), 'x', 'append')
+      expect(appended.absolutePath).toBe(resolve(outside, 'no-guard-2.txt'))
+    }
+    expect(await fs.readFile(join(outside, 'no-guard-2.txt'), 'utf8')).toBe('xx')
+  })
+
+  it('大小写变体（spike 结论）：全大写 / 盘符小写 / 混合大小写的文件都被判为根内', async () => {
+    // 依据是本 describe 顶部的实测表格：realpath 归成磁盘真实形态 + win32.relative 大小写不敏感。
+    // 这条用例同时钉住"回带路径是调用方写的那份"（realpath 形态只用于判定，不外泄）。
+    const port = createNodeFilePort({ workspaceRoot: () => root })
+    await fs.writeFile(join(root, 'Case-Spike.TXT'), 'case\n', 'utf8')
+
+    const upperDir = root.toUpperCase()
+    const lowerDrive = `${root.slice(0, 1).toLowerCase()}${root.slice(1)}`
+    // 前提：这两个变体在**字符串**层面确实与 root 不同（否则断言没证明任何事）
+    expect(upperDir).not.toBe(root)
+    expect(lowerDrive).not.toBe(root)
+
+    const inputs = [
+      join(upperDir, 'Case-Spike.TXT'),
+      join(lowerDrive, 'Case-Spike.TXT'),
+      join(root, 'case-spike.txt'),
+    ]
+    for (const input of inputs) {
+      const read = await port.readText(input, { maxBytes: 65_536 })
+      expect(read.lines).toEqual([{ number: 1, text: 'case' }])
+      expect(read.absolutePath).toBe(resolve(input))
+    }
+    // 反向：大小写变体**不能**变成绕过边界的口子（大写根 + `..` 逃逸照样拒）
+    const escaped = join(upperDir, '..', basename(outside), 'escaped.txt')
+    const error = await port.readText(escaped, { maxBytes: 65_536 }).then(
+      () => undefined,
+      (reason: unknown) => reason as NodeJS.ErrnoException,
+    )
+    expect(error?.code).toBe(PATH_OUTSIDE_CODE)
+  })
+
+  it('根不存在：视为不可用 → 不启用校验（记一条 warn，不抛错）', async () => {
+    const logger = createMemoryLogger()
+    const notCreated = join(root, 'not-created-yet')
+    const port = createNodeFilePort({ workspaceRoot: () => notCreated, logger })
+    const target = join(outside, 'root-missing.txt')
+
+    // 项目目录还没建好时，宁可退回"无边界"，也不能让文件工具整体失效
+    const written = await port.writeText(target, 'ok', 'overwrite')
+    expect(written.absolutePath).toBe(resolve(target))
+    expect(await fs.readFile(target, 'utf8')).toBe('ok')
+    expect(logger.entries.some((entry) => entry.includes('项目根不可用'))).toBe(true)
+  })
+
+  it('两个 getter 都是 live 的：同一次端口上开 / 关边界立刻生效', async () => {
+    let enabled = false
+    const port = createNodeFilePort({ workspaceRoot: () => root, enforceWorkspace: () => enabled })
+    const target = join(outside, 'live.txt')
+    await fs.writeFile(target, 'live\n', 'utf8')
+
+    // 关闭时与"没配根"完全一致
+    expect((await port.readText(target, { maxBytes: 65_536 })).lines).toEqual([
+      { number: 1, text: 'live' },
+    ])
+    enabled = true
+    const blocked = await port.readText(target, { maxBytes: 65_536 }).then(
+      () => undefined,
+      (reason: unknown) => reason as NodeJS.ErrnoException,
+    )
+    expect(blocked?.code).toBe(PATH_OUTSIDE_CODE)
+    // 再关回去：不需要重建端口就恢复（live getter 的意义）
+    enabled = false
+    expect((await port.readText(target, { maxBytes: 65_536 })).lines).toHaveLength(1)
+  })
+
+  it('根本身与根内 `..` 开头的合法条目不被误判（rel === "" 放行，`..foo` 不是越界）', async () => {
+    const port = createNodeFilePort({ workspaceRoot: () => root })
+    const dotdotDir = join(root, '..foo')
+    await fs.mkdir(dotdotDir)
+    await fs.writeFile(join(dotdotDir, 'x.txt'), 'inside\n', 'utf8')
+
+    // 根就是项目根：`list_dir` / `glob` / `grep` 常以它当根，必须放行
+    const listed = await port.list(root, 50)
+    expect(listed.entries.map((entry) => entry.name)).toContain('..foo')
+
+    // `relative(root, '<root>\..foo\x.txt')` 返回 `..foo\x.txt`：判据必须是 `..` **段**而不是前缀
+    const read = await port.readText(join(dotdotDir, 'x.txt'), { maxBytes: 65_536 })
+    expect(read.lines).toEqual([{ number: 1, text: 'inside' }])
+    const found = await port.findFiles({ root, pattern: '**/*.txt', maxResults: 50 })
+    expect(found.files).toContain('..foo/x.txt')
+  })
 })

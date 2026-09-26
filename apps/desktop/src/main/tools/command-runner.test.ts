@@ -5,7 +5,7 @@
  * 这些行为只有真跑进程才验证得了，假 runner 覆盖不到。非 Windows 平台整体跳过
  * （执行器本身只面向 Windows）。
  */
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -170,6 +170,89 @@ describe.skipIf(process.platform !== 'win32')('createCommandRunner（真实 Powe
       await expect(terminateProcessTree(undefined)).resolves.toBeUndefined()
       // 一个几乎不可能存在的 PID：taskkill 报错被吞掉，不允许抛
       await expect(terminateProcessTree(2_147_483_647)).resolves.toBeUndefined()
+    },
+    TIMEOUT,
+  )
+})
+
+/**
+ * 项目根边界（v13，docs/06 §11.1）：`cwd` 与文件类工具走同一套 realpath 前缀校验。
+ *
+ * 成对断言 —— 越界**不执行**、显式放行才**能执行**；否则「边界生效」这句话在单测里无从证伪。
+ * 真磁盘（`mkdtemp`）而不是桩：校验里含 `realpath`，桩证明不了 Windows 上的真实返回。
+ */
+describe.skipIf(process.platform !== 'win32')('createCommandRunner 的 cwd 边界校验', () => {
+  const root = mkdtempSync(join(tmpdir(), 'aurora-cmd-root-'))
+  const outside = mkdtempSync(join(tmpdir(), 'aurora-cmd-out-'))
+  const guarded = createCommandRunner({ defaultCwd: root, workspaceRoot: () => root })
+  // 副作用文件写在**越界目录**里：命令真的执行了才会出现
+  const marker = join(outside, 'aurora-cwd-boundary.txt')
+  rmSync(marker, { force: true })
+
+  it(
+    'cwd 在项目根之外：不执行命令，回带「cwd 在项目根之外」',
+    async () => {
+      const result = await guarded({
+        command: `Set-Content -LiteralPath '${marker}' -Value ran`,
+        cwd: outside,
+        timeoutMs: TIMEOUT,
+      })
+
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr).toContain('cwd 在项目根之外')
+      expect(existsSync(marker)).toBe(false)
+    },
+    TIMEOUT,
+  )
+
+  it(
+    'cwd 越界但显式放行（allowOutside）：命令真的执行',
+    async () => {
+      const result = await guarded({
+        command: `Set-Content -LiteralPath '${marker}' -Value ran`,
+        cwd: outside,
+        allowOutside: true,
+        timeoutMs: TIMEOUT,
+      })
+
+      expect(result.exitCode).toBe(0)
+      expect(existsSync(marker)).toBe(true)
+      rmSync(marker, { force: true })
+    },
+    TIMEOUT,
+  )
+
+  it(
+    'cwd 在项目根之内：不受影响，照常执行',
+    async () => {
+      const inside = join(root, 'aurora-inside.txt')
+      rmSync(inside, { force: true })
+      const result = await guarded({
+        command: `Set-Content -LiteralPath '${inside}' -Value ran`,
+        cwd: root,
+        timeoutMs: TIMEOUT,
+      })
+
+      expect(result.exitCode).toBe(0)
+      expect(existsSync(inside)).toBe(true)
+      rmSync(inside, { force: true })
+    },
+    TIMEOUT,
+  )
+
+  it(
+    '未配置 workspaceRoot：与 v13 之前一致（越界 cwd 照常执行）',
+    async () => {
+      const unguarded = createCommandRunner({ defaultCwd: root })
+      const result = await unguarded({
+        command: `Set-Content -LiteralPath '${marker}' -Value ran`,
+        cwd: outside,
+        timeoutMs: TIMEOUT,
+      })
+
+      expect(result.exitCode).toBe(0)
+      expect(existsSync(marker)).toBe(true)
+      rmSync(marker, { force: true })
     },
     TIMEOUT,
   )
