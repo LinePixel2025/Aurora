@@ -24,9 +24,15 @@ export const DEFAULT_CONFIRM_TIMEOUT_MS = 60_000
 
 interface PendingConfirm {
   request: SensitiveToolRequest
-  resolve: (approved: boolean) => void
+  resolve: (decision: ConfirmResolution) => void
   timer: NodeJS.Timeout
 }
+
+/**
+ * 一次确认的结算值（docs/06 §11.2）：`false` 拒绝；`true` 本次放行；
+ * `'always'` 本次放行 **且** 本会话内同名工具不再询问。原样交给 `createConfirmTool`。
+ */
+export type ConfirmResolution = boolean | 'always'
 
 /**
  * 纯函数：判断给定时间是否落在勿扰时段内（支持跨天，如 22:30–07:00）。
@@ -82,7 +88,7 @@ export class ProactiveScheduler {
     sessionId: string
     toolName: string
     input: unknown
-  }): Promise<boolean> {
+  }): Promise<ConfirmResolution> {
     if (this.disposed) {
       this.options.logger.warn('主动引导已释放，敏感工具确认直接拒绝', { tool: input.toolName })
       return false
@@ -101,7 +107,7 @@ export class ProactiveScheduler {
       expiresAt: new Date(Date.now() + this.confirmTimeoutMs).toISOString(),
     }
 
-    return new Promise<boolean>((resolve) => {
+    return new Promise<ConfirmResolution>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(request.confirmId)
         this.options.logger.warn('敏感工具确认超时，按拒绝处理', {
@@ -136,11 +142,21 @@ export class ProactiveScheduler {
     })
   }
 
-  /** IPC 回执入口：未知/已超时的 confirmId 返回 false。 */
-  resolve(confirmId: string, approved: boolean): boolean {
-    const settled = this.settle(confirmId, approved)
+  /**
+   * IPC 回执入口：未知/已超时的 confirmId 返回 false。
+   *
+   * `always === true` 只在 `approved === true` 时才生效 ——「本会话都允许」是放行的一种形态，
+   * **拒绝永远不会被升级成会话级授权**。
+   */
+  resolve(confirmId: string, approved: boolean, always = false): boolean {
+    const decision: ConfirmResolution = approved && always ? 'always' : approved
+    const settled = this.settle(confirmId, decision)
     if (!settled) {
-      this.options.logger.warn('收到未知或已过期的敏感工具确认回执', { confirmId, approved })
+      this.options.logger.warn('收到未知或已过期的敏感工具确认回执', {
+        confirmId,
+        approved,
+        always,
+      })
     }
     return settled
   }
@@ -162,13 +178,13 @@ export class ProactiveScheduler {
   // ───────────────────────── 内部 ─────────────────────────
 
   /** 结算一次在途确认；返回是否命中（未命中说明已超时或 id 未知）。 */
-  private settle(confirmId: string, approved: boolean): boolean {
+  private settle(confirmId: string, decision: ConfirmResolution): boolean {
     const entry = this.pending.get(confirmId)
     if (entry === undefined) return false
     this.pending.delete(confirmId)
     clearTimeout(entry.timer)
-    entry.resolve(approved)
-    this.options.logger.debug('敏感工具确认已回执', { confirmId, approved })
+    entry.resolve(decision)
+    this.options.logger.debug('敏感工具确认已回执', { confirmId, decision })
     return true
   }
 }

@@ -11,16 +11,20 @@ import {
   isLlmError,
   matchAllowPatterns,
   type AgentProviderFactory,
+  type ConfirmDecision,
   type ProviderConfig,
 } from '@aurora/agent-core'
 import type { AgentEvent, AgentHost, LlmSettings, LlmProviderConfig } from '@aurora/shared'
-import type { Logger } from '@aurora/shared'
+import type { Logger, PermissionMode } from '@aurora/shared'
+// 三档权限的判定是纯函数、主进程与渲染层共用同一份（docs/06 §11.2）
+import { isWithinRoot, permissionTargetOf } from '@aurora/shared'
 import type {
   ModeManagerLike,
   PerceptionLike,
   SendMessageRequest,
   SettingsStoreLike,
 } from './contracts.js'
+import type { ConfirmResolution } from './proactive.js'
 
 export interface AgentHostOptions {
   settings: SettingsStoreLike
@@ -39,14 +43,15 @@ export interface AgentHostOptions {
 /**
  * 敏感工具执行前的用户确认回调（docs/06 §5）。
  * 形状与 `@aurora/agent-core` 的 `AgentLoopOptions.confirmTool` 一致：
- * 由内核在工具 `sensitivity === 'confirm'` 时调用，`false` 表示用户拒绝执行。
+ * 由内核在工具 `sensitivity === 'confirm'` 时调用，`false` 表示用户拒绝执行，
+ * `'always'` 表示"本次放行 + 本会话内同名工具不再询问"（docs/06 §11.2）。
  */
 export type ConfirmToolDecision = (info: {
   name: string
   input: unknown
   sessionId: string
   sensitivity: 'confirm'
-}) => Promise<boolean>
+}) => Promise<ConfirmDecision>
 
 /** 确认载体（结构上由 `proactive.ts` 的 `ProactiveScheduler` 满足） */
 export interface SensitiveToolConfirmerLike {
@@ -54,7 +59,7 @@ export interface SensitiveToolConfirmerLike {
     sessionId: string
     toolName: string
     input: unknown
-  }): Promise<boolean>
+  }): Promise<ConfirmResolution>
 }
 
 /**
@@ -260,19 +265,39 @@ function fetchImplOf(resolveFetch?: () => typeof fetch | undefined): typeof fetc
  */
 export function createConfirmTool(options: {
   proactive: SensitiveToolConfirmerLike
-  enabled: () => boolean
   /**
-   * `run_command` 的免确认模式列表（每次调用即时判断，改设置无需重启，与 `enabled` 同款）。
-   * 未注入 / 返回空数组 = 没有免确认模式，所有命令都逐次确认。
+   * 当前**生效**的权限档位（每次调用即时读，改设置无需重启，与 v13 之前的 `enabled` 同款）。
+   * 取值由 `resolvePermissionMode()` 从 `agent.permissionMode` + `advanced.confirmSensitiveTools`
+   * 双开关算出来（docs/06 §11.2）。
    */
+  mode: () => PermissionMode
+  /** `run_command` 的免确认模式列表（每次调用即时读） */
   allowPatterns?: () => readonly string[]
+  /**
+   * 当前项目根（绝对路径）；无项目时返回 undefined。
+   *
+   * `auto` 档的免确认边界就是它：**根内免确认、根外照常弹卡**。
+   * 无项目时没有"根内"可言 —— 此时 `auto` 档与 v13 之前"关掉确认总开关"的行为一致
+   * （完全不弹卡），否则老用户一旦关掉那个开关就会突然被逐次询问，等于静默改回了旧行为。
+   */
+  projectRoot?: () => string | undefined
   logger?: Logger
 }): ConfirmToolDecision {
   return async (info) => {
-    if (!options.enabled()) return true
+    const mode = options.mode()
 
-    // 免确认分支只在 `enabled()` 为真之后判定：总开关关掉的那条路径比本列表更宽，
-    // 语义由它自己负责（本步不改）。命中即跳过卡片，但审计日志照写 —— 见上方函数注释。
+    // ── 只读档：写 / 执行类工具本来就不注册，这里是双保险 ──
+    // 走到这里说明工具表与设置不一致（例如刚好在切换档位的瞬间），宁可不执行。
+    if (mode === 'readonly') {
+      options.logger?.warn('只读档下收到敏感工具调用，已拒绝', {
+        tool: info.name,
+        sessionId: info.sessionId,
+      })
+      return false
+    }
+
+    // ── 免确认模式（confirm / auto 两档都生效）──
+    // 命中即跳过卡片，但审计日志照写 —— 见上方函数注释。
     if (info.name === 'run_command') {
       const command = readCommand(info.input)
       if (command !== undefined) {
@@ -285,6 +310,26 @@ export function createConfirmTool(options: {
           })
           return true
         }
+      }
+    }
+
+    // ── auto 档：只在项目根之内免确认 ──
+    if (mode === 'auto') {
+      const root = options.projectRoot?.()
+      if (root === undefined || root.trim() === '') {
+        // 无项目：没有"根内"的判据。保持 v13 之前"关掉确认总开关 = 不再逐次询问"的语义，
+        // 否则老用户会因为这次升级突然被反复询问（静默的行为回退）。
+        options.logger?.info('auto 档且未配置项目，按免确认放行', { tool: info.name })
+        return true
+      }
+      const approved = reasonWithinRoot(info, root)
+      if (approved !== undefined) {
+        options.logger?.info('调用落在项目根内，auto 档免确认放行', {
+          tool: info.name,
+          root,
+          target: approved,
+        })
+        return true
       }
     }
 
@@ -302,6 +347,46 @@ export function createConfirmTool(options: {
       return false
     }
   }
+}
+
+/**
+ * `auto` 档判定：该调用是否落在项目根内（返回被判定用的目标路径；不在 / 判不出时 undefined）。
+ *
+ * 保守方向永远是"不自动放行"：
+ * - 取不到目标路径（`permissionTargetOf` 返回 undefined）时只有 `run_command` 例外 ——
+ *   缺省 `cwd` 会回落项目根，所以按根内判定；其余工具一律按越界处理（走确认）；
+ * - **命令串里出现绝对路径时一律按越界处理**：我们不做 shell 解析，猜错一次就是静默越权，
+ *   多问一次只是打扰（`docs/06 §11.2` 已写明这个取舍）。
+ */
+function reasonWithinRoot(
+  info: { name: string; input: unknown },
+  root: string,
+): string | undefined {
+  if (info.name === 'run_command') {
+    const command = readCommand(info.input)
+    if (command !== undefined && containsAbsolutePath(command)) return undefined
+  }
+  const target = permissionTargetOf(info.name, info.input)
+  if (target === undefined) {
+    // `run_command` 缺省 `cwd` 会回落到项目根（装配层的 `defaultCwd`），因此按根内处理；
+    // 其余工具拿不到目标路径就等于"不知道它要碰哪"，一律走确认。
+    return info.name === 'run_command' ? root : undefined
+  }
+  return isWithinRoot(target, root) ? target : undefined
+}
+
+/**
+ * 命令串里是否出现"看起来是绝对路径"的片段。
+ *
+ * 只需要**宁可多问**：命中就退回确认卡片，不命中也不会漏掉真实越界（真越界会在执行时
+ * 被 `command-runner` 的 cwd 校验拦下）。因此这里允许误报，不允许漏报。
+ */
+export function containsAbsolutePath(command: string): boolean {
+  // 盘符路径（C:\ / C:/）、UNC（\\server\share）、以及 POSIX 绝对路径（/usr/...）。
+  // 注意 `C:` 单独出现不算（可能是命令行参数里的 `key:value`），要求后面紧跟分隔符。
+  return (
+    /[A-Za-z]:[\\/]/.test(command) || command.includes('\\\\') || /(^|[\s"'=])[/\\]/.test(command)
+  )
 }
 
 /**

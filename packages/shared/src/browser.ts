@@ -11,6 +11,8 @@
 // 纯 Schema 与类型（zod 可在浏览器运行）
 export * from './config/schema.js'
 export * from './config/defaults.js'
+// 三档权限的纯判定（docs/06 §11.2）：主进程与渲染层必须看到同一个"生效档位"
+export * from './config/permission.js'
 
 // 纯状态机与工具
 export * from './mode/windowState.js'

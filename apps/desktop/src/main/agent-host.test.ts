@@ -31,7 +31,7 @@ interface ConfirmRequest {
 }
 
 /** 假的确认载体：只记账、按给定结果返回，用来断言"卡片到底弹没弹" */
-function createFakeProactive(result: boolean): {
+function createFakeProactive(result: boolean | 'always'): {
   proactive: SensitiveToolConfirmerLike
   requests: ConfirmRequest[]
 } {
@@ -77,7 +77,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(false)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['echo AURORA_ALLOW*'],
     })
 
@@ -91,7 +91,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['echo AURORA_ALLOW*'],
     })
 
@@ -108,7 +108,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(false)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['echo AURORA_ALLOW*'],
     })
 
@@ -122,7 +122,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       // 故意用一条"假如能读出命令就会命中"的模式：放行才说明判据被绕过
       allowPatterns: () => ['git status*'],
     })
@@ -138,7 +138,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['git status*'],
     })
 
@@ -153,7 +153,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       // 三条都是"String() 一把会变成 git status"的形态，用来堵"隐式转字符串再匹配"的写法
       allowPatterns: () => ['git status*'],
     })
@@ -169,7 +169,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['git status*'],
     })
 
@@ -185,7 +185,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['git status*'],
       logger,
     })
@@ -210,7 +210,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['git status*'],
     })
 
@@ -224,7 +224,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['git status*'],
     })
 
@@ -237,7 +237,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
 
   it('allowPatterns 未注入：行为与从前完全一致（run_command 也全走确认）', async () => {
     const { proactive, requests } = createFakeProactive(false)
-    const confirm = createConfirmTool({ proactive, enabled: () => true })
+    const confirm = createConfirmTool({ proactive, mode: () => 'confirm' })
 
     const approved = await confirm(confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK' }))
 
@@ -249,7 +249,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => [],
     })
 
@@ -264,7 +264,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => patterns,
     })
 
@@ -276,12 +276,12 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     expect(requests).toHaveLength(1) // 命中 → 不再弹卡片（计数没涨）
   })
 
-  it('enabled() 为假：直接放行、不调用确认载体，也不写审计日志（既有语义未变）', async () => {
+  it('auto 档且未配置项目：直接放行、不调用确认载体（等价于旧的"关掉确认总开关"语义）', async () => {
     const logger = createRecordingLogger()
     const { proactive, requests } = createFakeProactive(false)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => false,
+      mode: () => 'auto',
       allowPatterns: () => ['echo AURORA_ALLOW*'],
       logger,
     })
@@ -290,8 +290,9 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
 
     expect(approved).toBe(true)
     expect(requests).toHaveLength(0)
-    // 免确认分支必须在 `enabled()` 之后判定：总开关关掉的路径不产生本分支的留痕
-    expect(logger.records).toHaveLength(0)
+    // 放行路径**会**留痕（info）：无项目时的 auto 放行必须可追溯，否则"为什么这次没弹卡片"无从查起
+    expect(logger.records).toHaveLength(1)
+    expect(logger.records[0]?.level).toBe('info')
   })
 
   it('命中时写 info 级审计日志（不是 warn），载荷含被命中的模式与命令', async () => {
@@ -299,7 +300,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['echo AURORA_ALLOW*'],
       logger,
     })
@@ -323,7 +324,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['npm test*', 'echo AURORA_ALLOW*'],
       logger,
     })
@@ -338,7 +339,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['echo *'],
       logger,
     })
@@ -353,7 +354,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['echo AURORA_ALLOW*'],
       logger,
     })
@@ -368,7 +369,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      enabled: () => true,
+      mode: () => 'confirm',
       allowPatterns: () => ['*'],
       logger,
     })
@@ -395,7 +396,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
       const { proactive, requests } = createFakeProactive(true)
       const confirm = createConfirmTool({
         proactive,
-        enabled: () => true,
+        mode: () => 'confirm',
         allowPatterns: () => patterns,
         logger,
       })
@@ -408,5 +409,101 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
       expect(approved).toBe(true) // 透传假载体的返回值
       expect(logger.records, `模式 ${patterns.join(',')} 不该留痕`).toHaveLength(0)
     }
+  })
+})
+
+/**
+ * 三档权限的判定（docs/06 §11.2，v13）。
+ *
+ * 这几条钉的是"档位真的改变了行为"，而不只是"字段被存下来了"：
+ * 只读档必须**拒绝**（工具层已经不注册，这里是双保险）、auto 档按项目根内/外分流、confirm 档不变。
+ */
+describe('createConfirmTool 的三档权限判定', () => {
+  const root = 'D:\\proj'
+
+  it('readonly 档：任何敏感工具一律拒绝，且不弹确认卡片', async () => {
+    const logger = createRecordingLogger()
+    const { proactive, requests } = createFakeProactive(true)
+    const confirm = createConfirmTool({
+      proactive,
+      mode: () => 'readonly',
+      projectRoot: () => root,
+      logger,
+    })
+
+    const approved = await confirm(confirmInfo('write_file', { path: 'D:\\proj\\a.txt' }))
+
+    expect(approved).toBe(false)
+    expect(requests).toHaveLength(0)
+    expect(logger.records[0]?.level).toBe('warn')
+  })
+
+  it('auto 档 + 项目根内：免确认直接放行，并写 info 审计日志', async () => {
+    const logger = createRecordingLogger()
+    const { proactive, requests } = createFakeProactive(false)
+    const confirm = createConfirmTool({
+      proactive,
+      mode: () => 'auto',
+      projectRoot: () => root,
+      logger,
+    })
+
+    const approved = await confirm(confirmInfo('write_file', { path: 'D:\\proj\\sub\\a.txt' }))
+
+    expect(approved).toBe(true)
+    expect(requests).toHaveLength(0)
+    expect(logger.records[0]?.level).toBe('info')
+    expect(metaOf(logger.records)).toMatchObject({
+      tool: 'write_file',
+      target: 'D:\\proj\\sub\\a.txt',
+    })
+  })
+
+  it('auto 档 + 项目根外：仍走确认卡片（越界不免确认）', async () => {
+    const { proactive, requests } = createFakeProactive(true)
+    const confirm = createConfirmTool({
+      proactive,
+      mode: () => 'auto',
+      projectRoot: () => root,
+    })
+
+    // 兄弟目录（前缀相同但不在根内）与 `..` 穿越都必须回到确认卡片
+    expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj2\\a.txt' }))).toBe(true)
+    expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj\\..\\other\\a.txt' }))).toBe(
+      true,
+    )
+    // `edit_file` 走 `path`、`open_path` 走 `target`
+    expect(await confirm(confirmInfo('open_path', { target: 'C:\\Windows' }))).toBe(true)
+    expect(requests).toHaveLength(3)
+  })
+
+  it('auto 档 + run_command：cwd 在根内免确认，命令串里出现绝对路径时一律回到确认', async () => {
+    const { proactive, requests } = createFakeProactive(true)
+    const confirm = createConfirmTool({
+      proactive,
+      mode: () => 'auto',
+      projectRoot: () => root,
+    })
+
+    // cwd 在根内、命令是相对命令 → 免确认
+    expect(await confirm(confirmInfo('run_command', { command: 'npm test', cwd: root }))).toBe(true)
+    // cwd 缺省（回落到根）但命令里带了绝对路径 → 保守起见回到确认卡片
+    expect(
+      await confirm(confirmInfo('run_command', { command: 'type C:\\Windows\\win.ini' })),
+    ).toBe(true)
+    expect(requests).toHaveLength(1)
+  })
+
+  it('confirm 档：行为与三档之前完全一致（一律走确认卡片）', async () => {
+    const { proactive, requests } = createFakeProactive(true)
+    const confirm = createConfirmTool({
+      proactive,
+      mode: () => 'confirm',
+      projectRoot: () => root,
+    })
+
+    // 即便路径就在项目根内，confirm 档也要问
+    expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj\\a.txt' }))).toBe(true)
+    expect(requests).toHaveLength(1)
   })
 })

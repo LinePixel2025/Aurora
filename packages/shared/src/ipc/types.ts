@@ -993,8 +993,15 @@ export interface AuroraApi {
   proactive: {
     /** 敏感工具确认请求（docs/06 §5） */
     onSensitiveTool(listener: (request: SensitiveToolRequest) => void): () => void
-    /** 回执：true = 允许执行；超时/未知 id 返回 false */
-    resolveSensitiveTool(confirmId: string, approved: boolean): Promise<Result<boolean>>
+    /**
+     * 回执：`true` = 允许执行；超时/未知 id 返回 false（docs/06 §11.2）。
+     * `always === true`（且 `approved === true`）= 本次放行 + **本会话内同名工具不再询问**。
+     */
+    resolveSensitiveTool(
+      confirmId: string,
+      approved: boolean,
+      always?: boolean,
+    ): Promise<Result<boolean>>
   }
   mcp: {
     status(): Promise<Result<McpServerStatus[]>>

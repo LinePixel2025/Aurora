@@ -540,8 +540,10 @@ export function registerIpc(deps: DesktopDeps): () => void {
 
   // ───────────────────────── 敏感工具确认（docs/06 §5） ─────────────────────────
 
-  handle<boolean>(IPC.proactive.resolveSensitiveTool, (confirmId: string, approved: boolean) =>
-    ok(deps.proactive.resolve(confirmId, approved)),
+  handle<boolean>(
+    IPC.proactive.resolveSensitiveTool,
+    (confirmId: string, approved: boolean, always = false) =>
+      ok(deps.proactive.resolve(confirmId, approved, always)),
   )
 
   // ───────────────────────── 更新（docs/09） ─────────────────────────

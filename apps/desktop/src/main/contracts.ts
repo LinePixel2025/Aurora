@@ -42,6 +42,7 @@ import type {
   WindowName,
   WindowState,
 } from '@aurora/shared'
+import type { ConfirmResolution } from './proactive.js'
 
 /** 也用于 agent-host 的最小依赖面 */
 export type {
@@ -153,14 +154,17 @@ export interface ClassificationControllerLike {
 
 /** 主动引导 / 敏感工具确认（docs/06 §5、§9） */
 export interface ProactiveLike {
-  /** 敏感工具执行前的确认；勿扰时段内直接拒绝 */
+  /**
+   * 敏感工具执行前的确认；勿扰时段内直接拒绝。
+   * 返回值多一个 `'always'`（v13）：用户点了「本会话都允许」（docs/06 §11.2）。
+   */
   requestSensitiveToolConfirm(input: {
     sessionId: string
     toolName: string
     input: unknown
-  }): Promise<boolean>
-  /** 渲染层回执 */
-  resolve(confirmId: string, approved: boolean): boolean
+  }): Promise<ConfirmResolution>
+  /** 渲染层回执；`always = true` 且 `approved = true` 时升级为本会话授权 */
+  resolve(confirmId: string, approved: boolean, always?: boolean): boolean
   /** 会话取消 / 退出时让在途确认立即失败 */
   rejectAll(reason: string): void
   onRequest(listener: (request: SensitiveToolRequest) => void): () => void

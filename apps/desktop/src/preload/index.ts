@@ -138,8 +138,9 @@ const api: AuroraApi = {
   },
   proactive: {
     onSensitiveTool: (listener) => subscribe(IPC.proactive.sensitiveTool, listener),
-    resolveSensitiveTool: (confirmId, approved) =>
-      invoke(IPC.proactive.resolveSensitiveTool, confirmId, approved),
+    // `always` 缺省时显式传 false：主进程侧的判定是 `always === true`，不依赖 undefined 的序列化
+    resolveSensitiveTool: (confirmId, approved, always) =>
+      invoke(IPC.proactive.resolveSensitiveTool, confirmId, approved, always === true),
   },
   mcp: {
     status: () => invoke(IPC.mcp.status),
