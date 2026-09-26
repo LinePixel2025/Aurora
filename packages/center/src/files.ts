@@ -78,24 +78,17 @@ export class FileStore {
     await fs.mkdir(this.dir, { recursive: true })
 
     let size = 0
-    let oversized = false
+    // 超限时 limiter 以 FileTooLargeError 结束 pipeline（见 TransformCounter）：
+    // done(error) 走的是标准错误通道，"先 done 再 destroy" 会变成 Premature close
+    // 把真实错误盖掉。半截文件在 catch 里删除。
     const limiter = new TransformCounter(this.options.maxFileBytes, (count) => {
       size = count
     })
-    limiter.onOverflow = () => {
-      oversized = true
-    }
     try {
       await pipeline(input.content, limiter, createWriteStream(target))
     } catch (error) {
       await fs.rm(target, { force: true })
       throw error
-    }
-    if (oversized) {
-      await fs.rm(target, { force: true })
-      throw new FileTooLargeError(
-        `文件超过上限（${Math.floor(this.options.maxFileBytes / 1024 / 1024)} MB）`,
-      )
     }
 
     const record: FileRecord = {
@@ -130,16 +123,13 @@ class TransformCounter extends Transform {
     super()
   }
 
-  onOverflow: () => void = () => {}
-
-  override _transform(chunk: Buffer, _enc: BufferEncoding, done: () => void): void {
+  override _transform(chunk: Buffer, _enc: BufferEncoding, done: (error?: Error) => void): void {
     if (this.count + chunk.length > this.max) {
-      this.onOverflow()
-      // 丢弃剩余数据并正常收尾：调用方靠 onOverflow 标记决定删除与报错
-      this.count = this.max
-      this.onCount(this.count)
-      done()
-      this.destroy()
+      done(
+        new FileTooLargeError(
+          `文件超过上限（${Math.floor(this.max / 1024 / 1024)} MB）`,
+        ),
+      )
       return
     }
     this.count += chunk.length
