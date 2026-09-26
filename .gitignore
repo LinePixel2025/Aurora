@@ -29,3 +29,4 @@ integrations/classisland-bridge/obj/
 # 本地设计素材副本（不参与构建，也不需要进版本库）
 Design/Apple Copy.zip
 Design/Apple Copy/
+dist-web

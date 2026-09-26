@@ -351,3 +351,24 @@ Git 状态感知、终端 / 命令执行工具组留待后续版本（能力位�
 - `modes.classroom.*`：watchDir、subjects（科目→文件夹映射）、schedule（课程表）、preClassReminder、preClassOpenFolder、classification（autoMove / confidenceThreshold / fallbackFolder）、guideCompleted
 - `modes.work.*`：guideCompleted、workspaceDir（BetaV2 起，办公工作目录）
 - `modes.code.*`：仅 `guideCompleted`（占位）
+
+## 6. 模式能力对齐（v0.2.0 定稿）
+
+**原则：模式差异只体现在「自主感知能力」与「特化功能」两处，绝不裁剪 Agent 的基础能力。**
+
+具体口径：
+
+1. **工具集全模式一致**：工具注册（内核 `ToolRegistry` + 三档权限 `permissionMode`）
+   与模式无关 —— 任何模式下的 Agent 都拥有同一份工具清单（受 `agent.tools.enabled`、
+   `agent.permissionMode`、`center.enabled` 等全局门控约束，但不按模式裁剪）。
+   `ModeManager` 不参与工具注册。
+2. **差异只允许出现在两处**：
+   - **自主感知**（`perceptionSubscriptions`）：classroom 订阅文件监听与课程时钟、
+     work 订阅时钟、code 暂无 —— 感知差异影响"Agent 主动知道什么"，不影响"Agent 能做什么"；
+   - **特化功能**（`systemPrompt` 片段 + guide + 模式专属配置）：classroom 的分类管线 /
+     课前提醒、work 的办公文档指引与工作目录。特化功能**只增不减**：模式提示词可以
+     声明"本模式的特化能力边界"（如 code 的"功能建设中"），但**不得声明或暗示**
+     基础工具（文件 / 命令 / 检索 / Center 等）在当前模式不可用。
+3. **回归护栏**：`packages/modes/src/manager.test.ts` 的能力矩阵用例断言三个模式
+   `capabilities.tools` 恒等（`modeCapabilityMatrix()` 导出，见 `helpers.ts`），
+   防止未来有人给某个模式加"工具裁剪"。

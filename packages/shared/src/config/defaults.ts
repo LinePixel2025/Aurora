@@ -268,6 +268,21 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
       autoContinueRounds: 2,
     },
   },
+  /**
+   * Aurora Center 连接（v16，docs/12）：默认**不启用**（`enabled: false` + 空 serverUrl）
+   * —— 不配置时零行为变化：不出站连接、不注册 Center 工具、设置页之外无任何入口。
+   */
+  center: {
+    enabled: false,
+    serverUrl: '',
+    tokenEnc: '',
+    clientId: '',
+    displayName: '',
+    allowRemoteSession: true,
+    allowRemoteConfig: true,
+    allowFileTransfer: true,
+    maxFileMb: 64,
+  },
 }
 
 /** 返回一份全新的默认配置（避免调用方共享同一引用）。 */

@@ -1,0 +1,423 @@
+/**
+ * Aurora Center Web —— Apple 风格基础样式（docs/12 §10）。
+ *
+ * 统一 token 化：颜色 / 圆角 / 阴影都在 :root 变量里，组件内只引用变量；
+ * 共享类（卡片 / 按钮 / 输入框 / 表格 / 圆点 / 转圈）放这里，布局细节在各组件 scoped 内。
+ */
+:root {
+  --bg: #f5f5f7;
+  --card: #ffffff;
+  --text: #1d1d1f;
+  --text-2: #6e6e73;
+  --muted: #86868b;
+  --accent: #0071e3;
+  --accent-hover: #0062cc;
+  --accent-soft: rgba(0, 113, 227, 0.1);
+  --danger: #ff3b30;
+  --danger-hover: #e0342b;
+  --danger-soft: rgba(255, 59, 48, 0.1);
+  --ok: #34c759;
+  --ok-soft: rgba(52, 199, 89, 0.14);
+  --line: rgba(0, 0, 0, 0.08);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.04);
+  --radius: 16px;
+  --radius-sm: 12px;
+  --topbar-h: 52px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei',
+    sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* ───────────────────────── 卡片 ───────────────────────── */
+
+.card {
+  background: var(--card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+/* ───────────────────────── 顶栏（毛玻璃） ───────────────────────── */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: var(--topbar-h);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  background: rgba(255, 255, 255, 0.72);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.topbar-inner {
+  max-width: 1280px;
+  height: 100%;
+  margin: 0 auto;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.brand {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.topbar-link {
+  color: var(--text-2);
+  text-decoration: none;
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 980px;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.topbar-link:hover {
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.topbar-link.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.topbar-user {
+  color: var(--text-2);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* WS 连接状态 */
+.ws-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 980px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+
+.ws-chip i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+
+.ws-chip.open i {
+  background: var(--ok);
+}
+
+.ws-chip.connecting i {
+  background: #ffcc00;
+}
+
+.ws-chip.closed i {
+  background: var(--danger);
+}
+
+/* ───────────────────────── 按钮 ───────────────────────── */
+
+.btn {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+  border-radius: 980px;
+  padding: 8px 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.35);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-secondary {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: rgba(0, 113, 227, 0.18);
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-hover);
+}
+
+.btn-danger-ghost {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.btn-danger-ghost:hover:not(:disabled) {
+  background: rgba(255, 59, 48, 0.18);
+}
+
+.btn-ghost {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.09);
+}
+
+.btn-sm {
+  padding: 4px 12px;
+  font-size: 13px;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+/* ───────────────────────── 输入框 ───────────────────────── */
+
+.input {
+  width: 100%;
+  border: 0;
+  background: var(--bg);
+  border-radius: 12px;
+  padding: 9px 12px;
+  font: inherit;
+  color: var(--text);
+  outline: none;
+  transition:
+    box-shadow 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.input::placeholder {
+  color: var(--muted);
+}
+
+.input:focus {
+  background: var(--card);
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.35);
+}
+
+textarea.input {
+  resize: none;
+}
+
+select.input {
+  appearance: none;
+  cursor: pointer;
+}
+
+.input-inline {
+  width: auto;
+}
+
+/* ───────────────────────── 表格 ───────────────────────── */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table th {
+  text-align: left;
+  color: var(--text-2);
+  font-weight: 500;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.table tbody tr {
+  transition: background-color 0.12s ease;
+}
+
+.table tbody tr:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ───────────────────────── 小件 ───────────────────────── */
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+}
+
+.dot.on {
+  background: var(--ok);
+}
+
+.dot.off {
+  background: #b0b0b6;
+}
+
+.chip {
+  display: inline-block;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 1px 10px;
+  border-radius: 980px;
+  background: var(--bg);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.chip-ok {
+  background: var(--ok-soft);
+  color: #1d7a35;
+}
+
+.chip-muted {
+  background: var(--bg);
+  color: var(--muted);
+}
+
+.chip-accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 0, 0, 0.12);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+  flex: none;
+}
+
+.spinner-sm {
+  width: 14px;
+  height: 14px;
+}
+
+.spinner-light {
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ───────────────────────── 工具类 ───────────────────────── */
+
+.text-2 {
+  color: var(--text-2);
+}
+
+.ta-right {
+  text-align: right;
+}
+
+.mono {
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.form-error {
+  color: var(--danger);
+  font-size: 13px;
+  margin: 6px 0;
+}
+
+/* 启动 / 空态居中转圈 */
+.boot-center {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

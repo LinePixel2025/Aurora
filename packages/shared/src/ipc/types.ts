@@ -815,7 +815,8 @@ export interface AgentJob {
   sessionId: string
   requestId?: string
   status: AgentJobStatus
-  origin: 'chat' | 'edge-bar' | 'resume'
+  /** `center` = 由 Aurora Center 远程会话发起（docs/12 §5） */
+  origin: 'chat' | 'edge-bar' | 'resume' | 'center'
   /** 本 job 的用户消息原文（续跑不再重复落盘，靠它还原上下文） */
   text: string
   /** 已经跑到第几轮（从 0 起） */

@@ -558,6 +558,12 @@ export class SettingsStore {
       }
     }
 
+    const centerToken = encryptIfPlain(this.current.center.tokenEnc)
+    if (centerToken !== this.current.center.tokenEnc) {
+      this.logger.info('已为存量 Center 配对令牌补加密')
+      this.current.center.tokenEnc = centerToken
+    }
+
     return count
   }
   private isDecryptable(value: string): boolean {
@@ -588,6 +594,7 @@ export class SettingsStore {
       const server = this.current.mcp.servers.find((s) => s.name === headerMatch.server)
       if (server !== undefined) return server.headersEnc[headerMatch.headerKey]
     }
+    if (key === 'center.token') return this.current.center.tokenEnc
     return undefined
   }
 
@@ -662,6 +669,14 @@ export class SettingsStore {
         }) !== undefined
       )
     }
+    if (key === 'center.token') {
+      // `center` 是顶层分组、Schema 带整组默认值，装配后的 `this.current` 里恒存在
+      return (
+        this.mutate((draft) => {
+          draft.center.tokenEnc = cipher
+        }) !== undefined
+      )
+    }
     return false
   }
 
@@ -680,6 +695,7 @@ export class SettingsStore {
       server.envEnc = {}
       server.headersEnc = {}
     }
+    clone.center.tokenEnc = ''
     return clone
   }
 }
@@ -737,6 +753,8 @@ export function canonicalSecretPath(path: string): string {
   if (env) return `mcp.servers.${env[1]}.env.${env[3]}`
   const headers = /^mcp\.servers\.([^.]+)\.headers(Enc)?\.(.+)$/.exec(trimmed)
   if (headers) return `mcp.servers.${headers[1]}.headers.${headers[3]}`
+  const centerToken = /^center\.token(Enc)?$/.exec(trimmed)
+  if (centerToken) return 'center.token'
   return trimmed
 }
 
@@ -749,7 +767,7 @@ export function canonicalSecretPath(path: string): string {
  * `envEnc` / `headersEnc` 同理是整体锚定的派生字段名（`.*secret.*` 等分支盖不住），须逐个列出。
  */
 const SENSITIVE_KEY_PATTERN =
-  /^(.*api[-_]?key.*|api[-_]?key|apikey|token|access[-_]?token|refresh[-_]?token|authorization|secret|client[-_]?secret|password|passwd|credential|envEnc|headersEnc|.*secret.*|.*password.*|.*credential.*)$/i
+  /^(.*api[-_]?key.*|api[-_]?key|apikey|token|access[-_]?token|refresh[-_]?token|authorization|secret|client[-_]?secret|password|passwd|credential|envEnc|headersEnc|tokenEnc|.*secret.*|.*password.*|.*credential.*)$/i
 
 export function redactKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => redactKeys(item))

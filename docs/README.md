@@ -407,6 +407,7 @@
 | 09 | [09-packaging-release.md](./09-packaging-release.md) | 打包（NSIS）、双仓库发布拓扑、自动更新、SmartScreen 说明 | 发布运维 |
 | 10 | [10-user-guide.md](./10-user-guide.md) | 用户手册：安装、引导、各窗口、ClassRoom、ClassIsland、代理、排障 | 用户文档 |
 | 11 | [11-privacy.md](./11-privacy.md) | 隐私说明：数据位置、凭据加密、出网场景、权限清单 | 合规说明 |
+| 12 | [12-aurora-center.md](./12-aurora-center.md) | Aurora Center：网页控制中心（服务器 / Web UI / CLI / 客户端连接器 / Center 工具） | 远程控制 |
 
 ## 阅读顺序建议
 

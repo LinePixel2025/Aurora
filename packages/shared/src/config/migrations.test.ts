@@ -1038,9 +1038,10 @@ describe('配置迁移链', () => {
           },
         },
       })
-      // 恒等指的是「不重复应用同一条迁移」：从 14 出发只会应用 v14 → v15
+      // 恒等指的是「不重复应用同一条迁移」：从 14 出发只会应用 v14 → v15 与 v15 → v16
       expect(outcome.applied).toEqual([
         'v14 → v15：v14 → v15：为 agent 补 loop.*（轮次上限、token 预算与自动续轮）',
+        'v15 → v16：v15 → v16：新增 center 分组（Aurora Center 连接，docs/12）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1054,6 +1055,42 @@ describe('配置迁移链', () => {
       const current = migrate({ version: CONFIG_VERSION, general: {} })
       expect(current.applied).toEqual([])
       expect(current.data['version']).toBe(CONFIG_VERSION)
+    })
+  })
+
+  describe('v15 → v16（新增 center 分组，Aurora Center 连接）', () => {
+    it('为已存在的 center 补默认值，用户已写的 serverUrl / tokenEnc 原样保留', () => {
+      const outcome = migrate({
+        version: 15,
+        center: { enabled: true, serverUrl: 'wss://center.example.com', tokenEnc: 'fakestorage:v1:tok' },
+      })
+      expect(outcome.applied).toEqual(['v15 → v16：v15 → v16：新增 center 分组（Aurora Center 连接，docs/12）'])
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+      expect(outcome.data['center']).toEqual({
+        enabled: true,
+        serverUrl: 'wss://center.example.com',
+        tokenEnc: 'fakestorage:v1:tok',
+        clientId: '',
+        displayName: '',
+        allowRemoteSession: true,
+        allowRemoteConfig: true,
+        allowFileTransfer: true,
+        maxFileMb: 64,
+      })
+    })
+
+    it('center 分组不存在时不凭空造对象，交给默认配置兜底', () => {
+      const outcome = migrate({ version: 15, general: {} })
+      expect(outcome.warnings).toEqual([])
+      expect(outcome.data['center']).toBeUndefined()
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('重复执行结果一致（幂等）', () => {
+      const raw = { version: 15, center: { enabled: true, serverUrl: 'ws://x' } }
+      const once = migrate(raw)
+      const twice = migrate(once.data as Record<string, unknown>)
+      expect(twice.data).toEqual(once.data)
     })
   })
 })

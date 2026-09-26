@@ -1,0 +1,347 @@
+<script setup lang="ts">
+import { computed, nextTick, ref, watch } from 'vue'
+import ToolCard from './ToolCard.vue'
+import { fileUrl } from '../api'
+import { formatBytes, modeLabel } from '../format'
+import { abortSession, sendInput, type ClientEntry, type SessionState } from '../store'
+
+/**
+ * 会话主区：消息流（按 messageId 聚合的结果）+ 底部输入框 + 发送 / 停止。
+ * 停止依赖最近一次 session.input 回执携带的 agentRequestId。
+ */
+const props = defineProps<{ session: SessionState; entry: ClientEntry }>()
+
+const emit = defineEmits<{ newSession: [] }>()
+
+const draft = ref('')
+const listEl = ref<HTMLElement | null>(null)
+const abortError = ref('')
+
+/** 没有任何助手输出时才显示整行「生成中」；有了增量就交给消息内光标 */
+const showLoading = computed(
+  () => props.session.pending && !props.session.items.some((item) => item.kind === 'assistant'),
+)
+
+async function send(): Promise<void> {
+  const text = draft.value.trim()
+  if (!text || props.session.pending) return
+  draft.value = ''
+  abortError.value = ''
+  await sendInput(props.session, text)
+}
+
+function onKeydown(event: KeyboardEvent): void {
+  // 中文输入法组词中的回车不发送
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    event.preventDefault()
+    void send()
+  }
+}
+
+async function abort(): Promise<void> {
+  abortError.value = ''
+  try {
+    await abortSession(props.session)
+  } catch (err) {
+    abortError.value = err instanceof Error ? err.message : '中止失败'
+  }
+}
+
+async function scrollToBottom(): Promise<void> {
+  await nextTick()
+  const el = listEl.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
+// 消息条数变化或任一消息内容增长时滚到底部；切换会话时同样滚到底
+watch(
+  () => [
+    props.session.items.length,
+    props.session.items.reduce(
+      (sum, item) => sum + item.content.length + (item.reasoning?.length ?? 0),
+      0,
+    ),
+  ],
+  () => void scrollToBottom(),
+)
+watch(
+  () => props.session,
+  () => void scrollToBottom(),
+)
+</script>
+
+<template>
+  <div class="card session">
+    <header class="session-head">
+      <div class="session-title">
+        <span class="dot" :class="entry.client.online ? 'on' : 'off'"></span>
+        <h2>{{ entry.client.name }}</h2>
+        <span class="chip">{{ modeLabel(entry.client.mode) }}模式</span>
+        <span v-if="entry.status" class="chip">{{ entry.status.agent.permissionMode }}</span>
+      </div>
+      <button class="btn btn-ghost btn-sm" type="button" @click="emit('newSession')">新会话</button>
+    </header>
+
+    <div ref="listEl" class="msg-list">
+      <template v-for="item in session.items" :key="item.id">
+        <div v-if="item.kind === 'user'" class="msg-user">
+          <div class="bubble-user">{{ item.content }}</div>
+        </div>
+        <div v-else-if="item.kind === 'error'" class="msg-error">
+          {{ item.content }}
+          <span v-if="item.code" class="msg-error-code">（{{ item.code }}）</span>
+        </div>
+        <div v-else class="msg-assistant">
+          <div v-if="item.reasoning" class="think">
+            <details>
+              <summary>{{ item.streaming && !item.content ? '思考中…' : '思考过程' }}</summary>
+              <div class="think-body">{{ item.reasoning }}</div>
+            </details>
+          </div>
+          <div v-if="item.content" class="msg-text">{{ item.content }}</div>
+          <ToolCard v-for="tool in item.tools" :key="tool.id" :tool="tool" />
+          <span v-if="item.streaming" class="caret"></span>
+        </div>
+      </template>
+
+      <div v-if="showLoading" class="msg-loading">
+        <span class="spinner spinner-sm"></span>
+        <span>生成中…</span>
+      </div>
+
+      <!-- 该客户端发来的文件（Agent 调 center_send_file 上传后出现） -->
+      <div v-if="entry.files.length > 0" class="file-strip">
+        <span class="file-strip-title">收到文件</span>
+        <a
+          v-for="file in entry.files"
+          :key="file.fileId"
+          class="file-chip"
+          :href="fileUrl(file.fileId)"
+          :download="file.name"
+          :title="file.note || file.name"
+        >
+          {{ file.name }} · {{ formatBytes(file.size) }}
+        </a>
+      </div>
+
+      <div v-if="session.items.length === 0 && !session.pending" class="msg-placeholder text-2">
+        会话已建立。发一条消息试试——它会由客户端本机的 Aurora 处理。
+      </div>
+    </div>
+
+    <footer class="composer">
+      <p v-if="abortError" class="form-error">{{ abortError }}</p>
+      <div class="composer-row">
+        <textarea
+          v-model="draft"
+          class="input composer-input"
+          rows="1"
+          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+          @keydown="onKeydown"
+        ></textarea>
+        <button v-if="session.pending" class="btn btn-danger" type="button" @click="abort">
+          停止
+        </button>
+        <button
+          v-else
+          class="btn btn-primary"
+          type="button"
+          :disabled="!draft.trim()"
+          @click="send"
+        >
+          发送
+        </button>
+      </div>
+    </footer>
+  </div>
+</template>
+
+<style scoped>
+.session {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.session-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px;
+}
+
+.session-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.session-title h2 {
+  margin: 0;
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 24px 16px;
+  min-height: 0;
+}
+
+/* 用户气泡：右侧、主色 */
+.msg-user {
+  display: flex;
+  justify-content: flex-end;
+  margin: 10px 0;
+}
+
+.bubble-user {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 18px 18px 4px 18px;
+  padding: 9px 14px;
+  max-width: 72%;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 助手消息：无气泡直排 */
+.msg-assistant {
+  margin: 14px 0;
+  max-width: 760px;
+}
+
+.msg-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 16px;
+  background: var(--accent);
+  vertical-align: -3px;
+  animation: caret-blink 1s steps(2) infinite;
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* 思考过程折叠块 */
+.think {
+  margin-bottom: 6px;
+}
+
+.think summary {
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 13px;
+  user-select: none;
+}
+
+.think-body {
+  color: var(--text-2);
+  font-size: 13px;
+  white-space: pre-wrap;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-top: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+/* 错误红条 */
+.msg-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin: 10px 0;
+  font-size: 13px;
+}
+
+.msg-error-code {
+  opacity: 0.75;
+  font-size: 12px;
+}
+
+/* 整行生成中 */
+.msg-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 13px;
+  margin: 12px 0;
+}
+
+/* 收到的文件 */
+.file-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 16px 0 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.file-strip-title {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.file-chip {
+  display: inline-block;
+  font-size: 12.5px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 980px;
+  padding: 4px 12px;
+  text-decoration: none;
+  transition: background-color 0.15s ease;
+}
+
+.file-chip:hover {
+  background: rgba(0, 113, 227, 0.18);
+}
+
+.msg-placeholder {
+  margin: 32px 0;
+  text-align: center;
+  font-size: 13px;
+}
+
+/* 输入区 */
+.composer {
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.composer .form-error {
+  margin: 0 0 8px;
+}
+
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.composer-input {
+  flex: 1;
+  max-height: 140px;
+}
+</style>

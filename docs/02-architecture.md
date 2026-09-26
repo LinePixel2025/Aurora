@@ -64,6 +64,7 @@
 | `schedule` / `pre-class-reminder` | 课程表 provider 与课前 5 分钟提醒（见 05 §3.4） |
 | `proactive` | 主动引导调度与敏感工具确认（勿扰时段、超时按拒绝，见 06 §9） |
 | `agent-host` | 装配 agent-core 与 modes，向渲染层暴露统一 API |
+| `center/*` | Aurora Center 连接器：出站 WS、重连、远程命令处理（会话 / 配置 / 模式），见 12 |
 | `ipc` | IPC 通道注册（契约见 §6） |
 
 ### 3.2 Agent 内核（`packages/agent-core`，纯 Node，不依赖 Electron）
@@ -86,6 +87,11 @@
 
 - IPC 通道常量、DTO 类型、配置 Schema、事件定义（渲染层 / 主进程 / 内核三方共用）。
 
+### 3.5 Aurora Center（`packages/center`，纯 Node，不依赖 Electron）
+
+- 独立可部署的控制中心服务器 + `aurora-center` CLI + Web UI（构建产物随包静态服务），
+  协议类型在 `packages/shared/src/center/protocol.ts` 三方共享。见 docs/12。
+
 ## 4. 目录结构（monorepo，pnpm workspace）
 
 ```
@@ -105,7 +111,8 @@ aurora/
 ├─ packages/
 │  ├─ agent-core/               # Agent 内核（纯 Node，vitest 单测）
 │  ├─ modes/                    # 模式实现（classroom / work / code）
-│  └─ shared/                   # 类型、IPC 契约、配置 Schema
+│  ├─ center/                   # Aurora Center 服务器 + CLI + Web UI（纯 Node，见 12）
+│  └─ shared/                   # 类型、IPC 契约、配置 Schema、Center 协议
 ├─ skills/                      # 内置 Skill（SKILL.md 包）
 ├─ scripts/                     # 构建 / 发布脚本
 ├─ Aurora.md                    # 需求原始记录

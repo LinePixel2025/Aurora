@@ -571,6 +571,40 @@ const migrateV14ToV15: Migration = {
   },
 }
 
+/**
+ * v15 → v16：新增顶层分组 `center`（Aurora Center 连接，docs/12）。
+ *
+ * 口径同 v12 → v13 的新增分组：`center` 已存在时只补缺失键（幂等，用户已填的
+ * serverUrl / 令牌原样保留）；整组缺失时**不凭空造对象**，交给默认配置兜底。
+ * `tokenEnc` 是凭据路径（`center.token`），迁移只补空串默认值，不碰已有密文。
+ */
+const migrateV15ToV16: Migration = {
+  from: 15,
+  to: 16,
+  describe: 'v15 → v16：新增 center 分组（Aurora Center 连接，docs/12）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const center = asRecord(raw['center'])
+    if (center !== undefined) {
+      next['center'] = fillMissing(center, {
+        enabled: false,
+        serverUrl: '',
+        tokenEnc: '',
+        clientId: '',
+        displayName: '',
+        allowRemoteSession: true,
+        allowRemoteConfig: true,
+        allowFileTransfer: true,
+        maxFileMb: 64,
+      })
+    }
+
+    next['version'] = 16
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -587,6 +621,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV12ToV13,
   migrateV13ToV14,
   migrateV14ToV15,
+  migrateV15ToV16,
 ]
 
 export interface MigrationOutcome {

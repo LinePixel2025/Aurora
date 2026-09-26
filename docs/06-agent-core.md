@@ -1589,3 +1589,49 @@ Aurora 只讲 OpenAI 兼容协议，而主流网关（DeepSeek / OpenAI / 硅基
   不需要用户开关。
 - 本轮不做 prompt 费用累计统计与缓存命中率的长期报表（只做「最近一轮」的即时展示）。
 
+
+## 22. Aurora Center 工具与 create_skill（v0.2.0）
+
+### 22.1 Center 工具组（`center_status` / `center_send_file`）
+
+Aurora Center（docs/12）连接建立后，Agent 获得两个 Center 工具；内核经 **`CenterPort`**
+注入实现，内核本身不做任何网络与 Electron 操作（与 `fetchImpl` / `confirmTool` 同一套路）：
+
+| 工具 | 入参 | sensitivity | 说明 |
+|---|---|---|---|
+| `center_status` | 无 | 无 | 返回连接状态 / 服务器地址 / 客户端展示名；未连接时如实返回「未启用或未连接」 |
+| `center_send_file` | `path`（绝对路径）, `note?` | `'confirm'` | 校验存在与大小（`center.maxFileMb`）后上传到 Center，返回 `{ fileId, name, size, url }` |
+
+- **注册门控**：`center.enabled === true` 且 `center.serverUrl` 非空**才注册**（未配置时
+  连工具都不出现，与 STT/TTS 的按钮门控同口径）；`center_send_file` 另受
+  `center.allowFileTransfer` 约束（关闭时工具描述注明不可用）。**不受**
+  `agent.tools.enabled` 门控（与扩展工具五件套同口径）。
+- **只读前缀联动**：`center.*` 整组在 `SETTINGS_READONLY_PREFIXES` 里 —— 连接目标是
+  数据外发通道，AI 的 `set_setting` 不得启用 / 改向 / 填令牌（自我外联 = 数据外泄）。
+  工具 description 与 systemPrompt 的 settingsHint 都写明这条。
+- 上传实现（主进程 `CenterPort.sendFile`）走客户端与 Center 的 HTTP 通道
+  （`POST /api/ingest/files`，配对令牌鉴权），**v1 不经代理配置**。
+
+### 22.2 create_skill：用户经对话创建自己的 Skill
+
+内置技能 `skills/create-skill/SKILL.md`：用户说"帮我做一个 xxx 的技能"时命中。正文指导
+Agent 按以下流程产出用户技能：
+
+1. 向用户收集：技能名（kebab-case，与目录名一致）、一句话 description、适用场景
+   （when_to_use）、指令正文；
+2. 生成 `SKILL.md`（frontmatter 格式与内置技能一致：`name` / `description` /
+   `when_to_use` 可选），用 `write_file` 写入用户技能目录
+   `userData/skills/<name>/SKILL.md`（`skills.userDir` 非空时用配置目录）；
+3. 技能可附 `scripts/` 目录（只注入文件清单，**永不自动执行**，见 §6）；
+4. 写完后提示用户：目录监听会自动重扫（§22.3），新技能即刻出现在 `use_skill`
+   清单里，也可在设置页启用 / 禁用。
+
+安全口径：create_skill 只是一个**教模型怎么写 SKILL.md 的指令模板**，不是特权工具 ——
+写文件仍走 `write_file` 的全部权限与确认链路（`sensitivity` / 项目根边界 / 快照）。
+
+### 22.3 用户技能目录监听与自动重扫
+
+`SkillsService`（主进程）对生效的用户技能目录挂 `fs.watch`（防抖 500ms）：
+目录内新增 / 删除 / 修改 SKILL.md 后自动 `rescan()` 并广播 `skills:changed`。因此
+create_skill 写完文件后**无需任何"刷新"仪式**；监听失败（如目录被删）降级为日志
+告警，不影响既有技能表。

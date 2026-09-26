@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 15 as const
+export const CONFIG_VERSION = 16 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -434,6 +434,9 @@ export const SETTINGS_READONLY_PREFIXES = [
   // 黑名单配置自身（v15）：AI 往里追加路径等于自己收紧自己的可写面（自我 DoS）；
   // 放宽本就不生效（判定从不读用户配置）。用户经设置页 `settings:update` 修改不受影响。
   'advanced.readonlyPrefixes',
+  // Aurora Center 连接（v16，docs/12 §7）：连接目标是数据外发通道 —— AI 自行启用、
+  // 改向或填令牌等于把本机数据发往任意服务器。只能由用户在设置页操作。
+  'center',
 ] as const
 
 export const AdvancedSchema = z.object({
@@ -603,6 +606,40 @@ export const AgentSchema = z.object({
 })
 export type AgentSettings = z.infer<typeof AgentSchema>
 
+/**
+ * Aurora Center 连接（v16，docs/12）。
+ *
+ * **整组在 `SETTINGS_READONLY_PREFIXES` 里**：连接目标是数据外发通道 —— AI 自行启用、
+ * 改向或填令牌，等于把本机数据发往任意服务器（自我外联 = 数据外泄）。启用 / 改址 /
+ * 填令牌只能由用户在设置页操作（走 `settings:update`，不经过该黑名单）。
+ * 远程配置来自 Center 的另一条通道（docs/12 §6.2 白名单），也不走 `set_setting`。
+ */
+export const CenterSchema = z.object({
+  /** 总开关；false 时不连接 Center，`center_*` 工具也不注册（未配置不注册，与 STT/TTS 同口径）。 */
+  enabled: z.boolean().default(false),
+  /** Center 服务器地址（`ws(s)://` 或 `http(s)://`，连接时统一换成 ws 协议）。 */
+  serverUrl: z.string().default(''),
+  /**
+   * 配对令牌（safeStorage 密文）。**凭据路径**：`center.token` ⇄ `center.tokenEnc`，
+   * 与 `apiKeyEnc` 同链路 —— `SettingsStore` 的 4 处 + `redactSettings` / `redactKeys`
+   * 同步维护（docs/12 §7）。
+   */
+  tokenEnc: z.string().default(''),
+  /** 本机客户端 id（首次启用时生成并持久化；标识符而非凭据）。 */
+  clientId: z.string().default(''),
+  /** 在 Center 展示的名字；空串 = 主机名。 */
+  displayName: z.string().default(''),
+  /** 允许 Center 远程开 session 对话（客户端侧最终闸门，命令类别被拒时回 `E_REMOTE_DISABLED`）。 */
+  allowRemoteSession: z.boolean().default(true),
+  /** 允许 Center 远程改配置（仍受 docs/12 §6.2 白名单约束）。 */
+  allowRemoteConfig: z.boolean().default(true),
+  /** 允许 `center_send_file` 上传文件。 */
+  allowFileTransfer: z.boolean().default(true),
+  /** 单个上传文件上限（MB，1–512）。 */
+  maxFileMb: z.number().int().min(1).max(512).default(64),
+})
+export type CenterSettings = z.infer<typeof CenterSchema>
+
 export const SettingsSchema = z.object({
   version: z.number().int().min(0),
   general: GeneralSchema,
@@ -616,6 +653,7 @@ export const SettingsSchema = z.object({
   projects: ProjectsSchema,
   advanced: AdvancedSchema,
   agent: AgentSchema,
+  center: CenterSchema,
 })
 
 export type Settings = z.infer<typeof SettingsSchema>
@@ -643,6 +681,7 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'agent.snapshots': '写前快照是改动可回滚的兜底，不允许通过工具关闭',
   'advanced.readonlyPrefixes':
     '只读黑名单的配置自身不允许通过工具修改（防自我收紧；放宽本就不生效）',
+  center: 'Center 连接是数据外发通道，不允许通过工具启用或改向（docs/12 §7）',
 }
 
 /** 显式可写覆盖表的一条登记：模式 + 中文说明。 */

@@ -781,3 +781,33 @@ describe('redactKeys', () => {
     })
   })
 })
+
+describe('SettingsStore · Center 配对令牌（center.token 凭据路径）', () => {
+  it('setSecret 加密落盘，getSecret 可还原；tokenEnc 的派生名也走同一条规范化', async () => {
+    const { store, fsPort, configPath, crypto } = setup()
+    await store.init()
+    expect(store.setSecret('center.token', 'pair-token-plain')).toBe(true)
+    // 派生名（tokenEnc）与明文名是同一条规范路径，读写等价
+    expect(store.setSecret('center.tokenEnc', 'pair-token-plain')).toBe(true)
+    await store.flush()
+    const leaked = fsPort.contentLog.filter((content) => content.includes('pair-token-plain'))
+    expect(leaked).toEqual([])
+    const raw = (await fsPort.readFile(configPath)) as string
+    expect(raw).not.toContain('pair-token-plain')
+    expect(store.getSecret('center.token')).toBe('pair-token-plain')
+    expect(store.getSecret('center.tokenEnc')).toBe('pair-token-plain')
+    expect(crypto.encryptCalls).toContain('pair-token-plain')
+  })
+
+  it('清空令牌后落盘无残留；get 返回空串', async () => {
+    const { store, fsPort } = setup()
+    await store.init()
+    store.setSecret('center.token', 'pair-token-plain')
+    await store.flush()
+    expect(store.setSecret('center.token', '')).toBe(true)
+    await store.flush()
+    expect(store.getSecret('center.token')).toBe('')
+    const raw = fsPort.contentLog.join('\n')
+    expect(raw).not.toContain('pair-token-plain')
+  })
+})
