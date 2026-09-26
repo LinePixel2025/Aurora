@@ -66,7 +66,7 @@
 
 - 主代理（代码分片）：
   - `packages/shared/src/config/schema.ts`：`SETTINGS_READONLY_PREFIXES` 追加 `'agent.loop'` / `'agent.snapshots'`（各带中文理由注释，沿用条目样式）；`READONLY_PREFIX_REASONS` 补两条（「循环轮次与 token 预算等于 Agent 自己的停止闸门，不允许通过工具修改」/「写前快照是改动可回滚的兜底，不允许通过工具关闭」）；551–552 / 582–583 行两处错误注释改为「在黑名单里（AI 改不动）+ 用户走设置页不受影响」。
-  - `packages/shared/src/config/schema.test.ts`：新增用例「agent.loop / agent.snapshots 进黑名单（放大预算与关快照均系自我提权）」——组路径 + 5 个叶子路径全部 `canWriteSettingPath === false`、原因 `toMatch(/不允许/)` 且非「未知配置路径」；护栏 `agent.tools.enabled` / `agent.tools.workspaceDir` 仍可写。附带发现：组路径 `agent.loop` 在 `matchReadonlyPrefix`（先于 Schema 兜底）即被黑名单命中，拒绝理由从「未知配置路径」变为显式中文原因——用例已锁定。
+  - `packages/shared/src/config/schema.test.ts`：新增用例「agent.loop / agent.snapshots 进黑名单（放大预算与关快照均系自我提权）」——2 条组路径 + 7 条叶子路径（共 9 条）全部 `canWriteSettingPath === false`、原因 `toMatch(/不允许/)` 且非「未知配置路径」；护栏 `agent.tools.enabled` / `agent.tools.workspaceDir` 仍可写。附带发现：组路径 `agent.loop` 在 `matchReadonlyPrefix`（先于 Schema 兜底）即被黑名单命中，拒绝理由从「未知配置路径」变为显式中文原因——用例已锁定。
   - `apps/desktop/src/main/tools/settings-port.ts`：60 行「默认九 / 十项」改为「默认全量前缀（含 `agent.loop` / `agent.snapshots`）」。
   - `apps/desktop/src/main/settings-hint.ts`：只读句拆为两行并入「循环预算（agent.loop.*）与写前快照（agent.snapshots.*）同样一律只读」。
   - `apps/desktop/src/main/index.ts`：冒烟矩阵 `apiKeyEnc` 条目后追加 `{ path: 'agent.loop.maxRounds', value: 64, expectReject: true }` 与 `{ path: 'agent.snapshots.enabled', value: false, expectReject: true }`。
