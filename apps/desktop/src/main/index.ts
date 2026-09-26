@@ -27,8 +27,10 @@ import {
   SkillsBridge,
   ToolRegistry,
   VOLATILE_SECTION_TITLES,
+  createFileSnapshotPort,
   createProjectInstructionsSource,
   nodeProjectFs,
+  type SnapshotPort,
   renderTodoList,
   resolveProject,
 } from '@aurora/agent-core'
@@ -37,6 +39,7 @@ import {
   COMPUTER_TOOL_NAMES,
   SettingsSchema,
   SettingsStore,
+  nodeFileSystem,
   // 三档权限的生效档位（docs/06 §11.2）：确认判定与工具注册必须读同一个来源
   resolvePermissionMode,
   type ClassIslandStatus,
@@ -71,7 +74,7 @@ import { TtsSynthesizer } from './tts.js'
 import { createSttService } from './stt.js'
 import { createImageGenService } from './imagegen.js'
 import { SETTINGS_HINT } from './settings-hint.js'
-import { registerIpc, createSettingsWriter, type DesktopDeps } from './ipc.js'
+import { registerIpc, createSettingsWriter, restoreSnapshot, type DesktopDeps } from './ipc.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { ProactiveScheduler } from './proactive.js'
 import { PreClassReminder } from './pre-class-reminder.js'
@@ -241,6 +244,78 @@ let tools: ToolRegistry | undefined
  * 另建一个 `createConfirmTool` 只会自证一个与生产无关的副本。
  */
 let confirmTool: ConfirmToolDecision | undefined
+
+// ───────── 写前快照（docs/06 §11.8，v14）─────────
+
+/** 快照根目录（bootstrap 时设为 `<userData>/backups`） */
+let snapshotDir = ''
+let snapshotPort: SnapshotPort | undefined
+/** 上次构造端口时的配置指纹：变了就换实例（让设置页改保留份数立刻生效） */
+let snapshotConfigKey = ''
+/**
+ * 交给 `createNodeFilePort` 的**稳定代理**：file-port 在 `syncToolRegistries()` 里会被重建，
+ * 但它手里的这个对象始终有效 —— 内部按需把调用转给当前的 `snapshotPort`。
+ *
+ * ⚠️ 必须**在模块作用域就初始化**（不能等 bootstrap 里赋值）：`registerComputerTools` 的调用点
+ * 早于快照端口那段装配，晚赋值会让 file-port 拿到 `undefined` —— 症状是"写文件从不留底、
+ * 却一条报错都没有"，是最难排查的一类静默失效。
+ */
+let filePortSnapshots: Pick<SnapshotPort, 'capture'> | undefined = {
+  capture: (input) => ensureSnapshotPort().capture(input),
+}
+/**
+ * IPC 依赖面（bootstrap 里装配）：自测要调**与界面同一条**回滚链路
+ * （`restoreSnapshot` 是 ipc.ts 导出的那个函数），另写一份就只是自证副本。
+ */
+let desktopDeps: DesktopDeps | undefined
+
+function createSnapshotPortFor(config: Settings['agent']['snapshots']): SnapshotPort {
+  return createFileSnapshotPort({
+    dir: snapshotDir,
+    fs: nodeFileSystem,
+    ...(logger === undefined ? {} : { logger: logger.child('snapshots') }),
+    keepPerFile: config.keepPerFile,
+    maxSnapshotBytes: config.maxSnapshotBytes,
+    totalBudgetBytes: config.totalBudgetBytes,
+    enabled: config.enabled,
+    /**
+     * 必须用 **lstat**（不跟随符号链接）：指向文件的软链若被当成普通文件，
+     * 快照存的就变成链接目标的**内容**，而回滚会把内容写回链接路径（把链接变成普通文件）——
+     * 那是静默的类型篡改。lstat 下软链不是普通文件，快照端口会按 `unreadable` 跳过。
+     */
+    stat: async (path: string) => {
+      const info = await fs.lstat(path)
+      return { isFile: info.isFile(), isDirectory: info.isDirectory(), size: info.size }
+    },
+  })
+}
+
+/**
+ * 取当前配置对应的快照端口：配置指纹没变就复用，变了就换一个新实例。
+ *
+ * 旧实例在换掉之前先 `flush()`（best-effort）：索引是 300ms 防抖写的，
+ * 直接丢弃实例会把刚写的几条快照留在磁盘上、却不在索引里（变成孤儿文件）。
+ */
+function ensureSnapshotPort(): SnapshotPort {
+  const config = settings!.get().agent.snapshots
+  const key = [
+    config.enabled,
+    config.keepPerFile,
+    config.maxSnapshotBytes,
+    config.totalBudgetBytes,
+  ].join('|')
+  if (snapshotPort === undefined) {
+    snapshotConfigKey = key
+    snapshotPort = createSnapshotPortFor(config)
+    return snapshotPort
+  }
+  if (key === snapshotConfigKey) return snapshotPort
+  const previous = snapshotPort
+  void previous.flush().catch(() => undefined)
+  snapshotConfigKey = key
+  snapshotPort = createSnapshotPortFor(config)
+  return snapshotPort
+}
 let computerTools: ComputerTools | undefined
 /** `set_setting` 装配器（docs/06 §12）：与电脑操控工具分开注册，互不摘除 */
 let settingsTool: SettingsToolRegistry | undefined
@@ -576,7 +651,11 @@ async function bootstrap(): Promise<void> {
       workspaceRoot: projectRoot,
       logger: logger.child('tools'),
     }),
-    files: createNodeFilePort({ workspaceRoot: projectRoot, logger: logger.child('tools') }),
+    files: createNodeFilePort({
+      workspaceRoot: projectRoot,
+      logger: logger.child('tools'),
+      snapshots: filePortSnapshots,
+    }),
     open: createShellOpenPort(),
   })
   settingsTool = registerSettingsTool({ tools, port: settingsPort, logger: logger.child('tools') })
@@ -616,6 +695,12 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('todos'),
     onWriteError: (error) => logger?.error('任务清单写入失败', { error: error.message }),
   })
+  // 7.1.4b 写前快照（docs/06 §11.8，v14）：`<userData>/backups/<sessionId>/` 下一条一个 `.snap`。
+  //     挂给 file-port 的是**稳定的代理对象**（不是某个具体实例）：设置页改保留份数 / 上限后，
+  //     `ensureSnapshotPort()` 会换一个新实例，而 file-port 手里的引用不变 ——
+  //     否则「改配置要重启」会成为又一个静默失效的配置字段。
+  snapshotDir = join(userData, 'backups')
+  snapshotPort = createSnapshotPortFor(settings.get().agent.snapshots)
   // 7.1.5 provider 工厂提取成常量：KernelAgentHost 与 `task` 子代理共享同一实例，
   //     「常规构造失败 → 临时回退可用条目」的启动自愈语义（docs/06 §12、step 02 第 6 条）
   //     两处一致；create() 每次请求即时构造，设置页改 Key 后无需重启即生效。
@@ -902,6 +987,14 @@ async function bootstrap(): Promise<void> {
     classification,
     proactive: adaptProactive(proactiveScheduler),
     hotkey: hotkeys,
+    // 写前快照（docs/06 §11.8）：ipc 的 snapshots:* 三条通道用它；配置变了由 ensureSnapshotPort 换实例
+    snapshots: {
+      capture: (input) => ensureSnapshotPort().capture(input),
+      list: (query) => ensureSnapshotPort().list(query),
+      readContent: (ref) => ensureSnapshotPort().readContent(ref),
+      prune: (sessionId) => ensureSnapshotPort().prune(sessionId),
+      flush: () => ensureSnapshotPort().flush(),
+    },
     classisland: {
       enabled: () => isClassIslandActive(),
       status: () => classIslandStatus(),
@@ -971,6 +1064,7 @@ async function bootstrap(): Promise<void> {
       syncClassification()
     },
   }
+  desktopDeps = deps
   disposeIpc = registerIpc(deps)
 
   // 8. 托盘
@@ -1639,6 +1733,109 @@ async function runSmokeTest(userData: string): Promise<void> {
         autoInsideWritten &&
         autoOutsideCard &&
         outsideBlocked,
+      detail,
+    )
+  }
+
+  // 2.4 写前快照与一键回滚（v14，docs/06 §11.8）：走**真实链路** —— 注册表里的 write_file /
+  //     edit_file 工具 → file-port 的写前钩子 → 真实快照端口 → 磁盘。
+  //     这是"回滚能救回原内容"的端到端证据：单测各自覆盖了端口与端口钩子，
+  //     但"工具层带上 snapshot 参数、装配层真的注入了端口"这条链只有整机跑得出来。
+  {
+    const snapshotDemoDir = join(userData, 'smoke-snapshot')
+    const snapshotDemoFile = join(snapshotDemoDir, 'note.txt')
+    let snapshotOnWrite = false
+    let contentRestored = false
+    let rollbackHasOwnSnapshot = false
+    let appendKeepsBefore = false
+    let editAlsoSnapshots = false
+    let ringKept = -1
+    let detail = ''
+    try {
+      await fs.mkdir(snapshotDemoDir, { recursive: true })
+      await fs.writeFile(snapshotDemoFile, 'V1', 'utf8')
+      const port = ensureSnapshotPort()
+      const write = tools?.get('write_file')
+      const edit = tools?.get('edit_file')
+      const read = tools?.get('read_file')
+      if (write !== undefined && edit !== undefined && desktopDeps !== undefined) {
+        // ① write_file（overwrite）→ 写前留底的是 V1，结果文本里回带快照 id
+        const first = await write.execute(
+          { path: snapshotDemoFile, content: 'V2' },
+          { sessionId: 'smoke-snapshot' },
+        )
+        snapshotOnWrite = (first.content ?? '').includes('已保存快照：')
+        await port.flush()
+        const listed = await port.list({ path: snapshotDemoFile })
+
+        // ② 回滚到第一份快照 → 磁盘内容回到 V1；③ 回滚自身留下 origin:'rollback'
+        const restored = await restoreSnapshot(desktopDeps, port, {
+          snapshotId: listed[0]?.id ?? '',
+        })
+        contentRestored = restored.ok && (await fs.readFile(snapshotDemoFile, 'utf8')) === 'V1'
+        await port.flush()
+        const afterRestore = await port.list({ path: snapshotDemoFile })
+        rollbackHasOwnSnapshot = afterRestore.some((item) => item.origin === 'rollback')
+
+        // ④ append 的快照是**追加前**的内容（V1），且 edit_file 同样留底
+        await write.execute(
+          { path: snapshotDemoFile, content: '+追加', mode: 'append' },
+          { sessionId: 'smoke-snapshot' },
+        )
+        await port.flush()
+        const afterAppend = await port.list({ path: snapshotDemoFile })
+        const appended = afterAppend.find((item) => item.mode === 'append')
+        if (appended !== undefined) {
+          const content = await port.readContent(appended)
+          appendKeepsBefore =
+            content !== undefined && Buffer.from(content.bytes).toString('utf8') === 'V1'
+        }
+        // `edit_file` 有"改前必须先读"的守卫：先真的读一次（与生产路径一致）
+        await read?.execute({ path: snapshotDemoFile }, { sessionId: 'smoke-snapshot' })
+        const edited = await edit.execute(
+          { path: snapshotDemoFile, oldString: 'V1', newString: 'V3' },
+          { sessionId: 'smoke-snapshot' },
+        )
+        editAlsoSnapshots = (edited.content ?? '').includes('已保存快照：')
+
+        // ⑤ 环形上限真的生效：同一文件连写 30 次（默认每文件保留 20 份）
+        for (let index = 0; index < 30; index += 1) {
+          await write.execute(
+            { path: snapshotDemoFile, content: `V${index}` },
+            { sessionId: 'smoke-snapshot' },
+          )
+        }
+        await port.flush()
+        const snapDir = join(snapshotDir, 'smoke-snapshot')
+        const snaps = (await fs.readdir(snapDir).catch(() => [] as string[])).filter((name) =>
+          name.endsWith('.snap'),
+        )
+        ringKept = snaps.length
+        detail = `listed=${listed.length} restored=${contentRestored} rollback=${rollbackHasOwnSnapshot} append=${appendKeepsBefore} edit=${editAlsoSnapshots} snaps=${ringKept}`
+      } else {
+        detail = 'tools / deps 不可用'
+      }
+    } catch (error) {
+      detail = `异常：${String(error)}`
+    }
+    record(
+      '写前快照：write_file 结果回带快照 id，且索引里能查到该文件的那一份',
+      snapshotOnWrite,
+      detail,
+    )
+    record(
+      '一键回滚：内容还原到写前，且回滚自身留下 origin=rollback 的快照（可再撤回）',
+      contentRestored && rollbackHasOwnSnapshot,
+      detail,
+    )
+    record(
+      'append 的快照是追加前内容；edit_file 同样留底',
+      appendKeepsBefore && editAlsoSnapshots,
+      detail,
+    )
+    record(
+      `每文件环形保留生效（连写 30 次后 .snap 数 ≤ ${settings?.get().agent.snapshots.keepPerFile ?? 20}）`,
+      ringKept >= 0 && ringKept <= (settings?.get().agent.snapshots.keepPerFile ?? 20),
       detail,
     )
   }
@@ -2449,6 +2646,9 @@ async function shutdown(): Promise<void> {
   })
   await todoPort?.flush().catch((error: unknown) => {
     logger?.warn('退出前落盘任务清单失败', { error: String(error) })
+  })
+  await snapshotPort?.flush().catch((error: unknown) => {
+    logger?.warn('退出前落盘快照索引失败', { error: String(error) })
   })
   await mcp?.close().catch((error: unknown) => {
     logger?.warn('退出前关闭 MCP 连接失败', { error: String(error) })

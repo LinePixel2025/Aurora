@@ -1192,3 +1192,116 @@ describe('项目根边界：realpath 前缀校验', () => {
     expect(found.files).toContain('..foo/x.txt')
   })
 })
+
+/**
+ * 写前快照钩子（v14，docs/06 §11.8）：快照必须发生在**真正落盘之前**。
+ *
+ * 这一组是"回滚能救命"的端口级证据：注入快照端口后，写一个已存在的文件 →
+ * 快照里是**写之前**的内容；`append` 同样留的是追加前的全文；
+ * 未注入端口时行为与 v13 一字不差（对照断言，不是"看起来没变"）。
+ */
+describe('writeText 的写前快照钩子', () => {
+  interface Captured {
+    path: string
+    mode?: 'overwrite' | 'append'
+    origin: string
+  }
+
+  function fakeSnapshots(captured: Captured[], contentFor: (path: string) => Promise<void>) {
+    return {
+      capture: async (input: {
+        sessionId: string
+        path: string
+        origin: 'write_file' | 'edit_file' | 'rollback'
+        mode?: 'overwrite' | 'append'
+      }) => {
+        // 端口在这里"读磁盘"：读到的必须是**写之前**的内容
+        await contentFor(input.path)
+        captured.push({ path: input.path, mode: input.mode, origin: input.origin })
+        return {
+          snapshot: {
+            id: `snap-${captured.length}`,
+            sessionId: input.sessionId,
+            path: input.path,
+            origin: input.origin,
+            createdAt: new Date().toISOString(),
+            contentPath: `snap-${captured.length}.snap`,
+            bytes: 0,
+            exists: true,
+          },
+        }
+      },
+    }
+  }
+
+  it('写已存在文件：快照内容等于写前，且工具结果回带快照 id', async () => {
+    const file = join(root, 'before.txt')
+    await fs.writeFile(file, 'ORIGINAL', 'utf8')
+    const seen: string[] = []
+    const port = createNodeFilePort({
+      snapshots: fakeSnapshots([], async (path) => {
+        seen.push(await fs.readFile(path, 'utf8'))
+      }),
+    })
+    const captured: Captured[] = []
+    const withLog = createNodeFilePort({
+      snapshots: fakeSnapshots(captured, async (path) => {
+        seen.push(await fs.readFile(path, 'utf8'))
+      }),
+    })
+    // 第一次（无捕获数组）只是为了拿到"注入后正常写入"的行为
+    const result = await withLog.writeText(file, 'NEW', 'overwrite', {
+      snapshot: { sessionId: 's1', origin: 'write_file', mode: 'overwrite' },
+    })
+    expect(result.snapshot?.id).toBe('snap-1')
+    expect(captured).toEqual([{ path: file, mode: 'overwrite', origin: 'write_file' }])
+    // 关键断言：快照时刻读到的是 ORIGINAL（写前），不是 NEW
+    expect(seen).toContain('ORIGINAL')
+    expect(await fs.readFile(file, 'utf8')).toBe('NEW')
+    // 端口本身没有被这一组测试之外的东西改坏
+    expect(await port.writeText(file, 'X', 'overwrite')).toMatchObject({ bytes: 1 })
+  })
+
+  it('append 模式的快照是追加前的全文', async () => {
+    const file = join(root, 'append.txt')
+    await fs.writeFile(file, 'BASE', 'utf8')
+    const seen: string[] = []
+    const port = createNodeFilePort({
+      snapshots: fakeSnapshots([], async (path) => {
+        seen.push(await fs.readFile(path, 'utf8'))
+      }),
+    })
+    await port.writeText(file, '+MORE', 'append', {
+      snapshot: { sessionId: 's1', origin: 'write_file', mode: 'append' },
+    })
+    expect(seen).toEqual(['BASE'])
+    expect(await fs.readFile(file, 'utf8')).toBe('BASE+MORE')
+  })
+
+  it('未注入快照端口：不产生快照、行为与 v13 一致（对照）', async () => {
+    const file = join(root, 'plain.txt')
+    await fs.writeFile(file, 'ORIGINAL', 'utf8')
+    const port = createNodeFilePort()
+    const result = await port.writeText(file, 'NEW', 'overwrite', {
+      snapshot: { sessionId: 's1', origin: 'write_file', mode: 'overwrite' },
+    })
+    expect(result.snapshot).toBeUndefined()
+    expect(await fs.readFile(file, 'utf8')).toBe('NEW')
+  })
+
+  it('快照端口抛错：写入照常成功，且如实回报"没留底"（不静默、不阻断写盘）', async () => {
+    const file = join(root, 'broken-snap.txt')
+    const port = createNodeFilePort({
+      snapshots: {
+        capture: async () => {
+          throw new Error('boom')
+        },
+      },
+    })
+    const result = await port.writeText(file, '内容', 'overwrite', {
+      snapshot: { sessionId: 's1', origin: 'edit_file', mode: 'overwrite' },
+    })
+    expect(result.snapshot).toEqual({ id: '', skipped: 'unreadable' })
+    expect(await fs.readFile(file, 'utf8')).toBe('内容')
+  })
+})

@@ -20,7 +20,8 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { nativeTheme, type BrowserWindow } from 'electron'
-import type { Logger, WindowName } from '@aurora/shared'
+import { createFileSnapshotPort } from '@aurora/agent-core'
+import { createNoopLogger, nodeFileSystem, type Logger, type WindowName } from '@aurora/shared'
 import type { WindowManager } from './window-manager.js'
 /**
  * 设置页可深链的页面 id，需与 `renderer/settings/App.vue` 的 `PageId` 保持一致。
@@ -609,6 +610,34 @@ export function captureMissingProjectRoot(userData: string): string {
 }
 
 /**
+ * 种一份**真实**的文件快照（v14，docs/06 §11.8），供 `chat-snapshot-card.png` 场景断言。
+ *
+ * 走真实端口（`createNodeFileSnapshotPort` 的默认实现）而不是手写 `index.json`：
+ * 手写的夹具只能证明"界面会渲染 json"，证明不了"写文件时真的会留底"。
+ */
+export async function seedSnapshotFixture(userData: string): Promise<string> {
+  const dir = join(userData, 'capture-snapshot-demo')
+  await mkdir(dir, { recursive: true })
+  const target = join(dir, '报告.txt')
+  await writeFile(target, '这是被 Agent 改写之前的原文。\n', 'utf8')
+  const port = createFileSnapshotPort({
+    dir: join(userData, 'backups'),
+    fs: nodeFileSystem,
+    logger: createNoopLogger(),
+  })
+  await port.capture({
+    sessionId: 'capture',
+    path: target,
+    origin: 'write_file',
+    mode: 'overwrite',
+  })
+  // ⚠️ 索引是 300ms 防抖写的：不 flush 的话渲染层 reload 后读到的是**空索引**，
+  // 场景就会以"没有记录"假 FAIL（验收标准里专门点了这一条）。
+  await port.flush()
+  return target
+}
+
+/**
  * 把「当前项目」指向临时目录（v13，docs/06 §5.1）。
  *
  * 必须走 `settings:update` IPC：`SettingsStore.init()` 启动即把 config.json 读进内存并长期缓存，
@@ -712,6 +741,60 @@ export function chatProjectCardCheck(name: string, missingRoot: string): string 
   }
 })()`
 }
+
+/**
+ * 右栏「文件备份」卡探针（v14，docs/06 §11.8）。
+ *
+ * `prepare` 已在 main 侧种好一份**真实**快照（见 `seedSnapshotFixture`），所以这里断言：
+ * 卡在、至少一条记录、条目的文件名与来源都渲染出来了，并且点一次「回滚」只停在
+ * 「确认回滚？」（**两段式**）—— 截图正好拍到这个中间态。
+ */
+export const CHAT_SNAPSHOT_CARD_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    let button = null
+    for (let attempt = 0; attempt < 15 && button === null; attempt += 1) {
+      button = document.querySelector('[data-field="chat.snapshot-restore"]')
+      if (button === null) await wait(200)
+    }
+    if (button === null) return { ok: false, reason: 'chat.snapshot-restore 未出现（快照没种上？）' }
+    const before = (button.textContent || '').trim()
+    button.click()
+    await wait(200)
+    const after = (document.querySelector('[data-field="chat.snapshot-restore"]').textContent || '').trim()
+    return { ok: true, before, after }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_SNAPSHOT_CARD_CHECK = `(async () => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const card = document.querySelector('[data-field="chat.snapshot-card"]')
+    const text = card === null ? '' : (card.textContent || '').replace(/\\s+/g, ' ').trim()
+    const rows = count('[data-field="chat.snapshot-restore"]')
+    const button = document.querySelector('[data-field="chat.snapshot-restore"]')
+    const label = button === null ? '' : (button.textContent || '').trim()
+    return {
+      card: count('[data-field="chat.snapshot-card"]'),
+      rows,
+      text,
+      label,
+      pass:
+        // 卡恰好一张 + 至少一条记录（不写死条数：环形保留的份数随配置走）
+        count('[data-field="chat.snapshot-card"]') === 1 &&
+        rows >= 1 &&
+        text.indexOf('文件备份') !== -1 &&
+        // 种下的快照来自 write_file，来源列必须译成中文
+        text.indexOf('写文件') !== -1 &&
+        // 两段式：act 点过一次，这里必须是待确认文案（截图拍的就是这个状态）
+        label.indexOf('确认回滚') !== -1,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
 
 /**
  * 「子代理」页面探针（docs/07 §2.4）。
@@ -2899,8 +2982,15 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
     const mcpRows = count('[data-field^="mcp.servers."]')
     const skillsEmpty = emptyStates.indexOf('skills.disabled') !== -1
     const skillsRows = count('[data-field^="skills.disabled."]')
+    // v14 写前快照（docs/06 §11.8）：四个字段常显（enabled=false 时三块换成 data-empty="agent.snapshots"）
+    const snapshotFields = count('[data-field^="agent.snapshots."]')
+    const snapshotEmpty = emptyStates.indexOf('agent.snapshots') !== -1
     const unexpected = emptyStates.filter(
-      (name) => name !== 'mcp.servers' && name !== 'skills.disabled',
+      (name) =>
+        name !== 'mcp.servers' &&
+        name !== 'skills.disabled' &&
+        // 本页预期空态：关掉文件备份时那一条（默认开启，通常不出现）
+        name !== 'agent.snapshots',
     )
     const activeNav = document.querySelector('.nav-item.active')
     const page = activeNav === null ? 'unknown' : (activeNav.textContent || '').trim()
@@ -2961,6 +3051,8 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
       readonlySummary,
       readonlyTools,
       readonlyRestored,
+      snapshotFields,
+      snapshotEmpty,
       // 总开关必须在（否则用户再也开不回来）；开着时四个分栏的详情字段都得在
       // （终端 / 文件 / 文件检索 / 打开），MCP 区组必须给出「空状态或行」之一，
       // 且不得出现两块预期空态之外的 data-empty。
@@ -2980,7 +3072,10 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
             unexpected.length === 0)) &&
         readonlySummary === true &&
         readonlyTools === true &&
-        readonlyRestored === true,
+        readonlyRestored === true &&
+        // 文件备份区组：开着时四个字段都在，关掉时是空态（两种形态都算过，不写死数字）
+        (snapshotFields >= 4 || snapshotEmpty === true) &&
+        unexpected.length === 0,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -4976,6 +5071,19 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       },
       act: chatProjectAct(captureProjectRoot(userData), '截图项目'),
       check: chatProjectCardCheck('截图项目', captureMissingProjectRoot(userData)),
+    },
+    // 右栏「文件备份」卡（v14，docs/06 §11.8）：
+    // prepare 种一份真实快照（走真实端口 + flush，不是手写 json）并 reload 让卡片重新水合；
+    // act 点一次「回滚」（两段式的第一下），check 断言卡在、有记录、来源文案与待确认文案。
+    {
+      name: 'chat',
+      file: 'chat-snapshot-card.png',
+      prepare: async () => {
+        await seedSnapshotFixture(userData)
+        await manager.reload('chat', {})
+      },
+      act: CHAT_SNAPSHOT_CARD_ACT,
+      check: CHAT_SNAPSHOT_CARD_CHECK,
     },
     // 思考过程折叠块（BetaV2）：seed 会话的助手消息带 `reasoning`，历史水合后默认收起；
     // act 点开展开态拍进截图，check 断言「曾收起 + 现已展开 + 全文可见 + 块在正文上方」。

@@ -72,6 +72,12 @@ export const IPC = {
     status: 'project:status',
     pickDirectory: 'project:pickDirectory',
   },
+  /** 写前快照与一键回滚（v14，docs/06 §11.8） */
+  snapshots: {
+    list: 'snapshots:list',
+    restore: 'snapshots:restore',
+    prune: 'snapshots:prune',
+  },
   skills: {
     list: 'skills:list',
     rescan: 'skills:rescan',
@@ -139,6 +145,7 @@ export type IpcChannel =
   | (typeof IPC.window)[keyof typeof IPC.window]
   | (typeof IPC.perception)[keyof typeof IPC.perception]
   | (typeof IPC.project)[keyof typeof IPC.project]
+  | (typeof IPC.snapshots)[keyof typeof IPC.snapshots]
   | (typeof IPC.skills)[keyof typeof IPC.skills]
   | (typeof IPC.chat)[keyof typeof IPC.chat]
   | (typeof IPC.hotkey)[keyof typeof IPC.hotkey]

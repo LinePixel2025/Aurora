@@ -747,6 +747,48 @@ export interface ChatHistoryRequest {
 }
 
 /**
+ * 一条写前快照的引用（docs/06 §11.8，v14）—— 跨 IPC 序列化，所以**不含 Buffer**。
+ *
+ * 定义放在 shared 而不是 agent-core：渲染层要拿它渲染「文件备份」卡（`@aurora/shared/browser`
+ * 会一并导出），内核的 `SnapshotPort` 直接复用这个类型（`agent-core` 依赖 `@aurora/shared`，
+ * 反向不行）。
+ */
+export interface SnapshotRef {
+  /** `<ISO 时间戳>-<8 位内容哈希>`；同一文件下字典序 = 时间序 */
+  id: string
+  sessionId: string
+  /** 被快照的**绝对路径** */
+  path: string
+  /** 触发它的工具调用 id */
+  toolCallId?: string
+  /** `rollback` = 回滚**之前**留下的那一份（所以回滚也能被再次回滚） */
+  origin: 'write_file' | 'edit_file' | 'rollback'
+  createdAt: string
+  /** 内容文件名（相对快照目录；`exists: false` 时为空串） */
+  contentPath: string
+  bytes: number
+  sha256?: string
+  /** false = 记的是"当时文件还不存在"；回滚它等于删除该文件 */
+  exists: boolean
+  truncated?: boolean
+  /** 写文件时的模式（`append` 的快照是**追加前**的全文） */
+  mode?: 'overwrite' | 'append'
+}
+
+export interface SnapshotListRequest {
+  /** 缺省 = 所有会话（按 createdAt 倒序，取 limit 条） */
+  sessionId?: string
+  /** 只看某个文件的快照（绝对路径） */
+  path?: string
+  /** 缺省 50 */
+  limit?: number
+}
+
+export interface SnapshotRestoreRequest {
+  snapshotId: string
+}
+
+/**
  * 事件一律携带 `sessionId`：快速会话与完整会话共用一个交互窗，
  * 只按 `requestId` 过滤会串会话（docs/06 §4）。
  *
@@ -868,6 +910,18 @@ export interface AuroraApi {
     status(): Promise<Result<ProjectStatus>>
     /** 弹系统目录选择框；用户取消时 `value` 为 null（不是错误） */
     pickDirectory(): Promise<Result<string | null>>
+  }
+  /** 写前快照与一键回滚（v14，docs/06 §11.8） */
+  snapshots: {
+    /** 列出快照（新的在前）；缺省按 50 条上限 */
+    list(request?: SnapshotListRequest): Promise<Result<SnapshotRef[]>>
+    /**
+     * 回滚到某份快照：**先给"回滚前状态"再打一份 `origin:'rollback'` 快照**，
+     * 然后把旧内容写回（`exists:false` 的回滚 = 删除该文件）。返回值是那份新快照。
+     */
+    restore(request: SnapshotRestoreRequest): Promise<Result<SnapshotRef>>
+    /** 手动清理某个会话的快照，返回删掉的条数 */
+    prune(request: { sessionId: string }): Promise<Result<number>>
   }
   settings: {
     get(): Promise<Result<Settings>>

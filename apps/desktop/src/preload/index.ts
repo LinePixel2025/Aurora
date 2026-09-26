@@ -53,6 +53,11 @@ const api: AuroraApi = {
     status: () => invoke(IPC.project.status),
     pickDirectory: () => invoke(IPC.project.pickDirectory),
   },
+  snapshots: {
+    list: (request) => invoke(IPC.snapshots.list, request),
+    restore: (request) => invoke(IPC.snapshots.restore, request),
+    prune: (request) => invoke(IPC.snapshots.prune, request),
+  },
   settings: {
     get: () => invoke(IPC.settings.get),
     update: (patch) => invoke(IPC.settings.update, patch),

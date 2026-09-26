@@ -46,6 +46,7 @@ import {
   compileGlob,
   matchesGlob,
 } from '@aurora/agent-core'
+import type { SnapshotPort, SnapshotWriteOptions, SnapshotWriteOutcome } from '@aurora/agent-core'
 import type {
   DirEntry,
   FilePort,
@@ -82,6 +83,16 @@ export interface PathOutsideError extends Error {
 export interface OutsideOption {
   /** 显式放行到项目根之外；缺省 / `false` = 按项目根校验 */
   allowOutside?: boolean
+}
+
+/**
+ * `writeText` 的端口参数（docs/06 §11.8）：越界放行 + **写前快照**。
+ *
+ * `snapshot` 由工具层传入（`write_file` / `edit_file`）；未注入快照端口时它被忽略 ——
+ * 单测直接调端口、或装配层没接快照时，行为与 v13 一字不差。
+ */
+export interface WriteOption extends OutsideOption {
+  snapshot?: SnapshotWriteOptions
 }
 
 /**
@@ -228,6 +239,12 @@ async function canonicalize(target: string): Promise<string> {
  * 「大文件跳过」「时间护栏到点不再扫」这些行为。
  */
 export interface NodeFilePortOptions extends WorkspaceGuardOptions {
+  /**
+   * 写前快照端口（docs/06 §11.8，v14）：只用到 `capture` 一个方法。
+   *
+   * 未注入 = 不留底（行为与 v13 一字不差）—— 单测据此做"注入前后断言不同"的对照。
+   */
+  snapshots?: Pick<SnapshotPort, 'capture'>
   /** 忽略的目录名（整棵子树跳过；按名字**精确匹配**，不做模式匹配） */
   searchIgnore?: readonly string[]
   /** 遍历预算：文件数与总字节数双重上限，任一触顶即停止遍历 */
@@ -256,8 +273,8 @@ export interface NodeFilePort extends FilePort {
     path: string,
     content: string,
     mode: 'overwrite' | 'append',
-    options?: OutsideOption,
-  ): Promise<{ absolutePath: string; bytes: number }>
+    options?: WriteOption,
+  ): Promise<{ absolutePath: string; bytes: number; snapshot?: SnapshotWriteOutcome }>
   list(
     path: string,
     limit: number,
@@ -298,6 +315,37 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
     workspaceRoot: options.workspaceRoot,
     enforceWorkspace: options.enforceWorkspace,
     logger: options.logger ?? createNoopLogger(),
+  }
+
+  /**
+   * 写前留底（docs/06 §11.8）：把**磁盘上的当前内容**存一份，返回给工具层的结果字段。
+   *
+   * 三条都刻意"失败也不抛"：快照是兜底能力，它坏掉不该让"写文件"整体失败 ——
+   * 但**必须如实回带**跳过原因（`skipped`），因为"以为有备份、其实没有"比"没有备份"更危险。
+   */
+  async function captureSnapshot(
+    input: SnapshotWriteOptions | undefined,
+    absolutePath: string,
+  ): Promise<SnapshotWriteOutcome | undefined> {
+    const port = options.snapshots
+    if (input === undefined || port === undefined) return undefined
+    try {
+      const result = await port.capture({
+        sessionId: input.sessionId,
+        path: absolutePath,
+        ...(input.toolCallId === undefined ? {} : { toolCallId: input.toolCallId }),
+        origin: input.origin,
+        mode: input.mode,
+      })
+      if (result.snapshot !== undefined) {
+        return { id: result.snapshot.id }
+      }
+      return { id: '', ...(result.skipped === undefined ? {} : { skipped: result.skipped }) }
+    } catch (error) {
+      // 端口实现自己承诺不抛；真抛了也只降级成"没留底"，并留一条 warn
+      guard.logger?.warn('写前快照失败，本次不留底', { path: absolutePath, error: String(error) })
+      return { id: '', skipped: 'unreadable' }
+    }
   }
 
   return {
@@ -415,10 +463,13 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
       path: string,
       content: string,
       mode: 'overwrite' | 'append',
-      options?: OutsideOption,
+      options?: WriteOption,
     ) {
       // 校验在建父目录**之前**：越界时连 `mkdir -p` 都不该发生
       const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard)
+      // 写前快照（docs/06 §11.8）：**必须先留底再写**。顺序不能换 —— 换过来就是"改完才备份"，
+      // 备份里已经是新内容，回滚等于没回滚。
+      const snapshot = await captureSnapshot(options?.snapshot, absolutePath)
       const bytes = Buffer.byteLength(content, 'utf8')
       try {
         await mkdir(dirname(absolutePath), { recursive: true })
@@ -427,9 +478,16 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
         } else {
           await writeFileAtomic(absolutePath, content)
         }
-        return { absolutePath, bytes }
+        return { absolutePath, bytes, ...(snapshot === undefined ? {} : { snapshot }) }
       } catch (error) {
-        throw withPath(mode === 'append' ? '追加写入失败' : '写入文件失败', absolutePath, error)
+        // 主写失败时**不回滚快照**（保命优先：文件可能已被部分改写），并把快照 id 带进错误信息，
+        // 否则用户根本不知道"其实还能救回来"。
+        const hint = snapshot?.id === undefined ? '' : `（已留底快照 ${snapshot.id}）`
+        throw withPath(
+          `${mode === 'append' ? '追加写入失败' : '写入文件失败'}${hint}`,
+          absolutePath,
+          error,
+        )
       }
     },
 

@@ -6,10 +6,10 @@
  * - 返回值统一 `Result<T>`，异常不越过 IPC 边界；
  * - 密文字段不回传渲染层（只回传"是否已设置"）。
  */
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promises as nodeFs } from 'node:fs'
 import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
-import { resolveProject, type SessionStore } from '@aurora/agent-core'
+import { resolveProject, type SessionStore, type SnapshotPort } from '@aurora/agent-core'
 import {
   IPC,
   createDefaultSettings,
@@ -38,6 +38,9 @@ import {
   type ModeSummary,
   type OpenPathRequest,
   type ProjectStatus,
+  type SnapshotListRequest,
+  type SnapshotRef,
+  type SnapshotRestoreRequest,
   type Result,
   type SecretEntries,
   type SendMessageRequest,
@@ -101,6 +104,11 @@ export interface DesktopDeps {
   proactive: ProactiveLike
   /** 全局快捷键状态（hotkey:*，docs/07 §5） */
   hotkey: HotkeyControllerLike
+  /**
+   * 写前快照与一键回滚（snapshots:*，docs/06 §11.8，v14）。
+   * 未注入时三条通道返回 `E_INVALID_STATE`（而不是静默成功）—— 界面据此如实报错。
+   */
+  snapshots?: SnapshotPort
   /** ClassIsland 桥接（classisland:*，docs/05 §3.4 v2/v3） */
   classisland: ClassIslandController
   /** MCP 状态（mcp:status，docs/06 §7） */
@@ -168,6 +176,7 @@ function normalizeNotifyRequest(input: unknown): ClassIslandNotifyRequest {
 
 export function registerIpc(deps: DesktopDeps): () => void {
   const handlers: Array<[string, (...args: never[]) => unknown]> = []
+  const snapshots = deps.snapshots
 
   const handle = <T>(
     channel: string,
@@ -248,6 +257,25 @@ export function registerIpc(deps: DesktopDeps): () => void {
     if (picked.canceled) return ok(null)
     return ok(picked.filePaths[0] ?? null)
   })
+
+  // ───────────────────────── snapshots（v14，docs/06 §11.8）─────────────────────────
+
+  handle<SnapshotRef[]>(IPC.snapshots.list, (request: SnapshotListRequest | undefined) =>
+    snapshots
+      ? snapshots.list(request ?? {}).then(ok, (error: unknown) => err('E_IO', String(error)))
+      : err('E_INVALID_STATE', '快照端口尚未装配'),
+  )
+  handle<SnapshotRef>(IPC.snapshots.restore, (request: SnapshotRestoreRequest) =>
+    restoreSnapshot(deps, snapshots, request),
+  )
+  handle<number>(IPC.snapshots.prune, (request: { sessionId: string }) =>
+    snapshots
+      ? snapshots.prune(request.sessionId).then(
+          (result) => ok(result.removed),
+          (error: unknown) => err('E_IO', String(error)),
+        )
+      : err('E_INVALID_STATE', '快照端口尚未装配'),
+  )
 
   // ───────────────────────── settings ─────────────────────────
 
@@ -820,6 +848,53 @@ async function projectStatus(deps: DesktopDeps): Promise<ProjectStatus> {
     rootAvailable = false
   }
   return { currentId: current.id, name: current.name, root: resolved.root, rootAvailable }
+}
+
+/**
+ * 回滚一个文件到某份快照（v14，docs/06 §11.8）。
+ *
+ * 顺序是**有意**的：先把"现在的磁盘状态"存成一份 `origin:'rollback'` 的快照，再把旧内容写回 ——
+ * 于是"回滚"本身也可撤回（用户点错了还能回到回滚前的样子）。
+ *
+ * `exists: false` 的快照表示"当时这个文件还不存在"，回滚它 = **删除该文件**（不是清空）。
+ * 路径仍然过项目根边界：回滚不是绕过 `resolveWithin` 的后门。
+ */
+export async function restoreSnapshot(
+  deps: DesktopDeps,
+  snapshots: SnapshotPort | undefined,
+  request: SnapshotRestoreRequest,
+): Promise<Result<SnapshotRef>> {
+  if (snapshots === undefined) return err('E_INVALID_STATE', '快照端口尚未装配')
+  const all = await snapshots.list({ limit: 500 })
+  const target = all.find((item) => item.id === request.snapshotId)
+  if (target === undefined) return err('E_NOT_FOUND', `未找到快照：${request.snapshotId}`)
+
+  // ① 回滚前状态留底（读不到内容时仍然记一条 exists:false）
+  const before = await snapshots.capture({
+    sessionId: target.sessionId,
+    path: target.path,
+    origin: 'rollback',
+  })
+  // ② 写回旧内容
+  try {
+    if (!target.exists) {
+      await nodeFs.rm(target.path, { force: true })
+    } else {
+      const content = await snapshots.readContent(target)
+      if (content === undefined) return err('E_NOT_FOUND', '快照内容已丢失（可能被手动清理过）')
+      await nodeFs.mkdir(dirname(target.path), { recursive: true })
+      await nodeFs.writeFile(target.path, content.bytes)
+    }
+  } catch (error) {
+    return err('E_IO', `回滚失败：${error instanceof Error ? error.message : String(error)}`)
+  }
+  deps.logger.info('已回滚文件快照', {
+    snapshotId: target.id,
+    path: target.path,
+    rollbackSnapshotId: before.snapshot?.id ?? '',
+  })
+  // 回滚前那一份（`capture` 没留底时退回被回滚的那一份，保证调用方拿到一个 ref）
+  return ok(before.snapshot ?? target)
 }
 
 async function openPath(deps: DesktopDeps, request: OpenPathRequest): Promise<Result<string>> {

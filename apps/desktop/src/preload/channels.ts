@@ -82,6 +82,11 @@ const CHANNELS = {
     status: 'project:status',
     pickDirectory: 'project:pickDirectory',
   },
+  snapshots: {
+    list: 'snapshots:list',
+    restore: 'snapshots:restore',
+    prune: 'snapshots:prune',
+  },
   skills: {
     list: 'skills:list',
     rescan: 'skills:rescan',
