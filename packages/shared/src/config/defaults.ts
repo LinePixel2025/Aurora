@@ -258,6 +258,15 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
       maxSnapshotBytes: 524288,
       totalBudgetBytes: 200 * 1024 * 1024,
     },
+    /**
+     * Agent 循环（v15，docs/06 §5 / §4.1）：轮次上限 8（= v15 之前写死的值）、token 预算不限、
+     * 轮次用尽后允许自动再续 2 轮。用尽即 job 暂停（附原因），不再静默收尾。
+     */
+    loop: {
+      maxRounds: 8,
+      maxTotalTokens: 0,
+      autoContinueRounds: 2,
+    },
   },
 }
 

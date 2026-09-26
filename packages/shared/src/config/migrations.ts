@@ -545,6 +545,32 @@ const migrateV13ToV14: Migration = {
   },
 }
 
+/**
+ * v14 → v15：为已存在的 `agent` 补 `loop.*`（轮次上限、token 预算、自动续轮，docs/06 §5 / §4.1）。
+ *
+ * 口径同 v13 → v14：只在 `agent` 已存在时补、只补缺不覆盖、幂等；`agent` 缺失时交默认配置兜底。
+ * 默认值刻意等于 v15 之前写死的行为（`maxRounds: 8`、预算不限、自动续 2 轮），
+ * 因此升级后既有的长任务表现不变 —— 只是现在"停下来"会明确说是停在哪。
+ */
+const migrateV14ToV15: Migration = {
+  from: 14,
+  to: 15,
+  describe: 'v14 → v15：为 agent 补 loop.*（轮次上限、token 预算与自动续轮）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const agent = asRecord(raw['agent'])
+    if (agent !== undefined) {
+      next['agent'] = fillMissing(agent, {
+        loop: { maxRounds: 8, maxTotalTokens: 0, autoContinueRounds: 2 },
+      })
+    }
+
+    next['version'] = 15
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -560,6 +586,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV11ToV12,
   migrateV12ToV13,
   migrateV13ToV14,
+  migrateV14ToV15,
 ]
 
 export interface MigrationOutcome {

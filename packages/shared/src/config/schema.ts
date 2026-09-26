@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 14 as const
+export const CONFIG_VERSION = 15 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -570,6 +570,26 @@ export const AgentSchema = z.object({
         .int()
         .min(1024 * 1024)
         .default(200 * 1024 * 1024),
+    })
+    .default({}),
+  /**
+   * Agent 循环的轮次与预算（docs/06 §5 / §4.1，v15）。
+   *
+   * 为什么这三个终于变成配置字段：`maxRounds` 此前是内核里写死的 8（`DEFAULT_MAX_ROUNDS`），
+   * 用户遇到"长任务跑到一半停下"既看不到原因也改不了。现在轮次与 token 预算都可配，
+   * 且用尽时 job 进入 `paused`（附 `pendingReason`）而不是静默收尾。
+   *
+   * **不要**进 `SETTINGS_READONLY_PREFIXES`（用户当然可以调），也**不要**进
+   * `WRITABLE_PATH_OVERRIDES` —— 让 AI 给自己放大预算，等于绕过"该停下来问用户"的那道闸门。
+   */
+  loop: z
+    .object({
+      /** 一次请求内最多几轮「工具调用 → 结果回填」（1–64，默认 8 = v15 之前的行为）。 */
+      maxRounds: z.number().int().min(1).max(64).default(8),
+      /** 累计 token 预算；**0 = 不限**（默认）。触顶时 job 暂停，不静默结束。 */
+      maxTotalTokens: z.number().int().min(0).default(0),
+      /** 轮次用尽后允许自动再续几轮（0–8，默认 2）；0 = 不自动续，直接暂停等用户点「继续」。 */
+      autoContinueRounds: z.number().int().min(0).max(8).default(2),
     })
     .default({}),
 })

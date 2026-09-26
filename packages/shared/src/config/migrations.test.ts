@@ -1025,10 +1025,35 @@ describe('配置迁移链', () => {
       expect(noAgent.data['version']).toBe(CONFIG_VERSION)
     })
 
-    it('当前版本配置原样通过（migrate({ version: 14 }) 恒等）', () => {
-      const outcome = migrate({ version: 14, general: { language: 'zh-CN' } })
-      expect(outcome.applied).toEqual([])
-      expect(outcome.data['version']).toBe(14)
+    it('v14 配置只补 loop（不覆盖已写的 snapshots），并随版本继续前移', () => {
+      const outcome = migrate({
+        version: 14,
+        general: { language: 'zh-CN' },
+        agent: {
+          snapshots: {
+            enabled: false,
+            keepPerFile: 3,
+            maxSnapshotBytes: 4096,
+            totalBudgetBytes: 1048576,
+          },
+        },
+      })
+      // 恒等指的是「不重复应用同一条迁移」：从 14 出发只会应用 v14 → v15
+      expect(outcome.applied).toEqual([
+        'v14 → v15：v14 → v15：为 agent 补 loop.*（轮次上限、token 预算与自动续轮）',
+      ])
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+      const agent = outcome.data['agent'] as Record<string, unknown>
+      expect(agent['snapshots']).toEqual({
+        enabled: false,
+        keepPerFile: 3,
+        maxSnapshotBytes: 4096,
+        totalBudgetBytes: 1048576,
+      })
+      // 新版本配置则一条迁移都不应用
+      const current = migrate({ version: CONFIG_VERSION, general: {} })
+      expect(current.applied).toEqual([])
+      expect(current.data['version']).toBe(CONFIG_VERSION)
     })
   })
 })
