@@ -81,6 +81,13 @@ export class SessionStore {
   /** 会话级元信息（归档等）：与 `cache` / `loaded` / `dirty` 同一套懒加载 + 脏标记 */
   private readonly metaCache = new Map<string, SessionMeta>()
   private readonly loaded = new Set<string>()
+  /**
+   * 首读去重：`id → 读盘中的 promise`（in-flight）。
+   *
+   * `loaded` 只在**读盘成功之后**才登记，读盘期间用这里复用同一个 promise，
+   * 因此不存在「已标记 loaded、内容却还没装填」的中间态（原因见 `ensureLoaded`）。
+   */
+  private readonly loading = new Map<string, Promise<void>>()
   private readonly dirty = new Set<string>()
   private readonly writing = new Map<string, Promise<void>>()
   private readonly timers = new Map<string, NodeJS.Timeout>()
@@ -337,12 +344,52 @@ export class SessionStore {
     return `msg-${Date.now()}-${this.counter}`
   }
 
+  /**
+   * 懒加载：并发首读共享同一次读盘（in-flight promise map），**读盘成功后才置 `loaded`**。
+   *
+   * 为什么不能"先置 loaded 再 await 读盘"（本方法原先的写法）：
+   * `loaded.add(id)` 与读盘之间隔着一次 await，在这个窗口里第二个调用者会看到 `loaded` 命中、
+   * 于是立刻返回——但它拿到的 `cache.get(id)` 还是**空快照**。
+   * 最典型的时序是 `Promise.all([get(id), append(id, msg)])`：`get` 发起读盘，
+   * `append` 在窗口内基于空快照算出 next（只有新消息、没有磁盘历史）并排好写盘，
+   * 紧接着读盘结果 `cache.set(id, messages)` 把新消息冲掉（或反过来：写盘把磁盘历史整体改写）——
+   * 两个方向都是**永久数据丢失**，而且只在首次访问某个会话时偶发。
+   *
+   * 现在：读盘中的 promise 放进 `loading`，并发调用复用它（同一 id 只读一次盘）；
+   * 读盘成功才登记 `loaded`；`finally` 里清掉 map 条目，失败时下次访问能重新读盘
+   * （失败降级口径仍由 `readFromDisk` 负责，这里不新造错误）。
+   */
   private async ensureLoaded(id: string): Promise<void> {
     if (this.loaded.has(id)) return
-    this.loaded.add(id)
+    const inFlight = this.loading.get(id)
+    // 已有在途读盘：直接复用它，既不重复读盘也不提前置 loaded
+    if (inFlight !== undefined) return inFlight
+    const task = this.loadFromDisk(id).finally(() => {
+      this.loading.delete(id)
+    })
+    this.loading.set(id, task)
+    return task
+  }
+
+  /**
+   * 真正读盘并装填 `cache` / `metaCache`（由 `ensureLoaded` 去重后调用）。
+   *
+   * 装填是**合并**而不是覆盖：读盘期间可能有并发写已经落进 `cache`（`append` 等），
+   * 直接 `cache.set(id, messages)` 会把它们冲掉，紧接着那一次写盘就会把这份内存快照
+   * 写回磁盘——既丢新消息、又把磁盘上的历史改写成"读盘那一刻"的旧快照。
+   * 合并口径：磁盘历史为底（顺序原样保留），cache 里磁盘没有的按原顺序补在后面；
+   * 同 id 视为同一条，取 cache 里那份（它可能已被 `updateToolCall` 就地更新过，状态更新）。
+   */
+  private async loadFromDisk(id: string): Promise<void> {
     const { messages, meta } = await this.readFromDisk(id)
-    this.cache.set(id, messages)
-    this.metaCache.set(id, meta)
+    const cached = this.cache.get(id)
+    this.cache.set(
+      id,
+      cached === undefined || cached.length === 0 ? messages : mergeMessages(messages, cached),
+    )
+    // meta 同理：读盘期间写下的 meta（归档等）比盘上那份新，不能反过来覆盖它
+    if (!this.metaCache.has(id)) this.metaCache.set(id, meta)
+    this.loaded.add(id)
   }
 
   /**
@@ -463,6 +510,26 @@ export class SessionStore {
     this.writing.set(id, run)
     return run
   }
+}
+
+/**
+ * 读盘结果与「读盘期间写进 cache 的消息」合并（`loadFromDisk` 用）。
+ *
+ * 以磁盘为底而不是以 cache 为底：磁盘那段是已经发生过的历史，必须原序保留；
+ * cache 里多出来的这些正是读盘窗口内新追加的消息，按追加顺序补在后面
+ * （反过来把新消息排到历史前面，会让 `summaries()` 的"首条用户消息作标题"
+ * 与上下文顺序一起错位）。同 id 取 cache 那份：它可能已被 `updateToolCall` 更新过状态。
+ */
+function mergeMessages(disk: StoredMessage[], cached: StoredMessage[]): StoredMessage[] {
+  const fromCache = new Map(cached.map((message) => [message.id, message]))
+  const merged = disk.map((message) => fromCache.get(message.id) ?? message)
+  const seen = new Set(disk.map((message) => message.id))
+  for (const message of cached) {
+    if (seen.has(message.id)) continue
+    seen.add(message.id)
+    merged.push(message)
+  }
+  return merged
 }
 
 function isStoredMessage(value: unknown): value is StoredMessage {

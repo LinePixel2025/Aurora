@@ -29,6 +29,20 @@ function setup(options: { debounceMs?: number; seed?: Record<string, string> } =
 /** 让 writeDebounceMs: 0 触发的写盘微任务链排空（mkdirp → writeFileAtomic） */
 const drain = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
+/**
+ * 计数文件系统：只统计 `readFile` 次数（断言"并发首读共享同一次读盘"）。
+ *
+ * 与 SessionStore 侧同款做法：`ensureLoaded` 是私有的，能观察到的只有真实读盘次数。
+ */
+class CountingFileSystem extends TestFileSystem {
+  readCount = 0
+
+  override readFile(path: string): Promise<string> {
+    this.readCount += 1
+    return super.readFile(path)
+  }
+}
+
 describe('FileTodoPort', () => {
   it('write → read 往返；新实例从盘上懒加载同一份', async () => {
     const { fs, port } = setup({ debounceMs: 0 })
@@ -171,5 +185,53 @@ describe('FileTodoPort', () => {
     expect(await port.read('main-sub')).toEqual(subItems)
     expect(fs.files.has(join(TODO_DIR, 'main.json'))).toBe(true)
     expect(fs.files.has(join(TODO_DIR, 'main-sub.json'))).toBe(true)
+  })
+
+  it('并发首读 + write：写入不被读盘结果盖掉（内存与磁盘都读回刚写的清单）', async () => {
+    const path = join(TODO_DIR, 's.json')
+    const { fs, port } = setup({
+      debounceMs: 0,
+      seed: {
+        [path]: JSON.stringify({
+          version: 1,
+          sessionId: 's',
+          updatedAt: '2025-01-01T00:00:00.000Z',
+          todos: [todo('old', '盘上旧清单')],
+        }),
+      },
+    })
+
+    const items = [todo('t1', '并发写入', 'in_progress')]
+    // read 发起读盘、write 同时进入：write 必须等同一份读盘结果，否则会被旧清单盖回去
+    await Promise.all([port.read('s'), port.write('s', items)])
+
+    // 关键断言：后续读取看到的是刚写的那份，而不是盘上的旧清单
+    expect(await port.read('s')).toEqual(items)
+
+    await port.flush()
+    const onDisk = JSON.parse(fs.files.get(path) ?? '{}') as { todos: TodoItem[] }
+    expect(onDisk.todos).toEqual(items)
+  })
+
+  it('并发两次 read 只触发一次读盘，且后续 read 命中缓存', async () => {
+    const path = join(TODO_DIR, 's.json')
+    const fs = new CountingFileSystem({
+      [path]: JSON.stringify({
+        version: 1,
+        sessionId: 's',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        todos: [todo('t1', '只读一次')],
+      }),
+    })
+    const port = createFileTodoPort({ dir: TODO_DIR, fs, writeDebounceMs: 0 })
+
+    const [first, second] = await Promise.all([port.read('s'), port.read('s')])
+    expect(first).toEqual([todo('t1', '只读一次')])
+    expect(second).toEqual([todo('t1', '只读一次')])
+    expect(fs.readCount).toBe(1)
+
+    // 读盘完成后已置 loaded：第三次读取纯命中缓存
+    expect(await port.read('s')).toEqual([todo('t1', '只读一次')])
+    expect(fs.readCount).toBe(1)
   })
 })

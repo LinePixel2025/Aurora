@@ -345,6 +345,81 @@ function metaOf(fs: TestFileSystem, id: string): Record<string, unknown> {
   return (readFile(fs, id)['meta'] ?? {}) as Record<string, unknown>
 }
 
+/**
+ * 计数文件系统：只统计 `readFile` 次数（断言"并发首读共享同一次读盘"）。
+ *
+ * 用子类而不是 spy 包一层：`ensureLoaded` 是私有方法，能观察到的只有真实调用次数，
+ * 而 `readFile` 是读盘路径上唯一必经且无副作用的观测点。
+ */
+class CountingFileSystem extends TestFileSystem {
+  readCount = 0
+
+  override readFile(path: string): Promise<string> {
+    this.readCount += 1
+    return super.readFile(path)
+  }
+}
+
+describe('SessionStore · 并发首读（in-flight 去重，docs/06 §4）', () => {
+  it('并发首读 + append：磁盘历史与刚追加的消息都不能丢', async () => {
+    const path = sessionFilePath(SESSION_DIR, 'main')
+    const { store, fs } = setup({
+      [path]: JSON.stringify({
+        version: 2,
+        sessionId: 'main',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '历史提问'), message('assistant', '历史回答')],
+      }),
+    })
+
+    // 两个调用同时进入首读窗口：get 发起读盘，append 必须等同一份读盘结果
+    const [loaded, appended] = await Promise.all([
+      store.get('main'),
+      store.append('main', { role: 'user', content: '并发追加' }),
+    ])
+    expect(appended.content).toBe('并发追加')
+    // 并发那次 get 的返回不约束顺序（它可能先于 append 完成），但历史一条都不能少
+    expect(loaded.map((item) => item.content)).toEqual(
+      expect.arrayContaining(['历史提问', '历史回答']),
+    )
+
+    // 关键断言：后续读取既有磁盘历史、也有并发追加的那条
+    const after = await store.get('main')
+    expect(after.map((item) => item.content)).toEqual(['历史提问', '历史回答', '并发追加'])
+
+    // 落盘快照同样两条都在：旧写法会用"读盘那一刻的空快照"把磁盘历史改写掉
+    await store.flush()
+    const persisted = JSON.parse(fs.files.get(path) ?? '{}') as { messages: StoredMessage[] }
+    expect(persisted.messages.map((item) => item.content)).toEqual([
+      '历史提问',
+      '历史回答',
+      '并发追加',
+    ])
+  })
+
+  it('并发两次 get 只触发一次读盘，且后续 get 命中缓存', async () => {
+    const path = sessionFilePath(SESSION_DIR, 'main')
+    const fs = new CountingFileSystem({
+      [path]: JSON.stringify({
+        version: 2,
+        sessionId: 'main',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '只读一次')],
+      }),
+    })
+    const store = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0, maxMessages: 5 })
+
+    const [first, second] = await Promise.all([store.get('main'), store.get('main')])
+    expect(first.map((item) => item.content)).toEqual(['只读一次'])
+    expect(second.map((item) => item.content)).toEqual(['只读一次'])
+    expect(fs.readCount).toBe(1)
+
+    // 读盘完成后已置 loaded：第三次读取纯命中缓存
+    expect((await store.get('main')).map((item) => item.content)).toEqual(['只读一次'])
+    expect(fs.readCount).toBe(1)
+  })
+})
+
 describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 §4）', () => {
   it('归档写盘可往返：重新从磁盘装载仍带 archived 与 archivedAt', async () => {
     const { store, fs } = setup()
