@@ -30,3 +30,6 @@ integrations/classisland-bridge/obj/
 Design/Apple Copy.zip
 Design/Apple Copy/
 dist-web
+
+# 本地端到端验证产物（CDP 驱动真实客户端的截图与脚本）
+.e2e-tmp/
