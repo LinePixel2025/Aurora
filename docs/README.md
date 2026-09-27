@@ -242,7 +242,7 @@
 
 **本轮（2026-09-26）修复三条对话体验 BUG**
 
-> 面向用户的更新说明见 [release-notes/v0.1.6.md](./release-notes/v0.1.6.md)（每个版本一份，随 Release 发布）。
+> 面向用户的更新说明见 [release-notes/v0.2.3.md](./release-notes/v0.2.3.md)（每个版本一份，随 Release 发布）。
 
 - **深度思考渲染跟上模型输出**（[06 §16.3](./06-agent-core.md)）：三条里最实质的一条。
   根因有二 —— 渲染层 `MessageList` 的 `rendered` computed 展开 `{ ...message }` 时把 `reasoning`
