@@ -129,9 +129,21 @@ const attachments = ref<string[]>([])
 /** 是否正有文件悬停在窗口上（用于描边提示） */
 const dragging = ref(false)
 
-/** 会话列表给左栏用：quick 由侧栏面板承载，不再出现在普通会话列表里 */
+/**
+ * 会话列表给左栏用：quick 由侧栏面板承载，不再出现在普通会话列表里。
+ *
+ * 另按 docs/12 §5 的口径过滤远程可见性：`center-` 前缀会话被 Center 标记
+ * `centerVisible === false` 时不进左栏（缺省 / 本地会话不受影响）。**只过滤展示**——
+ * 隐藏的远程会话仍可被网页端远程输入与 `chat:remoteActivate` 激活（激活后当前会话
+ * 恰是它也不强制切走，只是列表里看不到）。
+ */
 const sessionItems = computed(() =>
-  sessions.value.filter((item) => item.id !== 'quick' && item.archived !== true),
+  sessions.value.filter(
+    (item) =>
+      item.id !== 'quick' &&
+      item.archived !== true &&
+      !(item.id.startsWith('center-') && item.centerVisible === false),
+  ),
 )
 
 /**

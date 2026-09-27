@@ -5,7 +5,7 @@
  * 前者是 Aurora 自己的存储 / IPC 形状（带时间戳与工具卡片状态），
  * 后者是 LLM 侧线上形状，两者由 `history.ts` 负责转换。
  */
-import type { SubagentSnapshot } from '@aurora/shared'
+import type { PermissionMode, SubagentSnapshot } from '@aurora/shared'
 
 export type StoredRole = 'user' | 'assistant' | 'tool' | 'system'
 
@@ -75,6 +75,24 @@ export interface SessionMeta {
    * 与 `archived` 同一套零迁移套路。
    */
   projectId?: string
+  /**
+   * 客户端左栏可见性（docs/12 §6.3 远程会话管理，v0.2.3）。
+   *
+   * **缺省（undefined）= 可见**：与 `archived` 同款零迁移套路，老文件不写这个键。
+   * Center 的 `session.visibility` 命令可把它置为 false —— 隐藏的会话不出现在
+   * 客户端左栏，但仍可远程输入。这是**会话数据**不是配置：不进 `config.json`、
+   * 不进 `CONFIG_VERSION` 迁移链。
+   */
+  centerVisible?: boolean
+  /**
+   * 会话级权限档覆盖（docs/06 §11.2 / docs/12 §6.3，v0.2.3）。
+   *
+   * **缺省（undefined）= 跟随全局** `resolvePermissionMode()`；写了就只对该会话的
+   * 确认判定生效（装配层 `createConfirmTool` 的 `mode` getter 按 `info.sessionId` 现解析）。
+   * 写入入口只有本机渲染层与 Center 的 `session.setPermission` 命令 ——
+   * **AI 不可写**（改档位 = 自我提权）。同样是会话数据，不进 CONFIG_VERSION。
+   */
+  permissionMode?: PermissionMode
 }
 
 /** `userData/sessions/<sessionId>.json` 的结构（v1 无 `meta`，读取侧必须容忍） */

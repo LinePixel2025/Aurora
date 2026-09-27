@@ -61,3 +61,52 @@ describe('buildClientStatus · 状态快照', () => {
     expect(buildClientStatus(settings, '0.1.6', 'win32').agent.permissionMode).toBe('auto')
   })
 })
+
+describe('buildClientStatus · llm 快照（docs/12 §6.3，v0.2.3）', () => {
+  it('取激活 provider 的 model / reasoningEffort；凭据字段绝不进快照', () => {
+    const settings: Settings = createDefaultSettings()
+    settings.llm.active = 'p1'
+    settings.llm.providers['p1'] = {
+      type: 'openai-compat',
+      baseUrl: 'https://api.example.com/v1',
+      apiKeyEnc: '***密文***',
+      model: 'gpt-x',
+      modelList: [],
+      temperature: 0.7,
+      reasoningEffort: 'high',
+      contextWindow: 0,
+    }
+
+    const status = buildClientStatus(settings, '0.2.3', 'win32')
+    expect(status.llm).toEqual({ activeProviderId: 'p1', model: 'gpt-x', reasoningEffort: 'high' })
+    // llm 快照只取三个展示字段：baseUrl / apiKeyEnc 不出现在状态快照任何地方
+    expect(JSON.stringify(status)).not.toContain('https://api.example.com')
+    expect(JSON.stringify(status)).not.toContain('apiKeyEnc')
+  })
+
+  it('无激活 provider（active 为空 / 指向不存在的 id）时给安全缺省', () => {
+    const settings: Settings = createDefaultSettings()
+    expect(buildClientStatus(settings, '0.2.3', 'win32').llm).toEqual({
+      activeProviderId: '',
+      model: '',
+      reasoningEffort: 'auto',
+    })
+
+    settings.llm.active = 'ghost'
+    settings.llm.providers['other'] = {
+      type: 'openai-compat',
+      baseUrl: 'https://api.example.com/v1',
+      apiKeyEnc: 'x',
+      model: 'm',
+      modelList: [],
+      temperature: 0.7,
+      reasoningEffort: 'low',
+      contextWindow: 0,
+    }
+    expect(buildClientStatus(settings, '0.2.3', 'win32').llm).toEqual({
+      activeProviderId: 'ghost',
+      model: '',
+      reasoningEffort: 'auto',
+    })
+  })
+})

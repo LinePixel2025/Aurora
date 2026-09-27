@@ -684,3 +684,106 @@ describe('SessionStore · 会话绑定项目（chat:setSessionProject，docs/06 
     expect(metaOf(fs, 'quick')['archived']).toBe(true)
   })
 })
+
+describe('SessionStore · 远程会话管理（centerVisible / permissionMode，docs/12 §6.3）', () => {
+  it('setCenterVisible 写盘可往返：重启后 summaries 仍带 centerVisible=false', async () => {
+    const { store, fs } = setup()
+    await store.append('center-abc', { role: 'user', content: '远程提问' })
+    await store.setCenterVisible('center-abc', false)
+
+    expect(metaOf(fs, 'center-abc')['centerVisible']).toBe(false)
+
+    // 模拟重启：同一份磁盘内容、新的 store 实例
+    const reloaded = new SessionStore({
+      dir: SESSION_DIR,
+      fs,
+      writeDebounceMs: 0,
+      maxMessages: 5,
+    })
+    const summary = (await reloaded.summaries()).find((item) => item.id === 'center-abc')
+    expect(summary?.centerVisible).toBe(false)
+    expect(await reloaded.get('center-abc')).toHaveLength(1)
+  })
+
+  it('setCenterVisible 置回可见删键且不留 true 空值；缺省可见时幂等不写盘', async () => {
+    const { store, fs } = setup()
+    // 缺省（undefined）= 可见：置 true 不算变更，不写盘
+    await store.setCenterVisible('center-abc', true)
+    expect(fs.writeLog).toHaveLength(0)
+
+    await store.setCenterVisible('center-abc', false)
+    const afterHide = fs.writeLog.length
+    // 同值幂等
+    await store.setCenterVisible('center-abc', false)
+    expect(fs.writeLog.length).toBe(afterHide)
+
+    await store.setCenterVisible('center-abc', true)
+    const meta = metaOf(fs, 'center-abc')
+    expect('centerVisible' in meta).toBe(false)
+    expect(
+      (await store.summaries()).find((item) => item.id === 'center-abc')?.centerVisible,
+    ).toBeUndefined()
+  })
+
+  it('setPermissionMode 写盘可往返 + summaries 带键；同值幂等；非法值抛错', async () => {
+    const { store, fs } = setup()
+    await store.setPermissionMode('center-abc', 'readonly')
+    expect(metaOf(fs, 'center-abc')['permissionMode']).toBe('readonly')
+    expect(await store.permissionModeOf('center-abc')).toBe('readonly')
+    expect((await store.summaries()).find((item) => item.id === 'center-abc')?.permissionMode).toBe(
+      'readonly',
+    )
+
+    // 幂等：同档位不写盘
+    const afterFirst = fs.writeLog.length
+    await store.setPermissionMode('center-abc', 'readonly')
+    expect(fs.writeLog.length).toBe(afterFirst)
+
+    // 非法档位：宁可抛错也不静默落一个"看起来成功实则没生效"的覆盖
+    await expect(store.setPermissionMode('center-abc', 'yolo' as never)).rejects.toThrow(
+      /非法的权限档位/,
+    )
+    // 换档仍可继续
+    await store.setPermissionMode('center-abc', 'auto')
+    expect(await store.permissionModeOf('center-abc')).toBe('auto')
+  })
+
+  it('老文件缺字段宽容读出：centerVisible / permissionMode 不带键（缺省可见 / 跟随全局），畸形档位归化为未覆盖', async () => {
+    const path = sessionFilePath(SESSION_DIR, 'center-old')
+    const { store, fs } = setup({
+      [path]: JSON.stringify({
+        version: 2,
+        sessionId: 'center-old',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '历史提问')],
+        meta: { permissionMode: 'yolo', archived: true },
+      }),
+    })
+
+    expect(await store.permissionModeOf('center-old')).toBeUndefined()
+    const summary = (await store.summaries()).find((item) => item.id === 'center-old')
+    expect(summary?.centerVisible).toBeUndefined()
+    expect(summary?.permissionMode).toBeUndefined()
+    expect('permissionMode' in (summary ?? {})).toBe(false)
+    // 宽容归化不触发写盘：老文件只读不重写
+    expect(fs.writeLog).toHaveLength(0)
+  })
+
+  it('visibility / permissionMode 与既有 meta 字段共用同一份 meta：互不覆盖', async () => {
+    const { store, fs } = setup()
+    await store.setCenterVisible('center-abc', false)
+    await store.setPermissionMode('center-abc', 'confirm')
+    await store.setProject('center-abc', 'proj-1')
+    await store.setArchived('center-abc', true)
+
+    const meta = metaOf(fs, 'center-abc')
+    expect(meta['centerVisible']).toBe(false)
+    expect(meta['permissionMode']).toBe('confirm')
+    expect(meta['projectId']).toBe('proj-1')
+    expect(meta['archived']).toBe(true)
+
+    // 改可见性不动权限覆盖
+    await store.setCenterVisible('center-abc', true)
+    expect(metaOf(fs, 'center-abc')['permissionMode']).toBe('confirm')
+  })
+})

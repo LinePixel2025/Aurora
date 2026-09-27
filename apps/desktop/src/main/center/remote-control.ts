@@ -53,6 +53,10 @@ export function buildClientStatus(
   version: string,
   platform: string,
 ): ClientStatus {
+  // 生效 LLM 快照（docs/12 §6.3）：只取展示用的三个字段，凭据（apiKeyEnc / baseUrl）绝不进快照。
+  // 无激活 provider（active 为空 / 指向不存在的 id）时给安全缺省 —— 空串 + 'auto'，
+  // 网页端据此展示「未配置」而不是渲染出半截条目。
+  const activeProvider = settings.llm.providers[settings.llm.active]
   return {
     mode: settings.modes.current,
     version,
@@ -71,6 +75,11 @@ export function buildClientStatus(
       allowRemoteSession: settings.center.allowRemoteSession,
       allowRemoteConfig: settings.center.allowRemoteConfig,
       allowFileTransfer: settings.center.allowFileTransfer,
+    },
+    llm: {
+      activeProviderId: settings.llm.active,
+      model: activeProvider?.model ?? '',
+      reasoningEffort: activeProvider?.reasoningEffort ?? 'auto',
     },
   }
 }

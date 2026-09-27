@@ -98,6 +98,8 @@ const CHANNELS = {
     history: 'chat:history',
     event: 'chat:event',
     sessions: 'chat:sessions',
+    // 远程会话激活推送（docs/12 §6.3）：与 shared 契约同构，编译期双向断言会兜住
+    remoteActivate: 'chat:remoteActivate',
     // 通道表与 shared 契约同构：新增通道必须两处同步（编译期双向断言会兜住）
     newSession: 'chat:newSession',
     archiveSession: 'chat:archiveSession',

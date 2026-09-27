@@ -129,6 +129,8 @@ const api: AuroraApi = {
     onEvent: (listener) => subscribe(IPC.chat.event, listener),
     history: (request) => invoke(IPC.chat.history, request),
     sessions: () => invoke(IPC.chat.sessions),
+    // 远程会话激活推送（docs/12 §6.3）：Center 让主界面切会话时由主进程推
+    onRemoteActivate: (listener) => subscribe(IPC.chat.remoteActivate, listener),
     newSession: () => invoke(IPC.chat.newSession),
     archiveSession: (request) => invoke(IPC.chat.archiveSession, request),
     setSessionProject: (request) => invoke(IPC.chat.setSessionProject, request),

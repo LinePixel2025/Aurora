@@ -531,3 +531,71 @@ describe('createConfirmTool 的三档权限判定', () => {
     expect(requests).toHaveLength(1)
   })
 })
+
+/**
+ * 对外数据出域类工具不受 auto 档免确认路径约束（docs/06 §11.2 v0.2.3，ALWAYS_CONFIRM_TOOLS）。
+ *
+ * `center_send_file` 把本机文件上传到 Aurora Center —— 源头文件通常就在项目根内，
+ * 「根内免确认 / 无项目放行」会把它**静默**放掉，数据就出域了。因此两条 `'machine'`
+ * 路径对它一律跳过：auto 档下照常弹卡（readonly 档则是工具整体不注册，不在本表）。
+ */
+describe('createConfirmTool 的 ALWAYS_CONFIRM_TOOLS（center_send_file，docs/12 §5 第 4 步）', () => {
+  const root = 'D:\\proj'
+
+  it('auto 档 + 项目根内：center_send_file 仍弹卡，不走「根内放行」', async () => {
+    const { proactive, requests } = createFakeProactive(true)
+    const confirm = createConfirmTool({
+      proactive,
+      mode: () => 'auto',
+      projectRoot: async () => root,
+    })
+
+    const approved = await confirm(
+      confirmInfo('center_send_file', { path: 'D:\\proj\\report.docx' }),
+    )
+
+    expect(approved).toBe(true)
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.toolName).toBe('center_send_file')
+  })
+
+  it('auto 档 + 无项目：center_send_file 仍弹卡，不走「无项目放行」', async () => {
+    const { proactive, requests } = createFakeProactive(true)
+    const confirm = createConfirmTool({
+      proactive,
+      mode: () => 'auto',
+      projectRoot: async () => undefined,
+    })
+
+    expect(await confirm(confirmInfo('center_send_file', { path: 'C:\\data\\a.txt' }))).toBe(true)
+    expect(requests).toHaveLength(1)
+  })
+
+  it('对照：同一场景下普通工具（write_file）仍按原 auto 档行为根内免确认', async () => {
+    const { proactive, requests } = createFakeProactive(false)
+    const confirm = createConfirmTool({
+      proactive,
+      mode: () => 'auto',
+      projectRoot: async () => root,
+    })
+
+    expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj\\a.txt' }))).toBe('machine')
+    expect(requests).toHaveLength(0)
+  })
+
+  it('mode 支持按会话现解析：sessionId 传入 getter（会话级权限档覆盖的注入形态）', async () => {
+    const seen: string[] = []
+    const { proactive, requests } = createFakeProactive(true)
+    const confirm = createConfirmTool({
+      proactive,
+      mode: (sessionId) => {
+        seen.push(sessionId)
+        return 'confirm'
+      },
+    })
+
+    await confirm(confirmInfo('write_file', { path: 'D:\\proj\\a.txt' }))
+    expect(seen).toEqual(['test-session'])
+    expect(requests).toHaveLength(1)
+  })
+})

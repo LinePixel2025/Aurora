@@ -7,9 +7,19 @@
  * `E_REMOTE_DISABLED`，Center 端如实展示。配置签名（serverUrl/token/enabled）
  * 变化时强制断开重连 —— 换服务器不能还挂在旧连接上。
  */
-import type { CenterClientMessage, CenterCommand, ClientStatus, ModeId } from '@aurora/shared'
+import type {
+  CenterClientMessage,
+  CenterCommand,
+  CenterProjectOption,
+  CenterSessionSummary,
+  ClientStatus,
+  ModeId,
+  PermissionMode,
+  ReasoningEffort,
+} from '@aurora/shared'
 import type { Logger } from '@aurora/shared'
 import type { CenterStatusInfo } from '@aurora/agent-core'
+import { CENTER_SESSION_PREFIX } from '@aurora/shared'
 import { checkRemotePatch } from './remote-control.js'
 
 export interface WsLike {
@@ -62,6 +72,34 @@ export interface CenterConnectorDeps {
     }
   }
   /**
+   * 远程会话管理命令（docs/12 §6.3，v0.2.3）。**仅接受 `center-` 前缀会话**——
+   * 前缀与门控由连接器统一判定，这里的 handler 只管执行。未注入时相关命令一律回
+   * `E_SESSION_NOT_FOUND`（老装配器兼容）。
+   */
+  sessionManager?: {
+    /** 枚举 `center-` 前缀会话（`session.list` 的 `result.data`） */
+    listSessions(): Promise<CenterSessionSummary[]>
+    /** 让主界面切到指定会话（兜底装载未落盘的会话 + 推 `chat:remoteActivate`） */
+    activateSession(sessionId: string): Promise<{ ok: boolean; error?: string }>
+    /** 开关该会话在客户端左栏的可见性 */
+    setVisibility(sessionId: string, visible: boolean): Promise<{ ok: boolean; error?: string }>
+    /** 会话级权限档覆盖（SessionMeta 数据，不动全局档） */
+    setPermissionMode(
+      sessionId: string,
+      permissionMode: PermissionMode,
+    ): Promise<{ ok: boolean; error?: string }>
+    /** 会话绑定项目（`''` 清除）；projectId 合法性由装配层 / store 解析链兜底 */
+    setProject(sessionId: string, projectId: string): Promise<{ ok: boolean; error?: string }>
+    /** 客户端项目选项（`project.list` 的 `result.data`） */
+    listProjects(): CenterProjectOption[]
+    /** 远程切模型 / 思考等级（专用命令，绝不触碰 apiKeyEnc / baseUrl） */
+    switchLlm(request: {
+      providerId?: string
+      model?: string
+      reasoningEffort?: ReasoningEffort
+    }): Promise<{ ok: boolean; error?: string }>
+  }
+  /**
    * 结算一张在途敏感工具确认卡（`confirm.resolve` 命令，docs/12 §5.1）。
    * 返回是否命中（false = 已超时 / 已被本地结算 / id 未知）；未注入时不拦截。
    */
@@ -75,6 +113,12 @@ export type ConnectionState = 'disabled' | 'connecting' | 'connected' | 'error'
 
 const PING_REPLY_TIMEOUT = 30_000
 const MAX_BACKOFF_MS = 30_000
+/**
+ * 确认请求补发队列上限（docs/12 §5 第 4 步，v0.2.3）：连接器离线期间的确认请求
+ * FIFO 入队、重连后 flush；满 20 条丢最旧并写日志 —— 长时间离线的请求本来就
+ * 会按本地 60s 超时拒绝，补发只是兜「短暂断连」。
+ */
+export const CONFIRM_QUEUE_LIMIT = 20
 
 export class CenterConnector {
   private readonly deps: CenterConnectorDeps
@@ -88,6 +132,8 @@ export class CenterConnector {
   /** 上次成功连接使用的配置签名；变化时强制重连 */
   private signature = ''
   private disposed = false
+  /** 确认请求补发队列（docs/12 §5 第 4 步）：离线入队、open 后 flush，FIFO 上限见 CONFIRM_QUEUE_LIMIT */
+  private readonly confirmQueue: unknown[] = []
 
   constructor(deps: CenterConnectorDeps) {
     this.deps = deps
@@ -128,7 +174,12 @@ export class CenterConnector {
     }
     if (this.socket !== undefined || this.reconnectTimer !== undefined) {
       // 在线 / 重连中：签名变了才断开重连（改了无关开关不打扰连接）
-      if (this.signatureOf(config) === this.signature) return
+      if (this.signatureOf(config) === this.signature) {
+        // 已连接且连接参数没变：相关设置（llm / mode 等，docs/12 §6.1「每次相关变更时上报」）
+        // 变了也要重报状态快照 —— 本机设置页改模型后网页端才能看到新值
+        this.socket?.send(JSON.stringify({ type: 'status', status: this.deps.statusSnapshot() }))
+        return
+      }
       this.teardownSocket()
       if (this.reconnectTimer !== undefined) {
         clearTimeout(this.reconnectTimer)
@@ -154,6 +205,44 @@ export class CenterConnector {
     return {
       state: this.state,
       ...(this.lastError === undefined ? {} : { lastError: this.lastError }),
+    }
+  }
+
+  /**
+   * 确认请求入补发队列（docs/12 §5 第 4 步，v0.2.3）。
+   *
+   * 调用方（index.ts 的 `proactiveScheduler.onRequest`）在连接器离线（emit 为 undefined）
+   * 或当次发送失败时调用；socket 下次 open 时按 FIFO flush。满上限丢**最旧** ——
+   * 新请求的倒计时更长，旧请求大概率已按本地超时结算（先到先得的另一侧）。
+   */
+  enqueueConfirm(message: unknown): void {
+    while (this.confirmQueue.length >= CONFIRM_QUEUE_LIMIT) {
+      const dropped = this.confirmQueue.shift()
+      this.logger.warn('确认请求补发队列已满，丢弃最旧一条', {
+        preview: JSON.stringify(dropped).slice(0, 120),
+      })
+    }
+    this.confirmQueue.push(message)
+  }
+
+  /** 补发队列当前长度（诊断用） */
+  pendingConfirmCount(): number {
+    return this.confirmQueue.length
+  }
+
+  /** socket open 后调用：按 FIFO 补发离线期间积压的确认请求；发送失败保留余量待下次重连 */
+  private flushConfirmQueue(): void {
+    const socket = this.socket
+    if (socket === undefined) return
+    while (this.confirmQueue.length > 0) {
+      const message = this.confirmQueue[0]
+      try {
+        socket.send(JSON.stringify(message))
+        this.confirmQueue.shift()
+      } catch (error) {
+        this.logger.warn('补发确认请求失败，保留队列待下次 flush', { error: String(error) })
+        return
+      }
     }
   }
 
@@ -231,8 +320,14 @@ export class CenterConnector {
           socket.send(JSON.stringify(message))
         } catch (error) {
           this.logger.warn('向 Center 发送事件失败', { error: String(error) })
+          // 重抛：session.event 由 SessionBridge.forward 捕获记日志；确认请求由
+          // index.ts 的 onRequest 捕获后进补发队列 —— 在这里吞掉会让后者失去入队时机
+          //（socket 失效但 close 尚未触发的窗口期）。
+          throw error
         }
       })
+      // hello / status 已发、emit 已绑定：补发离线期间积压的确认请求（docs/12 §5 第 4 步）
+      this.flushConfirmQueue()
     })
 
     socket.on('message', (data) => {
@@ -339,6 +434,104 @@ export class CenterConnector {
             ? await this.deps.sessionHandler.handleInput(cmd)
             : this.deps.sessionHandler.handleAbort(cmd)
         reply(result.ok, result.data, result.error)
+        return
+      }
+      // ── 远程会话管理（docs/12 §6.3，v0.2.3）：仅 center- 前缀会话 ──
+      case 'session.list':
+      case 'session.activate':
+      case 'session.visibility':
+      case 'session.setPermission':
+      case 'session.setProject':
+      case 'project.list': {
+        // 会话管理属 session 类别：受 allowRemoteSession 闸门
+        if (!config.allowRemoteSession) {
+          reply(false, undefined, 'E_REMOTE_DISABLED')
+          return
+        }
+        const manager = this.deps.sessionManager
+        if (manager === undefined) {
+          reply(false, undefined, 'E_SESSION_NOT_FOUND')
+          return
+        }
+        // 带 sessionId 的命令一律先过 center- 前缀：本地会话对 Center 不可见、
+        // 不可枚举、不可切换（docs/12 §6.3）
+        if (
+          cmd.kind !== 'session.list' &&
+          cmd.kind !== 'project.list' &&
+          !cmd.sessionId.startsWith(CENTER_SESSION_PREFIX)
+        ) {
+          reply(false, undefined, 'E_SESSION_NOT_FOUND')
+          return
+        }
+        try {
+          switch (cmd.kind) {
+            case 'session.list': {
+              reply(true, await manager.listSessions())
+              return
+            }
+            case 'session.activate': {
+              const result = await manager.activateSession(cmd.sessionId)
+              reply(result.ok, undefined, result.error)
+              return
+            }
+            case 'session.visibility': {
+              const result = await manager.setVisibility(cmd.sessionId, cmd.visible)
+              reply(result.ok, undefined, result.error)
+              return
+            }
+            case 'session.setPermission': {
+              const result = await manager.setPermissionMode(cmd.sessionId, cmd.permissionMode)
+              reply(result.ok, undefined, result.error)
+              return
+            }
+            case 'session.setProject': {
+              const result = await manager.setProject(cmd.sessionId, cmd.projectId)
+              reply(result.ok, undefined, result.error)
+              return
+            }
+            case 'project.list': {
+              reply(true, manager.listProjects())
+              return
+            }
+          }
+        } catch (error) {
+          this.logger.warn('远程会话管理命令执行失败', {
+            kind: cmd.kind,
+            error: String(error),
+          })
+          reply(false, undefined, 'E_UNKNOWN')
+        }
+        return
+      }
+      case 'llm.switch': {
+        // 专用命令（docs/12 §6.3）：不走 config.update 白名单，但同属"远程改配置"类别，
+        // 受 allowRemoteConfig 闸门；handler 只点改 model / reasoningEffort / active，
+        // 绝不触碰 apiKeyEnc / baseUrl。
+        if (!config.allowRemoteConfig) {
+          reply(false, undefined, 'E_REMOTE_DISABLED')
+          return
+        }
+        const manager = this.deps.sessionManager
+        if (manager === undefined) {
+          reply(false, undefined, 'E_SESSION_NOT_FOUND')
+          return
+        }
+        try {
+          const result = await manager.switchLlm({
+            ...(cmd.providerId === undefined ? {} : { providerId: cmd.providerId }),
+            ...(cmd.model === undefined ? {} : { model: cmd.model }),
+            ...(cmd.reasoningEffort === undefined ? {} : { reasoningEffort: cmd.reasoningEffort }),
+          })
+          if (!result.ok) {
+            reply(false, undefined, result.error)
+            return
+          }
+          this.socket?.send(JSON.stringify({ type: 'status', status: this.deps.statusSnapshot() }))
+          reply(true)
+        } catch (error) {
+          this.logger.warn('远程 LLM 切换执行失败', { error: String(error) })
+          reply(false, undefined, 'E_UNKNOWN')
+        }
         return
       }
       case 'config.get': {

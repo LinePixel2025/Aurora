@@ -405,13 +405,44 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     }
   })
 
+  /**
+   * 远程会话激活（docs/12 §6.3 `chat:remoteActivate`）：Center 网页端要求客户端主界面
+   * 切到指定会话时，主进程向本窗口推送 `{ sessionId }`。推送前主进程已对该会话
+   * `sessions.get()` 兜底装载（未落盘的登记为空会话），因此这里直接走现成
+   * `switchSession` 就能走通「网页端打开一个历史 center- 会话」：`hydrate` 能读到
+   * 历史（新装载的会话是空），收尾的 `loadSessions()` 把列表里原本没有的会话补进来。
+   * 被隐藏（`centerVisible === false`）的会话同样响应 —— 隐藏只是左栏不展示，
+   * 不影响远程输入与激活（docs/12 §5）。
+   */
+  const disposeRemoteActivate = window.aurora.chat.onRemoteActivate((event) => {
+    void activateRemoteSession(event.sessionId)
+  })
+
   onScopeDispose(() => {
     // 先 flush 再 dispose：卸载瞬间已入队的增量不能丢（消息正文会缺尾），
     // dispose 只负责取消在途帧与清空缓冲（组件已经没了，不再 apply）
     deltaBuffer.flush()
     deltaBuffer.dispose()
     dispose()
+    disposeRemoteActivate()
   })
+
+  /**
+   * 执行一次远程激活（`chat:remoteActivate` 的处理体，docs/12 §6.3）。
+   *
+   * 目标会话不在本地列表时先补拉一次（与未知会话事件的补拉共用
+   * `refreshSessionsForUnknown` 的 in-flight 守卫；`switchSession` 收尾也会
+   * `loadSessions`，这里提前拉只是让切换动作与列表状态对齐）。
+   * 推送驱动的切换**不允许抛未捕获错误**：任何失败只 warn 一句，界面留在原会话。
+   */
+  async function activateRemoteSession(id: string): Promise<void> {
+    try {
+      if (!sessions.value.some((item) => item.id === id)) await refreshSessionsForUnknown()
+      await switchSession(id)
+    } catch (cause) {
+      window.console?.warn('远程会话激活失败', id, cause)
+    }
+  }
 
   function finishRequest(requestId: string): void {
     activeRequest = null

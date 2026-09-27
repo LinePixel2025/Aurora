@@ -452,6 +452,18 @@ export class WindowManager {
     win.focus()
   }
 
+  /**
+   * 向指定窗口推送事件（主进程 → 渲染层单向，docs/12 §6.3 `chat:remoteActivate` 用）。
+   *
+   * 与 `ensure` 不同，这里**绝不顺手创建窗口**：推送是"尽力而为"——
+   * 窗口未创建 / 已销毁时静默跳过（渲染层下次拉状态自会看到最新值）。
+   */
+  sendTo(name: WindowName, channel: string, payload: unknown): void {
+    const win = this.windows.get(name)
+    if (win === undefined || win.isDestroyed()) return
+    win.webContents.send(channel, payload)
+  }
+
   /** 退出前：允许窗口真正关闭并落盘几何信息。 */
   prepareQuit(): void {
     this.disposeThemeListener()

@@ -542,6 +542,16 @@ export interface ChatSessionSummary {
    * 未绑定的会话**不含这个键**：渲染层据此把下拉框显示成「未指定（跟随全局）」。
    */
   projectId?: string
+  /**
+   * 客户端左栏可见性（docs/12 §6.3 远程会话管理，`meta.centerVisible`）。
+   * **缺省（不含这个键）= 可见**；false = Center 已把该会话从左栏隐藏（仍可远程输入）。
+   */
+  centerVisible?: boolean
+}
+
+/** 远程会话激活推送（docs/12 §6.3，v0.2.3）：主进程驱动主界面切到指定会话 */
+export interface ChatRemoteActivateEvent {
+  sessionId: string
 }
 
 /** 归档 / 取消归档请求（`chat:archiveSession`，docs/06 §4） */
@@ -1177,6 +1187,11 @@ export interface AuroraApi {
     history(request: ChatHistoryRequest): Promise<Result<ChatMessageDto[]>>
     /** 会话列表（新的在前） */
     sessions(): Promise<Result<ChatSessionSummary[]>>
+    /**
+     * 远程会话激活推送（docs/12 §6.3，on/off 成对）：Center 的 `session.activate` 命令
+     * 命中客户端时，主进程经此通道让主界面切到指定会话（payload 只含 sessionId）。
+     */
+    onRemoteActivate(listener: (event: ChatRemoteActivateEvent) => void): () => void
     /** 新建会话并返回其 id */
     newSession(): Promise<Result<string>>
     /**

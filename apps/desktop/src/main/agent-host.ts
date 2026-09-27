@@ -252,6 +252,21 @@ function fetchImplOf(resolveFetch?: () => typeof fetch | undefined): typeof fetc
 }
 
 /**
+ * 对外数据出域类工具（docs/06 §11.2 v0.2.3）：**任何档位都逐次弹卡**。
+ *
+ * `center_send_file` 把本机文件上传到 Aurora Center，是**数据出域**动作 ——
+ * 它的源头文件通常就在项目根内，「根内免确认」不但管不住风险，反而会把它静默放掉
+ * （auto 档的「无项目放行 / 根内放行」两条 `'machine'` 分支对名单内工具一律跳过）。
+ * 确认卡还会同步推给 Center 网页端（docs/12 §5 第 4 步，含本地会话）。
+ */
+export const ALWAYS_CONFIRM_TOOLS = ['center_send_file'] as const
+
+/** `ALWAYS_CONFIRM_TOOLS` 的判定助手（导出供单测钉住行为） */
+export function isAlwaysConfirmTool(name: string): boolean {
+  return (ALWAYS_CONFIRM_TOOLS as readonly string[]).includes(name)
+}
+
+/**
  * 把主动引导的确认载体适配成内核需要的 `confirmTool` 钩子（docs/06 §5）。
  *
  * - 设置项 `advanced.confirmSensitiveTools` 关闭时**每次调用即时判断**并直接放行
@@ -269,8 +284,13 @@ export function createConfirmTool(options: {
    * 当前**生效**的权限档位（每次调用即时读，改设置无需重启，与 v13 之前的 `enabled` 同款）。
    * 取值由 `resolvePermissionMode()` 从 `agent.permissionMode` + `advanced.confirmSensitiveTools`
    * 双开关算出来（docs/06 §11.2）。
+   *
+   * v0.2.3 起按 `info.sessionId` **现解析**（与 `agent.loop` 上限的 getter 套路同款）：
+   * 解析链为 **会话级覆盖（`SessionMeta.permissionMode`，docs/12 §6.3）> 全局档**。
+   * 允许 async：会话 meta 存在会话文件里，装配层可能要先读盘。未注入会话覆盖时
+   * 装配层自行回落全局档，这里只认返回值。
    */
-  mode: () => PermissionMode
+  mode: (sessionId: string) => Promise<PermissionMode> | PermissionMode
   /** `run_command` 的免确认模式列表（每次调用即时读） */
   allowPatterns?: () => readonly string[]
   /**
@@ -287,7 +307,8 @@ export function createConfirmTool(options: {
   logger?: Logger
 }): ConfirmToolDecision {
   return async (info) => {
-    const mode = options.mode()
+    // 档位按会话现解析（getter 注入；会话级覆盖 > 全局档，docs/06 §11.2 / docs/12 §6.3）
+    const mode = await options.mode(info.sessionId)
 
     // ── 只读档：写 / 执行类工具本来就不注册，这里是双保险 ──
     // 走到这里说明工具表与设置不一致（例如刚好在切换档位的瞬间），宁可不执行。
@@ -320,7 +341,9 @@ export function createConfirmTool(options: {
     }
 
     // ── auto 档：只在项目根之内免确认 ──
-    if (mode === 'auto') {
+    // 对外数据出域类工具（ALWAYS_CONFIRM_TOOLS）不参与任何免确认路径：center_send_file
+    // 的源头文件通常就在项目根内，「根内免确认」会把它静默放掉（docs/06 §11.2 v0.2.3）。
+    if (mode === 'auto' && !isAlwaysConfirmTool(info.name)) {
       // 根按**会话**解析（会话绑定项目 > 全局当前项目，docs/06 §5.1）；允许 await 读盘
       const root = await options.projectRoot?.(info.sessionId)
       if (root === undefined || root.trim() === '') {

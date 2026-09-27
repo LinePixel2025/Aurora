@@ -16,6 +16,7 @@ import {
   type AgentToolCall,
   type ChatSessionSummary,
   type FileSystemPort,
+  type PermissionMode,
 } from '@aurora/shared'
 import type { Logger } from '@aurora/shared'
 import { createNoopLogger } from '@aurora/shared'
@@ -48,6 +49,10 @@ export interface SessionSummary extends ChatSessionSummary {
    * （与 `archived` 同款：渲染层按「有没有键」区分「未绑定」与「绑定到某项目」）。
    */
   projectId?: string
+  /**
+   * 会话级权限档覆盖（docs/06 §11.2 / docs/12 §6.3）。缺省**不含这个键** = 跟随全局档。
+   */
+  permissionMode?: PermissionMode
 }
 
 export interface SessionStoreOptions {
@@ -287,6 +292,66 @@ export class SessionStore {
   }
 
   /**
+   * 会话在客户端左栏的可见性（docs/12 §6.3 `session.visibility`，v0.2.3）。
+   *
+   * - **缺省可见**：undefined 与 true 等价，相互设置不算变更（幂等）；
+   * - 置回可见时**删掉键**（不留 `"centerVisible": true` 这种冗余空值，与 `setProject` 同款）；
+   * - 先 `ensureLoaded` + **await 写盘完成**：与 `setArchived` / `setProject` 同一条铁律 ——
+   *   调用方拿到返回后立刻拉 `summaries()` 一定能读到新状态。
+   */
+  async setCenterVisible(sessionId: string, visible: boolean): Promise<void> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    const current = this.metaCache.get(id) ?? {}
+    // 幂等判定按「缺省可见」归一：undefined 与 true 同为可见
+    if ((current.centerVisible ?? true) === visible) return
+
+    const next: SessionMeta = { ...current }
+    if (visible) delete next.centerVisible
+    else next.centerVisible = false
+    this.metaCache.set(id, next)
+    this.dirty.add(id)
+    this.scheduleWrite(id, 0)
+    await (this.writing.get(id) ?? Promise.resolve())
+  }
+
+  /**
+   * 会话级权限档覆盖（docs/06 §11.2 / docs/12 §6.3 `session.setPermission`，v0.2.3）。
+   *
+   * - **幂等**：与当前覆盖值相同（含「都未覆盖」）→ 直接返回，不写盘；
+   * - 只接受三档合法值（readonly / confirm / auto），非法值抛错而不是静默落盘 ——
+   *   档位写错会让确认判定落到 undefined 覆盖（等价全局档），看似成功实则没生效；
+   * - 先 `ensureLoaded` + **await 写盘完成**（与 `setProject` 同一条铁律）。
+   */
+  async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<void> {
+    if (mode !== 'readonly' && mode !== 'confirm' && mode !== 'auto') {
+      throw new Error(`非法的权限档位：${String(mode)}`)
+    }
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    const current = this.metaCache.get(id) ?? {}
+    if (current.permissionMode === mode) return
+
+    const next: SessionMeta = { ...current, permissionMode: mode }
+    this.metaCache.set(id, next)
+    this.dirty.add(id)
+    this.scheduleWrite(id, 0)
+    await (this.writing.get(id) ?? Promise.resolve())
+  }
+
+  /**
+   * 会话级权限档覆盖（**异步**，必要时先读盘；undefined = 未覆盖，跟随全局档）。
+   *
+   * 消费方是装配层 `createConfirmTool` 的 `mode` getter（允许 await 读盘），
+   * 与 `projectIdOf` 同款套路 —— 不提供同步版：确认判定允许 await，不需要同步口径。
+   */
+  async permissionModeOf(sessionId: string): Promise<PermissionMode | undefined> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    return this.metaCache.get(id)?.permissionMode
+  }
+
+  /**
    * 会话绑定的项目 id（**同步**，只读内存缓存；'' / undefined 一律归一为 undefined）。
    *
    * 为什么是同步的：工具执行链上的端口边界（`file-port` / `command-runner` 的
@@ -349,6 +414,10 @@ export class SessionStore {
         ...(activeId === undefined ? {} : { active: id === normalizeSessionId(activeId) }),
         ...(meta.archived === undefined ? {} : { archived: meta.archived }),
         ...(this.projectOf(id) === undefined ? {} : { projectId: this.projectOf(id) }),
+        // 远程会话管理（docs/12 §6.3）：visibility 缺省可见（undefined = 不带键），
+        // permissionMode 缺省跟随全局（同样不带键）
+        ...(meta.centerVisible === undefined ? {} : { centerVisible: meta.centerVisible }),
+        ...(meta.permissionMode === undefined ? {} : { permissionMode: meta.permissionMode }),
       })
     }
     return items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
@@ -615,6 +684,14 @@ function normalizeMeta(value: unknown): SessionMeta {
   if (typeof candidate['archivedAt'] === 'string') meta.archivedAt = candidate['archivedAt']
   if (typeof candidate['pinned'] === 'boolean') meta.pinned = candidate['pinned']
   if (typeof candidate['projectId'] === 'string') meta.projectId = candidate['projectId']
+  if (typeof candidate['centerVisible'] === 'boolean') {
+    meta.centerVisible = candidate['centerVisible']
+  }
+  // 权限档只认三档合法值：老文件 / 手改文件里的畸形值按「未覆盖」处理（宽容归化）
+  const permissionMode = candidate['permissionMode']
+  if (permissionMode === 'readonly' || permissionMode === 'confirm' || permissionMode === 'auto') {
+    meta.permissionMode = permissionMode
+  }
   return meta
 }
 
@@ -629,7 +706,11 @@ function isEmptyMeta(meta: SessionMeta): boolean {
     meta.archived === undefined &&
     meta.archivedAt === undefined &&
     meta.pinned === undefined &&
-    (meta.projectId === undefined || meta.projectId === '')
+    (meta.projectId === undefined || meta.projectId === '') &&
+    // centerVisible 只有 false 才有信息量（true = 缺省可见），setCenterVisible 写入侧已归一；
+    // 这里再兜一道：不让 `"centerVisible": true` 把每个会话文件多写一行
+    meta.centerVisible === undefined &&
+    meta.permissionMode === undefined
   )
 }
 

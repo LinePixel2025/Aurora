@@ -41,6 +41,7 @@ import type { AgentProviderFactory, SettingsToolPort, ToolDefinition } from '@au
 import {
   COMPUTER_TOOL_NAMES,
   CENTER_SESSION_PREFIX,
+  IPC,
   SettingsSchema,
   SettingsStore,
   nodeFileSystem,
@@ -898,8 +899,16 @@ async function bootstrap(): Promise<void> {
   })
   confirmTool = createConfirmTool({
     proactive: proactiveScheduler,
-    // 每次调用即时判断：设置页改档位无需重启（docs/06 §11.2）
-    mode: () => resolvePermissionMode(settings!.get()),
+    // 每次调用即时判断：设置页改档位无需重启（docs/06 §11.2）。
+    // v0.2.3 起按会话现解析：会话级覆盖（SessionMeta.permissionMode，docs/12 §6.3）
+    // > 全局档（resolvePermissionMode）；会话 meta 惰性读盘，允许 await。
+    mode: async (sessionId) => {
+      if (sessionId !== '') {
+        const overridden = await sessions!.permissionModeOf(sessionId)
+        if (overridden !== undefined) return overridden
+      }
+      return resolvePermissionMode(settings!.get())
+    },
     // 免确认命令模式（docs/06 §11.7）：与 `mode` 同款闭包 —— 每次调用即时读设置，
     // 用户在设置页加完模式立刻生效，无需重启（该字段是只读前缀，AI 改不动）。
     allowPatterns: () => settings!.get().agent.tools.terminal.allowPatterns,
@@ -1041,6 +1050,96 @@ async function bootstrap(): Promise<void> {
         }
       },
     },
+    // 远程会话管理（docs/12 §6.3，v0.2.3）：center- 前缀校验与门控在连接器，
+    // 这里只管执行 —— 会话数据操作走 SessionStore，切换主界面走 chat:remoteActivate 推送。
+    sessionManager: {
+      listSessions: async () => {
+        const all = await sessions!.summaries()
+        return all
+          .filter((summary) => summary.id.startsWith(CENTER_SESSION_PREFIX))
+          .map((summary) => ({
+            sessionId: summary.id,
+            title: summary.title,
+            updatedAt: summary.updatedAt,
+            ...(summary.projectId === undefined ? {} : { projectId: summary.projectId }),
+            ...(summary.permissionMode === undefined
+              ? {}
+              : { permissionMode: summary.permissionMode }),
+            ...(summary.centerVisible === undefined
+              ? {}
+              : { centerVisible: summary.centerVisible }),
+          }))
+      },
+      activateSession: async (sessionId) => {
+        // 兜底装载（docs/12 §6.3「会话未落盘时客户端兜底创建」）：get 会惰性读盘，
+        // 盘上没有 = 登记为空会话（首条消息落盘时才真正创建文件，与本地新建同款）。
+        await sessions!.get(sessionId)
+        windows?.sendTo('chat', IPC.chat.remoteActivate, { sessionId })
+        return { ok: true }
+      },
+      setVisibility: async (sessionId, visible) => {
+        await sessions!.setCenterVisible(sessionId, visible)
+        return { ok: true }
+      },
+      setPermissionMode: async (sessionId, permissionMode) => {
+        await sessions!.setPermissionMode(sessionId, permissionMode)
+        return { ok: true }
+      },
+      setProject: async (sessionId, projectId) => {
+        // 与 chat:setSessionProject 同一口径：绑到不存在的项目报错而不静默
+        //（静默成功后解析链按「绑定已失效」回落全局，网页端却以为绑定生效了）
+        if (
+          projectId !== '' &&
+          !settings!.get().projects.list.some((project) => project.id === projectId)
+        ) {
+          return { ok: false, error: 'E_INVALID_ARGUMENT: 项目不存在（可能已被删除）' }
+        }
+        await sessions!.setProject(sessionId, projectId)
+        return { ok: true }
+      },
+      listProjects: () =>
+        settings!.get().projects.list.map((project) => ({ id: project.id, name: project.name })),
+      // llm.switch 的 handler（docs/12 §6.3）：只点改 active / model / reasoningEffort，
+      // 绝不触碰 apiKeyEnc / baseUrl；settings.onChange 已驱动连接器重报 status。
+      switchLlm: async (request) => {
+        const current = settings!.get().llm
+        const targetId = request.providerId ?? current.active
+        if (
+          request.providerId !== undefined &&
+          current.providers[request.providerId] === undefined
+        ) {
+          return {
+            ok: false,
+            error: `E_INVALID_ARGUMENT: provider 不存在（${request.providerId}）`,
+          }
+        }
+        if (
+          (request.model !== undefined || request.reasoningEffort !== undefined) &&
+          current.providers[targetId] === undefined
+        ) {
+          return { ok: false, error: 'E_INVALID_ARGUMENT: 没有可用的激活 provider' }
+        }
+        if (request.model !== undefined && request.model.trim() === '') {
+          return { ok: false, error: 'E_INVALID_ARGUMENT: model 不能为空' }
+        }
+        const updated = settings!.mutate((draft) => {
+          if (request.providerId !== undefined) draft.llm.active = request.providerId
+          const provider = draft.llm.providers[targetId]
+          if (provider !== undefined) {
+            if (request.model !== undefined) provider.model = request.model.trim()
+            if (request.reasoningEffort !== undefined)
+              provider.reasoningEffort = request.reasoningEffort
+          }
+        })
+        if (updated === undefined) return { ok: false, error: '配置校验失败：请检查补丁内容' }
+        logger?.info('已应用来自 Aurora Center 的远程 LLM 切换', {
+          providerId: request.providerId,
+          modelChanged: request.model !== undefined,
+          reasoningEffort: request.reasoningEffort,
+        })
+        return { ok: true }
+      },
+    },
     bindSessionEmit: (emit) => {
       sessionBridge?.bindEmit(emit)
       // 确认卡（docs/12 §5.1）与 session.event 共用同一条下发通道：连接器在线时
@@ -1057,17 +1156,25 @@ async function bootstrap(): Promise<void> {
   centerConnector.start()
   settings.onChange(() => centerConnector?.onConfigChanged())
 
-  // 确认卡双通道（docs/12 §5.1）：center- 会话的敏感工具确认在本地卡片之外，
-  // 同时经 CenterConnector 的 socket 推给 Center 网页端（路由给会话属主 + 管理员）。
+  // 确认卡双通道（docs/12 §5 第 4 步）：center- 会话的敏感工具确认在本地卡片之外，
+  // 同时经 CenterConnector 的 socket 推给 Center 网页端（路由给会话属主 + 管理员）；
+  // v0.2.3 起本地会话仅在工具为 center_send_file 时也推送 —— 它是数据出域动作
+  //（发往 Center 本身），属主应可见（docs/12 §5 第 4 步推送范围）。
   // 两条通道并存、先到先得 —— proactive.resolve 对已结算 confirmId 幂等返回 false。
   proactiveScheduler.onRequest((request) => {
-    if (!request.sessionId.startsWith(CENTER_SESSION_PREFIX)) return
+    const isCenterSession = request.sessionId.startsWith(CENTER_SESSION_PREFIX)
+    if (!isCenterSession && request.toolName !== 'center_send_file') return
     const emit = centerConfirmEmit
-    if (emit === undefined) return // 连接器离线：静默跳过（网页端本来就收不到）
+    if (emit === undefined) {
+      // 连接器离线：入补发队列（FIFO 上限 20，重连后 flush），不再静默丢
+      centerConnector?.enqueueConfirm(toConfirmRequest(request))
+      return
+    }
     try {
       emit(toConfirmRequest(request))
     } catch (error) {
       logger?.warn('向 Center 发送确认请求失败', { error: String(error) })
+      centerConnector?.enqueueConfirm(toConfirmRequest(request))
     }
   })
 

@@ -90,6 +90,8 @@ export const IPC = {
     event: 'chat:event',
     /** 会话列表 / 新建会话（docs/06 §4） */
     sessions: 'chat:sessions',
+    /** 远程会话激活推送（docs/12 §6.3，主进程 → 渲染层，on/off 成对） */
+    remoteActivate: 'chat:remoteActivate',
     newSession: 'chat:newSession',
     /**
      * 归档 / 取消归档（docs/06 §4）。状态存在会话文件自身的 `meta` 里，

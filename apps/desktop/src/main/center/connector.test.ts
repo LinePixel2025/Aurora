@@ -84,6 +84,7 @@ function makeConnector(overrides?: Partial<CenterConfig>): Harness {
         allowRemoteConfig: config.allowRemoteConfig,
         allowFileTransfer: config.allowFileTransfer,
       },
+      llm: { activeProviderId: 'p1', model: 'gpt-x', reasoningEffort: 'auto' },
     }),
     version: '0.1.6',
     platform: 'win32',
@@ -390,5 +391,266 @@ describe('CenterConnector · confirm.resolve（docs/12 §5.1）', () => {
       ok: true,
       data: { settled: false },
     })
+  })
+})
+
+describe('CenterConnector · 远程会话管理命令（docs/12 §6.3）', () => {
+  interface ManagerSpies {
+    listSessions: ReturnType<typeof vi.fn>
+    activateSession: ReturnType<typeof vi.fn>
+    setVisibility: ReturnType<typeof vi.fn>
+    setPermissionMode: ReturnType<typeof vi.fn>
+    setProject: ReturnType<typeof vi.fn>
+    listProjects: ReturnType<typeof vi.fn>
+    switchLlm: ReturnType<typeof vi.fn>
+  }
+
+  /** 装好 sessionManager 的 harness（默认全部成功，测试可改返回值 / 换实现） */
+  function makeManagedConnector(overrides?: Partial<CenterConfig>): {
+    harness: Harness
+    spies: ManagerSpies
+  } {
+    const harness = makeConnector(overrides)
+    const spies: ManagerSpies = {
+      listSessions: vi.fn(async () => [
+        {
+          sessionId: 'center-abc',
+          title: '远程会话',
+          updatedAt: '2026-09-27T00:00:00.000Z',
+          permissionMode: 'confirm' as const,
+          centerVisible: false,
+        },
+      ]),
+      activateSession: vi.fn(async () => ({ ok: true })),
+      setVisibility: vi.fn(async () => ({ ok: true })),
+      setPermissionMode: vi.fn(async () => ({ ok: true })),
+      setProject: vi.fn(async () => ({ ok: true })),
+      listProjects: vi.fn(() => [{ id: 'proj-1', name: '演示项目' }]),
+      switchLlm: vi.fn(async () => ({ ok: true })),
+    }
+    harness.deps.sessionManager = {
+      listSessions: spies.listSessions,
+      activateSession: spies.activateSession,
+      setVisibility: spies.setVisibility,
+      setPermissionMode: spies.setPermissionMode,
+      setProject: spies.setProject,
+      listProjects: spies.listProjects,
+      switchLlm: spies.switchLlm,
+    }
+    return { harness, spies }
+  }
+
+  async function sendCmd(socket: FakeSocket, cmd: Record<string, unknown>): Promise<void> {
+    socket.emit('message', JSON.stringify({ type: 'cmd', cmd }))
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
+  function openSocket(harness: Harness): FakeSocket {
+    harness.connector.start()
+    vi.advanceTimersByTime(1)
+    const socket = harness.lastSocket()
+    socket.emit('open')
+    return socket
+  }
+
+  it('session.list：回执注入的 CenterSessionSummary 列表', async () => {
+    const { harness, spies } = makeManagedConnector()
+    const socket = openSocket(harness)
+    await sendCmd(socket, { kind: 'session.list', requestId: 'm-1' })
+    expect(spies.listSessions).toHaveBeenCalledTimes(1)
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'm-1',
+      ok: true,
+      data: [{ sessionId: 'center-abc', title: '远程会话', centerVisible: false }],
+    })
+  })
+
+  it('session.activate / visibility / setPermission / setProject / project.list 各自分派', async () => {
+    const { harness, spies } = makeManagedConnector()
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, { kind: 'session.activate', requestId: 'm-2', sessionId: 'center-abc' })
+    expect(spies.activateSession).toHaveBeenCalledWith('center-abc')
+    expect(socket.lastMessage()).toMatchObject({ type: 'result', requestId: 'm-2', ok: true })
+
+    await sendCmd(socket, {
+      kind: 'session.visibility',
+      requestId: 'm-3',
+      sessionId: 'center-abc',
+      visible: false,
+    })
+    expect(spies.setVisibility).toHaveBeenCalledWith('center-abc', false)
+
+    await sendCmd(socket, {
+      kind: 'session.setPermission',
+      requestId: 'm-4',
+      sessionId: 'center-abc',
+      permissionMode: 'auto',
+    })
+    expect(spies.setPermissionMode).toHaveBeenCalledWith('center-abc', 'auto')
+
+    await sendCmd(socket, {
+      kind: 'session.setProject',
+      requestId: 'm-5',
+      sessionId: 'center-abc',
+      projectId: 'proj-1',
+    })
+    expect(spies.setProject).toHaveBeenCalledWith('center-abc', 'proj-1')
+
+    await sendCmd(socket, { kind: 'project.list', requestId: 'm-6' })
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'm-6',
+      ok: true,
+      data: [{ id: 'proj-1', name: '演示项目' }],
+    })
+  })
+
+  it('center- 前缀校验：本地会话 id 一律回 E_SESSION_NOT_FOUND（不可见 / 不可切换）', async () => {
+    const { harness, spies } = makeManagedConnector()
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, { kind: 'session.activate', requestId: 'm-7', sessionId: 'quick' })
+    await sendCmd(socket, {
+      kind: 'session.visibility',
+      requestId: 'm-8',
+      sessionId: 'chat-123-1',
+      visible: true,
+    })
+    await sendCmd(socket, {
+      kind: 'session.setProject',
+      requestId: 'm-9',
+      sessionId: 'main',
+      projectId: '',
+    })
+
+    expect(spies.activateSession).not.toHaveBeenCalled()
+    expect(spies.setVisibility).not.toHaveBeenCalled()
+    expect(spies.setProject).not.toHaveBeenCalled()
+    for (const requestId of ['m-7', 'm-8', 'm-9']) {
+      expect(socket.sent.some((m) => JSON.parse(m).requestId === requestId)).toBe(true)
+    }
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      ok: false,
+      error: 'E_SESSION_NOT_FOUND',
+    })
+  })
+
+  it('allowRemoteSession=false：会话管理命令被本地闸门拒绝', async () => {
+    const { harness, spies } = makeManagedConnector({ allowRemoteSession: false })
+    const socket = openSocket(harness)
+    await sendCmd(socket, { kind: 'session.list', requestId: 'm-10' })
+    expect(spies.listSessions).not.toHaveBeenCalled()
+    expect(socket.lastMessage()).toMatchObject({ ok: false, error: 'E_REMOTE_DISABLED' })
+  })
+
+  it('llm.switch：分派注入的 switchLlm，成功后紧跟一条 status 重报', async () => {
+    const { harness, spies } = makeManagedConnector()
+    const socket = openSocket(harness)
+    const statusCountBefore = socket.sent.filter((m) => JSON.parse(m).type === 'status').length
+
+    await sendCmd(socket, {
+      kind: 'llm.switch',
+      requestId: 'm-11',
+      providerId: 'p2',
+      model: 'gpt-next',
+      reasoningEffort: 'high',
+    })
+    expect(spies.switchLlm).toHaveBeenCalledWith({
+      providerId: 'p2',
+      model: 'gpt-next',
+      reasoningEffort: 'high',
+    })
+    expect(socket.lastMessage()).toMatchObject({ type: 'result', requestId: 'm-11', ok: true })
+    // 与 config.update / mode.switch 同款：应用成功后紧跟一条 status 快照
+    const statusCountAfter = socket.sent.filter((m) => JSON.parse(m).type === 'status').length
+    expect(statusCountAfter).toBe(statusCountBefore + 1)
+  })
+
+  it('llm.switch 失败：回执错误、不重报 status；allowRemoteConfig=false 走闸门拒绝', async () => {
+    const { harness, spies } = makeManagedConnector()
+    spies.switchLlm.mockResolvedValue({ ok: false, error: 'E_INVALID_ARGUMENT: provider 不存在' })
+    const socket = openSocket(harness)
+    const statusCountBefore = socket.sent.filter((m) => JSON.parse(m).type === 'status').length
+    await sendCmd(socket, { kind: 'llm.switch', requestId: 'm-12', providerId: 'nope' })
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      ok: false,
+      error: 'E_INVALID_ARGUMENT: provider 不存在',
+    })
+    expect(socket.sent.filter((m) => JSON.parse(m).type === 'status').length).toBe(
+      statusCountBefore,
+    )
+
+    const gated = makeManagedConnector({ allowRemoteConfig: false })
+    const gatedSocket = openSocket(gated.harness)
+    await sendCmd(gatedSocket, { kind: 'llm.switch', requestId: 'm-13', providerId: 'p1' })
+    expect(gated.spies.switchLlm).not.toHaveBeenCalled()
+    expect(gatedSocket.lastMessage()).toMatchObject({ ok: false, error: 'E_REMOTE_DISABLED' })
+  })
+
+  it('sessionManager 未注入：会话管理命令回 E_SESSION_NOT_FOUND（老装配器兼容）', async () => {
+    const harness = makeConnector()
+    const socket = openSocket(harness)
+    await sendCmd(socket, { kind: 'session.list', requestId: 'm-14' })
+    expect(socket.lastMessage()).toMatchObject({ ok: false, error: 'E_SESSION_NOT_FOUND' })
+  })
+})
+
+describe('CenterConnector · 确认请求补发队列（docs/12 §5 第 4 步）', () => {
+  function openSocket(harness: Harness): FakeSocket {
+    harness.connector.start()
+    vi.advanceTimersByTime(1)
+    const socket = harness.lastSocket()
+    socket.emit('open')
+    return socket
+  }
+
+  it('离线入队 → open 后按 FIFO flush（顺序保持，排在 hello / status 之后）', () => {
+    const harness = makeConnector()
+    harness.connector.enqueueConfirm({ type: 'confirm.request', n: 1 })
+    harness.connector.enqueueConfirm({ type: 'confirm.request', n: 2 })
+    expect(harness.connector.pendingConfirmCount()).toBe(2)
+
+    const socket = openSocket(harness)
+    // hello(0) status(1) 之后是两条补发
+    expect(JSON.parse(socket.sent[2] as string)).toMatchObject({ type: 'confirm.request', n: 1 })
+    expect(JSON.parse(socket.sent[3] as string)).toMatchObject({ type: 'confirm.request', n: 2 })
+    expect(harness.connector.pendingConfirmCount()).toBe(0)
+  })
+
+  it('上限 20 条：满后丢最旧并保留最新', () => {
+    const harness = makeConnector()
+    for (let i = 0; i < 25; i += 1) {
+      harness.connector.enqueueConfirm({ type: 'confirm.request', n: i })
+    }
+    expect(harness.connector.pendingConfirmCount()).toBe(20)
+    // 最旧的 0–4 被丢，从 5 起保留
+    const socket = openSocket(harness)
+    const queued = socket.sent.slice(2).map((m) => JSON.parse(m).n)
+    expect(queued).toHaveLength(20)
+    expect(queued[0]).toBe(5)
+    expect(queued[19]).toBe(24)
+  })
+
+  it('断开后再次入队，重连时再次 flush（队列跨连接存续）', () => {
+    const harness = makeConnector()
+    const socket = openSocket(harness)
+    expect(harness.connector.pendingConfirmCount()).toBe(0)
+
+    socket.emit('close')
+    harness.connector.enqueueConfirm({ type: 'confirm.request', n: 1 })
+    vi.advanceTimersByTime(1000) // 第一次退避 1s
+    vi.advanceTimersByTime(1)
+    const reconnected = harness.lastSocket()
+    reconnected.emit('open')
+    expect(JSON.parse(reconnected.sent[2] as string)).toMatchObject({
+      type: 'confirm.request',
+      n: 1,
+    })
+    expect(harness.connector.pendingConfirmCount()).toBe(0)
   })
 })
