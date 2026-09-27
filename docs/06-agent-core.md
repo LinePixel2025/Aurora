@@ -238,7 +238,9 @@ export interface LlmProvider {
 缺省 cwd / 搜索根（工具执行时经 `ctx.sessionId` 现调 getter）、项目根边界与 auto 档免确认判定
 （`file-port` / `command-runner` 的 `workspaceRoot(sessionId)` 与 `createConfirmTool`）、
 AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时按会话解析）。
-中心会话（`center-` 前缀）与本地会话同一条逻辑，默认未绑定。
+中心会话（`center-` 前缀）与本地会话同一条逻辑，默认未绑定；绑定入口除本机
+`chat:setSessionProject` 外还有 Aurora Center 的 `session.setProject` 远程命令
+（docs/12 §6.3，走同一个 `SessionStore.setProject`）。
 注意装载时序：同步取绑定走 `SessionStore.projectOf`（内存缓存读），其前提是
 「会话的工具执行之前 `agentLoop` 必然已读过该会话」；允许 await 的路径（确认钩子 / 指令注入）
 先用 `projectIdOf` 预热再取。
@@ -606,6 +608,12 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 - **`auto` 档的保守方向**（`reasonWithinRoot`）：取不到目标路径的工具（除 `run_command` 外）一律按越界处理；
   `run_command` 缺省 `cwd` 视为根内（它会回落到项目根），但**命令串里出现绝对路径时一律回到确认卡片** ——
   我们不做 shell 解析，猜错一次就是静默越权，多问一次只是打扰。
+- **外发类工具不受根内免确认约束（v0.2.3，`ALWAYS_CONFIRM_TOOLS`）**：`center_send_file`
+  把本机文件发往 Aurora Center，是**数据出域**动作 —— 它的源头文件通常就在项目根内，
+  「根内免确认」不但管不住风险反而会静默放掉它。因此 `createConfirmTool` 的 auto 档两条
+  免确认路径（无项目放行 / 根内放行）对 `ALWAYS_CONFIRM_TOOLS`（当前只有 `center_send_file`）
+  一律跳过：三类档位下它都逐次弹卡（`readonly` 档则是工具整体不注册）。确认卡同时推送
+  Aurora Center（docs/12 §5 第 4 步，含本地会话）。
 - **项目根边界（两层，分工明确）**：
   1. `auto` 档的"要不要问用户"用字符串级判定（`isWithinRoot`，含 `..` 段一律按越界）；
   2. "能不能真碰"由主进程 `file-port.ts` 的 `resolveWithin` 用 **realpath** 判定：
@@ -635,6 +643,14 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   包括删除文件、改注册表、装软件这类不可逆操作。命中 §11.7 免确认模式的命令也是同一种
   「少一次打扰」的语义，**不等于**它更安全。
 因此该开关的定位是「减少打扰」，**不是安全加固**；需要安全边界时保持默认 `true`。
+- **会话级权限档覆盖（v0.2.3，docs/12 §6.3）**：`SessionMeta.permissionMode`（会话文件
+  数据，不进 CONFIG_VERSION）为**单个会话**覆盖生效档位，解析链 **会话覆盖 > 全局
+  `resolvePermissionMode()`**，由装配层的 `mode` getter 按 `info.sessionId` 现解析（与
+  `agent.loop` 上限的 getter 套路同款）。当前**唯一写入口**是 Aurora Center 的
+  `session.setPermission` 远程命令（docs/12 §6.3）；本机侧的会话权限写入 IPC 尚未实装
+  ——**AI 不可写**
+  （`set_setting` 只认配置路径，SessionMeta 不是配置；且改档位 = 自我提权）。
+  全局 `agent.permissionMode` 仍只能由用户在设置页调（`SETTINGS_READONLY_PREFIXES` 口径不变）。
 
 ### 11.3 非目标（v0.7.0 明确不做）
 

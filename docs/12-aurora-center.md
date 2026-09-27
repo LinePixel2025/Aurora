@@ -188,17 +188,31 @@ GET /api/client/device/info?code=<userCode>                      （无需登录
    同时把 `confirm.request` 推给 Center → 网页端（属主 / 管理员）看到工具名、入参摘要与
    倒计时，可「批准 / 拒绝」→ `confirm.resolve` 转回客户端调 `proactive.resolve`。两条通道
    先到先得（`proactive.resolve` 对已结算 confirmId 幂等）；客户端离线 / 超时（默认 60s）
-   一律按拒绝；
+   一律按拒绝。
+   **推送范围（v0.2.3 起）**：除 `center-` 前缀会话全量推送外，**本地会话仅在工具为
+   `center_send_file` 时也推送**（数据外发到 Center 本身，属主应可见）；连接器短暂离线期间的
+   确认请求进**补发队列**（FIFO 上限 20 条，重连后 flush；长时间离线仍按本地 60s 超时拒绝）。
+   网页端除会话视图内的卡之外，另有**全局待批复确认卡栏**（ConsoleView 顶部）展示所有未过期
+   请求——本地会话来源的请求没有会话视图，只能在这里批复；
 5. 「发送文件」：用户在远程会话里让 Agent 发文件 → Agent 调 `center_send_file`
    （§8）→ 客户端 HTTP `POST /api/ingest/files`（客户端令牌鉴权，尺寸受
    `center.maxFileMb` 限制）→ 服务器落盘并 `file.received` 通知 → 网页端出现
    下载卡（`GET /api/files/:fileId`，属主或管理员可下载）。**所有上传文件 24h 后自动删除**
    （索引带 `expiresAt`，启动 + 每 15 分钟清理一轮）；`#/files` 文件管理页可查看 / 下载 /
-   手动删除（§10）。
+   手动删除（§10）。`center_send_file` 在 **auto 档也不免确认**（外发类工具不受
+   「根内免确认」约束，见 §8 与 docs/06 §11.2）；
+6. **会话管理（v0.2.3 起，仅 `center-` 会话，§6.3）**：网页端可枚举客户端的远程会话
+   （`session.list`）、让客户端主界面切到某个会话（`session.activate`）、为会话开关
+   **客户端左栏可见性**（`session.visibility`，缺省可见，隐藏仍可远程输入）、覆盖
+   **会话级权限档**（`session.setPermission`，SessionMeta 数据，不动全局
+   `agent.permissionMode`）、绑定**会话级项目**（`session.setProject`，复用 docs/06 §5.1
+   会话级项目链）。历史 center- 会话（客户端侧已存在、非本页签创建）的事件流对属主可见
+   （服务器在 `sessionOwners` 未命中时回落到客户端登记表的属主）。
 
-远程会话在客户端主界面左栏的历史里照常可见（`center-*` 前缀），用户可随时查看
-甚至继续输入 —— 远程与本地对同一会话的写入顺序由客户端串行化（AgentHost 的
-`active` 槽本身按会话互斥，`E_BUSY` 是唯一交叉语义）。
+远程会话在客户端主界面左栏的历史里**默认可见**（`center-*` 前缀），用户可随时查看
+甚至继续输入；Center 可按会话关闭可见性（§5 第 6 步 `session.visibility`，隐藏的会话
+不出现在客户端左栏但仍可远程输入）。远程与本地对同一会话的写入顺序由客户端串行化
+（AgentHost 的 `active` 槽本身按会话互斥，`E_BUSY` 是唯一交叉语义）。
 
 ## 6. 状态快照与远程配置
 
@@ -207,7 +221,8 @@ GET /api/client/device/info?code=<userCode>                      （无需登录
 ```ts
 { mode, version, platform,
   agent: { permissionMode, tools: { enabled, files, search, open, terminal } },
-  center: { allowRemoteSession, allowRemoteConfig, allowFileTransfer } }
+  center: { allowRemoteSession, allowRemoteConfig, allowFileTransfer },
+  llm: { activeProviderId, model, reasoningEffort } }   // v0.2.3 起
 ```
 
 ### 6.2 远程配置白名单（客户端侧强制）
@@ -229,6 +244,26 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
 `error: 'E_FORBIDDEN_PATH: <路径>'`。
 
 `config.get` 回传**脱敏后**的完整配置（复用主进程 `redactSettings`，密文一律 `***`）。
+
+### 6.3 远程会话管理与 LLM 切换（v0.2.3 专用命令）
+
+通用补丁白名单**不适配**这组能力（`llm.providers.` 前缀会连带放行 `apiKeyEnc`，
+`agent.permissionMode` 被明文禁止），因此走**专用命令**（协议见
+`packages/shared/src/center/protocol.ts`），服务器只转发、不做白名单预检；授权、
+离线判定与 `result` 回执同其他命令：
+
+| 命令（web → server → client） | 语义与边界 |
+|---|---|
+| `session.list` | 枚举客户端的 `center-` 会话（`CenterSessionSummary[]`：标题 / 更新时间 / projectId / 权限覆盖 / 可见性） |
+| `session.activate` | 让客户端主界面切到指定会话（经 `chat:remoteActivate` 推送通道驱动渲染层 `switchSession`；会话未落盘时客户端兜底创建） |
+| `session.visibility` | 开关该会话在客户端左栏的可见性（`SessionMeta.centerVisible`，缺省可见；隐藏仍可远程输入） |
+| `session.setPermission` | **会话级权限档覆盖**（`SessionMeta.permissionMode`，生效于该会话的确认判定：会话覆盖 > 全局档）。不动全局 `agent.permissionMode`——全局档仍只能由用户在本机设置页调 |
+| `session.setProject` | 会话绑定项目（复用 docs/06 §5.1 会话级项目链；`''` 清除；projectId 必须在客户端 `projects.list` 内） |
+| `project.list` | 客户端项目选项（`CenterProjectOption[]`，绑定下拉用） |
+| `llm.switch` | 切客户端模型 / 思考等级：`providerId`（→ `llm.active`）、`model` / `reasoningEffort`（→ 激活 provider 的对应字段，经 `settings.mutate` 即时生效）。**绝不触碰** `apiKeyEnc` / `baseUrl`；可选项列表由网页端从 `config.get` 的脱敏配置取 |
+
+会话管理范围**仅限 `center-` 前缀会话**：客户端本地会话对 Center 不可见、不可枚举、
+不可切换。
 
 ## 7. 客户端配置（`center` 分组，CONFIG_VERSION 17）
 
@@ -271,6 +306,11 @@ Electron 任何操作）：
 - `center_send_file`：校验路径存在、大小 ≤ `center.maxFileMb`，经端口上传；返回
   `{ fileId, name, size, url }`。上传走 `CenterPort.sendFile`（主进程实现：
   `POST /api/ingest/files`），**不经 shell、不经代理配置**（v1 明确不支持代理）。
+  **「逐次确认」在 auto 档同样成立（v0.2.3）**：`createConfirmTool` 的 auto 档两条
+  免确认路径（无项目放行 / 根内放行）对**外发类工具**（`ALWAYS_CONFIRM_TOOLS`，当前
+  只有 `center_send_file`）一律跳过 —— 把文件发往 Center 是数据出域，"根内"判据
+  管不住它（源头文件当然常在根内），三类权限档下它都弹卡（readonly 档则整个工具
+  不执行）。确认卡同时弹客户端本机并推 Center（§5 第 4 步，含本地会话）。
 - 注册位置与扩展工具五件套一致（`registerExtensionTools` 一侧），**不受
   `agent.tools.enabled` 门控**；文档口径见 docs/06 §11.6。
 
@@ -309,6 +349,17 @@ aurora-center version
 - 会话渲染按 `messageId` 聚合 `text` 增量；工具调用渲染为可折叠卡片；思考过程折叠块；
   任务清单（job）与子代理（subagent）各渲染为一张状态卡；`done` 结束
   loading；`error` 红条；敏感工具确认卡显示在会话顶部（倒计时 + 批准 / 拒绝）。
+- **会话管理面板（v0.2.3，§6.3）**：客户端面板内列出该客户端的 `center-` 会话
+  （`session.list` 拉取），每项提供：切换查看（网页本地）、「在客户端打开」
+  （`session.activate`）、可见性开关（`session.visibility`）、权限档下拉
+  （`session.setPermission`，含「跟随全局」）、项目下拉（`session.setProject` +
+  `project.list`）。
+- **全局待批复确认卡栏（v0.2.3）**：ConsoleView 顶部常驻，展示所有未过期的
+  `confirm.request`（含本地会话来源的 `center_send_file`，其无会话视图可去），
+  行内批准 / 拒绝；与会话视图内的卡先到先得。
+- **Token 用量（v0.2.3）**：会话视图渲染 `usage` 事件（此前到达但被忽略）——
+  最新轮 prompt/completion tokens、会话累计、占 contextWindow 比例
+  （contextWindow 从 `config.get` 取）。
 - 文件管理页：全部上传文件的表格（名称 / 来源客户端 / 大小 / 备注 / 上传与过期时间），
   行内下载与删除，过期前 < 24h 显示倒计时。
 - **移动端适配**：≤ 720px 与 ≤ 480px 两档断点——窄屏上下堆叠、客户端列表变横向滚动
@@ -326,6 +377,12 @@ aurora-center version
   边界照常生效于客户端本机）。远程发起的会话中确认卡会同时弹在**客户端本机**并推送
   **网页端**（v0.2.2 起，§5 第 4 步）：两条通道先到先得，任何一边批准即放行、拒绝即拦下，
   `proactive.resolve` 对已结算的 confirmId 幂等 —— 远程批准不绕过任何本地闸门，只是
-  把"问用户"的界面延伸到了网页。
+  把"问用户"的界面延伸到了网页。本地会话仅 `center_send_file` 的确认卡推网页端
+  （v0.2.3，§5 第 4 步）——它是数据出域动作，属主应可见；本地会话的其余活动不推。
+- **会话级权限覆盖不等于远程改全局档**（v0.2.3，§6.3）：Center 能为**单个 `center-`
+  会话**覆盖权限档（`session.setPermission`），全局 `agent.permissionMode` 仍只能由
+  用户在本机设置页调整。会话覆盖存于客户端会话文件（SessionMeta），属会话数据，
+  不进 CONFIG_VERSION；放开它的理由与 §6.2 的禁令不矛盾——禁令防的是"远程一把
+  改掉所有会话的闸门"，会话级覆盖的作用面被限制在 Center 自己创建 / 可见的远程会话上。
 - Center 不存储会话历史（只转发事件流）；文件暂存 24h 自动删除，网页端也可手动删除。
 - 客户端一次只连一个 Center；`clientId` 本机生成、持久化于配置（非凭据）。
