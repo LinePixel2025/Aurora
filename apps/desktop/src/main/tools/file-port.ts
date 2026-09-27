@@ -377,7 +377,12 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
     async readText(path: string, options: ReadTextOptions & OutsideOption) {
       // 边界校验放在 try **之外**：越界错误要原样抛出（带 `PATH_OUTSIDE_CODE`），
       // 不能被 `withPath` 包成一条普通 IO 失败（那样调用方就分不清"越界"与"读不到"了）
-      const absolutePath = await resolveWithin(path, options.allowOutside === true, guard, options.sessionId)
+      const absolutePath = await resolveWithin(
+        path,
+        options.allowOutside === true,
+        guard,
+        options.sessionId,
+      )
       try {
         const info = await stat(absolutePath)
         if (info.isDirectory()) throw new Error('这是目录，不是文件（可改用 list_dir）')
@@ -436,7 +441,12 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
      *   或某个 GBK 文本文件的非 ASCII 字节被 `toString('utf8')` 换成 U+FFFD，即可触发。
      */
     async readWholeText(path: string, maxBytes: number, options?: OutsideOption) {
-      const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard, options?.sessionId)
+      const absolutePath = await resolveWithin(
+        path,
+        options?.allowOutside === true,
+        guard,
+        options?.sessionId,
+      )
       const limit = resolveLimit(maxBytes, MAX_EDIT_BYTES)
       try {
         const info = await stat(absolutePath)
@@ -477,7 +487,12 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
       options?: WriteOption,
     ) {
       // 校验在建父目录**之前**：越界时连 `mkdir -p` 都不该发生
-      const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard, options?.sessionId)
+      const absolutePath = await resolveWithin(
+        path,
+        options?.allowOutside === true,
+        guard,
+        options?.sessionId,
+      )
       // 写前快照（docs/06 §11.8）：**必须先留底再写**。顺序不能换 —— 换过来就是"改完才备份"，
       // 备份里已经是新内容，回滚等于没回滚。
       const snapshot = await captureSnapshot(options?.snapshot, absolutePath)
@@ -503,7 +518,12 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
     },
 
     async list(path: string, limit: number, options?: OutsideOption) {
-      const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard, options?.sessionId)
+      const absolutePath = await resolveWithin(
+        path,
+        options?.allowOutside === true,
+        guard,
+        options?.sessionId,
+      )
       try {
         const dirents = await readdir(absolutePath, { withFileTypes: true })
         const entries: DirEntry[] = []
@@ -552,7 +572,12 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
       // 系统调用），给一次 glob 加上几千次 realpath 会把搜索拖垮。这个取舍是安全的——
       // 子路径由 `join(根, 名字)` 拼出，而 walker 的**口径 1** 一律跳过符号链接
       //（文件与目录都跳），所以"根内某个链接把我带到根外"这条路已经在遍历层堵住了。
-      const absoluteRoot = await resolveWithin(options.root, options.allowOutside === true, guard, options.sessionId)
+      const absoluteRoot = await resolveWithin(
+        options.root,
+        options.allowOutside === true,
+        guard,
+        options.sessionId,
+      )
       const maxResults = resolveMaxResults(options.maxResults)
       const pattern = options.pattern
       const files: string[] = []
@@ -602,7 +627,12 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
      */
     async searchText(options: SearchTextOptions & OutsideOption): Promise<SearchTextResult> {
       // 同 `findFiles`：只校验遍历根，不在 visitor 里逐文件 realpath（取舍理由见那里的注释）
-      const absoluteRoot = await resolveWithin(options.root, options.allowOutside === true, guard, options.sessionId)
+      const absoluteRoot = await resolveWithin(
+        options.root,
+        options.allowOutside === true,
+        guard,
+        options.sessionId,
+      )
       const maxResults = resolveMaxResults(options.maxResults)
       const include = options.include
       const matches: SearchMatch[] = []
