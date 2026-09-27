@@ -61,6 +61,7 @@ const STATUS: ClientStatus = {
     tools: { enabled: true, files: true, search: true, open: true, terminal: true },
   },
   center: { allowRemoteSession: true, allowRemoteConfig: true, allowFileTransfer: true },
+  llm: { activeProviderId: 'p1', model: 'model-1', reasoningEffort: 'medium' },
 }
 
 async function seedClient(harness: Harness, clientId: string, ownerUserId: string): Promise<void> {
@@ -391,7 +392,7 @@ describe('Hub · 状态与文件通知', () => {
     ).toHaveLength(0)
   })
 
-  it('客户端断开后会话记账被清理，事件不再外发', async () => {
+  it('客户端断开后会话记账被清理；事件按登记表属主回落路由', async () => {
     const harness = await makeHub()
     await seedClient(harness, 'c1', 'u1')
     harness.connectClient('c1')
@@ -411,8 +412,231 @@ describe('Hub · 状态与文件通知', () => {
       sessionId,
       event: { seq: 1 } as never,
     })
+    // 记账已清，但客户端登记表仍在 → 事件按登记表属主回落路由（本地历史会话同款语义）
     expect(owner.sent.filter((m) => (m as { type: string }).type === 'client.event')).toHaveLength(
-      0,
+      1,
     )
+  })
+})
+
+describe('Hub · 远程会话管理与 LLM 切换（docs/12 §6.3）', () => {
+  it('7 个新命令原样转发给目标客户端，cmd 形状正确', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    client.sent.length = 0
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+
+    const cases: Array<{ message: Parameters<Hub['handleWebMessage']>[1]; expectCmd: unknown }> = [
+      {
+        message: { type: 'session.list', requestId: 'r1', clientId: 'c1' },
+        expectCmd: { kind: 'session.list', requestId: 'r1' },
+      },
+      {
+        message: {
+          type: 'session.activate',
+          requestId: 'r2',
+          clientId: 'c1',
+          sessionId: 'center-a',
+        },
+        expectCmd: { kind: 'session.activate', requestId: 'r2', sessionId: 'center-a' },
+      },
+      {
+        message: {
+          type: 'session.visibility',
+          requestId: 'r3',
+          clientId: 'c1',
+          sessionId: 'center-a',
+          visible: false,
+        },
+        expectCmd: {
+          kind: 'session.visibility',
+          requestId: 'r3',
+          sessionId: 'center-a',
+          visible: false,
+        },
+      },
+      {
+        message: {
+          type: 'session.setPermission',
+          requestId: 'r4',
+          clientId: 'c1',
+          sessionId: 'center-a',
+          permissionMode: 'auto',
+        },
+        expectCmd: {
+          kind: 'session.setPermission',
+          requestId: 'r4',
+          sessionId: 'center-a',
+          permissionMode: 'auto',
+        },
+      },
+      {
+        message: {
+          type: 'session.setProject',
+          requestId: 'r5',
+          clientId: 'c1',
+          sessionId: 'center-a',
+          projectId: 'proj-1',
+        },
+        expectCmd: {
+          kind: 'session.setProject',
+          requestId: 'r5',
+          sessionId: 'center-a',
+          projectId: 'proj-1',
+        },
+      },
+      {
+        message: { type: 'project.list', requestId: 'r6', clientId: 'c1' },
+        expectCmd: { kind: 'project.list', requestId: 'r6' },
+      },
+      {
+        message: {
+          type: 'llm.switch',
+          requestId: 'r7',
+          clientId: 'c1',
+          providerId: 'p2',
+          model: 'model-9',
+          reasoningEffort: 'high',
+        },
+        expectCmd: {
+          kind: 'llm.switch',
+          requestId: 'r7',
+          providerId: 'p2',
+          model: 'model-9',
+          reasoningEffort: 'high',
+        },
+      },
+    ]
+
+    for (const [i, { message, expectCmd }] of cases.entries()) {
+      harness.hub.handleWebMessage(owner.conn, message)
+      const forwarded = client.sent.at(i) as { type: string; cmd: Record<string, unknown> }
+      expect(forwarded.type).toBe('cmd')
+      expect(forwarded.cmd).toEqual(expectCmd)
+    }
+    // 转发成功时网页端只有等回执，不立即收任何消息
+    expect(owner.sent).toHaveLength(0)
+  })
+
+  it('llm.switch 缺省字段不进 cmd；不做白名单预检（路径像 config 路径也原样转发）', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    client.sent.length = 0
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'llm.switch',
+      requestId: 'r8',
+      clientId: 'c1',
+      model: 'model-2',
+    })
+    const forwarded = client.sent.at(-1) as { type: string; cmd: Record<string, unknown> }
+    expect(forwarded.cmd).toEqual({ kind: 'llm.switch', requestId: 'r8', model: 'model-2' })
+  })
+
+  it('新命令的拒绝路径：非属主 E_FORBIDDEN、未登记客户端 E_CLIENT_NOT_FOUND、离线 E_CLIENT_OFFLINE', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    harness.connectClient('c1')
+    const stranger = harness.connectWeb({ id: 'u2', username: 'u2', role: 'user' })
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+
+    harness.hub.handleWebMessage(stranger.conn, {
+      type: 'session.list',
+      requestId: 'r10',
+      clientId: 'c1',
+    })
+    expect((stranger.sent.at(-1) as { error?: string }).error).toBe('E_FORBIDDEN')
+
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'session.list',
+      requestId: 'r11',
+      clientId: 'ghost',
+    })
+    expect((owner.sent.at(-1) as { error?: string }).error).toBe('E_CLIENT_NOT_FOUND')
+
+    harness.hub.removeClient('c1')
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'llm.switch',
+      requestId: 'r12',
+      clientId: 'c1',
+      model: 'model-2',
+    })
+    expect((owner.sent.at(-1) as { error?: string }).error).toBe('E_CLIENT_OFFLINE')
+  })
+
+  it('session.event 属主回落：无 sessionOwners 记录时按客户端登记表属主 + 管理员路由', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    harness.connectClient('c1')
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    const stranger = harness.connectWeb({ id: 'u2', username: 'u2', role: 'user' })
+    const admin = harness.connectWeb({ id: 'u-admin', username: 'root', role: 'admin' })
+    owner.sent.length = stranger.sent.length = admin.sent.length = 0
+
+    // 客户端本地已有历史 center- 会话：没有任何 session.create / 会话类命令记账
+    harness.hub.handleClientMessage('c1', {
+      type: 'session.event',
+      sessionId: 'center-legacy',
+      event: { seq: 1 } as never,
+    })
+    expect(owner.sent.filter((m) => (m as { type: string }).type === 'client.event')).toHaveLength(
+      1,
+    )
+    expect(admin.sent.filter((m) => (m as { type: string }).type === 'client.event')).toHaveLength(
+      1,
+    )
+    expect(
+      stranger.sent.filter((m) => (m as { type: string }).type === 'client.event'),
+    ).toHaveLength(0)
+
+    // 客户端不在登记表 → 无法确定属主，丢弃
+    expect(() =>
+      harness.hub.handleClientMessage('c-ghost', {
+        type: 'session.event',
+        sessionId: 'center-legacy',
+        event: { seq: 2 } as never,
+      }),
+    ).not.toThrow()
+    expect(admin.sent.filter((m) => (m as { type: string }).type === 'client.event')).toHaveLength(
+      1,
+    )
+  })
+
+  it('session.activate 等会话类命令顺带补记属主：之后该会话的事件按记账属主路由', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    harness.connectClient('c1')
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    const stranger = harness.connectWeb({ id: 'u2', username: 'u2', role: 'user' })
+    const admin = harness.connectWeb({ id: 'u-admin', username: 'root', role: 'admin' })
+
+    // 直接 activate 一个未 create 的会话 → forwardCommand 补记 u1 为属主
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'session.activate',
+      requestId: 'r20',
+      clientId: 'c1',
+      sessionId: 'center-adopted',
+    })
+    owner.sent.length = stranger.sent.length = admin.sent.length = 0
+
+    harness.hub.handleClientMessage('c1', {
+      type: 'session.event',
+      sessionId: 'center-adopted',
+      event: { seq: 1 } as never,
+    })
+    expect(owner.sent.filter((m) => (m as { type: string }).type === 'client.event')).toHaveLength(
+      1,
+    )
+    expect(admin.sent.filter((m) => (m as { type: string }).type === 'client.event')).toHaveLength(
+      1,
+    )
+    expect(
+      stranger.sent.filter((m) => (m as { type: string }).type === 'client.event'),
+    ).toHaveLength(0)
   })
 })

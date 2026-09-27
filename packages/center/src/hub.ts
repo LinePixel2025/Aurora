@@ -4,7 +4,8 @@
  * 信任边界：
  * - **属主关系只信服务器记账**：客户端属主来自客户端令牌（登记表持久化），
  *   会话属主记录在 `sessionOwners`（谁发起 `session.create` 谁拥有）——不信任任何一方自报；
- * - 命令转发前做**白名单预检**（`CENTER_REMOTE_CONFIG_PREFIXES`），客户端侧还会再验一道；
+ * - 命令转发前做**白名单预检**（`CENTER_REMOTE_CONFIG_PREFIXES`，仅 config.update；
+ *   llm.switch 等专用命令不做预检，客户端侧还会再验一道）；
  * - 待回执的命令带超时，超时向网页端合成错误回执，不让请求悬死。
  */
 import { randomBytes } from 'node:crypto'
@@ -44,6 +45,15 @@ export interface HubDeps {
 
 /** 待回执命令的超时：session.input 的回执是"客户端收下了"（毫秒级），15s 足够宽裕 */
 const PENDING_TIMEOUT_MS = 15_000
+
+/** 会话类命令（带 sessionId）：forwardCommand 时未记账则顺带补记属主（与 create 同款） */
+const SESSION_OWNER_KINDS: ReadonlySet<string> = new Set([
+  'session.input',
+  'session.activate',
+  'session.visibility',
+  'session.setPermission',
+  'session.setProject',
+])
 
 export class Hub {
   private readonly clientConns = new Map<string, ClientConn>()
@@ -150,6 +160,62 @@ export class Hub {
           approved: message.approved,
         })
         break
+      // ── 远程会话管理（docs/12 §6.3）：授权与回执同其他命令 ──
+      case 'session.list':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'session.list',
+          requestId: message.requestId,
+        })
+        break
+      case 'session.activate':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'session.activate',
+          requestId: message.requestId,
+          sessionId: message.sessionId,
+        })
+        break
+      case 'session.visibility':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'session.visibility',
+          requestId: message.requestId,
+          sessionId: message.sessionId,
+          visible: message.visible,
+        })
+        break
+      case 'session.setPermission':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'session.setPermission',
+          requestId: message.requestId,
+          sessionId: message.sessionId,
+          permissionMode: message.permissionMode,
+        })
+        break
+      case 'session.setProject':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'session.setProject',
+          requestId: message.requestId,
+          sessionId: message.sessionId,
+          projectId: message.projectId,
+        })
+        break
+      case 'project.list':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'project.list',
+          requestId: message.requestId,
+        })
+        break
+      case 'llm.switch':
+        // 专用命令，不做 config.update 的白名单预检（checkPatch 只服务 config.update）
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'llm.switch',
+          requestId: message.requestId,
+          ...(message.providerId === undefined ? {} : { providerId: message.providerId }),
+          ...(message.model === undefined ? {} : { model: message.model }),
+          ...(message.reasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: message.reasoningEffort }),
+        })
+        break
       default:
         break // 协议只增不改：未知类型忽略
     }
@@ -188,8 +254,13 @@ export class Hub {
       conn.send({ type: 'result', requestId, ok: false, error: 'E_CLIENT_OFFLINE' })
       return
     }
-    // 会话类命令顺带补记会话属主（create 之外的入口防御：input 直接打到未 create 的会话时）
-    if (cmd.kind === 'session.input' && !this.sessionOwners.has(cmd.sessionId)) {
+    // 会话类命令顺带补记会话属主（create 之外的入口防御：直接打到未 create 的会话时，
+    // input / activate / visibility / setPermission / setProject 同款处理）
+    if (
+      SESSION_OWNER_KINDS.has(cmd.kind) &&
+      'sessionId' in cmd &&
+      !this.sessionOwners.has(cmd.sessionId)
+    ) {
       this.sessionOwners.set(cmd.sessionId, { userId: conn.user.id, clientId })
     }
     const timer = setTimeout(() => {
@@ -247,9 +318,13 @@ export class Hub {
       }
       case 'session.event': {
         const owner = this.sessionOwners.get(message.sessionId)
-        if (owner === undefined) return
+        // 属主回落：客户端本地已存在的历史 center- 会话没有 sessionOwners 记录
+        // （网页端 session.list 枚举后仍要看它们的事件流），回落用客户端登记表的属主；
+        // 客户端不在登记表才丢弃（仍按「属主 + 管理员」规则路由）。
+        const ownerId = owner?.userId ?? this.deps.clients.get(clientId)?.ownerUserId
+        if (ownerId === undefined) return
         for (const web of this.webConns.values()) {
-          if (web.user.role !== 'admin' && web.user.id !== owner.userId) continue
+          if (web.user.role !== 'admin' && web.user.id !== ownerId) continue
           web.send({
             type: 'client.event',
             clientId,

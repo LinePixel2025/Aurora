@@ -13,13 +13,18 @@
 import { computed, reactive, ref } from 'vue'
 import type {
   AgentEvent,
+  CenterProjectOption,
+  CenterSessionSummary,
   CenterWebMessage,
   CenterWebServerMessage,
   ClientInfo,
   ClientStatus,
   ConfirmRequestPayload,
   JobSummary,
+  PermissionMode,
+  ReasoningEffort,
   SubagentSnapshot,
+  TokenUsage,
 } from '@aurora/shared'
 import {
   api,
@@ -79,12 +84,38 @@ export interface FileItem {
   at: string
 }
 
+/** 单会话的 token 用量聚合（usage 事件驱动，docs/06 §16.2 / docs/12 §10） */
+export interface SessionUsage {
+  /** 最新一轮用量（promptTokens 即该轮的上下文占用） */
+  latest: TokenUsage | null
+  /** 本会话逐轮累加的消耗 */
+  totals: { promptTokens: number; completionTokens: number; totalTokens: number }
+  /** 防重：已累加过的 (requestId, round) 组合（事件重放 / 迟到不把用量翻倍） */
+  counted: Set<string>
+}
+
+/** config.get 回传（脱敏）里网页端关心的 LLM 切片：模型切换与 contextWindow 占比展示用 */
+export interface RemoteLlmConfig {
+  /** 当前激活 provider id（对应 `llm.active`） */
+  active: string
+  providers: Record<
+    string,
+    { model: string; modelList: string[]; contextWindow: number; reasoningEffort: ReasoningEffort }
+  >
+}
+
 export interface ClientEntry {
   client: ClientInfo
-  /** 最近一次 client.status 快照（会话页展示模式 / 权限档） */
+  /** 最近一次 client.status 快照（会话页展示模式 / 权限档 / LLM 快照 llm） */
   status: ClientStatus | null
   /** 本页签内创建过的远程会话（时间序，只展示最近一个） */
   sessionIds: string[]
+  /** 该客户端的 center- 会话（session.list 结果 ∪ 本页签新建占位，updatedAt 倒序） */
+  remoteSessions: CenterSessionSummary[]
+  /** 每会话的 token 用量聚合（键 = sessionId；事件先到、会话未见也照常累计） */
+  usageBySession: Map<string, SessionUsage>
+  /** 最近一次 config.get（脱敏）解析出的 LLM 配置切片；未拉取 / 失败为 null */
+  remoteLlm: RemoteLlmConfig | null
   /** 该客户端发来的文件（新的在前，内存持有） */
   files: FileItem[]
 }
@@ -192,6 +223,8 @@ function handleServerMessage(message: CenterWebServerMessage): void {
       replaceClients(message.clients)
       break
     case 'client.status': {
+      // llm 快照（activeProviderId / model / reasoningEffort）随 ClientStatus 一起进来，
+      // 存在 entry.status 上即可（SessionListPanel / SessionView 直接读）
       const entry = state.clients.get(message.clientId)
       if (entry) entry.status = message.status
       break
@@ -245,7 +278,16 @@ function replaceClients(list: ClientInfo[]): void {
     seen.add(info.clientId)
     const entry = state.clients.get(info.clientId)
     if (entry) entry.client = info
-    else state.clients.set(info.clientId, { client: info, status: null, sessionIds: [], files: [] })
+    else
+      state.clients.set(info.clientId, {
+        client: info,
+        status: null,
+        sessionIds: [],
+        remoteSessions: [],
+        usageBySession: new Map(),
+        remoteLlm: null,
+        files: [],
+      })
   }
   for (const clientId of [...state.clients.keys()]) {
     if (!seen.has(clientId)) state.clients.delete(clientId)
@@ -286,6 +328,12 @@ export function summarizeInput(input: unknown): string {
 }
 
 function applyEvent(clientId: string, sessionId: string, event: AgentEvent): void {
+  // usage 事件独立于消息流：会话未见（历史 center- 会话事件回落）也照常累计
+  if (event.type === 'usage') {
+    const entry = state.clients.get(clientId)
+    if (entry) applyUsage(entry, sessionId, event)
+    return
+  }
   const session = state.sessions.get(sessionKey(clientId, sessionId))
   if (!session) return // 未见过的会话（他端创建 / 页面刷新后）不渲染
   switch (event.type) {
@@ -377,8 +425,44 @@ function applyEvent(clientId: string, sessionId: string, event: AgentEvent): voi
       break
     }
     default:
-      // queued / usage / 未知类型：不渲染（协议只增不改）
+      // queued / 未知类型：不渲染（协议只增不改）
       break
+  }
+}
+
+/**
+ * token 用量聚合（对齐桌面端 useChat 的防重思路，docs/06 §16.2）：
+ * - `latest` 直接覆盖（promptTokens 就是该轮的上下文占用）；
+ * - `totals` 逐轮累加，但同一 (requestId, round) 只累加一次 ——
+ *   事件重放 / 迟到事件不该把用量翻倍（round 会在新一轮请求里重新从小数起，
+ *   所以键必须带 requestId 而不只是 round）。
+ */
+function applyUsage(
+  entry: ClientEntry,
+  sessionId: string,
+  event: Extract<AgentEvent, { type: 'usage' }>,
+): void {
+  let usage = entry.usageBySession.get(sessionId)
+  if (!usage) {
+    usage = {
+      latest: null,
+      totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      counted: new Set<string>(),
+    }
+    entry.usageBySession.set(sessionId, usage)
+  }
+  usage.latest = event.usage
+  const key = `${event.requestId}#${event.round}`
+  if (usage.counted.has(key)) return
+  usage.counted.add(key)
+  usage.totals = {
+    promptTokens: usage.totals.promptTokens + event.usage.promptTokens,
+    completionTokens: usage.totals.completionTokens + event.usage.completionTokens,
+    totalTokens: usage.totals.totalTokens + event.usage.totalTokens,
+  }
+  if (usage.counted.size > 200) {
+    // 防泄漏：只留最近 200 轮的防重键（正常远小于此；超限只影响极端重放场景）
+    usage.counted = new Set([...usage.counted].slice(-200))
   }
 }
 
@@ -408,7 +492,198 @@ export async function startSession(clientId: string): Promise<void> {
   }
   state.sessions.set(sessionKey(clientId, data.sessionId), session)
   entry?.sessionIds.push(data.sessionId)
+  // 会话列表合并：本页签新建的会话若还没在 session.list 结果里，先插占位条目
+  //（title 用「远程会话」，下次 listSessions 以真实数据覆盖）
+  if (entry && !entry.remoteSessions.some((s) => s.sessionId === data.sessionId)) {
+    mergeRemoteSessions(entry, [
+      { sessionId: data.sessionId, title: '远程会话', updatedAt: new Date().toISOString() },
+    ])
+  }
   state.activeSessionKey = sessionKey(clientId, data.sessionId)
+}
+
+/** 打开某个远程会话（含 session.list 拉回的历史会话）：无本地会话态时先建空壳再切过去 */
+export function openRemoteSession(clientId: string, sessionId: string): void {
+  const key = sessionKey(clientId, sessionId)
+  if (!state.sessions.has(key)) {
+    state.sessions.set(key, {
+      clientId,
+      sessionId,
+      items: [],
+      agentRequestId: null,
+      pending: false,
+    })
+  }
+  state.activeSessionKey = key
+}
+
+// ───────────────────────── 远程会话管理（docs/12 §6.3） ─────────────────────────
+
+/** session.list 结果 ∪ 已有列表（含本页签占位），按 updatedAt 倒序 */
+function mergeRemoteSessions(entry: ClientEntry, list: CenterSessionSummary[]): void {
+  const merged = new Map<string, CenterSessionSummary>()
+  for (const item of entry.remoteSessions) merged.set(item.sessionId, item)
+  for (const item of list) merged.set(item.sessionId, item)
+  entry.remoteSessions = [...merged.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+}
+
+/** 拉取客户端的 center- 会话列表并合并进本地状态 */
+export async function listSessions(clientId: string): Promise<CenterSessionSummary[]> {
+  const data = await command<CenterSessionSummary[]>({
+    type: 'session.list',
+    requestId: nextRequestId(),
+    clientId,
+  })
+  const entry = state.clients.get(clientId)
+  if (entry && Array.isArray(data)) mergeRemoteSessions(entry, data)
+  return Array.isArray(data) ? data : []
+}
+
+/** 让客户端主界面切到指定会话 */
+export async function activateSession(clientId: string, sessionId: string): Promise<void> {
+  await command({
+    type: 'session.activate',
+    requestId: nextRequestId(),
+    clientId,
+    sessionId,
+  })
+}
+
+/** 开关会话在客户端左栏的可见性（缺省可见；隐藏仍可远程输入） */
+export async function setSessionVisibility(
+  clientId: string,
+  sessionId: string,
+  visible: boolean,
+): Promise<void> {
+  await command({
+    type: 'session.visibility',
+    requestId: nextRequestId(),
+    clientId,
+    sessionId,
+    visible,
+  })
+  // 回执成功后再落本地视图状态（失败时组件侧会重新拉列表对齐）
+  const summary = state.clients.get(clientId)?.remoteSessions.find((s) => s.sessionId === sessionId)
+  if (summary) summary.centerVisible = visible
+}
+
+/** 会话级权限档覆盖（不动全局 agent.permissionMode；「跟随全局」无清除命令，见 SessionListPanel） */
+export async function setSessionPermission(
+  clientId: string,
+  sessionId: string,
+  permissionMode: PermissionMode,
+): Promise<void> {
+  await command({
+    type: 'session.setPermission',
+    requestId: nextRequestId(),
+    clientId,
+    sessionId,
+    permissionMode,
+  })
+  const summary = state.clients.get(clientId)?.remoteSessions.find((s) => s.sessionId === sessionId)
+  if (summary) summary.permissionMode = permissionMode
+}
+
+/** 会话绑定项目（'' = 清除绑定） */
+export async function setSessionProject(
+  clientId: string,
+  sessionId: string,
+  projectId: string,
+): Promise<void> {
+  await command({
+    type: 'session.setProject',
+    requestId: nextRequestId(),
+    clientId,
+    sessionId,
+    projectId,
+  })
+  const summary = state.clients.get(clientId)?.remoteSessions.find((s) => s.sessionId === sessionId)
+  if (summary) summary.projectId = projectId
+}
+
+/** 客户端项目选项（绑定下拉用） */
+export async function listProjects(clientId: string): Promise<CenterProjectOption[]> {
+  const data = await command<CenterProjectOption[]>({
+    type: 'project.list',
+    requestId: nextRequestId(),
+    clientId,
+  })
+  return Array.isArray(data) ? data : []
+}
+
+/**
+ * 远程切模型 / 思考等级（专用命令，不走 config.update 白名单，docs/12 §6.3）。
+ * 成功后乐观更新本地 llm 快照（client.status 随后也会推新值兜底）。
+ */
+export async function switchLlm(
+  clientId: string,
+  patch: { providerId?: string; model?: string; reasoningEffort?: ReasoningEffort },
+): Promise<void> {
+  await command({
+    type: 'llm.switch',
+    requestId: nextRequestId(),
+    clientId,
+    ...patch,
+  })
+  const entry = state.clients.get(clientId)
+  const llm = entry?.status?.llm
+  if (!entry || !llm) return
+  if (patch.providerId) {
+    llm.activeProviderId = patch.providerId
+    // 切 provider 时把该 provider 的默认模型 / 思考等级一并带上，避免展示串位
+    const provider = entry.remoteLlm?.providers[patch.providerId]
+    if (provider) {
+      llm.model = patch.model ?? provider.model
+      llm.reasoningEffort = patch.reasoningEffort ?? provider.reasoningEffort
+    }
+  }
+  if (patch.model) llm.model = patch.model
+  if (patch.reasoningEffort) llm.reasoningEffort = patch.reasoningEffort
+}
+
+/** config.get（脱敏全量配置）→ 解析出网页端关心的 LLM 切片并缓存到客户端条目 */
+export async function fetchRemoteConfig(clientId: string): Promise<RemoteLlmConfig | null> {
+  const data = await command<unknown>({
+    type: 'config.get',
+    requestId: nextRequestId(),
+    clientId,
+  })
+  const llm = extractRemoteLlm(data)
+  const entry = state.clients.get(clientId)
+  if (entry) entry.remoteLlm = llm
+  return llm
+}
+
+function extractRemoteLlm(data: unknown): RemoteLlmConfig | null {
+  if (typeof data !== 'object' || data === null) return null
+  const llm = (data as { llm?: unknown }).llm
+  if (typeof llm !== 'object' || llm === null) return null
+  const active = (llm as { active?: unknown }).active
+  const providers = (llm as { providers?: unknown }).providers
+  const result: RemoteLlmConfig = {
+    active: typeof active === 'string' ? active : '',
+    providers: {},
+  }
+  if (typeof providers !== 'object' || providers === null) return result
+  for (const [id, raw] of Object.entries(providers as Record<string, unknown>)) {
+    if (typeof raw !== 'object' || raw === null) continue
+    const provider = raw as Record<string, unknown>
+    const modelList = Array.isArray(provider.modelList)
+      ? provider.modelList.filter((m): m is string => typeof m === 'string')
+      : []
+    result.providers[id] = {
+      model: typeof provider.model === 'string' ? provider.model : '',
+      modelList,
+      contextWindow: typeof provider.contextWindow === 'number' ? provider.contextWindow : 0,
+      reasoningEffort:
+        provider.reasoningEffort === 'low' ||
+        provider.reasoningEffort === 'medium' ||
+        provider.reasoningEffort === 'high'
+          ? provider.reasoningEffort
+          : 'auto',
+    }
+  }
+  return result
 }
 
 /** 发送输入：乐观插入用户气泡（后续 user-message 事件按内容去重） */

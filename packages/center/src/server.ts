@@ -265,6 +265,8 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         allowRemoteConfig: hello.capabilities.remoteConfig,
         allowFileTransfer: hello.capabilities.fileTransfer,
       },
+      // 同 agent：占位快照，客户端连上后的第一条 `status` 会整体覆盖（含生效 LLM）
+      llm: { activeProviderId: '', model: '', reasoningEffort: 'auto' },
     }
   }
 

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import ClientList from '../components/ClientList.vue'
+import GlobalConfirmBar from '../components/GlobalConfirmBar.vue'
 import RemoteControlPanel from '../components/RemoteControlPanel.vue'
+import SessionListPanel from '../components/SessionListPanel.vue'
 import SessionView from '../components/SessionView.vue'
 import {
   activeSession,
@@ -32,52 +34,67 @@ async function create(): Promise<void> {
 </script>
 
 <template>
-  <div class="console">
-    <ClientList
-      :clients="clientsSorted"
-      :selected-id="state.selectedClientId"
-      @select="selectClient"
-    />
+  <div class="console-root">
+    <!-- 全局待批复确认卡栏：含本地会话来源的请求（无会话视图可去，只能在这里批复） -->
+    <GlobalConfirmBar />
 
-    <section class="session-pane">
-      <RemoteControlPanel :entry="selectedEntry" />
-      <SessionView
-        v-if="activeSession && selectedEntry"
-        :session="activeSession"
-        :entry="selectedEntry"
-        @new-session="create"
+    <div class="console">
+      <ClientList
+        :clients="clientsSorted"
+        :selected-id="state.selectedClientId"
+        @select="selectClient"
       />
-      <div v-else-if="selectedEntry" class="card empty-card">
-        <h2 class="empty-title">{{ selectedEntry.client.name }}</h2>
-        <p class="text-2 empty-meta">
-          {{ platformLabel(selectedEntry.client.platform) }} · v{{ selectedEntry.client.version }} ·
-          最近活跃 {{ formatTime(selectedEntry.client.lastSeenAt) }}
-        </p>
-        <p v-if="!selectedEntry.client.online" class="text-2">客户端当前离线，无法发起会话</p>
-        <p
-          v-else-if="selectedEntry.status && !selectedEntry.status.center.allowRemoteSession"
-          class="text-2"
-        >
-          该客户端未开启「远程会话」（center.allowRemoteSession），无法在此发起对话
-        </p>
-        <p v-if="createError" class="form-error">{{ createError }}</p>
-        <button
-          class="btn btn-primary"
-          type="button"
-          :disabled="!selectedEntry.client.online || creating"
-          @click="create"
-        >
-          {{ creating ? '创建中…' : '新建会话' }}
-        </button>
-      </div>
-      <div v-else class="card empty-card">
-        <p class="text-2">从列表中选择一个客户端开始</p>
-      </div>
-    </section>
+
+      <section class="session-pane">
+        <RemoteControlPanel :entry="selectedEntry" />
+        <SessionListPanel :entry="selectedEntry" />
+        <SessionView
+          v-if="activeSession && selectedEntry"
+          :session="activeSession"
+          :entry="selectedEntry"
+          @new-session="create"
+        />
+        <div v-else-if="selectedEntry" class="card empty-card">
+          <h2 class="empty-title">{{ selectedEntry.client.name }}</h2>
+          <p class="text-2 empty-meta">
+            {{ platformLabel(selectedEntry.client.platform) }} · v{{
+              selectedEntry.client.version
+            }}
+            · 最近活跃 {{ formatTime(selectedEntry.client.lastSeenAt) }}
+          </p>
+          <p v-if="!selectedEntry.client.online" class="text-2">客户端当前离线，无法发起会话</p>
+          <p
+            v-else-if="selectedEntry.status && !selectedEntry.status.center.allowRemoteSession"
+            class="text-2"
+          >
+            该客户端未开启「远程会话」（center.allowRemoteSession），无法在此发起对话
+          </p>
+          <p v-if="createError" class="form-error">{{ createError }}</p>
+          <button
+            class="btn btn-primary"
+            type="button"
+            :disabled="!selectedEntry.client.online || creating"
+            @click="create"
+          >
+            {{ creating ? '创建中…' : '新建会话' }}
+          </button>
+        </div>
+        <div v-else class="card empty-card">
+          <p class="text-2">从列表中选择一个客户端开始</p>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* 外层纵向：全局确认栏在顶、客户端 + 会话布局在下 */
+.console-root {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .console {
   display: flex;
   gap: 16px;

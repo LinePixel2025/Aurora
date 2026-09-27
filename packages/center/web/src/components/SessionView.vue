@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import ToolCard from './ToolCard.vue'
 import { fileUrl } from '../api'
 import {
+  formatBytes,
   formatRemaining,
   jobStatusLabel,
   modeLabel,
@@ -21,6 +22,7 @@ import {
   type ClientEntry,
   type ConfirmEntry,
   type SessionState,
+  type SessionUsage,
 } from '../store'
 
 /**
@@ -57,6 +59,27 @@ const sessionConfirms = computed<ConfirmEntry[]>(() =>
 function countdown(expiresAt: string): string {
   return formatRemaining(remainingMs(expiresAt, now.value))
 }
+
+// ───────────────────────── Token 用量（docs/12 §10） ─────────────────────────
+
+/** 该会话的 usage 聚合（usage 事件驱动，store 层防重累加） */
+const usage = computed<SessionUsage | null>(
+  () => props.entry.usageBySession.get(props.session.sessionId) ?? null,
+)
+
+/** 激活 provider 的上下文窗口（config.get 脱敏配置；0 = 未知，不显示占比） */
+const ctxWindow = computed<number>(() => {
+  const activeId = props.entry.status?.llm?.activeProviderId
+  if (!activeId) return 0
+  return props.entry.remoteLlm?.providers[activeId]?.contextWindow ?? 0
+})
+
+/** 最新轮上下文占用比例（promptTokens / contextWindow） */
+const usagePercent = computed<number>(() => {
+  const prompt = usage.value?.latest?.promptTokens ?? 0
+  if (!ctxWindow.value || !prompt) return 0
+  return Math.min(100, Math.round((prompt / ctxWindow.value) * 100))
+})
 
 /** 没有任何助手输出时才显示整行「生成中」；有了增量就交给消息内光标 */
 const showLoading = computed(
@@ -122,6 +145,25 @@ watch(
       </div>
       <button class="btn btn-ghost btn-sm" type="button" @click="emit('newSession')">新会话</button>
     </header>
+
+    <!-- Token 用量条：最新轮 prompt/completion、会话累计、占 contextWindow 比例（未知分母不显示占比） -->
+    <div
+      v-if="usage && usage.totals.totalTokens > 0"
+      class="usage-strip"
+      data-field="session-usage"
+    >
+      <span class="usage-item">
+        本轮 <strong>{{ usage.latest?.promptTokens ?? 0 }}</strong> +
+        <strong>{{ usage.latest?.completionTokens ?? 0 }}</strong> tok
+      </span>
+      <span class="usage-item"
+        >会话累计 <strong>{{ usage.totals.totalTokens }}</strong> tok</span
+      >
+      <span v-if="usagePercent > 0" class="usage-item">
+        上下文 <strong>{{ usagePercent }}%</strong>
+        <span class="text-2">（{{ usage.latest?.promptTokens }} / {{ ctxWindow }}）</span>
+      </span>
+    </div>
 
     <!-- 敏感工具确认卡（本会话）：批准 / 拒绝经 confirm.resolve 送回客户端 -->
     <div v-if="sessionConfirms.length > 0 || confirmNotice" class="confirm-strip">
@@ -307,6 +349,27 @@ watch(
   overflow-y: auto;
   padding: 4px 24px 16px;
   min-height: 0;
+}
+
+/* Token 用量条：贴在头部下方的一行小字 */
+.usage-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding: 0 20px 10px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.usage-strip strong {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-item {
+  white-space: nowrap;
 }
 
 /* 用户气泡：右侧、主色 */
@@ -583,6 +646,11 @@ watch(
 @media (max-width: 720px) {
   .session-head {
     padding: 12px 14px;
+  }
+
+  .usage-strip {
+    padding: 0 14px 8px;
+    gap: 4px 12px;
   }
 
   .msg-list {
