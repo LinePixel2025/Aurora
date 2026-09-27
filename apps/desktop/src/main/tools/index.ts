@@ -46,7 +46,6 @@ import {
   createTerminalTool,
   createTodoTools,
   createWebFetchTool,
-  effectiveWorkspaceDir,
   TODO_WRITE_TOOL_NAME,
   createCenterSendFileTool,
   createCenterStatusTool,
@@ -92,11 +91,22 @@ export interface ComputerToolsDeps {
   /** 用户主目录（三级回落的最后一级：无项目且未配 `agent.tools.workspaceDir` 时才用到） */
   homeDir: () => string
   /**
-   * 当前项目根（`resolveProject().root`，无项目时 undefined）。
-   * 缺省工作目录 / 搜索根按 docs/06 §5.1 三级回落：项目根 > `agent.tools.workspaceDir` > `homeDir`
-   * （`effectiveWorkspaceDir` 是唯一口径，与 `agent-host.ts` 的 `auto` 档免确认判定同源）。
+   * 全局当前项目根（`resolveProject().root`，无项目时 undefined）。
+   * 会话级项目（v17）引入后它退居**回落位**：会话绑定项目失效 / 未绑定时才用
+   * （回落链由 `sessionWorkspaceDir` 与端口 guard 内部承担，见 `session-project.ts`）。
+   * 保留它主要是给 `sync()` 的日志与「无会话上下文」场景一个明确的取值源。
    */
   projectRoot: () => string | undefined
+  /**
+   * 按会话解析**生效工作目录**（docs/06 §5.1 唯一口径，`session-project.ts` 的实现）：
+   * 会话绑定项目 > 全局当前项目 > `agent.tools.workspaceDir` > `homeDir`。
+   *
+   * 为什么是按会话的取值器而不是 sync() 里算好的字符串：工具执行时才知道 `ctx.sessionId`，
+   * 而两个会话可以绑定不同项目 —— 缺省 cwd / 搜索根必须**每次执行即时解析**
+   * （与 `agent.loop` 上限的 getter 注入同款套路，杜绝「改绑定要重启」的死值）。
+   * `sessionId` 传 `undefined` 时按全局回落链解析（sync() 的日志用它）。
+   */
+  sessionWorkspaceDir: (sessionId: string | undefined) => string
   run: CommandRunner
   files: FilePort
   open: OpenPort
@@ -160,13 +170,13 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
         return []
       }
 
-      // 缺省工作目录 / 搜索根的**唯一口径**（docs/06 §5.1）：三级回落
-      // 当前项目根 > `agent.tools.workspaceDir` > 用户主目录。
-      // 项目切换 / workspaceDir 改动都触发 `settings:changed` → 本 `sync()` 重建，热生效。
-      // 项目根只取一次（`resolveProject` 在 current 指向不存在 id 时会 warn，
-      // 读两次就落两条相同日志）；下面的 sync 日志字段复用同一个值。
+      // 缺省工作目录 / 搜索根的**唯一口径**（docs/06 §5.1）：回落链
+      // 会话绑定项目 > 当前项目根 > `agent.tools.workspaceDir` > 用户主目录。
+      // sync() 在启动 / `settings:changed` 时只取一次**全局链**（无会话上下文）做日志；
+      // 工具实例里的缺省值是**按会话的取值器**（`sessionWorkspaceDir`），每次执行即时解析 ——
+      // 两个会话绑定了不同项目时各用各的根，改绑定无需重建工具。
       const projectRoot = deps.projectRoot()
-      const workspaceDir = effectiveWorkspaceDir(settings, projectRoot, deps.homeDir())
+      const workspaceDir = deps.sessionWorkspaceDir(undefined)
 
       // 只读档：`run_command` 能执行任意命令（写盘 / 改注册表 / 起进程 / 装软件），
       // 是「有系统副作用」的典型，因此**整个分支跳过**——不在只读清单里的工具
@@ -177,7 +187,7 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
             run: deps.run,
             timeoutMs: cfg.terminal.timeoutMs,
             maxOutputChars: cfg.terminal.maxOutputChars,
-            defaultCwd: workspaceDir,
+            defaultCwd: (sessionId) => deps.sessionWorkspaceDir(sessionId),
           }),
         )
       }
@@ -209,12 +219,12 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
 
       // 搜索工具（grep / glob，docs/06 §11.5）**在只读档保留**：两者只读文件内容与目录名，
       // 不落盘、不起进程 —— 正是只读档该留下的能力。默认搜索根与 `run_command` 的缺省 cwd
-      // 是同一个 `workspaceDir`（上面三级回落的产物：配了项目即项目根）。
+      // 是同一个**按会话解析**的生效工作目录（上面回落链的产物：配了项目即项目根）。
       if (cfg.search.enabled) {
         for (const tool of createSearchTools({
           files: deps.files,
           maxResults: cfg.search.maxResults,
-          defaultRoot: workspaceDir,
+          defaultRoot: (sessionId) => deps.sessionWorkspaceDir(sessionId),
         })) {
           deps.tools.register(tool)
         }

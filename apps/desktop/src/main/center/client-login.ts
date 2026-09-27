@@ -1,6 +1,6 @@
 /**
  * Aurora Center 客户端账号登录（docs/12 §3/§7，v0.2.1）：把设置页的
- * 服务器地址 + 账号 + 口令换成客户端令牌（`POST /api/client/login`）。
+ * 服务器地址 + 账号 + 密码换成客户端令牌（`POST /api/client/login`）。
  *
  * 本文件保持纯 Node（不 import electron）：`fetchImpl` 由主进程注入
  * （生产 = `main/net.ts` 的 `netFetch`，走 Chromium 网络栈受代理设置约束；
@@ -16,8 +16,7 @@ export interface CenterLoginInput {
 }
 
 export type CenterLoginOutcome =
-  | { ok: true; token: string; account: string }
-  | { ok: false; message: string }
+  { ok: true; token: string; account: string } | { ok: false; message: string }
 
 /** 登录请求整体超时：Center 不可达时快速失败，别让设置页转圈 30 秒 */
 const LOGIN_TIMEOUT_MS = 15_000
@@ -48,7 +47,7 @@ export interface CenterLoginDeps {
 
 /**
  * 调 Center 的 `/api/client/login`：成功返回客户端令牌明文（调用方负责立即写入
- * 凭据链路）；失败返回用户可读的中文原因。口令只出现在请求体里，不进日志。
+ * 凭据链路）；失败返回用户可读的中文原因。密码只出现在请求体里，不进日志。
  */
 export async function requestClientLogin(
   input: CenterLoginInput,

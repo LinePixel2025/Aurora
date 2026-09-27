@@ -428,7 +428,7 @@ describe('createConfirmTool 的三档权限判定', () => {
     const confirm = createConfirmTool({
       proactive,
       mode: () => 'readonly',
-      projectRoot: () => root,
+      projectRoot: async () => root,
       logger,
     })
 
@@ -445,7 +445,7 @@ describe('createConfirmTool 的三档权限判定', () => {
     const confirm = createConfirmTool({
       proactive,
       mode: () => 'auto',
-      projectRoot: () => root,
+      projectRoot: async () => root,
       logger,
     })
 
@@ -465,7 +465,7 @@ describe('createConfirmTool 的三档权限判定', () => {
     const confirm = createConfirmTool({
       proactive,
       mode: () => 'auto',
-      projectRoot: () => root,
+      projectRoot: async () => root,
     })
 
     // 兄弟目录（前缀相同但不在根内）与 `..` 穿越都必须回到确认卡片
@@ -483,7 +483,7 @@ describe('createConfirmTool 的三档权限判定', () => {
     const confirm = createConfirmTool({
       proactive,
       mode: () => 'auto',
-      projectRoot: () => root,
+      projectRoot: async () => root,
     })
 
     // cwd 在根内、命令是相对命令 → 免确认（机器放行，返回 'machine'）
@@ -507,7 +507,7 @@ describe('createConfirmTool 的三档权限判定', () => {
     const confirm = createConfirmTool({
       proactive,
       mode: () => 'auto',
-      projectRoot: () => root,
+      projectRoot: async () => root,
       logger,
     })
 
@@ -523,7 +523,7 @@ describe('createConfirmTool 的三档权限判定', () => {
     const confirm = createConfirmTool({
       proactive,
       mode: () => 'confirm',
-      projectRoot: () => root,
+      projectRoot: async () => root,
     })
 
     // 即便路径就在项目根内，confirm 档也要问

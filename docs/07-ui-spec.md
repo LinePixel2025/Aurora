@@ -143,7 +143,12 @@
     `context.classisland-current` / `context.classisland-next` 两行、无数据时
     `context.classisland-empty`）+ 今日课程卡（`data-field="context.lesson-card"`）+
     分类流水（紧凑）+ 感知文件夹打开；work = 工作目录卡（打开 + 前往设置）+ 办公提示卡；
-    通用 = **当前项目卡（v13 新增，`data-field="context.project-card"`；无当前项目时整卡不渲染）**
+    通用 = **会话项目卡（v17 新增，`data-field="context.session-project-card"`；无可绑定项目
+    或拿不到会话 id 时整卡不渲染；内含下拉 `data-field="context.session-project"`）**
+    —— 本会话绑定 `projects.list` 里的一项（选择即调 `chat:setSessionProject`，空串 =
+    清除绑定回显「未指定（跟随全局）」），未绑定时缺省目录 / 项目边界 / AGENTS.md / auto 档
+    边界回落全局当前项目（`06 §5.1`）
+    + **当前项目卡（v13 新增，`data-field="context.project-card"`；无当前项目时整卡不渲染）**
     + **文件备份卡（v14 新增，`data-field="chat.snapshot-card"`；没有快照时整卡仍渲染、显示空态文案）**
     + 系统状态卡（时间 / 电量 / 网络 / 前台应用）。**非当前模式的功能一律不渲染**。
     课堂状态卡的数据来自桥接的快照（`05 §3.4 v3`）：上课中才显示当前科目与时段，

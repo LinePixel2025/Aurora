@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ToolRegistry,
+  effectiveWorkspaceDir,
   type AgentProviderFactory,
   type ClipboardPort,
   type CommandRunner,
@@ -192,6 +193,8 @@ function setup(
     logger: createMemoryLogger(),
     homeDir: () => HOME,
     projectRoot,
+    // 与生产装配同一条回落链（会话级解析器在 session-project.ts；本 helper 不带会话绑定）
+    sessionWorkspaceDir: () => effectiveWorkspaceDir(settings, projectRoot(), HOME),
     run: runner,
     files,
     open: fakeOpenPort(),
@@ -217,6 +220,30 @@ describe('registerComputerTools', () => {
     registry.sync()
     await tools.get('run_command')!.execute({ command: 'echo hi' }, { sessionId: 't' })
     expect((runner.calls[0] as { cwd?: string }).cwd).toBe(HOME)
+  })
+
+  it('会话绑定项目时缺省 cwd 按会话解析（两个会话各用各的根，docs/06 §5.1）', async () => {
+    const runner = fakeRunner()
+    const tools = new ToolRegistry()
+    const roots: Record<string, string> = { s1: 'D:\\proj-a', s2: 'D:\\proj-b' }
+    const registry = registerComputerTools({
+      tools,
+      getSettings: () => makeSettings(),
+      logger: createMemoryLogger(),
+      homeDir: () => HOME,
+      projectRoot: () => undefined,
+      // 与生产装配同款：按会话即时解析（getter 注入，杜绝「改绑定要重建工具」）
+      sessionWorkspaceDir: (sessionId) =>
+        (sessionId !== undefined ? roots[sessionId] : undefined) ?? HOME,
+      run: runner,
+      files: fakeFilePort(),
+      open: fakeOpenPort(),
+    })
+    registry.sync()
+    await tools.get('run_command')!.execute({ command: 'echo hi' }, { sessionId: 's1' })
+    await tools.get('run_command')!.execute({ command: 'echo hi' }, { sessionId: 's2' })
+    expect((runner.calls[0] as { cwd?: string }).cwd).toBe('D:\\proj-a')
+    expect((runner.calls[1] as { cwd?: string }).cwd).toBe('D:\\proj-b')
   })
 
   it('总开关关闭时一个工具都不注册，且不影响其它工具（use_skill 仍在）', () => {
@@ -423,6 +450,7 @@ describe('registerSettingsTool', () => {
       logger: createMemoryLogger(),
       homeDir: () => HOME,
       projectRoot: () => undefined,
+      sessionWorkspaceDir: () => HOME,
       run: fakeRunner(),
       files: fakeFilePort(),
       open: fakeOpenPort(),
@@ -498,6 +526,7 @@ describe('registerExtensionTools', () => {
       logger: createMemoryLogger(),
       homeDir: () => HOME,
       projectRoot: () => undefined,
+      sessionWorkspaceDir: () => HOME,
       run: fakeRunner(),
       files: fakeFilePort(),
       open: fakeOpenPort(),
@@ -655,6 +684,7 @@ describe('readonly 档（只读 = 不进工具表）', () => {
       logger: createMemoryLogger(),
       homeDir: () => HOME,
       projectRoot: () => undefined,
+      sessionWorkspaceDir: () => HOME,
       run: fakeRunner(),
       files: fakeFilePort(),
       open: fakeOpenPort(),

@@ -20,7 +20,7 @@
  * 四种拒绝（找不到 / 多处命中 / 空 `oldString` / 新旧相同）与三种行尾拒绝
  * （文件含孤立回车 / `newString` 含孤立回车 / 混合行尾）全部返回 `isError` 且**不写盘**。
  */
-import { MAX_EDIT_BYTES, describeSnapshot } from './files.js'
+import { MAX_EDIT_BYTES, describeSnapshot, outsideGuard } from './files.js'
 import type { FilePort, ReadWholeTextResult } from './files.js'
 import type { ToolDefinition, ToolResult } from './registry.js'
 
@@ -135,12 +135,9 @@ export function createEditTool(options: EditToolOptions): ToolDefinition {
       let read: ReadWholeTextResult
       try {
         // 已获用户批准（确认卡放行 / 免确认命中 / auto 档判定根内）时带上越界放行标记；
-        // 未批准时不带 —— 缺省即"没批准"，端口照旧按越界拦截
-        read = await options.files.readWholeText(
-          path,
-          maxEditBytes,
-          ctx.approvedByUser === true ? { allowOutside: true } : {},
-        )
+        // 未批准时不带 —— 缺省即"没批准"，端口照旧按越界拦截。sessionId 同步透传：
+        // 端口的项目根边界按会话解析（docs/06 §5.1）。
+        read = await options.files.readWholeText(path, maxEditBytes, outsideGuard(ctx))
       } catch (error) {
         // 二进制（含 NUL）与目录由端口抛错，这里折成 isError，不冒泡进工具循环
         return failure(`读取文件失败：${describeError(error)}`, '读取文件失败')
@@ -208,7 +205,7 @@ export function createEditTool(options: EditToolOptions): ToolDefinition {
 
       try {
         const written = await options.files.writeText(path, out, 'overwrite', {
-          ...(ctx.approvedByUser === true ? { allowOutside: true } : {}),
+          ...outsideGuard(ctx),
           // 写前快照（docs/06 §11.8）：与 `write_file` 共用同一条通道，来源标记为 edit_file
           ...(ctx.sessionId === undefined || ctx.sessionId === ''
             ? {}

@@ -595,3 +595,92 @@ describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 
     expect(metaOf(fs, 'main')['archivedAt']).toBe('2025-01-01T00:00:00.000Z')
   })
 })
+
+describe('SessionStore · 会话绑定项目（chat:setSessionProject，docs/06 §5.1）', () => {
+  it('setProject 写盘可往返：重启后 projectOf / summaries 仍带 projectId', async () => {
+    const { store, fs } = setup()
+    await store.append('quick', { role: 'user', content: 'hi' })
+    await store.setProject('quick', 'proj-1')
+
+    // setProject 是 await 写盘的（不靠 300ms 防抖），因此此刻盘上已是最终内容
+    expect(metaOf(fs, 'quick')['projectId']).toBe('proj-1')
+    expect(store.projectOf('quick')).toBe('proj-1')
+
+    // 模拟重启：同一份磁盘内容、新的 store 实例
+    const reloaded = new SessionStore({
+      dir: SESSION_DIR,
+      fs,
+      writeDebounceMs: 0,
+      maxMessages: 5,
+    })
+    expect(await reloaded.projectIdOf('quick')).toBe('proj-1')
+    expect((await reloaded.summaries()).find((item) => item.id === 'quick')?.projectId).toBe(
+      'proj-1',
+    )
+    expect(await reloaded.get('quick')).toHaveLength(1)
+  })
+
+  it('空串清除绑定且不留空键；幂等（同值 / 双重清除）不写盘', async () => {
+    const { store, fs } = setup()
+    await store.setProject('quick', 'proj-1')
+    const afterBind = fs.writeLog.length
+
+    // 同值幂等
+    await store.setProject('quick', 'proj-1')
+    expect(fs.writeLog.length).toBe(afterBind)
+
+    await store.setProject('quick', '')
+    const afterClear = fs.writeLog.length
+    const meta = metaOf(fs, 'quick')
+    expect('projectId' in meta).toBe(false)
+    expect(store.projectOf('quick')).toBeUndefined()
+
+    // 双重清除幂等：undefined 与 '' 都算「未绑定」，不算变更
+    await store.setProject('quick', '')
+    await store.setProject('quick', '   ')
+    expect(fs.writeLog.length).toBe(afterClear)
+  })
+
+  it('未绑定会话 projectOf / projectIdOf 返回 undefined，summaries 不含 projectId 键', async () => {
+    const { store } = setup()
+    await store.append('quick', { role: 'user', content: 'hi' })
+
+    expect(store.projectOf('quick')).toBeUndefined()
+    expect(await store.projectIdOf('quick')).toBeUndefined()
+    const summary = (await store.summaries()).find((item) => item.id === 'quick')
+    expect(summary?.projectId).toBeUndefined()
+    expect('projectId' in (summary ?? {})).toBe(false)
+  })
+
+  it('老文件（meta 无 projectId）宽容读出：视为未绑定，只读不重写', async () => {
+    const path = sessionFilePath(SESSION_DIR, 'main')
+    const { store, fs } = setup({
+      [path]: JSON.stringify({
+        version: 2,
+        sessionId: 'main',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '历史提问')],
+        meta: { archived: true },
+      }),
+    })
+
+    expect(await store.projectIdOf('main')).toBeUndefined()
+    expect(fs.writeLog).toHaveLength(0)
+    expect(readFile(fs, 'main')['version']).toBe(2)
+  })
+
+  it('绑定与归档共用同一份 meta：各改各的字段互不覆盖', async () => {
+    const { store, fs } = setup()
+    await store.append('quick', { role: 'user', content: 'hi' })
+    await store.setProject('quick', 'proj-1')
+    await store.setArchived('quick', true)
+
+    const meta = metaOf(fs, 'quick')
+    expect(meta['projectId']).toBe('proj-1')
+    expect(meta['archived']).toBe(true)
+
+    // 清除绑定不动归档
+    await store.setProject('quick', '')
+    expect(metaOf(fs, 'quick')['archived']).toBe(true)
+  })
+})

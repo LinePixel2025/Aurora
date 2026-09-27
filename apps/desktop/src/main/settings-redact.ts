@@ -29,7 +29,7 @@ export function redactSettings(settings: SettingsStoreLike, source: Settings): S
       draft['apiKeyEnc'] = ''
     }
   }
-  // Aurora Center 配对令牌（v16，docs/12 §7）：与 provider 密文同款 —— 折掉密文本体；
+  // Aurora Center 客户端令牌（v16，docs/12 §7）：与 provider 密文同款 —— 折掉密文本体；
   // 「是否已配置」由设置页走 `settings:hasSecret('center.token')` 单独查询。
   clone.center.tokenEnc = ''
   for (const server of clone.mcp.servers) {

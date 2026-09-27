@@ -131,6 +131,7 @@ const api: AuroraApi = {
     sessions: () => invoke(IPC.chat.sessions),
     newSession: () => invoke(IPC.chat.newSession),
     archiveSession: (request) => invoke(IPC.chat.archiveSession, request),
+    setSessionProject: (request) => invoke(IPC.chat.setSessionProject, request),
     jobs: (request) => invoke(IPC.chat.jobs, request),
     resumeJob: (request) => invoke(IPC.chat.resumeJob, request),
     cancelJob: (request) => invoke(IPC.chat.cancelJob, request),
@@ -164,6 +165,10 @@ const api: AuroraApi = {
   center: {
     status: () => invoke(IPC.center.status),
     login: (request) => invoke(IPC.center.login, request),
+    // 设备授权登录（docs/12 §4.3）：触发后立即回执，最终结果走独立推送通道
+    deviceLogin: (request) => invoke(IPC.center.deviceLogin, request),
+    onDeviceLoginResult: (listener) => subscribe(IPC.center.deviceLoginResult, listener),
+    deviceLoginCancel: () => invoke(IPC.center.deviceLoginCancel),
   },
 }
 

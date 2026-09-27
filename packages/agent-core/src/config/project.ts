@@ -51,6 +51,30 @@ export function resolveProject(
 }
 
 /**
+ * 按**任意项目 id**（不限于 `projects.current`）解析项目根（会话级项目，docs/06 §5.1）。
+ *
+ * 与 `resolveProject` 的差别只在条目定位：那边按 `projects.current` 找，这边按传入 id 找。
+ * 会话绑定（`sessions/<id>.json` 的 `meta.projectId`）指向的项目可能**已被删除**——
+ * 这是预期回落路径（会话级项目是可选的），因此这里**静默**返回 undefined、不记 warn：
+ * 解析发生在每次工具执行 / 确认判定上，逐次 warn 只会刷屏；需要排查时看装配层日志。
+ *
+ * - id 空白 → undefined（未绑定）
+ * - id 在 list 里找不到 → undefined（绑定已失效）
+ * - root 归一后为空白 → undefined（条目没有根）
+ */
+export function resolveProjectRootById(
+  settings: Pick<Settings, 'projects'>,
+  id: string | undefined,
+  options: { cwd: string; logger?: Logger },
+): string | undefined {
+  const trimmed = (id ?? '').trim()
+  if (trimmed === '') return undefined
+  const matched = settings.projects.list.find((entry) => entry.id === trimmed)
+  if (matched === undefined) return undefined
+  return normalizeRoot(matched.root, options.cwd)
+}
+
+/**
  * 把配置里的 root 归一成绝对路径；空白串返回 undefined（= 无项目）。
  *
  * 绝对 root 直接采用（`resolve` 对绝对路径只做 `.` / `..` / 分隔符归一，不拼接 cwd）；

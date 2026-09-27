@@ -101,6 +101,7 @@ const CHANNELS = {
     // 通道表与 shared 契约同构：新增通道必须两处同步（编译期双向断言会兜住）
     newSession: 'chat:newSession',
     archiveSession: 'chat:archiveSession',
+    setSessionProject: 'chat:setSessionProject',
     jobs: 'chat:jobs',
     resumeJob: 'chat:resumeJob',
     cancelJob: 'chat:cancelJob',
@@ -139,6 +140,10 @@ const CHANNELS = {
   center: {
     status: 'center:status',
     login: 'center:login',
+    // 设备授权登录（docs/12 §4.3）：与 shared 契约同构，编译期双向断言会兜住
+    deviceLogin: 'center:deviceLogin',
+    deviceLoginResult: 'center:deviceLoginResult',
+    deviceLoginCancel: 'center:deviceLoginCancel',
   },
 } as const
 

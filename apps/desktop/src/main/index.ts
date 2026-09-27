@@ -40,6 +40,7 @@ import {
 import type { AgentProviderFactory, SettingsToolPort, ToolDefinition } from '@aurora/agent-core'
 import {
   COMPUTER_TOOL_NAMES,
+  CENTER_SESSION_PREFIX,
   SettingsSchema,
   SettingsStore,
   nodeFileSystem,
@@ -48,6 +49,9 @@ import {
   err,
   ok,
   type CenterConnectionStatus,
+  type CenterDeviceLoginRequest,
+  type CenterDeviceLoginResult,
+  type CenterDeviceLoginStarted,
   type CenterLoginRequest,
   type CenterLoginResult,
   type Result,
@@ -89,8 +93,9 @@ import { ProactiveScheduler } from './proactive.js'
 import { PreClassReminder } from './pre-class-reminder.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
 import { HotkeyManager } from './hotkey.js'
-import { SessionBridge } from './center/session-bridge.js'
+import { SessionBridge, toConfirmRequest } from './center/session-bridge.js'
 import { CenterConnector } from './center/connector.js'
+import { DeviceLoginController, type DeviceLoginOutcome } from './center/device-login.js'
 import { requestClientLogin } from './center/client-login.js'
 import { uploadFileToCenter } from './center/ingest.js'
 import { applyWhitelistedPaths, buildClientStatus } from './center/remote-control.js'
@@ -151,6 +156,7 @@ import {
   type ExtensionToolsRegistry,
   type SettingsToolRegistry,
 } from './tools/index.js'
+import { createSessionProjectResolver } from './tools/session-project.js'
 import { createFileTodoPort, type FileTodoPort } from './tools/todo-port.js'
 import { createNetWebFetchPort } from './tools/web-fetch.js'
 import { createElectronClipboardPort } from './tools/clipboard.js'
@@ -368,6 +374,17 @@ let classIslandTools: ClassIslandToolsRegistry | undefined
 let centerConnector: CenterConnector | undefined
 let sessionBridge: SessionBridge | undefined
 let centerTools: { sync(): string[] } | undefined
+/**
+ * center- 会话确认卡 → Center 网页端的下发通道（docs/12 §5.1）。
+ * 连接器 open 后由 bindSessionEmit 绑定（与 SessionBridge 共用同一个发送函数），断开时置 undefined。
+ */
+let centerConfirmEmit: ((message: unknown) => void) | undefined
+/** 设备授权登录控制器（docs/12 §4.3）：懒创建，整个生命周期复用（start 自带取消旧轮询） */
+let deviceLoginController: DeviceLoginController | undefined
+/** 本次设备授权使用的服务器地址（approved 后按它落库 center.serverUrl） */
+let deviceLoginServerUrl = ''
+/** 设备授权登录最终结果的渲染层订阅（center:deviceLoginResult 推送） */
+const deviceLoginListeners = new Set<(result: CenterDeviceLoginResult) => void>()
 /** 扩展工具五件套装配器（docs/06 §14）：与 set_setting 同级，不受 agent.tools.enabled 门控 */
 let extensionTools: ExtensionToolsRegistry | undefined
 /** Agent 内核自带工具装配器（todo / task，docs/06 §18/§19）：同样不受门控 */
@@ -699,21 +716,40 @@ async function bootstrap(): Promise<void> {
       cwd: process.cwd(),
       ...(projectLogger === undefined ? {} : { logger: projectLogger }),
     }).root
+  // 会话级项目解析（v17，docs/06 §5.1）：每个会话可绑定 projects.list 里的一项
+  // （`sessions/<id>.json` 的 meta.projectId，经 `chat:setSessionProject` 写入）。
+  // 缺省 cwd / 搜索根、项目根边界（file-port / command-runner 的 workspaceRoot）、
+  // auto 档免确认判定与 AGENTS.md 注入**全部**走这一个解析器（session-project.ts），
+  // 未绑定 / 绑定已失效的会话回落上面的全局 `projectRoot`，再按原有链回落。
+  // 同步取值走 `projectOf`（内存缓存；装配层不变量：会话的工具执行之前 agentLoop
+  // 必然已读过该会话）；确认钩子 / 指令注入允许 await，先 `projectIdOf` 预热再取。
+  const sessionProjects = createSessionProjectResolver({
+    getSettings: () => settings!.get(),
+    getProjectId: (sessionId) =>
+      sessionId === undefined || sessionId === '' ? undefined : sessions!.projectOf(sessionId),
+    globalProjectRoot: projectRoot,
+    homeDir: () => app.getPath('home'),
+    cwd: process.cwd(),
+  })
   computerTools = registerComputerTools({
     tools,
     getSettings: () => settings!.get(),
     logger: logger.child('tools'),
     homeDir: () => app.getPath('home'),
-    // 缺省工作目录 / 搜索根的三级回落最高优先级输入（docs/06 §5.1，与边界校验同一个 getter）
+    // 全局当前项目根（会话未绑定时的回落位 + sync 日志取值源，docs/06 §5.1）
     projectRoot,
+    // 缺省工作目录 / 搜索根：**按会话**即时解析（会话绑定项目 > 全局链），工具执行期现调
+    sessionWorkspaceDir: (sessionId) => sessionProjects.workspaceDir(sessionId),
     run: createCommandRunner({
       defaultCwd: process.cwd(),
       maxOutputBytes: 1024 * 1024,
-      workspaceRoot: projectRoot,
+      // cwd 边界按会话解析（会话绑定项目 > 全局当前项目）
+      workspaceRoot: (sessionId) => sessionProjects.boundaryRoot(sessionId),
       logger: logger.child('tools'),
     }),
     files: createNodeFilePort({
-      workspaceRoot: projectRoot,
+      // 六个文件方法的项目根边界同样按会话解析（与 runner 同一个取值器，别再抄第三份）
+      workspaceRoot: (sessionId) => sessionProjects.boundaryRoot(sessionId),
       logger: logger.child('tools'),
       snapshots: filePortSnapshots,
     }),
@@ -867,9 +903,14 @@ async function bootstrap(): Promise<void> {
     // 免确认命令模式（docs/06 §11.7）：与 `mode` 同款闭包 —— 每次调用即时读设置，
     // 用户在设置页加完模式立刻生效，无需重启（该字段是只读前缀，AI 改不动）。
     allowPatterns: () => settings!.get().agent.tools.terminal.allowPatterns,
-    // auto 档的免确认边界 = 当前项目根（无项目时 auto 档与"关掉确认总开关"同义）
-    // 复用上方 `projectRoot` getter（与缺省 cwd / projectInstructions 同源，别再抄第三份）
-    projectRoot,
+    // auto 档的免确认边界 = 当前**会话**的项目根（会话绑定项目 > 全局当前项目；
+    // 无项目时 auto 档与"关掉确认总开关"同义）。先 `projectIdOf` 预热（允许 await 读盘），
+    // 再走与缺省 cwd / projectInstructions 同源的解析器，别再抄第三份
+    projectRoot: async (sessionId) => {
+      if (sessionId === '') return projectRoot()
+      await sessions!.projectIdOf(sessionId)
+      return sessionProjects.boundaryRoot(sessionId)
+    },
     logger: logger.child('confirm'),
   })
 
@@ -880,8 +921,13 @@ async function bootstrap(): Promise<void> {
   const projectInstructions = createProjectInstructionsSource({
     fs: nodeProjectFs,
     ...(projectLogger === undefined ? {} : { logger: projectLogger }),
-    // 复用上方 `projectRoot` getter（与 confirmTool 的边界判定同源）
-    resolveRoot: () => projectRoot(),
+    // 复用上方解析器（与 confirmTool 的边界判定同源）：按**会话**解析项目根 ——
+    // 会话绑定项目 > 全局当前项目；未带会话 id 的调用按全局回落
+    resolveRoot: async (sessionId) => {
+      if (sessionId === undefined || sessionId === '') return projectRoot()
+      await sessions!.projectIdOf(sessionId)
+      return sessionProjects.boundaryRoot(sessionId)
+    },
     resolveCwd: () => process.cwd(),
     resolveMaxBytes: () => settings!.get().projects.maxAgentsBytes,
   })
@@ -995,11 +1041,35 @@ async function bootstrap(): Promise<void> {
         }
       },
     },
-    bindSessionEmit: (emit) => sessionBridge?.bindEmit(emit),
+    bindSessionEmit: (emit) => {
+      sessionBridge?.bindEmit(emit)
+      // 确认卡（docs/12 §5.1）与 session.event 共用同一条下发通道：连接器在线时
+      // 绑定发送函数，断开时置 undefined —— center- 会话的确认请求据此静默跳过
+      //（本地 chat 窗口的卡片照旧，确认不会挂起）。
+      centerConfirmEmit = emit
+    },
+    // 网页端对确认卡的批复（docs/12 §5.1）走 proactive.resolve 结算；
+    // 未知 / 已结算 confirmId 幂等返回 false（settled=false 也算 ok）。
+    resolveConfirm: (confirmId, approved) =>
+      proactiveScheduler?.resolve(confirmId, approved) ?? false,
     onStatusChange: () => tray?.refresh(),
   })
   centerConnector.start()
   settings.onChange(() => centerConnector?.onConfigChanged())
+
+  // 确认卡双通道（docs/12 §5.1）：center- 会话的敏感工具确认在本地卡片之外，
+  // 同时经 CenterConnector 的 socket 推给 Center 网页端（路由给会话属主 + 管理员）。
+  // 两条通道并存、先到先得 —— proactive.resolve 对已结算 confirmId 幂等返回 false。
+  proactiveScheduler.onRequest((request) => {
+    if (!request.sessionId.startsWith(CENTER_SESSION_PREFIX)) return
+    const emit = centerConfirmEmit
+    if (emit === undefined) return // 连接器离线：静默跳过（网页端本来就收不到）
+    try {
+      emit(toConfirmRequest(request))
+    } catch (error) {
+      logger?.warn('向 Center 发送确认请求失败', { error: String(error) })
+    }
+  })
 
   // 7.2 分类管线装配（docs/05 §3、docs/02 §5.2）
   //     chokidar 监听 → 并发队列 → utilityProcess 内容提取 → 规则/LLM 判定 → 落盘 → 通知
@@ -1176,7 +1246,22 @@ async function bootstrap(): Promise<void> {
       }
     },
     updater,
-    center: { status: () => centerStatus(), login: (request) => centerLogin(request) },
+    center: {
+      status: () => centerStatus(),
+      login: (request) => centerLogin(request),
+      // 设备授权登录（docs/12 §4.3）：触发后立即回执，最终结果走 deviceLoginResult 推送
+      deviceLogin: (request) => startCenterDeviceLogin(request),
+      onDeviceLoginResult: (listener) => {
+        deviceLoginListeners.add(listener)
+        return () => {
+          deviceLoginListeners.delete(listener)
+        }
+      },
+      deviceLoginCancel: () => {
+        deviceLoginController?.cancel()
+        return Promise.resolve(ok(true))
+      },
+    },
     logger: logger.child('ipc'),
     paths,
     isDev,
@@ -3514,9 +3599,53 @@ function centerStatus(): CenterConnectionStatus {
 }
 
 /**
+ * 取（必要时生成并持久化）本机 clientId。
+ *
+ * 旧版只有设置页展示、没有任何生成逻辑，连接器因 clientId 为空永远停在
+ * 「尚未配置」——那正是「配对两端没反应」的根因。账号登录与设备授权登录
+ * 共用这一份，避免两处漂移。
+ */
+function ensureCenterClientId(): Result<string> {
+  if (settings === undefined) return err('E_INVALID_STATE', '配置存储尚未就绪')
+  const existing = settings.get().center.clientId.trim()
+  if (existing !== '') return ok(existing)
+  const clientId = `aurora-${randomUUID()}`
+  const saved = settings.mutate((draft) => {
+    draft.center.clientId = clientId
+  })
+  if (saved === undefined) return err('E_IO', '无法保存客户端 ID，请重试')
+  return ok(clientId)
+}
+
+/**
+ * 登录成功的**公共落库**（账号登录与设备授权登录共用，docs/12 §3/§4.3）：
+ * 令牌先进凭据链路（safeStorage 不可用时留在内存 = 本次运行有效），再落普通配置；
+ * enabled / serverUrl / account 变化经 settings:changed 驱动连接器自动重连。
+ */
+async function persistCenterLogin(
+  token: string,
+  account: string,
+  serverUrl: string,
+): Promise<Result<CenterLoginResult>> {
+  if (settings === undefined) {
+    return err('E_INVALID_STATE', '配置存储尚未就绪')
+  }
+  const persisted = settings.setSecret('center.token', token)
+  const mutated = settings.mutate((draft) => {
+    draft.center.enabled = true
+    draft.center.serverUrl = serverUrl
+    draft.center.account = account
+  })
+  if (mutated === undefined) {
+    return err('E_IO', '登录成功但配置保存失败，请重试')
+  }
+  return ok({ account, tokenPersisted: persisted })
+}
+
+/**
  * Aurora Center 账号登录（center:login IPC，docs/12 §3/§7，v0.2.1）：
- * 口令换客户端令牌（凭据链路落库）+ 记住账号名 + 自动启用连接。
- * 口令只在本次请求里使用，不落配置、不进日志；`center:login` 不对 AI 的
+ * 密码换客户端令牌（凭据链路落库）+ 记住账号名 + 自动启用连接。
+ * 密码只在本次请求里使用，不落配置、不进日志；`center:login` 不对 AI 的
  * `set_setting` 通道开放（`center.*` 整组只读前缀不变）。
  */
 async function centerLogin(request: CenterLoginRequest): Promise<Result<CenterLoginResult>> {
@@ -3529,33 +3658,80 @@ async function centerLogin(request: CenterLoginRequest): Promise<Result<CenterLo
   if (settings === undefined) {
     return err('E_INVALID_STATE', '配置存储尚未就绪')
   }
-  // clientId 首次登录时生成并持久化。旧版只有设置页展示、没有任何生成逻辑，
-  // 连接器因 clientId 为空永远停在「尚未配置」——那正是「配对两端没反应」的根因。
-  let clientId = settings.get().center.clientId.trim()
-  if (clientId === '') {
-    clientId = `aurora-${randomUUID()}`
-    const saved = settings.mutate((draft) => {
-      draft.center.clientId = clientId
-    })
-    if (saved === undefined) return err('E_IO', '无法保存客户端 ID，请重试')
-  }
+  const clientIdResult = ensureCenterClientId()
+  if (!clientIdResult.ok) return clientIdResult
   const outcome = await requestClientLogin(
-    { serverUrl, username, password, clientId },
+    { serverUrl, username, password, clientId: clientIdResult.value },
     { fetchImpl: netFetch ?? fetch, logger: logger?.child('center') },
   )
   if (!outcome.ok) return err('E_AUTH', outcome.message)
-  // 令牌先进凭据链路（safeStorage 不可用时留在内存 = 本次运行有效），再落普通配置；
-  // enabled / serverUrl / account 变化经 settings:changed 驱动连接器自动重连。
-  const persisted = settings.setSecret('center.token', outcome.token)
-  const mutated = settings.mutate((draft) => {
-    draft.center.enabled = true
-    draft.center.serverUrl = serverUrl
-    draft.center.account = outcome.account
-  })
-  if (mutated === undefined) {
-    return err('E_IO', '登录成功但配置保存失败，请重试')
+  return persistCenterLogin(outcome.token, outcome.account, serverUrl)
+}
+
+/**
+ * 广播设备授权登录的最终结果给渲染层（center:deviceLoginResult 推送）。
+ * 监听器异常互不影响（设置页未打开时集合为空，结果只进日志）。
+ */
+function emitDeviceLoginResult(result: CenterDeviceLoginResult): void {
+  for (const listener of deviceLoginListeners) {
+    try {
+      listener(result)
+    } catch (error) {
+      logger?.warn('设备授权登录结果监听器抛错', { error: String(error) })
+    }
   }
-  return ok({ account: outcome.account, tokenPersisted: persisted })
+}
+
+/** 设备授权最终结果 → 落库 + 推送（approved 才落库；expired / denied / error 只推送） */
+async function handleDeviceLoginOutcome(outcome: DeviceLoginOutcome): Promise<void> {
+  if (outcome.status === 'approved') {
+    const result = await persistCenterLogin(outcome.token, outcome.username, deviceLoginServerUrl)
+    if (result.ok) {
+      emitDeviceLoginResult({ status: 'approved' })
+    } else {
+      emitDeviceLoginResult({ status: 'error', message: result.message })
+    }
+    return
+  }
+  emitDeviceLoginResult(
+    outcome.status === 'error'
+      ? { status: 'error', message: outcome.message }
+      : { status: outcome.status },
+  )
+}
+
+/**
+ * Aurora Center 设备授权登录（center:deviceLogin IPC，docs/12 §4.3）：
+ * 打开确认页 + 后台轮询，**立即**回执；最终结果经 deviceLoginResult 推送。
+ * 令牌拿到后的落库走 `persistCenterLogin`（与账号登录同一份），连接器自动重连。
+ */
+async function startCenterDeviceLogin(
+  request: CenterDeviceLoginRequest,
+): Promise<Result<CenterDeviceLoginStarted>> {
+  const serverUrl = request.serverUrl.trim()
+  if (serverUrl === '') {
+    return err('E_INVALID_ARGUMENT', '请先填写服务器地址')
+  }
+  if (settings === undefined) {
+    return err('E_INVALID_STATE', '配置存储尚未就绪')
+  }
+  const clientIdResult = ensureCenterClientId()
+  if (!clientIdResult.ok) return clientIdResult
+  // 懒创建：控制器持有 netFetch / shell.openExternal 等注入，整个生命周期复用
+  //（start() 内部会先取消上一次的轮询，重复点击天然安全）。
+  if (deviceLoginController === undefined) {
+    deviceLoginController = new DeviceLoginController({
+      fetchImpl: netFetch ?? fetch,
+      logger: logger?.child('center'),
+      openExternal: (url) => shell.openExternal(url),
+      onResult: (outcome) => void handleDeviceLoginOutcome(outcome),
+    })
+  }
+  deviceLoginServerUrl = serverUrl
+  const started = await deviceLoginController.start({ serverUrl, clientId: clientIdResult.value })
+  if (!started.started) return err('E_NETWORK', started.message)
+  logger?.info('设备授权登录已发起', { serverUrl })
+  return ok({ started: true, verifyUrl: started.verifyUrl })
 }
 
 function syncToolRegistries(): void {

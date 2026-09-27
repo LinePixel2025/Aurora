@@ -83,6 +83,11 @@ export interface PathOutsideError extends Error {
 export interface OutsideOption {
   /** 显式放行到项目根之外；缺省 / `false` = 按项目根校验 */
   allowOutside?: boolean
+  /**
+   * 本次调用的来源会话（docs/06 §5.1 会话级项目）：`workspaceRoot` guard 据此解析
+   * **该会话**绑定的项目根。缺省 = 按全局当前项目根判定（行为与 v17 之前一致）。
+   */
+  sessionId?: string
 }
 
 /**
@@ -106,8 +111,11 @@ export interface WorkspaceGuardOptions {
   /**
    * 项目根（绝对路径）；返回 `undefined` / 空串 = **不做边界校验**
    * （行为与没有边界校验时逐字一致）。
+   *
+   * 入参是**发起调用的会话 id**（docs/06 §5.1 会话级项目）：装配层传入按会话解析的
+   * getter（会话绑定项目 > 全局当前项目）；不确定会话时传 undefined，按全局回落。
    */
-  workspaceRoot?: () => string | undefined
+  workspaceRoot?: (sessionId?: string) => string | undefined
   /**
    * 是否启用边界校验。缺省 = `workspaceRoot()` 有值就启用；
    * 显式返回 `false` 时**完全等同于没配根**（用户在设置页关掉了「限制在项目内」）。
@@ -143,15 +151,17 @@ export interface WorkspaceGuardOptions {
  *
  * `allowOutside === true` 整段跳过（用户显式放行）；`guard` 缺省 / 根不可用 / 校验关闭时
  * 直接返回 `resolve(path)`：**行为与没有边界校验时完全一致**。
+ * `sessionId` 原样传给 `workspaceRoot`：边界根按**会话**解析（会话绑定项目 > 全局，docs/06 §5.1）。
  */
 export async function resolveWithin(
   path: string,
   allowOutside: boolean,
   guard?: WorkspaceGuardOptions,
+  sessionId?: string,
 ): Promise<string> {
   const target = resolve(path)
   if (allowOutside) return target
-  const root = await resolveWorkspaceRoot(guard)
+  const root = await resolveWorkspaceRoot(guard, sessionId)
   if (root === undefined) return target
   const rel = relative(root, await canonicalize(target))
   if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
@@ -189,9 +199,10 @@ function createPathOutsideError(target: string, root: string): PathOutsideError 
  */
 async function resolveWorkspaceRoot(
   guard: WorkspaceGuardOptions | undefined,
+  sessionId?: string,
 ): Promise<string | undefined> {
   if (guard?.enforceWorkspace !== undefined && !guard.enforceWorkspace()) return undefined
-  const declared = guard?.workspaceRoot?.()
+  const declared = guard?.workspaceRoot?.(sessionId)
   if (declared === undefined || declared.trim() === '') return undefined
   try {
     return await realpath(resolve(declared))
@@ -366,7 +377,7 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
     async readText(path: string, options: ReadTextOptions & OutsideOption) {
       // 边界校验放在 try **之外**：越界错误要原样抛出（带 `PATH_OUTSIDE_CODE`），
       // 不能被 `withPath` 包成一条普通 IO 失败（那样调用方就分不清"越界"与"读不到"了）
-      const absolutePath = await resolveWithin(path, options.allowOutside === true, guard)
+      const absolutePath = await resolveWithin(path, options.allowOutside === true, guard, options.sessionId)
       try {
         const info = await stat(absolutePath)
         if (info.isDirectory()) throw new Error('这是目录，不是文件（可改用 list_dir）')
@@ -425,7 +436,7 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
      *   或某个 GBK 文本文件的非 ASCII 字节被 `toString('utf8')` 换成 U+FFFD，即可触发。
      */
     async readWholeText(path: string, maxBytes: number, options?: OutsideOption) {
-      const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard)
+      const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard, options?.sessionId)
       const limit = resolveLimit(maxBytes, MAX_EDIT_BYTES)
       try {
         const info = await stat(absolutePath)
@@ -466,7 +477,7 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
       options?: WriteOption,
     ) {
       // 校验在建父目录**之前**：越界时连 `mkdir -p` 都不该发生
-      const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard)
+      const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard, options?.sessionId)
       // 写前快照（docs/06 §11.8）：**必须先留底再写**。顺序不能换 —— 换过来就是"改完才备份"，
       // 备份里已经是新内容，回滚等于没回滚。
       const snapshot = await captureSnapshot(options?.snapshot, absolutePath)
@@ -492,7 +503,7 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
     },
 
     async list(path: string, limit: number, options?: OutsideOption) {
-      const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard)
+      const absolutePath = await resolveWithin(path, options?.allowOutside === true, guard, options?.sessionId)
       try {
         const dirents = await readdir(absolutePath, { withFileTypes: true })
         const entries: DirEntry[] = []
@@ -541,7 +552,7 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
       // 系统调用），给一次 glob 加上几千次 realpath 会把搜索拖垮。这个取舍是安全的——
       // 子路径由 `join(根, 名字)` 拼出，而 walker 的**口径 1** 一律跳过符号链接
       //（文件与目录都跳），所以"根内某个链接把我带到根外"这条路已经在遍历层堵住了。
-      const absoluteRoot = await resolveWithin(options.root, options.allowOutside === true, guard)
+      const absoluteRoot = await resolveWithin(options.root, options.allowOutside === true, guard, options.sessionId)
       const maxResults = resolveMaxResults(options.maxResults)
       const pattern = options.pattern
       const files: string[] = []
@@ -591,7 +602,7 @@ export function createNodeFilePort(options: NodeFilePortOptions = {}): NodeFileP
      */
     async searchText(options: SearchTextOptions & OutsideOption): Promise<SearchTextResult> {
       // 同 `findFiles`：只校验遍历根，不在 visitor 里逐文件 realpath（取舍理由见那里的注释）
-      const absoluteRoot = await resolveWithin(options.root, options.allowOutside === true, guard)
+      const absoluteRoot = await resolveWithin(options.root, options.allowOutside === true, guard, options.sessionId)
       const maxResults = resolveMaxResults(options.maxResults)
       const include = options.include
       const matches: SearchMatch[] = []

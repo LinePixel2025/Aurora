@@ -452,7 +452,10 @@ describe('read_file', () => {
     expect(result.content).toContain('4: d')
     expect(result.content).toContain('…（还有 6 行未显示，用 offset 继续读）…')
     expect(fakes.calls.readText).toEqual([
-      { path: 'a.txt', options: { offsetLines: 3, limitLines: 2, maxBytes: 65_536 } },
+      {
+        path: 'a.txt',
+        options: { offsetLines: 3, limitLines: 2, maxBytes: 65_536, sessionId: 'test-session' },
+      },
     ])
   })
 
@@ -754,7 +757,9 @@ describe('端口错误统一判定', () => {
  * 三档权限的越界放行透传（docs/06 §11.2）。
  *
  * 内核这一层的职责只有"透传"：`ctx.approvedByUser` 为 `true` 时给端口带上
- * `allowOutside`，其余情况**一个键都不多**——端口据此决定拦不拦（第二道边界）。
+ * `allowOutside`，其余情况**这个键一个都不多**——端口据此决定拦不拦（第二道边界）。
+ * `sessionId` 是另一回事（docs/06 §5.1 会话级项目）：有会话上下文就总是透传，
+ * 端口据此按会话解析项目根边界 —— 与放行与否无关。
  * 未注入字段的用例是反向自证：任何忘记透传的调用点都只会更保守。
  */
 describe('越界放行标记 allowOutside 的透传（docs/06 §11.2）', () => {
@@ -773,7 +778,12 @@ describe('越界放行标记 allowOutside 的透传（docs/06 §11.2）', () => 
     expect(fakes.calls.readText).toEqual([
       {
         path: 'a.txt',
-        options: { offsetLines: 1, limitLines: DEFAULT_READ_LINES, maxBytes: 65_536 },
+        options: {
+          offsetLines: 1,
+          limitLines: DEFAULT_READ_LINES,
+          maxBytes: 65_536,
+          sessionId: 'test-session',
+        },
       },
     ])
     expect(fakes.calls.outside).toEqual([

@@ -311,3 +311,84 @@ describe('CenterConnector · 命令处理', () => {
     })
   })
 })
+
+describe('CenterConnector · confirm.resolve（docs/12 §5.1）', () => {
+  function openSocket(harness: Harness): FakeSocket {
+    harness.connector.start()
+    vi.advanceTimersByTime(1)
+    const socket = harness.lastSocket()
+    socket.emit('open')
+    return socket
+  }
+
+  it('网页端批复命中在途确认：调 resolveConfirm 并回 settled=true', async () => {
+    const harness = makeConnector()
+    const resolved: Array<[string, boolean]> = []
+    harness.deps.resolveConfirm = (confirmId, approved) => {
+      resolved.push([confirmId, approved])
+      return true
+    }
+    const socket = openSocket(harness)
+    socket.emit(
+      'message',
+      JSON.stringify({
+        type: 'cmd',
+        cmd: { kind: 'confirm.resolve', requestId: 'c-9', confirmId: 'confirm-1', approved: true },
+      }),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(resolved).toEqual([['confirm-1', true]])
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'c-9',
+      ok: true,
+      data: { settled: true },
+    })
+  })
+
+  it('未命中（已超时 / 已本地结算）也回 ok，settled=false 交给网页端提示', async () => {
+    const harness = makeConnector()
+    harness.deps.resolveConfirm = () => false
+    const socket = openSocket(harness)
+    socket.emit(
+      'message',
+      JSON.stringify({
+        type: 'cmd',
+        cmd: {
+          kind: 'confirm.resolve',
+          requestId: 'c-10',
+          confirmId: 'confirm-x',
+          approved: false,
+        },
+      }),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'c-10',
+      ok: true,
+      data: { settled: false },
+    })
+  })
+
+  it('未注入 resolveConfirm 时不拦截命令，settled=false（端口可缺省）', async () => {
+    const harness = makeConnector()
+    const socket = openSocket(harness)
+    socket.emit(
+      'message',
+      JSON.stringify({
+        type: 'cmd',
+        cmd: { kind: 'confirm.resolve', requestId: 'c-11', confirmId: 'confirm-y', approved: true },
+      }),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      ok: true,
+      data: { settled: false },
+    })
+  })
+})

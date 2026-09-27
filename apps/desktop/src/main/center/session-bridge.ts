@@ -6,8 +6,8 @@
  * 不另开一条"远程专用"发送链 —— job 体系 / E_BUSY / 确认卡片 / 事件顺序
  * 全部与本地发送一致，远程会话在主界面历史里也照常可见。
  */
-import { CENTER_SESSION_PREFIX, type AgentEvent } from '@aurora/shared'
-import type { Logger } from '@aurora/shared'
+import { CENTER_SESSION_PREFIX, type AgentEvent, type ConfirmRequestPayload } from '@aurora/shared'
+import type { Logger, SensitiveToolRequest } from '@aurora/shared'
 
 /** 内核 AgentHost 的最小依赖面（`DesktopAgentHost` 结构性满足） */
 export interface AgentLike {
@@ -95,5 +95,29 @@ export class SessionBridge {
     } catch (error) {
       this.logger?.warn('转发远程会话事件失败', { error: String(error) })
     }
+  }
+}
+
+/**
+ * 敏感工具确认请求 → `confirm.request` 上行消息（docs/12 §5.1 的纯映射，导出供单测）。
+ *
+ * 主进程的 `SensitiveToolRequest` 与协议的 `ConfirmRequestPayload` 只差一个
+ * `createdAt`（调度器没有该字段，发送时刻即创建时刻）；`input` 已是纯数据
+ * （跨 IPC 结构化克隆而来），可直接 JSON 序列化。
+ */
+export function toConfirmRequest(request: SensitiveToolRequest): {
+  type: 'confirm.request'
+  request: ConfirmRequestPayload
+} {
+  return {
+    type: 'confirm.request',
+    request: {
+      confirmId: request.confirmId,
+      sessionId: request.sessionId,
+      toolName: request.toolName,
+      input: request.input,
+      createdAt: new Date().toISOString(),
+      expiresAt: request.expiresAt,
+    },
   }
 }

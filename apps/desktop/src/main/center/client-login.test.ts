@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { httpBaseUrlOf, requestClientLogin } from './client-login.js'
 
 /** 假 fetch：按脚本返回（状态码 + JSON 体），并记录收到的请求 */
-function fakeFetch(
-  script: Array<{ status: number; body: unknown }>,
-): { fetch: typeof fetch; calls: Array<{ url: string; init: RequestInit }> } {
+function fakeFetch(script: Array<{ status: number; body: unknown }>): {
+  fetch: typeof fetch
+  calls: Array<{ url: string; init: RequestInit }>
+} {
   const calls: Array<{ url: string; init: RequestInit }> = []
   const fn = (async (url: unknown, init: unknown) => {
     calls.push({ url: String(url), init: init as RequestInit })
@@ -75,9 +76,7 @@ describe('requestClientLogin', () => {
         )
       })
     }) as unknown as typeof fetch
-    expect(
-      await requestClientLogin(input, { fetchImpl: hang, timeoutMs: 30 }),
-    ).toEqual({
+    expect(await requestClientLogin(input, { fetchImpl: hang, timeoutMs: 30 })).toEqual({
       ok: false,
       message: '连接服务器超时（0 秒）',
     })
@@ -85,7 +84,10 @@ describe('requestClientLogin', () => {
 
   it('非法服务器地址直接失败，不发请求', async () => {
     const { fetch, calls } = fakeFetch([{ status: 200, body: {} }])
-    const outcome = await requestClientLogin({ ...input, serverUrl: 'ftp://x' }, { fetchImpl: fetch })
+    const outcome = await requestClientLogin(
+      { ...input, serverUrl: 'ftp://x' },
+      { fetchImpl: fetch },
+    )
     expect(outcome.ok).toBe(false)
     expect(calls).toHaveLength(0)
   })

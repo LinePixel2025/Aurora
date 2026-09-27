@@ -7,6 +7,9 @@
 import type {
   CenterConnectionStatus,
   AgentEvent,
+  CenterDeviceLoginRequest,
+  CenterDeviceLoginResult,
+  CenterDeviceLoginStarted,
   CenterLoginRequest,
   CenterLoginResult,
   ChatSessionSummary,
@@ -262,11 +265,17 @@ export interface SessionListLike {
 }
 
 /** 自动更新（docs/09）：主进程用 UpdateService，IPC 只依赖这个最小面 */
-/** Aurora Center 连接器（docs/12）：状态快照 + 账号登录（v0.2.1，docs/12 §7） */
+/** Aurora Center 连接器（docs/12）：状态快照 + 账号 / 设备授权登录（docs/12 §3/§4.3/§7） */
 export interface CenterConnectionLike {
   status(): CenterConnectionStatus
   /** 账号登录：换客户端令牌写入凭据链路 + 记住账号 + 自动启用连接 */
   login(request: CenterLoginRequest): Promise<Result<CenterLoginResult>>
+  /** 设备授权登录：打开确认页并后台轮询，立即回执；最终结果走 onDeviceLoginResult 推送 */
+  deviceLogin(request: CenterDeviceLoginRequest): Promise<Result<CenterDeviceLoginStarted>>
+  /** 设备授权登录的最终结果推送（on/off 成对） */
+  onDeviceLoginResult(listener: (result: CenterDeviceLoginResult) => void): () => void
+  /** 取消在途的设备授权轮询（幂等） */
+  deviceLoginCancel(): Promise<Result<boolean>>
 }
 
 export interface UpdateControllerLike {

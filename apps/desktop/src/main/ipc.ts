@@ -26,8 +26,11 @@ import {
   type ChatArchiveRequest,
   type ChatHistoryRequest,
   type ChatMessageDto,
+  type ChatSessionProjectRequest,
   type ChatSessionSummary,
   type CenterConnectionStatus,
+  type CenterDeviceLoginRequest,
+  type CenterDeviceLoginStarted,
   type CenterLoginRequest,
   type CenterLoginResult,
   type ClassIslandNotifyRequest,
@@ -540,6 +543,35 @@ export function registerIpc(deps: DesktopDeps): () => void {
       (error: unknown) => err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
     )
   })
+  /**
+   * 绑定 / 解绑会话项目（docs/06 §5.1 会话级项目，v17）。
+   *
+   * 与归档同一条惯例：状态写在会话文件自身的 `meta` 里（**不是配置项**，与 settings 无关），
+   * `setProject` **幂等且 await 落盘完成**，渲染层拿到 ok 后立刻拉 `chat:sessions` 就能读到
+   * 新绑定。`projectId` 空串 = 清除绑定；绑定到 `projects.list` 里不存在的项目**报错而不静默**
+   * ——静默成功后工具链会按「绑定已失效」回落全局项目，用户却以为绑定生效了，最难排查。
+   */
+  handle<{ projectId: string }>(
+    IPC.chat.setSessionProject,
+    (request: ChatSessionProjectRequest) => {
+      const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+      const projectId = typeof request?.projectId === 'string' ? request.projectId.trim() : ''
+      if (sessionId === '') {
+        return Promise.resolve(err('E_INVALID_ARGUMENT', 'sessionId 不能为空'))
+      }
+      if (
+        projectId !== '' &&
+        !deps.settings.get().projects.list.some((project) => project.id === projectId)
+      ) {
+        return Promise.resolve(err('E_INVALID_ARGUMENT', '项目不存在（可能已被删除）'))
+      }
+      return deps.sessions.setProject(sessionId, projectId).then(
+        () => ok({ projectId }),
+        (error: unknown) =>
+          err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      )
+    },
+  )
   handle<SkillSummary[]>(IPC.skills.list, () => ok(deps.skills.list()))
   handle<SkillsStatus>(IPC.skills.rescan, () =>
     deps.skills
@@ -624,9 +656,24 @@ export function registerIpc(deps: DesktopDeps): () => void {
   )
   // 账号登录（docs/12 §7）：实现装配在 index.ts（需要 settings / netFetch / logger），
   // 这里只做转发；未装配时如实报错而不是静默失败。
-  handle<CenterLoginResult>(IPC.center.login, (request: CenterLoginRequest) =>
-    deps.center?.login(request) ??
-    Promise.resolve(err('E_INVALID_STATE', 'Aurora Center 连接尚未装配')),
+  handle<CenterLoginResult>(
+    IPC.center.login,
+    (request: CenterLoginRequest) =>
+      deps.center?.login(request) ??
+      Promise.resolve(err('E_INVALID_STATE', 'Aurora Center 连接尚未装配')),
+  )
+  // 设备授权登录（docs/12 §4.3）：触发后立即回执（已打开浏览器并开始轮询），
+  // 最终结果经 deps.center.onDeviceLoginResult 推送（见下方订阅）。
+  handle<CenterDeviceLoginStarted>(
+    IPC.center.deviceLogin,
+    (request: CenterDeviceLoginRequest) =>
+      deps.center?.deviceLogin(request) ??
+      Promise.resolve(err('E_INVALID_STATE', 'Aurora Center 连接尚未装配')),
+  )
+  // 取消在途的设备授权轮询（幂等）：设置页关闭 / 重新发起时由渲染层调用
+  handle<boolean>(
+    IPC.center.deviceLoginCancel,
+    () => deps.center?.deviceLoginCancel() ?? Promise.resolve(ok(true)),
   )
 
   // ───────────────────────── 更新（docs/09） ─────────────────────────
@@ -685,6 +732,11 @@ export function registerIpc(deps: DesktopDeps): () => void {
   const offHotkey = deps.hotkey.onChange((status) => {
     broadcast(IPC.hotkey.changed, status)
   })
+  // 设备授权登录的最终结果（docs/12 §4.3）：主进程轮询结束 / 拿到令牌后推给渲染层
+  const offDeviceLogin =
+    deps.center?.onDeviceLoginResult((result) => {
+      broadcast(IPC.center.deviceLoginResult, result)
+    }) ?? (() => {})
 
   return () => {
     for (const [channel] of handlers) ipcMain.removeHandler(channel)
@@ -699,6 +751,7 @@ export function registerIpc(deps: DesktopDeps): () => void {
     offMcp()
     offUpdate()
     offHotkey()
+    offDeviceLogin()
   }
 }
 

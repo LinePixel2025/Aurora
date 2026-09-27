@@ -101,4 +101,47 @@ describe('effectiveWorkspaceDir', () => {
 
     expect(effectiveWorkspaceDir(settings, undefined, HOME_DIR)).toBe(WORKSPACE_DIR)
   })
+
+  // ───────── 会话级项目（docs/06 §5.1，第 4 参） ─────────
+
+  it('会话绑定的项目根优先级最高（压过全局项目根与 workspaceDir）', () => {
+    const settings = settingsWith({
+      current: 'p1',
+      list: [project('p1', LIST_ROOT), project('p2', resolve('top', 'session-root'))],
+      workspaceDir: WORKSPACE_DIR,
+    })
+    const sessionRoot = resolve('top', 'session-root')
+
+    expect(effectiveWorkspaceDir(settings, PROJECT_ROOT, HOME_DIR, sessionRoot)).toBe(sessionRoot)
+  })
+
+  it('未绑定会话（undefined）按原三级回落：全局项目根 > workspaceDir > homeDir', () => {
+    const settings = settingsWith({
+      current: 'p1',
+      list: [project('p1', LIST_ROOT)],
+      workspaceDir: WORKSPACE_DIR,
+    })
+
+    expect(effectiveWorkspaceDir(settings, undefined, HOME_DIR, undefined)).toBe(LIST_ROOT)
+    expect(effectiveWorkspaceDir(settings, undefined, HOME_DIR, '')).toBe(LIST_ROOT)
+  })
+
+  it('会话绑定的项目已被删除（第 4 参为空串）时回落全局链，不抛错', () => {
+    const settings = settingsWith({
+      current: 'p1',
+      list: [project('p1', LIST_ROOT)],
+      workspaceDir: WORKSPACE_DIR,
+    })
+
+    expect(effectiveWorkspaceDir(settings, undefined, HOME_DIR, '   ')).toBe(LIST_ROOT)
+  })
+
+  it('会话根与全局根都缺席时按 workspaceDir > homeDir 回落', () => {
+    const settings = settingsWith({ current: '', workspaceDir: WORKSPACE_DIR })
+
+    expect(effectiveWorkspaceDir(settings, undefined, HOME_DIR, undefined)).toBe(WORKSPACE_DIR)
+
+    const bare = settingsWith({ current: '' })
+    expect(effectiveWorkspaceDir(bare, undefined, HOME_DIR, undefined)).toBe(HOME_DIR)
+  })
 })

@@ -78,6 +78,10 @@ export interface LlmProvider {
   归档这件事本身就需要一个落点）。`summaries()` 把 `archived` 透出给 `ChatSessionSummary`，
   渲染层据此分组（见 07 §2.3）。IPC 通道 `chat:archiveSession` 对普通会话与 quick 一视同仁。
   **已知边界**：`chat:sessions` 目前没有推送通道，归档只在发出请求的那个窗口即时生效。
+- **会话绑定项目（v17，2026-09，`chat:setSessionProject`）**：`meta` 新增可选
+  `projectId?: string`（`''` 与缺字段都算未绑定，空 meta 判定同步覆盖，不写空键）；
+  写入 / 清除走 `SessionStore.setProject`（幂等 + await 落盘，惯例与 `setArchived` 全同）。
+  解析链与消费方见 §5.1 的「会话级项目」段。
 - 渲染层挂载时通过 `chat:history` 水合消息列表，因此重启后交互窗仍能看到历史。
 - 上下文窗口管理：超长自动摘要压缩（P1）；v1 先按 **字符上限（默认 60k）** 截断旧消息并保留系统提示词，
   且截断时保证「assistant(toolCalls) + 其后 tool 结果」成对保留。
@@ -223,7 +227,21 @@ export interface LlmProvider {
 「项目」是配置里的一个实体（docs/08 §1）：`projects.current` 指向 `projects.list[]` 里的某一条，
 每条是 `{ id, name, root }`；`current` 为空串表示**无项目**（默认态，行为与 v13 之前完全一致）。
 项目根同时决定三件事：① 每轮注入哪份项目级约定；② 权限层判定「项目根之内 / 之外」的边界（§12.2）；
-③ 缺省工作目录 / 搜索根的最高优先级输入（`effectiveWorkspaceDir` 的第一级，见本节末条）。
+③ 缺省工作目录 / 搜索根的最高优先级输入（`effectiveWorkspaceDir` 的一级回落，见本节末条）。
+
+**会话级项目（v17，2026-09）**：每个会话可以绑定 `projects.list` 里的某一项——绑定写在
+**会话文件自身**（`sessions/<id>.json` 的 `meta.projectId`，经 `chat:setSessionProject` 写入 / 清除），
+**不是配置项、不进 `CONFIG_VERSION` 迁移链**（与归档同一条路，`''` 与缺字段都算未绑定）。
+解析链升为四级：**会话绑定项目 > `projects.current` > `agent.tools.workspaceDir` > 主目录**；
+绑定项已被删除时**静默回落** `projects.current`（会话级绑定是可选的，逐次执行不刷 warn）。
+三处消费方全部按**会话**解析（`main/tools/session-project.ts` 是唯一解析口径，别另写第二份）：
+缺省 cwd / 搜索根（工具执行时经 `ctx.sessionId` 现调 getter）、项目根边界与 auto 档免确认判定
+（`file-port` / `command-runner` 的 `workspaceRoot(sessionId)` 与 `createConfirmTool`）、
+AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时按会话解析）。
+中心会话（`center-` 前缀）与本地会话同一条逻辑，默认未绑定。
+注意装载时序：同步取绑定走 `SessionStore.projectOf`（内存缓存读），其前提是
+「会话的工具执行之前 `agentLoop` 必然已读过该会话」；允许 await 的路径（确认钩子 / 指令注入）
+先用 `projectIdOf` 预热再取。
 
 - **发现顺序**：每个目录里先看 `AGENTS.override.md`，命中就用它并**顶掉**同目录的 `AGENTS.md`
   （两者都有时只注入 override）；override 不存在才用 `AGENTS.md`。
@@ -245,13 +263,14 @@ export interface LlmProvider {
 - **与 Code Mode 的关系**：`docs/05 §4.2` 给 Code Mode 预留的能力位里有一条「工作区项目识别」。
   本节的机制把它**兑现成了与模式无关的通用能力**（任何模式下都可以有当前项目）；
   Code Mode 那条预留位里剩下的「Git 状态感知」仍待后续版本。
-- **实现落点**：`packages/agent-core/src/config/project.ts`（`resolveProject`，纯函数，id 对不上即降级）、
-  `config/effectiveWorkspace.ts`（`effectiveWorkspaceDir`：**项目根 > `agent.tools.workspaceDir` > 主目录**）、
+- **实现落点**：`packages/agent-core/src/config/project.ts`（`resolveProject` / `resolveProjectRootById`，
+  纯函数，id 对不上即降级）、
+  `config/effectiveWorkspace.ts`（`effectiveWorkspaceDir`：**会话项目根 > 项目根 > `agent.tools.workspaceDir` > 主目录**）、
   `project/agentsFile.ts`（`collectProjectInstructions`，注入式 fs，永不抛错）、
   `project/instructions.ts`（`createProjectInstructionsSource`，按 root + mtime 缓存）；
   主进程在 `apps/desktop/src/main/index.ts` 用 `nodeProjectFs` 装配成 `projectInstructions` 依赖。
-- **缺省工作目录 / 搜索根的三级回落（以本节为准）**：`effectiveWorkspaceDir` 的取值顺序是
-  **当前项目根（配置了当前项目时）> `agent.tools.workspaceDir` > 用户主目录**。已接进装配层：
+- **缺省工作目录 / 搜索根的回落链（以本节为准）**：`effectiveWorkspaceDir` 的取值顺序是
+  **会话绑定项目根 > 当前项目根（配置了当前项目时）> `agent.tools.workspaceDir` > 用户主目录**（v17 起加会话级一级）。已接进装配层：
   配置了当前项目后，不显式传 `cwd` 的 `run_command` 与不传 `path` 的 `grep` / `glob` 落在**项目根**；
   未配置当前项目时与既往行为完全一致。§11.1 / §11.4 / §11.5 说的「缺省 `cwd` / 缺省搜索根」
   都指这条链的结果，**工具执行链上不再设第二套口径**。

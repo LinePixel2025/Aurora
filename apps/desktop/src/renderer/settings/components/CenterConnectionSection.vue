@@ -1,18 +1,22 @@
 <script setup lang="ts">
 /**
- * Aurora Center 连接设置区组（docs/12 §3/§7）：总开关 / 服务器地址 / 展示名 /
- * 账号登录 / clientId 只读展示。折叠卡风格与 `TtsSection.vue` / `SttSection.vue` 一致。
+ * Aurora Center 连接设置区组（docs/12 §3/§4.3/§7）：总开关 / 服务器地址 / 展示名 /
+ * 登录账户（设备授权，主按钮）/ 密码登录（回落表单）/ clientId 只读展示。
+ * 折叠卡风格与 `TtsSection.vue` / `SttSection.vue` 一致。
  *
  * 保存链路分工（与 TTS provider 同一套口径）：
  * - 本卡字段走 `settings:update`（`center.*` 整组在 `SETTINGS_READONLY_PREFIXES` 黑名单里
  *   —— AI 的 set_setting 改不动；设置页走 settings:update，不受该黑名单影响）；
- * - **配对方式是账号登录（v0.2.1）**：填服务器地址 + Center 账号口令 → 「登录并连接」
- *   走 `center:login` IPC，主进程调 `/api/client/login` 换客户端令牌并写入凭据链路
- *   （`center.token` ⇄ `center.tokenEnc`，与 apiKey 同链路）、记住账号名、自动启用连接。
- *   口令只在登录请求里使用，页面不保存、不回显；「已登录 / 未登录」标记用
- *   `settings:hasSecret` 查询。旧的手填配对令牌入口已移除（服务器端兼容路径保留）。
+ * - **主路径是设备授权登录（v0.2.2）**：点「登录账户」走 `center:deviceLogin` IPC，
+ *   主进程 `POST /api/client/device/start` 拿确认页地址并打开浏览器，随后后台轮询；
+ *   网页确认后主进程拿到令牌落库（凭据链路 `center.token` ⇄ `center.tokenEnc`，
+ *   与 apiKey 同链路）并推送 `center:deviceLoginResult`，本页据此回到正常态。
+ * - **回落是密码直登（v0.2.1）**：填服务器地址 + Center 账号密码 → 「密码登录」
+ *   走 `center:login` IPC，主进程调 `/api/client/login` 换客户端令牌。密码只在
+ *   登录请求里使用，页面不保存、不回显；「已登录 / 未登录」标记用
+ *   `settings:hasSecret` 查询。旧的手填配对令牌入口已移除（手动令牌功能面已整体删除）。
  */
-import { ref, watch } from 'vue'
+import { onUnmounted, ref, watch } from 'vue'
 import { ChevronRight } from '../../shared/icons.js'
 import type { CenterSettings, SettingsPatch } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
@@ -32,6 +36,8 @@ const message = ref<string | null>(null)
 const error = ref<string | null>(null)
 const saving = ref(false)
 const loggingIn = ref(false)
+/** 设备授权登录在途（已打开浏览器等网页确认；最终结果推送到达后回正常态） */
+const deviceLoginPending = ref(false)
 
 // 表单草稿：settings 是唯一水合来源；保存成功后主进程回传新 settings，草稿随之刷新。
 // `center` 组 AI 改不动，广播重灌的实际来源只有保存回传与远端配置下发。
@@ -40,7 +46,7 @@ const serverUrl = ref('')
 const displayName = ref('')
 const account = ref('')
 
-// 登录密码：write-only（只在点「登录并连接」时随请求发给主进程），登录成功即清空
+// 登录密码：write-only（只在点「密码登录」时随请求发给主进程），登录成功即清空
 const password = ref('')
 
 // 已登录标记 = 令牌已在凭据链路（hasSecret('center.token')）
@@ -67,6 +73,64 @@ async function refreshTokenSet(): Promise<void> {
 }
 
 void refreshTokenSet()
+
+/**
+ * 设备授权登录的最终结果（`center:deviceLoginResult` 推送）：approved 时主进程
+ * 已落库令牌、记住账号并启用连接（连接器自动重连，状态区有展示），这里只刷新
+ * 标记、清空回落表单并给一句提示。
+ */
+const offDeviceLoginResult = window.aurora.center.onDeviceLoginResult((result) => {
+  deviceLoginPending.value = false
+  if (result.status === 'approved') {
+    void refreshTokenSet()
+    password.value = ''
+    message.value = '登录成功，正在连接 Aurora Center'
+    return
+  }
+  if (result.status === 'expired') {
+    error.value = '设备授权确认已过期，请重新发起登录'
+    return
+  }
+  if (result.status === 'denied') {
+    error.value = '登录请求已在 Center 网页被拒绝'
+    return
+  }
+  error.value = result.message
+})
+
+onUnmounted(() => {
+  offDeviceLoginResult()
+  // 页面关闭即取消在途轮询（重复点击的取消由主进程 start 内部兜底）
+  void window.aurora.center.deviceLoginCancel()
+})
+
+/**
+ * 「登录账户」（设备授权登录，docs/12 §4.3）：把服务器地址交给主进程，
+ * 主进程打开 Center 网页确认页并后台轮询。触发成功后按钮停在等待态，
+ * 直到结果推送（登录成功 / 过期 / 拒绝 / 出错）把它带回正常态。
+ */
+async function deviceLogin(): Promise<void> {
+  if (deviceLoginPending.value) return
+  message.value = null
+  error.value = null
+  const trimmedUrl = serverUrl.value.trim()
+  if (trimmedUrl === '') {
+    error.value = '请先填写服务器地址'
+    return
+  }
+  deviceLoginPending.value = true
+  const result = await window.aurora.center.deviceLogin({
+    serverUrl: trimmedUrl,
+    // 主进程以持久化的 clientId 为准；这里带上只做展示一致性（可能尚未生成）
+    ...(clientId.value === '' ? {} : { clientId: clientId.value }),
+  })
+  if (!result.ok) {
+    deviceLoginPending.value = false
+    error.value = result.message
+    return
+  }
+  message.value = '已打开浏览器，请在 Center 网页确认登录…'
+}
 
 /**
  * 整卡保存：patch 只带本卡草稿值。
@@ -104,9 +168,9 @@ function tookEffect(sent: Partial<CenterSettings>): boolean {
 }
 
 /**
- * 「登录并连接」：账号口令经 `center:login` 发给主进程，由主进程调 Center 的
- * `/api/client/login` 换令牌。成功后主进程已写入令牌、记住账号并启用连接
- * （连接器自动重连），这里只刷新展示并清空密码框。
+ * 「密码登录」（回落表单，docs/12 §3）：账号密码经 `center:login` 发给主进程，
+ * 由主进程调 Center 的 `/api/client/login` 换令牌。成功后主进程已写入令牌、
+ * 记住账号并启用连接（连接器自动重连），这里只刷新展示并清空密码框。
  */
 async function login(): Promise<void> {
   // 重入守卫：Enter 与按钮共用本函数；并发登录会互相吊销令牌（每次登录重发并吊销
@@ -208,13 +272,37 @@ async function login(): Promise<void> {
           />
         </SettingField>
 
+        <!--
+          主按钮：设备授权登录（docs/12 §4.3）。点击后主进程打开 Center 网页确认页
+          并后台轮询；按钮停在等待态直到结果推送（成功 / 过期 / 拒绝 / 出错）。
+        -->
+        <SettingField
+          data-field="center.deviceLogin"
+          label="登录账户"
+          hint="推荐：点击后打开浏览器，在 Center 网页登录并一键确认，桌面端自动拿到凭据（无需在此输密码）"
+        >
+          <div class="row wrap token-row">
+            <AppButton
+              variant="primary"
+              size="sm"
+              :disabled="deviceLoginPending"
+              @click="deviceLogin"
+            >
+              {{ deviceLoginPending ? '已打开浏览器，请在 Center 网页确认…' : '登录账户' }}
+            </AppButton>
+            <span class="badge" :class="tokenSet ? 'ok' : 'warn'">
+              {{ tokenSet ? '已登录' : '未登录' }}
+            </span>
+          </div>
+        </SettingField>
+
         <SettingField
           data-field="center.account"
           label="Center 账号"
           :hint="
             tokenSet
               ? '已登录（重新登录可更换账号 / 刷新凭据）'
-              : '由 Center 管理员创建的账号；登录后本机归属该账号（改动只在点「登录并连接」时生效，不随「保存」提交）'
+              : '由 Center 管理员创建的账号；登录后本机归属该账号（仅密码登录回落表单使用，改动不随「保存」提交）'
           "
         >
           <input
@@ -227,10 +315,11 @@ async function login(): Promise<void> {
           />
         </SettingField>
 
+        <!-- 回落表单：不想切浏览器的场景用账号密码直登（docs/12 §3） -->
         <SettingField
           data-field="center.password"
           label="登录密码"
-          hint="只在点「登录并连接」时使用一次，不保存在本机；页面不回显"
+          hint="密码登录（备用）：只在点「密码登录」时使用一次，不保存在本机；页面不回显"
         >
           <div class="row wrap token-row">
             <input
@@ -242,12 +331,7 @@ async function login(): Promise<void> {
               placeholder="Center 账号密码"
               @keydown.enter="login"
             />
-            <AppButton variant="primary" size="sm" :disabled="loggingIn" @click="login">
-              登录并连接
-            </AppButton>
-            <span class="badge" :class="tokenSet ? 'ok' : 'warn'">
-              {{ tokenSet ? '已登录' : '未登录' }}
-            </span>
+            <AppButton size="sm" :disabled="loggingIn" @click="login">密码登录</AppButton>
           </div>
         </SettingField>
 

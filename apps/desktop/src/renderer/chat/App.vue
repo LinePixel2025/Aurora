@@ -83,6 +83,7 @@ const {
   switchSession: rawSwitchSession,
   newSession,
   setArchived,
+  setSessionProject,
 } = chat
 const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
@@ -182,6 +183,19 @@ const currentTitle = computed(() => {
   const current = sessions.value.find((item) => item.id === sessionId.value)
   return sessionTitle(current?.title ?? '')
 })
+
+/**
+ * 当前会话绑定的项目 id（docs/06 §5.1 会话级项目）：右栏「会话项目」下拉的回显值。
+ * 未绑定的会话主进程不回 `projectId` 键 → `''`（下拉显示「未指定（跟随全局）」）。
+ */
+const currentSessionProjectId = computed(
+  () => sessions.value.find((item) => item.id === sessionId.value)?.projectId ?? '',
+)
+
+/** 右栏「会话项目」下拉的选择回调：空串 = 清除绑定（会话回落全局当前项目） */
+async function onBindSessionProject(projectId: string): Promise<void> {
+  await setSessionProject(sessionId.value, projectId)
+}
 
 onMounted(() => {
   offSensitiveTool = window.aurora.proactive.onSensitiveTool((request) => {
@@ -1213,7 +1227,12 @@ async function markGuideDone(): Promise<void> {
       <div v-if="jobsOpen" class="jobs-host" data-field="chat.jobs">
         <JobPanel :jobs="jobs" @resume="onResumeJob" @cancel="onCancelJob" />
       </div>
-      <ContextPanel :todos="currentTodos" />
+      <ContextPanel
+        :todos="currentTodos"
+        :session-id="sessionId"
+        :session-project-id="currentSessionProjectId"
+        @bind-session-project="onBindSessionProject"
+      />
     </aside>
   </div>
 </template>

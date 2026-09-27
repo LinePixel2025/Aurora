@@ -36,7 +36,36 @@ const windowStore = useWindowStore()
 const perception = usePerceptionStore()
 
 /** 当前会话的任务清单（App.vue 从消息流里最后一次 todo_write 解析得出；空数组 = 无清单） */
-const props = withDefaults(defineProps<{ todos?: TodoRow[] }>(), { todos: () => [] })
+const props = withDefaults(
+  defineProps<{
+    todos?: TodoRow[]
+    /** 当前会话 id（「会话项目」卡的绑定目标；缺省 = 拿不到会话，整卡不渲染） */
+    sessionId?: string
+    /** 当前会话绑定的项目 id；`''` / 缺省 = 未绑定（跟随全局） */
+    sessionProjectId?: string
+  }>(),
+  { todos: () => [], sessionId: '', sessionProjectId: '' },
+)
+
+/** 绑定 / 解绑会话项目（App.vue → useChat.setSessionProject；空串 = 清除绑定） */
+const emit = defineEmits<{ (event: 'bindSessionProject', projectId: string): void }>()
+
+// ───────────────────────── 会话项目（v17，docs/06 §5.1） ─────────────────────────
+
+/**
+ * 会话级项目（docs/06 §5.1）：本会话可以绑定 `projects.list` 里的某一项，
+ * 绑定后该会话的缺省工作目录 / 项目根边界 / AGENTS.md 注入 / auto 档边界都以它为准；
+ * 未绑定（下拉选「未指定」）回落全局当前项目，再按原有链回落。
+ *
+ * 没有可绑定的项目（`projects.list` 为空）时整卡不渲染 —— 绑定一个空列表没有意义，
+ * 项目登记入口在设置页。center- 等远程会话与本会话同一条逻辑，不做特殊分支。
+ */
+const projectOptions = computed(() => settingsStore.settings?.projects.list ?? [])
+
+function onSessionProjectChange(event: Event): void {
+  const value = (event.target as HTMLSelectElement | null)?.value ?? ''
+  emit('bindSessionProject', value)
+}
 
 /** 进度摘要：已完成 / 总数（清单卡头右上角） */
 const todoProgress = computed(() => {
@@ -401,6 +430,34 @@ watch(project, () => {
       </section>
     </template>
 
+    <!--
+      ── 通用：会话项目（v17，docs/06 §5.1；任何模式都渲染，无可绑定项目整卡不渲染） ──
+      本会话绑定 projects.list 里的某一项：缺省工作目录 / 项目根边界 / AGENTS.md / auto 档
+      边界都以它为准；「未指定」回落全局当前项目（上面的「当前项目」卡显示的就是那份）。
+    -->
+    <section
+      v-if="props.sessionId !== '' && projectOptions.length > 0"
+      class="ctx-card"
+      data-field="context.session-project-card"
+    >
+      <header class="ctx-head">
+        <FolderOpen :size="15" :stroke-width="1.6" class="ctx-icon" aria-hidden="true" />
+        <strong>会话项目</strong>
+      </header>
+      <p class="tiny muted ctx-line">本会话绑定的项目（未指定时跟随全局当前项目）：</p>
+      <select
+        class="session-project-select"
+        data-field="context.session-project"
+        :value="props.sessionProjectId"
+        @change="onSessionProjectChange"
+      >
+        <option value="">未指定（跟随全局）</option>
+        <option v-for="item in projectOptions" :key="item.id" :value="item.id">
+          {{ item.name }}
+        </option>
+      </select>
+    </section>
+
     <!-- ── 通用：当前项目（v13，docs/06 §5.1；任何模式都渲染，无项目整卡不渲染） ── -->
     <section v-if="project !== null" class="ctx-card" data-field="context.project-card">
       <header class="ctx-head">
@@ -604,6 +661,17 @@ watch(project, () => {
 .ctx-actions {
   display: flex;
   gap: var(--space-2);
+}
+
+/* 会话项目下拉：与卡片内文案同宽，观感对齐 ctx-path（细边框 + 次级填充） */
+.session-project-select {
+  width: 100%;
+  padding: 6px var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--fill-2);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
 }
 
 .ctx-tips {

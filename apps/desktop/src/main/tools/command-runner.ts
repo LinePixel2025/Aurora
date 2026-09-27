@@ -92,7 +92,8 @@ export function createCommandRunner(options: CommandRunnerOptions): GuardedComma
     //（否则"探一个不存在的根外路径"会变成探测文件系统存在性的信道）。
     if (request.cwd !== undefined && request.cwd !== '') {
       try {
-        await resolveWithin(request.cwd, request.allowOutside === true, guard)
+        // `request.sessionId` 透传给 guard：cwd 边界按**会话**解析（会话绑定项目 > 全局，docs/06 §5.1）
+        await resolveWithin(request.cwd, request.allowOutside === true, guard, request.sessionId)
       } catch (error) {
         // 只有"路径越界"才在这里收口；其它异常（读取配置本身出错之类）原样抛给内核，
         // 由它渲染成「命令执行失败：…」——**都不会启动进程**（fail-closed）。

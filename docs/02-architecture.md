@@ -180,6 +180,12 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
 - **`chat:event` 事件带 `seq` 与 `round`**（2026-09）：`seq` 是会话内单调序号（主进程 `emit`
   统一分配），`round` 是本次请求的工具调用轮次。渲染层据此排序消息、丢弃陈旧请求的迟到事件、
   把思考链绑到正确的助手消息上（口径见 `06 §16.1`）。
+- **会话项目通道 `chat:setSessionProject`**（v17，2026-09）：绑定 / 解绑**单个会话**的项目
+  （入参 `{ sessionId, projectId }`，`projectId` 空串 = 清除绑定）。状态写在会话文件自身的
+  `meta.projectId`（与 `chat:archiveSession` 同一条路，**不是配置项**、不进迁移链）；
+  绑定到 `projects.list` 里不存在的项目返回 `{ ok: false }` 而不静默。
+  主进程 await 落盘完成后才返回，渲染层随后拉 `chat:sessions` 读回显（沿用「写后拉取」惯例，
+  会话列表没有推送通道）；解析链与消费方见 `06 §5.1`。
 - 大 payload（文件全文）只在主进程 / utilityProcess 内部流转，不进渲染进程。
 
 ## 7. 生命周期与容错

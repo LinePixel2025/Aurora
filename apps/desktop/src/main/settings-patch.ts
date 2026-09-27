@@ -268,7 +268,7 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
   // （只传 `{ terminal: {...} }` 会把 files / open 静默丢掉，设置页必须带完整的树）。
   if (patch.agent !== undefined) Object.assign(draft.agent, patch.agent)
   // Aurora Center（v16，docs/12）：顶层浅合并。补丁类型已排除 `tokenEnc`，
-  // 这里再运行期剥一次 —— 配对令牌只走 `setSecrets`，构造出的 patch 洗不掉已存密文。
+  // 这里再运行期剥一次 —— 客户端令牌只走 `setSecrets`，构造出的 patch 洗不掉已存密文。
   if (patch.center !== undefined) {
     const center = { ...patch.center } as Record<string, unknown>
     delete center['tokenEnc']

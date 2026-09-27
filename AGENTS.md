@@ -255,9 +255,20 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   （`CENTER_REMOTE_CONFIG_PREFIXES`），两条通道语义不同别混改；
   ④ 远程补丁应用前必须先在 `structuredClone` 副本上演练——`SettingsStore.mutate`
   的 draft 是**活对象**，失败半写会污染内存态。
+  ⑤（2026-09 扩展轮）确认卡网页批复：**只有 `center-` 前缀会话**的敏感工具确认会经
+  connector 推 Center（`confirm.request`），网页批复下发 `confirm.resolve` 命令最终调
+  `proactive.resolve`（对已结算 confirmId 幂等，本地卡与网页卡先到先得）；设备授权登录
+  （`center:deviceLogin` IPC）与账号密码直登的**凭据落库路径共用同一函数**，改落库只改一处；
+  上传文件 24h TTL 清理在 `packages/center/src/files.ts`（启动 + 每 15 分钟一轮）。
 - **远程会话与本地发送是同一条链**：Center 的 `session.input` → `SessionBridge` →
   `agent.send({ origin: 'center' })`（`SendMessageRequest.origin` 已放宽）。
   只转发 `center-` 前缀会话的事件；别在别处再写一条"远程专用"发送通路。
+- **会话级项目的解析唯一口径**（2026-09，docs/06 §5.1）：`main/tools/session-project.ts` 的
+  `createSessionProjectResolver` —— 回落链是**会话绑定项目（`SessionMeta.projectId`）>
+  `projects.current` > `agent.tools.workspaceDir` > 主目录**；工具缺省 cwd / 搜索根、
+  file-port 边界、confirmTool 的 auto 档根内免确认、AGENTS.md 指令注入**全部按会话现解析**
+  （getter 注入，同 `agent.loop` 上限套路）。不要在执行链上再写第二套项目根解析，
+  也别把会话项目塞回全局设置或 CONFIG_VERSION 迁移链（它是会话数据）。
 - **SkillsService 的目录监听**（`startWatching`）：改 `skills.userDir` 走 `reconfigure`
   时会 `rearmWatcher`，新增监听路径时记得同样处理；create-skill 技能写文件后
   依赖这个监听自动重扫，没有任何"刷新"仪式。

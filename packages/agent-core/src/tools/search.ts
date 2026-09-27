@@ -23,6 +23,7 @@ import {
   DEFAULT_SEARCH_MAX_RESULTS,
   MAX_MATCH_LINE_CHARS,
   MAX_SEARCH_MAX_RESULTS,
+  outsideGuard,
 } from './files.js'
 import type { FilePort, FindFilesResult, SearchMatch, SearchTextResult } from './files.js'
 import { isValidGlobPattern, MAX_GLOB_LENGTH } from './globPattern.js'
@@ -31,12 +32,25 @@ import type { ToolDefinition, ToolResult } from './registry.js'
 /** `grep.pattern` 的长度上限：正则源码过长多半是误传（与 glob 模式上限同值，但各自独立） */
 export const MAX_GREP_PATTERN_LENGTH = 200
 
+/**
+ * 缺省搜索根：静态字符串，或**按会话解析**的取值器（docs/06 §5.1 会话级项目）。
+ *
+ * 取值器形态供装配层注入「会话绑定的项目根 > 全局当前项目 > workspaceDir > 主目录」
+ * 的完整回落链（每次工具执行即时调用）；字符串形态保持向后兼容（单测 / 老调用方）。
+ */
+export type DefaultSearchRoot = string | ((sessionId: string | undefined) => string)
+
 export interface SearchToolOptions {
   files: FilePort
   /** `agent.tools.search.maxResults`（钳制到 1..MAX_SEARCH_MAX_RESULTS） */
   maxResults: number
-  /** 搜索根缺省值（装配层注入**生效工作目录**：docs/06 §5.1 三级回落 项目根 > workspaceDir > 主目录） */
-  defaultRoot: string
+  /** 搜索根缺省值（装配层注入**生效工作目录**：docs/06 §5.1 回落链 会话项目 > 项目根 > workspaceDir > 主目录） */
+  defaultRoot: DefaultSearchRoot
+}
+
+/** 解析缺省搜索根（字符串原样返回，取值器按会话现调） */
+function resolveDefaultRoot(defaultRoot: DefaultSearchRoot, sessionId: string | undefined): string {
+  return typeof defaultRoot === 'function' ? defaultRoot(sessionId) : defaultRoot
 }
 
 /**
@@ -59,7 +73,11 @@ export function createSearchTools(options: SearchToolOptions): ToolDefinition[] 
  * 要统计命中数量得用 `run_command`（逐次确认），因此 description 里明确拒掉这个期待。
  * 参数非法（空 / 超长 / 编译不过 / 嵌套无界量词 / `include` 超长）一律 `isError` 且**不触碰端口**。
  */
-function createGrepTool(files: FilePort, maxResults: number, defaultRoot: string): ToolDefinition {
+function createGrepTool(
+  files: FilePort,
+  maxResults: number,
+  defaultRoot: DefaultSearchRoot,
+): ToolDefinition {
   return {
     name: 'grep',
     description: [
@@ -126,7 +144,8 @@ function createGrepTool(files: FilePort, maxResults: number, defaultRoot: string
         }
       }
 
-      const root = readOptionalString(record, 'path') ?? defaultRoot
+      const root =
+        readOptionalString(record, 'path') ?? resolveDefaultRoot(defaultRoot, ctx.sessionId)
       const include = readOptionalString(record, 'include')
       // 与 `pattern` 的长度上限对称：`include` 也是 glob 模式（同一个 `MAX_GLOB_LENGTH`）
       if (include !== undefined && include.length > MAX_GLOB_LENGTH) {
@@ -142,8 +161,8 @@ function createGrepTool(files: FilePort, maxResults: number, defaultRoot: string
           pattern,
           maxResults,
           ...(include === undefined ? {} : { include }),
-          // 已获用户批准时才带上越界放行标记（缺省不带 = 端口照旧拦截）
-          ...(ctx.approvedByUser === true ? { allowOutside: true } : {}),
+          // 放行标记只在已获批准时带；会话 id 在有会话上下文时总是透传（端口按会话解析边界根）
+          ...outsideGuard(ctx),
         })
         return renderGrepResult(result, pattern, maxResults)
       } catch (error) {
@@ -163,7 +182,11 @@ function createGrepTool(files: FilePort, maxResults: number, defaultRoot: string
  * 模式语法与匹配逻辑全部来自 `globPattern.ts`（`include` 过滤、主进程遍历、
  * `run_command` 免确认列表共用同一份），这里只做「长度 + 花括号配对」的合法性把关。
  */
-function createGlobTool(files: FilePort, maxResults: number, defaultRoot: string): ToolDefinition {
+function createGlobTool(
+  files: FilePort,
+  maxResults: number,
+  defaultRoot: DefaultSearchRoot,
+): ToolDefinition {
   return {
     name: 'glob',
     description: [
@@ -229,14 +252,15 @@ function createGlobTool(files: FilePort, maxResults: number, defaultRoot: string
         }
       }
 
-      const root = readOptionalString(record, 'path') ?? defaultRoot
+      const root =
+        readOptionalString(record, 'path') ?? resolveDefaultRoot(defaultRoot, ctx.sessionId)
       try {
         const result = await files.findFiles({
           root,
           pattern,
           maxResults: limit,
-          // 与 grep 同款：仅已获批准时带放行标记
-          ...(ctx.approvedByUser === true ? { allowOutside: true } : {}),
+          // 与 grep 同款：放行标记仅已获批准时带，sessionId 按会话透传
+          ...outsideGuard(ctx),
         })
         return renderGlobResult(result, pattern, limit)
       } catch (error) {

@@ -3295,10 +3295,10 @@ export const SETTINGS_VOICE_FIELDS_SCRIPT = `(() => {
 })()`
 
 /**
- * 「Aurora Center」页探针（v0.2.1 账号登录改造后的卡片结构）：
- * 连接设置卡必须含 开关 / 服务器地址 / 展示名 / 账号 / 密码（write-only）/「登录并连接」
- * 按钮 / clientId 只读位；隔离 userData 无令牌 → 徽章必须是「未登录」、clientId 显示
- * 「尚未生成」；连接状态卡（5s 轮询）必须常在。
+ * 「Aurora Center」页探针（v0.2.2 设备授权登录改造后的卡片结构）：
+ * 连接设置卡必须含 开关 / 服务器地址 / 展示名 / 账号 / 密码（write-only）/「登录账户」
+ * （设备授权主按钮）/「密码登录」（直登回落按钮）/ clientId 只读位；隔离 userData 无令牌 →
+ * 徽章必须是「未登录」、clientId 显示「尚未生成」；连接状态卡（5s 轮询）必须常在。
  */
 export const SETTINGS_CENTER_FIELDS_SCRIPT = `(() => {
   try {
@@ -3310,7 +3310,8 @@ export const SETTINGS_CENTER_FIELDS_SCRIPT = `(() => {
     const account = document.querySelector('[data-field="center.account"] input[type="text"]')
     const password = document.querySelector('[data-field="center.password"] input[type="password"]')
     const buttons = Array.from(document.querySelectorAll('button')).map((b) => (b.textContent || '').trim())
-    const loginButton = buttons.indexOf('登录并连接')
+    const deviceLoginButton = buttons.indexOf('登录账户')
+    const passwordLoginButton = buttons.indexOf('密码登录')
     const badges = Array.from(document.querySelectorAll('.badge')).map((b) => (b.textContent || '').trim())
     const statusField = count('[data-field="center.status"]')
 
@@ -3322,7 +3323,8 @@ export const SETTINGS_CENTER_FIELDS_SCRIPT = `(() => {
         displayNamePresent: displayName !== null,
         accountPresent: account !== null,
         passwordWriteOnly: password !== null && password.getAttribute('type') === 'password',
-        loginButtonPresent: loginButton !== -1,
+        deviceLoginButtonPresent: deviceLoginButton !== -1,
+        passwordLoginButtonPresent: passwordLoginButton !== -1,
         badgeNotLoggedIn: badges.indexOf('未登录') !== -1,
         badgeLoggedInAbsent: badges.indexOf('已登录') === -1,
         clientIdPlaceholder: (document.body.textContent || '').indexOf('尚未生成') !== -1,
@@ -3334,7 +3336,8 @@ export const SETTINGS_CENTER_FIELDS_SCRIPT = `(() => {
         displayName !== null &&
         account !== null &&
         password !== null &&
-        loginButton !== -1 &&
+        deviceLoginButton !== -1 &&
+        passwordLoginButton !== -1 &&
         badges.indexOf('未登录') !== -1 &&
         badges.indexOf('已登录') === -1 &&
         statusField > 0,

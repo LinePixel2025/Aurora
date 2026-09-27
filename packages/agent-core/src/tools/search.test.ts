@@ -230,8 +230,14 @@ describe('grep 参数校验', () => {
 
     expect(fakes.calls.searchText).toEqual([
       // 缺省根来自装配层注入的 defaultRoot；`include` 没传时**不带这个键**（端口按缺省不过滤处理）
-      { root: DEFAULT_ROOT, pattern: 'foo', maxResults: 200 },
-      { root: 'D:\\other', pattern: 'foo', maxResults: 200, include: '*.{ts,tsx}' },
+      { root: DEFAULT_ROOT, pattern: 'foo', maxResults: 200, sessionId: 'test-session' },
+      {
+        root: 'D:\\other',
+        pattern: 'foo',
+        maxResults: 200,
+        include: '*.{ts,tsx}',
+        sessionId: 'test-session',
+      },
     ])
   })
 
@@ -426,7 +432,7 @@ describe('glob', () => {
     expect(result.content).toBe('搜索根：D:\\work（匹配 2 个文件）\n\nsrc/a.ts\nsrc/b.ts')
     expect(result.summary).toBe('找到 2 个文件')
     expect(fakes.calls.findFiles).toEqual([
-      { root: DEFAULT_ROOT, pattern: '**/*.ts', maxResults: 200 },
+      { root: DEFAULT_ROOT, pattern: '**/*.ts', maxResults: 200, sessionId: 'test-session' },
     ])
   })
 
@@ -576,10 +582,10 @@ describe('grep / glob 的越界放行标记（docs/06 §11.2）', () => {
     await toolOf(tools, 'glob').execute({ pattern: '**/*.ts' }, ctx)
 
     expect(fakes.calls.searchText).toEqual([
-      { root: DEFAULT_ROOT, pattern: 'foo', maxResults: 200 },
+      { root: DEFAULT_ROOT, pattern: 'foo', maxResults: 200, sessionId: 'test-session' },
     ])
     expect(fakes.calls.findFiles).toEqual([
-      { root: DEFAULT_ROOT, pattern: '**/*.ts', maxResults: 200 },
+      { root: DEFAULT_ROOT, pattern: '**/*.ts', maxResults: 200, sessionId: 'test-session' },
     ])
   })
 

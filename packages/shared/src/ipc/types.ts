@@ -537,12 +537,30 @@ export interface ChatSessionSummary {
    * 都表示「不在归档分组」，语义等价。归档会话**照常出现在列表里**，由渲染层分组，不做过滤。
    */
   archived?: boolean
+  /**
+   * 会话绑定的项目 id（docs/06 §5.1 会话级项目，`sessions/<id>.json` 的 `meta.projectId`）。
+   * 未绑定的会话**不含这个键**：渲染层据此把下拉框显示成「未指定（跟随全局）」。
+   */
+  projectId?: string
 }
 
 /** 归档 / 取消归档请求（`chat:archiveSession`，docs/06 §4） */
 export interface ChatArchiveRequest {
   sessionId: string
   archived: boolean
+}
+
+/**
+ * 绑定 / 解绑会话项目（`chat:setSessionProject`，docs/06 §5.1 会话级项目）。
+ *
+ * `projectId` 是 `projects.list` 里某一项的 id；**空串 = 清除绑定**（回落全局
+ * `projects.current`）。状态写在会话文件自身的 `meta` 里（与归档同一条路），
+ * **不是配置项**、不进 `CONFIG_VERSION` 迁移链。
+ */
+export interface ChatSessionProjectRequest {
+  sessionId: string
+  /** 目标项目 id；空串 = 清除绑定 */
+  projectId: string
 }
 
 // ───────────────────────── 感知（P5 补全） ─────────────────────────
@@ -1009,6 +1027,30 @@ export interface CenterLoginResult {
   tokenPersisted: boolean
 }
 
+/**
+ * 设备授权登录请求（docs/12 §4.3）：渲染层只提供服务器地址；主进程负责
+ * clientId（持久化的优先，缺失时自动生成并持久化）。`clientId` 仅作展示值回传，
+ * 主进程不以此为准。
+ */
+export interface CenterDeviceLoginRequest {
+  serverUrl: string
+  clientId?: string
+}
+
+/** 设备授权登录的触发回执：`started` = 已打开确认页并开始后台轮询 */
+export interface CenterDeviceLoginStarted {
+  started: true
+  /** 打开给用户确认的网页地址 */
+  verifyUrl: string
+}
+
+/** 设备授权登录最终结果（`center:deviceLoginResult` 推送，docs/12 §4.3） */
+export type CenterDeviceLoginResult =
+  | { status: 'approved' }
+  | { status: 'expired' }
+  | { status: 'denied' }
+  | { status: 'error'; message: string }
+
 export interface AuroraApi {
   app: {
     getInfo(): Promise<Result<AppInfo>>
@@ -1146,6 +1188,14 @@ export interface AuroraApi {
      */
     archiveSession(request: ChatArchiveRequest): Promise<Result<{ archived: boolean }>>
     /**
+     * 绑定 / 解绑一个会话的项目（docs/06 §5.1 会话级项目）。
+     *
+     * 状态写在会话文件自身的 `meta.projectId` 里；**幂等**，且主进程会等到落盘完成才返回，
+     * 因此调用后紧跟一次 `sessions()` 一定能读到新绑定。`projectId` 空串 = 清除绑定；
+     * 绑定到不存在的项目返回 `{ ok: false }`（静默成功会让用户以为绑定生效了）。
+     */
+    setSessionProject(request: ChatSessionProjectRequest): Promise<Result<{ projectId: string }>>
+    /**
      * Job（任务）列表（v15，docs/06 §4.1）。
      *
      * 缺省按 `updatedAt` 倒序；给了 `sessionId` 就只看该会话。界面的「任务」面板靠它水合 ——
@@ -1206,9 +1256,19 @@ export interface AuroraApi {
     install(): Promise<Result<boolean>>
     onStateChanged(listener: (state: UpdateState) => void): () => void
   }
-  /** Aurora Center 连接（docs/12）：设置页展示连接机与诊断信息 + 账号登录（v0.2.1） */
+  /** Aurora Center 连接（docs/12）：设置页展示连接机与诊断信息 + 账号 / 设备授权登录 */
   center: {
     status(): Promise<Result<CenterConnectionStatus>>
     login(request: CenterLoginRequest): Promise<Result<CenterLoginResult>>
+    /**
+     * 设备授权登录（docs/12 §4.3）：主进程打开确认页并按建议间隔后台轮询，
+     * **立即**回执（不等用户确认）；最终结果经 onDeviceLoginResult 推送。
+     * 重复调用会取消上一次的轮询。
+     */
+    deviceLogin(request: CenterDeviceLoginRequest): Promise<Result<CenterDeviceLoginStarted>>
+    /** 设备授权登录的最终结果推送（on/off 成对） */
+    onDeviceLoginResult(listener: (result: CenterDeviceLoginResult) => void): () => void
+    /** 取消在途的设备授权轮询（设置页关闭时调用；幂等，没有在途轮询时是 no-op） */
+    deviceLoginCancel(): Promise<Result<boolean>>
   }
 }

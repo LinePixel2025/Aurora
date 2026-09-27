@@ -274,13 +274,16 @@ export function createConfirmTool(options: {
   /** `run_command` 的免确认模式列表（每次调用即时读） */
   allowPatterns?: () => readonly string[]
   /**
-   * 当前项目根（绝对路径）；无项目时返回 undefined。
+   * 按会话解析的项目根（绝对路径）；无项目时返回 undefined（允许 async：会话绑定
+   * 存在会话文件里，装配层可能要先读盘）。缺省按全局 `projects.current` 判定。
    *
    * `auto` 档的免确认边界就是它：**根内免确认、根外照常弹卡**。
-   * 无项目时没有"根内"可言 —— 此时 `auto` 档与 v13 之前"关掉确认总开关"的行为一致
-   * （完全不弹卡），否则老用户一旦关掉那个开关就会突然被逐次询问，等于静默改回了旧行为。
+   * 会话级项目（docs/06 §5.1）起它按 `info.sessionId` 解析——会话绑定了项目就用那个根，
+   * 未绑定 / 绑定已失效回落全局当前项目；无项目时没有"根内"可言 —— 此时 `auto` 档与
+   * v13 之前"关掉确认总开关"的行为一致（完全不弹卡），否则老用户一旦关掉那个开关
+   * 就会突然被逐次询问，等于静默改回了旧行为。
    */
-  projectRoot?: () => string | undefined
+  projectRoot?: (sessionId: string) => Promise<string | undefined>
   logger?: Logger
 }): ConfirmToolDecision {
   return async (info) => {
@@ -318,7 +321,8 @@ export function createConfirmTool(options: {
 
     // ── auto 档：只在项目根之内免确认 ──
     if (mode === 'auto') {
-      const root = options.projectRoot?.()
+      // 根按**会话**解析（会话绑定项目 > 全局当前项目，docs/06 §5.1）；允许 await 读盘
+      const root = await options.projectRoot?.(info.sessionId)
       if (root === undefined || root.trim() === '') {
         // 无项目：没有"根内"的判据。保持 v13 之前"关掉确认总开关 = 不再逐次询问"的语义，
         // 否则老用户会因为这次升级突然被反复询问（静默的行为回退）。

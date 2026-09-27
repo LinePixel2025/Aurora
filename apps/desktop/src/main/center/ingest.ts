@@ -1,6 +1,6 @@
 /**
  * `center_send_file` 的上传实现（docs/12 §5）：`POST /api/ingest/files`，
- * 配对令牌鉴权（`Authorization: Bearer` + `X-Client-Id`），流式读文件。
+ * 客户端令牌鉴权（`Authorization: Bearer` + `X-Client-Id`），流式读文件。
  *
  * v1 明确**不走代理**（`advanced.proxy` 对本通道无效）—— Center 地址是用户
  * 显式配置的可信目标，与 LLM 出网不同源；docs/12 §11 已注明。
@@ -50,7 +50,7 @@ export function httpOriginOf(serverUrl: string): string | undefined {
 export async function uploadFileToCenter(options: UploadOptions): Promise<UploadResult> {
   const origin = httpOriginOf(options.serverUrl)
   if (origin === undefined || options.token === '' || options.clientId === '') {
-    throw new CenterUploadError('Aurora Center 尚未配置（地址或配对令牌缺失）', 'E_NOT_CONFIGURED')
+    throw new CenterUploadError('Aurora Center 尚未配置（地址或登录凭据缺失）', 'E_NOT_CONFIGURED')
   }
   let stat
   try {

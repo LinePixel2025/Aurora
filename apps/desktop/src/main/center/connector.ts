@@ -61,6 +61,11 @@ export interface CenterConnectorDeps {
       error?: string
     }
   }
+  /**
+   * 结算一张在途敏感工具确认卡（`confirm.resolve` 命令，docs/12 §5.1）。
+   * 返回是否命中（false = 已超时 / 已被本地结算 / id 未知）；未注入时不拦截。
+   */
+  resolveConfirm?: (confirmId: string, approved: boolean) => boolean
   /** 连接事件回调：绑定时传入发往 Center 的发送函数，断开时传 undefined */
   bindSessionEmit?: (emit: ((message: unknown) => void) | undefined) => void
   onStatusChange?: (state: ConnectionState, lastError?: string) => void
@@ -161,7 +166,7 @@ export class CenterConnector {
       return
     }
     if (config.serverUrl.trim() === '' || config.token === '' || config.clientId === '') {
-      this.lastError = '尚未配置服务器地址或配对令牌'
+      this.lastError = '尚未配置服务器地址或登录凭据'
       this.setState('error')
       return
     }
@@ -371,6 +376,14 @@ export class CenterConnector {
         }
         this.socket?.send(JSON.stringify({ type: 'status', status: this.deps.statusSnapshot() }))
         reply(true)
+        return
+      }
+      case 'confirm.resolve': {
+        // 网页端对确认卡的批复（docs/12 §5.1）。`settled: false` 说明本地已超时 /
+        // 已被本地窗口结算 —— 也算 ok，网页端据此提示「已失效」而不是当错误；
+        // 幂等性由 proactive.resolve 保证（未知 confirmId 返回 false，不抛）。
+        const settled = this.deps.resolveConfirm?.(cmd.confirmId, cmd.approved) ?? false
+        reply(true, { settled })
         return
       }
       default:

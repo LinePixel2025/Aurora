@@ -96,6 +96,8 @@ export const IPC = {
      * **不是**配置项，所以这条通道与 settings 无关、也不进 `SETTINGS_READONLY_PREFIXES`。
      */
     archiveSession: 'chat:archiveSession',
+    /** 绑定 / 解绑会话项目（docs/06 §5.1 会话级项目）：写会话文件 meta.projectId，与 settings 无关 */
+    setSessionProject: 'chat:setSessionProject',
     /** Job（任务）列表 / 续跑 / 取消（v15，docs/06 §4.1） */
     jobs: 'chat:jobs',
     resumeJob: 'chat:resumeJob',
@@ -136,10 +138,16 @@ export const IPC = {
     install: 'update:install',
     stateChanged: 'update:stateChanged',
   },
-  /** Aurora Center 连接（docs/12）：状态查询 + 账号登录（v0.2.1，§3/§7） */
+  /** Aurora Center 连接（docs/12）：状态查询 + 账号登录（v0.2.1，§3/§7）+ 设备授权登录（§4.3） */
   center: {
     status: 'center:status',
     login: 'center:login',
+    /** 设备授权登录：触发后立即回执（已打开浏览器），最终结果走 deviceLoginResult 推送 */
+    deviceLogin: 'center:deviceLogin',
+    /** 设备授权登录的最终结果推送（on/off 成对） */
+    deviceLoginResult: 'center:deviceLoginResult',
+    /** 取消在途的设备授权轮询（设置页关闭时调用；幂等） */
+    deviceLoginCancel: 'center:deviceLoginCancel',
   },
 } as const
 

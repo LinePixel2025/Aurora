@@ -18,8 +18,14 @@ import type { ProjectFs } from './agentsFile.js'
 export interface ProjectInstructionsSource {
   fs: ProjectFs
   logger?: Logger
-  /** 同步取当前项目根（绝对路径）；无项目返回 undefined */
-  resolveRoot(): string | undefined
+  /**
+   * 取本次请求的项目根（绝对路径）；无项目返回 undefined。
+   *
+   * `sessionId` 是发起请求的会话：装配层据此解析**会话绑定的项目**（docs/06 §5.1），
+   * 未绑定 / 绑定已失效回落全局当前项目根。允许返回 `Promise`：会话绑定存在
+   * 会话文件里，装配层可能要先读一次盘（内核侧 `await` 即可，同步实现不受影响）。
+   */
+  resolveRoot(sessionId?: string): string | undefined | Promise<string | undefined>
   /** 同步取当前工作目录（绝对路径），作为逐层收集的下界 */
   resolveCwd(): string
   /** 同步取字节预算；返回 undefined 用默认 */
@@ -31,16 +37,18 @@ export interface ProjectInstructionsSource {
  *
  * 同一项目根且文件 mtime 未变时复用缓存文本（连 readFile 都不做）；
  * 无项目 / 收集结果为空 / 抛错时返回 `undefined`（**永不抛错**，失败只记 warn）。
+ * 返回的是 `sessionId => Promise`：系统提示词**每轮按会话组装**，项目根也按会话解析
+ * ——两个会话绑定了不同项目时，各自拿到各自项目的 AGENTS.md。
  */
 export function createProjectInstructionsSource(
   source: ProjectInstructionsSource,
-): () => Promise<string | undefined> {
+): (sessionId?: string) => Promise<string | undefined> {
   const logger = source.logger ?? createNoopLogger()
   /** root → 上一轮的「签名 + 文本」；按 root 隔离，切换项目不会串味 */
   const cache = new Map<string, { signature: string; text: string }>()
 
-  return async (): Promise<string | undefined> => {
-    const root = source.resolveRoot()
+  return async (sessionId?: string): Promise<string | undefined> => {
+    const root = await source.resolveRoot(sessionId)
     if (root === undefined) return undefined // 无项目：不碰缓存，也不记日志（正常情况）
 
     const cwd = source.resolveCwd()

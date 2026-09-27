@@ -19,6 +19,7 @@
  */
 import { computed, ref } from 'vue'
 import type { ChatSessionSummary } from '@aurora/shared'
+import { CENTER_SESSION_PREFIX } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import { useWindowDrag } from '../../shared/composables/useWindowDrag.js'
 import { useModeStore } from '../../shared/stores.js'
@@ -68,6 +69,11 @@ const { dragClass } = useWindowDrag('chat')
 const archiveOpen = ref(false)
 
 const modeName = computed(() => modeStore.current?.displayName ?? '未激活')
+
+/** 远程会话（center-*，docs/12 §5）：列表项上加一枚「Center」小标签区分来源 */
+function isCenterSession(id: string): boolean {
+  return id.startsWith(CENTER_SESSION_PREFIX)
+}
 
 /** 相对时间：刚刚 / N 分钟前 / 当天时刻 / 昨天 / 月-日（会话摘要来自 ISO 时间戳） */
 function formatRelativeTime(iso: string): string {
@@ -181,6 +187,12 @@ function formatRelativeTime(iso: string): string {
             @click="emit('select', item.id)"
           >
             <span class="item-title">{{ item.title.trim() === '' ? '新会话' : item.title }}</span>
+            <span
+              v-if="isCenterSession(item.id)"
+              class="item-tag tiny"
+              title="来自 Aurora Center 网页端"
+              >Center</span
+            >
             <span class="item-time tiny muted">{{ formatRelativeTime(item.updatedAt) }}</span>
           </button>
           <!--
@@ -244,6 +256,12 @@ function formatRelativeTime(iso: string): string {
               @click="emit('select', item.id)"
             >
               <span class="item-title">{{ item.title.trim() === '' ? '新会话' : item.title }}</span>
+              <span
+                v-if="isCenterSession(item.id)"
+                class="item-tag tiny"
+                title="来自 Aurora Center 网页端"
+                >Center</span
+              >
               <span class="item-time tiny muted">{{ formatRelativeTime(item.updatedAt) }}</span>
             </button>
             <button
@@ -511,6 +529,17 @@ function formatRelativeTime(iso: string): string {
 .item-time {
   flex: 0 0 auto;
   font-variant-numeric: var(--num-tabular);
+}
+
+/* 远程会话来源标签（center-*，docs/12 §5）：轻量药丸，弱于激活指示条 */
+.item-tag {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--aurora-blue) 16%, transparent);
+  color: var(--accent-text);
+  line-height: 16px;
+  letter-spacing: 0;
 }
 
 /* ── 归档分组：可点击的切换行（默认收起）+ 展开后的列表 ── */

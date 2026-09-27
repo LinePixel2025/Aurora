@@ -16,6 +16,11 @@ export interface CommandRequest {
   timeoutMs?: number
   signal?: AbortSignal
   /**
+   * 发起本次执行的会话（docs/06 §5.1 会话级项目）：runner 据此解析**该会话**的项目根边界
+   * （会话绑定项目 > 全局当前项目）。缺省 = 按全局当前项目根判定（单测 / 老调用方行为不变）。
+   */
+  sessionId?: string
+  /**
    * 越界放行标记（docs/06 §11.2 三档权限）：`cwd` 落在项目根之外时，
    * 由实现侧（`main/tools/command-runner.ts`）决定拦不拦。
    *
@@ -45,6 +50,15 @@ export interface CommandResult {
 
 export type CommandRunner = (request: CommandRequest) => Promise<CommandResult>
 
+/**
+ * 缺省工作目录：静态字符串，或**按会话解析**的取值器（docs/06 §5.1 会话级项目）。
+ *
+ * 取值器形态供装配层注入「会话绑定的项目根 > 全局当前项目 > workspaceDir > 主目录」
+ * 的完整回落链（每次工具执行即时调用，改绑定 / 改设置都无需重建工具）；
+ * 字符串形态保持向后兼容（单测 / 老调用方）。
+ */
+export type DefaultCommandCwd = string | ((sessionId: string | undefined) => string)
+
 export interface TerminalToolOptions {
   run: CommandRunner
   /** 默认超时（来自 agent.tools.terminal.timeoutMs） */
@@ -53,7 +67,7 @@ export interface TerminalToolOptions {
   maxOutputChars: number
   /** 单次请求可申请的超时硬上限，默认 300_000 */
   maxTimeoutMs?: number
-  defaultCwd: string
+  defaultCwd: DefaultCommandCwd
 }
 
 export const RUN_COMMAND_TOOL_NAME = 'run_command'
@@ -105,7 +119,7 @@ export function createTerminalTool(options: TerminalToolOptions): ToolDefinition
         }
       }
 
-      const cwd = parsed.cwd ?? options.defaultCwd
+      const cwd = parsed.cwd ?? resolveDefaultCwd(options.defaultCwd, ctx.sessionId)
       const timeoutMs = clampTimeout(parsed.timeoutMs ?? options.timeoutMs, maxTimeoutMs)
 
       let result: CommandResult
@@ -115,6 +129,10 @@ export function createTerminalTool(options: TerminalToolOptions): ToolDefinition
           cwd,
           timeoutMs,
           ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
+          // 会话 id 原样透传：runner 的项目根边界按会话解析（docs/06 §5.1）
+          ...(ctx.sessionId === undefined || ctx.sessionId === ''
+            ? {}
+            : { sessionId: ctx.sessionId }),
           // 已获用户批准时才带上放行标记：缺省不带（老调用方与直接调工具的单测行为不变）
           ...(ctx.approvedByUser === true ? { allowOutside: true } : {}),
         })
@@ -171,6 +189,11 @@ interface ParsedInput {
   command: string
   cwd: string | undefined
   timeoutMs: number | undefined
+}
+
+/** 解析缺省 cwd：字符串原样返回；取值器按会话现调（每次执行即时解析，不缓存） */
+function resolveDefaultCwd(defaultCwd: DefaultCommandCwd, sessionId: string | undefined): string {
+  return typeof defaultCwd === 'function' ? defaultCwd(sessionId) : defaultCwd
 }
 
 function readInput(input: unknown): ParsedInput {

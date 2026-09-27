@@ -252,6 +252,15 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       applyJobSummary(event.job)
       return
     }
+    // 远程会话（center-*，docs/12 §5）由网页端发起：会话在主进程落盘后，本窗口的
+    // 会话列表可能还没拉到它 —— 事件来自列表里没有的会话时补拉一次。拉回来之后
+    // 列表里就有了，后续事件不再触发；in-flight 守卫挡住流式期间的高频重入。
+    if (
+      event.sessionId !== sessionId.value &&
+      !sessions.value.some((item) => item.id === event.sessionId)
+    ) {
+      void refreshSessionsForUnknown()
+    }
     if (event.sessionId !== sessionId.value) return
     if (finishedRequests.has(event.requestId)) return
     if (activeRequest !== null && event.requestId !== activeRequest) return
@@ -620,6 +629,23 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     }))
   }
 
+  /**
+   * 未知会话事件触发的列表补拉（center-* 远程会话可见性机制）。
+   *
+   * 流式期间同一会话的事件逐 token 到达，重入时直接跳过（in-flight 守卫）：
+   * 一次 IPC 往返后列表里有了该会话，后续事件自然不再触发。
+   */
+  let refreshingUnknownSession = false
+  async function refreshSessionsForUnknown(): Promise<void> {
+    if (refreshingUnknownSession) return
+    refreshingUnknownSession = true
+    try {
+      await loadSessions()
+    } finally {
+      refreshingUnknownSession = false
+    }
+  }
+
   // ───────────────────────── 任务（Job，docs/06 §4.1） ─────────────────────────
 
   /**
@@ -765,6 +791,33 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       result = await window.aurora.chat.archiveSession({ sessionId: targetId, archived })
     } catch (cause) {
       // invoke 本身也可能抛（序列化失败等），与 send() 同款兜底
+      error.value = String(cause)
+      return false
+    }
+    if (!result.ok) {
+      error.value = result.message
+      return false
+    }
+    await loadSessions()
+    return true
+  }
+
+  /**
+   * 绑定 / 解绑一个会话的项目（docs/06 §5.1 会话级项目），随后重拉列表。
+   *
+   * 主进程侧是幂等且 await 落盘完成的（`SessionStore.setProject`，与 `setArchived`
+   * 同一条惯例），所以这里紧接的 `loadSessions()` 一定能读到新绑定 ——
+   * 不做本地乐观改写，避免「下拉框已变、磁盘还没写」的两份事实。
+   * `projectId` 空串 = 清除绑定（会话回落全局当前项目）。
+   *
+   * 失败只把错误写进 `error`（与其它会话操作同一口径），不抛。
+   */
+  async function setSessionProject(targetId: string, projectId: string): Promise<boolean> {
+    let result: Awaited<ReturnType<typeof window.aurora.chat.setSessionProject>>
+    try {
+      result = await window.aurora.chat.setSessionProject({ sessionId: targetId, projectId })
+    } catch (cause) {
+      // invoke 本身也可能抛（序列化失败等），与 send() / setArchived() 同款兜底
       error.value = String(cause)
       return false
     }
@@ -934,6 +987,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     cancelJob,
     /** 归档 / 取消归档（左栏分组与主区提示条共用，docs/07 §2.3） */
     setArchived,
+    /** 绑定 / 解绑会话项目（右栏「会话项目」下拉用，docs/06 §5.1 会话级项目） */
+    setSessionProject,
     switchSession,
     newSession,
     send,

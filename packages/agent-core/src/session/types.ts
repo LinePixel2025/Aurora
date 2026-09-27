@@ -64,6 +64,17 @@ export interface SessionMeta {
    * 读取侧已按字段白名单宽容归化，写入侧也只写已知字段，因此现在留着零成本。
    */
   pinned?: boolean
+  /**
+   * 会话绑定的项目 id（`projects.list` 里的某一项，docs/06 §5.1 会话级项目）。
+   *
+   * `''` 与 `undefined` 都视为「未指定」：未绑定（或绑定的项目已被删除）的会话
+   * 回落到 `projects.current`，再按原有链回落 `agent.tools.workspaceDir` / 主目录。
+   *
+   * 这是**会话数据**不是配置：存在会话文件自身的 `meta` 里，**不进 `config.json`**、
+   * 不进 `CONFIG_VERSION` 迁移链 —— 读取侧按白名单宽容归化（老文件缺字段 = 未绑定），
+   * 与 `archived` 同一套零迁移套路。
+   */
+  projectId?: string
 }
 
 /** `userData/sessions/<sessionId>.json` 的结构（v1 无 `meta`，读取侧必须容忍） */

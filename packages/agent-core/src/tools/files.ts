@@ -69,17 +69,32 @@ export interface ReadWholeTextResult {
 export interface OutsideGuardOptions {
   /** 用户已批准本次越界（缺省 `false`/缺省不传 = 按越界拦截） */
   allowOutside?: boolean
+  /**
+   * 本次调用的来源会话（docs/06 §5.1 会话级项目）：端口用它解析**该会话**的项目根边界
+   * （会话绑定项目 > 全局当前项目）。缺省 / 空串 = 端口按全局当前项目根判定
+   * （与 v17 之前的行为一致——单测直接调工具、老调用方都不带会话上下文）。
+   */
+  sessionId?: string
 }
 
 /**
- * 把「本次已获用户批准」折成端口参数：批准才带键，否则返回空对象。
+ * 把「本次已获用户批准」折成端口参数：批准才带 `allowOutside`，否则返回空对象。
  *
  * 刻意**不带 `allowOutside: false`**：端口的参数是「有没有放行标记」，
  * 多带一个 false 会让既有的逐字断言（`toEqual({ path, options: {...} })`）与
  * 老端口实现都要跟着改，属于白噪声改动。
+ *
+ * `sessionId` 在**有会话上下文**时总是带上（越界判定与放行无关，边界根要按会话解析）；
+ * 直调工具的单测/老调用方不带时端口自然回落全局。
  */
-function outsideGuard(ctx: { approvedByUser?: boolean }): OutsideGuardOptions {
-  return ctx.approvedByUser === true ? { allowOutside: true } : {}
+export function outsideGuard(ctx: {
+  approvedByUser?: boolean
+  sessionId?: string
+}): OutsideGuardOptions {
+  return {
+    ...(ctx.approvedByUser === true ? { allowOutside: true } : {}),
+    ...(ctx.sessionId === undefined || ctx.sessionId === '' ? {} : { sessionId: ctx.sessionId }),
+  }
 }
 
 /**

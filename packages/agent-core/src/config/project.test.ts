@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createDefaultSettings, createMemoryLogger } from '@aurora/shared'
 import type { ProjectConfig, Settings } from '@aurora/shared'
-import { resolveProject } from './project.js'
+import { resolveProject, resolveProjectRootById } from './project.js'
 
 const CWD = join(process.cwd(), 'work', 'cwd')
 
@@ -98,5 +98,39 @@ describe('resolveProject', () => {
 
     expect(result.current).toStrictEqual(second)
     expect(result.root).toBe(join(CWD, 'b-root'))
+  })
+})
+
+describe('resolveProjectRootById（会话级项目，docs/06 §5.1）', () => {
+  it('按传入 id 命中条目并归一 root（相对 root 按 cwd 展开）', () => {
+    const root = resolveProjectRootById(
+      settingsWith({ current: '', list: [project('p1', 'sub/dir'), project('p2', 'other')] }),
+      'p1',
+      { cwd: CWD },
+    )
+
+    expect(root).toBe(join(CWD, 'sub', 'dir'))
+  })
+
+  it('id 空白 / undefined → 未绑定，返回 undefined', () => {
+    const settings = settingsWith({ list: [project('p1', 'root')] })
+
+    expect(resolveProjectRootById(settings, '', { cwd: CWD })).toBeUndefined()
+    expect(resolveProjectRootById(settings, '   ', { cwd: CWD })).toBeUndefined()
+    expect(resolveProjectRootById(settings, undefined, { cwd: CWD })).toBeUndefined()
+  })
+
+  it('绑定指向已删除的项目 → 静默回落 undefined（不 warn：解析逐次执行，刷屏无益）', () => {
+    const logger = createMemoryLogger()
+    const settings = settingsWith({ current: 'p1', list: [project('p1', 'root')] })
+
+    expect(resolveProjectRootById(settings, 'ghost', { cwd: CWD, logger })).toBeUndefined()
+    expect(logger.entries).toEqual([])
+  })
+
+  it('命中条目的 root 为空白串 → 返回 undefined（与 resolveProject 同口径）', () => {
+    const settings = settingsWith({ list: [project('p1', '   ')] })
+
+    expect(resolveProjectRootById(settings, 'p1', { cwd: CWD })).toBeUndefined()
   })
 })

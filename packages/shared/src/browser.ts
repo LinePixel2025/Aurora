@@ -28,3 +28,6 @@ export * from './ipc/types.js'
 // 模式契约（仅类型）
 export * from './mode/types.js'
 export * from './agent/types.js'
+
+// Center 协议（CENTER_SESSION_PREFIX 等常量；该文件只有类型与字面量常量，无 Node 依赖）
+export * from './center/protocol.js'

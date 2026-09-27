@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { SessionBridge, type AgentLike } from './session-bridge.js'
+import { SessionBridge, toConfirmRequest, type AgentLike } from './session-bridge.js'
 import type { AgentEvent, Logger } from '@aurora/shared'
 
 function makeAgent(): AgentLike & { events: AgentEvent[]; emit(event: AgentEvent): void } {
@@ -103,5 +103,27 @@ describe('SessionBridge · 远程会话', () => {
       createdAt: 0,
     } as AgentEvent)
     expect(seen).toHaveLength(1)
+  })
+})
+
+describe('toConfirmRequest · 确认卡上行消息', () => {
+  it('SensitiveToolRequest → ConfirmRequestPayload：补 createdAt，其余字段原样对齐', () => {
+    const message = toConfirmRequest({
+      confirmId: 'confirm-abc-1',
+      toolName: 'run_command',
+      input: { command: 'npm test', cwd: 'D:/repo' },
+      sessionId: 'center-abc',
+      expiresAt: '2026-09-27T00:01:00.000Z',
+    })
+    expect(message.type).toBe('confirm.request')
+    expect(message.request).toMatchObject({
+      confirmId: 'confirm-abc-1',
+      sessionId: 'center-abc',
+      toolName: 'run_command',
+      input: { command: 'npm test', cwd: 'D:/repo' },
+      expiresAt: '2026-09-27T00:01:00.000Z',
+    })
+    // createdAt 是发送时刻：合法的 ISO 时间戳即可
+    expect(Number.isNaN(Date.parse(message.request.createdAt))).toBe(false)
   })
 })

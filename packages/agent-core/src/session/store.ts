@@ -43,6 +43,11 @@ const MAX_BACKUPS = 3
 export interface SessionSummary extends ChatSessionSummary {
   /** 已归档（照常出现在列表里，只是带标记；渲染层据此分组） */
   archived?: boolean
+  /**
+   * 会话绑定的项目 id（docs/06 §5.1 会话级项目）。未绑定的会话**不含这个键**
+   * （与 `archived` 同款：渲染层按「有没有键」区分「未绑定」与「绑定到某项目」）。
+   */
+  projectId?: string
 }
 
 export interface SessionStoreOptions {
@@ -252,6 +257,56 @@ export class SessionStore {
     await (this.writing.get(sessionId) ?? Promise.resolve())
   }
 
+  /**
+   * 会话绑定的项目 id（docs/06 §5.1 会话级项目，`chat:setSessionProject`）。
+   *
+   * - **幂等**：目标值与当前值相同（含「都未绑定」）→ 直接返回，不写盘；
+   * - 空串 / 全空白 = **清除绑定**（删掉键，不留一个空值）；
+   * - 先 `ensureLoaded`：别把已在盘上的消息冲掉（与 `setArchived` 同一条铁律）；
+   * - **await 写盘完成**：渲染层拿到 ok 后立刻拉 `chat:sessions` 一定能读到新绑定
+   *   （与 `setArchived` 的确定性约定一致）。
+   *
+   * 给一个从未落盘的空会话绑定项目会首次写出一个只有 meta、`messages: []` 的文件 ——
+   * 这是**预期行为**（与归档同款）：绑定本身需要一个落点。
+   */
+  async setProject(sessionId: string, projectId: string): Promise<void> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    const current = this.metaCache.get(id) ?? {}
+    const nextId = projectId.trim()
+    // 幂等判定按归一后的值：'' 与 undefined 都算「未绑定」，相互设置不算变更
+    if ((current.projectId ?? '') === nextId) return
+
+    const next: SessionMeta = { ...current }
+    if (nextId === '') delete next.projectId
+    else next.projectId = nextId
+    this.metaCache.set(id, next)
+    this.dirty.add(id)
+    this.scheduleWrite(id, 0)
+    await (this.writing.get(id) ?? Promise.resolve())
+  }
+
+  /**
+   * 会话绑定的项目 id（**同步**，只读内存缓存；'' / undefined 一律归一为 undefined）。
+   *
+   * 为什么是同步的：工具执行链上的端口边界（`file-port` / `command-runner` 的
+   * `workspaceRoot`）与缺省 cwd 都是**同步 getter**，等不了一次读盘。
+   * 这依赖一条装配层不变量：**会话的工具执行之前，`agentLoop` 已经 `sessions.get(sessionId)`**
+   * （`KernelAgentHost.run()` 组装历史时必然发生），因此执行期缓存必然已装载 ——
+   * 不确定装载与否的异步路径（确认钩子 / 指令注入）请用 `projectIdOf`。
+   */
+  projectOf(sessionId: string): string | undefined {
+    const projectId = this.metaCache.get(normalizeSessionId(sessionId))?.projectId
+    return projectId === undefined || projectId === '' ? undefined : projectId
+  }
+
+  /** 异步版 `projectOf`：必要时先读盘再取（确认钩子 / 指令注入等允许 await 的路径用）。 */
+  async projectIdOf(sessionId: string): Promise<string | undefined> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    return this.projectOf(id)
+  }
+
   /** 已落盘 / 已缓存的会话 id 列表。 */
   async listSessions(): Promise<string[]> {
     const ids = new Set<string>(this.cache.keys())
@@ -293,6 +348,7 @@ export class SessionStore {
         ).length,
         ...(activeId === undefined ? {} : { active: id === normalizeSessionId(activeId) }),
         ...(meta.archived === undefined ? {} : { archived: meta.archived }),
+        ...(this.projectOf(id) === undefined ? {} : { projectId: this.projectOf(id) }),
       })
     }
     return items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
@@ -558,12 +614,23 @@ function normalizeMeta(value: unknown): SessionMeta {
   if (typeof candidate['archived'] === 'boolean') meta.archived = candidate['archived']
   if (typeof candidate['archivedAt'] === 'string') meta.archivedAt = candidate['archivedAt']
   if (typeof candidate['pinned'] === 'boolean') meta.pinned = candidate['pinned']
+  if (typeof candidate['projectId'] === 'string') meta.projectId = candidate['projectId']
   return meta
 }
 
-/** 空 meta（无字段或字段全 undefined）判定：决定要不要往 payload 里写 `meta` 键 */
+/**
+ * 空 meta（无字段或字段全 undefined / 空串）判定：决定要不要往 payload 里写 `meta` 键。
+ *
+ * `projectId` 按归一口径参与判定：空串与 undefined 一样算「未绑定」，
+ * 不让 `"projectId": ""` 这种空值把每个会话文件都多写一行。
+ */
 function isEmptyMeta(meta: SessionMeta): boolean {
-  return meta.archived === undefined && meta.archivedAt === undefined && meta.pinned === undefined
+  return (
+    meta.archived === undefined &&
+    meta.archivedAt === undefined &&
+    meta.pinned === undefined &&
+    (meta.projectId === undefined || meta.projectId === '')
+  )
 }
 
 /** 会话标题最大长度（中文字符按 1 计） */
