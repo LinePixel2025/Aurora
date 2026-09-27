@@ -1,6 +1,6 @@
 # 12 · Aurora Center —— 网页端控制中心
 
-状态：`已定稿`（v0.2.0 随本设计首次落地）
+状态：`已定稿`（v0.2.0 随本设计首次落地；2026-09 扩展轮：注册、设备授权登录、确认卡网页批复、文件 24h 管理与自动删除、移动端适配，并删除手动配对令牌）
 
 Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控制台**：
 
@@ -11,7 +11,7 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
 - Center 可以远程修改客户端的一定配置（Agent 各项开关、切换模式），但受客户端侧
   **白名单**约束（见 §7）；
 - 服务器是**纯 Node 程序**，Windows / Linux 均可运行，带 `aurora-center` CLI
-  （一键启动、建账户、发配对令牌、自更新）；
+  （一键启动、建账户、自更新）；
 - Web 端外观为**简约 Apple 风格**（系统字体栈、大圆角卡片、克制的灰阶与毛玻璃顶栏）。
 
 ## 1. 总体拓扑
@@ -51,10 +51,10 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
 | 文件 | 内容 |
 |---|---|
 | `config.json` | `{ version, port, host }` 服务器自身配置 |
-| `users.json` | 用户账户：`{ id, username, role: 'admin'\|'user', passHash, passSalt, createdAt }`（口令 scrypt 哈希，绝不存明文） |
-| `tokens.json` | 客户端令牌（配对令牌 / 账号登录颁发，§3）：`{ id, userId, tokenHash(SHA-256), label, clientId, createdAt, revokedAt? }` —— **令牌明文只在创建 / 登录响应时出现一次**；账号登录重发时同 `clientId` 旧令牌自动吊销 |
+| `users.json` | 用户账户：`{ id, username, role: 'admin'\|'user', passHash, passSalt, createdAt }`（密码 scrypt 哈希，绝不存明文；`config.json` 的 `allowRegistration` 控制是否开放自助注册，默认开） |
+| `tokens.json` | 客户端令牌（账号登录 / 设备授权颁发）：`{ id, userId, tokenHash(SHA-256), label, clientId, createdAt, revokedAt? }` —— **令牌明文只在登录 / 授权响应时出现一次**；同 `clientId` 重登自动吊销旧令牌 |
 | `clients.json` | 已登记客户端：`{ clientId, name, ownerUserId, version, platform, firstSeenAt, lastSeenAt, lastMode, revokedAt? }` |
-| `files/<fileId>-<name>` + `files/index.json` | 客户端上传文件的暂存与索引 |
+| `files/<fileId>-<name>` + `files/index.json` | 客户端上传文件的暂存与索引；**每条带 `expiresAt`（上传 + 24h），过期自动清理**（启动清一次 + 每 15 分钟一轮） |
 
 所有 JSON 落盘沿用仓库约定：**原子写（临时文件 + rename）**，读损坏备份后重建。
 
@@ -62,23 +62,30 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
 
 | 主体 | 凭据 | 能做什么 |
 |---|---|---|
-| 网页用户（`role: 'user'`） | REST `POST /api/auth/login` 换会话令牌（随机 32B hex，内存持有，7 天过期） | 看到**自己名下**的客户端；对自己的客户端发起会话 / 远程配置 / 收文件 |
-| 网页管理员（`role: 'admin'`） | 同上 | **看到并控制所有客户端**（跨属主"超限控制"）；管理用户（增删、重置口令）；吊销配对令牌 / 客户端 |
+| 网页用户（`role: 'user'`） | REST `POST /api/auth/login`（或注册后自动登录）换会话令牌（随机 32B hex，内存持有，7 天过期） | 看到**自己名下**的客户端；对自己的客户端发起会话 / 远程配置 / 批准确认卡 / 收发文件管理 |
+| 网页管理员（`role: 'admin'`） | 同上 | **看到并控制所有客户端**（跨属主"超限控制"）；管理用户（增删、重置密码）；吊销客户端 |
 | Aurora 客户端 | 客户端令牌（WS 握手 `Authorization: Bearer`） | 维持长连接、收命令、传事件、上传文件；一个令牌**创建即绑定**一个 `clientId`，不得复用到第二台机器 |
 
-- 首个管理员由 CLI 创建（`aurora-center init` / 首次 `start` 自动生成并打印一次性口令）。
-- **客户端配对主路径是账号登录（v0.2.1 起，替代"管理员发令牌 → 用户手填"的旧流程）**：
-  客户端在设置页填写服务器地址与 Center 账号口令 → `POST /api/client/login`（§4.2）校验
-  口令后颁发**归属该用户、创建即绑定该 `clientId`** 的客户端令牌 → 客户端存入安全存储
-  （`center.token` 凭据链路）并自动连接。每次登录都会重发新令牌并**吊销同 `clientId` 的旧令牌**
-  （换账号 / 重新登录后旧凭据立即失效）；口令本身**绝不落盘**，令牌失效（如服务器数据重置）
-  后需在设置页重新登录。
-- 手动创建配对令牌（CLI `aurora-center token create --user <名>` 或 Web 管理端）**仍可用**，
-  作为兼容路径：首次连接时绑定 `clientId` 的语义不变。
+- 首个管理员由 CLI 创建（`aurora-center init` / 首次 `start` 自动生成并打印一次性密码）。
+- **自助注册**：`POST /api/auth/register`（用户名 3–32 位字母数字下划线连字符、密码 ≥ 8 位），
+  成功即创建 `role:'user'` 并直接登录；服务器 `config.json` 的 `allowRegistration`（默认 true）
+  可整体关闭。
+- **客户端接入主路径有两条**（手动配对令牌已删除）：
+  1. **账号登录**：客户端在设置页填写服务器地址与 Center 账号密码 → `POST /api/client/login`
+     （§4.2）校验密码后颁发**归属该用户、创建即绑定该 `clientId`** 的客户端令牌 → 客户端存入
+     安全存储（`center.token` 凭据链路）并自动连接。每次登录都会重发新令牌并**吊销同
+     `clientId` 的旧令牌**；密码本身**绝不落盘**。
+  2. **设备授权登录（推荐，v0.2.2 起）**：客户端设置页点「登录账户」→ `POST /api/client/device/start`
+     取得设备码与确认页地址 → 自动打开浏览器进入 Center 网页 `#/device?code=<userCode>` →
+     用户在网页**注册 / 登录后一键确认** → 客户端轮询 `POST /api/client/device/poll`
+     拿到令牌自动接入（§4.3）。适合不想在桌面端输入密码的场景，网页上还可以顺带完成注册。
+- 一个用户可以同时在多台机器登录（每台一个 `clientId`，各自持有独立令牌）；每个用户
+  （除管理员）在网页端**只能看到自己名下的客户端**，事件（会话 / 文件 / 确认卡）也只
+  路由给属主 + 管理员。
 - **属主跟随当前有效令牌**：客户端 hello 登记时 `ownerUserId` 以其令牌属主为准 ——
   设备被释放（令牌吊销）后由另一账号登录即可接管归属；属主未释放前，登录（409
-  `E_CLIENT_BOUND`）与配对令牌首次绑定都会拒绝抢注。
-- Web 会话令牌与客户端 / 配对令牌都只存哈希，泄露数据库不等于泄露凭据。
+  `E_CLIENT_BOUND`）与设备授权确认都会拒绝抢注。
+- Web 会话令牌与客户端令牌都只存哈希，泄露数据库不等于泄露凭据。
 
 ## 4. 协议（`packages/shared/src/center/protocol.ts`）
 
@@ -92,6 +99,7 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
   { type: 'status', status: ClientStatus }     // 状态快照（连接后、配置/模式变更时）
   { type: 'result', requestId, ok, data?, error? }
   { type: 'session.event', sessionId, event }  // event 为内核 AgentEvent 原样转发（JSON 可序列化）
+  { type: 'confirm.request', request }         // 敏感工具确认请求（ConfirmRequestPayload：confirmId/sessionId/toolName/input/createdAt/expiresAt）
 
 服务器 → 客户端
   { type: 'welcome', serverVersion, clientId }
@@ -104,6 +112,7 @@ CenterCommand =
   | { kind: 'config.get',     requestId }
   | { kind: 'config.update',  requestId, patch }      // 白名单校验后落到 SettingsStore（§7）
   | { kind: 'mode.switch',    requestId, mode }       // 等价 config.update 的 modes.current，语义独立成命令
+  | { kind: 'confirm.resolve', requestId, confirmId, approved }  // 网页端确认卡批复的转发
 ```
 
 - `sessionId` 由**服务器分配**，固定形如 `center-<短随机串>`（客户端渲染层据此把
@@ -114,10 +123,12 @@ CenterCommand =
 
 ### 4.2 网页 ⇄ 服务器
 
-REST：`POST /api/auth/login`、`POST /api/client/login`（**无需已登录**：客户端用
-`{ username, password, clientId }` 换客户端令牌，见 §3）、`GET /api/me`、`GET /api/clients`（按角色过滤）、
-`GET /api/files/:fileId`（鉴权下载）、管理员 `POST /api/users`、`GET /api/admin/clients`、
-`POST /api/admin/tokens`、`POST /api/admin/tokens/:id/revoke`、`DELETE /api/users/:id`。
+REST：`POST /api/auth/login`、`POST /api/auth/register`（§3）、`POST /api/client/login`（**无需已登录**：
+客户端用 `{ username, password, clientId }` 换客户端令牌）、**设备授权三端点**（§4.3，`start` / `poll`
+无需登录，`authorize` 需网页会话）、`GET /api/me`、`GET /api/clients`（按角色过滤）、
+`GET /api/files`（文件清单，属主过滤）、`GET /api/files/:fileId`（鉴权下载）、`DELETE /api/files/:fileId`
+（属主或管理员删除）、管理员 `POST /api/users`、`GET /api/admin/clients`、`DELETE /api/users/:id`、
+`DELETE /api/admin/clients/:id`（吊销客户端）。
 
 WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义请求头）：
 
@@ -129,6 +140,7 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
   { type: 'config.get',     requestId, clientId }
   { type: 'config.update',  requestId, clientId, patch }
   { type: 'mode.switch',    requestId, clientId, mode }
+  { type: 'confirm.resolve', requestId, clientId, confirmId, approved }
 
 服务器 → 网页
   { type: 'clients', clients: ClientInfo[] }              // 连接后与每次变动时的全量快照
@@ -136,12 +148,33 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
   { type: 'client.event',  clientId, sessionId, event }   // 转发的会话事件
   { type: 'result', requestId, ok, data?, error? }
   { type: 'file.received', fileId, clientId, name, size, note?, at }
+  { type: 'confirm.request', clientId, sessionId, request }  // 客户端转来的确认卡
 ```
 
-路由规则（`hub.ts`）：命令按 `clientId` 找到该客户端的连接；`session.event` 按
-**会话属主**（发起 `session.create` 的网页用户）+ 全部管理员回传；`file.received`
-回传给该客户端属主 + 管理员。属主关系由服务器记账（`sessionId → webUserId`），
+路由规则（`hub.ts`）：命令按 `clientId` 找到该客户端的连接；`session.event` / `confirm.request` /
+`file.received` 按**会话 / 客户端属主**（发起 `session.create` 的网页用户）+ 全部管理员回传；
+`confirm.resolve` 只转发给该客户端的连接。属主关系由服务器记账（`sessionId → webUserId`），
 不信任客户端自报。
+
+### 4.3 设备授权登录（docs/12 §3 主路径 2）
+
+```
+POST /api/client/device/start    { clientId }                    （无需登录）
+  → { deviceCode, userCode, verifyUrl, expiresAt, intervalMs }    deviceCode 43 位随机、
+                                                                   userCode 形如 ABCD-1234
+                                                                   （展示给用户核对）、10 分钟有效
+POST /api/client/device/poll     { deviceCode, clientId }        （无需登录；按 intervalMs 轮询）
+  → { status: 'pending' } | { status: 'approved', token, username }
+    | { status: 'expired' } | { status: 'denied' }                approved / denied / expired 后挑战删除
+POST /api/client/device/authorize { deviceCode, approve }        （需网页会话；网页端 #/device 页调用）
+  → approve=false 置 denied；approve=true 校验属主护栏（clientId 已绑其他账号 → 409 且挑战置 denied）
+    后用 mintClientToken 为当前网页用户颁发并绑定 clientId
+GET /api/client/device/info?code=<userCode>                      （无需登录；#/device 页把
+  → { deviceCode, expiresAt }                                      URL 里的 userCode 换回 deviceCode）
+```
+
+流程：客户端设置页点「登录账户」→ start → `shell.openExternal(verifyUrl)` 打开浏览器 →
+用户在网页注册 / 登录并确认 → 客户端轮询 approved 拿令牌落 `center.token` 凭据链路、自动重连。
 
 ## 5. 远程会话与文件发送
 
@@ -149,12 +182,19 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
    并记账属主 → 网页端进入会话视图；
 2. 用户输入 → `session.input` → 服务器包成 `cmd` 发给客户端 → 客户端
    `agent.send({ sessionId, text, origin: 'center' })`；
-3. 客户端把该会话的全部 AgentEvent（正文增量 / 思考 / 工具卡 / done / error）以
+3. 客户端把该会话的全部 AgentEvent（正文增量 / 思考 / 工具卡 / 任务清单 / 子代理 / done / error）以
    `session.event` 回传 → 服务器按属主路由 → 网页端按 `messageId` 聚合渲染；
-4. 「发送文件」：用户在远程会话里让 Agent 发文件 → Agent 调 `center_send_file`
-   （§8）→ 客户端 HTTP `POST /api/ingest/files`（配对令牌鉴权，尺寸受
+4. **敏感工具确认（v0.2.2 起）**：远程会话中工具触发确认卡时，客户端在弹**本机**确认卡的
+   同时把 `confirm.request` 推给 Center → 网页端（属主 / 管理员）看到工具名、入参摘要与
+   倒计时，可「批准 / 拒绝」→ `confirm.resolve` 转回客户端调 `proactive.resolve`。两条通道
+   先到先得（`proactive.resolve` 对已结算 confirmId 幂等）；客户端离线 / 超时（默认 60s）
+   一律按拒绝；
+5. 「发送文件」：用户在远程会话里让 Agent 发文件 → Agent 调 `center_send_file`
+   （§8）→ 客户端 HTTP `POST /api/ingest/files`（客户端令牌鉴权，尺寸受
    `center.maxFileMb` 限制）→ 服务器落盘并 `file.received` 通知 → 网页端出现
-   下载卡（`GET /api/files/:fileId`，属主或管理员可下载）。
+   下载卡（`GET /api/files/:fileId`，属主或管理员可下载）。**所有上传文件 24h 后自动删除**
+   （索引带 `expiresAt`，启动 + 每 15 分钟清理一轮）；`#/files` 文件管理页可查看 / 下载 /
+   手动删除（§10）。
 
 远程会话在客户端主界面左栏的历史里照常可见（`center-*` 前缀），用户可随时查看
 甚至继续输入 —— 远程与本地对同一会话的写入顺序由客户端串行化（AgentHost 的
@@ -194,12 +234,17 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
 
 Schema / 默认值 / 迁移见 docs/08 §1。要点：
 
-- **账号登录（v0.2.1 起）**：设置页填服务器地址 + 账号口令，经 `center:login` IPC 由主进程调
+- **账号登录（v0.2.1 起）**：设置页填服务器地址 + 账号密码，经 `center:login` IPC 由主进程调
   `POST /api/client/login`（出网走 `main/net.ts` 的 `netFetch`）；成功后主进程落三件事 ——
   令牌写入 `center.token`（凭据链路）、`center.account` 记住账号名（**非凭据**，仅展示）、
   `center.enabled = true`，连接器经 `settings:changed` 自动重连。`clientId` 为空时登录前先生成
-  并持久化（旧版只展示不生成，导致连接器永远停在"尚未配置"——已修复）。口令只在登录请求里
+  并持久化（旧版只展示不生成，导致连接器永远停在"尚未配置"——已修复）。密码只在登录请求里
   使用，**不落配置、不进日志**。
+- **设备授权登录（v0.2.2 起，§4.3）**：设置页「登录账户」按钮走 `center:deviceLogin` IPC →
+  主进程 `POST /api/client/device/start` 并 `shell.openExternal` 打开 Center 网页确认页 →
+  用户网页确认后轮询拿令牌，落库路径与账号登录共用同一函数（`center:deviceLoginResult`
+  推送通道把最终结果回给设置页）。适合不想在桌面端输密码、或需要先注册的场景；
+  账号密码直登表单保留作为回落。
 - `center.tokenEnc` 是**凭据路径**（safeStorage 密文）：`canonicalSecretPath` 把
   `center.token` / `center.tokenEnc` 规范到 `center.token`；`SettingsStore` 的
   `readSecretField` / `writeSecretField` / `toPersisted`、`canonicalSecretPath`，
@@ -232,12 +277,11 @@ Electron 任何操作）：
 ## 9. CLI（`aurora-center`）
 
 ```
-aurora-center init    [--data <dir>] [--admin-user <名>] [--admin-password <口令>]
+aurora-center init    [--data <dir>] [--admin-user <名>] [--admin-password <密码>]
                       # 建数据目录 + 首个管理员；已存在则跳过并提示
 aurora-center start   [--port <N>] [--host <0.0.0.0>] [--data <dir>]
-                      # 未 init 时自动 init（管理员口令随机生成、打印一次）
+                      # 未 init 时自动 init（管理员密码随机生成、打印一次）
 aurora-center users   <add|list|passwd|remove> ...
-aurora-center token   <create|list|revoke> --user <名> [--label <备注>]
 aurora-center status  [--data <dir>]
 aurora-center update  [--check] [--registry <npm 源>]
 aurora-center version
@@ -254,28 +298,34 @@ aurora-center version
 
 ## 10. Web UI（Apple 风格）
 
-- 技术栈：Vue 3 + vite + 原生 CSS（不引 UI 库）。hash 路由：`#/login`、`#/`（客户端 +
-  会话）、`#/admin`（用户 / 令牌 / 全部客户端）。
+- 技术栈：Vue 3 + vite + 原生 CSS（不引 UI 库）。hash 路由：`#/login`（登录 / 注册切换）、
+  `#/`（客户端 + 会话）、`#/files`（文件管理）、`#/device`（设备授权确认页，未登录可访问）、
+  `#/admin`（用户 / 全部客户端）。
 - 视觉基调：`-apple-system, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei"`
   字体栈；`#f5f5f7` 底 + 白色大圆角卡片（12–16px）+ `#0071e3` 主色（Apple 蓝）；
   顶栏毛玻璃（`backdrop-filter: saturate(180%) blur(20px)`）；克制阴影、无重边框。
 - 布局：左侧客户端列表（在线绿点 / 离线灰点 / 名称 / 平台图标）+ 右侧会话主区
-  （消息流 + 输入框）；管理员页表格式用户与令牌管理。
-- 会话渲染按 `messageId` 聚合 `text` 增量；工具调用渲染为可折叠卡片；`done` 结束
-  loading；`error` 红条。
+  （消息流 + 输入框）；管理员页表格式用户管理。
+- 会话渲染按 `messageId` 聚合 `text` 增量；工具调用渲染为可折叠卡片；思考过程折叠块；
+  任务清单（job）与子代理（subagent）各渲染为一张状态卡；`done` 结束
+  loading；`error` 红条；敏感工具确认卡显示在会话顶部（倒计时 + 批准 / 拒绝）。
+- 文件管理页：全部上传文件的表格（名称 / 来源客户端 / 大小 / 备注 / 上传与过期时间），
+  行内下载与删除，过期前 < 24h 显示倒计时。
+- **移动端适配**：≤ 720px 与 ≤ 480px 两档断点——窄屏上下堆叠、客户端列表变横向滚动
+  chips、表格横向滚动、触摸目标 ≥ 40px。
 
 ## 11. 安全边界与非目标（v1）
 
 - **没有端到端加密**：Center 可见全部远程会话明文 —— 与"管理员可见所有客户端"的
-  产品语义一致，文档明示；敏感环境应自建 Center 于内网。账号登录的口令与颁发的
+  产品语义一致，文档明示；敏感环境应自建 Center 于内网。账号登录的密码与颁发的
   客户端令牌同样走明文 HTTP，公网部署必须置于 TLS 反代之后（客户端填 `https://` 地址）。
-- **clientId 是设备标识，不可外泄**：知道他人 clientId 的账号无法用账号登录抢注
-  （`/api/client/login` 对"clientId 已绑定其他账号的有效令牌"返回 409 `E_CLIENT_BOUND`，
-  同属主重登放行），但泄露仍有社工与骚扰面。
+- **clientId 是设备标识，不可外泄**：知道他人 clientId 的账号无法用账号登录或设备授权抢注
+  （`/api/client/login` 与 `device/authorize` 对"clientId 已绑定其他账号的有效令牌"返回
+  409 `E_CLIENT_BOUND`，同属主重登放行），但泄露仍有社工与骚扰面。
 - **没有 OS 级沙箱增益**：远程会话里 Agent 的能力与本地完全相同（三档权限、项目根
-  边界、确认卡片照常生效于客户端本机）。远程发起的会话中确认卡会弹在**客户端本机**
-  —— 远程用户需在 `session.event` 里看到"等待确认"状态；v1 不做远程代批准
-  （远程代批准 = 越权操作客户端，刻意不做）。
-- Center 不存储会话历史（只转发事件流）；文件暂存由 `files/index.json` 记录、
-  手动清理或 CLI `files prune`（后续）。
+  边界照常生效于客户端本机）。远程发起的会话中确认卡会同时弹在**客户端本机**并推送
+  **网页端**（v0.2.2 起，§5 第 4 步）：两条通道先到先得，任何一边批准即放行、拒绝即拦下，
+  `proactive.resolve` 对已结算的 confirmId 幂等 —— 远程批准不绕过任何本地闸门，只是
+  把"问用户"的界面延伸到了网页。
+- Center 不存储会话历史（只转发事件流）；文件暂存 24h 自动删除，网页端也可手动删除。
 - 客户端一次只连一个 Center；`clientId` 本机生成、持久化于配置（非凭据）。

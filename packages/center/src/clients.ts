@@ -57,7 +57,7 @@ export class ClientRegistry {
     if (existing !== undefined) {
       // 属主跟随当前有效令牌（v0.2.1 账号登录语义）：设备换账号登录后 hello 即换归属，
       // 否则新属主在 Web 端永远看不到本机。安全性前提：能走到 upsert 的连接已通过
-      // verifyPairingToken（令牌与 clientId 绑定一致），且首次绑定/登录换绑都有属主护栏。
+      // verifyClientToken（令牌与 clientId 绑定一致），且首次绑定/登录换绑都有属主护栏。
       existing.ownerUserId = input.ownerUserId
       existing.name = input.name
       existing.version = input.version

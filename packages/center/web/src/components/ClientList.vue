@@ -7,16 +7,13 @@ defineProps<{
   selectedId: string
 }>()
 
-defineEmits<{ select: [clientId: string]; manageTokens: [] }>()
+defineEmits<{ select: [clientId: string] }>()
 </script>
 
 <template>
   <aside class="card client-list">
     <div class="client-list-head">
       <span class="panel-title">客户端</span>
-      <button class="btn btn-ghost btn-sm" type="button" @click="$emit('manageTokens')">
-        配对令牌
-      </button>
     </div>
     <ul class="client-items">
       <li v-for="entry in clients" :key="entry.client.clientId">
@@ -37,7 +34,7 @@ defineEmits<{ select: [clientId: string]; manageTokens: [] }>()
       </li>
     </ul>
     <p v-if="clients.length === 0" class="client-empty text-2">
-      还没有客户端接入——在 Aurora 设置里连接本 Center 并填入配对令牌后，设备会出现在这里。
+      还没有客户端接入——在 Aurora 设置里用 Center 账号登录连接后，设备会出现在这里。
     </p>
   </aside>
 </template>
@@ -124,5 +121,45 @@ defineEmits<{ select: [clientId: string]; manageTokens: [] }>()
   font-size: 12.5px;
   padding: 10px 8px;
   margin: 0;
+}
+
+/* 窄屏：列表变横向滚动 chips（选中后会话区仍在下方全宽，随时可换设备） */
+@media (max-width: 720px) {
+  .client-list {
+    width: 100%;
+    padding: 10px 8px 8px;
+  }
+
+  .client-list-head {
+    padding: 0 6px 6px;
+  }
+
+  .client-items {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 4px;
+  }
+
+  .client-items li {
+    flex: none;
+  }
+
+  .client-item {
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    min-width: 104px;
+    padding: 10px 12px;
+    text-align: center;
+    background: var(--bg);
+    border-radius: var(--radius-sm);
+  }
+
+  .client-meta {
+    align-items: center;
+    max-width: 120px;
+  }
 }
 </style>

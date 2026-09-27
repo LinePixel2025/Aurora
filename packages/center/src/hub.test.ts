@@ -234,6 +234,116 @@ describe('Hub · 会话命令路由', () => {
   })
 })
 
+describe('Hub · 确认卡路由（confirm.request / confirm.resolve）', () => {
+  const CONFIRM_REQUEST = {
+    confirmId: 'cf-1',
+    sessionId: 'center-abc',
+    toolName: 'run_command',
+    input: { command: 'npm test' },
+    createdAt: '2026-09-27T00:00:00.000Z',
+    expiresAt: '2026-09-27T00:01:00.000Z',
+  }
+
+  it('confirm.request 转发给属主 + 管理员，陌生人不收；未登记客户端忽略', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    harness.connectClient('c1')
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    const stranger = harness.connectWeb({ id: 'u2', username: 'u2', role: 'user' })
+    const admin = harness.connectWeb({ id: 'u-admin', username: 'root', role: 'admin' })
+    owner.sent.length = stranger.sent.length = admin.sent.length = 0
+
+    harness.hub.handleClientMessage('c1', { type: 'confirm.request', request: CONFIRM_REQUEST })
+    const ownerMsgs = owner.sent.filter((m) => (m as { type: string }).type === 'confirm.request')
+    const adminMsgs = admin.sent.filter((m) => (m as { type: string }).type === 'confirm.request')
+    expect(ownerMsgs).toHaveLength(1)
+    expect(adminMsgs).toHaveLength(1)
+    expect(stranger.sent).toHaveLength(0)
+    const forwarded = ownerMsgs[0] as {
+      clientId: string
+      sessionId: string
+      request: { confirmId: string }
+    }
+    expect(forwarded.clientId).toBe('c1')
+    expect(forwarded.sessionId).toBe('center-abc')
+    expect(forwarded.request.confirmId).toBe('cf-1')
+
+    // 未登记的客户端发确认请求 → 无路由目标，静默忽略
+    expect(() =>
+      harness.hub.handleClientMessage('c-ghost', {
+        type: 'confirm.request',
+        request: CONFIRM_REQUEST,
+      }),
+    ).not.toThrow()
+    expect(
+      admin.sent.filter((m) => (m as { type: string }).type === 'confirm.request'),
+    ).toHaveLength(1)
+  })
+
+  it('confirm.resolve 转发为 cmd 给客户端，result 回执按 requestId 转回网页端', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    client.sent.length = 0
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'confirm.resolve',
+      requestId: 'web-10',
+      clientId: 'c1',
+      confirmId: 'cf-1',
+      approved: true,
+    })
+    const forwarded = client.sent.at(-1) as {
+      type: string
+      cmd: { kind: string; requestId: string; confirmId: string; approved: boolean }
+    }
+    expect(forwarded.cmd.kind).toBe('confirm.resolve')
+    expect(forwarded.cmd.confirmId).toBe('cf-1')
+    expect(forwarded.cmd.approved).toBe(true)
+
+    // 客户端 result 回执走通用 pending 通道转回网页端
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'web-10',
+      ok: true,
+      data: { confirmed: true },
+    })
+    const result = owner.sent.at(-1) as { type: string; ok: boolean; data?: unknown }
+    expect(result.ok).toBe(true)
+    expect(result.data).toEqual({ confirmed: true })
+  })
+
+  it('confirm.resolve 属主校验：非属主拒绝；客户端离线回 E_CLIENT_OFFLINE', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    harness.connectClient('c1')
+    const stranger = harness.connectWeb({ id: 'u2', username: 'u2', role: 'user' })
+    stranger.sent.length = 0
+    harness.hub.handleWebMessage(stranger.conn, {
+      type: 'confirm.resolve',
+      requestId: 'web-11',
+      clientId: 'c1',
+      confirmId: 'cf-1',
+      approved: false,
+    })
+    expect((stranger.sent.at(-1) as { error?: string }).error).toBe('E_FORBIDDEN')
+
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+    harness.hub.removeClient('c1')
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'confirm.resolve',
+      requestId: 'web-12',
+      clientId: 'c1',
+      confirmId: 'cf-1',
+      approved: true,
+    })
+    expect((owner.sent.at(-1) as { error?: string }).error).toBe('E_CLIENT_OFFLINE')
+  })
+})
+
 describe('Hub · 状态与文件通知', () => {
   it('clients 快照按角色过滤：user 只见自己的，admin 见全部；在线状态准确', async () => {
     const harness = await makeHub()

@@ -39,20 +39,19 @@ docker compose up -d --build
 ## 3. 初始化与配对
 
 ```bash
-# 首个管理员（强口令；也可不带 --admin-* 让 start 自动生成并打印一次性口令）
+# 首个管理员（强密码；也可不带 --admin-* 让 start 自动生成并打印一次性密码）
 docker compose exec -T aurora-center node bin/aurora-center.js init \
-  --data /data --admin-user admin --admin-password '<强口令>'
-
-# 创建客户端配对令牌（明文只显示一次，粘贴到 Aurora 桌面端 设置 → Aurora Center）
-docker compose exec -T aurora-center node bin/aurora-center.js token create \
-  --data /data --user admin --label <客户端备注>
+  --data /data --admin-user admin --admin-password '<强密码>'
 ```
 
-Web 控制台：`http://<服务器IP>:8787`（SPA hash 路由，`#/login` 登录）。
+Web 控制台：`http://<服务器IP>:8787`（SPA hash 路由，`#/login` 登录 / 注册）。
+
+客户端接入（v0.2.2 起，**不需要任何令牌**）：用户在网页端注册 / 登录，桌面端
+设置 → Aurora Center → 点「登录账户」走设备授权（或填账号密码直登）。
 
 ## 4. 安全注意
 
-- 服务是**纯 HTTP**：配对令牌 / 登录口令明文过公网。生产建议二选一：
+- 服务是**纯 HTTP**：登录密码与客户端令牌明文过公网。生产建议二选一：
   - 1panel 的 OpenResty 反代 + 域名 + Let's Encrypt 证书（桌面端 serverUrl 填
     `wss://<域名>`，Web 填 `https://<域名>`）；
   - 已有的 cloudflared 隧道是 **token 托管模式**（本地无 config.yml），需在 Cloudflare

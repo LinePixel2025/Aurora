@@ -2,15 +2,16 @@
  * `aurora-center` CLI（docs/12 §9）：
  *
  *   init    建数据目录 + 首个管理员
- *   start   启动服务器（未 init 时自动 init，管理员口令随机生成、打印一次）
+ *   start   启动服务器（未 init 时自动 init，管理员密码随机生成、打印一次）
  *   users   add / list / passwd / remove
- *   token   create / list / revoke
  *   status  数据目录概览
  *   update  [--check] 检查或执行更新（npm 通道）
  *   version 版本号
  *
- * 参数解析手写（无依赖）；口令可经 `--admin-password` / `--password` 传入，
+ * 参数解析手写（无依赖）；密码可经 `--admin-password` / `--password` 传入，
  * 未传时用 readline 提示输入（start 自动引导除外——那里始终随机生成）。
+ * 手动创建配对令牌的 `token` 子命令已移除：客户端接入统一走账号登录 /
+ * 设备授权登录（v0.2.1 起，docs/12 §3 / §4.3）。
  */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -37,15 +38,12 @@ const DEFAULT_REGISTRY = 'https://registry.npmjs.org'
 const USAGE = `aurora-center —— Aurora Center 控制中心（docs/12）
 
 用法：
-  aurora-center init    [--data <dir>] [--admin-user <名>] [--admin-password <口令>]
+  aurora-center init    [--data <dir>] [--admin-user <名>] [--admin-password <密码>]
   aurora-center start   [--port <N>] [--host <0.0.0.0>] [--data <dir>]
-  aurora-center users   add <名> [--admin] [--password <口令>]
+  aurora-center users   add <名> [--admin] [--password <密码>]
   aurora-center users   list
-  aurora-center users   passwd <名> --password <口令>
+  aurora-center users   passwd <名> --password <密码>
   aurora-center users   remove <名>
-  aurora-center token   create --user <名> [--label <备注>]     # 明文令牌只打印一次
-  aurora-center token   list   [--user <名>]
-  aurora-center token   revoke <令牌id>
   aurora-center status  [--data <dir>]
   aurora-center update  [--check] [--registry <npm 源>]
   aurora-center version
@@ -74,8 +72,6 @@ export async function runCli(options: CliOptions): Promise<number> {
       return runStart(argv.slice(1), out, err)
     case 'users':
       return runUsers(argv.slice(1), out, err)
-    case 'token':
-      return runToken(argv.slice(1), out, err)
     case 'status':
       return runStatus(argv.slice(1), out, err)
     case 'update':
@@ -131,7 +127,7 @@ async function runInit(
   if (result.created) {
     out(`已创建数据目录与首个管理员：${username}`)
     if (password === undefined)
-      out(`初始口令（只显示这一次，请立即修改）：${result.password ?? ''}`)
+      out(`初始密码（只显示这一次，请立即修改）：${result.password ?? ''}`)
     return 0
   }
   err(`管理员已存在，跳过（数据目录：${dataDir}）`)
@@ -154,7 +150,7 @@ async function runStart(
   const bootstrap = await auth.ensureAdmin('admin')
   if (bootstrap.created) {
     out('首次启动：已自动创建管理员 admin')
-    out(`初始口令（只显示这一次，请立即登录修改）：${bootstrap.password ?? ''}`)
+    out(`初始密码（只显示这一次，请立即登录修改）：${bootstrap.password ?? ''}`)
   }
   // Web UI 构建产物与 dist 同级；不存在时服务器仅提供 API（界面未构建的提示）
   const webDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist-web')
@@ -195,7 +191,7 @@ async function runUsers(
     case 'add': {
       const username = positional(rest, 0)
       if (username === undefined) {
-        err('用法：aurora-center users add <名> [--admin] [--password <口令>]')
+        err('用法：aurora-center users add <名> [--admin] [--password <密码>]')
         return 2
       }
       const password = flagOf(rest, '--password') ?? (await promptPassword())
@@ -222,7 +218,7 @@ async function runUsers(
       }
       const password = flagOf(rest, '--password') ?? (await promptPassword())
       await auth.resetPassword(userId, password)
-      out(`已更新 ${username} 的口令`)
+      out(`已更新 ${username} 的密码`)
       return 0
     }
     case 'remove': {
@@ -243,70 +239,6 @@ async function runUsers(
     }
     default:
       err('用法：aurora-center users <add|list|passwd|remove> ...')
-      return 2
-  }
-}
-
-async function runToken(
-  argv: string[],
-  out: (s: string) => void,
-  err: (s: string) => void,
-): Promise<number> {
-  const action = positional(argv, 0)
-  const rest = argv.slice(1)
-  const auth = await openAuth(dataDirOf(rest))
-  switch (action) {
-    case 'create': {
-      const username = flagOf(rest, '--user')
-      const userId = username === undefined ? undefined : resolveUser(auth, username)
-      if (userId === undefined) {
-        err(`用户不存在：${String(username)}`)
-        return 1
-      }
-      const label = flagOf(rest, '--label') ?? ''
-      const { token } = await auth.createPairingToken(userId, label)
-      out(`配对令牌（只显示一次，粘贴到 Aurora 客户端设置页）：`)
-      out(token)
-      return 0
-    }
-    case 'list': {
-      const username = flagOf(rest, '--user')
-      const userId = username === undefined ? undefined : resolveUser(auth, username)
-      if (username !== undefined && userId === undefined) {
-        err(`用户不存在：${username}`)
-        return 1
-      }
-      for (const token of auth.listPairingTokens(userId)) {
-        out(
-          `${token.id}\t${token.label}\t${token.clientId === '' ? '(未绑定)' : token.clientId}\t${
-            token.revokedAt ?? token.createdAt
-          }`,
-        )
-      }
-      return 0
-    }
-    case 'revoke': {
-      const id = positional(rest, 0)
-      if (id === undefined) {
-        err('用法：aurora-center token revoke <令牌id>')
-        return 2
-      }
-      const record = auth.findByTokenId(id)
-      if (record === undefined) {
-        err(`令牌不存在：${id}`)
-        return 1
-      }
-      const actor = auth.listUsers().find((entry) => entry.role === 'admin')
-      if (actor === undefined) {
-        err('数据目录里没有管理员，无法执行吊销')
-        return 1
-      }
-      await auth.revokePairingToken(id, actor)
-      out(`已吊销令牌 ${id}`)
-      return 0
-    }
-    default:
-      err('用法：aurora-center token <create|list|revoke> ...')
       return 2
   }
 }
@@ -361,7 +293,7 @@ async function runUpdate(
 
 async function promptPassword(): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout })
-  const answer = await rl.question('请输入口令（至少 6 位）: ')
+  const answer = await rl.question('请输入密码（至少 6 位）: ')
   rl.close()
   return answer
 }
@@ -381,10 +313,14 @@ export function createCliLogger(): Logger {
   const make = (scope?: string): Logger => {
     const prefix = scope === undefined ? '' : `[${scope}] `
     return {
-      debug: (message, meta) => line((t) => process.stdout.write(t), 'debug', `${prefix}${message}`, meta),
-      info: (message, meta) => line((t) => process.stdout.write(t), 'info', `${prefix}${message}`, meta),
-      warn: (message, meta) => line((t) => process.stderr.write(t), 'warn', `${prefix}${message}`, meta),
-      error: (message, meta) => line((t) => process.stderr.write(t), 'error', `${prefix}${message}`, meta),
+      debug: (message, meta) =>
+        line((t) => process.stdout.write(t), 'debug', `${prefix}${message}`, meta),
+      info: (message, meta) =>
+        line((t) => process.stdout.write(t), 'info', `${prefix}${message}`, meta),
+      warn: (message, meta) =>
+        line((t) => process.stderr.write(t), 'warn', `${prefix}${message}`, meta),
+      error: (message, meta) =>
+        line((t) => process.stderr.write(t), 'error', `${prefix}${message}`, meta),
       child: (childScope) => make(childScope),
     }
   }

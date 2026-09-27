@@ -17,6 +17,9 @@ import type {
   CenterWebServerMessage,
   ClientInfo,
   ClientStatus,
+  ConfirmRequestPayload,
+  JobSummary,
+  SubagentSnapshot,
 } from '@aurora/shared'
 import {
   api,
@@ -43,7 +46,7 @@ export interface ToolItem {
 
 export interface ChatItem {
   id: string
-  kind: 'user' | 'assistant' | 'error'
+  kind: 'user' | 'assistant' | 'error' | 'job' | 'subagent'
   content: string
   /** 思考过程增量聚合（按 messageId 归属到助手消息） */
   reasoning?: string
@@ -52,6 +55,10 @@ export interface ChatItem {
   streaming?: boolean
   /** kind = error 时的错误码 */
   code?: string
+  /** kind = job：最新一条任务摘要（后续 job 事件原地覆盖，一个会话只留一张卡） */
+  job?: JobSummary
+  /** kind = subagent：该 task 调用的最新快照（按 callId 合并覆盖） */
+  subagent?: SubagentSnapshot
 }
 
 export interface SessionState {
@@ -82,6 +89,13 @@ export interface ClientEntry {
   files: FileItem[]
 }
 
+/** 待批复的敏感工具确认卡（WS confirm.request 转发，docs/12 §5.1） */
+export interface ConfirmEntry {
+  clientId: string
+  sessionId: string
+  request: ConfirmRequestPayload
+}
+
 // ───────────────────────── 状态 ─────────────────────────
 
 interface CenterState {
@@ -91,6 +105,8 @@ interface CenterState {
   sessions: Map<string, SessionState>
   selectedClientId: string
   activeSessionKey: string
+  /** 待批复确认卡（新到追加，批复 / 过期后移除） */
+  confirms: ConfirmEntry[]
 }
 
 /** 响应式全局状态（组件可直接读字段；写操作一律走下面的动作函数） */
@@ -101,9 +117,13 @@ export const state = reactive<CenterState>({
   sessions: new Map(),
   selectedClientId: '',
   activeSessionKey: '',
+  confirms: [],
 })
 
 export const wsStatus = ref<SocketStatus>('idle')
+
+/** 确认卡批复 / 过期的非阻断提示（自动消隐） */
+export const confirmNotice = ref('')
 
 export const booted = computed(() => state.booted)
 export const currentUser = computed(() => state.user)
@@ -202,6 +222,17 @@ function handleServerMessage(message: CenterWebServerMessage): void {
       }
       break
     }
+    case 'confirm.request': {
+      // 敏感工具确认卡：同一 confirmId 只入列一次（服务器可能向属主与管理员各转发一份）
+      if (!state.confirms.some((c) => c.request.confirmId === message.request.confirmId)) {
+        state.confirms.push({
+          clientId: message.clientId,
+          sessionId: message.sessionId,
+          request: message.request,
+        })
+      }
+      break
+    }
     default:
       // 未知消息类型一律忽略（协议只增不改）
       break
@@ -243,7 +274,7 @@ function ensureAssistant(session: SessionState, messageId: string): ChatItem {
 }
 
 /** 工具输入的单行摘要：过长截断，工具卡里不堆全量 JSON（docs/12 §10） */
-function summarizeInput(input: unknown): string {
+export function summarizeInput(input: unknown): string {
   if (input === undefined || input === null) return ''
   if (typeof input === 'string') return input
   try {
@@ -299,6 +330,36 @@ function applyEvent(clientId: string, sessionId: string, event: AgentEvent): voi
       }
       break
     }
+    case 'job': {
+      // 任务清单卡：一个会话只保留最新一条 job 摘要，后续事件原地覆盖
+      const existing = session.items.find((item) => item.kind === 'job')
+      if (existing) existing.job = event.job
+      else
+        session.items.push({
+          id: `job-${event.job.id}`,
+          kind: 'job',
+          content: '',
+          tools: [],
+          job: event.job,
+        })
+      break
+    }
+    case 'subagent': {
+      // 子代理卡：同一 task 调用（callId）的最新快照覆盖旧值
+      const existing = session.items.find(
+        (item) => item.kind === 'subagent' && item.subagent?.callId === event.callId,
+      )
+      if (existing) existing.subagent = event.subagent
+      else
+        session.items.push({
+          id: `subagent-${event.callId}`,
+          kind: 'subagent',
+          content: '',
+          tools: [],
+          subagent: event.subagent,
+        })
+      break
+    }
     case 'done': {
       session.pending = false
       for (const item of session.items) item.streaming = false
@@ -316,7 +377,7 @@ function applyEvent(clientId: string, sessionId: string, event: AgentEvent): voi
       break
     }
     default:
-      // queued / usage / job / subagent / 未知类型：v1 不渲染
+      // queued / usage / 未知类型：不渲染（协议只增不改）
       break
   }
 }
@@ -395,6 +456,50 @@ export async function abortSession(session: SessionState): Promise<void> {
   })
 }
 
+// ───────────────────────── 确认卡批复 ─────────────────────────
+
+let noticeTimer: number | undefined
+
+function showConfirmNotice(text: string): void {
+  confirmNotice.value = text
+  if (noticeTimer !== undefined) window.clearTimeout(noticeTimer)
+  noticeTimer = window.setTimeout(() => {
+    confirmNotice.value = ''
+    noticeTimer = undefined
+  }, 6000)
+}
+
+function removeConfirm(confirmId: string): void {
+  const index = state.confirms.findIndex((c) => c.request.confirmId === confirmId)
+  if (index >= 0) state.confirms.splice(index, 1)
+}
+
+/** 批复一张确认卡；result 回执成功才静默移除，失败按拒绝处理并提示（docs/12 §5.1） */
+export async function resolveConfirm(entry: ConfirmEntry, approved: boolean): Promise<void> {
+  try {
+    await command({
+      type: 'confirm.resolve',
+      requestId: nextRequestId(),
+      clientId: entry.clientId,
+      confirmId: entry.request.confirmId,
+      approved,
+    })
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    showConfirmNotice(
+      approved ? `确认批复未生效，已按拒绝处理：${reason}` : `拒绝批复未送达：${reason}`,
+    )
+  } finally {
+    removeConfirm(entry.request.confirmId)
+  }
+}
+
+/** 倒计时归零：客户端侧超时同样按拒绝收尾，这里把卡摘掉并提示 */
+export function expireConfirm(entry: ConfirmEntry): void {
+  removeConfirm(entry.request.confirmId)
+  showConfirmNotice('确认请求已过期，客户端会按拒绝处理')
+}
+
 // ───────────────────────── 登录 / 启动 ─────────────────────────
 
 /** 页面加载时调用：恢复本地登录态（过期则清除），并尝试水合客户端列表 */
@@ -449,14 +554,26 @@ export async function login(username: string, password: string): Promise<void> {
   connectSocket()
 }
 
+/** 自助注册：成功即登录（响应与 login 同形状），调用方进入控制台 */
+export async function register(username: string, password: string): Promise<void> {
+  const result = await api.register(username, password)
+  saveAuth(result.token, result.user)
+  state.user = result.user
+  connectSocket()
+}
+
 export function logout(): void {
   socket.close()
   for (const pending of pendingCommands.values()) window.clearTimeout(pending.timer)
   pendingCommands.clear()
+  if (noticeTimer !== undefined) window.clearTimeout(noticeTimer)
+  noticeTimer = undefined
+  confirmNotice.value = ''
   clearAuth()
   state.user = null
   state.clients.clear()
   state.sessions.clear()
+  state.confirms.splice(0)
   state.selectedClientId = ''
   state.activeSessionKey = ''
   window.location.hash = '#/login'

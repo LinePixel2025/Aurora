@@ -145,20 +145,110 @@ let adminToken = ''
 let userToken = ''
 let pairingToken = ''
 
-describe('Aurora Center · 配对与客户端上线', () => {
-  it('用户创建配对令牌 → 客户端 hello 上线 → 出现在用户与（跨属主）管理员的列表里', async () => {
+/** 客户端账号登录（v0.2.1 主路径；手动配对令牌功能面已删除） */
+async function clientLogin(
+  body: Record<string, unknown>,
+): Promise<{ status: number; data: Record<string, unknown> }> {
+  const res = await fetch(`${base}/api/client/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return { status: res.status, data: (await res.json()) as Record<string, unknown> }
+}
+
+describe('Aurora Center · 自助注册（docs/12 §4.2）', () => {
+  const FRESH = { username: 'self-joined', password: 'self-pass-8888' }
+
+  it('注册成功 → 直接登录（与 login 相同返回形状），令牌可访问 /api/me', async () => {
+    const res = await fetch(`${base}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(FRESH),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      token: string
+      user: { username: string; role: string }
+    }
+    expect(body.user.username).toBe(FRESH.username)
+    expect(body.user.role).toBe('user')
+    const me = await fetch(`${base}/api/me`, { headers: authed(body.token) })
+    expect(me.status).toBe(200)
+    expect(((await me.json()) as { username: string }).username).toBe(FRESH.username)
+  })
+
+  it('重名 409；用户名 / 密码不合规 400', async () => {
+    const dup = await fetch(`${base}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(FRESH),
+    })
+    expect(dup.status).toBe(409)
+    const badName = await fetch(`${base}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'ab', password: 'long-enough-8' }),
+    })
+    expect(badName.status).toBe(400)
+    const shortPass = await fetch(`${base}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'fresh-name', password: 'short7' }),
+    })
+    expect(shortPass.status).toBe(400)
+  })
+
+  it('关闭注册（config.json allowRegistration=false）→ 403', async () => {
+    const closedDir = await mkdtemp(join(tmpdir(), 'aurora-center-reg-closed-'))
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(
+      join(closedDir, 'config.json'),
+      JSON.stringify({ version: 1, port: 8787, host: '0.0.0.0', allowRegistration: false }),
+      'utf8',
+    )
+    // 该数据目录先种一个管理员（登录主路径不受注册开关影响）
+    const { AuthStore } = await import('./auth.js')
+    const boot = new AuthStore({ dataDir: closedDir })
+    await boot.init()
+    await boot.createUser({ ...ADMIN, role: 'admin' })
+    const closed = createCenterServer({ dataDir: closedDir })
+    const { port: closedPort } = await closed.listen(0, '127.0.0.1')
+    try {
+      const res = await fetch(`http://127.0.0.1:${closedPort}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(FRESH),
+      })
+      expect(res.status).toBe(403)
+      expect(((await res.json()) as { error: string }).error).toBe('E_REGISTRATION_DISABLED')
+      // 注册关了，登录照常可用
+      const admin = await fetch(`http://127.0.0.1:${closedPort}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ADMIN),
+      })
+      expect(admin.status).toBe(200)
+    } finally {
+      await closed.close()
+    }
+  })
+})
+
+describe('Aurora Center · 客户端上线', () => {
+  it('用户账号登录换客户端令牌 → 客户端 hello 上线 → 出现在用户与（跨属主）管理员的列表里', async () => {
     const admin = await login(ADMIN)
     const user = await login(USER)
     adminToken = admin.token
     userToken = user.token
 
-    const created = await fetch(`${base}/api/tokens`, {
-      method: 'POST',
-      headers: { ...authed(userToken), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label: '我的笔记本' }),
+    const paired = await clientLogin({
+      username: USER.username,
+      password: USER.password,
+      clientId: 'client-e2e-1',
     })
-    const body = (await created.json()) as { token: string }
-    pairingToken = body.token
+    expect(paired.status).toBe(200)
+    pairingToken = paired.data['token'] as string
     expect(pairingToken.startsWith('ac-')).toBe(true)
 
     const ws = await connectClient(pairingToken, {
@@ -183,14 +273,42 @@ describe('Aurora Center · 配对与客户端上线', () => {
     expect(listAdmin.clients.some((c) => c.clientId === 'client-e2e-1')).toBe(true)
   }, 20_000)
 
-  it('hello 后立刻连发的 status 不因配对异步窗口丢失（竞态回归，docs/12）', async () => {
-    // 用 alice 建令牌：竞态客户端属主 = alice，下面的网页端（alice）才能收到它的 status
-    const created = await fetch(`${base}/api/tokens`, {
-      method: 'POST',
-      headers: { ...authed((await login(USER)).token), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label: 'race' }),
+  it('属主隔离（docs/12 §3 项 9）：一个用户可有多台客户端，/api/clients 只返回自己名下的', async () => {
+    // alice 的第二台客户端
+    const second = await clientLogin({
+      username: USER.username,
+      password: USER.password,
+      clientId: 'client-e2e-2',
     })
-    const { token: raceToken } = (await created.json()) as { token: string }
+    expect(second.status).toBe(200)
+    const ws = await connectClient(second.data['token'] as string, {
+      clientId: 'client-e2e-2',
+      name: '第二台',
+    })
+    try {
+      const list = (await (
+        await fetch(`${base}/api/clients`, { headers: authed(userToken) })
+      ).json()) as { clients: Array<{ clientId: string; ownerUserId: string }> }
+      // 两台都是 alice 的，且没有别人的
+      expect(list.clients.map((c) => c.clientId).sort()).toEqual(['client-e2e-1', 'client-e2e-2'])
+      expect(list.clients.every((c) => c.ownerUserId !== '')).toBe(true)
+      const adminList = (await (
+        await fetch(`${base}/api/clients`, { headers: authed(adminToken) })
+      ).json()) as { clients: Array<{ clientId: string; ownerUserId: string }> }
+      expect(adminList.clients.length).toBeGreaterThanOrEqual(2)
+    } finally {
+      ws.close()
+    }
+  }, 20_000)
+
+  it('hello 后立刻连发的 status 不因配对异步窗口丢失（竞态回归，docs/12）', async () => {
+    // 用 alice 登录换令牌：竞态客户端属主 = alice，下面的网页端（alice）才能收到它的 status
+    const paired = await clientLogin({
+      username: USER.username,
+      password: USER.password,
+      clientId: 'client-race',
+    })
+    const raceToken = paired.data['token'] as string
     // 与真实连接器同款：open 后**同一批**发 hello + status，status 必须被排队回放而非丢弃
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/client`, {
       headers: { Authorization: `Bearer ${raceToken}` },
@@ -384,7 +502,7 @@ describe('Aurora Center · 文件上传与下载', () => {
     const upload = await fetch(`${base}/api/ingest/files?note=测试备注`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${await getAnyPairingToken()}`,
+        Authorization: `Bearer ${await getAnyClientToken()}`,
         'X-Client-Id': 'client-e2e-1',
         'X-File-Name': encodeURIComponent('报告 v1.txt'),
         'Content-Type': 'application/octet-stream',
@@ -426,30 +544,19 @@ describe('Aurora Center · 文件上传与下载', () => {
   })
 })
 
-/** 配对令牌由「配对与客户端上线」用例经 REST 创建（vitest 同文件内按序执行） */
-let cachedPairing: string | undefined
-async function getAnyPairingToken(): Promise<string> {
-  if (cachedPairing !== undefined) return cachedPairing
-  if (pairingToken === '') throw new Error('配对用例未运行：pairingToken 为空')
-  cachedPairing = pairingToken
+/** 客户端令牌由「客户端上线」用例经 /api/client/login 颁发（vitest 同文件内按序执行） */
+let cachedClientToken: string | undefined
+async function getAnyClientToken(): Promise<string> {
+  if (cachedClientToken !== undefined) return cachedClientToken
+  if (pairingToken === '') throw new Error('上线用例未运行：clientToken 为空')
+  cachedClientToken = pairingToken
   return pairingToken
 }
 
 describe('Aurora Center · 客户端账号登录（v0.2.1，docs/12 §3）', () => {
   const CLIENT_ID = 'client-login-e2e'
 
-  async function clientLogin(
-    body: Record<string, unknown>,
-  ): Promise<{ status: number; data: Record<string, unknown> }> {
-    const res = await fetch(`${base}/api/client/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    return { status: res.status, data: (await res.json()) as Record<string, unknown> }
-  }
-
-  it('口令换客户端令牌：创建即绑定 clientId 与属主，令牌可直接握手上线', async () => {
+  it('密码换客户端令牌：创建即绑定 clientId 与属主，令牌可直接握手上线', async () => {
     const { status, data } = await clientLogin({
       username: USER.username,
       password: USER.password,
@@ -491,55 +598,12 @@ describe('Aurora Center · 客户端账号登录（v0.2.1，docs/12 §3）', () 
     expect(owner.status).toBe(200)
   })
 
-  it('配对令牌首次绑定他人 clientId 被拒（属主护栏，与登录 409 同款）', async () => {
-    // client-e2e-1 已绑定 alice 的有效令牌（前序用例）；root 另建一枚新令牌来抢绑定
-    const webToken = await login({ ...ADMIN }).then((r) => r.token)
-    const res = await fetch(`${base}/api/tokens`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authed(webToken) },
-      body: JSON.stringify({ label: '抢绑' }),
+  it('错误密码 401；缺 clientId / 缺密码 400', async () => {
+    const bad = await clientLogin({
+      username: USER.username,
+      password: 'wrong-pass',
+      clientId: CLIENT_ID,
     })
-    const { token } = (await res.json()) as { token: string }
-    await expect(
-      connectClient(token, { clientId: 'client-e2e-1', name: '抢绑机' }),
-    ).rejects.toThrow()
-  })
-
-  it('设备释放后换账号登录：属主跟随当前有效令牌（hello upsert 更新归属）', async () => {
-    const CID = 'owner-move-e2e'
-    // 1) alice 登录绑定设备
-    const first = await clientLogin({ username: USER.username, password: USER.password, clientId: CID })
-    expect(first.status).toBe(200)
-    const ws1 = await connectClient(first.data['token'] as string, { clientId: CID, name: '迁移机' })
-    ws1.close()
-    // 2) alice 吊销自己的令牌（释放设备；属主未释放前别人登录会被 409 拦截）
-    const aliceSession = await login({ ...USER }).then((r) => r.token)
-    const tokenList = await fetch(`${base}/api/tokens`, { headers: authed(aliceSession) }).then(
-      (r) => r.json(),
-    ) as { tokens: Array<{ id: string; clientId: string }> }
-    const mine = tokenList.tokens.find((t) => t.clientId === CID)
-    expect(mine).toBeDefined()
-    await fetch(`${base}/api/tokens/${(mine as { id: string }).id}/revoke`, {
-      method: 'POST',
-      headers: authed(aliceSession),
-    })
-    // 3) root 登录同一设备 → hello 后属主变为 root
-    const second = await clientLogin({ username: ADMIN.username, password: ADMIN.password, clientId: CID })
-    expect(second.status).toBe(200)
-    const ws2 = await connectClient(second.data['token'] as string, { clientId: CID, name: '迁移机' })
-    try {
-      const adminSession = await login({ ...ADMIN }).then((r) => r.token)
-      const list = await fetch(`${base}/api/clients`, { headers: authed(adminSession) }).then(
-        (r) => r.json(),
-      ) as { clients: Array<{ clientId: string; ownerUsername: string }> }
-      expect(list.clients.find((c) => c.clientId === CID)?.ownerUsername).toBe(ADMIN.username)
-    } finally {
-      ws2.close()
-    }
-  })
-
-  it('错误口令 401；缺 clientId / 缺口令 400', async () => {
-    const bad = await clientLogin({ username: USER.username, password: 'wrong-pass', clientId: CLIENT_ID })
     expect(bad.status).toBe(401)
     const noId = await clientLogin({ username: USER.username, password: USER.password })
     expect(noId.status).toBe(400)
@@ -548,15 +612,340 @@ describe('Aurora Center · 客户端账号登录（v0.2.1，docs/12 §3）', () 
   })
 
   it('重新登录吊销同 clientId 旧令牌：旧令牌握手被拒、新令牌可连', async () => {
-    const first = await clientLogin({ username: USER.username, password: USER.password, clientId: CLIENT_ID })
-    const second = await clientLogin({ username: USER.username, password: USER.password, clientId: CLIENT_ID })
+    const first = await clientLogin({
+      username: USER.username,
+      password: USER.password,
+      clientId: CLIENT_ID,
+    })
+    const second = await clientLogin({
+      username: USER.username,
+      password: USER.password,
+      clientId: CLIENT_ID,
+    })
     expect(first.status).toBe(200)
     expect(second.status).toBe(200)
 
     await expect(
       connectClient(first.data['token'] as string, { clientId: CLIENT_ID, name: '旧令牌' }),
     ).rejects.toThrow()
-    const ws = await connectClient(second.data['token'] as string, { clientId: CLIENT_ID, name: '新令牌' })
+    const ws = await connectClient(second.data['token'] as string, {
+      clientId: CLIENT_ID,
+      name: '新令牌',
+    })
     ws.close()
+  })
+})
+
+describe('Aurora Center · 设备授权登录（docs/12 §4.3）', () => {
+  interface Challenge {
+    deviceCode: string
+    userCode: string
+    verifyUrl: string
+    expiresAt: string
+    intervalMs: number
+  }
+
+  async function start(
+    body: Record<string, unknown>,
+  ): Promise<{ status: number; data: Record<string, unknown> }> {
+    const res = await fetch(`${base}/api/client/device/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return { status: res.status, data: (await res.json()) as Record<string, unknown> }
+  }
+
+  async function poll(
+    body: Record<string, unknown>,
+  ): Promise<{ status: number; data: Record<string, unknown> }> {
+    const res = await fetch(`${base}/api/client/device/poll`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return { status: res.status, data: (await res.json()) as Record<string, unknown> }
+  }
+
+  async function authorize(
+    token: string,
+    body: Record<string, unknown>,
+  ): Promise<{ status: number; data: Record<string, unknown> }> {
+    const res = await fetch(`${base}/api/client/device/authorize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authed(token) },
+      body: JSON.stringify(body),
+    })
+    return { status: res.status, data: (await res.json()) as Record<string, unknown> }
+  }
+
+  it('start → poll pending → authorize 批准 → poll approved（令牌可握手、归属批准者）', async () => {
+    const started = await start({ clientId: 'client-device-e2e' })
+    expect(started.status).toBe(200)
+    const challenge = started.data as unknown as Challenge
+    expect(challenge.deviceCode).toHaveLength(43)
+    expect(challenge.userCode).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/)
+    expect(challenge.intervalMs).toBe(2000)
+    // verifyUrl 按请求 Host 拼，指向网页确认页
+    expect(challenge.verifyUrl).toBe(`http://127.0.0.1:${port}/#/device?code=${challenge.userCode}`)
+
+    const pending = await poll({ deviceCode: challenge.deviceCode, clientId: 'client-device-e2e' })
+    expect(pending.data['status']).toBe('pending')
+
+    const approved = await authorize(userToken, { deviceCode: challenge.deviceCode, approve: true })
+    expect(approved.status).toBe(200)
+
+    const result = await poll({ deviceCode: challenge.deviceCode, clientId: 'client-device-e2e' })
+    expect(result.data['status']).toBe('approved')
+    expect(result.data['username']).toBe(USER.username)
+    const deviceToken = result.data['token'] as string
+    expect(deviceToken.startsWith('ac-')).toBe(true)
+
+    // 颁发的令牌可直接握手上线，且出现在 alice 自己的列表里
+    const ws = await connectClient(deviceToken, {
+      clientId: 'client-device-e2e',
+      name: '设备授权机',
+    })
+    try {
+      const list = (await (
+        await fetch(`${base}/api/clients`, { headers: authed(userToken) })
+      ).json()) as { clients: Array<{ clientId: string }> }
+      expect(list.clients.some((c) => c.clientId === 'client-device-e2e')).toBe(true)
+    } finally {
+      ws.close()
+    }
+
+    // 挑战一次性：approved 消费后再轮询 → expired
+    const consumed = await poll({ deviceCode: challenge.deviceCode, clientId: 'client-device-e2e' })
+    expect(consumed.data['status']).toBe('expired')
+  }, 20_000)
+
+  it('authorize 需网页会话；拒绝路径：approve=false → poll denied', async () => {
+    const started = await start({ clientId: 'client-device-deny' })
+    const challenge = started.data as unknown as Challenge
+    const anon = await fetch(`${base}/api/client/device/authorize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceCode: challenge.deviceCode }),
+    })
+    expect(anon.status).toBe(401)
+
+    const denied = await authorize(userToken, { deviceCode: challenge.deviceCode, approve: false })
+    expect(denied.status).toBe(200)
+    const result = await poll({ deviceCode: challenge.deviceCode, clientId: 'client-device-deny' })
+    expect(result.data['status']).toBe('denied')
+  }, 20_000)
+
+  it('属主护栏：clientId 已绑定他人有效令牌 → authorize 409 E_CLIENT_BOUND 且挑战置 denied', async () => {
+    // client-e2e-1 已绑定 alice 的有效令牌（前序用例）；root 试图批准绑定
+    const started = await start({ clientId: 'client-e2e-1' })
+    const challenge = started.data as unknown as Challenge
+    const conflict = await authorize(adminToken, {
+      deviceCode: challenge.deviceCode,
+      approve: true,
+    })
+    expect(conflict.status).toBe(409)
+    expect(conflict.data['error']).toBe('E_CLIENT_BOUND')
+    const result = await poll({ deviceCode: challenge.deviceCode, clientId: 'client-e2e-1' })
+    expect(result.data['status']).toBe('denied')
+  }, 20_000)
+
+  it('info 端点：userCode 换 deviceCode（无需登录），未知 code 404 防枚举', async () => {
+    const started = await start({ clientId: 'client-device-info' })
+    const challenge = started.data as unknown as Challenge
+    const res = await fetch(
+      `${base}/api/client/device/info?code=${encodeURIComponent(challenge.userCode)}`,
+    )
+    expect(res.status).toBe(200)
+    const info = (await res.json()) as { deviceCode: string; expiresAt: string }
+    expect(info.deviceCode).toBe(challenge.deviceCode)
+    expect(info.expiresAt).toBe(challenge.expiresAt)
+
+    const ghost = await fetch(`${base}/api/client/device/info?code=ZZZZ-9999`)
+    expect(ghost.status).toBe(404)
+    // 拿到的 deviceCode 真的能走 authorize（网页会话），证明映射有效
+    const approved = await authorize(userToken, { deviceCode: info.deviceCode, approve: true })
+    expect(approved.status).toBe(200)
+  }, 20_000)
+
+  it('未知 deviceCode：authorize 404；poll expired；start 缺 clientId 400', async () => {
+    const ghost = await authorize(userToken, { deviceCode: 'no-such-device-code' })
+    expect(ghost.status).toBe(404)
+    const expired = await poll({ deviceCode: 'no-such-device-code', clientId: 'c' })
+    expect(expired.data['status']).toBe('expired')
+    const noClient = await start({})
+    expect(noClient.status).toBe(400)
+  }, 20_000)
+})
+
+describe('Aurora Center · 确认卡端到端（confirm.request / confirm.resolve）', () => {
+  const CONFIRM_REQUEST = {
+    confirmId: 'cf-e2e-1',
+    sessionId: 'center-e2e',
+    toolName: 'run_command',
+    input: { command: 'npm test' },
+    createdAt: '2026-09-27T00:00:00.000Z',
+    expiresAt: '2026-09-27T00:01:00.000Z',
+  }
+
+  it('客户端 confirm.request → 属主网页端收到；网页端 confirm.resolve → 客户端 cmd → result 转回', async () => {
+    const ws = await connectClient(pairingToken, {
+      clientId: 'client-e2e-1',
+      name: '测试机',
+      version: '0.1.6',
+      platform: 'win32',
+      mode: 'work',
+      capabilities: { session: true, remoteConfig: true, fileTransfer: true },
+    })
+    const waitForClient = collector(ws)
+    try {
+      const web = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${userToken}`)
+      const waitForWeb = collector(web)
+      await new Promise<void>((resolveOpen, reject) => {
+        web.once('open', () => resolveOpen())
+        web.once('error', reject)
+      })
+
+      // 客户端发确认请求 → 属主网页端收到（带 clientId / sessionId / request）
+      ws.send(JSON.stringify({ type: 'confirm.request', request: CONFIRM_REQUEST }))
+      const forwarded = await waitForWeb(
+        (m) =>
+          m['type'] === 'confirm.request' &&
+          (m['request'] as { confirmId: string }).confirmId === 'cf-e2e-1',
+      )
+      expect(forwarded['clientId']).toBe('client-e2e-1')
+      expect(forwarded['sessionId']).toBe('center-e2e')
+
+      // 网页端批复 → 客户端收到 cmd confirm.resolve
+      web.send(
+        JSON.stringify({
+          type: 'confirm.resolve',
+          requestId: 'web-confirm-1',
+          clientId: 'client-e2e-1',
+          confirmId: 'cf-e2e-1',
+          approved: true,
+        }),
+      )
+      const cmd = await waitForClient(
+        (m) => m['type'] === 'cmd' && (m['cmd'] as { kind: string }).kind === 'confirm.resolve',
+      )
+      expect((cmd['cmd'] as { kind: string }).kind).toBe('confirm.resolve')
+      expect((cmd['cmd'] as { confirmId: string }).confirmId).toBe('cf-e2e-1')
+      expect((cmd['cmd'] as { approved: boolean }).approved).toBe(true)
+
+      // 客户端回执 → 网页端收到 result
+      ws.send(
+        JSON.stringify({
+          type: 'result',
+          requestId: 'web-confirm-1',
+          ok: true,
+          data: { resolved: true },
+        }),
+      )
+      const result = await waitForWeb(
+        (m) => m['type'] === 'result' && m['requestId'] === 'web-confirm-1',
+      )
+      expect(result['ok']).toBe(true)
+      web.close()
+    } finally {
+      ws.close()
+    }
+  }, 20_000)
+})
+
+describe('Aurora Center · 文件列表 / 删除 / 过期（docs/12 §5）', () => {
+  let ownedFileId = ''
+
+  it('GET /api/files：属主看自己名下（含 expiresAt，倒序），管理员看全部，陌生人看不到', async () => {
+    // 用属主令牌上传两个文件（client-e2e-1 属主 = alice）
+    for (const name of ['清单.txt', '日志.txt']) {
+      const upload = await fetch(`${base}/api/ingest/files`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${await getAnyClientToken()}`,
+          'X-Client-Id': 'client-e2e-1',
+          'X-File-Name': encodeURIComponent(name),
+        },
+        body: `内容-${name}`,
+      })
+      expect(upload.status).toBe(200)
+      const { fileId } = (await upload.json()) as { fileId: string }
+      ownedFileId = fileId
+    }
+
+    const userList = (await (
+      await fetch(`${base}/api/files`, { headers: authed(userToken) })
+    ).json()) as {
+      files: Array<{ fileId: string; name: string; uploadedAt: string; expiresAt: string }>
+    }
+    expect(userList.files.length).toBeGreaterThanOrEqual(2)
+    // 倒序：后上传的在前
+    expect(userList.files[0]?.name).toBe('日志.txt')
+    const first = userList.files[0] as { uploadedAt: string; expiresAt: string }
+    expect(new Date(first.expiresAt).getTime()).toBe(
+      new Date(first.uploadedAt).getTime() + 24 * 3600 * 1000,
+    )
+
+    // 管理员能看到全部（≥ 属主所见）
+    const adminList = (await (
+      await fetch(`${base}/api/files`, { headers: authed(adminToken) })
+    ).json()) as { files: Array<{ fileId: string }> }
+    expect(adminList.files.length).toBeGreaterThanOrEqual(userList.files.length)
+
+    // 陌生人（自助注册的新用户）看不到 alice 名下的文件
+    const stranger = await login({ username: 'self-joined', password: 'self-pass-8888' })
+    const strangerList = (await (
+      await fetch(`${base}/api/files`, { headers: authed(stranger.token) })
+    ).json()) as { files: Array<{ fileId: string }> }
+    expect(strangerList.files.some((f) => f.fileId === ownedFileId)).toBe(false)
+  }, 20_000)
+
+  it('DELETE /api/files/:fileId：属主可删（删除后下载 404），陌生人 403，未知 id 404', async () => {
+    const stranger = await login({ username: 'self-joined', password: 'self-pass-8888' })
+    const forbidden = await fetch(`${base}/api/files/${ownedFileId}`, {
+      method: 'DELETE',
+      headers: authed(stranger.token),
+    })
+    expect(forbidden.status).toBe(403)
+
+    const gone = await fetch(`${base}/api/files/${ownedFileId}`, {
+      method: 'DELETE',
+      headers: authed(userToken),
+    })
+    expect(gone.status).toBe(200)
+    // 删除后下载与列表都不可见
+    const download = await fetch(`${base}/api/files/${ownedFileId}`, { headers: authed(userToken) })
+    expect(download.status).toBe(404)
+    const list = (await (
+      await fetch(`${base}/api/files`, { headers: authed(userToken) })
+    ).json()) as { files: Array<{ fileId: string }> }
+    expect(list.files.some((f) => f.fileId === ownedFileId)).toBe(false)
+
+    const unknown = await fetch(`${base}/api/files/f-nope`, {
+      method: 'DELETE',
+      headers: authed(userToken),
+    })
+    expect(unknown.status).toBe(404)
+  }, 20_000)
+
+  it('手动令牌功能面已删除：/api/tokens* 与 /api/admin/tokens* 不再存在', async () => {
+    // user 打到管理段前的未知路由是 403（与既有 dispatch 行为一致），admin 是 404
+    expect((await fetch(`${base}/api/tokens`, { headers: authed(userToken) })).status).toBe(403)
+    expect(
+      (
+        await fetch(`${base}/api/tokens`, {
+          method: 'POST',
+          headers: authed(userToken),
+          body: '{}',
+        })
+      ).status,
+    ).toBe(403)
+    expect(
+      (await fetch(`${base}/api/tokens/t-1/revoke`, { method: 'POST', headers: authed(userToken) }))
+        .status,
+    ).toBe(403)
+    expect((await fetch(`${base}/api/admin/tokens`, { headers: authed(adminToken) })).status).toBe(
+      404,
+    )
   })
 })

@@ -6,7 +6,12 @@
  * - WebSocket 断线自动重连：指数退避 1s→2s→4s→8s→15s 封顶；
  * - 登录令牌存 localStorage（7 天有效期由服务器控制，过期由 401 触发登出）。
  */
-import type { CenterWebMessage, CenterWebServerMessage, ClientInfo } from '@aurora/shared'
+import type {
+  CenterWebMessage,
+  CenterWebServerMessage,
+  ClientInfo,
+  FileEntryInfo,
+} from '@aurora/shared'
 
 export interface Me {
   id: string
@@ -17,15 +22,6 @@ export interface Me {
 export interface LoginResponse {
   token: string
   user: Me
-}
-
-/** 配对令牌条目（GET /api/tokens 与 /api/admin/tokens 共用形状） */
-export interface PairingToken {
-  id: string
-  label?: string
-  createdAt: string
-  clientId?: string
-  revokedAt?: string
 }
 
 export interface AdminUser {
@@ -109,21 +105,31 @@ export const api = {
   login(username: string, password: string): Promise<LoginResponse> {
     return request('/api/auth/login', 'POST', { username, password })
   },
+  /** 自助注册：成功返回与 login 相同形状（直接进入登录态）；409 重名 / 403 注册关闭 */
+  register(username: string, password: string): Promise<LoginResponse> {
+    return request('/api/auth/register', 'POST', { username, password })
+  },
   me(): Promise<Me> {
     return request('/api/me')
   },
   clients(): Promise<{ clients: ClientInfo[] }> {
     return request('/api/clients')
   },
-  /** 创建自己的配对令牌；明文只在本次响应里出现一次 */
-  createPairingToken(label?: string): Promise<{ id: string; token: string }> {
-    return request('/api/tokens', 'POST', label ? { label } : {})
+
+  /** 客户端上传的文件列表（属主过滤后端已做，uploadedAt 倒序） */
+  files(): Promise<{ files: FileEntryInfo[] }> {
+    return request('/api/files')
   },
-  listPairingTokens(): Promise<{ tokens: PairingToken[] }> {
-    return request('/api/tokens')
+  deleteFile(fileId: string): Promise<{ ok: true }> {
+    return request(`/api/files/${encodeURIComponent(fileId)}`, 'DELETE')
   },
-  revokePairingToken(id: string): Promise<{ ok: true }> {
-    return request(`/api/tokens/${encodeURIComponent(id)}/revoke`, 'POST')
+
+  /** 设备授权（docs/12 §4.3）：展示码换设备码（无需登录），供确认页拿到 authorize 凭据 */
+  deviceInfo(userCode: string): Promise<{ deviceCode: string; expiresAt: string }> {
+    return request(`/api/client/device/info?code=${encodeURIComponent(userCode)}`)
+  },
+  authorizeDevice(deviceCode: string, approve: boolean): Promise<{ ok: true; clientId: string }> {
+    return request('/api/client/device/authorize', 'POST', { deviceCode, approve })
   },
 
   /** 管理员接口（role=admin） */
@@ -152,9 +158,6 @@ export const api = {
     },
     deleteClient(clientId: string): Promise<{ ok: true }> {
       return request(`/api/admin/clients/${encodeURIComponent(clientId)}`, 'DELETE')
-    },
-    tokens(): Promise<{ tokens: PairingToken[] }> {
-      return request('/api/admin/tokens')
     },
   },
 }

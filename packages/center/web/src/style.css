@@ -421,3 +421,65 @@ select.input {
   align-items: center;
   justify-content: center;
 }
+
+/* ───────────────────────── 移动端适配 ───────────────────────── */
+
+/* 表格横向滚动容器：窄屏不撑破布局（表格内容可横向滑） */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-scroll .table {
+  min-width: 640px;
+}
+
+@media (max-width: 720px) {
+  /* 触摸尺寸：输入 / 按钮不小于 40px 高 */
+  .btn {
+    min-height: 40px;
+    padding: 9px 18px;
+  }
+
+  .btn-sm {
+    min-height: 40px;
+    padding: 7px 14px;
+  }
+
+  .input {
+    min-height: 40px;
+  }
+
+  /* 顶栏压缩：用户名让位给导航 */
+  .topbar-inner {
+    padding: 0 12px;
+    gap: 8px;
+  }
+
+  .topbar-user {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  body {
+    font-size: 13.5px;
+  }
+
+  .topbar-right {
+    gap: 5px;
+  }
+
+  .topbar-link {
+    padding: 6px 8px;
+    font-size: 12.5px;
+  }
+
+  .ws-chip {
+    display: none;
+  }
+
+  .brand {
+    font-size: 15px;
+  }
+}

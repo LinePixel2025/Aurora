@@ -11,10 +11,22 @@ export {
   hashToken,
   type UserRecord,
   type UserRole,
-  type PairingTokenView,
+  type ClientTokenView,
 } from './auth.js'
+export {
+  DeviceAuthStore,
+  DEVICE_CHALLENGE_TTL_MS,
+  DEVICE_POLL_INTERVAL_MS,
+  formatUserCode,
+} from './device.js'
 export { ClientRegistry, type ClientRecord } from './clients.js'
-export { FileStore, FileTooLargeError, type FileRecord } from './files.js'
+export {
+  FILE_TTL_MS,
+  FILE_PRUNE_INTERVAL_MS,
+  FileStore,
+  FileTooLargeError,
+  type FileRecord,
+} from './files.js'
 export { Hub, type HubDeps, type ClientConn, type WebConn } from './hub.js'
 export { JsonStore } from './store.js'
 export { checkUpdate, compareVersions, type UpdateCheckResult } from './update.js'

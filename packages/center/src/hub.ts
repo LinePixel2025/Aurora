@@ -2,7 +2,7 @@
  * 消息路由中心（docs/12 §4）：网页命令 → 客户端，客户端事件 → 属主 + 管理员。
  *
  * 信任边界：
- * - **属主关系只信服务器记账**：客户端属主来自配对令牌（登记表持久化），
+ * - **属主关系只信服务器记账**：客户端属主来自客户端令牌（登记表持久化），
  *   会话属主记录在 `sessionOwners`（谁发起 `session.create` 谁拥有）——不信任任何一方自报；
  * - 命令转发前做**白名单预检**（`CENTER_REMOTE_CONFIG_PREFIXES`），客户端侧还会再验一道；
  * - 待回执的命令带超时，超时向网页端合成错误回执，不让请求悬死。
@@ -140,6 +140,16 @@ export class Hub {
           mode: message.mode,
         })
         break
+      case 'confirm.resolve':
+        // 确认卡批复：授权与离线判定同其他命令；客户端的 result 回执走通用 pending
+        // 通道转回网页端（网页端 requestId 保持不变）。
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'confirm.resolve',
+          requestId: message.requestId,
+          confirmId: message.confirmId,
+          approved: message.approved,
+        })
+        break
       default:
         break // 协议只增不改：未知类型忽略
     }
@@ -245,6 +255,22 @@ export class Hub {
             clientId,
             sessionId: message.sessionId,
             event: message.event,
+          })
+        }
+        break
+      }
+      case 'confirm.request': {
+        // 确认卡转发：按客户端登记表的属主 + 全部管理员路由（与 file.received 同款；
+        // 不在线就没有收方，客户端自带 60s 超时按拒绝收尾）
+        const record = this.deps.clients.get(clientId)
+        if (record === undefined) return
+        for (const web of this.webConns.values()) {
+          if (web.user.role !== 'admin' && web.user.id !== record.ownerUserId) continue
+          web.send({
+            type: 'confirm.request',
+            clientId,
+            sessionId: message.request.sessionId,
+            request: message.request,
           })
         }
         break

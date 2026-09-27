@@ -1,13 +1,32 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import ToolCard from './ToolCard.vue'
 import { fileUrl } from '../api'
-import { formatBytes, modeLabel } from '../format'
-import { abortSession, sendInput, type ClientEntry, type SessionState } from '../store'
+import {
+  formatRemaining,
+  jobStatusLabel,
+  modeLabel,
+  pendingReasonLabel,
+  remainingMs,
+  subagentStatusLabel,
+} from '../format'
+import {
+  abortSession,
+  confirmNotice,
+  expireConfirm,
+  resolveConfirm,
+  sendInput,
+  state,
+  summarizeInput,
+  type ClientEntry,
+  type ConfirmEntry,
+  type SessionState,
+} from '../store'
 
 /**
  * 会话主区：消息流（按 messageId 聚合的结果）+ 底部输入框 + 发送 / 停止。
  * 停止依赖最近一次 session.input 回执携带的 agentRequestId。
+ * 确认卡：本会话待批复的敏感工具请求（倒计时归零即摘除并提示）。
  */
 const props = defineProps<{ session: SessionState; entry: ClientEntry }>()
 
@@ -16,6 +35,28 @@ const emit = defineEmits<{ newSession: [] }>()
 const draft = ref('')
 const listEl = ref<HTMLElement | null>(null)
 const abortError = ref('')
+
+// ───────────────────────── 确认卡 ─────────────────────────
+
+/** 秒级心跳：驱动倒计时文案与过期自动摘除 */
+const now = ref(Date.now())
+const heartbeat = window.setInterval(() => {
+  now.value = Date.now()
+  for (const entry of [...sessionConfirms.value]) {
+    if (remainingMs(entry.request.expiresAt, now.value) <= 0) expireConfirm(entry)
+  }
+}, 1000)
+onBeforeUnmount(() => window.clearInterval(heartbeat))
+
+const sessionConfirms = computed<ConfirmEntry[]>(() =>
+  state.confirms.filter(
+    (c) => c.clientId === props.session.clientId && c.sessionId === props.session.sessionId,
+  ),
+)
+
+function countdown(expiresAt: string): string {
+  return formatRemaining(remainingMs(expiresAt, now.value))
+}
 
 /** 没有任何助手输出时才显示整行「生成中」；有了增量就交给消息内光标 */
 const showLoading = computed(
@@ -82,6 +123,39 @@ watch(
       <button class="btn btn-ghost btn-sm" type="button" @click="emit('newSession')">新会话</button>
     </header>
 
+    <!-- 敏感工具确认卡（本会话）：批准 / 拒绝经 confirm.resolve 送回客户端 -->
+    <div v-if="sessionConfirms.length > 0 || confirmNotice" class="confirm-strip">
+      <p v-if="confirmNotice" class="confirm-notice">{{ confirmNotice }}</p>
+      <div v-for="c in sessionConfirms" :key="c.request.confirmId" class="confirm-card">
+        <div class="confirm-head">
+          <span class="confirm-badge">等待确认</span>
+          <span class="confirm-tool">{{ c.request.toolName }}</span>
+          <span class="confirm-countdown">{{ countdown(c.request.expiresAt) }}后超时</span>
+        </div>
+        <pre v-if="summarizeInput(c.request.input)" class="mono confirm-input">{{
+          summarizeInput(c.request.input)
+        }}</pre>
+        <div class="confirm-actions">
+          <button
+            class="btn btn-ghost"
+            type="button"
+            :disabled="remainingMs(c.request.expiresAt, now) <= 0"
+            @click="resolveConfirm(c, false)"
+          >
+            拒绝
+          </button>
+          <button
+            class="btn btn-primary"
+            type="button"
+            :disabled="remainingMs(c.request.expiresAt, now) <= 0"
+            @click="resolveConfirm(c, true)"
+          >
+            批准
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div ref="listEl" class="msg-list">
       <template v-for="item in session.items" :key="item.id">
         <div v-if="item.kind === 'user'" class="msg-user">
@@ -90,6 +164,46 @@ watch(
         <div v-else-if="item.kind === 'error'" class="msg-error">
           {{ item.content }}
           <span v-if="item.code" class="msg-error-code">（{{ item.code }}）</span>
+        </div>
+        <!-- 任务清单卡：最新一条 job 摘要（后续事件原地覆盖） -->
+        <div v-else-if="item.kind === 'job' && item.job" class="job-card">
+          <div class="job-head">
+            <span class="job-title">任务清单</span>
+            <span class="chip" :class="item.job.status === 'done' ? 'chip-ok' : 'chip-accent'">
+              {{ jobStatusLabel(item.job.status) }}
+            </span>
+            <span v-if="item.job.pendingReason" class="chip chip-muted">
+              {{ pendingReasonLabel(item.job.pendingReason) }}
+            </span>
+          </div>
+          <div class="job-meta text-2">
+            第 {{ item.job.round }}/{{ item.job.maxRounds }} 轮 · 已执行 {{ item.job.stepCount }} 步
+            · Token {{ item.job.usedTokens }}/{{ item.job.maxTotalTokens }}
+            <template v-if="item.job.autoContinued > 0">
+              · 自动续轮 {{ item.job.autoContinued }} 次
+            </template>
+          </div>
+          <div v-if="item.job.lastStep" class="job-line text-2">
+            最近步骤：{{ item.job.lastStep }}
+          </div>
+          <p v-if="item.job.error" class="job-error">{{ item.job.error }}</p>
+        </div>
+        <!-- 子代理卡：同一 task 调用的最新快照 -->
+        <div v-else-if="item.kind === 'subagent' && item.subagent" class="job-card">
+          <div class="job-head">
+            <span class="job-title">子代理</span>
+            <span
+              class="chip"
+              :class="item.subagent.status === 'success' ? 'chip-ok' : 'chip-accent'"
+            >
+              {{ subagentStatusLabel(item.subagent.status) }}
+            </span>
+            <span class="text-2 job-inline">工具调用 {{ item.subagent.toolCalls }} 次</span>
+          </div>
+          <div class="job-line">{{ item.subagent.description }}</div>
+          <div v-if="item.subagent.report" class="job-line text-2 subagent-report">
+            {{ item.subagent.report }}
+          </div>
         </div>
         <div v-else class="msg-assistant">
           <div v-if="item.reasoning" class="think">
@@ -343,5 +457,156 @@ watch(
 .composer-input {
   flex: 1;
   max-height: 140px;
+}
+
+/* ───────────────────────── 确认卡 ───────────────────────── */
+
+.confirm-strip {
+  padding: 0 20px 12px;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+}
+
+.confirm-notice {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+
+.confirm-card {
+  background: #fffbe8;
+  border: 1px solid rgba(255, 204, 0, 0.45);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+}
+
+.confirm-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.confirm-badge {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8a6d00;
+}
+
+.confirm-tool {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confirm-countdown {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.confirm-input {
+  margin: 8px 0;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ───────────────────────── 任务清单 / 子代理卡 ───────────────────────── */
+
+.job-card {
+  margin: 12px 0;
+  max-width: 760px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  display: grid;
+  gap: 6px;
+}
+
+.job-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.job-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.job-inline {
+  font-size: 12px;
+}
+
+.job-meta {
+  font-size: 12.5px;
+}
+
+.job-line {
+  font-size: 13px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+
+.subagent-report {
+  white-space: pre-wrap;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.job-error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+
+/* 窄屏：气泡放宽、留白收紧，确认卡贴边 */
+@media (max-width: 720px) {
+  .session-head {
+    padding: 12px 14px;
+  }
+
+  .msg-list {
+    padding: 4px 14px 12px;
+  }
+
+  .bubble-user {
+    max-width: 88%;
+  }
+
+  .confirm-strip {
+    padding: 0 14px 10px;
+  }
+
+  .composer {
+    padding: 10px 12px 14px;
+  }
+
+  .composer-row {
+    flex-wrap: wrap;
+  }
+
+  .composer-row .btn {
+    flex: 1 1 100%;
+  }
 }
 </style>

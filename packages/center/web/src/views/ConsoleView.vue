@@ -2,7 +2,6 @@
 import ClientList from '../components/ClientList.vue'
 import RemoteControlPanel from '../components/RemoteControlPanel.vue'
 import SessionView from '../components/SessionView.vue'
-import TokenPanel from '../components/TokenPanel.vue'
 import {
   activeSession,
   clientsSorted,
@@ -16,7 +15,6 @@ import { ref } from 'vue'
 
 const creating = ref(false)
 const createError = ref('')
-const showTokens = ref(false)
 
 async function create(): Promise<void> {
   const entry = selectedEntry.value
@@ -39,7 +37,6 @@ async function create(): Promise<void> {
       :clients="clientsSorted"
       :selected-id="state.selectedClientId"
       @select="selectClient"
-      @manage-tokens="showTokens = true"
     />
 
     <section class="session-pane">
@@ -74,11 +71,9 @@ async function create(): Promise<void> {
         </button>
       </div>
       <div v-else class="card empty-card">
-        <p class="text-2">从左侧选择一个客户端开始</p>
+        <p class="text-2">从列表中选择一个客户端开始</p>
       </div>
     </section>
-
-    <TokenPanel v-if="showTokens" @close="showTokens = false" />
   </div>
 </template>
 
@@ -95,6 +90,8 @@ async function create(): Promise<void> {
   flex: 1;
   min-width: 0;
   display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .empty-card {
@@ -116,5 +113,20 @@ async function create(): Promise<void> {
 .empty-meta {
   margin: 0 0 10px;
   font-size: 13px;
+}
+
+/* 窄屏：上下堆叠，客户端列表横向滚动（chips），会话区始终全宽可返回列表 */
+@media (max-width: 720px) {
+  .console {
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+    gap: 12px;
+  }
+
+  .session-pane {
+    height: calc(100vh - var(--topbar-h) - 220px);
+    min-height: 380px;
+  }
 }
 </style>

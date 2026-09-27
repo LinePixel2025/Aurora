@@ -40,3 +40,78 @@ export function formatBytes(bytes: number): string {
   }
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${unit}`
 }
+
+// ───────────────────────── job / 子代理状态标签 ─────────────────────────
+
+/** AgentJobStatus → 中文标签（docs/06 §4.1） */
+export function jobStatusLabel(status: string): string {
+  switch (status) {
+    case 'queued':
+      return '排队中'
+    case 'running':
+      return '进行中'
+    case 'paused':
+      return '已暂停'
+    case 'done':
+      return '已完成'
+    case 'error':
+      return '出错'
+    case 'aborted':
+      return '已中止'
+    default:
+      return status
+  }
+}
+
+/** 暂停原因 → 中文说明 */
+export function pendingReasonLabel(reason: string): string {
+  switch (reason) {
+    case 'max-rounds':
+      return '已达轮次上限'
+    case 'budget':
+      return '已达 token 预算'
+    case 'aborted':
+      return '已被取消'
+    default:
+      return reason
+  }
+}
+
+/** 子代理运行状态 → 中文标签 */
+export function subagentStatusLabel(status: string): string {
+  switch (status) {
+    case 'running':
+      return '运行中'
+    case 'success':
+      return '已完成'
+    case 'error':
+      return '失败'
+    default:
+      return status
+  }
+}
+
+/**
+ * 距过期时间点的剩余毫秒（已过期返回 0）；确认卡倒计时与文件剩余有效期共用。
+ * `now` 由调用方传入（组件里用秒级心跳驱动重渲染）。
+ */
+export function remainingMs(expiresAt: string, now = Date.now()): number {
+  const target = new Date(expiresAt).getTime()
+  if (Number.isNaN(target)) return 0
+  return Math.max(0, target - now)
+}
+
+/** 剩余时间的人类可读文案：mm:ss（<1h）/ Xh Ym（<24h）/ X 天 */
+export function formatRemaining(ms: number): string {
+  const totalSeconds = Math.ceil(ms / 1000)
+  if (totalSeconds <= 0) return '已过期'
+  if (totalSeconds < 3600) {
+    const m = Math.floor(totalSeconds / 60)
+    const s = totalSeconds % 60
+    return m > 0 ? `${m} 分 ${s} 秒` : `${s} 秒`
+  }
+  const totalMinutes = Math.floor(totalSeconds / 60)
+  const hours = Math.floor(totalMinutes / 60)
+  if (hours < 24) return `${hours} 小时 ${totalMinutes % 60} 分`
+  return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`
+}

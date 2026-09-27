@@ -1,7 +1,7 @@
 /**
  * Aurora Center 服务器（docs/12）：单端口同时服务
- * - REST `/api/*`（登录、客户端列表、令牌、文件下载）
- * - WS `/api/client`（Aurora 客户端长连：Bearer 配对令牌，连接后第一条 hello 完成配对）
+ * - REST `/api/*`（注册 / 登录、设备授权登录、客户端列表、文件列表 / 下载 / 删除）
+ * - WS `/api/client`（Aurora 客户端长连：Bearer 客户端令牌，连接后第一条 hello 完成绑定）
  * - WS `/api/ws`（网页长连：`?token=` 登录令牌，升级期即校验）
  * - `/api/ingest/files`（客户端上传，流式落盘）
  * - 其余路径静态服务 Web UI（`dist-web/`）
@@ -13,10 +13,17 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createReadStream, promises as fs } from 'node:fs'
 import { extname, join, normalize } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
-import type { CenterServerMessage, ClientStatus, Logger, ModeId } from '@aurora/shared'
+import type {
+  CenterServerMessage,
+  ClientStatus,
+  FileEntryInfo,
+  Logger,
+  ModeId,
+} from '@aurora/shared'
 import { AuthError, AuthStore, type UserRecord } from './auth.js'
 import { ClientRegistry } from './clients.js'
-import { FileStore, FileTooLargeError } from './files.js'
+import { DeviceAuthStore } from './device.js'
+import { FILE_PRUNE_INTERVAL_MS, FileStore, FileTooLargeError } from './files.js'
 import { Hub, type ClientConn, type WebConn } from './hub.js'
 import { serverVersion } from './version.js'
 
@@ -67,6 +74,10 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     maxFileBytes: options.maxFileBytes ?? 512 * 1024 * 1024,
     logger,
   })
+  const device = new DeviceAuthStore({ logger })
+  // 数据目录 config.json 的服务器自身开关（缺省放行）；init() 时读取一次
+  let allowRegistration = true
+  let pruneTimer: NodeJS.Timeout | undefined
   const hub = new Hub({
     clients,
     usernameOf: (userId) => auth.getUser(userId)?.username ?? '',
@@ -86,7 +97,7 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
   })
   const clientWss = new WebSocketServer({ noServer: true })
   const webWss = new WebSocketServer({ noServer: true })
-  /** 已升级、还没完成 hello 的客户端连接：socket → 配对令牌 */
+  /** 已升级、还没完成 hello 的客户端连接：socket → 客户端令牌 */
   const pendingHello = new Map<WebSocket, string>()
 
   http.on('upgrade', (req, socket, head) => {
@@ -163,7 +174,7 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         return
       }
       void auth
-        .verifyPairingToken(token, body.clientId)
+        .verifyClientToken(token, body.clientId)
         .then(async (pair) => {
           pendingHello.delete(ws)
           if (pair === undefined) {
@@ -289,7 +300,7 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         .verifyPassword(String(body['username'] ?? ''), String(body['password'] ?? ''))
         .catch(() => undefined)
       if (user === undefined) {
-        sendJson(res, 401, { error: '用户名或口令不正确' })
+        sendJson(res, 401, { error: '用户名或密码不正确' })
         return
       }
       sendJson(res, 200, {
@@ -299,22 +310,49 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       return
     }
 
-    // 客户端账号登录（docs/12 §3，v0.2.1）：口令换客户端令牌（归属该用户、创建即绑定
+    // 自助注册（docs/12 §4.2）：创建 role:'user' 账户并直接登录（返回与 login 相同形状）。
+    // 服务器 config.json 的 allowRegistration = false 时整条 403 关闭。
+    if (path === '/api/auth/register' && req.method === 'POST') {
+      if (!allowRegistration) {
+        sendJson(res, 403, { error: 'E_REGISTRATION_DISABLED' })
+        return
+      }
+      const body = await readJsonBody(req)
+      try {
+        const user = await auth.registerUser(
+          String(body['username'] ?? ''),
+          String(body['password'] ?? ''),
+        )
+        sendJson(res, 200, {
+          token: auth.createWebSession(user.id),
+          user: { id: user.id, username: user.username, role: user.role },
+        })
+      } catch (error) {
+        sendAuthError(res, error)
+      }
+      return
+    }
+
+    // 客户端账号登录（docs/12 §3，v0.2.1）：密码换客户端令牌（归属该用户、创建即绑定
     // clientId）。与 /api/auth/login 一样是登录入口本身，放在鉴权段之前。
     if (path === '/api/client/login' && req.method === 'POST') {
       const body = await readJsonBody(req)
       const username = String(body['username'] ?? '').trim()
       const password = String(body['password'] ?? '')
       const clientIdRaw = body['clientId']
-      const clientId =
-        typeof clientIdRaw === 'string' ? clientIdRaw.trim() : ''
-      if (username === '' || password === '' || clientId === '' || clientId.length > HELLO_STRING_MAX) {
+      const clientId = typeof clientIdRaw === 'string' ? clientIdRaw.trim() : ''
+      if (
+        username === '' ||
+        password === '' ||
+        clientId === '' ||
+        clientId.length > HELLO_STRING_MAX
+      ) {
         sendJson(res, 400, { error: 'E_INVALID_ARGUMENT' })
         return
       }
       const user = await auth.verifyPassword(username, password).catch(() => undefined)
       if (user === undefined) {
-        sendJson(res, 401, { error: '用户名或口令不正确' })
+        sendJson(res, 401, { error: '用户名或密码不正确' })
         return
       }
       // clientId 已绑定到**其他**账号的有效令牌 → 拒绝抢注（否则 mint 会吊销对方
@@ -339,6 +377,43 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       return
     }
 
+    // 设备授权登录（docs/12 §4.3）：start / poll 是客户端入口（无需登录），
+    // authorize 需网页会话（用户在网页上确认），放在鉴权段之后。
+    if (path === '/api/client/device/start' && req.method === 'POST') {
+      const body = await readJsonBody(req)
+      const clientId = typeof body['clientId'] === 'string' ? body['clientId'].trim() : ''
+      if (clientId === '' || clientId.length > HELLO_STRING_MAX) {
+        sendJson(res, 400, { error: 'E_INVALID_ARGUMENT' })
+        return
+      }
+      const challenge = device.start(clientId, (userCode) => verifyUrlOf(req, userCode))
+      sendJson(res, 200, challenge)
+      return
+    }
+    if (path === '/api/client/device/poll' && req.method === 'POST') {
+      const body = await readJsonBody(req)
+      const deviceCode = typeof body['deviceCode'] === 'string' ? body['deviceCode'] : ''
+      const clientId = typeof body['clientId'] === 'string' ? body['clientId'].trim() : ''
+      if (deviceCode === '' || clientId === '') {
+        sendJson(res, 400, { error: 'E_INVALID_ARGUMENT' })
+        return
+      }
+      sendJson(res, 200, device.poll(deviceCode, clientId))
+      return
+    }
+    // 网页确认页只拿到展示码（userCode），authorize 端点认的是 deviceCode —— 这里做一次
+    // 无需登录的查询（docs/12 §4.3）。不存在的 code 回 404 且不带任何细节（防枚举）。
+    if (path === '/api/client/device/info' && req.method === 'GET') {
+      const code = url.searchParams.get('code') ?? ''
+      const info = device.findByUserCode(code)
+      if (info === undefined) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      sendJson(res, 200, { deviceCode: info.deviceCode, expiresAt: info.expiresAt })
+      return
+    }
+
     // 静态资源（SPA）在鉴权之前：登录页本身就住在 `/`，越过 /api 的 GET 一律回静态
     if (options.webDir !== undefined && req.method === 'GET' && !path.startsWith('/api/')) {
       await serveStatic(res, path, options.webDir)
@@ -360,25 +435,73 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       sendJson(res, 200, { clients: hub.buildClientInfos(user) })
       return
     }
-    if (path === '/api/tokens' && req.method === 'GET') {
-      sendJson(res, 200, { tokens: auth.listPairingTokens(user.id) })
-      return
-    }
-    if (path === '/api/tokens' && req.method === 'POST') {
+
+    // 设备授权确认（网页会话）：approve=false 置 denied；approve=true 先做属主护栏
+    // （clientId 已绑定其他账号的有效令牌 → 409 并把挑战置 denied），再颁发令牌。
+    if (path === '/api/client/device/authorize' && req.method === 'POST') {
       const body = await readJsonBody(req)
-      const { record, token } = await auth.createPairingToken(user.id, String(body['label'] ?? ''))
-      sendJson(res, 200, { id: record.id, token, label: record.label })
+      const deviceCode = typeof body['deviceCode'] === 'string' ? body['deviceCode'] : ''
+      const approve = body['approve'] !== false
+      const info = device.peek(deviceCode)
+      if (info === undefined) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      if (approve) {
+        const owner = auth.activeOwnerOfClient(info.clientId)
+        if (owner !== undefined && owner !== user.id) {
+          device.resolve(deviceCode, false, () => ({ token: '', username: '' }))
+          sendJson(res, 409, { error: 'E_CLIENT_BOUND' })
+          return
+        }
+        const minted = await auth.mintClientToken(user.id, info.clientId, '设备授权登录')
+        device.resolve(deviceCode, true, () => ({
+          token: minted.token,
+          username: user.username,
+        }))
+        sendJson(res, 200, { ok: true, clientId: info.clientId })
+        return
+      }
+      const resolved = device.resolve(deviceCode, false, () => ({ token: '', username: '' }))
+      if (!resolved) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      sendJson(res, 200, { ok: true, clientId: info.clientId })
       return
     }
-    const tokenRevoke = /^\/api\/tokens\/([^/]+)\/revoke$/.exec(path)
-    if (tokenRevoke && req.method === 'POST') {
-      await auth.revokePairingToken(tokenRevoke[1] as string, user)
-      sendJson(res, 200, { ok: true })
+
+    // 文件列表（属主看自己名下客户端上传的，管理员看全部），按上传时间倒序
+    if (path === '/api/files' && req.method === 'GET') {
+      const entries = files
+        .list()
+        .filter((record) => {
+          if (user.role === 'admin') return true
+          return clients.get(record.clientId)?.ownerUserId === user.id
+        })
+        .sort((a, b) => b.at.localeCompare(a.at))
+        .map(toFileEntryInfo)
+      sendJson(res, 200, { files: entries })
       return
     }
     const fileDownload = /^\/api\/files\/([^/]+)$/.exec(path)
     if (fileDownload && req.method === 'GET') {
       await serveFile(res, fileDownload[1] as string, user)
+      return
+    }
+    if (fileDownload && req.method === 'DELETE') {
+      const record = files.get(fileDownload[1] as string)
+      if (record === undefined) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      const client = clients.get(record.clientId)
+      if (user.role !== 'admin' && client?.ownerUserId !== user.id) {
+        sendJson(res, 403, { error: 'E_FORBIDDEN' })
+        return
+      }
+      await files.remove(record.fileId)
+      sendJson(res, 200, { ok: true })
       return
     }
 
@@ -438,22 +561,18 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       sendJson(res, 200, { ok: true })
       return
     }
-    if (path === '/api/admin/tokens' && req.method === 'GET') {
-      sendJson(res, 200, { tokens: auth.listPairingTokens() })
-      return
-    }
 
     sendJson(res, 404, { error: 'E_NOT_FOUND' })
   }
 
-  /** 客户端上传（`center_send_file` 的对端）：配对令牌 + X-Client-Id 双因子，流式落盘 */
+  /** 客户端上传（`center_send_file` 的对端）：客户端令牌 + X-Client-Id 双因子，流式落盘 */
   async function handleIngest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const token = bearerOf(req)
     const clientIdHeader = req.headers['x-client-id']
     const clientId = Array.isArray(clientIdHeader)
       ? (clientIdHeader[0] ?? '')
       : (clientIdHeader ?? '')
-    const pair = await auth.verifyPairingToken(token, clientId).catch(() => undefined)
+    const pair = await auth.verifyClientToken(token, clientId).catch(() => undefined)
     if (pair === undefined) {
       sendJson(res, 401, { error: 'E_UNAUTHORIZED' })
       return
@@ -540,6 +659,28 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     await auth.init()
     await clients.init()
     await files.init()
+    allowRegistration = await readAllowRegistration(options.dataDir)
+    // 启动清一次过期文件，之后每 15 分钟一轮（unref：不拦进程退出）
+    await files.pruneExpired().catch((error) => {
+      logger?.error('启动清理过期文件失败', { error: String(error) })
+    })
+    pruneTimer = setInterval(() => {
+      void files.pruneExpired().catch((error) => {
+        logger?.error('定期清理过期文件失败', { error: String(error) })
+      })
+    }, FILE_PRUNE_INTERVAL_MS)
+    pruneTimer.unref?.()
+  }
+
+  /** 数据目录 config.json 的 `allowRegistration`（缺省 true；读不到 / 解析失败按缺省）。 */
+  async function readAllowRegistration(dataDir: string): Promise<boolean> {
+    try {
+      const raw = await fs.readFile(join(dataDir, 'config.json'), 'utf8')
+      const parsed = JSON.parse(raw) as { allowRegistration?: unknown }
+      return parsed['allowRegistration'] !== false
+    } catch {
+      return true
+    }
   }
 
   const running: RunningCenterServer = {
@@ -560,6 +701,7 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       })
     },
     close() {
+      if (pruneTimer !== undefined) clearInterval(pruneTimer)
       return new Promise((resolveClose) => {
         clientWss.close()
         webWss.close()
@@ -571,6 +713,36 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
 }
 
 // ─────────────── 工具 ───────────────
+
+/** 网页确认页地址：`http(s)://<Host>/#/device?code=<userCode>`（x-forwarded-proto 优先） */
+function verifyUrlOf(req: IncomingMessage, userCode: string): string {
+  const hostHeader = req.headers['host']
+  const host = (Array.isArray(hostHeader) ? hostHeader[0] : hostHeader) ?? 'localhost'
+  const fwd = req.headers['x-forwarded-proto']
+  const proto = (Array.isArray(fwd) ? fwd[0] : fwd) === 'https' ? 'https' : 'http'
+  return `${proto}://${host}/#/device?code=${encodeURIComponent(userCode)}`
+}
+
+/** 索引条目 → 网页端文件信息（协议 FileEntryInfo；uploadedAt 即内部记录的 at） */
+function toFileEntryInfo(record: {
+  fileId: string
+  clientId: string
+  name: string
+  size: number
+  note?: string
+  at: string
+  expiresAt: string
+}): FileEntryInfo {
+  return {
+    fileId: record.fileId,
+    clientId: record.clientId,
+    name: record.name,
+    size: record.size,
+    ...(record.note === undefined ? {} : { note: record.note }),
+    uploadedAt: record.at,
+    expiresAt: record.expiresAt,
+  }
+}
 
 function parseMessage(data: unknown): Record<string, unknown> | undefined {
   try {
