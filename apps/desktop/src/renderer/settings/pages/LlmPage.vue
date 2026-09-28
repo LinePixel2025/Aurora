@@ -33,6 +33,8 @@ import { ChevronRight } from '../../shared/icons.js'
 import {
   DEFAULT_REASONING_EFFORT,
   PROVIDER_PRESETS,
+  REASONING_EFFORT_LABELS,
+  REASONING_EFFORT_LEVELS,
   type LlmProviderConfig,
   type TestConnectionResult,
 } from '@aurora/shared/browser'
@@ -890,11 +892,15 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
               label="思考等级"
               hint="auto 不指定该参数，兼容性最好；越高越深入，但更慢更贵"
             >
+              <!--
+                选项文案取 `REASONING_EFFORT_LABELS.full`（`@aurora/shared` 的**唯一来源**）：
+                与对话窗 composer 那个窄下拉共用一份定义，前者用 full、后者用 short ——
+                同一个值在两处说同一件事，不再各写一份字符串（见 schema.ts 的注释）。
+              -->
               <select v-model="draft.reasoningEffort" class="input">
-                <option value="auto">auto（不指定，兼容性最好）</option>
-                <option value="low">low（更快）</option>
-                <option value="medium">medium</option>
-                <option value="high">high（更深入）</option>
+                <option v-for="level in REASONING_EFFORT_LEVELS" :key="level" :value="level">
+                  {{ REASONING_EFFORT_LABELS[level].full }}
+                </option>
               </select>
             </SettingField>
 

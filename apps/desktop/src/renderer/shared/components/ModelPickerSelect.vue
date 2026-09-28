@@ -30,6 +30,18 @@ const props = withDefaults(
 
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
+/**
+ * 悬浮提示：**完整**模型 id + 调用方给的说明。
+ *
+ * 模型 id（如 `deepseek-chat`、`qwen2.5-72b-instruct`）在 110px 的窄控件里必然被省略号截断，
+ * 而这恰恰是用户要确认的信息 —— 截断后只靠前半段认不出是哪个模型（docs/07 §5.4：
+ * 「能压缩的说明不占版面」不等于「关键信息可以看不全」，看全的路径要留在手边）。
+ */
+const hoverTitle = computed(() => {
+  const full = props.modelValue === '' ? '未选择模型' : props.modelValue
+  return props.title === '' ? full : `${full}｜${props.title}`
+})
+
 interface ModelOption {
   value: string
   label: string
@@ -83,7 +95,7 @@ function onChange(event: Event): void {
     aria-label="模型"
     :value="modelValue"
     :disabled="disabled"
-    :title="title"
+    :title="hoverTitle"
     @change="onChange"
   >
     <option
@@ -114,7 +126,7 @@ function onChange(event: Event): void {
   flex: 0 1 110px;
   width: 110px;
   min-width: 72px;
-  max-width: 110px;
+  max-width: 130px;
   height: var(--control-h-md);
   padding: 0 var(--space-1);
   border-radius: var(--radius-sm);

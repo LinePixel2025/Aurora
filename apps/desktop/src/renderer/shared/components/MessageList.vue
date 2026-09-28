@@ -1127,13 +1127,25 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 }
 
 /* ── 思考过程折叠块（BetaV2）：正文上方的次要信息，视觉上刻意退后一档 ── */
+/*
+ * 思考块（2026-09 视觉减负轮）：从「带边框的灰盒子」改成**左侧竖轨的旁注**。
+ *
+ * 原先是「外层 fill-1 卡 + 内层 fill-2 文本框」的盒中盒，和紧跟其后的工具卡、
+ * 正文挤成一片灰色堆叠（用户反馈的「思考与工具展示挤在一起」）。
+ * 现在的层级：竖轨说明"这是旁注"、正文无色无框、与回答之间留一档间距
+ * （`--space-3`），工具卡之间也各留 8px —— 一屏能看到"思考 → 回答 → 工具"三段。
+ */
 .thinking {
   position: relative;
-  margin-bottom: var(--space-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--fill-1);
-  overflow: hidden;
+  margin-bottom: var(--space-3);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border-subtle);
+  background: transparent;
+}
+
+/* 流式接收中：竖轨换成强调色，与卡头文案同色 —— 一眼看出"这块还在长" */
+.thinking.streaming {
+  border-left-color: color-mix(in srgb, var(--accent-text) 45%, transparent);
 }
 
 /* 流式接收中：一条低对比度亮带在卡头扫过，明确「还在思考」 */
@@ -1152,16 +1164,14 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   align-items: center;
   gap: var(--space-1);
   width: 100%;
-  padding: 4px 10px;
+  padding: 2px 0;
   text-align: left;
   color: var(--text-muted);
-  transition:
-    background var(--transition-fast),
-    color var(--transition-fast);
+  transition: color var(--transition-fast);
 }
 
+/* 悬停只提亮文字（不再给整行铺底色：那会让旁注看着像可点区域的大按钮） */
 .thinking-head:hover {
-  background: var(--fill-2);
   color: var(--text-secondary);
 }
 
@@ -1218,7 +1228,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 
 .thinking-body {
   position: relative;
-  padding: 0 var(--space-3) var(--space-2);
+  padding: 2px 0 var(--space-1);
 }
 
 /* 长思考滚动查看，不把回答顶出可视区 */
@@ -1226,10 +1236,8 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   margin: 0;
   max-height: 220px;
   overflow-y: auto;
-  padding: var(--space-2);
-  border-radius: var(--radius-xs);
-  background: var(--fill-2);
-  color: var(--text-secondary);
+  /* 无底色无内框：旁注靠竖轨与缩进区分层级，不再叠一层灰（盒中盒是"挤"的主因） */
+  color: var(--text-muted);
   font-size: var(--text-sm);
   line-height: var(--leading-relaxed);
   white-space: pre-wrap;
@@ -1248,7 +1256,8 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 .tools {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  /* 8px：工具卡之间要能看出"这是两张卡"，4px 时边框几乎贴在一起（挤） */
+  gap: var(--space-2);
   margin-top: var(--space-2);
 }
 

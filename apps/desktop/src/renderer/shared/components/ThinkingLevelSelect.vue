@@ -15,22 +15,31 @@
  * 尺寸：高度与输入区按钮同为 40px、宽度自适应（约 96-128px），要和 420px 宽的交互窗输入区里的发送按钮同行。
  * `data-field` 挂在 `<select>` 自己身上：capture 探针按它定位后**直接读 `.value`**。
  */
-import { REASONING_EFFORT_LEVELS, type ReasoningEffort } from '@aurora/shared/browser'
+import { computed } from 'vue'
+import {
+  REASONING_EFFORT_LABELS,
+  REASONING_EFFORT_LEVELS,
+  type ReasoningEffort,
+} from '@aurora/shared/browser'
 
-withDefaults(defineProps<{ modelValue: ReasoningEffort; disabled?: boolean; title?: string }>(), {
-  disabled: false,
-  title: '',
-})
+const props = withDefaults(
+  defineProps<{ modelValue: ReasoningEffort; disabled?: boolean; title?: string }>(),
+  {
+    disabled: false,
+    title: '',
+  },
+)
 
 const emit = defineEmits<{ 'update:modelValue': [value: ReasoningEffort] }>()
 
-/** option 文案：与 `LlmPage.vue` 的下拉逐字一致（`Record` 保证新增等级时必须补文案） */
-const LEVEL_LABELS: Record<ReasoningEffort, string> = {
-  auto: 'auto（不指定，兼容性最好）',
-  low: 'low（更快）',
-  medium: 'medium',
-  high: 'high（更深入）',
-}
+/**
+ * 悬浮提示 = 当前等级的**完整解释** + 调用方给的参数说明
+ * （无 provider 时那边给的是「先在设置里配一个模型」的修复路径）。
+ */
+const hoverTitle = computed(() => {
+  const full = REASONING_EFFORT_LABELS[props.modelValue].full
+  return props.title === '' ? full : `${full}｜${props.title}`
+})
 
 /**
  * 用 `:value` + `change` 而不是 `v-model`：这里只把「用户选了什么」报给父级，
@@ -50,11 +59,11 @@ function onChange(event: Event): void {
     aria-label="思考等级"
     :value="modelValue"
     :disabled="disabled"
-    :title="title"
+    :title="hoverTitle"
     @change="onChange"
   >
     <option v-for="level in REASONING_EFFORT_LEVELS" :key="level" :value="level">
-      {{ LEVEL_LABELS[level] }}
+      {{ REASONING_EFFORT_LABELS[level].short }}
     </option>
   </select>
 </template>
@@ -70,8 +79,8 @@ function onChange(event: Event): void {
 .thinking-level {
   flex: 0 0 auto;
   width: auto;
-  min-width: 68px;
-  max-width: 128px;
+  min-width: 62px;
+  max-width: 96px;
   height: var(--control-h-md);
   padding: 0 var(--space-1);
   border-radius: var(--radius-sm);
@@ -83,7 +92,7 @@ function onChange(event: Event): void {
   line-height: 1;
   cursor: pointer;
   outline: none;
-  /* 选中项 `auto（不指定，兼容性最好）` 最长：超出就省略号，不撑宽输入区 */
+  /* 选中项最长是 `medium`：96px 足够完整显示，不再出现被省略号切一半的文案 */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

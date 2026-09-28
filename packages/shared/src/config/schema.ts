@@ -78,6 +78,21 @@ export const REASONING_EFFORT_LEVELS = ['auto', 'low', 'medium', 'high'] as cons
 export type ReasoningEffort = (typeof REASONING_EFFORT_LEVELS)[number]
 export const ReasoningEffortSchema = z.enum(REASONING_EFFORT_LEVELS)
 
+/**
+ * 思考等级的展示文案（**唯一来源**：对话窗 composer 的下拉与设置页「AI 模型」共用）。
+ *
+ * 两档文案不是"两套说法"：`short` 给**窄控件**（composer 里那个下拉只有约 90px，
+ * 长文案会被省略号切掉 —— 「文字看不全」的抱怨就来自这里），
+ * `full` 给设置页那份宽下拉与悬浮提示，两者描述的是同一件事。
+ * 新增等级时这里的 `Record` 会强制补文案，不会只漏一处。
+ */
+export const REASONING_EFFORT_LABELS: Record<ReasoningEffort, { short: string; full: string }> = {
+  auto: { short: 'auto', full: 'auto（不指定，兼容性最好）' },
+  low: { short: 'low', full: 'low（更快）' },
+  medium: { short: 'medium', full: 'medium' },
+  high: { short: 'high', full: 'high（更深入）' },
+}
+
 export const LlmProviderSchema = z.object({
   type: LlmProviderTypeSchema,
   baseUrl: z.string(),
