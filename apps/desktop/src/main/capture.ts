@@ -352,6 +352,20 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
     const quickInput = panel.querySelectorAll('.qc-composer input').length
     const quickSend = panel.querySelectorAll('[data-action="edge-bar.quick-send"]').length
     const quickBubbles = panel.querySelectorAll('.qc-msg').length
+    // 安全区（docs/07 §5.4）：面板里任何元素都不许探出窗口左右边界 ——
+    // 提示条整窗只有 8px 宽（展开态 228px），溢出的元素会被直接裁掉、用户点不到。
+    let overflow = 0
+    const offenders = []
+    for (const node of panel.querySelectorAll('*')) {
+      const rect = node.getBoundingClientRect()
+      if (rect.width === 0 && rect.height === 0) continue
+      if (rect.right > width + 1 || rect.left < -1) {
+        overflow += 1
+        if (offenders.length < 3) {
+          offenders.push(String(node.className).split(' ')[0] + '@' + Math.round(rect.left) + '-' + Math.round(rect.right))
+        }
+      }
+    }
     return {
       panel: true,
       windowWidth: width,
@@ -362,6 +376,8 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       quickInput,
       quickSend,
       quickBubbles,
+      overflow,
+      offenders,
       allClickable: probes.length > 0 && probes.every((p) => p.hit && p.insideWindow),
       pass:
         buttons.length === 3 &&
@@ -369,6 +385,7 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
         quickInput > 0 &&
         quickSend > 0 &&
         quickBubbles > 0 &&
+        overflow === 0 &&
         probes.every((p) => p.hit && p.insideWindow && p.width > 0),
     }
   } catch (error) {
@@ -5847,12 +5864,33 @@ function onboardingCheckScript(index: number): string {
             '；opacity=' + (titleEl === null ? 'n/a' : getComputedStyle(titleEl).opacity),
         )
       }
+      // 安全区（docs/07 §5.4）：当前阶段的 pane 内不允许元素横向探出 pane 边界 ——
+      // 引导页五段共用这一个 check，因此五段都被这一条覆盖（此前只断言了主 CTA 的可见性与命中）。
+      const paneEl = document.querySelector('.pane')
+      let outside = 0
+      const overflowNodes = []
+      if (paneEl !== null) {
+        const box = paneEl.getBoundingClientRect()
+        for (const node of paneEl.querySelectorAll('*')) {
+          const rect = node.getBoundingClientRect()
+          if (rect.width === 0 && rect.height === 0) continue
+          if (rect.right > box.right + 1 || rect.left < box.left - 1) {
+            outside += 1
+            if (overflowNodes.length < 3) {
+              overflowNodes.push(String(node.className).split(' ')[0] + '@' + Math.round(rect.left) + '-' + Math.round(rect.right))
+            }
+          }
+        }
+      }
+      if (outside > 0) {
+        reasons.push('内容横向溢出（' + outside + ' 处）：' + overflowNodes.join('、'))
+      }
       if (!cta) reasons.push('缺少页脚主 CTA「' + expected.cta + '」')
       else {
         if (!visible(cta)) reasons.push('主 CTA「' + expected.cta + '」超出窗口或不可见')
         if (!clickable) reasons.push('主 CTA「' + expected.cta + '」禁用或中心无法命中')
       }
-      return { pass: reasons.length === 0, stage: label, active, title, cta: (cta?.textContent || '').trim(), visible: visible(cta), clickable, waitedMs, reason: reasons.join('；') || null }
+      return { pass: reasons.length === 0, stage: label, active, title, cta: (cta?.textContent || '').trim(), visible: visible(cta), clickable, overflow: outside, waitedMs, reason: reasons.join('；') || null }
     } catch (error) {
       return { pass: false, reason: '引导阶段检查异常：' + String(error) }
     }

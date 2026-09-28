@@ -985,6 +985,11 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     **每个元素**的矩形，只查**横向**溢出（纵向滚动是正常行为、不算），
     探出内容区左右边界超过 1px 的节点记账；check 断言**页数 ≥ 7**（防"导航没点全还判 PASS"）
     且违规页数为 0。这条把「安全区」从自动化页扩到了最可能出现"长标签 + 窄控件"的设置页。
+    同一轮把这条护栏补齐到另外两个窗口：**引导窗**（`onboardingCheckScript`，五段共用，
+    每段都查 `.pane` 内横向溢出，结果进 `overflow` 字段）与**提示条面板**
+    （`EDGE_BAR_PANEL_SCRIPT`，查面板内元素是否探出 228px 窗口边界，进 `overflow` 字段）。
+    至此「安全区」的运行时证据覆盖：自动化页（卡片 / 磁贴）、设置页 7 页、引导窗 5 段、
+    提示条展开面板、输入区三个下拉 —— 都是几何判据，不是"看着没问题"。
   - **子代理页面**（`CHAT_SUBAGENT_OPEN_ACT` / `CHAT_SUBAGENT_OPEN_CHECK`，
     产物 `chat-subagent-page.png`，2026-09）：「子代理」固定项点击后主区切到页面，断言
     `chat.subagent-page` 在、`chat.subagent-run` 恰好 1 张（来自 seed 的 `task` 工具卡快照）、
