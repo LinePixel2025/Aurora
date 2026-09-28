@@ -204,6 +204,16 @@ export class Hub {
           requestId: message.requestId,
         })
         break
+      case 'session.history':
+        // 历史回放（docs/12 §5 第 7 步 / §6.3）：普通命令转发，授权 / 离线 / 超时判定
+        // 同其他命令；客户端从 SessionStore 读盘回传，`result.data` 携带历史消息数组。
+        // 服务器不缓存、不记账 —— 历史只在回执里路过。
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'session.history',
+          requestId: message.requestId,
+          sessionId: message.sessionId,
+        })
+        break
       case 'llm.switch':
         // 专用命令，不做 config.update 的白名单预检（checkPatch 只服务 config.update）
         this.forwardCommand(conn, message.clientId, {

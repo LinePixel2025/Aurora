@@ -92,6 +92,12 @@ export const IPC = {
     sessions: 'chat:sessions',
     /** 远程会话激活推送（docs/12 §6.3，主进程 → 渲染层，on/off 成对） */
     remoteActivate: 'chat:remoteActivate',
+    /**
+     * 远程会话可见性变更推送（docs/12 §5 第 8 步，v0.2.4，on/off 成对）：
+     * Center 的 `session.visibility` 在客户端落盘成功后，主进程经此通道通知
+     * chat 渲染层重拉会话列表（左栏立即按新可见性过滤）。
+     */
+    centerVisibilityChanged: 'chat:centerVisibilityChanged',
     newSession: 'chat:newSession',
     /**
      * 归档 / 取消归档（docs/06 §4）。状态存在会话文件自身的 `meta` 里，

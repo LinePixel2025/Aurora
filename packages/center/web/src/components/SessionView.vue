@@ -48,7 +48,10 @@ const heartbeat = window.setInterval(() => {
     if (remainingMs(entry.request.expiresAt, now.value) <= 0) expireConfirm(entry)
   }
 }, 1000)
-onBeforeUnmount(() => window.clearInterval(heartbeat))
+onBeforeUnmount(() => {
+  window.clearInterval(heartbeat)
+  if (bottomRaf !== 0) window.cancelAnimationFrame(bottomRaf)
+})
 
 const sessionConfirms = computed<ConfirmEntry[]>(() =>
   state.confirms.filter(
@@ -111,26 +114,78 @@ async function abort(): Promise<void> {
   }
 }
 
-async function scrollToBottom(): Promise<void> {
-  await nextTick()
-  const el = listEl.value
-  if (el) el.scrollTop = el.scrollHeight
+/**
+ * 自动吸底（v0.2.4 重做）：
+ * - 「用户是否在底部」判断——距底 < ~48px 才自动吸底；用户上翻看历史时不再强拽回底部；
+ * - 深度 watch 会话 items（正文 / 思考增量、工具卡 outputSummary、job / subagent 卡、
+ *   loading 行、确认卡与文件条出现消失——一切会改高度的变化都触发吸底判断）；
+ * - nextTick 之后再用 rAF 二次校正一次（图片 / 展开内容等晚稳定的高度变化）；
+ * - 切换会话时强制滚底一次（并把「在底部」状态复位）。
+ */
+const NEAR_BOTTOM_PX = 48
+const nearBottom = ref(true)
+
+function isNearBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
 }
 
-// 消息条数变化或任一消息内容增长时滚到底部；切换会话时同样滚到底
+function onListScroll(): void {
+  const el = listEl.value
+  if (el) nearBottom.value = isNearBottom(el)
+}
+
+let bottomRaf = 0
+
+async function scrollToBottom(force = false): Promise<void> {
+  await nextTick()
+  const el = listEl.value
+  if (!el) return
+  if (!force && !nearBottom.value) return
+  el.scrollTop = el.scrollHeight
+  if (bottomRaf !== 0) window.cancelAnimationFrame(bottomRaf)
+  bottomRaf = window.requestAnimationFrame(() => {
+    bottomRaf = 0
+    const target = listEl.value
+    if (!target) return
+    if (force || isNearBottom(target)) target.scrollTop = target.scrollHeight
+  })
+}
+
+// 消息条数 / 内容 / 状态行 / 确认卡与文件条的任何高度变化都走吸底判断。
+// 深度 watch 在长会话流式时每个 delta 都会触发，吸底判断做 100ms 尾沿节流：
+// 高频增量合并成一次滚动，静默 100ms 后补一次，收尾高度不会被漏掉。
+const SCROLL_THROTTLE_MS = 100
+let scrollTimer = 0
+let scrollTimerPending = false
 watch(
-  () => [
-    props.session.items.length,
-    props.session.items.reduce(
-      (sum, item) => sum + item.content.length + (item.reasoning?.length ?? 0),
-      0,
-    ),
-  ],
-  () => void scrollToBottom(),
+  () =>
+    [
+      props.session.items,
+      props.session.pending,
+      props.entry.files.length,
+      sessionConfirms.value.length,
+    ] as const,
+  () => {
+    if (scrollTimerPending) return
+    scrollTimerPending = true
+    const fire = (): void => {
+      scrollTimerPending = false
+      void scrollToBottom()
+    }
+    scrollTimer = window.setTimeout(fire, SCROLL_THROTTLE_MS)
+  },
+  { deep: true },
 )
+onBeforeUnmount(() => {
+  if (scrollTimer !== 0) window.clearTimeout(scrollTimer)
+})
+// 切换会话：强制滚底一次
 watch(
   () => props.session,
-  () => void scrollToBottom(),
+  () => {
+    nearBottom.value = true
+    void scrollToBottom(true)
+  },
 )
 </script>
 
@@ -198,7 +253,7 @@ watch(
       </div>
     </div>
 
-    <div ref="listEl" class="msg-list">
+    <div ref="listEl" class="msg-list" @scroll.passive="onListScroll">
       <template v-for="item in session.items" :key="item.id">
         <div v-if="item.kind === 'user'" class="msg-user">
           <div class="bubble-user">{{ item.content }}</div>

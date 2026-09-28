@@ -23,6 +23,12 @@
   --radius: 16px;
   --radius-sm: 12px;
   --topbar-h: 52px;
+  /* 刘海 / 手势条安全区（viewport-fit=cover，docs/12 §10 移动端适配）：
+     组件与高度计算统一引用这里的变量，不再各自手写 env() */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
 }
 
 * {
@@ -44,6 +50,8 @@ body {
   font-size: 14px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  /* 刘海 / 手势条安全区（viewport-fit=cover 时 env() 才有非零值） */
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
 }
 
 h1,
@@ -65,7 +73,7 @@ h3 {
 
 .topbar {
   position: sticky;
-  top: 0;
+  top: var(--safe-top);
   z-index: 20;
   height: var(--topbar-h);
   backdrop-filter: saturate(180%) blur(20px);

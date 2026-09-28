@@ -86,7 +86,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **日志**：业务包只依赖 `@aurora/shared` 的 `Logger` 接口；落盘实现在 `apps/desktop/src/main/logger.ts`（`userData/logs/`，按天轮转保留 7 天），所有输出统一脱敏。不要 `console.log` 当正式日志。
 - **凭据绝不落明文**：API Key / MCP env 经 Electron `safeStorage` 加密写入 `%APPDATA%/Aurora/config.json`；`settings:get` 与 `settings:changed` 两条通道都只回传 `apiKeySet` / `envSet` 标记。日志与「导出脱敏配置」中凭据一律 `***`。
 - **文件/命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
-- **配置改动**（当前 `CONFIG_VERSION = 15`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
+- **配置改动**（当前 `CONFIG_VERSION = 18`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 
 ## 文档先行（Docs-first）
 
@@ -131,6 +131,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **三档权限与项目根边界已落地（2026-09-26），但仍无 OS 级沙箱**：`agent.permissionMode` 取值
   `readonly` / `confirm` / `auto`（默认 `confirm`）—— `readonly` 档**不注册**写入 / 执行类工具
   （含 `todo_write`，保留 `todo_read`），`auto` 档在**当前项目根之内**免确认、越界仍逐次确认；
+  v0.2.4 起两处放宽（Codex 式，docs/06 §11.2）：`center_send_file` **直接发送不逐次确认**
+  （闸门在配置层 `center.enabled` / `allowFileTransfer` / `maxFileMb`，别再给它加确认），
+  `confirm` 档下 `write_file` / `edit_file` 落在会话边界根内**免确认**（`run_command` 等仍逐次）；
+  边界根的回落链见下面「会话级项目的解析唯一口径」（含 Work 模式工作目录一级）；
   项目根边界分**两层**：`auto` 档「要不要弹卡」用**字符串级判定**（含 `..` 段、取不到目标路径的
   工具一律按越界）；「能不能真碰」由主进程对**已存在的最近父目录**做 realpath 前缀校验
   （`file-port.resolveWithin`，越界即 `E_PATH_OUTSIDE_WORKSPACE`，六个文件类入口与
@@ -151,8 +155,13 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   （无项目时行为与 v12 之前完全一致）。
   想当然地拿 `workspaceDir` 当护栏、或把 `openPath` 的 `kind: 'workspace'` 当成项目根，都是错的
   （项目根走 `kind: 'project'`，见 docs/06 §5.1 / §11.1）。
+- **ClassIsland 桥接读取有默认路径回落（v0.2.4）**：文件源端点读取失败时自动按插件默认输出
+  `%APPDATA%\ClassIslandurora-bridge\schedule.json` 重试一次，成功则告警提示对齐两端配置
+  （`classisland.ts` 的 `fallbackFilePath`，主进程注入；默认路径常量别散落第二份）。
+  桥接读取失败按「错误是否变化」分级记日志（变化才 warn，持续同一错误 debug），别改回全量 warn。
 - Skill 的 `scripts/` 永不自动执行（只注入指令正文）；图片 OCR 未启用（只取文件名与尺寸）。
-- Code Mode 为占位实现；Work Mode 已初步实装（v0.0.1，guide + systemPrompt + workspaceDir）。
+- Code Mode 为占位实现；Work Mode 已初步实装（guide + systemPrompt；v0.2.4 起 `modes.work.workspaceDir`
+  已接进工具执行链的统一回落链，不再是仅提示词引用的死字段）。
   多语言、ARM64 / 便携版、macOS / Linux 未开始。
 - `integrations/classisland-bridge` **CI 不编译**（流水线没有 .NET SDK）。
   它已用 ClassIsland 2.1.0.1 的真实程序集在本机编译并实跑验证过（见该目录 README 的「已验证程度」），
@@ -257,18 +266,24 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   的 draft 是**活对象**，失败半写会污染内存态。
   ⑤（2026-09 扩展轮）确认卡网页批复：**只有 `center-` 前缀会话**的敏感工具确认会经
   connector 推 Center（`confirm.request`），网页批复下发 `confirm.resolve` 命令最终调
-  `proactive.resolve`（对已结算 confirmId 幂等，本地卡与网页卡先到先得）；设备授权登录
+  `proactive.resolve`（对已结算 confirmId 幂等，本地卡与网页卡先到先得）；v0.2.4 起
+  `center_send_file` 直接发送不产生确认卡，本地会话不再有推网页端的确认；
+  设备授权登录
   （`center:deviceLogin` IPC）与账号密码直登的**凭据落库路径共用同一函数**，改落库只改一处；
   上传文件 24h TTL 清理在 `packages/center/src/files.ts`（启动 + 每 15 分钟一轮）。
 - **远程会话与本地发送是同一条链**：Center 的 `session.input` → `SessionBridge` →
   `agent.send({ origin: 'center' })`（`SendMessageRequest.origin` 已放宽）。
   只转发 `center-` 前缀会话的事件；别在别处再写一条"远程专用"发送通路。
-- **会话级项目的解析唯一口径**（2026-09，docs/06 §5.1）：`main/tools/session-project.ts` 的
+- **会话级项目的解析唯一口径**（2026-09，v0.2.4 加模式级一级，docs/06 §5.1）：
+  `main/tools/session-project.ts` 的
   `createSessionProjectResolver` —— 回落链是**会话绑定项目（`SessionMeta.projectId`）>
-  `projects.current` > `agent.tools.workspaceDir` > 主目录**；工具缺省 cwd / 搜索根、
-  file-port 边界、confirmTool 的 auto 档根内免确认、AGENTS.md 指令注入**全部按会话现解析**
+  `projects.current` > 激活模式工作目录（当前只有 Work 模式读 `modes.work.workspaceDir`，
+  从 settings 现读不需要注入模式管理器）> `agent.tools.workspaceDir` > 主目录**；
+  工具缺省 cwd / 搜索根、file-port 边界、confirmTool 的 auto 档根内免确认与 confirm 档
+  根内写免确认、AGENTS.md 指令注入**全部按会话现解析**
   （getter 注入，同 `agent.loop` 上限套路）。不要在执行链上再写第二套项目根解析，
   也别把会话项目塞回全局设置或 CONFIG_VERSION 迁移链（它是会话数据）。
+  Work 模式的 systemPrompt 描述的就是这条链（docs/05 §4.1）——别在提示词里另立「工作目录」口径。
 - **SkillsService 的目录监听**（`startWatching`）：改 `skills.userDir` 走 `reconfigure`
   时会 `rearmWatcher`，新增监听路径时记得同样处理；create-skill 技能写文件后
   依赖这个监听自动重扫，没有任何"刷新"仪式。

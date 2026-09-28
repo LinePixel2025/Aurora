@@ -55,6 +55,7 @@ import {
   type CenterDeviceLoginStarted,
   type CenterLoginRequest,
   type CenterLoginResult,
+  type CenterSessionHistoryMessage,
   type Result,
   type ClassIslandStatus,
   type ClassIslandTestResult,
@@ -1079,6 +1080,10 @@ async function bootstrap(): Promise<void> {
       },
       setVisibility: async (sessionId, visible) => {
         await sessions!.setCenterVisible(sessionId, visible)
+        // 可见性变更同步（docs/12 §5 第 8 步，v0.2.4）：落盘成功后推 chat 渲染层
+        // 重拉会话列表 —— 左栏按 `centerVisible === false` 过滤，不推送的话列表要等
+        // 用户手动刷新才会消失/出现（与 activateSession 的推送套路相同）。
+        windows?.sendTo('chat', IPC.chat.centerVisibilityChanged, { sessionId })
         return { ok: true }
       },
       setPermissionMode: async (sessionId, permissionMode) => {
@@ -1099,6 +1104,13 @@ async function bootstrap(): Promise<void> {
       },
       listProjects: () =>
         settings!.get().projects.list.map((project) => ({ id: project.id, name: project.name })),
+      // 历史回放（docs/12 §5 第 7 步，v0.2.4）：rendererHistory 过滤 tool/system 角色、
+      // 把工具卡参数解析成对象，形状即协议的 CenterSessionHistoryMessage。
+      // 上限 200 条防历史超长会话把回执 payload 撑爆；center- 前缀校验在连接器。
+      history: async (sessionId) => {
+        const messages = await sessions!.rendererHistory(sessionId, 200)
+        return { ok: true, data: messages satisfies CenterSessionHistoryMessage[] }
+      },
       // llm.switch 的 handler（docs/12 §6.3）：只点改 active / model / reasoningEffort，
       // 绝不触碰 apiKeyEnc / baseUrl；settings.onChange 已驱动连接器重报 status。
       switchLlm: async (request) => {
@@ -1157,13 +1169,12 @@ async function bootstrap(): Promise<void> {
   settings.onChange(() => centerConnector?.onConfigChanged())
 
   // 确认卡双通道（docs/12 §5 第 4 步）：center- 会话的敏感工具确认在本地卡片之外，
-  // 同时经 CenterConnector 的 socket 推给 Center 网页端（路由给会话属主 + 管理员）；
-  // v0.2.3 起本地会话仅在工具为 center_send_file 时也推送 —— 它是数据出域动作
-  //（发往 Center 本身），属主应可见（docs/12 §5 第 4 步推送范围）。
+  // 同时经 CenterConnector 的 socket 推给 Center 网页端（路由给会话属主 + 管理员）。
+  // v0.2.4 起 center_send_file 改为直接发送（不逐次确认），本地会话不再有需要推网页端
+  // 的确认卡 —— 推送范围只剩 center- 前缀会话的其余敏感工具。
   // 两条通道并存、先到先得 —— proactive.resolve 对已结算 confirmId 幂等返回 false。
   proactiveScheduler.onRequest((request) => {
-    const isCenterSession = request.sessionId.startsWith(CENTER_SESSION_PREFIX)
-    if (!isCenterSession && request.toolName !== 'center_send_file') return
+    if (!request.sessionId.startsWith(CENTER_SESSION_PREFIX)) return
     const emit = centerConfirmEmit
     if (emit === undefined) {
       // 连接器离线：入补发队列（FIFO 上限 20，重连后 flush），不再静默丢
@@ -3470,6 +3481,9 @@ function classIslandProviderFor(): ClassIslandProvider | undefined {
   }
   classIslandProvider = new ClassIslandProvider({
     ...config,
+    // 桥接插件默认输出位置（v0.2.4，docs/05 §3.4）：端点读不到时回落试一次，
+    // 让「Aurora 端点与插件 outputPath 对不上」从静默空课表变成带告警的诊断信息
+    fallbackFilePath: join(app.getPath('appData'), 'ClassIsland', 'aurora-bridge', 'schedule.json'),
     logger: logger?.child('classisland'),
   })
   classIslandSignature = signature

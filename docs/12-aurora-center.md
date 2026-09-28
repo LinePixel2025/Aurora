@@ -113,6 +113,7 @@ CenterCommand =
   | { kind: 'config.update',  requestId, patch }      // 白名单校验后落到 SettingsStore（§7）
   | { kind: 'mode.switch',    requestId, mode }       // 等价 config.update 的 modes.current，语义独立成命令
   | { kind: 'confirm.resolve', requestId, confirmId, approved }  // 网页端确认卡批复的转发
+  | { kind: 'session.history', requestId, sessionId } // 历史回放（v0.2.4，§6.3）；result.data 携带 CenterSessionHistoryMessage[]
 ```
 
 - `sessionId` 由**服务器分配**，固定形如 `center-<短随机串>`（客户端渲染层据此把
@@ -141,6 +142,7 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
   { type: 'config.update',  requestId, clientId, patch }
   { type: 'mode.switch',    requestId, clientId, mode }
   { type: 'confirm.resolve', requestId, clientId, confirmId, approved }
+  { type: 'session.history', requestId, clientId, sessionId }  // 历史回放（v0.2.4，§6.3）
 
 服务器 → 网页
   { type: 'clients', clients: ClientInfo[] }              // 连接后与每次变动时的全量快照
@@ -189,8 +191,9 @@ GET /api/client/device/info?code=<userCode>                      （无需登录
    倒计时，可「批准 / 拒绝」→ `confirm.resolve` 转回客户端调 `proactive.resolve`。两条通道
    先到先得（`proactive.resolve` 对已结算 confirmId 幂等）；客户端离线 / 超时（默认 60s）
    一律按拒绝。
-   **推送范围（v0.2.3 起）**：除 `center-` 前缀会话全量推送外，**本地会话仅在工具为
-   `center_send_file` 时也推送**（数据外发到 Center 本身，属主应可见）；连接器短暂离线期间的
+   **推送范围（v0.2.4 起）**：仅 `center-` 前缀会话全量推送（v0.2.3 曾对本地会话的
+   `center_send_file` 也推送；v0.2.4 起该工具改为直接发送、不再走确认链路，本地会话
+   不再有需要推网页端的确认卡）；连接器短暂离线期间的
    确认请求进**补发队列**（FIFO 上限 20 条，重连后 flush；长时间离线仍按本地 60s 超时拒绝）。
    网页端除会话视图内的卡之外，另有**全局待批复确认卡栏**（ConsoleView 顶部）展示所有未过期
    请求——本地会话来源的请求没有会话视图，只能在这里批复；
@@ -199,15 +202,26 @@ GET /api/client/device/info?code=<userCode>                      （无需登录
    `center.maxFileMb` 限制）→ 服务器落盘并 `file.received` 通知 → 网页端出现
    下载卡（`GET /api/files/:fileId`，属主或管理员可下载）。**所有上传文件 24h 后自动删除**
    （索引带 `expiresAt`，启动 + 每 15 分钟清理一轮）；`#/files` 文件管理页可查看 / 下载 /
-   手动删除（§10）。`center_send_file` 在 **auto 档也不免确认**（外发类工具不受
-   「根内免确认」约束，见 §8 与 docs/06 §11.2）；
+   手动删除（§10）。`center_send_file` **不逐次确认、直接发送**（v0.2.4：闸门在配置层
+   —— `center.enabled` / `center.allowFileTransfer` / `center.maxFileMb`，见 §8 与
+   docs/06 §11.2）；
 6. **会话管理（v0.2.3 起，仅 `center-` 会话，§6.3）**：网页端可枚举客户端的远程会话
    （`session.list`）、让客户端主界面切到某个会话（`session.activate`）、为会话开关
    **客户端左栏可见性**（`session.visibility`，缺省可见，隐藏仍可远程输入）、覆盖
    **会话级权限档**（`session.setPermission`，SessionMeta 数据，不动全局
    `agent.permissionMode`）、绑定**会话级项目**（`session.setProject`，复用 docs/06 §5.1
    会话级项目链）。历史 center- 会话（客户端侧已存在、非本页签创建）的事件流对属主可见
-   （服务器在 `sessionOwners` 未命中时回落到客户端登记表的属主）。
+   （服务器在 `sessionOwners` 未命中时回落到客户端登记表的属主）；
+7. **历史回放（v0.2.4 起，仅 `center-` 会话）**：网页端打开某个远程会话时发
+   `session.history` → 服务器按普通命令转发（授权 / 离线判定同其他命令）→ 客户端从
+   SessionStore 读该会话的渲染层历史（`rendererHistory`，最近 200 条）经 `result` 回执
+   带回 → 网页端映射进会话 items（助手消息按存储消息 id 对齐、用户消息按内容去重，
+   与实时事件聚合同一套口径）。**服务器不缓存任何会话内容**——历史只在回执里路过；
+   `applyEvent` 对未见过的会话**补建空壳再应用**（不再丢弃），事件先于历史到达时
+   按 id / 内容去重合并，历史条目排在实时条目之前；
+8. **可见性变更的客户端同步（v0.2.4 起）**：`session.visibility` 在客户端落盘成功后，
+   客户端主进程经 `chat:centerVisibilityChanged` 推送通道（docs/12 §6.3）通知 chat 渲染层
+   重拉会话列表 —— 左栏立即按新可见性过滤，无需重启或手动刷新。
 
 远程会话在客户端主界面左栏的历史里**默认可见**（`center-*` 前缀），用户可随时查看
 甚至继续输入；Center 可按会话关闭可见性（§5 第 6 步 `session.visibility`，隐藏的会话
@@ -255,8 +269,9 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
 | 命令（web → server → client） | 语义与边界 |
 |---|---|
 | `session.list` | 枚举客户端的 `center-` 会话（`CenterSessionSummary[]`：标题 / 更新时间 / projectId / 权限覆盖 / 可见性） |
+| `session.history`（v0.2.4） | 拉取某个 `center-` 会话的历史（`CenterSessionHistoryMessage[]`，`result.data` 携带；客户端只回 `center-` 前缀会话，最近 200 条）。仅用于网页端打开会话时的回放，服务器不缓存 |
 | `session.activate` | 让客户端主界面切到指定会话（经 `chat:remoteActivate` 推送通道驱动渲染层 `switchSession`；会话未落盘时客户端兜底创建） |
-| `session.visibility` | 开关该会话在客户端左栏的可见性（`SessionMeta.centerVisible`，缺省可见；隐藏仍可远程输入） |
+| `session.visibility` | 开关该会话在客户端左栏的可见性（`SessionMeta.centerVisible`，缺省可见；隐藏仍可远程输入）。落盘成功后客户端经 `chat:centerVisibilityChanged` 推送通知渲染层重拉会话列表（v0.2.4） |
 | `session.setPermission` | **会话级权限档覆盖**（`SessionMeta.permissionMode`，生效于该会话的确认判定：会话覆盖 > 全局档）。不动全局 `agent.permissionMode`——全局档仍只能由用户在本机设置页调 |
 | `session.setProject` | 会话绑定项目（复用 docs/06 §5.1 会话级项目链；`''` 清除；projectId 必须在客户端 `projects.list` 内） |
 | `project.list` | 客户端项目选项（`CenterProjectOption[]`，绑定下拉用） |
@@ -299,18 +314,17 @@ Electron 任何操作）：
 | 工具 | 入参 | sensitivity | 门控 |
 |---|---|---|---|
 | `center_status` | 无 | 无（只读） | `center.enabled` 且 `serverUrl` 非空才注册（未配置不注册，与 STT/TTS 同口径） |
-| `center_send_file` | `path`（绝对路径）, `note?` | `'confirm'`（对外发送文件，逐次确认） | 同上 + `center.allowFileTransfer` |
+| `center_send_file` | `path`（绝对路径）, `note?` | `'safe'`（v0.2.4 起直接发送，不逐次确认；闸门是 `center.enabled` / `allowFileTransfer` / `maxFileMb` 三层配置开关，均只读前缀 AI 改不动） | 同上 + `center.allowFileTransfer` |
 
 - `center_status`：返回连接状态 / 服务器地址 / 本客户端在 Center 的展示名，供模型
   回答"你连着 Center 吗"。
 - `center_send_file`：校验路径存在、大小 ≤ `center.maxFileMb`，经端口上传；返回
   `{ fileId, name, size, url }`。上传走 `CenterPort.sendFile`（主进程实现：
   `POST /api/ingest/files`），**不经 shell、不经代理配置**（v1 明确不支持代理）。
-  **「逐次确认」在 auto 档同样成立（v0.2.3）**：`createConfirmTool` 的 auto 档两条
-  免确认路径（无项目放行 / 根内放行）对**外发类工具**（`ALWAYS_CONFIRM_TOOLS`，当前
-  只有 `center_send_file`）一律跳过 —— 把文件发往 Center 是数据出域，"根内"判据
-  管不住它（源头文件当然常在根内），三类权限档下它都弹卡（readonly 档则整个工具
-  不执行）。确认卡同时弹客户端本机并推 Center（§5 第 4 步，含本地会话）。
+  **不逐次确认、直接发送（v0.2.4）**：v0.2.3 的外发类特例（`ALWAYS_CONFIRM_TOOLS`）已删除，
+  工具 `sensitivity: 'safe'`，确认链路（含推 Center 网页端）不再经过它 —— 安全闸门是
+  `center.enabled` / `center.allowFileTransfer` / `center.maxFileMb` 三层配置开关
+  （均只读前缀，AI 改不动），口径见 docs/06 §11.2。
 - 注册位置与扩展工具五件套一致（`registerExtensionTools` 一侧），**不受
   `agent.tools.enabled` 门控**；文档口径见 docs/06 §11.6。
 
@@ -355,8 +369,9 @@ aurora-center version
   （`session.setPermission`，含「跟随全局」）、项目下拉（`session.setProject` +
   `project.list`）。
 - **全局待批复确认卡栏（v0.2.3）**：ConsoleView 顶部常驻，展示所有未过期的
-  `confirm.request`（含本地会话来源的 `center_send_file`，其无会话视图可去），
-  行内批准 / 拒绝；与会话视图内的卡先到先得。
+  `confirm.request`，行内批准 / 拒绝；与会话视图内的卡先到先得。
+  （v0.2.4 起只有 `center-` 会话来源的请求 —— 本地会话的 `center_send_file` 已改为
+  直接发送，不再产生确认卡。）
 - **Token 用量（v0.2.3）**：会话视图渲染 `usage` 事件（此前到达但被忽略）——
   最新轮 prompt/completion tokens、会话累计、占 contextWindow 比例
   （contextWindow 从 `config.get` 取）。

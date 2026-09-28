@@ -554,6 +554,15 @@ export interface ChatRemoteActivateEvent {
   sessionId: string
 }
 
+/**
+ * 远程会话可见性变更推送（docs/12 §5 第 8 步，v0.2.4）：Center 的 `session.visibility`
+ * 在客户端落盘成功后，主进程经 `chat:centerVisibilityChanged` 通知 chat 渲染层
+ * 重拉会话列表（左栏立即按新可见性过滤）。
+ */
+export interface ChatRemoteVisibilityEvent {
+  sessionId: string
+}
+
 /** 归档 / 取消归档请求（`chat:archiveSession`，docs/06 §4） */
 export interface ChatArchiveRequest {
   sessionId: string
@@ -1192,6 +1201,12 @@ export interface AuroraApi {
      * 命中客户端时，主进程经此通道让主界面切到指定会话（payload 只含 sessionId）。
      */
     onRemoteActivate(listener: (event: ChatRemoteActivateEvent) => void): () => void
+    /**
+     * 远程会话可见性变更推送（docs/12 §5 第 8 步，v0.2.4，on/off 成对）：
+     * Center 网页端开关某会话的左栏可见性且客户端落盘成功后触发，
+     * 渲染层收到后重拉会话列表即可（payload 只含 sessionId）。
+     */
+    onCenterVisibilityChanged(listener: (event: ChatRemoteVisibilityEvent) => void): () => void
     /** 新建会话并返回其 id */
     newSession(): Promise<Result<string>>
     /**

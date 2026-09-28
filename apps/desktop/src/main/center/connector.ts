@@ -92,6 +92,11 @@ export interface CenterConnectorDeps {
     setProject(sessionId: string, projectId: string): Promise<{ ok: boolean; error?: string }>
     /** 客户端项目选项（`project.list` 的 `result.data`） */
     listProjects(): CenterProjectOption[]
+    /**
+     * 历史回放（docs/12 §5 第 7 步，v0.2.4）：读 SessionStore 的渲染层历史，
+     * `result.data` 携带 `CenterSessionHistoryMessage[]`（仅 `center-` 前缀会话）。
+     */
+    history(sessionId: string): Promise<{ ok: boolean; data?: unknown; error?: string }>
     /** 远程切模型 / 思考等级（专用命令，绝不触碰 apiKeyEnc / baseUrl） */
     switchLlm(request: {
       providerId?: string
@@ -442,6 +447,7 @@ export class CenterConnector {
       case 'session.visibility':
       case 'session.setPermission':
       case 'session.setProject':
+      case 'session.history':
       case 'project.list': {
         // 会话管理属 session 类别：受 allowRemoteSession 闸门
         if (!config.allowRemoteSession) {
@@ -491,6 +497,12 @@ export class CenterConnector {
             }
             case 'project.list': {
               reply(true, manager.listProjects())
+              return
+            }
+            case 'session.history': {
+              // 历史回放（docs/12 §5 第 7 步）：SessionStore 读盘，回执 data 携带历史消息
+              const result = await manager.history(cmd.sessionId)
+              reply(result.ok, result.data, result.error)
               return
             }
           }

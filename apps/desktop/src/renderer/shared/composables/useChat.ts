@@ -418,6 +418,16 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     void activateRemoteSession(event.sessionId)
   })
 
+  /**
+   * 远程会话可见性变更（docs/12 §5 第 8 步 `chat:centerVisibilityChanged`）：
+   * Center 网页端开关某会话在客户端左栏的可见性且落盘成功后，主进程推到这里。
+   * 会话列表是左栏过滤（`centerVisible === false` 不进列表）的唯一数据源，
+   * 重拉一次即可对齐 —— 与 remoteActivate 不同，这不切换当前会话。
+   */
+  const disposeCenterVisibility = window.aurora.chat.onCenterVisibilityChanged(() => {
+    void loadSessions()
+  })
+
   onScopeDispose(() => {
     // 先 flush 再 dispose：卸载瞬间已入队的增量不能丢（消息正文会缺尾），
     // dispose 只负责取消在途帧与清空缓冲（组件已经没了，不再 apply）
@@ -425,6 +435,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     deltaBuffer.dispose()
     dispose()
     disposeRemoteActivate()
+    disposeCenterVisibility()
   })
 
   /**

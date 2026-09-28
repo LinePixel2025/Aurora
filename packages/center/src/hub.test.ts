@@ -538,6 +538,51 @@ describe('Hub · 远程会话管理与 LLM 切换（docs/12 §6.3）', () => {
     expect(forwarded.cmd).toEqual({ kind: 'llm.switch', requestId: 'r8', model: 'model-2' })
   })
 
+  it('session.history 转发给目标客户端；result.data（历史消息数组）按 requestId 转回网页端', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    client.sent.length = 0
+    const stranger = harness.connectWeb({ id: 'u2', username: 'u2', role: 'user' })
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+
+    harness.hub.handleWebMessage(stranger.conn, {
+      type: 'session.history',
+      requestId: 'h0',
+      clientId: 'c1',
+      sessionId: 'center-a',
+    })
+    expect((stranger.sent.at(-1) as { error?: string }).error).toBe('E_FORBIDDEN')
+
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'session.history',
+      requestId: 'h1',
+      clientId: 'c1',
+      sessionId: 'center-a',
+    })
+    const forwarded = client.sent.at(-1) as {
+      type: string
+      cmd: { kind: string; requestId: string; sessionId: string }
+    }
+    expect(forwarded.type).toBe('cmd')
+    expect(forwarded.cmd).toEqual({
+      kind: 'session.history',
+      requestId: 'h1',
+      sessionId: 'center-a',
+    })
+
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'h1',
+      ok: true,
+      data: [{ id: 'm1', role: 'user', content: 'hi', createdAt: '2026-09-28T00:00:00.000Z' }],
+    })
+    const result = owner.sent.at(-1) as { type: string; ok: boolean; data?: unknown }
+    expect(result.ok).toBe(true)
+    expect(Array.isArray(result.data)).toBe(true)
+  })
+
   it('新命令的拒绝路径：非属主 E_FORBIDDEN、未登记客户端 E_CLIENT_NOT_FOUND、离线 E_CLIENT_OFFLINE', async () => {
     const harness = await makeHub()
     await seedClient(harness, 'c1', 'u1')

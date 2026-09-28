@@ -5,7 +5,7 @@
  * 服务器与客户端主进程直接引用。**协议演进只增不改**：所有消费方对未知
  * `type` / `kind` 一律忽略，不得因新字段抛错。
  */
-import type { AgentEvent } from '../ipc/types.js'
+import type { AgentEvent, SubagentSnapshot } from '../ipc/types.js'
 import type { ModeId, ReasoningEffort } from '../config/schema.js'
 import type { PermissionMode } from '../config/permission.js'
 
@@ -124,6 +124,12 @@ export type CenterCommand =
   /** 客户端项目选项列表；`result.data` 携带 `CenterProjectOption[]` */
   | { kind: 'project.list'; requestId: string }
   /**
+   * 历史回放（v0.2.4，docs/12 §5 第 7 步 / §6.3）：客户端从 SessionStore 读该会话的
+   * 渲染层历史（`rendererHistory`，最近 200 条），经 `result.data` 携带
+   * `CenterSessionHistoryMessage[]` 回执。**服务器不缓存**——历史只在回执里路过。
+   */
+  | { kind: 'session.history'; requestId: string; sessionId: string }
+  /**
    * 远程切模型 / 思考等级（docs/12 §6.3）。**专用命令，不走 config.update 白名单**：
    * `llm.providers.` 前缀会连带放行 `apiKeyEnc`，故只放行这三个字段的点改。
    */
@@ -234,6 +240,8 @@ export type CenterWebMessage =
       projectId: string
     }
   | { type: 'project.list'; requestId: string; clientId: string }
+  /** 历史回放（v0.2.4，docs/12 §6.3）：客户端读盘回传，`result.data` 携带历史消息数组 */
+  | { type: 'session.history'; requestId: string; clientId: string; sessionId: string }
   | {
       type: 'llm.switch'
       requestId: string
@@ -265,6 +273,33 @@ export type CenterWebServerMessage =
       sessionId: string
       request: ConfirmRequestPayload
     }
+
+/** 历史回放里的单条工具调用（客户端 SessionStore 的渲染层形状，`input` 已是解析后的对象） */
+export interface CenterHistoryToolCall {
+  id: string
+  name: string
+  state: 'running' | 'success' | 'error'
+  input?: unknown
+  outputSummary?: string
+  /** `task` 子代理工具的运行快照（与实时 `subagent` 事件同形状） */
+  subagent?: SubagentSnapshot
+}
+
+/**
+ * 历史回放消息（`session.history` 的 `result.data` 数组元素，v0.2.4）。
+ *
+ * 形状与客户端 `SessionStore.rendererHistory` 的输出对齐（user / assistant 两种 role，
+ * 工具卡片挂在助手消息上）；网页端把它映射进会话 items——助手消息按**存储消息 id**
+ * 与实时聚合同源，用户消息按内容去重（与 `user-message` 事件同口径）。
+ */
+export interface CenterSessionHistoryMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: string
+  reasoning?: string
+  toolCalls?: CenterHistoryToolCall[]
+}
 
 /** 远程会话的 sessionId 前缀（客户端渲染层据此区分远程会话） */
 export const CENTER_SESSION_PREFIX = 'center-'

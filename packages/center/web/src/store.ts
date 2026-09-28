@@ -14,6 +14,7 @@ import { computed, reactive, ref } from 'vue'
 import type {
   AgentEvent,
   CenterProjectOption,
+  CenterSessionHistoryMessage,
   CenterSessionSummary,
   CenterWebMessage,
   CenterWebServerMessage,
@@ -74,6 +75,12 @@ export interface SessionState {
   agentRequestId: string | null
   /** 本轮请求尚未收到 done / error */
   pending: boolean
+  /**
+   * 历史回放状态（docs/12 §5 第 7 步，v0.2.4）：打开会话时拉一次 `session.history`。
+   * true = 已拉过（成功或已发起）；拉取失败且会话仍为空时回 false 允许重试。
+   * 新建的远程会话直接置 true（没有历史可拉）。
+   */
+  historyLoaded?: boolean
 }
 
 export interface FileItem {
@@ -334,8 +341,10 @@ function applyEvent(clientId: string, sessionId: string, event: AgentEvent): voi
     if (entry) applyUsage(entry, sessionId, event)
     return
   }
-  const session = state.sessions.get(sessionKey(clientId, sessionId))
-  if (!session) return // 未见过的会话（他端创建 / 页面刷新后）不渲染
+  // 未见过的会话（他端创建 / 页面刷新后 / 事件先于列表刷新到达）：补建空壳再应用，
+  // 不再丢弃 —— 丢弃会让「刷新页面后打开的会话」永远只有历史、看不到正在进行的事件。
+  // 空壳的 historyLoaded 未置位：用户打开它时仍会补拉一次历史与实时条目合并。
+  const session = ensureSessionState(clientId, sessionId)
   switch (event.type) {
     case 'user-message': {
       // 去重：同一会话内相同内容已存在则跳过（本地发送时已乐观插入）
@@ -468,6 +477,23 @@ function applyUsage(
 
 // ───────────────────────── 动作 ─────────────────────────
 
+/** 取会话状态，没有则补建空壳（applyEvent 对未知会话补壳 / openRemoteSession 共用） */
+function ensureSessionState(clientId: string, sessionId: string): SessionState {
+  const key = sessionKey(clientId, sessionId)
+  let session = state.sessions.get(key)
+  if (session === undefined) {
+    session = {
+      clientId,
+      sessionId,
+      items: [],
+      agentRequestId: null,
+      pending: false,
+    }
+    state.sessions.set(key, session)
+  }
+  return session
+}
+
 export function selectClient(clientId: string): void {
   state.selectedClientId = clientId
   const entry = state.clients.get(clientId)
@@ -489,6 +515,7 @@ export async function startSession(clientId: string): Promise<void> {
     items: [],
     agentRequestId: null,
     pending: false,
+    historyLoaded: true, // 新建的会话没有历史可拉
   }
   state.sessions.set(sessionKey(clientId, data.sessionId), session)
   entry?.sessionIds.push(data.sessionId)
@@ -505,16 +532,107 @@ export async function startSession(clientId: string): Promise<void> {
 /** 打开某个远程会话（含 session.list 拉回的历史会话）：无本地会话态时先建空壳再切过去 */
 export function openRemoteSession(clientId: string, sessionId: string): void {
   const key = sessionKey(clientId, sessionId)
-  if (!state.sessions.has(key)) {
-    state.sessions.set(key, {
-      clientId,
-      sessionId,
-      items: [],
-      agentRequestId: null,
-      pending: false,
-    })
-  }
+  const session = ensureSessionState(clientId, sessionId)
   state.activeSessionKey = key
+  // 历史回放（docs/12 §5 第 7 步，v0.2.4）：还没拉过历史就拉一次。
+  // 回执到达时若实时事件已经落了条目（流式期间打开），mergeHistory 按
+  // id / 内容去重后把历史排在实时条目之前，不重复、不错序。
+  if (session.historyLoaded !== true) {
+    session.historyLoaded = true
+    void fetchSessionHistory(clientId, sessionId)
+      .then((history) => {
+        const target = state.sessions.get(key)
+        if (target) mergeHistory(target, history)
+      })
+      .catch(() => {
+        // 拉取失败且会话仍为空：回退标记，下次打开重试（失败时不闪错误，会话照常可用）
+        const target = state.sessions.get(key)
+        if (target && target.items.length === 0) target.historyLoaded = false
+      })
+  }
+}
+
+// ───────────────────────── 历史回放（docs/12 §5 第 7 步，v0.2.4） ─────────────────────────
+
+/** 拉取某个远程会话的历史（客户端从 SessionStore 读盘回传，最近 200 条） */
+async function fetchSessionHistory(
+  clientId: string,
+  sessionId: string,
+): Promise<CenterSessionHistoryMessage[]> {
+  const data = await command<CenterSessionHistoryMessage[]>({
+    type: 'session.history',
+    requestId: nextRequestId(),
+    clientId,
+    sessionId,
+  })
+  return Array.isArray(data) ? data : []
+}
+
+/** 历史消息 → 助手 ChatItem（工具卡入参经 summarizeInput 压成单行，与实时聚合同口径） */
+function historyToAssistant(msg: CenterSessionHistoryMessage): ChatItem {
+  return {
+    id: msg.id,
+    kind: 'assistant',
+    content: msg.content,
+    ...(msg.reasoning === undefined || msg.reasoning === '' ? {} : { reasoning: msg.reasoning }),
+    tools: (msg.toolCalls ?? []).map((call) => ({
+      id: call.id,
+      name: call.name,
+      state: call.state,
+      inputSummary: summarizeInput(call.input),
+      ...(call.outputSummary === undefined ? {} : { outputSummary: call.outputSummary }),
+    })),
+    streaming: false, // 历史条目都是已收尾的消息，不显示流式光标
+  }
+}
+
+/**
+ * 把历史合并进会话 items：历史条目排前、实时条目排后。
+ *
+ * 实时条目只可能来自页面打开后的事件（比历史快照新），所以这个顺序天然正确；
+ * 去重保证流式期间拉取也不重复：
+ * - 助手消息按**存储消息 id** 对齐（内核预领的 messageId 就是落盘 id，实时与历史同源）；
+ * - 用户消息按「内容 + 出现次数」配对：live 里同内容的是**最新**的若干条，
+ *   与历史里**末尾**同样多条配对跳过，更早的同内容历史条目照常保留
+ *   （按纯内容 Set 去重会把「历史两条、live 一条」里的第一条也吞掉）。
+ */
+function mergeHistory(session: SessionState, history: CenterSessionHistoryMessage[]): void {
+  if (history.length === 0) return
+  const liveUserCounts = new Map<string, number>()
+  for (const item of session.items) {
+    if (item.kind !== 'user') continue
+    liveUserCounts.set(item.content, (liveUserCounts.get(item.content) ?? 0) + 1)
+  }
+  const historyUserTotals = new Map<string, number>()
+  for (const msg of history) {
+    if (msg.role !== 'user') continue
+    historyUserTotals.set(msg.content, (historyUserTotals.get(msg.content) ?? 0) + 1)
+  }
+  const historyUserSeen = new Map<string, number>()
+  const liveAssistantIds = new Set(
+    session.items.filter((item) => item.kind === 'assistant').map((item) => item.id),
+  )
+  const prefix: ChatItem[] = []
+  for (const msg of history) {
+    if (msg.role === 'user') {
+      const seen = (historyUserSeen.get(msg.content) ?? 0) + 1
+      historyUserSeen.set(msg.content, seen)
+      // 倒数第 N 条（N = live 同内容条数）之内才跳过：live 对应历史的末尾若干条
+      const remaining = (historyUserTotals.get(msg.content) ?? 0) - seen
+      if (remaining < (liveUserCounts.get(msg.content) ?? 0)) continue
+      prefix.push({
+        id: `user-hist-${msg.id}`,
+        kind: 'user',
+        content: msg.content,
+        tools: [],
+      })
+      continue
+    }
+    if (liveAssistantIds.has(msg.id)) continue
+    prefix.push(historyToAssistant(msg))
+  }
+  if (prefix.length === 0) return
+  session.items = [...prefix, ...session.items]
 }
 
 // ───────────────────────── 远程会话管理（docs/12 §6.3） ─────────────────────────

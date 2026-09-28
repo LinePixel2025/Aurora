@@ -403,6 +403,7 @@ describe('CenterConnector · 远程会话管理命令（docs/12 §6.3）', () =>
     setProject: ReturnType<typeof vi.fn>
     listProjects: ReturnType<typeof vi.fn>
     switchLlm: ReturnType<typeof vi.fn>
+    history: ReturnType<typeof vi.fn>
   }
 
   /** 装好 sessionManager 的 harness（默认全部成功，测试可改返回值 / 换实现） */
@@ -427,6 +428,7 @@ describe('CenterConnector · 远程会话管理命令（docs/12 §6.3）', () =>
       setProject: vi.fn(async () => ({ ok: true })),
       listProjects: vi.fn(() => [{ id: 'proj-1', name: '演示项目' }]),
       switchLlm: vi.fn(async () => ({ ok: true })),
+      history: vi.fn(async () => ({ ok: true, data: [] })),
     }
     harness.deps.sessionManager = {
       listSessions: spies.listSessions,
@@ -436,6 +438,7 @@ describe('CenterConnector · 远程会话管理命令（docs/12 §6.3）', () =>
       setProject: spies.setProject,
       listProjects: spies.listProjects,
       switchLlm: spies.switchLlm,
+      history: spies.history,
     }
     return { harness, spies }
   }
@@ -505,6 +508,33 @@ describe('CenterConnector · 远程会话管理命令（docs/12 §6.3）', () =>
       requestId: 'm-6',
       ok: true,
       data: [{ id: 'proj-1', name: '演示项目' }],
+    })
+  })
+
+  it('session.history：分派 history 并把历史消息数组放进 result.data', async () => {
+    const { harness, spies } = makeManagedConnector()
+    const socket = openSocket(harness)
+    spies.history.mockImplementation(async () => ({
+      ok: true,
+      data: [{ id: 'm-1', role: 'user', content: 'hi', createdAt: '2026-09-28T00:00:00.000Z' }],
+    }))
+
+    await sendCmd(socket, { kind: 'session.history', requestId: 'm-12', sessionId: 'center-abc' })
+    expect(spies.history).toHaveBeenCalledWith('center-abc')
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'm-12',
+      ok: true,
+      data: [{ id: 'm-1', role: 'user', content: 'hi' }],
+    })
+
+    // 本地会话 id 同样被前缀校验拦下（历史对 Center 不可见）
+    await sendCmd(socket, { kind: 'session.history', requestId: 'm-13', sessionId: 'main' })
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'm-13',
+      ok: false,
+      error: 'E_SESSION_NOT_FOUND',
     })
   })
 

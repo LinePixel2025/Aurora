@@ -88,24 +88,32 @@ async function create(): Promise<void> {
 </template>
 
 <style scoped>
-/* 外层纵向：全局确认栏在顶、客户端 + 会话布局在下 */
+/* 外层纵向：全局确认栏在顶、客户端 + 会话布局在下。
+   高度链（v0.2.4，docs/12 §10）：根节点拿「100dvh − 顶栏 − 安全区 − page 上下 padding」
+   之内的全部高度并内部消化 —— GlobalConfirmBar 在场时由 flex 压缩 .console，
+   确认卡再高也只会压缩消息区，**页面本身不再产生文档流滚动**（唯一滚动在 .msg-list）。
+   min-height 是极矮视口的兜底（低于它允许页面滚动，保证控制台可用）。 */
 .console-root {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  height: calc(100vh - var(--topbar-h) - var(--safe-top) - var(--safe-bottom) - 40px);
+  height: calc(100dvh - var(--topbar-h) - var(--safe-top) - var(--safe-bottom) - 40px);
+  min-height: 320px;
 }
 
 .console {
+  flex: 1;
+  min-height: 0; /* 高度链关键：允许被上面的确认栏压缩，滚动收进 .msg-list 内部 */
   display: flex;
   gap: 16px;
   align-items: stretch;
-  height: calc(100vh - var(--topbar-h) - 40px);
-  min-height: 420px;
 }
 
 .session-pane {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -132,18 +140,37 @@ async function create(): Promise<void> {
   font-size: 13px;
 }
 
-/* 窄屏：上下堆叠，客户端列表横向滚动（chips），会话区始终全宽可返回列表 */
+/* 窄屏：上下堆叠，客户端列表横向滚动（chips）。
+   不再用「220px 魔法数」手算会话区高度：根节点仍是固定视口高度，
+   chips 区自然占高，远程控制 / 会话管理两块面板限高 + 内部滚动，
+   剩余高度全部归会话区（.session flex:1 → .msg-list 内部滚动）。 */
 @media (max-width: 720px) {
+  .console-root {
+    height: calc(100vh - var(--topbar-h) - var(--safe-top) - var(--safe-bottom) - 32px);
+    height: calc(100dvh - var(--topbar-h) - var(--safe-top) - var(--safe-bottom) - 32px);
+    min-height: 0;
+  }
+
   .console {
     flex-direction: column;
-    height: auto;
-    min-height: 0;
     gap: 12px;
   }
 
+  .console > :deep(.client-list) {
+    flex: none;
+  }
+
   .session-pane {
-    height: calc(100vh - var(--topbar-h) - 220px);
-    min-height: 380px;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .session-pane > :deep(.remote-panel),
+  .session-pane > :deep(.session-list-panel) {
+    flex: none;
+    max-height: 40vh;
+    max-height: 40dvh;
+    overflow-y: auto;
   }
 }
 </style>
