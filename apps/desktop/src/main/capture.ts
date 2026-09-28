@@ -1064,6 +1064,15 @@ export const CHAT_SUBAGENT_OPEN_ACT = `(async () => {
       if (document.querySelector('[data-field="chat.subagent-page"]') !== null) break
       await wait(100)
     }
+    // 展开**独立对话视图**（截图要拍的就是它 —— 断言留在 check，但证据必须在图上）
+    const toggle = document.querySelector('[data-action="chat.subagent-conversation-toggle"]')
+    if (toggle === null) return { clicked: false, reason: 'no conversation toggle' }
+    toggle.click()
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (document.querySelector('[data-field="chat.subagent-conversation"]') !== null) break
+      await wait(50)
+    }
+    await wait(200)
     return { clicked: true }
   } catch (error) {
     return { clicked: false, reason: String(error) }
@@ -1074,35 +1083,79 @@ export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     const count = (selector) => document.querySelectorAll(selector).length
+    const convEl = () => document.querySelector('[data-field="chat.subagent-conversation"]')
     const page = document.querySelector('[data-field="chat.subagent-page"]')
     const runs = count('[data-field="chat.subagent-run"]')
-    const steps = count('.trace-step')
-    const reports = document.querySelectorAll('[data-field="chat.subagent-report"]')
-    const reportText = reports.length > 0 ? (reports[0].textContent || '').trim() : ''
+    // 权限徽章（2026-09）：seed 授予的是 write，卡头必须显示「可读写」
+    const perm = document.querySelector('[data-field="chat.subagent-perm"]')
+    const permText = perm === null ? '' : (perm.textContent || '').trim()
+    const toggle = document.querySelector('[data-action="chat.subagent-conversation-toggle"]')
     const result = {
       page: page !== null,
       runs,
-      steps,
-      reportChars: reportText.length,
-      bar: count('.trace-bar'),
+      toggleFound: toggle !== null,
+      permText,
       summary: count('[data-field="chat.subagent-summary"]'),
       // 导航项此时应是激活态（否则说明 view 状态没接上）
       navActive:
         document.querySelector('[data-field="chat.subagent-item"]') !== null &&
         document.querySelector('[data-field="chat.subagent-item"]').classList.contains('active'),
-      pass:
-        page !== null &&
-        runs === 1 &&
-        steps >= 3 &&
-        reportText.length > 10 &&
-        count('.trace-bar') === 1,
     }
+    // ① 折叠态 = 紧凑轨迹（act 里已展开对话，先收起再断言）：进度条 + 步骤时间线 + 报告
+    if (toggle !== null && convEl() !== null) toggle.click()
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (convEl() === null) break
+      await wait(50)
+    }
+    const reports = document.querySelectorAll('[data-field="chat.subagent-report"]')
+    result.traceSteps = count('.trace-step')
+    result.traceBar = count('.trace-bar')
+    result.traceReportChars = reports.length > 0 ? (reports[0].textContent || '').trim().length : 0
+    result.traceHiddenWhenOpen = convEl() === null
+    // ② 展开态 = 独立对话视图：任务指令气泡 / 工具行 / 最终报告，且**只读**（无输入控件）
+    if (toggle !== null) toggle.click()
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (convEl() !== null) break
+      await wait(50)
+    }
+    const conv = convEl()
+    const promptEl = conv === null ? null : conv.querySelector('.conv-bubble.user')
+    const reportBubble = conv === null ? null : conv.querySelector('.conv-bubble.report')
+    result.convOpened = conv !== null
+    result.convTurns = count('[data-field="chat.subagent-conversation"] .conv-turn')
+    result.convTools = count('[data-field="chat.subagent-conversation"] .conv-tool')
+    result.convPrompt = promptEl === null ? '' : (promptEl.textContent || '').trim().slice(0, 20)
+    result.convReportChars = reportBubble === null ? 0 : (reportBubble.textContent || '').trim().length
+    result.convReadonly =
+      conv === null
+        ? false
+        : conv.querySelector('textarea, input, [contenteditable="true"]') === null
+    result.convReport = count('[data-field="chat.subagent-conversation"] .conv-report-tag')
+    // 展开态下轨迹必须让位（两个缩放级别不同时出现 —— 同一段内容不说两遍）
+    result.traceDeduped = count('.trace-step') === 0
+    result.pass =
+      result.page === true &&
+      result.runs === 1 &&
+      result.permText.includes('可读写') &&
+      result.navActive === true &&
+      result.toggleFound === true &&
+      result.traceSteps >= 3 &&
+      result.traceBar === 1 &&
+      result.traceReportChars > 10 &&
+      result.convOpened === true &&
+      result.convTurns >= 3 &&
+      result.convTools >= 2 &&
+      result.convPrompt.length > 5 &&
+      result.convReportChars > 10 &&
+      result.convReadonly === true &&
+      result.convReport === 1 &&
+      result.traceDeduped === true
     // 收尾：切回对话流（composer 与消息区必须在后续场景里可用）
     const back = document.querySelector('[data-action="chat.subagent-back"]')
     if (back !== null) back.click()
     await wait(250)
     result.restored = document.querySelector('[data-field="chat.subagent-page"]') === null
-    result.pass = result.pass === true && result.navActive === true && result.restored === true
+    result.pass = result.pass === true && result.restored === true
     return result
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -5563,7 +5616,8 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
             state: 'success',
             outputSummary: '子代理：汇总系统状态',
             // 子代理运行快照（docs/06 §19）：随工具卡持久化，重启后仍能回看。
-            // 截图与探针证据：工具卡展开体里的「运行轨迹」，以及「子代理」独立页面。
+            // 截图与探针证据：工具卡展开体里的**独立对话视图**，以及「子代理」独立页面的
+            // 权限徽章 / 对话展开（2026-09：快照带 permission / tools / messages）。
             subagent: {
               taskId: 'sub-capture-1',
               callId: 'capture-task-1',
@@ -5573,6 +5627,8 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
               startedAt: Date.parse(now),
               endedAt: Date.parse(now) + 4200,
               toolCalls: 2,
+              permission: 'write',
+              tools: ['edit_file', 'list_dir', 'read_file', 'write_file'],
               steps: [
                 { id: 's1', kind: 'text', text: '先看系统状态采集项，再各取一次。' },
                 {
@@ -5581,6 +5637,7 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
                   name: 'list_dir',
                   state: 'success',
                   summary: '已列出 12 个条目',
+                  args: '{"path":"."}',
                 },
                 {
                   id: 'capture-tool-2',
@@ -5588,6 +5645,44 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
                   name: 'read_file',
                   state: 'success',
                   summary: '已读取 1.2 KB',
+                  args: '{"path":"status.json"}',
+                },
+              ],
+              messages: [
+                {
+                  id: 'capture-sub-u1',
+                  role: 'user',
+                  text: '读取当前的系统状态（时间 / 电量 / 网络 / 前台应用），汇总成一段话。',
+                },
+                {
+                  id: 'capture-sub-a1',
+                  role: 'assistant',
+                  text: '先看系统状态采集项，再各取一次。',
+                  toolCalls: [
+                    {
+                      id: 'capture-tool-1',
+                      name: 'list_dir',
+                      state: 'success',
+                      args: '{"path":"."}',
+                      summary: '已列出 12 个条目',
+                      output: 'status.json\\nschedule.json',
+                    },
+                    {
+                      id: 'capture-tool-2',
+                      name: 'read_file',
+                      state: 'success',
+                      args: '{"path":"status.json"}',
+                      summary: '已读取 1.2 KB',
+                      output: '{"power":"ac","battery":82,"network":"wifi"}',
+                    },
+                  ],
+                },
+                {
+                  id: 'capture-sub-a2',
+                  role: 'assistant',
+                  text:
+                    '当前时间 09:20，已接通电源（82%，非充电）；网络在线（Wi-Fi）；' +
+                    '前台应用为 Code.exe。整体状态正常，未发现需要处理的事项。',
                 },
               ],
               report:

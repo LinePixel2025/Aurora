@@ -53,8 +53,15 @@ function createHarness(options: {
   /** 让 provider.create() 直接抛错（验证意外异常转 isError） */
   createThrows?: unknown
   maxRounds?: number
-  /** 只读档下装配层注入的「子代理可见工具名白名单」（docs/06 §11.2） */
+  /** 只读档下装配层注入的「子代理可见的工具名白名单」（docs/06 §11.2） */
   subagentToolNames?: () => readonly string[]
+  /** 父会话的确认回调（`permission: 'write'` 的写入授权要靠它） */
+  confirmTool?: (info: {
+    name: string
+    input: unknown
+    sensitivity: 'confirm'
+    sessionId: string
+  }) => Promise<boolean | 'always' | 'machine'>
 }): Harness {
   const provider = createFakeProvider(options.rounds)
   const parent = new ToolRegistry()
@@ -73,6 +80,7 @@ function createHarness(options: {
     ...(options.subagentToolNames === undefined
       ? {}
       : { subagentToolNames: options.subagentToolNames }),
+    ...(options.confirmTool === undefined ? {} : { confirmTool: options.confirmTool }),
   })
   parent.register(tool)
   return { tool, provider, parent }
@@ -342,5 +350,175 @@ describe('createTaskTool', () => {
     const result = await tool.execute({ description: DESCRIPTION, prompt: PROMPT }, CONTEXT)
     expect(result.isError).toBe(true)
     expect(result.content).toContain('子代理执行异常：工厂炸了')
+  })
+})
+
+/**
+ * 权限授予（`permission: 'write'`，2026-09）与独立对话视图的投影（docs/06 §19）。
+ *
+ * 一条铁律：**写能力不是新通道** —— 写工具进子表后仍由父会话的确认回调逐次判定，
+ * 且 `run_command` / MCP / 递归派生在任何档位下都拿不到。
+ */
+describe('createTaskTool 的写权限授予', () => {
+  const allowAll = async (): Promise<'machine'> => 'machine'
+
+  it('缺省（read）时即使注入了确认链，子代理也拿不到写工具', async () => {
+    const { tool, provider } = createHarness({
+      rounds: [{ text: '报告' }],
+      extraTools: [makeTool('read_file'), makeTool('write_file', 'confirm')],
+      confirmTool: allowAll,
+    })
+    const result = await tool.execute({ description: DESCRIPTION, prompt: PROMPT }, CONTEXT)
+
+    expect(result.isError).toBeUndefined()
+    expect(provider.calls[0]?.tools?.map((item) => item.name)).toEqual(['read_file'])
+    expect(result.subagent?.permission).toBe('read')
+    expect(result.subagent?.tools).toEqual(['read_file'])
+  })
+
+  it("permission: 'write' + 确认链 → 写工具进子表，run_command / mcp / task 仍拿不到", async () => {
+    const { tool, provider } = createHarness({
+      rounds: [{ text: '报告' }],
+      extraTools: [
+        makeTool('read_file'),
+        makeTool('write_file', 'confirm'),
+        makeTool('edit_file', 'confirm'),
+        makeTool('run_command', 'confirm'),
+        makeTool('mcp.demo.tool', 'confirm'),
+      ],
+      confirmTool: allowAll,
+    })
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, permission: 'write' },
+      CONTEXT,
+    )
+
+    expect(result.isError).toBeUndefined()
+    expect(provider.calls[0]?.tools?.map((item) => item.name)).toEqual([
+      'edit_file',
+      'read_file',
+      'write_file',
+    ])
+    expect(result.subagent?.permission).toBe('write')
+    // 系统提示词里的工具目录与请求体的 tools 同源（命令 / MCP 都不在里面）
+    const system = provider.calls[0]?.messages[0]?.content ?? ''
+    expect(system).toContain('write_file')
+    expect(system).not.toContain('run_command')
+    expect(system).not.toContain('mcp.demo.tool')
+  })
+
+  it("permission: 'write' 但装配层没接确认链 → 降级只读，并在结果里如实说明", async () => {
+    const { tool, provider } = createHarness({
+      rounds: [{ text: '报告' }],
+      extraTools: [makeTool('read_file'), makeTool('write_file', 'confirm')],
+    })
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, permission: 'write' },
+      CONTEXT,
+    )
+
+    expect(provider.calls[0]?.tools?.map((item) => item.name)).toEqual(['read_file'])
+    expect(result.subagent?.permission).toBe('read')
+    expect(result.content).toContain('本次已按只读执行')
+  })
+
+  it('写工具的确认走注入的回调，且会话 id 钉回父会话（不是 -sub）', async () => {
+    const confirmations: { name: string; sessionId: string; sensitivity: string }[] = []
+    const executed: string[] = []
+    const { tool } = createHarness({
+      rounds: [
+        { text: '先写文件', toolCalls: [{ id: 'c1', name: 'write_file', arguments: '{"x":1}' }] },
+        { text: '写完了' },
+      ],
+      extraTools: [
+        makeTool('write_file', 'confirm', async () => {
+          executed.push('write_file')
+          return { content: '写入成功', summary: '已写入' }
+        }),
+      ],
+      confirmTool: async (info) => {
+        confirmations.push({
+          name: info.name,
+          sessionId: info.sessionId,
+          sensitivity: info.sensitivity,
+        })
+        return 'machine'
+      },
+    })
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, permission: 'write' },
+      CONTEXT,
+    )
+
+    expect(confirmations).toEqual([
+      { name: 'write_file', sessionId: 'quick', sensitivity: 'confirm' },
+    ])
+    expect(executed).toEqual(['write_file'])
+    expect(result.subagent?.report).toBe('先写文件写完了')
+  })
+
+  it('只读档的白名单是交集：写工具即使被授予也进不来', async () => {
+    const { tool, provider } = createHarness({
+      rounds: [{ text: '报告' }],
+      extraTools: [makeTool('read_file'), makeTool('write_file', 'confirm')],
+      confirmTool: allowAll,
+      // 只读档下装配层给的白名单里没有 write_file
+      subagentToolNames: () => ['read_file'],
+    })
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, permission: 'write' },
+      CONTEXT,
+    )
+
+    expect(provider.calls[0]?.tools?.map((item) => item.name)).toEqual(['read_file'])
+    expect(result.subagent?.tools).toEqual(['read_file'])
+  })
+
+  it('permission 非法取值 → isError 且不触碰 provider', async () => {
+    const { tool, provider } = createHarness({ rounds: [{ text: '报告' }] })
+    const result = await tool.execute(
+      { description: DESCRIPTION, prompt: PROMPT, permission: 'root' },
+      CONTEXT,
+    )
+    expect(result.isError).toBe(true)
+    expect(result.content).toContain('permission 只能是 read 或 write')
+    expect(provider.calls).toHaveLength(0)
+  })
+
+  it('连续正文增量合并成一段步骤（时间线不再是一堆半句）', async () => {
+    const { tool } = createHarness({ rounds: [{ text: ['第一段', '继续写', '收尾。'] }] })
+    const result = await tool.execute({ description: DESCRIPTION, prompt: PROMPT }, CONTEXT)
+    const texts = (result.subagent?.steps ?? []).filter((step) => step.kind === 'text')
+    expect(texts).toHaveLength(1)
+    expect(texts[0]?.text).toBe('第一段继续写收尾。')
+  })
+
+  it('对话投影：任务 / 正文与工具调用 / 结果回填到对应调用', async () => {
+    const { tool } = createHarness({
+      rounds: [
+        { text: '先读目录', toolCalls: [{ id: 'c1', name: 'probe', arguments: '{"path":"."}' }] },
+        { text: '结论：共 3 个模块。' },
+      ],
+      extraTools: [makeTool('probe')],
+    })
+    const result = await tool.execute({ description: DESCRIPTION, prompt: PROMPT }, CONTEXT)
+    const messages = result.subagent?.messages ?? []
+
+    expect(messages.map((message) => message.role)).toEqual(['user', 'assistant', 'assistant'])
+    expect(messages[0]?.text).toBe(PROMPT)
+    expect(messages[1]?.text).toBe('先读目录')
+    expect(messages[1]?.toolCalls?.[0]).toMatchObject({
+      id: 'c1',
+      name: 'probe',
+      args: '{"path":"."}',
+      state: 'success',
+      // 工具结果的正文只在子代理的对话里看得到（主对话的工具卡只有摘要）
+      output: 'probe 结果',
+    })
+    expect(messages[2]?.text).toBe('结论：共 3 个模块。')
+    expect(result.subagent?.transcriptTruncated).toBeUndefined()
+    // 轨迹步骤也带上入参（「它拿什么参数做了什么」）
+    const toolStep = (result.subagent?.steps ?? []).find((step) => step.kind === 'tool')
+    expect(toolStep?.args).toBe('{"path":"."}')
   })
 })

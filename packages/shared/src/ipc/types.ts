@@ -851,18 +851,53 @@ export interface TokenUsage {
 /**
  * 子代理的一个执行步骤：一段思考 / 文本，或一次工具调用。
  * 只用于展示（子代理的原始消息不落会话存储），字段一律可缺省。
+ *
+ * 这是**紧凑轨迹**（工具卡内的一段、进度条的数据源）：文本段按流式增量合并，
+ * 工具段只留名字 / 状态 / 结果摘要。要看完整对话用 `SubagentSnapshot.messages`。
  */
 export interface SubagentStep {
   id: string
   kind: 'text' | 'tool'
   /** 工具名（`kind === 'tool'`） */
   name?: string
-  /** 文本内容（`kind === 'text'`，随流式增量累积） */
+  /** 文本内容（`kind === 'text'`，连续的流式增量合并成一段） */
   text?: string
   /** 工具状态（`kind === 'tool'`） */
   state?: 'running' | 'success' | 'error'
   /** 工具结果单行摘要（`kind === 'tool'`） */
   summary?: string
+  /** 工具入参（`kind === 'tool'`，紧凑 JSON、已截断）—— 一眼看出"它拿什么参数做了什么" */
+  args?: string
+}
+
+/**
+ * 子代理独立对话视图里的一次工具调用（docs/06 §19）。
+ * 与 `SubagentStep` 的工具段同源，但**带上了结果正文**，供「子代理」页面的对话视图展开看。
+ */
+export interface SubagentTranscriptToolCall {
+  id: string
+  name: string
+  /** 入参（紧凑 JSON、已截断） */
+  args?: string
+  state: 'running' | 'success' | 'error'
+  /** 结果摘要（一行） */
+  summary?: string
+  /** 结果正文（已截断）：子代理拿到的工具输出，主对话里看不到 */
+  output?: string
+}
+
+/**
+ * 子代理对话里的一条消息（docs/06 §19 / docs/07 §2.3）。
+ *
+ * 子代理的过程不落会话存储，这份投影是「独立对话界面」的数据源：
+ * user = 主代理给的任务指令；assistant = 子代理的正文与它发起的工具调用；
+ * 工具结果**就地挂在对应调用的 `output` 上**，不单独成条（与主对话的工具卡同款信息组织）。
+ */
+export interface SubagentTranscriptMessage {
+  id: string
+  role: 'user' | 'assistant' | 'tool'
+  text?: string
+  toolCalls?: SubagentTranscriptToolCall[]
 }
 
 /**
@@ -888,6 +923,20 @@ export interface SubagentSnapshot {
   toolCalls: number
   /** 最终报告（完成后才有；与回传给主代理的文本同源、可能截断） */
   report?: string
+  /**
+   * 本次派生授予子代理的权限档（2026-09 新增，`task` 工具的 `permission` 参数）。
+   * **可缺省**：老快照（该字段出现前持久化的）读出来是 undefined，一律按 `'read'` 显示。
+   */
+  permission?: 'read' | 'write'
+  /** 子代理实际拿到的工具名（过滤后的结果，供界面与排查对齐） */
+  tools?: string[]
+  /**
+   * 完整对话（独立对话界面的数据源）：条数 / 每条长度都有上限，超出从**中间**截断
+   * （保留开头与最近的消息，见 `tools/task.ts` 的口径）。
+   */
+  messages?: SubagentTranscriptMessage[]
+  /** 对话记录超上限、中间已省略（界面据此如实标出，不假装完整） */
+  transcriptTruncated?: boolean
 }
 
 /**

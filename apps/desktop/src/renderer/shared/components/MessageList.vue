@@ -15,8 +15,9 @@
  * 2026-09 重构追加（docs/07 §2.3「任务清单与子代理卡」）：
  * - `todo_write` 工具卡渲染为**结构化任务清单卡**（`data-field="chat.todo-card"`），
  *   解析见 `shared/agentTodo.ts`；解析失败 / 非 todo_write 回落通用工具卡；
- * - `task` 工具卡渲染为**子代理卡**（`data-field="chat.task-card"`，卡头是任务简述，
- *   展开体是**实时运行轨迹** `SubagentTrace`：进度条 + 步骤时间线 + 报告）。
+ * - `task` 工具卡渲染为**子代理卡**（`data-field="chat.task-card"`，卡头是任务简述 +
+ *   授权了写权限时的「可读写」徽章，展开体是**独立对话视图** `SubagentConversation`：
+ *   任务指令 → 正文 → 工具调用与结果 → 最终报告；2026-09 起卡内不再叠一份紧凑轨迹）。
  *
  * 2026-09 动画轮追加（docs/07 §5.2）：
  * - 工具卡进场上浮 + 卡片逐个错开；运行中的卡叠扫光；状态翻到终态时状态点弹一下；
@@ -31,10 +32,11 @@ import { useCollapseTransition } from '../composables/useCollapseTransition.js'
 import { renderMarkdown } from '../markdown.js'
 import { parseTaskInput, parseTodoWriteInput, type TodoRow } from '../agentTodo.js'
 import { toolIconOf } from '../toolIcons.js'
-import { ArrowDown, ChevronRight, LoaderCircle, Square, Volume2 } from '../icons.js'
+import { ArrowDown, ChevronRight, FilePenLine, LoaderCircle, Square, Volume2 } from '../icons.js'
 import AgentTodoList from './AgentTodoList.vue'
+import AppTooltip from './AppTooltip.vue'
 import StatusDot from './StatusDot.vue'
-import SubagentTrace from './SubagentTrace.vue'
+import SubagentConversation from './SubagentConversation.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -475,6 +477,19 @@ function subagentOf(call: AgentToolCall) {
   return call.subagent ?? null
 }
 
+/**
+ * 子代理被授予的写权限（2026-09，docs/06 §19）：只有 `write` 才在卡头上显示徽章
+ * —— 只读是缺省，逐个卡都挂个「只读」只是噪音。徽章的悬浮提示列出**实际**拿到的工具名。
+ */
+function subagentWriteGranted(call: AgentToolCall): boolean {
+  return call.subagent?.permission === 'write'
+}
+
+function subagentToolsHint(call: AgentToolCall): string {
+  const tools = call.subagent?.tools ?? []
+  return tools.length === 0 ? '' : `可用工具：${tools.join('、')}`
+}
+
 // ───────────────────────── 工具卡片：折叠态 + 耗时 ─────────────────────────
 
 /** 已展开的卡片 id（默认全部折叠，保持消息区干净） */
@@ -859,6 +874,13 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                       taskOf(call)!.description.trim() !== '' ? taskOf(call)!.description : '子代理'
                     }}
                   </span>
+                  <!-- 授予了写权限才显示（只读是缺省）：一眼知道这个子代理能改文件 -->
+                  <AppTooltip v-if="subagentWriteGranted(call)" :text="subagentToolsHint(call)">
+                    <span class="tiny perm-badge">
+                      <FilePenLine :size="11" :stroke-width="1.8" aria-hidden="true" />
+                      可读写
+                    </span>
+                  </AppTooltip>
                   <span class="tiny tool-state-label">{{ toolStateLabel(call.state) }}</span>
                   <span v-if="subagentStepCount(call) !== null" class="tiny muted tool-time">
                     {{ subagentStepCount(call) }} 步
@@ -899,15 +921,15 @@ async function onContentClick(event: MouseEvent): Promise<void> {
               />
               <Transition name="collapse" @enter="collapseEnter" @before-leave="collapseLeave">
                 <div v-if="isOpen(call.id)" class="tool-body">
-                  <!-- 子代理卡：实时运行轨迹（进度 + 步骤 + 报告），docs/07 §2.3 -->
+                  <!--
+                    子代理卡：**独立对话视图**（2026-09，docs/06 §19 / docs/07 §2.3）。
+                    展开体里直接给完整对话（任务指令 → 正文 → 工具调用与结果 → 最终报告），
+                    与「子代理」页面用的是同一个组件；此前的紧凑轨迹（`SubagentTrace`）
+                    在卡里与它信息重复，改为只在页面上出现（那里还有进度条与总体信息）。
+                  -->
                   <template v-if="subagentOf(call)">
-                    <span class="tiny muted tool-label">运行轨迹</span>
-                    <SubagentTrace :snapshot="subagentOf(call)!" dense />
-                  </template>
-                  <!-- 子代理卡：完整指令单列一段（prompt 常是自包含长文） -->
-                  <template v-if="taskOf(call)">
-                    <span class="tiny muted tool-label">指令</span>
-                    <p class="tool-output">{{ taskOf(call)!.prompt }}</p>
+                    <span class="tiny muted tool-label">对话</span>
+                    <SubagentConversation :snapshot="subagentOf(call)!" />
                   </template>
                   <span class="tiny muted tool-label">参数</span>
                   <pre class="mono tool-args">{{ prettyInput(call.input) }}</pre>
@@ -1341,6 +1363,19 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 
 .tool-state-label {
   color: var(--text-muted);
+}
+
+/* 子代理卡头的写权限徽章（只在 `permission: 'write'` 时出现） */
+.perm-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--aurora-blue) 16%, transparent);
+  color: var(--accent-text);
+  line-height: 16px;
 }
 
 /* 成功态用 `--status-ok`：StatusDot 没有 ok 语义，这里按状态语义补色 */

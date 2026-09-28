@@ -4,7 +4,9 @@
  *
  * `task` 工具派生的子代理此前在界面上只有主对话里一张工具卡：既看不到过程
  * （子循环的文本 / 工具调用不外传），也看不到产出（报告全文只回给主代理）。
- * 本页面把「本会话的全部子代理运行」集中呈现：状态、耗时、每一步在干什么、最终报告。
+ * 本页面把「本会话的全部子代理运行」集中呈现：状态、耗时、每一步在干什么、最终报告，
+ * 以及 2026-09 新增的**独立对话视图**（`SubagentConversation`：任务指令 → 正文 →
+ * 工具调用与结果 → 最终报告，只读、无干预入口）与**本次授予的权限**（只读 / 可读写文件）。
  *
  * 数据来源（`useChat().subagentRuns`，computed 已合并两个来源）：
  * - 实时事件（`subagent`，docs/06 §19）—— 运行中就地长步骤；
@@ -14,8 +16,16 @@
  */
 import { computed, ref } from 'vue'
 import type { SubagentRun } from '../../shared/composables/useChat.js'
-import { Bot, ChevronRight, Clock, MessageSquare } from '../../shared/icons.js'
+import {
+  Bot,
+  ChevronRight,
+  Clock,
+  FilePenLine,
+  MessageSquare,
+  ShieldCheck,
+} from '../../shared/icons.js'
 import SubagentTrace from '../../shared/components/SubagentTrace.vue'
+import SubagentConversation from '../../shared/components/SubagentConversation.vue'
 
 const props = defineProps<{
   runs: SubagentRun[]
@@ -27,7 +37,7 @@ const emit = defineEmits<{
   (event: 'back'): void
 }>()
 
-/** 已展开「任务指令」的运行（默认收起：报告与轨迹才是主体，指令通常是长文） */
+/** 已展开「对话」的运行（默认收起：轨迹与报告才是主体） */
 const openedRuns = ref<string[]>([])
 
 function runKey(run: SubagentRun): string {
@@ -42,6 +52,11 @@ function toggle(key: string): void {
   openedRuns.value = isOpen(key)
     ? openedRuns.value.filter((item) => item !== key)
     : [...openedRuns.value, key]
+}
+
+/** 权限档（老快照没有该字段 → 按只读显示，与 `task` 工具的缺省一致） */
+function isWriteGranted(run: SubagentRun): boolean {
+  return run.permission === 'write'
 }
 
 const runningCount = computed(() => props.runs.filter((run) => run.status === 'running').length)
@@ -113,6 +128,20 @@ function statusLabel(status: SubagentRun['status']): string {
         <div class="run-head">
           <span class="run-dot" :class="run.status" aria-hidden="true" />
           <span class="run-title">{{ run.description }}</span>
+          <!-- 本次授予的权限（2026-09）：只读 / 可读写文件，一眼看清它能碰什么 -->
+          <span
+            class="perm-chip"
+            data-field="chat.subagent-perm"
+            :class="isWriteGranted(run) ? 'write' : 'read'"
+          >
+            <component
+              :is="isWriteGranted(run) ? FilePenLine : ShieldCheck"
+              :size="11"
+              :stroke-width="1.8"
+              aria-hidden="true"
+            />
+            {{ isWriteGranted(run) ? '可读写' : '只读' }}
+          </span>
           <span class="tiny run-status">{{ statusLabel(run.status) }}</span>
           <span class="tiny muted run-meta">{{ run.toolCalls }} 次工具调用</span>
           <span class="grow" />
@@ -122,7 +151,8 @@ function statusLabel(status: SubagentRun['status']): string {
             type="button"
             class="run-toggle"
             :aria-expanded="isOpen(runKey(run))"
-            :title="isOpen(runKey(run)) ? '收起指令' : '查看指令'"
+            :title="isOpen(runKey(run)) ? '收起对话' : '查看对话'"
+            :data-action="'chat.subagent-conversation-toggle'"
             @click="toggle(runKey(run))"
           >
             <ChevronRight
@@ -136,18 +166,24 @@ function statusLabel(status: SubagentRun['status']): string {
         </div>
 
         <!--
-          「任务指令」折叠走**纯淡入**，刻意不做高度动画：`.run-prompt` 自己带
-          `max-height: 160px; overflow-y: auto`（长指令内部滚动），它的可见高度由**自身样式**
-          决定，`--collapse-h` 在它身上没有可表达的东西；而且真要动画它，就得先摘掉它自己的
-          `max-height` 才能量到真实内容高（600px 级），动画会冲到 600 再弹回 160。
-          这是「过渡根自带 max-height / 本身是滚动容器时不做高度动画」这条口径的实例，见 docs/07 §5.2。
+          折叠态给**紧凑轨迹**（进度条 + 步骤时间线 + 报告）：一张卡扫一眼就知道它干了什么；
+          展开态换成**独立对话视图**（正文 / 工具调用与结果 / 最终报告，信息是轨迹的超集）。
+          两者是**两个缩放级别**，不同时出现 —— 同时出现就是同一段内容说两遍。
         -->
-        <Transition name="fade">
-          <p v-if="isOpen(runKey(run))" class="run-prompt">{{ run.prompt }}</p>
+        <SubagentTrace v-if="!isOpen(runKey(run))" :snapshot="run" :show-head="false" />
+        <!--
+          「对话」折叠走**纯淡入**，刻意不做高度动画：展开体里可能包含长指令与工具结果，
+          过渡期的 `overflow: hidden` 会把后长出来的内容裁掉、末尾补跳（见 docs/07 §5.2）。
+        -->
+        <Transition v-else name="fade">
+          <!--
+            组件根元素自带 `data-field="chat.subagent-conversation"`。
+            ⚠️ **别再在这里传 `data-field`**：透传属性会覆盖组件内部的锚点
+            （Vue 的 fallthrough attrs 后覆盖），探针就再也找不到对话容器了 ——
+            这一条是 2026-09 首跑实测踩出来的。
+          -->
+          <SubagentConversation :snapshot="run" />
         </Transition>
-
-        <!-- 卡头已给状态与耗时，这里不再重复一遍轨迹头行 -->
-        <SubagentTrace :snapshot="run" :show-head="false" />
       </article>
 
       <div v-if="props.runs.length === 0" class="page-empty anim-rise">
@@ -328,19 +364,23 @@ function statusLabel(status: SubagentRun['status']): string {
   transform: rotate(90deg);
 }
 
-/* 任务指令：等宽 + 低饱和底色，与报告区分开（一个是我们给的输入，一个是它的产出） */
-.run-prompt {
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
+/* 权限徽章：只读为中性、可读写用强调色（与工具卡的"敏感"语义同一套颜色语言） */
+.perm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  line-height: 16px;
   background: var(--fill-2);
   color: var(--text-muted);
-  font-size: var(--text-xs);
-  line-height: var(--leading-relaxed);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 160px;
-  overflow-y: auto;
+}
+
+.perm-chip.write {
+  background: color-mix(in srgb, var(--aurora-blue) 16%, transparent);
+  color: var(--accent-text);
 }
 
 .page-empty {

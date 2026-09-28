@@ -202,9 +202,22 @@
   （`data-field="chat.subagent-item"`，角标 `data-field="chat.subagent-count"` 显示本会话运行数，
   有在跑的用强调色）把**主区**切到子代理页面（`data-field="chat.subagent-page"`）。
   - 页面内容：概览条（运行数 / 进行中数 / 工具调用总数，`data-field="chat.subagent-summary"`）+
-    每次运行一张卡（`data-field="chat.subagent-run"`：状态点 + 任务简述 + 状态 + 工具调用数 +
-    相对时间与耗时 + 「任务指令」折叠（点 `›` 展开）+ 运行轨迹 + 报告
-    `data-field="chat.subagent-report"`）；无运行时给空状态说明。
+    每次运行一张卡（`data-field="chat.subagent-run"`：状态点 + 任务简述 +
+    **权限徽章**（`data-field="chat.subagent-perm"`：`write` = 「可读写」强调色 / 缺省「只读」中性色，
+    见 `06 §19.2`）+ 状态 + 工具调用数 + 相对时间与耗时 + 「查看对话」折叠
+    （点 `›`，锚点 `data-action="chat.subagent-conversation-toggle"`）+
+    **两个缩放级别**（不同时出现，避免同一段内容说两遍）：折叠 = 紧凑轨迹（`SubagentTrace`：
+    进度条 + 步骤时间线 + 报告 `data-field="chat.subagent-report"`），
+    展开 = 独立对话视图（见下条））；无运行时给空状态说明。
+  - **独立对话视图**（2026-09，`SubagentConversation.vue`，根锚点 `data-field="chat.subagent-conversation"`，
+    见 `06 §19.3`）：展开后渲染 `SubagentSnapshot.messages` —— 顶部一行是权限徽章与
+    可用工具清单（`可用工具：read_file、grep…`），随后是**主代理气泡**（任务指令）→
+    **子代理正文**（最后一条有正文的标「最终报告」）→ 其中的工具调用各成一行
+    （语义图标 + 工具名 + 结果摘要，点开看参数与结果正文）；超限时底部如实标出「中间已省略」。
+    与 `task` 工具卡的展开体**共用同一个组件**。
+  - **只读口径**：对话视图里**没有输入框 / 发送键 / 任何干预入口**（子代理的生死跟着父请求，
+    要中止就中止父请求，这句提示写在视图底部）。capture 探针按「容器内不存在 `textarea` /
+    `input` / `contenteditable`」来钉这条口径 —— 注释不算证据。
   - **它不是会话**：`view` 是 `chat/App.vue` 的独立状态
     （`'chat' | 'subagents' | 'automations'`，第三项见下文「自动化页规格」），
     切过去**不动** `sessionId`、不触发水合、不清空消息；输入区与右栏照旧，随时可切回
@@ -954,7 +967,11 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
   - **子代理页面**（`CHAT_SUBAGENT_OPEN_ACT` / `CHAT_SUBAGENT_OPEN_CHECK`，
     产物 `chat-subagent-page.png`，2026-09）：「子代理」固定项点击后主区切到页面，断言
     `chat.subagent-page` 在、`chat.subagent-run` 恰好 1 张（来自 seed 的 `task` 工具卡快照）、
-    轨迹步骤 ≥ 3、进度条 1 条、报告文本非空、导航项为激活态；check 收尾点「回到对话」并断言页面已消失
+    轨迹步骤 ≥ 3、进度条 1 条、报告文本非空、权限徽章文案含「可读写」（seed 授予 `write`）、
+    导航项为激活态；随后点 `chat.subagent-conversation-toggle` 展开**独立对话视图**，断言
+    容器在、`.conv-turn` ≥ 3（任务 + 两轮正文）、`.conv-tool` ≥ 2（工具调用行）、
+    「最终报告」标签恰好 1 个、且**容器内没有 `textarea` / `input` / `contenteditable`**
+    （只读 —— 用户无法干预的口径判据）；check 收尾点「回到对话」并断言页面已消失
     —— 后续场景（composer / 自动滚底）依赖对话流在前台。
     这条同时验证「子代理快照随工具卡持久化 → 页面读回」这条链路（`06 §19`）；
   - **自动化页四连**（`CHAT_AUTOMATION_*`，产物 `chat-automation.png` / `chat-automation-normal.png` /

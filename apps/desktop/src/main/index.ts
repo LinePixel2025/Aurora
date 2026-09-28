@@ -844,6 +844,10 @@ async function bootstrap(): Promise<void> {
     // 只读档下摘掉 `todo_write`（safe 级但会往 userData/todos 落盘）——档位每次 sync 现读，
     // 用户切档后由 `settings:changed` → `syncToolRegistries()` 立即生效
     getSettings: () => settings!.get(),
+    // `task` 的 `permission: 'write'`（2026-09）用它把子代理的写操作确认交回同一条判定链
+    // （档位 / 项目根 / 免确认模式）。给 getter 而不是值：`confirmTool` 在本行**之后**才创建
+    // （装配顺序如此），取值发生在工具执行时，那时它已经就位。
+    getConfirmTool: () => confirmTool,
   })
   // 7.1.6 ClassIsland 提醒工具（docs/05 §3.4 v3）：`classisland_remind`。
   //     与扩展工具五件套同级——不受 `agent.tools.enabled` 门控；但**按可用性注册**：

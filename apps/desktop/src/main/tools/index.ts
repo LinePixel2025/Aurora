@@ -74,6 +74,9 @@ import {
   createAutomationTools,
   type AutomationManagePort,
 } from './automation-tools.js'
+// 类型导入（编译期擦除，无运行期依赖）：`task` 子代理的写权限要把确认交回
+// 主进程那条判定链，形状直接复用 `createConfirmTool` 的返回类型，不再抄第二份。
+import type { ConfirmToolDecision } from './../agent-host.js'
 
 /**
  * 现读「生效档位」（`agent.permissionMode` + `advanced.confirmSensitiveTools` 的双开关判定
@@ -376,6 +379,16 @@ export interface AgentCoreToolsDeps {
    * 生产接线（`main/index.ts`）**必须**注入，否则只读档摘不掉 todo_write（构造时会 warn）。
    */
   getSettings?: () => Settings
+  /**
+   * 父会话的敏感工具确认回调（live getter，2026-09）：`task` 子代理在
+   * `permission: 'write'` 下用它把写入类工具的确认**交回同一条判定链**
+   * （档位 / 项目根 / 免确认模式全在 `createConfirmTool` 里，内核不重复实现）。
+   *
+   * 为什么是 getter 而不是值：`registerAgentCoreTools` 的调用点在 `confirmTool` 赋值**之前**
+   * （装配顺序如此），取值必须发生在工具执行时（远晚于构造），否则永远拿到 undefined。
+   * 不注入 = 子代理一律只读：写入授权降级，并在工具结果里如实说明。
+   */
+  getConfirmTool?: () => ConfirmToolDecision | undefined
 }
 
 export interface AgentCoreToolsRegistry {
@@ -421,8 +434,25 @@ export function registerAgentCoreTools(deps: AgentCoreToolsDeps): AgentCoreTools
       // `task` 照常注册：它自己不碰系统（只派生一个上下文隔离的子代理），而且子代理的工具面
       // 是执行时从**父表**过滤出来的（agent-core `tools/task.ts`）——只读档下父表里本就没有
       // 写 / 执行类工具，子代理自然也拿不到。
+      //
+      // `permission: 'write'`（2026-09）不是新通道：写类工具进子表后仍由**同一个**确认回调
+      // 逐次判定（档位 / 项目根 / 免确认模式），这里注入的只是"把确认交回那条链"的入口。
       deps.tools.register(
-        createTaskTool({ provider: deps.provider, tools: deps.tools, logger: deps.logger }),
+        createTaskTool({
+          provider: deps.provider,
+          tools: deps.tools,
+          logger: deps.logger,
+          ...(deps.getConfirmTool === undefined
+            ? {}
+            : {
+                // 只做转发：`info.sessionId` 已由 `task` 工具钉成父会话 id（不是 `-sub`）
+                confirmTool: async (info) => {
+                  const decide = deps.getConfirmTool?.()
+                  if (decide === undefined) return false
+                  return decide(info)
+                },
+              }),
+        }),
       )
 
       const names = AGENT_CORE_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
