@@ -135,6 +135,17 @@ export const IPC = {
     sensitiveTool: 'proactive:sensitiveTool',
     resolveSensitiveTool: 'proactive:resolveSensitiveTool',
   },
+  /**
+   * Agent 向用户提问（`ask_user`，docs/06 §21）：请求推送 + 回答回执。
+   *
+   * 与 `proactive:*` 分开而不是塞进去：那个分组的语义是「**敏感动作**的确认闸门」
+   * （超时按拒绝、有 always 记忆），提问是**协作**（超时不算拒绝、可跳过）——
+   * 语义不同、超时口径不同，混在一组里迟早会被谁按错语义改一处。
+   */
+  askUser: {
+    request: 'askUser:request',
+    answer: 'askUser:answer',
+  },
   mcp: {
     status: 'mcp:status',
     statusChanged: 'mcp:statusChanged',
@@ -194,6 +205,7 @@ export type IpcChannel =
   | (typeof IPC.classisland)[keyof typeof IPC.classisland]
   | (typeof IPC.classification)[keyof typeof IPC.classification]
   | (typeof IPC.proactive)[keyof typeof IPC.proactive]
+  | (typeof IPC.askUser)[keyof typeof IPC.askUser]
   | (typeof IPC.mcp)[keyof typeof IPC.mcp]
   | (typeof IPC.update)[keyof typeof IPC.update]
   | (typeof IPC.automation)[keyof typeof IPC.automation]

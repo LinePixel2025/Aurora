@@ -5,6 +5,8 @@
  * `WindowManager` / `ModeManager` / `GuideRunner` 在结构上天然满足这些接口。
  */
 import type {
+  AskUserAnswerInput,
+  AskUserRequest,
   CenterConnectionStatus,
   AgentEvent,
   AutomationCatalog,
@@ -180,6 +182,19 @@ export interface ProactiveLike {
   /** 会话取消 / 退出时让在途确认立即失败 */
   rejectAll(reason: string): void
   onRequest(listener: (request: SensitiveToolRequest) => void): () => void
+}
+
+/**
+ * `ask_user` 的装配层接口（docs/06 §21）。
+ *
+ * 只声明 IPC 需要的那两面：`resolve`（回执）与 `onRequest`（推送）。
+ * 内核那侧用的 `ask()` 端口在 `main/ask-user.ts` 里（那是完整的服务类型），
+ * 这里刻意不把整个服务塞进契约 —— 契约面越小，越不会被别处顺手当成万能入口。
+ */
+export interface AskUserLike {
+  /** 渲染层回执；已结算 / 未知 id 返回 false（幂等） */
+  resolve(input: AskUserAnswerInput): boolean
+  onRequest(listener: (request: AskUserRequest) => void): () => void
 }
 
 export interface AgentHost {

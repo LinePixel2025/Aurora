@@ -98,6 +98,8 @@ export {
   Info,
   // 反馈条（成功 / 失败提示，替代裸文字）
   TriangleAlert,
+  // Agent 提问卡片（`ask_user`）：跳过与提交
+  SkipForward,
   // ClassIsland 联动
   School,
   CalendarClock,

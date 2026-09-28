@@ -53,9 +53,10 @@ export * from './tools/clipboard.js'
 export * from './tools/notify.js'
 export * from './tools/center.js'
 export * from './tools/imagegen.js'
-// Agent 核心能力工具（docs/06 §18/§19）：任务清单与子代理派生。
+// Agent 核心能力工具（docs/06 §18/§19/§21）：任务清单、子代理派生、向用户提问。
 export * from './tools/todo.js'
 export * from './tools/task.js'
+export * from './tools/ask-user.js'
 // AI 修改自身配置（docs/06 §12）：同上，真实配置读写由主进程端口注入。
 export * from './tools/settings.js'
 export * from './mcp/errors.js'

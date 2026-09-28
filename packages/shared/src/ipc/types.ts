@@ -774,6 +774,35 @@ export interface AutomationHistoryQuery {
   limit?: number
 }
 
+// ───────────────────────── Agent 向用户提问（`ask_user`，docs/06 §21） ─────────────────────────
+
+/**
+ * 一次提问的卡片数据（主进程 → 渲染层）。
+ *
+ * 与 `SensitiveToolRequest` 的三处差别是**产品语义**，不是遗漏：
+ * 超时更长（3 分钟）、超时不算失败、用户可以主动跳过。
+ */
+export interface AskUserRequest {
+  requestId: string
+  sessionId: string
+  question: string
+  /** 卡片顶部的短标签（如「目标目录」）；缺省时界面显示「需要你确认」 */
+  header?: string
+  /** 备选项（0–4 个）：0 个 = 自由回答 */
+  options?: { label: string; description?: string }[]
+  /** 是否多选（单选时点选项即选中，仍走「提交」这道确认） */
+  multiSelect: boolean
+  /** 到期时刻（毫秒时间戳）：卡片据此显示倒计时 */
+  expiresAt: number
+}
+
+/** 渲染层回执：`answers` 为空且未 `skipped` 时主进程按「跳过」处理 */
+export interface AskUserAnswerInput {
+  requestId: string
+  answers: string[]
+  skipped?: boolean
+}
+
 // ───────────────────────── 敏感工具确认（docs/06 §5） ─────────────────────────
 
 /**
@@ -1440,6 +1469,18 @@ export interface AuroraApi {
       approved: boolean,
       always?: boolean,
     ): Promise<Result<boolean>>
+  }
+  /**
+   * `ask_user` 的问答通道（docs/06 §21）：请求推送 + 回答回执。
+   *
+   * 与 `proactive`（敏感动作确认）**刻意分开**：那是安全闸门（超时按拒绝、有本会话 always 记忆），
+   * 这是协作问答（超时不算拒绝、可以跳过）。混用会让"超时"这一件事有两套语义。
+   */
+  askUser: {
+    /** 有提问时推送卡片（同一时刻最多一张 —— 主循环同轮工具顺序执行，不会并发提问） */
+    onRequest(listener: (request: AskUserRequest) => void): () => void
+    /** 回执：已结算 / 未知 requestId 返回 false（幂等，与确认回执同款） */
+    answer(input: AskUserAnswerInput): Promise<Result<boolean>>
   }
   mcp: {
     status(): Promise<Result<McpServerStatus[]>>

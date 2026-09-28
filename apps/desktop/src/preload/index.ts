@@ -155,6 +155,16 @@ const api: AuroraApi = {
     resolveSensitiveTool: (confirmId, approved, always) =>
       invoke(IPC.proactive.resolveSensitiveTool, confirmId, approved, always === true),
   },
+  askUser: {
+    onRequest: (listener) => subscribe(IPC.askUser.request, listener),
+    // 把 skipped 归一成布尔再传：主进程按 `skipped === true` 判定，不依赖 undefined 的序列化
+    answer: (input) =>
+      invoke(IPC.askUser.answer, {
+        requestId: input.requestId,
+        answers: input.answers,
+        skipped: input.skipped === true,
+      }),
+  },
   mcp: {
     status: () => invoke(IPC.mcp.status),
     onStatusChanged: (listener) => subscribe(IPC.mcp.statusChanged, listener),

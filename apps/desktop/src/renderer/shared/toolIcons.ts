@@ -17,6 +17,7 @@ import {
   Globe,
   ImageIcon,
   ListChecks,
+  MessageSquare,
   Puzzle,
   School,
   Search,
@@ -47,6 +48,8 @@ const TOOL_ICONS: Record<string, Component> = {
   todo_write: ListChecks,
   todo_read: ListChecks,
   task: Bot,
+  // 向用户提问（docs/06 §21）：对话气泡（「问了一句」的语义），与 notify_user 的铃铛区分开
+  ask_user: MessageSquare,
   set_setting: Settings,
   // ClassIsland 联动（v3）
   classisland_remind: School,

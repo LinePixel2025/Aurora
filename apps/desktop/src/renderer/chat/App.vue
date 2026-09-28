@@ -25,6 +25,7 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
+  AskUserRequest,
   LlmProviderConfig,
   PermissionMode,
   SensitiveToolRequest,
@@ -38,6 +39,7 @@ import {
 } from '@aurora/shared/browser'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
+import AskUserCard from '../shared/components/AskUserCard.vue'
 import MessageList from '../shared/components/MessageList.vue'
 import ModelPickerSelect from '../shared/components/ModelPickerSelect.vue'
 import SensitiveToolCard from '../shared/components/SensitiveToolCard.vue'
@@ -124,6 +126,13 @@ const subagentRunning = computed(() => subagentRuns.value.some((run) => run.stat
 /** 待确认的敏感工具调用（主进程同一时刻最多推一条） */
 const sensitiveRequest = ref<SensitiveToolRequest | null>(null)
 let offSensitiveTool: (() => void) | null = null
+/**
+ * Agent 提问卡片（`ask_user`，docs/06 §21）的当前请求。
+ * 同一时刻最多一张：主循环同轮工具顺序执行，不会并发提问 —— 后来的请求直接覆盖旧的
+ * （旧的那次在主进程侧已按超时结算，覆盖不会丢回执）。
+ */
+const askUserRequest = ref<AskUserRequest | null>(null)
+let offAskUserRequest: (() => void) | null = null
 
 /** 拖拽中的附件绝对路径（发送后清空） */
 const attachments = ref<string[]>([])
@@ -218,6 +227,9 @@ onMounted(() => {
   offSensitiveTool = window.aurora.proactive.onSensitiveTool((request) => {
     sensitiveRequest.value = request
   })
+  offAskUserRequest = window.aurora.askUser.onRequest((request) => {
+    askUserRequest.value = request
+  })
   document.addEventListener('pointerdown', onComposerPointerDown)
   document.addEventListener('keydown', onDocumentEscape)
   // 水合当前会话（main）→ 会话列表：左栏立刻有内容
@@ -234,6 +246,8 @@ onMounted(() => {
 onUnmounted(() => {
   offSensitiveTool?.()
   offSensitiveTool = null
+  offAskUserRequest?.()
+  offAskUserRequest = null
   document.removeEventListener('pointerdown', onComposerPointerDown)
   document.removeEventListener('keydown', onDocumentEscape)
   if (pickerHintTimer !== null) window.clearTimeout(pickerHintTimer)
@@ -243,6 +257,11 @@ onUnmounted(() => {
 
 function resolveSensitive(): void {
   sensitiveRequest.value = null
+}
+
+/** 提问卡片的收尾：回执已由卡片自己发出，这里只把卡片收起（超时 / 跳过 / 已结算都走它） */
+function resolveAskUser(): void {
+  askUserRequest.value = null
 }
 
 const guide = computed(() => {
@@ -1042,6 +1061,18 @@ async function markGuideDone(): Promise<void> {
         -->
         <WindowCaption window="chat" />
       </header>
+
+      <!--
+        Agent 提问卡片（`ask_user`，docs/06 §21）：与确认卡片同区域、同款交互语言，
+        但语义是**协作**（超时按未回答继续、可跳过）。两者可以同时在场：确认问的是
+        「要不要执行这个敏感动作」，提问问的是「这件事你想怎么办」，互不替代。
+      -->
+      <AskUserCard
+        v-if="askUserRequest"
+        :key="askUserRequest.requestId"
+        :request="askUserRequest"
+        @resolved="resolveAskUser"
+      />
 
       <SensitiveToolCard
         v-if="sensitiveRequest"

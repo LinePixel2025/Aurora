@@ -33,6 +33,7 @@ import type { AgentProviderFactory } from '../host/agentHost.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
 import { ToolRegistry } from './registry.js'
 import type { ToolDefinition, ToolProgress, ToolResult } from './registry.js'
+import { ASK_USER_TOOL_NAME } from './ask-user.js'
 
 export const TASK_TOOL_NAME = 'task'
 /** 回传给主代理的报告长度上限：超过从尾部截断（防子代理结果刷爆主对话上下文） */
@@ -231,6 +232,10 @@ async function runSubagent(
   const subTools = new ToolRegistry()
   for (const tool of options.tools.list()) {
     if (tool.name === TASK_TOOL_NAME) continue
+    // 子代理**不向用户提问**（人设里也写明了）：`ask_user` 是 `safe` 级，不挡住的话
+    // 一个后台子代理会弹卡片打断用户，而它自己又看不到回答之外的上下文 ——
+    // 澄清需求是主代理的职责，子代理只负责把派下来的活干完。
+    if (tool.name === ASK_USER_TOOL_NAME) continue
     if (tool.name.startsWith('mcp.')) continue
     const writable = writeGranted && SUBAGENT_WRITE_TOOLS.has(tool.name)
     if (tool.sensitivity === 'confirm' && !writable) continue

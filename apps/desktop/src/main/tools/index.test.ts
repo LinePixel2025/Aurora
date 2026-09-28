@@ -590,9 +590,10 @@ describe('registerAgentCoreTools', () => {
 
     // `todo_write` 的 sensitivity 是 `safe`，但它会往 <userData>/todos/<sid>.json 落盘 ——
     // 档位叫「只读」就必须真的没有系统副作用，否则口号是假的；
-    // `todo_read` 只读文件、`task` 只派生上下文隔离的子代理（子代理的工具面从**父表**过滤），
-    // 两者都不碰系统，照常注册。
-    expect(registry.sync()).toEqual(['todo_read', 'task'])
+    // `todo_read` 只读文件、`task` 只派生上下文隔离的子代理（子代理的工具面从**父表**过滤）、
+    // `ask_user` 只推一张问题卡片（不写盘、不执行命令，"危险"只是打扰用户），
+    // 三者都不碰系统，照常注册。
+    expect(registry.sync()).toEqual(['todo_read', 'task', 'ask_user'])
     expect(tools.get('todo_write')).toBeUndefined()
     expect(tools.get('todo_read')).toBeDefined()
     expect(tools.get('task')).toBeDefined()
@@ -712,9 +713,15 @@ describe('readonly 档（只读 = 不进工具表）', () => {
     const { tools, syncAll } = setupAll(settings)
 
     // 顺序：`COMPUTER_TOOL_NAMES` 过滤后在前，`AGENT_CORE_TOOL_NAMES` 过滤后在后，
-    // `set_setting` 最后（`task` 也在表里：它自己不碰系统，子代理的工具面执行时从这张
-    // **已收窄的**父表过滤，见 registerAgentCoreTools 的注释）。
-    expect(syncAll()).toEqual([...READONLY_COMPUTER_TOOLS, 'todo_read', 'task', 'set_setting'])
+    // `set_setting` 最后（`task` / `ask_user` 也在表里：前者不碰系统、子代理的工具面执行时从这张
+    // **已收窄的**父表过滤；后者只是问一句，见 registerAgentCoreTools 的注释）。
+    expect(syncAll()).toEqual([
+      ...READONLY_COMPUTER_TOOLS,
+      'todo_read',
+      'task',
+      'ask_user',
+      'set_setting',
+    ])
     for (const name of READONLY_BLOCKED_TOOLS) {
       expect(tools.get(name)).toBeUndefined()
     }
@@ -733,7 +740,7 @@ describe('readonly 档（只读 = 不进工具表）', () => {
     expect(computer.sync()).toEqual([])
     expect(COMPUTER_TOOL_NAMES.every((name) => tools.get(name) === undefined)).toBe(true)
     // 总开关管的是 8 个电脑操控工具，不碰 Agent 内核工具（既有口径，与档位无关）
-    expect(core.sync()).toEqual(['todo_read', 'task'])
+    expect(core.sync()).toEqual(['todo_read', 'task', 'ask_user'])
   })
 
   it('confirm 档（默认）注册集合与改动前完全一致（回归基线）', () => {
@@ -770,7 +777,13 @@ describe('readonly 档（只读 = 不进工具表）', () => {
     settings.advanced.confirmSensitiveTools = false
     const { tools, syncAll } = setupAll(settings)
 
-    expect(syncAll()).toEqual([...READONLY_COMPUTER_TOOLS, 'todo_read', 'task', 'set_setting'])
+    expect(syncAll()).toEqual([
+      ...READONLY_COMPUTER_TOOLS,
+      'todo_read',
+      'task',
+      'ask_user',
+      'set_setting',
+    ])
     expect(tools.get('write_file')).toBeUndefined()
   })
 
@@ -785,7 +798,13 @@ describe('readonly 档（只读 = 不进工具表）', () => {
 
     // 用户在设置页改成「只读」→ `settings:changed` → 再 sync 一次（档位必须**现读**，不许缓存）
     settings.agent.permissionMode = 'readonly'
-    expect(syncAll()).toEqual([...READONLY_COMPUTER_TOOLS, 'todo_read', 'task', 'set_setting'])
+    expect(syncAll()).toEqual([
+      ...READONLY_COMPUTER_TOOLS,
+      'todo_read',
+      'task',
+      'ask_user',
+      'set_setting',
+    ])
     for (const name of READONLY_BLOCKED_TOOLS) {
       expect(tools.get(name)).toBeUndefined()
     }

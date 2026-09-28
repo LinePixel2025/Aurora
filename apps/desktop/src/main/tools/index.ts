@@ -42,6 +42,7 @@ import {
   createOpenTool,
   createSearchTools,
   createSettingsTool,
+  createAskUserTool,
   createTaskTool,
   createTerminalTool,
   createTodoTools,
@@ -50,6 +51,7 @@ import {
   createCenterSendFileTool,
   createCenterStatusTool,
   type AgentProviderFactory,
+  type AskUserPort,
   type CenterPort,
   type ClipboardPort,
   type CommandRunner,
@@ -363,12 +365,17 @@ export function registerExtensionTools(deps: ExtensionToolsDeps): ExtensionTools
 /**
  * Agent 内核自带工具的固定名字集合：注册 / 摘除 / 文档共用，避免多处各写一份字符串。
  */
-export const AGENT_CORE_TOOL_NAMES = ['todo_write', 'todo_read', 'task'] as const
+export const AGENT_CORE_TOOL_NAMES = ['todo_write', 'todo_read', 'task', 'ask_user'] as const
 export interface AgentCoreToolsDeps {
   tools: ToolRegistry
   logger: Logger
   /** 任务清单端口（`todo_write` / `todo_read` 的按会话落盘实现，main/tools/todo-port.ts） */
   todoPort: TodoPort
+  /**
+   * 提问端口（`ask_user` 的卡片推送 + 等回执实现，`main/ask-user.ts`）。
+   * 未注入时工具会如实回填「这里问不了人」（不静默失败），单测可直接构造装配器。
+   */
+  askUserPort?: AskUserPort
   /** provider 工厂：`task` 子代理按次即时构造；与 KernelAgentHost 共享同一实例（含启动自愈） */
   provider: AgentProviderFactory
   /**
@@ -452,6 +459,17 @@ export function registerAgentCoreTools(deps: AgentCoreToolsDeps): AgentCoreTools
                   return decide(info)
                 },
               }),
+        }),
+      )
+      // `ask_user`（2026-09，docs/06 §21）：Agent 向用户提问并等回答。
+      // 与 todo / task 同级**不受 `agent.tools.enabled` 门控**，也不按权限档摘除 ——
+      // 提问没有系统副作用（不写盘、不执行命令），"危险"只是打扰用户，
+      // 那由工具描述与「超时即继续」的语义约束。
+      // 端口未注入时工具会明确回填「这里问不了人」，不会静默假装问过了。
+      deps.tools.register(
+        createAskUserTool({
+          ...(deps.askUserPort === undefined ? {} : { port: deps.askUserPort }),
+          logger: deps.logger,
         }),
       )
 

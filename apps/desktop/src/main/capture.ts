@@ -20,7 +20,11 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { nativeTheme, type BrowserWindow } from 'electron'
-import { createFileSnapshotPort } from '@aurora/agent-core'
+import {
+  createFileSnapshotPort,
+  type AskUserAnswer,
+  type AskUserQuestion,
+} from '@aurora/agent-core'
 import { createNoopLogger, nodeFileSystem, type Logger, type WindowName } from '@aurora/shared'
 import type { WindowManager } from './window-manager.js'
 /**
@@ -43,6 +47,43 @@ export const SETTINGS_PAGE_IDS = [
 ] as const
 
 export type SettingsPageId = (typeof SETTINGS_PAGE_IDS)[number]
+
+/**
+ * `ask_user` 提问卡片的**作用域注入点**（capture 专用，2026-09）。
+ *
+ * 为什么需要它：提问只能由**主进程**发起（内核工具 → 装配层服务的 `ask`），
+ * 渲染层的探针脚本无法凭空造出一张请求卡片。capture.ts 又拿不到 `index.ts` 的
+ * 模块级服务实例（那会是循环依赖），因此由 `index.ts` 在截图模式下反向注册一个"发起一次提问"
+ * 的函数 —— 与 `seedAutomationFixture` 由 index.ts 调用是同一个方向。
+ *
+ * 未注册时场景的 `prepare` 什么都不做，check 会如实报 FAIL（不是静默通过）。
+ */
+let askUserSpawner: (() => Promise<AskUserAnswer>) | null = null
+
+export function registerAskUserSpawner(spawn: () => Promise<AskUserAnswer>): void {
+  askUserSpawner = spawn
+}
+
+/** 截图场景里那次提问的回执（nativeCheck 断言它 —— 证明"点回答"真的回到了内核） */
+let askUserCaptureAnswer: AskUserAnswer | undefined
+
+/**
+ * 截图用的提问内容（3 个选项、单选）：
+ * 选项文案固定，好让探针断言"选中的就是第 2 个"以及回执里的答案与之一致。
+ */
+export const ASK_USER_CAPTURE_QUESTION: AskUserQuestion = {
+  question: '要把归档后的课件放到哪个目录？',
+  header: '目标目录',
+  options: [
+    { label: '科目资料文件夹', description: '按课程表科目分类存放' },
+    { label: '桌面「本周课件」', description: '先堆在桌面，手动再整理' },
+    { label: '先别移动文件', description: '只生成清单，文件留在原地' },
+  ],
+  multiSelect: false,
+}
+
+/** 第二个选项的 label（探针用它断言"点哪个就回哪个"） */
+export const ASK_USER_CAPTURE_SECOND = ASK_USER_CAPTURE_QUESTION.options?.[1]?.label ?? ''
 
 export interface CaptureTarget {
   name: WindowName
@@ -1054,6 +1095,76 @@ export const CHAT_OVERVIEW_CHECK = `(async () => {
  * 也就是说这条断言同时验证了「快照随工具卡持久化 → 由子代理页面读回」这条链路，
  * 而不只是「实时事件画得出来」。
  */
+/**
+ * `ask_user` 提问卡片场景（`chat-ask-user.png`，2026-09，docs/06 §21 / docs/07 §2.3）。
+ *
+ * act 只**选中**第二个选项（截图要拍到"选中态 + 问题 + 选项"，不拍提交后的空场）；
+ * check 里才点「回答」并断言卡片消失；`nativeCheck` 断言主进程侧拿到的回执就是第二个选项的文案
+ * —— 三段合起来才证明「点回答 → IPC 回执 → 服务 resolve → 内核拿到答案」这条往返真的通了
+ * （只看卡片消失不够：回执失败时卡片也会收起）。
+ */
+export const CHAT_ASK_USER_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const card = document.querySelector('[data-field="chat.ask-user-card"]')
+    if (card === null) return { clicked: false, reason: 'no ask-user card' }
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (card.querySelectorAll('.option').length >= 3) break
+      await wait(50)
+    }
+    const options = card.querySelectorAll('.option')
+    if (options.length < 2) return { clicked: false, reason: 'options < 2' }
+    options[1].click()
+    await wait(200)
+    return { clicked: true }
+  } catch (error) {
+    return { clicked: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_ASK_USER_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const card = document.querySelector('[data-field="chat.ask-user-card"]')
+    const questionEl = document.querySelector('[data-field="chat.ask-user-question"]')
+    const options = card === null ? [] : Array.from(card.querySelectorAll('.option'))
+    const titleEl = card === null ? null : card.querySelector('.ask-title')
+    const result = {
+      card: card !== null,
+      options: options.length,
+      activeOptions: options.filter((item) => item.classList.contains('active')).length,
+      question: questionEl === null ? '' : (questionEl.textContent || '').trim(),
+      header: titleEl === null ? '' : (titleEl.textContent || '').trim(),
+      // 选了选项后提交键应可用（未选时 disabled 是「别手滑提交空回答」的闸门）
+      submitEnabled:
+        card !== null &&
+        card.querySelector('[data-action="chat.ask-user-submit"]')?.disabled === false,
+      // 自由输入框在（给了选项也能自己写）
+      hasFreeInput: card !== null && card.querySelector('.free-input') !== null,
+    }
+    // 提交：点「回答」，卡片应自行收起（回执往返的渲染层证据）
+    const submit = card === null ? null : card.querySelector('[data-action="chat.ask-user-submit"]')
+    if (submit !== null) submit.click()
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (document.querySelector('[data-field="chat.ask-user-card"]') === null) break
+      await wait(50)
+    }
+    result.dismissed = document.querySelector('[data-field="chat.ask-user-card"]') === null
+    result.pass =
+      result.card === true &&
+      result.options >= 3 &&
+      result.activeOptions === 1 &&
+      result.question.length > 5 &&
+      result.header.length > 0 &&
+      result.submitEnabled === true &&
+      result.hasFreeInput === true &&
+      result.dismissed === true
+    return result
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
 export const CHAT_SUBAGENT_OPEN_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
@@ -5991,6 +6102,32 @@ export function defaultCapturePlan(
       file: 'chat-subagent-page.png',
       act: CHAT_SUBAGENT_OPEN_ACT,
       check: CHAT_SUBAGENT_OPEN_CHECK,
+    },
+    // Agent 提问卡片（`ask_user`，docs/06 §21）：由 index.ts 注册的 spawner 发起一次真实提问，
+    // act 选中第二个选项 → 截图 → check 点「回答」并断言卡片收起 → nativeCheck 断言回执内容。
+    {
+      name: 'chat',
+      file: 'chat-ask-user.png',
+      prepare: async () => {
+        const spawn = askUserSpawner
+        if (spawn === null) return
+        // 刻意**不 await**：这一轮提问要等界面上的回答，await 会把整个 capture 卡住
+        void spawn().then((answer) => {
+          askUserCaptureAnswer = answer
+        })
+        await new Promise((resolve) => setTimeout(resolve, 300))
+      },
+      act: CHAT_ASK_USER_ACT,
+      check: CHAT_ASK_USER_CHECK,
+      nativeCheck: () => ({
+        // 回执必须是"被选中的第二个选项"，且不是超时 / 跳过
+        answered: askUserCaptureAnswer?.answers[0] ?? '',
+        pass:
+          askUserCaptureAnswer !== undefined &&
+          askUserCaptureAnswer.answers[0] === ASK_USER_CAPTURE_SECOND &&
+          askUserCaptureAnswer.timedOut !== true &&
+          askUserCaptureAnswer.skipped !== true,
+      }),
     },
     // 自动化页四连（docs/13 §11）：进入页面 → Normal tab（内置区）→ 编辑器弹窗 →
     // 历史 + Agent 回放；最后一张收尾时还原主区。数据来自 seedAutomationFixture。

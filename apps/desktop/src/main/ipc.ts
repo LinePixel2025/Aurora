@@ -22,6 +22,7 @@ import {
   err,
   ok,
   type AppInfo,
+  type AskUserAnswerInput,
   type AuroraApi,
   type ChatArchiveRequest,
   type ChatHistoryRequest,
@@ -87,6 +88,7 @@ import type {
   ModeManagerLike,
   PerceptionLike,
   ProactiveLike,
+  AskUserLike,
   SettingsStoreLike,
   SkillsInfoLike,
   UpdateControllerLike,
@@ -124,6 +126,11 @@ export interface DesktopDeps {
   classification: ClassificationControllerLike
   /** 敏感工具确认（proactive:*，docs/06 §5） */
   proactive: ProactiveLike
+  /**
+   * Agent 向用户提问（askUser:*，docs/06 §21）。未注入时回执通道返回 `false`
+   * （与"已结算/未知 id"同款语义），推送通道自然不发 —— 工具侧另有"端口缺失"的兜底文案。
+   */
+  askUser?: AskUserLike
   /** 全局快捷键状态（hotkey:*，docs/07 §5） */
   hotkey: HotkeyControllerLike
   /**
@@ -649,6 +656,12 @@ export function registerIpc(deps: DesktopDeps): () => void {
       ok(deps.proactive.resolve(confirmId, approved, always)),
   )
 
+  // ───────────────────────── Agent 向用户提问（docs/06 §21） ─────────────────────────
+
+  handle<boolean>(IPC.askUser.answer, (input: AskUserAnswerInput) =>
+    ok(deps.askUser?.resolve(input) ?? false),
+  )
+
   // ───────────────────────── Aurora Center（docs/12） ─────────────────────────
 
   handle<CenterConnectionStatus>(IPC.center.status, () =>
@@ -777,6 +790,9 @@ export function registerIpc(deps: DesktopDeps): () => void {
   const offSensitive = deps.proactive.onRequest((request) => {
     broadcast(IPC.proactive.sensitiveTool, request)
   })
+  const offAskUser = deps.askUser?.onRequest((request) => {
+    broadcast(IPC.askUser.request, request)
+  })
   const offMcp = deps.onMcpStatusChanged((statuses) => {
     broadcast(IPC.mcp.statusChanged, statuses)
   })
@@ -811,6 +827,7 @@ export function registerIpc(deps: DesktopDeps): () => void {
     eventBuffer.dispose()
     offClassification()
     offSensitive()
+    offAskUser?.()
     offMcp()
     offUpdate()
     offHotkey()

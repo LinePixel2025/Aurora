@@ -133,6 +133,7 @@ import {
 } from './smoke-llm.js'
 import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
 import {
+  ASK_USER_CAPTURE_QUESTION,
   captureWindows,
   chatStreamAct,
   chatStreamBurstAct,
@@ -140,6 +141,7 @@ import {
   chatStreamCheck,
   defaultCapturePlan,
   filterCapturePlan,
+  registerAskUserSpawner,
   seedChatTtsHistory,
   seedJobFixture,
   seedClassIslandFixture,
@@ -165,6 +167,8 @@ import { AutomationStore } from './automation/store.js'
 import type { AutomationActionPorts } from './automation/actions.js'
 import { createSessionProjectResolver } from './tools/session-project.js'
 import { createFileTodoPort, type FileTodoPort } from './tools/todo-port.js'
+// `ask_user` 的装配层实现（docs/06 §21）：卡片推送 + 等回执（3 分钟超时按"未回答"继续）
+import { createAskUserService, type AskUserService } from './ask-user.js'
 import { createNetWebFetchPort } from './tools/web-fetch.js'
 import { createElectronClipboardPort } from './tools/clipboard.js'
 import { createNotificationPort } from './tools/notify.js'
@@ -332,6 +336,12 @@ const filePortSnapshots: Pick<SnapshotPort, 'capture'> = {
 let desktopDeps: DesktopDeps | undefined
 /** Job 存储（docs/06 §4.1，v15）：bootstrap 里装配到 <userData>/jobs */
 let jobStore: JobStore | undefined
+/**
+ * `ask_user` 的提问服务（docs/06 §21）：bootstrap 里装配，同时作为
+ * 内核端口（`ask`）与 ipc 依赖（`resolve` / `onRequest`）—— 两处**必须同一个实例**，
+ * 否则回执会送到一个没有 pending 提问的服务上（表现是"点了提交没反应"，静默超时）。
+ */
+let askUserService: AskUserService | undefined
 
 function createSnapshotPortFor(config: Settings['agent']['snapshots']): SnapshotPort {
   return createFileSnapshotPort({
@@ -820,6 +830,17 @@ async function bootstrap(): Promise<void> {
     fs: nodeFileSystem,
     logger: logger.child('jobs'),
   })
+  // 7.1.4d Agent 向用户提问（docs/06 §21）：卡片推送 + 等回执，超时 3 分钟按"未回答"继续。
+  //     在这里（工具装配**之前**）建：`ask_user` 的工具实例要注入它的 `ask` 端口。
+  //     推送走 ipc 的 `askUser:request` 广播（见 registerIpc 的 deps.askUser），
+  //     这里只负责"把卡片对应的窗口显示出来"——卡片无处可显示就是一次静默超时。
+  askUserService = createAskUserService({
+    logger: logger.child('askUser'),
+    present: () => {
+      windows?.showChat()
+      windows?.focus('chat')
+    },
+  })
   // 7.1.5 provider 工厂提取成常量：KernelAgentHost 与 `task` 子代理共享同一实例，
   //     「常规构造失败 → 临时回退可用条目」的启动自愈语义（docs/06 §12、step 02 第 6 条）
   //     两处一致；create() 每次请求即时构造，设置页改 Key 后无需重启即生效。
@@ -841,6 +862,8 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('tools'),
     todoPort,
     provider: agentProvider,
+    // `ask_user` 的提问端口（docs/06 §21）：未接上时工具会如实回填"这里问不了人"
+    askUserPort: askUserService,
     // 只读档下摘掉 `todo_write`（safe 级但会往 userData/todos 落盘）——档位每次 sync 现读，
     // 用户切档后由 `settings:changed` → `syncToolRegistries()` 立即生效
     getSettings: () => settings!.get(),
@@ -1436,6 +1459,9 @@ async function bootstrap(): Promise<void> {
     sessions,
     classification,
     proactive: adaptProactive(proactiveScheduler),
+    // Agent 向用户提问（docs/06 §21）：`ask:answer` 回执 + `askUser:request` 推送。
+    // 与内核端口是**同一个实例**（见 askUserService 的声明处注释）。
+    ...(askUserService === undefined ? {} : { askUser: askUserService }),
     hotkey: hotkeys,
     // 写前快照（docs/06 §11.8）：ipc 的 snapshots:* 三条通道用它；配置变了由 ensureSnapshotPort 换实例
     jobs: jobStore,
@@ -1659,6 +1685,15 @@ async function runCapture(dir: string): Promise<void> {
   // 不重读的话「夹具写了、界面照样是空的」（本场景首跑实测就是 0 条）。
   await seedAutomationFixture(app.getPath('userData'))
   await automationEngine?.reload()
+  // `ask_user` 提问卡片场景（docs/06 §21）需要**主进程发起一次真实提问**：
+  // capture.ts 拿不到这里的服务实例（循环依赖），所以由这边反向注册一个 spawner。
+  // 注册的是同一个 `askUserService`（内核端口与 ipc 依赖的那个实例），
+  // 因此探针点「回答」走的正是生产那条回执链。
+  registerAskUserSpawner(async () => {
+    const service = askUserService
+    if (service === undefined) return { answers: [], skipped: true }
+    return service.ask(ASK_USER_CAPTURE_QUESTION, { sessionId: 'main' })
+  })
   // 输入框 → 真实（离线桩）模型往返场景：**排在计划最后**，因为它在 prepare 里把
   // `llm.active` 换成桩服务（前面的场景读到的是「未配置模型」的出厂态，不受影响）。
   // 为什么值得单列一个场景：`AURORA_SMOKE` 的断言跑在引导窗里、读不到对话窗 DOM，

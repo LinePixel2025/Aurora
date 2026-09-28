@@ -130,6 +130,13 @@ const CHANNELS = {
     sensitiveTool: 'proactive:sensitiveTool',
     resolveSensitiveTool: 'proactive:resolveSensitiveTool',
   },
+  // Agent 向用户提问（`ask_user`，docs/06 §21）：与 proactive 分组语义不同
+  //（协作问答 vs 敏感动作的确认闸门：超时口径、可否跳过都不一样），刻意分表。
+  // 本文件与 `@aurora/shared` 的 `ipc/channels.ts` 有编译期双向断言，漏改一侧 typecheck 会挂。
+  askUser: {
+    request: 'askUser:request',
+    answer: 'askUser:answer',
+  },
   mcp: {
     status: 'mcp:status',
     statusChanged: 'mcp:statusChanged',
