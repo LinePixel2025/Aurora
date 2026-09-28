@@ -301,7 +301,7 @@ ClassRoom 的系统提示词会附上「你可以修改的 ClassRoom 设置」�
 | `modes.classroom.subjects` | 科目列表（每项 name / folder / keywords） |
 | `modes.classroom.schedule.provider` | 课程表来源（`manual` / `classisland`） |
 | `modes.classroom.schedule.lessons` | 手动课程表（weekday / startTime / endTime / subject） |
-| `modes.classroom.schedule.classisland.endpoint` | ClassIsland 桥接数据源（文件路径或 HTTP 端点） |
+| `modes.classroom.schedule.classisland.endpoint` | ClassIsland 桥接数据源（文件路径或 HTTP 端点）；文件源读取失败时自动按桥接插件默认输出路径 `%APPDATA%\ClassIslandurora-bridge\schedule.json` 回落重试一次（v0.2.4），回落成功会置 `classisland:status` 的 `usedFallback` 状态位（并在日志里提示对齐两端配置） |
 | `modes.classroom.preClassReminder` | 课前提醒开关 |
 | `modes.classroom.preClassLeadMinutes` | 课前提前分钟数（1–30，默认 5；v10 新增） |
 | `modes.classroom.preClassOpenFolder` | 课前提醒是否自动打开科目文件夹 |
@@ -327,7 +327,14 @@ v1 占位的 Work Mode 在 BetaV2 完成**初步实装**（`packages/modes/src/w
   PDF 的处理、总结与生成；指导 Agent 用 `run_command` 执行 PowerShell 完成 Office 自动化
   （COM：`New-Object -ComObject Excel.Application` 等，操作要点见 `skills/office-work`），
   配合 `read_file` / `write_file` / `list_dir` 完成任务；**覆盖 / 删除 / 移动文件前必须先向
-  用户确认**；产出文件默认保存到工作目录。
+  用户确认**；产出文件保存到生效工作目录。
+- **工作目录是回落链的一级（v0.2.4，Codex 式统一，docs/06 §5.1）**：`modes.work.workspaceDir`
+  不再是提示词里的孤立概念 —— 它插在 `effectiveWorkspaceDir` 回落链的
+  **当前项目根之后、`agent.tools.workspaceDir` 之前**（仅当激活模式为 Work 且目录非空时参与）。
+  缺省 `cwd` / 搜索根、写入边界、confirm 档「根内写免确认」与 auto 档免确认边界全部落在
+  同一条链解析出的目录上 —— 提示词与工具链同源，Work 模式不再与项目指定互相打架
+  （绑了项目的会话以项目为准，没绑项目的 Work 会话以工作目录为准，二者都不配置时回落
+  `agent.tools.workspaceDir` / 主目录）。
 - **感知订阅**：`[{ kind: 'clock', intervalMs: 60000 }]`。
 - **与 ClassRoom 的功能边界**：工作模式**不包含**课堂 / 课程表 / 课件分类功能——那些属于
   ClassRoom Mode；提示词明确声明边界并引导用户切换模式。切换到 Work 后，渲染层也不再渲染

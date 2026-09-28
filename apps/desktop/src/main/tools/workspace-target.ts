@@ -1,8 +1,9 @@
 /**
  * 「打开工作目录」按钮的目标解析（docs/06 §5.1）。
  *
- * 与工具执行链走**同一个**三级回落 `effectiveWorkspaceDir`
- * （当前项目根 > `agent.tools.workspaceDir` > 用户主目录）：配了当前项目时打开项目根，
+ * 与工具执行链走**同一个**回落 `effectiveWorkspaceDir`
+ * （当前项目根 > 激活模式工作目录（Work）> `agent.tools.workspaceDir` > 用户主目录）：
+ * 配了当前项目时打开项目根、Work 模式下没绑项目时打开模式工作目录，
  * 与不显式传 `cwd` 的 `run_command` / 不传根的 `grep` / `glob` 落地目录一致，
  * 消除早前「按钮按字面 `workspaceDir` 解析」的用户可见分叉。
  *
@@ -13,10 +14,15 @@
 import { effectiveWorkspaceDir } from '@aurora/agent-core'
 import type { Settings } from '@aurora/shared'
 
-/** 「打开工作目录」按钮的目标：与执行链缺省目录同口径（docs/06 §5.1 三级回落）。 */
+/** 「打开工作目录」按钮的目标：与执行链缺省目录同口径（docs/06 §5.1 回落链）。 */
 export function resolveWorkspaceOpenTarget(
-  settings: Pick<Settings, 'projects' | 'agent'>,
+  settings: Pick<Settings, 'projects' | 'agent' | 'modes'>,
   deps: { projectRoot: () => string | undefined; homeDir: () => string },
 ): string {
-  return effectiveWorkspaceDir(settings, deps.projectRoot(), deps.homeDir())
+  // 激活模式的工作目录（v18）：当前只有 Work 模式提供，与 session-project 同口径
+  const modeDir =
+    settings.modes.current === 'work' && settings.modes.work.workspaceDir.trim() !== ''
+      ? settings.modes.work.workspaceDir
+      : undefined
+  return effectiveWorkspaceDir(settings, deps.projectRoot(), deps.homeDir(), undefined, modeDir)
 }

@@ -6,13 +6,19 @@
  * （`sessions/<id>.json` 的 `meta.projectId`，经 `chat:setSessionProject` 写入）：
  *
  * - **未绑定 / 绑定项已被删除** → 回落全局 `projects.current`，再按既有链回落
- *   `agent.tools.workspaceDir` / 用户主目录（`effectiveWorkspaceDir` 的第 4 参承接会话级入参）；
+ *   激活模式的工作目录（v18，当前只有 Work 模式）/ `agent.tools.workspaceDir` /
+ *   用户主目录（`effectiveWorkspaceDir` 的第 4 / 5 参承接会话级与模式级入参）；
  * - 中心会话（`center-` 前缀）与本地会话**同一逻辑**，默认未绑定，没有任何特殊分支。
+ *
+ * 这条链是 **Codex 式「一个会话一个工作目录」的唯一口径**（docs/05 §4 / docs/06 §5.1）：
+ * 缺省 cwd、写入边界、auto 档免确认边界、提示词全部同源 —— Work 模式的
+ * `modes.work.workspaceDir` 不再是提示词里的孤立概念，而是链上的一级回落。
  *
  * 三条消费方（docs/06 §5.1 / §11.2）共用这里的解析结果，不得各写一份：
  * 1. 缺省工作目录 / 搜索根（`registerComputerTools` → terminal / search 工具的 getter）；
  * 2. 项目根边界（`file-port` / `command-runner` 的 `workspaceRoot` guard）与
- *    auto 档免确认判定（`agent-host.ts` 的 `createConfirmTool`）；
+ *    auto 档免确认判定（`agent-host.ts` 的 `createConfirmTool`）、confirm 档的
+ *    「根内写文件免确认」（v0.2.4，Codex 式 auto-edit）；
  * 3. 项目级 AGENTS.md 注入（`createProjectInstructionsSource` 的 `resolveRoot(sessionId)`）。
  *
  * 本文件**不 import electron**：纯取值闭包 + agent-core 纯函数组合，可在 Node 里单测
@@ -45,14 +51,16 @@ export interface SessionProjectResolver {
    */
   projectRootOf(sessionId: string | undefined): string | undefined
   /**
-   * 该会话的项目根**边界**（端口 `workspaceRoot` guard 与 auto 档免确认判定用）：
-   * 会话绑定项目 > 全局当前项目。两者都无 → `undefined`（= 无边界，行为与 v13 之前一致）。
+   * 该会话的项目根**边界**（端口 `workspaceRoot` guard、auto 档免确认判定与
+   * confirm 档「根内写免确认」用，docs/06 §5.1 / §11.2）：
+   * 会话绑定项目 > 全局当前项目 > 激活模式工作目录（Work）。
+   * 三者都无 → `undefined`（= 无边界，行为与 v13 之前一致）。
    */
   boundaryRoot(sessionId: string | undefined): string | undefined
   /**
    * 该会话的**生效工作目录**（缺省 cwd / 搜索根，docs/06 §5.1 唯一口径）：
-   * 会话绑定项目 > 全局当前项目 > `agent.tools.workspaceDir` > 用户主目录
-   * （`effectiveWorkspaceDir` 的会话级第 4 参）。
+   * 会话绑定项目 > 全局当前项目 > 激活模式工作目录（Work）> `agent.tools.workspaceDir` >
+   * 用户主目录（`effectiveWorkspaceDir` 的会话级第 4 参 + 模式级第 5 参）。
    */
   workspaceDir(sessionId: string | undefined): string
 }
@@ -65,11 +73,22 @@ export function createSessionProjectResolver(deps: SessionProjectDeps): SessionP
   const projectRootOf = (sessionId: string | undefined): string | undefined =>
     rootOfBinding(deps.getProjectId(sessionId))
 
+  /**
+   * 激活模式的工作目录（v18，docs/05 §4）：当前只有 Work 模式提供。
+   * `modes.current` 就在 settings 里，不需要注入模式管理器 —— 与设置同源、热改即时生效。
+   */
+  const activeModeDir = (): string | undefined => {
+    const snapshot = deps.getSettings()
+    if (snapshot.modes.current !== 'work') return undefined
+    const dir = snapshot.modes.work.workspaceDir.trim()
+    return dir === '' ? undefined : dir
+  }
+
   return {
     projectRootOf,
 
     boundaryRoot(sessionId) {
-      return projectRootOf(sessionId) ?? deps.globalProjectRoot()
+      return projectRootOf(sessionId) ?? deps.globalProjectRoot() ?? activeModeDir()
     },
 
     workspaceDir(sessionId) {
@@ -78,6 +97,7 @@ export function createSessionProjectResolver(deps: SessionProjectDeps): SessionP
         deps.globalProjectRoot(),
         deps.homeDir(),
         projectRootOf(sessionId),
+        activeModeDir(),
       )
     },
   }

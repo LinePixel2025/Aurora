@@ -243,6 +243,14 @@ export interface ClassIslandSourceOptions {
   fetchImpl?: typeof fetch
   /** 注入便于单测；默认 `node:fs/promises` 的 readFile */
   readFile?: (path: string) => Promise<string>
+  /**
+   * 文件源读取失败时的**回落路径**（v0.2.4，docs/05 §3.4）：桥接插件的默认输出位置
+   * `%APPDATA%\ClassIsland\aurora-bridge\schedule.json`，由主进程注入（本文件不碰 Electron）。
+   * 用户改了插件端 `outputPath` 却没同步 Aurora 端点（或反过来）是「桥接经常没数据」的
+   * 最常见原因 —— 读不到时先试一次默认路径，成功则在结果里标记 `usedFallback` 并告警，
+   * 让「路径对不上」从静默空课表变成用户可见的诊断信息。
+   */
+  fallbackFilePath?: string
   logger?: Logger
 }
 
@@ -251,6 +259,10 @@ export interface ClassIslandFetchResult {
   raw?: string
   error?: string
   elapsedMs: number
+  /** 本次数据来自 `fallbackFilePath` 回落（端点本身读取失败），供 provider 记告警 */
+  usedFallback?: boolean
+  /** `usedFallback` 时端点本身的失败原因（回落成功不代表端点配置没问题，诊断要带出来） */
+  endpointError?: string
 }
 
 /** 读取桥接数据（不做解析、不抛错）。 */
@@ -274,8 +286,42 @@ export async function readClassIslandSource(
         : await readFileText(options.endpoint, timeoutMs, deps.readFile ?? options.readFile)
     return { raw, elapsedMs: elapsed() }
   } catch (error) {
+    // 文件源：端点读不到时试一次桥接插件默认输出路径（v0.2.4）。
+    // 只在回落路径与端点**确实不同**时才试，端点本来就是默认路径时失败要如实上报。
+    if (
+      options.source === 'file' &&
+      options.fallbackFilePath !== undefined &&
+      options.fallbackFilePath.trim() !== '' &&
+      !sameFilePath(options.endpoint, options.fallbackFilePath)
+    ) {
+      try {
+        const raw = await readFileText(
+          options.fallbackFilePath,
+          timeoutMs,
+          deps.readFile ?? options.readFile,
+        )
+        return {
+          raw,
+          elapsedMs: elapsed(),
+          usedFallback: true,
+          endpointError: describeError(error),
+        }
+      } catch {
+        /* 回落也失败：上报**端点本身**的错误（它才是用户配置的地址），回落失败不掩盖 */
+      }
+    }
     return { error: describeError(error), elapsedMs: elapsed() }
   }
+}
+
+/** Windows 宽容的文件路径同判：分隔符统一 + 大小写不敏感（`C:\a` 与 `c:/a` 视为同一路径）。 */
+function sameFilePath(left: string, right: string): boolean {
+  const normalize = (value: string): string =>
+    value
+      .trim()
+      .replace(/[\\/]+/g, '/')
+      .toLowerCase()
+  return normalize(left) === normalize(right)
 }
 
 async function fetchText(
@@ -353,6 +399,8 @@ export interface ClassIslandProviderStatus {
   lessonCount: number
   warnings: string[]
   error?: string
+  /** 本次数据来自默认路径回落（端点本身读不到）—— v0.2.4；不进 `warnings`（那是"被跳过的课程"） */
+  usedFallback?: boolean
   /** 桥接附带的当前课状态快照（v2；桥接未提供时为 undefined） */
   status?: ClassIslandBridgeStatus
 }
@@ -379,6 +427,10 @@ export class ClassIslandProvider implements IScheduleProvider {
   private lastLessons: Lesson[] = []
   /** 上次解析出的当前课状态（随 payload 缓存，`getStatus()` 透出） */
   private lastStatus: ClassIslandBridgeStatus | undefined
+  /** 上次读取失败的错误文案（日志分级用：错误变化才 warn，持续同一错误降为 debug） */
+  private lastReadError: string | undefined
+  /** 上次是否走了默认路径回落（回落 warn 只在状态翻转时记一次，稳态降为 debug） */
+  private lastUsedFallback = false
 
   constructor(options: ClassIslandSourceOptions) {
     this.options = options
@@ -457,9 +509,20 @@ export class ClassIslandProvider implements IScheduleProvider {
     if (read.raw === undefined) {
       const error = read.error ?? '未知错误'
       this.status = { ...this.status, ok: false, error }
-      this.options.logger?.debug('ClassIsland 桥接读取失败', { error, ...this.describe() })
+      // 日志按「错误是否变化」分级（v0.2.4）：同样的失败每 30 秒轮询一次，全量 warn 会刷屏；
+      // 首次失败 / 错误变化记 warn（这是用户可见的「桥接坏了」信号），持续同一错误只记 debug。
+      if (error !== this.lastReadError) {
+        this.options.logger?.warn('ClassIsland 桥接读取失败', { error, ...this.describe() })
+      } else {
+        this.options.logger?.debug('ClassIsland 桥接读取失败（与上次相同）', {
+          error,
+          ...this.describe(),
+        })
+      }
+      this.lastReadError = error
       return []
     }
+    this.lastReadError = undefined
 
     const { lessons, warnings } = this.parseSafely(read.raw)
     this.status = {
@@ -467,10 +530,31 @@ export class ClassIslandProvider implements IScheduleProvider {
       lastSyncAt: new Date().toISOString(),
       lessonCount: lessons.length,
       warnings,
+      // 回落成功 ≠ 一切正常：作为独立状态位透出（v0.2.4），不混进 `warnings`
+      //（那里语义是「被跳过的课程」）；UI / 诊断据此提示「端点与插件 outputPath 对不上」。
+      ...(read.usedFallback === true ? { usedFallback: true } : {}),
     }
-    if (warnings.length > 0) {
+    // 回落日志同样按「状态是否变化」分级：稳态回落（路径一直配错）只记 debug，
+    // 首次进入回落 / 从回落恢复记 warn / info，并带上端点原始失败原因。
+    if (read.usedFallback === true) {
+      if (!this.lastUsedFallback) {
+        this.options.logger?.warn('ClassIsland 桥接端点读取失败，已按默认路径回落读取', {
+          endpointError: read.endpointError,
+          ...this.describe(),
+        })
+      } else {
+        this.options.logger?.debug('ClassIsland 桥接持续走默认路径回落（端点仍读不到）', {
+          endpointError: read.endpointError,
+          ...this.describe(),
+        })
+      }
+    } else if (this.lastUsedFallback) {
+      this.options.logger?.info('ClassIsland 桥接端点恢复正常读取（不再回落）', this.describe())
+    }
+    this.lastUsedFallback = read.usedFallback === true
+    if (this.status.warnings.length > 0) {
       this.options.logger?.warn('ClassIsland 桥接数据存在被跳过的课程', {
-        count: warnings.length,
+        count: this.status.warnings.length,
         ...this.describe(),
       })
     }

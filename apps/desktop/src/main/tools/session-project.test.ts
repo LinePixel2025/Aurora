@@ -79,6 +79,37 @@ describe('createSessionProjectResolver', () => {
     expect(noGlobal.boundaryRoot('unbound')).toBeUndefined()
   })
 
+  it('boundaryRoot / workspaceDir 的 Work 模式回落（v18）：会话绑定 > 全局项目 > 模式工作目录', () => {
+    const workDir = resolve('top', 'work-dir')
+    const bare = settingsWith({ current: '', list: [] })
+    bare.modes.current = 'work'
+    bare.modes.work.workspaceDir = workDir
+    const resolver = createSessionProjectResolver(depsOf(bare))
+
+    expect(resolver.boundaryRoot('unbound')).toBe(workDir)
+    expect(resolver.workspaceDir('unbound')).toBe(workDir)
+
+    // 项目优先于模式工作目录（显式指定的当前项目盖过场景化缺省）
+    const withProject = settingsWith({
+      current: 'proj-global',
+      list: [project('proj-global', GLOBAL_ROOT)],
+    })
+    withProject.modes.current = 'work'
+    withProject.modes.work.workspaceDir = workDir
+    const resolver2 = createSessionProjectResolver(depsOf(withProject))
+    expect(resolver2.boundaryRoot('unbound')).toBe(GLOBAL_ROOT)
+
+    // 非 Work 模式不参与链；Work 模式但目录空白同样不参与
+    const classroom = settingsWith({ current: '', list: [] })
+    classroom.modes.work.workspaceDir = workDir
+    expect(createSessionProjectResolver(depsOf(classroom)).workspaceDir('unbound')).toBe(HOME)
+
+    const emptyWork = settingsWith({ current: '', list: [] })
+    emptyWork.modes.current = 'work'
+    emptyWork.modes.work.workspaceDir = '   '
+    expect(createSessionProjectResolver(depsOf(emptyWork)).workspaceDir('unbound')).toBe(HOME)
+  })
+
   it('workspaceDir：会话绑定项目 > 全局项目根 > workspaceDir > 主目录', () => {
     const settings = settingsWith(
       {

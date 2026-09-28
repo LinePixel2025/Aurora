@@ -125,6 +125,73 @@ describe('readClassIslandSource', () => {
     expect(result.error).toContain('503')
   })
 
+  it('file 源端点读不到时按默认路径回落（v0.2.4）', async () => {
+    const reads: string[] = []
+    const result = await readClassIslandSource(
+      {
+        source: 'file',
+        endpoint: 'D:\configured.json',
+        timeoutMs: 1000,
+        fallbackFilePath: 'D:\default\schedule.json',
+      },
+      {
+        readFile: async (path) => {
+          reads.push(path)
+          if (path === 'D:\configured.json') throw new Error('ENOENT')
+          return '{"ok":1}'
+        },
+      },
+    )
+    expect(result.raw).toBe('{"ok":1}')
+    expect(result.usedFallback).toBe(true)
+    expect(result.endpointError).toContain('ENOENT')
+    expect(reads).toEqual(['D:\configured.json', 'D:\default\schedule.json'])
+  })
+
+  it('端点本身就是默认路径时不重复回落（失败如实上报）', async () => {
+    let calls = 0
+    const result = await readClassIslandSource(
+      {
+        source: 'file',
+        endpoint: 'D:\default\schedule.json',
+        timeoutMs: 1000,
+        fallbackFilePath: 'D:\default\SCHEDULE.json',
+      },
+      {
+        readFile: async () => {
+          calls += 1
+          throw new Error('ENOENT')
+        },
+      },
+    )
+    expect(result.raw).toBeUndefined()
+    expect(result.usedFallback).toBeUndefined()
+    expect(result.error).toContain('ENOENT')
+    expect(calls).toBe(1)
+  })
+
+  it('http 源不走回落', async () => {
+    let calls = 0
+    const result = await readClassIslandSource(
+      {
+        source: 'http',
+        endpoint: 'http://127.0.0.1:1/schedule',
+        timeoutMs: 1000,
+        fallbackFilePath: 'D:\default\schedule.json',
+      },
+      {
+        fetchImpl: (async () => new Response('', { status: 503 })) as unknown as typeof fetch,
+        readFile: async () => {
+          calls += 1
+          return '{}'
+        },
+      },
+    )
+    expect(result.usedFallback).toBeUndefined()
+    expect(result.error).toContain('503')
+    expect(calls).toBe(0)
+  })
+
   it('http 源超时按 abort 处理（超时值被夹到下限以上）', async () => {
     const hanging = (async (_url: unknown, init?: { signal?: AbortSignal }) => {
       return new Promise<Response>((_resolve, reject) => {
