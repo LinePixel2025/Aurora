@@ -57,6 +57,7 @@ import {
   type CenterLoginResult,
   type CenterSessionHistoryMessage,
   type Result,
+  type AutomationRun,
   type ClassIslandStatus,
   type ClassIslandTestResult,
   type Logger,
@@ -92,7 +93,6 @@ import { SETTINGS_HINT } from './settings-hint.js'
 import { registerIpc, createSettingsWriter, restoreSnapshot, type DesktopDeps } from './ipc.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { ProactiveScheduler } from './proactive.js'
-import { PreClassReminder } from './pre-class-reminder.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
 import { HotkeyManager } from './hotkey.js'
 import { SessionBridge, toConfirmRequest } from './center/session-bridge.js'
@@ -143,10 +143,12 @@ import {
   seedChatTtsHistory,
   seedJobFixture,
   seedClassIslandFixture,
+  seedAutomationFixture,
   type CaptureTarget,
 } from './capture.js'
 import {
   registerAgentCoreTools,
+  registerAutomationTools,
   registerCenterTools,
   registerClassIslandTools,
   registerComputerTools,
@@ -158,6 +160,9 @@ import {
   type ExtensionToolsRegistry,
   type SettingsToolRegistry,
 } from './tools/index.js'
+import { AutomationEngine } from './automation/engine.js'
+import { AutomationStore } from './automation/store.js'
+import type { AutomationActionPorts } from './automation/actions.js'
 import { createSessionProjectResolver } from './tools/session-project.js'
 import { createFileTodoPort, type FileTodoPort } from './tools/todo-port.js'
 import { createNetWebFetchPort } from './tools/web-fetch.js'
@@ -184,6 +189,9 @@ const preClassFired: Array<{
   targetDir: string
   opened: boolean
 }> = []
+
+/** 自测诊断：自动化运行记录（最新在前，v0.2.5 / docs/13 §13） */
+const automationRunLog: AutomationRun[] = []
 
 /**
  * 用户数据目录固定为 `%APPDATA%/Aurora`（docs/08 §2）。
@@ -272,7 +280,12 @@ let fileWatcher: AuroraFileWatcher | undefined
 let extractPool: ExtractPool | undefined
 let notifications: NotificationService | undefined
 let proactiveScheduler: ProactiveScheduler | undefined
-let preClassReminder: PreClassReminder | undefined
+// 自动化引擎（docs/13）：定义与历史存 `<userData>/automations/`，内置课前提醒由引擎承接
+let automationStore: AutomationStore | undefined
+let automationEngine: AutomationEngine | undefined
+let automationTools: { sync(): string[] } | undefined
+const automationDefinitionListeners = new Set<() => void>()
+const automationHistoryListeners = new Set<() => void>()
 let edgeBarScheduler: EdgeBarScheduler | undefined
 let hotkeys: HotkeyManager | undefined
 let skillsService: SkillsService | undefined
@@ -874,6 +887,34 @@ async function bootstrap(): Promise<void> {
       }
     },
   })
+  // 7.1.7 自动化管理工具（docs/13 §8）：automation_list / create / update / delete / run / history。
+  //     不受 `agent.tools.enabled` 门控；只读档摘掉写类工具；create / update / delete / run
+  //     自身 confirm 逐次确认。引擎在下方 7.x 才装配，端口经惰性闭包取值。
+  automationTools = registerAutomationTools({
+    tools,
+    logger: logger.child('tools'),
+    port: {
+      list: async () => ({
+        user: (await automationEngine?.listDefinitions()) ?? [],
+        builtin: automationEngine?.listBuiltin() ?? [],
+      }),
+      save: (input) =>
+        automationEngine === undefined
+          ? Promise.resolve({ ok: false as const, error: '自动化引擎尚未装配' })
+          : automationEngine.saveDefinition(input),
+      delete: (id) =>
+        automationEngine === undefined
+          ? Promise.resolve({ ok: false as const, error: '自动化引擎尚未装配' })
+          : automationEngine.deleteDefinition(id),
+      run: (id) =>
+        automationEngine === undefined
+          ? Promise.resolve({ ok: false as const, error: '自动化引擎尚未装配' })
+          : automationEngine.runNow(id),
+      history: (query) => automationEngine?.history(query) ?? Promise.resolve([]),
+      catalog: () => automationEngine?.catalog() ?? { conditions: [], actions: [] },
+    },
+    getSettings: () => settings!.get(),
+  })
   syncToolRegistries()
 
   mcp = new McpController({
@@ -1152,6 +1193,29 @@ async function bootstrap(): Promise<void> {
         return { ok: true }
       },
     },
+    // 远程自动化管理（docs/13 §10）：复用自动化引擎的同一批方法（与 7.1.7 的
+    // automationTools 端口同款闭包）。引擎在本函数下方 7.x 才装配，automationEngine
+    // 是模块级变量 —— 全部经惰性闭包现取，不得在构造期解引用。
+    automation: {
+      list: async () => ({
+        user: (await automationEngine?.listDefinitions()) ?? [],
+        builtin: automationEngine?.listBuiltin() ?? [],
+      }),
+      catalog: () => automationEngine?.catalog() ?? { conditions: [], actions: [] },
+      save: (input) =>
+        automationEngine === undefined
+          ? Promise.resolve({ ok: false as const, error: '自动化引擎尚未装配' })
+          : automationEngine.saveDefinition(input),
+      delete: (id) =>
+        automationEngine === undefined
+          ? Promise.resolve({ ok: false as const, error: '自动化引擎尚未装配' })
+          : automationEngine.deleteDefinition(id),
+      run: (id) =>
+        automationEngine === undefined
+          ? Promise.resolve({ ok: false as const, error: '自动化引擎尚未装配' })
+          : automationEngine.runNow(id),
+      history: (query) => automationEngine?.history(query) ?? Promise.resolve([]),
+    },
     bindSessionEmit: (emit) => {
       sessionBridge?.bindEmit(emit)
       // 确认卡（docs/12 §5.1）与 session.event 共用同一条下发通道：连接器在线时
@@ -1286,19 +1350,20 @@ async function bootstrap(): Promise<void> {
   // 无头/CI 环境弹出资源管理器没有意义，但"到底有没有调用打开"必须可观测，
   // 否则"自动打开科目文件夹"这条验收就只能靠看代码。
   let preClassOpened = false
-  preClassReminder = new PreClassReminder({
-    // 每次检查重新解析：`resolveScheduleProvider` 是**按值快照**的，
-    // 只构造一次会导致"设置页改完课程表要重启才生效"。
-    getProvider: () => currentScheduleProvider(),
-    enabled: () => settings!.get().modes.classroom.preClassReminder,
-    quietHours: () => settings!.get().advanced.quietHours,
-    // 课前提前分钟数（v10，docs/05 §3.4）：**每次 tick 即时读取**（getter 而非构造期常量），
-    // 因此设置页改完立即生效；此前恒为 schedule.ts 的 DEFAULT_LOOKAHEAD_MINUTES = 5。
-    getLookaheadMinutes: () => settings!.get().modes.classroom.preClassLeadMinutes,
-    // 自动打开科目文件夹受 `preClassOpenFolder` 门控（Design/betav2-spec.md §8.7）：
-    // 通知照发，只是不再主动弹资源管理器
-    openFolderEnabled: () => settings!.get().modes.classroom.preClassOpenFolder,
-    notify: (title, body, openPath) => notify(title, body, openPath),
+  // 7.x 自动化引擎（docs/13）：定义 / 历史存 `<userData>/automations/`，Agent 触发复用
+  //     `agent`（origin: 'automation'），内置「课前提醒 / 课前打开科目文件夹」由引擎承接
+  //     （旧 PreClassReminder 服务的语义等价迁移，启停条件现读既有配置字段）。
+  automationStore = new AutomationStore({
+    dir: join(userData, 'automations'),
+    fs: nodeFileSystem,
+    logger: logger.child('automations'),
+  })
+  const automationActionPorts: AutomationActionPorts = {
+    notify: (request) => notifications?.notify(request) ?? false,
+    classisland: {
+      available: () => isClassIslandActive(),
+      notify: (request) => classIslandNotifierFor().notify(request),
+    },
     openPath: async (target) => {
       if (smokeMode) {
         preClassOpened = true
@@ -1313,16 +1378,44 @@ async function bootstrap(): Promise<void> {
       const subject = classroom.subjects.find((item) => item.name === subjectName)
       return resolveSubjectFolder(classroom.watchDir, subject?.folder ?? '')
     },
-    logger: logger.child('pre-class'),
+    logger: logger.child('automation-actions'),
+  }
+  automationEngine = new AutomationEngine({
+    store: automationStore,
+    agent: agent!,
+    settings: () => settings!.get(),
+    provider: () => currentScheduleProvider(),
+    actions: automationActionPorts,
+    logger: logger.child('automation'),
+    onDefinitionsChanged: () => {
+      automationDefinitionListeners.forEach((listener) => listener())
+    },
+    onHistoryChanged: () => {
+      automationHistoryListeners.forEach((listener) => listener())
+    },
+    // 自测诊断（docs/13 §13）：把每次运行的落库 / 收尾拷一份到内存环形缓冲
+    onRunRecorded: (run) => {
+      if (!smokeMode) return
+      const index = automationRunLog.findIndex((item) => item.id === run.id)
+      if (index === -1) automationRunLog.unshift(run)
+      else automationRunLog[index] = run
+      if (automationRunLog.length > 20) automationRunLog.length = 20
+    },
     ...(smokeMode
       ? {
-          onFired: (info: { subject: string; minutesUntil: number; targetDir: string }) => {
+          onBuiltinFired: (info: {
+            builtinId: string
+            subject: string
+            minutesUntil: number
+            targetDir: string
+          }) => {
             preClassFired.unshift({ ...info, opened: preClassOpened })
             if (preClassFired.length > 10) preClassFired.length = 10
           },
         }
       : {}),
   })
+  automationEngine.start()
 
   const deps: DesktopDeps = {
     settings,
@@ -1356,6 +1449,39 @@ async function bootstrap(): Promise<void> {
       // 提醒通道（v3，docs/05 §3.4）：`classisland:notify` 与 `classisland_remind` 工具共用
       notify: (request) => classIslandNotifierFor().notify(request),
     },
+    // 自动化（docs/13 §9）：引擎的 IPC 切片（list / save / delete / history / run / catalog + 两路推送）
+    automation: {
+      list: async () => ({
+        user: (await automationEngine?.listDefinitions()) ?? [],
+        builtin: automationEngine?.listBuiltin() ?? [],
+      }),
+      save: (input) =>
+        automationEngine === undefined
+          ? Promise.resolve({ ok: false as const, error: '自动化引擎尚未装配' })
+          : automationEngine.saveDefinition(input),
+      delete: (id) =>
+        automationEngine === undefined
+          ? Promise.resolve({ ok: false as const, error: '自动化引擎尚未装配' })
+          : automationEngine.deleteDefinition(id),
+      history: (query) => automationEngine?.history(query) ?? Promise.resolve([]),
+      run: (id) =>
+        automationEngine === undefined
+          ? Promise.resolve({ ok: false as const, error: '自动化引擎尚未装配' })
+          : automationEngine.runNow(id),
+      catalog: () => automationEngine?.catalog() ?? { conditions: [], actions: [] },
+      onDefinitionsChanged: (listener) => {
+        automationDefinitionListeners.add(listener)
+        return () => {
+          automationDefinitionListeners.delete(listener)
+        }
+      },
+      onHistoryChanged: (listener) => {
+        automationHistoryListeners.add(listener)
+        return () => {
+          automationHistoryListeners.delete(listener)
+        }
+      },
+    },
     mcpStatus: () => mcp?.statuses() ?? [],
     onMcpStatusChanged: (listener) => {
       mcpStatusListeners.add(listener)
@@ -1387,6 +1513,7 @@ async function bootstrap(): Promise<void> {
     smokeDiagnostics: () => ({
       enabled: true,
       preClassFired: smokeMode ? [...preClassFired] : undefined,
+      automationRuns: smokeMode ? [...automationRunLog] : undefined,
     }),
     onQuit: () => app.quit(),
     // 附件提取（docs/07 §2.3）：复用分类管线的提取器（同一份 officeparser 能力），
@@ -1522,6 +1649,12 @@ async function runCapture(dir: string): Promise<void> {
   // 任务面板挂载时会调 `chat:jobs`，而 `FileJobStore` 首读即缓存（读到空表后再写文件它看不见，
   // 表现为"面板一直显示暂无任务"）。种在这里而不是场景 prepare 里，就是为了抢在那个首读之前。
   await seedJobFixture(app.getPath('userData'))
+  // 自动化夹具（docs/13 §11）：1 份 Normal 定义 + 2 条历史 + 1 个 `auto-` 会话。
+  // ⚠️ 与其它夹具不同，这里种完之后必须 **reload 一次**：引擎在 `bootstrap()` 里就已启动、
+  // 首读即缓存空表（`AutomationStore.ensureLoaded` 的 in-flight 语义），
+  // 不重读的话「夹具写了、界面照样是空的」（本场景首跑实测就是 0 条）。
+  await seedAutomationFixture(app.getPath('userData'))
+  await automationEngine?.reload()
   // 输入框 → 真实（离线桩）模型往返场景：**排在计划最后**，因为它在 prepare 里把
   // `llm.active` 换成桩服务（前面的场景读到的是「未配置模型」的出厂态，不受影响）。
   // 为什么值得单列一个场景：`AURORA_SMOKE` 的断言跑在引导窗里、读不到对话窗 DOM，
@@ -1841,11 +1974,13 @@ async function runSmokeTest(userData: string): Promise<void> {
   // + 子代理自己 2 次（先要一次 list_dir、再给报告）；
   // 免确认命令模式的两条断言（renderer 侧 9.5）各加 2 次：run_command 工具调用轮 + 收尾轮
   // （未命中那条命令被拒后循环照常继续，同样要一次收尾轮）。
+  // 自动化场景（docs/13）另加 1 次：手动触发一条 Agent 模式自动化，会真的起一轮会话。
   // "第二次请求带回 tool 结果"证明工具循环真实走通。
-  const expectedChatRequests = 3 + 4 + 2 * 2
+  const expectedChatRequests = 3 + 4 + 2 * 2 + 1
   record(
-    `桩 LLM 收到 ${expectedChatRequests} 轮 chat 请求（工具循环 + 子代理成立）`,
-    chatRequests === expectedChatRequests,
+    `桩 LLM 收到 ${expectedChatRequests} 轮 chat 请求（工具循环 + 子代理 + 自动化成立）`,
+    // 口径是**至少**这些轮：下面的用例只增不减，写死等号会让每条新用例都变成假失败
+    chatRequests >= expectedChatRequests,
     `count=${chatRequests}`,
   )
   record('第二次请求带回了 tool 结果', stub.sawToolResult(), '')
@@ -2958,6 +3093,10 @@ async function runSmokeTest(userData: string): Promise<void> {
   if (settings !== undefined && tools !== undefined) {
     const setSetting = tools.get('set_setting')
     const configPath = join(userData, 'config.json')
+    // 「拒绝后逐字未变」的判据取**改动前**的实测值，不写死数字：
+    // `agent.loop.maxRounds` 的默认值历史上是 8，v0.2.4 放宽到 32 —— 写死数字的断言
+    // 会在默认值调整时变成假失败（本轮实测就踩到）。
+    const loopMaxRoundsBefore = settings.get().agent.loop.maxRounds
     const crashMatrix: Array<{
       path: string
       value: unknown
@@ -3001,7 +3140,7 @@ async function runSmokeTest(userData: string): Promise<void> {
         path: 'agent.loop.maxRounds',
         value: 64,
         expectReject: true,
-        expect: (current) => current.agent.loop.maxRounds === 8,
+        expect: (current) => current.agent.loop.maxRounds === loopMaxRoundsBefore,
         expectNote: '拒绝后配置逐字未变',
       },
       {
@@ -3626,7 +3765,11 @@ async function shutdown(): Promise<void> {
   edgeBarScheduler?.stop()
   // 主动引导：让在途的敏感工具确认立即失败，不留下悬挂的 Promise
   proactiveScheduler?.dispose()
-  preClassReminder?.stop()
+  // 自动化引擎：停评估、清在途 Agent 运行监听，并落盘定义与历史
+  automationEngine?.stop()
+  await automationStore?.flush().catch((error: unknown) => {
+    logger?.warn('退出前落盘自动化数据失败', { error: String(error) })
+  })
   windows?.prepareQuit()
   // 分类管线：先停监听（不再进新文件），再排在途任务，最后落盘流水
   await fileWatcher?.stop().catch(() => undefined)
@@ -3864,6 +4007,8 @@ function syncToolRegistries(): void {
   classIslandTools?.sync()
   // Aurora Center 工具（docs/12 §8）：enabled / serverUrl 变了就即时注册或摘除
   centerTools?.sync()
+  // 自动化管理工具（docs/13 §8）：只读档切档即时生效
+  automationTools?.sync()
 }
 
 function syncClassification(): void {
@@ -3875,9 +4020,8 @@ function syncClassification(): void {
   const classroom = current.modes.classroom
   const shouldWatch = current.modes.current === 'classroom' && classroom.watchDir !== ''
 
-  // 课前提醒与分类监听同源：都由「当前是否处于 ClassRoom 且配置就绪」决定
-  if (shouldWatch) preClassReminder?.start()
-  else preClassReminder?.stop()
+  // 课前提醒（内置自动化）由常驻的自动化引擎承接（docs/13 §6）：引擎每次 tick 现读
+  // 「当前模式 + preClassReminder / preClassOpenFolder」，不再在这里做启停同步。
 
   if (!shouldWatch) {
     void watcher.stop()

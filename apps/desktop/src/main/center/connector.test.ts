@@ -630,6 +630,168 @@ describe('CenterConnector · 远程会话管理命令（docs/12 §6.3）', () =>
   })
 })
 
+describe('CenterConnector · 远程自动化命令（docs/13 §10）', () => {
+  interface AutomationSpies {
+    list: ReturnType<typeof vi.fn>
+    catalog: ReturnType<typeof vi.fn>
+    save: ReturnType<typeof vi.fn>
+    delete: ReturnType<typeof vi.fn>
+    run: ReturnType<typeof vi.fn>
+    history: ReturnType<typeof vi.fn>
+  }
+
+  const DEFINITION = {
+    id: 'am-1',
+    name: '每天问好',
+    enabled: true,
+    mode: 'agent' as const,
+    trigger: { kind: 'daily' as const, params: { at: '08:00' } },
+    prompt: '早安汇总',
+    createdAt: '2026-09-28T00:00:00.000Z',
+    updatedAt: '2026-09-28T00:00:00.000Z',
+  }
+
+  /** 装好 automation 端口的 harness（默认全部成功，测试可改返回值） */
+  function makeAutomatedConnector(overrides?: Partial<CenterConfig>): {
+    harness: Harness
+    spies: AutomationSpies
+  } {
+    const harness = makeConnector(overrides)
+    const spies: AutomationSpies = {
+      list: vi.fn(async () => ({ user: [DEFINITION], builtin: [] })),
+      catalog: vi.fn(() => ({ conditions: [], actions: [] })),
+      save: vi.fn(async () => ({ ok: true as const, definition: DEFINITION })),
+      delete: vi.fn(async () => ({ ok: true })),
+      run: vi.fn(async () => ({ ok: true as const, runId: 'auto-1' })),
+      history: vi.fn(async () => []),
+    }
+    harness.deps.automation = {
+      list: spies.list,
+      catalog: spies.catalog,
+      save: spies.save,
+      delete: spies.delete,
+      run: spies.run,
+      history: spies.history,
+    }
+    return { harness, spies }
+  }
+
+  async function sendCmd(socket: FakeSocket, cmd: Record<string, unknown>): Promise<void> {
+    socket.emit('message', JSON.stringify({ type: 'cmd', cmd }))
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
+  function openSocket(harness: Harness): FakeSocket {
+    harness.connector.start()
+    vi.advanceTimersByTime(1)
+    const socket = harness.lastSocket()
+    socket.emit('open')
+    return socket
+  }
+
+  it('automation.list：转发并回 AutomationListResult；catalog 回组件目录', async () => {
+    const { harness, spies } = makeAutomatedConnector()
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, { kind: 'automation.list', requestId: 'a-1' })
+    expect(spies.list).toHaveBeenCalledTimes(1)
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'a-1',
+      ok: true,
+      data: { user: [{ id: 'am-1', name: '每天问好' }], builtin: [] },
+    })
+
+    await sendCmd(socket, { kind: 'automation.catalog', requestId: 'a-2' })
+    expect(spies.catalog).toHaveBeenCalledTimes(1)
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'a-2',
+      ok: true,
+      data: { conditions: [], actions: [] },
+    })
+  })
+
+  it('automation.save：definition 原样透传，成功回 data=definition；失败回 error 文案', async () => {
+    const { harness, spies } = makeAutomatedConnector()
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, {
+      kind: 'automation.save',
+      requestId: 'a-3',
+      definition: DEFINITION,
+    })
+    expect(spies.save).toHaveBeenCalledWith(DEFINITION)
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'a-3',
+      ok: true,
+      data: { id: 'am-1', name: '每天问好' },
+    })
+
+    spies.save.mockResolvedValue({ ok: false as const, error: '名称不能为空' })
+    await sendCmd(socket, { kind: 'automation.save', requestId: 'a-4', definition: {} })
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'a-4',
+      ok: false,
+      error: '名称不能为空',
+    })
+  })
+
+  it('automation.delete / run：各自分派；run 成功回 data={ runId }', async () => {
+    const { harness, spies } = makeAutomatedConnector()
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, { kind: 'automation.delete', requestId: 'a-5', id: 'am-1' })
+    expect(spies.delete).toHaveBeenCalledWith('am-1')
+    expect(socket.lastMessage()).toMatchObject({ type: 'result', requestId: 'a-5', ok: true })
+
+    await sendCmd(socket, { kind: 'automation.run', requestId: 'a-6', id: 'am-1' })
+    expect(spies.run).toHaveBeenCalledWith('am-1')
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'a-6',
+      ok: true,
+      data: { runId: 'auto-1' },
+    })
+  })
+
+  it('automation.history：query 透传（automationId / mode / limit）', async () => {
+    const { harness, spies } = makeAutomatedConnector()
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, {
+      kind: 'automation.history',
+      requestId: 'a-7',
+      automationId: 'am-1',
+      mode: 'agent',
+      limit: 20,
+    })
+    expect(spies.history).toHaveBeenCalledWith({ automationId: 'am-1', mode: 'agent', limit: 20 })
+
+    // 缺省字段不进 query（与协议的「只增不改」一致）
+    await sendCmd(socket, { kind: 'automation.history', requestId: 'a-8' })
+    expect(spies.history).toHaveBeenLastCalledWith({})
+  })
+
+  it('allowRemoteSession=false：自动化命令被本地闸门拒绝（E_REMOTE_DISABLED）', async () => {
+    const { harness, spies } = makeAutomatedConnector({ allowRemoteSession: false })
+    const socket = openSocket(harness)
+    await sendCmd(socket, { kind: 'automation.list', requestId: 'a-9' })
+    expect(spies.list).not.toHaveBeenCalled()
+    expect(socket.lastMessage()).toMatchObject({ ok: false, error: 'E_REMOTE_DISABLED' })
+  })
+
+  it('automation 端口未注入：回 E_SESSION_NOT_FOUND（老装配器兼容）', async () => {
+    const harness = makeConnector()
+    const socket = openSocket(harness)
+    await sendCmd(socket, { kind: 'automation.list', requestId: 'a-10' })
+    expect(socket.lastMessage()).toMatchObject({ ok: false, error: 'E_SESSION_NOT_FOUND' })
+  })
+})
+
 describe('CenterConnector · 确认请求补发队列（docs/12 §5 第 4 步）', () => {
   function openSocket(harness: Harness): FakeSocket {
     harness.connector.start()

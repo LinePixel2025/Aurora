@@ -11,16 +11,18 @@ import ConsoleView from './views/ConsoleView.vue'
 import AdminView from './views/AdminView.vue'
 import DeviceView from './views/DeviceView.vue'
 import FilesView from './views/FilesView.vue'
+import AutomationsView from './views/AutomationsView.vue'
 import { boot, booted, currentUser, logout, wsStatus } from './store'
 
-type RouteName = 'login' | 'console' | 'admin' | 'files' | 'device'
+type RouteName = 'login' | 'console' | 'admin' | 'files' | 'automations' | 'device'
 
 const route = ref<RouteName>(parseRoute())
 
 function parseRoute(): RouteName {
-  const hash = window.location.hash.replace(/^#/, '').split('?')[0]
+  const hash = window.location.hash.replace(/^#/, '').split('?')[0] ?? ''
   if (hash.startsWith('/admin')) return 'admin'
   if (hash.startsWith('/files')) return 'files'
+  if (hash.startsWith('/automations')) return 'automations'
   if (hash.startsWith('/device')) return 'device'
   if (hash.startsWith('/login')) return 'login'
   return 'console'
@@ -82,6 +84,13 @@ const wsLabel = computed(() => {
           <a class="brand" href="#/">Aurora Center</a>
           <nav class="topbar-right">
             <a class="topbar-link" :class="{ active: route === 'console' }" href="#/">控制台</a>
+            <a
+              class="topbar-link"
+              :class="{ active: route === 'automations' }"
+              href="#/automations"
+            >
+              自动化
+            </a>
             <a class="topbar-link" :class="{ active: route === 'files' }" href="#/files">文件</a>
             <a
               v-if="currentUser.role === 'admin'"
@@ -99,6 +108,7 @@ const wsLabel = computed(() => {
       </header>
       <main class="page">
         <ConsoleView v-if="route === 'console'" />
+        <AutomationsView v-else-if="route === 'automations'" />
         <FilesView v-else-if="route === 'files'" />
         <AdminView v-else-if="route === 'admin' && currentUser.role === 'admin'" />
       </main>

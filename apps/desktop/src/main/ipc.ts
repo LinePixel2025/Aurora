@@ -67,9 +67,15 @@ import {
   type UpdateState,
   type WindowName,
   type WindowState,
+  type AutomationCatalog,
+  type AutomationDefinition,
+  type AutomationHistoryQuery,
+  type AutomationListResult,
+  type AutomationRun,
 } from '@aurora/shared'
 import type {
   AgentHost,
+  AutomationControllerLike,
   ClassIslandControllerLike,
   ClassificationControllerLike,
   GuideRunnerLike,
@@ -136,6 +142,8 @@ export interface DesktopDeps {
   updater: UpdateControllerLike
   /** Aurora Center 连接（center:status，docs/12）。未装配时（理论上不会）按未启用回答 */
   center?: CenterConnectionLike
+  /** 自动化引擎（automation:*，docs/13 §9）。未装配时六条通道按 E_INVALID_STATE 如实报错 */
+  automation?: AutomationControllerLike
   logger: Logger
   paths: { userData: string; logs: string; config: string; builtinSkills: string }
   isDev: boolean
@@ -676,6 +684,52 @@ export function registerIpc(deps: DesktopDeps): () => void {
     () => deps.center?.deviceLoginCancel() ?? Promise.resolve(ok(true)),
   )
 
+  // ───────────────────────── 自动化（docs/13 §9） ─────────────────────────
+
+  // 未装配（精简场景）时如实报错（E_INVALID_STATE），而不是静默成功让界面空转。
+  handle<AutomationListResult>(IPC.automation.list, async () => {
+    if (deps.automation === undefined) return err('E_INVALID_STATE', '自动化引擎尚未装配')
+    return ok(await deps.automation.list())
+  })
+  handle<AutomationDefinition>(IPC.automation.save, async (definition: unknown) => {
+    if (deps.automation === undefined) {
+      return err('E_INVALID_STATE', '自动化引擎尚未装配')
+    }
+    const result = await deps.automation.save(definition)
+    if (!result.ok) return err('E_INVALID_ARGUMENT', result.error)
+    return ok(result.definition)
+  })
+  handle<boolean>(IPC.automation.delete, async (request: { id: string }) => {
+    if (deps.automation === undefined) return err('E_INVALID_STATE', '自动化引擎尚未装配')
+    const id =
+      typeof (request as { id?: unknown })?.['id'] === 'string'
+        ? (request as { id: string }).id
+        : ''
+    const result = await deps.automation.delete(id)
+    if (!result.ok) return err('E_INVALID_STATE', result.error ?? '删除失败')
+    return ok(true)
+  })
+  handle<AutomationRun[]>(IPC.automation.history, async (request: unknown) => {
+    if (deps.automation === undefined) return err('E_INVALID_STATE', '自动化引擎尚未装配')
+    const query =
+      typeof request === 'object' && request !== null ? (request as AutomationHistoryQuery) : {}
+    return ok(await deps.automation.history(query))
+  })
+  handle<{ runId: string }>(IPC.automation.run, async (request: { id: string }) => {
+    if (deps.automation === undefined) return err('E_INVALID_STATE', '自动化引擎尚未装配')
+    const id =
+      typeof (request as { id?: unknown })?.['id'] === 'string'
+        ? (request as { id: string }).id
+        : ''
+    const result = await deps.automation.run(id)
+    if (!result.ok) return err('E_INVALID_STATE', result.error)
+    return ok({ runId: result.runId })
+  })
+  handle<AutomationCatalog>(IPC.automation.catalog, async () => {
+    if (deps.automation === undefined) return err('E_INVALID_STATE', '自动化引擎尚未装配')
+    return ok(deps.automation.catalog())
+  })
+
   // ───────────────────────── 更新（docs/09） ─────────────────────────
 
   handle<UpdateState>(IPC.update.getState, () => ok(deps.updater.getState()))
@@ -737,6 +791,15 @@ export function registerIpc(deps: DesktopDeps): () => void {
     deps.center?.onDeviceLoginResult((result) => {
       broadcast(IPC.center.deviceLoginResult, result)
     }) ?? (() => {})
+  // 自动化定义 / 历史变化（docs/13 §9）：多窗口同步靠这两个推送重拉
+  const offAutomationDefinitions =
+    deps.automation?.onDefinitionsChanged(() => {
+      broadcast(IPC.automation.changed, undefined)
+    }) ?? (() => {})
+  const offAutomationHistory =
+    deps.automation?.onHistoryChanged(() => {
+      broadcast(IPC.automation.historyChanged, undefined)
+    }) ?? (() => {})
 
   return () => {
     for (const [channel] of handlers) ipcMain.removeHandler(channel)
@@ -752,6 +815,8 @@ export function registerIpc(deps: DesktopDeps): () => void {
     offUpdate()
     offHotkey()
     offDeviceLogin()
+    offAutomationDefinitions()
+    offAutomationHistory()
   }
 }
 

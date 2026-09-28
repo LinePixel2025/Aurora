@@ -149,6 +149,17 @@ const CHANNELS = {
     deviceLoginResult: 'center:deviceLoginResult',
     deviceLoginCancel: 'center:deviceLoginCancel',
   },
+  // 自动化（docs/13 §9）：与 shared 契约同构，编译期双向断言会兜住
+  automation: {
+    list: 'automation:list',
+    save: 'automation:save',
+    delete: 'automation:delete',
+    history: 'automation:history',
+    run: 'automation:run',
+    catalog: 'automation:catalog',
+    changed: 'automation:changed',
+    historyChanged: 'automation:historyChanged',
+  },
 } as const
 
 /**

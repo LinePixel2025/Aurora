@@ -83,6 +83,11 @@ export interface SmokeDiagnostics {
     /** 是否已调用过打开目录 */
     opened: boolean
   }>
+  /**
+   * 自动化运行记录快照（最新在前，v0.2.5 / docs/13 §13）：自测据此断言
+   * 「触发 → 落历史 → Agent 会话收尾」这条链路真的跑通（而不是只看日志）。
+   */
+  automationRuns?: AutomationRun[]
 }
 
 // ───────────────────────── 设置 ─────────────────────────
@@ -142,6 +147,8 @@ export interface SettingsPatch {
    * 主进程合并时还会运行期剥一次（防构造出的 patch 洗掉已存密文）。
    */
   center?: Omit<Partial<Settings['center']>, 'tokenEnc'>
+  /** 自动化总开关（v19，docs/13 §2.2）：定义与历史不进配置，这里只有这一个闸门 */
+  automations?: Partial<Settings['automations']>
 }
 
 /** 敏感字段路径 → 明文值；由主进程加密后落盘（docs/08 §2）。 */
@@ -658,6 +665,115 @@ export interface ClassificationCorrection {
   subject: string
 }
 
+// ───────────────────────── 自动化（docs/13） ─────────────────────────
+
+/** 自动化模式：agent = 触发后跑一次完整 Agent 会话；normal = 顺序执行预设操作组件 */
+export type AutomationMode = 'agent' | 'normal'
+
+/** 触发器类型：调度类（daily / interval）+ 课堂条件类（依赖课程表，docs/13 §4.2） */
+export type AutomationTriggerKind =
+  'daily' | 'interval' | 'pre-class' | 'class-start' | 'pre-end' | 'class-end' | 'next-lesson'
+
+/** 操作组件类型（Normal Mode 的封闭能力集，docs/13 §5） */
+export type AutomationActionKind = 'system-notify' | 'classisland-remind' | 'open-folder'
+
+/** 触发器参数（按 kind 取子集；宽容 JSON 形状，主进程评估时逐字段校验） */
+export interface AutomationTrigger {
+  kind: AutomationTriggerKind
+  params: Record<string, unknown>
+}
+
+/** 操作组件调用（Normal Mode 顺序执行） */
+export interface AutomationAction {
+  kind: AutomationActionKind
+  params: Record<string, unknown>
+}
+
+/** 一份自动化定义（用户自建；内置自动化是引擎硬编码的只读实例，见 docs/13 §6） */
+export interface AutomationDefinition {
+  id: string
+  name: string
+  enabled: boolean
+  mode: AutomationMode
+  trigger: AutomationTrigger
+  /** Agent Mode 的任务指令（mode === 'agent' 时必填） */
+  prompt?: string
+  /** Normal Mode 的操作组件列表（mode === 'normal' 时非空） */
+  actions?: AutomationAction[]
+  createdAt: string
+  updatedAt: string
+}
+
+export type AutomationRunStatus = 'running' | 'success' | 'failed' | 'interrupted'
+
+/** 一次自动化运行（Normal 只记触发时间与状态，不落操作明细；Agent 带 sessionId 供对话回放） */
+export interface AutomationRun {
+  id: string
+  automationId: string
+  automationName: string
+  mode: AutomationMode
+  status: AutomationRunStatus
+  /** ISO 时间戳 */
+  triggeredAt: string
+  finishedAt?: string
+  durationMs?: number
+  /** Agent Mode：本次会话 id（= runId，`auto-` 前缀），经 `chat:history` 回放对话 */
+  sessionId?: string
+  error?: string
+}
+
+/** 触发器 / 操作组件的表单元数据（主进程 catalog 提供，编辑器与 Center 网页共用） */
+export interface AutomationDescriptorField {
+  key: string
+  label: string
+  type: 'text' | 'number' | 'time' | 'weekdays' | 'select'
+  min?: number
+  max?: number
+  step?: number
+  options?: Array<{ value: string; label: string }>
+  placeholder?: string
+  hint?: string
+}
+
+/** 条件（触发器）组件描述符 */
+export interface AutomationConditionDescriptor {
+  kind: AutomationTriggerKind
+  label: string
+  description: string
+  fields: AutomationDescriptorField[]
+  /** true = 依赖课程表数据（manual / classisland 皆可；无课表数据时在 UI 标记不可用） */
+  requiresSchedule: boolean
+}
+
+/** 操作组件描述符 */
+export interface AutomationActionDescriptor {
+  kind: AutomationActionKind
+  label: string
+  description: string
+  fields: AutomationDescriptorField[]
+  /** true = 依赖 ClassIsland 桥接（未配置时 UI 不允许选，docs/13 §5） */
+  requiresClassIsland: boolean
+  /** 当前环境是否可用（ClassIsland 未配置时 classisland-remind 为 false） */
+  available: boolean
+}
+
+export interface AutomationCatalog {
+  conditions: AutomationConditionDescriptor[]
+  actions: AutomationActionDescriptor[]
+}
+
+export interface AutomationListResult {
+  user: AutomationDefinition[]
+  builtin: AutomationDefinition[]
+}
+
+export interface AutomationHistoryQuery {
+  automationId?: string
+  mode?: AutomationMode
+  /** 默认 50，上限 200 */
+  limit?: number
+}
+
 // ───────────────────────── 敏感工具确认（docs/06 §5） ─────────────────────────
 
 /**
@@ -678,8 +794,11 @@ export interface SensitiveToolRequest {
 export interface SendMessageRequest {
   sessionId: string
   text: string
-  /** 系统提示词会被注入的来源窗口，用于日志与后续多窗口路由；'center' = 远程会话（docs/12） */
-  origin: WindowName | 'center'
+  /**
+   * 系统提示词会被注入的来源窗口，用于日志与后续多窗口路由；
+   * 'center' = 远程会话（docs/12）；'automation' = 自动化触发（docs/13 §7，无人值守）。
+   */
+  origin: WindowName | 'center' | 'automation'
   /**
    * 附件绝对路径列表（拖拽发送，docs/07 §2.3）。
    * 主进程用 `extract.ts` 提取文本后拼进本轮用户消息；提取失败按降级处理，不阻断发送。
@@ -858,8 +977,8 @@ export interface AgentJob {
   sessionId: string
   requestId?: string
   status: AgentJobStatus
-  /** `center` = 由 Aurora Center 远程会话发起（docs/12 §5） */
-  origin: 'chat' | 'edge-bar' | 'resume' | 'center'
+  /** `center` = 由 Aurora Center 远程会话发起（docs/12 §5）；`automation` = 自动化触发（docs/13） */
+  origin: 'chat' | 'edge-bar' | 'resume' | 'center' | 'automation'
   /** 本 job 的用户消息原文（续跑不再重复落盘，靠它还原上下文） */
   text: string
   /** 已经跑到第几轮（从 0 起） */
@@ -1300,5 +1419,27 @@ export interface AuroraApi {
     onDeviceLoginResult(listener: (result: CenterDeviceLoginResult) => void): () => void
     /** 取消在途的设备授权轮询（设置页关闭时调用；幂等，没有在途轮询时是 no-op） */
     deviceLoginCancel(): Promise<Result<boolean>>
+  }
+  /** 自动化（docs/13 §9）：定义 CRUD + 历史 + 手动触发 + 组件目录 */
+  automation: {
+    /** 拉定义（user = 自建；builtin = 内置，只读启停走 settings:update） */
+    list(): Promise<Result<AutomationListResult>>
+    /**
+     * 新建（id 为空）/ 修改一份自动化。主进程做 catalog 之外组件与参数的合法化校验，
+     * 非法组件回 `E_INVALID_ARGUMENT`（UI 由 catalog 驱动，正常路径到不了）。
+     */
+    save(definition: AutomationDefinition): Promise<Result<AutomationDefinition>>
+    /** 删除一份自建自动化（内置不可删，回 `E_INVALID_STATE`） */
+    delete(request: { id: string }): Promise<Result<boolean>>
+    /** 运行历史（triggeredAt 倒序；limit 默认 50、上限 200） */
+    history(request?: AutomationHistoryQuery): Promise<Result<AutomationRun[]>>
+    /** 手动触发一次（Agent / Normal 皆可）；返回 runId（Agent 模式下即会话 id） */
+    run(request: { id: string }): Promise<Result<{ runId: string }>>
+    /** 组件目录（触发器 + 操作的表单元数据，available 现取） */
+    catalog(): Promise<Result<AutomationCatalog>>
+    /** 定义变化推送（on/off 成对） */
+    onChanged(listener: () => void): () => void
+    /** 运行记录落库 / 状态变化推送（on/off 成对） */
+    onHistoryChanged(listener: () => void): () => void
   }
 }

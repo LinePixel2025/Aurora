@@ -73,6 +73,16 @@ export {
   FolderSearch,
   // 子代理（独立页面）
   Bot,
+  // 自动化（独立页面，docs/13）：入口 / 编辑器 / 历史 / 启停
+  Workflow,
+  History,
+  Play,
+  Pencil,
+  Plus,
+  Power,
+  Timer,
+  BellRing,
+  FolderOpenDot,
   // ClassIsland 联动
   School,
   CalendarClock,

@@ -7,6 +7,11 @@
 import type {
   CenterConnectionStatus,
   AgentEvent,
+  AutomationCatalog,
+  AutomationDefinition,
+  AutomationHistoryQuery,
+  AutomationListResult,
+  AutomationRun,
   CenterDeviceLoginRequest,
   CenterDeviceLoginResult,
   CenterDeviceLoginStarted,
@@ -262,6 +267,22 @@ export interface ClassIslandControllerLike {
 export interface SessionListLike {
   listSessions(): Promise<ChatSessionSummary[]>
   createSession(): Promise<string>
+}
+
+/** 自动化（docs/13 §9）：引擎（`main/automation/engine.ts`）暴露给 IPC 的最小面 */
+export interface AutomationControllerLike {
+  list(): Promise<AutomationListResult>
+  save(
+    input: unknown,
+  ): Promise<{ ok: true; definition: AutomationDefinition } | { ok: false; error: string }>
+  delete(id: string): Promise<{ ok: boolean; error?: string }>
+  history(query?: AutomationHistoryQuery): Promise<AutomationRun[]>
+  run(id: string): Promise<{ ok: true; runId: string } | { ok: false; error: string }>
+  catalog(): AutomationCatalog
+  /** 定义变化（IPC 层广播 `automation:changed`） */
+  onDefinitionsChanged(listener: () => void): () => void
+  /** 运行记录变化（IPC 层广播 `automation:historyChanged`） */
+  onHistoryChanged(listener: () => void): () => void
 }
 
 /** 自动更新（docs/09）：主进程用 UpdateService，IPC 只依赖这个最小面 */

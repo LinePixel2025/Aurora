@@ -174,6 +174,17 @@ const api: AuroraApi = {
     onDeviceLoginResult: (listener) => subscribe(IPC.center.deviceLoginResult, listener),
     deviceLoginCancel: () => invoke(IPC.center.deviceLoginCancel),
   },
+  // 自动化（docs/13 §9）：定义 CRUD + 历史 + 手动触发 + 组件目录
+  automation: {
+    list: () => invoke(IPC.automation.list),
+    save: (definition) => invoke(IPC.automation.save, definition),
+    delete: (request) => invoke(IPC.automation.delete, request),
+    history: (request) => invoke(IPC.automation.history, request),
+    run: (request) => invoke(IPC.automation.run, request),
+    catalog: () => invoke(IPC.automation.catalog),
+    onChanged: (listener) => subscribe(IPC.automation.changed, listener),
+    onHistoryChanged: (listener) => subscribe(IPC.automation.historyChanged, listener),
+  },
 }
 
 contextBridge.exposeInMainWorld('aurora', api)

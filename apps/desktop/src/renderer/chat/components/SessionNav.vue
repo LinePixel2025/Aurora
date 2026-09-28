@@ -32,6 +32,7 @@ import {
   Settings,
   Sparkles,
   SquarePen,
+  Workflow,
   Zap,
 } from '../../shared/icons.js'
 
@@ -44,8 +45,8 @@ const props = defineProps<{
   activeId: string
   /** 右栏是否展开（开关图标的方向 / 激活态） */
   rightOpen: boolean
-  /** 主区正在展示的内容：对话流 / 子代理页面（2026-09 新增，docs/07 §2.3） */
-  view: 'chat' | 'subagents'
+  /** 主区正在展示的内容：对话流 / 子代理页面 / 自动化页面（docs/13 §11） */
+  view: 'chat' | 'subagents' | 'automations'
   /** 本会话已记录的子代理运行数（固定项上的角标） */
   subagentCount: number
   /** 其中是否还有在跑的（角标用 running 色） */
@@ -58,6 +59,8 @@ const emit = defineEmits<{
   /** 归档 / 取消归档（`archived` 即目标状态；由 App.vue 调 useChat.setArchived 落地） */
   (event: 'archiveSession', id: string, archived: boolean): void
   (event: 'openSubagents'): void
+  /** 切到自动化页面（docs/13 §11） */
+  (event: 'openAutomations'): void
   (event: 'toggleRightPanel'): void
   (event: 'openSettings'): void
 }>()
@@ -150,6 +153,21 @@ function formatRelativeTime(iso: string): string {
         data-field="chat.subagent-count"
         >{{ props.subagentCount }}</span
       >
+    </button>
+
+    <!--
+      固定顶置项：自动化（docs/13 §11）。主区切到自动化页面（Agent / Normal 双 tab +
+      编辑器与历史弹窗都在组件内）。触发器/操作组件的语义见 docs/13 §4/§5。
+    -->
+    <button
+      type="button"
+      class="quick-item hover-fill press"
+      data-field="chat.auto-item"
+      :class="{ active: props.view === 'automations' }"
+      @click="emit('openAutomations')"
+    >
+      <Workflow class="icon" :size="14" :stroke-width="1.6" aria-hidden="true" />
+      <span class="item-title">自动化</span>
     </button>
 
     <nav class="nav-scroll">

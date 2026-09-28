@@ -1,6 +1,6 @@
 # 12 · Aurora Center —— 网页端控制中心
 
-状态：`已定稿`（v0.2.0 随本设计首次落地；2026-09 扩展轮：注册、设备授权登录、确认卡网页批复、文件 24h 管理与自动删除、移动端适配，并删除手动配对令牌）
+状态：`已定稿`（v0.2.0 随本设计首次落地；2026-09 扩展轮：注册、设备授权登录、确认卡网页批复、文件 24h 管理与自动删除、移动端适配，并删除手动配对令牌；v0.2.5：§6.3 追加 `automation.*` 六命令、§10 追加自动化视图）
 
 Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控制台**：
 
@@ -276,9 +276,18 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
 | `session.setProject` | 会话绑定项目（复用 docs/06 §5.1 会话级项目链；`''` 清除；projectId 必须在客户端 `projects.list` 内） |
 | `project.list` | 客户端项目选项（`CenterProjectOption[]`，绑定下拉用） |
 | `llm.switch` | 切客户端模型 / 思考等级：`providerId`（→ `llm.active`）、`model` / `reasoningEffort`（→ 激活 provider 的对应字段，经 `settings.mutate` 即时生效）。**绝不触碰** `apiKeyEnc` / `baseUrl`；可选项列表由网页端从 `config.get` 的脱敏配置取 |
+| `automation.list` | 枚举客户端的自动化（`AutomationListResult`：`user` 自建 + `builtin` 内置），docs/13 §10 |
+| `automation.catalog` | 组件目录（`AutomationCatalog`：触发器 7 类 + 操作组件 3 类的表单元数据，`available` 现取），供网页端渲染动态表单 |
+| `automation.save` | 新建（`definition.id` 为空）/ 修改一份自建自动化；`result.data` 携带保存后的定义。校验与拒绝语义同 `automation_create` 工具（非法组件 / 参数回错误原因） |
+| `automation.delete` | 删除自建自动化（内置 `builtin.` 前缀不可删，回错误原因） |
+| `automation.run` | 手动触发一次；`result.data` 携带 `{ runId }`（Agent 模式即该次会话 id） |
+| `automation.history` | 运行历史（`AutomationRun[]`，`triggeredAt` 倒序；可按 `automationId` / `mode` / `limit` 过滤），服务器不缓存 |
 
 会话管理范围**仅限 `center-` 前缀会话**：客户端本地会话对 Center 不可见、不可枚举、
-不可切换。
+不可切换。自动化命令**不受该前缀限制**（它们操作的是自动化元数据，不是会话）；但同样受
+客户端 `center.allowRemoteSession` 闸门与服务器侧属主 / 管理员鉴权约束。
+**自动化定义与历史只存在客户端**（`<userData>/automations/*.json`），服务器零存储改动
+—— 与 `session.history` 的「只转发不缓存」同一口径。
 
 ## 7. 客户端配置（`center` 分组，CONFIG_VERSION 17）
 
@@ -375,6 +384,13 @@ aurora-center version
 - **Token 用量（v0.2.3）**：会话视图渲染 `usage` 事件（此前到达但被忽略）——
   最新轮 prompt/completion tokens、会话累计、占 contextWindow 比例
   （contextWindow 从 `config.get` 取）。
+- **自动化视图（v0.2.5，`#/automations`）**：设备下拉选定客户端后列出其自动化 ——
+  Agent Mode / Normal Mode / 内置三组卡片（名称 + 触发描述 + 启停开关 + 立即运行 +
+  编辑 / 删除；内置无编辑删除、启停提示去客户端设置页）；「新建 / 编辑」弹层按
+  `automation.catalog` 渲染动态字段（触发器 7 类 + 操作组件 3 类，`available: false`
+  的组件不可选）；底部运行历史（时间 / 自动化 / 状态 / 用时，可按自动化筛选）。
+  刷新为显式按钮 + 操作后重拉（桌面端的 `automation:changed` 推送不经 Center WS，
+  网页端不做实时订阅）。
 - 文件管理页：全部上传文件的表格（名称 / 来源客户端 / 大小 / 备注 / 上传与过期时间），
   行内下载与删除，过期前 < 24h 显示倒计时。
 - **移动端适配**：≤ 720px 与 ≤ 480px 两档断点——窄屏上下堆叠、客户端列表变横向滚动

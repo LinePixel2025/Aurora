@@ -5,7 +5,7 @@
  * 本项只管**提示条自己是否显示** —— 用户可能希望课前提醒照常弹，但不想要那条贴边竖条。
  * 两者相互独立，之前本项只是配置里的死字段。
  *
- * 纯逻辑 + 注入副作用，可在 Node 里单测（与 `pre-class-reminder.ts` 同一套路数）。
+ * 纯逻辑 + 注入副作用，可在 Node 里单测（与 `main/automation/engine.ts` 同一套路数）。
  */
 import type { Logger } from '@aurora/shared'
 import { isQuietHour } from './proactive.js'

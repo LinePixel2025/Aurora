@@ -419,6 +419,122 @@ describe('Hub · 状态与文件通知', () => {
   })
 })
 
+describe('Hub · 远程自动化命令（docs/13 §10）', () => {
+  const DEFINITION = {
+    id: 'am-1',
+    name: '每天问好',
+    enabled: true,
+    mode: 'agent' as const,
+    trigger: { kind: 'daily' as const, params: { at: '08:00' } },
+    prompt: '早安汇总',
+    createdAt: '2026-09-28T00:00:00.000Z',
+    updatedAt: '2026-09-28T00:00:00.000Z',
+  }
+
+  it('6 个 automation 命令原样转发给目标客户端，cmd 形状正确；缺省字段不进 cmd', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    client.sent.length = 0
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+
+    const cases: Array<{ message: Parameters<Hub['handleWebMessage']>[1]; expectCmd: unknown }> = [
+      {
+        message: { type: 'automation.list', requestId: 'au-1', clientId: 'c1' },
+        expectCmd: { kind: 'automation.list', requestId: 'au-1' },
+      },
+      {
+        message: { type: 'automation.catalog', requestId: 'au-2', clientId: 'c1' },
+        expectCmd: { kind: 'automation.catalog', requestId: 'au-2' },
+      },
+      {
+        message: {
+          type: 'automation.save',
+          requestId: 'au-3',
+          clientId: 'c1',
+          definition: DEFINITION,
+        },
+        expectCmd: {
+          kind: 'automation.save',
+          requestId: 'au-3',
+          definition: DEFINITION,
+        },
+      },
+      {
+        message: { type: 'automation.delete', requestId: 'au-4', clientId: 'c1', id: 'am-1' },
+        expectCmd: { kind: 'automation.delete', requestId: 'au-4', id: 'am-1' },
+      },
+      {
+        message: { type: 'automation.run', requestId: 'au-5', clientId: 'c1', id: 'am-1' },
+        expectCmd: { kind: 'automation.run', requestId: 'au-5', id: 'am-1' },
+      },
+      {
+        message: {
+          type: 'automation.history',
+          requestId: 'au-6',
+          clientId: 'c1',
+          automationId: 'am-1',
+          mode: 'agent',
+          limit: 20,
+        },
+        expectCmd: {
+          kind: 'automation.history',
+          requestId: 'au-6',
+          automationId: 'am-1',
+          mode: 'agent',
+          limit: 20,
+        },
+      },
+      {
+        message: { type: 'automation.history', requestId: 'au-7', clientId: 'c1' },
+        expectCmd: { kind: 'automation.history', requestId: 'au-7' },
+      },
+    ]
+
+    for (const [i, { message, expectCmd }] of cases.entries()) {
+      harness.hub.handleWebMessage(owner.conn, message)
+      const forwarded = client.sent.at(i) as { type: string; cmd: Record<string, unknown> }
+      expect(forwarded.type).toBe('cmd')
+      expect(forwarded.cmd).toEqual(expectCmd)
+    }
+    // 转发成功时网页端只有等回执，不立即收任何消息
+    expect(owner.sent).toHaveLength(0)
+  })
+
+  it('automation.list 的 result 回执按 requestId 转回网页端；拒绝路径与既有命令一致', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    client.sent.length = 0
+    const stranger = harness.connectWeb({ id: 'u2', username: 'u2', role: 'user' })
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+
+    harness.hub.handleWebMessage(stranger.conn, {
+      type: 'automation.list',
+      requestId: 'au-10',
+      clientId: 'c1',
+    })
+    expect((stranger.sent.at(-1) as { error?: string }).error).toBe('E_FORBIDDEN')
+
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'automation.list',
+      requestId: 'au-11',
+      clientId: 'c1',
+    })
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'au-11',
+      ok: true,
+      data: { user: [DEFINITION], builtin: [] },
+    })
+    const result = owner.sent.at(-1) as { type: string; ok: boolean; data?: unknown }
+    expect(result.ok).toBe(true)
+    expect(result.data).toEqual({ user: [DEFINITION], builtin: [] })
+  })
+})
+
 describe('Hub · 远程会话管理与 LLM 切换（docs/12 §6.3）', () => {
   it('7 个新命令原样转发给目标客户端，cmd 形状正确', async () => {
     const harness = await makeHub()

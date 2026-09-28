@@ -112,7 +112,8 @@ export interface LlmProvider {
   `jobs/types.ts` 只再导出 —— 跨进程的形状只能有一份，否则"界面看到的 job"与"内核写的 job"
   迟早漂移（与 `SnapshotRef` 同款口径）。字段：`id` / `sessionId` / `requestId?` /
   `status`（`queued` | `running` | `paused` | `done` | `error` | `aborted`）/
-  `origin`（`chat` | `edge-bar` | `resume`）/ `text`（本条任务的用户原文）/ `round` / `maxRounds` /
+  `origin`（`chat` | `edge-bar` | `resume` | `center` | `automation`）/
+  `text`（本条任务的用户原文）/ `round` / `maxRounds` /
   `stepsDone[{ round, tool, ok, at }]` / `todos[{ id, text, status }]` /
   `cursor{ nextRound, note? }` / `budget{ maxTotalTokens, usedTokens, autoContinued }` /
   `pendingReason?` / `createdAt` / `updatedAt` / `error?`。
@@ -390,7 +391,7 @@ AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时�
 | 网络连通性 | 系统探测（DNS） | 30s | 联网任务前置检查 |
 | 前台窗口 / 应用 | PowerShell 探针（`GetForegroundWindow` + `GetWindowTextW` + 进程名） | 5s | 上下文感知（“我在写什么”） |
 | 显示器 / 屏幕状态 | Electron `screen`（主进程注入） | 摘要即时读取 | 窗口贴边策略 |
-| 课程表（ClassRoom） | `manual` provider / ClassIsland 桥接 | 摘要即时读取 + 课前轮询（30s） | 课前提醒、`timetable` Skill |
+| 课程表（ClassRoom） | `manual` provider / ClassIsland 桥接 | 摘要即时读取 + 课前轮询（15s，自动化引擎节拍，docs/13 §3） | 课前提醒、`timetable` Skill |
 
 - 前台窗口**不引入 `active-win`**：该原生模块预编译产物杀软误报多（03 §3），v1 直接用 PowerShell 探针；
   探针 stdout 由**导出的纯函数** `parseForegroundProbe` 解析，因此解析逻辑可单测、
@@ -427,7 +428,7 @@ AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时�
 
 | 触发器 | 实现 | 载体 |
 |---|---|---|
-| 课前 N 分钟 | `PreClassReminder`（`pre-class-reminder.ts`）+ 纯函数 `preClassTrigger` | 系统通知 + 自动打开科目文件夹 |
+| 课前 N 分钟（内置自动化） | 自动化引擎的内置自动化 `builtin.pre-class-notify` / `builtin.pre-class-open-folder`（`main/automation/engine.ts`）+ 纯函数 `preClassTrigger` | 系统通知 + 自动打开科目文件夹（docs/05 §3.4、docs/13 §6） |
 | 敏感工具确认 | `ProactiveScheduler`（`proactive.ts`）+ IPC `proactive:sensitiveTool` / `proactive:resolveSensitiveTool` | 交互窗确认卡片 |
 | 模式引导 / 分类完成 | 模式系统（05 §1）与分类管线（05 §3.3）各自触发 | 交互窗 AI 消息 / 系统通知 |
 
@@ -438,12 +439,12 @@ AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时�
   ⚠️ **已知缺口**：`rejectAll()` 目前**没有**接到 `chat:abort`（会话中止只中断内核循环，
   在途确认卡片仍可点击、并在 60s 前一直有效）——所以「会话中止 = 确认作废」这句话目前不成立，
   待接线后才会。设置项 `advanced.confirmSensitiveTools` 关闭时直接放行（内核仍按 `sensitivity` 写日志留痕）。
-- **课前提醒**：默认每 30s 检查一次课程表，命中「课前 N 分钟」窗口时发系统通知并自动打开
-  该科目文件夹（`explorer`）。同一节课以 `<weekday>-<startTime>-<subject>` 去重、只提醒一次；
-  支持**启动补偿**（启动时已进入窗口，例如只剩 2 分钟）与**跨天**（23:5x 时次日 00:0x 的课）；
-  多节课同时进入窗口时按剩余时间升序提醒。勿扰时段静默跳过；通知 / 打开文件夹失败只降级为日志。
+- **课前提醒（v0.2.5 起是内置自动化）**：由常驻的自动化引擎按 **15s 节拍**检查课程表，命中
+  「课前 N 分钟」窗口时发系统通知并自动打开该科目文件夹（`explorer`）；旧 `PreClassReminder`
+  服务已删除，行为逐字保留（去重键仍是 `<weekday>-<startTime>-<subject>`、只提醒一次、
+  **启动补偿**、**跨天**、多节课按剩余时间升序、勿扰静默跳过、失败只降级为日志）。
   **N 可配**（2026-09）：`modes.classroom.preClassLeadMinutes`（1–30，默认 5），
-  每次 tick 即时读取（改设置无需重启，非法值回落 5）。
+  引擎每次评估即时读取（改设置无需重启，非法值回落 5）。
 - **勿扰时段**：`isQuietHour` 纯函数判定（支持跨天，如 22:30–07:00）；时段缺失或时间非法时不静默。
 - **ClassIsland 提醒的反向通道（v3，见 05 §3.4）**：Aurora 侧新增工具
   `classisland_remind(body, title?, channel?)` —— 把提醒交给 ClassIsland 自己的提醒服务弹出。
@@ -1682,3 +1683,70 @@ Agent 按以下流程产出用户技能：
 目录内新增 / 删除 / 修改 SKILL.md 后自动 `rescan()` 并广播 `skills:changed`。因此
 create_skill 写完文件后**无需任何"刷新"仪式**；监听失败（如目录被删）降级为日志
 告警，不影响既有技能表。
+
+## 23. 自动化管理工具与自动化触发的会话（v0.2.5）
+
+自动化（Agent Mode / Normal Mode）的完整设计见 **docs/13**；本节只写**工具面与会话面的契约**：
+AI 用什么工具管理自动化，以及自动化触发 Agent 时那条会话长什么样。
+
+### 23.1 自动化管理工具（`automation_*` 六件套）
+
+主进程 `apps/desktop/src/main/tools/automation-tools.ts` 注册（装配器 `registerAutomationTools`，
+接线在 `main/tools/index.ts`）：
+
+| 工具 | 参数摘要 | sensitivity |
+|---|---|---|
+| `automation_list` | 无（列出用户定义 + 内置自动化 + 摘要） | safe |
+| `automation_create` | `name` / `mode` / `trigger{kind, params}` / `prompt`（agent）或 `actions`（normal） | **confirm** |
+| `automation_update` | `id` + 局部字段（含 `enabled` 启停） | **confirm** |
+| `automation_delete` | `id` | **confirm** |
+| `automation_run` | `id`（手动触发一次；Agent 模式会跑一次完整会话） | **confirm** |
+| `automation_history` | `automationId?` / `limit?`（默认 20，最大 200） | safe |
+
+- **注册口径**：与 `registerSettingsTool`（§12）/ `registerExtensionTools`（§14.1）/
+  `registerAgentCoreTools`（§18 / §19）**同级**，**不受 `agent.tools.enabled` 门控** ——
+  这六件套管的是自动化的**元数据**（定义与运行历史），不属于「电脑操控」的开关语义；
+  `syncToolRegistries()` 每拍全量重建，热生效。
+- **只读档摘掉写类四个**：`agent.permissionMode = 'readonly'` 时不注册
+  `automation_create` / `automation_update` / `automation_delete` / `automation_run`，
+  只保留 `automation_list` / `automation_history` —— 档位叫「只读」就必须真的没有副作用（§11.2）。
+- **写类四个一律 `sensitivity: 'confirm'`**：AI 给自己排一个后台动作必须用户点头，
+  每次调用都走 §5 的 `confirmTool` 与 §9.1 的确认卡片；拒绝时按「用户拒绝执行」回填、循环继续。
+- **`automation_update` 对 `builtin.` 前缀 id 直接拒绝**并引导去设置页
+  （内置自动化的启停映射既有配置字段，见 docs/05 §3.4、docs/13 §6）；内置的删除请求同理。
+- **参数合法化以主进程 catalog 为准**：工具 description 给出触发器 / 操作组件的 kind 清单与
+  参数形状，非法 kind、缺参数、catalog 之外的组件一律拒绝（保存入口的唯一合法化层是
+  `validateDefinition`）—— 渲染层 / 远程路径经 IPC 回 `E_INVALID_ARGUMENT`（带中文原因），
+  AI 工具侧以 `isError` 回填同一原因。
+- **未进 `buildToolGuidance`**：§5 的「工具使用规范」小节**没有**为自动化工具加段落
+  （按注册工具名条件生成的那几段仍只覆盖 `todo_write` / `task` / `run_command` / `set_setting` /
+  `edit_file` / `grep` / `glob`），这六件套靠自身 description 自述。
+- **与 `set_setting` 的分工**：`automations.*` 整组在 `SETTINGS_READONLY_PREFIXES` 里（§12.2）——
+  AI 改不动自动化总开关，增删改自动化只能走上面的专用工具（逐次确认）。
+
+### 23.2 自动化触发的 Agent 会话
+
+Agent Mode 触发时，引擎用**专属会话**跑一次完整的 §5 工具循环（与用户对话同一条内核链路，
+docs/13 §7）：
+
+- **会话 id**：`sessionId = runId = auto-<ts36>-<n>`。runId 在 `agent.send` **之前**就落进运行记录，
+  因此即便 send 失败（如未配置模型），历史仍能指向「本该承载本次任务的会话」；
+  会话标题沿用既有的「首条用户消息前 24 字」推导（`SessionStore.titleFor`，即任务指令摘要）。
+- **origin**：`SendMessageRequest.origin` 与 `AgentJob.origin` 的联合类型各扩一个 `'automation'`
+  成员（job 字段形状见 §4.1）。内核不为它分支 —— 只写进 job 记录与日志，扩联合即安全。
+- **`extraContext`**：按契约注入触发上下文（自动化名称 + 触发描述，如「距上课 3 分钟」，
+  并附一句「请直接开始执行任务」），模型因此知道「为什么被唤醒」。
+- **运行终态由事件驱动**：`done` → `success`（落 `durationMs`）、`error` → `failed`（落错误文本）；
+  另有 **30 分钟兜底超时**，超时按失败收尾 —— 不留永远「进行中」的记录；
+  进程重启时历史里遗留的 `running` 记录改判 `interrupted`（docs/13 §3）。
+- **敏感工具确认沿用既有确认链，自动化没有自己的权限体系**：无人值守时 **60s 超时默认拒绝**
+  （`ProactiveScheduler` 既有语义，§9.1）。要「免打扰」得由用户把 `agent.permissionMode`
+  设为 `auto`（根内免确认，§11.2）或在会话里点「本会话都允许」（会话级授权表）——
+  **不为自动化新增静默放行通道**。
+
+### 23.3 `auto-` 前缀会话只过滤展示
+
+`auto-` 前缀会话**不进主界面左栏会话列表**（渲染层按前缀过滤，与 `center-` 可见性同款口径，
+docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `chat:history` 回放，
+入口是「自动化 → 历史」里那条运行记录的 `sessionId`（即 runId）。
+会话 id 走既有 `normalizeSessionId` 白名单归一（`[A-Za-z0-9_-]`），`auto-` 前缀天然合法（docs/13 §12）。

@@ -226,6 +226,51 @@ export class Hub {
             : { reasoningEffort: message.reasoningEffort }),
         })
         break
+      // ── 远程自动化管理（docs/13 §10）：客户端存数据、服务器只转发不缓存。
+      // 授权 / 离线 / 超时判定同其他命令；无 sessionId，不进会话属主记账
+      //（session.list / project.list 同款处理）。
+      case 'automation.list':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'automation.list',
+          requestId: message.requestId,
+        })
+        break
+      case 'automation.catalog':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'automation.catalog',
+          requestId: message.requestId,
+        })
+        break
+      case 'automation.save':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'automation.save',
+          requestId: message.requestId,
+          definition: message.definition,
+        })
+        break
+      case 'automation.delete':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'automation.delete',
+          requestId: message.requestId,
+          id: message.id,
+        })
+        break
+      case 'automation.run':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'automation.run',
+          requestId: message.requestId,
+          id: message.id,
+        })
+        break
+      case 'automation.history':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'automation.history',
+          requestId: message.requestId,
+          ...(message.automationId === undefined ? {} : { automationId: message.automationId }),
+          ...(message.mode === undefined ? {} : { mode: message.mode }),
+          ...(message.limit === undefined ? {} : { limit: message.limit }),
+        })
+        break
       default:
         break // 协议只增不改：未知类型忽略
     }

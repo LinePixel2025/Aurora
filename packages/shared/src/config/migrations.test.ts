@@ -1038,12 +1038,13 @@ describe('配置迁移链', () => {
           },
         },
       })
-      // 恒等指的是「不重复应用同一条迁移」：从 14 出发只会应用 v14 → v15、v15 → v16 与 v16 → v17
+      // 恒等指的是「不重复应用同一条迁移」：从 14 出发会依次应用 v14 → v19 的每条迁移
       expect(outcome.applied).toEqual([
         'v14 → v15：v14 → v15：为 agent 补 loop.*（轮次上限、token 预算与自动续轮）',
         'v15 → v16：v15 → v16：新增 center 分组（Aurora Center 连接，docs/12）',
         'v16 → v17：v16 → v17：center 补 account（账号登录记住的账号名，docs/12 §7）',
         'v17 → v18：v17 → v18：放宽 agent.loop 轮次上限（maxRounds 8→32，autoContinueRounds 2→8）',
+        'v18 → v19：v18 → v19：新增 automations 分组（自动化总开关，默认开启）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1074,6 +1075,7 @@ describe('配置迁移链', () => {
         'v15 → v16：v15 → v16：新增 center 分组（Aurora Center 连接，docs/12）',
         'v16 → v17：v16 → v17：center 补 account（账号登录记住的账号名，docs/12 §7）',
         'v17 → v18：v17 → v18：放宽 agent.loop 轮次上限（maxRounds 8→32，autoContinueRounds 2→8）',
+        'v18 → v19：v18 → v19：新增 automations 分组（自动化总开关，默认开启）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1155,6 +1157,37 @@ describe('配置迁移链', () => {
       const outcome = migrate({ version: 17, general: {}, agent: {} })
       expect((outcome.data['agent'] as Record<string, unknown>)['loop']).toBeUndefined()
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+  })
+
+  describe('v18 → v19（新增 automations 分组，docs/13）', () => {
+    it('缺分组时补上默认值（enabled: true）', () => {
+      const outcome = migrate({ version: 18, general: {} })
+      expect(outcome.data['automations']).toEqual({ enabled: true })
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('用户已写的关闭态原样保留（不覆盖）；重复迁移幂等', () => {
+      const raw = { version: 18, general: {}, automations: { enabled: false } }
+      const outcome = migrate(raw)
+      expect(outcome.data['automations']).toEqual({ enabled: false })
+
+      const again = migrate(outcome.data as Record<string, unknown>)
+      expect(again.data['automations']).toEqual({ enabled: false })
+      expect(again.data).toEqual(outcome.data)
+    })
+
+    it('不触碰其它分组（缺分组不造对象）', () => {
+      const outcome = migrate({ version: 18, general: {} })
+      expect(outcome.data['agent']).toBeUndefined()
+      expect(outcome.data['center']).toBeUndefined()
+      expect(outcome.data['projects']).toBeUndefined()
+    })
+
+    it('v0 → 当前版本：链式执行条数等于 CONFIG_VERSION，末态含 automations', () => {
+      const outcome = migrate({ version: 0, general: {} })
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION)
+      expect(outcome.data['automations']).toEqual({ enabled: true })
     })
   })
 })

@@ -68,6 +68,12 @@ import {
   createClassIslandRemindTool,
   type ClassIslandNotifyPort,
 } from './classisland-remind.js'
+import {
+  AUTOMATION_TOOL_NAMES,
+  AUTOMATION_WRITE_TOOL_NAMES,
+  createAutomationTools,
+  type AutomationManagePort,
+} from './automation-tools.js'
 
 /**
  * 现读「生效档位」（`agent.permissionMode` + `advanced.confirmSensitiveTools` 的双开关判定
@@ -514,6 +520,56 @@ export function registerCenterTools(deps: CenterToolsDeps): { sync(): string[] }
       deps.tools.register(createCenterSendFileTool(options))
       const names = CENTER_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
       deps.logger.info('已同步 Aurora Center 工具', { names: [...names] })
+      return [...names]
+    },
+  }
+}
+
+/**
+ * 自动化管理工具的名字集合（docs/13 §8）：注册 / 摘除 / 文档共用。
+ */
+export { AUTOMATION_TOOL_NAMES, AUTOMATION_WRITE_TOOL_NAMES }
+
+export interface AutomationToolsDeps {
+  tools: ToolRegistry
+  logger: Logger
+  /** 管理端口（`main/automation/engine.ts` 的 AutomationEngine 适配，main/index.ts 接线） */
+  port: AutomationManagePort
+  /**
+   * 配置取值（live getter），只用来判定 `readonly` 档该不该摘掉写类工具 ——
+   * 本装配器不受 `agent.tools.enabled` 门控（自动化是元数据管理，不是本机操控）。
+   * 可选：不注入时按 `'confirm'` 档处理（单测可直接构造装配器）。
+   */
+  getSettings?: () => Settings
+}
+
+/**
+ * 自动化管理工具装配器（automation_list / create / update / delete / run / history）。
+ *
+ * 与 `registerAgentCoreTools` 同级、同口径：不受 `agent.tools.enabled` 门控；
+ * **只读档摘掉写类工具**（create / update / delete / run），保留 list / history ——
+ * 档位叫「只读」就必须真的没有副作用。`create` / `update` / `delete` / `run` 自身是
+ * `sensitivity: 'confirm'`（逐次确认），AI 想给自己排程后台动作必须用户点头。
+ */
+export function registerAutomationTools(deps: AutomationToolsDeps): { sync(): string[] } {
+  if (deps.getSettings === undefined) {
+    deps.logger.warn(
+      'registerAutomationTools 未注入 getSettings：readonly 档不会摘掉写类自动化工具',
+    )
+  }
+  return {
+    sync(): string[] {
+      for (const name of AUTOMATION_TOOL_NAMES) deps.tools.unregister(name)
+
+      const readonly = currentPermissionMode(deps.getSettings?.()) === 'readonly'
+      const writeNames: readonly string[] = AUTOMATION_WRITE_TOOL_NAMES
+      for (const tool of createAutomationTools(deps.port)) {
+        if (readonly && writeNames.includes(tool.name)) continue
+        deps.tools.register(tool)
+      }
+
+      const names = AUTOMATION_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
+      deps.logger.info('已同步自动化工具', { names: [...names] })
       return [...names]
     },
   }

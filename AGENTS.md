@@ -19,6 +19,8 @@ apps/desktop/
                      ——窗口 focusable 跟随展开/收起切换；主界面左栏固定项点击切 quick 会话；
                      主界面与设置有 Windows 式「最小化 / 关闭」caption 按钮，关闭 = 隐藏）
 packages/shared/     配置 Schema、SettingsStore、IPC 契约、模式/窗口类型
+  src/main/automation/ 自动化引擎：调度（trigger 评估）、操作组件执行、定义与历史存储、
+                     内置自动化（课前提醒 / 课前打开科目文件夹，docs/13）
 packages/agent-core/ Agent 内核：LLM / 会话 / 工具循环 / Skill / MCP / Prompt 组装
 packages/modes/      IMode 框架、ClassRoom 完整实现、Work 初步实装（BetaV2）/ Code 占位
                      packages/modes/src/capabilities.ts：模式能力矩阵（docs/05 §6）
@@ -159,6 +161,18 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   `%APPDATA%\ClassIslandurora-bridge\schedule.json` 重试一次，成功则告警提示对齐两端配置
   （`classisland.ts` 的 `fallbackFilePath`，主进程注入；默认路径常量别散落第二份）。
   桥接读取失败按「错误是否变化」分级记日志（变化才 warn，持续同一错误 debug），别改回全量 warn。
+- **自动化（Automation，v0.2.5）已落地两种模式（docs/13）**：**Agent Mode** 触发后跑一次
+  完整 Agent 会话（专属会话 id = runId = `auto-<ts36>-<n>`，`origin: 'automation'`），
+  **Normal Mode** 触发后按预设操作组件执行（**封闭清单**：系统通知 / ClassIsland 提醒 /
+  打开文件夹 —— 没有命令、没有任意写，这是它与 Agent Mode 的安全分界）。
+  定义与历史落在 `<userData>/automations/{automations.json,history.json}`（**不是配置**、
+  不进迁移链；历史上限 500 条）。ClassRoom 既有的**课前提醒 / 课前自动打开科目文件夹**由
+  **内置自动化**（`builtin.pre-class-notify` / `builtin.pre-class-open-folder`）承接，
+  行为逐字保留（同一提前窗口 / 文案 / 勿扰 / `lessonKey` 去重），旧 `PreClassReminder`
+  服务已**删除**（`schedule.ts` 的 `preTrigger`/`needsNextDayLessons` 纯函数保留给条件评估用）；
+  **自动分类不在迁移范围**（仍是独立管线）。`auto-` 前缀会话**不进主界面左栏**（只过滤展示，
+  只从「自动化 → 历史」进入）。`automations.*` 整组在 `SETTINGS_READONLY_PREFIXES`
+  （AI 只能经 `automation_*` 六件套工具增删，写类四个是 `confirm`）。
 - Skill 的 `scripts/` 永不自动执行（只注入指令正文）；图片 OCR 未启用（只取文件名与尺寸）。
 - Code Mode 为占位实现；Work Mode 已初步实装（guide + systemPrompt；v0.2.4 起 `modes.work.workspaceDir`
   已接进工具执行链的统一回落链，不再是仅提示词引用的死字段）。
@@ -288,6 +302,20 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   时会 `rearmWatcher`，新增监听路径时记得同样处理；create-skill 技能写文件后
   依赖这个监听自动重扫，没有任何"刷新"仪式。
 
+- **自动化引擎（`main/automation/engine.ts`）的三处接线要点（docs/13 §3）**：
+  ① 事件订阅在**构造期**建立（不是 `start()`）—— 否则「构造完成 → start() 之间」落下的
+  `done` / `error` 会让历史永远停在 `running`（引擎只对 Agent 模式的运行做事件驱动收尾）；
+  ② `firedKeys` **按自动化隔离**（两条内置共用同一个 `lessonKey`，共用一个集合会互相挡），
+  条目 48h TTL（`lessonKey` 每周重复，不 TTL 会误挡下周同一节课）；
+  ③ **手动触发与定时触发必须走同一条分派**（`runDefinition`）—— Agent 模式的定义没有
+  `actions`，`runNow` 若只执行操作组件会落一条永远「进行中」的历史且从不调用 Agent
+  （v0.2.5 的 smoke 实测就是这个症状，回归护栏在 `engine.test.ts`）。
+  另注意：**引擎在 bootstrap 时就启动并首读 store**（in-flight 缓存），所以自测夹具在启动后
+  写盘时必须调 `automationEngine.reload()` 重读 —— capture 的 `seedAutomationFixture` 就是这么用的。
+- **`AgentEvent` 里 `auto-` 会话的确认卡走既有确认链**：无人值守时 60s 超时按拒绝处理；
+  自动化**没有自己的权限体系**，也**不应用勿扰时段**（勿扰只门控内置自动化 / 既有课前提醒）。
+  给自动化会话免打扰的正路是把权限档设为 `auto` 或在会话里点「本会话都允许」，
+  **不要**为自动化新增静默放行通道。
 - **capture / smoke 的探针改配置时注意两个缓存**：`SettingsStore.init()` 启动即把 `config.json`
   读进内存并长期缓存 —— 启动后**写文件对运行中的进程无效**，改配置只能走 `settings:update` IPC；
   而 `SessionStore` 是按会话**惰性**读盘且首次读即缓存，种会话文件必须赶在窗口第一次

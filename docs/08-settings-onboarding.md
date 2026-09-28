@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v16）
+## 1. 配置 Schema（config.json，v19）
 
 ```jsonc
 {
-  "version": 13,
+  "version": 19,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -192,6 +192,12 @@
     "allowRemoteConfig": true,  // 允许 Center 远程改配置（仍受 12 §6.2 白名单约束）
     "allowFileTransfer": true,  // 允许 center_send_file 上传文件
     "maxFileMb": 64             // 单个上传文件上限（1–512）
+  },
+  // v19 新增：自动化总开关（docs/13 §2.2）。自动化的**定义与历史不是配置** ——
+  // 它们落在 `<userData>/automations/automations.json` 与 `history.json`（同会话 / 待办的口径，
+  // 不进迁移链；历史上限 500 条，超出淘汰最旧），配置里只有这一道闸门
+  "automations": {
+    "enabled": true             // 关闭 = 引擎停止评估与触发（定义与历史原样保留）
   }
 }
 ```
@@ -380,6 +386,23 @@
   **用户可写**（「智能与工具 → Agent 循环」里调），**AI 不可写**：`agent.loop` 在
   `SETTINGS_READONLY_PREFIXES` 里（与 `agent.permissionMode` 同款）—— 让 AI 给自己放大预算，
   等于绕过"该停下来问用户"的那道闸门。
+- `automations`（**v19 新增**，见 docs/13 §2.2 / §11）：**自动化（Agent Mode / Normal Mode）**的
+  总开关，整组只有 `enabled` 一个字段（默认 `true`）。**关闭 = 引擎停止评估与触发**，
+  定义与运行历史原样保留（回看历史不受影响）；设置页入口在「模式」页顶部的「自动化」区组
+  （`data-field="automations.enabled"`，**常显** —— 关掉必须还能开回来），
+  管理入口在主界面左栏「自动化」（docs/07「自动化页规格」）。
+  - **定义与历史不是配置**：`<userData>/automations/automations.json`（用户自建定义）与
+    `history.json`（运行历史，上限 **500** 条，超出淘汰最旧）—— 同会话 / 待办的口径，
+    **不进 `CONFIG_VERSION` 迁移链**，也不参与「导出脱敏配置」（见 §1.2 与 docs/13 §2.1）。
+  - **只读（`SETTINGS_READONLY_PREFIXES`）**：这是用户对「AI 能不能自己安排后台动作」的**总闸门** ——
+    AI 关掉它可以让用户的自动化静默失效，打开它再配合 `automation_*` 工具等于自己给自己排程。
+    因此 AI 的 `set_setting` 对 `automations.*` 一律拒绝；AI 增删 / 启停自动化走**专用工具**
+    （`automation_list` / `automation_history` 为 `safe`，其余 `confirm` 逐次确认，docs/13 §8）。
+  - `SettingsPatch` 新增可选 `automations` 字段（**顶层浅合并**，`{ automations: { enabled } }`
+    的形状即可）；设置页那一处开关走 `settings:update`，不经过黑名单。
+  - **不引入任何凭据路径**：本组没有密文（对照 `apiKeyEnc` / `envEnc` / `headersEnc` /
+    `center.token ⇄ center.tokenEnc`），`SettingsStore` 的四处凭据读写与主进程 `redactSettings`
+    都不需要为它改动。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -418,16 +441,22 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 因而不新增存储面，也不会与流水出现两处数据不一致。
 
 **对话归档状态同样不进 config.json**：它写在会话文件自身（`sessions/<id>.json` 的
-`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 18）。
+`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 19）。
 会话文件自己的版本号 `SESSION_FILE_VERSION` 由 1 提到 2，读取对 v1 宽容（缺 `meta` = 未归档），
 不存在需要执行的迁移脚本 —— 「会话文件版本」与「配置版本」是两条独立的链，别混。
+
+**自动化的定义与运行历史同样不进 config.json**（v19，docs/13 §2.1）：落在
+`<userData>/automations/automations.json`（用户自建定义）与 `history.json`（运行历史，上限 500 条），
+因此自动化只把**总开关**计入配置版本（`v18 → v19`，见 §2 与 §1 的 `automations` 一条）。
+存储实现沿用仓库统一约定：in-flight promise 共享的 `ensureLoaded`、300ms 防抖 + 原子写、
+损坏文件备份 `.corrupt-<ts>.json` 后重建、退出前 `flush()`。
 
 ## 2. 存储与安全
 
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 18`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 19`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -463,9 +492,13 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   `v17 → v18`（放宽 `agent.loop` 轮次上限（见 06 §4.1 / §5）：恰好等于旧默认值的
   `maxRounds: 8` → `32`、`autoContinueRounds: 2` → `8` —— v15 迁移把旧默认值显式写进了
   已有配置，单改 Schema 默认值对老用户无效，故按哨兵值抬升；用户显式改过的其它值
-  （哪怕恰好也是 8 / 2）同样被抬升，这是「放宽」方向的迁移，宁可多放不误收紧）。
-  十八条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
-  方向是放宽），重复执行结果一致。
+  （哪怕恰好也是 8 / 2）同样被抬升，这是「放宽」方向的迁移，宁可多放不误收紧）、
+  `v18 → v19`（新增顶层分组 `automations`（自动化总开关，见 §1 与 docs/13 §2.2）：
+  **整组缺失时补 `{ enabled: true }`，已存在时原样保留、一个键也不改** —— 幂等、
+  不覆盖用户已写值；自动化的定义与历史是用户数据（`<userData>/automations/`），不走迁移链）。
+  十九条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  方向是放宽），重复执行结果一致 —— `pnpm verify` 的迁移条数断言
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **19** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -571,7 +604,8 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - **页面结构（v8 目标口径，UI 由另一任务实施，本节为目标 IA）**：设置页由 8 页并为 **6 页**
   （`SETTINGS_PAGE_IDS = ['general', 'modes', 'llm', 'voice', 'agent', 'advanced']`），侧栏仍三组排列：
   - **基础**：`general` 通用（启动与快捷键 / **项目（v13 新增）** / 提示条 / 勿扰时段——全局 + 提示条两组同区 / 关于与更新）、
-    `modes` 模式（模式卡 + ClassRoom 区组 + Work 区组，见 §7）；
+    `modes` 模式（**自动化总开关区组（v19，`automations.enabled`，不跟模式门控）** + 模式卡 +
+    ClassRoom 区组 + Work 区组，见 §7）；
   - **AI 能力**：`llm` AI 模型（provider 管理 + 「显示思考过程」开关 + 生图模型区组，见 §5）、
     `voice` 语音（TTS 区组 + STT 区组）、
     `agent` 智能与工具（`agent.tools` 区组 + 技能区组 + MCP 区组，三组同页折叠）；
@@ -708,6 +742,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 | `agent.permissionMode` | 常显（权限档位必须随时能改回来；v13 新增） |
 | `agent.snapshots.*` | 常显（`enabled` 必须随时能改回来；v14 新增）。关掉 `enabled` 时三个数字字段整块换成 `data-empty="agent.snapshots"` |
 | `agent.loop.*` | 常显（**不跟 `agent.tools.enabled` 门控**：它管的是"一次请求怎么停下来"，不是"注册哪些工具"；v15 新增）。三个字段一次到位、没有空态 |
+| `automations.enabled` | 常显（总开关关掉必须还能开回来；v19 新增）。所在区组在「模式」页顶部，**不跟模式门控** |
 
 校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针按页断言——
 `settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0，
@@ -717,7 +752,8 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 `settings?page=modes` 在 ClassRoom 下必须能数到 `modes.classroom.*` 字段（具体条数随科目数与展开分组变化，
 探针只断言 `> 0` 与「切走必须为 0」），切到 Work 后 classroom 字段必须为 0，且出现 Work 区组的
 `modes.work.workspaceDir`（v8 起 Work 有可配置字段，`data-empty="modes.work"` 空状态随之取消；
-探针断言由 capture 适配任务同步更新）；
+探针断言由 capture 适配任务同步更新）；另断言 `automations.enabled` **恰好 1 个**（v19 新增：
+它是常显字段，数到 0 就说明「自动化」区组整块没渲染）；
 `settings?page=agent` 读 `agent.tools.enabled` 复选框的**实际状态**：开着时终端 / 文件 / 检索 / 打开
 四栏的详情字段都必须存在（且 `data-empty` 为空；**检索栏**（`agent.tools.search.*`）与终端卡片下的
 **免确认命令模式**列表（`agent.tools.terminal.allowPatterns`）随 v12 新增，探针条目同步扩展，

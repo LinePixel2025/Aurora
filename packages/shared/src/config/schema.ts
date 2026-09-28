@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 18 as const
+export const CONFIG_VERSION = 19 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -437,6 +437,10 @@ export const SETTINGS_READONLY_PREFIXES = [
   // Aurora Center 连接（v16，docs/12 §7）：连接目标是数据外发通道 —— AI 自行启用、
   // 改向或填令牌等于把本机数据发往任意服务器。只能由用户在设置页操作。
   'center',
+  // 自动化总开关（v19，docs/13 §2.2）：它是用户对「AI 能不能自己安排后台动作」的
+  // 总闸门 —— AI 关掉它可以让用户的自动化静默失效，打开并配合 automation_* 工具
+  // 等于自己给自己排程。AI 增删自动化走专用工具（逐次确认），不经这里。
+  'automations',
 ] as const
 
 export const AdvancedSchema = z.object({
@@ -643,6 +647,22 @@ export const CenterSchema = z.object({
 })
 export type CenterSettings = z.infer<typeof CenterSchema>
 
+/**
+ * 自动化总开关（v19，docs/13 §2.2）。
+ *
+ * 自动化的**定义与历史不在这里**——它们是用户数据（可多条、带运行历史），
+ * 落在 `<userData>/automations/*.json` 独立存储（同会话 / 待办的口径，
+ * 不占 CONFIG_VERSION 迁移链）。配置里只有这一个闸门：关闭 = 引擎停止评估与触发。
+ *
+ * 整组在 `SETTINGS_READONLY_PREFIXES`：这是用户对「AI 能不能自己安排后台动作」的
+ * 总闸门，AI 的 `set_setting` 一律拒绝；AI 增删自动化走 `automation_*` 专用工具
+ * （docs/13 §8，逐次确认）。
+ */
+export const AutomationsSchema = z.object({
+  enabled: z.boolean().default(true),
+})
+export type AutomationsSettings = z.infer<typeof AutomationsSchema>
+
 export const SettingsSchema = z.object({
   version: z.number().int().min(0),
   general: GeneralSchema,
@@ -657,6 +677,7 @@ export const SettingsSchema = z.object({
   advanced: AdvancedSchema,
   agent: AgentSchema,
   center: CenterSchema,
+  automations: AutomationsSchema,
 })
 
 export type Settings = z.infer<typeof SettingsSchema>
@@ -685,6 +706,7 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'advanced.readonlyPrefixes':
     '只读黑名单的配置自身不允许通过工具修改（防自我收紧；放宽本就不生效）',
   center: 'Center 连接是数据外发通道，不允许通过工具启用或改向（docs/12 §7）',
+  automations: '自动化总开关是用户对后台动作的总闸门，不允许通过工具修改（docs/13 §2.2）',
 }
 
 /** 显式可写覆盖表的一条登记：模式 + 中文说明。 */

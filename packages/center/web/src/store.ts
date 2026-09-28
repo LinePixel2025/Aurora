@@ -13,6 +13,11 @@
 import { computed, reactive, ref } from 'vue'
 import type {
   AgentEvent,
+  AutomationCatalog,
+  AutomationDefinition,
+  AutomationHistoryQuery,
+  AutomationListResult,
+  AutomationRun,
   CenterProjectOption,
   CenterSessionHistoryMessage,
   CenterSessionSummary,
@@ -145,6 +150,16 @@ interface CenterState {
   activeSessionKey: string
   /** 待批复确认卡（新到追加，批复 / 过期后移除） */
   confirms: ConfirmEntry[]
+  /**
+   * 远程自动化（docs/13 §10）：客户端存数据、Center 只转发不缓存 ——
+   * 三张 Map 都只是**网页本页签的展示缓存**，刷新即重拉。
+   */
+  /** 自动化列表（clientId → user + builtin） */
+  automationsByClient: Map<string, AutomationListResult>
+  /** 组件目录（clientId → 表单元数据；编辑器动态渲染用） */
+  automationCatalogByClient: Map<string, AutomationCatalog>
+  /** 运行历史（clientId → triggeredAt 倒序） */
+  automationHistoryByClient: Map<string, AutomationRun[]>
 }
 
 /** 响应式全局状态（组件可直接读字段；写操作一律走下面的动作函数） */
@@ -156,6 +171,9 @@ export const state = reactive<CenterState>({
   selectedClientId: '',
   activeSessionKey: '',
   confirms: [],
+  automationsByClient: new Map(),
+  automationCatalogByClient: new Map(),
+  automationHistoryByClient: new Map(),
 })
 
 export const wsStatus = ref<SocketStatus>('idle')
@@ -804,6 +822,103 @@ function extractRemoteLlm(data: unknown): RemoteLlmConfig | null {
   return result
 }
 
+// ───────────────────────── 远程自动化管理（docs/13 §10） ─────────────────────────
+
+/** 拉取客户端的自动化列表（user + builtin）并缓存到展示状态 */
+export async function listAutomations(clientId: string): Promise<AutomationListResult> {
+  const data = await command<AutomationListResult>({
+    type: 'automation.list',
+    requestId: nextRequestId(),
+    clientId,
+  })
+  if (data && typeof data === 'object') {
+    state.automationsByClient.set(clientId, {
+      user: Array.isArray(data.user) ? data.user : [],
+      builtin: Array.isArray(data.builtin) ? data.builtin : [],
+    })
+  }
+  return {
+    user: Array.isArray(data?.user) ? data.user : [],
+    builtin: Array.isArray(data?.builtin) ? data.builtin : [],
+  }
+}
+
+/** 拉取客户端的组件目录（触发器 / 操作表单元数据）并缓存 */
+export async function fetchAutomationCatalog(clientId: string): Promise<AutomationCatalog> {
+  const data = await command<AutomationCatalog>({
+    type: 'automation.catalog',
+    requestId: nextRequestId(),
+    clientId,
+  })
+  const catalog: AutomationCatalog = {
+    conditions: Array.isArray(data?.conditions) ? data.conditions : [],
+    actions: Array.isArray(data?.actions) ? data.actions : [],
+  }
+  state.automationCatalogByClient.set(clientId, catalog)
+  return catalog
+}
+
+/**
+ * 新建 / 修改一份自动化（id 为空 = 新建；启停开关也走它 —— 整份定义回传）。
+ * 成功后重拉列表，让本地视图对齐客户端的真实落盘结果。
+ */
+export async function saveAutomation(
+  clientId: string,
+  definition: AutomationDefinition,
+): Promise<AutomationDefinition> {
+  const data = await command<AutomationDefinition>({
+    type: 'automation.save',
+    requestId: nextRequestId(),
+    clientId,
+    definition,
+  })
+  await listAutomations(clientId).catch(() => {})
+  return data
+}
+
+/** 删除一份自动化；成功后重拉列表 */
+export async function deleteAutomation(clientId: string, id: string): Promise<void> {
+  await command({
+    type: 'automation.delete',
+    requestId: nextRequestId(),
+    clientId,
+    id,
+  })
+  await listAutomations(clientId).catch(() => {})
+}
+
+/** 手动触发一次；返回 runId（Agent Mode 下同时是会话 id） */
+export async function runAutomation(clientId: string, id: string): Promise<string> {
+  const data = await command<{ runId: string }>({
+    type: 'automation.run',
+    requestId: nextRequestId(),
+    clientId,
+    id,
+  })
+  return typeof data?.runId === 'string' ? data.runId : ''
+}
+
+/**
+ * 拉取运行历史（triggeredAt 倒序）并缓存。传 automationId 时回执已按客户端过滤，
+ * 此时缓存里只剩该自动化最近的历史（网页端以整表拉取为主，传参用于按行筛选刷新）。
+ */
+export async function fetchAutomationHistory(
+  clientId: string,
+  query?: AutomationHistoryQuery,
+): Promise<AutomationRun[]> {
+  const data = await command<AutomationRun[]>({
+    type: 'automation.history',
+    requestId: nextRequestId(),
+    clientId,
+    ...(query?.automationId === undefined ? {} : { automationId: query.automationId }),
+    ...(query?.mode === undefined ? {} : { mode: query.mode }),
+    ...(query?.limit === undefined ? {} : { limit: query.limit }),
+  })
+  const list = Array.isArray(data) ? data : []
+  state.automationHistoryByClient.set(clientId, list)
+  return list
+}
+
 /** 发送输入：乐观插入用户气泡（后续 user-message 事件按内容去重） */
 export async function sendInput(session: SessionState, text: string): Promise<void> {
   const trimmed = text.trim()
@@ -967,6 +1082,9 @@ export function logout(): void {
   state.clients.clear()
   state.sessions.clear()
   state.confirms.splice(0)
+  state.automationsByClient.clear()
+  state.automationCatalogByClient.clear()
+  state.automationHistoryByClient.clear()
   state.selectedClientId = ''
   state.activeSessionKey = ''
   window.location.hash = '#/login'

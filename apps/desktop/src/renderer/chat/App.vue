@@ -51,6 +51,7 @@ import ContextPanel from './components/ContextPanel.vue'
 import JobPanel from './components/JobPanel.vue'
 import SessionNav from './components/SessionNav.vue'
 import SubagentPage from './components/SubagentPage.vue'
+import AutomationPage from './components/AutomationPage.vue'
 import { useChat } from '../shared/composables/useChat.js'
 import { useTts } from '../shared/composables/useTts.js'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
@@ -112,7 +113,7 @@ const jobsRunning = computed(() => jobs.value.some((job) => job.status === 'runn
  * 会话状态（否则会触发水合、清空正在看的消息）。它只替换 `.thread` 区域，
  * 输入区与右栏保持原样，随时可以切回来继续问。
  */
-const view = ref<'chat' | 'subagents'>('chat')
+const view = ref<'chat' | 'subagents' | 'automations'>('chat')
 /** 子代理页副标题：当前会话在列表里的标题（列表尚未加载时退化为固定文案） */
 const currentSessionTitle = computed(
   () => sessions.value.find((item) => item.id === sessionId.value)?.title ?? '当前会话',
@@ -136,11 +137,15 @@ const dragging = ref(false)
  * `centerVisible === false` 时不进左栏（缺省 / 本地会话不受影响）。**只过滤展示**——
  * 隐藏的远程会话仍可被网页端远程输入与 `chat:remoteActivate` 激活（激活后当前会话
  * 恰是它也不强制切走，只是列表里看不到）。
+ *
+ * `auto-` 前缀会话（自动化触发，docs/13 §7）同样**只过滤展示**：它们从
+ * 「自动化 → 历史」进入（每次触发一个专属会话），混进左栏只会稀释会话列表。
  */
 const sessionItems = computed(() =>
   sessions.value.filter(
     (item) =>
       item.id !== 'quick' &&
+      !item.id.startsWith('auto-') &&
       item.archived !== true &&
       !(item.id.startsWith('center-') && item.centerVisible === false),
   ),
@@ -952,6 +957,7 @@ async function markGuideDone(): Promise<void> {
         @select="selectSession"
         @archive-session="(id, archived) => void setArchived(id, archived)"
         @open-subagents="view = 'subagents'"
+        @open-automations="view = 'automations'"
         @toggle-right-panel="contextOpen = !contextOpen"
         @open-settings="windowStore.show('settings')"
       />
@@ -1222,10 +1228,16 @@ async function markGuideDone(): Promise<void> {
           上面那段 thread + composer 用 v-if 收在 view === 'chat' 分支里。
         -->
         <SubagentPage
+          v-if="view === 'subagents'"
           :runs="subagentRuns"
           :session-title="currentSessionTitle"
           @back="view = 'chat'"
         />
+        <!--
+          自动化页面（docs/13 §11）：与子代理页同构的主区替换内容。
+          双 tab（Agent / Normal）+ 编辑器与历史弹窗都在组件内自持。
+        -->
+        <AutomationPage v-else @back="view = 'chat'" />
       </template>
     </main>
 

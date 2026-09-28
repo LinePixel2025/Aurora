@@ -510,6 +510,90 @@ export async function seedClassIslandFixture(userData: string): Promise<string> 
 }
 
 /**
+ * 自动化夹具（docs/13 §11）：种 1 份 Normal 定义 + 2 条历史 + 1 个 `auto-` 会话文件。
+ *
+ * - 定义 / 历史：`AutomationStore` 惰性首读（同 SessionStore 口径），**必须赶在**
+ *   窗口第一次 `automation:list` 之前 —— runCapture 在打开窗口前调用本函数，时机正确；
+ * - `auto-` 会话文件：给历史探针的「Agent 记录回放」供真实对话（`chat:history` 惰性读盘）。
+ * 隔离 userData 退出即整体删除，不污染用户数据。
+ */
+export async function seedAutomationFixture(userData: string): Promise<void> {
+  const now = Date.now()
+  const definitions = [
+    {
+      id: 'am-capture1',
+      name: '早读提醒',
+      enabled: true,
+      mode: 'normal',
+      trigger: { kind: 'daily', params: { at: '07:30', weekdays: [] } },
+      actions: [{ kind: 'system-notify', params: { title: '早读提醒', body: '该背单词了' } }],
+      createdAt: new Date(now - 86_400_000).toISOString(),
+      updatedAt: new Date(now - 86_400_000).toISOString(),
+    },
+  ]
+  const runs = [
+    {
+      id: 'auto-capture-normal',
+      automationId: 'am-capture1',
+      automationName: '早读提醒',
+      mode: 'normal',
+      status: 'success',
+      triggeredAt: new Date(now - 3_600_000).toISOString(),
+      finishedAt: new Date(now - 3_600_000 + 120).toISOString(),
+      durationMs: 120,
+    },
+    {
+      id: 'auto-capture1',
+      automationId: 'am-capture1',
+      automationName: '早读提醒',
+      mode: 'agent',
+      status: 'success',
+      triggeredAt: new Date(now - 1_800_000).toISOString(),
+      finishedAt: new Date(now - 1_799_000).toISOString(),
+      durationMs: 1000,
+      sessionId: 'auto-capture1',
+    },
+  ]
+  const session = {
+    version: 2,
+    sessionId: 'auto-capture1',
+    updatedAt: new Date(now - 1_799_000).toISOString(),
+    messages: [
+      {
+        id: 'capture-auto-u1',
+        role: 'user',
+        content: 'capture-automation-run：这是自动化触发种下的任务指令（早读提醒）。',
+        createdAt: new Date(now - 1_800_000).toISOString(),
+      },
+      {
+        id: 'capture-auto-a1',
+        role: 'assistant',
+        content: 'capture-automation-run：这是自动化会话里 Agent 的回复，历史回放应显示本条。',
+        createdAt: new Date(now - 1_799_500).toISOString(),
+      },
+    ],
+  }
+  const automationDir = join(userData, 'automations')
+  await mkdir(automationDir, { recursive: true })
+  await writeFile(
+    join(automationDir, 'automations.json'),
+    JSON.stringify({ version: 1, definitions }, null, 2),
+    'utf8',
+  )
+  await writeFile(
+    join(automationDir, 'history.json'),
+    JSON.stringify({ version: 1, runs }, null, 2),
+    'utf8',
+  )
+  await mkdir(join(userData, 'sessions'), { recursive: true })
+  await writeFile(
+    join(userData, 'sessions', 'auto-capture1.json'),
+    JSON.stringify(session, null, 2),
+    'utf8',
+  )
+}
+
+/**
  * 把课表来源切到「ClassIsland 联动 + 文件模式 + 夹具路径」，让课堂状态卡出现。
  *
  * 必须走 `settings:update` IPC：`SettingsStore.init()` 启动即把 config.json 读进内存并长期缓存，
@@ -1019,6 +1103,278 @@ export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
     await wait(250)
     result.restored = document.querySelector('[data-field="chat.subagent-page"]') === null
     result.pass = result.pass === true && result.navActive === true && result.restored === true
+    return result
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 「自动化」页面探针组（docs/13 §11、docs/07 §5.3）：四个场景共用一次进入（chat-automation
+ * 打开页面 → chat-automation-normal 切 Normal tab 看内置区 → chat-automation-editor 开编辑器
+ * → chat-automation-history 开历史并回放 Agent 运行），最后一张收尾时点「返回对话」还原主区。
+ *
+ * 数据来自 `seedAutomationFixture` 种下的 1 份 Normal 定义 + 2 条历史（normal / agent 各一条，
+ * agent 记录指向 seed 的 `auto-capture1` 会话），使列表 / 历史 / 回放都有可视证据。
+ */
+export const CHAT_AUTOMATION_OPEN_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const item = document.querySelector('[data-field="chat.auto-item"]')
+    if (item === null) return { clicked: false, reason: 'no [data-field="chat.auto-item"]' }
+    item.click()
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (document.querySelector('[data-field="automation.page"]') !== null) break
+      await wait(100)
+    }
+    await wait(300)
+    return { clicked: true }
+  } catch (error) {
+    return { clicked: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_AUTOMATION_OPEN_CHECK = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const page = document.querySelector('[data-field="automation.page"]')
+    const tabAgent = document.querySelector('[data-field="automation.tab-agent"]')
+    const tabNormal = document.querySelector('[data-field="automation.tab-normal"]')
+    const historyBtn = document.querySelector('[data-action="automation.history"]')
+    const newBtn = document.querySelector('[data-action="automation.new"]')
+    const backBtn = document.querySelector('[data-action="automation-back"]')
+    return {
+      page: page !== null,
+      tabAgent: tabAgent !== null,
+      tabNormal: tabNormal !== null,
+      historyBtn: historyBtn !== null,
+      newBtn: newBtn !== null,
+      backBtn: backBtn !== null,
+      navActive:
+        document.querySelector('[data-field="chat.auto-item"]') !== null &&
+        document.querySelector('[data-field="chat.auto-item"]').classList.contains('active'),
+      pass:
+        page !== null &&
+        tabAgent !== null &&
+        tabNormal !== null &&
+        historyBtn !== null &&
+        newBtn !== null &&
+        backBtn !== null,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+export const CHAT_AUTOMATION_NORMAL_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const tab = document.querySelector('[data-field="automation.tab-normal"]')
+    if (tab === null) return { clicked: false, reason: 'no tab-normal' }
+    tab.click()
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (document.querySelector('[data-field="automation.builtin"]') !== null) break
+      await wait(100)
+    }
+    await wait(250)
+    return { clicked: true }
+  } catch (error) {
+    return { clicked: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_AUTOMATION_NORMAL_CHECK = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const builtin = document.querySelector('[data-field="automation.builtin"]')
+    const builtinToggles = count('[data-field="automation.builtin-toggle"]')
+    // seed 的 Normal 定义（am-capture1）出现在列表里
+    const seededItem = count('[data-field="automation.item-am-capture1"]')
+    const toggles = count('[data-field="automation.toggle"]')
+    return {
+      builtin: builtin !== null,
+      builtinToggles,
+      seededItem,
+      toggles,
+      pass:
+        builtin !== null &&
+        builtinToggles === 2 &&
+        seededItem === 1 &&
+        toggles === 1,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+export const CHAT_AUTOMATION_EDITOR_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const btn = document.querySelector('[data-action="automation.new"]')
+    if (btn === null) return { clicked: false, reason: 'no automation.new' }
+    btn.click()
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (document.querySelector('[data-field="automation.editor"]') !== null) break
+      await wait(100)
+    }
+    await wait(200)
+    return { clicked: true }
+  } catch (error) {
+    return { clicked: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_AUTOMATION_EDITOR_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const editor = document.querySelector('[data-field="automation.editor"]')
+    const kindSelect = document.querySelector('[data-field="automation.trigger-kind"]')
+    const optionCount = kindSelect === null ? 0 : kindSelect.querySelectorAll('option').length
+    const actionSelect = count('[data-field^="automation.action-"] select')
+    const nameInput = editor === null ? null : editor.querySelector('input[type="text"]')
+    const numberField = count('[data-field="automation.editor"] input[type="number"]')
+    const result = {
+      editor: editor !== null,
+      triggerOptions: optionCount,
+      actionSelect,
+      hasName: nameInput !== null,
+      numberField,
+    }
+    // Esc 关闭（弹窗的标准键盘路径）：派发到 window，组件监听器接住后应关掉编辑器
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await wait(200)
+    result.escClosed = document.querySelector('[data-field="automation.editor"]') === null
+    // 收尾：若 Esc 未生效（回归时）再点「取消」，保证后续场景能继续操作列表
+    if (result.escClosed !== true) {
+      const cancel = document.querySelector('[data-action="automation.editor-cancel"]')
+      if (cancel !== null) cancel.click()
+      await wait(200)
+    }
+    result.restored = document.querySelector('[data-field="automation.editor"]') === null
+    result.pass =
+      editor !== null &&
+      optionCount >= 7 &&
+      actionSelect >= 1 &&
+      result.hasName === true &&
+      result.escClosed === true &&
+      result.restored === true
+    return result
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+export const CHAT_AUTOMATION_HISTORY_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    // 历史面板按当前 tab 过滤（产品口径）：先切到 Agent tab，面板里才有可回放的 Agent 记录
+    const tab = document.querySelector('[data-field="automation.tab-agent"]')
+    if (tab !== null) {
+      tab.click()
+      await wait(200)
+    }
+    const btn = document.querySelector('[data-action="automation.history"]')
+    if (btn === null) return { clicked: false, reason: 'no automation.history' }
+    btn.click()
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (document.querySelector('[data-field="automation.history-panel"]') !== null) break
+      await wait(100)
+    }
+    await wait(250)
+    // 点开第一条可回放的 Agent 记录：截图本身要能看到「点记录 → 对话回放」这块证据
+    const row = document.querySelector('.run-item.clickable')
+    if (row !== null) {
+      row.click()
+      for (let attempt = 0; attempt < 25; attempt += 1) {
+        if (document.querySelectorAll('.detail-message').length >= 2) break
+        await wait(150)
+      }
+      await wait(200)
+    }
+    return { clicked: true, opened: row !== null }
+  } catch (error) {
+    return { clicked: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const panel = document.querySelector('[data-field="automation.history-panel"]')
+    const panelText = panel === null ? '' : panel.textContent || ''
+    // Agent tab 的历史：记录可点开回放（点开 → 出现对话气泡，且能看到 seed 的探针标记）
+    const agentRuns = count('.run-item')
+    const clickable = count('.run-item.clickable')
+    let detailMessages = 0
+    const agentRow = document.querySelector('.run-item.clickable')
+    if (agentRow !== null) {
+      agentRow.click()
+      for (let attempt = 0; attempt < 25; attempt += 1) {
+        if (count('.detail-message') >= 2) break
+        await wait(150)
+      }
+      detailMessages = count('.detail-message')
+    }
+    const panelAfter = document.querySelector('[data-field="automation.history-panel"]')
+    const agentMarker =
+      panelAfter !== null &&
+      ((panelAfter.textContent || '').indexOf('capture-automation-run') !== -1)
+
+    // Normal tab 的历史：**只显示触发时间与状态**（无详情层，产品口径 docs/13 §11）
+    const closeAgent = document.querySelector('[data-action="automation.history-close"]')
+    if (closeAgent !== null) closeAgent.click()
+    await wait(200)
+    const tabNormal = document.querySelector('[data-field="automation.tab-normal"]')
+    if (tabNormal !== null) {
+      tabNormal.click()
+      await wait(200)
+    }
+    const historyBtn = document.querySelector('[data-action="automation.history"]')
+    if (historyBtn !== null) historyBtn.click()
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (count('.run-item') > 0) break
+      await wait(120)
+    }
+    const normalRuns = count('.run-item')
+    const normalClickable = count('.run-item.clickable')
+    const normalHasTime = count('.run-time') > 0
+    const normalStatuses = Array.from(document.querySelectorAll('.run-status')).map((el) =>
+      (el.textContent || '').trim(),
+    )
+
+    // 收尾：关弹窗 → 点「返回对话」还原主区（后续 chat-classisland-status 等场景依赖对话流）
+    const closeNormal = document.querySelector('[data-action="automation.history-close"]')
+    if (closeNormal !== null) closeNormal.click()
+    await wait(200)
+    const back = document.querySelector('[data-action="automation-back"]')
+    if (back !== null) back.click()
+    await wait(250)
+    const restored = document.querySelector('[data-field="automation.page"]') === null
+    const result = {
+      panel: panel !== null,
+      agentRuns,
+      clickable,
+      detailMessages,
+      agentMarker,
+      normalRuns,
+      normalClickable,
+      normalHasTime,
+      normalStatuses,
+      restored,
+      pass:
+        panel !== null &&
+        agentRuns >= 1 &&
+        clickable >= 1 &&
+        detailMessages >= 2 &&
+        agentMarker === true &&
+        normalRuns >= 1 &&
+        normalClickable === 0 &&
+        normalHasTime === true &&
+        restored === true,
+    }
+    void panelText
     return result
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -3588,6 +3944,7 @@ export const SETTINGS_MODES_CLASSROOM_SCRIPT = `(() => {
     const workFields = count('[data-field^="modes.work"]')
     const preClassOpen = count('[data-field="modes.classroom.preClassOpenFolder"]')
     const preClassEmpty = emptyStates.indexOf('modes.classroom.preClassReminder') !== -1
+    const automationsToggle = count('[data-field="automations.enabled"]')
     const activeMode = document.querySelector('.cards .card.active .card-head strong')
     const activeNav = document.querySelector('.nav-item.active')
     return {
@@ -3598,11 +3955,13 @@ export const SETTINGS_MODES_CLASSROOM_SCRIPT = `(() => {
       workFields,
       preClassOpen,
       preClassEmpty,
+      automationsToggle,
       emptyStates,
       pass:
         classroomFields > 0 &&
         watchDir === 1 &&
         workFields === 0 &&
+        automationsToggle === 1 &&
         (preClassOpen > 0 || preClassEmpty),
     }
   } catch (error) {
@@ -5459,6 +5818,32 @@ export function defaultCapturePlan(
       file: 'chat-subagent-page.png',
       act: CHAT_SUBAGENT_OPEN_ACT,
       check: CHAT_SUBAGENT_OPEN_CHECK,
+    },
+    // 自动化页四连（docs/13 §11）：进入页面 → Normal tab（内置区）→ 编辑器弹窗 →
+    // 历史 + Agent 回放；最后一张收尾时还原主区。数据来自 seedAutomationFixture。
+    {
+      name: 'chat',
+      file: 'chat-automation.png',
+      act: CHAT_AUTOMATION_OPEN_ACT,
+      check: CHAT_AUTOMATION_OPEN_CHECK,
+    },
+    {
+      name: 'chat',
+      file: 'chat-automation-normal.png',
+      act: CHAT_AUTOMATION_NORMAL_ACT,
+      check: CHAT_AUTOMATION_NORMAL_CHECK,
+    },
+    {
+      name: 'chat',
+      file: 'chat-automation-editor.png',
+      act: CHAT_AUTOMATION_EDITOR_ACT,
+      check: CHAT_AUTOMATION_EDITOR_CHECK,
+    },
+    {
+      name: 'chat',
+      file: 'chat-automation-history.png',
+      act: CHAT_AUTOMATION_HISTORY_ACT,
+      check: CHAT_AUTOMATION_HISTORY_CHECK,
     },
     // ClassIsland 课堂状态卡：需要真实桥接产出，因此主进程侧先种夹具（见 seedClassIslandFixture），
     // 再由 act 把课表来源切到 classisland + 文件模式指向它；check 收尾还原成 manual。

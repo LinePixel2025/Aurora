@@ -5,7 +5,12 @@
  * 服务器与客户端主进程直接引用。**协议演进只增不改**：所有消费方对未知
  * `type` / `kind` 一律忽略，不得因新字段抛错。
  */
-import type { AgentEvent, SubagentSnapshot } from '../ipc/types.js'
+import type {
+  AgentEvent,
+  AutomationDefinition,
+  AutomationMode,
+  SubagentSnapshot,
+} from '../ipc/types.js'
 import type { ModeId, ReasoningEffort } from '../config/schema.js'
 import type { PermissionMode } from '../config/permission.js'
 
@@ -143,6 +148,23 @@ export type CenterCommand =
       /** 覆盖激活 provider 的思考等级；缺省不改 */
       reasoningEffort?: ReasoningEffort
     }
+  // ── 远程自动化管理（docs/13 §10）：客户端存数据、服务器只转发不缓存 ──
+  /** 枚举自动化（user + builtin）；`result.data` 携带 `AutomationListResult` */
+  | { kind: 'automation.list'; requestId: string }
+  /** 组件目录（触发器 / 操作的表单元数据）；`result.data` 携带 `AutomationCatalog` */
+  | { kind: 'automation.catalog'; requestId: string }
+  /** 新建（definition.id 为空）/ 修改一份自动化；`result.data` 携带保存后的定义 */
+  | { kind: 'automation.save'; requestId: string; definition: AutomationDefinition }
+  | { kind: 'automation.delete'; requestId: string; id: string }
+  | { kind: 'automation.run'; requestId: string; id: string }
+  /** 运行历史；`result.data` 携带 `AutomationRun[]`（triggeredAt 倒序） */
+  | {
+      kind: 'automation.history'
+      requestId: string
+      automationId?: string
+      mode?: AutomationMode
+      limit?: number
+    }
 
 /** 客户端 → 服务器 */
 export type CenterClientMessage =
@@ -249,6 +271,25 @@ export type CenterWebMessage =
       providerId?: string
       model?: string
       reasoningEffort?: ReasoningEffort
+    }
+  // ── 远程自动化管理（docs/13 §10）：授权与回执同其他命令 ──
+  | { type: 'automation.list'; requestId: string; clientId: string }
+  | { type: 'automation.catalog'; requestId: string; clientId: string }
+  | {
+      type: 'automation.save'
+      requestId: string
+      clientId: string
+      definition: AutomationDefinition
+    }
+  | { type: 'automation.delete'; requestId: string; clientId: string; id: string }
+  | { type: 'automation.run'; requestId: string; clientId: string; id: string }
+  | {
+      type: 'automation.history'
+      requestId: string
+      clientId: string
+      automationId?: string
+      mode?: AutomationMode
+      limit?: number
     }
 
 /** 服务器 → 网页 */

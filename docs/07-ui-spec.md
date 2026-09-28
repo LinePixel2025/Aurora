@@ -95,6 +95,8 @@
     **它与「子代理」的位置刻意相反**：「子代理」（`chat.subagent-item`）是左栏**顶部**固定项
     （在「快速对话」下面、会话列表之上，因为它把**主区**切走），而「任务」只切换**右栏**里一块面板，
     放底部才不会与"切主区"的那组争夺视线。
+    （v19 起左栏**顶部固定项**共三个：`chat.quick-item` 快速对话 / `chat.subagent-item` 子代理 /
+    `chat.auto-item` 自动化 —— 后两个切的是**主区**，见下条「子代理独立页面」与「自动化页规格」。）
   - **会话归档（2026-09 新增）**：会话项 hover 时右侧浮出一枚「归档」图标钮
     （`data-action="chat.archive-session"`，单击即归档、**可逆、不弹确认**）；
     归档后该会话从主列表移入底部「已归档 · N」分组，**仍可点开继续对话**，此时主区头部给一条
@@ -203,7 +205,8 @@
     每次运行一张卡（`data-field="chat.subagent-run"`：状态点 + 任务简述 + 状态 + 工具调用数 +
     相对时间与耗时 + 「任务指令」折叠（点 `›` 展开）+ 运行轨迹 + 报告
     `data-field="chat.subagent-report"`）；无运行时给空状态说明。
-  - **它不是会话**：`view` 是 `chat/App.vue` 的独立状态（`'chat' | 'subagents'`），
+  - **它不是会话**：`view` 是 `chat/App.vue` 的独立状态
+    （`'chat' | 'subagents' | 'automations'`，第三项见下文「自动化页规格」），
     切过去**不动** `sessionId`、不触发水合、不清空消息；输入区与右栏照旧，随时可切回
     （页头「回到对话」按钮 `data-action="chat.subagent-back"`，左栏点任意会话也会切回）。
   - 数据来源：`useChat().subagentRuns` —— 实时 `subagent` 事件（本会话内存）与
@@ -489,6 +492,57 @@
 >   到 `expiresAt` 的倒计时与进度条（≤15s 变红），「拒绝 / 允许一次」回执。
 >   主进程在推送确认请求时会**主动显示并聚焦交互窗**，避免交互窗未打开时确认不可见而静默超时。
 
+### 自动化页规格（v19 新增，docs/13 §11）
+
+- **入口**：左栏顶部固定项「自动化」（`data-field="chat.auto-item"`，紧接「子代理」之下），
+  点击把**主区**切到自动化页（`view = 'automations'`）。它与子代理页**同构** ——
+  **不是会话**：切过去不动 `sessionId`、不触发水合、不清空消息，输入区与右栏照旧，
+  靠页头「返回对话」按钮（`data-action="automation-back"`）或左栏点任意会话切回。
+  `auto-` 前缀的自动化会话**不进左栏会话列表**（渲染层过滤，与 `center-` 会话同款口径，
+  见 docs/13 §7），回看那次对话的唯一入口是历史弹窗。
+- **骨架**：根锚点 `data-field="automation.page"`，列表容器 `data-field="automation.list"`；
+  顶部工具行 = 双 tab「Agent Mode」（`data-field="automation.tab-agent"`）/
+  「Normal Mode」（`automation.tab-normal`）+ 右侧「历史」（`data-action="automation.history"`）
+  与「新建自动化」（`data-action="automation.new"`）。**列表按当前 tab 过滤**
+  （Agent tab 只列 Agent 定义）。
+- **卡片**（`automation.item-<id>`）：启停开关（`data-field="automation.toggle"`，写定义的 `enabled`）+
+  名称 + 模式徽章 + 触发描述（「每天 08:30」「距上课 ≤ 5 分钟」，由触发器参数生成，各 kind 的语义见
+  docs/13 §4）+ 摘要（Agent Mode 显示任务指令、Normal Mode 显示操作摘要，如「系统通知「早读」」）+
+  右侧三枚图标钮：立即运行 / 编辑 / 删除（`data-action="automation.delete"`）。
+  **删除是两段式**：首次点击只翻成「再点一次确认删除」，**3 秒内**再点才真删（超时自动复位）——
+  删掉的是用户攒下的定义，一个误点不该抹掉它。
+- **内置区（仅 Normal tab）**：容器 `data-field="automation.builtin"`，两条 ClassRoom 内置自动化
+  （课前提醒 / 课前打开科目文件夹）带「内置」徽章，开关锚点
+  `data-field="automation.builtin-toggle"`，**直接写既有配置**
+  （`modes.classroom.preClassReminder` / `preClassOpenFolder`，走既有 `settings:update`），
+  **没有编辑 / 删除**；区底一行提示「内置自动化沿用 ClassRoom 的设置（提前分钟数 / 勿扰时段），
+  在「设置 → 模式」里调整」。语义与迁移口径见 docs/13 §6。
+- **编辑器弹窗**（仓库**首个 Modal**，`data-field="automation.editor"`）：遮罩用 `--overlay-scrim` +
+  `z-index: var(--z-popover)`，弹窗底色用 **`--bg-overlay`** —— 它是**弹层专用令牌**，
+  写 `--surface-1` 这类不存在的名字会解析成透明、页面内容直接透进来。字段自上而下：
+  名称 → 模式单选（两个 `.mode-option`）→ 触发器（类型下拉
+  `data-field="automation.trigger-kind"`，选项来自后端 catalog，当前 **7 类**：每天定时 /
+  固定间隔 / 距上课不足 N 分钟 / 上课时 / 距下课不足 N 分钟 / 下课时 / 下节课是指定科目）+
+  该触发器的**动态字段**（文本 / 数字 / 时间 / 星期多选 / 下拉，描述符形状见 docs/13 §4.3）→
+  Agent Mode 的任务指令 textarea，或 Normal Mode 的**操作组件列表**
+  （每项 `data-field="automation.action-<索引>"`，含组件下拉与动态字段；「添加操作」
+  `data-action="automation.add-action"`，**上限 10 个**，到顶即 disabled）。
+  底部「取消」（`data-action="automation.editor-cancel"`）/「保存」；三条关闭路径 ——
+  点遮罩（`@click.self`，点弹窗内部不关）、「取消」、**Esc**（组件在 `window` 上挂 `keydown`
+  监听：编辑器优先，其次是历史弹窗；历史里正展开某条运行回放时，第一下 Esc 只收回放 ——
+  与「一层一层退」的直觉一致）。
+- **历史弹窗**（`data-field="automation.history-panel"`，关闭钮
+  `data-action="automation.history-close"`）：列表容器 `data-field="automation.history-list"`，
+  每条显示**触发时间 + 归属自动化名 + 状态（成功 / 失败 / 进行中 / 已中断）+ 用时**；
+  同样**按当前 tab 过滤**（Agent tab 只列 Agent 运行）。**Agent 记录可点开**（行加 `.clickable`）
+  → 弹窗内展开**对话回放**（`.detail-message`，「任务」/「Agent」两侧气泡，数据经既有
+  `chat:history` 按 `sessionId` 读取，见 docs/13 §7；会话被删则显示「会话已被删除或还没有消息」）；
+  **Normal 记录不可点、没有详情层** —— 产品口径是「只显示触发时间与状态，不展示具体操作」。
+- **门控口径**：catalog 里 `available: false` 的操作组件（如未配置桥接时的 ClassIsland 提醒）
+  **在选项里不出现**，不是 `disabled` —— 与麦克风 / 朗读按钮同款口径。
+- **推送订阅**：`automation:changed` → 重拉列表；`automation:historyChanged` → 历史弹窗开着时重拉
+  （通道清单见 docs/13 §9）。
+
 ### 2.5 设置窗口
 
 - 单窗口分栏（**BetaV2**：8 页合并为 **6 页**；2026-09 重构起条目为图标 + 单行文字；v0.2.0 起新增 **Aurora Center** 页共 **7 页**）：侧栏按四组排列 —— **基础**（常规 `general` /
@@ -527,6 +581,9 @@
 - 模式页（**BetaV2**）：三模式卡片选择 + 引导状态；**只渲染当前模式的配置内容** ——
   ClassRoom 区组不变；Work 已实装，提供工作目录 `workspaceDir`（`data-field="modes.work.workspaceDir"`）
   等配置；Code 仍显示「暂无可配置项」空状态。
+  **v19 起页首另有「自动化」区组**（不跟模式门控，三模式都显示）：只有自动化总开关
+  （`data-field="automations.enabled"`，常显），说明文案指向主界面左栏的「自动化」入口 ——
+  自动化的定义与历史都在那边管理，设置页只放这一道闸门（见 docs/13 §2.2 / docs/08 §1）。
 - **ClassIsland 提醒通道与课前提前分钟数（2026-09 新增，见 `05 §3.4 v3`）**：
   ClassRoom →「课程表与课前提醒」分组内新增两项，门控口径：
   - `modes.classroom.preClassLeadMinutes`（数字输入 1–30，默认 5）——门控与
@@ -754,6 +811,8 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
      `chat-job-panel.png`（v15 右栏「任务」面板：夹具在跑计划前种下 `paused` 的
      `<userData>/jobs/main.json`（**必须早于面板首读**），场景只 reload 让面板重新挂载，act **不点任何按钮**）→
      `chat-subagent-page.png`（点左栏「子代理」固定项进页面，check 收尾切回对话流）→
+     `chat-automation.png` / `chat-automation-normal.png` / `chat-automation-editor.png` /
+     `chat-automation-history.png`（自动化页四连，v19；见下面「自动化页四连」一条）→
      `chat-thinking-block.png`（reload 水合 seed 思考块后点开）→ `chat-quick-session.png`（展开侧栏快速对话面板）→
      `chat-thinking-level.png` → `chat-model-picker.png` → `chat-tts.png`（reload，朗读按钮）→
      `chat-drag.png` → `chat-collapse.png`（点击写在 check 里，见下）→ `chat.png`（自动滚底）。
@@ -882,6 +941,31 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     轨迹步骤 ≥ 3、进度条 1 条、报告文本非空、导航项为激活态；check 收尾点「回到对话」并断言页面已消失
     —— 后续场景（composer / 自动滚底）依赖对话流在前台。
     这条同时验证「子代理快照随工具卡持久化 → 页面读回」这条链路（`06 §19`）；
+  - **自动化页四连**（`CHAT_AUTOMATION_*`，产物 `chat-automation.png` / `chat-automation-normal.png` /
+    `chat-automation-editor.png` / `chat-automation-history.png`，v19，docs/13 §11）：
+    现场由 `seedAutomationFixture` 种下 —— 1 份 Normal 定义（`am-capture1`「早读提醒」，
+    `daily 07:30`）+ 2 条历史（normal / agent 各一条，agent 那条指向种子会话 `auto-capture1`）
+    + 该会话文件（任务与回复各一条，均带探针标记 `capture-automation-run`）。
+    ⚠️ **与其它夹具不同：种完必须 reload 一次自动化引擎**（`AutomationEngine.reload()`）——
+    引擎在 `bootstrap()` 里就已启动、`AutomationStore` 首读即缓存空表（in-flight 的 `ensureLoaded`），
+    不重读就是「夹具写了、界面照样是空的」（首跑实测 0 条），机制同 `seedJobFixture` 那条注释；
+    四张连做**一条链**（共用一次进入，最后一张收尾还原主区）：
+    ① 点左栏 `chat.auto-item` 进页面 → 断言 `automation.page` / 双 tab /「历史」/「新建自动化」/
+    「返回对话」锚点都在、左栏项为 **`.active`**；
+    ② 点 `automation.tab-normal` → 断言 `automation.builtin` 在、`automation.builtin-toggle`
+    **恰好 2**（两条内置）、自建项 `automation.item-am-capture1` 恰好 1、`automation.toggle`
+    恰好 1（切到 Normal tab 后 Agent 定义不在列表里 —— 顺带钉住「按 tab 过滤」）；
+    ③ 点 `automation.new` → 断言触发器下拉 `automation.trigger-kind` 的 option **≥ 7**
+    （catalog 七类）、至少 1 行操作组件（`[data-field^="automation.action-"] select`）、
+    名称输入框与数字字段都在，然后点 `automation.editor-cancel` 并断言弹窗**已消失**
+    （不留残影，后续场景还要操作列表）；
+    ④ 先切回 Agent tab 再点「历史」→ 点开一条 Agent 记录（`.run-item.clickable`）断言
+    `.detail-message` **≥ 2** 且面板文本含 seed 标记（证明回放的是**真实会话**，不是占位）；
+    随后关弹窗 → 切 Normal tab → 重开历史，断言 Normal 记录 `clickable === 0`
+    （**不可点、无详情层**，产品口径）且 `.run-time` 存在；
+    收尾关弹窗 + 点「返回对话」断言页面消失（后续 `chat-classisland-status` 等场景依赖对话流在前台）。
+    这一组同时钉住三条产品语义：**按 tab 分别过滤**、**两种记录的详情口径不同**、
+    自动化页与子代理页一样是**主区替换内容**（不属任何会话）；
   - **右栏开关**（`CHAT_RIGHT_PANEL_TOGGLE_ACT` / `CHAT_RIGHT_PANEL_TOGGLE_CHECK`，
     产物 `chat-right-panel-toggle.png`，BetaV2）：act 内点两次 `chat.right-panel-toggle`
     走「展开 → 收起 → 展开」，三态记录暂存渲染层；check 断言三态全部成立、且截图时刻右栏
@@ -949,7 +1033,9 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     `SETTINGS_MODES_CLASSROOM_SCRIPT`）：ClassRoom 生效时 classroom 区组在（`watchDir` 恰好一行）、
     work 区组**整块不在**（互斥渲染，BetaV2 起 WorkSection 有真字段，数到 `modes.work.*` 即回归）、
     课前提醒组按课表节次二选一 —— `modes.classroom.preClassOpenFolder` 或
-    `data-empty="modes.classroom.preClassReminder"` 必须出现其一；
+    `data-empty="modes.classroom.preClassReminder"` 必须出现其一、
+    自动化总开关 `automations.enabled` **恰好 1 个**（v19 新增断言：它是**常显**字段，
+    数到 0 就说明「自动化」区组整块没渲染 —— 与 `agent.tools.enabled` 同款「总开关必须能改回来」）；
     **llm 页**（`SETTINGS_LLM_FIELDS_SCRIPT`）：`general.chat.showThinking`（v8 新字段，思考块唯一门控）
     与 `imagegen.enabled` / `imagegen.active`（v8 新 provider 体系）常在，
     生图 provider 列表与 TTS / STT 同一套二选一（空 → `data-empty="imagegen.providers"`，非空 → 行容器）；
@@ -1066,11 +1152,13 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     （真实拖动仍可手测）——处置结论必须写进该步的执行记录。
   - **交互窗场景的全局顺序（BetaV2 更新）**：`theme-chat`（双主题）→ `chat-sidebar` →
     `chat-right-panel-toggle` → `chat-right-panel-work` → `chat-subagent-page` →
+    `chat-automation`（含 `-normal` / `-editor` / `-history` 三张）→
     `chat-thinking-block` → `chat-quick-session` → `chat-thinking-level` → `chat-model-picker` →
     `chat-tts` → `chat-drag` → `chat-collapse` → `chat.png`
     （上面这条链只是**已知条目**，不是清单全集：`chat-composer-slash` / `chat-composer-permission` /
     `chat-classisland-status` 也属于本组，2026-09-26 又新增了 `chat-composer-flyouts` /
-    `chat-tool-card-open` / `chat-archive` / `chat-stream-burst`。**真实顺序与条数以 `report.json` 为准**，
+    `chat-tool-card-open` / `chat-archive` / `chat-stream-burst`，v19 再加 `chat-automation*` 四连。
+    **真实顺序与条数以 `report.json` 为准**，
     改顺序时不要照这份清单核对。）
     （`theme-chat` 排在全部交互窗场景之前，因为主题图要拍"未配置模型"的基线态；
     `chat-sidebar` 排在一切改配置 / 改会话的场景之前，它断言的是隔离 userData 的**出厂门控现场**；

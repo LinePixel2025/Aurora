@@ -274,6 +274,8 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
     delete center['tokenEnc']
     Object.assign(draft.center, center)
   }
+  // 自动化总开关（v19，docs/13 §2.2）：顶层浅合并（当前只有一个字段，形状上留扩展余地）。
+  if (patch.automations !== undefined) Object.assign(draft.automations, patch.automations)
 
   return cleared
 }

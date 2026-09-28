@@ -659,6 +659,27 @@ const migrateV17ToV18: Migration = {
   },
 }
 
+/**
+ * v18 → v19：新增自动化分组（docs/13）。
+ *
+ * 只有一个总开关 `automations.enabled`（默认 true）——自动化的定义与历史是用户数据，
+ * 落在 `<userData>/automations/` 独立存储，不走迁移链。迁移只补默认值、
+ * 不覆盖用户已写值；缺分组补整组，已有分组原样保留（幂等）。
+ */
+const migrateV18ToV19: Migration = {
+  from: 18,
+  to: 19,
+  describe: 'v18 → v19：新增 automations 分组（自动化总开关，默认开启）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    if (next['automations'] === undefined) {
+      next['automations'] = { enabled: true }
+    }
+    next['version'] = 19
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -678,6 +699,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV15ToV16,
   migrateV16ToV17,
   migrateV17ToV18,
+  migrateV18ToV19,
 ]
 
 export interface MigrationOutcome {

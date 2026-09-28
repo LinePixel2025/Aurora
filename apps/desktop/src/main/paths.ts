@@ -1,7 +1,7 @@
 /**
  * ClassRoom Mode 的路径解析（docs/05 §2 ③、docs/05 §3.2）。
  *
- * 单独成文件的原因：分类管线（`classify/paths.ts`）、课前提醒（`pre-class-reminder.ts`）
+ * 单独成文件的原因：分类管线（`classify/paths.ts`）、自动化的「打开科目文件夹」操作组件
  * 与 IPC 的 `app:openPath` 必须用**同一套**规则解析「科目（或兜底目录）→ 目标目录」，
  * 否则会出现"分类移到 A、点开却打开 B"这类不一致。
  *

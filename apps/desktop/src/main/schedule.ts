@@ -128,7 +128,7 @@ export function lessonKey(lesson: Lesson): string {
  * - `firedKeys` 为已触发集合，命中即跳过，保证同一节课只触发一次；
  *   返回值只包含本次新触发的项，调用方负责把 `key` 记入集合。
  * - 跨天：同时考察「当日」与「次日」两个候选时刻，因此 23:5x 启动时
- *   次日 00:0x 的课也能触发（provider 需要提供次日课程，见 `PreClassReminder`）。
+ *   次日 00:0x 的课也能触发（provider 需要提供次日课程，见 `automation/engine.ts` 的 `collectLessons`）。
  * - 非法时间（无法解析的 "HH:mm"）与非法星期直接跳过，绝不抛错。
  * - 返回值按 `minutesUntil` 升序，便于"最紧急的课先提醒"。
  */

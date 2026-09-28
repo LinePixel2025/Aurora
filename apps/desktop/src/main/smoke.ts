@@ -911,6 +911,102 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       JSON.stringify(preClass),
     )
 
+    // ───────────────────── 自动化（docs/13） ─────────────────────
+    // 课前提醒已由「内置自动化」承接（docs/13 §6）：上面那条断言仍成立，但落点不同 ——
+    // 这里进一步断言「它真的落进了自动化运行历史」（run 状态 success、automationId 是内置 id），
+    // 也就是「触发 → 引擎 → 历史」这条新链路真的跑通，而不只是通知弹出过。
+    const autoRuns = await waitFor(
+      async () => {
+        const result = await window.aurora.automation.history({ mode: 'normal', limit: 20 })
+        return result && result.ok ? result.value : []
+      },
+      (runs) => Array.isArray(runs) && runs.some((run) => run.automationId.indexOf('builtin.') === 0),
+      15000,
+    )
+    const builtinRun = Array.isArray(autoRuns)
+      ? autoRuns.find((run) => run.automationId.indexOf('builtin.') === 0)
+      : undefined
+    record(
+      '内置课前提醒落进自动化历史（触发 → 引擎 → 历史 链路）',
+      Boolean(builtinRun && builtinRun.mode === 'normal' && builtinRun.status === 'success'),
+      JSON.stringify(builtinRun ?? null),
+    )
+
+    // 手动触发一次自建自动化（Agent Mode）：断言运行记录 + 专属会话（sessionId 以 auto- 开头）。
+    // 模型未配置时 agent.send 会立刻报错 —— 那也算「链路跑通」，只是终态为 failed；
+    // 因此这里只钉「有记录、有会话 id、终态不再是 running」，不假装它一定成功。
+    const created = await window.aurora.automation.save({
+      id: '',
+      name: '自测自动化',
+      enabled: true,
+      mode: 'agent',
+      trigger: { kind: 'daily', params: { at: '23:59', weekdays: [] } },
+      prompt: '自测：这是一条自动化触发的任务指令。',
+      createdAt: '',
+      updatedAt: '',
+    })
+    record('自动化学会创建自建自动化（agent 模式）', created.ok === true, JSON.stringify(created))
+    const createdId = created.ok ? created.value.id : ''
+    if (createdId !== '') {
+      const triggered = await window.aurora.automation.run({ id: createdId })
+      record('手动触发自动化返回 runId', triggered.ok === true, JSON.stringify(triggered))
+      const agentRun = await waitFor(
+        async () => {
+          const result = await window.aurora.automation.history({ automationId: createdId, limit: 5 })
+          return result && result.ok ? result.value : []
+        },
+        (runs) =>
+          Array.isArray(runs) && runs.length > 0 && runs[0].status !== 'running',
+        20000,
+      )
+      const first = Array.isArray(agentRun) ? agentRun[0] : undefined
+      record(
+        'Agent 模式运行落历史并拿到专属会话 id（auto- 前缀）',
+        Boolean(
+          first &&
+            first.mode === 'agent' &&
+            typeof first.sessionId === 'string' &&
+            first.sessionId.indexOf('auto-') === 0,
+        ),
+        JSON.stringify(first ?? null),
+      )
+      record(
+        'Agent 运行收尾（status 不再是 running，带用时）',
+        Boolean(first && first.status !== 'running' && typeof first.durationMs === 'number'),
+        JSON.stringify(first ?? null),
+      )
+      // 该会话确实落了盘（自动化历史里的对话回放依赖它）
+      const history = await window.aurora.chat.history({
+        sessionId: first && first.sessionId ? first.sessionId : '',
+        limit: 10,
+      })
+      record(
+        '自动化会话可回放（chat:history 读到任务指令）',
+        history.ok === true && Array.isArray(history.value) && history.value.length > 0,
+        JSON.stringify(history.ok ? history.value.length : history),
+      )
+      // 收尾：删掉自测创建的定义，避免污染后续断言与用户数据
+      const removed = await window.aurora.automation.delete({ id: createdId })
+      record('自测自建自动化可删除', removed.ok === true, JSON.stringify(removed))
+    }
+
+    // 组件目录（catalog）：渲染层编辑器与 AI 工具都靠它，这里断言基本形状
+    const catalog = await window.aurora.automation.catalog()
+    record(
+      '组件目录含全部触发器（7 类）与操作组件（3 类）',
+      catalog.ok === true &&
+        catalog.value.conditions.length === 7 &&
+        catalog.value.actions.length === 3,
+      JSON.stringify(
+        catalog.ok
+          ? {
+              conditions: catalog.value.conditions.length,
+              actions: catalog.value.actions.length,
+            }
+          : catalog,
+      ),
+    )
+
     // ───────────────────── 敏感工具确认通道（P5，docs/06 §5） ─────────────────────
     // 渲染层只断言订阅面可用（真实确认往返由单测覆盖，
     // 这里若真的触发一次会阻塞 60s 等超时，不适合自测）

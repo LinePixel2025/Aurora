@@ -7,7 +7,17 @@
 
 ## 当前实现状态
 
-**当前版本 v0.2.0（Aurora Center 轮），配置 Schema v16** —— 2026-09-27 的 **Aurora Center 轮**落地[网页控制中心](./12-aurora-center.md)（独立服务器 + Web 控制台 + CLI，`packages/center`）与桌面端接入（远程会话 / 远程配置白名单 / 文件发送 / `center_status`·`center_send_file` 工具），并带来 **Agent 能力增强**（`create_skill` 内置技能 + 用户技能目录自动重扫、模式能力对齐 docs/05 §6）。
+**当前版本 v0.2.5（自动化轮），配置 Schema v19** —— **自动化（Automation）** 落地两种模式：
+**Agent Mode**（定时 / 课堂条件触发后跑一次完整 Agent 会话，历史里可回放该次对话）与
+**Normal Mode**（触发后按预设操作组件执行：系统通知 / ClassIsland 提醒 / 打开文件夹）；
+触发器 7 类（每天定时 / 固定间隔 + 距上课 / 上课中 / 距下课 / 下课时 / 下节课是某科目），
+ClassRoom 既有的**课前提醒与课前自动打开科目文件夹**改由内置自动化承接（行为不变，
+`PreClassReminder` 服务退役）；主界面左栏新增「自动化」页（双 tab + 编辑器 + 历史弹窗）、
+Agent 六件套工具与 `automation` 技能（可与 AI 对话建自动化）、Aurora Center 网页端
+`#/automations` 视图；设计见 [13](./13-automation.md)、面向用户的说明见
+[release-notes/v0.2.5.md](./release-notes/v0.2.5.md)。
+
+**v0.2.0（Aurora Center 轮），配置 Schema v16** —— 2026-09-27 的 **Aurora Center 轮**落地[网页控制中心](./12-aurora-center.md)（独立服务器 + Web 控制台 + CLI，`packages/center`）与桌面端接入（远程会话 / 远程配置白名单 / 文件发送 / `center_status`·`center_send_file` 工具），并带来 **Agent 能力增强**（`create_skill` 内置技能 + 用户技能目录自动重扫、模式能力对齐 docs/05 §6）。
 2026-09-26 的**生产化主线轮**把四项能力落地并验证（项目机制 / 三档权限 / 写前快照 / 可续跑任务），2026-09-27 的**安全加固轮**兑现 v0.1.5 披露的三个已知问题并封堵零弹卡越界写入逃逸链：
 **项目机制**（顶层 `projects` 分组：当前项目决定项目根与项目级 `AGENTS.md` 注入）、
 **三档权限**（`agent.permissionMode ∈ {readonly, confirm, auto}`）、
@@ -409,6 +419,7 @@
 | 10 | [10-user-guide.md](./10-user-guide.md) | 用户手册：安装、引导、各窗口、ClassRoom、ClassIsland、代理、排障 | 用户文档 |
 | 11 | [11-privacy.md](./11-privacy.md) | 隐私说明：数据位置、凭据加密、出网场景、权限清单 | 合规说明 |
 | 12 | [12-aurora-center.md](./12-aurora-center.md) | Aurora Center：网页控制中心（服务器 / Web UI / CLI / 客户端连接器 / Center 工具） | 远程控制 |
+| 13 | [13-automation.md](./13-automation.md) | 自动化：Agent Mode / Normal Mode、触发器与操作组件、内置自动化、Center 远程管理 | 功能设计 |
 
 ## 阅读顺序建议
 

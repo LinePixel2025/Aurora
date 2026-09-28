@@ -171,6 +171,8 @@ function settingsWith(overrides: {
       allowFileTransfer: true,
       maxFileMb: 64,
     },
+    // v19 新增顶层分组（自动化，docs/13）：本用例不涉及自动化，保持默认态
+    automations: { enabled: true },
   }
 }
 

@@ -24,6 +24,22 @@ const busy = ref<ModeId | null>(null)
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
 
+/** 自动化总开关（v19，docs/13 §2.2）：本地镜像 + 显式保存（与其它页同一写盘链） */
+const automationsEnabled = ref(settingsStore.settings?.automations.enabled ?? true)
+
+async function saveAutomationsEnabled(): Promise<void> {
+  const ok = await settingsStore.update({
+    automations: { enabled: automationsEnabled.value },
+  })
+  if (ok) {
+    message.value = '已保存'
+    error.value = null
+  } else {
+    error.value = settingsStore.error ?? '保存失败'
+    automationsEnabled.value = settingsStore.settings?.automations.enabled ?? true
+  }
+}
+
 /** 展开「次级操作」的卡片（同一时刻只展开一张） */
 const openActions = ref<ModeId | null>(null)
 
@@ -76,6 +92,28 @@ async function markDone(id: ModeId): Promise<void> {
 
     <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
     <AppToast v-if="error" tone="error">{{ error }}</AppToast>
+
+    <!-- 自动化总开关（v19，docs/13 §2.2）：管理入口在主界面左栏「自动化」 -->
+    <section class="section-card auto-section" data-field="automations">
+      <div class="auto-row">
+        <div class="auto-text">
+          <strong>自动化</strong>
+          <p class="tiny muted">
+            允许按定时或课堂条件自动执行任务（Agent Mode / Normal Mode）；关闭后已有自动化暂停评估，
+            入口在主界面左栏的「自动化」。
+          </p>
+        </div>
+        <label class="auto-switch" :title="automationsEnabled ? '关闭自动化' : '开启自动化'">
+          <input
+            v-model="automationsEnabled"
+            type="checkbox"
+            data-field="automations.enabled"
+            @change="saveAutomationsEnabled"
+          />
+          <span class="track" aria-hidden="true"><span class="thumb" /></span>
+        </label>
+      </div>
+    </section>
 
     <div class="cards">
       <article
@@ -234,5 +272,78 @@ async function markDone(id: ModeId): Promise<void> {
 
 .warn-text {
   color: var(--status-unread);
+}
+
+/* 自动化总开关区组：单行「说明 + 开关」，弱于模式卡片的视觉重心 */
+.auto-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.auto-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.auto-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.auto-text p {
+  margin: 0;
+}
+
+.auto-switch {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.auto-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+
+.auto-switch .track {
+  display: inline-flex;
+  align-items: center;
+  width: 34px;
+  height: 20px;
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--fill-3);
+  transition: background var(--transition-fast);
+}
+
+.auto-switch .thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--surface-1);
+  box-shadow: var(--shadow-hairline);
+  transition: transform var(--transition-fast);
+}
+
+.auto-switch input:checked + .track {
+  background: var(--aurora-blue);
+}
+
+.auto-switch input:checked + .track .thumb {
+  transform: translateX(14px);
+}
+
+.auto-switch input:focus-visible + .track {
+  outline: 2px solid var(--aurora-blue);
+  outline-offset: 2px;
 }
 </style>

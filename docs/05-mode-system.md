@@ -139,7 +139,7 @@ export interface ModeGuide {
 > - 修正会把文件移到新科目、把该条标记 `corrected: true`，并由修正记录**沉淀为学习规则**
 >   （见 §3.2 ④）——同一类文件名再次出现时 `source` 为 `rule`，不再消耗模型调用。
 
-### 3.4 上课前自动打开科目文件夹
+### 3.4 课前提醒与上课前自动打开科目文件夹
 
 - **v1（手动课程表）**：设置中维护每周课程表（星期 × 节次 → 科目）；课前 N 分钟系统通知 + 自动打开该科目文件夹（explorer）。N = `modes.classroom.preClassLeadMinutes`（默认 5，范围 1–30，v10 起可配）。
 - **v2（ClassIsland 联动）**：通过 ClassIsland（开源桌面课程表应用）读取课程表，替代手动课程表。预留接口，实现可插拔：
@@ -151,14 +151,34 @@ export interface IScheduleProvider {
 }
 ```
 
-> **实现说明（v0.5.0）**：`IScheduleProvider` 落地在 `apps/desktop/src/main/schedule.ts`，
-> 除 `manual` 与 `classisland` 占位实现外，另导出纯函数 `preClassTrigger()`（判定「课前进度窗口内
-> 应触发哪些课」，处理跨天、非法时间、同一节课只触发一次、**应用启动时的补偿触发**）、
-> `parseClock()`、`lessonKey()` 与 `needsNextDayLessons()`。
-> 定时与副作用在 `pre-class-reminder.ts`（30s tick）：命中后先记 `firedKeys` 再发通知 / 打开目录，
-> 因此通知或打开失败都不会每 30s 重复刷屏；受 `modes.classroom.preClassReminder` 与勿扰时段约束。
-> 课前进度窗口自 **v10** 起取自 `modes.classroom.preClassLeadMinutes`（默认 5 分钟，
-> 装配层 `main/index.ts` 每次构造时注入；此前是常量 `DEFAULT_LOOKAHEAD_MINUTES = 5`）。
+> **实现说明（v0.5.0；v0.2.5 起迁到自动化引擎）**：`IScheduleProvider` 落地在
+> `apps/desktop/src/main/schedule.ts`，除 `manual` 与 `classisland` 占位实现外，另导出纯函数
+> `preClassTrigger()`（判定「课前进度窗口内应触发哪些课」，处理跨天、非法时间、同一节课只触发一次、
+> **应用启动时的补偿触发**）、`parseClock()`、`lessonKey()` 与 `needsNextDayLessons()`。
+> 定时与副作用自 **v0.2.5** 起由**自动化引擎的内置自动化**承接（见下与 docs/13 §6）：
+> 原 `pre-class-reminder.ts` 的 `PreClassReminder` 服务**已删除**，
+> `schedule.ts` 的 `preClassTrigger` / `needsNextDayLessons` 纯函数**保留**下来给触发条件评估复用。
+> 既有行为逐字保留——命中后先记去重键再动手（通知或打开失败都不会重复刷屏）、
+> 受 `modes.classroom.preClassReminder` 与勿扰时段约束；课前进度窗口自 **v10** 起取自
+> `modes.classroom.preClassLeadMinutes`（默认 5 分钟，此前是常量 `DEFAULT_LOOKAHEAD_MINUTES = 5`），
+> 现在由引擎**每次评估现读**，改设置无需重启（此前由装配层在构造时注入）。
+
+> **课前提醒 = 内置自动化（v0.2.5，docs/13 §6）**：课前提醒不再是 ClassRoom 自有的定时服务，
+> 而是自动化引擎里的一条**内置自动化**——它出现在**主界面「自动化 → Normal Mode → 内置」**区，
+> 开关**直接映射既有配置字段**，不另立状态：
+
+| id | 触发 | 操作 | 启用条件（引擎每次 tick 现读，勿扰时段在触发判定里跳过） |
+|---|---|---|---|
+| `builtin.pre-class-notify` | `pre-class`（提前窗口现读 `modes.classroom.preClassLeadMinutes`） | `system-notify`：标题「课前提醒：<科目>」、正文「HH:mm 上课，还有 N 分钟」、点击通知打开科目文件夹 | 当前模式 = `classroom` **且** `modes.classroom.preClassReminder` |
+| `builtin.pre-class-open-folder` | 同上（同一节课、同一 `lessonKey` 去重） | `open-folder`（`target: 'subject'`，科目取自触发的课） | 当前模式 = `classroom` **且** `modes.classroom.preClassOpenFolder` |
+
+- **引擎常驻、15s 节拍、每次现读配置**（引擎不随模式启停；改设置无需重启——同一条内置自动化
+  的去重键仍是 `<lessonKey>`，因此每节课只触发一次）；
+- **「自动打开科目文件夹」同样是内置自动化**（`open-folder` 操作组件），不是通知里的旁路副作用：
+  两条内置自动化可分别开关，但共用同一次课前判定；
+- 两条内置自动化**不可删除、不进编辑器**，启停即既有配置开关（设置页 / 主界面开关同一份字段），
+  触发历史照常进「自动化 → 历史」（Normal Mode 只记触发时间与成败）；
+- **自动分类不在这轮迁移内**：它仍是独立的分类管线（§3.2），与自动化引擎无关。
 
 #### v2 实现说明（v0.6.0）：ClassIsland 联动
 
@@ -171,7 +191,7 @@ Aurora 是 Node/Electron 应用，无法直接消费上述任何一种。因此�
 ClassIsland ──(C# 插件)──▶ 本地 JSON 契约 ──(读文件 / 读回环端点)──▶ Aurora 的 ClassIslandProvider
                                                                         │
                                           ┌─────────────────────────────┴───────────────────┐
-                                    感知摘要（今日课程）        课前提醒（课前 5 分钟打开科目文件夹）
+                                    感知摘要（今日课程）                课前提醒（内置自动化）
 ```
 
 **数据契约**（Aurora 侧 `main/classisland.ts` 的 `ClassIslandPayload`）：
@@ -311,6 +331,11 @@ ClassRoom 的系统提示词会附上「你可以修改的 ClassRoom 设置」�
 
 `schedule.provider = classisland` 时，课程表来自 ClassIsland 桥接插件，感知摘要包含今日课程与
 当前 / 下节课状态（见 §3.4 v2）；此时课前提醒改用桥接课表，手动课表条目不再参与。
+
+> **课堂自动操作的基座口径（v0.2.5）**：ClassRoom 的自动操作基座已换成**自动化引擎**
+> （课表条件 → 触发 → 内置动作，§3.4）。后续新增的课堂自动操作（铃声前后动作、课后清理、
+> 按科目切换某处状态等）应作为**内置自动化**或**用户自动化**接入，
+> **不要另外写定时服务**——否则「改了设置不生效」「与引擎抢触发」这类坑会重新长出来。
 
 ## 4. Work Mode（BetaV2 初步实装）与 Code Mode（占位）
 

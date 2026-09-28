@@ -8,6 +8,11 @@
  * 变化时强制断开重连 —— 换服务器不能还挂在旧连接上。
  */
 import type {
+  AutomationCatalog,
+  AutomationDefinition,
+  AutomationHistoryQuery,
+  AutomationListResult,
+  AutomationRun,
   CenterClientMessage,
   CenterCommand,
   CenterProjectOption,
@@ -39,6 +44,26 @@ export interface CenterConfig {
   allowRemoteSession: boolean
   allowRemoteConfig: boolean
   allowFileTransfer: boolean
+}
+
+/**
+ * 远程自动化管理端口（docs/13 §10）：客户端存数据、连接器只透传。未注入时相关
+ * 命令一律回 `E_SESSION_NOT_FOUND`（老装配器兼容，与 sessionManager 同款语义）。
+ */
+export interface AutomationRemotePort {
+  /** 枚举自动化（user + builtin） */
+  list(): Promise<AutomationListResult>
+  /** 触发器 / 操作组件的表单元数据（编辑器动态渲染用） */
+  catalog(): AutomationCatalog
+  /** 校验并保存（id 为空 = 新建）；非法定义回 error 文案，绝不写半份数据 */
+  save(
+    input: unknown,
+  ): Promise<{ ok: true; definition: AutomationDefinition } | { ok: false; error: string }>
+  delete(id: string): Promise<{ ok: boolean; error?: string }>
+  /** 手动触发一次；返回 runId（Agent Mode 下同时是会话 id） */
+  run(id: string): Promise<{ ok: true; runId: string } | { ok: false; error: string }>
+  /** 运行历史（triggeredAt 倒序） */
+  history(query?: AutomationHistoryQuery): Promise<AutomationRun[]>
 }
 
 export interface CenterConnectorDeps {
@@ -104,6 +129,8 @@ export interface CenterConnectorDeps {
       reasoningEffort?: ReasoningEffort
     }): Promise<{ ok: boolean; error?: string }>
   }
+  /** 远程自动化管理（docs/13 §10）：与远程会话同组，受 allowRemoteSession 闸门 */
+  automation?: AutomationRemotePort
   /**
    * 结算一张在途敏感工具确认卡（`confirm.resolve` 命令，docs/12 §5.1）。
    * 返回是否命中（false = 已超时 / 已被本地结算 / id 未知）；未注入时不拦截。
@@ -508,6 +535,72 @@ export class CenterConnector {
           }
         } catch (error) {
           this.logger.warn('远程会话管理命令执行失败', {
+            kind: cmd.kind,
+            error: String(error),
+          })
+          reply(false, undefined, 'E_UNKNOWN')
+        }
+        return
+      }
+      // ── 远程自动化管理（docs/13 §10）：客户端存数据、连接器只透传。自动化是
+      // 会话级能力，与远程会话同组受 allowRemoteSession 闸门（session.list 同款拒绝语义）
+      case 'automation.list':
+      case 'automation.catalog':
+      case 'automation.save':
+      case 'automation.delete':
+      case 'automation.run':
+      case 'automation.history': {
+        if (!config.allowRemoteSession) {
+          reply(false, undefined, 'E_REMOTE_DISABLED')
+          return
+        }
+        const port = this.deps.automation
+        if (port === undefined) {
+          reply(false, undefined, 'E_SESSION_NOT_FOUND')
+          return
+        }
+        try {
+          switch (cmd.kind) {
+            case 'automation.list': {
+              reply(true, await port.list())
+              return
+            }
+            case 'automation.catalog': {
+              reply(true, port.catalog())
+              return
+            }
+            case 'automation.save': {
+              // definition 原样透传（合法化校验在引擎的 validateDefinition）
+              const result = await port.save(cmd.definition)
+              if (result.ok) reply(true, result.definition)
+              else reply(false, undefined, result.error)
+              return
+            }
+            case 'automation.delete': {
+              const result = await port.delete(cmd.id)
+              reply(result.ok, undefined, result.error)
+              return
+            }
+            case 'automation.run': {
+              const result = await port.run(cmd.id)
+              if (result.ok) reply(true, { runId: result.runId })
+              else reply(false, undefined, result.error)
+              return
+            }
+            case 'automation.history': {
+              reply(
+                true,
+                await port.history({
+                  ...(cmd.automationId === undefined ? {} : { automationId: cmd.automationId }),
+                  ...(cmd.mode === undefined ? {} : { mode: cmd.mode }),
+                  ...(cmd.limit === undefined ? {} : { limit: cmd.limit }),
+                }),
+              )
+              return
+            }
+          }
+        } catch (error) {
+          this.logger.warn('远程自动化命令执行失败', {
             kind: cmd.kind,
             error: String(error),
           })

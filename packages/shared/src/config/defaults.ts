@@ -285,6 +285,13 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     allowFileTransfer: true,
     maxFileMb: 64,
   },
+  /**
+   * 自动化（v19，docs/13）：总开关默认开启。自动化的定义与历史是用户数据，
+   * 落在 `<userData>/automations/*.json` 独立存储、不进配置（见 AutomationsSchema 注释）。
+   */
+  automations: {
+    enabled: true,
+  },
 }
 
 /** 返回一份全新的默认配置（避免调用方共享同一引用）。 */

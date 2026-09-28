@@ -157,6 +157,23 @@ export const IPC = {
     /** 取消在途的设备授权轮询（设置页关闭时调用；幂等） */
     deviceLoginCancel: 'center:deviceLoginCancel',
   },
+  /**
+   * 自动化（v0.2.5，docs/13 §9）：定义 CRUD + 历史 + 手动触发 + 组件目录。
+   * 定义与历史存储在 `<userData>/automations/*.json`（不进配置）；
+   * 内置自动化的启停走既有 `settings:update`（`modes.classroom.preClass*`），不经这里。
+   */
+  automation: {
+    list: 'automation:list',
+    save: 'automation:save',
+    delete: 'automation:delete',
+    history: 'automation:history',
+    run: 'automation:run',
+    catalog: 'automation:catalog',
+    /** 定义变化推送（on/off 成对）：各窗口重拉 list */
+    changed: 'automation:changed',
+    /** 运行记录落库 / 状态变化推送（on/off 成对）：历史面板开着时重拉 */
+    historyChanged: 'automation:historyChanged',
+  },
 } as const
 
 export type IpcChannel =
@@ -179,3 +196,4 @@ export type IpcChannel =
   | (typeof IPC.proactive)[keyof typeof IPC.proactive]
   | (typeof IPC.mcp)[keyof typeof IPC.mcp]
   | (typeof IPC.update)[keyof typeof IPC.update]
+  | (typeof IPC.automation)[keyof typeof IPC.automation]
