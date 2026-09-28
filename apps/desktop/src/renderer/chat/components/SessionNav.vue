@@ -381,6 +381,9 @@ function formatRelativeTime(iso: string): string {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  /* 32px 下限：左栏固定项（快速对话 / 子代理 / 自动化）是高频点击，量出来原来只有 30px
+     （`chat-hit-targets` 探针；类名是历史命名，别被 `.quick-item` 误导成"只给快速对话用"） */
+  min-height: 32px;
   padding: 6px var(--space-2) 6px var(--space-3);
   border-radius: var(--radius-sm);
   font-weight: var(--weight-medium);
@@ -468,6 +471,9 @@ function formatRelativeTime(iso: string): string {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
+  /* 32px：固定项（快速对话 / 子代理 / 自动化）与会话行都是高频点击，
+     量出来原来只有 30px（`chat-hit-targets` 探针），补到 32 的手感线 */
+  min-height: 32px;
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -508,8 +514,10 @@ function formatRelativeTime(iso: string): string {
   flex: 0 0 auto;
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  /* 24×24：WCAG 2.2 SC 2.5.8（AA）的指针目标下限 —— 22px 在鼠标/触控板上就是"点了没反应"
+     （2026-09-29 用 `chat-hit-targets` 探针量出来的真实违例，别再压回去） */
+  width: 24px;
+  height: 24px;
   margin-right: var(--space-1);
   border-radius: var(--radius-xs);
   color: var(--text-muted);
@@ -608,8 +616,9 @@ function formatRelativeTime(iso: string): string {
   position: relative;
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  /* 32px：底部工具行（右栏开关 / 设置）与固定项同级，量出来原来 28px */
+  width: 32px;
+  height: 32px;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   transition:

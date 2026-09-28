@@ -1375,6 +1375,8 @@ async function markGuideDone(): Promise<void> {
   align-items: center;
   gap: var(--space-2);
   width: 100%;
+  /* 32px 下限：与左栏固定项同级的高频入口（`chat-hit-targets` 量出来原来 30px） */
+  min-height: 32px;
   padding: 6px var(--space-2) 6px var(--space-3);
   border-radius: var(--radius-sm);
   font-weight: var(--weight-medium);

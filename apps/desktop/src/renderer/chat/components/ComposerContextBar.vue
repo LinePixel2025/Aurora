@@ -262,6 +262,9 @@ const cachedText = computed(() => {
   align-items: center;
   gap: 6px;
   width: 100%;
+  /* 24px 下限：整条可点（宽 553px），但原来只有 22px 高 —— 高度低于 WCAG 2.2 SC 2.5.8 的
+     24×24 下限时，鼠标在上面按下/抬起稍有位移就会"点空"（`chat-hit-targets` 量出来的违例） */
+  min-height: 24px;
   padding: 5px 2px 0;
   border: 0;
   background: transparent;

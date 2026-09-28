@@ -1643,6 +1643,111 @@ export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
  * 本场景不改任何状态，排在 chat 场景最前（theme-chat 之后、一切改配置/改会话的场景之前），
  * 保证读到的是出厂门控现场。
  */
+/**
+ * 主界面**点击成本**盘点（`chat-hit-targets.png`，2026-09-29，docs/07 §5.4）。
+ *
+ * 起因：用户反馈「主界面按钮的位置不太合理，用户点击的成本大」。位置属于偏好，但
+ * **命中面积**是客观可量的 —— 小到 22×22 的按钮在鼠标/触控板上就是「点了没反应」。
+ * 本探针把四个区（左栏 / 标题栏 / 输入区 / 消息区）里**所有可见的可交互控件**量一遍，
+ * 按两条标准判定：
+ * - **WCAG 2.2 SC 2.5.8（AA）**：任何指针目标 ≥ **24×24 CSS px** —— 硬性下限；
+ * - **本仓的 `--hit-target: 40px` 口径的降级版**：主要动作（新建会话 / 固定项 /
+ *   输入区的发送与麦克风 / 标题栏 caption）≥ **32×32** —— 高频点击的手感线。
+ *
+ * 探针只量**渲染出来的目标**（按钮 / 下拉 / 链接），不量里面的图标 ——
+ * 图标小不是问题，它所在的按钮才是命中区（这条区分是"别把装饰当控件"）。
+ * 透明但占位的控件（会话行的归档钮，`opacity: 0` + 悬停显形）**照样要量**：
+ * 它保持着可命中性，尺寸不达标同样是坏手感。
+ */
+export const CHAT_HIT_TARGETS_CHECK = `(() => {
+  try {
+    const ABS_MIN = 24
+    const PRIMARY_MIN = 32
+    const items = []
+    const seen = new Set()
+    const zoneOf = (el) => {
+      if (el.closest('.nav') !== null) return 'sidebar'
+      if (el.closest('.head') !== null) return 'header'
+      if (el.closest('.composer-box') !== null) return 'composer'
+      if (el.closest('.thread') !== null) return 'thread'
+      return 'other'
+    }
+    const consider = (el) => {
+      const rect = el.getBoundingClientRect()
+      if (rect.width === 0 || rect.height === 0) return
+      const style = window.getComputedStyle(el)
+      if (style.visibility === 'hidden' || style.display === 'none') return
+      // 只统计视口内的（滚出可视区的会话行不算：用户当下点不到它）
+      if (rect.bottom < 0 || rect.top > window.innerHeight) return
+      if (rect.right < 0 || rect.left > window.innerWidth) return
+      const label =
+        el.getAttribute('data-field') ||
+        el.getAttribute('data-action') ||
+        el.getAttribute('data-caption-btn') ||
+        el.getAttribute('aria-label') ||
+        (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 14) ||
+        el.className
+      const key = label + '@' + Math.round(rect.left) + ',' + Math.round(rect.top)
+      if (seen.has(key)) return
+      seen.add(key)
+      items.push({
+        zone: zoneOf(el),
+        label,
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+      })
+    }
+    document.querySelectorAll('.nav button, .nav a').forEach(consider)
+    document.querySelectorAll('.head button, .head [data-caption-btn]').forEach(consider)
+    document.querySelectorAll('.composer-box button, .composer-box select').forEach(consider)
+    document.querySelectorAll('.thread button').forEach(consider)
+
+    // 主要动作：按锚点/文案点名（这些是高频点击，要求 32）
+    const PRIMARY_KEYS = [
+      'chat.new-session',
+      'chat.quick-item',
+      'chat.subagent-item',
+      'chat.auto-item',
+      'chat.jobs-entry',
+      'chat.right-panel-toggle',
+      'chat.settings-open',
+      'chat.mic',
+      'send',
+      'minimize',
+      'close',
+    ]
+    const isPrimary = (item) =>
+      PRIMARY_KEYS.some((key) => item.label === key || item.label.indexOf(key) !== -1)
+    // 可访问性（docs/07 §5.4）：消息区必须是 polite 的 live 区，且**不允许 assertive**；
+    // 非流式时 aria-busy 必须为 false（流式期间为 true 的那条在 chat-stream 场景断言）
+    const messages = document.querySelector('[data-field="chat.messages"]')
+    const ariaLive = messages === null ? '' : messages.getAttribute('aria-live') || ''
+    const ariaAtomic = messages === null ? '' : messages.getAttribute('aria-atomic') || ''
+    const ariaBusy = messages === null ? '' : messages.getAttribute('aria-busy') || ''
+    const belowAbsolute = items.filter((item) => item.w < ABS_MIN || item.h < ABS_MIN)
+    const belowPrimary = items.filter(
+      (item) => isPrimary(item) && (item.w < PRIMARY_MIN || item.h < PRIMARY_MIN),
+    )
+    return {
+      total: items.length,
+      belowAbsolute,
+      belowPrimary,
+      ariaLive,
+      ariaAtomic,
+      ariaBusy,
+      sizes: items.map((item) => item.zone + '|' + item.label + '|' + item.w + 'x' + item.h),
+      pass:
+        belowAbsolute.length === 0 &&
+        belowPrimary.length === 0 &&
+        ariaLive === 'polite' &&
+        ariaAtomic === 'false' &&
+        ariaBusy === 'false',
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
 export const CHAT_SIDEBAR_SCRIPT = `(() => {
   try {
     const count = (selector) => document.querySelectorAll(selector).length
@@ -1854,8 +1959,13 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
  * 由 `defaultCapturePlan` 在跑本场景前竖起本地桩 LLM 并把配置指向它（只在这一段生效，
  * 排在 chat 组最后，前面的场景读到的仍是「未配置模型」的出厂态）。
  *
- * act：把提示词写进 textarea → 点发送（走 `send()`，与用户手点同一条路径）→ 轮询等
- *      流式结束（`.thread.streaming` 摘掉）。截图即「一问一答 + 上下文条有真实 token」现场。
+ * act：把提示词写进 textarea → 点发送（走 `send()`，与用户手点同一条路径）→
+ *      **先等流式真的开始**（流式类出现 / 助手消息条数超过发送前的基线）→ 再等收尾。
+ *      截图即「一问一答 + 上下文条有真实 token」现场。
+ *      ⚠️ 基线那一步是 2026-09-29 补的：此前只在点击后轮询「流式类没了 + 有助手消息」，
+ *      而本场景的种子会话**本来就有助手消息** —— 第一次判断就成立、act 立刻返回，
+ *      整场景靠着种子数据空转通过，从没真正验证过往返（是加 `aria-busy` 断言时才暴露的）。
+ *      现在 `started`（真的流过）与 `busy`（流式期间 aria-busy 为真）都进了 pass。
  * check 断言五件事：
  * ① 助手气泡出现且正文含桩服务的标记（回复真的画到了 DOM 上，而不只是事件里有）；
  * ② 用户气泡也在（发送路径把提问渲染出来了）；
@@ -1866,7 +1976,11 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
  *    —— 512 = 分母 `promptTokens`，因此占比恰好 100%（桩数据自洽：`cached <= prompt`）。
  *    这条钉的是「字段解析 → 事件 → 展示」整条链里**最后一段**：解析丢了字段时这里没有该节点，
  *    百分比算错时数字对不上（`Math.min(100, …)` 夹住的那类荒谬值也因此不可能出现）；
- * ⑤ 流式已收尾（`.thread.streaming` 不存在），即「流式态不会卡住」。
+ * ⑤ 流式已收尾（`.thread.streaming` 不存在），即「流式态不会卡住」；
+ * ⑥ **往返真的发生过**（`streamStarted === true`）与**流式期间消息区 `aria-busy` 为真**
+ *    （`ariaBusyDuringStream === 'true'`，收尾后必须翻回 `'false'`）——
+ *    可访问性口径见 docs/07 §5.4，`aria-busy` 的抓取靠 act 里的 MutationObserver
+ *    （桩模型整轮可能不到 250ms，轮询会整体错过那个窗口）。
  */
 export function chatStreamAct(question: string): string {
   return `(async () => {
@@ -1880,15 +1994,53 @@ export function chatStreamAct(question: string): string {
     box.value = ${JSON.stringify(question)}
     box.dispatchEvent(new Event('input', { bubbles: true }))
     await wait(200)
+    // 可访问性证据（docs/07 §5.4）：消息区的 aria-busy 在流式期间应为 true、收尾翻回 false。
+    // 用 **MutationObserver** 而不是轮询：桩模型的整轮可能不到 250ms（首版轮询就整轮错过了
+    // 那个窗口，"忙过"这件事一次都没记到），属性变化的每一次都会被记账。
+    let busySeen = 'false'
+    const observer = new MutationObserver(() => {
+      const messagesEl = document.querySelector('[data-field="chat.messages"]')
+      if (messagesEl !== null && messagesEl.getAttribute('aria-busy') === 'true') busySeen = 'true'
+    })
+    const thread = document.querySelector('.thread')
+    observer.observe(thread === null ? document.body : thread, {
+      attributes: true,
+      attributeFilter: ['aria-busy'],
+      subtree: true,
+    })
+    // 发送前的助手消息条数：**必须记住基线**，否则「已有 seed 消息」会让下面的
+    // "等收尾"在点击后的第一次判断就成立（历史 bug：这一场景靠着 seed 数据空转通过，
+    // 从没真正验证过"发出去 → 流式回来 → 落到 DOM"）。
+    const before = document.querySelectorAll('.message.r-assistant').length
     sendButton.click()
-    // 等整轮结束：流式类摘掉 + 至少一条助手消息
-    for (let attempt = 0; attempt < 80; attempt += 1) {
+    // ① 先等**流式真的开始**：流式类出现 / 助手消息条数增长 / 消息区 aria-busy 翻真，谁先到算谁
+    let started = false
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const streaming = document.querySelector('.thread.streaming') !== null
+      const grew = document.querySelectorAll('.message.r-assistant').length > before
+      if (streaming || grew || busySeen === 'true') {
+        started = true
+        break
+      }
+      await wait(100)
+    }
+    // ② 再等整轮结束：流式类摘掉 + 助手消息至少多了一条
+    for (let attempt = 0; attempt < 120; attempt += 1) {
       const streaming = document.querySelector('.thread.streaming')
-      const replied = document.querySelectorAll('.message.r-assistant').length > 0
-      if (streaming === null && replied) return { ready: true, waited: attempt * 250 }
+      const grew = document.querySelectorAll('.message.r-assistant').length > before
+      if (streaming === null && grew) {
+        observer.disconnect()
+        // act 与 check 是同页面的两次注入：挂在 window 上让 check 读回来
+        window.__auroraAriaBusyDuringStream = busySeen
+        window.__auroraStreamStarted = started
+        return { ready: true, started, waited: attempt * 250 }
+      }
       await wait(250)
     }
-    return { ready: false, reason: '等待流式结束超时' }
+    observer.disconnect()
+    window.__auroraAriaBusyDuringStream = busySeen
+    window.__auroraStreamStarted = started
+    return { ready: false, started, reason: '等待流式结束超时' }
   } catch (error) {
     return { ready: false, reason: String(error) }
   }
@@ -1913,6 +2065,15 @@ export function chatStreamCheck(marker: string, reasoningMarker: string): string
     const cacheText = textOf('[data-field="chat.context-cache"]')
     const totals = textOf('.ctx-total')
     const stillStreaming = document.querySelector('.thread.streaming') !== null
+    // 流式期间消息区必须处于 aria-busy=true（可访问性，docs/07 §5.4）：
+    // 这比"文案里有没有新字"更能钉住"读屏器不会被逐 token 刷屏"这件事 ——
+    // busy 期间 AT 不会播报增量，收尾翻回 false 时才读一次完整内容。
+    const messagesEl = document.querySelector('[data-field="chat.messages"]')
+    // 收尾态（应为 false）+ act 期间抓到的最坏值（应为 true）——两者都要成立
+    const ariaBusyNow = messagesEl === null ? null : messagesEl.getAttribute('aria-busy')
+    const ariaBusyDuringStream = window.__auroraAriaBusyDuringStream ?? null
+    // 「这一轮真的流过」的证据（见 act 的基线注释）：没有它就等于场景在空转
+    const streamStarted = window.__auroraStreamStarted ?? null
     // 思考增量归属（docs/06 §16.1）：思考块只在 message.reasoning 非空时渲染，
     // 因此「最后一条助手消息带思考块」= 桩服务产出的 reasoning 增量确实绑到了**它自己那条**消息上
     //（不是前一条、也不是没人要）。请求结束后块已收起为摘要行，所以只断言块头文案。
@@ -1941,11 +2102,17 @@ export function chatStreamCheck(marker: string, reasoningMarker: string): string
       cacheText,
       totals,
       stillStreaming,
+      ariaBusyNow,
+      ariaBusyDuringStream,
+      streamStarted,
       lastThinkingLabel,
       lastThinkingHasMarker: lastThinkingText.indexOf(${reasoningLiteral}) !== -1,
       pass:
         assistants.length >= 1 &&
         users >= 1 &&
+        ariaBusyNow === 'false' &&
+        streamStarted === true &&
+        ariaBusyDuringStream === 'true' &&
         reply.indexOf(${markerLiteral}) !== -1 &&
         // 桩服务的结束片带 usage：界面必须显示真实数字，而不是「暂无用量数据」
         usageText !== '' &&
@@ -5192,6 +5359,75 @@ export const SETTINGS_LLM_STRUCTURE_CHECK = `(async () => {
  *   用户可见文案，改了文案这条断言本就该失败并报出实际按钮文案（不静默成功）。
  *   匹配时统一去掉首尾空白与「+」前缀，`+ 空白配置` / `空白配置` 两种写法都命中。
  */
+/**
+ * 设置页「安全区」巡检（`settings-overflow.png`，2026-09-29，docs/07 §5.4）。
+ *
+ * 用户反馈「文字与组件位置没协调好、许多文字冲出组件」时，此前的几何护栏只覆盖了
+ * 自动化页（卡片 / 磁贴内不探出边界）。设置页有 7 个页面、几十个区组，是最可能出现
+ * 「长标签 + 窄控件」的场合，因此单列一条**横向溢出**巡检（纵向滚动是正常行为，不算）：
+ * act 依次点开左侧每一个导航项、量当前页内容区（`main.content`）内**每个元素**的矩形，
+ * 把探出内容区左右边界超过 1px 的节点记下来；check 断言所有页面都是 0，
+ * 且**页数校验**（少于 7 页说明导航没点全，防止"巡检了个寂寞"仍判 PASS）。
+ */
+export const SETTINGS_OVERFLOW_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const items = Array.from(document.querySelectorAll('nav .nav-item'))
+    if (items.length === 0) return { pages: 0, reason: 'no nav items' }
+    const report = []
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index]
+      const label = (item.textContent || '').trim()
+      item.click()
+      await wait(320)
+      const content = document.querySelector('main.content')
+      if (content === null) {
+        report.push({ label, bad: -1, offenders: ['no main.content'] })
+        continue
+      }
+      const box = content.getBoundingClientRect()
+      let bad = 0
+      const offenders = []
+      const nodes = content.querySelectorAll('*')
+      for (let n = 0; n < nodes.length; n += 1) {
+        const node = nodes[n]
+        const rect = node.getBoundingClientRect()
+        if (rect.width === 0 && rect.height === 0) continue
+        // 只查**横向**：纵向溢出就是滚动，属正常
+        if (rect.right > box.right + 1 || rect.left < box.left - 1) {
+          bad += 1
+          if (offenders.length < 3) {
+            const name = typeof node.className === 'string' && node.className !== ''
+              ? node.className.split(' ')[0]
+              : node.tagName
+            offenders.push(name + '@' + Math.round(rect.left) + '-' + Math.round(rect.right))
+          }
+        }
+      }
+      report.push({ label, bad, box: Math.round(box.width), offenders })
+    }
+    window.__auroraSettingsOverflow = report
+    return { pages: report.length }
+  } catch (error) {
+    return { reason: String(error) }
+  }
+})()`
+
+export const SETTINGS_OVERFLOW_CHECK = `(() => {
+  try {
+    const report = window.__auroraSettingsOverflow ?? []
+    const bad = report.filter((item) => (item.bad ?? 0) !== 0)
+    return {
+      pages: report.length,
+      labels: report.map((item) => item.label),
+      bad,
+      pass: report.length >= 7 && bad.length === 0,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
 export const SETTINGS_TTS_ADD_ACT = `(async () => {
   try {
     const normalize = (text) => (text || '').replace(/\\s+/g, '').replace(/^\\+/, '')
@@ -5923,6 +6159,12 @@ export function defaultCapturePlan(
       file: 'chat-sidebar.png',
       check: CHAT_SIDEBAR_SCRIPT,
     },
+    // 主界面点击成本盘点（2026-09-29）：只量尺寸、不改状态，紧跟 chat-sidebar 读同一份出厂现场
+    {
+      name: 'chat',
+      file: 'chat-hit-targets.png',
+      check: CHAT_HIT_TARGETS_CHECK,
+    },
     // 右栏开关（BetaV2）：act 内点两次（收起 → 展开）自恢复，截图回到三栏默认布局，
     // 收起态由 check 依据 act 的记录判定。
     {
@@ -6351,6 +6593,16 @@ export function defaultCapturePlan(
     query: { page: 'modes' },
     act: SETTINGS_SWITCH_TO_WORK_SCRIPT,
     check: SETTINGS_WORK_GATING_SCRIPT,
+  })
+  // 设置页「安全区」横向溢出巡检（docs/07 §5.4）：一次点击走完 7 个页面，
+  // 断言内容区里没有元素探出左右边界。排在所有会改配置的设置页场景**之后**：
+  // 它只量几何，读哪一版配置都一样，放最后不用担心影响别人。
+  plan.push({
+    name: 'settings',
+    file: 'settings-overflow.png',
+    query: { page: 'general' },
+    act: SETTINGS_OVERFLOW_ACT,
+    check: SETTINGS_OVERFLOW_CHECK,
   })
   // 收尾两件事：面板收起（不留展开态）、点击竖条能呼出交互窗（回归 line 1 的 bug）
   plan.push({

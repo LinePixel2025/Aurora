@@ -696,7 +696,23 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 </script>
 
 <template>
-  <div ref="rootEl" class="messages" @click="onContentClick">
+  <!--
+    消息区的**可访问性**（2026-09-29 调研后补，docs/07 §5.4）：
+    `aria-live="polite"` + `aria-atomic="false"` 让读屏器在不打断用户的前提下播报新增内容；
+    流式期间另加 `aria-busy="true"`、收尾翻回 false —— 这是**逐 token 播报**之外唯一正确的做法
+    （逐 token 会把读屏器刷爆，`assertive` 更会打断用户正在听的一切）。
+    live 区挂在**常驻的消息区根容器**上而不是每条气泡上：live 区必须先存在于 DOM、内容后注入，
+    否则读屏器看不到"新增"这件事本身。
+  -->
+  <div
+    ref="rootEl"
+    class="messages"
+    aria-live="polite"
+    aria-atomic="false"
+    :aria-busy="streaming"
+    :data-field="'chat.messages'"
+    @click="onContentClick"
+  >
     <div v-if="messages.length === 0" class="empty anim-rise">
       <span class="empty-orb" aria-hidden="true" />
       <p class="empty-title">开始对话</p>
@@ -1164,6 +1180,8 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   align-items: center;
   gap: var(--space-1);
   width: 100%;
+  /* 24px：块头整行可点，但原来只有 21px 高（`chat-hit-targets` 量出来的 WCAG 2.2 违例） */
+  min-height: 24px;
   padding: 2px 0;
   text-align: left;
   color: var(--text-muted);

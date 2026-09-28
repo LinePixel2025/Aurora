@@ -77,6 +77,9 @@ function onClose(): void {
   display: grid;
   place-items: center;
   width: 44px;
+  /* 32px 下限：原来靠 `align-self: stretch` 跟着标题栏内容高，量出来只有 31px
+     （`chat-hit-targets` 探针；标题栏因此长高 1px，视觉无感） */
+  min-height: 32px;
   border-radius: 0;
   color: var(--text-secondary);
   transition:
