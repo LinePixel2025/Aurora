@@ -7,14 +7,23 @@
  * Normal tab 底部「内置」区（ClassRoom 既有自动操作，启停映射既有配置，docs/13 §6）→
  * 编辑器弹窗（仓库首个 Modal：catalog 驱动的动态表单）→ 历史弹窗（Agent 行可展开对话回放）。
  *
+ * **2026-09 前端减负轮重做**（docs/07 §5.4）：
+ * - **每个操作/条件都带图标**：条件磁贴、操作胶囊、历史状态、模式徽章、卡片摘要各有语义图标
+ *   （`triggerIconOf` / `actionIconOf` / `statusIconOf`），不再靠纯文字区分；
+ * - **不再出现原生 `<select>`**：条件选择从下拉改成图标磁贴网格（点一下即选、看得见全部选项），
+ *   参数里的下拉 / 星期多选分别改成胶囊分段与星期胶囊（`AutomationFieldInput.vue`）；
+ * - **说明文案离开版面**：可以压缩的解释一律挪进 `AppTooltip`，版面上只留标签与值。
+ *
  * 门控口径：catalog 里 `available: false` 的操作组件**不渲染选项**（不是 disabled）；
  * 内置自动化的开关直接写 `modes.classroom.preClassReminder / preClassOpenFolder`——
  * 它们的启停条件本来就长在既有配置上，不另立状态（docs/13 §6）。
  * 历史弹窗里 Normal 记录**只显示触发时间与状态**（不展开操作明细，产品口径）。
  *
- * `data-field` / `data-action` 锚点是 capture 探针契约（spec §5.3），不可改名。
+ * `data-field` / `data-action` 锚点是 capture 探针契约（spec §5.3），不可改名；
+ * `.run-item` / `.run-time` / `.clickable` / `.detail-message` 四个类名同属契约，同样别动。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import type { Component } from 'vue'
 import type {
   AutomationAction,
   AutomationCatalog,
@@ -24,17 +33,35 @@ import type {
   ChatMessageDto,
 } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
+import AppTooltip from '../../shared/components/AppTooltip.vue'
+import AutomationFieldInput from './AutomationFieldInput.vue'
 import { deepClone } from '@aurora/shared/browser'
 import { useSettingsStore } from '../../shared/stores.js'
 import {
+  ArrowLeft,
+  Bell,
+  BellRing,
+  BookOpen,
   Bot,
+  CalendarClock,
+  CircleCheck,
+  CirclePlay,
+  CircleStop,
+  CircleX,
   Clock,
+  FolderOpen,
   History,
+  Hourglass,
+  Info,
+  LoaderCircle,
   Pencil,
   Play,
   Plus,
+  School,
+  Sparkles,
   Timer,
   Trash2,
+  TriangleAlert,
   Workflow,
   X,
   Zap,
@@ -70,6 +97,8 @@ const availableActions = computed(() => actions.value.filter((item) => item.avai
 
 let offChanged: (() => void) | null = null
 let offHistoryChanged: (() => void) | null = null
+let noticeTimer: number | null = null
+let deleteTimer: number | null = null
 
 onMounted(() => {
   void refresh()
@@ -83,6 +112,8 @@ onUnmounted(() => {
   offChanged?.()
   offHistoryChanged?.()
   window.removeEventListener('keydown', onKeydown)
+  if (noticeTimer !== null) window.clearTimeout(noticeTimer)
+  if (deleteTimer !== null) window.clearTimeout(deleteTimer)
 })
 
 /**
@@ -103,6 +134,16 @@ function onKeydown(event: KeyboardEvent): void {
   closeHistory()
 }
 
+/** 成功反馈自动退场（避免一条「已保存」长期挂在版面上；错误则留到下一次操作） */
+function flash(message: string): void {
+  notice.value = message
+  if (noticeTimer !== null) window.clearTimeout(noticeTimer)
+  noticeTimer = window.setTimeout(() => {
+    notice.value = null
+    noticeTimer = null
+  }, 3200)
+}
+
 async function refresh(): Promise<void> {
   loading.value = true
   error.value = null
@@ -120,9 +161,51 @@ async function refresh(): Promise<void> {
   loading.value = false
 }
 
-// ───────────────────────── 触发器 / 状态的展示文案 ─────────────────────────
+// ───────────────────────── 图标 / 展示文案 ─────────────────────────
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+
+/**
+ * 条件 kind → 图标。**与主进程 catalog 的 7 类一一对应**：新增条件组件时
+ * 这里与 `apps/desktop/src/main/automation/catalog.ts` 一起补（漏了会退到兜底图标，
+ * 不会渲染失败，但会丢掉「一眼分辨」的价值）。
+ */
+const TRIGGER_ICONS: Record<string, Component> = {
+  daily: CalendarClock,
+  interval: Timer,
+  'pre-class': BellRing,
+  'class-start': CirclePlay,
+  'pre-end': Hourglass,
+  'class-end': CircleStop,
+  'next-lesson': BookOpen,
+}
+
+const ACTION_ICONS: Record<string, Component> = {
+  'system-notify': Bell,
+  'classisland-remind': School,
+  'open-folder': FolderOpen,
+}
+
+const MODE_ICONS: Record<'agent' | 'normal', Component> = { agent: Bot, normal: Zap }
+
+const STATUS_ICONS: Record<AutomationRun['status'], Component> = {
+  running: LoaderCircle,
+  success: CircleCheck,
+  failed: CircleX,
+  interrupted: CircleStop,
+}
+
+function triggerIconOf(kind: string): Component {
+  return TRIGGER_ICONS[kind] ?? Timer
+}
+
+function actionIconOf(kind: string): Component {
+  return ACTION_ICONS[kind] ?? Bell
+}
+
+function statusIconOf(status: AutomationRun['status']): Component {
+  return STATUS_ICONS[status] ?? CircleCheck
+}
 
 function describeTrigger(def: AutomationDefinition): string {
   const params = def.trigger.params ?? {}
@@ -150,22 +233,25 @@ function describeTrigger(def: AutomationDefinition): string {
   }
 }
 
-function actionLabel(action: AutomationAction): string {
-  const params = action.params ?? {}
-  switch (action.kind) {
-    case 'system-notify':
-      return `系统通知「${String(params['title'] ?? '')}」`
-    case 'classisland-remind':
-      return `ClassIsland 提醒「${String(params['title'] ?? '')}」`
-    case 'open-folder':
-      if (params['target'] === 'path') return `打开 ${String(params['path'] ?? '')}`
-      // 内置自动化不带科目名（科目来自触发的那节课）：空值时说「当前科目」而不是「打开「」」
-      return String(params['subject'] ?? '').trim() === ''
-        ? '打开该科目的资料文件夹'
-        : `打开「${String(params['subject'])}」的科目文件夹`
-    default:
-      return action.kind
-  }
+/** 卡片上的操作摘要：只给「图标 + 短名」，点开编辑才看参数（版面只留看一眼够用的量） */
+function actionChips(def: AutomationDefinition): { icon: Component; text: string }[] {
+  return (def.actions ?? []).map((action) => {
+    const params = action.params ?? {}
+    const kind = action.kind
+    if (kind === 'open-folder' && params['target'] !== 'path') {
+      const subject = String(params['subject'] ?? '').trim()
+      return {
+        icon: actionIconOf(kind),
+        text: subject === '' ? '打开科目文件夹' : `打开「${subject}」`,
+      }
+    }
+    const labels: Record<string, string> = {
+      'system-notify': '系统通知',
+      'classisland-remind': 'ClassIsland 提醒',
+      'open-folder': '打开文件夹',
+    }
+    return { icon: actionIconOf(kind), text: labels[kind] ?? kind }
+  })
 }
 
 const STATUS_LABELS: Record<AutomationRun['status'], string> = {
@@ -225,7 +311,7 @@ async function setBuiltinEnabled(def: AutomationDefinition, enabled: boolean): P
     error.value = settingsStore.error ?? '保存失败'
     return
   }
-  notice.value = '已保存'
+  flash('已保存')
   await refresh()
 }
 
@@ -235,14 +321,16 @@ async function runOnce(def: AutomationDefinition): Promise<void> {
     error.value = result.message
     return
   }
-  notice.value = '已触发一次，可在历史里查看结果'
+  flash('已触发一次，可在历史里查看结果')
 }
 
 async function removeDef(def: AutomationDefinition): Promise<void> {
   if (confirmingDelete.value !== def.id) {
     confirmingDelete.value = def.id
-    window.setTimeout(() => {
+    if (deleteTimer !== null) window.clearTimeout(deleteTimer)
+    deleteTimer = window.setTimeout(() => {
       if (confirmingDelete.value === def.id) confirmingDelete.value = null
+      deleteTimer = null
     }, 3000)
     return
   }
@@ -252,7 +340,7 @@ async function removeDef(def: AutomationDefinition): Promise<void> {
     error.value = result.message
     return
   }
-  notice.value = '已删除'
+  flash('已删除')
   await refresh()
 }
 
@@ -276,11 +364,14 @@ interface EditorDraft {
 const editorOpen = ref(false)
 const saving = ref(false)
 const draft = ref<EditorDraft | null>(null)
-/** 当前编辑器选中的操作组件 kind（下拉值，与 draft.actions 同步） */
-const draftActionKinds = ref<string[]>([])
 
 const conditionOf = (kind: string) => conditions.value.find((item) => item.kind === kind)
 const actionDescriptorOf = (kind: string) => actions.value.find((item) => item.kind === kind)
+
+/** 当前选中的条件描述符（磁贴下方的「说明 + 参数」都取自它） */
+const selectedCondition = computed(() =>
+  draft.value === null ? undefined : conditionOf(draft.value.triggerKind),
+)
 
 function emptyTriggerParams(kind: string): Record<string, unknown> {
   switch (kind) {
@@ -340,12 +431,11 @@ function openEditor(def?: AutomationDefinition): void {
       actions: [emptyAction('system-notify')],
     }
   }
-  // 按 catalog 补齐缺失的参数键（编辑旧定义 / 组件升级后新增字段），v-model 才有稳定目标
+  // 按 catalog 补齐缺失的参数键（编辑旧定义 / 组件升级后新增字段），控件才有稳定目标
   ensureParamKeys(draft.value.triggerParams, conditionOf(draft.value.triggerKind)?.fields ?? [])
   for (const action of draft.value.actions) {
     ensureParamKeys(action.params, actionDescriptorOf(action.kind)?.fields ?? [])
   }
-  draftActionKinds.value = draft.value.actions.map((action) => action.kind)
   editorOpen.value = true
 }
 
@@ -368,48 +458,31 @@ function closeEditor(): void {
 }
 
 function switchTriggerKind(kind: string): void {
-  if (draft.value === null) return
+  if (draft.value === null || draft.value.triggerKind === kind) return
   draft.value.triggerKind = kind
   draft.value.triggerParams = emptyTriggerParams(kind)
+  // 与 openEditor 同款：新条件的字段先补齐默认值，再交给控件渲染
+  ensureParamKeys(draft.value.triggerParams, conditionOf(kind)?.fields ?? [])
 }
 
-/** 移除第 index 个操作（与 draftActionKinds 同步裁剪，见 openEditor 的镜像说明） */
+/** 移除第 index 个操作（组件胶囊直接读 `action.kind`，这里只需裁数组） */
 function removeAction(index: number): void {
   const current = draft.value
   if (current === null) return
   current.actions.splice(index, 1)
-  draftActionKinds.value = current.actions.map((action) => action.kind)
 }
 
 function switchActionKind(index: number, kind: string): void {
   const current = draft.value
-  if (current === null) return
-  current.actions[index] = emptyAction(kind)
-  draftActionKinds.value = current.actions.map((action) => action.kind)
+  if (current === null || current.actions[index]?.kind === kind) return
+  // 换组件 = 换一整套参数：先按新组件补齐默认值，字段控件才有稳定目标
+  const next = emptyAction(kind)
+  ensureParamKeys(next.params, actionDescriptorOf(kind)?.fields ?? [])
+  current.actions[index] = next
 }
 
-/** weekdays 字段：checkbox 组 → number[]（空数组 = 每天） */
-function weekdayChecked(params: Record<string, unknown>, day: number): boolean {
-  const weekdays = Array.isArray(params['weekdays']) ? (params['weekdays'] as number[]) : []
-  return weekdays.includes(day)
-}
-
-function toggleWeekday(params: Record<string, unknown>, day: number, checked: boolean): void {
-  const weekdays = new Set(
-    Array.isArray(params['weekdays']) ? (params['weekdays'] as number[]) : [],
-  )
-  if (checked) weekdays.add(day)
-  else weekdays.delete(day)
-  params['weekdays'] = [...weekdays].sort((a, b) => a - b)
-}
-
-/** 参数读值（openEditor 已按 catalog 补齐键；这里兜底非原始值） */
-function paramValue(params: Record<string, unknown>, key: string): string | number {
-  const value = params[key]
-  return typeof value === 'string' || typeof value === 'number' ? value : ''
-}
-
-function setParam(params: Record<string, unknown>, key: string, value: string | number): void {
+/** 参数写回（字段控件发上来的 `{ key, value }`）：值类型由字段类型决定，这里直写 */
+function setParam(params: Record<string, unknown>, key: string, value: unknown): void {
   params[key] = value
 }
 
@@ -449,7 +522,7 @@ async function saveEditor(): Promise<void> {
     return
   }
   closeEditor()
-  notice.value = '已保存'
+  flash('已保存')
   await refresh()
 }
 
@@ -501,85 +574,103 @@ function closeHistory(): void {
 <template>
   <section class="auto-page" data-field="automation.page">
     <header class="page-head">
-      <div class="title-row">
-        <Workflow :size="18" :stroke-width="1.6" aria-hidden="true" />
-        <h2 class="page-title">自动化</h2>
-        <span class="grow" />
+      <Workflow :size="16" :stroke-width="1.7" aria-hidden="true" class="head-icon" />
+      <h2 class="page-title">自动化</h2>
+      <AppTooltip
+        text="定时或满足课堂条件时自动执行：Agent Mode 触发后跑一次完整会话，Normal Mode 按预设操作执行。"
+      >
+        <button type="button" class="hint-dot" aria-label="自动化说明">
+          <Info :size="13" :stroke-width="1.8" aria-hidden="true" />
+        </button>
+      </AppTooltip>
+
+      <div class="tabs" role="tablist">
         <button
           type="button"
-          class="icon-btn press"
-          data-action="automation-back"
-          title="返回对话"
-          aria-label="返回对话"
-          @click="emit('back')"
+          class="tab press"
+          data-field="automation.tab-agent"
+          :class="{ active: tab === 'agent' }"
+          role="tab"
+          :aria-selected="tab === 'agent'"
+          @click="tab = 'agent'"
         >
-          <X :size="15" :stroke-width="1.6" aria-hidden="true" />
+          <Bot :size="13" :stroke-width="1.7" aria-hidden="true" />
+          Agent Mode
+        </button>
+        <button
+          type="button"
+          class="tab press"
+          data-field="automation.tab-normal"
+          :class="{ active: tab === 'normal' }"
+          role="tab"
+          :aria-selected="tab === 'normal'"
+          @click="tab = 'normal'"
+        >
+          <Zap :size="13" :stroke-width="1.7" aria-hidden="true" />
+          Normal Mode
         </button>
       </div>
-      <p class="page-sub muted">
-        定时或满足课堂条件时自动执行——Agent Mode 跑一次会话，Normal Mode 执行预设操作。
-      </p>
-      <div class="toolbar">
-        <div class="tabs" role="tablist">
-          <button
-            type="button"
-            class="tab press"
-            data-field="automation.tab-agent"
-            :class="{ active: tab === 'agent' }"
-            role="tab"
-            :aria-selected="tab === 'agent'"
-            @click="tab = 'agent'"
-          >
-            <Bot :size="14" :stroke-width="1.6" aria-hidden="true" />
-            Agent Mode
-          </button>
-          <button
-            type="button"
-            class="tab press"
-            data-field="automation.tab-normal"
-            :class="{ active: tab === 'normal' }"
-            role="tab"
-            :aria-selected="tab === 'normal'"
-            @click="tab = 'normal'"
-          >
-            <Zap :size="14" :stroke-width="1.6" aria-hidden="true" />
-            Normal Mode
-          </button>
-        </div>
-        <span class="grow" />
+
+      <div class="head-actions">
         <AppButton
           variant="secondary"
           size="sm"
           data-action="automation.history"
           @click="openHistory()"
         >
-          <History :size="14" :stroke-width="1.6" aria-hidden="true" />
+          <History :size="13" :stroke-width="1.7" aria-hidden="true" />
           历史
         </AppButton>
         <AppButton variant="primary" size="sm" data-action="automation.new" @click="openEditor()">
-          <Plus :size="14" :stroke-width="1.8" aria-hidden="true" />
-          新建自动化
+          <Plus :size="14" :stroke-width="1.9" aria-hidden="true" />
+          新建
         </AppButton>
+        <AppTooltip text="返回对话" placement="bottom">
+          <button
+            type="button"
+            class="icon-btn press"
+            data-action="automation-back"
+            aria-label="返回对话"
+            @click="emit('back')"
+          >
+            <ArrowLeft :size="15" :stroke-width="1.7" aria-hidden="true" />
+          </button>
+        </AppTooltip>
       </div>
     </header>
 
-    <p v-if="error !== null" class="feedback error" role="alert">{{ error }}</p>
-    <p v-if="notice !== null" class="feedback ok">{{ notice }}</p>
+    <p v-if="error !== null" class="feedback error" role="alert">
+      <TriangleAlert :size="13" :stroke-width="1.8" aria-hidden="true" />
+      {{ error }}
+    </p>
+    <p v-if="notice !== null" class="feedback ok">
+      <CircleCheck :size="13" :stroke-width="1.8" aria-hidden="true" />
+      {{ notice }}
+    </p>
 
     <div class="list" data-field="automation.list">
       <p v-if="loading && userDefs.length === 0" class="tiny muted empty-hint">加载中…</p>
-      <p v-else-if="shownDefs.length === 0" class="tiny muted empty-hint">
-        {{
-          tab === 'agent'
-            ? '还没有 Agent Mode 自动化——触发后会由 Agent 执行一次完整任务。'
-            : '还没有 Normal Mode 自动化——触发后按预设操作执行，快而确定。'
-        }}
-      </p>
+      <div v-else-if="shownDefs.length === 0" class="empty-state">
+        <component
+          :is="tab === 'agent' ? Bot : Zap"
+          :size="22"
+          :stroke-width="1.4"
+          aria-hidden="true"
+          class="empty-icon"
+        />
+        <p class="tiny muted">
+          {{
+            tab === 'agent'
+              ? '还没有 Agent Mode 自动化——触发后会由 Agent 执行一次完整任务。'
+              : '还没有 Normal Mode 自动化——触发后按预设操作执行，快而确定。'
+          }}
+        </p>
+      </div>
 
       <article
         v-for="def in shownDefs"
         :key="def.id"
-        class="card"
+        class="card interactive"
         :class="{ disabled: !def.enabled }"
         :data-field="'automation.item-' + def.id"
       >
@@ -595,54 +686,83 @@ function closeHistory(): void {
         <div class="card-main">
           <div class="card-title-row">
             <strong class="card-title">{{ def.name }}</strong>
-            <span class="mode-tag tiny" :class="def.mode">{{
-              def.mode === 'agent' ? 'Agent' : 'Normal'
-            }}</span>
+            <span class="mode-chip" :class="def.mode">
+              <component
+                :is="MODE_ICONS[def.mode]"
+                :size="11"
+                :stroke-width="1.8"
+                aria-hidden="true"
+              />
+              {{ def.mode === 'agent' ? 'Agent' : 'Normal' }}
+            </span>
           </div>
-          <p class="card-meta tiny muted">
-            <Timer :size="12" :stroke-width="1.6" aria-hidden="true" />
-            {{ describeTrigger(def) }}
-          </p>
-          <p v-if="def.mode === 'agent'" class="card-prompt tiny muted">{{ def.prompt }}</p>
-          <p v-else class="card-prompt tiny muted">
-            {{ (def.actions ?? []).map(actionLabel).join('；') }}
-          </p>
+          <div class="card-meta">
+            <span class="meta-item">
+              <component
+                :is="triggerIconOf(def.trigger.kind)"
+                :size="12"
+                :stroke-width="1.7"
+                aria-hidden="true"
+              />
+              {{ describeTrigger(def) }}
+            </span>
+            <span class="meta-sep" aria-hidden="true" />
+            <span v-if="def.mode === 'agent'" class="meta-item clamp">
+              <Sparkles :size="12" :stroke-width="1.7" aria-hidden="true" />
+              {{ def.prompt }}
+            </span>
+            <span v-else class="meta-item wrap">
+              <span v-for="(chip, index) in actionChips(def)" :key="index" class="act-chip">
+                <component :is="chip.icon" :size="11" :stroke-width="1.7" aria-hidden="true" />
+                {{ chip.text }}
+              </span>
+            </span>
+          </div>
         </div>
         <div class="card-actions">
-          <button
-            type="button"
-            class="icon-btn press"
-            title="立即运行一次"
-            aria-label="立即运行一次"
-            @click="runOnce(def)"
-          >
-            <Play :size="14" :stroke-width="1.6" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            class="icon-btn press"
-            title="编辑"
-            aria-label="编辑"
-            @click="openEditor(def)"
-          >
-            <Pencil :size="14" :stroke-width="1.6" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            class="icon-btn press danger"
-            data-action="automation.delete"
-            :title="confirmingDelete === def.id ? '再点一次确认删除' : '删除'"
-            :aria-label="confirmingDelete === def.id ? '再点一次确认删除' : '删除'"
-            @click="removeDef(def)"
-          >
-            <Trash2 :size="14" :stroke-width="1.6" aria-hidden="true" />
-          </button>
+          <AppTooltip text="立即运行一次">
+            <button
+              type="button"
+              class="icon-btn press"
+              aria-label="立即运行一次"
+              @click="runOnce(def)"
+            >
+              <Play :size="14" :stroke-width="1.7" aria-hidden="true" />
+            </button>
+          </AppTooltip>
+          <AppTooltip text="编辑">
+            <button type="button" class="icon-btn press" aria-label="编辑" @click="openEditor(def)">
+              <Pencil :size="14" :stroke-width="1.7" aria-hidden="true" />
+            </button>
+          </AppTooltip>
+          <AppTooltip :text="confirmingDelete === def.id ? '再点一次确认删除' : '删除'">
+            <button
+              type="button"
+              class="icon-btn press danger"
+              :class="{ confirming: confirmingDelete === def.id }"
+              data-action="automation.delete"
+              :aria-label="confirmingDelete === def.id ? '再点一次确认删除' : '删除'"
+              @click="removeDef(def)"
+            >
+              <Trash2 :size="14" :stroke-width="1.7" aria-hidden="true" />
+            </button>
+          </AppTooltip>
         </div>
       </article>
 
       <!-- 内置区：仅 Normal tab；启停映射 ClassRoom 既有配置（docs/13 §6） -->
       <section v-if="tab === 'normal'" class="builtin" data-field="automation.builtin">
-        <p class="nav-caption tiny muted">内置（ClassRoom）</p>
+        <div class="section-head">
+          <School :size="13" :stroke-width="1.7" aria-hidden="true" />
+          <span>内置</span>
+          <AppTooltip
+            text="沿用 ClassRoom 的设置（提前分钟数 / 勿扰时段），在「设置 → 模式」里调整。"
+          >
+            <button type="button" class="hint-dot" aria-label="内置自动化的说明">
+              <Info :size="12" :stroke-width="1.8" aria-hidden="true" />
+            </button>
+          </AppTooltip>
+        </div>
         <article
           v-for="def in builtinShown"
           :key="def.id"
@@ -661,40 +781,62 @@ function closeHistory(): void {
           <div class="card-main">
             <div class="card-title-row">
               <strong class="card-title">{{ def.name }}</strong>
-              <span class="mode-tag normal tiny">内置</span>
+              <span class="mode-chip locked">内置</span>
             </div>
-            <p class="card-meta tiny muted">
-              <Timer :size="12" :stroke-width="1.6" aria-hidden="true" />
-              {{ describeTrigger(def) }}
-            </p>
-            <p class="card-prompt tiny muted">
-              {{ (def.actions ?? []).map(actionLabel).join('；') }}
-            </p>
+            <div class="card-meta">
+              <span class="meta-item">
+                <component
+                  :is="triggerIconOf(def.trigger.kind)"
+                  :size="12"
+                  :stroke-width="1.7"
+                  aria-hidden="true"
+                />
+                {{ describeTrigger(def) }}
+              </span>
+              <span class="meta-sep" aria-hidden="true" />
+              <span class="meta-item wrap">
+                <span v-for="(chip, index) in actionChips(def)" :key="index" class="act-chip">
+                  <component :is="chip.icon" :size="11" :stroke-width="1.7" aria-hidden="true" />
+                  {{ chip.text }}
+                </span>
+              </span>
+            </div>
           </div>
         </article>
-        <p class="tiny muted builtin-hint">
-          内置自动化沿用 ClassRoom 的设置（提前分钟数 / 勿扰时段），在「设置 → 模式」里调整。
-        </p>
       </section>
     </div>
 
-    <!-- 编辑器弹窗（仓库首个 Modal：遮罩 + --z-popover；Esc / 点遮罩关闭） -->
+    <!-- 编辑器弹窗（catalog 驱动的动态表单：条件磁贴 + 参数两列网格） -->
     <div v-if="editorOpen && draft !== null" class="modal-scrim" @click.self="closeEditor()">
       <div class="modal editor" role="dialog" aria-modal="true" data-field="automation.editor">
         <header class="modal-head">
+          <component
+            :is="MODE_ICONS[draft.mode]"
+            :size="15"
+            :stroke-width="1.7"
+            aria-hidden="true"
+            class="head-icon"
+          />
           <h3 class="modal-title">{{ draft.id === '' ? '新建自动化' : '编辑自动化' }}</h3>
-          <button type="button" class="icon-btn press" aria-label="关闭" @click="closeEditor()">
-            <X :size="15" :stroke-width="1.6" aria-hidden="true" />
-          </button>
+          <AppTooltip text="关闭" placement="bottom">
+            <button type="button" class="icon-btn press" aria-label="关闭" @click="closeEditor()">
+              <X :size="15" :stroke-width="1.7" aria-hidden="true" />
+            </button>
+          </AppTooltip>
         </header>
 
         <div class="modal-body">
-          <label class="field">
+          <div class="field-row">
             <span class="field-label">名称</span>
-            <input v-model="draft.name" type="text" placeholder="例如：上课前提醒我" />
-          </label>
+            <input
+              v-model="draft.name"
+              class="input"
+              type="text"
+              placeholder="例如：上课前提醒我"
+            />
+          </div>
 
-          <div class="field">
+          <div class="field-row">
             <span class="field-label">模式</span>
             <div class="mode-picker">
               <button
@@ -703,7 +845,10 @@ function closeHistory(): void {
                 :class="{ active: draft.mode === 'agent' }"
                 @click="draft.mode = 'agent'"
               >
-                <strong>Agent Mode</strong>
+                <span class="mode-head">
+                  <Bot :size="13" :stroke-width="1.8" aria-hidden="true" />
+                  Agent Mode
+                </span>
                 <span class="tiny muted">触发后由 Agent 执行任务</span>
               </button>
               <button
@@ -712,165 +857,155 @@ function closeHistory(): void {
                 :class="{ active: draft.mode === 'normal' }"
                 @click="draft.mode = 'normal'"
               >
-                <strong>Normal Mode</strong>
+                <span class="mode-head">
+                  <Zap :size="13" :stroke-width="1.8" aria-hidden="true" />
+                  Normal Mode
+                </span>
                 <span class="tiny muted">按预设操作执行</span>
               </button>
             </div>
           </div>
 
-          <div class="field">
-            <span class="field-label">触发器</span>
-            <select
-              :value="draft.triggerKind"
-              data-field="automation.trigger-kind"
-              @change="switchTriggerKind(($event.target as HTMLSelectElement).value)"
-            >
-              <option v-for="item in conditions" :key="item.kind" :value="item.kind">
-                {{ item.label }}
-              </option>
-            </select>
-            <p v-if="conditionOf(draft.triggerKind)?.description" class="tiny muted field-hint">
-              {{ conditionOf(draft.triggerKind)?.description }}
-            </p>
-            <div
-              v-for="field in conditionOf(draft.triggerKind)?.fields ?? []"
-              :key="field.key"
-              class="sub-field"
-            >
-              <span class="field-label tiny">{{ field.label }}</span>
-              <input
-                v-if="field.type === 'text' || field.type === 'time'"
-                :value="paramValue(draft.triggerParams, field.key)"
-                type="text"
-                :placeholder="field.placeholder ?? ''"
-                @input="
-                  setParam(
-                    draft.triggerParams,
-                    field.key,
-                    ($event.target as HTMLInputElement).value,
-                  )
-                "
+          <section class="section">
+            <div class="section-head">
+              <component
+                :is="triggerIconOf(draft.triggerKind)"
+                :size="13"
+                :stroke-width="1.7"
+                aria-hidden="true"
               />
-              <input
-                v-else-if="field.type === 'number'"
-                :value="paramValue(draft.triggerParams, field.key)"
-                type="number"
-                :min="field.min"
-                :max="field.max"
-                :step="field.step ?? 1"
-                @input="
-                  setParam(
-                    draft.triggerParams,
-                    field.key,
-                    Number(($event.target as HTMLInputElement).value),
-                  )
-                "
-              />
-              <select
-                v-else-if="field.type === 'select'"
-                :value="paramValue(draft.triggerParams, field.key)"
-                @change="
-                  setParam(
-                    draft.triggerParams,
-                    field.key,
-                    ($event.target as HTMLSelectElement).value,
-                  )
-                "
-              >
-                <option
-                  v-for="option in field.options ?? []"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </option>
-              </select>
-              <div v-else-if="field.type === 'weekdays'" class="weekday-row">
-                <label v-for="(name, day) in WEEKDAYS" :key="day" class="weekday tiny">
-                  <input
-                    type="checkbox"
-                    :checked="weekdayChecked(draft.triggerParams, day)"
-                    @change="
-                      toggleWeekday(
-                        draft.triggerParams,
-                        day,
-                        ($event.target as HTMLInputElement).checked,
-                      )
-                    "
-                  />
-                  {{ name }}
-                </label>
-              </div>
-              <p v-if="field.hint" class="tiny muted field-hint">{{ field.hint }}</p>
+              <span>触发条件</span>
+              <AppTooltip text="课堂类条件依赖课程表数据（来源与节次在「设置 → 模式」里配置）。">
+                <button type="button" class="hint-dot" aria-label="触发条件的说明">
+                  <Info :size="12" :stroke-width="1.8" aria-hidden="true" />
+                </button>
+              </AppTooltip>
             </div>
-          </div>
 
-          <label v-if="draft.mode === 'agent'" class="field">
-            <span class="field-label">任务指令（触发后交给 Agent 执行）</span>
+            <!-- 条件选择：图标磁贴网格（点一下即选，7 类全在眼前；描述走悬浮提示） -->
+            <div class="tile-grid" role="radiogroup" data-field="automation.trigger-kind">
+              <AppTooltip v-for="item in conditions" :key="item.kind" :text="item.description">
+                <button
+                  type="button"
+                  class="tile press"
+                  role="radio"
+                  :data-kind="item.kind"
+                  :aria-checked="draft.triggerKind === item.kind"
+                  :class="{ active: draft.triggerKind === item.kind }"
+                  @click="switchTriggerKind(item.kind)"
+                >
+                  <component
+                    :is="triggerIconOf(item.kind)"
+                    :size="16"
+                    :stroke-width="1.7"
+                    aria-hidden="true"
+                  />
+                  <span class="tile-label">{{ item.label }}</span>
+                </button>
+              </AppTooltip>
+            </div>
+
+            <p v-if="selectedCondition !== undefined" class="section-note">
+              {{ selectedCondition.description }}
+            </p>
+
+            <div v-if="(selectedCondition?.fields ?? []).length > 0" class="param-grid">
+              <AutomationFieldInput
+                v-for="field in selectedCondition?.fields ?? []"
+                :key="field.key"
+                :field="field"
+                :params="draft.triggerParams"
+                @update="setParam(draft.triggerParams, $event.key, $event.value)"
+              />
+            </div>
+          </section>
+
+          <section v-if="draft.mode === 'agent'" class="section">
+            <div class="section-head">
+              <Sparkles :size="13" :stroke-width="1.7" aria-hidden="true" />
+              <span>任务指令</span>
+              <AppTooltip text="写清楚目标、步骤与产出；触发时间等上下文会自动附带。">
+                <button type="button" class="hint-dot" aria-label="任务指令的说明">
+                  <Info :size="12" :stroke-width="1.8" aria-hidden="true" />
+                </button>
+              </AppTooltip>
+            </div>
             <textarea
               v-model="draft.prompt"
+              class="input textarea"
               rows="5"
-              placeholder="写清楚目标、步骤与产出；触发时间等上下文会自动附带"
+              placeholder="例如：把桌面上今天新增的课件按科目归档到资料文件夹"
             />
-          </label>
+          </section>
 
-          <div v-else class="field">
-            <span class="field-label">操作（按顺序执行）</span>
-            <div
+          <section v-else class="section">
+            <div class="section-head">
+              <Zap :size="13" :stroke-width="1.7" aria-hidden="true" />
+              <span>操作（按顺序执行）</span>
+              <AppTooltip
+                text="操作是封闭清单（通知 / ClassIsland 提醒 / 打开文件夹）——要更复杂的任务请改用 Agent Mode。"
+              >
+                <button type="button" class="hint-dot" aria-label="操作清单的说明">
+                  <Info :size="12" :stroke-width="1.8" aria-hidden="true" />
+                </button>
+              </AppTooltip>
+              <span class="grow" />
+              <span class="tiny muted step-count">{{ draft.actions.length }}/10</span>
+            </div>
+
+            <article
               v-for="(action, index) in draft.actions"
               :key="index"
               class="action-row"
               :data-field="'automation.action-' + index"
             >
-              <select
-                :value="action.kind"
-                @change="switchActionKind(index, ($event.target as HTMLSelectElement).value)"
-              >
-                <option v-for="item in availableActions" :key="item.kind" :value="item.kind">
-                  {{ item.label }}
-                </option>
-              </select>
-              <div
-                v-for="field in actionDescriptorOf(action.kind)?.fields ?? []"
-                :key="field.key"
-                class="sub-field"
-              >
-                <span class="field-label tiny">{{ field.label }}</span>
-                <input
-                  v-if="field.type === 'text' || field.type === 'time'"
-                  :value="paramValue(action.params, field.key)"
-                  type="text"
-                  :placeholder="field.placeholder ?? ''"
-                  @input="
-                    setParam(action.params, field.key, ($event.target as HTMLInputElement).value)
-                  "
-                />
-                <select
-                  v-else-if="field.type === 'select'"
-                  :value="paramValue(action.params, field.key)"
-                  @change="
-                    setParam(action.params, field.key, ($event.target as HTMLSelectElement).value)
-                  "
-                >
-                  <option
-                    v-for="option in field.options ?? []"
-                    :key="option.value"
-                    :value="option.value"
+              <div class="action-head">
+                <span class="action-index mono" aria-hidden="true">{{ index + 1 }}</span>
+                <div class="chip-group">
+                  <button
+                    v-for="item in availableActions"
+                    :key="item.kind"
+                    type="button"
+                    class="chip press"
+                    :class="{ active: action.kind === item.kind }"
+                    :aria-pressed="action.kind === item.kind"
+                    @click="switchActionKind(index, item.kind)"
                   >
-                    {{ option.label }}
-                  </option>
-                </select>
+                    <component
+                      :is="actionIconOf(item.kind)"
+                      :size="11"
+                      :stroke-width="1.8"
+                      aria-hidden="true"
+                    />
+                    {{ item.label }}
+                  </button>
+                </div>
+                <span class="grow" />
+                <AppTooltip text="移除该操作">
+                  <button
+                    type="button"
+                    class="icon-btn press danger"
+                    aria-label="移除该操作"
+                    @click="removeAction(index)"
+                  >
+                    <Trash2 :size="13" :stroke-width="1.7" aria-hidden="true" />
+                  </button>
+                </AppTooltip>
               </div>
-              <button
-                type="button"
-                class="icon-btn press danger"
-                title="移除该操作"
-                aria-label="移除该操作"
-                @click="removeAction(index)"
+              <div
+                v-if="(actionDescriptorOf(action.kind)?.fields ?? []).length > 0"
+                class="param-grid"
               >
-                <Trash2 :size="13" :stroke-width="1.6" aria-hidden="true" />
-              </button>
-            </div>
+                <AutomationFieldInput
+                  v-for="field in actionDescriptorOf(action.kind)?.fields ?? []"
+                  :key="field.key"
+                  :field="field"
+                  :params="action.params"
+                  @update="setParam(action.params, $event.key, $event.value)"
+                />
+              </div>
+            </article>
+
             <AppButton
               variant="secondary"
               size="sm"
@@ -878,14 +1013,10 @@ function closeHistory(): void {
               :disabled="draft.actions.length >= 10"
               @click="draft.actions.push(emptyAction(availableActions[0]?.kind ?? 'system-notify'))"
             >
-              <Plus :size="13" :stroke-width="1.8" aria-hidden="true" />
+              <Plus :size="13" :stroke-width="1.9" aria-hidden="true" />
               添加操作
             </AppButton>
-            <p class="tiny muted field-hint">
-              Normal Mode 的操作是封闭清单（通知 / ClassIsland 提醒 /
-              打开文件夹）——要更复杂的任务请用 Agent Mode。
-            </p>
-          </div>
+          </section>
         </div>
 
         <footer class="modal-foot">
@@ -913,18 +1044,27 @@ function closeHistory(): void {
         data-field="automation.history-panel"
       >
         <header class="modal-head">
+          <component
+            :is="tab === 'agent' ? Bot : Zap"
+            :size="15"
+            :stroke-width="1.7"
+            aria-hidden="true"
+            class="head-icon"
+          />
           <h3 class="modal-title">
             运行历史 · {{ tab === 'agent' ? 'Agent Mode' : 'Normal Mode' }}
           </h3>
-          <button
-            type="button"
-            class="icon-btn press"
-            data-action="automation.history-close"
-            aria-label="关闭"
-            @click="closeHistory()"
-          >
-            <X :size="15" :stroke-width="1.6" aria-hidden="true" />
-          </button>
+          <AppTooltip text="关闭" placement="bottom">
+            <button
+              type="button"
+              class="icon-btn press"
+              data-action="automation.history-close"
+              aria-label="关闭"
+              @click="closeHistory()"
+            >
+              <X :size="15" :stroke-width="1.7" aria-hidden="true" />
+            </button>
+          </AppTooltip>
         </header>
         <div class="modal-body">
           <p v-if="historyLoading && runs.length === 0" class="tiny muted">加载中…</p>
@@ -937,8 +1077,16 @@ function closeHistory(): void {
               :class="{ clickable: run.mode === 'agent' && run.sessionId !== undefined }"
               @click="openRunDetail(run)"
             >
+              <span class="run-status-icon" :class="run.status" aria-hidden="true">
+                <component
+                  :is="statusIconOf(run.status)"
+                  :size="13"
+                  :stroke-width="1.8"
+                  :class="{ spin: run.status === 'running' }"
+                />
+              </span>
               <span class="run-time">
-                <Clock :size="12" :stroke-width="1.6" aria-hidden="true" />
+                <Clock :size="12" :stroke-width="1.7" aria-hidden="true" />
                 {{ formatTime(run.triggeredAt) }}
               </span>
               <span class="run-name">{{ run.automationName }}</span>
@@ -992,33 +1140,53 @@ function closeHistory(): void {
   overflow-y: auto;
 }
 
+/* 页头：标题 + tab + 右侧动作**一行**（放不下时整体折行，任何窗口宽度都不溢出/重叠） */
 .page-head {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.title-row {
-  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  color: var(--text-primary);
+  color: var(--text-secondary);
+}
+
+.head-icon {
+  flex: 0 0 auto;
 }
 
 .page-title {
-  font-family: var(--font-display);
-  font-size: var(--text-xl);
-  font-weight: var(--weight-semibold);
-}
-
-.page-sub {
   margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-display);
+  color: var(--text-primary);
 }
 
-.toolbar {
+/* 「说明」标记：文案离开版面后，靠它把解释留在手边 */
+.hint-dot {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--text-muted);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.hint-dot:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+.head-actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  /* 折行后仍贴右（比放一个 flex 撑开的空元素更稳：空元素自己也会占一行） */
+  margin-left: auto;
 }
 
 .tabs {
@@ -1036,6 +1204,7 @@ function closeHistory(): void {
   padding: 5px var(--space-3);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
+  font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   transition:
     background var(--transition-fast),
@@ -1043,7 +1212,7 @@ function closeHistory(): void {
 }
 
 .tab.active {
-  background: var(--surface-1);
+  background: var(--bg-raised);
   color: var(--text-primary);
   box-shadow: var(--shadow-hairline);
 }
@@ -1053,6 +1222,9 @@ function closeHistory(): void {
 }
 
 .feedback {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
   margin: 0;
   padding: 6px var(--space-3);
   border-radius: var(--radius-sm);
@@ -1060,13 +1232,13 @@ function closeHistory(): void {
 }
 
 .feedback.error {
-  background: color-mix(in srgb, var(--status-error) 12%, transparent);
-  color: var(--status-error);
+  background: var(--error-fill);
+  color: var(--error-text);
 }
 
 .feedback.ok {
-  background: color-mix(in srgb, var(--status-ok) 12%, transparent);
-  color: var(--status-ok);
+  background: var(--ok-fill);
+  color: var(--ok-text);
 }
 
 .list {
@@ -1078,6 +1250,25 @@ function closeHistory(): void {
 .empty-hint {
   padding: var(--space-4);
   text-align: center;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+}
+
+.empty-state p {
+  margin: 0;
+  max-width: 380px;
+}
+
+.empty-icon {
+  color: var(--text-muted);
+  opacity: 0.7;
 }
 
 .card {
@@ -1095,66 +1286,123 @@ function closeHistory(): void {
   opacity: 0.62;
 }
 
+/* 悬停时把边界提亮一档（`.interactive` 负责上浮与阴影），一眼知道这张卡可操作 */
+.card:hover {
+  border-color: var(--border-strong);
+}
+
 .card-main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
 .card-title-row {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
 }
 
 .card-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--text-base);
 }
 
-.mode-tag {
-  padding: 0 6px;
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  padding: 1px 7px;
   border-radius: var(--radius-pill);
-  line-height: 16px;
-}
-
-.mode-tag.agent {
-  background: color-mix(in srgb, var(--aurora-blue) 16%, transparent);
-  color: var(--accent-text);
-}
-
-.mode-tag.normal {
+  font-size: var(--text-xs);
+  line-height: 15px;
   background: var(--fill-3);
   color: var(--text-muted);
 }
 
+.mode-chip.agent {
+  background: color-mix(in srgb, var(--aurora-blue) 16%, transparent);
+  color: var(--accent-text);
+}
+
+.mode-chip.locked {
+  background: var(--fill-2);
+}
+
+/* 元信息行：条件 + 分隔点 + 摘要（摘要过长时截断，绝不撑破卡片） */
 .card-meta {
   display: flex;
   align-items: center;
-  gap: 5px;
-  margin: 0;
+  flex-wrap: wrap;
+  gap: 4px var(--space-2);
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }
 
-.card-prompt {
-  margin: 0;
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.meta-item.clamp {
+  flex: 1 1 100%;
   overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta-item.wrap {
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.meta-sep {
+  flex: 0 0 auto;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  opacity: 0.6;
+}
+
+/* 操作摘要胶囊：一屏看清「这条自动化会做什么」，不用读整句 */
+.act-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--fill-2);
+  color: var(--text-secondary);
+  line-height: 15px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-actions {
   display: flex;
   align-items: center;
   gap: 2px;
+  flex: 0 0 auto;
 }
 
 .icon-btn {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: var(--radius-xs);
   color: var(--text-muted);
   transition:
@@ -1167,8 +1415,15 @@ function closeHistory(): void {
   color: var(--text-primary);
 }
 
-.icon-btn.danger:hover {
+.icon-btn.danger:hover,
+.icon-btn.danger.confirming {
   color: var(--status-error);
+}
+
+/* 两段式删除的中间态：边框一圈红，配合悬浮提示说清「再点一次」 */
+.icon-btn.confirming {
+  box-shadow: inset 0 0 0 1px var(--danger-border);
+  background: var(--danger-fill);
 }
 
 .builtin {
@@ -1180,8 +1435,14 @@ function closeHistory(): void {
   border-top: 1px solid var(--border-subtle);
 }
 
-.builtin-hint {
-  margin: 0;
+/* 区组头（内置 / 弹窗内的「触发条件」「任务指令」共用）：图标 + 标题 + 说明标记 */
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
 }
 
 /* ── 开关（与设置页 checkbox 口径一致的迷你 switch） ── */
@@ -1234,7 +1495,7 @@ function closeHistory(): void {
   outline-offset: 2px;
 }
 
-/* ── 弹窗（仓库首个 Modal：--z-popover + 遮罩令牌） ── */
+/* ── 弹窗（遮罩 + --z-popover；底色必须用弹层专用令牌 --bg-overlay） ── */
 .modal-scrim {
   position: fixed;
   inset: 0;
@@ -1242,38 +1503,44 @@ function closeHistory(): void {
   display: grid;
   place-items: center;
   background: var(--overlay-scrim);
-  animation: aurora-fade var(--dur-fast) var(--ease-out) both;
 }
 
 .modal {
   display: flex;
   flex-direction: column;
-  width: min(560px, calc(100vw - 48px));
-  max-height: min(640px, calc(100vh - 64px));
+  width: min(640px, calc(100vw - 48px));
+  max-height: min(660px, calc(100vh - 56px));
   border-radius: var(--radius-lg);
   /* 弹层专用底色令牌（`--surface-1` 不存在 —— 用了它弹窗会透明、页面内容透进来） */
   background: var(--bg-overlay);
   border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-2);
-  animation: aurora-rise var(--dur-base) var(--ease-spring) both;
+  animation: aurora-pop-in var(--dur-base) var(--ease-spring) both;
 }
 
 .modal.history {
-  width: min(640px, calc(100vw - 48px));
+  width: min(660px, calc(100vw - 48px));
 }
 
 .modal-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
 }
 
 .modal-title {
+  flex: 1;
+  min-width: 0;
   margin: 0;
-  font-size: var(--text-lg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-base);
   font-weight: var(--weight-semibold);
+  color: var(--text-primary);
 }
 
 .modal-body {
@@ -1294,26 +1561,133 @@ function closeHistory(): void {
   border-top: 1px solid var(--border-subtle);
 }
 
-/* ── 表单 ── */
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+/* ── 表单：左标签 / 右控件（标签列定宽，两侧都在自己的格子里） ── */
+.field-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .field-label {
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }
 
-.field-hint {
+.input {
+  width: 100%;
+  min-width: 0;
+  height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+  background: var(--fill-1);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.input:hover {
+  background: var(--fill-2);
+}
+
+.input:focus-visible {
+  outline: none;
+  border-color: var(--aurora-blue);
+  box-shadow: 0 0 0 2px var(--accent-ring);
+}
+
+.textarea {
+  height: auto;
+  padding: var(--space-2);
+  line-height: var(--leading-relaxed);
+  resize: vertical;
+}
+
+/* 区组：条件 / 执行两大块，块之间用细分隔线（不靠堆文字制造层级） */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.section-note {
   margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.param-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.step-count {
+  font-variant-numeric: var(--num-tabular);
+}
+
+/* 条件磁贴：图标在上、文字在下；选中态用强调色边界 + 淡填充 */
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-2);
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--fill-1);
+  color: var(--text-secondary);
+  text-align: left;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+/* 磁贴外层的提示锚点：撑满网格格，磁贴本体才能等高 */
+.tile-grid > .tip-host {
+  display: flex;
+}
+
+.tile:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+.tile.active {
+  border-color: var(--aurora-blue);
+  background: color-mix(in srgb, var(--aurora-blue) 10%, transparent);
+  color: var(--text-primary);
+}
+
+.tile-label {
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .mode-picker {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: var(--space-2);
 }
 
@@ -1325,10 +1699,15 @@ function closeHistory(): void {
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
+  background: var(--fill-1);
   text-align: left;
   transition:
     border-color var(--transition-fast),
     background var(--transition-fast);
+}
+
+.mode-option:hover {
+  background: var(--fill-2);
 }
 
 .mode-option.active {
@@ -1336,33 +1715,79 @@ function closeHistory(): void {
   background: color-mix(in srgb, var(--aurora-blue) 8%, transparent);
 }
 
-.sub-field {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding-left: var(--space-3);
-  border-left: 2px solid var(--fill-3);
-}
-
-.weekday-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.weekday {
+.mode-head {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 5px;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
 }
 
+/* 操作行：序号 + 组件胶囊 + 参数网格，一行一块的视觉分组 */
 .action-row {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   background: var(--fill-1);
+  border: 1px solid var(--border-subtle);
+}
+
+.action-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.action-index {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--fill-3);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: var(--fill-1);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.chip:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+.chip.active {
+  border-color: var(--aurora-blue);
+  background: color-mix(in srgb, var(--aurora-blue) 16%, transparent);
+  color: var(--text-primary);
 }
 
 /* ── 历史 ── */
@@ -1390,6 +1815,26 @@ function closeHistory(): void {
 
 .run-item.clickable:hover {
   background: var(--fill-2);
+}
+
+.run-status-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.run-status-icon.success {
+  color: var(--status-ok);
+}
+
+.run-status-icon.failed,
+.run-status-icon.interrupted {
+  color: var(--status-error);
+}
+
+.run-status-icon.running {
+  color: var(--accent-text);
 }
 
 .run-time {
@@ -1459,7 +1904,6 @@ function closeHistory(): void {
 }
 
 .role-tag {
-  text-transform: uppercase;
   letter-spacing: var(--tracking-eyebrow);
 }
 
@@ -1468,6 +1912,6 @@ function closeHistory(): void {
   white-space: pre-wrap;
   word-break: break-word;
   font-size: var(--text-sm);
-  line-height: 1.55;
+  line-height: var(--leading-relaxed);
 }
 </style>

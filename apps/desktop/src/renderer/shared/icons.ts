@@ -83,6 +83,21 @@ export {
   Timer,
   BellRing,
   FolderOpenDot,
+  // 自动化条件（触发器）语义图标：与 catalog 的 7 类一一对应，见 AutomationPage 的 triggerIconOf
+  // （「每天定时」复用 ClassIsland 组的 CalendarClock，语义同为时刻表）
+  CirclePlay,
+  CircleStop,
+  Hourglass,
+  BookOpen,
+  // 自动化编辑器的参数类型提示（文本 / 数字 / 星期多选 / 下拉）
+  TextCursorInput,
+  Hash,
+  CalendarDays,
+  ListFilter,
+  // 悬浮提示的「说明」标记
+  Info,
+  // 反馈条（成功 / 失败提示，替代裸文字）
+  TriangleAlert,
   // ClassIsland 联动
   School,
   CalendarClock,

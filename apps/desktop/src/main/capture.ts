@@ -1186,21 +1186,40 @@ export const CHAT_AUTOMATION_NORMAL_ACT = `(async () => {
 export const CHAT_AUTOMATION_NORMAL_CHECK = `(() => {
   try {
     const count = (selector) => document.querySelectorAll(selector).length
+    // 卡片内不许有元素探出边界（前端减负轮的「安全区」口径：文字/组件不冲出容器）
+    const overflowOf = (root) => {
+      const box = root.getBoundingClientRect()
+      let bad = 0
+      for (const node of root.querySelectorAll('*')) {
+        const rect = node.getBoundingClientRect()
+        if (rect.width === 0 && rect.height === 0) continue
+        if (rect.right > box.right + 1 || rect.left < box.left - 1) bad += 1
+      }
+      return bad
+    }
     const builtin = document.querySelector('[data-field="automation.builtin"]')
     const builtinToggles = count('[data-field="automation.builtin-toggle"]')
     // seed 的 Normal 定义（am-capture1）出现在列表里
     const seededItem = count('[data-field="automation.item-am-capture1"]')
     const toggles = count('[data-field="automation.toggle"]')
+    // 每张卡摘要行都有语义图标（「每个操作都配上图标」的回归护栏）
+    const cards = Array.from(document.querySelectorAll('.card'))
+    const iconsPerCard = cards.map((card) => card.querySelectorAll('.card-meta svg').length)
+    const cardOverflow = cards.reduce((total, card) => total + overflowOf(card), 0)
     return {
       builtin: builtin !== null,
       builtinToggles,
       seededItem,
       toggles,
+      iconsPerCard,
+      cardOverflow,
       pass:
         builtin !== null &&
         builtinToggles === 2 &&
         seededItem === 1 &&
-        toggles === 1,
+        toggles === 1 &&
+        cards.every((card) => card.querySelectorAll('.card-meta svg').length >= 2) &&
+        cardOverflow === 0,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -1229,18 +1248,70 @@ export const CHAT_AUTOMATION_EDITOR_CHECK = `(async () => {
   try {
     const count = (selector) => document.querySelectorAll(selector).length
     const editor = document.querySelector('[data-field="automation.editor"]')
-    const kindSelect = document.querySelector('[data-field="automation.trigger-kind"]')
-    const optionCount = kindSelect === null ? 0 : kindSelect.querySelectorAll('option').length
-    const actionSelect = count('[data-field^="automation.action-"] select')
+    // 条件选择器是「图标磁贴网格」（2026-09 前端减负轮）：数磁贴而不是数 option
+    const kindGroup = document.querySelector('[data-field="automation.trigger-kind"]')
+    const tiles = kindGroup === null ? [] : Array.from(kindGroup.querySelectorAll('[data-kind]'))
+    const tileIcons = tiles.filter((tile) => tile.querySelector('svg') !== null).length
+    // 操作行：每行一个组件胶囊组，胶囊自带图标（「每个操作都配上图标」的回归护栏）
+    const actionRows = Array.from(document.querySelectorAll('[data-field^="automation.action-"]'))
+    const actionIcons = actionRows.filter((row) => row.querySelector('.chip svg') !== null).length
     const nameInput = editor === null ? null : editor.querySelector('input[type="text"]')
     const numberField = count('[data-field="automation.editor"] input[type="number"]')
+    // 原生下拉应当绝迹（条件 / 参数下拉都改成了磁贴与胶囊）
+    const nativeSelect = count('[data-field="automation.editor"] select')
+    // 磁贴里的标签必须留在磁贴内（「文字冲出组件」的几何护栏）
+    const tileOverflow = tiles.reduce((total, tile) => {
+      const box = tile.getBoundingClientRect()
+      let bad = 0
+      for (const node of tile.querySelectorAll('*')) {
+        const rect = node.getBoundingClientRect()
+        if (rect.width === 0 && rect.height === 0) continue
+        if (rect.right > box.right + 1 || rect.bottom > box.bottom + 1) bad += 1
+      }
+      return total + bad
+    }, 0)
     const result = {
       editor: editor !== null,
-      triggerOptions: optionCount,
-      actionSelect,
+      triggerTiles: tiles.length,
+      tileIcons,
+      tileOverflow,
+      actionRows: actionRows.length,
+      actionIcons,
+      nativeSelect,
       hasName: nameInput !== null,
       numberField,
     }
+    // 悬浮提示（前端减负轮的核心交互）：pointerenter 后 body 下应出现 .app-tip，
+    // 文案非空、且不探出视口；pointerleave 后应自行收回（fixed 定位不留残影）
+    const firstTile = tiles[0]
+    const host = firstTile === undefined ? null : firstTile.closest('.tip-host')
+    let tipText = ''
+    let tipInside = false
+    if (host !== null) {
+      host.dispatchEvent(new PointerEvent('pointerenter'))
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const tip = document.querySelector('body > .app-tip')
+        if (tip !== null) {
+          tipText = (tip.textContent || '').trim()
+          const rect = tip.getBoundingClientRect()
+          tipInside =
+            rect.left >= -1 &&
+            rect.right <= window.innerWidth + 1 &&
+            rect.top >= -1 &&
+            rect.bottom <= window.innerHeight + 1
+          break
+        }
+        await wait(50)
+      }
+      host.dispatchEvent(new PointerEvent('pointerleave'))
+    }
+    result.tipText = tipText
+    result.tipInside = tipInside
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (document.querySelector('body > .app-tip') === null) break
+      await wait(50)
+    }
+    result.tipClosed = document.querySelector('body > .app-tip') === null
     // Esc 关闭（弹窗的标准键盘路径）：派发到 window，组件监听器接住后应关掉编辑器
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await wait(200)
@@ -1254,9 +1325,16 @@ export const CHAT_AUTOMATION_EDITOR_CHECK = `(async () => {
     result.restored = document.querySelector('[data-field="automation.editor"]') === null
     result.pass =
       editor !== null &&
-      optionCount >= 7 &&
-      actionSelect >= 1 &&
+      tiles.length >= 7 &&
+      tileIcons === tiles.length &&
+      tileOverflow === 0 &&
+      actionRows.length >= 1 &&
+      actionIcons === actionRows.length &&
+      nativeSelect === 0 &&
       result.hasName === true &&
+      tipText.length > 0 &&
+      tipInside === true &&
+      result.tipClosed === true &&
       result.escClosed === true &&
       result.restored === true
     return result

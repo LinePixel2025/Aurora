@@ -178,6 +178,12 @@
   --z-sticky: 1;
   --z-flyout: 20;
   --z-popover: 30;
+  /*
+   * 悬浮提示（`AppTooltip.vue`，2026-09 前端减负轮）：它 Teleport 到 body，
+   * 要盖住弹层（编辑弹窗挂在 `--z-popover` 上），所以必须**高于** `--z-popover`；
+   * 又低于 `--z-toast`（toast 是结果反馈，不该被提示挡住）。
+   */
+  --z-tooltip: 120;
   --z-toast: 200;
 }
 

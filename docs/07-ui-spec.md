@@ -503,41 +503,57 @@
 - **骨架**：根锚点 `data-field="automation.page"`，列表容器 `data-field="automation.list"`；
   顶部工具行 = 双 tab「Agent Mode」（`data-field="automation.tab-agent"`）/
   「Normal Mode」（`automation.tab-normal`）+ 右侧「历史」（`data-action="automation.history"`）
-  与「新建自动化」（`data-action="automation.new"`）。**列表按当前 tab 过滤**
-  （Agent tab 只列 Agent 定义）。
+  与「新建」（`data-action="automation.new"`）+ 「返回对话」图标钮（`data-action="automation-back"`）。
+  **列表按当前 tab 过滤**（Agent tab 只列 Agent 定义）；
+  **页头与两个 tab 同行**（`flex-wrap: wrap`，窄窗口下动作组整体折行而不是重叠），
+  页头不再有整句副标题 —— 说明改挂在标题右侧的说明标记上（悬停出 `AppTooltip`，§5.4）。
 - **卡片**（`automation.item-<id>`）：启停开关（`data-field="automation.toggle"`，写定义的 `enabled`）+
-  名称 + 模式徽章 + 触发描述（「每天 08:30」「距上课 ≤ 5 分钟」，由触发器参数生成，各 kind 的语义见
-  docs/13 §4）+ 摘要（Agent Mode 显示任务指令、Normal Mode 显示操作摘要，如「系统通知「早读」」）+
-  右侧三枚图标钮：立即运行 / 编辑 / 删除（`data-action="automation.delete"`）。
-  **删除是两段式**：首次点击只翻成「再点一次确认删除」，**3 秒内**再点才真删（超时自动复位）——
-  删掉的是用户攒下的定义，一个误点不该抹掉它。
-- **内置区（仅 Normal tab）**：容器 `data-field="automation.builtin"`，两条 ClassRoom 内置自动化
-  （课前提醒 / 课前打开科目文件夹）带「内置」徽章，开关锚点
+  名称 + 模式徽章（**带语义图标**：Agent = 机器人、Normal = 闪电；内置项用中性「内置」徽章）+
+  触发描述（「每天 08:30」「距上课 ≤ 5 分钟」，由触发器参数生成，各 kind 的语义见 docs/13 §4，
+  **行首带该条件的图标**）+ 摘要（Agent Mode 显示任务指令单行截断、Normal Mode 显示**图标胶囊**：
+  每个操作一枚「图标 + 短名」胶囊，如「系统通知」「打开「数学」」—— 不再把多个操作拼成一整句）+
+  右侧三枚图标钮：立即运行 / 编辑 / 删除（`data-action="automation.delete"`），三枚都有悬浮提示。
+  **删除是两段式**：首次点击只翻成「再点一次确认删除」（按钮转红底红边、提示文案同步切换），
+  **3 秒内**再点才真删（超时自动复位）—— 删掉的是用户攒下的定义，一个误点不该抹掉它。
+  卡片挂 `.interactive`（悬停上浮 + 抬阴影 + 边界提亮），禁用态只降透明度、不隐藏。
+- **内置区（仅 Normal tab）**：容器 `data-field="automation.builtin"`，区组头 = 图标 + 「内置」+ 说明标记；
+  两条 ClassRoom 内置自动化（课前提醒 / 课前打开科目文件夹）带「内置」徽章，开关锚点
   `data-field="automation.builtin-toggle"`，**直接写既有配置**
   （`modes.classroom.preClassReminder` / `preClassOpenFolder`，走既有 `settings:update`），
-  **没有编辑 / 删除**；区底一行提示「内置自动化沿用 ClassRoom 的设置（提前分钟数 / 勿扰时段），
-  在「设置 → 模式」里调整」。语义与迁移口径见 docs/13 §6。
+  **没有编辑 / 删除**；「沿用 ClassRoom 的设置（提前分钟数 / 勿扰时段），在「设置 → 模式」里调整」
+  这句**不再占版面**，改挂在区组头的说明标记上（悬停即见）。语义与迁移口径见 docs/13 §6。
 - **编辑器弹窗**（仓库**首个 Modal**，`data-field="automation.editor"`）：遮罩用 `--overlay-scrim` +
   `z-index: var(--z-popover)`，弹窗底色用 **`--bg-overlay`** —— 它是**弹层专用令牌**，
-  写 `--surface-1` 这类不存在的名字会解析成透明、页面内容直接透进来。字段自上而下：
-  名称 → 模式单选（两个 `.mode-option`）→ 触发器（类型下拉
-  `data-field="automation.trigger-kind"`，选项来自后端 catalog，当前 **7 类**：每天定时 /
-  固定间隔 / 距上课不足 N 分钟 / 上课时 / 距下课不足 N 分钟 / 下课时 / 下节课是指定科目）+
-  该触发器的**动态字段**（文本 / 数字 / 时间 / 星期多选 / 下拉，描述符形状见 docs/13 §4.3）→
-  Agent Mode 的任务指令 textarea，或 Normal Mode 的**操作组件列表**
-  （每项 `data-field="automation.action-<索引>"`，含组件下拉与动态字段；「添加操作」
-  `data-action="automation.add-action"`，**上限 10 个**，到顶即 disabled）。
+  写 `--surface-1` 这类不存在的名字会解析成透明、页面内容直接透进来；
+  宽 `min(640px, calc(100vw - 48px))`。字段自上而下（**全部走「左标签 / 右控件」两列网格**：
+  标签列 92px、控件列 `minmax(0, 1fr)`，两侧各在自己的格子里，长标签换行也不会挤压控件 —— §5.4）：
+  名称 → 模式单选（两个 `.mode-option`，各带图标与一行小字）→
+  **触发条件 = 图标磁贴网格**（容器 `data-field="automation.trigger-kind"` 持 `role="radiogroup"`；
+  每个磁贴带 `[data-kind]` + `role="radio"`，图标在上、名称在下，`repeat(auto-fill, minmax(140px, 1fr))`；
+  选项来自后端 catalog，当前 **7 类**：每天定时 / 固定间隔 / 距上课不足 N 分钟 / 上课时 /
+  距下课不足 N 分钟 / 下课时 / 下节课是指定科目；**每类的 description 挂在磁贴的悬浮提示上**，
+  选中项的说明另以一行小字出现在磁贴下方）+
+  该触发器的**动态字段**（由 `AutomationFieldInput.vue` 按描述符渲染：`text` / `time` 原生输入、
+  `number` 定宽数字框、`weekdays` **星期胶囊多选**（全不选 = 每天）、`select` **分段胶囊**；
+  **编辑器内不再出现原生 `<select>`**。描述符形状见 docs/13 §4.3）→
+  Agent Mode 的「任务指令」textarea，或 Normal Mode 的**操作组件列表**
+  （每项 `data-field="automation.action-<索引>"`：行首序号圆点 + **组件胶囊组**（图标 + 组件名，
+  点一下换组件；`available: false` 的组件**不出现**而不是 disabled）+ 移除钮 + 参数网格；
+  「添加操作」`data-action="automation.add-action"`，**上限 10 个**，到顶即 disabled，
+  区组头右侧显示 `n/10`）。
   底部「取消」（`data-action="automation.editor-cancel"`）/「保存」；三条关闭路径 ——
   点遮罩（`@click.self`，点弹窗内部不关）、「取消」、**Esc**（组件在 `window` 上挂 `keydown`
   监听：编辑器优先，其次是历史弹窗；历史里正展开某条运行回放时，第一下 Esc 只收回放 ——
   与「一层一层退」的直觉一致）。
 - **历史弹窗**（`data-field="automation.history-panel"`，关闭钮
   `data-action="automation.history-close"`）：列表容器 `data-field="automation.history-list"`，
-  每条显示**触发时间 + 归属自动化名 + 状态（成功 / 失败 / 进行中 / 已中断）+ 用时**；
+  每条 = **状态图标**（进行中旋转 / 成功对勾 / 失败叉 / 已中断停止，与状态文案同色）
+  + **触发时间 + 归属自动化名 + 状态 + 用时**；
   同样**按当前 tab 过滤**（Agent tab 只列 Agent 运行）。**Agent 记录可点开**（行加 `.clickable`）
   → 弹窗内展开**对话回放**（`.detail-message`，「任务」/「Agent」两侧气泡，数据经既有
   `chat:history` 按 `sessionId` 读取，见 docs/13 §7；会话被删则显示「会话已被删除或还没有消息」）；
   **Normal 记录不可点、没有详情层** —— 产品口径是「只显示触发时间与状态，不展示具体操作」。
+  `.run-item` / `.run-time` / `.clickable` / `.detail-message` 四个类名是 capture 探针契约，别改名。
 - **门控口径**：catalog 里 `available: false` 的操作组件（如未配置桥接时的 ClassIsland 提醒）
   **在选项里不出现**，不是 `disabled` —— 与麦克风 / 朗读按钮同款口径。
 - **推送订阅**：`automation:changed` → 重拉列表；`automation:historyChanged` → 历史弹窗开着时重拉
@@ -955,9 +971,12 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     ② 点 `automation.tab-normal` → 断言 `automation.builtin` 在、`automation.builtin-toggle`
     **恰好 2**（两条内置）、自建项 `automation.item-am-capture1` 恰好 1、`automation.toggle`
     恰好 1（切到 Normal tab 后 Agent 定义不在列表里 —— 顺带钉住「按 tab 过滤」）；
-    ③ 点 `automation.new` → 断言触发器下拉 `automation.trigger-kind` 的 option **≥ 7**
-    （catalog 七类）、至少 1 行操作组件（`[data-field^="automation.action-"] select`）、
-    名称输入框与数字字段都在，然后点 `automation.editor-cancel` 并断言弹窗**已消失**
+    ③ 点 `automation.new` → 断言**条件磁贴**（`automation.trigger-kind` 容器下 `[data-kind]`）**≥ 7**
+    （catalog 七类）且**每枚磁贴都有图标**、磁贴内元素不探出磁贴矩形（安全区几何护栏）、
+    至少 1 行操作组件（`[data-field^="automation.action-"]`）且每行胶囊都有图标、
+    编辑器内**原生 `<select>` 数为 0**、名称输入框与数字字段都在，
+    再派发一次 `pointerenter` 断言悬浮提示真的出现（`body > .app-tip` 文案非空、不探出视口）
+    且 `pointerleave` 后自行收回，然后点 `automation.editor-cancel` 并断言弹窗**已消失**
     （不留残影，后续场景还要操作列表）；
     ④ 先切回 Agent tab 再点「历史」→ 点开一条 Agent 记录（`.run-item.clickable`）断言
     `.detail-message` **≥ 2** 且面板文本含 seed 标记（证明回放的是**真实会话**，不是占位）；
@@ -1178,5 +1197,31 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     （切到 Work 后 classroom 控件不在 DOM）；其余设置场景各自 reload，互相无顺序约束。
 - 截图前会等 `WindowManager.whenLoaded()`（`ensure()` 的加载是 fire-and-forget，
   不等会截到 0 字节空图），并对空图重试；连续空图直接判失败，不产出空文件。
-- 设置页深链：`main/window-manager.ts` 的 `ensure(name, query)` / `reload(name, query)`
-  给 URL / `loadFile` 传 query，仅截图场景使用，正常启动不带 query。
+- 设置页深链：`main/window-manager.ts` 的 `ensure(name, query)` / `reload(name, query)`  给 URL / `loadFile` 传 query，仅截图场景使用，正常启动不带 query。
+
+### 5.4 文案密度与提示（2026-09 前端减负轮）
+
+用户反馈的原始问题是「文字、组件堆砌，视觉压力大」与「文字冲出组件」。两条口径落在这里，
+新写 / 重做的界面一律照此执行：
+
+1. **能压缩的说明不占版面，改挂悬浮提示**（`AppTooltip.vue`）：
+   - 触发方式：`pointerenter` 与 `focusin` 都开（键盘可达），`pointerleave` / `focusout` 收回；
+     滚动与窗口尺寸变化一律收回 —— `fixed` 定位的气泡不会跟着锚点走，留着就是错位浮层。
+   - 定位：`Teleport to body` + `position: fixed`，按锚点矩形算中线、**量到真实宽度后再做视口夹取**
+     （长文案在窄窗口下不会冲出屏幕）；`--z-tooltip`（120）高于弹层 `--z-popover`（30）、
+     低于 `--z-toast`（200）。**不要**用纯 CSS 伪元素：提示常挂在 `overflow: auto` 的弹窗正文里，
+     绝对定位的伪元素会被裁掉；也**不要**再写 `title`（样式不可控、禁用态控件不弹）。
+   - **坑**：气泡定位靠 `transform: translate(-50%, ...)`，所以进场动画**只能碰 opacity**
+     （`.tip-*` 只过渡透明度）—— 套 `aurora-pop-in` / `aurora-rise-in` 会写 `transform: none`，
+     气泡会被拍回锚点左上角。
+   - 用在：图标钮（只有图标的按钮必须有提示，因为它没有可见文案）、条件磁贴的 description、
+     字段的 `hint`、区组头的说明标记、页头说明。**有可见文案的按钮不需要再套一层提示**。
+2. **安全区**：标签与控件分列两项布局（`grid-template-columns: 92px minmax(0, 1fr)`）而不是
+   「标签在上、控件在下」——竖排时长标签会把控件挤变形；容器与子项一律带 `min-width: 0`
+   并允许换行（`overflow-wrap: anywhere`），页面级工具行用 `flex-wrap: wrap` 保证**任何窗口宽度都不重叠**。
+   capture 里有两条几何护栏钉住它：`.card` 内的元素不得探出卡片矩形、编辑器磁贴内的元素不得探出磁贴矩形
+   （`CHAT_AUTOMATION_NORMAL_CHECK` / `CHAT_AUTOMATION_EDITOR_CHECK`，超出 1px 即 FAIL）。
+3. **选择器不再用原生 `<select>`**（`AutomationFieldInput.vue` 的口径，其他页面逐步跟上）：
+   选项 ≤ 3～4 个时用**分段胶囊**（点一下即选），
+   选项更多时用**图标磁贴网格**（一眼看到全部选项与各自图标）；参数类型用输入框本身表达
+   （`type="time"` / `type="number"` + 定宽）。

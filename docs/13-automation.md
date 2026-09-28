@@ -277,18 +277,24 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。
 - **入口**：主界面左栏固定项「自动化」（`data-field="chat.auto-item"`，同子代理项
   模式），点击后主区切到自动化页（`view = 'automations'`，与子代理页同构）。
 - **自动化页**（`renderer/chat/components/AutomationPage.vue`）：
-  - 顶部 tab：「Agent Mode」/「Normal Mode」；右侧「新建自动化」「历史」按钮；
-  - 列表：卡片 = 名称 + 触发描述（如「每天 08:00」「距上课 ≤ 5 分钟」）+
-    启停开关 + 编辑 / 删除；Normal tab 底部「内置」区展示两条内置自动化
-    （徽章 + 开关映射既有配置 + 跳设置提示）；
+  - 顶部一行：标题 + 说明标记 + 双 tab「Agent Mode」/「Normal Mode」+
+    右侧「新建」「历史」「返回对话」（窄窗口下动作组整体折行）；
+  - 列表：卡片 = 名称 + **带图标的模式徽章** + 触发描述（如「每天 08:00」「距上课 ≤ 5 分钟」，
+    行首是该条件的图标）+ 摘要（Agent Mode 为任务指令单行截断；Normal Mode 为**图标胶囊**，
+    每个操作一枚「图标 + 短名」）+ 启停开关 + 立即运行 / 编辑 / 删除三枚图标钮（都带悬浮提示）；
+    Normal tab 底部「内置」区展示两条内置自动化（徽章 + 开关映射既有配置 + 说明标记）；
   - 编辑器（弹窗形态，仓库首个 Modal 组件，`--z-popover` + 遮罩令牌）：
-    名称、模式单选、触发器（类型下拉 + catalog 动态字段）、
-    Agent Mode → 任务指令 textarea；Normal Mode → 操作组件列表（添加 / 删除 +
-    catalog 动态字段，可用性门控同「不渲染而不是 disabled」）；
-  - **历史弹窗**：Agent tab 列出触发时间 / 用时 / 状态 / 归属自动化，点行展开
-    对话回放（复用 `MessageList`，数据 = `chat:history(sessionId)`）；
+    名称、模式单选（带图标）、**触发条件 = 图标磁贴网格**（7 类各带语义图标，
+    description 走悬浮提示）、catalog 动态字段（`AutomationFieldInput.vue`：
+    `select` → 分段胶囊、`weekdays` → 星期胶囊，**编辑器内无原生下拉**）、
+    Agent Mode → 任务指令 textarea；Normal Mode → 操作组件列表（行首序号 + 组件胶囊组
+    （图标 + 组件名，点一下换组件）+ 移除钮 + 参数网格，可用性门控同「不渲染而不是 disabled」）；
+  - **历史弹窗**：Agent tab 列出状态图标 / 触发时间 / 用时 / 归属自动化，点行展开
+    对话回放（数据 = `chat:history(sessionId)`）；
     Normal tab 只列触发时间（+ 自动化名 + 状态图标），**无详情层**（口径：不展示
     具体操作）；
+  - 文案密度与安全区的通用口径（悬浮提示组件 `AppTooltip`、左标签右控件、无原生下拉）
+    见 docs/07 §5.4；
   - 推送订阅：`automation:changed` → 重拉列表；`automation:historyChanged` →
     历史弹窗开着时重拉。
 - **设置页**：「模式」页新增「自动化」区组（总开关 `automations.enabled`，
