@@ -4,6 +4,10 @@
  *
  * 交互窗与设置页共用。默认折叠（`startOpen = false`），避免挤占对话区域；
  * 折叠时标题行仍展示条数与「处理中」状态，用户能感知后台在归类。
+ *
+ * 条目是**两行式**布局：第一行 = 状态点 + 时间 + 文件名（唯一收缩项，ellipsis）+ 状态徽章；
+ * 第二行（detail 行）= 科目下拉 + 打开按钮 + 科目/来源/置信 tag + 依据，允许换行 ——
+ * 主界面右栏的窄容器（约 260-300px）与设置页宽容器都不横向溢出。
  */
 import { computed, onMounted, ref } from 'vue'
 import { ChevronRight } from '../icons.js'
@@ -134,6 +138,11 @@ async function clearAll(): Promise<void> {
 
       <div v-else class="list">
         <article v-for="row in rows" :key="row.id" class="item">
+          <!--
+            两行式布局（窄容器修复）：第一行只放「状态 + 时间 + 文件名 + 状态徽章」，
+            文件名是唯一可收缩项（ellipsis）；科目下拉 / 打开按钮 / tag / reason 全部沉到
+            第二行 detail 行并允许换行 —— 主界面右栏（约 260-300px）与设置页宽容器都不溢出。
+          -->
           <div class="line">
             <span
               class="dot"
@@ -147,6 +156,8 @@ async function clearAll(): Promise<void> {
             <span class="badge" :class="stateBadge(row.state)">
               {{ classificationStateLabel(row.state) }}
             </span>
+          </div>
+          <div class="tiny muted detail">
             <select
               class="pick"
               :disabled="
@@ -167,8 +178,6 @@ async function clearAll(): Promise<void> {
             <AppButton size="sm" variant="ghost" @click="openRecordFolder(row)">
               打开所在文件夹
             </AppButton>
-          </div>
-          <p class="tiny muted detail">
             <span v-if="row.record.subject !== ''" class="tag">{{ row.record.subject }}</span>
             <span class="tag">{{ classificationSourceLabel(row.record.source) }}</span>
             <span v-if="row.record.confidence > 0" class="tag">
@@ -177,7 +186,7 @@ async function clearAll(): Promise<void> {
             <span class="reason" :title="row.record.reason">{{ row.record.reason }}</span>
             <span v-if="row.record.corrected === true" class="tag">已修正</span>
             <span v-if="row.record.movedTo" class="tag" :title="row.record.movedTo">已移动</span>
-          </p>
+          </div>
         </article>
       </div>
     </div>
@@ -321,8 +330,10 @@ async function clearAll(): Promise<void> {
 }
 
 .pick {
-  flex: 0 0 auto;
-  max-width: 132px;
+  /* 下拉允许收缩（窄容器不溢出）：可被压缩到内容宽以下，超出部分由控件自身截断 */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 160px;
   padding: 3px 6px;
   border-radius: var(--radius-xs);
   border: 1px solid var(--border-subtle);
@@ -346,9 +357,12 @@ async function clearAll(): Promise<void> {
 }
 
 .detail {
+  /* 第二行（detail 行）：下拉 / 按钮 / tag / reason 都在这里，允许换行 ——
+     窄容器里放不下就折到下一行，绝不横向溢出（expand 态与两个宿主容器都按此目测） */
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 4px 6px;
   margin: 0;
   min-width: 0;
 }
@@ -362,7 +376,9 @@ async function clearAll(): Promise<void> {
 }
 
 .reason {
-  flex: 1;
+  /* 依据文本：可伸缩、可换行基础宽度 —— 窄容器里它会折到独立一行并撑满，
+     超长仍然 ellipsis（title 悬浮可看全文） */
+  flex: 1 1 120px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

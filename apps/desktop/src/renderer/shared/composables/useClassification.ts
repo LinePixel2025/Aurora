@@ -134,18 +134,25 @@ export function useClassification(options: UseClassificationOptions = {}) {
   /**
    * 用主进程返回的完整流水重建列表（`correct` 的回包）。
    * 在途阶段只在事件里出现，因此保留「处理中」的行，其余按记录重新推导阶段。
+   *
+   * 例外：修正回包里的记录带 `corrected === true`（或已能推导出终态的错误标记）——
+   * 它说明这条记录**已经走完管线**，此时再保留「处理中」的旧阶段会出现
+   * 「徽章显示移动文件、detail 却已有已修正」的短暂错位，直接推到终态。
    */
   function applyRecords(records: ClassificationRecord[]): void {
     const previous = new Map(rows.value.map((row) => [row.id, row]))
     rows.value = records.slice(0, limit).map((record) => {
       const row = previous.get(record.id)
       if (row === undefined) return rowFromRecord(record)
-      const state = isClassificationActive(row.state)
-        ? row.state
-        : classificationStateFromRecord(record)
+      const merged = mergeRecord(row.record, record)
+      const settled = merged.corrected === true || (merged.error ?? '') !== ''
+      const state =
+        !settled && isClassificationActive(row.state)
+          ? row.state
+          : classificationStateFromRecord(merged)
       return {
         ...row,
-        record: mergeRecord(row.record, record),
+        record: merged,
         state,
       }
     })
