@@ -50,6 +50,7 @@ import {
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
+import SnapshotList from '../../shared/components/SnapshotList.vue'
 import McpSection from '../components/McpSection.vue'
 import SkillsSection from '../components/SkillsSection.vue'
 import { useSettingsStore } from '../../shared/stores.js'
@@ -659,6 +660,8 @@ async function openWorkspace(): Promise<void> {
             write_file / edit_file 的底。刻意**不**放进 `tools.enabled` 的门控：
             快照是"写盘行为的兜底"，与注册哪些工具无关（工具关着时它自然不生效，
             但配置项本身照常可改）。
+            2026-09 起回滚列表（SnapshotList）也从主界面右栏迁到这里：
+            回滚属于「排查 / 补救」动作，主界面右栏只留上下文卡片。
           -->
           <div class="sub">
             <h3 class="sub-title">文件备份</h3>
@@ -668,7 +671,7 @@ async function openWorkspace(): Promise<void> {
               >）真正落盘前，先把磁盘上的<strong>原内容</strong>存一份到本机（docs/06 §11.8）：
               改错了可以回到某一份快照；<strong>回滚本身也会先留一份快照</strong>，所以回滚同样可撤回。
               备份只存本机（用户数据目录的 <code class="mono">backups</code> 下，按会话分目录），
-              不会上传；主界面右栏的「文件备份」卡能看到最近几条并一键回滚。
+              不会上传；下方的备份列表能看到最近几条并一键回滚。
             </p>
 
             <SettingField
@@ -764,14 +767,14 @@ async function openWorkspace(): Promise<void> {
             </p>
 
             <!--
-              「立即清理」（`agent.snapshots.prune`）刻意**不渲染**：该通道的契约要求 `sessionId`，
-              而设置窗口拿不到"当前会话"—— 会话 id 是 chat 窗口 `useChat()` 内部的 ref
-              （chat/App.vue 的 `sessionId`），既不落配置、也没有 store 暴露给别的窗口；
-              `chat.sessions()` 返回的 active 标记还是渲染层自己算的。
-              拿不到会话就不能编一个（传 `''` 或"最近更新的那条"都会清理到别人的备份）。
-              主进程本来就会按上面的两个上限自动淘汰，手动入口等会话 id 能传进设置页后再补 ——
-              `shared/composables/snapshots.ts` 的 `prune()` 已经写好，接上即可。
+              备份列表 + 「立即清理」（2026-09 自主界面右栏迁入）：列表展示全部会话的最近
+              5 条、逐条两段式回滚（锚点 `agent.snapshot-*`，capture 探针同步）。
+              设置窗口拿不到"当前会话"（会话 id 是 chat 窗 `useChat()` 内部的 ref），
+              所以 `prune` 走 composable 的**全部会话**语义：先列全量快照、按 sessionId
+              去重后逐个淘汰，主进程的 `snapshots:prune` 契约（按会话粒度）不变。
+              列表挂在门控之外：关掉开关后历史备份仍可查看 / 回滚 / 清理。
             -->
+            <SnapshotList :limit="5" />
           </div>
 
           <!-- 文件检索 -->

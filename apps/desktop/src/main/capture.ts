@@ -619,7 +619,9 @@ export function captureMissingProjectRoot(userData: string): string {
 }
 
 /**
- * 种一份**真实**的文件快照（v14，docs/06 §11.8），供 `chat-snapshot-card.png` 场景断言。
+ * 种一份**真实**的文件快照（v14，docs/06 §11.8），供快照相关场景断言
+ * （`chat-snapshot-card-removed.png`：主界面右栏不再有快照卡；
+ * `settings-snapshot-list.png`：设置页 Agent 页的备份列表）。
  *
  * 走真实端口（`createNodeFileSnapshotPort` 的默认实现）而不是手写 `index.json`：
  * 手写的夹具只能证明"界面会渲染 json"，证明不了"写文件时真的会留底"。
@@ -752,51 +754,85 @@ export function chatProjectCardCheck(name: string, missingRoot: string): string 
 }
 
 /**
- * 右栏「文件备份」卡探针（v14，docs/06 §11.8）。
+ * 「文件备份」卡移出主界面的探针（2026-09 UI 收拢，回滚 UI 迁设置页 Agent 页）。
  *
- * `prepare` 已在 main 侧种好一份**真实**快照（见 `seedSnapshotFixture`），所以这里断言：
- * 卡在、至少一条记录、条目的文件名与来源都渲染出来了，并且点一次「回滚」只停在
- * 「确认回滚？」（**两段式**）—— 截图正好拍到这个中间态。
+ * `prepare` 仍然种一份**真实**快照（见 `seedSnapshotFixture`）—— 反例现场必须有数据：
+ * 即便备份存在，主界面右栏也不该再出现任何快照卡（`chat.snapshot-card`）。
+ * 快照列表本身的正例断言见 `settings-snapshot-list.png` 场景（SETTINGS_SNAPSHOT_LIST_*）。
  */
-export const CHAT_SNAPSHOT_CARD_ACT = `(async () => {
+export const CHAT_SNAPSHOT_CARD_REMOVED_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    // 等一拍：右栏是感知数据驱动渲染，稳定后再数，避免首帧竞态
+    await wait(800)
+    return {
+      card: count('[data-field="chat.snapshot-card"]'),
+      restore: count('[data-field="chat.snapshot-restore"]'),
+      agentRestore: count('[data-field="agent.snapshot-restore"]'),
+      pass:
+        count('[data-field="chat.snapshot-card"]') === 0 &&
+        count('[data-field="chat.snapshot-restore"]') === 0 &&
+        // 设置页的新锚点也不该泄漏进主界面（防止有人把组件挂错了窗口）
+        count('[data-field="agent.snapshot-restore"]') === 0,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 设置页「文件备份」列表探针（2026-09，回滚 UI 自主界面右栏迁入 Agent 页）。
+ *
+ * `prepare` 已种好一份真实快照（见 `seedSnapshotFixture`），这里断言：
+ * 列表在、至少一条记录、条目的文件名与来源都渲染出来了，并且点一次「回滚」只停在
+ * 「确认回滚？」（**两段式**）—— 截图正好拍到这个中间态；同时确认「刷新 / 立即清理」
+ * 两个操作入口都在。锚点已从 `chat.snapshot-*` 统一改名 `agent.snapshot-*`。
+ */
+export const SETTINGS_SNAPSHOT_LIST_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     let button = null
     for (let attempt = 0; attempt < 15 && button === null; attempt += 1) {
-      button = document.querySelector('[data-field="chat.snapshot-restore"]')
+      button = document.querySelector('[data-field="agent.snapshot-restore"]')
       if (button === null) await wait(200)
     }
-    if (button === null) return { ok: false, reason: 'chat.snapshot-restore 未出现（快照没种上？）' }
+    if (button === null) return { ok: false, reason: 'agent.snapshot-restore 未出现（快照没种上？）' }
     const before = (button.textContent || '').trim()
     button.click()
     await wait(200)
-    const after = (document.querySelector('[data-field="chat.snapshot-restore"]').textContent || '').trim()
+    const after = (document.querySelector('[data-field="agent.snapshot-restore"]').textContent || '').trim()
     return { ok: true, before, after }
   } catch (error) {
     return { ok: false, reason: String(error) }
   }
 })()`
 
-export const CHAT_SNAPSHOT_CARD_CHECK = `(async () => {
+export const SETTINGS_SNAPSHOT_LIST_CHECK = `(async () => {
   try {
     const count = (selector) => document.querySelectorAll(selector).length
-    const card = document.querySelector('[data-field="chat.snapshot-card"]')
-    const text = card === null ? '' : (card.textContent || '').replace(/\\s+/g, ' ').trim()
-    const rows = count('[data-field="chat.snapshot-restore"]')
-    const button = document.querySelector('[data-field="chat.snapshot-restore"]')
+    const list = document.querySelector('[data-field="agent.snapshot-list"]')
+    const text = list === null ? '' : (list.textContent || '').replace(/\\s+/g, ' ').trim()
+    const rows = count('[data-field="agent.snapshot-restore"]')
+    const button = document.querySelector('[data-field="agent.snapshot-restore"]')
     const label = button === null ? '' : (button.textContent || '').trim()
     return {
-      card: count('[data-field="chat.snapshot-card"]'),
+      list: count('[data-field="agent.snapshot-list"]'),
       rows,
+      prune: count('[data-field="agent.snapshot-prune"]'),
+      refresh: count('[data-action="agent.snapshot-refresh"]'),
       text,
       label,
       pass:
-        // 卡恰好一张 + 至少一条记录（不写死条数：环形保留的份数随配置走）
-        count('[data-field="chat.snapshot-card"]') === 1 &&
+        // 列表恰好一个 + 至少一条记录（不写死条数：环形保留的份数随配置走）
+        count('[data-field="agent.snapshot-list"]') === 1 &&
         rows >= 1 &&
-        text.indexOf('文件备份') !== -1 &&
-        // 种下的快照来自 write_file，来源列必须译成中文
         text.indexOf('写文件') !== -1 &&
+        // 种下的快照来自 write_file，来源列必须译成中文
+        text.indexOf('回滚') !== -1 &&
+        // 清理 / 刷新两个操作入口都得在（清理走两段式，按钮文案此刻仍是「立即清理」）
+        count('[data-field="agent.snapshot-prune"]') === 1 &&
+        count('[data-action="agent.snapshot-refresh"]') === 1 &&
         // 两段式：act 点过一次，这里必须是待确认文案（截图拍的就是这个状态）
         label.indexOf('确认回滚') !== -1,
     }
@@ -886,10 +922,11 @@ export const CHAT_JOB_PANEL_CHECK = `(async () => {
 })()`
 
 /**
- * 综合概览卡的探针（step 5）：右栏同时出现「当前项目 + 文件备份 + 任务」三张卡。
+ * 综合概览卡的探针（step 5）：右栏同时出现「当前项目 + 任务」两张卡。
  *
- * 断言的是**布局不冲突**：三张卡各自恰好一张、都渲染出来了，且任务卡显示的是真内容
- * （单独场景各自证明过"这张卡能出现"，这一张证明"三张同时出现时不会互相挤掉"）。
+ * 断言的是**布局不冲突**：两卡各自恰好一张、都渲染出来了，且任务卡显示的是真内容
+ * （单独场景各自证明过"这张卡能出现"，这一张证明"多卡同时出现时不会互相挤掉"）。
+ * 「文件备份」卡已迁设置页：这里顺带断言右栏不再出现快照卡（回归护栏）。
  */
 export const CHAT_OVERVIEW_CHECK = `(async () => {
   try {
@@ -899,7 +936,6 @@ export const CHAT_OVERVIEW_CHECK = `(async () => {
     for (let attempt = 0; attempt < 20 && !ready; attempt += 1) {
       ready =
         count('[data-field="context.project-card"]') === 1 &&
-        count('[data-field="chat.snapshot-card"]') === 1 &&
         count('[data-field="chat.job-panel"]') === 1
       if (!ready) await wait(150)
     }
@@ -912,8 +948,9 @@ export const CHAT_OVERVIEW_CHECK = `(async () => {
       text,
       pass:
         count('[data-field="context.project-card"]') === 1 &&
-        count('[data-field="chat.snapshot-card"]') === 1 &&
         count('[data-field="chat.job-panel"]') === 1 &&
+        // 快照卡已迁设置页（SnapshotList），右栏必须为 0
+        count('[data-field="chat.snapshot-card"]') === 0 &&
         text.indexOf('已暂停') !== -1,
     }
   } catch (error) {
@@ -5272,18 +5309,18 @@ export function defaultCapturePlan(
       act: chatProjectAct(captureProjectRoot(userData), '截图项目'),
       check: chatProjectCardCheck('截图项目', captureMissingProjectRoot(userData)),
     },
-    // 右栏「文件备份」卡（v14，docs/06 §11.8）：
-    // prepare 种一份真实快照（走真实端口 + flush，不是手写 json）并 reload 让卡片重新水合；
-    // act 点一次「回滚」（两段式的第一下），check 断言卡在、有记录、来源文案与待确认文案。
+    // 「文件备份」卡移出主界面（2026-09，回滚 UI 迁设置页 Agent 页）：
+    // prepare 仍种一份真实快照（反例现场必须有数据）并 reload，check 断言右栏
+    // **不再出现**快照卡（chat.snapshot-card / chat.snapshot-restore 均为 0）；
+    // 正例断言（列表 + 两段式回滚）见 settings-snapshot-list.png 场景。
     {
       name: 'chat',
-      file: 'chat-snapshot-card.png',
+      file: 'chat-snapshot-card-removed.png',
       prepare: async () => {
         await seedSnapshotFixture(userData)
         await manager.reload('chat', {})
       },
-      act: CHAT_SNAPSHOT_CARD_ACT,
-      check: CHAT_SNAPSHOT_CARD_CHECK,
+      check: CHAT_SNAPSHOT_CARD_REMOVED_CHECK,
     },
     // 右栏「任务」面板（v15，docs/06 §4.1）：
     // 现场由 runCapture 在跑计划前种好（seedJobFixture，**必须早于面板首读** —— job 存储
@@ -5298,14 +5335,14 @@ export function defaultCapturePlan(
       },
       check: CHAT_JOB_PANEL_CHECK,
     },
-    // 综合概览（step 5）：右栏同时挂「当前项目 + 文件备份 + 任务」三张卡，用于人工核对布局。
-    // 现场三样都要现种：项目根 + 一份快照 + 一份 paused job，然后 reload 让三张卡一起水合。
+    // 综合概览（step 5）：右栏同时挂「当前项目 + 任务」两张卡，用于人工核对布局。
+    // 现场两样都要现种：项目根 + 一份 paused job，然后 reload 让两张卡一起水合。
+    // （「文件备份」卡已迁设置页：右栏不再有快照卡，check 里附带断言它的缺席。）
     {
       name: 'chat',
       file: 'chat-agent-prod-overview.png',
       prepare: async () => {
         await mkdir(captureProjectRoot(userData), { recursive: true })
-        await seedSnapshotFixture(userData)
         await seedJobFixture(userData)
         hooks.setProject?.({
           id: 'capture-overview',
@@ -5534,6 +5571,22 @@ export function defaultCapturePlan(
     file: 'settings-legacy-tts-alias.png',
     query: { page: 'tts' },
     check: SETTINGS_LEGACY_ALIAS_SCRIPT,
+  })
+  // 设置页「文件备份」列表（2026-09，回滚 UI 自主界面右栏迁入 Agent 页）：
+  // prepare 种一份真实快照（走真实端口 + flush，不是手写 json），随后**带 query 重载**
+  // 设置窗让 SnapshotList 重新挂载并首读（列表只在挂载 / 手动刷新时拉取）；
+  // act 点一次「回滚」（两段式的第一下），check 断言列表在、有记录、来源文案、
+  // 清理 / 刷新入口与待确认文案。
+  plan.push({
+    name: 'settings',
+    file: 'settings-snapshot-list.png',
+    query: { page: 'agent' },
+    prepare: async () => {
+      await seedSnapshotFixture(userData)
+      await manager.reload('settings', { page: 'agent' })
+    },
+    act: SETTINGS_SNAPSHOT_LIST_ACT,
+    check: SETTINGS_SNAPSHOT_LIST_CHECK,
   })
   // 设置窗拖动区（step-06）：侧栏顶部 / `.brand` / 内容区顶部三处至少要有一条 ≥ 32px 的可见拖动区，
   // 且拖动区里的按钮仍能被 elementFromPoint 命中（不被 `-webkit-app-region: drag` 吃掉点击）。

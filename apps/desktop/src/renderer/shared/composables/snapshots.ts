@@ -1,15 +1,16 @@
 /**
  * 文件备份（写前快照）状态：docs/06 §11.8、docs/07 §2.3。
  *
- * 定位：**每会话一份缓存 + 手动刷新**的轻量实现，**不是全局 store** ——
- * 目前只有主界面右栏的「文件备份」卡用它（挂载时取一次、回滚成功后再取一次）。
+ * 定位：**每窗口一份缓存 + 手动刷新**的轻量实现，**不是全局 store** ——
+ * 消费方是设置页 Agent 页的「文件备份」列表（SnapshotList，挂载时取一次、
+ * 回滚 / 清理成功后再取一次）；主界面右栏的快照卡已于 2026-09 移除（UI 收拢进设置页）。
  * 因此刻意不引入 Pinia、也不订阅任何推送通道：主进程没有"快照变更"事件，
  * 列表天然只能在手动刷新时更新（挂载 / 回滚后 / 用户点刷新）。
  *
  * 会话过滤：调用方可以传 `sessionId` 只看某个会话；**不传 = 全部会话的最近若干条**。
- * 主界面右栏目前拿不到"当前会话 id"：`chat/App.vue` 里它是 `useChat()` 内部的 ref，
- * 既没有 store、也没有经 props 传进 ContextPanel（右栏的 props 只有 `todos`）。
- * 宁可不过滤，也不用"最近更新的那条会话"冒充当前会话（那会让人以为备份是别的会话的）。
+ * 渲染层普遍拿不到"当前会话 id"：`chat/App.vue` 里它是 `useChat()` 内部的 ref，
+ * 既没有 store、也没有经 props 传进别的组件。宁可不过滤，也不用"最近更新的那条会话"
+ * 冒充当前会话（那会让人以为备份是别的会话的）。
  *
  * 跨 IPC 只传字面量：三个方法的入参都在这里现构成纯对象，绝不把 `items` 里的对象
  * （Vue 响应式代理）回传 —— `ipcRenderer.invoke` 用结构化克隆，Proxy 会抛
@@ -18,7 +19,7 @@
 import { ref, type Ref } from 'vue'
 import type { SnapshotRef } from '@aurora/shared'
 
-/** 右栏卡片只展示最近 5 条；也是 `list` 的缺省条数 */
+/** 列表缺省展示最近 5 条（也是 `list` 的缺省条数） */
 const DEFAULT_LIMIT = 5
 
 export interface SnapshotsOptions {
@@ -37,7 +38,9 @@ export interface UseSnapshots {
   refresh: () => Promise<void>
   /** 回滚到某一份快照；成功后自动 `refresh()`（列表里会多出一条 `origin: 'rollback'`） */
   restore: (id: string) => Promise<boolean>
-  /** 立即清理（主进程按保留份数与总预算做一次淘汰）；返回删除条数，失败 / 无法执行返回 0 */
+  /** 立即清理（主进程按保留份数与总预算做一次淘汰）；返回删除条数，失败 / 无法执行返回 0。
+   *  查询条件带 `sessionId` 时只清该会话；**不带时按「全部会话」清理**（先列全量快照、
+   *  按 `sessionId` 去重后逐个淘汰）—— 设置页没有"当前会话"的概念，用的就是这条路。 */
   prune: () => Promise<number>
 }
 
@@ -101,16 +104,42 @@ export function useSnapshots(options: SnapshotsOptions = {}): UseSnapshots {
     return true
   }
 
-  /** 立即清理：`prune` 的契约要求 `sessionId`，不知道会话时**什么都不做**（宁可不动也不误删） */
+  /**
+   * 立即清理：
+   * - 查询条件带 `sessionId` → 只按该会话淘汰（主进程契约就是按会话粒度淘汰的）；
+   * - 不带 → **全部会话**：先拉一次全量快照列表（`limit: 0` = 不限制，主进程按
+   *   「非正数 = 不限制」口径返回所有会话的记录），按 `sessionId` 去重后逐个淘汰。
+   *   不向主进程编造会话 id，也不改 `snapshots:prune` 的 IPC 契约 ——
+   *   每次调用仍然只针对一个真实存在的会话目录，宁可多跑几轮也不误删。
+   */
   async function prune(): Promise<number> {
-    const sessionId = query.sessionId
-    if (sessionId === undefined) {
-      error.value = '无法清理：还不知道要清理哪个会话的备份'
-      return 0
-    }
     error.value = null
+    if (query.sessionId === undefined) {
+      try {
+        const listed = await window.aurora.snapshots.list({ limit: 0 })
+        if (!listed.ok) {
+          error.value = listed.message
+          return 0
+        }
+        const sessionIds = [...new Set(listed.value.map((item) => item.sessionId))]
+        let removed = 0
+        for (const sessionId of sessionIds) {
+          const result = await window.aurora.snapshots.prune({ sessionId })
+          if (!result.ok) {
+            error.value = result.message
+            return removed
+          }
+          removed += result.value
+        }
+        await refresh()
+        return removed
+      } catch (cause) {
+        error.value = String(cause)
+        return 0
+      }
+    }
     try {
-      const result = await window.aurora.snapshots.prune({ sessionId })
+      const result = await window.aurora.snapshots.prune({ sessionId: query.sessionId })
       if (!result.ok) {
         error.value = result.message
         return 0
