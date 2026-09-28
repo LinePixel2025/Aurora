@@ -149,13 +149,14 @@
     清除绑定回显「未指定（跟随全局）」），未绑定时缺省目录 / 项目边界 / AGENTS.md / auto 档
     边界回落全局当前项目（`06 §5.1`）
     + **当前项目卡（v13 新增，`data-field="context.project-card"`；无当前项目时整卡不渲染）**
-    + **文件备份卡（v14 新增，`data-field="chat.snapshot-card"`；没有快照时整卡仍渲染、显示空态文案）**
+    （**文件备份卡已于 v0.2.4 移除**：回滚 / 清理 UI 整体迁入设置页「智能与工具」页的
+    文件备份区组，主界面右栏不再展示快照列表 —— 见下文「文件备份」与 06 §11.8。）
     + 系统状态卡（时间 / 电量 / 网络 / 前台应用）。**非当前模式的功能一律不渲染**。
     课堂状态卡的数据来自桥接的快照（`05 §3.4 v3`）：上课中才显示当前科目与时段，
     下节课显示「科目 · 起–止」；字段缺失按「暂无课堂状态」降级，不编造。
     当前项目卡（`06 §5.1`）显示项目名与项目根；根可用时「打开文件夹」走 `app:openPath` 的
     **新 kind `project`**（打开的是**当前项目根**，与 `kind: 'workspace'` 不同 —— 后者打开的是
-    生效工作目录：三级回落（当前项目根 > `agent.tools.workspaceDir` > 主目录），配了项目时
+    生效工作目录：回落链（当前项目根 > 激活模式工作目录（Work）> `agent.tools.workspaceDir` > 主目录，06 §5.1），配了项目时
     两者都会打开项目根，无项目时 `workspace` 打开主目录或配置的工作目录）；根不可用（目录被删 / 不可读）时
     显示 `class="badge error"` 的「项目目录不可用」徽标与「去设置里重新选择目录」，
     **不渲染「打开文件夹」**（点了只会弹系统错误，反而让人以为路径没问题）。
@@ -433,14 +434,17 @@
   `projects.current` 指过去 → 断言右栏卡**恰好一张**、文本含项目名与根目录、**不是**警示态 →
   收尾还原成无项目再断言卡消失）；设置页 general 页探针则数 `[data-field^="projects."]`
   并要求「空态或至少一行」，`data-empty` 白名单为 `general.edgeBar` 与 `projects.list`。
-  文件备份（v14 新增）：右栏卡锚点 `chat.snapshot-card`（空态整卡仍渲染，空态元素用
-  `.snapshot-empty` class，**不是** `data-empty`），每条记录一个
-  `data-field="chat.snapshot-restore"` 的「回滚」按钮（**两段式**：第一下变「确认回滚？」，
-  第二下才执行），卡头另有一个 `data-action="chat.snapshot-refresh"` 的手动刷新。
+  文件备份（v14 新增；**v0.2.4 起从主界面右栏迁入设置页「智能与工具」页**，共享组件
+  `shared/components/SnapshotList.vue`）：列表锚点 `agent.snapshot-list`，每条记录一个
+  `data-field="agent.snapshot-restore"` 的「回滚」按钮（**两段式**：第一下变「确认回滚？」，
+  第二下才执行），另有 `data-field="agent.snapshot-prune"` 的「立即清理」与
+  `data-action="agent.snapshot-refresh"` 的手动刷新（清理无 sessionId 时按「全部会话」执行）。
+  capture 探针场景相应改为：主界面断言快照卡**不存在**（`chat-snapshot-card-removed`）、
+  设置页断言列表在（`settings-snapshot-list`）。
   设置页「智能与工具」页的文件备份区组字段锚点沿用配置路径原文：`agent.snapshots.enabled` /
   `agent.snapshots.keepPerFile` / `agent.snapshots.maxSnapshotBytes` / `agent.snapshots.totalBudgetBytes`
   （关掉开关时三个数字字段换成 `data-empty="agent.snapshots"`）。
-  钉住它们的探针场景见 §5.3：`chat-snapshot-card.png`（prepare 走**真实快照端口**种一份快照并
+  钉住它们的探针场景见 §5.3：`chat-snapshot-card-removed.png` / `settings-snapshot-list.png`（prepare 走**真实快照端口**种一份快照并
   `flush()` 落索引 → reload 让卡片重新水合 → act 点一次「回滚」→ 断言卡恰好一张、
   至少一条记录、来源译成「写文件」、按钮停在待确认文案）。
   任务面板（v15 新增）：右栏容器 `chat.jobs`（`jobsOpen` 为 false 时整块不渲染）、面板自身
@@ -555,7 +559,7 @@
   总开关关闭时显示「已停用」）、技能「已启用 x / 共 y」（未发现显示「未发现」）、
   MCP「n 台服务器 / m 台启用」（未配置显示「未配置」）。
   **安全文案收敛为一处**：本页操作直接影响真实系统、工作目录不是沙箱（缺省目录与检索缺省根都按
-  06 §5.1 三级回落取：配了当前项目时即项目根，否则「工作目录」> 用户主目录）、
+  06 §5.1 回落链取：配了当前项目时即项目根，Work 模式未绑项目时为模式工作目录，否则 `agent.tools.workspaceDir` > 主目录）、
   敏感工具需逐次确认（确认开关在「系统」页，关闭后不经确认直接执行）只在工具组说明里完整表述一次；
   工作目录长说明、页尾安全提示与原常驻警示 Toast 里与之重复的表述删除，页副标题只保留导航信息。
   **启停控件统一 checkbox**：MCP 服务器行卡的「停用 / 启用」按钮改为 checkbox（绑 `enabled`，
