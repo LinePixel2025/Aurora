@@ -123,7 +123,7 @@ describe('center_send_file 工具', () => {
       await rm(dir, { recursive: true, force: true })
     }
     expect(tool.name).toBe(CENTER_SEND_FILE_TOOL_NAME)
-    expect(tool.sensitivity).toBe('confirm')
+    expect(tool.sensitivity).toBe('safe')
     expect(
       createCenterStatusTool({
         port: makePort(),

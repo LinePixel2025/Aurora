@@ -518,7 +518,7 @@ describe('createConfirmTool 的三档权限判定', () => {
     expect(logger.records[0]?.level).toBe('info')
   })
 
-  it('confirm 档：行为与三档之前完全一致（一律走确认卡片）', async () => {
+  it('confirm 档：根内写文件已免确认（v0.2.4），但 run_command 仍逐次确认', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
@@ -526,52 +526,60 @@ describe('createConfirmTool 的三档权限判定', () => {
       projectRoot: async () => root,
     })
 
-    // 即便路径就在项目根内，confirm 档也要问
-    expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj\\a.txt' }))).toBe(true)
+    // 放宽只覆盖 write_file / edit_file；命令类工具不在其列（Codex 式 auto-edit 的边界）
+    expect(await confirm(confirmInfo('run_command', { command: 'npm test' }))).toBe(true)
     expect(requests).toHaveLength(1)
   })
 })
 
 /**
- * 对外数据出域类工具不受 auto 档免确认路径约束（docs/06 §11.2 v0.2.3，ALWAYS_CONFIRM_TOOLS）。
+ * auto 档免确认路径（docs/06 §11.2）。
  *
- * `center_send_file` 把本机文件上传到 Aurora Center —— 源头文件通常就在项目根内，
- * 「根内免确认 / 无项目放行」会把它**静默**放掉，数据就出域了。因此两条 `'machine'`
- * 路径对它一律跳过：auto 档下照常弹卡（readonly 档则是工具整体不注册，不在本表）。
+ * v0.2.4 起 `center_send_file` 改 `sensitivity: 'safe'` 直接发送（用户要求给 Center
+ * 发文件不弹卡），确认链路不再经过 createConfirmTool —— 原外发类工具特例名单
+ * （ALWAYS_CONFIRM_TOOLS）已删除，其用例随之移除；此处保留 auto / confirm 档的
+ * 放行与对照行为钉子。
  */
-describe('createConfirmTool 的 ALWAYS_CONFIRM_TOOLS（center_send_file，docs/12 §5 第 4 步）', () => {
+describe('createConfirmTool 的档位放行路径（docs/06 §11.2）', () => {
   const root = 'D:\\proj'
 
-  it('auto 档 + 项目根内：center_send_file 仍弹卡，不走「根内放行」', async () => {
+  it('confirm 档：write_file 落在边界根内免确认（v0.2.4 Codex 式 auto-edit）', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      mode: () => 'auto',
+      mode: () => 'confirm',
       projectRoot: async () => root,
     })
 
-    const approved = await confirm(
-      confirmInfo('center_send_file', { path: 'D:\\proj\\report.docx' }),
-    )
-
-    expect(approved).toBe(true)
-    expect(requests).toHaveLength(1)
-    expect(requests[0]!.toolName).toBe('center_send_file')
+    expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj\\a.txt' }))).toBe('machine')
+    expect(requests).toHaveLength(0)
   })
 
-  it('auto 档 + 无项目：center_send_file 仍弹卡，不走「无项目放行」', async () => {
+  it('confirm 档：write_file 越界仍弹卡', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
-      mode: () => 'auto',
-      projectRoot: async () => undefined,
+      mode: () => 'confirm',
+      projectRoot: async () => root,
     })
 
-    expect(await confirm(confirmInfo('center_send_file', { path: 'C:\\data\\a.txt' }))).toBe(true)
+    expect(await confirm(confirmInfo('write_file', { path: 'C:\\elsewhere\\a.txt' }))).toBe(true)
     expect(requests).toHaveLength(1)
   })
 
-  it('对照：同一场景下普通工具（write_file）仍按原 auto 档行为根内免确认', async () => {
+  it('confirm 档：无边界根（未配项目）维持逐次确认', async () => {
+    const { proactive, requests } = createFakeProactive(true)
+    const confirm = createConfirmTool({
+      proactive,
+      mode: () => 'confirm',
+      projectRoot: async () => undefined,
+    })
+
+    expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj\\a.txt' }))).toBe(true)
+    expect(requests).toHaveLength(1)
+  })
+
+  it('对照：auto 档下普通工具（write_file）按原行为根内免确认', async () => {
     const { proactive, requests } = createFakeProactive(false)
     const confirm = createConfirmTool({
       proactive,

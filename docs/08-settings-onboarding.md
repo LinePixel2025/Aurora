@@ -164,7 +164,7 @@
     },
     "tools": {
       "enabled": true,          // 电脑操控工具总开关；false 时 8 个工具都不注册
-      "workspaceDir": "",       // 工具默认工作目录；空串 = 按 06 §5.1 三级回落（无项目时 = 用户主目录）
+      "workspaceDir": "",       // 工具默认工作目录；空串 = 按 06 §5.1 回落链（Work 模式目录 > 它 > 主目录）
       "terminal": {
         "enabled": true,
         "timeoutMs": 60000,
@@ -312,7 +312,7 @@
 - `agent.tools`（v5 新增，见 06 §11）：5 个开关 + 4 个上限 + 1 份免确认模式列表 ——
   `enabled` 是电脑操控工具**总开关**（`false` 时 8 个工具都不注册）；`workspaceDir` 是 **`run_command`
   的缺省 `cwd`**，同时也是 `grep` / `glob` 的**缺省搜索根**（取值按 06 §5.1 的 `effectiveWorkspaceDir`
-  三级回落：**当前项目根（配置了当前项目时）> `workspaceDir` > 用户主目录**，没配当前项目时与既往一致；
+  回落链：**当前项目根（配置了当前项目时）> 激活模式工作目录（Work）> `workspaceDir` > 用户主目录**，没配当前项目时与既往一致；
   它只作**默认值**、不是沙箱；其余文件类工具不读它，见 06 §11.1 / §11.5）；`terminal.enabled` 开关终端工具、
   `terminal.timeoutMs` 是单次命令超时（毫秒）、`terminal.maxOutputChars` 是回传输出的截断上限；
   `files.enabled` 开关文件读写、`files.maxReadBytes` 是单次读取上限（字节）；
@@ -347,7 +347,7 @@
   当前项目决定三件事：① 每轮把「项目根 → 当前工作目录」逐层收集的 `AGENTS.md`
   （同目录 `AGENTS.override.md` 优先）注入系统提示词的「项目约定」小节；
   ② 权限层判定「项目根之内 / 之外」的边界；
-  ③ 缺省工作目录 / 搜索根的最高优先级（06 §5.1 三级回落的第一级：项目根 > `agent.tools.workspaceDir` > 主目录）。
+  ③ 缺省工作目录 / 搜索根的最高优先级（06 §5.1 回落链的第一级：项目根 > Work 模式工作目录 > `agent.tools.workspaceDir` > 主目录）。
   项目根不存在 / 被删除 / 不可读时**降级为无项目**：不抛错、不影响对话，
   但界面必须有可见提示（设置页该项目行标红并显示「项目目录不可用」+「重新选择目录」，
   右栏「当前项目」卡显示警示徽标）—— 只在日志里 warn 会让用户以为约定生效了却什么都没发生。
@@ -418,7 +418,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 因而不新增存储面，也不会与流水出现两处数据不一致。
 
 **对话归档状态同样不进 config.json**：它写在会话文件自身（`sessions/<id>.json` 的
-`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 15）。
+`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 18）。
 会话文件自己的版本号 `SESSION_FILE_VERSION` 由 1 提到 2，读取对 v1 宽容（缺 `meta` = 未归档），
 不存在需要执行的迁移脚本 —— 「会话文件版本」与「配置版本」是两条独立的链，别混。
 
@@ -427,7 +427,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 17`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 18`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -459,11 +459,13 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   `v15 → v16`（新增顶层分组 `center`（Aurora Center 连接，docs/12）：整组缺失时补默认值，
   已存在时只补缺失键；`center.token` 是凭据路径，迁移只补 `tokenEnc: ''` 不碰已有值）、
   `v16 → v17`（为已存在的 `center` 补 `account: ''`（账号登录后记住的账号名，见 12 §7）；
-  其余键原样保留，`center` 分组本身缺失时交给默认配置兜底）。
-  十七条迁移都**幂等且不覆盖用户已写入的值**（`v10 → v11` / `v11 → v12` / `v12 → v13` /
-  `v13 → v14` / `v14 → v15` / `v15 → v16` / `v16 → v17` 同理：只补缺失键、用户填过的窗口值 / 免确认模式 / 项目列表 /
-  权限档位 / 快照策略 / 循环参数 / Center 连接配置原样保留），
-  重复执行结果一致。
+  其余键原样保留，`center` 分组本身缺失时交给默认配置兜底）、
+  `v17 → v18`（放宽 `agent.loop` 轮次上限（见 06 §4.1 / §5）：恰好等于旧默认值的
+  `maxRounds: 8` → `32`、`autoContinueRounds: 2` → `8` —— v15 迁移把旧默认值显式写进了
+  已有配置，单改 Schema 默认值对老用户无效，故按哨兵值抬升；用户显式改过的其它值
+  （哪怕恰好也是 8 / 2）同样被抬升，这是「放宽」方向的迁移，宁可多放不误收紧）。
+  十八条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  方向是放宽），重复执行结果一致。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -619,7 +621,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
     **以当前分组值为基底深合并**，只覆盖被点名的字段 —— 不会把 `terminal` / `files` / `search` / `open`
     的现有值抹掉。
   - 「工作目录」只是 **`run_command` 的缺省 `cwd`**（也是 `grep` / `glob` 的缺省搜索根，见 06 §11.5），
-    **不是沙箱** —— 缺省起点按 06 §5.1 的 `effectiveWorkspaceDir` 三级回落：**当前项目根
+    **不是沙箱** —— 缺省起点按 06 §5.1 的 `effectiveWorkspaceDir` 回落链：**当前项目根
     （配置了当前项目时）> 「工作目录」> 用户主目录**，「工作目录」为空串且没配当前项目时才落主目录；
     未配置当前项目时与既往行为完全一致。越界不静默，结果里回带真实的绝对路径。
     注意 `read_file` / `write_file` / `edit_file` / `list_dir`

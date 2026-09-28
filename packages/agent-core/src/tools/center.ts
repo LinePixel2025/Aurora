@@ -8,7 +8,11 @@
  * 门控口径（装配层负责，见 main/tools/index.ts）：`center.enabled` 且
  * `center.serverUrl` 非空**才注册**（未配置时连工具都不出现，与 STT/TTS 同口径）；
  * **不受** `agent.tools.enabled` 门控（与扩展工具五件套同口径）。
- * `center_send_file` 是对外发送文件的动作，`sensitivity: 'confirm'` 逐次确认。
+ * `center_send_file` 的安全口径（v0.2.4）：**不逐次确认、直接发送** —— 用户明确要求
+ * 「给 Center 发文件不该弹卡」。它的闸门是**注册与配置层**：`center.enabled` +
+ * `serverUrl` 才注册、`center.allowFileTransfer` 可整体关闭、`center.maxFileMb` 限大小；
+ * 这三个开关都是用户在设置页维护的（`center.*` 在只读黑名单里，AI 自己改不动），
+ * 因此逐次确认是重复设防，只制造打扰。
  */
 import { promises as fs } from 'node:fs'
 import type { ToolDefinition, ToolResult } from './registry.js'
@@ -88,7 +92,7 @@ export function createCenterSendFileTool(options: CenterToolOptions): ToolDefini
       required: ['path'],
       additionalProperties: false,
     },
-    sensitivity: 'confirm',
+    sensitivity: 'safe',
     execute: async (input): Promise<ToolResult> => {
       const record = asRecord(input)
       const path = readNonEmptyString(record, 'path')

@@ -1043,6 +1043,7 @@ describe('配置迁移链', () => {
         'v14 → v15：v14 → v15：为 agent 补 loop.*（轮次上限、token 预算与自动续轮）',
         'v15 → v16：v15 → v16：新增 center 分组（Aurora Center 连接，docs/12）',
         'v16 → v17：v16 → v17：center 补 account（账号登录记住的账号名，docs/12 §7）',
+        'v17 → v18：v17 → v18：放宽 agent.loop 轮次上限（maxRounds 8→32，autoContinueRounds 2→8）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1072,6 +1073,7 @@ describe('配置迁移链', () => {
       expect(outcome.applied).toEqual([
         'v15 → v16：v15 → v16：新增 center 分组（Aurora Center 连接，docs/12）',
         'v16 → v17：v16 → v17：center 补 account（账号登录记住的账号名，docs/12 §7）',
+        'v17 → v18：v17 → v18：放宽 agent.loop 轮次上限（maxRounds 8→32，autoContinueRounds 2→8）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1110,6 +1112,49 @@ describe('配置迁移链', () => {
       const once = migrate(raw)
       const twice = migrate(once.data as Record<string, unknown>)
       expect(twice.data).toEqual(once.data)
+    })
+  })
+
+  describe('v17 → v18（放宽 agent.loop 轮次上限，docs/06 §5）', () => {
+    it('旧默认哨兵（maxRounds 8 / autoContinueRounds 2）抬升为新默认值', () => {
+      const outcome = migrate({
+        version: 17,
+        general: {},
+        agent: { loop: { maxRounds: 8, maxTotalTokens: 0, autoContinueRounds: 2 } },
+      })
+      const loop = (outcome.data['agent'] as Record<string, unknown>)['loop'] as Record<
+        string,
+        unknown
+      >
+      expect(loop).toEqual({ maxRounds: 32, maxTotalTokens: 0, autoContinueRounds: 8 })
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('用户显式改过的值原样保留；幂等', () => {
+      const raw = {
+        version: 17,
+        general: {},
+        agent: { loop: { maxRounds: 16, maxTotalTokens: 1000, autoContinueRounds: 0 } },
+      }
+      const outcome = migrate(raw)
+      const loop = (outcome.data['agent'] as Record<string, unknown>)['loop'] as Record<
+        string,
+        unknown
+      >
+      expect(loop).toEqual({ maxRounds: 16, maxTotalTokens: 1000, autoContinueRounds: 0 })
+
+      const again = migrate(outcome.data as Record<string, unknown>)
+      const loopAgain = (again.data['agent'] as Record<string, unknown>)['loop'] as Record<
+        string,
+        unknown
+      >
+      expect(loopAgain).toEqual(loop)
+    })
+
+    it('agent.loop 缺失时不造对象，交给默认配置兜底', () => {
+      const outcome = migrate({ version: 17, general: {}, agent: {} })
+      expect((outcome.data['agent'] as Record<string, unknown>)['loop']).toBeUndefined()
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
     })
   })
 })

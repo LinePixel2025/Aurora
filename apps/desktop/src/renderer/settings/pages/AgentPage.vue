@@ -379,8 +379,9 @@ async function openWorkspace(): Promise<void> {
           <p class="section-desc">
             让模型能执行命令、读写文件与打开路径（docs/06 §11）。
             <strong>本页操作直接影响真实系统</strong
-            >：命令执行与文件写入是敏感工具，逐次确认后才执行
-            （确认开关在「系统」页，关闭后将不经确认直接执行）；工作目录<strong>不是沙箱</strong>
+            >：命令执行与工作目录之外的文件写入是敏感操作，逐次确认后才执行 （工作目录之内的
+            write_file / edit_file 免确认；确认开关在「系统」页，关闭后将不经确认直接执行）；
+            工作目录<strong>不是沙箱</strong>
             —— 模型仍可显式传入其它路径，安全边界是「逐次确认 + 输出上限 + 总开关」。
           </p>
 
@@ -921,16 +922,16 @@ async function openWorkspace(): Promise<void> {
             <SettingField
               data-field="agent.loop.maxRounds"
               label="轮次上限"
-              hint="1 ～ 64；一次请求最多几轮工具调用，用完即暂停等续跑（默认 8）"
+              hint="1 ～ 128；一次请求最多几轮工具调用，用完即暂停等续跑（默认 32）"
             >
               <input
                 class="input input-num"
                 type="number"
                 min="1"
-                max="64"
+                max="128"
                 step="1"
                 :value="loop.maxRounds"
-                @change="saveLoop({ maxRounds: clampNumber($event, 1, 64, loop.maxRounds) })"
+                @change="saveLoop({ maxRounds: clampNumber($event, 1, 128, loop.maxRounds) })"
               />
             </SettingField>
 
@@ -957,7 +958,7 @@ async function openWorkspace(): Promise<void> {
             <SettingField
               data-field="agent.loop.autoContinueRounds"
               label="自动续轮"
-              hint="0 ～ 8；轮次用完后允许自动再续几轮，0 = 不自动续、直接暂停等用户点「继续」（默认 2）"
+              hint="0 ～ 8；轮次用完后允许自动再续几轮，0 = 不自动续、直接暂停等用户点「继续」（默认 8）"
             >
               <input
                 class="input input-num"

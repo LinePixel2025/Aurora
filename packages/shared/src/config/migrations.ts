@@ -628,6 +628,37 @@ const migrateV16ToV17: Migration = {
   },
 }
 
+/**
+ * v17 → v18：放宽 Agent 循环上限（docs/06 §5）。
+ *
+ * v15 的迁移把当时的默认值（`maxRounds: 8`、`autoContinueRounds: 2`）**显式写进了**
+ * 已存在的配置里，因此单改 Schema 默认值对老用户无效 —— 这里把**恰好等于旧默认值**的
+ * 两个哨兵抬到新默认值（32 / 8）。用户若显式改过（哪怕就填了 8 / 2）也会被抬升：
+ * 这是「放宽」方向的迁移，宁可多放不误收紧，已在 docs/08 §1 说明。
+ */
+const migrateV17ToV18: Migration = {
+  from: 17,
+  to: 18,
+  describe: 'v17 → v18：放宽 agent.loop 轮次上限（maxRounds 8→32，autoContinueRounds 2→8）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const agent = asRecord(raw['agent'])
+    const loop = asRecord(agent?.['loop'])
+    if (loop !== undefined) {
+      const patched: Record<string, unknown> = { ...loop }
+      if (patched['maxRounds'] === 8) patched['maxRounds'] = 32
+      if (patched['autoContinueRounds'] === 2) patched['autoContinueRounds'] = 8
+      if (agent !== undefined) {
+        next['agent'] = { ...agent, loop: patched }
+      }
+    }
+
+    next['version'] = 18
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -646,6 +677,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV14ToV15,
   migrateV15ToV16,
   migrateV16ToV17,
+  migrateV17ToV18,
 ]
 
 export interface MigrationOutcome {

@@ -302,6 +302,7 @@ describe('runAgentLoop', () => {
         history: [],
         tools: registryWithEcho(),
         sessionId: 'quick',
+        maxRounds: 8,
         append: rec.append,
         updateToolCall: rec.updateToolCall,
       }),

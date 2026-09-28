@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 17 as const
+export const CONFIG_VERSION = 18 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -595,12 +595,12 @@ export const AgentSchema = z.object({
    */
   loop: z
     .object({
-      /** 一次请求内最多几轮「工具调用 → 结果回填」（1–64，默认 8 = v15 之前的行为）。 */
-      maxRounds: z.number().int().min(1).max(64).default(8),
+      /** 一次请求内最多几轮「工具调用 → 结果回填」（1–128，默认 32 = v18 放宽后的值）。 */
+      maxRounds: z.number().int().min(1).max(128).default(32),
       /** 累计 token 预算；**0 = 不限**（默认）。触顶时 job 暂停，不静默结束。 */
       maxTotalTokens: z.number().int().min(0).default(0),
-      /** 轮次用尽后允许自动再续几轮（0–8，默认 2）；0 = 不自动续，直接暂停等用户点「继续」。 */
-      autoContinueRounds: z.number().int().min(0).max(8).default(2),
+      /** 轮次用尽后允许自动再续几轮（0–8，默认 8 = v18 放宽后的值）；0 = 不自动续，直接暂停等用户点「继续」。 */
+      autoContinueRounds: z.number().int().min(0).max(8).default(8),
     })
     .default({}),
 })

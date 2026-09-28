@@ -252,21 +252,6 @@ function fetchImplOf(resolveFetch?: () => typeof fetch | undefined): typeof fetc
 }
 
 /**
- * 对外数据出域类工具（docs/06 §11.2 v0.2.3）：**任何档位都逐次弹卡**。
- *
- * `center_send_file` 把本机文件上传到 Aurora Center，是**数据出域**动作 ——
- * 它的源头文件通常就在项目根内，「根内免确认」不但管不住风险，反而会把它静默放掉
- * （auto 档的「无项目放行 / 根内放行」两条 `'machine'` 分支对名单内工具一律跳过）。
- * 确认卡还会同步推给 Center 网页端（docs/12 §5 第 4 步，含本地会话）。
- */
-export const ALWAYS_CONFIRM_TOOLS = ['center_send_file'] as const
-
-/** `ALWAYS_CONFIRM_TOOLS` 的判定助手（导出供单测钉住行为） */
-export function isAlwaysConfirmTool(name: string): boolean {
-  return (ALWAYS_CONFIRM_TOOLS as readonly string[]).includes(name)
-}
-
-/**
  * 把主动引导的确认载体适配成内核需要的 `confirmTool` 钩子（docs/06 §5）。
  *
  * - 设置项 `advanced.confirmSensitiveTools` 关闭时**每次调用即时判断**并直接放行
@@ -341,9 +326,9 @@ export function createConfirmTool(options: {
     }
 
     // ── auto 档：只在项目根之内免确认 ──
-    // 对外数据出域类工具（ALWAYS_CONFIRM_TOOLS）不参与任何免确认路径：center_send_file
-    // 的源头文件通常就在项目根内，「根内免确认」会把它静默放掉（docs/06 §11.2 v0.2.3）。
-    if (mode === 'auto' && !isAlwaysConfirmTool(info.name)) {
+    // （v0.2.4 起 center_send_file 改 `sensitivity: 'safe'` 直接发送，确认链路不再经过本函数，
+    //  外发类工具的特例名单随之删除 —— 它的闸门在注册层：center.enabled / allowFileTransfer / maxFileMb。）
+    if (mode === 'auto') {
       // 根按**会话**解析（会话绑定项目 > 全局当前项目，docs/06 §5.1）；允许 await 读盘
       const root = await options.projectRoot?.(info.sessionId)
       if (root === undefined || root.trim() === '') {
@@ -367,6 +352,24 @@ export function createConfirmTool(options: {
             target: approved,
           },
         )
+        return 'machine'
+      }
+    }
+
+    // ── confirm 档：工作目录内的文件写入 / 编辑免确认（v0.2.4，Codex 式 auto-edit）──
+    // Codex 的「Auto」档位把工作区内的文件改动设为自动放行、命令仍要过目（on-request）；
+    // Aurora 的 confirm 档从这里起对齐：write_file / edit_file 落在会话边界根之内
+    // （会话绑定项目 > 全局当前项目 > Work 模式工作目录，docs/06 §5.1）时跳过卡片，
+    // 越界 / 无根（未配项目且无 Work 工作目录）时维持逐次确认 —— 默认行为不变。
+    if (mode === 'confirm' && (info.name === 'write_file' || info.name === 'edit_file')) {
+      const root = await options.projectRoot?.(info.sessionId)
+      const approved = root === undefined ? undefined : reasonWithinRoot(info, root)
+      if (approved !== undefined) {
+        options.logger?.info('confirm 档：写入落在工作目录边界内，免确认放行（边界校验仍生效）', {
+          tool: info.name,
+          root,
+          target: approved,
+        })
         return 'machine'
       }
     }

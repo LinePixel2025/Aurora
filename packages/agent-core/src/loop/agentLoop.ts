@@ -18,7 +18,7 @@ import type {
 import type { ToolProgress, ToolRegistry } from '../tools/registry.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
 
-export const DEFAULT_MAX_ROUNDS = 8
+export const DEFAULT_MAX_ROUNDS = 32
 
 /**
  * 确认结果（四态，docs/06 §5、§11.2）：

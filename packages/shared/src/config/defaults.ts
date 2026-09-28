@@ -259,13 +259,14 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
       totalBudgetBytes: 200 * 1024 * 1024,
     },
     /**
-     * Agent 循环（v15，docs/06 §5 / §4.1）：轮次上限 8（= v15 之前写死的值）、token 预算不限、
-     * 轮次用尽后允许自动再续 2 轮。用尽即 job 暂停（附原因），不再静默收尾。
+     * Agent 循环（v15 引入，v18 放宽，docs/06 §5 / §4.1）：轮次上限 32、token 预算不限、
+     * 轮次用尽后允许自动再续 8 轮 —— 对齐业界（Codex / OpenHands 等都不在个位数轮次上
+     * 卡断长任务），复杂任务不必频繁手动点「继续」。用尽即 job 暂停（附原因），不再静默收尾。
      */
     loop: {
-      maxRounds: 8,
+      maxRounds: 32,
       maxTotalTokens: 0,
-      autoContinueRounds: 2,
+      autoContinueRounds: 8,
     },
   },
   /**

@@ -130,8 +130,8 @@ export interface LlmProvider {
   不是所有收尾都有的字段。唯一的例外是 `abort()` 里**立即补发**的那条 `done`（它不带原因，
   职责只是当场结束渲染层的 loading）：真正的取消原因由循环收尾时那条 `done`
   （`pendingReason: 'aborted'`）与 job 的 `aborted` 状态给出。
-- **轮次与预算（配置项见 §5 与 08 §1）**：轮次上限取 `agent.loop.maxRounds`（默认 8，等于"可配之前"
-  写死的那个默认值），累计预算取 `agent.loop.maxTotalTokens`（**0 = 不限**）。
+- **轮次与预算（配置项见 §5 与 08 §1）**：轮次上限取 `agent.loop.maxRounds`（v18 起默认 32），
+  累计预算取 `agent.loop.maxTotalTokens`（**0 = 不限**）。
   预算只累加 provider 回传的真实用量，触顶判定发生在**工具轮结束时**（工具都跑完、结果都已回填），
   不等最后一段纯文本 —— 否则"预算用尽"会被一次不需要工具的收尾回复吃掉，
   等于预算白设。触顶时 `done` 带 `pendingReason: 'budget'`。
@@ -151,7 +151,7 @@ export interface LlmProvider {
 - **`budget.autoContinued` 必须持久化**：它记的是"这条任务已经自动续了几轮"。只放内存的话，
   重启之后同一条任务又会拿到一整份额度 —— 用户设的 `agent.loop.autoContinueRounds` 就此失效，
   等于一个没有上限的循环。
-- **自动续轮**：轮次用尽但仍有 `agent.loop.autoContinueRounds` 额度（默认 2）且预算未触顶时，
+- **自动续轮**：轮次用尽但仍有 `agent.loop.autoContinueRounds` 额度（v18 起默认 8）且预算未触顶时，
   循环**不落 `paused`**，而是原地从 `cursor.nextRound` 接着跑一轮（等价于一次自动 resume），
   `budget.autoContinued += 1` 并**随游标一起落盘**；额度用完才落 `paused` 等用户点「继续」。
   续轮既然等价于自动 resume，历史组装就必须与手动续跑**同一口径**：每个 attempt 开始前
@@ -271,20 +271,24 @@ AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时�
   `project/agentsFile.ts`（`collectProjectInstructions`，注入式 fs，永不抛错）、
   `project/instructions.ts`（`createProjectInstructionsSource`，按 root + mtime 缓存）；
   主进程在 `apps/desktop/src/main/index.ts` 用 `nodeProjectFs` 装配成 `projectInstructions` 依赖。
-- **缺省工作目录 / 搜索根的回落链（以本节为准）**：`effectiveWorkspaceDir` 的取值顺序是
-  **会话绑定项目根 > 当前项目根（配置了当前项目时）> `agent.tools.workspaceDir` > 用户主目录**（v17 起加会话级一级）。已接进装配层：
+- **缺省工作目录 / 搜索根的回落链（以本节为准，Codex 式「一个会话一个工作目录」的唯一口径）**：
+  `effectiveWorkspaceDir` 的取值顺序是
+  **会话绑定项目根 > 当前项目根（配置了当前项目时）> 激活模式工作目录（v18，当前只有 Work 模式）>
+  `agent.tools.workspaceDir` > 用户主目录**（v17 起加会话级一级，v18 起加模式级一级）。已接进装配层：
   配置了当前项目后，不显式传 `cwd` 的 `run_command` 与不传 `path` 的 `grep` / `glob` 落在**项目根**；
   未配置当前项目时与既往行为完全一致。§11.1 / §11.4 / §11.5 说的「缺省 `cwd` / 缺省搜索根」
   都指这条链的结果，**工具执行链上不再设第二套口径**。
   设置页「打开工作目录」按钮（`openPath kind:'workspace'`，`ipc.ts`）**已接同一链**（2026-09）：
   解析抽为纯函数 `resolveWorkspaceOpenTarget`（`main/tools/workspace-target.ts`，不 import electron、可单测），
-  配了项目时按钮打开**项目根**，与命令缺省落地目录一致，早前的展示/执行分叉已消除；
+  配了项目时按钮打开**项目根**，Work 模式下未绑项目时打开**模式工作目录**，与命令缺省落地目录一致，
+  早前的展示/执行分叉已消除；
   无项目时行为与旧两级解析（字面 `workspaceDir`，空串 = 主目录）逐字一致。
   注意 `kind:'workspace'` 与 `kind:'project'` 仍是两个入口：前者打开生效工作目录，后者固定打开当前项目根。
 
 - **循环**：用户消息 → LLM → [工具调用 → 执行 → 结果回填] × N → 最终回复。
-  轮次上限**默认 8**，由 `agent.loop.maxRounds`（1–64）配置 —— 默认值刻意等于 v15 之前
-  `DEFAULT_MAX_ROUNDS` 写死的那个 8，因此升级后既有的长任务表现不变（见 §4.1 与 08 §1）。
+  轮次上限**默认 32**，由 `agent.loop.maxRounds`（1–128）配置（v18 放宽：原默认 8 会把长任务
+  卡在半途，对齐 Codex / OpenHands 等主流 Agent「不在个位数轮次上断任务」的做法；
+  v17 → v18 迁移把旧默认值抬升到新默认，见 08 §1）。
 - 单轮出现多个工具调用时**按顺序执行**（不并发），保证 `chat:event` 工具卡片状态与结果顺序确定。
 - **事件顺序与归属（2026-09 增强，详见 §16.1）**：循环事件带 `round`（第几个工具调用轮次），
   `AgentEvent` 再统一带 `seq`（会话内单调序号）。渲染层据此排序消息、丢弃陈旧请求的迟到事件、
@@ -527,7 +531,7 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   | `MAX_ALLOW_PATTERNS` | `100` | `agent.tools.terminal.allowPatterns` 的条数上限（由 Schema 裁剪） |
   | `MAX_ALLOW_PATTERN_LENGTH` | `200` | 单条免确认命令模式的长度上限（§11.7） |
 - **配置字段（不改名）**：`agent.tools.enabled`（总开关）、`agent.tools.workspaceDir`（缺省工作目录 /
-  搜索根，取值走 §5.1 的 `effectiveWorkspaceDir` 三级回落，见 §11.1）、
+  搜索根，取值走 §5.1 的 `effectiveWorkspaceDir` 回落链，见 §11.1）、
   `agent.tools.terminal.{enabled,timeoutMs,maxOutputChars,allowPatterns}`、
   `agent.tools.files.{enabled,maxReadBytes}`、`agent.tools.search.{enabled,maxResults}`、
   `agent.tools.open.enabled`；**`agent.permissionMode`（v13）是工具面的总闸门**，见 §11.2。
@@ -553,8 +557,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 - **总开关**：`agent.tools.enabled = false` 时 8 个工具**完全不注册**——模型在工具清单里看不到
   它们，系统提示词里也没有相应说明，因而不可能产生确认卡片或任何本机副作用。
 - **`workspaceDir` 只是默认工作目录，不是沙箱**：`run_command` 的缺省 `cwd`（`grep` / `glob` 的缺省
-  搜索根同理）取的是 §5.1 `effectiveWorkspaceDir` 那条三级回落链——**当前项目根（配置了当前项目时）>
-  `agent.tools.workspaceDir` > 用户主目录**；未配置当前项目时与既往行为完全一致。工具**不限制**模型
+  搜索根同理）取的是 §5.1 `effectiveWorkspaceDir` 那条回落链——**当前项目根（配置了当前项目时）>
+  激活模式工作目录（Work）> `agent.tools.workspaceDir` > 用户主目录**；未配置当前项目时与既往行为完全一致。工具**不限制**模型
   访问该目录之外的位置
   （⚠️ v13 起另有一层真正的边界：**配置了当前项目**时文件类工具与 `run_command.cwd` 都受
   项目根 realpath 前缀校验，见 §11.2 —— 那层边界挂在"项目"上，与 `workspaceDir` 无关）。
@@ -566,8 +570,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   **主进程 CWD**
   解析（`file-port.ts` 的 `resolve()`）——打包应用从开始菜单启动时 CWD 并不可预期，
   因此文件类工具实际上只适合用绝对路径（`workspaceDir` 只影响命令的缺省 `cwd` 与检索的缺省搜索根）。
-  `grep` / `glob` 是例外：它们的 `path` 缺省值走 §5.1 `effectiveWorkspaceDir` 的三级回落
-  （**当前项目根（配置了当前项目时）> `agent.tools.workspaceDir` > 用户主目录**），
+  `grep` / `glob` 是例外：它们的 `path` 缺省值走 §5.1 `effectiveWorkspaceDir` 的回落链
+  （**当前项目根（配置了当前项目时）> 激活模式工作目录（Work）> `agent.tools.workspaceDir` > 用户主目录**），
   显式传入的相对路径仍按主进程 CWD 解析，见 §11.5。
   另外配置的目录不存在时，`run_command` 会回落到装配层传入的 `defaultCwd`（主进程 CWD），
   结果头里回带真实 `cwd`，但这件事**事前**在确认卡片上看不到。
@@ -608,12 +612,17 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 - **`auto` 档的保守方向**（`reasonWithinRoot`）：取不到目标路径的工具（除 `run_command` 外）一律按越界处理；
   `run_command` 缺省 `cwd` 视为根内（它会回落到项目根），但**命令串里出现绝对路径时一律回到确认卡片** ——
   我们不做 shell 解析，猜错一次就是静默越权，多问一次只是打扰。
-- **外发类工具不受根内免确认约束（v0.2.3，`ALWAYS_CONFIRM_TOOLS`）**：`center_send_file`
-  把本机文件发往 Aurora Center，是**数据出域**动作 —— 它的源头文件通常就在项目根内，
-  「根内免确认」不但管不住风险反而会静默放掉它。因此 `createConfirmTool` 的 auto 档两条
-  免确认路径（无项目放行 / 根内放行）对 `ALWAYS_CONFIRM_TOOLS`（当前只有 `center_send_file`）
-  一律跳过：三类档位下它都逐次弹卡（`readonly` 档则是工具整体不注册）。确认卡同时推送
-  Aurora Center（docs/12 §5 第 4 步，含本地会话）。
+- **`center_send_file` 不逐次确认（v0.2.4）**：用户明确要求「给 Center 发文件直接发送」，
+  原 v0.2.3 的外发类特例名单（`ALWAYS_CONFIRM_TOOLS`）随之删除。它的闸门在**注册与配置层**：
+  `center.enabled` + `serverUrl` 才注册、`center.allowFileTransfer` 可整体关闭、
+  `center.maxFileMb` 限大小 —— 三个开关都是用户在设置页维护的（`center.*` 在只读黑名单里，
+  AI 自己改不动），逐次确认属重复设防。工具本身 `sensitivity: 'safe'`，
+  确认链路（含推网页端）不再经过它。
+- **confirm 档根内写文件免确认（v0.2.4，Codex 式 auto-edit）**：`createConfirmTool` 在
+  confirm 档下对 `write_file` / `edit_file` 先按会话解析边界根（会话绑定项目 > 全局当前项目 >
+  Work 模式工作目录，docs/06 §5.1），落在根内即 `'machine'` 放行（审计日志照写），
+  越界 / 无根（未配项目且无 Work 工作目录）时维持逐次确认 —— 默认行为不变。
+  `run_command` 等其余敏感工具**不参与**这条放宽（对齐 Codex「工作区写自动、命令仍过目」）。
 - **项目根边界（两层，分工明确）**：
   1. `auto` 档的"要不要问用户"用字符串级判定（`isWithinRoot`，含 `..` 段一律按越界）；
   2. "能不能真碰"由主进程 `file-port.ts` 的 `resolveWithin` 用 **realpath** 判定：
@@ -679,8 +688,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   `list_dir` 单次最多 500 项、缺省 200，超出部分不返回并标注已截断。
   `grep` / `glob` 的扫描上限与预算见 §11.5（**绝不无限遍历**：超预算时返回已收集的结果并标注）。
 - **文件类工具的相对路径按主进程 CWD 解析**（不是 `workspaceDir`）：模型应传绝对路径；
-  `run_command` 的缺省 `cwd` 与 `grep` / `glob` 的缺省搜索根共用同一条三级回落——
-  **当前项目根（配置了当前项目时）> `agent.tools.workspaceDir` > 用户主目录**
+  `run_command` 的缺省 `cwd` 与 `grep` / `glob` 的缺省搜索根共用同一条回落链——
+  **当前项目根（配置了当前项目时）> 激活模式工作目录（Work）> `agent.tools.workspaceDir` > 用户主目录**
   （与 §5.1 的 `effectiveWorkspaceDir` 同源，见 §11.1 / §11.5），未配置当前项目时与既往行为一致。
 - `write_file` 的 `overwrite` 是「同目录临时文件 + `rename`」原子写；`append` 直接追加。
   `edit_file` 写回复用同一套原子写。**v14 起两者写入前都会留一份内容快照**（§11.8），
@@ -734,8 +743,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   命中 `a.ts`）、`*` 与 `?` **不跨 `/`**、`{a,b}` 是交替（花括号内**不做嵌套**，不支持
   `{a,{b,c}}`）、整体**全串锚定**（`^…$`）、Windows 口径**大小写不敏感**、路径里的 `\` 归一为 `/`、
   正则元字符按字面处理；`path` 模式的长度上限 200 字符。
-- **`path` 是搜索根**：缺省走 §5.1 的 `effectiveWorkspaceDir` 三级回落——**当前项目根
-  （配置了当前项目时）> `agent.tools.workspaceDir` > 用户主目录**，未配置当前项目时与既往行为一致；
+- **`path` 是搜索根**：缺省走 §5.1 的 `effectiveWorkspaceDir` 回落链——**当前项目根
+  （配置了当前项目时）> 激活模式工作目录（Work）> `agent.tools.workspaceDir` > 用户主目录**，未配置当前项目时与既往行为一致；
   显式传入的相对路径按主进程 CWD 解析（与 §11.1 的文件类工具同一条 `resolve()`），
   结果头回带解析后的**绝对**搜索根（越界不静默的既有口径）。
 
@@ -798,7 +807,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   （如 `已修改：<绝对路径>（替换 <n> 处，共 <bytes> 字节）`），**v14 起另回带一行
   `已保存快照：<id>`**（没留底时如实写"未保存快照：…"，见 §11.8）。
 - **可回滚性（v14 更新）**：`edit_file` 写入前会由 `writeText` 留一份内容快照（§11.8），
-  用户可在右栏「文件备份」卡上把文件回滚到任意一份快照，**回滚本身也会先留一份快照**，
+  用户可在设置页「智能与工具」页的文件备份区组（v0.2.4 起迁入设置页，主界面右栏不再展示）
+  把文件回滚到任意一份快照，**回滚本身也会先留一份快照**，
   所以回滚是可撤回的。原子写与「孤立 `\r` 拒绝」这两条**不是**回滚机制，
   它们保证的是"写盘过程不会写坏"，与"改动可撤销"是两件事。
   快照被关掉（`agent.snapshots.enabled = false`）或文件超过 `maxSnapshotBytes` 时不留底 ——
@@ -807,7 +817,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 ### 11.8 写前快照与回滚（v14）
 
 `write_file`（`overwrite` 与 `append` 都算）与 `edit_file` 在**真正落盘之前**，把磁盘上的
-**原内容**存进 `<userData>/backups/<sessionId>/`；用户在右栏「文件备份」卡上把某个文件回到某一份快照。
+**原内容**存进 `<userData>/backups/<sessionId>/`；用户在设置页「智能与工具」页的文件备份区组
+（v0.2.4 起迁入设置页）把某个文件回到某一份快照。
 
 - **目录布局（唯一形状口径）**：一条快照 = `<backups>/<sessionId>/` 下的**一个内容文件**，
   文件名就是快照 id：`<ISO 时间戳>-<8 位内容哈希>.snap`（例
@@ -1488,7 +1499,7 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 - **无递归**：子代理工具表里没有 `task`，子代理不能再生子代理。
 - **同轮多个 `task` 按顺序执行**（沿用 §5「同轮工具顺序执行」口径），结果顺序确定。
 - **失败与边界**：provider 缺配置 → `isError` 回填（不发起请求）；abort 传导到子循环，
-  以已产生的**部分结果**回填；子代理达到轮次上限（默认 8，同主循环）时结果附「部分结果」标记，
+  以已产生的**部分结果**回填；子代理达到轮次上限（默认 32，同主循环）时结果附「部分结果」标记，
   父模型据此决定是否重派。
 - **注册口径**：随 §18 的 `registerAgentCoreTools` 一并注册，**不受 `agent.tools.enabled` 门控**。
 
@@ -1635,12 +1646,13 @@ Aurora Center（docs/12）连接建立后，Agent 获得两个 Center 工具；�
 | 工具 | 入参 | sensitivity | 说明 |
 |---|---|---|---|
 | `center_status` | 无 | 无 | 返回连接状态 / 服务器地址 / 客户端展示名；未连接时如实返回「未启用或未连接」 |
-| `center_send_file` | `path`（绝对路径）, `note?` | `'confirm'` | 校验存在与大小（`center.maxFileMb`）后上传到 Center，返回 `{ fileId, name, size, url }` |
+| `center_send_file` | `path`（绝对路径）, `note?` | `'safe'`（v0.2.4 起直接发送，不逐次确认） | 校验存在与大小（`center.maxFileMb`）后上传到 Center，返回 `{ fileId, name, size, url }` |
 
 - **注册门控**：`center.enabled === true` 且 `center.serverUrl` 非空**才注册**（未配置时
   连工具都不出现，与 STT/TTS 的按钮门控同口径）；`center_send_file` 另受
-  `center.allowFileTransfer` 约束（关闭时工具描述注明不可用）。**不受**
-  `agent.tools.enabled` 门控（与扩展工具五件套同口径）。
+  `center.allowFileTransfer` 约束（关闭时工具明确报错而非消失）。**不受**
+  `agent.tools.enabled` 门控（与扩展工具五件套同口径）。v0.2.4 起它不再逐次确认 ——
+  安全闸门就是这三层配置开关（见 §11.2），用户要求发文件零打扰。
 - **只读前缀联动**：`center.*` 整组在 `SETTINGS_READONLY_PREFIXES` 里 —— 连接目标是
   数据外发通道，AI 的 `set_setting` 不得启用 / 改向 / 填令牌（自我外联 = 数据外泄）。
   工具 description 与 systemPrompt 的 settingsHint 都写明这条。
