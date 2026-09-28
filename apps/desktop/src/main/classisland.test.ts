@@ -130,14 +130,14 @@ describe('readClassIslandSource', () => {
     const result = await readClassIslandSource(
       {
         source: 'file',
-        endpoint: 'D:\configured.json',
+        endpoint: String.raw`D:\configured.json`,
         timeoutMs: 1000,
-        fallbackFilePath: 'D:\default\schedule.json',
+        fallbackFilePath: String.raw`D:\default\schedule.json`,
       },
       {
         readFile: async (path) => {
           reads.push(path)
-          if (path === 'D:\configured.json') throw new Error('ENOENT')
+          if (path === String.raw`D:\configured.json`) throw new Error('ENOENT')
           return '{"ok":1}'
         },
       },
@@ -145,7 +145,7 @@ describe('readClassIslandSource', () => {
     expect(result.raw).toBe('{"ok":1}')
     expect(result.usedFallback).toBe(true)
     expect(result.endpointError).toContain('ENOENT')
-    expect(reads).toEqual(['D:\configured.json', 'D:\default\schedule.json'])
+    expect(reads).toEqual([String.raw`D:\configured.json`, String.raw`D:\default\schedule.json`])
   })
 
   it('端点本身就是默认路径时不重复回落（失败如实上报）', async () => {
@@ -153,9 +153,9 @@ describe('readClassIslandSource', () => {
     const result = await readClassIslandSource(
       {
         source: 'file',
-        endpoint: 'D:\default\schedule.json',
+        endpoint: String.raw`D:\default\schedule.json`,
         timeoutMs: 1000,
-        fallbackFilePath: 'D:\default\SCHEDULE.json',
+        fallbackFilePath: String.raw`D:\default\SCHEDULE.json`,
       },
       {
         readFile: async () => {
@@ -177,7 +177,7 @@ describe('readClassIslandSource', () => {
         source: 'http',
         endpoint: 'http://127.0.0.1:1/schedule',
         timeoutMs: 1000,
-        fallbackFilePath: 'D:\default\schedule.json',
+        fallbackFilePath: String.raw`D:\default\schedule.json`,
       },
       {
         fetchImpl: (async () => new Response('', { status: 503 })) as unknown as typeof fetch,
