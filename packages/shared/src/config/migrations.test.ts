@@ -43,6 +43,7 @@ describe('配置迁移链', () => {
     const logger = createMemoryLogger()
     const outcome = migrate({ version: 99, general: { language: 'zh-CN' } }, logger)
     expect(outcome.warnings).toHaveLength(1)
+    // 版本更高 → 原样保留（不应用任何迁移，因此不会补上 requireAdmin 这类新字段）
     expect(outcome.data['general']).toEqual({ language: 'zh-CN' })
     expect(logger.entries.some((line) => line.includes('[warn]'))).toBe(true)
   })
@@ -269,6 +270,8 @@ describe('配置迁移链', () => {
         language: 'en-US',
         hotkey: 'Ctrl+Alt+A',
         chat: { showThinking: true },
+        // v19 → v20 补的出厂档（要求管理员身份启动，docs/08 §1）
+        requireAdmin: true,
       })
 
       // agent.tools 为默认值（含 v12 起补出的 search.* 与 terminal.allowPatterns）；
@@ -574,6 +577,8 @@ describe('配置迁移链', () => {
         language: 'zh-CN',
         hotkey: 'Ctrl+Alt+A',
         chat: { showThinking: true },
+        // v19 → v20 补的出厂档（docs/08 §1）
+        requireAdmin: true,
       })
       // llm 段除了**后续版本**（v10 → v11）按既定规则补的 `contextWindow: 0`，其余一字不改
       expect(outcome.data['llm']).toEqual({
@@ -851,7 +856,11 @@ describe('配置迁移链', () => {
       expect(loadTools(outcome.data)['files']).toEqual({ enabled: false, maxReadBytes: 131_072 })
       expect(loadTerminal(outcome.data)['timeoutMs']).toBe(30_000)
       expect(loadTerminal(outcome.data)['maxOutputChars']).toBe(4_000)
-      expect(outcome.data['general']).toEqual({ language: 'zh-CN' })
+      expect(outcome.data['general']).toEqual({
+        language: 'zh-CN',
+        // v19 → v20 补的出厂档（docs/08 §1）
+        requireAdmin: true,
+      })
     })
 
     it('重复执行结果一致（幂等）', () => {
@@ -1045,6 +1054,7 @@ describe('配置迁移链', () => {
         'v16 → v17：v16 → v17：center 补 account（账号登录记住的账号名，docs/12 §7）',
         'v17 → v18：v17 → v18：放宽 agent.loop 轮次上限（maxRounds 8→32，autoContinueRounds 2→8）',
         'v18 → v19：v18 → v19：新增 automations 分组（自动化总开关，默认开启）',
+        'v19 → v20：v19 → v20：新增 general.requireAdmin（要求管理员身份启动，默认开启）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1076,6 +1086,7 @@ describe('配置迁移链', () => {
         'v16 → v17：v16 → v17：center 补 account（账号登录记住的账号名，docs/12 §7）',
         'v17 → v18：v17 → v18：放宽 agent.loop 轮次上限（maxRounds 8→32，autoContinueRounds 2→8）',
         'v18 → v19：v18 → v19：新增 automations 分组（自动化总开关，默认开启）',
+        'v19 → v20：v19 → v20：新增 general.requireAdmin（要求管理员身份启动，默认开启）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1188,6 +1199,37 @@ describe('配置迁移链', () => {
       const outcome = migrate({ version: 0, general: {} })
       expect(outcome.applied).toHaveLength(CONFIG_VERSION)
       expect(outcome.data['automations']).toEqual({ enabled: true })
+    })
+  })
+
+  describe('v19 → v20（新增 general.requireAdmin，docs/08 §1）', () => {
+    it('缺字段时补 true（出厂档：要求管理员身份启动）', () => {
+      const outcome = migrate({ version: 19, general: { language: 'zh-CN' } })
+      const general = outcome.data['general'] as Record<string, unknown>
+      expect(general['requireAdmin']).toBe(true)
+      expect(general['language']).toBe('zh-CN')
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('用户已写的关闭态原样保留（不覆盖）；重复迁移幂等', () => {
+      const raw = { version: 19, general: { requireAdmin: false } }
+      const outcome = migrate(raw)
+      expect((outcome.data['general'] as Record<string, unknown>)['requireAdmin']).toBe(false)
+
+      const again = migrate(outcome.data as Record<string, unknown>)
+      expect(again.data).toEqual(outcome.data)
+    })
+
+    it('general 整组缺失时不凭空造分组（Schema 兜底路径）', () => {
+      const outcome = migrate({ version: 19 })
+      expect(outcome.data['general']).toBeUndefined()
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('v0 → 当前版本：链式执行条数等于 CONFIG_VERSION，末态含 requireAdmin', () => {
+      const outcome = migrate({ version: 0, general: {} })
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION)
+      expect((outcome.data['general'] as Record<string, unknown>)['requireAdmin']).toBe(true)
     })
   })
 })

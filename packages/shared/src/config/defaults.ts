@@ -182,6 +182,8 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     language: 'zh-CN',
     launchAtLogin: false,
     hotkey: 'Alt+Space',
+    // v20 出厂档：要求管理员身份（docs/08 §1）。用户可在设置页「常规」关掉。
+    requireAdmin: true,
     edgeBar: {
       enabled: true,
       opacity: 0.9,

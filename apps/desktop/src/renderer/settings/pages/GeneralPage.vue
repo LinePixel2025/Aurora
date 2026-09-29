@@ -75,6 +75,7 @@ const updateTone = computed<'ok' | 'error' | 'info'>(() => {
 
 const general = computed(() => settingsStore.settings?.general ?? null)
 const launchAtLogin = ref(general.value?.launchAtLogin ?? false)
+const requireAdmin = ref(general.value?.requireAdmin ?? true)
 const hotkey = ref(general.value?.hotkey ?? 'Alt+Space')
 const edgeEnabled = ref(general.value?.edgeBar.enabled ?? true)
 const edgeOpacity = ref(general.value?.edgeBar.opacity ?? 0.9)
@@ -145,6 +146,7 @@ watch(
   (next) => {
     if (!next) return
     launchAtLogin.value = next.general.launchAtLogin
+    requireAdmin.value = next.general.requireAdmin
     hotkey.value = next.general.hotkey
     edgeEnabled.value = next.general.edgeBar.enabled
     edgeOpacity.value = next.general.edgeBar.opacity
@@ -162,6 +164,8 @@ async function save(): Promise<void> {
       // 死字段原样回传：UI 不提供入口，但也不该被保存动作重置（docs/08 §1）
       language: general.value?.language ?? 'zh-CN',
       launchAtLogin: launchAtLogin.value,
+      // 与开机自启同为显式回传：`general` 整对象浅合并，漏掉会被 Schema 默认值重置
+      requireAdmin: requireAdmin.value,
       hotkey: hotkey.value.trim() === '' ? 'Alt+Space' : hotkey.value.trim(),
       edgeBar: {
         enabled: edgeEnabled.value,
@@ -303,6 +307,14 @@ async function openProjectRoot(): Promise<void> {
         hint="登录 Windows 后自动在托盘常驻"
       >
         <input v-model="launchAtLogin" type="checkbox" />
+      </SettingField>
+
+      <SettingField
+        data-field="general.requireAdmin"
+        label="以管理员身份运行"
+        hint="启动时未提权会弹 UAC 重新拉起，避免写系统目录、执行系统命令被权限拦住；改动重启后生效"
+      >
+        <input v-model="requireAdmin" type="checkbox" />
       </SettingField>
 
       <SettingField

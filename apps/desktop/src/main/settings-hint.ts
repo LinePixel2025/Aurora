@@ -39,7 +39,7 @@ export const SETTINGS_HINT = [
   // `agent.snapshots.*`）则是"该停下来问用户"与"写坏了能回滚"的最后兜底（docs/06 §12.2 / §5.1 / §11.8）。
   // 这里各补一句话，免得模型反复尝试必然被拒绝的写入。
   '项目（projects.*）、权限档位（agent.permissionMode）与确认闸门（advanced.confirmSensitiveTools、agent.tools.terminal.allowPatterns）一律只读：',
-  '循环预算（agent.loop.*）与写前快照（agent.snapshots.*）同样一律只读：',
+  '循环预算（agent.loop.*）、写前快照（agent.snapshots.*）与管理员提权（general.requireAdmin）同样一律只读：',
   '改它们等于改你自己的指令面、摘掉自己的确认闸门，或绕过预算与回滚的兜底，需要用户去设置页操作。',
   '所有凭据类路径（llm/tts/stt/imagegen 的 providers 子树、mcp.servers）一律只读：',
   '用户要求修改密钥时，请引导他去设置页操作。',

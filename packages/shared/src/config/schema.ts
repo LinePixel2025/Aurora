@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 19 as const
+export const CONFIG_VERSION = 20 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -57,6 +57,19 @@ export const GeneralSchema = z.object({
   edgeBar: EdgeBarSchema,
   /** 各窗口位置 / 尺寸记忆（docs/02 §2.2、docs/07 §2）。 */
   windowState: z.record(WindowNameSchema, z.record(z.string(), z.unknown())),
+  /**
+   * 要求以管理员身份运行（v20，docs/08 §1 / docs/09 §9）：启动时若当前进程未提权，
+   * 用 UAC 重新拉起一个管理员实例并退出自己（`main/elevation.ts`）。
+   *
+   * 开着它的意义是「不被权限卡住」：`run_command` 是当前用户权限，写入 Program Files /
+   * 改系统设置 / `net session` 这类操作在非提权进程里会直接失败（`E_ACCESSDENIED`），
+   * 用户看到的是"AI 说做了但没做成"。默认 `true`（出厂档）。
+   *
+   * 只能由用户在设置页改（在 `SETTINGS_READONLY_PREFIXES` 里：AI 把它关掉等于降低
+   * 自己的权限边界，属自我提权路径）。注意这**不是沙箱**：提权只提高能做什么，
+   * 不改变「越界要确认」的判定链。
+   */
+  requireAdmin: z.boolean(),
   /** 对话窗展示偏好（v8 新增）。 */
   chat: z.object({
     /** 对话界面展示思考过程（MessageList 可折叠思考块的门控，docs/07 §2.3）。 */
@@ -429,6 +442,10 @@ export const SETTINGS_READONLY_PREFIXES = [
   'general.firstRun',
   'general.launchAtLogin',
   'general.hotkey',
+  // 管理员提权（v20，docs/08 §1）：这是 Agent 自己能碰到的权限边界本身 ——
+  // AI 把它关掉（或阻止自己重启提权）等于自己降低权限约束面，属自我提权路径。
+  // 只保留「用户在设置页手动关」这一条路径（设置页走 `settings:update`）。
+  'general.requireAdmin',
   // 敏感工具确认总闸门：`agent-host` 每次调用**即时判断**它，关掉后 `run_command` /
   // `write_file` / 全部 MCP 工具 / `set_setting` 自身都不再弹确认卡片 —— 等于 AI 自我提权。
   // 只保留「用户在设置页手动关」这一条路径（设置页走 `settings:update`，不经过本黑名单）。
@@ -719,6 +736,7 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'general.firstRun': '首次运行标记不允许通过工具修改',
   'general.launchAtLogin': '开机自启不允许通过工具修改',
   'general.hotkey': '全局快捷键不允许通过工具修改',
+  'general.requireAdmin': '管理员提权是 Agent 自己的权限边界，不允许通过工具关闭（docs/08 §1）',
   'advanced.confirmSensitiveTools': '关闭它等于摘掉敏感工具的确认闸门，不允许通过工具修改',
   'agent.tools.terminal.allowPatterns':
     '免确认命令模式等于摘掉终端工具自己的确认闸门，不允许通过工具修改',

@@ -680,6 +680,27 @@ const migrateV18ToV19: Migration = {
   },
 }
 
+/**
+ * v19 → v20：新增 `general.requireAdmin`（要求管理员身份启动，docs/08 §1）。
+ *
+ * 幂等：只补缺字段，用户已写值（false）原样保留；`general` 整组缺失时留给 Schema 兜底
+ * （那时会出现一次"整体保留候选对象"的路径，默认值由 defaults.ts 提供）。
+ */
+const migrateV19ToV20: Migration = {
+  from: 19,
+  to: 20,
+  describe: 'v19 → v20：新增 general.requireAdmin（要求管理员身份启动，默认开启）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const general = asRecord(next['general'])
+    if (general !== undefined && general['requireAdmin'] === undefined) {
+      next['general'] = { ...general, requireAdmin: true }
+    }
+    next['version'] = 20
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -700,6 +721,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV16ToV17,
   migrateV17ToV18,
   migrateV18ToV19,
+  migrateV19ToV20,
 ]
 
 export interface MigrationOutcome {

@@ -96,6 +96,8 @@ function settingsWith(overrides: {
       launchAtLogin: false,
       hotkey: 'Alt+Space',
       edgeBar: { enabled: true, opacity: 0.9, quietHours: null },
+      // CONFIG_VERSION 20 新增（管理员提权，docs/08 §1）：本用例不涉及，保持默认态
+      requireAdmin: true,
       // CONFIG_VERSION 8 新增子组：本用例不涉及对话展示，保持默认态
       chat: { showThinking: true },
       windowState: {},
