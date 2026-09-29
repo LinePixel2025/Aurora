@@ -417,6 +417,37 @@ describe('Hub · 状态与文件通知', () => {
       1,
     )
   })
+
+  it('重连竞态：旧连接的迟到 close 不会把新连接删掉（带上 conn 做身份校验）', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const first = harness.connectClient('c1')
+    const admin = harness.connectWeb({ id: 'u-admin', username: 'root', role: 'admin' })
+
+    // 同一 clientId 的新连接先注册完成（重连的常见顺序）
+    const second = harness.connectClient('c1')
+    expect(harness.hub.isOnline('c1')).toBe(true)
+
+    // 旧连接的 close 现在才到达：传它自己 → 不该动新连接
+    admin.sent.length = 0
+    expect(harness.hub.removeClient('c1', first.conn)).toBe(false)
+    expect(harness.hub.isOnline('c1')).toBe(true)
+    // 也不该广播"离线"（没有任何 clients 快照发出）
+    expect(admin.sent.filter((m) => (m as { type: string }).type === 'clients')).toHaveLength(0)
+
+    // 新连接真的断开时才生效，并广播一次
+    expect(harness.hub.removeClient('c1', second.conn)).toBe(true)
+    expect(harness.hub.isOnline('c1')).toBe(false)
+    expect(admin.sent.filter((m) => (m as { type: string }).type === 'clients')).toHaveLength(1)
+
+    // 不带 conn（管理员主动踢人 / 心跳清场）仍按 clientId 无差别生效
+    const third = harness.connectClient('c1')
+    expect(third.conn.clientId).toBe('c1')
+    expect(harness.hub.removeClient('c1')).toBe(true)
+    expect(harness.hub.isOnline('c1')).toBe(false)
+    // 已经没有这条连接了：重复调用返回 false，不重复广播
+    expect(harness.hub.removeClient('c1')).toBe(false)
+  })
 })
 
 describe('Hub · 远程自动化命令（docs/13 §10）', () => {

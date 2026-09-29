@@ -1,17 +1,46 @@
 <script setup lang="ts">
 /**
  * 管理端（role=admin）：用户管理 / 全部客户端。
- * 纯 REST 交互；409（不能删自己 / 最后一个管理员）等错误原样展示服务器 message。
+ *
+ * **客户端列表的在线状态来自 WebSocket 推送**（2026-09-29 修复）：`api.admin.clients()` 是
+ * 一次性 REST 快照，页面停留期间不会再变 —— 管理员盯着这张表时，设备上线 / 下线永远看不到变化
+ * （用户反馈「客户端上线与下线时 Center 的更新太慢」的其中一段）。现在：
+ * REST 只负责**首次水合**（含本页才有的全部账号维度），在线位 / 模式 / 版本 / 最近活跃
+ * 一律以 store 里那条 WS 全量快照（`state.clients`）为准实时覆盖。
+ * 用户管理仍是纯 REST（用户增删改没有推送通道，也不需要）。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import type { ClientInfo } from '@aurora/shared'
 import { api, type AdminUser } from '../api'
 import { formatTime, modeLabel, platformLabel } from '../format'
+import { state as centerState } from '../store'
 
 const users = ref<AdminUser[]>([])
 const clients = ref<ClientInfo[]>([])
 const loading = ref(true)
 const error = ref('')
+
+/**
+ * 列表行 = REST 快照 ∪ WS 实时快照（两边的并集）。
+ *
+ * - 同一条客户端以 **WS 快照为准**（在线位 / 模式 / 版本 / 最近活跃的唯一实时来源）；
+ * - REST 结果里多出来的条目照常显示（WS 还没连上时它只有 REST 有数据）；
+ * - **WS 快照里多出来的条目也要补进来**：停在本页期间首次上线的设备只有 WS 全量快照里才有，
+ *   只按 REST 的行骨架 map，管理员要刷新页面才看得到新设备。
+ */
+const clientRows = computed<ClientInfo[]>(() => {
+  const rows: ClientInfo[] = []
+  const seen = new Set<string>()
+  for (const info of clients.value) {
+    seen.add(info.clientId)
+    rows.push(centerState.clients.get(info.clientId)?.client ?? info)
+  }
+  for (const [clientId, entry] of centerState.clients) {
+    if (seen.has(clientId)) continue
+    rows.push(entry.client)
+  }
+  return rows
+})
 
 async function loadAll(): Promise<void> {
   loading.value = true
@@ -233,7 +262,7 @@ onMounted(() => void loadAll())
               </tr>
             </thead>
             <tbody>
-              <tr v-for="client in clients" :key="client.clientId">
+              <tr v-for="client in clientRows" :key="client.clientId">
                 <td>
                   <span class="dot" :class="client.online ? 'on' : 'off'"></span>
                   {{ client.name }}
@@ -259,7 +288,7 @@ onMounted(() => void loadAll())
                   </button>
                 </td>
               </tr>
-              <tr v-if="clients.length === 0">
+              <tr v-if="clientRows.length === 0">
                 <td colspan="8" class="text-2">还没有客户端接入</td>
               </tr>
             </tbody>

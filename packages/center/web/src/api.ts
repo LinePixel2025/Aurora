@@ -228,7 +228,12 @@ export class CenterSocket {
         return
       }
       this.emitStatus('closed')
-      const delay = Math.min(15_000, 1000 * 2 ** this.attempt)
+      /*
+       * 重连退避：1s 起、指数翻倍、**5s 封顶**（2026-09-29 从 15s 收紧）。
+       * 网页端的"在线/离线"完全靠这条 WS 推送（`clients` 全量快照，无轮询兜底），
+       * 所以断线期间页面上的在线状态就是**停住不动**的旧快照 —— 越早重连，越早对齐真实状态。
+       */
+      const delay = Math.min(5_000, 1000 * 2 ** this.attempt)
       this.attempt += 1
       this.reconnectTimer = window.setTimeout(() => this.open(token), delay)
     }

@@ -944,14 +944,25 @@ async function bootstrap(): Promise<void> {
   })
   syncToolRegistries()
 
+  const mcpLogger = logger.child('mcp')
   mcp = new McpController({
     settings,
     tools,
-    logger: logger.child('mcp'),
+    logger: mcpLogger,
     resolveFetch: () => netFetch,
     onStatusChanged: (statuses) => mcpStatusListeners.forEach((listener) => listener(statuses)),
   })
-  await mcp.start()
+  /*
+   * MCP 建连**不阻塞启动主链**（2026-09-29）：`start()` 会把每个已启用的服务器挨个握手，
+   * 单台超时 30s（`agent-core/src/mcp/hub.ts` 的 timeoutMs）。`await` 它等于把后面所有
+   * 启动步骤（含本函数末尾的 `centerConnector.start()`）一起推迟 —— 用户配了一台连不上的
+   * MCP 服务器时，Center 网页端要等半分钟才看到设备上线，这正是「上线太慢」的成因之一。
+   * 工具是**连上即注册**进同一个 `tools` 注册表（系统提示词按请求现组装），
+   * 因此这里 fire-and-forget 只影响「MCP 工具多早可用」，不影响可用性本身。
+   */
+  void mcp.start().catch((error) => {
+    mcpLogger.error('MCP 启动失败', { error: String(error) })
+  })
 
   // 7.1 主动引导 / 敏感工具确认（docs/06 §5、§9）——必须在内核之前装配：
   //     内核的 `confirmTool` 钩子需要它作为确认载体。

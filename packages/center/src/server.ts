@@ -44,6 +44,15 @@ export interface RunningCenterServer {
 
 const MAX_JSON_BODY = 256 * 1024
 const HELLO_TIMEOUT_MS = 10_000
+/*
+ * 半开连接的判死节奏（2026-09-29 提速，用户反馈「客户端下线时 Center 更新太慢」）：
+ * 每 `HEARTBEAT_INTERVAL_MS` 发一次 ping，连续 `HEARTBEAT_MISSES_ALLOWED` 次没收到 pong
+ * 就 `terminate()` —— 最坏 2 × 15s = 30s 判离线（旧值 30s × 3 = 90s）。
+ * 正常连接的 pong 是毫秒级回包，这两个值只影响"真死了"的那条路径。
+ * 导出供单测钉住节奏（改这两个数必须同时改 docs/12 的时效表）。
+ */
+export const HEARTBEAT_INTERVAL_MS = 15_000
+export const HEARTBEAT_MISSES_ALLOWED = 1
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -207,11 +216,21 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
             )
           }
           logger?.info('客户端已连接', { clientId: body.clientId, name: body.name })
-          // 心跳：30s 一次 ping，连续 2 次无 pong 判死（半开连接兜底）
+          /*
+           * 心跳：`HEARTBEAT_INTERVAL_MS` 一次 ping，连续 `HEARTBEAT_MISSES_ALLOWED` 次无 pong 判死。
+           *
+           * 半开连接（拔网线 / 休眠 / 进程被硬杀）只能靠这条兜底把设备**标成离线** ——
+           * 网页端看到的「在线」就是这一刻还有没有连接（`hub.clientConns`），所以判死有多快，
+           * 「下线」就有多快。旧值 30s × 3 拍 = 最坏 90s，用户实测反馈「下线太慢」；
+           * 现在 15s × 2 拍 = 最坏 30s（正常网络的 pong 在毫秒级回来，不会误杀）。
+           */
           const heartbeat = setInterval(() => {
             missedPongs += 1
-            if (missedPongs > 2) {
-              logger?.info('客户端心跳超时，已断开', { clientId: body.clientId })
+            if (missedPongs > HEARTBEAT_MISSES_ALLOWED) {
+              logger?.info('客户端心跳超时，已断开', {
+                clientId: body.clientId,
+                missedPongs,
+              })
               ws.terminate()
               return
             }
@@ -220,7 +239,7 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
             } catch {
               /* 发送失败等 close/terminate 收尾 */
             }
-          }, 30_000)
+          }, HEARTBEAT_INTERVAL_MS)
           heartbeat.unref?.()
           ws.once('close', () => clearInterval(heartbeat))
         })
@@ -241,7 +260,9 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       // bind 只负责注册后的清理钩子
       bind: () => {
         ws.on('close', () => {
-          hub.removeClient(clientId)
+          // 身份校验：只有"当前这条连接"关掉才算真断开 —— 旧连接的迟到 close 既不能删掉
+          // 同 clientId 的新连接（见 hub.removeClient），也不能顺手清掉新连接名下的会话属主记账
+          if (!hub.removeClient(clientId, conn)) return
           hub.dropClientSessions(clientId)
           logger?.info('客户端已断开', { clientId })
         })

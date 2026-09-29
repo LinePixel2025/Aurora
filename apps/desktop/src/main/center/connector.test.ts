@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   CenterConnector,
+  SERVER_PING_TIMEOUT_MS,
   backoffDelayMs,
   wsUrlOf,
   type CenterConfig,
@@ -129,6 +130,31 @@ afterEach(() => {
 })
 
 describe('CenterConnector · 连接状态机', () => {
+  it('心跳看门狗：长时间收不到服务器 ping 时主动断开重连（半开连接不等 TCP 超时）', () => {
+    const harness = makeConnector()
+    harness.connector.start()
+    vi.advanceTimersByTime(1)
+    const socket = harness.lastSocket()
+    socket.emit('open')
+    expect(harness.connector.connectionState().state).toBe('connected')
+
+    // 服务器每 15s 发一次 ping：喂一次 pong 之后，在看门狗超时线以内必须仍是 connected
+    socket.emit('message', JSON.stringify({ type: 'ping' }))
+    expect(socket.lastMessage()).toMatchObject({ type: 'pong' })
+    vi.advanceTimersByTime(SERVER_PING_TIMEOUT_MS - 5_000)
+    expect(harness.connector.connectionState().state).toBe('connected')
+
+    // 推进到恰好越过超时线的那一刻（5s 一轮检查 → 下一次检查即判死）：
+    // 这一步不能跨过退避时长，否则同一批定时器里连重连都跑完了，读到的就是 connecting 而不是 error
+    vi.advanceTimersByTime(10_000)
+    expect(harness.connector.connectionState().state).toBe('error')
+    expect(socket.closed).toBe(true)
+
+    // 退避后自动重连（1s ±20% 抖动 → 放宽到 1.5s）
+    vi.advanceTimersByTime(1500)
+    expect(harness.sockets.length).toBe(2)
+  })
+
   it('start → 连接 → open 后发 hello + status；hello 携带 clientId 与能力位', () => {
     const harness = makeConnector()
     harness.connector.start()
@@ -165,9 +191,8 @@ describe('CenterConnector · 连接状态机', () => {
     first.emit('open')
     first.emit('close')
     expect(harness.connector.connectionState().state).toBe('error')
-    // 1s 后重连（第一次断开 attempt=0 → 1s）
-    vi.advanceTimersByTime(1000)
-    vi.advanceTimersByTime(1)
+    // 退避后重连（第一次断开 attempt=0 → 1s ±20% 抖动，因此这里放宽到 1.5s）
+    vi.advanceTimersByTime(1500)
     expect(harness.sockets.length).toBe(2)
 
     // 改 serverUrl → 签名变化 → 立即重连（teardown + 新连接）
@@ -198,11 +223,22 @@ describe('CenterConnector · 连接状态机', () => {
     expect(wsUrlOf('not-a-url')).toBeUndefined()
   })
 
-  it('backoffDelayMs：1s 起步、指数、30s 封顶', () => {
-    expect(backoffDelayMs(0)).toBe(1000)
-    expect(backoffDelayMs(1)).toBe(2000)
-    expect(backoffDelayMs(2)).toBe(4000)
-    expect(backoffDelayMs(10)).toBe(30_000)
+  it('backoffDelayMs：1s 起步、指数、5s 封顶，叠 ±20% 抖动（断言区间）', () => {
+    // 退避上限 2026-09-29 从 30s 收到 5s：Center 重启 / 网络闪断后设备重新上线最快化。
+    // 抖动让同一 attempt 的两次调用不再相等，因此这里断言的是区间而不是精确值。
+    expect(backoffDelayMs(0)).toBeGreaterThanOrEqual(800)
+    expect(backoffDelayMs(0)).toBeLessThanOrEqual(1200)
+    expect(backoffDelayMs(1)).toBeGreaterThanOrEqual(1600)
+    expect(backoffDelayMs(1)).toBeLessThanOrEqual(2400)
+    expect(backoffDelayMs(2)).toBeGreaterThanOrEqual(3200)
+    expect(backoffDelayMs(2)).toBeLessThanOrEqual(4800)
+    // 封顶后再大的 attempt 也停在 5s±20% 内，永不回到 30s
+    for (const attempt of [3, 10, 40]) {
+      expect(backoffDelayMs(attempt)).toBeLessThanOrEqual(6000)
+      expect(backoffDelayMs(attempt)).toBeGreaterThanOrEqual(4000)
+    }
+    // 负数 / 0 起步一档：退避不会倒着走
+    expect(backoffDelayMs(-3)).toBeGreaterThanOrEqual(800)
   })
 })
 
@@ -835,8 +871,7 @@ describe('CenterConnector · 确认请求补发队列（docs/12 §5 第 4 步）
 
     socket.emit('close')
     harness.connector.enqueueConfirm({ type: 'confirm.request', n: 1 })
-    vi.advanceTimersByTime(1000) // 第一次退避 1s
-    vi.advanceTimersByTime(1)
+    vi.advanceTimersByTime(1500) // 第一次退避 1s ±20% 抖动，放宽到 1.5s
     const reconnected = harness.lastSocket()
     reconnected.emit('open')
     expect(JSON.parse(reconnected.sent[2] as string)).toMatchObject({

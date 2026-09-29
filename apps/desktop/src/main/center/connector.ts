@@ -143,8 +143,22 @@ export interface CenterConnectorDeps {
 
 export type ConnectionState = 'disabled' | 'connecting' | 'connected' | 'error'
 
-const PING_REPLY_TIMEOUT = 30_000
-const MAX_BACKOFF_MS = 30_000
+/**
+ * 重连退避上限（2026-09-29 提速，用户反馈「客户端上线时 Center 更新太慢」）：
+ * 旧值 30s 意味着 Center 重启 / 网络闪断后，设备在网页端最长要等半分钟才重新变绿。
+ * 5s 封顶对一台常驻客户端的重连负载可以忽略（退避仍是指数的，只是天花板低），
+ * 再叠一层 ±20% 抖动，避免多台设备在 Center 重启后同一毫秒一起回来。
+ */
+const MAX_BACKOFF_MS = 5_000
+/**
+ * 服务器心跳看门狗（2026-09-29）：Center 每 `HEARTBEAT_INTERVAL_MS`（15s）发一次 `ping`，
+ * 客户端这里连续 `SERVER_PING_TIMEOUT_MS` 收不到就判定链路半开（拔网线 / 休眠 / NAT 静默超时 ——
+ * 这种连接 TCP 层不会报错，`close` 事件可能几十分钟都不来），主动断开走重连。
+ * 判活快慢直接决定网页端「在线」是否可信，所以这里不等系统 TCP 超时。
+ */
+export const SERVER_PING_TIMEOUT_MS = 45_000
+/** 看门狗检查间隔：只做一次减法，5s 一轮足够（判定精度 = 检查间隔） */
+const SERVER_PING_CHECK_INTERVAL_MS = 5_000
 /**
  * 确认请求补发队列上限（docs/12 §5 第 4 步，v0.2.3）：连接器离线期间的确认请求
  * FIFO 入队、重连后 flush；满 20 条丢最旧并写日志 —— 长时间离线的请求本来就
@@ -161,6 +175,10 @@ export class CenterConnector {
   private reconnectTimer: NodeJS.Timeout | undefined
   private attempt = 0
   private stopped = true
+  /** 上次收到服务器 `ping` 的时刻（心跳看门狗的判据，0 = 还没连上过） */
+  private lastServerPingAt = 0
+  /** 心跳看门狗定时器（连接期间存在，`teardownSocket` 清） */
+  private pingWatchdog: NodeJS.Timeout | undefined
   /** 上次成功连接使用的配置签名；变化时强制重连 */
   private signature = ''
   private disposed = false
@@ -329,6 +347,20 @@ export class CenterConnector {
       this.attempt = 0
       this.lastError = undefined
       this.setState('connected')
+      // 心跳看门狗：连上就先记一次时间，之后每收到一个服务器 `ping` 都刷新
+      // （判定与断开见下面 watchdog 的注释）
+      this.lastServerPingAt = Date.now()
+      const watchdog = setInterval(() => {
+        if (this.socket !== socket) return // 已换连接：这份看门狗自然停（teardown 也会清）
+        const silentMs = Date.now() - this.lastServerPingAt
+        if (silentMs <= SERVER_PING_TIMEOUT_MS) return
+        this.logger.warn('长时间未收到 Center 心跳，按链路已断处理并重连', { silentMs })
+        // close() 走既有的 failure 路径（置 error → 指数退避重连）；
+        // 半开连接上 close 帧发不出去也没关系，terminate 由 failure → teardownSocket 兜底
+        failure(new Error(`心跳超时（${silentMs}ms 无 ping）`))
+      }, SERVER_PING_CHECK_INTERVAL_MS)
+      watchdog.unref?.()
+      this.pingWatchdog = watchdog
       socket.send(
         JSON.stringify({
           type: 'hello',
@@ -384,7 +416,7 @@ export class CenterConnector {
         this.lastError = String(error)
       }
       this.setState('error')
-      const delay = Math.min(1000 * 2 ** this.attempt, MAX_BACKOFF_MS)
+      const delay = backoffDelayMs(this.attempt)
       this.attempt += 1
       this.logger.warn('与 Aurora Center 的连接断开，将自动重连', {
         delayMs: delay,
@@ -403,6 +435,10 @@ export class CenterConnector {
   private teardownSocket(): void {
     const socket = this.socket
     this.socket = undefined
+    if (this.pingWatchdog !== undefined) {
+      clearInterval(this.pingWatchdog)
+      this.pingWatchdog = undefined
+    }
     if (socket !== undefined) {
       try {
         socket.close()
@@ -429,6 +465,8 @@ export class CenterConnector {
     const message = parsed as { type?: string }
     switch (message.type) {
       case 'ping':
+        // 刷新看门狗时间戳：它是"链路还活着"的唯一主动证据（服务器每 15s 发一次）
+        this.lastServerPingAt = Date.now()
         this.socket?.send(JSON.stringify({ type: 'pong' } satisfies CenterClientMessage))
         return
       case 'welcome':
@@ -706,11 +744,13 @@ export function wsUrlOf(serverUrl: string): string | undefined {
   }
 }
 
-/** 重连退避（毫秒）：1s 起、指数翻倍、30s 封顶 —— 导出供单测钉住行为 */
+/**
+ * 重连退避（毫秒）：1s 起、指数翻倍、`MAX_BACKOFF_MS`（5s）封顶，再叠 ±20% 抖动。
+ * 导出供单测钉住行为 —— 抖动让"同一 attempt 的两次调用"不再相等，
+ * 因此单测断言的是**区间**（见 `connector.test.ts`）。
+ */
 export function backoffDelayMs(attempt: number): number {
-  return Math.min(1000 * 2 ** Math.max(0, attempt), MAX_BACKOFF_MS)
+  const base = Math.min(1000 * 2 ** Math.max(0, attempt), MAX_BACKOFF_MS)
+  const jitter = base * 0.2 * (Math.random() * 2 - 1)
+  return Math.max(200, Math.round(base + jitter))
 }
-
-// PING_REPLY_TIMEOUT 目前仅作文档锚点：服务器主动 ping、客户端立即回 pong，
-// 客户端不额外发心跳（半开连接由服务端的心跳超时兜底）
-void PING_REPLY_TIMEOUT

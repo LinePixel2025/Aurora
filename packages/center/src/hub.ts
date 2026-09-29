@@ -80,8 +80,23 @@ export class Hub {
     this.broadcastClients()
   }
 
-  removeClient(clientId: string): void {
-    if (this.clientConns.delete(clientId)) this.broadcastClients()
+  /**
+   * 断开某个客户端。`conn` 传了就做**身份校验**：只有 `clientConns` 里当前那条
+   * 就是这条连接时才删。
+   *
+   * 为什么需要校验：重连场景下同一 clientId 的新连接可能已经注册完成，旧 socket 的
+   * `close` 才迟到（心跳 terminate 与新建连交错、或客户端改配置后立即重连）。
+   * 无条件 `delete` 会把**刚上线的新连接**删掉 → 网页端显示离线、且要等下一次重连才恢复
+   * （用户感知就是「上线状态不对 / 慢半拍」）。管理员「解除登记」等按 clientId 主动踢人的
+   * 路径不传 `conn`，语义是"不管当前是哪条都踢掉"。
+   */
+  removeClient(clientId: string, conn?: ClientConn): boolean {
+    const current = this.clientConns.get(clientId)
+    if (current === undefined) return false
+    if (conn !== undefined && current !== conn) return false
+    this.clientConns.delete(clientId)
+    this.broadcastClients()
+    return true
   }
 
   registerWeb(conn: WebConn): void {

@@ -1,8 +1,13 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createCenterServer, type RunningCenterServer } from './server.js'
+import {
+  createCenterServer,
+  HEARTBEAT_INTERVAL_MS,
+  HEARTBEAT_MISSES_ALLOWED,
+  type RunningCenterServer,
+} from './server.js'
 import WebSocket from 'ws'
 
 /**
@@ -948,4 +953,66 @@ describe('Aurora Center · 文件列表 / 删除 / 过期（docs/12 §5）', () 
       404,
     )
   })
+})
+
+/**
+ * 心跳与离线判定（2026-09-29 提速：最坏 90s → 30s，docs/12 §4.1 的时效表）。
+ *
+ * 这条链路的「下线快慢」= 服务器多久把设备标成离线，而网页端的在线位就是
+ * `hub.clientConns` 里还有没有这条连接 —— 因此这里用**假定时器**把两拍心跳推完，
+ * 断言：① 第一拍只发 ping、不判死；② 第二拍仍无 pong 才 terminate（连接真的被断开、
+ * 在线位变 false）。没有这条用例时，节奏只能靠读代码推演（复核时明确指出过）。
+ */
+describe('Aurora Center · 心跳与离线判定（提速轮）', () => {
+  it('15s 一拍：第一拍发 ping，第二拍仍无 pong 才判死并断开', async () => {
+    // 假定时器必须在**客户端注册之前**装上：心跳 interval 是在 hello 处理链里创建的，
+    // 装晚了它就是一个真实定时器，推进假时钟对它无效（第一次写这条用例就踩了这个）。
+    // `shouldAdvanceTime: true` 让假时钟跟着真实时间走，ws 握手 / fetch 照常完成。
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const CLIENT_ID = 'client-heartbeat-e2e'
+      const paired = await clientLogin({
+        username: USER.username,
+        password: USER.password,
+        clientId: CLIENT_ID,
+      })
+      expect(paired.status).toBe(200)
+      const token = (paired.data as { token: string }).token
+
+      const ws = await connectClient(token, {
+        clientId: CLIENT_ID,
+        name: '心跳机',
+        version: '9.9.9',
+        platform: 'win32',
+        mode: 'work',
+        capabilities: { session: true, remoteConfig: true, fileTransfer: true },
+      })
+      const next = collector(ws)
+      expect(server.hub.isOnline(CLIENT_ID)).toBe(true)
+
+      const closed = new Promise<void>((resolve) => ws.once('close', () => resolve()))
+
+      // 第一拍：只发 ping（missedPongs 允许值内的那一拍不判死）
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS)
+      const ping = await next((msg) => msg.type === 'ping', 3000)
+      expect(ping.type).toBe('ping')
+      expect(server.hub.isOnline(CLIENT_ID)).toBe(true)
+
+      // 不回 pong：下一拍就该判死（terminate → close → removeClient → 广播离线）
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS)
+      await closed
+      expect(HEARTBEAT_MISSES_ALLOWED).toBe(1)
+      // 在线位要等**服务器侧**的 close → removeClient 跑完：客户端收到 close 的同一刻
+      // 服务端记账可能还没落下（terminate 是对端发起的），所以轮询而不是立刻断言
+      let online = true
+      for (let attempt = 0; attempt < 40 && online; attempt += 1) {
+        online = server.hub.isOnline(CLIENT_ID)
+        if (online) await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      expect(online).toBe(false)
+      ws.terminate()
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 20_000)
 })
