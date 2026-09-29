@@ -270,21 +270,20 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
         <section v-if="stepIndex === 0" key="welcome" class="pane">
           <h2 class="pane-title anim-rise">欢迎使用 Aurora</h2>
           <p class="lead anim-rise">
-            Aurora 常驻系统托盘，从屏幕右侧的提示条提供服务：悬停展开面板、点击呼出完整对话窗口；
-            配合智慧感知文件夹自动整理你的文件。整个引导约 2 分钟。
+            Aurora 常驻系统托盘，从屏幕右侧的提示条提供服务：悬停展开面板，点击呼出主界面。
+            整个引导约 2 分钟。
           </p>
           <div class="cards anim-rise">
             <article class="card">
               <h3>ClassRoom Mode</h3>
               <p class="tiny muted">
-                课堂学习：把新文件拖入「智慧感知文件夹」，自动分析并归类到对应科目；课前提醒并打开科目文件夹。
+                课堂学习：把新文件拖入「智慧感知文件夹」自动归类；课前提醒并打开科目文件夹。
               </p>
             </article>
             <article class="card">
               <h3>Work Mode</h3>
               <p class="tiny muted">
-                办公场景已实装：Office 文档 / 表格 / 演示文稿与 PDF 的处理、总结与生成（PowerShell
-                COM 自动化）。
+                办公场景：Office 文档 / 表格 / 演示文稿与 PDF 的处理、总结与生成。
               </p>
             </article>
             <article class="card dim">
@@ -297,10 +296,7 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
         <!-- ② AI 模型（必填） -->
         <section v-else-if="stepIndex === 1" key="llm" class="pane">
           <h2 class="pane-title anim-rise">配置 AI 模型 <span class="badge warn">必填</span></h2>
-          <p class="lead anim-rise">
-            支持任何 OpenAI 兼容服务（DeepSeek / OpenAI / Ollama /
-            vLLM…），凭据使用系统安全存储加密后仅保存在本机。
-          </p>
+          <p class="lead anim-rise">支持任何 OpenAI 兼容服务；凭据加密后仅保存在本机。</p>
 
           <div class="row wrap anim-rise">
             <AppButton
@@ -390,8 +386,7 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
           <h2 class="pane-title anim-rise">{{ selectedMode?.displayName ?? form.mode }} 设置</h2>
           <template v-if="form.mode === 'classroom'">
             <p class="lead anim-rise">
-              设置「智慧感知文件夹」与科目列表；也可以稍后通过对话式引导完成（设置 → 模式 →
-              重新引导）。
+              设置「智慧感知文件夹」与科目列表；也可稍后在对话窗里重新引导。
             </p>
             <div class="anim-rise">
               <SettingField
@@ -408,16 +403,14 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
               <SettingField label="科目列表" hint="用逗号分隔；每科目标文件夹默认为 分类/<科目>">
                 <textarea v-model="form.subjects" spellcheck="false" />
               </SettingField>
-              <SettingField label="上课前提醒" hint="课前 5 分钟提醒并打开科目文件夹（P5 落地）">
+              <SettingField label="上课前提醒" hint="课前 5 分钟提醒并打开科目文件夹">
                 <input v-model="form.preClassReminder" type="checkbox" />
               </SettingField>
             </div>
           </template>
           <template v-else-if="form.mode === 'work'">
             <p class="lead anim-rise">
-              工作模式已实装：Office 文档、表格、演示文稿与 PDF
-              的处理、总结与生成，产出文件默认保存到「工作目录」；也可以稍后通过对话式引导完成（设置
-              → 模式 → 重新引导）。
+              产出文件默认保存到「工作目录」；也可稍后在对话窗里重新引导。
             </p>
             <div class="anim-rise">
               <SettingField
@@ -433,9 +426,7 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
               </SettingField>
             </div>
           </template>
-          <p v-else class="lead anim-rise">
-            该模式目前为占位实现，无需额外配置；激活后仅注入提示词片段，具体能力将在后续版本提供。
-          </p>
+          <p v-else class="lead anim-rise">该模式目前为占位实现，无需额外配置。</p>
         </section>
 
         <!-- ⑤ 完成 -->
@@ -450,7 +441,7 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
             >。
           </p>
           <p class="tiny muted anim-rise">
-            提示：屏幕右侧提示条悬停展开面板，点击可呼出主界面；托盘右键可切换模式与打开设置。
+            提示：提示条悬停展开面板，点击呼出主界面；托盘右键可切换模式与打开设置。
           </p>
         </section>
       </transition>

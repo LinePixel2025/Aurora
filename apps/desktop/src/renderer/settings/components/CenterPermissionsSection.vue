@@ -115,8 +115,7 @@ function tookEffect(sent: Partial<CenterSettings>): boolean {
     <Transition name="collapse">
       <div v-if="open" class="group-body">
         <p class="section-desc">
-          这些是 Center 远程操作本机的<strong>最终闸门</strong>：无论 Center 侧怎么请求，
-          关掉的许可都会被本机直接拒绝。三项相互独立，AI 改不动这里。
+          Center 远程操作本机的<strong>最终闸门</strong>：关掉的许可一律被本机拒绝；三项相互独立。
         </p>
 
         <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
@@ -125,7 +124,7 @@ function tookEffect(sent: Partial<CenterSettings>): boolean {
         <SettingField
           data-field="center.allowRemoteSession"
           label="允许远程会话"
-          hint="允许 Center 发起对话（等价在本机发一条消息，命令类工具仍受本机权限档位约束）"
+          hint="允许 Center 发起对话，命令类工具仍受本机权限档位约束"
         >
           <label class="row tiny">
             <input v-model="allowRemoteSession" type="checkbox" />

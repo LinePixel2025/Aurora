@@ -202,7 +202,7 @@ async function removeLesson(index: number): Promise<void> {
   <SettingField
     data-field="modes.classroom.schedule.provider"
     label="课程表来源"
-    hint="手动维护，或从 ClassIsland 桥接插件读取（桥接安装见 docs/10 用户手册）"
+    hint="手动维护，或从 ClassIsland 桥接插件读取"
   >
     <select :value="classroom.schedule.provider" @change="onProviderChange">
       <option value="manual">手动维护（默认）</option>
@@ -262,7 +262,7 @@ async function removeLesson(index: number): Promise<void> {
     <SettingField
       data-field="modes.classroom.schedule.classisland.timeoutMs"
       label="读取超时"
-      hint="毫秒；桥接不可用时按此超时降级为空课表，不阻塞主流程"
+      hint="毫秒；桥接不可用时按此超时降级为空课表"
     >
       <input
         class="input"
@@ -310,7 +310,7 @@ async function removeLesson(index: number): Promise<void> {
     <SettingField
       data-field="settings.classisland-notify-test"
       label="提醒通道"
-      hint="让 Aurora 调用 ClassIsland 的提醒（需要桥接插件 v3）；是否弹出与是否朗读由 ClassIsland 的提醒设置决定"
+      hint="调用 ClassIsland 的提醒（需桥接插件 v3）；是否弹出与朗读由 ClassIsland 决定"
     >
       <div class="row grow">
         <span class="tiny muted grow" data-field="settings.classisland-notify-state">
@@ -337,9 +337,7 @@ async function removeLesson(index: number): Promise<void> {
   </template>
 
   <div class="row">
-    <span class="tiny muted grow">
-      共 {{ classroom.schedule.lessons.length }} 个节次（星期按 0 = 周日 … 6 = 周六）
-    </span>
+    <span class="tiny muted grow"> 共 {{ classroom.schedule.lessons.length }} 个节次 </span>
     <AppButton size="sm" data-field="modes.classroom.schedule.lessons" @click="addLesson">
       添加节次
     </AppButton>
@@ -432,7 +430,7 @@ async function removeLesson(index: number): Promise<void> {
     <SettingField
       data-field="modes.classroom.preClassLeadMinutes"
       label="提前分钟数"
-      hint="1–30 分钟；改完即时生效。设得太大时同一天的多节课会同时进入提醒窗口"
+      hint="1 ～ 30 分钟，改完即时生效；设得太大时多节课会同时进入提醒窗口"
     >
       <input
         class="input"

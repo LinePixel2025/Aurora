@@ -89,8 +89,7 @@ function dotStyle(): Record<string, string> | undefined {
     <Transition name="collapse">
       <div v-if="open" class="group-body">
         <p class="section-desc">
-          展示连接器的实时状态（每 5 秒刷新）。地址与展示名是连接器当前生效值 ——
-          与配置草稿不同属正常，改完配置要点「保存」才会生效。
+          每 5 秒刷新连接器实时状态；地址与展示名是当前生效值，改完配置要点「保存」才生效。
         </p>
 
         <div class="status-line" data-field="center.status">

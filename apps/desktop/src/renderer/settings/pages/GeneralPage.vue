@@ -290,9 +290,7 @@ async function openProjectRoot(): Promise<void> {
   <section class="page">
     <header>
       <h1 class="page-title">通用</h1>
-      <p class="page-sub">
-        开机自启、全局快捷键、右侧提示条与全局勿扰时段；系统感知与更新状态也在这里查看。
-      </p>
+      <p class="page-sub">开机自启、全局快捷键、提示条与勿扰时段，以及系统感知与更新。</p>
     </header>
 
     <section class="section-card">
@@ -331,9 +329,8 @@ async function openProjectRoot(): Promise<void> {
     <section class="section-card">
       <h2 class="section-title">项目</h2>
       <p class="section-desc">
-        登记项目后，每一轮对话都会把「项目根 → 当前工作目录」逐层收集的 AGENTS.md 注入系统提示词
-        （同一目录里 AGENTS.override.md 优先）；项目根也是权限层判定「根内 / 根外」的边界。 留空 /
-        不添加 = 无项目，行为与以前完全一致。
+        登记后每轮对话会注入项目根逐层收集的 AGENTS.md，项目根也是权限判定「根内 / 根外」的边界；
+        不添加 = 无项目。
       </p>
 
       <div v-for="item in projects?.list ?? []" :key="item.id" class="project-row">
@@ -431,14 +428,12 @@ async function openProjectRoot(): Promise<void> {
 
     <section class="section-card">
       <h2 class="section-title">提示条</h2>
-      <p class="section-desc">
-        桌面右缘常驻的 8px 提示条：悬停展开面板，点击呼出完整交互窗（docs/07 §2.2）。
-      </p>
+      <p class="section-desc">桌面右缘常驻的 8px 提示条：悬停展开面板，点击呼出主界面。</p>
 
       <SettingField
         data-field="general.edgeBar.enabled"
         label="启用提示条"
-        hint="关闭后提示条从屏幕隐藏；透明度与静默时段会一并收起，重新启用即可继续调整"
+        hint="关闭后提示条从屏幕隐藏，透明度与静默时段一并收起"
       >
         <input v-model="edgeEnabled" type="checkbox" />
         <AppButton size="sm" variant="ghost" @click="toggleEdgeBar">立即显隐</AppButton>
@@ -456,7 +451,7 @@ async function openProjectRoot(): Promise<void> {
         <SettingField
           data-field="general.edgeBar.quietHours.start"
           label="提示条开始隐藏"
-          hint="格式 HH:mm；留空表示不限（仅影响提示条本身）"
+          hint="格式 HH:mm；留空表示不限，仅影响提示条本身"
         >
           <input
             type="text"
@@ -483,7 +478,7 @@ async function openProjectRoot(): Promise<void> {
       </template>
 
       <p v-else class="section-desc" data-empty="general.edgeBar">
-        提示条已停用：透明度与静默时段暂不可配，重新启用后即可继续调整。
+        提示条已停用：透明度与静默时段不可配，重新启用后可继续调整。
       </p>
     </section>
 
@@ -491,8 +486,7 @@ async function openProjectRoot(): Promise<void> {
     <section class="section-card">
       <h2 class="section-title">勿扰时段</h2>
       <p class="section-desc">
-        全局勿扰只拦截主动打扰（课前提醒、敏感工具确认），不影响提示条显示；两端都填才生效。
-        提示条自己的静默时段在上方「提示条」里单独设置。
+        全局勿扰只拦截主动打扰（课前提醒、敏感工具确认），两端都填才生效；提示条的静默时段在上方单独设置。
       </p>
 
       <SettingField
@@ -524,7 +518,7 @@ async function openProjectRoot(): Promise<void> {
 
     <section class="section-card">
       <h2 class="section-title">系统感知</h2>
-      <p class="section-desc">时间 / 电源 / 网络已接入；其余采集项在 P5 补齐（docs/06 §8）。</p>
+      <p class="section-desc">时间、电源与网络已接入，其余采集项后续补齐。</p>
 
       <SettingField label="当前感知快照">
         <div class="column grow">
@@ -547,7 +541,7 @@ async function openProjectRoot(): Promise<void> {
 
     <section class="section-card">
       <h2 class="section-title">关于与更新</h2>
-      <p class="section-desc">版本信息、更新状态与手动检查入口（docs/09 §5）。</p>
+      <p class="section-desc">版本信息、更新状态与手动检查入口。</p>
 
       <SettingField
         label="当前版本"
@@ -606,8 +600,8 @@ async function openProjectRoot(): Promise<void> {
             </AppButton>
           </div>
           <p v-if="update.state?.enabled === false" class="tiny muted">
-            自动更新只在安装版中可用；开发态请用
-            <code class="mono">AURORA_UPDATE_FEED</code> 指向本地更新源做验证（docs/09 §6）。
+            自动更新只在安装版中可用；开发态可用
+            <code class="mono">AURORA_UPDATE_FEED</code> 指向本地更新源验证。
           </p>
         </div>
       </SettingField>

@@ -196,7 +196,7 @@ function select(id: PageId): void {
       <!-- 内容区顶部拖动带：见下方 `.content-drag` 注释里「为什么不用 sticky」 -->
       <div class="content-drag" :class="dragClass" aria-hidden="true" />
       <AppToast v-if="needsOnboarding" tone="warn" class="banner">
-        尚未完成 AI 模型配置：主功能不可用，请前往「AI 模型」页完成配置（或运行首次引导向导）。
+        尚未完成 AI 模型配置：主功能不可用，请前往「AI 模型」页配置。
       </AppToast>
       <AppToast v-if="!settingsStore.cryptoAvailable" tone="warn" class="banner">
         当前系统未提供安全存储：API Key 只在本次运行的内存中有效。

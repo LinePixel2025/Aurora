@@ -98,8 +98,7 @@ const summary = computed(() => {
     <header>
       <h2 class="section-title">ClassRoom 配置</h2>
       <p class="section-desc">
-        感知文件夹里的新文件会被自动提取内容 → 判定科目 → 移动到科目文件夹，并写入分类流水 （docs/05
-        §3.2）。分组可折叠，标题右侧是当前配置摘要。
+        感知文件夹里的新文件会被提取内容、判定科目并移到科目文件夹，同时写入分类流水。
       </p>
     </header>
 

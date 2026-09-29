@@ -15,9 +15,7 @@ import TtsSection from '../components/TtsSection.vue'
   <section class="page">
     <header>
       <h1 class="page-title">语音</h1>
-      <p class="page-sub">
-        朗读回复（TTS）与语音输入（STT）。支持任何 OpenAI 兼容服务；凭据加密保存在本机。
-      </p>
+      <p class="page-sub">朗读回复（TTS）与语音输入（STT）；凭据加密保存在本机。</p>
     </header>
 
     <TtsSection />

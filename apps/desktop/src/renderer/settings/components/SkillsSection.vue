@@ -148,9 +148,8 @@ onMounted(() => {
     <Transition name="collapse">
       <div v-if="open" class="group-body">
         <p class="section-desc">
-          以 <code class="mono">SKILL.md</code>（YAML frontmatter + 指令正文）描述的可复用能力包，
-          存放于内置 <code class="mono">skills/</code> 与用户技能目录。 模型按描述自动匹配并调用
-          <code class="mono">use_skill</code> 读取指令；也可在输入框用
+          以 <code class="mono">SKILL.md</code> 描述的可复用能力包，存放于内置
+          <code class="mono">skills/</code> 与用户技能目录；模型按描述自动匹配，也可用
           <code class="mono">/技能名</code> 或 <code class="mono">@技能名</code> 显式调用。
         </p>
 
@@ -189,8 +188,7 @@ onMounted(() => {
         <!-- 空状态：没有技能就没有可启停的对象（skills.disabled 不出现） -->
         <p v-if="skills.length === 0" class="empty-inline" data-empty="skills.disabled">
           未发现技能：请确认仓库根目录存在
-          <code class="mono">skills/&lt;name&gt;/SKILL.md</code
-          >，或在上方配置用户技能目录后重新扫描。
+          <code class="mono">skills/&lt;name&gt;/SKILL.md</code>，或配置用户技能目录后重新扫描。
         </p>
 
         <template v-else>

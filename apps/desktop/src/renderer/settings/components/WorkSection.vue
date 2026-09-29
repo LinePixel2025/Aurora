@@ -43,8 +43,7 @@ async function setWorkspaceDir(value: string): Promise<void> {
     <header>
       <h2 class="section-title">Work 工作目录</h2>
       <p class="section-desc">
-        办公场景的产出落点：生成的文档 / 表格 / 演示文稿与导出结果默认保存在这里，
-        命令类工具的相对路径也按它解析。
+        办公产出（文档 / 表格 / 演示文稿）默认保存在这里，命令类工具的相对路径也按它解析。
       </p>
     </header>
 
@@ -55,7 +54,7 @@ async function setWorkspaceDir(value: string): Promise<void> {
       <SettingField
         data-field="modes.work.workspaceDir"
         label="工作目录"
-        hint="绝对路径；留空表示未配置（AI 引导时会再次收集，默认是 用户目录\Aurora\工作目录）"
+        hint="绝对路径；留空 = 未配置（AI 引导时会再次收集）"
       >
         <input
           class="input"

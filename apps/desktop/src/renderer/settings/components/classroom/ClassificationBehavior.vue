@@ -56,7 +56,7 @@ async function setFallbackFolder(value: string): Promise<void> {
   <SettingField
     data-field="modes.classroom.classification.autoMove"
     label="自动移动文件"
-    hint="关闭后只记录流水、不移动文件（原地保留）"
+    hint="关闭后只记录流水、不移动文件"
   >
     <label class="row tiny">
       <input
@@ -88,7 +88,7 @@ async function setFallbackFolder(value: string): Promise<void> {
     </SettingField>
   </template>
   <p v-else class="section-desc" data-empty="modes.classroom.classification.confidenceThreshold">
-    先添加科目：没有任何科目可判定时，置信阈值不产生作用。
+    先添加科目：没有科目可判定时，置信阈值不产生作用。
   </p>
 
   <template v-if="classroom.classification.autoMove">
@@ -112,9 +112,7 @@ async function setFallbackFolder(value: string): Promise<void> {
   </p>
 
   <div class="divider" />
-  <p class="section-desc">
-    最近 50 条记录；可直接改到其他科目，用户修正会同步沉淀为分类规则（docs/05 §3.2）。
-  </p>
+  <p class="section-desc">最近 50 条记录；可直接改到其他科目，修正会沉淀为分类规则。</p>
   <ClassificationLedger :limit="50" start-open />
 </template>
 

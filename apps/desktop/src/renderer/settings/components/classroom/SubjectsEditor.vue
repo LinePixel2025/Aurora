@@ -103,7 +103,7 @@ async function openSubjectFolder(name: string): Promise<void> {
 <template>
   <div class="row">
     <span class="section-desc grow">
-      目标文件夹相对感知文件夹（也可填绝对路径）；关键词用于规则命中，多个关键词用逗号分隔。
+      目标文件夹相对感知文件夹，也可填绝对路径；关键词用逗号分隔。
     </span>
     <AppButton size="sm" data-field="modes.classroom.subjects" @click="addSubject">
       添加科目

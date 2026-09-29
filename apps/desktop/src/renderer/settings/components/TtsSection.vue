@@ -304,7 +304,7 @@ function clampSpeed(value: number): number {
 /** 编辑卡按接口类型切换的 baseURL 提示（docs/06 §13.2 / §13.6） */
 function baseUrlHint(type: TtsProviderType): string {
   return type === 'dashscope'
-    ? 'DashScope 原生根地址，例：https://maas.qianwenaiapi.com/api/v1 或 https://dashscope.aliyuncs.com/api/v1（裸域名 / 以 /api 结尾会自动补齐）；主进程自动拼 /services/aigc/multimodal-generation/generation'
+    ? 'DashScope 原生根地址，例：https://maas.qianwenaiapi.com/api/v1；裸域名或 /api 结尾会自动补齐'
     : 'OpenAI 兼容端点，例如 https://api.openai.com/v1'
 }
 
@@ -506,8 +506,7 @@ function stopPreview(): void {
     <Transition name="collapse">
       <div v-if="open" class="group-body">
         <p class="section-desc">
-          让 Aurora 朗读回复。总开关决定对话窗里是否出现朗读按钮；关掉后已保存的模型不会被删除，
-          随时可以再打开。
+          让 Aurora 朗读回复；关闭后对话窗不再出现朗读按钮，已保存的模型保留。
         </p>
 
         <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
@@ -517,7 +516,7 @@ function stopPreview(): void {
         <SettingField
           data-field="tts.enabled"
           label="启用语音朗读"
-          hint="关闭后对话窗不再提供朗读入口（已保存的 TTS 模型保留）"
+          hint="关闭后对话窗不再提供朗读入口"
         >
           <label class="row tiny">
             <input
@@ -568,7 +567,7 @@ function stopPreview(): void {
         <SettingField
           data-field="tts.maxChars"
           label="单次朗读文本上限"
-          hint="按字符截断，50 ～ 4096；超出部分不合成，避免一次朗读消耗过多额度"
+          hint="按字符截断，50 ～ 4096；超出部分不合成"
         >
           <input
             class="input"
@@ -583,7 +582,7 @@ function stopPreview(): void {
 
         <!-- 空状态：没有 TTS 模型时不摆一排空行，直接给主入口 -->
         <p v-if="drafts.length === 0" class="empty-inline" data-empty="tts.providers">
-          还没有 TTS 模型：添加一个 OpenAI 兼容的语音合成服务并设为默认后，就能朗读回复。
+          还没有 TTS 模型：添加一个并设为默认后就能朗读回复。
         </p>
         <div v-if="drafts.length === 0" class="row">
           <AppButton variant="primary" @click="startAdd">添加 TTS 模型</AppButton>
@@ -702,7 +701,7 @@ function stopPreview(): void {
               <SettingField
                 :data-field="`tts.providers.${draft.id}.type`"
                 label="接口类型"
-                hint="决定主进程按哪套协议发合成请求；DashScope 原生走百炼 / 千问AI平台的生成端点"
+                hint="决定按哪套协议发合成请求；DashScope 原生走百炼 / 千问AI平台端点"
               >
                 <select v-model="draft.type" class="input">
                   <option v-for="(label, value) in TYPE_LABELS" :key="value" :value="value">
@@ -748,7 +747,7 @@ function stopPreview(): void {
                 :data-field="`tts.providers.${draft.id}.model`"
                 label="模型名"
                 required
-                hint="例：tts-1；SiliconFlow 例：FunAudioLLM/CosyVoice2-0.5B；可点「获取模型列表」拉取候选"
+                hint="例：tts-1；可点「获取模型列表」拉取候选"
               >
                 <div class="row wrap model-row">
                   <input
@@ -779,7 +778,7 @@ function stopPreview(): void {
                 :data-field="`tts.providers.${draft.id}.voice`"
                 label="音色"
                 required
-                hint="服务端定义的音色 id，例：alloy / alex；可直接填写"
+                hint="服务端定义的音色 id，例：alloy；可直接填写"
               >
                 <!-- 刻意不用 `v-model`：与音色 chips 共用同一个写入口（见 onVoiceInput） -->
                 <input
@@ -828,7 +827,7 @@ function stopPreview(): void {
                 label="输出格式"
                 :hint="
                   draft.type === 'dashscope'
-                    ? 'DashScope 仅下发 wav / mp3 / opus，其余格式按服务端默认；决定播放时的 MIME 类型'
+                    ? 'DashScope 仅下发 wav / mp3 / opus，其余按服务端默认'
                     : '请求体的 response_format；决定播放时的 MIME 类型'
                 "
               >
@@ -887,8 +886,7 @@ function stopPreview(): void {
         </div>
 
         <p v-if="drafts.length > 0" class="tiny muted">
-          改动在点「应用」（保存这一张卡）后落盘；编辑卡里的 API Key
-          留空表示不修改已保存的凭据，试听会使用已保存的模型配置。
+          改动需点「应用」后落盘；API Key 留空表示不修改已保存的凭据，试听使用已保存的配置。
         </p>
       </div>
     </Transition>

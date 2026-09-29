@@ -36,17 +36,17 @@ const confirmingReset = ref(false)
 
 const advanced = computed(() => settingsStore.settings?.advanced ?? null)
 
-/** 三档下拉的选项（顺序固定：由严到宽，避免「默认档排在最后」这类误读） */
+/** 三档下拉的选项（顺序固定：由严到宽；出厂默认是「完全权限」，排在最后） */
 const PERMISSION_MODES: ReadonlyArray<{ value: PermissionMode; label: string }> = [
   { value: 'readonly', label: '只读' },
-  { value: 'confirm', label: '变更前确认（默认）' },
+  { value: 'confirm', label: '变更前确认' },
   { value: 'auto', label: '完全权限' },
 ]
 
 /**
  * 当前**生效**档位：走 `resolvePermissionMode`，老配置里只有 `confirmSensitiveTools: false`
  * 的情况会被承接成 `auto`（否则下拉会显示成「变更前确认」，与主进程实际行为不符）。
- * 配置未水合时按默认档 `confirm` 显示。
+ * 配置未水合时按更保守的 `confirm` 显示。
  */
 const permissionMode = computed<PermissionMode>(() => {
   const settings = settingsStore.settings
@@ -130,7 +130,7 @@ async function resetAll(): Promise<void> {
   <section class="page">
     <header>
       <h1 class="page-title">系统</h1>
-      <p class="page-sub">网络代理、日志与安全；排障时可导出脱敏配置。勿扰时段已移至「通用」页。</p>
+      <p class="page-sub">网络代理、日志与安全；排障时可导出脱敏配置。</p>
     </header>
 
     <AppToast v-if="error" tone="error">{{ error }}</AppToast>
@@ -143,7 +143,7 @@ async function resetAll(): Promise<void> {
       <SettingField
         data-field="advanced.proxy"
         label="系统代理"
-        hint="留空表示直连；例如 http://127.0.0.1:7890（也可只写 127.0.0.1:7890）。保存后立即对模型与 MCP 生效"
+        hint="留空表示直连，例 http://127.0.0.1:7890；保存后立即对模型与 MCP 生效"
       >
         <input
           class="input"
@@ -181,11 +181,7 @@ async function resetAll(): Promise<void> {
     <section class="section-card">
       <h2 class="section-title">安全</h2>
       <p class="section-desc">
-        权限档位决定敏感工具（写文件 / 执行命令 / MCP 工具 / 改设置）要不要先问你（docs/06 §11.2）：
-        <strong>只读</strong> = 写文件 /
-        执行命令类工具不会注册给模型；<strong>变更前确认</strong>（默认）=
-        每次执行前弹确认卡，你点「允许一次」才执行；<strong>完全权限</strong> =
-        仅在项目根之内免确认，越界仍会询问（只写日志留痕）。AI 改不动这一项，防自我提权。
+        敏感工具是否先问你：<strong>只读</strong>不注册写入与命令类工具，<strong>变更前确认</strong>逐次弹卡，<strong>完全权限</strong>仅项目根内免确认。
       </p>
 
       <!--
@@ -195,7 +191,7 @@ async function resetAll(): Promise<void> {
       <SettingField
         data-field="agent.permissionMode"
         label="权限档位"
-        hint="每次调用即时判断，改完无需重启；选「完全权限」等于放宽闸门，请确认你真的不需要逐次确认"
+        hint="改完无需重启，每次调用即时判断；该档位 AI 改不动，防自我提权"
       >
         <select
           :value="permissionMode"
@@ -210,9 +206,7 @@ async function resetAll(): Promise<void> {
 
     <section class="section-card">
       <h2 class="section-title">危险操作</h2>
-      <p class="section-desc">
-        重置会恢复默认值并清除已保存的凭据，不可撤销；配置与日志导出均做脱敏处理。
-      </p>
+      <p class="section-desc">重置会恢复默认值并清除已保存凭据，不可撤销；导出均做脱敏处理。</p>
 
       <div class="row wrap">
         <AppButton size="sm" @click="openConfig">打开配置目录</AppButton>
@@ -238,7 +232,7 @@ async function resetAll(): Promise<void> {
     </section>
 
     <p class="tiny muted">
-      隐私说明：API Key 与 MCP 环境变量使用系统安全存储加密后仅保存在本机；日志、导出配置一律脱敏。
+      API Key 与 MCP 环境变量经系统安全存储加密后仅存本机；日志与导出配置一律脱敏。
     </p>
   </section>
 </template>

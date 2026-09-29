@@ -246,16 +246,14 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
     <Transition name="collapse">
       <div v-if="open" class="group-body">
         <p class="section-desc">
-          连接外部工具服务（Model Context Protocol）。工具以
-          <code class="mono">mcp.&lt;server&gt;.&lt;tool&gt;</code> 注册进 Agent 工具表；与 Skill
-          重名时 MCP 优先。连接失败只影响该服务器，不会阻塞对话。
+          连接外部工具服务（Model Context Protocol）：工具以
+          <code class="mono">mcp.&lt;server&gt;.&lt;tool&gt;</code> 注册；连接失败只影响该服务器。
         </p>
 
         <!-- 空状态：没有服务器时不显示 lazyConnect 等无对象的配置项 -->
         <template v-if="servers.length === 0">
           <p class="empty-inline" data-empty="mcp.servers">
-            尚未配置 MCP 服务器：添加一个 stdio 本地进程或 HTTP
-            端点后，它的工具会自动出现在对话可用工具里。
+            尚未配置 MCP 服务器：添加后它的工具会自动出现在对话可用工具里。
           </p>
           <div class="row">
             <AppButton variant="primary" @click="showAdd = true">添加服务器</AppButton>
@@ -334,7 +332,7 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
                 <SettingField
                   data-field="mcp.lazyConnect"
                   label="懒连接"
-                  hint="开启后在首次使用某个 MCP 工具时才连接；关闭则启动即连（默认）"
+                  hint="开启后首次使用该服务器的工具时才连接；关闭则启动即连（默认）"
                 >
                   <label class="row tiny">
                     <input
@@ -421,8 +419,8 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
         </Transition>
 
         <p class="tiny muted">
-          提示：MCP 服务器以你填写的 argv 数组启动，<strong>不经过 shell</strong>；HTTP
-          传输支持自定义请求头（含鉴权头），值加密存储。
+          服务器以你填写的 argv 数组启动，<strong>不经过 shell</strong
+          >；请求头与环境变量的值加密存储。
         </p>
       </div>
     </Transition>

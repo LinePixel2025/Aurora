@@ -225,9 +225,7 @@ async function login(): Promise<void> {
     <Transition name="collapse">
       <div v-if="open" class="group-body">
         <p class="section-desc">
-          连接到 Aurora Center：用 Center 账号登录后，桌面端会自动连上服务器并归属该账号 ——
-          同一账号在 Center 网页端登录即可远程查看本机状态、发起会话（许可见下一卡）。
-          连接目标与凭据只保存在本机，这里的任何配置 AI 都改不动。
+          用 Center 账号登录后自动连接并归属该账号，可在网页端远程查看本机状态、发起会话。
         </p>
 
         <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
@@ -247,7 +245,7 @@ async function login(): Promise<void> {
         <SettingField
           data-field="center.serverUrl"
           label="服务器地址"
-          hint="ws(s):// 或 http(s)://（连接时统一换成 ws 协议）；填写与否和上面的开关无关，都可编辑"
+          hint="ws(s):// 或 http(s)://，连接时统一换成 ws；与上面的开关无关，都可编辑"
         >
           <input
             v-model="serverUrl"
@@ -279,7 +277,7 @@ async function login(): Promise<void> {
         <SettingField
           data-field="center.deviceLogin"
           label="登录账户"
-          hint="推荐：点击后打开浏览器，在 Center 网页登录并一键确认，桌面端自动拿到凭据（无需在此输密码）"
+          hint="点击后打开浏览器，在 Center 网页登录并一键确认，桌面端自动拿到凭据"
         >
           <div class="row wrap token-row">
             <AppButton
@@ -302,7 +300,7 @@ async function login(): Promise<void> {
           :hint="
             tokenSet
               ? '已登录（重新登录可更换账号 / 刷新凭据）'
-              : '由 Center 管理员创建的账号；登录后本机归属该账号（仅密码登录回落表单使用，改动不随「保存」提交）'
+              : '由 Center 管理员创建的账号，仅密码登录时使用；改动不随「保存」提交'
           "
         >
           <input
@@ -319,7 +317,7 @@ async function login(): Promise<void> {
         <SettingField
           data-field="center.password"
           label="登录密码"
-          hint="密码登录（备用）：只在点「密码登录」时使用一次，不保存在本机；页面不回显"
+          hint="只在点「密码登录」时使用一次，不保存在本机，页面不回显"
         >
           <div class="row wrap token-row">
             <input
@@ -338,7 +336,7 @@ async function login(): Promise<void> {
         <SettingField
           data-field="center.clientId"
           label="客户端 ID"
-          hint="首次登录时由本机生成并持久化；仅用于在 Center 侧标识本机，不可编辑"
+          hint="首次登录时由本机生成；仅用于在 Center 侧标识本机，不可编辑"
         >
           <span class="tiny muted mono">{{ clientId === '' ? '尚未生成' : clientId }}</span>
         </SettingField>

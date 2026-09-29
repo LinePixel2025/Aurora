@@ -9,7 +9,7 @@
  *
  * 「电脑操控」是给模型装上"手"的一组工具（`COMPUTER_TOOL_NAMES` 里那 8 个：run_command /
  * read_file / write_file / edit_file / list_dir / open_path / grep / glob）：默认全开，
- * 但命令执行与文件写入（含 edit_file）是敏感工具，逐次确认后才执行。
+ * 但命令执行与文件写入（含 edit_file）是敏感工具，越界时逐次确认后才执行。
  * 本页是这套工具的**唯一**开关面，保存后由主进程 `onSettingsChanged` →
  * `computerTools.sync()` 立即重注册，无需重启。
  *
@@ -28,7 +28,7 @@
  * 它只是工具的**默认**工作目录（缺省起点走 docs/06 §5.1 的 `effectiveWorkspaceDir` 三级回落：
  * 当前项目根 > workspaceDir > 用户主目录，配置了当前项目时以项目根优先），
  * 模型仍可显式传入任意绝对路径。
- * 安全边界是「逐次确认 + 输出上限 + 总开关」，不是路径限制。
+ * 安全边界是「权限档位 + 输出上限 + 总开关」，不是路径限制。
  *
  * `COMPUTER_TOOL_NAMES` 必须从 `@aurora/shared/browser` 取：主入口 `@aurora/shared`
  * 依赖 `node:fs`，一旦被拉进渲染层 bundle，Electron 构建会直接失败（AGENTS.md 架构硬约束 4）。
@@ -374,35 +374,29 @@ async function openWorkspace(): Promise<void> {
         <div v-if="openTools" class="group-body">
           <!--
             安全告诫全页唯一一处完整表述（docs/07 §2.5 文案收敛）：
-            直接影响真实系统 + 敏感工具逐次确认 + 工作目录不是沙箱，都在这里说清。
+            直接影响真实系统 + 敏感工具越界确认 + 工作目录不是沙箱，都在这里说清。
           -->
           <p class="section-desc">
-            让模型能执行命令、读写文件与打开路径（docs/06 §11）。
-            <strong>本页操作直接影响真实系统</strong
-            >：命令执行与工作目录之外的文件写入是敏感操作，逐次确认后才执行 （工作目录之内的
-            write_file / edit_file 免确认；确认开关在「系统」页，关闭后将不经确认直接执行）；
-            工作目录<strong>不是沙箱</strong>
-            —— 模型仍可显式传入其它路径，安全边界是「逐次确认 + 输出上限 + 总开关」。
+            让模型执行命令、读写文件与打开路径。默认档（完全权限）下项目根之内免确认、越界仍逐次确认，
+            未配置项目时只写日志留痕；档位在「系统」页或对话窗输入框的权限钮上切换。
+            工作目录<strong>不是沙箱</strong>，模型仍可传入其它路径。
           </p>
 
           <!-- 总开关 -->
           <div class="sub">
             <h3 class="sub-title">总开关</h3>
             <!--
-              数量与名字都从 `COMPUTER_TOOL_NAMES` 派生（不写死）：加工具时自动跟上，
-              否则会出现「文案说 5 个、实际注册 8 个」这类只在下次加工具时才暴露的偏差。
+              本段刻意不复述工具数量与名字：区组下方的「当前生效工具」一栏有实时清单，
+              加工具时也不会留下「文案说 5 个、实际注册 8 个」这类偏差。
             -->
             <p class="section-desc">
-              关闭后模型<strong>完全看不到</strong>这 {{ COMPUTER_TOOL_NAMES.length }} 个工具（<code
-                class="mono"
-                >{{ COMPUTER_TOOL_NAMES.join('、') }}</code
-              >）—— 系统提示词与工具表里都不再出现，保存后立即生效，无需重启。
+              关闭后模型<strong>完全看不到</strong>这些工具：系统提示词与工具表里都不再出现，保存后立即生效。
             </p>
 
             <SettingField
               data-field="agent.tools.enabled"
               label="启用电脑操控"
-              hint="关掉是最彻底的「刹车」：工具根本不注册，模型无从请求（默认开启）"
+              hint="默认开启；关闭后工具完全不注册，模型无从请求"
             >
               <label class="row tiny">
                 <input
@@ -419,21 +413,20 @@ async function openWorkspace(): Promise<void> {
           <div class="sub">
             <h3 class="sub-title">工作目录</h3>
             <p class="section-desc">
-              <strong>命令</strong>的缺省工作目录：执行命令时若未显式指定路径，就在它下面运行
-              （配置了当前项目时以项目根优先）。文件类工具（读 / 写 /
-              列目录）不读此项，它们的相对路径按应用自身目录解析，因此只适合用绝对路径。
+              <strong>命令</strong>不传路径时的缺省工作目录，有当前项目时以项目根优先；
+              文件类工具的相对路径不按它解析。
             </p>
 
             <SettingField
               data-field="agent.tools.workspaceDir"
               label="默认工作目录"
-              hint="留空 = 用户主目录（配置了当前项目时以项目根优先）；作用于命令缺省 cwd 与检索缺省根（按钮「打开工作目录」与此目录一致）"
+              hint="留空 = 用户主目录，有当前项目时以项目根优先；作用于命令缺省 cwd 与检索缺省根"
             >
               <input
                 class="input"
                 type="text"
                 spellcheck="false"
-                placeholder="例如 D:\Projects（留空 = 用户主目录，有当前项目时项目根优先）"
+                placeholder="例如 D:\Projects"
                 :value="tools.workspaceDir"
                 @change="save({ workspaceDir: ($event.target as HTMLInputElement).value })"
               />
@@ -449,8 +442,7 @@ async function openWorkspace(): Promise<void> {
           <div class="sub">
             <h3 class="sub-title">终端</h3>
             <p class="section-desc">
-              执行命令（<code class="mono">run_command</code
-              >）：敏感工具，执行前需要确认；超时到点即杀进程。
+              执行命令（<code class="mono">run_command</code>）：敏感工具；超时即杀进程。
             </p>
 
             <template v-if="tools.enabled">
@@ -472,7 +464,7 @@ async function openWorkspace(): Promise<void> {
               <SettingField
                 data-field="agent.tools.terminal.timeoutMs"
                 label="命令超时"
-                hint="单位毫秒，1000 ～ 300000；超时后强制结束进程并回传已捕获的输出（默认 60000）"
+                hint="单位毫秒，1000 ～ 300000，默认 60000；超时强制结束进程并回传已捕获输出"
               >
                 <input
                   class="input input-num"
@@ -492,7 +484,7 @@ async function openWorkspace(): Promise<void> {
               <SettingField
                 data-field="agent.tools.terminal.maxOutputChars"
                 label="输出上限"
-                hint="单位字符，500 ～ 100000；超出部分截断，避免一次命令灌爆上下文（默认 8000）"
+                hint="单位字符，500 ～ 100000，默认 8000；超出部分截断"
               >
                 <input
                   class="input input-num"
@@ -527,9 +519,8 @@ async function openWorkspace(): Promise<void> {
           <div class="sub">
             <h3 class="sub-title">免确认命令模式</h3>
             <p class="section-desc">
-              <code class="mono">run_command</code> 的命令串按 glob <strong>全串</strong>匹配
-              （大小写不敏感，<code class="mono">*</code> 匹配任意字符、<code class="mono">?</code>
-              匹配单字符）：命中即跳过确认卡片，未命中照旧逐次确认；审计日志照写。
+              <code class="mono">run_command</code> 的命令串按 glob
+              <strong>全串</strong>匹配，不区分大小写； 命中即跳过确认卡，未命中的按权限档位判定。
             </p>
             <!--
               `*` 跨命令分隔符的披露（docs/06 §11.7）：模式是纯文本匹配，`*` 编译成 .*，
@@ -538,16 +529,14 @@ async function openWorkspace(): Promise<void> {
             -->
             <p class="tiny muted">
               <code class="mono">*</code> 也匹配 <code class="mono">;</code>、
-              <code class="mono">&amp;&amp;</code>、<code class="mono">|</code> 等命令分隔符：填
+              <code class="mono">&amp;&amp;</code>、<code class="mono">|</code> 等分隔符：填
               <code class="mono">git status*</code> 会连
-              <code class="mono">git status; 任意命令</code> 一起放行。要收窄就写完整命令
-              <code class="mono">git status</code>，或明确到参数级
-              <code class="mono">git log --oneline *</code>。
+              <code class="mono">git status; 任意命令</code> 一起放行；要收窄就写完整命令
+              <code class="mono">git status</code>。
             </p>
             <!-- 口径说明（docs/06 §11.7）：这段是本页唯一一处表述，且必须成句完整出现 -->
             <p class="tiny">
-              命中这些模式的命令不再弹出确认卡片；这是减少打扰，不是安全加固。该列表只能在这里修改，AI
-              无法改动。
+              命中即跳过确认卡，属减少打扰而非安全加固；该列表只能在这里改，AI 改不动。
             </p>
 
             <template v-if="tools.enabled">
@@ -559,7 +548,7 @@ async function openWorkspace(): Promise<void> {
               <div class="allow-patterns" data-field="agent.tools.terminal.allowPatterns">
                 <!-- 空状态用普通文案元素：本页多出一个空状态锚点会被 capture 判成回归 -->
                 <p v-if="tools.terminal.allowPatterns.length === 0" class="tiny muted">
-                  暂未添加，所有命令都会逐次确认。
+                  暂未添加，当前没有可跳过确认卡的命令模式。
                 </p>
 
                 <ul v-else class="pattern-list">
@@ -586,7 +575,7 @@ async function openWorkspace(): Promise<void> {
                     class="input"
                     type="text"
                     spellcheck="false"
-                    placeholder="例如 git status*（全串匹配，不区分大小写；* 也匹配 ; &amp;&amp; |）"
+                    placeholder="例如 git status*"
                     @input="allowPatternHint = ''"
                     @keydown.enter="addAllowPattern"
                   />
@@ -598,26 +587,20 @@ async function openWorkspace(): Promise<void> {
             </template>
 
             <p v-else class="tiny muted">
-              关闭总开关后这一栏不生效：所有命令都会逐次确认（保留已填内容，下次开启仍然生效）。
+              总开关已关闭：这一栏不生效，命令仍按权限档位判定，已填内容保留。
             </p>
           </div>
 
           <!-- 文件 -->
           <div class="sub">
             <h3 class="sub-title">文件</h3>
-            <p class="section-desc">
-              读取 / 写入 / 精确替换 / 列目录（<code class="mono">read_file</code>、<code
-                class="mono"
-                >write_file</code
-              >、<code class="mono">edit_file</code>、<code class="mono">list_dir</code>）：
-              写入与替换是敏感工具，执行前需要确认。
-            </p>
+            <p class="section-desc">读取、写入、精确替换与列目录：写入与替换是敏感工具。</p>
 
             <template v-if="tools.enabled">
               <SettingField
                 data-field="agent.tools.files.enabled"
                 label="启用文件工具"
-                hint="关闭后模型看不到 read_file / write_file / edit_file / list_dir，其余工具不受影响"
+                hint="关闭后模型看不到这 4 个文件工具，其余工具不受影响"
               >
                 <label class="row tiny">
                   <input
@@ -632,7 +615,7 @@ async function openWorkspace(): Promise<void> {
               <SettingField
                 data-field="agent.tools.files.maxReadBytes"
                 label="单次读取上限"
-                hint="单位字节，1024 ～ 4194304；超出即拒绝并提示用分段读取（默认 262144 = 256 KiB）"
+                hint="单位字节，1024 ～ 4194304，默认 262144；超出即拒绝并提示分段读取"
               >
                 <input
                   class="input input-num"
@@ -667,18 +650,14 @@ async function openWorkspace(): Promise<void> {
           <div class="sub">
             <h3 class="sub-title">文件备份</h3>
             <p class="section-desc">
-              写文件 / 改文件（<code class="mono">write_file</code>、<code class="mono"
-                >edit_file</code
-              >）真正落盘前，先把磁盘上的<strong>原内容</strong>存一份到本机（docs/06 §11.8）：
-              改错了可以回到某一份快照；<strong>回滚本身也会先留一份快照</strong>，所以回滚同样可撤回。
-              备份只存本机（用户数据目录的 <code class="mono">backups</code> 下，按会话分目录），
-              不会上传；下方的备份列表能看到最近几条并一键回滚。
+              写文件 / 改文件落盘前，先把磁盘上的<strong>原内容</strong>存一份到本机，改错可回滚；
+              回滚也会先留一份快照，备份只存本机、不上传。
             </p>
 
             <SettingField
               data-field="agent.snapshots.enabled"
               label="启用文件备份"
-              hint="关掉后写文件不再留底，改动将不可回滚（默认开启）"
+              hint="默认开启；关闭后写文件不再留底，改动将不可回滚"
             >
               <label class="row tiny">
                 <input
@@ -694,7 +673,7 @@ async function openWorkspace(): Promise<void> {
               <SettingField
                 data-field="agent.snapshots.keepPerFile"
                 label="每文件保留份数"
-                hint="1 ～ 200；每个文件最多留几份，超了删最旧的（默认 20）"
+                hint="1 ～ 200，默认 20；每个文件最多留几份，超出删最旧的"
               >
                 <input
                   class="input input-num"
@@ -714,7 +693,7 @@ async function openWorkspace(): Promise<void> {
               <SettingField
                 data-field="agent.snapshots.maxSnapshotBytes"
                 label="单份快照上限"
-                hint="单位字节，1024 ～ 67108864；单个文件超过这个大小就不留底（工具结果里会明确告诉你，默认 524288 = 512 KiB）"
+                hint="单位字节，1024 ～ 67108864，默认 524288；超过此大小的文件不留底"
               >
                 <input
                   class="input input-num"
@@ -739,7 +718,7 @@ async function openWorkspace(): Promise<void> {
               <SettingField
                 data-field="agent.snapshots.totalBudgetBytes"
                 label="备份总容量上限"
-                hint="单位字节，≥ 1048576；整个备份目录的总容量上限，超出时从最旧的开始删（默认 209715200 = 200 MiB）"
+                hint="单位字节，≥ 1048576，默认 209715200；超出总容量上限时从最旧的开始删"
               >
                 <input
                   class="input input-num"
@@ -764,7 +743,7 @@ async function openWorkspace(): Promise<void> {
 
             <!-- 关闭态的说明：整块替换三个数字字段（照本页既有门控口径，控件不在 DOM） -->
             <p v-else class="tiny muted" data-empty="agent.snapshots">
-              已关闭文件备份：写文件前不再留底，<strong>改动将不可回滚</strong>。上面的保留份数与容量上限维持原值，重新开启后立即生效。
+              已关闭文件备份：写文件前不再留底，<strong>改动将不可回滚</strong>。保留份数与容量上限维持原值，重新开启后生效。
             </p>
 
             <!--
@@ -784,10 +763,7 @@ async function openWorkspace(): Promise<void> {
             <p class="section-desc">
               按文件名模式或正则内容检索（<code class="mono">grep</code>、<code class="mono"
                 >glob</code
-              >）：<strong>只读</strong>工具（不弹确认），但它们会递归扫描整个搜索目录（自动跳过
-              <code class="mono">node_modules</code> / <code class="mono">.git</code> 等）——
-              只读不等于无开销。搜索根缺省按三级取：配置了当前项目时是项目根，否则用上面的
-              「工作目录」（该项留空时是用户主目录）。
+              >）： 只读工具，但会递归扫描整个搜索目录。
             </p>
 
             <template v-if="tools.enabled">
@@ -809,7 +785,7 @@ async function openWorkspace(): Promise<void> {
               <SettingField
                 data-field="agent.tools.search.maxResults"
                 label="结果条数上限"
-                hint="1 ～ 1000；单次检索的结果上限（grep 按命中行、glob 按文件计），超出即截断并标注（默认 200）"
+                hint="1 ～ 1000，默认 200；grep 按命中行、glob 按文件计，超出即截断"
               >
                 <input
                   class="input input-num"
@@ -834,8 +810,7 @@ async function openWorkspace(): Promise<void> {
           <div class="sub">
             <h3 class="sub-title">打开</h3>
             <p class="section-desc">
-              用系统默认程序打开路径（<code class="mono">open_path</code
-              >）：敏感工具，执行前需要确认。
+              用系统默认程序打开路径（<code class="mono">open_path</code>）：敏感工具。
             </p>
 
             <template v-if="tools.enabled">
@@ -871,7 +846,7 @@ async function openWorkspace(): Promise<void> {
               写入 / 命令 / 打开 / 待办写入都不在其中，只读项与非门控工具照常在。
             -->
             <p v-if="permissionReadonly" class="section-desc">
-              只读模式：仅注册只读工具（不含写入与命令）—— 模型下一次请求的工具表里只有下面这
+              只读模式：仅注册只读工具（不含写入与命令）—— 下一次请求的工具表里只有下面这
               {{ activeToolNames.length }} 个电脑操控工具。
             </p>
             <p v-else class="section-desc">
@@ -900,7 +875,7 @@ async function openWorkspace(): Promise<void> {
                 >web_fetch</code
               >、<code class="mono">clipboard_read</code>、<code class="mono">clipboard_write</code
               >、<code class="mono">notify_user</code>、<code class="mono">generate_image</code>）——
-              它们不受电脑操控总开关与权限档位门控，其中敏感的仍逐次确认。
+              它们不受总开关与档位门控，敏感的仍逐次确认。
             </p>
           </div>
 
@@ -911,18 +886,15 @@ async function openWorkspace(): Promise<void> {
           -->
           <div class="sub">
             <h3 class="sub-title">Agent 循环</h3>
+            <p class="section-desc">一次请求里「思考 → 调用工具 → 再思考」的循环上限。</p>
             <p class="section-desc">
-              一次请求里「模型思考 → 调用工具 → 再思考」的循环上限（docs/06 §4.1）。
-            </p>
-            <p class="section-desc">
-              触顶时任务<strong>不会静默结束</strong>：它会停成「已暂停」，主界面右栏的「任务」面板给出原因与
-              「继续」按钮，可以从停下的那一轮接着往下跑。
+              触顶时任务<strong>不会静默结束</strong>：它会停成「已暂停」，可在主界面右栏的任务面板继续。
             </p>
 
             <SettingField
               data-field="agent.loop.maxRounds"
               label="轮次上限"
-              hint="1 ～ 128；一次请求最多几轮工具调用，用完即暂停等续跑（默认 32）"
+              hint="1 ～ 128，默认 32；一次请求最多几轮工具调用，用完即暂停等续跑"
             >
               <input
                 class="input input-num"
@@ -938,7 +910,7 @@ async function openWorkspace(): Promise<void> {
             <SettingField
               data-field="agent.loop.maxTotalTokens"
               label="token 预算"
-              hint="0 = 不限；本请求累计消耗达到预算即暂停（默认 0）"
+              hint="0 = 不限（默认）；本请求累计消耗达到预算即暂停"
             >
               <input
                 class="input input-num"
@@ -958,7 +930,7 @@ async function openWorkspace(): Promise<void> {
             <SettingField
               data-field="agent.loop.autoContinueRounds"
               label="自动续轮"
-              hint="0 ～ 8；轮次用完后允许自动再续几轮，0 = 不自动续、直接暂停等用户点「继续」（默认 8）"
+              hint="0 ～ 8，默认 8；轮次用完后自动再续几轮，0 = 暂停等用户点「继续」"
             >
               <input
                 class="input input-num"

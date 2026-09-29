@@ -317,9 +317,8 @@ async function setActive(id: string): Promise<void> {
     <Transition name="collapse">
       <div v-if="open" class="group-body">
         <p class="section-desc">
-          让 Agent 能用 <code class="mono">generate_image</code>
-          工具生成图片（花 API 费用，执行前需要确认）。支持任何 OpenAI 兼容的
-          <code class="mono">/images/generations</code> 服务；凭据加密保存在本机。
+          让 Agent 用 <code class="mono">generate_image</code>
+          生成图片（花 API 费用），每次执行前会弹确认卡；凭据加密保存在本机。
         </p>
 
         <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
@@ -329,7 +328,7 @@ async function setActive(id: string): Promise<void> {
         <SettingField
           data-field="imagegen.enabled"
           label="启用图像生成"
-          hint="关闭后 Agent 的 generate_image 工具不再注册（已保存的模型保留）"
+          hint="关闭后 generate_image 不再注册，已保存的模型保留"
         >
           <label class="row tiny">
             <input
@@ -364,7 +363,7 @@ async function setActive(id: string): Promise<void> {
 
         <!-- 空状态：没有模型时不摆一排空行，直接给主入口 -->
         <p v-if="drafts.length === 0" class="empty-inline" data-empty="imagegen.providers">
-          还没有生图模型：添加一个 OpenAI 兼容服务并设为默认后，Agent 才能生成图片。
+          还没有生图模型：添加一个并设为默认后，Agent 才能生成图片。
         </p>
 
         <!-- 工具行 + 添加流程（mode === 'add'）：预设 chips 来自 IMAGEGEN_PRESETS -->
@@ -534,8 +533,7 @@ async function setActive(id: string): Promise<void> {
         </div>
 
         <p v-if="drafts.length > 0" class="tiny muted">
-          改动在点「应用」（保存这一张卡）后落盘；编辑卡里的 API Key
-          留空表示不修改已保存的凭据。当前默认：{{
+          改动需点「应用」后落盘；API Key 留空表示不修改已保存的凭据。当前默认：{{
             activeDraft ? `${activeDraft.id} · ${activeDraft.model}` : '未配置'
           }}。
         </p>

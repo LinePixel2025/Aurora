@@ -46,7 +46,5 @@ async function openWatchDir(): Promise<void> {
     <AppButton size="sm" @click="openWatchDir">打开文件夹</AppButton>
   </SettingField>
 
-  <p class="section-desc">
-    文件夹里的新文件会被自动提取内容 → 判定科目 → 移动到科目文件夹，并写入分类流水（docs/05 §3.2）。
-  </p>
+  <p class="section-desc">分类流水可在「分类行为」分组里查看与修正。</p>
 </template>

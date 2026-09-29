@@ -550,9 +550,7 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
   <section class="page">
     <header>
       <h1 class="page-title">AI 模型</h1>
-      <p class="page-sub">
-        支持任何 OpenAI 兼容服务。凭据使用系统安全存储加密后保存在本机，日志与导出均会脱敏。
-      </p>
+      <p class="page-sub">支持任何 OpenAI 兼容服务；凭据加密保存在本机，日志与导出均脱敏。</p>
       <!-- 页头摘要：当前默认模型来自哪个 provider，一眼可见 -->
       <p class="summary tiny">
         <template v-if="activeDraft">
@@ -591,7 +589,7 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
     <section v-if="drafts.length === 0" class="section-card empty-state" data-empty="llm.providers">
       <h2 class="section-title">还没有 AI 模型配置</h2>
       <p class="section-desc">
-        至少添加一个 Provider 并设为默认后，主功能才可用；未配置时启动会进入首次引导向导。
+        添加一个 Provider 并设为默认后主功能才可用；未配置时启动会进入首次引导向导。
       </p>
       <div class="row">
         <AppButton variant="primary" @click="startAdd">添加 AI 模型</AppButton>
@@ -908,7 +906,7 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
             <SettingField
               data-field="llm.contextWindow"
               label="上下文窗口"
-              hint="单位 token；仅用于对话窗输入框底部的「上下文占用比例」分母。留空或 0 = 未知，此时只显示 token 数、不显示占比进度条；上限 2000000，超出按上限截断"
+              hint="单位 token，仅作对话窗「上下文占用比例」的分母；留空或 0 = 未知不显示占比，上限 2000000"
             >
               <input
                 class="input input-num"
@@ -969,8 +967,7 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
     </article>
 
     <p v-if="drafts.length > 0" class="tiny muted">
-      改动在点「应用」（保存这一张卡）或工具行的「保存全部」后落盘；编辑卡里的 API Key
-      留空表示不修改已保存的凭据。
+      改动需点「应用」或工具行的「保存全部」后落盘；API Key 留空表示不修改已保存的凭据。
     </p>
 
     <!-- 生图模型区组（v8 新增）：独立 provider 体系，与聊天模型互不绑定 -->

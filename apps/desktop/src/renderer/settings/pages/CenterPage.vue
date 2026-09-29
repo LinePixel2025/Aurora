@@ -17,8 +17,7 @@ import CenterStatusSection from '../components/CenterStatusSection.vue'
     <header>
       <h1 class="page-title">Aurora Center</h1>
       <p class="page-sub">
-        连接 Aurora Center：用 Center 账号登录后自动连接，同一账号在网页端即可远程控制本机。
-        连接目标与凭据只保存在本机；这里的配置 AI 改不动。
+        用 Center 账号登录后自动连接，同一账号可在网页端远程控制本机；配置与凭据只存本机。
       </p>
     </header>
 

@@ -85,9 +85,7 @@ async function markDone(id: ModeId): Promise<void> {
   <section class="page">
     <header>
       <h1 class="page-title">模式</h1>
-      <p class="page-sub">
-        同一时刻只启用一个模式；切换后若引导未完成，AI 会在对话窗口主动发起引导。
-      </p>
+      <p class="page-sub">同一时刻只启用一个模式；引导未完成时，AI 会在对话窗主动发起引导。</p>
     </header>
 
     <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
@@ -99,8 +97,7 @@ async function markDone(id: ModeId): Promise<void> {
         <div class="auto-text">
           <strong>自动化</strong>
           <p class="tiny muted">
-            允许按定时或课堂条件自动执行任务（Agent Mode / Normal Mode）；关闭后已有自动化暂停评估，
-            入口在主界面左栏的「自动化」。
+            按定时或课堂条件自动执行任务；关闭后已有自动化暂停评估，入口在主界面左栏。
           </p>
         </div>
         <label class="auto-switch" :title="automationsEnabled ? '关闭自动化' : '开启自动化'">
@@ -187,10 +184,7 @@ async function markDone(id: ModeId): Promise<void> {
       :data-empty="`modes.${currentMode}`"
     >
       <h2 class="section-title">{{ currentLabel }} 暂无可配置项</h2>
-      <p class="section-desc">
-        该模式仍是占位实现（docs/04 路线图）：对话可用，但没有专属设置项。切到 ClassRoom
-        后这里会出现感知文件夹、科目与课表等配置；切到 Work 则有工作目录设置。
-      </p>
+      <p class="section-desc">该模式仍是占位实现：对话可用，但没有专属设置项。</p>
       <div class="row">
         <AppButton size="sm" :disabled="busy !== null" @click="choose('classroom')">
           切换到 ClassRoom
