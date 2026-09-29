@@ -81,6 +81,8 @@ export {
   Plus,
   Power,
   Timer,
+  // 调用次数（自动化卡片的次数徽章，docs/13 §3.1）
+  Repeat,
   BellRing,
   FolderOpenDot,
   // 自动化条件（触发器）语义图标：与 catalog 的 7 类一一对应，见 AutomationPage 的 triggerIconOf

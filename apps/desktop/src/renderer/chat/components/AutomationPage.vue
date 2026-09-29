@@ -57,6 +57,7 @@ import {
   Pencil,
   Play,
   Plus,
+  Repeat,
   School,
   Sparkles,
   Timer,
@@ -278,6 +279,39 @@ function formatDuration(ms: number | undefined): string {
   return `${(ms / 1000).toFixed(1)}s`
 }
 
+// ───────────────────────── 调用次数（v0.2.8，docs/13 §3.1） ─────────────────────────
+
+/** 调用次数上限（0 = 不限；内置自动化恒为 0） */
+function runLimitOf(def: AutomationDefinition): number {
+  return def.maxRuns ?? 0
+}
+
+/** 已调用次数用尽（判据与主进程 catalog 的 `isRunsExhausted` 同口径） */
+function runsExhaustedOf(def: AutomationDefinition): boolean {
+  const limit = runLimitOf(def)
+  return limit > 0 && (def.runCount ?? 0) >= limit
+}
+
+/** 列表卡片上的次数徽章文案（未设上限时返回空串 = 不渲染） */
+function runCountLabel(def: AutomationDefinition): string {
+  const limit = runLimitOf(def)
+  if (limit <= 0) return ''
+  return `${def.runCount ?? 0}/${limit}`
+}
+
+/** 次数徽章的悬浮说明 */
+function runCountHint(def: AutomationDefinition): string {
+  if (runsExhaustedOf(def)) return '调用次数已用尽，已自动停用；提高上限或重置计数后可再次启用'
+  return `已调用 ${def.runCount ?? 0} / ${runLimitOf(def)} 次；用满后自动停用`
+}
+
+/** 输入框 → 上限整数（空 / 非法 / 负数一律 0 = 不限，与主进程校验层的语义一致） */
+function parseMaxRuns(raw: string): number {
+  const parsed = Number(raw.trim())
+  if (raw.trim() === '' || !Number.isFinite(parsed)) return 0
+  return Math.max(0, Math.floor(parsed))
+}
+
 // ───────────────────────── 启停 / 运行 / 删除 ─────────────────────────
 
 async function setEnabled(def: AutomationDefinition, enabled: boolean): Promise<void> {
@@ -286,6 +320,13 @@ async function setEnabled(def: AutomationDefinition, enabled: boolean): Promise<
   const result = await window.aurora.automation.save(payload)
   if (!result.ok) {
     error.value = result.message
+    return
+  }
+  // 打开一条已用尽的自动化不会立刻报错，但下一次触发会被引擎停回去 ——
+  // 如实提示，而不是让用户以为"开了就能用"（docs/13 §3.1）
+  if (enabled && runsExhaustedOf(def)) {
+    flash('次数已用尽：请提高上限或重置计数')
+    await refresh()
     return
   }
   await refresh()
@@ -359,6 +400,16 @@ interface EditorDraft {
   triggerParams: Record<string, unknown>
   prompt: string
   actions: DraftAction[]
+  /** 启停状态：编辑不改动它（旧版编辑器保存时无条件置 true，会让「编辑」变成「顺带启用」） */
+  enabled: boolean
+  /**
+   * 调用次数上限（输入框态，字符串）：
+   * 数字输入框清空时若直接绑 number，`:value` 会把空串顶回数字，用户"删不掉"；
+   * 保存时再解析成整数（空 / 非法一律 0 = 不限）。
+   */
+  maxRuns: string
+  /** 已调用次数：由原定义带过来，**保存时必须原样回传**（漏掉等于每次编辑清零计数） */
+  runCount: number
 }
 
 const editorOpen = ref(false)
@@ -419,6 +470,9 @@ function openEditor(def?: AutomationDefinition): void {
         kind: action.kind,
         params: deepClone(action.params ?? {}),
       })),
+      enabled: def.enabled,
+      maxRuns: String(def.maxRuns ?? 0),
+      runCount: def.runCount ?? 0,
     }
   } else {
     draft.value = {
@@ -429,6 +483,9 @@ function openEditor(def?: AutomationDefinition): void {
       triggerParams: emptyTriggerParams(tab.value === 'normal' ? 'pre-class' : 'daily'),
       prompt: '',
       actions: [emptyAction('system-notify')],
+      enabled: true,
+      maxRuns: '0',
+      runCount: 0,
     }
   }
   // 按 catalog 补齐缺失的参数键（编辑旧定义 / 组件升级后新增字段），控件才有稳定目标
@@ -499,12 +556,16 @@ async function saveEditor(): Promise<void> {
   const payload: AutomationDefinition = {
     id: current.id,
     name: current.name.trim(),
-    enabled: true,
+    enabled: current.enabled,
     mode: current.mode,
     trigger: {
       kind: triggerKind,
       params: deepClone(current.triggerParams),
     },
+    // 调用次数：上限按输入解析（空 / 非法 = 0 = 不限），计数原样回传 ——
+    // 缺 runCount 会被归一化层判成 0，等于"编辑一次就把计数清零"
+    maxRuns: parseMaxRuns(current.maxRuns),
+    runCount: current.runCount,
     createdAt: '',
     updatedAt: '',
   }
@@ -695,6 +756,17 @@ function closeHistory(): void {
               />
               {{ def.mode === 'agent' ? 'Agent' : 'Normal' }}
             </span>
+            <!-- 调用次数（v0.2.8，docs/13 §3.1）：只在上限 > 0 时显示；用尽时整枚转警示色 -->
+            <AppTooltip v-if="runCountLabel(def) !== ''" :text="runCountHint(def)">
+              <span
+                class="runs-chip"
+                :class="{ exhausted: runsExhaustedOf(def) }"
+                data-field="automation.runs"
+              >
+                <Repeat :size="11" :stroke-width="1.8" aria-hidden="true" />
+                {{ runCountLabel(def) }}
+              </span>
+            </AppTooltip>
           </div>
           <div class="card-meta">
             <span class="meta-item">
@@ -863,6 +935,35 @@ function closeHistory(): void {
                 </span>
                 <span class="tiny muted">按预设操作执行</span>
               </button>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <span class="field-label">调用次数</span>
+            <div class="runs-row">
+              <input
+                v-model="draft.maxRuns"
+                class="input"
+                data-field="automation.max-runs"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="0"
+              />
+              <span class="tiny muted runs-note">
+                上限（0 = 不限）；用满自动停用<template v-if="draft.id !== ''">
+                  。已调用 {{ draft.runCount }} 次</template
+                >
+              </span>
+              <AppButton
+                v-if="draft.id !== '' && draft.runCount > 0"
+                variant="ghost"
+                size="sm"
+                data-action="automation.reset-runs"
+                @click="draft.runCount = 0"
+              >
+                重置计数
+              </AppButton>
             </div>
           </div>
 
@@ -1336,6 +1437,25 @@ function closeHistory(): void {
   background: var(--fill-2);
 }
 
+/* 调用次数徽章（与模式徽章同形，用尽时转警示色） */
+.runs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  line-height: 15px;
+  background: var(--fill-2);
+  color: var(--text-muted);
+}
+
+.runs-chip.exhausted {
+  background: var(--danger-fill);
+  color: var(--danger-text);
+}
+
 /* 元信息行：条件 + 分隔点 + 摘要（摘要过长时截断，绝不撑破卡片） */
 .card-meta {
   display: flex;
@@ -1577,6 +1697,26 @@ function closeHistory(): void {
   min-width: 0;
   color: var(--text-muted);
   font-size: var(--text-xs);
+}
+
+/* 调用次数一行：窄输入 + 说明 +（编辑既有定义时）重置按钮。
+   宽度写在 `.runs-row .input` 里（两级选择器）：`.input` 的 `width: 100%` 定义在本段之后，
+   只写 `.runs-input` 会被它按源码顺序压过去 —— 症状是输入框占满整行、说明被挤成一列竖排字。 */
+.runs-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.runs-row .input {
+  width: 84px;
+  flex: 0 0 auto;
+}
+
+.runs-note {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .input {

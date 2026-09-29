@@ -174,6 +174,8 @@ export interface ValidationResult {
 const NAME_MAX = 60
 const PROMPT_MAX = 8000
 const MAX_ACTIONS = 10
+/** 调用次数上限的取值区间（0 = 不限；与工具层 `MAX_RUNS_MAX` 同源口径） */
+export const MAX_RUNS_MAX = 100_000
 
 /**
  * 校验一份自动化定义（docs/13 §8 / §9 的保存入口共用）。
@@ -193,6 +195,23 @@ export function validateDefinition(input: unknown, catalog: AutomationCatalog): 
 
   const enabled = raw['enabled']
   if (enabled !== undefined && typeof enabled !== 'boolean') return fail('enabled 必须是布尔值')
+
+  const maxRuns = raw['maxRuns']
+  if (maxRuns !== undefined && maxRuns !== null) {
+    if (typeof maxRuns !== 'number' || !Number.isInteger(maxRuns)) {
+      return fail('调用次数上限必须是整数（0 = 不限）')
+    }
+    if (maxRuns < 0 || maxRuns > MAX_RUNS_MAX) {
+      return fail(`调用次数上限必须在 0–${MAX_RUNS_MAX} 之间（0 = 不限）`)
+    }
+  }
+
+  const runCount = raw['runCount']
+  if (runCount !== undefined && runCount !== null) {
+    if (typeof runCount !== 'number' || !Number.isInteger(runCount) || runCount < 0) {
+      return fail('已调用次数必须是非负整数')
+    }
+  }
 
   const trigger = raw['trigger']
   if (typeof trigger !== 'object' || trigger === null) return fail('缺少触发器')
@@ -304,6 +323,30 @@ function isBlank(value: unknown): boolean {
   return typeof value !== 'string' || value.trim() === ''
 }
 
+/** 取一个非负整数（0 = 不限 / 未计）；非法或缺失一律回落 0（校验层已拦过非法值） */
+function readNonNegativeInt(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return 0
+  return Math.min(value, MAX_RUNS_MAX)
+}
+
+/**
+ * 调用次数是否已用尽（v0.2.8，docs/13 §3.1）。
+ *
+ * `maxRuns` 为 0 / 缺省 = 不限，永远不算用尽。判据只有"已调用次数 ≥ 上限"一条，
+ * **不做任何副作用**：引擎据此决定"要不要再跑一次 / 要不要顺手停用"，
+ * 工具层（`tools/automation-tools.ts`）据此把"已用尽"如实呈现给模型 —— 判据只此一份。
+ *
+ * 入参只要这两个字段（不是整份定义）：判据只依赖它们，调用方（工具层的假件、单测）
+ * 因此不必凑出一整份 `AutomationDefinition`。
+ */
+export function isRunsExhausted(
+  definition: Pick<AutomationDefinition, 'maxRuns' | 'runCount'>,
+): boolean {
+  const maxRuns = definition.maxRuns ?? 0
+  if (maxRuns <= 0) return false
+  return (definition.runCount ?? 0) >= maxRuns
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
@@ -325,6 +368,10 @@ export function normalizeDefinition(input: Record<string, unknown>): AutomationD
       kind: trigger['kind'] as AutomationTriggerKind,
       params: isRecord(trigger['params']) ? structuredClone(trigger['params']) : {},
     },
+    // 调用次数（v0.2.8）：上限缺省 = 0（不限）；计数缺省 = 0。
+    // 两个都只在"给了合法值"时取用，非法值已在 validateDefinition 里被拒。
+    maxRuns: readNonNegativeInt(input['maxRuns']),
+    runCount: readNonNegativeInt(input['runCount']),
     createdAt: typeof input['createdAt'] === 'string' ? input['createdAt'] : '',
     updatedAt: typeof input['updatedAt'] === 'string' ? input['updatedAt'] : '',
   }

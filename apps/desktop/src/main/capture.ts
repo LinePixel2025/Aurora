@@ -585,8 +585,24 @@ export async function seedAutomationFixture(userData: string): Promise<void> {
       mode: 'normal',
       trigger: { kind: 'daily', params: { at: '07:30', weekdays: [] } },
       actions: [{ kind: 'system-notify', params: { title: '早读提醒', body: '该背单词了' } }],
+      // 调用次数（v0.2.8，docs/13 §3.1）：夹具带一段"还没用满"的计数，卡片应显示 3/10 徽章
+      maxRuns: 10,
+      runCount: 3,
       createdAt: new Date(now - 86_400_000).toISOString(),
       updatedAt: new Date(now - 86_400_000).toISOString(),
+    },
+    {
+      id: 'am-capture2',
+      name: '每周整理（已用尽）',
+      enabled: false,
+      mode: 'normal',
+      trigger: { kind: 'daily', params: { at: '20:00', weekdays: [] } },
+      actions: [{ kind: 'open-folder', params: { target: 'path', path: 'C:\\' } }],
+      // 已用尽：引擎会把它自动停用（enabled=false + 计数到顶），徽章应转警示色
+      maxRuns: 5,
+      runCount: 5,
+      createdAt: new Date(now - 86_400_000).toISOString(),
+      updatedAt: new Date(now - 3_600_000).toISOString(),
     },
   ]
   const runs = [
@@ -1295,8 +1311,9 @@ export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
  * 打开页面 → chat-automation-normal 切 Normal tab 看内置区 → chat-automation-editor 开编辑器
  * → chat-automation-history 开历史并回放 Agent 运行），最后一张收尾时点「返回对话」还原主区。
  *
- * 数据来自 `seedAutomationFixture` 种下的 1 份 Normal 定义 + 2 条历史（normal / agent 各一条，
- * agent 记录指向 seed 的 `auto-capture1` 会话），使列表 / 历史 / 回放都有可视证据。
+ * 数据来自 `seedAutomationFixture` 种下的 2 份 Normal 定义（一份计数 3/10、一份已用尽 5/5，
+ * 用于次数徽章）+ 2 条历史（normal / agent 各一条，agent 记录指向 seed 的 `auto-capture1` 会话），
+ * 使列表 / 历史 / 回放都有可视证据。
  */
 export const CHAT_AUTOMATION_OPEN_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -1383,6 +1400,11 @@ export const CHAT_AUTOMATION_NORMAL_CHECK = `(() => {
     // seed 的 Normal 定义（am-capture1）出现在列表里
     const seededItem = count('[data-field="automation.item-am-capture1"]')
     const toggles = count('[data-field="automation.toggle"]')
+    // 调用次数徽章（v0.2.8，docs/13 §3.1）：两份 seed 定义各一枚（3/10 与 5/5），
+    // 其中 5/5 那份已用尽 —— 文本与警示样式都要真的落到 DOM 上（数值判据，不看截图猜）
+    const runsChips = Array.from(document.querySelectorAll('[data-field="automation.runs"]'))
+    const runsText = runsChips.map((chip) => (chip.textContent || '').trim())
+    const exhaustedChips = document.querySelectorAll('[data-field="automation.runs"].exhausted').length
     // 每张卡摘要行都有语义图标（「每个操作都配上图标」的回归护栏）
     const cards = Array.from(document.querySelectorAll('.card'))
     const iconsPerCard = cards.map((card) => card.querySelectorAll('.card-meta svg').length)
@@ -1392,13 +1414,20 @@ export const CHAT_AUTOMATION_NORMAL_CHECK = `(() => {
       builtinToggles,
       seededItem,
       toggles,
+      runsChips: runsChips.length,
+      runsText,
+      exhaustedChips,
       iconsPerCard,
       cardOverflow,
       pass:
         builtin !== null &&
         builtinToggles === 2 &&
         seededItem === 1 &&
-        toggles === 1 &&
+        toggles === 2 &&
+        runsChips.length === 2 &&
+        runsText.includes('3/10') &&
+        runsText.includes('5/5') &&
+        exhaustedChips === 1 &&
         cards.every((card) => card.querySelectorAll('.card-meta svg').length >= 2) &&
         cardOverflow === 0,
     }
@@ -1438,6 +1467,21 @@ export const CHAT_AUTOMATION_EDITOR_CHECK = `(async () => {
     const actionIcons = actionRows.filter((row) => row.querySelector('.chip svg') !== null).length
     const nameInput = editor === null ? null : editor.querySelector('input[type="text"]')
     const numberField = count('[data-field="automation.editor"] input[type="number"]')
+    // 调用次数上限输入（v0.2.8）：字段在、能输入（写 42 后读回同一值 = 双向绑定真的接上了），
+    // 且几何合规 —— 输入是窄的、说明占剩下的大部分（.input 的 width:100% 曾把说明挤成竖排字）
+    const runsInput = editor === null ? null : editor.querySelector('[data-field="automation.max-runs"]')
+    const runsRow = runsInput === null ? null : runsInput.closest('.runs-row')
+    const runsNote = runsRow === null ? null : runsRow.querySelector('.runs-note')
+    const runsInputWidth =
+      runsInput === null ? 0 : Math.round(runsInput.getBoundingClientRect().width)
+    const runsNoteWidth = runsNote === null ? 0 : Math.round(runsNote.getBoundingClientRect().width)
+    let runsInputValue = ''
+    if (runsInput !== null) {
+      runsInput.value = '42'
+      runsInput.dispatchEvent(new Event('input', { bubbles: true }))
+      await wait(80)
+      runsInputValue = runsInput.value
+    }
     // 原生下拉应当绝迹（条件 / 参数下拉都改成了磁贴与胶囊）
     const nativeSelect = count('[data-field="automation.editor"] select')
     // 磁贴里的标签必须留在磁贴内（「文字冲出组件」的几何护栏）
@@ -1461,6 +1505,10 @@ export const CHAT_AUTOMATION_EDITOR_CHECK = `(async () => {
       nativeSelect,
       hasName: nameInput !== null,
       numberField,
+      runsInput: runsInput !== null,
+      runsInputValue,
+      runsInputWidth,
+      runsNoteWidth,
     }
     // 悬浮提示（前端减负轮的核心交互）：pointerenter 后 body 下应出现 .app-tip，
     // 文案非空、且不探出视口；pointerleave 后应自行收回（fixed 定位不留残影）
@@ -1513,6 +1561,11 @@ export const CHAT_AUTOMATION_EDITOR_CHECK = `(async () => {
       actionIcons === actionRows.length &&
       nativeSelect === 0 &&
       result.hasName === true &&
+      runsInput !== null &&
+      runsInputValue === '42' &&
+      runsInputWidth > 0 &&
+      runsInputWidth <= 120 &&
+      runsNoteWidth >= 120 &&
       tipText.length > 0 &&
       tipInside === true &&
       result.tipClosed === true &&
@@ -3864,6 +3917,9 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
     )
     // BetaV2：全局勿扰时段（advanced.quietHours.start/.end）迁到 general 页且常显
     const quietHoursFields = count('[data-field^="advanced.quietHours"]')
+    // v20：管理员提权开关（docs/08 §1）常显 —— 它是"会不会被权限卡住"的唯一开关，
+    // 被顺手删掉/改名时这里立刻报 FAIL（与 general.launchAtLogin 同款常显口径）
+    const requireAdminField = count('[data-field="general.requireAdmin"]')
     // v13 项目机制（docs/06 §5.1）：项目区组常显，列表可空可非空 —— 只断言「空态或至少一行」，
     // 不写死条数（用户有几个项目都能过）。
     const projectsFields = count('[data-field^="projects."]')
@@ -3883,6 +3939,7 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
       edgeBarToggle,
       edgeBarDetail,
       quietHoursFields,
+      requireAdminField,
       projectsFields,
       projectsRows,
       projectsEmpty,
@@ -3895,6 +3952,7 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
       pass:
         languageFields === 0 &&
         quietHoursFields === 2 &&
+        requireAdminField === 1 &&
         (edgeBarToggle === 0 ? edgeBarDetail === 0 : edgeBarDetail > 0) &&
         (projectsEmpty || projectsRows > 0) &&
         (projectsEmpty || projectsFields > 0) &&

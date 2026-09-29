@@ -394,3 +394,128 @@ describe('describeTrigger', () => {
     expect(describeTrigger({ kind: 'class-end', params: {} }, CATALOG)).toBe('下课时')
   })
 })
+
+// ───────────────────────── 自动化会话的边界（v0.2.8，docs/13 §7.1） ─────────────────────────
+
+describe('自动化会话不得管理 / 触发自动化', () => {
+  const AUTO_SESSION = { sessionId: 'auto-m1a2b3-1' }
+
+  it('四个写类工具在 auto- 会话里一律拒绝（端口不被触碰）', async () => {
+    const h = createHarness({ user: [definition()] })
+    const create = await createAutomationCreateTool(h.port).execute(
+      {
+        name: 'x',
+        mode: 'normal',
+        trigger: { kind: 'daily', params: { at: '08:00' } },
+        actions: [{ kind: 'system-notify', params: { title: 't' } }],
+      },
+      AUTO_SESSION,
+    )
+    const update = await createAutomationUpdateTool(h.port).execute(
+      { id: 'am-1', enabled: true },
+      AUTO_SESSION,
+    )
+    const remove = await createAutomationDeleteTool(h.port).execute({ id: 'am-1' }, AUTO_SESSION)
+    const trigger = await createAutomationRunTool(h.port).execute({ id: 'am-1' }, AUTO_SESSION)
+
+    for (const result of [create, update, remove, trigger]) {
+      expect(result.isError).toBe(true)
+      expect(result.content).toContain('不能管理或触发自动化')
+    }
+    // 「做不到」而不是「做了但报错」：端口一次都没被调用
+    expect(h.saved).toEqual([])
+    expect(h.deleted).toEqual([])
+    expect(h.triggered).toEqual([])
+  })
+
+  it('只读的 list / history 在 auto- 会话里照常可用（看得到，改不了）', async () => {
+    const h = createHarness({ user: [definition()], runs: [run()] })
+    const listed = await createAutomationListTool(h.port).execute({}, AUTO_SESSION)
+    const history = await createAutomationHistoryTool(h.port).execute({}, AUTO_SESSION)
+    expect(listed.isError).toBeUndefined()
+    expect(history.isError).toBeUndefined()
+  })
+
+  it('普通会话与它的子代理（-sub）照常放行', async () => {
+    const h = createHarness({ user: [definition()] })
+    const chat = await createAutomationRunTool(h.port).execute(
+      { id: 'am-1' },
+      { sessionId: 'chat-1' },
+    )
+    const sub = await createAutomationRunTool(h.port).execute(
+      { id: 'am-1' },
+      { sessionId: 'chat-1-sub' },
+    )
+    expect(chat.isError).toBeUndefined()
+    expect(sub.isError).toBeUndefined()
+    expect(h.triggered).toEqual(['am-1', 'am-1'])
+  })
+
+  it('auto- 会话的子代理（-sub 后缀）同样被拒（继承父会话边界）', async () => {
+    const h = createHarness({ user: [definition()] })
+    const result = await createAutomationRunTool(h.port).execute(
+      { id: 'am-1' },
+      { sessionId: 'auto-m1a2b3-1-sub' },
+    )
+    expect(result.isError).toBe(true)
+    expect(h.triggered).toEqual([])
+  })
+})
+
+describe('调用次数（v0.2.8，docs/13 §3.1）', () => {
+  it('automation_list 显示已调用 / 上限，用尽时点明「已用尽，自动停用」', async () => {
+    const h = createHarness({
+      user: [
+        definition({ id: 'am-a', maxRuns: 10, runCount: 3 }),
+        definition({ id: 'am-b', name: '整理', maxRuns: 5, runCount: 5, enabled: false }),
+      ],
+    })
+    const result = await createAutomationListTool(h.port).execute({}, { sessionId: 's' })
+    expect(result.content).toContain('已调用 3/10')
+    expect(result.content).toContain('已调用 5/5（已用尽，自动停用）')
+  })
+
+  it('automation_create 转交合法 maxRuns；非法值直接拒绝（不落半份定义）', async () => {
+    const h = createHarness()
+    const tool = createAutomationCreateTool(h.port)
+    const ok = await tool.execute(
+      {
+        name: 'x',
+        mode: 'normal',
+        trigger: { kind: 'daily', params: { at: '08:00' } },
+        actions: [{ kind: 'system-notify', params: { title: 't' } }],
+        maxRuns: 12,
+      },
+      { sessionId: 's' },
+    )
+    expect(ok.isError).toBeUndefined()
+    expect((h.saved[0] as Record<string, unknown>)['maxRuns']).toBe(12)
+
+    const bad = await tool.execute(
+      {
+        name: 'y',
+        mode: 'normal',
+        trigger: { kind: 'daily', params: { at: '08:00' } },
+        actions: [{ kind: 'system-notify', params: { title: 't' } }],
+        maxRuns: -3,
+      },
+      { sessionId: 's' },
+    )
+    expect(bad.isError).toBe(true)
+    expect(bad.content).toContain('调用次数上限')
+    expect(h.saved).toHaveLength(1)
+  })
+
+  it('automation_update 可改上限、可重置计数（resetRunCount）', async () => {
+    const h = createHarness({ user: [definition({ maxRuns: 5, runCount: 5 })] })
+    const tool = createAutomationUpdateTool(h.port)
+    const result = await tool.execute(
+      { id: 'am-1', maxRuns: 0, resetRunCount: true },
+      { sessionId: 's' },
+    )
+    expect(result.isError).toBeUndefined()
+    const merged = h.saved[0] as Record<string, unknown>
+    expect(merged['maxRuns']).toBe(0)
+    expect(merged['runCount']).toBe(0)
+  })
+})

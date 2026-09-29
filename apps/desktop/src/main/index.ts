@@ -164,6 +164,8 @@ import {
 } from './tools/index.js'
 import { AutomationEngine } from './automation/engine.js'
 import { AutomationStore } from './automation/store.js'
+import { automationRunProfile } from './automation/run-profile.js'
+import { ensureElevation } from './elevation.js'
 import type { AutomationActionPorts } from './automation/actions.js'
 import { createSessionProjectResolver } from './tools/session-project.js'
 import { createFileTodoPort, type FileTodoPort } from './tools/todo-port.js'
@@ -554,6 +556,25 @@ async function bootstrap(): Promise<void> {
   logger.setLevel(settings.get().advanced.logLevel)
   netFetch = createNetFetch()
   await applyAdvancedNetwork(settings.get().advanced.proxy)
+
+  // 2.2 管理员提权（v0.2.8，docs/08 §1、docs/09 §9）：未提权且配置要求时用 UAC 重新拉起
+  //     一个管理员实例并退出自己 —— 必须在建窗 / 装托盘 / 连 Center **之前**，
+  //     否则要多做一次"把已经起来的东西全部拆掉"的收尾（还可能有半截 WS 连接）。
+  //     提权失败不阻断启动（继续以普通权限跑），失败原因进日志。
+  const elevation = await ensureElevation({
+    requireAdmin: settings.get().general.requireAdmin,
+    packaged: app.isPackaged,
+    argv: process.argv,
+    execPath: process.execPath,
+    logger: logger.child('elevation'),
+  })
+  if (elevation === 'relaunched') {
+    // 提权实例会接管单实例锁：**先把锁放开再退出**，否则子进程与"还没退干净的父进程"
+    // 抢同一把锁，子进程会以"已有实例"为由立刻退出（用户看到的现象是双击后什么都没发生）。
+    app.releaseSingleInstanceLock()
+    app.quit()
+    return
+  }
 
   // 3. 系统感知（docs/06 §8.1）：时间 / 电源 / 网络 / 前台窗口 / 显示器 / 课程表
   //    显示器与课程表的数据源在主进程侧（Electron screen / 模式配置），以注入方式提供，
@@ -1050,6 +1071,11 @@ async function bootstrap(): Promise<void> {
     maxRounds: () => settings!.get().agent.loop.maxRounds,
     maxTotalTokens: () => settings!.get().agent.loop.maxTotalTokens,
     autoContinueRounds: () => settings!.get().agent.loop.autoContinueRounds,
+    // 运行档（v0.2.8，docs/06 §5.2 / docs/13 §7.1）：自动化触发的会话换一套人设
+    // （无人值守：不反问、自己决定、做完汇报）并摘掉写类自动化工具
+    // （create / update / delete / run）——「自动化 → 会话 → 自动化」不得成为闭环。
+    // 判据是 origin 或会话 id 前缀；普通会话返回 undefined，提示词与工具面与从前逐字一致。
+    runProfileFor: (context) => automationRunProfile(context),
   })
   agent = new DesktopAgentHost({
     settings,

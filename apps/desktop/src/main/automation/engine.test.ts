@@ -551,6 +551,119 @@ describe('AutomationEngine · runNow（手动触发）', () => {
   })
 })
 
+describe('AutomationEngine · 调用次数（v0.2.8，docs/13 §3.1）', () => {
+  it('每次触发计数 +1；到达上限的那一次照常执行，执行后自动停用', async () => {
+    const h = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+      },
+    })
+    await h.store.saveDefinition(dailyNotifyDefinition({ maxRuns: 2 }))
+
+    await h.engine.tick(new Date(2026, 2, 2, 8, 0, 0))
+    let stored = await h.store.getDefinition('am-daily')
+    expect(stored?.runCount).toBe(1)
+    expect(stored?.enabled).toBe(true)
+
+    // 第二天同一时刻再触发一次（daily 去重键按日期，跨天不会互相挡）
+    await h.engine.tick(new Date(2026, 2, 3, 8, 0, 0))
+    expect(h.notifies).toHaveLength(2)
+    stored = await h.store.getDefinition('am-daily')
+    expect(stored?.runCount).toBe(2)
+    // 用满即停用：最后一次运行**没有**被吞掉，停用是它的结果
+    expect(stored?.enabled).toBe(false)
+
+    // 停用后不再触发（第三天同一时刻）
+    await h.engine.tick(new Date(2026, 2, 4, 8, 0, 0))
+    expect(h.notifies).toHaveLength(2)
+  })
+
+  it('未设上限（maxRuns 缺省 / 0）不计数、不停用', async () => {
+    const h = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+      },
+    })
+    await h.store.saveDefinition(dailyNotifyDefinition())
+    await h.engine.tick(new Date(2026, 2, 2, 8, 0, 0))
+    const stored = await h.store.getDefinition('am-daily')
+    // 未设上限时引擎根本不碰计数字段（缺省 = 完全没有这一项，不是 0）
+    expect(stored?.runCount ?? 0).toBe(0)
+    expect(stored?.enabled).toBe(true)
+  })
+
+  it('手动触发也计数；已用尽的定义 runNow 明确报错（不落历史）', async () => {
+    const h = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+      },
+    })
+    const saved = await h.store.saveDefinition(dailyNotifyDefinition({ maxRuns: 1 }))
+
+    const first = await h.engine.runNow(saved.id)
+    expect(first.ok).toBe(true)
+    expect((await h.store.getDefinition(saved.id))?.enabled).toBe(false)
+
+    // 用户把它重新打开：下一次触发会被拒绝并再次停用（计数只增不减）
+    const reopened = await h.engine.saveDefinition({
+      ...(await h.store.getDefinition(saved.id)),
+      enabled: true,
+    })
+    expect(reopened.ok).toBe(true)
+
+    const err = await h.engine.runNow(saved.id)
+    expect(err.ok).toBe(false)
+    if (!err.ok) {
+      expect(err.error).toContain('调用次数已用尽')
+    }
+    expect(h.notifies).toHaveLength(1)
+    // 被拒的那次不留运行历史
+    expect(await h.store.listRuns({ automationId: saved.id })).toHaveLength(1)
+    // 顺手停回去（状态与理由一致）
+    expect((await h.store.getDefinition(saved.id))?.enabled).toBe(false)
+  })
+
+  it('内置自动化不计数（次数是用户自建定义的概念）', async () => {
+    const h = createHarness({
+      settings: (s) => {
+        s.modes.current = 'classroom'
+      },
+    })
+    const result = await h.engine.runNow(BUILTIN_PRE_CLASS_NOTIFY_ID)
+    expect(result.ok).toBe(true)
+    const builtin = h.engine.listBuiltin().find((item) => item.id === BUILTIN_PRE_CLASS_NOTIFY_ID)
+    expect(builtin?.runCount).toBeUndefined()
+  })
+
+  it('saveDefinition：调用方不带 runCount / maxRuns 时沿用原值（防「编辑一次就清零」）', async () => {
+    const h = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+      },
+    })
+    await h.store.saveDefinition(dailyNotifyDefinition({ maxRuns: 5, runCount: 3 }))
+
+    // 只改名字、不带计数两字段（老客户端 / 旧版界面就是这么发的）
+    const saved = await h.engine.saveDefinition({
+      id: 'am-daily',
+      name: '早读',
+      mode: 'normal',
+      trigger: { kind: 'daily', params: { at: '08:00' } },
+      actions: [{ kind: 'system-notify', params: { title: '早读' } }],
+    })
+    expect(saved.ok).toBe(true)
+    const stored = await h.store.getDefinition('am-daily')
+    expect(stored?.runCount).toBe(3)
+    expect(stored?.maxRuns).toBe(5)
+
+    // 显式给 0 = 真的清零 / 取消上限
+    await h.engine.saveDefinition({ ...stored, maxRuns: 0, runCount: 0 })
+    const cleared = await h.store.getDefinition('am-daily')
+    expect(cleared?.runCount).toBe(0)
+    expect(cleared?.maxRuns).toBe(0)
+  })
+})
+
 describe('AutomationEngine · 定义 CRUD 防线', () => {
   it('saveDefinition：合法保存 ok 且 id 以 am- 开头', async () => {
     const h = createHarness({

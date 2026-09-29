@@ -172,6 +172,27 @@ function statusClass(status: AutomationRunStatus): string {
   }
 }
 
+// ───────────────────────── 调用次数（v0.2.8，docs/13 §3.1） ─────────────────────────
+
+/** 是否设了调用次数上限（0 / 缺省 = 不限，此时不显示次数徽章） */
+function hasRunLimit(def: AutomationDefinition): boolean {
+  return (def.maxRuns ?? 0) > 0
+}
+
+/** 次数徽章文案（只在上限 > 0 时用） */
+function runCountLabel(def: AutomationDefinition): string {
+  return `已调用 ${def.runCount ?? 0}/${def.maxRuns ?? 0}`
+}
+
+/**
+ * 次数是否已用尽（与主进程 `isRunsExhausted` 同口径：上限 > 0 且已调用 ≥ 上限）。
+ * 用尽时引擎会自动停用，所以卡片上常与「已停用」徽章同时出现。
+ */
+function runsExhausted(def: AutomationDefinition): boolean {
+  const maxRuns = def.maxRuns ?? 0
+  return maxRuns > 0 && (def.runCount ?? 0) >= maxRuns
+}
+
 function formatDuration(ms?: number): string {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—'
   if (ms < 1000) return `${Math.round(ms)} ms`
@@ -239,6 +260,10 @@ const editor = ref({
   params: {} as Record<string, unknown>,
   prompt: '',
   actions: [] as EditorAction[],
+  /** 调用次数上限输入（字符串态，空 = 0 = 不限；保存时经 normalizeMaxRuns 归一化为整数） */
+  maxRuns: '',
+  /** 已调用次数：表单不直接暴露编辑，只从原定义继承 / 由「重置计数」置 0 */
+  runCount: 0,
 })
 
 const editingCondition = computed(() =>
@@ -271,6 +296,8 @@ function openNew(): void {
     params: seedParams(condition?.fields ?? []),
     prompt: '',
     actions: [],
+    maxRuns: '',
+    runCount: 0,
   }
   editorError.value = ''
   editorOpen.value = true
@@ -293,6 +320,9 @@ function openEdit(def: AutomationDefinition): void {
         params: { ...seedParams(descriptor?.fields ?? []), ...action.params },
       }
     }),
+    // 次数：上限空 = 不限；计数从原定义继承（改完回传时必须带上，否则会被清零）
+    maxRuns: (def.maxRuns ?? 0) > 0 ? String(def.maxRuns) : '',
+    runCount: def.runCount ?? 0,
   }
   editorError.value = ''
   editorOpen.value = true
@@ -330,6 +360,15 @@ function onActionParams(index: number, value: Record<string, unknown>): void {
   if (action !== undefined) action.params = value
 }
 
+/**
+ * 表单里的上限输入 → 整数（空 / 非数字 / 负数一律按 0 = 不限）。
+ * 上限的合法区间（0–100000）由客户端校验层裁决，非法值在保存回执里给中文报错。
+ */
+function normalizeMaxRuns(raw: string): number {
+  const value = Math.floor(Number(raw.trim()))
+  return Number.isFinite(value) && value > 0 ? value : 0
+}
+
 /** 组装定义回传（enabled / createdAt / updatedAt 继承原定义；新建走默认值） */
 function buildDefinition(): AutomationDefinition {
   const original = editingOriginal.value
@@ -348,6 +387,10 @@ function buildDefinition(): AutomationDefinition {
             params: { ...action.params },
           })),
         }),
+    // 调用次数（v0.2.8）：上限来自表单；runCount 由原定义继承（新建 = 0）——
+    // 主进程 normalizeDefinition 对缺省值补 0，**漏带 runCount 会把已调用次数清零**。
+    maxRuns: normalizeMaxRuns(editor.value.maxRuns),
+    runCount: editor.value.runCount,
     createdAt: original?.createdAt ?? '',
     updatedAt: original?.updatedAt ?? '',
   }
@@ -466,6 +509,21 @@ function filterHistory(automationId: string): void {
                 <div class="auto-name-row">
                   <span class="auto-name">{{ def.name }}</span>
                   <span v-if="!def.enabled" class="chip chip-muted">已停用</span>
+                  <span
+                    v-if="hasRunLimit(def)"
+                    class="chip"
+                    :class="runsExhausted(def) ? 'chip-failed' : 'chip-muted'"
+                    title="调用次数上限（用满后引擎自动停用）"
+                  >
+                    {{ runCountLabel(def) }}
+                  </span>
+                  <span
+                    v-if="runsExhausted(def)"
+                    class="chip chip-failed"
+                    title="调用次数已用尽，引擎已自动停用；提高上限或重置计数后可继续使用"
+                  >
+                    已用尽
+                  </span>
                 </div>
                 <span class="auto-trigger text-2">
                   {{ conditionLabel(def.trigger.kind) }} · {{ describeTrigger(def) }}
@@ -531,6 +589,21 @@ function filterHistory(automationId: string): void {
                 <div class="auto-name-row">
                   <span class="auto-name">{{ def.name }}</span>
                   <span v-if="!def.enabled" class="chip chip-muted">已停用</span>
+                  <span
+                    v-if="hasRunLimit(def)"
+                    class="chip"
+                    :class="runsExhausted(def) ? 'chip-failed' : 'chip-muted'"
+                    title="调用次数上限（用满后引擎自动停用）"
+                  >
+                    {{ runCountLabel(def) }}
+                  </span>
+                  <span
+                    v-if="runsExhausted(def)"
+                    class="chip chip-failed"
+                    title="调用次数已用尽，引擎已自动停用；提高上限或重置计数后可继续使用"
+                  >
+                    已用尽
+                  </span>
                 </div>
                 <span class="auto-trigger text-2">
                   {{ conditionLabel(def.trigger.kind) }} · {{ describeTrigger(def) }}
@@ -707,6 +780,38 @@ function filterHistory(automationId: string): void {
                 <span>Normal Mode（执行操作组件）</span>
               </label>
             </div>
+          </div>
+
+          <div class="editor-field">
+            <span class="auto-field-label">调用次数上限</span>
+            <div class="runs-row">
+              <input
+                v-model="editor.maxRuns"
+                class="input runs-input"
+                type="number"
+                min="0"
+                step="1"
+                inputmode="numeric"
+                placeholder="0"
+                aria-label="调用次数上限"
+              />
+              <template v-if="editingOriginal">
+                <span class="text-2 runs-current">当前已调用 {{ editor.runCount }} 次</span>
+                <button
+                  class="btn btn-ghost btn-sm"
+                  type="button"
+                  :disabled="editor.runCount === 0"
+                  title="把已调用次数清零后随本次保存一起回传"
+                  @click="editor.runCount = 0"
+                >
+                  重置计数
+                </button>
+              </template>
+            </div>
+            <p class="auto-field-hint">0 = 不限；用满后自动停用。</p>
+            <p v-if="editingOriginal && runsExhausted(editingOriginal)" class="auto-field-hint">
+              该自动化已用尽次数并被引擎自动停用：提高上限或重置计数后，还需重新启用。
+            </p>
           </div>
 
           <div class="editor-field">
@@ -1054,6 +1159,30 @@ function filterHistory(automationId: string): void {
 .mode-row {
   display: grid;
   gap: 6px;
+}
+
+/* 字段小字说明（与 AutomationFields.vue 同款；本文件里触发器提示也用它） */
+.auto-field-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* 调用次数上限：数字输入 + 当前计数 + 重置按钮 */
+.runs-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.runs-input {
+  width: 120px;
+  flex: none;
+}
+
+.runs-current {
+  font-size: 12.5px;
 }
 
 .mode-item {

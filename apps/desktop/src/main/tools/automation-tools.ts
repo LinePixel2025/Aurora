@@ -14,7 +14,9 @@
  *
  * **门控口径**：不受 `agent.tools.enabled` 门控（管的是自动化元数据，不是本机操控）；
  * **只读档摘掉写类工具**（create / update / delete / run），保留 list / history
- * —— 档位叫「只读」就必须真的没有副作用（同 todo_write 的处理）。
+ * —— 档位叫「只读」就必须真的没有副作用（同 todo_write 的处理）；
+ * **自动化会话摘掉同一组**（`run-profile.ts` 的 `hiddenTools`），且写类工具的 `execute`
+ * 里另有一道拒绝（`refuseInAutomationSession`）—— 摘除让模型看不见，拒绝保证绕不过去。
  */
 import type {
   AutomationAction,
@@ -23,7 +25,9 @@ import type {
   AutomationRun,
   AutomationTrigger,
 } from '@aurora/shared'
-import type { ToolDefinition, ToolResult } from '@aurora/agent-core'
+import type { ToolContext, ToolDefinition, ToolResult } from '@aurora/agent-core'
+import { MAX_RUNS_MAX } from '../automation/catalog.js'
+import { isAutomationSession } from '../automation/session-id.js'
 
 export const AUTOMATION_LIST_TOOL_NAME = 'automation_list'
 export const AUTOMATION_CREATE_TOOL_NAME = 'automation_create'
@@ -85,6 +89,26 @@ const ACTION_REFERENCE = [
   '- open-folder：{ target: "subject"|"path", subject?: string, path?: string }（打开科目文件夹或指定路径）',
 ].join('\n')
 
+/**
+ * 自动化会话拒绝写类工具（docs/13 §7.1）。
+ *
+ * 「自动化 → 会话 → 自动化」是把 AI 变成可自我延续的排程器的闭环：一条自动化跑起来的
+ * 会话若能再创建 / 触发自动化，就不需要用户点头也能不断给自己排后台动作。
+ * 正常路径上这些工具**根本不在**该会话的工具面里（`run-profile.ts` 的 `hiddenTools`），
+ * 因此走到这里只有两种可能：装配层漏了、或调用来自没走过滤视图的通道
+ * （如 `task` 子代理从父表取工具）。两种都不该放行 —— 摘除负责"看不见"，这里负责"做不到"。
+ */
+function refuseInAutomationSession(ctx: ToolContext): ToolResult | undefined {
+  if (!isAutomationSession(ctx.sessionId)) return undefined
+  return {
+    content:
+      '自动化运行中的会话不能管理或触发自动化（避免自动化自我延续）。' +
+      '如果确实需要调整，请把需求告诉用户，由用户在自动化页面操作。',
+    isError: true,
+    summary: '自动化会话不可管理自动化',
+  }
+}
+
 /** 触发器的一句话描述（列表 / 历史输出用） */
 export function describeTrigger(trigger: AutomationTrigger, catalog: AutomationCatalog): string {
   const descriptor = catalog.conditions.find((item) => item.kind === trigger.kind)
@@ -140,8 +164,11 @@ function describeDefinition(
   catalog: AutomationCatalog,
   builtin: boolean,
 ): string {
+  const max = definition.maxRuns ?? 0
+  const used = definition.runCount ?? 0
+  const quota = max > 0 ? `，已调用 ${used}/${max}${used >= max ? '（已用尽，自动停用）' : ''}` : ''
   const lines = [
-    `${builtin ? '[内置] ' : ''}${definition.name}（id: ${definition.id}，${definition.enabled ? '已启用' : '已停用'}）`,
+    `${builtin ? '[内置] ' : ''}${definition.name}（id: ${definition.id}，${definition.enabled ? '已启用' : '已停用'}${quota}）`,
     `  模式：${definition.mode === 'agent' ? 'Agent Mode（跑一次 Agent 会话）' : 'Normal Mode（执行预设操作）'}`,
     `  触发：${describeTrigger(definition.trigger, catalog)}`,
   ]
@@ -191,7 +218,7 @@ export function createAutomationListTool(port: AutomationManagePort): ToolDefini
 export function createAutomationCreateTool(port: AutomationManagePort): ToolDefinition {
   return {
     name: AUTOMATION_CREATE_TOOL_NAME,
-    description: `新建一份自动化（需用户确认）。参数：name（名称）、mode（"agent" = 触发后跑一次 Agent 会话，须给 prompt 任务指令；"normal" = 执行预设操作组件，须给 actions 数组）、trigger（触发器，见下方类型表）。\n${TRIGGER_REFERENCE}\n${ACTION_REFERENCE}\n创建成功返回定义 id；建议再用 automation_run 试跑一次并向用户汇报结果。`,
+    description: `新建一份自动化（需用户确认）。参数：name（名称）、mode（"agent" = 触发后跑一次 Agent 会话，须给 prompt 任务指令；"normal" = 执行预设操作组件，须给 actions 数组）、trigger（触发器，见下方类型表）、maxRuns（可选的调用次数上限，0 / 不填 = 不限，用尽自动停用）。\n${TRIGGER_REFERENCE}\n${ACTION_REFERENCE}\n创建成功返回定义 id；建议再用 automation_run 试跑一次并向用户汇报结果。`,
     parameters: {
       type: 'object',
       properties: {
@@ -211,16 +238,27 @@ export function createAutomationCreateTool(port: AutomationManagePort): ToolDefi
           description:
             'Normal Mode 的操作组件列表（mode=normal 时必填，元素为 { kind, params }，见类型表）',
         },
+        maxRuns: {
+          type: 'number',
+          description: `调用次数上限（可选，0 = 不限，最大 ${MAX_RUNS_MAX}）；用满后自动停用`,
+        },
       },
       required: ['name', 'mode', 'trigger'],
       additionalProperties: false,
     },
     sensitivity: 'confirm',
-    execute: async (input): Promise<ToolResult> => {
+    execute: async (input, ctx): Promise<ToolResult> => {
+      const refused = refuseInAutomationSession(ctx)
+      if (refused !== undefined) return refused
       const record = asRecord(input)
       if (record === undefined) {
         return { content: '缺少参数。', isError: true, summary: '参数缺失' }
       }
+      const maxRuns = readMaxRuns(record)
+      if (maxRuns.error !== undefined) {
+        return { content: maxRuns.error, isError: true, summary: '参数无效' }
+      }
+      if (maxRuns.value !== undefined) record['maxRuns'] = maxRuns.value
       const result = await port.save(record)
       if (!result.ok) {
         return { content: `创建自动化失败：${result.error}`, isError: true, summary: '创建失败' }
@@ -236,7 +274,7 @@ export function createAutomationCreateTool(port: AutomationManagePort): ToolDefi
 export function createAutomationUpdateTool(port: AutomationManagePort): ToolDefinition {
   return {
     name: AUTOMATION_UPDATE_TOOL_NAME,
-    description: `修改一份已有自动化（需用户确认）：id 必填，其余字段（name / enabled / trigger / prompt / actions）给了就整体替换对应字段。enabled: false = 停用。内置自动化（id 以 builtin. 开头）只能改其配置来源（ClassRoom 设置），不能经本工具修改。\n${TRIGGER_REFERENCE}\n${ACTION_REFERENCE}`,
+    description: `修改一份已有自动化（需用户确认）：id 必填，其余字段（name / enabled / trigger / prompt / actions / maxRuns）给了就整体替换对应字段。enabled: false = 停用。maxRuns = 调用次数上限（0 = 不限，最大 ${MAX_RUNS_MAX}），runCount 达到上限时引擎会自动停用该自动化；resetRunCount: true 把已调用次数清零（用尽停用后要再用它，需先提高上限或清零）。内置自动化（id 以 builtin. 开头）只能改其配置来源（ClassRoom 设置），不能经本工具修改。\n${TRIGGER_REFERENCE}\n${ACTION_REFERENCE}`,
     parameters: {
       type: 'object',
       properties: {
@@ -246,12 +284,22 @@ export function createAutomationUpdateTool(port: AutomationManagePort): ToolDefi
         trigger: { type: 'object', description: '新触发器（可选，整体替换）' },
         prompt: { type: 'string', description: '新任务指令（可选）' },
         actions: { type: 'array', description: '新操作组件列表（可选，整体替换）' },
+        maxRuns: {
+          type: 'number',
+          description: `调用次数上限（可选，0 = 不限，最大 ${MAX_RUNS_MAX}）`,
+        },
+        resetRunCount: {
+          type: 'boolean',
+          description: '把已调用次数清零（可选；用于「用尽停用后重新开始」）',
+        },
       },
       required: ['id'],
       additionalProperties: false,
     },
     sensitivity: 'confirm',
-    execute: async (input): Promise<ToolResult> => {
+    execute: async (input, ctx): Promise<ToolResult> => {
+      const refused = refuseInAutomationSession(ctx)
+      if (refused !== undefined) return refused
       const record = asRecord(input)
       const id = readString(record, 'id')
       if (record === undefined || id === undefined) {
@@ -270,6 +318,10 @@ export function createAutomationUpdateTool(port: AutomationManagePort): ToolDefi
           summary: '内置自动化不可修改',
         }
       }
+      const maxRuns = readMaxRuns(record)
+      if (maxRuns.error !== undefined) {
+        return { content: maxRuns.error, isError: true, summary: '参数无效' }
+      }
       const merged: Record<string, unknown> = { ...existing }
       if (typeof record['name'] === 'string') merged['name'] = record['name']
       if (typeof record['enabled'] === 'boolean') merged['enabled'] = record['enabled']
@@ -282,12 +334,18 @@ export function createAutomationUpdateTool(port: AutomationManagePort): ToolDefi
         merged['actions'] = record['actions']
         merged['mode'] = 'normal'
       }
+      if (maxRuns.value !== undefined) merged['maxRuns'] = maxRuns.value
+      if (record['resetRunCount'] === true) merged['runCount'] = 0
       const result = await port.save(merged)
       if (!result.ok) {
         return { content: `修改自动化失败：${result.error}`, isError: true, summary: '修改失败' }
       }
+      const quota =
+        (result.definition.maxRuns ?? 0) > 0
+          ? `，已调用 ${result.definition.runCount ?? 0}/${result.definition.maxRuns}`
+          : ''
       return {
-        content: `已更新自动化「${result.definition.name}」（${result.definition.enabled ? '已启用' : '已停用'}）。`,
+        content: `已更新自动化「${result.definition.name}」（${result.definition.enabled ? '已启用' : '已停用'}${quota}）。`,
         summary: `已更新自动化「${result.definition.name}」`,
       }
     },
@@ -305,7 +363,9 @@ export function createAutomationDeleteTool(port: AutomationManagePort): ToolDefi
       additionalProperties: false,
     },
     sensitivity: 'confirm',
-    execute: async (input): Promise<ToolResult> => {
+    execute: async (input, ctx): Promise<ToolResult> => {
+      const refused = refuseInAutomationSession(ctx)
+      if (refused !== undefined) return refused
       const record = asRecord(input)
       const id = readString(record, 'id')
       if (record === undefined || id === undefined) {
@@ -336,7 +396,9 @@ export function createAutomationRunTool(port: AutomationManagePort): ToolDefinit
       additionalProperties: false,
     },
     sensitivity: 'confirm',
-    execute: async (input): Promise<ToolResult> => {
+    execute: async (input, ctx): Promise<ToolResult> => {
+      const refused = refuseInAutomationSession(ctx)
+      if (refused !== undefined) return refused
       const record = asRecord(input)
       const id = readString(record, 'id')
       if (record === undefined || id === undefined) {
@@ -423,6 +485,26 @@ function readString(record: Record<string, unknown> | undefined, key: string): s
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   return trimmed === '' ? undefined : trimmed
+}
+
+/**
+ * 读取可选的 `maxRuns` 参数（0 = 不限）。
+ *
+ * 三种结果：字段没给（`undefined`，调用方保持原值）、给了合法值（取整后返回）、
+ * 给了非法值（返回中文错误，调用方**不落盘**——半个定义比没有定义更难查）。
+ * 非法值不静默取整成 0：那会把"上限写错"变成"永久不限"，语义正好反了。
+ */
+function readMaxRuns(record: Record<string, unknown>): { value?: number; error?: string } {
+  const raw = record['maxRuns']
+  if (raw === undefined || raw === null) return {}
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+    return { error: '调用次数上限必须是数字（0 = 不限）。' }
+  }
+  const value = Math.round(raw)
+  if (value < 0 || value > MAX_RUNS_MAX) {
+    return { error: `调用次数上限必须在 0–${MAX_RUNS_MAX} 之间（0 = 不限）。` }
+  }
+  return { value }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

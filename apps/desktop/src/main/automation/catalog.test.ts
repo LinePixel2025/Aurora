@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { buildCatalog, normalizeDefinition, validateDefinition } from './catalog.js'
+import {
+  buildCatalog,
+  isRunsExhausted,
+  normalizeDefinition,
+  validateDefinition,
+} from './catalog.js'
 
 /** ClassIsland 未配置的 catalog（classisland-remind 不可用） */
 const CATALOG = buildCatalog(false)
@@ -227,5 +232,55 @@ describe('normalizeDefinition', () => {
       prompt: 'p',
     })
     expect(normalized.trigger.params).toEqual({})
+  })
+
+  it('调用次数：缺省补 0（= 不限 / 未计），合法值取整保留，非法值回落 0', () => {
+    const absent = normalizeDefinition({ ...agentDefinition() })
+    expect(absent.maxRuns).toBe(0)
+    expect(absent.runCount).toBe(0)
+
+    const given = normalizeDefinition({ ...agentDefinition(), maxRuns: 8, runCount: 3 })
+    expect(given.maxRuns).toBe(8)
+    expect(given.runCount).toBe(3)
+
+    // 非法值（小数 / 负 / 非数字）不抛错 —— 校验层已经拦过，这里只保证不写出脏数据
+    expect(normalizeDefinition({ ...agentDefinition(), maxRuns: 2.5 }).maxRuns).toBe(0)
+    expect(normalizeDefinition({ ...agentDefinition(), runCount: -1 }).runCount).toBe(0)
+    expect(normalizeDefinition({ ...agentDefinition(), maxRuns: 'x' }).maxRuns).toBe(0)
+  })
+})
+
+describe('validateDefinition · 调用次数（v0.2.8）', () => {
+  it('合法取值：0（不限）、正整数、缺省', () => {
+    expect(validateDefinition({ ...agentDefinition(), maxRuns: 0 }, CATALOG)).toEqual({ ok: true })
+    expect(validateDefinition({ ...agentDefinition(), maxRuns: 100 }, CATALOG)).toEqual({
+      ok: true,
+    })
+    expect(validateDefinition({ ...agentDefinition(), runCount: 12 }, CATALOG)).toEqual({
+      ok: true,
+    })
+    expect(validateDefinition(agentDefinition(), CATALOG)).toEqual({ ok: true })
+  })
+
+  it('非法取值：小数 / 负数 / 超上限 / 非数字 / runCount 为负', () => {
+    for (const maxRuns of [1.5, -1, 100_001, '10', true]) {
+      const result = validateDefinition({ ...agentDefinition(), maxRuns }, CATALOG)
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain('调用次数上限')
+    }
+    const negativeCount = validateDefinition({ ...agentDefinition(), runCount: -2 }, CATALOG)
+    expect(negativeCount.ok).toBe(false)
+    expect(negativeCount.error).toContain('已调用次数')
+  })
+})
+
+describe('isRunsExhausted', () => {
+  it('未设上限（缺省 / 0）永不用尽；达到或超过上限即用尽', () => {
+    expect(isRunsExhausted({ maxRuns: 0, runCount: 99 })).toBe(false)
+    expect(isRunsExhausted({ runCount: 99 })).toBe(false)
+    expect(isRunsExhausted({ maxRuns: 5, runCount: 4 })).toBe(false)
+    expect(isRunsExhausted({ maxRuns: 5, runCount: 5 })).toBe(true)
+    expect(isRunsExhausted({ maxRuns: 5, runCount: 6 })).toBe(true)
+    expect(isRunsExhausted({ maxRuns: 5 })).toBe(false)
   })
 })

@@ -27,8 +27,14 @@ import { createNoopLogger, type Logger } from '@aurora/shared'
 import { isQuietHour } from '../proactive.js'
 import { needsNextDayLessons, type IScheduleProvider, type Lesson } from '../schedule.js'
 import { executeAction, type AutomationActionPorts } from './actions.js'
-import { buildCatalog, normalizeDefinition, validateDefinition } from './catalog.js'
+import {
+  buildCatalog,
+  isRunsExhausted,
+  normalizeDefinition,
+  validateDefinition,
+} from './catalog.js'
 import { evaluateTrigger, type TriggerContext, type TriggerEvaluation } from './conditions.js'
+import { AUTOMATION_SESSION_PREFIX, isAutomationSession } from './session-id.js'
 import type { AutomationStore } from './store.js'
 
 /** 内置自动化 id（`builtin.` 前缀保留；用户自建定义禁止使用） */
@@ -36,8 +42,11 @@ export const BUILTIN_PRE_CLASS_NOTIFY_ID = 'builtin.pre-class-notify'
 export const BUILTIN_PRE_CLASS_OPEN_FOLDER_ID = 'builtin.pre-class-open-folder'
 export const BUILTIN_IDS = [BUILTIN_PRE_CLASS_NOTIFY_ID, BUILTIN_PRE_CLASS_OPEN_FOLDER_ID] as const
 
-/** Agent 会话 / 运行记录的 id 前缀（渲染层据此把 auto- 会话排除在左栏之外） */
-export const AUTOMATION_SESSION_PREFIX = 'auto'
+/**
+ * Agent 会话 / 运行记录的 id 前缀（渲染层据此把 auto- 会话排除在左栏之外）。
+ * 常量与判据都在 `session-id.ts`（提示词运行档与工具层拒绝也依赖它，见文件注释）。
+ */
+export { AUTOMATION_SESSION_PREFIX, isAutomationSession }
 /** 内置自动化的保留 id 前缀 */
 export const BUILTIN_ID_PREFIX = 'builtin.'
 
@@ -300,6 +309,16 @@ export class AutomationEngine {
     }
     const definition = normalizeDefinition(record)
     if (definition.id === '') definition.id = this.generateId('am')
+    else {
+      // 缺字段 = 保持原值（v0.2.8）：保存通道是"整份替换"语义，但调用侧未必知道新字段
+      // 的存在 —— 漏 `runCount` 会把已调用次数清零、漏 `maxRuns` 会把上限悄悄改成不限。
+      // 显式给 0 才表示"不限 / 清零"（0 是合法值，与"没给"必须区分开）。
+      const existing = await this.store.getDefinition(definition.id)
+      if (existing !== undefined) {
+        if (record['runCount'] === undefined) definition.runCount = existing.runCount ?? 0
+        if (record['maxRuns'] === undefined) definition.maxRuns = existing.maxRuns ?? 0
+      }
+    }
     const saved = await this.store.saveDefinition(definition)
     this.keysOf(saved.id).clear()
     this.onDefinitionsChanged?.()
@@ -366,6 +385,17 @@ export class AutomationEngine {
     }
     const definition = await this.store.getDefinition(id)
     if (definition === undefined) return { ok: false, error: '自动化不存在' }
+    // 用尽的判定先于"已停用"：自动停用后这条定义**同时**是用尽且停用的，
+    // 只说"请先开启"会让用户开了又被停，找不到真正的原因（v0.2.8）。
+    if (isRunsExhausted(definition)) {
+      // 顺手把它停回去（幂等）：手动触发也走"用尽即停用"这一条口径，
+      // 界面上的状态与拒绝理由因此始终一致。
+      await this.suspendForExhaustion(definition)
+      return {
+        ok: false,
+        error: `调用次数已用尽（${definition.runCount ?? 0}/${definition.maxRuns ?? 0}）：请提高上限或重置计数`,
+      }
+    }
     if (!definition.enabled) return { ok: false, error: '自动化已停用，请先开启' }
     // 按模式分派（**不能**只执行操作组件）：Agent 模式的定义没有 actions，
     // 手动触发若走错分支会落一条永远「进行中」的历史（本轮 smoke 实测就是这个症状）。
@@ -379,12 +409,84 @@ export class AutomationEngine {
     definition: AutomationDefinition,
     detail: string | undefined,
   ): Promise<{ ok: true; runId: string } | { ok: false; error: string }> {
+    // 调用次数闸门（v0.2.8，docs/13 §3.1）：用尽即不再执行。
+    // 走到这里通常意味着"用户手动重新启用了一条已用尽的自动化"（定时触发路径上引擎
+    // 已经在停用的那一刻把它摘出启用集），因此顺手把它停回去并留痕，让状态与理由一致，
+    // 而不是每次 tick 都白跑一遍。
+    if (isRunsExhausted(definition)) {
+      const settled = await this.suspendForExhaustion(definition)
+      if (settled !== undefined) definition = settled
+      return {
+        ok: false,
+        error: `调用次数已用尽（${definition.runCount ?? 0}/${definition.maxRuns ?? 0}），已自动停用；请提高上限或重置计数`,
+      }
+    }
+    const counted = await this.countRun(definition)
+    if (counted !== undefined) definition = counted
     if (definition.mode === 'agent') {
       return await this.fireAgentRun(definition, detail)
     }
     return await this.startRun(definition, detail, async () => {
       await this.executeDefinitionActions(definition)
     })
+  }
+
+  /**
+   * 记一次调用（v0.2.8，docs/13 §3.1）：次数 +1；达到上限的那一次**照常执行**，
+   * 执行前先把 `enabled` 置 false —— "用满即停用"，最后这一跑是用户要的那一次。
+   *
+   * 只对**用户自建**定义计数：内置自动化的启停由 ClassRoom 配置驱动，没有"次数"可言
+   * （`runNow` 的内置分支与 `fireBuiltin` 都不经过这里）。
+   * 计数落盘失败只记日志：它不该让一次已经决定要跑的运行失败。
+   */
+  private async countRun(
+    definition: AutomationDefinition,
+  ): Promise<AutomationDefinition | undefined> {
+    if (definition.maxRuns === undefined || definition.maxRuns <= 0) return undefined
+    const runCount = (definition.runCount ?? 0) + 1
+    const exhausted = runCount >= definition.maxRuns
+    try {
+      const saved = await this.store.saveDefinition({
+        ...definition,
+        runCount,
+        enabled: exhausted ? false : definition.enabled,
+      })
+      if (exhausted) {
+        this.logger.info('自动化调用次数已用尽，已自动停用', {
+          automationId: definition.id,
+          runCount,
+          maxRuns: definition.maxRuns,
+        })
+      }
+      this.onDefinitionsChanged?.()
+      return saved
+    } catch (error) {
+      this.logger.warn('自动化调用次数落盘失败', {
+        automationId: definition.id,
+        error: String(error),
+      })
+      return undefined
+    }
+  }
+
+  /** 把一条"已用尽却仍启用"的定义停用（幂等：已停用时不再写盘）。 */
+  private async suspendForExhaustion(
+    definition: AutomationDefinition,
+  ): Promise<AutomationDefinition | undefined> {
+    if (!definition.enabled) return undefined
+    try {
+      const saved = await this.store.saveDefinition({ ...definition, enabled: false })
+      this.logger.info('自动化调用次数已用尽，已停用', {
+        automationId: definition.id,
+        runCount: definition.runCount ?? 0,
+        maxRuns: definition.maxRuns ?? 0,
+      })
+      this.onDefinitionsChanged?.()
+      return saved
+    } catch (error) {
+      this.logger.warn('自动停用失败', { automationId: definition.id, error: String(error) })
+      return undefined
+    }
   }
 
   /** Agent Mode：专属会话（sessionId = runId）+ 完整 Agent 会话；done / error 事件收尾。 */

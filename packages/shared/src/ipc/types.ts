@@ -700,6 +700,13 @@ export interface AutomationDefinition {
   prompt?: string
   /** Normal Mode 的操作组件列表（mode === 'normal' 时非空） */
   actions?: AutomationAction[]
+  /**
+   * 调用次数上限（0 / 缺省 = 不限）。`runCount` 达到上限时引擎自动停用该自动化（docs/13 §3.1）。
+   * 计数是**累计**的：重新启用不清零，要继续用请提高上限或在编辑器里「重置计数」。
+   */
+  maxRuns?: number
+  /** 已调用次数（触发即计一次，含手动触发；内置自动化不计数） */
+  runCount?: number
   createdAt: string
   updatedAt: string
 }
