@@ -341,4 +341,42 @@ describe('set_setting 的自我提权闸门：AI 改不动免确认模式列表�
     expect(result.isError).not.toBe(true)
     expect(writes).toHaveLength(1)
   })
+  /**
+   * v0.2.8 复核的两条只读路径：**AI 改不动「自动化」与「自己的提权开关」**。
+   *
+   * 与上面的免确认列表同属自我提权闸门：`automations.*` 是用户对「AI 能不能自己排后台动作」的
+   * 总闸门（改它 + `automation_*` 工具 = 自己给自己排程），`general.requireAdmin` 是 Agent 自己的
+   * 权限边界（关掉它等于降低权限约束面）。两条都由用户在设置页操作，判定走同一份真实实现。
+   */
+  it('automations.* 整组只读，理由是黑名单那条而不是「未知配置路径」', () => {
+    for (const path of ['automations.enabled', 'automations']) {
+      expect(canWriteSettingPath(path)).toBe(false)
+      const reason = settingsReadonlyReason(path)
+      expect(reason).toBeDefined()
+      expect(reason).toContain('自动化')
+      expect(reason).not.toBe('未知配置路径')
+    }
+  })
+
+  it('general.requireAdmin 只读（AI 不能给自己关掉提权），常规页邻居字段不受影响', () => {
+    expect(canWriteSettingPath('general.requireAdmin')).toBe(false)
+    const reason = settingsReadonlyReason('general.requireAdmin')
+    expect(reason).toBeDefined()
+    expect(reason).toContain('管理员')
+    expect(reason).not.toBe('未知配置路径')
+    // 正对照：没被整组封死
+    expect(canWriteSettingPath('general.chat.showThinking')).toBe(true)
+    expect(canWriteSettingPath('general.edgeBar.enabled')).toBe(true)
+  })
+
+  it('端口侧同样拒绝（如实回填中文原因，且一次 write 都没落下去）', async () => {
+    const { port, writes } = createGateProbe()
+    const tool = createSettingsTool({ port, logger: createMemoryLogger() })
+    for (const path of ['automations.enabled', 'general.requireAdmin']) {
+      const result = await tool.execute({ action: 'set', values: [{ path, value: false }] }, ctx)
+      expect(result.isError).toBe(true)
+      expect(result.content).toContain(`不能修改 ${path}`)
+    }
+    expect(writes).toHaveLength(0)
+  })
 })
