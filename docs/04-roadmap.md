@@ -446,11 +446,13 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
     设置页新增「项目」区组、右栏新增「当前项目」卡（项目根不可用时标红并给「重新选择目录」）。
     `openPath` 新增 `kind: 'project'`（`kind: 'workspace'` 打开的是 `agent.tools.workspaceDir`，
     不是项目根，两者别混）。
-  - **三档权限（v13，`agent.permissionMode ∈ {readonly, confirm, auto}`，默认 `confirm`）**：
+  - **三档权限（v13，`agent.permissionMode ∈ {readonly, confirm, auto}`，默认 `auto` —— 2026-09-29
+    起出厂即完全权限）**：
     `readonly` 档**根本不注册**写入 / 执行类工具（含 `todo_write`，保留 `todo_read`），
-    因此不是"注册后再拒绝"；`confirm` 档与旧行为逐字一致；`auto` 档在**项目根之内**免确认
-    （写 `info` 级审计日志）、越界仍逐次确认。老的 `advanced.confirmSensitiveTools === false`
-    由 `auto` 档承接，且 **`readonly` 优先于该布尔**。确认卡片新增第三键「本会话都允许」
+    因此不是"注册后再拒绝"；`confirm` 档逐次确认（用户手动收紧后的档位）；
+    `auto` 档在**项目根之内**免确认（写 `info` 级审计日志）、越界仍逐次确认、未配置项目时只写日志。
+    老的 `advanced.confirmSensitiveTools === false` 由 `auto` 档承接（与默认档镜像，出厂同为 `false`），
+    且 **`readonly` 优先于该布尔**。确认卡片新增第三键「本会话都允许」
     （会话 × 工具名，仅内存、不落盘）。项目根边界是**两层**：`auto` 档「要不要弹卡」用**字符串级
     判定**（含 `..` 段、取不到目标路径的工具一律按越界）；「能不能真碰」由主进程对已存在的最近
     父目录做 **realpath 前缀校验**（越界即 `E_PATH_OUTSIDE_WORKSPACE`），六个文件类入口与

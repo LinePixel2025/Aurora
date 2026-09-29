@@ -592,15 +592,30 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 
 ### 11.2 三档权限：`agent.permissionMode`（v13）
 
-`agent.permissionMode ∈ {readonly, confirm, auto}`（默认 `confirm`）是**工具面**的总闸门；
-`advanced.confirmSensitiveTools` 这个老开关保留，两者由 `resolvePermissionMode()`
+`agent.permissionMode ∈ {readonly, confirm, auto}`（**默认 `auto`**，2026-09-29 起；
+`advanced.confirmSensitiveTools` 与它镜像，出厂同为 `false`）是**工具面**的总闸门；
+那个老开关保留，两者由 `resolvePermissionMode()`
 （`packages/shared/src/config/permission.ts`，主进程与渲染层共用同一份）合成**生效档位**：
 
 | 生效档位 | 何时出现 | 注册哪些工具 | 确认行为 |
 |---|---|---|---|
 | `readonly` | `agent.permissionMode === 'readonly'`（**只读优先**，老开关在这档无效） | 只注册只读工具：`read_file` / `list_dir` / `grep` / `glob` / `todo_read` / `use_skill` / `set_setting` / MCP 与扩展工具。**不注册** `run_command` / `write_file` / `edit_file` / `open_path` / `todo_write` / `todo_read` 以外的待办写侧 | 敏感工具本就不在清单里；若仍被调用（例如刚好在切换档位），`createConfirmTool` 直接**拒绝**并写 warn（双保险） |
-| `confirm` | 默认档；或显式选了 `confirm` 且老开关为 `true` | 与三档之前完全一致 | 与三档之前完全一致：逐次弹卡；命中 `allowPatterns` 的 `run_command` 免确认 |
-| `auto` | 显式选了 `auto`；或 `advanced.confirmSensitiveTools === false`（老开关的语义由它承接） | 与三档之前完全一致 | **有项目时**：目标路径落在**项目根之内** → 免确认（写 `info` 审计日志）；根外 → 照常弹卡。**无项目时**：没有"根内"的判据，按老开关的语义**完全不弹卡**（否则老用户升级后会突然被逐次询问，等于静默改回了旧行为） |
+| `confirm` | 显式选了 `confirm` 且老开关为 `true`（用户手动收紧后的档位，**不再是出厂档**） | 与三档之前完全一致 | 与三档之前完全一致：逐次弹卡；命中 `allowPatterns` 的 `run_command` 免确认；根内写文件按 v0.2.4 的 Codex 式免确认 |
+| `auto` | **出厂默认**；或显式选了 `auto`；或 `advanced.confirmSensitiveTools === false`（老开关的语义由它承接） | 与三档之前完全一致 | **有项目时**：目标路径落在**项目根之内** → 免确认（写 `info` 审计日志）；根外 → 照常弹卡。**无项目时**：没有"根内"的判据，按老开关的语义**完全不弹卡**（否则老用户升级后会突然被逐次询问，等于静默改回了旧行为） |
+
+- **为什么默认档从 `confirm` 提到 `auto`（2026-09-29）**：Aurora 是系统级 Agent 工具，
+  出厂就逐次确认会让绝大多数正常操作（改自己项目里的文件、跑一条构建）都要先点一次卡片，
+  用户反馈「默认权限太低」。放宽的同时保留两道真实护栏：① `auto` 只在**当前项目根之内**
+  免确认、越界仍问；② 主进程对已存在的最近父目录做 realpath 前缀校验
+  （`file-port.resolveWithin`，越界即 `E_PATH_OUTSIDE_WORKSPACE`）。
+  ⚠️ **这两道护栏都以「登记了项目」为前提**：无项目（新装默认就是无项目，`projects.current` 为空 &&
+  未设 Work 工作目录）时没有"根内 / 越界"的判据，`auto` 退化成**完全不弹卡、只写日志留痕**
+  （与 v12 之前关掉确认总开关的行为一致）。要确认卡兜底就把档位切到 `confirm`，
+  或先登记一个项目让边界生效 —— 界面文案（权限下拉的提示与菜单项）把这两种状态都写明了，
+  改文案时别只留「越界仍会询问」那半句。
+  **只影响新装 / 缺字段的配置**（`zod` 默认值）：既有 `config.json` 里已持久化的
+  `permissionMode` / `confirmSensitiveTools` 一律保持原值（含绝大多数沿用旧默认值的配置），
+  需用户自行切换；因此本次**不进迁移链、不改 `CONFIG_VERSION`**。
 
 - **只读档的语义是"根本不在清单里"**，不是"注册后拒绝"：模型看不到这些工具，也就不会先承诺再被拒
   （`§11` 的既有口径）。`todo_write` 虽然 `sensitivity = 'safe'`，但它会往 `<userData>/todos/<sid>.json`
@@ -866,6 +881,9 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 
 - **配置**：`agent.tools.terminal.allowPatterns: string[]`，**缺省空数组 = 行为与从前完全一致**
   （全部逐次确认）。
+- **它只在「会弹卡」的档位上有意义**：`auto` 档下未命中的命令本来就不弹卡（那是免确认档），
+  所以讨论"命中 vs 未命中"必须落在 `confirm` 档上。`AURORA_SMOKE` 的 9.5 节因此**显式把档位
+  切到 `confirm`** 再跑正负两条对照（出厂默认是 `auto`，不切档负对照会整体失效），收尾还原成默认档。
 - **匹配语义**：**glob 全串匹配、大小写不敏感**，`*` 匹配任意字符（含空）、`?` 匹配单个字符，
   与 §11.5 共用**同一个模式编译器**（命令串按纯文本模式匹配：`\` 是内容不是路径分隔符）。
   **全串锚定**意味着 `git *` 不会命中 `echo git`。

@@ -133,7 +133,8 @@
     "proxy": "",
     "logLevel": "info",
     "quietHours": null,
-    "confirmSensitiveTools": true,
+    // 与 agent.permissionMode 镜像（界面写档位时两条一起写）：默认档是 auto ⇒ 这里为 false
+    "confirmSensitiveTools": false,
     // v6 新增：AI 改配置（set_setting）的路径黑名单，按路径段匹配，见 06 §12。
     // 只能在默认项之上追加限制：默认项始终生效，删掉或清空都不能放开（判定的第二道用的是硬编码常量）
     "readonlyPrefixes": [
@@ -146,9 +147,9 @@
     ]
   },
   "agent": {
-    // v13 新增：三档权限 readonly | confirm | auto（默认 confirm = 与 v13 之前行为一致）
-    // 只读：AI 的 set_setting 一律拒绝（自我提权），只能由用户在设置页 / 对话窗改，见 06 §12.2
-    "permissionMode": "confirm",
+    // v13 新增：三档权限 readonly | confirm | auto（默认 auto = 完全权限，2026-09-29 起）
+    // 只读：AI 的 set_setting 一律拒绝（自我提权），只能由用户在设置页 / 对话窗改，见 06 §11.2
+    "permissionMode": "auto",
     // v14 新增：写前快照（见 06 §11.8）。写文件前把原内容留底，可在右栏「文件备份」卡回滚
     "snapshots": {
       "enabled": true,          // 关掉后写文件不再留底，改动将不可回滚
@@ -222,9 +223,11 @@
   不移动文件；`confidenceThreshold` 是进「待分类」的置信度下限；`fallbackFolder` 是兜底目录
   （相对 `watchDir` 或绝对路径）。
 - `advanced.confirmSensitiveTools`（v2 新增）：敏感工具（`sensitivity = 'confirm'`，含全部 MCP 工具
-  与 `set_setting`）执行前是否要求用户确认（见 06 §5）。关闭后按 v0.3.0 行为降级为「只记日志留痕、不拦截」。
-  **它本身在默认黑名单里**（见下一条）：关闭它等于摘掉敏感工具的确认闸门，属于 AI 自我提权，
-  因此只允许用户在设置页手动关（设置页走 `settings:update`，不经过该黑名单）。
+  与 `set_setting`）执行前是否要求用户确认（见 06 §5）。**默认 `false`**（2026-09-29 起，
+  与默认权限档 `auto` 镜像）：为 `false` 时由 `auto` 档承接 —— 有项目时项目根内免确认、
+  越界仍弹卡，未登记项目时不再逐次询问（只写日志留痕）；切回 `confirm` 档才是真正的逐次确认。
+  **它本身在默认黑名单里**（见下一条）：改它等于摘掉 / 收紧敏感工具的确认闸门，属于 AI 自我提权，
+  因此只允许用户在设置页手动改（设置页走 `settings:update`，不经过该黑名单）。
 - `advanced.readonlyPrefixes`（**v6 新增**，见 06 §12）：AI 通过 `set_setting` 改配置时的路径黑名单，
   按**路径段**前缀匹配。默认值即 `SETTINGS_READONLY_PREFIXES`（覆盖凭据 / 密文、配置版本、
   窗口几何、网络代理、引导与首启标记、开机自启、全局快捷键、敏感工具确认总闸门；**具体条目以该常量为准**）。
@@ -360,12 +363,14 @@
   **整组在默认黑名单里**（`SETTINGS_READONLY_PREFIXES`，即 `advanced.readonlyPrefixes` 的默认项）：
   **只读，AI 的 `set_setting` 一律拒绝读写它**，只能由用户在设置页「通用 → 项目」维护 ——
   切项目等于同时改 Agent 的**指令面**与**权限面**，属自我提权。
-- `agent.permissionMode`（**v13 新增**，见 06 §12.2）：三档权限
+- `agent.permissionMode`（**v13 新增**，见 06 §11.2）：三档权限
   `readonly`（只读：写 / 执行 / 有系统副作用的工具**根本不注册**，模型在工具清单里看不到它们）|
-  `confirm`（默认：与 v13 之前完全一致，敏感工具逐次确认）|
-  `auto`（只在项目根之内免确认，越界仍逐次确认）。
+  `confirm`（逐次确认：敏感工具每次执行前弹卡）|
+  `auto`（**默认档**，2026-09-29 起：只在项目根之内免确认，越界仍逐次确认、无项目时只写日志）。
   与 `advanced.confirmSensitiveTools` **双开关并存**，优先级是：`confirmSensitiveTools === false` 时
   非 readonly 档被强制按 `auto` 处理；`readonly` 档下该布尔**无效**（只读优先）。
+  两个字段是**镜像**关系（界面写档位时同时写老开关），出厂默认因此是
+  `permissionMode: 'auto'` + `confirmSensitiveTools: false`，两者不矛盾。
   **只读**（`SETTINGS_READONLY_PREFIXES`）：改档位等于给自己放宽或收紧确认闸门，属自我提权，
   只能由用户在设置页 / 对话窗改。
 - `agent.snapshots`（**v14 新增**，见 06 §11.8）：写前快照 —— `enabled`（默认 `true`，
@@ -693,8 +698,10 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   「重置为默认配置」需**就地二次确认**（按钮变为「确认重置？」+ 取消），不再用原生 `confirm`。
   - 实现状态（v0.5.0）：**勿扰时段已实际拦截主动行为**——敏感工具确认在时段内直接拒绝
     （`ProactiveScheduler.isQuietHour`），课前提醒在时段内静默跳过。新增
-    「敏感工具确认」开关（`advanced.confirmSensitiveTools`，默认开启）：关闭后敏感工具
-    不再询问用户，降级为「只记日志留痕」，且**每次调用即时判断**，改设置无需重启。
+    「敏感工具确认」开关（`advanced.confirmSensitiveTools`，**默认关闭** —— 2026-09-29 起
+    它与默认档 `auto` 镜像）：关闭后敏感工具不再逐次询问（`auto` 档语义：项目根内免确认、
+    越界仍问、无项目时只记日志留痕），且**每次调用即时判断**，改设置无需重启。
+    用户要最严的档位就在设置页「智能与工具」或对话窗把档位切回「变更前确认」。
   - 实现状态（v0.6.0）：**代理与日志级别真正生效**（此前是「存了不生效」的死配置）——
     - `advanced.proxy`：`main/net.ts` 交给 `session.setProxy`，出网改用 Electron `net.fetch`
       （走 Chromium 网络栈 → 自动遵守代理）并保留 `globalThis.fetch` 回落；

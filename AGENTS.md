@@ -131,8 +131,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   （`edit_file` 随 `files.enabled`、`grep` / `glob` 随 `search.enabled`）之下 ——
   与「扩展工具五件套不受门控」的口径**相反**，别按五件套理解它们。
 - **三档权限与项目根边界已落地（2026-09-26），但仍无 OS 级沙箱**：`agent.permissionMode` 取值
-  `readonly` / `confirm` / `auto`（默认 `confirm`）—— `readonly` 档**不注册**写入 / 执行类工具
-  （含 `todo_write`，保留 `todo_read`），`auto` 档在**当前项目根之内**免确认、越界仍逐次确认；
+  `readonly` / `confirm` / `auto`（**默认 `auto` = 完全权限**，2026-09-29 起出厂档；镜像的老开关
+  `advanced.confirmSensitiveTools` 出厂同为 `false`）—— `readonly` 档**不注册**写入 / 执行类工具
+  （含 `todo_write`，保留 `todo_read`），`auto` 档在**当前项目根之内**免确认、越界仍逐次确认、
+  未配置项目时只写日志留痕；
   v0.2.4 起两处放宽（Codex 式，docs/06 §11.2）：`center_send_file` **直接发送不逐次确认**
   （闸门在配置层 `center.enabled` / `allowFileTransfer` / `maxFileMb`，别再给它加确认），
   `confirm` 档下 `write_file` / `edit_file` 落在会话边界根内**免确认**（`run_command` 等仍逐次）；
@@ -261,6 +263,12 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   同样**不受 `agent.tools.enabled` 门控**。
 - **主界面 `chat` 窗口是 1120×720、`alwaysOnTop=false` 的常驻大窗**（三栏布局 + 右栏模式感知，
   关闭仍 = 隐藏），别按旧版 420×640 侧弹交互窗的心智模型理解它的几何、层级与探针坐标。
+- **输入卡有两条硬口径（2026-09-29 减负轮，docs/07 §2.3），别再改回去**：
+  ① 权限 / 模型 / 思考三枚控件一律 `--control-h-xs`（28px）+ pill 圆角 + **静止态零边框**
+  （悬停才浮 `--fill-2`），三者的尺寸与状态样式**逐字对齐** —— 40px + 逐枚边框会把输入卡
+  顶成一条设置工具栏；② 占位文案只留一句（`输入消息…`），键位提示挂工具行右侧的
+  `.composer-hint` —— textarea 的高度由**内容**决定（空内容 = 一行），占位串一旦换行，
+  第二行就看不见了（用户实测「文字超出组件」的成因）。
 - **改了 `packages/shared/src/**` 或 `packages/agent-core/src/**` 之后必须先 build 那个包再跑下游 typecheck**：
   两个包的 `types` 都指向 `dist/*.d.ts`，不重建的话 `apps/desktop` 会对着**旧类型**报错 ——
   常见症状是共享包「no exported member」、agent-core 新加的方法在 `main/ipc.ts` 里报

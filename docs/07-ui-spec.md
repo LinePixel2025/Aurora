@@ -112,10 +112,11 @@
     MessageList → composer。**「模型 / 思考等级」两个下拉移入 composer 工具行**
     （对齐 ChatGPT / Claude Desktop；`data-field="chat.model"` / `chat.reasoningEffort` 锚点不变，
     仅位置变化），「收起」文字按钮由 caption「关闭」按钮取代（隐藏语义不变）。
-  - **composer（2026-09 输入框重做，见下方「输入框规格」）**：单张悬浮卡
+  - **composer（2026-09 输入框重做，2026-09-29 减负轮，见下方「输入框规格」）**：单张悬浮卡
     （附件 chips → textarea → 工具行 → 上下文详解条）；工具行 = 权限模式 + 模型下拉 +
-    思考等级下拉 +（右侧）麦克风 + 停止 / 发送；旧「会话：xxx · 可调用 Skill 与 MCP 工具」
-    常驻 meta 文案移除，仅保存操作的瞬时提示保留。
+    思考等级下拉 +（右侧）键位提示 / 保存瞬时提示 + 麦克风 + 停止 / 发送；旧「会话：xxx ·
+    可调用 Skill 与 MCP 工具」常驻 meta 文案移除，三枚工具控件是 28px 零边框「芯片」，
+    占位文案只留一句（`输入消息…`）。
   - **右栏「任务」面板（v15 新增，`data-field="chat.jobs"`；面板自身 `chat.job-panel`）**：
     停在右栏**最上方、`ContextPanel` 之上**（右栏是两行网格：任务面板按内容高度、上下文栏占满
     剩余高度；面板收起时上下文栏独占整列）。位置比上下文信息更靠前，是因为"长任务停了"是
@@ -350,29 +351,42 @@
   （标题栏拖动区的改动不要碰输入区，见 §1 与 §5.3 的拖动探针）。
 - **窗口拖动（本轮）**：标题栏 `.head` 走统一的 `useWindowDrag('chat')`（`:class="dragClass"`），
   按钮区挂 `noDragClass`；详见 §1 与 §5.3 的拖动探针。
-### 输入框规格（2026-09 输入框重做）
+### 输入框规格（2026-09 输入框重做；2026-09-29 减负轮）
 
 目标是对齐主流 Agent Desktop（ChatGPT / Claude / Cursor 类）的输入动线：卡内自底向上依次是
-**输入区 → 工具行 → 上下文详解条**，三段用发丝线分隔，整体仍是单张悬浮卡（`.composer-box`），
+**输入区 → 工具行 → 上下文详解条**，整体仍是单张悬浮卡（`.composer-box`），
 宽度与消息列同轴（860px 中轴）。
 
 - **输入区**：`<textarea>` 自动增高（`rows=1`，高度由 `autoGrow()` 按 `scrollHeight` 钉住，
   1 行起步、**200px 上限**后内部滚动）。CSS 上刻意**不设** `min/max-height` 与 `resize`：
   手动拖动高度会与自动增高互相打架，结果是「发完消息输入框还保持着刚拖出来的高度」。
-  `Enter` 发送、`Shift + Enter` 换行（`Ctrl + Enter` 与 `Enter` 等价，兼容老习惯）；
-  占位文案随流式状态切换（回复中提示「可先继续输入；回复结束后按 Enter 发送」）。
+  `Enter` 发送、`Shift + Enter` 换行（`Ctrl + Enter` 与 `Enter` 等价，兼容老习惯）。
+- **占位文案只留一句**（减负轮）：`输入消息…`（流式中 `正在回复中，可继续输入…`）。
+  它**不再当说明栏用** —— 旧版把「Enter 发送 / Shift + Enter 换行 / 输入 / 调用命令与技能 /
+  可直接拖入文件」整串塞进占位，长度超过一行，而 textarea 的高度由**内容**决定
+  （空内容 = 一行），换行后的第二行会被直接裁掉，用户看到的是「可直接拖入文」这种断句。
+  键位提示改挂工具行右侧的 `.composer-hint`（`Enter 发送 · Shift + Enter 换行`，
+  与 `.picker-hint` 共用同一个弹性槽、宽度不够时第一个让位）；其余能力（`/` 命令、
+  拖入文件）走 textarea 的 `title` 悬浮提示。
   流式中按 `Enter` 会给一句 2 秒自灭的提示（发送按钮同时是 disabled 的，两处口径一致）——
   `useChat.send` 在流式期间直接返回，若不提示就是「敲了 Enter 没反应也没说法」。
-- **工具行**（左 → 右）：**权限模式** + 模型下拉 + 思考等级下拉 + 弹性空隙 +（右侧）
-  瞬时提示 + 麦克风（STT，门控口径不变）+ 停止（流式中）+ 发送。
-  压缩顺序与旧口径一致：先让瞬时提示让位，两个下拉可收缩到 72px，**发送按钮绝不能被挤出卡外**。
+- **工具行**（左 → 右）：**权限模式** + 模型下拉 + 思考等级下拉 + 弹性空隙 +
+  （右侧）键位提示 / 瞬时提示 + 麦克风（STT，门控口径不变）+ 停止（流式中）+ 发送。
+  压缩顺序与旧口径一致：先让两枚提示文本让位，模型下拉可收缩到 72px，
+  **发送按钮绝不能被挤出卡外**。
+- **三枚「芯片」的视觉口径**（减负轮）：权限 / 模型 / 思考都是 `--control-h-xs`（28px）高、
+  `--radius-pill` 圆角、**静止态零边框零底色**（只有文字与原生箭头），悬停 / 聚焦浮一层
+  `--fill-2`。三者必须逐字对齐才像同一条工具带上的控件；此前的 40px + 逐枚边框
+  （三枚各带 1px 边框的 40px 控件）把输入卡顶成了一条设置工具栏，是「太丑 / 元素冗杂」的主因。
+  28px 仍高于 WCAG 2.2 SC 2.5.8 的 24×24 命中下限（`chat-hit-targets` 探针按 24 判），
+  发送 / 麦克风保持 32px。
 - **权限模式**（`ComposerPermissionSelect.vue`，`data-field="chat.permission"`）：
   **三档**（v13，语义见 06 §11.2）—— **只读**（`readonly`，`data-field="chat.permission-mode-readonly"`）＝
   写文件 / 执行命令类工具**根本不注册**给模型（设置页摘要写「只读模式：仅注册只读工具（不含写入与命令）」）；
-  **变更前确认**（`confirm`，默认，`data-field="chat.permission-confirm"`）＝ 敏感工具
+  **变更前确认**（`confirm`，`data-field="chat.permission-confirm"`）＝ 敏感工具
   （写文件 / 执行命令 / MCP 工具 / 改设置）执行前弹确认卡；**完全权限**
-  （`auto`，`data-field="chat.permission-full"`）＝ 有项目时**只在项目根之内**免确认、越界仍询问，
-  无项目时与从前一样不再逐次询问、只写日志留痕。
+  （`auto`，**出厂默认档**，`data-field="chat.permission-full"`）＝ 有项目时**只在项目根之内**免确认、
+  越界仍询问，无项目时与从前一样不再逐次询问、只写日志留痕。
   写盘时**同时写两个字段**（`agent.permissionMode` = 选中档，`advanced.confirmSensitiveTools` =
   `档位 !== 'auto'`）：后者是老开关，两者由 `resolvePermissionMode()` 合成生效档位，
   分开写会出现「界面选 confirm、实际生效 auto」的错位。与设置页「智能与工具」页读写的
@@ -380,9 +394,11 @@
   三个细节是有意的：
   - 放宽权限的档位（完全权限）用**警示色常驻**（不是一闪而过的 toast）——闸门开着这件事必须一直看得见；
   - **放宽是两段式**：点「完全权限」只把该项翻成「再点一次确认」，第二下才提交 ——
-    一个误点不该把闸门摘掉；**收紧（只读 / 变更前确认）单击即生效**（收紧不需要摩擦）。
+    一个误点不该把闸门摘掉；**收紧（只读 / 变更前确认）单击即生效**（收紧不需要摩擦）；
+    **已经是完全权限时点它只收起下拉**（那一档这时没有可放宽的东西，弹「再点一次确认」
+    只会让人以为要再放一次权）。
     AI 的 `set_setting` 对 `agent.permissionMode` 与 `advanced.confirmSensitiveTools`
-    两条路径**一律拒绝**（见 06 §12.2）。
+    两条路径**一律拒绝**（见 06 §11.2）。
   - 设置页那一处入口（`AdvancedPage.vue`，`data-field="agent.permissionMode"`）是**三档单选**、
     同样走"同时写两个字段"的镜像规则；两处交互强度目前略有差异（对话窗对**放宽**更严），
     因为对话窗是随手可点的位置。
@@ -474,13 +490,16 @@
   不另设锚点）；面板空态**没有** `data-empty` 锚点（见上文右栏条目的理由）。
   钉住它们的探针场景见 §5.3：`chat-job-panel.png`。
   钉住它们的探针场景见 §5.3：`chat-composer-slash.png`（浮层 + 权限钮文案 + 上下文条 +
-  **textarea 自动增高** 28px→170px→28px，含 200px 上限与「上限后改为内部滚动」）、
+  **textarea 自动增高** 36px→178px→36px，含 200px 上限与「上限后改为内部滚动」；
+  1 行高度 = 行高 20.25px + 上下 padding 8px×2）、
   `chat-composer-permission.png`（权限下拉三档：只读 / 变更前确认 / 完全权限三项都在；
-  点「完全权限」一次只翻成「再点一次确认」、**配置一动不动**（`settings:get` 回报 `agent.permissionMode`
-  仍是 `confirm`）、再收起下拉）、
+  act 先把档位显式切到 `confirm`（出厂默认是 `auto`，「放宽」只在还能放宽时存在）→
+  点「完全权限」一次只翻成「再点一次确认」、**配置一动不动**（`settings:get` 回报
+  `agent.permissionMode` 仍是 `confirm`、`confirmSensitiveTools` 仍是 `true`）→
+  点第二次才真正放宽，配置落成 `auto` + 老开关 `false`，下拉自行收起）、
   `chat-permission-readonly.png`（v13 只读档：切到 `readonly` 后触发器与菜单项都显示「只读」、
-  `settings:get` 回报 `permissionMode === 'readonly'`，收尾还原成 `confirm` 并断言触发器回到
-  「变更前确认」）、
+  `settings:get` 回报 `permissionMode === 'readonly'`，收尾还原成**出厂默认档 `auto`**
+  并断言触发器回到「完全权限」）、
   `chat-composer-flyouts.png`（浮层互斥 + 几何不相交 + 发送键 `elementFromPoint` 命中自己）、
   `chat-archive.png`（归档分组）；
   以及 `chat-stream.png`（**唯一一条 DOM 级端到端**：capture 在跑这一段前竖起本地桩 LLM 并把
