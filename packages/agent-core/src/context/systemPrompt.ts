@@ -2,8 +2,9 @@
  * 系统提示词组装（docs/06 §5）。
  *
  * **小节顺序（docs/06 §5 / §21.1 定稿，原则是「静态在前、易变在后」）**：
- * 基础人设 → 当前模式 → 可用 Skill 清单 → 可用工具清单 → 工具使用规范 →
- * Agent 可修改的设置 → 安全规则 → 更早对话的摘要 → 当前任务清单 → 项目约定 → 系统状态。
+ * 基础人设 → 当前模式 → 本次运行（按运行来源，v20） → 可用 Skill 清单 → 可用工具清单 →
+ * 工具使用规范 → Agent 可修改的设置 → 安全规则 → 更早对话的摘要 → 当前任务清单 →
+ * 项目约定 → 系统状态。
  *
  * ─────────────────────── 易变段必须留在最后（缓存前缀，改动前先读） ───────────────────────
  * OpenAI 兼容网关的前缀缓存按**最长公共前缀**命中；`## 系统状态` 每轮都带时间与前台窗口，
@@ -39,6 +40,15 @@ export interface SystemPromptParts {
   persona?: string
   /** 当前模式的系统提示词片段（IMode.systemPrompt） */
   modePrompt?: string
+  /**
+   * 本次运行的场景说明（v20，docs/06 §5.2）：按**运行来源**注入，渲染为独立小节
+   * 「## 本次运行」，紧随「## 当前模式」。
+   *
+   * 有它的是自动化触发的无人值守运行：模型要在这里知道「没有人在陪你聊」——
+   * 因此不能依赖追问、不能把任务留给下一次对话。普通会话不传（整段省略），
+   * 提示词与从前逐字一致。
+   */
+  runContext?: string
   /** 技能清单（SkillsRegistry.toCatalogPrompt） */
   skillCatalog?: string
   /** 工具清单（由工具表生成；为空表示本次没有可用工具） */
@@ -93,6 +103,9 @@ export function buildSystemPrompt(parts: SystemPromptParts = {}): string {
 
   const mode = normalize(parts.modePrompt)
   if (mode !== undefined) sections.push(`## 当前模式\n${mode}`)
+
+  const run = normalize(parts.runContext)
+  if (run !== undefined) sections.push(`## 本次运行\n${run}`)
 
   const skills = normalize(parts.skillCatalog)
   if (skills !== undefined) {

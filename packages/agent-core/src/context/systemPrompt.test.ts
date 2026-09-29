@@ -226,6 +226,31 @@ describe('buildSystemPrompt', () => {
     expect(buildSystemPrompt({ persona: '你是助教' }).startsWith('你是助教')).toBe(true)
   })
 
+  it('runContext 渲染为「本次运行」小节：紧随「当前模式」、在 Skill / 工具清单之前', () => {
+    const prompt = buildSystemPrompt({
+      persona: '你是后台执行体',
+      modePrompt: '课堂模式说明',
+      runContext: '本次运行由自动化触发，没有人在旁边回话。',
+      skillCatalog: '- system-status：读状态',
+      toolCatalog: '- todo_write：记任务',
+    })
+    const run = prompt.indexOf('## 本次运行')
+    expect(run).toBeGreaterThanOrEqual(0)
+    expect(prompt).toContain('本次运行由自动化触发，没有人在旁边回话。')
+    // 顺序：人设 → 当前模式 → 本次运行 → 可用 Skill → 可用工具
+    expect(prompt.startsWith('你是后台执行体')).toBe(true)
+    expect(run).toBeGreaterThan(prompt.indexOf('## 当前模式'))
+    expect(run).toBeLessThan(prompt.indexOf('## 可用 Skill'))
+    expect(run).toBeLessThan(prompt.indexOf('## 可用工具'))
+    // 它属于静态段：必须排在安全规则之前（易变内容一律在后的缓存口径，docs/06 §21.1）
+    expect(run).toBeLessThan(prompt.indexOf('## 安全规则'))
+  })
+
+  it('未传 runContext 时整段省略（普通会话的提示词与从前逐字一致）', () => {
+    expect(buildSystemPrompt({ modePrompt: '课堂模式说明' })).not.toContain('## 本次运行')
+    expect(buildSystemPrompt({ runContext: '   ' })).not.toContain('## 本次运行')
+  })
+
   it('todoSummary 渲染为「当前任务清单」小节：位于历史摘要之后、系统状态之前，附更新提醒', () => {
     const prompt = buildSystemPrompt({
       perceptionSummary: '当前时间 08:00',

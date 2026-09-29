@@ -78,6 +78,8 @@ async function createHarness(options: {
   quickContextWindowMs?: number
   /** 敏感工具确认钩子（docs/06 §5）；缺省不注入 = 不拦截 */
   confirmTool?: AgentHostDeps['confirmTool']
+  /** 按运行来源定制的运行档（v0.2.8，docs/06 §5.2） */
+  runProfileFor?: AgentHostDeps['runProfileFor']
 }): Promise<Harness> {
   const fs = options.fs ?? new TestFileSystem()
   const sessions = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
@@ -131,6 +133,7 @@ async function createHarness(options: {
       ? {}
       : { quickContextWindowMs: options.quickContextWindowMs }),
     ...(options.confirmTool === undefined ? {} : { confirmTool: options.confirmTool }),
+    ...(options.runProfileFor === undefined ? {} : { runProfileFor: options.runProfileFor }),
   })
   host.onEvent((event) => events.push(event))
 
@@ -1751,5 +1754,73 @@ describe('job 生命周期（v15）', () => {
       harness.events.some((event) => event.type === 'error' && event.code === 'E_UNKNOWN'),
     ).toBe(true)
     expect(harness.provider.calls).toHaveLength(0)
+  })
+})
+
+/**
+ * 运行档（v0.2.8，docs/06 §5.2、docs/13 §7.1）：自动化触发的会话换人设、加「本次运行」小节、
+ * 并按运行来源摘掉若干工具。这里是装配层的接线回归 —— 三条消费（提示词人设 / 工具清单 / 循环
+ * 执行用的工具表）必须都走同一份过滤视图，漏一处都会让模型看到"清单里有、调了却说工具不存在"。
+ */
+describe('KernelAgentHost · 运行档（自动化会话）', () => {
+  const profileFor = (context: { sessionId: string; origin: string }) =>
+    context.origin === 'automation' || context.sessionId.startsWith('auto-')
+      ? {
+          persona: '你是后台执行体：无人值守，自己决定，做完汇报。',
+          runContext: '本次运行由自动化触发，没有人在旁边回话。',
+          hiddenTools: ['echo'],
+        }
+      : undefined
+
+  it('origin=automation：换人设 + 本次运行小节 + 摘掉的工具在提示词与请求体里都不在', async () => {
+    const harness = await createHarness({ rounds: [{ text: '做完了' }], runProfileFor: profileFor })
+    await harness.host.send({ sessionId: 'auto-1', text: '整理笔记', origin: 'automation' })
+    await harness.waitForDone()
+
+    const request = harness.provider.calls[0]
+    const systemPrompt = request?.messages[0]?.content ?? ''
+    expect(systemPrompt.startsWith('你是后台执行体')).toBe(true)
+    expect(systemPrompt).toContain('## 本次运行')
+    expect(systemPrompt).toContain('没有人在旁边回话')
+    // 被摘掉的工具三处同时消失：人设替换（非追加）也一并成立
+    expect(systemPrompt).not.toContain('- echo：回显')
+    const toolNames = (request?.tools ?? []).map((tool) => tool.name)
+    expect(toolNames).not.toContain('echo')
+
+    // 真调用它 → 循环按"工具不存在"回填（模型拿到的是可解释的拒绝，而不是静默失败）
+    const result = await harness.tools.get('echo')!.execute({ text: 'x' }, { sessionId: 'auto-1' })
+    expect(result.content).toBe('echo:x')
+  })
+
+  it('会话 id 命中 auto-（origin 仍是 chat，如续跑）按同一档跑', async () => {
+    const harness = await createHarness({ rounds: [{ text: 'ok' }], runProfileFor: profileFor })
+    await harness.host.send({ sessionId: 'auto-2', text: '继续', origin: 'chat' })
+    await harness.waitForDone()
+    expect(harness.provider.calls[0]?.messages[0]?.content).toContain('## 本次运行')
+  })
+
+  it('普通会话不受影响：默认人设、无「本次运行」、工具照旧齐全', async () => {
+    const harness = await createHarness({ rounds: [{ text: 'ok' }], runProfileFor: profileFor })
+    await harness.send('你好')
+    await harness.waitForDone()
+    const request = harness.provider.calls[0]
+    const systemPrompt = request?.messages[0]?.content ?? ''
+    expect(systemPrompt).not.toContain('## 本次运行')
+    expect(systemPrompt).toContain('- echo：回显')
+    expect((request?.tools ?? []).map((tool) => tool.name)).toContain('echo')
+  })
+
+  it('运行档解析抛错 → 降级为默认档（提示词问题不拖垮请求）并留痕', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: 'ok' }],
+      runProfileFor: () => {
+        throw new Error('装配层炸了')
+      },
+    })
+    await harness.send('你好')
+    await harness.waitForDone()
+    expect(harness.provider.calls[0]?.messages[0]?.content).not.toContain('## 本次运行')
+    expect(harness.events.some((event) => event.type === 'done')).toBe(true)
+    expect(harness.logger.entries.some((entry) => entry.includes('运行档解析失败'))).toBe(true)
   })
 })

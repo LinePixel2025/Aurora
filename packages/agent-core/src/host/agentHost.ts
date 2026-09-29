@@ -26,7 +26,7 @@ import {
 } from '../session/history.js'
 import type { SessionStore } from '../session/store.js'
 import type { NewMessage, StoredToolCall } from '../session/types.js'
-import type { ToolRegistry } from '../tools/registry.js'
+import { filterTools, type ToolRegistry, type ToolSource } from '../tools/registry.js'
 
 export interface ProviderConfig {
   provider: LoopProvider
@@ -47,6 +47,21 @@ export interface AgentProviderFactory {
   create(options?: { allowFallback?: boolean }): ProviderConfig | undefined
 }
 
+/**
+ * 一次运行的「运行档」（v20，docs/06 §5.2）：按 `origin` 定制人设、场景说明与工具面。
+ *
+ * 三个字段都可缺省，缺省即"与普通会话相同"：
+ * - `persona` 替换 `BASE_PERSONA`（系统提示词的第一段）；
+ * - `runContext` 渲染成独立的「## 本次运行」小节（紧随「## 当前模式」）；
+ * - `hiddenTools` 是**本次运行从工具面摘除的工具名**：模型在「## 可用工具」里看不到它们，
+ *   请求体的 `tools` 数组里也没有，调用时循环会回填「工具不存在」——三层同时成立。
+ */
+export interface RunProfile {
+  persona?: string
+  runContext?: string
+  hiddenTools?: readonly string[]
+}
+
 export interface AgentHostDeps {
   sessions: SessionStore
   provider: AgentProviderFactory
@@ -55,6 +70,18 @@ export interface AgentHostDeps {
   logger?: Logger
   /** 当前模式提示词片段 */
   modePrompt?(): string
+  /**
+   * 按运行来源定制的「运行档」（v20，docs/06 §5.2）。
+   *
+   * 使用场景只有一个：**自动化触发的会话**。它与交互式会话有两条硬差别 ——
+   * ① 没人在旁边回答问题（不能把任务留给下一轮对话），② 它不得再管理 / 触发自动化
+   * （否则「自动化 → 会话 → 自动化」是自我延续的闭环）。
+   * 前者靠替换人设 + 注入「## 本次运行」小节表达，后者靠 `hiddenTools` 摘除工具名。
+   *
+   * 返回 `undefined` 时一切与从前逐字一致（普通会话因此完全不受影响）；
+   * 抛错按「无运行档」降级（提示词与工具面都退回默认，不拖垮请求）。
+   */
+  runProfileFor?(context: { sessionId: string; origin: string }): RunProfile | undefined
   /** 系统感知摘要 */
   perceptionSummary?(): Promise<string>
   /** 单次请求的会话历史字符预算 */
@@ -352,6 +379,26 @@ export class KernelAgentHost implements AgentHostContract {
 
   // ───────────────────────── 内部 ─────────────────────────
 
+  /**
+   * 解析本次运行的运行档（v20，docs/06 §5.2）。
+   *
+   * 装配层抛错时**降级为默认档**并记一条 warn：宁可让这次请求按普通会话跑，也不能
+   * 因为「算提示词」失败而整个请求失败 —— 运行档是提示词层面的优化，不是请求的前置条件。
+   */
+  private resolveRunProfile(sessionId: string, origin: string): RunProfile | undefined {
+    if (this.deps.runProfileFor === undefined) return undefined
+    try {
+      return this.deps.runProfileFor({ sessionId, origin })
+    } catch (error) {
+      this.logger.warn('运行档解析失败，已按默认档继续', {
+        sessionId,
+        origin,
+        error: String(error),
+      })
+      return undefined
+    }
+  }
+
   private async run(input: {
     sessionId: string
     requestId: string
@@ -370,6 +417,20 @@ export class KernelAgentHost implements AgentHostContract {
     const maxRoundsLimit = this.deps.maxRounds?.() ?? DEFAULT_MAX_ROUNDS
     const maxTotalTokens = Math.max(0, this.deps.maxTotalTokens?.() ?? 0)
     const autoContinueLimit = Math.max(0, this.deps.autoContinueRounds?.() ?? 0)
+    /**
+     * 本次运行的运行档（v20）：按 `origin` 现取值。取值失败一律降级为「无运行档」
+     * （提示词与工具面退回默认）——提示词细节永远不该让一次请求跑不起来。
+     */
+    const profile = this.resolveRunProfile(sessionId, input.origin)
+    /**
+     * 本次请求的工具面：有 `hiddenTools` 时是**过滤视图**（不污染全局注册表 ——
+     * 注册表是进程级、按时重建的，而"哪些工具能用"是请求级的）。三处消费
+     * （提示词工具清单 / 工具使用规范 / 循环执行）都走这一个来源，三处才同口径。
+     */
+    const tools: ToolSource =
+      profile?.hiddenTools === undefined || profile.hiddenTools.length === 0
+        ? this.deps.tools
+        : filterTools(this.deps.tools, profile.hiddenTools)
     /** 本请求的 job；未注入 `jobs` 时恒为 undefined，行为与 v15 之前完全一致 */
     let job: AgentJob | undefined
 
@@ -523,6 +584,8 @@ export class KernelAgentHost implements AgentHostContract {
         const projectInstructions = await this.readProjectInstructions(sessionId)
 
         const systemPrompt = buildSystemPrompt({
+          ...(profile?.persona === undefined ? {} : { persona: profile.persona }),
+          ...(profile?.runContext === undefined ? {} : { runContext: profile.runContext }),
           ...(this.deps.modePrompt === undefined ? {} : { modePrompt: this.deps.modePrompt() }),
           ...(this.deps.perceptionSummary === undefined
             ? {}
@@ -533,12 +596,14 @@ export class KernelAgentHost implements AgentHostContract {
           skillCatalog: this.deps.skills.catalogPrompt,
           ...(() => {
             // 用**同一个**有序列表（toLlmTools 已按名字排序）生成提示词里的工具清单：
-            // 与请求体的 tools 数组同序，否则缓存与展示会拧（docs/06 §21.2）
-            const catalog = describeTools(this.deps.tools.toLlmTools())
+            // 与请求体的 tools 数组同序，否则缓存与展示会拧（docs/06 §21.2）。
+            // 注意这里用的是**本次请求的工具面**（可能是过滤视图）：命令行与清单必须一致，
+            // 否则模型会看到"清单里有、请求体里没有"的工具并反复尝试（docs/06 §5.2）
+            const catalog = describeTools(tools.toLlmTools())
             return catalog === undefined ? {} : { toolCatalog: catalog }
           })(),
           ...(() => {
-            const guidance = buildToolGuidance(this.deps.tools.list().map((tool) => tool.name))
+            const guidance = buildToolGuidance(tools.list().map((tool) => tool.name))
             return guidance === undefined ? {} : { toolGuidance: guidance }
           })(),
           ...(settingsHint === undefined ? {} : { settingsHint }),
@@ -569,7 +634,7 @@ export class KernelAgentHost implements AgentHostContract {
           userInput,
           ...(extraContext === undefined ? {} : { extraContext }),
           history,
-          tools: this.deps.tools,
+          tools,
           sessionId,
           signal: input.controller.signal,
           // 轮次上限走上面那个 getter 解析出来的值（v15）：改设置后下一次请求即生效

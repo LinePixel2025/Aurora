@@ -15,7 +15,7 @@ import type {
   LlmToolDefinition,
   ReasoningEffortLevel,
 } from '../llm/types.js'
-import type { ToolProgress, ToolRegistry } from '../tools/registry.js'
+import type { ToolProgress, ToolSource } from '../tools/registry.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
 
 export const DEFAULT_MAX_ROUNDS = 32
@@ -118,7 +118,11 @@ export interface AgentLoopOptions {
   extraContext?: string
   /** 本次用户输入之前的会话历史（不含本次输入） */
   history: readonly StoredMessage[]
-  tools: ToolRegistry
+  /**
+   * 本次可用的工具（注册表，或装配层按运行来源过滤后的**只读视图**，docs/06 §5.2）。
+   * 循环只依赖 `get()` / `toLlmTools()`，因此视图与注册表可互换。
+   */
+  tools: ToolSource
   sessionId: string
   signal?: AbortSignal
   maxRounds?: number

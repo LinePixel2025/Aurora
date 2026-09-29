@@ -66,7 +66,39 @@ export interface ToolDefinition {
   execute(input: unknown, ctx: ToolContext): Promise<ToolResult>
 }
 
-export class ToolRegistry {
+/**
+ * 工具来源（**结构类型**）：调用循环只依赖这三个方法，注册表与「按运行来源过滤后的视图」
+ * 都满足它（docs/06 §5.2）。
+ *
+ * 为什么要这个接口：自动化触发的会话不得再管理 / 触发自动化（否则「自动化 → 会话 → 自动化」
+ * 形成自我延续的闭环），只能按**本次请求的来源**从工具面里摘掉若干名字。摘除发生在
+ * 请求组装处（`host/agentHost.ts`），视图用 `filterTools` 现造，不污染全局注册表 ——
+ * 注册表是进程级的（`sync()` 按时重建），而"哪些工具能用"是请求级的。
+ */
+export interface ToolSource {
+  get(name: string): ToolDefinition | undefined
+  list(): ToolDefinition[]
+  toLlmTools(): LlmToolDefinition[]
+}
+
+/**
+ * 按名字集合摘除若干工具，返回**只读视图**（不改动原注册表）。
+ *
+ * 摘除语义是"模型看不见、也调不到"：`list()` / `toLlmTools()` 不返回被摘的工具名，
+ * `get()` 对它们返回 `undefined`（循环据此回填「工具不存在」）。
+ */
+export function filterTools(source: ToolSource, hidden: readonly string[]): ToolSource {
+  if (hidden.length === 0) return source
+  const blocked = new Set(hidden)
+  const visible = <T extends { name: string }>(tool: T): boolean => !blocked.has(tool.name)
+  return {
+    get: (name) => (blocked.has(name) ? undefined : source.get(name)),
+    list: () => source.list().filter(visible),
+    toLlmTools: () => source.toLlmTools().filter(visible),
+  }
+}
+
+export class ToolRegistry implements ToolSource {
   private readonly tools = new Map<string, ToolDefinition>()
   private readonly log: Array<{ message: string; detail?: string }> = []
 
