@@ -5,8 +5,15 @@ import { isWithinRoot, permissionTargetOf, resolvePermissionMode } from './permi
 describe('三档权限判定（docs/06 §11.2，v13）', () => {
   it('resolvePermissionMode：三档 + 双开关组合', () => {
     const base = createDefaultSettings()
-    // 默认：confirm 档 + 确认总开关开着 → confirm
-    expect(resolvePermissionMode(base)).toBe('confirm')
+    // 默认：auto 档（2026-09-29 起出厂就是完全权限）+ 镜像的老开关 false → auto
+    expect(resolvePermissionMode(base)).toBe('auto')
+    expect(base.advanced.confirmSensitiveTools).toBe(false)
+
+    // 用户切回逐次确认：镜像规则会把老开关一起置 true
+    const confirm = createDefaultSettings()
+    confirm.agent.permissionMode = 'confirm'
+    confirm.advanced.confirmSensitiveTools = true
+    expect(resolvePermissionMode(confirm)).toBe('confirm')
 
     const readonly = createDefaultSettings()
     readonly.agent.permissionMode = 'readonly'

@@ -241,13 +241,23 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     proxy: '',
     logLevel: 'info',
     quietHours: null,
-    confirmSensitiveTools: true,
+    /*
+     * 老开关（v13 之前唯一的确认闸门）与 `agent.permissionMode` 是**镜像**关系：
+     * 界面每次改档位都同时写两个字段（`mode !== 'auto'`）。默认档既然提到 `auto`，
+     * 这里就必须一起是 `false` —— 否则出厂配置本身就处在「两个字段互相矛盾」的状态，
+     * 任何直接读这个老开关的消费方（Center 状态映射 / 老版本回退）都会读到一个谎。
+     */
+    confirmSensitiveTools: false,
     readonlyPrefixes: [...SETTINGS_READONLY_PREFIXES],
   },
   agent: {
     tools: { ...DEFAULT_AGENT_TOOLS },
-    // 三档权限默认 `confirm` = 与 v13 之前的行为完全一致（敏感工具逐次确认）
-    permissionMode: 'confirm',
+    /*
+     * 三档权限默认 `auto`（完全权限，2026-09-29 起）：项目根之内免确认、越界仍确认 ——
+     * 逐次确认（`confirm`）不再是出厂档，用户随时能在对话窗 / 设置页切回去。
+     * 改这条的理由与护栏见 schema.ts 上的长注释。
+     */
+    permissionMode: 'auto',
     /**
      * 写前快照（v14，docs/06 §11.8）：默认开启、每文件留 20 份、单份 ≤512 KiB、
      * 目录总预算 200 MiB。默认值刻意"够用不夸张"——用户第一次改文件就应该能回滚。

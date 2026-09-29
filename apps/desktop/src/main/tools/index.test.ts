@@ -743,8 +743,12 @@ describe('readonly 档（只读 = 不进工具表）', () => {
     expect(core.sync()).toEqual(['todo_read', 'task', 'ask_user'])
   })
 
-  it('confirm 档（默认）注册集合与改动前完全一致（回归基线）', () => {
+  it('confirm 档注册集合与改动前完全一致（回归基线；档位显式钉住，别吃默认值）', () => {
     const settings = makeSettings()
+    // 默认档 2026-09-29 起是 auto —— 本用例测的是 confirm 档的注册集合，
+    // 因此显式切过去（镜像规则：两条一起写），不依赖出厂默认值
+    settings.agent.permissionMode = 'confirm'
+    settings.advanced.confirmSensitiveTools = true
     expect(settings.agent.permissionMode).toBe('confirm')
     const { tools, syncAll } = setupAll(settings)
 

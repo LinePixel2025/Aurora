@@ -176,8 +176,11 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(SettingsSchema.safeParse(settings).success).toBe(true)
   })
 
-  it('敏感工具确认开关默认开启且为布尔（P5）', () => {
-    expect(createDefaultSettings().advanced.confirmSensitiveTools).toBe(true)
+  it('敏感工具确认开关是布尔，且默认与默认权限档镜像（默认档 auto ⇒ false，P5）', () => {
+    // 默认档 2026-09-29 起是 `auto`（完全权限），镜像的老开关因此必须是 false ——
+    // 出厂配置自己不能处在「两个字段互相矛盾」的状态（见 defaults.ts 的注释）
+    expect(createDefaultSettings().advanced.confirmSensitiveTools).toBe(false)
+    expect(createDefaultSettings().agent.permissionMode).toBe('auto')
     expect(fieldAccepts('advanced.confirmSensitiveTools', false)).toBe(true)
     expect(fieldAccepts('advanced.confirmSensitiveTools', 'no')).toBe(false)
   })

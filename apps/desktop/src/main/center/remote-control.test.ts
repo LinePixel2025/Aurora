@@ -51,12 +51,22 @@ describe('applyWhitelistedPaths · 补丁落草稿', () => {
 })
 
 describe('buildClientStatus · 状态快照', () => {
-  it('映射 agent 开关与 center 能力位；confirmSensitiveTools=false 时档位按 auto 呈现', () => {
+  it('映射 agent 开关与 center 能力位；老开关 false 时档位按 auto 呈现', () => {
     const settings: Settings = createDefaultSettings()
     const status = buildClientStatus(settings, '0.1.6', 'win32')
     expect(status.mode).toBe(settings.modes.current)
     expect(status.agent.tools.enabled).toBe(true)
-    expect(status.agent.permissionMode).toBe('confirm')
+    // 出厂默认 = auto（完全权限，2026-09-29 起）
+    expect(status.agent.permissionMode).toBe('auto')
+    // 用户切回逐次确认：镜像的两条一起写
+    settings.agent.permissionMode = 'confirm'
+    settings.advanced.confirmSensitiveTools = true
+    expect(buildClientStatus(settings, '0.1.6', 'win32').agent.permissionMode).toBe('confirm')
+    // 老配置（只有老开关）仍按 auto 承接：这一档是"别再逐次问我"的老语义
+    settings.agent.permissionMode = 'readonly'
+    settings.advanced.confirmSensitiveTools = false
+    expect(buildClientStatus(settings, '0.1.6', 'win32').agent.permissionMode).toBe('readonly')
+    settings.agent.permissionMode = 'confirm'
     settings.advanced.confirmSensitiveTools = false
     expect(buildClientStatus(settings, '0.1.6', 'win32').agent.permissionMode).toBe('auto')
   })

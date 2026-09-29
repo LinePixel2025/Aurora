@@ -1844,8 +1844,8 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
  *
  * check 断言四件事：
  * ① 浮层 `chat.slash-menu` 在，且含内置命令项（`chat.slash-new`）与技能分组（有技能时）；
- * ② 权限钮 `chat.permission` 在，文案必须是「变更前确认」——隔离 userData 的默认值
- *    （`confirmSensitiveTools: true`），读错档位等于闸门状态显示错误；
+ * ② 权限钮 `chat.permission` 在，文案必须是「完全权限」——隔离 userData 的默认档
+ *    （2026-09-29 起出厂默认就是 `auto`；读错档位等于闸门状态显示错误）；
  * ③ 上下文条 `chat.context` 在，且 `chat.context-usage` 显示「暂无用量数据」：
  *    离线跑没有真实 LLM，也就没有 usage 事件 —— 这条同时钉住「没有用量就不编造 token 数」；
  * ④ **textarea 自动增高**：塞 8 行文本后高度明显变大且不超过 CSS 上限，清空后回到一行高。
@@ -1938,7 +1938,7 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
         // 命令组恒有 4 条内置命令；技能组取决于内置 skills 目录（扫到几个列几个）
         slashCommandItems === 4 &&
         slashSkillItems >= 1 &&
-        permissionLabel.indexOf('变更前确认') !== -1 &&
+        permissionLabel.indexOf('完全权限') !== -1 &&
         count('[data-field="chat.permission-menu"]') === 0 &&
         count('[data-field="chat.context"]') === 1 &&
         usageText.indexOf('暂无用量数据') !== -1 &&
@@ -1957,13 +1957,18 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
 })()`
 
 /**
- * 输入框探针 · 后半：权限下拉的**两段式**关闭（照「一个误点不该摘掉确认闸门」的口径钉住）。
+ * 输入框探针 · 后半：权限下拉的**两段式放宽**（照「一个误点不该摘掉确认闸门」的口径钉住）。
  *
- * act 点开 `chat.permission`（截图即下拉展开现场）；check 断言：
- * ① 下拉在、两个选项都在（变更前确认 / 完全权限）；
+ * act：先把档位显式切到 `confirm`（出厂默认 2026-09-29 起是 `auto`，而「放宽」这个动作
+ * 只有在还没放宽时才存在 —— 已经是完全权限时点那一项只会收起下拉），再点开
+ * `chat.permission`（截图即下拉展开现场）。
+ *
+ * check 断言：
+ * ① 下拉在、三个选项都在（只读 / 变更前确认 / 完全权限）；
  * ② 点一次「完全权限」**不写配置**（只翻成二次确认文案），且 `settings:get` 回报的
- *    `confirmSensitiveTools` 仍是 true —— 这是本探针的核心：一次误点不能放权；
- * ③ 收尾再点一次权限钮把下拉关掉，**并确认配置一字未改**（为后续场景留干净状态）。
+ *    `permissionMode` 仍是 confirm、`confirmSensitiveTools` 仍是 true —— 一次误点不能放权；
+ * ③ 点第二次才真正放宽：配置落成 `auto` + 老开关 `false`（**镜像规则**两条一起写），
+ *    下拉自行收起。收尾状态就是出厂默认档，后续场景读到的仍是默认闸门状态。
  */
 /**
  * 输入框 → 真实（离线桩）模型往返探针（2026-09 输入框重做：**这是本轮唯一能验证
@@ -2537,6 +2542,16 @@ export function chatStreamBurstCheck(markers: {
 export const CHAT_PERMISSION_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
+    // 先钉到 confirm 档：出厂默认是 auto，而「再点一次确认」这条路径只存在于还能放宽时
+    const state = await window.aurora.settings.get()
+    if (state.ok && state.value.agent.permissionMode !== 'confirm') {
+      const updated = await window.aurora.settings.update({
+        agent: { ...state.value.agent, permissionMode: 'confirm' },
+        advanced: { ...state.value.advanced, confirmSensitiveTools: true },
+      })
+      if (!updated.ok) return { opened: false, reason: updated.message }
+      await wait(400)
+    }
     // 轮询等钮可用：它的 disabled 取决于渲染层 settingsStore 是否已水合（不是配置本身），
     // 而 disabled 元素上的 click 不触发处理函数 → 探针会假 FAIL（同 chat.reasoningEffort 的教训）。
     let button = null
@@ -2584,7 +2599,7 @@ export const CHAT_PERMISSION_READONLY_ACT = `(async () => {
   }
 })()`
 
-/** 只读档断言：下拉文案 = 只读、配置真的落成 readonly，收尾还原成 confirm 并收起下拉。 */
+/** 只读档断言：下拉文案 = 只读、配置真的落成 readonly，收尾还原成出厂默认档（auto）并收起下拉。 */
 export const CHAT_PERMISSION_READONLY_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
@@ -2604,11 +2619,12 @@ export const CHAT_PERMISSION_READONLY_CHECK = `(async () => {
       result.trigger.indexOf('只读') !== -1 &&
       result.readonlyOption.indexOf('只读') !== -1
 
-    // 收尾：还原成默认档（confirm）并把下拉收起，后续场景读到的仍是出厂门控
+    // 收尾：还原成出厂默认档（auto，镜像的老开关 false）并把下拉收起，
+    // 后续场景读到的仍是默认闸门状态
     if (state.ok) {
       await window.aurora.settings.update({
-        agent: { ...state.value.agent, permissionMode: 'confirm' },
-        advanced: { ...state.value.advanced, confirmSensitiveTools: true },
+        agent: { ...state.value.agent, permissionMode: 'auto' },
+        advanced: { ...state.value.advanced, confirmSensitiveTools: false },
       })
     }
     const button = document.querySelector('[data-field="chat.permission"]')
@@ -2621,7 +2637,7 @@ export const CHAT_PERMISSION_READONLY_CHECK = `(async () => {
     result.restoredTrigger = textOf('[data-field="chat.permission"]')
     result.restored =
       closed &&
-      result.restoredTrigger.indexOf('变更前确认') !== -1 &&
+      result.restoredTrigger.indexOf('完全权限') !== -1 &&
       count('[data-field="chat.permission-mode-readonly"]') === 0
     result.pass = result.pass === true && result.restored === true
     return result
@@ -2644,25 +2660,37 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
     const confirmItem = textOf('[data-field="chat.permission-confirm"]')
     const autoItemBefore = textOf('[data-field="chat.permission-full"]')
 
+    // ── 第一下：只翻成「再点一次确认」，配置一动不动 ──
     const autoButton = document.querySelector('[data-field="chat.permission-full"]')
     if (autoButton !== null) autoButton.click()
     await wait(300)
     const autoItemAfter = textOf('[data-field="chat.permission-full"]')
+    const first = await window.aurora.settings.get()
+    const unchangedAfterFirst = first.ok
+      ? first.value.agent.permissionMode === 'confirm' &&
+        first.value.advanced.confirmSensitiveTools === true
+      : null
 
-    const state = await window.aurora.settings.get()
-    // 放宽权限是两段式：点一次只应停在「再点一次确认」，配置里的档位必须一动没动
-    const modeUnchanged = state.ok ? state.value.agent.permissionMode === 'confirm' : null
-    const legacyUnchanged = state.ok ? state.value.advanced.confirmSensitiveTools === true : null
-
-    // 收尾：再点一次权限钮收起下拉（不影响配置），并轮询确认它真的关掉了 ——
-    // leave transition 是 --dur-fast（150ms），固定等 200ms 在高负载下余量太小会假 FAIL。
-    const button = document.querySelector('[data-field="chat.permission"]')
-    if (button !== null) button.click()
+    // ── 第二下：真正放宽 —— 配置落成 auto（镜像规则：老开关 false），下拉自行收起 ──
+    const againButton = document.querySelector('[data-field="chat.permission-full"]')
+    if (againButton !== null) againButton.click()
+    // 落盘链路是 渲染层 → settings:update IPC → SettingsStore → settings:changed 回灌，
+    // 比下拉的 leave 过渡（--dur-fast）慢且受负载影响：**必须轮询**而不是读一次 ——
+    // 固定等/读一次在高负载下会读到写入前的值，探针会以「配置没改」假 FAIL（旧版踩过一次）。
     let closed = false
-    for (let attempt = 0; attempt < 12 && !closed; attempt += 1) {
+    let committed = null
+    for (let attempt = 0; attempt < 20; attempt += 1) {
       closed = document.querySelectorAll('[data-field="chat.permission-menu"]').length === 0
-      if (!closed) await wait(150)
+      const state = await window.aurora.settings.get()
+      if (state.ok) {
+        committed =
+          state.value.agent.permissionMode === 'auto' &&
+          state.value.advanced.confirmSensitiveTools === false
+        if (committed && closed) break
+      }
+      await wait(150)
     }
+    const triggerAfter = textOf('[data-field="chat.permission"]')
 
     return {
       menuOpen,
@@ -2670,8 +2698,10 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
       confirmOption: confirmItem.indexOf('变更前确认') !== -1,
       fullOption: autoItemBefore.indexOf('完全权限') !== -1,
       askedAgain: autoItemAfter.indexOf('再点一次确认') !== -1,
-      permissionMode: state.ok ? state.value.agent.permissionMode : null,
-      confirmSensitiveTools: legacyUnchanged,
+      permissionModeBefore: first.ok ? first.value.agent.permissionMode : null,
+      unchangedAfterFirst,
+      committed,
+      triggerAfter,
       menuClosedAfter: closed,
       pass:
         menuOpen &&
@@ -2679,9 +2709,11 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
         confirmItem.indexOf('变更前确认') !== -1 &&
         autoItemBefore.indexOf('完全权限') !== -1 &&
         autoItemAfter.indexOf('再点一次确认') !== -1 &&
-        modeUnchanged === true &&
-        legacyUnchanged === true &&
-        count('[data-field="chat.permission-menu"]') === 0,
+        unchangedAfterFirst === true &&
+        committed === true &&
+        closed === true &&
+        // 收尾 = 出厂默认档（完全权限），后续场景读到的仍是默认闸门状态
+        triggerAfter.indexOf('完全权限') !== -1,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -3945,7 +3977,7 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
     // 只读档摘要（v13，docs/06 §11.2）：切到 readonly 后，区组摘要必须说"仅注册只读工具"，
     // 且生效工具名集合里不能出现写 / 执行类。这一条是"界面摘要不骗人"的运行时证据 ——
     // 设置页的摘要与实际注册表是两套代码，只断言主进程注册表的话，摘要写错也没人发现。
-    // 必须走 settings:update（SettingsStore 启动即缓存），收尾还原成 confirm。
+    // 必须走 settings:update（SettingsStore 启动即缓存），收尾还原成出厂默认档（auto）。
     let readonlySummary = null
     let readonlyTools = null
     let readonlyRestored = null
@@ -3972,7 +4004,8 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
         listed.indexOf('list_dir') !== -1 &&
         forbidden.every((name) => listed.indexOf(name) === -1)
       await window.aurora.settings.update({
-        agent: { ...before.value.agent, permissionMode: 'confirm' },
+        agent: { ...before.value.agent, permissionMode: 'auto' },
+        advanced: { ...before.value.advanced, confirmSensitiveTools: false },
       })
       await wait(300)
       readonlyRestored =

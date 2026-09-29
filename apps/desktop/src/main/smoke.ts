@@ -572,6 +572,31 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     const ALLOW_PROMPT = RUN_COMMAND_MARKER + '\n' + ALLOW_COMMAND
 
     /**
+     * 本节必须跑在 **confirm 档**上（2026-09-29 起出厂默认是 auto，见 docs/06 §11.2）。
+     *
+     * 两条断言是成对的：命中 → 不弹卡；未命中 → 弹卡。而 auto 档下「未命中」的命令
+     * 本来就不会弹卡（它是免确认档），负对照会因此失效（实测会连报两条 FAIL：
+     * 收不到卡片 + 命令被执行）。所以这里显式把档位切到 confirm 再跑，
+     * 这样「未命中仍弹卡」才是**允许列表本身**的证据，而不是档位的证据；收尾再还原成出厂默认。
+     * ⚠️ 这段注释里不要写反引号：整个注入脚本是一个 template literal，写反引号会提前终止字符串。
+     */
+    const setPermissionMode = async (mode, legacy) => {
+      const current = await window.aurora.settings.get()
+      if (current === null || !current.ok) return null
+      return window.aurora.settings.update({
+        agent: { ...current.value.agent, permissionMode: mode },
+        advanced: { ...current.value.advanced, confirmSensitiveTools: legacy },
+      })
+    }
+    const confirmSaved = await setPermissionMode('confirm', true)
+    record(
+      '免确认模式前置：权限档已切到 confirm（负对照需要"未命中会弹卡"的档位）',
+      Boolean(confirmSaved && confirmSaved.ok && confirmSaved.value.agent.permissionMode === 'confirm'),
+      JSON.stringify(confirmSaved && confirmSaved.ok ? confirmSaved.value.agent.permissionMode : confirmSaved),
+    )
+    await wait(120)
+
+    /**
      * 写 agent.tools.terminal.allowPatterns。
      * ⚠️ settings:update 对 agent 分组是**整棵子树覆盖**，patch 必须带完整的 agent.tools 树，
      * 否则 files / search / open 会被静默写丢（后面几条门控断言会跟着一起假 FAIL）。
@@ -735,6 +760,25 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
           allowRestored.value.agent.tools.terminal.allowPatterns.length === 0,
       ),
       '',
+    )
+    // 档位也还原成**出厂默认**（auto + 老开关 false）：后面的门控断言读的是默认闸门现场
+    const modeRestored = await setPermissionMode('auto', false)
+    record(
+      '权限档已还原为出厂默认（auto + confirmSensitiveTools=false）',
+      Boolean(
+        modeRestored &&
+          modeRestored.ok &&
+          modeRestored.value.agent.permissionMode === 'auto' &&
+          modeRestored.value.advanced.confirmSensitiveTools === false,
+      ),
+      JSON.stringify(
+        modeRestored && modeRestored.ok
+          ? {
+              mode: modeRestored.value.agent.permissionMode,
+              legacy: modeRestored.value.advanced.confirmSensitiveTools,
+            }
+          : modeRestored,
+      ),
     )
     offConfirm()
 
