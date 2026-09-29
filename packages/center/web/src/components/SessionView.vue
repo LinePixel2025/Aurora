@@ -347,7 +347,8 @@ watch(
           v-model="draft"
           class="input composer-input"
           rows="1"
-          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+          placeholder="输入消息…"
+          title="Enter 发送，Shift + Enter 换行"
           @keydown="onKeydown"
         ></textarea>
         <button v-if="session.pending" class="btn btn-danger" type="button" @click="abort">

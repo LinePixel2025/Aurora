@@ -253,7 +253,7 @@ const cachedText = computed(() => {
  */
 .ctx {
   border-top: 1px solid var(--border-subtle);
-  margin-top: var(--space-2);
+  margin-top: var(--space-1);
 }
 
 /* 折叠态：一条贴边的细状态栏，默认透明度低、hover 提亮（不想跟正文抢注意力） */

@@ -4,8 +4,8 @@
  *
  * 三档（`agent.permissionMode`，生效结果由调用方解析后传进来）：
  * - `readonly` 只读：写文件 / 执行命令类工具不会注册给模型；
- * - `confirm` 变更前确认（默认档，与三档之前的行为一字不差）：敏感工具执行前弹确认卡；
- * - `auto` 完全权限：仅在项目根之内免确认，越界仍会询问。
+ * - `confirm` 变更前确认：敏感工具执行前弹确认卡（用户手动收紧后的档位，**不再是出厂默认**）；
+ * - `auto` 完全权限：仅在项目根之内免确认，越界仍会询问（**出厂默认档**，2026-09-29 起）。
  *
  * 生效档位由调用方 `resolvePermissionMode(settingsStore.settings)` 算好传入，**不是**直接读
  * `agent.permissionMode`：v13 之前只有 `advanced.confirmSensitiveTools` 一个开关，老配置里
@@ -74,22 +74,28 @@ watch(
   },
 )
 
-/** 触发器上的当前档位文案 */
+/** 触发器上的当前档位文案（探针按这三个词断言，别改词） */
 const label = computed(() => {
   if (props.mode === 'readonly') return '只读'
   return props.mode === 'auto' ? '完全权限' : '变更前确认'
 })
 
+/**
+ * 悬浮提示：一句话说清这一档**在两种项目状态下**各是什么行为。
+ *
+ * 「无项目时不再逐次询问」这半句不能省（2026-09-29 复核补回）：出厂默认就是这一档，
+ * 而全新 userData 没有登记项目，此时没有「根内 / 越界」的判据、行为退化成完全不弹卡。
+ * 只写「越界仍会询问」会让用户以为还有确认卡兜底 —— 标签与提示必须与
+ * `agent-host.ts` 的 `auto` 分支一致（那两行的判定是：有根 → 根内放行、根外弹卡；无根 → 直接放行）。
+ */
 const title = computed(() => {
-  if (props.mode === 'readonly') {
-    return '只读：写文件 / 执行命令类工具不会注册给模型，模型看不到它们'
-  }
+  if (props.mode === 'readonly') return '只读：不注册写入与执行类工具'
   return props.mode === 'auto'
-    ? '完全权限：仅在项目根之内免确认，越界仍会询问（仅写日志留痕）'
-    : '变更前确认：读文件 / 写文件 / 执行命令 / MCP 工具 / 改设置执行前都会先弹确认卡'
+    ? '完全权限：有项目时项目根内免确认、越界仍询问；未登记项目时不再逐次询问（只写日志）'
+    : '变更前确认：敏感工具执行前先弹确认卡'
 })
 
-/** 完全权限档用警示色常驻提醒「闸门是开着的」 */
+/** 完全权限档用警示色常驻提醒「闸门是开着的」，不做成一闪而过的 toast */
 const danger = computed(() => props.mode === 'auto')
 
 function toggle(): void {
@@ -102,16 +108,21 @@ function toggle(): void {
  * - `auto`（放宽）：两段式。第一下只翻成确认按钮（`pendingDanger`），第二下才提交 ——
  *   这一项的唯一后果是「敏感操作不再问」，值得一次确认；
  * - `readonly` / `confirm`（收紧 / 维持）：单击即提交；
- * - 已经是当前档：只收起，不重复写盘。
+ * - 已经是当前档：只收起，不重复写盘（含「已经是完全权限再点完全权限」——
+ *   那一档这时没有可放宽的东西，弹「再点一次确认」只会让人以为要再放一次权）。
  */
 function choose(mode: PermissionMode): void {
   if (mode === 'auto') {
+    if (props.mode === 'auto') {
+      emit('update:open', false)
+      return
+    }
     if (!pendingDanger.value) {
       pendingDanger.value = true
       return
     }
     emit('update:open', false)
-    if (props.mode !== 'auto') emit('change', 'auto')
+    emit('change', 'auto')
     return
   }
   emit('update:open', false)
@@ -178,11 +189,11 @@ onBeforeUnmount(() => {
             <span class="perm-item-title"
               >只读<em v-if="mode === 'readonly'" class="perm-item-now">当前</em></span
             >
-            <span class="tiny muted">写文件 / 执行命令类工具不会注册给模型</span>
+            <span class="tiny muted">只注册只读工具，不含写入与命令</span>
           </span>
         </button>
 
-        <!-- 变更前确认：默认档；锚点沿用它两档时代的旧名字 -->
+        <!-- 变更前确认：锚点沿用它两档时代的旧名字（出厂默认档已是 auto） -->
         <button
           type="button"
           class="perm-item"
@@ -196,9 +207,7 @@ onBeforeUnmount(() => {
             <span class="perm-item-title"
               >变更前确认<em v-if="mode === 'confirm'" class="perm-item-now">当前</em></span
             >
-            <span class="tiny muted"
-              >写文件 / 执行命令 / MCP 工具 / 改设置都先弹确认卡，你点「允许一次」才执行</span
-            >
+            <span class="tiny muted">写文件、执行命令、改设置都先弹确认卡</span>
           </span>
         </button>
 
@@ -222,8 +231,8 @@ onBeforeUnmount(() => {
             <span class="tiny muted">
               {{
                 pendingDanger
-                  ? '再点一次确认：项目根之内的敏感操作将不再询问，直接执行'
-                  : '仅在项目根之内免确认，越界仍会询问（仅写日志留痕）'
+                  ? '再点一次确认：项目根内的敏感操作不再询问'
+                  : '有项目时项目根内免确认、越界仍问；未登记项目时不再逐次询问'
               }}
             </span>
           </span>
@@ -242,16 +251,17 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 
-/* 与模型 / 思考等级两个下拉同高同边框，看起来是同一条工具带上的控件 */
+/* 与模型 / 思考等级两枚下拉共用同一套「零边框芯片」尺寸（28px + pill 圆角 + 悬停浮底），
+   三者必须逐字对齐才像同一条工具带上的控件。 */
 .perm-btn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: var(--control-h-md);
+  height: var(--control-h-xs);
   padding: 0 var(--space-2);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: var(--fill-1);
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
   font-size: var(--text-xs);
@@ -265,23 +275,31 @@ onBeforeUnmount(() => {
 }
 
 .perm-btn:hover:not(:disabled) {
-  border-color: var(--border-strong);
+  background: var(--fill-2);
   color: var(--text-primary);
 }
 
 .perm-btn:focus-visible {
   outline: none;
   border-color: var(--focus-ring);
-  box-shadow: 0 0 0 1px var(--accent-ring);
+  background: var(--fill-2);
+  color: var(--text-primary);
 }
 
-/* 完全权限：用警示色常驻提醒「闸门是开着的」，不做成一闪而过的 toast */
+/* 完全权限：用警示色常驻提醒「闸门是开着的」，不做成一闪而过的 toast。
+   底色是低透明度的警示填充（不是边框）——既不抢走视线，又一直看得见。 */
 .perm-btn.danger {
-  border-color: color-mix(in srgb, var(--warning-text) 45%, var(--border-subtle));
   color: var(--warning-text);
+  background: var(--warning-fill);
 }
 
-/* 只读：最严的一档，不上强调色也不上警示色 —— 它是一个「收窄」状态，不该比默认档更抢眼 */
+.perm-btn.danger:hover:not(:disabled),
+.perm-btn.danger:focus-visible {
+  color: var(--warning-text);
+  background: color-mix(in srgb, var(--warning-text) 26%, transparent);
+}
+
+/* 只读：最严的一档，不上强调色也不上警示色 —— 它是一个「收窄」状态，不该比完全权限更抢眼 */
 .perm-btn.readonly {
   color: var(--text-muted);
 }

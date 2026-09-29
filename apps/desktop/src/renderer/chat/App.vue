@@ -731,8 +731,8 @@ watch(input, () => {
  * 刻意走 `resolvePermissionMode` 而不是直接读 `agent.permissionMode`：老配置里只有
  * `confirmSensitiveTools: false`，直接读会显示成「变更前确认」，而实际生效的是 auto ——
  * 界面显示的档位必须与主进程注册工具 / 弹确认卡时用的那一档一致。
- * 配置还没水合时按 `confirm` 显示：这是 Schema 的默认档，也是更安全的一侧
- * （宁可先让用户看到「会确认」，也不默认显示成已放权）。
+ * 配置还没水合时按 `confirm` 显示：那只是水合前的一帧占位（出厂默认已是 `auto`），
+ * 取更保守的一侧 —— 宁可先让用户看到「会确认」，也不先显示成已放权。
  */
 const permissionMode = computed<PermissionMode>(() => {
   const settings = settingsStore.settings
@@ -934,10 +934,26 @@ const contentChars = computed(() =>
 /** 当前 provider 的上下文窗口（token）；0 = 未知，上下文条据此只显示用量不显示比例 */
 const currentContextWindow = computed<number>(() => activeProvider.value?.contextWindow ?? 0)
 
-const placeholder = computed(() =>
+/**
+ * 占位文案（2026-09-29 输入框减负轮）：**只留一句**，不再当说明栏用。
+ *
+ * 旧版把「Enter 发送 / Shift + Enter 换行 / 输入 / 调用命令与技能 / 可直接拖入文件」
+ * 整串塞进占位：文字长度超过一行，而 textarea 由 `autoGrow()` 按**内容**的 scrollHeight
+ * 钉住高度（空内容 = 一行 = 行高 20.25px + 上下 padding 8px×2 ≈ 36.25px），占位串换行后的第二行会被直接裁掉 ——
+ * 用户看到的就是「可直接拖入文」后面断了半句。
+ * 现在：键位提示挂工具行右侧的 `.composer-hint`，其余能力（`/` 命令、拖入文件）
+ * 走 textarea 的 `title` 悬浮提示。
+ */
+const placeholder = computed(() => (streaming.value ? '正在回复中，可继续输入…' : '输入消息…'))
+
+/** 键位提示（工具行右侧；空间不足时先让位，见 `.composer-hint`） */
+const shortcutHint = 'Enter 发送 · Shift + Enter 换行'
+
+/** 输入框悬浮提示：占位串里放不下的那部分能力说明 */
+const composerTitle = computed(() =>
   streaming.value
-    ? '正在回复中，可先继续输入；回复结束后按 Enter 发送'
-    : '输入消息，Enter 发送，Shift + Enter 换行；输入 / 调用命令与技能，可直接拖入文件',
+    ? '正在回复中，可继续输入；回复结束后按 Enter 发送'
+    : 'Enter 发送，Shift + Enter 换行；输入 / 调用命令与技能；可直接拖入文件',
 )
 
 // ───────────────────────── 模式引导（交互语义不变） ─────────────────────────
@@ -1165,6 +1181,7 @@ async function markGuideDone(): Promise<void> {
               rows="1"
               spellcheck="false"
               :placeholder="placeholder"
+              :title="composerTitle"
               @keydown="onComposerKeydown"
             />
 
@@ -1194,8 +1211,13 @@ async function markGuideDone(): Promise<void> {
                 @update:model-value="setEffort"
               />
               <span class="grow" />
-              <!-- 保存类操作的瞬时提示（2 秒自灭）；旧常驻「会话：xxx · 可调用 Skill…」meta 已移除 -->
+              <!--
+                保存类操作的瞬时提示（2 秒自灭）；它不在时这条位置让给键位提示
+                （旧常驻「会话：xxx · 可调用 Skill…」meta 已移除，键位提示是唯一常驻文案，
+                与 `.picker-hint` 共用同一个弹性槽、同样是空间不足时第一个让位的元素）。
+              -->
               <span v-if="pickerHint" class="tiny muted picker-hint">{{ pickerHint }}</span>
+              <span v-else class="tiny muted composer-hint">{{ shortcutHint }}</span>
               <!--
                 麦克风（STT）：门控口径同 TTS——未配置可用的 provider 时**不渲染**（不是 disabled）。
                 录音态套 `.pulse-ring` 扩散环（theme.css 动效基线）。与发送键同侧，
@@ -1635,12 +1657,16 @@ async function markGuideDone(): Promise<void> {
   color: var(--text-primary);
 }
 
+/**
+ * 输入卡（2026-09-29 输入框减负轮）：内边距与行距都收紧一档，
+ * 让「文字 → 工具行 → 上下文条」三段贴得更紧，卡本身不再是页面上最重的一块。
+ */
 .composer-box {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-3) var(--space-4) var(--space-2);
+  gap: 2px;
+  padding: var(--space-2) var(--space-3) var(--space-1);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-subtle);
   background: var(--fill-1);
@@ -1656,20 +1682,24 @@ async function markGuideDone(): Promise<void> {
 }
 
 /**
- * 输入区（2026-09 输入框重做）。
+ * 输入区（2026-09 输入框重做，2026-09-29 减负轮收紧）。
  *
  * 高度由 `autoGrow()` 按 `scrollHeight` 钉住（1 行起步、最多 200px 后内部滚动），
  * 因此这里**不设 min/max-height 也不留 `resize`** —— 手动拖动会和自动增高互相打架，
  * 结果是「发完消息输入框还是刚才拖出来的高度」。
  * `overflow-y: auto` 是超出上限后的兜底（此时才出现滚动条）。
+ *
+ * `min-height` 是「空内容 = 一行」的显式声明（一行 = 行高 + 上下 padding）：
+ * 占位文案必须能完整放进这一行 —— 放不下就会换行，而换行后的第二行在空内容高度里
+ * 会被直接裁掉（2026-09-29 用户实测就是这个：占位串太长，末尾半句消失）。
  */
 .composer-input {
   display: block;
   width: 100%;
   height: auto;
-  min-height: calc(var(--text-base) * var(--leading-normal) + 2 * var(--space-1));
+  min-height: calc(var(--text-base) * var(--leading-normal) + 2 * var(--space-2));
   max-height: 200px;
-  padding: var(--space-1) 0;
+  padding: var(--space-2) 0;
   border: 0;
   background: transparent;
   color: var(--text-primary);
@@ -1685,20 +1715,28 @@ async function markGuideDone(): Promise<void> {
   color: var(--text-muted);
 }
 
+/* 工具行（2026-09-29 减负轮）：三枚 28px 芯片 + 弹性槽 + 右侧动作钮，间距收到 4px，
+   整行不再是一条「带边框的工具栏」——三个控件零边框、悬停才出现分层填充。 */
 .composer-bar {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
   min-width: 0;
   white-space: nowrap;
 }
 
 /* 保存类操作的瞬时提示：出现时挤占的是弹性空隙，不把发送按钮挤出行外 */
-.picker-hint {
+.picker-hint,
+.composer-hint {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 键位提示（占位文案的替身）：比 muted 再淡一档，宽度不够时它是第一个消失的 */
+.composer-hint {
+  opacity: 0.75;
 }
 
 /* 发送按钮不允许被压缩：它被挤出圆角输入框是这一行最容易破的版 */

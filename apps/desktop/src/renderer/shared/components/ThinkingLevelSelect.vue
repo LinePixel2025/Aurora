@@ -70,23 +70,26 @@ function onChange(event: Event): void {
 
 <style scoped>
 /**
- * 紧凑下拉。`.input` 这个类名只为与设置页的控件叫法对齐——它的样式定义在
- * `settings.css` 的 `.settings .input` 作用域内，在对话窗**不生效**，实际外观全部由这里给出。
+ * 紧凑下拉（2026-09-29 减负轮：与 `ModelPickerSelect.vue` 同步改成「零边框芯片」）。
+ * `.input` 这个类名只为与设置页的控件叫法对齐——它的样式定义在 `settings.css` 的
+ * `.settings .input` 作用域内，在对话窗**不生效**，实际外观全部由这里给出。
+ * 两枚下拉的尺寸 / 圆角 / 悬停 / 聚焦样式必须**逐字对齐**（同 28px 高、同 pill 圆角、
+ * 同 `--fill-2` 悬停底色），否则同一条工具带上会出现两种控件观感。
  *
- * `flex: 0 0 auto` 是关键：`.composer-bar` 里被压缩的只能是可省略的 `.meta` 文本，
- * 这个控件与发送按钮都不参与收缩（420px 窗口下不允许换行或把发送按钮挤出去）。
+ * `flex: 0 0 auto` 是关键：`.composer-bar` 里被压缩的只能是可省略的提示文本，
+ * 这个控件与发送按钮都不参与收缩（窄窗下不允许换行或把发送按钮挤出去）。
  */
 .thinking-level {
   flex: 0 0 auto;
   width: auto;
   min-width: 62px;
   max-width: 96px;
-  height: var(--control-h-md);
-  padding: 0 var(--space-1);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: var(--fill-1);
-  color: var(--text-secondary);
+  height: var(--control-h-xs);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
   font-family: inherit;
   font-size: var(--text-xs);
   line-height: 1;
@@ -103,7 +106,7 @@ function onChange(event: Event): void {
 }
 
 .thinking-level:hover:not(:disabled) {
-  border-color: var(--border-strong);
+  background: var(--fill-2);
   color: var(--text-primary);
 }
 
@@ -111,7 +114,7 @@ function onChange(event: Event): void {
 .thinking-level:focus-visible {
   border-color: var(--focus-ring);
   background: var(--fill-2);
-  box-shadow: 0 0 0 1px var(--accent-ring);
+  color: var(--text-primary);
 }
 
 /* 无可用 provider 时保持可见但禁用（用户抱怨的是「找不到按钮」，藏起来会让抱怨复现） */

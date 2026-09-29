@@ -111,28 +111,32 @@ function onChange(event: Event): void {
 
 <style scoped>
 /**
- * 紧凑下拉，视觉与 `ThinkingLevelSelect.vue` 保持同一套（同高、同边框与聚焦环）。
+ * 紧凑下拉（2026-09-29 减负轮：从「带边框的小按钮」改成「零边框芯片」）。
  * `.input` 这个类名只为与设置页的控件叫法对齐——它的样式定义在 `settings.css` 的
  * `.settings .input` 作用域内，在对话窗**不生效**，实际外观全部由这里给出。
  *
+ * 静止态**不画边框、不填底**，只留一行文字与原生箭头；悬停 / 聚焦才浮出一层 `--fill-2`。
+ * 权限 / 模型 / 思考三枚芯片必须共用这一套尺寸与状态（同高 28px、同 pill 圆角、同悬停底色），
+ * 才像同一条工具带上的控件；40px + 逐枚边框的旧样式会把输入卡顶成一条设置工具栏
+ * （用户反馈「太丑、元素冗杂」）。
+ *
  * 宽度是**固定 110px**（长模型名省略号，不撑破输入区），因为模型 id 的长度差异很大，
- * 自适应宽度会让整行随选择跳动。`flex: 0 1 110px` 与 `min-width: 72px` 是 420px 宽下的
- * 兜底：`.composer-bar` 里流式时会多出一个「停止」按钮，此时全长（两个标签 + 两个下拉 +
- * 停止 + 发送）会略微超出可用宽度，收缩顺序必须是「提示文本（`.picker-hint`，shrink 100）
- * → 本控件（最多让出 38px）」——两个标签与发送按钮都不收缩，
- * **发送按钮绝不能被挤出行外**（这是这一行最容易破的版）。非流式时本控件始终是 110px。
+ * 自适应宽度会让整行随选择跳动。`flex: 0 1 110px` 与 `min-width: 72px` 是窗口很窄时的
+ * 兜底：`.composer-bar` 里流式时会多出一个「停止」按钮，收缩顺序必须是
+ * 「键位提示 / 瞬时提示（shrink 100）→ 本控件（最多让出 38px）」——
+ * 权限芯片与发送按钮都不收缩，**发送按钮绝不能被挤出行外**（这是这一行最容易破的版）。
  */
 .model-picker {
   flex: 0 1 110px;
   width: 110px;
   min-width: 72px;
   max-width: 130px;
-  height: var(--control-h-md);
-  padding: 0 var(--space-1);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: var(--fill-1);
-  color: var(--text-secondary);
+  height: var(--control-h-xs);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
   font-family: inherit;
   font-size: var(--text-xs);
   line-height: 1;
@@ -149,7 +153,7 @@ function onChange(event: Event): void {
 }
 
 .model-picker:hover:not(:disabled) {
-  border-color: var(--border-strong);
+  background: var(--fill-2);
   color: var(--text-primary);
 }
 
@@ -157,7 +161,7 @@ function onChange(event: Event): void {
 .model-picker:focus-visible {
   border-color: var(--focus-ring);
   background: var(--fill-2);
-  box-shadow: 0 0 0 1px var(--accent-ring);
+  color: var(--text-primary);
 }
 
 /* 无可用 provider 时保持可见但禁用（用户抱怨的是「找不到按钮」，藏起来会让抱怨复现） */
