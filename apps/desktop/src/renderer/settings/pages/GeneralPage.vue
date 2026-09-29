@@ -164,7 +164,8 @@ async function save(): Promise<void> {
       // 死字段原样回传：UI 不提供入口，但也不该被保存动作重置（docs/08 §1）
       language: general.value?.language ?? 'zh-CN',
       launchAtLogin: launchAtLogin.value,
-      // 与开机自启同为显式回传：`general` 整对象浅合并，漏掉会被 Schema 默认值重置
+      // 显式回传：本字段在 settings:update 那条链里是分组内浅合并（漏键其实会保留），
+      // 但写全更直观、也免得将来改动合并语义时静默丢值
       requireAdmin: requireAdmin.value,
       hotkey: hotkey.value.trim() === '' ? 'Alt+Space' : hotkey.value.trim(),
       edgeBar: {

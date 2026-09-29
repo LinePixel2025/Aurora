@@ -635,6 +635,47 @@ describe('AutomationEngine · 调用次数（v0.2.8，docs/13 §3.1）', () => {
     expect(builtin?.runCount).toBeUndefined()
   })
 
+  it('并发触发不会少记（双击「立即运行」/ 定时与手动撞车都被按 id 串行化）', async () => {
+    // 回归护栏（v0.2.8 独立审查）：countRun 是"读—改—写"，此前两条触发链各自读同一份
+    // runCount 再各自 +1，后写覆盖先写 —— 结果是"真跑了 2 次、只记 1 次"，
+    // maxRuns = 1 的定义被双击绕过一次。现在判定 + 计数 + 停用都在按 id 的临界区里。
+    const h = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+      },
+    })
+    await h.store.saveDefinition(dailyNotifyDefinition({ maxRuns: 1 }))
+
+    const [a, b] = await Promise.all([h.engine.runNow('am-daily'), h.engine.runNow('am-daily')])
+    const okCount = [a, b].filter((result) => result.ok).length
+    // 两次并发里只有一次真的跑（另一次拿到锁后被"已用尽"挡下）
+    expect(okCount).toBe(1)
+    const stored = await h.store.getDefinition('am-daily')
+    expect(stored?.runCount).toBe(1)
+    expect(stored?.enabled).toBe(false)
+    expect(await h.store.listRuns({ automationId: 'am-daily' })).toHaveLength(1)
+  })
+
+  it('未达上限时并发触发：计数与运行条数一一对应（不丢记）', async () => {
+    const h = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+      },
+    })
+    await h.store.saveDefinition(dailyNotifyDefinition({ maxRuns: 5 }))
+
+    await Promise.all([
+      h.engine.runNow('am-daily'),
+      h.engine.runNow('am-daily'),
+      h.engine.runNow('am-daily'),
+    ])
+    const stored = await h.store.getDefinition('am-daily')
+    const runs = await h.store.listRuns({ automationId: 'am-daily' })
+    expect(runs.length).toBe(3)
+    expect(stored?.runCount).toBe(runs.length)
+    expect(stored?.enabled).toBe(true)
+  })
+
   it('saveDefinition：调用方不带 runCount / maxRuns 时沿用原值（防「编辑一次就清零」）', async () => {
     const h = createHarness({
       settings: (s) => {

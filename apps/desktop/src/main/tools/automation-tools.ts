@@ -274,7 +274,7 @@ export function createAutomationCreateTool(port: AutomationManagePort): ToolDefi
 export function createAutomationUpdateTool(port: AutomationManagePort): ToolDefinition {
   return {
     name: AUTOMATION_UPDATE_TOOL_NAME,
-    description: `修改一份已有自动化（需用户确认）：id 必填，其余字段（name / enabled / trigger / prompt / actions / maxRuns）给了就整体替换对应字段。enabled: false = 停用。maxRuns = 调用次数上限（0 = 不限，最大 ${MAX_RUNS_MAX}），runCount 达到上限时引擎会自动停用该自动化；resetRunCount: true 把已调用次数清零（用尽停用后要再用它，需先提高上限或清零）。内置自动化（id 以 builtin. 开头）只能改其配置来源（ClassRoom 设置），不能经本工具修改。\n${TRIGGER_REFERENCE}\n${ACTION_REFERENCE}`,
+    description: `修改一份已有自动化（需用户确认）：id 必填，其余字段（name / enabled / trigger / prompt / actions / maxRuns）给了就整体替换对应字段。enabled: false = 停用。maxRuns = 调用次数上限（0 = 不限，最大 ${MAX_RUNS_MAX}），runCount 达到上限时引擎会自动把 enabled 置 false（**它不会自动恢复**：提高上限或清零后要再用，必须同时传 enabled: true）；resetRunCount: true 只把已调用次数清零。内置自动化（id 以 builtin. 开头）只能改其配置来源（ClassRoom 设置），不能经本工具修改。\n${TRIGGER_REFERENCE}\n${ACTION_REFERENCE}`,
     parameters: {
       type: 'object',
       properties: {

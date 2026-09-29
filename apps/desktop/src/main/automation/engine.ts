@@ -142,6 +142,11 @@ export class AutomationEngine {
 
   /** 每个自动化的已触发键集合（键 → 加入时刻，TTL 清理） */
   private readonly firedKeys = new Map<string, Map<string, number>>()
+  /**
+   * 按自动化 id 串行化的临界区链尾（`withDefinitionLock`）：计数与停用是读—改—写，
+   * 必须与并发触发互斥（双击「立即运行」/ 定时与手动撞在一起 / UI 与 AI 工具同时触发）。
+   */
+  private readonly definitionLocks = new Map<string, Promise<void>>()
   /** 在途 Agent 运行：sessionId → run 信息 */
   private readonly pendingAgentRuns = new Map<
     string,
@@ -387,19 +392,26 @@ export class AutomationEngine {
     if (definition === undefined) return { ok: false, error: '自动化不存在' }
     // 用尽的判定先于"已停用"：自动停用后这条定义**同时**是用尽且停用的，
     // 只说"请先开启"会让用户开了又被停，找不到真正的原因（v0.2.8）。
-    if (isRunsExhausted(definition)) {
-      // 顺手把它停回去（幂等）：手动触发也走"用尽即停用"这一条口径，
-      // 界面上的状态与拒绝理由因此始终一致。
-      await this.suspendForExhaustion(definition)
+    // 判定与停用放进同一条临界区（与 `runDefinition` 里的计数互斥）：否则
+    // 「手动触发 + 定时触发」并发时会各自读到旧计数，把用尽判定放过去。
+    const gate = await this.withDefinitionLock(id, async () => {
+      const current = (await this.store.getDefinition(id)) ?? definition
+      if (isRunsExhausted(current)) {
+        const settled = await this.suspendForExhaustion(current)
+        return { ok: false as const, definition: settled ?? current }
+      }
+      return { ok: true as const, definition: current }
+    })
+    if (!gate.ok) {
       return {
         ok: false,
-        error: `调用次数已用尽（${definition.runCount ?? 0}/${definition.maxRuns ?? 0}）：请提高上限或重置计数`,
+        error: `调用次数已用尽（${gate.definition.runCount ?? 0}/${gate.definition.maxRuns ?? 0}）：请提高上限或重置计数`,
       }
     }
-    if (!definition.enabled) return { ok: false, error: '自动化已停用，请先开启' }
+    if (!gate.definition.enabled) return { ok: false, error: '自动化已停用，请先开启' }
     // 按模式分派（**不能**只执行操作组件）：Agent 模式的定义没有 actions，
     // 手动触发若走错分支会落一条永远「进行中」的历史（本轮 smoke 实测就是这个症状）。
-    return await this.runDefinition(definition, '手动触发')
+    return await this.runDefinition(gate.definition, '手动触发')
   }
 
   // ───────────────────────── 触发执行 ─────────────────────────
@@ -409,20 +421,28 @@ export class AutomationEngine {
     definition: AutomationDefinition,
     detail: string | undefined,
   ): Promise<{ ok: true; runId: string } | { ok: false; error: string }> {
-    // 调用次数闸门（v0.2.8，docs/13 §3.1）：用尽即不再执行。
-    // 走到这里通常意味着"用户手动重新启用了一条已用尽的自动化"（定时触发路径上引擎
-    // 已经在停用的那一刻把它摘出启用集），因此顺手把它停回去并留痕，让状态与理由一致，
-    // 而不是每次 tick 都白跑一遍。
-    if (isRunsExhausted(definition)) {
-      const settled = await this.suspendForExhaustion(definition)
-      if (settled !== undefined) definition = settled
-      return {
-        ok: false,
-        error: `调用次数已用尽（${definition.runCount ?? 0}/${definition.maxRuns ?? 0}），已自动停用；请提高上限或重置计数`,
+    // 计数与闸门在**同一个临界区**里做（见 `withDefinitionLock`）：读—改—写不是原子的，
+    // 两条并发触发（双击「立即运行」/ 定时与手动撞在一起 / UI 与 AI 工具同时触发）
+    // 各自读到的都是同一份旧计数，会把「用满即停」放宽一次。
+    const gate = await this.withDefinitionLock(definition.id, async () => {
+      // 用**最新**的定义做判定，而不是调用方手里的那份快照
+      const current = (await this.store.getDefinition(definition.id)) ?? definition
+      if (isRunsExhausted(current)) {
+        // 走到这里通常意味着"用户手动重新启用了一条已用尽的自动化"（定时触发路径上引擎
+        // 已经在停用的那一刻把它摘出启用集），因此顺手把它停回去并留痕，让状态与理由一致，
+        // 而不是每次 tick 都白跑一遍。
+        const settled = await this.suspendForExhaustion(current)
+        return {
+          ok: false as const,
+          definition: settled ?? current,
+          error: `调用次数已用尽（${current.runCount ?? 0}/${current.maxRuns ?? 0}），已自动停用；请提高上限或重置计数`,
+        }
       }
-    }
-    const counted = await this.countRun(definition)
-    if (counted !== undefined) definition = counted
+      const counted = await this.countRun(current)
+      return { ok: true as const, definition: counted ?? current }
+    })
+    if (!gate.ok) return { ok: false, error: gate.error }
+    definition = gate.definition
     if (definition.mode === 'agent') {
       return await this.fireAgentRun(definition, detail)
     }
@@ -432,12 +452,42 @@ export class AutomationEngine {
   }
 
   /**
+   * 按自动化 id 串行化的临界区（v0.2.8 审查修复）。
+   *
+   * 存在的理由：`countRun` / `suspendForExhaustion` / 用尽判定都是**读—改—写**，
+   * 而两条触发链（`tick` 的循环与 `runNow`）之间没有任何互斥 —— `tick` 的 `ticking`
+   * 只挡自己重入。并发时两边各自读同一份 `runCount`、各自 +1，后写覆盖先写，
+   * 结果是「跑了 N 次、只记 1 次」，`maxRuns` 的承诺被放宽。
+   *
+   * 队列按 id 串（不同自动化互不阻塞）；一次失败不卡死后续（链上吞掉异常再继续），
+   * 队列排空后清掉条目（防 Map 随自动化数量无限增长）。
+   */
+  private async withDefinitionLock<T>(id: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.definitionLocks.get(id)
+    const run = previous === undefined ? task() : previous.then(task, task)
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    this.definitionLocks.set(id, tail)
+    try {
+      return await run
+    } finally {
+      // 只在自己仍是链尾时清理（后面还有排队的调用就留给它们收尾）
+      if (this.definitionLocks.get(id) === tail) this.definitionLocks.delete(id)
+    }
+  }
+
+  /**
    * 记一次调用（v0.2.8，docs/13 §3.1）：次数 +1；达到上限的那一次**照常执行**，
    * 执行前先把 `enabled` 置 false —— "用满即停用"，最后这一跑是用户要的那一次。
    *
    * 只对**用户自建**定义计数：内置自动化的启停由 ClassRoom 配置驱动，没有"次数"可言
    * （`runNow` 的内置分支与 `fireBuiltin` 都不经过这里）。
    * 计数落盘失败只记日志：它不该让一次已经决定要跑的运行失败。
+   *
+   * 调用方必须已经持有该 id 的临界区（`withDefinitionLock`），入参是**临界区内现读**的
+   * 最新定义 —— 否则并发触发会少记次数。
    */
   private async countRun(
     definition: AutomationDefinition,
@@ -469,7 +519,12 @@ export class AutomationEngine {
     }
   }
 
-  /** 把一条"已用尽却仍启用"的定义停用（幂等：已停用时不再写盘）。 */
+  /**
+   * 把一条"已用尽却仍启用"的定义停用（幂等：已停用时不再写盘）。
+   *
+   * 同样要求调用方持有该 id 的临界区：停用是"读—改—写"，与计数并发会把刚 +1 的
+   * 计数覆盖掉（`saveDefinition` 是内存 upsert，后写覆盖先写）。
+   */
   private async suspendForExhaustion(
     definition: AutomationDefinition,
   ): Promise<AutomationDefinition | undefined> {

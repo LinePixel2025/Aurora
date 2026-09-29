@@ -165,7 +165,7 @@ import {
 import { AutomationEngine } from './automation/engine.js'
 import { AutomationStore } from './automation/store.js'
 import { automationRunProfile } from './automation/run-profile.js'
-import { ensureElevation } from './elevation.js'
+import { ensureElevation, inspectElevatedUserData, disableRequireAdmin } from './elevation.js'
 import type { AutomationActionPorts } from './automation/actions.js'
 import { createSessionProjectResolver } from './tools/session-project.js'
 import { createFileTodoPort, type FileTodoPort } from './tools/todo-port.js'
@@ -529,6 +529,32 @@ async function bootstrap(): Promise<void> {
     callback(true)
   })
 
+  // 1.5 提权换账户守卫（v0.2.8 审查修复）：UAC 若是**凭据**框（当前用户不在管理员组），
+  //     提权实例会以另一个账户运行、%APPDATA% 随之切换 —— 界面上看起来像"配置与会话全丢了"
+  //     （原数据其实躺在用户自己的 profile 里）。这里在**读配置之前**识别它：把原用户配置里的
+  //     requireAdmin 关掉（自愈，下次启动就能正常跑），提示用户重启，然后退出 ——
+  //     不进入"空配置 + 引导页"的假象。
+  const switchedAccount = inspectElevatedUserData(process.argv, userData)
+  if (switchedAccount !== undefined) {
+    const fixed = disableRequireAdmin(join(switchedAccount.expected, 'config.json'))
+    logger.warn('提权实例运行在另一个账户下，已阻止本次启动', {
+      expected: switchedAccount.expected,
+      actual: switchedAccount.actual,
+      requireAdminDisabled: fixed,
+    })
+    dialog.showMessageBoxSync({
+      type: 'warning',
+      title: 'Aurora 未能以你的账户启动',
+      message: fixed
+        ? '提权把程序切到了另一个 Windows 账户，看不到你原来的数据。已为你关闭「以管理员身份运行」，请重新启动 Aurora。'
+        : '提权把程序切到了另一个 Windows 账户，看不到你原来的数据。请手动关闭配置里的 general.requireAdmin（或改用本机管理员组账户）后重启。',
+      buttons: ['退出'],
+      noLink: true,
+    })
+    app.quit()
+    return
+  }
+
   // 2. 配置（Schema 校验 + 迁移 + safeStorage 凭据）
   const crypto = createSafeStorageCrypto()
   settings = new SettingsStore({
@@ -566,6 +592,7 @@ async function bootstrap(): Promise<void> {
     packaged: app.isPackaged,
     argv: process.argv,
     execPath: process.execPath,
+    userDataPath: userData,
     logger: logger.child('elevation'),
   })
   if (elevation === 'relaunched') {
