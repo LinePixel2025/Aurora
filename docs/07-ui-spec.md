@@ -546,6 +546,10 @@
   页头不再有整句副标题 —— 说明改挂在标题右侧的说明标记上（悬停出 `AppTooltip`，§5.4）。
 - **卡片**（`automation.item-<id>`）：启停开关（`data-field="automation.toggle"`，写定义的 `enabled`）+
   名称 + 模式徽章（**带语义图标**：Agent = 机器人、Normal = 闪电；内置项用中性「内置」徽章）+
+  **次数徽章**（v0.2.8，`data-field="automation.runs"`：上限 > 0 时显示 `3/10` 形态，
+  **用尽（已调用 ≥ 上限）转警示色**（加 `.exhausted` 类）并换一条悬浮说明
+  「调用次数已用尽，已自动停用；提高上限或重置计数后可再次启用」；上限 0 / 缺省 = 不限，
+  不渲染这枚徽章 —— 与「不渲染而不是 disabled」同款门控口径，见 docs/13 §3.1）+
   触发描述（「每天 08:30」「距上课 ≤ 5 分钟」，由触发器参数生成，各 kind 的语义见 docs/13 §4，
   **行首带该条件的图标**）+ 摘要（Agent Mode 显示任务指令单行截断、Normal Mode 显示**图标胶囊**：
   每个操作一枚「图标 + 短名」胶囊，如「系统通知」「打开「数学」」—— 不再把多个操作拼成一整句）+
@@ -573,6 +577,11 @@
   该触发器的**动态字段**（由 `AutomationFieldInput.vue` 按描述符渲染：`text` / `time` 原生输入、
   `number` 定宽数字框、`weekdays` **星期胶囊多选**（全不选 = 每天）、`select` **分段胶囊**；
   **编辑器内不再出现原生 `<select>`**。描述符形状见 docs/13 §4.3）→
+  **「调用次数」一行**（v0.2.8：上限数字输入 `data-field="automation.max-runs"`，**0 = 不限**；
+  编辑既有定义时在旁显示「已调用 N 次」+「重置计数」按钮
+  `data-action="automation.reset-runs"`（计数为 0 时 disabled）—— 点击只改草稿，
+  保存后生效；保存回传 `maxRuns` 与 `runCount` 两个字段，**编辑既有定义不再无条件
+  `enabled: true`**（沿用原启停状态），口径见 docs/13 §3.1 / §11）→
   Agent Mode 的「任务指令」textarea，或 Normal Mode 的**操作组件列表**
   （每项 `data-field="automation.action-<索引>"`：行首序号圆点 + **组件胶囊组**（图标 + 组件名，
   点一下换组件；`available: false` 的组件**不出现**而不是 disabled）+ 移除钮 + 参数网格；
@@ -631,6 +640,11 @@
   - **保存链路分工**：卡片字段整卡走 `settings:update`（`{ center: {...} }` 顶层浅合并，
     不含 `tokenEnc` / `clientId`；主进程合并时运行期剥 `tokenEnc` 防构造 patch 洗密文）；
     令牌由 `center:login` 在主进程内直写凭据链路，页面不经手。
+- 常规页（**BetaV2**：「启动」/「项目」/「提示条」/「勿扰时段」/「关于与更新」）：
+  「启动」区组内、开机自启（`general.launchAtLogin`）之下是 **「以管理员身份运行」**
+  （v20 新增，`data-field="general.requireAdmin"`，常显 checkbox）—— 启动时未提权会用 UAC
+  重新拉起（**改动重启后生效**，理由与四条边界见 docs/08 §1、docs/09 §9）；
+  本页的死字段口径不变：`general.language` 任何页面都不渲染（见下条）。
 - 模式页（**BetaV2**）：三模式卡片选择 + 引导状态；**只渲染当前模式的配置内容** ——
   ClassRoom 区组不变；Work 已实装，提供工作目录 `workspaceDir`（`data-field="modes.work.workspaceDir"`）
   等配置；Code 仍显示「暂无可配置项」空状态。
@@ -1033,10 +1047,15 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     ② 点 `automation.tab-normal` → 断言 `automation.builtin` 在、`automation.builtin-toggle`
     **恰好 2**（两条内置）、自建项 `automation.item-am-capture1` 恰好 1、`automation.toggle`
     恰好 1（切到 Normal tab 后 Agent 定义不在列表里 —— 顺带钉住「按 tab 过滤」）；
+    另断言**次数徽章**（v0.2.8，docs/13 §3.1）：`automation.runs` **恰好 2 枚**、
+    文本含 `3/10` 与 `5/5`、**`.exhausted` 恰好 1 枚**（seed 的第二份定义已用尽 ——
+    用尽转警示色是 DOM 事实，不靠截图猜）；
     ③ 点 `automation.new` → 断言**条件磁贴**（`automation.trigger-kind` 容器下 `[data-kind]`）**≥ 7**
     （catalog 七类）且**每枚磁贴都有图标**、磁贴内元素不探出磁贴矩形（安全区几何护栏）、
     至少 1 行操作组件（`[data-field^="automation.action-"]`）且每行胶囊都有图标、
-    编辑器内**原生 `<select>` 数为 0**、名称输入框与数字字段都在，
+    编辑器内**原生 `<select>` 数为 0**、名称输入框与数字字段都在、
+    **`automation.max-runs`（调用次数上限）输入可用**（v0.2.8：写入 `42` 后读回同一值
+    = 双向绑定真的接上了，不只是"元素在 DOM 里"），
     再派发一次 `pointerenter` 断言悬浮提示真的出现（`body > .app-tip` 文案非空、不探出视口）
     且 `pointerleave` 后自行收回，然后点 `automation.editor-cancel` 并断言弹窗**已消失**
     （不留残影，后续场景还要操作列表）；
@@ -1107,6 +1126,8 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     **general 页**（`SETTINGS_FIELDS_SCRIPT`）：死字段 `general.language` 必须为 0、提示条详情跟随
     `general.edgeBar.enabled` 开关、BetaV2 迁入的全局勿扰时段 `advanced.quietHours.start/.end`
     两字段必须常在（AdvancedPage 不再渲染它们，数到 >0 才是回归）、
+    **`general.requireAdmin` 恰好 1 个**（v20 新增断言：常显字段，数到 0 就说明提权开关
+    被删掉 / 改名了 —— 与 `general.launchAtLogin` 同款「必须能改回来」）、
     **v13 的项目区组要么给出 `data-empty="projects.list"` 要么至少一行 `projects.name`**
     （只断言「空态或 ≥ 1 行」，不写死条数），且本页 `data-empty` 白名单只有
     `general.edgeBar` 与 `projects.list` 两个 —— 其余空态一律回归；

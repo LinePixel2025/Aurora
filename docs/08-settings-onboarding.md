@@ -2,15 +2,20 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v19）
+## 1. 配置 Schema（config.json，v20）
 
 ```jsonc
 {
-  "version": 19,
+  "version": 20,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
     "hotkey": "Alt+Space",
+    // v20 新增：要求以管理员身份运行（出厂 true）。启动时若当前进程未提权，用 UAC
+    // 重新拉起一个管理员实例（先释放单实例锁再退出，否则子进程会因「已有实例」秒退）；
+    // 用户拒绝 UAC 时不阻断启动（以普通权限继续 + 记 warn）；改动重启后生效。
+    // 只读：AI 的 set_setting 一律拒绝，只能由用户在设置页改（见下方 advanced.readonlyPrefixes）
+    "requireAdmin": true,
     "edgeBar": { "enabled": true, "opacity": 0.9, "quietHours": null },
     // v8 新增：对话窗展示偏好
     "chat": { "showThinking": true }, // 对话界面展示思考过程（MessageList 可折叠思考块的门控，docs/07 §2.3）
@@ -143,7 +148,10 @@
       "general.onboarded", "general.firstRun", "general.launchAtLogin", "general.hotkey",
       "advanced.confirmSensitiveTools",
       // v13 新增：项目根同时决定注入的指令与权限边界；权限档位等于 Agent 自己的确认闸门
-      "projects", "agent.permissionMode"
+      "projects", "agent.permissionMode",
+      // v20 新增：提权是 Agent 自己能碰到的权限边界本身 —— AI 关掉它（或阻止自己重启提权）
+      // 等于自己降低权限约束面，属自我提权；只能由用户在设置页改
+      "general.requireAdmin"
     ]
   },
   "agent": {
@@ -240,7 +248,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **12**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **20**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
@@ -304,6 +312,21 @@
   `v7 → v8` 迁移为旧配置补齐 `imagegen.*`（默认关闭、无 provider）。
 - `general.chat.showThinking`（**v8 新增**）：对话界面是否展示思考过程（MessageList 可折叠思考块的
   门控，docs/07 §2.3，默认 `true`）。Agent 可写（显式登记）。设置页入口在「AI 模型」页（见 §5 / §6）。
+- `general.requireAdmin`（**v20 新增**，见 `main/elevation.ts` 与 docs/09 §9）：
+  **要求以管理员身份运行**，出厂默认 `true`。启动时（配置就绪之后、建窗 / 托盘 / Center 连接
+  之前）若当前进程未提权，用 `powershell -Command Start-Process -Verb RunAs` 拉起一个带
+  `--aurora-elevated` 标记的新实例，随后**先 `app.releaseSingleInstanceLock()` 再 `app.quit()`**
+  —— 先放锁再退，否则子进程会因「已有实例」立刻退出。四条边界：
+  ① **反循环**（子进程看到标记参数就不再提权）；② **用户拒绝 UAC 不阻断启动**
+  （以普通权限继续并记 warn）；③ **开发态默认不强制**（`pnpm dev` / smoke / capture
+  常跑在非提权终端里，需要验证时用 `AURORA_REQUIRE_ADMIN=1` 显式打开）；
+  ④ **探测拿不到结论时按「已提权」处理**（能跑优先）。
+  开着它的意义是「不被权限卡住」：`run_command` 与文件类工具跑在当前用户权限下，
+  未提权时写 `C:\Program Files`、改系统设置这类操作会直接失败。注意它**不是沙箱** ——
+  提权只提高"能做什么"，不改变「越界要确认」的判定链（见 06 §11.2）。
+  **只读**（`SETTINGS_READONLY_PREFIXES`）：提权是 Agent 自己能碰到的权限边界本身，
+  AI 关掉它等于自己降低权限约束面，属自我提权；只能由用户在设置页「常规」改
+  （设置页走 `settings:update`，不经过该黑名单），**改动重启后生效**。
 - `modes.work.workspaceDir`（**v8 新增**）：Work 模式的办公工作目录，空串 = 未配置
   （由引导问答 / 设置页收集）。它与电脑操控工具的 `agent.tools.workspaceDir` **是两个字段**：
   前者是 Work 模式的场景目录，后者只是 `run_command` 的缺省 `cwd`（见 06 §11）。Agent 可写（显式登记）。
@@ -446,7 +469,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 因而不新增存储面，也不会与流水出现两处数据不一致。
 
 **对话归档状态同样不进 config.json**：它写在会话文件自身（`sessions/<id>.json` 的
-`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 19）。
+`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 20）。
 会话文件自己的版本号 `SESSION_FILE_VERSION` 由 1 提到 2，读取对 v1 宽容（缺 `meta` = 未归档），
 不存在需要执行的迁移脚本 —— 「会话文件版本」与「配置版本」是两条独立的链，别混。
 
@@ -461,7 +484,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 19`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 20`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -500,10 +523,13 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   （哪怕恰好也是 8 / 2）同样被抬升，这是「放宽」方向的迁移，宁可多放不误收紧）、
   `v18 → v19`（新增顶层分组 `automations`（自动化总开关，见 §1 与 docs/13 §2.2）：
   **整组缺失时补 `{ enabled: true }`，已存在时原样保留、一个键也不改** —— 幂等、
-  不覆盖用户已写值；自动化的定义与历史是用户数据（`<userData>/automations/`），不走迁移链）。
-  十九条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  不覆盖用户已写值；自动化的定义与历史是用户数据（`<userData>/automations/`），不走迁移链）、
+  `v19 → v20`（新增 `general.requireAdmin`（要求管理员身份启动，见 §1 / docs/09 §9）：
+  只为**已有 `general` 分组**补缺字段（默认 `true`），用户已写的 `false` 原样保留、
+  一个键也不改；`general` 整组缺失时留给 Schema 兜底，不凭空造半截对象）。
+  二十条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽），重复执行结果一致 —— `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **19** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **20** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -601,6 +627,11 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 ## 6. 其他设置页
 
 - **常规**（`general.*`）：开机自启、全局快捷键、提示条（显示 / 透明度 / 独立勿扰时段）均已生效。
+  **「启动」区组新增「以管理员身份运行」开关**（v20，`data-field="general.requireAdmin"`，
+  出厂开）：启动时未提权会弹 UAC 重新拉起（理由与四条边界见 §1 的 `general.requireAdmin`），
+  提示文案已写明「改动重启后生效」。
+  **已知限制**：开机自启（`general.launchAtLogin`）时同样会弹一次 UAC —— 当前**没有**用
+  计划任务做最高权限自启（见 docs/09 §8）。
   `general.language` 是**未生效的死字段** —— Schema 里保留（避免再动一次配置版本），但**没有 i18n 消费方**，
   改它不会改变界面语言，因此**设置页与引导页都不再显示该选择器**（保存时仍原样回传，配置不丢）。
 - **页面骨架**：所有页面统一「标题 + 一句话说明 + 分组卡片」（`theme.css` 的
@@ -750,9 +781,12 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 | `agent.snapshots.*` | 常显（`enabled` 必须随时能改回来；v14 新增）。关掉 `enabled` 时三个数字字段整块换成 `data-empty="agent.snapshots"` |
 | `agent.loop.*` | 常显（**不跟 `agent.tools.enabled` 门控**：它管的是"一次请求怎么停下来"，不是"注册哪些工具"；v15 新增）。三个字段一次到位、没有空态 |
 | `automations.enabled` | 常显（总开关关掉必须还能开回来；v19 新增）。所在区组在「模式」页顶部，**不跟模式门控** |
+| `general.requireAdmin` | 常显（「常规」页「启动」区组；v20 新增）。被删掉 / 改名时 capture 的 general 页探针立刻报 FAIL |
 
 校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针按页断言——
-`settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0，
+`settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0、
+**`general.requireAdmin` 恰好 1 个**（v20 新增：它是常显字段，数到 0 就说明「启动」区组里的
+提权开关被删掉 / 改名了），
 且**项目区组要么给出 `data-empty="projects.list"`、要么至少渲染一行 `projects.name`**
 （v13 新增；探针只断言「空态或 ≥ 1 行」，不写死条数 —— 用户有几个项目都能过），
 本页除 `general.edgeBar` 与 `projects.list` 之外的 `data-empty` 一律视为回归；

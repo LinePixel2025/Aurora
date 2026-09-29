@@ -151,3 +151,34 @@ electron-builder 首次打包会下载两样东西：Electron 发行包与打包
 - 差量更新依赖 `*.blockmap`（已随产物上传）；如果上传时漏了它，更新仍可完成，
   但会退化为全量下载。
 - `latest.yml` 与安装包的 sha512 必须同时更新（`verify:release` 会拦住这类错误）。
+- **安装版启动可能弹一次 UAC**（见 §9）：`general.requireAdmin` 为 `true`（出厂默认）
+  且当前进程未提权时，应用会用 UAC 以管理员身份重新拉起自己；**开机自启同样会弹一次**
+  （没有用计划任务做最高权限自启）。提权被拒**不阻断启动**（以普通权限继续 + 记 warn）。
+
+## 9. 启动提权（`general.requireAdmin`，v0.2.8）
+
+`run_command` 与文件类工具跑在**当前用户权限**下：未提权时写 `C:\Program Files`、
+改系统设置、`net session` 这类操作会直接失败，用户看到的是「AI 说做了，其实没做成」。
+安装版启动时因此多一步提权（实现 `apps/desktop/src/main/elevation.ts`，
+配置字段与只读口径见 docs/08 §1）：
+
+- **时机**：bootstrap 第 2.2 步 —— 配置就绪之后、建窗 / 托盘 / Center 连接**之前**
+  （先拿到 `general.requireAdmin` 的真实值，也保证提权重启发生在任何外部连接之前）；
+- **探测**：Windows 上先看 `fltmc.exe`（未提权时因访问被拒而失败，退出码 1 = 确定未提权），
+  拿不到结论再回落 PowerShell 的 `WindowsPrincipal.IsInRole(Administrator)`；
+  **两条都拿不到结论时按「已提权」处理**（能跑优先，探测失败绝不等于启动不了）；
+- **重启**：`powershell -Command Start-Process -Verb RunAs` 拉起带 `--aurora-elevated`
+  标记的新实例，随后**先 `app.releaseSingleInstanceLock()` 再 `app.quit()`** ——
+  先放锁再退，否则子进程会因「已有实例」立刻退出（本进程不放锁 = 提权实例秒退）；
+  子进程看到 `--aurora-elevated` 标记就不再尝试提权（反循环的唯一判据）；
+- **失败不阻断**：用户拒绝 UAC（powershell 退出码 3）/ 无管理员权限 / 非 Windows 时
+  **继续以普通权限启动**并记一条 warn ——「要求管理员」不能变成"配置错了就打不开"；
+- **开发态默认不强制**：`pnpm dev` / smoke / capture 的进程常跑在非提权终端里，
+  强制提权会让自测每次弹 UAC 甚至卡住；需要验证提权路径时用
+  `AURORA_REQUIRE_ADMIN=1` 显式打开（仅该环境变量能打开开发态的提权）；
+- **未签名安装包 + UAC 的注意点**：本仓库产物**不签名**（§4），因此提权弹窗里的发行者
+  显示为「未知发行者」—— 这与首次运行安装包时的 SmartScreen 提示（§4）是**两件事**：
+  UAC 问的是「是否允许本次提权」，SmartScreen 问的是「是否允许运行未签名的安装程序」，
+  前者点「是」、后者点「更多信息 → 仍要运行」（用户文档里的说明见 §4）。
+- **它不改变权限判定链**：提权只提高"能做什么"，越界要确认 / 项目根边界仍照旧
+  （docs/06 §11.2）—— 提权**不是**「不再确认」，别把两者混为一谈。
