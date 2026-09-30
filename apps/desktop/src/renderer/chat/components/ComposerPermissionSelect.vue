@@ -247,8 +247,12 @@ onBeforeUnmount(() => {
  * 刻意**不设** `position: relative`：下拉要锚在整张输入卡（`.composer-box`）上，
  * 这样它永远浮在输入卡上方，绝不会盖住自己所在的这条工具行（docs/07 §2.3）。
  */
+/* 可收缩（`min-width: 0` 是收缩的前提）：窄窗下收缩顺序是
+   「键位提示 → 模型 → 思考档 → 权限（最后让位）」——权限是档位闸门入口，
+   尽量保持全文可见，真放不下时由 `.perm-label` 省略号兜底，绝不允许溢出输入卡边框。 */
 .perm {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 /* 与模型 / 思考等级两枚下拉共用同一套「零边框芯片」尺寸（28px + pill 圆角 + 悬停浮底），
@@ -258,6 +262,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 5px;
   height: var(--control-h-xs);
+  min-width: 0;
   padding: 0 var(--space-2);
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
@@ -309,9 +314,18 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 
+/*
+ * 截断三件套必须齐（`white-space` 从按钮继承不可靠——flex 子项被压缩时各浏览器表现不一）：
+ * `min-width: 0` 允许自身被压缩、`nowrap` 保证单行、ellipsis 收尾。
+ * 上限给到 96px（与思考档一致）：三档最长文案「变更前确认」在 125% DPI 下也放得下，
+ * 不再出现文字被切成两截或顶出 pill 的情况。
+ */
 .perm-label {
-  max-width: 84px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 96px;
   overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
 }
 

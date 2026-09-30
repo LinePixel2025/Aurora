@@ -1716,12 +1716,16 @@ async function markGuideDone(): Promise<void> {
 }
 
 /* 工具行（2026-09-29 减负轮）：三枚 28px 芯片 + 弹性槽 + 右侧动作钮，间距收到 4px，
-   整行不再是一条「带边框的工具栏」——三个控件零边框、悬停才出现分层填充。 */
+   整行不再是一条「带边框的工具栏」——三个控件零边框、悬停才出现分层填充。
+   `overflow: hidden` 是最后的兜底：三枚芯片都参与收缩（权限最后让位），但任何极端
+   宽度（超窄窗 / 高 DPI）下内容都只会在行内被裁剪，绝不溢出输入卡的圆角边框
+   （用户实测「权限文字超出组件边框」的根因就是本行此前既不收缩也不裁剪）。 */
 .composer-bar {
   display: flex;
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
+  overflow: hidden;
   white-space: nowrap;
 }
 

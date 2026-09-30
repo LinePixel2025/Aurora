@@ -76,11 +76,12 @@ function onChange(event: Event): void {
  * 两枚下拉的尺寸 / 圆角 / 悬停 / 聚焦样式必须**逐字对齐**（同 28px 高、同 pill 圆角、
  * 同 `--fill-2` 悬停底色），否则同一条工具带上会出现两种控件观感。
  *
- * `flex: 0 0 auto` 是关键：`.composer-bar` 里被压缩的只能是可省略的提示文本，
- * 这个控件与发送按钮都不参与收缩（窄窗下不允许换行或把发送按钮挤出去）。
+ * `flex: 0 1 auto`（可收缩到 `min-width`）：`.composer-bar` 的收缩顺序是
+ * 「键位提示 / 瞬时提示 → 模型 → 本控件 → 权限芯片」，窄窗下依次让位，
+ * 谁都不能把发送按钮挤出行外、更不能溢出输入卡边框。
  */
 .thinking-level {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   width: auto;
   min-width: 62px;
   max-width: 96px;
