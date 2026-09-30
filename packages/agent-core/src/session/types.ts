@@ -46,6 +46,17 @@ export interface StoredMessage {
 }
 
 /**
+ * 会话空间（2026-09-30，主界面左栏三分，docs/06 §4 / docs/07 §2.3）。
+ *
+ * 左栏会话列表按空间分三区，每区工作目录互不相同：
+ * - `'agent'` → Agent对话（含未标记的历史会话与 `quick`），工作目录固定 `%USERPROFILE%\Desktop\Aurora`；
+ * - `'work'` → 工作目录对话（Work 模式专属），工作目录 = `modes.work.workspaceDir`；
+ * - 绑定了 `projectId` 的会话是**项目对话**（不需要 space 字段，projectId 优先于 space）；
+ * - `'code'` 为 Code Mode 预留取值，当前不产生。
+ */
+export type SessionSpace = 'agent' | 'work'
+
+/**
  * 会话级元信息（`userData/sessions/<sessionId>.json` 的 `meta` 字段，docs/06 §4）。
  *
  * 刻意存在**会话文件自身**里，不做 sidecar 索引：`listSessions()` 把 `sessions/`
@@ -75,6 +86,15 @@ export interface SessionMeta {
    * 与 `archived` 同一套零迁移套路。
    */
   projectId?: string
+  /**
+   * 会话空间（`SessionSpace`，docs/06 §4 会话三分）。
+   *
+   * `undefined` 与 `'agent'` 等价（Agent 对话区）：未标记的会话（含历史会话与 `main`）
+   * 一律按 Agent 空间解析工作目录与权限边界 —— 这是 2026-09-30 的有意行为变化。
+   * 绑定了 `projectId` 的会话以项目为准，space 不参与判定（projectId 优先）。
+   * 这是**会话数据**不是配置：不进 `config.json`、不进 `CONFIG_VERSION` 迁移链。
+   */
+  space?: SessionSpace
   /**
    * 客户端左栏可见性（docs/12 §6.3 远程会话管理，v0.2.3）。
    *

@@ -19,6 +19,8 @@ export * from './context/systemPrompt.js'
 // 项目机制（docs/06 §5.1，v13）：当前项目解析 + 项目级 AGENTS.md 逐层收集
 export * from './config/project.js'
 export * from './config/effectiveWorkspace.js'
+// Agent 空间的固定工作目录（docs/06 §4 会话三分，2026-09-30）
+export * from './config/agentWorkspace.js'
 export * from './project/agentsFile.js'
 export * from './project/instructions.js'
 export * from './project/nodeFs.js'

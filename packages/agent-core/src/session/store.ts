@@ -25,6 +25,7 @@ import {
   SESSION_FILE_VERSION,
   type NewMessage,
   type SessionMeta,
+  type SessionSpace,
   type StoredMessage,
   type StoredSession,
   type StoredToolCall,
@@ -53,6 +54,11 @@ export interface SessionSummary extends ChatSessionSummary {
    * 会话级权限档覆盖（docs/06 §11.2 / docs/12 §6.3）。缺省**不含这个键** = 跟随全局档。
    */
   permissionMode?: PermissionMode
+  /**
+   * 会话空间（docs/06 §4 会话三分）。未标记的会话**不含这个键** = Agent 空间
+   * （undefined 与 `'agent'` 等价，渲染层按「有没有键」与 `projectId` 分三区）。
+   */
+  space?: SessionSpace
 }
 
 export interface SessionStoreOptions {
@@ -352,6 +358,37 @@ export class SessionStore {
   }
 
   /**
+   * 会话空间（docs/06 §4 会话三分）。
+   *
+   * - **幂等**：与当前空间相同（含「都是未标记」）→ 直接返回，不写盘；
+   * - 只认 `'agent' | 'work'`（`'code'` 预留未启用），非法值抛错而不是静默落盘 ——
+   *   与 `setPermissionMode` 同一条口径：空间写错会让工作目录 / 权限边界落到错误分区；
+   * - 先 `ensureLoaded` + **await 写盘完成**（与 `setProject` 同一条铁律）。
+   *
+   * 给从未落盘的空会话调它**会**首次写出只有 meta 的文件（与归档 / 绑定项目同款）——
+   * 「新会话带空间」请走 `createSession({ space })`：那条路只写内存缓存、不置脏标记，
+   * 空会话永远不会落盘。
+   */
+  async setSpace(sessionId: string, space: SessionSpace): Promise<void> {
+    if (space !== 'agent' && space !== 'work') {
+      throw new Error(`非法的会话空间：${String(space)}`)
+    }
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    const current = this.metaCache.get(id) ?? {}
+    // 幂等判定按「缺省 agent」归一：undefined 与 'agent' 等价，相互设置不算变更
+    if ((current.space ?? 'agent') === space) return
+
+    const next: SessionMeta = { ...current }
+    if (space === 'agent') delete next.space
+    else next.space = space
+    this.metaCache.set(id, next)
+    this.dirty.add(id)
+    this.scheduleWrite(id, 0)
+    await (this.writing.get(id) ?? Promise.resolve())
+  }
+
+  /**
    * 会话绑定的项目 id（**同步**，只读内存缓存；'' / undefined 一律归一为 undefined）。
    *
    * 为什么是同步的：工具执行链上的端口边界（`file-port` / `command-runner` 的
@@ -370,6 +407,16 @@ export class SessionStore {
     const id = normalizeSessionId(sessionId)
     await this.ensureLoaded(id)
     return this.projectOf(id)
+  }
+
+  /**
+   * 会话空间（**同步**，只读内存缓存；undefined 归一为 `'agent'`，docs/06 §4）。
+   *
+   * 与 `projectOf` 同一条装配层不变量（工具执行前会话必然已装载），消费方是
+   * `main/tools/session-project.ts` 的空间回落级 —— 同步 getter，等不了一次读盘。
+   */
+  spaceOf(sessionId: string): SessionSpace {
+    return this.metaCache.get(normalizeSessionId(sessionId))?.space ?? 'agent'
   }
 
   /** 已落盘 / 已缓存的会话 id 列表。 */
@@ -418,6 +465,8 @@ export class SessionStore {
         // permissionMode 缺省跟随全局（同样不带键）
         ...(meta.centerVisible === undefined ? {} : { centerVisible: meta.centerVisible }),
         ...(meta.permissionMode === undefined ? {} : { permissionMode: meta.permissionMode }),
+        // 会话空间（docs/06 §4）：未标记 = Agent 空间，不带键（与 projectId 同款「有键才有值」）
+        ...(meta.space === undefined ? {} : { space: meta.space }),
       })
     }
     return items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
@@ -428,12 +477,23 @@ export class SessionStore {
    *
    * 只生成 id 并标记为已加载（空数组）：文件在首条消息落盘时才真正创建，
    * 避免用户连点「新建」在磁盘上堆一批空文件。
+   *
+   * `options.space`（docs/06 §4 会话三分）：**只写内存 metaCache、不置脏标记** ——
+   * 左栏 Agent / Work 分区的新建入口因此能在列表里立即按空间分组，而空会话
+   * 永远不会落盘（连「只有 meta 的文件」都不会出现）；首条消息 append 落盘时
+   * meta 随消息一起写入。重启后未发过消息的空间会话随之消失（与空会话同命，符合预期）。
    */
-  async createSession(): Promise<string> {
+  async createSession(options?: { space?: SessionSpace }): Promise<string> {
     const id = normalizeSessionId(`chat-${Date.now().toString(36)}-${(this.counter += 1)}`)
     if (!this.loaded.has(id)) {
       this.loaded.add(id)
       this.cache.set(id, [])
+    }
+    const space = options?.space
+    // 只为 'work' 落缓存键：'agent' 是缺省空间（`spaceOf` 已归一），写 `{ space: 'agent' }`
+    // 会让 summaries / isEmptyMeta 出现「有键但无信息量」的空值键
+    if (space === 'work') {
+      this.metaCache.set(id, { space })
     }
     return id
   }
@@ -692,6 +752,9 @@ function normalizeMeta(value: unknown): SessionMeta {
   if (permissionMode === 'readonly' || permissionMode === 'confirm' || permissionMode === 'auto') {
     meta.permissionMode = permissionMode
   }
+  // 会话空间只认已启用的两个取值（'code' 预留未启用）；畸形值按未标记（Agent 空间）处理
+  const space = candidate['space']
+  if (space === 'agent' || space === 'work') meta.space = space
   return meta
 }
 
@@ -710,7 +773,9 @@ function isEmptyMeta(meta: SessionMeta): boolean {
     // centerVisible 只有 false 才有信息量（true = 缺省可见），setCenterVisible 写入侧已归一；
     // 这里再兜一道：不让 `"centerVisible": true` 把每个会话文件多写一行
     meta.centerVisible === undefined &&
-    meta.permissionMode === undefined
+    meta.permissionMode === undefined &&
+    // space 只有 'work' 才有信息量（'agent' = 缺省空间），setSpace / createSession 写入侧已归一
+    (meta.space === undefined || meta.space === 'agent')
   )
 }
 

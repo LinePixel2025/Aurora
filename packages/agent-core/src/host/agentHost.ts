@@ -130,6 +130,12 @@ export interface AgentHostDeps {
    */
   projectInstructions?(sessionId: string): Promise<string | undefined>
   /**
+   * 会话生效工作目录提示（docs/06 §4 会话三分 / §5.1，2026-09-30）：按会话解析
+   * 回落链结果（Agent 空间 → `桌面\Aurora`、Work 空间 → 模式工作目录、项目对话 → 项目根），
+   * 渲染为「## 工作目录」易变小节。返回空串 / undefined / 抛错时整段省略（不中断请求）。
+   */
+  workspaceHint?(sessionId: string): Promise<string | undefined>
+  /**
    * Job 存储（docs/06 §4.1，v15）：有了它，一次请求就是一条可查询 / 可续跑的 job；
    * 未注入时行为与 v15 之前完全一致（不落 job、不发 `job` 事件）。
    */
@@ -582,6 +588,7 @@ export class KernelAgentHost implements AgentHostContract {
         const settingsHint = this.readSettingsHint()
         const todoSummary = await this.readTodoSummary(sessionId)
         const projectInstructions = await this.readProjectInstructions(sessionId)
+        const workspaceHint = await this.readWorkspaceHint(sessionId)
 
         const systemPrompt = buildSystemPrompt({
           ...(profile?.persona === undefined ? {} : { persona: profile.persona }),
@@ -592,6 +599,7 @@ export class KernelAgentHost implements AgentHostContract {
             : { perceptionSummary: await this.deps.perceptionSummary() }),
           ...(compression.summary === undefined ? {} : { historySummary: compression.summary }),
           ...(todoSummary === undefined ? {} : { todoSummary }),
+          ...(workspaceHint === undefined ? {} : { workspaceHint }),
           ...(projectInstructions === undefined ? {} : { projectInstructions }),
           skillCatalog: this.deps.skills.catalogPrompt,
           ...(() => {
@@ -986,6 +994,20 @@ export class KernelAgentHost implements AgentHostContract {
       return await this.deps.projectInstructions(sessionId)
     } catch (error) {
       this.logger.warn('项目约定读取失败，本次请求省略该小节', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return undefined
+    }
+  }
+
+  /** 会话工作目录提示（docs/06 §4 会话三分）：同一条降级口径 —— 读不到就省略该小节 */
+  private async readWorkspaceHint(sessionId: string): Promise<string | undefined> {
+    if (this.deps.workspaceHint === undefined) return undefined
+    try {
+      return await this.deps.workspaceHint(sessionId)
+    } catch (error) {
+      this.logger.warn('工作目录解析失败，本次请求省略该小节', {
+        sessionId,
         error: error instanceof Error ? error.message : String(error),
       })
       return undefined

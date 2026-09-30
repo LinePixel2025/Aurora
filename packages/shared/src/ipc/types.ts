@@ -552,6 +552,13 @@ export interface ChatSessionSummary {
    */
   projectId?: string
   /**
+   * 会话空间（docs/06 §4 会话三分，2026-09-30，`meta.space`）。
+   * 未标记的会话**不含这个键** = Agent 空间（undefined 与 `'agent'` 等价）；
+   * 绑定了 `projectId` 的会话以 projectId 为准（项目对话），本字段不参与判定。
+   * 渲染层按 `projectId` / `space` 把左栏分成 项目对话 / 工作目录对话 / Agent对话 三区。
+   */
+  space?: 'agent' | 'work'
+  /**
    * 客户端左栏可见性（docs/12 §6.3 远程会话管理，`meta.centerVisible`）。
    * **缺省（不含这个键）= 可见**；false = Center 已把该会话从左栏隐藏（仍可远程输入）。
    */
@@ -1418,8 +1425,15 @@ export interface AuroraApi {
      * 渲染层收到后重拉会话列表即可（payload 只含 sessionId）。
      */
     onCenterVisibilityChanged(listener: (event: ChatRemoteVisibilityEvent) => void): () => void
-    /** 新建会话并返回其 id */
-    newSession(): Promise<Result<string>>
+    /**
+     * 新建会话并返回其 id。
+     *
+     * `options.space`（docs/06 §4 会话三分，2026-09-30）：给新会话打空间戳 ——
+     * `'agent'`（缺省）= Agent对话、`'work'` = 工作目录对话；`options.projectId`
+     * 传入则**绑定到该项目**（校验存在性，同 `setSessionProject`；绑定优先于 space）。
+     * 空会话不落盘：space 只写内存，首条消息落盘时 meta 随消息一起写入。
+     */
+    newSession(options?: { space?: 'agent' | 'work'; projectId?: string }): Promise<Result<string>>
     /**
      * 归档 / 取消归档一个会话（docs/06 §4）。
      *
