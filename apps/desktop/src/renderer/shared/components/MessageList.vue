@@ -32,11 +32,15 @@
  *   （内容在流式期间还在长，实测高度的终点会被 `overflow: hidden` 裁掉并补跳）；
  * - 每张工具卡变成 **AgentToolRow**：去掉行内状态文字（语义交给状态点色 + `aria-label`），
  *   结果摘要上提到行首一行，终态一次性确认 + 行底色淡出（`aurora-tint-out` / `--dur-tint`）；
- * - **自动折叠状态机**（本条是本轮的行为核心）：`props.streaming` 的 true → false 边沿把
- *   这一轮的消息标记为"已折叠"（`historyFoldedIds`），历史水合出来的消息默认折叠；
- *   用户点开某条（`traceOpenedIds`）就保持点开；流式期间的目标消息自动展开
- *   （`thinkingTargetId` 到达时把该条加进 `traceOpenedIds`）。
- *   落到渲染上就是 `traceOpen(message) = traceOpenedIds.has(id) || !historyFoldedIds.has(id)`；
+ * - **自动折叠状态机**（本条是本轮的行为核心）：`props.streaming` 的两个边沿各管一头 ——
+ *   false → true（新一轮开始）把**此刻在屏的消息**登记为历史（默认折叠），
+ *   true → false（这一轮结束）把**本轮追加的消息**（= 到此刻还没登记的）一并收起为一行摘要；
+ *   历史水合出来的消息默认折叠；用户点开某条（`traceOpenedIds`）就保持点开（跨轮不清）；
+ *   流式期间的目标消息自动展开（`thinkingTargetId`，写在 `traceOpen` 的判据里）。
+ *   落到渲染上就是
+ *   `traceOpen(message) = traceOpenedIds.has(id) || thinkingTargetId === id || !historyFoldedIds.has(id)`；
+ *   ⚠️ 收尾只能按「本轮追加了哪些」收，按「哪些被打开过」收会漏掉**没有思考增量**的工具轮
+ *   （2026-10-01 用户实测：「模型答完了，工作过程还摊着不折叠」）；
  * - 三处扩展 / 收起（轨迹头、思考块头、工具行头）在**跟随态**下重新贴底
  *   （`stick(reduceMotion ? 'auto' : 'smooth')`，判定照抄 `jumpToLatest`）。
  *
@@ -167,10 +171,11 @@ function isThinkingOpen(id: string): boolean {
 }
 
 /**
- * 轨迹被**显式展开**的消息 id（用户点开过，或这一轮正在流式）。
+ * 轨迹被**用户显式展开**的消息 id（点开就留在这儿，跨轮不清）。
  *
- * 与 `historyFoldedIds` 一起构成 `traceOpen(message)`：两个集合各自只增该项的"显式意图"，
- * 折叠判定本身没有额外的开关变量（状态机见下方的「轨迹自动折叠」一节）。
+ * 它只装"用户意图"一件事 —— 流式期间正在思考的那条由 `traceOpen` 直接判定，
+ * 不混进来（见下方「轨迹自动折叠」一节）。与 `historyFoldedIds` 一起构成
+ * `traceOpen(message)`：折叠判定本身没有额外的开关变量。
  */
 const traceOpenedIds = reactive(new Set<string>())
 
@@ -308,8 +313,10 @@ function toggleThinking(id: string): void {
  * 2. 目标被指到 → 展开该块，并滚到块内最新一行（DOM 下一帧才存在）；
  * 3. 目标被指到 → 开始（或重启）本轮思考的读秒。
  *
- * 轨迹重构追加第 4 件：目标出现时把**外层轨迹**也打开（`traceOpenedIds`）——
- * 否则推理到达时思考块整段藏在一个折叠的轨迹里，用户看不到"正在想什么"。
+ * 轨迹重构追加第 4 件：目标出现时把**外层轨迹**也打开 —— 这一条现在写在 `traceOpen` 的
+ * 第 2 条判据里（`props.thinkingTargetId === message.id` → 展开），**不再**往
+ * `traceOpenedIds` 里塞：那个集合表达的是"用户**显式**点开过"，把自动展开混进去会让收尾边沿
+ * 分不清"该收起来的自动展开"与"该保留的用户意图"（2026-10-01 的折叠 bug 就出在这里）。
  * 这一条只对"当前正在思考的那条"生效，翻历史时不会被别的消息的增量强行展开。
  */
 watch(
@@ -320,7 +327,6 @@ watch(
       return
     }
     if (!thinkingOpen.value.includes(id)) thinkingOpen.value = [...thinkingOpen.value, id]
-    if (!traceOpenedIds.has(id)) traceOpenedIds.add(id)
     beginThinkingFollow()
     startThinkingTimer()
   },
@@ -328,12 +334,16 @@ watch(
 )
 
 /**
- * 请求结束（streaming true → false 边沿）：把这一轮打开过的轨迹与思考块一起收起为摘要行。
+ * 请求结束（streaming true → false 边沿）：把这一轮的思考块与轨迹一起收起为摘要行。
  *
  * 这是**轨迹自动折叠状态机**的触发点（docs/07 §2.3）：边沿一到就
- * ① 清掉「显式展开」集合（`traceOpenedIds`）、② 把这一轮的消息全部标记为"已折叠"
- * （`historyFoldedIds`）—— 于是 `traceOpen(message)` 对它们一律为 false，
- * 已结束的轨迹回到一行摘要，用户手动点开的那些仍可再点开（历史消息不在这个集合里）。
+ * ① 收起思考块（`thinkingOpen`）、② 把**本轮追加的消息**全部收成折叠态
+ * （`markPresentAsHistory`）——于是 `traceOpen(message)` 对它们一律为 false（除非用户点开过），
+ * 已结束的轨迹回到一行摘要。
+ *
+ * ⚠️ 收的是"此刻在屏但还没登记过的"（= 本轮追加的），不是"这一轮被打开过的"：
+ * 后者漏掉**没有思考增量**的那一轮（它从没进过 `traceOpenedIds`），轨迹会永远摊开着
+ * —— 用户报的「模型工作过程没有折叠」（2026-10-01 实测，回归防线见 `chat-trace-fold` 探针）。
  *
  * 同一条路径上兜底停表：正常收尾 `useChat` 会先清 `thinkingTargetId`（上面已停过），
  * 但出错 / 目标未被清时也不许留下定时器。
@@ -341,11 +351,15 @@ watch(
 watch(
   () => props.streaming,
   (now, before) => {
-    if (before !== true || now !== false) return
+    if (now === before) return
+    if (now === true) {
+      // 新一轮开始：此刻在屏的一切都是历史（默认折叠），本轮新追加的默认展开。
+      markPresentAsHistory()
+      return
+    }
     thinkingOpen.value = []
     stopThinkingTimer()
-    for (const id of traceOpenedIds) historyFoldedIds.add(id)
-    traceOpenedIds.clear()
+    markPresentAsHistory()
   },
 )
 
@@ -416,32 +430,49 @@ const swapping = ref(false)
 /**
  * 判定「这条消息的轨迹默认折叠」的 id 集合。
  *
- * 两个来源，合起来覆盖"什么算历史"：
+ * 三个来源，合起来覆盖"什么算历史 / 什么算已结束"：
  * 1. **整表替换进来的消息**（窗口刚挂载时的水合结果 / 切会话 / 清空后重新水合）——
  *    `props.messages` 换引用且此刻 `streaming` 为 false 时整表入册（`markIncomingAsHistory`）；
- * 2. **streaming 的 true → false 边沿**——把这一轮里被打开过的消息补进来
- *    （见上面的 `streaming` watcher）。
+ * 2. **新一轮开始**（streaming false → true 边沿）——此刻在屏的一切都成了历史（`markPresentAsHistory`）；
+ * 3. **这一轮结束**（streaming true → false 边沿）——把这轮追加的消息全部入册，收起为一行摘要。
  *
- * 流式期间**新追加**的消息不会进这个集合，所以 `traceOpen` 对它们默认为真 ——
- * 正在跑的那条轨迹默认展开，跑完被边沿收掉。历史消息默认折叠，用户点开后
- * 进 `traceOpenedIds`，`traceOpen` 仍然为真（"用户点开就保持点开"）。
+ * 流式期间**新追加**的消息不在这个集合里，所以 `traceOpen` 对它们默认为真 ——
+ * 正在跑的那条轨迹默认展开，跑完被边沿收掉。历史消息默认折叠，用户点开后进
+ * `traceOpenedIds`，`traceOpen` 恒为真（"用户点开就保持点开"，跨轮也不清）。
+ *
+ * ⚠️ **不要在收尾边沿只收「打开过的」（2026-10-01 用户实测的 bug）**：轨迹的"打开"原先
+ * 混在 `traceOpenedIds` 里，而**只有思考增量到达**（`thinkingTargetId`）才会把消息放进去。
+ * 于是「有工具调用但没有思考增量」的那一轮（纯工具模型 / 关掉思考 / 工具轮才是最后一轮）
+ * 从没进过集合 → 收尾边沿收不掉它 → 轨迹**永远停在展开态**，用户看到的就是
+ * 「模型答完了，工作过程还铺在那里不折叠」。收尾必须按"这一轮追加了哪些消息"来收，
+ * 而不是按"哪些被打开过"。
  */
 const historyFoldedIds = reactive(new Set<string>())
 
 /**
- * 这条消息的轨迹是否展开：**显式展开过**或**从来没被标记为已折叠**。
+ * 这条消息的轨迹是否展开。
  *
- * 单一表达式就是整个状态机的读写口径（改行为只需要改这里），
- * 渲染层读它、`toggleTrace` 写它、`streaming` 边沿清它。
+ * 三条判据按优先级：
+ * 1. 用户显式点开过 → 恒为真（跨轮保留）；
+ * 2. 正在思考的那条（`thinkingTargetId`）→ 自动展开（否则推理藏在折叠的轨迹里看不见）；
+ * 3. 其余按「有没有被登记为历史 / 已结束」：登记过 = 折叠，没登记过 = 展开。
  */
 function traceOpen(message: ChatMessage): boolean {
-  return traceOpenedIds.has(message.id) || !historyFoldedIds.has(message.id)
+  if (traceOpenedIds.has(message.id)) return true
+  if (props.thinkingTargetId === message.id) return true
+  return !historyFoldedIds.has(message.id)
 }
 
 /** 点击轨迹摘要行：翻转状态并在跟随态下重新贴底（展开体会长高一段）。 */
 function toggleTrace(message: ChatMessage): void {
-  if (traceOpen(message)) traceOpenedIds.delete(message.id)
-  else traceOpenedIds.add(message.id)
+  if (traceOpen(message)) {
+    // 收起：必须**同时登记为"已折叠"**。只把 id 从 `traceOpenedIds` 里删掉的话，
+    // 第 3 条判据（没登记过 = 展开）会立刻又把它打开 —— 点了没反应。
+    traceOpenedIds.delete(message.id)
+    historyFoldedIds.add(message.id)
+  } else {
+    traceOpenedIds.add(message.id)
+  }
   restick()
 }
 
@@ -468,6 +499,21 @@ function toggleToolRow(id: string): void {
  */
 function markIncomingAsHistory(): void {
   if (props.streaming) return
+  for (const message of props.messages) historyFoldedIds.add(message.id)
+}
+
+/**
+ * 把**此刻在屏的消息**全部登记为"已折叠"。
+ *
+ * 两处调用，语义都是"这一批已经不是'正在跑的那条'了"：
+ * - 新一轮开始时（`streaming` false → true）：这一刻之前出现的都是历史，
+ *   之后追加的才是本轮（本轮不登记 → 默认展开）；
+ * - 这一轮结束时（true → false）：把本轮追加的（= 到此刻还没登记过的）一并收起来。
+ *
+ * 幂等：已登记的重复 `add` 无副作用；用户显式点开的那些在 `traceOpen` 里优先级更高，
+ * 因此不会被这条收掉（"用户点开就保持点开"）。
+ */
+function markPresentAsHistory(): void {
   for (const message of props.messages) historyFoldedIds.add(message.id)
 }
 

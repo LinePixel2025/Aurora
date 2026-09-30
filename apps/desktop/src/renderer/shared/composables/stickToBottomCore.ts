@@ -17,6 +17,15 @@
  * 现在只有 wheel / 滚条拖拽 / 翻页键这类**真实输入**（`events.onUserScrollIntent`）才被当作
  * 用户意图，且仍需「实际距底 > threshold」这道**正向确认**才算接管（在底部继续滚滚轮不会误关）。
  *
+ * **①′ 但"真实输入"与"读数"之间有一个时间差：窗口期内的读数必须重新判一次。**
+ * 合成器线程先滚、主线程后收到输入事件（`passive: true` 的 wheel 尤其如此），输入到达那一刻
+ * 读到的**仍是旧位置**：视口本来就贴在底部时，"用户上滚"会被判成"用户还在底部继续滚"，
+ * 紧接着浏览器派发的 `scroll` 排出一帧对齐，把这次滚动**原样抹回底部** —— 每一次滚轮都被吞，
+ * 界面上就是「模型答完后翻不动历史」（2026-10-01 用户实测）。因此真实输入会开启一个短窗口
+ * （`DEFAULT_INTENT_WINDOW_MS`）：**窗口期内**的读数变化按当前位置重新判定跟随；窗口一过，
+ * 读数变化退回"内容可能变了"的纯通知语义（①）。判定永远只由真实输入**发起** ——
+ * 程序自己滚出来的读数变化开不了这个窗口。
+ *
  * **② 内容变高后必须自愈到"真的到底"。**
  * `scrollTop = scrollHeight - clientHeight` 用的是**写那一刻**的读数：DOM 变更发生在布局之前，
  * 同一帧里内容可能又长了一截（一次 markdown 块 / 一张工具卡 70–500px）。因此每帧对齐后
@@ -51,6 +60,12 @@ export type StickUnsubscribe = () => void
  * `onUserScrollIntent` 才表示"人在滚" —— 两者混在一起就是本轮修复前的病根。
  */
 export interface StickEvents {
+  /**
+   * 读数**可能**变了（程序滚动也会触发；真实滚动的 `scroll` 也走这条）。
+   *
+   * 它本身不表达"人在滚"，只有在 `onUserScrollIntent` 打开的真实输入窗口期内，
+   * 才会被当作"人滚出来的位置"用来重判跟随（见文件头 ① / ①′）。
+   */
   onScroll: (callback: () => void) => StickUnsubscribe | void
   onUserScrollIntent: (callback: (kind: StickIntentKind) => void) => StickUnsubscribe | void
   onTransitionEnd: (callback: () => void) => StickUnsubscribe | void
@@ -76,6 +91,11 @@ export interface StickToBottomCoreOptions {
   onFollowingChange?: (following: boolean) => void
   /** 距底部多少 px 以内仍算「在底部」（缺省 24，与思考块内跟随同口径） */
   threshold?: number
+  /**
+   * 「真实输入窗口」时长（缺省 250ms，见文件头 ①′）。
+   * 只为可测性暴露：单测用注入时钟把它推过期，生产不传。
+   */
+  intentWindowMs?: number
 }
 
 export interface StickToBottomCore {
@@ -92,6 +112,9 @@ export interface StickToBottomCore {
    *
    * 必须由调用方主动喂进来：程序滚动不产生这些事件，引擎自己**读不到**"人是否在滚"，
    * 这也正是它无法再用 `scroll` 事件判定跟随状态的原因。
+   *
+   * 实现上是**开一个短窗口 + 立刻判一次**：立刻那一判用的是输入到达时的读数（合成器可能
+   * 还没把视口挪过去），窗口期内的读数变化会再判一次补上（见文件头 ①′）。
    */
   onUserIntent: (kind: StickIntentKind) => void
   /** DOM 增删 / 文本变更 / 尺寸变化 / 过渡结束的统一入口：合并到下一帧对齐一次 */
@@ -123,8 +146,21 @@ const HEIGHT_EPSILON = 0.5
 /** 判定「已经真的在底部」的容差（px） */
 const ALIGN_EPSILON = 1
 
+/**
+ * 「真实输入窗口」的缺省时长（ms）：真实输入之后这段时间内的读数变化，按**当前位置**重新
+ * 判定跟随（理由见文件头 ①′）。
+ *
+ * 为什么是 250ms 而不是"一次读数"：真实滚动会派发**不止一次** `scroll`（浏览器自身一次、
+ * 壳层的「贴底修正」一次），把窗口做成"消费一次就关"会正好被前一次抵消掉（那一次的位置仍是
+ * 底部，判完窗口就没了，真正的滚动读数反而落回①的纯通知语义）。时长只需覆盖"输入 → 合成器
+ * 把视口挪过去 → 派发 scroll"这一两个帧（16–32ms），250ms 留足余量又不至于把用户之后的
+ * 程序滚动误算成意图。
+ */
+const DEFAULT_INTENT_WINDOW_MS = 250
+
 export function createStickToBottomCore(options: StickToBottomCoreOptions): StickToBottomCore {
   const threshold = options.threshold ?? DEFAULT_THRESHOLD
+  const intentWindowMs = options.intentWindowMs ?? DEFAULT_INTENT_WINDOW_MS
   const now = options.events.now ?? (() => Date.now())
   const maxSettleMs = options.events.maxSettleMs ?? DEFAULT_MAX_SETTLE_MS
 
@@ -139,6 +175,8 @@ export function createStickToBottomCore(options: StickToBottomCoreOptions): Stic
   let idleFrames = 0
   /** 跟随循环的存活截止时刻（0 = 没有在途循环） */
   let settleDeadline = 0
+  /** 「真实输入窗口」的截止时刻（0 = 没有输入在窗口期内，见文件头 ①′） */
+  let intentDeadline = 0
   /** 已挂上的订阅的"摘除"函数（`cancel()` 统一调用） */
   let subscriptions: StickUnsubscribe[] = []
 
@@ -270,11 +308,17 @@ export function createStickToBottomCore(options: StickToBottomCoreOptions): Stic
    * 正在读最后一段，这时把跟随接回来会让下一条输出又一次把他拽走。
    */
   function onUserIntent(_kind: StickIntentKind): void {
+    // 开窗（见文件头 ①′）：这一判用的是"输入到达那一刻"的读数，而合成器可能还没把视口挪过去；
+    // 紧随其后的那几次读数变化才是事实，要靠窗口期内的重判补上。
+    intentDeadline = now() + intentWindowMs
     setFollowing(distanceToBottom() <= threshold)
   }
 
   function stick(): void {
     setFollowing(true)
+    // 程序化的「恢复跟随」压过在途的真实输入窗口：否则窗口期内下一次读数（对齐自己滚出来的
+    // scroll）会拿旧位置把刚恢复的跟随又翻掉 —— `stick()` 的语义是"这一次必须跟"。
+    intentDeadline = 0
     alignAttempts = 0
     idleFrames = 0
     lastHeight = -1
@@ -301,7 +345,10 @@ export function createStickToBottomCore(options: StickToBottomCoreOptions): Stic
     }
     keep(
       options.events.onScroll(() => {
-        // scroll 事件**只**作为"读数变了"的通知：程序自己滚出来的事件也会走到这里，
+        // 窗口期内（刚刚发生过真实输入）：这次读数变化就是"人滚出来的位置" —— **先重判、再排帧**。
+        // 顺序反了就会先排出一帧对齐、把用户刚滚出来的位置拽回底部，滚轮逐次被吞（见文件头 ①′）。
+        if (now() < intentDeadline) setFollowing(distanceToBottom() <= threshold)
+        // 窗口之外，scroll 事件**只**作为"读数变了"的通知：程序自己滚出来的事件也会走到这里，
         // 它绝不能改变跟随状态（这正是本轮修复的那条语义，见文件头 ①）。
         if (following) schedule()
       }),
@@ -323,6 +370,7 @@ export function createStickToBottomCore(options: StickToBottomCoreOptions): Stic
     started = false
     cancelFrame()
     settleDeadline = 0
+    intentDeadline = 0
     idleFrames = 0
     lastHeight = -1
     alignAttempts = 0

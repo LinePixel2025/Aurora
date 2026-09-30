@@ -20,7 +20,9 @@
  *    `min-height: 100%`，内容超过一屏后根节点盒子被钉在一屏高、多出来的部分作为**溢出**渲染
  *    —— 元素尺寸不再变化（见 core 文件头与 docs/07 §2.3），所以真正的信号是 DOM 变更。
  * 3. **三层自愈**（2026-09-30「跟丢」修复轮，每一层都对应实测到的真实失效形态）：
- *    ① `rebind()`：内容根 / 容器被 Vue 换掉之后重新解析并重挂观察者；
+ *    ① `rebind()`：内容根 / 容器被 Vue 换掉之后重新解析并**重挂观察者与原生监听**
+ *      （`wheel` / 滚条 / 翻页键 / `scroll`）—— 后者一度只写在注释里、实现里漏了，
+ *      症状是"换容器之后收不到任何用户意图 = 滚不动"（2026-10-01 补齐）；
  *    ② `MutationObserver` 回调里核对 `isConnected`：盯住的节点已被摘走时立刻重绑；
  *    ③ **心跳兜底**（`startStructureGuard`）：上面两条都失灵时，每帧用两次属性读发现
  *      "内容变高 / 视口被挪"，直接把对齐补上。实测过"观察者既没断开、也没判成脱离文档、
@@ -105,6 +107,13 @@ export function useStickToBottom(
   let notifyScroll: (() => void) | null = null
   /** 引擎要求的"尺寸变化"通知（由 `rebind()` 里的 ResizeObserver 转发） */
   let notifyResize: (() => void) | null = null
+  /**
+   * 引擎给过来的「真实用户输入」回调。
+   *
+   * 存下来是为了 `rebind()`：滚动容器换掉之后原生监听必须重挂，而重挂需要这个回调 ——
+   * 引擎的端口只在 `start()` 那一次被消费，之后拿不到第二次。
+   */
+  let intentCallback: ((kind: StickIntentKind) => void) | null = null
   /**
    * 绑定在"滚动容器 / 窗口"上的原生监听。
    *
@@ -224,6 +233,13 @@ export function useStickToBottom(
     })
     mutationObserver.observe(observed, { childList: true, characterData: true, subtree: true })
     observersAttached = true
+    // 换容器必须连**原生监听**一起换（2026-10-01 补）：引擎的 `onUserScrollIntent` 端口只在
+    // `core.start()` 那一次被消费，之后没有任何人会替我们重挂 —— 漏掉这一步的症状是
+    // 「换了容器之后再也没人收得到用户意图」（wheel / 滚条 / 翻页键全哑），从界面上看就是
+    // 「滚不动了」，而观察者、心跳、读数都还是好的，属于最难从现象反推的一类失效。
+    // 这里与 `bindScroller` 的注释（「每次 `rebind()` 都重新挂一遍」）对齐 —— 那句话
+    // 一直是**注释写了、实现漏了**（2026-09-30 就写在文档里，直到 2026-10-01 才补上实现）。
+    if (intentCallback !== null) bindScroller(intentCallback)
     core?.refresh()
   }
 
@@ -233,6 +249,9 @@ export function useStickToBottom(
    * `wheel` / `pointerdown` / `keydown` 每次 `rebind()` 都重新挂一遍（旧的那条在
    * `nativeSubscriptions` 里收口）；`scroll` 这条转发给引擎 —— 引擎的订阅端口在
    * `createStickToBottomCore` 时就被消费掉了，之后换容器只能由这一层负责。
+   *
+   * ⚠️ 重挂的触发权在 `rebind()` 手里（它拿 `intentCallback` 再调一次这里）：这个函数
+   * **不能**自己去订阅端口 —— 端口是"一次消费"的，第二次订阅拿不到回调。
    */
   function bindScroller(callback: (kind: StickIntentKind) => void): void {
     for (const unsubscribe of nativeSubscriptions.splice(0)) unsubscribe()
@@ -356,8 +375,10 @@ export function useStickToBottom(
           }
         },
         onUserScrollIntent: (callback) => {
+          intentCallback = callback
           bindScroller(callback)
           return () => {
+            intentCallback = null
             for (const unsubscribe of nativeSubscriptions.splice(0)) unsubscribe()
           }
         },

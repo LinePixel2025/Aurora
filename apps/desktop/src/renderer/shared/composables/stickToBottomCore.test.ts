@@ -32,6 +32,8 @@ interface Harness {
   visibility: () => void
   /** 跑掉全部在途帧，返回本轮跑了多少帧 */
   runFrames: (limit?: number) => number
+  /** 推进注入的单调时钟（只影响「真实输入窗口」与 `maxSettleMs` 兜底） */
+  advance: (ms: number) => void
   maxScroll: () => number
   distance: () => number
   scrollTop: () => number
@@ -52,6 +54,13 @@ function createHarness(): Harness {
   const frames = new Map<number, () => void>()
   let nextHandle = 0
   let scrollCalls = 0
+  /**
+   * 注入的单调时钟。
+   *
+   * 默认**不自己走**（`advance` 才动）：帧循环里的 `maxSettleMs` 兜底若按真实时间流逝，
+   * 测试就会变成一个"跑到超时就换个结果"的东西 —— 现有那批断言都建立在"时钟不动"上。
+   */
+  let clock = 0
 
   function clamp(top: number): number {
     const max = Math.max(0, scrollHeight - clientHeight)
@@ -94,7 +103,7 @@ function createHarness(): Harness {
         visibilityCallback = callback
       },
       // 固定时钟：`maxSettleMs` 的兜底不该由真实时间决定，测试需要可控
-      now: () => 0,
+      now: () => clock,
     },
   })
 
@@ -124,6 +133,9 @@ function createHarness(): Harness {
     distance: () => scrollHeight - scrollTop - clientHeight,
     scrollTop: () => scrollTop,
     scrollCalls: () => scrollCalls,
+    advance: (ms) => {
+      clock += ms
+    },
   }
 }
 
@@ -203,6 +215,46 @@ describe('stickToBottomCore', () => {
     h.runFrames()
     h.intent('wheel')
     h.intent('key')
+    expect(h.core.isFollowing()).toBe(true)
+  })
+
+  /**
+   * 「滚不动」的回归防线（用户实测：模型答完后既翻不动历史、轨迹又没收起来）。
+   *
+   * 现场是**两次读数**：真实滚轮先到主线程，此刻浏览器（合成器线程先滚）还没把视口挪上去，
+   * 读数是"仍在底部"；下一次读数（浏览器派发的 `scroll`）才带着"已经离底 240px"的事实。
+   * 只看第一次 = 把"用户上滚"判成"用户还在底部继续滚"，随后那一轮对齐帧会把这次滚动
+   * **原样抹掉** —— 于是每一次滚轮都被吞，界面永远钉在底部。
+   */
+  it('视口在底部时上滚：输入到达时读数还没挪，浏览器随后挪动 → 暂停跟随且不被拽回', () => {
+    const h = createHarness()
+    h.arrive(3000)
+    h.runFrames()
+    expect(h.core.isFollowing()).toBe(true)
+
+    // ① 输入到达：读数还在底部，这一刻判不出"在翻历史"是正常的
+    h.intent('wheel')
+    expect(h.core.isFollowing()).toBe(true)
+    const max = h.maxScroll()
+
+    // ② 浏览器把视口挪上去并派发 scroll —— 这才是"人真的翻上去了"的事实
+    h.arrive(3000, max - 240)
+    h.browserScroll()
+    expect(h.core.isFollowing()).toBe(false)
+
+    // ③ 跟随既已暂停，就不许再有对齐帧把用户拽回底部
+    h.runFrames()
+    expect(h.scrollTop()).toBe(max - 240)
+  })
+
+  it('真实输入窗口之外，读数变化只当作「内容可能变了」（程序滚动仍不得改跟随）', () => {
+    const h = createHarness()
+    h.arrive(3000)
+    h.runFrames()
+    h.intent('wheel')
+    h.advance(1000)
+    h.arrive(3000, 100)
+    h.browserScroll()
     expect(h.core.isFollowing()).toBe(true)
   })
 
