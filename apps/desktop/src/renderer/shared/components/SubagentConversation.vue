@@ -155,7 +155,7 @@ function stateLabel(state: SubagentTranscriptToolCall['state']): string {
                 aria-hidden="true"
               />
             </button>
-            <Transition name="fade">
+            <Transition name="conv-tool-body">
               <div v-if="isToolOpen(call.id)" class="conv-tool-body">
                 <span v-if="call.args !== undefined" class="tiny muted">参数</span>
                 <pre v-if="call.args !== undefined" class="mono conv-pre">{{ call.args }}</pre>
@@ -336,6 +336,22 @@ function stateLabel(state: SubagentTranscriptToolCall['state']): string {
   gap: 3px;
   padding: var(--space-2);
   border-top: 1px solid var(--border-subtle);
+}
+
+/*
+ * 令牌级对齐（2026-09-30 轨迹重构）：展开体的淡入走 `--dur-tint`(800ms)。
+ * 它是一段**已经结束**的工具调用的细节（子代理的步骤都跑完了才会进这份投影），
+ * 用比 `--dur-base` 慢一档的这个新令牌，展开读起来是"细节慢慢显出来"而不是"啪一下"。
+ * 结构不动（本文件只做令牌级对齐，见 task-1 的写范围）。
+ */
+.conv-tool-body-enter-active,
+.conv-tool-body-leave-active {
+  transition: opacity var(--dur-tint) var(--ease-standard);
+}
+
+.conv-tool-body-enter-from,
+.conv-tool-body-leave-to {
+  opacity: 0;
 }
 
 .conv-pre {

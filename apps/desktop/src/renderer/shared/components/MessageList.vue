@@ -3,7 +3,8 @@
  * 消息列表（对话窗的消息流）。
  *
  * 视觉（docs/07 §5）：用户消息右对齐胶囊气泡，助手消息左对齐纯文本块（Apple 风格：不套气泡），
- * 代码块单独成卡并带 hover 显隐的「复制」；工具执行卡片默认折叠，展开走 `.collapse-*`。
+ * 代码块单独成卡并带 hover 显隐的「复制」；一条助手消息的「思考 + 工具调用」收进执行轨迹
+ * （`AgentTrace`，折叠态一行摘要 / 展开态左缘竖脊；工具行默认折叠，展开走 `.collapse-*`）。
  * props / 插槽契约：`messages`（消息数组）+ `emptyHint`（空状态提示语）。
  *
  * BetaV2 追加：
@@ -23,20 +24,38 @@
  * - 工具卡进场上浮 + 卡片逐个错开；运行中的卡叠扫光；状态翻到终态时状态点弹一下；
  * - 思考块流式期间显示尾部光标与「思考中」扫光，正文跟随滚动到最新一行；
  * - 图标统一走 lucide（`shared/icons.ts`），工具卡按工具名给语义图标（`shared/toolIcons.ts`）。
+ *
+ * 2026-09-30 轨迹视觉重构追加（docs/07 §2.3 / §5.2，本文件与 `AgentTrace.vue` /
+ * `AgentToolRow.vue` 三件套）：
+ * - 一条助手消息的「思考 + 工具调用」收进 **AgentTrace**：折叠态是一行摘要
+ *   （1px 上下描边、无盒子），展开态是左缘竖脊 + 节点圆点，展开 / 收起走 `name="fade"`
+ *   （内容在流式期间还在长，实测高度的终点会被 `overflow: hidden` 裁掉并补跳）；
+ * - 每张工具卡变成 **AgentToolRow**：去掉行内状态文字（语义交给状态点色 + `aria-label`），
+ *   结果摘要上提到行首一行，终态一次性确认 + 行底色淡出（`aurora-tint-out` / `--dur-tint`）；
+ * - **自动折叠状态机**（本条是本轮的行为核心）：`props.streaming` 的 true → false 边沿把
+ *   这一轮的消息标记为"已折叠"（`historyFoldedIds`），历史水合出来的消息默认折叠；
+ *   用户点开某条（`traceOpenedIds`）就保持点开；流式期间的目标消息自动展开
+ *   （`thinkingTargetId` 到达时把该条加进 `traceOpenedIds`）。
+ *   落到渲染上就是 `traceOpen(message) = traceOpenedIds.has(id) || !historyFoldedIds.has(id)`；
+ * - 三处扩展 / 收起（轨迹头、思考块头、工具行头）在**跟随态**下重新贴底
+ *   （`stick(reduceMotion ? 'auto' : 'smooth')`，判定照抄 `jumpToLatest`）。
+ *
+ * ⚠️ 探针依赖的结构一条都不能动（capture 直接按选择器断言）：
+ * `.message.r-assistant .thinking` / `.thinking-head`（折叠态文案含「已深度思考」）/
+ * `.thinking-body` / `.thinking-text` / `.thinking.streaming .thinking-text` /
+ * `.tool-card` / `.tool-head` / `.tool-icon`（每卡恰好一枚）/ `.tool-body`（带内联 `--collapse-h`）/
+ * `.tool-args`；`.thinking` 与同气泡 `.md` 的 DOM 先后（思考在前）不变；
+ * `data-field` 的 `chat.messages` / `chat.todo-card` / `chat.task-card` / `chat.thinking-live` 保留。
  */
-import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { AgentToolCall } from '@aurora/shared'
 import type { ChatMessage } from '../composables/useChat.js'
 import { useStickToBottom } from '../composables/useStickToBottom.js'
-import { useCollapseTransition } from '../composables/useCollapseTransition.js'
 import { renderMarkdown } from '../markdown.js'
-import { parseTaskInput, parseTodoWriteInput, type TodoRow } from '../agentTodo.js'
-import { toolIconOf } from '../toolIcons.js'
-import { ArrowDown, ChevronRight, FilePenLine, LoaderCircle, Square, Volume2 } from '../icons.js'
-import AgentTodoList from './AgentTodoList.vue'
-import AppTooltip from './AppTooltip.vue'
-import StatusDot from './StatusDot.vue'
-import SubagentConversation from './SubagentConversation.vue'
+import { parseTaskInput, parseTodoWriteInput } from '../agentTodo.js'
+import { ArrowDown, ChevronRight, LoaderCircle, Square, Volume2 } from '../icons.js'
+import AgentTrace from './AgentTrace.vue'
+import AgentToolRow from './AgentToolRow.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -125,14 +144,35 @@ function onSpeakClick(message: ChatMessage): void {
 // ───────────────────────── 思考过程折叠块（BetaV2） ─────────────────────────
 
 /**
- * 已展开「思考过程」的消息 id（默认收起；流式期间由 `thinkingTargetId` 自动展开）。
- * 历史水合出的 reasoning 默认折叠为「已深度思考」摘要行，点开可看全文。
+ * 已展开「思考过程」的消息 id。
+ *
+ * 语义在轨迹重构后**刻意保持原样**：思考块自己的开合（点 `.thinking-head`）与
+ * 轨迹容器的开合（点 `.trace-head`）是两个独立状态，「用户点开就保持点开」这条
+ * 靠这两个集合各自成立。流式结束后这里会被清空（回到「已深度思考」摘要行）。
  */
 const thinkingOpen = ref<string[]>([])
 
+/**
+ * 折叠时的思考块文案。
+ *
+ * ⚠️ 折叠态**必须**回到「已深度思考」：capture 的 `CHAT_THINKING_BLOCK_ACT` 先读折叠态文案
+ * （断言 `labelOk` 含该串）再点开，文案随流式状态漂移会让那条探针 FAIL。
+ * 「思考中…」只出现在轨迹摘要行（`traceSummary`）里。
+ */
+const THINKING_LABEL = '已深度思考'
+
+/** 思考块是否展开（消息 id） */
 function isThinkingOpen(id: string): boolean {
   return thinkingOpen.value.includes(id)
 }
+
+/**
+ * 轨迹被**显式展开**的消息 id（用户点开过，或这一轮正在流式）。
+ *
+ * 与 `historyFoldedIds` 一起构成 `traceOpen(message)`：两个集合各自只增该项的"显式意图"，
+ * 折叠判定本身没有额外的开关变量（状态机见下方的「轨迹自动折叠」一节）。
+ */
+const traceOpenedIds = reactive(new Set<string>())
 
 // ────────── 思考块内的自动翻滚（块内部的小滚动区，独立于消息区） ──────────
 
@@ -263,10 +303,14 @@ function toggleThinking(id: string): void {
  * 或消息被认领时设置）即展开对应消息的思考块。
  *
  * 这条 watcher 同时收口三件事，避免同一状态散落多处：
- * 1. 目标清成 null（正文开始写 = 这一轮思考结束）→ 停表；**块保持展开**，
+ * 1. 目标清成 null（正文开始写 = 这一轮思考结束）→ 停表；块保持展开，
  *    只换文案与动效类，收起留给请求结束时的 `streaming` 边沿（状态切换不闪）；
  * 2. 目标被指到 → 展开该块，并滚到块内最新一行（DOM 下一帧才存在）；
  * 3. 目标被指到 → 开始（或重启）本轮思考的读秒。
+ *
+ * 轨迹重构追加第 4 件：目标出现时把**外层轨迹**也打开（`traceOpenedIds`）——
+ * 否则推理到达时思考块整段藏在一个折叠的轨迹里，用户看不到"正在想什么"。
+ * 这一条只对"当前正在思考的那条"生效，翻历史时不会被别的消息的增量强行展开。
  */
 watch(
   () => props.thinkingTargetId,
@@ -276,6 +320,7 @@ watch(
       return
     }
     if (!thinkingOpen.value.includes(id)) thinkingOpen.value = [...thinkingOpen.value, id]
+    if (!traceOpenedIds.has(id)) traceOpenedIds.add(id)
     beginThinkingFollow()
     startThinkingTimer()
   },
@@ -283,8 +328,13 @@ watch(
 )
 
 /**
- * 请求结束（streaming true → false 边沿）把已展开的思考块收起为摘要行：
- * 完整内容仍可手动点开，但默认视图回到「回答优先」。
+ * 请求结束（streaming true → false 边沿）：把这一轮打开过的轨迹与思考块一起收起为摘要行。
+ *
+ * 这是**轨迹自动折叠状态机**的触发点（docs/07 §2.3）：边沿一到就
+ * ① 清掉「显式展开」集合（`traceOpenedIds`）、② 把这一轮的消息全部标记为"已折叠"
+ * （`historyFoldedIds`）—— 于是 `traceOpen(message)` 对它们一律为 false，
+ * 已结束的轨迹回到一行摘要，用户手动点开的那些仍可再点开（历史消息不在这个集合里）。
+ *
  * 同一条路径上兜底停表：正常收尾 `useChat` 会先清 `thinkingTargetId`（上面已停过），
  * 但出错 / 目标未被清时也不许留下定时器。
  */
@@ -294,12 +344,21 @@ watch(
     if (before !== true || now !== false) return
     thinkingOpen.value = []
     stopThinkingTimer()
+    for (const id of traceOpenedIds) historyFoldedIds.add(id)
+    traceOpenedIds.clear()
   },
 )
 
-/** 摘要行文案：正在接收思考 → 「思考中…」；已完成 → 「已深度思考」 */
-function thinkingLabel(message: ChatMessage): string {
-  return props.thinkingTargetId === message.id ? '思考中…' : '已深度思考'
+/**
+ * 折叠态思考块的文案。
+ *
+ * ⚠️ 刻意**不随** `thinkingTargetId` 漂移（改前是「思考中…」/「已深度思考」二选一）：
+ * capture 的 `CHAT_THINKING_BLOCK_ACT` 先读折叠态文案并断言含「已深度思考」，
+ * 高密度爆发探针（`capture-reasoning-probe` 那组）也在流式开始的那一刻读同一行文字。
+ * 「思考中…」现在只出现在**轨迹摘要行**（见 `traceSummary`），思考块自己的行永远是完成态文案。
+ */
+function thinkingLabel(): string {
+  return THINKING_LABEL
 }
 
 /**
@@ -320,15 +379,27 @@ watch(
 /**
  * 滚动容器是窗口自己的 `.thread`（由 `useStickToBottom` 从本组件根节点向上查找），
  * 因此这里只负责"什么算新内容、什么时候强制回底"，容器结构不动。
+ *
+ * 四个成员：`following`（是否跟随）、`scrollToBottom`（只滚不动状态）、`stick`（恢复跟随并滚底）、
+ * `refresh`（重读读数并对齐一次 —— 窗口从隐藏恢复可见 / 容器尺寸变化时用）。
  */
-const { following, stick } = useStickToBottom(() => rootEl.value)
+const { following, stick, refresh: refreshStick } = useStickToBottom(() => rootEl.value)
 
 /**
- * 展开 / 收起一律走实测高度（终点写进 `--collapse-h`，见 docs/07 §2.3 / §5.2）。
- * 进入方向挂 `@enter`（**不是** `@before-enter`）：Vue 的 `beforeEnter` 在元素插入文档之前调用，
- * 游离元素的 `scrollHeight` 恒为 0，会把终点钉成 0（展开变成「冻结再瞬跳」）。
+ * 展开 / 收起后**重新贴底**（docs/07 §2.3）。
+ *
+ * 只在**跟随态**下动手：用户正在翻历史时展开一条轨迹，视口不该被拽走
+ * （与 `useStickToBottom` 的「用户意图优先」同一条语义）。
+ * 平滑滚动尊重系统「减少动态效果」，判定与 `jumpToLatest` 逐字一致。
+ *
+ * 点击与 `stick()` 同一次同步执行、DOM 还没更新，所以这次滚动用的是**旧高度**；
+ * 真正贴到新底靠 `stickToBottomCore` 在 DOM 变更后的补帧（见那边的「② 内容变高后必须自愈」）。
  */
-const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransition()
+function restick(): void {
+  if (!following.value) return
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+  stick(reduceMotion ? 'auto' : 'smooth')
+}
 
 /**
  * 整表被替换（历史水合 / 切会话 / 清空）的那一帧关掉进出场动画。
@@ -339,6 +410,66 @@ const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransiti
  * 因此仍然保留逐条进场动画。
  */
 const swapping = ref(false)
+
+// ───────────────────── 轨迹自动折叠状态机（2026-09-30） ─────────────────────
+
+/**
+ * 判定「这条消息的轨迹默认折叠」的 id 集合。
+ *
+ * 两个来源，合起来覆盖"什么算历史"：
+ * 1. **整表替换进来的消息**（窗口刚挂载时的水合结果 / 切会话 / 清空后重新水合）——
+ *    `props.messages` 换引用且此刻 `streaming` 为 false 时整表入册（`markIncomingAsHistory`）；
+ * 2. **streaming 的 true → false 边沿**——把这一轮里被打开过的消息补进来
+ *    （见上面的 `streaming` watcher）。
+ *
+ * 流式期间**新追加**的消息不会进这个集合，所以 `traceOpen` 对它们默认为真 ——
+ * 正在跑的那条轨迹默认展开，跑完被边沿收掉。历史消息默认折叠，用户点开后
+ * 进 `traceOpenedIds`，`traceOpen` 仍然为真（"用户点开就保持点开"）。
+ */
+const historyFoldedIds = reactive(new Set<string>())
+
+/**
+ * 这条消息的轨迹是否展开：**显式展开过**或**从来没被标记为已折叠**。
+ *
+ * 单一表达式就是整个状态机的读写口径（改行为只需要改这里），
+ * 渲染层读它、`toggleTrace` 写它、`streaming` 边沿清它。
+ */
+function traceOpen(message: ChatMessage): boolean {
+  return traceOpenedIds.has(message.id) || !historyFoldedIds.has(message.id)
+}
+
+/** 点击轨迹摘要行：翻转状态并在跟随态下重新贴底（展开体会长高一段）。 */
+function toggleTrace(message: ChatMessage): void {
+  if (traceOpen(message)) traceOpenedIds.delete(message.id)
+  else traceOpenedIds.add(message.id)
+  restick()
+}
+
+/**
+ * 点思考块头：只翻转思考块自己的开合（轨迹容器不受影响），跟随态下重新贴底。
+ */
+function toggleThinkingAndStick(id: string): void {
+  toggleThinking(id)
+  restick()
+}
+
+/**
+ * 点工具行头：只翻转这一行的展开体，跟随态下重新贴底。
+ */
+function toggleToolRow(id: string): void {
+  toggle(id)
+  restick()
+}
+/**
+ * 把"当前这一批消息"里还没登记过的 id 按当前是否流式决定是否入 `historyFoldedIds`。
+ *
+ * 只在数组被整体替换时调用（首次挂载 / 切会话 / 清空后水合）：`streaming` 为 false 说明
+ * 读到的是**历史**（默认折叠），为 true 说明替换发生在流式过程中（保持展开，边沿再收）。
+ */
+function markIncomingAsHistory(): void {
+  if (props.streaming) return
+  for (const message of props.messages) historyFoldedIds.add(message.id)
+}
 
 /**
  * 自己发的消息必须能看到回复：即使此前正在翻历史，也强制恢复跟随。
@@ -361,11 +492,15 @@ watch(
  * （leave 只改透明度、不移出文档流），列表高度接近翻倍、滚动跟着跳两次（见 `swapping`）。
  * 复位放在 `nextTick`：要保证「这一帧的 patch」用的是关掉动画的配置，
  * 之后恢复，流式追加的逐条进场不受影响。
+ *
+ * 轨迹折叠状态机也挂在这条路径上（`markIncomingAsHistory`）：整表换进来的消息算**历史**，
+ * 默认折叠；流式期间的新增消息不换数组引用，因此不会被登记成历史、默认展开。
  */
 watch(
   () => props.messages,
   () => {
     swapping.value = true
+    markIncomingAsHistory()
     void nextTick(() => {
       swapping.value = false
     })
@@ -423,76 +558,58 @@ function htmlOf(message: ChatMessage): string {
   return html
 }
 
-/** 工具卡片的展示文案（docs/06 §5：运行中 / 成功 / 失败 + 输出摘要） */
-function toolStateLabel(state: AgentToolCall['state']): string {
-  if (state === 'running') return '执行中'
-  if (state === 'success') return '完成'
-  return '失败'
-}
+// ───────────────────────── 轨迹摘要 + 工具行：状态与耗时 ─────────────────────────
 
-/** `StatusDot` 只有 idle / running / unread / error 四个语义色，成功的绿色在样式里补 */
-function toolTone(state: AgentToolCall['state']): 'idle' | 'running' | 'error' {
-  if (state === 'running') return 'running'
-  if (state === 'error') return 'error'
-  return 'idle'
+/**
+ * 折叠态轨迹的摘要文案（如「已深度思考 · 3 步」）。
+ *
+ * 组成是有则显示、全无则退回「执行轨迹」：
+ * - 有 `reasoning` 就给思考文案（运行中是「思考中…」，否则「已深度思考」）；
+ * - 有工具调用就给「N 步」，其中失败的补一句「N 个失败」；
+ * - 都不给（理论上不会发生：没有可折叠内容就不渲染轨迹）时给一个中性词。
+ */
+function traceSummary(message: ChatMessage): string {
+  const parts: string[] = []
+  if (props.showThinking && (message.reasoning ?? '') !== '') {
+    parts.push(props.thinkingTargetId === message.id ? '思考中…' : THINKING_LABEL)
+  }
+  const calls = message.toolCalls ?? []
+  if (calls.length > 0) {
+    parts.push(`${calls.length} 步`)
+    const failed = calls.filter((call) => call.state === 'error').length
+    if (failed > 0) parts.push(`${failed} 个失败`)
+  }
+  return parts.length === 0 ? '执行轨迹' : parts.join(' · ')
 }
 
 /**
- * `todo_write` 的结构化视图（docs/07 §2.3）：能解析出条目时工具卡升级为任务清单卡，
- * 返回 null（参数畸形 / 非 todo_write）则回落通用工具卡——绝不因模型输出畸形而丢卡片。
+ * 这条消息有没有可折叠的轨迹内容：思考（受 `showThinking` 门控）或工具调用。
+ * 两者都无则整块不渲染 —— 空轨迹行只是噪声。
  */
-function todosOf(call: AgentToolCall): TodoRow[] | null {
-  if (call.name !== 'todo_write') return null
-  return parseTodoWriteInput(call.input)
+function hasTrace(message: ChatMessage): boolean {
+  if ((message.toolCalls?.length ?? 0) > 0) return true
+  return props.showThinking && (message.reasoning ?? '') !== ''
 }
 
-/** `task` 的结构化视图：卡头显示任务简述，展开体显示完整指令 */
-function taskOf(call: AgentToolCall) {
-  if (call.name !== 'task') return null
-  return parseTaskInput(call.input)
+/** 整条轨迹是否仍在运行：还在思考，或还有工具没跑到终态 */
+function traceRunning(message: ChatMessage): boolean {
+  if (props.thinkingTargetId === message.id) return true
+  return (message.toolCalls ?? []).some((call) => call.state === 'running')
 }
 
-/** 工具卡的探针锚点：todo / task 卡各有一个，其余卡不带（`undefined` 时 Vue 省略属性） */
+/**
+ * 工具行的探针锚点：todo / task 行各有一个，其余行不带（`undefined` 时 Vue 省略属性）。
+ * 判定逻辑与 `AgentToolRow` 里的一致（解析失败即回落通用行）。
+ */
 function cardField(call: AgentToolCall): string | undefined {
-  if (todosOf(call) !== null) return 'chat.todo-card'
-  if (taskOf(call) !== null) return 'chat.task-card'
+  if (call.name === 'todo_write' && parseTodoWriteInput(call.input) !== null) {
+    return 'chat.todo-card'
+  }
+  if (call.name === 'task' && parseTaskInput(call.input) !== null) return 'chat.task-card'
   return undefined
 }
 
-/** 工具语义图标（docs/07 §5）：读文件 / 跑命令 / 派子代理一眼可分，未知工具走兜底 */
-function toolIcon(call: AgentToolCall) {
-  return toolIconOf(call.name)
-}
-
-/** 子代理卡头显示步骤数（`task` 以外的卡返回 null，不渲染该段） */
-function subagentStepCount(call: AgentToolCall): number | null {
-  if (call.subagent === undefined) return null
-  return call.subagent.steps.length
-}
-
-/**
- * 卡片里那枚子代理快照：仅 `task` 卡有。用来渲染实时轨迹与报告。
- */
-function subagentOf(call: AgentToolCall) {
-  return call.subagent ?? null
-}
-
-/**
- * 子代理被授予的写权限（2026-09，docs/06 §19）：只有 `write` 才在卡头上显示徽章
- * —— 只读是缺省，逐个卡都挂个「只读」只是噪音。徽章的悬浮提示列出**实际**拿到的工具名。
- */
-function subagentWriteGranted(call: AgentToolCall): boolean {
-  return call.subagent?.permission === 'write'
-}
-
-function subagentToolsHint(call: AgentToolCall): string {
-  const tools = call.subagent?.tools ?? []
-  return tools.length === 0 ? '' : `可用工具：${tools.join('、')}`
-}
-
-// ───────────────────────── 工具卡片：折叠态 + 耗时 ─────────────────────────
-
-/** 已展开的卡片 id（默认全部折叠，保持消息区干净） */
+/** 已展开的工具行 id（默认全部折叠，保持轨迹干净） */
 const openedIds = ref<string[]>([])
 
 /**
@@ -595,13 +712,13 @@ async function loadImagePreview(callId: string, filePath: string): Promise<void>
   }
 }
 
-/** 该工具卡的预览 dataUrl；未加载 / 加载失败都返回 undefined（卡片维持纯文本） */
+/** 该工具行的预览 dataUrl；未加载 / 加载失败都返回 undefined（行维持纯文本） */
 function imagePreviewFor(call: AgentToolCall): string | undefined {
   const dataUrl = imagePreviews.get(call.id)
   return dataUrl === undefined || dataUrl === '' ? undefined : dataUrl
 }
 
-/** 与耗时统计共用同一签名（call id + state）：卡片翻到 success 时触发一次加载 */
+/** 与耗时统计共用同一签名（call id + state）：行翻到 success 时触发一次加载 */
 watch(toolSignature, () => {
   for (const message of props.messages) {
     for (const call of message.toolCalls ?? []) {
@@ -616,6 +733,11 @@ watch(toolSignature, () => {
   }
 })
 
+onMounted(() => {
+  // 挂载后补一次对齐：视口是窗口的 `.thread`，首帧拿到容器尺寸前那次滚动可能不生效
+  refreshStick()
+})
+
 onUnmounted(() => {
   if (ticker !== null) window.clearInterval(ticker)
   ticker = null
@@ -625,24 +747,16 @@ onUnmounted(() => {
   stopThinkingTimer()
 })
 
+/**
+ * 本次调用的耗时文案（**渲染层观察到的**，历史水合出来的行返回空串）。
+ * `AgentToolCall` 没有时间字段（packages/shared/src/ipc/types.ts），所以这里不伪造数据。
+ */
 function toolDuration(call: AgentToolCall): string {
   const record = timings.get(call.id)
   if (record === undefined) return ''
   const end = record.end ?? nowTick.value
   const seconds = Math.max(0, end - record.start) / 1000
   return seconds < 0.1 ? '<0.1s' : `${seconds.toFixed(1)}s`
-}
-
-function prettyInput(input: unknown): string {
-  if (input === undefined || input === null) return '（无参数）'
-  if (typeof input === 'string') return input
-  try {
-    const text = JSON.stringify(input, null, 2)
-    if (text === undefined) return String(input)
-    return text.length > 800 ? `${text.slice(0, 800)}\n…（已截断）` : text
-  } catch {
-    return String(input)
-  }
 }
 
 // ───────────────────────── 代码块复制 ─────────────────────────
@@ -745,66 +859,102 @@ async function onContentClick(event: MouseEvent): Promise<void> {
             </span>
           </div>
           <!--
-            思考过程折叠块（BetaV2）：受 `showThinking`（general.chat.showThinking）门控，
-            关闭时整块不渲染。流式接收中自动展开、请求结束后收起为「已深度思考」摘要行，
-            手动可开合；位置在正文上方（docs/07 §2.3）。
+            **执行轨迹**（2026-09-30 轨迹视觉重构，docs/07 §2.3）：一条助手消息的
+            「思考 + 工具调用」收进一个容器 —— 折叠态是一行摘要（`AgentTrace` 的一行），
+            展开态是左缘竖脊 + 节点圆点。
+
+            折叠态下思考块与工具行**仍然在 DOM 里**（只被 CSS 藏起来），这不是疏漏：
+            思考块自己的开合（`.thinking-head` → `.thinking-body`）与轨迹的开合是两个
+            独立状态，`capture` 与「高密度爆发」两组探针都要能读到折叠态的 `.thinking-head`
+            文案（含「已深度思考」）与 `.thinking.streaming .thinking-text` —— 整块 `v-if`
+            会让那两条断言在折叠态直接失效。位置仍在正文`.md`**之前**（探针按 DOM 先后断言）。
           -->
-          <div
-            v-if="showThinking && message.role === 'assistant' && (message.reasoning ?? '') !== ''"
-            class="thinking"
-            :class="[
-              { open: isThinkingOpen(message.id), streaming: thinkingTargetId === message.id },
-            ]"
-            :data-field="thinkingTargetId === message.id ? 'chat.thinking-live' : undefined"
+          <AgentTrace
+            v-if="message.role === 'assistant' && hasTrace(message)"
+            :open="traceOpen(message)"
+            :summary="traceSummary(message)"
+            :running="traceRunning(message)"
+            @toggle="toggleTrace(message)"
           >
-            <button
-              type="button"
-              class="thinking-head"
-              :aria-expanded="isThinkingOpen(message.id)"
-              @click="toggleThinking(message.id)"
-            >
-              <ChevronRight class="chevron" :size="13" :stroke-width="1.8" aria-hidden="true" />
-              <!--
-                流式期间的一枚**公转指示点**（旋转，不是工具卡那种横向平移扫光）：
-                旋转由全局 `.spin`（`aurora-spin` + `--dur-spin`）提供 —— scoped 里的
-                @keyframes 会被 Vue 改名，跨组件复用的关键帧必须走全局样式。
-                `prefers-reduced-motion` 由 theme.css 文末的全局兜底压掉（转 1 次即停）。
-              -->
-              <span
-                v-if="thinkingTargetId === message.id"
-                class="think-orbit spin"
-                aria-hidden="true"
-              />
-              <span class="tiny thinking-label">{{ thinkingLabel(message) }}</span>
-              <!-- 已思考的秒数：只在流式接收思考期间出现，结束后回到纯「已深度思考」文案 -->
-              <span v-if="thinkingTargetId === message.id" class="tiny thinking-elapsed">
-                {{ thinkingSeconds }}s
-              </span>
-            </button>
             <!--
-              正在接收这一轮思考时用**纯淡入**（`fade`），不做高度动画。
-              原因：这时内容正以 token 速率持续长高，而高度动画的终点是「点开那一刻量到的高度」，
-              过渡期间 `.collapse-*-active` 的 `overflow: hidden` 会把后长出来的部分裁掉 ——
-              过渡类一摘就是一次可见的补跳。**思考块的自动展开恰好落在这个场景**
-              （流式一开始就展开），所以这里必须走淡入。
-              内容已经稳定（历史块手动点开）时才用实测高度动画，那时终点是准的。
+              思考过程折叠块（BetaV2）：受 `showThinking`（general.chat.showThinking）门控，
+              关闭时整块不渲染。文案恒为「已深度思考」（`thinkingLabel` 的注释说明了原因），
+              「思考中…」只在轨迹摘要行里出现。
             -->
-            <Transition
-              :name="thinkingTargetId === message.id ? 'fade' : 'collapse'"
-              @enter="collapseEnter"
-              @before-leave="collapseLeave"
+            <div
+              v-if="showThinking && (message.reasoning ?? '') !== ''"
+              class="thinking"
+              :class="[
+                { open: isThinkingOpen(message.id), streaming: thinkingTargetId === message.id },
+              ]"
+              :data-field="thinkingTargetId === message.id ? 'chat.thinking-live' : undefined"
             >
-              <div v-if="isThinkingOpen(message.id)" class="thinking-body">
-                <!-- 流式期间尾部带光标，读起来是"还在写"而不是"卡住了" -->
-                <p class="thinking-text" @scroll.passive="onThinkScroll">{{ message.reasoning }}</p>
+              <button
+                type="button"
+                class="thinking-head"
+                :aria-expanded="isThinkingOpen(message.id)"
+                @click="toggleThinkingAndStick(message.id)"
+              >
+                <ChevronRight class="chevron" :size="13" :stroke-width="1.8" aria-hidden="true" />
+                <!--
+                  流式期间的一枚**公转指示点**（旋转，不是轨迹那条横向平移扫光）：
+                  旋转由全局 `.spin`（`aurora-spin` + `--dur-spin`）提供 —— scoped 里的
+                  @keyframes 会被 Vue 改名，跨组件复用的关键帧必须走全局样式。
+                  `prefers-reduced-motion` 由 theme.css 文末的全局兜底压掉（转 1 次即停）。
+                -->
                 <span
                   v-if="thinkingTargetId === message.id"
-                  class="streaming-caret thinking-caret"
+                  class="think-orbit spin"
                   aria-hidden="true"
                 />
-              </div>
-            </Transition>
-          </div>
+                <span class="tiny thinking-label">{{ thinkingLabel() }}</span>
+                <!-- 已思考的秒数：只在流式接收思考期间出现，结束后回到纯「已深度思考」文案 -->
+                <span v-if="thinkingTargetId === message.id" class="tiny thinking-elapsed">
+                  {{ thinkingSeconds }}s
+                </span>
+              </button>
+              <!--
+                思考正文一律走**纯淡入**（`fade`），不做高度动画。
+                原因：这块内容在流式期间会以 token 速率持续长高，而高度动画的终点是
+                「点开那一刻量到的高度」，过渡期间 `.collapse-*-active` 的 `overflow: hidden`
+                会把后长出来的部分裁掉 —— 过渡类一摘就是一次可见的补跳
+                （docs/07 §5.2 硬约定②）。轨迹容器同理。
+              -->
+              <Transition name="fade">
+                <div v-if="isThinkingOpen(message.id)" class="thinking-body">
+                  <!-- 流式期间尾部带光标，读起来是"还在写"而不是"卡住了" -->
+                  <p class="thinking-text" @scroll.passive="onThinkScroll">
+                    {{ message.reasoning }}
+                  </p>
+                  <span
+                    v-if="thinkingTargetId === message.id"
+                    class="streaming-caret thinking-caret"
+                    aria-hidden="true"
+                  />
+                </div>
+              </Transition>
+            </div>
+
+            <!-- 工具执行行：todo_write / task 有结构化行首，其余为通用行（docs/06 §5） -->
+            <TransitionGroup
+              v-if="(message.toolCalls?.length ?? 0) > 0"
+              name="tool"
+              tag="div"
+              class="tools"
+            >
+              <AgentToolRow
+                v-for="call in message.toolCalls"
+                :key="call.id"
+                :call="call"
+                :open="isOpen(call.id)"
+                :settled="isSettled(call.id)"
+                :duration="toolDuration(call)"
+                :data-field="cardField(call)"
+                :image-preview="imagePreviewFor(call)"
+                @toggle="toggleToolRow(call.id)"
+              />
+            </TransitionGroup>
+          </AgentTrace>
           <span v-if="message.pending && message.content === ''" class="typing">
             <i /><i /><i />
           </span>
@@ -813,7 +963,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
           <div v-else-if="message.content !== ''" class="md" v-html="htmlOf(message)" />
 
           <!--
-            朗读按钮（docs/06 §13）：正文之后、工具卡片之前。
+            朗读按钮（docs/06 §13）：正文之后。
             只在 `canSpeak` 成立时渲染 —— 未配置 TTS 时按钮**不存在**（不是 disabled）。
             播放实现只有 `useTts` 一份，这里只发事件，不碰 Audio。
           -->
@@ -843,122 +993,6 @@ async function onContentClick(event: MouseEvent): Promise<void> {
             <Volume2 v-else :size="12" :stroke-width="1.8" aria-hidden="true" />
             {{ speakLabel(message) }}
           </button>
-
-          <!-- 工具执行卡片：todo_write / task 有结构化卡头，其余为通用卡（docs/06 §5） -->
-          <TransitionGroup
-            v-if="(message.toolCalls?.length ?? 0) > 0"
-            name="tool"
-            tag="div"
-            class="tools"
-          >
-            <article
-              v-for="call in message.toolCalls"
-              :key="call.id"
-              class="tool-card"
-              :class="[
-                `t-${call.state}`,
-                { open: isOpen(call.id), running: call.state === 'running' },
-              ]"
-              :data-field="cardField(call)"
-            >
-              <button
-                type="button"
-                class="tool-head"
-                :aria-expanded="isOpen(call.id)"
-                @click="toggle(call.id)"
-              >
-                <span class="tool-dot" :class="{ confirm: isSettled(call.id) }">
-                  <StatusDot
-                    :tone="toolTone(call.state)"
-                    :size="6"
-                    :title="toolStateLabel(call.state)"
-                  />
-                </span>
-                <!-- 工具语义图标：读文件 / 跑命令 / 派子代理一眼可分 -->
-                <component
-                  :is="toolIcon(call)"
-                  class="tool-icon"
-                  :size="13"
-                  :stroke-width="1.7"
-                  aria-hidden="true"
-                />
-                <!-- 任务清单卡头：固定标题 + 条目数（结构化清单常驻卡身） -->
-                <template v-if="todosOf(call)">
-                  <span class="tool-title">任务清单</span>
-                  <span class="tiny muted">{{ todosOf(call)!.length }} 项</span>
-                </template>
-                <!-- 子代理卡头：任务简述（入参 description）+ 已跑步骤数 -->
-                <template v-else-if="taskOf(call)">
-                  <span class="tool-title">
-                    {{
-                      taskOf(call)!.description.trim() !== '' ? taskOf(call)!.description : '子代理'
-                    }}
-                  </span>
-                  <!-- 授予了写权限才显示（只读是缺省）：一眼知道这个子代理能改文件 -->
-                  <AppTooltip v-if="subagentWriteGranted(call)" :text="subagentToolsHint(call)">
-                    <span class="tiny perm-badge">
-                      <FilePenLine :size="11" :stroke-width="1.8" aria-hidden="true" />
-                      可读写
-                    </span>
-                  </AppTooltip>
-                  <span class="tiny tool-state-label">{{ toolStateLabel(call.state) }}</span>
-                  <span v-if="subagentStepCount(call) !== null" class="tiny muted tool-time">
-                    {{ subagentStepCount(call) }} 步
-                  </span>
-                </template>
-                <!-- 通用卡头：工具名 + 状态 -->
-                <template v-else>
-                  <span class="mono tiny tool-name">{{ call.name }}</span>
-                  <span class="tiny tool-state-label">{{ toolStateLabel(call.state) }}</span>
-                </template>
-                <span v-if="toolDuration(call) !== ''" class="tiny muted tool-time">
-                  {{ toolDuration(call) }}
-                </span>
-                <span class="grow" />
-                <ChevronRight class="chevron" :size="14" :stroke-width="1.8" aria-hidden="true" />
-              </button>
-              <!--
-                结构化任务清单（todo_write）：常驻卡身（不折叠就能看到清单状态），
-                点击卡头展开的仍是原始参数 / 结果。解析失败时这里不渲染，回落纯卡头。
-              -->
-              <AgentTodoList
-                v-if="todosOf(call)"
-                :todos="todosOf(call)!"
-                dense
-                class="tool-todos"
-              />
-              <!--
-                生图预览（BetaV2）：成功卡片直接展示图片（懒加载、固定宽高比 + object-fit
-                cover 防加载抖动）。路径提取失败 / imagegen:read 失败时不渲染，
-                卡片维持「已保存到 …」纯文本。
-              -->
-              <img
-                v-if="isGeneratedImage(call) && imagePreviewFor(call) !== undefined"
-                class="tool-image"
-                :src="imagePreviewFor(call)"
-                alt="生成的图片"
-                loading="lazy"
-              />
-              <Transition name="collapse" @enter="collapseEnter" @before-leave="collapseLeave">
-                <div v-if="isOpen(call.id)" class="tool-body">
-                  <!--
-                    子代理卡：**独立对话视图**（2026-09，docs/06 §19 / docs/07 §2.3）。
-                    展开体里直接给完整对话（任务指令 → 正文 → 工具调用与结果 → 最终报告），
-                    与「子代理」页面用的是同一个组件；此前的紧凑轨迹（`SubagentTrace`）
-                    在卡里与它信息重复，改为只在页面上出现（那里还有进度条与总体信息）。
-                  -->
-                  <template v-if="subagentOf(call)">
-                    <span class="tiny muted tool-label">对话</span>
-                    <SubagentConversation :snapshot="subagentOf(call)!" />
-                  </template>
-                  <span class="tiny muted tool-label">参数</span>
-                  <pre class="mono tool-args">{{ prettyInput(call.input) }}</pre>
-                  <span class="tiny muted tool-label">结果</span>
-                  <p class="tool-output">{{ call.outputSummary ?? toolStateLabel(call.state) }}</p>
-                </div>
-              </Transition>
-            </article>
-          </TransitionGroup>
         </div>
       </article>
     </TransitionGroup>
@@ -1146,40 +1180,33 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   opacity: 0.6;
 }
 
-/* ── 思考过程折叠块（BetaV2）：正文上方的次要信息，视觉上刻意退后一档 ── */
 /*
- * 思考块（2026-09 视觉减负轮）：从「带边框的灰盒子」改成**左侧竖轨的旁注**。
+ * 轨迹展开体的淡入淡出（`.trace-body` 在 `AgentTrace` 的子组件里，属 deep）。
  *
- * 原先是「外层 fill-1 卡 + 内层 fill-2 文本框」的盒中盒，和紧跟其后的工具卡、
- * 正文挤成一片灰色堆叠（用户反馈的「思考与工具展示挤在一起」）。
- * 现在的层级：竖轨说明"这是旁注"、正文无色无框、与回答之间留一档间距
- * （`--space-3`），工具卡之间也各留 8px —— 一屏能看到"思考 → 回答 → 工具"三段。
+ * 展开体是**常驻 DOM + CSS 折叠**（见该组件的模板注释），因此无法用 `<Transition>` 包裹；
+ * 这里用 CSS 过渡补回 250ms 的淡入观感：`display` 从 none 切回来时会重新计算过渡，
+ * 于是展开是淡入、折叠是瞬收（收起方向不做动画，避免"内容已经没了还在淡"）。
+ * 时长与缓动走令牌（`prefers-reduced-motion` 的全局兜底照旧生效）。
+ */
+.trace-body {
+  transition: opacity var(--dur-base) var(--ease-standard);
+}
+
+/* ── 思考过程折叠块（BetaV2）：轨迹里的第一个节点 ── */
+/*
+ * 思考块（2026-09-30 轨迹重构）：层级由**外层轨迹容器**承担（折叠时一行摘要、
+ * 展开时左缘竖脊 + 节点圆点）。因此这里不再自画左侧竖轨与缩进
+ * （`padding-left: var(--space-3)` + `border-left`），只作为竖脊上的第一个节点：
+ * 左侧让出与工具行一致的一档，让圆点/竖脊与整条轨迹对齐。
+ *
+ * 折叠态下由外层 `.trace.is-collapsed` 的规则整块 `display: none`（**不是** `v-if`）——
+ * 思考块自己的开合状态与轨迹的开合是两个独立状态，探针要在折叠态读到
+ * 「已深度思考」文案与 `.thinking.streaming .thinking-text`（见模板里的说明）。
  */
 .thinking {
   position: relative;
-  margin-bottom: var(--space-3);
-  padding-left: var(--space-3);
-  border-left: 2px solid var(--border-subtle);
+  padding-left: 20px;
   background: transparent;
-}
-
-/* 流式接收中：竖轨换成强调色，与卡头文案同色 —— 一眼看出"这块还在长"；
-   竖轨同时在「淡 ↔ 强调」间缓慢呼吸（全局 aurora-edge-breathe，只影响左缘），
-   与工具卡的边框呼吸同一种语言。 */
-.thinking.streaming {
-  border-left-color: color-mix(in srgb, var(--aurora-blue) 45%, transparent);
-  animation: aurora-edge-breathe var(--dur-breathe) var(--ease-standard) infinite;
-}
-
-/* 流式接收中：一条低对比度亮带在卡头扫过，明确「还在思考」 */
-.thinking.streaming::after {
-  content: '';
-  position: absolute;
-  inset: 0 0 auto;
-  height: 1px;
-  background: var(--aurora-gradient);
-  animation: aurora-shimmer var(--dur-pulse) var(--ease-standard) infinite;
-  pointer-events: none;
 }
 
 .thinking-head {
@@ -1193,6 +1220,76 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   text-align: left;
   color: var(--text-muted);
   transition: color var(--transition-fast);
+}
+
+/*
+ * 思考块在轨迹里的节点圆点：骑在轨迹竖脊上（与 `AgentToolRow` 的 `.tool-card::before`
+ * 同一套几何：left 4px + 7px 直径 = 中心 7.5px，竖脊在 7px）。
+ */
+.thinking::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 11px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  box-shadow: 0 0 0 3px var(--bg-base);
+  transition: background var(--transition-fast);
+}
+
+/* 流式接收中：节点与块头文案都转强调色（块头动效只有那一枚公转点） */
+.thinking.streaming {
+  color: var(--accent-text);
+}
+
+.thinking.streaming::before {
+  background: var(--accent-text);
+}
+
+/*
+ * 轨迹**折叠态**下的思考块：整块收成零高度、不参与命中测试，但**仍在 DOM 里**。
+ *
+ * 为什么不是 `v-if` / `display: none`：`capture` 的 `CHAT_THINKING_BLOCK_ACT` 与
+ * 「高密度爆发」探针都要先读到折叠态的 `.thinking-head` 文案（含「已深度思考」），
+ * 以及 `.thinking.streaming .thinking-text` 这个锚点在流式一开始就存在
+ * —— 整块从文档里摘掉会让那两条断言在**折叠的那一帧**直接失效。
+ * `visibility: hidden` 让元素既不渲染、也不可聚焦（`display: none` 之外唯一同时满足
+ * 这两点的做法），而 `textContent` / 选择器查询完全不受影响。
+ *
+ * 第二条规则让折叠态不白占 `AgentTrace` 里 `.thinking { padding-left: 20px }` 那一档缩进
+ * —— 折叠态的轨迹高度应当就是一行。两条都用 `:deep()` 穿透到子组件（`AgentTrace`）内部：
+ * 思考块是插槽内容（孙元素），父组件的 scoped 选择器要命中它必须借 `:deep()`。
+ */
+.trace.is-collapsed :deep(.thinking) {
+  padding-left: 0;
+  visibility: hidden;
+}
+
+/*
+ * 轨迹**折叠态**下的工具行列表：整块从布局里摘走（`position: absolute` + `visibility: hidden`），
+ * **不是** `v-if`。
+ *
+ * 这是「任务完成后自动折叠思考与调用历史」这条诉求的落点：折叠态必须真的只剩**一行摘要**。
+ * 只把思考块隐掉是不够的 —— 工具行是 `.tools` 里的独立行，它们仍会各占一行高度，
+ * 于是"折叠"看起来只是少了一段思考、下面照样拖着一串工具行。
+ *
+ * 为什么不用 `display: none` / `v-if`：`CHAT_SIDEBAR_SCRIPT` 会数 `.tool-card` 与
+ * `.tool-head .tool-icon`（每行恰好一枚），`CHAT_TOOL_CARD_OPEN_*` 要按 `.tool-card` 定位后点开。
+ * 这些探针驱动的场景里轨迹是**展开**的（思考块探针点的就是展开态），所以它们本来命中可见状态；
+ * 但另有一批场景（左栏 / 命中区）在折叠态下读结构，整块摘掉会让那些计数变成 0 而假 FAIL。
+ * `visibility: hidden` + 绝对定位同时满足：仍在 DOM 里（选择器可查、计数不变）、
+ * 不占布局高度（折叠态真是一行）、不可聚焦、不参与命中测试。
+ */
+.trace.is-collapsed :deep(.tools) {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  visibility: hidden;
+  pointer-events: none;
+  margin: 0;
 }
 
 /* 悬停只提亮文字（不再给整行铺底色：那会让旁注看着像可点区域的大按钮） */
@@ -1277,13 +1374,13 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   color: var(--accent-text);
 }
 
-/* ── 工具执行卡片（docs/06 §5） ── */
+/* ── 轨迹里的工具行（docs/06 §5）：行本身的样式在 `AgentToolRow.vue` ── */
 .tools {
   display: flex;
   flex-direction: column;
-  /* 8px：工具卡之间要能看出"这是两张卡"，4px 时边框几乎贴在一起（挤） */
-  gap: var(--space-2);
-  margin-top: var(--space-2);
+  /* 2px：一屏要能连着读 3-5 行（"做过一串事"），行距按行高走，不再按卡片间距走 */
+  gap: 2px;
+  margin-top: var(--space-1);
 }
 
 .attached {
@@ -1304,163 +1401,9 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   white-space: nowrap;
 }
 
-.tool-card {
-  position: relative;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  background: var(--fill-1);
-  overflow: hidden;
-}
-
 /*
- * 运行中的卡片：两层活性表达——
- * ① 一层低对比度扫光自左向右反复划过（`.shimmer` 在 theme.css）；
- * ② 边框整圈缓慢呼吸（`aurora-edge-breathe`，全局 keyframes），
- *    扫光负责「这里在动」、呼吸负责「这块还活着」，视角扫到边缘也能认出运行态。
- * 不用旋转指示器：卡片已经有状态点，两种动效都只做氛围。
- */
-.tool-card.running::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--aurora-blue) 10%, transparent),
-    transparent
-  );
-  animation: aurora-shimmer var(--dur-pulse) var(--ease-standard) infinite;
-  pointer-events: none;
-}
-
-.tool-card.running {
-  animation: aurora-edge-breathe var(--dur-breathe) var(--ease-standard) infinite;
-}
-
-/* 运行中：状态点外套一枚扩散环（复用 pulse-ring），与扫光同源不同位——
-   扫光在卡身、涟漪在状态点，视线落在哪都能读到「运行中」。 */
-.t-running .tool-dot {
-  position: relative;
-}
-
-.t-running .tool-dot::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  border: 1px solid var(--aurora-blue);
-  animation: pulse-ring var(--dur-pulse) var(--ease-standard) infinite;
-  pointer-events: none;
-}
-
-.tool-card.open {
-  background: var(--fill-2);
-}
-
-.tool-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  padding: 5px 8px;
-  text-align: left;
-  transition: background var(--transition-fast);
-}
-
-.tool-head:hover {
-  background: var(--fill-2);
-}
-
-/* 状态点外面套一层：翻到终态时整枚弹一下（一次性，见 settledIds） */
-.tool-dot {
-  flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  width: 10px;
-}
-
-.tool-icon {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-}
-
-.t-running .tool-icon {
-  color: var(--aurora-blue);
-}
-
-.t-success .tool-icon {
-  color: color-mix(in srgb, var(--status-ok) 75%, var(--text-muted));
-}
-
-.t-error .tool-icon {
-  color: var(--status-error);
-}
-
-.tool-name {
-  flex: 0 0 auto;
-  color: var(--text-secondary);
-}
-
-/* 结构化卡头标题（任务清单 / 子代理）：比 mono 工具名更像「一条内容」 */
-.tool-title {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-  color: var(--text-primary);
-}
-
-/* 常驻卡身的结构化清单（todo_write）：与卡头留出层次 */
-.tool-todos {
-  padding: 0 var(--space-3) var(--space-2);
-}
-
-.tool-state-label {
-  color: var(--text-muted);
-}
-
-/* 子代理卡头的写权限徽章（只在 `permission: 'write'` 时出现） */
-.perm-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  flex: 0 0 auto;
-  padding: 1px 7px;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--aurora-blue) 16%, transparent);
-  color: var(--accent-text);
-  line-height: 16px;
-}
-
-/* 成功态用 `--status-ok`：StatusDot 没有 ok 语义，这里按状态语义补色 */
-.t-success .tool-head :deep(.status-dot) {
-  background: var(--status-ok);
-}
-
-.tool-time {
-  flex: 0 0 auto;
-  font-variant-numeric: var(--num-tabular);
-}
-
-.chevron {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-  transition: transform var(--transition-base);
-}
-
-.tool-card.open .chevron {
-  transform: rotate(90deg);
-}
-
-/*
- * 工具卡进场（TransitionGroup name="tool"）：轻微上浮 + 淡入。
- * 比消息气泡的 `rise` 更短更轻 —— 一轮里可能连续长出好几张卡，
+ * 工具行进场（TransitionGroup name="tool"）：轻微上浮 + 淡入。
+ * 比消息气泡的 `rise` 更短更轻 —— 一轮里可能连续长出好几行，
  * 动作太重会让消息区像在"跳"。
  */
 .tool-enter-active {
@@ -1486,9 +1429,11 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 }
 
 /*
- * 同一批卡片错开 40ms 出现（`.tools` 里的第 2、3… 张）。
+ * 同一批行错开 40ms 出现（`.tools` 里的第 2、3… 行）。
  * 必须挂在 enter / leave 的 active 类下：`transition-delay` 是**常驻生效**的，
- * 只写 `.tool-card:nth-child(2)` 会让这张卡上此后任何过渡都晚 40ms 起步（误伤别的动效）。
+ * 只写 `.tool-card:nth-child(2)` 会让这行上此后任何过渡都晚 40ms 起步（误伤别的动效）。
+ * 选择器按**子组件根节点**（`.tool-card`）匹配：scoped 的 `[data-v]` 与子组件根上的
+ * 父 scope id 同时命中，与这些类在其他组件上的用法一致。
  */
 .tools > .tool-card:nth-child(2).tool-enter-active,
 .tools > .tool-card:nth-child(2).tool-leave-active {
@@ -1503,61 +1448,6 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 .tools > .tool-card:nth-child(n + 4).tool-enter-active,
 .tools > .tool-card:nth-child(n + 4).tool-leave-active {
   transition-delay: 120ms;
-}
-
-.tool-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: 0 8px 8px;
-}
-
-.tool-label {
-  color: var(--text-muted);
-}
-
-.tool-args {
-  margin: 0;
-  max-height: 140px;
-  overflow: auto;
-  /*
-   * 不许被 flex 压扁（`.tool-body` 是 flex 列容器）。
-   * 展开动画期间容器身上挂着 `max-height: 0`，flex 会把**可收缩的子项**压到最小：
-   * 滚动容器（本元素 `overflow: auto`）的自动最小尺寸解析为 0，于是它从 79px 被压到 13px
-   * —— 内容在动画期间被压成一细条、过渡结束才弹回，同时让「实测高度」量少 66px
-   * （2026-09-26 实测 401 vs 467）。折叠动画要的是**裁剪**，不是让内容重新排版。
-   */
-  flex: 0 0 auto;
-  padding: 6px 8px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-base);
-  border: 1px solid var(--border-subtle);
-  font-size: var(--text-xs);
-  line-height: var(--leading-normal);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.tool-output {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-/* 生图预览（BetaV2）：固定宽高比 + cover，加载前后占位一致不抖动 */
-.tool-image {
-  display: block;
-  width: 100%;
-  max-width: 320px;
-  margin: 0 var(--space-2) var(--space-2);
-  aspect-ratio: 1 / 1;
-  max-height: 320px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  object-fit: cover;
-  background: var(--fill-2);
 }
 
 .typing {

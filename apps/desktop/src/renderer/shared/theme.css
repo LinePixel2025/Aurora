@@ -174,6 +174,13 @@
   --dur-bounce: 1000ms;
   /* 边框呼吸 / 扩散环这类「运行中」氛围动效：比扫光慢一拍，避免同屏节奏打架 */
   --dur-breathe: 2400ms;
+  /*
+   * 2026-09-30 轨迹视觉重构新增：**终态底色淡出**的时长（工具行 `aurora-tint-out`）。
+   * 比 `--dur-slow` 再慢一档：这是"刚做完"的一次性交代，要和状态点那一下确认
+   * （`--dur-base`）形成"点一下 + 底色慢慢退去"的两段节奏，而不是同时结束。
+   * **新名 append-only**：不改名、不删既有令牌（见下方硬约束与 docs/07 §5.1）。
+   */
+  --dur-tint: 800ms;
   --transition-fast: var(--dur-fast) var(--ease-standard);
   --transition-base: var(--dur-base) var(--ease-spring);
 
@@ -663,6 +670,28 @@ select {
   100% {
     transform: scale(1);
     opacity: 1;
+  }
+}
+
+/**
+ * 2026-09-30 轨迹重构新增：**终态底色淡出**（工具行 `AgentToolRow` 的 `.settled`）。
+ *
+ * 状态翻到 success / error 的那一刻，行底色先亮一下（纯强调色，`--aurora-blue`；
+ * 错误行由组件把 `--trace-tint` 换成 `--status-error`，见 `AgentToolRow` 的样式），
+ * 再在 `--dur-tint`(800ms) 内淡回透明 —— "刚做完"有个交代，
+ * 又不留一块常驻的高亮底色。**只动 `background`**：与同一行上状态点的
+ * `aurora-confirm`（`transform`）互不干扰，两段动效可以同时跑。
+ * 用纯强调色而不是 `--status-ok`：**失败也是一种终态**，"完成 / 失败"共用同一套
+ * 底色淡出，颜色只由状态点与图标表达（语义色不混进氛围动效）。
+ * 放在全局而不是组件 scoped 里：scoped 的 `@keyframes` 会被 Vue 改名，
+ * 跨组件复用（子代理页 / 自动化页的完成态）必须走全局。
+ */
+@keyframes aurora-tint-out {
+  from {
+    background-color: color-mix(in srgb, var(--trace-tint, var(--aurora-blue)) 14%, transparent);
+  }
+  to {
+    background-color: transparent;
   }
 }
 
