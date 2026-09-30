@@ -108,6 +108,38 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **vitest 只收「不 import 'electron'」的主进程测试**（`vitest.config.ts` 的 include）：`apps/desktop/src/main/**/*.test.ts` 下的用例若引入 Electron 会在 Node 环境加载失败。依赖 Electron 的行为靠 `AURORA_SMOKE` 端到端自测覆盖。
 - 用户数据：配置 `%APPDATA%/Aurora/config.json`、会话 `sessions/*.json`、分类流水 `classification.json`、日志 `logs/`。写文件一律原子写 + 防抖（与 `SettingsStore` 同一套 `FileSystemPort` 约定），退出前 `flush()`；损坏文件备份后重建。
 - 提交信息用 **Conventional Commits**，描述用中文（如 `feat(v0.5.0): ...`、`fix: ...`、`docs: ...`）。
+- **`pnpm dev`（含 `AURORA_CAPTURE`）在 Electron 里跑不了时先查 `ELECTRON_RUN_AS_NODE`**：
+  它若是 `1`，Electron 会把自己当纯 Node 启动，`require('electron')` 返回的是**二进制路径字符串**，
+  主进程在 `!electron.app.isPackaged` 这行崩（`Cannot read properties of undefined`）——
+  看着像打包产物坏了，其实只差 `Remove-Item env:ELECTRON_RUN_AS_NODE`。
+  某些 agent 运行时（如 DSH 的 shell）默认就带这个变量，逐条命令前清一次最稳。
+- **同一台机器上可能有别的 dev server 占着 5173**：`electron-vite dev` 会自动换到 5174 并照常工作，
+  不是错误（截图与探针都不受影响）。
+
+## 诊断与验证的时间成本（2026-09-30 「跟丢」排查的教训）
+
+那一轮把「自动跟随跟丢」查穿花了远超预期的时间，**大头不是难度而是排查方式**。
+下次碰到"跑起来才知道对不对"的问题，先按这几条走：
+
+- **别用全量 `AURORA_CAPTURE` 当探针**：一轮 3–5 分钟、且必须串行重建。
+  排查阶段先用**最小复现**（一个临时 HTML + 同一段 JS，几秒一轮）把
+  "浏览器到底会不会那样表现"钉死，再回到仓库里改实现 —— 本轮最贵的一次绕路就是
+  用 20 多轮全量截图去问一个可以用 20 行 HTML 回答的问题。
+- **"绿灯"会骗人**：`pnpm typecheck` / `pnpm test` / 大多数探针一路是绿的，行为却可以是坏的。
+  UI 类问题先构造**能直接读出事实**的观测（引擎自己的读数 vs 探针 querySelector 的读数、
+  计数器、节点身份标记），**一次性把仪器插全**再跑，而不是每轮只加一个数字。
+- **`capture.ts` 里的探针是 template literal 字符串**：字符串**内部**的注释写反引号 `` ` ``
+  会提前终止字符串，直接 `TS1005` 且报错位置极具误导性。本轮在这个坑上反复栽了十几次 ——
+  写注释用「」或单引号。这条在文件里已写过一次，**但教训是"每次改都要自查"**，不是"记住了就行"。
+- **探针之间会互相污染**：本轮 `chat-follow-burst` 长时间 FAIL，根因是它前面那条
+  `CHAT_AUTO_SCROLL_SCRIPT` 把跟随关掉后没恢复。每条场景都要**自带前置与收尾**，
+  用应用自己的入口按钮恢复状态，不依赖别人的自律。
+- **同一段语义的判据只写一份**：`pass` 与 `conditions` 表漂移过一次 —— 报告里每条都 `true`、
+  探针恒定 FAIL。让 `pass` 直接取那一张表的乘积。
+- **量事实，别量解析值**：`border-left-color` 在"没有左边框"时解析成 `currentColor`；
+  展开动画中途的 `border-width` 是 `0.666667px`。判据要取"有没有这条边"（宽度）而不是颜色，
+  且必须在**正确的时机**量（折叠态、点击之前）。
+
 
 ## 尚未生效 / 已知限制（别误当成 bug）
 
