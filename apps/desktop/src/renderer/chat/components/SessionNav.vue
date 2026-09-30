@@ -276,7 +276,12 @@ const noSessionsAtAll = computed(
       <!-- ── 分区三：Agent对话（Agent 空间；首行固定 quick，与提示条面板共用同一会话） ── -->
       <section class="group" data-field="chat.agent-group">
         <p class="nav-caption tiny muted">Agent对话</p>
-        <div class="session-list">
+        <!--
+          `chat.session-list` 锚点（capture 探针契约）随会话三分挂在本区的列表容器上：
+          Agent 空间是未标记会话（含历史 main 等）的缺省分区，「主会话列表」的语义由它承接
+          （docs/07 §2.3）。
+        -->
+        <div class="session-list" data-field="chat.session-list">
           <!--
             quick 固定首行（原左栏固定顶置项，2026-09-30 随会话三分下沉到这里；
             `chat.quick-item` 探针锚点保留）。它同时是提示条面板的输入会话（docs/07 §2.2）。
@@ -284,7 +289,7 @@ const noSessionsAtAll = computed(
           <div class="nav-row hover-fill" :class="{ active: quickActive }">
             <button
               type="button"
-              class="nav-item press"
+              class="quick-row-btn press"
               data-field="chat.quick-item"
               :class="{ active: quickActive }"
               title="快速对话（提示条面板同样使用这段会话）"
@@ -500,6 +505,58 @@ const noSessionsAtAll = computed(
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/**
+ * quick 固定首行（Agent对话区）：会话行样式已随三分搬进 SessionRow（scoped），
+ * 这一行是 SessionNav 自己渲染的特例（Zap 图标 + 无归档钮），尺寸与状态样式
+ * **逐字对齐** SessionRow 的 `.nav-row` / `.nav-item` —— `chat-hit-targets` 探针把它
+ * 当主要动作量（32px 手感线），缩水就是 FAIL。
+ */
+.nav-row.hover-fill {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+}
+
+.nav-row.hover-fill.active {
+  background: var(--fill-2);
+}
+
+.quick-row-btn {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px var(--space-2) 6px var(--space-3);
+  border-radius: var(--radius-sm);
+  text-align: left;
+  color: var(--text-secondary);
+}
+
+.quick-row-btn.active {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+.quick-row-btn.active::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 55%;
+  border-radius: var(--radius-pill);
+  background: var(--aurora-blue);
+}
+
+.quick-row-btn .icon {
+  flex: 0 0 auto;
+  stroke: currentColor;
 }
 
 /* ── 分区结构：caption（或组头）+ 会话列表 ── */
