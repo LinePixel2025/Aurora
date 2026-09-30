@@ -211,9 +211,13 @@ onMounted(() => {
                     <strong>{{ skill.name }}</strong>
                     <span class="badge">{{ skill.source === 'builtin' ? '内置' : '用户' }}</span>
                   </span>
-                  <p class="tiny muted">{{ skill.description }}</p>
+                  <p class="tiny muted clamp-2" :title="skill.description">
+                    {{ skill.description }}
+                  </p>
                 </td>
-                <td class="tiny muted">{{ skill.whenToUse ?? '—' }}</td>
+                <td class="tiny muted clamp-2" :title="skill.whenToUse ?? ''">
+                  {{ skill.whenToUse ?? '—' }}
+                </td>
                 <td class="tiny muted">{{ skill.hasScripts ? 'scripts/' : '—' }}</td>
                 <td>
                   <label class="row tiny enable-cell" :data-field="`skills.disabled.${skill.name}`">
@@ -253,7 +257,32 @@ onMounted(() => {
 .table {
   width: 100%;
   border-collapse: collapse;
+  /* 固定列宽：自动布局会被长 whenToUse / description 拉得忽宽忽窄，
+     整表看起来「文字错位」——列宽钉死后每行结构一致（docs/07 §2.5） */
+  table-layout: fixed;
   font-size: var(--text-sm);
+}
+
+/* 名称列 32%、脚本 / 启用列钉窄，剩余全给「适用场景」 */
+.table th:nth-child(1) {
+  width: 32%;
+}
+
+.table th:nth-child(3) {
+  width: 72px;
+}
+
+.table th:nth-child(4) {
+  width: 88px;
+}
+
+/* 长文案在固定列宽内最多两行，行高不再参差（全文挂 title） */
+.clamp-2 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  word-break: break-word;
 }
 
 .table th,

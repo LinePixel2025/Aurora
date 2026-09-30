@@ -313,7 +313,7 @@ async function openProjectRoot(): Promise<void> {
       <SettingField
         data-field="general.requireAdmin"
         label="以管理员身份运行"
-        hint="启动时未提权会弹 UAC 重新拉起，避免写系统目录、执行系统命令被权限拦住；改动重启后生效"
+        hint="未提权时弹 UAC 重新拉起；改动重启后生效"
       >
         <input v-model="requireAdmin" type="checkbox" />
       </SettingField>
@@ -342,8 +342,7 @@ async function openProjectRoot(): Promise<void> {
     <section class="section-card">
       <h2 class="section-title">项目</h2>
       <p class="section-desc">
-        登记后每轮对话会注入项目根逐层收集的 AGENTS.md，项目根也是权限判定「根内 / 根外」的边界；
-        不添加 = 无项目。
+        登记后注入项目根的 AGENTS.md；项目根也是「根内 / 根外」的权限边界。不添加 = 无项目。
       </p>
 
       <div v-for="item in projects?.list ?? []" :key="item.id" class="project-row">
@@ -499,7 +498,7 @@ async function openProjectRoot(): Promise<void> {
     <section class="section-card">
       <h2 class="section-title">勿扰时段</h2>
       <p class="section-desc">
-        全局勿扰只拦截主动打扰（课前提醒、敏感工具确认），两端都填才生效；提示条的静默时段在上方单独设置。
+        只拦主动打扰（课前提醒、敏感工具确认），两端都填才生效；提示条静默时段在上方单独设置。
       </p>
 
       <SettingField
