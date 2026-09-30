@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   createStickToBottomCore,
+  shouldSnapOnIntent,
   type StickIntentKind,
   type StickMetrics,
   type StickToBottomCore,
@@ -42,7 +43,7 @@ interface Harness {
 
 function createHarness(): Harness {
   let scrollHeight = 2000
-  let clientHeight = VIEWPORT
+  const clientHeight = VIEWPORT
   let scrollTop = 0
 
   let scrollCallback: (() => void) | null = null
@@ -345,5 +346,70 @@ describe('stickToBottomCore', () => {
     h.visibility()
     h.runFrames()
     expect(h.distance()).toBe(0)
+  })
+
+  // ────────── 真实输入窗口内的对齐静默（2026-10-01「滚轮滚不动」第二层根因） ──────────
+  //
+  // 上一条「两次读数」用例里，对齐帧排在 scroll **之后**才跑，抹不掉什么。真实浏览器里
+  // 还有第二种时序：`stick()`（展开折叠体触发 restick）留下的结算帧与用户的滚轮**竞速** ——
+  // 帧在意图与 scroll 之间插入执行，此刻 `following` 还没被窗口重判翻掉，对齐一次就把
+  // 用户刚滚出去的视口按回底部，随后到来的 scroll 读到的又是"贴底"。小步长滚动
+  // （触控板 / 高分辨率滚轮，单步 < 24px 阈值）连窗口重判都翻不了案 —— 逐次被吞。
+
+  it('结算帧与上滚竞速：帧插在意图与 scroll 之间也不许抹掉滚动', () => {
+    const h = createHarness()
+    h.arrive(3000)
+    h.runFrames()
+    h.core.stick() // 模拟 restick()：展开轨迹后结算帧在途
+    const max = h.maxScroll()
+
+    // ① 真实输入先到，读数还在底部 → 判成「还在跟随」（这一刻判不出是正常的）
+    h.intent('wheel')
+    expect(h.core.isFollowing()).toBe(true)
+
+    // ② 浏览器已把视口挪上去，scroll 事件还没派发 —— 在途结算帧此刻插进来跑
+    h.arrive(3000, max - 240)
+    h.runFrames(1)
+
+    // ③ scroll 到达，窗口重判
+    h.browserScroll()
+    expect(h.core.isFollowing()).toBe(false)
+    expect(h.scrollTop()).toBe(max - 240)
+  })
+
+  it('意图窗口期内排出的对齐帧不写 scrollTop（小步长上滚逐次被吞的根因）', () => {
+    const h = createHarness()
+    h.arrive(3000)
+    h.runFrames()
+    expect(h.distance()).toBe(0)
+
+    // 贴底上滚 16px（< 24px 阈值）：窗口重判仍是「跟随」，但位移必须站着
+    h.intent('wheel')
+    const max = h.maxScroll()
+    h.arrive(3000, max - 16)
+    h.browserScroll()
+    expect(h.core.isFollowing()).toBe(true)
+
+    // 窗口期内（时钟未推进）排出的帧：不许把用户这 16px 抹回底部
+    h.runFrames()
+    expect(h.scrollTop()).toBe(max - 16)
+
+    // 窗口过期后恢复常规语义：跟随态下内容变更照常对齐（此处距底仅 16px）
+    h.advance(1000)
+    h.core.onMutated()
+    h.runFrames()
+    expect(h.distance()).toBe(0)
+  })
+})
+
+describe('shouldSnapOnIntent（吸底补齐的时机口径，2026-10-01 收窄）', () => {
+  it('只在滚条释放与向下滚轮时补齐；上滚滚轮 / 按键 / 滚条按下不得补', () => {
+    expect(shouldSnapOnIntent('pointer-release')).toBe(true)
+    expect(shouldSnapOnIntent('wheel', 120)).toBe(true)
+    expect(shouldSnapOnIntent('wheel', -120)).toBe(false)
+    // 拿不到方向时保守不补：宁可少吸一次，不可吞一次上滚
+    expect(shouldSnapOnIntent('wheel')).toBe(false)
+    expect(shouldSnapOnIntent('key')).toBe(false)
+    expect(shouldSnapOnIntent('pointer')).toBe(false)
   })
 })

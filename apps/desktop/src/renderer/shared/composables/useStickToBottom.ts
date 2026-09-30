@@ -30,7 +30,11 @@
  */
 import { onMounted, onUnmounted, ref } from 'vue'
 import type { Ref } from 'vue'
-import { createStickToBottomCore, type StickIntentKind } from './stickToBottomCore.js'
+import {
+  createStickToBottomCore,
+  shouldSnapOnIntent,
+  type StickIntentKind,
+} from './stickToBottomCore.js'
 
 export interface StickToBottom {
   /** 当前是否处于「跟随最新」状态（`false` = 用户正在翻历史，渲染层据此显示回到最新入口） */
@@ -112,8 +116,9 @@ export function useStickToBottom(
    *
    * 存下来是为了 `rebind()`：滚动容器换掉之后原生监听必须重挂，而重挂需要这个回调 ——
    * 引擎的端口只在 `start()` 那一次被消费，之后拿不到第二次。
+   * `wheelDeltaY` 只由 wheel 监听提供（其余 kind 为 `undefined`），供吸底补齐判方向。
    */
-  let intentCallback: ((kind: StickIntentKind) => void) | null = null
+  let intentCallback: ((kind: StickIntentKind, wheelDeltaY?: number) => void) | null = null
   /**
    * 绑定在"滚动容器 / 窗口"上的原生监听。
    *
@@ -151,23 +156,6 @@ export function useStickToBottom(
     const found = findScroller(live)
     if (found !== null) scroller = found
     return found ?? scroller
-  }
-
-  /**
-   * 用户意图的统一入口。**只有真实输入会走到这里**：
-   * 程序滚动（`scrollTo`）、内容长高、`scrollTop` 被浏览器夹取都不产生这些事件。
-   * 三个 kind 的判定放在各自的绑定处（`wheel` / `pointerdown` / `keydown`）。
-   *
-   * ⚠️ **判定之后紧跟一次"贴底修正"**（`snapIfNearBottom`，2026-09-30 实测后补）：
-   * 引擎在「接管态」下**不写** `scrollTop`（那是刻意的，见 core 里那段注释），于是用户把滚动
-   * 拖回底部、意图已经把跟随接回来之后，视口仍停在原处 —— 直到下一次内容变更才被对齐。
-   * 这既让"滚回底部就恢复跟随"缺了最后一步（胶囊还在、画面不动），也会让后续的持续跟随
-   * 从一个**没贴底**的位置重新开始。这里在一次真实滚动之后补一次对齐，把这条链闭合。
-   */
-  function onUserIntent(kind: StickIntentKind): void {
-    core?.onUserIntent(kind)
-    sync()
-    snapIfNearBottom()
   }
 
   /**
@@ -253,15 +241,15 @@ export function useStickToBottom(
    * ⚠️ 重挂的触发权在 `rebind()` 手里（它拿 `intentCallback` 再调一次这里）：这个函数
    * **不能**自己去订阅端口 —— 端口是"一次消费"的，第二次订阅拿不到回调。
    */
-  function bindScroller(callback: (kind: StickIntentKind) => void): void {
+  function bindScroller(callback: (kind: StickIntentKind, wheelDeltaY?: number) => void): void {
     for (const unsubscribe of nativeSubscriptions.splice(0)) unsubscribe()
     const target = scroller
     if (target === null) return
     const onScroll = (): void => notifyScroll?.()
-    // 滚轮：只认纵向（触控板横扫与对话区滚动无关）
+    // 滚轮：只认纵向（触控板横扫与对话区滚动无关）；方向交给吸底补齐判（见 onUserIntent）
     const wheel = (event: WheelEvent): void => {
       if (Math.abs(event.deltaY) < Math.abs(event.deltaX)) return
-      callback('wheel')
+      callback('wheel', event.deltaY)
     }
     // 滚条拖拽：`clientX > clientWidth` 就是滚动条那条缝（本仓 `::-webkit-scrollbar`
     // 是 overlay 风格的 8px，不计入 `clientWidth`）
@@ -375,8 +363,23 @@ export function useStickToBottom(
           }
         },
         onUserScrollIntent: (callback) => {
-          intentCallback = callback
-          bindScroller(callback)
+          // 用户意图的统一入口（**只有真实输入会走到这里**）。引擎先开窗判定
+          // （见 core 文件头 ①′），渲染层随后做自己的收尾 —— 跟随 ref 同步 +
+          // **方向感知的吸底补齐**（`shouldSnapOnIntent`，2026-10-01 收窄）：
+          // 引擎在「接管态」下不写 `scrollTop`，用户把滚动拖回底部、意图把跟随接回来之后，
+          // 视口可能停在离底一小步处 —— 这条链由释放 / 向下滚轮之后的一次补齐闭合。
+          // **向上滚轮绝不补**：输入到达那一刻读数还是"贴底"（合成器还没挪视口），
+          // 无差别补齐等于把每次上滚预先吸回去，小步长滚轮逐次被吞（用户实测「无法用
+          // 滚轮滚动」的根因之一）。
+          // ⚠️⚠️ 这层包装**必须存在**：2026-09-30 的版本把意图直接喂给引擎，渲染层的
+          // 收尾（含吸底补齐）是没人调用的死代码 —— lint 不在日常验证循环里，一直没暴露。
+          // `rebind()` 重挂原生监听时拿的也是这个包装（`intentCallback`）。
+          intentCallback = (kind, wheelDeltaY) => {
+            callback(kind)
+            sync()
+            if (shouldSnapOnIntent(kind, wheelDeltaY)) snapIfNearBottom()
+          }
+          bindScroller(intentCallback)
           return () => {
             intentCallback = null
             for (const unsubscribe of nativeSubscriptions.splice(0)) unsubscribe()

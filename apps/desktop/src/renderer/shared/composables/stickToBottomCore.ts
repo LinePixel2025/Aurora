@@ -26,6 +26,15 @@
  * 读数变化退回"内容可能变了"的纯通知语义（①）。判定永远只由真实输入**发起** ——
  * 程序自己滚出来的读数变化开不了这个窗口。
  *
+ * **①″ 真实输入窗口期内，对齐帧必须闭嘴。**
+ * 窗口（①′）开着的时候，任何在途对齐帧都**不许写 `scrollTop`**：窗口的存在理由就是
+ * "输入到达时的读数是旧的，浏览器马上要挪视口"。此刻一帧对齐（`following` 尚未被窗口
+ * 重判翻掉）会抢在 `scroll` 之前把视口按回底部 —— 用户的滚动被抹掉，随后到来的 `scroll`
+ * 读到的又是"贴底"，窗口重判翻不了案。`stick()`（展开折叠体触发的 `restick`）留下的结算帧
+ * 与用户紧接着的上滚正是这样竞速的；小步长输入（触控板 / 高分辨率滚轮，单步 < 阈值）连
+ * 重判都判不出去，逐次被吞，体感就是「滚轮滚不动」（2026-10-01 用户实测，回归防线
+ * `stickToBottomCore.test.ts` 的两条竞速用例）。窗口收口（重判 / 过期）后对齐恢复常规语义。
+ *
  * **② 内容变高后必须自愈到"真的到底"。**
  * `scrollTop = scrollHeight - clientHeight` 用的是**写那一刻**的读数：DOM 变更发生在布局之前，
  * 同一帧里内容可能又长了一截（一次 markdown 块 / 一张工具卡 70–500px）。因此每帧对齐后
@@ -158,6 +167,21 @@ const ALIGN_EPSILON = 1
  */
 const DEFAULT_INTENT_WINDOW_MS = 250
 
+/**
+ * 「贴底补齐」（薄壳的 `snapIfNearBottom`）该不该在这一记真实输入之后执行。
+ *
+ * 补齐的语义是「用户这记输入之后视口应当精确落在底部」——只有**朝底部去**的输入才成立：
+ * 滚条拖拽释放（`pointer-release`）与向下滚轮（`deltaY > 0`）。
+ * **向上滚轮绝不补**：输入到达那一刻读数还是"贴底"（合成器还没挪视口，见文件头 ①′），
+ * 此刻补齐等于把用户即将发生的上滚预先吞掉 —— 小步长滚轮（触控板 / 高分辨率滚轮）
+ * 逐次被吸回，体感就是「滚不动」。按键与滚条按下同理不补；拿不到方向时保守不补
+ * （宁可少吸一次，不可吞一次上滚）。2026-10-01 收窄，此前是无差别补齐。
+ */
+export function shouldSnapOnIntent(kind: StickIntentKind, wheelDeltaY?: number): boolean {
+  if (kind === 'pointer-release') return true
+  return kind === 'wheel' && wheelDeltaY !== undefined && wheelDeltaY > 0
+}
+
 export function createStickToBottomCore(options: StickToBottomCoreOptions): StickToBottomCore {
   const threshold = options.threshold ?? DEFAULT_THRESHOLD
   const intentWindowMs = options.intentWindowMs ?? DEFAULT_INTENT_WINDOW_MS
@@ -238,10 +262,14 @@ export function createStickToBottomCore(options: StickToBottomCoreOptions): Stic
     // 每帧重新给一份补帧额度：额度是「一帧内补几次」的防死循环，不是跨帧预算
     if (following) alignAttempts = 0
 
+    // ①″（见文件头）：真实输入窗口期内绝不对齐 —— 输入读数是旧的，浏览器马上要挪视口，
+    // 此刻一帧对齐就是与用户抢视口。窗口的收口（重判 / 过期）在 onScroll 与时钟里。
+    const inIntentWindow = now() < intentDeadline
+
     let changed = false
     let needMore = false
 
-    if (following) {
+    if (following && !inIntentWindow) {
       while (alignAttempts < MAX_ALIGN_FRAMES) {
         alignAttempts += 1
         const result = alignOnce()
@@ -250,7 +278,8 @@ export function createStickToBottomCore(options: StickToBottomCoreOptions): Stic
         if (!needMore) break
       }
     } else {
-      // 用户接管期间**只**观察高度变化，绝不改 `scrollTop`、也绝不因"位置靠底"自行恢复跟随。
+      // 用户接管期间 / 意图窗口期内**只**观察高度变化，绝不改 `scrollTop`、
+      // 也绝不因"位置靠底"自行恢复跟随。
       // 这里刻意不做"距底小于阈值就恢复"的位置判定：内容变高会把 `scrollTop` 留在原处，
       // 读数的「距底」随即变大 —— 拿位置当"用户回到底部"的判据会让跟随被悄悄续上，
       // 于是用户上翻读历史时被新一轮输出拽走。恢复跟随只有两条路：真实输入把滚动
