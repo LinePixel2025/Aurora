@@ -133,7 +133,8 @@ const api: AuroraApi = {
     onRemoteActivate: (listener) => subscribe(IPC.chat.remoteActivate, listener),
     // 远程会话可见性变更推送（docs/12 §5 第 8 步）：Center 开关左栏可见性后由主进程推
     onCenterVisibilityChanged: (listener) => subscribe(IPC.chat.centerVisibilityChanged, listener),
-    newSession: () => invoke(IPC.chat.newSession),
+    // 会话三分（docs/06 §4）：space / projectId 只透传（纯字面量，无 Proxy 克隆问题）
+    newSession: (options) => invoke(IPC.chat.newSession, options),
     archiveSession: (request) => invoke(IPC.chat.archiveSession, request),
     setSessionProject: (request) => invoke(IPC.chat.setSessionProject, request),
     jobs: (request) => invoke(IPC.chat.jobs, request),

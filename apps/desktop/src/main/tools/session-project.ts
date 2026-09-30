@@ -30,7 +30,7 @@
  * 本文件**不 import electron**：纯取值闭包 + agent-core 纯函数组合，可在 Node 里单测
  * （`session-project.test.ts`）。
  */
-import { agentDesktopDir, effectiveWorkspaceDir, resolveProjectRootById } from '@aurora/agent-core'
+import { effectiveWorkspaceDir, resolveProjectRootById } from '@aurora/agent-core'
 import type { SessionSpace } from '@aurora/agent-core'
 import type { Settings } from '@aurora/shared'
 
