@@ -174,6 +174,12 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   —— 它已经在两次全量截图里红着（2026-09-30 21:06 / 22:00 的报告可查），没人看见。
   另一类成因是**注释里写了反引号**（提前终止 template literal，后半截被当成代码解析）：
   本轮现写现踩，被这条护栏当场抓住。
+- **JS 合成事件测不到原生滚轮管线（2026-10-01「无法用滚轮滚动」的教训）**：
+  `dispatchEvent(new WheelEvent(...))` 能驱动意图链路（监听器照收、判定照跑），但**不触发
+  合成器滚动** ——「程序把用户刚滚出去的视口吸回去」这类失效（意图与对齐帧的竞速、
+  吸底补齐的时机）全都发生在合成器与主线程之间，合成事件面前必然 PASS。
+  要测真实滚轮，走 `webContents.debugger` 发 CDP `Input.dispatchMouseEvent`（type `mouseWheel`），
+  见 capture 的 `chat-trace-wheel` 探针与 docs/07 §5.2 ①‴。
 
 
 ## 尚未生效 / 已知限制（别误当成 bug）
