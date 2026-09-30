@@ -161,6 +161,36 @@ const sessionItems = computed(() =>
 )
 
 /**
+ * 会话三分的三个分区（docs/06 §4 会话空间 / docs/07 §2.3，2026-09-30）：
+ * 判定优先级是 **projectId > space**（绑定了项目的会话是项目对话，space 不参与）；
+ * 未标记 space 的会话一律归 Agent对话（主进程 `spaceOf` 同一条归一口径）。
+ * 孤儿绑定（绑定的项目已被删除）解析链上已按未绑定回落 —— 展示层同样归入 Agent对话。
+ */
+const workSessions = computed(() =>
+  sessionItems.value.filter((item) => item.projectId === undefined && item.space === 'work'),
+)
+
+const agentSessions = computed(() =>
+  sessionItems.value.filter(
+    (item) => item.projectId === undefined && item.space !== 'work',
+  ),
+)
+
+/**
+ * 项目对话：按 `projects.list` 顺序的子分组。**空项目也要渲染** —— 组头 `+` 是
+ * 「在这个项目里新建对话」的唯一入口，按「有会话才显示」过滤会让空项目无法创建第一条会话。
+ * 项目名取自设置 store（ContextPanel 的当前项目卡同源，没有第二份配置读取）。
+ */
+const projectGroups = computed(() => {
+  const list = settingsStore.settings?.projects.list ?? []
+  return list.map((project) => ({
+    id: project.id,
+    name: project.name,
+    sessions: sessionItems.value.filter((item) => item.projectId === project.id),
+  }))
+})
+
+/**
  * 已归档会话（左栏「已归档 · N」分组的数据源，docs/07 §2.3）。
  *
  * 归档判定严格按 `archived === true`：`false`（显式取消归档过）与 `undefined`（从未归档的
@@ -288,12 +318,32 @@ async function switchSession(id: string): Promise<void> {
   await rawSwitchSession(id)
 }
 
-/** 左栏「新对话」：同样是切会话，带上同一组副作用 */
+/**
+ * 左栏「新对话」：同样是切会话，带上同一组副作用。
+ * 固定创建 **Agent 会话**（docs/07 §2.3，2026-09-30）—— 项目 / 工作目录对话
+ * 从各分区组头的 `+` 进入（startProjectSession / startWorkSession）。
+ */
 async function startNewSession(): Promise<void> {
   tts.stop()
   lastReadId = null
   disposeRecording()
-  await newSession()
+  await newSession({ space: 'agent' })
+}
+
+/** 项目分组头 `+`：新建会话并绑定到该项目（主进程校验项目存在性） */
+async function startProjectSession(projectId: string): Promise<void> {
+  tts.stop()
+  lastReadId = null
+  disposeRecording()
+  await newSession({ projectId })
+}
+
+/** 工作目录对话分组头 `+`：新建 space:'work' 的会话（Work 模式专属入口） */
+async function startWorkSession(): Promise<void> {
+  tts.stop()
+  lastReadId = null
+  disposeRecording()
+  await newSession({ space: 'work' })
 }
 
 /**
@@ -985,7 +1035,9 @@ async function markGuideDone(): Promise<void> {
         不再一处两式）。`chat.jobs-entry` 锚点随按钮迁走，面板容器锚点仍是 `chat.jobs`。
       -->
       <SessionNav
-        :sessions="sessionItems"
+        :project-groups="projectGroups"
+        :work-sessions="workSessions"
+        :agent-sessions="agentSessions"
         :archived-sessions="archivedSessionItems"
         :active-id="sessionId"
         :right-open="contextOpen"
@@ -996,6 +1048,8 @@ async function markGuideDone(): Promise<void> {
         :jobs-running="jobsRunning"
         :jobs-open="jobsOpen"
         @new-session="startNewSession"
+        @new-project-session="startProjectSession"
+        @new-work-session="startWorkSession"
         @select="selectSession"
         @archive-session="(id, archived) => void setArchived(id, archived)"
         @open-subagents="view = 'subagents'"

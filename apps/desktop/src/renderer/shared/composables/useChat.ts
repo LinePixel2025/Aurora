@@ -898,9 +898,15 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     await refreshJobs()
   }
 
-  /** 新建会话并切过去。新会话此时还没有标题，发完第一条消息后列表会刷新。 */
-  async function newSession(): Promise<void> {
-    const result = await window.aurora.chat.newSession()
+  /**
+   * 新建会话并切过去。新会话此时还没有标题，发完第一条消息后列表会刷新。
+   *
+   * `options` 透传给 `chat:newSession`（docs/06 §4 会话三分，2026-09-30）：
+   * `space: 'agent'`（缺省语义）= Agent对话、`'work'` = 工作目录对话、
+   * `projectId` 传入则绑定项目。参数是纯字面量对象，无 Proxy 克隆问题。
+   */
+  async function newSession(options?: { space?: 'agent' | 'work'; projectId?: string }): Promise<void> {
+    const result = await window.aurora.chat.newSession(options)
     if (!result.ok) {
       error.value = result.message
       return
