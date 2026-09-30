@@ -28,6 +28,7 @@ import {
   SkillsBridge,
   ToolRegistry,
   VOLATILE_SECTION_TITLES,
+  agentDesktopDir,
   createFileJobStore,
   createFileSnapshotPort,
   createProjectInstructionsSource,
@@ -791,15 +792,38 @@ async function bootstrap(): Promise<void> {
     }).root
   // 会话级项目解析（v17，docs/06 §5.1）：每个会话可绑定 projects.list 里的一项
   // （`sessions/<id>.json` 的 meta.projectId，经 `chat:setSessionProject` 写入）。
+  // 2026-09-30 会话三分（docs/06 §4）起再插入会话空间一级（meta.space）：
+  // Agent 空间（未标记 / 'agent'，含 quick 与历史会话）→ 固定 `桌面\Aurora`，
+  // Work 空间（'work'）→ modes.work.workspaceDir，都排在全局 projects.current 之前。
   // 缺省 cwd / 搜索根、项目根边界（file-port / command-runner 的 workspaceRoot）、
-  // auto 档免确认判定与 AGENTS.md 注入**全部**走这一个解析器（session-project.ts），
-  // 未绑定 / 绑定已失效的会话回落上面的全局 `projectRoot`，再按原有链回落。
-  // 同步取值走 `projectOf`（内存缓存；装配层不变量：会话的工具执行之前 agentLoop
-  // 必然已读过该会话）；确认钩子 / 指令注入允许 await，先 `projectIdOf` 预热再取。
+  // auto 档免确认判定与 AGENTS.md 注入**全部**走这一个解析器（session-project.ts）。
+  // 同步取值走 `projectOf` / `spaceOf`（内存缓存；装配层不变量：会话的工具执行之前
+  // agentLoop 必然已读过该会话）；确认钩子 / 指令注入允许 await，先 `projectIdOf` 预热再取。
+  // Agent 空间目录懒创建：首次有 Agent 会话解析到它时建一次（失败只 warn —— 目录不存在时
+  // file-port 的 realpath 校验退到最近存在的父目录，链路仍能工作）。
+  const agentWorkspaceDir = agentDesktopDir(app.getPath('home'))
+  let agentWorkspaceEnsured = false
+  const ensureAgentWorkspaceDir = (): string => {
+    if (!agentWorkspaceEnsured) {
+      agentWorkspaceEnsured = true
+      fs.mkdir(agentWorkspaceDir, { recursive: true })
+        .then(() => logger?.debug('Agent 工作区目录就绪', { dir: agentWorkspaceDir }))
+        .catch((error: unknown) => {
+          logger?.warn('Agent 工作区目录创建失败（链路继续，落盘时按最近存在父目录校验）', {
+            dir: agentWorkspaceDir,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        })
+    }
+    return agentWorkspaceDir
+  }
   const sessionProjects = createSessionProjectResolver({
     getSettings: () => settings!.get(),
     getProjectId: (sessionId) =>
       sessionId === undefined || sessionId === '' ? undefined : sessions!.projectOf(sessionId),
+    sessionSpaceOf: (sessionId) =>
+      sessionId === undefined || sessionId === '' ? 'agent' : sessions!.spaceOf(sessionId),
+    agentDir: ensureAgentWorkspaceDir,
     globalProjectRoot: projectRoot,
     homeDir: () => app.getPath('home'),
     cwd: process.cwd(),
@@ -1083,6 +1107,14 @@ async function bootstrap(): Promise<void> {
     settingsHint: () => SETTINGS_HINT,
     todoSummary: async (sessionId) => renderTodoList(await todoPort!.read(sessionId)),
     projectInstructions,
+    // 工作目录提示（docs/06 §4 会话三分，2026-09-30）：按会话现解析生效工作目录，
+    // 渲染为「## 工作目录」易变小节 —— 模型要先知道「在哪干活」，再读「那片地方的约定」。
+    workspaceHint: async (sessionId) => {
+      if (sessionId === undefined || sessionId === '') return undefined
+      await sessions!.projectIdOf(sessionId)
+      const dir = sessionProjects.workspaceDir(sessionId)
+      return dir.trim() === '' ? undefined : dir
+    },
     modePrompt: () => modes.systemPrompt(),
     perceptionSummary: () => perception?.contextSummary() ?? Promise.resolve(''),
     // 长上下文摘要（docs/06 §4）：被截断的旧消息交给当前 provider 压成一段摘要。

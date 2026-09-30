@@ -132,11 +132,12 @@ describe('buildSystemPrompt', () => {
     }
   })
 
-  it('四个易变小节都排在「## 安全规则」之后，相对顺序是 历史摘要 → 任务清单 → 项目约定 → 系统状态', () => {
+  it('五个易变小节都排在「## 安全规则」之后，相对顺序是 历史摘要 → 任务清单 → 工作目录 → 项目约定 → 系统状态', () => {
     const prompt = buildSystemPrompt({
       ...STATIC_PARTS,
       perceptionSummary: '当前时间 08:00',
       todoSummary: '1. [~] 收集资料',
+      workspaceHint: 'C:\\Users\\demo\\Desktop\\Aurora',
       projectInstructions: '本仓库用 pnpm workspace',
       historySummary: '此前聊过课程表',
     })
@@ -145,29 +146,31 @@ describe('buildSystemPrompt', () => {
 
     const positions = VOLATILE_SECTION_TITLES.map((title) => prompt.indexOf(title))
     for (const position of positions) {
-      // -1（没渲染）也不会大于 safety，因此这一条同时覆盖「四个小节都渲染了」
+      // -1（没渲染）也不会大于 safety，因此这一条同时覆盖「五个小节都渲染了」
       expect(position).toBeGreaterThan(safety)
     }
     // 相对顺序即数组顺序
     expect([...positions].sort((a, b) => a - b)).toEqual(positions)
   })
 
-  it('VOLATILE_SECTION_TITLES 冻结为四个易变小节，含「## 项目约定」', () => {
-    expect(VOLATILE_SECTION_TITLES).toHaveLength(4)
+  it('VOLATILE_SECTION_TITLES 冻结为五个易变小节，含「## 工作目录」与「## 项目约定」', () => {
+    expect(VOLATILE_SECTION_TITLES).toHaveLength(5)
     expect(VOLATILE_SECTION_TITLES).toContain('## 项目约定')
     expect([...VOLATILE_SECTION_TITLES]).toEqual([
       '## 更早对话的摘要',
       '## 当前任务清单',
+      '## 工作目录',
       '## 项目约定',
       '## 系统状态',
     ])
   })
 
-  it('四个易变小节的标题位置都大于「## 安全规则」，且相对顺序与 VOLATILE_SECTION_TITLES 一致', () => {
+  it('五个易变小节的标题位置都大于「## 安全规则」，且相对顺序与 VOLATILE_SECTION_TITLES 一致', () => {
     const prompt = buildSystemPrompt({
       ...STATIC_PARTS,
       historySummary: '此前聊过课程表',
       todoSummary: '1. [~] 收集资料',
+      workspaceHint: 'C:\\Users\\demo\\Desktop\\Aurora',
       projectInstructions: '本仓库用 pnpm workspace',
       perceptionSummary: '当前时间 08:00',
     })
@@ -175,7 +178,7 @@ describe('buildSystemPrompt', () => {
     expect(safety).toBeGreaterThanOrEqual(0)
 
     const positions = VOLATILE_SECTION_TITLES.map((title) => prompt.indexOf(title))
-    expect(positions).toHaveLength(4)
+    expect(positions).toHaveLength(5)
     expect(positions.every((position) => position > safety)).toBe(true)
     expect([...positions].sort((a, b) => a - b)).toEqual(positions)
   })
@@ -184,6 +187,7 @@ describe('buildSystemPrompt', () => {
     const prompt = buildSystemPrompt({
       perceptionSummary: 'P',
       todoSummary: 'T',
+      workspaceHint: 'W',
       projectInstructions: 'C',
       historySummary: 'H',
     })

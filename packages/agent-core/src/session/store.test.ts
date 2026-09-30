@@ -334,6 +334,69 @@ describe('SessionStore · 会话列表与新建（chat:sessions / chat:newSessio
   })
 })
 
+describe('SessionStore · 会话空间（docs/06 §4 会话三分，2026-09-30）', () => {
+  it('createSession({ space: "work" }) 只写内存：列表立即按空间分组，空会话不落盘', async () => {
+    const { store, fs } = setup()
+    const id = await store.createSession({ space: 'work' })
+
+    const summaries = await store.summaries()
+    expect(summaries.find((item) => item.id === id)?.space).toBe('work')
+    expect(store.spaceOf(id)).toBe('work')
+    // 空会话不落盘（与不带 space 的 createSession 同一条不变量）
+    const files = await fs.readdir(SESSION_DIR)
+    expect(files.some((name) => name === `${id}.json`)).toBe(false)
+
+    // 首条消息落盘时 meta.space 随消息一起写入
+    await store.append(id, { role: 'user', content: '第一条' })
+    await store.flush()
+    expect(metaOf(fs, id)['space']).toBe('work')
+  })
+
+  it('spaceOf 缺省归一为 agent；agent 空间不带键（缺省值不产生空值键）', async () => {
+    const { store, fs } = setup()
+    const id = await store.createSession({ space: 'agent' })
+
+    expect(store.spaceOf('never-seen')).toBe('agent')
+    expect(store.spaceOf(id)).toBe('agent')
+    const summaries = await store.summaries()
+    const item = summaries.find((entry) => entry.id === id)
+    expect(item?.space).toBeUndefined()
+    await store.append(id, { role: 'user', content: '第一条' })
+    await store.flush()
+    expect(metaOf(fs, id)['space']).toBeUndefined()
+  })
+
+  it('setSpace 往返：写入 work、改回 agent 删键；幂等不重复写盘', async () => {
+    const { store, fs } = setup()
+    await store.append('s1', { role: 'user', content: 'a' })
+    await store.flush()
+
+    await store.setSpace('s1', 'work')
+    expect(store.spaceOf('s1')).toBe('work')
+    expect(metaOf(fs, 's1')['space']).toBe('work')
+
+    await store.setSpace('s1', 'work') // 幂等
+    await store.setSpace('s1', 'agent')
+    expect(store.spaceOf('s1')).toBe('agent')
+    expect(metaOf(fs, 's1')['space']).toBeUndefined()
+
+    // 重新从磁盘装载仍能读出空间
+    await store.setSpace('s1', 'work')
+    await store.flush()
+    const reopened = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
+    await reopened.append('s1', { role: 'user', content: 'b' })
+    expect(reopened.spaceOf('s1')).toBe('work')
+  })
+
+  it('setSpace 非法值抛错； summaries 对未标记会话不带 space 键', async () => {
+    const { store } = setup()
+    await expect(store.setSpace('s1', 'code' as never)).rejects.toThrow()
+    await store.append('s1', { role: 'user', content: 'a' })
+    const summaries = await store.summaries()
+    expect(summaries.find((item) => item.id === 's1')?.space).toBeUndefined()
+  })
+})
+
 /** 读回某会话文件的原始 JSON（断言落盘形状用） */
 function readFile(fs: TestFileSystem, id: string): Record<string, unknown> {
   const raw = fs.files.get(sessionFilePath(SESSION_DIR, id))

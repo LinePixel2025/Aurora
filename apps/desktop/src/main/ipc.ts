@@ -532,13 +532,37 @@ export function registerIpc(deps: DesktopDeps): () => void {
         err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
       ),
   )
-  handle<string>(IPC.chat.newSession, () =>
-    deps.sessions
-      .createSession()
+  /**
+   * 新建会话（docs/06 §4 会话三分，2026-09-30）。
+   *
+   * 可选参数打「空间戳」：`space: 'work'` = 工作目录对话（Work 模式专属），
+   * 其余（缺省 / `'agent'`）= Agent对话；`projectId` 传入则绑定到该项目
+   * （校验存在性，同 `chat:setSessionProject`；绑定优先于 space）。非法 space 报错而不静默
+   * —— 静默成功后左栏分组与实际工作目录会落到错误分区，最难排查。
+   * `createSession` 只写内存：空会话不落盘，首条消息落盘时 meta 随消息一起写入。
+   */
+  handle<string>(IPC.chat.newSession, (request?: { space?: string; projectId?: string }) => {
+    const space = request?.space
+    if (space !== undefined && space !== 'agent' && space !== 'work') {
+      return Promise.resolve(err('E_INVALID_ARGUMENT', `非法的会话空间：${String(space)}`))
+    }
+    const projectId = request?.projectId?.trim() ?? ''
+    if (
+      projectId !== '' &&
+      !deps.settings.get().projects.list.some((project) => project.id === projectId)
+    ) {
+      return Promise.resolve(err('E_INVALID_ARGUMENT', '项目不存在（可能已被删除）'))
+    }
+    return deps.sessions
+      .createSession(space === undefined ? undefined : { space })
+      .then(async (sessionId) => {
+        if (projectId !== '') await deps.sessions.setProject(sessionId, projectId)
+        return sessionId
+      })
       .then(ok, (error: unknown) =>
         err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
-      ),
-  )
+      )
+  })
   /**
    * 归档 / 取消归档（docs/06 §4）。
    *
