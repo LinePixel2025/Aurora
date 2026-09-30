@@ -404,15 +404,17 @@ const { following, stick, refresh: refreshStick } = useStickToBottom(() => rootE
  *
  * 只在**跟随态**下动手：用户正在翻历史时展开一条轨迹，视口不该被拽走
  * （与 `useStickToBottom` 的「用户意图优先」同一条语义）。
- * 平滑滚动尊重系统「减少动态效果」，判定与 `jumpToLatest` 逐字一致。
  *
+ * 刻意用**瞬时**滚动（不用 smooth）：2026-10-01 起展开体走 grid 高度动画，
+ * 底部是逐帧移动的 —— `stickToBottomCore` 的结算帧每帧按**当下**高度对齐，
+ * 视口跟着动画一起滑，比「smooth 滚向旧高度 + 结算帧瞬跳新高度」两种动效打架顺畅得多
+ * （那正是用户报「展开时滚动不顺畅」的另一半来源）。
  * 点击与 `stick()` 同一次同步执行、DOM 还没更新，所以这次滚动用的是**旧高度**；
  * 真正贴到新底靠 `stickToBottomCore` 在 DOM 变更后的补帧（见那边的「② 内容变高后必须自愈」）。
  */
 function restick(): void {
   if (!following.value) return
-  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
-  stick(reduceMotion ? 'auto' : 'smooth')
+  stick()
 }
 
 /**
@@ -641,6 +643,30 @@ function hasTrace(message: ChatMessage): boolean {
 function traceRunning(message: ChatMessage): boolean {
   if (props.thinkingTargetId === message.id) return true
   return (message.toolCalls ?? []).some((call) => call.state === 'running')
+}
+
+/** 这条轨迹里有没有失败的工具调用（折叠胶囊的状态图标据此给红叉） */
+function traceFailed(message: ChatMessage): boolean {
+  return (message.toolCalls ?? []).some((call) => call.state === 'error')
+}
+
+/**
+ * 整条轨迹的耗时（折叠胶囊右侧，2026-10-01 重塑新增）：**渲染层计时**口径 ——
+ * 首个工具开始到末个工具结束（正在跑的按当前 tick 算）。
+ * 历史水合的行没有任何计时记录 → 空串，与工具行耗时同一条「不伪造数据」口径。
+ */
+function traceDuration(message: ChatMessage): string {
+  let start = Number.POSITIVE_INFINITY
+  let end = 0
+  for (const call of message.toolCalls ?? []) {
+    const record = timings.get(call.id)
+    if (record === undefined) continue
+    start = Math.min(start, record.start)
+    end = Math.max(end, record.end ?? nowTick.value)
+  }
+  if (start === Number.POSITIVE_INFINITY) return ''
+  const seconds = Math.max(0, end - start) / 1000
+  return seconds < 0.1 ? '<0.1s' : `${seconds.toFixed(1)}s`
 }
 
 /**
@@ -920,6 +946,8 @@ async function onContentClick(event: MouseEvent): Promise<void> {
             :open="traceOpen(message)"
             :summary="traceSummary(message)"
             :running="traceRunning(message)"
+            :failed="traceFailed(message)"
+            :duration="traceDuration(message)"
             @toggle="toggleTrace(message)"
           >
             <!--
@@ -941,12 +969,12 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 :aria-expanded="isThinkingOpen(message.id)"
                 @click="toggleThinkingAndStick(message.id)"
               >
-                <ChevronRight class="chevron" :size="13" :stroke-width="1.8" aria-hidden="true" />
                 <!--
                   流式期间的一枚**公转指示点**（旋转，不是轨迹那条横向平移扫光）：
                   旋转由全局 `.spin`（`aurora-spin` + `--dur-spin`）提供 —— scoped 里的
                   @keyframes 会被 Vue 改名，跨组件复用的关键帧必须走全局样式。
                   `prefers-reduced-motion` 由 theme.css 文末的全局兜底压掉（转 1 次即停）。
+                  chevron 统一挂行尾 —— 与工具行 / 轨迹胶囊同一套行语言（2026-10-01 重塑）。
                 -->
                 <span
                   v-if="thinkingTargetId === message.id"
@@ -958,6 +986,8 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 <span v-if="thinkingTargetId === message.id" class="tiny thinking-elapsed">
                   {{ thinkingSeconds }}s
                 </span>
+                <span class="grow" />
+                <ChevronRight class="chevron" :size="13" :stroke-width="1.8" aria-hidden="true" />
               </button>
               <!--
                 思考正文一律走**纯淡入**（`fade`），不做高度动画。
@@ -1227,16 +1257,13 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 }
 
 /*
- * 轨迹展开体的淡入淡出（`.trace-body` 在 `AgentTrace` 的子组件里，属 deep）。
+ * 轨迹展开体的开合动画（`.trace-body` 在 `AgentTrace` 的子组件里，属 deep）。
  *
- * 展开体是**常驻 DOM + CSS 折叠**（见该组件的模板注释），因此无法用 `<Transition>` 包裹；
- * 这里用 CSS 过渡补回 250ms 的淡入观感：`display` 从 none 切回来时会重新计算过渡，
- * 于是展开是淡入、折叠是瞬收（收起方向不做动画，避免"内容已经没了还在淡"）。
- * 时长与缓动走令牌（`prefers-reduced-motion` 的全局兜底照旧生效）。
+ * 2026-10-01 起动画本体是 **grid `0fr ↔ 1fr` 高度过渡**，实现在 `AgentTrace.vue` 自己的
+ * scoped 样式里（`.trace-clip`）；这里曾经挂过 `opacity` 过渡补"淡入观感"—— `display`
+ * 翻转（旧 `v-show`）不会触发过渡、grid 折叠也不再摘 `display`，这条规则已经没有作用对象，
+ * 删掉防止后人照着它再挂一层（动画口径见 docs/07 §5.2 硬约定②与 §2.3「执行轨迹」）。
  */
-.trace-body {
-  transition: opacity var(--dur-base) var(--ease-standard);
-}
 
 /* ── 思考过程折叠块（BetaV2）：轨迹里的第一个节点 ── */
 /*
@@ -1260,12 +1287,15 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   align-items: center;
   gap: var(--space-1);
   width: 100%;
-  /* 24px：块头整行可点，但原来只有 21px 高（`chat-hit-targets` 量出来的 WCAG 2.2 违例） */
-  min-height: 24px;
-  padding: 2px 0;
+  /* 28px：与工具行同一档（2026-10-01 重塑统一行语言），命中区同步达标 */
+  min-height: 28px;
+  padding: 4px 0 4px 2px;
+  border-radius: var(--radius-xs);
   text-align: left;
   color: var(--text-muted);
-  transition: color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
 /*
@@ -1276,7 +1306,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   content: '';
   position: absolute;
   left: 4px;
-  top: 11px;
+  top: 10.5px;
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -1295,51 +1325,16 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 }
 
 /*
- * 轨迹**折叠态**下的思考块：整块收成零高度、不参与命中测试，但**仍在 DOM 里**。
- *
- * 为什么不是 `v-if` / `display: none`：`capture` 的 `CHAT_THINKING_BLOCK_ACT` 与
- * 「高密度爆发」探针都要先读到折叠态的 `.thinking-head` 文案（含「已深度思考」），
- * 以及 `.thinking.streaming .thinking-text` 这个锚点在流式一开始就存在
- * —— 整块从文档里摘掉会让那两条断言在**折叠的那一帧**直接失效。
- * `visibility: hidden` 让元素既不渲染、也不可聚焦（`display: none` 之外唯一同时满足
- * 这两点的做法），而 `textContent` / 选择器查询完全不受影响。
- *
- * 第二条规则让折叠态不白占 `AgentTrace` 里 `.thinking { padding-left: 20px }` 那一档缩进
- * —— 折叠态的轨迹高度应当就是一行。两条都用 `:deep()` 穿透到子组件（`AgentTrace`）内部：
- * 思考块是插槽内容（孙元素），父组件的 scoped 选择器要命中它必须借 `:deep()`。
+ * 轨迹**折叠态**下思考块与工具行的隐藏，2026-10-01 起由 `AgentTrace` 的 grid `0fr` 轨道
+ * 统一承担（展开体收成零高度、内层 `overflow: hidden`），这里不再需要 `visibility: hidden`
+ * 与 `position: absolute` 的两条覆盖 —— 它们反而会在展开动画期间打架
+ * （轨道还在 1fr 的过渡里，子项已经被拽出文档流）。锚点契约不变：折叠态
+ * `.thinking-head` 文案与 `.tool-card` 计数仍可读（元素只是被裁剪，没有离开 DOM）。
  */
-.trace.is-collapsed :deep(.thinking) {
-  padding-left: 0;
-  visibility: hidden;
-}
 
-/*
- * 轨迹**折叠态**下的工具行列表：整块从布局里摘走（`position: absolute` + `visibility: hidden`），
- * **不是** `v-if`。
- *
- * 这是「任务完成后自动折叠思考与调用历史」这条诉求的落点：折叠态必须真的只剩**一行摘要**。
- * 只把思考块隐掉是不够的 —— 工具行是 `.tools` 里的独立行，它们仍会各占一行高度，
- * 于是"折叠"看起来只是少了一段思考、下面照样拖着一串工具行。
- *
- * 为什么不用 `display: none` / `v-if`：`CHAT_SIDEBAR_SCRIPT` 会数 `.tool-card` 与
- * `.tool-head .tool-icon`（每行恰好一枚），`CHAT_TOOL_CARD_OPEN_*` 要按 `.tool-card` 定位后点开。
- * 这些探针驱动的场景里轨迹是**展开**的（思考块探针点的就是展开态），所以它们本来命中可见状态；
- * 但另有一批场景（左栏 / 命中区）在折叠态下读结构，整块摘掉会让那些计数变成 0 而假 FAIL。
- * `visibility: hidden` + 绝对定位同时满足：仍在 DOM 里（选择器可查、计数不变）、
- * 不占布局高度（折叠态真是一行）、不可聚焦、不参与命中测试。
- */
-.trace.is-collapsed :deep(.tools) {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  visibility: hidden;
-  pointer-events: none;
-  margin: 0;
-}
-
-/* 悬停只提亮文字（不再给整行铺底色：那会让旁注看着像可点区域的大按钮） */
+/* 悬停铺 `--fill-1`（与工具行同一套行语言；它是可点的展开行，affordance 该有） */
 .thinking-head:hover {
+  background: var(--fill-1);
   color: var(--text-secondary);
 }
 

@@ -28,13 +28,14 @@ import type { TodoRow } from '../agentTodo.js'
 import { parseTaskInput, parseTodoWriteInput } from '../agentTodo.js'
 import { useCollapseTransition } from '../composables/useCollapseTransition.js'
 import { toolIconOf } from '../toolIcons.js'
+import { toolLabelOf } from '../toolLabels.js'
 import { ChevronRight, FilePenLine } from '../icons.js'
 import AgentTodoList from './AgentTodoList.vue'
 import AppTooltip from './AppTooltip.vue'
 import StatusDot from './StatusDot.vue'
 import SubagentConversation from './SubagentConversation.vue'
 
-const props = withDefaults(
+withDefaults(
   defineProps<{
     /** 这次工具调用（`AgentToolCall`，`MessageList` 从消息里透传） */
     call: AgentToolCall
@@ -99,6 +100,17 @@ function taskOf(call: AgentToolCall) {
 /** 工具语义图标（docs/07 §5）：读文件 / 跑命令 / 派子代理一眼可分，未知工具走兜底 */
 function toolIcon(call: AgentToolCall) {
   return toolIconOf(call.name)
+}
+
+/**
+ * 通用行的语义化行首标题（docs/07 §2.3 硬口径④）：「动词 + 关键参数」的可读短语
+ * （「运行 pnpm test」）。未登记 / 参数里摘不出东西时回落工具名 —— 行首永远不渲染残缺短语，
+ * mono 工具名完整保留在 `.tool-head` 的 `aria-label` 里（语义不丢）。
+ */
+function titleOf(call: AgentToolCall): string {
+  const label = toolLabelOf(call.name, call.input)
+  if (label === null) return call.name
+  return label.object === undefined ? label.verb : `${label.verb} ${label.object}`
 }
 
 /** 子代理行首的步骤数（`task` 以外的行返回 null，不渲染该段） */
@@ -168,7 +180,7 @@ const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransiti
       <component
         :is="toolIcon(call)"
         class="tool-icon"
-        :size="13"
+        :size="14"
         :stroke-width="1.7"
         aria-hidden="true"
       />
@@ -192,9 +204,13 @@ const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransiti
           {{ subagentStepCount(call) }} 步
         </span>
       </template>
-      <!-- 通用行：工具名 -->
+      <!--
+        通用行：语义化标题（「运行 pnpm test」）。摘不出短语时回落 mono 工具名
+        （保持旧行的等宽观感），两种形态都不会渲染残缺文本。
+      -->
       <template v-else>
-        <span class="mono tiny tool-name">{{ call.name }}</span>
+        <span v-if="titleOf(call) !== call.name" class="tool-title">{{ titleOf(call) }}</span>
+        <span v-else class="mono tiny tool-name">{{ call.name }}</span>
       </template>
       <!-- 结果摘要上提到行首一行（悬停看全文），单行省略 -->
       <span class="tiny tool-summary" :class="`s-${call.state}`">{{ summaryOf(call) }}</span>
@@ -256,7 +272,7 @@ const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransiti
   content: '';
   position: absolute;
   left: 4px;
-  top: 11px;
+  top: 10.5px;
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -283,8 +299,9 @@ const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransiti
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  min-height: 24px;
-  padding: 3px var(--space-2) 3px 2px;
+  /* 28px：与思考块头同一档（2026-10-01 重塑），密度与 WCAG 命中区的平衡点 */
+  min-height: 28px;
+  padding: 4px var(--space-2) 4px 2px;
   border-radius: var(--radius-xs);
   text-align: left;
   overflow: hidden;
