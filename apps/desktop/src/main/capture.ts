@@ -97,6 +97,20 @@ export interface CaptureTarget {
   prepare?: () => Promise<void> | void
   /** 截图前在目标窗口渲染层执行的 JS（模拟 hover / click 等真实交互） */
   act?: string
+  /**
+   * 截图前在**主进程侧**执行的动作（拿到 `BrowserWindow`）。
+   *
+   * 存在的理由：**JS 合成事件测不到原生输入管线** —— `dispatchEvent(new WheelEvent(...))`
+   * 能驱动得了监听器，却不触发合成器滚动，「程序把用户刚滚出去的视口吸回去」这类失效
+   * 在合成事件面前必然 PASS。真实滚轮要走 CDP `Input.dispatchMouseEvent`
+   * （`webContents.debugger`），只有主进程能挂 —— 见 `chat-trace-wheel` 场景
+   * 与 docs/07 §5.3「真实滚轮跟随」。返回值必须带 `pass`，与渲染层结果合并进同一条 checks 记录。
+   */
+  mainAct?: (
+    win: BrowserWindow,
+  ) =>
+    | Promise<{ pass: boolean } & Record<string, unknown>>
+    | ({ pass: boolean } & Record<string, unknown>)
   /** 截图后在目标窗口渲染层执行的 JS；返回值写入 `report.json` */
   check?: string
   /**
@@ -197,6 +211,11 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
         await wait(60)
         await win.webContents.executeJavaScript(target.act, true)
       }
+      let mainActResult: ({ pass: boolean } & Record<string, unknown>) | undefined
+      if (target.mainAct !== undefined) {
+        await wait(60)
+        mainActResult = await target.mainAct(win)
+      }
       await wait(delayMs)
       const png = await captureNonEmpty(win)
       await writeFile(file, png)
@@ -210,8 +229,14 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
       checks.push({
         name: target.name,
         file,
-        result: mergeCheckResults(rendererResult, target.nativeCheck?.()),
-        checked: target.check !== undefined || target.nativeCheck !== undefined,
+        result: mergeCheckResults(
+          mergeCheckResults(rendererResult, mainActResult, 'main'),
+          target.nativeCheck?.(),
+        ),
+        checked:
+          target.check !== undefined ||
+          target.nativeCheck !== undefined ||
+          target.mainAct !== undefined,
         ok: true,
       })
     } catch (error) {
@@ -219,7 +244,10 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
       checks.push({
         name: target.name,
         file,
-        checked: target.check !== undefined || target.nativeCheck !== undefined,
+        checked:
+          target.check !== undefined ||
+          target.nativeCheck !== undefined ||
+          target.mainAct !== undefined,
         ok: false,
         error: String(error),
       })
@@ -245,23 +273,25 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
 }
 
 /**
- * 把渲染层 `check` 与主进程 `nativeCheck` 合成一条探针结果。
+ * 把渲染层 `check` 与主进程侧结果（`mainAct` / `nativeCheck`）合成一条探针结果。
  *
- * 两者都在才要求双通过；只有 `nativeCheck`（没有渲染层 check）时以它为准。
- * 渲染层返回非对象（理论上不会）时降级成 `{ renderer, native, pass:false }`，
- * 避免静默把一次失败当成通过。
+ * 两者都在才要求双通过；只有主进程侧结果（没有渲染层 check）时以它为准。
+ * 渲染层返回非对象（理论上不会）时降级成 `{ renderer, …, pass:false }`，
+ * 避免静默把一次失败当成通过。`key` 是主进程侧结果在报告里的字段名
+ * （`nativeCheck` 用 `native`、`mainAct` 用 `main`，排障时一眼分得出哪边说话）。
  */
 function mergeCheckResults(
   renderer: unknown,
-  native: ({ pass: boolean } & Record<string, unknown>) | undefined,
+  extra: ({ pass: boolean } & Record<string, unknown>) | undefined,
+  key = 'native',
 ): unknown {
-  if (native === undefined) return renderer
-  if (renderer === undefined) return { native, pass: native.pass }
+  if (extra === undefined) return renderer
+  if (renderer === undefined) return { [key]: extra, pass: extra.pass }
   const record =
     typeof renderer === 'object' && renderer !== null
       ? (renderer as Record<string, unknown>)
       : { renderer }
-  return { ...record, native, pass: record['pass'] === true && native.pass === true }
+  return { ...record, [key]: extra, pass: record['pass'] === true && extra.pass === true }
 }
 
 /**
@@ -667,6 +697,199 @@ export const CHAT_FOLLOW_WHEEL_UP_SCRIPT = `(async () => {
       capsule: capsule,
       maxScroll: maxScroll,
       restored: restored,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 「展开轨迹后**真实滚轮**仍滚得动」探针 · 前半（2026-10-01，docs/07 §5.3「真实滚轮跟随」）。
+ *
+ * 既有 `CHAT_FOLLOW_WHEEL_UP_SCRIPT` 用 JS `dispatchEvent` 合成 wheel —— 它驱动得了**意图链路**
+ * （监听器照收、判定照跑），却**绕过了原生滚轮管线**：合成事件不触发合成器滚动，
+ * 「贴底时程序把用户刚滚出去的视口吸回去」这一类失效（意图与对齐帧的竞速、吸底补齐的时机）
+ * 全都发生在合成器与主线程之间，合成事件面前必然 PASS。
+ *
+ * 本场景分三段：本 act 造现场（跟随态 + 展开一条折叠轨迹 = `restick()` 结算帧在途 +
+ * 探针填充块保证有得滚），把滚轮坐标与基线挂 window；主进程侧的 `chatTraceWheelMainAct`
+ * 经 CDP `Input.dispatchMouseEvent`（type `mouseWheel`）发**真实滚轮**（走完整合成器管线）；
+ * check 断言视口单调上移、离底超过阈值、「回到最新」胶囊出现，最后收尾还原。
+ */
+export const CHAT_TRACE_WHEEL_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const thread = document.querySelector('.thread')
+    const list = document.querySelector('.messages')
+    if (thread === null || list === null) return { ok: false, reason: 'no .thread/.messages' }
+    // 前置：撑高内容 + 归位到跟随态（点应用自己的胶囊，不依赖别的场景收尾）
+    const filler = document.createElement('div')
+    filler.setAttribute('data-probe', 'trace-wheel')
+    filler.style.height = '1200px'
+    filler.style.flexShrink = '0'
+    list.appendChild(filler)
+    thread.scrollTop = thread.scrollHeight
+    const jumpButton = list.querySelector('.jump-latest')
+    if (jumpButton !== null) jumpButton.click()
+    await wait(350)
+    // 展开一条折叠的轨迹（复现 restick 结算帧在途的现场）；已展开就不动它（那会把它收起来）
+    const trace = document.querySelector('.message.r-assistant .trace')
+    if (trace !== null && trace.classList.contains('open') === false) {
+      const head = trace.querySelector('.trace-head')
+      if (head !== null) head.click()
+      await wait(450)
+    }
+    // 滚轮坐标：**thread 内部**靠上的一点（旧实现取填充块矩形的中心 —— 贴底后填充块
+    // 大部分在视口之上，中心算出来落在标题栏上，滚轮打在非滚动区，scrollTop 纹丝不动）。
+    // thread 内任意点都安全：即便落在展开体的内滚区，overscroll 默认会链回 .thread。
+    const threadRect = thread.getBoundingClientRect()
+    const x = Math.max(1, Math.min(window.innerWidth - 2, Math.round(threadRect.left + threadRect.width / 2)))
+    const y = Math.max(
+      Math.round(threadRect.top + 80),
+      Math.min(window.innerHeight - 2, Math.round(threadRect.top + threadRect.height * 0.5)),
+    )
+    window.__auroraTraceWheelProbe = {
+      x: x,
+      y: y,
+      baseline: Math.round(thread.scrollTop),
+      maxScroll: Math.round(thread.scrollHeight - thread.clientHeight),
+      samples: [],
+    }
+    return { ok: true, x: x, y: y, baseline: window.__auroraTraceWheelProbe.baseline, maxScroll: window.__auroraTraceWheelProbe.maxScroll }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 真实滚轮的**主进程侧**执行体：CDP `Input.dispatchMouseEvent` 发 14 步小幅上滚
+ * （每步 `deltaY: -12`，位移小于跟随阈值 24px —— 触控板 / 高分辨率滚轮的真实步长），
+ * 每步之间等 45ms（让合成器滚动与在途对齐帧真正竞速），逐次采样 `scrollTop`。
+ *
+ * 判据在渲染层 check 里做（含胶囊、轨迹保持展开、收尾还原）；这里只把采样结果
+ * 挂回 window 并返回粗判（总位移 ≥ 48px）供 report 合并。
+ */
+async function chatTraceWheelMainAct(
+  win: BrowserWindow,
+): Promise<{ pass: boolean } & Record<string, unknown>> {
+  const info = (await win.webContents.executeJavaScript(
+    '(() => { const p = window.__auroraTraceWheelProbe; return p === undefined ? null : { x: p.x, y: p.y, baseline: p.baseline, maxScroll: p.maxScroll } })()',
+    true,
+  )) as { x: number; y: number; baseline: number; maxScroll: number } | null
+  if (info === null) {
+    return { pass: false, reason: 'CHAT_TRACE_WHEEL_ACT 未运行（缺 __auroraTraceWheelProbe）' }
+  }
+  if (info.maxScroll < 200) {
+    return { pass: false, reason: '内容不足一屏，滚轮无处可滚', baseline: info.baseline }
+  }
+  const dbg = win.webContents.debugger
+  try {
+    dbg.attach('1.3')
+  } catch {
+    // 已附加（例如 devtools 开着）就直接复用，attach 抛错不阻断
+  }
+  const samples: number[] = []
+  try {
+    for (let step = 0; step < 14; step += 1) {
+      await dbg.sendCommand('Input.dispatchMouseEvent', {
+        type: 'mouseWheel',
+        x: info.x,
+        y: info.y,
+        deltaX: 0,
+        deltaY: -12,
+      })
+      await wait(45)
+      const top = (await win.webContents.executeJavaScript(
+        'Math.round(document.querySelector(".thread").scrollTop)',
+        true,
+      )) as number
+      samples.push(top)
+    }
+  } finally {
+    try {
+      dbg.detach()
+    } catch {
+      // 未附加时 detach 会抛，忽略
+    }
+  }
+  const finalTop =
+    samples.length === 0 ? info.baseline : (samples[samples.length - 1] ?? info.baseline)
+  const moved = info.baseline - finalTop
+  await win.webContents.executeJavaScript(
+    `(() => { const p = window.__auroraTraceWheelProbe; if (p !== undefined) p.main = { samples: ${JSON.stringify(samples)}, baseline: ${info.baseline} } })()`,
+    true,
+  )
+  return {
+    pass: moved >= 48,
+    moved: moved,
+    samples: samples,
+    baseline: info.baseline,
+    x: info.x,
+    y: info.y,
+  }
+}
+
+/**
+ * 真实滚轮探针 · 后半：断言 + 收尾。
+ *
+ * ① **滚得动**：总位移 ≥ 48px（14 步 × 12px，若有一步被吸回去就到不了这个数）；
+ * ② **单调**：逐次采样不出现"视口被按回去"（相邻两步容差 1px 亚像素）；
+ * ③ **接管成立**：结束时离底 ≥ 24px（跟随已翻成接管）且「回到最新」胶囊在场；
+ * ④ **轨迹保持展开**：展开态没被这次滚动意外收掉（`toggleTrace` 的互斥语义没被扰动）。
+ * 收尾摘掉探针填充块并点胶囊恢复跟随，不把接管态留给后面的场景。
+ */
+export const CHAT_TRACE_WHEEL_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const probe = window.__auroraTraceWheelProbe
+    if (probe === undefined || probe.main === undefined) {
+      return { pass: false, reason: 'chatTraceWheelMainAct 未运行（缺 __auroraTraceWheelProbe.main）' }
+    }
+    const thread = document.querySelector('.thread')
+    const list = document.querySelector('.messages')
+    if (thread === null || list === null) return { pass: false, reason: 'no .thread/.messages' }
+    const samples = probe.main.samples
+    const baseline = probe.main.baseline
+    const finalTop = samples.length === 0 ? baseline : samples[samples.length - 1]
+    const moved = baseline - finalTop
+    let monotonic = true
+    for (let index = 1; index < samples.length; index += 1) {
+      if (samples[index] > samples[index - 1] + 1) {
+        monotonic = false
+        break
+      }
+    }
+    const distanceToBottom = Math.round(thread.scrollHeight - thread.scrollTop - thread.clientHeight)
+    const capsule = list.querySelector('.jump-latest') !== null
+    const trace = document.querySelector('.message.r-assistant .trace')
+    const traceStillOpen = trace === null ? false : trace.classList.contains('open')
+    // 收尾：摘掉探针节点，点胶囊恢复跟随
+    const filler = list.querySelector('[data-probe="trace-wheel"]')
+    if (filler !== null) filler.remove()
+    const restoreButton = list.querySelector('.jump-latest')
+    if (restoreButton !== null) restoreButton.click()
+    else thread.scrollTop = thread.scrollHeight
+    await wait(300)
+    const restored = list.querySelector('.jump-latest') === null
+    const conditions = {
+      enoughScroll: probe.maxScroll >= 200,
+      movedBeyondThreshold: moved >= 48,
+      monotonic: monotonic,
+      tookOver: distanceToBottom >= 24,
+      capsule: capsule,
+      traceStillOpen: traceStillOpen,
+      restored: restored,
+    }
+    return {
+      conditions: conditions,
+      samples: samples,
+      baseline: baseline,
+      finalTop: finalTop,
+      moved: moved,
+      distanceToBottom: distanceToBottom,
+      capsule: capsule,
+      traceStillOpen: traceStillOpen,
+      pass: Object.values(conditions).every((value) => value === true),
     }
   } catch (error) {
     return { pass: false, reason: String(error) }
@@ -4428,9 +4651,10 @@ export const CHAT_THINKING_BLOCK_CHECK = `(() => {
 /**
  * 执行轨迹展开探针 · 前半（2026-09-30 轨迹视觉重构，docs/07 §2.3 / §5.2）。
  *
- * 本轮把「思考块 + 一摞工具卡」收成一个 `AgentTrace`：折叠态是**一行摘要**
- * （1px 上下描边、无盒子），展开态是**左缘连续竖脊 + 节点圆点**，展开走 `name="fade"`。
- * 这条 act 负责把折叠态的一行点开（已是展开态就不重复点，避免又收回去），
+ * 本轮把「思考块 + 一摞工具卡」收成一个 `AgentTrace`：折叠态是**软胶囊**
+ * （`--fill-1` 底 + 圆角、无描边），展开态是**左缘连续竖脊 + 节点圆点**，
+ * 展开走 grid `0fr ↔ 1fr` 高度过渡（docs/07 §2.3 / §5.2）。
+ * 这条 act 负责把折叠态的胶囊点开（已是展开态就不重复点，避免又收回去），
  * 并把展开后的几何量出来挂 window 给后半读 —— **act 的返回值进不了 report.json**。
  *
  * **只点 DOM，不写配置**（与 task-1 的口径一致）：它不依赖任何 settings 变更，
@@ -4448,12 +4672,14 @@ export const CHAT_TRACE_ACT = `(async () => {
     }
     const head = trace.querySelector('.trace-head')
     if (head === null) return { ok: false, reason: 'no .trace-head' }
-    // 诊断：展开体在折叠态下的真实形态（display / 高度 / open 类）
+    // 诊断：展开体在折叠态下的真实形态（inert / 高度 / open 类）。
+    // inert 挂在 .trace-clip（grid 过渡层）上，不再挂在 .trace-body —— 2026-10-01 重塑后。
     const diagnose = () => {
       const el = trace.querySelector('.trace-body')
+      const clip = trace.querySelector('.trace-clip')
       return {
         openClass: trace.classList.contains('open'),
-        hidden: el === null ? null : el.hasAttribute('inert'),
+        hidden: clip === null ? null : clip.hasAttribute('inert'),
         display: el === null ? null : window.getComputedStyle(el).display,
         height: el === null ? -1 : Math.round(el.getBoundingClientRect().height),
       }
@@ -4469,22 +4695,11 @@ export const CHAT_TRACE_ACT = `(async () => {
     const beforeShape = diagnose()
     const openBefore = trace.classList.contains('open')
     /*
-     * ⚠️ 描边宽度要在**折叠态、点击之前**量。
-     *
-     * 这条踩过：topBorder / bottomBorder 原先在 check 里量，而那时 act 已经点开过 ——
-     * 展开态两次写入之间可能读到过渡中的中间值（实测 0.666667px，即 1px × 2/3 的中间帧），
-     * 「>= 1」于是恒定 FAIL，看起来像"没描边"。规格要的是**有 1px 上下描边**，
-     * 所以判据用「量到的宽度 > 0」而不是「恰好 >= 1」（DPR / 中间帧都会让它不是整数）。
-     */
-    const collapsedStyle = window.getComputedStyle(trace)
-    const topBorderPx = parseFloat(collapsedStyle.borderTopWidth) || 0
-    const bottomBorderPx = parseFloat(collapsedStyle.borderBottomWidth) || 0
-    /*
      * 折叠态的判据是「展开体**看不见**」，不是「展开体不在 DOM 里」。
      *
      * 展开体常驻 DOM（.thinking / .tool-card 这些锚点在折叠态也必须查得到，
-     * 见 AgentTrace 的模板注释），折叠由 CSS 的 display: none 表达 ——
-     * 所以这里量可见性，并且**必须在这一刻量**（act 记录的值是点击之前的快照，
+     * 见 AgentTrace 的模板注释），折叠由 grid 0fr 轨道收成零高度表达 ——
+     * 所以这里量可见性（高度为 0），并且**必须在这一刻量**（act 记录的值是点击之前的快照，
      * 而 check 跑在 act 之后，用它当"折叠态证据"会永远为假：2026-09-30 实测踩到）。
      */
     const collapsedBodyEl = trace.querySelector('.trace-body')
@@ -4492,19 +4707,14 @@ export const CHAT_TRACE_ACT = `(async () => {
       collapsedBodyEl === null ||
       window.getComputedStyle(collapsedBodyEl).display === 'none' ||
       Math.round(collapsedBodyEl.getBoundingClientRect().height) === 0
-    // 折叠态的判据是"展开体**看不见**"，不是"展开体不在 DOM 里"：展开体常驻 DOM
-    // （「.thinking / .tool-card」这些锚点在折叠态也必须查得到，见 AgentTrace 的模板注释），
-    // 折叠由 CSS 的 display: none 表达。因此这里量可见性，而不是查是否存在。
-    const bodyEl = trace.querySelector('.trace-body')
-    const bodyBefore =
-      bodyEl === null ||
-      window.getComputedStyle(bodyEl).display === 'none' ||
-      Math.round(bodyEl.getBoundingClientRect().height) === 0
     // 折叠态的几何与"历史是否真的被折叠"的证据必须**点之前**读（点完就换成展开态了）。
     // collapsedHeight 就是"任务完成后只剩一行摘要"的硬证据：折叠态若把思考块与工具行
     // 留在布局里，这里会随消息内容涨到几百像素（2026-09-30 复核发现的实现缺陷）。
+    // grid 0fr 下这条判据天然成立：轨道高度 0，内部内容再高也被展开体的 overflow hidden
+    // 裁掉，不占布局。
     const collapsedHeight = Math.round(trace.getBoundingClientRect().height)
     const headHeight = Math.round(head.getBoundingClientRect().height)
+    const headStyle = window.getComputedStyle(head)
     const collapsedTools = trace.querySelector('.tools')
     const collapsedToolsCards = collapsedTools === null ? 0 : collapsedTools.querySelectorAll('.tool-card').length
     const collapsedToolsVisibility =
@@ -4512,11 +4722,10 @@ export const CHAT_TRACE_ACT = `(async () => {
     // 一行摘要：折叠态时它必须是有文字的（「已深度思考 · N 步」之类）
     const summary = (head.textContent || '').trim()
     if (openBefore === false) head.click()
-    // 展开是 fade（250ms 量级的过渡）：等一拍再量几何
+    // 展开是 grid 0fr 到 1fr 的高度过渡（250ms 量级）：等一拍再量几何
     await wait(450)
     const body = trace.querySelector('.trace-body')
     const traceRect = trace.getBoundingClientRect()
-    const style = window.getComputedStyle(trace)
     const row = body === null ? null : body.querySelector('.tool-card')
     const iconCount = row === null ? 0 : row.querySelectorAll('.tool-head .tool-icon').length
     const thinking = body === null ? null : body.querySelector('.thinking')
@@ -4534,21 +4743,19 @@ export const CHAT_TRACE_ACT = `(async () => {
       beforeShape: beforeShape,
       afterShape: diagnose(),
       openBefore: openBefore,
-      bodyBefore: bodyBefore,
+      bodyBefore: collapsedBodyHidden,
       collapsedHeight: collapsedHeight,
       headHeight: headHeight,
+      headBg: headStyle.backgroundColor,
+      headRadius: headStyle.borderTopLeftRadius,
       collapsedToolsCards: collapsedToolsCards,
       collapsedToolsVisibility: collapsedToolsVisibility,
       collapsedToolsInDom: collapsedTools !== null,
-      topBorderPx: topBorderPx,
-      bottomBorderPx: bottomBorderPx,
       collapsedBodyHidden: collapsedBodyHidden,
       open: open,
       bodyMounted: body !== null,
       bodyVisibleHeight: body === null ? 0 : Math.round(body.getBoundingClientRect().height),
       traceHeight: Math.round(traceRect.height),
-      topBorder: style.borderTopWidth,
-      bottomBorder: style.borderBottomWidth,
       rowCount: body === null ? 0 : body.querySelectorAll('.tool-card').length,
       iconCount: iconCount,
       thinkingPresent: thinking !== null,
@@ -4556,8 +4763,8 @@ export const CHAT_TRACE_ACT = `(async () => {
       thinkingBodyMounted: thinkingBody !== null,
       thinkingTextHeight:
         thinkingText === null ? 0 : Math.round(thinkingText.getBoundingClientRect().height),
-      // 折叠态下思考块是「visibility: hidden」（不在 DOM 里摘掉）——这条读数用来区分
-      // 「块被摘掉了」与「块在、只是被藏起来」，两者在截图上看不出来，在排查时差别很大。
+      // 展开体常驻 DOM（grid 折叠不再摘显示）：这条读数用来区分
+      // 「块被摘掉了」与「块在、只是被裁剪」，两者在截图上看不出来，在排查时差别很大。
       thinkingVisibility: thinking === null ? '' : window.getComputedStyle(thinking).visibility,
       thinkingBeforeRow: thinkingDistance,
       summaryChars: summary.length,
@@ -4569,22 +4776,25 @@ export const CHAT_TRACE_ACT = `(async () => {
 })()`
 
 /**
- * 执行轨迹探针 · 后半：几何与结构断言（「一行摘要 + 左缘竖脊 + 节点圆点」的直接证据）。
+ * 执行轨迹探针 · 后半：几何与结构断言（「软胶囊 + 左缘竖脊 + 节点圆点」的直接证据）。
  *
  * 断言链：
- * ① **点开生效**：act 记录「点之前是折叠的」（`.trace` 无 `open` 类、`.trace-body` 不在），
+ * ① **点开生效**：act 记录「点之前是折叠的」（`.trace` 无 `open` 类、展开体高度为 0），
  *    点完 `.trace` 有 `open` 类且 `.trace-body` 在文档里、可见高度 > 0；
- * ② **折叠态是"一行摘要"**：`.trace` 只有 1px 上下描边、没有左右描边与圆角，
- *    `.trace-head` 里的摘要文字非空 —— 这条钉的是"无盒子"这个观感口径
- *    （有人给它加回边框 / 圆角 / 背景色，这里就 FAIL）；
- * ③ **展开态是"竖脊 + 节点"**：`.trace-body::before` 是一条 1px 竖脊（高度 > 0），
+ * ② **折叠态是"一行软胶囊"**：`.trace-head` 有底色（`--fill-1`）、有圆角（`--radius-sm`），
+ *    `.trace` 自身四边无边框，`.trace-head` 里的摘要文字非空 —— 这条钉的是"软胶囊"这个观感口径
+ *    （有人改回无底色灰字行 / 加回描边，这里就 FAIL）。⚠️ 背景色判据别用颜色字面量比对
+ *    （两套主题值不同），只断言"非透明"；描边判据量**宽度**而不是颜色（无边框时
+ *    `border-top-color` 解析成 `currentColor`，量颜色恒定误报 —— 2026-09-30 实测踩过）；
+ * ③ **折叠态真的只剩一行**：展开体折叠高度为 0（grid `0fr`）且整条轨迹高度 ≈ 胶囊高度；
+ * ④ **展开态是"竖脊 + 节点"**：`.trace-body::before` 是一条 1px 竖脊（高度 > 0），
  *    且行的 `.tool-card` 有左内边距 ≥ 8px（节点圆点骑在竖脊上所需的让位）；
- * ④ **工具行结构没退化**：每行恰好一枚 `.tool-icon`（与 `CHAT_SIDEBAR_SCRIPT` 同口径）、
+ * ⑤ **工具行结构没退化**：每行恰好一枚 `.tool-icon`（与 `CHAT_SIDEBAR_SCRIPT` 同口径）、
  *    `.tool-body` 不存在或带可解析的 `--collapse-h`；
- * ⑤ **轨迹内顺序**：思考块在工具行**之上**（`thinkingBeforeRow` > 0）——
+ * ⑥ **轨迹内顺序**：思考块在工具行**之上**（`thinkingBeforeRow` > 0）——
  *    与 docs/07 §2.3「思考 → 工具 → 回答」的阅读顺序同一条约束。
  *
- * ③ 用 `getComputedStyle(…, '::before')` 量伪元素：竖脊是画在展开体上的，
+ * ④ 用 `getComputedStyle(…, '::before')` 量伪元素：竖脊是画在展开体上的，
  * 不是独立节点，选择器查不到它。
  */
 export const CHAT_TRACE_CHECK = `(() => {
@@ -4596,13 +4806,12 @@ export const CHAT_TRACE_CHECK = `(() => {
     const head = trace.querySelector('.trace-head')
     const body = trace.querySelector('.trace-body')
     const open = trace.classList.contains('open')
-    const style = window.getComputedStyle(trace)
     const spine = body === null ? null : window.getComputedStyle(body, '::before')
     const spineWidth = spine === null ? 0 : parseFloat(spine.width) || 0
     const spineHeight = spine === null ? 0 : parseFloat(spine.height) || 0
     /*
-     * 行内边距与"每行一枚图标"的取样要落在**展开体内部**：折叠态下展开体是
-     * display: none（元素仍在 DOM、但几何全为 0），此时量出来的是 0，
+     * 行内边距与"每行一枚图标"的取样要落在**展开体内部**：折叠态下展开体被 grid 轨道
+     * 收成零高度（元素仍在 DOM、但几何全为 0），此时量出来的是 0，
      * 而本探针的几何断言必须在展开态下取（act 已经点开了）。
      */
     const row = body === null ? null : body.querySelector('.tool-card')
@@ -4616,36 +4825,38 @@ export const CHAT_TRACE_CHECK = `(() => {
     const summaryNow = head === null ? '' : (head.textContent || '').trim()
     // 点开生效：act 记录过"点之前是折叠的"，现在必须是展开且有可见高度
     const bodyHeight = body === null ? 0 : Math.round(body.getBoundingClientRect().height)
-    const borderColors = [
-      style.borderTopColor,
-      style.borderBottomColor,
-      style.borderLeftColor,
-      style.borderRightColor,
-    ]
     /*
-     * 「一行」的判据是**上下有 1px 描边、左右没有边框宽度**。
+     * 「软胶囊」的判据是**有底色、有圆角、容器无描边**。
      *
-     * ⚠️ 不要拿左右**颜色**当判据（2026-09-30 实测踩到）：border-left-color 在
-     * 「没有左边框」时会被解析成 currentColor（本仓即 --text-secondary），
-     * 于是"左右透明"这条永远不成立、探针恒定 FAIL —— 量宽度才是"有没有这条边"的事实。
-     * 颜色仍回报给 report.json 供人工核对。
+     * ⚠️ 背景色只断言"非透明"，不比对颜色字面量（明暗两套主题值不同）；
+     * 描边量**宽度**而不是颜色（无边框时 border-top-color 解析成 currentColor，
+     * 量颜色恒定误报 —— 2026-09-30 实测踩过）。宽度 / 圆角在展开态量也成立：
+     * 它们不随开合变化（底色 hover 才会浮 --fill-2，无 hover 的截图不受影响）。
      */
-    const clear = 'rgba(0, 0, 0, 0)'
-    const topBottomPainted = borderColors[0] !== clear && borderColors[1] !== clear
-    const leftRightWidth = [
-      parseFloat(style.borderLeftWidth) || 0,
-      parseFloat(style.borderRightWidth) || 0,
+    const transparent = 'rgba(0, 0, 0, 0)'
+    const headStyleNow = head === null ? null : window.getComputedStyle(head)
+    const headBgPainted =
+      headStyleNow !== null && headStyleNow.backgroundColor !== transparent
+    const headRadius =
+      headStyleNow === null ? 0 : parseFloat(headStyleNow.borderTopLeftRadius) || 0
+    const traceStyleNow = window.getComputedStyle(trace)
+    const traceBorderWidths = [
+      parseFloat(traceStyleNow.borderTopWidth) || 0,
+      parseFloat(traceStyleNow.borderBottomWidth) || 0,
+      parseFloat(traceStyleNow.borderLeftWidth) || 0,
+      parseFloat(traceStyleNow.borderRightWidth) || 0,
     ]
-    const leftRightClear = leftRightWidth[0] === 0 && leftRightWidth[1] === 0
+    const traceBorderless = traceBorderWidths.every((width) => width === 0)
     /*
      * 「任务完成后自动折叠思考与调用历史」这条诉求的硬断言 —— 折叠态必须**真的只剩一行**：
      * 思考块与工具行都还在 DOM 里（探针与结构计数依赖它们），但整条轨迹的高度只能是
-     * 「摘要行 + 上下 1px 描边」这一档。给 12px 余量覆盖过渡与亚像素。
+     * 「一行软胶囊」这一档（grid 0fr 轨道把展开体收成零高度）。给 12px 余量覆盖过渡与亚像素。
+     * 旧判据里的 collapsedToolsVisibility === 'hidden' 已删：grid 折叠不再需要把内容
+     * 摘出布局（轨道收 0 即可），.tools 保持可见是**新口径的正常形态**。
      */
     const singleLine =
       probe.collapsedToolsInDom === true &&
       probe.collapsedToolsCards > 0 &&
-      probe.collapsedToolsVisibility === 'hidden' &&
       probe.collapsedHeight <= probe.headHeight + 12
     // 逐条摊开（排障与可读性双用）：pass 只看下面这份布尔表的乘积，
     // 少写一条或多写一条在报告里一眼可见，不用回头读源码。
@@ -4657,10 +4868,9 @@ export const CHAT_TRACE_CHECK = `(() => {
       open: open === true,
       bodyPresent: body !== null,
       bodyHeight: bodyHeight > 0,
-      topBorder: probe.topBorderPx >= 0.5,
-      bottomBorder: probe.bottomBorderPx >= 0.5,
-      topBottomPainted: topBottomPainted,
-      leftRightClear: leftRightClear,
+      headBgPainted: headBgPainted,
+      headRounded: headRadius >= 8,
+      traceBorderless: traceBorderless,
       spineWidth: spineWidth >= 1,
       spineHeight: spineHeight > 0,
       rowPresent: row !== null,
@@ -4682,7 +4892,7 @@ export const CHAT_TRACE_CHECK = `(() => {
       collapsedHeadHeight: probe.headHeight,
       collapsedToolsCards: probe.collapsedToolsCards,
       collapsedToolsVisibility: probe.collapsedToolsVisibility,
-      // 展开态里工具行必须是可见的（折叠规则只作用于折叠态，别把展开态一起藏了）
+      // 展开态里工具行必须是可见的（折叠由 grid 轨道收 0 表达，别把展开态一起藏了）
       toolsVisibilityOpen:
         body === null || body.querySelector('.tools') === null
           ? ''
@@ -4695,10 +4905,9 @@ export const CHAT_TRACE_CHECK = `(() => {
       rowIconCount: rowIconCount,
       rowPaddingLeft: rowPadding === null ? null : parseFloat(rowPadding.paddingLeft) || 0,
       collapseVar: collapseVar,
-      topBottomPainted: topBottomPainted,
-      leftRightClear: leftRightClear,
-      leftRightWidth: leftRightWidth,
-      borderColors: borderColors,
+      headBg: headStyleNow === null ? '' : headStyleNow.backgroundColor,
+      headRadius: headRadius,
+      traceBorderWidths: traceBorderWidths,
       /*
        * 单一事实来源：pass 就是上面那张布尔表的乘积。
        * 不在这里重抄一遍条件 —— 2026-09-30 实测踩过：两份判据漂移之后
@@ -7500,12 +7709,21 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     },
     { name: 'chat', file: 'chat-drag.png', check: WINDOW_DRAG_SCRIPT },
     { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },
-    // 自动滚底三条：语义（谁能改跟随状态）+ 持续跟进（每帧都到底）+ **底部上滚**（2026-10-01，
-    // 真实用户从底部滚起来时不能被那帧对齐抹回底部 —— 用户实测「答完翻不动历史」）。
+    // 自动滚底四条：语义（谁能改跟随状态）+ 持续跟进（每帧都到底）+ **底部上滚**（2026-10-01，
+    // 真实用户从底部滚起来时不能被那帧对齐抹回底部 —— 用户实测「答完翻不动历史」）+
+    // **真实滚轮**（2026-10-01，CDP `Input.dispatchMouseEvent` 走原生管线：合成事件测不到
+    // 「对齐帧 / 吸底补齐把用户滚出去的视口吸回去」这类失效，见 docs/07 §5.3「真实滚轮跟随」）。
     // **必须排在 chat-collapse 之前** —— 窗口一被 hide，后面的 DOM 操作就没了。
     { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
     { name: 'chat', file: 'chat-follow-burst.png', check: CHAT_FOLLOW_BURST_SCRIPT },
     { name: 'chat', file: 'chat-follow-wheel-up.png', check: CHAT_FOLLOW_WHEEL_UP_SCRIPT },
+    {
+      name: 'chat',
+      file: 'chat-trace-wheel.png',
+      act: CHAT_TRACE_WHEEL_ACT,
+      mainAct: chatTraceWheelMainAct,
+      check: CHAT_TRACE_WHEEL_CHECK,
+    },
     // 五段共用同一窗口，不能加 query / reload；本地占位凭据只在隔离 userData 中保存，绝不测试连接。
     // 双主题场景（step-06）刻意排在五段**之前**：它只等第 0 段就位、不点任何页脚按钮，
     // 因此引导的阶段推进与既有五条断言完全不受影响。
