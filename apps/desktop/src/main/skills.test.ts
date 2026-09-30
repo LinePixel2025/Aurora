@@ -7,10 +7,20 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { watch } from 'node:fs'
+import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createMemoryLogger, createDefaultSettings, type Settings } from '@aurora/shared'
 import { SkillsService, resolveSkillsUserDir } from './skills.js'
+
+/** `watchImpl` 注入用的最小假 watcher：只实现 error 分支测试需要的事件面与 close。 */
+class FakeSkillsWatcher extends EventEmitter {
+  closed = false
+  close(): void {
+    this.closed = true
+  }
+}
 
 let root = ''
 let builtinDir = ''
@@ -152,5 +162,47 @@ describe('SkillsService', () => {
     const status = await service.init(settingsWith(join(root, 'not-created')))
     expect(status.failed).toBe(0)
     expect(status.total).toBe(1)
+  })
+
+  it('watcher 报 error 时降级为告警并放弃监听，旧 watcher 的迟到 error 不影响新监听', () => {
+    const logger = createMemoryLogger()
+    const watchers: FakeSkillsWatcher[] = []
+    const watchImpl = ((_dir: string, _opts: { recursive: boolean }, _cb: () => void) => {
+      const watcher = new FakeSkillsWatcher()
+      watchers.push(watcher)
+      return watcher
+    }) as unknown as typeof watch
+    const service = new SkillsService({ builtinDir, userData, logger, watchImpl }, settingsWith(''))
+
+    service.startWatching()
+    expect(watchers).toHaveLength(1)
+
+    // capture/smoke 收尾删临时 userData 时，Electron 内置的 Node 20 会对被删的监听根报
+    // EPERM —— 这条 error 没人接就是未捕获异常，直通 Electron 错误弹窗（曾每轮截图必现）。
+    watchers[0]?.emit('error', new Error('EPERM: operation not permitted, watch'))
+    expect(watchers[0]?.closed).toBe(true)
+    expect(logger.entries.some((entry) => entry.includes('技能目录监听出错'))).toBe(true)
+
+    // 目录被重建后重挂新 watcher；旧 watcher 的迟到 error 不得把新监听顶掉
+    //（若被顶掉，stopWatching 关不到真身 —— closed 断言就是守它的）。
+    service.startWatching()
+    expect(watchers).toHaveLength(2)
+    watchers[0]?.emit('error', new Error('EPERM: operation not permitted, watch'))
+    service.stopWatching()
+    expect(watchers[1]?.closed).toBe(true)
+    expect(logger.entries.filter((entry) => entry.includes('技能目录监听出错'))).toHaveLength(1)
+  })
+
+  it('真实 fs.watch 下删除监听根不崩（Node 20 报 error、Node 24 刷 change 风暴，都要兜住）', async () => {
+    const logger = createMemoryLogger()
+    const service = new SkillsService({ builtinDir, userData, logger }, settingsWith(''))
+    await service.init(settingsWith(''))
+    service.startWatching()
+    await rm(join(userData, 'skills'), { recursive: true, force: true })
+    // 跨过 500ms 防抖窗口：期间无论到的是 error 事件还是 change 风暴，都不允许以
+    // 未捕获异常冒出来（真冒出来整条测试会以 Unhandled error 失败）
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    service.stopWatching()
+    expect(service.status().total).toBe(1)
   })
 })

@@ -1938,6 +1938,10 @@ async function runCapture(dir: string): Promise<void> {
   manager.prepareQuit()
   // 固定工作区（两次启动验证）**不删**：第二次启动还要读它；普通自测照旧一跑一清
   if (smokeWorkspace !== undefined && pinnedSmokeWorkspace === undefined) {
+    // 先停技能目录监听再删树：app.exit() 不走 before-quit，shutdown() 的 stopWatching
+    // 到不了这里，被监听的 userData/skills 会随整树删除触发一次 watcher EPERM
+    //（skills 的 error 处理保证不弹窗，先停掉则连告警与收尾重扫都不发生）。
+    skillsService?.stopWatching()
     await fs.rm(smokeWorkspace, { recursive: true, force: true }).catch(() => undefined)
   }
   if (result.files.length === 0) app.exit(1)
@@ -3400,6 +3404,8 @@ async function runSmokeTest(userData: string): Promise<void> {
   // 不排除的话症状是"第一次启动明明 file=yes，第二次却 found=0"，而且因为是 `rm -rf`
   // 与收尾写入抢时序，偶尔还能剩下几个文件，看起来像随机丢数据（实测踩过）。
   if (smokeWorkspace !== undefined && pinnedSmokeWorkspace === undefined) {
+    // 同 runCapture：先停技能目录监听再删树（app.exit 不走 before-quit，见彼处注释）
+    skillsService?.stopWatching()
     await fs.rm(smokeWorkspace, { recursive: true, force: true }).catch(() => undefined)
   }
   app.exit(failed.length === 0 ? 0 : 2)

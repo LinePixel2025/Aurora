@@ -28,6 +28,12 @@ export interface SkillsServiceOptions {
   /** 当前用户数据目录（`skills.userDir` 为空时的回落基准） */
   userData: string
   logger: Logger
+  /**
+   * 监听实现，仅供单测注入（默认 `node:fs` 的 `watch`）。
+   * 真实 watch 的 error 行为随运行时漂移：Electron 33 的 Node 20 对「监听根被删」报
+   * EPERM，Node 24 同场景只刷 change 风暴、根本不报错 —— error 分支只能靠假 watcher 钉住。
+   */
+  watchImpl?: typeof watch
 }
 
 /**
@@ -162,7 +168,24 @@ export class SkillsService {
       // fs.watch 对不存在的目录直接抛 ENOENT；用户技能目录在首次创建技能前并不存在
       //（create-skill / 设置页都会往里写）——先建出来，顺带让"目录在哪"肉眼可查。
       mkdirSync(this.currentUserDir, { recursive: true })
-      this.watcher = watch(this.currentUserDir, { recursive: true }, () => this.scheduleRescan())
+      const watchFn = this.options.watchImpl ?? watch
+      const watcher = watchFn(this.currentUserDir, { recursive: true }, () => this.scheduleRescan())
+      // 建立**之后**的 error 不走上面的 try/catch，而是以事件到达（Electron 内置的 Node 20
+      // 对「监听根被整树删除」报 EPERM —— capture/smoke 每轮收尾删临时 userData 就是这个
+      // 现场）。不挂 error 监听它会变成未捕获异常，直通 Electron 的「A JavaScript error
+      // occurred in the main process」弹窗并把进程挂住等点击。降级为告警并放弃监听（重挂走
+      // startWatching / reconfigure），与 file-watcher 的 error 处理同款口径。
+      watcher.on('error', (error) => {
+        watcher.close()
+        // 旧 watcher 的迟到 error：新监听已挂上，安静丢弃，不误清也不刷告警
+        if (this.watcher !== watcher) return
+        this.watcher = undefined
+        this.options.logger.warn('技能目录监听出错，已停止自动重扫（改设置或重启可恢复）', {
+          dir: this.currentUserDir,
+          error: String(error),
+        })
+      })
+      this.watcher = watcher
     } catch (error) {
       this.options.logger.warn('技能目录监听失败，新技能需手动重扫或改设置触发', {
         dir: this.currentUserDir,
