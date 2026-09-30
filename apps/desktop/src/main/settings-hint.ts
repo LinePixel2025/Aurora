@@ -21,6 +21,7 @@ export const SETTINGS_HINT = [
   '- imagegen.enabled / active（图像生成开关与默认生图模型）',
   '- general.edgeBar.enabled / opacity / quietHours / display / position（提示条开关、透明度、勿扰时段与贴附的显示器 / 屏幕侧）',
   '- general.chat.showThinking（对话界面是否展示思考过程）',
+  '- appearance.accent（界面强调色主题：aurora / teal / violet / rose / amber）',
   '- modes.current（切换当前模式）',
   '- modes.work.workspaceDir（Work 模式的工作目录）',
   '- modes.classroom.*（课堂模式设置：watchDir、subjects、schedule.*、preClassReminder、preClassLeadMinutes、preClassOpenFolder、classification.*）',

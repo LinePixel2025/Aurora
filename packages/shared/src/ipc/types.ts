@@ -149,6 +149,8 @@ export interface SettingsPatch {
   center?: Omit<Partial<Settings['center']>, 'tokenEnc'>
   /** 自动化总开关（v19，docs/13 §2.2）：定义与历史不进配置，这里只有这一个闸门 */
   automations?: Partial<Settings['automations']>
+  /** 外观自定义（v21，docs/08 §1）：顶层浅合并（当前只有强调色主题） */
+  appearance?: Partial<Settings['appearance']>
 }
 
 /** 敏感字段路径 → 明文值；由主进程加密后落盘（docs/08 §2）。 */

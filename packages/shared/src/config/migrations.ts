@@ -711,7 +711,7 @@ const migrateV19ToV20: Migration = {
 const migrateV20ToV21: Migration = {
   from: 20,
   to: 21,
-  describe: 'v20 → v21：新增 general.edgeBar.display / position（提示条显示器与屏幕侧）',
+  describe: 'v20 → v21：新增 general.edgeBar.display / position 与 appearance.accent',
   transform(raw) {
     const next: Record<string, unknown> = { ...raw }
     const general = asRecord(next['general'])
@@ -725,6 +725,10 @@ const migrateV20ToV21: Migration = {
           position: edgeBar['position'] ?? 'right',
         },
       }
+    }
+    // 外观分组：整组缺失补默认（与 v18 → v19 的 automations 同套路），已存在原样保留
+    if (next['appearance'] === undefined) {
+      next['appearance'] = { accent: 'aurora' }
     }
     next['version'] = 21
     return next

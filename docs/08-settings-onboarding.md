@@ -29,6 +29,10 @@
     // 各窗口位置 / 尺寸记忆，key 集合见 WINDOW_NAMES（edge-bar / chat / settings / onboarding）
     "windowState": {}
   },
+  // v21 新增：外观自定义（用户在设置页选，Agent 也可经 set_setting 调）
+  "appearance": {
+    "accent": "aurora" // 界面强调色：aurora 品牌蓝（默认）| teal | violet | rose | amber
+  },
   "llm": {
     "active": "deepseek",
     "providers": {
@@ -295,7 +299,7 @@
   ① **真的放开** —— `llm.providers.<id>.model / .reasoningEffort / .temperature` 落在 `llm.providers`
   黑名单前缀之内，但「换模型 / 调参数」不碰凭据，显式放行（baseUrl / apiKeyEnc / modelList 等
   其余字段仍被前缀拒绝）；② **显式登记** —— `tts.enabled|active|autoRead|maxChars`、
-  `stt.enabled|active`、`imagegen.enabled|active`、`general.edgeBar.enabled|opacity|quietHours|display|position`、
+  `stt.enabled|active`、`imagegen.enabled|active`、`general.edgeBar.enabled|opacity|quietHours|display|position`、`appearance.accent`、
   `general.chat.showThinking`、`modes.current`、`modes.work.workspaceDir`、`agent.tools.*`
   （`terminal.allowPatterns` **除外** —— 它在黑名单里，见 §1）、
   `skills.userDir|disabled`、`advanced.quietHours` 等本就可写的路径逐条入表
@@ -536,7 +540,9 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   一个键也不改；`general` 整组缺失时留给 Schema 兜底，不凭空造半截对象）、
   `v20 → v21`（新增 `general.edgeBar.display` / `general.edgeBar.position`
   （提示条贴附的显示器与屏幕侧，见 §1）：只为**已有 `general.edgeBar`** 补缺字段
-  （默认 `primary` / `right`），已写值原样保留；`edgeBar` 缺失时留给 Schema 兜底）。
+  （默认 `primary` / `right`），已写值原样保留，`edgeBar` 缺失时留给 Schema 兜底；
+  同时新增 `appearance` 分组（外观自定义，见 §1）：**整组缺失时补 `{ accent: 'aurora' }`**，
+  已存在时原样保留、一个键也不改 —— 与 `v18 → v19` 的 automations 同一套路）。
   二十一条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽），重复执行结果一致 —— `pnpm verify` 的迁移条数断言
   （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **21** 条。

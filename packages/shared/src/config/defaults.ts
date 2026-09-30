@@ -197,6 +197,9 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
       showThinking: true,
     },
   },
+  appearance: {
+    accent: 'aurora',
+  },
   llm: {
     active: '',
     providers: {},

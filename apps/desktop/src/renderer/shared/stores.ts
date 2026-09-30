@@ -8,7 +8,7 @@
  * - 自动更新（update:* / update:stateChanged）
  */
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { Result } from '@aurora/shared'
 import type {
   AppInfo,
@@ -22,12 +22,21 @@ import type {
   WindowState,
 } from '@aurora/shared'
 import { deepClone } from '@aurora/shared/browser'
+import { applyAppearance } from './appearance.js'
 
 export const useSettingsStore = defineStore('settings', () => {
   const settings = ref<Settings | null>(null)
   const appInfo = ref<AppInfo | null>(null)
   const error = ref<string | null>(null)
   const loading = ref(false)
+
+  // 外观跟随（v21）：settings 的每一条落回路径（load / update / reset / bind 推送）
+  // 都会写 `settings.value`，在这里统一应用强调色，四个窗口无需各接一遍。
+  watch(
+    settings,
+    (next) => applyAppearance(next?.appearance?.accent),
+    { immediate: true },
+  )
 
   async function load(): Promise<void> {
     loading.value = true

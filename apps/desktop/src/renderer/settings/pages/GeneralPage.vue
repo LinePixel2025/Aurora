@@ -82,6 +82,37 @@ const edgeOpacity = ref(general.value?.edgeBar.opacity ?? 0.9)
 /** 提示条贴附的显示器与屏幕侧（v21，docs/08 §1） */
 const edgeDisplay = ref(general.value?.edgeBar.display ?? 'primary')
 const edgePosition = ref(general.value?.edgeBar.position ?? 'right')
+
+// ── 外观自定义（v21，docs/08 §1）：强调色主题，Agent 也可经 set_setting 调 ──
+
+/** 与 renderer/shared/appearance.ts 的 ACCENT_PRESETS 同一份约定（色值改两处要同步） */
+const ACCENTS = {
+  aurora: '#0a84ff',
+  teal: '#14b8a6',
+  violet: '#8b5cf6',
+  rose: '#f43f5e',
+  amber: '#f59e0b',
+} as const
+
+const ACCENT_LABELS: Record<keyof typeof ACCENTS, string> = {
+  aurora: '品牌蓝',
+  teal: '青',
+  violet: '紫',
+  rose: '玫瑰',
+  amber: '琥珀',
+}
+
+type AccentKey = keyof typeof ACCENTS
+
+const accent = ref<AccentKey>(settingsStore.settings?.appearance?.accent ?? 'aurora')
+
+/** 切强调色：落盘即生效（渲染层 settings store 的 watch 统一应用到文档根） */
+async function saveAccent(key: AccentKey): Promise<void> {
+  if (key === accent.value) return
+  const ok = await settingsStore.update({ appearance: { accent: key } })
+  if (ok) accent.value = key
+  else error.value = settingsStore.error
+}
 const saved = ref<string | null>(null)
 const error = ref<string | null>(null)
 
@@ -157,6 +188,7 @@ watch(
     edgeOpacity.value = next.general.edgeBar.opacity
     edgeDisplay.value = next.general.edgeBar.display
     edgePosition.value = next.general.edgeBar.position
+    accent.value = next.appearance?.accent ?? 'aurora'
     // 项目配置一变就重新探测根目录（失败静默：按"无警示"处理）
     void refreshProjectStatus()
   },
@@ -361,6 +393,28 @@ async function openProjectRoot(): Promise<void> {
           <AppToast v-if="hotkeyStatus !== null && !hotkeyStatus.registered" tone="warn">
             {{ hotkeyStatus.message ?? '该快捷键未注册成功' }}
           </AppToast>
+        </div>
+      </SettingField>
+    </section>
+
+    <!-- 外观自定义（v21，docs/08 §1）：强调色主题；Agent 也可经 set_setting 调同一字段 -->
+    <section class="section-card">
+      <h2 class="section-title">外观</h2>
+      <p class="section-desc">界面强调色，改完即时生效，四个窗口统一跟随。</p>
+
+      <SettingField data-field="appearance.accent" label="强调色" hint="默认为品牌蓝">
+        <div class="accent-row" role="radiogroup" aria-label="强调色">
+          <button
+            v-for="(hex, key) in ACCENTS"
+            :key="key"
+            type="button"
+            class="accent-dot press"
+            :class="{ active: accent === key }"
+            :style="{ background: hex }"
+            :aria-pressed="accent === key"
+            :title="ACCENT_LABELS[key]"
+            @click="saveAccent(key)"
+          />
         </div>
       </SettingField>
     </section>
@@ -682,6 +736,31 @@ async function openProjectRoot(): Promise<void> {
 .page > .section-card {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-hairline);
+}
+
+/* 强调色色板（外观，v21）：圆形色点 + 选中环，选择态一眼可辨 */
+.accent-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.accent-dot {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition:
+    box-shadow var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.accent-dot.active {
+  border-color: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--bg-raised) inset;
+  transform: scale(1.08);
 }
 
 .page [data-empty] {

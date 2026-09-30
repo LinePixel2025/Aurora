@@ -47,7 +47,16 @@ export interface SettingsPortDeps {
 }
 
 /** 配置顶层分组：只有这些前缀能进 `SettingsPatch`（`version` 等一律拒绝）。 */
-const TOP_LEVEL_GROUPS = ['general', 'llm', 'modes', 'skills', 'mcp', 'advanced', 'agent'] as const
+const TOP_LEVEL_GROUPS = [
+  'general',
+  'llm',
+  'modes',
+  'skills',
+  'mcp',
+  'advanced',
+  'agent',
+  'appearance',
+] as const
 
 /**
  * 主进程侧端口实现（docs/06 §12）。

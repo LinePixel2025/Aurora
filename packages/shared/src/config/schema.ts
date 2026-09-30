@@ -57,6 +57,16 @@ export const EdgeBarSchema = z.object({
   position: z.enum(['right', 'left']),
 })
 
+/**
+ * 外观自定义（v21，docs/08 §1）：用户在设置页选，Agent 也可经 `set_setting` 调
+ * （`appearance.accent` 在 `WRITABLE_PATH_OVERRIDES` 登记）。渲染层由
+ * `shared/appearance.ts` 应用到文档根 —— `aurora` = 内置品牌蓝（移除覆盖，跟随明暗档）。
+ */
+export const AppearanceSchema = z.object({
+  accent: z.enum(['aurora', 'teal', 'violet', 'rose', 'amber']),
+})
+export type AppearanceSettings = z.infer<typeof AppearanceSchema>
+
 export const GeneralSchema = z.object({
   language: z.string().min(2),
   launchAtLogin: z.boolean(),
@@ -725,6 +735,7 @@ export const SettingsSchema = z.object({
   agent: AgentSchema,
   center: CenterSchema,
   automations: AutomationsSchema,
+  appearance: AppearanceSchema,
 })
 
 export type Settings = z.infer<typeof SettingsSchema>
@@ -801,6 +812,7 @@ export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
   { pattern: 'general.edgeBar.quietHours', reason: '调整提示条的勿扰时段' },
   { pattern: 'general.edgeBar.display', reason: '切换提示条贴附的显示器' },
   { pattern: 'general.edgeBar.position', reason: '切换提示条贴附的屏幕侧' },
+  { pattern: 'appearance.accent', reason: '切换界面强调色主题' },
   { pattern: 'general.chat.showThinking', reason: '开关对话界面的思考过程展示' },
   // 模式
   { pattern: 'modes.current', reason: '切换当前模式' },
