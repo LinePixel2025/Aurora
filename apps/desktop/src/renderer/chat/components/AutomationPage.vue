@@ -1252,6 +1252,7 @@ function closeHistory(): void {
           </section>
         </div>
       </div>
+    </div>
     </Transition>
   </section>
 </template>
