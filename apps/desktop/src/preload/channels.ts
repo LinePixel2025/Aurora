@@ -106,6 +106,8 @@ const CHANNELS = {
     newSession: 'chat:newSession',
     archiveSession: 'chat:archiveSession',
     setSessionProject: 'chat:setSessionProject',
+    // 真删除会话（docs/08 会话管理页）：与 shared 契约同构，编译期双向断言兜住
+    deleteSession: 'chat:deleteSession',
     jobs: 'chat:jobs',
     resumeJob: 'chat:resumeJob',
     cancelJob: 'chat:cancelJob',

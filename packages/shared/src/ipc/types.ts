@@ -1435,6 +1435,13 @@ export interface AuroraApi {
      */
     newSession(options?: { space?: 'agent' | 'work'; projectId?: string }): Promise<Result<string>>
     /**
+     * 真删除会话（docs/08 会话管理页）：删 `sessions/<id>.json` + 清全部内存态，**不可逆**。
+     * 渲染层负责二次确认（两步按钮，不用浏览器 confirm）；主进程守卫 running 的 job
+     * （E_INVALID_STATE：状态冲突，不是参数错误）。
+     * 幂等：删除不存在的会话文件返回 ok。
+     */
+    deleteSession(sessionId: string): Promise<Result<boolean>>
+    /**
      * 归档 / 取消归档一个会话（docs/06 §4）。
      *
      * 状态写在会话文件自身的 `meta` 里；**幂等**，且主进程会等到落盘完成才返回，

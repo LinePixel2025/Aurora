@@ -135,6 +135,8 @@ const api: AuroraApi = {
     onCenterVisibilityChanged: (listener) => subscribe(IPC.chat.centerVisibilityChanged, listener),
     // 会话三分（docs/06 §4）：space / projectId 只透传（纯字面量，无 Proxy 克隆问题）
     newSession: (options) => invoke(IPC.chat.newSession, options),
+    // 真删除会话（docs/08 会话管理页）：不可逆，二次确认由调用方负责
+    deleteSession: (sessionId) => invoke(IPC.chat.deleteSession, { sessionId }),
     archiveSession: (request) => invoke(IPC.chat.archiveSession, request),
     setSessionProject: (request) => invoke(IPC.chat.setSessionProject, request),
     jobs: (request) => invoke(IPC.chat.jobs, request),

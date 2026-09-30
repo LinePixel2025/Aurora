@@ -242,6 +242,31 @@ export class SessionStore {
   }
 
   /**
+   * **真删除**会话（`chat:deleteSession`，docs/08 会话管理页）：删盘上文件 + 清全部内存态。
+   *
+   * 与 `clear`（只清消息、meta 保留）不同，这是不可逆操作：
+   * - **先撤掉防抖定时器与脏标记**：挂着待写状态删文件，紧接着的那次 `writeNow` 会把
+   *   内存快照原样写回磁盘，表现为「删了又回来了」；
+   * - 文件不存在（从未落盘的空会话）不算错误 —— `fs.remove` 对缺失路径幂等；
+   * - 删除失败原样抛出（调用方转 `E_UNKNOWN`），不做静默降级；
+   * - 调用方（IPC 层）负责先确认该会话没有在跑的请求 —— 这里只管存储。
+   */
+  async remove(sessionId: string): Promise<void> {
+    const id = normalizeSessionId(sessionId)
+    const timer = this.timers.get(id)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      this.timers.delete(id)
+    }
+    this.dirty.delete(id)
+    this.cache.delete(id)
+    this.metaCache.delete(id)
+    this.loaded.delete(id)
+    this.loading.delete(id)
+    await this.fs.remove(sessionFilePath(this.dir, id))
+  }
+
+  /**
    * 归档 / 取消归档（`chat:archiveSession`，docs/06 §4）。
    *
    * - **幂等**：当前状态已等于目标值 → 直接返回，不写盘；

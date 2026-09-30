@@ -397,6 +397,50 @@ describe('SessionStore · 会话空间（docs/06 §4 会话三分，2026-09-30�
   })
 })
 
+describe('SessionStore · 真删除会话（chat:deleteSession，docs/08 会话管理页）', () => {
+  it('remove 删掉盘上文件并清空内存态，删完不再出现在列表里', async () => {
+    const { store, fs } = setup()
+    await store.append('s1', { role: 'user', content: 'a' })
+    await store.flush()
+    expect((await fs.readdir(SESSION_DIR)).includes('s1.json')).toBe(true)
+
+    await store.remove('s1')
+    expect((await fs.readdir(SESSION_DIR)).includes('s1.json')).toBe(false)
+    expect(await store.listSessions()).not.toContain('s1')
+    expect((await store.summaries()).some((item) => item.id === 's1')).toBe(false)
+  })
+
+  it('remove 撤掉防抖定时器与脏标记：删完不会被待写状态「写回来」', async () => {
+    const { store, fs } = setup()
+    await store.append('s1', { role: 'user', content: 'a' })
+    // 不 flush：此刻脏标记与防抖定时器都挂着（这正是「删了又回来」的现场）
+    await store.remove('s1')
+    await store.flush()
+    expect((await fs.readdir(SESSION_DIR)).includes('s1.json')).toBe(false)
+  })
+
+  it('remove 幂等：文件不存在（从未落盘的空会话）不报错', async () => {
+    const { store } = setup()
+    await expect(store.remove('never-written')).resolves.toBeUndefined()
+  })
+
+  it('remove 清掉 meta 绑定：删掉再同名重建（重新 append）不残留项目 / 空间', async () => {
+    const { store, fs } = setup()
+    await store.append('s1', { role: 'user', content: 'a' })
+    await store.setProject('s1', 'proj-1')
+    await store.setSpace('s1', 'work')
+    await store.remove('s1')
+
+    // 同名会话重新出现时读的是新文件（旧 meta 不残留）
+    await store.append('s1', { role: 'user', content: 'b' })
+    await store.flush()
+    expect(store.projectOf('s1')).toBeUndefined()
+    expect(store.spaceOf('s1')).toBe('agent')
+    expect(metaOf(fs, 's1')['projectId']).toBeUndefined()
+    expect(metaOf(fs, 's1')['space']).toBeUndefined()
+  })
+})
+
 /** 读回某会话文件的原始 JSON（断言落盘形状用） */
 function readFile(fs: TestFileSystem, id: string): Record<string, unknown> {
   const raw = fs.files.get(sessionFilePath(SESSION_DIR, id))

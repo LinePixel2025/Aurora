@@ -106,6 +106,11 @@ export const IPC = {
     archiveSession: 'chat:archiveSession',
     /** 绑定 / 解绑会话项目（docs/06 §5.1 会话级项目）：写会话文件 meta.projectId，与 settings 无关 */
     setSessionProject: 'chat:setSessionProject',
+    /**
+     * 真删除会话（docs/08 会话管理页）：删 `sessions/<id>.json` 文件 + 清全部内存态，
+     * **不可逆**。主进程守卫：该会话有 running 状态的 job 时拒绝（E_INVALID_STATE）。
+     */
+    deleteSession: 'chat:deleteSession',
     /** Job（任务）列表 / 续跑 / 取消（v15，docs/06 §4.1） */
     jobs: 'chat:jobs',
     resumeJob: 'chat:resumeJob',

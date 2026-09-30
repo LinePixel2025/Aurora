@@ -611,6 +611,38 @@ export function registerIpc(deps: DesktopDeps): () => void {
       )
     },
   )
+  /**
+   * 真删除会话（docs/08 会话管理页，`SessionStore.remove`）：删 `sessions/<id>.json`
+   * + 清全部内存态，**不可逆** —— 渲染层负责两步确认，这里负责守卫：
+   * 该会话还有 `running` 的 job（请求在跑或自动续轮中）时拒绝 `E_INVALID_STATE`（状态冲突）
+   * （在跑的流随时会 append，删了会被下一轮写回来）；paused / 已结束的 job 随会话一起
+   * 留在盘上无妨（会话没了它们也不可达，job 文件的 24h TTL 之外由会话删除兜底清理不在本轮范围）。
+   * 文件不存在（从未落盘的空会话）幂等返回 ok。
+   */
+  handle<boolean>(IPC.chat.deleteSession, (request: { sessionId: string }) => {
+    const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+    if (sessionId === '') {
+      return Promise.resolve(err('E_INVALID_ARGUMENT', 'sessionId 不能为空'))
+    }
+    const jobs = deps.jobs
+    const guard =
+      jobs === undefined
+        ? Promise.resolve(false)
+        : jobs
+            .list({ sessionId, status: 'running' })
+            .then((running) => running.length > 0)
+            .catch(() => false)
+    return guard.then((busy) => {
+      if (busy) {
+        return err('E_INVALID_STATE', '会话有正在运行的任务，先取消或等它结束再删除')
+      }
+      return deps.sessions.remove(sessionId).then(
+        () => ok(true),
+        (error: unknown) =>
+          err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      )
+    })
+  })
   handle<SkillSummary[]>(IPC.skills.list, () => ok(deps.skills.list()))
   handle<SkillsStatus>(IPC.skills.rescan, () =>
     deps.skills
