@@ -13,7 +13,7 @@
 | 模式 | 触发后做什么 | 历史记什么 |
 |---|---|---|
 | **Agent Mode** | 用该自动化配置的**任务指令（prompt）驱动一次完整的 Agent 会话**（模型 + 工具循环，与会话页同一条内核链路） | 每次触发一条运行记录（触发时间 / 用时 / 状态 / 归属自动化）；点开记录可回看**该次对话全文** |
-| **Normal Mode** | 顺序执行预设的**操作组件**（系统通知 / ClassIsland 提醒 / 打开文件夹，见 §5） | 每次触发一条记录，**只显示触发时间**（与归属自动化、状态），不展开具体操作 |
+| **Normal Mode** | 顺序执行预设的**操作组件**（系统通知 / ClassIsland 提醒 / 打开文件夹 / 打开网址 / 打开应用，见 §5） | 每次触发一条记录，**只显示触发时间**（与归属自动化、状态），不展开具体操作 |
 
 两种模式共用同一套**触发器**（§4）与同一份历史存储；区别只在「触发后干什么」。
 
@@ -202,10 +202,16 @@ interface AutomationDescriptorField {
 | `system-notify` | `title`、`body`、`openPath?`（点击通知打开的目录） | 系统通知（`NotificationService`） | 不会 |
 | `classisland-remind` | `title`、`body`、`channel: 'custom' \| 'class-started' \| 'pre-class'` | 经 ClassIsland 桥接提醒通道弹出 | 未配置桥接时该组件在 catalog 中标记不可用（UI 不允许选；历史记录失败原因） |
 | `open-folder` | `target: 'subject' \| 'path'`；`subject?`（科目名，解析到科目文件夹）或 `path?`（绝对路径） | 用系统默认方式打开文件夹 | 目录解析为空 → 该次执行记 `warn` 跳过 |
+| `open-url` | `url`（必填，仅 http/https） | 用系统默认浏览器打开网址（`shell.openExternal`） | 不会（协议白名单在保存校验与执行器双层把守） |
+| `open-app` | `path`（必填，可执行文件 / `.lnk` 绝对路径） | 用系统默认方式打开应用（`shell.openPath`，不经 shell、无参数拼接面） | 不会 |
 
 **封闭性就是安全边界**：Normal Mode 没有 `run_command`、没有任意写——
-自动化的「无人值守」面被限制在通知 / 打开文件夹 / ClassIsland 提醒三个预设能力，
-不引入新的确认或提权问题。要更强的能力请用 Agent Mode（受三档权限与确认链约束）。
+自动化的「无人值守」面被限制在通知 / 打开文件夹 / ClassIsland 提醒 / 打开网址 / 打开应用
+这几个预设能力上，不引入新的确认或提权问题。要更强的能力请用 Agent Mode（受三档权限与确认链约束）。
+`open-url` / `open-app`（v0.2.9 新增）的边界维持手法：URL 走 http(s) 协议白名单
+（`catalog.isWebUrl`，保存校验与执行器共用）；应用路径只接受**单一**路径参数走 `shell.openPath`
+（与「打开文件夹」同一通道，不存在 shell 注入面）；两者的参数都只能由用户在 UI 里配置
+（`automations.*` 是 AI 只读前缀，AI 无法给自己添加自动打开行为）。
 
 ## 6. 内置自动化（ClassRoom 自动操作的迁移）
 

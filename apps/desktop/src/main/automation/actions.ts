@@ -1,7 +1,7 @@
 /**
  * 操作组件执行器（docs/13 §5）。Normal Mode 的**封闭能力集**：
- * 系统通知 / ClassIsland 提醒 / 打开文件夹 —— 没有命令、没有任意写，
- * 自动化的无人值守面被限制在这三个预设能力上（要更强走 Agent Mode 的权限链）。
+ * 系统通知 / ClassIsland 提醒 / 打开文件夹 / 打开网址 / 打开应用 —— 没有命令、没有任意写，
+ * 自动化的无人值守面被限制在这几个预设能力上（要更强走 Agent Mode 的权限链）。
  *
  * 纯 Node：系统能力全部经 port 注入，可完整单测。失败一律返回 `{ ok: false, error }`
  * 绝不抛错 —— 单个操作的失败不阻断后续操作，也不能拖垮引擎 tick。
@@ -10,6 +10,7 @@ import type { AutomationAction } from '@aurora/shared'
 import type { ClassIslandNotifyRequest } from '@aurora/shared'
 import type { Logger } from '@aurora/shared'
 import { resolveSubjectFolder } from '../paths.js'
+import { isWebUrl } from './catalog.js'
 
 /** 注入的系统能力端口（主进程装配时接线，docs/13 §3） */
 export interface AutomationActionPorts {
@@ -22,6 +23,8 @@ export interface AutomationActionPorts {
   }
   /** 打开路径（`shell.openPath`） */
   openPath(target: string): Promise<void>
+  /** 用系统默认浏览器打开 URL（`shell.openExternal`；仅 http(s)，协议白名单在执行器里校验） */
+  openExternal(url: string): Promise<void>
   /** 科目名 → 科目文件夹绝对路径（空串 = 未映射，复用 `paths.resolveSubjectFolder` 链） */
   resolveSubjectDir(subjectName: string): string
   logger: Logger
@@ -46,6 +49,10 @@ export async function executeAction(
       return await executeClassislandRemind(params, ports)
     case 'open-folder':
       return await executeOpenFolder(params, ports)
+    case 'open-url':
+      return await executeOpenUrl(params, ports)
+    case 'open-app':
+      return await executeOpenApp(params, ports)
     default:
       return { ok: false, error: `不支持的操作组件：${String(action.kind)}`, summary: '' }
   }
@@ -125,6 +132,46 @@ async function executeOpenFolder(
     return { ok: false, error: `打开文件夹失败：${String(error)}`, summary: '' }
   }
   return { ok: true, summary: `已打开 ${dir}` }
+}
+
+/**
+ * 打开网址（open-url）：协议白名单只放 http / https —— `file:` / 自定义协议
+ * （`ms-settings:` 之类）一律拒绝，防 URL 字段变成协议逃逸面（docs/13 §5）。
+ */
+async function executeOpenUrl(
+  params: Record<string, unknown>,
+  ports: AutomationActionPorts,
+): Promise<ActionExecutionResult> {
+  const url = readString(params['url'], '').trim()
+  if (url === '') return { ok: false, error: '未指定网址', summary: '' }
+  if (!isWebUrl(url)) {
+    return { ok: false, error: `仅支持 http(s) 网址：${url}`, summary: '' }
+  }
+  try {
+    await ports.openExternal(url)
+  } catch (error) {
+    return { ok: false, error: `打开网址失败：${String(error)}`, summary: '' }
+  }
+  return { ok: true, summary: `已在默认浏览器打开 ${url}` }
+}
+
+/**
+ * 打开应用（open-app）：走 `openPath` 端口（`shell.openPath`，单一路径参数、
+ * 不经 shell —— 不存在参数拼接的注入面）。应用路径只来自用户在 UI 里的配置
+ * （automations.* 是 AI 只读前缀），执行器只兜底拦空值。
+ */
+async function executeOpenApp(
+  params: Record<string, unknown>,
+  ports: AutomationActionPorts,
+): Promise<ActionExecutionResult> {
+  const path = readString(params['path'], '').trim()
+  if (path === '') return { ok: false, error: '未指定应用路径', summary: '' }
+  try {
+    await ports.openPath(path)
+  } catch (error) {
+    return { ok: false, error: `打开应用失败：${String(error)}`, summary: '' }
+  }
+  return { ok: true, summary: `已打开应用 ${path}` }
 }
 
 /**

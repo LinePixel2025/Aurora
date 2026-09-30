@@ -34,6 +34,21 @@ describe('validateDefinition · 合法定义', () => {
     expect(validateDefinition(normalDefinition(), CATALOG)).toEqual({ ok: true })
   })
 
+  it('open-url 合法网址通过；open-app 填路径即合法', () => {
+    expect(
+      validateDefinition(
+        normalDefinition([{ kind: 'open-url', params: { url: 'https://example.com' } }]),
+        CATALOG,
+      ),
+    ).toEqual({ ok: true })
+    expect(
+      validateDefinition(
+        normalDefinition([{ kind: 'open-app', params: { path: 'C:\\app.exe' } }]),
+        CATALOG,
+      ),
+    ).toEqual({ ok: true })
+  })
+
   it('open-folder 两种目标类型（subject / path）填齐即合法', () => {
     expect(
       validateDefinition(
@@ -143,6 +158,29 @@ describe('validateDefinition · 非法定义', () => {
     expect(badTarget.ok).toBe(false)
     // 非法取值由 select 字段校验先拦下（错误文案带字段名「目标类型」）
     expect(badTarget.error).toContain('目标类型')
+  })
+
+  it('open-url 缺网址 / 非 http(s) 协议拒绝；open-app 缺路径拒绝', () => {
+    const missingUrl = validateDefinition(
+      normalDefinition([{ kind: 'open-url', params: {} }]),
+      CATALOG,
+    )
+    expect(missingUrl.ok).toBe(false)
+    expect(missingUrl.error).toContain('网址')
+
+    const badProtocol = validateDefinition(
+      normalDefinition([{ kind: 'open-url', params: { url: 'file://C:/calc.exe' } }]),
+      CATALOG,
+    )
+    expect(badProtocol.ok).toBe(false)
+    expect(badProtocol.error).toContain('http(s)')
+
+    const missingAppPath = validateDefinition(
+      normalDefinition([{ kind: 'open-app', params: {} }]),
+      CATALOG,
+    )
+    expect(missingAppPath.ok).toBe(false)
+    expect(missingAppPath.error).toContain('应用路径')
   })
 
   it('select 字段非法取值拒绝（classisland-remind 的 channel）', () => {

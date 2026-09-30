@@ -1464,6 +1464,13 @@ async function bootstrap(): Promise<void> {
       const error = await shell.openPath(target)
       if (error !== '') throw new Error(error)
     },
+    openExternal: async (url) => {
+      if (smokeMode) {
+        logger?.info('自测：跳过真实打开网址，已记录回执', { url })
+        return
+      }
+      await shell.openExternal(url)
+    },
     resolveSubjectDir: (subjectName) => {
       const classroom = settings!.get().modes.classroom
       const subject = classroom.subjects.find((item) => item.name === subjectName)

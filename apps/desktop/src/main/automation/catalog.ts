@@ -151,6 +151,36 @@ export const ACTION_DESCRIPTORS: Omit<AutomationActionDescriptor, 'available'>[]
     ],
     requiresClassIsland: false,
   },
+  {
+    kind: 'open-url',
+    label: '打开网址',
+    description: '用系统默认浏览器打开一个 http(s) 网址（其他协议一律拒绝）。',
+    fields: [
+      {
+        key: 'url',
+        label: '网址',
+        type: 'text',
+        placeholder: 'https://…',
+        hint: '仅支持 http:// 与 https:// 开头',
+      },
+    ],
+    requiresClassIsland: false,
+  },
+  {
+    kind: 'open-app',
+    label: '打开应用',
+    description: '用系统默认方式打开一个应用（可执行文件或 .lnk 快捷方式的绝对路径）。',
+    fields: [
+      {
+        key: 'path',
+        label: '应用路径',
+        type: 'text',
+        placeholder: '如 C:\\Program Files\\…\\app.exe',
+        hint: '仅路径本身，不支持附加命令行参数',
+      },
+    ],
+    requiresClassIsland: false,
+  },
 ]
 
 /** 组装 catalog；`classislandAvailable` 决定 classisland-remind 的 `available`。 */
@@ -162,6 +192,14 @@ export function buildCatalog(classislandAvailable: boolean): AutomationCatalog {
       available: !descriptor.requiresClassIsland || classislandAvailable,
     })),
   }
+}
+
+/**
+ * open-url 的协议白名单（docs/13 §5）：只放 http / https —— `file:` / 自定义协议
+ * 一律视为非法，防「打开网址」变成协议逃逸面。保存校验与执行器共用这一个口径。
+ */
+export function isWebUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value)
 }
 
 // ───────────────────────── 定义校验（保存入口的唯一合法化层） ─────────────────────────
@@ -263,6 +301,18 @@ function validateAction(action: unknown, catalog: AutomationCatalog): Validation
       return fail('操作「打开文件夹」：目标类型为指定路径时必须填写路径')
     }
     if (target !== 'subject' && target !== 'path') return fail('操作「打开文件夹」：目标类型无效')
+  }
+  // open-url：网址必填且只放 http(s)（与执行器共用 isWebUrl 一个口径，docs/13 §5）
+  if (descriptor.kind === 'open-url') {
+    const params = isRecord(record['params']) ? record['params'] : {}
+    if (isBlank(params['url'])) return fail('操作「打开网址」：必须填写网址')
+    if (!isWebUrl(String(params['url']))) return fail('操作「打开网址」：仅支持 http(s) 网址')
+  }
+  // open-app：路径必填（扩展名不做白名单——能落进这里的手已经只有用户 UI，
+  // automations.* 是 AI 只读前缀；执行器同样不经 shell、无参数拼接面）
+  if (descriptor.kind === 'open-app') {
+    const params = isRecord(record['params']) ? record['params'] : {}
+    if (isBlank(params['path'])) return fail('操作「打开应用」：必须填写应用路径')
   }
   return { ok: true }
 }
