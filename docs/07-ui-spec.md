@@ -103,7 +103,9 @@
        （会话仍在，切回来照常显示）。
     3. **Agent对话**（`data-field="chat.agent-group"`）：`space: 'agent'` 或未标记的会话
        （含历史会话与 `main`）；**首行固定是 quick 会话**（沿用 `data-field="chat.quick-item"`
-       锚点；提示条面板与其共用同一会话文件，见 §2.2）。
+       锚点；提示条面板与其共用同一会话文件，见 §2.2）。旧「会话列表」锚点
+       `data-field="chat.session-list"` 挂在本区的列表容器上（Agent 空间是未标记会话的
+       缺省分区，「主会话列表」的语义由它承接）。
     固定顶置项其余三个不变：子代理（`chat.subagent-item`）/ 自动化（`chat.auto-item`）/
     任务（`chat.jobs-entry`）—— 前一个切**主区**，后两个开关**右栏面板**；「快速对话」不再
     是固定顶置项（它的入口随 Agent对话区下沉）。空态文案按分区显示：项目对话区空时不渲染

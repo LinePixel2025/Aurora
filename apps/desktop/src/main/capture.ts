@@ -3779,6 +3779,116 @@ export const CHAT_RIGHT_PANEL_WORK_CHECK = `(async () => {
 })()`
 
 /**
+ * 会话三分探针（2026-09-30，docs/06 §4 会话空间 / docs/07 §2.3）：左栏必须分成
+ * 项目对话 / 工作目录对话 / Agent对话 三区，且分区随项目与模式门控。
+ *
+ * ACT 三个阶段：
+ * ① 出厂现场（无项目、classroom）：`chat.agent-group` / `chat.session-list` /
+ *    `chat.quick-item` 必须在，`chat.work-group` / `chat.project-group` 必须不在 ——
+ *    工作目录对话区是 Work 模式专属、项目对话区只在登记了项目时渲染（「无则整区不渲染」）；
+ * ② 登记截图项目（与 chat-project-card 同一条 `settings:update` 通道，`list` 整体权威）：
+ *    `chat.project-group` 出现且组头 `+`（`chat.new-project-session`）恰好一枚；
+ * ③ 切 Work 模式（与右栏模式感知探针同一条 `mode.set` IPC）：`chat.work-group` 出现
+ *    且组头 `+`（`chat.new-work-session`）恰好一枚，项目对话区不受影响。
+ *
+ * CHECK 断言三阶段现场后收尾还原（模式切回 classroom、项目清空），
+ * 后续场景（chat-tts / archive）读到的仍是出厂门控。seed 的 main 会话是未标记会话
+ * （Agent 空间），因此 `chat.session-list .nav-item` ≥ 1 顺带验证「历史会话归 Agent对话区」。
+ */
+export const CHAT_SESSION_GROUPS_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const count = (selector) => document.querySelectorAll(selector).length
+  try {
+    const factory = {
+      agentGroup: count('[data-field="chat.agent-group"]'),
+      sessionList: count('[data-field="chat.session-list"]'),
+      quickItem: count('[data-field="chat.quick-item"]'),
+      workGroup: count('[data-field="chat.work-group"]'),
+      projectGroup: count('[data-field="chat.project-group"]'),
+      agentRows: count('[data-field="chat.session-list"] .nav-item'),
+    }
+    // 阶段 B：登记截图项目（projects.list 是数组整体权威，显式给完整子树）
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { ok: false, reason: state.message }
+    const update = await window.aurora.settings.update({
+      projects: {
+        ...state.value.projects,
+        current: 'capture',
+        list: [{ id: 'capture', name: '截图项目', root: 'C:\\\\capture-project' }],
+      },
+    })
+    if (!update.ok) return { ok: false, reason: update.message }
+    let projectGroup = 0
+    for (let attempt = 0; attempt < 15 && projectGroup === 0; attempt += 1) {
+      projectGroup = count('[data-field="chat.project-group"]')
+      if (projectGroup === 0) await wait(200)
+    }
+    const projectAdd = count('[data-action="chat.new-project-session"]')
+    // 阶段 C：切 Work 模式
+    const mode = await window.aurora.mode.set('work')
+    if (!mode.ok) return { ok: false, reason: 'mode.set failed: ' + mode.message }
+    let workGroup = 0
+    for (let attempt = 0; attempt < 20 && workGroup === 0; attempt += 1) {
+      workGroup = count('[data-field="chat.work-group"]')
+      if (workGroup === 0) await wait(200)
+    }
+    const workAdd = count('[data-action="chat.new-work-session"]')
+    window.__auroraSessionGroupsProbe = { factory, projectGroup, projectAdd, workGroup, workAdd }
+    return { ok: true, factory, projectGroup, projectAdd, workGroup, workAdd }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const count = (selector) => document.querySelectorAll(selector).length
+  try {
+    const probe = window.__auroraSessionGroupsProbe
+    const factory = probe === undefined ? null : probe.factory
+    const factoryOk =
+      factory !== null &&
+      factory.agentGroup === 1 &&
+      factory.sessionList === 1 &&
+      factory.quickItem === 1 &&
+      factory.workGroup === 0 &&
+      factory.projectGroup === 0 &&
+      factory.agentRows >= 1
+    const projectOk =
+      probe !== undefined && probe.projectGroup === 1 && probe.projectAdd === 1
+    const workOk = probe !== undefined && probe.workGroup === 1 && probe.workAdd === 1
+
+    // 收尾还原：模式切回 classroom、项目清空，两区随之消失（还原结果并入 pass）
+    let restored = false
+    const state = await window.aurora.settings.get()
+    if (state.ok) {
+      const back = await window.aurora.mode.set('classroom')
+      const clear = await window.aurora.settings.update({
+        projects: { ...state.value.projects, current: '', list: [] },
+      })
+      if (back.ok && clear.ok) {
+        restored = true
+        for (let attempt = 0; attempt < 10 && restored; attempt += 1) {
+          restored =
+            count('[data-field="chat.work-group"]') === 0 &&
+            count('[data-field="chat.project-group"]') === 0
+          if (!restored) await wait(200)
+        }
+      }
+    }
+    return {
+      factory,
+      projectGroup: probe === undefined ? null : probe.projectGroup,
+      workGroup: probe === undefined ? null : probe.workGroup,
+      restored,
+      pass: factoryOk && projectOk && workOk && restored,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
  * 思考过程折叠块探针（BetaV2，spec §9/§11）：MessageList 对带 `reasoning` 的助手消息
  * 渲染可折叠「思考过程」块，受 `general.chat.showThinking` 门控。
  *
@@ -6311,6 +6421,14 @@ export function defaultCapturePlan(
       file: 'chat-right-panel-work.png',
       act: CHAT_RIGHT_PANEL_WORK_ACT,
       check: CHAT_RIGHT_PANEL_WORK_CHECK,
+    },
+    // 会话三分（2026-09-30，docs/07 §2.3）：三区结构 + 项目/Work 门控 + 组头新建入口；
+    // act 登记「截图项目」并切 work，check 断言后还原（classroom + 无项目）。
+    {
+      name: 'chat',
+      file: 'chat-session-groups.png',
+      act: CHAT_SESSION_GROUPS_ACT,
+      check: CHAT_SESSION_GROUPS_CHECK,
     },
     // 右栏「当前项目」卡（v13，docs/06 §5.1；docs/07 §2.3）：
     // prepare 先在 userData 下建出真实项目根（让"根可用"这个健康态成立），
