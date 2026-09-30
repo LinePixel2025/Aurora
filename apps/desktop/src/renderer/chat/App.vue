@@ -1559,6 +1559,13 @@ async function markGuideDone(): Promise<void> {
   flex-direction: column;
   gap: var(--space-2);
   overflow-y: auto;
+  /*
+   * 关掉浏览器的**滚动锚定**（2026-09-30 跟丢修复轮）：
+   * 它会在内容长高时自行调整 `scrollTop` 来"保持可见内容"，与我们自己的逐帧对齐是两套
+   * 互不知情的补偿 —— 两者叠加就是"滚动条偶尔停在半路"的来源之一（锚定的调整发生在
+   * 我们读完之后、写之前）。跟随逻辑既然自己每帧对齐到底，就不需要浏览器再补偿一次。
+   */
+  overflow-anchor: none;
   padding: var(--space-3) var(--space-4);
 }
 

@@ -1,32 +1,34 @@
 /**
- * 「跟随最新」滚动（对话 / 日志类列表的自动滚底）。
+ * 「跟随最新」滚动（对话 / 日志类列表的自动滚到底）—— **Vue 薄壳**。
  *
- * 背景：交互窗的**滚动容器是窗口自己的 `.thread`**（`overflow-y: auto`），
- * `MessageList` 只是它的内容；渲染层此前没有任何滚动代码，于是新消息与流式增量
- * 都停在原地、必须用户自己往下拉。
+ * 语义与判定逻辑全在 `stickToBottomCore.ts`（纯逻辑、零 DOM，可被 vitest 的 node 环境直接收单测）；
+ * 这里只做浏览器侧的事：
  *
- * 设计取舍：
- * - **滚动容器由内容向上查找**（第一个 `overflow-y: auto|scroll` 的祖先），
- *   不要求调用方传 ref：窗口模板结构不变、`MessageList` 的 props / 插槽契约保持原样。
- * - **三条信号合并到"每帧最多滚一次"**（`schedule()` / `settle()` + `requestAnimationFrame`）：
- *   1. `MutationObserver`（subtree 的 `childList` / `characterData`）—— 新消息、流式文本、
- *      工具卡片都是 DOM 变更，这是**唯一在交互窗里也成立**的信号；
- *   2. `ResizeObserver`（内容根 + 滚动容器）—— 覆盖容器尺寸变化（窗口从隐藏到显示、用户缩放）；
- *   3. `transitionend`（内容根，靠冒泡覆盖全部后代，2026-09 新增）—— 展开 / 收起工具卡与
- *      思考块走的是 CSS `height` 过渡，它在「DOM 变更那一帧」之后**继续**长高或缩短，
- *      前两条信号都收不到；收到信号后由 `settle()` 逐帧核对到高度稳定为止。
- *
- *   ⚠️ **只监听内容元素的高度是不够的**（实测踩过）：交互窗的 `.thread` 是定高 flex 列，
- *   `MessageList` 的根节点带 `min-height: 100%`，内容一旦超过一屏，根节点的盒子就被
- *   钉在一屏高、多出来的部分作为**溢出**渲染 —— 元素尺寸不再变化，`ResizeObserver` 收不到信号
- *   （普通块级容器里的同类列表会跟着长高，看起来正常，所以这个信号本身就不可靠）。
- *   因此必须以 DOM 变更为准。
- * - **用户意图优先**：用户主动上滚（离底部超过 `threshold`）即暂停跟随，
- *   否则回看历史时会被流式输出一次次拽回底部；`stick()` 用来表达"强制回到底部"
- *   （自己发消息 / 点「回到最新」）。
+ * 1. **找滚动容器**：从内容根**向上**找第一个 `overflow-y: auto|scroll|overlay` 的祖先。
+ *    交互窗的滚动容器是窗口自己的 `.thread`，`MessageList` 只是它的内容 —— 不要求调用方传 ref，
+ *    窗口模板结构不用动。
+ * 2. **接事件源**，并把"人真的在滚"与"读数变了"严格分开（`onScroll` vs `onUserScrollIntent`）：
+ *    - `scroll`：读数可能变了。**程序自己滚出来的 scroll 事件也走这条**，
+ *      所以它绝不能改变跟随状态 —— 旧实现正是在这里用「距底 > 24px」判定的，
+ *      一次流式 delta 就能把跟随误关掉，此后所有输出都停在半路（用户报的「跟丢」）。
+ *    - `wheel` / 滚条 `pointerdown` / 翻页键：**真实输入**，只有它们能关闭跟随，
+ *      且引擎侧还有「实际离底超过阈值」这道正向确认（在底部继续滚滚轮不会误关）；
+ *      判定是"当前位置"而不是"上滚还是下滚"，所以用户从历史滚回底部时跟随会恢复。
+ *    - `ResizeObserver`（内容根 + 容器）：容器尺寸变化（窗口从隐藏到显示、用户缩放）。
+ *    - `visibilitychange` / `focus`：窗口从隐藏恢复可见时 `scrollTop` 可能已被浏览器夹取。
+ *    ⚠️ 只监听内容根尺寸是**不够的**：`.thread` 是定高 flex 列、`MessageList` 根节点带
+ *    `min-height: 100%`，内容超过一屏后根节点盒子被钉在一屏高、多出来的部分作为**溢出**渲染
+ *    —— 元素尺寸不再变化（见 core 文件头与 docs/07 §2.3），所以真正的信号是 DOM 变更。
+ * 3. **三层自愈**（2026-09-30「跟丢」修复轮，每一层都对应实测到的真实失效形态）：
+ *    ① `rebind()`：内容根 / 容器被 Vue 换掉之后重新解析并重挂观察者；
+ *    ② `MutationObserver` 回调里核对 `isConnected`：盯住的节点已被摘走时立刻重绑；
+ *    ③ **心跳兜底**（`startStructureGuard`）：上面两条都失灵时，每帧用两次属性读发现
+ *      "内容变高 / 视口被挪"，直接把对齐补上。实测过"观察者既没断开、也没判成脱离文档、
+ *      更没抛错，但回调就是不再触发"的形态 —— 纯事件驱动在它面前没有出路。
  */
 import { onMounted, onUnmounted, ref } from 'vue'
 import type { Ref } from 'vue'
+import { createStickToBottomCore, type StickIntentKind } from './stickToBottomCore.js'
 
 export interface StickToBottom {
   /** 当前是否处于「跟随最新」状态（`false` = 用户正在翻历史，渲染层据此显示回到最新入口） */
@@ -35,6 +37,8 @@ export interface StickToBottom {
   scrollToBottom: (behavior?: ScrollBehavior) => void
   /** 恢复跟随并滚到底 */
   stick: (behavior?: ScrollBehavior) => void
+  /** 重读读数并对齐（窗口从隐藏恢复可见、容器尺寸变化、DOM 结构大改后调用） */
+  refresh: () => void
 }
 
 export interface StickToBottomOptions {
@@ -49,114 +53,76 @@ function isScrollable(node: HTMLElement): boolean {
 }
 
 /**
- * 高度过渡后「继续跟随」的帧数上限（≈400ms @60fps）。
- * 取在最大时长令牌（350ms）之上，保证过渡结束后还能多跟几帧；
- * 这只是兜底 —— 正常路径由「连续两帧 `scrollHeight` 不变」自终止。
+ * 这个元素会不会消费上下键 / 空格（输入框、可编辑区、下拉）。
+ * 用来把「把光标移进输入框」与「用键盘翻对话历史」分开 —— 前者不该暂停跟随。
  */
-const MAX_SETTLE_FRAMES = 24
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tag = target.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+}
+
+/** 会改变滚动位置、且属于「用户在翻页」的按键 */
+const SCROLL_KEYS = new Set([
+  'PageUp',
+  'PageDown',
+  'Home',
+  'End',
+  'ArrowUp',
+  'ArrowDown',
+  ' ',
+  'Spacebar',
+])
+
+/**
+ * 「已经贴底」的容差（px）：与引擎的 `threshold` 默认值同口径。
+ * 一次真实滚动之后若落在这个范围内且处于跟随态，就把视口精确对齐到底（见 `snapIfNearBottom`）。
+ */
+const NEAR_BOTTOM_PX = 24
 
 export function useStickToBottom(
   content: () => HTMLElement | null,
   options: StickToBottomOptions = {},
 ): StickToBottom {
-  const threshold = options.threshold ?? 24
   const following = ref(true)
 
-  let scroller: HTMLElement | null = null
+  /** 观察中的内容根；每次 `rebind()` 之后都指向**当前**文档里的那个节点 */
   let contentEl: HTMLElement | null = null
+  /** 上一次解析出的滚动容器；容器随内容根一起重建，所以同样按需重解析 */
+  let scroller: HTMLElement | null = null
   let resizeObserver: ResizeObserver | null = null
   let mutationObserver: MutationObserver | null = null
-  let frame: number | null = null
-  /** 过渡后自终止跟随：已排的帧 / 剩余帧数 / 上一帧的 `scrollHeight` */
-  let settleHandle: number | null = null
-  let settleFramesLeft = 0
-  let settleLastHeight = -1
-
-  /** 距底部的像素距离；容器还没接上时按「在底部」处理 */
-  function distanceToBottom(): number {
-    if (scroller === null) return 0
-    return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
-  }
-
+  let core: ReturnType<typeof createStickToBottomCore> | null = null
+  let disposed = false
+  /** 两个观察者是否已经挂过（首次 `rebind()` 必须绑定，见那里的注释） */
+  let observersAttached = false
+  /** 心跳兜底：上一次的读数与在途帧（见 `startStructureGuard`） */
+  let lastHeartbeatHeight = -1
+  let lastHeartbeatTop = -1
+  let guardHandle: number | null = null
+  /** 引擎要求的 `scroll` 通知（由绑在容器上的原生监听转发） */
+  let notifyScroll: (() => void) | null = null
+  /** 引擎要求的"尺寸变化"通知（由 `rebind()` 里的 ResizeObserver 转发） */
+  let notifyResize: (() => void) | null = null
   /**
-   * 用户滚动 → 重新判定是否跟随。
+   * 绑定在"滚动容器 / 窗口"上的原生监听。
    *
-   * 程序触发的滚动（下面 `scrollToBottom`）也会走到这里，但那时距离为 0，
-   * 判定结果仍是"跟随"，不会自己把自己关掉。
+   * 之所以单列：容器会被 `rebind()` 换掉，而引擎创建时的订阅端口已经"用过"了 ——
+   * 重新挂监听是这一层的事，卸载时统一收口（`onUnmounted`）。
    */
-  function onScroll(): void {
-    following.value = distanceToBottom() <= threshold
+  const nativeSubscriptions: Array<() => void> = []
+
+  /** 把引擎的跟随状态同步进 `ref`（引擎是唯一权威，渲染层只读它渲染「回到最新」入口） */
+  function sync(): void {
+    if (core === null) return
+    const value = core.isFollowing()
+    if (following.value !== value) following.value = value
   }
 
-  function scrollToBottom(behavior: ScrollBehavior = 'auto'): void {
-    if (scroller === null) return
-    scroller.scrollTo({ top: scroller.scrollHeight, behavior })
-  }
-
-  function stick(behavior: ScrollBehavior = 'auto'): void {
-    following.value = true
-    scrollToBottom(behavior)
-  }
-
-  /**
-   * 内容或容器变了的统一入口：合并到**下一帧**滚一次。
-   *
-   * 走 `requestAnimationFrame` 而不是立即滚，有两个原因：
-   * 一次流式 delta 会触发多条 MutationObserver 记录，逐条滚是白做功；
-   * 且 DOM 变更发生在布局之前，等一帧拿到的 `scrollHeight` 才是最终值。
-   */
-  function schedule(): void {
-    if (frame !== null) return
-    frame = window.requestAnimationFrame(() => {
-      frame = null
-      if (following.value) {
-        scrollToBottom()
-        return
-      }
-      // 内容缩到不足一屏（切会话 / 清空 / 收起工具卡片）时没有可滚动的距离，
-      // 「回到最新」就没有意义了 —— 恢复跟随，避免按钮永久挂在那里。
-      // 注意：用户真的在翻历史时距离远大于阈值，不会被这条误清。
-      if (distanceToBottom() <= threshold) following.value = true
-    })
-  }
-
-  /**
-   * 高度过渡结束后继续跟随，直到高度真的不动为止。
-   *
-   * 为什么需要它：展开 / 收起工具卡与思考块走的是 CSS `height` 过渡，它在「DOM 变更那一帧」
-   * 之后**继续**长高或缩短，而 `MutationObserver` / `ResizeObserver` 都收不到（内容根带
-   * `min-height: 100%`，尺寸信号本就不可靠，见文件头注释）—— 结果是动画还在动、滚动条已经
-   * 停在半路。`transitionend` 只报「某一段过渡结束」，而高度变化可能由多段过渡串联
-   * （展开体里还有别的过渡），所以收到信号后**逐帧核对** `scrollHeight`：
-   * 只要还在变就继续滚，连续两帧不变即停。
-   *
-   * 帧数上限是兜底：宁可少跟几帧，也不要留下一个常驻的 rAF 空转。
-   * `following` 每帧都重新判断，所以用户在过渡期间上滚接管仍然有效。
-   */
-  function settle(): void {
-    settleFramesLeft = MAX_SETTLE_FRAMES
-    if (settleHandle !== null) return
-    settleLastHeight = -1
-    const step = (): void => {
-      settleHandle = null
-      if (settleFramesLeft <= 0 || scroller === null) return
-      settleFramesLeft -= 1
-      const height = scroller.scrollHeight
-      const stable = height === settleLastHeight
-      settleLastHeight = height
-      if (following.value) scrollToBottom()
-      if (stable) return
-      settleHandle = window.requestAnimationFrame(step)
-    }
-    settleHandle = window.requestAnimationFrame(step)
-  }
-
-  function onTransitionEnd(): void {
-    settle()
-  }
-
-  function findScroller(): HTMLElement | null {
-    let node = content()?.parentElement ?? null
+  /** 从内容根向上找滚动容器（找不到就返回 null，调用方静默降级：不滚动、不报错） */
+  function findScroller(from: HTMLElement): HTMLElement | null {
+    let node: HTMLElement | null = from.parentElement
     while (node !== null) {
       if (isScrollable(node)) return node
       node = node.parentElement
@@ -164,38 +130,309 @@ export function useStickToBottom(
     return null
   }
 
+  /**
+   * 引擎与渲染层共用的「当前滚动容器」：**现查**，不用缓存引用。
+   *
+   * 缓存过的引用会在 DOM 被重建后变成死节点（读数冻结、写 `scrollTop` 无效），
+   * 而这类失效在界面上与"跟随被关掉"长得一模一样。现查的代价只是几次 `parentElement` 上溯。
+   */
+  function resolveScroller(): HTMLElement | null {
+    const live = content()
+    if (live === null) return scroller
+    const found = findScroller(live)
+    if (found !== null) scroller = found
+    return found ?? scroller
+  }
+
+  /**
+   * 用户意图的统一入口。**只有真实输入会走到这里**：
+   * 程序滚动（`scrollTo`）、内容长高、`scrollTop` 被浏览器夹取都不产生这些事件。
+   * 三个 kind 的判定放在各自的绑定处（`wheel` / `pointerdown` / `keydown`）。
+   *
+   * ⚠️ **判定之后紧跟一次"贴底修正"**（`snapIfNearBottom`，2026-09-30 实测后补）：
+   * 引擎在「接管态」下**不写** `scrollTop`（那是刻意的，见 core 里那段注释），于是用户把滚动
+   * 拖回底部、意图已经把跟随接回来之后，视口仍停在原处 —— 直到下一次内容变更才被对齐。
+   * 这既让"滚回底部就恢复跟随"缺了最后一步（胶囊还在、画面不动），也会让后续的持续跟随
+   * 从一个**没贴底**的位置重新开始。这里在一次真实滚动之后补一次对齐，把这条链闭合。
+   */
+  function onUserIntent(kind: StickIntentKind): void {
+    core?.onUserIntent(kind)
+    sync()
+    snapIfNearBottom()
+  }
+
+  /**
+   * 跟随中且已经贴底（离底 ≤ 阈值）时，把视口精确对齐到底。
+   *
+   * 幂等、零成本（跟随态 + 已贴底才写）；用户离底时不动任何东西。
+   */
+  function snapIfNearBottom(): void {
+    if (core === null || !core.isFollowing()) return
+    const target = resolveScroller()
+    if (target === null) return
+    const distance = target.scrollHeight - target.scrollTop - target.clientHeight
+    if (distance <= 0 || distance > NEAR_BOTTOM_PX) return
+    target.scrollTo({ top: target.scrollHeight })
+  }
+
+  /**
+   * 重新解析内容根与滚动容器，并把两个观察者挂到**新**节点上。
+   *
+   * 触发场景：`MessageList` 的根节点被 Vue 重建、窗口结构变化、以及"观察者静默挂在
+   * 已脱离文档的旧节点上"这种自愈场景。引擎本身不用重建 —— 它的读数与写入都是**现查**
+   * （见 `resolveScroller`），换掉这两个引用就等于换了数据源。
+   */
+  function rebind(): void {
+    if (disposed) return
+    const next = content()
+    if (next === null) return
+    const changed =
+      observersAttached === false ||
+      next !== contentEl ||
+      scroller === null ||
+      !scroller.isConnected ||
+      !contentEl.isConnected
+    contentEl = next
+    scroller = findScroller(next)
+    // ⚠️ 首次必须绑定：`observersAttached` 这个标记不能省 —— 挂载时 `contentEl` 刚被赋成
+    // 同一个节点，只比对引用会判成"没变化"直接返回，于是**观察者一次都没挂上**
+    //（2026-09-30 实测：`mutations` 恒为 0、此后 DOM 变更全收不到、滚动冻在那一刻）。
+    if (!changed) return
+    // 闭包里用常量而不是可变的 `contentEl`：观察者只管**这一次**绑定的那个节点，
+    // 之后换节点是新开一个观察者（见上面 `disconnect()`），局部常量让这条语义更清楚。
+    const observed = next
+    resizeObserver?.disconnect()
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        notifyResize?.()
+        core?.onMutated()
+      })
+      resizeObserver.observe(observed)
+      if (scroller !== null) resizeObserver.observe(scroller)
+    }
+    mutationObserver?.disconnect()
+    mutationObserver = new MutationObserver(() => {
+      if (disposed) return
+      // 观察的节点还活着吗？（脱离文档的节点永远不触发，也不会报错）
+      if (observed.isConnected) {
+        core?.onMutated()
+        return
+      }
+      // 节点已被换掉：重新解析后再滚一次，这一轮的内容变更不丢
+      rebind()
+      core?.onMutated()
+    })
+    mutationObserver.observe(observed, { childList: true, characterData: true, subtree: true })
+    observersAttached = true
+    core?.refresh()
+  }
+
+  /**
+   * 把原生监听挂到**当时的**滚动容器上。
+   *
+   * `wheel` / `pointerdown` / `keydown` 每次 `rebind()` 都重新挂一遍（旧的那条在
+   * `nativeSubscriptions` 里收口）；`scroll` 这条转发给引擎 —— 引擎的订阅端口在
+   * `createStickToBottomCore` 时就被消费掉了，之后换容器只能由这一层负责。
+   */
+  function bindScroller(callback: (kind: StickIntentKind) => void): void {
+    for (const unsubscribe of nativeSubscriptions.splice(0)) unsubscribe()
+    const target = scroller
+    if (target === null) return
+    const onScroll = (): void => notifyScroll?.()
+    // 滚轮：只认纵向（触控板横扫与对话区滚动无关）
+    const wheel = (event: WheelEvent): void => {
+      if (Math.abs(event.deltaY) < Math.abs(event.deltaX)) return
+      callback('wheel')
+    }
+    // 滚条拖拽：`clientX > clientWidth` 就是滚动条那条缝（本仓 `::-webkit-scrollbar`
+    // 是 overlay 风格的 8px，不计入 `clientWidth`）
+    const pointerDown = (event: PointerEvent): void => {
+      if (event.clientX <= target.clientWidth) return
+      callback('pointer')
+    }
+    const pointerUp = (event: PointerEvent): void => {
+      if (event.clientX <= target.clientWidth) return
+      // 拖动结束：位置可能刚落到阈值内，用一次意图重新判定（也可能恢复跟随）
+      callback('pointer-release')
+    }
+    // 翻页键：焦点在输入框里时不算（那是在编辑正文，不是在翻历史）
+    const keydown = (event: KeyboardEvent): void => {
+      if (isEditableTarget(event.target) || !SCROLL_KEYS.has(event.key)) return
+      callback('key')
+    }
+    target.addEventListener('scroll', onScroll, { passive: true })
+    target.addEventListener('wheel', wheel, { passive: true })
+    target.addEventListener('pointerdown', pointerDown, { passive: true })
+    target.addEventListener('pointerup', pointerUp, { passive: true })
+    target.addEventListener('keydown', keydown)
+    nativeSubscriptions.push(() => {
+      target.removeEventListener('scroll', onScroll)
+      target.removeEventListener('wheel', wheel)
+      target.removeEventListener('pointerdown', pointerDown)
+      target.removeEventListener('pointerup', pointerUp)
+      target.removeEventListener('keydown', keydown)
+    })
+  }
+
+  /**
+   * 结构巡检 + **心跳兜底**（「跟丢」的最后一道防线）。
+   *
+   * 2026-09-30 实测到的形态：`MutationObserver` 的回调**会停**。同一节点上另挂一个独立观察者
+   * 能收到全部变更（实测 6/6），而应用自己那个既没被 `disconnect`、也没被判成脱离文档、
+   * 更没有抛错 —— 信号就是不到。此时界面的样子是：内容一直在长、滚动条冻在那一刻。
+   * 纯事件驱动在这一类失灵面前没有出路，所以这里再加一条**廉价心跳**：
+   * 每帧只做两次属性读（布局已缓存时是常数级），发现内容变高就补一次对齐，
+   * 于是"无论事件层怎么失灵，下一帧都会自我纠正"。
+   *
+   * ⚠️ **用户接管后心跳必须彻底安静**（这条踩过）：`scrollTop` 被用户改小也是"读数变了"，
+   * 若无条件认作"内容变更"，就会给引擎排一帧 —— 那一帧读到「离底很远」，
+   * 转身就把刚由 user intent 判定过的状态翻回"暂停"，于是**每一次用户滚动都会把跟随关掉**
+   *（2026-09-30 实测：`chat.png` 的"程序化改小不得关闭跟随"与 burst 的持续跟随同时 FAIL）。
+   * 所以：跟随态下才把 `scrollTop` 的变化当作内容变更；接管态下只更新基准。
+   *
+   * 顺带承担结构校对：引擎读到的容器必须是内容根当下的真实祖先，错位就重新绑定。
+   */
+  function startStructureGuard(): void {
+    const step = (): void => {
+      if (disposed) return
+      guardHandle = window.requestAnimationFrame(step)
+      const live = content()
+      if (live === null) return
+      const candidate = findScroller(live)
+      if (!live.isConnected || candidate === null || candidate !== scroller) {
+        rebind()
+        return
+      }
+      const height = candidate.scrollHeight
+      const top = candidate.scrollTop
+      const heightChanged = height !== lastHeartbeatHeight
+      const topChanged = top !== lastHeartbeatTop
+      lastHeartbeatHeight = height
+      lastHeartbeatTop = top
+      // 接管态下用户自己滚出来的 `scrollTop` 变化不是"内容变更"：只更新基准、不驱动引擎
+      const following = core?.isFollowing() ?? true
+      if (!heightChanged && !(topChanged && following)) return
+      core?.onMutated()
+    }
+    guardHandle = window.requestAnimationFrame(step)
+  }
+
   onMounted(() => {
-    contentEl = content()
-    scroller = findScroller()
-    // 结构以后若改成 `MessageList` 自带滚动容器，这里找不到祖先就静默降级（不滚动、不报错）
-    if (contentEl === null || scroller === null) return
-    scroller.addEventListener('scroll', onScroll, { passive: true })
-    resizeObserver = new ResizeObserver(schedule)
-    resizeObserver.observe(contentEl)
-    // 容器自身尺寸变化（窗口从隐藏到显示、用户缩放窗口）同样要跟到底
-    resizeObserver.observe(scroller)
-    mutationObserver = new MutationObserver(schedule)
-    mutationObserver.observe(contentEl, { childList: true, characterData: true, subtree: true })
-    // 第三条信号：高度过渡的结束瞬间（`transitionend` 会从后代冒泡上来，一次监听覆盖全部子元素）
-    contentEl.addEventListener('transitionend', onTransitionEnd)
-    scrollToBottom()
+    const initial = content()
+    if (initial === null) return
+    contentEl = initial
+    scroller = findScroller(initial)
+
+    core = createStickToBottomCore({
+      /**
+       * 读数**每次都按 DOM 现查**：不直接用闭包里的 `scroller`，而是从内容根重新解析一次
+       * —— 引擎的读数是整条跟随链的地基，它必须永远来自"此刻文档里的那个容器"，
+       * 而不是某个可能已被换掉的引用。结构没变时这一步只是一次 `parentElement` 上溯。
+       */
+      getMetrics: () => {
+        const resolved = resolveScroller()
+        return {
+          scrollHeight: resolved?.scrollHeight ?? 0,
+          scrollTop: resolved?.scrollTop ?? 0,
+          clientHeight: resolved?.clientHeight ?? 0,
+        }
+      },
+      scrollTo: (top) => {
+        // 同上：现查滚动容器，绝不对着已脱离文档的旧节点写 scrollTop
+        resolveScroller()?.scrollTo({ top })
+      },
+      requestFrame: (callback) => window.requestAnimationFrame(callback),
+      cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+      // 状态变化主动上报：引擎内部有三处会改它，靠渲染层轮询去同步既浪费又容易漏
+      onFollowingChange: (value) => {
+        following.value = value
+      },
+      ...(options.threshold === undefined ? {} : { threshold: options.threshold }),
+      events: {
+        onScroll: (callback) => {
+          notifyScroll = callback
+          return () => {
+            notifyScroll = null
+          }
+        },
+        onUserScrollIntent: (callback) => {
+          bindScroller(callback)
+          return () => {
+            for (const unsubscribe of nativeSubscriptions.splice(0)) unsubscribe()
+          }
+        },
+        onTransitionEnd: (callback) => {
+          const target = contentEl
+          const listener = (): void => callback()
+          target?.addEventListener('transitionend', listener)
+          return () => target?.removeEventListener('transitionend', listener)
+        },
+        onResize: (callback) => {
+          notifyResize = callback
+          return () => {
+            notifyResize = null
+          }
+        },
+        onVisibility: (callback) => {
+          const listener = (): void => {
+            if (document.hidden === true) return
+            callback()
+          }
+          document.addEventListener('visibilitychange', listener)
+          window.addEventListener('focus', listener)
+          return () => {
+            document.removeEventListener('visibilitychange', listener)
+            window.removeEventListener('focus', listener)
+          }
+        },
+      },
+    })
+
+    // `transitionend` 与 `scroll` 的订阅挂在**创建时**的节点上；内容根被重建时这两条会失联 ——
+    // 重建后真正兜住跟随的是 `rebind()` 的观察者与心跳巡检，不必为它们再写一套重挂逻辑。
+    rebind()
+    core.start()
+    startStructureGuard()
+    sync()
+    // 挂载即定位到底（历史水合后打开会话不该停在顶部）
+    core.stick()
+    sync()
   })
 
   onUnmounted(() => {
-    scroller?.removeEventListener('scroll', onScroll)
-    contentEl?.removeEventListener('transitionend', onTransitionEnd)
-    resizeObserver?.disconnect()
+    disposed = true
+    core?.cancel()
+    core = null
+    if (guardHandle !== null) window.cancelAnimationFrame(guardHandle)
+    guardHandle = null
     mutationObserver?.disconnect()
-    resizeObserver = null
     mutationObserver = null
-    if (frame !== null) window.cancelAnimationFrame(frame)
-    frame = null
-    if (settleHandle !== null) window.cancelAnimationFrame(settleHandle)
-    settleHandle = null
-    settleFramesLeft = 0
+    resizeObserver?.disconnect()
+    resizeObserver = null
+    for (const unsubscribe of nativeSubscriptions.splice(0)) unsubscribe()
     contentEl = null
     scroller = null
   })
 
-  return { following, scrollToBottom, stick }
+  function scrollToBottom(behavior: ScrollBehavior = 'auto'): void {
+    const target = resolveScroller()
+    if (target === null) return
+    target.scrollTo({ top: target.scrollHeight, behavior })
+  }
+
+  function stick(behavior: ScrollBehavior = 'auto'): void {
+    // 顺序要紧：先让引擎接管（它会在下一帧持续纠正），再按调用方要求的动效滚一次。
+    // 平滑滚动由浏览器插值、会被随后的写入打断 —— 所以只在调用方显式要求时用它。
+    core?.stick()
+    sync()
+    if (behavior !== 'auto') scrollToBottom(behavior)
+  }
+
+  function refresh(): void {
+    rebind()
+    core?.refresh()
+    sync()
+  }
+
+  return { following, scrollToBottom, stick, refresh }
 }
