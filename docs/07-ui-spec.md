@@ -92,18 +92,32 @@
     **「已归档 · N」分组**（`data-field="chat.archive-group"`，默认收起；展开后的列表是
     `data-field="chat.archive-list"`，**三个分区的会话共用这一个归档分组**）→
     底部：模式徽章 + 右栏开关（`data-field="chat.right-panel-toggle"`）+ 设置齿轮。
-    三个分区自上而下（分区标题用 `.group-caption`：正体、`--text-sm`、次级文字色 ——
-    **不能用 `text-transform: uppercase` + 大字距的 eyebrow 样式**，中文没有大小写，
-    那样只会把「AGENT对话」拉得又稀又淡，2026-09-30 用户反馈可读性差后改的）：
+    三个分区自上而下（分区标题 `.group-caption` 的可读性经两轮调整，2026-09-30 定稿：
+    ① 撤掉 `text-transform: uppercase` + 大字距的 eyebrow 样式 —— 中文没有大小写，
+    那样只会把「AGENT对话」拉得又稀又淡；
+    ② 用户反馈「不够醒目」后加强为**左侧 3px 强调色竖条（`::before`）+ `--weight-semibold` +
+    `--text-base` + 主文字色** —— 与 `.nav-item.active` 的指示条同一套视觉语言。
+    这两条都由 `chat-session-groups` 探针钉住：`text-transform === 'none'`、
+    `font-size ≥ 13`、`font-weight ≥ 600`、`::before` 宽度 ≥ 2px 且背景色非透明）：
     1. **项目对话**（`data-field="chat.project-group"`，**常显**）：按 `projects.list` 顺序的
        **项目子分组**（子分组标题 = 项目名，标题旁 `+` 钮
        `data-action="chat.new-project-session"`，新建即绑定该项目）；
+       **点项目标题行折叠 / 展开该项目的全部会话**（`data-action="chat.toggle-project"`，
+       标题行是可点按钮、hover 有底色；`aria-expanded` 跟折叠态；会话数徽标；
+       默认**全部展开**，折叠态只存组件内（视图偏好不落配置，重启回展开态）。
+       折叠动效：容器 `grid-template-rows: 0fr ↔ 1fr` 过渡（无需测量内容高度）+ 内层
+       `overflow: hidden`；折叠时容器加 `inert` —— 视觉裁掉了但键盘还能 Tab 进去，
+       否则会 focus 到看不见的会话项上。`+` 与折叠按钮是**同行兄弟**且 `+` 带 `@click.stop`，
+       否则点「新建」会顺带把分组收起来（刚新建的会话就看不见了）。
+       项目增删走 `TransitionGroup`（淡入 + 轻微位移，不「啪」地插一整块）。
        会话项 = 绑定了 `projectId` 的会话（`ChatSessionSummary.projectId`）。
        **分区标题行右侧是「添加项目」钮**（`data-action="chat.add-project"`：
        弹系统目录选择框 → 加入 `projects.list`，与设置页同一条链路与 id 规则；
        整区常显正是因为它是主界面唯一的项目登记入口 —— 没有项目时也不能没有它；
        **不自动设为当前项目**，避免静默改变全局权限边界）。
-       绑定项目已被删除的孤儿会话**归入 Agent对话区**显示（解析链上它们已按未绑定回落）。
+       绑定项目已被删除的孤儿会话**归入 Agent对话区**显示（解析链上它们已按未绑定回落；
+       展示层按 `knownProjectIds` 判定，2026-09-30 修 —— 此前它们既进不了项目分组、
+       又被 Agent 分组按 `projectId === undefined` 挡掉，会从**左栏整条消失**）。
     2. **工作目录对话**（`data-field="chat.work-group"`）：**仅 Work 模式渲染**
        （`modes.current === 'work'`，ClassRoom / Code 无此区）；`space: 'work'` 的会话；
        标题行 `+` 钮 `data-action="chat.new-work-session"`。切走 Work 模式后该区隐藏

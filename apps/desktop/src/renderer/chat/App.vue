@@ -161,18 +161,35 @@ const sessionItems = computed(() =>
 )
 
 /**
+ * 已登记的项目 id 集合：判定「会话的绑定是否还有效」用。
+ *
+ * 绑定项已被删除的会话（**孤儿绑定**）在解析链上按未绑定回落（docs/06 §5.1），
+ * 展示层必须同口径 —— 否则这类会话既进不了任何项目分组（项目没了）、
+ * 又被 Agent 分组按 `projectId === undefined` 挡掉，会从左栏**整条消失**，
+ * 用户看得见的历史会话「凭空不见了」。
+ */
+const knownProjectIds = computed(
+  () => new Set((settingsStore.settings?.projects.list ?? []).map((project) => project.id)),
+)
+
+/**
  * 会话三分的三个分区（docs/06 §4 会话空间 / docs/07 §2.3，2026-09-30）：
- * 判定优先级是 **projectId > space**（绑定了项目的会话是项目对话，space 不参与）；
+ * 判定优先级是 **projectId > space**（绑定了**有效**项目的会话是项目对话，space 不参与）；
  * 未标记 space 的会话一律归 Agent对话（主进程 `spaceOf` 同一条归一口径）。
- * 孤儿绑定（绑定的项目已被删除）解析链上已按未绑定回落 —— 展示层同样归入 Agent对话。
  */
 const workSessions = computed(() =>
-  sessionItems.value.filter((item) => item.projectId === undefined && item.space === 'work'),
+  sessionItems.value.filter(
+    (item) =>
+      (item.projectId === undefined || !knownProjectIds.value.has(item.projectId)) &&
+      item.space === 'work',
+  ),
 )
 
 const agentSessions = computed(() =>
   sessionItems.value.filter(
-    (item) => item.projectId === undefined && item.space !== 'work',
+    (item) =>
+      (item.projectId === undefined || !knownProjectIds.value.has(item.projectId)) &&
+      item.space !== 'work',
   ),
 )
 

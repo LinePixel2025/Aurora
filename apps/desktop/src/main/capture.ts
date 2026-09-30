@@ -3943,7 +3943,7 @@ export const CHAT_SESSION_GROUPS_ACT = `(async () => {
       },
     })
     if (!update.ok) return { ok: false, reason: update.message }
-    // 等待条件 = **项目子分组头出现**（`+` 钮）而不是「子分组里有会话行」：
+    // 等待条件 = **项目子分组头出现**（+ 钮）而不是「子分组里有会话行」：
     // 刚登记的项目还没有任何会话，子分组下自然没有行（这是正确行为，不是缺陷）。
     const projectText = () => {
       const el = document.querySelector('[data-field="chat.project-group"]')
@@ -3967,7 +3967,41 @@ export const CHAT_SESSION_GROUPS_ACT = `(async () => {
       if (workGroup === 0) await wait(200)
     }
     const workAdd = count('[data-action="chat.new-work-session"]')
+
+    // 阶段 D（2026-09-30）：**项目分组折叠往返**。夹具里 chat-seed-project 绑定
+    // 项目 'capture'（见 seedChatTtsHistory 第 4 步），上面阶段 B 登记的同 id 项目
+    // 因此有了 1 条会话 —— 折叠它、量高度与可见性，再展开还原。
+    const firstProjectGroup = () => document.querySelector('[data-field="chat.project-group"] .project-group')
+    const projectListOf = (groupEl) => (groupEl === null ? null : groupEl.querySelector('.collapse'))
+    const collapseHeight = () => {
+      const el = projectListOf(firstProjectGroup())
+      return el === null ? -1 : Math.round(el.getBoundingClientRect().height)
+    }
+    const toggleButton = firstProjectGroup() === null
+      ? null
+      : firstProjectGroup().querySelector('[data-action="chat.toggle-project"]')
+    const expandedHeight = collapseHeight()
+    const expandedAria = toggleButton === null ? null : toggleButton.getAttribute('aria-expanded')
+    let collapseClicked = false
+    if (toggleButton !== null) {
+      toggleButton.click()
+      collapseClicked = true
+    }
+    await wait(600)
+    const collapsedHeight = collapseHeight()
+    const collapsedAria = toggleButton === null ? null : toggleButton.getAttribute('aria-expanded')
+    // 展开还原（后续场景读到的是展开态）
+    if (toggleButton !== null) toggleButton.click()
+    await wait(600)
+    const restoredHeight = collapseHeight()
+
     window.__auroraSessionGroupsProbe = {
+      collapseClicked,
+      expandedHeight,
+      collapsedHeight,
+      restoredHeight,
+      expandedAria,
+      collapsedAria,
       factory,
       projectGroup,
       projectAdd,
@@ -4000,14 +4034,49 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
       factory.projectRows === 0 &&
       factory.agentAddButton === 1 &&
       factory.agentRows >= 1
-    // 项目已登记：子分组头（`+`）在场、项目名出现在分组标题里。
-    // 不断言「子分组里有会话行」—— 新登记的项目本来就没有会话（新建入口就是那个 `+`）。
+    // 项目已登记：子分组头（+）在场、项目名出现在分组标题里。
+    // 不断言「子分组里有会话行」—— 新登记的项目本来就没有会话（新建入口就是那个 +）。
     const projectOk =
       probe !== undefined &&
       probe.projectGroup === 1 &&
       probe.projectAdd === 1 &&
       probe.projectNameShown === true
     const workOk = probe !== undefined && probe.workGroup === 1 && probe.workAdd === 1
+
+    // 阶段 D 断言：折叠后高度归零 → 展开还原（两个方向都验，避免"点了没反应"漏判）
+    const collapseOk =
+      probe !== undefined &&
+      probe.collapseClicked === true &&
+      probe.expandedHeight > 20 &&
+      probe.collapsedHeight === 0 &&
+      probe.restoredHeight === probe.expandedHeight &&
+      probe.expandedAria === 'true' &&
+      probe.collapsedAria === 'false'
+
+    // 分区标题可读性（2026-09-30 用户反馈「不够醒目」）：字号 ≥ 13px、字重 ≥ 600、
+    // 且**带左侧强调色竖条**（::before 伪元素 —— 用 getComputedStyle 读背景色判定）。
+    const captionStyle = (() => {
+      const el = document.querySelector('.group-caption')
+      if (el === null) return null
+      const style = window.getComputedStyle(el)
+      const before = window.getComputedStyle(el, '::before')
+      return {
+        text: (el.textContent || '').trim(),
+        fontSize: parseFloat(style.fontSize) || 0,
+        fontWeight: parseInt(style.fontWeight, 10) || 0,
+        transform: style.textTransform,
+        barWidth: parseFloat(before.width) || 0,
+        barColor: before.backgroundColor,
+      }
+    })()
+    const captionOk =
+      captionStyle !== null &&
+      captionStyle.fontSize >= 13 &&
+      captionStyle.fontWeight >= 600 &&
+      // 中文分区标题不再被 uppercase 拉稀
+      captionStyle.transform === 'none' &&
+      captionStyle.barWidth >= 2 &&
+      captionStyle.barColor !== 'rgba(0, 0, 0, 0)'
 
     // 收尾还原：模式切回 classroom、项目清空，两区随之消失（还原结果并入 pass）
     let restored = false
@@ -4018,15 +4087,15 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
         projects: { ...state.value.projects, current: '', list: [] },
       })
       if (back.ok && clear.ok) {
-        restored = true
         const projectRowsNow = () =>
           Array.from(document.querySelectorAll('[data-field="chat.project-group"] .session-list'))
             .map((el) => el.querySelectorAll('.nav-item').length)
             .reduce((sum, value) => sum + value, 0)
-        for (let attempt = 0; attempt < 10 && restored; attempt += 1) {
+        // 轮询**直到还原生效**（条件写 && !restored）：写成 && restored 是「已经好了才继续等」，
+        // 需要等一等的场合会在第一轮直接退出并判 FAIL（本探针首跑的 restored:false 即此）。
+        for (let attempt = 0; attempt < 15 && !restored; attempt += 1) {
           // 项目区常显（添加项目钮），还原的判据是「工作目录区消失 + 项目子分组清空」
-          restored =
-            count('[data-field="chat.work-group"]') === 0 && projectRowsNow() === 0
+          restored = count('[data-field="chat.work-group"]') === 0 && projectRowsNow() === 0
           if (!restored) await wait(200)
         }
       }
@@ -4039,8 +4108,17 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
       projectNameShown: probe === undefined ? null : probe.projectNameShown,
       workGroup: probe === undefined ? null : probe.workGroup,
       workAdd: probe === undefined ? null : probe.workAdd,
+      collapse: probe === undefined
+        ? null
+        : {
+            expanded: probe.expandedHeight,
+            collapsed: probe.collapsedHeight,
+            restored: probe.restoredHeight,
+            aria: [probe.expandedAria, probe.collapsedAria],
+          },
+      caption: captionStyle,
       restored,
-      pass: factoryOk && projectOk && workOk && restored,
+      pass: factoryOk && projectOk && workOk && collapseOk && captionOk && restored,
     }
   } catch (error) {
     return { pass: false, reason: String(error) }
@@ -6504,6 +6582,38 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
   await writeFile(
     join(userData, 'sessions', 'chat-seed-archived.json'),
     JSON.stringify(archived, null, 2),
+    'utf8',
+  )
+
+  // 4) 绑定项目的会话（2026-09-30 项目分组折叠探针用）：`meta.projectId` 指向探针
+  //    随后登记的那个项目 id（'capture'，见 settingsProjectAct）。出厂现场该项目还不存在，
+  //    因此这条会话**先是孤儿绑定**（展示层归 Agent对话区，见 App.vue 的 knownProjectIds），
+  //    等 chat-session-groups 场景登记项目后才移进「项目对话」子分组 —— 探针在那一刻
+  //    折叠它、断言列表收成 0 高再展开，折叠能力才有真实对象可测。
+  const projectSeedAt = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
+  const projectSeed = {
+    version: 2,
+    sessionId: 'chat-seed-project',
+    updatedAt: projectSeedAt,
+    messages: [
+      {
+        id: 'capture-project-u1',
+        role: 'user',
+        content: 'project-seed 绑定项目的会话',
+        createdAt: projectSeedAt,
+      },
+      {
+        id: 'capture-project-a1',
+        role: 'assistant',
+        content: '这条会话绑定到 capture 项目，用来验证项目分组的折叠与展开。',
+        createdAt: projectSeedAt,
+      },
+    ],
+    meta: { projectId: 'capture' },
+  }
+  await writeFile(
+    join(userData, 'sessions', 'chat-seed-project.json'),
+    JSON.stringify(projectSeed, null, 2),
     'utf8',
   )
 }

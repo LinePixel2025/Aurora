@@ -103,6 +103,23 @@ const { dragClass } = useWindowDrag('chat')
 /** 归档分组展开态（组件内状态，默认收起；docs/07 §2.3 口径） */
 const archiveOpen = ref(false)
 
+/**
+ * 项目分组折叠态（2026-09-30 新增，docs/07 §2.3）：点项目标题行折叠 / 展开**该项目下的全部会话**。
+ *
+ * 默认**全部展开**（与用户心智一致：刚登记的项目要能立刻看到里面的对话）；
+ * 折叠态存组件内（同 `archiveOpen` 的口径，不落配置 —— 它是视图偏好，不是数据，
+ * 重启后回到展开态比"记得你上次收起了哪个项目"更不容易让人误以为会话丢了）。
+ */
+const collapsedProjects = ref<Record<string, boolean>>({})
+
+function isProjectCollapsed(id: string): boolean {
+  return collapsedProjects.value[id] === true
+}
+
+function toggleProject(id: string): void {
+  collapsedProjects.value = { ...collapsedProjects.value, [id]: !isProjectCollapsed(id) }
+}
+
 const modeName = computed(() => modeStore.current?.displayName ?? '未激活')
 
 /** 工作目录对话区只在 Work 模式渲染（docs/07 §2.3：ClassRoom / Code 无此区） */
@@ -220,11 +237,11 @@ const noSessionsAtAll = computed(
         ── 分区一：项目对话（绑定项目的会话，按项目子分组）──
         **常显**：标题行的「添加项目」是主界面加入 projects.list 的唯一入口
         （弹目录选择框，docs/07 §2.3），没有项目时也不能没有它；
-        每个项目分组头 `+` 新建即绑定该项目。
+        每个项目分组头 `+` 新建即绑定该项目，**点标题行折叠 / 展开该项目的全部会话**。
       -->
       <section class="group" data-field="chat.project-group">
         <div class="group-head group-head-caption">
-          <p class="group-caption">项目对话</p>
+          <h3 class="group-caption">项目对话</h3>
           <button
             type="button"
             class="group-add press"
@@ -236,31 +253,76 @@ const noSessionsAtAll = computed(
             <Plus :size="13" :stroke-width="1.8" aria-hidden="true" />
           </button>
         </div>
-        <div v-for="group in props.projectGroups" :key="group.id" class="project-group">
-          <div class="group-head">
-            <span class="group-title" :title="group.name">{{ group.name }}</span>
-            <button
-              type="button"
-              class="group-add press"
-              data-action="chat.new-project-session"
-              :title="`在「${group.name}」中新建对话`"
-              aria-label="在项目中新建对话"
-              @click="emit('newProjectSession', group.id)"
+        <!--
+          `TransitionGroup`：**新增 / 删除项目**时列表项淡入淡出（不是瞬间插入），
+          与折叠动画共用同一套时长令牌。`:key` 用项目 id（重排时按 id 复用节点）。
+        -->
+        <TransitionGroup name="project-row" tag="div" class="project-groups">
+          <div v-for="group in props.projectGroups" :key="group.id" class="project-group">
+            <!--
+              项目标题行 = **折叠开关**（2026-09-30）：点它收起 / 展开该项目的会话。
+              与 `+`（新建）是**同一行的两个兄弟按钮**：`+` 带 `@click.stop`，
+              否则点「新建」会顺带把分组收起来（刚新建的会话就看不见了）。
+              `aria-expanded` 供读屏与探针读取。
+            -->
+            <div class="project-head-row">
+              <button
+                type="button"
+                class="project-head hover-fill press"
+                data-action="chat.toggle-project"
+                :aria-expanded="!isProjectCollapsed(group.id)"
+                :title="`${group.name}（点击${isProjectCollapsed(group.id) ? '展开' : '收起'}）`"
+                @click="toggleProject(group.id)"
+              >
+                <ChevronRight
+                  class="caret"
+                  :class="{ open: !isProjectCollapsed(group.id) }"
+                  :size="13"
+                  :stroke-width="1.8"
+                  aria-hidden="true"
+                />
+                <span class="project-name">{{ group.name }}</span>
+                <span v-if="group.sessions.length > 0" class="count-badge tiny">{{
+                  group.sessions.length
+                }}</span>
+              </button>
+              <button
+                type="button"
+                class="group-add press"
+                data-action="chat.new-project-session"
+                :title="`在「${group.name}」中新建对话`"
+                aria-label="在项目中新建对话"
+                @click.stop="emit('newProjectSession', group.id)"
+              >
+                <Plus :size="13" :stroke-width="1.8" aria-hidden="true" />
+              </button>
+            </div>
+            <!--
+              折叠容器：`grid-template-rows: 0fr → 1fr` 的高度过渡（无需测量内容高度），
+              内层 `overflow: hidden` 裁切；折叠时加 `inert` —— 视觉裁掉了但键盘还能 Tab 进去，
+              否则用户会 focus 到一个看不见的会话项上。
+            -->
+            <div
+              class="collapse"
+              :class="{ open: !isProjectCollapsed(group.id) }"
+              :inert="isProjectCollapsed(group.id) ? true : undefined"
             >
-              <Plus :size="13" :stroke-width="1.8" aria-hidden="true" />
-            </button>
+              <div class="collapse-inner">
+                <div v-if="group.sessions.length > 0" class="session-list">
+                  <SessionRow
+                    v-for="item in group.sessions"
+                    :key="item.id"
+                    :item="item"
+                    :active-id="props.activeId"
+                    @select="emit('select', $event)"
+                    @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
+                  />
+                </div>
+                <p v-else class="tiny muted nav-empty">暂无对话</p>
+              </div>
+            </div>
           </div>
-          <div v-if="group.sessions.length > 0" class="session-list">
-            <SessionRow
-              v-for="item in group.sessions"
-              :key="item.id"
-              :item="item"
-              :active-id="props.activeId"
-              @select="emit('select', $event)"
-              @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
-            />
-          </div>
-        </div>
+        </TransitionGroup>
       </section>
 
       <!--
@@ -269,7 +331,7 @@ const noSessionsAtAll = computed(
       -->
       <section v-if="isWorkMode" class="group" data-field="chat.work-group">
         <div class="group-head group-head-caption">
-          <p class="group-caption">工作目录对话</p>
+          <h3 class="group-caption">工作目录对话</h3>
           <button
             type="button"
             class="group-add press"
@@ -297,7 +359,7 @@ const noSessionsAtAll = computed(
       <!-- ── 分区三：Agent对话（Agent 空间；首行固定 quick，与提示条面板共用同一会话） ── -->
       <section class="group" data-field="chat.agent-group">
         <div class="group-head group-head-caption">
-          <p class="group-caption">Agent对话</p>
+          <h3 class="group-caption">Agent对话</h3>
           <button
             type="button"
             class="group-add press"
@@ -530,19 +592,147 @@ const noSessionsAtAll = computed(
 }
 
 /**
- * 分区标题（项目对话 / 工作目录对话 / Agent对话，2026-09-30 可读性口径）：
- * 不走 `.nav-caption` 的「eyebrow 小标签」样式 —— 中文没有大小写，
+ * 分区标题（项目对话 / 工作目录对话 / Agent对话，2026-09-30 两轮可读性口径）。
+ *
+ * 第一轮：撤掉 `.nav-caption` 的「eyebrow 小标签」样式 —— 中文没有大小写，
  * `text-transform: uppercase` + 大字距只会把「AGENT对话」拉得又稀又淡。
- * 这里按普通小节标题处理：正体、稍大、次级文字色，扫读性优先。
+ * 第二轮（用户反馈「不够醒目」）：加**左侧强调色短竖条** + 加粗到 semibold +
+ * 提到 `--text-base` + 主文字色 —— 分区标题是左栏的**结构骨架**，扫读时应该先看到它，
+ * 再看到会话行；与 `.nav-item.active` 的 3px 指示条同一套视觉语言（不引入新形状）。
  */
 .group-caption {
-  margin: var(--space-2) 0 0;
-  padding: 0 var(--space-2);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-  color: var(--text-secondary);
-  letter-spacing: normal;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 2px;
+  padding: 0 var(--space-2) 0 calc(var(--space-2) + 7px);
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
   text-transform: none;
+}
+
+/* 左侧 3px 强调色竖条：与激活项的指示条同宽同色，一眼认出「这是一级分区」 */
+.group-caption::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 13px;
+  border-radius: var(--radius-pill);
+  background: var(--aurora-blue);
+  opacity: 0.85;
+}
+
+/* ── 项目分组：可折叠的标题行 + 会话列表 ── */
+.project-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 标题行容器：折叠按钮（占满剩余宽）+ `+`（右侧固定） */
+.project-head-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/**
+ * 项目标题行（折叠开关）：可点、hover 有底色 —— 它是**按钮**而不是标题文本，
+ * 视觉上必须给出可点线索（否则用户不知道这里能收起）。
+ */
+.project-head {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 28px;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.project-head .caret {
+  flex: 0 0 auto;
+  stroke: currentColor;
+  /* 折叠箭头：收起态指右、展开态转 90° 指下（与归档分组同一套动效） */
+  transition: transform var(--transition-base);
+}
+
+.project-head .caret.open {
+  transform: rotate(90deg);
+}
+
+.project-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+}
+
+/**
+ * 折叠容器：`grid-template-rows: 0fr → 1fr` 的高度过渡。
+ *
+ * 相比「测量 scrollHeight 再写 max-height」，这个写法不需要知道内容高度、
+ * 不会在内容变化时算错，也天然支持两边都缓动（Chromium 105+ 支持 fr 过渡；
+ * 本仓 Electron 33 = Chromium 130）。内层 `overflow: hidden` 负责裁切。
+ */
+.collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition:
+    grid-template-rows var(--dur-base) var(--ease-spring),
+    opacity var(--transition-fast);
+  opacity: 0;
+}
+
+.collapse.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.collapse-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/**
+ * 项目行进出场（`TransitionGroup`）：新增 / 删除项目时淡入淡出 + 轻微位移，
+ * 避免列表「啪」地一下多出一整块。
+ */
+.project-row-enter-active,
+.project-row-leave-active {
+  transition:
+    opacity var(--transition-base),
+    transform var(--transition-base);
+}
+
+.project-row-enter-from,
+.project-row-leave-to {
+  opacity: 0;
+  transform: translateX(-6px);
+}
+
+/* 离场时不再占位（否则折叠动画与离场动画会打架） */
+.project-row-leave-active {
+  position: absolute;
+  width: 100%;
 }
 
 .nav-empty {
@@ -635,20 +825,15 @@ const noSessionsAtAll = computed(
 }
 
 .group-head-caption .group-caption,
-.group-head-caption .group-add {
+/* 标题行里的 `+`：上边距归零（与标题同轴心），缩放微交互给出「可点」反馈 */
+.group-head-caption .group-add,
+.project-head-row .group-add {
   margin-top: 0;
 }
 
-.group-title {
-  flex: 1;
-  min-width: 0;
-  margin-top: var(--space-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-xs);
-  font-weight: var(--weight-medium);
-  color: var(--text-muted);
+.group-add:active,
+.project-head:active {
+  transform: scale(0.94);
 }
 
 .group-add {
@@ -663,7 +848,8 @@ const noSessionsAtAll = computed(
   color: var(--text-muted);
   transition:
     background var(--transition-fast),
-    color var(--transition-fast);
+    color var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .group-add svg {
