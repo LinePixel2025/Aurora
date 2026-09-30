@@ -241,12 +241,18 @@
     `left: 7px; width: 1px`）；思考块与每个工具行各有一枚 7px 节点圆点骑在这条线上
     （`left: 4px`，中心 7.5px），因此"思考 → 第 1 步 → 第 2 步 → …"读起来是一条时间线。
     阅读顺序固定为 **思考 → 工具行 → 正文**（`chat-trace` 探针按 `thinkingBeforeRow > 0` 钉住）。
-  - **自动折叠状态机**：`props.streaming` 的 **true → false 边沿**是唯一触发点 ——
-    边沿一到就把这一轮打开过的消息标记为已折叠（`historyFoldedIds`）并清空显式展开集合
-    （`traceOpenedIds`），于是已结束的轨迹回到一行摘要；**历史水合出来的消息默认折叠**；
-    **用户点开就保持点开**（点开进 `traceOpenedIds`，`traceOpen(message)` 恒为真）；
+  - **自动折叠状态机**：`props.streaming` 的**两个边沿**各管一头 ——
+    false → true（新一轮开始）把**此刻在屏的消息**登记为历史（默认折叠）；
+    true → false（这一轮结束）把**本轮追加的消息**（= 到此刻还没登记过的）一并收成一行摘要。
+    落到渲染上就是
+    `traceOpen(message) = traceOpenedIds.has(id) || thinkingTargetId === id || !historyFoldedIds.has(id)`；
+    **历史水合出来的消息默认折叠**（整表替换时按"当时是否流式"决定是否登记为历史）；
+    **用户点开就保持点开**（进 `traceOpenedIds`，跨轮不清；点收起时同时登记为"已折叠"）；
     流式期间 `thinkingTargetId` 指向的那条自动展开（否则推理藏在折叠的轨迹里看不见）。
-    整表替换（切会话 / 水合）时按"当时是否流式"决定是否登记为历史，流式追加的新消息默认展开。
+    ⚠️ 收尾**只能按「本轮追加了哪些消息」收，不能按「哪些被打开过」收**：后者会漏掉
+    **没有思考增量**的那一轮（它从没被打开过），轨迹永远停在展开态 —— 2026-10-01 用户实测的
+    「模型答完了，工作过程还铺着不折叠」就是这个（回归防线：`chat-trace-fold` 探针，
+    桩服务的 `SKILL_ONLY_MARKER` 分流专门造这个现场）。
   - **工具行（`AgentToolRow.vue`）**：见下条「工具行」。
   探针锚点（`chat-trace.png` / `chat-thinking-block.png` / `chat-tool-card-open.png` 依赖）：
   `.message.r-assistant .thinking`、`.thinking-head`、`.thinking-body`、`.thinking-text`、
@@ -399,6 +405,20 @@
     这类**真实输入**才进入判定，而且还要「实际离底超过阈值」这道正向确认才算接管
     —— 用户已经贴在底部继续滚滚轮不会误关。判定是**位置**（读数）而不是"上滚/下滚"，
     所以在底部附近继续滚 → 保持/恢复跟随；停在阈值之外 → 保持接管。
+  - **①′ 「输入」与「读数」之间的时间差（2026-10-01 修复「答完翻不动历史」）**：合成器线程
+    先滚、主线程后收到输入事件（`passive: true` 的 wheel 尤其如此），所以输入到达那一刻读到的
+    **仍是旧位置**。视口本来贴在底部时，「用户上滚」会被判成「用户还在底部继续滚」，紧接着浏览器
+    派发的 `scroll` 排出一帧对齐，把这一滚**原样抹回底部** —— 每一次滚轮都被吞，界面永远钉在
+    底部（用户实测：模型回答完之后翻不动对话历史）。修法是**真实输入开一个短窗口**
+    （`intentWindow`，缺省 250ms）：窗口期内的读数变化按**当前位置**重新判定跟随；窗口一过，
+    读数变化退回①的纯通知语义。判定永远只由真实输入**发起**，程序自己滚出来的读数变化
+    开不了这个窗口 —— 旧的「跟丢」语义因此一条都没放松。回归防线在
+    `stickToBottomCore.test.ts`（「视口在底部时上滚」）与 `CHAT_FOLLOW_WHEEL_UP_SCRIPT`。
+  - **①″ 换容器必须连原生监听一起换**：`rebind()`（内容根 / 滚动容器被 Vue 换掉、观察者挂在
+    已脱离文档的旧节点上时的自愈入口）原先只重挂两个观察者，而 `wheel` / 滚条 / 翻页键 / `scroll`
+    四条**原生监听**只在 `core.start()` 那一次被消费 —— 注释写了「每次 `rebind()` 都重新挂一遍」、
+    实现里漏了。漏掉的症状与①′同款（滚不动），但成因完全不同：**没有任何人收得到用户意图**。
+    2026-10-01 补齐（`rebind()` 拿存下的 `intentCallback` 重挂）。
   - **② 每帧自愈到"真的到底"**：`scrollTop = scrollHeight - clientHeight` 用的是**写那一刻**的
     读数，而 DOM 变更发生在布局之前 —— 同一帧里内容可能又长了一截（markdown 块 / 工具行
     70–500px）。因此每帧对齐后**再读一次**，仍有偏差就补帧（一帧最多 3 次，防死循环）；
@@ -1007,12 +1027,16 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
      `chat-automation-history.png`（自动化页四连，v19；见下面「自动化页四连」一条）→
      `chat-thinking-block.png`（reload 水合 seed 思考块后点开）→ `chat-quick-session.png`（展开侧栏快速对话面板）→
      `chat-thinking-level.png` → `chat-model-picker.png` → `chat-tts.png`（reload，朗读按钮）→
-     `chat-drag.png` → `chat-collapse.png`（点击写在 check 里，见下）→ `chat.png`（自动滚底）。
-     2026-09-26 新增四条（**顺序以 `report.json` 为准**；两条 `chat-stream*` 排在本组最后）：
+     `chat-drag.png` → `chat-collapse.png`（点击写在 check 里，见下）→ `chat.png`（自动滚底）→
+     `chat-follow-burst.png`（高密度持续跟进）→ `chat-follow-wheel-up.png`（底部上滚，2026-10-01）。
+     2026-09-26 新增四条（**顺序以 `report.json` 为准**；三条 `chat-stream*` / `chat-trace-fold`
+     排在本组最后）：
      `chat-composer-flyouts.png`（两个浮层 + 几何断言）、`chat-tool-card-open.png`（点开工具行展开体）、
      `chat-archive.png`（左栏归档分组）、`chat-stream-burst.png`（高密度流式，见下面各条说明）。
      2026-09-30 轨迹重构新增一条：`chat-trace.png`（点开 `AgentTrace` 的一行摘要，
      断言折叠态"无盒子"与展开态"竖脊 + 节点"的几何，见下面「执行轨迹」一条）。
+     2026-10-01 新增一条：`chat-trace-fold.png`（**有工具调用、没有思考增量**的一轮流式结束后，
+     轨迹必须自己收成一行摘要；见下面「执行轨迹自动折叠」一条）。
      历史现场由 `runCapture` 在跑计划前经 `seedChatTtsHistory` 种进 `sessions/main.json`：
      一条助手消息，内容含裸 URL 与行内代码（核对链接样式），并带 `reasoning` 字段
      （**探针标记 `capture-reasoning-probe`**，思考块探针靠它确认「展开后看到的就是 seed 的思考全文」）；
@@ -1081,11 +1105,21 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     （`position: sticky` 在"内容按溢出渲染"的交互窗里是否真吸得住，只有真实 DOM 能回答）；
     ③ 滚回底部再派发一次真实滚轮 → 跟随恢复、胶囊消失（滞回的两端都被覆盖）。
     ⚠️ **已知覆盖缺口**（如实记下，别当成实现承诺）：**「只有程序改 `scrollTop`、不派发任何输入事件时
-    跟随不被关掉」这条没有断言** —— 实测该场景下 `following` 确实被关掉了，但 `onUserIntent`
-    从未被调用（排查中连捕获阶段都确认 wheel 事件到达了 `.thread`），说明还有一条未知的关闭路径；
-    查清前写成断言只会得到一条长期 FAIL 的探针。持续跟进的防线由下一条探针承担。
+    跟随不被关掉」这条没有断言** —— 2026-09-30 实测该场景下 `following` 确实被关掉了，但
+    `onUserIntent` 从未被调用（排查中连捕获阶段都确认 wheel 事件到达了 `.thread`），说明还有一条
+    未知的关闭路径；查清前写成断言只会得到一条长期 FAIL 的探针。
+    2026-10-01 复核：本轮查清的是**另一条**路径（①′ 的输入/读数时间差 + `rebind()` 漏挂原生监听），
+    上面这条旧读数仍未复现，缺口照旧保留。
     探针放在 `check`（截图**之后**执行），不污染 PNG，执行完移除节点、归位滚动；注：探针节点是
     **合成内容**，只验证滚动机制本身，不需要配置模型；
+  - **底部上滚**（`CHAT_FOLLOW_WHEEL_UP_SCRIPT`，产物 `chat-follow-wheel-up.png`，2026-10-01）：
+    上一条的两阶段都是"先把 `scrollTop` 拨到 0 **再**发滚轮"，因此天然能判出「用户接管」；
+    而真实用户是**从底部**开始滚的 —— 输入事件到达主线程时合成器还没把视口挪上去，那一刻读数
+    仍在底部。本探针如实复刻这两拍（贴底 → 派发真实 `WheelEvent` → 把 `scrollTop` 挪上去 +
+    派发 `scroll`），判据是**这一滚必须留在用户滚到的位置**（没被随后那帧对齐拽回底部）
+    且「↓ 回到最新」胶囊出现；收尾摘掉探针节点并点应用自己的胶囊恢复跟随。
+    它钉住的就是用户报的「答完翻不动历史」；`pass` 另带 `maxScroll ≥ 200` 守卫（内容没撑高时
+    "没被拽回"没有意义）。
   - **高密度自动跟随**（`CHAT_FOLLOW_BURST_SCRIPT`，产物 `chat-follow-burst.png`，2026-09-30）：
     与上一条的分工是「语义」对「持续跟进」—— 按 6 帧每帧长高约 120px 持续追加内容
     （真实流式中 markdown 块 / 工具行密集插入的形态），**每帧**都要求「帧末已经到底」
@@ -1124,6 +1158,17 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     ⑤ 轨迹内顺序为「思考 → 工具行」（`thinkingBeforeRow > 0`）。
     这条同时保证「折叠态仍能读到 `.thinking-head` 文案」这条前提没被改掉；
     场景顺序按 `report.json` 的实际条目排在 `chat-tool-card-open` 之后、`chat-collapse` 之前。
+  - **执行轨迹自动折叠**（`CHAT_TRACE_FOLD_CHECK`，产物 `chat-trace-fold.png`，2026-10-01）：
+    与上一条的分工是「状态机」对「几何」—— 上一条自己会**先把轨迹收起来**再量（去测折叠态的形状），
+    本条**完全不碰 DOM 状态**，只读「流式结束后应用自己留下的那个状态」，因此能抓到状态机的错。
+    现场由桩服务的 `SKILL_ONLY_MARKER` 分流造出：第 1 轮只要一次 `use_skill`、第 2 轮**只回正文**
+    （一条 `reasoning_content` 都不发）—— 即**有工具调用、没有思考增量**的那一轮。
+    `pass` 的三段：① 现场成立（有工具卡、**没有** `.thinking`）；② 轨迹是折叠态（无 `.open` 类 +
+    展开体不可见）；③ 摘要行有文字。前两段缺一不可 —— 只有它们合起来才能区分"收到位了"与
+    "压根没有可收的东西"。
+    ⚠️ **为什么必须单列**：原先的收尾逻辑只收「这一轮被打开过的」消息，而消息只有思考增量到达
+    时才会被打开；桩服务默认分流每轮都发 `reasoning_content`，于是这个分支在既有 34 条探针里
+    **一次都没被覆盖**（2026-10-01 实测：全绿的报告下用户仍看到"工作过程不折叠"）。
   - **左栏归档分组**（`CHAT_ARCHIVE_ACT` / `CHAT_ARCHIVE_CHECK`，产物 `chat-archive.png`，
     2026-09-26）：act 点 `chat.archive-toggle` 展开分组；check 断言 seed 的已归档会话
     （`sessions/chat-seed-archived.json`）只在 `chat.archive-list` 里、分组标题计数与实际行数一致，
