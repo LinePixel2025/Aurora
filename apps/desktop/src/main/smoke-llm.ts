@@ -96,6 +96,17 @@ export const WRITE_FILE_CONTENT = 'AURORA_STUB_WRITTEN'
 export const BURST_MARKER = 'burst-probe'
 
 /**
+ * 「只要一次工具、且**不发思考增量**」的标记（`chat-trace-fold` 场景，2026-10-01）。
+ *
+ * 为什么需要它：轨迹（`AgentTrace`）的自动折叠曾经只收「这一轮打开过的」消息，而消息
+ * 只有**思考增量到达**时才会被打开 —— 于是"有工具调用、没有思考增量"的那一轮永远停在
+ * 展开态（用户实测：模型答完了，工作过程还摊着不折叠）。默认对话分流每轮都发
+ * `reasoning_content`，覆盖不到这个分支；本条分流第 1 轮只要一次 `use_skill`
+ * （无权限面、与默认分流同一个工具），第 2 轮只回纯文本。
+ */
+export const SKILL_ONLY_MARKER = 'AURORA_SKILL_ONLY'
+
+/**
  * 爆发分片的首末标记：探针据此断言「首片与末片都真的落到了渲染层」，
  * 而不是只证明「流式大体上跑通了」。
  */
@@ -517,6 +528,56 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
         return
       }
 
+      // ── 「要一次工具、无思考增量」分流（`chat-trace-fold` 场景）──
+      // 同样必须排在计数寻址的 `toolCallRound` 之前（同理：计数寻址只在第 1 次请求里给工具，
+      // 而这条要两轮都由内容寻址决定）。
+      if (isSkillOnlyRequest(record)) {
+        /*
+         * ⚠️ 「这是第几轮」必须看**最后一条 user 消息之后**有没有 tool 结果，不能看整段历史：
+         * 本分流跑在 main 会话上（capture 计划里排在 chat-stream 之后），历史里**已经有**
+         * 前一条场景留下的 `role: 'tool'` —— 按整段历史判会直接走收尾分支、第 1 轮就回正文，
+         * 于是一次工具调用都不发，探针的现场（有工具卡、无思考增量）根本没造出来
+         * （2026-10-01 实测：探针报"最后一条助手消息没有轨迹"，看着像渲染坏了，其实是夹具没搭起来）。
+         */
+        if (!hasToolResultSinceLastUser(record)) {
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_smoke_skill_only_1',
+                      type: 'function',
+                      function: { name: 'use_skill', arguments: '{"name":"system-status"}' },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
+        } else {
+          // 第 2 轮：**刻意只回正文**（一条 reasoning_content 都不发）——
+          // 轨迹折叠的判据正是"没有思考增量也必须收起"，发了就把这个分支测没了。
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: { content: `${STUB_MARKER} 工具轮已收尾（本轮没有思考增量）。` },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSseStop(res)
+        }
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+
       // ── 对话分流（沿用 P3 行为：第一次触发工具调用） ──
       const toolCallRound = chatRequests().length === 1
       if (toolCallRound) {
@@ -664,6 +725,29 @@ function isBurstRequest(request: StubRequest): boolean {
     .reverse()
     .find((message) => message.role === 'user')
   return typeof lastUser?.content === 'string' && lastUser.content.includes(BURST_MARKER)
+}
+
+/** 请求是否为「只要一次工具、无思考增量」分流：最后一条 user 消息含 `SKILL_ONLY_MARKER` */
+function isSkillOnlyRequest(request: StubRequest): boolean {
+  return lastUserContent(request).includes(SKILL_ONLY_MARKER)
+}
+
+/**
+ * **最后一条 user 消息之后**是否已经带回过 `role: 'tool'` 结果 —— 判断"这是本分流第几轮"。
+ *
+ * 不能拿整段 messages 数（`lastToolContent` 那种写法）：会话历史里可能留有**上一条提问**
+ * 产生的工具结果，于是第 1 轮就被误判成"已经跑过工具"，直接回正文（见 `SKILL_ONLY_MARKER` 处的注释）。
+ */
+function hasToolResultSinceLastUser(request: StubRequest): boolean {
+  const messages = request.body?.messages ?? []
+  let lastUserIndex = -1
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') {
+      lastUserIndex = index
+      break
+    }
+  }
+  return messages.slice(lastUserIndex + 1).some((message) => message.role === 'tool')
 }
 
 /** 最后一条 user 消息的文本内容（非字符串一律当空串） */

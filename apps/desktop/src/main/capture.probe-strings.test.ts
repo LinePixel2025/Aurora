@@ -27,6 +27,22 @@ function isTemplateLiteral(node: ts.Node): boolean {
   return ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node)
 }
 
+/**
+ * 把一个 template literal 还原成**可被 JS 解析器读的源码**：静态片段原样保留，
+ * 每个 `${...}` 插值换成一个 `0`（插值本身在运行时才求值，语法检查只需要占位符）。
+ *
+ * 用途见下面第二条用例：探针是**字符串**，写错了 tsc 看不见。
+ */
+function toParsableSource(node: ts.TemplateLiteral): string {
+  if (ts.isNoSubstitutionTemplateLiteral(node)) return node.text
+  const parts: string[] = [node.head.text]
+  for (const span of node.templateSpans) {
+    parts.push('0')
+    parts.push(span.literal.text)
+  }
+  return parts.join('')
+}
+
 describe('capture.ts 的探针字符串', () => {
   it('没有 template literal 被反引号提前终止（表现为 `+` 字符串拼接）', () => {
     const source = readFileSync(CAPTURE_PATH, 'utf8')
@@ -56,6 +72,58 @@ describe('capture.ts 的探针字符串', () => {
       offenders,
       '探针是 template literal：字符串内部的注释不能出现反引号（会提前终止字符串，' +
         '被解析成字符串拼接且 tsc 不报错）。注释请改用「」或单引号。',
+    ).toEqual([])
+  })
+
+  /**
+   * 第二条：探针字符串**本身必须能当 JS 解析**。
+   *
+   * 起因（2026-10-01）：`SETTINGS_FIELDS_SCRIPT` 里删白名单时留下一行多余的 `)`，整段脚本
+   * 语法错 —— 但它是字符串，`pnpm typecheck` / `pnpm test` 一路全绿，只有 `AURORA_CAPTURE`
+   * 跑到那一张图时才以 `Script failed to execute` 失败（而且此前已经在两次全量截图里红着）。
+   *
+   * 只查「静态开头是 `(`」的模板串（= 那些 `(() => {…})()` / `(async () => {…})()` 探针）：
+   * 本模块里还有图标 SVG、选择器等文本串，它们不是 JS，拿解析器去量只会造出假阳性。
+   * 语法错是**解析期**就能判定的，不需要执行（也没有 DOM 可执行）。
+   */
+  it('探针脚本本身能通过 JS 解析（模板串里的语法错 tsc 看不见）', () => {
+    const source = readFileSync(CAPTURE_PATH, 'utf8')
+    const file = ts.createSourceFile(
+      CAPTURE_PATH,
+      source,
+      ts.ScriptTarget.ESNext,
+      true,
+      ts.ScriptKind.TS,
+    )
+
+    const offenders: string[] = []
+    const walk = (node: ts.Node): void => {
+      if (isTemplateLiteral(node) && node.getText(file).trimStart().startsWith('`(')) {
+        const code = toParsableSource(node as ts.TemplateLiteral)
+        const parsed = ts.createSourceFile('probe.ts', code, ts.ScriptTarget.ESNext, true)
+        // `parseDiagnostics` 是 `SourceFile` 上的**内部**字段（公开 d.ts 没有它），
+        // 但它是"这段文本能不能解析"的唯一现成出口；窄化成只读数组，不用 `any`。
+        const diagnostics =
+          (parsed as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ??
+          []
+        if (diagnostics.length > 0) {
+          const line = file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1
+          const first = diagnostics[0]
+          offenders.push(
+            `第 ${line} 行：${ts.flattenDiagnosticMessageText(first?.messageText ?? '', ' ')}`,
+          )
+        }
+      }
+      ts.forEachChild(node, walk)
+    }
+    walk(file)
+
+    expect(
+      offenders,
+      '探针是字符串：里面的语法错不会让 tsc / vitest 变红，只会在 AURORA_CAPTURE 里变成' +
+        '「Script failed to execute」。两种常见成因：① 多/少一个括号的残渣；' +
+        '② 字符串内部的注释写了反引号（提前终止 template literal，剩下的半截被当成代码解析）。' +
+        '按上面的行号修掉。',
     ).toEqual([])
   })
 })

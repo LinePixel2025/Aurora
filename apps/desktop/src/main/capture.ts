@@ -595,6 +595,85 @@ export const CHAT_FOLLOW_BURST_SCRIPT = `(async () => {
 })()`
 
 /**
+ * 「视口贴在底部时上滚」探针（2026-10-01 用户实测：模型答完后**翻不动历史**）。
+ *
+ * 与 `CHAT_AUTO_SCROLL_SCRIPT` 的分工：那条把 `scrollTop` 先拨到 0 **再**发滚轮 ——
+ * 意图判定那一刻离底已经很远，天然能判出"用户接管"；而真实用户是**从底部**开始滚的：
+ * 输入事件到达主线程时，合成器线程通常还没把视口挪上去（`passive: true` 的 wheel 尤其如此），
+ * 那一刻读数仍在底部，只看它就会判成"用户还在底部继续滚"，紧跟着浏览器派发的 `scroll`
+ * 排出一帧对齐，把这一滚**原样抹回底部** —— 每一次滚轮都被吞，界面永远钉在底部。
+ *
+ * 因此本探针如实复刻这两拍（**这正是合成器滚动的时序**，不是人为制造的边角）：
+ * ① 贴底 → 派发真实 `wheel`（此刻仍读到底部）；
+ * ② 浏览器把视口挪上去 + 派发 `scroll`；
+ * 判据：这一滚必须**留在用户滚到的位置**（没被对齐帧拽回）且「↓ 回到最新」胶囊出现。
+ *
+ * 收尾自带（摘掉探针节点 + 点应用自己的胶囊恢复跟随），不把状态留给后面的场景 ——
+ * 本仓在这类"探针之间互相污染"上踩过（见 AGENTS.md 的排查教训）。
+ */
+export const CHAT_FOLLOW_WHEEL_UP_SCRIPT = `(async () => {
+  try {
+    const thread = document.querySelector('.thread')
+    const list = document.querySelector('.messages')
+    if (thread === null || list === null) {
+      return { pass: false, reason: 'no .thread/.messages' }
+    }
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()))
+    const settle = async (count) => {
+      for (let index = 0; index < count; index += 1) await frame()
+    }
+    const distanceToBottom = () =>
+      Math.round(thread.scrollHeight - thread.scrollTop - thread.clientHeight)
+
+    // 前置：撑高内容 + 归位到跟随态（点应用自己的胶囊，不依赖别的场景收尾）
+    const filler = document.createElement('div')
+    filler.setAttribute('data-probe', 'wheel-up')
+    filler.style.height = '1600px'
+    filler.style.flexShrink = '0'
+    list.appendChild(filler)
+    thread.scrollTop = thread.scrollHeight
+    const jumpButton = list.querySelector('.jump-latest')
+    if (jumpButton !== null) jumpButton.click()
+    await settle(4)
+
+    const atBottomBefore = distanceToBottom()
+    const maxScroll = Math.round(thread.scrollHeight - thread.clientHeight)
+
+    // ① 真实滚轮：主线程收到输入时读数通常还在底部
+    thread.dispatchEvent(new WheelEvent('wheel', { deltaY: -240, bubbles: true }))
+    const distanceAfterInput = distanceToBottom()
+
+    // ② 浏览器把视口挪上去并派发 scroll（合成器滚动的可见结果）
+    thread.scrollTop = maxScroll - 240
+    thread.dispatchEvent(new Event('scroll'))
+    await settle(4)
+
+    const distanceAfter = distanceToBottom()
+    const capsule = list.querySelector('.jump-latest') !== null
+
+    // 收尾：摘掉探针节点，点胶囊恢复跟随
+    filler.remove()
+    const restoreButton = list.querySelector('.jump-latest')
+    if (restoreButton !== null) restoreButton.click()
+    else thread.scrollTop = thread.scrollHeight
+    await settle(3)
+    const restored = list.querySelector('.jump-latest') === null && distanceToBottom() <= 4
+
+    return {
+      pass: maxScroll >= 200 && atBottomBefore <= 4 && distanceAfter >= 200 && capsule && restored,
+      atBottomBefore: atBottomBefore,
+      distanceAfterInput: distanceAfterInput,
+      distanceAfter: distanceAfter,
+      capsule: capsule,
+      maxScroll: maxScroll,
+      restored: restored,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
  * 「收起 = 直接消失」探针（step-01）：点交互窗头部操作区的「收起」按钮，再断言窗口真的没了。
  *
  * 这一条钉住的是一个已修掉的 bug：原来的「收起」会**另外弹出一个快速对话窗口**
@@ -4634,6 +4713,78 @@ export const CHAT_TRACE_CHECK = `(() => {
 })()`
 
 /**
+ * 「工具轮（**没有思考增量**）结束后轨迹必须自动收起」探针（2026-10-01 用户实测的折叠 bug）。
+ *
+ * 与 `CHAT_TRACE_CHECK` 的分工：那条钉**几何**（折叠态一行、展开态竖脊 + 节点），而且它
+ * 自己会「先把轨迹收起来」再量（见 `CHAT_TRACE_ACT` 的前置）；这条钉**状态机**——
+ * 完全不碰 DOM 状态，只读"流式结束后应用**自己**留下的那个状态"。
+ *
+ * 为什么必须单独一条：原先的收尾逻辑只收「这一轮被打开过的」消息，而消息只有思考增量到达
+ * 时才会被打开。桩服务默认分流每轮都发 `reasoning_content`，于是**现有全部探针都覆盖不到**
+ * 「有工具调用、没有思考增量」的那一轮 —— 它的轨迹永远停在展开态，用户看到的就是
+ * 「模型答完了，工作过程还摊着不折叠」（2026-10-01 实测；现场由 `SKILL_ONLY_MARKER` 分流造出）。
+ *
+ * `pass` 的三段：① 现场成立（这一轮有工具卡、**没有**思考块）；② 轨迹是折叠态
+ * （无 `.open` 类 + 展开体不可见）；③ 摘要行有文字（「N 步」这类可读摘要）。
+ * 缺任何一段都 FAIL —— 前两段一起才能区分"收到位了"与"压根没有可收的东西"。
+ */
+export const CHAT_TRACE_FOLD_CHECK = `(async () => {
+  try {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    // 收尾边沿的 patch 需要落一帧再看：act 判定"流式已结束"与这里读 DOM 之间隔着同一轮 Vue
+    // 刷新的尾巴，不等就可能读到"还在展开"的中间态（那是假 FAIL）。
+    await wait(150)
+    const assistants = Array.from(document.querySelectorAll('.message.r-assistant'))
+    if (assistants.length === 0) return { pass: false, reason: '没有助手消息' }
+    /*
+     * 目标现场从**全部**助手消息里筛，不取"最后一条"：
+     * 一轮请求可能落成多条助手消息（要工具的那轮 / 给正文的那轮），最后一条未必带轨迹。
+     * 判据是"这条消息有轨迹、有工具卡、**没有**思考块" —— 正是本探针要测的那个分支。
+     */
+    const shapeOf = (el) => {
+      const trace = el.querySelector('.trace')
+      const body = trace === null ? null : trace.querySelector('.trace-body')
+      const bodyHidden =
+        body === null ||
+        window.getComputedStyle(body).display === 'none' ||
+        Math.round(body.getBoundingClientRect().height) === 0
+      const head = trace === null ? null : trace.querySelector('.trace-head')
+      return {
+        trace: trace !== null,
+        cards: el.querySelectorAll('.tool-card').length,
+        thinking: el.querySelector('.thinking') !== null,
+        open: trace === null ? null : trace.classList.contains('open'),
+        bodyHidden: trace === null ? null : bodyHidden,
+        summary: head === null ? '' : (head.textContent || '').trim(),
+        height: trace === null ? 0 : Math.round(trace.getBoundingClientRect().height),
+      }
+    }
+    const rows = assistants.map(shapeOf)
+    const targets = rows.filter((row) => row.trace && row.cards > 0 && row.thinking === false)
+    const openRows = rows.filter((row) => row.open === true)
+    const conditions = {
+      // ① 现场成立：**有工具卡、没有思考块**的那一轮真的发生了（否则本探针什么都没测到）
+      targetExists: targets.length > 0,
+      // ② 它已经收起（无 .open 类 + 展开体不可见 + 摘要行有文字）
+      targetCollapsed: targets.every(
+        (row) => row.open === false && row.bodyHidden === true && row.summary.length > 0,
+      ),
+      // ③ 全表没有别的轨迹还摊着（本探针之前没人点开过任何一条，"答完都收起"是用户口径）
+      allCollapsed: openRows.length === 0,
+    }
+    return {
+      conditions: conditions,
+      rows: rows,
+      targets: targets,
+      openRows: openRows.length,
+      pass: Object.values(conditions).every((value) => value === true),
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
  * 快速会话探针（BetaV2 口径不变，2026-09 重构确认）：点左栏固定项「快速对话」
  * 必须切到 sessionId='quick'（快速对话的**输入入口在桌面提示条面板**，docs/07 §2.2；
  * 主界面左栏固定项沿用「点击切主区会话」）。
@@ -4710,10 +4861,16 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
     const projectsFields = count('[data-field^="projects."]')
     const projectsRows = count('[data-field="projects.name"]')
     const projectsEmpty = emptyStates.indexOf('projects.list') !== -1
-    // 本页**预期**会出现的 data-empty：提示条停用时那一条，与"还没有项目"那一条。
+    // 本页**预期**会出现的 data-empty：只剩「提示条停用」那一条（项目区组已于 2026-09-30
+    // 迁「会话管理」页，它的空态不在这页）。
     // 其余任何空态出现都是回归（照 SETTINGS_AGENT_FIELDS_SCRIPT 的白名单口径）。
+    // ⚠️ 这里曾留下一行多余的「)」（删项目白名单时的残渣）：整段探针字符串是 template
+    // literal，语法错**不经过 tsc**，症状是运行时 Script failed to execute、
+    // 而 pnpm typecheck / pnpm test 全绿（capture.probe-strings.test.ts 的第一条只查
+    // 「反引号提前终止后被解析成字符串拼接」，查不到这类残渣）。2026-10-01 修掉。
+    // ⚠️ 本注释也踩过同一个坑：注释里写反引号会把 template literal 提前终止 ——
+    // 字符串内部的注释一律用「」或单引号（见 AGENTS.md）。
     const unexpected = emptyStates.filter((name) => name !== 'general.edgeBar')
-    )
     const activeMode = document.querySelector('.cards .card.active .card-head strong')
     const activeNav = document.querySelector('.nav-item.active')
     return {
@@ -7343,10 +7500,12 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     },
     { name: 'chat', file: 'chat-drag.png', check: WINDOW_DRAG_SCRIPT },
     { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },
-    // 自动滚底两条：语义（谁能改跟随状态）+ 持续跟进（每帧都到底）。
+    // 自动滚底三条：语义（谁能改跟随状态）+ 持续跟进（每帧都到底）+ **底部上滚**（2026-10-01，
+    // 真实用户从底部滚起来时不能被那帧对齐抹回底部 —— 用户实测「答完翻不动历史」）。
     // **必须排在 chat-collapse 之前** —— 窗口一被 hide，后面的 DOM 操作就没了。
     { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
     { name: 'chat', file: 'chat-follow-burst.png', check: CHAT_FOLLOW_BURST_SCRIPT },
+    { name: 'chat', file: 'chat-follow-wheel-up.png', check: CHAT_FOLLOW_WHEEL_UP_SCRIPT },
     // 五段共用同一窗口，不能加 query / reload；本地占位凭据只在隔离 userData 中保存，绝不测试连接。
     // 双主题场景（step-06）刻意排在五段**之前**：它只等第 0 段就位、不点任何页脚按钮，
     // 因此引导的阶段推进与既有五条断言完全不受影响。

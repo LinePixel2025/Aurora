@@ -122,6 +122,7 @@ import {
   BURST_TEXT_END_MARKER,
   BURST_TEXT_START_MARKER,
   REASONING_MARKER,
+  SKILL_ONLY_MARKER,
   JOB_LOOP_MARKER,
   WRITE_FILE_CONTENT,
   WRITE_FILE_MARKER,
@@ -136,6 +137,7 @@ import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
 import {
   ASK_USER_CAPTURE_QUESTION,
   captureWindows,
+  CHAT_TRACE_FOLD_CHECK,
   chatStreamAct,
   chatStreamBurstAct,
   chatStreamBurstCheck,
@@ -1801,38 +1803,58 @@ async function runCapture(dir: string): Promise<void> {
   // `llm.active` 换成桩服务（前面的场景读到的是「未配置模型」的出厂态，不受影响）。
   // 为什么值得单列一个场景：`AURORA_SMOKE` 的断言跑在引导窗里、读不到对话窗 DOM，
   // 而两个模式互斥 —— 「事件层对了但界面没画出来」只有这里能抓到（见 capture.ts 的探针注释）。
+  //
+  // 桩配置抽成一处：下面三条场景（往返 / 爆发 / 轨迹折叠）**同走这条离线桩链路**，
+  // 三条各自的 prepare 只该表达"用桩"，配置细节（provider 形状、凭据、reload 时机）只写一份。
+  const useCaptureStub = async (): Promise<void> => {
+    captureStub ??= await startStubLlmServer(logger?.child('capture-llm'))
+    // `llm.providers` 是 record：给新 id 是「新增」，既有的 capture provider 不受影响
+    settings?.update({
+      llm: {
+        active: 'capture-stub',
+        providers: {
+          'capture-stub': {
+            type: 'openai-compat',
+            baseUrl: captureStub.baseUrl,
+            apiKeyEnc: '',
+            model: STUB_MODEL,
+            modelList: [STUB_MODEL],
+            temperature: 0.7,
+            reasoningEffort: 'auto',
+            // 故意给一个窗口值：本链路顺带钉住「占用比例」那一半（分母来自配置）
+            contextWindow: 128_000,
+          },
+        },
+      },
+    } as Partial<Settings>)
+    settings?.setSecret('llm.providers.capture-stub.apiKey', STUB_API_KEY)
+    await settings?.flush()
+    // 配置改完必须 reload 让渲染层重新水合：`SettingsStore` 启动就把 config.json 读进内存，
+    // 计划开始后再改文件对已运行的进程无效（AGENTS.md 的「两个缓存」那条）。
+    await manager.reload('chat', {})
+  }
   const chatStreamTarget: CaptureTarget = {
     name: 'chat',
     file: 'chat-stream.png',
-    prepare: async () => {
-      captureStub ??= await startStubLlmServer(logger?.child('capture-llm'))
-      // `llm.providers` 是 record：给新 id 是「新增」，既有的 capture provider 不受影响
-      settings?.update({
-        llm: {
-          active: 'capture-stub',
-          providers: {
-            'capture-stub': {
-              type: 'openai-compat',
-              baseUrl: captureStub.baseUrl,
-              apiKeyEnc: '',
-              model: STUB_MODEL,
-              modelList: [STUB_MODEL],
-              temperature: 0.7,
-              reasoningEffort: 'auto',
-              // 故意给一个窗口值：本场景顺带钉住「占用比例」那一半（分母来自配置）
-              contextWindow: 128_000,
-            },
-          },
-        },
-      } as Partial<Settings>)
-      settings?.setSecret('llm.providers.capture-stub.apiKey', STUB_API_KEY)
-      await settings?.flush()
-      // 配置改完必须 reload 让渲染层重新水合：`SettingsStore` 启动就把 config.json 读进内存，
-      // 计划开始后再改文件对已运行的进程无效（AGENTS.md 的「两个缓存」那条）。
-      await manager.reload('chat', {})
-    },
+    prepare: useCaptureStub,
     act: chatStreamAct('/system-status 我电脑现在什么状态'),
     check: chatStreamCheck(STUB_MARKER, REASONING_MARKER),
+  }
+  /**
+   * 轨迹自动折叠（2026-10-01 用户实测的 bug）：**有工具调用、没有思考增量**的那一轮，
+   * 流式结束后轨迹必须收成一行摘要。
+   *
+   * 为什么单列一条：桩服务的默认分流每轮都发 `reasoning_content`，而原先的收尾逻辑只收
+   * 「思考增量到达时被打开过的」消息 —— 这个分支在既有场景里**一次都没被覆盖**，
+   * 于是 bug 能在 34 条探针全 PASS 的情况下活下来（见 `CHAT_TRACE_FOLD_CHECK` 的注释）。
+   * 提问走 `SKILL_ONLY_MARKER` 分流：第 1 轮只要一次 `use_skill`（无权限面），第 2 轮纯正文。
+   */
+  const chatTraceFoldTarget: CaptureTarget = {
+    name: 'chat',
+    file: 'chat-trace-fold.png',
+    prepare: useCaptureStub,
+    act: chatStreamAct(`${SKILL_ONLY_MARKER} 用一个技能查一下系统状态`),
+    check: CHAT_TRACE_FOLD_CHECK,
   }
   // 1-D 爆发场景：与 chat-stream 同一条离线桩链路，但按真实推理模型的密度（150 + 150 片、
   // 5ms 一片）喷思考与正文 —— 这是「渲染跟不上输出」唯一能复现的现场，measure 见探针注释。
@@ -1841,29 +1863,7 @@ async function runCapture(dir: string): Promise<void> {
   const chatBurstTarget: CaptureTarget = {
     name: 'chat',
     file: 'chat-stream-burst.png',
-    prepare: async () => {
-      captureStub ??= await startStubLlmServer(logger?.child('capture-llm'))
-      settings?.update({
-        llm: {
-          active: 'capture-stub',
-          providers: {
-            'capture-stub': {
-              type: 'openai-compat',
-              baseUrl: captureStub.baseUrl,
-              apiKeyEnc: '',
-              model: STUB_MODEL,
-              modelList: [STUB_MODEL],
-              temperature: 0.7,
-              reasoningEffort: 'auto',
-              contextWindow: 128_000,
-            },
-          },
-        },
-      } as Partial<Settings>)
-      settings?.setSecret('llm.providers.capture-stub.apiKey', STUB_API_KEY)
-      await settings?.flush()
-      await manager.reload('chat', {})
-    },
+    prepare: useCaptureStub,
     act: chatStreamBurstAct(burstProbeQuestion),
     check: chatStreamBurstCheck({
       textStart: BURST_TEXT_START_MARKER,
@@ -1878,6 +1878,7 @@ async function runCapture(dir: string): Promise<void> {
       // 走 `settings:update` IPC 自建，装配层不再注入配置层钩子
       ...defaultCapturePlan(manager, app.getPath('userData')),
       chatStreamTarget,
+      chatTraceFoldTarget,
       chatBurstTarget,
     ],
     process.env['AURORA_CAPTURE_WINDOWS'],
