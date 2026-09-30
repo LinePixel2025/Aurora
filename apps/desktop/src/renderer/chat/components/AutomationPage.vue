@@ -44,6 +44,7 @@ import {
   BookOpen,
   Bot,
   CalendarClock,
+  ChevronRight,
   CircleCheck,
   CirclePlay,
   CircleStop,
@@ -1197,14 +1198,35 @@ function closeHistory(): void {
               <span v-if="run.durationMs !== undefined" class="tiny muted run-duration">
                 {{ formatDuration(run.durationMs) }}
               </span>
+              <!-- Agent 记录的「可展开」提示：不再是整行只有隐式的 hover 光标，
+                   右侧常驻一枚低对比度入口，触屏 / 键盘用户也能发现回放能力 -->
+              <span
+                v-if="run.mode === 'agent' && run.sessionId !== undefined"
+                class="run-open tiny"
+                aria-hidden="true"
+              >
+                查看对话
+                <ChevronRight :size="11" :stroke-width="1.8" />
+              </span>
+              <!-- 失败原因就地可见：整行第二行小字（hover 有全文），不用点开任何东西 -->
+              <span
+                v-if="run.status === 'failed' && run.error !== undefined && run.error !== ''"
+                class="run-error tiny"
+                :title="run.error"
+              >
+                {{ run.error }}
+              </span>
             </li>
           </ul>
 
           <section v-if="detail !== null" class="run-detail">
             <h4 class="tiny muted detail-title">
-              「{{ detail.run.automationName }}」的对话回放（{{
-                formatTime(detail.run.triggeredAt)
-              }}）
+              「{{ detail.run.automationName }}」的对话回放 · {{ formatTime(detail.run.triggeredAt) }}
+              · {{ STATUS_LABELS[detail.run.status] }}<template
+                v-if="detail.run.durationMs !== undefined"
+              >
+                · {{ formatDuration(detail.run.durationMs) }}</template
+              >
             </h4>
             <p v-if="detailLoading" class="tiny muted">加载对话…</p>
             <div v-else-if="detail.messages.length === 0" class="tiny muted">
@@ -1942,6 +1964,8 @@ function closeHistory(): void {
 
 .run-item {
   display: flex;
+  /* wrap 是给失败原因行留的：`.run-error` 占满一整行折到状态行下面 */
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
   padding: 6px var(--space-2);
@@ -2016,6 +2040,36 @@ function closeHistory(): void {
 .run-duration {
   flex: 0 0 auto;
   font-variant-numeric: var(--num-tabular);
+}
+
+/* Agent 记录的「查看对话」入口：muted 常驻、hover 行上才提亮（低噪声但可发现） */
+.run-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  transition: color var(--transition-fast);
+}
+
+.run-item.clickable:hover .run-open {
+  color: var(--accent-text);
+}
+
+/* 失败原因：占满整行折到第二行，单行省略（全文挂 title） */
+.run-error {
+  flex-basis: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--status-error);
+}
+
+/* 运行中的记录：状态图标自旋（模板里挂 .spin）之外，颜色再缓慢呼吸一档，
+   与主界面工具卡的运行态是同一种语言（全局 aurora-breathe，theme.css） */
+.run-status-icon.running {
+  animation: aurora-breathe var(--dur-pulse) var(--ease-standard) infinite;
 }
 
 .run-detail {
