@@ -880,8 +880,10 @@ function closeHistory(): void {
     </div>
 
     <!-- 编辑器弹窗（catalog 驱动的动态表单：条件磁贴 + 参数两列网格） -->
-    <div v-if="editorOpen && draft !== null" class="modal-scrim" @click.self="closeEditor()">
-      <div class="modal editor" role="dialog" aria-modal="true" data-field="automation.editor">
+    <!-- 弹窗出入走全局 fade（遮罩）+ anim-pop（面板一次入场），不再硬切 -->
+    <Transition name="fade">
+      <div v-if="editorOpen && draft !== null" class="modal-scrim" @click.self="closeEditor()">
+        <div class="modal editor anim-pop" role="dialog" aria-modal="true" data-field="automation.editor">
         <header class="modal-head">
           <component
             :is="MODE_ICONS[draft.mode]"
@@ -1136,15 +1138,17 @@ function closeHistory(): void {
         </footer>
       </div>
     </div>
+    </Transition>
 
     <!-- 历史弹窗：Agent 记录可展开对话回放；Normal 只显示触发时间与状态（docs/13 §11） -->
-    <div v-if="historyOpen" class="modal-scrim" @click.self="closeHistory()">
-      <div
-        class="modal history"
-        role="dialog"
-        aria-modal="true"
-        data-field="automation.history-panel"
-      >
+    <Transition name="fade">
+      <div v-if="historyOpen" class="modal-scrim" @click.self="closeHistory()">
+        <div
+          class="modal history anim-pop"
+          role="dialog"
+          aria-modal="true"
+          data-field="automation.history-panel"
+        >
         <header class="modal-head">
           <component
             :is="tab === 'agent' ? Bot : Zap"
@@ -1248,7 +1252,7 @@ function closeHistory(): void {
           </section>
         </div>
       </div>
-    </div>
+    </Transition>
   </section>
 </template>
 

@@ -601,7 +601,7 @@ export class WindowManager {
   private edgeBarDisplay(): Display {
     if (this.options.settings.get().general.edgeBar.display === 'cursor') {
       try {
-        return screen.getDisplayMatching(screen.getCursorScreenPoint())
+        return screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
       } catch (error) {
         this.options.logger.debug('取光标所在显示器失败，回落主显示器', { error: String(error) })
       }

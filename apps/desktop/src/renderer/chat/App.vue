@@ -1263,18 +1263,22 @@ async function markGuideDone(): Promise<void> {
         <!--
           子代理页面（docs/07 §2.3）：替换主区内容，输入区与右栏照旧。
           上面那段 thread + composer 用 v-if 收在 view === 'chat' 分支里。
+          两个页面用全局 fade 过渡切换（theme.css 预设），主区不再硬切。
         -->
-        <SubagentPage
-          v-if="view === 'subagents'"
-          :runs="subagentRuns"
-          :session-title="currentSessionTitle"
-          @back="view = 'chat'"
-        />
-        <!--
-          自动化页面（docs/13 §11）：与子代理页同构的主区替换内容。
-          双 tab（Agent / Normal）+ 编辑器与历史弹窗都在组件内自持。
-        -->
-        <AutomationPage v-else @back="view = 'chat'" />
+        <Transition name="fade" mode="out-in">
+          <SubagentPage
+            v-if="view === 'subagents'"
+            key="subagents"
+            :runs="subagentRuns"
+            :session-title="currentSessionTitle"
+            @back="view = 'chat'"
+          />
+          <!--
+            自动化页面（docs/13 §11）：与子代理页同构的主区替换内容。
+            双 tab（Agent / Normal）+ 编辑器与历史弹窗都在组件内自持。
+          -->
+          <AutomationPage v-else key="automations" @back="view = 'chat'" />
+        </Transition>
       </template>
     </main>
 
@@ -1284,10 +1288,13 @@ async function markGuideDone(): Promise<void> {
         「任务（Job）」面板（2026-09 新增，docs/06 §4.1）：停在右栏顶部、上下文栏之上 ——
         长任务被暂停是**要用户动手**的状态，位置比上下文信息更靠前。
         `data-field="chat.jobs"` 挂在容器上，面板自身另有 `chat.job-panel`（同一元素只挂一个锚点）。
+        出入用全局 fade（grid 行高不做高度动画，避免挤压下方的上下文栏）。
       -->
-      <div v-if="jobsOpen" class="jobs-host" data-field="chat.jobs">
-        <JobPanel :jobs="jobs" @resume="onResumeJob" @cancel="onCancelJob" />
-      </div>
+      <Transition name="fade">
+        <div v-if="jobsOpen" class="jobs-host" data-field="chat.jobs">
+          <JobPanel :jobs="jobs" @resume="onResumeJob" @cancel="onCancelJob" />
+        </div>
+      </Transition>
       <ContextPanel
         :todos="currentTodos"
         :session-id="sessionId"

@@ -175,6 +175,8 @@ function settingsWith(overrides: {
     },
     // v19 新增顶层分组（自动化，docs/13）：本用例不涉及自动化，保持默认态
     automations: { enabled: true },
+    // v21 新增顶层分组（外观，docs/08 §1）：本用例不涉及外观，保持默认态
+    appearance: { accent: 'aurora' },
   }
 }
 

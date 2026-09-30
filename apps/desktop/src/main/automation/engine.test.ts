@@ -196,6 +196,7 @@ function createHarness(options: HarnessOptions = {}) {
     openPath: async (target) => {
       opened.push(target)
     },
+    openExternal: async () => {},
     resolveSubjectDir: (subject) => (subjectDir === '' ? '' : `${subjectDir}${subject}`),
     // 静默 logger：单测不需要日志输出（引擎的 logger 是可注入端口）
     logger: silentLogger(),
