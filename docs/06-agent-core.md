@@ -85,6 +85,19 @@ export interface LlmProvider {
   `projectId?: string`（`''` 与缺字段都算未绑定，空 meta 判定同步覆盖，不写空键）；
   写入 / 清除走 `SessionStore.setProject`（幂等 + await 落盘，惯例与 `setArchived` 全同）。
   解析链与消费方见 §5.1 的「会话级项目」段。
+- **会话空间（2026-09-30，主界面左栏三分）**：`meta` 新增可选
+  `space?: 'agent' | 'work'`（`SessionSpace`；`'code'` 为 Code Mode 预留取值，当前不产生）。
+  它把左栏会话列表分成三个**工作目录互不相同**的分区（docs/07 §2.3）：
+  **项目对话**（绑定了 `projectId`，工作目录 = 项目根）/** 工作目录对话**（`space: 'work'`，
+  Work 模式专属，工作目录 = `modes.work.workspaceDir`）/** Agent对话**（`space: 'agent'` 或未标记，
+  含 `quick` 与历史会话，工作目录 = 固定 `%USERPROFILE%\Desktop\Aurora`）。
+  写入入口：`SessionStore.setSpace` + `createSession({ space })`（新建时只记**内存 pending meta**，
+  首条消息 append 时才并入落盘 —— 保持「空会话不落盘」的不变量）；`chat:newSession` 的可选参数
+  `{ space?, projectId? }` 是 IPC 层入口（`projectId` 校验存在性，同 `chat:setSessionProject`）。
+  空间目录是**回落链的一级**（§5.1）与**权限边界根**（§11.2）：Agent 会话在 `auto` 档下
+  桌面 Aurora 目录之内免确认、之外逐次确认 ——「Agent 在自己的工作区内划分权限」，
+  无项目不再等于无边界（**不是 OS 级沙箱**，`run_command` 仍是当前用户权限）。
+  space 与 projectId 一样是**会话数据**：不进 `config.json`、不进 `CONFIG_VERSION` 迁移链。
 - 渲染层挂载时通过 `chat:history` 水合消息列表，因此重启后交互窗仍能看到历史。
 - 上下文窗口管理：超长自动摘要压缩（P1）；v1 先按 **字符上限（默认 60k）** 截断旧消息并保留系统提示词，
   且截断时保证「assistant(toolCalls) + 其后 tool 结果」成对保留。
@@ -236,7 +249,8 @@ export interface LlmProvider {
 **会话级项目（v17，2026-09）**：每个会话可以绑定 `projects.list` 里的某一项——绑定写在
 **会话文件自身**（`sessions/<id>.json` 的 `meta.projectId`，经 `chat:setSessionProject` 写入 / 清除），
 **不是配置项、不进 `CONFIG_VERSION` 迁移链**（与归档同一条路，`''` 与缺字段都算未绑定）。
-解析链升为四级：**会话绑定项目 > `projects.current` > `agent.tools.workspaceDir` > 主目录**；
+  解析链升为五级（2026-09-30 起加会话空间一级，见下）：**会话绑定项目 > 会话空间目录 >
+  `projects.current` > `agent.tools.workspaceDir` > 主目录**；
 绑定项已被删除时**静默回落** `projects.current`（会话级绑定是可选的，逐次执行不刷 warn）。
 三处消费方全部按**会话**解析（`main/tools/session-project.ts` 是唯一解析口径，别另写第二份）：
 缺省 cwd / 搜索根（工具执行时经 `ctx.sessionId` 现调 getter）、项目根边界与 auto 档免确认判定
@@ -272,15 +286,24 @@ AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时�
 - **实现落点**：`packages/agent-core/src/config/project.ts`（`resolveProject` / `resolveProjectRootById`，
   纯函数，id 对不上即降级）、
   `config/effectiveWorkspace.ts`（`effectiveWorkspaceDir`：**会话项目根 > 项目根 > `agent.tools.workspaceDir` > 主目录**）、
+  `config/agentWorkspace.ts`（`agentDesktopDir`：Agent 空间的固定工作目录
+  `%USERPROFILE%\Desktop\Aurora`，纯函数、主进程负责懒创建目录）、
   `project/agentsFile.ts`（`collectProjectInstructions`，注入式 fs，永不抛错）、
   `project/instructions.ts`（`createProjectInstructionsSource`，按 root + mtime 缓存）；
   主进程在 `apps/desktop/src/main/index.ts` 用 `nodeProjectFs` 装配成 `projectInstructions` 依赖。
 - **缺省工作目录 / 搜索根的回落链（以本节为准，Codex 式「一个会话一个工作目录」的唯一口径）**：
   `effectiveWorkspaceDir` 的取值顺序是
-  **会话绑定项目根 > 当前项目根（配置了当前项目时）> 激活模式工作目录（v18，当前只有 Work 模式）>
-  `agent.tools.workspaceDir` > 用户主目录**（v17 起加会话级一级，v18 起加模式级一级）。已接进装配层：
-  配置了当前项目后，不显式传 `cwd` 的 `run_command` 与不传 `path` 的 `grep` / `glob` 落在**项目根**；
-  未配置当前项目时与既往行为完全一致。§11.1 / §11.4 / §11.5 说的「缺省 `cwd` / 缺省搜索根」
+  **会话绑定项目根 > 会话空间目录（2026-09-30 起：`space: 'agent'` → `%USERPROFILE%\Desktop\Aurora`；
+  `space: 'work'` → `modes.work.workspaceDir`，目录为空串时跳过本机继续旧链）>
+  当前项目根（配置了当前项目时）> 激活模式工作目录（v18，当前只有 Work 模式）>
+  `agent.tools.workspaceDir` > 用户主目录**（v17 会话级、v18 模式级、2026-09-30 会话空间级）。
+  会话空间排在**全局当前项目之前**：空间是会话创建时刻的显式归属（左栏三分的判定依据），
+  不随用户后来切 `projects.current` 漂移 —— 三分区的「工作目录互不相同」靠这一级保证。
+  **未标记空间且未绑项目的会话（历史会话与 `main`）默认按 Agent 空间解析**：
+  工作目录落 `桌面\Aurora`，这是 2026-09-30 的**有意行为变化**（此前它们回落
+  `projects.current` / `agent.tools.workspaceDir` / 主目录）。
+  已接进装配层：Agent 会话不显式传 `cwd` 的 `run_command` 与不传 `path` 的 `grep` / `glob`
+  落在 `桌面\Aurora`；§11.1 / §11.4 / §11.5 说的「缺省 `cwd` / 缺省搜索根」
   都指这条链的结果，**工具执行链上不再设第二套口径**。
   设置页「打开工作目录」按钮（`openPath kind:'workspace'`，`ipc.ts`）**已接同一链**（2026-09）：
   解析抽为纯函数 `resolveWorkspaceOpenTarget`（`main/tools/workspace-target.ts`，不 import electron、可单测），
@@ -642,18 +665,20 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 |---|---|---|---|
 | `readonly` | `agent.permissionMode === 'readonly'`（**只读优先**，老开关在这档无效） | 只注册只读工具：`read_file` / `list_dir` / `grep` / `glob` / `todo_read` / `use_skill` / `set_setting` / MCP 与扩展工具。**不注册** `run_command` / `write_file` / `edit_file` / `open_path` / `todo_write` / `todo_read` 以外的待办写侧 | 敏感工具本就不在清单里；若仍被调用（例如刚好在切换档位），`createConfirmTool` 直接**拒绝**并写 warn（双保险） |
 | `confirm` | 显式选了 `confirm` 且老开关为 `true`（用户手动收紧后的档位，**不再是出厂档**） | 与三档之前完全一致 | 与三档之前完全一致：逐次弹卡；命中 `allowPatterns` 的 `run_command` 免确认；根内写文件按 v0.2.4 的 Codex 式免确认 |
-| `auto` | **出厂默认**；或显式选了 `auto`；或 `advanced.confirmSensitiveTools === false`（老开关的语义由它承接） | 与三档之前完全一致 | **有项目时**：目标路径落在**项目根之内** → 免确认（写 `info` 审计日志）；根外 → 照常弹卡。**无项目时**：没有"根内"的判据，按老开关的语义**完全不弹卡**（否则老用户升级后会突然被逐次询问，等于静默改回了旧行为） |
+| `auto` | **出厂默认**；或显式选了 `auto`；或 `advanced.confirmSensitiveTools === false`（老开关的语义由它承接） | 与三档之前完全一致 | **有边界根时**（2026-09-30 起**每个会话都有**：会话绑定项目 > 会话空间目录 > 全局当前项目，见下）：目标路径落在**边界根之内** → 免确认（写 `info` 审计日志）；根外 → 照常弹卡。**无边界根的路径不存在了**（Agent 空间的 `桌面\Aurora` 恒可解析），历史语境里的「无项目完全不弹卡」随之消失 |
 
 - **为什么默认档从 `confirm` 提到 `auto`（2026-09-29）**：Aurora 是系统级 Agent 工具，
   出厂就逐次确认会让绝大多数正常操作（改自己项目里的文件、跑一条构建）都要先点一次卡片，
-  用户反馈「默认权限太低」。放宽的同时保留两道真实护栏：① `auto` 只在**当前项目根之内**
+  用户反馈「默认权限太低」。放宽的同时保留两道真实护栏：① `auto` 只在**边界根之内**
   免确认、越界仍问；② 主进程对已存在的最近父目录做 realpath 前缀校验
   （`file-port.resolveWithin`，越界即 `E_PATH_OUTSIDE_WORKSPACE`）。
-  ⚠️ **这两道护栏都以「登记了项目」为前提**：无项目（新装默认就是无项目，`projects.current` 为空 &&
-  未设 Work 工作目录）时没有"根内 / 越界"的判据，`auto` 退化成**完全不弹卡、只写日志留痕**
-  （与 v12 之前关掉确认总开关的行为一致）。要确认卡兜底就把档位切到 `confirm`，
-  或先登记一个项目让边界生效 —— 界面文案（权限下拉的提示与菜单项）把这两种状态都写明了，
-  改文案时别只留「越界仍会询问」那半句。
+  **边界根按会话解析（2026-09-30 起覆盖所有会话）**：**会话绑定项目 > 会话空间目录**
+  （Agent 空间 → `%USERPROFILE%\Desktop\Aurora`；Work 空间 → `modes.work.workspaceDir`）
+  **> 全局当前项目**。空间目录恒可解析（Agent 空间不依赖任何配置），因此**每个会话都有边界根**
+  —— 未标记的历史会话（Agent 空间）从「无项目完全不弹卡」变为「`桌面\Aurora` 内免确认、
+  外逐次确认」，这是会话空间轮的**有意收紧**（「Agent 在自己的工作区内划分权限」）；
+  要恢复旧行为只能把档位切回显式 `confirm` 之外的老语义路径（已不存在）或 `readonly`。
+  界面文案（权限下拉的提示与菜单项）把边界状态写明，改文案时别只留「越界仍会询问」那半句。
   **只影响新装 / 缺字段的配置**（`zod` 默认值）：既有 `config.json` 里已持久化的
   `permissionMode` / `confirmSensitiveTools` 一律保持原值（含绝大多数沿用旧默认值的配置），
   需用户自行切换；因此本次**不进迁移链、不改 `CONFIG_VERSION`**。
@@ -676,9 +701,9 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   AI 自己改不动），逐次确认属重复设防。工具本身 `sensitivity: 'safe'`，
   确认链路（含推网页端）不再经过它。
 - **confirm 档根内写文件免确认（v0.2.4，Codex 式 auto-edit）**：`createConfirmTool` 在
-  confirm 档下对 `write_file` / `edit_file` 先按会话解析边界根（会话绑定项目 > 全局当前项目 >
-  Work 模式工作目录，docs/06 §5.1），落在根内即 `'machine'` 放行（审计日志照写），
-  越界 / 无根（未配项目且无 Work 工作目录）时维持逐次确认 —— 默认行为不变。
+  confirm 档下对 `write_file` / `edit_file` 先按会话解析边界根（会话绑定项目 > 会话空间目录 >
+  全局当前项目 > Work 模式工作目录，docs/06 §5.1），落在根内即 `'machine'` 放行（审计日志照写），
+  越界 / 无根时维持逐次确认 —— Agent / Work 空间会话自 2026-09-30 起恒有根（同 auto 档的收紧）。
   `run_command` 等其余敏感工具**不参与**这条放宽（对齐 Codex「工作区写自动、命令仍过目」）。
 - **项目根边界（两层，分工明确）**：
   1. `auto` 档的"要不要问用户"用字符串级判定（`isWithinRoot`，含 `..` 段一律按越界）；

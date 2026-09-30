@@ -356,10 +356,12 @@ v1 占位的 Work Mode 在 BetaV2 完成**初步实装**（`packages/modes/src/w
 - **工作目录是回落链的一级（v0.2.4，Codex 式统一，docs/06 §5.1）**：`modes.work.workspaceDir`
   不再是提示词里的孤立概念 —— 它插在 `effectiveWorkspaceDir` 回落链的
   **当前项目根之后、`agent.tools.workspaceDir` 之前**（仅当激活模式为 Work 且目录非空时参与）。
+  2026-09-30 会话三分起，**在 Work 模式下新建的「工作目录对话」会话**（`meta.space: 'work'`，
+  docs/06 §4 / docs/07 §2.3）把工作目录**显式钉在会话上**：空间目录排在全局当前项目之前，
+  这些会话的工作目录不随用户切 `projects.current` 漂移（绑了项目的会话仍以项目为准）。
   缺省 `cwd` / 搜索根、写入边界、confirm 档「根内写免确认」与 auto 档免确认边界全部落在
   同一条链解析出的目录上 —— 提示词与工具链同源，Work 模式不再与项目指定互相打架
-  （绑了项目的会话以项目为准，没绑项目的 Work 会话以工作目录为准，二者都不配置时回落
-  `agent.tools.workspaceDir` / 主目录）。
+  （二者都不配置时回落 `agent.tools.workspaceDir` / 主目录）。
 - **感知订阅**：`[{ kind: 'clock', intervalMs: 60000 }]`。
 - **与 ClassRoom 的功能边界**：工作模式**不包含**课堂 / 课程表 / 课件分类功能——那些属于
   ClassRoom Mode；提示词明确声明边界并引导用户切换模式。切换到 Work 后，渲染层也不再渲染
@@ -371,6 +373,8 @@ v1 占位的 Work Mode 在 BetaV2 完成**初步实装**（`packages/modes/src/w
 
 Code Mode 保持**占位实现**：引导一步（确认知晓），提示词说明「功能建设中」；工作区项目识别、
 Git 状态感知、终端 / 命令执行工具组留待后续版本（能力位通过 06 文档的扩展点预留）。
+会话空间的 `'code'` 取值已为它预留（`SessionSpace` 类型，docs/06 §4）——
+Code Mode 实装时左栏「项目对话」区之外将出现自己的分区，当前**不产生**该取值。
 
 | 模式 | 当前状态 | 预留能力位（后续实现） |
 |---|---|---|

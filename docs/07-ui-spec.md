@@ -86,21 +86,38 @@
 - **三栏布局（2026-09 重构起）**：`sidebar(240px, 可折叠) | main(1fr) | context(264px, 可折叠)`，
   栏间用分隔而非悬浮卡片；主区消息与 composer 居中排布（内容列最大宽 860px），
   对齐主流 Agent Desktop 的阅读动线：
-  - **左栏**：品牌行（单色 mark + Aurora）→「新对话」按钮（`data-action="chat.new-session"`）→
-    固定顶置项「快速对话」（`data-field="chat.quick-item"`，点击切到 quick 会话；
-    **可直接输入的快速对话入口在桌面提示条面板**，见 §2.2）→
-    会话列表（`data-field="chat.session-list"`，单行标题 + 相对时间）→
+  - **左栏（2026-09-30 会话三分起）**：品牌行（单色 mark + Aurora）→「新对话」按钮
+    （`data-action="chat.new-session"`，**固定创建 Agent 会话**）→
+    会话滚动区**分三区**（判定与工作目录见 06 §4「会话空间」，三分区工作目录互不相同）→
     **「已归档 · N」分组**（`data-field="chat.archive-group"`，默认收起；展开后的列表是
-    `data-field="chat.archive-list"`）→
+    `data-field="chat.archive-list"`，**三个分区的会话共用这一个归档分组**）→
     底部：模式徽章 + 右栏开关（`data-field="chat.right-panel-toggle"`）+ 设置齿轮。
+    三个分区自上而下：
+    1. **项目对话**（`data-field="chat.project-group"`）：按 `projects.list` 顺序的**项目子分组**
+       （子分组标题 = 项目名，标题旁 `+` 钮 `data-action="chat.new-project-session"`，
+       新建即绑定该项目）；会话项 = 绑定了 `projectId` 的会话（`ChatSessionSummary.projectId`）。
+       绑定项目已被删除的孤儿会话**归入 Agent对话区**显示（解析链上它们已按未绑定回落）。
+    2. **工作目录对话**（`data-field="chat.work-group"`）：**仅 Work 模式渲染**
+       （`modes.current === 'work'`，ClassRoom / Code 无此区）；`space: 'work'` 的会话；
+       分组标题旁 `+` 钮 `data-action="chat.new-work-session"`。切走 Work 模式后该区隐藏
+       （会话仍在，切回来照常显示）。
+    3. **Agent对话**（`data-field="chat.agent-group"`）：`space: 'agent'` 或未标记的会话
+       （含历史会话与 `main`）；**首行固定是 quick 会话**（沿用 `data-field="chat.quick-item"`
+       锚点；提示条面板与其共用同一会话文件，见 §2.2）。
+    固定顶置项其余三个不变：子代理（`chat.subagent-item`）/ 自动化（`chat.auto-item`）/
+    任务（`chat.jobs-entry`）—— 前一个切**主区**，后两个开关**右栏面板**；「快速对话」不再
+    是固定顶置项（它的入口随 Agent对话区下沉）。空态文案按分区显示：项目对话区空时不渲染
+    空态（没有项目就没有分组），Agent对话区空时显示「还没有会话」（与归档分组都空的联合判定
+    同旧口径，分区隐藏的 Work 区不参与该判定）。
   - **左栏固定项「任务」（v15 新增；2026-09-30 收拢进 SessionNav 顶部固定项组）**：
     `data-field="chat.jobs-entry"`，与 快速对话 / 子代理 / 自动化 同一组**顶部固定项**
     （旧「左栏底部固定项」的一处两式样式已随杂糅清理删除，`aside.nav` 回到单行网格）；
     角标是本会话的任务条数（复用 `.count-badge`，有在跑的用强调色）。
     点击展开 / 收起右栏的「任务」面板（`aria-expanded` 跟 `jobsOpen`）；
     面板容器锚点仍是 App.vue 的 `chat.jobs`（与按钮不同元素）。
-    （左栏**顶部固定项**现为四个：`chat.quick-item` 快速对话 / `chat.subagent-item` 子代理 /
-    `chat.auto-item` 自动化 / `chat.jobs-entry` 任务 —— 前两个切**主区**，后两个开关**右栏面板**。）
+    （左栏**顶部固定项**现为三个：`chat.subagent-item` 子代理 / `chat.auto-item` 自动化 /
+    `chat.jobs-entry` 任务 —— 第一个切**主区**，后两个开关**右栏面板**；
+    「快速对话」固定项已随 2026-09-30 会话三分移入 Agent对话区，锚点 `chat.quick-item` 保留。）
   - **会话归档（2026-09 新增）**：会话项 hover 时右侧浮出一枚「归档」图标钮
     （`data-action="chat.archive-session"`，单击即归档、**可逆、不弹确认**）；
     归档后该会话从主列表移入底部「已归档 · N」分组，**仍可点开继续对话**，此时主区头部给一条
