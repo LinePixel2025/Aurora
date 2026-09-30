@@ -79,6 +79,9 @@ const requireAdmin = ref(general.value?.requireAdmin ?? true)
 const hotkey = ref(general.value?.hotkey ?? 'Alt+Space')
 const edgeEnabled = ref(general.value?.edgeBar.enabled ?? true)
 const edgeOpacity = ref(general.value?.edgeBar.opacity ?? 0.9)
+/** 提示条贴附的显示器与屏幕侧（v21，docs/08 §1） */
+const edgeDisplay = ref(general.value?.edgeBar.display ?? 'primary')
+const edgePosition = ref(general.value?.edgeBar.position ?? 'right')
 const saved = ref<string | null>(null)
 const error = ref<string | null>(null)
 
@@ -103,6 +106,8 @@ async function saveEdgeQuiet(which: 'start' | 'end', value: string): Promise<voi
         enabled: edgeEnabled.value,
         opacity: Number(edgeOpacity.value),
         quietHours: next.start === '' || next.end === '' ? null : next,
+        display: edgeDisplay.value,
+        position: edgePosition.value,
       },
     },
   })
@@ -150,6 +155,8 @@ watch(
     hotkey.value = next.general.hotkey
     edgeEnabled.value = next.general.edgeBar.enabled
     edgeOpacity.value = next.general.edgeBar.opacity
+    edgeDisplay.value = next.general.edgeBar.display
+    edgePosition.value = next.general.edgeBar.position
     // 项目配置一变就重新探测根目录（失败静默：按"无警示"处理）
     void refreshProjectStatus()
   },
@@ -172,6 +179,26 @@ async function save(): Promise<void> {
         enabled: edgeEnabled.value,
         opacity: Number(edgeOpacity.value),
         quietHours: general.value?.edgeBar.quietHours ?? null,
+        display: edgeDisplay.value,
+        position: edgePosition.value,
+      },
+    },
+  })
+  if (ok) saved.value = '已保存'
+  else error.value = settingsStore.error
+}
+
+/** 显示器 / 屏幕侧两个下拉共用：改动即落盘（主进程现读配置，立即重排） */
+async function saveEdgePlacement(): Promise<void> {
+  const ok = await settingsStore.update({
+    general: {
+      ...general.value!,
+      edgeBar: {
+        enabled: edgeEnabled.value,
+        opacity: Number(edgeOpacity.value),
+        quietHours: general.value?.edgeBar.quietHours ?? null,
+        display: edgeDisplay.value,
+        position: edgePosition.value,
       },
     },
   })
@@ -440,7 +467,7 @@ async function openProjectRoot(): Promise<void> {
 
     <section class="section-card">
       <h2 class="section-title">提示条</h2>
-      <p class="section-desc">桌面右缘常驻的 8px 提示条：悬停展开面板，点击呼出主界面。</p>
+      <p class="section-desc">常驻屏幕边缘的 8px 提示条：悬停展开面板，点击呼出主界面。</p>
 
       <SettingField
         data-field="general.edgeBar.enabled"
@@ -452,6 +479,28 @@ async function openProjectRoot(): Promise<void> {
       </SettingField>
 
       <template v-if="edgeEnabled">
+        <SettingField
+          data-field="general.edgeBar.display"
+          label="所在显示器"
+          hint="主显示器或跟随鼠标所在显示器；保存后立即生效"
+        >
+          <select v-model="edgeDisplay" @change="saveEdgePlacement">
+            <option value="primary">主显示器</option>
+            <option value="cursor">跟随鼠标</option>
+          </select>
+        </SettingField>
+
+        <SettingField
+          data-field="general.edgeBar.position"
+          label="屏幕位置"
+          hint="贴屏幕左缘或右缘；保存后立即生效"
+        >
+          <select v-model="edgePosition" @change="saveEdgePlacement">
+            <option value="right">屏幕右缘</option>
+            <option value="left">屏幕左缘</option>
+          </select>
+        </SettingField>
+
         <SettingField
           data-field="general.edgeBar.opacity"
           label="提示条透明度"

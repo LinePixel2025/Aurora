@@ -19,7 +19,7 @@ export const SETTINGS_HINT = [
   '- tts.enabled / active / autoRead / maxChars（语音朗读）',
   '- stt.enabled / active（语音输入开关与默认识别模型）',
   '- imagegen.enabled / active（图像生成开关与默认生图模型）',
-  '- general.edgeBar.enabled / opacity / quietHours（提示条开关、透明度与勿扰时段）',
+  '- general.edgeBar.enabled / opacity / quietHours / display / position（提示条开关、透明度、勿扰时段与贴附的显示器 / 屏幕侧）',
   '- general.chat.showThinking（对话界面是否展示思考过程）',
   '- modes.current（切换当前模式）',
   '- modes.work.workspaceDir（Work 模式的工作目录）',

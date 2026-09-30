@@ -16,7 +16,14 @@
     // 用户拒绝 UAC 时不阻断启动（以普通权限继续 + 记 warn）；改动重启后生效。
     // 只读：AI 的 set_setting 一律拒绝，只能由用户在设置页改（见下方 advanced.readonlyPrefixes）
     "requireAdmin": true,
-    "edgeBar": { "enabled": true, "opacity": 0.9, "quietHours": null },
+    "edgeBar": {
+      "enabled": true,
+      "opacity": 0.9,
+      "quietHours": null,
+      // v21 新增：提示条贴附的显示器与屏幕侧（默认主显示器 + 右缘）
+      "display": "primary", // 'primary' 主显示器 | 'cursor' 跟随鼠标所在显示器
+      "position": "right" // 'right' 屏幕右缘 | 'left' 屏幕左缘
+    },
     // v8 新增：对话窗展示偏好
     "chat": { "showThinking": true }, // 对话界面展示思考过程（MessageList 可折叠思考块的门控，docs/07 §2.3）
     // 各窗口位置 / 尺寸记忆，key 集合见 WINDOW_NAMES（edge-bar / chat / settings / onboarding）
@@ -248,7 +255,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **20**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **21**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
@@ -288,7 +295,7 @@
   ① **真的放开** —— `llm.providers.<id>.model / .reasoningEffort / .temperature` 落在 `llm.providers`
   黑名单前缀之内，但「换模型 / 调参数」不碰凭据，显式放行（baseUrl / apiKeyEnc / modelList 等
   其余字段仍被前缀拒绝）；② **显式登记** —— `tts.enabled|active|autoRead|maxChars`、
-  `stt.enabled|active`、`imagegen.enabled|active`、`general.edgeBar.enabled|opacity|quietHours`、
+  `stt.enabled|active`、`imagegen.enabled|active`、`general.edgeBar.enabled|opacity|quietHours|display|position`、
   `general.chat.showThinking`、`modes.current`、`modes.work.workspaceDir`、`agent.tools.*`
   （`terminal.allowPatterns` **除外** —— 它在黑名单里，见 §1）、
   `skills.userDir|disabled`、`advanced.quietHours` 等本就可写的路径逐条入表
@@ -469,7 +476,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 因而不新增存储面，也不会与流水出现两处数据不一致。
 
 **对话归档状态同样不进 config.json**：它写在会话文件自身（`sessions/<id>.json` 的
-`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 20）。
+`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 21）。
 会话文件自己的版本号 `SESSION_FILE_VERSION` 由 1 提到 2，读取对 v1 宽容（缺 `meta` = 未归档），
 不存在需要执行的迁移脚本 —— 「会话文件版本」与「配置版本」是两条独立的链，别混。
 
@@ -484,7 +491,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 20`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 21`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -526,10 +533,13 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
   不覆盖用户已写值；自动化的定义与历史是用户数据（`<userData>/automations/`），不走迁移链）、
   `v19 → v20`（新增 `general.requireAdmin`（要求管理员身份启动，见 §1 / docs/09 §9）：
   只为**已有 `general` 分组**补缺字段（默认 `true`），用户已写的 `false` 原样保留、
-  一个键也不改；`general` 整组缺失时留给 Schema 兜底，不凭空造半截对象）。
-  二十条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  一个键也不改；`general` 整组缺失时留给 Schema 兜底，不凭空造半截对象）、
+  `v20 → v21`（新增 `general.edgeBar.display` / `general.edgeBar.position`
+  （提示条贴附的显示器与屏幕侧，见 §1）：只为**已有 `general.edgeBar`** 补缺字段
+  （默认 `primary` / `right`），已写值原样保留；`edgeBar` 缺失时留给 Schema 兜底）。
+  二十一条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽），重复执行结果一致 —— `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **20** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **21** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程

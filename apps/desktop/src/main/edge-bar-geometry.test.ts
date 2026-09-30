@@ -92,4 +92,29 @@ describe('提示条几何（docs/07 §2.2）', () => {
     expect(expanded.x + expanded.width).toBe(WORK_AREA.x + WORK_AREA.width)
     expect(expanded.width).toBe(EDGE_BAR_WIDTHS.expanded)
   })
+
+  // ───── v21：贴附屏幕侧可配置（general.edgeBar.position，docs/07 §2.2）─────
+
+  it('左侧放置：左缘贴工作区左缘、垂直居中；默认参数仍贴右缘', () => {
+    const left = placeEdgeBar(WORK_AREA, collapsedSize(), 'left')
+    expect(left.x).toBe(WORK_AREA.x)
+    expect(centerOf(left)).toBe(WORK_AREA.y + WORK_AREA.height / 2)
+    // 缺省参数 = 既有右缘行为（老调用点不动）
+    expect(placeEdgeBar(WORK_AREA, collapsedSize()).x + 8).toBe(WORK_AREA.width)
+  })
+
+  it('左侧两态切换：左缘与垂直中心固定（往返幂等）', () => {
+    const collapsed = placeEdgeBar(WORK_AREA, collapsedSize(), 'left')
+    const expanded = resizeEdgeBarKeepingAnchor(
+      collapsed,
+      expandedSize(WORK_AREA),
+      WORK_AREA,
+      'left',
+    )
+    expect(expanded.x).toBe(collapsed.x)
+    expect(expanded.width).toBe(EDGE_BAR_WIDTHS.expanded)
+    expect(centerOf(expanded)).toBe(centerOf(collapsed))
+    const back = resizeEdgeBarKeepingAnchor(expanded, collapsedSize(), WORK_AREA, 'left')
+    expect(back).toEqual(collapsed)
+  })
 })

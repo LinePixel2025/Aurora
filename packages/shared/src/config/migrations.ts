@@ -701,6 +701,36 @@ const migrateV19ToV20: Migration = {
   },
 }
 
+/**
+ * v20 → v21：新增 `general.edgeBar.display` / `general.edgeBar.position`
+ * （提示条贴附的显示器与屏幕侧，docs/08 §1 / docs/07 §2.2）。
+ *
+ * 幂等：只为**已有 `general.edgeBar`** 补缺字段（默认主显示器 + 右缘），已写值原样保留；
+ * `edgeBar` 整组缺失时留给 Schema 兜底，不凭空造半截对象。
+ */
+const migrateV20ToV21: Migration = {
+  from: 20,
+  to: 21,
+  describe: 'v20 → v21：新增 general.edgeBar.display / position（提示条显示器与屏幕侧）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const general = asRecord(next['general'])
+    const edgeBar = general === undefined ? undefined : asRecord(general['edgeBar'])
+    if (edgeBar !== undefined) {
+      next['general'] = {
+        ...general,
+        edgeBar: {
+          ...edgeBar,
+          display: edgeBar['display'] ?? 'primary',
+          position: edgeBar['position'] ?? 'right',
+        },
+      }
+    }
+    next['version'] = 21
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -722,6 +752,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV17ToV18,
   migrateV18ToV19,
   migrateV19ToV20,
+  migrateV20ToV21,
 ]
 
 export interface MigrationOutcome {

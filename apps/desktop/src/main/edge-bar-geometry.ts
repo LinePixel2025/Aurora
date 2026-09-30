@@ -27,6 +27,12 @@ export interface Size {
  */
 export const EDGE_BAR_WIDTHS = { collapsed: 8, expanded: 228 } as const
 
+/**
+ * 提示条贴附的屏幕侧（v21，`general.edgeBar.position`，docs/07 §2.2）。
+ * 几何函数都以可选参数接收（缺省 `'right'` = 既有行为），主进程现读配置传入。
+ */
+export type EdgeBarSide = 'right' | 'left'
+
 /** 收起态高度：竖条本身的高度（展开态高度见 `expandedEdgeBarHeight`） */
 export const EDGE_BAR_COLLAPSED_HEIGHT = 200
 
@@ -51,14 +57,16 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /**
- * 默认放置：右缘贴工作区右缘、垂直居中（与 `computeBounds` 的 `edge` 分支语义一致）。
+ * 默认放置：贴工作区 `position` 侧边缘、垂直居中（与 `computeBounds` 的 `edge` 分支语义一致）。
  * 工作区比窗口还窄 / 还矮时被 clamp 到左上边界，不产生越界坐标。
  */
-export function placeEdgeBar(workArea: Rect, size: Size): Rect {
+export function placeEdgeBar(workArea: Rect, size: Size, side: EdgeBarSide = 'right'): Rect {
   const maxX = Math.max(workArea.x, workArea.x + workArea.width - size.width)
   const maxY = Math.max(workArea.y, workArea.y + workArea.height - size.height)
+  const x =
+    side === 'left' ? workArea.x : workArea.x + workArea.width - size.width
   return {
-    x: Math.round(clamp(workArea.x + workArea.width - size.width, workArea.x, maxX)),
+    x: Math.round(clamp(x, workArea.x, maxX)),
     y: Math.round(clamp(workArea.y + (workArea.height - size.height) / 2, workArea.y, maxY)),
     width: size.width,
     height: size.height,
@@ -66,19 +74,25 @@ export function placeEdgeBar(workArea: Rect, size: Size): Rect {
 }
 
 /**
- * 两态切换：**右缘固定 + 垂直中心固定**，宽度与高度换成目标尺寸。
+ * 两态切换：**`position` 侧边缘固定 + 垂直中心固定**，宽度与高度换成目标尺寸。
  *
- * 保持右缘而不是保持左缘：提示条贴的是屏幕物理右缘，收起态那 8px 必须始终贴着边缘，
- * 否则展开再收起后竖条会整体左移，屏幕最右侧反而漏出一条缝。
+ * 保持贴附侧边缘而不是对侧：提示条贴着屏幕物理边缘，收起态那 8px 必须始终贴着边缘，
+ * 否则展开再收起后竖条会整体位移，屏幕最贴附侧反而漏出一条缝。
  * 保持垂直中心：展开成半屏高度时竖条的中心不能跳位，否则鼠标会"跑出"面板。
  */
-export function resizeEdgeBarKeepingAnchor(current: Rect, size: Size, workArea: Rect): Rect {
-  const right = current.x + current.width
-  const centerY = current.y + current.height / 2
+export function resizeEdgeBarKeepingAnchor(
+  current: Rect,
+  size: Size,
+  workArea: Rect,
+  side: EdgeBarSide = 'right',
+): Rect {
   const maxX = Math.max(workArea.x, workArea.x + workArea.width - size.width)
   const maxY = Math.max(workArea.y, workArea.y + workArea.height - size.height)
+  const anchorX = side === 'left' ? current.x : current.x + current.width
+  const anchorTargetX = side === 'left' ? anchorX : anchorX - size.width
+  const centerY = current.y + current.height / 2
   return {
-    x: Math.round(clamp(right - size.width, workArea.x, maxX)),
+    x: Math.round(clamp(anchorTargetX, workArea.x, maxX)),
     y: Math.round(clamp(centerY - size.height / 2, workArea.y, maxY)),
     width: size.width,
     height: size.height,

@@ -42,7 +42,7 @@ function fakeSettings(options: FakeSettingsOptions = {}): SettingsStoreLike {
       language: 'zh-CN',
       launchAtLogin: false,
       hotkey: 'Alt+Space',
-      edgeBar: { enabled: true, opacity: 0.9, quietHours: null },
+      edgeBar: { enabled: true, opacity: 0.9, quietHours: null, display: 'primary', position: 'right' },
       windowState: {},
     },
     llm: { active: '', providers: {} },

@@ -188,6 +188,9 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
       enabled: true,
       opacity: 0.9,
       quietHours: null,
+      // v21：提示条贴附的显示器与屏幕侧（docs/08 §1 / docs/07 §2.2）
+      display: 'primary',
+      position: 'right',
     },
     windowState: {},
     chat: {

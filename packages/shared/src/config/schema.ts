@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 20 as const
+export const CONFIG_VERSION = 21 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -48,6 +48,13 @@ export const EdgeBarSchema = z.object({
   enabled: z.boolean(),
   opacity: z.number().min(0.2).max(1),
   quietHours: QuietHoursSchema,
+  /**
+   * 贴附显示器（v21）：`primary` 主显示器 / `cursor` 跟随鼠标所在显示器。
+   * 窗口创建 / 显示 / 两态切换时现读（改完即生效），docs/08 §1 / docs/07 §2.2。
+   */
+  display: z.enum(['primary', 'cursor']),
+  /** 贴附屏幕侧（v21）：`right` 屏幕右缘（默认）/ `left` 屏幕左缘。 */
+  position: z.enum(['right', 'left']),
 })
 
 export const GeneralSchema = z.object({
@@ -792,6 +799,8 @@ export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
   { pattern: 'general.edgeBar.enabled', reason: '开关提示条' },
   { pattern: 'general.edgeBar.opacity', reason: '调整提示条透明度' },
   { pattern: 'general.edgeBar.quietHours', reason: '调整提示条的勿扰时段' },
+  { pattern: 'general.edgeBar.display', reason: '切换提示条贴附的显示器' },
+  { pattern: 'general.edgeBar.position', reason: '切换提示条贴附的屏幕侧' },
   { pattern: 'general.chat.showThinking', reason: '开关对话界面的思考过程展示' },
   // 模式
   { pattern: 'modes.current', reason: '切换当前模式' },

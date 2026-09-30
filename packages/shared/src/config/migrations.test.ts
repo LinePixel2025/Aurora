@@ -1055,6 +1055,7 @@ describe('配置迁移链', () => {
         'v17 → v18：v17 → v18：放宽 agent.loop 轮次上限（maxRounds 8→32，autoContinueRounds 2→8）',
         'v18 → v19：v18 → v19：新增 automations 分组（自动化总开关，默认开启）',
         'v19 → v20：v19 → v20：新增 general.requireAdmin（要求管理员身份启动，默认开启）',
+        'v20 → v21：v20 → v21：新增 general.edgeBar.display / position（提示条显示器与屏幕侧）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1087,6 +1088,7 @@ describe('配置迁移链', () => {
         'v17 → v18：v17 → v18：放宽 agent.loop 轮次上限（maxRounds 8→32，autoContinueRounds 2→8）',
         'v18 → v19：v18 → v19：新增 automations 分组（自动化总开关，默认开启）',
         'v19 → v20：v19 → v20：新增 general.requireAdmin（要求管理员身份启动，默认开启）',
+        'v20 → v21：v20 → v21：新增 general.edgeBar.display / position（提示条显示器与屏幕侧）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({

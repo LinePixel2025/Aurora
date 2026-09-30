@@ -7,7 +7,7 @@
  * - 位置 / 尺寸写入 `general.windowState`，跨启动保留。
  */
 import { join } from 'node:path'
-import { BrowserWindow, nativeTheme, screen } from 'electron'
+import { BrowserWindow, nativeTheme, screen, type Display } from 'electron'
 import {
   WINDOW_NAMES,
   createInitialWindowState,
@@ -24,6 +24,7 @@ import {
   expandedEdgeBarHeight,
   placeEdgeBar,
   resizeEdgeBarKeepingAnchor,
+  type EdgeBarSide,
 } from './edge-bar-geometry.js'
 
 export interface WindowManagerOptions {
@@ -388,7 +389,8 @@ export class WindowManager {
       resizeEdgeBarKeepingAnchor(
         win.getBounds(),
         this.sizeFor('edge-bar'),
-        screen.getPrimaryDisplay().workArea,
+        this.edgeBarDisplay().workArea,
+        this.edgeBarSide(),
       ),
     )
     this.persistGeometry('edge-bar', win)
@@ -540,7 +542,8 @@ export class WindowManager {
       resizeEdgeBarKeepingAnchor(
         win.getBounds(),
         this.sizeFor('edge-bar'),
-        screen.getPrimaryDisplay().workArea,
+        this.edgeBarDisplay().workArea,
+        this.edgeBarSide(),
       ),
     )
   }
@@ -555,8 +558,9 @@ export class WindowManager {
 
     switch (spec.place) {
       case 'edge':
-        // 提示条：右缘贴工作区右缘、垂直居中，宽度按折叠态（收起 8 / 展开 228）
-        return placeEdgeBar(area, this.sizeFor(name))
+        // 提示条：贴工作区配置侧边缘、垂直居中，宽度按折叠态（收起 8 / 展开 228）。
+        // 显示器与屏幕侧 v21 起可配置（general.edgeBar.display / position，现读即生效）
+        return placeEdgeBar(this.edgeBarDisplay().workArea, this.sizeFor(name), this.edgeBarSide())
       case 'chat':
         return {
           x: Math.round(area.x + area.width - width - 12),
@@ -581,13 +585,33 @@ export class WindowManager {
       if (!this.edgeBarExpanded) {
         return { width: EDGE_BAR_WIDTHS.collapsed, height: EDGE_BAR_COLLAPSED_HEIGHT }
       }
-      // 展开态高度跟工作区走（全高面板），所以这里要读屏幕
+      // 展开态高度跟工作区走（全高面板），所以这里要读屏幕（贴附显示器，v21）
       return {
         width: EDGE_BAR_WIDTHS.expanded,
-        height: expandedEdgeBarHeight(screen.getPrimaryDisplay().workArea),
+        height: expandedEdgeBarHeight(this.edgeBarDisplay().workArea),
       }
     }
     return { width: spec.width, height: spec.height }
+  }
+
+  /**
+   * 提示条贴附的显示器（v21，`general.edgeBar.display`）：主显示器 / 光标所在显示器。
+   * 创建 / 显示 / 两态切换时现读（改完即生效）；光标坐标取不到时回落主显示器。
+   */
+  private edgeBarDisplay(): Display {
+    if (this.options.settings.get().general.edgeBar.display === 'cursor') {
+      try {
+        return screen.getDisplayMatching(screen.getCursorScreenPoint())
+      } catch (error) {
+        this.options.logger.debug('取光标所在显示器失败，回落主显示器', { error: String(error) })
+      }
+    }
+    return screen.getPrimaryDisplay()
+  }
+
+  /** 提示条贴附的屏幕侧（v21，`general.edgeBar.position`，现读配置）。 */
+  private edgeBarSide(): EdgeBarSide {
+    return this.options.settings.get().general.edgeBar.position
   }
 
   private readGeometry(
