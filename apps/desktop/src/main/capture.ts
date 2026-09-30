@@ -38,6 +38,8 @@ import type { WindowManager } from './window-manager.js'
  */
 export const SETTINGS_PAGE_IDS = [
   'general',
+  // 会话管理（2026-09-30 新增：项目管理自「通用」页迁入 + 会话列表）
+  'sessions',
   'modes',
   'llm',
   'voice',
@@ -807,14 +809,17 @@ export async function seedSnapshotFixture(userData: string): Promise<string> {
 }
 
 /**
- * 把「当前项目」指向临时目录（v13，docs/06 §5.1）。
+ * 设置页「会话管理」的项目区组探针（v13 项目机制，2026-09-30 自右栏迁入设置页）。
  *
  * 必须走 `settings:update` IPC：`SettingsStore.init()` 启动即把 config.json 读进内存并长期缓存，
  * 启动后写文件对运行中的进程无效。`projects` 是顶层浅合并，但 `list` 是数组整体权威 ——
  * 所以这里显式给出**完整**的 projects 子树（其余键从当前配置展开，不动 `maxAgentsBytes`）。
- * `check` 收尾会还原成"无项目"，后续场景读到的仍是出厂门控。
+ *
+ * ACT 把「当前项目」指向真实临时目录并等渲染层重算；两个 `projects.*` 锚点
+ * （`projects.name` / `projects.root`）随项目管理整组迁到 `?page=sessions`，
+ * 本场景的 query 已钉住那个页面。
  */
-export function chatProjectAct(root: string, name: string): string {
+export function settingsProjectAct(root: string, name: string): string {
   return `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
@@ -829,15 +834,15 @@ export function chatProjectAct(root: string, name: string): string {
         },
       })
       if (!result.ok) return { ok: false, reason: result.message }
-      // 等渲染层 store 收到 settings:changed 广播后重算卡片
+      // 等渲染层 store 收到 settings:changed 广播后重算项目行
       await wait(400)
     }
-    let cardShown = false
-    for (let attempt = 0; attempt < 15 && !cardShown; attempt += 1) {
-      cardShown = document.querySelector('[data-field="context.project-card"]') !== null
-      if (!cardShown) await wait(200)
+    let rowShown = false
+    for (let attempt = 0; attempt < 15 && !rowShown; attempt += 1) {
+      rowShown = document.querySelector('[data-field="projects.root"]') !== null
+      if (!rowShown) await wait(200)
     }
-    return { ok: true, cardShown }
+    return { ok: true, rowShown }
   } catch (error) {
     return { ok: false, reason: String(error) }
   }
@@ -848,7 +853,13 @@ export function chatProjectAct(root: string, name: string): string {
  * 右栏「当前项目」卡探针（v13，docs/06 §5.1）：卡恰好一张、文本含项目名与根目录、
  * **不是**"项目目录不可用"警示态；收尾还原成无项目并把 restored 并入 pass。
  */
-export function chatProjectCardCheck(name: string, missingRoot: string): string {
+/**
+ * 项目区组探针 · 后半（设置页版，假设 7 的现场）：项目行渲染出项目名与根路径、
+ * **不是**警示态；随后把根改成一个**不存在**的目录，断言警示文案真的出现
+ * （只在日志里 warn 而界面没提示，用户会以为 AGENTS.md 生效了却什么都没发生）。
+ * 判据：项目区组文案里出现「项目目录不可用」。收尾还原成无项目。
+ */
+export function settingsProjectCheck(name: string, missingRoot: string): string {
   return `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
@@ -857,22 +868,33 @@ export function chatProjectCardCheck(name: string, missingRoot: string): string 
       const el = document.querySelector(selector)
       return el === null ? '' : (el.textContent || '').replace(/\\s+/g, ' ').trim()
     }
-    const cardText = text('[data-field="context.project-card"]')
+    const pageText = text('.sessions-page')
+    // ⚠️ 项目名与根路径渲染在 <input :value> 里，**不在 textContent 中** ——
+    // 旧右栏卡用的是 <p> 文本节点，抄那套 textContent 断言会恒假（首跑实测）。
+    const fieldValue = (selector) => {
+      const input = document.querySelector(selector + ' input')
+      return input === null ? '' : input.value || ''
+    }
+    const nameValue = fieldValue('[data-field="projects.name"]')
+    const rootValue = fieldValue('[data-field="projects.root"]')
     const result = {
-      card: count('[data-field="context.project-card"]'),
-      cardText,
-      unavailable: count('[data-field="context.project-unavailable"]'),
+      nameField: count('[data-field="projects.name"]'),
+      rootField: count('[data-field="projects.root"]'),
+      addButton: count('[data-field="projects.add"]'),
+      nameValue,
+      rootValueLen: rootValue.length,
+      pageText: pageText.slice(0, 200),
       pass:
-        count('[data-field="context.project-card"]') === 1 &&
-        cardText.indexOf(${JSON.stringify(name)}) !== -1 &&
-        cardText.indexOf('capture-project') !== -1 &&
-        // prepare 已建出真实目录：这里必须是健康态，警示徽标一个都不该有
-        count('[data-field="context.project-unavailable"]') === 0,
+        count('[data-field="projects.name"]') === 1 &&
+        count('[data-field="projects.root"]') === 1 &&
+        count('[data-field="projects.add"]') === 1 &&
+        nameValue === ${JSON.stringify(name)} &&
+        rootValue.indexOf('capture-project') !== -1 &&
+        // prepare 已建出真实目录：这里必须是健康态，警示文案一个都不该有
+        pageText.indexOf('项目目录不可用') === -1,
     }
 
-    // 第二阶段（假设 7）：把项目根改成一个**不存在**的目录，断言警示态真的出现 ——
-    // 只在日志里 warn 而界面没提示，用户会以为 AGENTS.md 生效了却什么都没发生。
-    // 判据两条：卡仍在（项目还登记着）+ 警示徽标恰好一个 + 文案里出现「不可用」。
+    // 第二阶段（假设 7）：把项目根改成一个**不存在**的目录，断言警示文案出现
     const before = await window.aurora.settings.get()
     if (before.ok && before.value.projects.current === 'capture') {
       await window.aurora.settings.update({
@@ -883,18 +905,17 @@ export function chatProjectCardCheck(name: string, missingRoot: string): string 
       })
       let warned = false
       for (let attempt = 0; attempt < 15 && !warned; attempt += 1) {
-        warned = count('[data-field="context.project-unavailable"]') === 1
+        warned = text('.sessions-page').indexOf('项目目录不可用') !== -1
         if (!warned) await wait(200)
       }
-      result.warningCard = count('[data-field="context.project-card"]')
       result.warningShown = warned
-      result.warningText = text('[data-field="context.project-card"]').indexOf('项目目录不可用') !== -1
-      result.pass = result.pass === true && warned === true && result.warningText === true
+      result.pass = result.pass === true && warned === true
     } else {
       result.warningShown = null
       result.pass = false
     }
 
+    // 收尾：还原成无项目，后续场景读到的仍是出厂门控
     const state = await window.aurora.settings.get()
     if (state.ok) {
       await window.aurora.settings.update({
@@ -902,7 +923,7 @@ export function chatProjectCardCheck(name: string, missingRoot: string): string 
       })
     }
     await wait(250)
-    result.restored = count('[data-field="context.project-card"]') === 0
+    result.restored = count('[data-field="projects.name"]') === 0
     result.pass = result.pass === true && result.restored === true
     return result
   } catch (error) {
@@ -910,6 +931,101 @@ export function chatProjectCardCheck(name: string, missingRoot: string): string 
   }
 })()`
 }
+
+/**
+ * 「会话管理」页的**会话列表**探针（2026-09-30 新增）：列表渲染 + 归档往返 + 删除两步确认。
+ *
+ * 现场：seed 的 main 会话（Agent 空间）+ `chat-seed-archived`（已归档）—— 隔离 userData 里
+ * 至少两行，`sessions.row` 数 ≥ 2 顺带验证「归档会话照常列出、只是归到已归档组」。
+ *
+ * ACT 做一次完整的可逆往返（归档 → 取消归档）与一次**只到第一步**的删除
+ * （点「删除」后断言出现「确认删除」而没有真的删）：真删会毁掉后续场景依赖的 seed 现场，
+ * 因此删除的**执行**只断言到确认态为止（真正删文件的那条路径由 store 单测覆盖）。
+ */
+export const SETTINGS_SESSIONS_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const rowsNow = () => document.querySelectorAll('[data-field="sessions.row"]').length
+    const rows = () => Array.from(document.querySelectorAll('[data-field="sessions.row"]'))
+    // 选一行**未归档**的（归档钮文案为「归档」）：不依赖 seed 标题文本，
+    // 探针与夹具的文案解耦（标题随首条用户消息变，钉标题是最脆的一种写法）
+    const activeRow = () =>
+      rows().find((row) => {
+        const button = row.querySelector('[data-field="sessions.archive"]')
+        return button !== null && (button.textContent || '').trim() === '归档'
+      }) || null
+    const clickIn = (row, selector) => {
+      if (row === null) return false
+      const button = row.querySelector(selector)
+      if (button !== null) button.click()
+      return button !== null
+    }
+    const rowsBefore = rowsNow()
+    const titleOf = (row) => {
+      const el = row.querySelector('.session-title')
+      return el === null ? '' : (el.textContent || '').trim()
+    }
+    // ⚠️ 按**标题**而不是下标找行：归档后该行会移进「已归档」组（分组重排），
+    // 下标会指向另一行（首跑实测 archivedNow=false 的成因）。
+    const findByTitle = (value) =>
+      rows().find((row) => titleOf(row) === value) || null
+
+    // ① 归档往返：点「归档」后该行应带「取消归档」（同一次重拉列表后）
+    const targetBefore = activeRow()
+    const targetTitle = targetBefore === null ? null : titleOf(targetBefore)
+    const archiveClicked = clickIn(targetBefore, '[data-field="sessions.archive"]')
+    await wait(700)
+    const afterArchive = targetTitle === null ? null : findByTitle(targetTitle)
+    const archivedNow =
+      afterArchive !== null && (afterArchive.textContent || '').indexOf('取消归档') !== -1
+    if (archivedNow === true) clickIn(afterArchive, '[data-field="sessions.archive"]')
+    await wait(700)
+    const afterRestore = targetTitle === null ? null : findByTitle(targetTitle)
+    const unarchivedNow =
+      afterRestore !== null && (afterRestore.textContent || '').indexOf('取消归档') === -1
+
+    // ② 删除两步确认：第一次点只翻状态（出现「确认删除」，行数不变、没有真删）
+    const deleteClicked = clickIn(afterRestore, '[data-field="sessions.delete"]')
+    await wait(350)
+    const confirmShown = Array.from(
+      document.querySelectorAll('[data-field="sessions.delete"]'),
+    ).some((button) => (button.textContent || '').trim() === '确认删除')
+    const rowsAfterDeleteStep = rowsNow()
+    window.__auroraSessionsListProbe = {
+      rowsBefore,
+      targetTitle,
+      archiveClicked,
+      archivedNow,
+      unarchivedNow,
+      deleteClicked,
+      confirmShown,
+      rowsAfterDeleteStep,
+    }
+    return window.__auroraSessionsListProbe
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+export const SETTINGS_SESSIONS_CHECK = `(() => {
+  try {
+    const probe = window.__auroraSessionsListProbe
+    if (probe === undefined) return { pass: false, reason: 'no act probe' }
+    return {
+      ...probe,
+      pass:
+        probe.rowsBefore >= 2 &&
+        probe.archiveClicked === true &&
+        probe.archivedNow === true &&
+        probe.unarchivedNow === true &&
+        probe.deleteClicked === true &&
+        probe.confirmShown === true &&
+        probe.rowsAfterDeleteStep === probe.rowsBefore,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
 
 /**
  * 「文件备份」卡移出主界面的探针（2026-09 UI 收拢，回滚 UI 迁设置页 Agent 页）。
@@ -1080,11 +1196,11 @@ export const CHAT_JOB_PANEL_CHECK = `(async () => {
 })()`
 
 /**
- * 综合概览卡的探针（step 5）：右栏同时出现「当前项目 + 任务」两张卡。
+ * 综合概览卡的探针（step 5）：右栏出现「任务」面板 + 上下文卡，用于人工核对布局。
  *
- * 断言的是**布局不冲突**：两卡各自恰好一张、都渲染出来了，且任务卡显示的是真内容
- * （单独场景各自证明过"这张卡能出现"，这一张证明"多卡同时出现时不会互相挤掉"）。
- * 「文件备份」卡已迁设置页：这里顺带断言右栏不再出现快照卡（回归护栏）。
+ * 断言的是**布局不冲突**：任务面板在且显示真内容（「已暂停」），同时断言两类
+ * **已下线卡片**的缺席（回归护栏）：快照卡（2026-09 迁设置页）与两张项目卡
+ * （2026-09-30 迁「会话管理」页 —— `context.project-card` / `context.session-project-card`）。
  */
 export const CHAT_OVERVIEW_CHECK = `(async () => {
   try {
@@ -1092,23 +1208,24 @@ export const CHAT_OVERVIEW_CHECK = `(async () => {
     const count = (selector) => document.querySelectorAll(selector).length
     let ready = false
     for (let attempt = 0; attempt < 20 && !ready; attempt += 1) {
-      ready =
-        count('[data-field="context.project-card"]') === 1 &&
-        count('[data-field="chat.job-panel"]') === 1
+      ready = count('[data-field="chat.job-panel"]') === 1
       if (!ready) await wait(150)
     }
     const panel = document.querySelector('[data-field="chat.job-panel"]')
     const text = panel === null ? '' : (panel.textContent || '').replace(/\\s+/g, ' ').trim()
     return {
       project: count('[data-field="context.project-card"]'),
+      sessionProject: count('[data-field="context.session-project-card"]'),
       snapshots: count('[data-field="chat.snapshot-card"]'),
       jobs: count('[data-field="chat.job-panel"]'),
       text,
       pass:
-        count('[data-field="context.project-card"]') === 1 &&
         count('[data-field="chat.job-panel"]') === 1 &&
         // 快照卡已迁设置页（SnapshotList），右栏必须为 0
         count('[data-field="chat.snapshot-card"]') === 0 &&
+        // 两张项目卡已迁「会话管理」页（2026-09-30），右栏必须为 0
+        count('[data-field="context.project-card"]') === 0 &&
+        count('[data-field="context.session-project-card"]') === 0 &&
         text.indexOf('已暂停') !== -1,
     }
   } catch (error) {
@@ -3799,13 +3916,21 @@ export const CHAT_SESSION_GROUPS_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const count = (selector) => document.querySelectorAll(selector).length
   try {
+    const rows = () =>
+      Array.from(document.querySelectorAll('[data-field="chat.project-group"] .session-list'))
+        .map((el) => el.querySelectorAll('.nav-item').length)
+        .reduce((sum, value) => sum + value, 0)
     const factory = {
       agentGroup: count('[data-field="chat.agent-group"]'),
       sessionList: count('[data-field="chat.session-list"]'),
       quickItem: count('[data-field="chat.quick-item"]'),
       workGroup: count('[data-field="chat.work-group"]'),
+      // 项目区**常显**（标题行有「添加项目」钮）：出厂现场判定看「有没有项目子分组」
       projectGroup: count('[data-field="chat.project-group"]'),
+      projectAddButton: count('[data-action="chat.add-project"]'),
+      projectRows: rows(),
       agentRows: count('[data-field="chat.session-list"] .nav-item'),
+      agentAddButton: count('[data-action="chat.new-agent-session"]'),
     }
     // 阶段 B：登记截图项目（projects.list 是数组整体权威，显式给完整子树）
     const state = await window.aurora.settings.get()
@@ -3818,12 +3943,21 @@ export const CHAT_SESSION_GROUPS_ACT = `(async () => {
       },
     })
     if (!update.ok) return { ok: false, reason: update.message }
-    let projectGroup = 0
-    for (let attempt = 0; attempt < 15 && projectGroup === 0; attempt += 1) {
-      projectGroup = count('[data-field="chat.project-group"]')
-      if (projectGroup === 0) await wait(200)
+    // 等待条件 = **项目子分组头出现**（`+` 钮）而不是「子分组里有会话行」：
+    // 刚登记的项目还没有任何会话，子分组下自然没有行（这是正确行为，不是缺陷）。
+    const projectText = () => {
+      const el = document.querySelector('[data-field="chat.project-group"]')
+      return el === null ? '' : (el.textContent || '').replace(/\\s+/g, ' ').trim()
     }
+    let projectHeader = 0
+    for (let attempt = 0; attempt < 15 && projectHeader === 0; attempt += 1) {
+      projectHeader = count('[data-action="chat.new-project-session"]')
+      if (projectHeader === 0) await wait(200)
+    }
+    const projectGroup = count('[data-field="chat.project-group"]')
     const projectAdd = count('[data-action="chat.new-project-session"]')
+    const projectRows = rows()
+    const projectNameShown = projectText().indexOf('截图项目') !== -1
     // 阶段 C：切 Work 模式
     const mode = await window.aurora.mode.set('work')
     if (!mode.ok) return { ok: false, reason: 'mode.set failed: ' + mode.message }
@@ -3833,7 +3967,15 @@ export const CHAT_SESSION_GROUPS_ACT = `(async () => {
       if (workGroup === 0) await wait(200)
     }
     const workAdd = count('[data-action="chat.new-work-session"]')
-    window.__auroraSessionGroupsProbe = { factory, projectGroup, projectAdd, workGroup, workAdd }
+    window.__auroraSessionGroupsProbe = {
+      factory,
+      projectGroup,
+      projectAdd,
+      projectRows,
+      projectNameShown,
+      workGroup,
+      workAdd,
+    }
     return { ok: true, factory, projectGroup, projectAdd, workGroup, workAdd }
   } catch (error) {
     return { ok: false, reason: String(error) }
@@ -3852,10 +3994,19 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
       factory.sessionList === 1 &&
       factory.quickItem === 1 &&
       factory.workGroup === 0 &&
-      factory.projectGroup === 0 &&
+      // 项目区常显（添加项目入口），但出厂现场**没有项目子分组**
+      factory.projectGroup === 1 &&
+      factory.projectAddButton === 1 &&
+      factory.projectRows === 0 &&
+      factory.agentAddButton === 1 &&
       factory.agentRows >= 1
+    // 项目已登记：子分组头（`+`）在场、项目名出现在分组标题里。
+    // 不断言「子分组里有会话行」—— 新登记的项目本来就没有会话（新建入口就是那个 `+`）。
     const projectOk =
-      probe !== undefined && probe.projectGroup === 1 && probe.projectAdd === 1
+      probe !== undefined &&
+      probe.projectGroup === 1 &&
+      probe.projectAdd === 1 &&
+      probe.projectNameShown === true
     const workOk = probe !== undefined && probe.workGroup === 1 && probe.workAdd === 1
 
     // 收尾还原：模式切回 classroom、项目清空，两区随之消失（还原结果并入 pass）
@@ -3868,10 +4019,14 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
       })
       if (back.ok && clear.ok) {
         restored = true
+        const projectRowsNow = () =>
+          Array.from(document.querySelectorAll('[data-field="chat.project-group"] .session-list'))
+            .map((el) => el.querySelectorAll('.nav-item').length)
+            .reduce((sum, value) => sum + value, 0)
         for (let attempt = 0; attempt < 10 && restored; attempt += 1) {
+          // 项目区常显（添加项目钮），还原的判据是「工作目录区消失 + 项目子分组清空」
           restored =
-            count('[data-field="chat.work-group"]') === 0 &&
-            count('[data-field="chat.project-group"]') === 0
+            count('[data-field="chat.work-group"]') === 0 && projectRowsNow() === 0
           if (!restored) await wait(200)
         }
       }
@@ -3879,7 +4034,11 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
     return {
       factory,
       projectGroup: probe === undefined ? null : probe.projectGroup,
+      projectAdd: probe === undefined ? null : probe.projectAdd,
+      projectRows: probe === undefined ? null : probe.projectRows,
+      projectNameShown: probe === undefined ? null : probe.projectNameShown,
       workGroup: probe === undefined ? null : probe.workGroup,
+      workAdd: probe === undefined ? null : probe.workAdd,
       restored,
       pass: factoryOk && projectOk && workOk && restored,
     }
@@ -4039,8 +4198,7 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
     const projectsEmpty = emptyStates.indexOf('projects.list') !== -1
     // 本页**预期**会出现的 data-empty：提示条停用时那一条，与"还没有项目"那一条。
     // 其余任何空态出现都是回归（照 SETTINGS_AGENT_FIELDS_SCRIPT 的白名单口径）。
-    const unexpected = emptyStates.filter(
-      (name) => name !== 'general.edgeBar' && name !== 'projects.list',
+    const unexpected = emptyStates.filter((name) => name !== 'general.edgeBar')
     )
     const activeMode = document.querySelector('.cards .card.active .card-head strong')
     const activeNav = document.querySelector('.nav-item.active')
@@ -4059,15 +4217,17 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
       activeMode: activeMode === null ? null : (activeMode.textContent || '').trim(),
       emptyStates,
       // 死字段（general.language）在任何页面都不该出现；提示条详情跟着开关走；
-      // 全局勿扰时段两个字段必须随页常在；项目区组要么给出空态、要么至少渲染一行；
-      // 且不得出现两块预期空态之外的 data-empty。
+      // 全局勿扰时段两个字段必须随页常在；且不得出现预期空态之外的 data-empty。
+      // **项目区组已于 2026-09-30 迁「会话管理」页**：本页 projects.* 锚点必须为 0
+      // （回归护栏 —— 区组在原处留下的话，两处入口会各自写一遍 projects 子树），
+      // 项目正例断言见 settings-sessions-project.png。
       pass:
         languageFields === 0 &&
         quietHoursFields === 2 &&
         requireAdminField === 1 &&
         (edgeBarToggle === 0 ? edgeBarDetail === 0 : edgeBarDetail > 0) &&
-        (projectsEmpty || projectsRows > 0) &&
-        (projectsEmpty || projectsFields > 0) &&
+        projectsFields === 0 &&
+        projectsRows === 0 &&
         unexpected.length === 0,
     }
   } catch (error) {
@@ -6348,23 +6508,7 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
   )
 }
 
-/**
- * 场景可用的**配置层钩子**：`capture.ts` 本身不碰 `SettingsStore`（它只负责截图与 DOM 探针），
- * 需要改配置的场景由装配层（`index.ts` 的 `runCapture`）把动作注进来。
- *
- * 目前只有"切换当前项目"一项：综合概览卡要同时展示项目卡 / 快照卡 / 任务卡，
- * 而项目卡只在**配置了当前项目**时渲染。
- */
-export interface CapturePlanHooks {
-  /** 把当前项目切到给定条目；传 `undefined` 表示还原成"无项目" */
-  setProject?(project: { id: string; name: string; root: string } | undefined): void
-}
-
-export function defaultCapturePlan(
-  manager: WindowManager,
-  userData: string,
-  hooks: CapturePlanHooks = {},
-): CaptureTarget[] {
+export function defaultCapturePlan(manager: WindowManager, userData: string): CaptureTarget[] {
   const theme = activeTheme()
   const plan: CaptureTarget[] = [
     { name: 'edge-bar', file: 'edge-bar.png' },
@@ -6430,19 +6574,6 @@ export function defaultCapturePlan(
       act: CHAT_SESSION_GROUPS_ACT,
       check: CHAT_SESSION_GROUPS_CHECK,
     },
-    // 右栏「当前项目」卡（v13，docs/06 §5.1；docs/07 §2.3）：
-    // prepare 先在 userData 下建出真实项目根（让"根可用"这个健康态成立），
-    // act 把 projects.current 指过去，check 先断言卡片出现且不是警示态、
-    // 再把根改成一个**不存在**的目录断言警示态出现（假设 7 的可见提示），最后还原成无项目。
-    {
-      name: 'chat',
-      file: 'chat-project-card.png',
-      prepare: async () => {
-        await mkdir(captureProjectRoot(userData), { recursive: true })
-      },
-      act: chatProjectAct(captureProjectRoot(userData), '截图项目'),
-      check: chatProjectCardCheck('截图项目', captureMissingProjectRoot(userData)),
-    },
     // 「文件备份」卡移出主界面（2026-09，回滚 UI 迁设置页 Agent 页）：
     // prepare 仍种一份真实快照（反例现场必须有数据）并 reload，check 断言右栏
     // **不再出现**快照卡（chat.snapshot-card / chat.snapshot-restore 均为 0）；
@@ -6469,20 +6600,17 @@ export function defaultCapturePlan(
       },
       check: CHAT_JOB_PANEL_CHECK,
     },
-    // 综合概览（step 5）：右栏同时挂「当前项目 + 任务」两张卡，用于人工核对布局。
-    // 现场两样都要现种：项目根 + 一份 paused job，然后 reload 让两张卡一起水合。
-    // （「文件备份」卡已迁设置页：右栏不再有快照卡，check 里附带断言它的缺席。）
+    // 综合概览（step 5）：右栏挂「任务」面板 + 上下文卡，用于人工核对布局。
+    // 「当前项目」卡已随项目管理迁设置页（2026-09-30）：这里改为断言右栏**不再有**项目卡
+    // （`context.project-card` / `context.session-project-card` 恒为 0，回归护栏）。
+    // 现场要现种一份 paused job，然后 reload 让面板水合；项目根仍建出来是因为
+    // verify 的 AGENTS.md 假设依赖它存在。
     {
       name: 'chat',
       file: 'chat-agent-prod-overview.png',
       prepare: async () => {
         await mkdir(captureProjectRoot(userData), { recursive: true })
         await seedJobFixture(userData)
-        hooks.setProject?.({
-          id: 'capture-overview',
-          name: '截图项目',
-          root: captureProjectRoot(userData),
-        })
         await manager.reload('chat', {})
       },
       check: CHAT_OVERVIEW_CHECK,
@@ -6757,6 +6885,30 @@ export function defaultCapturePlan(
     file: 'settings-legacy-tts-alias.png',
     query: { page: 'tts' },
     check: SETTINGS_LEGACY_ALIAS_SCRIPT,
+  })
+  // 「会话管理」页 · 项目区组（2026-09-30 自「通用」页迁入，docs/06 §5.1）：
+  // prepare 先建出真实项目根（让"根可用"这个健康态成立），act 把 projects.current 指过去，
+  // check 断言两个字段锚点在、显示项目名与根路径，再把根改成不存在的目录断言
+  // **警示文案**出现（假设 7 的可见提示），最后还原成无项目。
+  plan.push({
+    name: 'settings',
+    file: 'settings-sessions-project.png',
+    query: { page: 'sessions' },
+    prepare: async () => {
+      await mkdir(captureProjectRoot(userData), { recursive: true })
+    },
+    act: settingsProjectAct(captureProjectRoot(userData), '截图项目'),
+    check: settingsProjectCheck('截图项目', captureMissingProjectRoot(userData)),
+  })
+  // 「会话管理」页 · 会话列表（2026-09-30 新增）：列表渲染 + 归档往返 + 删除两步确认。
+  // 现场依赖 seed 的 main 会话与已归档会话（runCapture 在跑计划前种好）；本场景带 query，
+  // 设置窗会重新挂载，列表在 onMounted 自有首读，不需要额外 reload。
+  plan.push({
+    name: 'settings',
+    file: 'settings-sessions-list.png',
+    query: { page: 'sessions' },
+    act: SETTINGS_SESSIONS_ACT,
+    check: SETTINGS_SESSIONS_CHECK,
   })
   // 设置页「文件备份」列表（2026-09，回滚 UI 自主界面右栏迁入 Agent 页）：
   // prepare 种一份真实快照（走真实端口 + flush，不是手写 json），随后**带 query 重载**

@@ -92,20 +92,28 @@
     **「已归档 · N」分组**（`data-field="chat.archive-group"`，默认收起；展开后的列表是
     `data-field="chat.archive-list"`，**三个分区的会话共用这一个归档分组**）→
     底部：模式徽章 + 右栏开关（`data-field="chat.right-panel-toggle"`）+ 设置齿轮。
-    三个分区自上而下：
-    1. **项目对话**（`data-field="chat.project-group"`）：按 `projects.list` 顺序的**项目子分组**
-       （子分组标题 = 项目名，标题旁 `+` 钮 `data-action="chat.new-project-session"`，
-       新建即绑定该项目）；会话项 = 绑定了 `projectId` 的会话（`ChatSessionSummary.projectId`）。
+    三个分区自上而下（分区标题用 `.group-caption`：正体、`--text-sm`、次级文字色 ——
+    **不能用 `text-transform: uppercase` + 大字距的 eyebrow 样式**，中文没有大小写，
+    那样只会把「AGENT对话」拉得又稀又淡，2026-09-30 用户反馈可读性差后改的）：
+    1. **项目对话**（`data-field="chat.project-group"`，**常显**）：按 `projects.list` 顺序的
+       **项目子分组**（子分组标题 = 项目名，标题旁 `+` 钮
+       `data-action="chat.new-project-session"`，新建即绑定该项目）；
+       会话项 = 绑定了 `projectId` 的会话（`ChatSessionSummary.projectId`）。
+       **分区标题行右侧是「添加项目」钮**（`data-action="chat.add-project"`：
+       弹系统目录选择框 → 加入 `projects.list`，与设置页同一条链路与 id 规则；
+       整区常显正是因为它是主界面唯一的项目登记入口 —— 没有项目时也不能没有它；
+       **不自动设为当前项目**，避免静默改变全局权限边界）。
        绑定项目已被删除的孤儿会话**归入 Agent对话区**显示（解析链上它们已按未绑定回落）。
     2. **工作目录对话**（`data-field="chat.work-group"`）：**仅 Work 模式渲染**
        （`modes.current === 'work'`，ClassRoom / Code 无此区）；`space: 'work'` 的会话；
-       分组标题旁 `+` 钮 `data-action="chat.new-work-session"`。切走 Work 模式后该区隐藏
+       标题行 `+` 钮 `data-action="chat.new-work-session"`。切走 Work 模式后该区隐藏
        （会话仍在，切回来照常显示）。
     3. **Agent对话**（`data-field="chat.agent-group"`）：`space: 'agent'` 或未标记的会话
        （含历史会话与 `main`）；**首行固定是 quick 会话**（沿用 `data-field="chat.quick-item"`
-       锚点；提示条面板与其共用同一会话文件，见 §2.2）。旧「会话列表」锚点
-       `data-field="chat.session-list"` 挂在本区的列表容器上（Agent 空间是未标记会话的
-       缺省分区，「主会话列表」的语义由它承接）。
+       锚点；提示条面板与其共用同一会话文件，见 §2.2）；标题行 `+` 钮
+       （`data-action="chat.new-agent-session"`）与顶部「新对话」同效（都显式标 agent 空间）。
+       旧「会话列表」锚点 `data-field="chat.session-list"` 挂在本区的列表容器上
+       （Agent 空间是未标记会话的缺省分区，「主会话列表」的语义由它承接）。
     固定顶置项其余三个不变：子代理（`chat.subagent-item`）/ 自动化（`chat.auto-item`）/
     任务（`chat.jobs-entry`）—— 前一个切**主区**，后两个开关**右栏面板**；「快速对话」不再
     是固定顶置项（它的入口随 Agent对话区下沉）。空态文案按分区显示：项目对话区空时不渲染
@@ -169,25 +177,17 @@
     `context.classisland-current` / `context.classisland-next` 两行、无数据时
     `context.classisland-empty`）+ 今日课程卡（`data-field="context.lesson-card"`）+
     分类流水（紧凑）+ 感知文件夹打开；work = 工作目录卡（打开 + 前往设置）+ 办公提示卡；
-    通用 = **会话项目卡（v17 新增，`data-field="context.session-project-card"`；无可绑定项目
-    或拿不到会话 id 时整卡不渲染；内含下拉 `data-field="context.session-project"`）**
-    —— 本会话绑定 `projects.list` 里的一项（选择即调 `chat:setSessionProject`，空串 =
-    清除绑定回显「未指定（跟随全局）」），未绑定时缺省目录 / 项目边界 / AGENTS.md / auto 档
-    边界回落全局当前项目（`06 §5.1`）
-    + **当前项目卡（v13 新增，`data-field="context.project-card"`；无当前项目时整卡不渲染）**
-    （**文件备份卡已于 v0.2.4 移除**：回滚 / 清理 UI 整体迁入设置页「智能与工具」页的
-    文件备份区组，主界面右栏不再展示快照列表 —— 见下文「文件备份」与 06 §11.8。）
-    + 系统状态卡（时间 / 电量 / 网络 / 前台应用）。**非当前模式的功能一律不渲染**。
+    通用 = 系统状态卡（时间 / 电量 / 网络 / 前台应用）。**非当前模式的功能一律不渲染**。
     课堂状态卡的数据来自桥接的快照（`05 §3.4 v3`）：上课中才显示当前科目与时段，
     下节课显示「科目 · 起–止」；字段缺失按「暂无课堂状态」降级，不编造。
-    当前项目卡（`06 §5.1`）显示项目名与项目根；根可用时「打开文件夹」走 `app:openPath` 的
-    **新 kind `project`**（打开的是**当前项目根**，与 `kind: 'workspace'` 不同 —— 后者打开的是
-    生效工作目录：回落链（当前项目根 > 激活模式工作目录（Work）> `agent.tools.workspaceDir` > 主目录，06 §5.1），配了项目时
-    两者都会打开项目根，无项目时 `workspace` 打开主目录或配置的工作目录）；根不可用（目录被删 / 不可读）时
-    显示 `class="badge error"` 的「项目目录不可用」徽标与「去设置里重新选择目录」，
-    **不渲染「打开文件夹」**（点了只会弹系统错误，反而让人以为路径没问题）。
-    "目录是否存在"由主进程经 `project:status` 回传（渲染进程没有文件系统能力），
-    取不到状态时按「可用」处理 —— 显示假警报比不显示更糟。
+    （**两张项目卡已于 2026-09-30 下线**：「会话项目」绑定下拉（`context.session-project-card`）
+    与「当前项目」卡（`context.project-card`，含 `context.project-unavailable` 警示徽标）
+    经用户判定为无用 —— 项目信息在左栏「项目对话」分区按项目名分组已完整可见，
+    绑定入口收敛为各项目分组头的 `+`（新建即绑定），项目登记与根可用性警示迁到
+    设置页「会话管理」（`projects.*` 锚点 + 警示文案，见 08 §7）；
+    两卡的缺席由 `chat-agent-prod-overview` 探针回归护栏钉住。
+    **「文件备份」卡已于 v0.2.4 移除**：回滚 / 清理 UI 整体迁入设置页「智能与工具」页的
+    文件备份区组，主界面右栏不再展示快照列表 —— 见下文「文件备份」与 06 §11.8。）
 - **麦克风（STT，BetaV2）**：composer 的麦克风按钮（`data-field="chat.mic"`）门控口径同 TTS：
   `stt.enabled && stt.active` 指向 baseUrl / model 齐全的 provider 才渲染按钮，
   **否则连按钮都不渲染**（不是 disabled）；录音走 MediaRecorder → `stt:transcribe`，

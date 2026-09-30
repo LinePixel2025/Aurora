@@ -1874,19 +1874,9 @@ async function runCapture(dir: string): Promise<void> {
   }
   const plan = filterCapturePlan(
     [
-      ...defaultCapturePlan(manager, app.getPath('userData'), {
-        // 综合概览场景要项目卡在场：由装配层改配置（capture.ts 不碰 SettingsStore）
-        setProject: (project) => {
-          const current = settings?.get().projects
-          if (current === undefined) return
-          settings?.update({
-            projects:
-              project === undefined
-                ? { ...current, current: '', list: [] }
-                : { ...current, current: project.id, list: [project] },
-          })
-        },
-      }),
+      // 项目卡已下线（2026-09-30）：项目现场改由 capture.ts 内部的 settingsProjectAct
+      // 走 `settings:update` IPC 自建，装配层不再注入配置层钩子
+      ...defaultCapturePlan(manager, app.getPath('userData')),
       chatStreamTarget,
       chatBurstTarget,
     ],

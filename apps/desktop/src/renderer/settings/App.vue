@@ -17,6 +17,7 @@
 import { computed, onMounted, onUnmounted, ref, type Component } from 'vue'
 import AppToast from '../shared/components/AppToast.vue'
 import GeneralPage from './pages/GeneralPage.vue'
+import SessionsPage from './pages/SessionsPage.vue'
 import ModesPage from './pages/ModesPage.vue'
 import LlmPage from './pages/LlmPage.vue'
 import VoicePage from './pages/VoicePage.vue'
@@ -27,6 +28,7 @@ import WindowCaption from '../shared/components/WindowCaption.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import {
+  Archive,
   AudioLines,
   Cpu,
   House,
@@ -37,7 +39,15 @@ import {
   Sparkles,
 } from '../shared/icons.js'
 
-type PageId = 'general' | 'modes' | 'llm' | 'voice' | 'agent' | 'center' | 'advanced'
+type PageId =
+  | 'general'
+  | 'sessions'
+  | 'modes'
+  | 'llm'
+  | 'voice'
+  | 'agent'
+  | 'center'
+  | 'advanced'
 
 interface NavItem {
   id: PageId
@@ -49,6 +59,7 @@ interface NavItem {
 /** 扁平清单同时是「页面 id → 标签 / 图标」的查表数据（深链校验也用它） */
 const nav: NavItem[] = [
   { id: 'general', label: '通用', icon: House },
+  { id: 'sessions', label: '会话管理', icon: Archive },
   { id: 'modes', label: '模式', icon: LayoutGrid },
   { id: 'llm', label: 'AI 模型', icon: Cpu },
   { id: 'voice', label: '语音', icon: AudioLines },
@@ -62,7 +73,7 @@ const nav: NavItem[] = [
  * Aurora Center 是独立的远程控制通道（docs/12），不属智能能力也不属本机运维，单独成组。
  */
 const navGroups: Array<{ title: string; ids: PageId[] }> = [
-  { title: '基础', ids: ['general', 'modes'] },
+  { title: '基础', ids: ['general', 'sessions', 'modes'] },
   { title: '智能', ids: ['llm', 'voice', 'agent'] },
   { title: '连接', ids: ['center'] },
   { title: '系统', ids: ['advanced'] },
@@ -81,6 +92,7 @@ const grouped = computed(() =>
 /** 页面 id → 组件：`<component :is>` 渲染当前页，配合 `<Transition name="page">` 做切换动画 */
 const pages: Record<PageId, Component> = {
   general: GeneralPage,
+  sessions: SessionsPage,
   modes: ModesPage,
   llm: LlmPage,
   voice: VoicePage,

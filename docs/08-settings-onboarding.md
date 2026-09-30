@@ -659,9 +659,19 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 - **页面骨架**：所有页面统一「标题 + 一句话说明 + 分组卡片」（`theme.css` 的
   `.page` / `.page-title` / `.page-sub` + `settings/settings.css` 的 `.section-card` /
   `.section-title` / `.section-desc` / `.empty-state`）；侧栏按「基础 / AI 能力 / 系统」三组排列。
-- **页面结构（v8 目标口径，UI 由另一任务实施，本节为目标 IA）**：设置页由 8 页并为 **6 页**
-  （`SETTINGS_PAGE_IDS = ['general', 'modes', 'llm', 'voice', 'agent', 'advanced']`），侧栏仍三组排列：
-  - **基础**：`general` 通用（启动与快捷键 / **项目（v13 新增）** / 提示条 / 勿扰时段——全局 + 提示条两组同区 / 关于与更新）、
+- **页面结构（2026-09-30 起 8 页；本节为目标 IA）**：设置页由 8 页并为 **6 页**，
+  再于 2026-09-30 新增 `sessions` 会话管理，现为 **8 页**
+  （`SETTINGS_PAGE_IDS = ['general', 'sessions', 'modes', 'llm', 'voice', 'agent', 'center', 'advanced']`），
+  侧栏仍三组排列：
+  - **基础**：`general` 通用（启动与快捷键 / 提示条 / 勿扰时段——全局 + 提示条两组同区 / 关于与更新）、
+    **`sessions` 会话管理（2026-09-30 新增）**：
+    **项目管理区组整体自「通用」页迁入**（`projects.*` 锚点与逻辑原样搬，见 §1 的 `projects`；
+    项目根可用性警示也从右栏卡改到这里的 AppToast 文案「项目目录不可用」）+
+    **会话列表区组**（`data-field="sessions.section"` / 行 `sessions.row`）：
+    按左栏三分口径分组展示（项目对话 / 工作目录对话 / Agent对话 / 已归档），行内提供
+    **归档 / 取消归档**（可逆，`chat:archiveSession`）与**删除**（不可逆，
+    `chat:deleteSession`：**两步确认** —— 第一次点翻成「确认删除」+「取消」，第二次点才真删；
+    主进程对「还有 running 任务」的会话拒绝 `E_INVALID_STATE`，删的是 `sessions/<id>.json` 文件本体）、
     `modes` 模式（**自动化总开关区组（v19，`automations.enabled`，不跟模式门控）** + 模式卡 +
     ClassRoom 区组 + Work 区组，见 §7）；
   - **AI 能力**：`llm` AI 模型（provider 管理 + 「显示思考过程」开关 + 生图模型区组，见 §5）、
