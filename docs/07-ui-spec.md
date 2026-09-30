@@ -88,15 +88,14 @@
     **「已归档 · N」分组**（`data-field="chat.archive-group"`，默认收起；展开后的列表是
     `data-field="chat.archive-list"`）→
     底部：模式徽章 + 右栏开关（`data-field="chat.right-panel-toggle"`）+ 设置齿轮。
-  - **左栏底部固定项「任务」（v15 新增）**：`data-field="chat.jobs-entry"`，
-    落在 `aside.nav` 网格的**第二行**（= SessionNav 自带页脚那一行**之下**、左栏的最底部），
-    不随会话列表滚动；角标是本会话的任务条数（内部 `.jobs-count`，有在跑的用强调色）。
-    点击展开 / 收起右栏的「任务」面板（`aria-expanded` 跟 `jobsOpen`）。
-    **它与「子代理」的位置刻意相反**：「子代理」（`chat.subagent-item`）是左栏**顶部**固定项
-    （在「快速对话」下面、会话列表之上，因为它把**主区**切走），而「任务」只切换**右栏**里一块面板，
-    放底部才不会与"切主区"的那组争夺视线。
-    （v19 起左栏**顶部固定项**共三个：`chat.quick-item` 快速对话 / `chat.subagent-item` 子代理 /
-    `chat.auto-item` 自动化 —— 后两个切的是**主区**，见下条「子代理独立页面」与「自动化页规格」。）
+  - **左栏固定项「任务」（v15 新增；2026-09-30 收拢进 SessionNav 顶部固定项组）**：
+    `data-field="chat.jobs-entry"`，与 快速对话 / 子代理 / 自动化 同一组**顶部固定项**
+    （旧「左栏底部固定项」的一处两式样式已随杂糅清理删除，`aside.nav` 回到单行网格）；
+    角标是本会话的任务条数（复用 `.count-badge`，有在跑的用强调色）。
+    点击展开 / 收起右栏的「任务」面板（`aria-expanded` 跟 `jobsOpen`）；
+    面板容器锚点仍是 App.vue 的 `chat.jobs`（与按钮不同元素）。
+    （左栏**顶部固定项**现为四个：`chat.quick-item` 快速对话 / `chat.subagent-item` 子代理 /
+    `chat.auto-item` 自动化 / `chat.jobs-entry` 任务 —— 前两个切**主区**，后两个开关**右栏面板**。）
   - **会话归档（2026-09 新增）**：会话项 hover 时右侧浮出一枚「归档」图标钮
     （`data-action="chat.archive-session"`，单击即归档、**可逆、不弹确认**）；
     归档后该会话从主列表移入底部「已归档 · N」分组，**仍可点开继续对话**，此时主区头部给一条

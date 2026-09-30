@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
- * 主界面左栏（2026-09 重构，docs/07 §2.3）：品牌行 → 新对话 → 固定项（快速对话 / 子代理）
- * → 会话列表 →「已归档 · N」分组 → 底部（模式徽章 / 右栏开关 / 设置齿轮）。
+ * 主界面左栏（2026-09 重构，docs/07 §2.3）：品牌行 → 新对话 → 固定项（快速对话 / 子代理 /
+ * 自动化 / 任务）→ 会话列表 →「已归档 · N」分组 → 底部（模式徽章 / 右栏开关 / 设置齿轮）。
+ * 「任务」入口 2026-09-30 自 App.vue 收拢进这里——左栏固定项不再一处两式（去杂糅）。
  *
  * 面板内的快速对话入口在**桌面提示条**（悬停展开的面板，docs/07 §2.2）；
  * 主界面左栏的固定项沿用「点击切换主区内容」口径：快速对话切到 `quick` 会话，
@@ -28,6 +29,7 @@ import {
   ArchiveRestore,
   Bot,
   ChevronRight,
+  ListChecks,
   PanelRight,
   Settings,
   Sparkles,
@@ -51,6 +53,12 @@ const props = defineProps<{
   subagentCount: number
   /** 其中是否还有在跑的（角标用 running 色） */
   subagentRunning: boolean
+  /** 本会话任务条数（任务固定项角标；0 = 不渲染角标） */
+  jobsCount: number
+  /** 其中是否还有在跑的（角标用 running 色） */
+  jobsRunning: boolean
+  /** 任务面板是否展开（入口激活态） */
+  jobsOpen: boolean
 }>()
 
 const emit = defineEmits<{
@@ -62,6 +70,8 @@ const emit = defineEmits<{
   /** 切到自动化页面（docs/13 §11） */
   (event: 'openAutomations'): void
   (event: 'toggleRightPanel'): void
+  /** 任务面板开关（原 App.vue 的 .nav-jobs，2026-09-30 收拢进本组件） */
+  (event: 'toggleJobs'): void
   (event: 'openSettings'): void
 }>()
 
@@ -168,6 +178,30 @@ function formatRelativeTime(iso: string): string {
     >
       <Workflow class="icon" :size="14" :stroke-width="1.6" aria-hidden="true" />
       <span class="item-title">自动化</span>
+    </button>
+
+    <!--
+      固定顶置项：任务面板开关（原在 App.vue 的 .nav-jobs，2026-09-30 去杂糅收拢进本组件——
+      左栏固定项不再一处两式）。角标 = 本会话任务条数；`chat.jobs-entry` 探针锚点随按钮迁入，
+      面板容器锚点仍是 App.vue 的 `chat.jobs`（两者不同元素）。
+    -->
+    <button
+      type="button"
+      class="quick-item hover-fill press"
+      data-field="chat.jobs-entry"
+      :class="{ active: props.jobsOpen }"
+      :aria-expanded="props.jobsOpen"
+      :title="props.jobsOpen ? '收起任务面板' : '展开任务面板'"
+      @click="emit('toggleJobs')"
+    >
+      <ListChecks class="icon" :size="14" :stroke-width="1.6" aria-hidden="true" />
+      <span class="item-title">任务</span>
+      <span
+        v-if="props.jobsCount > 0"
+        class="count-badge tiny"
+        :class="{ running: props.jobsRunning }"
+        >{{ props.jobsCount }}</span
+      >
     </button>
 
     <nav class="nav-scroll">

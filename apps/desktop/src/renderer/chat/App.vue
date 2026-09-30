@@ -60,7 +60,7 @@ import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
 import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.js'
-import { ArrowUp, ListChecks, Mic, PanelLeft, Trash2, X } from '../shared/icons.js'
+import { ArrowUp, Mic, PanelLeft, Trash2, X } from '../shared/icons.js'
 
 const chat = useChat('chat', 'main')
 const {
@@ -980,6 +980,10 @@ async function markGuideDone(): Promise<void> {
   <div class="app-shell">
     <!-- ── 左栏：品牌 / 新对话 / 快速对话面板 / 会话列表 / 底部工具 ── -->
     <aside class="nav" :class="{ collapsed: !navOpen }">
+      <!--
+        左栏固定项已整体收进 SessionNav（2026-09-30 去杂糅：任务入口从本组件迁入，
+        不再一处两式）。`chat.jobs-entry` 锚点随按钮迁走，面板容器锚点仍是 `chat.jobs`。
+      -->
       <SessionNav
         :sessions="sessionItems"
         :archived-sessions="archivedSessionItems"
@@ -988,38 +992,18 @@ async function markGuideDone(): Promise<void> {
         :view="view"
         :subagent-count="subagentRuns.length"
         :subagent-running="subagentRunning"
+        :jobs-count="jobs.length"
+        :jobs-running="jobsRunning"
+        :jobs-open="jobsOpen"
         @new-session="startNewSession"
         @select="selectSession"
         @archive-session="(id, archived) => void setArchived(id, archived)"
         @open-subagents="view = 'subagents'"
         @open-automations="view = 'automations'"
         @toggle-right-panel="contextOpen = !contextOpen"
+        @toggle-jobs="jobsOpen = !jobsOpen"
         @open-settings="windowStore.show('settings')"
       />
-
-      <!--
-        左栏固定项：任务面板开关（2026-09 新增，docs/06 §4.1）。
-        它固定在左栏底部、不随会话列表滚动；角标显示本会话的任务条数，
-        有在跑的用 running 色（与「子代理」角标同一套观感）。
-        注意：`chat.jobs-entry` 挂在这个按钮上，面板容器上的锚点是 `chat.jobs`（两者不同元素）。
-      -->
-      <div class="nav-jobs">
-        <button
-          type="button"
-          class="jobs-entry hover-fill press"
-          data-field="chat.jobs-entry"
-          :class="{ active: jobsOpen }"
-          :aria-expanded="jobsOpen"
-          :title="jobsOpen ? '收起任务面板' : '展开任务面板'"
-          @click="jobsOpen = !jobsOpen"
-        >
-          <ListChecks class="icon" :size="14" :stroke-width="1.6" aria-hidden="true" />
-          <span class="jobs-label">任务</span>
-          <span v-if="jobs.length > 0" class="jobs-count tiny" :class="{ running: jobsRunning }">{{
-            jobs.length
-          }}</span>
-        </button>
-      </div>
     </aside>
 
     <!-- ── 主区 ── -->
@@ -1343,14 +1327,9 @@ async function markGuideDone(): Promise<void> {
   width: 240px;
   background: var(--fill-1);
   border-right: 1px solid var(--border-subtle);
-  /**
-   * 两行网格：SessionNav 占满剩余高度，任务入口是固定在左栏底部的固定项
-   * （不参与会话列表的滚动）。用网格而不是让 SessionNav 自己 flex 的原因：
-   * 它的根 `.nav-inner` 写死 `height: 100%`，只有在行高确定时才能被正确填满。
-   * 宽度不受影响 —— 两行的内容都固定 240px，三栏几何与折叠过渡口径不变。
-   */
+  /* 左栏固定项已整体收进 SessionNav：单行网格，SessionNav 占满整栏（含底部固定项） */
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .context {
@@ -1382,66 +1361,6 @@ async function markGuideDone(): Promise<void> {
   width: 0;
   opacity: 0;
   border-color: transparent;
-}
-
-/* ── 左栏固定项：任务面板开关（2026-09 新增，docs/06 §4.1） ── */
-
-/* 与 SessionNav 的 12px 内边距对齐；固定项自带底部留白，不参与列表滚动 */
-.nav-jobs {
-  padding: 0 var(--space-3) var(--space-3);
-}
-
-/* 观感照 SessionNav 的 `.quick-item`（本组件自己的 scoped 样式，不跨组件借用类名） */
-.jobs-entry {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  /* 32px 下限：与左栏固定项同级的高频入口（`chat-hit-targets` 量出来原来 30px） */
-  min-height: 32px;
-  padding: 6px var(--space-2) 6px var(--space-3);
-  border-radius: var(--radius-sm);
-  font-weight: var(--weight-medium);
-  color: var(--text-secondary);
-  text-align: left;
-  transition:
-    background-color var(--transition-fast),
-    color var(--transition-fast);
-}
-
-.jobs-entry.active {
-  background: var(--fill-2);
-  color: var(--text-primary);
-}
-
-.jobs-entry .icon {
-  flex: 0 0 auto;
-  stroke: currentColor;
-}
-
-.jobs-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 任务数角标：有在跑的用 running 色（与左栏「子代理」角标同一套观感） */
-.jobs-count {
-  flex: 0 0 auto;
-  min-width: 18px;
-  padding: 0 5px;
-  border-radius: var(--radius-pill);
-  background: var(--fill-3);
-  color: var(--text-muted);
-  text-align: center;
-  font-variant-numeric: var(--num-tabular);
-}
-
-.jobs-count.running {
-  background: color-mix(in srgb, var(--aurora-blue) 22%, transparent);
-  color: var(--accent-text);
 }
 
 /* ── 主区：头部（拖动）/ 消息滚动区 / composer ── */
