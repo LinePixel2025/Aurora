@@ -562,6 +562,13 @@ function formatRelativeTime(iso: string): string {
     color var(--transition-fast);
 }
 
+/* 触摸屏没有 hover（归档钮永远等不到显形的那一下）：无 hover 指针设备上常显 */
+@media (hover: none) {
+  .row-action {
+    opacity: 1;
+  }
+}
+
 .row-action svg {
   flex: 0 0 auto;
   stroke: currentColor;

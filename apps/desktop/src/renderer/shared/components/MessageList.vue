@@ -1647,6 +1647,13 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   opacity: 1;
 }
 
+/* 触摸屏没有 hover（复制钮永远等不到显形的那一下）：无 hover 指针设备上常显 */
+@media (hover: none) {
+  .md :deep(.code-copy) {
+    opacity: 1;
+  }
+}
+
 .md :deep(.code-copy:hover) {
   color: var(--text-primary);
   background: var(--fill-3);

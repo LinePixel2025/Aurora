@@ -263,6 +263,32 @@ async function openChat(): Promise<void> {
   await windowStore.showChat()
 }
 
+/**
+ * 竖条的指针按下类型（触摸判定用）：click 事件本身不带 pointerType，
+ * 先在 pointerdown 记一笔，click 里读。
+ */
+let stripPointerType = 'mouse'
+
+/** 触摸屏没有 hover：点竖条 = 展开 / 收起面板（鼠标点竖条仍是打开主界面，docs/07 §2.2） */
+function onStripPointerDown(event: PointerEvent): void {
+  stripPointerType = event.pointerType
+}
+
+function onStripClick(): void {
+  if (stripPointerType === 'touch') {
+    if (expanded.value) collapseNow()
+    else {
+      clearTimers()
+      void (async () => {
+        await windowStore.setEdgeBarExpanded(true)
+        expanded.value = true
+      })()
+    }
+    return
+  }
+  void openChat()
+}
+
 async function openSettings(): Promise<void> {
   collapseNow()
   await windowStore.show('settings')
@@ -286,7 +312,13 @@ onUnmounted(() => {
 
 <template>
   <div class="edge" :class="{ expanded }" @mouseenter="onPointerEnter" @mouseleave="onPointerLeave">
-    <button class="strip" type="button" title="打开 Aurora 主界面" @click="openChat">
+    <button
+      class="strip"
+      type="button"
+      title="打开 Aurora 主界面"
+      @pointerdown="onStripPointerDown"
+      @click="onStripClick"
+    >
       <span class="strip-dot">
         <StatusDot :tone="statusTone" :size="6" :title="statusLabel" />
       </span>
