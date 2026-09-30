@@ -18,6 +18,15 @@ import { ref } from 'vue'
 const creating = ref(false)
 const createError = ref('')
 
+// 移动端（≤720px）分段切换：远程控制 / 会话列表默认收起、互斥展开，
+// 让对话区成为主角。桌面端切换条被 CSS 隐藏，两块面板恒常显示。
+type MobilePanel = 'none' | 'remote' | 'sessions'
+const mobilePanel = ref<MobilePanel>('none')
+
+function toggleMobilePanel(panel: Exclude<MobilePanel, 'none'>): void {
+  mobilePanel.value = mobilePanel.value === panel ? 'none' : panel
+}
+
 async function create(): Promise<void> {
   const entry = selectedEntry.value
   if (!entry || creating.value) return
@@ -45,7 +54,32 @@ async function create(): Promise<void> {
         @select="selectClient"
       />
 
-      <section class="session-pane">
+      <section
+        class="session-pane"
+        :class="{
+          'show-remote': mobilePanel === 'remote',
+          'show-sessions': mobilePanel === 'sessions',
+        }"
+      >
+        <!-- 移动端专用分段切换条（桌面端 display:none）：互斥展开下面两块面板 -->
+        <div class="mobile-panel-tabs" role="tablist">
+          <button
+            type="button"
+            class="mobile-tab"
+            :class="{ open: mobilePanel === 'remote' }"
+            @click="toggleMobilePanel('remote')"
+          >
+            远程控制
+          </button>
+          <button
+            type="button"
+            class="mobile-tab"
+            :class="{ open: mobilePanel === 'sessions' }"
+            @click="toggleMobilePanel('sessions')"
+          >
+            会话列表
+          </button>
+        </div>
         <RemoteControlPanel :entry="selectedEntry" />
         <SessionListPanel :entry="selectedEntry" />
         <SessionView
@@ -140,10 +174,17 @@ async function create(): Promise<void> {
   font-size: 13px;
 }
 
-/* 窄屏：上下堆叠，客户端列表横向滚动（chips）。
-   不再用「220px 魔法数」手算会话区高度：根节点仍是固定视口高度，
-   chips 区自然占高，远程控制 / 会话管理两块面板限高 + 内部滚动，
-   剩余高度全部归会话区（.session flex:1 → .msg-list 内部滚动）。 */
+/* 移动端分段切换条：桌面端直接隐藏（模板里保留不影响 >720px 布局） */
+.mobile-panel-tabs {
+  display: none;
+}
+
+/* 窄屏（≤720px）：上下堆叠，客户端列表横向滚动（chips）。
+   布局主角是对话区：远程控制 / 会话列表收进「分段切换条」背后，默认收起、
+   点开互斥展开（show-remote / show-sessions），展开时内部滚动且限高
+   （max-height 38%），对话区用 min-height max(200px, 60%) 保底——
+   任何状态下会话区都占会话栏可用高度的六成以上，composer 贴底恒常可见。
+   根节点仍是固定视口高度（100dvh 随软键盘收缩），唯一长滚动区仍是 .msg-list。 */
 @media (max-width: 720px) {
   .console-root {
     height: calc(100vh - var(--topbar-h) - var(--safe-top) - var(--safe-bottom) - 32px);
@@ -163,14 +204,52 @@ async function create(): Promise<void> {
   .session-pane {
     flex: 1;
     min-height: 0;
+    gap: 10px;
   }
 
+  .mobile-panel-tabs {
+    display: flex;
+    gap: 8px;
+    flex: none;
+  }
+
+  .mobile-tab {
+    flex: 1;
+    min-height: 40px;
+    border: 0;
+    border-radius: 980px;
+    background: rgba(0, 0, 0, 0.05);
+    color: var(--text-2);
+    font: inherit;
+    font-size: 13.5px;
+    cursor: pointer;
+  }
+
+  .mobile-tab.open {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* 两块面板默认收起；展开时限高 + 内部滚动（flex-shrink 1 兜底极矮视口） */
   .session-pane > :deep(.remote-panel),
   .session-pane > :deep(.session-list-panel) {
-    flex: none;
-    max-height: 40vh;
-    max-height: 40dvh;
+    display: none;
+    flex: 0 1 auto;
+    max-height: 38%;
     overflow-y: auto;
+  }
+
+  .session-pane.show-remote > :deep(.remote-panel),
+  .session-pane.show-sessions > :deep(.session-list-panel) {
+    display: flex;
+  }
+
+  /* 对话区高度下限：max() 不支持时回落到 200px（旧浏览器仅损失比例保底） */
+  .session-pane > :deep(.session) {
+    flex: 1 1 0;
+    min-height: 200px;
+    min-height: max(200px, 60%);
   }
 }
 </style>

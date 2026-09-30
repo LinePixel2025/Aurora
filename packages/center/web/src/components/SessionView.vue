@@ -698,7 +698,9 @@ watch(
   color: var(--danger);
 }
 
-/* 窄屏：气泡放宽、留白收紧，确认卡贴边 */
+/* 窄屏：气泡放宽、留白收紧，确认卡贴边。
+   composer 输入框 16px：iOS Safari 对 font-size < 16px 的输入框聚焦时会缩放页面，
+   看起来像「键盘把布局顶飞」——提到 16px 从根上规避。 */
 @media (max-width: 720px) {
   .session-head {
     padding: 12px 14px;
@@ -727,6 +729,11 @@ watch(
 
   .composer-row {
     flex-wrap: wrap;
+  }
+
+  .composer-input {
+    flex: 1 1 100%;
+    font-size: 16px;
   }
 
   .composer-row .btn {
