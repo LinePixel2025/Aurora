@@ -1541,15 +1541,17 @@ export const CHAT_AUTOMATION_EDITOR_CHECK = `(async () => {
       await wait(50)
     }
     result.tipClosed = document.querySelector('body > .app-tip') === null
-    // Esc 关闭（弹窗的标准键盘路径）：派发到 window，组件监听器接住后应关掉编辑器
+    // Esc 关闭（弹窗的标准键盘路径）：派发到 window，组件监听器接住后应关掉编辑器。
+    // v0.2.9 起弹窗有 250ms 淡出过渡（Transition fade），过渡期间元素还在 DOM 里 ——
+    // 等 500ms 再断言，别把「正在退场」误判成「没关掉」。
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
-    await wait(200)
+    await wait(500)
     result.escClosed = document.querySelector('[data-field="automation.editor"]') === null
     // 收尾：若 Esc 未生效（回归时）再点「取消」，保证后续场景能继续操作列表
     if (result.escClosed !== true) {
       const cancel = document.querySelector('[data-action="automation.editor-cancel"]')
       if (cancel !== null) cancel.click()
-      await wait(200)
+      await wait(500)
     }
     result.restored = document.querySelector('[data-field="automation.editor"]') === null
     result.pass =
