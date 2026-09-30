@@ -57,6 +57,7 @@ import AutomationPage from './components/AutomationPage.vue'
 import { useChat } from '../shared/composables/useChat.js'
 import { useTts } from '../shared/composables/useTts.js'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
+import { pickProjectEntry } from '../shared/projects.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
 import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.js'
@@ -86,7 +87,6 @@ const {
   switchSession: rawSwitchSession,
   newSession,
   setArchived,
-  setSessionProject,
 } = chat
 const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
@@ -241,17 +241,11 @@ const currentTitle = computed(() => {
 })
 
 /**
- * 当前会话绑定的项目 id（docs/06 §5.1 会话级项目）：右栏「会话项目」下拉的回显值。
- * 未绑定的会话主进程不回 `projectId` 键 → `''`（下拉显示「未指定（跟随全局）」）。
+ * 右栏两张项目卡（会话项目绑定 / 当前项目）已于 2026-09-30 下线（用户判定为无用）：
+ * 项目信息在左栏「项目对话」分区已完整可见（按项目名分组），绑定入口收敛为
+ * 组头 `+`（新建即绑定）。绑定状态本身仍是 `chat:setSessionProject` 的产物，
+ * 只是不再有主界面下拉入口 —— 改绑请删除重绑或经 Center 远程命令。
  */
-const currentSessionProjectId = computed(
-  () => sessions.value.find((item) => item.id === sessionId.value)?.projectId ?? '',
-)
-
-/** 右栏「会话项目」下拉的选择回调：空串 = 清除绑定（会话回落全局当前项目） */
-async function onBindSessionProject(projectId: string): Promise<void> {
-  await setSessionProject(sessionId.value, projectId)
-}
 
 onMounted(() => {
   offSensitiveTool = window.aurora.proactive.onSensitiveTool((request) => {
@@ -344,6 +338,27 @@ async function startWorkSession(): Promise<void> {
   lastReadId = null
   disposeRecording()
   await newSession({ space: 'work' })
+}
+
+/**
+ * 项目对话区标题行的「添加项目」（2026-09-30，docs/07 §2.3）：
+ * 弹目录选择框 → 加入 `projects.list`（**带完整 projects 子树**，顶层浅合并）。
+ * 与设置页走同一条链路与同一份 id / 命名规则（`shared/projects.ts`）；
+ * 不自动设为当前项目 —— 主界面加项目多半是为「在这个项目里开对话」，
+ * 而新建入口是各项目分组头的 `+`，切 `current` 反而会改变全局权限边界。
+ */
+async function addProject(): Promise<void> {
+  const current = settingsStore.settings?.projects
+  if (!current) return
+  const entry = await pickProjectEntry()
+  if (entry === null) return
+  await settingsStore.update({ projects: { ...current, list: [...current.list, entry] } })
+  // 项目分组由 settings store 现算（`projectGroups`），update 成功后左栏自动多出一组
+}
+
+/** Agent对话分组头 `+`：与顶部「新对话」同效（都显式标 agent 空间） */
+async function startAgentSession(): Promise<void> {
+  await startNewSession()
 }
 
 /**
@@ -1048,7 +1063,9 @@ async function markGuideDone(): Promise<void> {
         :jobs-running="jobsRunning"
         :jobs-open="jobsOpen"
         @new-session="startNewSession"
+        @new-agent-session="startAgentSession"
         @new-project-session="startProjectSession"
+        @add-project="addProject"
         @new-work-session="startWorkSession"
         @select="selectSession"
         @archive-session="(id, archived) => void setArchived(id, archived)"
@@ -1349,12 +1366,7 @@ async function markGuideDone(): Promise<void> {
           <JobPanel :jobs="jobs" @resume="onResumeJob" @cancel="onCancelJob" />
         </div>
       </Transition>
-      <ContextPanel
-        :todos="currentTodos"
-        :session-id="sessionId"
-        :session-project-id="currentSessionProjectId"
-        @bind-session-project="onBindSessionProject"
-      />
+      <ContextPanel :todos="currentTodos" />
     </aside>
   </div>
 </template>

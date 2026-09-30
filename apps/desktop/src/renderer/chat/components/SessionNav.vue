@@ -77,8 +77,12 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** 顶部「新对话」：固定创建 Agent 会话（docs/07 §2.3，2026-09-30） */
   (event: 'newSession'): void
+  /** Agent对话组头 `+`：新建 space:'agent' 的会话（与顶部按钮同效，docs/07 §2.3） */
+  (event: 'newAgentSession'): void
   /** 项目分组头 `+`：新建会话并绑定到该项目 */
   (event: 'newProjectSession', projectId: string): void
+  /** 项目对话区「添加项目」：弹目录选择框并加入 projects.list（docs/07 §2.3） */
+  (event: 'addProject'): void
   /** 工作目录对话分组头 `+`：新建 space:'work' 的会话 */
   (event: 'newWorkSession'): void
   (event: 'select', id: string): void
@@ -212,9 +216,26 @@ const noSessionsAtAll = computed(
       -->
       <p v-if="noSessionsAtAll" class="tiny muted nav-empty">还没有会话</p>
 
-      <!-- ── 分区一：项目对话（绑定项目的会话，按项目子分组；组头 + = 在该项目里新建） ── -->
-      <section v-if="props.projectGroups.length > 0" class="group" data-field="chat.project-group">
-        <p class="nav-caption tiny muted">项目对话</p>
+      <!--
+        ── 分区一：项目对话（绑定项目的会话，按项目子分组）──
+        **常显**：标题行的「添加项目」是主界面加入 projects.list 的唯一入口
+        （弹目录选择框，docs/07 §2.3），没有项目时也不能没有它；
+        每个项目分组头 `+` 新建即绑定该项目。
+      -->
+      <section class="group" data-field="chat.project-group">
+        <div class="group-head group-head-caption">
+          <p class="group-caption">项目对话</p>
+          <button
+            type="button"
+            class="group-add press"
+            data-action="chat.add-project"
+            title="添加项目（选择一个文件夹）"
+            aria-label="添加项目"
+            @click="emit('addProject')"
+          >
+            <Plus :size="13" :stroke-width="1.8" aria-hidden="true" />
+          </button>
+        </div>
         <div v-for="group in props.projectGroups" :key="group.id" class="project-group">
           <div class="group-head">
             <span class="group-title" :title="group.name">{{ group.name }}</span>
@@ -248,7 +269,7 @@ const noSessionsAtAll = computed(
       -->
       <section v-if="isWorkMode" class="group" data-field="chat.work-group">
         <div class="group-head group-head-caption">
-          <p class="nav-caption tiny muted">工作目录对话</p>
+          <p class="group-caption">工作目录对话</p>
           <button
             type="button"
             class="group-add press"
@@ -275,7 +296,19 @@ const noSessionsAtAll = computed(
 
       <!-- ── 分区三：Agent对话（Agent 空间；首行固定 quick，与提示条面板共用同一会话） ── -->
       <section class="group" data-field="chat.agent-group">
-        <p class="nav-caption tiny muted">Agent对话</p>
+        <div class="group-head group-head-caption">
+          <p class="group-caption">Agent对话</p>
+          <button
+            type="button"
+            class="group-add press"
+            data-action="chat.new-agent-session"
+            title="新建 Agent 对话"
+            aria-label="新建 Agent 对话"
+            @click="emit('newAgentSession')"
+          >
+            <Plus :size="13" :stroke-width="1.8" aria-hidden="true" />
+          </button>
+        </div>
         <!--
           `chat.session-list` 锚点（capture 探针契约）随会话三分挂在本区的列表容器上：
           Agent 空间是未标记会话（含历史 main 等）的缺省分区，「主会话列表」的语义由它承接
@@ -496,6 +529,22 @@ const noSessionsAtAll = computed(
   text-transform: uppercase;
 }
 
+/**
+ * 分区标题（项目对话 / 工作目录对话 / Agent对话，2026-09-30 可读性口径）：
+ * 不走 `.nav-caption` 的「eyebrow 小标签」样式 —— 中文没有大小写，
+ * `text-transform: uppercase` + 大字距只会把「AGENT对话」拉得又稀又淡。
+ * 这里按普通小节标题处理：正体、稍大、次级文字色，扫读性优先。
+ */
+.group-caption {
+  margin: var(--space-2) 0 0;
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
 .nav-empty {
   margin: var(--space-1) 0 0;
   padding: 0 var(--space-2);
@@ -578,12 +627,16 @@ const noSessionsAtAll = computed(
 }
 
 .group-head-caption {
-  /* 工作目录对话的组头把分区 caption 收进同一行（`+` 与 caption 对齐） */
+  /* 分区标题行的组头把分区 caption 收进同一行（`+` 与 caption 对齐）：
+     上间距收到容器一级，两个子元素的独立上边距归零 —— 否则 caption 与 24px 的 `+`
+     各带一份不同的 margin-top，align-items: center 也消不齐那 2px 错位 */
   justify-content: space-between;
+  padding-top: var(--space-2);
 }
 
-.group-head-caption .nav-caption {
-  margin: var(--space-2) 0 2px;
+.group-head-caption .group-caption,
+.group-head-caption .group-add {
+  margin-top: 0;
 }
 
 .group-title {

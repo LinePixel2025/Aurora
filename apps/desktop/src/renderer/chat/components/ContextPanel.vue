@@ -7,9 +7,12 @@
  * - classroom：当前/下节课卡（ClassIsland 桥接 status，非 classisland provider 时隐藏）、
  *   今日课程卡（perception lessons）、分类流水（ClassificationLedger 紧凑版）、打开感知文件夹；
  * - work：工作目录卡（workspaceDir + 打开 / 前往设置）、办公能力提示卡；
- * - 通用：当前项目卡（v13，docs/06 §5.1；无当前项目时不渲染）、系统状态卡
- *   （时间 / 电量 / 网络 / 前台应用）。
+ * - 通用：系统状态卡（时间 / 电量 / 网络 / 前台应用）。
  * 非当前模式的功能**一律不渲染**（不是 disabled）。
+ *
+ * 两张项目卡（「会话项目」绑定下拉 /「当前项目」）已于 2026-09-30 下线：项目信息在
+ * 左栏「项目对话」分区按项目名分组可见，绑定入口收敛为组头 `+`（新建即绑定），
+ * 项目登记在设置页「会话管理」。本组件因此不再需要会话上下文（无 sessionId prop）。
  *
  * 「文件备份」卡（v14）已于 2026-09 移出主界面：回滚 UI 整体迁到设置页 Agent 页
  * （`shared/components/SnapshotList.vue`），右栏不再渲染任何快照相关内容。
@@ -36,37 +39,19 @@ const modeStore = useModeStore()
 const windowStore = useWindowStore()
 const perception = usePerceptionStore()
 
-/** 当前会话的任务清单（App.vue 从消息流里最后一次 todo_write 解析得出；空数组 = 无清单） */
+/**
+ * 当前会话的任务清单（App.vue 从消息流里最后一次 todo_write 解析得出；空数组 = 无清单）。
+ *
+ * 2026-09-30：「会话项目」与「当前项目」两张卡已下线（用户判定为无用）——
+ * 项目信息在左栏「项目对话」分区按项目名分组可见，绑定入口收敛为组头 `+`（新建即绑定）；
+ * 会话 id / 项目 id 两个 props 随之删除（本组件不再需要会话上下文）。
+ */
 const props = withDefaults(
   defineProps<{
     todos?: TodoRow[]
-    /** 当前会话 id（「会话项目」卡的绑定目标；缺省 = 拿不到会话，整卡不渲染） */
-    sessionId?: string
-    /** 当前会话绑定的项目 id；`''` / 缺省 = 未绑定（跟随全局） */
-    sessionProjectId?: string
   }>(),
-  { todos: () => [], sessionId: '', sessionProjectId: '' },
+  { todos: () => [] },
 )
-
-/** 绑定 / 解绑会话项目（App.vue → useChat.setSessionProject；空串 = 清除绑定） */
-const emit = defineEmits<{ (event: 'bindSessionProject', projectId: string): void }>()
-
-// ───────────────────────── 会话项目（v17，docs/06 §5.1） ─────────────────────────
-
-/**
- * 会话级项目（docs/06 §5.1）：本会话可以绑定 `projects.list` 里的某一项，
- * 绑定后该会话的缺省工作目录 / 项目根边界 / AGENTS.md 注入 / auto 档边界都以它为准；
- * 未绑定（下拉选「未指定」）回落全局当前项目，再按原有链回落。
- *
- * 没有可绑定的项目（`projects.list` 为空）时整卡不渲染 —— 绑定一个空列表没有意义，
- * 项目登记入口在设置页。center- 等远程会话与本会话同一条逻辑，不做特殊分支。
- */
-const projectOptions = computed(() => settingsStore.settings?.projects.list ?? [])
-
-function onSessionProjectChange(event: Event): void {
-  const value = (event.target as HTMLSelectElement | null)?.value ?? ''
-  emit('bindSessionProject', value)
-}
 
 /** 进度摘要：已完成 / 总数（清单卡头右上角） */
 const todoProgress = computed(() => {
@@ -175,32 +160,6 @@ const foregroundLabel = computed(() => summary.value?.foreground?.app ?? '不可
 
 // ───────────────────────── 通用：当前项目（v13） ─────────────────────────
 
-/**
- * 当前项目（docs/06 §5.1）：从配置里取「当前那一条」，无项目 / id 对不上都不渲染。
- *
- * 与 `agent.tools.workspaceDir`（work 模式的「工作目录」卡）**不是一个东西**：
- * 项目根是 AGENTS.md 的注入来源，也是权限层判定「根内 / 根外」的边界。
- */
-const project = computed(() => {
-  const projects = settingsStore.settings?.projects
-  if (!projects || projects.current === '') return null
-  return projects.list.find((item) => item.id === projects.current) ?? null
-})
-
-/** 项目根是否可用由主进程探测（渲染层没有 fs）；拿不到状态时按「可用」处理，不显示假警报 */
-const projectAvailable = ref(true)
-
-async function refreshProjectStatus(): Promise<void> {
-  if (project.value === null) return
-  const result = await window.aurora.project.status()
-  projectAvailable.value = result.ok ? result.value.rootAvailable : true
-}
-
-async function openProjectRoot(): Promise<void> {
-  // 打不开时静默（右栏没有提示位）；设置页的项目区组才是排查入口
-  await window.aurora.app.openPath({ kind: 'project' })
-}
-
 // ───────────────────────── 轮询 ─────────────────────────
 
 let timer: number | null = null
@@ -208,7 +167,6 @@ let timer: number | null = null
 function refreshAll(): void {
   void perception.refresh()
   void refreshClassisland()
-  void refreshProjectStatus()
 }
 
 onMounted(() => {
@@ -224,11 +182,6 @@ onUnmounted(() => {
 // 模式 / provider 切换导致卡片出现时立即取一次，不等下一轮轮询
 watch(showClassislandCard, (now) => {
   if (now) void refreshClassisland()
-})
-
-// 项目卡出现（切项目 / 新登记）时立刻探测一次根目录
-watch(project, () => {
-  void refreshProjectStatus()
 })
 </script>
 
@@ -352,66 +305,6 @@ watch(project, () => {
     </template>
 
     <!--
-      ── 通用：会话项目（v17，docs/06 §5.1；任何模式都渲染，无可绑定项目整卡不渲染） ──
-      本会话绑定 projects.list 里的某一项：缺省工作目录 / 项目根边界 / AGENTS.md / auto 档
-      边界都以它为准；「未指定」回落全局当前项目（上面的「当前项目」卡显示的就是那份）。
-    -->
-    <section
-      v-if="props.sessionId !== '' && projectOptions.length > 0"
-      class="ctx-card"
-      data-field="context.session-project-card"
-    >
-      <header class="ctx-head">
-        <FolderOpen :size="15" :stroke-width="1.6" class="ctx-icon" aria-hidden="true" />
-        <strong>会话项目</strong>
-      </header>
-      <p class="tiny muted ctx-line">本会话绑定的项目（未指定时跟随全局当前项目）：</p>
-      <select
-        class="session-project-select"
-        data-field="context.session-project"
-        :value="props.sessionProjectId"
-        @change="onSessionProjectChange"
-      >
-        <option value="">未指定（跟随全局）</option>
-        <option v-for="item in projectOptions" :key="item.id" :value="item.id">
-          {{ item.name }}
-        </option>
-      </select>
-    </section>
-
-    <!-- ── 通用：当前项目（v13，docs/06 §5.1；任何模式都渲染，无项目整卡不渲染） ── -->
-    <section v-if="project !== null" class="ctx-card" data-field="context.project-card">
-      <header class="ctx-head">
-        <FolderOpen :size="15" :stroke-width="1.6" class="ctx-icon" aria-hidden="true" />
-        <strong>当前项目</strong>
-        <span v-if="!projectAvailable" class="badge error" data-field="context.project-unavailable">
-          项目目录不可用
-        </span>
-      </header>
-      <p class="tiny muted ctx-line">
-        {{
-          projectAvailable
-            ? '每轮对话都会注入「项目根 → 当前工作目录」的 AGENTS.md：'
-            : '项目根不存在或不是目录，AGENTS.md 不会被注入：'
-        }}
-      </p>
-      <div class="ctx-line">
-        <span class="tiny muted">项目</span>
-        <span class="ctx-value" :title="project.name">{{ project.name }}</span>
-      </div>
-      <p class="ctx-path mono tiny" :title="project.root">{{ project.root }}</p>
-      <!-- 项目根失效时不提供「打开」：点了只会弹系统错误，反而让人以为路径没问题 -->
-      <div v-if="projectAvailable" class="ctx-actions">
-        <AppButton size="sm" variant="secondary" @click="openProjectRoot">打开文件夹</AppButton>
-      </div>
-      <div v-else class="ctx-actions">
-        <AppButton size="sm" variant="secondary" @click="windowStore.show('settings')">
-          去设置里重新选择目录
-        </AppButton>
-      </div>
-    </section>
-
-    <!--
       ── 文件备份（v14）已于 2026-09 移出主界面：回滚 UI 整体迁到设置页 Agent 页
       （`shared/components/SnapshotList.vue`，锚点改名 `agent.snapshot-*`）。 ──
     -->
@@ -532,16 +425,6 @@ watch(project, () => {
 }
 
 /* 会话项目下拉：与卡片内文案同宽，观感对齐 ctx-path（细边框 + 次级填充） */
-.session-project-select {
-  width: 100%;
-  padding: 6px var(--space-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xs);
-  background: var(--fill-2);
-  color: var(--text-primary);
-  font-size: var(--text-xs);
-}
-
 .ctx-tips {
   margin: 0;
   padding-left: 18px;
