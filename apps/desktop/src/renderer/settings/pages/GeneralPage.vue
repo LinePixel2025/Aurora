@@ -235,7 +235,6 @@ async function saveEdgePlacement(): Promise<void> {
 async function toggleEdgeBar(): Promise<void> {
   await windowStore.toggle('edge-bar')
 }
-
 </script>
 
 <template>

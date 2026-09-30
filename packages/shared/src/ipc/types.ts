@@ -685,11 +685,7 @@ export type AutomationTriggerKind =
 
 /** 操作组件类型（Normal Mode 的封闭能力集，docs/13 §5） */
 export type AutomationActionKind =
-  | 'system-notify'
-  | 'classisland-remind'
-  | 'open-folder'
-  | 'open-url'
-  | 'open-app'
+  'system-notify' | 'classisland-remind' | 'open-folder' | 'open-url' | 'open-app'
 
 /** 触发器参数（按 kind 取子集；宽容 JSON 形状，主进程评估时逐字段校验） */
 export interface AutomationTrigger {

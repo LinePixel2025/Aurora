@@ -905,7 +905,10 @@ export function useChat(windowName: WindowName, context: ChatContext) {
    * `space: 'agent'`（缺省语义）= Agent对话、`'work'` = 工作目录对话、
    * `projectId` 传入则绑定项目。参数是纯字面量对象，无 Proxy 克隆问题。
    */
-  async function newSession(options?: { space?: 'agent' | 'work'; projectId?: string }): Promise<void> {
+  async function newSession(options?: {
+    space?: 'agent' | 'work'
+    projectId?: string
+  }): Promise<void> {
     const result = await window.aurora.chat.newSession(options)
     if (!result.ok) {
       error.value = result.message

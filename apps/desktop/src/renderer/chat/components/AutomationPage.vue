@@ -883,261 +883,268 @@ function closeHistory(): void {
     <!-- 弹窗出入走全局 fade（遮罩）+ anim-pop（面板一次入场），不再硬切 -->
     <Transition name="fade">
       <div v-if="editorOpen && draft !== null" class="modal-scrim" @click.self="closeEditor()">
-        <div class="modal editor anim-pop" role="dialog" aria-modal="true" data-field="automation.editor">
-        <header class="modal-head">
-          <component
-            :is="MODE_ICONS[draft.mode]"
-            :size="15"
-            :stroke-width="1.7"
-            aria-hidden="true"
-            class="head-icon"
-          />
-          <h3 class="modal-title">{{ draft.id === '' ? '新建自动化' : '编辑自动化' }}</h3>
-          <AppTooltip text="关闭" placement="bottom">
-            <button type="button" class="icon-btn press" aria-label="关闭" @click="closeEditor()">
-              <X :size="15" :stroke-width="1.7" aria-hidden="true" />
-            </button>
-          </AppTooltip>
-        </header>
-
-        <div class="modal-body">
-          <div class="field-row">
-            <span class="field-label">名称</span>
-            <input
-              v-model="draft.name"
-              class="input"
-              type="text"
-              placeholder="例如：上课前提醒我"
+        <div
+          class="modal editor anim-pop"
+          role="dialog"
+          aria-modal="true"
+          data-field="automation.editor"
+        >
+          <header class="modal-head">
+            <component
+              :is="MODE_ICONS[draft.mode]"
+              :size="15"
+              :stroke-width="1.7"
+              aria-hidden="true"
+              class="head-icon"
             />
-          </div>
-
-          <div class="field-row">
-            <span class="field-label">模式</span>
-            <div class="mode-picker">
-              <button
-                type="button"
-                class="mode-option press"
-                :class="{ active: draft.mode === 'agent' }"
-                @click="draft.mode = 'agent'"
-              >
-                <span class="mode-head">
-                  <Bot :size="13" :stroke-width="1.8" aria-hidden="true" />
-                  Agent Mode
-                </span>
-                <span class="tiny muted">触发后由 Agent 执行任务</span>
+            <h3 class="modal-title">{{ draft.id === '' ? '新建自动化' : '编辑自动化' }}</h3>
+            <AppTooltip text="关闭" placement="bottom">
+              <button type="button" class="icon-btn press" aria-label="关闭" @click="closeEditor()">
+                <X :size="15" :stroke-width="1.7" aria-hidden="true" />
               </button>
-              <button
-                type="button"
-                class="mode-option press"
-                :class="{ active: draft.mode === 'normal' }"
-                @click="draft.mode = 'normal'"
-              >
-                <span class="mode-head">
-                  <Zap :size="13" :stroke-width="1.8" aria-hidden="true" />
-                  Normal Mode
-                </span>
-                <span class="tiny muted">按预设操作执行</span>
-              </button>
-            </div>
-          </div>
+            </AppTooltip>
+          </header>
 
-          <div class="field-row">
-            <span class="field-label">调用次数</span>
-            <div class="runs-row">
+          <div class="modal-body">
+            <div class="field-row">
+              <span class="field-label">名称</span>
               <input
-                v-model="draft.maxRuns"
+                v-model="draft.name"
                 class="input"
-                data-field="automation.max-runs"
-                type="number"
-                min="0"
-                step="1"
-                placeholder="0"
+                type="text"
+                placeholder="例如：上课前提醒我"
               />
-              <span class="tiny muted runs-note">
-                上限（0 = 不限）；用满自动停用<template v-if="draft.id !== ''">
-                  。已调用 {{ draft.runCount }} 次</template
-                >
-              </span>
-              <AppButton
-                v-if="draft.id !== '' && draft.runCount > 0"
-                variant="ghost"
-                size="sm"
-                data-action="automation.reset-runs"
-                @click="draft.runCount = 0"
-              >
-                重置计数
-              </AppButton>
-            </div>
-          </div>
-
-          <section class="section">
-            <div class="section-head">
-              <component
-                :is="triggerIconOf(draft.triggerKind)"
-                :size="13"
-                :stroke-width="1.7"
-                aria-hidden="true"
-              />
-              <span>触发条件</span>
-              <AppTooltip text="课堂类条件依赖课程表数据（来源与节次在「设置 → 模式」里配置）。">
-                <button type="button" class="hint-dot" aria-label="触发条件的说明">
-                  <Info :size="12" :stroke-width="1.8" aria-hidden="true" />
-                </button>
-              </AppTooltip>
             </div>
 
-            <!-- 条件选择：图标磁贴网格（点一下即选，7 类全在眼前；描述走悬浮提示） -->
-            <div class="tile-grid" role="radiogroup" data-field="automation.trigger-kind">
-              <AppTooltip v-for="item in conditions" :key="item.kind" :text="item.description">
+            <div class="field-row">
+              <span class="field-label">模式</span>
+              <div class="mode-picker">
                 <button
                   type="button"
-                  class="tile press"
-                  role="radio"
-                  :data-kind="item.kind"
-                  :aria-checked="draft.triggerKind === item.kind"
-                  :class="{ active: draft.triggerKind === item.kind }"
-                  @click="switchTriggerKind(item.kind)"
+                  class="mode-option press"
+                  :class="{ active: draft.mode === 'agent' }"
+                  @click="draft.mode = 'agent'"
                 >
-                  <component
-                    :is="triggerIconOf(item.kind)"
-                    :size="16"
-                    :stroke-width="1.7"
-                    aria-hidden="true"
-                  />
-                  <span class="tile-label">{{ item.label }}</span>
+                  <span class="mode-head">
+                    <Bot :size="13" :stroke-width="1.8" aria-hidden="true" />
+                    Agent Mode
+                  </span>
+                  <span class="tiny muted">触发后由 Agent 执行任务</span>
                 </button>
-              </AppTooltip>
-            </div>
-
-            <p v-if="selectedCondition !== undefined" class="section-note">
-              {{ selectedCondition.description }}
-            </p>
-
-            <div v-if="(selectedCondition?.fields ?? []).length > 0" class="param-grid">
-              <AutomationFieldInput
-                v-for="field in selectedCondition?.fields ?? []"
-                :key="field.key"
-                :field="field"
-                :params="draft.triggerParams"
-                @update="setParam(draft.triggerParams, $event.key, $event.value)"
-              />
-            </div>
-          </section>
-
-          <section v-if="draft.mode === 'agent'" class="section">
-            <div class="section-head">
-              <Sparkles :size="13" :stroke-width="1.7" aria-hidden="true" />
-              <span>任务指令</span>
-              <AppTooltip text="写清楚目标、步骤与产出；触发时间等上下文会自动附带。">
-                <button type="button" class="hint-dot" aria-label="任务指令的说明">
-                  <Info :size="12" :stroke-width="1.8" aria-hidden="true" />
+                <button
+                  type="button"
+                  class="mode-option press"
+                  :class="{ active: draft.mode === 'normal' }"
+                  @click="draft.mode = 'normal'"
+                >
+                  <span class="mode-head">
+                    <Zap :size="13" :stroke-width="1.8" aria-hidden="true" />
+                    Normal Mode
+                  </span>
+                  <span class="tiny muted">按预设操作执行</span>
                 </button>
-              </AppTooltip>
-            </div>
-            <textarea
-              v-model="draft.prompt"
-              class="input textarea"
-              rows="5"
-              placeholder="例如：把桌面上今天新增的课件按科目归档到资料文件夹"
-            />
-          </section>
-
-          <section v-else class="section">
-            <div class="section-head">
-              <Zap :size="13" :stroke-width="1.7" aria-hidden="true" />
-              <span>操作（按顺序执行）</span>
-              <AppTooltip
-                text="操作是封闭清单（通知 / ClassIsland 提醒 / 打开文件夹）——要更复杂的任务请改用 Agent Mode。"
-              >
-                <button type="button" class="hint-dot" aria-label="操作清单的说明">
-                  <Info :size="12" :stroke-width="1.8" aria-hidden="true" />
-                </button>
-              </AppTooltip>
-              <span class="grow" />
-              <span class="tiny muted step-count">{{ draft.actions.length }}/10</span>
+              </div>
             </div>
 
-            <article
-              v-for="(action, index) in draft.actions"
-              :key="index"
-              class="action-row"
-              :data-field="'automation.action-' + index"
-            >
-              <div class="action-head">
-                <span class="action-index mono" aria-hidden="true">{{ index + 1 }}</span>
-                <div class="chip-group">
-                  <button
-                    v-for="item in availableActions"
-                    :key="item.kind"
-                    type="button"
-                    class="chip press"
-                    :class="{ active: action.kind === item.kind }"
-                    :aria-pressed="action.kind === item.kind"
-                    @click="switchActionKind(index, item.kind)"
+            <div class="field-row">
+              <span class="field-label">调用次数</span>
+              <div class="runs-row">
+                <input
+                  v-model="draft.maxRuns"
+                  class="input"
+                  data-field="automation.max-runs"
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="0"
+                />
+                <span class="tiny muted runs-note">
+                  上限（0 = 不限）；用满自动停用<template v-if="draft.id !== ''">
+                    。已调用 {{ draft.runCount }} 次</template
                   >
-                    <component
-                      :is="actionIconOf(item.kind)"
-                      :size="11"
-                      :stroke-width="1.8"
-                      aria-hidden="true"
-                    />
-                    {{ item.label }}
-                  </button>
-                </div>
-                <span class="grow" />
-                <AppTooltip text="移除该操作">
-                  <button
-                    type="button"
-                    class="icon-btn press danger"
-                    aria-label="移除该操作"
-                    @click="removeAction(index)"
-                  >
-                    <Trash2 :size="13" :stroke-width="1.7" aria-hidden="true" />
+                </span>
+                <AppButton
+                  v-if="draft.id !== '' && draft.runCount > 0"
+                  variant="ghost"
+                  size="sm"
+                  data-action="automation.reset-runs"
+                  @click="draft.runCount = 0"
+                >
+                  重置计数
+                </AppButton>
+              </div>
+            </div>
+
+            <section class="section">
+              <div class="section-head">
+                <component
+                  :is="triggerIconOf(draft.triggerKind)"
+                  :size="13"
+                  :stroke-width="1.7"
+                  aria-hidden="true"
+                />
+                <span>触发条件</span>
+                <AppTooltip text="课堂类条件依赖课程表数据（来源与节次在「设置 → 模式」里配置）。">
+                  <button type="button" class="hint-dot" aria-label="触发条件的说明">
+                    <Info :size="12" :stroke-width="1.8" aria-hidden="true" />
                   </button>
                 </AppTooltip>
               </div>
-              <div
-                v-if="(actionDescriptorOf(action.kind)?.fields ?? []).length > 0"
-                class="param-grid"
-              >
+
+              <!-- 条件选择：图标磁贴网格（点一下即选，7 类全在眼前；描述走悬浮提示） -->
+              <div class="tile-grid" role="radiogroup" data-field="automation.trigger-kind">
+                <AppTooltip v-for="item in conditions" :key="item.kind" :text="item.description">
+                  <button
+                    type="button"
+                    class="tile press"
+                    role="radio"
+                    :data-kind="item.kind"
+                    :aria-checked="draft.triggerKind === item.kind"
+                    :class="{ active: draft.triggerKind === item.kind }"
+                    @click="switchTriggerKind(item.kind)"
+                  >
+                    <component
+                      :is="triggerIconOf(item.kind)"
+                      :size="16"
+                      :stroke-width="1.7"
+                      aria-hidden="true"
+                    />
+                    <span class="tile-label">{{ item.label }}</span>
+                  </button>
+                </AppTooltip>
+              </div>
+
+              <p v-if="selectedCondition !== undefined" class="section-note">
+                {{ selectedCondition.description }}
+              </p>
+
+              <div v-if="(selectedCondition?.fields ?? []).length > 0" class="param-grid">
                 <AutomationFieldInput
-                  v-for="field in actionDescriptorOf(action.kind)?.fields ?? []"
+                  v-for="field in selectedCondition?.fields ?? []"
                   :key="field.key"
                   :field="field"
-                  :params="action.params"
-                  @update="setParam(action.params, $event.key, $event.value)"
+                  :params="draft.triggerParams"
+                  @update="setParam(draft.triggerParams, $event.key, $event.value)"
                 />
               </div>
-            </article>
+            </section>
 
+            <section v-if="draft.mode === 'agent'" class="section">
+              <div class="section-head">
+                <Sparkles :size="13" :stroke-width="1.7" aria-hidden="true" />
+                <span>任务指令</span>
+                <AppTooltip text="写清楚目标、步骤与产出；触发时间等上下文会自动附带。">
+                  <button type="button" class="hint-dot" aria-label="任务指令的说明">
+                    <Info :size="12" :stroke-width="1.8" aria-hidden="true" />
+                  </button>
+                </AppTooltip>
+              </div>
+              <textarea
+                v-model="draft.prompt"
+                class="input textarea"
+                rows="5"
+                placeholder="例如：把桌面上今天新增的课件按科目归档到资料文件夹"
+              />
+            </section>
+
+            <section v-else class="section">
+              <div class="section-head">
+                <Zap :size="13" :stroke-width="1.7" aria-hidden="true" />
+                <span>操作（按顺序执行）</span>
+                <AppTooltip
+                  text="操作是封闭清单（通知 / ClassIsland 提醒 / 打开文件夹）——要更复杂的任务请改用 Agent Mode。"
+                >
+                  <button type="button" class="hint-dot" aria-label="操作清单的说明">
+                    <Info :size="12" :stroke-width="1.8" aria-hidden="true" />
+                  </button>
+                </AppTooltip>
+                <span class="grow" />
+                <span class="tiny muted step-count">{{ draft.actions.length }}/10</span>
+              </div>
+
+              <article
+                v-for="(action, index) in draft.actions"
+                :key="index"
+                class="action-row"
+                :data-field="'automation.action-' + index"
+              >
+                <div class="action-head">
+                  <span class="action-index mono" aria-hidden="true">{{ index + 1 }}</span>
+                  <div class="chip-group">
+                    <button
+                      v-for="item in availableActions"
+                      :key="item.kind"
+                      type="button"
+                      class="chip press"
+                      :class="{ active: action.kind === item.kind }"
+                      :aria-pressed="action.kind === item.kind"
+                      @click="switchActionKind(index, item.kind)"
+                    >
+                      <component
+                        :is="actionIconOf(item.kind)"
+                        :size="11"
+                        :stroke-width="1.8"
+                        aria-hidden="true"
+                      />
+                      {{ item.label }}
+                    </button>
+                  </div>
+                  <span class="grow" />
+                  <AppTooltip text="移除该操作">
+                    <button
+                      type="button"
+                      class="icon-btn press danger"
+                      aria-label="移除该操作"
+                      @click="removeAction(index)"
+                    >
+                      <Trash2 :size="13" :stroke-width="1.7" aria-hidden="true" />
+                    </button>
+                  </AppTooltip>
+                </div>
+                <div
+                  v-if="(actionDescriptorOf(action.kind)?.fields ?? []).length > 0"
+                  class="param-grid"
+                >
+                  <AutomationFieldInput
+                    v-for="field in actionDescriptorOf(action.kind)?.fields ?? []"
+                    :key="field.key"
+                    :field="field"
+                    :params="action.params"
+                    @update="setParam(action.params, $event.key, $event.value)"
+                  />
+                </div>
+              </article>
+
+              <AppButton
+                variant="secondary"
+                size="sm"
+                data-action="automation.add-action"
+                :disabled="draft.actions.length >= 10"
+                @click="
+                  draft.actions.push(emptyAction(availableActions[0]?.kind ?? 'system-notify'))
+                "
+              >
+                <Plus :size="13" :stroke-width="1.9" aria-hidden="true" />
+                添加操作
+              </AppButton>
+            </section>
+          </div>
+
+          <footer class="modal-foot">
             <AppButton
               variant="secondary"
               size="sm"
-              data-action="automation.add-action"
-              :disabled="draft.actions.length >= 10"
-              @click="draft.actions.push(emptyAction(availableActions[0]?.kind ?? 'system-notify'))"
+              data-action="automation.editor-cancel"
+              @click="closeEditor()"
             >
-              <Plus :size="13" :stroke-width="1.9" aria-hidden="true" />
-              添加操作
+              取消
             </AppButton>
-          </section>
+            <AppButton variant="primary" size="sm" :disabled="saving" @click="saveEditor()">
+              {{ saving ? '保存中…' : '保存' }}
+            </AppButton>
+          </footer>
         </div>
-
-        <footer class="modal-foot">
-          <AppButton
-            variant="secondary"
-            size="sm"
-            data-action="automation.editor-cancel"
-            @click="closeEditor()"
-          >
-            取消
-          </AppButton>
-          <AppButton variant="primary" size="sm" :disabled="saving" @click="saveEditor()">
-            {{ saving ? '保存中…' : '保存' }}
-          </AppButton>
-        </footer>
       </div>
-    </div>
     </Transition>
 
     <!-- 历史弹窗：Agent 记录可展开对话回放；Normal 只显示触发时间与状态（docs/13 §11） -->
@@ -1149,110 +1156,109 @@ function closeHistory(): void {
           aria-modal="true"
           data-field="automation.history-panel"
         >
-        <header class="modal-head">
-          <component
-            :is="tab === 'agent' ? Bot : Zap"
-            :size="15"
-            :stroke-width="1.7"
-            aria-hidden="true"
-            class="head-icon"
-          />
-          <h3 class="modal-title">
-            运行历史 · {{ tab === 'agent' ? 'Agent Mode' : 'Normal Mode' }}
-          </h3>
-          <AppTooltip text="关闭" placement="bottom">
-            <button
-              type="button"
-              class="icon-btn press"
-              data-action="automation.history-close"
-              aria-label="关闭"
-              @click="closeHistory()"
-            >
-              <X :size="15" :stroke-width="1.7" aria-hidden="true" />
-            </button>
-          </AppTooltip>
-        </header>
-        <div class="modal-body">
-          <p v-if="historyLoading && runs.length === 0" class="tiny muted">加载中…</p>
-          <p v-else-if="runs.length === 0" class="tiny muted">还没有运行记录。</p>
-          <ul v-else class="run-list" data-field="automation.history-list">
-            <li
-              v-for="run in runs"
-              :key="run.id"
-              class="run-item"
-              :class="{ clickable: run.mode === 'agent' && run.sessionId !== undefined }"
-              @click="openRunDetail(run)"
-            >
-              <span class="run-status-icon" :class="run.status" aria-hidden="true">
-                <component
-                  :is="statusIconOf(run.status)"
-                  :size="13"
-                  :stroke-width="1.8"
-                  :class="{ spin: run.status === 'running' }"
-                />
-              </span>
-              <span class="run-time">
-                <Clock :size="12" :stroke-width="1.7" aria-hidden="true" />
-                {{ formatTime(run.triggeredAt) }}
-              </span>
-              <span class="run-name">{{ run.automationName }}</span>
-              <span class="run-status tiny" :class="run.status">{{
-                STATUS_LABELS[run.status]
-              }}</span>
-              <span v-if="run.durationMs !== undefined" class="tiny muted run-duration">
-                {{ formatDuration(run.durationMs) }}
-              </span>
-              <!-- Agent 记录的「可展开」提示：不再是整行只有隐式的 hover 光标，
-                   右侧常驻一枚低对比度入口，触屏 / 键盘用户也能发现回放能力 -->
-              <span
-                v-if="run.mode === 'agent' && run.sessionId !== undefined"
-                class="run-open tiny"
-                aria-hidden="true"
+          <header class="modal-head">
+            <component
+              :is="tab === 'agent' ? Bot : Zap"
+              :size="15"
+              :stroke-width="1.7"
+              aria-hidden="true"
+              class="head-icon"
+            />
+            <h3 class="modal-title">
+              运行历史 · {{ tab === 'agent' ? 'Agent Mode' : 'Normal Mode' }}
+            </h3>
+            <AppTooltip text="关闭" placement="bottom">
+              <button
+                type="button"
+                class="icon-btn press"
+                data-action="automation.history-close"
+                aria-label="关闭"
+                @click="closeHistory()"
               >
-                查看对话
-                <ChevronRight :size="11" :stroke-width="1.8" />
-              </span>
-              <!-- 失败原因就地可见：整行第二行小字（hover 有全文），不用点开任何东西 -->
-              <span
-                v-if="run.status === 'failed' && run.error !== undefined && run.error !== ''"
-                class="run-error tiny"
-                :title="run.error"
+                <X :size="15" :stroke-width="1.7" aria-hidden="true" />
+              </button>
+            </AppTooltip>
+          </header>
+          <div class="modal-body">
+            <p v-if="historyLoading && runs.length === 0" class="tiny muted">加载中…</p>
+            <p v-else-if="runs.length === 0" class="tiny muted">还没有运行记录。</p>
+            <ul v-else class="run-list" data-field="automation.history-list">
+              <li
+                v-for="run in runs"
+                :key="run.id"
+                class="run-item"
+                :class="{ clickable: run.mode === 'agent' && run.sessionId !== undefined }"
+                @click="openRunDetail(run)"
               >
-                {{ run.error }}
-              </span>
-            </li>
-          </ul>
-
-          <section v-if="detail !== null" class="run-detail">
-            <h4 class="tiny muted detail-title">
-              「{{ detail.run.automationName }}」的对话回放 · {{ formatTime(detail.run.triggeredAt) }}
-              · {{ STATUS_LABELS[detail.run.status] }}<template
-                v-if="detail.run.durationMs !== undefined"
-              >
-                · {{ formatDuration(detail.run.durationMs) }}</template
-              >
-            </h4>
-            <p v-if="detailLoading" class="tiny muted">加载对话…</p>
-            <div v-else-if="detail.messages.length === 0" class="tiny muted">
-              会话已被删除或还没有消息。
-            </div>
-            <template v-else>
-              <div
-                v-for="message in detail.messages"
-                :key="message.id"
-                class="detail-message"
-                :class="message.role"
-              >
-                <span class="role-tag tiny muted">{{
-                  message.role === 'user' ? '任务' : 'Agent'
+                <span class="run-status-icon" :class="run.status" aria-hidden="true">
+                  <component
+                    :is="statusIconOf(run.status)"
+                    :size="13"
+                    :stroke-width="1.8"
+                    :class="{ spin: run.status === 'running' }"
+                  />
+                </span>
+                <span class="run-time">
+                  <Clock :size="12" :stroke-width="1.7" aria-hidden="true" />
+                  {{ formatTime(run.triggeredAt) }}
+                </span>
+                <span class="run-name">{{ run.automationName }}</span>
+                <span class="run-status tiny" :class="run.status">{{
+                  STATUS_LABELS[run.status]
                 }}</span>
-                <p class="detail-content">{{ message.content }}</p>
+                <span v-if="run.durationMs !== undefined" class="tiny muted run-duration">
+                  {{ formatDuration(run.durationMs) }}
+                </span>
+                <!-- Agent 记录的「可展开」提示：不再是整行只有隐式的 hover 光标，
+                   右侧常驻一枚低对比度入口，触屏 / 键盘用户也能发现回放能力 -->
+                <span
+                  v-if="run.mode === 'agent' && run.sessionId !== undefined"
+                  class="run-open tiny"
+                  aria-hidden="true"
+                >
+                  查看对话
+                  <ChevronRight :size="11" :stroke-width="1.8" />
+                </span>
+                <!-- 失败原因就地可见：整行第二行小字（hover 有全文），不用点开任何东西 -->
+                <span
+                  v-if="run.status === 'failed' && run.error !== undefined && run.error !== ''"
+                  class="run-error tiny"
+                  :title="run.error"
+                >
+                  {{ run.error }}
+                </span>
+              </li>
+            </ul>
+
+            <section v-if="detail !== null" class="run-detail">
+              <h4 class="tiny muted detail-title">
+                「{{ detail.run.automationName }}」的对话回放 ·
+                {{ formatTime(detail.run.triggeredAt) }} · {{ STATUS_LABELS[detail.run.status]
+                }}<template v-if="detail.run.durationMs !== undefined">
+                  · {{ formatDuration(detail.run.durationMs) }}</template
+                >
+              </h4>
+              <p v-if="detailLoading" class="tiny muted">加载对话…</p>
+              <div v-else-if="detail.messages.length === 0" class="tiny muted">
+                会话已被删除或还没有消息。
               </div>
-            </template>
-          </section>
+              <template v-else>
+                <div
+                  v-for="message in detail.messages"
+                  :key="message.id"
+                  class="detail-message"
+                  :class="message.role"
+                >
+                  <span class="role-tag tiny muted">{{
+                    message.role === 'user' ? '任务' : 'Agent'
+                  }}</span>
+                  <p class="detail-content">{{ message.content }}</p>
+                </div>
+              </template>
+            </section>
+          </div>
         </div>
       </div>
-    </div>
     </Transition>
   </section>
 </template>

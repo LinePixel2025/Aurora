@@ -32,11 +32,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   // 外观跟随（v21）：settings 的每一条落回路径（load / update / reset / bind 推送）
   // 都会写 `settings.value`，在这里统一应用强调色，四个窗口无需各接一遍。
-  watch(
-    settings,
-    (next) => applyAppearance(next?.appearance?.accent),
-    { immediate: true },
-  )
+  watch(settings, (next) => applyAppearance(next?.appearance?.accent), { immediate: true })
 
   async function load(): Promise<void> {
     loading.value = true

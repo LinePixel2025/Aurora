@@ -361,9 +361,7 @@ watch(
       </p>
 
       <div v-for="group in sessionGroups" :key="group.key" class="session-group">
-        <p class="group-label">
-          {{ group.title }} · {{ group.items.length }}
-        </p>
+        <p class="group-label">{{ group.title }} · {{ group.items.length }}</p>
         <div
           v-for="item in group.items"
           :key="item.id"
@@ -388,7 +386,12 @@ watch(
               {{ item.archived === true ? '取消归档' : '归档' }}
             </AppButton>
             <template v-if="confirmingId === item.id">
-              <AppButton size="sm" variant="danger" data-field="sessions.delete" @click="onDelete(item.id)">
+              <AppButton
+                size="sm"
+                variant="danger"
+                data-field="sessions.delete"
+                @click="onDelete(item.id)"
+              >
                 确认删除
               </AppButton>
               <AppButton size="sm" variant="ghost" @click="confirmingId = null">取消</AppButton>

@@ -39,15 +39,7 @@ import {
   Sparkles,
 } from '../shared/icons.js'
 
-type PageId =
-  | 'general'
-  | 'sessions'
-  | 'modes'
-  | 'llm'
-  | 'voice'
-  | 'agent'
-  | 'center'
-  | 'advanced'
+type PageId = 'general' | 'sessions' | 'modes' | 'llm' | 'voice' | 'agent' | 'center' | 'advanced'
 
 interface NavItem {
   id: PageId

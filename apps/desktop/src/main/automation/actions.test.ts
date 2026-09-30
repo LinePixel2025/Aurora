@@ -55,7 +55,11 @@ describe('executeAction · open-url', () => {
 
   it('非 http(s) 协议一律拒绝且不触达端口（协议白名单，docs/13 §5）', async () => {
     const { ports, openedUrls } = openPorts()
-    for (const url of ['file://C:/Windows/System32/calc.exe', 'ms-settings://display', 'javascript:alert(1)']) {
+    for (const url of [
+      'file://C:/Windows/System32/calc.exe',
+      'ms-settings://display',
+      'javascript:alert(1)',
+    ]) {
       const result = await executeAction({ kind: 'open-url', params: { url } }, ports)
       expect(result.ok).toBe(false)
       expect(result.error).toContain('http(s)')

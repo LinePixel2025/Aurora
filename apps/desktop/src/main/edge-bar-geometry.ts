@@ -63,8 +63,7 @@ function clamp(value: number, min: number, max: number): number {
 export function placeEdgeBar(workArea: Rect, size: Size, side: EdgeBarSide = 'right'): Rect {
   const maxX = Math.max(workArea.x, workArea.x + workArea.width - size.width)
   const maxY = Math.max(workArea.y, workArea.y + workArea.height - size.height)
-  const x =
-    side === 'left' ? workArea.x : workArea.x + workArea.width - size.width
+  const x = side === 'left' ? workArea.x : workArea.x + workArea.width - size.width
   return {
     x: Math.round(clamp(x, workArea.x, maxX)),
     y: Math.round(clamp(workArea.y + (workArea.height - size.height) / 2, workArea.y, maxY)),

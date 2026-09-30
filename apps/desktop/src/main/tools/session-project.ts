@@ -128,7 +128,10 @@ export function createSessionProjectResolver(deps: SessionProjectDeps): SessionP
 
     boundaryRoot(sessionId) {
       return (
-        projectRootOf(sessionId) ?? spaceDirOf(sessionId) ?? deps.globalProjectRoot() ?? activeModeDir()
+        projectRootOf(sessionId) ??
+        spaceDirOf(sessionId) ??
+        deps.globalProjectRoot() ??
+        activeModeDir()
       )
     },
 
