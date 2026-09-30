@@ -172,6 +172,8 @@
   --dur-spin: 1200ms;
   --dur-caret: 1100ms;
   --dur-bounce: 1000ms;
+  /* 边框呼吸 / 扩散环这类「运行中」氛围动效：比扫光慢一拍，避免同屏节奏打架 */
+  --dur-breathe: 2400ms;
   --transition-fast: var(--dur-fast) var(--ease-standard);
   --transition-base: var(--dur-base) var(--ease-spring);
 
@@ -683,6 +685,31 @@ select {
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+/**
+ * 运行中元素的边框呼吸：边框色在「淡 → 强调色 → 淡」之间缓慢往复。
+ * 配合扫光表达「这块还活着」——扫光是横向动、呼吸是整框渐变，同屏不冲突。
+ */
+@keyframes aurora-edge-breathe {
+  0%,
+  100% {
+    border-color: var(--border-subtle);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--aurora-blue) 42%, transparent);
+  }
+}
+
+/** 透明度呼吸（指示环 / 徽章的低噪声活性表达） */
+@keyframes aurora-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
   }
 }
 

@@ -544,6 +544,10 @@ function syncTimings(): void {
         record.end = Date.now()
         // 状态刚翻到终态：记下来给状态点挂一次性确认动画（见 `settledIds`）
         settledIds.add(call.id)
+        // 完成即自动折叠（用户口径 2026-09-29）：运行中展开看进度的卡片，
+        // 翻到终态就没必要继续占着消息区——收起后只留一行结果摘要，点开仍可回看。
+        // 历史水合的卡片不经过这条边沿（`record.end` 早已落定），不受影响。
+        openedIds.value = openedIds.value.filter((id) => id !== call.id)
       } else if (record === undefined) {
         // 历史水合出来的卡片本就没有计时记录：不伪造耗时，也不放确认动画
       }
@@ -1159,9 +1163,12 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   background: transparent;
 }
 
-/* 流式接收中：竖轨换成强调色，与卡头文案同色 —— 一眼看出"这块还在长" */
+/* 流式接收中：竖轨换成强调色，与卡头文案同色 —— 一眼看出"这块还在长"；
+   竖轨同时在「淡 ↔ 强调」间缓慢呼吸（全局 aurora-edge-breathe，只影响左缘），
+   与工具卡的边框呼吸同一种语言。 */
 .thinking.streaming {
-  border-left-color: color-mix(in srgb, var(--accent-text) 45%, transparent);
+  border-left-color: color-mix(in srgb, var(--aurora-blue) 45%, transparent);
+  animation: aurora-edge-breathe var(--dur-breathe) var(--ease-standard) infinite;
 }
 
 /* 流式接收中：一条低对比度亮带在卡头扫过，明确「还在思考」 */
@@ -1306,8 +1313,11 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 }
 
 /*
- * 运行中的卡片：一层低对比度扫光自左向右反复划过（`.shimmer` 在 theme.css）。
- * 不用旋转指示器：卡片已经有状态点，扫光只负责表达「这里在动」。
+ * 运行中的卡片：两层活性表达——
+ * ① 一层低对比度扫光自左向右反复划过（`.shimmer` 在 theme.css）；
+ * ② 边框整圈缓慢呼吸（`aurora-edge-breathe`，全局 keyframes），
+ *    扫光负责「这里在动」、呼吸负责「这块还活着」，视角扫到边缘也能认出运行态。
+ * 不用旋转指示器：卡片已经有状态点，两种动效都只做氛围。
  */
 .tool-card.running::before {
   content: '';
@@ -1320,6 +1330,29 @@ async function onContentClick(event: MouseEvent): Promise<void> {
     transparent
   );
   animation: aurora-shimmer var(--dur-pulse) var(--ease-standard) infinite;
+  pointer-events: none;
+}
+
+.tool-card.running {
+  animation: aurora-edge-breathe var(--dur-breathe) var(--ease-standard) infinite;
+}
+
+/* 运行中：状态点外套一枚扩散环（复用 pulse-ring），与扫光同源不同位——
+   扫光在卡身、涟漪在状态点，视线落在哪都能读到「运行中」。 */
+.t-running .tool-dot {
+  position: relative;
+}
+
+.t-running .tool-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--aurora-blue);
+  animation: pulse-ring var(--dur-pulse) var(--ease-standard) infinite;
   pointer-events: none;
 }
 
