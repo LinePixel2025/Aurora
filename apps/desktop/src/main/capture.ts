@@ -410,12 +410,24 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
  * - `pass` 里带 `maxScroll >= 200` 守卫：先确认"内容确实比窗口高"，再看"是否滚到了底"，
  *   否则一旦探针没撑开内容，`distance === 0` 会假 PASS。
  *
- * 同一条探针还顺带核对「回到最新」胶囊（用户主动上滚后才出现的入口）：
- * 把 `scrollTop` 归零模拟上滚，断言胶囊出现且**落在滚动容器可视区内**。
- * `position: sticky` 在交互窗那种"`.messages` 盒子被钉住、内容按溢出渲染"的布局里
- * 未必吸附得住，这条断言就是钉这个的。
+ * 2026-09-30（「跟丢」修复轮）把这条探针改成**可验证的三段**：
+ * ① 追加内容 → 必须自动到底（跟随的默认行为，实测通过）；
+ * ② 位置在离底处 + 派发**真实 `wheel`** → 「↓ 回到最新」胶囊出现且落在可视区内
+ *    （`position: sticky` 在"`.messages` 盒子被钉住、内容按溢出渲染"的布局里未必吸附得住）；
+ * ③ 滚回底部（`scrollTop = max`）→ 胶囊消失（滞回的另一端）。
  *
- * 放在 `check` 里（截图**之后**执行），所以不会出现在 PNG 中；执行完立刻移除节点。
+ * 两条**已知缺口**（如实记下，别当成实现承诺 —— 2026-09-30 排查记录）：
+ * 1. 「只程序改 `scrollTop`、不派发输入事件时跟随不被关掉」**没有**断言：实测该场景下
+ *    `following` 被关掉了，但 `onUserIntent`（`:root` 层的意图中转）从未被调用 ——
+ *    而同时**捕获阶段**能确认 `wheel` 事件确实到达 `.thread`、`bindScroller` 也确实拿到了
+ *    `.thread` 并挂了监听。即「意图回调没被触发、跟随却变了」这条矛盾尚未查清。
+ * 2. 因为 ①，本探针末尾那一次 `wheel` 之后跟随仍处于暂停态（`restored` 为假），
+ *    所以**跨场景状态**在 `chat-follow-burst` 之前可能是"暂停跟随"—— 那一条自带
+ *    `scrollTop = scrollHeight` 与真实滚轮的收尾，独立可判，不受影响。
+ * 在查清之前把 ① 写成断言只会得到一条长期 FAIL 的探针；持续跟进的防线由
+ * `CHAT_FOLLOW_BURST_SCRIPT` 承担（它已实测能抓住"跟到一半就停"）。
+ *
+ * 放在 `check` 里（截图**之后**执行），所以不会出现在 PNG 中；执行完立刻移除节点、恢复跟随。
  */
 export const CHAT_AUTO_SCROLL_SCRIPT = `(async () => {
   try {
@@ -424,20 +436,42 @@ export const CHAT_AUTO_SCROLL_SCRIPT = `(async () => {
     if (thread === null || list === null) {
       return { pass: false, reason: 'no .thread/.messages' }
     }
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()))
+    const settle = async (count) => {
+      for (let index = 0; index < count; index += 1) await frame()
+    }
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    const distanceToBottom = () =>
+      Math.round(thread.scrollHeight - thread.scrollTop - thread.clientHeight)
+    // 真实滚轮输入（程序改 scrollTop **不**产生它）—— 跟随状态只认这个
+    const wheel = (deltaY) => {
+      thread.dispatchEvent(new WheelEvent('wheel', { deltaY: deltaY, bubbles: true }))
+    }
+
     const filler = document.createElement('div')
     filler.setAttribute('data-probe', 'auto-scroll')
     filler.style.height = '1600px'
     filler.style.flexShrink = '0'
     list.appendChild(filler)
-    await new Promise((resolve) => setTimeout(resolve, 150))
+    await wait(150)
+    // 排障：填充前后各读一次读数与"跟随胶囊是否存在"（气泡在 = following 已被关掉）
+    const jumpBeforeProgrammatic = list.querySelector('.jump-latest') !== null
     const maxScroll = Math.round(thread.scrollHeight - thread.clientHeight)
     const scrolled = Math.round(thread.scrollTop)
-    const distance = maxScroll - scrolled
+    const followed = maxScroll - scrolled
     const scrollHeight = Math.round(thread.scrollHeight)
     const clientHeight = thread.clientHeight
-    // 2) 「回到最新」胶囊：模拟用户主动上滚 → 必须出现，且吸附在可视区内（可点）
+
+    // ② 位置在离底处 + 真实滚轮 → 用户接管：胶囊必须出现
     thread.scrollTop = 0
-    await new Promise((resolve) => setTimeout(resolve, 200))
+    wheel(-240)
+    await settle(4)
+    const jumpAfterScroll = list.querySelector('.jump-latest') !== null
+
+    // ③ 真实滚轮 + 位置在离底处：胶囊必须出现且落在可视区内
+    thread.scrollTop = 0
+    wheel(-240)
+    await wait(200)
     const button = list.querySelector('.jump-latest')
     const rect = button === null ? null : button.getBoundingClientRect()
     const threadRect = thread.getBoundingClientRect()
@@ -451,17 +485,109 @@ export const CHAT_AUTO_SCROLL_SCRIPT = `(async () => {
         rect.top >= threadRect.top - 1 &&
         rect.bottom <= threadRect.bottom + 1,
     }
+    // ④ 收尾：**恢复跟随**，让后续场景拿到干净状态。
+    //
+    // 点击真实的「↓ 回到最新」胶囊（走 jumpToLatest → stick）而不是"再派发一次滚轮"：
+    // 胶囊是应用自己的恢复入口，语义明确、不依赖意图回调（那条在本环境下不可靠，见头部注释）。
+    // 这一步是必须的 —— 本探针在 ② 里把跟随关掉了，不收尾就会把后续场景
+    //（实测：chat-follow-burst）整段留在"暂停跟随"里。
+    thread.scrollTop = maxScroll
+    const jumpButton = list.querySelector('.jump-latest')
+    if (jumpButton !== null) jumpButton.click()
+    else thread.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }))
+    await wait(250)
+    const restored =
+      list.querySelector('.jump-latest') === null && distanceToBottom() <= 4
+
     filler.remove()
-    thread.scrollTop = 0
+    thread.scrollTop = maxScroll
     return {
-      pass: maxScroll >= 200 && distance <= 4 && jump.present && jump.inView,
+      pass: maxScroll >= 200 && followed <= 4 && jumpAfterScroll && jump.present && jump.inView && restored,
       scrollable: maxScroll >= 200,
-      distance,
+      followed,
+      jumpAfterScroll,
       scrolled,
       maxScroll,
       scrollHeight,
       clientHeight,
+      restored,
+      jumpBeforeProgrammatic,
       jump,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 高密度流式的「自动跟随」探针（交互窗专用，2026-09-30 跟丢修复轮新增）。
+ *
+ * 与 `CHAT_AUTO_SCROLL_SCRIPT` 的分工：那条钉**语义**（谁能改跟随状态），这条钉**持续跟进**。
+ * 按 6 帧每帧长高约 120px 持续追加内容 —— 正是真实流式下 markdown 块 / 工具行密集插入的形态：
+ * 每帧都要看到"帧末已经到底"，且**不必等任何 `transitionend`**（旧实现只在过渡结束时补一次，
+ * 高度增长期间一直落后）。`maxDistance` 同时给出"是不是真的撑高了内容"的旁证
+ * （没撑开时 distance 恒为 0，也能拿到 0 分，所以另有 `grown` 字段供人工核对）。
+ *
+ * 收尾把探针节点移除并贴回底部，窗口恢复原状。
+ */
+export const CHAT_FOLLOW_BURST_SCRIPT = `(async () => {
+  try {
+    const thread = document.querySelector('.thread')
+    const list = document.querySelector('.messages')
+    if (thread === null || list === null) {
+      return { pass: false, reason: 'no .thread/.messages' }
+    }
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()))
+    const distanceToBottom = () =>
+      Math.round(thread.scrollHeight - thread.scrollTop - thread.clientHeight)
+
+    // 前置：**先恢复跟随**。
+    //
+    // 这条探针要求"内容增长时每帧都跟到底"，只有**跟随态**才成立；而它前面那个
+    // CHAT_AUTO_SCROLL_SCRIPT 会主动把跟随关掉（那正是它在测的语义）。本探针
+    // 不能依赖别人有没有收尾干净 —— 点一次应用自己的「↓ 回到最新」胶囊（stick()），
+    // 把状态归位再开始量（2026-09-30 实测：缺这一步时 samples 从第一帧起就落后）。
+    thread.scrollTop = thread.scrollHeight
+    const jumpButton = list.querySelector('.jump-latest')
+    if (jumpButton !== null) jumpButton.click()
+    await frame()
+    await frame()
+
+    const growth = document.createElement('div')
+    growth.setAttribute('data-probe', 'follow-burst')
+    growth.style.flexShrink = '0'
+    list.appendChild(growth)
+
+    const samples = []
+    const trace = []
+    for (let step = 0; step < 6; step += 1) {
+      growth.style.height = String((step + 1) * 120) + 'px'
+      await frame()
+      await frame()
+      const distance = distanceToBottom()
+      samples.push(distance)
+      trace.push({
+        step: step,
+        distance: distance,
+        // 跟随被关掉时右下角会浮出「回到最新」胶囊：拿它当"跟丢"的现场证据
+        paused: list.querySelector('.jump-latest') !== null,
+        scrollTop: Math.round(thread.scrollTop),
+        growthHeight: Math.round(growth.getBoundingClientRect().height),
+        maxScroll: Math.round(thread.scrollHeight - thread.clientHeight),
+      })
+    }
+    const maxDistance = samples.reduce((max, value) => Math.max(max, value), 0)
+    const last = samples.length === 0 ? -1 : samples[samples.length - 1]
+    const grown = Math.round(thread.scrollHeight)
+    growth.remove()
+    thread.scrollTop = thread.scrollHeight
+    await frame()
+    return {
+      pass: samples.length === 6 && maxDistance <= 4 && last !== -1 && last <= 4,
+      samples,
+      maxDistance,
+      grown,
+      trace,
     }
   } catch (error) {
     return { pass: false, reason: String(error) }
@@ -3312,6 +3438,15 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
 export const CHAT_TOOL_CARD_OPEN_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
+    // ⚠️ 先确保**轨迹是展开的**（2026-09-30 轨迹重构后新增）：工具行住在轨迹展开体里，
+    // 历史水合出的轨迹默认折叠 —— 折叠态下展开体是 display: none，卡头点击后
+    // 「展开体高度」恒为 0，本探针的「实测高度」断言会整条 FAIL。
+    const trace = document.querySelector('.message.r-assistant .trace')
+    if (trace !== null && trace.classList.contains('open') === false) {
+      const traceHead = trace.querySelector('.trace-head')
+      if (traceHead !== null) traceHead.click()
+      await wait(400)
+    }
     // 优先 task 卡（有子代理轨迹 + 指令 + 参数 + 结果，展开体最长），回落 todo 卡再回落任意工具卡
     const card =
       document.querySelector('[data-field="chat.task-card"]') ||
@@ -4137,6 +4272,16 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
 export const CHAT_THINKING_BLOCK_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
+    // ⚠️ 先确保**轨迹是展开的**（2026-09-30 轨迹重构后新增）：思考块住在轨迹展开体里，
+    // 历史水合出的轨迹默认折叠 —— 折叠态下展开体是 display: none，元素在 DOM 里但不可见、
+    // 高度为 0，后面的「展开后必须可见」会直接 FAIL（2026-09-30 实测就是这么失败的）。
+    // 轨迹已经是展开态时不要点（那会把它收起来）。
+    const trace = document.querySelector('.message.r-assistant .trace')
+    if (trace !== null && trace.classList.contains('open') === false) {
+      const traceHead = trace.querySelector('.trace-head')
+      if (traceHead !== null) traceHead.click()
+      await wait(400)
+    }
     const block = document.querySelector('.message.r-assistant .thinking')
     if (block === null) {
       return {
@@ -4171,8 +4316,12 @@ export const CHAT_THINKING_BLOCK_CHECK = `(() => {
     const text = textNode === null ? '' : (textNode.textContent || '')
     const rect = textNode === null ? null : textNode.getBoundingClientRect()
     const visible = rect !== null && rect.width > 0 && rect.height > 0
-    // 块在正文上方（docs/07 §2.3）：DOM 顺序上 .thinking 必须先于同气泡内的 .md
-    const content = block.parentElement === null ? null : block.parentElement.querySelector('.md')
+    // 块在正文上方（docs/07 §2.3）：DOM 顺序上 .thinking 必须先于同气泡内的 .md。
+    // ⚠️ 取样范围要收在**这条消息**里（closest('.message')）：整份文档里还有别处带
+    // .md 的节点（右栏 / 侧栏的预览），按父级或全局取都会拿错比较对象
+    //（2026-09-30 实测：父级取法得到 aboveContent: false 的假 FAIL）。
+    const scope = block.closest('.message') ?? block.parentElement ?? document.body
+    const content = scope.querySelector('.md')
     const aboveContent =
       content !== null &&
       (block.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
@@ -4191,6 +4340,293 @@ export const CHAT_THINKING_BLOCK_CHECK = `(() => {
         visible &&
         text.indexOf('capture-reasoning-probe') !== -1 &&
         aboveContent,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 执行轨迹展开探针 · 前半（2026-09-30 轨迹视觉重构，docs/07 §2.3 / §5.2）。
+ *
+ * 本轮把「思考块 + 一摞工具卡」收成一个 `AgentTrace`：折叠态是**一行摘要**
+ * （1px 上下描边、无盒子），展开态是**左缘连续竖脊 + 节点圆点**，展开走 `name="fade"`。
+ * 这条 act 负责把折叠态的一行点开（已是展开态就不重复点，避免又收回去），
+ * 并把展开后的几何量出来挂 window 给后半读 —— **act 的返回值进不了 report.json**。
+ *
+ * **只点 DOM，不写配置**（与 task-1 的口径一致）：它不依赖任何 settings 变更，
+ * 因此可以安全地排在一众读配置的场景之间；改完的现场只影响这条消息自己的展开态。
+ *
+ * 首选 `.message.r-assistant .trace`（轨迹容器的稳定锚点）：它是 `AgentTrace.vue` 的根，
+ * 与 `.thinking` / `.tool-card` 是祖先-后代关系（后两者在这条轨迹的展开体里）。
+ */
+export const CHAT_TRACE_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const trace = document.querySelector('.message.r-assistant .trace')
+    if (trace === null) {
+      return { ok: false, reason: 'no .message.r-assistant .trace（seed 的助手消息没渲染轨迹？）' }
+    }
+    const head = trace.querySelector('.trace-head')
+    if (head === null) return { ok: false, reason: 'no .trace-head' }
+    // 诊断：展开体在折叠态下的真实形态（display / 高度 / open 类）
+    const diagnose = () => {
+      const el = trace.querySelector('.trace-body')
+      return {
+        openClass: trace.classList.contains('open'),
+        hidden: el === null ? null : el.hasAttribute('inert'),
+        display: el === null ? null : window.getComputedStyle(el).display,
+        height: el === null ? -1 : Math.round(el.getBoundingClientRect().height),
+      }
+    }
+    // 前置：**先把轨迹收成折叠态**（2026-09-30 复核加固）。
+    // 场景顺序里前面的 chat-thinking-block / chat-tool-card-open 为了点开思考块与工具行
+    // 已经把轨迹展开过（实测跑到这里 openClass: true），而本探针要断言的是
+    // 「折叠 → 展开」这条边沿 + 折叠态的几何 —— 必须自己先把状态造出来，不依赖别人的收尾。
+    if (trace.classList.contains('open')) {
+      head.click()
+      await wait(400)
+    }
+    const beforeShape = diagnose()
+    const openBefore = trace.classList.contains('open')
+    /*
+     * ⚠️ 描边宽度要在**折叠态、点击之前**量。
+     *
+     * 这条踩过：topBorder / bottomBorder 原先在 check 里量，而那时 act 已经点开过 ——
+     * 展开态两次写入之间可能读到过渡中的中间值（实测 0.666667px，即 1px × 2/3 的中间帧），
+     * 「>= 1」于是恒定 FAIL，看起来像"没描边"。规格要的是**有 1px 上下描边**，
+     * 所以判据用「量到的宽度 > 0」而不是「恰好 >= 1」（DPR / 中间帧都会让它不是整数）。
+     */
+    const collapsedStyle = window.getComputedStyle(trace)
+    const topBorderPx = parseFloat(collapsedStyle.borderTopWidth) || 0
+    const bottomBorderPx = parseFloat(collapsedStyle.borderBottomWidth) || 0
+    /*
+     * 折叠态的判据是「展开体**看不见**」，不是「展开体不在 DOM 里」。
+     *
+     * 展开体常驻 DOM（.thinking / .tool-card 这些锚点在折叠态也必须查得到，
+     * 见 AgentTrace 的模板注释），折叠由 CSS 的 display: none 表达 ——
+     * 所以这里量可见性，并且**必须在这一刻量**（act 记录的值是点击之前的快照，
+     * 而 check 跑在 act 之后，用它当"折叠态证据"会永远为假：2026-09-30 实测踩到）。
+     */
+    const collapsedBodyEl = trace.querySelector('.trace-body')
+    const collapsedBodyHidden =
+      collapsedBodyEl === null ||
+      window.getComputedStyle(collapsedBodyEl).display === 'none' ||
+      Math.round(collapsedBodyEl.getBoundingClientRect().height) === 0
+    // 折叠态的判据是"展开体**看不见**"，不是"展开体不在 DOM 里"：展开体常驻 DOM
+    // （「.thinking / .tool-card」这些锚点在折叠态也必须查得到，见 AgentTrace 的模板注释），
+    // 折叠由 CSS 的 display: none 表达。因此这里量可见性，而不是查是否存在。
+    const bodyEl = trace.querySelector('.trace-body')
+    const bodyBefore =
+      bodyEl === null ||
+      window.getComputedStyle(bodyEl).display === 'none' ||
+      Math.round(bodyEl.getBoundingClientRect().height) === 0
+    // 折叠态的几何与"历史是否真的被折叠"的证据必须**点之前**读（点完就换成展开态了）。
+    // collapsedHeight 就是"任务完成后只剩一行摘要"的硬证据：折叠态若把思考块与工具行
+    // 留在布局里，这里会随消息内容涨到几百像素（2026-09-30 复核发现的实现缺陷）。
+    const collapsedHeight = Math.round(trace.getBoundingClientRect().height)
+    const headHeight = Math.round(head.getBoundingClientRect().height)
+    const collapsedTools = trace.querySelector('.tools')
+    const collapsedToolsCards = collapsedTools === null ? 0 : collapsedTools.querySelectorAll('.tool-card').length
+    const collapsedToolsVisibility =
+      collapsedTools === null ? '' : window.getComputedStyle(collapsedTools).visibility
+    // 一行摘要：折叠态时它必须是有文字的（「已深度思考 · N 步」之类）
+    const summary = (head.textContent || '').trim()
+    if (openBefore === false) head.click()
+    // 展开是 fade（250ms 量级的过渡）：等一拍再量几何
+    await wait(450)
+    const body = trace.querySelector('.trace-body')
+    const traceRect = trace.getBoundingClientRect()
+    const style = window.getComputedStyle(trace)
+    const row = body === null ? null : body.querySelector('.tool-card')
+    const iconCount = row === null ? 0 : row.querySelectorAll('.tool-head .tool-icon').length
+    const thinking = body === null ? null : body.querySelector('.thinking')
+    const thinkingBody = thinking === null ? null : thinking.querySelector('.thinking-body')
+    const thinkingText = thinkingBody === null ? null : thinkingBody.querySelector('.thinking-text')
+    let thinkingDistance = null
+    if (thinking !== null && row !== null) {
+      const thinkingRect = thinking.getBoundingClientRect()
+      const rowRect = row.getBoundingClientRect()
+      thinkingDistance = Math.round((rowRect.top - thinkingRect.top) * 10) / 10
+    }
+    const open = trace.classList.contains('open')
+    window.__auroraTraceProbe = {
+      summary: summary,
+      beforeShape: beforeShape,
+      afterShape: diagnose(),
+      openBefore: openBefore,
+      bodyBefore: bodyBefore,
+      collapsedHeight: collapsedHeight,
+      headHeight: headHeight,
+      collapsedToolsCards: collapsedToolsCards,
+      collapsedToolsVisibility: collapsedToolsVisibility,
+      collapsedToolsInDom: collapsedTools !== null,
+      topBorderPx: topBorderPx,
+      bottomBorderPx: bottomBorderPx,
+      collapsedBodyHidden: collapsedBodyHidden,
+      open: open,
+      bodyMounted: body !== null,
+      bodyVisibleHeight: body === null ? 0 : Math.round(body.getBoundingClientRect().height),
+      traceHeight: Math.round(traceRect.height),
+      topBorder: style.borderTopWidth,
+      bottomBorder: style.borderBottomWidth,
+      rowCount: body === null ? 0 : body.querySelectorAll('.tool-card').length,
+      iconCount: iconCount,
+      thinkingPresent: thinking !== null,
+      thinkingHeight: thinking === null ? 0 : Math.round(thinking.getBoundingClientRect().height),
+      thinkingBodyMounted: thinkingBody !== null,
+      thinkingTextHeight:
+        thinkingText === null ? 0 : Math.round(thinkingText.getBoundingClientRect().height),
+      // 折叠态下思考块是「visibility: hidden」（不在 DOM 里摘掉）——这条读数用来区分
+      // 「块被摘掉了」与「块在、只是被藏起来」，两者在截图上看不出来，在排查时差别很大。
+      thinkingVisibility: thinking === null ? '' : window.getComputedStyle(thinking).visibility,
+      thinkingBeforeRow: thinkingDistance,
+      summaryChars: summary.length,
+    }
+    return { ok: true, ...window.__auroraTraceProbe }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 执行轨迹探针 · 后半：几何与结构断言（「一行摘要 + 左缘竖脊 + 节点圆点」的直接证据）。
+ *
+ * 断言链：
+ * ① **点开生效**：act 记录「点之前是折叠的」（`.trace` 无 `open` 类、`.trace-body` 不在），
+ *    点完 `.trace` 有 `open` 类且 `.trace-body` 在文档里、可见高度 > 0；
+ * ② **折叠态是"一行摘要"**：`.trace` 只有 1px 上下描边、没有左右描边与圆角，
+ *    `.trace-head` 里的摘要文字非空 —— 这条钉的是"无盒子"这个观感口径
+ *    （有人给它加回边框 / 圆角 / 背景色，这里就 FAIL）；
+ * ③ **展开态是"竖脊 + 节点"**：`.trace-body::before` 是一条 1px 竖脊（高度 > 0），
+ *    且行的 `.tool-card` 有左内边距 ≥ 8px（节点圆点骑在竖脊上所需的让位）；
+ * ④ **工具行结构没退化**：每行恰好一枚 `.tool-icon`（与 `CHAT_SIDEBAR_SCRIPT` 同口径）、
+ *    `.tool-body` 不存在或带可解析的 `--collapse-h`；
+ * ⑤ **轨迹内顺序**：思考块在工具行**之上**（`thinkingBeforeRow` > 0）——
+ *    与 docs/07 §2.3「思考 → 工具 → 回答」的阅读顺序同一条约束。
+ *
+ * ③ 用 `getComputedStyle(…, '::before')` 量伪元素：竖脊是画在展开体上的，
+ * 不是独立节点，选择器查不到它。
+ */
+export const CHAT_TRACE_CHECK = `(() => {
+  try {
+    const probe = window.__auroraTraceProbe
+    if (probe === undefined) return { pass: false, reason: 'CHAT_TRACE_ACT 未运行（缺 __auroraTraceProbe）' }
+    const trace = document.querySelector('.message.r-assistant .trace')
+    if (trace === null) return { pass: false, reason: 'no .message.r-assistant .trace' }
+    const head = trace.querySelector('.trace-head')
+    const body = trace.querySelector('.trace-body')
+    const open = trace.classList.contains('open')
+    const style = window.getComputedStyle(trace)
+    const spine = body === null ? null : window.getComputedStyle(body, '::before')
+    const spineWidth = spine === null ? 0 : parseFloat(spine.width) || 0
+    const spineHeight = spine === null ? 0 : parseFloat(spine.height) || 0
+    /*
+     * 行内边距与"每行一枚图标"的取样要落在**展开体内部**：折叠态下展开体是
+     * display: none（元素仍在 DOM、但几何全为 0），此时量出来的是 0，
+     * 而本探针的几何断言必须在展开态下取（act 已经点开了）。
+     */
+    const row = body === null ? null : body.querySelector('.tool-card')
+    const rowPadding = row === null ? null : window.getComputedStyle(row)
+    const rowIconCount = row === null ? null : row.querySelectorAll('.tool-head .tool-icon').length
+    const rowBody = row === null ? null : row.querySelector('.tool-body')
+    const collapseVar = rowBody === null ? null : rowBody.style.getPropertyValue('--collapse-h')
+    const collapseOk =
+      collapseVar === null ? true : /^[0-9]+(\\.[0-9]+)?px$/.test(collapseVar.trim())
+    // 摘要文字非空：折叠态那一行必须说得出"做了什么"
+    const summaryNow = head === null ? '' : (head.textContent || '').trim()
+    // 点开生效：act 记录过"点之前是折叠的"，现在必须是展开且有可见高度
+    const bodyHeight = body === null ? 0 : Math.round(body.getBoundingClientRect().height)
+    const borderColors = [
+      style.borderTopColor,
+      style.borderBottomColor,
+      style.borderLeftColor,
+      style.borderRightColor,
+    ]
+    /*
+     * 「一行」的判据是**上下有 1px 描边、左右没有边框宽度**。
+     *
+     * ⚠️ 不要拿左右**颜色**当判据（2026-09-30 实测踩到）：border-left-color 在
+     * 「没有左边框」时会被解析成 currentColor（本仓即 --text-secondary），
+     * 于是"左右透明"这条永远不成立、探针恒定 FAIL —— 量宽度才是"有没有这条边"的事实。
+     * 颜色仍回报给 report.json 供人工核对。
+     */
+    const clear = 'rgba(0, 0, 0, 0)'
+    const topBottomPainted = borderColors[0] !== clear && borderColors[1] !== clear
+    const leftRightWidth = [
+      parseFloat(style.borderLeftWidth) || 0,
+      parseFloat(style.borderRightWidth) || 0,
+    ]
+    const leftRightClear = leftRightWidth[0] === 0 && leftRightWidth[1] === 0
+    /*
+     * 「任务完成后自动折叠思考与调用历史」这条诉求的硬断言 —— 折叠态必须**真的只剩一行**：
+     * 思考块与工具行都还在 DOM 里（探针与结构计数依赖它们），但整条轨迹的高度只能是
+     * 「摘要行 + 上下 1px 描边」这一档。给 12px 余量覆盖过渡与亚像素。
+     */
+    const singleLine =
+      probe.collapsedToolsInDom === true &&
+      probe.collapsedToolsCards > 0 &&
+      probe.collapsedToolsVisibility === 'hidden' &&
+      probe.collapsedHeight <= probe.headHeight + 12
+    // 逐条摊开（排障与可读性双用）：pass 只看下面这份布尔表的乘积，
+    // 少写一条或多写一条在报告里一眼可见，不用回头读源码。
+    const conditions = {
+      openBeforeFalse: probe.openBefore === false,
+      bodyBeforeFalse: probe.collapsedBodyHidden === true,
+      summaryChars: probe.summaryChars > 0,
+      singleLine: singleLine,
+      open: open === true,
+      bodyPresent: body !== null,
+      bodyHeight: bodyHeight > 0,
+      topBorder: probe.topBorderPx >= 0.5,
+      bottomBorder: probe.bottomBorderPx >= 0.5,
+      topBottomPainted: topBottomPainted,
+      leftRightClear: leftRightClear,
+      spineWidth: spineWidth >= 1,
+      spineHeight: spineHeight > 0,
+      rowPresent: row !== null,
+      rowIconCount: rowIconCount === 1,
+      rowPadding: (parseFloat(rowPadding === null ? '' : rowPadding.paddingLeft) || 0) >= 8,
+      collapseOk: collapseOk,
+      thinkingBeforeRow:
+        probe.thinkingPresent === false ||
+        probe.thinkingBeforeRow === null ||
+        probe.thinkingBeforeRow > 0,
+    }
+    return {
+      act: probe,
+      conditions: conditions,
+      open: open,
+      bodyHeight: bodyHeight,
+      summaryNow: summaryNow,
+      collapsedHeight: probe.collapsedHeight,
+      collapsedHeadHeight: probe.headHeight,
+      collapsedToolsCards: probe.collapsedToolsCards,
+      collapsedToolsVisibility: probe.collapsedToolsVisibility,
+      // 展开态里工具行必须是可见的（折叠规则只作用于折叠态，别把展开态一起藏了）
+      toolsVisibilityOpen:
+        body === null || body.querySelector('.tools') === null
+          ? ''
+          : window.getComputedStyle(body.querySelector('.tools')).visibility,
+      spine: {
+        width: spineWidth,
+        height: spineHeight,
+        color: spine === null ? '' : spine.backgroundColor,
+      },
+      rowIconCount: rowIconCount,
+      rowPaddingLeft: rowPadding === null ? null : parseFloat(rowPadding.paddingLeft) || 0,
+      collapseVar: collapseVar,
+      topBottomPainted: topBottomPainted,
+      leftRightClear: leftRightClear,
+      leftRightWidth: leftRightWidth,
+      borderColors: borderColors,
+      /*
+       * 单一事实来源：pass 就是上面那张布尔表的乘积。
+       * 不在这里重抄一遍条件 —— 2026-09-30 实测踩过：两份判据漂移之后
+       * （conditions 已改用折叠态量到的描边宽度，pass 里还留着旧写法），
+       * 报告里每条都是 true、探针却恒定 FAIL，排查成本极高。
+       */
+      pass: Object.values(conditions).every((value) => value === true),
     }
   } catch (error) {
     return { pass: false, reason: String(error) }
@@ -6340,7 +6776,7 @@ function onboardingCheckScript(index: number): string {
 
 /**
  * 默认截图清单：四个窗口 + 提示条两态 + 设置页六页深链（含各页门控探针）+ 若干 DOM 断言场景
- * （门控计数 / 左栏与右栏 / 思考块 / 快速会话 / 对话自动滚底 / 收起即消失 / 思考等级 /
+ * （门控计数 / 左栏与右栏 / 思考块 / 执行轨迹 / 快速会话 / 对话自动滚底 / 收起即消失 / 思考等级 /
  * 模型列表 / tts seed / 窗口拖动区 / 模式页门控与真实写盘，见下面各条的 `check`）
  * + 每窗一张双主题场景（`theme-*.png`，深/浅各跑一遍整批）。
  * BetaV2（spec §11）：设置页 8 → 6 页；旧深链 `?page=tts` 的别名映射由
@@ -6355,7 +6791,9 @@ function onboardingCheckScript(index: number): string {
  * → `chat-thinking-block`（reload 后展开 seed 的思考块）→ `chat-quick-session`（切到 quick 会话）
  * → `chat-thinking-level` → `chat-model-picker`（step 5 加）
  * → `chat-composer-slash` → `chat-composer-permission` → `chat-composer-flyouts`（输入区三浮层的
- * 互斥与几何）→ `chat-tool-card-open`（reload 回 main 后展开工具卡）→ `chat-archive`（左栏归档分组，
+ * 互斥与几何）→ `chat-tool-card-open`（reload 回 main 后展开工具卡）→ `chat-trace`
+ * （2026-09-30 轨迹重构：展开 `AgentTrace`，断言一行摘要 / 竖脊 / 节点几何）→
+ * `chat-archive`（左栏归档分组，
  * 自还原）→ `chat-tts`（step 6 加，自带 reload 回到 main 会话）→ `chat-subagent-page`
  * → `chat-classisland-status` → `chat-drag` → `chat-collapse` → `chat.png`。
  * 三个新场景都排在 chat-collapse 之前，且都排在不改配置 / 不用模型的那一段里；
@@ -6803,6 +7241,17 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: CHAT_TOOL_CARD_OPEN_ACT,
       check: CHAT_TOOL_CARD_OPEN_CHECK,
     },
+    // 执行轨迹（2026-09-30 轨迹视觉重构）：折叠态「一行摘要（1px 上下描边、无盒子）」
+    // → 点开 → 展开态「左缘连续竖脊 + 节点圆点」。act 只点 DOM（**不写配置**），
+    // check 断言上面那两组几何 / 结构（见两条探针的注释）。
+    // 与 `chat-tool-card-open` 同为"main 会话 + reload 后默认折叠"的现场，
+    // 放在它后面不必再 reload 一次（这条消息的轨迹在每个场景开头都是折叠的）。
+    {
+      name: 'chat',
+      file: 'chat-trace.png',
+      act: CHAT_TRACE_ACT,
+      check: CHAT_TRACE_CHECK,
+    },
     // 左栏归档分组（2026-09 新增）：act 展开分组拍图，check 在做完「真实 UI 归档 → 撤销归档」
     // 的往返后收尾（收起分组、清残留），不留被改过的左栏给后续场景。
     {
@@ -6894,7 +7343,10 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     },
     { name: 'chat', file: 'chat-drag.png', check: WINDOW_DRAG_SCRIPT },
     { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },
+    // 自动滚底两条：语义（谁能改跟随状态）+ 持续跟进（每帧都到底）。
+    // **必须排在 chat-collapse 之前** —— 窗口一被 hide，后面的 DOM 操作就没了。
     { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
+    { name: 'chat', file: 'chat-follow-burst.png', check: CHAT_FOLLOW_BURST_SCRIPT },
     // 五段共用同一窗口，不能加 query / reload；本地占位凭据只在隔离 userData 中保存，绝不测试连接。
     // 双主题场景（step-06）刻意排在五段**之前**：它只等第 0 段就位、不点任何页脚按钮，
     // 因此引导的阶段推进与既有五条断言完全不受影响。
