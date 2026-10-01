@@ -5532,6 +5532,27 @@ export const SETTINGS_CENTER_FIELDS_SCRIPT = `(() => {
  * - 生图 provider 列表与 TTS / STT 同一套二选一：空 → `data-empty="imagegen.providers"`，
  *   非空 → 行容器（`imagegen.providers.<id>`，后面不再有点）。
  */
+/**
+ * 「AI 模型」页的拍图前置（step-06）：把**生图模型区组**滚进视口。
+ *
+ * 它在该页**最底部**，而设置窗是固定高度 + 内部滚动 —— 不滚的话这张 PNG 永远停在页头，
+ * 「生图空状态里有可点的『+ 添加生图模型』按钮」这条人工核对项就无从核对
+ *（`SETTINGS_LLM_FIELDS_SCRIPT` 只证明空态元素在 DOM 里，不看它在不在视口内）。
+ *
+ * 只滚 DOM、不改任何配置，因此不影响同一场景的 check 判据。
+ */
+export const SETTINGS_LLM_SCROLL_ACT = `(async () => {
+  try {
+    const anchor = document.querySelector('[data-empty="imagegen.providers"]')
+    if (anchor === null) return { ok: false, reason: 'no imagegen empty state' }
+    anchor.scrollIntoView({ block: 'center' })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    return { ok: true, scrolled: true }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
 export const SETTINGS_LLM_FIELDS_SCRIPT = `(() => {
   try {
     const count = (selector) => document.querySelectorAll(selector).length
@@ -8203,7 +8224,15 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       // 「智能与工具」页（BetaV2 合并技能 + MCP）：预期空状态见 SETTINGS_AGENT_FIELDS_SCRIPT；
       // 技能 / MCP 区组默认收起（docs/07 §2.5），探针在 check 里自己先展开再计数（async），
       // 所以这里**不需要**像 modes 页那样配 act —— PNG 拍到的正是默认收起态。
-      act: page === 'modes' ? SETTINGS_MODES_EXPAND_ACT : undefined,
+      // 「AI 模型」页也配一个拍图前置（step-06）：把页面**底部**的生图区组滚进视口 ——
+      // 设置窗是固定高度 + 内部滚动，不滚的话这张 PNG 只拍得到页头，而
+      // 「生图空状态里有可点的『+ 添加生图模型』按钮」正是要在这张图上人工核对的一条。
+      act:
+        page === 'modes'
+          ? SETTINGS_MODES_EXPAND_ACT
+          : page === 'llm'
+            ? SETTINGS_LLM_SCROLL_ACT
+            : undefined,
       check:
         page === 'general'
           ? SETTINGS_FIELDS_SCRIPT
