@@ -579,6 +579,15 @@ export interface ChatRemoteVisibilityEvent {
   sessionId: string
 }
 
+/**
+ * 会话删除推送（`chat:sessionDeleted`，docs/07 §2.3）：
+ * 主进程在 `chat:deleteSession` 删除成功后广播被删会话 id，chat 窗口据此重拉
+ * 会话列表；被删会话正是当前会话时按「最近会话 / 新建」回落。
+ */
+export interface ChatSessionDeletedEvent {
+  sessionId: string
+}
+
 /** 归档 / 取消归档请求（`chat:archiveSession`，docs/06 §4） */
 export interface ChatArchiveRequest {
   sessionId: string
@@ -1421,6 +1430,12 @@ export interface AuroraApi {
      * 渲染层收到后重拉会话列表即可（payload 只含 sessionId）。
      */
     onCenterVisibilityChanged(listener: (event: ChatRemoteVisibilityEvent) => void): () => void
+    /**
+     * 会话删除推送（docs/07 §2.3，on/off 成对）：主进程在 `deleteSession` 删除成功后
+     * 广播被删会话 id（payload 只含 sessionId）；渲染层重拉会话列表，且当前会话被删时
+     * 按「左栏最近一条会话回落，列表空则新建」处理。
+     */
+    onSessionDeleted(listener: (event: ChatSessionDeletedEvent) => void): () => void
     /**
      * 新建会话并返回其 id。
      *

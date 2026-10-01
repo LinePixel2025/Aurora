@@ -109,6 +109,16 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   const sessionId = ref(defaultSessionId)
   const messages = ref<ChatMessage[]>([])
   const streaming = ref(false)
+  /**
+   * 最近一次「本轮收尾」的 requestId（`done` / `error` 分支置位，含**非本窗口发起**的轮次）。
+   *
+   * 折叠收尾的**第二个触发入口**（docs/07 §2.3，P2-20）：跨窗口观看 / 中途切走再切回时，
+   * 本窗口的 `streaming` 全程为 false —— MessageList 只挂 `streaming` 边沿的话，边沿
+   * 从不触发，本轮轨迹与思考块会永远停在展开态。改用这个显式信号后，只要本窗口看到了
+   * 收尾事件（requestId 变化）就会收拢一次。本窗口自己发起的轮次也会置位，与边沿走
+   * 同一条收拢路径（幂等，重复无害）；切会话 / 清空时复位为 null。
+   */
+  const lastSettledRequestId = ref<string | null>(null)
   const unread = ref(false)
   const error = ref<string | null>(null)
   /** 会话列表（`chat:sessions`），仅交互窗使用 */
@@ -275,25 +285,18 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         // user 消息广播（docs/06 §4）：主界面 / 提示条任一侧发出的提问，另一侧实时可见。
         // **不能按 requestId 过滤**：该事件在内核 run() 开始时广播，早于 chat:send 的
         // invoke 返回 —— 发送方此刻的 activeRequest 还没拿到这个 requestId，而且发送方
-        // 在 send() 里已本地 push 过同一条消息。因此按内容去重：事件时间戳往前 30 秒内
-        // 已存在同文本的 user 消息就跳过，否则（其它窗口发的）追加一条。
+        // 在 send() 里已本地 push 过同一条消息。
+        // 去重判定见 `matchUserMessageEcho`（P2-19）：只与**无 seq 的本地临时气泡**对账，
+        // 已带 seq 的气泡一律跳过 —— 否则跨窗口 30 秒内重发同文本会命中上一轮的
+        // `u-evt-` 气泡，把它的 seq/createdAt 覆写成这一轮的（吞掉第二条、错锚第一条）。
         // 刻意不动 streaming / assistantId / activeRequest 等流式状态。
         const content = event.content
-        const cutoff = event.createdAt - 30_000
-        let duplicateIndex = -1
-        for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-          const message = messages.value[index]
-          if (message === undefined || message.createdAt < cutoff) break
-          if (message.role === 'user' && message.content === content) {
-            duplicateIndex = index
-            break
-          }
-        }
-        if (duplicateIndex >= 0) {
+        const matched = matchUserMessageEcho(messages.value, content, event.createdAt)
+        if (matched >= 0) {
           // 命中的是发送方本地 push 的气泡（临时 id、无 seq）：把主进程分配的 seq /
           // 时间对齐回去 —— 它就是同一条消息。不补 seq 的话，后续按 seq 插入的回复
           // 会越过这条气泡排到它前面（用户消息被压到整轮回复之后，2026-09-25 报告）。
-          const existing = messages.value[duplicateIndex]
+          const existing = messages.value[matched]
           if (existing) {
             existing.seq = event.seq
             existing.createdAt = event.createdAt
@@ -382,6 +385,9 @@ export function useChat(windowName: WindowName, context: ChatContext) {
           event.pendingReason === undefined ? null : PENDING_REASON_TEXT[event.pendingReason]
         unread.value = true
         finishRequest(event.requestId)
+        // 收尾信号（P2-20）：MessageList 的折叠收尾据此触发 —— 非本窗口发起的轮次
+        // 在 `streaming` 上无边沿，只有这条显式信号能让它收拢成一行摘要。
+        lastSettledRequestId.value = event.requestId
         // 任务可能刚进入 paused（轮次用尽 / 预算触顶）：立即对齐一次列表，
         // 让「继续」按钮在回复结束的同一刻出现，而不是等下一次切会话。
         void refreshJobs()
@@ -398,6 +404,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
           message.content = message.content === '' ? `请求失败：${event.message}` : message.content
         }
         finishRequest(event.requestId)
+        // 出错同样是「本轮收尾」：轨迹与思考块照收（与 done 同一条收拢路径，P2-20）
+        lastSettledRequestId.value = event.requestId
         break
       }
       default:
@@ -428,6 +436,16 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     void loadSessions()
   })
 
+  /**
+   * 会话删除推送（docs/07 §2.3，P2-22）：设置页「会话管理」删除某会话后，主进程
+   * 在**删除成功后**广播被删 id。这里重拉会话列表；若被删的正是当前会话，按
+   * 「最近会话回落 / 列表空则新建」处理 —— 否则被删会话会一直留在左栏、
+   * `activeId` 仍指着它。与 remoteActivate 同口径：推送处理**不许抛未捕获错误**。
+   */
+  const disposeSessionDeleted = window.aurora.chat.onSessionDeleted((event) => {
+    void handleSessionDeleted(event.sessionId)
+  })
+
   onScopeDispose(() => {
     // 先 flush 再 dispose：卸载瞬间已入队的增量不能丢（消息正文会缺尾），
     // dispose 只负责取消在途帧与清空缓冲（组件已经没了，不再 apply）
@@ -436,7 +454,31 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     dispose()
     disposeRemoteActivate()
     disposeCenterVisibility()
+    disposeSessionDeleted()
   })
+
+  /**
+   * 处理 `chat:sessionDeleted`（上面推送的处理体，docs/07 §2.3）。
+   *
+   * 先重拉列表（被删会话一定不在里面了），再判断当前会话是否被删：
+   * **不是** → 只刷新左栏；**是** → 按「左栏最近一条会话回落」（列表新的在前），
+   * 列表里再没有别的会话时新建一个。回落走现成入口（`switchSession` / `newSession`），
+   * 任何失败只 warn 一句（推送处理不许抛未捕获错误）。
+   */
+  async function handleSessionDeleted(deletedId: string): Promise<void> {
+    try {
+      await loadSessions()
+      if (sessionId.value !== deletedId) return
+      const next = sessions.value.find((item) => item.id !== deletedId)
+      if (next === undefined) {
+        await newSession()
+        return
+      }
+      await switchSession(next.id)
+    } catch (cause) {
+      window.console?.warn('会话删除后的回落失败', deletedId, cause)
+    }
+  }
 
   /**
    * 执行一次远程激活（`chat:remoteActivate` 的处理体，docs/12 §6.3）。
@@ -881,6 +923,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     error.value = null
     unread.value = false
     streaming.value = false
+    // 收尾信号是「本会话本轮」的：切走后旧值不能在新会话里再触发一次收拢
+    lastSettledRequestId.value = null
     activeRequest = null
     assistantId = null
     finishedRequests.clear()
@@ -1000,6 +1044,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     error.value = null
     pendingNotice.value = null
     liveSubagents.value = []
+    // 清空同理：收尾信号属于「本轮」，清空后不该留着让 MessageList 再收拢一次
+    lastSettledRequestId.value = null
     resetUsage()
     resetReasoning()
   }
@@ -1019,6 +1065,11 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     lastAssistant,
     /** 正在接收思考过程的助手消息 id（供 MessageList 自动展开思考块）；空闲时为 null */
     reasoningTargetId,
+    /**
+     * 最近一次「本轮收尾」的 requestId（done / error 置位，含非本窗口发起的轮次）：
+     * MessageList 的折叠收尾据此触发（`streaming` 边沿之外的第二个入口，docs/07 §2.3）。
+     */
+    lastSettledRequestId,
     /** 本会话 token 用量（输入框底部「上下文详解」的数据源，docs/07 §2.3） */
     usage,
     /** 本会话的子代理运行（「子代理」页面用，新的在前） */
@@ -1053,6 +1104,49 @@ export function useChat(windowName: WindowName, context: ChatContext) {
 function sameAsServer(server: ChatMessage[], local: ChatMessage): boolean {
   return server.some((item) => item.role === local.role && item.content === local.content)
 }
+
+/**
+ * `user-message` 广播要回填哪一条本地气泡（返回下标；`-1` 表示没有可对账的本地气泡）。
+ *
+ * 判定口径（P2-19，`docs/06 §4` 的跨窗口实时同步）：
+ * - 只看**无 `seq` 的本地临时气泡**（`send()` 本地 push 的那条，尚未被广播确认）：
+ *   已带 `seq` 的气泡是**已确认过**的消息，`content` 相同也可能是**另一条**同文本消息
+ *   —— 跨窗口 30 秒内重发「继续」是现实用法，命中上一轮的 `u-evt-` 气泡会把它的
+ *   seq / createdAt 覆写成这一轮的（第二条被吞、第一条被错锚，2026-09-30 报告）。
+ *   因此**带 seq 的一律跳过**，只与临时气泡对账。
+ * - 时间窗：只在事件时间戳往前 `windowMs` 内回扫；一旦越出窗口（下标往前扫到的消息
+ *   `createdAt` 更早）立即停止 —— 比窗口更早的气泡不可能是这次广播的原作者。
+ * - 从数组末尾往前扫，取**最近**一条匹配（重发同文本时命中的是最后一次本地 push）。
+ *
+ * 抽成不依赖 electron / DOM 的纯函数，供 `useChat.test.ts` 直接覆盖（含「带 seq 跳过」
+ * 与「同文本重发不吞」两条回归）。
+ */
+export function matchUserMessageEcho(
+  messages: readonly ChatMessage[],
+  content: string,
+  eventCreatedAt: number,
+  windowMs = USER_MESSAGE_ECHO_WINDOW_MS,
+): number {
+  const cutoff = eventCreatedAt - windowMs
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message === undefined || message.createdAt < cutoff) break
+    if (message.role !== 'user') continue
+    // 已带 seq 的气泡是「已确认」的消息，跳过 content 匹配（P2-19 的核心）
+    if (message.seq !== undefined) continue
+    if (message.content === content) return index
+  }
+  return -1
+}
+
+/**
+ * `user-message` 广播的回扫时间窗（毫秒）。
+ *
+ * 30 秒是历史值，语义是「同一窗口内本地刚 push 的气泡」——广播到达与本地 push 间隔
+ * 通常只有一次 IPC 往返，给足 30 秒只是容错（本地气泡本身无 seq，越晚匹配越容易误判，
+ * 但带 seq 的气泡已由上面跳过，误判面只剩「广播丢失且同文本重发」这一窄角）。
+ */
+export const USER_MESSAGE_ECHO_WINDOW_MS = 30_000
 
 function toChatMessage(dto: ChatMessageDto): ChatMessage {
   return {

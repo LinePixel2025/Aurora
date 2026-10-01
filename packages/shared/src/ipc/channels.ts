@@ -111,6 +111,12 @@ export const IPC = {
      * **不可逆**。主进程守卫：该会话有 running 状态的 job 时拒绝（E_INVALID_STATE）。
      */
     deleteSession: 'chat:deleteSession',
+    /**
+     * 真删除会话成功后的跨窗口推送（on/off 成对，docs/07 §2.3）：
+     * 主进程在 `chat:deleteSession` 删除成功后向所有窗口广播 `{ sessionId }`，
+     * chat 窗口据此重拉会话列表，当前会话被删时按「最近会话 / 新建」回落。
+     */
+    sessionDeleted: 'chat:sessionDeleted',
     /** Job（任务）列表 / 续跑 / 取消（v15，docs/06 §4.1） */
     jobs: 'chat:jobs',
     resumeJob: 'chat:resumeJob',

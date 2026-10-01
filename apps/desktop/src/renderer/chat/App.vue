@@ -30,7 +30,6 @@ import type {
   PermissionMode,
   SensitiveToolRequest,
   SkillSummary,
-  SttProviderConfig,
 } from '@aurora/shared'
 import {
   DEFAULT_REASONING_EFFORT,
@@ -72,6 +71,7 @@ const {
   error: chatError,
   statusTone,
   reasoningTargetId,
+  lastSettledRequestId,
   subagentRuns,
   usage,
   jobs,
@@ -598,8 +598,9 @@ function speakMessage(text: string, id: string): void {
 // ───────────────────── 语音输入（STT，BetaV2；门控口径同 TTS） ─────────────────────
 
 /**
- * 麦克风按钮出不出现的**唯一**口径：`stt.enabled` 且 `stt.active` 指向一个存在的
- * provider、`baseUrl` / `model` 齐全、且已存有 API Key（`apiKeySet` 由主进程脱敏时给出）。
+ * 麦克风按钮出不出现的**唯一**口径（docs/07 §2.3）：`stt.enabled` 且 `stt.active` 指向一个
+ * **存在**的 provider，且该 provider 的 `baseUrl` / `model` 齐全。门槛与 `ttsReady` 同款
+ * ——**不查 API Key**（本地 whisper 类无需密钥的部署同样渲染按钮；转写失败由状态提示兜底）。
  * 未满足时按钮**根本不渲染**（不是 disabled）——点一个必然失败的入口不如不给。
  */
 const sttReady = computed<boolean>(() => {
@@ -607,11 +608,9 @@ const sttReady = computed<boolean>(() => {
   if (!settings) return false
   const { enabled, active, providers } = settings.stt
   if (!enabled || active === '') return false
-  const provider = providers[active] as (SttProviderConfig & { apiKeySet?: boolean }) | undefined
+  const provider = providers[active]
   if (provider === undefined) return false
-  return (
-    provider.baseUrl.trim() !== '' && provider.model.trim() !== '' && provider.apiKeySet === true
-  )
+  return provider.baseUrl.trim() !== '' && provider.model.trim() !== ''
 })
 
 const recording = ref(false)
@@ -1206,6 +1205,7 @@ async function markGuideDone(): Promise<void> {
           :streaming="streaming"
           :show-thinking="showThinking"
           :thinking-target-id="reasoningTargetId"
+          :settled-request-id="lastSettledRequestId"
           @speak="speakMessage"
           @stop-speak="tts.stop"
         />

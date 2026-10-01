@@ -41,6 +41,9 @@
  *   `traceOpen(message) = traceOpenedIds.has(id) || thinkingTargetId === id || !historyFoldedIds.has(id)`；
  *   ⚠️ 收尾只能按「本轮追加了哪些」收，按「哪些被打开过」收会漏掉**没有思考增量**的工具轮
  *   （2026-10-01 用户实测：「模型答完了，工作过程还摊着不折叠」）；
+ *   ⚠️ 收尾有**两个触发入口**（同一个 `settleRound`）：`streaming` 边沿，以及 useChat 的
+ *   `settledRequestId` 收尾信号 —— 跨窗口观看 / 中途切走再切回时本窗口 `streaming` 全程
+ *   为 false、边沿从不触发，只挂边沿会让本轮轨迹永远摊开（P2-20）；
  * - 三处扩展 / 收起（轨迹头、思考块头、工具行头）在**跟随态**下重新贴底
  *   （`stick(reduceMotion ? 'auto' : 'smooth')`，判定照抄 `jumpToLatest`）。
  *
@@ -80,6 +83,15 @@ const props = withDefaults(
     showThinking?: boolean
     /** 正在接收思考过程的助手消息 id（useChat 的 reasoningTargetId；自动展开依据） */
     thinkingTargetId?: string | null
+    /**
+     * 最近一次「本轮收尾」的 requestId（useChat 的 `lastSettledRequestId`，done / error 置位）。
+     *
+     * 折叠收尾的**第二个触发入口**（docs/07 §2.3，P2-20）：跨窗口观看 / 中途切走再切回时，
+     * 本窗口的 `streaming` 全程为 false，「streaming 边沿」根本不触发 —— 只挂边沿的话，
+     * 本轮轨迹与思考块会永远停在展开态。本窗口自己发起时它也会置位：与边沿走同一条
+     * 收拢路径，重复调用幂等。
+     */
+    settledRequestId?: string | null
   }>(),
   {
     emptyHint: '开始一段对话吧',
@@ -89,6 +101,7 @@ const props = withDefaults(
     streaming: false,
     showThinking: true,
     thinkingTargetId: null,
+    settledRequestId: null,
   },
 )
 
@@ -357,11 +370,39 @@ watch(
       markPresentAsHistory()
       return
     }
-    thinkingOpen.value = []
-    stopThinkingTimer()
-    markPresentAsHistory()
+    settleRound()
   },
 )
+
+/**
+ * 「本轮收尾」显式信号（useChat 的 `lastSettledRequestId`，done / error 置位）。
+ *
+ * 折叠收尾的**第二个触发入口**（P2-20）：跨窗口观看 / 中途切走再切回时，本窗口的
+ * `streaming` 全程为 false，上面那条边沿 watch 因 `now === before` 直接 return ——
+ * 本轮轨迹与思考块会永远停在展开态。这里改挂收尾信号：只要本窗口看到了收尾事件
+ * （requestId 变化）就收拢一次。本窗口自己发起时边沿与它都会触发，`settleRound`
+ * 幂等，重复无害（`thinkingOpen` 清空、`markPresentAsHistory` 重复 `add` 无副作用）。
+ */
+watch(
+  () => props.settledRequestId,
+  (id) => {
+    if (id === null || id === '') return
+    settleRound()
+  },
+)
+
+/**
+ * 本轮收尾的收拢动作（`streaming` 边沿与 `settledRequestId` 两个入口共用的**唯一一份**）。
+ *
+ * 三段：收起思考块、停表、把此刻在屏的消息全部登记为"已结束"（默认折叠）。
+ * 抽成一个函数是刻意的 —— 两个触发入口各写一份迟早会漂移（2026-09-30 的
+ * 「pass 与 conditions 表漂移」同类教训）。
+ */
+function settleRound(): void {
+  thinkingOpen.value = []
+  stopThinkingTimer()
+  markPresentAsHistory()
+}
 
 /**
  * 折叠态思考块的文案。

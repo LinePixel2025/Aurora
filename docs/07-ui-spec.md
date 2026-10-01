@@ -150,7 +150,15 @@
     **不进 config.json**、归档本身不改 `CONFIG_VERSION`（当前版本见 08 §2）。
     已知边界：`chat:sessions` 目前**没有推送通道**，归档只在发出请求的那个窗口即时生效，
     其它窗口（提示条用 quick 会话）要等下次拉列表才看得到；quick / settings 两个伪会话
-    不出现在列表里，因此也不参与归档。
+    不出现在列表里，因此也不参与归档。（**唯一的例外**是会话删除：它有专属的
+    `chat:sessionDeleted` 推送，见下条。）
+  - **会话删除的跨窗口同步（2026-10-01，P2-22）**：真删除走 `chat:deleteSession`
+    （删 `sessions/<id>.json` + 清内存态，**不可逆**，renderer 负责两步确认，主进程守卫
+    在跑的 job，见 08 §7）。主进程**删除成功后**向所有窗口广播 `chat:sessionDeleted`，
+    载荷 `{ sessionId }`（被删会话的 id）。chat 窗口订阅后重拉 `chat:sessions`；若被删的
+    **正是当前打开的那个会话**，按「左栏最近一条会话（列表新的在前）回落，列表里再没有
+    别的会话时 `chat:newSession` 新建并切过去」处理。`quick` / `settings` 两个伪会话
+    不出现在列表里，因此不参与回落目标的选择（也不可被删除）。
   - **主区**：头部拖拽区（侧栏开关 + 状态灯 + 会话标题 + 未配置徽章 + 清空（图标钮）+
     **Windows 式窗口按钮**：`最小化`（`data-caption-btn="minimize"`，真最小化进任务栏）与
     `关闭`（`data-caption-btn="close"`，= 隐藏窗口）；双击头部拖动区切换最大化）→
@@ -204,7 +212,9 @@
     文件备份区组，主界面右栏不再展示快照列表 —— 见下文「文件备份」与 06 §11.8。）
 - **麦克风（STT，BetaV2）**：composer 的麦克风按钮（`data-field="chat.mic"`）门控口径同 TTS：
   `stt.enabled && stt.active` 指向 baseUrl / model 齐全的 provider 才渲染按钮，
-  **否则连按钮都不渲染**（不是 disabled）；录音走 MediaRecorder → `stt:transcribe`，
+  **否则连按钮都不渲染**（不是 disabled）；门槛**不含 API Key**（与 `ttsReady` 同款，
+  本地 whisper 类无需密钥的部署同样出现按钮，转写失败由状态提示兜底）；
+  录音走 MediaRecorder → `stt:transcribe`，
   录音态用 theme.css 的 `pulse-ring` 扩散环动画。
 - **完整对话**：Markdown、代码高亮、流式渲染、执行轨迹（可展开查看细节）、附件与文件拖拽发送。
   - 实现状态（v0.6.0）：**附件拖拽已落地** —— 路径解析在 preload（`webUtils.getPathForFile`，Electron 32+ 已移除 `File.path`），

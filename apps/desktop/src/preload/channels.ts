@@ -108,6 +108,8 @@ const CHANNELS = {
     setSessionProject: 'chat:setSessionProject',
     // 真删除会话（docs/08 会话管理页）：与 shared 契约同构，编译期双向断言兜住
     deleteSession: 'chat:deleteSession',
+    // 会话删除推送（docs/07 §2.3）：删除成功后主进程广播被删 id，同上，双向断言兜住
+    sessionDeleted: 'chat:sessionDeleted',
     jobs: 'chat:jobs',
     resumeJob: 'chat:resumeJob',
     cancelJob: 'chat:cancelJob',
