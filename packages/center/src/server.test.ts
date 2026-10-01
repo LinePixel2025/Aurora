@@ -3,9 +3,13 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  AUTH_RATE_LIMITS,
   createCenterServer,
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_MISSES_ALLOWED,
+  inspectServerLock,
+  MAX_WS_PAYLOAD,
+  RATE_LIMITED_ERROR,
   type RunningCenterServer,
 } from './server.js'
 import WebSocket from 'ws'
@@ -547,6 +551,34 @@ describe('Aurora Center · 文件上传与下载', () => {
     })
     expect(res.status).toBe(401)
   })
+
+  it('下载竞态：校验通过之后、流 open 之前文件被清理轮删掉 → 404 而非进程崩溃（P2-16）', async () => {
+    const name = '竞态文件.txt'
+    const upload = await fetch(`${base}/api/ingest/files`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${await getAnyClientToken()}`,
+        'X-Client-Id': 'client-e2e-1',
+        'X-File-Name': encodeURIComponent(name),
+      },
+      body: '这份内容会先被删掉',
+    })
+    expect(upload.status).toBe(200)
+    const { fileId } = (await upload.json()) as { fileId: string }
+
+    // 复刻 15 分钟清理轮的竞态：索引条目还在（serveFile 的鉴权 / 属主校验都能过），
+    // 物理文件已经没了 —— 旧代码在这里会因为 createReadStream 的 ENOENT
+    // 无人监听而 uncaughtException（整个服务器退出）。
+    const { rm } = await import('node:fs/promises')
+    await rm(join(dataDir, 'files', `${fileId}-${name}`))
+
+    const res = await fetch(`${base}/api/files/${fileId}?token=${userToken}`)
+    expect(res.status).toBe(404)
+    expect(((await res.json()) as { error: string }).error).toBe('E_NOT_FOUND')
+    // 进程存活：同一条下载链路上的常规请求照常
+    const me = await fetch(`${base}/api/me`, { headers: authed(userToken) })
+    expect(me.status).toBe(200)
+  }, 20_000)
 })
 
 /** 客户端令牌由「客户端上线」用例经 /api/client/login 颁发（vitest 同文件内按序执行） */
@@ -1014,5 +1046,205 @@ describe('Aurora Center · 心跳与离线判定（提速轮）', () => {
     } finally {
       vi.useRealTimers()
     }
+  }, 20_000)
+})
+
+/**
+ * 畸形入站帧与单帧上限（2026-10-01 全量审查）。
+ *
+ * 入站 WS 消息在运行时**没有形状校验**（`parsed as …` 盲转型），任何已认证连接都能用
+ * 一条缺字段的 JSON 把处理链打成异常 —— 全仓没有 `process.on('uncaughtException')`，
+ * 异常逃出 `'message'` 监听器就是**整个服务器进程退出**（P0-01 / P1-02；P2-14 的超限帧
+ * 在装了 maxPayload 之后同理：ws 会 emit 一个没人听的 `'error'`）。
+ *
+ * 本文件的 beforeAll 只起一个服务器、用例串行执行，所以"服务器还活着"由**后续请求
+ * 照常拿到响应**直接证明（进程崩了这一整个文件都会失败）。
+ */
+describe('Aurora Center · 畸形入站帧与单帧上限（P0-01 / P1-02 / P2-14）', () => {
+  it('网页端发缺 patch 的 config.update：回 E_INVALID_PATCH，连接与服务器都照常', async () => {
+    const user = await login(USER)
+    const web = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${user.token}`)
+    const waitForWeb = collector(web)
+    await new Promise<void>((resolveOpen, reject) => {
+      web.once('open', () => resolveOpen())
+      web.once('error', reject)
+    })
+    try {
+      // 真实攻击形状：JSON 里根本没有 patch 字段（旧代码在 Object.keys(undefined) 处崩）
+      web.send(
+        JSON.stringify({ type: 'config.update', requestId: 'bad-1', clientId: 'client-e2e-1' }),
+      )
+      const result = await waitForWeb((m) => m['type'] === 'result' && m['requestId'] === 'bad-1')
+      expect(result['ok']).toBe(false)
+      expect(result['error']).toBe('E_INVALID_PATCH')
+
+      // 同一条连接紧接着发一条正常命令：连接与处理链都还在
+      web.send(
+        JSON.stringify({ type: 'session.list', requestId: 'ok-1', clientId: 'client-e2e-1' }),
+      )
+      const ok = await waitForWeb((m) => m['type'] === 'result' && m['requestId'] === 'ok-1')
+      expect(ok['requestId']).toBe('ok-1')
+    } finally {
+      web.close()
+    }
+    const me = await fetch(`${base}/api/me`, { headers: authed(user.token) })
+    expect(me.status).toBe(200)
+  }, 20_000)
+
+  it('客户端发缺 request 的 confirm.request：丢弃且进程不崩，连接与 REST 都照常', async () => {
+    const paired = await clientLogin({
+      username: USER.username,
+      password: USER.password,
+      clientId: 'client-malformed',
+    })
+    expect(paired.status).toBe(200)
+    const ws = await connectClient(paired.data['token'] as string, {
+      clientId: 'client-malformed',
+      name: '畸形帧机',
+    })
+    try {
+      // 旧代码在 message.request.sessionId 处抛 TypeError
+      ws.send(JSON.stringify({ type: 'confirm.request' }))
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      // 进程还在（崩了就不会有 hub 可问），这条连接也没被误踢
+      expect(server.hub.isOnline('client-malformed')).toBe(true)
+      const user = await login(USER)
+      const res = await fetch(`${base}/api/clients`, { headers: authed(user.token) })
+      expect(res.status).toBe(200)
+    } finally {
+      ws.close()
+    }
+  }, 20_000)
+
+  it('超过 maxPayload 的单帧：该连接被 1009 关闭，服务器存活且新连接可正常握手', async () => {
+    const paired = await clientLogin({
+      username: USER.username,
+      password: USER.password,
+      clientId: 'client-oversize',
+    })
+    expect(paired.status).toBe(200)
+    const token = paired.data['token'] as string
+    const ws = await connectClient(token, { clientId: 'client-oversize', name: '超大帧机' })
+    const closed = new Promise<number>((resolveClose) =>
+      ws.once('close', (code) => resolveClose(code)),
+    )
+    // 单帧 > 1 MiB：ws 的 receiver 判超限后以 1009 关闭该连接
+    // （服务端 socket 上那条 'error' 由 server.ts 的监听就地消费，不会变成 uncaughtException）
+    ws.send('x'.repeat(MAX_WS_PAYLOAD + 1024))
+    expect(await closed).toBe(1009)
+
+    // 服务器存活：REST 照常，另起一条连接能正常完成 hello 配对
+    const user = await login(USER)
+    const me = await fetch(`${base}/api/me`, { headers: authed(user.token) })
+    expect(me.status).toBe(200)
+    const healthy = await connectClient(token, { clientId: 'client-oversize', name: '重连机' })
+    healthy.close()
+  }, 20_000)
+})
+
+/**
+ * 认证端点限速（P2-12）。
+ *
+ * 本组用**独立的数据目录 + 独立服务器实例**：限速计数在进程内按源 IP 记，跑在主服务器上
+ * 会和前面那些登录用例互相污染（本文件所有请求的源 IP 都是 127.0.0.1）。
+ * 口径：`login` 只记失败，成功登录不消耗额度 —— 所以"先成功登录拿会话"这一步
+ * 不影响后面的 5 次失败额度。
+ */
+describe('Aurora Center · 认证端点限速（P2-12）', () => {
+  let limited: RunningCenterServer
+  let limitedPort = 0
+  let limitedBase = ''
+  let sessionToken = ''
+
+  beforeAll(async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aurora-center-ratelimit-'))
+    const { AuthStore } = await import('./auth.js')
+    const boot = new AuthStore({ dataDir: dir })
+    await boot.init()
+    await boot.createUser({ ...ADMIN, role: 'admin' })
+
+    limited = createCenterServer({ dataDir: dir })
+    const { port } = await limited.listen(0, '127.0.0.1')
+    limitedPort = port
+    limitedBase = `http://127.0.0.1:${port}`
+
+    // 先用一次**成功**登录拿会话（成功后仍要验证它不被限速影响）
+    const ok = await fetch(`${limitedBase}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ADMIN),
+    })
+    expect(ok.status).toBe(200)
+    sessionToken = ((await ok.json()) as { token: string }).token
+  }, 20_000)
+
+  afterAll(async () => {
+    await limited.close()
+  })
+
+  it('失败 5 次后第 6 次登录被拒（429）：连正确密码也被挡，但既有会话与 WS 照常', async () => {
+    const attempt = (password: string): Promise<Response> =>
+      fetch(`${limitedBase}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: ADMIN.username, password }),
+      })
+
+    for (let i = 0; i < AUTH_RATE_LIMITS.login.max; i += 1) {
+      expect((await attempt('wrong-pass')).status).toBe(401)
+    }
+
+    const blocked = await attempt('wrong-pass')
+    expect(blocked.status).toBe(429)
+    expect(((await blocked.json()) as { error: string }).error).toBe(RATE_LIMITED_ERROR)
+    // 限速在密码校验之前判定：窗口内连正确密码也一并 429（否则穷举每 N 次就能"试中一次"）
+    expect((await attempt(ADMIN.password)).status).toBe(429)
+
+    // 限速只挡认证端点：已登录会话的常规 API 照常
+    const me = await fetch(`${limitedBase}/api/me`, {
+      headers: { Authorization: `Bearer ${sessionToken}` },
+    })
+    expect(me.status).toBe(200)
+
+    // 网页 WS（心跳所在的长连）也不受影响
+    const web = new WebSocket(`ws://127.0.0.1:${limitedPort}/api/ws?token=${sessionToken}`)
+    await new Promise<void>((resolveOpen, reject) => {
+      web.once('open', () => resolveOpen())
+      web.once('error', reject)
+    })
+    web.close()
+  }, 20_000)
+
+  it('设备授权 start 超限后 429（无需登录的挑战创建也要挡住）', async () => {
+    const start = (): Promise<Response> =>
+      fetch(`${limitedBase}/api/client/device/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId: 'client-device-limited' }),
+      })
+    for (let i = 0; i < AUTH_RATE_LIMITS.deviceStart.max; i += 1) {
+      expect((await start()).status).toBe(200)
+    }
+    const blocked = await start()
+    expect(blocked.status).toBe(429)
+    expect(((await blocked.json()) as { error: string }).error).toBe(RATE_LIMITED_ERROR)
+  }, 20_000)
+})
+
+/**
+ * 服务器锁文件（P2-17）：CLI 的 users 写命令据此判断"服务器在跑"（服务器与 CLI 各自
+ * 缓存整份 users.json，并发写是整文件覆盖）。CLI 侧的三态判定见 cli.test.ts。
+ */
+describe('Aurora Center · 服务器锁文件（P2-17）', () => {
+  it('监听成功后创建 server.lock、close 后删除', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aurora-center-lock-'))
+    expect(await inspectServerLock(dir)).toBe('none')
+
+    const instance = createCenterServer({ dataDir: dir })
+    await instance.listen(0, '127.0.0.1')
+    expect(await inspectServerLock(dir)).toBe('running')
+
+    await instance.close()
+    expect(await inspectServerLock(dir)).toBe('none')
   }, 20_000)
 })

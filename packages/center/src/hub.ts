@@ -46,6 +46,28 @@ export interface HubDeps {
 /** 待回执命令的超时：session.input 的回执是"客户端收下了"（毫秒级），15s 足够宽裕 */
 const PENDING_TIMEOUT_MS = 15_000
 
+/**
+ * 待回执条目（P1-03），键为 `${webConnId}:${requestId}`。
+ *
+ * 键里带网页连接 id：两条页签用相同 requestId 发命令时各记各的，不再互相覆盖
+ * （旧实现是全局 `requestId` 单键）。
+ * `clientId` 记的是**这条命令被转发给的那台客户端**：回执必须由它发回，别台客户端
+ * 拿猜到的 requestId 伪造 result 会被 `settlePending` 直接丢掉。
+ */
+interface PendingEntry {
+  webConnId: string
+  clientId: string
+  requestId: string
+  timer: NodeJS.Timeout
+}
+
+/** 纯对象判定（数组 / null / 标量一律不算）：入站消息的形状守卫共用（P0-01 / P1-02） */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+const pendingKey = (webConnId: string, requestId: string): string => `${webConnId}:${requestId}`
+
 /** 会话类命令（带 sessionId）：forwardCommand 时未记账则顺带补记属主（与 create 同款） */
 const SESSION_OWNER_KINDS: ReadonlySet<string> = new Set([
   'session.input',
@@ -58,8 +80,8 @@ const SESSION_OWNER_KINDS: ReadonlySet<string> = new Set([
 export class Hub {
   private readonly clientConns = new Map<string, ClientConn>()
   private readonly webConns = new Map<string, WebConn>()
-  /** requestId → 发起方（回执路由） */
-  private readonly pending = new Map<string, { webConnId: string; timer: NodeJS.Timeout }>()
+  /** `${webConnId}:${requestId}` → 待回执条目（回执路由 + 超时；键含连接 id，见 PendingEntry） */
+  private readonly pending = new Map<string, PendingEntry>()
   /** sessionId → { userId, clientId }（会话属主记账） */
   private readonly sessionOwners = new Map<string, { userId: string; clientId: string }>()
   /** clientId → 最近一次状态快照（网页端展示开关 / 模式） */
@@ -333,13 +355,35 @@ export class Hub {
     ) {
       this.sessionOwners.set(cmd.sessionId, { userId: conn.user.id, clientId })
     }
+    const key = pendingKey(conn.id, requestId)
     const timer = setTimeout(() => {
-      if (this.pending.delete(requestId)) {
-        conn.send({ type: 'result', requestId, ok: false, error: 'E_CLIENT_TIMEOUT' })
-      }
+      const current = this.pending.get(key)
+      // 只回收自己那一条：同一条网页连接复用同一个 requestId 时（协议上允许），
+      // 迟到的旧定时器不能把新条目的 pending 删掉（否则新命令的回执会被静默丢弃）
+      if (current === undefined || current.timer !== timer) return
+      this.pending.delete(key)
+      conn.send({ type: 'result', requestId, ok: false, error: 'E_CLIENT_TIMEOUT' })
     }, PENDING_TIMEOUT_MS)
-    this.pending.set(requestId, { webConnId: conn.id, timer })
+    this.pending.set(key, { webConnId: conn.id, clientId, requestId, timer })
     target.send({ type: 'cmd', cmd })
+  }
+
+  /**
+   * 取回并清除一条待回执（P1-03）。
+   *
+   * 回执只带 `requestId`（协议形状不变，客户端无需知道网页连接 id），因此这里按
+   * **（发起客户端, requestId）** 首个匹配取回：条目里记着命令转发给的是哪台客户端，
+   * 别的客户端拿着猜到的 requestId 发 result 匹配不到任何条目，直接丢弃（跨租户伪造注入被封堵）。
+   * 两条页签用同一个 requestId 打同一台客户端时各有一条条目，按插入顺序（= 命令顺序）
+   * 逐条配对，互不串扰。
+   */
+  private settlePending(clientId: string, requestId: string): PendingEntry | undefined {
+    for (const [key, entry] of this.pending) {
+      if (entry.clientId !== clientId || entry.requestId !== requestId) continue
+      this.pending.delete(key)
+      return entry
+    }
+    return undefined
   }
 
   /** 授权判定：客户端必须存在（登记表），且是本人名下或管理员。 */
@@ -352,8 +396,16 @@ export class Hub {
     return undefined
   }
 
-  /** 远程配置白名单预检（docs/12 §6.2）：只允许已登记前缀的路径，整条拒绝。 */
-  private checkPatch(patch: Record<string, unknown>): string | undefined {
+  /**
+   * 远程配置白名单预检（docs/12 §6.2）：只允许已登记前缀的路径，整条拒绝。
+   *
+   * ⚠️ 入站消息的**运行时形状无人校验**（server.ts 是盲转型），因此这里必须自己守形状：
+   * 缺 `patch`（undefined）或 `patch: null` 会让 `Object.keys()` 抛 TypeError，异常一旦
+   * 逃出事件监听器就是 uncaughtException（全仓没有进程级兜底）= 整个服务器退出（P0-01）；
+   * 数组虽然不抛，但也不是合法的 patch（下标会被当成配置路径），同款拒绝。
+   */
+  private checkPatch(patch: unknown): string | undefined {
+    if (!isRecord(patch)) return 'E_INVALID_PATCH'
     const allowed = CENTER_REMOTE_CONFIG_PREFIXES as readonly string[]
     for (const path of Object.keys(patch)) {
       if (!allowed.some((prefix) => path === prefix || path.startsWith(`${prefix}.`))) {
@@ -368,10 +420,12 @@ export class Hub {
   handleClientMessage(clientId: string, message: CenterClientMessage): void {
     switch (message.type) {
       case 'result': {
-        const entry = this.pending.get(message.requestId)
+        // requestId 非字符串（畸形帧）在运行时是可能的：盲查 pending 会拿到 undefined → 无害，
+        // 但形状守卫在这里一并做掉，语义更清楚
+        if (typeof message.requestId !== 'string') return
+        const entry = this.settlePending(clientId, message.requestId)
         if (entry !== undefined) {
           clearTimeout(entry.timer)
-          this.pending.delete(message.requestId)
           const target = this.webConns.get(entry.webConnId)
           if (target !== undefined) {
             const payload: CenterWebServerMessage = {
@@ -407,6 +461,12 @@ export class Hub {
       case 'confirm.request': {
         // 确认卡转发：按客户端登记表的属主 + 全部管理员路由（与 file.received 同款；
         // 不在线就没有收方，客户端自带 60s 超时按拒绝收尾）
+        //
+        // ⚠️ 形状守卫（P1-02）：`{"type":"confirm.request"}` 这种缺 request 的畸形帧
+        // 会让 `message.request.sessionId` 抛 TypeError，异常逃出监听器即进程退出
+        // （与 P0-01 同族）。非纯对象直接丢弃 —— 客户端→网页这条链没有 requestId，
+        // 回不了错误帧，忽略就是协议允许的收尾方式。
+        if (!isRecord(message.request)) return
         const record = this.deps.clients.get(clientId)
         if (record === undefined) return
         for (const web of this.webConns.values()) {

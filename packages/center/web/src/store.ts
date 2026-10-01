@@ -7,7 +7,8 @@
  * - 下行 `clients` 是全量快照，直接替换列表；
  * - `client.event` 按 (clientId, sessionId) 过滤后按 `event.messageId` 聚合：
  *   text 增量累加、reasoning 聚成折叠块、tool 按 call.id 合并成工具卡；
- * - `user-message` 按内容去重（本地发送时已乐观插入同一条）；
+ * - `user-message` 与本地乐观气泡按「内容 + 出现次数」逐条配对（同内容连续两条不会丢，
+ *   见 applyEvent 的说明）；
  * - 未知 event / message 类型一律忽略（协议只增不改）。
  */
 import { computed, reactive, ref } from 'vue'
@@ -216,11 +217,22 @@ interface PendingCommand {
 }
 
 const pendingCommands = new Map<string, PendingCommand>()
-let requestSeq = 0
 
+/**
+ * 命令 `requestId`（P1-03）。**必须不可预测**：旧实现是每页从 `web-1` 起的顺序自增，
+ * 任意已配对客户端只要在 30s 待回执窗口内逐个猜 `web-N`，就能把伪造 `result` 投进
+ * 别人的网页会话（跨租户完整性破坏）。
+ *
+ * 优先 `crypto.randomUUID()`；明文 HTTP 直连 IP 部署时不是安全上下文（`randomUUID`
+ * 在该上下文不存在，调用会抛错），退化为 `getRandomValues` 拼 128 位随机十六进制 ——
+ * 两条路径都满足"猜不到"。服务器侧另有 pending 键按连接隔离兜底（hub.ts）。
+ */
 function nextRequestId(): string {
-  requestSeq += 1
-  return `web-${requestSeq}`
+  const cryptoApi = globalThis.crypto
+  if (typeof cryptoApi?.randomUUID === 'function') return cryptoApi.randomUUID()
+  const bytes = new Uint8Array(16)
+  cryptoApi?.getRandomValues(bytes)
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 /** 上行一条命令并等 result 回执；ok=false / 超时 / 连接未就绪都按错误处理 */
@@ -365,18 +377,28 @@ function applyEvent(clientId: string, sessionId: string, event: AgentEvent): voi
   const session = ensureSessionState(clientId, sessionId)
   switch (event.type) {
     case 'user-message': {
-      // 去重：同一会话内相同内容已存在则跳过（本地发送时已乐观插入）
-      const duplicated = session.items.some(
-        (item) => item.kind === 'user' && item.content === event.content,
+      /*
+       * 回显配对（P2-18）：本地发送时已乐观插入一条 `local-` 气泡，服务器随后把同一条
+       * `user-message` 广播回来 —— 只能把这**一条**事件配对掉，不能"内容已存在就跳过"
+       * （先后发两条相同内容的消息时，第二条会被当成第一条的回显整条丢掉）。
+       * 配对口径与 mergeHistory 一致：内容 + 出现次数，逐条抵消且只认**本地乐观气泡**；
+       * 配对成功就把气泡就地升级成带 seq 的权威 id，同一条事件重复到达时按 id 幂等。
+       */
+      if (session.items.some((item) => item.id === `user-${event.seq}`)) break
+      const optimistic = session.items.find(
+        (item) =>
+          item.kind === 'user' && item.id.startsWith('local-') && item.content === event.content,
       )
-      if (!duplicated) {
-        session.items.push({
-          id: `user-${event.seq}`,
-          kind: 'user',
-          content: event.content,
-          tools: [],
-        })
+      if (optimistic) {
+        optimistic.id = `user-${event.seq}`
+        break
       }
+      session.items.push({
+        id: `user-${event.seq}`,
+        kind: 'user',
+        content: event.content,
+        tools: [],
+      })
       break
     }
     case 'text':
@@ -919,7 +941,7 @@ export async function fetchAutomationHistory(
   return list
 }
 
-/** 发送输入：乐观插入用户气泡（后续 user-message 事件按内容去重） */
+/** 发送输入：乐观插入用户气泡（后续 user-message 事件按「内容 + 出现次数」逐条配对，不整类去重） */
 export async function sendInput(session: SessionState, text: string): Promise<void> {
   const trimmed = text.trim()
   if (!trimmed || session.pending) return

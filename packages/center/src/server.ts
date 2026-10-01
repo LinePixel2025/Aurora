@@ -53,6 +53,121 @@ const HELLO_TIMEOUT_MS = 10_000
  */
 export const HEARTBEAT_INTERVAL_MS = 15_000
 export const HEARTBEAT_MISSES_ALLOWED = 1
+/*
+ * 单帧上限（P2-14）：协议里最大的消息不过几 KB（会话历史走 result.data，仍是 JSON 文本），
+ * ws 默认的 100 MiB 只意味着一条恶意帧就能让 `JSON.parse` 停顿秒级并吃掉上百 MB 内存。
+ * 超限帧由 ws 自己以 1009 关闭该连接（见下面的 socket error 监听：那条 error 必须就地消费）。
+ * 导出供单测钉住上限。
+ */
+export const MAX_WS_PAYLOAD = 1024 * 1024
+/*
+ * 认证类端点的限速参数（P2-12）—— **参数集中在这一处**，便于按部署调参；
+ * 计数键是源 IP，三个作用域各自独立（互不占用额度）。
+ *
+ * 部署事实：Center 直连公网（120.24.223.65:8787，无反代），因此源 IP 只取 socket 地址
+ * （`req.socket.remoteAddress`），**不读可伪造的 `x-forwarded-for`** —— 放到反代后面时
+ * 必须回来改这一处的取值口径，否则限速键会退化成"所有请求同一把"。
+ *
+ * 计数口径：`login` **只记失败**（密码错 / 用户不存在）—— 成功登录不消耗额度，否则正常
+ * 用户连登几次就会被自己的成功挡在门外；穷举则全是失败，记失败足以拦住（5 次/分钟 =
+ * 一天 7200 次，配合 scrypt 成本已是不可行量级）。`register` / `deviceStart` 两侧都记数。
+ */
+export const AUTH_RATE_LIMITS = {
+  /** 登录：`/api/auth/login` 与 `/api/client/login` 共用一把（同一个密码校验面） */
+  login: { max: 5, windowMs: 60_000 },
+  /** 自助注册（批量建号防护；成功与失败都算一次） */
+  register: { max: 10, windowMs: 60_000 },
+  /** 设备授权 start（无需登录，防刷挑战表） */
+  deviceStart: { max: 30, windowMs: 60_000 },
+} as const
+
+/** 限速超限的回执（HTTP 429；WS 侧不涉及） */
+export const RATE_LIMITED_ERROR = 'E_RATE_LIMITED'
+
+/**
+ * 滑动窗口计数器（内存、进程内）。只保存窗口内的时间戳，键上一条不剩时删键 ——
+ * 否则 Map 会被一次性源 IP 撑大（P2-12 的限速自己变成内存问题）。
+ */
+class SlidingWindowLimiter {
+  private readonly hits = new Map<string, number[]>()
+
+  constructor(
+    private readonly rule: { max: number; windowMs: number },
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** 该键当前是否已达上限（只读，不记账） */
+  exceeded(key: string): boolean {
+    return this.recent(key).length >= this.rule.max
+  }
+
+  /** 记一次（失败 / 一次请求） */
+  record(key: string): void {
+    const recent = this.recent(key)
+    recent.push(this.now())
+    this.hits.set(key, recent)
+  }
+
+  private recent(key: string): number[] {
+    const threshold = this.now() - this.rule.windowMs
+    const recent = (this.hits.get(key) ?? []).filter((at) => at > threshold)
+    if (recent.length === 0) this.hits.delete(key)
+    else this.hits.set(key, recent)
+    return recent
+  }
+}
+
+/** 限速键：直连部署取 socket 地址（见 AUTH_RATE_LIMITS 的口径说明） */
+function sourceKeyOf(req: IncomingMessage): string {
+  return req.socket.remoteAddress ?? 'unknown'
+}
+
+/*
+ * 服务器锁文件（P2-17）：CLI 的 users 写命令与运行中的服务器各自缓存整份 users.json，
+ * 谁后写谁覆盖（CLI 侧的改密会被服务器下一次落盘静默回滚）。服务器在**监听成功后**创建
+ * `<dataDir>/server.lock`、`close()` 时删除，并周期性刷新 mtime；CLI 据此判定"服务器在跑"。
+ *
+ * 陈旧锁：进程被 kill -9 / 断电时锁文件会残留。判定只看 mtime —— 服务器每
+ * SERVER_LOCK_REFRESH_MS（15s）刷一次，mtime 超过 SERVER_LOCK_STALE_MS（60s）没动过
+ * 即视为残留（= 无服务器，放行）。刷新周期必须显著小于陈旧窗口。
+ */
+export const SERVER_LOCK_FILE = 'server.lock'
+export const SERVER_LOCK_STALE_MS = 60_000
+export const SERVER_LOCK_REFRESH_MS = 15_000
+
+export type ServerLockState = 'none' | 'running' | 'stale'
+
+/** 锁文件绝对路径（CLI 与服务器共用这一处口径） */
+export function serverLockPath(dataDir: string): string {
+  return join(dataDir, SERVER_LOCK_FILE)
+}
+
+/**
+ * 纯判定（无 I/O，供单测）：不存在 → `none`；存在且 mtime 在陈旧窗口内 → `running`;
+ * 存在但 mtime 已超窗口 → `stale`（崩溃残留，按无服务器放行）。
+ */
+export function evaluateServerLock(input: {
+  exists: boolean
+  mtimeMs: number
+  nowMs: number
+}): ServerLockState {
+  if (!input.exists) return 'none'
+  return input.nowMs - input.mtimeMs > SERVER_LOCK_STALE_MS ? 'stale' : 'running'
+}
+
+/** 读盘判定（CLI 用）：读不到 / stat 失败一律按 `none`。 */
+export async function inspectServerLock(
+  dataDir: string,
+  nowMs: number = Date.now(),
+): Promise<ServerLockState> {
+  try {
+    const stat = await fs.stat(serverLockPath(dataDir))
+    return evaluateServerLock({ exists: true, mtimeMs: stat.mtimeMs, nowMs })
+  } catch {
+    return 'none'
+  }
+}
+
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -87,6 +202,13 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
   // 数据目录 config.json 的服务器自身开关（缺省放行）；init() 时读取一次
   let allowRegistration = true
   let pruneTimer: NodeJS.Timeout | undefined
+  let lockTimer: NodeJS.Timeout | undefined
+  // 认证类端点限速（P2-12）：每个作用域一把，键是源 IP；只挡认证端点，不碰 WS 心跳与常规 API
+  const limiters = {
+    login: new SlidingWindowLimiter(AUTH_RATE_LIMITS.login),
+    register: new SlidingWindowLimiter(AUTH_RATE_LIMITS.register),
+    deviceStart: new SlidingWindowLimiter(AUTH_RATE_LIMITS.deviceStart),
+  }
   const hub = new Hub({
     clients,
     usernameOf: (userId) => auth.getUser(userId)?.username ?? '',
@@ -104,10 +226,22 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       if (!res.headersSent) sendJson(res, 500, { error: 'E_INTERNAL' })
     })
   })
-  const clientWss = new WebSocketServer({ noServer: true })
-  const webWss = new WebSocketServer({ noServer: true })
+  const clientWss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD })
+  const webWss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD })
   /** 已升级、还没完成 hello 的客户端连接：socket → 客户端令牌 */
   const pendingHello = new Map<WebSocket, string>()
+
+  /**
+   * ws 层的 `'error'` 必须**就地消费**：EventEmitter 上没有 `'error'` 监听时，
+   * `emit('error')` 会直接抛成 uncaughtException（全仓没有进程级兜底 = 服务器退出）。
+   * 触发它的现实路径：单帧超过 maxPayload（ws 报 `Max payload size exceeded` 后以 1009
+   * 关闭该连接）、协议帧畸形等 —— 都只该影响这一条连接（P2-14 / P0-01 的兜底）。
+   */
+  function watchSocketErrors(ws: WebSocket, describe: () => Record<string, unknown>): void {
+    ws.on('error', (error: Error) => {
+      logger?.warn('WS 连接错误', { ...describe(), error: String(error) })
+    })
+  }
 
   http.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
@@ -154,6 +288,28 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     const queuedBeforeRegister: Array<Record<string, unknown>> = []
     let registeredClient = ''
     let pongHook: () => void = () => {}
+
+    /**
+     * 交给 hub 处理一条客户端消息。**必须 try/catch**：协议类型在运行时被盲转型，
+     * 畸形帧（缺字段 / 错型）会让处理链抛错，异常逃出 `'message'` 监听器即
+     * uncaughtException → 整个服务器退出（P0-01 / P1-02，全仓没有进程级兜底）。
+     * 单条消息出错只记日志：该命令的网页端会走 15s 超时（E_CLIENT_TIMEOUT）自然收尾。
+     */
+    const dispatchClientMessage = (parsed: Record<string, unknown>): void => {
+      try {
+        hub.handleClientMessage(
+          registeredClient,
+          parsed as Parameters<Hub['handleClientMessage']>[1],
+        )
+      } catch (error) {
+        logger?.error('处理客户端 WS 消息失败', {
+          clientId: registeredClient,
+          error: String(error),
+        })
+      }
+    }
+
+    watchSocketErrors(ws, () => ({ clientId: registeredClient }))
     ws.on('message', (data) => {
       const parsed = parseMessage(data)
       if (parsed === undefined || parsed['type'] === 'hello') return
@@ -165,7 +321,7 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         queuedBeforeRegister.push(parsed)
         return
       }
-      hub.handleClientMessage(registeredClient, parsed as Parameters<Hub['handleClientMessage']>[1])
+      dispatchClientMessage(parsed)
     })
 
     ws.once('message', (data) => {
@@ -210,10 +366,7 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
           }
           registeredClient = body.clientId
           for (const pending of queuedBeforeRegister.splice(0)) {
-            hub.handleClientMessage(
-              registeredClient,
-              pending as Parameters<Hub['handleClientMessage']>[1],
-            )
+            dispatchClientMessage(pending)
           }
           logger?.info('客户端已连接', { clientId: body.clientId, name: body.name })
           /*
@@ -303,10 +456,26 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       send: (message) => ws.send(JSON.stringify(message)),
     }
     hub.registerWeb(conn)
+    watchSocketErrors(ws, () => ({ webConnId: conn.id, userId: conn.user.id }))
     ws.on('message', (data) => {
-      const parsed = parseMessage(data)
-      if (parsed === undefined) return
-      hub.handleWebMessage(conn, parsed as Parameters<Hub['handleWebMessage']>[1])
+      let parsed: Record<string, unknown> | undefined
+      try {
+        parsed = parseMessage(data)
+        if (parsed === undefined) return
+        hub.handleWebMessage(conn, parsed as Parameters<Hub['handleWebMessage']>[1])
+      } catch (error) {
+        // 同客户端侧：畸形消息的异常**不得穿透到进程级**（P0-01）。能定位到 requestId
+        // 就回一帧错误回执（网页端不必干等 30s 超时），否则只记日志。
+        logger?.error('处理网页 WS 消息失败', { webConnId: conn.id, error: String(error) })
+        const requestId = parsed?.['requestId']
+        if (typeof requestId === 'string') {
+          try {
+            conn.send({ type: 'result', requestId, ok: false, error: 'E_INTERNAL' })
+          } catch {
+            /* 连接已断开：close 处理会收尾 */
+          }
+        }
+      }
     })
     ws.on('close', () => hub.removeWeb(conn.id))
   }
@@ -318,11 +487,19 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     const path = url.pathname
 
     if (path === '/api/auth/login' && req.method === 'POST') {
+      const rateKey = sourceKeyOf(req)
+      if (limiters.login.exceeded(rateKey)) {
+        logger?.warn('登录请求超限，已拒绝', { source: rateKey, path })
+        sendJson(res, 429, { error: RATE_LIMITED_ERROR })
+        return
+      }
       const body = await readJsonBody(req)
       const user = await auth
         .verifyPassword(String(body['username'] ?? ''), String(body['password'] ?? ''))
         .catch(() => undefined)
       if (user === undefined) {
+        limiters.login.record(rateKey)
+        logger?.warn('网页登录失败（用户名或密码不正确）', { source: rateKey })
         sendJson(res, 401, { error: '用户名或密码不正确' })
         return
       }
@@ -340,6 +517,13 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         sendJson(res, 403, { error: 'E_REGISTRATION_DISABLED' })
         return
       }
+      // 注册成功与失败都记账（防批量建号）；建号本身要跑一次 scrypt，更该挡住洪水
+      const rateKey = sourceKeyOf(req)
+      if (limiters.register.exceeded(rateKey)) {
+        sendJson(res, 429, { error: RATE_LIMITED_ERROR })
+        return
+      }
+      limiters.register.record(rateKey)
       const body = await readJsonBody(req)
       try {
         const user = await auth.registerUser(
@@ -359,6 +543,13 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     // 客户端账号登录（docs/12 §3，v0.2.1）：密码换客户端令牌（归属该用户、创建即绑定
     // clientId）。与 /api/auth/login 一样是登录入口本身，放在鉴权段之前。
     if (path === '/api/client/login' && req.method === 'POST') {
+      // 与 /api/auth/login 共用 login 限速（同一个密码校验面，共用额度才挡得住穷举）
+      const rateKey = sourceKeyOf(req)
+      if (limiters.login.exceeded(rateKey)) {
+        logger?.warn('客户端登录请求超限，已拒绝', { source: rateKey, path })
+        sendJson(res, 429, { error: RATE_LIMITED_ERROR })
+        return
+      }
       const body = await readJsonBody(req)
       const username = String(body['username'] ?? '').trim()
       const password = String(body['password'] ?? '')
@@ -375,6 +566,8 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       }
       const user = await auth.verifyPassword(username, password).catch(() => undefined)
       if (user === undefined) {
+        limiters.login.record(rateKey)
+        logger?.warn('客户端账号登录失败（用户名或密码不正确）', { source: rateKey })
         sendJson(res, 401, { error: '用户名或密码不正确' })
         return
       }
@@ -403,6 +596,13 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     // 设备授权登录（docs/12 §4.3）：start / poll 是客户端入口（无需登录），
     // authorize 需网页会话（用户在网页上确认），放在鉴权段之后。
     if (path === '/api/client/device/start' && req.method === 'POST') {
+      // 无需登录的挑战创建：限速防刷表（表本身另有上限与清扫，见 device.ts）
+      const rateKey = sourceKeyOf(req)
+      if (limiters.deviceStart.exceeded(rateKey)) {
+        sendJson(res, 429, { error: RATE_LIMITED_ERROR })
+        return
+      }
+      limiters.deviceStart.record(rateKey)
       const body = await readJsonBody(req)
       const clientId = typeof body['clientId'] === 'string' ? body['clientId'].trim() : ''
       if (clientId === '' || clientId.length > HELLO_STRING_MAX) {
@@ -639,11 +839,41 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       sendJson(res, 404, { error: 'E_NOT_FOUND' })
       return
     }
-    res.writeHead(200, {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(record.name)}`,
+    streamFile(
+      res,
+      path,
+      {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(record.name)}`,
+      },
+      { fileId },
+    )
+  }
+
+  /**
+   * 流式回一个文件（P2-16）：**`open` 成功之后才写 200 头**，并挂 `error` 监听。
+   *
+   * 现实竞态：校验通过之后、流真正 open 之前，目标文件可能已被 15 分钟清理轮删掉
+   * （24h 到期的瞬间点下载正好命中）。没有 `error` 监听时 ENOENT 是 uncaughtException
+   * —— 全仓没有进程级兜底，等于**整个服务器退出**。先挂监听再写头，`headersSent`
+   * 为假时回 404，已发头则 destroy 这条响应（连接报废但进程活着）。
+   */
+  function streamFile(
+    res: ServerResponse,
+    path: string,
+    headers: Record<string, string>,
+    label: Record<string, unknown>,
+  ): void {
+    const stream = createReadStream(path)
+    stream.once('open', () => {
+      res.writeHead(200, headers)
+      stream.pipe(res)
     })
-    createReadStream(path).pipe(res)
+    stream.on('error', (error) => {
+      logger?.warn('文件流打开失败', { ...label, error: String(error) })
+      if (!res.headersSent) sendJson(res, 404, { error: 'E_NOT_FOUND' })
+      else res.destroy()
+    })
   }
 
   async function serveStatic(res: ServerResponse, path: string, webDir: string): Promise<void> {
@@ -655,11 +885,17 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         if (stat.isFile()) {
           const type = MIME[extname(target)] ?? 'application/octet-stream'
           const immutable = target.includes(join('assets', ''))
-          res.writeHead(200, {
-            'Content-Type': type,
-            'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
-          })
-          createReadStream(target).pipe(res)
+          // 同 serveFile：stat 与流 open 之间文件可能已被替换 / 删除，error 在
+          // headersSent 之前到达即 404（P2-16）
+          streamFile(
+            res,
+            target,
+            {
+              'Content-Type': type,
+              'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+            },
+            { path: relative },
+          )
           return
         }
       } catch {
@@ -676,6 +912,47 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     } catch {
       sendJson(res, 404, { error: 'E_NOT_FOUND' })
     }
+  }
+
+  /**
+   * 创建锁文件并周期性刷新 mtime（P2-17）。写失败只告警不拦启动：锁是给 CLI 的
+   * 并发护栏，数据目录只读之类的情况下服务器照常该能跑（CLI 会退化成"看不到服务器"，
+   * 与升级前的行为一致 —— 所以 CLI 与服务器要**同版本上线**）。
+   */
+  async function acquireLock(): Promise<void> {
+    const lockPath = serverLockPath(options.dataDir)
+    try {
+      await fs.mkdir(options.dataDir, { recursive: true })
+      await fs.writeFile(
+        lockPath,
+        JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
+        'utf8',
+      )
+    } catch (error) {
+      logger?.warn('写入服务器锁文件失败（CLI 将无法识别服务器在运行）', {
+        lockPath,
+        error: String(error),
+      })
+      return
+    }
+    lockTimer = setInterval(() => {
+      const now = new Date()
+      void fs.utimes(lockPath, now, now).catch(() => {
+        /* 锁文件被外部删掉：下一轮 CLI 会按"无服务器"处理，不刷日志 */
+      })
+    }, SERVER_LOCK_REFRESH_MS)
+    lockTimer.unref?.()
+  }
+
+  /** 删除锁文件（close 时调用；删不掉也不影响退出，最坏是让 CLI 等一个陈旧窗口）。 */
+  async function releaseLock(): Promise<void> {
+    if (lockTimer !== undefined) {
+      clearInterval(lockTimer)
+      lockTimer = undefined
+    }
+    await fs.rm(serverLockPath(options.dataDir), { force: true }).catch(() => {
+      /* 忽略：残留锁由 mtime 陈旧判定兜底 */
+    })
   }
 
   async function init(): Promise<void> {
@@ -715,8 +992,11 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
             http.once('error', reject)
             http.listen(port, host, () => {
               const address = http.address()
-              resolveListen({
-                port: typeof address === 'object' && address !== null ? address.port : port,
+              const actualPort =
+                typeof address === 'object' && address !== null ? address.port : port
+              // 锁文件在**监听成功之后**创建：端口占用等启动失败不留假锁（P2-17）
+              void acquireLock().then(() => {
+                resolveListen({ port: actualPort })
               })
             })
           })
@@ -726,9 +1006,11 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     close() {
       if (pruneTimer !== undefined) clearInterval(pruneTimer)
       return new Promise((resolveClose) => {
-        clientWss.close()
-        webWss.close()
-        http.close(() => resolveClose())
+        void releaseLock().then(() => {
+          clientWss.close()
+          webWss.close()
+          http.close(() => resolveClose())
+        })
       })
     },
   }

@@ -17,6 +17,12 @@ interface Harness {
   }
 }
 
+/**
+ * 网页连接 id 用模块级自增：`hub.registerWeb` 以 id 为键，同一用户连两条（两个页签）
+ * 不能共用 id，否则第二条会把第一条从 `webConns` 里顶掉（多页签场景的用例需要它们共存）。
+ */
+let webConnSeq = 0
+
 async function makeHub(): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), 'aurora-center-hub-'))
   const clients = new ClientRegistry({ dataDir: dir })
@@ -40,9 +46,10 @@ async function makeHub(): Promise<Harness> {
       return { sent, conn }
     },
     connectWeb(user) {
+      webConnSeq += 1
       const sent: unknown[] = []
       const conn: WebConn = {
-        id: `w-${sent.length}-${user.id}`,
+        id: `w-${webConnSeq}`,
         user,
         send: (m) => sent.push(m),
       }
@@ -830,5 +837,189 @@ describe('Hub · 远程会话管理与 LLM 切换（docs/12 §6.3）', () => {
     expect(
       stranger.sent.filter((m) => (m as { type: string }).type === 'client.event'),
     ).toHaveLength(0)
+  })
+})
+
+/**
+ * 畸形入站消息与回执隔离（2026-10-01 全量审查）：
+ * - P0-01 / P1-02：入站 WS 消息在运行时**没有任何形状校验**（server.ts 盲转型），
+ *   缺字段的 `config.update` / `confirm.request` 会让处理链抛 TypeError；全仓没有
+ *   `process.on('uncaughtException')` 兜底，异常逃出监听器 = 整个服务器退出。
+ *   下面的用例就是按**真实攻击形状**（JSON 里干脆没有那个字段）构造的。
+ * - P1-03：回执必须只投递给发起命令的那条网页连接，且伪造的 `result` 无效。
+ */
+describe('Hub · 畸形入站消息与回执隔离（P0-01 / P1-02 / P1-03）', () => {
+  /** 真实攻击形状：服务器只做 `JSON.parse` + 盲转型，字段缺了也没人拦 */
+  const webMessage = (raw: string): Parameters<Hub['handleWebMessage']>[1] =>
+    JSON.parse(raw) as Parameters<Hub['handleWebMessage']>[1]
+  const clientMessage = (raw: string): Parameters<Hub['handleClientMessage']>[1] =>
+    JSON.parse(raw) as Parameters<Hub['handleClientMessage']>[1]
+
+  it('config.update 缺 patch / patch 为 null 或数组：回 E_INVALID_PATCH，不抛错也不转发', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    client.sent.length = 0
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+
+    const cases = [
+      '{"type":"config.update","requestId":"r1","clientId":"c1"}', // patch 字段整体缺失
+      '{"type":"config.update","requestId":"r2","clientId":"c1","patch":null}',
+      '{"type":"config.update","requestId":"r3","clientId":"c1","patch":["agent.tools.enabled"]}',
+    ]
+    for (const raw of cases) {
+      expect(() => harness.hub.handleWebMessage(owner.conn, webMessage(raw))).not.toThrow()
+      const result = owner.sent.at(-1) as { ok: boolean; error?: string }
+      expect(result.ok).toBe(false)
+      expect(result.error).toBe('E_INVALID_PATCH')
+    }
+    // 畸形帧一律不进转发链：客户端一条命令都没收到
+    expect(client.sent).toHaveLength(0)
+  })
+
+  it('confirm.request 缺 request（或非纯对象）：丢弃不抛错，属主 / 管理员都收不到', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    harness.connectClient('c1')
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    const admin = harness.connectWeb({ id: 'u-admin', username: 'root', role: 'admin' })
+    owner.sent.length = admin.sent.length = 0
+
+    for (const raw of [
+      '{"type":"confirm.request"}', // 缺 request（旧代码在 message.request.sessionId 处崩）
+      '{"type":"confirm.request","request":null}',
+      '{"type":"confirm.request","request":[1,2]}',
+    ]) {
+      expect(() => harness.hub.handleClientMessage('c1', clientMessage(raw))).not.toThrow()
+    }
+    expect(owner.sent).toHaveLength(0)
+    expect(admin.sent).toHaveLength(0)
+
+    // 合法请求照常转发（守卫没有误伤正常路径）
+    harness.hub.handleClientMessage('c1', {
+      type: 'confirm.request',
+      request: {
+        confirmId: 'cf-ok',
+        sessionId: 'center-1',
+        toolName: 'run_command',
+        input: {},
+        createdAt: '2026-10-01T00:00:00.000Z',
+        expiresAt: '2026-10-01T00:01:00.000Z',
+      },
+    })
+    expect(
+      owner.sent.filter((m) => (m as { type: string }).type === 'confirm.request'),
+    ).toHaveLength(1)
+  })
+
+  it('伪造回执：另一台客户端（跨属主）猜中 requestId 发 result 不投递，真主回执照常送达', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    await seedClient(harness, 'c2', 'u2')
+    harness.connectClient('c1')
+    harness.connectClient('c2')
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'config.get',
+      requestId: 'web-forge',
+      clientId: 'c1',
+    })
+    // c2 猜中 requestId 发假回执 —— 旧实现按全局 requestId 取条目，会被原样投进 u1 的网页端
+    harness.hub.handleClientMessage('c2', {
+      type: 'result',
+      requestId: 'web-forge',
+      ok: true,
+      data: { forged: true },
+    })
+    expect(owner.sent.filter((m) => (m as { type: string }).type === 'result')).toHaveLength(0)
+
+    // 真主 c1 的回执照常送达
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'web-forge',
+      ok: true,
+      data: { genuine: true },
+    })
+    const result = owner.sent.at(-1) as { ok: boolean; data?: unknown }
+    expect(result.ok).toBe(true)
+    expect(result.data).toEqual({ genuine: true })
+
+    // 条目已结算：同一 requestId 的重复回执不再重复投递
+    owner.sent.length = 0
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'web-forge',
+      ok: true,
+      data: { replay: true },
+    })
+    expect(owner.sent).toHaveLength(0)
+  })
+
+  it('两条网页连接用相同 requestId 打同一台客户端：pending 互不覆盖，回执按命令顺序各归各', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    client.sent.length = 0
+    // 同一账号的两个页签（同一用户、两条连接）—— 旧实现两页都从 web-1 开始，pending 互相覆盖
+    const tabA = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    const tabB = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    expect(tabA.id).not.toBe(tabB.id)
+    tabA.sent.length = tabB.sent.length = 0
+
+    for (const tab of [tabA, tabB]) {
+      harness.hub.handleWebMessage(tab.conn, {
+        type: 'session.list',
+        requestId: 'web-1', // 两页签同名（旧实现下这是常态）
+        clientId: 'c1',
+      })
+    }
+    expect(client.sent).toHaveLength(2) // 两条命令都真的转发了，谁也没被覆盖
+
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'web-1',
+      ok: true,
+      data: { tab: 'A' },
+    })
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'web-1',
+      ok: true,
+      data: { tab: 'B' },
+    })
+    expect(tabA.sent).toHaveLength(1)
+    expect(tabB.sent).toHaveLength(1)
+    expect((tabA.sent.at(-1) as { data?: unknown }).data).toEqual({ tab: 'A' })
+    expect((tabB.sent.at(-1) as { data?: unknown }).data).toEqual({ tab: 'B' })
+  })
+
+  it('两条网页连接用相同 requestId 各自超时：只向自己的连接合成 E_CLIENT_TIMEOUT', async () => {
+    vi.useFakeTimers()
+    try {
+      const harness = await makeHub()
+      await seedClient(harness, 'c1', 'u1')
+      harness.connectClient('c1')
+      const tabA = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+      const tabB = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+      tabA.sent.length = tabB.sent.length = 0
+
+      for (const tab of [tabA, tabB]) {
+        harness.hub.handleWebMessage(tab.conn, {
+          type: 'config.get',
+          requestId: 'web-dup',
+          clientId: 'c1',
+        })
+      }
+      await vi.advanceTimersByTimeAsync(16_000)
+      expect((tabA.sent.at(-1) as { error?: string }).error).toBe('E_CLIENT_TIMEOUT')
+      expect((tabB.sent.at(-1) as { error?: string }).error).toBe('E_CLIENT_TIMEOUT')
+      expect(tabA.sent).toHaveLength(1)
+      expect(tabB.sent).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
