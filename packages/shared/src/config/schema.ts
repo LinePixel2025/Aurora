@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 22 as const
+export const CONFIG_VERSION = 23 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -143,12 +143,116 @@ export const REASONING_EFFORT_LABELS: Record<ReasoningEffort, { short: string; f
   high: { short: 'high', full: 'high（更深入）' },
 }
 
+/**
+ * 上下文窗口字段（token，v11 新增）：只用于对话窗「上下文详解」条的占用比例分母
+ * （`promptTokens / contextWindow`，docs/07 §2.3、docs/06 §16.2）。
+ * `0` = 未知 —— 分母不知道就不编，不显示进度条与百分比。
+ */
+const ContextWindowFieldSchema = z.number().int().min(0).max(2_000_000).default(0)
+
+/**
+ * 单个模型的生成参数（v23，docs/08 §1）。
+ *
+ * 为什么按模型走：同一个 provider（同一份 `baseUrl` / 凭据）下常常配多个模型，
+ * 而「窗口多大、能不能收图、该用哪档思考」是**模型的事实**，不是 provider 的偏好 ——
+ * provider 级单一值会让「切到另一个模型」之后窗口与图片开关变成另一套谎话。
+ */
+export const LlmModelParamsSchema = z.object({
+  /**
+   * 思考等级（docs/06 §3）：由主进程装配层把 `auto` 映射成「不下发」
+   * `reasoning_effort` 字段 —— 不认这个参数的兼容网关收到它可能直接 400。
+   */
+  reasoningEffort: ReasoningEffortSchema,
+  contextWindow: ContextWindowFieldSchema,
+  /**
+   * 该模型是否支持**图片输入**（多模态，docs/06 §3.1），默认 `false`。
+   *
+   * 出厂关闭是有意的：对不支持视觉的模型发图片分片会被服务端 400，
+   * 「整个对话都用不了」比「图片没送进去」严重得多 —— 与 `reasoningEffort` 的
+   * `auto`（不下发该参数）是同一个思路：默认值必须让最保守的网关也能工作。
+   * 与 `contextWindow` 同款口径：**不做内置模型能力表**，由用户照服务商文档填。
+   */
+  vision: z.boolean().default(false),
+})
+export type LlmModelParams = z.infer<typeof LlmModelParamsSchema>
+
+/**
+ * `modelParams` 缺键 / 字段缺失 / 值非法时的回落值（v23）。
+ *
+ * 三个值与 v22 及更早的 provider 级出厂值**逐字相同**（`auto` / `0` / `false`，
+ * 与 `defaults.ts` 的 `DEFAULT_REASONING_EFFORT` 一致），因此本次下沉不改变默认行为。
+ */
+export const LLM_MODEL_PARAM_DEFAULTS: LlmModelParams = {
+  reasoningEffort: 'auto',
+  contextWindow: 0,
+  vision: false,
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * 把任意输入归一到一份合法的模型参数（**唯一的「什么算合法」口径**，v23）。
+ *
+ * 逐字段用各自的 Schema 试一次，失败的那一个回落 `LLM_MODEL_PARAM_DEFAULTS` ——
+ * 复用 Schema 而不是手写第二套范围判断，避免「Schema 放宽了上限、这里忘了改」的漂移。
+ *
+ * 存在的理由有两条，都不是洁癖：
+ * ① 迁移（`migrateV22ToV23`）必须用它：`llm.providers` 是 `z.record`，`SettingsStore`
+ *    的字段级回退对这类动态键**整体保留候选对象**（`store.ts` 的 `sanitizeWithDefaults`
+ *    命中 `isDynamicPath` 时直接 `deepClone(candidate)`）—— 手改过的非法旧值没法被逐字段
+ *    回退，一旦原样搬进 `modelParams` 就会让 `SettingsSchema.parse` 抛错，走「备份 + 重建
+ *    出厂配置」，用户的 provider / 凭据 / 项目配置一起消失；
+ * ② 读取端（`resolveModelParams`）也要用它：无论配置从哪来，消费方**绝不**应拿到一个
+ *    缺字段的对象 —— 在 `noUncheckedIndexedAccess` 下那会变成 `undefined` 参与运算。
+ */
+export function normalizeModelParams(raw: unknown): LlmModelParams {
+  const source = isPlainRecord(raw) ? raw : {}
+  const effort = ReasoningEffortSchema.safeParse(source['reasoningEffort'])
+  const window = ContextWindowFieldSchema.safeParse(source['contextWindow'])
+  const vision = z.boolean().safeParse(source['vision'])
+  return {
+    reasoningEffort: effort.success ? effort.data : LLM_MODEL_PARAM_DEFAULTS.reasoningEffort,
+    contextWindow: window.success ? window.data : LLM_MODEL_PARAM_DEFAULTS.contextWindow,
+    vision: vision.success ? vision.data : LLM_MODEL_PARAM_DEFAULTS.vision,
+  }
+}
+
+/**
+ * 取某个模型生效的生成参数（**唯一取值口径**，v23）。
+ *
+ * 三处消费方 —— 主进程装配层 / 渲染层（设置页与对话窗）/ Aurora Center 网页端 ——
+ * 都**必须**走它，别在调用处再写 `provider.modelParams[id] ?? {…}`：各写一套的结果是
+ * 「同一个模型在设置页显示 128K、在对话窗按未知处理」这类分叉迟早出现。
+ *
+ * `modelId` 缺省取 `provider.model`（真正生效的那个模型）。键未命中（模型不在表里、
+ * 配置被手改、老配置漏迁移）或字段值非法时，**按字段**回落 `LLM_MODEL_PARAM_DEFAULTS`。
+ */
+export function resolveModelParams(
+  provider: Pick<LlmProviderConfig, 'model' | 'modelParams'>,
+  modelId?: string,
+): LlmModelParams {
+  return normalizeModelParams(provider.modelParams?.[modelId ?? provider.model])
+}
+
 export const LlmProviderSchema = z.object({
   type: LlmProviderTypeSchema,
   baseUrl: z.string(),
   /** safeStorage 密文；解密值只存在于运行时内存。 */
   apiKeyEnc: z.string(),
   model: z.string(),
+  /**
+   * 按**模型 id** 键的生成参数表（v23，docs/08 §1）。
+   *
+   * 键是模型 id（`modelList` 的元素，或 `model` 本身）；键未命中时**不是** `undefined` ——
+   * 消费方一律经 `resolveModelParams` 取值，那里回落 `LLM_MODEL_PARAM_DEFAULTS`。
+   * 用 `.default({})` 的理由同 `modelList`：消费方必须能无条件读到一个对象。
+   *
+   * 与 `modelList` **不是**同一张表：往列表里加模型不会为它造条目（读到就按默认值），
+   * 删列表项也不清它的参数（设置页落盘时按「候选列表 ∪ {model}」归一，见 docs/08 §5）。
+   */
+  modelParams: z.record(z.string(), LlmModelParamsSchema).default({}),
   /**
    * 该 provider 下可选的模型 id 列表（docs/08 §5）。
    * 用 `.default([])` 而不是「可选字段」：设置页与对话窗都必须能无条件读到一个数组，
@@ -157,27 +261,6 @@ export const LlmProviderSchema = z.object({
    * 选项串里要把当前值显示为「（不在列表中）」而不是把它悄悄替换掉。
    */
   modelList: z.array(z.string()).default([]),
-  temperature: z.number().min(0).max(2),
-  /** 思考等级；由主进程装配层把 `auto` 映射成「不下发」（docs/06 §11）。 */
-  reasoningEffort: ReasoningEffortSchema,
-  /**
-   * 该模型的上下文窗口（token），v11 新增（docs/08 §1）。
-   *
-   * 只用于对话窗输入框底部的**上下文占用**展示：`promptTokens / contextWindow` 即占用比例。
-   * 取值来源是用户填写（服务商文档里的 context length），**不做内置模型表** ——
-   * 模型名千变万化，猜错一个数量级比不显示更误导。
-   * `0` = 未知：此时只显示 token 数与字符数，不显示占比与进度条（不编造分母）。
-   */
-  contextWindow: z.number().int().min(0).max(2_000_000).default(0),
-  /**
-   * 该模型是否支持**图片输入**（多模态，docs/06 §3.1，v22 新增），默认 `false`。
-   *
-   * 出厂关闭是有意的：对不支持视觉的模型发图片分片会被服务端 400，
-   * 「整个对话都用不了」比「图片没送进去」严重得多 —— 与 `reasoningEffort` 的
-   * `auto`（不下发该参数）是同一个思路：默认值必须让最保守的网关也能工作。
-   * 与 `contextWindow` 同款口径：**不做内置模型能力表**，由用户照服务商文档填。
-   */
-  vision: z.boolean().default(false),
 })
 export type LlmProviderConfig = z.infer<typeof LlmProviderSchema>
 
@@ -837,8 +920,8 @@ export interface WritablePathOverride {
  * AI 改配置（`set_setting`）的**显式可写覆盖表**（docs/06 §12、Betav2 规格 §6.3）。
  *
  * 判定顺序在 `SETTINGS_READONLY_PREFIXES` **之前**：命中即视为可写。登记的意义有两类：
- * 1. **真的放开**：`llm.providers.<id>.model / reasoningEffort / temperature` 落在
- *    `llm.providers` 黑名单前缀之内，但「换模型 / 调参数」不碰凭据，必须显式放行
+ * 1. **真的放开**：`llm.providers.<id>.model` 与 `llm.providers.<id>.modelParams.<modelId>.reasoningEffort`
+ *    落在 `llm.providers` 黑名单前缀之内，但「换模型 / 调思考等级」不碰凭据，必须显式放行
  *    （baseUrl / apiKeyEnc / modelList 等其余字段仍被前缀拒绝）；
  * 2. **显式登记**：`tts.enabled` / `agent.tools.*` 这类本就因「不在黑名单而可写」的路径，
  *    逐条登记成可写面清单（供工具 description 与审计使用），也防未来误加前缀时静默收窄。
@@ -847,10 +930,15 @@ export interface WritablePathOverride {
  * 具体路径（`isConcreteSettingPath` 会先拦掉带 `*` / `[]` 的输入）。
  */
 export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
-  // llm.providers.*：黑名单内显式放开三个「模型行为」字段（凭据与连接字段仍只读）
+  // llm.providers.*：黑名单内显式放开两个「模型行为」字段（凭据与连接字段仍只读）。
+  // 注意 `modelParams.*.contextWindow` / `.vision` **刻意不登记** —— 它们是**模型能力事实**
+  // （窗口多大、能不能收图），不是用户偏好：登记进去等于让 AI 把一条假事实写进配置
+  // （docs/08 §1）。采样温度字段已随 v23 从 Schema 删除，不再是可写路径（docs/06 §3）。
   { pattern: 'llm.providers.*.model', reason: '切换该 provider 实际使用的模型（不碰凭据）' },
-  { pattern: 'llm.providers.*.reasoningEffort', reason: '调整该 provider 的思考等级（不碰凭据）' },
-  { pattern: 'llm.providers.*.temperature', reason: '调整该 provider 的采样温度（不碰凭据）' },
+  {
+    pattern: 'llm.providers.*.modelParams.*.reasoningEffort',
+    reason: '调整该模型的思考等级（不碰凭据）',
+  },
   // tts / stt / imagegen：总开关与默认 provider 选择对 AI 开放（providers 凭据子树仍只读）
   { pattern: 'tts.enabled', reason: '开关语音朗读' },
   { pattern: 'tts.active', reason: '切换默认 TTS provider' },

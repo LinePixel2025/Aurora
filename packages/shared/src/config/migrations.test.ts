@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { CONFIG_VERSION, SETTINGS_READONLY_PREFIXES } from './schema.js'
+import { CONFIG_VERSION, SETTINGS_READONLY_PREFIXES, SettingsSchema } from './schema.js'
 import { MIGRATIONS, migrate, readVersion } from './migrations.js'
+import { createDefaultSettings } from './defaults.js'
 import { createMemoryLogger } from '../utils/logger.js'
 
 describe('配置迁移链', () => {
@@ -30,7 +31,12 @@ describe('配置迁移链', () => {
     expect(llm['baseUrl']).toBeUndefined()
     const providers = llm['providers'] as Record<string, Record<string, unknown>>
     expect(providers['deepseek']?.['apiKeyEnc']).toBe('sk-plain-1234')
-    expect(providers['deepseek']?.['temperature']).toBe(0.7)
+    // v23 起 `temperature` 已从 Schema 删除：v0 → v1 不再写入它，链路走到 v23 也不会留下
+    expect(providers['deepseek']?.['temperature']).toBeUndefined()
+    // 三个生成参数一律落到 `modelParams[model]`（v23）；v0 夹具的 model 是 `deepseek-chat`
+    expect(providers['deepseek']?.['modelParams']).toEqual({
+      'deepseek-chat': { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+    })
   })
 
   it('v0 的空 apiKey 不生成 provider', () => {
@@ -252,11 +258,14 @@ describe('配置迁移链', () => {
       const llm = outcome.data['llm'] as Record<string, unknown>
       expect(llm['active']).toBe('custom')
       const provider = (llm['providers'] as Record<string, Record<string, unknown>>)['custom']!
-      expect(provider['reasoningEffort']).toBe('auto')
-      // 其它 provider 字段一个不动
+      // v4 → v5 补的是 provider 级 reasoningEffort，它随链路（v22 → v23）落进 `modelParams[model]`
+      expect(provider['modelParams']).toEqual({
+        'qwen2.5:7b': { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+      })
+      // 其它 provider 字段一个不动（`temperature` 已从 Schema 删除，链路不再保留它）
       expect(provider['baseUrl']).toBe('http://127.0.0.1:11434/v1')
       expect(provider['model']).toBe('qwen2.5:7b')
-      expect(provider['temperature']).toBe(1.4)
+      expect(provider['temperature']).toBeUndefined()
       expect(provider['apiKeyEnc']).toBe('cipher')
 
       // advanced 只被 v5 → v6 补上 readonlyPrefixes，用户改过的值原样保留；general 迁移不碰
@@ -319,7 +328,8 @@ describe('配置迁移链', () => {
           Record<string, unknown>
         >
       )['custom']!
-      expect(provider['reasoningEffort']).toBe('high')
+      const params = provider['modelParams'] as Record<string, Record<string, unknown>>
+      expect(params['qwen2.5:7b']?.['reasoningEffort']).toBe('high')
     })
 
     it('非法 reasoningEffort（手改配置写错）回落 auto', () => {
@@ -339,7 +349,8 @@ describe('配置迁移链', () => {
           Record<string, unknown>
         >
       )['custom']!
-      expect(provider['reasoningEffort']).toBe('auto')
+      const params = provider['modelParams'] as Record<string, Record<string, unknown>>
+      expect(params['qwen2.5:7b']?.['reasoningEffort']).toBe('auto')
     })
 
     it('已存在的 agent.tools 上限值保留，只补缺失字段', () => {
@@ -482,11 +493,16 @@ describe('配置迁移链', () => {
       expect(providers['fresh']?.['modelList']).toEqual([])
       // 已有的原样保留（只补缺失键，不覆盖）
       expect(providers['custom']?.['modelList']).toEqual(['x'])
-      // 其它 provider 字段一个不动
+      // 其它 provider 字段一个不动（`temperature` / provider 级 reasoningEffort 已被 v23 收进 modelParams）
       expect(providers['custom']?.['model']).toBe('qwen2.5:7b')
-      expect(providers['custom']?.['temperature']).toBe(1.4)
-      expect(providers['custom']?.['reasoningEffort']).toBe('high')
+      expect(providers['custom']?.['temperature']).toBeUndefined()
+      expect(providers['custom']?.['modelParams']).toEqual({
+        'qwen2.5:7b': { reasoningEffort: 'high', contextWindow: 0, vision: false },
+      })
       expect(providers['fresh']?.['model']).toBe('deepseek-chat')
+      expect(providers['fresh']?.['modelParams']).toEqual({
+        'deepseek-chat': { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+      })
       expect((outcome.data['llm'] as Record<string, unknown>)['active']).toBe('custom')
       // advanced 半边不受影响：同一次迁移里仍无条件补默认黑名单
       expect(loadReadonlyPrefixes(outcome.data)).toEqual([...SETTINGS_READONLY_PREFIXES])
@@ -580,17 +596,18 @@ describe('配置迁移链', () => {
         // v19 → v20 补的出厂档（docs/08 §1）
         requireAdmin: true,
       })
-      // llm 段除了**后续版本**按既定规则补的 `contextWindow: 0`（v10 → v11）与
-      // `vision: false` + `type`（v21 → v22，缺 / 非法才补），其余一字不改
+      // llm 段除了**后续版本**按既定规则补的 `type`（v21 → v22，缺 / 非法才补）与
+      // v23 把三个 provider 级生成参数收进 `modelParams[model]`，其余一字不改
       expect(outcome.data['llm']).toEqual({
         active: 'deepseek',
         providers: {
           deepseek: {
             model: 'deepseek-chat',
             modelList: ['deepseek-chat'],
-            contextWindow: 0,
-            vision: false,
             type: 'openai-compat',
+            modelParams: {
+              'deepseek-chat': { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+            },
           },
         },
       })
@@ -770,6 +787,15 @@ describe('配置迁移链', () => {
         Record<string, unknown>
       >
 
+    /** 取某个 provider 下某个模型的 `modelParams` 条目（v23 起参数按模型 id 键存放）。 */
+    const loadParams = (
+      raw: Record<string, unknown>,
+      id: string,
+      model: string,
+    ): Record<string, unknown> =>
+      (loadProviders(raw)[id]?.['modelParams'] as Record<string, Record<string, unknown>>)[model] ??
+      {}
+
     it('为每个已有 provider 补 contextWindow: 0（0 = 未知），其余字段原样保留', () => {
       const outcome = migrate({
         version: 10,
@@ -788,24 +814,30 @@ describe('配置迁移链', () => {
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const providers = loadProviders(outcome.data)
-      expect(providers['deepseek']?.['contextWindow']).toBe(0)
-      expect(providers['qwen']?.['contextWindow']).toBe(0)
-      // 用户写过的值一个不动
+      // v10 → v11 补的是 provider 级 contextWindow，它随链路（v22 → v23）落进 `modelParams[model]`
+      expect(providers['deepseek']?.['modelParams']).toEqual({
+        'deepseek-chat': { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+      })
+      expect(providers['qwen']?.['modelParams']).toEqual({
+        'qwen3.8-flash': { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+      })
+      // 用户写过的值一个不动（`temperature` 已从 Schema 删除，链路不再保留它）
       expect(providers['deepseek']?.['model']).toBe('deepseek-chat')
-      expect(providers['deepseek']?.['temperature']).toBe(0.7)
+      expect(providers['deepseek']?.['temperature']).toBeUndefined()
       expect((outcome.data['llm'] as Record<string, unknown>)['active']).toBe('deepseek')
     })
 
     it('用户已写过的 contextWindow 不被覆盖（幂等）', () => {
+      // 带 `model` 的 provider 才能把 provider 级 contextWindow 搬进 modelParams[model]（v23）
       const once = migrate({
         version: 10,
-        llm: { providers: { deepseek: { contextWindow: 128000 } } },
+        llm: { providers: { deepseek: { model: 'deepseek-chat', contextWindow: 128000 } } },
       })
-      expect(loadProviders(once.data)['deepseek']?.['contextWindow']).toBe(128000)
+      expect(loadParams(once.data, 'deepseek', 'deepseek-chat')['contextWindow']).toBe(128000)
 
       const twice = migrate({ ...once.data, version: 10 })
       expect(twice.data).toEqual(once.data)
-      expect(loadProviders(twice.data)['deepseek']?.['contextWindow']).toBe(128000)
+      expect(loadParams(twice.data, 'deepseek', 'deepseek-chat')['contextWindow']).toBe(128000)
     })
 
     it('llm / providers 分组不存在或不合法时不凭空造对象，不抛错', () => {
@@ -1064,6 +1096,7 @@ describe('配置迁移链', () => {
         'v19 → v20：v19 → v20：新增 general.requireAdmin（要求管理员身份启动，默认开启）',
         'v20 → v21：v20 → v21：新增 general.edgeBar.display / position 与 appearance.accent',
         'v21 → v22：v21 → v22：为 llm.providers 各条目补 vision: false 并归一 type（多模态输入 / Responses API）',
+        'v22 → v23：v22 → v23：把 provider 级 reasoningEffort / contextWindow / vision 搬进 modelParams[model]，删除 temperature',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1098,6 +1131,7 @@ describe('配置迁移链', () => {
         'v19 → v20：v19 → v20：新增 general.requireAdmin（要求管理员身份启动，默认开启）',
         'v20 → v21：v20 → v21：新增 general.edgeBar.display / position 与 appearance.accent',
         'v21 → v22：v21 → v22：为 llm.providers 各条目补 vision: false 并归一 type（多模态输入 / Responses API）',
+        'v22 → v23：v22 → v23：把 provider 级 reasoningEffort / contextWindow / vision 搬进 modelParams[model]，删除 temperature',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1241,6 +1275,207 @@ describe('配置迁移链', () => {
       const outcome = migrate({ version: 0, general: {} })
       expect(outcome.applied).toHaveLength(CONFIG_VERSION)
       expect((outcome.data['general'] as Record<string, unknown>)['requireAdmin']).toBe(true)
+    })
+  })
+
+  describe('v22 → v23（生成参数下沉 modelParams / 删除 temperature）', () => {
+    const loadProvider = (raw: Record<string, unknown>, id: string): Record<string, unknown> =>
+      (
+        (raw['llm'] as Record<string, unknown>)['providers'] as Record<
+          string,
+          Record<string, unknown>
+        >
+      )[id]!
+
+    /** 取某个 provider 下某个模型的 `modelParams` 条目（v23 起参数按模型 id 键存放）。 */
+    const loadParams = (
+      raw: Record<string, unknown>,
+      id: string,
+      model: string,
+    ): Record<string, unknown> =>
+      (loadProvider(raw, id)['modelParams'] as Record<string, Record<string, unknown>>)[model] ?? {}
+
+    /**
+     * 把迁移结果与默认配置拼成一份完整配置后交给 Schema。
+     *
+     * 这是本组最要紧的护栏：`llm.providers` 是 `z.record`，字段级回退对它**整体保留候选对象**，
+     * 非法值只能靠迁移兜住 —— 归一漏一处，`SettingsSchema.parse` 就会抛错，整份配置被判损坏
+     * （备份 + 重建出厂配置，用户的 provider / 凭据 / 项目配置一起消失）。
+     */
+    const parsesAsSettings = (data: Record<string, unknown>): boolean =>
+      SettingsSchema.safeParse({ ...createDefaultSettings(), ...data }).success
+
+    it('v22 旧配置 → v23：三个 provider 级值搬到 modelParams[model]，四个旧键全部消失', () => {
+      const outcome = migrate({
+        version: 22,
+        llm: {
+          active: 'deepseek',
+          providers: {
+            deepseek: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.deepseek.com',
+              apiKeyEnc: 'cipher',
+              model: 'deepseek-chat',
+              modelList: ['deepseek-chat', 'deepseek-reasoner'],
+              temperature: 0.7,
+              reasoningEffort: 'high',
+              contextWindow: 128000,
+              vision: true,
+            },
+          },
+        },
+      })
+      expect(outcome.fromVersion).toBe(22)
+      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied[0]).toContain('v22 → v23')
+      expect(outcome.data['version']).toBe(23)
+
+      const provider = loadProvider(outcome.data, 'deepseek')
+      // 三个值逐个相等 —— 搬的是值本身，不是"搬丢后落回默认"
+      expect(provider['modelParams']).toEqual({
+        'deepseek-chat': { reasoningEffort: 'high', contextWindow: 128000, vision: true },
+      })
+      // 四个旧键在 provider 级**都不存在**（`temperature` 直接丢弃）
+      expect('temperature' in provider).toBe(false)
+      expect('reasoningEffort' in provider).toBe(false)
+      expect('contextWindow' in provider).toBe(false)
+      expect('vision' in provider).toBe(false)
+      // 其它字段一个不动
+      expect(provider['model']).toBe('deepseek-chat')
+      expect(provider['modelList']).toEqual(['deepseek-chat', 'deepseek-reasoner'])
+      expect(provider['apiKeyEnc']).toBe('cipher')
+      expect((outcome.data['llm'] as Record<string, unknown>)['active']).toBe('deepseek')
+    })
+
+    it('model 为空串时不造模型条目，四个旧键照删', () => {
+      const outcome = migrate({
+        version: 22,
+        llm: {
+          active: 'custom',
+          providers: {
+            custom: {
+              type: 'openai-compat',
+              baseUrl: 'http://127.0.0.1:11434/v1',
+              apiKeyEnc: 'cipher',
+              model: '',
+              temperature: 0.7,
+              reasoningEffort: 'high',
+              contextWindow: 128000,
+              vision: true,
+            },
+          },
+        },
+      })
+      expect(outcome.data['version']).toBe(23)
+
+      const provider = loadProvider(outcome.data, 'custom')
+      // 没有一个生效模型就不凭它编条目：空表
+      expect(provider['modelParams']).toEqual({})
+      expect('temperature' in provider).toBe(false)
+      expect('reasoningEffort' in provider).toBe(false)
+      expect('contextWindow' in provider).toBe(false)
+      expect('vision' in provider).toBe(false)
+      expect(provider['model']).toBe('')
+    })
+
+    it('迁移幂等：对 v23 结果再迁一次，结果逐字相同', () => {
+      const once = migrate({
+        version: 22,
+        llm: {
+          providers: {
+            deepseek: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.deepseek.com',
+              apiKeyEnc: 'cipher',
+              model: 'deepseek-chat',
+              reasoningEffort: 'high',
+              contextWindow: 128000,
+              vision: true,
+            },
+          },
+        },
+      })
+      const again = migrate({ ...once.data, version: 22 })
+
+      expect(again.data['version']).toBe(23)
+      expect(loadParams(again.data, 'deepseek', 'deepseek-chat')).toEqual(
+        loadParams(once.data, 'deepseek', 'deepseek-chat'),
+      )
+      // 整份 llm 逐字相同：第二轮不会把 provider 级的四个键"补"回来，也不会改动已写的 modelParams
+      expect(again.data['llm']).toEqual(once.data['llm'])
+    })
+
+    it('非法旧值被归一为默认（ultra / 128k / yes），且结果能通过 SettingsSchema.parse', () => {
+      const outcome = migrate({
+        version: 22,
+        llm: {
+          active: 'a',
+          providers: {
+            // 缺 reasoningEffort（一个合法值都没给）
+            a: {
+              type: 'openai-compat',
+              baseUrl: 'https://a.example.com',
+              apiKeyEnc: 'cipher',
+              model: 'm-a',
+              contextWindow: 128000,
+              vision: true,
+            },
+            // 三个旧值全是非法字面量
+            b: {
+              type: 'openai-compat',
+              baseUrl: 'https://b.example.com',
+              apiKeyEnc: 'cipher',
+              model: 'm-b',
+              reasoningEffort: 'ultra',
+              contextWindow: '128k',
+              vision: 'yes',
+            },
+          },
+        },
+      })
+
+      // 合法值原样搬，非法 / 缺失的按字段回落默认 —— 不是"原样继承"
+      expect(loadParams(outcome.data, 'a', 'm-a')).toEqual({
+        reasoningEffort: 'auto',
+        contextWindow: 128000,
+        vision: true,
+      })
+      expect(loadParams(outcome.data, 'b', 'm-b')).toEqual({
+        reasoningEffort: 'auto',
+        contextWindow: 0,
+        vision: false,
+      })
+
+      // 手改配置里 `modelParams` 已经有一条非法条目：整张表逐条归一
+      const handEdited = migrate({
+        version: 22,
+        llm: {
+          active: 'hand',
+          providers: {
+            hand: {
+              type: 'openai-compat',
+              baseUrl: 'https://hand.example.com',
+              apiKeyEnc: 'cipher',
+              model: 'm-hand',
+              modelParams: { other: { reasoningEffort: 'nope' } },
+            },
+          },
+        },
+      })
+      expect(loadParams(handEdited.data, 'hand', 'other')).toEqual({
+        reasoningEffort: 'auto',
+        contextWindow: 0,
+        vision: false,
+      })
+      expect(loadParams(handEdited.data, 'hand', 'm-hand')).toEqual({
+        reasoningEffort: 'auto',
+        contextWindow: 0,
+        vision: false,
+      })
+
+      // 最要紧的护栏：归一漏一处，`z.record` 子树会把非法值原样带进 parse → 整份配置判损坏
+      expect(parsesAsSettings(outcome.data)).toBe(true)
+      expect(parsesAsSettings(handEdited.data)).toBe(true)
     })
   })
 })

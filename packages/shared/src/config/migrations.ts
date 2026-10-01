@@ -6,6 +6,7 @@
 import {
   CONFIG_VERSION,
   LlmProviderTypes,
+  normalizeModelParams,
   REASONING_EFFORT_LEVELS,
   SETTINGS_READONLY_PREFIXES,
 } from './schema.js'
@@ -53,7 +54,6 @@ const migrateV0ToV1: Migration = {
           baseUrl: typeof llm['baseUrl'] === 'string' ? llm['baseUrl'] : 'https://api.deepseek.com',
           apiKeyEnc: apiKey,
           model: typeof llm['model'] === 'string' ? llm['model'] : 'deepseek-chat',
-          temperature: 0.7,
           ...(asRecord(providers['deepseek']) ?? {}),
         }
         next['llm'] = { ...llm, providers, active: 'deepseek' }
@@ -789,6 +789,89 @@ const migrateV21ToV22: Migration = {
   },
 }
 
+/**
+ * v22 → v23：把 provider 级的三项生成参数搬进**按模型 id 键**的 `modelParams`，
+ * 并删除 provider 级的 `temperature`（docs/08 §1 / §2）。
+ *
+ * 四条语义：
+ * ① **幂等** —— 重复执行结果一致；
+ * ② **不覆盖已写值** —— 该模型在 `modelParams` 里已有条目时以它为准，旧值只补它缺的键；
+ * ③ **`model` 为空串时不造模型条目** —— 此时 `modelParams` 为空表，四个旧键照删
+ *   （不凭一个不存在的模型名编出条目）；
+ * ④ **旧非法值归一到默认** —— `reasoningEffort: 'ultra'` / `contextWindow: '128k'` /
+ *   `vision: 'yes'` 一律回落 `auto` / `0` / `false`。
+ *
+ * ④ 不是洁癖：`llm.providers` 是 `z.record`，`SettingsStore` 的字段级回退对这类动态键
+ * **整体保留候选对象**（`store.ts` 的 `sanitizeWithDefaults`）—— 非法值没法被逐字段回退，
+ * 一旦原样搬进 `modelParams` 就会让 `SettingsSchema.parse` 抛错，走「备份 + 重建出厂配置」，
+ * 用户的 provider / 凭据 / 项目配置一起消失。归一统一走 `normalizeModelParams`（schema.ts），
+ * 保证「什么算合法」只有一份口径。
+ *
+ * 与 v10 → v11 / v21 → v22 同一条口径：只在 `llm.providers` 已存在时逐条目处理，
+ * `llm` 或 `providers` 缺失时留给默认配置兜底，不凭空造半截对象。
+ */
+const migrateV22ToV23: Migration = {
+  from: 22,
+  to: 23,
+  describe:
+    'v22 → v23：把 provider 级 reasoningEffort / contextWindow / vision 搬进 modelParams[model]，删除 temperature',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const llm = asRecord(raw['llm'])
+    if (llm !== undefined) {
+      const providers = asRecord(llm['providers'])
+      if (providers !== undefined) {
+        const nextProviders: Record<string, unknown> = {}
+        for (const [id, provider] of Object.entries(providers)) {
+          const entry = asRecord(provider)
+          nextProviders[id] = entry === undefined ? provider : migrateProviderToModelParams(entry)
+        }
+        next['llm'] = { ...llm, providers: nextProviders }
+      }
+    }
+
+    next['version'] = 23
+    return next
+  },
+}
+
+/** 单个 provider 的 v22 → v23 搬运（语义见 `migrateV22ToV23`）。 */
+function migrateProviderToModelParams(entry: Record<string, unknown>): Record<string, unknown> {
+  const patch: Record<string, unknown> = { ...entry }
+
+  // 先把四个旧键摘出来（provider 级一律删除）：三个值待会儿搬进 modelParams，
+  // `temperature` 直接丢弃 —— v23 起请求体不再下发它，配置里也就不该留着。
+  const legacy = {
+    reasoningEffort: patch['reasoningEffort'],
+    contextWindow: patch['contextWindow'],
+    vision: patch['vision'],
+  }
+  delete patch['reasoningEffort']
+  delete patch['contextWindow']
+  delete patch['vision']
+  delete patch['temperature']
+
+  // 已有的 modelParams 只可能是手改出来的（v22 及更早没有任何代码写过它）：
+  // 逐条目**归一**而不是逐字保留，理由见 `migrateV22ToV23` 的语义 ④。
+  const table: Record<string, unknown> = { ...(asRecord(patch['modelParams']) ?? {}) }
+  for (const [key, value] of Object.entries(table)) table[key] = normalizeModelParams(value)
+
+  const model = patch['model']
+  if (typeof model !== 'string' || model.length === 0) {
+    // ③ 没有生效模型：写下（可能为空的）表，四个旧键照删。
+    patch['modelParams'] = table
+    return patch
+  }
+
+  // ② 不覆盖已写值：先把旧值归一（补齐三个键），再用该模型**已写**的原始值盖上去，
+  // 最后整体归一一次 —— 于是「缺的键拿旧值、旧值非法拿默认、已写值原样保留」同时成立。
+  const current = asRecord(table[model]) ?? {}
+  table[model] = normalizeModelParams({ ...normalizeModelParams(legacy), ...current })
+  patch['modelParams'] = table
+  return patch
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -812,6 +895,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV19ToV20,
   migrateV20ToV21,
   migrateV21ToV22,
+  migrateV22ToV23,
 ]
 
 export interface MigrationOutcome {

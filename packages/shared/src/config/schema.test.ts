@@ -10,6 +10,7 @@ import {
   COMPUTER_TOOL_NAMES,
   CONFIG_VERSION,
   DEFAULT_SUBJECT_NAMES,
+  LLM_MODEL_PARAM_DEFAULTS,
   MODE_IDS,
   McpServerSchema,
   RESOURCE_NAME_PATTERN,
@@ -19,9 +20,35 @@ import {
   TTS_FORMATS,
   canWriteSettingPath,
   fieldAccepts,
+  resolveModelParams,
   schemaPathCount,
   settingsReadonlyReason,
+  type LlmProviderConfig,
 } from './schema.js'
+
+/** 造一个 v23 形态的 provider：生成参数在 `modelParams.<modelId>` 下，provider 级不再有
+ * `temperature` / `reasoningEffort` / `contextWindow` / `vision`（已删 / 已下沉）。 */
+function providerWith(modelId: string, params: Record<string, unknown>): LlmProviderConfig {
+  return {
+    type: 'openai-compat',
+    baseUrl: 'https://api.deepseek.com',
+    apiKeyEnc: 'enc',
+    model: modelId,
+    modelParams: { [modelId]: params } as LlmProviderConfig['modelParams'],
+  }
+}
+
+/** `providerWith` 的判定版：拿一份模型参数跑一次整份配置的 Schema 校验。 */
+function acceptsModelParams(params: Record<string, unknown>): boolean {
+  const settings = createDefaultSettings()
+  settings.llm.providers['deepseek'] = providerWith('deepseek-chat', params)
+  return SettingsSchema.safeParse(settings).success
+}
+
+/** `resolveModelParams` 的入参构造（用例要造缺字段 / 非法条目，故允许 unknown 表）。 */
+function paramsFor(model: string, table: Record<string, unknown>) {
+  return { model, modelParams: table as LlmProviderConfig['modelParams'] }
+}
 
 describe('SettingsSchema / defaults 一致性', () => {
   it('MODE_IDS 顺序 ClassRoom 在前（docs/07 §2.5、docs/08 §3 推荐 ClassRoom）', () => {
@@ -68,9 +95,10 @@ describe('SettingsSchema / defaults 一致性', () => {
     // 字符串字段拒绝数字
     expect(fieldAccepts('general.language', 42)).toBe(false)
     expect(fieldAccepts('general.language', 'en-US')).toBe(true)
-    // 数字字段接受数字、拒绝字符串
-    expect(fieldAccepts('llm.providers.deepseek.temperature', 0.7)).toBe(true)
-    expect(fieldAccepts('llm.providers.deepseek.temperature', 'hot')).toBe(false)
+    // 数字字段接受数字、拒绝字符串（v23 起 provider 级 `temperature` 已删除 —— 生成参数下沉到
+    // `modelParams.<modelId>`，该路径的取值闸门见本 describe 里的越界用例与缺口用例）
+    expect(fieldAccepts('general.edgeBar.opacity', 0.7)).toBe(true)
+    expect(fieldAccepts('general.edgeBar.opacity', 'dim')).toBe(false)
     // 布尔与数组
     expect(fieldAccepts('modes.classroom.preClassReminder', true)).toBe(true)
     expect(fieldAccepts('modes.classroom.preClassReminder', 'yes')).toBe(false)
@@ -82,7 +110,10 @@ describe('SettingsSchema / defaults 一致性', () => {
     // 动态键 record 字段
     expect(fieldAccepts('llm.providers', {})).toBe(true)
     expect(fieldAccepts('llm.providers.deepseek.apiKeyEnc', 'cipher')).toBe(true)
-    expect(fieldAccepts('llm.providers.deepseek.temperature', 'hot')).toBe(false)
+    // v23：模型参数在 `modelParams.<modelId>` 下，合法值被接受（路径登记口径的缺口见「缺口」用例）
+    expect(
+      fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.contextWindow', 128_000),
+    ).toBe(true)
     // 未登记的路径默认接受（避免误杀）
     expect(fieldAccepts('some.future.field', 1)).toBe(true)
   })
@@ -139,17 +170,51 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(fieldAccepts('general.windowState', {})).toBe(true)
   })
 
-  it('temperature 越界会被 Schema 拒绝', () => {
+  it('modelParams 的越界 / 类型错 / 非法枚举值会被 Schema 拒绝（v23）', () => {
+    // 边界值本身合法（上限 2_000_000）
+    expect(
+      acceptsModelParams({ reasoningEffort: 'auto', contextWindow: 2_000_000, vision: true }),
+    ).toBe(true)
+    // 越界：contextWindow 上限 2_000_000
+    expect(
+      acceptsModelParams({ reasoningEffort: 'auto', contextWindow: 9_000_000, vision: false }),
+    ).toBe(false)
+    expect(acceptsModelParams({ reasoningEffort: 'auto', contextWindow: -1, vision: false })).toBe(
+      false,
+    )
+    // 类型：contextWindow 是数字、vision 是布尔
+    expect(
+      acceptsModelParams({ reasoningEffort: 'auto', contextWindow: '128k', vision: false }),
+    ).toBe(false)
+    expect(acceptsModelParams({ reasoningEffort: 'auto', contextWindow: 0, vision: 'yes' })).toBe(
+      false,
+    )
+    // 枚举：reasoningEffort 只认四个等级
+    expect(acceptsModelParams({ reasoningEffort: 'ultra', contextWindow: 0, vision: false })).toBe(
+      false,
+    )
+    // `modelParams` 条目里 `reasoningEffort` 必填（缺了整份配置会被判非法 —— 消费方一律经
+    // `resolveModelParams` 取值，写配置的一侧必须写全三项）
+    expect(acceptsModelParams({ contextWindow: 0, vision: false })).toBe(false)
+  })
+
+  it('provider 级 temperature 已从 Schema 删除：写进去既不报错也不落库（v23）', () => {
+    // 旧字段不是"换了个校验"而是**真的没了**：`LlmProviderSchema` 是非 strict 的 z.object，
+    // parse 时未知键被 strip，于是带 temperature 的旧配置不会把整份配置判为损坏。
     const settings = createDefaultSettings()
-    settings.llm.providers['deepseek'] = {
-      type: 'openai-compat',
-      baseUrl: 'https://api.deepseek.com',
-      apiKeyEnc: 'enc',
-      model: 'deepseek-chat',
+    const withTemperature = {
+      ...providerWith('deepseek-chat', { reasoningEffort: 'auto' }),
       temperature: 9,
-      reasoningEffort: 'auto',
     }
-    expect(SettingsSchema.safeParse(settings).success).toBe(false)
+    settings.llm.providers['deepseek'] = withTemperature as unknown as LlmProviderConfig
+    expect(SettingsSchema.safeParse(settings).success).toBe(true)
+    const parsed = SettingsSchema.parse(settings).llm.providers['deepseek']
+    expect(parsed).not.toHaveProperty('temperature')
+    expect(parsed?.modelParams['deepseek-chat']).toEqual({
+      reasoningEffort: 'auto',
+      contextWindow: 0,
+      vision: false,
+    })
   })
 
   it('未知模式 id 会被 Schema 拒绝', () => {
@@ -189,23 +254,26 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(fieldAccepts('advanced.confirmSensitiveTools', 'no')).toBe(false)
   })
 
-  it('思考等级：只接受四个枚举值（枚举按值校验，而非"类型对就放行"）（v5）', () => {
+  it('思考等级：只接受四个枚举值（枚举按值校验，而非"类型对就放行"）（v5；v23 起在 modelParams 下）', () => {
     const settings = createDefaultSettings()
-    settings.llm.providers['deepseek'] = {
-      type: 'openai-compat',
-      baseUrl: 'https://api.deepseek.com',
-      apiKeyEnc: 'enc',
-      model: 'deepseek-chat',
-      temperature: 0.7,
+    settings.llm.providers['deepseek'] = providerWith('deepseek-chat', {
       reasoningEffort: 'high',
-    }
+      contextWindow: 0,
+      vision: false,
+    })
     expect(SettingsSchema.safeParse(settings).success).toBe(true)
 
-    expect(fieldAccepts('llm.providers.deepseek.reasoningEffort', 'high')).toBe(true)
-    expect(fieldAccepts('llm.providers.deepseek.reasoningEffort', 'auto')).toBe(true)
+    for (const level of ['auto', 'low', 'medium', 'high']) {
+      expect(
+        acceptsModelParams({ reasoningEffort: level, contextWindow: 0, vision: false }),
+        level,
+      ).toBe(true)
+    }
     // 类型对不代表值合法：枚举必须按值校验，否则非法值会活到 parse 把整份配置判为损坏
-    expect(fieldAccepts('llm.providers.deepseek.reasoningEffort', 'ultra')).toBe(false)
-    expect(fieldAccepts('llm.providers.deepseek.reasoningEffort', 42)).toBe(false)
+    expect(acceptsModelParams({ reasoningEffort: 'ultra', contextWindow: 0, vision: false })).toBe(
+      false,
+    )
+    expect(acceptsModelParams({ reasoningEffort: 42, contextWindow: 0, vision: false })).toBe(false)
   })
 
   it('模型候选列表：必须是数组，且默认值为空数组（v6）', () => {
@@ -218,12 +286,11 @@ describe('SettingsSchema / defaults 一致性', () => {
 
     const settings = createDefaultSettings()
     settings.llm.providers['deepseek'] = {
-      type: 'openai-compat',
-      baseUrl: 'https://api.deepseek.com',
-      apiKeyEnc: 'enc',
-      model: 'deepseek-chat',
-      temperature: 0.7,
-      reasoningEffort: 'auto',
+      ...providerWith('deepseek-chat', {
+        reasoningEffort: 'auto',
+        contextWindow: 0,
+        vision: false,
+      }),
       modelList: [],
     }
     expect(SettingsSchema.safeParse(settings).success).toBe(true)
@@ -427,18 +494,90 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(settings.tts.active).toBe('')
     expect(settings.tts.providers).toEqual({})
 
-    settings.llm.providers['deepseek'] = {
-      type: 'openai-compat',
-      baseUrl: 'https://api.deepseek.com',
-      apiKeyEnc: 'cipher',
-      model: 'deepseek-chat',
-      temperature: 0.7,
+    settings.llm.providers['deepseek'] = providerWith('deepseek-chat', {
       reasoningEffort: 'auto',
-    }
+      contextWindow: 0,
+      vision: false,
+    })
     // 只配了聊天模型时，语音仍然是「未配置」——两者不共用一份 provider
     expect(SettingsSchema.parse(settings).tts.active).toBe('')
     expect(SettingsSchema.parse(settings).tts.providers).toEqual({})
   })
+
+  it('resolveModelParams 是三处消费方的唯一取值口径：命中 / 未命中 / 缺字段都按字段回落（v23）', () => {
+    // 命中的模型 → 返回该条目的三项
+    expect(
+      resolveModelParams(
+        paramsFor('deepseek-chat', {
+          'deepseek-chat': { reasoningEffort: 'high', contextWindow: 128_000, vision: true },
+        }),
+      ),
+    ).toEqual({ reasoningEffort: 'high', contextWindow: 128_000, vision: true })
+
+    // 未命中（模型不在表里 / `modelParams` 为空）→ 回落默认值，**不是** undefined
+    expect(resolveModelParams(paramsFor('ghost', {}))).toEqual(LLM_MODEL_PARAM_DEFAULTS)
+    expect(resolveModelParams(paramsFor('ghost', {}))).toEqual({
+      reasoningEffort: 'auto',
+      contextWindow: 0,
+      vision: false,
+    })
+
+    // 条目存在但缺字段 → 按字段回落（`reasoningEffort` 保留，另两项取默认），绝不返回 undefined
+    const partial = resolveModelParams(paramsFor('a', { a: { reasoningEffort: 'high' } }))
+    expect(partial).toEqual({ reasoningEffort: 'high', contextWindow: 0, vision: false })
+    expect(partial.contextWindow).toBe(0)
+    expect(partial.vision).toBe(false)
+
+    // `modelId` 缺省取 `provider.model`；显式传入时按传入的 id 取
+    expect(
+      resolveModelParams(
+        paramsFor('a', { a: { reasoningEffort: 'low', contextWindow: 1, vision: true } }),
+      ),
+    ).toEqual({ reasoningEffort: 'low', contextWindow: 1, vision: true })
+    expect(
+      resolveModelParams(
+        paramsFor('a', { b: { reasoningEffort: 'low', contextWindow: 1, vision: true } }),
+        'b',
+      ),
+    ).toEqual({ reasoningEffort: 'low', contextWindow: 1, vision: true })
+    // 显式 id 未命中时同样回落（不会偷偷按 `provider.model` 再试一次）
+    expect(resolveModelParams(paramsFor('a', { a: { reasoningEffort: 'high' } }), 'other')).toEqual(
+      LLM_MODEL_PARAM_DEFAULTS,
+    )
+
+    // 手改配置留下的非法值按字段归一（老配置漏迁移的兜底）
+    expect(
+      resolveModelParams(
+        paramsFor('a', { a: { reasoningEffort: 'ultra', contextWindow: '128k', vision: 'yes' } }),
+      ),
+    ).toEqual(LLM_MODEL_PARAM_DEFAULTS)
+    // 默认值与 v22 及更早的 provider 级出厂值逐字相同（本次下沉不改变默认行为）
+    expect(LLM_MODEL_PARAM_DEFAULTS).toEqual({
+      reasoningEffort: 'auto',
+      contextWindow: 0,
+      vision: false,
+    })
+  })
+
+  it.fails(
+    'fieldAccepts 应当按 Schema 拒绝 modelParams 下的非法值（已知缺口，见注释）（v23）',
+    () => {
+      // ⚠️ 这是**期望行为**、当前实现做不到，故整条挂在 `it.fails` 下 —— 有朝一日 lookupSpec
+      // 支持多段通配时它会变红，提醒把这批断言挪回普通用例（口径见下）。
+      //
+      // 实测：`lookupSpec` / `lookupEnum`（schema.ts）只做**单段** `*` 替换，而 `modelParams`
+      // 的登记路径是 `llm.providers.*.modelParams.*.<字段>`（**两个**动态段）——具体路径查不到
+      // 登记项，`fieldAccepts` 于是落到「未登记路径默认接受」分支，对任何候选值都返回 true。
+      // 影响面有限：`sanitizeWithDefaults` 对 `llm.providers`（z.record）整体保留候选对象、
+      // 不逐字段问 `fieldAccepts`；真正的取值闸门是 `SettingsSchema`（见上面两条越界用例）。
+      expect(
+        fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.contextWindow', '128k'),
+      ).toBe(false)
+      expect(
+        fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.reasoningEffort', 'ultra'),
+      ).toBe(false)
+    },
+  )
 })
 
 describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () => {
@@ -487,6 +626,47 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     expect(canWriteSettingPath('version')).toBe(false)
     expect(canWriteSettingPath('general.windowState.chat')).toBe(false)
     expect(canWriteSettingPath('mcp.servers')).toBe(false)
+  })
+
+  it('llm.providers 只放行 model 与 modelParams.*.reasoningEffort：双 * 覆盖表不得退化成整组放行（v23）', () => {
+    // 覆盖表是「逐段相等 + 段数一致」（`*` 匹配恰好一段），`llm.providers` 整组在只读前缀里 ——
+    // 只有这两条显式放行（调模型行为不碰凭据）；一旦有人把模式写成 `llm.providers.*`，
+    // baseUrl / apiKeyEnc / modelList / 整个 modelParams 子树会一起放开。
+    expect(
+      canWriteSettingPath('llm.providers.deepseek.modelParams.deepseek-chat.reasoningEffort'),
+    ).toBe(true)
+    expect(
+      settingsReadonlyReason('llm.providers.deepseek.modelParams.deepseek-chat.reasoningEffort'),
+    ).toBeUndefined()
+    expect(canWriteSettingPath('llm.providers.deepseek.model')).toBe(true)
+
+    // temperature 已随 v23 从 Schema 删除：它不再是可写路径（也不是任何路径）
+    expect(canWriteSettingPath('llm.providers.deepseek.temperature')).toBe(false)
+    // `modelParams` 下的 contextWindow / vision **刻意不登记**（模型能力事实，只读）
+    expect(
+      canWriteSettingPath('llm.providers.deepseek.modelParams.deepseek-chat.contextWindow'),
+    ).toBe(false)
+    expect(canWriteSettingPath('llm.providers.deepseek.modelParams.deepseek-chat.vision')).toBe(
+      false,
+    )
+    // 凭据与连接字段仍被前缀拒绝
+    expect(canWriteSettingPath('llm.providers.deepseek.baseUrl')).toBe(false)
+    expect(canWriteSettingPath('llm.providers.deepseek.apiKeyEnc')).toBe(false)
+    expect(canWriteSettingPath('llm.providers.deepseek.modelParams')).toBe(false)
+    expect(canWriteSettingPath('llm.providers.deepseek')).toBe(false)
+
+    // 防退化：段数少一段 / 段数对但不是 `modelParams` 这一段，都不得命中断言式前缀匹配
+    expect(canWriteSettingPath('llm.providers.deepseek.modelParams.deepseek-chat')).toBe(false)
+    expect(canWriteSettingPath('llm.providers.deepseek.other.deepseek-chat.reasoningEffort')).toBe(
+      false,
+    )
+    // 拒绝来自黑名单（而不是「未知配置路径」那条兜底）：说明路径本身是识别的、只是不许写
+    expect(
+      settingsReadonlyReason('llm.providers.deepseek.modelParams.deepseek-chat.contextWindow'),
+    ).toBe('凭据字段不允许通过工具修改')
+    expect(settingsReadonlyReason('llm.providers.deepseek.modelParams.deepseek-chat')).toBe(
+      '凭据字段不允许通过工具修改',
+    )
   })
 
   it('敏感工具确认总闸门不可由 AI 关闭（AI 自我提权，P1）', () => {

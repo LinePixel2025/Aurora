@@ -1,12 +1,29 @@
 import { describe, expect, it } from 'vitest'
 import { SettingsStore, canonicalSecretPath, redactKeys } from './store.js'
 import { CONFIG_FILE_NAME } from './store.js'
-import { CONFIG_VERSION } from './schema.js'
+import { CONFIG_VERSION, type LlmProviderConfig } from './schema.js'
 import { createDefaultSettings } from './defaults.js'
 import { createMemoryLogger } from '../utils/logger.js'
 import { MemoryFileSystem, createFakeCrypto, memoryPath } from '../testing/memoryFs.js'
 
 const DIR = memoryPath()
+
+/**
+ * 造一个 v23 形态的 LLM provider 条目：生成参数在 `modelParams.<modelId>` 下，
+ * provider 级不再有 `temperature` / `reasoningEffort` / `contextWindow` / `vision`
+ * （前者已从 Schema 删除，后三者已下沉）；`apiKeyEnc` 留空由用例自己 setSecret。
+ */
+function llmProvider(model = 'deepseek-chat'): LlmProviderConfig {
+  return {
+    type: 'openai-compat',
+    baseUrl: 'https://api.deepseek.com',
+    apiKeyEnc: '',
+    model,
+    modelParams: {
+      [model]: { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+    },
+  }
+}
 
 function setup(
   options: { seed?: Record<string, string>; crypto?: boolean; debounceMs?: number } = {},
@@ -153,6 +170,8 @@ describe('SettingsStore · 初始化', () => {
               baseUrl: 'https://api.deepseek.com',
               apiKeyEnc: 'cipher',
               model: 'deepseek-chat',
+              // v4 时代的旧字段（v23 已从 Schema 删除）：留在夹具里正是为了证明迁移链
+              // 一路把它带到 v23 并丢掉 —— 别照抄到新夹具（新形态用 `llmProvider()`）。
               temperature: 0.7,
             },
           },
@@ -165,7 +184,13 @@ describe('SettingsStore · 初始化', () => {
     expect(report.fromVersion).toBe(4)
     expect(report.corrupted).toBe(false)
     expect(store.get().version).toBe(CONFIG_VERSION)
-    expect(store.get().llm.providers['legacy']?.reasoningEffort).toBe('auto')
+    // v23 终态：provider 级不再有 reasoningEffort，三个生成参数落在 `modelParams[<model>]` 下
+    // （v4→v23 一路迁下来，缺的值按出厂默认补齐）
+    expect(store.get().llm.providers['legacy']?.modelParams['deepseek-chat']).toEqual({
+      reasoningEffort: 'auto',
+      contextWindow: 0,
+      vision: false,
+    })
     expect(store.get().agent.tools).toEqual({
       enabled: true,
       workspaceDir: '',
@@ -185,14 +210,14 @@ describe('SettingsStore · 初始化', () => {
     const seeded = createDefaultSettings()
     seeded.general.language = 'en-US'
     seeded.modes.classroom.watchDir = 'D:\\感知文件夹'
-    // 旧版本写下的 provider：没有 modelList 这个键（版本已声明为 v6，迁移链不会跑）
+    // 旧版本写下的 provider：没有 modelList 这个键，`modelParams` 条目也只写了思考等级
+    // （版本已声明为当前版本，迁移链不会跑）
     const legacyProvider = {
       type: 'openai-compat',
       baseUrl: 'http://127.0.0.1:11434/v1',
       apiKeyEnc: '',
       model: 'qwen2.5:7b',
-      temperature: 1.4,
-      reasoningEffort: 'high',
+      modelParams: { 'qwen2.5:7b': { reasoningEffort: 'high' } },
     }
     const seed = {
       [memoryPath(CONFIG_FILE_NAME)]: JSON.stringify({
@@ -208,18 +233,65 @@ describe('SettingsStore · 初始化', () => {
     expect(report.appliedMigrations).toEqual([])
 
     // 缺字段按各自 Schema 默认值补齐：`modelList` → []（设置页与对话窗无条件拿到数组）、
-    // `contextWindow` → 0（v11 起的上下文窗口，0 = 未知）、
-    // `vision` → false（v22 起的图片输入开关，出厂关；docs/06 §3.1 / docs/08 §1）
+    // `modelParams.<model>` 内缺的 `contextWindow` → 0（v11 起，0 = 未知）、
+    // `vision` → false（v22 起，出厂关；docs/06 §3.1 / docs/08 §1）；
+    // v23 起这三项都在 `modelParams` 下，provider 级已无对应键。
     expect(store.get().llm.providers['legacy']).toEqual({
       ...legacyProvider,
+      modelParams: {
+        'qwen2.5:7b': { reasoningEffort: 'high', contextWindow: 0, vision: false },
+      },
       modelList: [],
-      contextWindow: 0,
-      vision: false,
     })
     // 其余字段一个都不变
     expect(store.get().llm.active).toBe('legacy')
     expect(store.get().general.language).toBe('en-US')
     expect(store.get().modes.classroom.watchDir).toBe('D:\\感知文件夹')
+  })
+
+  it('磁盘上的 v22 配置：三个生成参数搬进 modelParams[model]，provider 级四个键都不在（v23）', async () => {
+    // 「用户填过的上下文窗口 / 图片开关 / 思考等级不会在升级时丢」的端到端证据
+    const seeded = createDefaultSettings()
+    const seed = {
+      [memoryPath(CONFIG_FILE_NAME)]: JSON.stringify({
+        ...seeded,
+        version: 22,
+        llm: {
+          active: 'legacy',
+          providers: {
+            legacy: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.openai.com/v1',
+              apiKeyEnc: 'cipher',
+              model: 'gpt-4o',
+              temperature: 0.7,
+              reasoningEffort: 'high',
+              contextWindow: 128_000,
+              vision: true,
+            },
+          },
+        },
+      }),
+    }
+    const { store } = setup({ seed })
+    const report = await store.init()
+    expect(report.fromVersion).toBe(22)
+    expect(report.corrupted).toBe(false)
+    expect(store.get().version).toBe(CONFIG_VERSION)
+
+    const provider = store.get().llm.providers['legacy']!
+    // 三个值逐字搬到该 provider 生效模型的条目下
+    expect(provider.modelParams).toEqual({
+      'gpt-4o': { reasoningEffort: 'high', contextWindow: 128_000, vision: true },
+    })
+    // provider 级四个键（含已从 Schema 删除的 temperature）一个都不在了
+    for (const key of ['temperature', 'reasoningEffort', 'contextWindow', 'vision']) {
+      expect(provider, key).not.toHaveProperty(key)
+    }
+    // 连接字段与模型不受影响；存量明文凭据照旧被 init 补加密（与本次下沉无关的既有行为）
+    expect(provider.baseUrl).toBe('https://api.openai.com/v1')
+    expect(provider.model).toBe('gpt-4o')
+    expect(provider.apiKeyEnc).toContain('fakestorage:v1:')
   })
 
   it('从 v0 旧配置迁移：明文 apiKey 被迁移并补加密', async () => {
@@ -319,14 +391,7 @@ describe('SettingsStore · 凭据安全', () => {
     const { store, fsPort, configPath, crypto } = setup()
     await store.init()
     store.mutate((draft) => {
-      draft.llm.providers['deepseek'] = {
-        type: 'openai-compat',
-        baseUrl: 'https://api.deepseek.com',
-        apiKeyEnc: '',
-        model: 'deepseek-chat',
-        temperature: 0.7,
-        reasoningEffort: 'auto',
-      }
+      draft.llm.providers['deepseek'] = llmProvider()
       draft.llm.active = 'deepseek'
     })
     const persisted = store.setSecret('llm.providers.deepseek.apiKey', 'sk-secret-value')
@@ -346,14 +411,7 @@ describe('SettingsStore · 凭据安全', () => {
     const { store, fsPort } = setup()
     await store.init()
     store.mutate((draft) => {
-      draft.llm.providers['deepseek'] = {
-        type: 'openai-compat',
-        baseUrl: 'https://api.deepseek.com',
-        apiKeyEnc: '',
-        model: 'deepseek-chat',
-        temperature: 0.7,
-        reasoningEffort: 'auto',
-      }
+      draft.llm.providers['deepseek'] = llmProvider()
       draft.llm.active = 'deepseek'
     })
     store.setSecret('llm.providers.deepseek.apiKey', 'sk-first')
@@ -372,14 +430,7 @@ describe('SettingsStore · 凭据安全', () => {
     const { store, fsPort } = setup()
     await store.init()
     store.mutate((draft) => {
-      draft.llm.providers['deepseek'] = {
-        type: 'openai-compat',
-        baseUrl: 'https://api.deepseek.com',
-        apiKeyEnc: '',
-        model: 'deepseek-chat',
-        temperature: 0.7,
-        reasoningEffort: 'auto',
-      }
+      draft.llm.providers['deepseek'] = llmProvider()
       draft.llm.active = 'deepseek'
     })
     store.setSecret('llm.providers.deepseek.apiKey', 'sk-persist')
@@ -401,14 +452,7 @@ describe('SettingsStore · 凭据安全', () => {
     const report = await store.init()
     expect(report.cryptoAvailable).toBe(false)
     store.mutate((draft) => {
-      draft.llm.providers['deepseek'] = {
-        type: 'openai-compat',
-        baseUrl: 'https://api.deepseek.com',
-        apiKeyEnc: '',
-        model: 'deepseek-chat',
-        temperature: 0.7,
-        reasoningEffort: 'auto',
-      }
+      draft.llm.providers['deepseek'] = llmProvider()
       draft.llm.active = 'deepseek'
     })
     const persisted = store.setSecret('llm.providers.deepseek.apiKey', 'sk-memory-only')
@@ -424,14 +468,7 @@ describe('SettingsStore · 凭据安全', () => {
     const { store, fsPort, configPath } = setup()
     await store.init()
     store.mutate((draft) => {
-      draft.llm.providers['deepseek'] = {
-        type: 'openai-compat',
-        baseUrl: 'https://api.deepseek.com',
-        apiKeyEnc: '',
-        model: 'deepseek-chat',
-        temperature: 0.7,
-        reasoningEffort: 'auto',
-      }
+      draft.llm.providers['deepseek'] = llmProvider()
     })
     store.setSecret('llm.providers.deepseek.apiKey', 'sk-old')
     await store.flush()
@@ -454,14 +491,7 @@ describe('SettingsStore · 凭据安全', () => {
     const { store } = setup()
     await store.init()
     store.mutate((draft) => {
-      draft.llm.providers['deepseek'] = {
-        type: 'openai-compat',
-        baseUrl: 'https://api.deepseek.com',
-        apiKeyEnc: '',
-        model: 'deepseek-chat',
-        temperature: 0.7,
-        reasoningEffort: 'auto',
-      }
+      draft.llm.providers['deepseek'] = llmProvider()
     })
     store.setSecret('llm.providers.deepseek.apiKey', 'sk-x')
     store.clearSecret('llm.providers.deepseek.apiKey')
@@ -521,14 +551,7 @@ describe('SettingsStore · 凭据安全', () => {
     const { store } = setup()
     await store.init()
     store.mutate((draft) => {
-      draft.llm.providers['deepseek'] = {
-        type: 'openai-compat',
-        baseUrl: 'https://api.deepseek.com',
-        apiKeyEnc: '',
-        model: 'deepseek-chat',
-        temperature: 0.7,
-        reasoningEffort: 'auto',
-      }
+      draft.llm.providers['deepseek'] = llmProvider()
       draft.mcp.servers.push({
         name: 'demo',
         transport: 'stdio',
@@ -818,14 +841,7 @@ describe('SettingsStore · 含点名称的凭据路径（P1-07）', () => {
   /** 建一个含点 id 的 provider（`llm.providers` 是 record，键不受 Schema 约束）。 */
   function seedDottedProvider(store: SettingsStore, id: string): void {
     store.mutate((draft) => {
-      draft.llm.providers[id] = {
-        type: 'openai-compat',
-        baseUrl: 'https://api.deepseek.com',
-        apiKeyEnc: '',
-        model: 'deepseek-chat',
-        temperature: 0.7,
-        reasoningEffort: 'auto',
-      }
+      draft.llm.providers[id] = llmProvider()
       draft.llm.active = id
     })
   }
@@ -888,14 +904,7 @@ describe('SettingsStore · 含点名称的凭据路径（P1-07）', () => {
     // `McpServerSchema.name` 现在禁 `.`，而 `mcp.servers` 是数组（sanitize 不逐项回退）：
     // 不先规整就会在 SettingsSchema.parse 硬抛 → 备份 + 重建出厂配置。
     const seeded = createDefaultSettings()
-    seeded.llm.providers['deepseek'] = {
-      type: 'openai-compat',
-      baseUrl: 'https://api.deepseek.com',
-      apiKeyEnc: '',
-      model: 'deepseek-chat',
-      temperature: 0.7,
-      reasoningEffort: 'auto',
-    }
+    seeded.llm.providers['deepseek'] = llmProvider()
     // 手写密文 = 假加密格式（`fakestorage:v1:` + base64），解密回 'tok-value'
     const tokCipher = 'fakestorage:v1:' + Buffer.from('tok-value', 'utf8').toString('base64')
     const seed = {
