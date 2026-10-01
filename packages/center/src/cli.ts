@@ -22,7 +22,7 @@ import { createInterface } from 'node:readline/promises'
 import type { Logger } from '@aurora/shared'
 import { AuthStore } from './auth.js'
 import { ClientRegistry } from './clients.js'
-import { createCenterServer } from './server.js'
+import { createCenterServer, inspectServerLock, serverLockPath } from './server.js'
 import { serverVersion } from './version.js'
 import { checkUpdate } from './update.js'
 
@@ -34,6 +34,8 @@ export interface CliOptions {
 
 export const DEFAULT_DATA_DIR = join(homedir(), '.aurora-center')
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org'
+/** `users` 里会写 users.json 的子命令（`list` 只读，不受停服约束） */
+const USER_WRITE_ACTIONS = new Set(['add', 'passwd', 'remove'])
 
 const USAGE = `aurora-center —— Aurora Center 控制中心（docs/12）
 
@@ -44,6 +46,7 @@ const USAGE = `aurora-center —— Aurora Center 控制中心（docs/12）
   aurora-center users   list
   aurora-center users   passwd <名> --password <密码>
   aurora-center users   remove <名>
+                        # 写命令（add / passwd / remove）需先停服，见 docs/12 §9
   aurora-center status  [--data <dir>]
   aurora-center update  [--check] [--registry <npm 源>]
   aurora-center version
@@ -186,7 +189,22 @@ async function runUsers(
 ): Promise<number> {
   const action = positional(argv, 0)
   const rest = argv.slice(1)
-  const auth = await openAuth(dataDirOf(rest))
+  const dataDir = dataDirOf(rest)
+  if (action !== undefined && USER_WRITE_ACTIONS.has(action)) {
+    // 服务器在跑时必须先停服（P2-17，docs/12 §9）：CLI 与服务器各自缓存整份
+    // users.json，谁后写谁整文件覆盖 —— CLI 的改密会被服务器下一次落盘静默回滚。
+    const state = await inspectServerLock(dataDir)
+    if (state === 'running') {
+      err('检测到服务器正在运行，已拒绝执行 —— 请先停止服务器（Ctrl+C）后重试。')
+      err(`锁文件：${serverLockPath(dataDir)}`)
+      err('原因：CLI 与运行中的服务器各自缓存整份 users.json，本次改动会被静默回滚。')
+      return 1
+    }
+    if (state === 'stale') {
+      err('提示：数据目录存在陈旧锁文件（服务器上次未正常退出），已按「无服务器」继续。')
+    }
+  }
+  const auth = await openAuth(dataDir)
   switch (action) {
     case 'add': {
       const username = positional(rest, 0)

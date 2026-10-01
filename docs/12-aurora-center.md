@@ -55,6 +55,7 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
 | `tokens.json` | 客户端令牌（账号登录 / 设备授权颁发）：`{ id, userId, tokenHash(SHA-256), label, clientId, createdAt, revokedAt? }` —— **令牌明文只在登录 / 授权响应时出现一次**；同 `clientId` 重登自动吊销旧令牌 |
 | `clients.json` | 已登记客户端：`{ clientId, name, ownerUserId, version, platform, firstSeenAt, lastSeenAt, lastMode, revokedAt? }` |
 | `files/<fileId>-<name>` + `files/index.json` | 客户端上传文件的暂存与索引；**每条带 `expiresAt`（上传 + 24h），过期自动清理**（启动清一次 + 每 15 分钟一轮） |
+| `server.lock` | **服务器运行标记**（v0.2.9）：`{ pid, startedAt }`，`start` / `listen` 成功后创建、`close()` 删除、每 15s 刷 mtime —— CLI 的 `users` 写命令据它拒绝与运行中服务器并发写 `users.json`（§9）；mtime 超过 60s 未刷新视为崩溃残留（当作无服务器） |
 
 所有 JSON 落盘沿用仓库约定：**原子写（临时文件 + rename）**，读损坏备份后重建。
 
@@ -82,6 +83,17 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
 - 一个用户可以同时在多台机器登录（每台一个 `clientId`，各自持有独立令牌）；每个用户
   （除管理员）在网页端**只能看到自己名下的客户端**，事件（会话 / 文件 / 确认卡）也只
   路由给属主 + 管理员。
+- **认证端点限速**（v0.2.9）：`/api/auth/login` 与 `/api/client/login` 共用一把按**源 IP**
+  的滑动窗口计数器（**只记失败**：成功登录不消耗额度），窗口内失败达 **5 次 / 分钟** 后
+  返回 `429 {"error":"E_RATE_LIMITED"}`（此后连正确密码也一并挡住，直到窗口滚过）；
+  `/api/auth/register` 10 次/分钟、`/api/client/device/start` 30 次/分钟（各作用域独立）。
+  源 IP 取 socket 地址（`req.socket.remoteAddress`），**不读 `x-forwarded-for`** ——
+  当前是直连部署（无反代），放到反代后面必须先改这一处的取值口径，否则所有请求会共用一个键。
+  限速只作用于上述认证端点：WS 心跳、`/api/me` 等常规 API 不受影响。参数集中在
+  `server.ts` 的 `AUTH_RATE_LIMITS`。
+- **密码校验异步**（v0.2.9）：`scryptSync` → `crypto.scrypt`（线程池），登录 / 注册 / 改密
+  不再阻塞事件循环（同步版每次约 32ms，公网穷举几十 req/s 就能让 WS 心跳被误判超时）。
+- **网页会话表有界**（v0.2.9）：颁发会话时清扫过期项，并按上限（默认 10000 条）淘汰最旧。
 - **属主跟随当前有效令牌**：客户端 hello 登记时 `ownerUserId` 以其令牌属主为准 ——
   设备被释放（令牌吊销）后由另一账号登录即可接管归属；属主未释放前，登录（409
   `E_CLIENT_BOUND`）与设备授权确认都会拒绝抢注。
@@ -197,6 +209,10 @@ POST /api/client/device/authorize { deviceCode, approve }        （需网页会
 GET /api/client/device/info?code=<userCode>                      （无需登录；#/device 页把
   → { deviceCode, expiresAt }                                      URL 里的 userCode 换回 deviceCode）
 ```
+
+- 挑战**只存内存**（重启即失效，客户端重新发起即可），`start` 时先清扫过期项；表有上限
+  （默认 1000 条，v0.2.9），超限**淘汰最旧**——既不永续增长，也不给"刷满上限把新设备挡在
+  门外"的攻击留口子。该端点另有 30 次/分钟的按源 IP 限速（§3）。
 
 流程：客户端设置页点「登录账户」→ start → `shell.openExternal(verifyUrl)` 打开浏览器 →
 用户在网页注册 / 登录并确认 → 客户端轮询 approved 拿令牌落 `center.token` 凭据链路、自动重连。
@@ -377,6 +393,14 @@ aurora-center version
   不带 `--check` 执行 `npm install -g @aurora/center@latest`（经 `child_process`，
   `--registry` 透传）。**没有**自替换二进制的黑魔法 —— 以 npm 为发布 / 更新通道，
   装不到 npm 的环境用 `git pull && pnpm install && pnpm build`（README 写明）。
+- **`users` 的写命令需先停服**（`add` / `passwd` / `remove`；v0.2.9 起 CLI 会**拒绝执行**
+  并提示，不再只有口头约定）：CLI 与运行中的服务器各自缓存整份 `users.json`，谁后写谁
+  整文件覆盖 —— 服务器在跑时用 CLI 改密，改动会被服务器下一次落盘**静默回滚**（旧密码继续
+  可用），CLI 建的户也可能覆盖掉服务器新注册的用户。判定依据是数据目录里的锁文件
+  `server.lock`（服务器监听成功后创建、`close()` 时删除、每 15s 刷 mtime；崩溃残留的陈旧锁
+  按 mtime 超过 60s 视为无服务器）。`users list` 只读，不受此限。
+  ⚠️ 升级时 **CLI 与服务器要同版本上线**：旧版服务器不写这个锁文件，新版 CLI 会认不出
+  "服务器正在运行"（表现为照旧直接改写 users.json）。
 - 跨端：纯 Node ≥ 18，无原生依赖；`ws` 是唯一运行时依赖。
 - **Docker 离线部署**：`packages/center/deploy/`（构建机 `pnpm deploy` 打自包含产物 →
   scp → `docker compose up -d --build`，服务器全程无需访问 npm）；步骤、更新与安全
@@ -424,6 +448,10 @@ aurora-center version
 - **没有端到端加密**：Center 可见全部远程会话明文 —— 与"管理员可见所有客户端"的
   产品语义一致，文档明示；敏感环境应自建 Center 于内网。账号登录的密码与颁发的
   客户端令牌同样走明文 HTTP，公网部署必须置于 TLS 反代之后（客户端填 `https://` 地址）。
+- **限速是"防穷举 / 防批量"级别，不是 DDoS 防护**（v0.2.9）：认证端点的计数器在进程内存里、
+  按**源 IP** 计（直连部署下取 socket 地址，不信任 `x-forwarded-for`），分布式源 IP / 代理池
+  仍可绕过；它挡的是单点暴力破解与批量建号，且限速状态**不跨重启保留**。部署到反代后面时
+  必须同时改 `server.ts` 的取值口径（否则所有请求共用一个键 —— 要么误伤所有人，要么形同虚设）。
 - **clientId 是设备标识，不可外泄**：知道他人 clientId 的账号无法用账号登录或设备授权抢注
   （`/api/client/login` 与 `device/authorize` 对"clientId 已绑定其他账号的有效令牌"返回
   409 `E_CLIENT_BOUND`，同属主重登放行），但泄露仍有社工与骚扰面。

@@ -5,7 +5,8 @@
  * 设计取舍：不用 JWT / 数据库 —— Center 的规模是"个人 / 小团队"，JSON 文件 +
  * 随机令牌足够，且少一层可被误配的基础设施。所有哈希都带独立盐。
  */
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
+import { promisify } from 'node:util'
 import type { Logger } from '@aurora/shared'
 import { JsonStore } from './store.js'
 
@@ -44,8 +45,20 @@ export interface ClientTokenView {
 
 const SCRYPT_KEYLEN = 64
 
-function hashPassword(password: string, salt: string): string {
-  return scryptSync(password, salt, SCRYPT_KEYLEN).toString('hex')
+const scryptAsync = promisify(scrypt)
+
+/**
+ * 密码哈希（异步，P2-15）：早先用 `scryptSync` —— 每次登录 / 改密阻塞事件循环约 32ms
+ * （本机实测），公网约 30 req/s 的穷举就能让 WS 心跳被误判超时、全服卡顿。异步版把
+ * scrypt 交给 libuv 线程池，事件循环只等回调。
+ *
+ * ⚠️ 调用方**必须 await**：漏掉 await 拿到的是 Promise（恒真），认证会被静默绕过。
+ * 本文件的三处（createUser / verifyPassword / resetPassword）已全部 await；
+ * server.ts 的两处调用点（login / client login）本来就是 `await auth.verifyPassword(...)`。
+ */
+async function hashPassword(password: string, salt: string): Promise<string> {
+  const derived = (await scryptAsync(password, salt, SCRYPT_KEYLEN)) as Buffer
+  return derived.toString('hex')
 }
 
 export function hashToken(token: string): string {
@@ -55,6 +68,10 @@ export function hashToken(token: string): string {
 export interface AuthStoreOptions {
   dataDir: string
   logger?: Logger
+  /** 可注入时钟（单测验证会话清扫 / 过期）；缺省 `Date.now` */
+  now?: () => number
+  /** 网页会话表上限（条），默认 `AuthStore.MAX_WEB_SESSIONS`；超限淘汰最旧 */
+  maxSessions?: number
 }
 
 export interface NewUserInput {
@@ -86,12 +103,23 @@ export class AuthStore {
   /** 网页会话令牌：token → { userId, expiresAt }（内存持有，重启即全失效） */
   private readonly sessions = new Map<string, { userId: string; expiresAt: number }>()
   private readonly logger?: Logger
+  private readonly now: () => number
+  private readonly maxSessions: number
 
   /** 网页会话有效期：7 天 */
   static readonly SESSION_TTL_MS = 7 * 24 * 3600 * 1000
 
+  /**
+   * 网页会话表上限（P2-12）：登录成功就新增一条（7 天 TTL），没有任何上界时长期
+   * 无人查询的过期项会一直占内存 —— 超限按插入顺序淘汰最旧（正常规模远达不到）。
+   * 可用 `AuthStoreOptions.maxSessions` 覆盖（单测用）。
+   */
+  static readonly MAX_WEB_SESSIONS = 10_000
+
   constructor(options: AuthStoreOptions) {
     this.logger = options.logger
+    this.now = options.now ?? Date.now
+    this.maxSessions = options.maxSessions ?? AuthStore.MAX_WEB_SESSIONS
     this.users = new JsonStore<UserRecord[]>(`${options.dataDir}/users.json`, () => [], this.logger)
     this.tokens = new JsonStore<ClientTokenRecord[]>(
       `${options.dataDir}/tokens.json`,
@@ -120,7 +148,7 @@ export class AuthStore {
       id: `u-${randomBytes(6).toString('hex')}`,
       username,
       role: input.role,
-      passHash: hashPassword(input.password, salt),
+      passHash: await hashPassword(input.password, salt),
       passSalt: salt,
       createdAt: new Date().toISOString(),
     }
@@ -161,7 +189,7 @@ export class AuthStore {
     const user = this.userCache.find((record) => record.username === username)
     if (user === undefined) throw new AuthError('E_BAD_CREDENTIALS', '用户名或密码不正确')
     const expected = Buffer.from(user.passHash, 'hex')
-    const actual = hashPassword(password, user.passSalt)
+    const actual = await hashPassword(password, user.passSalt)
     const actualBuf = Buffer.from(actual, 'hex')
     if (actualBuf.length !== expected.length || !timingSafeEqual(actualBuf, expected)) {
       throw new AuthError('E_BAD_CREDENTIALS', '用户名或密码不正确')
@@ -176,7 +204,7 @@ export class AuthStore {
       throw new AuthError('E_INVALID_ARGUMENT', '密码至少 6 位')
     }
     user.passSalt = randomBytes(16).toString('hex')
-    user.passHash = hashPassword(password, user.passSalt)
+    user.passHash = await hashPassword(password, user.passSalt)
     await this.users.save(this.userCache)
   }
 
@@ -207,17 +235,33 @@ export class AuthStore {
 
   // ─────────────── 网页会话 ───────────────
 
+  /**
+   * 颁发网页会话令牌。**创建时清扫过期项**（P2-12）：过期会话原先只在被查询时顺带删，
+   * 而真实会话一旦过期就再也没人查询它 —— 那批条目会一直留在 Map 里。
+   * 清扫后再按 `MAX_WEB_SESSIONS` 淘汰最旧（Map 插入序）。
+   */
   createWebSession(userId: string): string {
+    this.sweepSessions()
     const token = randomBytes(32).toString('hex')
-    this.sessions.set(token, { userId, expiresAt: Date.now() + AuthStore.SESSION_TTL_MS })
+    this.sessions.set(token, { userId, expiresAt: this.now() + AuthStore.SESSION_TTL_MS })
+    while (this.sessions.size > this.maxSessions) {
+      const oldest = this.sessions.keys().next()
+      if (oldest.done === true) break
+      this.sessions.delete(oldest.value)
+    }
     return token
+  }
+
+  /** 当前持有的会话条数（供单测断言清扫 / 上限；不属于对外协议面） */
+  get sessionCount(): number {
+    return this.sessions.size
   }
 
   /** 返回会话对应的用户；过期 / 不存在 → undefined（并顺手清理过期项）。 */
   verifyWebSession(token: string): UserRecord | undefined {
     const entry = this.sessions.get(token)
     if (entry === undefined) return undefined
-    if (Date.now() > entry.expiresAt) {
+    if (this.now() > entry.expiresAt) {
       this.sessions.delete(token)
       return undefined
     }
@@ -226,6 +270,13 @@ export class AuthStore {
 
   dropWebSession(token: string): void {
     this.sessions.delete(token)
+  }
+
+  private sweepSessions(): void {
+    const now = this.now()
+    for (const [token, entry] of this.sessions) {
+      if (now > entry.expiresAt) this.sessions.delete(token)
+    }
   }
 
   // ─────────────── 客户端令牌 ───────────────

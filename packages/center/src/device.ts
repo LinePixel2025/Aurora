@@ -14,6 +14,12 @@ import type { DeviceLoginChallenge, DeviceLoginPollResult, Logger } from '@auror
 export const DEVICE_CHALLENGE_TTL_MS = 10 * 60 * 1000
 /** 客户端建议轮询间隔 */
 export const DEVICE_POLL_INTERVAL_MS = 2000
+/**
+ * 挑战表上限（P2-13）：`start` 无需登录，任何人都能刷。超限时**淘汰最旧**而不是拒绝
+ * 新挑战 —— 拒绝会让攻击者用"刷满"把正常用户挡在门外（做成拒绝服务），淘汰最旧只影响
+ * 早已被遗忘的挑战。正常规模（同时待确认的设备）远小于这个数。
+ */
+export const DEVICE_MAX_CHALLENGES = 1000
 
 const USER_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
 
@@ -32,6 +38,8 @@ interface DeviceChallenge {
 export interface DeviceAuthStoreOptions {
   /** 挑战有效期（毫秒），默认 10 分钟 */
   ttlMs?: number
+  /** 挑战表上限（条），默认 `DEVICE_MAX_CHALLENGES`；超限淘汰最旧 */
+  maxChallenges?: number
   /** 可注入时钟（单测） */
   now?: () => number
   logger?: Logger
@@ -45,17 +53,28 @@ export function formatUserCode(raw: string): string {
 export class DeviceAuthStore {
   private readonly challenges = new Map<string, DeviceChallenge>()
   private readonly ttlMs: number
+  private readonly maxChallenges: number
   private readonly now: () => number
   private readonly logger?: Logger
 
   constructor(options: DeviceAuthStoreOptions = {}) {
     this.ttlMs = options.ttlMs ?? DEVICE_CHALLENGE_TTL_MS
+    this.maxChallenges = options.maxChallenges ?? DEVICE_MAX_CHALLENGES
     this.now = options.now ?? Date.now
     this.logger = options.logger
   }
 
+  /** 当前挑战条数（供单测断言清扫 / 上限；不属于对外协议面） */
+  get size(): number {
+    return this.challenges.size
+  }
+
   /** 发起一次挑战；`verifyUrlOf` 由调用方按请求 Host 拼（服务器侧才知道对外地址）。 */
   start(clientId: string, verifyUrlOf: (userCode: string) => string): DeviceLoginChallenge {
+    // 先清扫 + 限容（P2-13）：sweep 原先只在四个查询方法里跑，光刷本端点就能让 Map
+    // 永续增长；而下面的撞码检查对全表线性扫描 → 总成本随表长二次方放大。
+    this.sweep()
+    this.evictOldest()
     const deviceCode = randomBytes(32).toString('base64url').slice(0, 43)
     let userCode = ''
     do {
@@ -162,6 +181,15 @@ export class DeviceAuthStore {
     const now = this.now()
     for (const [code, challenge] of this.challenges) {
       if (now > challenge.expiresAt) this.challenges.delete(code)
+    }
+  }
+
+  /** 已达上限时按创建序（Map 插入序）淘汰最旧，给新挑战腾位。 */
+  private evictOldest(): void {
+    while (this.challenges.size >= this.maxChallenges) {
+      const oldest = this.challenges.keys().next()
+      if (oldest.done === true) return
+      this.challenges.delete(oldest.value)
     }
   }
 }

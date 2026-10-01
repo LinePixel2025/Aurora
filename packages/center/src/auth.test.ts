@@ -65,6 +65,45 @@ describe('AuthStore · 用户账户', () => {
   })
 })
 
+/**
+ * 密码校验异步化（P2-15）：`scryptSync` 每次登录阻塞事件循环约 32ms，公网穷举
+ * 30 req/s 就能让 WS 心跳被误判超时。回归点两条 —— ① 事件循环在校验期间不被阻塞；
+ * ② 换异步之后**错误密码仍然被拒**（漏 await 的话拿到的是 Promise 对象 = 恒真，
+ * 认证被静默绕过，这是本步最危险的失效模式）。
+ */
+describe('AuthStore · 密码校验异步化（P2-15）', () => {
+  it('校验期间事件循环不被阻塞（scrypt 交给线程池）', async () => {
+    const { auth } = await makeAuth()
+    await auth.createUser({ username: 'busy', password: 'secret-123', role: 'user' })
+    const verification = auth.verifyPassword('busy', 'secret-123').then(() => 'verified')
+    // 同步版在这行之内就跑完了（~32ms）；异步版要等线程池回调，1ms 定时器必然先到
+    const tick = new Promise<string>((resolve) => setTimeout(() => resolve('tick'), 1))
+    expect(await Promise.race([verification, tick])).toBe('tick')
+    await expect(verification).resolves.toBe('verified')
+  })
+
+  it('正确密码 resolve、错误密码 / 不存在的用户 reject（异步化不得让校验恒真）', async () => {
+    const { auth } = await makeAuth()
+    await auth.createUser({ username: 'async-user', password: 'secret-123', role: 'user' })
+    await expect(auth.verifyPassword('async-user', 'secret-123')).resolves.toMatchObject({
+      username: 'async-user',
+    })
+    await expect(auth.verifyPassword('async-user', 'wrong-pass')).rejects.toMatchObject({
+      code: 'E_BAD_CREDENTIALS',
+    })
+    await expect(auth.verifyPassword('ghost-user', 'secret-123')).rejects.toBeInstanceOf(AuthError)
+    // 创建 / 改密也走同一条异步哈希：改密后新密码生效、旧密码失效
+    const created = await auth.createUser({
+      username: 'async-reset',
+      password: 'first-123',
+      role: 'user',
+    })
+    await auth.resetPassword(created.id, 'second-456')
+    await expect(auth.verifyPassword('async-reset', 'first-123')).rejects.toBeInstanceOf(AuthError)
+    await expect(auth.verifyPassword('async-reset', 'second-456')).resolves.toBeTruthy()
+  })
+})
+
 describe('AuthStore · 自助注册', () => {
   it('注册成功：固定 role:user，密码可验证', async () => {
     const { auth } = await makeAuth()
@@ -199,5 +238,50 @@ describe('AuthStore · 网页会话', () => {
     await second.init()
     await expect(second.verifyPassword('root', 'secret-123')).resolves.toBeTruthy()
     expect(await second.verifyClientToken(token, 'client-p')).toBeDefined()
+  })
+})
+
+/**
+ * 会话表清扫与上限（P2-12）：过期会话原先只在被查询时顺带删 —— 而真实会话一旦过期就
+ * 再也没人查它，那批条目会一直留在内存里（7 天 TTL 内无上界）。
+ */
+describe('AuthStore · 会话表清扫与上限（P2-12）', () => {
+  it('createWebSession 时清扫过期会话（不用等谁来查询它）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aurora-center-session-sweep-'))
+    let current = 1_700_000_000_000
+    const auth = new AuthStore({ dataDir: dir, now: () => current })
+    await auth.init()
+    const user = await auth.createUser({
+      username: 'sweeper',
+      password: 'secret-123',
+      role: 'admin',
+    })
+    const expiring = auth.createWebSession(user.id)
+    expect(auth.sessionCount).toBe(1)
+
+    current += AuthStore.SESSION_TTL_MS + 1
+    const fresh = auth.createWebSession(user.id)
+    // 过期的那条在创建新会话时就被清掉了（不是"留在表里等验证"）
+    expect(auth.sessionCount).toBe(1)
+    expect(auth.verifyWebSession(expiring)).toBeUndefined()
+    expect(auth.verifyWebSession(fresh)?.id).toBe(user.id)
+  })
+
+  it('超过上限时淘汰最旧，表长不再无界', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aurora-center-session-cap-'))
+    const auth = new AuthStore({ dataDir: dir, maxSessions: 3 })
+    await auth.init()
+    const user = await auth.createUser({
+      username: 'capped',
+      password: 'secret-123',
+      role: 'admin',
+    })
+    const tokens = [0, 1, 2].map(() => auth.createWebSession(user.id))
+    expect(auth.sessionCount).toBe(3)
+    const newest = auth.createWebSession(user.id)
+    expect(auth.sessionCount).toBe(3)
+    expect(auth.verifyWebSession(tokens[0] as string)).toBeUndefined()
+    expect(auth.verifyWebSession(tokens[2] as string)?.id).toBe(user.id)
+    expect(auth.verifyWebSession(newest)?.id).toBe(user.id)
   })
 })
