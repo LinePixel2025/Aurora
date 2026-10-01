@@ -14,17 +14,20 @@
     "./browser": {
       "types": "./dist/browser.d.ts",
       "default": "./dist/browser.js"
-    }
+    },
+    "./browser/markdown/md.css": "./dist/browser/markdown/md.css"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"const fs=require('fs');fs.mkdirSync('dist/browser/markdown',{recursive:true});fs.copyFileSync('src/browser/markdown/md.css','dist/browser/markdown/md.css')\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "highlight.js": "^11.12.0",
+    "markdown-it": "^15.0.2",
     "zod": "^3.24.1"
   }
 }

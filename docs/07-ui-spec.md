@@ -249,7 +249,23 @@
 - **联动**：由提示条（面板按钮或点击竖条）与托盘菜单「显示主界面」打开；失焦默认不自动隐藏（可配置）。
 - **视觉（前端刷新轮；BetaV2 起头部按上方三栏布局的主区头部为准）**：容器 `.glass` + `--radius-lg`；
   用户消息右对齐胶囊气泡、助手消息左对齐纯文本块；代码块独立卡片 + hover 显隐「复制」
-  （在 `markdown.ts` 已转义的白名单 HTML 上补结构，不改其输出契约）。
+  （按钮壳由渲染器直接产出，点击走容器上的事件委托）。
+- **Markdown 渲染（P1，2026-10-02）**：正文与 Center Web 共用**同一个渲染器** ——
+  `packages/shared/src/browser/markdown/`（markdown-it + `html:false` + highlight.js 子集，
+  两端各自的 `markdown.ts` 已删除）。支持的语法与输出契约：
+  标题（`#`→`h3`…`####`→`h6`，均带 `.md-h`）、段落 `.md-p`、无序 / 有序列表
+  `.md-list(.md-ol)`、GFM 表格 `.md-table-wrap > .md-table`（含对齐、表头加粗、斑马纹、
+  横向滚动）、引用块 `.md-quote`、提示块 `.md-admonition-{note,tip,warning,caution,important}`
+  （GitHub Alerts 语法 `> [!NOTE]`）、任务列表 `.md-task(.md-task-done)`（只读 checkbox）、
+  删除线 `<s>`、水平线 `.md-hr`、行内代码 `.md-inline`、代码块 `.code-block > .md-code[data-lang]`
+  （含语言标注与 hljs 高亮，未知语言回落纯转义）、链接 `a.md-link`
+  （外链 `target=_blank` + `rel="noopener noreferrer nofollow"`）、图片降级为 `.md-image-link`
+  （生产 CSP `img-src 'self' data:` 会拦远程图，点击可看原图）。
+  **安全基线不变**：模型原文先转义、再套白名单标记，链接 scheme 走 markdown-it `validateLink`
+  （`javascript:` 一律拒绝），绝不允许裸 `v-html` 模型原文。
+  样式单源在 `packages/shared/src/browser/markdown/md.css`（经 `--md-*` 变量映射两端令牌），
+  桌面与 Center Web 视觉一致；渲染结果按消息缓存（WeakMap + 内容比对），
+  流式期间只有正在生长的消息逐帧重解析。
   工具栏位与样式（折叠态摘要行 / 展开态竖脊 + 节点）见下文「执行轨迹」；
   耗时是**渲染层观察到的本次调用耗时**，历史水合出来的行不伪造耗时。
   流式追加只在末尾加光标（父级 `::after`），不对每条 `delta` 重放进场动画。

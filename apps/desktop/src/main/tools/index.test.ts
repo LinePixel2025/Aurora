@@ -863,20 +863,16 @@ describe('缺省工作目录按会话回落', () => {
     expect(targets.globRoot).toBe(PROJECT)
   })
 
-  it('无会话上下文（ctx 不带 sessionId）时同样透传 getter 的回落值', async () => {
+  it('不同会话各取各的根：getter 收到的就是 ctx.sessionId 原文（含 -sub，由上游适配器处理）', async () => {
     const runner = fakeRunner()
     const files = fakeFilePort()
+    const roots: Record<string, string> = { t: PROJECT, other: HOME }
     const { tools, registry } = setup(makeSettings(), runner, files, (sessionId) =>
-      sessionId === undefined ? HOME : PROJECT,
+      sessionId === undefined ? HOME : (roots[sessionId] ?? HOME),
     )
     registry.sync()
-    // 三次执行都不带 sessionId：工具把 ctx.sessionId 原样（undefined）传给 getter
-    await tools.get('run_command')!.execute({ command: 'echo hi' }, {})
-    await tools.get('grep')!.execute({ pattern: 'x' }, {})
-    await tools.get('glob')!.execute({ pattern: 'x' }, {})
+    await tools.get('run_command')!.execute({ command: 'echo hi' }, { sessionId: 'other' })
     expect((runner.calls[0] as { cwd?: string }).cwd).toBe(HOME)
-    expect(files.searchRoots[0]).toBe(HOME)
-    expect(files.findRoots[0]).toBe(HOME)
   })
 })
 

@@ -88,6 +88,11 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 2. **preload 必须自包含**：它跑在 `sandbox: true` 的渲染进程里，无 Node 能力、无法解析 pnpm 工作区包，只能 `require('electron')` + 字面量通道表。改 IPC 契约时**同时**改 `packages/shared/src/ipc/channels.ts` 与 `apps/desktop/src/preload/channels.ts`（两者有编译期双向断言，漏改 `pnpm typecheck` 会报错）。
 3. **主进程必须内联工作区包**：`@aurora/*` 是纯 ESM，主进程产物是 CJS，`require()` ESM 会抛 `ERR_REQUIRE_ESM`。因此 `electron.vite.config.ts` 把它们排除在 `externalizeDepsPlugin` 之外——不要「顺手」加回去。
 4. **渲染层只允许类型导入**：从 `@aurora/shared` 取**纯常量/运行时值**必须走 `@aurora/shared/browser` 子路径，否则会把 `node:fs` 拉进浏览器 bundle 导致构建失败。`packages/shared/src/browser.ts` 的依赖链禁止出现任何 Node 内置模块。
+   **Markdown 渲染器就是这条规则的现成例子**（2026-10-02）：`browser/markdown/`
+   （markdown-it + highlight.js 子集）是桌面与 Center Web 的**唯一**渲染器，
+   样式单源在 `browser/markdown/md.css`（经 `--md-*` 变量映射两端令牌；
+   改输出类名必须同时对照 `MARKDOWN_CONTRACT_CLASSES` 与两端截图）。
+   两端的旧 `markdown.ts` 已删除 —— 不要再各自分叉一份。
 5. **重任务走子进程**：文档内容提取等 CPU/IO 重活由 `utilityProcess.fork` 启动 `extract-worker`（`electron.vite.config.ts` 的第二个 main 入口），不阻塞主进程事件循环。
 6. **IPC 命名**：通道用 `namespace:action`（如 `chat:send`、`mcp:status`）；事件推送 `on/off` 成对暴露；大 payload（文件全文）只在主进程 / worker 内流转，不进渲染进程。
 
@@ -97,6 +102,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - Prettier：**无分号**、单引号、`printWidth: 100`、尾逗号 all、LF（见 `.prettierrc.json` / `.editorconfig`）。
 - **日志**：业务包只依赖 `@aurora/shared` 的 `Logger` 接口；落盘实现在 `apps/desktop/src/main/logger.ts`（`userData/logs/`，按天轮转保留 7 天），所有输出统一脱敏。不要 `console.log` 当正式日志。
 - **凭据绝不落明文**：API Key / MCP env 经 Electron `safeStorage` 加密写入 `%APPDATA%/Aurora/config.json`；`settings:get` 与 `settings:changed` 两条通道都只回传 `apiKeySet` / `envSet` 标记。日志与「导出脱敏配置」中凭据一律 `***`。
+- **Markdown 渲染安全基线**：输出必须先转义再套白名单标记（渲染器 `html:false`），
+  **绝不允许裸 `v-html` 模型原文**；链接 scheme 走 markdown-it `validateLink`（`javascript:` 拒绝）；
+  外链一律 `target=_blank` + `rel="noopener noreferrer nofollow"`；图片降级为链接
+  （生产 CSP `img-src 'self' data:` 会拦远程图）。
 - **文件/命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
 - **配置改动**（当前 `CONFIG_VERSION = 24`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 

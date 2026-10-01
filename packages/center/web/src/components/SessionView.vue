@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useStickToBottom } from '../composables/useStickToBottom.js'
-import { renderMarkdown } from '../markdown'
+import '@aurora/shared/browser/markdown/md.css'
+import { CODE_COPY_BUTTON, ICON_CHECK, ICON_COPY, renderMarkdown } from '@aurora/shared/browser'
 import ToolCard from './ToolCard.vue'
 import { fileUrl } from '../api'
 import {
@@ -276,6 +277,80 @@ function blobToBase64(blob: Blob): Promise<string> {
 
 const ttsReady = computed(() => props.entry.status?.voice?.tts === true)
 const ttsBusy = ref(false)
+// ── Markdown 渲染缓存 + 代码块复制按钮 ─────────────────────────────
+// 键是消息对象（WeakMap：对象被丢弃后缓存自动回收），content 不变就复用上次解析 ——
+// 流式期间只有正在生长的那条消息逐帧重解析，历史消息不重跑 markdown。
+const contentCache = new WeakMap<object, { source: string; html: string }>()
+const reasoningCache = new WeakMap<object, { source: string; html: string }>()
+
+function cachedHtmlOf(
+  cache: WeakMap<object, { source: string; html: string }>,
+  item: { content?: string; reasoning?: string },
+  field: 'content' | 'reasoning',
+): string {
+  const source = item[field] ?? ''
+  const cached = cache.get(item)
+  if (cached !== undefined && cached.source === source) return cached.html
+  const html = renderMarkdown(source)
+  cache.set(item, { source, html })
+  return html
+}
+
+function contentHtmlOf(item: { content?: string }): string {
+  return cachedHtmlOf(contentCache, item, 'content')
+}
+
+function reasoningHtmlOf(item: { reasoning?: string }): string {
+  return cachedHtmlOf(reasoningCache, item, 'reasoning')
+}
+
+/** 写剪贴板：优先 async Clipboard API，非安全上下文（http 部署）回落 execCommand */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    try {
+      const area = document.createElement('textarea')
+      area.value = text
+      area.style.position = 'fixed'
+      area.style.opacity = '0'
+      document.body.appendChild(area)
+      area.select()
+      const ok = document.execCommand('copy')
+      area.remove()
+      return ok
+    } catch {
+      return false
+    }
+  }
+}
+
+/**
+ * 代码块「复制」按钮走事件委托：v-html 出来的 DOM 由字符串生成，
+ * 在消息线程容器上挂一次监听即可（随流式重渲染失效的是节点，不是容器）。
+ */
+async function onThreadClick(event: MouseEvent): Promise<void> {
+  const target = event.target
+  if (!(target instanceof HTMLElement)) return
+  const button = target.closest('.code-copy')
+  if (!(button instanceof HTMLButtonElement)) return
+  const code = button.parentElement?.querySelector('code')
+  const text = code?.textContent ?? ''
+  if (text === '' || !(await copyText(text))) return
+  const label = button.querySelector('.code-copy-label')
+  if (label !== null) label.textContent = '已复制'
+  button.querySelector('svg')?.remove()
+  button.insertAdjacentHTML('afterbegin', ICON_CHECK)
+  button.classList.add('copied')
+  window.setTimeout(() => {
+    if (label !== null) label.textContent = '复制'
+    button.querySelector('svg')?.remove()
+    button.insertAdjacentHTML('afterbegin', ICON_COPY)
+    button.classList.remove('copied')
+  }, 1400)
+}
+
 const speakingId = ref('')
 const speakError = ref('')
 let currentAudio: HTMLAudioElement | null = null
@@ -395,7 +470,7 @@ function releaseAudio(): void {
     </div>
 
     <div class="msg-list">
-      <div ref="threadEl" class="msg-thread">
+      <div ref="threadEl" class="msg-thread" @click="onThreadClick">
         <template v-for="item in session.items" :key="item.id">
           <div v-if="item.kind === 'user'" class="msg-user">
             <div class="bubble-user">{{ item.content }}</div>
@@ -448,12 +523,12 @@ function releaseAudio(): void {
             <div v-if="item.reasoning" class="think">
               <details>
                 <summary>{{ item.streaming && !item.content ? '思考中…' : '思考过程' }}</summary>
-                <!-- markdown.ts 输出已 HTML 转义，v-html 安全 -->
-                <div class="think-body md" v-html="renderMarkdown(item.reasoning)"></div>
+                <!-- 渲染器先转义再套白名单标记，v-html 安全 -->
+                <div class="think-body md" v-html="reasoningHtmlOf(item)"></div>
               </details>
             </div>
-            <!-- markdown.ts 输出已 HTML 转义，v-html 安全 -->
-            <div v-if="item.content" class="msg-text md" v-html="renderMarkdown(item.content)"></div>
+            <!-- 渲染器先转义再套白名单标记，v-html 安全 -->
+            <div v-if="item.content" class="msg-text md" v-html="contentHtmlOf(item)"></div>
             <div v-if="item.tools.length > 0" class="msg-tools">
               <ToolCard v-for="tool in item.tools" :key="tool.id" :tool="tool" />
             </div>

@@ -4740,6 +4740,60 @@ export const CHAT_THINKING_BLOCK_ACT = `(async () => {
 })()`
 
 /** 思考过程折叠块探针 · 后半：展开态全文可见、文本是 seed 的标记内容，且块位于正文上方。 */
+/**
+ * Markdown P1 渲染核对（docs/07 §2.3）：固定样本（capture-markdown-probe）的 DOM 结构。
+ *
+ * 断言的是**渲染器真的产出了那类节点**（存在性 / 结构），不量解析后的样式值 ——
+ * 样式值随主题与浏览器版本漂移，量它只会制造假 FAIL（docs/AGENTS 的教训）。
+ * 样本由 seedChatTtsHistory 种在那条助手消息末尾（见那边的注释）。
+ */
+export const CHAT_MARKDOWN_CHECK = `(() => {
+  try {
+    const msg = Array.from(document.querySelectorAll('.message.r-assistant')).find(
+      (el) => (el.textContent || '').indexOf('capture-markdown-probe') !== -1,
+    )
+    if (msg === undefined) return { pass: false, reason: 'sample message not found' }
+    const q = (sel) => msg.querySelectorAll(sel).length
+    const table = msg.querySelector('.md-table-wrap > table.md-table')
+    const rows = table === null ? 0 : table.querySelectorAll('tbody tr').length
+    const headerCells = table === null ? 0 : table.querySelectorAll('thead th').length
+    const alignRight = table === null
+      ? ''
+      : (table.querySelectorAll('thead th')[1] || { style: {} }).style.textAlign
+    const link = msg.querySelector('a.md-link[target="_blank"]')
+    const rel = link === null ? '' : (link.getAttribute('rel') || '')
+    const admonition = msg.querySelector('.md-admonition')
+    const checkbox = msg.querySelector('.md-task input[type="checkbox"]')
+    const checked = msg.querySelector('.md-task-done input[type="checkbox"]')
+    const code = msg.querySelector('.code-block .md-code code.hljs')
+    const copyBtn = msg.querySelector('.code-block .code-copy')
+    const conditions = {
+      // 三号标题映射为 h5（# → h3 … #### → h6）；判据只要「有带 .md-h 的标题节点」
+      heading: q('.md-h') >= 1,
+      orderedList: q('ol.md-list.md-ol') >= 1,
+      tableShape: rows === 2 && headerCells === 3,
+      tableAlign: alignRight === 'right',
+      taskList: q('li.md-task') >= 2 && checkbox !== null,
+      taskDone: checked !== null,
+      admonition: admonition !== null && admonition.className.indexOf('md-admonition-warning') !== -1,
+      quote: q('blockquote.md-quote') >= 1,
+      strike: q('s') >= 1,
+      hr: q('hr.md-hr') >= 1,
+      linkBlank: link !== null && rel.indexOf('noopener') !== -1 && rel.indexOf('noreferrer') !== -1,
+      codeLang: code !== null,
+      highlighted: q('.hljs-keyword') >= 1,
+      copyButton: copyBtn !== null,
+    }
+    return {
+      conditions,
+      pass: Object.keys(conditions).every((key) => conditions[key] === true),
+      counts: { tables: q('.md-table'), admonitions: q('.md-admonition'), tasks: q('li.md-task') },
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
 export const CHAT_THINKING_BLOCK_CHECK = `(() => {
   try {
     const probe = window.__auroraThinkingProbe
@@ -7838,7 +7892,19 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
         role: 'assistant',
         content:
           '这是截图探针种下的一条助手回复，用来验证「朗读」按钮的渲染与状态复位。' +
-          '参考 https://example.com/aurora 与 `pnpm typecheck` 的说明。',
+          '参考 https://example.com/aurora 与 `pnpm typecheck` 的说明。' +
+          // P1 渲染升级的固定样本（capture-markdown-probe）：表格 / 有序与任务列表 /
+          // 提示块与引用 / 删除线与水平线 / 外链 / 带语言围栏代码，CHAT_MARKDOWN_CHECK
+          // 逐项断言 DOM 结构。样本追加在末尾，不影响既有探针对该消息的其余判据。
+          '\n\n### 渲染样本 capture-markdown-probe\n\n' +
+          '1. 有序第一步\n2. 有序第二步\n\n' +
+          '| 名称 | 数量 | 备注 |\n| --- | ---: | :---: |\n| 甲 | 12 | 正常 |\n| 乙 | 3 | 待办 |\n\n' +
+          '- [ ] 未完成项\n- [x] 已完成项\n\n' +
+          '> [!WARNING]\n> 这是一条警示提示块。\n\n' +
+          '> 普通引用。\n\n' +
+          '~~已废弃~~ 与 [外链](https://example.com/doc)\n\n' +
+          '---\n\n' +
+          '```ts\nconst answer: number = 42\n```',
         reasoning:
           'capture-reasoning-probe：这是探针种下的思考过程全文。' +
           '历史水合出的思考块默认收起为「已深度思考」摘要行，点开应能看到本段全文。',
@@ -8166,6 +8232,19 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       },
       act: CHAT_THINKING_BLOCK_ACT,
       check: CHAT_THINKING_BLOCK_CHECK,
+    },
+    // Markdown P1 渲染（2026-10-02）：固定样本（seedChatTtsHistory 的 capture-markdown-probe
+    // 段）在真实 DOM 上的结构核对 —— 表格 / 列表 / 提示块 / 链接属性 / 高亮 / 复制按钮。
+    // 无需 act 与 prepare：样本随历史水合进入消息区，前面 chat-thinking-block 已 reload 过。
+    {
+      name: 'chat',
+      file: 'chat-markdown-render.png',
+      check: CHAT_MARKDOWN_CHECK,
+      // 消息区需要滚到样本所在位置才看得到渲染全貌（截图取证），DOM 断言不受滚动影响
+      prepare: async () => {
+        await manager.reload('chat', {})
+        await new Promise((resolve) => setTimeout(resolve, 300))
+      },
     },
     // 快速会话（BetaV2）：点左栏固定项切到 sessionId='quick'，主区标题变「快速对话」。
     // 停在 quick 会话没有影响：chat-tts 自带 reload 回到 main，其余场景只依赖 provider 配置。

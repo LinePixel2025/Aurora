@@ -1,0 +1,278 @@
+/**
+ * Markdown 输出的共享样式（**单源**：桌面与 Center Web 都引这份文件）。
+ *
+ * v-html 注入的节点不带 scoped 属性，样式必须全局 —— 但选择器全部挂在 `.md`
+ * 容器之下（两端的消息容器都是 `.md`），不污染页面其它部分。
+ *
+ * 配色全部走 `--md-*` 局部变量（定义在 `.md` 上）：取值是「两端令牌 + 中性回落」，
+ * 桌面命中自己的 `--fill-*` / `--text-*`，Center 命中 `--text-2` 等简化令牌，
+ * 都没有时用中性值兜底 —— 亮 / 暗主题下均可读（变量最终都指向主题文本/填充色）。
+ */
+.md {
+  /* 令牌映射：桌面命中 --fill-* / --text-* / --radius-* / --font-mono，
+     Center 命中 --text-2 / --accent，都没有时用中性值兜底（亮暗均可读） */
+  --md-code-bg: var(--fill-1, rgba(120, 120, 128, 0.1));
+  --md-code-border: var(--border-subtle, rgba(120, 120, 128, 0.18));
+  --md-inline-bg: var(--fill-2, rgba(120, 120, 128, 0.14));
+  --md-muted: var(--text-secondary, var(--text-2, #86868b));
+  --md-strong: var(--text-primary, var(--text, inherit));
+  --md-link: var(--accent-text, var(--accent, #3157bb));
+  --md-rule: var(--border-subtle, rgba(120, 120, 128, 0.24));
+  --md-warn: #b45309;
+  --md-ok: var(--status-ok, #15803d);
+  --md-danger: #b91c1c;
+  --md-info: #1d4ed8;
+  /* 斑马纹底色：静态值而不是 color-mix —— 表体大时 color-mix 参与每帧样式重算，
+     在低端 / 虚拟显示环境会把流式期间的合成帧拖慢（capture 的 burst 探针能测到） */
+  --md-zebra: rgba(120, 120, 128, 0.06);
+  --md-font-mono: var(
+    --font-mono,
+    ui-monospace,
+    'SF Mono',
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace
+  );
+  --md-transition: var(--transition-fast, 0.15s ease);
+  color-scheme: inherit;
+}
+
+/* ── 基础块 ── */
+.md .md-p {
+  margin: 0 0 var(--space-3, 8px);
+}
+.md .md-p:last-child {
+  margin-bottom: 0;
+}
+.md .md-h {
+  margin: 12px 0 var(--space-1, 4px);
+  font-size: var(--text-base, 1em);
+  font-weight: var(--weight-semibold, 650);
+  line-height: 1.35;
+  color: var(--md-strong);
+}
+.md .md-h:first-child {
+  margin-top: 0;
+}
+.md .md-list {
+  margin: var(--space-1, 4px) 0 var(--space-3, 8px);
+  padding-left: 20px;
+}
+.md .md-list:last-child {
+  margin-bottom: 0;
+}
+.md .md-list li {
+  margin: var(--space-1, 4px) 0;
+}
+.md .md-hr {
+  border: none;
+  border-top: 1px solid var(--md-rule);
+  margin: 10px 0;
+}
+.md del {
+  color: var(--md-muted);
+}
+
+/* ── 引用块 / 提示块 ── */
+.md .md-quote {
+  margin: var(--space-2, 6px) 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--md-rule);
+  color: var(--md-muted);
+}
+.md .md-quote .md-quote {
+  margin-block: 2px;
+}
+
+.md .md-admonition {
+  --md-admonition-accent: var(--md-info);
+  margin: 6px 0;
+  padding: 6px 12px;
+  border-left: 3px solid var(--md-admonition-accent);
+  border-radius: 6px;
+  background: var(--md-code-bg);
+  color: var(--md-muted);
+}
+.md .md-admonition-warning,
+.md .md-admonition-caution {
+  --md-admonition-accent: var(--md-warn);
+}
+.md .md-admonition-important {
+  --md-admonition-accent: var(--md-danger);
+}
+.md .md-admonition-tip {
+  --md-admonition-accent: var(--md-ok);
+}
+.md .md-admonition-title {
+  margin: 2px 0 4px;
+  font-size: 0.85em;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--md-admonition-accent);
+}
+
+/* ── 代码 ── */
+.md .code-block {
+  position: relative;
+  margin: 6px 0;
+}
+.md .md-code {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md, 8px);
+  background: var(--md-code-bg);
+  border: 1px solid var(--md-code-border);
+  overflow-x: auto;
+  font-family: var(--md-font-mono);
+  font-size: var(--text-sm, 0.92em);
+  line-height: 1.5;
+}
+.md .md-code code {
+  font-family: inherit;
+  background: transparent;
+  padding: 0;
+}
+.md .code-copy {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  /* 最小高度 24px：满足点击目标下限（capture 的 chat-hit-targets 审计会量它） */
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: var(--radius-xs, 6px);
+  border: none;
+  background: var(--md-inline-bg);
+  color: var(--md-muted);
+  font-size: var(--text-xs, 11px);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--md-transition), color var(--md-transition);
+}
+.md .code-copy svg {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+}
+.md .code-block:hover .code-copy,
+.md .code-copy:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .md .code-copy {
+    opacity: 1;
+  }
+}
+.md .code-copy:hover {
+  color: var(--md-strong);
+}
+.md .code-copy.copied {
+  opacity: 1;
+  color: var(--md-ok);
+}
+
+/* 语法高亮 token：低饱和、随主题（不用 hljs 官方主题 CSS） */
+.md .hljs-keyword,
+.md .hljs-selector-tag,
+.md .hljs-literal,
+.md .hljs-doctag {
+  color: #a626a4;
+}
+.md .hljs-string,
+.md .hljs-regexp,
+.md .hljs-addition {
+  color: #15803d;
+}
+.md .hljs-number,
+.md .hljs-symbol,
+.md .hljs-bullet {
+  color: #b45309;
+}
+.md .hljs-title,
+.md .hljs-section,
+.md .hljs-name,
+.md .hljs-function {
+  color: #1d4ed8;
+}
+.md .hljs-attr,
+.md .hljs-attribute,
+.md .hljs-variable,
+.md .hljs-template-variable {
+  color: #b45309;
+}
+.md .hljs-comment,
+.md .hljs-quote {
+  color: var(--md-muted);
+  opacity: 0.85;
+}
+.md .hljs-meta,
+.md .hljs-deletion {
+  color: #b91c1c;
+}
+
+/* ── 行内 ── */
+.md .md-inline {
+  padding: 1px 4px;
+  border-radius: var(--radius-xs, 5px);
+  background: var(--md-inline-bg);
+  font-family: var(--md-font-mono);
+  font-size: var(--text-sm, 0.9em);
+}
+
+/* ── 链接 / 表格 / 任务 ── */
+.md a.md-link {
+  color: var(--md-link);
+  text-decoration: none;
+  word-break: break-all;
+}
+.md a.md-link:hover {
+  text-decoration: underline;
+}
+
+.md .md-table-wrap {
+  margin: 6px 0;
+  overflow-x: auto;
+}
+.md .md-table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+  min-width: 40%;
+}
+.md .md-table th,
+.md .md-table td {
+  border: 1px solid var(--md-rule);
+  padding: 4px 10px;
+  text-align: left;
+}
+.md .md-table th {
+  font-weight: 650;
+  background: var(--md-code-bg);
+  color: var(--md-strong);
+}
+.md .md-table tbody tr:nth-child(even) td {
+  background: var(--md-zebra);
+}
+
+.md .md-task {
+  list-style: none;
+  margin-left: -18px;
+  padding-left: 22px;
+  position: relative;
+}
+.md .md-task input[type='checkbox'] {
+  position: absolute;
+  left: 0;
+  top: 0.25em;
+  margin: 0;
+  accent-color: var(--md-link);
+}
+.md .md-task-done {
+  color: var(--md-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--md-muted);
+  text-decoration-thickness: 1px;
+}

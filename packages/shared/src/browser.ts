@@ -18,6 +18,11 @@ export * from './config/permission.js'
 export * from './mode/windowState.js'
 export * from './utils/object.js'
 export * from './utils/format.js'
+
+// Agent 输出的 Markdown 渲染（纯浏览器、零 Node 依赖；样式文件 md.css 由
+// build 脚本拷进 dist，两端经 `@aurora/shared/browser/markdown/md.css` 引入）
+export * from './browser/markdown/index.js'
+export * from './browser/markdown/codeBlock.js'
 export * from './utils/result.js'
 export * from './utils/logger.js'
 

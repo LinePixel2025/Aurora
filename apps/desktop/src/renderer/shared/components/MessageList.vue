@@ -58,7 +58,8 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import type { AgentToolCall } from '@aurora/shared'
 import type { ChatMessage } from '../composables/useChat.js'
 import { useStickToBottom } from '../composables/useStickToBottom.js'
-import { renderMarkdown } from '../markdown.js'
+import '@aurora/shared/browser/markdown/md.css'
+import { ICON_CHECK, ICON_COPY, renderMarkdown } from '@aurora/shared/browser'
 import { parseTaskInput, parseTodoWriteInput } from '../agentTodo.js'
 import { ArrowDown, ChevronRight, LoaderCircle, Square, Volume2 } from '../icons.js'
 import AgentTrace from './AgentTrace.vue'
@@ -604,31 +605,6 @@ function jumpToLatest(): void {
 }
 
 /**
- * 代码块「复制」按钮。
- *
- * `markdown.ts` 的输出形状固定（先转义再套白名单标记），这里只在渲染结果上补一层结构：
- * `<pre class="md-code">` 外包一层定位容器并塞入按钮。转义保证了代码正文里不可能出现
- * 字面量 `</pre>`，因此按标记切分是安全的；不引入依赖、也不改 `markdown.ts` 的输出契约。
- *
- * 图标是 lucide 的 `Copy` / `Check` 路径原样内联：这枚按钮由**字符串**注入到 markdown
- * 输出里（不是模板节点），用不了组件；形状与其余图标一致，改图标时两处一起改。
- */
-const ICON_COPY =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>'
-const ICON_CHECK =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>'
-const COPY_BUTTON = `<button type="button" class="code-copy" aria-label="复制代码">${ICON_COPY}<span class="code-copy-label">复制</span></button>`
-
-function withCodeCopy(html: string): string {
-  return html
-    .replace(
-      /<pre class="md-code">/g,
-      `<div class="code-block">${COPY_BUTTON}<pre class="md-code">`,
-    )
-    .replace(/<\/pre>/g, '</pre></div>')
-}
-
-/**
  * markdown 渲染结果按消息缓存。
  *
  * 键是消息对象本身（WeakMap：消息被丢弃后自动回收），只有 `content` 变了才重跑解析。
@@ -642,7 +618,8 @@ const htmlCache = new WeakMap<ChatMessage, { content: string; html: string }>()
 function htmlOf(message: ChatMessage): string {
   const cached = htmlCache.get(message)
   if (cached !== undefined && cached.content === message.content) return cached.html
-  const html = withCodeCopy(renderMarkdown(message.content))
+  // 复制按钮的壳由渲染器直接产出（CODE_COPY_BUTTON 在 code-block 里），这里只做解析缓存
+  const html = renderMarkdown(message.content)
   htmlCache.set(message, { content: message.content, html })
   return html
 }
@@ -1553,101 +1530,8 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   animation-delay: 0.3s;
 }
 
-/* ── Markdown ── */
-.md :deep(.md-p) {
-  margin: 0 0 var(--space-3);
-}
-
-.md :deep(.md-p:last-child) {
-  margin-bottom: 0;
-}
-
-.md :deep(.md-h) {
-  margin: 6px 0 4px;
-  font-size: var(--text-base);
-}
-
-.md :deep(.md-list) {
-  margin: 4px 0;
-  padding-left: 18px;
-}
-
-/* 代码块：单独成卡 + hover 显隐「复制」 */
-.md :deep(.code-block) {
-  position: relative;
-  margin: 6px 0;
-}
-
-.md :deep(.md-code) {
-  margin: 0;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  background: var(--fill-1);
-  border: 1px solid var(--border-subtle);
-  overflow-x: auto;
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-}
-
-.md :deep(.code-copy) {
-  position: absolute;
-  top: 6px;
-  right: 8px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: var(--radius-xs);
-  background: var(--fill-3);
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-  opacity: 0;
-  transition:
-    opacity var(--transition-fast),
-    color var(--transition-fast),
-    background var(--transition-fast);
-}
-
-.md :deep(.code-copy svg) {
-  width: 11px;
-  height: 11px;
-  flex: 0 0 auto;
-}
-
-.md :deep(.code-block:hover .code-copy),
-.md :deep(.code-copy:focus-visible) {
-  opacity: 1;
-}
-
-/* 触摸屏没有 hover（复制钮永远等不到显形的那一下）：无 hover 指针设备上常显 */
-@media (hover: none) {
-  .md :deep(.code-copy) {
-    opacity: 1;
-  }
-}
-
-.md :deep(.code-copy:hover) {
-  color: var(--text-primary);
-  background: var(--fill-3);
-}
-
-.md :deep(.code-copy.copied) {
-  opacity: 1;
-  color: var(--status-ok);
-}
-
-.md :deep(.md-inline) {
-  padding: 1px 4px;
-  border-radius: var(--radius-xs);
-  background: var(--fill-2);
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-}
-
-.md :deep(.md-link) {
-  /* 链接是正文文本：用可读的语义强调色，浅色档 --accent-text 是深蓝（#3157bb，6.0:1），
-     直接写 --aurora-blue 在浅色基座上只有 3.14:1 */
-  color: var(--accent-text);
-  word-break: break-all;
-}
+/* ── Markdown ──
+   .md-* 全部样式已抽到共享的 md.css（@aurora/shared/browser/markdown/md.css，
+   脚本里 import 引入）：桌面与 Center Web 单源，选择器挂在 .md 容器下，
+   配色经 --md-* 局部变量映射到主题令牌。这里不再重复声明。 */
 </style>
