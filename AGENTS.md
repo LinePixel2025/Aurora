@@ -56,7 +56,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   是**根相对**路径，在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败
   （2026-09-26 实测；各包 package.json 里的 `test: vitest run` 只在仓库根调用时才对）。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：PowerShell 下 `$env:AURORA_SMOKE='1'; pnpm dev`，结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`。调试渲染层加 `AURORA_DEVTOOLS=1`。
-  **全量一轮约 25 秒、176 条断言应当全绿（`SUMMARY 176/176 passed`）**——
+  **全量一轮约 25 秒、177 条断言应当全绿（`SUMMARY 177/177 passed`）**——
   基线不是绿的说明断言或夹具过期了，**先把基线修绿再动被测代码**，别在红基线上判断"这次是不是我引入的"。
   只跑相关的那一段用 `$env:AURORA_SMOKE_ONLY='2.3'`（段号或子串，逗号分隔；留空 = 全量）。
   它**只切主进程侧那十几个段**（2.1~5），渲染层脚本（约 135 条断言）始终全跑 ——
@@ -98,7 +98,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **日志**：业务包只依赖 `@aurora/shared` 的 `Logger` 接口；落盘实现在 `apps/desktop/src/main/logger.ts`（`userData/logs/`，按天轮转保留 7 天），所有输出统一脱敏。不要 `console.log` 当正式日志。
 - **凭据绝不落明文**：API Key / MCP env 经 Electron `safeStorage` 加密写入 `%APPDATA%/Aurora/config.json`；`settings:get` 与 `settings:changed` 两条通道都只回传 `apiKeySet` / `envSet` 标记。日志与「导出脱敏配置」中凭据一律 `***`。
 - **文件/命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
-- **配置改动**（当前 `CONFIG_VERSION = 21`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
+- **配置改动**（当前 `CONFIG_VERSION = 23`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 
 ## 文档先行（Docs-first）
 
