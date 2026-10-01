@@ -295,8 +295,7 @@ export class McpClientHub {
 
   private registerTools(entry: ServerEntry, client: McpClient): void {
     // 先清掉上一轮注册的工具（清单可能变小），避免残留失效工具
-    for (const name of entry.registered) this.tools.unregister(name)
-    entry.registered = []
+    this.unregisterEntryTools(entry)
 
     const server = entry.definition.name
     for (const tool of client.listTools()) {
@@ -335,13 +334,25 @@ export class McpClientHub {
     entry.toolCount = entry.registered.length
   }
 
+  /**
+   * 移除该服务器当前注册的全部工具，并清空登记名单。
+   *
+   * **必须走 `ToolRegistry.unregister`**（P2-06）：同名工具若在 MCP 注册**之前**就已存在
+   * （用户配置过同名的内置 / Skill 工具），注销 MCP 实现时注册表会把被覆盖的旧定义恢复回来 ——
+   * 断开 / 出错 / 重连清理都不该让内置工具"消失到下一次 `sync()`"。
+   * 本 hub 的四个清理点（registerTools 重建 / markError / 意外退出 / teardown）全部走这里。
+   */
+  private unregisterEntryTools(entry: ServerEntry): void {
+    for (const name of entry.registered) this.tools.unregister(name)
+    entry.registered = []
+  }
+
   private markError(entry: ServerEntry, error: McpError): void {
     entry.state = 'error'
     entry.lastError = error.message
     entry.client = undefined
     entry.toolCount = 0
-    for (const name of entry.registered) this.tools.unregister(name)
-    entry.registered = []
+    this.unregisterEntryTools(entry)
     this.logger.warn('MCP 服务器不可用，已降级', {
       server: entry.definition.name,
       code: error.code,
@@ -368,8 +379,7 @@ export class McpClientHub {
     // 死连接与其工具先清理（在途请求已由传输层以 E_CLOSED 拒绝）
     entry.client = undefined
     entry.toolCount = 0
-    for (const name of entry.registered) this.tools.unregister(name)
-    entry.registered = []
+    this.unregisterEntryTools(entry)
     entry.lastError = `连接意外断开（code=${info.code ?? 'null'}，signal=${info.signal ?? 'null'}）`
     this.scheduleReconnect(entry)
   }
@@ -437,8 +447,7 @@ export class McpClientHub {
       clearTimeout(entry.reconnectTimer)
       entry.reconnectTimer = undefined
     }
-    for (const name of entry.registered) this.tools.unregister(name)
-    entry.registered = []
+    this.unregisterEntryTools(entry)
     entry.toolCount = 0
     const client = entry.client
     entry.client = undefined

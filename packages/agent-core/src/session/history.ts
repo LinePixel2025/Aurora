@@ -117,6 +117,13 @@ export function truncateHistory(
  * 由调用方在 `compressHistory` **之前**过滤 —— 更早的消息仅留在存储 / 界面历史，
  * 不进 LLM 组装。时间戳解析失败的消息视为窗外（宁缺勿污）；返回新数组，不改入参。
  * `now` 可注入，单测不必对着真实时钟写断言。
+ *
+ * **配对口径（P1-11）**：与 `truncateHistory` 的孤儿防御一致 —— 工具组按**原子单位**判定。
+ * `assistant(toolCalls)` 及其全部 `tool` 结果是一组：组内任一条落在窗内就**整组保留**
+ * （宿主因此被"强制保留"，窗口起点可能被向前回拉一条 assistant），整组都在窗外才整组丢弃。
+ * 只按 `createdAt` 逐条过筛会在窗口边界上把工具配对切两半（宿主在窗外、结果在窗内 →
+ * 请求里出现没有宿主的 `role:'tool'`，或反过来的悬空 toolCalls），OpenAI 兼容服务一律 400。
+ * 找不到宿主的**真孤儿**（宿主从未落盘）一律丢弃：这是整条链唯一的合法处置。
  */
 export function filterMessagesWithinWindow(
   messages: readonly StoredMessage[],
@@ -125,10 +132,30 @@ export function filterMessagesWithinWindow(
 ): StoredMessage[] {
   if (windowMs <= 0) return [...messages]
   const cutoff = now - windowMs
-  return messages.filter((message) => {
-    const timestamp = Date.parse(message.createdAt)
-    return Number.isFinite(timestamp) && timestamp >= cutoff
-  })
+
+  // 组归属：tool 结果归其宿主 assistant 下标，其余消息各自成组。
+  // `null` = 找不到宿主的真孤儿（整条丢弃，同 `truncateHistory` 的处置）。
+  const headOf: Array<number | null> = messages.map((message, index) =>
+    message.role === 'tool' ? toolCallOwner(messages, index) : index,
+  )
+
+  // 组内任一条落在窗内 → 整组保留（含早于 cutoff 的宿主，属刻意的边界回拉）
+  const retainedGroups = new Set<number>()
+  for (let index = 0; index < messages.length; index += 1) {
+    const head = headOf[index]
+    if (head === null || head === undefined) continue
+    const timestamp = Date.parse(messages[index]?.createdAt ?? '')
+    if (Number.isFinite(timestamp) && timestamp >= cutoff) retainedGroups.add(head)
+  }
+
+  const kept: StoredMessage[] = []
+  for (let index = 0; index < messages.length; index += 1) {
+    const head = headOf[index]
+    if (head === null || head === undefined || !retainedGroups.has(head)) continue
+    const message = messages[index]
+    if (message !== undefined) kept.push(message)
+  }
+  return kept
 }
 
 /** 生成 / 更新摘要的注入点（由装配层用当前 provider 实现，内核不引入网络耦合） */

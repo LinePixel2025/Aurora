@@ -94,3 +94,81 @@ describe('filterTools', () => {
     expect(filterTools(source, [])).toBe(source)
   })
 })
+
+/**
+ * MCP 覆盖与恢复（P2-06）。
+ *
+ * MCP 优先于内置是设计（docs/06 §7），但**覆盖必须可逆**：服务器断开 / 出错时
+ * hub 逐名 `unregister`，若不恢复旧定义，被覆盖的内置工具会消失到下一次 `sync()`。
+ */
+describe('ToolRegistry MCP 覆盖与恢复', () => {
+  it('MCP 覆盖同名内置工具：unregister 恢复被覆盖的旧定义', () => {
+    const tools = new ToolRegistry()
+    const builtin = makeTool('read_file')
+    const mcp = makeTool('read_file')
+    tools.register(builtin)
+    tools.register(mcp, 'mcp')
+
+    expect(tools.get('read_file')).toBe(mcp)
+    expect(tools.conflicts.some((item) => item.message.includes('MCP 工具覆盖'))).toBe(true)
+
+    expect(tools.unregister('read_file')).toBe(true)
+    expect(tools.get('read_file')).toBe(builtin)
+  })
+
+  it('内置 / Skill 覆盖同名工具仍被拒绝，且不会留下可恢复的遮蔽', () => {
+    const tools = new ToolRegistry()
+    const first = makeTool('read_file')
+    tools.register(first)
+    tools.register(makeTool('read_file'), 'skill')
+
+    expect(tools.get('read_file')).toBe(first)
+    tools.unregister('read_file')
+    // 拒绝覆盖 → 无遮蔽记录 → 注销后不"复活"
+    expect(tools.get('read_file')).toBeUndefined()
+  })
+
+  it('多次 MCP 覆盖只记最早的旧定义（tools/list_changed 重新注册不丢内置实现）', () => {
+    const tools = new ToolRegistry()
+    const builtin = makeTool('mcp.srv.read')
+    tools.register(builtin)
+    tools.register(makeTool('mcp.srv.read'), 'mcp')
+    tools.register(makeTool('mcp.srv.read'), 'mcp')
+
+    tools.unregister('mcp.srv.read')
+    expect(tools.get('mcp.srv.read')).toBe(builtin)
+  })
+
+  it('unregisterByPrefix 同样恢复被覆盖的旧定义', () => {
+    const tools = new ToolRegistry()
+    const builtin = makeTool('mcp.srv.read')
+    tools.register(builtin)
+    tools.register(makeTool('mcp.srv.read'), 'mcp')
+
+    expect(tools.unregisterByPrefix('mcp.srv.')).toBe(1)
+    expect(tools.get('mcp.srv.read')).toBe(builtin)
+  })
+
+  it('遮蔽只恢复一次：恢复后再注销不会把它再"复活"', () => {
+    const tools = new ToolRegistry()
+    tools.register(makeTool('read_file'))
+    tools.register(makeTool('read_file'), 'mcp')
+    expect(tools.unregister('read_file')).toBe(true)
+    expect(tools.get('read_file')).toBeDefined()
+
+    expect(tools.unregister('read_file')).toBe(true)
+    expect(tools.get('read_file')).toBeUndefined()
+  })
+
+  it('MCP 覆盖 Skill 工具后断开 → Skill 实现恢复（同一机制的另一来源）', () => {
+    const tools = new ToolRegistry()
+    const skill = { ...makeTool('use_skill'), description: 'Skill 实现' }
+    tools.register(skill, 'skill')
+    const mcp = makeTool('use_skill')
+    tools.register(mcp, 'mcp')
+    expect(tools.get('use_skill')).toBe(mcp)
+
+    tools.unregister('use_skill')
+    expect(tools.get('use_skill')?.description).toBe('Skill 实现')
+  })
+})

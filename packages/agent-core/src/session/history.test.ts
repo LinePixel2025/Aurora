@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { compressHistory, truncateHistory, toChatRequestMessages } from './history.js'
+import {
+  compressHistory,
+  filterMessagesWithinWindow,
+  truncateHistory,
+  toChatRequestMessages,
+} from './history.js'
 import type { StoredMessage } from './types.js'
 
 function msg(
@@ -236,5 +241,129 @@ describe('compressHistory（docs/06 §4 长上下文摘要）', () => {
     // 保留区里不允许出现孤儿 tool 结果
     const keptIds = result.messages.map((item) => item.id)
     if (keptIds.includes('3')) expect(keptIds).toContain('2')
+  })
+})
+
+/**
+ * quick 会话滑动窗口（docs/06 §4，P1-11）。
+ *
+ * 判据只取**事实**：过滤结果里是否存在"没有宿主 assistant 的 tool 消息"，
+ * 或"宿主 assistant 的结果缺失"。窗口边界按配对组整体判定。
+ */
+describe('filterMessagesWithinWindow', () => {
+  const now = Date.parse('2025-01-01T00:10:00.000Z')
+  const windowMs = 5 * 60_000 // 窗口 = [00:05:00, 00:10:00]
+
+  /** 结果里不允许残留孤儿 tool 结果（没有宿主 assistant 携带它的 toolCallId） */
+  const orphanToolIds = (kept: readonly StoredMessage[]): string[] =>
+    kept
+      .filter((message) => message.role === 'tool')
+      .filter((message) => {
+        const owner = kept.some(
+          (candidate) =>
+            candidate.role === 'assistant' &&
+            (candidate.toolCalls ?? []).some((call) => call.id === message.toolCallId),
+        )
+        return !owner
+      })
+      .map((message) => message.id)
+
+  const assistantWithCall = (id: string, createdAt: string, callId: string): StoredMessage =>
+    msg({
+      id,
+      role: 'assistant',
+      createdAt,
+      toolCalls: [{ id: callId, name: 'task', arguments: '{}', state: 'success' }],
+    })
+
+  it('全部在窗内 → 原样保留；全部在窗外 → 整组丢弃', () => {
+    const inside = [
+      msg({ id: 'u1', role: 'user', createdAt: '2025-01-01T00:06:00.000Z' }),
+      assistantWithCall('a1', '2025-01-01T00:06:10.000Z', 'c1'),
+      msg({ id: 't1', role: 'tool', toolCallId: 'c1', createdAt: '2025-01-01T00:06:20.000Z' }),
+    ]
+    expect(filterMessagesWithinWindow(inside, windowMs, now).map((item) => item.id)).toEqual([
+      'u1',
+      'a1',
+      't1',
+    ])
+
+    const outside = [
+      msg({ id: 'u1', role: 'user', createdAt: '2025-01-01T00:01:00.000Z' }),
+      assistantWithCall('a1', '2025-01-01T00:01:10.000Z', 'c1'),
+      msg({ id: 't1', role: 'tool', toolCallId: 'c1', createdAt: '2025-01-01T00:01:20.000Z' }),
+    ]
+    expect(filterMessagesWithinWindow(outside, windowMs, now)).toEqual([])
+  })
+
+  it('窗口边界落在 assistant(toolCalls) 与 tool 结果之间 → 宿主被强制保留，无孤儿 tool', () => {
+    // 触发条件（P1-11）：长工具从 assistant 落盘到结果落盘超过窗口
+    const messages = [
+      msg({ id: 'u1', role: 'user', content: 'q', createdAt: '2025-01-01T00:01:00.000Z' }),
+      // 宿主在窗外（00:04 < cutoff 00:05）……
+      assistantWithCall('a1', '2025-01-01T00:04:00.000Z', 'c1'),
+      // ……结果在窗内
+      msg({
+        id: 't1',
+        role: 'tool',
+        content: 'r',
+        toolCallId: 'c1',
+        createdAt: '2025-01-01T00:06:00.000Z',
+      }),
+      msg({ id: 'u2', role: 'user', content: 'q2', createdAt: '2025-01-01T00:09:30.000Z' }),
+    ]
+    const kept = filterMessagesWithinWindow(messages, windowMs, now)
+    // 宿主被向前回拉进来（与 truncateHistory 的孤儿防御同口径），整组原子保留
+    expect(kept.map((item) => item.id)).toEqual(['a1', 't1', 'u2'])
+    expect(orphanToolIds(kept)).toEqual([])
+  })
+
+  it('同一宿主的多个 tool 结果被边界切到两侧 → 整组保留（不会只留一半配对）', () => {
+    const messages = [
+      msg({
+        id: 'a1',
+        role: 'assistant',
+        createdAt: '2025-01-01T00:04:00.000Z',
+        toolCalls: [
+          { id: 'c1', name: 'task', arguments: '{}', state: 'success' },
+          { id: 'c2', name: 'task', arguments: '{}', state: 'success' },
+        ],
+      }),
+      msg({ id: 't1', role: 'tool', toolCallId: 'c1', createdAt: '2025-01-01T00:04:30.000Z' }),
+      msg({ id: 't2', role: 'tool', toolCallId: 'c2', createdAt: '2025-01-01T00:06:00.000Z' }),
+    ]
+    const kept = filterMessagesWithinWindow(messages, windowMs, now)
+    expect(kept.map((item) => item.id)).toEqual(['a1', 't1', 't2'])
+    expect(orphanToolIds(kept)).toEqual([])
+  })
+
+  it('找不到宿主的真孤儿 tool 消息一律丢弃（宿主从未落盘）', () => {
+    const messages = [
+      msg({
+        id: 't0',
+        role: 'tool',
+        content: 'orphan',
+        toolCallId: 'missing',
+        createdAt: '2025-01-01T00:09:00.000Z',
+      }),
+      msg({ id: 'u1', role: 'user', content: 'q', createdAt: '2025-01-01T00:09:30.000Z' }),
+    ]
+    const kept = filterMessagesWithinWindow(messages, windowMs, now)
+    expect(kept.map((item) => item.id)).toEqual(['u1'])
+    expect(orphanToolIds(kept)).toEqual([])
+  })
+
+  it('时间戳非法按窗外处理；windowMs<=0 返回新数组且不改入参', () => {
+    const messages = [
+      msg({ id: 'bad', role: 'user', createdAt: '不是时间' }),
+      msg({ id: 'ok', role: 'user', createdAt: '2025-01-01T00:09:00.000Z' }),
+    ]
+    expect(filterMessagesWithinWindow(messages, windowMs, now).map((item) => item.id)).toEqual([
+      'ok',
+    ])
+
+    const disabled = filterMessagesWithinWindow(messages, 0, now)
+    expect(disabled).toEqual(messages)
+    expect(disabled).not.toBe(messages)
   })
 })

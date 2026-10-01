@@ -228,6 +228,12 @@ export class HttpTransport implements McpTransport {
   private readonly headers: Record<string, string>
   private readonly fetchImpl: typeof fetch
   private closed = false
+  /**
+   * Streamable HTTP 会话 id（P2-05）：initialize 响应头 `Mcp-Session-Id` 由服务端分配，
+   * 规范要求客户端**此后每个请求都回传**。不捕获就会让 `tools/list` / `tools/call`
+   * 被 400/404 拒绝（服务器整体不可用），且用户侧无从判断原因。
+   */
+  private sessionId: string | undefined
 
   constructor(options: HttpTransportOptions) {
     this.url = options.url
@@ -235,6 +241,21 @@ export class HttpTransport implements McpTransport {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch
     if (typeof this.fetchImpl !== 'function') {
       throw new McpError('E_UNSUPPORTED', '当前运行环境不提供 fetch，无法使用 HTTP 传输的 MCP')
+    }
+  }
+
+  /**
+   * 组装请求头：默认头 → 用户显式配置头（覆盖默认）→ 服务端分配的会话 id。
+   *
+   * 会话 id 放在最后：它是协议要求的回传值，优先于用户手工配的同名头
+   * （静态配置无法知道服务端这次分配了什么）。
+   */
+  private buildHeaders(): Record<string, string> {
+    return {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      ...this.headers,
+      ...(this.sessionId === undefined ? {} : { 'mcp-session-id': this.sessionId }),
     }
   }
 
@@ -248,11 +269,7 @@ export class HttpTransport implements McpTransport {
     try {
       const response = await this.fetchImpl(this.url, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          accept: 'application/json, text/event-stream',
-          ...this.headers,
-        },
+        headers: this.buildHeaders(),
         body: JSON.stringify(request),
         signal: controller.signal,
       })
@@ -260,6 +277,10 @@ export class HttpTransport implements McpTransport {
         const body = await safeText(response)
         throw new McpError('E_HTTP', `MCP HTTP ${response.status}`, body.slice(0, 300))
       }
+      // 会话 id 只在 initialize 响应里出现（规范），但"看到就记住"更稳：
+      // 部分服务端会在每个响应里重复下发，重复赋值是同值幂等的。
+      const assigned = response.headers.get('mcp-session-id')
+      if (assigned !== null && assigned !== '') this.sessionId = assigned
       const contentType = response.headers.get('content-type') ?? ''
       if (contentType.includes('text/event-stream')) {
         return await this.readSse(response, request.id)
@@ -282,39 +303,121 @@ export class HttpTransport implements McpTransport {
     if (this.closed) return
     void this.fetchImpl(this.url, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json, text/event-stream',
-        ...this.headers,
-      },
+      headers: this.buildHeaders(),
       body: JSON.stringify(notification),
     }).catch(() => undefined)
   }
 
   async close(): Promise<void> {
     this.closed = true
+    this.sessionId = undefined
   }
 
-  /** 从 SSE 流里取第一条携带请求 id 的 JSON-RPC 响应。 */
+  /**
+   * 从 SSE 流里取第一条携带请求 id 的 JSON-RPC 响应。
+   *
+   * **增量解析（P2-04）**：Streamable HTTP 规范允许服务端写出响应后继续持有流
+   * （长工具期间推通知 / 心跳就是这么做的）。等 `response.text()` 会一直挂到流关闭，
+   * 先撞上请求超时——响应其实早已到达，于是"执行超过 30s 的 MCP 工具必然报超时"。
+   * 这里逐 chunk 解码、按空行切出**完整事件**，命中即返回并取消读取（释放连接）；
+   * 只有流自然结束仍无匹配才报协议错。`TextDecoder` 全程复用，跨 chunk 的多字节
+   * 字符不会被截断成乱码。
+   */
   private async readSse(response: Response, id: number): Promise<JsonRpcResponse> {
-    const body = await response.text()
-    const blocks = body.split(/\r?\n\r?\n/)
-    for (const block of blocks) {
-      const dataLines = block
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice('data:'.length).trim())
-      const data = dataLines.join('')
-      if (data === '' || data === '[DONE]') continue
-      try {
-        const parsed = JSON.parse(data) as JsonRpcResponse
-        if (parsed.id === id || parsed.id === null) return parsed
-      } catch {
-        continue
-      }
+    const body = response.body
+    if (body === null) {
+      // 无流可读（204 / 极简测试替身）→ 回落全量文本解析
+      const matched = parseSseResponse(`${await response.text()}\n\n`, id)
+      if (matched === undefined) throw sseMiss()
+      return matched
     }
-    throw new McpError('E_PROTOCOL', 'MCP SSE 响应中未找到匹配的 JSON-RPC 回应')
+    const reader = body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const matched = parseSseResponse(buffer, id)
+        if (matched !== undefined) return matched
+      }
+      buffer += decoder.decode()
+      const tail = parseSseResponse(`${buffer}\n\n`, id)
+      if (tail === undefined) throw sseMiss()
+      return tail
+    } finally {
+      // 命中即返回：取消剩余流，别把连接留到超时；流已结束时的 cancel 是幂等空操作
+      void reader.cancel().catch(() => undefined)
+    }
   }
+}
+
+/** SSE 流结束 / 无匹配事件时的统一失败形态 */
+function sseMiss(): McpError {
+  return new McpError('E_PROTOCOL', 'MCP SSE 响应中未找到匹配的 JSON-RPC 回应')
+}
+
+/**
+ * 从 SSE 文本里找出第一条匹配 `id` 的 JSON-RPC 响应。
+ *
+ * 先按空行切出**完整事件**（未收全的事件留在调用方缓冲里等下一个 chunk ——
+ * 这正是"增量解析"与"等流关闭再切"的区别所在）；完整事件里没有命中的，
+ * 再对**尾部残缺块**试一次：只要 `data:` 行已能解析出完整 JSON 且 id 匹配就直接返回，
+ * 不必等服务端补上收尾空行（有实现省略末尾空行、同时继续持有连接）。
+ * `[DONE]` 与解析失败的事件一律跳过。
+ * `id === null` 的回应也接受 —— 服务端在无法判定请求 id 时用 null（JSON-RPC 2.0 约定）。
+ */
+function parseSseResponse(text: string, id: number): JsonRpcResponse | undefined {
+  let cursor = 0
+  for (;;) {
+    const end = findEventEnd(text, cursor)
+    if (end === undefined) break
+    const matched = parseSseEvent(text.slice(cursor, end), id)
+    cursor = end
+    if (matched !== undefined) return matched
+  }
+  return parseSseEvent(text.slice(cursor), id)
+}
+
+/** 单个 SSE 事件块 → 匹配 id 的 JSON-RPC 响应（解析失败 / 不匹配返回 `undefined`） */
+function parseSseEvent(block: string, id: number): JsonRpcResponse | undefined {
+  const data = block
+    .split(/\r\n|\n|\r/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice('data:'.length).trim())
+    .join('')
+  if (data === '' || data === '[DONE]') return undefined
+  try {
+    const parsed = JSON.parse(data) as JsonRpcResponse
+    if (parsed.id === id || parsed.id === null) return parsed
+  } catch {
+    return undefined
+  }
+  return undefined
+}
+
+/**
+ * 返回 `from` 之后第一个**空行**结束处（事件边界）的下标；没有完整事件时返回 `undefined`。
+ * 兼容 `\n` / `\r\n` / `\r` 三种行尾（SSE 规范允许）。
+ */
+function findEventEnd(text: string, from: number): number | undefined {
+  let index = from
+  while (index < text.length) {
+    const char = text[index]
+    let lineEnd: number
+    if (char === '\n') lineEnd = index + 1
+    else if (char === '\r') lineEnd = text[index + 1] === '\n' ? index + 2 : index + 1
+    else {
+      index += 1
+      continue
+    }
+    const next = text[lineEnd]
+    if (next === '\n') return lineEnd + 1
+    if (next === '\r') return lineEnd + (text[lineEnd + 1] === '\n' ? 2 : 1)
+    index = lineEnd
+  }
+  return undefined
 }
 
 // ───────────────────────── 工具 ─────────────────────────

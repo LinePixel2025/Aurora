@@ -246,6 +246,51 @@ describe('McpClientHub', () => {
     expect(tools.conflicts.some((item) => item.message.includes('MCP 工具覆盖'))).toBe(true)
     await hub.close()
   })
+
+  /**
+   * P2-06：MCP 工具覆盖同名内置工具后，断开 / 移除都必须把内置实现**恢复**回来，
+   * 而不是让模型拿到「工具不存在」直到下一次 sync()。
+   */
+  it('MCP 覆盖同名内置工具后 close() → 被覆盖的旧定义恢复且可调用', async () => {
+    const { hub, tools } = setup()
+    const builtin = {
+      name: 'mcp.fake.echo',
+      description: '内置实现',
+      parameters: { type: 'object' },
+      execute: async () => ({ content: 'builtin' }),
+    }
+    tools.register(builtin)
+
+    await hub.reconfigure([stdioDefinition()], { connect: true })
+    // 连接期间 MCP 实现生效
+    const duringConnection = await tools
+      .get('mcp.fake.echo')
+      ?.execute({ text: 'x' }, { sessionId: 's' })
+    expect(duringConnection?.content).toContain('fake:echo:x')
+
+    await hub.close()
+    const restored = tools.get('mcp.fake.echo')
+    expect(restored).toBe(builtin)
+    expect((await restored?.execute({}, { sessionId: 's' }))?.content).toBe('builtin')
+  })
+
+  it('reconfigure 移除服务器（teardown 路径）同样恢复被覆盖的旧定义', async () => {
+    const { hub, tools } = setup()
+    const builtin = {
+      name: 'mcp.fake.echo',
+      description: '内置实现',
+      parameters: { type: 'object' },
+      execute: async () => ({ content: 'builtin' }),
+    }
+    tools.register(builtin)
+
+    await hub.reconfigure([stdioDefinition()], { connect: true })
+    expect(tools.get('mcp.fake.echo')).not.toBe(builtin)
+
+    await hub.reconfigure([], { connect: true })
+    expect(tools.get('mcp.fake.echo')).toBe(builtin)
+    await hub.close()
+  })
 })
 
 describe('mcpToolName / toServerDefinitions', () => {
@@ -489,6 +534,30 @@ describe('McpClientHub stdio 意外断开自动重连（docs/06 §7）', () => {
     await vi.advanceTimersByTimeAsync(1_000)
     expect(hub.statuses()[0]?.state).toBe('ready')
     expect(transports).toHaveLength(8) // 初始 + 5 次失败 + reconfigure 成功 + 1 次重试成功
+    await hub.close()
+  })
+
+  /** P2-06：意外断开走的是 handleTransportExit 的清理路径，同样要恢复被覆盖的旧定义 */
+  it('意外退出 → 被 MCP 覆盖的旧定义立即恢复（不等重连、不等 sync）', async () => {
+    const { hub, tools, transports } = factorySetup()
+    const builtin = {
+      name: 'mcp.fake.echo',
+      description: '内置实现',
+      parameters: { type: 'object' },
+      execute: async () => ({ content: 'builtin' }),
+    }
+    tools.register(builtin)
+    await hub.reconfigure([bareDefinition], { connect: true })
+    expect(tools.get('mcp.fake.echo')).not.toBe(builtin)
+
+    transports[0]?.crash()
+    expect(hub.statuses()[0]?.state).toBe('connecting')
+    expect(tools.get('mcp.fake.echo')).toBe(builtin)
+
+    // 重连成功后再由 MCP 覆盖回来（覆盖仍是正常语义）
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(hub.statuses()[0]?.state).toBe('ready')
+    expect(tools.get('mcp.fake.echo')).not.toBe(builtin)
     await hub.close()
   })
 })

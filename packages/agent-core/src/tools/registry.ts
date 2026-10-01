@@ -100,6 +100,16 @@ export function filterTools(source: ToolSource, hidden: readonly string[]): Tool
 
 export class ToolRegistry implements ToolSource {
   private readonly tools = new Map<string, ToolDefinition>()
+  /**
+   * 被 MCP 实现**覆盖掉**的旧定义（名字 → 原实现）。
+   *
+   * MCP 优先于内置 / Skill 是设计（docs/06 §7）：官方 filesystem server 就叫
+   * `read_file` / `write_file` / `edit_file`。但覆盖必须是**可逆**的 ——
+   * 该服务器断开 / 出错时 `McpClientHub` 按名单 `unregister`，若不恢复旧定义，
+   * 被覆盖的内置工具会从注册表消失（模型此后拿到「工具不存在」），
+   * 直到下一次 `sync()` 全量重建或重启才回来（P2-06）。
+   */
+  private readonly shadowed = new Map<string, ToolDefinition>()
   private readonly log: Array<{ message: string; detail?: string }> = []
 
   register(tool: ToolDefinition, source: 'builtin' | 'skill' | 'mcp' = 'builtin'): void {
@@ -110,20 +120,36 @@ export class ToolRegistry implements ToolSource {
         this.log.push({ message: `工具重名，保留已有实现`, detail: tool.name })
         return
       }
+      // 记录被替换的旧定义（只记最早那一份：MCP 刷新工具清单会重复注册同名工具，
+      // 第二次的 existing 已经是上一个 MCP 实现，覆盖它会丢掉真正的内置实现）。
+      if (!this.shadowed.has(tool.name)) this.shadowed.set(tool.name, existing)
       this.log.push({ message: 'MCP 工具覆盖同名工具', detail: tool.name })
     }
     this.tools.set(tool.name, tool)
   }
 
+  /**
+   * 注销工具。
+   *
+   * 若该名字下有「被 MCP 覆盖前」的旧定义，注销后**恢复**它（P2-06）：
+   * 断开 MCP 服务器不该连带删掉它覆盖的内置 / Skill 工具。
+   * 恢复只发生一次 —— 恢复时同时清掉遮蔽记录，避免下一次注销把旧定义再"复活"。
+   */
   unregister(name: string): boolean {
-    return this.tools.delete(name)
+    const removed = this.tools.delete(name)
+    const previous = this.shadowed.get(name)
+    if (removed && previous !== undefined) {
+      this.shadowed.delete(name)
+      this.tools.set(name, previous)
+    }
+    return removed
   }
 
-  /** 按前缀批量移除（MCP server 断开时使用） */
+  /** 按前缀批量移除（MCP server 断开时使用）；同样恢复被覆盖的旧定义 */
   unregisterByPrefix(prefix: string): number {
     let removed = 0
     for (const name of [...this.tools.keys()]) {
-      if (name.startsWith(prefix) && this.tools.delete(name)) removed += 1
+      if (name.startsWith(prefix) && this.unregister(name)) removed += 1
     }
     return removed
   }
