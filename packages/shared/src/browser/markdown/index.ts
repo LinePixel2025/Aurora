@@ -16,11 +16,16 @@
  * （流式时只有"正在长的那条消息"逐帧重解析，50KB 级文本一次 <8ms，历史消息走
  * 视图层缓存不重解析）。
  */
+// KaTeX 的样式与字体随包本地化（font-src 'self'，见 docs/06 §10 的 CSP 段）：
+// 从**本包**导入，两端宿主不必各自声明依赖（pnpm 严格链接下宿主解析不到它）
+import 'katex/dist/katex.min.css'
 import MarkdownIt from 'markdown-it'
 import type { MarkdownIt as MarkdownItInstance, RendererRule } from 'markdown-it'
 import { admonitionPlugin } from './admonition.js'
+import { isChartKind, renderChartPlaceholder } from './chart.js'
 import { renderCodeBlock } from './codeBlock.js'
 import { highlightCode } from './highlight.js'
+import { mathPlugin } from './math.js'
 import { tasklistPlugin } from './tasklist.js'
 
 /** 标题层级映射：`#`→h3 … `####`→h6（对话正文不需要真的 h1/h2，避免与大标题抢层级） */
@@ -83,13 +88,20 @@ md.renderer.rules.code_inline = (tokens, idx) => {
   return `<code class="md-inline">${md.utils.escapeHtml(token?.content ?? '')}</code>`
 }
 
-/** 围栏代码块：语言标签进 data-lang，正文走 highlight.js（输出已转义） */
+/**
+ * 围栏代码块：语言标签进 data-lang，正文走 highlight.js（输出已转义）。
+ * `mermaid` / `echarts` 是**图表围栏**（P2）：产出可水合的占位结构（源码转义保留，
+ * 渲染失败即回退展示源码），真正的渲染在 `hydrate.ts` 里按需异步进行。
+ */
 md.renderer.rules.fence = (tokens, idx) => {
   const token = tokens[idx]
   if (token === undefined) return ''
   const info = token.info?.trim() ?? ''
   // info 首个空格前是语言名（后面可能是 meta，如 ```js title=a.js —— 尾部原样忽略）
   const lang = info.split(/\s+/)[0] ?? ''
+  if (isChartKind(lang)) {
+    return renderChartPlaceholder(lang, token.content ?? '', (raw) => md.utils.escapeHtml(raw))
+  }
   const highlighted = highlightCode(token.content ?? '', lang === '' ? undefined : lang)
   return renderCodeBlock(highlighted, lang === '' ? undefined : lang)
 }
@@ -128,6 +140,7 @@ md.renderer.rules.image = (tokens, idx) => {
 
 md.use(admonitionPlugin)
 md.use(tasklistPlugin)
+md.use(mathPlugin)
 
 /**
  * 渲染 Agent 输出的 Markdown 为可安全注入的 HTML（`v-html` 用）。
@@ -157,4 +170,15 @@ export const MARKDOWN_CONTRACT_CLASSES = [
   'md-hr',
   'md-task',
   'md-admonition',
+  'md-math',
+  'md-chart',
+  'md-chart-src',
 ] as const
+
+// 图表水合运行时（P2）：宿主容器创建水合器即可（见 hydrate.ts 的用法与失效分析）
+export {
+  createChartHydrator,
+  type ChartHydrator,
+  type ChartHydratorOptions,
+} from './hydrate.js'
+export { CHART_KINDS, CHART_SOURCE_LIMITS, type ChartKind } from './chart.js'

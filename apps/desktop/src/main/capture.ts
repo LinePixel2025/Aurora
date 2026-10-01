@@ -2842,12 +2842,19 @@ const BURST_LONG_TASK_LIMITS = {
  * 恒红，而主判据 maxUnhiddenHeartbeatMs / maxFrameGapMs 全在限内 —— 环境性帧距劣化，
  * 高度疑似 ToDesk 虚拟显示适配器压低合成器帧率（代码无关）。两个累计阈值放宽到
  * 「今日稳态 × 约 1.5 倍」，仍远离修复前量纲（238 / 4749），真回归照样 FAIL。
+ *
+ * **同日晚 P2 轮把 droppedFrames 再放到 140**：夹具（seedChatTtsHistory 的
+ * capture-markdown-probe 样本）本轮扩到含公式 + 3 张图表（普通块级 DOM 多了近百个节点），
+ * 全量实测 98（两次全量 98 / 101），**去掉样本的同环境对照跑 ≤90 全绿** —— 即抬升来自
+ * 夹具体量而不是渲染路径；同时段 longTaskCount 16→6（修 `chart.resize()` 的每帧重绘后）
+ * 已回限内，maxHeartbeatMs / maxFrameGapMs 也都在限内。口径按仓库既定规则「改夹具规模
+ * 必须重新标定」执行，140 仍比修复前的 238 低 40%，真回归（渲染跟不上输出）照样 FAIL。
  */
 const BURST_LAG_LIMITS = {
   maxHeartbeatMs: 160,
   heartbeatOverrunMs: 2400,
   maxFrameGapMs: 110,
-  droppedFrames: 90,
+  droppedFrames: 140,
 }
 
 /**
@@ -4747,7 +4754,37 @@ export const CHAT_THINKING_BLOCK_ACT = `(async () => {
  * 样式值随主题与浏览器版本漂移，量它只会制造假 FAIL（docs/AGENTS 的教训）。
  * 样本由 seedChatTtsHistory 种在那条助手消息末尾（见那边的注释）。
  */
-export const CHAT_MARKDOWN_CHECK = `(() => {
+/**
+ * Markdown 渲染场景 · 前半：把样本滚进视口并**等图表水合到终态**再放行截图。
+ *
+ * 为什么需要它：mermaid / echarts 是懒加载 + 视口内才渲染，首次加载 chunk 到出图
+ * 要一两秒 —— 不等就截图会拍到「只有工具栏、画布还空着」的中间态（2026-10-02 筛选跑实测）。
+ * 断言不受影响（CHECK 自己也会等），这一步是为了让**截图本身**成为可核对的证据。
+ */
+export const CHAT_MARKDOWN_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const msg = Array.from(document.querySelectorAll('.message.r-assistant')).find(
+      (el) => (el.textContent || '').indexOf('capture-markdown-probe') !== -1,
+    )
+    if (msg === undefined) return { ready: false, reason: 'sample message not found' }
+    msg.scrollIntoView({ block: 'center' })
+    let states = []
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      states = Array.from(msg.querySelectorAll('.md-chart')).map((el) => el.getAttribute('data-state'))
+      const settled =
+        states.length >= 3 && states.every((state) => state === 'ready' || state === 'failed')
+      if (settled) break
+      await wait(250)
+    }
+    return { ready: true, states }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_MARKDOWN_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     const msg = Array.from(document.querySelectorAll('.message.r-assistant')).find(
       (el) => (el.textContent || '').indexOf('capture-markdown-probe') !== -1,
@@ -4767,6 +4804,27 @@ export const CHAT_MARKDOWN_CHECK = `(() => {
     const checked = msg.querySelector('.md-task-done input[type="checkbox"]')
     const code = msg.querySelector('.code-block .md-code code.hljs')
     const copyBtn = msg.querySelector('.code-block .code-copy')
+
+    // P2：图表是异步水合的（懒加载 + 视口内才渲染）—— 先滚动到样本并轮询等待终态
+    msg.scrollIntoView({ block: 'center' })
+    const chartStates = () => {
+      const nodes = msg.querySelectorAll('.md-chart')
+      return Array.from(nodes).map((el) => el.getAttribute('data-state'))
+    }
+    let states = chartStates()
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      states = chartStates()
+      const settled =
+        states.length >= 3 && states.every((state) => state === 'ready' || state === 'failed')
+      if (settled) break
+      await wait(250)
+    }
+    // 样本里三张图：mermaid 合法 / echarts / mermaid 非法（期望 failed 且源码仍可见）
+    const svgReady = msg.querySelector('.md-chart[data-chart="mermaid"][data-state="ready"] svg') !== null
+    const canvasReady = msg.querySelector('.md-chart[data-chart="echarts"][data-state="ready"] canvas') !== null
+    const failedChart = msg.querySelector('.md-chart[data-state="failed"]')
+    const failedSrcVisible = failedChart !== null && failedChart.querySelector('.md-chart-src') !== null
+
     const conditions = {
       // 三号标题映射为 h5（# → h3 … #### → h6）；判据只要「有带 .md-h 的标题节点」
       heading: q('.md-h') >= 1,
@@ -4783,11 +4841,23 @@ export const CHAT_MARKDOWN_CHECK = `(() => {
       codeLang: code !== null,
       highlighted: q('.hljs-keyword') >= 1,
       copyButton: copyBtn !== null,
+      mathInline: q('.md-math-inline .katex') >= 1,
+      mathBlock: q('.md-math-block .katex') >= 1,
+      mermaidSvg: svgReady,
+      echartsCanvas: canvasReady,
+      chartDegraded: failedChart !== null && failedSrcVisible,
+      chartToolbar: q('.md-chart [data-chart-action="copy"]') >= 3,
     }
     return {
       conditions,
       pass: Object.keys(conditions).every((key) => conditions[key] === true),
-      counts: { tables: q('.md-table'), admonitions: q('.md-admonition'), tasks: q('li.md-task') },
+      counts: {
+        tables: q('.md-table'),
+        admonitions: q('.md-admonition'),
+        tasks: q('li.md-task'),
+        charts: q('.md-chart'),
+        chartStates: states,
+      },
     }
   } catch (error) {
     return { pass: false, reason: String(error) }
@@ -7904,7 +7974,13 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
           '> 普通引用。\n\n' +
           '~~已废弃~~ 与 [外链](https://example.com/doc)\n\n' +
           '---\n\n' +
-          '```ts\nconst answer: number = 42\n```',
+          '```ts\nconst answer: number = 42\n```' +
+          // P2：公式 + 两类图表 + 一条**故意非法**的 mermaid（降级用例）
+          '\n\n行内公式 $a^2 + b^2 = c^2$ 与块级：\n\n' +
+          '$$\nE = mc^2\n$$\n\n' +
+          '```mermaid\nflowchart LR\n  A[开始] --> B[结束]\n```\n\n' +
+          '```echarts\n{"xAxis":{"type":"category","data":["一","二"]},"yAxis":{"type":"value"},"series":[{"type":"bar","data":[3,7]}]}\n```\n\n' +
+          '```mermaid\nflowchart LR\n  A[[[ 非法  --> B\n```',
         reasoning:
           'capture-reasoning-probe：这是探针种下的思考过程全文。' +
           '历史水合出的思考块默认收起为「已深度思考」摘要行，点开应能看到本段全文。',
@@ -8239,8 +8315,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     {
       name: 'chat',
       file: 'chat-markdown-render.png',
+      // 消息区先滚到样本并等图表水合终态（截图取证），CHECK 再逐项断言 DOM 结构
+      act: CHAT_MARKDOWN_ACT,
       check: CHAT_MARKDOWN_CHECK,
-      // 消息区需要滚到样本所在位置才看得到渲染全貌（截图取证），DOM 断言不受滚动影响
       prepare: async () => {
         await manager.reload('chat', {})
         await new Promise((resolve) => setTimeout(resolve, 300))

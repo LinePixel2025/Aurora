@@ -261,7 +261,19 @@
   （含语言标注与 hljs 高亮，未知语言回落纯转义）、链接 `a.md-link`
   （外链 `target=_blank` + `rel="noopener noreferrer nofollow"`）、图片降级为 `.md-image-link`
   （生产 CSP `img-src 'self' data:` 会拦远程图，点击可看原图）。
-  **安全基线不变**：模型原文先转义、再套白名单标记，链接 scheme 走 markdown-it `validateLink`
+- **公式与图表（P2，2026-10-02）**：数学公式 `$...$` / `$$...$$` 走 **KaTeX**
+  （`trust:false` + `throwOnError:false`：非法公式以 `katex-error` 红字显示源码，不空白；
+  字体与样式随包本地化，CSP 显式放行 `font-src 'self' data:`）。
+  ` ```mermaid ` / ` ```echarts ` 围栏渲染为**可水合占位**（源码转义保留在
+  `.md-chart-src`，天然构成失败保底），由宿主容器上的水合器
+  （`createChartHydrator`，见 `browser/markdown/hydrate.ts`）按需异步渲染：
+  懒加载分包（初始 bundle 不含两库）、按源码缓存（流式逐帧重建时命中缓存不重跑渲染器）、
+  进入视口 200px 才渲染、单图源码上限（mermaid 100k / echarts 256k 字符，超出只展示源码）；
+  mermaid 用 `securityLevel:'strict'`，ECharts 只吃 `JSON.parse` 出来的配置对象
+  （模型给不了函数，无「执行任意 JS」路径），且强制 `animation:false`（流式期间不持续触发合成帧）。
+  渲染失败 → `data-state="failed"` + 工具栏状态文案 + 源码块保持可见（**永不空白**）。
+  每张图工具栏三枚按钮：复制源码 / 下载（mermaid→SVG，echarts→PNG）/ 大图（遮罩层，Esc 关闭）。
+- **安全基线不变**：模型原文先转义、再套白名单标记，链接 scheme 走 markdown-it `validateLink`
   （`javascript:` 一律拒绝），绝不允许裸 `v-html` 模型原文。
   样式单源在 `packages/shared/src/browser/markdown/md.css`（经 `--md-*` 变量映射两端令牌），
   桌面与 Center Web 视觉一致；渲染结果按消息缓存（WeakMap + 内容比对），

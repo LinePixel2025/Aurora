@@ -59,7 +59,13 @@ import type { AgentToolCall } from '@aurora/shared'
 import type { ChatMessage } from '../composables/useChat.js'
 import { useStickToBottom } from '../composables/useStickToBottom.js'
 import '@aurora/shared/browser/markdown/md.css'
-import { ICON_CHECK, ICON_COPY, renderMarkdown } from '@aurora/shared/browser'
+import {
+  ICON_CHECK,
+  ICON_COPY,
+  createChartHydrator,
+  renderMarkdown,
+  type ChartHydrator,
+} from '@aurora/shared/browser'
 import { parseTaskInput, parseTodoWriteInput } from '../agentTodo.js'
 import { ArrowDown, ChevronRight, LoaderCircle, Square, Volume2 } from '../icons.js'
 import AgentTrace from './AgentTrace.vue'
@@ -823,9 +829,26 @@ watch(toolSignature, () => {
   }
 })
 
+/**
+ * 图表水合器（P2）：挂在本组件的消息根容器上，负责把 ```mermaid / ```echarts 的占位
+ * 渲染成真图（懒加载 + 按源码缓存 + 进入视口才渲染，见 hydrate.ts 的失效分析）。
+ *
+ * 主题与 CSS 同源：桌面端主题由 `nativeTheme.themeSource` 落到 `prefers-color-scheme`，
+ * 没有 data-theme 属性 —— 这里读 media query（已渲染的图不重绘；切换主题后新出现的图
+ * 用新主题，与截图探针的双主题场景一致）。
+ */
+let chartHydrator: ChartHydrator | null = null
+
+function currentTheme(): 'light' | 'dark' {
+  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+}
+
 onMounted(() => {
   // 挂载后补一次对齐：视口是窗口的 `.thread`，首帧拿到容器尺寸前那次滚动可能不生效
   refreshStick()
+  if (rootEl.value !== null) {
+    chartHydrator = createChartHydrator(rootEl.value, { theme: currentTheme })
+  }
 })
 
 onUnmounted(() => {
@@ -835,6 +858,8 @@ onUnmounted(() => {
   if (thinkingFrame !== null) window.cancelAnimationFrame(thinkingFrame)
   thinkingFrame = null
   stopThinkingTimer()
+  chartHydrator?.dispose()
+  chartHydrator = null
 })
 
 /**

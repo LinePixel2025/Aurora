@@ -591,6 +591,8 @@ async function bootstrap(): Promise<void> {
   //     inline 预置脚本与 HMR websocket；生产环境只加载本地打包资源。
   //     放行 `blob:` 是 TTS 朗读的硬前提（docs/06 §13）：合成音频走 Blob 对象 URL，
   //     生产 CSP 的 `default-src 'self'` 会把它拦掉 —— 表现为「开发能播、打包不能播」。
+  //     `font-src` 显式声明（P2 公式）：KaTeX 的字体随 bundle 本地化，file:// 下
+  //     `'self'` 的匹配行为各浏览器有差异，写死 `'self' data:` 消除打包态隐患。
   //     两态各一条指令，缺任何一条都会让对应环境静音。
   const csp = isDev
     ? [
@@ -600,6 +602,7 @@ async function bootstrap(): Promise<void> {
         "connect-src 'self' http://localhost:5173 ws://localhost:5173",
         "img-src 'self' data:",
         "media-src 'self' blob: data:",
+        "font-src 'self' data: http://localhost:5173",
       ].join('; ')
     : [
         "default-src 'self'",
@@ -608,6 +611,7 @@ async function bootstrap(): Promise<void> {
         "img-src 'self' data:",
         "media-src 'self' blob:",
         "connect-src 'self'",
+        "font-src 'self' data:",
         "object-src 'none'",
         "base-uri 'none'",
         "form-action 'none'",

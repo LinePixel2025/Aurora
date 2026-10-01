@@ -1,8 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useStickToBottom } from '../composables/useStickToBottom.js'
 import '@aurora/shared/browser/markdown/md.css'
-import { CODE_COPY_BUTTON, ICON_CHECK, ICON_COPY, renderMarkdown } from '@aurora/shared/browser'
+import {
+  ICON_CHECK,
+  ICON_COPY,
+  createChartHydrator,
+  renderMarkdown,
+  type ChartHydrator,
+} from '@aurora/shared/browser'
 import ToolCard from './ToolCard.vue'
 import { fileUrl } from '../api'
 import {
@@ -71,10 +77,21 @@ const heartbeat = window.setInterval(() => {
     if (remainingMs(entry.request.expiresAt, now.value) <= 0) expireConfirm(entry)
   }
 }, 1000)
+onMounted(() => {
+  if (threadEl.value !== null) {
+    chartHydrator = createChartHydrator(threadEl.value, {
+      // Center Web 主题由 media query 决定（style.css 的 prefers-color-scheme 分档）
+      theme: () => (window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark'),
+    })
+  }
+})
+
 onBeforeUnmount(() => {
   window.clearInterval(heartbeat)
   cleanupMic()
   stopSpeak()
+  chartHydrator?.dispose()
+  chartHydrator = null
 })
 
 const sessionConfirms = computed<ConfirmEntry[]>(() =>
@@ -350,6 +367,9 @@ async function onThreadClick(event: MouseEvent): Promise<void> {
     button.classList.remove('copied')
   }, 1400)
 }
+
+/** 图表水合器（P2）：与桌面端同一实现（懒加载 + 按源码缓存 + 视口内才渲染） */
+let chartHydrator: ChartHydrator | null = null
 
 const speakingId = ref('')
 const speakError = ref('')

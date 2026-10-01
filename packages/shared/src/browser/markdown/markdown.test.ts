@@ -92,6 +92,51 @@ describe('输出契约（两端共用的类名）', () => {
   })
 })
 
+describe('数学公式（P2，KaTeX）', () => {
+  it('行内 $...$ 与块级 $$...$$ 渲染为 KaTeX 结构', () => {
+    const inline = renderMarkdown('公式 $a^2 + b^2 = c^2$ 结束')
+    expect(inline).toContain('<span class="md-math md-math-inline">')
+    expect(inline).toContain('class="katex"')
+    const block = renderMarkdown(['$$', 'E = mc^2', '$$', ''].join('\n'))
+    expect(block).toContain('<div class="md-math md-math-block">')
+    expect(block).toContain('katex-display')
+  })
+
+  it('非法公式降级不空白：KaTeX 以 katex-error 显示源码（throwOnError:false）', () => {
+    const html = renderMarkdown('$' + String.raw`\frac{1}{` + '$ 结尾')
+    // 不抛错、原文可见（红字提示），且不允许出现可执行内容
+    expect(html).toContain('katex-error')
+    expect(html).toContain(String.raw`\frac{1}{`)
+    expect(html).not.toContain('<script')
+  })
+
+  it('货币写法不误判为公式（$ 后紧跟空白不认）', () => {
+    const html = renderMarkdown('这件商品 $ 100 元')
+    expect(html).not.toContain('katex')
+  })
+})
+
+describe('图表占位（P2：mermaid / echarts，真渲染在水合层）', () => {
+  it('```mermaid 产出占位结构：源码转义保留 + 工具栏 + pending 态', () => {
+    const html = renderMarkdown(
+      ['```mermaid', 'flowchart LR', '  A[开始] --> B[结束]', '```', ''].join('\n'),
+    )
+    expect(html).toContain('class="md-chart" data-chart="mermaid" data-state="pending"')
+    expect(html).toContain('class="md-chart-stage"')
+    expect(html).toContain('data-chart-action="copy"')
+    expect(html).toContain('A[开始] --&gt; B[结束]')
+    expect(html).not.toContain('<svg')
+  })
+
+  it('```echarts 同款占位；注入尝试被转义（不留可执行标签）', () => {
+    const html = renderMarkdown(
+      ['```echarts', '{"xAxis":1} <script>alert(1)</script>', '```', ''].join('\n'),
+    )
+    expect(html).toContain('data-chart="echarts"')
+    expect(html).not.toContain('<script>')
+  })
+})
+
 describe('安全基线（XSS：先转义、后白名单）', () => {
   it('裸 HTML 标签整体转义成纯文本（html:false）', () => {
     const html = renderMarkdown('<img src=x onerror=alert(1)>')

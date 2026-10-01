@@ -89,10 +89,14 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 3. **主进程必须内联工作区包**：`@aurora/*` 是纯 ESM，主进程产物是 CJS，`require()` ESM 会抛 `ERR_REQUIRE_ESM`。因此 `electron.vite.config.ts` 把它们排除在 `externalizeDepsPlugin` 之外——不要「顺手」加回去。
 4. **渲染层只允许类型导入**：从 `@aurora/shared` 取**纯常量/运行时值**必须走 `@aurora/shared/browser` 子路径，否则会把 `node:fs` 拉进浏览器 bundle 导致构建失败。`packages/shared/src/browser.ts` 的依赖链禁止出现任何 Node 内置模块。
    **Markdown 渲染器就是这条规则的现成例子**（2026-10-02）：`browser/markdown/`
-   （markdown-it + highlight.js 子集）是桌面与 Center Web 的**唯一**渲染器，
-   样式单源在 `browser/markdown/md.css`（经 `--md-*` 变量映射两端令牌；
-   改输出类名必须同时对照 `MARKDOWN_CONTRACT_CLASSES` 与两端截图）。
-   两端的旧 `markdown.ts` 已删除 —— 不要再各自分叉一份。
+   （markdown-it + highlight.js 子集 + KaTeX/katex.min.css，图表两库**动态 import**）是
+   桌面与 Center Web 的**唯一**渲染器，样式单源在 `browser/markdown/md.css`
+   （经 `--md-*` 变量映射两端令牌；改输出类名必须同时对照 `MARKDOWN_CONTRACT_CLASSES`
+   与两端截图）。两端的旧 `markdown.ts` 已删除 —— 不要再各自分叉一份。
+   ⚠️ 渲染器依赖（含 CSS/字体）只声明在 **`packages/shared`**：pnpm 严格链接下
+   宿主解析不到兄弟包的依赖（Center 曾因此在 `vite build` 报 unresolved import）；
+   两库无 `eval`，生产 CSP `script-src 'self'` 下动态 chunk 可正常加载（已核 mermaid 12 /
+   echarts 6 的 dist）。
 5. **重任务走子进程**：文档内容提取等 CPU/IO 重活由 `utilityProcess.fork` 启动 `extract-worker`（`electron.vite.config.ts` 的第二个 main 入口），不阻塞主进程事件循环。
 6. **IPC 命名**：通道用 `namespace:action`（如 `chat:send`、`mcp:status`）；事件推送 `on/off` 成对暴露；大 payload（文件全文）只在主进程 / worker 内流转，不进渲染进程。
 
