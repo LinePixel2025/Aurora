@@ -228,13 +228,16 @@ onBeforeUnmount(() => {
             <span class="perm-item-title">
               完全权限<em v-if="mode === 'auto'" class="perm-item-now">当前</em>
             </span>
-            <span class="tiny muted">
-              {{
-                pendingDanger
-                  ? '再点一次确认：项目根内的敏感操作不再询问'
-                  : '有项目时项目根内免确认、越界仍问；未登记项目时不再逐次询问'
-              }}
+            <!-- 说明文案压成两段短句：`.perm-item-body` 是 flex 列，每个 span 自成一行。
+                 两种项目状态的语义都要留着（有根 → 根内放行、根外弹卡；无根 → 直接放行，
+                 见 `agent-host.ts` 的 auto 分支）。「再点一次确认」那支逐字保持原样（探针子串）。 -->
+            <span v-if="pendingDanger" class="tiny muted">
+              再点一次确认：项目根内的敏感操作不再询问
             </span>
+            <template v-else>
+              <span class="tiny muted">有项目：根内免确认，越界仍询问</span>
+              <span class="tiny muted">无项目：不再逐次询问</span>
+            </template>
           </span>
         </button>
       </div>
@@ -356,6 +359,9 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border-strong);
   background: var(--bg-raised);
   box-shadow: var(--shadow-2);
+  /* 兜住极端窄窗 / 高 DPI：卡片自己裁掉溢出，长串（模型 id、路径）在词内也能断 */
+  overflow: hidden;
+  word-break: break-word;
 }
 
 .perm-item {
@@ -397,11 +403,17 @@ onBeforeUnmount(() => {
   color: var(--text-muted);
 }
 
+/*
+ * 说明文字换行的根治点（2026-10-01）：`white-space` 是**继承**属性，祖先
+ * `.composer-bar { white-space: nowrap }` 会一路继承到菜单里的正文 —— 不在这里显式复位，
+ * 长文案就会横向画出卡片（`capture.ts` 的 `CHAT_PERMISSION_CHECK` 有溢出断言兜着）。
+ */
 .perm-item-body {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  white-space: normal;
 }
 
 .perm-item-title {
