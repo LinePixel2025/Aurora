@@ -34,6 +34,7 @@ import type {
 } from '@aurora/shared'
 import {
   DEFAULT_REASONING_EFFORT,
+  resolveModelParams,
   resolvePermissionMode,
   type ReasoningEffort,
 } from '@aurora/shared/browser'
@@ -429,8 +430,21 @@ const currentModel = computed<string>(() => activeProvider.value?.model ?? '')
 /** 模型下拉的候选列表（去重与空串过滤是 `ModelPickerSelect` 的事） */
 const modelOptions = computed<string[]>(() => activeProvider.value?.modelList ?? [])
 
-/** 当前生效 provider 的思考等级；没有可用 provider 时为 `null`（此时控件禁用而不是隐藏） */
-const effort = computed<ReasoningEffort | null>(() => activeProvider.value?.reasoningEffort ?? null)
+/**
+ * 当前生效**模型**的生成参数（v23，docs/08 §1）：思考等级 / 上下文窗口都在
+ * `llm.providers.<active>.modelParams.<当前模型>` 下，随模型绑定 —— 换个模型就是另一套值。
+ * 取值走 shared 的**唯一**入口 `resolveModelParams`（键未命中 / 字段缺失时按字段回落默认，
+ * 消费端绝不拿到 `undefined`）。没有可用 provider 时为 `null`。
+ */
+const currentModelParams = computed(() => {
+  const provider = activeProvider.value
+  return provider === null ? null : resolveModelParams(provider)
+})
+
+/** 当前生效模型的思考等级；没有可用 provider 时为 `null`（此时控件禁用而不是隐藏） */
+const effort = computed<ReasoningEffort | null>(
+  () => currentModelParams.value?.reasoningEffort ?? null,
+)
 
 /** 思考下拉显示值：无 provider 时用默认等级占位——禁用态也要让用户看得见这个控件 */
 const effortValue = computed<ReasoningEffort>(() => effort.value ?? DEFAULT_REASONING_EFFORT)
@@ -509,11 +523,27 @@ async function updateActiveProvider(patch: Partial<LlmProviderConfig>): Promise<
   return true
 }
 
-/** 写入思考等级（`auto` 由主进程装配层映射成「不下发」）；只在值真的变了时写 */
+/**
+ * 写入思考等级（`auto` 由主进程装配层映射成「不下发」）；只在值真的变了时写。
+ *
+ * 等级是**模型级**的（v23）：写的是 `provider.modelParams[provider.model]`，
+ * 而且**整份替换**该键的对象（不是原地改一个字段）—— `modelParams` 的三个子字段里
+ * `reasoningEffort` 是唯一没有 `.default()` 的，只写它会让自己下次启动时被判为损坏配置。
+ * 当前模型为空串时不写（没有「生效模型」可归属，与迁移的「model 为空不造条目」同口径）。
+ */
 async function setEffort(next: ReasoningEffort): Promise<void> {
   const provider = activeProvider.value
-  if (provider === null || provider.reasoningEffort === next) return
-  if (await updateActiveProvider({ reasoningEffort: next })) {
+  if (provider === null) return
+  const modelId = provider.model
+  if (modelId === '' || resolveModelParams(provider).reasoningEffort === next) return
+  if (
+    await updateActiveProvider({
+      modelParams: {
+        ...provider.modelParams,
+        [modelId]: { ...resolveModelParams(provider), reasoningEffort: next },
+      },
+    })
+  ) {
     flashPickerHint(`思考等级已改为 ${next}`)
   }
 }
@@ -1036,16 +1066,11 @@ function onComposerKeydown(event: KeyboardEvent): void {
   }
 }
 
-/** 上下文详解的「本会话内容」：正文字符数（把思考链也算进去，它同样进上下文） */
-const contentChars = computed(() =>
-  messages.value.reduce(
-    (total, message) => total + message.content.length + (message.reasoning?.length ?? 0),
-    0,
-  ),
-)
-
-/** 当前 provider 的上下文窗口（token）；0 = 未知，上下文条据此只显示用量不显示比例 */
-const currentContextWindow = computed<number>(() => activeProvider.value?.contextWindow ?? 0)
+/**
+ * 当前生效**模型**的上下文窗口（token，v23 起随模型绑定）；0 = 未知，
+ * 上下文条据此只显示用量、不显示比例。
+ */
+const currentContextWindow = computed<number>(() => currentModelParams.value?.contextWindow ?? 0)
 
 /**
  * 占位文案（2026-09-29 输入框减负轮）：**只留一句**，不再当说明栏用。
@@ -1054,15 +1079,13 @@ const currentContextWindow = computed<number>(() => activeProvider.value?.contex
  * 整串塞进占位：文字长度超过一行，而 textarea 由 `autoGrow()` 按**内容**的 scrollHeight
  * 钉住高度（空内容 = 一行 = 行高 20.25px + 上下 padding 8px×2 ≈ 36.25px），占位串换行后的第二行会被直接裁掉 ——
  * 用户看到的就是「可直接拖入文」后面断了半句。
- * 现在：键位提示挂工具行右侧的 `.composer-hint`，其余能力（`/` 命令、拖入文件）
- * 走 textarea 的 `title` 悬浮提示。
+ * 现在：键位说明与其它能力（`/` 命令、拖入文件）**一并**只走 textarea 的 `title`
+ * 悬浮提示 —— 工具行右侧那枚常驻的键位提示已移除（2026-10-01 UI 细节轮：
+ * 常驻键位提示在窄窗下最先让位、实际多数时候看不见，却一直占着弹性槽）。
  */
 const placeholder = computed(() => (streaming.value ? '正在回复中，可继续输入…' : '输入消息…'))
 
-/** 键位提示（工具行右侧；空间不足时先让位，见 `.composer-hint`） */
-const shortcutHint = 'Enter 发送 · Shift + Enter 换行'
-
-/** 输入框悬浮提示：占位串里放不下的那部分能力说明 */
+/** 输入框悬浮提示：占位串里放不下的那部分能力说明（键位说明现在只在这里） */
 const composerTitle = computed(() =>
   streaming.value
     ? '正在回复中，可继续输入；回复结束后按 Enter 发送'
@@ -1334,12 +1357,11 @@ async function markGuideDone(): Promise<void> {
               />
               <span class="grow" />
               <!--
-                保存类操作的瞬时提示（2 秒自灭）；它不在时这条位置让给键位提示
-                （旧常驻「会话：xxx · 可调用 Skill…」meta 已移除，键位提示是唯一常驻文案，
-                与 `.picker-hint` 共用同一个弹性槽、同样是空间不足时第一个让位的元素）。
+                保存类操作的瞬时提示（2 秒自灭）。它是工具行右侧**唯一**的提示文案：
+                旧常驻「会话：xxx · 可调用 Skill…」meta 与常驻键位提示都已移除
+                （键位说明改由 textarea 的 `title` 承担）。宽度不够时它仍第一个让位。
               -->
               <span v-if="pickerHint" class="tiny muted picker-hint">{{ pickerHint }}</span>
-              <span v-else class="tiny muted composer-hint">{{ shortcutHint }}</span>
               <!--
                 麦克风（STT）：门控口径同 TTS——未配置可用的 provider 时**不渲染**（不是 disabled）。
                 录音态套 `.pulse-ring` 扩散环（theme.css 动效基线）。与发送键同侧，
@@ -1381,8 +1403,6 @@ async function markGuideDone(): Promise<void> {
               :context-window="currentContextWindow"
               :open="openFlyout === 'context'"
               :model="currentModel"
-              :message-count="messages.length"
-              :char-count="contentChars"
               :streaming="streaming"
               @update:open="openFlyout = $event ? 'context' : null"
             />
@@ -1810,17 +1830,11 @@ async function markGuideDone(): Promise<void> {
 }
 
 /* 保存类操作的瞬时提示：出现时挤占的是弹性空隙，不把发送按钮挤出行外 */
-.picker-hint,
-.composer-hint {
+.picker-hint {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-/* 键位提示（占位文案的替身）：比 muted 再淡一档，宽度不够时它是第一个消失的 */
-.composer-hint {
-  opacity: 0.75;
 }
 
 /* 发送按钮不允许被压缩：它被挤出圆角输入框是这一行最容易破的版 */

@@ -3,15 +3,16 @@
  * 上下文详解条（输入框最底部，2026-09 输入框重做：docs/07 §2.3）。
  *
  * 折叠态是一条细状态栏：`上下文 <已用> / <窗口>  <进度条>  <百分比>` + 本会话累计；
- * 展开态在它**上方**弹出一张卡，逐项列出这一轮与整个会话的 token 消耗、消息与字符数、
- * 当前模型，以及上下文窗口没填时的修复路径。
+ * 展开态在它**上方**弹出一张卡，**只有三行**：本轮输入 / 上下文窗口 / 模型
+ * （2026-10-01 UI 细节轮精简：输出、缓存命中、本会话累计/内容四行移除 ——
+ * 缓存命中量只保留在折叠条的 `chat.context-cache` 那一段里）。
  *
  * 数据口径（docs/06 §16.2）：`latest.promptTokens` 是**最近一轮请求真实送进去的 token 数**
  * （系统提示词 + 历史 + 本轮内容），也就是「上下文占用」本身；`totals` 是逐轮累加。
  * provider 没回传 `usage` 时 `latest` 为 null —— 此时**不显示进度条与百分比**，
  * 改为如实说明「模型未返回用量」，绝不拿字符数估算冒充 token 数。
- * 分母（上下文窗口）来自 `llm.providers.<active>.contextWindow`，为 0 = 未知，
- * 同样只显示分子、不显示比例。
+ * 分母（上下文窗口）来自**当前生效模型**的 `llm.providers.<active>.modelParams.<模型>`（v23 起
+ * 随模型绑定），为 0 = 未知，同样只显示分子、不显示比例。
  *
  * 前缀缓存命中量（`latest.cachedTokens`，docs/06 §21.4）是**另一个分子**：命中提示条上那一段
  * 的百分比分母是**本轮的 `promptTokens`**（命中量 / 送进去的 prompt），
@@ -37,14 +38,10 @@ const props = withDefaults(
     open: boolean
     /** 当前生效模型（缺省显示为空） */
     model?: string
-    /** 本会话可见消息条数 */
-    messageCount?: number
-    /** 本会话可见消息的字符数（估算量级的参考，标注为字符而不是 token） */
-    charCount?: number
     /** 是否正在流式接收（流式中把「本轮」标为进行中） */
     streaming?: boolean
   }>(),
-  { model: '', messageCount: 0, charCount: 0, streaming: false },
+  { model: '', streaming: false },
 )
 
 const emit = defineEmits<{ 'update:open': [open: boolean] }>()
@@ -153,43 +150,13 @@ const cachedText = computed(() => {
             </dd>
           </div>
           <div class="ctx-row">
-            <dt>输出（最近一轮）</dt>
-            <dd>
-              {{ latest === null ? '—' : formatExact(latest.completionTokens) }}
-              <span class="tiny muted">tokens</span>
-            </dd>
-          </div>
-          <!-- 缓存命中（docs/07 §2.3）：缺省 = provider 没回传，整行不渲染（不写「缓存命中 0」） -->
-          <div v-if="cachedText !== ''" class="ctx-row">
-            <dt>缓存命中（最近一轮）</dt>
-            <dd>
-              {{ formatExact(cachedTokens ?? 0) }}
-              <span class="tiny muted">tokens</span>
-              <span v-if="cachedPercent !== null" class="tiny muted">· {{ cachedPercent }}%</span>
-            </dd>
-          </div>
-          <div class="ctx-row">
-            <dt>本会话累计</dt>
-            <dd>
-              {{ formatExact(totals.totalTokens) }}
-              <span class="tiny muted">tokens</span>
-            </dd>
-          </div>
-          <div class="ctx-row">
             <dt>上下文窗口</dt>
             <dd>
               <template v-if="contextWindow > 0">
                 {{ formatExact(contextWindow) }}
                 <span class="tiny muted">tokens</span>
               </template>
-              <span v-else class="tiny muted">未设置（设置 → AI 模型 → 上下文窗口）</span>
-            </dd>
-          </div>
-          <div class="ctx-row">
-            <dt>本会话内容</dt>
-            <dd>
-              {{ messageCount }} 条
-              <span class="tiny muted">· {{ formatExact(charCount) }} 字符</span>
+              <span v-else class="tiny muted">未设置（设置 → AI 模型 → 模型参数）</span>
             </dd>
           </div>
           <div class="ctx-row">
@@ -200,8 +167,8 @@ const cachedText = computed(() => {
         <p class="tiny muted ctx-note">
           {{
             latest === null
-              ? '模型服务未回传 token 用量（部分兼容网关不支持），这里只统计消息条数与字符数。'
-              : '「输入」就是这一轮真正送进模型的上下文长度（系统提示词 + 历史 + 本轮内容），随对话增长。'
+              ? '模型服务未回传 token 用量（部分兼容网关不支持）'
+              : '「输入」就是这一轮真正送进模型的上下文长度'
           }}
         </p>
       </div>
@@ -214,7 +181,7 @@ const cachedText = computed(() => {
       :aria-expanded="open"
       :title="
         latest === null
-          ? '模型未回传 token 用量；点开看本会话消息与字符数'
+          ? '模型未回传 token 用量；点开看本轮输入与窗口设置'
           : '上下文占用与 token 用量；点开看明细'
       "
       @click="emit('update:open', !props.open)"
