@@ -159,8 +159,9 @@ describe('createSettingsPort 的写入闸门（黑名单 × 顶层分组）', ()
     // 它是 boundaryRoot 回落链的一级：AI 改写它 = 把「根内免确认」扩到任意目录
     const check = port.writable('modes.work.workspaceDir')
     expect(check.ok).toBe(false)
-    // 端口先查用户配置项（默认值即 SETTINGS_READONLY_PREFIXES，已含该路径）
-    if (!check.ok) expect(check.reason).toContain('不可修改的配置')
+    // 拒绝理由来自硬编码黑名单（该路径在 `SETTINGS_READONLY_PREFIXES` 里，且不在覆盖表内）——
+    // 比端口那句泛化的「不可修改的配置」更具体，也说明判定走的是 `canWriteSettingPath`
+    if (!check.ok) expect(check.reason).toContain('权限边界根')
 
     const outcome = await port.write([{ path: 'modes.work.workspaceDir', value: 'D:\\任意目录' }])
     expect(outcome.ok).toBe(false)
@@ -220,5 +221,103 @@ describe('createSettingsPort 的写入闸门（黑名单 × 顶层分组）', ()
     const outcome = await port.write([{ path: 'center.enabled', value: true }])
     expect(outcome.ok).toBe(false)
     expect(store.get().center.enabled).toBe(false)
+  })
+})
+
+/**
+ * 「承诺可写 = 写入可写」（P1-06 的同一条教训，这是第二处）。
+ *
+ * `reasonOf` 曾经把顺序弄反：先拿 `advanced.readonlyPrefixes`（默认值＝硬编码黑名单的**镜像**）
+ * 做前缀匹配，于是 `llm.providers` 这条默认项先命中，覆盖表对
+ * `llm.providers.<id>.model` 与 `...modelParams.<modelId>.reasoningEffort` 的放行**一次都没生效过** ——
+ * 而工具描述 / `settings-hint` / 三册文档都承诺这两条可写（docs/08 §1 更明确写着
+ * 「覆盖表的判定**先于** advanced.readonlyPrefixes 黑名单」）。
+ *
+ * 模型 id 可以带点（`gpt-4.1` / `claude-3.5-sonnet`），所以这一组两条都覆盖：
+ * 不带点的走普通分段、带点的走 `splitSettingPath` 的还原。
+ */
+describe('createSettingsPort 写 llm.providers 的模型行为字段（覆盖表先于黑名单）', () => {
+  function setup(): { store: SettingsStoreLike; port: ReturnType<typeof createSettingsPort> } {
+    const initial = createDefaultSettings()
+    const modelId = 'gpt-4.1'
+    initial.llm.active = 'deepseek'
+    initial.llm.providers['deepseek'] = {
+      type: 'openai-compat',
+      baseUrl: 'https://api.deepseek.com',
+      apiKeyEnc: 'CIPHER',
+      model: modelId,
+      modelList: [modelId, 'deepseek-chat'],
+      modelParams: { [modelId]: { reasoningEffort: 'auto', contextWindow: 128_000, vision: true } },
+    }
+    const { store } = createFakeStore(initial)
+    const port = createSettingsPort({
+      settings: store,
+      applyPatch: () => fakeApplyPatch(store),
+      logger: createFakeLogger(),
+    })
+    return { store, port }
+  }
+
+  it('含点模型 id 的思考等级：permission 与 write 一致，且落在该模型自己的键下', async () => {
+    const { store, port } = setup()
+    const path = 'llm.providers.deepseek.modelParams.gpt-4.1.reasoningEffort'
+    expect(port.writable(path).ok).toBe(true)
+
+    const outcome = await port.write([{ path, value: 'high' }])
+    expect(outcome.ok).toBe(true)
+    expect(outcome.applied).toEqual([path])
+
+    const provider = store.get().llm.providers['deepseek']
+    expect(provider?.modelParams['gpt-4.1']?.reasoningEffort).toBe('high')
+    // 关键：**没有**被切成 `modelParams['gpt-4'] = { '1': … }` 那种两层残骸
+    expect(Object.keys(provider?.modelParams ?? {})).toEqual(['gpt-4.1'])
+    // 兄弟字段不被这次写入抹掉
+    expect(provider?.modelParams['gpt-4.1']?.contextWindow).toBe(128_000)
+    expect(provider?.modelParams['gpt-4.1']?.vision).toBe(true)
+    // 读回走同一条分段口径（否则端口会把「写成功」判成「未生效」）
+    expect(port.read(path)).toBe('high')
+  })
+
+  it('切模型（llm.providers.<id>.model）也可写 —— 覆盖表里的另一条', async () => {
+    const { store, port } = setup()
+    const path = 'llm.providers.deepseek.model'
+    expect(port.writable(path).ok).toBe(true)
+    const outcome = await port.write([{ path, value: 'deepseek-chat' }])
+    expect(outcome.ok).toBe(true)
+    expect(store.get().llm.providers['deepseek']?.model).toBe('deepseek-chat')
+  })
+
+  it('凭据与模型能力事实仍被硬编码前缀拒（覆盖表赢了黑名单，但不放宽任何安全面）', async () => {
+    const { store, port } = setup()
+    for (const path of [
+      'llm.providers.deepseek.apiKeyEnc',
+      'llm.providers.deepseek.baseUrl',
+      'llm.providers.deepseek.modelList',
+      'llm.providers.deepseek.modelParams.gpt-4.1.contextWindow',
+      'llm.providers.deepseek.modelParams.gpt-4.1.vision',
+      'llm.providers.deepseek.modelParams',
+      'llm.providers.deepseek',
+    ]) {
+      expect(port.writable(path).ok).toBe(false)
+      expect((await port.write([{ path, value: 'x' }])).ok).toBe(false)
+    }
+    const provider = store.get().llm.providers['deepseek']
+    expect(provider?.apiKeyEnc).toBe('CIPHER')
+    expect(provider?.modelParams['gpt-4.1']?.contextWindow).toBe(128_000)
+  })
+
+  it('用户**追加**的黑名单前缀仍然生效（只能追加限制，不能放宽）', async () => {
+    const { store, port } = setup()
+    store.mutate((draft) => {
+      draft.advanced.readonlyPrefixes = [
+        ...draft.advanced.readonlyPrefixes,
+        'llm.providers.deepseek.modelParams',
+      ]
+    })
+    expect(port.writable('llm.providers.deepseek.modelParams.gpt-4.1.reasoningEffort').ok).toBe(
+      false,
+    )
+    // 同组的另一条不受影响（前缀匹配只作用于被追加的那条）
+    expect(port.writable('llm.providers.deepseek.model').ok).toBe(true)
   })
 })

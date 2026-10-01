@@ -17,7 +17,11 @@ import {
   type Settings,
   type SettingsPatch,
 } from '@aurora/shared'
-import { canWriteSettingPath, settingsReadonlyReason } from '@aurora/shared'
+import {
+  SETTINGS_READONLY_PREFIXES,
+  canWriteSettingPath,
+  settingsReadonlyReason,
+} from '@aurora/shared'
 import type { SettingsToolPort, SettingsWriteOutcome } from '@aurora/agent-core'
 import { redactSettings } from '../settings-redact.js'
 import type { SettingsStoreLike } from '../contracts.js'
@@ -81,17 +85,33 @@ export function createSettingsPort(deps: SettingsPortDeps): SettingsToolPort {
     redactSettings(deps.settings, source) as unknown as Record<string, unknown>
 
   /**
-   * 路径可写判定：用户配置的 `advanced.readonlyPrefixes` **只能追加**限制，
-   * 之后还要无条件走 `canWriteSettingPath` —— 后者用的是硬编码常量（不接收用户配置），
-   * 因此默认全量前缀（含 `agent.loop` / `agent.snapshots`）永远生效，删掉或清空配置项都放不开它们。
+   * 路径可写判定。**顺序与 docs/08 §1 写的一致：显式可写覆盖表先于黑名单前缀** ——
+   * `canWriteSettingPath` 内部就是「覆盖表 → 硬编码前缀 → Schema 识别」这条链，所以先问它。
+   *
+   * ⚠️ 这里曾经把顺序弄反了：先拿用户配置的 `advanced.readonlyPrefixes` 做前缀匹配，再问
+   * `canWriteSettingPath`。而该字段的**默认值就是硬编码前缀的镜像**（`defaults.ts` 里的
+   * `[...SETTINGS_READONLY_PREFIXES]`），于是 `llm.providers` 这条默认项先命中，
+   * **覆盖表对 `llm.providers.<id>.model / modelParams.<modelId>.reasoningEffort` 的放行一次都没生效过** ——
+   * 工具描述、`settings-hint` 与三册文档都承诺「能改模型 / 思考等级」，实际每次都回
+   * 「「llm.providers」属于不可修改的配置」。同一类「承诺可写、写入必拒」在
+   * `TOP_LEVEL_GROUPS` 上修过一次（P1-06），这是第二处。
+   *
+   * 修正后的语义：硬编码规则是唯一权威；用户配置项**只认得硬编码清单之外的那些条目**
+   * （默认值是镜像，逐条比对会把默认项误当成"用户额外加的"），因此「只能追加限制、不能放宽」
+   * 这条承诺仍然成立 —— 凭据 / `contextWindow` / `vision` 依旧一个字都写不进去
+   * （它们不在覆盖表里，仍然命中硬编码前缀）。
    */
   const reasonOf = (path: string): string | undefined => {
-    // 老配置 / 极端情况下该字段可能缺失：缺失按"没有额外黑名单"处理，
-    // 后续的 Schema 兜底仍然拦截拼错与动态路径。
-    const prefixes = deps.settings.get().advanced.readonlyPrefixes ?? []
-    const hit = prefixes.find((prefix) => path === prefix || path.startsWith(`${prefix}.`))
-    if (hit !== undefined) return `「${hit}」属于不可修改的配置（凭据 / 代理 / 窗口 / 版本等）`
-    if (canWriteSettingPath(path)) return undefined
+    if (canWriteSettingPath(path)) {
+      const extra = (deps.settings.get().advanced.readonlyPrefixes ?? []).find(
+        (prefix) =>
+          !(SETTINGS_READONLY_PREFIXES as readonly string[]).includes(prefix) &&
+          (path === prefix || path.startsWith(`${prefix}.`)),
+      )
+      return extra === undefined
+        ? undefined
+        : `「${extra}」属于用户追加的不可修改配置（见 docs/08 §1 的 advanced.readonlyPrefixes）`
+    }
     return settingsReadonlyReason(path) ?? '未知配置路径'
   }
 
@@ -125,7 +145,9 @@ export function createSettingsPort(deps: SettingsPortDeps): SettingsToolPort {
           return { ok: false, message: `${item.path}：${reason}`, applied: [] }
         }
 
-        const segments = item.path.split('.')
+        // 段切分走 `splitSettingPath`：模型级参数的路径里，模型 id 本身可能带点
+        // （`gpt-4.1` / `claude-3.5-sonnet`），盲切会把它写到错误的键上。
+        const segments = splitSettingPath(item.path)
         const group = segments[0]
         if (group === undefined || !(TOP_LEVEL_GROUPS as readonly string[]).includes(group)) {
           return { ok: false, message: `${item.path}：不支持的配置分组`, applied: [] }
@@ -236,9 +258,37 @@ function pickRedacted(snapshot: Record<string, unknown>, paths: string[]): Recor
   return picked
 }
 
+/**
+ * 把点分路径切成段 —— **模型级参数那一条要特殊对待**。
+ *
+ * `llm.providers.<id>.modelParams.<模型 id>.<字段>` 里的模型 id **可以带点**
+ * （`gpt-4.1` / `claude-3.5-sonnet` / `qwen2.5:7b` 都是常见写法：Schema 对 `model` 没有任何
+ * 字符集约束，设置页重命名也只查非空与重名）。盲切段会把它拆成两层嵌套
+ * （`modelParams['gpt-4'] = { '1': { … } }`）—— 于是往**错误的键**上写：真正的 `gpt-4.1`
+ * 一个字没动、配置里还多出一条垃圾条目，回读又是 `undefined`（工具只会报「未生效」）。
+ * 覆盖表已用 `**` 段承认这类路径可写，写路径必须能把它还原回来。
+ *
+ * 这个形状是**固定的**（`modelParams` 就是 `Record<模型 id, {三个字段}>` 的两层结构），
+ * 所以按已知结构把中间那些段重新拼回一个模型 id。其余路径一律原样按 `.` 切，语义不变。
+ */
+export function splitSettingPath(path: string): string[] {
+  const segments = path.split('.')
+  const isModelParamPath =
+    segments.length >= 6 &&
+    segments[0] === 'llm' &&
+    segments[1] === 'providers' &&
+    segments[3] === 'modelParams'
+  if (!isModelParamPath) return segments
+  return [
+    ...segments.slice(0, 4),
+    segments.slice(4, segments.length - 1).join('.'),
+    segments[segments.length - 1] as string,
+  ]
+}
+
 function readDotted(source: Record<string, unknown>, path: string): unknown {
   let cursor: unknown = source
-  for (const segment of path.split('.')) {
+  for (const segment of splitSettingPath(path)) {
     if (cursor === null || typeof cursor !== 'object') return undefined
     cursor = (cursor as Record<string, unknown>)[segment]
   }
