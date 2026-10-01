@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 24 as const
+export const CONFIG_VERSION = 25 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -574,7 +574,7 @@ export const McpSchema = z.object({
 export type McpSettings = z.infer<typeof McpSchema>
 
 export const ProjectSchema = z.object({
-  /** 项目 id（设置页生成，稳定不变，`projects.current` 引用它）。 */
+  /** 项目 id（设置页生成，稳定不变；会话绑定（`SessionMeta.projectId`）引用它）。 */
   id: z.string(),
   /** 展示名（设置页可改；为空时界面回落成根目录末段）。 */
   name: z.string(),
@@ -586,18 +586,19 @@ export type ProjectConfig = z.infer<typeof ProjectSchema>
 /**
  * 项目机制（v13，docs/06 §5.1、docs/08 §1）。
  *
- * 「当前项目」决定两件事：① 每轮注入哪份项目级 `AGENTS.md`（项目根 → 当前工作目录逐层收集）；
- * ② 权限层判定「项目根之内 / 之外」的边界（step 2 的路径前缀校验）。
+ * 项目分组只登记「可被会话绑定的项目清单」：哪个会话用哪个项目由会话数据
+ * `SessionMeta.projectId`（`chat:setSessionProject` 写入）决定 —— 全局 `projects.current`
+ * 已于 v25 退役（v17 起它就不再决定会话的实际工作目录 / 边界，界面的「设为当前」早已过时）。
+ * 项目根仍决定两件事：① 绑定它的会话每轮注入哪份项目级 `AGENTS.md`；② 权限层判定
+ * 「项目根之内 / 之外」的边界（step 2 的路径前缀校验）。
  *
- * 因此本分组在 `SETTINGS_READONLY_PREFIXES` 里 —— 切项目等于改 Agent 的权限面与指令面，
+ * 因此本分组在 `SETTINGS_READONLY_PREFIXES` 里 —— 改项目清单等于改 Agent 的权限面与指令面，
  * 属自我提权路径，只能由用户在设置页 / 界面改（走 `settings:update`，不经过该黑名单）。
  *
  * 每个字段都带 `.default()`：顶层分组整段缺失时，Schema 走"整体保留候选对象"路径，
  * 不过三个子字段现在都有默认值（`LlmModelParamsSchema`），缺字段只会回落默认，不牵连整份配置。
  */
 export const ProjectsSchema = z.object({
-  /** 当前项目 id；空串 = 无项目（行为与 v13 之前完全一致）。 */
-  current: z.string().default(''),
   list: z.array(ProjectSchema).default([]),
   /** 每轮注入的项目级 AGENTS.md 字节预算（超出即截断并在注入文本里标注）。 */
   maxAgentsBytes: z.number().int().min(0).max(1_048_576).default(32768),

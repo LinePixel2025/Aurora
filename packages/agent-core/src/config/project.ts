@@ -1,59 +1,25 @@
 /**
- * 「当前项目」解析（docs/06 §5.1、docs/08 §1，v13）。
+ * 项目根解析（docs/06 §5.1）。
  *
- * 项目机制决定两件事：① 每轮注入哪份项目级 `AGENTS.md`（项目根 → 当前工作目录逐层收集）；
- * ② 权限层判定「项目根之内 / 之外」的边界（路径前缀校验）。
+ * 项目机制决定两件事：① 绑定项目的会话每轮注入哪份项目级 `AGENTS.md`（项目根 → 当前工作目录
+ * 逐层收集）；② 权限层判定「项目根之内 / 之外」的边界（路径前缀校验）。
  *
- * 本文件只做**纯函数**归一：把 `settings.projects.current` 指到 `list` 里的哪一条解析出来，
- * 并把 `root` 归一成绝对路径 —— 不读文件、不碰 Electron / DOM，纯 Node 可单测。
+ * 唯一的解析入口是**按项目 id**（会话绑定 `SessionMeta.projectId` → `projects.list` 里的条目）：
+ * 全局 `projects.current` 已于 v25 退役（v17 起它就不再决定会话的实际工作目录 / 边界）。
  *
- * **永不抛错**：配置被写坏（`current` 指向不存在的 id）只降级为「无项目」+ 一条 warn，
- * 与 `agentHost` 的 provider 自愈路径同一口径 —— 配置坏掉不该让 Agent 彻底失能。
+ * 本文件只做**纯函数**归一：把 root 归一成绝对路径 —— 不读文件、不碰 Electron / DOM，
+ * 纯 Node 可单测。
+ *
+ * **永不抛错**：绑定指向的项目已被删除 / root 空白是预期回落路径（会话级绑定是可选的），
+ * 静默降级为 `undefined`，与 `agentHost` 的 provider 自愈路径同一口径 —— 配置坏掉不该让
+ * Agent 彻底失能。
  */
 import { isAbsolute, resolve } from 'node:path'
-import type { Logger, ProjectConfig, Settings } from '@aurora/shared'
-import { createNoopLogger } from '@aurora/shared'
-
-export interface ResolvedProject {
-  /** 命中的当前项目条目；无项目 / id 无效时为 undefined */
-  current: ProjectConfig | undefined
-  /** 归一后的绝对项目根；无项目时为 undefined */
-  root: string | undefined
-}
+import type { Settings } from '@aurora/shared'
 
 /**
- * 解析「当前项目」：settings.projects.current 指向 list 里的哪一条、根目录归一成绝对路径。
- * - current 为空串（或全空白）→ 无项目（不 warn）
- * - current 有值但 list 里没有该 id → 记 warn（logger 可选）并降级为无项目，**永不抛错**
- * - root 为绝对路径直接采用；相对路径按传入的 cwd 解析（node:path 的 resolve/isAbsolute）
- * - root 归一后为空串时视为无项目（条目本身不返回，调用方只需看 `root`）
- */
-export function resolveProject(
-  settings: Pick<Settings, 'projects'>,
-  options: { cwd: string; logger?: Logger },
-): ResolvedProject {
-  const logger = options.logger ?? createNoopLogger()
-  const id = settings.projects.current.trim()
-  // 空串 = 未登记项目（默认态）：不告警，行为与 v13 之前完全一致
-  if (id === '') return { current: undefined, root: undefined }
-
-  const matched = settings.projects.list.find((entry) => entry.id === id)
-  if (matched === undefined) {
-    logger.warn('projects.current 指向不存在的项目，降级为无项目', { current: id })
-    return { current: undefined, root: undefined }
-  }
-
-  const root = normalizeRoot(matched.root, options.cwd)
-  // root 为空白的条目等于「登记了但没有根」——当无项目处理，条目也不返回（调用方只看 root）
-  if (root === undefined) return { current: undefined, root: undefined }
-
-  return { current: matched, root }
-}
-
-/**
- * 按**任意项目 id**（不限于 `projects.current`）解析项目根（会话级项目，docs/06 §5.1）。
+ * 按**项目 id** 解析项目根（会话级项目，docs/06 §5.1 的唯一解析入口）。
  *
- * 与 `resolveProject` 的差别只在条目定位：那边按 `projects.current` 找，这边按传入 id 找。
  * 会话绑定（`sessions/<id>.json` 的 `meta.projectId`）指向的项目可能**已被删除**——
  * 这是预期回落路径（会话级项目是可选的），因此这里**静默**返回 undefined、不记 warn：
  * 解析发生在每次工具执行 / 确认判定上，逐次 warn 只会刷屏；需要排查时看装配层日志。
@@ -65,7 +31,7 @@ export function resolveProject(
 export function resolveProjectRootById(
   settings: Pick<Settings, 'projects'>,
   id: string | undefined,
-  options: { cwd: string; logger?: Logger },
+  options: { cwd: string },
 ): string | undefined {
   const trimmed = (id ?? '').trim()
   if (trimmed === '') return undefined

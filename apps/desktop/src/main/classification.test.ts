@@ -144,7 +144,7 @@ function settingsWith(overrides: {
     skills: { userDir: '', disabled: [] },
     mcp: { servers: [], lazyConnect: false },
     // v13 新增顶层分组（项目机制，docs/06 §5.1）：本用例不涉及项目，保持"无项目"默认态
-    projects: { current: '', list: [], maxAgentsBytes: 32768 },
+    projects: { list: [], maxAgentsBytes: 32768 },
     advanced: {
       proxy: '',
       logLevel: 'info',

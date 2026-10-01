@@ -110,15 +110,9 @@ export interface ComputerToolsDeps {
   /** 用户主目录（三级回落的最后一级：无项目且未配 `agent.tools.workspaceDir` 时才用到） */
   homeDir: () => string
   /**
-   * 全局当前项目根（`resolveProject().root`，无项目时 undefined）。
-   * 会话级项目（v17）引入后它退居**回落位**：会话绑定项目失效 / 未绑定时才用
-   * （回落链由 `sessionWorkspaceDir` 与端口 guard 内部承担，见 `session-project.ts`）。
-   * 保留它主要是给 `sync()` 的日志与「无会话上下文」场景一个明确的取值源。
-   */
-  projectRoot: () => string | undefined
-  /**
    * 按会话解析**生效工作目录**（docs/06 §5.1 唯一口径，`session-project.ts` 的实现）：
-   * 会话绑定项目 > 全局当前项目 > `agent.tools.workspaceDir` > `homeDir`。
+   * 会话绑定项目 > 会话空间目录 > 激活模式目录 > `agent.tools.workspaceDir` > `homeDir`。
+   * （全局 `projects.current` 一级已于 v25 退役。）
    *
    * 为什么是按会话的取值器而不是 sync() 里算好的字符串：工具执行时才知道 `ctx.sessionId`，
    * 而两个会话可以绑定不同项目 —— 缺省 cwd / 搜索根必须**每次执行即时解析**
@@ -190,11 +184,10 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
       }
 
       // 缺省工作目录 / 搜索根的**唯一口径**（docs/06 §5.1）：回落链
-      // 会话绑定项目 > 当前项目根 > `agent.tools.workspaceDir` > 用户主目录。
+      // 会话绑定项目 > 会话空间目录 > 激活模式目录 > `agent.tools.workspaceDir` > 主目录。
       // sync() 在启动 / `settings:changed` 时只取一次**全局链**（无会话上下文）做日志；
       // 工具实例里的缺省值是**按会话的取值器**（`sessionWorkspaceDir`），每次执行即时解析 ——
       // 两个会话绑定了不同项目时各用各的根，改绑定无需重建工具。
-      const projectRoot = deps.projectRoot()
       const workspaceDir = deps.sessionWorkspaceDir(undefined)
 
       // 只读档：`run_command` 能执行任意命令（写盘 / 改注册表 / 起进程 / 装软件），
@@ -257,12 +250,11 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
 
       const names = toolNames.filter((name) => deps.tools.get(name) !== undefined)
       // `mode` 一并落日志：排查「为什么 write_file 不在表里」时第一眼就能看出是档位摘的，
-      // 还是子开关关的。`projectRoot` 也落进来：排查「命令到底跑在哪个目录」时，
-      // 三级回落里最高优先级的输入一眼可辨（空串 = 无项目）。
+      // 还是子开关关的。`workspaceDir` 是无会话上下文的全局链取值，排查「命令到底
+      // 跑在哪个目录」时以此做基线（真实执行按会话即时解析）。
       deps.logger.info('已同步电脑操控工具', {
         names,
         workspaceDir,
-        projectRoot: projectRoot ?? '',
         mode,
       })
       return names

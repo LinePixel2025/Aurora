@@ -256,11 +256,11 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   当前项目后，不显式传 `cwd` 的 `run_command` 与不传根的 `grep` / `glob` 落在**项目根**；
   无项目时行为与之前一致。设置页「打开工作目录」按钮（`openPath kind:'workspace'`，`ipc.ts`）
   **也已接同一链**（2026-09，解析抽在 `main/tools/workspace-target.ts` 纯函数）：配了项目时打开项目根、
-  与命令缺省落地目录一致，早前的分叉已消除；不要误改成 `kind:'project'`（那是固定打开项目根的另一个入口）。
+  与命令缺省落地目录一致，早前的分叉已消除（v25 起无 `kind:'project'` 入口：全局 current 已退役）。
   真正的安全边界是**「当前项目根」**，且**只有配置了当前项目时才生效**
   （无项目时行为与 v12 之前完全一致）。
   想当然地拿 `workspaceDir` 当护栏、或把 `openPath` 的 `kind: 'workspace'` 当成项目根，都是错的
-  （项目根走 `kind: 'project'`，见 docs/06 §5.1 / §11.1）。
+  （v25 起无 `kind: 'project'`：全局 current 已退役，`kind:'workspace'` 走同一回落链）。
 - **ClassIsland 桥接读取有默认路径回落（v0.2.4）**：文件源端点读取失败时自动按插件默认输出
   `%APPDATA%\ClassIslandurora-bridge\schedule.json` 重试一次，成功则告警提示对齐两端配置
   （`classisland.ts` 的 `fallbackFilePath`，主进程注入；默认路径常量别散落第二份）。
@@ -401,8 +401,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **会话级项目的解析唯一口径**（2026-09，v0.2.4 加模式级一级，docs/06 §5.1）：
   `main/tools/session-project.ts` 的
   `createSessionProjectResolver` —— 回落链是**会话绑定项目（`SessionMeta.projectId`）>
-  `projects.current` > 激活模式工作目录（当前只有 Work 模式读 `modes.work.workspaceDir`，
-  从 settings 现读不需要注入模式管理器）> `agent.tools.workspaceDir` > 主目录**；
+  会话空间目录（Agent → `桌面\Aurora`，Work → 模式工作目录）> 激活模式目录 >
+  `agent.tools.workspaceDir` > 主目录**（全局 `projects.current` 一级已于 v25 **整体退役**：
+  字段随 v24→v25 迁移删除、设置页「设为当前」与左栏「当前」徽标已删、
+  `openPath kind:'project'` 已删 —— 别再把「当前项目」当回落位或入口加回来）；
   工具缺省 cwd / 搜索根、file-port 边界、confirmTool 的 auto 档根内免确认与 confirm 档
   根内写免确认、AGENTS.md 指令注入**全部按会话现解析**
   （getter 注入，同 `agent.loop` 上限套路）。不要在执行链上再写第二套项目根解析，

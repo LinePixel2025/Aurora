@@ -253,12 +253,11 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     lazyConnect: false,
   },
   /**
-   * 项目机制（v13，docs/06 §5.1）：默认**无项目**（`current: ''` + 空列表），
-   * 行为与 v13 之前完全一致；AGENTS.md 只在用户显式登记项目后才注入。
+   * 项目机制（v13，docs/06 §5.1）：默认**空列表**；AGENTS.md 只在用户显式登记项目、
+   * 且会话绑定它之后才注入（v25 起无全局 `current`）。
    * `maxAgentsBytes` 是每轮注入的字节预算（32 KiB，够放一份长 AGENTS.md）。
    */
   projects: {
-    current: '',
     list: [],
     maxAgentsBytes: 32768,
   },

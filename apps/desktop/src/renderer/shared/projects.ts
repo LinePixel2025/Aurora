@@ -1,20 +1,19 @@
 /**
- * 项目添加的共享逻辑（docs/06 §5.1 项目机制，2026-09-30；2026-10-01 两处入口对齐）。
+ * 项目添加的共享逻辑（docs/06 §5.1 项目机制）。
  *
  * 两个入口共用：设置页「会话管理」（项目管理区组）与主界面左栏「项目对话」标题行的
- * 「添加项目」钮。id 规则 / 「目录末段作默认名」/「添加后即设为当前项目」只在这里有一份 ——
+ * 「添加项目」钮。id 规则与「目录末段作默认名」只在这里有一份 ——
  * 两处各抄一遍必然漂移（`.nav-row` 与探针契约那类漂移已经发生过一次）。
  *
- * 2026-10-01 用户报「左栏加完项目并没有真正添加」：两处入口此前**语义不一致** ——
- * 设置页加完会把新项目设为 `projects.current`（界面上的「已启用」），左栏只往 `list` 里追加、
- * 不动 `current`，于是「加上了」与「生效了」在左栏这条路径上分了家。现在统一为
- * `appendProject()` 一份口径：**加入 list + 设为当前项目**。
+ * **v25 起项目只登记、不「生效」**：全局 `projects.current` 已退役，项目改由**会话绑定**
+ * （`SessionMeta.projectId`，左栏项目分组组头 `+` 新建会话即绑定，`chat:setSessionProject`）。
+ * 添加项目 = 往 `list` 追加一条，仅此而已。
  *
  * 渲染层没有文件系统能力：目录一律由主进程弹系统选择框（`project:pickDirectory`）。
  */
 import type { ProjectConfig, ProjectsSettings, Result } from '@aurora/shared'
 
-/** 项目 id 只是本机标识（`projects.current` 引用它），不必全局唯一，但要够随机以免撞车 */
+/** 项目 id 只是本机标识（会话绑定 `SessionMeta.projectId` 引用它），不必全局唯一，但要够随机以免撞车 */
 export function newProjectId(): string {
   return `proj-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
@@ -26,12 +25,12 @@ export function folderNameOf(path: string): string {
 }
 
 /**
- * 「添加项目」的配置补丁构造口径（**唯一一份**）：把新条目追加进 `list`，并把它设为
- * `projects.current`（与设置页同款，见文件头注释）。返回完整 `projects` 子树 ——
- * `settings:update` 是顶层浅合并，少带一个键（如 `maxAgentsBytes`）就会丢配置。
+ * 「添加项目」的配置补丁构造口径（**唯一一份**）：把新条目追加进 `list`。
+ * 返回完整 `projects` 子树 —— `settings:update` 是顶层浅合并，
+ * 少带一个键（如 `maxAgentsBytes`）就会丢配置。
  */
 export function appendProject(current: ProjectsSettings, entry: ProjectConfig): ProjectsSettings {
-  return { ...current, list: [...current.list, entry], current: entry.id }
+  return { ...current, list: [...current.list, entry] }
 }
 
 /**

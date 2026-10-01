@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path'
 import { promises as nodeFs } from 'node:fs'
 import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
 import {
-  resolveProject,
+  resolveProjectRootById,
   type JobStore,
   type SessionStore,
   type SnapshotPort,
@@ -67,6 +67,7 @@ import {
   type ModeSummary,
   type OpenPathRequest,
   type ProjectStatus,
+  type ProjectRuntimeStatus,
   type SnapshotListRequest,
   type AgentJob,
   type AgentJobStatus,
@@ -1147,28 +1148,28 @@ function redactSettingsForRenderer(deps: DesktopDeps, source: Settings): Setting
 }
 
 /**
- * 读「当前项目」状态（v13，docs/06 §5.1）。
+ * 读项目清单的运行时状态（v25，docs/06 §5.1）。
  *
  * 渲染层没有文件系统能力，而项目根失效必须有**可见**提示（不能只在日志里 warn），
- * 所以"根目录是否存在且是目录"由主进程探测后回传；根不可读一律降级为 `rootAvailable: false`
- * （不抛错、不影响对话）。
+ * 所以"根目录是否存在且是目录"由主进程逐项探测后回传；根不可读一律降级为
+ * `rootAvailable: false`（不抛错、不影响对话）。相对 root 按进程 cwd 归一。
  */
 async function projectStatus(deps: DesktopDeps): Promise<ProjectStatus> {
-  const resolved = resolveProject(deps.settings.get(), {
-    cwd: process.cwd(),
-    logger: deps.logger,
-  })
-  const current = resolved.current
-  if (current === undefined || resolved.root === undefined) {
-    return { currentId: '', name: '', root: '', rootAvailable: false }
+  const settings = deps.settings.get()
+  const items: ProjectRuntimeStatus[] = []
+  for (const entry of settings.projects.list) {
+    const root = resolveProjectRootById(settings, entry.id, { cwd: process.cwd() })
+    let rootAvailable = false
+    if (root !== undefined) {
+      try {
+        rootAvailable = (await nodeFs.stat(root)).isDirectory()
+      } catch {
+        rootAvailable = false
+      }
+    }
+    items.push({ id: entry.id, name: entry.name, root: root ?? '', rootAvailable })
   }
-  let rootAvailable = false
-  try {
-    rootAvailable = (await nodeFs.stat(resolved.root)).isDirectory()
-  } catch {
-    rootAvailable = false
-  }
-  return { currentId: current.id, name: current.name, root: resolved.root, rootAvailable }
+  return { items }
 }
 
 /**
@@ -1312,21 +1313,13 @@ async function openPath(deps: DesktopDeps, request: OpenPathRequest): Promise<Re
       target = settings.modes.classroom.watchDir
       break
     case 'workspace': {
-      // 设置页「打开工作目录」按钮：与工具执行链走**同一个**三级回落
-      //（当前项目根 > agent.tools.workspaceDir > 用户主目录，docs/06 §5.1）——
-      // 配了当前项目时打开项目根，与不显式传 `cwd` 的命令落地目录一致，分叉已消除。
+      // 设置页「打开工作目录」按钮：与工具执行链走**同一个**回落
+      //（激活模式工作目录 > agent.tools.workspaceDir > 用户主目录，docs/06 §5.1）——
+      // 与不显式传 `cwd` 的命令落地目录一致。全局 `projects.current` 一级已于 v25 退役。
       // 解析逻辑抽在 `tools/workspace-target.ts`（纯函数、不 import electron，可单测）。
       target = resolveWorkspaceOpenTarget(settings, {
-        projectRoot: () =>
-          resolveProject(settings, { cwd: process.cwd(), logger: deps.logger }).root,
         homeDir: () => app.getPath('home'),
       })
-      break
-    }
-    case 'project': {
-      // 当前项目根（v13，docs/06 §5.1）：与 `workspace` 是两个不同字段，
-      // 相对路径按进程 cwd 归一（与 `project:status` 同一套语义）
-      target = resolveProject(settings, { cwd: process.cwd(), logger: deps.logger }).root ?? ''
       break
     }
     case 'subject': {

@@ -383,13 +383,12 @@ function flashProjectNotice(tone: 'ok' | 'error', text: string): void {
 }
 
 /**
- * 项目对话区标题行的「添加项目」（2026-09-30，docs/07 §2.3；2026-10-01 与设置页对齐）：
- * 弹目录选择框 → 加入 `projects.list` 并**设为当前项目**（`appendProject` 是唯一口径，
- * 与设置页同一条链路、同一份 id / 命名规则、同一个「加完即当前」语义）。
+ * 项目对话区标题行的「添加项目」（2026-09-30，docs/07 §2.3）：
+ * 弹目录选择框 → 加入 `projects.list`（`appendProject` 是唯一口径，
+ * 与设置页同一条链路、同一份 id / 命名规则）。
  *
- * 为什么现在也切 `current`：此前这里刻意不切，结果是「加上了」与「生效了」分家 ——
- * 设置页加完新项目就是「已启用」，左栏加完 `projects.current` 还指着旧项目，
- * 用户报「在左栏加完项目并没有真正添加」。两处入口现在是同一件事。
+ * **v25 起项目只登记、不「生效」**：全局 `projects.current` 已退役，项目改由会话绑定 ——
+ * 新项目要用于对话，在左栏该项目的分组头 `+` 新建会话（`chat:setSessionProject`）即可。
  *
  * 失败不再静默（2026-10-01）：选择框出错 / 配置被拒都经 `projectNotice` 报出来 ——
  * 旧实现把「取消」与「出错」压成同一个 `null` 直接返回，用户点完什么都看不到。
@@ -417,7 +416,7 @@ async function addProject(): Promise<void> {
     return
   }
   // 项目分组由 settings store 现算（`projectGroups`），update 成功后左栏自动多出一组
-  flashProjectNotice('ok', `已添加项目「${picked.entry.name}」并设为当前项目`)
+  flashProjectNotice('ok', `已添加项目「${picked.entry.name}」`)
 }
 
 /** Agent对话分组头 `+`：与顶部「新对话」同效（都显式标 agent 空间） */
@@ -1168,7 +1167,6 @@ async function markGuideDone(): Promise<void> {
       -->
       <SessionNav
         :project-groups="projectGroups"
-        :current-project-id="settingsStore.settings?.projects.current ?? ''"
         :work-sessions="workSessions"
         :agent-sessions="agentSessions"
         :archived-sessions="archivedSessionItems"

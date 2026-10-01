@@ -6,14 +6,15 @@
  * （`sessions/<id>.json` 的 `meta.projectId`，经 `chat:setSessionProject` 写入）；
  * 2026-09-30 会话三分（docs/06 §4）起再插入**会话空间**一级（`meta.space`）：
  *
- * - **绑定项目 > 空间目录 > 全局回落**：绑定了项目的会话（项目对话）以项目根为准；
+ * - **绑定项目 > 空间目录 > 模式目录 > 工具目录**：绑定了项目的会话（项目对话）以项目根为准；
  *   未绑定（或绑定项已被删除）的会话按空间落目录 —— Agent 空间（`space: 'agent'` 或
  *   未标记，含 `quick` 与历史会话）→ `%USERPROFILE%\Desktop\Aurora`（`agentDesktopDir`，
  *   固定常量、恒可解析）；Work 空间（`space: 'work'`）→ `modes.work.workspaceDir`
- *   （目录为空串时跳过本机继续旧链）。再往后按既有链回落：全局 `projects.current` >
- *   激活模式的工作目录（v18，当前只有 Work 模式）/ `agent.tools.workspaceDir` / 用户主目录；
- * - **空间目录排在全局当前项目之前**：空间是会话创建时刻的显式归属（左栏三分的判定依据），
- *   不随用户后来切 `projects.current` 漂移 —— 三分区「工作目录互不相同」靠这一级保证；
+ *   （目录为空串时跳过本机继续旧链）。再往后回落：激活模式的工作目录（v18，当前只有
+ *   Work 模式）/ `agent.tools.workspaceDir` / 用户主目录。
+ *   全局 `projects.current` 一级已于 v25 退役：它自 v17 起就不再决定会话的实际工作目录，
+ *   空间目录（会话创建时刻的显式归属，左栏三分的判定依据）才是真正的回落位 ——
+ *   三分区「工作目录互不相同」靠这一级保证；
  * - 中心会话（`center-` 前缀）与本地会话**同一逻辑**，默认未绑定、Agent 空间，没有特殊分支。
  *
  * 这条链是 **Codex 式「一个会话一个工作目录」的唯一口径**（docs/05 §4 / docs/06 §5.1）：
@@ -60,11 +61,9 @@ export interface SessionProjectDeps {
    * 由装配层注入并负责**懒创建**目录（失败只告警）—— 本文件不碰 fs。
    */
   agentDir: () => string
-  /** 全局当前项目根（`resolveProject().root`，v13 口径的 live getter） */
-  globalProjectRoot: () => string | undefined
   /** 用户主目录（回落链末级；每次调用即时取，别在装配期快照） */
   homeDir: () => string
-  /** 相对项目根的归一基准 cwd（与全局 `resolveProject` 同源：`process.cwd()`） */
+  /** 相对项目根的归一基准 cwd（`resolveProjectRootById` 用：`process.cwd()`） */
   cwd: string
 }
 
@@ -78,7 +77,7 @@ export interface SessionProjectResolver {
   /**
    * 该会话的项目根**边界**（端口 `workspaceRoot` guard、auto 档免确认判定与
    * confirm 档「根内写免确认」用，docs/06 §5.1 / §11.2）：
-   * 会话绑定项目 > 会话空间目录 > 全局当前项目 > 激活模式工作目录（Work）。
+   * 会话绑定项目 > 会话空间目录 > 激活模式工作目录（Work）。
    * Agent 空间恒可解析（`桌面\Aurora` 不依赖配置），因此**每个会话都有边界根** ——
    * 2026-09-30 起「无项目 = 无边界」的旧行为不再存在。
    */
@@ -86,7 +85,7 @@ export interface SessionProjectResolver {
   /**
    * 该会话的**生效工作目录**（缺省 cwd / 搜索根，docs/06 §5.1 唯一口径）：
    * 会话绑定项目 > 会话空间目录（Agent → `桌面\Aurora`；Work → 模式工作目录）>
-   * 全局当前项目 > 激活模式工作目录（Work）> `agent.tools.workspaceDir` > 用户主目录。
+   * 激活模式工作目录（Work）> `agent.tools.workspaceDir` > 用户主目录。
    */
   workspaceDir(sessionId: string | undefined): string
 }
@@ -135,12 +134,7 @@ export function createSessionProjectResolver(deps: SessionProjectDeps): SessionP
     projectRootOf,
 
     boundaryRoot(sessionId) {
-      return (
-        projectRootOf(sessionId) ??
-        spaceDirOf(sessionId) ??
-        deps.globalProjectRoot() ??
-        activeModeDir()
-      )
+      return projectRootOf(sessionId) ?? spaceDirOf(sessionId) ?? activeModeDir()
     },
 
     workspaceDir(sessionId) {
@@ -148,14 +142,8 @@ export function createSessionProjectResolver(deps: SessionProjectDeps): SessionP
       if (bound !== undefined) return bound
       const space = spaceDirOf(sessionId)
       if (space !== undefined) return space
-      // 既有链：全局当前项目 > 激活模式工作目录 > agent.tools.workspaceDir > 主目录
-      return effectiveWorkspaceDir(
-        deps.getSettings(),
-        deps.globalProjectRoot(),
-        deps.homeDir(),
-        undefined,
-        activeModeDir(),
-      )
+      // 既有链：激活模式工作目录 > agent.tools.workspaceDir > 主目录
+      return effectiveWorkspaceDir(deps.getSettings(), deps.homeDir(), undefined, activeModeDir())
     },
   }
 }

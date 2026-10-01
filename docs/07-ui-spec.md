@@ -104,8 +104,9 @@
        `data-action="chat.new-project-session"`，新建即绑定该项目）；
        **点项目标题行折叠 / 展开该项目的全部会话**（`data-action="chat.toggle-project"`，
        标题行是可点按钮、hover 有底色；`aria-expanded` 跟折叠态；会话数徽标；
-       当前项目的标题行上另有一枚「当前」徽标 `data-field="chat.project-current"`；
        默认**全部展开**，折叠态只存组件内（视图偏好不落配置，重启回展开态）。
+       ⚠️ 旧「当前」徽标（`data-field="chat.project-current"`）已于 v25 随全局
+       `projects.current` 退役整体删除 —— 探针现为「零出现」哨兵。
        折叠动效：容器 `grid-template-rows: 0fr ↔ 1fr` 过渡（无需测量内容高度）+ 内层
        `overflow: hidden`；折叠时容器加 `inert` —— 视觉裁掉了但键盘还能 Tab 进去，
        否则会 focus 到看不见的会话项上。`+` 与折叠按钮是**同行兄弟**且 `+` 带 `@click.stop`，
@@ -113,21 +114,17 @@
        项目增删走 `TransitionGroup`（淡入 + 轻微位移，不「啪」地插一整块）。
        会话项 = 绑定了 `projectId` 的会话（`ChatSessionSummary.projectId`）。
        **分区标题行右侧是「添加项目」钮**（`data-action="chat.add-project"`：
-       弹系统目录选择框 → 加入 `projects.list` **并设为当前项目**（`projects.current`），
-       与设置页「会话管理 → 添加项目」**同一条链路、同一份口径**（`shared/projects.ts` 的
-       `appendProject`，id / 默认名 / 是否设为当前都只在那里有一份）；
+       弹系统目录选择框 → 加入 `projects.list`，与设置页「会话管理 → 添加项目」
+       **同一条链路、同一份口径**（`shared/projects.ts` 的 `appendProject`，
+       id / 默认名都只在那里有一份）；
        整区常显正是因为它是主界面唯一的项目登记入口 —— 没有项目时也不能没有它。
-       ⚠️ 2026-10-01 修正：此前左栏这条**刻意不切 `current`**（理由是「加项目多半只是为在
-       这个项目里开对话」），结果「加上了」与「生效了」在两处入口分了家 —— 用户报
-       「在左栏加完项目并没有真正添加」。现在两处逐字一致：**加完即当前项目**。
+       ⚠️ **v25 起项目只登记不「生效」**：全局 `projects.current` 已退役，加完项目要用于
+       对话，在该项目的分组头 `+` 新建会话（`chat:setSessionProject`）即绑定。
        选择框出错 / 配置被拒不再静默：IPC 仍是 `Result<string | null>`，渲染层的
        `pickProjectEntry` 把它收敛成三态（选中 / 用户取消 / 出错，`ProjectPickOutcome`），
        出错经左栏左下角的 `chat.project-notice` 提示条报出来（**不挂在 composer 里** ——
        composer 只在对话视图挂载，而左栏这个钮在子代理 / 自动化页照样能点），
-       成功也给一句「已添加项目「X」并设为当前项目」。
-       **当前项目在分组头上标一枚「当前」**（`data-field="chat.project-current"`，锁定
-       `projects.current`）：主界面此前没有任何地方表示「哪个项目是当前项目」（右栏项目卡
-       已下线），加完项目有没有生效只能去设置页看 —— 这枚标记把它带回主界面。
+       成功给一句「已添加项目「X」」。
        绑定项目已被删除的孤儿会话**归入 Agent对话区**显示（解析链上它们已按未绑定回落；
        展示层按 `knownProjectIds` 判定，2026-09-30 修 —— 此前它们既进不了项目分组、
        又被 Agent 分组按 `projectId === undefined` 挡掉，会从**左栏整条消失**）。
@@ -673,10 +670,13 @@
   的契约因此原样保留。空态「还没有会话」只在**两份列表都空**时出现（全部归档时主列表为空、
   归档分组仍在，此时提示「还没有会话」自相矛盾）。
   项目（v13 新增）：右栏卡锚点 `context.project-card`（警示徽标 `context.project-unavailable`）；
-  设置页「通用 → 项目」区组的字段锚点沿用**配置路径原文** —— `projects.name` / `projects.root` /
-  `projects.current`（「设为当前」按钮，当前项显示「已启用」并 disabled）/ `projects.repick`
-  （「重新选择目录」，仅根不可用的当前项目行）/ `projects.remove`（删除）/ `projects.add`（添加项目，
-  走 `project:pickDirectory` 弹系统目录选择框），列表为空时是 `data-empty="projects.list"`。
+  设置页「会话管理 → 项目」区组的字段锚点沿用**配置路径原文** —— `projects.name` / `projects.root` /
+  `projects.repick`（「重新选择目录」）/ `projects.remove`（删除）/ `projects.add`（添加项目，
+  走 `project:pickDirectory` 弹系统目录选择框），列表为空时是 `data-empty="projects.list"`；
+  根不可用的项目行另有 `data-field="projects.unavailable"` 的「目录不可用」徽标 + 警示条。
+  ⚠️ 旧 `projects.current`（「设为当前」按钮，当前项显示「已启用」）已于 v25 退役。
+  ⚠️ `openPath` 的 `kind: 'project'`（「打开当前项目目录」按钮）同轮退役：
+  全局 current 不复存在，该入口删除（`kind: 'workspace'` 保留，按 06 §5.1 回落链取目录）。
   钉住它们的探针场景见 §5.3：`chat-project-card.png`（先建出真实项目根 → `settings:update` 把
   `projects.current` 指过去 → 断言右栏卡**恰好一张**、文本含项目名与根目录、**不是**警示态 →
   收尾还原成无项目再断言卡消失）；设置页 general 页探针则数 `[data-field^="projects."]`
@@ -902,7 +902,8 @@
   总开关关闭时显示「已停用」）、技能「已启用 x / 共 y」（未发现显示「未发现」）、
   MCP「n 台服务器 / m 台启用」（未配置显示「未配置」）。
   **安全文案收敛为一处**：本页操作直接影响真实系统、工作目录不是沙箱（缺省目录与检索缺省根都按
-  06 §5.1 回落链取：配了当前项目时即项目根，Work 模式未绑项目时为模式工作目录，否则 `agent.tools.workspaceDir` > 主目录）、
+  06 §5.1 回落链取：Work 模式配了模式工作目录时为模式目录，否则 `agent.tools.workspaceDir` > 主目录；
+  全局 `projects.current` 一级已于 v25 退役）、
   敏感工具需逐次确认（确认开关在「系统」页，关闭后不经确认直接执行）只在工具组说明里完整表述一次；
   工作目录长说明、页尾安全提示与原常驻警示 Toast 里与之重复的表述删除，页副标题只保留导航信息。
   **启停控件统一 checkbox**：MCP 服务器行卡的「停用 / 启用」按钮改为 checkbox（绑 `enabled`，

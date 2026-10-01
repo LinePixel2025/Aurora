@@ -3,8 +3,9 @@
  * 会话管理设置页（2026-09-30，docs/08 §7）：**项目管理 + 会话列表**两个区组。
  *
  * 项目管理由「通用」页迁入（docs/06 §5.1，v13 起原在 GeneralPage）——
- * 项目列表 / 设为当前 / 重选目录 / 删除 / 根可用性警示全部原样搬来，
- * `data-field="projects.*"` 锚点不变（capture 探针契约）。
+ * 项目列表 / 重选目录 / 删除 / 根可用性警示原样搬来；「设为当前」已于 v25
+ * 随全局 `projects.current` 退役（项目改由会话绑定），`data-field="projects.*"`
+ * 锚点不变（capture 探针契约）。
  *
  * 会话列表（新增）：拉 `chat:sessions` 全量，按左栏三分口径分组
  * （项目对话 / 工作目录对话 / Agent对话 + 已归档），行内提供**归档 / 取消归档**
@@ -18,6 +19,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import type {
   ChatSessionSummary,
   ProjectConfig,
+  ProjectRuntimeStatus,
   ProjectsSettings,
   ProjectStatus,
 } from '@aurora/shared'
@@ -36,14 +38,16 @@ const error = ref<string | null>(null)
 
 const projects = computed(() => settingsStore.settings?.projects ?? null)
 
-/** 主进程探测的「当前项目」状态：渲染层没有文件系统能力，根目录是否可用只能问主进程 */
+/** 主进程逐项探测的项目根状态：渲染层没有文件系统能力，根目录是否可用只能问主进程 */
 const projectStatus = ref<ProjectStatus | null>(null)
 
-/** 项目根不可用**且确实有当前项目**时才算警示态（无项目不是异常） */
-const currentProjectUnavailable = computed(() => {
+/** 某一行的项目根是否确认不可用（探测不到状态时按可用处理 —— 假警报比不显示更糟） */
+function rootUnavailableOf(id: string): boolean {
   const status = projectStatus.value
-  return status !== null && status.currentId !== '' && !status.rootAvailable
-})
+  if (status === null) return false
+  const item = status.items.find((entry) => entry.id === id)
+  return item !== undefined && !item.rootAvailable
+}
 
 async function refreshProjectStatus(): Promise<void> {
   const result = await window.aurora.project.status()
@@ -70,9 +74,10 @@ async function saveProjects(next: Partial<ProjectsSettings>): Promise<void> {
 }
 
 /**
- * 添加项目：目录由主进程弹系统选择框（渲染层没有文件系统能力），选中即设为当前项目。
- * id / 默认名 / 「设为当前」规则与主界面左栏「项目对话」标题行的添加钮**同源**
- * （`shared/projects.ts` 的 `appendProject`，2026-10-01 起两处入口逐字一致）。
+ * 添加项目：目录由主进程弹系统选择框（渲染层没有文件系统能力）。
+ * id / 默认名与主界面左栏「项目对话」标题行的添加钮**同源**
+ * （`shared/projects.ts` 的 `appendProject`）；v25 起项目只登记不「生效」，
+ * 会话用项目走左栏分组头 `+` 新建会话绑定。
  * 选择框出错不再静默：`pickProjectEntry` 回三态，错误经 `error` 报出来。
  */
 async function addProject(): Promise<void> {
@@ -98,18 +103,11 @@ async function updateProjectField(id: string, patch: Partial<ProjectConfig>): Pr
   })
 }
 
-async function setCurrentProject(id: string): Promise<void> {
-  await saveProjects({ current: id })
-}
-
-/** 删除项目：删掉的正是当前项目时一并把 `current` 清空（否则它会指向一个不存在的 id） */
+/** 删除项目：直接从清单移除（v25 起无全局 current 需要连带清理） */
 async function removeProject(id: string): Promise<void> {
   const current = projects.value
   if (!current) return
-  await saveProjects({
-    list: current.list.filter((item) => item.id !== id),
-    current: current.current === id ? '' : current.current,
-  })
+  await saveProjects({ list: current.list.filter((item) => item.id !== id) })
 }
 
 /** 项目根失效时的「重新选择目录」（假设 7：失效必须有可见出口，不能只在日志里 warn） */
@@ -121,11 +119,6 @@ async function repickProjectRoot(id: string): Promise<void> {
   }
   if (picked.value === null) return
   await updateProjectField(id, { root: picked.value })
-}
-
-async function openProjectRoot(): Promise<void> {
-  const result = await window.aurora.app.openPath({ kind: 'project' })
-  if (!result.ok) error.value = result.message
 }
 
 // ───────────────────────── 会话列表（新增）─────────────────────────
@@ -303,14 +296,12 @@ watch(
         </SettingField>
 
         <div class="row project-actions">
-          <AppButton
-            data-field="projects.current"
-            size="sm"
-            :disabled="item.id === (projects?.current ?? '')"
-            @click="setCurrentProject(item.id)"
+          <span
+            v-if="rootUnavailableOf(item.id)"
+            class="tiny unavailable-badge"
+            data-field="projects.unavailable"
+            >目录不可用</span
           >
-            {{ item.id === (projects?.current ?? '') ? '已启用' : '设为当前' }}
-          </AppButton>
           <AppButton
             data-field="projects.repick"
             size="sm"
@@ -329,12 +320,9 @@ watch(
           </AppButton>
         </div>
 
-        <AppToast
-          v-if="item.id === (projects?.current ?? '') && currentProjectUnavailable"
-          tone="error"
-        >
-          项目目录不可用：{{ item.root }} 不存在或不是目录，AGENTS.md
-          不会被注入。请重新选择目录或改正路径。
+        <AppToast v-if="rootUnavailableOf(item.id)" tone="error">
+          项目目录不可用：{{ item.root }} 不存在或不是目录，绑定它的会话将无法注入
+          AGENTS.md。请重新选择目录或改正路径。
         </AppToast>
       </div>
 
@@ -345,14 +333,6 @@ watch(
       <div class="row project-actions">
         <AppButton data-field="projects.add" size="sm" variant="primary" @click="addProject">
           添加项目
-        </AppButton>
-        <AppButton
-          size="sm"
-          variant="ghost"
-          :disabled="(projects?.current ?? '') === ''"
-          @click="openProjectRoot"
-        >
-          打开当前项目目录
         </AppButton>
         <span class="tiny muted">
           AGENTS.md 注入上限 {{ projects?.maxAgentsBytes ?? 32768 }} 字节
@@ -451,6 +431,14 @@ watch(
 .project-actions {
   flex-wrap: wrap;
   align-items: center;
+}
+
+/* 「目录不可用」徽标：只做状态标识，修复入口是同行的「重新选择目录」 */
+.unavailable-badge {
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--status-error-bg, rgba(255, 59, 48, 0.14));
+  color: var(--status-error, #ff3b30);
 }
 
 /* ── 会话列表 ── */

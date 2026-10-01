@@ -136,8 +136,7 @@ describe('SettingsSchema / defaults 一致性', () => {
     // 不给分组自身登记**类型**（分组路径只进 `objectPaths` —— 标量 / 数组会被形状校验拒掉，P2-26），
     // `lookupSpec('projects')` 仍返回 undefined，所以**值**层面的校验必须断言子路径
     // （否则「配置写坏只剩备份重建」这类问题不会被这层拦到）。
-    expect(fieldAccepts('projects.current', 'proj-1')).toBe(true)
-    expect(fieldAccepts('projects.current', 1)).toBe(false)
+    // `projects.current` 已于 v25 从 Schema 删除（该 helper 对未登记路径默认放行，不在此断言）
     expect(fieldAccepts('projects.list', [])).toBe(true)
     expect(fieldAccepts('projects.list', {})).toBe(false)
     expect(fieldAccepts('projects.maxAgentsBytes', 32768)).toBe(true)

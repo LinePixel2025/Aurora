@@ -293,7 +293,8 @@ export function createConfirmTool(options: {
   allowPatterns?: () => readonly string[]
   /**
    * 按会话解析的项目根（绝对路径）；无项目时返回 undefined（允许 async：会话绑定
-   * 存在会话文件里，装配层可能要先读盘）。缺省按全局 `projects.current` 判定。
+   * 存在会话文件里，装配层可能要先读盘）。按**会话绑定**的项目根边界判定
+   * （docs/06 §5.1；全局 `projects.current` 一级已于 v25 退役）。
    *
    * `auto` 档的免确认边界就是它：**根内免确认、根外照常弹卡**。
    * 会话级项目（docs/06 §5.1）起它按 `info.sessionId` 解析——会话绑定了项目就用那个根，

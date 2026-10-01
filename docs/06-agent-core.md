@@ -322,22 +322,22 @@ export interface LlmProvider {
     「`grep` 返回的是路径与行号，拿到位置后再用 `read_file` 的 `offset` 读那一段」。
 ### 5.1 项目与 AGENTS.md（v13）
 
-「项目」是配置里的一个实体（docs/08 §1）：`projects.current` 指向 `projects.list[]` 里的某一条，
-每条是 `{ id, name, root }`；`current` 为空串表示**无项目**（默认态，行为与 v13 之前完全一致）。
-项目根同时决定三件事：① 每轮注入哪份项目级约定；② 权限层判定「项目根之内 / 之外」的边界（§12.2）；
-③ 缺省工作目录 / 搜索根（`effectiveWorkspaceDir`，见本节末条）。
-⚠️ v17 / 2026-09-30 起这三件事**全部按会话解析**（不是"全局当前项目的最高优先级输入"）：
-**会话绑定项目 > 会话空间目录 > 全局 `projects.current` > …** —— 全局 `projects.current`
-只是回落链上的一级，未绑定会话先落自己的空间目录（Agent 空间恒 `桌面\Aurora`），
-因此「切 `projects.current`」在界面上是「哪个项目是当前项目」（设置页的「已启用」/ 左栏的
-「当前」徽标），**并不等于**把某个会话的工作目录搬过去（要搬得绑定会话或走空间目录那一级）。
+「项目」是配置里的一个实体（docs/08 §1）：`projects.list[]` 每条是 `{ id, name, root }`。
+⚠️ **v25 / 2026-10-02 起全局 `projects.current` 整体退役**（v24 → v25 迁移删除该字段）：
+v17 起它就已经不决定会话的实际工作目录 / 边界，界面的「设为当前」早已过时 ——
+项目现在只是「可被会话绑定的目录清单」，哪个会话用哪个项目由**会话绑定**（下段）决定。
+项目根同时决定两件事：① 绑定它的会话每轮注入哪份项目级约定；② 权限层判定
+「项目根之内 / 之外」的边界（§12.2）与缺省工作目录 / 搜索根（`effectiveWorkspaceDir`，
+见本节末条）。解析链（2026-09-30 起含会话空间一级）：
+**会话绑定项目 > 会话空间目录 > 激活模式目录 > `agent.tools.workspaceDir` > 主目录**
+—— 未绑定会话落自己的空间目录（Agent 空间恒 `桌面\Aurora`）。
 
 **会话级项目（v17，2026-09）**：每个会话可以绑定 `projects.list` 里的某一项——绑定写在
 **会话文件自身**（`sessions/<id>.json` 的 `meta.projectId`，经 `chat:setSessionProject` 写入 / 清除），
 **不是配置项、不进 `CONFIG_VERSION` 迁移链**（与归档同一条路，`''` 与缺字段都算未绑定）。
-  解析链升为五级（2026-09-30 起加会话空间一级，见下）：**会话绑定项目 > 会话空间目录 >
-  `projects.current` > `agent.tools.workspaceDir` > 主目录**；
-绑定项已被删除时**静默回落** `projects.current`（会话级绑定是可选的，逐次执行不刷 warn）。
+  解析链（2026-09-30 起加会话空间一级，见下）：**会话绑定项目 > 会话空间目录 >
+  激活模式目录 > `agent.tools.workspaceDir` > 主目录**；
+绑定项已被删除时**静默回落**空间目录（会话级绑定是可选的，逐次执行不刷 warn）。
 三处消费方全部按**会话**解析（`main/tools/session-project.ts` 是唯一解析口径，别另写第二份）：
 缺省 cwd / 搜索根（工具执行时经 `ctx.sessionId` 现调 getter）、项目根边界与 auto 档免确认判定
 （`file-port` / `command-runner` 的 `workspaceRoot(sessionId)` 与 `createConfirmTool`）、

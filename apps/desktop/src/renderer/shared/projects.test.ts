@@ -1,16 +1,15 @@
 /**
  * 「添加项目」共享逻辑的单测（`apps/desktop/src/renderer/**` 下的纯逻辑，vitest 以 node 环境跑）。
  *
- * 守护的是**两处入口的唯一口径**（docs/07 §2.3，2026-10-01）：
- * 设置页与主界面左栏都必须「加入 list + 设为当前项目」——此前左栏只追加 list、不动
- * `current`，用户报「在左栏加完项目并没有真正添加」（加了但没生效）。
+ * 守护的是**两处入口的唯一口径**（docs/07 §2.3）：设置页与主界面左栏都只「加入 list」——
+ * v25 起项目只登记不「生效」，全局 `projects.current` 已退役，会话用项目走左栏
+ * 分组头 `+` 新建会话绑定（`chat:setSessionProject`）。
  */
 import { describe, expect, it } from 'vitest'
 import type { ProjectConfig, ProjectsSettings } from '@aurora/shared'
 import { appendProject, folderNameOf, newProjectId, pickProjectEntry } from './projects.js'
 
 const base: ProjectsSettings = {
-  current: 'proj-old',
   list: [{ id: 'proj-old', name: '旧项目', root: 'D:\\old' }],
   maxAgentsBytes: 32768,
 }
@@ -40,10 +39,9 @@ describe('newProjectId', () => {
 })
 
 describe('appendProject', () => {
-  it('追加到 list 末尾并把它设为当前项目（与设置页同款口径）', () => {
+  it('追加到 list 末尾（v25 起项目只登记不「生效」，无 current 可设）', () => {
     const next = appendProject(base, entry)
     expect(next.list.map((item) => item.id)).toEqual(['proj-old', 'proj-new'])
-    expect(next.current).toBe('proj-new')
   })
 
   it('保留 projects 子树的其它键（顶层浅合并下少带一个键就丢配置）', () => {
@@ -54,7 +52,7 @@ describe('appendProject', () => {
     const before = JSON.stringify(base)
     appendProject(base, entry)
     expect(JSON.stringify(base)).toBe(before)
-    expect(base.current).toBe('proj-old')
+    expect(base.list).toHaveLength(1)
   })
 })
 

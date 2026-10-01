@@ -41,10 +41,10 @@ export interface AppInfo {
 
 export interface OpenPathRequest {
   /**
-   * `project` = **当前项目根**（v13，docs/06 §5.1）：与 `workspace` 不同，
-   * 后者打开的是 `agent.tools.workspaceDir`（工具默认工作目录），项目根另有归属。
+   * `workspace` = 生效工作目录（docs/06 §5.1 回落链）。`project`（v13 的「当前项目根」）
+   * 已于 v25 随全局 `projects.current` 一并退役 —— 项目改为按会话绑定，没有全局「当前项目」。
    */
-  kind: 'logs' | 'config' | 'watchDir' | 'subject' | 'workspace' | 'project'
+  kind: 'logs' | 'config' | 'watchDir' | 'subject' | 'workspace'
   /** kind = subject 时使用：科目名 */
   subject?: string
 }
@@ -56,11 +56,15 @@ export interface OpenPathRequest {
  * 不能只在日志里 warn），因此由主进程探测后经 IPC 回传，而不是让界面自己猜。
  */
 export interface ProjectStatus {
-  /** 当前项目 id；空串 = 无项目（此时其余字段均为空 / false） */
-  currentId: string
-  /** 当前项目展示名；未命名时为空串（界面回落成根目录末段） */
+  /** 每个已登记项目的根可用性（渲染层没有文件系统能力，只能问主进程） */
+  items: ProjectRuntimeStatus[]
+}
+
+/** 单个项目的根探测结果；不可用时界面在对应行显示「项目目录不可用」 */
+export interface ProjectRuntimeStatus {
+  id: string
   name: string
-  /** 归一后的项目根绝对路径；无项目时为空串 */
+  /** 归一后的项目根绝对路径 */
   root: string
   /** 项目根是否存在且是目录；false 时界面显示「项目目录不可用」 */
   rootAvailable: boolean
@@ -137,7 +141,8 @@ export interface SettingsPatch {
   modes?: Partial<Settings['modes']>
   /**
    * 项目机制（v13，docs/06 §5.1）：顶层浅合并，调用方只传改动的键即可
-   * （例如只传 `{ current: 'a' }`，`list` 原样保留）。
+   * （例如只传 `{ maxAgentsBytes: 4096 }`，`list` 原样保留）。
+   * 全局 `projects.current` 已于 v25 从 Schema 删除，补丁里不再出现该键。
    */
   projects?: Partial<Settings['projects']>
   /** 电脑操控工具（docs/06 §11）：顶层浅合并，调用方必须带上完整的 `tools` 子树 */

@@ -967,13 +967,13 @@ describe('配置迁移链', () => {
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.warnings).toEqual([])
 
-      // projects 已存在时只补缺键
-      expect(loadProjects(outcome.data)).toEqual({ current: '', list: [], maxAgentsBytes: 32768 })
+      // projects 已存在时只补缺键（v25 迁移在链尾把 current 删掉）
+      expect(loadProjects(outcome.data)).toEqual({ list: [], maxAgentsBytes: 32768 })
       // agent 已存在时只补 permissionMode
       expect((outcome.data['agent'] as Record<string, unknown>)['permissionMode']).toBe('confirm')
     })
 
-    it('用户已写过的 current / list / permissionMode 原样保留，不被默认值覆盖', () => {
+    it('用户已写过的 list / maxAgentsBytes / permissionMode 原样保留，current 被 v25 删除', () => {
       const config = structuredClone(V12_CONFIG)
       config['projects'] = {
         current: 'proj-1',
@@ -984,7 +984,7 @@ describe('配置迁移链', () => {
 
       const outcome = migrate(config)
       const projects = loadProjects(outcome.data)
-      expect(projects['current']).toBe('proj-1')
+      expect(projects['current']).toBeUndefined()
       expect(projects['maxAgentsBytes']).toBe(4096)
       expect(projects['list']).toEqual([{ id: 'proj-1', name: '演示', root: 'D:\\demo' }])
       expect((outcome.data['agent'] as Record<string, unknown>)['permissionMode']).toBe('readonly')
@@ -1098,6 +1098,7 @@ describe('配置迁移链', () => {
         'v21 → v22：v21 → v22：为 llm.providers 各条目补 vision: false 并归一 type（多模态输入 / Responses API）',
         'v22 → v23：v22 → v23：把 provider 级 reasoningEffort / contextWindow / vision 搬进 modelParams[model]，删除 temperature',
         'v23 → v24：v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
+        'v24 → v25：v24 → v25：退役全局 projects.current（项目改为按会话绑定，docs/06 §5.1）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1134,6 +1135,7 @@ describe('配置迁移链', () => {
         'v21 → v22：v21 → v22：为 llm.providers 各条目补 vision: false 并归一 type（多模态输入 / Responses API）',
         'v22 → v23：v22 → v23：把 provider 级 reasoningEffort / contextWindow / vision 搬进 modelParams[model]，删除 temperature',
         'v23 → v24：v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
+        'v24 → v25：v24 → v25：退役全局 projects.current（项目改为按会话绑定，docs/06 §5.1）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1537,6 +1539,7 @@ describe('配置迁移链', () => {
       })
       expect(outcome.applied).toEqual([
         'v23 → v24：v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
+        'v24 → v25：v24 → v25：退役全局 projects.current（项目改为按会话绑定，docs/06 §5.1）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>

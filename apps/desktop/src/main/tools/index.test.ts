@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   ToolRegistry,
-  effectiveWorkspaceDir,
   type AgentProviderFactory,
   type ClipboardImagePort,
   type ClipboardPort,
@@ -188,7 +187,7 @@ function setup(
   settings: Settings,
   runner: CommandRunner = fakeRunner(),
   files: FilePort = fakeFilePort(),
-  projectRoot: () => string | undefined = () => undefined,
+  sessionWorkspaceDir: (sessionId: string | undefined) => string = () => HOME,
 ) {
   const tools = new ToolRegistry()
   const port = fakeSettingsPort()
@@ -197,9 +196,9 @@ function setup(
     getSettings: () => settings,
     logger: createMemoryLogger(),
     homeDir: () => HOME,
-    projectRoot,
-    // 与生产装配同一条回落链（会话级解析器在 session-project.ts；本 helper 不带会话绑定）
-    sessionWorkspaceDir: () => effectiveWorkspaceDir(settings, projectRoot(), HOME),
+    // 与生产装配同款：按会话即时解析（会话级解析器在 session-project.ts；
+    // 本 helper 缺省不带会话绑定，直接落 HOME）
+    sessionWorkspaceDir,
     run: runner,
     files,
     open: fakeOpenPort(),
@@ -236,7 +235,6 @@ describe('registerComputerTools', () => {
       getSettings: () => makeSettings(),
       logger: createMemoryLogger(),
       homeDir: () => HOME,
-      projectRoot: () => undefined,
       // 与生产装配同款：按会话即时解析（getter 注入，杜绝「改绑定要重建工具」）
       sessionWorkspaceDir: (sessionId) =>
         (sessionId !== undefined ? roots[sessionId] : undefined) ?? HOME,
@@ -454,7 +452,6 @@ describe('registerSettingsTool', () => {
       getSettings: () => settings,
       logger: createMemoryLogger(),
       homeDir: () => HOME,
-      projectRoot: () => undefined,
       sessionWorkspaceDir: () => HOME,
       run: fakeRunner(),
       files: fakeFilePort(),
@@ -530,7 +527,6 @@ describe('registerExtensionTools', () => {
       getSettings: () => settings,
       logger: createMemoryLogger(),
       homeDir: () => HOME,
-      projectRoot: () => undefined,
       sessionWorkspaceDir: () => HOME,
       run: fakeRunner(),
       files: fakeFilePort(),
@@ -689,7 +685,6 @@ describe('readonly 档（只读 = 不进工具表）', () => {
       getSettings: () => settings,
       logger: createMemoryLogger(),
       homeDir: () => HOME,
-      projectRoot: () => undefined,
       sessionWorkspaceDir: () => HOME,
       run: fakeRunner(),
       files: fakeFilePort(),
@@ -829,32 +824,25 @@ describe('readonly 档（只读 = 不进工具表）', () => {
 })
 
 /**
- * 缺省工作目录三级回落（docs/06 §5.1，2026-09 接线修复）：**当前项目根 > `agent.tools.workspaceDir` > 主目录**。
+ * 缺省工作目录按会话回落（docs/06 §5.1，2026-09 接线修复）。
  *
- * 断言的是**端口实际收到的参数**（runner 的 `cwd`、file 端口的 `root`）—— 即"命令到底跑在哪 /
- * 检索到底扫哪"的执行端证据；判定端由 `agent-host.test.ts`「auto 档 + run_command 不带显式 cwd」
- * 用例钉住（同一"缺省=项目根"前提），两者配对构成「判定 ↔ 执行一致」的报障修复证明。
- * 无项目的两条用例同时锁定"行为与接线前逐字一致"。
+ * v25 起无全局 `projects.current` 一级：装配层注入的 `sessionWorkspaceDir` 是**按会话的
+ * 取值器**（生产侧由 session-project.ts 现解析，回落链单测在那边）—— 本组断言的是
+ * **装配必须原样透传这个 getter**：端口实际收到的参数（runner 的 `cwd`、file 端口的 `root`）
+ * 必须等于 getter 给的值，装配不得截留 / 二次加工。判定端由 `agent-host.test.ts`
+ * 「auto 档 + run_command 不带显式 cwd」用例钉住，两者配对构成「判定 ↔ 执行一致」。
  */
-describe('缺省工作目录三级回落', () => {
+describe('缺省工作目录按会话回落', () => {
   const PROJECT = 'C:\\proj-root'
 
-  function withProject(workspaceDir: string): Settings {
-    const settings = makeSettings()
-    settings.projects.current = 'p'
-    // list 里的 root 刻意与 getter 返回值**不同字**：若装配丢掉 `deps.projectRoot()`（第一级），
-    // `effectiveWorkspaceDir` 的第②级会现查 list 拿到 `C:\list-root` —— 用例当场变红。
-    // （第②级不做绝对化，生产侧绝对路径根只能来自 `resolveProject` 的 getter，2026-09 审查加固）
-    settings.projects.list = [{ id: 'p', name: 'x', root: 'C:\\list-root' }]
-    settings.agent.tools.workspaceDir = workspaceDir
-    return settings
-  }
-
   /** 装一遍工具并各执行一次**不传 cwd / path** 的调用，回传端口实际收到的目录 */
-  async function defaultTargets(settings: Settings, projectRoot: () => string | undefined) {
+  async function defaultTargets(
+    settings: Settings,
+    sessionWorkspaceDir: (sessionId: string | undefined) => string,
+  ) {
     const runner = fakeRunner()
     const files = fakeFilePort()
-    const { tools, registry } = setup(settings, runner, files, projectRoot)
+    const { tools, registry } = setup(settings, runner, files, sessionWorkspaceDir)
     registry.sync()
     await tools.get('run_command')!.execute({ command: 'echo hi' }, { sessionId: 't' })
     await tools.get('grep')!.execute({ pattern: 'x' }, { sessionId: 't' })
@@ -866,44 +854,29 @@ describe('缺省工作目录三级回落', () => {
     }
   }
 
-  it('配了当前项目：缺省 cwd 与缺省搜索根都落项目根（报障现场的反面）', async () => {
-    // 接线前这里看到的是 HOME —— 三级回落纯函数在生产代码零消费方，项目根从不参与
-    const targets = await defaultTargets(withProject(''), () => PROJECT)
+  it('会话解析器给的目录就是缺省 cwd 与缺省搜索根（装配透传 getter）', async () => {
+    const targets = await defaultTargets(makeSettings(), (sessionId) =>
+      sessionId === 't' ? PROJECT : HOME,
+    )
     expect(targets.cwd).toBe(PROJECT)
     expect(targets.grepRoot).toBe(PROJECT)
     expect(targets.globRoot).toBe(PROJECT)
   })
 
-  it('项目根优先于 workspaceDir（第二级不得盖过第一级）', async () => {
-    const targets = await defaultTargets(withProject('D:\\elsewhere'), () => PROJECT)
-    expect(targets.cwd).toBe(PROJECT)
-    expect(targets.grepRoot).toBe(PROJECT)
-    expect(targets.globRoot).toBe(PROJECT)
-  })
-
-  it('无项目 + workspaceDir 空串：回落主目录（与接线前逐字一致）', async () => {
-    const targets = await defaultTargets(makeSettings(), () => undefined)
-    expect(targets.cwd).toBe(HOME)
-    expect(targets.grepRoot).toBe(HOME)
-    expect(targets.globRoot).toBe(HOME)
-  })
-
-  it('无项目 + 设了 workspaceDir：第二级直接生效（与接线前逐字一致）', async () => {
-    const settings = makeSettings()
-    settings.agent.tools.workspaceDir = 'D:\\ws'
-    const targets = await defaultTargets(settings, () => undefined)
-    expect(targets.cwd).toBe('D:\\ws')
-    expect(targets.grepRoot).toBe('D:\\ws')
-    expect(targets.globRoot).toBe('D:\\ws')
-  })
-
-  it('空白项目根（只有空格）视为无项目：按后续级别回落', async () => {
-    // `effectiveWorkspaceDir` 的 normalize 只 trim；不新增"相对根"用例，因为生产侧
-    // `resolveProject` 已把根归一成绝对路径，装配器拿不到相对根。
-    const targets = await defaultTargets(makeSettings(), () => '  ')
-    expect(targets.cwd).toBe(HOME)
-    expect(targets.grepRoot).toBe(HOME)
-    expect(targets.globRoot).toBe(HOME)
+  it('无会话上下文（ctx 不带 sessionId）时同样透传 getter 的回落值', async () => {
+    const runner = fakeRunner()
+    const files = fakeFilePort()
+    const { tools, registry } = setup(makeSettings(), runner, files, (sessionId) =>
+      sessionId === undefined ? HOME : PROJECT,
+    )
+    registry.sync()
+    // 三次执行都不带 sessionId：工具把 ctx.sessionId 原样（undefined）传给 getter
+    await tools.get('run_command')!.execute({ command: 'echo hi' }, {})
+    await tools.get('grep')!.execute({ pattern: 'x' }, {})
+    await tools.get('glob')!.execute({ pattern: 'x' }, {})
+    expect((runner.calls[0] as { cwd?: string }).cwd).toBe(HOME)
+    expect(files.searchRoots[0]).toBe(HOME)
+    expect(files.findRoots[0]).toBe(HOME)
   })
 })
 

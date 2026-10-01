@@ -274,7 +274,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **24**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **25**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.modelParams.<modelId>.reasoningEffort`（v5 新增，v23 起按模型绑定）：
@@ -458,15 +458,17 @@
   **只读，AI 的 `set_setting` 一律拒绝读写它**，只能由用户在设置页手动维护 ——
   否则 AI 可以给自己加一条 `git*` 直接摘掉自己的确认闸门，属于**自我提权**
   （与 `advanced.confirmSensitiveTools` 只读同款理由）。
-- `projects`（**v13 新增**，见 06 §5.1）：项目机制 —— `projects.current` 是当前项目 id
-  （空串 = **无项目**，即默认态，行为与 v13 之前完全一致），`projects.list[]` 每条是
+- `projects`（**v13 新增**，见 06 §5.1）：项目机制 —— `projects.list[]` 每条是
   `{ id, name, root }`（`root` 可为绝对路径，或相对进程 cwd 的路径），
   `projects.maxAgentsBytes` 是每轮注入的项目级 `AGENTS.md` 字节预算（1 字节 – 1 MiB，默认 32768）。
-  当前项目决定三件事：① 每轮把「项目根 → 当前工作目录」逐层收集的 `AGENTS.md`
+  ⚠️ **`projects.current` 已于 v25 删除**（迁移删除该字段，界面的「设为当前」一并退役）：
+  v17 起项目根就按**会话绑定**解析（`sessions/<id>.json` 的 `meta.projectId`），
+  全局 current 只是过时的回落级；项目现在只是「可被会话绑定的目录清单」。
+  项目根决定：① 绑定它的会话每轮把「项目根 → 当前工作目录」逐层收集的 `AGENTS.md`
   （同目录 `AGENTS.override.md` 优先）注入系统提示词的「项目约定」小节；
   ② 权限层判定「项目根之内 / 之外」的边界；
   ③ 缺省工作目录 / 搜索根的最高优先级（06 §5.1 回落链：**会话绑定项目根 > 会话空间目录** >
-  当前项目根 > Work 模式工作目录 > `agent.tools.workspaceDir` > 主目录）。
+  Work 模式工作目录 > `agent.tools.workspaceDir` > 主目录）。
   **会话空间（2026-09-30，docs/06 §4）不是配置**：左栏三分（项目对话 / 工作目录对话 / Agent对话）
   的判定字段 `space` 与会话绑定项目一样写在**会话文件自身**（不进本 Schema、不进迁移链）；
   Agent 空间的工作目录是**固定常量** `%USERPROFILE%\Desktop\Aurora`（不设配置项），由主进程懒创建。
@@ -623,7 +625,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 24`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 25`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -690,10 +692,14 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   归一**每个已有** `stt.providers.<id>` 的 `type` —— 只把「缺失 / 不是已知取值」的补成
   `openai-compat`（v23 及更早的配置写的本来就是这个值，旧配置升级后请求体逐字不变），
   已是 `dashscope-native` 的**不动**（迁移不替用户改协议）；
-  `stt` 分组缺失时留给默认配置兜底，不凭空造半截对象）。
-  二十四条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  `stt` 分组缺失时留给默认配置兜底，不凭空造半截对象）、
+  `v24 → v25`（**退役全局 `projects.current`**（见 §1 的 `projects`）：从 `projects` 分组里
+  **删除该字段**（置空串等于让死字段永生），`list` / `maxAgentsBytes` 原样保留；
+  界面的「设为当前」与左栏「当前」徽标随本轮一并退役 —— 项目改由会话绑定
+  （`sessions/<id>.json` 的 `meta.projectId`，见 06 §5.1））。
+  二十五条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽），重复执行结果一致 —— `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **24** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **25** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程

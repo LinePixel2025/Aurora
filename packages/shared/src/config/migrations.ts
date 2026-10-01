@@ -921,6 +921,26 @@ const migrateV23ToV24: Migration = {
   },
 }
 
+const migrateV24ToV25: Migration = {
+  from: 24,
+  to: 25,
+  describe: 'v24 → v25：退役全局 projects.current（项目改为按会话绑定，docs/06 §5.1）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const projects = asRecord(raw['projects'])
+    if (projects !== undefined) {
+      // 字段删除而不是置空串：v25 的 Schema 里已无 `current` 定义，
+      // 留着未知键会走「整体保留候选对象」路径，等于让死字段永生。
+      const { current: _current, ...rest } = projects
+      next['projects'] = rest
+    }
+
+    next['version'] = 25
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -946,6 +966,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV21ToV22,
   migrateV22ToV23,
   migrateV23ToV24,
+  migrateV24ToV25,
 ]
 
 export interface MigrationOutcome {

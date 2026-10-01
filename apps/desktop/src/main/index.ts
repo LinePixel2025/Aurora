@@ -36,7 +36,6 @@ import {
   type JobStore,
   type SnapshotPort,
   renderTodoList,
-  resolveProject,
 } from '@aurora/agent-core'
 import type { AgentProviderFactory, SettingsToolPort, ToolDefinition } from '@aurora/agent-core'
 import {
@@ -885,25 +884,16 @@ async function bootstrap(): Promise<void> {
     // 回滚分支走 `mutate`（不广播）：补一次工具注册表重建，别让工具闭包停在坏值实例上
     notifyChanged: () => syncToolRegistries(),
   })
-  // 项目根边界（v13，docs/06 §11.1）：**只在配置了当前项目时启用** ——
-  // `workspaceRoot()` 返回 undefined 时 file-port / command-runner 的行为与 v13 之前一字不差
-  //（无项目 = 无边界），这也是 step 1「无项目时行为不变」那条完成标准的落点。
-  // ⚠️ 声明顺序承重：`projectLogger` 必须在 `projectRoot` **之前**声明 —— 缺省工作目录接线后
-  //（step 3，`registerComputerTools` 的 `sync()` 在启动序就会调用本 getter），若把它留在下方
-  // `registerComputerTools` 装配与首次 `syncToolRegistries()` 调用之后，getter 执行时即 TDZ
-  // `Cannot access 'projectLogger' before initialization`，表现为**启动直接失败**
-  //（单测全用假装配器，覆盖不到真实装配时序，只有 AURORA_SMOKE 抓得到）。
+  // ⚠️ 声明顺序承重：`projectLogger` 必须在下方 `sessionProjects` / `registerComputerTools`
+  // 装配**之前**声明 —— 这些装配的 `sync()` 在启动序就会取日志闭包，若留在装配之后才声明，
+  // getter 执行时即 TDZ `Cannot access 'projectLogger' before initialization`，表现为
+  // **启动直接失败**（单测全用假装配器，覆盖不到真实装配时序，只有 AURORA_SMOKE 抓得到）。
   const projectLogger = logger?.child('project')
-  const projectRoot = (): string | undefined =>
-    resolveProject(settings!.get(), {
-      cwd: process.cwd(),
-      ...(projectLogger === undefined ? {} : { logger: projectLogger }),
-    }).root
   // 会话级项目解析（v17，docs/06 §5.1）：每个会话可绑定 projects.list 里的一项
   // （`sessions/<id>.json` 的 meta.projectId，经 `chat:setSessionProject` 写入）。
   // 2026-09-30 会话三分（docs/06 §4）起再插入会话空间一级（meta.space）：
   // Agent 空间（未标记 / 'agent'，含 quick 与历史会话）→ 固定 `桌面\Aurora`，
-  // Work 空间（'work'）→ modes.work.workspaceDir，都排在全局 projects.current 之前。
+  // Work 空间（'work'）→ modes.work.workspaceDir（v25 起全局 current 已退役，无该回落级）。
   // 缺省 cwd / 搜索根、项目根边界（file-port / command-runner 的 workspaceRoot）、
   // auto 档免确认判定与 AGENTS.md 注入**全部**走这一个解析器（session-project.ts）。
   // 同步取值走 `projectOf` / `spaceOf`（内存缓存；装配层不变量：会话的工具执行之前
@@ -933,7 +923,6 @@ async function bootstrap(): Promise<void> {
     sessionSpaceOf: (sessionId) =>
       sessionId === undefined || sessionId === '' ? 'agent' : sessions!.spaceOf(sessionId),
     agentDir: ensureAgentWorkspaceDir,
-    globalProjectRoot: projectRoot,
     homeDir: () => app.getPath('home'),
     cwd: process.cwd(),
   })
@@ -947,8 +936,6 @@ async function bootstrap(): Promise<void> {
     getSettings: () => settings!.get(),
     logger: logger.child('tools'),
     homeDir: () => app.getPath('home'),
-    // 全局当前项目根（会话未绑定时的回落位 + sync 日志取值源，docs/06 §5.1）
-    projectRoot,
     // 缺省工作目录 / 搜索根：**按会话**即时解析（会话绑定项目 > 全局链），工具执行期现调
     sessionWorkspaceDir: (sessionId) => toolchainProjects.workspaceDir(sessionId),
     run: createCommandRunner({
@@ -1201,11 +1188,11 @@ async function bootstrap(): Promise<void> {
     // 免确认命令模式（docs/06 §11.7）：与 `mode` 同款闭包 —— 每次调用即时读设置，
     // 用户在设置页加完模式立刻生效，无需重启（该字段是只读前缀，AI 改不动）。
     allowPatterns: () => settings!.get().agent.tools.terminal.allowPatterns,
-    // auto 档的免确认边界 = 当前**会话**的项目根（会话绑定项目 > 全局当前项目；
-    // 无项目时 auto 档与"关掉确认总开关"同义）。先 `projectIdOf` 预热（允许 await 读盘），
-    // 再走与缺省 cwd / projectInstructions 同源的解析器，别再抄第三份
+    // auto 档的免确认边界 = 当前**会话**的项目根边界（会话绑定项目 > 会话空间目录 >
+    // 激活模式目录；全局 `projects.current` 一级已于 v25 退役，docs/06 §5.1）。
+    // 先 `projectIdOf` 预热（允许 await 读盘），再走与缺省 cwd / projectInstructions
+    // 同源的解析器，别再抄第三份
     projectRoot: async (sessionId) => {
-      if (sessionId === '') return projectRoot()
       await sessions!.projectIdOf(sessionId)
       return sessionProjects.boundaryRoot(sessionId)
     },
@@ -1220,10 +1207,9 @@ async function bootstrap(): Promise<void> {
     fs: nodeProjectFs,
     ...(projectLogger === undefined ? {} : { logger: projectLogger }),
     // 复用上方解析器（与 confirmTool 的边界判定同源）：按**会话**解析项目根 ——
-    // 会话绑定项目 > 全局当前项目；未带会话 id 的调用按全局回落
+    // 会话绑定项目 > 会话空间目录 > 激活模式目录（docs/06 §5.1，v25 起无全局回落）
     resolveRoot: async (sessionId) => {
-      if (sessionId === undefined || sessionId === '') return projectRoot()
-      await sessions!.projectIdOf(sessionId)
+      await sessions!.projectIdOf(sessionId ?? '')
       return sessionProjects.boundaryRoot(sessionId)
     },
     resolveCwd: () => process.cwd(),
@@ -2155,9 +2141,9 @@ async function runCapture(dir: string): Promise<void> {
  * 给自测会话绑定一个临时项目根。
  *
  * v17 起项目根**按会话解析**（`tools/session-project.ts`），链是「会话绑定项目 >
- * 会话空间目录 > 全局当前项目」；未标记的会话恒落 Agent 空间、其目录固定为
- * 「桌面\Aurora」—— 它**排在全局当前项目之前**，所以只设 `projects.current` 已经不足以
- * 把会话落到夹具根上。凡是走真实文件链路的自测段都必须先绑定，否则写进 userData / %TEMP%
+ * 会话空间目录 > 激活模式目录」；未标记的会话恒落 Agent 空间、其目录固定为
+ * 「桌面\Aurora」—— 全局 `projects.current` 一级已于 v25 退役，凡是走真实文件链路的
+ * 自测段都必须先绑定会话。凡是走真实文件链路的自测段都必须先绑定，否则写进 userData / %TEMP%
  * 的夹具一律被判越界，断言测的就成了「越界拒绝」而不是被测行为；
  * 落进等待确认卡的那条分支时还会白挂一个 60s 超时（2026-09-30 的口径变更 smoke 没跟着改，
  * 13 条断言因此连续多轮恒红）。
@@ -2464,12 +2450,11 @@ async function runSmokeTest(userData: string): Promise<void> {
         settings.update({
           projects: {
             ...projectsBefore,
-            current: 'smoke-project',
             list: [{ id: 'smoke-project', name: '自测项目', root: projectRoot }],
           },
         })
-        // v17 起边界根按**会话**解析，未绑定会话恒落 Agent 空间（桌面\Aurora）——
-        // 只设全局 current 已经落不到夹具根上（详见 `bindSmokeProject` 注释）。
+        // v17 起边界根按**会话**解析（v25 起更无全局 current 一级）——
+        // 必须绑定会话，夹具才落得到根上（详见 `bindSmokeProject` 注释）。
         await bindSmokeProject('smoke-project', 'smoke-project', projectRoot)
 
         // 等这一轮的 done 再断言：`send` 只入队，事件流才是"请求真的发出去了"的证据
@@ -2503,7 +2488,7 @@ async function runSmokeTest(userData: string): Promise<void> {
         detail = `rounds=${fresh.length} markerAgents=${prompt.includes(agentsMarker)} markerOverride=${overrideWins}`
 
         // 收尾：把项目还原成"无项目"，免得带进后面的断言
-        settings.update({ projects: { ...settings.get().projects, current: '', list: [] } })
+        settings.update({ projects: { ...settings.get().projects, list: [] } })
       } else {
         detail = 'settings / agent 不可用'
       }
@@ -2544,11 +2529,10 @@ async function runSmokeTest(userData: string): Promise<void> {
         const scheduler = proactiveScheduler
         const agentBefore = settings.get().agent
         const projectsBefore = settings.get().projects
-        // 设一个当前项目：没有项目时 auto 档没有"根内"判据（那是老开关的等价路径）
+        // 登记权限自测项目：auto 档的「根内」判据来自**会话绑定**的项目根
         settings.update({
           projects: {
             ...projectsBefore,
-            current: 'smoke-perm',
             list: [{ id: 'smoke-perm', name: '权限自测', root: projectRoot }],
           },
         })
@@ -2670,7 +2654,7 @@ async function runSmokeTest(userData: string): Promise<void> {
 
         // 收尾：档位与项目都还原
         settings.update({ agent: { ...agentBefore, permissionMode: 'confirm' } })
-        settings.update({ projects: { ...settings.get().projects, current: '', list: [] } })
+        settings.update({ projects: { ...settings.get().projects, list: [] } })
         syncToolRegistries()
         detail =
           `readonlyKept=[${readonlyToolNames.join(',')}] ` +
@@ -3004,7 +2988,6 @@ async function runSmokeTest(userData: string): Promise<void> {
         settings.update({
           projects: {
             ...previousProjects,
-            current: projectId,
             list: [{ id: projectId, name: '集成自测项目', root: projectRoot }],
           },
           // 一轮工具就够：第 0 轮写文件、第 1 轮收尾；关掉自动续轮让行为确定
@@ -3102,7 +3085,7 @@ async function runSmokeTest(userData: string): Promise<void> {
 
         off()
         settings.update({
-          projects: { ...settings.get().projects, current: '', list: [] },
+          projects: { ...settings.get().projects, list: [] },
           agent: { ...settings.get().agent, loop: previousLoop, permissionMode: 'confirm' },
         })
         integrationDetail = `scope=${scopeOk} auto=${autoOk} readonly=${readonlyOk} rollback=${rollbackOk} events=[${[...seenTypes].join(',')}] unknown=[${unknown.join(',')}]`
