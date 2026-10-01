@@ -114,6 +114,35 @@ const SPECS: Record<WindowName, WindowSpec> = {
 const DARK_BACKGROUND = '#000000'
 const LIGHT_BACKGROUND = '#f5f5f7'
 
+/**
+ * 几何落盘的**收尾去抖**间隔（ms，P2-08）。
+ *
+ * Windows 上拖动 / 缩放期间 `moved` / `resized` 每秒触发 30–60 次；每次落盘都会
+ * `settings.mutate()` → 全量 zod 校验 + `redactSettings`（逐 provider DPAPI 解密）+
+ * 全窗广播 + 托盘菜单重建 + Center WS 状态重发。250ms 是「手感上已经停手、又不会丢最后一帧」
+ * 的惯用值：拖动期间只重排定时器，停手后落一次。
+ */
+const GEOMETRY_PERSIST_DEBOUNCE_MS = 250
+
+/** 窗口几何（与 `BrowserWindow.getBounds()` 同形，单独命名只为让短路比较读得懂） */
+interface WindowBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** 几何是否与基准**逐字段**相同（P2-08 的短路判据） */
+function sameBounds(base: WindowBounds | undefined, next: WindowBounds): boolean {
+  return (
+    base !== undefined &&
+    base.x === next.x &&
+    base.y === next.y &&
+    base.width === next.width &&
+    base.height === next.height
+  )
+}
+
 function windowBackgroundColor(): string {
   return nativeTheme.shouldUseDarkColors ? DARK_BACKGROUND : LIGHT_BACKGROUND
 }
@@ -128,6 +157,15 @@ export class WindowManager {
   /** 提示条是否处于展开（面板）态；默认收起为 8px 竖条（docs/07 §2.2） */
   private edgeBarExpanded = false
   private themeListenerActive = true
+  /** 几何事件的收尾去抖定时器（每个窗口一个，P2-08） */
+  private readonly geometryTimers = new Map<WindowName, ReturnType<typeof setTimeout>>()
+  /**
+   * 每个窗口**最近一次已调度 / 已落盘**的几何（P2-08 的短路基准）。
+   *
+   * 与它逐字段相同的 `moved` / `resized` 直接返回 —— 连重排定时器都省了
+   *（拖动停手后系统还会补几帧同样的 bounds，那些帧就是靠这里挡掉的）。
+   */
+  private readonly geometryBounds = new Map<WindowName, WindowBounds>()
   private readonly syncWindowBackgrounds = (): void => {
     const color = windowBackgroundColor()
     for (const name of ['chat', 'settings', 'onboarding'] as const) {
@@ -286,9 +324,13 @@ export class WindowManager {
       event.preventDefault()
       this.hide(name)
     })
-    win.on('moved', () => this.persistGeometry(name, win))
-    win.on('resized', () => this.persistGeometry(name, win))
+    // 几何事件走**去抖 + 短路**入口（P2-08）：拖动期间不再每帧全量 mutate / 广播一次
+    win.on('moved', () => this.scheduleGeometryPersist(name, win))
+    win.on('resized', () => this.scheduleGeometryPersist(name, win))
     win.on('closed', () => {
+      // 先收掉待落盘的几何定时器：窗口没了，它再去改配置就是一次"幽灵写入"
+      this.cancelGeometryTimer(name)
+      this.geometryBounds.delete(name)
       this.windows.delete(name)
       this.loadTasks.delete(name)
     })
@@ -470,6 +512,13 @@ export class WindowManager {
   prepareQuit(): void {
     this.disposeThemeListener()
     this.quitting = true
+    // 待落盘的几何先按真实窗口现读一次落盘，再清掉去抖定时器 —— 否则最后一帧拖动会留在
+    // 定时器里，等它触发时窗口已经不在（`persistGeometry` 会因 isDestroyed 直接跳过）。
+    for (const name of [...this.geometryTimers.keys()]) {
+      const win = this.windows.get(name)
+      if (win !== undefined && !win.isDestroyed()) this.persistGeometry(name, win)
+      this.cancelGeometryTimer(name)
+    }
     for (const [name, win] of this.windows) {
       if (win.isDestroyed()) continue
       this.persistGeometry(name, win)
@@ -479,6 +528,7 @@ export class WindowManager {
   destroyAll(): void {
     this.disposeThemeListener()
     this.quitting = true
+    for (const name of [...this.geometryTimers.keys()]) this.cancelGeometryTimer(name)
     for (const win of this.windows.values()) {
       if (!win.isDestroyed()) win.destroy()
     }
@@ -643,15 +693,67 @@ export class WindowManager {
     }
   }
 
-  private persistGeometry(name: WindowName, win: BrowserWindow): void {
+  /**
+   * 几何事件入口（`moved` / `resized`，P2-08）：**短路 + 收尾去抖**。
+   *
+   * 修在这里（事件的**源头**）而不是消费方：`index.ts` 的 `settings.onChange` 与
+   * `ipc.ts` 的全窗广播都是**监听者**，它们无法分辨"这次配置变更是拖动引起的"；
+   * 把去重搬进去只会得到三份互不相同的口径（AGENTS.md 的既有教训）。
+   *
+   * 两条判据缺一不可：
+   * ① **bounds 未变短路** —— 拖动停手后系统还会补几帧同样的几何，这些帧连定时器都不排；
+   * ② **收尾去抖** —— 拖动期间只更新待落盘几何并重排定时器，停手 250ms 后才真正写一次。
+   */
+  private scheduleGeometryPersist(name: WindowName, win: BrowserWindow): void {
+    if (!this.isPersistableGeometry(name, win)) return
     const bounds = win.getBounds()
-    // 提示条不落盘：它的几何完全由「右缘 + 垂直居中 + 折叠态」推导（`readGeometry` 也不读它）。
-    // 若照写，鼠标每次掠过右缘的展开/收起都会触发一次配置写 + `settings:changed`，
-    // 进而让主进程重建托盘菜单 —— 纯 UI 悬停不该有这种写入放大。
-    if (name === 'edge-bar') return
-    // 最大化态的工作区尺寸是系统给的，落盘会把「还原后的窗口」撑满整屏 ——
-    // 只记录用户手动调整出来的常规几何，还原尺寸交给 isMaximized 判定。
-    if (win.isMaximized()) return
+    if (sameBounds(this.geometryBounds.get(name), bounds)) return
+    this.geometryBounds.set(name, bounds)
+    const existing = this.geometryTimers.get(name)
+    if (existing !== undefined) clearTimeout(existing)
+    this.geometryTimers.set(
+      name,
+      setTimeout(() => {
+        this.geometryTimers.delete(name)
+        this.writeGeometry(name, bounds)
+      }, GEOMETRY_PERSIST_DEBOUNCE_MS),
+    )
+  }
+
+  /** 取消某窗口的待落盘几何（窗口关闭 / 进程退出前调用） */
+  private cancelGeometryTimer(name: WindowName): void {
+    const timer = this.geometryTimers.get(name)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.geometryTimers.delete(name)
+  }
+
+  /**
+   * 这个窗口的几何**该不该落盘**（三条既有口径，`persistGeometry` 与去抖路径共用一份）：
+   * - 提示条不落盘：几何完全由「右缘 + 垂直居中 + 折叠态」推导（`readGeometry` 也不读它）。
+   *   若照写，鼠标每次掠过右缘的展开/收起都会触发一次配置写 + `settings:changed`，
+   *   进而让主进程重建托盘菜单 —— 纯 UI 悬停不该有这种写入放大；
+   * - 已销毁：`getBounds` 会抛，且写进去的几何没有任何意义；
+   * - 最大化态：工作区尺寸是系统给的，落盘会把「还原后的窗口」撑满整屏 —— 只记录用户手动
+   *   调整出来的常规几何，还原尺寸交给 `isMaximized` 判定。
+   */
+  private isPersistableGeometry(name: WindowName, win: BrowserWindow): boolean {
+    if (name === 'edge-bar') return false
+    if (win.isDestroyed()) return false
+    return !win.isMaximized()
+  }
+
+  /** 立即落盘（`setPosition` / 提示条两态切换 / 退出前）：与去抖路径共用 `writeGeometry` */
+  private persistGeometry(name: WindowName, win: BrowserWindow): void {
+    if (!this.isPersistableGeometry(name, win)) return
+    const bounds = win.getBounds()
+    // 记进短路基准：紧跟其后的 `moved` / `resized` 若几何未变就不必再排一次定时器
+    this.geometryBounds.set(name, bounds)
+    this.writeGeometry(name, bounds)
+  }
+
+  /** 真正写配置（`settings.mutate` → 广播链路；调用点只有上面两处，别再散落第三处） */
+  private writeGeometry(name: WindowName, bounds: WindowBounds): void {
     this.options.settings.mutate((draft) => {
       draft.general.windowState[name] = {
         x: bounds.x,

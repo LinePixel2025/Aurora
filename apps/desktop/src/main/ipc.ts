@@ -16,6 +16,12 @@ import {
   type SnapshotPort,
 } from '@aurora/agent-core'
 import { resolveWorkspaceOpenTarget } from './tools/workspace-target.js'
+import { isPathOutsideError, type WorkspaceGuardOptions } from './tools/file-port.js'
+import {
+  assertRestorablePath,
+  isRestorePathRejectedError,
+  writeRestoredFile,
+} from './tools/restore-guard.js'
 import {
   IPC,
   createDefaultSettings,
@@ -138,6 +144,12 @@ export interface DesktopDeps {
    * 未注入时三条通道返回 `E_INVALID_STATE`（而不是静默成功）—— 界面据此如实报错。
    */
   snapshots?: SnapshotPort
+  /**
+   * 快照**回滚**路径的项目根边界 guard（docs/06 §11.8，P2-07）：与 file-port / run_command
+   * 是**同一个** `sessionProjects.boundaryRoot`（装配层注入），边界按快照所属会话现解析。
+   * 未注入 = 不做边界校验（与 `resolveWithin` 未配根时逐字一致）。
+   */
+  snapshotGuard?: WorkspaceGuardOptions
   /** Job 存储（chat:jobs / resumeJob / cancelJob，docs/06 §4.1，v15） */
   jobs?: JobStore
   /** ClassIsland 桥接（classisland:*，docs/05 §3.4 v2/v3） */
@@ -618,6 +630,10 @@ export function registerIpc(deps: DesktopDeps): () => void {
    * （在跑的流随时会 append，删了会被下一轮写回来）；paused / 已结束的 job 随会话一起
    * 留在盘上无妨（会话没了它们也不可达，job 文件的 24h TTL 之外由会话删除兜底清理不在本轮范围）。
    * 文件不存在（从未落盘的空会话）幂等返回 ok。
+   *
+   * **删除成功后**广播 `chat:sessionDeleted`（载荷带 sessionId，docs/07 §2.3）：
+   * chat 窗口据此重拉会话列表，当前会话被删时按「最近会话 / 新建」回落
+   * —— 否则被删会话会一直留在左栏、`activeId` 仍指向它。
    */
   handle<boolean>(IPC.chat.deleteSession, (request: { sessionId: string }) => {
     const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
@@ -637,7 +653,11 @@ export function registerIpc(deps: DesktopDeps): () => void {
         return err('E_INVALID_STATE', '会话有正在运行的任务，先取消或等它结束再删除')
       }
       return deps.sessions.remove(sessionId).then(
-        () => ok(true),
+        () => {
+          // 广播在**删除成功之后**（失败/被守卫拒绝时不发，避免渲染层对着不存在的删除动作回落）
+          broadcast(IPC.chat.sessionDeleted, { sessionId })
+          return ok(true)
+        },
         (error: unknown) =>
           err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
       )
@@ -1067,7 +1087,12 @@ async function projectStatus(deps: DesktopDeps): Promise<ProjectStatus> {
  * 于是"回滚"本身也可撤回（用户点错了还能回到回滚前的样子）。
  *
  * `exists: false` 的快照表示"当时这个文件还不存在"，回滚它 = **删除该文件**（不是清空）。
- * 路径仍然过项目根边界：回滚不是绕过 `resolveWithin` 的后门。
+ *
+ * **路径确实过项目根边界**（P2-07 前这条只是注释里的承诺，实现没有）：写回前先过
+ * `assertRestorablePath`（`tools/restore-guard.ts`）——`lstat` 拒绝符号链接 / junction +
+ * 与 file-port 六个方法**同一个** `resolveWithin`（realpath 前缀校验）。守卫放在**留底之前**：
+ * `capture` 会读一次目标内容，那一步本身就已经在跟随链接了。写回走 tmp + rename 原子写
+ * （裸 `writeFile` 中途崩溃会留下半截文件，比没有回滚更糟）。
  */
 export async function restoreSnapshot(
   deps: DesktopDeps,
@@ -1079,28 +1104,48 @@ export async function restoreSnapshot(
   const target = all.find((item) => item.id === request.snapshotId)
   if (target === undefined) return err('E_NOT_FOUND', `未找到快照：${request.snapshotId}`)
 
-  // ① 回滚前状态留底（读不到内容时仍然记一条 exists:false）
+  // ① 边界与符号链接守卫（越界 / 链接一律拒绝，且**什么都不做** —— 连留底都不做）
+  let absolutePath: string
+  try {
+    absolutePath = await assertRestorablePath(target.path, {
+      guard: deps.snapshotGuard,
+      sessionId: target.sessionId,
+    })
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    if (isPathOutsideError(error) || isRestorePathRejectedError(error)) {
+      deps.logger.warn('已拒绝回滚快照：目标未通过路径守卫', {
+        snapshotId: target.id,
+        path: target.path,
+        reason,
+      })
+      return err('E_INVALID_ARGUMENT', `回滚被拒绝：${reason}`)
+    }
+    return err('E_IO', `回滚失败：${reason}`)
+  }
+
+  // ② 回滚前状态留底（读不到内容时仍然记一条 exists:false）
   const before = await snapshots.capture({
     sessionId: target.sessionId,
-    path: target.path,
+    path: absolutePath,
     origin: 'rollback',
   })
-  // ② 写回旧内容
+  // ③ 写回旧内容
   try {
     if (!target.exists) {
-      await nodeFs.rm(target.path, { force: true })
+      await nodeFs.rm(absolutePath, { force: true })
     } else {
       const content = await snapshots.readContent(target)
       if (content === undefined) return err('E_NOT_FOUND', '快照内容已丢失（可能被手动清理过）')
-      await nodeFs.mkdir(dirname(target.path), { recursive: true })
-      await nodeFs.writeFile(target.path, content.bytes)
+      await nodeFs.mkdir(dirname(absolutePath), { recursive: true })
+      await writeRestoredFile(absolutePath, content.bytes)
     }
   } catch (error) {
     return err('E_IO', `回滚失败：${error instanceof Error ? error.message : String(error)}`)
   }
   deps.logger.info('已回滚文件快照', {
     snapshotId: target.id,
-    path: target.path,
+    path: absolutePath,
     rollbackSnapshotId: before.snapshot?.id ?? '',
   })
   // 回滚前那一份（`capture` 没留底时退回被回滚的那一份，保证调用方拿到一个 ref）

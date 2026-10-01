@@ -424,6 +424,22 @@ let todoPort: FileTodoPort | undefined
 /** MCP 状态订阅（IPC 层与主进程内部共用，避免为状态再引入一次事件总线） */
 const mcpStatusListeners = new Set<(statuses: McpServerStatus[]) => void>()
 
+/**
+ * 退出收尾是否已经跑起来（P1-12）。
+ *
+ * `before-quit` 会在一次退出里被**触发多次**（我们自己在 `finally` 里补发的 `app.quit()`、
+ * 以及收尾期间用户再点一次「退出」）。收尾只能跑一遍，而**收尾进行中的那次退出必须继续挡住**
+ * —— 否则重复的退出请求会让进程在 flush 落盘之前就退掉，正是 P1-12 要防的截断。
+ */
+let shuttingDown = false
+/**
+ * 收尾已完成、由我们主动补发 `app.quit()`（P1-12）。
+ *
+ * 这是 `before-quit` 里**唯一**放行退出的分支：没有它，补发的 `app.quit()` 会被自己的
+ * `preventDefault()` 再次挡下 —— 收尾跑完进程也退不出去（半关停僵尸的另一种形态）。
+ */
+let quitAllowed = false
+
 /** 单实例：二次启动聚焦并唤起交互窗（docs/02 §2.1） */
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -449,8 +465,53 @@ if (!gotLock) {
     // 常驻托盘：窗口全部关闭不退出（docs/02 §7）
   })
 
-  app.on('before-quit', () => {
+  /**
+   * 退出协议：**先挡住退出、收完再退**（P1-12，docs/02 §2.2）。
+   *
+   * 为什么不能是 `void shutdown()` 就走：Electron 的退出序列是
+   * `before-quit → 逐窗 close → will-quit → quit`，任一窗口在 `close` 里 `preventDefault()`
+   * 会**取消整次退出**；而 `shutdown()` 的第一个 `await` 就挂起了，各窗口的 `close` 会在
+   * `quitting` 仍为 false 时到达 → 退出被取消、且**没有任何代码再调 `app.quit()`**：
+   * 进程活着、托盘没了、窗口全隐藏、IPC 全失效、单实例锁仍被占（只能任务管理器杀）。
+   * 即便时序侥幸，收尾（分类 drain 可等数秒 → 各 store flush）也会与退出序列并行竞速，
+   * 最近几百毫秒的写入可能不落盘 —— 正是"退出前 flush"要防的事。
+   *
+   * 因此这里：
+   * ① 同步 `prepareQuit()` 置位 `quitting`（各窗口 close 守卫据此放行，不再 preventDefault）；
+   * ② `preventDefault()` 挡下本次退出（**同步**，不给窗口 close 任何插队机会）；
+   * ③ 收尾跑完（`.finally`）再补发一次 `app.quit()`。
+   *
+   * ⚠️ 自动更新 `quitAndInstall` 与托盘退出**走同一个 before-quit**（electron-updater 的
+   * `BaseUpdater.quitAndInstall` 只是 `setImmediate(() => app.quit())`，安装器已在此之前
+   * spawn，且它只要求"应用最终退出"、不要求单次 quit 立即生效），所以本条对更新流程同样成立：
+   * preventDefault 不会卡死安装，`finally` 一定会补上那一次 quit。
+   */
+  app.on('before-quit', (event) => {
+    // 收尾完成后的那次 app.quit()：放行（这条分支之外一律不放行）
+    if (quitAllowed) return
+    // 收尾进行中：重复的退出请求继续挡住，绝不打断落盘
+    if (shuttingDown) {
+      event.preventDefault()
+      return
+    }
+    shuttingDown = true
+    // ① 先同步放行各窗口的 close 守卫（顺序不能与 ② 互换：中间任何一次 await 都会让
+    //    窗口 close 在 quitting 仍为 false 时到达）
+    windows?.prepareQuit()
+    // ② 挡下本次退出
+    event.preventDefault()
+    // ③ 收完再退：`shutdown()` 内部逐段 catch，外面再兜一层，**保证 finally 无条件到达**
+    //    （否则一次抛错就把进程永远留在"半关停"状态）
     void shutdown()
+      .catch((error: unknown) => {
+        logger?.error('退出收尾失败', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
+      .finally(() => {
+        quitAllowed = true
+        app.quit()
+      })
   })
 }
 
@@ -1570,6 +1631,12 @@ async function bootstrap(): Promise<void> {
     hotkey: hotkeys,
     // 写前快照（docs/06 §11.8）：ipc 的 snapshots:* 三条通道用它；配置变了由 ensureSnapshotPort 换实例
     jobs: jobStore,
+    // 快照**回滚**路径的项目根边界（P2-07，docs/06 §11.8）：与 file-port / run_command
+    // 同一个取值器（别再抄第二份），按快照所属会话现解析
+    snapshotGuard: {
+      workspaceRoot: (sessionId) => sessionProjects.boundaryRoot(sessionId),
+      logger: logger.child('snapshots'),
+    },
     snapshots: {
       capture: (input) => ensureSnapshotPort().capture(input),
       list: (query) => ensureSnapshotPort().list(query),
@@ -3891,6 +3958,16 @@ function createSummarizer(
   }
 }
 
+/**
+ * 退出收尾（P1-12：调用方是 `before-quit` 的「先挡后退」协议）。
+ *
+ * ⚠️ 这里**不再**调用 `windows.prepareQuit()`（旧实现在首个 `await automationStore.flush()`
+ * **之后**才调，于是置位 `quitting` 被推到了异步之后 —— 各窗口 close 早已到达并取消了整次退出，
+ * 见 `before-quit` 的注释）。置位已提前到 `before-quit` 的同步段，本函数只负责**收尾落盘**：
+ * 段落顺序（先停在途、再逐层 flush、最后关日志）保持不变。
+ *
+ * 调用方必须 `.finally(() => app.quit())`：本函数**不是**退出动作，只是退出前的收尾。
+ */
 async function shutdown(): Promise<void> {
   logger?.info('Aurora 退出中')
   disposeIpc?.()
@@ -3909,7 +3986,6 @@ async function shutdown(): Promise<void> {
   await automationStore?.flush().catch((error: unknown) => {
     logger?.warn('退出前落盘自动化数据失败', { error: String(error) })
   })
-  windows?.prepareQuit()
   // 分类管线：先停监听（不再进新文件），再排在途任务，最后落盘流水
   await fileWatcher?.stop().catch(() => undefined)
   await classification?.drain().catch(() => undefined)
