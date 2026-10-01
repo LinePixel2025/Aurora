@@ -221,10 +221,13 @@ function createHarness(options: HarnessOptions = {}) {
     },
     ...(options.maxAgentRunMs === undefined ? {} : { maxAgentRunMs: options.maxAgentRunMs }),
   }
-  const engine = new AutomationEngine(engineOptions)
+  let engine = new AutomationEngine(engineOptions)
   engines.push(engine)
   return {
-    engine,
+    /** 当前引擎（`restart()` 后指向新引擎） */
+    get engine(): AutomationEngine {
+      return engine
+    },
     store,
     agent,
     notifies,
@@ -233,6 +236,17 @@ function createHarness(options: HarnessOptions = {}) {
     settings,
     setNow: (next: Date) => {
       now = next
+    },
+    /**
+     * 模拟进程重启：停掉当前引擎，在**同一份存储**上重建一个。
+     * 新引擎的 firedKeys 为空、而历史仍在 —— 与真实重启「内存去重集合丢了、磁盘历史还在」
+     * 一致（测试里存储是内存实现，历史随 store 实例存活）。
+     */
+    restart: (): AutomationEngine => {
+      engine.stop()
+      engine = new AutomationEngine(engineOptions)
+      engines.push(engine)
+      return engine
     },
   }
 }
@@ -282,6 +296,71 @@ describe('AutomationEngine · 用户定义触发', () => {
     await h.engine.tick(new Date(2026, 2, 2, 8, 0, 0))
     expect(h.notifies).toEqual([])
     expect(await h.store.listRuns({ limit: 0 })).toEqual([])
+  })
+})
+
+describe('AutomationEngine · daily 跨进程幂等（错过补偿不跨重启重复触发）', () => {
+  // P1 回归护栏：daily 的错过补偿是 `nowMinutes >= at`，而 firedKeys 纯内存 ——
+  // 不重建的话，当天触发过后每次重启（含开机自启）都会把当天已过的定时任务再触发一次。
+  const workSettings = (s: Settings): void => {
+    s.modes.current = 'work'
+  }
+
+  it('同日已触发过：重启（重建引擎）后首个 tick 不重复，隔天该再触发', async () => {
+    const h = createHarness({ settings: workSettings })
+    await h.store.saveDefinition(dailyNotifyDefinition())
+
+    h.setNow(new Date(2026, 2, 2, 8, 0, 0))
+    await h.engine.tick()
+    expect(h.notifies).toHaveLength(1)
+    expect(await h.store.listRuns({ automationId: 'am-daily' })).toHaveLength(1)
+
+    // 重启（08:05 关掉再开）：新引擎 firedKeys 为空，历史里今天已有一条运行记录
+    h.setNow(new Date(2026, 2, 2, 8, 5, 0))
+    h.restart().start()
+    await settle(50)
+    expect(h.notifies).toHaveLength(1)
+    expect(await h.store.listRuns({ automationId: 'am-daily' })).toHaveLength(1)
+
+    // 隔天（不同 ymd）：新键 → 该再触发一次
+    h.setNow(new Date(2026, 2, 3, 8, 0, 0))
+    await h.engine.tick()
+    expect(h.notifies).toHaveLength(2)
+  })
+
+  it('当天 at 已过且从未触发过：重启后补触发一次（错过补偿语义保留）', async () => {
+    const h = createHarness({ settings: workSettings })
+    await h.store.saveDefinition(dailyNotifyDefinition())
+
+    // at=08:00，进程 08:05 才起来且从未触发过 → 首个 tick 补触发一次
+    h.setNow(new Date(2026, 2, 2, 8, 5, 0))
+    h.restart().start()
+    await settle(50)
+
+    expect(h.notifies).toHaveLength(1)
+    expect(await h.store.listRuns({ automationId: 'am-daily' })).toHaveLength(1)
+  })
+
+  it('reload() 重建当日键：Agent 模式重启后不重复跑、不重复消耗 runCount', async () => {
+    const h = createHarness({ settings: workSettings })
+    await h.store.saveDefinition(
+      agentDefinition({ trigger: { kind: 'daily', params: { at: '08:00' } }, maxRuns: 5 }),
+    )
+
+    h.setNow(new Date(2026, 2, 2, 8, 0, 0))
+    await h.engine.tick()
+    expect(h.agent.sent).toHaveLength(1)
+    expect((await h.store.getDefinition('am-agent'))?.runCount).toBe(1)
+
+    // 重启前先落盘（生产退出时会 flush；本测试的存储实现把数据放内存，reload 读的是磁盘）
+    await h.store.flush()
+    await h.engine.reload()
+    h.setNow(new Date(2026, 2, 2, 8, 5, 0))
+    await h.engine.tick()
+
+    expect(h.agent.sent).toHaveLength(1)
+    expect((await h.store.getDefinition('am-agent'))?.runCount).toBe(1)
+    expect(await h.store.listRuns({ automationId: 'am-agent' })).toHaveLength(1)
   })
 })
 

@@ -10,7 +10,8 @@
  * - 引擎常驻，不随模式启停；每次 tick 前现读配置（总开关 / 模式 / 课表参数）——
  *   「改了没反应、要重启」是本仓库明令禁止的坑；
  * - firedKeys **按自动化隔离**（两个内置共用 lessonKey，共用一个集合会互相挡），
- *   条目 48h TTL + 容量上限（lessonKey 每周重复，TTL 保证下周不误挡）；
+ *   条目 48h TTL + 容量上限（lessonKey 每周重复，TTL 保证下周不误挡）；集合**只在内存**，
+ *   `daily` 的跨进程幂等由首轮评估前的历史重建保证（`restoreDailyKeys`，docs/13 §4.1）；
  * - 先记键再执行副作用（失败不重试，防 15s 刷屏 —— 同旧课前提醒口径）；
  * - Agent 会话的敏感工具确认走既有确认链：无人值守时 60s 超时默认拒绝，
  *   不新增静默放行通道（docs/13 §3）；
@@ -33,7 +34,12 @@ import {
   normalizeDefinition,
   validateDefinition,
 } from './catalog.js'
-import { evaluateTrigger, type TriggerContext, type TriggerEvaluation } from './conditions.js'
+import {
+  dailyTriggerKey,
+  evaluateTrigger,
+  type TriggerContext,
+  type TriggerEvaluation,
+} from './conditions.js'
 import { AUTOMATION_SESSION_PREFIX, isAutomationSession } from './session-id.js'
 import type { AutomationStore } from './store.js'
 
@@ -143,6 +149,11 @@ export class AutomationEngine {
   /** 每个自动化的已触发键集合（键 → 加入时刻，TTL 清理） */
   private readonly firedKeys = new Map<string, Map<string, number>>()
   /**
+   * 是否已从运行历史重建过 daily 键（跨进程幂等，见 `restoreDailyKeys`）。
+   * 每进程只做一次；`reload()` 重读存储后置回 false，让下一次 tick 重建。
+   */
+  private keysRestored = false
+  /**
    * 按自动化 id 串行化的临界区链尾（`withDefinitionLock`）：计数与停用是读—改—写，
    * 必须与并发触发互斥（双击「立即运行」/ 定时与手动撞在一起 / UI 与 AI 工具同时触发）。
    */
@@ -227,6 +238,10 @@ export class AutomationEngine {
     try {
       const settings = this.settings()
       if (!settings.automations.enabled) return
+
+      // 首轮评估前先按运行历史重建 daily 键（跨进程幂等，见 `restoreDailyKeys`）：
+      // 必须在评估**之前**完成，否则重启后首个 tick 会把当天已触发过的 daily 再触发一次。
+      await this.ensureFiredKeysRestored(now)
 
       const definitions = await this.store.listDefinitions()
       const enabled = definitions.filter((item) => item.enabled)
@@ -345,6 +360,9 @@ export class AutomationEngine {
   async reload(): Promise<void> {
     await this.store.reload()
     this.firedKeys.clear()
+    // 历史可能已变：允许下一次 tick 重新按历史重建当日 daily 键（否则 reload 后会把
+    // 当天已触发过的 daily 再触发一次 —— 与重启同一条失效路径）。
+    this.keysRestored = false
     this.onDefinitionsChanged?.()
     this.onHistoryChanged?.()
   }
@@ -708,6 +726,54 @@ export class AutomationEngine {
       this.firedKeys.set(automationId, keys)
     }
     return keys
+  }
+
+  /** 每进程只重建一次；失败也只记日志（重建是补偿机制，不该让整轮评估跑不起来）。 */
+  private async ensureFiredKeysRestored(now: Date): Promise<void> {
+    if (this.keysRestored) return
+    this.keysRestored = true
+    try {
+      await this.restoreDailyKeys(now)
+    } catch (error) {
+      this.logger.warn('自动化触发键重建失败（重启后可能重复触发 daily）', {
+        error: String(error),
+      })
+    }
+  }
+
+  /**
+   * 从运行历史重建 `daily` 的当日去重键（跨进程幂等，docs/13 §4.1，P1 回归修复）。
+   *
+   * 为什么需要：`firedKeys` 只在内存，进程重启后为空 —— 若不重建，daily 的错过补偿
+   * （`conditions.ts` 的 `nowMinutes >= at`）会在每次重启后把**当天已经触发过**的任务
+   * 再触发一次：Normal 重复通知 + 重复历史；Agent 真的再跑一整轮（重复消耗 token 与
+   * 工具副作用），并重复消耗 `runCount`（耗尽 `maxRuns` 会把自动化「已自动停用」）。
+   *
+   * 口径：对每条 `daily` 定义，历史里只要存在「该定义 + `triggeredAt` 落在**同一个本地
+   * 日期**」的运行记录，就把当天的键预置进 `firedKeys`。日期判据复用 `dailyTriggerKey`
+   * （键本身含本地日期，`dailyTriggerKey(trigger, runDate) === 当天键` 即同日），不手写
+   * 第二份日期比较。手动触发的运行同样计入「今天已跑过」—— 与「触发即计次」的既有口径
+   * （§3.1）同向。
+   *
+   * 残留窗口：重建依赖历史里的当日运行记录 —— 记录被 500 条上限淘汰、历史文件损坏，
+   * 或「运行记录已 `appendRun` 但 300ms 防抖落盘前进程被杀」时，重启仍会补触发一次。
+   */
+  private async restoreDailyKeys(now: Date): Promise<void> {
+    const definitions = await this.store.listDefinitions()
+    const daily = definitions.filter((item) => item.trigger.kind === 'daily')
+    if (daily.length === 0) return
+    const runs = await this.store.listRuns({ limit: 0 })
+    for (const definition of daily) {
+      const key = dailyTriggerKey(definition.trigger, now)
+      if (key === null) continue
+      const firedToday = runs.some((run) => {
+        if (run.automationId !== definition.id) return false
+        const triggeredAt = new Date(run.triggeredAt)
+        if (Number.isNaN(triggeredAt.getTime())) return false
+        return dailyTriggerKey(definition.trigger, triggeredAt) === key
+      })
+      if (firedToday) this.keysOf(definition.id).set(key, now.getTime())
+    }
   }
 
   private pruneKeys(keys: Map<string, number>, nowMs: number): void {

@@ -2,9 +2,10 @@
  * 触发器评估（docs/13 §4）。纯逻辑、不依赖 Electron：课程数据与时间由调用方注入。
  *
  * 统一模型：每个条件评估输出 `{ matched, key }` —— `key` 标识「这次触发机会」，
- * 引擎按自动化维护已触发键集合（firedKeys），命中即跳过。于是「电平 + 边沿」
- * 全部由同一个去重机制表达：daily 键带日期、interval 键带时间桶、课表键是 lessonKey
- * （同节课外不再触发，跨天由 48h TTL 清理，不会挡住下周同一节课）。
+ * 引擎按自动化维护已触发键集合（firedKeys，**仅在内存**，重启即空；`daily` 的跨进程幂等
+ * 由引擎用 `dailyTriggerKey` 从运行历史重建当日键保证，见 docs/13 §4.1），命中即跳过。
+ * 于是「电平 + 边沿」全部由同一个去重机制表达：daily 键带日期、interval 键带时间桶、
+ * 课表键是 lessonKey（同节课外不再触发，跨天由 48h TTL 清理，不会挡住下周同一节课）。
  *
  * 课表条件**全部从课程表（`IScheduleProvider.getToday`）推导**，不依赖桥接 status
  * 快照 —— 与既有课前提醒同一口径（快照只用于展示，见桥接 README 的约定）。
@@ -40,7 +41,7 @@ export function evaluateTrigger(
   const params = isRecord(trigger.params) ? trigger.params : {}
   switch (trigger.kind) {
     case 'daily':
-      return evaluateDaily(params, ctx)
+      return evaluateDaily(trigger, ctx)
     case 'interval':
       return evaluateInterval(params, ctx)
     case 'pre-class':
@@ -58,23 +59,53 @@ export function evaluateTrigger(
   }
 }
 
-function evaluateDaily(params: Record<string, unknown>, ctx: TriggerContext): TriggerEvaluation {
-  const at = typeof params['at'] === 'string' ? parseClock(params['at']) : undefined
+function evaluateDaily(trigger: AutomationTrigger, ctx: TriggerContext): TriggerEvaluation {
+  const at = parseDailyAt(trigger)
   if (at === undefined) return notMatched()
-  const weekdays = normalizeWeekdays(params['weekdays'])
+  const weekdays = normalizeWeekdays(
+    isRecord(trigger.params) ? trigger.params['weekdays'] : undefined,
+  )
   if (weekdays !== undefined && !weekdays.includes(ctx.now.getDay())) return notMatched()
   const nowMinutes = ctx.now.getHours() * 60 + ctx.now.getMinutes()
   // 错过补偿（P2-11，docs/13 §4.1）：`>=` 而不是 `===` —— 触发那一分钟主进程若没在评估
   // （睡眠 / 休眠、主线程被长任务阻塞、时间跳变），恢复后的首个 tick 补触发一次。
-  // 键含日期（`daily-<ymd>-<at>`）天然幂等：同日后续 tick 都命中但键相同，引擎的
-  // firedKeys 去重使其只触发一次（与 interval 的时间桶语义一致）。
-  if (nowMinutes < at) return notMatched()
-  const atText = typeof params['at'] === 'string' ? params['at'].trim() : ''
+  // 键含日期（`daily-<本地日期>-<at>`）：同日重复评估得到同一个键，引擎的 firedKeys 去重使其
+  // 在**一次进程生命周期内**只触发一次。**跨进程**的幂等不在这里 —— `firedKeys` 只在内存，
+  // 重启后为空，故引擎在首轮评估前用下面的 `dailyTriggerKey` 从运行历史重建当日键
+  // （否则「当天 at 已过且已触发过」会被误判成错过补偿，每次重启都再触发一次）。
+  if (nowMinutes < at.minutes) return notMatched()
   return {
     matched: true,
-    key: `daily-${ymd(ctx.now)}-${atText}`,
-    detail: `定时 ${atText}`,
+    key: dailyKeyOf(at.text, ctx.now),
+    detail: `定时 ${at.text}`,
   }
+}
+
+/** daily 的 `at` 解析结果（分钟数 + 原文）；非法一律 undefined。评估与键重建共用同一份判据。 */
+function parseDailyAt(trigger: AutomationTrigger): { minutes: number; text: string } | undefined {
+  if (trigger.kind !== 'daily' || !isRecord(trigger.params)) return undefined
+  const raw = trigger.params['at']
+  if (typeof raw !== 'string') return undefined
+  const minutes = parseClock(raw)
+  if (minutes === undefined) return undefined
+  return { minutes, text: raw.trim() }
+}
+
+/**
+ * daily 的去重键（`daily-<本地日期>-<at>`）；非 daily / 参数非法返回 null。
+ *
+ * 引擎在进程启动后的首轮评估前用它**从运行历史重建当日键**（docs/13 §4.1）：`firedKeys`
+ * 只在内存，重启后为空 —— 不重建的话，错过补偿（`nowMinutes >= at`）会把当天**已经触发过**
+ * 的任务再触发一次（Normal 重复通知；Agent 真的再跑一轮并重复消耗 `runCount`）。
+ */
+export function dailyTriggerKey(trigger: AutomationTrigger, date: Date): string | null {
+  const at = parseDailyAt(trigger)
+  return at === undefined ? null : dailyKeyOf(at.text, date)
+}
+
+/** daily 去重键的**唯一**格式来源（评估与历史重建共用，防两处漂移） */
+function dailyKeyOf(atText: string, date: Date): string {
+  return `daily-${ymd(date)}-${atText}`
 }
 
 function evaluateInterval(params: Record<string, unknown>, ctx: TriggerContext): TriggerEvaluation {
@@ -83,7 +114,8 @@ function evaluateInterval(params: Record<string, unknown>, ctx: TriggerContext):
   const bucket = Math.floor(ctx.now.getTime() / (every * MINUTE_MS))
   return {
     matched: true,
-    // 键带时间桶：对齐桶触发（重启后同一桶不重复），TTL 清理不挡下一次
+    // 键带时间桶：对齐桶触发；去重集合只在内存，同一桶只在**本进程生命周期内**不重复
+    // （重启后若仍在同一桶会再触发一次 —— 与课堂类条件一致；跨进程幂等的是 daily，见上）
     key: `interval-${every}-${bucket}`,
     detail: `每 ${every} 分钟`,
   }

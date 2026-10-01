@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { currentLesson, evaluateTrigger, nextLesson, type TriggerContext } from './conditions.js'
+import {
+  currentLesson,
+  dailyTriggerKey,
+  evaluateTrigger,
+  nextLesson,
+  type TriggerContext,
+} from './conditions.js'
 import { lessonKey, type Lesson } from '../schedule.js'
 
 /** 2026-03-02 是星期一；星期动态取自真实日历，避免测试绑死具体日期（同 preClassTrigger.test.ts） */
@@ -114,6 +120,42 @@ describe('evaluateTrigger · daily（每天定时）', () => {
     expect(evaluateTrigger({ kind: 'daily', params: { at: 800 } }, ctx(dayAt(8, 0))).matched).toBe(
       false,
     )
+  })
+})
+
+/**
+ * `dailyTriggerKey` 是引擎**跨进程重建当日键**的判据（P1 回归修复，docs/13 §4.1）：
+ * 键含本地日期，故「历史里那一条是不是今天触发的」等价于「两次算出的键相同」。
+ */
+describe('dailyTriggerKey（历史重建当日键的判据）', () => {
+  const trigger = { kind: 'daily' as const, params: { at: '08:00' } }
+
+  it('与评估产出的键逐字一致；同日不同时刻相同，隔天不同', () => {
+    expect(dailyTriggerKey(trigger, dayAt(8, 0))).toBe('daily-2026-03-02-08:00')
+    expect(dailyTriggerKey(trigger, dayAt(8, 5))).toBe(
+      evaluateTrigger(trigger, ctx(dayAt(8, 5))).key,
+    )
+    // 同一天的任意时刻（含午夜与深夜）算出同一个键 → 历史记录落在今天即可预置
+    expect(dailyTriggerKey(trigger, dayAt(0, 0))).toBe(dailyTriggerKey(trigger, dayAt(23, 59)))
+    // 隔天是另一个键（不会被今天的记录挡住）
+    expect(dailyTriggerKey(trigger, dayAt(8, 0, 0, new Date(2026, 2, 3)))).toBe(
+      'daily-2026-03-03-08:00',
+    )
+  })
+
+  it('非 daily / 非法 at / 错型 params 一律返回 null', () => {
+    expect(
+      dailyTriggerKey({ kind: 'interval', params: { everyMinutes: 30 } }, dayAt(8, 0)),
+    ).toBeNull()
+    expect(dailyTriggerKey({ kind: 'daily', params: { at: '8点' } }, dayAt(8, 0))).toBeNull()
+    expect(dailyTriggerKey({ kind: 'daily', params: {} }, dayAt(8, 0))).toBeNull()
+    expect(dailyTriggerKey({ kind: 'daily', params: { at: 800 } }, dayAt(8, 0))).toBeNull()
+    expect(
+      dailyTriggerKey(
+        { kind: 'daily', params: 'oops' as unknown as Record<string, unknown> },
+        dayAt(8, 0),
+      ),
+    ).toBeNull()
   })
 })
 
