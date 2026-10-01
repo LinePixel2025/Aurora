@@ -17,8 +17,13 @@ export interface UseTts {
   loading: Ref<string | null>
   /** 最近一次失败的说明；成功后清空 */
   error: Ref<string | null>
-  /** 合成并播放；同一时刻只有一个音频，播新的会先停掉旧的 */
-  speak(text: string, key: string): Promise<void>
+  /**
+   * 合成并播放；同一时刻只有一个音频，播新的会先停掉旧的。
+   *
+   * `providerId` 缺省 = 主进程按 `tts.active` 选（会话朗读走这条）；
+   * 设置页「保存并试听」传入**正在编辑那张卡**的 id，否则非默认 provider 的试听会张冠李戴。
+   */
+  speak(text: string, key: string, providerId?: string): Promise<void>
   /** 停止播放并释放资源（audio.pause + revokeObjectURL） */
   stop(): void
 }
@@ -66,7 +71,7 @@ export function useTts(): UseTts {
     loading.value = null
   }
 
-  async function speak(text: string, key: string): Promise<void> {
+  async function speak(text: string, key: string, providerId?: string): Promise<void> {
     const trimmed = text.trim()
     if (trimmed === '') return
 
@@ -79,7 +84,11 @@ export function useTts(): UseTts {
     let audioBase64 = ''
     let mimeType = 'audio/mpeg'
     try {
-      const result = await window.aurora.tts.synthesize({ text: trimmed })
+      // 空串与 undefined 都表示「用 `tts.active`」——`TtsSynthesizeRequest.providerId` 是可选参数，
+      // 传空串会被主进程当成一个不存在的 provider id，所以这里显式只传有值的那种。
+      const request: { text: string; providerId?: string } = { text: trimmed }
+      if (providerId !== undefined && providerId !== '') request.providerId = providerId
+      const result = await window.aurora.tts.synthesize(request)
       if (current !== token) return // 已被 stop() 或新的 speak() 取代
       if (!result.ok) {
         error.value = result.message
