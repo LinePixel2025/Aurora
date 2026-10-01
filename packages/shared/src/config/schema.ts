@@ -926,8 +926,9 @@ export interface WritablePathOverride {
  * 2. **显式登记**：`tts.enabled` / `agent.tools.*` 这类本就因「不在黑名单而可写」的路径，
  *    逐条登记成可写面清单（供工具 description 与审计使用），也防未来误加前缀时静默收窄。
  *
- * 注意：模式里的 `*` 只是本表的匹配语法，`canWriteSettingPath` 收到的**实际路径**仍必须是
- * 具体路径（`isConcreteSettingPath` 会先拦掉带 `*` / `[]` 的输入）。
+ * 注意：模式里的 `*` / `**` 只是本表的匹配语法（语义见 `matchesPattern`），
+ * `canWriteSettingPath` 收到的**实际路径**仍必须是具体路径
+ * （`isConcreteSettingPath` 会先拦掉带 `*` / `[]` 的输入）。
  */
 export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
   // llm.providers.*：黑名单内显式放开两个「模型行为」字段（凭据与连接字段仍只读）。
@@ -936,7 +937,12 @@ export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
   // （docs/08 §1）。采样温度字段已随 v23 从 Schema 删除，不再是可写路径（docs/06 §3）。
   { pattern: 'llm.providers.*.model', reason: '切换该 provider 实际使用的模型（不碰凭据）' },
   {
-    pattern: 'llm.providers.*.modelParams.*.reasoningEffort',
+    // `**`（一个或多个段）而不是 `*`：**模型 id 里可以有点** —— `gpt-4.1` /
+    // `gemini-2.5-pro` / `claude-3.5-sonnet` 都是常见写法，而路径是按 `.` 切段的。
+    // 用 `*` 的话这类模型的思考等级会变成「文档说可写、实际必被拒」（v22 时代它是
+    // provider 级路径 `llm.providers.*.reasoningEffort`，而 provider id 禁点，
+    // 所以**任何**模型都能写 —— 这是下沉到模型级时新出现的收窄）。
+    pattern: 'llm.providers.*.modelParams.**.reasoningEffort',
     reason: '调整该模型的思考等级（不碰凭据）',
   },
   // tts / stt / imagegen：总开关与默认 provider 选择对 AI 开放（providers 凭据子树仍只读）
@@ -982,21 +988,40 @@ export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
 ]
 
 /**
- * 显式可写覆盖匹配：与 `matchReadonlyPrefix` 同一套「逐段相等」语义，另支持 `*` 段
- * （匹配恰好一个动态键段），且要求**整条路径与模式的段数一致** ——
- * 因此 `llm.providers.*.model` 命中 `llm.providers.deepseek.model`，但不命中
- * `llm.providers.deepseek.modelList`（段名不同）也不命中 `llm.providers.a.model.x`（多一段）。
+ * 显式可写覆盖匹配：与 `matchReadonlyPrefix` 同一套「逐段相等」语义，另支持两种通配段：
+ * - `*` 匹配**恰好一个**动态键段（如 provider id），且**整条路径与模式的段数一致** ——
+ *   因此 `llm.providers.*.model` 命中 `llm.providers.deepseek.model`，但不命中
+ *   `llm.providers.deepseek.modelList`（段名不同）也不命中 `llm.providers.a.model.x`（多一段）；
+ * - `**` 匹配**一个或多个**段，且**后面必须还有字面量段**。它只有一个用途：
+ *   **模型 id 里可以有点**（`gpt-4.1` / `claude-3.5-sonnet` 都是常见写法，见 `LlmProviderSchema.model`
+ *   的注释 —— 那里没有任何字符集约束），而路径是按 `.` 切段的，`*` 匹配不了。
+ *   收尾那个字面量段（`reasoningEffort`）是这条模式的**闸门**：`**` 只允许出现在它之前，
+ *   所以 `contextWindow` / `vision` / 凭据子树仍然一个字都写不进去。
  */
 function matchWritableOverride(path: string): WritablePathOverride | undefined {
   const segments = path.split('.')
   for (const override of WRITABLE_PATH_OVERRIDES) {
-    const patternSegments = override.pattern.split('.')
-    if (patternSegments.length !== segments.length) continue
-    if (patternSegments.every((segment, index) => segment === '*' || segment === segments[index])) {
-      return override
-    }
+    if (matchesPattern(override.pattern.split('.'), segments)) return override
   }
   return undefined
+}
+
+/** 段级模式匹配（`*` = 恰好一段；`**` = 一段或更多，且不能在模式末尾）。 */
+function matchesPattern(patternSegments: readonly string[], segments: readonly string[]): boolean {
+  const globstar = patternSegments.indexOf('**')
+  if (globstar === -1) {
+    if (patternSegments.length !== segments.length) return false
+    return patternSegments.every((segment, index) => segment === '*' || segment === segments[index])
+  }
+  const head = patternSegments.slice(0, globstar)
+  const tail = patternSegments.slice(globstar + 1)
+  // `**` 在末尾等于「以任意内容结尾」—— 那会把整棵子树放出去，直接判不匹配。
+  if (tail.length === 0) return false
+  const offset = segments.length - tail.length
+  // `**` 至少要吃掉一段（`offset === head.length` 时它一段都没吃到）。
+  if (offset <= head.length) return false
+  if (!head.every((segment, index) => segment === '*' || segment === segments[index])) return false
+  return tail.every((segment, index) => segment === '*' || segment === segments[offset + index])
 }
 
 /**
@@ -1233,8 +1258,15 @@ export function debugSchemaSpecs(): Record<string, AcceptSpec | undefined> {
 
 /**
  * 枚举路径查找（与 `lookupSpec` 同一套通配兜底）：
- * `llm.providers.<id>.reasoningEffort` 在 Schema 遍历时登记成 `llm.providers.*.reasoningEffort`，
- * 因此逐级用 `*` / `[]` 替换才找得到。
+ * `llm.providers.<id>.modelParams.<modelId>.reasoningEffort` 在 Schema 遍历时登记成
+ * `llm.providers.*.modelParams.*.reasoningEffort`，因此逐级用 `*` / `[]` 替换才找得到。
+ *
+ * ⚠️ **已知缺口**（`schema.test.ts` 有两条 `it.fails` 钉住）：替换一次只作用于**一段**，
+ * 而 `modelParams` 的登记路径有**两个**动态段 —— 具体路径查不到登记项，`fieldAccepts`
+ * 于是落到「未登记路径默认接受」分支。影响是**惰性**的：`fieldAccepts` 全仓只被
+ * `sanitizeWithDefaults` 使用，而它对 `llm.providers`（`z.record`）整体保留候选对象、
+ * 不下钻这棵子树（真正的取值闸门是 `SettingsSchema`）。同一形状早在
+ * `mcp.servers[].headersEnc.*` 上就存在。
  */
 function lookupEnum(path: string): EnumSpec | undefined {
   const exact = enumPaths.get(path)
@@ -1307,7 +1339,7 @@ function walk(
       // 把**整份配置**判为损坏（备份 + 重建），而不是像其它非法字段那样只回退这一个字段。
       //
       // 注意生效范围：只对**静态**枚举路径有效（`advanced.logLevel`、`modes.current`、
-      // `modes.classroom.schedule.{provider,classisland.source}`）。`llm.providers.*.reasoningEffort`
+      // `modes.classroom.schedule.{provider,classisland.source}`）。`llm.providers.*.modelParams.*.reasoningEffort`
       // 虽然也是 `z.enum`，但它在 `z.record` 之下、而 record 路径被 `isDynamicPath` 判定为
       // "整体保留候选对象"（见 store.ts 的 sanitize），逐字段校验根本不会被问到；
       // 那边靠 `migrateV4ToV5` 把非法值回落成 `auto` 兜底。

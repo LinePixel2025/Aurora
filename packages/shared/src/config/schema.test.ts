@@ -19,6 +19,7 @@ import {
   SettingsSchema,
   TTS_FORMATS,
   canWriteSettingPath,
+  debugSchemaSpecs,
   fieldAccepts,
   resolveModelParams,
   schemaPathCount,
@@ -110,10 +111,13 @@ describe('SettingsSchema / defaults 一致性', () => {
     // 动态键 record 字段
     expect(fieldAccepts('llm.providers', {})).toBe(true)
     expect(fieldAccepts('llm.providers.deepseek.apiKeyEnc', 'cipher')).toBe(true)
-    // v23：模型参数在 `modelParams.<modelId>` 下，合法值被接受（路径登记口径的缺口见「缺口」用例）
-    expect(
-      fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.contextWindow', 128_000),
-    ).toBe(true)
+    // v23：模型参数在 `modelParams.<modelId>` 下。
+    // ⚠️ 这条**不是**在验证「类型闸门」—— 该路径是双动态段、`lookupSpec` 查不到登记，
+    // `fieldAccepts` 落到「未登记路径默认接受」分支，对**任何**候选值都返回 true
+    //（下面两条 `it.fails` 用例正是把这个缺口写成了探针）。真正的闸门是 `SettingsSchema`，
+    // 见本文件「modelParams 的越界 / 类型错 / 非法枚举值会被 Schema 拒绝」那条。
+    // 这里改成断言「路径确实登记在通配表里」，别再拿它当类型校验读。
+    expect(debugSchemaSpecs()['llm.providers.*.modelParams.*.contextWindow']).toEqual(['number'])
     // 未登记的路径默认接受（避免误杀）
     expect(fieldAccepts('some.future.field', 1)).toBe(true)
   })
@@ -559,20 +563,27 @@ describe('SettingsSchema / defaults 一致性', () => {
     })
   })
 
+  // ⚠️ 下面两条是**期望行为**、当前实现做不到，故挂在 `it.fails` 下 —— 有朝一日 `lookupSpec` /
+  // `lookupEnum` 支持多段通配时它们会变红，提醒把这批断言挪回普通用例。
+  //
+  // 实测：两者都只做**单段** `*` 替换，而 `modelParams` 的登记路径是
+  // `llm.providers.*.modelParams.*.<字段>`（**两个**动态段）—— 具体路径查不到登记项，
+  // `fieldAccepts` 于是落到「未登记路径默认接受」分支，对任何候选值都返回 true。
+  // 影响面有限：`sanitizeWithDefaults` 对 `llm.providers`（`z.record`）整体保留候选对象、
+  // 不逐字段问 `fieldAccepts`（真正的取值闸门是 `SettingsSchema`，见上面那组越界用例），
+  // 所以这是**惰性**缺口，不是可达的坏路径。
+  //
+  // 拆成两条而不是一条里放两个 expect：`it.fails` 的回调在第一个 expect 抛错时就结束了，
+  // 写在后面的断言**从来没跑过** —— 一条用例只该验一件事。
+  it.fails('fieldAccepts 应当按 Schema 拒绝 modelParams 下越界的 contextWindow（已知缺口）', () => {
+    expect(
+      fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.contextWindow', '128k'),
+    ).toBe(false)
+  })
+
   it.fails(
-    'fieldAccepts 应当按 Schema 拒绝 modelParams 下的非法值（已知缺口，见注释）（v23）',
+    'fieldAccepts 应当按 Schema 拒绝 modelParams 下非法的 reasoningEffort（已知缺口）',
     () => {
-      // ⚠️ 这是**期望行为**、当前实现做不到，故整条挂在 `it.fails` 下 —— 有朝一日 lookupSpec
-      // 支持多段通配时它会变红，提醒把这批断言挪回普通用例（口径见下）。
-      //
-      // 实测：`lookupSpec` / `lookupEnum`（schema.ts）只做**单段** `*` 替换，而 `modelParams`
-      // 的登记路径是 `llm.providers.*.modelParams.*.<字段>`（**两个**动态段）——具体路径查不到
-      // 登记项，`fieldAccepts` 于是落到「未登记路径默认接受」分支，对任何候选值都返回 true。
-      // 影响面有限：`sanitizeWithDefaults` 对 `llm.providers`（z.record）整体保留候选对象、
-      // 不逐字段问 `fieldAccepts`；真正的取值闸门是 `SettingsSchema`（见上面两条越界用例）。
-      expect(
-        fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.contextWindow', '128k'),
-      ).toBe(false)
       expect(
         fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.reasoningEffort', 'ultra'),
       ).toBe(false)
@@ -660,6 +671,24 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     expect(canWriteSettingPath('llm.providers.deepseek.other.deepseek-chat.reasoningEffort')).toBe(
       false,
     )
+    // v23：**模型 id 里可以有点**（`gpt-4.1` / `claude-3.5-sonnet` 都是常见写法），而路径是按 `.`
+    // 切段的 —— 覆盖表用 `**`（一个或多个段）+ 收尾的字面量 `reasoningEffort` 兜住这一类。
+    // 用 `*` 的话这些模型的思考等级会变成「文档说可写、实际必被拒」（v22 是 provider 级路径，
+    // 而 provider id 禁点，任何模型都能写）。
+    expect(canWriteSettingPath('llm.providers.deepseek.modelParams.gpt-4.1.reasoningEffort')).toBe(
+      true,
+    )
+    expect(
+      canWriteSettingPath('llm.providers.deepseek.modelParams.claude-3.5-sonnet.reasoningEffort'),
+    ).toBe(true)
+    // `**` 只在收尾那个字面量段之前生效：含点模型也不能借此写到 contextWindow / vision
+    expect(canWriteSettingPath('llm.providers.deepseek.modelParams.gpt-4.1.contextWindow')).toBe(
+      false,
+    )
+    expect(canWriteSettingPath('llm.providers.deepseek.modelParams.gpt-4.1.vision')).toBe(false)
+    // `**` 必须吃掉**至少一段**：`…modelParams.reasoningEffort`（少一个模型 id 段）不得命中
+    expect(canWriteSettingPath('llm.providers.deepseek.modelParams.reasoningEffort')).toBe(false)
+
     // 拒绝来自黑名单（而不是「未知配置路径」那条兜底）：说明路径本身是识别的、只是不许写
     expect(
       settingsReadonlyReason('llm.providers.deepseek.modelParams.deepseek-chat.contextWindow'),
