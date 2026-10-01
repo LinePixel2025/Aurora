@@ -15,12 +15,17 @@
  * SubjectsEditor 一致），每次带**完整 `projects` 子树** —— `settings:update` 是顶层浅合并。
  */
 import { computed, onMounted, ref, watch } from 'vue'
-import type { ChatSessionSummary, ProjectConfig, ProjectStatus } from '@aurora/shared'
+import type {
+  ChatSessionSummary,
+  ProjectConfig,
+  ProjectsSettings,
+  ProjectStatus,
+} from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
 import { useSettingsStore } from '../../shared/stores.js'
-import { pickProjectEntry } from '../../shared/projects.js'
+import { appendProject, pickProjectEntry } from '../../shared/projects.js'
 
 const settingsStore = useSettingsStore()
 
@@ -50,9 +55,7 @@ async function refreshProjectStatus(): Promise<void> {
  * 保存项目改动：**必须带完整子树**（顶层浅合并），且未加载完不写 —— 否则等于用兜底默认值
  * 把已保存的项目列表整棵覆盖掉。
  */
-async function saveProjects(
-  next: Partial<{ current: string; list: ProjectConfig[] }>,
-): Promise<void> {
+async function saveProjects(next: Partial<ProjectsSettings>): Promise<void> {
   const current = projects.value
   if (!current) return
   error.value = null
@@ -68,15 +71,23 @@ async function saveProjects(
 
 /**
  * 添加项目：目录由主进程弹系统选择框（渲染层没有文件系统能力），选中即设为当前项目。
- * id / 默认名规则与主界面「项目对话」标题行的添加钮同源（`shared/projects.ts`）。
+ * id / 默认名 / 「设为当前」规则与主界面左栏「项目对话」标题行的添加钮**同源**
+ * （`shared/projects.ts` 的 `appendProject`，2026-10-01 起两处入口逐字一致）。
+ * 选择框出错不再静默：`pickProjectEntry` 回三态，错误经 `error` 报出来。
  */
 async function addProject(): Promise<void> {
-  const current = projects.value
-  if (!current) return
-  const entry = await pickProjectEntry()
-  if (entry === null) return // 用户取消：不是错误，什么都不做
-  // 刚添加的项目就是用户想用的那一个，省掉一次点击
-  await saveProjects({ list: [...current.list, entry], current: entry.id })
+  if (!projects.value) return
+  const picked = await pickProjectEntry()
+  if (picked.kind === 'canceled') return // 用户取消：不是错误，什么都不做
+  if (picked.kind === 'error') {
+    error.value = `添加项目失败：${picked.message}`
+    return
+  }
+  // 选择框是模态的、可能停留很久：**重读**最新 projects 再合并 —— 用弹框前的旧快照提交
+  // 会把期间在别处（主界面左栏 / Center 远程）做的项目改动整棵覆盖掉。
+  const latest = projects.value
+  if (!latest) return
+  await saveProjects(appendProject(latest, picked.entry))
 }
 
 async function updateProjectField(id: string, patch: Partial<ProjectConfig>): Promise<void> {

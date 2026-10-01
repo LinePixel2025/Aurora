@@ -58,7 +58,7 @@ import AutomationPage from './components/AutomationPage.vue'
 import { useChat } from '../shared/composables/useChat.js'
 import { useTts } from '../shared/composables/useTts.js'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
-import { pickProjectEntry } from '../shared/projects.js'
+import { appendProject, pickProjectEntry } from '../shared/projects.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
 import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.js'
@@ -360,19 +360,64 @@ async function startWorkSession(): Promise<void> {
 }
 
 /**
- * 项目对话区标题行的「添加项目」（2026-09-30，docs/07 §2.3）：
- * 弹目录选择框 → 加入 `projects.list`（**带完整 projects 子树**，顶层浅合并）。
- * 与设置页走同一条链路与同一份 id / 命名规则（`shared/projects.ts`）；
- * 不自动设为当前项目 —— 主界面加项目多半是为「在这个项目里开对话」，
- * 而新建入口是各项目分组头的 `+`，切 `current` 反而会改变全局权限边界。
+ * 「添加项目」的结果提示（2026-10-01）。
+ *
+ * **独立于 `chatError` / `pickerHint`**：那两个都渲染在 composer 里，而 composer 只在
+ * `view === 'chat'` 时挂载 —— 左栏的「添加项目」在子代理 / 自动化页照样能点，
+ * 提示就必须在任何视图下都看得见（否则又回到"点了什么都不发生"）。
+ * 成功 2.6 秒自散；失败留 6 秒（够读完，又不会变成常驻噪声；下次再点会先清掉）。
+ */
+const projectNotice = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
+let projectNoticeTimer: number | null = null
+
+function flashProjectNotice(tone: 'ok' | 'error', text: string): void {
+  projectNotice.value = { tone, text }
+  if (projectNoticeTimer !== null) window.clearTimeout(projectNoticeTimer)
+  projectNoticeTimer = window.setTimeout(
+    () => {
+      projectNotice.value = null
+      projectNoticeTimer = null
+    },
+    tone === 'ok' ? 2600 : 6000,
+  )
+}
+
+/**
+ * 项目对话区标题行的「添加项目」（2026-09-30，docs/07 §2.3；2026-10-01 与设置页对齐）：
+ * 弹目录选择框 → 加入 `projects.list` 并**设为当前项目**（`appendProject` 是唯一口径，
+ * 与设置页同一条链路、同一份 id / 命名规则、同一个「加完即当前」语义）。
+ *
+ * 为什么现在也切 `current`：此前这里刻意不切，结果是「加上了」与「生效了」分家 ——
+ * 设置页加完新项目就是「已启用」，左栏加完 `projects.current` 还指着旧项目，
+ * 用户报「在左栏加完项目并没有真正添加」。两处入口现在是同一件事。
+ *
+ * 失败不再静默（2026-10-01）：选择框出错 / 配置被拒都经 `projectNotice` 报出来 ——
+ * 旧实现把「取消」与「出错」压成同一个 `null` 直接返回，用户点完什么都看不到。
  */
 async function addProject(): Promise<void> {
-  const current = settingsStore.settings?.projects
-  if (!current) return
-  const entry = await pickProjectEntry()
-  if (entry === null) return
-  await settingsStore.update({ projects: { ...current, list: [...current.list, entry] } })
+  if (projectNoticeTimer !== null) {
+    window.clearTimeout(projectNoticeTimer)
+    projectNoticeTimer = null
+  }
+  projectNotice.value = null
+  if (!settingsStore.settings) return
+  const picked = await pickProjectEntry()
+  if (picked.kind === 'canceled') return
+  if (picked.kind === 'error') {
+    flashProjectNotice('error', `添加项目失败：${picked.message}`)
+    return
+  }
+  // 选择框是模态的、可能停留很久：**重读**最新 projects 再合并 —— 用弹框前的旧快照提交
+  // 会把期间在设置页做的重命名 / 删除整棵覆盖掉。
+  const latest = settingsStore.settings?.projects
+  if (!latest) return
+  const ok = await settingsStore.update({ projects: appendProject(latest, picked.entry) })
+  if (!ok) {
+    flashProjectNotice('error', settingsStore.error ?? '添加项目失败')
+    return
+  }
   // 项目分组由 settings store 现算（`projectGroups`），update 成功后左栏自动多出一组
+  flashProjectNotice('ok', `已添加项目「${picked.entry.name}」并设为当前项目`)
 }
 
 /** Agent对话分组头 `+`：与顶部「新对话」同效（都显式标 agent 空间） */
@@ -1123,6 +1168,7 @@ async function markGuideDone(): Promise<void> {
       -->
       <SessionNav
         :project-groups="projectGroups"
+        :current-project-id="settingsStore.settings?.projects.current ?? ''"
         :work-sessions="workSessions"
         :agent-sessions="agentSessions"
         :archived-sessions="archivedSessionItems"
@@ -1456,6 +1502,15 @@ async function markGuideDone(): Promise<void> {
       </Transition>
       <ContextPanel :todos="currentTodos" />
     </aside>
+
+    <!--
+      左栏动作的结果提示（「添加项目」成功 / 失败，2026-10-01）：挂在 app-shell 层而不是
+      composer 里 —— composer 只在 `view === 'chat'` 时挂载，而左栏那个按钮在子代理 /
+      自动化页照样能点，提示必须跟着它走。`pointer-events: none` 保证不挡住左栏底部的按钮。
+    -->
+    <div v-if="projectNotice !== null" class="shell-toast" data-field="chat.project-notice">
+      <AppToast :tone="projectNotice.tone">{{ projectNotice.text }}</AppToast>
+    </div>
   </div>
 </template>
 
@@ -1472,6 +1527,19 @@ async function markGuideDone(): Promise<void> {
   overflow: hidden;
   background: var(--bg-base);
   color: var(--text-primary);
+}
+
+/*
+ * 左栏动作的结果提示：固定在窗口左下角（浮在左栏之上，不参与三栏 grid 排版）。
+ * 不挡点击（`pointer-events: none`）—— 它可能盖住左栏底部的模式徽章 / 设置齿轮。
+ */
+.shell-toast {
+  position: fixed;
+  left: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 60;
+  max-width: 320px;
+  pointer-events: none;
 }
 
 /* ── 左栏 / 右栏的公共折叠语义 ── */

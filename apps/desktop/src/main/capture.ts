@@ -4458,8 +4458,9 @@ export const CHAT_RIGHT_PANEL_WORK_CHECK = `(async () => {
  * ① 出厂现场（无项目、classroom）：`chat.agent-group` / `chat.session-list` /
  *    `chat.quick-item` 必须在，`chat.work-group` / `chat.project-group` 必须不在 ——
  *    工作目录对话区是 Work 模式专属、项目对话区只在登记了项目时渲染（「无则整区不渲染」）；
- * ② 登记截图项目（与 chat-project-card 同一条 `settings:update` 通道，`list` 整体权威）：
- *    `chat.project-group` 出现且组头 `+`（`chat.new-project-session`）恰好一枚；
+ * ② 登记两个截图项目（与 chat-project-card 同一条 `settings:update` 通道，`list` 整体权威；
+ *    第一条是 `current`）：`chat.project-group` 出现、组头 `+`（`chat.new-project-session`）
+ *    恰好两枚，且「当前」徽标（`chat.project-current`）**只有一枚**（按 id 判定）；
  * ③ 切 Work 模式（与右栏模式感知探针同一条 `mode.set` IPC）：`chat.work-group` 出现
  *    且组头 `+`（`chat.new-work-session`）恰好一枚，项目对话区不受影响。
  *
@@ -4487,32 +4488,41 @@ export const CHAT_SESSION_GROUPS_ACT = `(async () => {
       agentRows: count('[data-field="chat.session-list"] .nav-item'),
       agentAddButton: count('[data-action="chat.new-agent-session"]'),
     }
-    // 阶段 B：登记截图项目（projects.list 是数组整体权威，显式给完整子树）
+    // 阶段 B：登记截图项目（projects.list 是数组整体权威，显式给完整子树）。
+    // **两条**：第二条不是当前项目（current 指第一条）—— 「当前」徽标必须按 id 判定，
+    // 只挂一条时「每个分组都挂」这种错法也只会产出一枚，断言就失去判别力。
     const state = await window.aurora.settings.get()
     if (!state.ok) return { ok: false, reason: state.message }
     const update = await window.aurora.settings.update({
       projects: {
         ...state.value.projects,
         current: 'capture',
-        list: [{ id: 'capture', name: '截图项目', root: 'C:\\\\capture-project' }],
+        list: [
+          { id: 'capture', name: '截图项目', root: 'C:\\\\capture-project' },
+          { id: 'capture-other', name: '非当前项目', root: 'C:\\\\capture-project-2' },
+        ],
       },
     })
     if (!update.ok) return { ok: false, reason: update.message }
-    // 等待条件 = **项目子分组头出现**（+ 钮）而不是「子分组里有会话行」：
+    // 等待条件 = **两条项目子分组头都出现**（+ 钮）而不是「子分组里有会话行」：
     // 刚登记的项目还没有任何会话，子分组下自然没有行（这是正确行为，不是缺陷）。
     const projectText = () => {
       const el = document.querySelector('[data-field="chat.project-group"]')
       return el === null ? '' : (el.textContent || '').replace(/\\s+/g, ' ').trim()
     }
     let projectHeader = 0
-    for (let attempt = 0; attempt < 15 && projectHeader === 0; attempt += 1) {
+    for (let attempt = 0; attempt < 15 && projectHeader < 2; attempt += 1) {
       projectHeader = count('[data-action="chat.new-project-session"]')
-      if (projectHeader === 0) await wait(200)
+      if (projectHeader < 2) await wait(200)
     }
     const projectGroup = count('[data-field="chat.project-group"]')
     const projectAdd = count('[data-action="chat.new-project-session"]')
     const projectRows = rows()
     const projectNameShown = projectText().indexOf('截图项目') !== -1
+    // 「当前项目」徽标（2026-10-01）：两条项目里只有 capture 是 projects.current，
+    // 分组头上有且只有一枚 —— 主界面此前没有任何地方表示「哪个项目是当前项目」，
+    // 用户因此看不出左栏「添加项目」有没有生效（用户报的那个 bug）。
+    const currentBadge = count('[data-field="chat.project-current"]')
     // 阶段 C：切 Work 模式
     const mode = await window.aurora.mode.set('work')
     if (!mode.ok) return { ok: false, reason: 'mode.set failed: ' + mode.message }
@@ -4562,6 +4572,7 @@ export const CHAT_SESSION_GROUPS_ACT = `(async () => {
       projectAdd,
       projectRows,
       projectNameShown,
+      currentBadge,
       workGroup,
       workAdd,
     }
@@ -4589,13 +4600,15 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
       factory.projectRows === 0 &&
       factory.agentAddButton === 1 &&
       factory.agentRows >= 1
-    // 项目已登记：子分组头（+）在场、项目名出现在分组标题里。
+    // 项目已登记：**两条**子分组头在场、项目名出现在分组标题里、且只有当前项目
+    // （capture）标了「当前」—— 徽标数 1 配两条分组，才真正钉住「按 id 判定」。
     // 不断言「子分组里有会话行」—— 新登记的项目本来就没有会话（新建入口就是那个 +）。
     const projectOk =
       probe !== undefined &&
       probe.projectGroup === 1 &&
-      probe.projectAdd === 1 &&
-      probe.projectNameShown === true
+      probe.projectAdd === 2 &&
+      probe.projectNameShown === true &&
+      probe.currentBadge === 1
     const workOk = probe !== undefined && probe.workGroup === 1 && probe.workAdd === 1
 
     // 阶段 D 断言：折叠后高度归零 → 展开还原（两个方向都验，避免"点了没反应"漏判）
@@ -4661,6 +4674,7 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
       projectAdd: probe === undefined ? null : probe.projectAdd,
       projectRows: probe === undefined ? null : probe.projectRows,
       projectNameShown: probe === undefined ? null : probe.projectNameShown,
+      currentBadge: probe === undefined ? null : probe.currentBadge,
       workGroup: probe === undefined ? null : probe.workGroup,
       workAdd: probe === undefined ? null : probe.workAdd,
       collapse: probe === undefined

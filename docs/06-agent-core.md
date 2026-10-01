@@ -325,7 +325,12 @@ export interface LlmProvider {
 「项目」是配置里的一个实体（docs/08 §1）：`projects.current` 指向 `projects.list[]` 里的某一条，
 每条是 `{ id, name, root }`；`current` 为空串表示**无项目**（默认态，行为与 v13 之前完全一致）。
 项目根同时决定三件事：① 每轮注入哪份项目级约定；② 权限层判定「项目根之内 / 之外」的边界（§12.2）；
-③ 缺省工作目录 / 搜索根的最高优先级输入（`effectiveWorkspaceDir` 的一级回落，见本节末条）。
+③ 缺省工作目录 / 搜索根（`effectiveWorkspaceDir`，见本节末条）。
+⚠️ v17 / 2026-09-30 起这三件事**全部按会话解析**（不是"全局当前项目的最高优先级输入"）：
+**会话绑定项目 > 会话空间目录 > 全局 `projects.current` > …** —— 全局 `projects.current`
+只是回落链上的一级，未绑定会话先落自己的空间目录（Agent 空间恒 `桌面\Aurora`），
+因此「切 `projects.current`」在界面上是「哪个项目是当前项目」（设置页的「已启用」/ 左栏的
+「当前」徽标），**并不等于**把某个会话的工作目录搬过去（要搬得绑定会话或走空间目录那一级）。
 
 **会话级项目（v17，2026-09）**：每个会话可以绑定 `projects.list` 里的某一项——绑定写在
 **会话文件自身**（`sessions/<id>.json` 的 `meta.projectId`，经 `chat:setSessionProject` 写入 / 清除），

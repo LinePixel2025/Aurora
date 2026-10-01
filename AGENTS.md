@@ -56,7 +56,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   是**根相对**路径，在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败
   （2026-09-26 实测；各包 package.json 里的 `test: vitest run` 只在仓库根调用时才对）。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：PowerShell 下 `$env:AURORA_SMOKE='1'; pnpm dev`，结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`。调试渲染层加 `AURORA_DEVTOOLS=1`。
-  **全量一轮约 25 秒、177 条断言应当全绿（`SUMMARY 177/177 passed`）**——
+  **全量一轮约 25 秒、178 条断言应当全绿（`SUMMARY 178/178 passed`）**——
   基线不是绿的说明断言或夹具过期了，**先把基线修绿再动被测代码**，别在红基线上判断"这次是不是我引入的"。
   只跑相关的那一段用 `$env:AURORA_SMOKE_ONLY='2.3'`（段号或子串，逗号分隔；留空 = 全量）。
   它**只切主进程侧那十几个段**（2.1~5），渲染层脚本（约 135 条断言）始终全跑 ——

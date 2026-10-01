@@ -104,6 +104,7 @@
        `data-action="chat.new-project-session"`，新建即绑定该项目）；
        **点项目标题行折叠 / 展开该项目的全部会话**（`data-action="chat.toggle-project"`，
        标题行是可点按钮、hover 有底色；`aria-expanded` 跟折叠态；会话数徽标；
+       当前项目的标题行上另有一枚「当前」徽标 `data-field="chat.project-current"`；
        默认**全部展开**，折叠态只存组件内（视图偏好不落配置，重启回展开态）。
        折叠动效：容器 `grid-template-rows: 0fr ↔ 1fr` 过渡（无需测量内容高度）+ 内层
        `overflow: hidden`；折叠时容器加 `inert` —— 视觉裁掉了但键盘还能 Tab 进去，
@@ -112,9 +113,21 @@
        项目增删走 `TransitionGroup`（淡入 + 轻微位移，不「啪」地插一整块）。
        会话项 = 绑定了 `projectId` 的会话（`ChatSessionSummary.projectId`）。
        **分区标题行右侧是「添加项目」钮**（`data-action="chat.add-project"`：
-       弹系统目录选择框 → 加入 `projects.list`，与设置页同一条链路与 id 规则；
-       整区常显正是因为它是主界面唯一的项目登记入口 —— 没有项目时也不能没有它；
-       **不自动设为当前项目**，避免静默改变全局权限边界）。
+       弹系统目录选择框 → 加入 `projects.list` **并设为当前项目**（`projects.current`），
+       与设置页「会话管理 → 添加项目」**同一条链路、同一份口径**（`shared/projects.ts` 的
+       `appendProject`，id / 默认名 / 是否设为当前都只在那里有一份）；
+       整区常显正是因为它是主界面唯一的项目登记入口 —— 没有项目时也不能没有它。
+       ⚠️ 2026-10-01 修正：此前左栏这条**刻意不切 `current`**（理由是「加项目多半只是为在
+       这个项目里开对话」），结果「加上了」与「生效了」在两处入口分了家 —— 用户报
+       「在左栏加完项目并没有真正添加」。现在两处逐字一致：**加完即当前项目**。
+       选择框出错 / 配置被拒不再静默：IPC 仍是 `Result<string | null>`，渲染层的
+       `pickProjectEntry` 把它收敛成三态（选中 / 用户取消 / 出错，`ProjectPickOutcome`），
+       出错经左栏左下角的 `chat.project-notice` 提示条报出来（**不挂在 composer 里** ——
+       composer 只在对话视图挂载，而左栏这个钮在子代理 / 自动化页照样能点），
+       成功也给一句「已添加项目「X」并设为当前项目」。
+       **当前项目在分组头上标一枚「当前」**（`data-field="chat.project-current"`，锁定
+       `projects.current`）：主界面此前没有任何地方表示「哪个项目是当前项目」（右栏项目卡
+       已下线），加完项目有没有生效只能去设置页看 —— 这枚标记把它带回主界面。
        绑定项目已被删除的孤儿会话**归入 Agent对话区**显示（解析链上它们已按未绑定回落；
        展示层按 `knownProjectIds` 判定，2026-09-30 修 —— 此前它们既进不了项目分组、
        又被 Agent 分组按 `projectId === undefined` 挡掉，会从**左栏整条消失**）。

@@ -50,6 +50,12 @@ interface ProjectSessionGroup {
 const props = defineProps<{
   /** 项目对话（按项目分组的绑定会话；App.vue 已按 projectId 分好桶） */
   projectGroups: ProjectSessionGroup[]
+  /**
+   * 当前项目 id（`projects.current`；空串 = 无当前项目）。
+   * 分组头上标一枚「当前」（2026-10-01，docs/07 §2.3）：当前项目在主界面里此前**没有任何
+   * 可见表示**（右栏项目卡已下线），用户加完项目也看不出「有没有生效」。
+   */
+  currentProjectId: string
   /** 工作目录对话（space:'work'，仅 Work 模式下由本组件渲染该区） */
   workSessions: ChatSessionSummary[]
   /** Agent对话（space:'agent' 或未标记；不含 quick —— quick 是本区固定首行） */
@@ -81,7 +87,7 @@ const emit = defineEmits<{
   (event: 'newAgentSession'): void
   /** 项目分组头 `+`：新建会话并绑定到该项目 */
   (event: 'newProjectSession', projectId: string): void
-  /** 项目对话区「添加项目」：弹目录选择框并加入 projects.list（docs/07 §2.3） */
+  /** 项目对话区「添加项目」：弹目录选择框并加入 projects.list 且设为当前项目（docs/07 §2.3） */
   (event: 'addProject'): void
   /** 工作目录对话分组头 `+`：新建 space:'work' 的会话 */
   (event: 'newWorkSession'): void
@@ -282,6 +288,17 @@ const noSessionsAtAll = computed(
                   aria-hidden="true"
                 />
                 <span class="project-name">{{ group.name }}</span>
+                <!--
+                  「当前」标记（2026-10-01）：与设置页的「已启用」同一份状态（`projects.current`），
+                  只是把状态搬回主界面。左栏「添加项目」加完即把新项目设为当前，
+                  用户能当场看见这件事生效了（此前要开设置页才知道）。
+                -->
+                <span
+                  v-if="group.id === props.currentProjectId"
+                  class="current-badge tiny"
+                  data-field="chat.project-current"
+                  >当前</span
+                >
                 <span v-if="group.sessions.length > 0" class="count-badge tiny">{{
                   group.sessions.length
                 }}</span>
@@ -571,6 +588,15 @@ const noSessionsAtAll = computed(
   background: color-mix(in srgb, var(--aurora-blue) 22%, transparent);
   color: var(--accent-text);
   animation: aurora-confirm var(--dur-base) var(--ease-spring) both;
+}
+
+/* 「当前项目」标记：与角标同形同尺寸，用强调色区分「这是状态」而不是「这是计数」 */
+.current-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--aurora-blue) 22%, transparent);
+  color: var(--accent-text);
 }
 
 /* ── 会话滚动区（三分区 + 归档组） ── */
