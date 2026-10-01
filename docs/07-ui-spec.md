@@ -169,7 +169,7 @@
     仅位置变化），「收起」文字按钮由 caption「关闭」按钮取代（隐藏语义不变）。
   - **composer（2026-09 输入框重做，2026-09-29 减负轮，见下方「输入框规格」）**：单张悬浮卡
     （附件 chips → textarea → 工具行 → 上下文详解条）；工具行 = 权限模式 + 模型下拉 +
-    思考等级下拉 +（右侧）键位提示 / 保存瞬时提示 + 麦克风 + 停止 / 发送；旧「会话：xxx ·
+    思考等级下拉 +（右侧）保存瞬时提示 + 麦克风 + 停止 / 发送；旧「会话：xxx ·
     可调用 Skill 与 MCP 工具」常驻 meta 文案移除，三枚工具控件是 28px 零边框「芯片」，
     占位文案只留一句（`输入消息…`）。
   - **右栏「任务」面板（v15 新增，`data-field="chat.jobs"`；面板自身 `chat.job-panel`）**：
@@ -512,8 +512,10 @@
   快速会话（`sessionId = 'quick'`）与提示条面板的快速对话共用同一份数据 ——
   旧的「标题栏『历史』按钮展开双栏侧栏」口径废弃。
 - **思考等级（本轮）**：输入区（`.composer-bar`）含「思考等级」下拉
-  （`data-field="chat.reasoningEffort"`，`ThinkingLevelSelect.vue`），读写**当前生效 provider** 的
-  `llm.providers.<active>.reasoningEffort`：`auto` = **不下发**该参数（映射成 `undefined`），
+  （`data-field="chat.reasoningEffort"`，`ThinkingLevelSelect.vue`），读写**当前生效模型**的
+  `llm.providers.<active>.modelParams.<modelId>.reasoningEffort`（v23 起随模型绑定，
+  `modelId` = 该 provider 的 `model`；**换模型即换等级**，同一 provider 的不同模型各有一套值）：
+  `auto` = **不下发**该参数（映射成 `undefined`），
   `low` / `medium` / `high` 原样透传。**设置页与对话窗输入区两处入口写的是同一个字段，没有第二份来源**，
   也不做按会话覆盖；改完对**下一次**请求生效，无需重启。
   无可用 provider 时控件**不隐藏**，而是 `disabled` + 提示「先在「设置 → AI 模型」里配置并选中一个模型」
@@ -526,7 +528,16 @@
   **模型页与对话窗读写的是同一份列表**：模型页维护 `modelList`、对话窗从同一份列表里选，
   没有第二份来源。当前 `model` 不在列表里（或列表为空）时，下拉把当前值显示为
   「`<model>`（不在列表中）」而不是悄悄替换成别的模型。
+  **打开编辑卡时，当前生效模型总会占一行**（渲染层重建草稿时把 `model` 补进候选列表），
+  所以引导页建出来的 provider（落盘的是 `modelList: []`）也能就地配置它的模型级参数；
+  落盘时 `modelList` 仍会被归一为「候选列表 ∪ {`model`}」。
   无可用 provider 时**与思考等级一样**「不隐藏、只 `disabled`」，并给出同一句去设置页的提示。
+- **权限下拉的换行口径（本轮）**：菜单项的说明文字**允许换行** —— 长文案的实际容器
+  `.perm-item-body` 必须有 `white-space: normal`（祖先 `.composer-bar` 的 `white-space: nowrap`
+  是**继承**属性，不覆盖它文字就会横向画出卡片）。完全权限档的非确认态文案是**两短句**
+  （有项目 / 无项目两态各一句），例如「有项目：根内免确认，越界仍询问」「无项目：不再逐次询问」；
+  `pendingDanger` 那支「再点一次确认：项目根内的敏感操作不再询问」保持原样。
+  **探针按 `textContent` 子串断言『完全权限』『再点一次确认』，改文案时必须保留这两个子串。**
   `.composer-bar` 的控件顺序（2026-09 输入框重做后）：**权限模式** → **模型** → **思考**
   → 弹性空隙 → 瞬时提示 → 麦克风 → 停止 / 发送；
   空间不足（右栏展开 / 窗口缩窄）时先让 `meta` / 提示文本让位（隐藏或
@@ -548,14 +559,14 @@
   它**不再当说明栏用** —— 旧版把「Enter 发送 / Shift + Enter 换行 / 输入 / 调用命令与技能 /
   可直接拖入文件」整串塞进占位，长度超过一行，而 textarea 的高度由**内容**决定
   （空内容 = 一行），换行后的第二行会被直接裁掉，用户看到的是「可直接拖入文」这种断句。
-  键位提示改挂工具行右侧的 `.composer-hint`（`Enter 发送 · Shift + Enter 换行`，
-  与 `.picker-hint` 共用同一个弹性槽、宽度不够时第一个让位）；其余能力（`/` 命令、
-  拖入文件）走 textarea 的 `title` 悬浮提示。
+  键位说明（`Enter` 发送 / `Shift + Enter` 换行）**不再常驻**工具行 —— 原先挂在那里的
+  `.composer-hint` 已移除，键位与其余能力（`/` 命令、拖入文件）一并只留在 textarea 的
+  `title` 悬浮提示里；工具行右侧只剩瞬时提示 `.picker-hint`（保存 / 切换成功那类自灭文案）。
   流式中按 `Enter` 会给一句 2 秒自灭的提示（发送按钮同时是 disabled 的，两处口径一致）——
   `useChat.send` 在流式期间直接返回，若不提示就是「敲了 Enter 没反应也没说法」。
 - **工具行**（左 → 右）：**权限模式** + 模型下拉 + 思考等级下拉 + 弹性空隙 +
-  （右侧）键位提示 / 瞬时提示 + 麦克风（STT，门控口径不变）+ 停止（流式中）+ 发送。
-  压缩顺序与旧口径一致：先让两枚提示文本让位，模型下拉可收缩到 72px，
+  （右侧）瞬时提示 + 麦克风（STT，门控口径不变）+ 停止（流式中）+ 发送。
+  压缩顺序与旧口径一致：先让瞬时提示文本让位，模型下拉可收缩到 72px，
   **发送按钮绝不能被挤出卡外**。
 - **三枚「芯片」的视觉口径**（减负轮）：权限 / 模型 / 思考都是 `--control-h-xs`（28px）高、
   `--radius-pill` 圆角、**静止态零边框零底色**（只有文字与原生箭头），悬停 / 聚焦浮一层
@@ -604,14 +615,15 @@
 - **上下文详解条**（`ComposerContextBar.vue`，`data-field="chat.context"`）：卡片最底部一条细状态栏，
   折叠态显示 `上下文 <已用> / <窗口> <进度条> <百分比>` + 本会话累计，最近一轮有缓存命中量时
   紧凑文案里一并带出命中 token 数（探针锚点 `chat.context-usage` 的文案因此含「缓存命中」）。
-  点开在上方弹出明细（`data-field="chat.context-detail"`：最近一轮输入 / 输出、缓存命中、
-  本会话累计、上下文窗口、消息条数与字符数、当前模型）。
+  点开在上方弹出明细（`data-field="chat.context-detail"`）——**只有三行**：本轮输入 /
+  上下文窗口 / 模型（缓存命中只留在折叠条上，不再进明细卡）。
   - **分子**：最近一轮的 `promptTokens`（`usage` 事件，06 §16.2）——就是这一轮真实送进模型的上下文长度；
   - **缓存命中**：最近一轮的缓存命中 token 数（`cachedTokens`，06 §21.4）——来自 provider 回传的
     `prompt_tokens_details.cached_tokens`（OpenAI 形态）或 `prompt_cache_hit_tokens`（DeepSeek 形态），
     明细里另给出占比（命中量 / 本轮的 `promptTokens`）。**两者都缺就整项不显示** ——
     既不写「缓存命中 0」也不占位：那会把「provider 没回传」显示成「一条都没命中」，两者必须可区分；
-  - **分母**：`llm.providers.<active>.contextWindow`（v11 新增，08 §1）。**0 = 未知**，此时
+  - **分母**：当前生效模型在 `llm.providers.<active>.modelParams.<modelId>.contextWindow`
+    （v11 新增，**v23 起按模型绑定**，08 §1；`modelId` = 该 provider 的 `model`）。**0 = 未知**，此时
     不显示进度条与百分比，明细里给出去设置页填的路径——不编造分母；
   - provider 没回传用量时整条显示「暂无用量数据」，明细里说明原因，**绝不拿字符数换算冒充 token**；
   - 占用 ≥60% 转警示色、≥85% 转错误色（在输入框上就能看出该开新会话了）。
@@ -1478,9 +1490,11 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     `classification.autoMove` 复选框 → `patch()` → IPC → 落盘），前后快照在渲染层暂存由 check 比对 ——
     其它 classroom 字段（含 schedule / subjects）不得因 `settings:update` 的**顶层浅合并**而静默丢失。
   - **思考等级**（`SETTINGS_LLM_EFFORT_CHECK`，产物 `settings-llm-params.png`）：造一个 provider →
-    点开第一行的「高级参数与连接测试」→ 断言 `[data-field$=".reasoningEffort"]` 与
-    `[data-field$=".temperature"]` 都在、且下拉的 `select.value` 等于配置里写的 `'high'`
-    （覆盖「写盘 → 回读 → 渲染」整条链路）。
+    点 `data-action="edit-provider"` 开卡 → 点**当前使用模型那一行**（`.model-row.current`）的
+    `data-action="toggle-model-params"` 展开模型参数 → 断言 `[data-field$=".reasoningEffort"]`
+    与 `[data-field$=".contextWindow"]` / `[data-field$=".vision"]` 都在**模型行内**、且下拉的
+    `select.value` 等于配置里写的 `'high'`（覆盖「写盘 → 回读 → 渲染」整条链路）。
+    `temperature` 字段已随 v23 从 Schema 与页面上删除，**不再**断言它存在。
     ⚠️ 这条探针找的是 `document.querySelector('.more')`（设置页里第一颗折叠按钮），而**列表态的行上没有折叠箭头**
     ——所以 act 先按真实用户路径点 `data-action="edit-provider"` 开卡，再点**卡内**那颗 `.more`
     （`高级参数与连接测试`）。行上刻意只有「编辑 / 设为默认 / 删除」三个动作（删除另带就地二次确认条），
@@ -1497,16 +1511,19 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     产物 `chat-thinking-level.png`，交互窗一条）：act 先把
     `[data-field="chat.reasoningEffort"]` 下拉切到 `high` 并派发 `change`，等 600ms 让
     `settings:update` + `settings:changed` 往返完成；check 再取
-    `llm.providers[llm.active].reasoningEffort`，与 DOM 里该下拉的 `select.value` 比对，
+    `llm.providers[llm.active].modelParams[provider.model].reasoningEffort`，
+    与 DOM 里该下拉的 `select.value` 比对，
     并断言 option 数量为 4。`pass` = 配置值 === `'high'` **且** DOM 值 === `'high'` **且** option 数 === 4
     ——它同时钉住「读写的是同一个字段」与「探针不改坏用户配置」：act 前先记下原值，
     check 结尾把原值写回，恢复结果一并放进返回值。
   - **模型页「模型列表」区**（`SETTINGS_LLM_MODELS_ACT` / `SETTINGS_LLM_MODELS_CHECK`，
     产物 `settings-llm-models.png`，设置页 `?page=llm`）：act 点开第一行的「编辑」
     （`data-action="edit-provider"`，找不到就按文案「编辑」兜底）；check 断言
-    「模型设置区」存在（`[data-field$=".modelList"]`）且**行数 ≥ 1**（行是
-    `data-field="llm.providers.<id>.modelList.<index>"`）→ 点一次 `data-action="add-model"`
-    后**行数 +1** → 结束时**把刚加的那一项删掉**，让后面的场景仍看到干净配置。
+    「模型设置区」存在（`[data-field$=".modelList"]`）且**行数 ≥ 1**（行容器是
+    `data-field="llm.providers.<id>.modelList.<index>"` 且类名 `model-row`；**按 `.model-row`
+    计数** —— 行内的参数子字段锚点也以 `.modelList.` 开头，用 `[data-field*=".modelList."]`
+    数会虚高）→ 点一次 `data-action="add-model"` 后**行数 +1** → 结束时**把刚加的那一项删掉**，
+    让后面的场景仍看到干净配置。
     `pass` = 列表区存在 && 行数 ≥ 1 && 添加后行数增加 && 恢复后行数还原。
     ⚠️ 这条 act **只改本地 draft**（`+ 手动添加` 加一行空行，点「应用」才落盘），
     唯一写盘的情况是**一个 provider 都没有**时先造一个（否则列表区不在 DOM 里，无从点开）；

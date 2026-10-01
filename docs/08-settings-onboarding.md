@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v22）
+## 1. 配置 Schema（config.json，v23）
 
 ```jsonc
 {
-  "version": 22,
+  "version": 23,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -42,12 +42,19 @@
         "baseUrl": "https://api.deepseek.com",
         "apiKeyEnc": "<safeStorage 密文>",
         "model": "deepseek-chat",  // 唯一生效值：请求实际用的模型就是它
-        "temperature": 0.7,
-        "reasoningEffort": "auto", // auto | low | medium | high；auto = 不下发该参数
-        "contextWindow": 128000, // 上下文窗口（token，v11 新增）；0 = 未知，见 §1.2
-        // v22 新增：该模型是否支持**图片输入**（多模态，见 06 §3.1）。默认 false ——
-        // 关闭时图片附件按「未读取」降级为一行文字；对不支持视觉的模型发图片会被服务端 400
-        "vision": false,
+        // v23 新增：**按模型 id 键**的参数表（见下文的 modelParams 登记）。三个字段
+        // 缺省回落 { reasoningEffort: 'auto', contextWindow: 0, vision: false }；
+        // 未发生命中的模型一律按这份默认值理解 —— 不再有 provider 级的同名旧字段
+        "modelParams": {
+          "deepseek-chat": {
+            "reasoningEffort": "auto", // auto | low | medium | high；auto = 不下发该参数
+            "contextWindow": 128000, // 上下文窗口（token）；0 = 未知，见 §1.2
+            // v22 新增、v23 起按模型绑定：该模型是否支持**图片输入**（多模态，见 06 §3.1）。
+            // 默认 false —— 关闭时图片附件按「未读取」降级为一行文字；
+            // 对不支持视觉的模型发图片会被服务端 400
+            "vision": false
+          }
+        },
         // v6 新增：**候选**模型 id 列表（设置页「模型列表」与对话窗模型选择器共用，见 §5）
         "modelList": ["deepseek-chat", "deepseek-reasoner"]
       }
@@ -267,13 +274,14 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **22**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **23**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
-- `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
+- `llm.providers.<id>.modelParams.<modelId>.reasoningEffort`（v5 新增，v23 起按模型绑定）：
+  `auto | low | medium | high`，默认 `auto`。
   `auto` 表示请求里**不带 `reasoning_effort` 字段**，用于兼容不认该参数的厂商；
-  其余三档按值下发（见 06 §3）。它是 **provider 级**字段：作用于该 provider 下的**所有**模型，
-  切模型不会切换等级（见 §5 第 6 条与 06 §3 的「已知取舍」）。
+  其余三档按值下发（见 06 §3）。它现在是**模型级**参数（`modelParams[<modelId>]` 的一个字段）：
+  哪个模型生效就取哪一份，**换模型即换思考等级**（见 §5 第 6 条与 06 §3）。
 - `llm.providers.<id>.modelList`（**v6 新增**，见 §5）：该 provider 下的**候选**模型 id 列表
   （`string[]`，`.default([])`），供设置页「模型列表」编辑区与对话窗模型选择器使用 ——
   两处读写的是**同一份**列表，没有第二份来源。
@@ -283,25 +291,47 @@
   并标注「（不在列表中）」，**不会**悄悄替换成列表里的第一个模型；对话窗同样显示为
   `<model>（不在列表中）`。`v5 → v6` 迁移会为旧配置的每个 provider 补齐 `modelList: []`
   （已存在的值不动；本字段是在 v6 内追加的，当时没有另起新版本号）。
-- `llm.providers.<id>.contextWindow`（**v11 新增**）：该模型的**上下文窗口**（token，整数，
+- `llm.providers.<id>.modelParams`（**v23 新增**）：按**模型 id** 键的参数表，
+  `Record<modelId, { reasoningEffort, contextWindow, vision }>`（`.default({})`），
+  把「随模型而异」的三个参数收拢到一处 —— 它们此前是 **provider 级**字段（作用于该 provider
+  下的所有模型），v23 起改为**模型级**：哪个模型生效就取哪一份，换模型即换参数。三字段：
+  - `reasoningEffort`：`auto | low | medium | high`（默认 `auto`，见上一条）；
+  - `contextWindow`：整数 `0 … 2_000_000`（默认 `0`，`0` = 未知，见下一条）；
+  - `vision`：布尔（默认 `false` = 不支持图片输入，见 §1 的 `vision` 登记条）。
+  **缺省回落**：shared 导出**唯一入口** `resolveModelParams(provider, modelId?)` ——
+  读 `provider.modelParams[modelId]`，**未命中键**（或键在但字段缺失 / 非法）时返回
+  `{ reasoningEffort: 'auto', contextWindow: 0, vision: false }`；`modelId` 缺省取
+  `provider.model`。主进程 / 渲染层 / Center **三处都走它**，不在任何一处再写一套默认值 ——
+  否则「同一个模型在设置页显示 128K、在对话窗按未知处理」这类分叉迟早出现。
+  `modelList` 仍是 `string[]`（只记**有哪些模型**），模型参数一律进 `modelParams`：两者不是
+  同一张表，往列表里加模型不会为它造条目（读到就按默认值），删列表项也不清它的参数。
+  `v22 → v23` 迁移把 provider 级的三个旧键搬进 `modelParams[provider.model]`（`model` 为空串时
+  写 `{}`），并删除 provider 级的旧键（见 §2）。
+- `llm.providers.<id>.modelParams.<modelId>.contextWindow`（**v11 新增，v23 起按模型绑定**）：
+  该模型的**上下文窗口**（token，整数，
   `0 … 2_000_000`，`.default(0)`）。**唯一用途**是对话窗输入框底部「上下文详解」条的
   **占用比例分母**（`promptTokens / contextWindow`，见 07 §2.3 与 06 §16.2）。
   - `0` = **未知**：此时只显示 token 数与字符数，**不显示进度条与百分比** —— 分母不知道就不编；
   - 刻意**不做内置的「模型名 → 窗口大小」对照表**：模型名千变万化，猜错一个数量级比不显示更误导
     （用户会以为快爆上下文了，或以为还很空）。取值来源就是用户在设置页照服务商文档填；
-  - 设置页入口在「AI 模型」卡的**编辑表单 → 高级参数**折叠区（`data-field="llm.contextWindow"`），
-    只读态在该 provider 卡上以「上下文窗口 128K」的形式显示（为 0 时不渲染这一行）；
-  - `v10 → v11` 迁移为旧配置的每个 provider 补 `contextWindow: 0`（已写过的值不动）。
+  - 设置页入口在「AI 模型」卡的**模型行内展开的参数**里
+    （`data-field="llm.providers.<id>.modelList.<index>.contextWindow"`，行上 `data-action="toggle-model-params"`
+    展开开关；v23 起不再位于 provider 级「高级参数」折叠区，见 §5）；
+    只读态在该模型行上以「上下文窗口 128K」的形式显示（为 0 时不渲染这一行）；
+  - `v10 → v11` 迁移为旧配置的每个 provider 补 `contextWindow: 0`（已写过的值不动），
+    `v22 → v23` 起该值被搬进 `modelParams[<model>]`（见 §2）。
 - `llm.providers.<id>.type`（**v22 扩枚举**）：该条目的**接口协议**，取值
   `openai-compat`（默认，`POST {baseUrl}/chat/completions`）或 `openai-responses`
   （`POST {baseUrl}/responses`，见 06 §3.2）。**纯增量枚举，`v21` 及更早的配置天然合法**
   （它们写的就是 `openai-compat`），因此迁移只补字段不改正值。
   凭据与连接字段（`baseUrl` / `apiKeyEnc`）仍在 `llm.providers` 只读前缀里：AI 不能把
   自己的请求改道到别的地址去。
-- `llm.providers.<id>.vision`（**v22 新增**）：该模型是否支持**图片输入**（多模态，见 06 §3.1），
+- `llm.providers.<id>.modelParams.<modelId>.vision`（**v22 新增，v23 起按模型绑定**）：
+  该模型是否支持**图片输入**（多模态，见 06 §3.1），
   布尔，默认 `false`。关闭时附件里的图片按「内容未读取（当前模型未开启图片输入）」降级成一行
   文字，请求体里不出现图片分片 —— 对不支持视觉的模型发图片会被服务端 400，这个开关就是那道闸。
-  与 `contextWindow` 同一口径：**不做内置模型能力表**，由用户照服务商文档填。
+  与 `contextWindow` 同一口径：**不做内置模型能力表**，由用户照服务商文档填；
+  **只读**（AI 的 `set_setting` 改不动它 —— 它是模型能力事实，不是偏好，见 `WRITABLE_PATH_OVERRIDES`）。
 - `tts`（**v7 新增**，见 06 §13）：**语音输出（TTS）**；语音输入（STT）自 **v8** 起见下一条 `stt`。
   `tts.enabled` 是整个语音功能的**总开关**（`false` 时对话窗不显示朗读按钮）；
   `tts.active` 是默认 TTS provider id，**为空串 = 未配置**，此时对话窗的朗读按钮**不出现**；
@@ -314,9 +344,13 @@
   `v6 → v7` 迁移会为旧配置补齐 `tts.*`（`fillMissing` 对已存在的值一律保留，因此天然幂等）。
 - `WRITABLE_PATH_OVERRIDES`（**v8 新增**，见 06 §12）：AI 的 `set_setting` **显式可写覆盖表**，
   判定**先于** `advanced.readonlyPrefixes` 黑名单前缀。两类登记：
-  ① **真的放开** —— `llm.providers.<id>.model / .reasoningEffort / .temperature` 落在 `llm.providers`
-  黑名单前缀之内，但「换模型 / 调参数」不碰凭据，显式放行（baseUrl / apiKeyEnc / modelList 等
-  其余字段仍被前缀拒绝）；② **显式登记** —— `tts.enabled|active|autoRead|maxChars`、
+  ① **真的放开** —— `llm.providers.<id>.model / .modelParams.<modelId>.reasoningEffort` 落在
+  `llm.providers` 黑名单前缀之内，但「换模型 / 调思考等级」不碰凭据、也不改模型能力事实，
+  显式放行（baseUrl / apiKeyEnc / modelList 等其余字段仍被前缀拒绝）；
+  **`modelParams` 下的 `contextWindow` / `vision` 仍只读**（它们是**模型能力事实**、不是偏好 ——
+  AI 把窗口改大或打开视觉，只是把一条假事实告诉用户，出问题的还是用户）；`temperature` 已随
+  v23 从 Schema 删除，不再存在这条可写路径（请求也不再下发它，见 06 §3）；
+  ② **显式登记** —— `tts.enabled|active|autoRead|maxChars`、
   `stt.enabled|active`、`imagegen.enabled|active`、`general.edgeBar.enabled|opacity|quietHours|display|position`、`appearance.accent`、
   `general.chat.showThinking`、`modes.current`、`agent.tools.*`
   （`terminal.allowPatterns` **除外** —— 它在黑名单里，见 §1）、
@@ -517,7 +551,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 因而不新增存储面，也不会与流水出现两处数据不一致。
 
 **对话归档状态同样不进 config.json**：它写在会话文件自身（`sessions/<id>.json` 的
-`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 22）。
+`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 23）。
 会话文件自己的版本号 `SESSION_FILE_VERSION` 由 1 提到 2，读取对 v1 宽容（缺 `meta` = 未归档），
 不存在需要执行的迁移脚本 —— 「会话文件版本」与「配置版本」是两条独立的链，别混。
 
@@ -579,7 +613,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 22`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 23`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -630,10 +664,21 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `v21 → v22`（**多模态输入 + Responses API**，见 06 §3.1 / §3.2：为**每个已有
   `llm.providers.<id>`** 补 `vision: false`，并把缺失 / 非法的 `type` 归一为
   `openai-compat`（旧配置写的本来就是这个值，迁移**不改正值**、只补缺字段与非法值）；
-  两个都是**能力开关**，出厂一律「关 / 旧协议」，因此升级后请求体与 v21 逐字一致）。
-  二十二条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  两个都是**能力开关**，出厂一律「关 / 旧协议」，因此升级后请求体与 v21 逐字一致）、
+  `v22 → v23`（**模型级参数表**，见 §1 的 `modelParams`：新增
+  `llm.providers.<id>.modelParams`（`Record<modelId, { reasoningEffort, contextWindow, vision }>`），
+  把 provider 级的 `reasoningEffort` / `contextWindow` / `vision` 三个旧键**搬到**
+  `modelParams[provider.model]` 下，并删除 provider 级的**四个**键（三个旧键 + `temperature` ——
+  它随 v23 从 Schema 消失，请求不再下发）。四条语义：① **幂等** —— 重复执行结果一致，
+  `modelParams` 已有对应模型条目时只补缺失键、不重建；② **不覆盖已写值** ——
+  已有的 `modelParams[<model>]` 条目（以及其中已写的值）原样保留；③ **`model` 为空串时不造模型条目** ——
+  此时 `modelParams` 写 `{}`，四个旧键照删（不凭一个不存在的模型名编出条目）；
+  ④ **旧非法值归一到默认** —— `reasoningEffort` 非法 / 缺失 → `'auto'`、
+  `contextWindow` 非法 / 缺失 → `0`、`vision` 非法 / 缺失 → `false`；
+  没有 `llm.providers` 时整组交给默认配置兜底，不凭空造半截对象）。
+  二十三条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽），重复执行结果一致 —— `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **22** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **23** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -689,6 +734,12 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
        - **「当前使用」标记**（选中即把 `llm.providers.<id>.model` 设为该 id，即改的是唯一生效值）；
        - 模型 id 文本（`.mono`）；重命名（改的就是列表里的 id，若是当前使用的那个则同步改 `model`）；
        - 删除（从列表移除）；
+       - **展开模型参数**（行上的 `data-action="toggle-model-params"` 开关）：就地展开这一行的
+         三个字段 —— **思考等级 / 上下文窗口 / 支持图片输入**，锚点
+         `llm.providers.<id>.modelList.<index>.{reasoningEffort,contextWindow,vision}`，
+         读写的是 `llm.providers.<id>.modelParams[<modelId>]`（v23，见 §1）——
+         **参数随模型绑定**：换模型即换这一份参数。开关是**行内**的，与 provider 级
+         「高级参数与连接测试」折叠区无关（后者只有接口类型与连接测试，见下）。
      - **删除当前使用的那一项不换模型**：`model` 原样保留，只在页面提示「当前模型已不在列表中」，
        改哪个由用户自己决定——与 §1 的回落口径一致，不静默换模型；
      - 「拉取模型列表」把发现到的 id **去重合并**进现有列表（不覆盖已有项），
@@ -698,25 +749,32 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
      - 与「模型名」的关系：必填区的 `data-field="llm.providers.<id>.model"` 输入框**保留在原位**，
        它是「当前使用模型」的**唯一编辑点**（也是 capture 抓手）；它填的 id 不在列表里时会
        **自动追加进列表**，让两者保持一致且用户看得见发生了什么。
-   - `高级参数与连接测试` 折叠区（**默认收起**）：**接口类型**（`llm.providers.<id>.type`，
-     `openai-compat | openai-responses`，v22）、**支持图片输入**（`llm.providers.<id>.vision`，
-     开关，v22，见 06 §3.1）、`temperature`、思考等级、`保存并测试连接` /
-     `拉取模型列表`、连接延迟与可用模型 chips；
+   - `高级参数与连接测试` 折叠区（**默认收起**）：**只剩两样** —— **接口类型**
+     （`llm.providers.<id>.type`，`openai-compat | openai-responses`，v22）与
+     `保存并测试连接` / `拉取模型列表` 按钮、连接延迟与可用模型 chips；
+     **思考等级 / 上下文窗口 / 支持图片输入不在这一层**（v23 起改为在**模型行内**、随模型绑定，
+     见上一条），`temperature` 已随 v23 从 Schema 删除、本区不再有它；
    - 卡底 `应用`（只提交这一张卡，成功回列表态）/ `取消`。
    - 添加流程：预设 chips（DeepSeek / OpenAI / 本地兼容）+ 自定义 id 输入框；重复 id 提示
      `Provider「<id>」已存在`；选中预设**直接进编辑卡**。
    - **模型列表是页与窗的公共数据**：本页维护 `llm.providers.<id>.modelList`，对话窗的「模型」选择器
      从**同一份**列表里选、并把选中项写回 `llm.providers.<id>.model`（docs/07 §2.3）。
      两边不存在各自的副本，因此「模型页改当前模型 → 对话窗选择器跟着变」是必然而非同步逻辑。
+   - **对话窗「上下文详解」卡只呈现三行**：本轮输入 / 上下文窗口 / 模型 ——
+     分母取**当前生效模型**的 `modelParams.<modelId>.contextWindow`（`0` = 未知则不显示百分比，
+     见 §1 与 docs/07 §2.3）；v23 起卡片正文就这三行（`chat.context-detail` 锚点与
+     `chat.context` / `chat.context-usage` / `chat.context-cache` / `.ctx-total` 保持不变）。
 5. **删除是危险操作**：点「删除」先就地出现确认条
    （`删除 provider「<id>」？依赖它的会话将无法再请求模型。` + `确认删除` / `取消`）。
    确认后的 patch 带 `llm.removedProviders: [<id>]` —— `llm.providers` 是 record，
    **缺项表达不了删除**（只回传一份少了它的 `providers` 是合法的局部更新形状，不会删掉它）。
    密文与内存明文缓存在**删除成功之后**由主进程一并清理；删除失败时凭据保持原样。
-6. **思考等级**属于 **provider 维度**（`llm.providers.<id>.reasoningEffort`，Schema 就是这么存的），
-   所以保留在本页的折叠区里；交互窗另有入口（docs/07 §2.3，读写的是同一个字段）。
-   因此它作用于该 provider 下的**所有**模型 —— 在对话窗切模型**不会**切换思考等级，
-   这是**已知取舍**；将来若要按模型区分，需要把它扩展成模型级映射（见 06 §3）。
+6. **思考等级 / 上下文窗口 / 支持图片输入**属于**模型维度**
+   （`llm.providers.<id>.modelParams.<modelId>.*`，v23 起，见 §1），因此**不在** provider 级折叠区，
+   而在「模型设置」区的**模型行内**展开编辑（行上 `data-action="toggle-model-params"` 开关，
+   字段锚点 `llm.providers.<id>.modelList.<index>.<字段>`）；交互窗另有入口
+   （docs/07 §2.3，读写的是同一份 `modelParams`）。语义因此是「**参数随模型绑定**」——
+   在对话窗切模型即切参数，`model` 是唯一生效值、参数随之取（见 06 §3）。
 7. 保存语义：`settings:update` 只有**顶层浅合并**，因此任何一次保存都必须**原样回传全部 provider
    再覆盖当前一个**；`apiKeyEnc: ''` 对已有 provider 表示「本次不改凭据」（新建时 Schema 要求该字段存在）；
    **缺项 ≠ 删除**（删除必须显式声明 `llm.removedProviders`，见第 5 条）；
@@ -729,6 +787,9 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     **生图模型区组**（`imagegen.*`：总开关 / 默认生图模型 / provider 增改删；provider 表单为
     `baseUrl` / `apiKey` / `model` / `size`，与 `llm.providers` 同构但独立，见 §1；
     凭据沿用 §1.1 的 `apiKeySet` 只读标记口径，编辑卡 API Key 留空 = 本次不修改）。
+    **生图模型列表为空时**是 `data-empty="imagegen.providers"` 的**空状态卡**（锚点保持不变），
+    卡上必须有**可点的「+ 添加生图模型」主按钮** —— 空状态只留一句话、不给入口，
+    用户会以为这功能没实现（v23 起的目标口径）。
 
 ## 6. 其他设置页
 
@@ -880,7 +941,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 | `general.language` | **永不显示**（无 i18n 消费方的死字段，字段保留在 Schema 仅为配置兼容） |
 | `skills.disabled` | `skills.list()` 非空 |
 | `mcp.servers.*` / `mcp.lazyConnect` | `mcp.servers.length > 0` |
-| `llm.providers.*`（含 `temperature` / `reasoningEffort` / `modelList`） | `llm.providers` 至少一项 |
+| `llm.providers.*`（含 `modelList` 与 `modelParams.<modelId>.*`） | `llm.providers` 至少一项 |
 | `agent.tools.enabled` | 常显（否则无法重新启用） |
 | `agent.tools.workspaceDir` | 常显（总开关关着时也要能改默认工作目录） |
 | `agent.tools.terminal.*`（含只读的 `allowPatterns`）/ `files.*` / `search.*` / `open.enabled` | `agent.tools.enabled === true` |

@@ -38,20 +38,23 @@ export interface LlmProvider {
 - 稳定实现 `OpenAiCompatProvider`：`baseURL + apiKey + model`，兼容 DeepSeek / OpenAI / Ollama / vLLM 等（见 ADR-003）；
   第二个实现 `OpenAiResponsesProvider`（OpenAI **Responses API**，v22 新增）见 §3.2。
   多模态（图片输入）见 §3.1。
-- 设置中可保存多组模型配置并切换默认；temperature 等参数可调。
+- 设置中可保存多组模型配置并切换默认；思考等级等参数可调（v23 起随模型绑定，见下）。
   （「会话级可选模型」目前**没有实现**：每个 provider 只有一个生效的 `model`，也不做按会话覆盖
   —— 见 07 §2.3。另有一份候选列表 `llm.providers.<id>.modelList` 只决定 UI 里能选什么，
   对话窗选模型写回的就是 `model` 本身，内核侧只认 `model`，见 08 §1/§5。）
 - 可靠性：指数退避重试、单请求超时（默认 60s）、流式中断可取消（AbortSignal 贯穿到 IPC）。
-- `ChatRequest.reasoningEffort` 由 `llm.providers.<id>.reasoningEffort` 驱动，取值
+- `ChatRequest.reasoningEffort` 由
+  `llm.providers.<id>.modelParams.<modelId>.reasoningEffort` 驱动，取值
   `auto | low | medium | high`；`auto`（默认）时**不下发** `reasoning_effort` 字段。
-  设置页「AI 模型」的高级参数与对话窗输入区的「思考」下拉**两处入口写的是同一个字段，
+  设置页「AI 模型」的模型行内参数与对话窗输入区的「思考」下拉**两处入口写的是同一个字段，
   没有第二份来源**（也不做按会话覆盖）：改哪一处，下一次请求都按新值下发。
-  **已知取舍**：思考等级存在 **provider 级**，因此作用于当前 provider 下的**所有模型** ——
-  对话窗的「模型」下拉（`chat.model`，选项来自 `llm.providers.<id>.modelList`）只切模型、
-  **不切思考等级**。将来若要按模型区分，需要把它扩展成**模型级映射**
-  （例如 `llm.providers.<id>.effortByModel: Record<modelId, 'auto' | 'low' | 'medium' | 'high'>`），
-  当前 Schema 与 UI 都不支持；在那之前，不要假定「切了模型就换了等级」。
+  **v23 起思考等级随模型绑定**：`modelParams` 是**按模型 id 键的参数表**
+  （`Record<modelId, { reasoningEffort, contextWindow, vision }>`；`modelList` 仍是 `string[]`
+  候选列表），参数取的是**当前生效模型**（`llm.providers.<id>.model`）名下的那一份 ——
+  `model` 是唯一生效值、参数随之取，切模型即切等级。未命中的键由唯一入口
+  `resolveModelParams(provider, modelId?)` 回落默认
+  （`{ reasoningEffort: 'auto', contextWindow: 0, vision: false }`，`modelId` 缺省取 `provider.model`）；
+  主进程 / 渲染层 / Center 三处取值都走它，不各写一套。
 
 ### 3.1 多模态输入（图片进模型，v22）
 
@@ -71,8 +74,11 @@ export interface LlmProvider {
   跨轮次续聊时按路径**重新读盘**，用户追问「刚才那张图里的公式」时模型仍看得到图。
   代价是历史里那份图片会被重复计费（与「图片一直留在上下文里」的通行做法一致）。
   文件被删 / 读不出时**该轮跳过这张图并记 warn**：不编造内容，也不因此让整轮请求失败。
-- **能力开关 `llm.providers.<id>.vision`（默认 `false`）**：模型是否支持图片输入因模型而异，
-  与本仓库不做内置模型表的口径一致（同 `contextWindow`）。关闭时图片按**未读取**降级成
+- **能力开关：当前生效模型在 `modelParams` 里的 `vision`（默认 `false`）**：模型是否支持图片
+  输入因模型而异，与本仓库不做内置模型表的口径一致（`vision` 与 `contextWindow` 同处一张参数表）。
+  判据是当前生效模型（`llm.providers.<id>.model`）在
+  `llm.providers.<id>.modelParams.<modelId>` 里的 `vision`，未命中的键由 `resolveModelParams`
+  回落**缺省关**（`vision: false`）。关闭时图片按**未读取**降级成
   一行文字（`【附件】a.png：内容未读取（当前模型未开启图片输入）`），请求体里不出现图片分片 ——
   对不支持视觉的模型发图片会被服务端 400，**整个对话都用不了**，这个开关就是那道闸。
 - **上限**：单图 `IMAGE_MAX_BYTES`（8 MiB，超出按未读取处理并在降级文案里写明原因）、
@@ -84,8 +90,8 @@ export interface LlmProvider {
 - `llm.providers.<id>.type` 由单值枚举扩为 **`openai-compat | openai-responses`**（纯增量，
   旧配置天然合法，见 08 §1）。前者走 `POST {baseUrl}/chat/completions`（既有实现不动），
   新增的 `OpenAiResponsesProvider` 走 `POST {baseUrl}/responses`，`stream: true`。
-  装配层（`createProviderFactory`）按 `config.type` 分派，其余（thinking 等级 / temperature /
-  vision / 附件）两套协议共用同一份上层逻辑。
+  装配层（`createProviderFactory`）按 `config.type` 分派，其余（思考等级 / 图片输入 / 附件）
+  两套协议共用同一份上层逻辑。
 - **请求映射**：**首条** `system` 消息（系统提示词）→ 顶层 `instructions`；其余 `system` 消息
   （如技能正文与附件文本）**保留在 `input` 里的原位**、以 `{ role: 'system', content: [...] }`
   下发 —— 这样「易变内容靠尾部」的性质与 chat-completions 侧一致，前缀缓存不被破坏。
@@ -94,7 +100,10 @@ export interface LlmProvider {
   工具结果是 `{ type: 'function_call_output', call_id, output }`（顺序按对话原序，不能合并进上一条消息）。
   `tools` 用**扁平**形状 `{ type: 'function', name, description, parameters }`（不套 `function` 一层）。
   `reasoningEffort` → `reasoning: { effort }`；`jsonObject` → `text: { format: { type: 'json_object' } }`；
-  `temperature` / `max_output_tokens` **仅在给了值时才出现**（不认这些字段的推理模型会 400）。
+  `max_output_tokens` **仅在给了值时才出现**（不认这个字段的推理模型会 400）。
+  **v23 起请求体不再下发 `temperature`**：主流 Agent（Claude Code / Codex 一类）不设该参数，
+  由服务商默认值决定 —— 桌面装配层不再由配置喂值。内核侧的 `ProviderConfig.temperature?: number`
+  这个可选能力**保留**（`fakeProvider` / 子任务 `task.ts` / 单测仍在用），只是配置里已无此字段。
   **`store: false` 恒定下发**：不在服务端留存会话（docs/11 的隐私口径）。
 - **事件映射**（SSE 的 `data:` 负载统一带 `type` 字段）：
   `response.output_text.delta` → `text`；
@@ -1086,8 +1095,8 @@ v0.7.0 起 Agent 能读写**自己的配置**：内核新增内置工具 `set_se
 v8 起共三道闸门（**覆盖表先行**）：
 
 0. **显式可写覆盖表（v8 新增，`WRITABLE_PATH_OVERRIDES`）**：命中即视为可写，判定**先于**黑名单前缀。
-   存在它的意义：`llm.providers.<id>.model / .reasoningEffort / .temperature` 落在
-   `llm.providers` 黑名单前缀之内，但「换模型 / 调采样参数」不碰凭据，必须显式放行
+   存在它的意义：`llm.providers.<id>.model / .modelParams.<modelId>.reasoningEffort` 落在
+   `llm.providers` 黑名单前缀之内，但「换模型 / 调思考等级」不碰凭据，必须显式放行
    （baseUrl / apiKeyEnc / modelList 等其余字段仍被前缀拒绝）；
    `tts.*` / `stt.*` / `imagegen.*` / `agent.tools.*`（凭据与免确认模式列表除外）这类本就因
    「不在黑名单而可写」的路径
@@ -1511,6 +1520,12 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 
 - `promptTokens` 就是**这一轮真实占用的上下文长度**（系统提示词 + 历史 + 本轮内容），
   是输入框底部「上下文详解」的唯一分子来源；逐轮累加即本会话消耗；
+- **分母（上下文窗口）来自当前生效模型**：取
+  `llm.providers.<id>.modelParams.<modelId>.contextWindow`（`modelId` = 该 provider 的 `model`，
+  未命中的键由 `resolveModelParams` 回落 `0` = 窗口未知）—— v23 起窗口是**随模型绑定**的事实，
+  不再是 provider 级的单个值（§3 / §3.1）；
+- 「上下文详解」卡只保留**三行**：本轮输入 / 上下文窗口 / 模型；缺用量时显示「暂无用量数据」
+  （不编造分母），缓存命中的展示口径见 §21.4；
 - **只用于展示、不落盘**：它是「本轮请求的上下文占用」，重放历史时重新收集没有意义；
 - `TokenUsage` 另有一个可选字段 `cachedTokens`（命中服务端前缀缓存的 prompt token 数）——
   解析口径、缺省语义与展示位置见 §21.4；它同样只用于展示、不落盘；
@@ -1583,7 +1598,7 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 - `SystemPromptParts.settingsHint?: string`（agent-core）渲染为独立小节
   「## Agent 可修改的设置」，位于工具使用规范之后、安全规则之前（§5 的固定小节顺序）；空片段自动省略。
 - 主进程在 `main/settings-hint.ts` 维护**一段固定中文清单**：逐条列出 §12.2 显式可写覆盖表
-  同口径的路径（`llm.providers.<id>.model/reasoningEffort/temperature`、`tts.*`、`stt.*`、
+  同口径的路径（`llm.providers.<id>.model/modelParams.<modelId>.reasoningEffort`、`tts.*`、`stt.*`、
   `imagegen.*` 开关、`general.edgeBar.*`、`general.chat.showThinking`、`modes.current`、
   `modes.classroom.*`、
   `agent.tools` 下的**逐条枚举**——`enabled` / `workspaceDir` /
@@ -1833,8 +1848,8 @@ Aurora 只讲 OpenAI 兼容协议，而主流网关（DeepSeek / OpenAI / 硅基
 - 展示口径：只在对话窗的「上下文详解」条展示**最近一轮**的命中量，**不落盘**——
   它是可再生的观测值，写进会话存储只会让持久化契约多一个可变字段。
   折叠态文案形如 `512 / 128k · 缓存命中 512（100%）`（命中片段是
-  `data-field="chat.context-cache"`，嵌在 `chat.context-usage` 文案里；展开的详解卡里是独立一行
-  「缓存命中（最近一轮）」）：
+  `data-field="chat.context-cache"`，嵌在 `chat.context-usage` 文案里；**v23 起它只出现在折叠条上**
+  ——展开的详解卡只剩「本轮输入 / 上下文窗口 / 模型」三行，不再单列命中量）：
   - 百分比 = `Math.min(100, Math.round(cachedTokens / promptTokens * 100))`——
     `cachedTokens` 是**服务端报的命中数**，正常不会超过 `promptTokens`，但桩服务 / 异常网关
     可能给出不一致的数据，界面不显示「缓存命中 512（400%）」这类荒谬值；
