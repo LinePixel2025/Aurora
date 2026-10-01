@@ -107,7 +107,7 @@ export class McpController {
 }
 
 /** 只关心会影响连接的字段，避免无关设置变更触发重连。 */
-function signatureOf(settings: Settings): string {
+export function signatureOf(settings: Pick<Settings, 'mcp'>): string {
   return JSON.stringify({
     lazyConnect: settings.mcp.lazyConnect,
     servers: settings.mcp.servers.map((server) => ({
@@ -117,8 +117,25 @@ function signatureOf(settings: Settings): string {
       args: server.args,
       url: server.url,
       enabled: server.enabled,
-      envKeys: Object.keys(server.envEnc).sort(),
-      headerKeys: Object.keys(server.headersEnc).sort(),
+      // 键名与**值**一起进签名（P1-05）：只轮换某个 env / header 的值（键名集合不变、
+      // 密文变了）时签名同样变化，从而走到 `hub.reconfigure`，由 hub 自身的
+      // `sameDefinition`（按值比较）判定 teardown + 重连。旧实现只取 `Object.keys()`，
+      // 于是轮换泄漏的 token 对运行中的连接永远不生效。
+      //
+      // ⚠️ 这里序列化的是 safeStorage **密文**：签名**只用于与上次比较**（`appliedSignature`），
+      // 绝不写日志、不进 IPC；明文只在 `decryptEnv` / `decryptHeaders` 里解密后就地交给 hub。
+      envEnc: stableEntries(server.envEnc),
+      headersEnc: stableEntries(server.headersEnc),
     })),
   })
+}
+
+/**
+ * 按键排序成稳定序列：对象字面量的键序不可靠（同一份内容的不同键序不应产生新签名），
+ * 而值参与比较（P1-05 的落点）。返回「键 → 值」二元组数组，`JSON.stringify` 结果确定。
+ */
+function stableEntries(record: Record<string, string>): Array<[string, string]> {
+  return Object.keys(record)
+    .sort()
+    .map((key): [string, string] => [key, record[key] ?? ''])
 }

@@ -148,8 +148,15 @@ automations: {
 
 | kind | 参数 | 语义 | 去重键 |
 |---|---|---|---|
-| `daily` | `at: 'HH:mm'`、`weekdays?: number[]`（0=周日，缺省每天） | 每周指定天的 HH:mm 触发一次 | `daily-<ymd>-<at>` |
+| `daily` | `at: 'HH:mm'`、`weekdays?: number[]`（0=周日，缺省每天） | 每周指定天的 HH:mm 触发一次；**当天 `at` 已过且当日键未触发即补触发**（错过补偿，见下） | `daily-<ymd>-<at>` |
 | `interval` | `everyMinutes: number`（5–1440） | 每 N 分钟触发一次 | `interval-<floor(nowMs / N)>`（对齐桶，重启不重复触发同一桶） |
+
+- **daily 的「错过补偿」（P2-11，2026-10-01）**：判定从「当前分钟恰好等于 `at`」改为
+  「`nowMinutes >= at` 且当日键未触发」。主进程在触发那一分钟缺席（睡眠 / 休眠、
+  主线程被长任务阻塞超过该分钟、系统时间跳变）时，恢复后的首个 tick 会**补触发一次**
+  （与 `interval` 的时间桶语义一致：恢复后新桶补触发一次）。
+  键 `daily-<ymd>-<at>` 已含日期、天然幂等 —— 同日后续每个 tick 都命中但键相同，
+  引擎的 `firedKeys` 去重使其**只触发一次**；48h TTL 清理不挡下一周的同一条。
 
 ### 4.2 课堂条件类（依赖课程表数据，`requiresSchedule: true`）
 

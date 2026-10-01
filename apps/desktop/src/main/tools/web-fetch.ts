@@ -6,6 +6,9 @@
  * 标签转空格、常见实体解码），压平空白后按 `MAX_WEB_FETCH_CHARS`（与 agent-core
  * 的常量同源）截断，保证一次抓取吃不掉整个上下文预算。
  *
+ * 超时覆盖**整次抓取**（含 body 读取）、body 走**限量流式读取**（P2-09）——
+ * 拿到响应头就清计时器 / 整份 `response.text()` 会让慢速或超大 body 挂住整轮 agentLoop。
+ *
  * 本文件**不得 import electron**：出网 fetch 由构造参数注入，可在 Node 里完整单测。
  */
 import { MAX_WEB_FETCH_CHARS } from '@aurora/agent-core'
@@ -29,9 +32,19 @@ export interface NetWebFetchPortOptions {
 /** 抓取超时（默认 20s：网页抓取不应比一次 LLM 请求还慢）。 */
 const DEFAULT_TIMEOUT_MS = 20_000
 
+/**
+ * body 读取的软上限倍率（P2-09）：以 `maxChars` 为基准再留一截余量 ——
+ * HTML 要先剥标签再截断，卡死在 `maxChars` 会让剥完标签的正文明显短于上限。
+ * 内存上界因此是「倍率 × 上限」字符（默认 4 × 20000），仍是常数级、不可能 OOM，
+ * 而 `response.text()` 那种「整份读进来再截断」的量级随之消失。
+ */
+const BODY_READ_HEADROOM = 4
+
 export function createNetWebFetchPort(options: NetWebFetchPortOptions): WebFetchPort {
   const maxChars = Math.max(1, Math.floor(options.maxChars ?? MAX_WEB_FETCH_CHARS))
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  /** 流式读取的字符上限：读满即 abort，不再为「回填用不上的内容」继续下载（P2-09） */
+  const readLimit = maxChars * BODY_READ_HEADROOM
 
   return {
     async fetch(url: string): Promise<{ status: number; text: string }> {
@@ -39,30 +52,103 @@ export function createNetWebFetchPort(options: NetWebFetchPortOptions): WebFetch
 
       const fetchImpl = resolveFetch(options.fetchImpl)
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), timeoutMs)
-      let response: Response
+      // 超时覆盖**整次抓取**（含 body 读取）：拿到响应头就 clearTimeout 会让
+      // 「响应头秒回、body 停滞」的服务器把工具挂住数分钟并阻塞整轮 agentLoop（P2-09）。
+      let timedOut = false
+      const timer = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, timeoutMs)
       try {
-        response = await fetchImpl(url, {
-          method: 'GET',
-          headers: { Accept: 'text/html,application/json;q=0.9,*/*;q=0.8' },
-          redirect: 'follow',
-          signal: controller.signal,
-        })
+        let response: Response
+        try {
+          response = await fetchImpl(url, {
+            method: 'GET',
+            headers: { Accept: 'text/html,application/json;q=0.9,*/*;q=0.8' },
+            redirect: 'follow',
+            signal: controller.signal,
+          })
+        } catch (error) {
+          if (timedOut) throw timeoutError(timeoutMs)
+          throw new Error(`抓取请求失败：${errorMessage(error)}`)
+        }
+
+        const body = await readBodyLimited(response, readLimit, controller, () => timedOut)
+        return {
+          status: response.status,
+          text: flattenText(extractText(body.text, response), maxChars, body.truncated),
+        }
       } catch (error) {
-        if (controller.signal.aborted)
-          throw new Error(`抓取超时（${Math.round(timeoutMs / 1000)}s）`)
-        throw new Error(`抓取请求失败：${error instanceof Error ? error.message : String(error)}`)
+        // body 阶段被超时 abort 打断（reader.read() 拒绝）也归到同一个超时口径
+        if (timedOut) throw timeoutError(timeoutMs)
+        throw error
       } finally {
         clearTimeout(timer)
       }
-
-      const raw = await response.text().catch(() => '')
-      return { status: response.status, text: flattenText(extractText(raw, response), maxChars) }
     },
   }
 }
 
 // ───────────────────────── 内部 ─────────────────────────
+
+function timeoutError(timeoutMs: number): Error {
+  const shown = timeoutMs < 1000 ? `${timeoutMs}ms` : `${Math.round(timeoutMs / 1000)}s`
+  return new Error(`抓取超时（${shown}）`)
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * 限量流式读取 body（P2-09）：
+ *
+ * - 按 chunk 解码、累计到 `limit` 个字符即主动 `controller.abort()` —— 既停止下载，
+ *   也把内存/时间上界钉死（旧实现 `await response.text()` 把整份 body 读进主进程内存，
+ *   且不受超时约束）；
+ * - `TextDecoder` **全程复用**（每 chunk 新建会丢挂起字节、把多字节字符截成 U+FFFD，
+ *   同 P1-09 的教训）；
+ * - `truncated = true` 表示「body 因限量被提前中断」，最终截断文案据此取更诚实的措辞。
+ *
+ * 超时 abort 打断 `reader.read()` 时**向上抛**，由 `fetch()` 统一映射成「抓取超时」；
+ * 其余 body 中途失败（连接复位等）保留已读到的部分（旧实现整体吞成空串）。
+ */
+async function readBodyLimited(
+  response: Response,
+  limit: number,
+  controller: AbortController,
+  isTimedOut: () => boolean,
+): Promise<{ text: string; truncated: boolean }> {
+  const body = response.body
+  if (body === null) return { text: await response.text().catch(() => ''), truncated: false }
+  const reader = body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let text = ''
+  let truncated = false
+  try {
+    for (;;) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      text += decoder.decode(chunk.value, { stream: true })
+      if (text.length >= limit) {
+        truncated = true
+        controller.abort()
+        break
+      }
+    }
+  } catch (error) {
+    if (isTimedOut()) throw error
+    truncated = text !== ''
+  } finally {
+    try {
+      await reader.cancel()
+    } catch {
+      /* 已 abort / 已读尽：取消失败无需处理 */
+    }
+  }
+  // 冲刷 decoder 的挂起字节（stream: true 期间不完整的多字节序列在这里收敛）
+  return { text: `${text}${decoder.decode()}`, truncated }
+}
 
 function assertHttpUrl(raw: string): void {
   let parsed: URL
@@ -127,9 +213,15 @@ function fromCodePoint(code: number): string {
   return Number.isFinite(code) && code >= 0 ? String.fromCodePoint(code) : ''
 }
 
-/** 压平空白（含换行）为单空格并截断；截断时加省略标记，让模型知道内容不完整。 */
-function flattenText(text: string, maxChars: number): string {
+/**
+ * 压平空白（含换行）为单空格并截断；截断时加省略标记，让模型知道内容不完整。
+ *
+ * `truncated` = body 因限量被提前中断（真实总长未知）：此时只提示「已截断」，
+ * 不报一个把「已读部分」当成原文总长的错误数字。
+ */
+function flattenText(text: string, maxChars: number, truncated = false): string {
   const flattened = text.replace(/\s+/g, ' ').trim()
-  if (flattened.length <= maxChars) return flattened
-  return `${flattened.slice(0, maxChars)}…（已截断，原文共 ${flattened.length} 字符）`
+  if (flattened.length <= maxChars && !truncated) return flattened
+  const head = flattened.slice(0, maxChars)
+  return truncated ? `${head}…（已截断）` : `${head}…（已截断，原文共 ${flattened.length} 字符）`
 }

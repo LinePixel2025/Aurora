@@ -19,6 +19,11 @@
  * 绕过路径：`{a,*}` 去掉通配符与空白后还剩 `a`，能骗过"至少含一个具体字符"的检查，
  * 但它编译成 `(?:a|.*)` —— **匹配任意命令**，等于一行就关掉整个确认闸门。
  * 因此规则收紧为：**命令模式只允许字面字符 + `*` + `?`，出现任何其它元字符（含花括号）即非法**。
+ *
+ * 另一处**匹配粒度**的收紧（P2-10，2026-10-01）：命令先按 `;` / 换行拆段，**每一段**都要
+ * 命中某个模式才整体放行。文本模式下的 `*` 编译为 `.*`（含空格与分号），不拆段时 `git *`
+ * 会放行 `git status; <任意语句>`（整串经 PowerShell `-Command` 执行，多语句合法）——
+ * 与上面「一条模式放行全部命令」是同一性质的口子，只是粒度藏在了分隔符里。
  */
 import { isValidGlobPattern, matchesGlob } from './globPattern.js'
 
@@ -49,8 +54,19 @@ export function describeInvalidPattern(pattern: string): string | undefined {
 }
 
 /**
- * 是否命中免确认列表：任一模式**全串**匹配即命中，返回**被命中的那条模式**（供审计日志留痕）；
- * 不命中返回 `undefined`。
+ * 命令的**分段符**（P2-10）：`;` 与换行。
+ *
+ * 为什么必须拆段：文本模式下 `*` 编译为 `.*`（含空格与分号），全串锚定匹配让
+ * `git *` 直接命中 `git status; <任意危险语句>` —— 命令整串经 PowerShell `-Command`
+ * 执行时多语句合法，用户意图「git 命令免确认」就变成了「任何以 git 起头的命令串免确认」，
+ * 与文件头的自述（任何「一条模式放行全部命令」的口子都必须堵死）矛盾。
+ * 拆段后**每一段**都要命中某个模式才整体放行，于是「尾部裸 `*`」的前缀模式只放行单段命令。
+ */
+const COMMAND_SEPARATORS = /;|\r\n|\n|\r/
+
+/**
+ * 是否命中免确认列表：把命令按 `;` / 换行拆段，**每一段都命中某个模式**才算整体命中，
+ * 返回第一段命中的那条模式（供审计日志留痕）；任一段未命中即返回 `undefined`（弹卡）。
  *
  * **语法非法或纯通配的模式一律跳过，绝不匹配**（纵深防御，与配置层的拒绝是两件事）。
  */
@@ -58,10 +74,30 @@ export function matchAllowPatterns(
   command: string,
   patterns: readonly string[],
 ): string | undefined {
+  const segments = splitCommand(command)
+  if (segments.length === 0) return undefined
+  let matched: string | undefined
+  for (const segment of segments) {
+    const hit = matchSegment(segment, patterns)
+    if (hit === undefined) return undefined // 任一段未命中 → 整条命令不免确认
+    matched ??= hit
+  }
+  return matched
+}
+
+/** 单段命令的模式匹配（原text匹配逻辑，`pathMode: false`：命令串里的反斜杠是内容） */
+function matchSegment(segment: string, patterns: readonly string[]): string | undefined {
   for (const pattern of patterns) {
     if (describeInvalidPattern(pattern) !== undefined) continue
-    // 文本模式：命令串里的反斜杠是内容不是路径分隔符（`pathMode: false`）
-    if (matchesGlob(pattern, command, { pathMode: false, caseInsensitive: true })) return pattern
+    if (matchesGlob(pattern, segment, { pathMode: false, caseInsensitive: true })) return pattern
   }
   return undefined
+}
+
+/** 拆段并去掉空白段（`git status;` 的尾部分号、空行都不参与匹配）；全空白命令得到空数组。 */
+function splitCommand(command: string): string[] {
+  return command
+    .split(COMMAND_SEPARATORS)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== '')
 }

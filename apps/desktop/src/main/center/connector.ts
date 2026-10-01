@@ -198,8 +198,31 @@ export class CenterConnector {
     this.scheduleConnect(0)
   }
 
+  /**
+   * 不可逆停机：置 `stopped` 后**没有任何复位路径**（只有 `start()` 会清）。
+   *
+   * ⚠️ 不要用它表达「用户在设置页关闭 Center」—— 那种情形是**可逆**的，走 `halt()`
+   * （P1-04：曾经两处共用 `stopped = true`，于是关闭再启用永远停在 disabled，
+   * 仅重启应用能恢复）。
+   */
   stop(): void {
     this.stopped = true
+    this.halt()
+  }
+
+  dispose(): void {
+    this.disposed = true
+    this.stop()
+  }
+
+  /**
+   * 拆 socket + 清定时器 + 置 disabled（**可逆**暂停）：不置 `stopped`，
+   * 因此再次启用时 `onConfigChanged` 会走到既有重建路径。
+   *
+   * 调用方：① `onConfigChanged` 的 `enabled=false` 分支（用户关闭 Center）；
+   * ② `stop()`（不可逆停机，自身额外置 `stopped`）。
+   */
+  private halt(): void {
     if (this.reconnectTimer !== undefined) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = undefined
@@ -209,17 +232,13 @@ export class CenterConnector {
     this.attempt = 0
   }
 
-  dispose(): void {
-    this.disposed = true
-    this.stop()
-  }
-
   /** settings:changed 时调用：enabled / serverUrl / token 变化会驱动连接状态 */
   onConfigChanged(): void {
     if (this.stopped || this.disposed) return
     const config = this.deps.config()
     if (!config.enabled) {
-      this.stop()
+      // 用户关闭 Center = 可逆暂停（不置 stopped）：再启用时下面会重建连（P1-04）
+      this.halt()
       return
     }
     if (this.socket !== undefined || this.reconnectTimer !== undefined) {

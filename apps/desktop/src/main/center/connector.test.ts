@@ -216,6 +216,62 @@ describe('CenterConnector · 连接状态机', () => {
     expect(harness.sockets.length).toBe(count)
   })
 
+  /**
+   * P1-04 回归：设置页「关掉 Center → 再打开」必须重建连。
+   * 修复前 `onConfigChanged` 的 `enabled=false` 分支调 `stop()`（置 `stopped=true`），
+   * 而 `stopped` 没有任何复位路径 —— 再次启用时第一行守卫直接 return，
+   * 连接器永远停在 disabled，只有重启应用能恢复。
+   */
+  it('disable → enable：连接器重建连（不再停在 disabled 直到重启）', () => {
+    const harness = makeConnector()
+    harness.connector.start()
+    vi.advanceTimersByTime(1)
+    const first = harness.lastSocket()
+    first.emit('open')
+    expect(harness.connector.connectionState().state).toBe('connected')
+
+    // 用户在设置页关闭 Aurora Center
+    harness.config.enabled = false
+    harness.connector.onConfigChanged()
+    expect(harness.connector.connectionState().state).toBe('disabled')
+    expect(first.closed).toBe(true)
+    const countAfterDisable = harness.sockets.length
+
+    // 再次启用：可逆暂停 → 走既有重建路径（scheduleConnect → 新 socket）
+    harness.config.enabled = true
+    harness.connector.onConfigChanged()
+    expect(harness.connector.connectionState().state).toBe('connecting')
+    vi.advanceTimersByTime(1)
+    expect(harness.sockets.length).toBe(countAfterDisable + 1)
+    const second = harness.lastSocket()
+    second.emit('open')
+    expect(harness.connector.connectionState().state).toBe('connected')
+    // 重建连后照常发 hello（新连接不是半截状态）
+    expect(JSON.parse(second.sent[0] as string).type).toBe('hello')
+  })
+
+  /**
+   * 与上条成对：`dispose()` 是应用退出路径（`index.ts` 的 shutdown），
+   * 仍必须**不可逆** —— 置 `stopped` 之后即便配置再变也不许重连。
+   */
+  it('dispose() 不可逆：之后 onConfigChanged 不再重连（stopped 保留给停机）', () => {
+    const harness = makeConnector()
+    harness.connector.start()
+    vi.advanceTimersByTime(1)
+    harness.lastSocket().emit('open')
+
+    harness.connector.dispose()
+    expect(harness.connector.connectionState().state).toBe('disabled')
+    const count = harness.sockets.length
+
+    // 配置再变（含 enabled=true）也不该复活
+    harness.config.enabled = true
+    harness.connector.onConfigChanged()
+    vi.advanceTimersByTime(60_000)
+    expect(harness.sockets.length).toBe(count)
+    expect(harness.connector.connectionState().state).toBe('disabled')
+  })
+
   it('wsUrlOf：ws(s)/http(s) 都折算成 /api/client 的 WS 地址', () => {
     expect(wsUrlOf('ws://center:8787')).toBe('ws://center:8787/api/client')
     expect(wsUrlOf('https://center.example.com/')).toBe('wss://center.example.com/api/client')

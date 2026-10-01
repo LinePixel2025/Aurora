@@ -39,6 +39,60 @@ describe('evaluateTrigger · daily（每天定时）', () => {
     expect(result.key).toBeNull()
   })
 
+  /**
+   * P2-11 / docs/13 §4.1：daily 从「恰好等于 at 分钟」改为「今天的 at 已过且当日键未触发」。
+   * 触发那一分钟主进程若没在评估（睡眠 / 休眠、主线程被长任务阻塞、时间跳变），
+   * 恢复后必须补触发一次；同日后续 tick 都命中但键相同，靠引擎的 firedKeys 去重。
+   */
+  it('错过 1 分钟补偿触发：08:00 的触发器在 08:01 评估仍命中一次', () => {
+    const result = evaluateTrigger({ kind: 'daily', params: { at: '08:00' } }, ctx(dayAt(8, 1)))
+    expect(result.matched).toBe(true)
+    expect(result.key).toBe('daily-2026-03-02-08:00')
+    expect(result.detail).toContain('08:00')
+  })
+
+  it('错过补偿与命中时刻的键完全一致（同日不重复触发：引擎按 firedKeys 去重）', () => {
+    const trigger = { kind: 'daily' as const, params: { at: '08:00' } }
+    // 该分钟的键：准时命中、迟到 1 分钟、当天很晚、跨到次日 之前
+    const onTime = evaluateTrigger(trigger, ctx(dayAt(8, 0)))
+    const late = evaluateTrigger(trigger, ctx(dayAt(8, 1)))
+    const veryLate = evaluateTrigger(trigger, ctx(dayAt(23, 59)))
+    expect(onTime.key).toBe('daily-2026-03-02-08:00')
+    expect(late.key).toBe(onTime.key)
+    expect(veryLate.key).toBe(onTime.key)
+
+    // 复刻引擎的「命中 → 记键 → 已记则跳过」：一整天的 tick 只触发一次
+    const fired = new Set<string>()
+    const runs: string[] = []
+    for (const now of [dayAt(7, 59), dayAt(8, 1), dayAt(8, 30), dayAt(12, 0), dayAt(23, 59)]) {
+      const result = evaluateTrigger(trigger, ctx(now))
+      if (!result.matched || result.key === null || fired.has(result.key)) continue
+      fired.add(result.key)
+      runs.push(result.key)
+    }
+    expect(runs).toEqual(['daily-2026-03-02-08:00'])
+  })
+
+  it('还没到点的当天不触发（补偿只向前补，不提前）', () => {
+    expect(
+      evaluateTrigger({ kind: 'daily', params: { at: '08:00' } }, ctx(dayAt(7, 59))).matched,
+    ).toBe(false)
+  })
+
+  it('跨天后重新可触发（键带日期，补偿不吞掉次日那一次）', () => {
+    const trigger = { kind: 'daily' as const, params: { at: '08:00' } }
+    const today = evaluateTrigger(trigger, ctx(dayAt(8, 5)))
+    const tomorrow = evaluateTrigger(trigger, ctx(dayAt(8, 5, 0, new Date(2026, 2, 3))))
+    expect(tomorrow.matched).toBe(true)
+    expect(tomorrow.key).not.toBe(today.key)
+    expect(tomorrow.key).toBe('daily-2026-03-03-08:00')
+  })
+
+  it('weekdays 过滤在补偿路径上同样生效（非指定星期不补触发）', () => {
+    const tuesday = { kind: 'daily' as const, params: { at: '08:00', weekdays: [TUESDAY_WEEKDAY] } }
+    expect(evaluateTrigger(tuesday, ctx(dayAt(8, 5))).matched).toBe(false)
+  })
+
   it('weekdays 过滤：指定星期之外不触发，命中星期触发', () => {
     const tuesday = { kind: 'daily' as const, params: { at: '08:00', weekdays: [TUESDAY_WEEKDAY] } }
     expect(evaluateTrigger(tuesday, ctx(dayAt(8, 0))).matched).toBe(false)

@@ -64,7 +64,11 @@ function evaluateDaily(params: Record<string, unknown>, ctx: TriggerContext): Tr
   const weekdays = normalizeWeekdays(params['weekdays'])
   if (weekdays !== undefined && !weekdays.includes(ctx.now.getDay())) return notMatched()
   const nowMinutes = ctx.now.getHours() * 60 + ctx.now.getMinutes()
-  if (nowMinutes !== at) return notMatched()
+  // 错过补偿（P2-11，docs/13 §4.1）：`>=` 而不是 `===` —— 触发那一分钟主进程若没在评估
+  // （睡眠 / 休眠、主线程被长任务阻塞、时间跳变），恢复后的首个 tick 补触发一次。
+  // 键含日期（`daily-<ymd>-<at>`）天然幂等：同日后续 tick 都命中但键相同，引擎的
+  // firedKeys 去重使其只触发一次（与 interval 的时间桶语义一致）。
+  if (nowMinutes < at) return notMatched()
   const atText = typeof params['at'] === 'string' ? params['at'].trim() : ''
   return {
     matched: true,
