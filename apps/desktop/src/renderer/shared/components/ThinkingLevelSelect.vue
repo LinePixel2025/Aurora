@@ -12,7 +12,8 @@
  * option 集合直接取 Schema 的 `REASONING_EFFORT_LEVELS`：以后加等级不会只漏掉这个入口；
  * 文案与 `settings/pages/LlmPage.vue` **逐字一致**——同一个值在两个入口不能有两套说法。
  *
- * 尺寸：高度与输入区按钮同为 40px、宽度自适应（约 96-128px），要和 420px 宽的交互窗输入区里的发送按钮同行。
+ * 尺寸：与权限 / 模型两枚控件**逐字对齐**（`--control-h-xs` = 28px + pill 圆角 + 静止态零边框，
+ * 见 docs/07 §2.3 的输入卡硬口径；2026-09-29 减负轮从 40px 压到 28px），宽度自适应。
  * `data-field` 挂在 `<select>` 自己身上：capture 探针按它定位后**直接读 `.value`**。
  */
 import { computed } from 'vue'
