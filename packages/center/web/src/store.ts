@@ -771,7 +771,8 @@ export async function listProjects(clientId: string): Promise<CenterProjectOptio
 
 /**
  * 远程切模型 / 思考等级（专用命令，不走 config.update 白名单，docs/12 §6.3）。
- * 成功后乐观更新本地 llm 快照（client.status 随后也会推新值兜底）。
+ * 成功后乐观更新本地 llm 快照（client.status 随后也会推新值兜底），并**补拉一次配置切片**：
+ * `contextWindow` 只能从 `config.get` 的 `modelParams[模型]` 拿到，不在 status 快照里（见下方注释）。
  */
 export async function switchLlm(
   clientId: string,
@@ -797,6 +798,11 @@ export async function switchLlm(
   }
   if (patch.model) llm.model = patch.model
   if (patch.reasoningEffort) llm.reasoningEffort = patch.reasoningEffort
+  // 补一次配置拉取：`llm.switch` 成功只推 client.status（快照含 activeProviderId / model /
+  // reasoningEffort，**不含** contextWindow），而 remoteLlm 只在选中客户端时由
+  // fetchRemoteConfig 拉一次。参数下沉到模型级后，不补这一次，切模型会让 SessionView 的
+  // 占比分母停在上一个模型的窗口值。读配置失败不影响切换本身（乐观更新已写入），尽力而为。
+  await fetchRemoteConfig(clientId).catch(() => {})
 }
 
 /** config.get（脱敏全量配置）→ 解析出网页端关心的 LLM 切片并缓存到客户端条目 */
@@ -829,15 +835,27 @@ function extractRemoteLlm(data: unknown): RemoteLlmConfig | null {
     const modelList = Array.isArray(provider.modelList)
       ? provider.modelList.filter((m): m is string => typeof m === 'string')
       : []
+    const model = typeof provider.model === 'string' ? provider.model : ''
+    // contextWindow / reasoningEffort 在 v23 下沉到**模型级**（`modelParams[模型]`）：
+    // 取值口径 = 该 provider 的当前 `model`（真正生效的那个），与主进程的
+    // `resolveModelParams(provider)` 同源；键未命中 / 字段缺失按字段回落 0 / 'auto'。
+    // 逐层收窄（provider → 该模型的条目），别把 undefined 漏进下面的类型判断。
+    const modelParams = provider.modelParams
+    const rawEntry =
+      typeof modelParams === 'object' && modelParams !== null
+        ? (modelParams as Record<string, unknown>)[model]
+        : undefined
+    const modelEntry: Record<string, unknown> =
+      typeof rawEntry === 'object' && rawEntry !== null ? (rawEntry as Record<string, unknown>) : {}
     result.providers[id] = {
-      model: typeof provider.model === 'string' ? provider.model : '',
+      model,
       modelList,
-      contextWindow: typeof provider.contextWindow === 'number' ? provider.contextWindow : 0,
+      contextWindow: typeof modelEntry.contextWindow === 'number' ? modelEntry.contextWindow : 0,
       reasoningEffort:
-        provider.reasoningEffort === 'low' ||
-        provider.reasoningEffort === 'medium' ||
-        provider.reasoningEffort === 'high'
-          ? provider.reasoningEffort
+        modelEntry.reasoningEffort === 'low' ||
+        modelEntry.reasoningEffort === 'medium' ||
+        modelEntry.reasoningEffort === 'high'
+          ? modelEntry.reasoningEffort
           : 'auto',
     }
   }

@@ -122,7 +122,14 @@ export interface CenterConnectorDeps {
      * `result.data` 携带 `CenterSessionHistoryMessage[]`（仅 `center-` 前缀会话）。
      */
     history(sessionId: string): Promise<{ ok: boolean; data?: unknown; error?: string }>
-    /** 远程切模型 / 思考等级（专用命令，绝不触碰 apiKeyEnc / baseUrl） */
+    /**
+     * 远程切模型 / 思考等级（专用命令，绝不触碰 apiKeyEnc / baseUrl）。
+     *
+     * `reasoningEffort` 的落值位置（v23 下沉后）在**当前模型**的
+     * `llm.providers.<providerId>.modelParams.<当前 model>.reasoningEffort` ——
+     * 由本端口的实现（装配层 `main/index.ts` 的 `switchLlm`）写入，
+     * connector 只做命令分派与 `allowRemoteConfig` 闸门，自身不碰 settings。
+     */
     switchLlm(request: {
       providerId?: string
       model?: string
@@ -669,6 +676,9 @@ export class CenterConnector {
         // 专用命令（docs/12 §6.3）：不走 config.update 白名单，但同属"远程改配置"类别，
         // 受 allowRemoteConfig 闸门；handler 只点改 model / reasoningEffort / active，
         // 绝不触碰 apiKeyEnc / baseUrl。
+        // 注：`reasoningEffort` 的**落值位置**在实现端（装配层 main/index.ts 的 switchLlm）——
+        // v23 起写的是 `providers.<providerId>.modelParams.<当前 model>.reasoningEffort`；
+        // connector 侧只做分派，下面的入参逐个透传。
         if (!config.allowRemoteConfig) {
           reply(false, undefined, 'E_REMOTE_DISABLED')
           return

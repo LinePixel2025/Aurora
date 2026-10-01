@@ -72,8 +72,8 @@ describe('buildClientStatus · 状态快照', () => {
   })
 })
 
-describe('buildClientStatus · llm 快照（docs/12 §6.3，v0.2.3）', () => {
-  it('取激活 provider 的 model / reasoningEffort；凭据字段绝不进快照', () => {
+describe('buildClientStatus · llm 快照（docs/12 §6.3，v0.2.3；v23 起思考等级取模型级）', () => {
+  it('取激活 provider 的 model 与 modelParams[model].reasoningEffort；凭据字段绝不进快照', () => {
     const settings: Settings = createDefaultSettings()
     settings.llm.active = 'p1'
     settings.llm.providers['p1'] = {
@@ -81,18 +81,39 @@ describe('buildClientStatus · llm 快照（docs/12 §6.3，v0.2.3）', () => {
       baseUrl: 'https://api.example.com/v1',
       apiKeyEnc: '***密文***',
       model: 'gpt-x',
-      modelList: [],
-      temperature: 0.7,
-      reasoningEffort: 'high',
-      contextWindow: 0,
-      vision: false,
+      modelList: ['gpt-x', 'gpt-mini'],
+      // v23：思考等级按**模型 id** 键；快照取的是当前 `model` 那一条
+      modelParams: {
+        'gpt-x': { reasoningEffort: 'high', contextWindow: 0, vision: false },
+        'gpt-mini': { reasoningEffort: 'low', contextWindow: 0, vision: false },
+      },
     }
 
     const status = buildClientStatus(settings, '0.2.3', 'win32')
+    // 快照**形状不变**（仍只有三个展示字段），只是值来自模型级条目
     expect(status.llm).toEqual({ activeProviderId: 'p1', model: 'gpt-x', reasoningEffort: 'high' })
     // llm 快照只取三个展示字段：baseUrl / apiKeyEnc 不出现在状态快照任何地方
     expect(JSON.stringify(status)).not.toContain('https://api.example.com')
     expect(JSON.stringify(status)).not.toContain('apiKeyEnc')
+  })
+
+  it('当前模型在 modelParams 里没有条目时按字段回落 auto（不整条 undefined）', () => {
+    const settings: Settings = createDefaultSettings()
+    settings.llm.active = 'p1'
+    settings.llm.providers['p1'] = {
+      type: 'openai-compat',
+      baseUrl: 'https://api.example.com/v1',
+      apiKeyEnc: 'x',
+      model: 'gpt-new',
+      modelList: [],
+      // 表里只有别的模型 —— 键未命中
+      modelParams: { 'gpt-old': { reasoningEffort: 'high', contextWindow: 0, vision: false } },
+    }
+    expect(buildClientStatus(settings, '0.2.3', 'win32').llm).toEqual({
+      activeProviderId: 'p1',
+      model: 'gpt-new',
+      reasoningEffort: 'auto',
+    })
   })
 
   it('无激活 provider（active 为空 / 指向不存在的 id）时给安全缺省', () => {
@@ -110,10 +131,7 @@ describe('buildClientStatus · llm 快照（docs/12 §6.3，v0.2.3）', () => {
       apiKeyEnc: 'x',
       model: 'm',
       modelList: [],
-      temperature: 0.7,
-      reasoningEffort: 'low',
-      contextWindow: 0,
-      vision: false,
+      modelParams: { m: { reasoningEffort: 'low', contextWindow: 0, vision: false } },
     }
     expect(buildClientStatus(settings, '0.2.3', 'win32').llm).toEqual({
       activeProviderId: 'ghost',

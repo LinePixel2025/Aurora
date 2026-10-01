@@ -7,7 +7,12 @@
  * 白名单外的补丁整条拒绝、不部分应用 —— 否则"远程改一个合法字段 + 一个非法字段"
  * 的组合会留下半截状态。
  */
-import { CENTER_REMOTE_CONFIG_PREFIXES, type ClientStatus, type Settings } from '@aurora/shared'
+import {
+  CENTER_REMOTE_CONFIG_PREFIXES,
+  resolveModelParams,
+  type ClientStatus,
+  type Settings,
+} from '@aurora/shared'
 
 export interface RemotePatchCheck {
   ok: boolean
@@ -79,7 +84,11 @@ export function buildClientStatus(
     llm: {
       activeProviderId: settings.llm.active,
       model: activeProvider?.model ?? '',
-      reasoningEffort: activeProvider?.reasoningEffort ?? 'auto',
+      // 思考等级在 v23 下沉到**模型级**（`modelParams[模型]`），口径与主进程装配层同源：
+      // 缺省按 `provider.model` 取值、键未命中回落 'auto'。快照**形状不变**，
+      // Center 网页端与服务器协议都不用改。
+      reasoningEffort:
+        activeProvider === undefined ? 'auto' : resolveModelParams(activeProvider).reasoningEffort,
     },
   }
 }

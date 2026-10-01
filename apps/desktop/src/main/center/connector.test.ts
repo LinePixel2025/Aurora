@@ -669,7 +669,10 @@ describe('CenterConnector · 远程会话管理命令（docs/12 §6.3）', () =>
     expect(socket.lastMessage()).toMatchObject({ ok: false, error: 'E_REMOTE_DISABLED' })
   })
 
-  it('llm.switch：分派注入的 switchLlm，成功后紧跟一条 status 重报', async () => {
+  // connector 只做分派：reasoningEffort 原样透传给注入的实现端，真正的落值位置在客户端
+  // 装配层 `main/index.ts` 的 switchLlm —— v23 起写的是
+  // `llm.providers.<providerId>.modelParams.<当前 model>.reasoningEffort`（见 deps 端口注释）。
+  it('llm.switch：把 reasoningEffort 原样透传给实现端（落值到 modelParams[<model>] 由该端完成），成功后紧跟一条 status 重报', async () => {
     const { harness, spies } = makeManagedConnector()
     const socket = openSocket(harness)
     const statusCountBefore = socket.sent.filter((m) => JSON.parse(m).type === 'status').length
