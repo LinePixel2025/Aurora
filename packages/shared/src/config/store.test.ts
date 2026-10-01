@@ -811,3 +811,145 @@ describe('SettingsStore · Center 配对令牌（center.token 凭据路径）', 
     expect(raw).not.toContain('pair-token-plain')
   })
 })
+
+describe('SettingsStore · 含点名称的凭据路径（P1-07）', () => {
+  /** 建一个含点 id 的 provider（`llm.providers` 是 record，键不受 Schema 约束）。 */
+  function seedDottedProvider(store: SettingsStore, id: string): void {
+    store.mutate((draft) => {
+      draft.llm.providers[id] = {
+        type: 'openai-compat',
+        baseUrl: 'https://api.deepseek.com',
+        apiKeyEnc: '',
+        model: 'deepseek-chat',
+        temperature: 0.7,
+        reasoningEffort: 'auto',
+      }
+      draft.llm.active = id
+    })
+  }
+
+  it('canonicalSecretPath 能归一化含点的 provider id 与 MCP 服务器名', () => {
+    // provider：后缀 `.apiKey` 固定 → id 段贪婪，含点 id 原样保留
+    expect(canonicalSecretPath('llm.providers.api.deepseek.apiKey')).toBe(
+      'llm.providers.api.deepseek.apiKey',
+    )
+    expect(canonicalSecretPath('llm.providers.api.deepseek.apiKeyEnc')).toBe(
+      'llm.providers.api.deepseek.apiKey',
+    )
+    // MCP：`mcp.servers.my.server.env.KEY` 要拆成服务器 `my.server` 的 env 键 `KEY`
+    // （`envEnc` 写法归一化回 `env`，等价于识别出了两侧段）
+    expect(canonicalSecretPath('mcp.servers.my.server.env.KEY')).toBe(
+      'mcp.servers.my.server.env.KEY',
+    )
+    expect(canonicalSecretPath('mcp.servers.my.server.envEnc.KEY')).toBe(
+      'mcp.servers.my.server.env.KEY',
+    )
+    expect(canonicalSecretPath('mcp.servers.my.server.headers.X.Api-Key')).toBe(
+      'mcp.servers.my.server.headers.X.Api-Key',
+    )
+    expect(canonicalSecretPath('mcp.servers.my.server.headersEnc.X.Api-Key')).toBe(
+      'mcp.servers.my.server.headers.X.Api-Key',
+    )
+    // 含点的键（env 键 / header 名不受 Schema 约束）也不能回归：名称段无点时按标记拆开
+    expect(canonicalSecretPath('mcp.servers.foo.env.A.B')).toBe('mcp.servers.foo.env.A.B')
+    expect(canonicalSecretPath('mcp.servers.foo.headers.X.Api-Key')).toBe(
+      'mcp.servers.foo.headers.X.Api-Key',
+    )
+  })
+
+  it('含点 provider id 的凭据可存取（writeSecretField → readSecretField 全链）', async () => {
+    const { store, fsPort, configPath } = setup()
+    await store.init()
+    seedDottedProvider(store, 'api.deepseek')
+
+    // 不抛「无法识别的凭据路径」；写成密文
+    expect(store.setSecret('llm.providers.api.deepseek.apiKey', 'sk-dotted')).toBe(true)
+    await store.flush()
+
+    // 路径别名（apiKeyEnc）与明文名指向同一条规范路径
+    expect(store.getSecret('llm.providers.api.deepseek.apiKey')).toBe('sk-dotted')
+    expect(store.getSecret('llm.providers.api.deepseek.apiKeyEnc')).toBe('sk-dotted')
+    expect(store.get().llm.providers['api.deepseek']?.apiKeyEnc).toContain('fakestorage:v1:')
+    // 主进程的 `settings:hasSecret` 就是 `getSecret(path) !== ''`
+    expect(store.getSecret('llm.providers.api.deepseek.apiKey') !== '').toBe(true)
+    // 磁盘只有密文
+    const raw = (await fsPort.readFile(configPath)) as string
+    expect(raw).not.toContain('sk-dotted')
+    expect(raw).toContain('fakestorage:v1:')
+    // 内存缓存键也是规范路径（clearSecret 能一并清掉）
+    store.clearSecret('llm.providers.api.deepseek.apiKey')
+    await store.flush()
+    expect(store.getSecret('llm.providers.api.deepseek.apiKey')).toBe('')
+  })
+
+  it('存量含点 MCP 服务器名：init 时规整为合法名，不把整份配置判为损坏', async () => {
+    // `McpServerSchema.name` 现在禁 `.`，而 `mcp.servers` 是数组（sanitize 不逐项回退）：
+    // 不先规整就会在 SettingsSchema.parse 硬抛 → 备份 + 重建出厂配置。
+    const seeded = createDefaultSettings()
+    seeded.llm.providers['deepseek'] = {
+      type: 'openai-compat',
+      baseUrl: 'https://api.deepseek.com',
+      apiKeyEnc: '',
+      model: 'deepseek-chat',
+      temperature: 0.7,
+      reasoningEffort: 'auto',
+    }
+    // 手写密文 = 假加密格式（`fakestorage:v1:` + base64），解密回 'tok-value'
+    const tokCipher = 'fakestorage:v1:' + Buffer.from('tok-value', 'utf8').toString('base64')
+    const seed = {
+      [memoryPath(CONFIG_FILE_NAME)]: JSON.stringify({
+        ...seeded,
+        version: CONFIG_VERSION,
+        mcp: {
+          lazyConnect: false,
+          servers: [
+            {
+              name: 'my.server',
+              transport: 'http',
+              url: 'https://example.com/mcp',
+              envEnc: { TOKEN: tokCipher },
+              headersEnc: {},
+              enabled: true,
+            },
+          ],
+        },
+      }),
+    }
+    const { store, logger } = setup({ seed })
+    const report = await store.init()
+
+    expect(report.corrupted).toBe(false)
+    expect(report.warnings.some((w) => w.includes('my.server'))).toBe(true)
+    const server = store.get().mcp.servers[0]
+    expect(server?.name).toBe('my-server')
+    // 凭据密文随条目一起搬走 → 改名后仍读得到
+    expect(server?.envEnc['TOKEN']).toContain('fakestorage:v1:')
+    expect(store.getSecret('mcp.servers.my-server.env.TOKEN')).toBe('tok-value')
+    expect(logger.entries.some((l) => l.includes('规整存量 MCP 服务器名称'))).toBe(true)
+  })
+
+  it('规整时不与既有合法名冲突（追加 -2）', async () => {
+    const seeded = createDefaultSettings()
+    const seedServer = (name: string) => ({
+      name,
+      transport: 'stdio' as const,
+      command: 'npx',
+      args: [],
+      envEnc: {},
+      headersEnc: {},
+      enabled: true,
+    })
+    const seed = {
+      [memoryPath(CONFIG_FILE_NAME)]: JSON.stringify({
+        ...seeded,
+        version: CONFIG_VERSION,
+        mcp: { lazyConnect: false, servers: [seedServer('my-server'), seedServer('my.server')] },
+      }),
+    }
+    const { store } = setup({ seed })
+    const report = await store.init()
+    expect(report.corrupted).toBe(false)
+    const names = store.get().mcp.servers.map((s) => s.name)
+    expect(names).toEqual(['my-server', 'my-server-2'])
+  })
+})

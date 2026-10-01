@@ -12,6 +12,7 @@
  */
 import { join } from 'node:path'
 import {
+  RESOURCE_NAME_PATTERN,
   SettingsSchema,
   WINDOW_NAMES,
   fieldAccepts,
@@ -148,8 +149,12 @@ export class SettingsStore {
       // 所以「声明已是 v4、却还留着 service-dock」这种文件不会被迁移链覆盖。
       // 这里按 `WINDOW_NAMES` 精确摘掉未知键：只丢一个窗口几何，用户的其它配置一个不动。
       const prunedWarnings = pruneUnknownWindowState(outcome.data, this.logger)
-      warnings.push(...prunedWarnings)
-      repaired = prunedWarnings.length > 0
+      // 存量含点 MCP 服务器名（`McpServerSchema.name` 现在禁 `.`）：`mcp.servers` 是数组、
+      // sanitize 对数组**整体保留候选值**，不先规整就会在 `SettingsSchema.parse` 硬抛，
+      // 走「备份原文件 + 重建出厂配置」（见 `normalizeLegacyMcpServerNames`）。
+      const renamedWarnings = normalizeLegacyMcpServerNames(outcome.data, this.logger)
+      warnings.push(...prunedWarnings, ...renamedWarnings)
+      repaired = prunedWarnings.length > 0 || renamedWarnings.length > 0
       const issues: SanitizeIssue[] = []
       candidate = sanitizeWithDefaults(
         outcome.data,
@@ -702,36 +707,89 @@ export class SettingsStore {
 
 // ───────────────────────── 工具 ─────────────────────────
 
+/**
+ * provider 段改贪婪 `(.+)`：`llm.providers.<id>.apiKey` 的后缀是**固定**的 `.apiKey`
+ * （`apiKeyEnc` 亦然），贪婪匹配只会吃掉 id 里多出来的点，不会与后缀打架 ——
+ * 于是存量含点 id（`llm.providers.api.deepseek.apiKey`）重新可定位（P1-07）。
+ */
 function matchProviderKey(key: string): string | undefined {
-  const matched = /^llm\.providers\.([^.]+)\.apiKey$/.exec(key)
+  const matched = /^llm\.providers\.(.+)\.apiKey$/.exec(key)
   return matched?.[1]
 }
 
 function matchTtsProviderKey(key: string): string | undefined {
-  const matched = /^tts\.providers\.([^.]+)\.apiKey$/.exec(key)
+  const matched = /^tts\.providers\.(.+)\.apiKey$/.exec(key)
   return matched?.[1]
 }
 
 function matchSttProviderKey(key: string): string | undefined {
-  const matched = /^stt\.providers\.([^.]+)\.apiKey$/.exec(key)
+  const matched = /^stt\.providers\.(.+)\.apiKey$/.exec(key)
   return matched?.[1]
 }
 
 function matchImageGenProviderKey(key: string): string | undefined {
-  const matched = /^imagegen\.providers\.([^.]+)\.apiKey$/.exec(key)
+  const matched = /^imagegen\.providers\.(.+)\.apiKey$/.exec(key)
   return matched?.[1]
 }
 
+/**
+ * MCP 凭据路径里受控的「标记」段（`mcp.servers.<name>.<marker>.<KEY>`）。
+ * 明文路径与密文路径的写法是 `.env.KEY` / `.envEnc.KEY`（headers 同款）。
+ */
+const MCP_SECRET_MARKERS = ['envEnc', 'headersEnc', 'env', 'headers'] as const
+
+interface McpSecretPath {
+  server: string
+  marker: 'env' | 'headers'
+  key: string
+}
+
+/**
+ * 从**右往左**按已知标记拆 `mcp.servers.<name>.<marker>.<KEY>`（P1-07）。
+ *
+ * 为什么不用「名称段 `[^.]+`」：存量配置里服务器名可能含 `.`（`McpServerSchema.name` 曾只校验
+ * `min(1)`），而 env 键 / header 名**没有**「不含 `.`」的硬约束（`envEnc` / `headersEnc` 是
+ * `z.record(z.string(), …)`，见 docs/08 §1.3），两侧都可能有 `.`，无法靠单侧卡死。
+ * 约定：**最后一个**受控标记（`.env.` / `.envEnc.` / `.headers.` / `.headersEnc.`）为分隔符 ——
+ * 名称与键都允许含点；唯一会误判的是**键名自身含标记词**（键名写作 `env.KEY` 时名称会把键的
+ * 前半段吃掉），取舍见 docs/08 §1.3。
+ *
+ * 不用正则贪婪而用 `lastIndexOf`：`.env.` 不是 `.envEnc.` 的子串，逐个标记取最靠右的起点即可，
+ * 语义等价且不用在 `(Enc)?` 与交替顺序上做回溯推理。
+ */
+function splitMcpSecretPath(path: string): McpSecretPath | undefined {
+  const prefix = 'mcp.servers.'
+  if (!path.startsWith(prefix)) return undefined
+  const rest = path.slice(prefix.length)
+  let best: { start: number; length: number; marker: 'env' | 'headers' } | undefined
+  for (const token of MCP_SECRET_MARKERS) {
+    const start = rest.lastIndexOf(`.${token}.`)
+    if (start === -1) continue
+    if (best === undefined || start > best.start) {
+      best = {
+        start,
+        length: token.length + 2,
+        marker: token.startsWith('headers') ? 'headers' : 'env',
+      }
+    }
+  }
+  if (best === undefined) return undefined
+  const server = rest.slice(0, best.start)
+  const key = rest.slice(best.start + best.length)
+  if (server === '' || key === '') return undefined
+  return { server, marker: best.marker, key }
+}
+
 function matchMcpEnvKey(key: string): { server: string; envKey: string } | undefined {
-  const matched = /^mcp\.servers\.([^.]+)\.env\.(.+)$/.exec(key)
-  if (!matched) return undefined
-  return { server: matched[1] as string, envKey: matched[2] as string }
+  const split = splitMcpSecretPath(key)
+  if (split === undefined || split.marker !== 'env') return undefined
+  return { server: split.server, envKey: split.key }
 }
 
 function matchMcpHeaderKey(key: string): { server: string; headerKey: string } | undefined {
-  const matched = /^mcp\.servers\.([^.]+)\.headers\.(.+)$/.exec(key)
-  if (!matched) return undefined
-  return { server: matched[1] as string, headerKey: matched[2] as string }
+  const split = splitMcpSecretPath(key)
+  if (split === undefined || split.marker !== 'headers') return undefined
+  return { server: split.server, headerKey: split.key }
 }
 
 /**
@@ -741,18 +799,18 @@ function matchMcpHeaderKey(key: string): { server: string; headerKey: string } |
  */
 export function canonicalSecretPath(path: string): string {
   const trimmed = path.trim().replace(/\.$/, '')
-  const provider = /^llm\.providers\.([^.]+)\.apiKey(Enc)?$/.exec(trimmed)
+  // 四组 provider 同构：id 段贪婪（见 `matchProviderKey` 的说明），后缀 `.apiKey(Enc)?` 固定。
+  const provider = /^llm\.providers\.(.+)\.apiKey(Enc)?$/.exec(trimmed)
   if (provider) return `llm.providers.${provider[1]}.apiKey`
-  const tts = /^tts\.providers\.([^.]+)\.apiKey(Enc)?$/.exec(trimmed)
+  const tts = /^tts\.providers\.(.+)\.apiKey(Enc)?$/.exec(trimmed)
   if (tts) return `tts.providers.${tts[1]}.apiKey`
-  const stt = /^stt\.providers\.([^.]+)\.apiKey(Enc)?$/.exec(trimmed)
+  const stt = /^stt\.providers\.(.+)\.apiKey(Enc)?$/.exec(trimmed)
   if (stt) return `stt.providers.${stt[1]}.apiKey`
-  const imagegen = /^imagegen\.providers\.([^.]+)\.apiKey(Enc)?$/.exec(trimmed)
+  const imagegen = /^imagegen\.providers\.(.+)\.apiKey(Enc)?$/.exec(trimmed)
   if (imagegen) return `imagegen.providers.${imagegen[1]}.apiKey`
-  const env = /^mcp\.servers\.([^.]+)\.env(Enc)?\.(.+)$/.exec(trimmed)
-  if (env) return `mcp.servers.${env[1]}.env.${env[3]}`
-  const headers = /^mcp\.servers\.([^.]+)\.headers(Enc)?\.(.+)$/.exec(trimmed)
-  if (headers) return `mcp.servers.${headers[1]}.headers.${headers[3]}`
+  // MCP：从右往左按已知标记拆（含点服务器名与含点键都兼容，见 `splitMcpSecretPath`）
+  const mcp = splitMcpSecretPath(trimmed)
+  if (mcp) return `mcp.servers.${mcp.server}.${mcp.marker}.${mcp.key}`
   const centerToken = /^center\.token(Enc)?$/.exec(trimmed)
   if (centerToken) return 'center.token'
   return trimmed
@@ -805,4 +863,57 @@ export function pruneUnknownWindowState(raw: Record<string, unknown>, logger?: L
   for (const key of retired) delete windowState[key]
   logger?.warn('清理已下线窗口的几何记录', { retired })
   return [`已移除不再存在的窗口几何记录：${retired.join('、')}`]
+}
+
+/**
+ * 规整存量 MCP 服务器名称（就地修改 `raw`），返回警告文案（P1-07）。
+ *
+ * 背景：`McpServerSchema.name` 现在要求 `RESOURCE_NAME_PATTERN`（禁 `.`，因为名称是凭据路径的段），
+ * 而 `mcp.servers` 是**数组** —— `sanitizeWithDefaults` 对数组整体保留候选值、不做逐项回退，
+ * 于是含点的旧名称会一路活到 `SettingsSchema.parse` 并硬抛，走「备份原文件 + 重建出厂配置」，
+ * 用户所有 provider / 课表 / 项目一起消失。与 `pruneUnknownWindowState` 同款：只修这一处。
+ *
+ * 修法是**改名不丢数据**：把不合规字符换成 `-`（`my.server` → `my-server`），冲突时追加 `-2`、`-3`…
+ * （见 docs/08 §1.3）。MCP 的凭据密文存在条目内部的 `envEnc` / `headersEnc`，随条目一起搬走，
+ * 改名后运行时按新名字构造的凭据路径照样读得到。
+ */
+export function normalizeLegacyMcpServerNames(
+  raw: Record<string, unknown>,
+  logger?: Logger,
+): string[] {
+  const mcp = raw['mcp']
+  if (!isPlainObject(mcp)) return []
+  const servers = mcp['servers']
+  if (!Array.isArray(servers)) return []
+
+  const warnings: string[] = []
+  const taken = new Set<string>()
+  for (const entry of servers) {
+    if (!isPlainObject(entry)) continue
+    const name = entry['name']
+    if (typeof name !== 'string') continue
+    const normalized = uniqueResourceName(name, taken)
+    if (normalized !== name) {
+      entry['name'] = normalized
+      warnings.push(`MCP 服务器名称「${name}」含非法字符，已规范化为「${normalized}」`)
+    }
+    taken.add(normalized)
+  }
+  if (warnings.length > 0) {
+    logger?.warn('规整存量 MCP 服务器名称（名称只允许字母、数字、下划线、连字符）', {
+      count: warnings.length,
+    })
+  }
+  return warnings
+}
+
+/** 不合规名称段 → `-`，并保证在 `taken` 内唯一（`my.server` → `my-server`）。 */
+function uniqueResourceName(name: string, taken: Set<string>): string {
+  if (RESOURCE_NAME_PATTERN.test(name) && !taken.has(name)) return name
+  const base = name.replace(/[^A-Za-z0-9_-]/g, '-') || 'server'
+  if (!taken.has(base)) return base
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${base}-${suffix}`
+    if (!taken.has(candidate)) return candidate
+  }
 }

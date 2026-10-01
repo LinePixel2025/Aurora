@@ -11,8 +11,10 @@
  * env / headers 凭据通过 settings:setSecrets 加密存储，列表只显示已配置的变量名与请求头名；
  * `lazyConnect` 收进「高级」折叠；新增服务器表单默认收起（空状态时由主按钮展开）。
  */
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ChevronRight } from '../../shared/icons.js'
+// 运行时值走浏览器子路径（`@aurora/shared` 主入口依赖 node:fs）；类型仍可从主入口取。
+import { RESOURCE_NAME_PATTERN, RESOURCE_NAME_RULE } from '@aurora/shared/browser'
 import type { McpServerConfig, McpServerStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import SettingField from '../../shared/components/SettingField.vue'
@@ -29,6 +31,8 @@ const settingsStore = useSettingsStore()
 const statuses = ref<McpServerStatus[]>([])
 const showAdd = ref(false)
 const showAdvanced = ref(false)
+/** 删除的二次确认：待确认的服务器名（单值，同一时刻只确认一台；与 LlmPage 的 pendingRemoveId 同款） */
+const pendingRemoveId = ref<string | null>(null)
 
 /** 区组折叠状态：默认收起（组头摘要承载状态，docs/07 §2.5） */
 const open = ref(false)
@@ -101,6 +105,19 @@ const lazyConnect = computed(() => settingsStore.settings?.mcp.lazyConnect ?? fa
 /** 组头摘要用：已启用的服务器台数（docs/07 §2.5 的「n 台服务器 / m 台启用」） */
 const enabledCount = computed(() => servers.value.filter((server) => server.enabled).length)
 
+/**
+ * 待确认的服务器被别处删掉（`set_setting` / 另一窗口 / 配置重置）时，确认条不能指着
+ * 一台不存在的服务器。与 LlmPage / TtsSection 的 `syncDrafts` 守卫同义。
+ */
+watch(servers, (next) => {
+  if (
+    pendingRemoveId.value !== null &&
+    !next.some((server) => server.name === pendingRemoveId.value)
+  ) {
+    pendingRemoveId.value = null
+  }
+})
+
 function notify(tone: NotifyPayload['tone'], text: string): void {
   emit('notify', { tone, text })
 }
@@ -130,6 +147,7 @@ function headerNames(server: McpServerConfig): string[] {
 }
 
 async function setLazyConnect(value: boolean): Promise<void> {
+  pendingRemoveId.value = null
   if (!(await settingsStore.update({ mcp: { lazyConnect: value } }))) {
     if (settingsStore.error) notify('error', settingsStore.error)
   }
@@ -155,9 +173,17 @@ async function saveServers(
 }
 
 async function add(): Promise<void> {
+  pendingRemoveId.value = null
   const name = form.name.trim()
   if (name === '') {
     notify('error', '请填写服务器名称')
+    return
+  }
+  // 名称会作为凭据路径的段（`mcp.servers.<name>.env.<KEY>`），`.` 是分隔符 → 禁点：
+  // 否则 `setSecrets` 会失败，服务器行落库而 env 明文丢失。正则与文案取自
+  // `@aurora/shared`（`McpServerSchema.name` 同款），不另写一份。
+  if (!RESOURCE_NAME_PATTERN.test(name)) {
+    notify('error', `服务器「${name}」${RESOURCE_NAME_RULE}`)
     return
   }
   if (servers.value.some((server) => server.name === name)) {
@@ -210,13 +236,31 @@ async function add(): Promise<void> {
   showAdd.value = false
 }
 
+/**
+ * 删除入口（P2-24）：**先亮出确认条，不直接生效** —— 主进程按「整数组权威」删除并连带清掉
+ * 该服务器全部 `envEnc` / `headersEnc`，不可撤销，所以与 LlmPage / TtsSection 一样要两次点击。
+ * 再次点同一台 = 取消确认（与 `requestRemove` 的 toggle 语义一致）。
+ */
+function requestRemove(name: string): void {
+  pendingRemoveId.value = pendingRemoveId.value === name ? null : name
+}
+
+/**
+ * 确认删除：点确认条里的「确认删除」才真的落盘。
+ *
+ * 关键语义（别退化）：`mcp.servers` 是**整数组权威**——`saveServers` 直接回传过滤后的新数组，
+ * 所以这里不需要（也没有）`removedProviders` 之类的删除指令；凭据清理由主进程在
+ * 删除成功之后一并做。
+ */
 async function remove(name: string): Promise<void> {
   const next = servers.value.filter((server) => server.name !== name)
   const saved = await saveServers(next)
+  pendingRemoveId.value = null
   if (saved) notify('ok', `已删除 ${name}`)
 }
 
 async function toggleEnabled(server: McpServerConfig): Promise<void> {
+  pendingRemoveId.value = null
   const next = servers.value.map((item) =>
     item.name === server.name ? { ...item, enabled: !item.enabled } : item,
   )
@@ -290,8 +334,42 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
                   />
                   {{ server.enabled ? '已启用' : '已停用' }}
                 </label>
-                <AppButton size="sm" variant="danger" @click="remove(server.name)">删除</AppButton>
+                <AppButton
+                  size="sm"
+                  :variant="pendingRemoveId === server.name ? 'danger' : 'ghost'"
+                  data-action="remove-mcp-server"
+                  @click="requestRemove(server.name)"
+                >
+                  删除
+                </AppButton>
               </header>
+
+              <!-- 危险操作二次确认（P2-24）：确认条就地出现，点「确认删除」才真的删 -->
+              <div v-if="pendingRemoveId === server.name" class="confirm-bar">
+                <span class="tiny confirm-text">
+                  删除服务器「{{ server.name }}」？{{
+                    envNames(server).length + headerNames(server).length > 0
+                      ? '它的环境变量 / 请求头密文会一并清除。'
+                      : '它还没有保存凭据。'
+                  }}此操作不可撤销。
+                </span>
+                <AppButton
+                  size="sm"
+                  variant="danger"
+                  data-action="confirm-remove-mcp-server"
+                  @click="remove(server.name)"
+                >
+                  确认删除
+                </AppButton>
+                <AppButton
+                  size="sm"
+                  variant="ghost"
+                  data-action="cancel-remove-mcp-server"
+                  @click="pendingRemoveId = null"
+                >
+                  取消
+                </AppButton>
+              </div>
               <p class="tiny muted mono target">
                 {{
                   server.transport === 'stdio'
@@ -476,6 +554,23 @@ async function toggleEnabled(server: McpServerConfig): Promise<void> {
 .target {
   margin: 0;
   word-break: break-all;
+}
+
+/* 删除的二次确认条（与 LlmPage / TtsSection 同一套观感与令牌） */
+.confirm-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--danger-border);
+  background: var(--danger-fill);
+}
+
+.confirm-text {
+  flex: 1;
+  min-width: 220px;
 }
 
 /* 「高级：连接策略」折叠块 */

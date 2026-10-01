@@ -12,7 +12,12 @@
  */
 import { computed, ref, watch } from 'vue'
 import { ChevronRight } from '../../shared/icons.js'
-import { STT_PRESETS, type SttProviderConfig } from '@aurora/shared/browser'
+import {
+  RESOURCE_NAME_PATTERN,
+  RESOURCE_NAME_RULE,
+  STT_PRESETS,
+  type SttProviderConfig,
+} from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
@@ -77,15 +82,23 @@ const drafts = computed<ProviderDraft[]>(() => [...savedDrafts.value, ...localDr
 function syncDrafts(): void {
   const settings = settingsStore.settings
   if (!settings) return
-  savedDrafts.value = Object.entries(settings.stt.providers).map(([id, provider]) => ({
-    id,
-    ...provider,
-    apiKey: '',
-    apiKeySet: Boolean((provider as unknown as { apiKeySet?: boolean }).apiKeySet),
-  }))
+  const previous = savedDrafts.value
+  const editing = editingId.value
+  savedDrafts.value = Object.entries(settings.stt.providers).map(([id, provider]) => {
+    // 兑现上面那条注释：编辑卡正在改的那一份**按 id 复用旧对象引用** ——
+    // 广播到达（或任何即时保存动作触发的 `settings:changed`）都不回退卡内内容、不关编辑器。
+    // 其余行每次重建，别处改过的值照常反映到列表。
+    const reused = editing === id ? previous.find((draft) => draft.id === id) : undefined
+    if (reused !== undefined) return reused
+    return {
+      id,
+      ...provider,
+      apiKey: '',
+      apiKeySet: Boolean((provider as unknown as { apiKeySet?: boolean }).apiKeySet),
+    }
+  })
   // provider 被别处删掉（如 `set_setting`）时，编辑卡 / 确认条不能指着一个不存在的行。
   // 未落盘的新建草稿不在 settings 里，所以先把它排除在判断之外。
-  const editing = editingId.value
   if (editing !== null && !isCreating(editing) && !hasSaved(editing)) closeEditor()
   if (
     pendingRemoveId.value !== null &&
@@ -136,6 +149,12 @@ function startAdd(): void {
 function addPreset(id: string): void {
   const preset = STT_PRESETS.find((item) => item.id === id)
   const key = newProviderId.value.trim() === '' ? id : newProviderId.value.trim()
+  // provider id 会作为凭据路径的段（`stt.providers.<id>.apiKey`），`.` 是分隔符 → 禁点。
+  // 正则与文案与 `McpServerSchema.name` 同源（`@aurora/shared` 单一来源），不另写一份。
+  if (!RESOURCE_NAME_PATTERN.test(key)) {
+    error.value = `语音输入模型「${key}」${RESOURCE_NAME_RULE}`
+    return
+  }
   if (drafts.value.some((draft) => draft.id === key)) {
     error.value = `语音输入模型「${key}」已存在`
     return
