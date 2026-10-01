@@ -24,6 +24,14 @@
  * 命中某个模式才整体放行。文本模式下的 `*` 编译为 `.*`（含空格与分号），不拆段时 `git *`
  * 会放行 `git status; <任意语句>`（整串经 PowerShell `-Command` 执行，多语句合法）——
  * 与上面「一条模式放行全部命令」是同一性质的口子，只是粒度藏在了分隔符里。
+ *
+ * P2-10 只封了一半（P1，2026-10-01 补齐），两处收紧：
+ * 1. **拆段集合补齐 `&&` / `||` / `|`** —— 只看 `;` 与换行时，`git status && del x` /
+ *    `git log | more` 仍是单段，`git *` 直接命中；
+ * 2. **出现语句构造即整体不命中**（见 `hasStatementComposition`）—— `$(...)` / 反引号 /
+ *    `@(...)` / `@{...}` / `%{...}` / 调用运算符 `&` 内部都是**另一条可执行语句**，
+ *    它们在**同一个段**里，拆分隔符堵不住；只加 `|` 也会被它们绕过。
+ * 这就是审查者指出的根因：问题是**匹配粒度**（字符 vs 语句边界），不是「少拆一个字符」。
  */
 import { isValidGlobPattern, matchesGlob } from './globPattern.js'
 
@@ -54,19 +62,48 @@ export function describeInvalidPattern(pattern: string): string | undefined {
 }
 
 /**
- * 命令的**分段符**（P2-10）：`;` 与换行。
+ * 命令的**分段符**（P2-10）：`;`、换行、`&&`、`||`、`|`。
  *
- * 为什么必须拆段：文本模式下 `*` 编译为 `.*`（含空格与分号），全串锚定匹配让
+ * 为什么必须拆段：文本模式下 `*` 编译为 `.*`（含空格与分隔符），全串锚定匹配让
  * `git *` 直接命中 `git status; <任意危险语句>` —— 命令整串经 PowerShell `-Command`
- * 执行时多语句合法，用户意图「git 命令免确认」就变成了「任何以 git 起头的命令串免确认」，
+ * 执行时多语句 / 管道合法，用户意图「git 命令免确认」就变成了「任何以 git 起头的命令串免确认」，
  * 与文件头的自述（任何「一条模式放行全部命令」的口子都必须堵死）矛盾。
  * 拆段后**每一段**都要命中某个模式才整体放行，于是「尾部裸 `*`」的前缀模式只放行单段命令。
+ *
+ * 交替顺序敏感：`||` 必须在 `|` 之前、`&&` 必须成对匹配 —— 否则 `||` 会先被 `|` 拆成
+ * 两个空段（虽然空段会被过滤掉，但语义上仍应作为一个边界整体处理）。
  */
-const COMMAND_SEPARATORS = /;|\r\n|\n|\r/
+const COMMAND_SEPARATORS = /&&|\|\||;|\||\r\n|\n|\r/
 
 /**
- * 是否命中免确认列表：把命令按 `;` / 换行拆段，**每一段都命中某个模式**才算整体命中，
- * 返回第一段命中的那条模式（供审计日志留痕）；任一段未命中即返回 `undefined`（弹卡）。
+ * 命令是否含**语句构造**（P1，2026-10-01）：含则**整条命令一律不免确认**（退回弹卡）。
+ *
+ * 这条判据的意图是**把匹配粒度从「字符」提升到「语句边界」**。免确认模式是纯文本全串匹配，
+ * `*` 编译成 `.*`，所以下面这些构造会被 `.*` 原样吃掉，而它们在 PowerShell 里各自都是
+ * 「一条可执行语句」或「多条语句的拼接」：
+ * - `$(...)` 子表达式、反引号 `` ` `` 转义 / 行连接（引号内也会被执行）；
+ * - `@(...)` 数组子表达式、`@{...}` 哈希表字面量、`%{...}` ForEach-Object 脚本块；
+ * - 调用运算符 `&`（`&&` 已是分段符，剩下任何 `&` 都按调用运算符处理，含 `&>` / `2>&1`
+ *   这类重定向 —— **宁可多弹一张卡**）。
+ *
+ * 它们**不与分隔符对齐**（`git status $(del x)` 是一个段），只按分段符拆段堵不住，
+ * 所以在此整体判不命中。这仍属「减少打扰」的收窄，不是安全边界（见文件头）。
+ */
+function hasStatementComposition(command: string): boolean {
+  if (command.includes('$(')) return true
+  if (command.includes('`')) return true
+  if (command.includes('@(')) return true
+  if (command.includes('@{')) return true
+  if (command.includes('%{')) return true
+  // `&&` 是分段符，先剔除成对的两个 `&`；余下任何 `&` 都按调用运算符 / 重定向处理
+  if (command.replace(/&&/g, '').includes('&')) return true
+  return false
+}
+
+/**
+ * 是否命中免确认列表：先整体排除语句构造，再把命令按**分段符**拆段，
+ * **每一段都命中某个模式**才算整体命中，返回第一段命中的那条模式（供审计日志留痕）；
+ * 任一段未命中即返回 `undefined`（弹卡）。
  *
  * **语法非法或纯通配的模式一律跳过，绝不匹配**（纵深防御，与配置层的拒绝是两件事）。
  */
@@ -74,6 +111,8 @@ export function matchAllowPatterns(
   command: string,
   patterns: readonly string[],
 ): string | undefined {
+  // 语句构造（子表达式 / 反引号 / 调用运算符等）**整体**不适用免确认
+  if (hasStatementComposition(command)) return undefined
   const segments = splitCommand(command)
   if (segments.length === 0) return undefined
   let matched: string | undefined

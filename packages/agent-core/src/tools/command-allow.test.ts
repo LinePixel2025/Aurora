@@ -217,6 +217,62 @@ describe('matchAllowPatterns：分号 / 换行拼接不再被单段模式放行�
   })
 })
 
+describe('matchAllowPatterns：语句构造 / 补充分隔符整体不适用免确认（P1，P2-10 补齐）', () => {
+  /**
+   * P2-10 只拆了 `;` 与换行，`&&` / `||` / `|` 拼接仍是单段，`git *` 被 `.*` 直接命中；
+   * 而 `$(...)` / 反引号 / `@(...)` / `@{...}` / `%{...}` / 调用运算符 `&` 内部都是**另一条
+   * 可执行语句**，它们在同一个段里，只加 `|` 也堵不住 —— 根因是**匹配粒度**（字符 vs 语句边界），
+   * 不是「少拆一个字符」。两条修法：补齐分段符 + 出现语句构造即整体判不命中。
+   */
+
+  it('`git *` 不放行 `;` / `&&` / `||` 拼接（补充分隔符逐段判定）', () => {
+    const patterns = ['git *']
+    expect(matchAllowPatterns('git status; del x', patterns)).toBeUndefined()
+    expect(matchAllowPatterns('git status && del x', patterns)).toBeUndefined()
+    expect(matchAllowPatterns('git status || del x', patterns)).toBeUndefined()
+  })
+
+  it('`git *` 不放行管道拼接（`|` 现在是分段符）', () => {
+    const patterns = ['git *']
+    expect(matchAllowPatterns('git log | more', patterns)).toBeUndefined()
+    expect(matchAllowPatterns('git status | Remove-Item -Recurse -Force C:\\x', patterns)).toBeUndefined()
+  })
+
+  it('`git *` 不放行子表达式 / 反引号 / 数组 / 哈希表 / 调用运算符（整体判不命中）', () => {
+    const patterns = ['git *']
+    expect(matchAllowPatterns('git status $(del x)', patterns)).toBeUndefined()
+    expect(matchAllowPatterns('git status `del x`', patterns)).toBeUndefined()
+    expect(matchAllowPatterns('git status @(del x)', patterns)).toBeUndefined()
+    expect(matchAllowPatterns('git status @{a=1}', patterns)).toBeUndefined()
+    expect(matchAllowPatterns('git status | %{ del x }', patterns)).toBeUndefined()
+    expect(matchAllowPatterns('git status & del x', patterns)).toBeUndefined()
+  })
+
+  it('语句构造即使「看起来完全符合模式」也不放行（不依赖 `*` 才被吃掉）', () => {
+    // 精确模式也想放行整串：`git status` 命中单段，但 `$(...)` 让它整体不适用
+    expect(matchAllowPatterns('git status', ['git status'])).toBe('git status')
+    expect(matchAllowPatterns('git status $(del x)', ['git status'])).toBeUndefined()
+    expect(matchAllowPatterns('git status $(del x)', ['git status *'])).toBeUndefined()
+  })
+
+  it('拆段后 `git status;`（尾部空段）仍命中，单段纯命令不回退', () => {
+    const patterns = ['git *']
+    expect(matchAllowPatterns('git status;', patterns)).toBe('git *')
+    expect(matchAllowPatterns('git status', patterns)).toBe('git *')
+    expect(matchAllowPatterns('git status --short', patterns)).toBe('git *')
+    // 两侧都命中同一模式时仍整体放行（拆分不等于一律拒绝）
+    expect(matchAllowPatterns('git status && git log', patterns)).toBe('git *')
+    expect(matchAllowPatterns('git log | git status', patterns)).toBe('git *')
+  })
+
+  it('纯通配 / 花括号语义在补充路径上不回退（仍不匹配任何段）', () => {
+    for (const pattern of ['*', '**', '?*', '{a,*}', '  *  ', '']) {
+      expect(matchAllowPatterns('git status && git log', [pattern]), pattern).toBeUndefined()
+      expect(matchAllowPatterns('git status | git log', [pattern]), pattern).toBeUndefined()
+    }
+  })
+})
+
 describe('安全边界：花括号绕过被堵死（本计划修订过的缺口的回归测试）', () => {
   // 绕过原理：`{a,*}` 去掉 `*` / `?` 与空白后还剩一个 `a`，能骗过「至少含一个具体字符」
   // 的检查，但 glob 编译器把它编成交替组 —— 含 `.*` 的那一支匹配任意命令，等于一行关掉闸门。
