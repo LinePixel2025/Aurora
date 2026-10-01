@@ -14,7 +14,7 @@
  * **生成参数按模型走**（v23，docs/08 §1）：`llm.providers.<id>.modelParams.<模型 id>` 里的
  * 思考等级 / 上下文窗口 / 支持图片输入三项，编辑入口在每一行模型右上角的「参数」开关里；
  * 锚点是 `llm.providers.<id>.modelList.<index>.<字段>`，写入口只有 `patchParams` 一个
- * （它整份替换该键的对象 —— `reasoningEffort` 没有 `.default()`，只写一项会让整份配置被判损坏）。
+ * （它整份替换该键的对象 —— 只写一项会把另外两项静默重置成默认值）。
  * 「上下文窗口」是**可选信息**：非法输入一律归一化（见 `clampContextWindow`），**不阻断保存**
  * —— 缺了它对话窗只是不画占比进度条；当前使用的那一行还会在行内以小字展示一次窗口值
  * （0 = 未知，不渲染）。
@@ -345,7 +345,7 @@ function paramsOf(draft: ProviderDraft, id: string): LlmModelParams {
 /**
  * 写某个模型参数的**唯一入口**：整体替换该键的对象，**不要**原地改 `draft.modelParams[id].xxx`。
  *
- * 两个理由：① `reasoningEffort` 是三个子字段里唯一没有 `.default()` 的，而 `modelParams`
+ * 两个理由：① `modelParams`
  * 落在 `llm.providers`（`z.record`）之下、`SettingsStore` 的字段级回退**不下钻**这棵子树 ——
  * 「只写被改的那一项」会让整份配置在下次启动被判损坏并重建出厂；② 整体替换能让 Vue 的
  * 变更追踪看得见（原地改嵌套对象同样能被追踪，但替换更不容易漏掉）。
@@ -604,7 +604,7 @@ function addPreset(id: string): void {
     // 与 `syncDrafts` 同一口径：当前使用的模型就是列表里的第一个候选项
     modelList: model === '' ? [] : [model],
     // 生成参数按**模型 id** 键（v23）；三项写全 —— `reasoningEffort` 是三个子字段里
-    // 唯一没有 `.default()` 的。图片输入出厂**关**（docs/06 §3.1）：打开之前先确认
+    // 三项都写全。图片输入出厂**关**（docs/06 §3.1）：打开之前先确认
     // 这个模型确实能看图，否则每一轮带图的消息都会被服务端 400 拒掉。
     // `model` 为空（自定义 id + 还没填模型名）时不造条目，与迁移的语义一致。
     modelParams:

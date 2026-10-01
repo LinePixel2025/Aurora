@@ -6127,8 +6127,7 @@ export const CHAT_THINKING_LEVEL_ACT = `(async () => {
     if (!state.ok) return { changed: false, reason: 'settings.get failed' }
     if (Object.keys(state.value.llm.providers).length === 0) {
       // 生成参数是按**模型 id** 键的（v23）：种子条目必须与 provider.model 同键，
-      // 且三项一起写全 —— reasoningEffort 是三个子字段里唯一没有 .default() 的，
-      // 漏写它整份配置会在下次启动被判损坏重建。provider 级已无 reasoningEffort / temperature。
+      // 且三项一起写全，别留下半截条目（provider 级已无 reasoningEffort / temperature）。
       const seedModel = 'deepseek-chat'
       const created = await window.aurora.settings.update({
         llm: {
@@ -6212,7 +6211,7 @@ export const CHAT_THINKING_LEVEL_ACT = `(async () => {
  *
  * v23：配置值改读 `modelParams[provider.model].reasoningEffort`（与渲染层的
  * `resolveModelParams` 同口径，缺省 `'auto'`），写回时**整份替换该键对象且三项写全**——
- * `reasoningEffort` 是三个子字段里唯一没有 `.default()` 的，漏写会让整份配置在下次启动被判损坏。
+ * 三个子字段都有默认值兜底，三项一起写只是防御纵深（别留下半截条目）。
  */
 export const CHAT_THINKING_LEVEL_CHECK = `(async () => {
   try {
@@ -6241,8 +6240,7 @@ export const CHAT_THINKING_LEVEL_CHECK = `(async () => {
 
     // 写回原值：本场景会改配置，后面还有别的截图场景，不能让它们看到 high。
     // 写回落在**模型 id** 那一项上（provider 级字段已随 v23 删除），且整份替换该键对象、
-    // 三项都写全：reasoningEffort 是三个子字段里唯一没有 .default() 的，漏写会让整份配置
-    // 在下次启动被判损坏重建。
+    // 三项都写全，别留下半截条目。
     const probe = window.__auroraEffortProbe
     let restored = null
     if (probe !== undefined && probe.active !== '' && probe.before !== null) {
@@ -6932,7 +6930,7 @@ export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
             modelList: [],
             ...(existing ?? {}),
             type: 'openai-responses',
-            // 三项一起写全、整份替换该键的对象（reasoningEffort 是唯一没有 .default() 的子字段）
+            // 三项一起写全、整份替换该键的对象（别留下半截条目）
             modelParams: {
               ...table,
               [modelId]: {

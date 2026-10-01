@@ -529,7 +529,7 @@ async function updateActiveProvider(patch: Partial<LlmProviderConfig>): Promise<
  *
  * 等级是**模型级**的（v23）：写的是 `provider.modelParams[provider.model]`，
  * 而且**整份替换**该键的对象（不是原地改一个字段）—— `modelParams` 的三个子字段里
- * `reasoningEffort` 是唯一没有 `.default()` 的，只写它会让自己下次启动时被判为损坏配置。
+ * 只写它会让另外两项被静默重置成默认值 —— 三项一起写。
  * 当前模型为空串时不写（没有「生效模型」可归属，与迁移的「model 为空不造条目」同口径）。
  */
 async function setEffort(next: ReasoningEffort): Promise<void> {

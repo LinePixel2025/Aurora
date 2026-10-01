@@ -110,7 +110,7 @@ async function persistModel(): Promise<boolean> {
           modelList: [],
           // 生成参数按**模型 id** 键（v23，docs/08 §1）。引导页只确定「当前使用哪个模型」，
           // 参数一律给出厂默认值（用户之后在「设置 → AI 模型 → 模型行内参数」里改）；
-          // 三项必须写全 —— `reasoningEffort` 是三个子字段里唯一没有 `.default()` 的。
+          // 三项都写全（别留下半截条目）。
           modelParams:
             form.model.trim() === ''
               ? {}
