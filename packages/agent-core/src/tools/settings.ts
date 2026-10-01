@@ -68,11 +68,13 @@ export function createSettingsTool(options: SettingsToolOptions): ToolDefinition
       '修改立即生效，无需重启。可写范围：模型 provider 的 model / reasoningEffort / temperature，' +
       '语音 TTS（tts.enabled / active / autoRead / maxChars）与语音输入 STT（stt.enabled / active），' +
       '生图（imagegen.enabled / active），提示条（general.edgeBar.*）与「显示思考过程」（general.chat.showThinking），' +
-      '模式切换与参数（modes.current / modes.work.workspaceDir / modes.classroom.*），' +
+      '模式切换与课堂模式参数（modes.current / modes.classroom.*），' +
       '电脑操控工具的开关与参数（agent.tools.*，其中只读的免确认模式列表 ' +
       'agent.tools.terminal.allowPatterns 除外），技能（skills.userDir / skills.disabled），' +
       '勿扰时段（advanced.quietHours）。' +
-      '凭据（API Key 等）、代理、窗口位置、Schema 版本与开机自启 / 全局快捷键等敏感字段不可修改：' +
+      '凭据（API Key 等）、代理、窗口位置、Schema 版本与开机自启 / 全局快捷键等敏感字段不可修改；' +
+      'Work 模式的工作目录（modes.work.workspaceDir）同样只读 —— 它是权限边界根的一级，' +
+      '需要修改时请引导用户去设置页操作。' +
       '命中黑名单或路径不被 Schema 识别时会被整体拒绝（只要有一个字段不可写，本次一个字段都不会写入）。',
     parameters: {
       type: 'object',

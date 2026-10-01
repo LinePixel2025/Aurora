@@ -138,3 +138,87 @@ describe('createSettingsPort 的写后校验与回滚', () => {
     expect(store.get().advanced.logLevel).not.toBe(42)
   })
 })
+
+/**
+ * 写入闸门 = `canWriteSettingPath`（shared，黑名单 × 覆盖表）× `TOP_LEVEL_GROUPS`（本文件）。
+ * 两道都必须过：只对第一道放行会让「工具描述承诺可写、写入必拒」（P1-06）。
+ */
+describe('createSettingsPort 的写入闸门（黑名单 × 顶层分组）', () => {
+  function setup(): { store: SettingsStoreLike; port: ReturnType<typeof createSettingsPort> } {
+    const { store } = createFakeStore(createDefaultSettings())
+    const port = createSettingsPort({
+      settings: store,
+      applyPatch: () => fakeApplyPatch(store),
+      logger: createFakeLogger(),
+    })
+    return { store, port }
+  }
+
+  it('modes.work.workspaceDir 拒写（权限边界根的一级，P1-01）', async () => {
+    const { store, port } = setup()
+    // 它是 boundaryRoot 回落链的一级：AI 改写它 = 把「根内免确认」扩到任意目录
+    const check = port.writable('modes.work.workspaceDir')
+    expect(check.ok).toBe(false)
+    // 端口先查用户配置项（默认值即 SETTINGS_READONLY_PREFIXES，已含该路径）
+    if (!check.ok) expect(check.reason).toContain('不可修改的配置')
+
+    const outcome = await port.write([{ path: 'modes.work.workspaceDir', value: 'D:\\任意目录' }])
+    expect(outcome.ok).toBe(false)
+    expect(outcome.applied).toEqual([])
+    // 盘上的值一字未动（拒绝发生在合并之前）
+    expect(store.get().modes.work.workspaceDir).toBe('')
+
+    // 同一 modes 组内的可写字段不受牵连（只收紧这一个路径）
+    expect(port.writable('modes.current').ok).toBe(true)
+    expect(port.writable('modes.work.guideCompleted').ok).toBe(true)
+  })
+
+  it('用户把 readonlyPrefixes 清空也放不开 modes.work.workspaceDir（硬编码黑名单兜底，P1-01）', () => {
+    // 「只从 WRITABLE_PATH_OVERRIDES 删掉」不够 —— 那样会落回「Schema 登记过即默认可写」；
+    // 反向也一样：用户配置项只能在默认黑名单之上追加，清空只代表回到默认项。
+    const settings = createDefaultSettings()
+    settings.advanced.readonlyPrefixes = []
+    const { store } = createFakeStore(settings)
+    const port = createSettingsPort({
+      settings: store,
+      applyPatch: () => fakeApplyPatch(store),
+      logger: createFakeLogger(),
+    })
+
+    const check = port.writable('modes.work.workspaceDir')
+    expect(check.ok).toBe(false)
+    if (!check.ok) expect(check.reason).toContain('权限边界')
+  })
+
+  it('tts / stt / imagegen 三组可真写入（承诺可写 = 写入可写，P1-06）', async () => {
+    const { store, port } = setup()
+    for (const path of ['tts.enabled', 'stt.enabled', 'imagegen.enabled']) {
+      expect(port.writable(path).ok, path).toBe(true)
+    }
+
+    const outcome = await port.write([
+      { path: 'tts.enabled', value: false },
+      { path: 'stt.enabled', value: true },
+      { path: 'imagegen.enabled', value: true },
+    ])
+    // 修复前：writable 说可写（覆盖表命中），write 却在分组检查处整体拒绝
+    expect(outcome.ok).toBe(true)
+    expect(outcome.applied).toEqual(['tts.enabled', 'stt.enabled', 'imagegen.enabled'])
+    expect(store.get().tts.enabled).toBe(false)
+    expect(store.get().stt.enabled).toBe(true)
+    expect(store.get().imagegen.enabled).toBe(true)
+  })
+
+  it('三组内的凭据子树与 center 整组仍被拒（新放行不扩大到凭据 / 外发通道）', async () => {
+    const { store, port } = setup()
+    expect(port.writable('tts.providers.siliconflow.apiKey').ok).toBe(false)
+    expect(port.writable('stt.providers').ok).toBe(false)
+    expect(port.writable('imagegen.providers.openai.apiKeyEnc').ok).toBe(false)
+    // center 整组只读（`TOP_LEVEL_GROUPS` 刻意不含它，两侧口径一致）
+    expect(port.writable('center.enabled').ok).toBe(false)
+
+    const outcome = await port.write([{ path: 'center.enabled', value: true }])
+    expect(outcome.ok).toBe(false)
+    expect(store.get().center.enabled).toBe(false)
+  })
+})

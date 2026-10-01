@@ -68,6 +68,48 @@ describe('sanitizeWithDefaults（非法字段回退默认值）', () => {
     expect(classroom['subjects']).toEqual(subjects)
   })
 
+  it('对象型分组被写成标量时整组回退默认，其它分组保留（P2-26）', () => {
+    // 修复前：`general: 123` 被原样保留 → `SettingsSchema.parse` 判**整份配置**损坏 →
+    // 备份 + 重建出厂（用户所有 provider / 课表 / 项目 / 快捷键同时消失）。
+    // `llm.providers` 是 z.record：它的类型表是 'any'（`fieldAccepts` 放行），
+    // 因此还额外钉住 object.ts 里那道「fallback 是对象、candidate 不是」的形状校验。
+    const issues: SanitizeIssue[] = []
+    const result = sanitizeWithDefaults(
+      { general: 123, llm: { providers: 5 }, modes: { current: 'work' } },
+      defaults,
+      leaf,
+      issues,
+    )
+    expect(result['general']).toEqual(defaults['general'])
+    expect(result['llm']).toEqual(defaults['llm'])
+    expect(issues.map((i) => i.path)).toContain('general')
+    expect(issues.map((i) => i.path)).toContain('llm.providers')
+    // 其余分组照常保留
+    expect((result['modes'] as Record<string, unknown>)['current']).toBe('work')
+  })
+
+  it('可空对象叶子被写成标量时只回退该字段，同组其余字段保留（P2-26）', () => {
+    const issues: SanitizeIssue[] = []
+    const result = sanitizeWithDefaults(
+      { general: { edgeBar: { enabled: false, quietHours: '22:30' } } },
+      defaults,
+      leaf,
+      issues,
+    )
+    const edgeBar = (result['general'] as Record<string, unknown>)['edgeBar'] as Record<
+      string,
+      unknown
+    >
+    const defaultEdgeBar = (defaults['general'] as Record<string, unknown>)['edgeBar'] as Record<
+      string,
+      unknown
+    >
+    expect(edgeBar['enabled']).toBe(false)
+    // quietHours 的 Schema 是 `{start,end}.nullable()`（默认 null），标量必须回退成默认 null
+    expect(edgeBar['quietHours']).toEqual(defaultEdgeBar['quietHours'])
+    expect(issues.map((i) => i.path)).toContain('general.edgeBar.quietHours')
+  })
+
   it('deepClone 后修改副本不影响源对象', () => {
     const source = createDefaultSettings()
     const clone = deepClone(source)

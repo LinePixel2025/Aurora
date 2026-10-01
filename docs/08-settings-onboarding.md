@@ -162,7 +162,9 @@
       "projects", "agent.permissionMode",
       // v20 新增：提权是 Agent 自己能碰到的权限边界本身 —— AI 关掉它（或阻止自己重启提权）
       // 等于自己降低权限约束面，属自我提权；只能由用户在设置页改
-      "general.requireAdmin"
+      "general.requireAdmin",
+      // 权限边界根的一级（boundaryRoot → Work 空间目录）：AI 改写它 = 把根内免确认扩到任意目录
+      "modes.work.workspaceDir"
     ]
   },
   "agent": {
@@ -249,7 +251,9 @@
   因此只允许用户在设置页手动改（设置页走 `settings:update`，不经过该黑名单）。
 - `advanced.readonlyPrefixes`（**v6 新增**，见 06 §12）：AI 通过 `set_setting` 改配置时的路径黑名单，
   按**路径段**前缀匹配。默认值即 `SETTINGS_READONLY_PREFIXES`（覆盖凭据 / 密文、配置版本、
-  窗口几何、网络代理、引导与首启标记、开机自启、全局快捷键、敏感工具确认总闸门；**具体条目以该常量为准**）。
+  窗口几何、网络代理、引导与首启标记、开机自启、全局快捷键、敏感工具确认总闸门、
+  项目分组与权限档位等自我提权路径、权限边界根一级的 `modes.work.workspaceDir`；
+  **具体条目以该常量为准**）。
   **它只能在默认黑名单之上追加限制，不能放宽 —— 默认项始终生效，无法通过配置放开**：
   判定时先查这个配置项，再**无条件**走 `canWriteSettingPath()`，而后者用的是硬编码的
   `SETTINGS_READONLY_PREFIXES`，**从不读取用户配置**。所以把 `general.hotkey` 从数组里删掉、
@@ -300,12 +304,19 @@
   黑名单前缀之内，但「换模型 / 调参数」不碰凭据，显式放行（baseUrl / apiKeyEnc / modelList 等
   其余字段仍被前缀拒绝）；② **显式登记** —— `tts.enabled|active|autoRead|maxChars`、
   `stt.enabled|active`、`imagegen.enabled|active`、`general.edgeBar.enabled|opacity|quietHours|display|position`、`appearance.accent`、
-  `general.chat.showThinking`、`modes.current`、`modes.work.workspaceDir`、`agent.tools.*`
+  `general.chat.showThinking`、`modes.current`、`agent.tools.*`
   （`terminal.allowPatterns` **除外** —— 它在黑名单里，见 §1）、
   `skills.userDir|disabled`、`advanced.quietHours` 等本就可写的路径逐条入表
   （供 `set_setting` 工具描述与审计使用，也防未来误加前缀时静默收窄）。
   注意 `advanced.confirmSensitiveTools` 总闸门**不在**表内，仍只读（防 AI 自我提权）。
   **具体条目以该常量为准**。
+  **`modes.work.workspaceDir` 已从本表移出并进黑名单**（它是权限边界根的一级，见下方该字段条）——
+  只删覆盖表登记**不够**：那样会落回「Schema 登记过即默认可写」，必须同时进 `SETTINGS_READONLY_PREFIXES`。
+- **写入闸门的顶层分组**（主进程 `main/tools/settings-port.ts` 的 `TOP_LEVEL_GROUPS`）：`set_setting`
+  的 `set` 只接受这些顶层分组，`tts` / `stt` / `imagegen` **三组已补齐**（覆盖表登记的可写面
+  `tts.enabled` 等此前因分组缺席被写闸门整体拒绝 → 「工具描述承诺可写、写入必拒」）；
+  `center` **维持缺席**（整组只读，与覆盖表里没有它的条目一致）。两条判定必须同时通过：
+  先过 `canWriteSettingPath`，再过这个分组清单。
 - `stt`（**v8 新增**）：**语音输入（STT，录音 → 文本）**，与 `tts` **同构但独立** ——
   语音输入与语音输出的可用性互不绑定，共用一份配置会让「换朗读服务」顺手把转写弄坏。
   `stt.enabled` 是总开关（`false` 时对话窗连麦克风按钮都不渲染，门控口径同 TTS，docs/07 §2.3）；
@@ -340,7 +351,13 @@
   （设置页走 `settings:update`，不经过该黑名单），**改动重启后生效**。
 - `modes.work.workspaceDir`（**v8 新增**）：Work 模式的办公工作目录，空串 = 未配置
   （由引导问答 / 设置页收集）。它与电脑操控工具的 `agent.tools.workspaceDir` **是两个字段**：
-  前者是 Work 模式的场景目录，后者只是 `run_command` 的缺省 `cwd`（见 06 §11）。Agent 可写（显式登记）。
+  前者是 Work 模式的场景目录，后者只是 `run_command` 的缺省 `cwd`（见 06 §11）。
+  **只读**（`SETTINGS_READONLY_PREFIXES`）：它是**权限边界根回落链的一级**（`boundaryRoot` 的
+  Work 空间目录，见 06 §5.1 / §11.2）—— AI 能改写它，就等于把 `auto` 档「根内免确认」与
+  `confirm` 档「根内写免确认」扩到任意目录 = **自我提权**（与 `projects` 整组被拉黑的理由完全同构）。
+  AI 的 `set_setting` 一律拒绝读写它；只能由用户在设置页「模式 → Work」或引导问答改
+  （设置页走 `settings:update`、引导走 `guide-runner`，都不经过该黑名单）。
+  **对照**：`agent.tools.workspaceDir` 仍可写 —— 它只是缺省 `cwd` / 搜索根、不是边界（06 §11.1）。
 - `modes.classroom.preClassOpenFolder`（**v8 新增**，见 05 §3.3）：课前提醒触发时是否自动打开
   科目文件夹（默认 `true`；通知照发，本字段只门控「打开文件夹」动作）。
   `modes.classroom.*` 本就不在黑名单，Agent 可写。
@@ -495,6 +512,42 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 因此自动化只把**总开关**计入配置版本（`v18 → v19`，见 §2 与 §1 的 `automations` 一条）。
 存储实现沿用仓库统一约定：in-flight promise 共享的 `ensureLoaded`、300ms 防抖 + 原子写、
 损坏文件备份 `.corrupt-<ts>.json` 后重建、退出前 `flush()`。
+
+### 1.3 资源名称约定与凭据路径（P1-07）
+
+provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>` /
+`imagegen.providers.<id>`）与 MCP 服务器名（`mcp.servers[].name`）一律遵守：
+
+```text
+/^[A-Za-z0-9_-]+$/      # 只能含字母、数字、下划线、连字符；禁 `.`
+```
+
+- **为什么禁 `.`**：凭据路径以 `.` 分段（`llm.providers.<id>.apiKey`、
+  `mcp.servers.<name>.env.<KEY>`、`mcp.servers.<name>.headers.<KEY>`），
+  含点的名称会让「名称」与路径分隔符无法区分 —— `SettingsStore` 的
+  `canonicalSecretPath` / `readSecretField` / `writeSecretField` 定位不到条目，
+  `setSecret` 抛 `SettingsSecretError: 无法识别的凭据路径`；MCP 添加流程更糟：
+  服务器行已落库、`settings:setSecrets` 失败，env 明文静默丢失。
+- **校验口径（三处同源，不写第二份正则）**：① `packages/shared/src/config/schema.ts` 的
+  `RESOURCE_NAME_PATTERN`（`McpServerSchema.name` 上的 `.regex(...)`，提示文案
+  `RESOURCE_NAME_RULE`）；② 五个设置页新增入口（LlmPage / Tts / Stt / ImageGen / Mcp）
+  经 `@aurora/shared/browser` 取**同一个常量**、同一句提示当场拒绝；
+  ③ 主进程 `settings:update` 因 Schema 校验失败而拒绝整次写入。
+- **存量兼容口径**：读取侧对**含点名称**改贪婪 / 按标记从右往左拆分匹配（`store.ts`
+  的 `canonicalSecretPath` 与各 matcher，见 06 §11 之外的凭据链说明），因此老的
+  `llm.providers['api.deepseek']`（`llm.providers` 是 record，键不受 Schema 约束）
+  **仍可继续使用**，只是不建议再新增；MCP 服务器名受 Schema 约束，含点存量在
+  `SettingsStore.init()` 里被**规整**（非法字符替换为 `-`、冲突追加 `-2`…，
+  同 `pruneUnknownWindowState` 的「只修这一处、不动其它配置」口径），凭据密文存在条目
+  内部的 `envEnc` / `headersEnc`、随条目一起搬走不会丢 —— 不做这一步，含点名称会让
+  `mcp.servers` 数组在 `SettingsSchema.parse` 硬抛、整份配置被备份重建
+  （用户所有 provider / 课表 / 项目一起消失）。
+- **MCP 路径的拆分约定**：env 键 / header 名**没有**「不含 `.`」的硬约束
+  （`envEnc` / `headersEnc` 是 `z.record(z.string(), …)`），所以不用「键段 `[^.]+`」判定，
+  而是以**最后一个**受控标记（`.env.` / `.envEnc.` / `.headers.` / `.headersEnc.`）
+  为分隔符从右往左拆：`<name>` 与 `<KEY>` 都允许含点。唯一会误判的是**键名自身含标记词**
+  （如键名写作 `env.KEY`）——此时名称会把键的前半段吃掉；这种键名极罕见，
+  且旧写法（名称段 `[^.]+`）也救不了含点的名称，取舍后以「救存量名称」为先。
 
 ## 2. 存储与安全
 

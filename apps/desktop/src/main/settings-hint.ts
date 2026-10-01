@@ -23,7 +23,6 @@ export const SETTINGS_HINT = [
   '- general.chat.showThinking（对话界面是否展示思考过程）',
   '- appearance.accent（界面强调色主题：aurora / teal / violet / rose / amber）',
   '- modes.current（切换当前模式）',
-  '- modes.work.workspaceDir（Work 模式的工作目录）',
   '- modes.classroom.*（课堂模式设置：watchDir、subjects、schedule.*、preClassReminder、preClassLeadMinutes、preClassOpenFolder、classification.*）',
   // `agent.tools` 一律逐条列举，**不用通配写法**：`terminal` 下现在还有**只读**的
   // `terminal.allowPatterns`（v12 的免确认命令模式），写成通配会出现「说能改但不能改」的
@@ -35,11 +34,13 @@ export const SETTINGS_HINT = [
   '- agent.tools.open.enabled（「打开路径」工具开关）',
   '- skills.userDir / disabled（用户技能目录与停用列表）',
   '- advanced.quietHours（全局勿扰时段）',
-  // 只读的自我提权路径**刻意不入上面的可改清单**：项目根同时决定注入的指令与权限边界，
+  // 只读的自我提权路径**刻意不入上面的可改清单**：项目根同时决定注入的指令与权限边界、
+  // Work 工作目录（`modes.work.workspaceDir`）是这条边界根回落链的一级，
   // 权限档位与各类确认闸门是 Agent 自己的闸门，循环预算与写前快照（`agent.loop.*` /
   // `agent.snapshots.*`）则是"该停下来问用户"与"写坏了能回滚"的最后兜底（docs/06 §12.2 / §5.1 / §11.8）。
   // 这里各补一句话，免得模型反复尝试必然被拒绝的写入。
   '项目（projects.*）、权限档位（agent.permissionMode）与确认闸门（advanced.confirmSensitiveTools、agent.tools.terminal.allowPatterns）一律只读：',
+  'Work 模式的工作目录（modes.work.workspaceDir）同样一律只读 —— 它是权限边界根的一级，改它等于把免确认范围扩到任意目录：',
   '循环预算（agent.loop.*）、写前快照（agent.snapshots.*）与管理员提权（general.requireAdmin）同样一律只读：',
   '改它们等于改你自己的指令面、摘掉自己的确认闸门，或绕过预算与回滚的兜底，需要用户去设置页操作。',
   '所有凭据类路径（llm/tts/stt/imagegen 的 providers 子树、mcp.servers）一律只读：',

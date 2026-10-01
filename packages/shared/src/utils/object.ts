@@ -63,6 +63,19 @@ export function sanitizeWithDefaults(
       continue
     }
 
+    // 形状校验（P2-26）：默认值是对象、候选却是标量 / 数组时，它不可能是合法的分组值。
+    // 这条兜的是 `validate` 放行的两类路径：① `z.record` 动态键路径（`llm.providers` 的
+    // 类型表是 'any'，`fieldAccepts` 一律放行）；② 任何对象型路径 —— 静态对象分组的形状校验
+    // 已在 `schema.ts` 的 `fieldAccepts` 里补上（`objectPaths`），这里再兜一道不重叠的。
+    // 不在这里回退的话，`general: 123` 这种手改 / 半损坏配置会一路活到 `SettingsSchema.parse`，
+    // 把**整份配置**判为损坏并备份重建（用户所有 provider / 课表 / 项目同时消失），
+    // 违背「单个字段非法只回退该字段」的承诺。
+    if (isPlainObject(fallback) && !isPlainObject(candidate)) {
+      issues.push({ path: fieldPath, reason: '值非法，已回退默认值' })
+      result[key] = deepClone(fallback)
+      continue
+    }
+
     if (isPlainObject(fallback) && isPlainObject(candidate)) {
       // 动态键映射（z.record）的键不在 Schema 里，整体保留用户数据
       if (isDynamic?.(fieldPath)) {

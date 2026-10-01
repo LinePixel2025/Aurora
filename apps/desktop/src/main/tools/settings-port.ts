@@ -46,10 +46,20 @@ export interface SettingsPortDeps {
   notifyChanged?: () => void
 }
 
-/** 配置顶层分组：只有这些前缀能进 `SettingsPatch`（`version` 等一律拒绝）。 */
+/**
+ * 配置顶层分组：只有这些前缀能进 `SettingsPatch`（`version` 等一律拒绝）。
+ *
+ * `tts` / `stt` / `imagegen` 必须在列（docs/08 §1）：三组的非凭据叶子（`tts.enabled` 等）
+ * 登记在 shared 的 `WRITABLE_PATH_OVERRIDES` 里，`writable()` 因此对模型承诺可写 ——
+ * 分组清单若缺席，`write()` 会在下一道检查里整体拒绝，形成「承诺可写、写入必拒」的偏差。
+ * `center` **刻意缺席**：它整组只读（`SETTINGS_READONLY_PREFIXES`），两侧口径一致。
+ */
 const TOP_LEVEL_GROUPS = [
   'general',
   'llm',
+  'tts',
+  'stt',
+  'imagegen',
   'modes',
   'skills',
   'mcp',

@@ -1025,7 +1025,9 @@ v8 起共三道闸门（**覆盖表先行**）：
    并防未来误加前缀时静默收窄。模式里的 `*` 段匹配恰好一个动态键段（如 provider id）。
    注意 `advanced.confirmSensitiveTools` **不在**表内：确认总闸门必须只读，防自我提权；
    `agent.tools.terminal.allowPatterns` 同样**不在**表内（覆盖表判定先于黑名单，加进去就等于放行），
-   理由见 §11.7（自我提权）。
+   理由见 §11.7（自我提权）；
+   `modes.work.workspaceDir` 也已**移出**本表并进黑名单 —— 它是权限边界根回落链的一级（§5.1 / §11.2），
+   只删本表登记不够：那样会落回「Schema 登记过即默认可写」，必须同时进 `SETTINGS_READONLY_PREFIXES`。
 
 1. **黑名单前缀**：判定分两步 —— 先查用户配置项 `advanced.readonlyPrefixes`（默认值即导出的
    `SETTINGS_READONLY_PREFIXES`，见 docs/08 §1，**具体条目以该常量为准**；v8 起新增
@@ -1044,6 +1046,8 @@ v8 起共三道闸门（**覆盖表先行**）：
    全局快捷键（`general.hotkey`）、敏感工具确认总闸门（`advanced.confirmSensitiveTools`）、
    命令免确认模式列表（`agent.tools.terminal.allowPatterns`）、
    项目分组（`projects`，v13）、三档权限（`agent.permissionMode`，v13）、
+   Work 模式工作目录（`modes.work.workspaceDir`，权限边界根的一级 —— AI 改写它等于把免确认范围
+   扩到任意目录，与 `projects` 同构的自我提权路径）、
    循环预算（`agent.loop`）与写前快照（`agent.snapshots`）。
    按**路径段**前缀匹配（`llm.providers` 命中 `llm.providers.deepseek.apiKeyEnc`，
    但**不**命中 `llm.providerSettings` 这类仅开头相同的字段名）。
@@ -1511,12 +1515,14 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 - 主进程在 `main/settings-hint.ts` 维护**一段固定中文清单**：逐条列出 §12.2 显式可写覆盖表
   同口径的路径（`llm.providers.<id>.model/reasoningEffort/temperature`、`tts.*`、`stt.*`、
   `imagegen.*` 开关、`general.edgeBar.*`、`general.chat.showThinking`、`modes.current`、
-  `modes.work.workspaceDir`、`modes.classroom.*`、
+  `modes.classroom.*`、
   `agent.tools` 下的**逐条枚举**——`enabled` / `workspaceDir` /
   `terminal.{enabled,timeoutMs,maxOutputChars}` / `files.{enabled,maxReadBytes}` /
   `search.{enabled,maxResults}` / `open.enabled`、`skills.userDir/disabled`、
   `advanced.quietHours`），
   并注明「凭据类一律只读、改动即时生效」。
+  **`modes.work.workspaceDir` 不在这份可改清单里**：它是权限边界根回落链的一级（§5.1 / §11.2），
+  已进 `SETTINGS_READONLY_PREFIXES`（§12.2 第 1 条），清单末尾的只读小节会逐字点出它。
   **`agent.tools` 不再用通配写法**：`terminal.*` 现在包含只读的 `terminal.allowPatterns`（§11.7），
   写成通配会出现「说能改但不能改」的偏差，正是本节末条要避免的。
 - 清单只是**提示词**，真实可写面永远由 `canWriteSettingPath` 判定（工具端口不认清单）：

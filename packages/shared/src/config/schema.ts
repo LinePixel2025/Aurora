@@ -380,8 +380,25 @@ export const SkillsSchema = z.object({
 })
 export type SkillsSettings = z.infer<typeof SkillsSchema>
 
+/**
+ * provider id / MCP 服务器名的合法字符集：字母、数字、下划线、连字符（**禁 `.`**）。
+ *
+ * 名称会作为凭据路径的段（`llm.providers.<id>.apiKey`、`mcp.servers.<name>.env.<KEY>`），
+ * 而 `.` 是路径分隔符 —— 含点的名称无法被 `SettingsStore` 的
+ * `canonicalSecretPath` / `readSecretField` / `writeSecretField` 定位（P1-07），
+ * 表现为「凭据永远存不进去」，MCP 添加流程还会丢 env 明文。
+ *
+ * 单一来源：`McpServerSchema.name` 用它做 Schema 校验，五个设置页入口经
+ * `@aurora/shared/browser` 取**同一个常量**（`RESOURCE_NAME_RULE` 是同一句提示文案），
+ * 不要再写第二份正则。口径见 docs/08 §1.3。
+ */
+export const RESOURCE_NAME_PATTERN = /^[A-Za-z0-9_-]+$/
+/** 名称不合规时的统一提示文案（Schema 与五个设置页共用，避免五份漂移）。 */
+export const RESOURCE_NAME_RULE =
+  '名称只能包含字母、数字、下划线或连字符（不能含「.」，它用于凭据路径分段）'
+
 export const McpServerSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().min(1).regex(RESOURCE_NAME_PATTERN, RESOURCE_NAME_RULE),
   transport: z.enum(['stdio', 'http']),
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
@@ -474,6 +491,12 @@ export const SETTINGS_READONLY_PREFIXES = [
   // 项目机制（v13，docs/06 §5.1）：切项目会同时改「注入给模型的指令」与「权限层认定的项目根」，
   // 等于改 Agent 的权限面与行为面，属自我提权路径 —— 只能由用户在设置页 / 界面触发。
   'projects',
+  // Work 模式的工作目录（docs/06 §5.1）：它是**权限边界根回落链的一级**（`boundaryRoot` →
+  // Work 空间目录）—— AI 改写它等于把 `auto` 档「根内免确认」与 `confirm` 档「根内写免确认」
+  // 扩到任意目录，与 `projects` 同构的自我提权路径。此前它登记在 `WRITABLE_PATH_OVERRIDES`
+  // 里（覆盖表判定先于黑名单 → 双重放行）；只删覆盖表不够，会落回「Schema 登记过即默认可写」。
+  // 只能由用户在设置页「模式 → Work」或引导问答改（都不经过本黑名单）。
+  'modes.work.workspaceDir',
   // 三档权限（v13，docs/06 §12.2）：改档位等于自己给自己放宽确认闸门，同样只读。
   'agent.permissionMode',
   // 循环预算（v15，docs/06 §4.1）：AI 给自己放大轮次 / token 预算，等于绕过"该停下来问用户"的那道闸门。
@@ -759,6 +782,8 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'agent.tools.terminal.allowPatterns':
     '免确认命令模式等于摘掉终端工具自己的确认闸门，不允许通过工具修改',
   projects: '项目根同时决定注入的指令与权限边界，不允许通过工具修改',
+  'modes.work.workspaceDir':
+    'Work 工作目录是权限边界根的一级，AI 改写它等于把免确认范围扩到任意目录，不允许通过工具修改',
   'agent.permissionMode': '权限档位等于 Agent 自己的确认闸门，不允许通过工具修改',
   'agent.loop': '循环轮次与 token 预算等于 Agent 自己的停止闸门，不允许通过工具修改',
   'agent.snapshots': '写前快照是改动可回滚的兜底，不允许通过工具关闭',
@@ -816,7 +841,8 @@ export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
   { pattern: 'general.chat.showThinking', reason: '开关对话界面的思考过程展示' },
   // 模式
   { pattern: 'modes.current', reason: '切换当前模式' },
-  { pattern: 'modes.work.workspaceDir', reason: '设置 Work 模式的工作目录' },
+  // 注意 `modes.work.workspaceDir` **刻意不登记**：它是权限边界根的一级（见
+  // `SETTINGS_READONLY_PREFIXES`），覆盖表判定先于黑名单，登记进去等于放行（自我提权）。
   { pattern: 'modes.classroom.preClassLeadMinutes', reason: '调整课前提醒的提前分钟数' },
   // 电脑操控工具（advanced.confirmSensitiveTools 确认总闸门**不在**表内，仍只读防自我提权）
   { pattern: 'agent.tools.enabled', reason: '开关电脑操控工具' },
@@ -933,7 +959,8 @@ export function canWriteSettingPath(path: string): boolean {
  * 但 `fieldAccepts('llm.providers.deepseek.apiKeyEnc', 'x') === true`。
  *
  * 实现方式：遍历 Schema 收集"路径 → 可接受类型"表（含数组元素通配 `[]`、
- * record 动态键通配 `*`），校验时精确匹配 + 逐级通配兜底。
+ * record 动态键通配 `*`），校验时精确匹配 + 逐级通配兜底；对象型路径另走
+ * `objectPaths` / `nullableObjectPaths` 的**形状校验**（见其定义）。
  */
 export type { FieldValidator } from '../utils/object.js'
 
@@ -947,10 +974,29 @@ type EnumSpec = readonly unknown[]
 
 const schemaSpecs = new Map<string, AcceptSpec>()
 const enumPaths = new Map<string, EnumSpec>()
+/**
+ * 对象型字段路径（`z.object`）：候选值必须是**纯对象**。
+ *
+ * 与 `schemaSpecs` **刻意分开维护**（P2-26）：`walk` 对 `ZodObject` 只递归子键、不给分组自身
+ * 登记类型，于是「标量 / 数组塞进对象型字段」（`general: 123`、`general.edgeBar.quietHours: "22:30"`）
+ * 在 `fieldAccepts` 里被按「未登记路径默认接受」放行，一路活到 `SettingsSchema.parse`，
+ * 把**整份配置**判为损坏并重建出厂。这里只补形状判定，
+ * **不能**把对象路径写进 `schemaSpecs` —— 那会让 `lookupSpec('general')` 这类分组路径变成
+ * 「已登记」，`isKnownSettingPath('general')` 随之为真 → `set_setting` 的路径存在性兜底
+ * 对整组路径失效（`canWriteSettingPath('general')` 变成放行）。
+ */
+const objectPaths = new Set<string>()
+/** 「对象或 null」的可空对象字段（`z.object(...).nullable()`，如 `general.edgeBar.quietHours`）。 */
+const nullableObjectPaths = new Set<string>()
 walk(SettingsSchema, '', schemaSpecs, enumPaths)
 const dynamicPaths = collectDynamicPaths(SettingsSchema)
 
 export const fieldAccepts: FieldValidator = (path, candidate) => {
+  if (objectPaths.has(path) || nullableObjectPaths.has(path)) {
+    // 可空对象（quietHours）接受 null；其余对象字段只接受纯对象。
+    // 数组**不是**对象（`general.windowState[]` 这类畸形路径同样落到这里被拒）。
+    return candidate === null ? nullableObjectPaths.has(path) : typeNameOf(candidate) === 'object'
+  }
   const allowedValues = lookupEnum(path)
   if (allowedValues !== undefined) return allowedValues.includes(candidate)
   const spec = lookupSpec(path)
@@ -1127,6 +1173,9 @@ function walk(
 
   switch (def.typeName) {
     case 'ZodObject': {
+      // 本级登记为「必须是纯对象」（P2-26）：只递归子键的话，`general: 123` 这类形状坏掉的
+      // 分组在 `fieldAccepts` 里无人认领 → 默认放行 → 整份配置被判损坏重建。
+      if (path !== '') objectPaths.add(path)
       const shape = materialize(def['shape'])
       if (shape && typeof shape === 'object') {
         for (const [key, value] of Object.entries(shape as Record<string, z.ZodTypeAny>)) {
@@ -1166,8 +1215,18 @@ function walk(
     case 'ZodUnion':
       for (const option of def['options'] as z.ZodTypeAny[]) walk(option, path, specs, enums)
       return
+    case 'ZodNullable': {
+      const inner = def['innerType']
+      if (inner) {
+        walk(inner as z.ZodTypeAny, path, specs, enums)
+        // 可空对象（`z.object(...).nullable()`，当前只有两个 quietHours 字段）：
+        // 内层是对象时 `walk` 刚把它记进 `objectPaths`，这里补一条「也接受 null」，
+        // 否则 `fieldAccepts(path, null)` 会被形状校验误杀。
+        if (path !== '' && objectPaths.has(path)) nullableObjectPaths.add(path)
+      }
+      return
+    }
     case 'ZodOptional':
-    case 'ZodNullable':
     case 'ZodDefault':
     case 'ZodCatch':
     case 'ZodReadonly': {

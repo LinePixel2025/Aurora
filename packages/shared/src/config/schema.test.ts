@@ -11,6 +11,9 @@ import {
   CONFIG_VERSION,
   DEFAULT_SUBJECT_NAMES,
   MODE_IDS,
+  McpServerSchema,
+  RESOURCE_NAME_PATTERN,
+  RESOURCE_NAME_RULE,
   SETTINGS_READONLY_PREFIXES,
   SettingsSchema,
   TTS_FORMATS,
@@ -94,9 +97,10 @@ describe('SettingsSchema / defaults 一致性', () => {
   })
 
   it('v13 新增字段的逐字段校验（projects / agent.permissionMode）', () => {
-    // ⚠️ 上一条对**顶层分组**是空转的：`walk()` 对 ZodObject 只递归子键、不给分组自身登记，
-    // `lookupSpec('projects')` 返回 undefined 时 `fieldAccepts` 直接放行。真正要验证新分组，
-    // 必须断言子路径（否则「配置写坏只剩备份重建」这类问题不会被这层拦到）。
+    // ⚠️ 上一条对**顶层分组**只做形状层面的校验：`walk()` 对 ZodObject 只递归子键、
+    // 不给分组自身登记**类型**（分组路径只进 `objectPaths` —— 标量 / 数组会被形状校验拒掉，P2-26），
+    // `lookupSpec('projects')` 仍返回 undefined，所以**值**层面的校验必须断言子路径
+    // （否则「配置写坏只剩备份重建」这类问题不会被这层拦到）。
     expect(fieldAccepts('projects.current', 'proj-1')).toBe(true)
     expect(fieldAccepts('projects.current', 1)).toBe(false)
     expect(fieldAccepts('projects.list', [])).toBe(true)
@@ -546,6 +550,49 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     expect(canWriteSettingPath('agent.tools.enabled')).toBe(true)
   })
 
+  it('Work 工作目录不可由 AI 改写（权限边界根的一级，P1-01）', () => {
+    // 它是 `boundaryRoot` 回落链的一级：AI 改写它 = 把 auto 档「根内免确认」与
+    // confirm 档「根内写免确认」扩到任意目录（与 `projects` 整组拉黑同构的自我提权）。
+    // 此前它登记在 `WRITABLE_PATH_OVERRIDES` 里（覆盖表判定先于黑名单 → 双重放行）；
+    // 注意只删覆盖表登记**不够** —— 会落回「Schema 登记过即默认可写」。
+    expect(canWriteSettingPath('modes.work.workspaceDir')).toBe(false)
+    const reason = settingsReadonlyReason('modes.work.workspaceDir')
+    expect(reason).toContain('权限边界')
+    // 拒绝来自黑名单，而不是「未知配置路径」那条兜底
+    expect(reason).not.toBe('未知配置路径')
+    // 只收紧这一个路径：modes 组内其余字段仍可写
+    expect(canWriteSettingPath('modes.current')).toBe(true)
+    expect(canWriteSettingPath('modes.work.guideCompleted')).toBe(true)
+    expect(canWriteSettingPath('modes.classroom.preClassLeadMinutes')).toBe(true)
+  })
+
+  it('tts / stt / imagegen 的非凭据叶子可写，凭据子树仍拒绝（P1-06 / AGENTS.md 口径）', () => {
+    // 覆盖表登记了这些叶子（工具描述与 settingsHint 也向模型承诺可写），
+    // 若它们被判不可写就是「说能改但不能改」；反过来凭据子树不能因新放行被带开。
+    for (const path of [
+      'tts.enabled',
+      'tts.active',
+      'tts.autoRead',
+      'tts.maxChars',
+      'stt.enabled',
+      'stt.active',
+      'imagegen.enabled',
+      'imagegen.active',
+    ]) {
+      expect(canWriteSettingPath(path), path).toBe(true)
+      expect(settingsReadonlyReason(path), path).toBeUndefined()
+    }
+    expect(canWriteSettingPath('tts.providers')).toBe(false)
+    expect(canWriteSettingPath('tts.providers.siliconflow.apiKey')).toBe(false)
+    expect(canWriteSettingPath('stt.providers')).toBe(false)
+    expect(canWriteSettingPath('stt.providers.openai.apiKeyEnc')).toBe(false)
+    expect(canWriteSettingPath('imagegen.providers')).toBe(false)
+    expect(canWriteSettingPath('imagegen.providers.openai.baseUrl')).toBe(false)
+    expect(settingsReadonlyReason('tts.providers.siliconflow.apiKey')).toBe(
+      '凭据字段不允许通过工具修改',
+    )
+  })
+
   it('agent.loop / agent.snapshots 进黑名单（放大预算与关快照均系自我提权）', () => {
     // 循环预算：AI 给自己放大轮次 / token 上限 = 绕过"该停下来问用户"的闸门；
     // 写前快照：AI 关掉 enabled 或压低预算 = 拆掉写文件后的回滚保险。
@@ -630,5 +677,31 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     expect(canWriteSettingPath('tts.maxChars')).toBe(true)
     // 段名相近的字段不被误伤（`tts.providerSuffix` 不是 `tts.providers` 的子路径）
     expect(settingsReadonlyReason('tts.providerSuffix')).toBe('未知配置路径')
+  })
+})
+
+describe('资源名称约定（P1-07，docs/08 §1.3）', () => {
+  it('MCP 服务器名称禁用 `.`：含点被拒，字母数字下划线连字符通过', () => {
+    // 名称是凭据路径的段（`mcp.servers.<name>.env.<KEY>`），`.` 是路径分隔符；
+    // 放行含点名称 = 服务器行落库而 env 明文丢失（见 docs/08 §1.3）。
+    const base = {
+      transport: 'stdio' as const,
+      command: 'npx',
+      args: [],
+      envEnc: {},
+      headersEnc: {},
+      enabled: true,
+    }
+    expect(McpServerSchema.safeParse({ ...base, name: 'my.server' }).success).toBe(false)
+    expect(McpServerSchema.safeParse({ ...base, name: 'api.deepseek' }).success).toBe(false)
+    expect(McpServerSchema.safeParse({ ...base, name: '' }).success).toBe(false)
+    // 合法名称（连字符 / 下划线 / 数字；设置页预设与 smoke 夹具都是这种形态）
+    for (const name of ['my-server', 'my_server', 'smoke-mcp-123', 'deepseek']) {
+      expect(McpServerSchema.safeParse({ ...base, name }).success, name).toBe(true)
+    }
+    // 常量本身与提示文案是单一来源，且约定就是「禁点」
+    expect(RESOURCE_NAME_PATTERN.test('a.b')).toBe(false)
+    expect(RESOURCE_NAME_PATTERN.test('a-b_c1')).toBe(true)
+    expect(RESOURCE_NAME_RULE).toContain('不能含')
   })
 })
