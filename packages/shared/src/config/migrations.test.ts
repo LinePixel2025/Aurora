@@ -1097,6 +1097,7 @@ describe('配置迁移链', () => {
         'v20 → v21：v20 → v21：新增 general.edgeBar.display / position 与 appearance.accent',
         'v21 → v22：v21 → v22：为 llm.providers 各条目补 vision: false 并归一 type（多模态输入 / Responses API）',
         'v22 → v23：v22 → v23：把 provider 级 reasoningEffort / contextWindow / vision 搬进 modelParams[model]，删除 temperature',
+        'v23 → v24：v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1132,6 +1133,7 @@ describe('配置迁移链', () => {
         'v20 → v21：v20 → v21：新增 general.edgeBar.display / position 与 appearance.accent',
         'v21 → v22：v21 → v22：为 llm.providers 各条目补 vision: false 并归一 type（多模态输入 / Responses API）',
         'v22 → v23：v22 → v23：把 provider 级 reasoningEffort / contextWindow / vision 搬进 modelParams[model]，删除 temperature',
+        'v23 → v24：v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1326,9 +1328,10 @@ describe('配置迁移链', () => {
         },
       })
       expect(outcome.fromVersion).toBe(22)
-      expect(outcome.applied).toHaveLength(1)
+      // 链此后每加一版就多一条：断言「从 v22 起逐条应用」（别写死 1，否则每次加迁移都要改这里）
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 22)
       expect(outcome.applied[0]).toContain('v22 → v23')
-      expect(outcome.data['version']).toBe(23)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const provider = loadProvider(outcome.data, 'deepseek')
       // 三个值逐个相等 —— 搬的是值本身，不是"搬丢后落回默认"
@@ -1402,7 +1405,7 @@ describe('配置迁移链', () => {
           },
         },
       })
-      expect(outcome.data['version']).toBe(23)
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
 
       const provider = loadProvider(outcome.data, 'custom')
       // 没有一个生效模型就不凭它编条目：空表
@@ -1433,7 +1436,7 @@ describe('配置迁移链', () => {
       })
       const again = migrate({ ...once.data, version: 22 })
 
-      expect(again.data['version']).toBe(23)
+      expect(again.data['version']).toBe(CONFIG_VERSION)
       expect(loadParams(again.data, 'deepseek', 'deepseek-chat')).toEqual(
         loadParams(once.data, 'deepseek', 'deepseek-chat'),
       )
@@ -1512,6 +1515,93 @@ describe('配置迁移链', () => {
       // 最要紧的护栏：归一漏一处，`z.record` 子树会把非法值原样带进 parse → 整份配置判损坏
       expect(parsesAsSettings(outcome.data)).toBe(true)
       expect(parsesAsSettings(handEdited.data)).toBe(true)
+    })
+  })
+  describe('v23 → v24（stt.providers 的 type 归一，语音输入新增阿里云百炼原生 ASR）', () => {
+    it('已有的 openai-compat 原样保留（不改正值），迁移后仍能通过 Schema', () => {
+      const outcome = migrate({
+        version: 23,
+        stt: {
+          enabled: true,
+          active: 'st',
+          providers: {
+            st: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.openai.com/v1',
+              apiKeyEnc: '',
+              model: 'whisper-1',
+              language: 'zh',
+            },
+          },
+        },
+      })
+      expect(outcome.applied).toEqual([
+        'v23 → v24：v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
+      ])
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+      const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
+      expect((provider['providers'] as Record<string, Record<string, unknown>>)['st']).toEqual({
+        type: 'openai-compat',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKeyEnc: '',
+        model: 'whisper-1',
+        language: 'zh',
+      })
+      expect(
+        SettingsSchema.safeParse({ ...createDefaultSettings(), ...outcome.data }).success,
+      ).toBe(true)
+    })
+
+    it('缺 type / 非法 type 归一为 openai-compat，已是 dashscope-native 的不动', () => {
+      const outcome = migrate({
+        version: 23,
+        stt: {
+          enabled: true,
+          active: 'aliyun',
+          providers: {
+            legacy: { baseUrl: 'https://api.openai.com/v1', apiKeyEnc: '', model: 'whisper-1' },
+            broken: {
+              type: 'whisper-ish',
+              baseUrl: 'https://api.openai.com/v1',
+              apiKeyEnc: '',
+              model: 'whisper-1',
+            },
+            aliyun: {
+              type: 'dashscope-native',
+              baseUrl: 'https://dashscope.aliyuncs.com',
+              apiKeyEnc: '',
+              model: 'qwen3-asr-flash',
+            },
+          },
+        },
+      })
+      const providers = (outcome.data['stt'] as Record<string, unknown>)['providers'] as Record<
+        string,
+        Record<string, unknown>
+      >
+      expect(providers['legacy']?.['type']).toBe('openai-compat')
+      expect(providers['broken']?.['type']).toBe('openai-compat')
+      // 迁移不替用户改协议
+      expect(providers['aliyun']?.['type']).toBe('dashscope-native')
+      expect(
+        SettingsSchema.safeParse({ ...createDefaultSettings(), ...outcome.data }).success,
+      ).toBe(true)
+    })
+
+    it('stt 分组缺失时不凭空造半截对象；重复迁移幂等', () => {
+      const outcome = migrate({ version: 23, general: {} })
+      expect(outcome.data['stt']).toBeUndefined()
+
+      const once = migrate({
+        version: 23,
+        stt: {
+          enabled: false,
+          active: '',
+          providers: { st: { type: 'dashscope-native', baseUrl: 'x', apiKeyEnc: '', model: 'm' } },
+        },
+      })
+      const twice = migrate({ ...once.data, version: 23 })
+      expect(twice.data['stt']).toEqual(once.data['stt'])
     })
   })
 })

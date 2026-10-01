@@ -7236,6 +7236,169 @@ export const SETTINGS_TTS_CARD_CHECK = `(async () => {
 })()`
 
 /**
+ * 「语音」页 STT 编辑卡探针 · 前半（v24 阿里云原生 ASR）：点开 STT 区组的编辑卡。
+ *
+ * 与 TTS 那条同款，但**必须先锁定 STT 区组容器**再找按钮：两栏同页、且都有「空白配置」，
+ * 按文案全页找会点到 TTS 那张卡上去。区组按 `.section-title` 里的「语音输入」识别。
+ */
+export const SETTINGS_STT_ADD_ACT = `(async () => {
+  try {
+    // ⚠️ 这里刻意**不用任何带反斜杠的正则**（要匹配空白与行首的加号，改成逐字符判定）：
+    // 探针是 template literal 字符串，反斜杠要先被模板层吃掉一层，写错一层就退化成非法正则、
+    // 渲染层直接「Script failed to execute」，报告里只剩一句没信息量的话（本轮实测栽在这里）。
+    // 注释里也**不要**写反斜杠转义（如「反斜杠 + s」那种写法）：ESLint 的 no-useless-escape
+    // 照字符串内容报错，模板串里的注释照样命中（本轮被 lint 抓过一次）。
+    const normalize = (text) => {
+      const joined = (text || '')
+        .split('')
+        .filter((ch) => ch.trim() !== '')
+        .join('')
+      return joined.charAt(0) === '+' ? joined.slice(1) : joined
+    }
+    const record = (value) => {
+      window.__auroraSttActResult = value
+      return value
+    }
+    const section = () =>
+      Array.from(document.querySelectorAll('section.group')).find((el) => {
+        const title = el.querySelector('.section-title')
+        return title !== null && (title.textContent || '').indexOf('语音输入') !== -1
+      })
+    // 每次都重新查询按钮：进入添加态后是全新节点，缓存下来的数组里不会有它（TTS 那条首跑踩过）
+    const allButtons = () =>
+      section() === undefined ? [] : Array.from(section().querySelectorAll('button'))
+    const blankButton = () => allButtons().find((item) => normalize(item.textContent) === '空白配置')
+
+    let opened = null
+    if (blankButton() === undefined) {
+      const opener = allButtons().find(
+        (item) => normalize(item.textContent) === '添加语音输入模型',
+      )
+      if (opener === undefined) {
+        return record({
+          ok: false,
+          reason: 'no 添加语音输入模型 opener',
+          labels: allButtons()
+            .map((item) => (item.textContent || '').trim())
+            .filter((item) => item !== ''),
+        })
+      }
+      opener.click()
+      opened = normalize(opener.textContent)
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+
+    const target = blankButton()
+    if (target === undefined) {
+      return record({
+        ok: false,
+        reason: 'no 空白配置 button',
+        opened,
+        labels: allButtons()
+          .map((item) => (item.textContent || '').trim())
+          .filter((item) => item !== ''),
+      })
+    }
+    target.click()
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    // 把这张卡滚进视野：设置页很长，不滚的话截图里只有上面的 TTS 区组，
+    // 探针量的是「控件有尺寸」（折叠线以下也算），截出来的图却没有它 —— 视觉证据就断了。
+    const card = section().querySelector('[data-field$=".baseUrl"]')
+    if (card !== null) card.scrollIntoView({ block: 'center' })
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    return record({
+      ok: true,
+      opened,
+      label: normalize(target.textContent),
+      editorFields: section().querySelectorAll('[data-field$=".baseUrl"]').length,
+    })
+  } catch (error) {
+    window.__auroraSttActResult = { ok: false, reason: String(error) }
+    return window.__auroraSttActResult
+  }
+})()`
+
+/**
+ * 「语音」页 STT 编辑卡探针 · 后半（v24）：五个字段在，且「接口协议」真接在草稿上。
+ *
+ * 只断言「控件在」是不够的：新建一个 provider、把一个下拉摆上去，测试照样绿而功能是坏的。
+ * 所以这里跑一条**行为**断言 —— 把协议切到 `dashscope-native`，baseURL 的提示词必须
+ * 跟着改写（两套接口的 baseURL 语义不同），切回后必须逐字复原。
+ * 本场景只动本地 draft、**不点「应用」**，因此配置一个字都不写。
+ */
+export const SETTINGS_STT_CARD_CHECK = `(async () => {
+  try {
+    const section = () =>
+      Array.from(document.querySelectorAll('section.group')).find((el) => {
+        const title = el.querySelector('.section-title')
+        return title !== null && (title.textContent || '').indexOf('语音输入') !== -1
+      })
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect()
+      return rect.width > 0 && rect.height > 0
+    }
+    const pick = (suffix) =>
+      Array.from(section().querySelectorAll('[data-field$=".' + suffix + '"]')).filter(visible)[0]
+    const hintOf = (root) => {
+      const hint = root === undefined ? null : root.querySelector('.hint')
+      return hint === null ? '' : (hint.textContent || '').trim()
+    }
+
+    const fields = ['type', 'baseUrl', 'apiKey', 'model', 'language']
+    const found = {}
+    for (const name of fields) {
+      found[name] = Array.from(
+        section().querySelectorAll('[data-field$=".' + name + '"]'),
+      ).filter(visible).length
+    }
+    const missing = fields.filter((name) => found[name] === 0)
+
+    const select = pick('type') === undefined ? null : pick('type').querySelector('select')
+    const options =
+      select === null
+        ? []
+        : Array.from(select.options).map((item) => item.value + '|' + (item.textContent || '').trim())
+
+    const hintBefore = hintOf(pick('baseUrl'))
+    let hintAfter = ''
+    let hintRestored = ''
+    if (select !== null) {
+      select.value = 'dashscope-native'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      hintAfter = hintOf(pick('baseUrl'))
+      select.value = 'openai-compat'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      hintRestored = hintOf(pick('baseUrl'))
+    }
+
+    return {
+      pass:
+        missing.length === 0 &&
+        options.length === 2 &&
+        options.some(
+          (item) => item.indexOf('dashscope-native') !== -1 && item.indexOf('阿里云') !== -1,
+        ) &&
+        options.some((item) => item.indexOf('openai-compat') !== -1) &&
+        hintAfter !== '' &&
+        hintAfter !== hintBefore &&
+        hintAfter.indexOf('阿里云') !== -1 &&
+        hintRestored === hintBefore,
+      fields: found,
+      missing,
+      options,
+      hintBefore,
+      hintAfter,
+      hintRestored,
+      act: window.__auroraSttActResult === undefined ? null : window.__auroraSttActResult,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
  * 双主题探针（step-06，docs/07 §5.3）。
  *
  * 深/浅两档各跑一遍完整截图时，每窗多一张 `theme-*.png`，用同一条探针回答三件事：
@@ -8378,6 +8541,16 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     query: { page: 'tts' },
     act: SETTINGS_TTS_ADD_ACT,
     check: SETTINGS_TTS_CARD_CHECK,
+  })
+  // 「语音」页 STT 编辑卡（v24 阿里云原生 ASR）：点「+ 空白配置」→ 断言五字段在，
+  // 且「接口协议」下拉切到阿里云原生时 baseURL 提示词被改写（行为断言，不是只看控件在）。
+  // 同样只动本地 draft、不点「应用」；用**新页 id** `voice`（与上面 TTS 那条的旧别名 `tts` 相对）。
+  plan.push({
+    name: 'settings',
+    file: 'settings-stt-card.png',
+    query: { page: 'voice' },
+    act: SETTINGS_STT_ADD_ACT,
+    check: SETTINGS_STT_CARD_CHECK,
   })
   // 真实写盘：改一个 classroom 字段后其它字段不能丢（浅合并语义回归）。
   // 必须排在「切到 Work」之前 —— 切走之后 classroom 控件就不在 DOM 里了。

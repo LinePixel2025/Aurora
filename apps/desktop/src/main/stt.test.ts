@@ -10,7 +10,12 @@ interface FakeSttOptions {
   enabled?: boolean
   active?: string
   secret?: string
-  provider?: Partial<{ baseUrl: string; model: string; language: string }>
+  provider?: Partial<{
+    type: 'openai-compat' | 'dashscope-native'
+    baseUrl: string
+    model: string
+    language: string
+  }>
   /** true 时完全不放 provider 条目（模拟「指向不存在的模型」） */
   omitProvider?: boolean
 }
@@ -192,5 +197,191 @@ describe('createSttService · 未配置与错误路径', () => {
     await expect(
       stt.transcribe({ audioBase64: audioBase64('a'), mime: 'audio/webm' }),
     ).rejects.toThrow(/识别请求失败.*ECONNREFUSED/)
+  })
+})
+
+/** 阿里云原生协议的响应体（与线上实测形状一致：output.choices[0].message.content[0].text）。 */
+function nativeResponse(text: string, extraContentBefore: unknown[] = []): Response {
+  return new Response(
+    JSON.stringify({
+      output: {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              annotations: [{ emotion: 'neutral', language: 'zh', type: 'audio_info' }],
+              content: [...extraContentBefore, { text }],
+              role: 'assistant',
+            },
+          },
+        ],
+      },
+      usage: { seconds: 4 },
+    }),
+  )
+}
+
+function nativeSettings(
+  provider: Partial<{
+    baseUrl: string
+    model: string
+    language: string
+  }> = {},
+): SettingsStoreLike {
+  return fakeSettings({
+    provider: { type: 'dashscope-native', model: 'qwen3-asr-flash', ...provider },
+  })
+}
+
+describe('createSttService · dashscope-native（阿里云原生 ASR）', () => {
+  it('走原生端点，body 是 input.messages 里的 data URI，语言进 asr_options', async () => {
+    const { fetchImpl, requests } = stubFetch(nativeResponse('你好'))
+    const stt = make(nativeSettings({ baseUrl: 'https://dashscope.aliyuncs.com' }), fetchImpl)
+
+    const result = await stt.transcribe({
+      audioBase64: audioBase64('fake-webm'),
+      // 渲染层交上来的是 recorder.mimeType，带 codecs —— 数据 URI 必须把它剥掉
+      mime: 'audio/webm;codecs=opus',
+    })
+
+    expect(result.text).toBe('你好')
+    expect(requests).toHaveLength(1)
+    const request = requests[0]!
+    expect(request.url).toBe(
+      'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+    )
+    expect(request.init.method).toBe('POST')
+    const headers = request.init.headers as Record<string, string>
+    expect(headers['Authorization']).toBe('Bearer sk-saved')
+    // 原生接口是 JSON（与 multipart 侧相反：这里**必须**显式设 Content-Type）
+    expect(headers['Content-Type']).toBe('application/json')
+
+    const body = JSON.parse(String(request.init.body)) as Record<string, unknown>
+    expect(body['model']).toBe('qwen3-asr-flash')
+    expect(body['parameters']).toEqual({ asr_options: { language: 'zh' } })
+    const messages = (body['input'] as { messages: { role: string; content: unknown[] }[] })
+      .messages
+    expect(messages).toHaveLength(1)
+    expect(messages[0]!.role).toBe('user')
+    expect(messages[0]!.content).toEqual([
+      { audio: `data:audio/webm;base64,${audioBase64('fake-webm')}` },
+    ])
+  })
+
+  it('baseUrl 的四种常见写法都落到同一个原生端点', async () => {
+    const cases: [string, string][] = [
+      ['https://dashscope.aliyuncs.com', 'https://dashscope.aliyuncs.com'],
+      ['https://dashscope.aliyuncs.com/', 'https://dashscope.aliyuncs.com'],
+      // MaaS 专属网关习惯写成 …/api（TTS 那栏就是这个形状）
+      ['https://maas.example.com/api', 'https://maas.example.com'],
+      ['https://maas.example.com/api/v1', 'https://maas.example.com'],
+      ['https://maas.example.com/compatible-mode/v1', 'https://maas.example.com'],
+      // 已经贴了完整端点：不重复拼接
+      [
+        'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+        'https://dashscope.aliyuncs.com',
+      ],
+    ]
+
+    for (const [baseUrl, expectedRoot] of cases) {
+      const { fetchImpl, requests } = stubFetch(nativeResponse('x'))
+      const stt = make(nativeSettings({ baseUrl }), fetchImpl)
+      await stt.transcribe({ audioBase64: audioBase64('a'), mime: 'audio/webm' })
+      expect(requests[0]!.url).toBe(
+        `${expectedRoot}/api/v1/services/aigc/multimodal-generation/generation`,
+      )
+    }
+  })
+
+  it('语言为空时整个 parameters 不下发（交服务端自动检测）', async () => {
+    const { fetchImpl, requests } = stubFetch(nativeResponse('hi'))
+    const stt = make(nativeSettings({ language: '' }), fetchImpl)
+    await stt.transcribe({ audioBase64: audioBase64('a'), mime: 'audio/webm' })
+
+    const body = JSON.parse(String(requests[0]!.init.body)) as Record<string, unknown>
+    expect(body['parameters']).toBeUndefined()
+  })
+
+  it('请求级 language 覆盖 provider 配置', async () => {
+    const { fetchImpl, requests } = stubFetch(nativeResponse('hi'))
+    const stt = make(nativeSettings(), fetchImpl)
+    await stt.transcribe({ audioBase64: audioBase64('a'), mime: 'audio/webm', language: 'en' })
+
+    const body = JSON.parse(String(requests[0]!.init.body)) as Record<string, unknown>
+    expect(body['parameters']).toEqual({ asr_options: { language: 'en' } })
+  })
+
+  it('内容数组里非文本分片在前时，取第一条带 text 的', async () => {
+    const { fetchImpl } = stubFetch(nativeResponse('真文本', [{ image: 'x' }, { foo: 1 }]))
+    const stt = make(nativeSettings(), fetchImpl)
+    const result = await stt.transcribe({ audioBase64: audioBase64('a'), mime: 'audio/webm' })
+    expect(result.text).toBe('真文本')
+  })
+
+  it('mime 为空时数据 URI 兜底 audio/webm', async () => {
+    const { fetchImpl, requests } = stubFetch(nativeResponse('x'))
+    const stt = make(nativeSettings(), fetchImpl)
+    await stt.transcribe({ audioBase64: audioBase64('a'), mime: '  ' })
+
+    const body = JSON.parse(String(requests[0]!.init.body)) as {
+      input: { messages: { content: { audio: string }[] }[] }
+    }
+    expect(body.input.messages[0]!.content[0]!.audio.startsWith('data:audio/webm;base64,')).toBe(
+      true,
+    )
+  })
+
+  it('原生错误体折成「code：message」并保留状态码前缀', async () => {
+    const modelMissing = new Response(
+      JSON.stringify({
+        code: 'InvalidParameter',
+        message: 'Model not exist.',
+        request_id: 'abc',
+      }),
+      { status: 404 },
+    )
+    const { fetchImpl } = stubFetch(modelMissing)
+    const stt = make(nativeSettings(), fetchImpl)
+    await expect(
+      stt.transcribe({ audioBase64: audioBase64('a'), mime: 'audio/webm' }),
+    ).rejects.toThrow(/接口或模型不存在.*404.*InvalidParameter：Model not exist\./)
+  })
+
+  it('原生错误体不是 JSON 时回落到原始 body', async () => {
+    const { fetchImpl } = stubFetch(new Response('gateway exploded', { status: 502 }))
+    const stt = make(nativeSettings(), fetchImpl)
+    await expect(
+      stt.transcribe({ audioBase64: audioBase64('a'), mime: 'audio/webm' }),
+    ).rejects.toThrow(/STT 服务端错误.*502.*gateway exploded/)
+  })
+
+  it('原生响应缺少 output.choices[0].message.content[0].text 时按失败处理', async () => {
+    const { fetchImpl } = stubFetch(new Response(JSON.stringify({ output: { choices: [] } })))
+    const stt = make(nativeSettings(), fetchImpl)
+    await expect(
+      stt.transcribe({ audioBase64: audioBase64('a'), mime: 'audio/webm' }),
+    ).rejects.toThrow('语音识别返回格式异常')
+  })
+
+  it('原生协议同样受总开关 / 缺 Key / 空音频守卫约束，且不触网', async () => {
+    const { fetchImpl, requests } = stubFetch(nativeResponse('x'))
+    const audio = { audioBase64: audioBase64('a'), mime: 'audio/webm' }
+
+    await expect(
+      make(
+        fakeSettings({ provider: { type: 'dashscope-native' }, enabled: false }),
+        fetchImpl,
+      ).transcribe(audio),
+    ).rejects.toThrow('语音输入未配置')
+    await expect(
+      make(
+        fakeSettings({ provider: { type: 'dashscope-native' }, secret: '' }),
+        fetchImpl,
+      ).transcribe(audio),
+    ).rejects.toThrow('缺少 API Key')
+    await expect(
+      make(nativeSettings(), fetchImpl).transcribe({ audioBase64: '', mime: 'audio/webm' }),
+    ).rejects.toThrow('没有可识别的音频内容')
+    expect(requests).toHaveLength(0)
   })
 })

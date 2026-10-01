@@ -2,7 +2,7 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v23）
+## 1. 配置 Schema（config.json，v24）
 
 ```jsonc
 {
@@ -82,10 +82,10 @@
     "active": "",              // 默认 STT provider id；空串 = 未配置（此时麦克风按钮不出现）
     "providers": {
       "openai": {
-        "type": "openai-compat",
-        "baseUrl": "https://api.openai.com/v1",
+        "type": "openai-compat",  // 或 "dashscope-native"（阿里云百炼原生 ASR，v24 起，见 06 §15.1）
+        "baseUrl": "https://api.openai.com/v1",  // 原生协议填服务根，如 https://dashscope.aliyuncs.com
         "apiKeyEnc": "<safeStorage 密文>",
-        "model": "whisper-1",  // 唯一生效值：转写请求实际用的模型就是它
+        "model": "whisper-1",  // 唯一生效值：转写请求实际用的模型就是它（原生协议例：qwen3-asr-flash）
         "language": "zh"       // 识别语言（zh / en 等，默认 zh）；空串 = 交给服务端自动检测
       }
     }
@@ -274,7 +274,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **23**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **24**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.modelParams.<modelId>.reasoningEffort`（v5 新增，v23 起按模型绑定）：
@@ -330,6 +330,8 @@
   该模型是否支持**图片输入**（多模态，见 06 §3.1），
   布尔，默认 `false`。关闭时附件里的图片按「内容未读取（当前模型未开启图片输入）」降级成一行
   文字，请求体里不出现图片分片 —— 对不支持视觉的模型发图片会被服务端 400，这个开关就是那道闸。
+  **该开关同时决定图像工具是否注册**：`view_image` / `screenshot` / `clipboard_read_image`
+  仅在开启时进工具表，关闭时连工具都不出现（判据与附件管线同源，见 06 §25）。
   与 `contextWindow` 同一口径：**不做内置模型能力表**，由用户照服务商文档填；
   **只读**（AI 的 `set_setting` 改不动它 —— 它是模型能力事实，不是偏好，见 `WRITABLE_PATH_OVERRIDES`）。
 - `tts`（**v7 新增**，见 06 §13）：**语音输出（TTS）**；语音输入（STT）自 **v8** 起见下一条 `stt`。
@@ -374,9 +376,14 @@
   `stt.active` 是默认 STT provider id，**空串 = 未配置**（麦克风按钮同样不出现）。
   `stt.providers.<id>`（`{ type, baseUrl, apiKeyEnc, model, language }`）：`apiKeyEnc` 为 safeStorage
   密文（回传口径见 §1.1）；`language` 是识别语言（如 `zh` / `en`，默认 `zh`，空串 = 交给服务端自动检测）。
+  **`type`（v24 起两取值，见 06 §15.1）**：`openai-compat`（默认，OpenAI 兼容
+  `/audio/transcriptions`，`baseUrl` 是端点根）与 `dashscope-native`（阿里云百炼原生同步接口，
+  `baseUrl` 是**服务根**）。协议不同则 `baseUrl` / `model` 的语义不同，设置页的编辑卡把「接口协议」
+  放在第一位并按当前协议切换提示词；两条预设（OpenAI / 阿里云百炼）各自带上 `type`。
   **Agent 写权限**：`stt.enabled` / `stt.active` 可写（显式登记，见上）；
   `stt.providers` 在默认黑名单（凭据），`set_setting` 一律拒绝。
-  `v7 → v8` 迁移为旧配置补齐 `stt.*`（默认关闭、无 provider）。
+  `v7 → v8` 迁移为旧配置补齐 `stt.*`（默认关闭、无 provider）；
+  `v23 → v24` 迁移归一 `stt.providers.<id>.type`（只补缺失 / 非法值，不改正值）。
 - `imagegen`（**v8 新增**）：**图像生成**，与 `llm.providers` **同构但独立**。
   `imagegen.enabled` / `imagegen.active` 语义同 `stt`（Agent 均可写，显式登记）；
   `imagegen.providers.<id>`（`{ type, baseUrl, apiKeyEnc, model, size }`）：`size` 是生成尺寸白名单
@@ -554,7 +561,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 因而不新增存储面，也不会与流水出现两处数据不一致。
 
 **对话归档状态同样不进 config.json**：它写在会话文件自身（`sessions/<id>.json` 的
-`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 23）。
+`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前版本号见 §2）。
 会话文件自己的版本号 `SESSION_FILE_VERSION` 由 1 提到 2，读取对 v1 宽容（缺 `meta` = 未归档），
 不存在需要执行的迁移脚本 —— 「会话文件版本」与「配置版本」是两条独立的链，别混。
 
@@ -616,7 +623,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 23`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 24`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -678,10 +685,15 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   此时 `modelParams` 写 `{}`，四个旧键照删（不凭一个不存在的模型名编出条目）；
   ④ **旧非法值归一到默认** —— `reasoningEffort` 非法 / 缺失 → `'auto'`、
   `contextWindow` 非法 / 缺失 → `0`、`vision` 非法 / 缺失 → `false`；
-  没有 `llm.providers` 时整组交给默认配置兜底，不凭空造半截对象）。
-  二十三条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  没有 `llm.providers` 时整组交给默认配置兜底，不凭空造半截对象）、
+  `v23 → v24`（**语音输入支持阿里云百炼原生 ASR**，见 06 §15.1：
+  归一**每个已有** `stt.providers.<id>` 的 `type` —— 只把「缺失 / 不是已知取值」的补成
+  `openai-compat`（v23 及更早的配置写的本来就是这个值，旧配置升级后请求体逐字不变），
+  已是 `dashscope-native` 的**不动**（迁移不替用户改协议）；
+  `stt` 分组缺失时留给默认配置兜底，不凭空造半截对象）。
+  二十四条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽），重复执行结果一致 —— `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **23** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **24** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -899,8 +911,10 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     留空则由主进程回落已保存配置与凭据。失败走 toast 提示、**不改任何配置**；
     模型名始终可直接手填，列表只是候选不是必经步骤。
   - 列表为空时是 `data-empty="tts.providers"` 的**空状态卡**，不画一排空行。
-  - **STT 区组（v8 目标口径，UI 由另一任务实施）**：「总开关」（`stt.enabled`）、「默认 STT 模型」
-    （`stt.active`）与 provider 列表增 / 改 / 删（表单 `baseUrl` / `apiKey` / `model` / `language`，见 §1）。
+  - **STT 区组（v8 起实装，v24 加「接口协议」）**：「总开关」（`stt.enabled`）、「默认 STT 模型」
+    （`stt.active`）与 provider 列表增 / 改 / 删（表单 `type` / `baseUrl` / `apiKey` / `model` / `language`，见 §1）；
+    「接口协议」是编辑卡的第一项（`data-field="stt.providers.<id>.type"`），切换后 baseURL / 模型名的
+    提示词随协议改写（两套接口的字段语义不同，见 06 §15.1）；两条预设各自带 `type`。
     门控口径同 TTS：未配置时对话窗连麦克风按钮都不渲染（docs/07 §2.3）；
     麦克风（`media`）权限仅对自身窗口放行（主进程 `setPermissionRequestHandler`）。
 - **系统**（`advanced`，旧称「高级」）：日志查看与导出、代理设置、日志级别、重置为默认配置。

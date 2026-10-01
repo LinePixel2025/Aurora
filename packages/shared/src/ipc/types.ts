@@ -317,7 +317,10 @@ export interface TtsListModelsResult {
 export interface SttTranscribeRequest {
   /** 录音内容的 base64（渲染层 MediaRecorder 产物） */
   audioBase64: string
-  /** 录音 MIME 类型（如 `audio/webm;codecs=opus`），主进程据此拼 multipart */
+  /**
+   * 录音 MIME 类型（如 `audio/webm;codecs=opus`）。主进程两套协议都用它：
+   * OpenAI 兼容侧拼 multipart（据此选扩展名），阿里云原生侧拼 `data:<type/subtype>;base64,…`。
+   */
   mime: string
   /** 覆盖 provider 配置的识别语言；缺省用 `stt.providers.<id>.language` */
   language?: string

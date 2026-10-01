@@ -98,7 +98,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **日志**：业务包只依赖 `@aurora/shared` 的 `Logger` 接口；落盘实现在 `apps/desktop/src/main/logger.ts`（`userData/logs/`，按天轮转保留 7 天），所有输出统一脱敏。不要 `console.log` 当正式日志。
 - **凭据绝不落明文**：API Key / MCP env 经 Electron `safeStorage` 加密写入 `%APPDATA%/Aurora/config.json`；`settings:get` 与 `settings:changed` 两条通道都只回传 `apiKeySet` / `envSet` 标记。日志与「导出脱敏配置」中凭据一律 `***`。
 - **文件/命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
-- **配置改动**（当前 `CONFIG_VERSION = 23`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
+- **配置改动**（当前 `CONFIG_VERSION = 24`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 
 ## 文档先行（Docs-first）
 
@@ -432,3 +432,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   `chat:history` **之前**（`runCapture` 里、`captureWindows` 之前）。两者时机相反，容易搞混。
 - **`capture.ts` 里那些探针是 template literal 字符串**：字符串**内部**的注释写反引号 `` ` ``
   会提前终止字符串，直接 `TS1005` 且报错位置极具误导性。写注释用「」或单引号。
+  2026-10-01 追加：**反斜杠也要多写一层**——探针里本意是 JS 的 `/\s+/`、`/^\+/`，
+  文件里少了那一层，模板层会把 `\+` 吃成 `+`，渲染层收到**非法正则 `/^+/`**；
+  而这类错**不报在解析期**（`tsc` 与 `capture.probe-strings.test.ts` 的第二条都看不见，
+  TS 不校验正则 pattern），只在 V8 编译那段脚本时炸成报告里一句无信息量的
+  「Script failed to execute」——本轮在这上面白跑了两轮截图。
+  现在有第三条护栏（同样在 `capture.probe-strings.test.ts`）把模板层 cook 过的文本
+  交给 `new Function` 编译，能带行号指出非法正则；**写探针时不想数层数就别用带反斜杠的正则**。

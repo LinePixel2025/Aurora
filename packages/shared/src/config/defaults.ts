@@ -67,15 +67,32 @@ export const DEFAULT_TTS = {
 /**
  * STT provider 预设（docs/08 §1）：设置页「添加语音输入模型」的 chips。
  *
- * 与 `TTS_PRESETS` 一样只提供 id / label / baseUrl / model / language，
+ * 与 `TTS_PRESETS` 一样只提供 id / label / type / baseUrl / model / language，
  * 其余字段由新建流程用页面默认值补齐。
+ *
+ * `type` 必须写在预设里（不能由页面写死）：两条预设走的是**两套协议**
+ * —— `openai-compat` 的 baseUrl 是 `<端点根>`（页面拼 `/audio/transcriptions`），
+ * `dashscope-native` 的 baseUrl 是**服务根**（主进程拼
+ * `/api/v1/services/aigc/multimodal-generation/generation`，见 docs/06 §15.1）。
+ * 阿里云那条填**官方域名**：qianwenai 之类的 MaaS 专属网关把同一原生路径
+ * 挂在 `/compatible-mode/v1` 之外的根路径上，改用网关时把 baseUrl 换成
+ * 网关根地址（或 `…/api`）即可，协议不用改。
  */
 export const STT_PRESETS = [
   {
     id: 'openai',
     label: 'OpenAI 语音识别',
+    type: 'openai-compat',
     baseUrl: 'https://api.openai.com/v1',
     model: 'whisper-1',
+    language: 'zh',
+  },
+  {
+    id: 'dashscope',
+    label: '阿里云百炼（原生 ASR）',
+    type: 'dashscope-native',
+    baseUrl: 'https://dashscope.aliyuncs.com',
+    model: 'qwen3-asr-flash',
     language: 'zh',
   },
 ] as const

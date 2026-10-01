@@ -126,4 +126,51 @@ describe('capture.ts 的探针字符串', () => {
         '按上面的行号修掉。',
     ).toEqual([])
   })
+
+  /**
+   * 第三条：探针脚本必须能被 **JS 引擎编译**，而不只是「TS 解析器能解析」。
+   *
+   * 起因（2026-10-01，v24 阿尔泰轮）：探针里写 `replace(/\\s+/g, '')` 与 `replace(/^\\+/, '')`，
+   * 本意是 JS 侧拿到 `/\s+/` 与 `/^\+/`，但文件里少写了一层反斜杠 —— template literal
+   * 先把 `\+` 吃成 `+`，渲染层收到的是 **`/^+/`**（非法正则）。
+   * 关键点：**非法正则不报在解析期** —— `parseDiagnostics` 是空的、上面第二条用例照样绿
+   * （TS 只认正则字面量的词法形状，不校验 pattern 是否合法），它只在 V8 编译那段脚本时炸，
+   * 症状与语法残留一模一样：报告里一句「Script failed to execute」，无行号、无信息量。
+   * 于是这里补最后一道：把**模板层 cook 过**的文本交给 `new Function` 编译一次。
+   * 口径与前一条一致，只查 `(` 开头的探针（其余是 SVG 路径 / 选择器文本，不是 JS）。
+   */
+  it('探针脚本能被 JS 引擎编译（非法正则、转义塌陷这类只在运行期炸）', () => {
+    const source = readFileSync(CAPTURE_PATH, 'utf8')
+    const file = ts.createSourceFile(
+      CAPTURE_PATH,
+      source,
+      ts.ScriptTarget.ESNext,
+      true,
+      ts.ScriptKind.TS,
+    )
+
+    const offenders: string[] = []
+    const walk = (node: ts.Node): void => {
+      if (isTemplateLiteral(node) && node.getText(file).trimStart().startsWith('`(')) {
+        const code = toParsableSource(node as ts.TemplateLiteral)
+        try {
+          // 只编译不执行：正则字面量在这里被编译，非法 pattern 会抛 SyntaxError
+          new Function(code)
+        } catch (error) {
+          const line = file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1
+          offenders.push(`第 ${line} 行：${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      ts.forEachChild(node, walk)
+    }
+    walk(file)
+
+    expect(
+      offenders,
+      '这份探针文本在渲染层要当代码跑：请按行号修掉。最常见的成因是**反斜杠少写一层** —— ' +
+        '探针是 TS 的 template literal，`\\s` / `\\+` 里的反斜杠会先被模板层吃掉一层，' +
+        '文件里必须写 `\\\\s` / `\\\\+` 才能让渲染层收到 `\\s` / `\\+`。' +
+        '不想数层数就别在探针里写带反斜杠的正则。',
+    ).toEqual([])
+  })
 })

@@ -9,6 +9,7 @@ import {
   normalizeModelParams,
   REASONING_EFFORT_LEVELS,
   SETTINGS_READONLY_PREFIXES,
+  SttProviderTypes,
 } from './schema.js'
 import {
   DEFAULT_AGENT_TOOLS,
@@ -875,6 +876,51 @@ function migrateProviderToModelParams(entry: Record<string, unknown>): Record<st
   return patch
 }
 
+/**
+ * v23 → v24：**语音输入支持阿里云百炼原生 ASR**（docs/06 §15.1、docs/08 §1）。
+ *
+ * `stt.providers.<id>.type` 是被 Schema 扩过的枚举（新增 `dashscope-native`）。本迁移
+ * **只补缺失 / 非法的值**，归一为旧协议 `openai-compat` —— v23 及更早的配置写的本来就是这个值，
+ * 因此旧配置升级后请求体逐字不变；已经是 `dashscope-native` 的（手改或从新版回写）**不动**
+ * （迁移不替用户改协议，与 v21 → v22 归一 `llm.providers.*.type` 同一条口径）。
+ *
+ * 与 v7 → v8 / v10 → v11 同款：只在 `stt.providers` 已存在时逐条目处理，
+ * `stt` 分组整个缺失时留给默认配置兜底，不凭空造半截对象。
+ */
+const migrateV23ToV24: Migration = {
+  from: 23,
+  to: 24,
+  describe: 'v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const stt = asRecord(raw['stt'])
+    if (stt !== undefined) {
+      const providers = asRecord(stt['providers'])
+      if (providers !== undefined) {
+        const nextProviders: Record<string, unknown> = {}
+        for (const [id, provider] of Object.entries(providers)) {
+          const entry = asRecord(provider)
+          if (entry === undefined) {
+            nextProviders[id] = provider
+            continue
+          }
+          const patched: Record<string, unknown> = { ...entry }
+          const type = patched['type']
+          if (typeof type !== 'string' || !(SttProviderTypes as readonly string[]).includes(type)) {
+            patched['type'] = 'openai-compat'
+          }
+          nextProviders[id] = patched
+        }
+        next['stt'] = { ...stt, providers: nextProviders }
+      }
+    }
+
+    next['version'] = 24
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -899,6 +945,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV20ToV21,
   migrateV21ToV22,
   migrateV22ToV23,
+  migrateV23ToV24,
 ]
 
 export interface MigrationOutcome {

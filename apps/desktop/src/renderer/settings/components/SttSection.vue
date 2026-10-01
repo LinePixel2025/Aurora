@@ -4,7 +4,7 @@
  *
  * provider CRUD 与 `TtsSection.vue` 逐条同构（含 removedProviders 删除语义、
  * write-only 凭据、未落盘草稿的镜像合并），只是字段与预设换成 STT：
- * 识别走 OpenAI 兼容的 `/audio/transcriptions`，需要浏览器录音权限
+ * 协议可选 OpenAI 兼容的 `/audio/transcriptions` 或阿里云百炼原生接口，需要浏览器录音权限
  * （主进程 `session.setPermissionRequestHandler` 只对本窗放行 `media`）。
  *
  * 门控口径同 TTS：`stt.enabled && stt.active` 指向 baseUrl/model 齐全的 provider 时，
@@ -16,6 +16,7 @@ import {
   RESOURCE_NAME_PATTERN,
   RESOURCE_NAME_RULE,
   STT_PRESETS,
+  STT_PROVIDER_TYPE_LABELS,
   type SttProviderConfig,
 } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
@@ -35,6 +36,24 @@ type PageMode = 'list' | 'add' | 'edit'
 
 /** 新建 provider 的页面默认识别语言（与 Schema 默认一致；空串 = 服务端自动检测） */
 const DEFAULT_LANGUAGE = 'zh'
+
+/** 新建 provider 的页面默认协议（与 Schema 的旧口径一致；阿里云那条由预设带过来） */
+const DEFAULT_TYPE: SttProviderConfig['type'] = 'openai-compat'
+
+/**
+ * 两套协议的字段语义不同，提示词按当前协议切换（文案口径：短句、不引文档号）：
+ * OpenAI 兼容那栏的 baseUrl 是**端点根**（页面拼 `/audio/transcriptions`），
+ * 阿里云原生那栏是**服务根**（主进程拼 `/api/v1/services/aigc/multimodal-generation/generation`）。
+ */
+function baseUrlHint(draft: ProviderDraft): string {
+  return draft.type === 'dashscope-native'
+    ? '阿里云百炼服务根地址，如 https://dashscope.aliyuncs.com；也接受写到 /api 或完整端点'
+    : 'OpenAI 兼容端点，例如 https://api.openai.com/v1'
+}
+
+function modelHint(draft: ProviderDraft): string {
+  return draft.type === 'dashscope-native' ? '例：qwen3-asr-flash' : '例：whisper-1'
+}
 
 const settingsStore = useSettingsStore()
 
@@ -161,7 +180,8 @@ function addPreset(id: string): void {
   }
   localDrafts.value.push({
     id: key,
-    type: 'openai-compat',
+    // 协议由预设带过来：阿里云那条走原生接口，其余（含「空白配置」）默认 OpenAI 兼容
+    type: preset?.type ?? DEFAULT_TYPE,
     baseUrl: preset?.baseUrl ?? '',
     apiKeyEnc: '',
     model: preset?.model ?? '',
@@ -200,7 +220,7 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
       providers: {
         ...settings.stt.providers,
         [draft.id]: {
-          type: 'openai-compat',
+          type: draft.type,
           baseUrl: draft.baseUrl.trim(),
           apiKeyEnc: '',
           model: draft.model.trim(),
@@ -326,8 +346,8 @@ async function setActive(id: string): Promise<void> {
     <Transition name="collapse">
       <div v-if="open" class="group-body">
         <p class="section-desc">
-          在对话窗按麦克风说话，录音会转写成文本；需浏览器录音权限，未配置时按钮不出现。 识别走
-          OpenAI 兼容的 <code class="mono">/audio/transcriptions</code>。
+          在对话窗按麦克风说话，录音会转写成文本；需浏览器录音权限，未配置时按钮不出现。
+          识别协议可选 OpenAI 兼容或阿里云百炼原生接口。
         </p>
 
         <AppToast v-if="message" tone="ok">{{ message }}</AppToast>
@@ -488,11 +508,28 @@ async function setActive(id: string): Promise<void> {
                 这条还没有保存：点「应用」后才写入配置。
               </p>
 
+              <!-- 协议排在第一位：它决定 baseURL 与模型名的语义（两套接口的字段含义不同） -->
+              <SettingField
+                :data-field="`stt.providers.${draft.id}.type`"
+                label="接口协议"
+                hint="决定 baseURL 与模型名怎么下发；换协议请连带检查这两项的提示"
+              >
+                <select v-model="draft.type" class="input">
+                  <option
+                    v-for="(label, value) in STT_PROVIDER_TYPE_LABELS"
+                    :key="value"
+                    :value="value"
+                  >
+                    {{ label }}
+                  </option>
+                </select>
+              </SettingField>
+
               <SettingField
                 :data-field="`stt.providers.${draft.id}.baseUrl`"
                 label="baseURL"
                 required
-                hint="OpenAI 兼容端点，例如 https://api.openai.com/v1"
+                :hint="baseUrlHint(draft)"
               >
                 <input v-model="draft.baseUrl" class="input" type="text" spellcheck="false" />
               </SettingField>
@@ -519,7 +556,7 @@ async function setActive(id: string): Promise<void> {
                 :data-field="`stt.providers.${draft.id}.model`"
                 label="模型名"
                 required
-                hint="例：whisper-1"
+                :hint="modelHint(draft)"
               >
                 <input v-model="draft.model" class="input" type="text" spellcheck="false" />
               </SettingField>

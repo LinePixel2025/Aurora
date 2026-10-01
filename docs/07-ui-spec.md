@@ -876,7 +876,9 @@
 - **语音页（v0.8.0 新增；BetaV2 扩为 TTS + STT 双区组）**：页面提供 TTS 区组 —— 总开关（`tts.enabled`）、
   默认 TTS 模型（`tts.active`）、自动朗读（`tts.autoRead`）、截断上限（`tts.maxChars`），
   以及 TTS provider 列表的**增 / 改 / 删 + 「试听」**；BetaV2 新增 **STT 区组**（`stt.enabled` / `stt.active` /
-  provider 的 baseUrl / model / apiKey / language，锚点 `stt.*`）。
+  provider 的 type / baseUrl / model / apiKey / language，锚点 `stt.*`；
+  v24 起「接口协议」（`type`，`openai-compat` / `dashscope-native`）是编辑卡的**第一项**，
+  切换后 baseURL / 模型名的提示词随之改写 —— 两套接口的字段语义不同，见 docs/06 §15.1）。
   凭据行的展示规则与 AI 模型页一致（只显示「凭据已保存 / 缺少凭据」，密文不进渲染层）。
   字段与门控矩阵见 docs/08 §1 / §6.1。
 - **智能与工具页（2026-09 信息架构收拢）**：页内三组（电脑操控工具 / 技能 / MCP 服务器）同为可折叠
@@ -1125,6 +1127,8 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
      `skills|mcp → agent` 走同一张映射表，机制由本场景代表验证）→ `settings-drag.png` →
      `settings-llm-models.png` → `settings-llm-params.png` → `settings-llm-structure.png` →
      `settings-tts-card.png`（深链用旧 id `tts`，顺带覆盖「旧链接上编辑卡流程照常可用」）→
+     `settings-stt-card.png`（v24 新增；深链用新页 id `voice`，打开 STT 编辑卡并断言
+     「接口协议」切到阿里云原生时 baseURL 提示词被改写）→
      `settings-classroom-patch.png` → `settings-modes-work-gating.png`。
      「思考等级 / 结构 / 模型列表」三条的配置改写与恢复口径见下面各条探针说明。
   5. **提示条收尾**：`edge-bar-collapsed-final.png`（收起，不留展开态）→

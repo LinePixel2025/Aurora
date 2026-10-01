@@ -1434,16 +1434,35 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 
 ### 15.1 语音输入（STT）
 
-- 端点：`POST <baseUrl>/audio/transcriptions`（OpenAI 兼容），`multipart/form-data`：
-  字段 `file`（Blob，文件名按 MIME 取扩展名：webm / mp3 / wav / ogg / m4a / flac，兜底 webm）、
-  `model`、`language`（provider.language 或请求覆盖值，**空串不下发** = 服务端自动检测）。
-  ⚠️ multipart **不手工设置** `Content-Type`——boundary 由 fetch 实现生成。
+- 两套协议，由 `stt.providers.<id>.type` 选择（v24 起可选，旧配置一律 `openai-compat`）：
+
+  - **`openai-compat`**：`POST <baseUrl>/audio/transcriptions`，`multipart/form-data`：
+    字段 `file`（Blob，文件名按 MIME 取扩展名：webm / mp3 / wav / ogg / m4a / flac，兜底 webm）、
+    `model`、`language`（provider.language 或请求覆盖值，**空串不下发** = 服务端自动检测）。
+    ⚠️ multipart **不手工设置** `Content-Type`——boundary 由 fetch 实现生成。成功响应读 `{text}`。
+  - **`dashscope-native`**（阿里云百炼 / DashScope 原生，2026-10 实装）：
+    `POST <baseUrl>/api/v1/services/aigc/multimodal-generation/generation`（同步 JSON），
+    body `{ model, input: { messages: [{ role: 'user', content: [{ audio: 'data:<mime>;base64,…' }] }] },
+    parameters: { asr_options: { language } } }` —— `language` 为空串时 **`parameters` 整个不下发**；
+    识别文本取 `output.choices[0].message.content[].text`（内容数组逐项找第一条带 `text` 的）。
+    `baseUrl` 的规范填法是**服务根**（`https://dashscope.aliyuncs.com`），也容忍写到 `…/api`、
+    `…/api/v1`、`…/compatible-mode/v1` 或**完整端点**这四种常见粘法。
+    **音频不转码**：渲染层 `MediaRecorder` 的 webm/opus 直接以数据 URI 下发
+    （数据 URI 的 MIME 只保留 `type/subtype`，`;codecs=opus` 必须剥掉，实测
+    `audio/webm` + `qwen3-asr-flash` 端到端可用、4 秒语音约 0.5–0.7 秒返回）。
+
 - 凭据：`Authorization: Bearer <解密后的 apiKey>`，明文只存在于主进程发起请求的那一刻（同 §13.3）。
 - provider 解析口径与 TTS 一致：`stt.enabled && stt.active` 指向存在的条目，
   否则抛「语音输入未配置」中文错误（渲染层 composer 连麦克风按钮都不渲染，docs/07 §3）。
-- 成功响应 `{text}`；缺 `text` / 非 2xx / 超时（默认 30s）都折成带状态码或原因的中文错误。
+- 非 2xx / 超时（默认 30s）都折成带状态码或原因的中文错误；原生接口的错误体是
+  `{ code, message, request_id }`，按「code：message」呈现（`code` 才是能对照阿里云文档的东西），
+  解析不出时退回原始 body。响应形状不对（缺 `text` / 缺 `output.choices…`）一律按失败处理，
+  不编造空文本。
 - 音频是渲染层 `MediaRecorder` 的 webm base64，经 IPC `stt:transcribe` 上来，**不落盘**：
   转写完成后只有文本进会话，录音即弃。
+- 设置页预设两条（`STT_PRESETS`，含 `type`）：OpenAI 语音识别（`openai-compat`）与
+  阿里云百炼原生 ASR（`dashscope-native` + `qwen3-asr-flash` + 官方域名）。
+  换 MaaS 专属网关（如 qianwenai）只需把 baseUrl 换成网关根地址或 `…/api`，协议不用改。
 
 ### 15.2 图像生成
 
@@ -2098,5 +2117,5 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
 - **只读档（`agent.permissionMode === 'readonly'`）不摘这三个工具**：与 §14 的扩展工具五件套同口径 ——
   `screenshot` / `clipboard_read_image` 写的是 app 自己的目录（不是用户文件）、`view_image` 纯读，
   因此不属于「写入 / 执行类工具」。
-- **无配置 Schema 变更**：本能力不新增配置字段、`CONFIG_VERSION` 仍为 **23**、无新迁移 ——
-  门控读的是既有的 `vision`。
+- **无配置 Schema 变更**：本能力不新增配置字段、不推进 `CONFIG_VERSION`、无新迁移
+  （当前版本号见 08 §2）—— 门控读的是既有的 `vision`。

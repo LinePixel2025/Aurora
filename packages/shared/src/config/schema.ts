@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 23 as const
+export const CONFIG_VERSION = 24 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -328,19 +328,47 @@ export type TtsSettings = z.infer<typeof TtsSchema>
 export const STT_LANGUAGE_MAX_CHARS = 32
 
 /**
+ * STT provider 的接口协议（docs/06 §15.1、docs/08 §1）：
+ *
+ * - `openai-compat`：OpenAI 兼容 `POST <baseUrl>/audio/transcriptions`（multipart，回 `{text}`）；
+ * - `dashscope-native`：阿里云百炼 / DashScope **原生**
+ *   `POST <baseUrl>/api/v1/services/aigc/multimodal-generation/generation`
+ *   （JSON，音频以 `data:` URI 放进 `input.messages`，文本在 `output.choices[0].message.content[].text`）。
+ *
+ * 纯增量枚举：v23 及更早的配置写的都是 `openai-compat`，天然合法，
+ * 迁移只补缺失 / 非法的值，**不改正值**（旧配置升级后请求体逐字不变）。
+ */
+export const SttProviderTypes = ['openai-compat', 'dashscope-native'] as const
+export const SttProviderTypeSchema = z.enum(SttProviderTypes)
+export type SttProviderType = z.infer<typeof SttProviderTypeSchema>
+
+/**
+ * 接口协议的展示文案（**唯一来源**：设置页「语音」页 STT 区组的「接口协议」下拉）。
+ *
+ * 与 `LLM_PROVIDER_TYPE_LABELS` 同款：新增取值时这个 `Record` 会强制补文案，
+ * 不会出现「枚举加了、界面上是个空白选项」。
+ */
+export const STT_PROVIDER_TYPE_LABELS: Record<SttProviderType, string> = {
+  'openai-compat': 'OpenAI 兼容（/audio/transcriptions）',
+  'dashscope-native': '阿里云百炼原生（数据 URI）',
+}
+
+/**
  * STT provider（docs/08 §1、Betav2 规格 §4）。
  *
  * 与 `tts.providers.<id>` **同构但独立**：语音输入（录音 → 文本）与语音输出（文本 → 语音）
  * 的可用性互不绑定，共用一份配置会让「换朗读服务」顺手把麦克风转写也弄坏。
  */
 export const SttProviderSchema = z.object({
-  type: z.enum(['openai-compat']),
+  type: SttProviderTypeSchema,
   baseUrl: z.string(),
   /** safeStorage 密文；明文只走 `settings:setSecrets`，渲染层与日志永远看不到明文。 */
   apiKeyEnc: z.string(),
   model: z.string(),
   /**
-   * 识别语言（如 `zh` / `en`），随转写请求的 `language` 字段下发；空串表示交给服务端自动检测。
+   * 识别语言（如 `zh` / `en`）；空串表示交给服务端自动检测。
+   * 下发位置随 `type` 变：`openai-compat` 走 multipart 的 `language` 字段，
+   * `dashscope-native` 走 `parameters.asr_options.language`（空串时该字段整个不出现）。
    * `.default('zh')` 与 `modelList` 同理：`stt.providers` 是 `z.record`，字段级回退管不到它的子树，
    * 手改配置漏了该字段时由 parse 直接补齐，不让整份配置被判损坏。
    */
