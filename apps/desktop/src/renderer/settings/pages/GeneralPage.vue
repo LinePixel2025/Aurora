@@ -9,9 +9,6 @@
  * `general.language` 是**没有 i18n 消费方的死字段**（docs/08 §1）：
  * 本页不再提供任何入口，但保存时仍原样回传当前值 —— `settings:update` 是
  * 顶层分组浅合并，`general` 整对象被替换，漏掉 language 会被 Schema 默认值重置。
- *
- * 项目区组（v13 起）已于 2026-09-30 迁「会话管理」页：项目登记与会话列表同属「本机数据」，
- * 集中一页维护（`data-field="projects.*"` 锚点随迁）。本页保留一条指引占位。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { HotkeyStatus } from '@aurora/shared'
@@ -304,16 +301,6 @@ async function toggleEdgeBar(): Promise<void> {
           />
         </div>
       </SettingField>
-    </section>
-
-    <!--
-      项目区组已于 2026-09-30 迁「会话管理」页：项目管理与会话列表同属「本机数据」，
-      集中一页维护（`data-field="projects.*"` 锚点随迁，capture 探针契约不变）。
-    -->
-    <section class="section-card">
-      <p class="section-desc">
-        项目登记与会话列表已移至「会话管理」页（主界面左栏「项目对话」也可直接添加项目）。
-      </p>
     </section>
 
     <section class="section-card">

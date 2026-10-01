@@ -373,14 +373,17 @@ async function setActive(id: string): Promise<void> {
             </option>
           </select>
         </SettingField>
-        <p v-if="drafts.length === 0" class="tiny muted">
-          还没有可选的模型：先在下面「添加生图模型」。
-        </p>
+        <p v-if="drafts.length === 0" class="tiny muted">还没有可选的模型：先添加一个生图模型。</p>
 
-        <!-- 空状态：没有模型时不摆一排空行，直接给主入口 -->
+        <!-- 空状态：没有模型时不摆一排空行，直接给主入口（锚点保留，capture 探针依赖它） -->
         <p v-if="drafts.length === 0" class="empty-inline" data-empty="imagegen.providers">
           还没有生图模型：添加一个并设为默认后，Agent 才能生成图片。
         </p>
+
+        <!-- 空态自带主按钮（与 LlmPage 空态同款）：此时工具行不渲染，不会重复出现同名按钮 -->
+        <div v-if="drafts.length === 0 && mode !== 'add'" class="row wrap toolbar">
+          <AppButton variant="primary" @click="startAdd">+ 添加生图模型</AppButton>
+        </div>
 
         <!-- 工具行 + 添加流程（mode === 'add'）：预设 chips 来自 IMAGEGEN_PRESETS -->
         <div v-if="drafts.length > 0 || mode === 'add'" class="row wrap toolbar">
