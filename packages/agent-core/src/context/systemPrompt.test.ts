@@ -442,6 +442,16 @@ describe('buildToolGuidance', () => {
     expect(buildToolGuidance(['glob'])).not.toContain('返回的是路径与行号')
   })
 
+  it('含图像工具时附「自己截图看，不要让用户描述」规范（docs/06 §25）', () => {
+    for (const toolNames of [['view_image'], ['screenshot'], ['view_image', 'screenshot']]) {
+      const guidance = buildToolGuidance(toolNames)
+      expect(guidance).toContain('直接用 `screenshot` 截图自己看，不要让用户描述')
+      expect(guidance).toContain('磁盘上的图片用 `view_image`')
+    }
+    // 图像工具不在表里（模型没开图片输入）时不该出现这段 —— 否则提示词会让模型去调一个不存在的工具
+    expect(buildToolGuidance(['read_file'])).not.toContain('screenshot')
+  })
+
   it('只注册 todo_write 时不出现 edit_file / grep / glob 的规范', () => {
     const guidance = buildToolGuidance(['todo_write'])
     expect(guidance).toContain('多步/多项任务先调用 todo_write 建立清单')

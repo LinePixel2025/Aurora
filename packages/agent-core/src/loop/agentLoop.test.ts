@@ -26,6 +26,8 @@ function createRecorder() {
         ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls }),
         ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
         ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
+        // 图片路径（用户附件 / 工具产出，docs/06 §3.1、§25）：与 SessionStore 一样原样落盘
+        ...(message.images === undefined ? {} : { images: message.images }),
       }
       messages.push(stored)
       return Promise.resolve(stored)
@@ -1148,6 +1150,251 @@ describe('runAgentLoop', () => {
         events.filter((event) => event.type === 'tool').map((event) => event.call.state),
       ).toEqual(['running', 'error'])
     })
+  })
+})
+
+/**
+ * 工具产出的图片（图像工具，docs/06 §25）。
+ *
+ * 这一组钉的是"模型真的看得到工具给它的图"这条链，三处都要对：
+ * - **本轮**：图片作为一条合成 user 消息，排在**本轮全部 tool 结果之后**下发
+ *   （插在中间会断开 assistant(tool_calls) → 各 tool 消息的配对，服务端 400）；
+ * - **落盘**：路径写进 tool 消息的 `images`（存路径不存 base64，与用户附件同款）；
+ * - **重放**：历史里的 tool 图片在后续请求里同样补这条合成消息，且解析不出时不发。
+ */
+describe('runAgentLoop · 工具产出的图片（图像工具，docs/06 §25）', () => {
+  const IMAGE = { mimeType: 'image/png', dataBase64: 'AAA', name: 'a.png' }
+  const IMAGE_PATH = 'C:\\Users\\u\\AppData\\Roaming\\Aurora\\screenshots\\1-a.png'
+
+  /** 一个自报图片的工具；`isError` 决定这次调用算成功还是失败 */
+  function registryWithImageTool(options: { isError?: boolean } = {}): ToolRegistry {
+    const tools = new ToolRegistry()
+    tools.register({
+      name: 'view_image',
+      description: '看图',
+      parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+      execute: async () => ({
+        content: `已读取图片 ${IMAGE_PATH}`,
+        summary: '已读取图片',
+        ...(options.isError === true ? { isError: true } : {}),
+        images: [{ path: IMAGE_PATH, image: IMAGE }],
+      }),
+    })
+    return tools
+  }
+
+  function run(options: {
+    rec: ReturnType<typeof createRecorder>
+    provider: LoopProvider
+    tools: ToolRegistry
+    history?: StoredMessage[]
+    resolveImages?: (paths: readonly string[]) => readonly (typeof IMAGE)[]
+  }): Promise<AgentLoopEvent[]> {
+    return drain(
+      runAgentLoop({
+        provider: options.provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: '看看这张图',
+        history: options.history ?? [],
+        ...(options.resolveImages === undefined ? {} : { resolveImages: options.resolveImages }),
+        tools: options.tools,
+        sessionId: 'quick',
+        append: options.rec.append,
+        updateToolCall: options.rec.updateToolCall,
+      }),
+    )
+  }
+
+  it('本轮：图片以合成 user 消息下发，路径随 tool 消息落盘', async () => {
+    const rec = createRecorder()
+    const provider = createFakeProvider([
+      // 参数用 JSON.stringify 生成：Windows 路径里的反斜杠直接拼进 JSON 会变成非法转义，
+      // 那样工具拿到的是"参数不是合法 JSON"，测的就成了错误分支
+      {
+        toolCalls: [
+          { id: 'c1', name: 'view_image', arguments: JSON.stringify({ path: IMAGE_PATH }) },
+        ],
+      },
+      { text: '我看到了' },
+    ])
+
+    await run({ rec, provider, tools: registryWithImageTool() })
+
+    // 第二轮（拿到工具结果后的那一轮）能看到图片
+    const roles = provider.calls[1]?.messages.map((message) => message.role)
+    expect(roles).toEqual(['system', 'user', 'assistant', 'tool', 'user'])
+    const delivered = provider.calls[1]?.messages[4]
+    expect(delivered?.images?.[0]?.dataBase64).toBe('AAA')
+    // 文案里带路径，模型知道这张图是哪来的
+    expect(delivered?.content).toContain('screenshots')
+    // 落盘的是**路径**（不是 base64），与用户附件同一条回放口径
+    expect(rec.messages.find((message) => message.role === 'tool')?.images).toEqual([IMAGE_PATH])
+  })
+
+  it('同轮多个工具调用：图片消息排在全部 tool 结果之后（配对不被破坏）', async () => {
+    const rec = createRecorder()
+    const provider = createFakeProvider([
+      {
+        toolCalls: [
+          { id: 'c1', name: 'view_image', arguments: '{"path":"a.png"}' },
+          { id: 'c2', name: 'view_image', arguments: '{"path":"b.png"}' },
+        ],
+      },
+      { text: '都看到了' },
+    ])
+
+    await run({ rec, provider, tools: registryWithImageTool() })
+
+    const messages = provider.calls[1]?.messages ?? []
+    expect(messages.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+      'tool',
+      'user',
+    ])
+    // 两条 tool 结果之后才轮到图片消息
+    expect(messages[3]?.toolCallId).toBe('c1')
+    expect(messages[4]?.toolCallId).toBe('c2')
+  })
+
+  it('失败的调用不带图片分片（避免"读失败但图在这儿"的自相矛盾输入）', async () => {
+    const rec = createRecorder()
+    const provider = createFakeProvider([
+      { toolCalls: [{ id: 'c1', name: 'view_image', arguments: '{"path":"a.png"}' }] },
+      { text: '读不到' },
+    ])
+
+    await run({ rec, provider, tools: registryWithImageTool({ isError: true }) })
+
+    expect(provider.calls[1]?.messages.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+    ])
+    expect(rec.messages.find((message) => message.role === 'tool')?.images).toBeUndefined()
+  })
+
+  it('重放：历史里的工具图片同样补合成 user 消息，解析不出则只留文本', async () => {
+    const history: StoredMessage[] = [
+      { id: 'm1', role: 'user', content: '看看这张图', createdAt: '2025-01-01T00:00:00.000Z' },
+      {
+        id: 'm2',
+        role: 'assistant',
+        content: '',
+        createdAt: '2025-01-01T00:00:00.000Z',
+        toolCalls: [{ id: 'c1', name: 'view_image', arguments: '{}', state: 'success' }],
+      },
+      {
+        id: 'm3',
+        role: 'tool',
+        content: `已读取图片 ${IMAGE_PATH}`,
+        createdAt: '2025-01-01T00:00:00.000Z',
+        toolCallId: 'c1',
+        images: [IMAGE_PATH],
+      },
+    ]
+
+    const on = createRecorder()
+    const providerOn = createFakeProvider([{ text: '看到了' }])
+    await run({
+      rec: on,
+      provider: providerOn,
+      tools: new ToolRegistry(),
+      history,
+      resolveImages: () => [IMAGE],
+    })
+    const replay = providerOn.calls[0]?.messages ?? []
+    expect(replay.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+      'user',
+      'user',
+    ])
+    expect(replay[4]?.images?.[0]?.dataBase64).toBe('AAA')
+
+    // 关闭图片输入时解析器返回空数组（内核侧的闸门）：这条合成消息不该出现
+    const off = createRecorder()
+    const providerOff = createFakeProvider([{ text: '看不到' }])
+    await run({
+      rec: off,
+      provider: providerOff,
+      tools: new ToolRegistry(),
+      history,
+      resolveImages: () => [],
+    })
+    expect(providerOff.calls[0]?.messages.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+      'user',
+    ])
+  })
+
+  it('重放：同轮多条带图 tool 消息合并成一条图片消息（不把 tool 配对劈开）', async () => {
+    // 历史里 tool 消息是**连续**的（同轮两个工具调用）：逐条插 user 会让它们中间夹一条
+    // user 消息 —— 服务端要求 assistant(tool_calls) 后每个 id 的 tool 消息依次紧跟，配对一断就是 400
+    const history: StoredMessage[] = [
+      { id: 'm1', role: 'user', content: '看两张图', createdAt: '2025-01-01T00:00:00.000Z' },
+      {
+        id: 'm2',
+        role: 'assistant',
+        content: '',
+        createdAt: '2025-01-01T00:00:00.000Z',
+        toolCalls: [
+          { id: 'c1', name: 'view_image', arguments: '{}', state: 'success' },
+          { id: 'c2', name: 'view_image', arguments: '{}', state: 'success' },
+        ],
+      },
+      {
+        id: 'm3',
+        role: 'tool',
+        content: '已读取图片 a.png',
+        createdAt: '2025-01-01T00:00:00.000Z',
+        toolCallId: 'c1',
+        images: ['C:\\tmp\\a.png'],
+      },
+      {
+        id: 'm4',
+        role: 'tool',
+        content: '已读取图片 b.png',
+        createdAt: '2025-01-01T00:00:00.000Z',
+        toolCallId: 'c2',
+        images: ['C:\\tmp\\b.png'],
+      },
+    ]
+
+    const rec = createRecorder()
+    const provider = createFakeProvider([{ text: '看到了' }])
+    await run({
+      rec,
+      provider,
+      tools: new ToolRegistry(),
+      history,
+      resolveImages: (paths) => paths.map((path) => ({ ...IMAGE, name: path })),
+    })
+
+    const messages = provider.calls[0]?.messages ?? []
+    expect(messages.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'tool',
+      'tool',
+      'user',
+      'user',
+    ])
+    // 两条 tool 结果之后才是那一条合并的图片消息（两张图在同一条里）
+    expect(messages[5]?.images?.map((image) => image.name)).toEqual([
+      'C:\\tmp\\a.png',
+      'C:\\tmp\\b.png',
+    ])
   })
 })
 

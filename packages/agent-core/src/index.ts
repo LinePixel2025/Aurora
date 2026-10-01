@@ -61,6 +61,10 @@ export * from './tools/clipboard.js'
 export * from './tools/notify.js'
 export * from './tools/center.js'
 export * from './tools/imagegen.js'
+// 图像工具（docs/06 §25）：看图 / 截屏（剪贴板图片工具与上面 clipboard 同文件）。
+// 只在当前生效模型开启图片输入（`modelParams.<模型>.vision`）时被注册，门控在主进程装配层。
+export * from './tools/image.js'
+export * from './tools/screenshot.js'
 // Agent 核心能力工具（docs/06 §18/§19/§21）：任务清单、子代理派生、向用户提问。
 export * from './tools/todo.js'
 export * from './tools/task.js'

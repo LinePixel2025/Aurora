@@ -17,7 +17,7 @@ import type {
   LlmToolDefinition,
   ReasoningEffortLevel,
 } from '../llm/types.js'
-import type { ToolProgress, ToolSource } from '../tools/registry.js'
+import type { ToolImage, ToolProgress, ToolSource } from '../tools/registry.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
 
 export const DEFAULT_MAX_ROUNDS = 32
@@ -369,6 +369,15 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
 
     messages.push(toAssistantMessage(assistant))
 
+    /**
+     * 本轮工具产出的图片（图像工具，docs/06 §25）。
+     *
+     * 攒到本轮**全部**工具结果之后才下发：同轮多个工具调用时，中间插一条 user 消息会把
+     * 「assistant(tool_calls) → 每个 id 各自的 tool 消息」这条配对链断开，服务端直接 400。
+     * 因此这里只收集，注入放在下面那个 for 循环之后。
+     */
+    const roundImages: ToolImage[] = []
+
     // 同轮多个工具调用：顺序执行，保证事件与结果顺序确定（docs/06 §5）
     for (const call of calls) {
       if (options.signal?.aborted) {
@@ -412,11 +421,31 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
         role: 'tool',
         content: outcome.content,
         toolCallId: call.id,
+        // 图片**存路径不存内容**（与用户附件同一条回放口径，docs/06 §25）：
+        // 会话文件不因截图膨胀，跨轮重放时按路径重读，关闭 vision 后自动不再下发。
+        ...(outcome.images === undefined || outcome.images.length === 0
+          ? {}
+          : { images: outcome.images.map((item) => item.path) }),
       })
       messages.push({
         role: 'tool',
         content: toolMessage.content,
         toolCallId: call.id,
+      })
+      // 本轮请求的图片分片用**端口刚读好的内容**（不必回查缓存）：同一批图在这一轮里
+      // 手上就有，跨轮重放才走 `resolveImages`。
+      if (outcome.images !== undefined && outcome.images.length > 0) {
+        roundImages.push(...outcome.images)
+      }
+    }
+
+    // 本轮有工具产出的图片：作为一条**合成 user 消息**附在全部 tool 结果之后下发
+    //（tool 角色只能带字符串，两套协议都一样，docs/06 §25）。
+    if (roundImages.length > 0) {
+      messages.push({
+        role: 'user',
+        content: `【工具返回的图片】${roundImages.map((item) => item.path).join('；')}`,
+        images: roundImages.map((item) => item.image),
       })
     }
 
@@ -510,6 +539,32 @@ function toMessages(
 ): ChatRequestMessage[] {
   // 只挑 API 需要的字段（role / content / 工具调用 / 图片）：`reasoning` 等展示字段一律不回传
   const out: ChatRequestMessage[] = []
+  /**
+   * 待下发的工具图片路径（图像工具，docs/06 §25）。
+   *
+   * 攒着而不是"每条 tool 消息后立刻插一条 user 消息"：同轮多个工具调用时，
+   * 历史里是连续的若干条 tool 消息，逐条插 user 会把它们**从中间劈开** ——
+   * 「assistant(tool_calls) → 每个 id 各自的 tool 消息」的配对链一断，服务端直接 400。
+   * 因此只在「一段 tool 消息结束」（碰到非 tool 消息）时统一注入一条，
+   * 与写入路径「轮末统一插入」产生的顺序逐字一致。
+   */
+  let pendingImages: string[] = []
+
+  const flushImages = (): void => {
+    if (pendingImages.length === 0) return
+    const paths = pendingImages
+    pendingImages = []
+    // 未注入解析器（历史按纯文本下发）/ 解析不出（关闭 vision、文件已删）时整条省略
+    if (resolveImages === undefined) return
+    const images = resolveImages(paths)
+    if (images.length === 0) return
+    out.push({
+      role: 'user',
+      content: `【工具返回的图片】${paths.join('；')}`,
+      images: [...images],
+    })
+  }
+
   for (const message of history) {
     if (message.role === 'system') continue
     if (message.role === 'tool') {
@@ -518,8 +573,11 @@ function toMessages(
         content: message.content,
         ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
       })
+      pendingImages.push(...imagePathsOf(message))
       continue
     }
+    // 非 tool 消息：先把上一段工具图片发出去，再发这一条
+    flushImages()
     if (message.role === 'assistant') {
       const stored = message.toolCalls ?? []
       out.push({
@@ -539,7 +597,20 @@ function toMessages(
     }
     out.push({ role: 'user', content: message.content, ...imagesOfMessage(message, resolveImages) })
   }
+  // 历史以 tool 消息结尾时也要把最后一段发出去
+  flushImages()
   return out
+}
+
+/**
+ * 消息上挂着的图片**路径**（多模态输入 / 图像工具，docs/06 §3.1、§25）。
+ *
+ * 只收字符串：会话文件是磁盘数据，可能被手改过 —— 畸形值在这里滤掉，
+ * 不让它进到解析器（解析失败会白报一次错，而"图没了"本身只该是一条提示）。
+ */
+function imagePathsOf(message: StoredMessage): string[] {
+  if (!Array.isArray(message.images)) return []
+  return message.images.filter((path): path is string => typeof path === 'string' && path !== '')
 }
 
 /**
@@ -550,8 +621,8 @@ function imagesOfMessage(
   message: StoredMessage,
   resolveImages?: LlmImageResolver,
 ): { images?: LlmImageInput[] } {
-  if (resolveImages === undefined || !Array.isArray(message.images)) return {}
-  const paths = message.images.filter((path) => typeof path === 'string')
+  if (resolveImages === undefined) return {}
+  const paths = imagePathsOf(message)
   if (paths.length === 0) return {}
   const resolved = resolveImages(paths)
   return resolved.length === 0 ? {} : { images: [...resolved] }
@@ -602,6 +673,8 @@ interface ToolOutcome {
   state: 'success' | 'error'
   /** 工具自报的最终子代理快照（仅 `task`；随工具卡一起持久化） */
   subagent?: SubagentSnapshot
+  /** 工具产出 / 读到的图片（图像工具，docs/06 §25）：随 tool 消息落盘路径、随合成 user 消息下发内容 */
+  images?: readonly ToolImage[]
 }
 
 /**
@@ -766,6 +839,11 @@ async function runTool(
       state: isError ? 'error' : 'success',
       // 工具自报的最终子代理快照（仅 `task`）原样带上，随工具卡持久化
       ...(result.subagent === undefined ? {} : { subagent: result.subagent }),
+      // 工具产出 / 读到的图片（图像工具，docs/06 §25）：失败的调用不回传图片分片 ——
+      // `isError` 的结果里带上图片会让模型看到"读失败但图在这儿"的自相矛盾输入
+      ...(!isError && result.images !== undefined && result.images.length > 0
+        ? { images: result.images }
+        : {}),
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

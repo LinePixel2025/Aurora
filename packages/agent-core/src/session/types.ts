@@ -44,9 +44,11 @@ export interface StoredMessage {
    */
   reasoning?: string
   /**
-   * 随这条用户消息一起发出的**图片附件路径**（多模态输入，docs/06 §3.1，v22）。
+   * 随这条消息一起发出的**图片附件路径**（多模态输入，docs/06 §3.1，v22；图像工具 §25）。
    *
-   * 存的是**路径不是 base64**：一张 4 MB 的图 base64 后是 5.3 MB，几轮对话就能把
+   * 两个来源共用这一个字段：`role: 'user'` 是用户拖入的附件，`role: 'tool'` 是
+   * `view_image` / `screenshot` / `clipboard_read_image` 的产物 —— 两者都是
+   * **路径不是 base64**：一张 4 MB 的图 base64 后是 5.3 MB，几轮对话就能把
    * `sessions/*.json` 顶成几十 MB；跨轮次续聊时按路径重新读盘（用户追问「刚才那张图」时
    * 模型仍看得到图），文件被删 / 读不出就在那一轮跳过并记 warn —— 不编造内容，
    * 也不让整轮请求失败。是否真的作为图片分片下发由当前生效模型的 `llm.providers.<id>.modelParams.<模型 id>.vision` 决定。

@@ -240,6 +240,15 @@ export function buildToolGuidance(toolNames: readonly string[]): string | undefi
   if (has('grep')) {
     lines.push('- `grep` 返回的是路径与行号，拿到位置后再用 `read_file` 的 `offset` 读那一段。')
   }
+  // 图像工具（docs/06 §25）：只在当前模型开了图片输入时才会出现在工具表里，
+  // 因此这段指引天然随之开关。要点是"自己去看，别让用户描述屏幕"——
+  // 这是模型最容易走偏的一步（默认会反问用户「你能描述一下吗」）。
+  if (has('view_image') || has('screenshot')) {
+    lines.push(
+      '- 用户问屏幕上是什么、或指向某个报错窗口时，直接用 `screenshot` 截图自己看，不要让用户描述；' +
+        '磁盘上的图片用 `view_image`（读文本仍用 `read_file`）。',
+    )
+  }
   return lines.join('\n')
 }
 

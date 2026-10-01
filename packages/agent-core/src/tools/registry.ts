@@ -5,7 +5,7 @@
  * （`loop` 模块会消费本文件暴露的工具表，MCP / Skill 都往这里注册）。
  */
 import type { SubagentSnapshot } from '@aurora/shared'
-import type { LlmToolDefinition, LlmToolParameterSchema } from '../llm/types.js'
+import type { LlmImageInput, LlmToolDefinition, LlmToolParameterSchema } from '../llm/types.js'
 
 /**
  * 工具执行过程中的进度上报（docs/06 §19）。
@@ -42,6 +42,22 @@ export interface ToolContext {
   approvedByUser?: boolean
 }
 
+/**
+ * 工具产出的一张图片（图像工具，docs/06 §25）。
+ *
+ * 两个字段各管一件事，缺一不可：
+ * - `image` 是**已经读好的内容**（内核不碰文件系统，端口读好交进来），本轮请求立即要用；
+ * - `path` 是**落盘位置**：随 tool 消息存进会话历史（`StoredMessage.images`），
+ *   后续轮次按路径重读重放 —— 与用户拖入的附件同一条回放口径。
+ *
+ * 剪贴板图片这类**原本没有路径**的产物，由主进程先落盘再回传路径，
+ * 于是「回放」这条路径对所有来源都成立（没有例外分支）。
+ */
+export interface ToolImage {
+  path: string
+  image: LlmImageInput
+}
+
 export interface ToolResult {
   /** 回填给模型的结果文本（会进入上下文，注意长度） */
   content: string
@@ -54,6 +70,11 @@ export interface ToolResult {
    * 让「子代理」页面在重启后仍能回看历史运行。
    */
   subagent?: SubagentSnapshot
+  /**
+   * 工具产出 / 读到的图片（图像工具，docs/06 §25）：非空时循环把它作为一条**合成 user 消息**
+   * 附在本轮全部 tool 结果之后下发（tool 角色只能带字符串，两套协议都一样）。
+   */
+  images?: readonly ToolImage[]
 }
 
 export interface ToolDefinition {
