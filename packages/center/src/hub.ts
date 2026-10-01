@@ -45,6 +45,15 @@ export interface HubDeps {
 
 /** 待回执命令的超时：session.input 的回执是"客户端收下了"（毫秒级），15s 足够宽裕 */
 const PENDING_TIMEOUT_MS = 15_000
+/**
+ * 语音中转命令（stt.transcribe / tts.synthesize，docs/12 §6.4）的待回执超时：
+ * 客户端调本机 STT / TTS provider 本身就有 30s 级超时（stt.ts / tts.ts 的
+ * `DEFAULT_TIMEOUT_MS`），沿用 15s 会让服务器**先于客户端**超时、把还在转写的
+ * 请求报成 E_CLIENT_TIMEOUT。与协议注释「网页端回执等待放宽到 60s」对齐。
+ */
+const VOICE_PENDING_TIMEOUT_MS = 60_000
+/** 语音中转命令（按 cmd.kind 判定，用放宽后的超时） */
+const VOICE_KINDS: ReadonlySet<string> = new Set(['stt.transcribe', 'tts.synthesize'])
 
 /**
  * 待回执条目（P1-03），键为 `${webConnId}:${requestId}`。
@@ -308,6 +317,25 @@ export class Hub {
           ...(message.limit === undefined ? {} : { limit: message.limit }),
         })
         break
+      // ── 语音中转（v0.3.2，docs/12 §6.4）：客户端用本机已配 STT / TTS provider，
+      // 服务器只转发不缓存（音频不落盘、不进任何存储）。授权 / 离线判定同其他命令；
+      // 无 sessionId，不进会话属主记账（automation.* 同款）。回执等待放宽到 60s，
+      // 见 VOICE_PENDING_TIMEOUT_MS。
+      case 'stt.transcribe':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'stt.transcribe',
+          requestId: message.requestId,
+          audioBase64: message.audioBase64,
+          mime: message.mime,
+        })
+        break
+      case 'tts.synthesize':
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'tts.synthesize',
+          requestId: message.requestId,
+          text: message.text,
+        })
+        break
       default:
         break // 协议只增不改：未知类型忽略
     }
@@ -356,6 +384,8 @@ export class Hub {
       this.sessionOwners.set(cmd.sessionId, { userId: conn.user.id, clientId })
     }
     const key = pendingKey(conn.id, requestId)
+    // 语音中转的回执要等客户端调完本机 provider（30s 级），用放宽后的超时
+    const timeoutMs = VOICE_KINDS.has(cmd.kind) ? VOICE_PENDING_TIMEOUT_MS : PENDING_TIMEOUT_MS
     const timer = setTimeout(() => {
       const current = this.pending.get(key)
       // 只回收自己那一条：同一条网页连接复用同一个 requestId 时（协议上允许），
@@ -363,7 +393,7 @@ export class Hub {
       if (current === undefined || current.timer !== timer) return
       this.pending.delete(key)
       conn.send({ type: 'result', requestId, ok: false, error: 'E_CLIENT_TIMEOUT' })
-    }, PENDING_TIMEOUT_MS)
+    }, timeoutMs)
     this.pending.set(key, { webConnId: conn.id, clientId, requestId, timer })
     target.send({ type: 'cmd', cmd })
   }

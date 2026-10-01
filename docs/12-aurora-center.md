@@ -126,6 +126,8 @@ CenterCommand =
   | { kind: 'mode.switch',    requestId, mode }       // 等价 config.update 的 modes.current，语义独立成命令
   | { kind: 'confirm.resolve', requestId, confirmId, approved }  // 网页端确认卡批复的转发
   | { kind: 'session.history', requestId, sessionId } // 历史回放（v0.2.4，§6.3）；result.data 携带 CenterSessionHistoryMessage[]
+  | { kind: 'stt.transcribe', requestId, audioBase64, mime }  // 语音识别中转（v0.3.2，§6.4）；客户端用本机已配 provider 转写
+  | { kind: 'tts.synthesize', requestId, text }               // 朗读合成中转（v0.3.2，§6.4）；result.data 携带 { audioBase64, mimeType }
 ```
 
 - `sessionId` 由**服务器分配**，固定形如 `center-<短随机串>`（客户端渲染层据此把
@@ -178,6 +180,8 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
   { type: 'mode.switch',    requestId, clientId, mode }
   { type: 'confirm.resolve', requestId, clientId, confirmId, approved }
   { type: 'session.history', requestId, clientId, sessionId }  // 历史回放（v0.2.4，§6.3）
+  { type: 'stt.transcribe',  requestId, clientId, audioBase64, mime }  // 语音识别中转（v0.3.2，§6.4）
+  { type: 'tts.synthesize',  requestId, clientId, text }               // 朗读合成中转（v0.3.2，§6.4）
 
 服务器 → 网页
   { type: 'clients', clients: ClientInfo[] }              // 连接后与每次变动时的全量快照
@@ -275,8 +279,14 @@ GET /api/client/device/info?code=<userCode>                      （无需登录
 { mode, version, platform,
   agent: { permissionMode, tools: { enabled, files, search, open, terminal } },
   center: { allowRemoteSession, allowRemoteConfig, allowFileTransfer },
-  llm: { activeProviderId, model, reasoningEffort } }   // v0.2.3 起
+  llm: { activeProviderId, model, reasoningEffort },   // v0.2.3 起
+  voice: { stt: boolean, tts: boolean } }              // v0.3.2 起：本机语音能力位（§6.4）
 ```
+
+`voice` 为**可选字段**（旧客户端不下发）：`stt` = 本机 STT 可用（`stt.enabled` + 激活
+provider 的 `baseUrl`/`model` 齐全，同桌面端门控口径）；`tts` = 本机 TTS 可用。网页端据此
+决定**是否渲染**麦克风 / 朗读按钮（未配置连按钮都不出现，不是 disabled）——字段缺失时
+按钮不渲染（向后兼容旧客户端）。
 
 ### 6.2 远程配置白名单（客户端侧强制）
 
@@ -327,6 +337,28 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
 客户端 `center.allowRemoteSession` 闸门与服务器侧属主 / 管理员鉴权约束。
 **自动化定义与历史只存在客户端**（`<userData>/automations/*.json`），服务器零存储改动
 —— 与 `session.history` 的「只转发不缓存」同一口径。
+
+### 6.4 语音中转命令（v0.3.2）
+
+浏览器直连 STT/TTS provider 会被 CORS 拦截，且 API Key 不能落浏览器；网页端的语音能力
+**经桌面客户端中转**——客户端复用本机已配置的 provider（safeStorage 里的密钥），服务器
+只转发命令与回执、零存储（与 `session.history` 同口径）：
+
+| 命令（web → server → client） | 语义与边界 |
+|---|---|
+| `stt.transcribe` | 网页端录一段音频（webm/opus 或 mp4，`mime` 标明容器）以 base64 随命令上行，客户端调本机 STT service（`main/stt.ts`，协议与桌面端语音输入完全一致）转写，`result.data` 携带 `{ text }` |
+| `tts.synthesize` | 网页端把一段文本送客户端 TTS service（`main/tts.ts`）合成，`result.data` 携带 `{ audioBase64, mimeType }`，网页端 blob 播放 |
+
+- 门控：两条命令都受客户端 `center.allowRemoteSession` 闸门约束（同其他中转命令）；
+  客户端本机未配置 STT / TTS 时回 `E_VOICE_NOT_CONFIGURED`，网页端按能力位
+  （`ClientStatus.voice`，§6.1）**预先不渲染**按钮。
+- 时效：STT / TTS 合成耗时可能超过网页端命令的默认 30s 超时，网页端对这两条命令
+  的回执等待放宽到 **60s**。
+- **已知限制**：网页端录音（`getUserMedia`）需要安全上下文——Center 以 `http://IP:端口`
+  裸部署时语音输入不可用（需 HTTPS 反代或 localhost 访问）；朗读（TTS）不受此限。
+  另：朗读的 `audio.play()` 发生在合成回执之后，按「瞬态激活」判定自动播放的浏览器
+  （Safari）在合成耗时超过激活窗口时可能拒绝播放——表现为「朗读失败」红条，属浏览器
+  策略限制，不是链路故障。
 
 ## 7. 客户端配置（`center` 分组，CONFIG_VERSION 17）
 
@@ -414,11 +446,18 @@ aurora-center version
 - 视觉基调：`-apple-system, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei"`
   字体栈；`#f5f5f7` 底 + 白色大圆角卡片（12–16px）+ `#0071e3` 主色（Apple 蓝）；
   顶栏毛玻璃（`backdrop-filter: saturate(180%) blur(20px)`）；克制阴影、无重边框。
-- 布局：左侧客户端列表（在线绿点 / 离线灰点 / 名称 / 平台图标）+ 右侧会话主区
-  （消息流 + 输入框）；管理员页表格式用户管理。
-- 会话渲染按 `messageId` 聚合 `text` 增量；工具调用渲染为可折叠卡片；思考过程折叠块；
+- **布局（v0.3.2 重构：对话主导）**：控制台 = 顶部客户端紧凑选择器 + **对话主区独占全高**
+  + 右侧可折叠边栏（两个 tab：「会话列表」/「远程控制」，一键收起后对话全宽，
+  折叠状态存 localStorage）。此前「远程控制 + 会话列表 + 对话区」同列纵向堆叠、
+  对话区被压在下面的布局已废弃。
+- 会话渲染按 `messageId` 聚合 `text` 增量；助手正文与思考块走 **Markdown 渲染**
+  （v0.3.2，自写渲染器含 HTML 转义防 XSS，与桌面端同一实现；用户气泡保持纯文本）；
+  工具调用渲染为可折叠卡片；思考过程折叠块；
   任务清单（job）与子代理（subagent）各渲染为一张状态卡；`done` 结束
   loading；`error` 红条；敏感工具确认卡显示在会话顶部（倒计时 + 批准 / 拒绝）。
+- **自动跟随滚动（v0.3.2 重做）**：与桌面端同一套「吸底」语义（`stickToBottomCore`
+  搬运版）——跟随状态只由真实用户输入（滚轮 / 拖动 / 翻页键）关闭，流式增量的
+  scroll 事件不关；250ms 意图窗口按之后的读数重判；非跟随态显示「回到底部」胶囊。
 - **会话管理面板（v0.2.3，§6.3）**：客户端面板内列出该客户端的 `center-` 会话
   （`session.list` 拉取），每项提供：切换查看（网页本地）、「在客户端打开」
   （`session.activate`）、可见性开关（`session.visibility`）、权限档下拉
@@ -440,8 +479,14 @@ aurora-center version
   网页端不做实时订阅）。
 - 文件管理页：全部上传文件的表格（名称 / 来源客户端 / 大小 / 备注 / 上传与过期时间），
   行内下载与删除，过期前 < 24h 显示倒计时。
-- **移动端适配**：≤ 720px 与 ≤ 480px 两档断点——窄屏上下堆叠、客户端列表变横向滚动
-  chips、表格横向滚动、触摸目标 ≥ 40px。
+- **语音（v0.3.2，§6.4）**：composer 麦克风按钮（按 `ClientStatus.voice.stt` 门控，
+  未配置连按钮都不渲染）录音 → `stt.transcribe` 中转识别 → 文本填入输入框；
+  助手消息行内「朗读」按钮（按 `voice.tts` 门控）→ `tts.synthesize` 中转合成 → blob 播放。
+  录音需安全上下文（HTTPS / localhost），见 §6.4 已知限制。
+- **移动端适配（v0.3.2 重做）**：≤ 720px 与 ≤ 480px 两档断点——对话区**全屏**为主角，
+  会话列表 / 远程控制收进**覆盖式抽屉**（滑出盖在对话上、关闭即回全屏，替代旧版
+  「内嵌分段展开限高 38%」）；客户端选择器收紧为顶部下拉；表格横向滚动、
+  触摸目标 ≥ 40px、safe-area 与 composer 16px 输入字号（规避 iOS 聚焦缩放）。
 
 ## 11. 安全边界与非目标（v1）
 

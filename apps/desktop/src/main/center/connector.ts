@@ -139,6 +139,21 @@ export interface CenterConnectorDeps {
   /** 远程自动化管理（docs/13 §10）：与远程会话同组，受 allowRemoteSession 闸门 */
   automation?: AutomationRemotePort
   /**
+   * 语音中转（v0.3.2，docs/12 §6.4）：本机 STT / TTS 服务（装配层注入**同一实例**，
+   * 与 `stt:transcribe` / `tts:synthesize` IPC 共用，不在 connector 里直接构造）。
+   * 门控判定经 `readiness` 注入（与 `ClientStatus.voice` 能力位同一份口径），
+   * 未注入、或对应能力门控不满足时回 `E_VOICE_NOT_CONFIGURED`（老装配器兼容，
+   * 与 sessionManager 同款语义）。
+   */
+  voice?: {
+    /** 门控能力位（每次调用即时取值，设置热改立即生效） */
+    readiness: () => { stt: boolean; tts: boolean }
+    /** 录音 base64 → 文本；失败抛错（错误文案透传给网页端） */
+    transcribe(input: { audioBase64: string; mime: string }): Promise<{ text: string }>
+    /** 文本 → 音频；失败抛错（错误文案透传给网页端） */
+    synthesize(text: string): Promise<{ audioBase64: string; mimeType: string }>
+  }
+  /**
    * 结算一张在途敏感工具确认卡（`confirm.resolve` 命令，docs/12 §5.1）。
    * 返回是否命中（false = 已超时 / 已被本地结算 / id 未知）；未注入时不拦截。
    */
@@ -669,6 +684,39 @@ export class CenterConnector {
             error: String(error),
           })
           reply(false, undefined, 'E_UNKNOWN')
+        }
+        return
+      }
+      // ── 语音中转（docs/12 §6.4）：服务远程对话的本机语音能力，与自动化同组受
+      // allowRemoteSession 闸门（session.list 同款拒绝语义）；本机未配置 STT / TTS
+      // 时回专用错误码 E_VOICE_NOT_CONFIGURED（网页端据此不渲染麦克风 / 朗读按钮，
+      // 判定与 ClientStatus.voice 能力位同一份 readiness，别在这两处写两套口径）。
+      case 'stt.transcribe':
+      case 'tts.synthesize': {
+        if (!config.allowRemoteSession) {
+          reply(false, undefined, 'E_REMOTE_DISABLED')
+          return
+        }
+        const voice = this.deps.voice
+        if (voice === undefined) {
+          reply(false, undefined, 'E_VOICE_NOT_CONFIGURED')
+          return
+        }
+        const ready = voice.readiness()
+        if (cmd.kind === 'stt.transcribe' ? !ready.stt : !ready.tts) {
+          reply(false, undefined, 'E_VOICE_NOT_CONFIGURED')
+          return
+        }
+        try {
+          if (cmd.kind === 'stt.transcribe') {
+            reply(true, await voice.transcribe({ audioBase64: cmd.audioBase64, mime: cmd.mime }))
+          } else {
+            reply(true, await voice.synthesize(cmd.text))
+          }
+        } catch (error) {
+          this.logger.warn('远程语音命令执行失败', { kind: cmd.kind, error: String(error) })
+          // service 的错误是给用户看的中文文案（超时 / 限流 / 密钥无效），原样透传
+          reply(false, undefined, error instanceof Error ? error.message : 'E_UNKNOWN')
         }
         return
       }

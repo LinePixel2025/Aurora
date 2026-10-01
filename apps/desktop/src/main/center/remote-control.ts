@@ -12,6 +12,8 @@ import {
   resolveModelParams,
   type ClientStatus,
   type Settings,
+  type SttSettings,
+  type TtsSettings,
 } from '@aurora/shared'
 
 export interface RemotePatchCheck {
@@ -52,6 +54,38 @@ export function applyWhitelistedPaths(draft: Settings, patch: Record<string, unk
   return true
 }
 
+/**
+ * STT 能力位（docs/12 §6.4）：与渲染层 `sttReady`（chat/App.vue）同一口径 ——
+ * `enabled && active` 指向**存在**的 provider，且该 provider 的 `baseUrl` / `model`
+ * 齐全。**不查 API Key**（本地 whisper 类免密钥部署同样算可用；密钥问题由转写
+ * 失败的错误文案兜底）。
+ */
+function sttReadyOf(settings: SttSettings): boolean {
+  if (!settings.enabled || settings.active === '') return false
+  const provider = settings.providers[settings.active]
+  if (provider === undefined) return false
+  return provider.baseUrl.trim() !== '' && provider.model.trim() !== ''
+}
+
+/** TTS 能力位：与渲染层 `ttsReady` 同口径 —— 在 baseUrl / model 之上多查 `voice` 齐全。 */
+function ttsReadyOf(settings: TtsSettings): boolean {
+  if (!settings.enabled || settings.active === '') return false
+  const provider = settings.providers[settings.active]
+  if (provider === undefined) return false
+  return (
+    provider.baseUrl.trim() !== '' && provider.model.trim() !== '' && provider.voice.trim() !== ''
+  )
+}
+
+/**
+ * 语音能力位（v0.3.2，docs/12 §6.4）：connector 的语音命令门控
+ * （`E_VOICE_NOT_CONFIGURED`）与 `ClientStatus.voice` 能力位**共用这一份**，
+ * 别再写第二套判定。
+ */
+export function voiceReadiness(settings: Settings): { stt: boolean; tts: boolean } {
+  return { stt: sttReadyOf(settings.stt), tts: ttsReadyOf(settings.tts) }
+}
+
 /** 客户端状态快照（连接后与每次 settings:changed 时上报，docs/12 §6.1）。 */
 export function buildClientStatus(
   settings: Settings,
@@ -90,6 +124,9 @@ export function buildClientStatus(
       reasoningEffort:
         activeProvider === undefined ? 'auto' : resolveModelParams(activeProvider).reasoningEffort,
     },
+    // 语音能力位（v0.3.2，docs/12 §6.4）：网页端据此决定是否渲染麦克风 / 朗读按钮
+    //（与桌面端同口径：未配置连按钮都不出现）
+    voice: voiceReadiness(settings),
   }
 }
 

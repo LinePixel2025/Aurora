@@ -104,7 +104,11 @@ import { CenterConnector } from './center/connector.js'
 import { DeviceLoginController, type DeviceLoginOutcome } from './center/device-login.js'
 import { requestClientLogin } from './center/client-login.js'
 import { uploadFileToCenter } from './center/ingest.js'
-import { applyWhitelistedPaths, buildClientStatus } from './center/remote-control.js'
+import {
+  applyWhitelistedPaths,
+  buildClientStatus,
+  voiceReadiness,
+} from './center/remote-control.js'
 import { SkillsService } from './skills.js'
 import { ClassIslandNotifier, ClassIslandProvider } from './classisland.js'
 import { applyProxy, createNetFetch } from './net.js'
@@ -1315,6 +1319,19 @@ async function bootstrap(): Promise<void> {
       }
     },
     statusSnapshot: () => buildClientStatus(settings!.get(), app.getVersion(), process.platform),
+    // 语音中转（docs/12 §6.4）：与 `stt:transcribe` / `tts:synthesize` IPC **同一实例**
+    //（sttService / tts 都在上方装配）；门控判定与 ClientStatus.voice 能力位共用
+    // voiceReadiness（remote-control.ts），不在 connector 里另写一套口径。
+    voice: {
+      readiness: () => voiceReadiness(settings!.get()),
+      transcribe: async (input) => {
+        return sttService.transcribe(input)
+      },
+      synthesize: async (text) => {
+        const result = await tts.synthesize({ text })
+        return { audioBase64: result.audioBase64, mimeType: result.mimeType }
+      },
+    },
     version: app.getVersion(),
     platform: process.platform,
     hostname: () => osHostname(),

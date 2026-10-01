@@ -1,6 +1,80 @@
 import { describe, expect, it } from 'vitest'
-import { buildClientStatus, checkRemotePatch, applyWhitelistedPaths } from './remote-control.js'
+import {
+  applyWhitelistedPaths,
+  buildClientStatus,
+  checkRemotePatch,
+  voiceReadiness,
+} from './remote-control.js'
 import { createDefaultSettings, SETTINGS_READONLY_PREFIXES, type Settings } from '@aurora/shared'
+
+describe('buildClientStatus · 语音能力位（docs/12 §6.4，v0.3.2）', () => {
+  /** 给 settings 配一个齐全的 STT / TTS provider 并激活（再按需裁字段） */
+  function withVoice(settings: Settings): Settings {
+    settings.stt.enabled = true
+    settings.stt.active = 's1'
+    settings.stt.providers['s1'] = {
+      type: 'openai-compat',
+      baseUrl: 'https://stt.example.com/v1',
+      apiKeyEnc: 'x',
+      model: 'whisper-1',
+      language: 'zh',
+    }
+    settings.tts.enabled = true
+    settings.tts.active = 't1'
+    settings.tts.providers['t1'] = {
+      type: 'openai-compat',
+      baseUrl: 'https://tts.example.com/v1',
+      apiKeyEnc: 'x',
+      model: 'tts-1',
+      voice: 'alloy',
+      speed: 1,
+      format: 'mp3',
+    }
+    return settings
+  }
+
+  it('齐全的 provider：voice 两位都 true，快照携带 voice 字段', () => {
+    const status = buildClientStatus(withVoice(createDefaultSettings()), '0.3.2', 'win32')
+    expect(status.voice).toEqual({ stt: true, tts: true })
+  })
+
+  it('门控与渲染层同口径：开关 / active / provider 存在 / 字段齐全，缺一即 false（不查 API Key）', () => {
+    // 出厂默认未配置语音：两位都 false
+    expect(buildClientStatus(createDefaultSettings(), '0.3.2', 'win32').voice).toEqual({
+      stt: false,
+      tts: false,
+    })
+
+    const settings = withVoice(createDefaultSettings())
+    expect(settings.stt.providers['s1']?.apiKeyEnc).not.toBe('') // 门控刻意不查密钥
+
+    // STT 逐项拆：总开关 / active / provider 存在 / baseUrl / model
+    const stt = settings.stt
+    stt.enabled = false
+    expect(voiceReadiness(settings).stt).toBe(false)
+    stt.enabled = true
+    stt.active = ''
+    expect(voiceReadiness(settings).stt).toBe(false)
+    stt.active = 'ghost'
+    expect(voiceReadiness(settings).stt).toBe(false)
+    stt.active = 's1'
+    const savedBaseUrl = stt.providers['s1']!.baseUrl
+    stt.providers['s1']!.baseUrl = ' '
+    expect(voiceReadiness(settings).stt).toBe(false)
+    stt.providers['s1']!.baseUrl = savedBaseUrl
+    stt.providers['s1']!.model = ''
+    expect(voiceReadiness(settings).stt).toBe(false)
+    stt.providers['s1']!.model = 'whisper-1'
+    expect(voiceReadiness(settings).stt).toBe(true)
+
+    // TTS 同口径，多查 voice 字段
+    const tts = settings.tts
+    tts.providers['t1']!.voice = ''
+    expect(voiceReadiness(settings).tts).toBe(false)
+    tts.providers['t1']!.voice = 'alloy'
+    expect(voiceReadiness(settings).tts).toBe(true)
+  })
+})
 
 describe('checkRemotePatch · 远程配置白名单', () => {
   it('白名单内的路径放行（含 agent.tools 子路径）', () => {

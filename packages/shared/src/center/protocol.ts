@@ -46,6 +46,12 @@ export interface ClientStatus {
   center: { allowRemoteSession: boolean; allowRemoteConfig: boolean; allowFileTransfer: boolean }
   /** 生效 LLM 快照（网页端据此展示/切换模型与思考等级，docs/12 §6.3） */
   llm: { activeProviderId: string; model: string; reasoningEffort: ReasoningEffort }
+  /**
+   * 本机语音能力位（v0.3.2，docs/12 §6.4）。**可选字段**（旧客户端不下发）：
+   * 网页端据此决定是否渲染麦克风 / 朗读按钮——未配置连按钮都不出现（同桌面端
+   * STT/TTS 门控口径），字段缺失时同样不渲染（向后兼容）。
+   */
+  voice?: { stt: boolean; tts: boolean }
 }
 
 /** 敏感工具确认请求（客户端 → 服务器 → 网页端转发，docs/12 §5.1） */
@@ -165,6 +171,19 @@ export type CenterCommand =
       mode?: AutomationMode
       limit?: number
     }
+  // ── 语音中转（v0.3.2，docs/12 §6.4）：客户端用本机已配 provider，服务器只转发不缓存 ──
+  /**
+   * 语音识别中转：网页端录音（webm/opus 或 mp4，`mime` 标明容器）base64 上行，
+   * 客户端调本机 STT service 转写；`result.data` 携带 `{ text }`。
+   * 客户端未配置 STT 时回 `E_VOICE_NOT_CONFIGURED`。
+   */
+  | { kind: 'stt.transcribe'; requestId: string; audioBase64: string; mime: string }
+  /**
+   * 朗读合成中转：网页端送文本，客户端调本机 TTS service；
+   * `result.data` 携带 `{ audioBase64, mimeType }`（网页端 blob 播放）。
+   * 客户端未配置 TTS 时回 `E_VOICE_NOT_CONFIGURED`。
+   */
+  | { kind: 'tts.synthesize'; requestId: string; text: string }
 
 /** 客户端 → 服务器 */
 export type CenterClientMessage =
@@ -291,6 +310,15 @@ export type CenterWebMessage =
       mode?: AutomationMode
       limit?: number
     }
+  // ── 语音中转（v0.3.2，docs/12 §6.4）：授权与回执同其他命令；网页端回执等待放宽到 60s ──
+  | {
+      type: 'stt.transcribe'
+      requestId: string
+      clientId: string
+      audioBase64: string
+      mime: string
+    }
+  | { type: 'tts.synthesize'; requestId: string; clientId: string; text: string }
 
 /** 服务器 → 网页 */
 export type CenterWebServerMessage =

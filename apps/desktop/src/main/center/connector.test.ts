@@ -940,3 +940,161 @@ describe('CenterConnector · 确认请求补发队列（docs/12 §5 第 4 步）
     expect(harness.connector.pendingConfirmCount()).toBe(0)
   })
 })
+
+describe('CenterConnector · 语音中转（docs/12 §6.4）', () => {
+  interface VoiceSpies {
+    readiness: ReturnType<typeof vi.fn>
+    transcribe: ReturnType<typeof vi.fn>
+    synthesize: ReturnType<typeof vi.fn>
+  }
+
+  /** 装好 voice 端口的 harness（默认两个能力位都 ready，测试可改） */
+  function makeVoiceConnector(
+    overrides?: Partial<CenterConfig>,
+    readiness: { stt: boolean; tts: boolean } = { stt: true, tts: true },
+  ): { harness: Harness; spies: VoiceSpies } {
+    const harness = makeConnector(overrides)
+    const spies: VoiceSpies = {
+      readiness: vi.fn(() => readiness),
+      transcribe: vi.fn(async () => ({ text: '识别出的文本' })),
+      synthesize: vi.fn(async () => ({ audioBase64: 'QUBBQg==', mimeType: 'audio/mpeg' })),
+    }
+    harness.deps.voice = {
+      readiness: spies.readiness,
+      transcribe: spies.transcribe,
+      synthesize: spies.synthesize,
+    }
+    return { harness, spies }
+  }
+
+  async function sendCmd(socket: FakeSocket, cmd: Record<string, unknown>): Promise<void> {
+    socket.emit('message', JSON.stringify({ type: 'cmd', cmd }))
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
+  function openSocket(harness: Harness): FakeSocket {
+    harness.connector.start()
+    vi.advanceTimersByTime(1)
+    const socket = harness.lastSocket()
+    socket.emit('open')
+    return socket
+  }
+
+  it('stt.transcribe：入参原样透传给本机 service，成功回 data={ text }', async () => {
+    const { harness, spies } = makeVoiceConnector()
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, {
+      kind: 'stt.transcribe',
+      requestId: 'v-1',
+      audioBase64: 'QUBB',
+      mime: 'audio/webm;codecs=opus',
+    })
+    expect(spies.transcribe).toHaveBeenCalledTimes(1)
+    expect(spies.transcribe).toHaveBeenCalledWith({
+      audioBase64: 'QUBB',
+      mime: 'audio/webm;codecs=opus',
+    })
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'v-1',
+      ok: true,
+      data: { text: '识别出的文本' },
+    })
+  })
+
+  it('tts.synthesize：调本机 service，成功回 data={ audioBase64, mimeType }', async () => {
+    const { harness, spies } = makeVoiceConnector()
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, { kind: 'tts.synthesize', requestId: 'v-2', text: '你好，世界' })
+    expect(spies.synthesize).toHaveBeenCalledWith('你好，世界')
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'v-2',
+      ok: true,
+      data: { audioBase64: 'QUBBQg==', mimeType: 'audio/mpeg' },
+    })
+  })
+
+  it('未配置（readiness 对应位 false）：回 E_VOICE_NOT_CONFIGURED，不调 service', async () => {
+    const { harness, spies } = makeVoiceConnector(undefined, { stt: false, tts: false })
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, {
+      kind: 'stt.transcribe',
+      requestId: 'v-3',
+      audioBase64: 'QUBB',
+      mime: 'audio/webm',
+    })
+    await sendCmd(socket, { kind: 'tts.synthesize', requestId: 'v-4', text: '你好' })
+    expect(spies.transcribe).not.toHaveBeenCalled()
+    expect(spies.synthesize).not.toHaveBeenCalled()
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'v-4',
+      ok: false,
+      error: 'E_VOICE_NOT_CONFIGURED',
+    })
+
+    // 单侧配置：STT 未配只挡 STT，TTS 仍可用（两者互不绑定）
+    const half = makeVoiceConnector(undefined, { stt: false, tts: true })
+    const halfSocket = openSocket(half.harness)
+    await sendCmd(halfSocket, {
+      kind: 'stt.transcribe',
+      requestId: 'v-5',
+      audioBase64: 'QUBB',
+      mime: 'audio/webm',
+    })
+    expect(halfSocket.lastMessage()).toMatchObject({ ok: false, error: 'E_VOICE_NOT_CONFIGURED' })
+    await sendCmd(halfSocket, { kind: 'tts.synthesize', requestId: 'v-6', text: '你好' })
+    expect(halfSocket.lastMessage()).toMatchObject({ ok: true })
+  })
+
+  it('voice 端口未注入：回 E_VOICE_NOT_CONFIGURED（老装配器兼容）', async () => {
+    const harness = makeConnector()
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, { kind: 'tts.synthesize', requestId: 'v-7', text: '你好' })
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'v-7',
+      ok: false,
+      error: 'E_VOICE_NOT_CONFIGURED',
+    })
+  })
+
+  it('allowRemoteSession=false：语音命令被本地闸门拒绝（E_REMOTE_DISABLED）', async () => {
+    const { harness, spies } = makeVoiceConnector({ allowRemoteSession: false })
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, {
+      kind: 'stt.transcribe',
+      requestId: 'v-8',
+      audioBase64: 'QUBB',
+      mime: 'audio/webm',
+    })
+    expect(spies.transcribe).not.toHaveBeenCalled()
+    expect(socket.lastMessage()).toMatchObject({ ok: false, error: 'E_REMOTE_DISABLED' })
+  })
+
+  it('service 抛错：中文错误文案透传给网页端（超时 / 限流等由 provider 侧描述）', async () => {
+    const { harness, spies } = makeVoiceConnector()
+    spies.transcribe.mockRejectedValueOnce(new Error('识别超时（30s）'))
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, {
+      kind: 'stt.transcribe',
+      requestId: 'v-9',
+      audioBase64: 'QUBB',
+      mime: 'audio/webm',
+    })
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'v-9',
+      ok: false,
+      error: '识别超时（30s）',
+    })
+  })
+})

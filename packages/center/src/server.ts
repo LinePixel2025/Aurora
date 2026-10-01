@@ -54,12 +54,17 @@ const HELLO_TIMEOUT_MS = 10_000
 export const HEARTBEAT_INTERVAL_MS = 15_000
 export const HEARTBEAT_MISSES_ALLOWED = 1
 /*
- * 单帧上限（P2-14）：协议里最大的消息不过几 KB（会话历史走 result.data，仍是 JSON 文本），
- * ws 默认的 100 MiB 只意味着一条恶意帧就能让 `JSON.parse` 停顿秒级并吃掉上百 MB 内存。
- * 超限帧由 ws 自己以 1009 关闭该连接（见下面的 socket error 监听：那条 error 必须就地消费）。
- * 导出供单测钉住上限。
+ * 单帧上限（P2-14）：ws 默认的 100 MiB 意味着一条恶意帧就能让 `JSON.parse` 停顿秒级
+ * 并吃掉上百 MB 内存，因此仍要显式设上限；超限帧由 ws 自己以 1009 关闭该连接
+ * （见下面的 socket error 监听：那条 error 必须就地消费）。导出供单测钉住上限。
+ *
+ * v0.3.2 语音中转（docs/12 §6.4）把上限从 1 MiB 放宽到 16 MiB：`stt.transcribe` 的
+ * 上行是最大约 10 MB 的 base64 音频（base64 膨胀后 ≈13.7 MiB，再加 JSON 包封留余量），
+ * `tts.synthesize` 的回执（client → server 的 result）同样可能带数 MB base64 音频。
+ * 沿用 1 MiB 会把语音链路在网关处以 1009 掐断（连接整个被关，不止丢一条命令）。
+ * 两侧 WebSocketServer（clientWss / webWss）共用这一个值：上行与转发都要过得去。
  */
-export const MAX_WS_PAYLOAD = 1024 * 1024
+export const MAX_WS_PAYLOAD = 16 * 1024 * 1024
 /*
  * 认证类端点的限速参数（P2-12）—— **参数集中在这一处**，便于按部署调参；
  * 计数键是源 IP，三个作用域各自独立（互不占用额度）。

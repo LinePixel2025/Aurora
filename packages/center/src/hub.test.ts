@@ -1023,3 +1023,123 @@ describe('Hub · 畸形入站消息与回执隔离（P0-01 / P1-02 / P1-03）', 
     }
   })
 })
+
+describe('Hub · 语音中转（docs/12 §6.4）', () => {
+  it('stt.transcribe / tts.synthesize 原样转发成 cmd 给目标客户端；result 按 requestId 转回网页端', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    client.sent.length = 0
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'stt.transcribe',
+      requestId: 'web-v1',
+      clientId: 'c1',
+      audioBase64: 'QUBB',
+      mime: 'audio/webm;codecs=opus',
+    })
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'tts.synthesize',
+      requestId: 'web-v2',
+      clientId: 'c1',
+      text: '你好，世界',
+    })
+    expect(client.sent).toEqual([
+      {
+        type: 'cmd',
+        cmd: {
+          kind: 'stt.transcribe',
+          requestId: 'web-v1',
+          audioBase64: 'QUBB',
+          mime: 'audio/webm;codecs=opus',
+        },
+      },
+      {
+        type: 'cmd',
+        cmd: { kind: 'tts.synthesize', requestId: 'web-v2', text: '你好，世界' },
+      },
+    ])
+
+    // 客户端回执：成功带转写文本、失败带错误码，都按 requestId 转回发起的网页连接
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'web-v1',
+      ok: true,
+      data: { text: '识别文本' },
+    })
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'web-v2',
+      ok: false,
+      error: 'E_VOICE_NOT_CONFIGURED',
+    })
+    expect(owner.sent).toEqual([
+      { type: 'result', requestId: 'web-v1', ok: true, data: { text: '识别文本' } },
+      { type: 'result', requestId: 'web-v2', ok: false, error: 'E_VOICE_NOT_CONFIGURED' },
+    ])
+  })
+
+  it('拒绝路径与既有命令一致：非属主 E_FORBIDDEN、未登记 E_CLIENT_NOT_FOUND、离线 E_CLIENT_OFFLINE', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    harness.connectClient('c1')
+    const stranger = harness.connectWeb({ id: 'u2', username: 'u2', role: 'user' })
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+
+    harness.hub.handleWebMessage(stranger.conn, {
+      type: 'tts.synthesize',
+      requestId: 'web-v3',
+      clientId: 'c1',
+      text: '你好',
+    })
+    expect((stranger.sent.at(-1) as { error?: string }).error).toBe('E_FORBIDDEN')
+
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'stt.transcribe',
+      requestId: 'web-v4',
+      clientId: 'ghost',
+      audioBase64: 'QUBB',
+      mime: 'audio/webm',
+    })
+    expect((owner.sent.at(-1) as { error?: string }).error).toBe('E_CLIENT_NOT_FOUND')
+
+    await seedClient(harness, 'c2', 'u1')
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'tts.synthesize',
+      requestId: 'web-v5',
+      clientId: 'c2',
+      text: '你好',
+    })
+    expect((owner.sent.at(-1) as { error?: string }).error).toBe('E_CLIENT_OFFLINE')
+  })
+
+  it('语音命令的待回执超时放宽到 60s：15s 不合成超时，60s 后才报 E_CLIENT_TIMEOUT', async () => {
+    vi.useFakeTimers()
+    try {
+      const harness = await makeHub()
+      await seedClient(harness, 'c1', 'u1')
+      harness.connectClient('c1')
+      const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+      owner.sent.length = 0
+      harness.hub.handleWebMessage(owner.conn, {
+        type: 'stt.transcribe',
+        requestId: 'web-v6',
+        clientId: 'c1',
+        audioBase64: 'QUBB',
+        mime: 'audio/webm',
+      })
+      // 15s（普通命令的超时点）不合成超时：客户端调本机 provider 是 30s 级耗时
+      await vi.advanceTimersByTimeAsync(16_000)
+      expect(owner.sent.filter((m) => (m as { type: string }).type === 'result')).toHaveLength(0)
+      // 60s 后仍未回执才合成 E_CLIENT_TIMEOUT，不让请求悬死
+      await vi.advanceTimersByTimeAsync(45_000)
+      const result = owner.sent.at(-1) as { ok: boolean; error?: string }
+      expect(result.ok).toBe(false)
+      expect(result.error).toBe('E_CLIENT_TIMEOUT')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
