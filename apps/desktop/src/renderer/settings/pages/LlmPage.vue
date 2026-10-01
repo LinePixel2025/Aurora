@@ -8,14 +8,16 @@
  *
  * 编辑卡（`mode === 'edit' && editingId === id`，一次只渲染一张）从上到下是：
  * 必填区（baseURL / API Key / 模型名）→ **「模型设置」区**（候选模型列表：拉取 / 手动添加 /
- * 重命名 / 删除 / 点选「当前使用」）→ `.more`「高级参数与连接测试」折叠区
- * （temperature / 思考等级 / 上下文窗口 / 连接测试 / 模型 chips，默认收起）
- * → 卡片底部「应用 / 取消」。
+ * 重命名 / 删除 / 点选「当前使用」/ **行内「参数」开关**）→ `.more`「高级参数与连接测试」折叠区
+ * （**只剩**接口类型 + 连接测试 / 拉取按钮 + 模型 chips）→ 卡片底部「应用 / 取消」。
  *
- * 「上下文窗口」（`llm.providers.<id>.contextWindow`，v11 新增，docs/08 §1）是**可选信息**：
- * 它不进必填区（用户得先翻服务商文档才知道），放在折叠区与 temperature / 思考等级并列；
- * 只读态在行标题下方以小字展示（0 = 未知，不渲染），编辑态在折叠区里改。非法输入一律
- * 归一化（见 `clampContextWindow`），**不阻断保存** —— 缺了它对话窗只是不画占比进度条。
+ * **生成参数按模型走**（v23，docs/08 §1）：`llm.providers.<id>.modelParams.<模型 id>` 里的
+ * 思考等级 / 上下文窗口 / 支持图片输入三项，编辑入口在每一行模型右上角的「参数」开关里；
+ * 锚点是 `llm.providers.<id>.modelList.<index>.<字段>`，写入口只有 `patchParams` 一个
+ * （它整份替换该键的对象 —— `reasoningEffort` 没有 `.default()`，只写一项会让整份配置被判损坏）。
+ * 「上下文窗口」是**可选信息**：非法输入一律归一化（见 `clampContextWindow`），**不阻断保存**
+ * —— 缺了它对话窗只是不画占比进度条；当前使用的那一行还会在行内以小字展示一次窗口值
+ * （0 = 未知，不渲染）。
  *
  * 「当前使用」与「候选列表」的关系（唯一生效值只有 `model`，列表 `modelList` 只是候选项）：
  * 在「模型名」里填的 id 会自动补进列表；删掉当前使用的那一项**不换模型**，只提示
@@ -32,6 +34,7 @@ import { formatTokenCount } from '@aurora/shared/browser'
 import { ChevronRight } from '../../shared/icons.js'
 import {
   DEFAULT_REASONING_EFFORT,
+  LLM_MODEL_PARAM_DEFAULTS,
   LLM_PROVIDER_TYPE_LABELS,
   LlmProviderTypes,
   PROVIDER_PRESETS,
@@ -39,7 +42,9 @@ import {
   REASONING_EFFORT_LEVELS,
   RESOURCE_NAME_PATTERN,
   RESOURCE_NAME_RULE,
+  type LlmModelParams,
   type LlmProviderConfig,
+  type ReasoningEffort,
   type TestConnectionResult,
 } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
@@ -81,6 +86,12 @@ const editingId = ref<string | null>(null)
 const pendingRemoveId = ref<string | null>(null)
 /** 高级参数折叠状态（按 provider 记，默认收起） */
 const advancedOpen = reactive<Record<string, boolean>>({})
+/**
+ * 模型行内参数块的展开态：「<providerId>:<index>」→ 是否展开（默认收起）。
+ * 与 `advancedOpen` / `renamingModel` 同一套「按 key 记」的写法；它只是行内的一块内容，
+ * **不涉及浮层互斥**，所以允许多行同时展开（一次只开一张卡那条约束只针对 provider 编辑卡）。
+ */
+const paramsOpen = reactive<Record<string, boolean>>({})
 /** 候选模型的行内重命名编辑态：「<providerId>:<index>」，同一时刻只允许一行在编辑 */
 const renamingModel = ref<string | null>(null)
 /** 行内重命名的输入值（与上面那条一一对应，所以共用一个 ref 就够） */
@@ -152,6 +163,16 @@ function isEditing(id: string): boolean {
 
 function advancedOf(id: string): boolean {
   return advancedOpen[id] === true
+}
+
+/** 某一行模型参数块是否展开（按 `${draft.id}:${index}` 记）。 */
+function paramsExpanded(draftId: string, index: number): boolean {
+  return paramsOpen[`${draftId}:${index}`] === true
+}
+
+function toggleParams(draftId: string, index: number): void {
+  const key = `${draftId}:${index}`
+  paramsOpen[key] = paramsOpen[key] !== true
 }
 
 /**
@@ -263,7 +284,22 @@ function commitRename(draft: ProviderDraft, index: number): void {
   }
   draft.modelList[index] = next
   if (previous !== '' && previous === currentModel(draft)) draft.model = next
+  // 参数是**按模型 id 键**的（v23）：重命名要把该模型的那份参数一起搬到新 id 下，
+  // 否则「改了个名字」的模型会读回一份默认参数，用户填过的窗口 / 图片开关像凭空消失。
+  transferModelParams(draft, previous, next)
   closeRename()
+}
+
+/**
+ * 把 `from` 名下的参数搬到 `to`，并删掉旧键。
+ * 目标已有条目时**以它为准**（只补它缺的键），与 v22 → v23 迁移同一套「不覆盖已写值」语义。
+ */
+function transferModelParams(draft: ProviderDraft, from: string, to: string): void {
+  if (from === '' || from === to) return
+  const source = draft.modelParams[from]
+  if (source === undefined) return
+  draft.modelParams[to] = { ...source, ...(draft.modelParams[to] ?? {}) }
+  delete draft.modelParams[from]
 }
 
 /**
@@ -275,13 +311,59 @@ function commitRename(draft: ProviderDraft, index: number): void {
 function removeModel(draft: ProviderDraft, index: number): void {
   draft.modelList.splice(index, 1)
   closeRename()
+  // 行内参数块的展开态是**按下标**记的：删一行之后后面的行会整体上移，
+  // 不收起来就会让下一行的参数块「自己展开」（看着像点错了）。
+  closeParams(draft.id)
   message.value = null
   error.value = null
+}
+
+/** 收起某个 provider 下所有行的参数块（删行 / 重命名导致下标错位时用）。 */
+function closeParams(draftId: string): void {
+  for (const key of Object.keys(paramsOpen)) {
+    if (key.startsWith(`${draftId}:`)) delete paramsOpen[key]
+  }
 }
 
 /** 落盘的候选列表：去空白、去重，并保证当前使用的 `model` 一定在列表里。 */
 function normalizedModelList(draft: ProviderDraft): string[] {
   return mergeModelIds(draft.modelList, [currentModel(draft)])
+}
+
+/**
+ * 某个模型的生成参数（v23，docs/08 §1）：思考等级 / 上下文窗口 / 支持图片输入三项都按
+ * **模型 id** 键放在 `modelParams` 下 —— 换个模型就是另一套值（同一个 provider 的不同模型
+ * 窗口大小、能不能收图本就不同）。
+ *
+ * 这是**只读展示**入口：键未命中时回落 `LLM_MODEL_PARAM_DEFAULTS`（与消费端
+ * `resolveModelParams` 同一份默认值，绝不返回 `undefined`）。
+ */
+function paramsOf(draft: ProviderDraft, id: string): LlmModelParams {
+  return draft.modelParams[id] ?? { ...LLM_MODEL_PARAM_DEFAULTS }
+}
+
+/**
+ * 写某个模型参数的**唯一入口**：整体替换该键的对象，**不要**原地改 `draft.modelParams[id].xxx`。
+ *
+ * 两个理由：① `reasoningEffort` 是三个子字段里唯一没有 `.default()` 的，而 `modelParams`
+ * 落在 `llm.providers`（`z.record`）之下、`SettingsStore` 的字段级回退**不下钻**这棵子树 ——
+ * 「只写被改的那一项」会让整份配置在下次启动被判损坏并重建出厂；② 整体替换能让 Vue 的
+ * 变更追踪看得见（原地改嵌套对象同样能被追踪，但替换更不容易漏掉）。
+ */
+function patchParams(draft: ProviderDraft, id: string, patch: Partial<LlmModelParams>): void {
+  draft.modelParams[id] = { ...paramsOf(draft, id), ...patch }
+}
+
+/**
+ * 落盘的参数表：键表 = 归一化后的模型列表（含当前使用的 `model`），值缺省回落默认。
+ *
+ * 列表里没有的键**丢弃** —— 删掉一行模型，它的参数就在保存时自然清掉，不必在
+ * `removeModel` 里另外清理（那条路径还要处理「删了又取消」，两处维护必然分叉）。
+ */
+function normalizedModelParams(draft: ProviderDraft): Record<string, LlmModelParams> {
+  const table: Record<string, LlmModelParams> = {}
+  for (const id of normalizedModelList(draft)) table[id] = { ...paramsOf(draft, id) }
+  return table
 }
 
 /** 上下文窗口的上界：与 `LlmProviderSchema.contextWindow` 的 `.max(2_000_000)` 对齐。 */
@@ -311,8 +393,10 @@ function clampContextWindow(value: unknown): number {
  * **不逐键改写** —— `type=number` 下 `1.` / `-` 这类中间态的 `input.value` 是空串，
  * 逐键钳成 0 会把用户正在敲的字符擦掉、连小数都打不进去。
  */
-function commitContextWindow(draft: ProviderDraft, event: Event): void {
-  draft.contextWindow = clampContextWindow((event.target as HTMLInputElement).value)
+function commitContextWindow(draft: ProviderDraft, id: string, event: Event): void {
+  patchParams(draft, id, {
+    contextWindow: clampContextWindow((event.target as HTMLInputElement).value),
+  })
 }
 
 function syncDrafts(): void {
@@ -326,17 +410,32 @@ function syncDrafts(): void {
     // `localDrafts` 里，不参与这里的重建，所以填了一半的内容也不会被抹掉。
     // （其余行每次重建，别处改过的值——如另一个窗口改 baseURL——照常反映到列表。）
     const reused = editing === id ? previous.find((draft) => draft.id === id) : undefined
-    if (reused !== undefined) return reused
-    return {
+    if (reused !== undefined) {
+      // 复用的编辑草稿同样只在这张卡打开时渲染模型行，所以也要过一遍补行
+      // （用户删掉「当前使用」那一行后，下一次同步把它补回来 —— 这正是既有语义）。
+      adoptCurrentModel(reused)
+      return reused
+    }
+    const draft: ProviderDraft = {
       id,
       ...provider,
       // 候选列表**深拷贝成新数组**：`{ ...provider }` 只浅拷贝，卡里直接改会和 store 里
       // 尚未落盘的配置共用同一个数组（下一次 setActive / saveProvider 就把它一起写盘了）。
       // 顺手把当前使用的模型补进去：它本来就是候选项之一，用户看得见两者是一致的。
       modelList: mergeModelIds(provider.modelList, [provider.model.trim()]),
+      // 参数表同样**深拷贝成新对象**：只浅拷贝的话，卡里 `patchParams` 改的就是 settings
+      // 快照里那一份（下一次任意广播就把它带出去，且和「取消」的语义打架）。
+      modelParams: Object.fromEntries(
+        Object.entries(provider.modelParams ?? {}).map(([key, value]) => [key, { ...value }]),
+      ),
       apiKey: '',
       apiKeySet: Boolean((provider as unknown as { apiKeySet?: boolean }).apiKeySet),
     }
+    // 「当前使用的模型」始终在候选列表里占一行（空列表 → 行数 1）。引导页落盘的 provider 是
+    // `modelList: []`，不补这一步，模型行内那三枚参数（第 6 条的唯一入口）在默认路径下
+    // 根本不渲染。`model` 为空时 `adoptCurrentModel` 原样不动，空白配置仍显示空态。
+    adoptCurrentModel(draft)
+    return draft
   })
   // provider 被别处删掉（如 `set_setting` 或对话窗）时，编辑卡 / 确认条不能指着一个不存在的行。
   // 未落盘的新建草稿不在 settings 里，所以先把它排除在判断之外。
@@ -426,13 +525,11 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
           // 候选列表是数组：跨 IPC 前**深拷贝成新数组**（`reactive` 里的数组是 Proxy，
           // 直接传会 DataCloneError）。`normalizedModelList` 每次都新建数组，顺带去空白 / 去重。
           modelList: normalizedModelList(draft),
-          temperature: Number(draft.temperature),
-          reasoningEffort: draft.reasoningEffort,
-          // 落盘前再过一次归一化入口：可选信息，非法值一律归成合法整数而不是拦住保存
-          contextWindow: clampContextWindow(draft.contextWindow),
-          // 图片输入开关（v22，docs/06 §3.1）：关着时图片附件降级成一行「未读取」说明。
-          // 布尔值跨 IPC 没有 Proxy 克隆问题；`=== true` 顺手把 undefined 归成 false。
-          vision: draft.vision === true,
+          // 生成参数按**模型 id** 键（v23，docs/08 §1）：键表 = 归一化后的候选列表，
+          // 值缺省回落默认、**列表之外的键丢弃**。`normalizedModelParams` 每次都新建对象，
+          // 跨 IPC 前天然没有 Proxy 共享问题；落盘前也不再需要单独的兜底（值已在
+          // `paramsOf` / `patchParams` 里归一过）。
+          modelParams: normalizedModelParams(draft),
         },
       },
     },
@@ -506,12 +603,20 @@ function addPreset(id: string): void {
     model,
     // 与 `syncDrafts` 同一口径：当前使用的模型就是列表里的第一个候选项
     modelList: model === '' ? [] : [model],
-    temperature: 0.7,
-    reasoningEffort: DEFAULT_REASONING_EFFORT,
-    contextWindow: 0,
-    // 图片输入出厂**关**（v22，docs/06 §3.1）：打开之前先确认这个模型确实能看图，
-    // 否则每一轮带图的消息都会被服务端 400 拒掉。
-    vision: false,
+    // 生成参数按**模型 id** 键（v23）；三项写全 —— `reasoningEffort` 是三个子字段里
+    // 唯一没有 `.default()` 的。图片输入出厂**关**（docs/06 §3.1）：打开之前先确认
+    // 这个模型确实能看图，否则每一轮带图的消息都会被服务端 400 拒掉。
+    // `model` 为空（自定义 id + 还没填模型名）时不造条目，与迁移的语义一致。
+    modelParams:
+      model === ''
+        ? {}
+        : {
+            [model]: {
+              reasoningEffort: DEFAULT_REASONING_EFFORT,
+              contextWindow: 0,
+              vision: false,
+            },
+          },
     apiKey: '',
     apiKeySet: false,
   })
@@ -752,15 +857,6 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
         </AppButton>
       </header>
 
-      <!-- 只读态：上下文窗口（v11）有值才给一行小字；0 = 未知，不渲染（编辑态由折叠区输入框承担） -->
-      <p
-        v-if="!isEditing(draft.id) && draft.contextWindow > 0"
-        class="tiny muted"
-        data-field="llm.contextWindow.readout"
-      >
-        上下文窗口 {{ formatContextWindow(draft.contextWindow) }}
-      </p>
-
       <!-- 危险操作二次确认：确认条就地出现，点「确认删除」才真的删 -->
       <div v-if="pendingRemoveId === draft.id" class="confirm-bar">
         <span class="tiny confirm-text">
@@ -866,64 +962,152 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
               :class="{ current: isCurrent(draft, item) }"
               :data-field="`llm.providers.${draft.id}.modelList.${index}`"
             >
-              <template v-if="isRenaming(draft.id, index)">
-                <input
-                  v-model="renameValue"
-                  class="input model-rename"
-                  type="text"
-                  spellcheck="false"
-                  @keydown.enter="commitRename(draft, index)"
-                  @keydown.esc="cancelRename(draft, index)"
-                />
-                <AppButton
-                  size="sm"
-                  data-action="commit-rename-model"
-                  @click="commitRename(draft, index)"
-                >
-                  确定
-                </AppButton>
-                <AppButton
-                  size="sm"
-                  variant="ghost"
-                  data-action="cancel-rename-model"
-                  @click="cancelRename(draft, index)"
-                >
-                  取消
-                </AppButton>
-              </template>
-              <template v-else>
-                <label class="model-pick">
+              <div class="model-line">
+                <template v-if="isRenaming(draft.id, index)">
                   <input
-                    type="radio"
-                    :name="`model-of-${draft.id}`"
-                    :checked="isCurrent(draft, item)"
-                    :disabled="item === ''"
-                    data-action="select-model"
-                    @change="selectModel(draft, item)"
+                    v-model="renameValue"
+                    class="input model-rename"
+                    type="text"
+                    spellcheck="false"
+                    @keydown.enter="commitRename(draft, index)"
+                    @keydown.esc="cancelRename(draft, index)"
                   />
-                  <span class="mono model-id" :class="{ pending: item === '' }">
-                    {{ item === '' ? '（未命名）' : item }}
+                  <AppButton
+                    size="sm"
+                    data-action="commit-rename-model"
+                    @click="commitRename(draft, index)"
+                  >
+                    确定
+                  </AppButton>
+                  <AppButton
+                    size="sm"
+                    variant="ghost"
+                    data-action="cancel-rename-model"
+                    @click="cancelRename(draft, index)"
+                  >
+                    取消
+                  </AppButton>
+                </template>
+                <template v-else>
+                  <label class="model-pick">
+                    <input
+                      type="radio"
+                      :name="`model-of-${draft.id}`"
+                      :checked="isCurrent(draft, item)"
+                      :disabled="item === ''"
+                      data-action="select-model"
+                      @change="selectModel(draft, item)"
+                    />
+                    <span class="mono model-id" :class="{ pending: item === '' }">
+                      {{ item === '' ? '（未命名）' : item }}
+                    </span>
+                  </label>
+                  <span v-if="isCurrent(draft, item)" class="badge ok">当前使用</span>
+                  <!-- 只读态的窗口读数（v11）；0 = 未知不渲染，编辑入口在行内参数块里 -->
+                  <span
+                    v-if="isCurrent(draft, item) && paramsOf(draft, item).contextWindow > 0"
+                    class="tiny muted"
+                    :data-field="`llm.providers.${draft.id}.modelList.${index}.readout`"
+                  >
+                    窗口 {{ formatContextWindow(paramsOf(draft, item).contextWindow) }}
                   </span>
+                  <span class="grow" />
+                  <AppButton
+                    size="sm"
+                    variant="ghost"
+                    data-action="toggle-model-params"
+                    :aria-expanded="paramsExpanded(draft.id, index)"
+                    @click="toggleParams(draft.id, index)"
+                  >
+                    参数
+                  </AppButton>
+                  <AppButton
+                    size="sm"
+                    variant="ghost"
+                    data-action="rename-model"
+                    @click="startRename(draft, index)"
+                  >
+                    重命名
+                  </AppButton>
+                  <AppButton
+                    size="sm"
+                    variant="ghost"
+                    data-action="remove-model"
+                    @click="removeModel(draft, index)"
+                  >
+                    删除
+                  </AppButton>
+                </template>
+              </div>
+              <!--
+                行内参数（v23，docs/08 §1）：思考等级 / 上下文窗口 / 支持图片输入三项**随模型绑定**
+                —— 同一个 provider 下不同模型的窗口大小、能不能收图本就不同。锚点
+                `llm.providers.<id>.modelList.<index>.<字段>` 供 capture 抓手。
+                展开态按 `${id}:${index}` 记，允许多行同时展开（这里不涉及浮层互斥）。
+              -->
+              <div v-if="paramsExpanded(draft.id, index)" class="model-params">
+                <!--
+                  三个 `data-field` 都挂在**外层 label** 上、控件在它内部：这既是 `SettingField`
+                  的既有口径（探针按 `[data-field$=".xxx"] select` / `input[type=checkbox]` 往下钻），
+                  也让 label 的原生「点文字即聚焦控件」生效。
+                -->
+                <label
+                  class="param-field"
+                  :data-field="`llm.providers.${draft.id}.modelList.${index}.reasoningEffort`"
+                >
+                  <span class="tiny muted">思考等级</span>
+                  <select
+                    class="input"
+                    :value="paramsOf(draft, item).reasoningEffort"
+                    @change="
+                      patchParams(draft, item, {
+                        reasoningEffort: ($event.target as HTMLSelectElement)
+                          .value as ReasoningEffort,
+                      })
+                    "
+                  >
+                    <option v-for="level in REASONING_EFFORT_LEVELS" :key="level" :value="level">
+                      {{ REASONING_EFFORT_LABELS[level].full }}
+                    </option>
+                  </select>
                 </label>
-                <span v-if="isCurrent(draft, item)" class="badge ok">当前使用</span>
-                <span class="grow" />
-                <AppButton
-                  size="sm"
-                  variant="ghost"
-                  data-action="rename-model"
-                  @click="startRename(draft, index)"
+                <label
+                  class="param-field"
+                  :data-field="`llm.providers.${draft.id}.modelList.${index}.contextWindow`"
                 >
-                  重命名
-                </AppButton>
-                <AppButton
-                  size="sm"
-                  variant="ghost"
-                  data-action="remove-model"
-                  @click="removeModel(draft, index)"
+                  <span class="tiny muted">上下文窗口</span>
+                  <input
+                    class="input input-num"
+                    type="number"
+                    min="0"
+                    max="2000000"
+                    step="1000"
+                    :value="paramsOf(draft, item).contextWindow"
+                    @change="commitContextWindow(draft, item, $event)"
+                  />
+                </label>
+                <label
+                  class="param-field"
+                  :data-field="`llm.providers.${draft.id}.modelList.${index}.vision`"
                 >
-                  删除
-                </AppButton>
-              </template>
+                  <input
+                    type="checkbox"
+                    data-action="toggle-vision"
+                    :checked="paramsOf(draft, item).vision"
+                    @change="
+                      patchParams(draft, item, {
+                        vision: ($event.target as HTMLInputElement).checked,
+                      })
+                    "
+                  />
+                  <span class="tiny">把拖入的图片交给这个模型</span>
+                </label>
+                <span class="tiny muted param-hint">
+                  窗口单位 token，仅作对话窗「上下文占用比例」的分母，留空或 0 =
+                  未知（不显示占比），上限
+                  2000000；图片输入开启后这个模型的图片附件才会作为图片发出去（需该模型支持视觉）
+                </span>
+              </div>
             </div>
           </div>
 
@@ -972,69 +1156,10 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
             </SettingField>
 
             <!--
-              图片输入（v22，docs/06 §3.1）：出厂关。开启后用户拖入的图片会作为图片分片发给模型；
-              不支持视觉的模型收到图片分片会被服务端 400，因此这里必须由用户照服务商文档确认。
+              这里**刻意只剩接口类型**：思考等级 / 上下文窗口 / 支持图片输入三项都随**模型**走
+              （v23，docs/08 §1），编辑入口在「模型列表」每一行右上角的「参数」开关里 ——
+              它们描述的是「这个模型能做什么」，放在 provider 级会让切模型时显示出另一套谎话。
             -->
-            <SettingField
-              :data-field="`llm.providers.${draft.id}.vision`"
-              label="支持图片输入"
-              hint="开启后图片附件会作为图片发给模型（需该模型支持视觉）；关闭时图片只以一行说明进入上下文"
-            >
-              <label class="switch-row">
-                <input v-model="draft.vision" type="checkbox" data-action="toggle-vision" />
-                <span class="tiny">把拖入的图片交给这个模型</span>
-              </label>
-            </SettingField>
-
-            <SettingField
-              :data-field="`llm.providers.${draft.id}.temperature`"
-              label="temperature"
-              hint="0 ～ 2；越高越发散，默认 0.7"
-            >
-              <input
-                v-model.number="draft.temperature"
-                class="input"
-                type="number"
-                min="0"
-                max="2"
-                step="0.1"
-              />
-            </SettingField>
-
-            <SettingField
-              :data-field="`llm.providers.${draft.id}.reasoningEffort`"
-              label="思考等级"
-              hint="auto 不指定该参数，兼容性最好；越高越深入，但更慢更贵"
-            >
-              <!--
-                选项文案取 `REASONING_EFFORT_LABELS.full`（`@aurora/shared` 的**唯一来源**）：
-                与对话窗 composer 那个窄下拉共用一份定义，前者用 full、后者用 short ——
-                同一个值在两处说同一件事，不再各写一份字符串（见 schema.ts 的注释）。
-              -->
-              <select v-model="draft.reasoningEffort" class="input">
-                <option v-for="level in REASONING_EFFORT_LEVELS" :key="level" :value="level">
-                  {{ REASONING_EFFORT_LABELS[level].full }}
-                </option>
-              </select>
-            </SettingField>
-
-            <!-- 上下文窗口（v11）：可选信息，唯一用途是对话窗输入框底部的「上下文占用比例」分母 -->
-            <SettingField
-              data-field="llm.contextWindow"
-              label="上下文窗口"
-              hint="单位 token，仅作对话窗「上下文占用比例」的分母；留空或 0 = 未知不显示占比，上限 2000000"
-            >
-              <input
-                class="input input-num"
-                type="number"
-                min="0"
-                max="2000000"
-                step="1000"
-                :value="draft.contextWindow"
-                @change="commitContextWindow(draft, $event)"
-              />
-            </SettingField>
-
             <div class="row wrap">
               <AppButton size="sm" :disabled="testing !== null" @click="testProvider(draft)">
                 {{ testing === draft.id ? '测试中…' : '保存并测试连接' }}
@@ -1216,13 +1341,59 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
 }
 
 /* 一行候选模型：hover 用分层填充（与 provider 行列表同一套观感），不做上浮位移，免得行跟着跳 */
+/* 一行模型 = 行内容 + 可展开的参数块：外层竖向排列，行内容自成一个横向 flex 行 */
 .model-row {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: var(--space-1);
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
   transition: background var(--transition-fast);
+}
+
+.model-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/*
+ * 行内参数块：与行内容用一条左侧竖线区分（它是该模型的下级信息）。
+ * 这里**不用** `SettingField` —— 那是竖向「标签在上、控件在下」的分组卡，
+ * 放进已有一行里会把行高撑成三倍。
+ */
+.model-params {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  margin-left: var(--space-3);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border-subtle);
+}
+
+.param-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* 参数块里的控件压缩到与行同高（全局 `.input` 是 36px + 100% 宽，放这一行会顶开布局） */
+.model-params .input {
+  width: auto;
+  min-width: 220px;
+  min-height: 28px;
+  padding: 0 var(--space-2);
+}
+
+.model-params .input.input-num {
+  min-width: 120px;
+  width: 120px;
+}
+
+.param-hint {
+  flex: 1 1 100%;
 }
 
 .model-row:hover {
