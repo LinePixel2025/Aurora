@@ -3,16 +3,19 @@ import {
   ToolRegistry,
   effectiveWorkspaceDir,
   type AgentProviderFactory,
+  type ClipboardImagePort,
   type ClipboardPort,
   type CommandRunner,
   type FilePort,
   type ImageGenPort,
   type NotifyPort,
   type OpenPort,
+  type ScreenshotPort,
   type SettingsToolPort,
   type SettingsWriteOutcome,
   type TodoItem,
   type TodoPort,
+  type ViewImagePort,
   type WebFetchPort,
 } from '@aurora/agent-core'
 import {
@@ -24,9 +27,11 @@ import {
 import {
   AGENT_CORE_TOOL_NAMES,
   EXTENSION_TOOL_NAMES,
+  IMAGE_TOOL_NAMES,
   registerAgentCoreTools,
   registerComputerTools,
   registerExtensionTools,
+  registerImageTools,
   registerSettingsTool,
 } from './index.js'
 
@@ -899,5 +904,82 @@ describe('缺省工作目录三级回落', () => {
     expect(targets.cwd).toBe(HOME)
     expect(targets.grepRoot).toBe(HOME)
     expect(targets.globRoot).toBe(HOME)
+  })
+})
+
+/**
+ * 图像工具装配器（docs/06 §25）。
+ *
+ * 这一组的重点是**门控的语义**：它按「当前生效模型是否支持图片输入」注册，
+ * 而不是按开关 —— 关着时三个工具一个都不该在表里（模型看不到、也调不到），
+ * 而不是"注册好、调用时再拒绝"。判据现读，因此换模型 / 改开关后下一次 `sync()` 即翻转。
+ */
+describe('registerImageTools', () => {
+  function fakePorts() {
+    return {
+      // 本文件只验证"按能力注册哪些工具"；端口的真实行为由各自端口文件的用例覆盖
+      viewImage: { view: async ({ path }: { path: string }) => ({ path }) } as ViewImagePort,
+      screenshot: { capture: async () => [] } as ScreenshotPort,
+      clipboardImage: { capture: async () => undefined } as ClipboardImagePort,
+    }
+  }
+
+  function setupImage(options: { vision?: boolean; tools?: ToolRegistry } = {}) {
+    const tools = options.tools ?? new ToolRegistry()
+    let vision = options.vision ?? false
+    const registry = registerImageTools({
+      tools,
+      logger: createMemoryLogger(),
+      visionEnabled: () => vision,
+      ...fakePorts(),
+    })
+    return { tools, registry, setVision: (next: boolean) => (vision = next) }
+  }
+
+  it('模型未开启图片输入：三个工具一个都不注册', () => {
+    const { tools, registry } = setupImage({ vision: false })
+    expect(registry.sync()).toEqual([])
+    expect(IMAGE_TOOL_NAMES.map((name) => tools.get(name))).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ])
+  })
+
+  it('模型开启图片输入：三个工具全部注册，敏感级与文档一致', () => {
+    const { tools, registry } = setupImage({ vision: true })
+    expect(registry.sync()).toEqual([...IMAGE_TOOL_NAMES])
+    expect(tools.get('view_image')?.sensitivity).toBe('safe')
+    expect(tools.get('screenshot')?.sensitivity).toBe('confirm')
+    expect(tools.get('clipboard_read_image')?.sensitivity).toBe('confirm')
+  })
+
+  it('门控现读：关 → 开 → 关，每次 sync 都即时翻转（切模型无需重启）', () => {
+    const { tools, registry, setVision } = setupImage({ vision: false })
+    expect(registry.sync()).toEqual([])
+
+    setVision(true)
+    expect(registry.sync()).toEqual([...IMAGE_TOOL_NAMES])
+
+    setVision(false)
+    expect(registry.sync()).toEqual([])
+    // 摘除要真的生效：注册表里查不到，请求体的 tools 数组里也就不会有
+    expect(tools.toLlmTools().map((tool) => tool.name)).not.toContain('view_image')
+  })
+
+  it('不影响其它工具：摘除只按图像工具名走', () => {
+    const tools = new ToolRegistry()
+    tools.register({
+      name: 'echo',
+      description: '回显',
+      parameters: { type: 'object', properties: {}, required: [] },
+      execute: async () => ({ content: 'ok' }),
+    })
+    const { registry } = setupImage({ vision: true, tools })
+    registry.sync()
+    expect(tools.get('echo')).toBeDefined()
+
+    registry.sync()
+    expect(tools.get('echo')).toBeDefined()
   })
 })

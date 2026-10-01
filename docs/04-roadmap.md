@@ -29,7 +29,7 @@ Task/Job 持久化与续跑），详见 §5 变更记录最后一条。
 | P4 | 模式系统 + ClassRoom Mode：感知文件夹自动分类、对话引导 | v0.4.0 | 2 周 | **已完成** |
 | P5 | 系统感知与主动引导：感知采集、上下文注入、课前提醒、敏感确认 | v0.5.0 | 1.5 周 | **已完成** |
 | P6 | 打磨发布：打包、安装器、日志、文档 | v1.0.0 | 1 周 | **打包 / 自动更新 / 日志 / 文档已完成**；签名待证书、启动优化未做 |
-| P6++ | 电脑操控：终端与文件操控工具、模型思考等级、「电脑操控」设置页与安全边界 | v0.7.0 | — | **已完成**（v0.7.0）；鼠标键盘模拟 / 截图仍属后续范围 |
+| P6++ | 电脑操控：终端与文件操控工具、模型思考等级、「电脑操控」设置页与安全边界 | v0.7.0 | — | **已完成**（v0.7.0）；鼠标键盘模拟 / 录屏仍属后续范围（**截图已由 `screenshot` 工具落地**，受模型 vision 门控，见 06 §25） |
 | P7 | 后期：Work/Code Mode、ClassIsland 联动 | v1.x | — | **ClassIsland 联动已完成**（v0.6.0）；Work/Code Mode 预留 |
 
 ### 已完成范围（截至 v0.3.0）
@@ -300,7 +300,8 @@ v0.6.0 的重点不是新增大功能，而是**把"设置里能改、运行时�
   关键字段：`agent.tools.enabled`、`agent.tools.workspaceDir`、
   `agent.tools.terminal.{enabled,timeoutMs,maxOutputChars}`、
   `agent.tools.files.{enabled,maxReadBytes}`、`agent.tools.open.enabled`。
-- **仍属后续范围**（**未实现**）：鼠标键盘模拟、截图录屏、持久交互式 shell、命令黑名单、
+- **截图已由 `screenshot` 工具落地**（受模型 `vision` 门控，与本节的电脑操控工具不同族，见 06 §25）。
+- **仍属后续范围**（**未实现**）：鼠标键盘模拟、录屏、持久交互式 shell、命令黑名单、
   Work / Code Mode 功能、Anthropic 等非 OpenAI 兼容协议。
 - **验证**：`pnpm typecheck && pnpm test && pnpm build` 全绿（用例数随轮次变动，以实际输出为准）；
   `AURORA_SMOKE=1 pnpm dev` 新增「电脑操控」四条断言；`AURORA_CAPTURE` 18 张 PNG、无 FAIL。
@@ -349,7 +350,8 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
 - Work Mode / Code Mode 功能实现
 - ~~ClassIsland 联动（课程表自动获取）~~ —— **已于 v0.6.0 完成**
 - ~~终端 / 文件 / 打开路径操控工具~~ —— **已于 v0.7.0 完成**（见 P6++）；
-  鼠标键盘模拟、截图录屏、持久交互式 shell、命令黑名单仍未做
+  ~~截图~~ —— **已由 `screenshot` 工具落地**（受模型 vision 门控，见 06 §25）；
+  鼠标键盘模拟、录屏、持久交互式 shell、命令黑名单仍未做
 - 多语言、macOS / Linux 评估、ARM64 / 便携版
 
 ## 3. 需求 → 阶段映射（可追溯性）

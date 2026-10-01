@@ -84,6 +84,13 @@ export interface LlmProvider {
 - **上限**：单图 `IMAGE_MAX_BYTES`（8 MiB，超出按未读取处理并在降级文案里写明原因）、
   单轮附件数沿用既有的 `MAX_ATTACHMENTS`（5，图文合计）。`detail` 字段在类型里预留但**当前不下发**
   （多数网关不认它）。
+- **工具产出的图片（图像工具，见 §25）**：`view_image` / `screenshot` / `clipboard_read_image`
+  的结果图走一条独立于附件的通路 —— `ToolResult` 新增 `images`（`{ path, image }`，`image` 是端口
+  已读好的 `LlmImageInput` 裸 base64）：**路径随 tool 消息落盘**（`StoredMessage.images`，与用户附件
+  存路径同款），**图片内容作为一条合成 user 消息**在本轮**全部 tool 结果之后**下发 —— 同轮多工具调用
+  时插在中间会破坏 tool_call ↔ tool 的配对，服务端直接 400。历史重放时同样补这条合成 user 消息，
+  图片经既有 `resolveImages` 解析，因此关闭态返回空数组的那道闸门自动生效；回放口径与用户拖入的附件
+  一致（存路径、跨轮重放）。`generate_image` 只回路径 + 渲染层预览（§15.2），不走这条通路。
 
 ### 3.2 Responses API（`type: 'openai-responses'`，v22）
 
@@ -629,6 +636,9 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 | `grep` | `{ pattern, path?, include? }` | safe | `packages/agent-core/src/tools/search.ts` + `apps/desktop/src/main/tools/file-port.ts` |
 | `glob` | `{ pattern, path?, limit? }` | safe | 同上 |
 
+> 图像工具（`view_image` / `screenshot` / `clipboard_read_image`）**不属于**这一族：它们按当前
+> 生效模型的 `vision` 注册（不是 `agent.tools.enabled`），只读档也不摘除，见 §25。
+
 - **工具语义**：`run_command` 执行单条命令并采集 stdout / stderr；`read_file` 按 UTF-8 读文本；
   `write_file` 写文本（`mode` 缺省 `overwrite`，`append` 追加）；`edit_file` 对文本做
   **精确局部替换**（读前守卫 + 唯一性拒绝 + 行尾保真，见 §11.6）；`list_dir` 列目录项；
@@ -820,7 +830,9 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 ### 11.3 非目标（v0.7.0 明确不做）
 
 - **鼠标 / 键盘模拟**：不做 `SendInput` / UI 自动化，Agent 不得代替用户点击、输入界面。
-- **截图 / 录屏**：不采集屏幕像素，视觉输入不在本轮范围。
+- **录屏**：不做屏幕录制。**截屏不是非目标**：`screenshot` 工具（§25）按需截取当前屏幕像素并交给
+  模型看，每次调用过确认卡片、受当前生效模型的 `vision` 门控；它是扩展工具、不在 `COMPUTER_TOOL_NAMES`
+  里，不受 `agent.tools.enabled` 门控，也不是持续录屏。
 - **持久交互式 shell**：不为会话维持长驻 shell；每次 `run_command` 都是独立进程。
 - **命令黑名单**：见 §11.1——不做字符串级别的命令过滤。
   免确认模式列表（§11.7）是**白名单**且只减少打扰，与「黑名单」不是一回事：它不放宽任何权限，
@@ -1387,6 +1399,10 @@ v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/b
 | `notify_user` {title, body} | `NotifyPort.show(title, body)` | `createNotificationPort`（映射到 `NotificationService.notify`，复用去重 / 点击打开 / 日志） | safe |
 | `generate_image` {prompt, size?} | `ImageGenPort.generate({prompt, size?})` | `createImageGenPort` → `ImageGenService`（§15） | **confirm**（花 API 费用） |
 
+`generate_image` 只管**写**图，且**不受门控**（任何模型都能照着描述生图）；补齐「看图」三件套的
+`view_image` / `screenshot` / `clipboard_read_image` 是 §25 的图像工具，门控口径与本节五件套**相反**
+（按当前生效模型的 `vision` 注册）—— 别把三者按「不受门控」理解。
+
 ### 14.1 注册口径
 
 - 装配器是 `main/tools/index.ts` 的 `registerExtensionTools`，与 `registerSettingsTool` **同级**：
@@ -1443,6 +1459,9 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 - `imagegen:read`（渲染层预览已生成图片的唯一通道）做**路径安全校验**：
   `path.resolve` 后必须在 generated 目录内（`..` 逃逸、换盘符、目录本身一律拒绝），
   越界路径返回错误，不读盘。
+- **`generate_image` 不受 `vision` 门控**：生图只需模型会写描述、不需要它自己会看图，
+  因此对**不支持图片输入**的模型同样注册；开启 `vision` 的模型可以顺手用 `view_image` 回看自己刚
+  生成的图（`<userData>/generated` 在 `view_image` 的自有目录白名单里，见 §25）。
 
 ## 16. 思考链展示（reasoning，v0.0.1）
 
@@ -1763,7 +1782,7 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 | opencode 原文要点 | Aurora 的结论 | 落地位置 | 理由 |
 |---|---|---|---|
 | `read.txt`：用绝对路径；默认返回**开头 2000 行**；`offset` 是 **1 起始**行号；内容按 `<行号>: <内容>` 前缀返回（文件内容 `foo\n` → 返回 `1: foo\n`）；目录按一行一条返回（子目录带尾 `/`，无行号）；**单行超 2000 字符截断**；建议并行读多个文件、不要切成 30 行的小片段；不确定路径先用 `glob`；大文件用 `grep` 定位 | **采用** | §11 的 `read_file` 输出契约与参数（`offset` / `limit`） | 行号前缀是 `edit_file` 的 `oldString` 的引用基准（两者必须同一口径）；「一次读足够大的窗口」比多次小片段调用省 token，也让模型少犯错。两处按 Aurora 语义落：目录列举归 `list_dir`（`read_file` 拒绝目录）；「并行读」= 同轮批量发出、执行仍按顺序（§5） |
-| `read.txt`：可把**图片 / PDF** 作为附件读入（视觉附件） | **不采纳** | §11.4 已知限制 | Aurora 的 `read_file` 明确拒绝二进制（含 NUL 即报错），图片 OCR 未启用；把二进制交给模型需要多模态附件链路，本轮不存在 |
+| `read.txt`：可把**图片 / PDF** 作为附件读入（视觉附件） | **部分采纳：图片进模型已落地（多模态附件 + 图像工具），`read_file` 仍不读二进制、PDF 不支持** | §3.1 / §25 | Aurora 的 `read_file` 仍明确拒绝二进制（含 NUL 即报错）、**图片 OCR 仍未启用**；但「把图片交给模型看」已由多模态附件（§3.1）与图像工具 `view_image` / `screenshot` / `clipboard_read_image`（§25）承接 —— 路径与边界见该两节 |
 | `edit.txt`：**改前必须在本会话 Read 过该文件**，否则工具报错；`oldString` 必须与 Read 输出**去掉行号前缀之后**的内容逐字一致（保留缩进）；找不到 → 报错；命中**多处** → 报错并要求补足上下文或改用 `replaceAll`；`replaceAll` 用于全局改名 | **采用** | §11.6（读前守卫 + 唯一性拒绝 + EOL 保真） | 读前守卫防「凭记忆改文件」，唯一性拒绝防「命中多处却只改第一处」——两条都是**静默改坏文件**的直接来源 |
 | `grep.txt`：正则内容检索，不限制仓库规模；`include` 支持 `*.js` / `*.{ts,tsx}` 这类过滤；返回**文件路径 + 行号 + 命中行** | **采用** | §11.5（`grep` / `glob` 搜索层规格） | 「路径 + 行号」与 `read_file` 的行号前缀对齐，模型可直接跳到目标行再精确读 |
 | `grep.txt`：需要**计数**或更复杂统计时改用 `Bash` + `rg` | **不采纳** | §11.5 与 `grep` 的 description | Aurora 的命令工具是 `run_command`（PowerShell）且**逐次确认**——没有 `rg` 可用，也不该为了数一下命中数再弹一次确认卡片；因此 `grep` 的工具描述**不承诺**计数能力（要统计由模型自己数，或由用户处理） |
@@ -2022,3 +2041,62 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   与 `proactive:*` **刻意分表**，因为两者对「超时」的语义相反（确认按拒绝、提问按未回答继续）。
 - **注册口径**：随 §18 的 `registerAgentCoreTools` 一并注册，**不受 `agent.tools.enabled` 门控**，
   也不按权限档摘除。
+
+## 25. 图像工具（`view_image` / `screenshot` / `clipboard_read_image`）
+
+`generate_image`（§15.2）让 Agent 能**写**图，这一节补齐它**看**图的能力：读一张本地图片、
+截取当前屏幕、读剪贴板里的图片，并把图片作为本轮输入的一部分交给模型。三者与 §14 的扩展工具
+同族（内核只定义工具与端口，系统能力由主进程注入），但**门控方式与它们相反**。
+
+| 工具 | 参数 | sensitivity | 门控 | 产物落盘 |
+|---|---|---|---|---|
+| `view_image` | `{ path }` | `safe`（与 `read_file` 同档） | 仅当当前生效模型 `vision === true` 时注册 | 无写入 |
+| `screenshot` | `{ display?: 'primary' \| 'all' }` | **confirm** | 同上 | `<userData>/screenshots/<ts>.png`，保留最近 50 张 |
+| `clipboard_read_image` | `()` | **confirm** | 同上 | `<userData>/clipboard/<ts>.png`，保留最近 50 张 |
+
+### 25.1 门控：按当前生效模型的 `vision` **注册级**生效
+
+- **判据是「当前生效模型是否开启图片输入」**：读的是
+  `llm.providers.<active>.modelParams.<modelId>.vision`（v23 起按模型绑定），唯一取值口径是
+  `resolveModelParams`（§3）——判决与图片附件管线**共用同一份实现**（主进程 `main/vision.ts`），
+  **不写第二份**。
+- **门控是「注册级」而不是「调用级」**：`vision` 为假时这三个工具**根本不进工具表** ——
+  模型在系统提示词的「## 可用工具」清单里看不到、请求体 `tools` 数组里也没有、即便调用也会被回填
+  「工具不存在」。这与 ClassIsland / Center 工具「按可用性注册」同款，不是「注册后再拒绝」。
+- **热生效**：工具表由 `sync()` 在启动与每次 `settings:changed` 时重建，因此在**对话窗的模型下拉里
+  换模型**（写 `llm.providers.<active>.model`）**下一次请求即生效，无需重启**（与 §3 的参数取值同拍）。
+- **`generate_image` 不在门控内**：生图只需要模型会写描述、不需要它自己会看图，因此**任何模型都能生图**；
+  开启 `vision` 后模型可以顺手 `view_image` 检查自己刚生成的图（见 §14 / §15.2）。
+
+### 25.2 `view_image` 的读盘边界与自有目录
+
+- **与 `read_file` 同一条边界**：`view_image` 是 `sensitivity: 'safe'`，读盘走 `file-port.ts` 的
+  `resolveWithin`（项目根 realpath 前缀校验，边界根按会话解析 `sessionProjects.boundaryRoot(sessionId)`，
+  见 §11.1 / §5.1）—— 与 `read_file` 完全一致，没有第二条读盘通路。
+- **app 自己的三个目录始终可读**：`<userData>/generated`（生图）、`<userData>/screenshots`（截屏）、
+  `<userData>/clipboard`（剪贴板）**不受边界根限制** —— 这三处是 app 自己写出的产物，必须能被回看，
+  否则「生成一张图再看看」这条最自然的用法会被边界挡死。
+- **根外路径如实拒绝**：越界时不静默返回空、也不假装读过，而是把错误回填给模型，并提示它
+  「可以让用户把图片拖进对话窗口」（附件管线不受该边界限制，那是用户显式动作）。
+- **只读图片格式**：只接受图片扩展名（`png / jpg / jpeg / webp / gif / bmp`），读文本要用 `read_file`；
+  单图上限沿用 `IMAGE_MAX_BYTES`（8 MiB）。
+- **工具描述要交代的**：`view_image` 说明「只能读图片格式，读文本用 `read_file`」；
+  `screenshot` 说明「截的是当前屏幕，会给用户弹确认卡」。
+- **提示词另有一行规范**：`buildToolGuidance` 在工具表含 `view_image` 或 `screenshot` 时追加
+  「用户问屏幕上是什么、或指向某个报错窗口时，直接用 `screenshot` 截图自己看，不要让用户描述」——
+  模型在这类问题上最容易走偏的一步就是反问用户「你能描述一下吗」。工具表里没有它们时这一行自动消失，
+  不会出现「提示词让模型去调一个不存在的工具」。
+
+### 25.3 图片怎么回到模型
+
+- 三者都走 §3.1 那条通路：`ToolResult.images`（`{ path, image }`）里的**路径随 tool 消息落盘**
+  （`StoredMessage.images`），**图片内容作为一条合成 user 消息**在本轮全部 tool 结果之后下发；
+  历史重放时同样补这条消息 —— 口径与用户拖入的附件一致（存路径、跨轮重放），关闭态自动降级。
+
+### 25.4 与权限档、配置 Schema 的关系
+
+- **只读档（`agent.permissionMode === 'readonly'`）不摘这三个工具**：与 §14 的扩展工具五件套同口径 ——
+  `screenshot` / `clipboard_read_image` 写的是 app 自己的目录（不是用户文件）、`view_image` 纯读，
+  因此不属于「写入 / 执行类工具」。
+- **无配置 Schema 变更**：本能力不新增配置字段、`CONFIG_VERSION` 仍为 **23**、无新迁移 ——
+  门控读的是既有的 `vision`。

@@ -442,8 +442,8 @@ Center 网页端移动端对话区保底 60% 高度（面板收进分段切换�
   第二次启动读回同一条 job（`found=1 status=paused`）→ 继续后 `status=done`、
   `stepsDone 2→3`、`cursor 2→3`，会话里那条用户消息**仍只有一条**。
 
-鼠标键盘模拟、截图录屏、持久交互式 shell、命令黑名单、Anthropic 等非 OpenAI 兼容协议
-**仍属后续范围**。
+鼠标键盘模拟、录屏、持久交互式 shell、命令黑名单、Anthropic 等非 OpenAI 兼容协议
+**仍属后续范围**（**截图已由 `screenshot` 工具落地**，受模型 vision 门控，见 [06 §25](./06-agent-core.md)）。
 
 仍待做：**OS 级沙箱**（三档权限与项目根 realpath 前缀校验**不是**沙箱 —— 没有作业对象 / 容器 /
 受限令牌，`run_command` 仍是当前用户权限）、Code Mode 功能实现（Work 已于 0.0.1 初步实装）、

@@ -23,6 +23,8 @@ import {
   type ImageReadPort,
 } from './attachments.js'
 import { isPathOutsideError, type WorkspaceGuardOptions } from './tools/file-port.js'
+// 图片输入开关的**唯一判据**（docs/06 §3.1 / §25）：附件降级与图像工具门控共用同一份实现。
+import { visionEnabled as resolveVisionEnabled } from './vision.js'
 import {
   assertRestorablePath,
   isRestorePathRejectedError,
@@ -33,7 +35,6 @@ import {
   createDefaultSettings,
   err,
   ok,
-  resolveModelParams,
   type AppInfo,
   type AskUserAnswerInput,
   type AuroraApi,
@@ -1062,19 +1063,11 @@ async function prepareAttachments(
 /**
  * 当前默认 provider 的**当前生效模型**是否开了**图片输入**（docs/06 §3.1）。
  *
- * 判据只有一处：`resolveModelParams(llm.providers[llm.active]).vision`（v23 起下沉到
- * 模型级 `modelParams[model]`）。读不到 provider（未配置 / 条目被删）按**关**处理 ——
- * 与内核 `ProviderConfig.vision` 的缺省一致，绝不因为配置异常就把图片发出去。
+ * 判据只有一处，实现搬到了 `main/vision.ts`：图像工具的门控（`tools/index.ts` 的
+ * `registerImageTools`）用的是**同一个函数**，两边不会漂移。
  */
 function visionEnabled(deps: DesktopDeps): boolean {
-  try {
-    const llm = deps.settings.get().llm
-    const provider = llm.providers[llm.active]
-    if (provider === undefined) return false
-    return resolveModelParams(provider).vision === true
-  } catch {
-    return false
-  }
+  return resolveVisionEnabled(deps.settings.get())
 }
 
 /** 从绝对路径取文件名（渲染层传来的路径可能含 Windows 反斜杠） */

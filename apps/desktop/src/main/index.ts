@@ -163,11 +163,14 @@ import {
   registerClassIslandTools,
   registerComputerTools,
   registerExtensionTools,
+  registerImageTools,
   registerSettingsTool,
+  IMAGE_TOOL_NAMES,
   type AgentCoreToolsRegistry,
   type ClassIslandToolsRegistry,
   type ComputerTools,
   type ExtensionToolsRegistry,
+  type ImageToolsRegistry,
   type SettingsToolRegistry,
 } from './tools/index.js'
 import { AutomationEngine } from './automation/engine.js'
@@ -180,7 +183,12 @@ import { createFileTodoPort, type FileTodoPort } from './tools/todo-port.js'
 // `ask_user` 的装配层实现（docs/06 §21）：卡片推送 + 等回执（3 分钟超时按"未回答"继续）
 import { createAskUserService, type AskUserService } from './ask-user.js'
 import { createNetWebFetchPort } from './tools/web-fetch.js'
-import { createElectronClipboardPort } from './tools/clipboard.js'
+import { createElectronClipboardImagePort, createElectronClipboardPort } from './tools/clipboard.js'
+import { createNodeImageIo, createViewImagePort } from './tools/image-read-port.js'
+import { OWNED_IMAGE_SUBDIRS } from './tools/image-read.js'
+import { createScreenshotPort } from './tools/screenshot-port.js'
+// 图片输入开关的**唯一判据**（docs/06 §3.1 / §25）：图像工具门控与附件降级共用同一份实现
+import { visionEnabled } from './vision.js'
 import { createNotificationPort } from './tools/notify.js'
 import { createImageGenPort } from './tools/imagegen-port.js'
 import { createSettingsPort } from './tools/settings-port.js'
@@ -443,6 +451,11 @@ let deviceLoginServerUrl = ''
 const deviceLoginListeners = new Set<(result: CenterDeviceLoginResult) => void>()
 /** 扩展工具五件套装配器（docs/06 §14）：与 set_setting 同级，不受 agent.tools.enabled 门控 */
 let extensionTools: ExtensionToolsRegistry | undefined
+/**
+ * 图像工具装配器（看图 / 截屏 / 读剪贴板图片，docs/06 §25）：**按模型能力注册** ——
+ * 当前生效模型没开图片输入时一个都不注册（判据与附件管线同源，见 `vision.ts`）。
+ */
+let imageTools: ImageToolsRegistry | undefined
 /** Agent 内核自带工具装配器（todo / task，docs/06 §18/§19）：同样不受门控 */
 let agentCoreTools: AgentCoreToolsRegistry | undefined
 /** 任务清单端口（docs/06 §18）：`<userData>/todos/<sessionId>.json`，退出前 flush */
@@ -969,6 +982,29 @@ async function bootstrap(): Promise<void> {
     }),
     imageGen: createImageGenPort(imageGenService),
   })
+  // 7.1.3b 图像工具（docs/06 §25）：view_image / screenshot / clipboard_read_image。
+  //     门控是**模型能力**而不是开关：当前生效模型没开图片输入就一个都不注册（判据见 vision.ts）。
+  //     三个落盘目录（generated / screenshots / clipboard）同时是 view_image 的白名单根 ——
+  //     它们由 Agent 自己写出，`<userData>` 又在任何项目根之外，边界校验必须先放行这三处。
+  imageTools = registerImageTools({
+    tools,
+    logger: logger.child('tools'),
+    visionEnabled: () => visionEnabled(settings!.get()),
+    viewImage: createViewImagePort({
+      io: createNodeImageIo(),
+      // 与 file-port / command-runner **同一个**边界取值器（按会话解析项目根，docs/06 §5.1）
+      guard: { workspaceRoot: (sessionId) => sessionProjects.boundaryRoot(sessionId) },
+      ownedDirs: OWNED_IMAGE_SUBDIRS.map((name) => join(userData, name)),
+    }),
+    screenshot: createScreenshotPort({
+      dir: join(userData, 'screenshots'),
+      logger: logger.child('tools'),
+    }),
+    clipboardImage: createElectronClipboardImagePort({
+      dir: join(userData, 'clipboard'),
+      logger: logger.child('tools'),
+    }),
+  })
   // 7.1.4 Agent 内核自带工具（docs/06 §18/§19）：todo_write / todo_read / task。
   //     与 set_setting / 扩展工具五件套同级——不受 `agent.tools.enabled` 门控
   //     （todo / task 是 Agent 自身能力，不是电脑操控）。
@@ -1216,13 +1252,9 @@ async function bootstrap(): Promise<void> {
     // 与 `attachmentExtract` 同一套「降级不阻断」口径：读不出 / 超限的图如实记 warn，
     // 本轮按未读取处理（模型不会以为它看见过）。
     loadImages: async (paths) => {
-      const loaded = await readImages(paths, {
-        sizeOf: async (path) => {
-          const stat = await fs.stat(path).catch(() => undefined)
-          return stat?.isFile() === true ? stat.size : undefined
-        },
-        readFile: (path) => fs.readFile(path),
-      })
+      // io 与 `view_image` 的读盘端口**共用同一份**（`createNodeImageIo`）：
+      // 单图 8 MiB 上限、空文件、读失败三种降级由 `readImages` 统一判定，两处不会漂移
+      const loaded = await readImages(paths, createNodeImageIo())
       return loaded.map((item) => {
         if (item.image === undefined) {
           logger?.warn('图片附件未读入上下文', { path: item.path, note: item.note })
@@ -3414,6 +3446,59 @@ async function runSmokeTest(userData: string): Promise<void> {
       masterOffOk,
       masterOffOk ? '' : '总开关断言失败',
     )
+
+    // 图像工具的门控（docs/06 §25）：它是**按模型能力**注册的，而不是按开关 ——
+    // 这里在真实的 `syncToolRegistries()` 链上钉「注册表里有没有这三个工具」，
+    // 单测只覆盖了装配器本身，覆盖不到「settings:changed → sync」这段接线。
+    let imageGateOk = false
+    let imageGateDetail = '配置存储未就绪'
+    if (settings !== undefined) {
+      // 收进局部常量：闭包里的窄化不会保留（`settings` 是可能为 undefined 的 let）
+      const store = settings
+      const llmBefore = store.get().llm
+      const writeVision = (vision: boolean): void => {
+        const current = store.get().llm
+        store.update({
+          llm: {
+            active: 'smoke-image',
+            providers: {
+              ...current.providers,
+              'smoke-image': {
+                type: 'openai-compat',
+                baseUrl: 'http://127.0.0.1:1/v1',
+                apiKeyEnc: '',
+                model: 'vision-model',
+                modelList: ['vision-model'],
+                // 只写三个必填子字段：本段要的是 vision 这一位的效果，别的取值无关
+                modelParams: {
+                  'vision-model': { reasoningEffort: 'auto', contextWindow: 0, vision },
+                },
+              },
+            },
+          },
+        })
+        syncToolRegistries()
+      }
+      const present = (): boolean[] =>
+        IMAGE_TOOL_NAMES.map((name) => tools?.get(name) !== undefined)
+
+      writeVision(false)
+      const off = present()
+      writeVision(true)
+      const on = present()
+
+      // 复原：把 `llm` 整组写回（`settings:update` 是顶层浅合并，少带一个键就丢配置）
+      store.update({ llm: { active: llmBefore.active, providers: llmBefore.providers } })
+      syncToolRegistries()
+
+      imageGateOk = off.every((value) => !value) && on.every((value) => value)
+      imageGateDetail = imageGateOk ? '' : `off=${off.join(',')} on=${on.join(',')}`
+    }
+    record(
+      '图像工具按模型能力注册：vision 关着时三个工具都不在表里，打开后全部出现',
+      imageGateOk,
+      imageGateDetail,
+    )
   }
 
   // 5. `set_setting` 的 crash 矩阵（docs/06 §12、step 02 第 8 条）：
@@ -4512,6 +4597,8 @@ function syncToolRegistries(): void {
   computerTools?.sync()
   settingsTool?.sync()
   extensionTools?.sync()
+  // 图像工具（docs/06 §25）：换模型 / 改「支持图片输入」开关后即时注册或摘除
+  imageTools?.sync()
   agentCoreTools?.sync()
   // ClassIsland 提醒工具（v3）：端点填了 / 改了就即时注册或摘除（无需重启）
   classIslandTools?.sync()

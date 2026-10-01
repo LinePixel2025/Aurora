@@ -7,12 +7,14 @@
  * （`clipboard.ts` 是唯一的例外：它实现 Electron `clipboard` 端口，必须 import electron，
  * 因此不进本文件的依赖 —— 由 `main/index.ts` 直接构造后注入。）
  *
- * 本文件现有四个装配器：
+ * 本文件现有这些装配器：
  * - `registerComputerTools`：电脑操控工具（8 个，含 `grep` / `glob`），受 `agent.tools.enabled` 门控
  *   （docs/06 §11）；
  * - `registerSettingsTool`：`set_setting`，不受门控（docs/06 §12）；
  * - `registerExtensionTools`：扩展工具五件套，不受门控（docs/06 §14）；
- * - `registerAgentCoreTools`：todo_write / todo_read / task，不受门控（docs/06 §18/§19）
+ * - `registerImageTools`：图像工具（看图 / 截屏 / 读剪贴板图片），**按模型能力注册** ——
+ *   当前生效模型没开图片输入就一个都不注册（docs/06 §25）；
+ * - `registerAgentCoreTools`：todo_write / todo_read / task / ask_user，不受门控（docs/06 §18/§19/§21）
  *   —— todo / task 是 Agent 自身的工作能力（维护任务清单、派生上下文隔离的子代理），
  *   不是「电脑操控」，与 set_setting / 扩展工具同级。
  *
@@ -35,17 +37,20 @@ import {
 } from '@aurora/shared'
 import {
   createClipboardTools,
+  createClipboardImageTool,
   createEditTool,
   createFileTools,
   createImageGenTool,
   createNotifyTool,
   createOpenTool,
+  createScreenshotTool,
   createSearchTools,
   createSettingsTool,
   createAskUserTool,
   createTaskTool,
   createTerminalTool,
   createTodoTools,
+  createViewImageTool,
   createWebFetchTool,
   TODO_WRITE_TOOL_NAME,
   createCenterSendFileTool,
@@ -53,6 +58,7 @@ import {
   type AgentProviderFactory,
   type AskUserPort,
   type CenterPort,
+  type ClipboardImagePort,
   type ClipboardPort,
   type CommandRunner,
   type FilePort,
@@ -60,9 +66,11 @@ import {
   type NotifyPort,
   type OpenPort,
   type ReadTracker,
+  type ScreenshotPort,
   type SettingsToolPort,
   type TodoPort,
   type ToolRegistry,
+  type ViewImagePort,
   type WebFetchPort,
 } from '@aurora/agent-core'
 import {
@@ -362,10 +370,78 @@ export function registerExtensionTools(deps: ExtensionToolsDeps): ExtensionTools
   }
 }
 
+/** 图像工具的固定名字集合：注册 / 摘除 / smoke 断言 / 文档共用，避免多处各写一份字符串。 */
+export const IMAGE_TOOL_NAMES = ['view_image', 'screenshot', 'clipboard_read_image'] as const
+
+export interface ImageToolsDeps {
+  tools: ToolRegistry
+  logger: Logger
+  /**
+   * 当前生效模型是否支持**图片输入**（live getter，唯一判据在 `main/vision.ts`）。
+   *
+   * 为什么是 getter 而不是布尔值：它与 `registerComputerTools` 的开关一样必须**现读** ——
+   * `sync()` 在启动与每次 `settings:changed` 时被调用，用户在对话窗的模型下拉里换个模型
+   * （写 `llm.providers.<active>.model`）就走这条链，下一次请求的工具表即随之变化，无需重启。
+   */
+  visionEnabled: () => boolean
+  /** 看图端口（`view_image`，`tools/image-read-port.ts` → 项目根边界 + app 自有目录白名单） */
+  viewImage: ViewImagePort
+  /** 截屏端口（`screenshot`，`tools/screenshot-port.ts` → Electron desktopCapturer） */
+  screenshot: ScreenshotPort
+  /** 剪贴板图片端口（`clipboard_read_image`，`tools/clipboard.ts` → Electron clipboard） */
+  clipboardImage: ClipboardImagePort
+}
+
+export interface ImageToolsRegistry {
+  /** 重建图像工具表，返回本次注册的工具名 */
+  sync(): string[]
+}
+
+/**
+ * 图像工具装配器（看图 / 截屏 / 读剪贴板图片，docs/06 §25）。
+ *
+ * 门控口径与其它装配器都不同：**按模型能力注册**。当前生效模型的
+ * `llm.providers.<id>.modelParams.<模型 id>.vision` 关着时，三个工具一个都不注册 ——
+ * 模型在系统提示词的「## 可用工具」里看不到它们，请求体的 `tools` 数组里也没有，
+ * 调用会回填「工具不存在」。这与 ClassIsland / Center 工具的「按可用性注册」同款，
+ * 而**不是**「注册好、调用时再拒绝」：把看不懂图的工具摆在模型面前，只会诱使它先答应
+ * 用户「我看看」、再在调用时失败。
+ *
+ * 它与图片附件管线共用**同一份判据**（`main/vision.ts`）：附件降级而工具照给，
+ * 或反过来，都是自相矛盾的组合。
+ *
+ * 不受 `agent.tools.enabled` 门控（与扩展五件套同口径：「看图」不属于电脑操控的开关语义），
+ * 也不按 `readonly` 档摘除（`view_image` 纯读；截屏与剪贴板读写的都是 app 自己的目录）。
+ */
+export function registerImageTools(deps: ImageToolsDeps): ImageToolsRegistry {
+  return {
+    sync(): string[] {
+      // 先全量摘掉再重建（幂等），与其它装配器同一套时序约定
+      for (const name of IMAGE_TOOL_NAMES) deps.tools.unregister(name)
+
+      if (!deps.visionEnabled()) {
+        deps.logger.debug('当前模型未开启图片输入：图像工具不注册', {
+          names: [...IMAGE_TOOL_NAMES],
+        })
+        return []
+      }
+
+      deps.tools.register(createViewImageTool({ port: deps.viewImage }))
+      deps.tools.register(createScreenshotTool({ port: deps.screenshot }))
+      deps.tools.register(createClipboardImageTool({ port: deps.clipboardImage }))
+
+      const names = IMAGE_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
+      deps.logger.info('已同步图像工具', { names: [...names] })
+      return [...names]
+    },
+  }
+}
+
 /**
  * Agent 内核自带工具的固定名字集合：注册 / 摘除 / 文档共用，避免多处各写一份字符串。
  */
 export const AGENT_CORE_TOOL_NAMES = ['todo_write', 'todo_read', 'task', 'ask_user'] as const
+
 export interface AgentCoreToolsDeps {
   tools: ToolRegistry
   logger: Logger

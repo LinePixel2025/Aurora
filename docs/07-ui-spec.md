@@ -229,6 +229,8 @@
     图片本身**不走文本提取**：路径经 `chat:send` 透传到内核，按提供方
     `llm.providers.<id>.modelParams.<模型 id>.vision`（v23 起按模型绑定） 开关决定「作为图片分片下发」还是「降级为一行未读取说明」；
     未开启时 chip 上仍显示缩略图（那是本地预览，与是否送给模型无关）。
+    该开关**同时决定图像工具（`view_image` / `screenshot` / `clipboard_read_image`）是否注册给模型**
+    （见 06 §25）—— 开启后模型除收到图片附件外，还能主动读图 / 截屏 / 读剪贴板里的图片。
 - **尺寸（BetaV2）**：见本节开头的主界面规格（1120×720 / min 940×600 / 居中）；位置记忆与多会话能力不变。
   - 实现状态（v0.6.0）：**多会话列表已落地**（`chat:sessions` 列表 + `chat:newSession` 新建 + 切换）。
     标题取首条用户消息前 24 字（不额外调用模型生成标题），按最后消息时间倒序；
@@ -868,6 +870,9 @@
   列表为空时是 `data-empty="llm.providers"` 的空状态卡。BetaV2 新增：「显示思考过程」开关
   （`data-field="general.chat.showThinking"`）与**生图模型区组**（enabled / active / provider 编辑，
   锚点 `imagegen.*`）。详情见 docs/08 §5。
+  模型行内参数里的「支持图片输入」（`data-field` 锚点 `…modelParams.<模型 id>.vision`）勾选后，
+  除图片附件按分片下发外，还会给模型**注册图像工具**（`view_image` / `screenshot` /
+  `clipboard_read_image`，见 06 §25）。
 - **语音页（v0.8.0 新增；BetaV2 扩为 TTS + STT 双区组）**：页面提供 TTS 区组 —— 总开关（`tts.enabled`）、
   默认 TTS 模型（`tts.active`）、自动朗读（`tts.autoRead`）、截断上限（`tts.maxChars`），
   以及 TTS provider 列表的**增 / 改 / 删 + 「试听」**；BetaV2 新增 **STT 区组**（`stt.enabled` / `stt.active` /

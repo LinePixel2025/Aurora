@@ -1105,7 +1105,8 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
                 <span class="tiny muted param-hint">
                   窗口单位 token，仅作对话窗「上下文占用比例」的分母，留空或 0 =
                   未知（不显示占比），上限
-                  2000000；图片输入开启后这个模型的图片附件才会作为图片发出去（需该模型支持视觉）
+                  2000000；图片输入开启后这个模型的图片附件才会作为图片发出去（需该模型支持视觉），
+                  并给模型开放看图 / 截屏 / 读剪贴板图片三个工具
                 </span>
               </div>
             </div>
