@@ -3298,6 +3298,46 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
     const confirmItem = textOf('[data-field="chat.permission-confirm"]')
     const autoItemBefore = textOf('[data-field="chat.permission-full"]')
 
+    // ── 溢出护栏（菜单还开着的时候量，后面两下点击就把它收起来了）──
+    // 「文字跑出卡片」有两个可读事实，两个都量，缺一不可：
+    // ① 每项的矩形必须落在卡片矩形之内 —— 几何越界；
+    // ② 每项（连同它的文字容器 .perm-item-body）的 scrollWidth 不得大于 clientWidth。
+    //    只查 ① 抓不到本轮的 bug：每一项都是 width: 100% + 全局 border-box，矩形**永远**在
+    //    卡片内，而文字是画到自己盒子之外的。成因是 white-space 是**继承**属性 —— 祖先
+    //    .composer-bar 的 nowrap 一路继承进菜单，flex 子项被压到可用宽度、文本却按 nowrap 排版。
+    //    根治点是 .perm-item-body 复位成 white-space: normal（.perm-menu 的 overflow: hidden
+    //    只是兜底裁剪：它会把「画出卡片」变成「静默截断」，② 对此同样报警）。
+    const menuEl = document.querySelector('[data-field="chat.permission-menu"]')
+    const menuBoxes = []
+    if (menuEl !== null) {
+      const menuRect = menuEl.getBoundingClientRect()
+      const items = menuEl.querySelectorAll('.perm-item')
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index]
+        const rect = item.getBoundingClientRect()
+        const body = item.querySelector('.perm-item-body')
+        const boxes = body === null ? [item] : [item, body]
+        const outOfCard = rect.right > menuRect.right + 0.5 || rect.left < menuRect.left - 0.5
+        let textClipped = false
+        for (let box = 0; box < boxes.length; box += 1) {
+          if (boxes[box].scrollWidth > boxes[box].clientWidth + 1) textClipped = true
+        }
+        menuBoxes.push({
+          index: index,
+          right: Math.round(rect.right * 10) / 10,
+          cardRight: Math.round(menuRect.right * 10) / 10,
+          scrollWidth: item.scrollWidth,
+          clientWidth: item.clientWidth,
+          bodyScrollWidth: body === null ? null : body.scrollWidth,
+          bodyClientWidth: body === null ? null : body.clientWidth,
+          outOfCard: outOfCard,
+          textClipped: textClipped,
+        })
+      }
+    }
+    const menuOverflow = menuBoxes.filter((box) => box.outOfCard || box.textClipped).length
+    const noOverflow = menuEl !== null && menuOverflow === 0
+
     // ── 第一下：只翻成「再点一次确认」，配置一动不动 ──
     const autoButton = document.querySelector('[data-field="chat.permission-full"]')
     if (autoButton !== null) autoButton.click()
@@ -3330,28 +3370,32 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
     }
     const triggerAfter = textOf('[data-field="chat.permission"]')
 
-    return {
-      menuOpen,
+    // 同一段语义的判据只写一份：pass 直接取这张表的乘积，别让两处表漂移
+    //（报告里每条都 true、探针却恒定 FAIL 的根因就是这个）。
+    const conditions = {
+      menuOpen: menuOpen,
       readonlyOption: readonlyItem.indexOf('只读') !== -1,
       confirmOption: confirmItem.indexOf('变更前确认') !== -1,
       fullOption: autoItemBefore.indexOf('完全权限') !== -1,
       askedAgain: autoItemAfter.indexOf('再点一次确认') !== -1,
+      /** 第一下点击只翻确认态，配置一动不动 */
+      permissionUnchanged: unchangedAfterFirst === true,
+      /** 第二下才真正落盘成 auto（镜像规则：老开关 false） */
+      permissionCommitted: committed === true,
+      menuClosedAfter: closed === true,
+      /** 说明文字没有横向画出卡片 */
+      noOverflow: noOverflow,
+      /** 收尾 = 出厂默认档（完全权限），后续场景读到的仍是默认闸门状态 */
+      triggerRestored: triggerAfter.indexOf('完全权限') !== -1,
+    }
+
+    return {
+      ...conditions,
+      menuOverflow: menuOverflow,
+      menuBoxes: menuBoxes,
       permissionModeBefore: first.ok ? first.value.agent.permissionMode : null,
-      unchangedAfterFirst,
-      committed,
-      triggerAfter,
-      menuClosedAfter: closed,
-      pass:
-        menuOpen &&
-        readonlyItem.indexOf('只读') !== -1 &&
-        confirmItem.indexOf('变更前确认') !== -1 &&
-        autoItemBefore.indexOf('完全权限') !== -1 &&
-        autoItemAfter.indexOf('再点一次确认') !== -1 &&
-        unchangedAfterFirst === true &&
-        committed === true &&
-        closed === true &&
-        // 收尾 = 出厂默认档（完全权限），后续场景读到的仍是默认闸门状态
-        triggerAfter.indexOf('完全权限') !== -1,
+      triggerAfter: triggerAfter,
+      pass: Object.keys(conditions).every((key) => conditions[key] === true),
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -3667,6 +3711,29 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
     const contextMoment = snapshot()
     contextMoment.hit = sendHit()
 
+    // ── 详解卡的形状断言（此刻卡是展开的）──
+    // capture 的顺序是「先拍 PNG、后跑 check」，而展开详解卡的代码就在 check 里 ——
+    // 没有任何截图能拍到它的展开态，所以「只留三行」这件事只能在这里客观钉住：
+    // 标签集合恰为三项且顺序一致、说明里不再出现「消息条数」（统计项已随精简移除）。
+    const detailCard = document.querySelector('[data-field="chat.context-detail"]')
+    const detailLabels =
+      detailCard === null
+        ? []
+        : Array.from(detailCard.querySelectorAll('.ctx-grid dt')).map((el) =>
+            (el.textContent || '').trim(),
+          )
+    const detailRows = detailLabels.length
+    const detailNote =
+      detailCard === null
+        ? ''
+        : ((detailCard.querySelector('.ctx-note') || {}).textContent || '').trim()
+    const expectedLabels = ['输入（最近一轮）', '上下文窗口', '模型']
+    const detailShape =
+      detailCard !== null &&
+      detailRows === expectedLabels.length &&
+      detailLabels.every((label, index) => label === expectedLabels[index]) &&
+      detailNote.indexOf('消息条数') === -1
+
     // 收尾：反复按**当前**状态关掉可见浮层 —— 不能用过期快照决定点谁：
     // 打开上下文卡时权限下拉已经被挤掉了（openFlyout 只有一个值），此时再点权限钮会把它又打开。
     const box = document.querySelector('.composer-input')
@@ -3745,10 +3812,20 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
       cleared,
       cleanupTrace,
       finalVisible: finalMoment.visible,
+      detailRows,
+      detailLabels,
+      detailNoteClean: detailNote.indexOf('消息条数') === -1,
       inputAfter:
         box === null ? null : box.value === '' ? 'empty' : JSON.stringify(box.value.slice(0, 24)),
       pass:
-        oneAtMost && mutual && barClear && aboveComposerBox && sendClickable && cleared === true,
+        oneAtMost &&
+        mutual &&
+        barClear &&
+        aboveComposerBox &&
+        sendClickable &&
+        cleared === true &&
+        // 详解卡只留三行（输入 / 上下文窗口 / 模型）+ 一句说明
+        detailShape === true,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -5943,12 +6020,21 @@ export const SETTINGS_LLM_EFFORT_CHECK = `(async () => {
  * 截图用**隔离 userData**，起步时一个 provider 都没有 —— 而「没有可用 provider」时渲染层按设计把控件
  * `disabled`（不隐藏），此时切不动。所以先像 `SETTINGS_LLM_EFFORT_ACT` 那样造一个 provider，再操作下拉。
  * 原值记到 `window.__auroraEffortProbe`，供 check 阶段**写回**，避免污染后面的截图场景。
+ *
+ * v23 起思考等级按**模型 id** 键（`llm.providers.<id>.modelParams.<modelId>.reasoningEffort`，
+ * provider 级字段已删除）：种子 provider 的 `modelParams` 要与 `model` 同键，`before` 记
+ * 「该模型的原值（缺省 `'auto'`）」——**不能**记 `undefined`，否则 CHECK 的
+ * `current === probe.before` 会因两边都是 `undefined` 而误判已还原，把 `high` 留在配置里。
  */
 export const CHAT_THINKING_LEVEL_ACT = `(async () => {
   try {
     let state = await window.aurora.settings.get()
     if (!state.ok) return { changed: false, reason: 'settings.get failed' }
     if (Object.keys(state.value.llm.providers).length === 0) {
+      // 生成参数是按**模型 id** 键的（v23）：种子条目必须与 provider.model 同键，
+      // 且三项一起写全 —— reasoningEffort 是三个子字段里唯一没有 .default() 的，
+      // 漏写它整份配置会在下次启动被判损坏重建。provider 级已无 reasoningEffort / temperature。
+      const seedModel = 'deepseek-chat'
       const created = await window.aurora.settings.update({
         llm: {
           active: 'capture',
@@ -5957,9 +6043,10 @@ export const CHAT_THINKING_LEVEL_ACT = `(async () => {
               type: 'openai-compat',
               baseUrl: 'https://api.deepseek.com/v1',
               apiKeyEnc: '',
-              model: 'deepseek-chat',
-              temperature: 0.7,
-              reasoningEffort: 'auto',
+              model: seedModel,
+              modelParams: {
+                [seedModel]: { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+              },
             },
           },
         },
@@ -5972,9 +6059,22 @@ export const CHAT_THINKING_LEVEL_ACT = `(async () => {
 
     const active = state.value.llm.active
     const provider = active === '' ? undefined : state.value.llm.providers[active]
+    // 取值口径与渲染层一致（resolveModelParams，v23）：按**模型 id** 键，缺省 'auto'。
+    // **不能**把 before 记成 undefined —— 那样 CHECK 里 current === probe.before
+    // 会因两边都是 undefined 而误判 restored = true，把探针写进去的 high 永久留在配置里。
+    const paramsOf = (target) => {
+      if (target === undefined || target === null) return null
+      const table = target.modelParams === undefined ? {} : target.modelParams
+      const entry = table[target.model]
+      return entry === undefined || entry === null
+        ? { reasoningEffort: 'auto', contextWindow: 0, vision: false }
+        : entry
+    }
+    const beforeParams = paramsOf(provider)
     window.__auroraEffortProbe = {
-      active,
-      before: provider === undefined ? null : provider.reasoningEffort,
+      active: active,
+      modelId: provider === undefined ? null : provider.model,
+      before: beforeParams === null ? null : beforeParams.reasoningEffort || 'auto',
     }
 
     // 轮询等控件可用：它的 disabled 取决于**渲染层 settingsStore 是否已水合**（不是配置本身），
@@ -6014,6 +6114,10 @@ export const CHAT_THINKING_LEVEL_ACT = `(async () => {
  * 只上报不判定等于没断言 —— 写回失败会把 `reasoningEffort: 'high'` 留给后面的场景。
  * 恢复目标用 ACT 记下的 `probe.active`（而不是此刻的 `llm.active`）：中途 active 若被别的场景改过，
  * 按当前 active 回写会写错 provider。
+ *
+ * v23：配置值改读 `modelParams[provider.model].reasoningEffort`（与渲染层的
+ * `resolveModelParams` 同口径，缺省 `'auto'`），写回时**整份替换该键对象且三项写全**——
+ * `reasoningEffort` 是三个子字段里唯一没有 `.default()` 的，漏写会让整份配置在下次启动被判损坏。
  */
 export const CHAT_THINKING_LEVEL_CHECK = `(async () => {
   try {
@@ -6021,7 +6125,18 @@ export const CHAT_THINKING_LEVEL_CHECK = `(async () => {
     if (!state.ok) return { pass: false, reason: 'settings.get failed' }
     const active = state.value.llm.active
     const provider = active === '' ? undefined : state.value.llm.providers[active]
-    const configValue = provider === undefined ? null : provider.reasoningEffort
+    // 取值口径同渲染层的 resolveModelParams（v23）：按**模型 id** 键，缺省 'auto'。
+    // 再读 provider 级的 reasoningEffort 只会恒读到 undefined → 假 FAIL（该字段已删除）。
+    const paramsOf = (target) => {
+      if (target === undefined || target === null) return null
+      const table = target.modelParams === undefined ? {} : target.modelParams
+      const entry = table[target.model]
+      return entry === undefined || entry === null
+        ? { reasoningEffort: 'auto', contextWindow: 0, vision: false }
+        : entry
+    }
+    const configParams = paramsOf(provider)
+    const configValue = configParams === null ? null : configParams.reasoningEffort || 'auto'
 
     const field = document.querySelector('[data-field="chat.reasoningEffort"]')
     const select =
@@ -6029,20 +6144,40 @@ export const CHAT_THINKING_LEVEL_CHECK = `(async () => {
     const domValue = select === null ? null : select.value
     const optionCount = select === null ? 0 : select.options.length
 
-    // 写回原值：本场景会改配置，后面还有别的截图场景，不能让它们看到 high
+    // 写回原值：本场景会改配置，后面还有别的截图场景，不能让它们看到 high。
+    // 写回落在**模型 id** 那一项上（provider 级字段已随 v23 删除），且整份替换该键对象、
+    // 三项都写全：reasoningEffort 是三个子字段里唯一没有 .default() 的，漏写会让整份配置
+    // 在下次启动被判损坏重建。
     const probe = window.__auroraEffortProbe
     let restored = null
     if (probe !== undefined && probe.active !== '' && probe.before !== null) {
       const providers = state.value.llm.providers
       const target = providers[probe.active]
-      if (target === undefined || target.reasoningEffort === probe.before) {
+      const targetParams = paramsOf(target)
+      const current = targetParams === null ? null : targetParams.reasoningEffort || 'auto'
+      if (target === undefined || current === probe.before) {
         // 本来就是我们创建/没改动的值：无需写回，视为已还原
         restored = true
       } else {
+        const modelId = target.model
+        const table = target.modelParams === undefined ? {} : target.modelParams
         const result = await window.aurora.settings.update({
           llm: {
             active: state.value.llm.active,
-            providers: { ...providers, [probe.active]: { ...target, reasoningEffort: probe.before } },
+            providers: {
+              ...providers,
+              [probe.active]: {
+                ...target,
+                modelParams: {
+                  ...table,
+                  [modelId]: {
+                    reasoningEffort: probe.before,
+                    contextWindow: targetParams === null ? 0 : targetParams.contextWindow || 0,
+                    vision: targetParams !== null && targetParams.vision === true,
+                  },
+                },
+              },
+            },
           },
         })
         restored = result.ok === true
