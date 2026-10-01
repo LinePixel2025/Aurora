@@ -852,10 +852,13 @@ function migrateProviderToModelParams(entry: Record<string, unknown>): Record<st
   delete patch['vision']
   delete patch['temperature']
 
-  // 已有的 modelParams 只可能是手改出来的（v22 及更早没有任何代码写过它）：
-  // 逐条目**归一**而不是逐字保留，理由见 `migrateV22ToV23` 的语义 ④。
-  const table: Record<string, unknown> = { ...(asRecord(patch['modelParams']) ?? {}) }
-  for (const [key, value] of Object.entries(table)) table[key] = normalizeModelParams(value)
+  // 已有的 `modelParams` 只可能是**手改**出来的（v22 及更早没有任何代码写过它）。
+  // 写回时逐条目归一（理由见 `migrateV22ToV23` 的语义 ④），但**合并必须用原始值**：
+  // 先归一再合并的话，归一出来的默认值会把旧值整个盖掉 —— 语义② 承诺的
+  // 「用旧值补它缺的键」就永远不成立（`reasoningEffort` 会被静默重置成 `auto`）。
+  const rawTable = asRecord(patch['modelParams']) ?? {}
+  const table: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(rawTable)) table[key] = normalizeModelParams(value)
 
   const model = patch['model']
   if (typeof model !== 'string' || model.length === 0) {
@@ -864,10 +867,10 @@ function migrateProviderToModelParams(entry: Record<string, unknown>): Record<st
     return patch
   }
 
-  // ② 不覆盖已写值：先把旧值归一（补齐三个键），再用该模型**已写**的原始值盖上去，
-  // 最后整体归一一次 —— 于是「缺的键拿旧值、旧值非法拿默认、已写值原样保留」同时成立。
-  const current = asRecord(table[model]) ?? {}
-  table[model] = normalizeModelParams({ ...normalizeModelParams(legacy), ...current })
+  // ② 不覆盖已写值 + 补缺键：把该模型**已写的原始值**盖在旧值之上再整体归一 ——
+  // 缺的键拿旧值（旧值非法则拿默认）、已写且合法的值原样保留。
+  const written = asRecord(rawTable[model]) ?? {}
+  table[model] = normalizeModelParams({ ...legacy, ...written })
   patch['modelParams'] = table
   return patch
 }

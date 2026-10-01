@@ -1347,6 +1347,42 @@ describe('配置迁移链', () => {
       expect((outcome.data['llm'] as Record<string, unknown>)['active']).toBe('deepseek')
     })
 
+    it('该模型在 modelParams 里已有（手改的）条目时：已写值原样保留、缺的键由旧值补上', () => {
+      // 语义②「不覆盖已写值」+「旧值只补它缺的键」，两个方向都要成立。
+      // ⚠️ 这条是回归护栏：实现若先归一已有条目再合并，归一出来的默认值会把旧值整个盖掉 ——
+      // 症状是「手写过的 reasoningEffort: high 升级后静默变回 auto」，用户看不出是迁移干的。
+      const outcome = migrate({
+        version: 22,
+        llm: {
+          active: 'deepseek',
+          providers: {
+            deepseek: {
+              type: 'openai-compat',
+              baseUrl: 'https://api.deepseek.com',
+              apiKeyEnc: 'cipher',
+              model: 'deepseek-chat',
+              modelList: ['deepseek-chat'],
+              // 三个 provider 级旧值（待搬运）
+              reasoningEffort: 'high',
+              contextWindow: 128000,
+              vision: true,
+              // 该模型**已经**有一条手改出来的 modelParams 条目（只写了窗口）
+              modelParams: { 'deepseek-chat': { contextWindow: 999 } },
+            },
+          },
+        },
+      })
+
+      expect(loadParams(outcome.data, 'deepseek', 'deepseek-chat')).toEqual({
+        // 已写值优先
+        contextWindow: 999,
+        // 缺的两个键由 provider 级旧值补上（不是落回 auto / false）
+        reasoningEffort: 'high',
+        vision: true,
+      })
+      expect(parsesAsSettings(outcome.data)).toBe(true)
+    })
+
     it('model 为空串时不造模型条目，四个旧键照删', () => {
       const outcome = migrate({
         version: 22,
