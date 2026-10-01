@@ -15,7 +15,11 @@ import { agentDesktopDir } from '@aurora/agent-core'
 import { createDefaultSettings } from '@aurora/shared'
 import type { SessionSpace } from '@aurora/agent-core'
 import type { ProjectConfig, Settings } from '@aurora/shared'
-import { createSessionProjectResolver, type SessionProjectDeps } from './session-project.js'
+import {
+  adaptForSubagent,
+  createSessionProjectResolver,
+  type SessionProjectDeps,
+} from './session-project.js'
 
 const HOME = resolve('top', 'home-dir')
 const GLOBAL_ROOT = resolve('top', 'global-root')
@@ -169,5 +173,41 @@ describe('createSessionProjectResolver', () => {
     expect(resolver.workspaceDir('s1')).toBe(AGENT_DIR)
     mutableBindings['s1'] = 'proj-b'
     expect(resolver.workspaceDir('s1')).toBe(SESSION_ROOT)
+  })
+})
+
+describe('adaptForSubagent（A2：子代理缺省 cwd / 搜索根 / 边界根跟随父会话）', () => {
+  it('`-sub` 会话 id 剥回父会话再解析：绑定项目的父会话，子代理拿到同一个项目根', () => {
+    const settings = settingsWith({ list: [project('proj-session', SESSION_ROOT)] })
+    const view = adaptForSubagent(createSessionProjectResolver(depsOf(settings)))
+
+    expect(view.workspaceDir('s1-sub')).toBe(SESSION_ROOT)
+    expect(view.boundaryRoot('s1-sub')).toBe(SESSION_ROOT)
+    // 父会话本身与未带后缀的 id 原样
+    expect(view.workspaceDir('s1')).toBe(SESSION_ROOT)
+    expect(view.workspaceDir('a-sub-sub')).toBe(AGENT_DIR) // 只剥一层：a-sub 未绑定 → Agent 空间
+  })
+
+  it('父会话未绑定项目：回落链逐字不变（Agent 空间 > Work 模式目录 > workspaceDir > 主目录）', () => {
+    const settings = settingsWith({}, WORKSPACE_DIR)
+    const view = adaptForSubagent(createSessionProjectResolver(depsOf(settings)))
+
+    expect(view.workspaceDir('unbound-sub')).toBe(AGENT_DIR)
+    expect(view.boundaryRoot('unbound-sub')).toBe(AGENT_DIR)
+
+    const work = settingsWith({}, WORKSPACE_DIR)
+    work.modes.work.workspaceDir = resolve('top', 'work-dir')
+    work.modes.current = 'work'
+    const workView = adaptForSubagent(createSessionProjectResolver(depsOf(work)))
+    expect(workView.workspaceDir('sw-sub')).toBe(resolve('top', 'work-dir'))
+  })
+
+  it('undefined / 空串原样透传（不剥、不抛）', () => {
+    const settings = settingsWith({ list: [project('proj-session', SESSION_ROOT)] })
+    const view = adaptForSubagent(createSessionProjectResolver(depsOf(settings)))
+
+    expect(view.workspaceDir(undefined)).toBe(AGENT_DIR)
+    expect(view.workspaceDir('')).toBe(AGENT_DIR)
+    expect(view.boundaryRoot(undefined)).toBe(AGENT_DIR)
   })
 })

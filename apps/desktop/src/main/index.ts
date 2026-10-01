@@ -182,7 +182,10 @@ import { AutomationStore } from './automation/store.js'
 import { automationRunProfile } from './automation/run-profile.js'
 import { ensureElevation, inspectElevatedUserData, disableRequireAdmin } from './elevation.js'
 import type { AutomationActionPorts } from './automation/actions.js'
-import { createSessionProjectResolver } from './tools/session-project.js'
+import {
+  adaptForSubagent,
+  createSessionProjectResolver,
+} from './tools/session-project.js'
 import { createFileTodoPort, type FileTodoPort } from './tools/todo-port.js'
 // `ask_user` 的装配层实现（docs/06 §21）：卡片推送 + 等回执（3 分钟超时按"未回答"继续）
 import { createAskUserService, type AskUserService } from './ask-user.js'
@@ -934,6 +937,11 @@ async function bootstrap(): Promise<void> {
     homeDir: () => app.getPath('home'),
     cwd: process.cwd(),
   })
+  // 工具执行链的取值视图：子代理（task）的 `-sub` 会话 id 先剥回父会话再解析 ——
+  // 缺省 cwd / 搜索根 / 边界根跟随**父会话**的工作目录（docs/06 §19，确认链同款钉回）；
+  // todo 清单等状态隔离仍按 `-sub`（不经此视图）。确认 / AGENTS.md / workspaceHint
+  // 不会收到 `-sub` id，继续直用 sessionProjects。
+  const toolchainProjects = adaptForSubagent(sessionProjects)
   computerTools = registerComputerTools({
     tools,
     getSettings: () => settings!.get(),
@@ -942,17 +950,17 @@ async function bootstrap(): Promise<void> {
     // 全局当前项目根（会话未绑定时的回落位 + sync 日志取值源，docs/06 §5.1）
     projectRoot,
     // 缺省工作目录 / 搜索根：**按会话**即时解析（会话绑定项目 > 全局链），工具执行期现调
-    sessionWorkspaceDir: (sessionId) => sessionProjects.workspaceDir(sessionId),
+    sessionWorkspaceDir: (sessionId) => toolchainProjects.workspaceDir(sessionId),
     run: createCommandRunner({
       defaultCwd: process.cwd(),
       maxOutputBytes: 1024 * 1024,
-      // cwd 边界按会话解析（会话绑定项目 > 全局当前项目）
-      workspaceRoot: (sessionId) => sessionProjects.boundaryRoot(sessionId),
+      // cwd 边界按会话解析（会话绑定项目 > 全局当前项目）；子代理剥回父会话
+      workspaceRoot: (sessionId) => toolchainProjects.boundaryRoot(sessionId),
       logger: logger.child('tools'),
     }),
     files: createNodeFilePort({
-      // 六个文件方法的项目根边界同样按会话解析（与 runner 同一个取值器，别再抄第三份）
-      workspaceRoot: (sessionId) => sessionProjects.boundaryRoot(sessionId),
+      // 六个文件方法的项目根边界同样按会话解析（与 runner 同一个取值器，别再抄第三份；子代理剥回父会话）
+      workspaceRoot: (sessionId) => toolchainProjects.boundaryRoot(sessionId),
       logger: logger.child('tools'),
       snapshots: filePortSnapshots,
     }),
@@ -997,7 +1005,7 @@ async function bootstrap(): Promise<void> {
     viewImage: createViewImagePort({
       io: createNodeImageIo(),
       // 与 file-port / command-runner **同一个**边界取值器（按会话解析项目根，docs/06 §5.1）
-      guard: { workspaceRoot: (sessionId) => sessionProjects.boundaryRoot(sessionId) },
+      guard: { workspaceRoot: (sessionId) => toolchainProjects.boundaryRoot(sessionId) },
       ownedDirs: OWNED_IMAGE_SUBDIRS.map((name) => join(userData, name)),
     }),
     screenshot: createScreenshotPort({

@@ -27,10 +27,18 @@
  *    「根内写文件免确认」（v0.2.4，Codex 式 auto-edit）；
  * 3. 项目级 AGENTS.md 注入（`createProjectInstructionsSource` 的 `resolveRoot(sessionId)`）。
  *
+ * 其中 1 / 2 的**工具执行链取值**经 `adaptForSubagent` 视图：子代理（task 工具）的 `-sub`
+ * 会话 id 先剥回父会话再解析（docs/06 §19）—— 缺省 cwd / 搜索根 / 边界根跟随父会话的
+ * 工作目录，todo 清单等状态隔离仍按 `-sub`。
+ *
  * 本文件**不 import electron**：纯取值闭包 + agent-core 纯函数组合，可在 Node 里单测
  * （`session-project.test.ts`）。
  */
-import { effectiveWorkspaceDir, resolveProjectRootById } from '@aurora/agent-core'
+import {
+  effectiveWorkspaceDir,
+  parentSessionIdOf,
+  resolveProjectRootById,
+} from '@aurora/agent-core'
 import type { SessionSpace } from '@aurora/agent-core'
 import type { Settings } from '@aurora/shared'
 
@@ -156,4 +164,31 @@ export function createSessionProjectResolver(deps: SessionProjectDeps): SessionP
 function normalizeDir(value: string | undefined): string | undefined {
   const trimmed = value?.trim()
   return trimmed === undefined || trimmed === '' ? undefined : trimmed
+}
+
+/**
+ * 工具执行链用的解析器视图：子代理会话 id（`-sub` 后缀）先剥回**父会话**再解析。
+ *
+ * task 工具的子代理循环带着 `<父会话>-sub` 的 id 跑（todo 清单等状态隔离依赖它，
+ * docs/06 §19），但电脑操控工具的缺省 cwd / 搜索根（`sessionWorkspaceDir`）与
+ * file-port / command-runner / view_image 的边界根（`workspaceRoot` guard）必须按
+ * **父会话**解析 —— 否则 `-sub` 查不到会话绑定，恒落 Agent 空间目录，主代理在项目里
+ * 派子代理时子代理会在错误的目录里 grep / 写文件。与确认链「钉回父会话」
+ * （task.ts 的 `confirmForSubagent`）是同一类钉回的另一半，同用 `parentSessionIdOf`。
+ *
+ * 只透出工具链用的两个方法；AGENTS.md 注入 / 确认边界 / workspaceHint 等**不经**此视图
+ * （那些路径不会收到 `-sub` id，保持原语义）。纯函数包装，可单测。
+ */
+export interface ToolchainProjectResolver {
+  workspaceDir(sessionId: string | undefined): string
+  boundaryRoot(sessionId: string | undefined): string | undefined
+}
+
+export function adaptForSubagent(resolver: SessionProjectResolver): ToolchainProjectResolver {
+  const unwrap = (sessionId: string | undefined): string | undefined =>
+    sessionId === undefined || sessionId === '' ? sessionId : parentSessionIdOf(sessionId)
+  return {
+    workspaceDir: (sessionId) => resolver.workspaceDir(unwrap(sessionId)),
+    boundaryRoot: (sessionId) => resolver.boundaryRoot(unwrap(sessionId)),
+  }
 }

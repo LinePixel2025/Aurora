@@ -342,6 +342,8 @@ export interface LlmProvider {
 缺省 cwd / 搜索根（工具执行时经 `ctx.sessionId` 现调 getter）、项目根边界与 auto 档免确认判定
 （`file-port` / `command-runner` 的 `workspaceRoot(sessionId)` 与 `createConfirmTool`）、
 AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时按会话解析）。
+其中缺省 cwd / 搜索根与边界根的取值经 `adaptForSubagent` 视图：子代理（§19）的 `-sub`
+会话 id 先剥回父会话再解析 —— 子代理的工作目录跟随父会话（2026-10-02，docs/06 §19.2）。
 中心会话（`center-` 前缀）与本地会话同一条逻辑，默认未绑定；绑定入口除本机
 `chat:setSessionProject` 外还有 Aurora Center 的 `session.setProject` 远程命令
 （docs/12 §6.3，走同一个 `SessionStore.setProject`）。
@@ -1736,8 +1738,15 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
   （`TaskToolOptions.confirmTool` ← 装配层 `getConfirmTool` ← `createConfirmTool`）逐次判定，
   口径与主对话完全一致：档位（`readonly` / `confirm` / `auto`）、项目根 realpath、免确认命令模式
   全都不打折。子代理的写操作因此也受「根内按档位机器放行、根外弹卡」的既有规则约束。
-- **会话 id 钉回父会话**：内核把确认请求的 `sessionId` **强写成父会话**（不是循环看到的 `-sub`）。
+- **会话 id 钉回父会话（两个半边，2026-10-02 补齐）**：
+  ① 确认链——内核把确认请求的 `sessionId` **强写成父会话**（不是循环看到的 `-sub`）；
+  ② 工作目录——装配层注入工具的缺省 cwd / 搜索根与 file-port / command-runner / view_image
+  的 `workspaceRoot` guard 时经 `adaptForSubagent` 视图（`tools/session-project.ts`），用
+  `parentSessionIdOf` 把 `-sub` **剥回父会话**再解析。修复前子代理的缺省 cwd / 搜索根 /
+  边界根恒落 Agent 空间（`-sub` 查不到会话绑定）—— 主代理在项目里派子代理，
+  子代理却在 `桌面\Aurora` 里 grep / 写文件。
   `-sub` 会话在会话库里不存在，按它解析项目根会走另一条回落链 —— 那等于换了一条护栏。
+  两处钉回都不动 `-sub` 本身：todo 清单（§18）与读记录等**状态隔离**仍按 `-sub`。
 - **白名单只做减法**：只读档下装配层注入的 `subagentToolNames` 与写入白名单取**交集**，
   因此只读档即使模型写了 `permission: 'write'`，子代理照样拿不到写工具（回归用例钉住）。
 - **`run_command` / MCP / 递归派生拿不到**：写入白名单是**固定枚举**，不按 sensitivity 通配 ——

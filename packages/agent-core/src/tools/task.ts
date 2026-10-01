@@ -40,6 +40,25 @@ export const TASK_TOOL_NAME = 'task'
 export const MAX_TASK_RESULT_CHARS = 20_000
 /** 子代理会话 id 后缀：todo 等按会话隔离的端口据此与主对话分清单 */
 export const SUBAGENT_SESSION_SUFFIX = '-sub'
+
+/**
+ * 子代理会话 id → 父会话 id：剥掉末尾的 `-sub` 后缀（幂等；无后缀原样返回）。
+ *
+ * 子代理的工具循环带着 `-sub` id 跑（todo 清单等**状态隔离**依赖它，docs/06 §19），
+ * 但「按会话解析工作目录 / 边界根」的工具 deps 需要的是**父会话** id —— 否则 `-sub`
+ * 在会话库查不到绑定，缺省 cwd / 搜索根 / 边界会恒落 Agent 空间（确认链同款问题，
+ * 那边在 task.ts 里钉回父会话，工作目录这半边由装配层用本函数解决）。
+ * 裸 `-sub`（剥完为空串）不是合法会话 id，原样返回。
+ */
+export function parentSessionIdOf(sessionId: string): string {
+  if (
+    sessionId.length > SUBAGENT_SESSION_SUFFIX.length &&
+    sessionId.endsWith(SUBAGENT_SESSION_SUFFIX)
+  ) {
+    return sessionId.slice(0, sessionId.length - SUBAGENT_SESSION_SUFFIX.length)
+  }
+  return sessionId
+}
 /** 快照里保留的步骤上限（超出丢弃最早的中间步骤，保留首步与最近若干步） */
 export const MAX_SUBAGENT_STEPS = 60
 /** 单个步骤文本上限（快照只用于展示） */
@@ -296,6 +315,9 @@ async function runSubagent(
     // 写入授权下把父会话的确认链交进子循环：循环只在 `sensitivity === 'confirm'` 时调用它，
     // 因此这一句的效果是「子代理的写操作与主对话走同一条判定」（档位 / 项目根 / 免确认模式）。
     // 会话 id **钉回父会话**：`-sub` 在会话库里不存在，按它解析项目根会换一条护栏。
+    // 缺省 cwd / 搜索根 / 边界根的同一类钉回在**装配层**做（`session-project.ts` 的
+    // `adaptForSubagent` 用 `parentSessionIdOf` 剥后缀）—— 那边的 getter 由主进程注入，
+    // 内核只知道 `-sub`（todo 清单的状态隔离依赖它，不能整体换 id）。
     ...(writeGranted && confirmForSubagent !== undefined
       ? {
           confirmTool: (info: { name: string; input: unknown; sensitivity: 'confirm' }) =>

@@ -11,6 +11,7 @@ import {
   SUBAGENT_SESSION_SUFFIX,
   TASK_TOOL_NAME,
   createTaskTool,
+  parentSessionIdOf,
 } from './task.js'
 import { createTodoTools } from './todo.js'
 import type { TodoItem, TodoPort } from './todo.js'
@@ -85,6 +86,21 @@ function createHarness(options: {
   parent.register(tool)
   return { tool, provider, parent }
 }
+
+describe('parentSessionIdOf', () => {
+  it('剥掉末尾的 -sub 后缀：quick-sub → quick（A2：工具 deps 按父会话解析工作目录）', () => {
+    expect(parentSessionIdOf(`quick${SUBAGENT_SESSION_SUFFIX}`)).toBe('quick')
+  })
+
+  it('无后缀 / 非末尾后缀原样返回；幂等；裸 -sub 不剥（剥完为空串的不是合法会话 id）', () => {
+    expect(parentSessionIdOf('quick')).toBe('quick')
+    expect(parentSessionIdOf('center-abc-1')).toBe('center-abc-1')
+    expect(parentSessionIdOf('a-sub-sub')).toBe('a-sub')
+    expect(parentSessionIdOf(parentSessionIdOf('quick-sub'))).toBe('quick')
+    expect(parentSessionIdOf(SUBAGENT_SESSION_SUFFIX)).toBe(SUBAGENT_SESSION_SUFFIX)
+    expect(parentSessionIdOf('')).toBe('')
+  })
+})
 
 describe('createTaskTool', () => {
   it('声明 task 名、safe 敏感级与必填参数', () => {

@@ -408,6 +408,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   （getter 注入，同 `agent.loop` 上限套路）。不要在执行链上再写第二套项目根解析，
   也别把会话项目塞回全局设置或 CONFIG_VERSION 迁移链（它是会话数据）。
   Work 模式的 systemPrompt 描述的就是这条链（docs/05 §4.1）——别在提示词里另立「工作目录」口径。
+  **子代理（task，docs/06 §19.2）**：工具执行链的取值经 `adaptForSubagent` 视图 ——
+  缺省 cwd / 搜索根 / 边界根用 `parentSessionIdOf` 把 `-sub` 剥回**父会话**再解析
+  （2026-10-02 修复：此前恒落 Agent 空间）；todo 清单等状态隔离仍按 `-sub`，别整体换 id。
 - **SkillsService 的目录监听**（`startWatching`）：改 `skills.userDir` 走 `reconfigure`
   时会 `rearmWatcher`，新增监听路径时记得同样处理；create-skill 技能写文件后
   依赖这个监听自动重扫，没有任何"刷新"仪式。
