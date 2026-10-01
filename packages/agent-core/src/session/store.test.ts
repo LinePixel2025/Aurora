@@ -441,6 +441,124 @@ describe('SessionStore · 真删除会话（chat:deleteSession，docs/08 会话�
   })
 })
 
+describe('SessionStore · 读盘错误两态（P2-01）与删除竞态（P2-02）', () => {
+  /** 可注入一次读盘异常的会话文件系统（`TestFileSystem.readFile` 只能用 ENOENT 表达缺失） */
+  class FlakyReadFileSystem extends TestFileSystem {
+    failNextRead: Error | undefined
+
+    override readFile(path: string): Promise<string> {
+      const error = this.failNextRead
+      if (error !== undefined) {
+        this.failNextRead = undefined
+        return Promise.reject(error)
+      }
+      return super.readFile(path)
+    }
+  }
+
+  /** 可让下一次写盘挂在闸门上的会话文件系统（造「在途写盘」现场） */
+  class GatedWriteFileSystem extends TestFileSystem {
+    gateHit = false
+    private gate: Promise<void> | undefined
+
+    /** 挂起下一次 `writeFileAtomic`，返回放行函数 */
+    blockNextWrite(): () => void {
+      let release: () => void = () => undefined
+      this.gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      return release
+    }
+
+    override async writeFileAtomic(path: string, content: string): Promise<void> {
+      const gate = this.gate
+      this.gate = undefined
+      if (gate !== undefined) {
+        this.gateHit = true
+        await gate
+      }
+      return super.writeFileAtomic(path, content)
+    }
+  }
+
+  /** 轮询等待条件成立（超时即抛，避免"条件其实没达成"的假绿） */
+  async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error('等待条件超时')
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+  }
+
+  const seedPath = (id: string): string => sessionFilePath(SESSION_DIR, id)
+  const seedFile = (id: string): string =>
+    JSON.stringify({
+      version: 2,
+      sessionId: id,
+      updatedAt: '2025-01-01T00:00:00.000Z',
+      messages: [message('user', '历史提问')],
+    })
+  const storedMessages = (fs: TestFileSystem, id: string): string[] => {
+    const parsed = JSON.parse(fs.files.get(seedPath(id)) ?? '{}') as { messages?: unknown }
+    return Array.isArray(parsed.messages)
+      ? (parsed.messages as StoredMessage[]).map((item) => item.content)
+      : []
+  }
+
+  it('读盘抛非 ENOENT 错误（EPERM）：上抛而不返回空快照，下次访问重试仍读回历史', async () => {
+    const fs = new FlakyReadFileSystem({ [seedPath('main')]: seedFile('main') })
+    const store = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0, maxMessages: 5 })
+    const eperm = Object.assign(new Error('EPERM: operation not permitted, open main.json'), {
+      code: 'EPERM',
+    })
+
+    fs.failNextRead = eperm
+    await expect(store.get('main')).rejects.toThrow(/EPERM/)
+    // 关键：没有把「读错误」当成「文件不存在」——盘上数据一条没动，也没触发写盘
+    expect(storedMessages(fs, 'main')).toEqual(['历史提问'])
+    expect(fs.writeLog).toEqual([])
+
+    // 下一次访问重新读盘：拿到的是磁盘上的真实历史（而不是被置位的空快照）
+    expect((await store.get('main')).map((item) => item.content)).toEqual(['历史提问'])
+  })
+
+  it('读盘错误期间 append：不落盘（更谈不上用空快照覆盖磁盘历史）', async () => {
+    const fs = new FlakyReadFileSystem({ [seedPath('main')]: seedFile('main') })
+    const store = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0, maxMessages: 5 })
+    fs.failNextRead = Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' })
+
+    await expect(store.append('main', { role: 'user', content: '新消息' })).rejects.toThrow(/EBUSY/)
+    await store.flush()
+    expect(fs.writeLog).toEqual([])
+    expect(storedMessages(fs, 'main')).toEqual(['历史提问'])
+
+    // 读盘恢复后追加：磁盘历史与新消息都在（旧写法会把文件覆盖成「只有新消息」）
+    await store.append('main', { role: 'user', content: '新消息' })
+    await store.flush()
+    expect(storedMessages(fs, 'main')).toEqual(['历史提问', '新消息'])
+  })
+
+  it('在途写盘期间 remove：文件保持已删除（不被在途那次写重建）', async () => {
+    const fs = new GatedWriteFileSystem()
+    const store = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0, maxMessages: 5 })
+
+    const release = fs.blockNextWrite()
+    const appending = store.append('s1', { role: 'user', content: 'a' })
+    await waitFor(() => fs.gateHit) // 写盘已进入 writeFileAtomic（脏标记检查早已通过）
+
+    const removing = store.remove('s1')
+    release()
+    await appending
+    await removing
+
+    expect(fs.files.has(seedPath('s1'))).toBe(false)
+    // 之后的 flush 也不会把它写回来（脏标记与在途写都收干净了）
+    await store.flush()
+    expect(fs.files.has(seedPath('s1'))).toBe(false)
+    expect(await store.listSessions()).not.toContain('s1')
+  })
+})
+
 /** 读回某会话文件的原始 JSON（断言落盘形状用） */
 function readFile(fs: TestFileSystem, id: string): Record<string, unknown> {
   const raw = fs.files.get(sessionFilePath(SESSION_DIR, id))

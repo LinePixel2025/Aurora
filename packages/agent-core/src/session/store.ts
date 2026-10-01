@@ -122,7 +122,12 @@ export class SessionStore {
     return this.dir
   }
 
-  /** 读取（必要时从磁盘加载）某会话的全部消息。 */
+  /**
+   * 读取（必要时从磁盘加载）某会话的全部消息。
+   *
+   * 读盘抛**非「文件不存在」**错误（EPERM / EBUSY / EIO）时原样上抛，不返回空快照 ——
+   * 空快照会被后续写盘当成真实内容覆盖掉磁盘历史（见 `readFromDisk`）；调用方重试即可。
+   */
   async get(sessionId: string): Promise<StoredMessage[]> {
     const id = normalizeSessionId(sessionId)
     await this.ensureLoaded(id)
@@ -247,6 +252,9 @@ export class SessionStore {
    * 与 `clear`（只清消息、meta 保留）不同，这是不可逆操作：
    * - **先撤掉防抖定时器与脏标记**：挂着待写状态删文件，紧接着的那次 `writeNow` 会把
    *   内存快照原样写回磁盘，表现为「删了又回来了」；
+   * - **再 await 该 id 的在途写盘**（并吞掉它的失败，对照同文件 `setArchived` 的做法）：
+   *   定时器与脏标记只挡得住**尚未开始**的写，已经在 `writeFileAtomic` 里的那一次
+   *   会在 remove 返回之后把文件重建出来 —— 这是同一条「删了又回来」的另一半；
    * - 文件不存在（从未落盘的空会话）不算错误 —— `fs.remove` 对缺失路径幂等；
    * - 删除失败原样抛出（调用方转 `E_UNKNOWN`），不做静默降级；
    * - 调用方（IPC 层）负责先确认该会话没有在跑的请求 —— 这里只管存储。
@@ -259,6 +267,7 @@ export class SessionStore {
       this.timers.delete(id)
     }
     this.dirty.delete(id)
+    await (this.writing.get(id) ?? Promise.resolve()).catch(() => undefined)
     this.cache.delete(id)
     this.metaCache.delete(id)
     this.loaded.delete(id)
@@ -567,7 +576,8 @@ export class SessionStore {
    *
    * 现在：读盘中的 promise 放进 `loading`，并发调用复用它（同一 id 只读一次盘）；
    * 读盘成功才登记 `loaded`；`finally` 里清掉 map 条目，失败时下次访问能重新读盘
-   * （失败降级口径仍由 `readFromDisk` 负责，这里不新造错误）。
+   * （降级口径见 `readFromDisk`：只有**文件确实不存在**才返回空会话，「读错误」原样上抛，
+   * 调用方（`get` / `append` / `summaries`…）拿到的是异常而不是一份空快照）。
    */
   private async ensureLoaded(id: string): Promise<void> {
     if (this.loaded.has(id)) return
@@ -606,7 +616,11 @@ export class SessionStore {
    * 读盘：消息与会话级 meta 一次读出（两者在同一个文件里，没有理由读两遍）。
    *
    * 宽容口径（docs/06 §4）：
-   * - 文件不存在 → 空 messages + 空 meta（首次运行，不是错误）；
+   * - 文件**确实不存在** → 空 messages + 空 meta（首次运行，不是错误）；
+   * - 读取异常（EPERM / EBUSY / EIO —— Windows 上杀软与同步盘短暂锁文件现实存在）→
+   *   **原样上抛**，由 `ensureLoaded` 保证「不置 loaded、下次访问重试」（P2-01）：
+   *   在这里返回空快照会被当成装载成功，紧接着那一次写盘就用「只有新消息」的 payload
+   *   把会话文件整体覆盖掉 —— 这正是「空快照冲盘」家族（对照 `jobs/store.ts` 的 `isAbsent`）；
    * - `messages` 不是数组 → 走既有损坏备份路径（文件结构已不可信）；
    * - `meta` 畸形（不是对象 / 是数组 / 字段类型不对）→ 只当空 meta，**备份都不做** ——
    *   meta 是新加的旁路信息，绝不能因为它坏了就把整份会话备份重建（那等于丢消息）。
@@ -618,8 +632,9 @@ export class SessionStore {
     let raw: string
     try {
       raw = await this.fs.readFile(path)
-    } catch {
-      return { messages: [], meta: {} } // 首次运行：会话文件尚不存在
+    } catch (error) {
+      if (await this.isAbsent(path, error)) return { messages: [], meta: {} }
+      throw error
     }
 
     try {
@@ -634,6 +649,25 @@ export class SessionStore {
       this.logger.error('会话文件解析失败，已备份并重建', { sessionId: id, error: String(error) })
       await this.backupCorrupt(id, path)
       return { messages: [], meta: {} }
+    }
+  }
+
+  /**
+   * 读盘异常是否表示「文件**确实不存在**」（对照 `jobs/store.ts` 的同名方法）。
+   *
+   * 三层判定，从严到宽：
+   * 1. `error.code === 'ENOENT'` —— 真实文件系统的标准口径；
+   * 2. 端口没带 `code`（内存文件系统 / 某些包装层）时报文里点名 ENOENT / no such file；
+   * 3. 退一步向端口问一次 `exists`：**答"不存在"才算缺失**；
+   *    探测本身抛错按「不是缺失」处理（宁可上抛走下次重试，也不冒险用空快照冲盘）。
+   */
+  private async isAbsent(path: string, error: unknown): Promise<boolean> {
+    if (errorCodeOf(error) === 'ENOENT') return true
+    if (/ENOENT|no such file|not exist/i.test(messageOf(error))) return true
+    try {
+      return !(await this.fs.exists(path))
+    } catch {
+      return false
     }
   }
 
@@ -855,4 +889,14 @@ function createdAtFromId(id: string): string | undefined {
   const parsed = Number.parseInt(match[1] ?? '', 36)
   if (!Number.isFinite(parsed)) return undefined
   return new Date(parsed).toISOString()
+}
+
+/** 异常上的 `code`（`node:fs` 的 ENOENT / EPERM / EBUSY / EIO 都在这条链上） */
+function errorCodeOf(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | null)?.code
+  return typeof code === 'string' ? code : undefined
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }

@@ -2,7 +2,9 @@
  * OpenAI 兼容 Provider（ADR-003）：`baseURL + apiKey + model` 即可接入
  * DeepSeek / OpenAI / Ollama / vLLM 等，不绑定任何商业 SDK。
  *
- * 可靠性：单请求超时（默认 60s）、指数退避重试、AbortSignal 贯穿（docs/06 §3）。
+ * 可靠性：单请求超时（默认 60s，在**整个流**期间保持武装、每片数据重新计时）、
+ * 指数退避重试、AbortSignal 贯穿到读流结束（`chat()` 持有作用域，`finally` 里
+ * `reader.cancel()` + 释放）—— 详见 `createScope` 与 `chat()` 的注释（docs/06 §3）。
  */
 import {
   LlmError,
@@ -131,11 +133,39 @@ export class OpenAiCompatProvider implements LlmProvider {
   }
 
   async *chat(req: ChatRequest, signal?: AbortSignal): AsyncIterable<ChatEvent> {
+    /**
+     * 超时 / 取消的作用域由**本方法**持有到流读完（P1-08）。
+     *
+     * `fetchOnce` 的 `finally` 在拿到响应头时就把自有作用域释放掉（`listModels` / `probeChat`
+     * 需要那个时序），于是外部 abort → controller 的转发与超时计时会在**正文传输期间**双双失效：
+     * 用户点「停止」后底层请求照跑（token 照扣、增量照广播），服务端停滞时
+     * `reader.read()` 更是永久挂起且解不开。修法是让这份作用域活到读流结束。
+     */
+    const scope = this.createScope(signal)
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
     try {
-      const response = await this.openStream(this.buildBody(req, true), signal)
-      const reader = response.body?.getReader()
+      const response = await this.openStream(this.buildBody(req, true), signal, scope)
+      reader = response.body?.getReader()
       if (!reader) throw new LlmError('E_UNKNOWN', '响应体为空，无法读取流')
 
+      /**
+       * abort 感知：`reader.read()` 在服务端停滞时会长期挂起，只在循环前查一次
+       * `signal.aborted` 解不开（那时已经卡在 read 上）。这里让每次读与 abort 通知赛跑。
+       *
+       * 同一个 promise 反复参与 race，并先挂一个吞掉拒绝的处理器：race 收场之后才触发的
+       * abort 不该变成 unhandledRejection（正常读完的流后面也可能被外部取消）。
+       */
+      const aborted = new Promise<never>((_resolve, reject) => {
+        const onAbort = (): void => reject(toLlmError(scope.controller.signal.reason))
+        if (scope.controller.signal.aborted) onAbort()
+        else scope.controller.signal.addEventListener('abort', onAbort, { once: true })
+      })
+      aborted.catch(() => undefined)
+
+      // TextDecoder 全程复用一份：`{ stream: true }` 的挂起字节存在实例里，
+      // 每个 chunk 新建一份就会把跨 chunk 截断的多字节字符变成 U+FFFD（中文每字 3 字节，
+      // 网络分片边界落在字符中间是常态，乱码还会随消息落进会话历史）—— P1-09
+      const decoder = new TextDecoder()
       const toolCalls = new Map<number, ToolCallRequest>()
       let finishReason: FinishReason = 'unknown'
       let usage: TokenUsage | undefined
@@ -143,9 +173,12 @@ export class OpenAiCompatProvider implements LlmProvider {
       let finished = false
 
       while (!finished) {
-        const { done, value } = await reader.read()
+        const { done, value } = await Promise.race([reader.read(), aborted])
         if (done) break
-        buffer += new TextDecoder().decode(value, { stream: true })
+        // 超时在整个流期间保持武装，但每收到一片就重新计时：服务端停滞 60s 即超时，
+        // 而正常传输的长回复不会被"总时长"掐断（那会把正常完成也取消）。
+        scope.rearm()
+        buffer += decoder.decode(value, { stream: true })
         const parsedChunk = parseSseChunk(buffer)
         buffer = parsedChunk.rest
 
@@ -189,6 +222,11 @@ export class OpenAiCompatProvider implements LlmProvider {
     } catch (error) {
       const llmError = toLlmError(error)
       yield { type: 'error', code: llmError.code, message: llmError.message }
+    } finally {
+      // 正常读完（含 `[DONE]` 提前收尾）/ 异常 / 生成器被提前 return 三条路径都要
+      // 取消底层读取并释放作用域：不取消的话连接与 response.body 会一直挂到服务端自己关闭
+      await reader?.cancel().catch(() => undefined)
+      scope.release()
     }
   }
 
@@ -203,9 +241,13 @@ export class OpenAiCompatProvider implements LlmProvider {
    * 「整个对话打不开」比「拿不到 token 用量」严重得多，所以这里必须能退回去。
    * 只对**点名了这两个字段**的 400 重试：其它 400（模型名错、参数越界）重试也是白试。
    */
-  private async openStream(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+  private async openStream(
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+    scope?: RequestScope,
+  ): Promise<Response> {
     try {
-      return await this.postStream(body, signal)
+      return await this.postStream(body, signal, scope)
     } catch (error) {
       const llmError = toLlmError(error)
       if (llmError.code !== 'E_BAD_REQUEST' || !looksLikeRejectedField(llmError.message)) {
@@ -221,13 +263,18 @@ export class OpenAiCompatProvider implements LlmProvider {
         delayMs: 0,
         reason: '服务端拒绝 stream_options，已去掉该字段重试（本次不带 token 用量）',
       })
-      return await this.postStream(withoutUsage, signal)
+      return await this.postStream(withoutUsage, signal, scope)
     }
   }
 
-  private postStream(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+  private postStream(
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+    scope?: RequestScope,
+  ): Promise<Response> {
     return this.fetchWithPolicy(
       this.createRequest('POST', '/chat/completions', body, 'text/event-stream', signal),
+      scope,
     )
   }
 
@@ -298,12 +345,12 @@ export class OpenAiCompatProvider implements LlmProvider {
     }
   }
 
-  /** 超时 + 指数退避重试。 */
-  private async fetchWithPolicy(request: PreparedRequest): Promise<Response> {
+  /** 超时 + 指数退避重试。`scope` 由流式路径传进来（跨重试复用，由 `chat()` 释放）。 */
+  private async fetchWithPolicy(request: PreparedRequest, scope?: RequestScope): Promise<Response> {
     let attempt = 0
     for (;;) {
       try {
-        return await this.fetchOnce(request)
+        return await this.fetchOnce(request, scope)
       } catch (error) {
         const llmError = toLlmError(error)
         if (!RETRYABLE.has(llmError.code) || attempt >= this.maxRetries) throw llmError
@@ -315,18 +362,49 @@ export class OpenAiCompatProvider implements LlmProvider {
     }
   }
 
-  private async fetchOnce(request: PreparedRequest): Promise<Response> {
+  /**
+   * 一次请求的「超时 + 取消」作用域（P1-08）。
+   *
+   * `release()` 结束它：清掉超时计时、摘掉外部 abort 转发（幂等）。
+   * 非流式调用（`listModels` / `probeChat`）拿到响应头即释放（与旧行为一致）；
+   * 流式调用由 `chat()` 持有到**流读完**才释放 —— 转发监听若在响应头到达时就摘掉，
+   * 正文传输期间点「停止」就再没人管这个请求了。
+   *
+   * `rearm()` 把超时计时重新计时：超时在**整个流期间保持武装**（不再只覆盖首字节），
+   * 但每收到一片数据就重置。服务端停滞（`reader.read()` 永久挂起）到点即 abort，
+   * 而正常传输的长时间回复不会被"总时长"掐断 —— 那等于把正常完成也取消掉。
+   */
+  private createScope(external?: AbortSignal): RequestScope {
+    const controller = new AbortController()
+    const onTimeout = (): void => controller.abort(new LlmError('E_TIMEOUT', '请求超时'))
+    let timer = setTimeout(onTimeout, this.timeoutMs)
+    const onExternalAbort = (): void => controller.abort(new LlmError('E_ABORTED', '请求已取消'))
+    // 已经取消了（或本来就没给信号）：立刻反映到内部 controller，别等读流时才发现
+    if (external?.aborted === true) onExternalAbort()
+    else external?.addEventListener('abort', onExternalAbort)
+
+    let released = false
+    return {
+      controller,
+      rearm: (): void => {
+        if (released) return
+        clearTimeout(timer)
+        timer = setTimeout(onTimeout, this.timeoutMs)
+      },
+      release: (): void => {
+        if (released) return
+        released = true
+        clearTimeout(timer)
+        external?.removeEventListener('abort', onExternalAbort)
+      },
+    }
+  }
+
+  private async fetchOnce(request: PreparedRequest, scope?: RequestScope): Promise<Response> {
     if (request.signal?.aborted) throw new LlmError('E_ABORTED', '请求已取消')
 
-    const controller = new AbortController()
-    const timer = setTimeout(
-      () => controller.abort(new LlmError('E_TIMEOUT', '请求超时')),
-      this.timeoutMs,
-    )
-    const external = request.signal
-    const onExternalAbort = (): void => controller.abort(new LlmError('E_ABORTED', '请求已取消'))
-    external?.addEventListener('abort', onExternalAbort)
-
+    // 作用域优先用调用方给的（流式路径），没有就自建一个并在本次 finally 里释放
+    const active = scope ?? this.createScope(request.signal)
     try {
       const response = await this.fetchImpl(request.url, {
         method: request.method,
@@ -334,7 +412,7 @@ export class OpenAiCompatProvider implements LlmProvider {
         ...(request.body === undefined || BODYLESS_METHODS.has(request.method)
           ? {}
           : { body: JSON.stringify(request.body) }),
-        signal: controller.signal,
+        signal: active.controller.signal,
       })
       if (!response.ok) {
         const body = await safeText(response)
@@ -348,10 +426,19 @@ export class OpenAiCompatProvider implements LlmProvider {
     } catch (error) {
       throw toLlmError(error)
     } finally {
-      clearTimeout(timer)
-      external?.removeEventListener('abort', onExternalAbort)
+      // 自建的作用域到此收工；调用方传进来的那份归调用方释放（流式路径要活到流读完）
+      if (scope === undefined) active.release()
     }
   }
+}
+
+/** 一次请求的超时 / 取消作用域（`chat()` 与 `fetchOnce()` 的分界，见 `createScope`） */
+interface RequestScope {
+  readonly controller: AbortController
+  /** 重新计时（流式路径每收到一片数据调一次；释放后是空操作） */
+  rearm(): void
+  /** 结束本次请求：清掉超时计时与外部 abort 转发（幂等） */
+  release(): void
 }
 
 /** 内部请求描述（不直接用 `Request`，便于注入 fetch 与单测断言请求体） */

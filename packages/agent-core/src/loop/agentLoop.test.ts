@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { runAgentLoop, type AgentLoopEvent, type ConfirmDecision } from './agentLoop.js'
+import {
+  runAgentLoop,
+  type AgentLoopEvent,
+  type ConfirmDecision,
+  type LoopProvider,
+} from './agentLoop.js'
 import { ToolRegistry } from '../tools/registry.js'
 import { createFakeProvider } from '../testing/fakeProvider.js'
+import type { ChatEvent } from '../llm/types.js'
 import type { NewMessage, StoredMessage } from '../session/types.js'
 
 /** 极简内存会话：记录落盘顺序，等价于 SessionStore 的可观察行为 */
@@ -668,6 +674,129 @@ describe('runAgentLoop', () => {
       const assistant = rec.messages.find((message) => message.role === 'assistant')
       expect(assistant?.reasoning).toBe(' partial')
       expect(assistant?.content).toBe('部分输出')
+    })
+  })
+
+  describe('流中途失败：未执行的 tool_call 收敛为 error（P2-03）', () => {
+    /** 注册一个会记录执行次数的工具（用来证明「从未执行」这条语义） */
+    function registryWithCounter(counter: { count: number }): ToolRegistry {
+      const tools = new ToolRegistry()
+      tools.register({
+        name: 'echo',
+        description: '回显输入',
+        parameters: { type: 'object', properties: { text: { type: 'string' } } },
+        execute: async (input) => {
+          counter.count += 1
+          return { content: `echo:${(input as { text?: string }).text ?? ''}` }
+        },
+      })
+      return tools
+    }
+
+    it('工具调用增量已产出后流断开：落盘 tool_call 为 error 且从未执行', async () => {
+      const rec = createRecorder()
+      const executed = { count: 0 }
+      const provider = createFakeProvider([
+        {
+          toolCalls: [{ id: 'c1', name: 'echo', arguments: '{"text":"hi"}' }],
+          error: { code: 'E_NETWORK', message: '连接中断' },
+        },
+      ])
+      const events = await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: 'x',
+          history: [],
+          tools: registryWithCounter(executed),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+        }),
+      )
+
+      expect(events.at(-1)).toMatchObject({ type: 'error', code: 'E_NETWORK' })
+      expect(executed.count).toBe(0)
+      // 落盘的卡片必须是终态 error（旧行为留 `running`：界面与「子代理」页永远显示运行中）
+      const assistant = rec.messages.find((message) => message.role === 'assistant')
+      expect(assistant?.toolCalls?.[0]).toMatchObject({
+        id: 'c1',
+        name: 'echo',
+        state: 'error',
+        outputSummary: '流中断未执行',
+      })
+    })
+
+    it('流中断时已产出的正文照旧落盘，且不会再发起工具执行', async () => {
+      const rec = createRecorder()
+      const executed = { count: 0 }
+      const provider = createFakeProvider([
+        {
+          text: '部分正文',
+          toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }],
+          error: { code: 'E_SERVER', message: '网关掐流' },
+        },
+      ])
+      await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: 'x',
+          history: [],
+          tools: registryWithCounter(executed),
+          sessionId: 'quick',
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+        }),
+      )
+
+      expect(executed.count).toBe(0)
+      expect(rec.messages.some((message) => message.role === 'tool')).toBe(false)
+      const assistant = rec.messages.find((message) => message.role === 'assistant')
+      expect(assistant?.content).toBe('部分正文')
+      expect(assistant?.toolCalls?.[0]?.state).toBe('error')
+    })
+
+    it('流中断且 signal 已 abort（用户点停止）：按 aborted 暂停收尾，不是 error', async () => {
+      const rec = createRecorder()
+      const executed = { count: 0 }
+      const controller = new AbortController()
+      // 桩：正文之后由 provider 自己触发 abort（等价于「流读到一半用户点了停止」）
+      const provider: LoopProvider = {
+        id: 'aborting',
+        async *chat(): AsyncIterable<ChatEvent> {
+          yield { type: 'text', delta: '部分' }
+          controller.abort()
+          yield { type: 'error', code: 'E_ABORTED', message: '请求已取消' }
+        },
+      }
+      const events = await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: 'x',
+          history: [],
+          tools: registryWithCounter(executed),
+          sessionId: 'quick',
+          signal: controller.signal,
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+        }),
+      )
+
+      // 终态是「暂停」而不是「错误」：装配层据此把 job 落成 aborted（点停止的 job
+      // 不能被 finishJob 改写成 error / done）
+      expect(events.at(-1)).toMatchObject({
+        type: 'done',
+        pending: true,
+        pendingReason: 'aborted',
+      })
+      expect(events.some((event) => event.type === 'error')).toBe(false)
+      // 已产出的正文照旧留在历史里
+      expect(rec.messages.find((message) => message.role === 'assistant')?.content).toBe('部分')
     })
   })
 

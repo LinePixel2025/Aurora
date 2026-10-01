@@ -291,9 +291,28 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
     }
 
     if (failed) {
+      /**
+       * 流在 `[DONE]` 之前断开（网络中断、网关中途掐流）：本轮已产出但**从未执行**的
+       * tool_call 绝不能以 `running` 落盘 —— 那会让工具卡在未来所有会话视图里
+       * 永远显示「运行中」，重启也不修正（P2-03）。这里在落盘前统一收敛为 `error`。
+       */
+      for (const call of calls) {
+        call.state = 'error'
+        call.outputSummary ??= '流中断未执行'
+      }
       // 已产出的文本与思考链先落盘，避免用户看到的内容在历史里消失
       if (text !== '' || reasoning !== '' || calls.length > 0) {
         await appendAssistant(options, messageId, text, calls, reasoning)
+      }
+      /**
+       * 用户取消（signal 已 abort）时**按「暂停」收尾**，而不是报 `error`：
+       * 装配层 `agent.abort()` 已经把 job 乐观落成 `aborted`，这里若报 error，
+       * `finishJob` 会反手把它改写成 `error` —— 点「停止」的 job 终态必须保持 `aborted`
+       * （与循环里其它两处 abort 检查点同款；P1-08 让取消真的能中断流，这条收敛因此才被看见）。
+       */
+      if (options.signal?.aborted === true) {
+        yield { type: 'done', pending: true, pendingReason: 'aborted', round, usedTokens }
+        return
       }
       yield { type: 'error', code: failed.code, message: failed.message }
       return

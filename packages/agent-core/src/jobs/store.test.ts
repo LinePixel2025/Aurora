@@ -589,3 +589,79 @@ describe('FileJobStore', () => {
     ).toEqual(['job-escape'])
   })
 })
+
+/**
+ * origin 白名单与 shared 联合类型的同步护栏（P1-10）。
+ *
+ * 写入侧（主进程 `agent-host.ts`）用 `as` 强转放行任何字符串，落盘没有校验；
+ * 读侧的 `ORIGINS` 白名单是唯一的形状闸门 —— 少一个取值，那类 job 就在
+ * `toAgentJob` 里被判非法**整条跳过**，从 `get` / `list` / `listResumable` 里彻底消失
+ * （paused 的自动化 / 远程任务再也续不上）。
+ */
+describe('FileJobStore · origin 白名单（P1-10）', () => {
+  /**
+   * 编译期护栏：`Record<AgentJob['origin'], true>` 的键集合必须**恰好等于**联合类型的
+   * 取值集合（少一个键 TS 报错，多一个不在联合里的键同样报错）。
+   * 下面的运行时断言再把这份键集合逐个过一遍「落盘 → 重启 → 读回」。
+   */
+  const ORIGIN_TABLE: Record<AgentJob['origin'], true> = {
+    chat: true,
+    'edge-bar': true,
+    resume: true,
+    center: true,
+    automation: true,
+  }
+  const SHARED_ORIGINS = Object.keys(ORIGIN_TABLE) as Array<AgentJob['origin']>
+
+  it('五个取值逐字对齐 shared（少一个就会被读侧整条跳过）', () => {
+    expect(SHARED_ORIGINS).toHaveLength(5)
+    expect([...SHARED_ORIGINS].sort()).toEqual(
+      ['automation', 'center', 'chat', 'edge-bar', 'resume'].sort(),
+    )
+  })
+
+  it('center / automation 的 job 落盘后重启仍可 get / list 可见', async () => {
+    const harness = createHarness()
+    for (const origin of SHARED_ORIGINS) {
+      await harness.store.create(makeJob({ id: `job-${origin}`, origin, sessionId: `s-${origin}` }))
+    }
+    await harness.store.flush()
+
+    // 换一个 store 实例读同一份盘（模拟重启）
+    const restarted = harness.reopen()
+    for (const origin of SHARED_ORIGINS) {
+      expect(requireJob(await restarted.get(`job-${origin}`)).origin).toBe(origin)
+    }
+    const listed = await restarted.list({ limit: 0 })
+    expect(listed.map((job) => job.origin).sort()).toEqual([...SHARED_ORIGINS].sort())
+  })
+
+  it('center / automation 的 paused job 重启后能续跑（listResumable 看得见）', async () => {
+    const harness = createHarness()
+    mountJobs(harness, 'center-abc', [
+      makeJob({
+        id: 'job-center',
+        sessionId: 'center-abc',
+        origin: 'center',
+        status: 'paused',
+        pendingReason: 'budget',
+      }),
+    ])
+    mountJobs(harness, 'auto-abc', [
+      makeJob({ id: 'job-auto', sessionId: 'auto-abc', origin: 'automation', status: 'paused' }),
+    ])
+
+    const restarted = harness.reopen()
+    const resumable = await restarted.listResumable()
+    expect(resumable.map((job) => job.id).sort()).toEqual(['job-auto', 'job-center'])
+  })
+
+  it('白名单之外的 origin 仍整条跳过（闸门没有被放宽）', async () => {
+    const harness = createHarness()
+    const illegal = { ...makeJob({ id: 'job-illegal' }), origin: 'webhook' }
+    mountJobs(harness, 's1', [illegal as unknown as AgentJob])
+
+    await expect(harness.store.list()).resolves.toEqual([])
+    expect(harness.logger.entries.some((entry) => entry.includes('形状非法'))).toBe(true)
+  })
+})

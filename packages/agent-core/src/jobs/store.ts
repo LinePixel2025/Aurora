@@ -629,7 +629,24 @@ const STATUSES: readonly AgentJobStatus[] = [
   'aborted',
 ]
 const PENDING_REASONS: readonly JobPendingReason[] = ['max-rounds', 'budget', 'aborted']
-const ORIGINS: readonly AgentJob['origin'][] = ['chat', 'edge-bar', 'resume']
+/**
+ * 允许从磁盘读回的 origin 白名单。
+ *
+ * **必须与 `AgentJob['origin']`（`@aurora/shared` 的 `ipc/types.ts`）逐字对齐**：
+ * 少一个取值，那类 job 就会在 `toAgentJob` 里被判非法整条跳过 —— `get` / `list` /
+ * `listResumable` 从此永远看不到它们（paused 的自动化 / 远程任务无法续跑），
+ * 而同一文件里合法 job 的一次 `update` 还会把这些被跳过的条目从磁盘上抹掉。
+ * 写入侧（主进程 `agent-host.ts`）用 `as` 强转放行任何字符串，落盘没有校验兜底，
+ * 所以这道读侧白名单是唯一的形状闸门。同步护栏见 `store.test.ts` 的
+ * 「origin 白名单与 shared 联合类型一致」用例。
+ */
+const ORIGINS: readonly AgentJob['origin'][] = [
+  'chat',
+  'edge-bar',
+  'resume',
+  'center',
+  'automation',
+]
 
 /**
  * 磁盘形状 → `AgentJob`：**必填字段缺一不可**，可选字段宽容（缺 / 类型不对就丢掉），

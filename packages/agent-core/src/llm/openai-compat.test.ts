@@ -550,3 +550,137 @@ describe('构造函数防御', () => {
     expect(isLlmError(null)).toBe(false)
   })
 })
+
+/**
+ * 按**原始字节**分片的 SSE fetch 替身。
+ *
+ * `createFetchStub` 的 `sseChunks` 是字符串数组（每片各自 `TextEncoder.encode`），
+ * 造不出本组要的两种现场：① 多字节字符被切成两半；② 响应流保持打开（模拟服务端停滞）。
+ */
+function rawStreamFetch(
+  chunks: Uint8Array[],
+  options: { keepOpen?: boolean; gapMs?: number } = {},
+): { fetchImpl: typeof fetch; cancelCount: () => number } {
+  let cancels = 0
+  const fetchImpl = (async (): Promise<Response> => {
+    const gapMs = options.gapMs ?? 0
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        chunks.forEach((chunk, index) => {
+          const push = (): void => {
+            controller.enqueue(chunk)
+            if (index === chunks.length - 1 && options.keepOpen !== true) controller.close()
+          }
+          if (gapMs === 0) push()
+          else setTimeout(push, index * gapMs)
+        })
+      },
+      cancel() {
+        cancels += 1
+      },
+    })
+    return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }) as unknown as typeof fetch
+  return { fetchImpl, cancelCount: () => cancels }
+}
+
+/**
+ * 给「应当很快结束」的断言加一道超时护栏：实现若挂住，失败消息是明确的
+ * 「超过 Nms 仍未结束」，而不是拖到 vitest 自己的超时。
+ */
+function withTimeout<T>(task: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    task,
+    new Promise<never>((_resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`超过 ${ms}ms 仍未结束`)), ms)
+      timer.unref?.()
+    }),
+  ])
+}
+
+describe('OpenAiCompatProvider.chat · 流式可靠性与取消（P1-08 / P1-09）', () => {
+  const request = { model: 'm', messages: [{ role: 'user' as const, content: 'hi' }] }
+
+  function rawProvider(
+    chunks: Uint8Array[],
+    options: { keepOpen?: boolean; gapMs?: number; timeoutMs?: number } = {},
+  ) {
+    const raw = rawStreamFetch(chunks, options)
+    const instance = new OpenAiCompatProvider({
+      id: 'local',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      apiKey: 'sk-test',
+      defaultModel: 'm',
+      maxRetries: 0,
+      fetchImpl: raw.fetchImpl,
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    })
+    return { instance, raw }
+  }
+
+  it('多字节字符跨 chunk 不产生 U+FFFD（decoder 全程复用）', async () => {
+    const payload = sseLine({ choices: [{ delta: { content: '中' } }] })
+    const encoded = new TextEncoder().encode(`${payload}data: [DONE]\n\n`)
+    // 切点落在「中」的 3 字节序列中间：每片新建一份 TextDecoder 时，这一刀必然切出替换符
+    const cut = new TextEncoder().encode(payload.slice(0, payload.indexOf('中'))).length + 1
+    const { instance } = rawProvider([encoded.slice(0, cut), encoded.slice(cut)])
+
+    const events = await collect(instance.chat(request))
+    const deltas = events
+      .filter((event) => event.type === 'text')
+      .map((event) => (event as { delta: string }).delta)
+    expect(deltas).toEqual(['中'])
+    expect(deltas.join('')).not.toContain('\uFFFD')
+  })
+
+  it('流中途 abort：生成器及时结束、上报 E_ABORTED 并取消底层 reader', async () => {
+    const { instance, raw } = rawProvider(
+      [new TextEncoder().encode(sseLine({ choices: [{ delta: { content: '前半' } }] }))],
+      { keepOpen: true },
+    )
+    const controller = new AbortController()
+    const iterator = instance.chat(request, controller.signal)[Symbol.asyncIterator]()
+
+    const first = await iterator.next()
+    expect(first.value).toMatchObject({ type: 'text', delta: '前半' })
+    expect(raw.cancelCount()).toBe(0)
+
+    // 这一读会挂在「服务端不关闭的流」上：此前只有 abort 到不了这里，读会永久挂起
+    const pending = iterator.next()
+    controller.abort()
+    const settled = await withTimeout(pending, 1000)
+    expect(settled).toMatchObject({ value: { type: 'error', code: 'E_ABORTED' }, done: false })
+
+    expect((await iterator.next()).done).toBe(true)
+    expect(raw.cancelCount()).toBe(1)
+  })
+
+  it('服务端停滞时超时仍在流期间生效（不再只覆盖首字节）', async () => {
+    const { instance, raw } = rawProvider(
+      [new TextEncoder().encode(sseLine({ choices: [{ delta: { content: 'ok' } }] }))],
+      { keepOpen: true, timeoutMs: 30 },
+    )
+
+    const events = await withTimeout(collect(instance.chat(request)), 1000)
+    expect(events.filter((event) => event.type === 'text')).toHaveLength(1)
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'E_TIMEOUT' })
+    expect(raw.cancelCount()).toBe(1)
+  })
+
+  it('正常传输的长回复不会被「总时长」掐断（超时按片重新计时）', async () => {
+    const chunks = Array.from({ length: 6 }, (_item, index) =>
+      new TextEncoder().encode(sseLine({ choices: [{ delta: { content: `第${index}片` } }] })),
+    )
+    // 总时长约 240ms > 超时 150ms，但每片间隔 40ms ≪ 150ms：
+    // 只有"给整个流设一个总时长上限"的实现才会在这里被误取消
+    const { instance } = rawProvider([...chunks, new TextEncoder().encode('data: [DONE]\n\n')], {
+      gapMs: 40,
+      timeoutMs: 150,
+    })
+
+    const events = await withTimeout(collect(instance.chat(request)), 3000)
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    expect(events.filter((event) => event.type === 'text')).toHaveLength(6)
+    expect(events.at(-1)).toMatchObject({ type: 'done' })
+  })
+})
