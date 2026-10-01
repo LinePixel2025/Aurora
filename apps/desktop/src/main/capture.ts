@@ -5884,28 +5884,37 @@ export const SETTINGS_CLASSROOM_PATCH_CHECK = `(async () => {
 })()`
 
 /**
- * 思考等级探针 · 前半（step-02）：走真实用户路径把「思考等级」写进配置。
+ * 思考等级探针 · 前半（step-02；step-05 起改写**模型行内**的参数）：走真实用户路径把「思考等级」写进配置。
  *
  * 截图用的是**隔离 userData**（`index.ts` 的 `AURORA_CAPTURE` 分支），起步时一个
- * provider 都没有，所以先经 `settings.update` 造一个带 `reasoningEffort: 'high'` 的；
+ * provider 都没有，所以先经 `settings.update` 造一个带 `modelParams[<模型>].reasoningEffort: 'high'`
+ * 的（v23 起参数按**模型 id** 键，provider 级 temperature / reasoningEffort 已删除）；
  * 等 `settings:changed` 推送把卡片画出来，再点开**生效 provider 那一行**的「编辑」与卡内 `.more`
- * （「高级参数与连接测试」）—— 下拉只在折叠区展开后才在 DOM 里。
+ *（「高级参数与连接测试」，现在只剩接口类型与连接测试按钮），最后点**当前使用模型那一行**的
+ * 参数开关 —— 思考等级下拉只在模型行展开后才在 DOM 里。
  */
 export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
   try {
     const state = await window.aurora.settings.get()
     if (!state.ok) return { ok: false, reason: 'settings.get failed' }
     // 与「对话窗思考等级」探针共用一份配置，两个场景谁先跑都要能自足：
-    // 所以不是「没有 provider 才造」，而是「当前 provider 的 reasoningEffort 不是 high 就写成 high」。
+    // 所以不是「没有 provider 才造」，而是「当前 provider 的思考等级不是 high 就写成 high」。
     const providers = state.value.llm.providers
     const active = state.value.llm.active !== '' ? state.value.llm.active : 'capture'
     const existing = providers[active]
-    // 记下原值：check 阶段要写回，避免把 'high' 永久留在配置里（本场景在真实 userData 下也会被跑）
+    // v23 起生成参数按**模型 id** 键：先算出合并后真正生效的模型 id，再写它的三个子字段。
+    const modelId = (existing ?? {}).model ?? 'deepseek-chat'
+    const table = (existing ?? {}).modelParams ?? {}
+    const entry = table[modelId] ?? {}
+    // 记下原值：check 阶段要写回，避免把 'high' 永久留在配置里（本场景在真实 userData 下也会被跑）。
+    // 缺省必须是 'auto'，**不能**记 undefined —— 否则 CHECK 的 target === probe.before
+    // 会因两边都是 undefined 而误判 restored = true，把 high 永久留在配置里。
     window.__auroraEffortSettingsProbe = {
       active,
-      before: existing === undefined ? 'auto' : existing.reasoningEffort,
+      modelId,
+      before: entry.reasoningEffort ?? 'auto',
     }
-    if (existing === undefined || existing.reasoningEffort !== 'high') {
+    if (existing === undefined || entry.reasoningEffort !== 'high') {
       const result = await window.aurora.settings.update({
         llm: {
           active,
@@ -5916,9 +5925,13 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
               baseUrl: 'https://api.deepseek.com/v1',
               apiKeyEnc: '',
               model: 'deepseek-chat',
-              temperature: 0.7,
               ...(existing ?? {}),
-              reasoningEffort: 'high',
+              // 三项一起写全、整份替换该键的对象：reasoningEffort 是三个子字段里
+              // 唯一没有 .default() 的，漏写它整份配置会在下次启动被判损坏重建。
+              modelParams: {
+                ...table,
+                [modelId]: { reasoningEffort: 'high', contextWindow: 0, vision: false },
+              },
             },
           },
         },
@@ -5945,6 +5958,24 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
     if (more === null) return { ok: false, reason: 'no .more after opening editor' }
     more.click()
     await new Promise((resolve) => setTimeout(resolve, 600))
+
+    // step-05 起三个生成参数（思考等级 / 上下文窗口 / 图片输入）在**模型行内**：
+    // provider 折叠区只剩接口类型与连接测试。必须点**当前使用模型那一行**的参数开关，
+    // 不能取第一个 —— 隔离 userData 与全量截图里 onboarding 会先种一个 local provider，
+    // 第一行未必是当前使用的那行（本段在模板字符串里，注释不能出现反引号）。
+    const currentRow = row.querySelector('.model-row.current')
+    if (currentRow === null) {
+      return { ok: false, reason: '当前模型行未找到（.model-row.current 不存在）' }
+    }
+    const paramsToggle = currentRow.querySelector('[data-action="toggle-model-params"]')
+    if (paramsToggle === null) return { ok: false, reason: 'no toggle-model-params in current row' }
+    paramsToggle.click()
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    // 拍图前把刚展开的参数块滚进视口：设置窗是**固定高度 + 内部滚动**，不滚的话
+    // 这张 PNG 停在页头，人工核对「三个参数控件在模型行内」根本看不到它们。
+    const paramsBox = currentRow.querySelector('.model-params')
+    if (paramsBox !== null) paramsBox.scrollIntoView({ block: 'center' })
+    await new Promise((resolve) => setTimeout(resolve, 300))
     return { ok: true }
   } catch (error) {
     return { ok: false, reason: String(error) }
@@ -5967,20 +5998,24 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
 export const SETTINGS_LLM_EFFORT_CHECK = `(async () => {
   try {
     const probe = window.__auroraEffortSettingsProbe
-    // 与 ACT 同一套定位：编辑卡（含 .reasoningEffort / .temperature）渲染在
-    // [data-field="llm.providers.<id>"] 这一行**内部**，所以按生效 provider 限定范围。
+    // 与 ACT 同一套定位：step-05 起三个生成参数在**当前使用模型那一行内**
+    //（类名 model-row 且带 current），整张编辑卡仍渲染在 [data-field="llm.providers.<id>"] 内部，
+    // 所以先按生效 provider 限定范围、再在它的当前模型行里找。
     // 全局 querySelectorAll 会数到别人的卡：全量截图里 onboarding 先种了 local provider，
     // 行首未必是 active 那个 —— 那时会读到别人的 auto，探针假 FAIL（真实缺陷，已实测复现）。
     const scope =
       probe === undefined
         ? document
         : document.querySelector('[data-field="llm.providers.' + probe.active + '"]')
-    const effortFields = scope === null ? [] : scope.querySelectorAll('[data-field$=".reasoningEffort"]')
-    const temperatureFields = scope === null ? [] : scope.querySelectorAll('[data-field$=".temperature"]')
+    const currentRow = scope === null ? null : scope.querySelector('.model-row.current')
+    const effortFields =
+      scope === null
+        ? []
+        : scope.querySelectorAll('.model-row.current [data-field$=".reasoningEffort"]')
     const first = effortFields[0]
     const select = first === undefined ? null : first.querySelector('select')
     const value = select === null ? null : select.value
-    const domOk = effortFields.length > 0 && temperatureFields.length > 0 && value === 'high'
+    const domOk = effortFields.length > 0 && value === 'high'
 
     // DOM 断言必须先读（写回会触发 settings:changed 重新渲染，之后就读不到 high 了）
     let restored = null
@@ -5988,13 +6023,29 @@ export const SETTINGS_LLM_EFFORT_CHECK = `(async () => {
     if (state.ok && probe !== undefined) {
       const providers = state.value.llm.providers
       const target = providers[probe.active]
-      if (target === undefined || target.reasoningEffort === probe.before) {
+      const table = (target ?? {}).modelParams ?? {}
+      const entry = table[probe.modelId] ?? {}
+      if (target === undefined || entry.reasoningEffort === probe.before) {
         restored = true
       } else {
         const result = await window.aurora.settings.update({
           llm: {
             active: state.value.llm.active,
-            providers: { ...providers, [probe.active]: { ...target, reasoningEffort: probe.before } },
+            providers: {
+              ...providers,
+              [probe.active]: {
+                ...target,
+                // 写回时整份替换该键的对象、三项一起写全（reasoningEffort 没有 .default()）
+                modelParams: {
+                  ...table,
+                  [probe.modelId]: {
+                    reasoningEffort: probe.before,
+                    contextWindow: entry.contextWindow ?? 0,
+                    vision: entry.vision === true,
+                  },
+                },
+              },
+            },
           },
         })
         restored = result.ok === true
@@ -6003,8 +6054,11 @@ export const SETTINGS_LLM_EFFORT_CHECK = `(async () => {
 
     return {
       active: probe === undefined ? null : probe.active,
+      modelId: probe === undefined ? null : probe.modelId,
+      // 这条是「当前模型行存在」的直接证据：harness 会把 ACT 的返回值丢掉（只留 check 的），
+      // 只写进 ACT 的失败文案在报告里看不到 —— 所以在这里如实回传一次。
+      currentRow: currentRow !== null,
       effortFields: effortFields.length,
-      temperatureFields: temperatureFields.length,
       value,
       restored,
       pass: domOk && restored === true,
@@ -6299,7 +6353,6 @@ export const CHAT_MODEL_PICKER_ACT = `(async () => {
               baseUrl: 'https://api.deepseek.com/v1',
               apiKeyEnc: '',
               model: 'deepseek-chat',
-              temperature: 0.7,
               ...(existing === undefined ? {} : existing),
               modelList: models,
             },
@@ -6604,9 +6657,13 @@ export const SETTINGS_LLM_MODELS_ACT = `(async () => {
               baseUrl: 'https://api.deepseek.com/v1',
               apiKeyEnc: '',
               model: 'deepseek-chat',
+              // 「+ 手动添加加一行」的行数断言需要**确定的起点**：候选列表写死一行，
+              // 不依赖 syncDrafts 的自动补行。
               modelList: ['deepseek-chat'],
-              temperature: 0.7,
-              reasoningEffort: 'auto',
+              // 生成参数按**模型 id** 键（v23）：三项一起写全（reasoningEffort 没有 .default()）。
+              modelParams: {
+                'deepseek-chat': { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+              },
             },
           },
         },
@@ -6622,7 +6679,11 @@ export const SETTINGS_LLM_MODELS_ACT = `(async () => {
 
     const section = document.querySelector('[data-field$=".modelList"]')
     if (section === null) return { ok: false, reason: 'no model list section' }
-    const countRows = () => document.querySelectorAll('[data-field*=".modelList."]').length
+    // 行 = 模型列表区（[data-field$=".modelList"]）里的 .model-row。两个限定都不能省：
+    // ⚠️ 不能用 [data-field*=".modelList."] —— step-05 起行内还有三个参数子字段锚点
+    //（同样以 .modelList. 开头）会让行数虚高，「after === before + 1」当场变假 FAIL；
+    // ⚠️ 也不能只数 .model-row —— 会数到别的 provider 卡（本段在模板字符串里，注释不能出现反引号）。
+    const countRows = () => document.querySelectorAll('[data-field$=".modelList"] .model-row').length
     const before = countRows()
 
     const add = document.querySelector('[data-action="add-model"]')
@@ -6648,13 +6709,15 @@ export const SETTINGS_LLM_MODELS_ACT = `(async () => {
 export const SETTINGS_LLM_MODELS_CHECK = `(async () => {
   try {
     const section = document.querySelector('[data-field$=".modelList"]')
-    const countRows = () => document.querySelectorAll('[data-field*=".modelList."]').length
+    // 与 ACT 同一套计数口径：模型列表区里的 .model-row（行内参数子字段同样以 .modelList. 开头，
+    // 用 [data-field*=".modelList."] 会虚高）。
+    const countRows = () => document.querySelectorAll('[data-field$=".modelList"] .model-row').length
     const probe = window.__auroraLlmModelsProbe
     const before = probe === undefined ? null : probe.before
     const after = probe === undefined ? null : probe.after
 
     // 恢复：删掉「+ 手动添加」加出来的最后一行（它是最新加的空行）
-    const rows = Array.from(document.querySelectorAll('[data-field*=".modelList."]'))
+    const rows = Array.from(document.querySelectorAll('[data-field$=".modelList"] .model-row'))
     const last = rows[rows.length - 1]
     const remove = last === undefined ? null : last.querySelector('[data-action="remove-model"]')
     let restored = null
@@ -6777,10 +6840,11 @@ export const SETTINGS_LLM_STRUCTURE_CHECK = `(async () => {
 })()`
 
 /**
- * AI 模型页「接口类型 + 图片输入」探针 · 前半（v22 多模态轮，docs/06 §3.1 / §3.2）。
+ * AI 模型页「接口类型 + 图片输入」探针 · 前半（v22 多模态轮，docs/06 §3.1 / §3.2；step-05 起图片输入搬到模型行内）。
  *
- * 先把当前生效 provider 的 `type` 写成 `openai-responses`、`vision` 写成 `true`，
- * 再按真实用户路径打开它的编辑卡与「高级参数」折叠区 —— 后半只读 DOM 与回读配置。
+ * 先把当前生效 provider 的 `type` 写成 `openai-responses`、把**当前生效模型**的
+ * `modelParams[<模型>].vision` 写成 `true`，再按真实用户路径打开它的编辑卡、卡内「高级参数」
+ * 折叠区（只剩接口类型与连接测试）以及**当前使用模型那一行的参数开关** —— 后半只读 DOM 与回读配置。
  *
  * 两条与 `SETTINGS_LLM_EFFORT_ACT` 同款的取舍：
  * - **必须点当前生效 provider 那一行的编辑按钮**：全量截图里 onboarding 会先种一个 local
@@ -6797,12 +6861,20 @@ export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
     const providers = state.value.llm.providers
     const active = state.value.llm.active !== '' ? state.value.llm.active : 'capture'
     const existing = providers[active]
+    // v23 起「支持图片输入」按**模型 id** 键（provider 级 temperature / vision 已删除）：
+    // 合并后真正生效的模型 id 是 existing.model（缺 provider 时用种子的 deepseek-chat），
+    // 写进去的键必须与它对上 —— 否则「当前使用」那一行读的是别的模型的参数，断言必然落空
+    //（全量截图里 onboarding 先种的 local provider 用的是别的模型，这条不是理论风险）。
+    const modelId = (existing ?? {}).model ?? 'deepseek-chat'
+    const table = (existing ?? {}).modelParams ?? {}
+    const entry = table[modelId] ?? {}
     window.__auroraMultimodalProbe = {
       active,
+      modelId,
       // 缺 provider 时（隔离 userData 起步）按出厂档记录：写回时把这两项恢复成
       // 「openai-compat + 关」即可，不必删整条（它与 EFFORT 探针共用同一份配置）。
       beforeType: existing === undefined ? 'openai-compat' : existing.type,
-      beforeVision: existing === undefined ? false : existing.vision === true,
+      beforeVision: entry.vision === true,
     }
     const result = await window.aurora.settings.update({
       llm: {
@@ -6815,13 +6887,13 @@ export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
             apiKeyEnc: '',
             model: 'deepseek-chat',
             modelList: [],
-            temperature: 0.7,
-            reasoningEffort: 'auto',
-            contextWindow: 0,
-            vision: false,
             ...(existing ?? {}),
             type: 'openai-responses',
-            vision: true,
+            // 三项一起写全、整份替换该键的对象（reasoningEffort 是唯一没有 .default() 的子字段）
+            modelParams: {
+              ...table,
+              [modelId]: { reasoningEffort: 'auto', contextWindow: 0, vision: true },
+            },
           },
         },
       },
@@ -6839,6 +6911,22 @@ export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
     if (more === null) return { ok: false, reason: 'no .more after opening editor' }
     more.click()
     await new Promise((resolve) => setTimeout(resolve, 600))
+
+    // step-05 起「支持图片输入」在**模型行内**（折叠区只剩接口类型）：再点当前使用模型那一行的
+    // 参数开关，复选框才会进 DOM。本段在模板字符串里，注释不能出现反引号。
+    const currentRow = row.querySelector('.model-row.current')
+    if (currentRow === null) {
+      return { ok: false, reason: '当前模型行未找到（.model-row.current 不存在）' }
+    }
+    const paramsToggle = currentRow.querySelector('[data-action="toggle-model-params"]')
+    if (paramsToggle === null) return { ok: false, reason: 'no toggle-model-params in current row' }
+    paramsToggle.click()
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    // 拍图前把刚展开的参数块滚进视口：设置窗是**固定高度 + 内部滚动**，不滚的话
+    // 这张 PNG 停在页头，人工核对「三个参数控件在模型行内」根本看不到它们。
+    const paramsBox = currentRow.querySelector('.model-params')
+    if (paramsBox !== null) paramsBox.scrollIntoView({ block: 'center' })
+    await new Promise((resolve) => setTimeout(resolve, 300))
     return { ok: true }
   } catch (error) {
     return { ok: false, reason: String(error) }
@@ -6850,8 +6938,8 @@ export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
  *
  * 判据刻意同时要两样：
  * - **DOM**：折叠区里 `type` 是 `<select>` 且当前值 `openai-responses`、
- *   `vision` 是勾上的复选框 —— 只数元素不够（写死的控件也能数出来）；
- * - **配置回读**：`settings.get()` 里这两项确实是刚写进去的值。
+ *   **当前使用模型那一行**的图片输入是勾上的复选框 —— 只数元素不够（写死的控件也能数出来）；
+ * - **配置回读**：`settings.get()` 里这两项确实是刚写进去的值（图片输入按模型 id 键）。
  *   `restored` 必须为真：本场景会改用户的协议与开关，不写回就是污染。
  */
 export const SETTINGS_LLM_MULTIMODAL_CHECK = `(async () => {
@@ -6863,7 +6951,12 @@ export const SETTINGS_LLM_MULTIMODAL_CHECK = `(async () => {
         : document.querySelector('[data-field="llm.providers.' + probe.active + '"]')
     if (scope === null) return { pass: false, reason: 'no row after act' }
     const typeField = scope.querySelector('[data-field$=".type"] select')
-    const visionField = scope.querySelector('[data-field$=".vision"] input[type=checkbox]')
+    // step-05 起「支持图片输入」在**当前使用模型那一行内**：先限定到 .model-row.current
+    //（全局取第一个 .vision 会读到别的模型行的参数），再要它展开块里的复选框。
+    const currentRow = scope.querySelector('.model-row.current')
+    const visionField = scope.querySelector(
+      '.model-row.current [data-field$=".vision"] input[type=checkbox]',
+    )
     const typeValue = typeField === null ? null : typeField.value
     const visionChecked = visionField === null ? null : visionField.checked
     const domOk = typeValue === 'openai-responses' && visionChecked === true
@@ -6871,7 +6964,9 @@ export const SETTINGS_LLM_MULTIMODAL_CHECK = `(async () => {
     const state = await window.aurora.settings.get()
     if (!state.ok || probe === undefined) return { pass: false, reason: 'settings.get failed' }
     const saved = state.value.llm.providers[probe.active]
-    const savedOk = saved !== undefined && saved.type === 'openai-responses' && saved.vision === true
+    const table = (saved ?? {}).modelParams ?? {}
+    const entry = table[probe.modelId] ?? {}
+    const savedOk = saved !== undefined && saved.type === 'openai-responses' && entry.vision === true
 
     const restored = await window.aurora.settings.update({
       llm: {
@@ -6881,7 +6976,15 @@ export const SETTINGS_LLM_MULTIMODAL_CHECK = `(async () => {
           [probe.active]: {
             ...saved,
             type: probe.beforeType,
-            vision: probe.beforeVision,
+            // 写回时三项一起写全、整份替换该键的对象（reasoningEffort 没有 .default()）
+            modelParams: {
+              ...table,
+              [probe.modelId]: {
+                reasoningEffort: entry.reasoningEffort ?? 'auto',
+                contextWindow: entry.contextWindow ?? 0,
+                vision: probe.beforeVision === true,
+              },
+            },
           },
         },
       },
@@ -6889,6 +6992,9 @@ export const SETTINGS_LLM_MULTIMODAL_CHECK = `(async () => {
     return {
       typeValue,
       visionChecked,
+      modelId: probe.modelId,
+      // 「当前模型行存在」的直接证据（harness 丢掉 ACT 的返回值，只留 check 的）
+      currentRow: currentRow !== null,
       savedOk,
       restored: restored.ok === true,
       pass: domOk && savedOk && restored.ok === true,
