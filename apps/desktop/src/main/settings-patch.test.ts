@@ -37,10 +37,9 @@ function provider(overrides: Partial<LlmProviderConfig> = {}): LlmProviderConfig
     apiKeyEnc: 'CIPHER-KEY',
     model: 'demo-model',
     modelList: ['demo-model'],
-    temperature: 0.7,
-    reasoningEffort: 'auto',
-    contextWindow: 0,
-    vision: false,
+    modelParams: {
+      'demo-model': { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+    },
     ...overrides,
   }
 }

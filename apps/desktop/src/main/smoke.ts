@@ -142,7 +142,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       llm: {
         active: 'smoke',
         providers: {
-          smoke: { type: 'openai-compat', baseUrl: 'https://api.deepseek.com', apiKeyEnc: '', model: 'deepseek-chat', temperature: 0.7 },
+          smoke: { type: 'openai-compat', baseUrl: 'https://api.deepseek.com', apiKeyEnc: '', model: 'deepseek-chat', modelParams: { 'deepseek-chat': { reasoningEffort: 'auto', contextWindow: 0, vision: false } } },
         },
       },
     }))
@@ -171,7 +171,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       llm: {
         active: freshProviderId,
         providers: {
-          [freshProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, apiKeyEnc: '', model: 'fresh-model', temperature: 0.5, reasoningEffort: 'auto' },
+          [freshProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, apiKeyEnc: '', model: 'fresh-model', modelParams: { 'fresh-model': { reasoningEffort: 'auto', contextWindow: 0, vision: false } } },
         },
       },
     }))
@@ -193,7 +193,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       llm: {
         active: freshProviderId,
         providers: {
-          [freshProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, model: 'renamed-model', temperature: 0.5, reasoningEffort: 'auto' },
+          [freshProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, model: 'renamed-model', modelParams: { 'renamed-model': { reasoningEffort: 'auto', contextWindow: 0, vision: false } } },
         },
       },
     }))
@@ -211,7 +211,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       llm: {
         active: freshProviderId,
         providers: {
-          [freshProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, apiKeyEnc: '', model: 'renamed-model', temperature: 0.5, reasoningEffort: 'auto' },
+          [freshProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, apiKeyEnc: '', model: 'renamed-model', modelParams: { 'renamed-model': { reasoningEffort: 'auto', contextWindow: 0, vision: false } } },
         },
       },
     }))
@@ -288,7 +288,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
         active: 'smoke',
         providers: {
           ...(notDeleted?.llm?.providers ?? {}),
-          [removeProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, apiKeyEnc: '', model: 'remove-me', temperature: 0.5, reasoningEffort: 'auto' },
+          [removeProviderId]: { type: 'openai-compat', baseUrl: STUB_BASE, apiKeyEnc: '', model: 'remove-me', modelParams: { 'remove-me': { reasoningEffort: 'auto', contextWindow: 0, vision: false } } },
         },
       },
     }))
@@ -336,7 +336,7 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       llm: {
         active: 'smoke',
         providers: {
-          smoke: { type: 'openai-compat', baseUrl: STUB_BASE, model: STUB_MODEL, temperature: 0.7 },
+          smoke: { type: 'openai-compat', baseUrl: STUB_BASE, model: STUB_MODEL, modelParams: { [STUB_MODEL]: { reasoningEffort: 'auto', contextWindow: 0, vision: false } } },
         },
       },
     }))

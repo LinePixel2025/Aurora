@@ -87,6 +87,7 @@ import {
 } from './agent-host.js'
 import { McpController } from './mcp.js'
 import { LlmTester } from './llm-tester.js'
+import { withModelParams } from './llm-params.js'
 import { TtsSynthesizer } from './tts.js'
 import { createSttService } from './stt.js'
 import { createImageGenService } from './imagegen.js'
@@ -1409,9 +1410,16 @@ async function bootstrap(): Promise<void> {
           if (request.providerId !== undefined) draft.llm.active = request.providerId
           const provider = draft.llm.providers[targetId]
           if (provider !== undefined) {
+            // 先落 `model`，再写参数 —— 思考等级是**模型级**的（v23）：远端同时切模型与等级时，
+            // 该等级要落在**新模型**名下，而不是留在旧模型那条上。
             if (request.model !== undefined) provider.model = request.model.trim()
-            if (request.reasoningEffort !== undefined)
-              provider.reasoningEffort = request.reasoningEffort
+            if (request.reasoningEffort !== undefined) {
+              // 整份替换该模型条目（`withModelParams` 补齐缺的键）：`modelParams` 的
+              // `reasoningEffort` 没有 `.default()`，只写这一项会让整份配置在下次启动被判损坏。
+              draft.llm.providers[targetId] = withModelParams(provider, {
+                reasoningEffort: request.reasoningEffort,
+              })
+            }
           }
         })
         if (updated === undefined) return { ok: false, error: '配置校验失败：请检查补丁内容' }
@@ -1930,12 +1938,17 @@ async function runCapture(dir: string): Promise<void> {
             apiKeyEnc: '',
             model: STUB_MODEL,
             modelList: [STUB_MODEL],
-            temperature: 0.7,
-            reasoningEffort: 'auto',
-            // 故意给一个窗口值：本链路顺带钉住「占用比例」那一半（分母来自配置）
-            contextWindow: 128_000,
-            // `vision` 同为 output 必填（zod `.default(false)`）：自测链路上关闭图片输入
-            vision: false,
+            // 生成参数按**模型 id** 键（v23）。三项都要写全：`reasoningEffort` 是三个子字段里
+            // 唯一没有 `.default()` 的，漏写它会让整份配置在下次启动被判损坏并重建出厂。
+            modelParams: {
+              [STUB_MODEL]: {
+                reasoningEffort: 'auto',
+                // 故意给一个窗口值：本链路顺带钉住「占用比例」那一半（分母来自配置）
+                contextWindow: 128_000,
+                // 自测链路上关闭图片输入
+                vision: false,
+              },
+            },
           },
         },
       },
@@ -2159,13 +2172,16 @@ async function runSmokeTest(userData: string): Promise<void> {
             // `LlmProviderConfig.modelList` 是 output 必填字段（zod `.default([])` 只放宽输入类型），
             // 这里显式给出候选列表：自测也顺带覆盖「选择器能列出两个模型」的场景。
             modelList: [STUB_MODEL, `${STUB_MODEL}-alt`],
-            temperature: 0.7,
-            reasoningEffort: 'auto',
-            // `contextWindow` 同为 output 必填（zod `.default(0)`）：0 = 未知，
-            // 界面此时只显示 token 数、不显示占用比例
-            contextWindow: 0,
-            // `vision` 同为 output 必填（zod `.default(false)`）：自测链路上关闭图片输入
-            vision: false,
+            // 生成参数按**模型 id** 键（v23）；三项都要写全（`reasoningEffort` 没有默认值）
+            modelParams: {
+              [STUB_MODEL]: {
+                reasoningEffort: 'auto',
+                // 0 = 未知：界面此时只显示 token 数、不显示占用比例
+                contextWindow: 0,
+                // 自测链路上关闭图片输入
+                vision: false,
+              },
+            },
           },
         },
       },
@@ -3629,10 +3645,10 @@ async function runSmokeTest(userData: string): Promise<void> {
                 apiKeyEnc: '',
                 model: STUB_MODEL,
                 modelList: [STUB_MODEL],
-                temperature: 0.7,
-                reasoningEffort: 'auto',
-                contextWindow: 0,
-                vision,
+                // 开关落在**当前生效模型**的参数里（v23）；三项写全，别只翻 vision
+                modelParams: {
+                  [STUB_MODEL]: { reasoningEffort: 'auto', contextWindow: 0, vision },
+                },
               },
             },
           },
@@ -3697,11 +3713,15 @@ async function runSmokeTest(userData: string): Promise<void> {
     // 注意 `llm.active` 也一并写回：本段开头为了绕开第 5 段留下的空 active 而把它设成了 `smoke`。
     try {
       const llm = settings.get().llm
+      const smoke = llm.providers['smoke']
       settings.update({
         llm: {
           ...llm,
           active: 'smoke',
-          providers: { ...llm.providers, smoke: { ...llm.providers['smoke']!, vision: false } },
+          providers:
+            smoke === undefined
+              ? { ...llm.providers }
+              : { ...llm.providers, smoke: withModelParams(smoke, { vision: false }) },
         },
       })
     } catch {
@@ -3808,10 +3828,10 @@ async function runResumePhase(userData: string): Promise<void> {
               apiKeyEnc: '',
               model: STUB_MODEL,
               modelList: [STUB_MODEL, `${STUB_MODEL}-alt`],
-              temperature: 0.7,
-              reasoningEffort: 'auto',
-              contextWindow: 0,
-              vision: false,
+              // 生成参数按**模型 id** 键（v23）；三项写全（`reasoningEffort` 没有默认值）
+              modelParams: {
+                [STUB_MODEL]: { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+              },
             },
           },
         },

@@ -17,7 +17,7 @@ import { createLlmProvider } from './llm-provider.js'
 import type { AgentEvent, AgentHost, LlmSettings, LlmProviderConfig } from '@aurora/shared'
 import type { Logger, PermissionMode } from '@aurora/shared'
 // 三档权限的判定是纯函数、主进程与渲染层共用同一份（docs/06 §11.2）
-import { isWithinRoot, permissionTargetOf } from '@aurora/shared'
+import { isWithinRoot, permissionTargetOf, resolveModelParams } from '@aurora/shared'
 import type {
   ModeManagerLike,
   PerceptionLike,
@@ -174,9 +174,13 @@ export function createProviderFactory(
       return undefined
     }
 
+    // 模型能力与思考等级按**当前生效模型**解析（v23：`llm.providers.<id>.modelParams[model]`，
+    // 唯一取值口径 `resolveModelParams`；缺省按 `provider.model` 取，未命中按字段回落默认）。
+    const params = resolveModelParams(config)
+
     // 「思考等级」按用户设置透传给内核；`auto` 约定为「不下发 reasoning_effort」，
     // 在内核边界之前就映射成 undefined —— 其它层不许再判断 `'auto'`。
-    const reasoningEffort = config.reasoningEffort === 'auto' ? undefined : config.reasoningEffort
+    const reasoningEffort = params.reasoningEffort === 'auto' ? undefined : params.reasoningEffort
 
     return {
       provider: createLlmProvider(config.type, {
@@ -197,10 +201,9 @@ export function createProviderFactory(
           }),
       }),
       model: config.model,
-      temperature: config.temperature,
       // 能力开关（docs/06 §3.1）：内核据它决定要不要把历史里的图片读出来重放。
-      // 默认档是**关**（`?.` 兜的是历史配置 / 手改文件），与 Schema 的 `default(false)` 一致。
-      vision: config.vision === true,
+      // 默认档是**关**（模型级表未命中时 `resolveModelParams` 回落 `false`），与 Schema 一致。
+      vision: params.vision === true,
       ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     }
   }

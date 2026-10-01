@@ -65,7 +65,7 @@ export function createSettingsTool(options: SettingsToolOptions): ToolDefinition
     description:
       '读取或修改 Aurora 自身的配置。先用 action=list 查可写字段与当前值（字段多时用 group 收窄，' +
       `例如 ${GROUP_EXAMPLE}），action=get 读单个字段，action=set 批量写入（values 为 { path, value } 数组）。` +
-      '修改立即生效，无需重启。可写范围：模型 provider 的 model / reasoningEffort / temperature，' +
+      '修改立即生效，无需重启。可写范围：模型 provider 的 model / modelParams.<modelId>.reasoningEffort，' +
       '语音 TTS（tts.enabled / active / autoRead / maxChars）与语音输入 STT（stt.enabled / active），' +
       '生图（imagegen.enabled / active），提示条（general.edgeBar.*）与「显示思考过程」（general.chat.showThinking），' +
       '模式切换与课堂模式参数（modes.current / modes.classroom.*），' +

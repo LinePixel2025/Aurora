@@ -44,7 +44,6 @@ const form = reactive({
   baseUrl: PROVIDER_PRESETS[0].baseUrl as string,
   model: PROVIDER_PRESETS[0].model as string,
   apiKey: '',
-  temperature: 0.7,
   mode: 'classroom' as ModeId,
   watchDir: '',
   workspaceDir: '',
@@ -109,14 +108,23 @@ async function persistModel(): Promise<boolean> {
           // 引导页只确定「当前使用哪个模型」，候选列表留空（用户之后在「设置 → AI 模型」里维护）；
           // 该字段在 `LlmProviderConfig` 里是必填（zod `.default([])` 只放宽输入类型），必须显式给出。
           modelList: [],
-          temperature: form.temperature,
-          reasoningEffort: DEFAULT_REASONING_EFFORT,
-          // 上下文窗口（v11）：引导页不收集，留 0 = 未知（用户之后在「设置 → AI 模型」里填）
-          contextWindow: 0,
-          // 图片输入（v22，docs/06 §3.1）：引导页不收集，出厂**关**（之后可在
-          // 「设置 → AI 模型 → 高级参数」里开）。默认关是刻意的：对不支持视觉的模型
-          // 发图片分片会被服务端 400，引导阶段没有任何地方能提醒用户这件事。
-          vision: false,
+          // 生成参数按**模型 id** 键（v23，docs/08 §1）。引导页只确定「当前使用哪个模型」，
+          // 参数一律给出厂默认值（用户之后在「设置 → AI 模型 → 模型行内参数」里改）；
+          // 三项必须写全 —— `reasoningEffort` 是三个子字段里唯一没有 `.default()` 的。
+          modelParams:
+            form.model.trim() === ''
+              ? {}
+              : {
+                  [form.model.trim()]: {
+                    reasoningEffort: DEFAULT_REASONING_EFFORT,
+                    // 上下文窗口（v11）：引导页不收集，留 0 = 未知（用户之后在设置页填）
+                    contextWindow: 0,
+                    // 图片输入（v22，docs/06 §3.1）：引导页不收集，出厂**关**（之后可在设置页开）。
+                    // 默认关是刻意的：对不支持视觉的模型发图片分片会被服务端 400，
+                    // 引导阶段没有任何地方能提醒用户这件事。
+                    vision: false,
+                  },
+                },
         },
       },
     },
@@ -339,9 +347,6 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
                 spellcheck="false"
                 placeholder="sk-..."
               />
-            </SettingField>
-            <SettingField label="temperature" hint="0 更确定，2 更发散">
-              <input v-model.number="form.temperature" type="number" min="0" max="2" step="0.1" />
             </SettingField>
           </div>
 
@@ -759,7 +764,7 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
 }
 
 /**
- * 两列栅格：标签列压到 120px（够放 baseURL / API Key / temperature），
+ * 两列栅格：标签列压到 120px（够放 baseURL / API Key / 模型名），
  * 说明文字改成跨两列的独立一行 —— 否则在 120px 的列里会折成两三行，把固定高度吃掉。
  */
 .field-grid :deep(.field) {

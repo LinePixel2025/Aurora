@@ -33,6 +33,7 @@ import {
   createDefaultSettings,
   err,
   ok,
+  resolveModelParams,
   type AppInfo,
   type AskUserAnswerInput,
   type AuroraApi,
@@ -539,7 +540,7 @@ export function registerIpc(deps: DesktopDeps): () => void {
   )
   handle(IPC.chat.send, async (request: SendMessageRequest) => {
     // 附件（docs/07 §2.3）：在主进程分流 —— 图片交多模态链路（docs/06 §3.1，是否真的下发
-    // 取决于 `llm.providers.<id>.vision`），其余提取成文本后拼进本轮消息。
+    // 取决于 `llm.providers.<id>.modelParams.<模型>.vision`），其余提取成文本后拼进本轮消息。
     // 刻意**不在渲染层**读文件 —— 渲染进程没有 fs 能力，也不该有。
     try {
       const prepared = await prepareAttachments(deps, request.attachments)
@@ -979,7 +980,7 @@ function broadcast(channel: string, payload: unknown): void {
  * 其余文件走分类管线的 `extract.ts` 提取文本。两类可以同时存在于一轮消息里。
  *
  * 降级策略（一律**不阻断发送**）：
- * - 关闭了图片输入（`llm.providers.<id>.vision` 为假）→ 图片写成一行「未读取」说明，
+ * - 关闭了图片输入（当前模型的 `modelParams.<modelId>.vision` 为假）→ 图片写成一行「未读取」说明，
  *   请求体里不出现图片分片（对不支持视觉的模型发图片会被服务端 400）；
  * - 无法提取的文档 → 同样如实写明「内容未读取」，避免模型以为读过而编造。
  *
@@ -1059,15 +1060,18 @@ async function prepareAttachments(
 }
 
 /**
- * 当前默认 provider 是否开了**图片输入**（docs/06 §3.1）。
+ * 当前默认 provider 的**当前生效模型**是否开了**图片输入**（docs/06 §3.1）。
  *
- * 判据只有一处：`llm.providers.<active>.vision`。读不到（未配置 / 条目被删）按**关**处理 ——
+ * 判据只有一处：`resolveModelParams(llm.providers[llm.active]).vision`（v23 起下沉到
+ * 模型级 `modelParams[model]`）。读不到 provider（未配置 / 条目被删）按**关**处理 ——
  * 与内核 `ProviderConfig.vision` 的缺省一致，绝不因为配置异常就把图片发出去。
  */
 function visionEnabled(deps: DesktopDeps): boolean {
   try {
     const llm = deps.settings.get().llm
-    return llm.providers[llm.active]?.vision === true
+    const provider = llm.providers[llm.active]
+    if (provider === undefined) return false
+    return resolveModelParams(provider).vision === true
   } catch {
     return false
   }

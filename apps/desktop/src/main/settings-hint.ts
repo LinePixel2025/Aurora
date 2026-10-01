@@ -15,7 +15,7 @@
 
 export const SETTINGS_HINT = [
   '你可以用 `set_setting` 工具修改以下设置（改动即时生效，无需重启；改前先告知用户）：',
-  '- llm.providers.<id>.model / reasoningEffort / temperature（模型与采样参数；baseUrl / API Key 等凭据一律只读）',
+  '- llm.providers.<id>.model / modelParams.<modelId>.reasoningEffort（模型与思考等级；baseUrl / API Key 等凭据一律只读）',
   '- tts.enabled / active / autoRead / maxChars（语音朗读）',
   '- stt.enabled / active（语音输入开关与默认识别模型）',
   '- imagegen.enabled / active（图像生成开关与默认生图模型）',
