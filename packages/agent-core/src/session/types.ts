@@ -49,7 +49,7 @@ export interface StoredMessage {
    * 存的是**路径不是 base64**：一张 4 MB 的图 base64 后是 5.3 MB，几轮对话就能把
    * `sessions/*.json` 顶成几十 MB；跨轮次续聊时按路径重新读盘（用户追问「刚才那张图」时
    * 模型仍看得到图），文件被删 / 读不出就在那一轮跳过并记 warn —— 不编造内容，
-   * 也不让整轮请求失败。是否真的作为图片分片下发由 `llm.providers.<id>.vision` 决定。
+   * 也不让整轮请求失败。是否真的作为图片分片下发由当前生效模型的 `llm.providers.<id>.modelParams.<模型 id>.vision` 决定。
    */
   images?: string[]
 }

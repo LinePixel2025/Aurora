@@ -36,7 +36,7 @@ export interface ProviderConfig {
   reasoningEffort?: ReasoningEffortLevel
   /**
    * 该模型是否支持**图片输入**（多模态，docs/06 §3.1，v22）：
-   * 由装配层按 `llm.providers.<id>.vision` 透传。**缺省 = 不支持** ——
+   * 由装配层按当前生效模型的 `llm.providers.<id>.modelParams.<模型 id>.vision` 透传。**缺省 = 不支持** ——
    * 对不支持视觉的模型发图片分片会被服务端 400（整个对话都用不了），
    * 因此「没说不支持」不能当成支持；关闭时图片按未读取降级为一行文字。
    */

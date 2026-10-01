@@ -2,7 +2,7 @@
 /**
  * 思考等级下拉（对话窗输入区专用的紧凑版，docs/07 §2.3）。
  *
- * 读写的是**同一个字段** `llm.providers.<active>.reasoningEffort`（docs/06 §3）——
+ * 读写的是**同一个字段** `llm.providers.<active>.modelParams.<当前模型>.reasoningEffort`（v23 起按模型绑定，docs/06 §3）——
  * 与设置页「AI 模型」高级参数里的同名下拉没有第二份来源，因此本组件不保存本地状态：
  * 值始终来自 props（配置 = 单一事实来源），选择只 `emit` 出去，落盘由调用方完成
  * （分组级局部更新要求原样回传全部 provider，且不能带回渲染层的空 `apiKeyEnc`——
@@ -77,7 +77,7 @@ function onChange(event: Event): void {
  * 同 `--fill-2` 悬停底色），否则同一条工具带上会出现两种控件观感。
  *
  * `flex: 0 1 auto`（可收缩到 `min-width`）：`.composer-bar` 的收缩顺序是
- * 「键位提示 / 瞬时提示 → 模型 → 本控件 → 权限芯片」，窄窗下依次让位，
+ * 「瞬时提示 → 模型 → 本控件 → 权限芯片」，窄窗下依次让位，
  * 谁都不能把发送按钮挤出行外、更不能溢出输入卡边框。
  */
 .thinking-level {

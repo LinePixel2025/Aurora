@@ -409,7 +409,8 @@ function onCancelJob(id: string): void {
 
 /**
  * 「模型」与「思考等级」两个下拉读写的是**同一个 provider 子树**，只是字段不同：
- * `llm.providers.<active>.model`（唯一生效值）与 `.reasoningEffort`。
+ * `llm.providers.<active>.model`（唯一生效值）与 `.modelParams.<当前模型>.reasoningEffort`
+ *（v23 起思考等级随模型绑定）。
  *
  * 与设置页「AI 模型」卡写的是同一份数据（单一事实来源），**没有按会话覆盖**；
  * 保存成功后 `settings:changed` 会把新配置推回 store，两个控件随之更新。

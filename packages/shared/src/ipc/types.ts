@@ -864,7 +864,7 @@ export interface SendMessageRequest {
   /**
    * 附件绝对路径列表（拖拽发送，docs/07 §2.3）。
    * 主进程按扩展名分成两类：**图片**（png / jpg / jpeg / webp / gif / bmp）走多模态图片分片
-   * （docs/06 §3.1，是否真的送进模型由 `llm.providers.<id>.vision` 决定），
+   * （docs/06 §3.1，是否真的送进模型由当前生效模型的 `modelParams.<模型 id>.vision` 决定），
    * 其余用 `extract.ts` 提取文本后拼进本轮用户消息；提取失败按降级处理，不阻断发送。
    */
   attachments?: string[]

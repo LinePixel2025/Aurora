@@ -366,7 +366,7 @@ function normalizedModelParams(draft: ProviderDraft): Record<string, LlmModelPar
   return table
 }
 
-/** 上下文窗口的上界：与 `LlmProviderSchema.contextWindow` 的 `.max(2_000_000)` 对齐。 */
+/** 上下文窗口的上界：与 `LlmModelParamsSchema.contextWindow` 的 `.max(2_000_000)` 对齐。 */
 const CONTEXT_WINDOW_MAX = 2_000_000
 
 /**

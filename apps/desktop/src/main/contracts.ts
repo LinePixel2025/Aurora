@@ -201,7 +201,7 @@ export interface AskUserLike {
 export interface AgentHost {
   /**
    * `images`（多模态输入，docs/06 §3.1）：本轮的**图片附件路径**，由 `ipc.ts` 按扩展名挑出、
-   * 并已按 `llm.providers.<id>.vision` 判定过是否下发；内核经注入的 `loadImages` 读成内容。
+   * 并已按当前生效模型的 `modelParams.<模型 id>.vision`（v23 起按模型绑定）判定过是否下发；内核经注入的 `loadImages` 读成内容。
    */
   send(
     request: SendMessageRequest & { extraContext?: string; images?: readonly string[] },
