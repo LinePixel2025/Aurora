@@ -568,33 +568,32 @@ describe('SettingsSchema / defaults 一致性', () => {
     })
   })
 
-  // ⚠️ 下面两条钉的是**已知缺口**的现状（不是期望行为）。
-  //
-  // 缺口：`lookupSpec` / `lookupEnum` 只做**单段** `*` 替换，而 `modelParams` 的登记路径是
-  // `llm.providers.*.modelParams.*.<字段>`（**两个**动态段）—— 具体路径查不到登记项，
-  // `fieldAccepts` 于是落到「未登记路径默认接受」分支，对任何候选值都返回 true。
-  // 影响面有限：`sanitizeWithDefaults` 对 `llm.providers`（`z.record`）整体保留候选对象、
-  // 不逐字段问 `fieldAccepts`（真正的取值闸门是 `SettingsSchema`），所以这是**惰性**缺口。
-  //
-  // 写法为什么不是 `it.fails`：那样只断言「回调抛了错」，而调用**自身炸了**也算通过 —— 假绿。
-  // 这里先证明调用没抛异常，再断言当前值；`lookupSpec` 支持多段通配之后这两条会变红，
-  // 那时把 `true` 翻成 `false`、并把标题里的「已知缺口」去掉即可。
-  it('fieldAccepts 对越界的 contextWindow 目前按「未登记放行」（已知缺口，修好 lookupSpec 后应翻成 false）', () => {
-    const path = 'llm.providers.deepseek.modelParams.deepseek-chat.contextWindow'
-    let actual: unknown
-    expect(() => {
-      actual = fieldAccepts(path, '128k')
-    }).not.toThrow()
-    expect(actual).toBe(true)
-  })
-
-  it('fieldAccepts 对非法的 reasoningEffort 目前按「未登记放行」（已知缺口，修好 lookupSpec 后应翻成 false）', () => {
-    const path = 'llm.providers.deepseek.modelParams.deepseek-chat.reasoningEffort'
-    let actual: unknown
-    expect(() => {
-      actual = fieldAccepts(path, 'ultra')
-    }).not.toThrow()
-    expect(actual).toBe(true)
+  // v23 的双动态段路径（`llm.providers.*.modelParams.*.<字段>`）现在能被 `lookupSpec` /
+  // `lookupEnum` 逐段解析 —— 老实现只会「把具体路径的某一段替换成 `*` / `[]` 再查表」，
+  // 一次只替换一段，所以这类路径永远查不到登记项、`fieldAccepts` 一律放行。
+  // 这里钉住修复后的行为：**非含点模型 id** 的非法值必须按 Schema 拒绝。
+  it('双动态段路径的非法值会被 fieldAccepts 按 Schema 拒绝（lookupSpec 逐段匹配）', () => {
+    expect(
+      fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.contextWindow', '128k'),
+    ).toBe(false)
+    expect(
+      fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.reasoningEffort', 'ultra'),
+    ).toBe(false)
+    // 正对照：合法值仍要放行（别修成「一律拒绝」）
+    expect(
+      fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.contextWindow', 128_000),
+    ).toBe(true)
+    expect(
+      fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.reasoningEffort', 'high'),
+    ).toBe(true)
+    // ⚠️ **含点模型 id 仍是歧义路径**：`gpt-4.1` 在点分路径里会被拆成两段（`gpt-4` / `1`），
+    // 段数对不上登记模式，于是仍走「未登记放行」。这是点分路径表示的固有歧义，不是漏修 ——
+    // 影响仍然是**惰性**的（`fieldAccepts` 只被 `sanitizeWithDefaults` 使用，而它对
+    // `llm.providers`（`z.record`）整体保留候选对象、不下钻这棵子树）。
+    // 写入路径的歧义由 `tools/settings-port.ts` 的 `splitSettingPath` 按已知结构还原。
+    expect(fieldAccepts('llm.providers.deepseek.modelParams.gpt-4.1.contextWindow', '128k')).toBe(
+      true,
+    )
   })
 })
 

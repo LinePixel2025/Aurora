@@ -1233,30 +1233,38 @@ function lookupDynamic(path: string): boolean {
  * 动态键字段的键名是运行时才知道的，用逐级替换为通配段（`*` = record 键）兜底；
  * 数组元素路径形如 `modes.classroom.subjects[]`，与 Schema 遍历时的命名一致。
  */
-function lookupSpec(path: string): AcceptSpec | undefined {
-  const exact = schemaSpecs.get(path)
-  if (exact !== undefined) return exact
+/**
+ * 通配路径匹配（登记表的键 → 具体路径）。
+ *
+ * 登记表的键里，`*` 段代表 `z.record` 的动态键、`x[]` 段代表数组元素。老实现是
+ * 「把具体路径的**某一段**替换成 `*` / `[]` 再查表」—— 一次只替换一段，于是**双动态段**的路径
+ * （`llm.providers.<id>.modelParams.<模型 id>.<字段>`，v23 起存在）永远查不到登记项，
+ * `fieldAccepts` 落到「未登记路径默认接受」分支、对任何候选值都放行。
+ * 这里改成**逐段比对登记键**（每段允许 `*` / `[]` / 去尾的 `[]`），天然支持任意多段动态。
+ */
+function matchPathPattern(pattern: string, segments: readonly string[]): boolean {
+  const parts = pattern.split('.')
+  if (parts.length !== segments.length) return false
+  return parts.every((part, index) => {
+    const segment = segments[index]
+    if (segment === undefined) return false
+    if (part === segment) return true
+    if (part === '*' || part === '[]') return true
+    // 数组元素标记粘在该段尾巴上（`subjects[].name`）
+    return part.endsWith('[]') && part.slice(0, -2) === segment
+  })
+}
 
+function findByPattern<T>(map: ReadonlyMap<string, T>, path: string): T | undefined {
   const segments = path.split('.')
-  for (let i = 0; i < segments.length; i++) {
-    const alternatives = segments[i] === '[]' ? ['*'] : ['*', '[]']
-    for (const alternative of alternatives) {
-      if (alternative === segments[i]) continue
-      const candidatePath = [...segments.slice(0, i), alternative, ...segments.slice(i + 1)].join(
-        '.',
-      )
-      const found = schemaSpecs.get(candidatePath)
-      if (found !== undefined) return found
-    }
-  }
-
-  // 元素路径本身可能带 `[]` 后缀（`subjects[].name`）
-  if (!path.endsWith('[]')) {
-    const withSuffix = path.replace(/\.([^.]+)$/, '.$1[]')
-    const found = schemaSpecs.get(withSuffix)
-    if (found !== undefined) return found
+  for (const [key, value] of map) {
+    if (matchPathPattern(key, segments)) return value
   }
   return undefined
+}
+
+function lookupSpec(path: string): AcceptSpec | undefined {
+  return schemaSpecs.get(path) ?? findByPattern(schemaSpecs, path)
 }
 
 /** 调试 / 测试用：已登记的字段路径数量。 */
@@ -1282,28 +1290,7 @@ export function debugSchemaSpecs(): Record<string, AcceptSpec | undefined> {
  * `mcp.servers[].headersEnc.*` 上就存在。
  */
 function lookupEnum(path: string): EnumSpec | undefined {
-  const exact = enumPaths.get(path)
-  if (exact !== undefined) return exact
-
-  const segments = path.split('.')
-  for (let i = 0; i < segments.length; i++) {
-    const alternatives = segments[i] === '[]' ? ['*'] : ['*', '[]']
-    for (const alternative of alternatives) {
-      if (alternative === segments[i]) continue
-      const candidatePath = [...segments.slice(0, i), alternative, ...segments.slice(i + 1)].join(
-        '.',
-      )
-      const found = enumPaths.get(candidatePath)
-      if (found !== undefined) return found
-    }
-  }
-
-  if (!path.endsWith('[]')) {
-    const withSuffix = path.replace(/\.([^.]+)$/, '.$1[]')
-    const found = enumPaths.get(withSuffix)
-    if (found !== undefined) return found
-  }
-  return undefined
+  return enumPaths.get(path) ?? findByPattern(enumPaths, path)
 }
 
 function record(specs: Map<string, AcceptSpec>, path: string, spec: AcceptSpec): void {
