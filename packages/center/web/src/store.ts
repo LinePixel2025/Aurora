@@ -173,6 +173,13 @@ export const wsStatus = ref<SocketStatus>('idle')
 /** 确认卡批复 / 过期的非阻断提示（自动消隐） */
 export const confirmNotice = ref('')
 
+/**
+ * 「有会话被打开」信号：`openRemoteSession` 每次被调用都自增（**包括**打开的就是
+ * 当前激活会话的情况——那种时候 `activeSessionKey` 不变，watch 它收不到）。
+ * 消费方只有移动端抽屉的自动收起（ConsoleView）。
+ */
+export const sessionViewTick = ref(0)
+
 export const booted = computed(() => state.booted)
 export const currentUser = computed(() => state.user)
 export const clientsSorted = computed<ClientEntry[]>(() =>
@@ -550,6 +557,8 @@ export async function startSession(clientId: string): Promise<void> {
   }
   state.sessions.set(sessionKey(clientId, data.sessionId), session)
   entry?.sessionIds.push(data.sessionId)
+  // 移动端抽屉联动：新建会话同样算「打开了会话」（与 openRemoteSession 同口径）
+  sessionViewTick.value += 1
   // 会话列表合并：本页签新建的会话若还没在 session.list 结果里，先插占位条目
   //（title 用「远程会话」，下次 listSessions 以真实数据覆盖）
   if (entry && !entry.remoteSessions.some((s) => s.sessionId === data.sessionId)) {
@@ -565,6 +574,7 @@ export function openRemoteSession(clientId: string, sessionId: string): void {
   const key = sessionKey(clientId, sessionId)
   const session = ensureSessionState(clientId, sessionId)
   state.activeSessionKey = key
+  sessionViewTick.value += 1
   // 历史回放（docs/12 §5 第 7 步，v0.2.4）：还没拉过历史就拉一次。
   // 回执到达时若实时事件已经落了条目（流式期间打开），mergeHistory 按
   // id / 内容去重后把历史排在实时条目之前，不重复、不错序。
@@ -904,6 +914,42 @@ export async function fetchAutomationHistory(
   const list = Array.isArray(data) ? data : []
   state.automationHistoryByClient.set(clientId, list)
   return list
+}
+
+// ───────────────────────── 语音中转（docs/12 §6.4） ─────────────────────────
+
+/**
+ * 语音命令的回执等待放宽到 60s（docs/12 §6.4）：STT 转写 / TTS 合成在客户端
+ * 本机可能比普通命令慢得多，30s 的默认超时会误报「未在时限内回执」。
+ */
+const VOICE_COMMAND_TIMEOUT_MS = 60_000
+
+/** 语音识别中转：录音 base64 送客户端本机 STT，回转写文本 */
+export async function transcribeAudio(
+  clientId: string,
+  audioBase64: string,
+  mime: string,
+): Promise<string> {
+  const data = await command<{ text?: string }>(
+    { type: 'stt.transcribe', requestId: nextRequestId(), clientId, audioBase64, mime },
+    VOICE_COMMAND_TIMEOUT_MS,
+  )
+  return typeof data?.text === 'string' ? data.text : ''
+}
+
+/** 朗读合成中转：文本送客户端本机 TTS，回音频 base64 + 容器类型 */
+export async function synthesizeSpeech(
+  clientId: string,
+  text: string,
+): Promise<{ audioBase64: string; mimeType: string }> {
+  const data = await command<{ audioBase64?: string; mimeType?: string }>(
+    { type: 'tts.synthesize', requestId: nextRequestId(), clientId, text },
+    VOICE_COMMAND_TIMEOUT_MS,
+  )
+  return {
+    audioBase64: typeof data?.audioBase64 === 'string' ? data.audioBase64 : '',
+    mimeType: typeof data?.mimeType === 'string' ? data.mimeType : 'audio/mpeg',
+  }
 }
 
 /** 发送输入：乐观插入用户气泡（后续 user-message 事件按「内容 + 出现次数」逐条配对，不整类去重） */

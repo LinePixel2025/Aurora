@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useStickToBottom } from '../composables/useStickToBottom.js'
+import { renderMarkdown } from '../markdown'
 import ToolCard from './ToolCard.vue'
 import { fileUrl } from '../api'
 import {
@@ -19,6 +21,9 @@ import {
   sendInput,
   state,
   summarizeInput,
+  synthesizeSpeech,
+  transcribeAudio,
+  type ChatItem,
   type ClientEntry,
   type ConfirmEntry,
   type SessionState,
@@ -26,17 +31,34 @@ import {
 } from '../store'
 
 /**
- * 会话主区：消息流（按 messageId 聚合的结果）+ 底部输入框 + 发送 / 停止。
- * 停止依赖最近一次 session.input 回执携带的 agentRequestId。
- * 确认卡：本会话待批复的敏感工具请求（倒计时归零即摘除并提示）。
+ * 会话主区（v0.3.2 重构：对话主导 + 信息密度收紧）：
+ * - 消息流（按 messageId 聚合）+ 底部输入框 + 发送 / 停止；
+ * - 自动跟随滚动用与桌面端同一套「吸底」语义（stickToBottomCore 搬运版）：
+ *   跟随只由真实用户输入关闭，流式增量绝不拽走或误关；非跟随态显示「回到底部」胶囊；
+ * - 助手正文与思考块走 Markdown 渲染（自写渲染器，输出已 HTML 转义防 XSS）；
+ * - 语音（docs/12 §6.4）：麦克风录音经客户端中转识别进输入框；助手消息可经
+ *   客户端中转合成朗读——按 ClientStatus.voice 能力位门控，未配置连按钮都不渲染。
  */
 const props = defineProps<{ session: SessionState; entry: ClientEntry }>()
 
 const emit = defineEmits<{ newSession: [] }>()
 
 const draft = ref('')
-const listEl = ref<HTMLElement | null>(null)
+const threadEl = ref<HTMLElement | null>(null)
+const inputEl = ref<HTMLTextAreaElement | null>(null)
 const abortError = ref('')
+
+// ───────────────────────── 自动跟随滚动（stickToBottomCore，docs/12 §10） ─────────────────────────
+
+const { following, stick } = useStickToBottom(() => threadEl.value)
+
+// 切换会话：强制恢复跟随并滚底一次（composable 挂载时也会 stick 一次）
+watch(
+  () => props.session,
+  () => {
+    stick()
+  },
+)
 
 // ───────────────────────── 确认卡 ─────────────────────────
 
@@ -50,7 +72,8 @@ const heartbeat = window.setInterval(() => {
 }, 1000)
 onBeforeUnmount(() => {
   window.clearInterval(heartbeat)
-  if (bottomRaf !== 0) window.cancelAnimationFrame(bottomRaf)
+  cleanupMic()
+  stopSpeak()
 })
 
 const sessionConfirms = computed<ConfirmEntry[]>(() =>
@@ -93,8 +116,21 @@ async function send(): Promise<void> {
   const text = draft.value.trim()
   if (!text || props.session.pending) return
   draft.value = ''
+  resetInputHeight()
   abortError.value = ''
+  // 自己发消息 = 必须跟随（真实用户输入之外唯一恢复跟随的入口，与桌面端同口径）
+  stick()
   await sendInput(props.session, text)
+}
+
+/** 中止本轮：需要 session.input 回执带出的 agentRequestId */
+async function abort(): Promise<void> {
+  abortError.value = ''
+  try {
+    await abortSession(props.session)
+  } catch (err) {
+    abortError.value = err instanceof Error ? err.message : '中止失败'
+  }
 }
 
 function onKeydown(event: KeyboardEvent): void {
@@ -105,88 +141,193 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
-async function abort(): Promise<void> {
-  abortError.value = ''
+/** composer 自增高：空内容 = 一行，随内容长高、封顶后内部滚动（与桌面端同口径） */
+function autogrow(): void {
+  const el = inputEl.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+}
+
+function resetInputHeight(): void {
+  const el = inputEl.value
+  if (!el) return
+  el.style.height = ''
+}
+
+// ───────────────────────── 语音输入（stt.transcribe 中转，docs/12 §6.4） ─────────────────────────
+
+/** 能力位门控：客户端未配置 STT 时连按钮都不渲染（字段缺失同款，向后兼容旧客户端） */
+const micReady = computed(() => props.entry.status?.voice?.stt === true)
+
+const micState = ref<'idle' | 'recording' | 'transcribing'>('idle')
+const micError = ref('')
+/** 录音体积上限（10MB）：base64 后 ≈13.7MB，贴近 ws 16MiB 帧上限；超限不发命令（超了会 1009 断整条连接） */
+const MAX_RECORD_BYTES = 10 * 1024 * 1024
+let mediaStream: MediaStream | null = null
+let recorder: MediaRecorder | null = null
+let recordedChunks: Blob[] = []
+let recordMime = ''
+
+/** 容器优先 webm/opus（Chrome / Edge / Firefox），回落 mp4（Safari），再退浏览器默认 */
+function pickRecorderMime(): string {
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+  for (const mime of candidates) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(mime)) return mime
+  }
+  return ''
+}
+
+async function toggleMic(): Promise<void> {
+  if (micState.value === 'recording') {
+    stopRecording()
+    return
+  }
+  if (micState.value !== 'idle') return
+  micError.value = ''
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    micError.value = '当前环境不支持录音——语音输入需要 HTTPS 或 localhost 访问'
+    return
+  }
   try {
-    await abortSession(props.session)
-  } catch (err) {
-    abortError.value = err instanceof Error ? err.message : '中止失败'
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    recordMime = pickRecorderMime()
+    recorder = recordMime
+      ? new MediaRecorder(mediaStream, { mimeType: recordMime })
+      : new MediaRecorder(mediaStream)
+    recordedChunks = []
+    recorder.ondataavailable = (event: BlobEvent) => {
+      if (event.data.size > 0) recordedChunks.push(event.data)
+    }
+    recorder.onstop = () => {
+      void finishTranscribe()
+    }
+    recorder.start()
+    micState.value = 'recording'
+  } catch (error) {
+    cleanupMic()
+    micError.value =
+      error instanceof Error && error.name === 'NotAllowedError'
+        ? '麦克风权限被拒绝——请在浏览器地址栏允许麦克风后重试'
+        : '打开麦克风失败，请重试'
   }
 }
 
-/**
- * 自动吸底（v0.2.4 重做）：
- * - 「用户是否在底部」判断——距底 < ~48px 才自动吸底；用户上翻看历史时不再强拽回底部；
- * - 深度 watch 会话 items（正文 / 思考增量、工具卡 outputSummary、job / subagent 卡、
- *   loading 行、确认卡与文件条出现消失——一切会改高度的变化都触发吸底判断）；
- * - nextTick 之后再用 rAF 二次校正一次（图片 / 展开内容等晚稳定的高度变化）；
- * - 切换会话时强制滚底一次（并把「在底部」状态复位）。
- */
-const NEAR_BOTTOM_PX = 48
-const nearBottom = ref(true)
-
-function isNearBottom(el: HTMLElement): boolean {
-  return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
+function stopRecording(): void {
+  if (recorder && recorder.state !== 'inactive') {
+    recorder.stop()
+    return
+  }
+  cleanupMic()
 }
 
-function onListScroll(): void {
-  const el = listEl.value
-  if (el) nearBottom.value = isNearBottom(el)
+async function finishTranscribe(): Promise<void> {
+  micState.value = 'transcribing'
+  const mime = recordMime || recorder?.mimeType || 'audio/webm'
+  const blob = new Blob(recordedChunks, { type: mime })
+  // 只清资源（停轨 / 置空引用），**不复位状态**：「识别中」要亮到转写收尾，
+  // 期间 toggleMic 的重入保护（micState !== 'idle'）才有效——否则两路转写竞写 draft
+  mediaStream?.getTracks().forEach((track) => track.stop())
+  mediaStream = null
+  recorder = null
+  recordedChunks = []
+  recordMime = ''
+  try {
+    if (blob.size > MAX_RECORD_BYTES) {
+      throw new Error('录音过长（超过 10MB），请缩短录音后重试')
+    }
+    const audioBase64 = await blobToBase64(blob)
+    const text = await transcribeAudio(props.session.clientId, audioBase64, blob.type || mime)
+    if (text) {
+      draft.value = draft.value ? `${draft.value} ${text.trim()}` : text.trim()
+      autogrow()
+      inputEl.value?.focus()
+    }
+  } catch (error) {
+    micError.value = error instanceof Error ? error.message : '识别失败，请重试'
+  } finally {
+    micState.value = 'idle'
+  }
 }
 
-let bottomRaf = 0
+function cleanupMic(): void {
+  mediaStream?.getTracks().forEach((track) => track.stop())
+  mediaStream = null
+  recorder = null
+  recordedChunks = []
+  recordMime = ''
+  micState.value = 'idle'
+}
 
-async function scrollToBottom(force = false): Promise<void> {
-  await nextTick()
-  const el = listEl.value
-  if (!el) return
-  if (!force && !nearBottom.value) return
-  el.scrollTop = el.scrollHeight
-  if (bottomRaf !== 0) window.cancelAnimationFrame(bottomRaf)
-  bottomRaf = window.requestAnimationFrame(() => {
-    bottomRaf = 0
-    const target = listEl.value
-    if (!target) return
-    if (force || isNearBottom(target)) target.scrollTop = target.scrollHeight
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = String(reader.result ?? '')
+      const comma = result.indexOf(',')
+      resolve(comma >= 0 ? result.slice(comma + 1) : result)
+    }
+    reader.onerror = () => reject(new Error('读取录音数据失败'))
+    reader.readAsDataURL(blob)
   })
 }
 
-// 消息条数 / 内容 / 状态行 / 确认卡与文件条的任何高度变化都走吸底判断。
-// 深度 watch 在长会话流式时每个 delta 都会触发，吸底判断做 100ms 尾沿节流：
-// 高频增量合并成一次滚动，静默 100ms 后补一次，收尾高度不会被漏掉。
-const SCROLL_THROTTLE_MS = 100
-let scrollTimer = 0
-let scrollTimerPending = false
-watch(
-  () =>
-    [
-      props.session.items,
-      props.session.pending,
-      props.entry.files.length,
-      sessionConfirms.value.length,
-    ] as const,
-  () => {
-    if (scrollTimerPending) return
-    scrollTimerPending = true
-    const fire = (): void => {
-      scrollTimerPending = false
-      void scrollToBottom()
+// ───────────────────────── 朗读（tts.synthesize 中转，docs/12 §6.4） ─────────────────────────
+
+const ttsReady = computed(() => props.entry.status?.voice?.tts === true)
+const ttsBusy = ref(false)
+const speakingId = ref('')
+const speakError = ref('')
+let currentAudio: HTMLAudioElement | null = null
+let currentUrl = ''
+
+async function toggleSpeak(item: ChatItem): Promise<void> {
+  if (speakingId.value === item.id) {
+    stopSpeak()
+    return
+  }
+  if (ttsBusy.value) return
+  speakError.value = ''
+  ttsBusy.value = true
+  try {
+    const { audioBase64, mimeType } = await synthesizeSpeech(
+      props.session.clientId,
+      item.content,
+    )
+    if (!audioBase64) throw new Error('客户端未返回音频')
+    const bytes = Uint8Array.from(atob(audioBase64), (char) => char.charCodeAt(0))
+    const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }))
+    const audio = new Audio(url)
+    stopSpeak()
+    currentAudio = audio
+    currentUrl = url
+    speakingId.value = item.id
+    audio.onended = () => {
+      if (speakingId.value === item.id) speakingId.value = ''
+      releaseAudio()
     }
-    scrollTimer = window.setTimeout(fire, SCROLL_THROTTLE_MS)
-  },
-  { deep: true },
-)
-onBeforeUnmount(() => {
-  if (scrollTimer !== 0) window.clearTimeout(scrollTimer)
-})
-// 切换会话：强制滚底一次
-watch(
-  () => props.session,
-  () => {
-    nearBottom.value = true
-    void scrollToBottom(true)
-  },
-)
+    await audio.play()
+  } catch (error) {
+    speakingId.value = ''
+    releaseAudio()
+    speakError.value = error instanceof Error ? error.message : '朗读失败，请重试'
+  } finally {
+    ttsBusy.value = false
+  }
+}
+
+function stopSpeak(): void {
+  currentAudio?.pause()
+  releaseAudio()
+}
+
+function releaseAudio(): void {
+  currentAudio = null
+  if (currentUrl) {
+    URL.revokeObjectURL(currentUrl)
+    currentUrl = ''
+  }
+}
 </script>
 
 <template>
@@ -201,7 +342,7 @@ watch(
       <button class="btn btn-ghost btn-sm" type="button" @click="emit('newSession')">新会话</button>
     </header>
 
-    <!-- Token 用量条：最新轮 prompt/completion、会话累计、占 contextWindow 比例（未知分母不显示占比） -->
+    <!-- Token 用量条：贴在头部下方的一行小字 -->
     <div
       v-if="usage && usage.totals.totalTokens > 0"
       class="usage-strip"
@@ -253,104 +394,157 @@ watch(
       </div>
     </div>
 
-    <div ref="listEl" class="msg-list" @scroll.passive="onListScroll">
-      <template v-for="item in session.items" :key="item.id">
-        <div v-if="item.kind === 'user'" class="msg-user">
-          <div class="bubble-user">{{ item.content }}</div>
-        </div>
-        <div v-else-if="item.kind === 'error'" class="msg-error">
-          {{ item.content }}
-          <span v-if="item.code" class="msg-error-code">（{{ item.code }}）</span>
-        </div>
-        <!-- 任务清单卡：最新一条 job 摘要（后续事件原地覆盖） -->
-        <div v-else-if="item.kind === 'job' && item.job" class="job-card">
-          <div class="job-head">
-            <span class="job-title">任务清单</span>
-            <span class="chip" :class="item.job.status === 'done' ? 'chip-ok' : 'chip-accent'">
-              {{ jobStatusLabel(item.job.status) }}
-            </span>
-            <span v-if="item.job.pendingReason" class="chip chip-muted">
-              {{ pendingReasonLabel(item.job.pendingReason) }}
-            </span>
+    <div class="msg-list">
+      <div ref="threadEl" class="msg-thread">
+        <template v-for="item in session.items" :key="item.id">
+          <div v-if="item.kind === 'user'" class="msg-user">
+            <div class="bubble-user">{{ item.content }}</div>
           </div>
-          <div class="job-meta text-2">
-            第 {{ item.job.round }}/{{ item.job.maxRounds }} 轮 · 已执行 {{ item.job.stepCount }} 步
-            · Token {{ item.job.usedTokens }}/{{ item.job.maxTotalTokens }}
-            <template v-if="item.job.autoContinued > 0">
-              · 自动续轮 {{ item.job.autoContinued }} 次
-            </template>
+          <div v-else-if="item.kind === 'error'" class="msg-error">
+            {{ item.content }}
+            <span v-if="item.code" class="msg-error-code">（{{ item.code }}）</span>
           </div>
-          <div v-if="item.job.lastStep" class="job-line text-2">
-            最近步骤：{{ item.job.lastStep }}
+          <!-- 任务清单卡：最新一条 job 摘要（后续事件原地覆盖） -->
+          <div v-else-if="item.kind === 'job' && item.job" class="job-card">
+            <div class="job-head">
+              <span class="job-title">任务清单</span>
+              <span class="chip" :class="item.job.status === 'done' ? 'chip-ok' : 'chip-accent'">
+                {{ jobStatusLabel(item.job.status) }}
+              </span>
+              <span v-if="item.job.pendingReason" class="chip chip-muted">
+                {{ pendingReasonLabel(item.job.pendingReason) }}
+              </span>
+            </div>
+            <div class="job-meta text-2">
+              第 {{ item.job.round }}/{{ item.job.maxRounds }} 轮 · 已执行 {{ item.job.stepCount }} 步
+              · Token {{ item.job.usedTokens }}/{{ item.job.maxTotalTokens }}
+              <template v-if="item.job.autoContinued > 0">
+                · 自动续轮 {{ item.job.autoContinued }} 次
+              </template>
+            </div>
+            <div v-if="item.job.lastStep" class="job-line text-2">
+              最近步骤：{{ item.job.lastStep }}
+            </div>
+            <p v-if="item.job.error" class="job-error">{{ item.job.error }}</p>
           </div>
-          <p v-if="item.job.error" class="job-error">{{ item.job.error }}</p>
-        </div>
-        <!-- 子代理卡：同一 task 调用的最新快照 -->
-        <div v-else-if="item.kind === 'subagent' && item.subagent" class="job-card">
-          <div class="job-head">
-            <span class="job-title">子代理</span>
-            <span
-              class="chip"
-              :class="item.subagent.status === 'success' ? 'chip-ok' : 'chip-accent'"
-            >
-              {{ subagentStatusLabel(item.subagent.status) }}
-            </span>
-            <span class="text-2 job-inline">工具调用 {{ item.subagent.toolCalls }} 次</span>
+          <!-- 子代理卡：同一 task 调用的最新快照 -->
+          <div v-else-if="item.kind === 'subagent' && item.subagent" class="job-card">
+            <div class="job-head">
+              <span class="job-title">子代理</span>
+              <span
+                class="chip"
+                :class="item.subagent.status === 'success' ? 'chip-ok' : 'chip-accent'"
+              >
+                {{ subagentStatusLabel(item.subagent.status) }}
+              </span>
+              <span class="text-2 job-inline">工具调用 {{ item.subagent.toolCalls }} 次</span>
+            </div>
+            <div class="job-line">{{ item.subagent.description }}</div>
+            <div v-if="item.subagent.report" class="job-line text-2 subagent-report">
+              {{ item.subagent.report }}
+            </div>
           </div>
-          <div class="job-line">{{ item.subagent.description }}</div>
-          <div v-if="item.subagent.report" class="job-line text-2 subagent-report">
-            {{ item.subagent.report }}
+          <div v-else-if="item.kind === 'assistant'" class="msg-assistant">
+            <div v-if="item.reasoning" class="think">
+              <details>
+                <summary>{{ item.streaming && !item.content ? '思考中…' : '思考过程' }}</summary>
+                <!-- markdown.ts 输出已 HTML 转义，v-html 安全 -->
+                <div class="think-body md" v-html="renderMarkdown(item.reasoning)"></div>
+              </details>
+            </div>
+            <!-- markdown.ts 输出已 HTML 转义，v-html 安全 -->
+            <div v-if="item.content" class="msg-text md" v-html="renderMarkdown(item.content)"></div>
+            <div v-if="item.tools.length > 0" class="msg-tools">
+              <ToolCard v-for="tool in item.tools" :key="tool.id" :tool="tool" />
+            </div>
+            <div class="msg-foot">
+              <span v-if="item.streaming" class="caret"></span>
+              <button
+                v-else-if="ttsReady && item.content"
+                class="speak-btn"
+                type="button"
+                :class="{ speaking: speakingId === item.id }"
+                :disabled="ttsBusy && speakingId !== item.id"
+                :title="speakingId === item.id ? '停止朗读' : '朗读这段回复'"
+                @click="toggleSpeak(item)"
+              >
+                {{ speakingId === item.id ? '停止' : '朗读' }}
+              </button>
+            </div>
           </div>
-        </div>
-        <div v-else class="msg-assistant">
-          <div v-if="item.reasoning" class="think">
-            <details>
-              <summary>{{ item.streaming && !item.content ? '思考中…' : '思考过程' }}</summary>
-              <div class="think-body">{{ item.reasoning }}</div>
-            </details>
-          </div>
-          <div v-if="item.content" class="msg-text">{{ item.content }}</div>
-          <ToolCard v-for="tool in item.tools" :key="tool.id" :tool="tool" />
-          <span v-if="item.streaming" class="caret"></span>
-        </div>
-      </template>
+        </template>
 
-      <div v-if="showLoading" class="msg-loading">
-        <span class="spinner spinner-sm"></span>
-        <span>生成中…</span>
+        <div v-if="showLoading" class="msg-loading">
+          <span class="spinner spinner-sm"></span>
+          <span>生成中…</span>
+        </div>
+
+        <!-- 该客户端发来的文件（Agent 调 center_send_file 上传后出现） -->
+        <div v-if="entry.files.length > 0" class="file-strip">
+          <span class="file-strip-title">收到文件</span>
+          <a
+            v-for="file in entry.files"
+            :key="file.fileId"
+            class="file-chip"
+            :href="fileUrl(file.fileId)"
+            :download="file.name"
+            :title="file.note || file.name"
+          >
+            {{ file.name }} · {{ formatBytes(file.size) }}
+          </a>
+        </div>
+
+        <div v-if="session.items.length === 0 && !session.pending" class="msg-placeholder text-2">
+          会话已建立。发一条消息试试——它会由客户端本机的 Aurora 处理。
+        </div>
       </div>
 
-      <!-- 该客户端发来的文件（Agent 调 center_send_file 上传后出现） -->
-      <div v-if="entry.files.length > 0" class="file-strip">
-        <span class="file-strip-title">收到文件</span>
-        <a
-          v-for="file in entry.files"
-          :key="file.fileId"
-          class="file-chip"
-          :href="fileUrl(file.fileId)"
-          :download="file.name"
-          :title="file.note || file.name"
-        >
-          {{ file.name }} · {{ formatBytes(file.size) }}
-        </a>
-      </div>
-
-      <div v-if="session.items.length === 0 && !session.pending" class="msg-placeholder text-2">
-        会话已建立。发一条消息试试——它会由客户端本机的 Aurora 处理。
-      </div>
+      <!-- 非跟随态（用户在翻历史）的「回到底部」胶囊 -->
+      <button
+        v-if="!following"
+        class="jump-bottom"
+        type="button"
+        title="回到底部并恢复跟随"
+        @click="stick('smooth')"
+      >
+        ↓ 回到底部
+      </button>
     </div>
 
     <footer class="composer">
       <p v-if="abortError" class="form-error">{{ abortError }}</p>
+      <p v-if="micError" class="form-error">{{ micError }}</p>
+      <p v-if="speakError" class="form-error">{{ speakError }}</p>
       <div class="composer-row">
         <textarea
+          ref="inputEl"
           v-model="draft"
           class="input composer-input"
           rows="1"
           placeholder="输入消息…"
           title="Enter 发送，Shift + Enter 换行"
           @keydown="onKeydown"
+          @input="autogrow"
         ></textarea>
+        <button
+          v-if="micReady"
+          class="mic-btn"
+          type="button"
+          :class="{ recording: micState === 'recording' }"
+          :disabled="micState === 'transcribing' || session.pending"
+          :title="
+            micState === 'recording'
+              ? '停止录音并识别'
+              : micState === 'transcribing'
+                ? '识别中…'
+                : '按住语义说话：点击开始 / 再点结束'
+          "
+          @click="toggleMic"
+        >
+          <span v-if="micState === 'transcribing'" class="spinner spinner-sm"></span>
+          <span v-else-if="micState === 'recording'" class="mic-stop"></span>
+          <span v-else class="mic-icon"></span>
+        </button>
         <button v-if="session.pending" class="btn btn-danger" type="button" @click="abort">
           停止
         </button>
@@ -382,29 +576,59 @@ watch(
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 20px;
+  padding: 10px 16px;
 }
 
 .session-title {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
 .session-title h2 {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .msg-list {
+  position: relative;
   flex: 1;
   overflow-y: auto;
-  padding: 4px 24px 16px;
+  padding: 2px 20px 12px;
   min-height: 0;
+}
+
+/* 消息流内容根：吸底引擎的观察对象（MutationObserver 盯它，滚动容器向上解析） */
+.msg-thread {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 「回到底部」胶囊：悬浮在消息区底部 */
+.jump-bottom {
+  position: sticky;
+  bottom: 10px;
+  width: fit-content;
+  margin: 10px auto 0;
+  display: block;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--card);
+  box-shadow: var(--shadow);
+  border-radius: 980px;
+  padding: 6px 14px;
+  pointer-events: auto;
+}
+
+.jump-bottom:hover {
+  color: var(--accent);
 }
 
 /* Token 用量条：贴在头部下方的一行小字 */
@@ -412,9 +636,9 @@ watch(
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px 18px;
-  padding: 0 20px 10px;
-  font-size: 12.5px;
+  gap: 4px 14px;
+  padding: 0 16px 8px;
+  font-size: 12px;
   color: var(--text-2);
 }
 
@@ -432,34 +656,29 @@ watch(
 .msg-user {
   display: flex;
   justify-content: flex-end;
-  margin: 10px 0;
+  margin: 8px 0;
 }
 
 .bubble-user {
   background: var(--accent);
   color: #fff;
-  border-radius: 18px 18px 4px 18px;
-  padding: 9px 14px;
-  max-width: 72%;
+  border-radius: 16px 16px 4px 16px;
+  padding: 8px 13px;
+  max-width: 76%;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 /* 助手消息：无气泡直排 */
 .msg-assistant {
-  margin: 14px 0;
-  max-width: 760px;
-}
-
-.msg-text {
-  white-space: pre-wrap;
-  word-break: break-word;
+  margin: 12px 0;
+  max-width: 860px;
 }
 
 .caret {
   display: inline-block;
   width: 2px;
-  height: 16px;
+  height: 15px;
   background: var(--accent);
   vertical-align: -3px;
   animation: caret-blink 1s steps(2) infinite;
@@ -471,6 +690,36 @@ watch(
   }
 }
 
+/* 消息底部一行：流式光标 / 朗读按钮 */
+.msg-foot {
+  min-height: 18px;
+  margin-top: 4px;
+}
+
+.speak-btn {
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-2);
+  background: transparent;
+  border-radius: 980px;
+  padding: 2px 8px;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.speak-btn:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.speak-btn.speaking {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 /* 思考过程折叠块 */
 .think {
   margin-bottom: 6px;
@@ -479,14 +728,13 @@ watch(
 .think summary {
   cursor: pointer;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: 12.5px;
   user-select: none;
 }
 
 .think-body {
   color: var(--text-2);
-  font-size: 13px;
-  white-space: pre-wrap;
+  font-size: 12.5px;
   background: var(--bg);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
@@ -500,8 +748,8 @@ watch(
   background: var(--danger-soft);
   color: var(--danger);
   border-radius: var(--radius-sm);
-  padding: 10px 14px;
-  margin: 10px 0;
+  padding: 8px 12px;
+  margin: 8px 0;
   font-size: 13px;
 }
 
@@ -517,7 +765,7 @@ watch(
   gap: 8px;
   color: var(--text-2);
   font-size: 13px;
-  margin: 12px 0;
+  margin: 10px 0;
 }
 
 /* 收到的文件 */
@@ -526,8 +774,8 @@ watch(
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin: 16px 0 8px;
-  padding-top: 12px;
+  margin: 14px 0 6px;
+  padding-top: 10px;
   border-top: 1px solid var(--line);
 }
 
@@ -559,36 +807,105 @@ watch(
 
 /* 输入区 */
 .composer {
-  padding: 12px 16px 16px;
+  padding: 10px 14px 12px;
   border-top: 1px solid var(--line);
 }
 
 .composer .form-error {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
 }
 
 .composer-row {
   display: flex;
   align-items: flex-end;
-  gap: 10px;
+  gap: 8px;
 }
 
 .composer-input {
   flex: 1;
-  max-height: 140px;
+  max-height: 160px;
+  line-height: 1.5;
+}
+
+/* 麦克风按钮：圆形 ghost，与 composer 同高 */
+.mic-btn {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.mic-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.09);
+}
+
+.mic-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.mic-btn.recording {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* 纯 CSS 麦克风图标：胶囊头 + 底座（不引图标库） */
+.mic-icon {
+  position: relative;
+  width: 10px;
+  height: 15px;
+  background: currentColor;
+  border-radius: 5px;
+}
+
+.mic-icon::after {
+  content: '';
+  position: absolute;
+  left: -4px;
+  bottom: -6px;
+  width: 18px;
+  height: 10px;
+  border: 1.5px solid currentColor;
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+}
+
+/* 录音中：方形停止符 */
+.mic-stop {
+  width: 9px;
+  height: 9px;
+  background: currentColor;
+  border-radius: 2px;
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 
 /* ───────────────────────── 确认卡 ───────────────────────── */
 
 .confirm-strip {
-  padding: 0 20px 12px;
+  padding: 0 16px 10px;
   border-bottom: 1px solid var(--line);
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .confirm-notice {
-  margin: 8px 0 0;
+  margin: 6px 0 0;
   font-size: 12.5px;
   color: var(--danger);
 }
@@ -597,7 +914,7 @@ watch(
   background: #fffbe8;
   border: 1px solid rgba(255, 204, 0, 0.45);
   border-radius: var(--radius-sm);
-  padding: 10px 14px;
+  padding: 8px 12px;
 }
 
 .confirm-head {
@@ -648,13 +965,13 @@ watch(
 /* ───────────────────────── 任务清单 / 子代理卡 ───────────────────────── */
 
 .job-card {
-  margin: 12px 0;
-  max-width: 760px;
+  margin: 10px 0;
+  max-width: 860px;
   background: var(--bg);
   border-radius: var(--radius-sm);
-  padding: 10px 14px;
+  padding: 8px 12px;
   display: grid;
-  gap: 6px;
+  gap: 5px;
 }
 
 .job-head {
@@ -674,7 +991,7 @@ watch(
 }
 
 .job-meta {
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .job-line {
@@ -703,16 +1020,16 @@ watch(
    看起来像「键盘把布局顶飞」——提到 16px 从根上规避。 */
 @media (max-width: 720px) {
   .session-head {
-    padding: 12px 14px;
+    padding: 10px 12px;
   }
 
   .usage-strip {
-    padding: 0 14px 8px;
-    gap: 4px 12px;
+    padding: 0 12px 6px;
+    gap: 4px 10px;
   }
 
   .msg-list {
-    padding: 4px 14px 12px;
+    padding: 2px 12px 10px;
   }
 
   .bubble-user {
@@ -720,24 +1037,15 @@ watch(
   }
 
   .confirm-strip {
-    padding: 0 14px 10px;
+    padding: 0 12px 8px;
   }
 
   .composer {
-    padding: 10px 12px 14px;
-  }
-
-  .composer-row {
-    flex-wrap: wrap;
+    padding: 8px 10px 10px;
   }
 
   .composer-input {
-    flex: 1 1 100%;
     font-size: 16px;
-  }
-
-  .composer-row .btn {
-    flex: 1 1 100%;
   }
 }
 </style>

@@ -119,9 +119,9 @@ const wsLabel = computed(() => {
 
 <style scoped>
 .page {
-  max-width: 1280px;
+  max-width: 1440px;
   margin: 0 auto;
-  padding: 16px 20px 24px;
+  padding: 14px 20px 20px;
 }
 
 @media (max-width: 720px) {

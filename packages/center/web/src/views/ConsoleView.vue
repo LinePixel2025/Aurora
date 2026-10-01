@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import ClientList from '../components/ClientList.vue'
 import GlobalConfirmBar from '../components/GlobalConfirmBar.vue'
 import RemoteControlPanel from '../components/RemoteControlPanel.vue'
 import SessionListPanel from '../components/SessionListPanel.vue'
@@ -9,22 +8,57 @@ import {
   clientsSorted,
   selectClient,
   selectedEntry,
-  state,
+  sessionViewTick,
   startSession,
+  state,
 } from '../store'
 import { formatTime, platformLabel } from '../format'
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+
+/**
+ * 控制台布局（v0.3.2 重构：对话主导，docs/12 §10）：
+ * - **对话主区独占全高**，客户端选择收紧为顶部下拉；
+ * - 「会话列表 / 远程控制」收进**右侧可折叠边栏**（两个 tab），收起后对话全宽，
+ *   折叠状态存 localStorage（移动端不持久化）；
+ * - 旧版「远程控制 + 会话列表 + 对话区」同列纵向堆叠（对话区被压在下面）已废弃；
+ * - ≤ 720px：对话区全屏，边栏变**覆盖式抽屉**（滑出盖在对话上，选中会话后自动收起）。
+ */
+
+type SideTab = 'sessions' | 'remote'
+const sideTab = ref<SideTab>('sessions')
+
+const PANEL_KEY = 'aurora-center-side-panel'
+const MOBILE_QUERY = '(max-width: 720px)'
+
+function isMobile(): boolean {
+  return window.matchMedia(MOBILE_QUERY).matches
+}
+
+const panelOpen = ref(window.localStorage.getItem(PANEL_KEY) !== '0')
+
+function togglePanel(): void {
+  panelOpen.value = !panelOpen.value
+  // 移动端的抽屉开合是一次性的，不持久化——回桌面时边栏保持上次桌面态
+  if (!isMobile()) {
+    window.localStorage.setItem(PANEL_KEY, panelOpen.value ? '1' : '0')
+  }
+}
+
+// 移动端：从会话列表点开一个会话后自动收起抽屉，让对话区立刻全屏。
+// 用 store 的 viewTick 信号而不是 watch activeSessionKey：点开的就是当前激活会话时
+// key 不变，watch 收不到——但抽屉同样应该收起。
+watch(sessionViewTick, () => {
+  if (isMobile() && panelOpen.value) panelOpen.value = false
+})
 
 const creating = ref(false)
 const createError = ref('')
 
-// 移动端（≤720px）分段切换：远程控制 / 会话列表默认收起、互斥展开，
-// 让对话区成为主角。桌面端切换条被 CSS 隐藏，两块面板恒常显示。
-type MobilePanel = 'none' | 'remote' | 'sessions'
-const mobilePanel = ref<MobilePanel>('none')
+const selectedClient = computed(() => selectedEntry.value?.client ?? null)
 
-function toggleMobilePanel(panel: Exclude<MobilePanel, 'none'>): void {
-  mobilePanel.value = mobilePanel.value === panel ? 'none' : panel
+function onClientChange(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  if (value) selectClient(value)
 }
 
 async function create(): Promise<void> {
@@ -48,40 +82,38 @@ async function create(): Promise<void> {
     <GlobalConfirmBar />
 
     <div class="console">
-      <ClientList
-        :clients="clientsSorted"
-        :selected-id="state.selectedClientId"
-        @select="selectClient"
-      />
+      <section class="chat-main">
+        <!-- 顶部条：客户端紧凑下拉 + 边栏开关 -->
+        <div class="chat-topbar">
+          <label v-if="clientsSorted.length > 0" class="client-picker">
+            <span
+              class="dot"
+              :class="selectedClient?.online ? 'on' : 'off'"
+              aria-hidden="true"
+            ></span>
+            <select
+              class="input picker-select"
+              :value="state.selectedClientId"
+              title="切换客户端"
+              @change="onClientChange"
+            >
+              <option v-for="entry in clientsSorted" :key="entry.client.clientId" :value="entry.client.clientId">
+                {{ entry.client.name }} · {{ entry.client.online ? '在线' : '离线' }}
+              </option>
+            </select>
+          </label>
+          <span v-else class="text-2 picker-empty">还没有客户端接入——在 Aurora 设置里用 Center 账号登录后，设备会出现在这里</span>
 
-      <section
-        class="session-pane"
-        :class="{
-          'show-remote': mobilePanel === 'remote',
-          'show-sessions': mobilePanel === 'sessions',
-        }"
-      >
-        <!-- 移动端专用分段切换条（桌面端 display:none）：互斥展开下面两块面板 -->
-        <div class="mobile-panel-tabs" role="tablist">
           <button
+            class="icon-btn"
             type="button"
-            class="mobile-tab"
-            :class="{ open: mobilePanel === 'remote' }"
-            @click="toggleMobilePanel('remote')"
+            :title="panelOpen ? '收起边栏' : '展开边栏（会话列表 / 远程控制）'"
+            @click="togglePanel"
           >
-            远程控制
-          </button>
-          <button
-            type="button"
-            class="mobile-tab"
-            :class="{ open: mobilePanel === 'sessions' }"
-            @click="toggleMobilePanel('sessions')"
-          >
-            会话列表
+            {{ panelOpen ? '▸' : '◂' }}
           </button>
         </div>
-        <RemoteControlPanel :entry="selectedEntry" />
-        <SessionListPanel :entry="selectedEntry" />
+
         <SessionView
           v-if="activeSession && selectedEntry"
           :session="activeSession"
@@ -114,18 +146,53 @@ async function create(): Promise<void> {
           </button>
         </div>
         <div v-else class="card empty-card">
-          <p class="text-2">从列表中选择一个客户端开始</p>
+          <p class="text-2">从上方选择一个客户端开始</p>
         </div>
       </section>
+
+      <!-- 右侧边栏：桌面端常驻可折叠，移动端覆盖式抽屉 -->
+      <div
+        v-if="panelOpen"
+        class="drawer-backdrop"
+        aria-hidden="true"
+        @click="togglePanel"
+      ></div>
+      <aside v-if="panelOpen" class="card side-panel">
+        <div class="side-tabs" role="tablist">
+          <button
+            type="button"
+            class="side-tab"
+            :class="{ open: sideTab === 'sessions' }"
+            @click="sideTab = 'sessions'"
+          >
+            会话列表
+          </button>
+          <button
+            type="button"
+            class="side-tab"
+            :class="{ open: sideTab === 'remote' }"
+            @click="sideTab = 'remote'"
+          >
+            远程控制
+          </button>
+          <button class="side-close" type="button" title="收起" @click="togglePanel">✕</button>
+        </div>
+        <div v-show="sideTab === 'sessions'" class="side-body">
+          <SessionListPanel :entry="selectedEntry" />
+        </div>
+        <div v-show="sideTab === 'remote'" class="side-body">
+          <RemoteControlPanel :entry="selectedEntry" />
+        </div>
+      </aside>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* 外层纵向：全局确认栏在顶、客户端 + 会话布局在下。
-   高度链（v0.2.4，docs/12 §10）：根节点拿「100dvh − 顶栏 − 安全区 − page 上下 padding」
+/* 外层纵向：全局确认栏在顶、对话布局在下。
+   高度链（docs/12 §10）：根节点拿「100dvh − 顶栏 − 安全区 − page 上下 padding」
    之内的全部高度并内部消化 —— GlobalConfirmBar 在场时由 flex 压缩 .console，
-   确认卡再高也只会压缩消息区，**页面本身不再产生文档流滚动**（唯一滚动在 .msg-list）。
+   确认卡再高也只会压缩消息区，页面本身不产生文档流滚动（唯一滚动在 .msg-list）。
    min-height 是极矮视口的兜底（低于它允许页面滚动，保证控制台可用）。 */
 .console-root {
   display: flex;
@@ -140,17 +207,77 @@ async function create(): Promise<void> {
   flex: 1;
   min-height: 0; /* 高度链关键：允许被上面的确认栏压缩，滚动收进 .msg-list 内部 */
   display: flex;
-  gap: 16px;
+  gap: 12px;
   align-items: stretch;
 }
 
-.session-pane {
+/* 对话主区：独占全高，是布局的绝对主角 */
+.chat-main {
   flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
+}
+
+.chat-topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.client-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 340px;
+  flex: none;
+}
+
+.picker-select {
+  width: auto;
+  max-width: 320px;
+  min-height: 34px;
+  padding: 5px 30px 5px 12px;
+  font-size: 13.5px;
+  /* 下拉箭头（原生 appearance 已去掉） */
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236e6e73' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+
+.picker-empty {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-btn {
+  margin-left: auto;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 980px;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-2);
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease;
+}
+
+.icon-btn:hover {
+  background: rgba(0, 0, 0, 0.09);
+  color: var(--text);
 }
 
 .empty-card {
@@ -174,17 +301,87 @@ async function create(): Promise<void> {
   font-size: 13px;
 }
 
-/* 移动端分段切换条：桌面端直接隐藏（模板里保留不影响 >720px 布局） */
-.mobile-panel-tabs {
+/* ───────────────────────── 右侧边栏 ───────────────────────── */
+
+.side-panel {
+  flex: none;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.side-tabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.side-tab {
+  flex: 1;
+  min-height: 32px;
+  border: 0;
+  border-radius: 980px;
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.side-tab.open {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.side-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.side-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+
+/* 边栏面板的滚动收在这里；嵌套的 .card 在边栏里退成平面（去白底与阴影），视觉是一块面板 */
+.side-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.side-body > :deep(.card) {
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  flex: 1 0 auto;
+}
+
+.drawer-backdrop {
   display: none;
 }
 
-/* 窄屏（≤720px）：上下堆叠，客户端列表横向滚动（chips）。
-   布局主角是对话区：远程控制 / 会话列表收进「分段切换条」背后，默认收起、
-   点开互斥展开（show-remote / show-sessions），展开时内部滚动且限高
-   （max-height 38%），对话区用 min-height max(200px, 60%) 保底——
-   任何状态下会话区都占会话栏可用高度的六成以上，composer 贴底恒常可见。
-   根节点仍是固定视口高度（100dvh 随软键盘收缩），唯一长滚动区仍是 .msg-list。 */
+/* ───────────────────────── 窄屏（≤720px）：对话全屏 + 覆盖式抽屉 ─────────────────────────
+   边栏变成 fixed 抽屉滑出、盖在对话上（带半透明遮罩），选中会话后自动收起；
+   替代旧版「内嵌分段展开限高 38%」——对话区在任何时候都是全屏主角。 */
 @media (max-width: 720px) {
   .console-root {
     height: calc(100vh - var(--topbar-h) - var(--safe-top) - var(--safe-bottom) - 32px);
@@ -193,63 +390,68 @@ async function create(): Promise<void> {
   }
 
   .console {
-    flex-direction: column;
-    gap: 12px;
+    gap: 0;
+    position: relative;
   }
 
-  .console > :deep(.client-list) {
-    flex: none;
-  }
-
-  .session-pane {
+  .client-picker {
     flex: 1;
-    min-height: 0;
-    gap: 10px;
+    max-width: none;
   }
 
-  .mobile-panel-tabs {
-    display: flex;
-    gap: 8px;
-    flex: none;
-  }
-
-  .mobile-tab {
-    flex: 1;
+  .picker-select {
+    max-width: none;
+    width: 100%;
     min-height: 40px;
-    border: 0;
-    border-radius: 980px;
-    background: rgba(0, 0, 0, 0.05);
-    color: var(--text-2);
-    font: inherit;
-    font-size: 13.5px;
-    cursor: pointer;
+    font-size: 16px; /* iOS 聚焦缩放规避 */
   }
 
-  .mobile-tab.open {
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-weight: 600;
+  .picker-empty {
+    font-size: 12.5px;
   }
 
-  /* 两块面板默认收起；展开时限高 + 内部滚动（flex-shrink 1 兜底极矮视口） */
-  .session-pane > :deep(.remote-panel),
-  .session-pane > :deep(.session-list-panel) {
-    display: none;
-    flex: 0 1 auto;
-    max-height: 38%;
-    overflow-y: auto;
+  .icon-btn {
+    width: 40px;
+    height: 40px;
   }
 
-  .session-pane.show-remote > :deep(.remote-panel),
-  .session-pane.show-sessions > :deep(.session-list-panel) {
-    display: flex;
+  .empty-card {
+    padding: 16px;
   }
 
-  /* 对话区高度下限：max() 不支持时回落到 200px（旧浏览器仅损失比例保底） */
-  .session-pane > :deep(.session) {
-    flex: 1 1 0;
-    min-height: 200px;
-    min-height: max(200px, 60%);
+  .drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: rgba(0, 0, 0, 0.35);
+  }
+
+  .side-panel {
+    position: fixed;
+    top: calc(var(--topbar-h) + var(--safe-top) + 6px);
+    right: 0;
+    bottom: 0;
+    z-index: 31;
+    width: min(86vw, 360px);
+    border-radius: var(--radius) 0 0 0;
+    padding: 10px 10px calc(10px + var(--safe-bottom));
+    animation: drawer-in 0.18s ease;
+  }
+
+  .side-body {
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
   }
 }
 </style>
