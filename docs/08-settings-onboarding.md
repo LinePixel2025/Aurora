@@ -346,7 +346,10 @@
   判定**先于** `advanced.readonlyPrefixes` 黑名单前缀。两类登记：
   ① **真的放开** —— `llm.providers.<id>.model / .modelParams.<modelId>.reasoningEffort` 落在
   `llm.providers` 黑名单前缀之内，但「换模型 / 调思考等级」不碰凭据、也不改模型能力事实，
-  显式放行（baseUrl / apiKeyEnc / modelList 等其余字段仍被前缀拒绝）；
+  显式放行（baseUrl / apiKeyEnc / modelList 等其余字段仍被前缀拒绝）。
+  模式里的 `**` 段（**v23 起**）表示「一个或多个段」，专为**模型 id 可以带点**
+  （`gpt-4.1` / `claude-3.5-sonnet` 一类）而设：路径按 `.` 切段，用 `*`（恰好一段）匹配不了它们。
+  `**` 只允许出现在收尾的字面量段之前，所以 `contextWindow` / `vision` / 凭据子树不会被顺带放开；
   **`modelParams` 下的 `contextWindow` / `vision` 仍只读**（它们是**模型能力事实**、不是偏好 ——
   AI 把窗口改大或打开视觉，只是把一条假事实告诉用户，出问题的还是用户）；`temperature` 已随
   v23 从 Schema 删除，不再存在这条可写路径（请求也不再下发它，见 06 §3）；

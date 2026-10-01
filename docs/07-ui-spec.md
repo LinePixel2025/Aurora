@@ -227,7 +227,7 @@
     缩略图取数据 URL 走 `chat:readAttachment`（主进程读盘 → 上限 `PREVIEW_MAX_BYTES`，超出 / 读取失败时
     退回原来的纯文字 chip，**不显示占位裂图**）。
     图片本身**不走文本提取**：路径经 `chat:send` 透传到内核，按提供方
-    `llm.providers.<id>.vision` 开关决定「作为图片分片下发」还是「降级为一行未读取说明」；
+    `llm.providers.<id>.modelParams.<模型 id>.vision`（v23 起按模型绑定） 开关决定「作为图片分片下发」还是「降级为一行未读取说明」；
     未开启时 chip 上仍显示缩略图（那是本地预览，与是否送给模型无关）。
 - **尺寸（BetaV2）**：见本节开头的主界面规格（1120×720 / min 940×600 / 居中）；位置记忆与多会话能力不变。
   - 实现状态（v0.6.0）：**多会话列表已落地**（`chat:sessions` 列表 + `chat:newSession` 新建 + 切换）。
