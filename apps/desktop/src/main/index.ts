@@ -1989,9 +1989,17 @@ async function runCapture(dir: string): Promise<void> {
   // `report.json` 里没过的那几张（修完一轮只重验红的，不必全量重跑五六十张）。
   // ⚠️ `failed` 落在"上次全绿"时得到的是**空数组**，那表示"没有要重验的"，
   // 不是"没匹配上"—— 传空串会被 `filterCapturePlan` 当成全选，等于偷偷全量重跑。
+  // ⚠️ 反过来，**没设** `AURORA_CAPTURE_ONLY` 必须解析成 `undefined`（= 不过滤），
+  // 不能交给 `parseCaptureTokens('')` 得到 `[]` —— 空数组在 `filterCapturePlan` 里
+  // 是「一个都不匹配」，于是 `AURORA_CAPTURE=<dir> pnpm dev`（文档里的标准全量用法）
+  // 会静默一张都不截（实测：`开始窗口截图 {"count":0}` + 退出码 0）。
   const captureOnlyRaw = (process.env['AURORA_CAPTURE_ONLY'] ?? '').trim()
   const captureOnly =
-    captureOnlyRaw === 'failed' ? await failedCaptureFiles(dir) : parseCaptureTokens(captureOnlyRaw)
+    captureOnlyRaw === ''
+      ? undefined
+      : captureOnlyRaw === 'failed'
+        ? await failedCaptureFiles(dir)
+        : parseCaptureTokens(captureOnlyRaw)
   const plan = filterCapturePlan(
     [
       // 项目卡已下线（2026-09-30）：项目现场改由 capture.ts 内部的 settingsProjectAct
