@@ -580,11 +580,18 @@ describe('配置迁移链', () => {
         // v19 → v20 补的出厂档（docs/08 §1）
         requireAdmin: true,
       })
-      // llm 段除了**后续版本**（v10 → v11）按既定规则补的 `contextWindow: 0`，其余一字不改
+      // llm 段除了**后续版本**按既定规则补的 `contextWindow: 0`（v10 → v11）与
+      // `vision: false` + `type`（v21 → v22，缺 / 非法才补），其余一字不改
       expect(outcome.data['llm']).toEqual({
         active: 'deepseek',
         providers: {
-          deepseek: { model: 'deepseek-chat', modelList: ['deepseek-chat'], contextWindow: 0 },
+          deepseek: {
+            model: 'deepseek-chat',
+            modelList: ['deepseek-chat'],
+            contextWindow: 0,
+            vision: false,
+            type: 'openai-compat',
+          },
         },
       })
     })
@@ -1056,6 +1063,7 @@ describe('配置迁移链', () => {
         'v18 → v19：v18 → v19：新增 automations 分组（自动化总开关，默认开启）',
         'v19 → v20：v19 → v20：新增 general.requireAdmin（要求管理员身份启动，默认开启）',
         'v20 → v21：v20 → v21：新增 general.edgeBar.display / position 与 appearance.accent',
+        'v21 → v22：v21 → v22：为 llm.providers 各条目补 vision: false 并归一 type（多模态输入 / Responses API）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1089,6 +1097,7 @@ describe('配置迁移链', () => {
         'v18 → v19：v18 → v19：新增 automations 分组（自动化总开关，默认开启）',
         'v19 → v20：v19 → v20：新增 general.requireAdmin（要求管理员身份启动，默认开启）',
         'v20 → v21：v20 → v21：新增 general.edgeBar.display / position 与 appearance.accent',
+        'v21 → v22：v21 → v22：为 llm.providers 各条目补 vision: false 并归一 type（多模态输入 / Responses API）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({

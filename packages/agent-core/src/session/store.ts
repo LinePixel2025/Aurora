@@ -157,6 +157,10 @@ export class SessionStore {
       ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls }),
       ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
       ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
+      // 图片附件路径（多模态输入，docs/06 §3.1）：空数组与缺省同义，不落空键
+      ...(message.images === undefined || message.images.length === 0
+        ? {}
+        : { images: message.images }),
     }
     const next = [...(this.cache.get(id) ?? []), stored]
     // 条数上限：与上下文截断同一套规则，保证不拆散工具调用组

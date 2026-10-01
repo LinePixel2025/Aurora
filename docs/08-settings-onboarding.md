@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v20）
+## 1. 配置 Schema（config.json，v22）
 
 ```jsonc
 {
-  "version": 20,
+  "version": 22,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -37,6 +37,7 @@
     "active": "deepseek",
     "providers": {
       "deepseek": {
+        // v22 新增：接口协议（openai-compat = /chat/completions | openai-responses = /responses，见 06 §3.2）
         "type": "openai-compat",
         "baseUrl": "https://api.deepseek.com",
         "apiKeyEnc": "<safeStorage 密文>",
@@ -44,6 +45,9 @@
         "temperature": 0.7,
         "reasoningEffort": "auto", // auto | low | medium | high；auto = 不下发该参数
         "contextWindow": 128000, // 上下文窗口（token，v11 新增）；0 = 未知，见 §1.2
+        // v22 新增：该模型是否支持**图片输入**（多模态，见 06 §3.1）。默认 false ——
+        // 关闭时图片附件按「未读取」降级为一行文字；对不支持视觉的模型发图片会被服务端 400
+        "vision": false,
         // v6 新增：**候选**模型 id 列表（设置页「模型列表」与对话窗模型选择器共用，见 §5）
         "modelList": ["deepseek-chat", "deepseek-reasoner"]
       }
@@ -263,7 +267,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **21**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **22**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.reasoningEffort`（v5 新增）：`auto | low | medium | high`，默认 `auto`。
@@ -288,6 +292,16 @@
   - 设置页入口在「AI 模型」卡的**编辑表单 → 高级参数**折叠区（`data-field="llm.contextWindow"`），
     只读态在该 provider 卡上以「上下文窗口 128K」的形式显示（为 0 时不渲染这一行）；
   - `v10 → v11` 迁移为旧配置的每个 provider 补 `contextWindow: 0`（已写过的值不动）。
+- `llm.providers.<id>.type`（**v22 扩枚举**）：该条目的**接口协议**，取值
+  `openai-compat`（默认，`POST {baseUrl}/chat/completions`）或 `openai-responses`
+  （`POST {baseUrl}/responses`，见 06 §3.2）。**纯增量枚举，`v21` 及更早的配置天然合法**
+  （它们写的就是 `openai-compat`），因此迁移只补字段不改正值。
+  凭据与连接字段（`baseUrl` / `apiKeyEnc`）仍在 `llm.providers` 只读前缀里：AI 不能把
+  自己的请求改道到别的地址去。
+- `llm.providers.<id>.vision`（**v22 新增**）：该模型是否支持**图片输入**（多模态，见 06 §3.1），
+  布尔，默认 `false`。关闭时附件里的图片按「内容未读取（当前模型未开启图片输入）」降级成一行
+  文字，请求体里不出现图片分片 —— 对不支持视觉的模型发图片会被服务端 400，这个开关就是那道闸。
+  与 `contextWindow` 同一口径：**不做内置模型能力表**，由用户照服务商文档填。
 - `tts`（**v7 新增**，见 06 §13）：**语音输出（TTS）**；语音输入（STT）自 **v8** 起见下一条 `stt`。
   `tts.enabled` 是整个语音功能的**总开关**（`false` 时对话窗不显示朗读按钮）；
   `tts.active` 是默认 TTS provider id，**为空串 = 未配置**，此时对话窗的朗读按钮**不出现**；
@@ -503,7 +517,7 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 因而不新增存储面，也不会与流水出现两处数据不一致。
 
 **对话归档状态同样不进 config.json**：它写在会话文件自身（`sessions/<id>.json` 的
-`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 21）。
+`meta.archived`，见 06 §4），因此归档功能**不改 `CONFIG_VERSION`**（当前为 22）。
 会话文件自己的版本号 `SESSION_FILE_VERSION` 由 1 提到 2，读取对 v1 宽容（缺 `meta` = 未归档），
 不存在需要执行的迁移脚本 —— 「会话文件版本」与「配置版本」是两条独立的链，别混。
 
@@ -565,7 +579,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 21`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 22`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -612,10 +626,14 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   （提示条贴附的显示器与屏幕侧，见 §1）：只为**已有 `general.edgeBar`** 补缺字段
   （默认 `primary` / `right`），已写值原样保留，`edgeBar` 缺失时留给 Schema 兜底；
   同时新增 `appearance` 分组（外观自定义，见 §1）：**整组缺失时补 `{ accent: 'aurora' }`**，
-  已存在时原样保留、一个键也不改 —— 与 `v18 → v19` 的 automations 同一套路）。
-  二十一条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  已存在时原样保留、一个键也不改 —— 与 `v18 → v19` 的 automations 同一套路）、
+  `v21 → v22`（**多模态输入 + Responses API**，见 06 §3.1 / §3.2：为**每个已有
+  `llm.providers.<id>`** 补 `vision: false`，并把缺失 / 非法的 `type` 归一为
+  `openai-compat`（旧配置写的本来就是这个值，迁移**不改正值**、只补缺字段与非法值）；
+  两个都是**能力开关**，出厂一律「关 / 旧协议」，因此升级后请求体与 v21 逐字一致）。
+  二十二条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽），重复执行结果一致 —— `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **21** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **22** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -680,7 +698,9 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
      - 与「模型名」的关系：必填区的 `data-field="llm.providers.<id>.model"` 输入框**保留在原位**，
        它是「当前使用模型」的**唯一编辑点**（也是 capture 抓手）；它填的 id 不在列表里时会
        **自动追加进列表**，让两者保持一致且用户看得见发生了什么。
-   - `高级参数与连接测试` 折叠区（**默认收起**）：`temperature`、思考等级、`保存并测试连接` /
+   - `高级参数与连接测试` 折叠区（**默认收起**）：**接口类型**（`llm.providers.<id>.type`，
+     `openai-compat | openai-responses`，v22）、**支持图片输入**（`llm.providers.<id>.vision`，
+     开关，v22，见 06 §3.1）、`temperature`、思考等级、`保存并测试连接` /
      `拉取模型列表`、连接延迟与可用模型 chips；
    - 卡底 `应用`（只提交这一张卡，成功回列表态）/ `取消`。
    - 添加流程：预设 chips（DeepSeek / OpenAI / 本地兼容）+ 自定义 id 输入框；重复 id 提示

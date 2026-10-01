@@ -6642,6 +6642,128 @@ export const SETTINGS_LLM_STRUCTURE_CHECK = `(async () => {
 })()`
 
 /**
+ * AI 模型页「接口类型 + 图片输入」探针 · 前半（v22 多模态轮，docs/06 §3.1 / §3.2）。
+ *
+ * 先把当前生效 provider 的 `type` 写成 `openai-responses`、`vision` 写成 `true`，
+ * 再按真实用户路径打开它的编辑卡与「高级参数」折叠区 —— 后半只读 DOM 与回读配置。
+ *
+ * 两条与 `SETTINGS_LLM_EFFORT_ACT` 同款的取舍：
+ * - **必须点当前生效 provider 那一行的编辑按钮**：全量截图里 onboarding 会先种一个 local
+ *   provider，行首未必是 active 那个，取错行会读到别人的卡（假 FAIL）；
+ * - **原值先记进 `window.__auroraMultimodalProbe`**：后半要写回，否则在真实 userData 下跑
+ *   （`AURORA_CAPTURE_WINDOWS=settings`）会把用户的协议与开关永久改掉。
+ *
+ * ⚠️ 本段在模板字符串里，注释里不能出现反引号（用「」）。
+ */
+export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { ok: false, reason: 'settings.get failed' }
+    const providers = state.value.llm.providers
+    const active = state.value.llm.active !== '' ? state.value.llm.active : 'capture'
+    const existing = providers[active]
+    window.__auroraMultimodalProbe = {
+      active,
+      // 缺 provider 时（隔离 userData 起步）按出厂档记录：写回时把这两项恢复成
+      // 「openai-compat + 关」即可，不必删整条（它与 EFFORT 探针共用同一份配置）。
+      beforeType: existing === undefined ? 'openai-compat' : existing.type,
+      beforeVision: existing === undefined ? false : existing.vision === true,
+    }
+    const result = await window.aurora.settings.update({
+      llm: {
+        active,
+        providers: {
+          ...providers,
+          [active]: {
+            type: 'openai-compat',
+            baseUrl: 'https://api.deepseek.com/v1',
+            apiKeyEnc: '',
+            model: 'deepseek-chat',
+            modelList: [],
+            temperature: 0.7,
+            reasoningEffort: 'auto',
+            contextWindow: 0,
+            vision: false,
+            ...(existing ?? {}),
+            type: 'openai-responses',
+            vision: true,
+          },
+        },
+      },
+    })
+    if (!result.ok) return { ok: false, reason: result.message }
+    await new Promise((resolve) => setTimeout(resolve, 600))
+
+    const row = document.querySelector('[data-field="llm.providers.' + active + '"]')
+    if (row === null) return { ok: false, reason: 'no row for active provider ' + active }
+    const editButton = row.querySelector('[data-action="edit-provider"]')
+    if (editButton === null) return { ok: false, reason: 'no edit-provider button' }
+    editButton.click()
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const more = row.querySelector('.more')
+    if (more === null) return { ok: false, reason: 'no .more after opening editor' }
+    more.click()
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 「接口类型 + 图片输入」探针 · 后半：读 DOM 真值 + 回读配置 + 写回原值。
+ *
+ * 判据刻意同时要两样：
+ * - **DOM**：折叠区里 `type` 是 `<select>` 且当前值 `openai-responses`、
+ *   `vision` 是勾上的复选框 —— 只数元素不够（写死的控件也能数出来）；
+ * - **配置回读**：`settings.get()` 里这两项确实是刚写进去的值。
+ *   `restored` 必须为真：本场景会改用户的协议与开关，不写回就是污染。
+ */
+export const SETTINGS_LLM_MULTIMODAL_CHECK = `(async () => {
+  try {
+    const probe = window.__auroraMultimodalProbe
+    const scope =
+      probe === undefined
+        ? document
+        : document.querySelector('[data-field="llm.providers.' + probe.active + '"]')
+    if (scope === null) return { pass: false, reason: 'no row after act' }
+    const typeField = scope.querySelector('[data-field$=".type"] select')
+    const visionField = scope.querySelector('[data-field$=".vision"] input[type=checkbox]')
+    const typeValue = typeField === null ? null : typeField.value
+    const visionChecked = visionField === null ? null : visionField.checked
+    const domOk = typeValue === 'openai-responses' && visionChecked === true
+
+    const state = await window.aurora.settings.get()
+    if (!state.ok || probe === undefined) return { pass: false, reason: 'settings.get failed' }
+    const saved = state.value.llm.providers[probe.active]
+    const savedOk = saved !== undefined && saved.type === 'openai-responses' && saved.vision === true
+
+    const restored = await window.aurora.settings.update({
+      llm: {
+        active: state.value.llm.active,
+        providers: {
+          ...state.value.llm.providers,
+          [probe.active]: {
+            ...saved,
+            type: probe.beforeType,
+            vision: probe.beforeVision,
+          },
+        },
+      },
+    })
+    return {
+      typeValue,
+      visionChecked,
+      savedOk,
+      restored: restored.ok === true,
+      pass: domOk && savedOk && restored.ok === true,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+/**
  * 「语音」页编辑卡探针 · 前半（step-05）：进「添加」态 → 点「+ 空白配置」让编辑卡出现。
  *
  * ⚠️ 三条硬约束（第一条是首跑实测踩出来的）：
@@ -7940,6 +8062,16 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     query: { page: 'llm' },
     act: SETTINGS_LLM_STRUCTURE_ACT,
     check: SETTINGS_LLM_STRUCTURE_CHECK,
+  })
+  // 接口类型 + 图片输入（v22 多模态轮，docs/06 §3.1 / §3.2）：把生效 provider 的协议写成
+  // `openai-responses`、图片输入打开 → 展开折叠区，断言两个控件在 DOM 里且真值来自配置，
+  // 随后写回原值。排在 `settings-llm-structure` 之后（它只点开卡、不改配置，先跑更安全）。
+  plan.push({
+    name: 'settings',
+    file: 'settings-llm-multimodal.png',
+    query: { page: 'llm' },
+    act: SETTINGS_LLM_MULTIMODAL_ACT,
+    check: SETTINGS_LLM_MULTIMODAL_CHECK,
   })
   // 「语音」页编辑卡（step-05）：点「+ 空白配置」→ 断言六个字段的 data-field 都在。
   // 只动**本地 draft**、不点「应用」，所以无需恢复动作。

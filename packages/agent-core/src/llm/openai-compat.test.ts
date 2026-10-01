@@ -1,6 +1,11 @@
 import { createServer, type Server } from 'node:http'
 import { describe, expect, it } from 'vitest'
-import { OpenAiCompatProvider, normalizeBaseUrl, statusToCode } from './openai-compat.js'
+import {
+  OpenAiCompatProvider,
+  normalizeBaseUrl,
+  statusToCode,
+  toOpenAiContent,
+} from './openai-compat.js'
 import { isLlmError, type TokenUsage } from './types.js'
 import { collect, createFetchStub, sseLine } from '../testing/fetchStub.js'
 
@@ -826,5 +831,64 @@ describe('OpenAiCompatProvider.chat · 每次 attempt 独立超时预算', () =>
     expect(stub.calls).toHaveLength(0)
     // 若真去重试，退避至少 500ms 起步 —— 这比「立刻返回」的下限宽得多
     expect(Date.now() - started).toBeLessThan(400)
+  })
+})
+
+/**
+ * 多模态输入（docs/06 §3.1，v22）：图片分片的形状与「没图片时形状一个字不变」。
+ *
+ * 后一条是这次改动最要紧的回归面 —— 内容分片只应该在**真的有图片**时出现：
+ * 老网关（只认 `content: string`）收到的请求必须与 v22 之前逐字一致。
+ */
+describe('OpenAiCompatProvider 的图片分片（docs/06 §3.1）', () => {
+  const image = { mimeType: 'image/png', dataBase64: 'AAAA', name: 'a.png' }
+
+  it('没有图片时 content 仍是字符串（旧形状逐字不变）', () => {
+    expect(toOpenAiContent({ role: 'user', content: '你好' })).toBe('你好')
+    expect(toOpenAiContent({ role: 'user', content: '你好', images: [] })).toBe('你好')
+  })
+
+  it('有图片时 content 变成 text + image_url 分片（data URL 前缀在内核拼）', () => {
+    expect(toOpenAiContent({ role: 'user', content: '看看', images: [image] })).toEqual([
+      { type: 'text', text: '看看' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+    ])
+  })
+
+  it('正文为空时只发图片分片（空 text 分片会被部分服务当空消息拒掉）', () => {
+    expect(toOpenAiContent({ role: 'user', content: '', images: [image] })).toEqual([
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+    ])
+  })
+
+  it('多张图按顺序排列', () => {
+    const parts = toOpenAiContent({
+      role: 'user',
+      content: '两张',
+      images: [image, { mimeType: 'image/jpeg', dataBase64: 'BBBB' }],
+    }) as Array<Record<string, unknown>>
+    expect(parts).toHaveLength(3)
+    expect(parts[2]).toEqual({
+      type: 'image_url',
+      image_url: { url: 'data:image/jpeg;base64,BBBB' },
+    })
+  })
+
+  it('请求体里透传：图片消息的 content 是数组，紧随其后的助手消息不受影响', async () => {
+    const { instance, stub } = provider([{ sseChunks: ['data: [DONE]\n\n'] }])
+    await collect(
+      instance.chat({
+        model: 'deepseek-chat',
+        messages: [{ role: 'user', content: '这张图里是什么', images: [image] }],
+      }),
+    )
+    const body = stub.calls[0]?.body as { messages: Array<Record<string, unknown>> }
+    expect(body.messages[0]).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: '这张图里是什么' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+      ],
+    })
   })
 })

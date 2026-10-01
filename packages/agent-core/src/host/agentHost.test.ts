@@ -43,7 +43,7 @@ interface Harness {
   send(
     text: string,
     sessionId?: string,
-    options?: { resumeJobId?: string },
+    options?: { resumeJobId?: string; images?: readonly string[] },
   ): Promise<{ requestId: string }>
   waitForDone(timeoutMs?: number): Promise<void>
 }
@@ -80,6 +80,15 @@ async function createHarness(options: {
   confirmTool?: AgentHostDeps['confirmTool']
   /** 按运行来源定制的运行档（v0.2.8，docs/06 §5.2） */
   runProfileFor?: AgentHostDeps['runProfileFor']
+  /** provider 是否声明支持图片输入（v22，docs/06 §3.1）：缺省 undefined = 不支持 */
+  vision?: boolean
+  /**
+   * 同 `vision`，但**每次请求现取**（v22）：用来验证「同一个 host 实例里中途关掉开关」——
+   * 图片缓存是进程级不淘汰的，只判「要不要读盘」会漏掉「缓存里已经有的图照样被下发」。
+   */
+  visionGetter?: () => boolean
+  /** 图片读盘端口（v22）：缺省不注入 = 图片只落盘不重放 */
+  loadImages?: AgentHostDeps['loadImages']
 }): Promise<Harness> {
   const fs = options.fs ?? new TestFileSystem()
   const sessions = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
@@ -109,6 +118,16 @@ async function createHarness(options: {
               provider,
               model: 'fake-model',
               temperature: 0.3,
+              // `visionGetter` 优先：getter 形式让「同一个 host 中途关开关」可测
+              ...(options.visionGetter !== undefined
+                ? {
+                    get vision(): boolean {
+                      return options.visionGetter!()
+                    },
+                  }
+                : options.vision === undefined
+                  ? {}
+                  : { vision: options.vision }),
               ...(options.reasoningEffort === undefined
                 ? {}
                 : { reasoningEffort: options.reasoningEffort }),
@@ -134,6 +153,7 @@ async function createHarness(options: {
       : { quickContextWindowMs: options.quickContextWindowMs }),
     ...(options.confirmTool === undefined ? {} : { confirmTool: options.confirmTool }),
     ...(options.runProfileFor === undefined ? {} : { runProfileFor: options.runProfileFor }),
+    ...(options.loadImages === undefined ? {} : { loadImages: options.loadImages }),
   })
   host.onEvent((event) => events.push(event))
 
@@ -150,6 +170,7 @@ async function createHarness(options: {
         text,
         origin: 'chat',
         ...(sendOptions?.resumeJobId === undefined ? {} : { resumeJobId: sendOptions.resumeJobId }),
+        ...(sendOptions?.images === undefined ? {} : { images: sendOptions.images }),
       }),
     async waitForDone(timeoutMs = 2_000) {
       const deadline = Date.now() + timeoutMs
@@ -1822,5 +1843,145 @@ describe('KernelAgentHost · 运行档（自动化会话）', () => {
     expect(harness.provider.calls[0]?.messages[0]?.content).not.toContain('## 本次运行')
     expect(harness.events.some((event) => event.type === 'done')).toBe(true)
     expect(harness.logger.entries.some((entry) => entry.includes('运行档解析失败'))).toBe(true)
+  })
+})
+
+describe('KernelAgentHost · 多模态输入（docs/06 §3.1，v22）', () => {
+  /** 读盘端口假实现：登记过的路径读得出，其余读不出（带 note） */
+  const loader =
+    (files: Record<string, string>): NonNullable<AgentHostDeps['loadImages']> =>
+    async (paths) =>
+      paths.map((path) =>
+        files[path] === undefined
+          ? { path }
+          : { path, image: { mimeType: 'image/png', dataBase64: files[path]!, name: 'a.png' } },
+      )
+
+  it('vision 开：本轮图片作为图片分片进请求，路径落进会话历史', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: '看到了' }],
+      vision: true,
+      loadImages: loader({ 'C:\\pic.png': 'AAAA' }),
+    })
+    await harness.send('这是什么', 'quick', { images: ['C:\\pic.png'] })
+    await harness.waitForDone()
+
+    const sent = harness.provider.calls[0]?.messages.at(-1)
+    expect(sent).toMatchObject({
+      role: 'user',
+      content: '这是什么',
+      images: [{ mimeType: 'image/png', dataBase64: 'AAAA', name: 'a.png' }],
+    })
+    // 会话里存的是**路径**（不是 base64）：文件不因图片膨胀，重放时按路径重读
+    const stored = await harness.sessions.get('quick')
+    const user = stored.find((message) => message.role === 'user')
+    expect(user?.images).toEqual(['C:\\pic.png'])
+    expect(user?.content).toBe('这是什么')
+  })
+
+  it('vision 开：跨轮次重放历史里的图片（用户追问「刚才那张图」时模型仍看得到）', async () => {
+    const fs = new TestFileSystem()
+    const loadImages = loader({ 'C:\\pic.png': 'AAAA' })
+    const first = await createHarness({
+      rounds: [{ text: '第一轮' }],
+      fs,
+      vision: true,
+      loadImages,
+    })
+    await first.send('看这张', 'quick', { images: ['C:\\pic.png'] })
+    await first.waitForDone()
+
+    // 换一个 host 实例（模拟重启后新的一轮）：历史从磁盘读回，图片按路径重新读盘
+    const second = await createHarness({
+      rounds: [{ text: '第二轮' }],
+      fs,
+      vision: true,
+      loadImages,
+    })
+    await second.send('图里有什么', 'quick')
+    await second.waitForDone()
+
+    const messages = second.provider.calls[0]?.messages ?? []
+    const withImage = messages.find((message) => message.content === '看这张')
+    expect(withImage?.images).toEqual([
+      { mimeType: 'image/png', dataBase64: 'AAAA', name: 'a.png' },
+    ])
+  })
+
+  it('vision 关：路径照样落盘，但请求里**没有**图片分片', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: '好的' }],
+      vision: false,
+      loadImages: loader({ 'C:\\pic.png': 'AAAA' }),
+    })
+    await harness.send('这是什么', 'quick', { images: ['C:\\pic.png'] })
+    await harness.waitForDone()
+
+    const sent = harness.provider.calls[0]?.messages.at(-1)
+    expect(sent?.images).toBeUndefined()
+    // 落盘与下发是两件事：开关关着也写路径 —— 用户之后打开开关，历史里那张图立刻能重放
+    const stored = await harness.sessions.get('quick')
+    expect(stored.find((message) => message.role === 'user')?.images).toEqual(['C:\\pic.png'])
+  })
+
+  it('vision 开但读盘失败：该图跳过并记 warn，请求照常发出（不阻断）', async () => {
+    const harness = await createHarness({
+      rounds: [{ text: '好的' }],
+      vision: true,
+      loadImages: loader({}),
+    })
+    await harness.send('这是什么', 'quick', { images: ['C:\\gone.png'] })
+    await harness.waitForDone()
+
+    const sent = harness.provider.calls[0]?.messages.at(-1)
+    expect(sent?.images).toBeUndefined()
+    expect(harness.logger.entries.some((entry) => entry.includes('图片附件读取失败'))).toBe(true)
+    expect(harness.events.some((event) => event.type === 'done')).toBe(true)
+  })
+
+  it('未注入读盘端口：图片不重放（与 v22 之前的行为一致）', async () => {
+    const harness = await createHarness({ rounds: [{ text: '好的' }], vision: true })
+    await harness.send('这是什么', 'quick', { images: ['C:\\pic.png'] })
+    await harness.waitForDone()
+    expect(harness.provider.calls[0]?.messages.at(-1)?.images).toBeUndefined()
+  })
+
+  /**
+   * 回归：**同一个 host 实例里中途关掉开关**。
+   *
+   * `imageCache` 是进程级、不淘汰的，所以「先开着跑一轮（图进缓存）→ 再关掉」时，
+   * 光判断「要不要读盘」是拦不住的 —— 缓存里那几张图照样会被解析出来下发。
+   * 这条真实路径是 smoke 实测踩到的（同进程连续两次发送，第二次仍有 `image_url` 分片）。
+   *
+   * 断言前**必须等到第二次请求真的发出去**：`waitForDone()` 看的是累积事件数组，
+   * 第一次发送留下的 `done` 会让它立刻返回，于是 `calls[1]` 还是 undefined ——
+   * 那种写法下「图片泄漏」这条断言在调用根本没发生时也恒真（反向复核实测：
+   * 拿掉修复代码它照样 PASS）。
+   */
+  it('中途关闭开关：缓存里已有的图也不得再下发', async () => {
+    let vision = true
+    const harness = await createHarness({
+      rounds: [{ text: '第一轮' }, { text: '第二轮' }],
+      visionGetter: () => vision,
+      loadImages: loader({ 'C:\\pic.png': 'AAAA' }),
+    })
+    /** 等第 `count` 次请求真的落到 provider 上（带超时，超时即算失败） */
+    const waitForCall = async (count: number): Promise<void> => {
+      const deadline = Date.now() + 2_000
+      while (harness.provider.calls.length < count && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    }
+
+    await harness.send('看这张', 's1', { images: ['C:\\pic.png'] })
+    await waitForCall(1)
+    expect(harness.provider.calls[0]?.messages.at(-1)?.images).toBeDefined()
+
+    // 关掉开关，换一个**全新会话**（历史里没有图片）再发一次：请求里不得有任何图片分片
+    vision = false
+    await harness.send('还看得见吗', 's2', { images: ['C:\\pic.png'] })
+    await waitForCall(2)
+    expect(harness.provider.calls[1]?.messages.at(-1)?.content).toBe('还看得见吗')
+    expect(harness.provider.calls[1]?.messages.at(-1)?.images).toBeUndefined()
   })
 })

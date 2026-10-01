@@ -113,6 +113,10 @@ async function persistModel(): Promise<boolean> {
           reasoningEffort: DEFAULT_REASONING_EFFORT,
           // 上下文窗口（v11）：引导页不收集，留 0 = 未知（用户之后在「设置 → AI 模型」里填）
           contextWindow: 0,
+          // 图片输入（v22，docs/06 §3.1）：引导页不收集，出厂**关**（之后可在
+          // 「设置 → AI 模型 → 高级参数」里开）。默认关是刻意的：对不支持视觉的模型
+          // 发图片分片会被服务端 400，引导阶段没有任何地方能提醒用户这件事。
+          vision: false,
         },
       },
     },

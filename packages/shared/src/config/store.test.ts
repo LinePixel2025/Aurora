@@ -208,11 +208,13 @@ describe('SettingsStore · 初始化', () => {
     expect(report.appliedMigrations).toEqual([])
 
     // 缺字段按各自 Schema 默认值补齐：`modelList` → []（设置页与对话窗无条件拿到数组）、
-    // `contextWindow` → 0（v11 起的上下文窗口，0 = 未知；docs/08 §1）
+    // `contextWindow` → 0（v11 起的上下文窗口，0 = 未知）、
+    // `vision` → false（v22 起的图片输入开关，出厂关；docs/06 §3.1 / docs/08 §1）
     expect(store.get().llm.providers['legacy']).toEqual({
       ...legacyProvider,
       modelList: [],
       contextWindow: 0,
+      vision: false,
     })
     // 其余字段一个都不变
     expect(store.get().llm.active).toBe('legacy')

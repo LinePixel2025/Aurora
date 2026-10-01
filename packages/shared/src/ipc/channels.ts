@@ -121,6 +121,12 @@ export const IPC = {
     jobs: 'chat:jobs',
     resumeJob: 'chat:resumeJob',
     cancelJob: 'chat:cancelJob',
+    /**
+     * 附件缩略图（v22 多模态输入，docs/07 §2.3）：把本地图片附件读成 `data:` URL
+     * 供渲染层在 chip 上显示缩略图。**只读、只回数据 URL**（渲染层拿不到任意文件内容，
+     * 上限 `PREVIEW_MAX_BYTES`，超出即如实回 `note` 不返回半张图）。
+     */
+    readAttachment: 'chat:readAttachment',
   },
   /** 全局快捷键注册状态（docs/07 §5、docs/08 §1） */
   hotkey: {

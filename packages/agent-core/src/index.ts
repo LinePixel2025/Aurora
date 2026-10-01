@@ -4,6 +4,12 @@
 export * from './llm/types.js'
 export * from './llm/sse.js'
 export * from './llm/openai-compat.js'
+// Responses API（docs/06 §3.2，v22）：第二个 provider 实现。
+// 共享传输层（`llm/transport.ts`）**不在这里二次导出**：`openai-compat.js` 已经把它们
+// 逐个再导出（`normalizeBaseUrl` / `statusToCode` / `toLlmError` / `describeError`），
+// 两个 `export *` 撞同名会让该名字在根导出里**静默消失**（ESM 的歧义导出语义），
+// 反而弄丢主进程的既有导入。
+export * from './llm/responses.js'
 
 // 会话层（docs/06 §4）
 export * from './session/types.js'

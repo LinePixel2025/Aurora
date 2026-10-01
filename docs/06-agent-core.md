@@ -35,7 +35,9 @@ export interface LlmProvider {
 }
 ```
 
-- 默认实现 `OpenAiCompatProvider`：`baseURL + apiKey + model`，兼容 DeepSeek / OpenAI / Ollama / vLLM 等（见 ADR-003）。
+- 稳定实现 `OpenAiCompatProvider`：`baseURL + apiKey + model`，兼容 DeepSeek / OpenAI / Ollama / vLLM 等（见 ADR-003）；
+  第二个实现 `OpenAiResponsesProvider`（OpenAI **Responses API**，v22 新增）见 §3.2。
+  多模态（图片输入）见 §3.1。
 - 设置中可保存多组模型配置并切换默认；temperature 等参数可调。
   （「会话级可选模型」目前**没有实现**：每个 provider 只有一个生效的 `model`，也不做按会话覆盖
   —— 见 07 §2.3。另有一份候选列表 `llm.providers.<id>.modelList` 只决定 UI 里能选什么，
@@ -50,6 +52,66 @@ export interface LlmProvider {
   **不切思考等级**。将来若要按模型区分，需要把它扩展成**模型级映射**
   （例如 `llm.providers.<id>.effortByModel: Record<modelId, 'auto' | 'low' | 'medium' | 'high'>`），
   当前 Schema 与 UI 都不支持；在那之前，不要假定「切了模型就换了等级」。
+
+### 3.1 多模态输入（图片进模型，v22）
+
+- **线上形状**：`ChatRequestMessage.images?: LlmImageInput[]`，其中
+  `LlmImageInput = { mimeType, dataBase64, name?, detail? }`（`dataBase64` 是**裸 base64**，
+  不带 `data:` 前缀）。非空时该条消息的 `content` 由字符串变成 **content parts 数组**：
+  正文一段 `{ type: 'text', text }` + 每张图一段
+  `{ type: 'image_url', image_url: { url: 'data:image/png;base64,…' } }`。
+  正文为空时**只发图片分片**、不发空 text 分片 —— 部分服务把空 text 当「空消息」直接 400。
+- **落地链**：渲染层拖入的附件始终是**绝对路径**（`SendMessageRequest.attachments`，没有第二套
+  上传通道）。主进程按扩展名分流：`png / jpg / jpeg / webp / gif / bmp` 是图片，其余仍走
+  `extract.ts` 提取文本 —— 同一轮里「一段提取文本 + 若干图片」可以并存，两者走的是同一条
+  `chat:send`（图片路径经 `agent.send({ images })` 透传给内核，内核用注入的 `loadImages`
+  端口读成 base64）。
+- **会话历史存路径、不存 base64**（`StoredMessage.images?: string[]`）：会话文件体积不被图片
+  撑大（一张 4 MB 的图 base64 后是 5.3 MB，几轮对话就能把 `sessions/*.json` 顶成几十 MB），
+  跨轮次续聊时按路径**重新读盘**，用户追问「刚才那张图里的公式」时模型仍看得到图。
+  代价是历史里那份图片会被重复计费（与「图片一直留在上下文里」的通行做法一致）。
+  文件被删 / 读不出时**该轮跳过这张图并记 warn**：不编造内容，也不因此让整轮请求失败。
+- **能力开关 `llm.providers.<id>.vision`（默认 `false`）**：模型是否支持图片输入因模型而异，
+  与本仓库不做内置模型表的口径一致（同 `contextWindow`）。关闭时图片按**未读取**降级成
+  一行文字（`【附件】a.png：内容未读取（当前模型未开启图片输入）`），请求体里不出现图片分片 ——
+  对不支持视觉的模型发图片会被服务端 400，**整个对话都用不了**，这个开关就是那道闸。
+- **上限**：单图 `IMAGE_MAX_BYTES`（8 MiB，超出按未读取处理并在降级文案里写明原因）、
+  单轮附件数沿用既有的 `MAX_ATTACHMENTS`（5，图文合计）。`detail` 字段在类型里预留但**当前不下发**
+  （多数网关不认它）。
+
+### 3.2 Responses API（`type: 'openai-responses'`，v22）
+
+- `llm.providers.<id>.type` 由单值枚举扩为 **`openai-compat | openai-responses`**（纯增量，
+  旧配置天然合法，见 08 §1）。前者走 `POST {baseUrl}/chat/completions`（既有实现不动），
+  新增的 `OpenAiResponsesProvider` 走 `POST {baseUrl}/responses`，`stream: true`。
+  装配层（`createProviderFactory`）按 `config.type` 分派，其余（thinking 等级 / temperature /
+  vision / 附件）两套协议共用同一份上层逻辑。
+- **请求映射**：**首条** `system` 消息（系统提示词）→ 顶层 `instructions`；其余 `system` 消息
+  （如技能正文与附件文本）**保留在 `input` 里的原位**、以 `{ role: 'system', content: [...] }`
+  下发 —— 这样「易变内容靠尾部」的性质与 chat-completions 侧一致，前缀缓存不被破坏。
+  用户 / 助手消息 → `{ role, content: [{ type: 'input_text' | 'output_text' }, { type: 'input_image', image_url }] }`；
+  assistant 的每次工具调用是**独立条目** `{ type: 'function_call', call_id, name, arguments }`，
+  工具结果是 `{ type: 'function_call_output', call_id, output }`（顺序按对话原序，不能合并进上一条消息）。
+  `tools` 用**扁平**形状 `{ type: 'function', name, description, parameters }`（不套 `function` 一层）。
+  `reasoningEffort` → `reasoning: { effort }`；`jsonObject` → `text: { format: { type: 'json_object' } }`；
+  `temperature` / `max_output_tokens` **仅在给了值时才出现**（不认这些字段的推理模型会 400）。
+  **`store: false` 恒定下发**：不在服务端留存会话（docs/11 的隐私口径）。
+- **事件映射**（SSE 的 `data:` 负载统一带 `type` 字段）：
+  `response.output_text.delta` → `text`；
+  `response.reasoning_summary_text.delta` / `response.reasoning_text.delta` → `reasoning`；
+  `response.output_item.added`（`item.type === 'function_call'`）开一条工具调用、
+  `response.function_call_arguments.delta` 累加参数、`response.output_item.done` 收口并
+  `yield { type: 'tool_call' }`；
+  `response.completed` 带 `usage`（`input_tokens` / `output_tokens` / `total_tokens`，缓存命中读
+  `input_tokens_details.cached_tokens`）与收尾原因；`response.failed`、`response.incomplete`
+  （`incomplete_details.reason === 'max_output_tokens'` → `length`）与顶层 `{ type: 'error' }`
+  映射为 `error` 事件 / 收尾原因。
+- **工具调用 id 用 `call_id`**（形如 `call_…`），**不是**条目 id（`fc_…`）：下一轮的
+  `function_call_output.call_id` 必须与它配对，拿条目 id 会被服务端直接拒绝、
+  表现为「工具跑完了但对话再也继续不下去」。
+- **可靠性**：超时 / 取消 / 指数退避 / 错误码 / `listModels` / `testConnection` 全部复用
+  §3 抽出的共享传输层（`llm/transport.ts`），两个 provider 在这些行为上逐字一致；
+  唯一的差异是 chat-completions 专有的 `stream_options` 降级重试，Responses 侧不适用。
 
 ## 4. 会话管理
 

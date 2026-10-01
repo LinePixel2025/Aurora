@@ -3,7 +3,12 @@
  *
  * 约定：每次 Schema 破坏性变更向 `MIGRATIONS` 追加一条，永不修改历史条目。
  */
-import { CONFIG_VERSION, REASONING_EFFORT_LEVELS, SETTINGS_READONLY_PREFIXES } from './schema.js'
+import {
+  CONFIG_VERSION,
+  LlmProviderTypes,
+  REASONING_EFFORT_LEVELS,
+  SETTINGS_READONLY_PREFIXES,
+} from './schema.js'
 import {
   DEFAULT_AGENT_TOOLS,
   DEFAULT_CLASSIFICATION,
@@ -735,6 +740,55 @@ const migrateV20ToV21: Migration = {
   },
 }
 
+/**
+ * v21 → v22：**多模态输入 + Responses API**（docs/06 §3.1 / §3.2、docs/08 §1）。
+ *
+ * 为**每个已有的** `llm.providers.<id>` 补两件事：
+ * - `vision: false`（该模型是否支持图片输入，出厂关：对不支持视觉的模型发图片会被 400）；
+ * - 缺失或非法的 `type` 归一为 `openai-compat`（v21 及更早的配置写的本来就是这个值，
+ *   因此**不改正值**、只补缺字段与不可识别的值 —— 旧配置升级后请求体逐字不变）。
+ *
+ * 与 v10 → v11 给 `llm.providers` 补 `contextWindow` 是同一条口径：只在
+ * `llm.providers` 已存在时逐条目补缺，`llm` 分组整个缺失时留给 Schema 兜底，
+ * 不凭空造半截对象。既有的 `type` 与 `vision` 一律原样保留（幂等）。
+ */
+const migrateV21ToV22: Migration = {
+  from: 21,
+  to: 22,
+  describe:
+    'v21 → v22：为 llm.providers 各条目补 vision: false 并归一 type（多模态输入 / Responses API）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const llm = asRecord(raw['llm'])
+    if (llm !== undefined) {
+      const providers = asRecord(llm['providers'])
+      if (providers !== undefined) {
+        const nextProviders: Record<string, unknown> = {}
+        for (const [id, provider] of Object.entries(providers)) {
+          const entry = asRecord(provider)
+          if (entry === undefined) {
+            nextProviders[id] = provider
+            continue
+          }
+          const patched = fillMissing(entry, { vision: false })
+          // `type` 是被 Schema 扩过的枚举：只把「缺 / 不是已知取值」的归一为旧协议，
+          // 已是 `openai-responses` 的**不动**（迁移不替用户改协议）。
+          const type = patched['type']
+          if (typeof type !== 'string' || !(LlmProviderTypes as readonly string[]).includes(type)) {
+            patched['type'] = 'openai-compat'
+          }
+          nextProviders[id] = patched
+        }
+        next['llm'] = { ...llm, providers: nextProviders }
+      }
+    }
+
+    next['version'] = 22
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -757,6 +811,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV18ToV19,
   migrateV19ToV20,
   migrateV20ToV21,
+  migrateV21ToV22,
 ]
 
 export interface MigrationOutcome {

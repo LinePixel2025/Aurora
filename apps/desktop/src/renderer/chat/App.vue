@@ -26,6 +26,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
   AskUserRequest,
+  ChatAttachmentPreview,
   LlmProviderConfig,
   PermissionMode,
   SensitiveToolRequest,
@@ -756,6 +757,37 @@ function removeAttachment(path: string): void {
   attachments.value = attachments.value.filter((item) => item !== path)
 }
 
+/**
+ * 附件缩略图（v22 多模态输入，docs/07 §2.3）：图片附件在 chip 上显示一张小图，
+ * 非图片 / 超限 / 读失败时只是没有 `dataUrl`，chip 退回纯文字（**不显示裂图**）。
+ *
+ * 一次性读盘（`chat:readAttachment`，上限 `PREVIEW_MAX_BYTES`）而不是丢个 `file://` 给渲染层：
+ * 渲染进程没有 fs 能力，这条通道也是它唯一的读图途径。
+ */
+const attachmentPreviews = ref<Record<string, ChatAttachmentPreview>>({})
+
+function previewOf(path: string): ChatAttachmentPreview | undefined {
+  return attachmentPreviews.value[path]
+}
+
+async function loadAttachmentPreview(path: string): Promise<void> {
+  if (attachmentPreviews.value[path] !== undefined) return
+  const result = await window.aurora.chat.readAttachment({ path })
+  if (!result.ok) return
+  attachmentPreviews.value = { ...attachmentPreviews.value, [path]: result.value }
+}
+
+watch(attachments, (paths) => {
+  for (const path of paths) void loadAttachmentPreview(path)
+  // 已被移除的附件不再保留预览：那条记录里可能带着几 MB 的 data URL，攒着是纯浪费。
+  // 同一个文件再拖进来会重新拉一次（走的是同一条只读通道）。
+  const kept: Record<string, ChatAttachmentPreview> = {}
+  for (const [path, preview] of Object.entries(attachmentPreviews.value)) {
+    if (paths.includes(path)) kept[path] = preview
+  }
+  attachmentPreviews.value = kept
+})
+
 function fileNameOf(path: string): string {
   const segments = path.split(/[\\/]/)
   return segments[segments.length - 1] ?? path
@@ -1214,7 +1246,25 @@ async function markGuideDone(): Promise<void> {
       <footer v-if="view === 'chat'" class="composer">
         <div class="composer-inner">
           <div v-if="attachments.length > 0" class="attachments">
-            <span v-for="path in attachments" :key="path" class="chip tiny">
+            <!--
+              附件 chip（v22 起图片带缩略图，docs/07 §2.3）：
+              图片 → `data:` URL 渲染 48×48 小图（CSP 的 `img-src 'self' data:` 放行），
+              非图片 / 超限 / 读失败 → 只有文件名（`title` 里给出未生成缩略图的原因）。
+              `show-thumb` 这个类只影响图片 chip 的内边距，纯文字 chip 的观感与从前一致。
+            -->
+            <span
+              v-for="path in attachments"
+              :key="path"
+              class="chip tiny"
+              :class="{ 'show-thumb': previewOf(path)?.dataUrl !== undefined }"
+              :title="previewOf(path)?.note ?? fileNameOf(path)"
+            >
+              <img
+                v-if="previewOf(path)?.dataUrl !== undefined"
+                class="chip-thumb"
+                :src="previewOf(path)?.dataUrl"
+                :alt="fileNameOf(path)"
+              />
               {{ fileNameOf(path) }}
               <button
                 type="button"
@@ -1667,6 +1717,20 @@ async function markGuideDone(): Promise<void> {
   cursor: pointer;
   line-height: 1;
   padding: 0;
+}
+
+/* 图片附件 chip（v22 多模态输入，docs/07 §2.3）：左侧 24×24 缩略图（与 `chip tiny` 同高）。
+   `cover` 让非正方形图不拉伸；chip 的左侧内边距收窄一档，让图与胶囊边距一致。 */
+.chip.show-thumb {
+  padding: 2px 8px 2px 2px;
+}
+
+.chip-thumb {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm, 4px);
+  object-fit: cover;
+  flex: none;
 }
 
 .chip-remove:hover {

@@ -32,6 +32,7 @@ import type {
   ImageGenReadResult,
   ImageGenResult,
   Lesson,
+  LlmProviderType,
   Logger,
   ModeChangedEvent,
   ModeId,
@@ -198,7 +199,13 @@ export interface AskUserLike {
 }
 
 export interface AgentHost {
-  send(request: SendMessageRequest & { extraContext?: string }): Promise<{ requestId: string }>
+  /**
+   * `images`（多模态输入，docs/06 §3.1）：本轮的**图片附件路径**，由 `ipc.ts` 按扩展名挑出、
+   * 并已按 `llm.providers.<id>.vision` 判定过是否下发；内核经注入的 `loadImages` 读成内容。
+   */
+  send(
+    request: SendMessageRequest & { extraContext?: string; images?: readonly string[] },
+  ): Promise<{ requestId: string }>
   abort(requestId: string): boolean
   onEvent(listener: (event: AgentEvent) => void): () => void
   isReady(): boolean
@@ -211,6 +218,8 @@ export interface LlmTesterLike {
     baseUrl?: string
     apiKey?: string
     model?: string
+    /** 接口协议（v22）：渲染层把正在编辑的类型一并送来，未保存也能测到正确的端点 */
+    type?: LlmProviderType
     withModels?: boolean
   }): Promise<{
     ok: boolean
@@ -224,6 +233,7 @@ export interface LlmTesterLike {
     baseUrl?: string
     apiKey?: string
     model?: string
+    type?: LlmProviderType
   }): Promise<Array<{ id: string; ownedBy?: string }>>
 }
 

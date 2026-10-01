@@ -32,6 +32,8 @@ import { formatTokenCount } from '@aurora/shared/browser'
 import { ChevronRight } from '../../shared/icons.js'
 import {
   DEFAULT_REASONING_EFFORT,
+  LLM_PROVIDER_TYPE_LABELS,
+  LlmProviderTypes,
   PROVIDER_PRESETS,
   REASONING_EFFORT_LABELS,
   REASONING_EFFORT_LEVELS,
@@ -54,6 +56,15 @@ interface ProviderDraft extends LlmProviderConfig {
 
 /** 页面三态：目录列表 / 添加（选预设）/ 编辑（最多一张卡，由单值 `editingId` 决定是哪一张） */
 type PageMode = 'list' | 'add' | 'edit'
+
+/**
+ * 「接口类型」下拉的选项：取值来自 Schema 的枚举（**唯一来源**），文案来自同一份
+ * `LLM_PROVIDER_TYPE_LABELS` —— 新增协议时这里不用改，界面也不会漏项。
+ */
+const PROVIDER_TYPE_OPTIONS = LlmProviderTypes.map((value) => ({
+  value,
+  label: LLM_PROVIDER_TYPE_LABELS[value],
+}))
 
 const settingsStore = useSettingsStore()
 
@@ -405,7 +416,10 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
       providers: {
         ...settings.llm.providers,
         [draft.id]: {
-          type: 'openai-compat',
+          // 接口协议（v22，docs/06 §3.2）：用户在折叠区选的值原样落盘 ——
+          // `openai-compat` 走 /chat/completions，`openai-responses` 走 /responses。
+          // 改它会换端点，因此保存后建议点一次「保存并测试连接」（测的就是这个 type）。
+          type: draft.type,
           baseUrl: draft.baseUrl.trim(),
           apiKeyEnc: '',
           model: draft.model.trim(),
@@ -416,6 +430,9 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
           reasoningEffort: draft.reasoningEffort,
           // 落盘前再过一次归一化入口：可选信息，非法值一律归成合法整数而不是拦住保存
           contextWindow: clampContextWindow(draft.contextWindow),
+          // 图片输入开关（v22，docs/06 §3.1）：关着时图片附件降级成一行「未读取」说明。
+          // 布尔值跨 IPC 没有 Proxy 克隆问题；`=== true` 顺手把 undefined 归成 false。
+          vision: draft.vision === true,
         },
       },
     },
@@ -481,6 +498,8 @@ function addPreset(id: string): void {
   // 否则填了一半的 baseUrl / Key 会被下一次 `syncDrafts` 整条抹掉）。
   localDrafts.value.push({
     id: key,
+    // 新建一律从最通行的 `openai-compat` 起步（与 Schema 默认值、迁移口径一致）：
+    // 需要 Responses API 的网关是少数，用户会在折叠区自己切。
     type: 'openai-compat',
     baseUrl: preset?.baseUrl ?? '',
     apiKeyEnc: '',
@@ -490,6 +509,9 @@ function addPreset(id: string): void {
     temperature: 0.7,
     reasoningEffort: DEFAULT_REASONING_EFFORT,
     contextWindow: 0,
+    // 图片输入出厂**关**（v22，docs/06 §3.1）：打开之前先确认这个模型确实能看图，
+    // 否则每一轮带图的消息都会被服务端 400 拒掉。
+    vision: false,
     apiKey: '',
     apiKeySet: false,
   })
@@ -567,6 +589,10 @@ async function testProvider(draft: ProviderDraft): Promise<void> {
     baseUrl: draft.baseUrl,
     apiKey: draft.apiKey,
     model: draft.model,
+    // 把**当前选中的**接口协议一并送去（v22）：用户刚从 chat-completions 切到 Responses、
+    // 还没改完就想先测一下端点，测的必须是新协议 —— 否则会出现「测通了但对话仍然 404」。
+    // `saveProvider` 在上面已经把 draft.type 落库，这里传的是同一个值（未保存草稿也能测）。
+    type: draft.type,
     withModels: true,
   })
   testing.value = null
@@ -927,6 +953,39 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
 
         <Transition name="collapse">
           <div v-if="advancedOf(draft.id)" class="advanced">
+            <!--
+              接口协议（v22，docs/06 §3.2）：`openai-compat` = POST /chat/completions（最通行，
+              也是旧配置与新建条目的默认），`openai-responses` = POST /responses（OpenAI Responses API）。
+              改它等于换端点，因此放在折叠区第一项、并紧挨着「保存并测试连接」——
+              改完立刻能测；`data-field` 供 capture 抓手。
+            -->
+            <SettingField
+              :data-field="`llm.providers.${draft.id}.type`"
+              label="接口类型"
+              hint="openai-compat 走 /chat/completions（默认）；openai-responses 走 /responses。改完请点下面的「保存并测试连接」验一次"
+            >
+              <select v-model="draft.type" class="input">
+                <option v-for="item in PROVIDER_TYPE_OPTIONS" :key="item.value" :value="item.value">
+                  {{ item.label }}
+                </option>
+              </select>
+            </SettingField>
+
+            <!--
+              图片输入（v22，docs/06 §3.1）：出厂关。开启后用户拖入的图片会作为图片分片发给模型；
+              不支持视觉的模型收到图片分片会被服务端 400，因此这里必须由用户照服务商文档确认。
+            -->
+            <SettingField
+              :data-field="`llm.providers.${draft.id}.vision`"
+              label="支持图片输入"
+              hint="开启后图片附件会作为图片发给模型（需该模型支持视觉）；关闭时图片只以一行说明进入上下文"
+            >
+              <label class="switch-row">
+                <input v-model="draft.vision" type="checkbox" data-action="toggle-vision" />
+                <span class="tiny">把拖入的图片交给这个模型</span>
+              </label>
+            </SettingField>
+
             <SettingField
               :data-field="`llm.providers.${draft.id}.temperature`"
               label="temperature"
@@ -1264,6 +1323,14 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
   gap: var(--space-2);
   border-top: 1px solid var(--border-subtle);
   padding-top: var(--space-2);
+}
+
+/* 开关行（图片输入，v22）：与设置页其它复选框同款排布 —— 方框在当前色，文字在次色 */
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
 }
 
 .wrap {

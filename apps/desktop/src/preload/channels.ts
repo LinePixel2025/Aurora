@@ -113,6 +113,8 @@ const CHANNELS = {
     jobs: 'chat:jobs',
     resumeJob: 'chat:resumeJob',
     cancelJob: 'chat:cancelJob',
+    // 附件缩略图（v22 多模态输入，docs/07 §2.3）：与 shared 契约同构，编译期双向断言兜住
+    readAttachment: 'chat:readAttachment',
   },
   hotkey: {
     status: 'hotkey:status',

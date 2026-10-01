@@ -3,9 +3,10 @@
  *
  * 凭据只在主进程解密后用于构造 provider，永不回传渲染层。
  */
-import { OpenAiCompatProvider, type ModelInfo, type TestConnectionResult } from '@aurora/agent-core'
-import type { Logger } from '@aurora/shared'
+import type { ModelInfo, TestConnectionResult } from '@aurora/agent-core'
+import type { LlmProviderType, Logger } from '@aurora/shared'
 import type { LlmTesterLike, SettingsStoreLike } from './contracts.js'
+import { createLlmProvider } from './llm-provider.js'
 
 export interface LlmTesterOptions {
   settings: SettingsStoreLike
@@ -25,7 +26,19 @@ export interface LlmTestRequest {
   baseUrl?: string
   apiKey?: string
   model?: string
+  /** 接口协议（v22）：渲染层把正在编辑的类型一并送来，未保存也能测到正确的端点 */
+  type?: LlmProviderType
   withModels?: boolean
+}
+
+/** `resolve` 的产物：构造 provider 所需的全部目标信息（含接口协议）。 */
+interface ResolvedLlmTarget {
+  id: string
+  baseUrl: string
+  apiKey: string
+  model: string
+  /** 未指定时为 `undefined`，由 `createLlmProvider` 按 `openai-compat` 兜底 */
+  type: LlmProviderType | undefined
 }
 
 export class LlmTester implements LlmTesterLike {
@@ -71,9 +84,7 @@ export class LlmTester implements LlmTesterLike {
    * 优先使用渲染层传来的草稿值（用户正在编辑、尚未保存），
    * 否则回落到已保存配置中解密出来的凭据。
    */
-  private resolve(
-    request: LlmTestRequest,
-  ): { id: string; baseUrl: string; apiKey: string; model: string } | { error: string } {
+  private resolve(request: LlmTestRequest): ResolvedLlmTarget | { error: string } {
     const settings = this.settings.get()
     const providerId = request.providerId ?? settings.llm.active
     const saved = providerId === '' ? undefined : settings.llm.providers[providerId]
@@ -83,6 +94,10 @@ export class LlmTester implements LlmTesterLike {
 
     const model = (request.model ?? saved?.model ?? '').trim()
     if (model === '') return { error: '请先填写模型名' }
+
+    // 接口协议：渲染层的草稿优先（用户刚切到 Responses 还没保存就要能测），
+    // 否则用已保存配置。两者都缺时交给 `createLlmProvider` 按 openai-compat 兜底。
+    const type = request.type ?? saved?.type
 
     const apiKey =
       request.apiKey !== undefined && request.apiKey !== ''
@@ -95,12 +110,18 @@ export class LlmTester implements LlmTesterLike {
       return { error: '缺少 API Key：请填写密钥（本地模型可留空但需服务端允许匿名访问）' }
     }
 
-    return { id: providerId === '' ? 'draft' : providerId, baseUrl, apiKey, model }
+    return { id: providerId === '' ? 'draft' : providerId, baseUrl, apiKey, model, type }
   }
 
-  private createProvider(input: { id: string; baseUrl: string; apiKey: string; model: string }) {
+  private createProvider(input: {
+    id: string
+    baseUrl: string
+    apiKey: string
+    model: string
+    type: LlmProviderType | undefined
+  }) {
     const fetchImpl = this.netFetch()
-    return new OpenAiCompatProvider({
+    return createLlmProvider(input.type, {
       id: input.id,
       baseUrl: input.baseUrl,
       apiKey: input.apiKey,

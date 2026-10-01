@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 21 as const
+export const CONFIG_VERSION = 22 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -95,8 +95,28 @@ export const GeneralSchema = z.object({
 })
 export type GeneralSettings = z.infer<typeof GeneralSchema>
 
-export const LlmProviderTypeSchema = z.enum(['openai-compat'])
+/**
+ * LLM provider 的接口协议（docs/06 §3.2，v22 扩枚举）：
+ * - `openai-compat`：OpenAI 兼容 `POST <baseUrl>/chat/completions`（DeepSeek / Ollama / vLLM 等）；
+ * - `openai-responses`：OpenAI **Responses API** `POST <baseUrl>/responses`。
+ *
+ * 纯增量枚举：v21 及更早的配置写的都是 `openai-compat`，天然合法，
+ * 迁移只补缺失 / 非法的值，**不改正值**（旧配置升级后请求体逐字不变）。
+ */
+export const LlmProviderTypes = ['openai-compat', 'openai-responses'] as const
+export const LlmProviderTypeSchema = z.enum(LlmProviderTypes)
 export type LlmProviderType = z.infer<typeof LlmProviderTypeSchema>
+
+/**
+ * 接口协议的展示文案（**唯一来源**：设置页「AI 模型」折叠区的「接口类型」下拉）。
+ *
+ * 与 `REASONING_EFFORT_LABELS` 同款：新增取值时这个 `Record` 会强制补文案，
+ * 不会出现「枚举加了、界面上是个空白选项」。
+ */
+export const LLM_PROVIDER_TYPE_LABELS: Record<LlmProviderType, string> = {
+  'openai-compat': 'OpenAI 兼容（/chat/completions）',
+  'openai-responses': 'OpenAI Responses API（/responses）',
+}
 
 /**
  * 模型思考等级（docs/06 §3）：`auto` = 不下发 `reasoning_effort` 字段。
@@ -149,6 +169,15 @@ export const LlmProviderSchema = z.object({
    * `0` = 未知：此时只显示 token 数与字符数，不显示占比与进度条（不编造分母）。
    */
   contextWindow: z.number().int().min(0).max(2_000_000).default(0),
+  /**
+   * 该模型是否支持**图片输入**（多模态，docs/06 §3.1，v22 新增），默认 `false`。
+   *
+   * 出厂关闭是有意的：对不支持视觉的模型发图片分片会被服务端 400，
+   * 「整个对话都用不了」比「图片没送进去」严重得多 —— 与 `reasoningEffort` 的
+   * `auto`（不下发该参数）是同一个思路：默认值必须让最保守的网关也能工作。
+   * 与 `contextWindow` 同款口径：**不做内置模型能力表**，由用户照服务商文档填。
+   */
+  vision: z.boolean().default(false),
 })
 export type LlmProviderConfig = z.infer<typeof LlmProviderSchema>
 

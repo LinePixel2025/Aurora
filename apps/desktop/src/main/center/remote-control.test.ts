@@ -85,6 +85,7 @@ describe('buildClientStatus · llm 快照（docs/12 §6.3，v0.2.3）', () => {
       temperature: 0.7,
       reasoningEffort: 'high',
       contextWindow: 0,
+      vision: false,
     }
 
     const status = buildClientStatus(settings, '0.2.3', 'win32')
@@ -112,6 +113,7 @@ describe('buildClientStatus · llm 快照（docs/12 §6.3，v0.2.3）', () => {
       temperature: 0.7,
       reasoningEffort: 'low',
       contextWindow: 0,
+      vision: false,
     }
     expect(buildClientStatus(settings, '0.2.3', 'win32').llm).toEqual({
       activeProviderId: 'ghost',

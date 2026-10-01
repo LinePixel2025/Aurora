@@ -5,8 +5,24 @@
  * 「assistant(toolCalls) + 其全部 tool 结果」成对保留 ——
  * 只留一半会让 OpenAI 兼容服务直接拒绝请求（tool_call_id 无对应调用）。
  */
-import type { ChatRequestMessage } from '../llm/types.js'
+import type { ChatRequestMessage, LlmImageResolver } from '../llm/types.js'
 import type { StoredMessage } from './types.js'
+
+/**
+ * 历史消息的图片分片（多模态输入，docs/06 §3.1）：`images` 是**路径**，解析成内容要有解析器。
+ *
+ * 缺失 / 解析器未注入 / 该路径解析不出来 → 这条消息按纯文本下发（`{}`，不写 `images` 键）。
+ * 只认字符串数组：会话文件是磁盘数据，可能被手改过。
+ */
+function imagesOf(
+  message: StoredMessage,
+  options: { resolveImages?: LlmImageResolver },
+): { images?: ChatRequestMessage['images'] } {
+  const paths = message.images
+  if (options.resolveImages === undefined || !Array.isArray(paths) || paths.length === 0) return {}
+  const resolved = options.resolveImages(paths.filter((path) => typeof path === 'string'))
+  return resolved.length === 0 ? {} : { images: [...resolved] }
+}
 
 /** 默认上下文预算（字符数，v1 用字符而非真实 token 计数，见 docs/06 §4） */
 export const DEFAULT_MAX_CHARS = 60_000
@@ -262,9 +278,11 @@ function trimForSummary(messages: readonly StoredMessage[]): StoredMessage[] {
  * - `system`：跳过（系统提示词由 context 层每次重新组装，不参与历史）
  * - `tool`：还原为 `role:'tool'` + `toolCallId`
  * - `assistant`：带 `toolCalls` 时一并还原（`content` 为空也合法）
+ * - `user`：带图片路径（`images`）时经 `resolveImages` 还原成图片分片
+ *   （多模态输入，docs/06 §3.1）；未注入解析器 = 按纯文本下发
  */ export function toChatRequestMessages(
   messages: readonly StoredMessage[],
-  options: { excludeTail?: number } = {},
+  options: { excludeTail?: number; resolveImages?: LlmImageResolver } = {},
 ): ChatRequestMessage[] {
   const excludeTail = options.excludeTail ?? 0
   const slice =
@@ -276,7 +294,7 @@ function trimForSummary(messages: readonly StoredMessage[]): StoredMessage[] {
       case 'system':
         continue
       case 'user':
-        out.push({ role: 'user', content: message.content })
+        out.push({ role: 'user', content: message.content, ...imagesOf(message, options) })
         continue
       case 'tool':
         out.push({

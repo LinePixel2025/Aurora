@@ -6,7 +6,6 @@
  * 真实逻辑全部在 `packages/agent-core`（纯 Node、可单测）。
  */
 import {
-  OpenAiCompatProvider,
   describeError,
   isLlmError,
   matchAllowPatterns,
@@ -14,6 +13,7 @@ import {
   type ConfirmDecision,
   type ProviderConfig,
 } from '@aurora/agent-core'
+import { createLlmProvider } from './llm-provider.js'
 import type { AgentEvent, AgentHost, LlmSettings, LlmProviderConfig } from '@aurora/shared'
 import type { Logger, PermissionMode } from '@aurora/shared'
 // 三档权限的判定是纯函数、主进程与渲染层共用同一份（docs/06 §11.2）
@@ -80,7 +80,14 @@ export class DesktopAgentHost implements AgentHost {
     return this.options.kernel.isReady()
   }
 
-  send(request: SendMessageRequest): Promise<{ requestId: string }> {
+  /**
+   * 与 `AgentHost` 契约同形（见 `contracts.ts`）：`extraContext` 是附件提取的文本，
+   * `images` 是本轮**图片附件的路径**（多模态输入，docs/06 §3.1）——
+   * 后者由 `ipc.ts` 按扩展名挑出、并按 `vision` 判定是否下发，主进程只是透传给内核。
+   */
+  send(
+    request: SendMessageRequest & { extraContext?: string; images?: readonly string[] },
+  ): Promise<{ requestId: string }> {
     return this.options.kernel.send(request)
   }
 
@@ -172,7 +179,7 @@ export function createProviderFactory(
     const reasoningEffort = config.reasoningEffort === 'auto' ? undefined : config.reasoningEffort
 
     return {
-      provider: new OpenAiCompatProvider({
+      provider: createLlmProvider(config.type, {
         id: providerId,
         baseUrl: config.baseUrl,
         apiKey,
@@ -191,6 +198,9 @@ export function createProviderFactory(
       }),
       model: config.model,
       temperature: config.temperature,
+      // 能力开关（docs/06 §3.1）：内核据它决定要不要把历史里的图片读出来重放。
+      // 默认档是**关**（`?.` 兜的是历史配置 / 手改文件），与 Schema 的 `default(false)` 一致。
+      vision: config.vision === true,
       ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     }
   }

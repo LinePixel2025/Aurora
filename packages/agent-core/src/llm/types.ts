@@ -24,9 +24,51 @@ export interface ToolCallRequest {
   arguments: string
 }
 
+/**
+ * 一张**可下发的图片**（多模态输入，docs/06 §3.1）。
+ *
+ * 刻意是「已经解析好的内容」而不是路径：内核不碰文件系统（`agent-core` 保持纯逻辑、
+ * 可在 Node 里单测），路径 → base64 的读取由主进程经 `AgentHostDeps.loadImages` 注入
+ * （与 `confirmTool` / `summarize` 同款的端口套路）。
+ */
+export interface LlmImageInput {
+  /** MIME（`image/png` / `image/jpeg` …），决定 data URL 前缀 */
+  mimeType: string
+  /** **裸 base64**（不含 `data:` 前缀）：前缀在拼 data URL 时统一加，避免两处各拼一半 */
+  dataBase64: string
+  /** 文件名，只用于降级文案与日志 */
+  name?: string
+  /**
+   * 视觉精细度（OpenAI 语义的 `detail`）。
+   *
+   * **当前不下发**：多数 OpenAI 兼容网关不认这个字段，发过去会被 400。
+   * 留在类型里是因为两套协议的映射共用同一份形状，将来要暴露给用户时不必再改类型。
+   */
+  detail?: 'auto' | 'low' | 'high'
+}
+
+/** 把 `LlmImageInput` 拼成 `data:` URL（两套协议的请求映射共用这一份实现）。 */
+export function toImageDataUrl(image: LlmImageInput): string {
+  return `data:${image.mimeType};base64,${image.dataBase64}`
+}
+
+/**
+ * 历史消息里的图片**路径** → 可下发的图片内容（多模态输入，docs/06 §3.1）。
+ *
+ * 必须是**同步**的：真正读盘发生在装配层（`AgentHost` 用注入的 `loadImages` 一次性
+ * 读好、放进 Map），历史映射（`history.ts` / `agentLoop.ts`）只做查表。
+ * 未注入 / 查不到 → 返回空数组 = 这条消息按纯文本下发，**不是**错误。
+ */
+export type LlmImageResolver = (paths: readonly string[]) => readonly LlmImageInput[]
+
 export interface ChatRequestMessage {
   role: ChatRole
   content: string
+  /**
+   * 图片分片（多模态输入，docs/06 §3.1）：非空时请求体的 `content` 由字符串变成
+   * content parts 数组（正文 + 每张图一段）。只应出现在 `role: 'user'` 的消息上。
+   */
+  images?: LlmImageInput[]
   /** assistant 消息发起工具调用时使用 */
   toolCalls?: ToolCallRequest[]
   /** role = tool 时的调用 id */

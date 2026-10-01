@@ -16,6 +16,12 @@ import {
   type SnapshotPort,
 } from '@aurora/agent-core'
 import { resolveWorkspaceOpenTarget } from './tools/workspace-target.js'
+import {
+  buildAttachmentPreview,
+  imageFallbackBlock,
+  splitAttachments,
+  type ImageReadPort,
+} from './attachments.js'
 import { isPathOutsideError, type WorkspaceGuardOptions } from './tools/file-port.js'
 import {
   assertRestorablePath,
@@ -31,6 +37,8 @@ import {
   type AskUserAnswerInput,
   type AuroraApi,
   type ChatArchiveRequest,
+  type ChatAttachmentPreview,
+  type ChatAttachmentPreviewRequest,
   type ChatHistoryRequest,
   type ChatMessageDto,
   type ChatSessionProjectRequest,
@@ -108,8 +116,27 @@ import { createEventBuffer } from './event-buffer.js'
 
 /** 附件正文入上下文的字符上限（超出截断，避免一个 PDF 吃掉整个上下文预算） */
 const MAX_ATTACHMENT_CHARS = 8_000
-/** 单条消息最多处理的附件数 */
+/** 单条消息最多处理的附件数（图文合计；图片分片同样占这个额度） */
 const MAX_ATTACHMENTS = 5
+
+/**
+ * 附件缩略图的读盘端口（docs/07 §2.3）。
+ *
+ * 与 `index.ts` 里给内核的 `loadImages` 是两个端口但**同一套读法**（`stat` + `readFile`）：
+ * 前者给渲染层预览（2 MiB 上限、只回 data URL），后者给模型（8 MiB 上限、读进内核缓存）。
+ * 分开是因为上限与消费方都不同 —— 但都只读、都不写。
+ */
+const previewReadPort: ImageReadPort = {
+  sizeOf: async (path) => {
+    try {
+      const stat = await nodeFs.stat(path)
+      return stat.isFile() ? stat.size : undefined
+    } catch {
+      return undefined
+    }
+  },
+  readFile: (path) => nodeFs.readFile(path),
+}
 
 export interface DesktopDeps {
   settings: SettingsStoreLike
@@ -511,12 +538,17 @@ export function registerIpc(deps: DesktopDeps): () => void {
       ),
   )
   handle(IPC.chat.send, async (request: SendMessageRequest) => {
-    // 附件（docs/07 §2.3）：在主进程提取成文本后拼进本轮消息。
+    // 附件（docs/07 §2.3）：在主进程分流 —— 图片交多模态链路（docs/06 §3.1，是否真的下发
+    // 取决于 `llm.providers.<id>.vision`），其余提取成文本后拼进本轮消息。
     // 刻意**不在渲染层**读文件 —— 渲染进程没有 fs 能力，也不该有。
     try {
-      const extraContext = await buildAttachmentContext(deps, request.attachments)
+      const prepared = await prepareAttachments(deps, request.attachments)
       return await deps.agent
-        .send(extraContext === undefined ? request : { ...request, extraContext })
+        .send({
+          ...request,
+          ...(prepared.extraContext === undefined ? {} : { extraContext: prepared.extraContext }),
+          ...(prepared.images.length === 0 ? {} : { images: prepared.images }),
+        })
         .then(ok, (error: unknown) =>
           err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
         )
@@ -524,6 +556,25 @@ export function registerIpc(deps: DesktopDeps): () => void {
       return err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
     }
   })
+  /**
+   * 附件缩略图（v22 多模态输入，docs/07 §2.3）：渲染层 chip 上那张 48×48 的图。
+   *
+   * 渲染进程拿不到 fs，这是唯一通道；**只回 data URL**（不回来路 / 目录信息），
+   * 非图片、超过 `PREVIEW_MAX_BYTES`、读失败都退回纯文字 chip 并附原因，
+   * 绝不让渲染层显示一张裂图。
+   */
+  handle<ChatAttachmentPreview>(
+    IPC.chat.readAttachment,
+    (request: ChatAttachmentPreviewRequest) => {
+      const path = typeof request?.path === 'string' ? request.path : ''
+      if (path === '') return Promise.resolve(err('E_INVALID_ARGUMENT', '缺少附件路径'))
+      return buildAttachmentPreview(path, previewReadPort)
+        .then(ok)
+        .catch((error: unknown) =>
+          err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+        )
+    },
+  )
   handle<boolean>(IPC.chat.abort, (requestId: string) => ok(deps.agent.abort(requestId)))
   handle<ChatMessageDto[]>(IPC.chat.history, (request: ChatHistoryRequest) => {
     const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
@@ -922,22 +973,24 @@ function broadcast(channel: string, payload: unknown): void {
 }
 
 /**
- * 把附件提取成可入上下文的文本块（docs/07 §2.3）。
+ * 把附件整理成「本轮要额外给模型看的内容」（docs/07 §2.3、docs/06 §3.1）。
  *
- * 降级策略：无法提取（不支持的格式 / 提取失败）时**不阻断发送**，
- * 而是在上下文里如实写明「该文件内容未读取」，避免模型以为读过内容而编造。
- * 返回 `undefined` 表示本次没有可用附件（调用方走原路径，不额外拼上下文）。
+ * 分流规则：图片（`png / jpg / jpeg / webp / gif / bmp`）**不提取文本**，而是作为图片分片下发；
+ * 其余文件走分类管线的 `extract.ts` 提取文本。两类可以同时存在于一轮消息里。
+ *
+ * 降级策略（一律**不阻断发送**）：
+ * - 关闭了图片输入（`llm.providers.<id>.vision` 为假）→ 图片写成一行「未读取」说明，
+ *   请求体里不出现图片分片（对不支持视觉的模型发图片会被服务端 400）；
+ * - 无法提取的文档 → 同样如实写明「内容未读取」，避免模型以为读过而编造。
+ *
+ * 返回的 `images` 是**路径**（读盘在内核的 `loadImages` 端口里发生，一处读、一处缓存），
+ * 只有真正要下发时才是非空。
  */
-async function buildAttachmentContext(
+async function prepareAttachments(
   deps: DesktopDeps,
   attachments: string[] | undefined,
-): Promise<string | undefined> {
-  if (attachments === undefined || attachments.length === 0) return undefined
-  const extract = deps.attachmentExtract
-  if (extract === undefined) {
-    // 未装配提取能力（例如精简场景）：如实说明，不静默假装附件存在
-    return `【附件】${attachments.length} 个文件未读取内容（当前环境未启用附件解析）`
-  }
+): Promise<{ extraContext?: string; images: string[] }> {
+  if (attachments === undefined || attachments.length === 0) return { images: [] }
 
   const targets = attachments.slice(0, MAX_ATTACHMENTS)
   if (attachments.length > MAX_ATTACHMENTS) {
@@ -947,36 +1000,77 @@ async function buildAttachmentContext(
     })
   }
 
+  const { images, documents } = splitAttachments(targets)
   const blocks: string[] = []
-  for (const path of targets) {
-    try {
-      const digest = await extract(path)
-      if (digest === undefined) {
-        blocks.push(`【附件】${fileNameOf(path)}：内容未读取（不支持的格式）`)
-        continue
-      }
-      if (digest.text === undefined || digest.text.trim() === '') {
-        blocks.push(
-          `【附件】${digest.fileName}：内容未读取${digest.note === undefined ? '' : `（${digest.note}）`}`,
-        )
-        continue
-      }
-      blocks.push(
-        [
-          `【附件】${digest.fileName}`,
-          digest.text.length > MAX_ATTACHMENT_CHARS
-            ? `${digest.text.slice(0, MAX_ATTACHMENT_CHARS)}\n（内容过长，已截断）`
-            : digest.text,
-        ].join('\n'),
-      )
-    } catch (error) {
-      deps.logger.warn('附件提取失败，按未读取处理', { path, error: String(error) })
-      blocks.push(`【附件】${fileNameOf(path)}：内容未读取（提取失败）`)
+
+  // 图片：能力开关决定「下发」还是「降级成一行说明」
+  const vision = visionEnabled(deps)
+  for (const path of images) {
+    if (!vision) {
+      blocks.push(imageFallbackBlock(fileNameOf(path), '当前模型未开启图片输入'))
     }
   }
 
-  if (blocks.length === 0) return undefined
-  return ['以下是用户随消息一起发送的本地文件内容，仅供本次回复参考。', ...blocks].join('\n\n')
+  // 文档：沿用既有提取链（officeparser / 纯文本读取器）
+  const extract = deps.attachmentExtract
+  if (documents.length > 0 && extract === undefined) {
+    // 未装配提取能力（例如精简场景）：如实说明，不静默假装附件存在
+    blocks.push(`【附件】${documents.length} 个文件未读取内容（当前环境未启用附件解析）`)
+  } else if (extract !== undefined) {
+    for (const path of documents) {
+      try {
+        const digest = await extract(path)
+        if (digest === undefined) {
+          blocks.push(`【附件】${fileNameOf(path)}：内容未读取（不支持的格式）`)
+          continue
+        }
+        if (digest.text === undefined || digest.text.trim() === '') {
+          blocks.push(
+            `【附件】${digest.fileName}：内容未读取${digest.note === undefined ? '' : `（${digest.note}）`}`,
+          )
+          continue
+        }
+        blocks.push(
+          [
+            `【附件】${digest.fileName}`,
+            digest.text.length > MAX_ATTACHMENT_CHARS
+              ? `${digest.text.slice(0, MAX_ATTACHMENT_CHARS)}\n（内容过长，已截断）`
+              : digest.text,
+          ].join('\n'),
+        )
+      } catch (error) {
+        deps.logger.warn('附件提取失败，按未读取处理', { path, error: String(error) })
+        blocks.push(`【附件】${fileNameOf(path)}：内容未读取（提取失败）`)
+      }
+    }
+  }
+
+  return {
+    ...(blocks.length === 0
+      ? {}
+      : {
+          extraContext: [
+            '以下是用户随消息一起发送的本地文件内容，仅供本次回复参考。',
+            ...blocks,
+          ].join('\n\n'),
+        }),
+    images: vision ? images : [],
+  }
+}
+
+/**
+ * 当前默认 provider 是否开了**图片输入**（docs/06 §3.1）。
+ *
+ * 判据只有一处：`llm.providers.<active>.vision`。读不到（未配置 / 条目被删）按**关**处理 ——
+ * 与内核 `ProviderConfig.vision` 的缺省一致，绝不因为配置异常就把图片发出去。
+ */
+function visionEnabled(deps: DesktopDeps): boolean {
+  try {
+    const llm = deps.settings.get().llm
+    return llm.providers[llm.active]?.vision === true
+  } catch {
+    return false
+  }
 }
 
 /** 从绝对路径取文件名（渲染层传来的路径可能含 Windows 反斜杠） */

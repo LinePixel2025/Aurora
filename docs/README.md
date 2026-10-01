@@ -7,6 +7,16 @@
 
 ## 当前实现状态
 
+**多模态输入 + Responses API 轮（2026-10-01，配置 Schema v22，迁移 v21 → v22）** —— 两件事：
+① **图片进模型**（`llm.providers.<id>.vision`，出厂关）：拖入的图片按扩展名分出来，
+作为 content parts（`image_url`）下发；会话历史只存**路径**不存 base64（跨轮次续聊按路径重读）；
+附件 chip 显示缩略图；关闭开关时图片降级为一行「未读取」说明（对不支持视觉的模型发图片会被 400）；
+② **Responses API**（`llm.providers.<id>.type = 'openai-responses'`）：新增
+`OpenAiResponsesProvider`（`/responses`，`store: false`），与 chat-completions 共用同一层
+超时 / 重试 / 错误码（`llm/transport.ts`）。
+设计见 [06 §3.1 / §3.2](./06-agent-core.md)、[08 §1](./08-settings-onboarding.md)、[07 §2.3](./07-ui-spec.md)，
+验证见 [04-roadmap.md](./04-roadmap.md) 的「2026-10-01 多模态与 Responses API 轮」。
+
 **当前版本 v0.2.9（细节优化轮），配置 Schema v21（迁移 v20 → v21）** —— 十一处细节：
 输入卡工具行可收缩省略（窄窗 / 高 DPI 下权限文字不再溢出边框）、工具卡完成即自动折叠、
 运行态「扫光 + 边框呼吸」双层动效、主区视图切换与自动化弹窗过渡、设置页文案再精简 +
@@ -420,9 +430,10 @@ Center 网页端移动端对话区保底 60% 高度（面板收进分段切换�
 
 仍待做：**OS 级沙箱**（三档权限与项目根 realpath 前缀校验**不是**沙箱 —— 没有作业对象 / 容器 /
 受限令牌，`run_command` 仍是当前用户权限）、Code Mode 功能实现（Work 已于 0.0.1 初步实装）、
-多模态输入（图片进模型 + 附件预览）与 Responses API、子代理能力加强（多子代理 / 独立
-`model·effort` / 并行 / 可写工作区）、上下文压缩修正（工具参数计入权重、摘要落盘、
-预算按真实 token 校准）、代码签名证书、启动耗时 / 内存优化、OCR、多语言。
+子代理能力加强（多子代理 / 独立 `model·effort` / 并行 / 可写工作区）、上下文压缩修正
+（工具参数计入权重、摘要落盘、预算按真实 token 校准）、代码签名证书、启动耗时 / 内存优化、OCR、多语言。
+（**多模态输入与 Responses API 已于 2026-10-01 落地**，见文首那一轮与
+[04-roadmap.md](./04-roadmap.md) 的「2026-10-01 多模态与 Responses API 轮」。）
 详见 [04-roadmap.md](./04-roadmap.md) 的阶段状态与「实现说明」。
 实际工程结构见根目录 [README.md](../README.md)；端到端验证见 `pnpm verify`、
 `pnpm verify:release`、`pnpm verify:update` 与 `AURORA_SMOKE=1 pnpm dev`。

@@ -55,7 +55,7 @@ describe('SessionStore', () => {
       sessionId: string
       messages: StoredMessage[]
     }
-    expect(persisted.version).toBe(2)
+    expect(persisted.version).toBe(3)
     expect(persisted.sessionId).toBe('quick')
     expect(persisted.messages).toHaveLength(3)
     expect(persisted.messages[2]?.toolCallId).toBe('c1')
@@ -734,7 +734,7 @@ describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 
 
     // setArchived 是 await 写盘的（不靠 300ms 防抖），因此此刻盘上已是最终内容
     const persisted = readFile(fs, 'quick')
-    expect(persisted['version']).toBe(2)
+    expect(persisted['version']).toBe(3)
     expect(metaOf(fs, 'quick')['archived']).toBe(true)
     expect(typeof metaOf(fs, 'quick')['archivedAt']).toBe('string')
 
@@ -803,7 +803,7 @@ describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 
     await store.setArchived('empty-one', true)
 
     const persisted = readFile(fs, 'empty-one')
-    expect(persisted['version']).toBe(2)
+    expect(persisted['version']).toBe(3)
     expect(persisted['messages']).toEqual([])
     expect(metaOf(fs, 'empty-one')['archived']).toBe(true)
     expect((await store.summaries()).find((item) => item.id === 'empty-one')?.title).toBe('新会话')
@@ -972,6 +972,7 @@ describe('SessionStore · 会话绑定项目（chat:setSessionProject，docs/06 
 
     expect(await store.projectIdOf('main')).toBeUndefined()
     expect(fs.writeLog).toHaveLength(0)
+    // 只读不该顺手重写老文件：盘上那份仍是它自己的 v2（读取侧对 v1 / v2 都宽容）
     expect(readFile(fs, 'main')['version']).toBe(2)
   })
 

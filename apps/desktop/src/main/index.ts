@@ -91,6 +91,8 @@ import { TtsSynthesizer } from './tts.js'
 import { createSttService } from './stt.js'
 import { createImageGenService } from './imagegen.js'
 import { SETTINGS_HINT } from './settings-hint.js'
+// 图片附件读盘（多模态输入，docs/06 §3.1）：与渲染层预览同一套读法，上限不同
+import { readImages } from './attachments.js'
 import { registerIpc, createSettingsWriter, restoreSnapshot, type DesktopDeps } from './ipc.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { ProactiveScheduler } from './proactive.js'
@@ -1209,6 +1211,25 @@ async function bootstrap(): Promise<void> {
     // 快速会话上下文只带最近 5 分钟，防旧上下文污染（docs/06 §4 滑动窗口）
     quickContextWindowMs: 5 * 60_000,
     confirmTool,
+    // 图片附件读盘（多模态输入，docs/06 §3.1，v22）：内核不碰文件系统，端口在这里注入。
+    // 与 `attachmentExtract` 同一套「降级不阻断」口径：读不出 / 超限的图如实记 warn，
+    // 本轮按未读取处理（模型不会以为它看见过）。
+    loadImages: async (paths) => {
+      const loaded = await readImages(paths, {
+        sizeOf: async (path) => {
+          const stat = await fs.stat(path).catch(() => undefined)
+          return stat?.isFile() === true ? stat.size : undefined
+        },
+        readFile: (path) => fs.readFile(path),
+      })
+      return loaded.map((item) => {
+        if (item.image === undefined) {
+          logger?.warn('图片附件未读入上下文', { path: item.path, note: item.note })
+          return { path: item.path }
+        }
+        return { path: item.path, image: item.image }
+      })
+    },
     // Job 持久化（docs/06 §4.1，v15）：一次请求 = 一条可查询 / 可续跑的 job。
     // 三个上限都走 **getter** —— 设置页改完下一次请求即生效（v15 之前 maxRounds 是常量值，
     // 改配置必须重启，属于"能写但不生效"的死字段）。
@@ -1913,6 +1934,8 @@ async function runCapture(dir: string): Promise<void> {
             reasoningEffort: 'auto',
             // 故意给一个窗口值：本链路顺带钉住「占用比例」那一半（分母来自配置）
             contextWindow: 128_000,
+            // `vision` 同为 output 必填（zod `.default(false)`）：自测链路上关闭图片输入
+            vision: false,
           },
         },
       },
@@ -2133,6 +2156,8 @@ async function runSmokeTest(userData: string): Promise<void> {
             // `contextWindow` 同为 output 必填（zod `.default(0)`）：0 = 未知，
             // 界面此时只显示 token 数、不显示占用比例
             contextWindow: 0,
+            // `vision` 同为 output 必填（zod `.default(false)`）：自测链路上关闭图片输入
+            vision: false,
           },
         },
       },
@@ -3516,6 +3541,166 @@ async function runSmokeTest(userData: string): Promise<void> {
     record('损坏 config.json 仍能恢复为合法配置', corruptRecovered, corruptDetail)
   }
 
+  // 2.8 多模态输入（docs/06 §3.1，v22）：真实图片文件 → 主进程读盘 → 内核组装 → 真实 HTTP 桩。
+  //     两个方向都断言，因为**少任何一半都测不出这条链的价值**：
+  //     ① 开关打开时请求体里必须出现 `image_url` 分片（否则"图片进模型"只是文档里的承诺）；
+  //     ② 开关关闭时**一个分片都不许有**（对不支持视觉的模型发图片会被服务端 400，
+  //        这个开关就是为此存在的 —— 退化方向错了等于把可用性事故引回来）。
+  if (smokeSection('2.8') && settings !== undefined && agent !== undefined && stub !== undefined) {
+    const imagePath = join(userData, 'smoke-image.png')
+    let detail = ''
+    let multimodalOk = false
+    try {
+      // 1×1 透明 PNG：不需要真的能解码 —— 这条链验的是「字节被读成 base64 并作为图片分片下发」
+      await fs.writeFile(
+        imagePath,
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+          'base64',
+        ),
+      )
+      const sendWithImages = async (
+        sessionId: string,
+        images: readonly string[],
+      ): Promise<string> => {
+        let outcome = ''
+        const off = agent!.onEvent((event) => {
+          if (event.sessionId !== sessionId) return
+          if (event.type === 'done') outcome = 'done'
+          else if (event.type === 'error') outcome = `error:${event.code}:${event.message}`
+        })
+        await agent!.send({ sessionId, text: '多模态自测', origin: 'chat', images })
+        const deadline = Date.now() + 20_000
+        while (outcome === '' && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20))
+        }
+        off()
+        return outcome === '' ? 'timeout' : outcome
+      }
+      /** 最后一个请求里那条 user 消息的 `content`（形状取决于是不是带图片的那一轮） */
+      const lastUserContentOf = (): unknown => {
+        for (const request of [...stub.requests].reverse()) {
+          if (!request.path.endsWith('/chat/completions')) continue
+          const messages = request.body?.messages ?? []
+          const user = [...messages].reverse().find((message) => message.role === 'user')
+          if (user !== undefined) return user.content
+        }
+        return undefined
+      }
+      /**
+       * 写开关。这里做三件事，缺一条都会让本段以**看着像图片链路坏了**的方式失败：
+       * ① `llm.active` 拽回 `smoke` —— 第 5 段的 crash 矩阵会把 `llm.active` 写成不存在的 id，
+       *    `sanitize` 随后把它规范化成**空串**；
+       * ② 重新写回 `smoke` 的 API Key —— 渲染层脚本收尾时按卫生习惯 `clearSecret` 过它，
+       *    没有 Key 时 `createProviderFactory` 会**静默回退**到另一个可用条目
+       *    （日志里是一条 `默认模型配置不可用，已回退到可用条目`），而那一条的 `vision` 是关的，
+       *    于是请求照发、图却没进请求体；
+       * ③ 设 `vision` 本身。
+       */
+      /**
+       * 写开关。这里做三件事，缺一条都会让本段以**看着像图片链路坏了**的方式失败：
+       * ① `llm.active` 拽回 `smoke` —— 第 5 段的 crash 矩阵会把 `llm.active` 写成不存在的 id，
+       *    `sanitize` 随后把它规范化成**空串**；
+       * ② **把 `smoke` 条目整体写回去**（而不是只改 `vision`）—— 前面的段可能已经把它删了，
+       *    条目不存在时 `setSecret` 会以「无法识别的凭据路径」抛错，整段直接进 catch；
+       * ③ 重新写回 API Key —— 渲染层脚本收尾时按卫生习惯 `clearSecret` 过它，没有 Key 时
+       *    `createProviderFactory` 会**静默回退**到另一个可用条目（日志里是
+       *    `默认模型配置不可用，已回退到可用条目`），而那一条的 `vision` 是关的，
+       *    于是请求照发、图却没进请求体。
+       * 顺序不可换：`setSecret` 要求该 provider 已经存在于配置里。
+       */
+      const setVision = (vision: boolean): void => {
+        settings!.update({
+          llm: {
+            active: 'smoke',
+            providers: {
+              ...settings!.get().llm.providers,
+              smoke: {
+                type: 'openai-compat',
+                baseUrl: stub!.baseUrl,
+                apiKeyEnc: '',
+                model: STUB_MODEL,
+                modelList: [STUB_MODEL],
+                temperature: 0.7,
+                reasoningEffort: 'auto',
+                contextWindow: 0,
+                vision,
+              },
+            },
+          },
+        })
+        settings!.setSecret('llm.providers.smoke.apiKey', STUB_API_KEY)
+      }
+
+      /** 请求体里那条 user 消息的形状摘要（失败详情用：看得见「有没有图片分片」即可） */
+      const shapeOf = (content: unknown): string => {
+        if (typeof content === 'string') return `string(${content.length})`
+        if (!Array.isArray(content)) return String(content)
+        const kinds = content
+          .map((part) => String((part as { type?: unknown }).type ?? '?'))
+          .join('+')
+        return `array:${kinds}`
+      }
+
+      setVision(true)
+      const requestsBefore = stub.requests.length
+      const onOutcome = await sendWithImages('smoke-image-on', [imagePath])
+      const withImages = lastUserContentOf()
+      const onRequests = stub.requests.slice(requestsBefore).length
+      const onShape = shapeOf(withImages)
+      const onOk =
+        onOutcome === 'done' &&
+        Array.isArray(withImages) &&
+        withImages.some(
+          (part) =>
+            (part as { type?: unknown }).type === 'image_url' &&
+            typeof (part as { image_url?: { url?: unknown } }).image_url?.url === 'string' &&
+            (part as { image_url: { url: string } }).image_url.url.startsWith(
+              'data:image/png;base64,',
+            ),
+        )
+
+      setVision(false)
+      const offOutcome = await sendWithImages('smoke-image-off', [imagePath])
+      const withoutImages = lastUserContentOf()
+      const offRequests = stub.requests.slice(requestsBefore).length - onRequests
+      const offShape = shapeOf(withoutImages)
+      const offOk = offOutcome === 'done' && typeof withoutImages === 'string'
+
+      // 会话历史里存的是**路径**（跨轮次重放的前提）：一张 4 MB 的图 base64 后是 5.3 MB，
+      // 存内容会把 sessions/*.json 顶成几十 MB
+      const stored = await sessions!.get('smoke-image-on')
+      const storedUser = stored.find((message) => message.role === 'user')
+      const storedOk = Array.isArray(storedUser?.images) && storedUser?.images[0] === imagePath
+
+      multimodalOk = onOk && offOk && storedOk
+      detail =
+        `on=${onOk}(${onOutcome},${onShape}) off=${offOk}(${offOutcome},${offShape})` +
+        ` storedPath=${storedOk} req=${onRequests}+${offRequests}`
+    } catch (error) {
+      detail = `异常：${String(error)}`
+    }
+    record(
+      '多模态输入：开启时图片作为 image_url 分片下发且历史只存路径；关闭时不下发图片分片',
+      multimodalOk,
+      detail,
+    )
+    // 收尾：把开关与默认 provider 复原（后续清理与磁盘不变量断言都假设配置是"干净"的）。
+    // 注意 `llm.active` 也一并写回：本段开头为了绕开第 5 段留下的空 active 而把它设成了 `smoke`。
+    try {
+      const llm = settings.get().llm
+      settings.update({
+        llm: {
+          ...llm,
+          active: 'smoke',
+          providers: { ...llm.providers, smoke: { ...llm.providers['smoke']!, vision: false } },
+        },
+      })
+    } catch {
+      /* 复原失败不影响断言结果 */
+    }
+  }
+
   for (const item of results) {
     const line = `${item.ok ? 'PASS' : 'FAIL'} ${item.name}${item.detail === '' ? '' : ` — ${item.detail}`}`
     if (item.ok) logger?.info(`${SMOKE_RESULT_PREFIX} ${line}`)
@@ -3618,6 +3803,7 @@ async function runResumePhase(userData: string): Promise<void> {
               temperature: 0.7,
               reasoningEffort: 'auto',
               contextWindow: 0,
+              vision: false,
             },
           },
         },

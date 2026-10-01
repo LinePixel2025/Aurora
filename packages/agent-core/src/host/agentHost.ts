@@ -16,7 +16,7 @@ import {
   type ConfirmDecision,
   type LoopProvider,
 } from '../loop/agentLoop.js'
-import type { ReasoningEffortLevel } from '../llm/types.js'
+import type { LlmImageInput, LlmImageResolver, ReasoningEffortLevel } from '../llm/types.js'
 import type { SkillsBridge } from '../skills/bridge.js'
 import {
   compressHistory,
@@ -25,7 +25,7 @@ import {
   type SummarizeFn,
 } from '../session/history.js'
 import type { SessionStore } from '../session/store.js'
-import type { NewMessage, StoredToolCall } from '../session/types.js'
+import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
 import { filterTools, type ToolRegistry, type ToolSource } from '../tools/registry.js'
 
 export interface ProviderConfig {
@@ -34,6 +34,19 @@ export interface ProviderConfig {
   temperature?: number
   /** 思考等级（v5）；`undefined` = 不下发思考等级字段 */
   reasoningEffort?: ReasoningEffortLevel
+  /**
+   * 该模型是否支持**图片输入**（多模态，docs/06 §3.1，v22）：
+   * 由装配层按 `llm.providers.<id>.vision` 透传。**缺省 = 不支持** ——
+   * 对不支持视觉的模型发图片分片会被服务端 400（整个对话都用不了），
+   * 因此「没说不支持」不能当成支持；关闭时图片按未读取降级为一行文字。
+   */
+  vision?: boolean
+}
+
+/** 一次图片读盘的结果（`image` 缺省 = 这张图读不出来，按未读取处理）。 */
+export interface LoadedImage {
+  path: string
+  image?: LlmImageInput
 }
 
 export interface AgentProviderFactory {
@@ -136,6 +149,16 @@ export interface AgentHostDeps {
    */
   workspaceHint?(sessionId: string): Promise<string | undefined>
   /**
+   * 图片附件**读盘**（多模态输入，docs/06 §3.1）：把绝对路径读成可下发的图片内容。
+   *
+   * 内核不碰文件系统，因此这里是注入端口（与 `confirmTool` / `summarize` 同款）：
+   * 主进程实现里带单图大小上限与失败降级。**未注入时图片一律不重放**（历史按纯文本下发、
+   * 本轮的图片路径只落盘不发送），行为与 v22 之前完全一致。
+   *
+   * 返回与入参**一一对应**（读不出的条目 `image` 缺省），调用方据此只放行读成功的那些。
+   */
+  loadImages?(paths: readonly string[]): Promise<readonly LoadedImage[]>
+  /**
    * Job 存储（docs/06 §4.1，v15）：有了它，一次请求就是一条可查询 / 可续跑的 job；
    * 未注入时行为与 v15 之前完全一致（不落 job、不发 `job` 事件）。
    */
@@ -221,6 +244,14 @@ export class KernelAgentHost implements AgentHostContract {
   /** 每个会话的累计历史摘要（内存态；进程重启后由后续轮次重新压缩得出） */
   private readonly summaries = new Map<string, string>()
   /**
+   * 图片路径 → 已读好的图片内容（多模态输入，docs/06 §3.1）。
+   *
+   * 进程内缓存，键是**绝对路径**：同一张图在后续轮次（含自动续轮的 attempt 重进）
+   * 只读一次盘。刻意不设淘汰：一条会话里的图片数量本就有限，而按 LRU 逐出的代价是
+   * 「同一张图被反复读盘 + 反复编码 base64」，那正是这条链上最贵的操作。
+   */
+  private readonly imageCache = new Map<string, LlmImageInput>()
+  /**
    * 会话级「已授权不再询问」的工具名表（`confirmTool` 返回 `'always'` 时写入）。
    *
    * 为什么放在这里而不是主进程：许可的粒度是**会话 × 工具名**，而"会话"这个概念
@@ -257,6 +288,15 @@ export class KernelAgentHost implements AgentHostContract {
      * 由装配层在发送前准备好并拼进本轮用户消息，内核只负责透传。
      */
     extraContext?: string
+    /**
+     * 随本轮消息一起发出的**图片附件路径**（多模态输入，docs/06 §3.1）。
+     *
+     * 由装配层（主进程）按扩展名从附件里挑出来；内核经注入的 `loadImages` 读成内容，
+     * 路径本身落进会话历史（`StoredMessage.images`）供跨轮次重放。
+     * 当前 provider 的 `ProviderConfig.vision` 为假时**只落盘不发送** —— 能力开关那一层的
+     * 判断在装配层已经做过一次（降级文案也在那边），这里是防止其它调用方绕过它。
+     */
+    images?: readonly string[]
     /**
      * 续跑哪条 job（v15，docs/06 §4.1）：只接受**同会话**且 `status === 'paused'` 的 job，
      * 其余一律回 `E_JOB_STATE` 且不开始执行。给了它时本轮**不重复落盘**那条用户消息。
@@ -340,6 +380,9 @@ export class KernelAgentHost implements AgentHostContract {
       config,
       controller,
       ...(request.extraContext === undefined ? {} : { extraContext: request.extraContext }),
+      ...(request.images === undefined || request.images.length === 0
+        ? {}
+        : { images: request.images }),
       ...(resumeJob === undefined ? {} : { resumeJob }),
     })
     return { requestId }
@@ -413,6 +456,8 @@ export class KernelAgentHost implements AgentHostContract {
     config: ProviderConfig
     controller: AbortController
     extraContext?: string
+    /** 本轮的图片附件路径（多模态输入，docs/06 §3.1） */
+    images?: readonly string[]
     /** 续跑的目标 job（`send` 已校验过：同会话 + `paused`）；缺省 = 一次全新请求 */
     resumeJob?: AgentJob
   }): Promise<void> {
@@ -584,6 +629,46 @@ export class KernelAgentHost implements AgentHostContract {
         }
         const history = compression.messages
 
+        /**
+         * 图片附件读盘（多模态输入，docs/06 §3.1）。
+         *
+         * 只在**当前 provider 声明支持图片输入**（`vision`）且装配层注入了 `loadImages` 时读：
+         * 关掉开关的模型收到图片分片会被服务端 400，所以降级必须在**发出去之前**完成
+         * （降级文案由装配层在 `extraContext` 里给出，内核这边只是不读、不发）。
+         *
+         * 缓存跨 attempt 复用（自动续轮会重进这个循环）：读过的路径不再读第二遍，
+         * 因此续轮不会因为"重新读一遍图"而变慢；读不出的路径**不缓存**，
+         * 于是也不会把一次偶发失败永久记成本轮失败。
+         */
+        const visionEnabled = input.config.vision === true
+        const loadImages = this.deps.loadImages
+        if (visionEnabled && loadImages !== undefined) {
+          await primeImageCache(
+            [...collectImagePaths(history), ...(input.images ?? [])],
+            loadImages,
+            this.imageCache,
+            this.logger,
+          )
+        }
+        const resolveImages: LlmImageResolver = (paths) => {
+          /**
+           * 能力开关**在解析处再判一次**，而不是只判「要不要读盘」。
+           *
+           * `imageCache` 是进程级、不淘汰的（同一张图跨轮次只读一次盘），因此
+           * 「先开着开关跑一轮（图进了缓存）→ 再关掉」时，缓存里那几张图照样能被解析出来 ——
+           * 于是关闭态仍然把图片发了出去。这条路径是 smoke 实测出来的：
+           * 同一个进程里连续两次发送（开 / 关），第二次的内容分片里仍然有 `image_url`。
+           */
+          if (!visionEnabled) return []
+          const out: LlmImageInput[] = []
+          for (const path of paths) {
+            const image = this.imageCache.get(path)
+            if (image !== undefined) out.push(image)
+          }
+          return out
+        }
+        const userImages = resolveImages(input.images ?? [])
+
         // 三个可选提示片段：读取失败一律降级为省略该小节，不让提示词问题拖垮请求
         const settingsHint = this.readSettingsHint()
         const todoSummary = await this.readTodoSummary(sessionId)
@@ -642,6 +727,14 @@ export class KernelAgentHost implements AgentHostContract {
           userInput,
           ...(extraContext === undefined ? {} : { extraContext }),
           history,
+          // 图片（docs/06 §3.1）：本轮读好的内容 + 供跨轮次重放的同步解析器。
+          // 路径**无条件**落盘（即使 vision 关着）：用户后来在设置页打开开关，
+          // 历史里那张图应该立刻能被重放，而不是要求他重新发一次。
+          ...(userImages.length === 0 ? {} : { userImages }),
+          ...(input.images === undefined || input.images.length === 0
+            ? {}
+            : { userImagePaths: input.images }),
+          resolveImages,
           tools,
           sessionId,
           signal: input.controller.signal,
@@ -1021,4 +1114,53 @@ export type { AgentToolCall }
 function joinSections(parts: Array<string | undefined>): string | undefined {
   const kept = parts.map((part) => part?.trim() ?? '').filter((part) => part !== '')
   return kept.length === 0 ? undefined : kept.join('\n\n')
+}
+
+/**
+ * 历史里出现过的图片路径（多模态输入，docs/06 §3.1）。
+ *
+ * 只收字符串：会话文件是磁盘数据，可能被手改过 —— 畸形值在这里就滤掉，
+ * 不让它进到读盘端口（那边按路径读文件，拿到非字符串只会白报一次错）。
+ */
+function collectImagePaths(history: readonly StoredMessage[]): string[] {
+  const paths: string[] = []
+  for (const message of history) {
+    if (!Array.isArray(message.images)) continue
+    for (const path of message.images) {
+      if (typeof path === 'string' && path !== '') paths.push(path)
+    }
+  }
+  return paths
+}
+
+/**
+ * 把还没读过的路径读进缓存（多模态输入，docs/06 §3.1）。
+ *
+ * 三条刻意的降级，都不让图片问题拖垮一次请求：
+ * - 端口抛错 → 记 warn，本轮该批图片全部按未读取处理（**不写缓存**，下次还会再试）；
+ * - 单张读不出（`image` 缺省）→ 记 warn，只跳过这一张；
+ * - 端口回传的条目少于请求的路径 → 缺的那些视为未读取（不编造内容）。
+ */
+async function primeImageCache(
+  paths: readonly string[],
+  loadImages: NonNullable<AgentHostDeps['loadImages']>,
+  cache: Map<string, LlmImageInput>,
+  logger: Logger,
+): Promise<void> {
+  const missing = [...new Set(paths)].filter((path) => path !== '' && !cache.has(path))
+  if (missing.length === 0) return
+  try {
+    const loaded = await loadImages(missing)
+    for (const item of loaded) {
+      if (item.image === undefined) {
+        logger.warn('图片附件读取失败，本轮按未读取处理', { path: item.path })
+        continue
+      }
+      cache.set(item.path, item.image)
+    }
+  } catch (error) {
+    logger.warn('图片附件读取失败，本轮按未读取处理', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
 }

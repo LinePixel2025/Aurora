@@ -12,6 +12,8 @@ import type { AgentToolCall, SubagentSnapshot, TokenUsage } from '@aurora/shared
 import type {
   ChatEvent,
   ChatRequestMessage,
+  LlmImageInput,
+  LlmImageResolver,
   LlmToolDefinition,
   ReasoningEffortLevel,
 } from '../llm/types.js'
@@ -119,6 +121,24 @@ export interface AgentLoopOptions {
   /** 本次用户输入之前的会话历史（不含本次输入） */
   history: readonly StoredMessage[]
   /**
+   * 本次用户输入随附的图片（多模态输入，docs/06 §3.1）：已解析好的内容，
+   * 由装配层经 `loadImages` 读盘得到。缺省 = 本轮没有图片。
+   *
+   * 落盘那份存的是**路径**（`userImagePaths`），两者是同一批图片的两种形状：
+   * 一个给本轮请求用，一个给跨轮次重放用。
+   */
+  userImages?: readonly LlmImageInput[]
+  /**
+   * 与 `userImages` 配套的图片**路径**，随用户消息一起落进会话历史（`StoredMessage.images`）。
+   * 缺省 / 空数组 = 不写该字段。
+   */
+  userImagePaths?: readonly string[]
+  /**
+   * 历史消息里的图片路径 → 图片内容（多模态输入，docs/06 §3.1）。
+   * 由装配层一次性读好放进查表闭包；缺省 = 历史里的图片不重放（按纯文本下发）。
+   */
+  resolveImages?: LlmImageResolver
+  /**
    * 本次可用的工具（注册表，或装配层按运行来源过滤后的**只读视图**，docs/06 §5.2）。
    * 循环只依赖 `get()` / `toLlmTools()`，因此视图与注册表可互换。
    */
@@ -200,19 +220,32 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
   )
   const messages: ChatRequestMessage[] = [
     { role: 'system', content: options.systemPrompt },
-    ...toMessages(options.history),
+    ...toMessages(options.history, options.resolveImages),
   ]
 
   // 用户消息先落盘，保证即使后续失败也能在历史里看到提问。
   // **续跑时 `appendUserMessage` 为 false**：那条提问在上一个 job 里已经落过盘了，
   // 再 append 一次历史里就会有两份同样的用户消息（续跑最经典的重复落盘 bug）。
   if (options.appendUserMessage !== false) {
-    await options.append({ role: 'user', content: options.userInput })
+    await options.append({
+      role: 'user',
+      content: options.userInput,
+      // 图片**存路径不存内容**（docs/06 §3.1）：会话文件不因图片膨胀，重放时按路径重读
+      ...(options.userImagePaths === undefined || options.userImagePaths.length === 0
+        ? {}
+        : { images: [...options.userImagePaths] }),
+    })
   }
   // 续跑时那条用户消息已经在 `history` 里（上一次请求写下的），不能重复 push 进 messages；
-  // 非续跑时才补上本轮输入。
+  // 非续跑时才补上本轮输入。图片同理：只有非续跑那次才需要把本轮图片放进请求。
   if (options.appendUserMessage !== false) {
-    messages.push({ role: 'user', content: options.userInput })
+    messages.push({
+      role: 'user',
+      content: options.userInput,
+      ...(options.userImages === undefined || options.userImages.length === 0
+        ? {}
+        : { images: [...options.userImages] }),
+    })
   }
   // 技能正文等一次性上下文：放在用户消息之后，只影响本次请求，不写入历史
   if (options.extraContext !== undefined && options.extraContext.trim() !== '') {
@@ -299,7 +332,7 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       for (const call of calls) {
         call.state = 'error'
         call.outputSummary ??= '流中断未执行'
-      }      // 已产出的文本与思考链先落盘，避免用户看到的内容在历史里消失
+      } // 已产出的文本与思考链先落盘，避免用户看到的内容在历史里消失
       if (text !== '' || reasoning !== '' || calls.length > 0) {
         await appendAssistant(options, messageId, text, calls, reasoning)
       }
@@ -471,8 +504,11 @@ async function appendAssistant(
   })
 }
 
-function toMessages(history: readonly StoredMessage[]): ChatRequestMessage[] {
-  // 只挑 API 需要的字段（role / content / 工具调用）：`reasoning` 等展示字段一律不回传
+function toMessages(
+  history: readonly StoredMessage[],
+  resolveImages?: LlmImageResolver,
+): ChatRequestMessage[] {
+  // 只挑 API 需要的字段（role / content / 工具调用 / 图片）：`reasoning` 等展示字段一律不回传
   const out: ChatRequestMessage[] = []
   for (const message of history) {
     if (message.role === 'system') continue
@@ -501,9 +537,24 @@ function toMessages(history: readonly StoredMessage[]): ChatRequestMessage[] {
       })
       continue
     }
-    out.push({ role: 'user', content: message.content })
+    out.push({ role: 'user', content: message.content, ...imagesOfMessage(message, resolveImages) })
   }
   return out
+}
+
+/**
+ * 用户消息的图片分片（多模态输入，docs/06 §3.1）：`images` 是路径，解析要靠装配层注入的
+ * 解析器（同步查表）。解析不出来就当纯文本下发 —— 不写 `images` 键，与「本来就没图片」一致。
+ */
+function imagesOfMessage(
+  message: StoredMessage,
+  resolveImages?: LlmImageResolver,
+): { images?: LlmImageInput[] } {
+  if (resolveImages === undefined || !Array.isArray(message.images)) return {}
+  const paths = message.images.filter((path) => typeof path === 'string')
+  if (paths.length === 0) return {}
+  const resolved = resolveImages(paths)
+  return resolved.length === 0 ? {} : { images: [...resolved] }
 }
 
 function toAssistantMessage(message: StoredMessage): ChatRequestMessage {

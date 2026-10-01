@@ -8,6 +8,7 @@ import type {
   GeneralSettings,
   ImageGenSettings,
   Lesson,
+  LlmProviderType,
   LlmSettings,
   ModeId,
   Settings,
@@ -226,6 +227,12 @@ export interface TestConnectionRequest {
   baseUrl?: string
   apiKey?: string
   model?: string
+  /**
+   * 接口协议（v22 多模态轮）：设置页把**正在编辑**的类型一起送过来，
+   * 用户才能在选择 `openai-responses` 之后、保存之前就点「保存并测试连接」——
+   * 不传时按已保存配置的 `type`，再缺省为 `openai-compat`（与 Schema 默认值一致）。
+   */
+  type?: LlmProviderType
   /** true 时同时拉取模型列表 */
   withModels?: boolean
 }
@@ -856,7 +863,9 @@ export interface SendMessageRequest {
   origin: WindowName | 'center' | 'automation'
   /**
    * 附件绝对路径列表（拖拽发送，docs/07 §2.3）。
-   * 主进程用 `extract.ts` 提取文本后拼进本轮用户消息；提取失败按降级处理，不阻断发送。
+   * 主进程按扩展名分成两类：**图片**（png / jpg / jpeg / webp / gif / bmp）走多模态图片分片
+   * （docs/06 §3.1，是否真的送进模型由 `llm.providers.<id>.vision` 决定），
+   * 其余用 `extract.ts` 提取文本后拼进本轮用户消息；提取失败按降级处理，不阻断发送。
    */
   attachments?: string[]
   /**
@@ -864,6 +873,30 @@ export interface SendMessageRequest {
    * 其余状态主进程回 `E_JOB_STATE`。给了它时**不会重复落盘**那条用户消息。
    */
   resumeJobId?: string
+}
+
+/**
+ * 附件缩略图请求 / 回执（v22 多模态输入，docs/07 §2.3、通道 `chat:readAttachment`）。
+ *
+ * 渲染层拖入图片后要在 chip 上显示缩略图，而渲染进程没有 fs 能力 —— 由主进程读盘转
+ * `data:` URL。**只回数据 URL、不回磁盘内容**，且超过 `PREVIEW_MAX_BYTES` 或读取失败时
+ * `dataUrl` 缺省、`note` 写明原因（渲染层退回纯文字 chip，不显示裂图）。
+ */
+export interface ChatAttachmentPreviewRequest {
+  /** 附件绝对路径（与 `SendMessageRequest.attachments` 里的同一个值） */
+  path: string
+}
+
+export interface ChatAttachmentPreview {
+  path: string
+  /** 文件名（chip 上的文字，主进程用 basename 解析） */
+  name: string
+  /** 是否被识别为图片（扩展名判定；false 时不尝试读盘） */
+  image: boolean
+  /** `data:image/png;base64,…`；非图片 / 超限 / 读取失败时缺省 */
+  dataUrl?: string
+  /** 未能给出缩略图时的原因（超限 / 读取失败），会原样展示在 chip 的 title 里 */
+  note?: string
 }
 
 export interface AgentToolCall {
@@ -1483,6 +1516,14 @@ export interface AuroraApi {
     resumeJob(request: { sessionId: string; jobId: string }): Promise<Result<{ requestId: string }>>
     /** 取消一条未结束的 job（落 `aborted`；与「停止」按钮同一语义） */
     cancelJob(request: { sessionId: string; jobId: string }): Promise<Result<boolean>>
+    /**
+     * 图片附件的缩略图（v22 多模态输入，docs/07 §2.3）。
+     *
+     * 渲染进程没有 fs 能力，chip 上那张 48×48 的缩略图由主进程读盘转成 `data:` URL；
+     * 非图片 / 超过 `PREVIEW_MAX_BYTES` / 读取失败时 `dataUrl` 缺省、`note` 写明原因，
+     * 渲染层据此退回纯文字 chip（不显示裂图）。
+     */
+    readAttachment(request: ChatAttachmentPreviewRequest): Promise<Result<ChatAttachmentPreview>>
     /**
      * 拖拽文件的绝对路径（docs/07 §2.3）。
      *

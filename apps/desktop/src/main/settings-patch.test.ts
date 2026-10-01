@@ -40,6 +40,7 @@ function provider(overrides: Partial<LlmProviderConfig> = {}): LlmProviderConfig
     temperature: 0.7,
     reasoningEffort: 'auto',
     contextWindow: 0,
+    vision: false,
     ...overrides,
   }
 }

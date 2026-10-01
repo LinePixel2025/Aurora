@@ -43,6 +43,15 @@ export interface StoredMessage {
    * Design/betav2-spec.md §6）。只用于渲染层展示；构造 API 请求时**绝不**回传给模型。
    */
   reasoning?: string
+  /**
+   * 随这条用户消息一起发出的**图片附件路径**（多模态输入，docs/06 §3.1，v22）。
+   *
+   * 存的是**路径不是 base64**：一张 4 MB 的图 base64 后是 5.3 MB，几轮对话就能把
+   * `sessions/*.json` 顶成几十 MB；跨轮次续聊时按路径重新读盘（用户追问「刚才那张图」时
+   * 模型仍看得到图），文件被删 / 读不出就在那一轮跳过并记 warn —— 不编造内容，
+   * 也不让整轮请求失败。是否真的作为图片分片下发由 `llm.providers.<id>.vision` 决定。
+   */
+  images?: string[]
 }
 
 /**
@@ -142,6 +151,8 @@ export interface NewMessage {
   toolCallId?: string
   /** assistant 消息的思考链全文（不参与 API 请求构造） */
   reasoning?: string
+  /** 随这条用户消息发出的图片附件路径（多模态输入，docs/06 §3.1） */
+  images?: string[]
   createdAt?: string
 }
 
@@ -150,5 +161,8 @@ export interface NewMessage {
  *
  * v1 → v2：新增可选 `meta`（归档等会话级元信息）。读取对 v1 **宽容**（缺 `meta` = 未归档），
  * 因此**不存在迁移脚本**，旧文件也无需重写。
+ * v2 → v3：消息新增可选 `images`（随消息发出的图片附件**路径**，docs/06 §3.1 多模态输入）。
+ * 同样**不存在迁移脚本**：缺字段 = 没有图片附件，旧文件天然合法、无需重写；
+ * 版本号只用于说明"这个文件可能带图片路径"。
  */
-export const SESSION_FILE_VERSION = 2 as const
+export const SESSION_FILE_VERSION = 3 as const

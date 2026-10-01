@@ -487,8 +487,50 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
     第二次启动读回同一条 job（`found=1 status=paused`）→ 继续后 `status=done`、
     `stepsDone 2→3`、`cursor 2→3`，会话里那条用户消息**仍只有一条**。
   - **明确未做**：**仍无 OS 级沙箱** —— 三档权限与项目根 realpath 前缀校验**不是**沙箱
-    （没有作业对象 / 容器 / 受限令牌，`run_command` 仍是当前用户权限）；多模态输入与 Responses API、
+    （没有作业对象 / 容器 / 受限令牌，`run_command` 仍是当前用户权限）；
     子代理能力加强、上下文压缩修正**均未开始**（属第二批）；Code Mode 仍是占位实现。
+    （**多模态输入与 Responses API 已于 2026-10-01 落地**，见下方「2026-10-01 多模态与 Responses API 轮」。）
     另需说明：上面「第二次启动」的续跑验证走的是**自测专用开关**
     `AURORA_SMOKE_WORKSPACE` + `AURORA_SMOKE_PHASE=resume` 拉起的两次启动，
     它是验证手段，**不是面向用户的功能**——用户侧的正常用法是重启后在右栏「任务」面板点「继续」。
+
+## 2026-10-01 多模态与 Responses API 轮（配置 Schema v22）
+
+兑现路线图里最后两项「第二批」能力的**第一项**：让模型真正看得见图，并支持第二套接口协议。
+逐条口径见 [06 §3.1 / §3.2](./06-agent-core.md)、[08 §1](./08-settings-onboarding.md)、
+[07 §2.3](./07-ui-spec.md)。
+
+- **多模态输入（图片进模型）**：
+  - 内核线上形状 `ChatRequestMessage.images?: LlmImageInput[]`（`mimeType` + 裸 base64）；
+    非空时请求体的 `content` 由字符串变成 **content parts 数组**（正文 + 每张图一段
+    `image_url`），**没有图片时形状逐字不变**（老网关不受影响）。
+  - 落地链只加一条：主进程按扩展名把 `png / jpg / jpeg / webp / gif / bmp` 从附件里挑出来，
+    路径经 `agent.send({ images })` 透传，内核用注入的 `loadImages` 端口读盘 ——
+    图片**不走文本提取**，与文档附件可以同轮并存。
+  - **会话历史存路径不存内容**（`StoredMessage.images`，`SESSION_FILE_VERSION` 2 → 3，无迁移脚本）：
+    `sessions/*.json` 不被 base64 撑大，跨轮次续聊按路径重读，用户追问「刚才那张图」时仍看得到；
+    文件被删 / 读不出时该轮跳过并记 warn（不编造内容，也不阻断请求）。
+  - **能力开关 `llm.providers.<id>.vision`（出厂关）**：模型是否支持视觉因模型而异，
+    且本仓库不做内置能力表（同 `contextWindow` 的口径）。关闭时图片降级为一行
+    「内容未读取（当前模型未开启图片输入）」，请求体里不出现图片分片 ——
+    对不支持视觉的模型发图片会被服务端 400，这个开关就是那道闸。
+  - **附件缩略图**（`chat:readAttachment`，只回 `data:` URL、上限 2 MiB）：图片 chip 显示
+    24×24 缩略图，非图片 / 超限 / 读失败退回纯文字 chip，不显示裂图。
+- **Responses API（`llm.providers.<id>.type = 'openai-responses'`）**：
+  新增 `OpenAiResponsesProvider`（`POST {baseUrl}/responses`，`store: false` 恒定下发）。
+  请求映射：首条 system 消息 → `instructions`，其余 system 消息留在原位（前缀缓存不破）；
+  工具调用与结果是**独立条目**（`function_call` / `function_call_output`，用 `call_id` 配对，
+  不是条目 id）；`tools` 是扁平形状。事件映射：`response.output_text.delta` /
+  `response.reasoning_*.delta` / `response.output_item.done` / `response.completed`（用量与收尾原因）/
+  `response.failed` / `response.incomplete`。可靠性（超时 / 取消 / 退避重试 / 错误码 /
+  列模型 / 连接测试）抽到共享传输层 `llm/transport.ts`，两套协议逐字一致。
+- **顺带修掉的一个既有 bug**：`AURORA_CAPTURE=<dir> pnpm dev`（文档里的**全量**截图用法，
+  不带 `AURORA_CAPTURE_ONLY`）会把场景清单过滤成空 —— 空字符串被解析成「一个都不匹配」的
+  过滤条件，于是**静默一张都不截、退出码仍是 0**。现在空串 = 不过滤（`count: 71`）。
+- **验证**：`pnpm typecheck` / `pnpm lint` / `pnpm build` 全绿；`pnpm test`
+  **119 文件 / 2140 用例全绿**；`pnpm verify` **26/26**（`version = 22`、`v0 → 当前版本` **22 条迁移**）；
+  `AURORA_SMOKE` **177/177 passed**（新增一条跨链路断言：开启时图片作为 `image_url` 分片下发且
+  历史只存路径、关闭时不下发图片分片）；`AURORA_CAPTURE` **71 张 PNG / 71 条 checks / 0 FAIL**
+  （新增 `settings-llm-multimodal.png`：接口类型与图片输入两枚控件在折叠区里、真值来自配置并写回原值）。
+  另有一条**反向复核**：把「开关关闭时不得解析缓存里的图」那行守卫去掉，
+  `agentHost.test.ts` 的「中途关闭开关」用例实测 FAIL（`expected [...] to be undefined`）。
