@@ -282,6 +282,13 @@ export class SettingsStore {
 
   // ───────────────────────── 凭据 ─────────────────────────
 
+  /**
+   * 拆分 MCP 凭据路径时的「服务器是否存在」判定（`splitMcpSecretPath` 择优用）。
+   * 用箭头属性而非方法：可整体作为 `McpServerLookup` 传递，且每次调用**现读** `this.current`。
+   */
+  private readonly mcpServerLookup: McpServerLookup = (name) =>
+    this.current.mcp.servers.some((server) => server.name === name)
+
   /** 读取解密后的凭据；不存在或解密失败返回 ''。 */
   getSecret(path: string): string {
     const key = canonicalSecretPath(path)
@@ -589,12 +596,12 @@ export class SettingsStore {
     if (sttId !== undefined) return this.current.stt.providers[sttId]?.apiKeyEnc
     const imageGenId = matchImageGenProviderKey(key)
     if (imageGenId !== undefined) return this.current.imagegen.providers[imageGenId]?.apiKeyEnc
-    const envMatch = matchMcpEnvKey(key)
+    const envMatch = matchMcpEnvKey(key, this.mcpServerLookup)
     if (envMatch) {
       const server = this.current.mcp.servers.find((s) => s.name === envMatch.server)
       if (server !== undefined) return server.envEnc[envMatch.envKey]
     }
-    const headerMatch = matchMcpHeaderKey(key)
+    const headerMatch = matchMcpHeaderKey(key, this.mcpServerLookup)
     if (headerMatch) {
       const server = this.current.mcp.servers.find((s) => s.name === headerMatch.server)
       if (server !== undefined) return server.headersEnc[headerMatch.headerKey]
@@ -650,7 +657,7 @@ export class SettingsStore {
         }) !== undefined
       )
     }
-    const envMatch = matchMcpEnvKey(key)
+    const envMatch = matchMcpEnvKey(key, this.mcpServerLookup)
     if (envMatch) {
       if (!this.current.mcp.servers.some((s) => s.name === envMatch.server)) return false
       return (
@@ -662,7 +669,7 @@ export class SettingsStore {
         }) !== undefined
       )
     }
-    const headerMatch = matchMcpHeaderKey(key)
+    const headerMatch = matchMcpHeaderKey(key, this.mcpServerLookup)
     if (headerMatch) {
       if (!this.current.mcp.servers.some((s) => s.name === headerMatch.server)) return false
       return (
@@ -745,49 +752,90 @@ interface McpSecretPath {
 }
 
 /**
- * 从**右往左**按已知标记拆 `mcp.servers.<name>.<marker>.<KEY>`（P1-07）。
+ * 判断某个名字是否是**当前配置里真实存在的** MCP 服务器（拆分择优用，见 `splitMcpSecretPath`）。
+ * 无上下文（`canonicalSecretPath` / 纯字符串场景）时传 `undefined`，退化为「最右标记」。
+ */
+type McpServerLookup = (name: string) => boolean
+
+interface McpSecretCandidate {
+  start: number
+  length: number
+  marker: 'env' | 'headers'
+}
+
+/**
+ * 拆 `mcp.servers.<name>.<marker>.<KEY>`（P1-07 + 择优修复）。
  *
  * 为什么不用「名称段 `[^.]+`」：存量配置里服务器名可能含 `.`（`McpServerSchema.name` 曾只校验
  * `min(1)`），而 env 键 / header 名**没有**「不含 `.`」的硬约束（`envEnc` / `headersEnc` 是
  * `z.record(z.string(), …)`，见 docs/08 §1.3），两侧都可能有 `.`，无法靠单侧卡死。
- * 约定：**最后一个**受控标记（`.env.` / `.envEnc.` / `.headers.` / `.headersEnc.`）为分隔符 ——
- * 名称与键都允许含点；唯一会误判的是**键名自身含标记词**（键名写作 `env.KEY` 时名称会把键的
- * 前半段吃掉），取舍见 docs/08 §1.3。
  *
- * 不用正则贪婪而用 `lastIndexOf`：`.env.` 不是 `.envEnc.` 的子串，逐个标记取最靠右的起点即可，
- * 语义等价且不用在 `(Enc)?` 与交替顺序上做回溯推理。
+ * **候选 + 择优**：把每个受控标记（`.env.` / `.envEnc.` / `.headers.` / `.headersEnc.`）的
+ * 出现位置都算作一个候选拆法，**从右往左**（标记起点递减）逐个用 `serverExists` 查名字是否真实
+ * 存在，命中第一个存在者即采用 —— 于是「键名自身含标记词」（`srv.headers.env.X` 里的 header 名
+ * `env.X`、`srv.env.headers.X` 里的 env 键 `headers.X`）也能定位到服务器 `srv`。
+ *
+ * 一个候选都不命中（`serverExists` 未注入，或服务器确实不存在）时**回落到「最右标记」**——与
+ * 择优之前的行为逐字一致，保证 `canonicalSecretPath` 等无上下文调用方与「幽灵服务器」路径不变。
+ * 名称段为空 / 键段为空的候选不算有效拆法，跳过（不参与择优，也不能成为回落结果）。
+ *
+ * 不用正则贪婪而用 `lastIndexOf`：`.env.` 不是 `.envEnc.` 的子串，逐个标记取起点后按起点降序
+ * 排列即可，语义等价且不用在 `(Enc)?` 与交替顺序上做回溯推理。
  */
-function splitMcpSecretPath(path: string): McpSecretPath | undefined {
+function splitMcpSecretPath(
+  path: string,
+  serverExists?: McpServerLookup,
+): McpSecretPath | undefined {
   const prefix = 'mcp.servers.'
   if (!path.startsWith(prefix)) return undefined
   const rest = path.slice(prefix.length)
-  let best: { start: number; length: number; marker: 'env' | 'headers' } | undefined
-  for (const token of MCP_SECRET_MARKERS) {
-    const start = rest.lastIndexOf(`.${token}.`)
-    if (start === -1) continue
-    if (best === undefined || start > best.start) {
-      best = {
-        start,
-        length: token.length + 2,
-        marker: token.startsWith('headers') ? 'headers' : 'env',
-      }
+  const candidates: McpSecretCandidate[] = []
+  // 枚举**每一个**标记出现位置（不是每个标记取最靠右的一次）：键名可以既含点、又含标记词
+  // （`srv.env.env.X` 的 env 键是 `env.X`），只留最右一次就退不出候选。
+  for (const match of rest.matchAll(/\.(envEnc|headersEnc|env|headers)\./g)) {
+    if (match.index === undefined) continue
+    const token = match[1] ?? ''
+    candidates.push({
+      start: match.index,
+      length: token.length + 2,
+      marker: token.startsWith('headers') ? 'headers' : 'env',
+    })
+  }
+  // 从右往左（标记起点递减）；不同标记的起点必然不同（同一位置不可能既是 `.env.` 又是 `.headers.`）。
+  candidates.sort((a, b) => b.start - a.start)
+
+  const splitAt = (candidate: McpSecretCandidate): McpSecretPath | undefined => {
+    const server = rest.slice(0, candidate.start)
+    const key = rest.slice(candidate.start + candidate.length)
+    if (server === '' || key === '') return undefined
+    return { server, marker: candidate.marker, key }
+  }
+
+  if (serverExists !== undefined) {
+    for (const candidate of candidates) {
+      const split = splitAt(candidate)
+      if (split !== undefined && serverExists(split.server)) return split
     }
   }
-  if (best === undefined) return undefined
-  const server = rest.slice(0, best.start)
-  const key = rest.slice(best.start + best.length)
-  if (server === '' || key === '') return undefined
-  return { server, marker: best.marker, key }
+  // 回落：最右标记（无上下文 / 服务器名不存在时的既有行为）。
+  const fallback = candidates[0]
+  return fallback === undefined ? undefined : splitAt(fallback)
 }
 
-function matchMcpEnvKey(key: string): { server: string; envKey: string } | undefined {
-  const split = splitMcpSecretPath(key)
+function matchMcpEnvKey(
+  key: string,
+  serverExists?: McpServerLookup,
+): { server: string; envKey: string } | undefined {
+  const split = splitMcpSecretPath(key, serverExists)
   if (split === undefined || split.marker !== 'env') return undefined
   return { server: split.server, envKey: split.key }
 }
 
-function matchMcpHeaderKey(key: string): { server: string; headerKey: string } | undefined {
-  const split = splitMcpSecretPath(key)
+function matchMcpHeaderKey(
+  key: string,
+  serverExists?: McpServerLookup,
+): { server: string; headerKey: string } | undefined {
+  const split = splitMcpSecretPath(key, serverExists)
   if (split === undefined || split.marker !== 'headers') return undefined
   return { server: split.server, headerKey: split.key }
 }

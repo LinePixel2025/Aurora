@@ -953,3 +953,97 @@ describe('SettingsStore · 含点名称的凭据路径（P1-07）', () => {
     expect(names).toEqual(['my-server', 'my-server-2'])
   })
 })
+
+describe('SettingsStore · 键名含标记词的凭据路径（择优修复，2026-10-01）', () => {
+  /**
+   * P1-07 把名称段改成贪婪之后，`srv.headers.env.X` 这类「名称不含点、键含标记词」的路径会被
+   * **最右标记**拆成服务器 `srv.headers` + 键 `X` —— 而基线（名称段 `[^.]+`）对它是正确的，
+   * 属回归。修法是「候选拆法 + 按真实存在的服务器名择优」，本组用例钉住它。
+   */
+  function seedServer(store: SettingsStore, name: string): void {
+    store.mutate((draft) => {
+      draft.mcp.servers.push({
+        name,
+        transport: 'stdio',
+        command: 'npx',
+        args: [],
+        envEnc: {},
+        headersEnc: {},
+        enabled: true,
+      })
+    })
+  }
+
+  it('名称不含点、键含标记词：择优命中真实服务器，不取最右标记', async () => {
+    const { store } = setup()
+    await store.init()
+    seedServer(store, 'srv')
+
+    // header 名 = `env.X`：最右标记是 `.env.`，旧实现会解析成服务器 `srv.headers`
+    expect(store.setSecret('mcp.servers.srv.headers.env.X', 'v-headers')).toBe(true)
+    expect(store.getSecret('mcp.servers.srv.headers.env.X')).toBe('v-headers')
+    const afterHeaders = store.get().mcp.servers[0]
+    expect(afterHeaders?.headersEnc['env.X']).toContain('fakestorage:v1:')
+    expect(afterHeaders?.envEnc).toEqual({})
+
+    // env 键 = `headers.X`：最右标记是 `.headers.`，旧实现会解析成服务器 `srv.env`
+    expect(store.setSecret('mcp.servers.srv.env.headers.X', 'v-env')).toBe(true)
+    expect(store.getSecret('mcp.servers.srv.env.headers.X')).toBe('v-env')
+    const afterEnv = store.get().mcp.servers[0]
+    expect(afterEnv?.envEnc['headers.X']).toContain('fakestorage:v1:')
+    expect(afterEnv?.headersEnc['env.X']).toContain('fakestorage:v1:')
+  })
+
+  it('正常形状逐字不变（择优不改无歧义输入的解析）', async () => {
+    const { store } = setup()
+    await store.init()
+    seedServer(store, 'srv')
+
+    expect(store.setSecret('mcp.servers.srv.env.KEY', 'e1')).toBe(true)
+    expect(store.setSecret('mcp.servers.srv.headers.Authorization', 'h1')).toBe(true)
+    expect(store.getSecret('mcp.servers.srv.env.KEY')).toBe('e1')
+    expect(store.getSecret('mcp.servers.srv.headers.Authorization')).toBe('h1')
+    const server = store.get().mcp.servers[0]
+    expect(server?.envEnc['KEY']).toContain('fakestorage:v1:')
+    expect(server?.headersEnc['Authorization']).toContain('fakestorage:v1:')
+  })
+
+  it('别名写法（headersEnc / envEnc）与规范写法指向同一条路径', async () => {
+    // 择优是**解析层**的改动，规范化后两侧必须仍是同一条路径，否则 set/get 会对不上。
+    expect(canonicalSecretPath('mcp.servers.srv.headers.env.X')).toBe(
+      'mcp.servers.srv.headers.env.X',
+    )
+    expect(canonicalSecretPath('mcp.servers.srv.headersEnc.env.X')).toBe(
+      'mcp.servers.srv.headers.env.X',
+    )
+    expect(canonicalSecretPath('mcp.servers.srv.env.headers.X')).toBe(
+      'mcp.servers.srv.env.headers.X',
+    )
+    expect(canonicalSecretPath('mcp.servers.srv.envEnc.headers.X')).toBe(
+      'mcp.servers.srv.env.headers.X',
+    )
+
+    const { store } = setup()
+    await store.init()
+    seedServer(store, 'srv')
+    expect(store.setSecret('mcp.servers.srv.headers.env.X', 'alias')).toBe(true)
+    expect(store.getSecret('mcp.servers.srv.headersEnc.env.X')).toBe('alias')
+    expect(store.getSecret('mcp.servers.srv.headers.env.X')).toBe('alias')
+  })
+
+  it('服务器不存在时回落到「最右标记」：不误写、只拒绝', async () => {
+    const { store } = setup()
+    await store.init()
+    seedServer(store, 'srv')
+
+    // 择优全部落空 → 回落最右：服务器 `ghost.headers`、键 `X` → 该服务器不存在
+    expect(() => store.setSecret('mcp.servers.ghost.headers.env.X', 'nope')).toThrow(
+      /无法识别的凭据路径/,
+    )
+    expect(store.getSecret('mcp.servers.ghost.headers.env.X')).toBe('')
+    // 既有服务器一字未动（既没被误写、也没被误读）
+    const server = store.get().mcp.servers[0]
+    expect(server?.envEnc).toEqual({})
+    expect(server?.headersEnc).toEqual({})
+  })
+})

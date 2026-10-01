@@ -542,12 +542,23 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   内部的 `envEnc` / `headersEnc`、随条目一起搬走不会丢 —— 不做这一步，含点名称会让
   `mcp.servers` 数组在 `SettingsSchema.parse` 硬抛、整份配置被备份重建
   （用户所有 provider / 课表 / 项目一起消失）。
-- **MCP 路径的拆分约定**：env 键 / header 名**没有**「不含 `.`」的硬约束
-  （`envEnc` / `headersEnc` 是 `z.record(z.string(), …)`），所以不用「键段 `[^.]+`」判定，
-  而是以**最后一个**受控标记（`.env.` / `.envEnc.` / `.headers.` / `.headersEnc.`）
-  为分隔符从右往左拆：`<name>` 与 `<KEY>` 都允许含点。唯一会误判的是**键名自身含标记词**
-  （如键名写作 `env.KEY`）——此时名称会把键的前半段吃掉；这种键名极罕见，
-  且旧写法（名称段 `[^.]+`）也救不了含点的名称，取舍后以「救存量名称」为先。
+- **MCP 路径的拆分约定（候选 + 按真实服务器名择优，2026-10-01 补齐）**：env 键 / header 名
+  **没有**「不含 `.`」的硬约束（`envEnc` / `headersEnc` 是 `z.record(z.string(), …)`），
+  所以不用「键段 `[^.]+`」判定。`store.ts` 的 `splitMcpSecretPath` 把每个受控标记
+  （`.env.` / `.envEnc.` / `.headers.` / `.headersEnc.`）的**每一个出现位置**都算作一个
+  候选拆法，**从右往左**逐个用「该服务器名在当前 `mcp.servers` 里是否真实存在」校验，
+  命中第一个存在者即采用：
+  - 「键名自身含标记词」不再误判 —— `mcp.servers.srv.headers.env.X` 解析为服务器 `srv`
+    的 header `env.X`（只取最右标记会把它错拆成服务器 `srv.headers`）；
+  - 正常形状（`mcp.servers.srv.env.KEY` / `...headers.Authorization`）逐字不变；
+  - **一个候选都不命中**（服务器确实不存在，或无上下文的纯字符串调用方）时**回落到
+    「最右标记」** —— 与择优之前的行为逐字一致，保证 `canonicalSecretPath`、`toPersisted`、
+    主进程 `redactSettings` 这些拿不到 settings 上下文的路径不变。
+  - **已知限制**：服务器名**本身**含点（如 `my.server`）时，择优只能靠 `mcp.servers` 里的
+    真实名字判定；由于 `McpServerSchema.name` 现在禁 `.`，这类名字在 `init()` 就被规整成
+    `my-server`，所以实际只影响 `canonicalSecretPath` 这类纯字符串归一化。另外，
+    「同一路径的多个候选都真实存在」时只认从右往左第一个存在的名字，不保证与写入意图一致；
+    新配置不要用带标记词的键名。
 
 ## 2. 存储与安全
 
