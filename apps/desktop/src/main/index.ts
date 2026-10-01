@@ -1412,6 +1412,10 @@ async function bootstrap(): Promise<void> {
         // 这里显式拒绝（与相邻两条守卫同一口径），别让它变成静默的空操作。
         if (
           request.reasoningEffort !== undefined &&
+          // 本次**不改模型**、且该 provider 当前没有生效模型时才拦：同时传 `model` 时
+          // handler 会先落新模型、等级跟着写在新模型名下（`withModelParams` 读的就是它），
+          // 那种组合一直是可用的，别提前拒掉。
+          request.model === undefined &&
           (current.providers[targetId]?.model ?? '').trim() === ''
         ) {
           return {
@@ -1428,7 +1432,7 @@ async function bootstrap(): Promise<void> {
             if (request.model !== undefined) provider.model = request.model.trim()
             if (request.reasoningEffort !== undefined) {
               // 整份替换该模型条目（`withModelParams` 补齐缺的键）：`modelParams` 的
-              // `reasoningEffort` 没有 `.default()`，只写这一项会让整份配置在下次启动被判损坏。
+              // 三项一起写（半截条目会让另外两项被静默重置成默认值）。
               draft.llm.providers[targetId] = withModelParams(provider, {
                 reasoningEffort: request.reasoningEffort,
               })
@@ -1952,7 +1956,7 @@ async function runCapture(dir: string): Promise<void> {
             model: STUB_MODEL,
             modelList: [STUB_MODEL],
             // 生成参数按**模型 id** 键（v23）。三项都要写全：`reasoningEffort` 是三个子字段里
-            // 唯一没有 `.default()` 的，漏写它会让整份配置在下次启动被判损坏并重建出厂。
+            // 三项都写全，别留下半截条目。
             modelParams: {
               [STUB_MODEL]: {
                 reasoningEffort: 'auto',
@@ -2185,7 +2189,7 @@ async function runSmokeTest(userData: string): Promise<void> {
             // `LlmProviderConfig.modelList` 是 output 必填字段（zod `.default([])` 只放宽输入类型），
             // 这里显式给出候选列表：自测也顺带覆盖「选择器能列出两个模型」的场景。
             modelList: [STUB_MODEL, `${STUB_MODEL}-alt`],
-            // 生成参数按**模型 id** 键（v23）；三项都要写全（`reasoningEffort` 没有默认值）
+            // 生成参数按**模型 id** 键（v23）；三项都写全，别留半截条目
             modelParams: {
               [STUB_MODEL]: {
                 reasoningEffort: 'auto',
@@ -3841,7 +3845,7 @@ async function runResumePhase(userData: string): Promise<void> {
               apiKeyEnc: '',
               model: STUB_MODEL,
               modelList: [STUB_MODEL, `${STUB_MODEL}-alt`],
-              // 生成参数按**模型 id** 键（v23）；三项写全（`reasoningEffort` 没有默认值）
+              // 生成参数按**模型 id** 键（v23）；三项写全，别留半截条目
               modelParams: {
                 [STUB_MODEL]: { reasoningEffort: 'auto', contextWindow: 0, vision: false },
               },

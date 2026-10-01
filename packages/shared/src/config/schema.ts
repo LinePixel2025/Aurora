@@ -565,7 +565,7 @@ export type ProjectConfig = z.infer<typeof ProjectSchema>
  * 属自我提权路径，只能由用户在设置页 / 界面改（走 `settings:update`，不经过该黑名单）。
  *
  * 每个字段都带 `.default()`：顶层分组整段缺失时，Schema 走"整体保留候选对象"路径，
- * 没有默认值会把整份配置判为非法并备份重建。
+ * 不过三个子字段现在都有默认值（`LlmModelParamsSchema`），缺字段只会回落默认，不牵连整份配置。
  */
 export const ProjectsSchema = z.object({
   /** 当前项目 id；空串 = 无项目（行为与 v13 之前完全一致）。 */
@@ -1019,6 +1019,9 @@ function matchWritableOverride(path: string): WritablePathOverride | undefined {
 /** 段级模式匹配（`*` = 恰好一段；`**` = 一段或更多，且不能在模式末尾）。 */
 function matchesPattern(patternSegments: readonly string[], segments: readonly string[]): boolean {
   const globstar = patternSegments.indexOf('**')
+  // 只支持**一个** `**`（多于一个时尾段里的那个会被当字面量、模式静默永不命中 ——
+  // 那正是本轮要修的症状，宁可显式拒绝）。
+  if (globstar !== patternSegments.lastIndexOf('**')) return false
   if (globstar === -1) {
     if (patternSegments.length !== segments.length) return false
     return patternSegments.every((segment, index) => segment === '*' || segment === segments[index])
