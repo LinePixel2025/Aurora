@@ -12,6 +12,7 @@
  * - 未知 event / message 类型一律忽略（协议只增不改）。
  */
 import { computed, reactive, ref } from 'vue'
+import { extractRemoteLlm, type RemoteLlmConfig } from './remote-llm.js'
 import type {
   AgentEvent,
   AutomationCatalog,
@@ -105,16 +106,6 @@ export interface SessionUsage {
   totals: { promptTokens: number; completionTokens: number; totalTokens: number }
   /** 防重：已累加过的 (requestId, round) 组合（事件重放 / 迟到不把用量翻倍） */
   counted: Set<string>
-}
-
-/** config.get 回传（脱敏）里网页端关心的 LLM 切片：模型切换与 contextWindow 占比展示用 */
-export interface RemoteLlmConfig {
-  /** 当前激活 provider id（对应 `llm.active`） */
-  active: string
-  providers: Record<
-    string,
-    { model: string; modelList: string[]; contextWindow: number; reasoningEffort: ReasoningEffort }
-  >
 }
 
 export interface ClientEntry {
@@ -816,50 +807,6 @@ export async function fetchRemoteConfig(clientId: string): Promise<RemoteLlmConf
   const entry = state.clients.get(clientId)
   if (entry) entry.remoteLlm = llm
   return llm
-}
-
-function extractRemoteLlm(data: unknown): RemoteLlmConfig | null {
-  if (typeof data !== 'object' || data === null) return null
-  const llm = (data as { llm?: unknown }).llm
-  if (typeof llm !== 'object' || llm === null) return null
-  const active = (llm as { active?: unknown }).active
-  const providers = (llm as { providers?: unknown }).providers
-  const result: RemoteLlmConfig = {
-    active: typeof active === 'string' ? active : '',
-    providers: {},
-  }
-  if (typeof providers !== 'object' || providers === null) return result
-  for (const [id, raw] of Object.entries(providers as Record<string, unknown>)) {
-    if (typeof raw !== 'object' || raw === null) continue
-    const provider = raw as Record<string, unknown>
-    const modelList = Array.isArray(provider.modelList)
-      ? provider.modelList.filter((m): m is string => typeof m === 'string')
-      : []
-    const model = typeof provider.model === 'string' ? provider.model : ''
-    // contextWindow / reasoningEffort 在 v23 下沉到**模型级**（`modelParams[模型]`）：
-    // 取值口径 = 该 provider 的当前 `model`（真正生效的那个），与主进程的
-    // `resolveModelParams(provider)` 同源；键未命中 / 字段缺失按字段回落 0 / 'auto'。
-    // 逐层收窄（provider → 该模型的条目），别把 undefined 漏进下面的类型判断。
-    const modelParams = provider.modelParams
-    const rawEntry =
-      typeof modelParams === 'object' && modelParams !== null
-        ? (modelParams as Record<string, unknown>)[model]
-        : undefined
-    const modelEntry: Record<string, unknown> =
-      typeof rawEntry === 'object' && rawEntry !== null ? (rawEntry as Record<string, unknown>) : {}
-    result.providers[id] = {
-      model,
-      modelList,
-      contextWindow: typeof modelEntry.contextWindow === 'number' ? modelEntry.contextWindow : 0,
-      reasoningEffort:
-        modelEntry.reasoningEffort === 'low' ||
-        modelEntry.reasoningEffort === 'medium' ||
-        modelEntry.reasoningEffort === 'high'
-          ? modelEntry.reasoningEffort
-          : 'auto',
-    }
-  }
-  return result
 }
 
 // ───────────────────────── 远程自动化管理（docs/13 §10） ─────────────────────────

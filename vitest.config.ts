@@ -6,6 +6,9 @@ export default defineConfig({
     include: [
       'packages/*/src/**/*.test.ts',
       'packages/*/test/**/*.test.ts',
+      // 包内的 Web 端（`packages/center/web`）——它的 glob 是 `packages/*/src/**`，
+      // `*` 不跨 `/`，所以**那里写的用例一个都不会被执行**（静默不跑比报错更难发现）。
+      'packages/*/web/src/**/*.test.ts',
       // 主进程里**不依赖 Electron** 的纯逻辑（如 updater 的状态机）也纳入单测。
       // 只能测试不 import 'electron' 的模块，否则 Node 环境下无法加载。
       'apps/desktop/src/main/**/*.test.ts',
