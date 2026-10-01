@@ -161,8 +161,15 @@ export const LlmModelParamsSchema = z.object({
   /**
    * 思考等级（docs/06 §3）：由主进程装配层把 `auto` 映射成「不下发」
    * `reasoning_effort` 字段 —— 不认这个参数的兼容网关收到它可能直接 400。
+   *
+   * `.default('auto')` 与两个兄弟字段同口径（它们也各有默认值）。这不只是好看：
+   * `modelParams` 落在 `llm.providers`（`z.record`）之下，`SettingsStore` 的字段级回退
+   * **不下钻**这棵子树 —— 一个缺字段（或非法）的条目会让 `SettingsSchema.parse` 抛错，
+   * 走「备份 + 重建出厂配置」，用户的 provider / 凭据 / 项目配置**一起消失**。
+   * 有默认值以后，手改配置漏写这一项只会回落成 `auto`，而不是赔上整份配置。
+   * （写入方仍然三项一起写 —— 那是防御纵深，不再是「不写就炸」的单点。）
    */
-  reasoningEffort: ReasoningEffortSchema,
+  reasoningEffort: ReasoningEffortSchema.default('auto'),
   contextWindow: ContextWindowFieldSchema,
   /**
    * 该模型是否支持**图片输入**（多模态，docs/06 §3.1），默认 `false`。
@@ -877,7 +884,10 @@ export type Settings = z.infer<typeof SettingsSchema>
 
 /** 黑名单前缀 → 给模型与审计日志看的中文原因（每个默认前缀都必须有一条）。 */
 const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number], string> = {
-  'llm.providers': '凭据字段不允许通过工具修改',
+  // 这条前缀同时罩着凭据（baseUrl / apiKeyEnc）与「模型能力事实」（modelParams 下的
+  // contextWindow / vision）—— 只放行 `model` 与 `modelParams.*.reasoningEffort`（见覆盖表），
+  // 所以拒绝文案要覆盖两类，别把「窗口大小」这类事实说成凭据。
+  'llm.providers': '凭据与模型能力事实字段不允许通过工具修改',
   'mcp.servers': '凭据字段不允许通过工具修改',
   'tts.providers': '凭据字段不允许通过工具修改',
   'stt.providers': '凭据字段不允许通过工具修改',

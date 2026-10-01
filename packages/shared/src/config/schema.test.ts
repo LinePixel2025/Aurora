@@ -114,7 +114,7 @@ describe('SettingsSchema / defaults 一致性', () => {
     // v23：模型参数在 `modelParams.<modelId>` 下。
     // ⚠️ 这条**不是**在验证「类型闸门」—— 该路径是双动态段、`lookupSpec` 查不到登记，
     // `fieldAccepts` 落到「未登记路径默认接受」分支，对**任何**候选值都返回 true
-    //（下面两条 `it.fails` 用例正是把这个缺口写成了探针）。真正的闸门是 `SettingsSchema`，
+    //（下面两条用例正是把这个缺口钉成了探针）。真正的闸门是 `SettingsSchema`，
     // 见本文件「modelParams 的越界 / 类型错 / 非法枚举值会被 Schema 拒绝」那条。
     // 这里改成断言「路径确实登记在通配表里」，别再拿它当类型校验读。
     expect(debugSchemaSpecs()['llm.providers.*.modelParams.*.contextWindow']).toEqual(['number'])
@@ -197,9 +197,14 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(acceptsModelParams({ reasoningEffort: 'ultra', contextWindow: 0, vision: false })).toBe(
       false,
     )
-    // `modelParams` 条目里 `reasoningEffort` 必填（缺了整份配置会被判非法 —— 消费方一律经
-    // `resolveModelParams` 取值，写配置的一侧必须写全三项）
-    expect(acceptsModelParams({ contextWindow: 0, vision: false })).toBe(false)
+    // 三个子字段**都有默认值**（`auto` / `0` / `false`），所以条目缺字段是合法的、按默认补齐 ——
+    // 这点很要紧：`modelParams` 落在 `llm.providers`（`z.record`）之下、字段级回退**不下钻**
+    // 这棵子树，一旦有一项是「必填」，手改配置漏写它就会让 `SettingsSchema.parse` 抛错，
+    // 走「备份 + 重建出厂配置」（provider / 凭据 / 项目配置一起丢）。宁可回落默认。
+    expect(acceptsModelParams({ contextWindow: 0, vision: false })).toBe(true)
+    expect(acceptsModelParams({})).toBe(true)
+    // 值非法仍然判非法（默认值兜的是"缺"，不是"错"）
+    expect(acceptsModelParams({ reasoningEffort: 'ultra' })).toBe(false)
   })
 
   it('provider 级 temperature 已从 Schema 删除：写进去既不报错也不落库（v23）', () => {
@@ -563,32 +568,34 @@ describe('SettingsSchema / defaults 一致性', () => {
     })
   })
 
-  // ⚠️ 下面两条是**期望行为**、当前实现做不到，故挂在 `it.fails` 下 —— 有朝一日 `lookupSpec` /
-  // `lookupEnum` 支持多段通配时它们会变红，提醒把这批断言挪回普通用例。
+  // ⚠️ 下面两条钉的是**已知缺口**的现状（不是期望行为）。
   //
-  // 实测：两者都只做**单段** `*` 替换，而 `modelParams` 的登记路径是
+  // 缺口：`lookupSpec` / `lookupEnum` 只做**单段** `*` 替换，而 `modelParams` 的登记路径是
   // `llm.providers.*.modelParams.*.<字段>`（**两个**动态段）—— 具体路径查不到登记项，
   // `fieldAccepts` 于是落到「未登记路径默认接受」分支，对任何候选值都返回 true。
   // 影响面有限：`sanitizeWithDefaults` 对 `llm.providers`（`z.record`）整体保留候选对象、
-  // 不逐字段问 `fieldAccepts`（真正的取值闸门是 `SettingsSchema`，见上面那组越界用例），
-  // 所以这是**惰性**缺口，不是可达的坏路径。
+  // 不逐字段问 `fieldAccepts`（真正的取值闸门是 `SettingsSchema`），所以这是**惰性**缺口。
   //
-  // 拆成两条而不是一条里放两个 expect：`it.fails` 的回调在第一个 expect 抛错时就结束了，
-  // 写在后面的断言**从来没跑过** —— 一条用例只该验一件事。
-  it.fails('fieldAccepts 应当按 Schema 拒绝 modelParams 下越界的 contextWindow（已知缺口）', () => {
-    expect(
-      fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.contextWindow', '128k'),
-    ).toBe(false)
+  // 写法为什么不是 `it.fails`：那样只断言「回调抛了错」，而调用**自身炸了**也算通过 —— 假绿。
+  // 这里先证明调用没抛异常，再断言当前值；`lookupSpec` 支持多段通配之后这两条会变红，
+  // 那时把 `true` 翻成 `false`、并把标题里的「已知缺口」去掉即可。
+  it('fieldAccepts 对越界的 contextWindow 目前按「未登记放行」（已知缺口，修好 lookupSpec 后应翻成 false）', () => {
+    const path = 'llm.providers.deepseek.modelParams.deepseek-chat.contextWindow'
+    let actual: unknown
+    expect(() => {
+      actual = fieldAccepts(path, '128k')
+    }).not.toThrow()
+    expect(actual).toBe(true)
   })
 
-  it.fails(
-    'fieldAccepts 应当按 Schema 拒绝 modelParams 下非法的 reasoningEffort（已知缺口）',
-    () => {
-      expect(
-        fieldAccepts('llm.providers.deepseek.modelParams.deepseek-chat.reasoningEffort', 'ultra'),
-      ).toBe(false)
-    },
-  )
+  it('fieldAccepts 对非法的 reasoningEffort 目前按「未登记放行」（已知缺口，修好 lookupSpec 后应翻成 false）', () => {
+    const path = 'llm.providers.deepseek.modelParams.deepseek-chat.reasoningEffort'
+    let actual: unknown
+    expect(() => {
+      actual = fieldAccepts(path, 'ultra')
+    }).not.toThrow()
+    expect(actual).toBe(true)
+  })
 })
 
 describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () => {
@@ -626,7 +633,7 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
   it('黑名单路径（含其子路径）一律拒绝，并给出中文原因', () => {
     expect(canWriteSettingPath('llm.providers.deepseek.apiKeyEnc')).toBe(false)
     expect(settingsReadonlyReason('llm.providers.deepseek.apiKeyEnc')).toBe(
-      '凭据字段不允许通过工具修改',
+      '凭据与模型能力事实字段不允许通过工具修改',
     )
     expect(canWriteSettingPath('advanced.proxy')).toBe(false)
     expect(settingsReadonlyReason('advanced.proxy')).toContain('代理')
@@ -692,9 +699,9 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     // 拒绝来自黑名单（而不是「未知配置路径」那条兜底）：说明路径本身是识别的、只是不许写
     expect(
       settingsReadonlyReason('llm.providers.deepseek.modelParams.deepseek-chat.contextWindow'),
-    ).toBe('凭据字段不允许通过工具修改')
+    ).toBe('凭据与模型能力事实字段不允许通过工具修改')
     expect(settingsReadonlyReason('llm.providers.deepseek.modelParams.deepseek-chat')).toBe(
-      '凭据字段不允许通过工具修改',
+      '凭据与模型能力事实字段不允许通过工具修改',
     )
   })
 
