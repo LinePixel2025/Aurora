@@ -143,7 +143,9 @@ import {
   chatStreamBurstCheck,
   chatStreamCheck,
   defaultCapturePlan,
+  failedCaptureFiles,
   filterCapturePlan,
+  parseCaptureTokens,
   registerAskUserSpawner,
   seedChatTtsHistory,
   seedJobFixture,
@@ -272,6 +274,27 @@ function pruneSmokeWorkspaces(): void {
   } catch {
     /* 临时目录不可读：忽略 */
   }
+}
+
+/**
+ * 段级分片：`AURORA_SMOKE_ONLY=2.3,4` 只跑段号匹配的段（逗号分隔的子串，留空 = 全量）。
+ *
+ * 为什么按「段」切而不是按「条」：断言之间有状态依赖（2.2 设过项目、2.3 接着用），
+ * 段内自带前置与收尾，段间互不残留 —— 逐条跳过会让后面的断言读到错的前置，那正是
+ * 「夹具过期」那一族假 FAIL 的成因。未命中的段**整段不执行**（副作用一起跳过），
+ * 所以单独跑一段时也不会白等 2.3 段里那两个确认卡的 60s 超时。
+ *
+ * 它只用来把「改一行 → 等三分钟」压成「改一行 → 等十几秒」；
+ * 提交前的验收仍然跑全量（留空即全量，行为与引入本开关前逐字一致）。
+ */
+const smokeOnlyTokens = (process.env['AURORA_SMOKE_ONLY'] ?? '')
+  .split(',')
+  .map((token) => token.trim())
+  .filter((token) => token !== '')
+
+/** 该段是否在本轮分片范围内（留空 = 全选）。 */
+function smokeSection(section: string): boolean {
+  return smokeOnlyTokens.length === 0 || smokeOnlyTokens.some((token) => section.includes(token))
 }
 
 let logger: FileLogger | undefined
@@ -1939,6 +1962,13 @@ async function runCapture(dir: string): Promise<void> {
       reasoningEnd: BURST_REASONING_END_MARKER,
     }),
   }
+  // 场景级过滤：`AURORA_CAPTURE_ONLY=<文件名子串, ...>`；特殊值 `failed` = 只重跑上次
+  // `report.json` 里没过的那几张（修完一轮只重验红的，不必全量重跑五六十张）。
+  // ⚠️ `failed` 落在"上次全绿"时得到的是**空数组**，那表示"没有要重验的"，
+  // 不是"没匹配上"—— 传空串会被 `filterCapturePlan` 当成全选，等于偷偷全量重跑。
+  const captureOnlyRaw = (process.env['AURORA_CAPTURE_ONLY'] ?? '').trim()
+  const captureOnly =
+    captureOnlyRaw === 'failed' ? await failedCaptureFiles(dir) : parseCaptureTokens(captureOnlyRaw)
   const plan = filterCapturePlan(
     [
       // 项目卡已下线（2026-09-30）：项目现场改由 capture.ts 内部的 settingsProjectAct
@@ -1949,32 +1979,44 @@ async function runCapture(dir: string): Promise<void> {
       chatBurstTarget,
     ],
     process.env['AURORA_CAPTURE_WINDOWS'],
+    captureOnly,
   )
-  logger?.info('开始窗口截图', { dir, count: plan.length })
+  const nothingDue = plan.length === 0 && captureOnlyRaw === 'failed'
+  logger?.info('开始窗口截图', {
+    dir,
+    count: plan.length,
+    only: captureOnlyRaw === '' ? undefined : captureOnlyRaw,
+  })
   const result = await captureWindows({
     dir,
     targets: plan,
     manager,
     logger: logger ?? undefined,
-    delayMs: 700,
+    // `delayMs` 不在这里传：它是「等两帧渲染后再补多久」的 settle 值，
+    // 缺省由 capture.ts 定义（原先写死 700 是"固定等待"，已随 waitForPaint 一起改语义）。
   })
   logger?.info('窗口截图完成', { written: result.files.length, dir })
 
   // 渲染层探针结果与截图一起落盘：截图回答"长什么样"，探针回答"能不能点"。
   // 用与 AURORA_SMOKE 相同的前缀，方便在同一条命令链里 grep 结果。
-  try {
-    const report = {
-      dir,
-      // 档位要能**自证**：`AURORA_CAPTURE_THEME` 拼错（如 'LIGHT'）会静默回落 system，
-      // 只留 PNG 的话两份报告的目录名与实际档位对不上也看不出来，所以请求值与实际生效值都落盘。
-      requestedTheme: (process.env['AURORA_CAPTURE_THEME'] ?? '').trim() || 'system',
-      theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
-      files: result.files,
-      checks: result.checks,
+  //
+  // ⚠️ 只在**真的跑过场景**时才写：`AURORA_CAPTURE_ONLY=failed` 碰上"上一轮全绿"时 plan 为空，
+  // 照写就会把上一份"有失败项"的报告覆盖成空 checks —— 下次再 `failed` 就什么都读不到了。
+  if (plan.length > 0) {
+    try {
+      const report = {
+        dir,
+        // 档位要能**自证**：`AURORA_CAPTURE_THEME` 拼错（如 'LIGHT'）会静默回落 system，
+        // 只留 PNG 的话两份报告的目录名与实际档位对不上也看不出来，所以请求值与实际生效值都落盘。
+        requestedTheme: (process.env['AURORA_CAPTURE_THEME'] ?? '').trim() || 'system',
+        theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+        files: result.files,
+        checks: result.checks,
+      }
+      await fs.writeFile(join(dir, 'report.json'), JSON.stringify(report, null, 2), 'utf8')
+    } catch (error) {
+      logger?.warn('截图报告写出失败', { error: String(error) })
     }
-    await fs.writeFile(join(dir, 'report.json'), JSON.stringify(report, null, 2), 'utf8')
-  } catch (error) {
-    logger?.warn('截图报告写出失败', { error: String(error) })
   }
   for (const item of result.checks) {
     if (item.result == null) {
@@ -2011,7 +2053,7 @@ async function runCapture(dir: string): Promise<void> {
     skillsService?.stopWatching()
     await fs.rm(smokeWorkspace, { recursive: true, force: true }).catch(() => undefined)
   }
-  if (result.files.length === 0) app.exit(1)
+  if (result.files.length === 0) app.exit(nothingDue ? 0 : 1)
   else app.exit(result.failed ? 2 : 0)
 }
 
@@ -2022,6 +2064,35 @@ async function runCapture(dir: string): Promise<void> {
  * 对话部分使用本地假 LLM 服务（`smoke-llm.ts`）：自测**离线可跑**，
  * 且"桩服务收到 3 轮 chat 请求 + 其中一轮带回 tool 结果"能证明工具循环真的执行了。
  */
+/**
+ * 给自测会话绑定一个临时项目根。
+ *
+ * v17 起项目根**按会话解析**（`tools/session-project.ts`），链是「会话绑定项目 >
+ * 会话空间目录 > 全局当前项目」；未标记的会话恒落 Agent 空间、其目录固定为
+ * 「桌面\Aurora」—— 它**排在全局当前项目之前**，所以只设 `projects.current` 已经不足以
+ * 把会话落到夹具根上。凡是走真实文件链路的自测段都必须先绑定，否则写进 userData / %TEMP%
+ * 的夹具一律被判越界，断言测的就成了「越界拒绝」而不是被测行为；
+ * 落进等待确认卡的那条分支时还会白挂一个 60s 超时（2026-09-30 的口径变更 smoke 没跟着改，
+ * 13 条断言因此连续多轮恒红）。
+ *
+ * `projectId` 复用同一个 key：本函数替换同 id 的旧项，同一段里改绑不同目录不会让
+ * `projects.list` 越积越长。
+ */
+async function bindSmokeProject(sessionId: string, projectId: string, root: string): Promise<void> {
+  if (settings === undefined || sessions === undefined) return
+  const projects = settings.get().projects
+  settings.update({
+    projects: {
+      ...projects,
+      list: [
+        ...projects.list.filter((item) => item.id !== projectId),
+        { id: projectId, name: '自测项目', root },
+      ],
+    },
+  })
+  await sessions.setProject(sessionId, projectId)
+}
+
 async function runSmokeTest(userData: string): Promise<void> {
   const target = BrowserWindow.getAllWindows()[0]
   if (!target) {
@@ -2201,7 +2272,7 @@ async function runSmokeTest(userData: string): Promise<void> {
   //     单测覆盖不到这两条：`systemPrompt.test.ts` 那对确定性构造的 a / b 只证组装函数
   //     正确，证不了「请求真的这么发出去了」；`toLlmTools()` 的排序单测同理证不了
   //     agentLoop 的**生效路径**用的是它（step 6 的已知风险 ③）。
-  {
+  if (smokeSection('2.1')) {
     // 只取**父对话**请求：分类与子代理各走自己的分流，系统提示词不是同一份，混进来必然假 FAIL。
     // 再要求"整份组装结果"（含安全规则 + 系统状态）才对：桩服务是公用的，将来若有别的场景
     // 在对话之前打它（设置页的"测试连接"这类只发最小提示词），不筛就会拿它当第一轮。
@@ -2277,7 +2348,7 @@ async function runSmokeTest(userData: string): Promise<void> {
   //     证不了「装配层的闭包 + 每轮即时读取」这条生效路径。
   //     位置必须在上面那组断言**之后**：那里有一条"桩共收到 11 轮 chat 请求"的精确计数，
   //     本轮会多打一次桩 —— 让 record 先跑完就不会互相影响。
-  {
+  if (smokeSection('2.2')) {
     const projectRoot = join(userData, 'smoke-project')
     const agentsMarker = 'AURORA_AGENTS_MD_MARKER'
     const overrideMarker = 'AURORA_AGENTS_OVERRIDE_MARKER'
@@ -2305,6 +2376,9 @@ async function runSmokeTest(userData: string): Promise<void> {
             list: [{ id: 'smoke-project', name: '自测项目', root: projectRoot }],
           },
         })
+        // v17 起边界根按**会话**解析，未绑定会话恒落 Agent 空间（桌面\Aurora）——
+        // 只设全局 current 已经落不到夹具根上（详见 `bindSmokeProject` 注释）。
+        await bindSmokeProject('smoke-project', 'smoke-project', projectRoot)
 
         // 等这一轮的 done 再断言：`send` 只入队，事件流才是"请求真的发出去了"的证据
         let offDone: (() => void) | undefined
@@ -2355,7 +2429,7 @@ async function runSmokeTest(userData: string): Promise<void> {
   //     这里断言的是**真实装配实例**（`syncToolRegistries()` 重建出的注册表 + 注入内核的同一个
   //     `confirmTool`）——单测各自覆盖过函数，但"改设置 → 注册表跟着变 → 确认判定跟着变"这条
   //     生效路径只有整机跑得出来。
-  {
+  if (smokeSection('2.3')) {
     let readonlyToolNames: string[] = []
     let readonlyRemoved = false
     let autoInsideApproved = false
@@ -2386,6 +2460,9 @@ async function runSmokeTest(userData: string): Promise<void> {
             list: [{ id: 'smoke-perm', name: '权限自测', root: projectRoot }],
           },
         })
+        // 会话 id 与项目 id 在这里**必须分开写**：绑的是会话，解析出来的根才是夹具根。
+        // 不绑的话下面两条 `confirmTool` 落不到 auto 档的「根内」分支，会去等 60s 确认超时。
+        await bindSmokeProject('smoke-permission', 'smoke-perm', projectRoot)
 
         // ① 只读档：写 / 执行 / 有副作用的工具必须从注册表里消失
         settings.update({ agent: { ...agentBefore, permissionMode: 'readonly' } })
@@ -2539,7 +2616,7 @@ async function runSmokeTest(userData: string): Promise<void> {
   //     edit_file 工具 → file-port 的写前钩子 → 真实快照端口 → 磁盘。
   //     这是"回滚能救回原内容"的端到端证据：单测各自覆盖了端口与端口钩子，
   //     但"工具层带上 snapshot 参数、装配层真的注入了端口"这条链只有整机跑得出来。
-  {
+  if (smokeSection('2.4')) {
     const snapshotDemoDir = join(userData, 'smoke-snapshot')
     const snapshotDemoFile = join(snapshotDemoDir, 'note.txt')
     let snapshotOnWrite = false
@@ -2552,6 +2629,9 @@ async function runSmokeTest(userData: string): Promise<void> {
     try {
       await fs.mkdir(snapshotDemoDir, { recursive: true })
       await fs.writeFile(snapshotDemoFile, 'V1', 'utf8')
+      // 快照存储本身不走 file-port、不受边界约束；受约束的是 write_file / edit_file /
+      // read_file —— 让它们落在绑定的项目根内，测到的才是快照链路而不是越界拒绝。
+      await bindSmokeProject('smoke-snapshot', 'smoke-snapshot', snapshotDemoDir)
       const port = ensureSnapshotPort()
       const write = tools?.get('write_file')
       const edit = tools?.get('edit_file')
@@ -2641,7 +2721,7 @@ async function runSmokeTest(userData: string): Promise<void> {
   // 2.5 Job 持久化与续跑（v15，docs/06 §4.1）：走**真实链路** —— `kernel.send()` → 真循环 →
   //     真 job 存储 → 磁盘。桩服务按 JOB_LOOP_MARKER 一直要工具，"轮次用尽 → paused"
   //     因此是**确定发生**的，不依赖模型自觉。
-  {
+  if (smokeSection('2.5')) {
     const jobSession = 'smoke-job'
     let pausedOk = false
     let resumeOk = false
@@ -2774,7 +2854,7 @@ async function runSmokeTest(userData: string): Promise<void> {
   // 2.6 跨特性集成（step 5）：把四步串成一条链 —— 选项目 → 设权限档 → Agent 真的写文件（留快照）
   //     → 只读档写不动 → 一键回滚。每条断言都必须能回答"这个特性坏了它会失败吗"：
   //     于是写文件走**真实桩驱动**（标记之后那一行是目标路径），而不是直接调工具注册表。
-  {
+  if (smokeSection('2.6')) {
     const outerMarker = 'AURORA_AGENTS_OUTER_MARKER'
     const innerMarker = 'AURORA_AGENTS_INNER_MARKER'
     let scopeOk = false
@@ -2841,6 +2921,9 @@ async function runSmokeTest(userData: string): Promise<void> {
             loop: { maxRounds: 2, maxTotalTokens: 0, autoContinueRounds: 0 },
           },
         })
+        // 会话绑定（v17 口径）：auto 档的「根内免确认」与 AGENTS.md 注入都按**会话**解析根，
+        // 只设全局 current 落不到夹具根上 —— 断言会退化成"越界拒绝"。
+        await bindSmokeProject('smoke-integration', projectId, projectRoot)
 
         // ① auto 档：根内写文件**不弹卡**、真的落盘、并且留下了快照
         settings.update({
@@ -2889,7 +2972,10 @@ async function runSmokeTest(userData: string): Promise<void> {
         })
         await waitForSessionDone(host, 'smoke-integration')
         const blockedContent = await fs.readFile(readonlyTarget, 'utf8').catch(() => '')
-        readonlyOk = blockedContent === 'UNTOUCHED'
+        // 判据挂在 `autoOk` 上：只读档"写不动"只有在**同一链路在 auto 档下确实写得动**的
+        // 前提下才有证明力。否则这条是空真 —— 文件从头到尾没被碰过（因为 auto 那段就没写成）
+        // 时 `blockedContent === 'UNTOUCHED'` 照样成立，它在 2026-09-30 之后就一直这么"假绿"着。
+        readonlyOk = autoOk && blockedContent === 'UNTOUCHED'
 
         // ⑤ 回滚：把 ① 里的写操作撤回，且回滚自身留下 origin:'rollback' 的快照
         const first = afterSnapshots[0]
@@ -2964,7 +3050,7 @@ async function runSmokeTest(userData: string): Promise<void> {
   // 2.7 给"第二次启动"留一条 paused 的 job（step 5 的跨进程续跑验证前置）：
   //     轮次用尽 + 关掉自动续轮 + 这里**不**续跑 → 它就停在这个工作区里等下一次启动。
   //     跨进程证据的另一半在 `runResumePhase`（`AURORA_SMOKE_PHASE=resume`）。
-  {
+  if (smokeSection('2.7')) {
     let prepared = false
     let detail = ''
     try {
@@ -3018,61 +3104,63 @@ async function runSmokeTest(userData: string): Promise<void> {
   //    注意：Windows 上 `getBounds()` 会带上窗口的不可见边框（实测 8px 请求 → 10px 返回，
   //    且随 DPI 缩放变化），所以这里断言**不变量 + 容差**，而不是精确相等 ——
   //    精确的几何算术由纯函数单测保证。
-  const near = (a: number, b: number, tolerance: number): boolean => Math.abs(a - b) <= tolerance
-  const workArea = screen.getPrimaryDisplay().workArea
-  const rightEdge = workArea.x + workArea.width
-  windows?.setEdgeBarExpanded(false)
-  const barCollapsed = windows?.getBounds('edge-bar')
-  windows?.setEdgeBarExpanded(true)
-  const barExpanded = windows?.getBounds('edge-bar')
-  windows?.setEdgeBarExpanded(false)
-  const barBack = windows?.getBounds('edge-bar')
-  record(
-    '提示条收起态真实窗口约 8px 宽且贴右缘',
-    barCollapsed !== undefined &&
-      near(barCollapsed.width, EDGE_BAR_WIDTHS.collapsed, 4) &&
-      near(barCollapsed.x + barCollapsed.width, rightEdge, 4),
-    JSON.stringify(barCollapsed),
-  )
-  record(
-    '提示条展开态真实窗口约 228px 宽、右缘与垂直中心不变',
-    barCollapsed !== undefined &&
-      barExpanded !== undefined &&
-      near(barExpanded.width, EDGE_BAR_WIDTHS.expanded, 4) &&
-      near(barExpanded.x + barExpanded.width, barCollapsed.x + barCollapsed.width, 3) &&
-      near(barExpanded.y + barExpanded.height / 2, barCollapsed.y + barCollapsed.height / 2, 3) &&
-      barExpanded.height > barCollapsed.height,
-    JSON.stringify(barExpanded),
-  )
-  record(
-    '提示条展开态占满工作区高度（面板按钮不会被挤出可视区）',
-    barExpanded !== undefined &&
-      barExpanded.height >= workArea.height - 2 * 24 - 6 &&
-      barExpanded.height <= workArea.height,
-    barExpanded !== undefined ? `height=${barExpanded.height}, workArea=${workArea.height}` : '',
-  )
-  record(
-    '提示条展开比收起宽出约 220px（8 -> 228）',
-    barCollapsed !== undefined &&
-      barExpanded !== undefined &&
-      near(
-        barExpanded.width - barCollapsed.width,
-        EDGE_BAR_WIDTHS.expanded - EDGE_BAR_WIDTHS.collapsed,
-        4,
-      ),
-    barCollapsed !== undefined && barExpanded !== undefined
-      ? `delta=${barExpanded.width - barCollapsed.width}`
-      : 'undefined',
-  )
-  record(
-    '提示条收起后真实窗口回到初始矩形（往返幂等）',
-    barBack !== undefined &&
+  if (smokeSection('3')) {
+    const near = (a: number, b: number, tolerance: number): boolean => Math.abs(a - b) <= tolerance
+    const workArea = screen.getPrimaryDisplay().workArea
+    const rightEdge = workArea.x + workArea.width
+    windows?.setEdgeBarExpanded(false)
+    const barCollapsed = windows?.getBounds('edge-bar')
+    windows?.setEdgeBarExpanded(true)
+    const barExpanded = windows?.getBounds('edge-bar')
+    windows?.setEdgeBarExpanded(false)
+    const barBack = windows?.getBounds('edge-bar')
+    record(
+      '提示条收起态真实窗口约 8px 宽且贴右缘',
       barCollapsed !== undefined &&
-      barBack.x === barCollapsed.x &&
-      barBack.width === barCollapsed.width &&
-      barBack.height === barCollapsed.height,
-    JSON.stringify(barBack),
-  )
+        near(barCollapsed.width, EDGE_BAR_WIDTHS.collapsed, 4) &&
+        near(barCollapsed.x + barCollapsed.width, rightEdge, 4),
+      JSON.stringify(barCollapsed),
+    )
+    record(
+      '提示条展开态真实窗口约 228px 宽、右缘与垂直中心不变',
+      barCollapsed !== undefined &&
+        barExpanded !== undefined &&
+        near(barExpanded.width, EDGE_BAR_WIDTHS.expanded, 4) &&
+        near(barExpanded.x + barExpanded.width, barCollapsed.x + barCollapsed.width, 3) &&
+        near(barExpanded.y + barExpanded.height / 2, barCollapsed.y + barCollapsed.height / 2, 3) &&
+        barExpanded.height > barCollapsed.height,
+      JSON.stringify(barExpanded),
+    )
+    record(
+      '提示条展开态占满工作区高度（面板按钮不会被挤出可视区）',
+      barExpanded !== undefined &&
+        barExpanded.height >= workArea.height - 2 * 24 - 6 &&
+        barExpanded.height <= workArea.height,
+      barExpanded !== undefined ? `height=${barExpanded.height}, workArea=${workArea.height}` : '',
+    )
+    record(
+      '提示条展开比收起宽出约 220px（8 -> 228）',
+      barCollapsed !== undefined &&
+        barExpanded !== undefined &&
+        near(
+          barExpanded.width - barCollapsed.width,
+          EDGE_BAR_WIDTHS.expanded - EDGE_BAR_WIDTHS.collapsed,
+          4,
+        ),
+      barCollapsed !== undefined && barExpanded !== undefined
+        ? `delta=${barExpanded.width - barCollapsed.width}`
+        : 'undefined',
+    )
+    record(
+      '提示条收起后真实窗口回到初始矩形（往返幂等）',
+      barBack !== undefined &&
+        barCollapsed !== undefined &&
+        barBack.x === barCollapsed.x &&
+        barBack.width === barCollapsed.width &&
+        barBack.height === barCollapsed.height,
+      JSON.stringify(barBack),
+    )
+  }
 
   // 4. 电脑操控工具（docs/06 §11）：用**真实的 Windows 进程与文件系统**证明
   //    「模型真的能操控电脑」这条链路在主进程装配下是通的。
@@ -3090,7 +3178,7 @@ async function runSmokeTest(userData: string): Promise<void> {
     'grep',
     'glob',
   ] as const
-  {
+  if (smokeSection('4')) {
     const names = tools ? tools.list().map((tool) => tool.name) : []
     const missing = SMOKE_IMPLEMENTED_TOOLS.filter((name) => !names.includes(name))
     record(
@@ -3131,6 +3219,10 @@ async function runSmokeTest(userData: string): Promise<void> {
     let commandDetail = ''
     try {
       await fs.mkdir(probeDir, { recursive: true })
+      // 探针目录即本段的"临时项目根"：文件类工具的边界按会话解析，未绑定会话恒落
+      // Agent 空间（桌面\Aurora），%TEMP% 下的探针会被整片拒掉 —— 那测到的就不是
+      //「工具能不能用」而是「越界拒绝」了。
+      await bindSmokeProject('smoke', 'smoke-tools', probeDir)
       const command = await runCommand?.execute(
         {
           // PowerShell 单引号字面量里的单引号要写成两个：路径来自 tmpdir()，正常不会含引号，
@@ -3174,6 +3266,8 @@ async function runSmokeTest(userData: string): Promise<void> {
     const searchDir = join(tmpdir(), `aurora-smoke-search-${Date.now()}`)
     try {
       await fs.mkdir(join(searchDir, 'src', 'deep'), { recursive: true })
+      // 复用同一个项目 id 改绑到搜索目录（`bindSmokeProject` 会替换同 id 的旧项）。
+      await bindSmokeProject('smoke', 'smoke-tools', searchDir)
       await fs.mkdir(join(searchDir, 'node_modules', 'pkg'), { recursive: true })
       await fs.writeFile(
         join(searchDir, 'src', 'deep', 'marker.txt'),
@@ -3202,11 +3296,12 @@ async function runSmokeTest(userData: string): Promise<void> {
         ?.execute({ path: searchDir, pattern: 'AURORA_GREP_OK' }, { sessionId: 'smoke' })
       const grepText = grepped?.content ?? ''
       // 命中行格式是 `<相对路径>:<行号>: <内容>`，行号 1 起始（marker.txt 的命中在第 2 行）
-      grepOk =
-        grepped !== undefined &&
-        grepped.isError !== true &&
-        grepText.includes('src/deep/marker.txt:2: AURORA_GREP_OK')
-      grepIgnoredOk = !grepText.includes('skipped.txt')
+      // 负对照（"没扫 node_modules"）必须建立在**调用真的成功**之上：grep 失败时返回的是
+      // 错误文案，里面当然不含 `skipped.txt` —— 那样 `grepIgnoredOk` 恒真，这半条断言
+      // 等于没跑（2026-09-30 起 grep 被边界拒绝，它就是靠这个空真一直报 ok 的）。
+      const grepSucceeded = grepped !== undefined && grepped.isError !== true
+      grepOk = grepSucceeded && grepText.includes('src/deep/marker.txt:2: AURORA_GREP_OK')
+      grepIgnoredOk = grepSucceeded && !grepText.includes('skipped.txt')
       searchDetail = globText.slice(0, 100)
     } catch (error) {
       searchDetail = `异常：${String(error)}`
@@ -3294,7 +3389,7 @@ async function runSmokeTest(userData: string): Promise<void> {
   //    第 ④ 条刻意读盘、而不是 `safeParse(settings.get())` —— 后者恒真：
   //    `SettingsStore.get()` 的内存态本来就只装「通过了 safeParse」的候选值，
   //    拿它当证据等于什么都没测；而「AI 改设置导致应用崩」的真实风险正是**下次启动读盘**时炸。
-  if (settings !== undefined && tools !== undefined) {
+  if (smokeSection('5') && settings !== undefined && tools !== undefined) {
     const setSetting = tools.get('set_setting')
     const configPath = join(userData, 'config.json')
     // 「拒绝后逐字未变」的判据取**改动前**的实测值，不写死数字：

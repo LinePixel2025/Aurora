@@ -17,8 +17,8 @@
  * - 每个窗口之间留 `delayMs`（默认 700ms）让进场动画落位，否则会拍到过渡中间帧；
  * - 需要深链的窗口（设置页 `?page=`）用 reload 而不是新开窗口，避免堆一排窗口。
  */
-import { mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import { nativeTheme, type BrowserWindow } from 'electron'
 import {
   createFileSnapshotPort,
@@ -98,6 +98,15 @@ export interface CaptureTarget {
   /** 截图前在目标窗口渲染层执行的 JS（模拟 hover / click 等真实交互） */
   act?: string
   /**
+   * 本场景独有的「等两帧渲染之后还要多久」覆盖值（缺省用 `CaptureOptions.delayMs`）。
+   *
+   * 只有**动到窗口本身**的场景才需要它：`act` 是 await 的，但"提示条展开"走的是
+   * 主进程 `setBounds`，属于**跨进程**异步 —— act 返回时画面还停在收起态
+   *（2026-10-01 实测：把缺省等待从 700ms 收到 292ms 后，`edge-bar-expanded.png`
+   * 从 79KB 掉到 7.6KB，画面是竖条、DOM 却已是展开态 —— 探针 PASS 但图是错的）。
+   */
+  settleMs?: number
+  /**
    * 截图前在**主进程侧**执行的动作（拿到 `BrowserWindow`）。
    *
    * 存在的理由：**JS 合成事件测不到原生输入管线** —— `dispatchEvent(new WheelEvent(...))`
@@ -163,6 +172,33 @@ function wait(ms: number): Promise<void> {
 }
 
 /**
+ * 「等两帧渲染」的脚本：`executeJavaScript(task, true)` 本身是 await 的，act 里所有异步
+ * （写配置、reload、IPC 往返）在它返回时都已结束，差的只是浏览器把 DOM 变更画出来。
+ * 窗口被隐藏时 rAF 不派发（promise 永不 settle），调用方必须配超时兜底。
+ */
+const PAINT_WAIT_SCRIPT =
+  'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))'
+
+/**
+ * 等这一场景的画面真的落到帧上。
+ *
+ * 两帧 rAF 保证 DOM 变更已渲染；场景里还可能带 CSS transition（提示条展开 220ms 一类），
+ * rAF 之后仍需一段，所以再补一个 `settleMs`。原先是无条件 `wait(700)`：
+ * **59 个场景里 51 个带 act**，那段固定等待接近一轮时长的一半
+ *（2026-10-01 实测：70 张图相邻间隔合计 105.6s，其中固定等待约 49s）。
+ */
+async function waitForPaint(win: BrowserWindow, settleMs: number): Promise<void> {
+  await Promise.race([
+    win.webContents
+      .executeJavaScript(PAINT_WAIT_SCRIPT, true)
+      // 窗口已被 hide 的场景：拿不到结果就由下面的 settle 兜底，不要在这里抛错卡住整轮
+      .catch(() => undefined),
+    wait(1000),
+  ])
+  await wait(settleMs)
+}
+
+/**
  * 截一张**非空**的图。
  *
  * `capturePage()` 在窗口刚 show 出来、合成器还没产出首帧时会返回空图（0 字节 PNG）。
@@ -189,7 +225,9 @@ async function captureNonEmpty(win: BrowserWindow, attempts = 4, gapMs = 600): P
  */
 export async function captureWindows(options: CaptureOptions): Promise<CaptureResult> {
   const { dir, targets, manager, logger } = options
-  const delayMs = options.delayMs ?? 700
+  // `delayMs` 的语义是「rAF 之后额外等多久让动画收尾」，不是「固定等待总时长」
+  //（总等待 = 两帧 rAF + 它）。缺省值按场景里最长的 CSS transition（220ms 级）留余量。
+  const delayMs = options.delayMs ?? 260
   await mkdir(dir, { recursive: true })
 
   const files: string[] = []
@@ -216,7 +254,7 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
         await wait(60)
         mainActResult = await target.mainAct(win)
       }
-      await wait(delayMs)
+      await waitForPaint(win, target.settleMs ?? delayMs)
       const png = await captureNonEmpty(win)
       await writeFile(file, png)
       files.push(file)
@@ -7438,6 +7476,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       file: 'edge-bar-expanded.png',
       act: EDGE_BAR_HOVER_SCRIPT,
       check: EDGE_BAR_PANEL_SCRIPT,
+      // 展开要等主进程 setBounds 把窗口撑到 228px（跨进程异步，rAF 等不到它）
+      settleMs: 700,
     },
     // 交互窗的场景顺序见函数头注释：能在窗口里操作 DOM 的都排在 chat-collapse 之前。
     // 这些场景都沿用 `name: 'chat'`（`CaptureTarget.name` 的类型是 `WindowName`，且 `report.json`
@@ -7968,15 +8008,63 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
   return plan
 }
 
-/** 按 `AURORA_CAPTURE_WINDOWS` 过滤清单；未设置或为空表示全选。 */
-export function filterCapturePlan(
-  plan: CaptureTarget[],
-  requested: string | undefined,
-): CaptureTarget[] {
-  const names = (requested ?? '')
+/** 把逗号分隔的取值切成去空 token（两个过滤开关共用）。 */
+export function parseCaptureTokens(value: string | undefined): string[] {
+  return (value ?? '')
     .split(',')
     .map((item) => item.trim())
     .filter((item) => item !== '')
-  if (names.length === 0) return plan
-  return plan.filter((target) => names.includes(target.name))
+}
+
+/**
+ * 按窗口名（`AURORA_CAPTURE_WINDOWS`）与场景文件名（`AURORA_CAPTURE_ONLY`）过滤截图清单。
+ *
+ * 两级过滤各管一件事：窗口名只有四个（edge-bar / chat / settings / onboarding），
+ * 粗到没法只跑"会话三分那一张"；`only` 按 `file` 做**子串**匹配 —— 写 `session-groups`
+ * 或 `chat-session-groups.png` 都能命中，它才是把一轮五六十张收敛成"改到哪张跑哪张"的那级。
+ *
+ * `only` 的取值用 `string[] | undefined` 而不是 `string | undefined`，是为了让
+ * **"空数组"与"不传"语义分开**：`undefined` = 不按场景筛（全选），`[]` = 一张都不选。
+ * 揉成空串的话，`AURORA_CAPTURE_ONLY=failed` 碰上"上次全绿"就会静默退化成全量重跑
+ * —— 那正是这个开关最不该做的事。窗口名沿用空串 = 全选（`AURORA_CAPTURE_WINDOWS`
+ * 的既有语义，不能改）。
+ */
+export function filterCapturePlan(
+  plan: CaptureTarget[],
+  requested: string | undefined,
+  only: readonly string[] | undefined = undefined,
+): CaptureTarget[] {
+  const names = parseCaptureTokens(requested)
+  return plan.filter((target) => {
+    if (names.length > 0 && !names.includes(target.name)) return false
+    if (only === undefined) return true
+    const file = target.file ?? `${target.name}.png`
+    return only.some((token) => file.includes(token))
+  })
+}
+
+/**
+ * 读上次 `report.json` 里**没通过**的场景文件名（截图/探针抛错 `ok:false`，或探针 `pass:false`），
+ * 供 `AURORA_CAPTURE_ONLY=failed` 只重验红掉的那几张。
+ *
+ * 没有报告 / 报告损坏时返回空数组，**由调用方决定怎么办** —— 这里刻意不回落成"全量重跑"：
+ * 把"重验失败项"悄悄变成"重跑五六十张"是最坏的结果（一轮三五分钟，用户以为很快）。
+ */
+export async function failedCaptureFiles(dir: string): Promise<string[]> {
+  try {
+    const raw = await readFile(join(dir, 'report.json'), 'utf8')
+    const parsed = JSON.parse(raw) as {
+      checks?: Array<{ file?: unknown; ok?: unknown; result?: unknown }>
+    }
+    const names = (parsed.checks ?? [])
+      .filter(
+        (item) =>
+          item.ok === false || (item.result as { pass?: unknown } | undefined)?.pass === false,
+      )
+      .map((item) => (typeof item.file === 'string' ? basename(item.file) : ''))
+      .filter((name) => name !== '')
+    return [...new Set(names)]
+  } catch {
+    return []
+  }
 }

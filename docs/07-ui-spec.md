@@ -1104,7 +1104,20 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
      「思考等级 / 结构 / 模型列表」三条的配置改写与恢复口径见下面各条探针说明。
   5. **提示条收尾**：`edge-bar-collapsed-final.png`（收起，不留展开态）→
      `edge-bar-after-click.png`（先 `hide('chat')` 复位再点竖条，回归「点击呼出交互窗」）。
-  `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）。
+  `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）；
+  再细一级用 `AURORA_CAPTURE_ONLY='session-groups'`（按 PNG 文件名**子串**匹配，逗号分隔），
+  特殊值 `failed` = 只重跑上次 `report.json` 里未通过的场景（`ok:false` 或探针 `pass:false`）——
+  修完一轮只重验红掉的那几张，不必全量重跑；上次全绿时它是**空清单**，一张不跑且退出码为 0
+  （"没有要重验的"不等于"没匹配上"，后者退出码是 1）。
+  - **截图时机的等待策略**（2026-10-01）：每个场景在 `act` 结束后等**两帧 rAF**（保证 DOM 变更
+    已经画出来），再补一个 settle —— 缺省 260ms，按场景里最长的 CSS transition（220ms 级）留余量。
+    `executeJavaScript(act, true)` 本身是 await 的，所以 act 内部的异步（写配置、reload、IPC 往返）
+    在它返回时都已结束，不需要再用固定长等待去"兜"。**只有动到窗口本身的场景**才覆盖
+    `CaptureTarget.settleMs`：提示条展开走主进程 `setBounds`，属**跨进程**异步，rAF 等不到它
+    （`edge-bar-expanded` 因此保持 700ms）。
+    ⚠️ 别把 rAF 当成万能的：把等待一刀切短之后，`edge-bar-expanded.png` 从 79KB 掉到 7.6KB ——
+    画面还停在竖条、DOM 却已是展开态，而**探针照样 PASS**（它只读 DOM，不看画面）。
+    这类回归只有压缩 PNG 的字节数或人眼看图才发现得了。
   仅开发态生效；与 `AURORA_SMOKE` 同时设置时**截图优先**（自测不会执行）。
   进程退出码：0 = 全部成功，1 = 一张图都没写出，2 = **存在失败项**——
   截图/探针抛错（`ok:false`）、探针 `pass === false`，或 `checked` 为真却拿不到 `result`

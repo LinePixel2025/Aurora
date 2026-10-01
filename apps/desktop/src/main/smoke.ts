@@ -1034,21 +1034,30 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       record('自测自建自动化可删除', removed.ok === true, JSON.stringify(removed))
     }
 
-    // 组件目录（catalog）：渲染层编辑器与 AI 工具都靠它，这里断言基本形状
+    // 组件目录（catalog）：渲染层编辑器与 AI 工具都靠它。
+    // 断言**必需的 kind 在不在**，而不是把长度写死：长度口径每次扩类都要跟着改一次
+    //（2026-09-30 新增「打开网址 / 打开应用」两个操作组件时就是这样假红了一整轮），
+    // 而"某个 kind 悄悄消失"才是真缺陷 —— 名单 + 下界同时盯住这两件事。
     const catalog = await window.aurora.automation.catalog()
+    const REQUIRED_CONDITIONS = [
+      'daily',
+      'interval',
+      'pre-class',
+      'class-start',
+      'pre-end',
+      'class-end',
+      'next-lesson',
+    ]
+    const REQUIRED_ACTIONS = ['system-notify', 'classisland-remind', 'open-folder']
+    const conditionKinds =
+      catalog.ok === true ? catalog.value.conditions.map((item) => item.kind) : []
+    const actionKinds = catalog.ok === true ? catalog.value.actions.map((item) => item.kind) : []
     record(
-      '组件目录含全部触发器（7 类）与操作组件（3 类）',
+      '组件目录含全部必需触发器与操作组件（新增 kind 不假红，缺失即失败）',
       catalog.ok === true &&
-        catalog.value.conditions.length === 7 &&
-        catalog.value.actions.length === 3,
-      JSON.stringify(
-        catalog.ok
-          ? {
-              conditions: catalog.value.conditions.length,
-              actions: catalog.value.actions.length,
-            }
-          : catalog,
-      ),
+        REQUIRED_CONDITIONS.every((kind) => conditionKinds.includes(kind)) &&
+        REQUIRED_ACTIONS.every((kind) => actionKinds.includes(kind)),
+      JSON.stringify({ conditions: conditionKinds, actions: actionKinds }),
     )
 
     // ───────────────────── 敏感工具确认通道（P5，docs/06 §5） ─────────────────────

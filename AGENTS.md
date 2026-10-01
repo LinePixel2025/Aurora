@@ -56,6 +56,13 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   是**根相对**路径，在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败
   （2026-09-26 实测；各包 package.json 里的 `test: vitest run` 只在仓库根调用时才对）。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：PowerShell 下 `$env:AURORA_SMOKE='1'; pnpm dev`，结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`。调试渲染层加 `AURORA_DEVTOOLS=1`。
+  **全量一轮约 25 秒、176 条断言应当全绿（`SUMMARY 176/176 passed`）**——
+  基线不是绿的说明断言或夹具过期了，**先把基线修绿再动被测代码**，别在红基线上判断"这次是不是我引入的"。
+  只跑相关的那一段用 `$env:AURORA_SMOKE_ONLY='2.3'`（段号或子串，逗号分隔；留空 = 全量）。
+  它**只切主进程侧那十几个段**（2.1~5），渲染层脚本（约 135 条断言）始终全跑 ——
+  所以一轮的下限仍在 20 秒上下，它的价值是**聚焦**（只跑相关断言、不被无关噪声干扰），
+  不是把 24 秒压到几秒。**提交前仍必须跑全量**。
+  另有一条跨进程续跑段用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
 - **窗口截图核对（前端视觉验收）**：`$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev`，会把四个窗口、
   提示条两态、设置页各页与各条 DOM 探针场景（面板 / 收起 / 自动滚底 / 门控 / 拖动 / 思考等级 /
   模型列表与模型选择 / 真实写盘 / 提示条收尾图）截成一批 PNG ——
@@ -65,7 +72,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   并写 `report.json`（渲染层 DOM 探针结果：
   面板按钮命中测试、点击竖条后的窗口状态、设置页 `data-field` 门控计数；探针返回 `pass` 时按 PASS/FAIL 落日志，
   有 FAIL 时进程退出码为 2）。
-  只截部分窗口用 `$env:AURORA_CAPTURE_WINDOWS='edge-bar,chat'`。命令结束后进程自行退出；
+  只截部分窗口用 `$env:AURORA_CAPTURE_WINDOWS='edge-bar,chat'`；再细一级用
+  `$env:AURORA_CAPTURE_ONLY='session-groups'`（按 PNG 文件名**子串**匹配，逗号分隔），
+  特殊值 `failed` = 只重跑上次 `report.json` 里没过的那几张（上次全绿则一张不跑、退出码仍为 0）。
+  命令结束后进程自行退出；
   userData **自动隔离**（探针会改配置），无需再手动同开 `$env:AURORA_SMOKE='1'`。规则见 docs/07 §5.3。
 - **CI 是按需触发的，不跟随 push / PR 自动跑**（`.github/workflows/ci.yml`，Windows）。
   日常验证靠本地 `pnpm typecheck && pnpm test && pnpm build`——与 CI 同一套检查、全量约 15 秒；
@@ -180,6 +190,25 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   吸底补齐的时机）全都发生在合成器与主线程之间，合成事件面前必然 PASS。
   要测真实滚轮，走 `webContents.debugger` 发 CDP `Input.dispatchMouseEvent`（type `mouseWheel`），
   见 capture 的 `chat-trace-wheel` 探针与 docs/07 §5.2 ①‴。
+
+### 2026-10-01 追加（用户报「大部分时间花在冒烟测试上」）
+
+那一轮单跑一次冒烟要 2~3.5 分钟、且 176 条里有 13 条连续多轮恒红。三条可复用的：
+
+- **口径变了就必须同改夹具，否则测试会以「恒红」的形式持续收税**：v17/v18 把项目根从
+  「全局 `projects.current`」改成**按会话解析**（未绑定会话恒落 Agent 空间 `桌面\Aurora`，
+  而它**排在全局当前项目之前**），smoke 的夹具却仍只设全局 current、写目标又在 `userData` /
+  `%TEMP%` 下 —— 13 条断言测的全成了「越界拒绝」。**判据**：连续多轮失败项**逐字相同**
+  （不是抖动）+ 失败详情里出现"按设计"的拒绝文案（如 `该路径在项目根之外`）→ 先怀疑夹具过期，
+  再怀疑实现。修法是把夹具**绑定到会话**（`index.ts` 的 `bindSmokeProject`），别去"修"边界判定。
+- **看见 `await confirmTool(...)` 先检查夹具**：夹具落不到 auto 档"根内"分支时，它会静默走进
+  「等用户回执」—— 一个 60s 超时，两个就是每轮白扔 2 分钟，而失败详情只显示
+  `approve:false noCard:true`，看着像"没批准"。同段里"**故意**要弹卡"的那半（根外）走的是
+  轮询 + `rejectAll`，**不等超时** —— 两者别混为一谈。
+- **「负对照」必须挂在"调用真的成功"之上**：`!text.includes('skipped.txt')` 这类判据在调用本身
+  失败时恒真（错误文案里当然没有那个文件名），于是半条断言从没跑过却一直报 ok；
+  2.6 段只读档的"内容一字未变"同款（文件压根没被写成功过）。加判据时先问一句
+  「**调用失败时这条会不会也成立**」。
 
 
 ## 尚未生效 / 已知限制（别误当成 bug）
