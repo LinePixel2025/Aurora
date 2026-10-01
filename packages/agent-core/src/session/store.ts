@@ -481,7 +481,19 @@ export class SessionStore {
   async summaries(activeId?: string): Promise<SessionSummary[]> {
     const items: SessionSummary[] = []
     for (const id of await this.listSessions()) {
-      const messages = await this.get(id)
+      // 逐条隔离（P2-01 的配套）：读盘错误在 `get()` 上**如实上抛**是对的方向，但聚合层
+      // 不能被单点拖垮 —— 否则一个文件被瞬时占用（Windows 杀软 / 同步盘）就会让整个
+      // `chat:sessions` 返回 E_UNKNOWN、左栏一条都不显示。失败者跳过（下次访问自愈）。
+      let messages: StoredMessage[]
+      try {
+        messages = await this.get(id)
+      } catch (error) {
+        this.logger.warn('会话摘要读取失败，已跳过该条', {
+          sessionId: id,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        continue
+      }
       const meta = this.metaCache.get(id) ?? {}
       const firstUser = messages.find((message) => message.role === 'user')
       const last = messages[messages.length - 1]
@@ -584,8 +596,11 @@ export class SessionStore {
     const inFlight = this.loading.get(id)
     // 已有在途读盘：直接复用它，既不重复读盘也不提前置 loaded
     if (inFlight !== undefined) return inFlight
-    const task = this.loadFromDisk(id).finally(() => {
-      this.loading.delete(id)
+    let task: Promise<void>
+    // 传 `isCurrent`：`remove()` 会把本 id 的 `loading` 条目删掉，读盘完成后据此丢弃结果，
+    // 避免「先删会话、后读到盘」把已删会话复活（与 P2-02 是同一家族的另一半）。
+    task = this.loadFromDisk(id, () => this.loading.get(id) === task).finally(() => {
+      if (this.loading.get(id) === task) this.loading.delete(id)
     })
     this.loading.set(id, task)
     return task
@@ -600,8 +615,12 @@ export class SessionStore {
    * 合并口径：磁盘历史为底（顺序原样保留），cache 里磁盘没有的按原顺序补在后面；
    * 同 id 视为同一条，取 cache 里那份（它可能已被 `updateToolCall` 就地更新过，状态更新）。
    */
-  private async loadFromDisk(id: string): Promise<void> {
+  private async loadFromDisk(id: string, isCurrent?: () => boolean): Promise<void> {
     const { messages, meta } = await this.readFromDisk(id)
+    // 读盘期间被 `remove()` 删掉了：`remove` 已清 cache/metaCache/loaded 并删了文件，
+    // 这里再 `set` 会把已删会话以**完整内容**复活在内存（幽灵条目，直到重启）。
+    // 判据是「`loading` 里那一条还是不是本次这个 task」—— `remove()` 会把它删掉。
+    if (isCurrent !== undefined && !isCurrent()) return
     const cached = this.cache.get(id)
     this.cache.set(
       id,
@@ -746,7 +765,10 @@ export class SessionStore {
           )
         } catch (error) {
           const wrapped = error instanceof Error ? error : new Error(String(error))
-          this.dirty.add(id) // 保持脏标记，下次重试
+          // 只在**会话还在缓存里**时重新点亮脏标记：写盘失败与 `remove()` 并发时，
+          // `remove()` 已经清过 dirty 并删了文件 —— 无脑 `add` 会让退出前的 `flush()`
+          // 用空 messages 把刚删掉的会话**重建**成空文件（「删了又回来」的另一半）。
+          if (this.cache.has(id)) this.dirty.add(id) // 保持脏标记，下次重试
           this.logger.error('会话写入失败', { sessionId: id, error: wrapped.message })
           this.onWriteError?.(wrapped)
         }

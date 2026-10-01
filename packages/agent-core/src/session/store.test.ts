@@ -557,6 +557,87 @@ describe('SessionStore · 读盘错误两态（P2-01）与删除竞态（P2-02�
     expect(fs.files.has(seedPath('s1'))).toBe(false)
     expect(await store.listSessions()).not.toContain('s1')
   })
+
+  it('在途写盘失败 + 并发 remove：不把已删会话写回空文件（脏标记不再复亮）', async () => {
+    /** 下一次 `writeFileAtomic` 直接抛错（造「在途写失败」），其余照常 */
+    class FailingWriteFileSystem extends TestFileSystem {
+      failNextWrite = false
+      override async writeFileAtomic(path: string, content: string): Promise<void> {
+        if (this.failNextWrite) {
+          this.failNextWrite = false
+          throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })
+        }
+        return super.writeFileAtomic(path, content)
+      }
+    }
+    const fs = new FailingWriteFileSystem({ [seedPath('main')]: seedFile('main') })
+    const store = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0, maxMessages: 5 })
+
+    fs.failNextWrite = true
+    await store.append('main', { role: 'user', content: '新消息' })
+    await store.remove('main')
+    // `remove` 之后 flush：写盘失败那次**不得**把 id 重新点亮成脏（否则会用空
+    // messages 把已删会话重建出来 ——「删了又回来」的另一半）
+    await store.flush()
+    expect(fs.files.has(seedPath('main'))).toBe(false)
+    expect(await store.listSessions()).not.toContain('main')
+  })
+
+  it('读盘在途时 remove：读盘完成后不把已删会话复活（幽灵条目）', async () => {
+    /** 让下一次 `readFile` 挂在闸门上的会话文件系统（造「在途读盘」现场） */
+    class GatedReadFileSystem extends TestFileSystem {
+      gateHit = false
+      private gate: Promise<void> | undefined
+
+      blockNextRead(): () => void {
+        let release: () => void = () => undefined
+        this.gate = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        return release
+      }
+
+      override async readFile(path: string): Promise<string> {
+        const gate = this.gate
+        this.gate = undefined
+        if (gate !== undefined) {
+          this.gateHit = true
+          await gate
+        }
+        return super.readFile(path)
+      }
+    }
+    const fs = new GatedReadFileSystem({ [seedPath('main')]: seedFile('main') })
+    const store = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0, maxMessages: 5 })
+
+    const release = fs.blockNextRead()
+    const reading = store.get('main')
+    await waitFor(() => fs.gateHit)
+
+    const removing = store.remove('main')
+    release() // 读盘现在才完成 —— 结果必须被丢弃
+    await reading
+    await removing
+
+    expect(fs.files.has(seedPath('main'))).toBe(false)
+    expect(await store.listSessions()).not.toContain('main')
+    // 内存里也没有那份被复活的历史：再次访问按「文件不存在」给出空会话
+    expect(await store.get('main')).toEqual([])
+  })
+
+  it('summaries() 逐条隔离：单个会话读盘失败只跳过它，不拖垮整张列表', async () => {
+    const fs = new FlakyReadFileSystem({
+      [seedPath('main')]: seedFile('main'),
+      [seedPath('other')]: seedFile('other'),
+    })
+    const store = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0, maxMessages: 5 })
+    fs.failNextRead = Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' })
+
+    // 第一条（id 排序在前的 main）失败被跳过，其它的照常返回 —— 而不是整表 reject
+    expect((await store.summaries()).map((item) => item.id)).toEqual(['other'])
+    // 只是「这一次跳过」：下次访问自愈（读错误仍然不产生空快照冲盘）
+    expect((await store.summaries()).map((item) => item.id).sort()).toEqual(['main', 'other'])
+  })
 })
 
 /** 读回某会话文件的原始 JSON（断言落盘形状用） */

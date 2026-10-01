@@ -798,6 +798,67 @@ describe('runAgentLoop', () => {
       // 已产出的正文照旧留在历史里
       expect(rec.messages.find((message) => message.role === 'assistant')?.content).toBe('部分')
     })
+
+    it('同轮多工具中途停止：未执行的那个以 error 落盘，已执行的保留真实终态（P2-03）', async () => {
+      const rec = createRecorder()
+      const controller = new AbortController()
+      const executed: string[] = []
+      const tools = new ToolRegistry()
+      const register = (name: string): void => {
+        tools.register({
+          name,
+          description: name,
+          parameters: { type: 'object', properties: {} },
+          execute: async () => {
+            executed.push(name)
+            // 第 1 个工具执行期间用户点了「停止」——检查点在第 2 个开跑前命中
+            if (name === 'first') controller.abort()
+            return { content: `${name} ok`, summary: `${name} ok` }
+          },
+        })
+      }
+      register('first')
+      register('second')
+
+      const provider = createFakeProvider([
+        {
+          toolCalls: [
+            { id: 'c1', name: 'first', arguments: '{}' },
+            { id: 'c2', name: 'second', arguments: '{}' },
+          ],
+        },
+        { text: '不该跑到这里' },
+      ])
+
+      const events = await drain(
+        runAgentLoop({
+          provider,
+          model: 'm',
+          systemPrompt: 'sys',
+          userInput: 'x',
+          history: [],
+          tools,
+          sessionId: 'quick',
+          signal: controller.signal,
+          append: rec.append,
+          updateToolCall: rec.updateToolCall,
+        }),
+      )
+
+      // 终态是「暂停」；第 2 个工具从未开跑
+      expect(events.at(-1)).toMatchObject({ type: 'done', pending: true, pendingReason: 'aborted' })
+      expect(executed).toEqual(['first'])
+      const assistant = rec.messages.find(
+        (message) => message.role === 'assistant' && message.toolCalls !== undefined,
+      )
+      const byId = new Map((assistant?.toolCalls ?? []).map((call) => [call.id, call]))
+      // 已执行的保留真实终态；未执行的**不能**停在 running（那会让工具卡永远显示「运行中」）
+      expect(byId.get('c1')?.state).toBe('success')
+      expect(byId.get('c2')?.state).toBe('error')
+      expect(byId.get('c2')?.outputSummary).toBe('已取消未执行')
+      // 第 2 个没有产生 tool 结果消息（没有半组配对之外的伪结果）
+      expect(rec.messages.filter((message) => message.role === 'tool')).toHaveLength(1)
+    })
   })
 
   it('onToolCall 留痕（名称 / 敏感级 / 是否失败）', async () => {

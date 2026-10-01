@@ -299,8 +299,7 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       for (const call of calls) {
         call.state = 'error'
         call.outputSummary ??= '流中断未执行'
-      }
-      // 已产出的文本与思考链先落盘，避免用户看到的内容在历史里消失
+      }      // 已产出的文本与思考链先落盘，避免用户看到的内容在历史里消失
       if (text !== '' || reasoning !== '' || calls.length > 0) {
         await appendAssistant(options, messageId, text, calls, reasoning)
       }
@@ -340,6 +339,13 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
     // 同轮多个工具调用：顺序执行，保证事件与结果顺序确定（docs/06 §5）
     for (const call of calls) {
       if (options.signal?.aborted) {
+        /**
+         * 用户在本轮中途点了「停止」：本轮**已落盘**的 tool_call 里，还没跑到的那几个仍是
+         * `running`（`appendAssistant` 在 :330 已把整组落盘）。不收敛就会让工具卡在未来所有
+         * 会话视图里永远显示「运行中」，重启也不修正 —— 与 P2-03 是同一个症状，只是入口不同
+         * （那条修的是「流中断」，这条修的是「取消」）。
+         */
+        await settleUnexecutedCalls(options, assistant.id, calls, '已取消未执行')
         yield { type: 'done', pending: true, pendingReason: 'aborted', round, usedTokens }
         return
       }
@@ -423,6 +429,29 @@ let localCounter = 0
 function localMessageId(): string {
   localCounter += 1
   return `msg-local-${Date.now()}-${localCounter}`
+}
+
+/**
+ * 把「本轮已产出但从未执行」的 tool_call 收敛为 `error` 并写回（P2-03）。
+ *
+ * 两个入口都要用：① 流在 `[DONE]` 之前断开（`failed` 分支）；② 用户在轮中途点「停止」
+ * （工具循环的 abort 检查点）。共同症状是 `appendAssistant` 已经把整组以 `running`
+ * 落盘，不收敛就会让工具卡永远显示「运行中」。
+ *
+ * 只动 `state === 'running'` 的那些 —— 已执行完的调用保留真实终态。
+ */
+async function settleUnexecutedCalls(
+  options: AgentLoopOptions,
+  messageId: string,
+  calls: readonly StoredToolCall[],
+  summary: string,
+): Promise<void> {
+  for (const call of calls) {
+    if (call.state !== 'running') continue
+    call.state = 'error'
+    call.outputSummary ??= summary
+    await options.updateToolCall(messageId, { ...call })
+  }
 }
 
 async function appendAssistant(
