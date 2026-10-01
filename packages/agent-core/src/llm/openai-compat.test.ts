@@ -585,6 +585,60 @@ function rawStreamFetch(
 }
 
 /**
+ * 按「计划」逐次响应的 fetch 替身，**每份计划都感知 signal**（复刻真实 fetch：到点前 signal 被
+ * abort 就以 abort reason 拒绝；调用时 signal 已 abort 则立刻拒绝）。`hang: true` = 永不响应，
+ * 只能被 abort 收场。
+ *
+ * `createFetchStub` 的响应是「同步立即返回」，造不出本组要的现场：第 1 次尝试**超时**
+ * （响应头 / 数据都不到），以及第 1 次在预算将尽时才失败、重试只剩一点点残留预算 ——
+ * 这两条正是「跨重试复用同一个 RequestScope」会踩到的路径。
+ */
+function plannedFetch(
+  plan: Array<{ delayMs: number; hang?: boolean; status?: number; text?: string; sse?: string[] }>,
+): { fetchImpl: typeof fetch; callCount: () => number } {
+  let calls = 0
+  const fetchImpl = ((_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const signal = init?.signal ?? null
+    const step = plan[Math.min(calls, plan.length - 1)]
+    calls += 1
+    if (step === undefined) return Promise.reject(new Error('setup: 桩 fetch 未配置响应'))
+
+    return new Promise<Response>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const onAbort = (): void => {
+        if (timer !== undefined) clearTimeout(timer)
+        reject(signal?.reason)
+      }
+      if (signal?.aborted === true) {
+        onAbort()
+        return
+      }
+      if (step.hang !== true) {
+        timer = setTimeout(() => {
+          signal?.removeEventListener('abort', onAbort)
+          resolve(plannedResponse(step))
+        }, step.delayMs)
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
+  }) as unknown as typeof fetch
+  return { fetchImpl, callCount: () => calls }
+}
+
+function plannedResponse(step: { status?: number; text?: string; sse?: string[] }): Response {
+  const status = step.status ?? 200
+  if (step.sse === undefined) return new Response(step.text ?? '', { status })
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of step.sse ?? []) controller.enqueue(encoder.encode(chunk))
+      controller.close()
+    },
+  })
+  return new Response(stream, { status, headers: { 'content-type': 'text/event-stream' } })
+}
+
+/**
  * 给「应当很快结束」的断言加一道超时护栏：实现若挂住，失败消息是明确的
  * 「超过 Nms 仍未结束」，而不是拖到 vitest 自己的超时。
  */
@@ -682,5 +736,95 @@ describe('OpenAiCompatProvider.chat · 流式可靠性与取消（P1-08 / P1-09�
     expect(events.some((event) => event.type === 'error')).toBe(false)
     expect(events.filter((event) => event.type === 'text')).toHaveLength(6)
     expect(events.at(-1)).toMatchObject({ type: 'done' })
+  })
+})
+
+/**
+ * 「超时后的重试全是死重试」的回归（P1）：`chat()` 建一份 scope 并跨 attempt 复用，
+ * 而 `AbortController` 一旦 abort 不可复位 —— 第 1 次超时后每个重试都拿着永久 aborted 的
+ * 信号秒失败，且共享同一个计时器（重试只剩上一次的残留预算）。修法是超时**每个 attempt 一份**。
+ */
+describe('OpenAiCompatProvider.chat · 每次 attempt 独立超时预算', () => {
+  const request = { model: 'm', messages: [{ role: 'user' as const, content: 'hi' }] }
+
+  function plannedProvider(
+    plan: Parameters<typeof plannedFetch>[0],
+    overrides: Partial<ConstructorParameters<typeof OpenAiCompatProvider>[0]> = {},
+  ) {
+    const stub = plannedFetch(plan)
+    const instance = new OpenAiCompatProvider({
+      id: 'local',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      apiKey: 'sk-test',
+      defaultModel: 'm',
+      maxRetries: 2,
+      retryBaseDelayMs: 1,
+      fetchImpl: stub.fetchImpl,
+      ...overrides,
+    })
+    return { instance, stub }
+  }
+
+  it('首次 attempt 超时失败后，重试拿到全新预算并成功（重试不是死重试）', async () => {
+    const { instance, stub } = plannedProvider(
+      [
+        // 第 1 次：响应永不到达（服务端停滞），只能在超时时被 abort 收场
+        { delayMs: 0, hang: true },
+        {
+          delayMs: 0,
+          sse: [sseLine({ choices: [{ delta: { content: '重试成功' } }] }), 'data: [DONE]\n\n'],
+        },
+      ],
+      { timeoutMs: 40 },
+    )
+
+    const events = await withTimeout(collect(instance.chat(request)), 2000)
+    // 修复前：重试复用已 abort 的 controller → 两次重试均秒失败，这里只会拿到 error
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    expect(
+      events
+        .filter((event) => event.type === 'text')
+        .map((event) => (event as { delta: string }).delta),
+    ).toEqual(['重试成功'])
+    expect(events.at(-1)).toMatchObject({ type: 'done' })
+    expect(stub.callCount()).toBe(2)
+  })
+
+  it('重试不吃上一次 attempt 剩下的预算（每次 attempt 各有完整超时）', async () => {
+    // 第 1 次在 60ms（预算 100ms 将尽）才以 503 失败 → 共享计时器时重试只剩约 40ms；
+    // 第 2 次的响应要 60ms 才到：> 残留、< 完整预算。只有「每次 attempt 重新武装」才救得回来。
+    const { instance, stub } = plannedProvider(
+      [
+        { delayMs: 60, status: 503, text: 'busy' },
+        {
+          delayMs: 60,
+          sse: [sseLine({ choices: [{ delta: { content: 'ok' } }] }), 'data: [DONE]\n\n'],
+        },
+      ],
+      { timeoutMs: 100 },
+    )
+
+    const events = await withTimeout(collect(instance.chat(request)), 2000)
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    expect(events.filter((event) => event.type === 'text')).toHaveLength(1)
+    expect(events.at(-1)).toMatchObject({ type: 'done' })
+    expect(stub.callCount()).toBe(2)
+  })
+
+  it('外部取消不重试：maxRetries > 0 也立刻 E_ABORTED（不睡退避、不重发请求）', async () => {
+    const { instance, stub } = provider([{ sseChunks: ['data: [DONE]\n\n'] }], {
+      maxRetries: 3,
+      retryBaseDelayMs: 500,
+    })
+    const controller = new AbortController()
+    controller.abort()
+    const started = Date.now()
+
+    const events = await withTimeout(collect(instance.chat(request, controller.signal)), 1000)
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'E_ABORTED' })
+    // E_ABORTED 不在 RETRYABLE：一次请求都不该发出去
+    expect(stub.calls).toHaveLength(0)
+    // 若真去重试，退避至少 500ms 起步 —— 这比「立刻返回」的下限宽得多
+    expect(Date.now() - started).toBeLessThan(400)
   })
 })

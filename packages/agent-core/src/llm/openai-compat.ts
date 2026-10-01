@@ -2,9 +2,9 @@
  * OpenAI 兼容 Provider（ADR-003）：`baseURL + apiKey + model` 即可接入
  * DeepSeek / OpenAI / Ollama / vLLM 等，不绑定任何商业 SDK。
  *
- * 可靠性：单请求超时（默认 60s，在**整个流**期间保持武装、每片数据重新计时）、
- * 指数退避重试、AbortSignal 贯穿到读流结束（`chat()` 持有作用域，`finally` 里
- * `reader.cancel()` + 释放）—— 详见 `createScope` 与 `chat()` 的注释（docs/06 §3）。
+ * 可靠性：单请求超时（默认 60s，在**整个流**期间保持武装、每片数据重新计时；**每次 attempt 一份
+ * 独立预算**，见 `fetchWithPolicy`）、指数退避重试、AbortSignal 贯穿到读流结束（`chat()` 持有作用域，
+ * `finally` 里 `reader.cancel()` + 释放）—— 详见 `createScope` 与 `chat()` 的注释（docs/06 §3）。
  */
 import {
   LlmError,
@@ -154,11 +154,15 @@ export class OpenAiCompatProvider implements LlmProvider {
        *
        * 同一个 promise 反复参与 race，并先挂一个吞掉拒绝的处理器：race 收场之后才触发的
        * abort 不该变成 unhandledRejection（正常读完的流后面也可能被外部取消）。
+       *
+       * 信号在这里取一次（`openStream` 已定局，之后不再 `arm()`）：转发监听与超时计时都作用于
+       * 这同一份信号 —— 正文期间点「停止」（E_ABORTED）与服务端停滞（E_TIMEOUT）都能解开这一读。
        */
+      const requestSignal = scope.controller.signal
       const aborted = new Promise<never>((_resolve, reject) => {
-        const onAbort = (): void => reject(toLlmError(scope.controller.signal.reason))
-        if (scope.controller.signal.aborted) onAbort()
-        else scope.controller.signal.addEventListener('abort', onAbort, { once: true })
+        const onAbort = (): void => reject(toLlmError(requestSignal.reason))
+        if (requestSignal.aborted) onAbort()
+        else requestSignal.addEventListener('abort', onAbort, { once: true })
       })
       aborted.catch(() => undefined)
 
@@ -345,14 +349,25 @@ export class OpenAiCompatProvider implements LlmProvider {
     }
   }
 
-  /** 超时 + 指数退避重试。`scope` 由流式路径传进来（跨重试复用，由 `chat()` 释放）。 */
+  /**
+   * 超时 + 指数退避重试。`scope` 由流式路径传进来（由 `chat()` 持有到读流结束并释放）。
+   *
+   * 每个 attempt 入口都 `scope.arm()`：换一份**全新**的超时预算（新 controller + 新计时器）。
+   * 修复「超时后的重试全是死重试」：`AbortController` 一旦 abort 不可复位，若跨 attempt 复用
+   * 同一份 controller，第 1 次超时后所有重试都拿着一个永久 aborted 的信号秒失败，
+   * 且会继承上一次剩下的超时预算 —— 每次重试都该有独立的完整预算（与「每次 attempt 一次请求」同构）。
+   */
   private async fetchWithPolicy(request: PreparedRequest, scope?: RequestScope): Promise<Response> {
     let attempt = 0
     for (;;) {
+      scope?.arm()
       try {
         return await this.fetchOnce(request, scope)
       } catch (error) {
         const llmError = toLlmError(error)
+        // 用户点了「停止」（外部 signal 已 aborted）：短路，不重试也不白睡退避。
+        // `E_ABORTED` 本就不在 RETRYABLE，这里提前拦一道是为了不打出与事实相反的「请求重试」日志。
+        if (request.signal?.aborted === true) throw new LlmError('E_ABORTED', '请求已取消')
         if (!RETRYABLE.has(llmError.code) || attempt >= this.maxRetries) throw llmError
         const delayMs = this.retryBaseDelayMs * 2 ** attempt
         attempt += 1
@@ -365,27 +380,55 @@ export class OpenAiCompatProvider implements LlmProvider {
   /**
    * 一次请求的「超时 + 取消」作用域（P1-08）。
    *
+   * 这里把两件事**拆开**：
+   * - **外部 abort 转发**（`onExternalAbort`）在建立作用域时只挂一次，并活到 `release()` ——
+   *   这是 P1-08 的初衷：转发监听若在响应头到达时就摘掉，正文传输期间点「停止」就再没人管这个请求了。
+   * - **超时计时**是**每个 attempt 一份**：`arm()` 换一份全新的 controller 与计时器，
+   *   使每次重试都有独立的完整预算（旧的跨 attempt 复用会把超时后的重试变成死重试，见 `fetchWithPolicy`）。
+   *   转发监听不随 `arm()` 重挂：它闭包引用 `controller` 这个**绑定**，换了新 controller 依然命中。
+   *
    * `release()` 结束它：清掉超时计时、摘掉外部 abort 转发（幂等）。
    * 非流式调用（`listModels` / `probeChat`）拿到响应头即释放（与旧行为一致）；
-   * 流式调用由 `chat()` 持有到**流读完**才释放 —— 转发监听若在响应头到达时就摘掉，
-   * 正文传输期间点「停止」就再没人管这个请求了。
+   * 流式调用由 `chat()` 持有到**流读完**才释放。
    *
    * `rearm()` 把超时计时重新计时：超时在**整个流期间保持武装**（不再只覆盖首字节），
    * 但每收到一片数据就重置。服务端停滞（`reader.read()` 永久挂起）到点即 abort，
    * 而正常传输的长时间回复不会被"总时长"掐断 —— 那等于把正常完成也取消掉。
    */
   private createScope(external?: AbortSignal): RequestScope {
-    const controller = new AbortController()
-    const onTimeout = (): void => controller.abort(new LlmError('E_TIMEOUT', '请求超时'))
-    let timer = setTimeout(onTimeout, this.timeoutMs)
-    const onExternalAbort = (): void => controller.abort(new LlmError('E_ABORTED', '请求已取消'))
-    // 已经取消了（或本来就没给信号）：立刻反映到内部 controller，别等读流时才发现
+    // `controller` 会在每次 `arm()` 时被替换（`AbortController` 一旦 abort 不可复位）
+    let controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let released = false
+
+    const abortCurrent = (error: LlmError): void => {
+      if (!controller.signal.aborted) controller.abort(error)
+    }
+    const onTimeout = (): void => abortCurrent(new LlmError('E_TIMEOUT', '请求超时'))
+    const onExternalAbort = (): void => abortCurrent(new LlmError('E_ABORTED', '请求已取消'))
+    // 外部 abort 转发只挂一次：已经取消了（或本来就没给信号）就立刻反映到内部 controller，
+    // 别等读流时才发现。
     if (external?.aborted === true) onExternalAbort()
     else external?.addEventListener('abort', onExternalAbort)
 
-    let released = false
+    /**
+     * 开始一次 attempt：换成一份全新的 controller 与计时器（释放后是空操作）。
+     * 若此刻外部**已经**取消，新的 controller 立刻被 abort —— 下一次 `fetchOnce` 会短路成 E_ABORTED。
+     */
+    const arm = (): void => {
+      if (released) return
+      clearTimeout(timer)
+      controller = new AbortController()
+      if (external?.aborted === true) onExternalAbort()
+      timer = setTimeout(onTimeout, this.timeoutMs)
+    }
+    arm()
+
     return {
-      controller,
+      get controller(): AbortController {
+        return controller
+      },
+      arm,
       rearm: (): void => {
         if (released) return
         clearTimeout(timer)
@@ -434,7 +477,16 @@ export class OpenAiCompatProvider implements LlmProvider {
 
 /** 一次请求的超时 / 取消作用域（`chat()` 与 `fetchOnce()` 的分界，见 `createScope`） */
 interface RequestScope {
+  /**
+   * **当前 attempt** 的请求信号：外部取消（转发进来）与本次 attempt 的超时都会 abort 它。
+   * 每次 `arm()` 换新（超时 abort 掉的是上一份，不会连累重试）。
+   */
   readonly controller: AbortController
+  /**
+   * 开始一次 attempt：换一份全新的超时预算（新 controller + 新计时器）。
+   * `fetchWithPolicy` 每次 attempt 入口调用；释放后是空操作。
+   */
+  arm(): void
   /** 重新计时（流式路径每收到一片数据调一次；释放后是空操作） */
   rearm(): void
   /** 结束本次请求：清掉超时计时与外部 abort 转发（幂等） */
