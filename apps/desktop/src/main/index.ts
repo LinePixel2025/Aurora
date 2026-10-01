@@ -87,7 +87,7 @@ import {
 } from './agent-host.js'
 import { McpController } from './mcp.js'
 import { LlmTester } from './llm-tester.js'
-import { withModelParams } from './llm-params.js'
+import { llmSwitchRejection, withModelParams } from './llm-params.js'
 import { TtsSynthesizer } from './tts.js'
 import { createSttService } from './stt.js'
 import { createImageGenService } from './imagegen.js'
@@ -1388,41 +1388,10 @@ async function bootstrap(): Promise<void> {
       switchLlm: async (request) => {
         const current = settings!.get().llm
         const targetId = request.providerId ?? current.active
-        if (
-          request.providerId !== undefined &&
-          current.providers[request.providerId] === undefined
-        ) {
-          return {
-            ok: false,
-            error: `E_INVALID_ARGUMENT: provider 不存在（${request.providerId}）`,
-          }
-        }
-        if (
-          (request.model !== undefined || request.reasoningEffort !== undefined) &&
-          current.providers[targetId] === undefined
-        ) {
-          return { ok: false, error: 'E_INVALID_ARGUMENT: 没有可用的激活 provider' }
-        }
-        if (request.model !== undefined && request.model.trim() === '') {
-          return { ok: false, error: 'E_INVALID_ARGUMENT: model 不能为空' }
-        }
-        // 思考等级是**模型级**的（v23）：没有生效模型就没有可归属的键，`withModelParams`
-        // 会原样返回 —— 那样 `mutate` 照样成功、回执 `{ok:true}`，但配置一个字节都没变，
-        // 网页端先乐观显示再被 status 重报打回，看着像「切了又弹回去」。
-        // 这里显式拒绝（与相邻两条守卫同一口径），别让它变成静默的空操作。
-        if (
-          request.reasoningEffort !== undefined &&
-          // 本次**不改模型**、且该 provider 当前没有生效模型时才拦：同时传 `model` 时
-          // handler 会先落新模型、等级跟着写在新模型名下（`withModelParams` 读的就是它），
-          // 那种组合一直是可用的，别提前拒掉。
-          request.model === undefined &&
-          (current.providers[targetId]?.model ?? '').trim() === ''
-        ) {
-          return {
-            ok: false,
-            error: 'E_INVALID_ARGUMENT: 该 provider 尚未设置模型，无法写入模型级参数',
-          }
-        }
+        // 四条前置守卫抽在 `llm-params.ts` 的纯函数里（`index.ts` 依赖 Electron，vitest 收不了，
+        // 那段判定此前零覆盖）。语义与顺序见那个函数的注释。
+        const rejection = llmSwitchRejection(current.providers, current.active, request)
+        if (rejection !== undefined) return { ok: false, error: rejection }
         const updated = settings!.mutate((draft) => {
           if (request.providerId !== undefined) draft.llm.active = request.providerId
           const provider = draft.llm.providers[targetId]

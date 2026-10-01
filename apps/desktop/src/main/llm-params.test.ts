@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { withModelParams } from './llm-params.js'
+import { llmSwitchRejection, withModelParams } from './llm-params.js'
 import type { LlmProviderConfig } from '@aurora/shared'
 
 function provider(overrides: Partial<LlmProviderConfig> = {}): LlmProviderConfig {
@@ -89,5 +89,66 @@ describe('withModelParams（v23 模型级参数的写入口径）', () => {
     const entry = next.modelParams['deepseek-chat']
     expect(entry).toBeDefined()
     expect(Object.keys(entry ?? {}).sort()).toEqual(['contextWindow', 'reasoningEffort', 'vision'])
+  })
+})
+
+describe('llmSwitchRejection（远程 llm.switch 的四条前置守卫）', () => {
+  const providers = {
+    deepseek: { model: 'deepseek-chat' },
+    empty: { model: '' },
+  }
+
+  it('放行：改模型、改等级、以及「同时改模型+等级」（后者先前被误拦）', () => {
+    expect(llmSwitchRejection(providers, 'deepseek', { providerId: 'deepseek' })).toBeUndefined()
+    expect(
+      llmSwitchRejection(providers, 'deepseek', { model: 'deepseek-reasoner' }),
+    ).toBeUndefined()
+    expect(llmSwitchRejection(providers, 'deepseek', { reasoningEffort: 'high' })).toBeUndefined()
+    // 只切 provider（不改任何字段）
+    expect(llmSwitchRejection(providers, 'deepseek', {})).toBeUndefined()
+  })
+
+  it('① providerId 不存在 → 拒（绝不新建条目）', () => {
+    expect(llmSwitchRejection(providers, 'deepseek', { providerId: 'ghost' })).toContain(
+      'provider 不存在',
+    )
+  })
+
+  it('② 没有任何可用的激活 provider 时改字段 → 拒', () => {
+    expect(llmSwitchRejection(providers, 'ghost', { model: 'x' })).toContain(
+      '没有可用的激活 provider',
+    )
+    expect(llmSwitchRejection(providers, 'ghost', { reasoningEffort: 'high' })).toContain(
+      '没有可用的激活 provider',
+    )
+    // 只是切到不存在的 provider：① 先拦（文案不同，顺序是有意的）
+    expect(llmSwitchRejection(providers, 'deepseek', { providerId: 'ghost' })).toContain(
+      'provider 不存在',
+    )
+  })
+
+  it('③ 显式把 model 设成空串 → 拒（含只有空白的串）', () => {
+    expect(llmSwitchRejection(providers, 'deepseek', { model: '' })).toContain('model 不能为空')
+    expect(llmSwitchRejection(providers, 'deepseek', { model: '   ' })).toContain('model 不能为空')
+  })
+
+  it('④ 只改等级、而该 provider 还没有生效模型 → 拒（等级是模型级的，没有可归属的键）', () => {
+    expect(llmSwitchRejection(providers, 'deepseek', { providerId: 'empty' })).toBeUndefined()
+    expect(llmSwitchRejection(providers, 'deepseek', { reasoningEffort: 'high' })).toBeUndefined()
+    // 切到 empty 并只改等级 → 拒
+    expect(
+      llmSwitchRejection(providers, 'deepseek', {
+        providerId: 'empty',
+        reasoningEffort: 'high',
+      }),
+    ).toContain('尚未设置模型')
+    // 切到 empty 并**同时**给新模型 → 放行（handler 先落模型，等级写在新模型名下）
+    expect(
+      llmSwitchRejection(providers, 'deepseek', {
+        providerId: 'empty',
+        model: 'qwen2.5:7b',
+        reasoningEffort: 'high',
+      }),
+    ).toBeUndefined()
   })
 })
