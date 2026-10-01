@@ -157,8 +157,10 @@
     在跑的 job，见 08 §7）。主进程**删除成功后**向所有窗口广播 `chat:sessionDeleted`，
     载荷 `{ sessionId }`（被删会话的 id）。chat 窗口订阅后重拉 `chat:sessions`；若被删的
     **正是当前打开的那个会话**，按「左栏最近一条会话（列表新的在前）回落，列表里再没有
-    别的会话时 `chat:newSession` 新建并切过去」处理。`quick` / `settings` 两个伪会话
-    不出现在列表里，因此不参与回落目标的选择（也不可被删除）。
+    别的会话时 `chat:newSession` 新建并切过去」处理。`quick`（提示条快速对话）**不作为回落
+    目标**（它有独立入口，落在它上面会让主界面标题变成「快速对话」）；`quick` 本身**会**出现在
+    `chat:sessions` 与设置页的会话管理列表里（有消息时才落盘），因此也可以在设置页被删除
+    ——语义是「清掉快速对话的历史」，与普通会话同一条 `chat:deleteSession` 链路。
   - **主区**：头部拖拽区（侧栏开关 + 状态灯 + 会话标题 + 未配置徽章 + 清空（图标钮）+
     **Windows 式窗口按钮**：`最小化`（`data-caption-btn="minimize"`，真最小化进任务栏）与
     `关闭`（`data-caption-btn="close"`，= 隐藏窗口）；双击头部拖动区切换最大化）→
@@ -261,6 +263,11 @@
   - **自动折叠状态机**：`props.streaming` 的**两个边沿**各管一头 ——
     false → true（新一轮开始）把**此刻在屏的消息**登记为历史（默认折叠）；
     true → false（这一轮结束）把**本轮追加的消息**（= 到此刻还没登记过的）一并收成一行摘要。
+    **收尾还有第二个触发入口（P2-20，2026-10-01）**：`props.settledRequestId`
+    （`useChat` 的 `lastSettledRequestId`，done / error 分支置位、切换会话或清空时复位）。
+    它负责 `streaming` 边沿**覆盖不到**的场景 —— 跨窗口观看、或中途切走再切回：
+    此时本窗口全程 `streaming === false`、边沿从不触发，靠收尾信号才能把本轮轨迹与思考块收拢。
+    两个入口调用**同一个** `settleRound()`（清 `thinkingOpen` + 停表 + 登记为历史），互不重复生效。
     落到渲染上就是
     `traceOpen(message) = traceOpenedIds.has(id) || thinkingTargetId === id || !historyFoldedIds.has(id)`；
     **历史水合出来的消息默认折叠**（整表替换时按"当时是否流式"决定是否登记为历史）；

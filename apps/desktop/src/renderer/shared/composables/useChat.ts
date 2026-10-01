@@ -464,12 +464,15 @@ export function useChat(windowName: WindowName, context: ChatContext) {
    * **不是** → 只刷新左栏；**是** → 按「左栏最近一条会话回落」（列表新的在前），
    * 列表里再没有别的会话时新建一个。回落走现成入口（`switchSession` / `newSession`），
    * 任何失败只 warn 一句（推送处理不许抛未捕获错误）。
+   *
+   * `quick`（提示条快速对话）**不作为回落目标**：它有独立入口，落在它上面会让主界面
+   * 标题变成「快速对话」（docs/07 §2.3 的回落口径）。
    */
   async function handleSessionDeleted(deletedId: string): Promise<void> {
     try {
       await loadSessions()
       if (sessionId.value !== deletedId) return
-      const next = sessions.value.find((item) => item.id !== deletedId)
+      const next = sessions.value.find((item) => item.id !== deletedId && item.id !== 'quick')
       if (next === undefined) {
         await newSession()
         return
