@@ -43,16 +43,21 @@ describe('withModelParams（v23 模型级参数的写入口径）', () => {
   })
 
   it('只影响当前生效模型：其它模型的条目一个都不动', () => {
-    const next = withModelParams(
-      provider({
-        model: 'b',
-        modelParams: {
-          a: { reasoningEffort: 'high', contextWindow: 200_000, vision: true },
-          b: { reasoningEffort: 'auto', contextWindow: 0, vision: false },
-        },
-      }),
-      { vision: true },
-    )
+    const base = provider({
+      model: 'b',
+      modelParams: {
+        a: { reasoningEffort: 'high', contextWindow: 200_000, vision: true },
+        b: { reasoningEffort: 'auto', contextWindow: 0, vision: false },
+      },
+    })
+    const next = withModelParams(base, { vision: true })
+    // 入参**不被就地改写**（`provider` 是 `settings.mutate` 的 draft 活对象）：
+    // 只断言返回值的用例抓不到「原地合并」这类实现（嵌套对象同样要保干净）。
+    expect(base.modelParams['b']).toEqual({
+      reasoningEffort: 'auto',
+      contextWindow: 0,
+      vision: false,
+    })
     expect(next.modelParams['a']).toEqual({
       reasoningEffort: 'high',
       contextWindow: 200_000,
@@ -79,8 +84,7 @@ describe('withModelParams（v23 模型级参数的写入口径）', () => {
     expect(next.modelList).toEqual(['deepseek-chat'])
   })
 
-  it('写出来的表能通过 `LlmModelParamsSchema` 与整份 SettingsSchema 的校验形态', () => {
-    // 这里只钉「三项键齐全」这一条 —— 完整 Schema 校验由 packages/shared 的单测覆盖。
+  it('写出来的表三项键齐全（`reasoningEffort` 没有默认值的那道坎）', () => {
     const next = withModelParams(provider(), { vision: true })
     const entry = next.modelParams['deepseek-chat']
     expect(entry).toBeDefined()

@@ -3299,7 +3299,8 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
     const autoItemBefore = textOf('[data-field="chat.permission-full"]')
 
     // ── 溢出护栏（菜单还开着的时候量，后面两下点击就把它收起来了）──
-    // 「文字跑出卡片」有两个可读事实，两个都量，缺一不可：
+    // 「文字跑出卡片」有两个可读事实。**① 在本布局下恒为真**（原因见下），真正点火的是 ②；
+    // 两个都留着是为了语义完整 —— 万一将来布局不再是 width: 100%，① 会接住：
     // ① 每项的矩形必须落在卡片矩形之内 —— 几何越界；
     // ② 每项（连同它的文字容器 .perm-item-body）的 scrollWidth 不得大于 clientWidth。
     //    只查 ① 抓不到本轮的 bug：每一项都是 width: 100% + 全局 border-box，矩形**永远**在
@@ -3336,7 +3337,9 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
       }
     }
     const menuOverflow = menuBoxes.filter((box) => box.outOfCard || box.textClipped).length
-    const noOverflow = menuEl !== null && menuOverflow === 0
+    // menuBoxes 非空是必需的：量不到任何项时（.perm-item 改了类名 / 菜单没渲染出来），
+    // 「违规数 === 0」会恒真 —— 那是静默失效，不是通过。
+    const noOverflow = menuEl !== null && menuBoxes.length > 0 && menuOverflow === 0
 
     // ── 第一下：只翻成「再点一次确认」，配置一动不动 ──
     const autoButton = document.querySelector('[data-field="chat.permission-full"]')
@@ -5560,6 +5563,13 @@ export const SETTINGS_LLM_FIELDS_SCRIPT = `(() => {
       el.getAttribute('data-empty'),
     )
     const imagegenEmpty = emptyStates.indexOf('imagegen.providers') !== -1
+    // 生图空态里的主入口（step-06）：空配置下它必须是**可点的**，不是 disabled ——
+    // 「空态有按钮」是本轮的视觉验收项，只靠人看 PNG 就成了一次性检查。
+    const imagegenAddButtons = Array.from(
+      document.querySelectorAll('[data-action="add-imagegen-provider"]'),
+    ).filter((el) => el.disabled !== true)
+    // v23 起设置页**不该再有** temperature 字段（配置里也删了）：反向断言，防它被加回来。
+    const temperatureFields = count('[data-field$=".temperature"]')
     const imagegenRows = Array.from(document.querySelectorAll('[data-field]')).filter((el) => {
       const value = el.getAttribute('data-field') || ''
       return value.indexOf('imagegen.providers.') === 0 && value.slice('imagegen.providers.'.length).indexOf('.') === -1
@@ -5572,12 +5582,18 @@ export const SETTINGS_LLM_FIELDS_SCRIPT = `(() => {
       imagegenActiveFields: count('[data-field="imagegen.active"]'),
       imagegenEmpty,
       imagegenRows,
+      imagegenAddButtons: imagegenAddButtons.length,
+      temperatureFields,
       emptyStates,
       pass:
         count('[data-field="general.chat.showThinking"]') > 0 &&
         count('[data-field="imagegen.enabled"]') > 0 &&
         count('[data-field="imagegen.active"]') > 0 &&
-        (imagegenEmpty || imagegenRows > 0),
+        (imagegenEmpty || imagegenRows > 0) &&
+        // 空态时必须能看到并点到添加入口
+        (!imagegenEmpty || imagegenAddButtons.length > 0) &&
+        // 已废除的字段不许回来
+        temperatureFields === 0,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -5947,11 +5963,15 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
               apiKeyEnc: '',
               model: 'deepseek-chat',
               ...(existing ?? {}),
-              // 三项一起写全、整份替换该键的对象：reasoningEffort 是三个子字段里
-              // 唯一没有 .default() 的，漏写它整份配置会在下次启动被判损坏重建。
+              // 整份替换该键的对象，但**保留该模型已有的兄弟字段** —— 写死成 0 / false 会把
+              // 用户（或别的场景）填过的窗口与图片开关一起抹掉，本段收尾虽会写回，但也只写回
+              // reasoningEffort 那一项。三项齐全仍是硬要求（缺 reasoningEffort 会被 Schema 判非法）。
               modelParams: {
                 ...table,
-                [modelId]: { reasoningEffort: 'high', contextWindow: 0, vision: false },
+                [modelId]: {
+                  ...(table[modelId] ?? { reasoningEffort: 'auto', contextWindow: 0, vision: false }),
+                  reasoningEffort: 'high',
+                },
               },
             },
           },
@@ -6703,7 +6723,9 @@ export const SETTINGS_LLM_MODELS_ACT = `(async () => {
     // 行 = 模型列表区（[data-field$=".modelList"]）里的 .model-row。两个限定都不能省：
     // ⚠️ 不能用 [data-field*=".modelList."] —— step-05 起行内还有三个参数子字段锚点
     //（同样以 .modelList. 开头）会让行数虚高，「after === before + 1」当场变假 FAIL；
-    // ⚠️ 也不能只数 .model-row —— 会数到别的 provider 卡（本段在模板字符串里，注释不能出现反引号）。
+    // ⚠️ 不能用 [data-field*=".modelList."] 数行：行内的三个参数子字段锚点也以 .modelList.
+    //    开头，会数虚高。这里按行容器类名数；判据是**相对增量**（after === before + 1），
+    //    所以即便 DOM 上同时存在两张卡也不会假 FAIL（本段在模板字符串里，注释不能出现反引号）。
     const countRows = () => document.querySelectorAll('[data-field$=".modelList"] .model-row').length
     const before = countRows()
 
@@ -6913,7 +6935,10 @@ export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
             // 三项一起写全、整份替换该键的对象（reasoningEffort 是唯一没有 .default() 的子字段）
             modelParams: {
               ...table,
-              [modelId]: { reasoningEffort: 'auto', contextWindow: 0, vision: true },
+              [modelId]: {
+                ...(table[modelId] ?? { reasoningEffort: 'auto', contextWindow: 0, vision: false }),
+                vision: true,
+              },
             },
           },
         },

@@ -34,7 +34,6 @@ import { formatTokenCount } from '@aurora/shared/browser'
 import { ChevronRight } from '../../shared/icons.js'
 import {
   DEFAULT_REASONING_EFFORT,
-  LLM_MODEL_PARAM_DEFAULTS,
   LLM_PROVIDER_TYPE_LABELS,
   LlmProviderTypes,
   PROVIDER_PRESETS,
@@ -42,6 +41,7 @@ import {
   REASONING_EFFORT_LEVELS,
   RESOURCE_NAME_PATTERN,
   RESOURCE_NAME_RULE,
+  resolveModelParams,
   type LlmModelParams,
   type LlmProviderConfig,
   type ReasoningEffort,
@@ -335,11 +335,11 @@ function normalizedModelList(draft: ProviderDraft): string[] {
  * **模型 id** 键放在 `modelParams` 下 —— 换个模型就是另一套值（同一个 provider 的不同模型
  * 窗口大小、能不能收图本就不同）。
  *
- * 这是**只读展示**入口：键未命中时回落 `LLM_MODEL_PARAM_DEFAULTS`（与消费端
- * `resolveModelParams` 同一份默认值，绝不返回 `undefined`）。
+ * 这是**只读展示**入口，直接转调 shared 的 `resolveModelParams` —— 主进程 / 对话窗 /
+ * Center 走的是同一个函数，避免「设置页显示 128K、对话窗按未知处理」这类分叉。
  */
 function paramsOf(draft: ProviderDraft, id: string): LlmModelParams {
-  return draft.modelParams[id] ?? { ...LLM_MODEL_PARAM_DEFAULTS }
+  return resolveModelParams(draft, id)
 }
 
 /**
