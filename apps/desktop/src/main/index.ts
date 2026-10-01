@@ -1406,6 +1406,19 @@ async function bootstrap(): Promise<void> {
         if (request.model !== undefined && request.model.trim() === '') {
           return { ok: false, error: 'E_INVALID_ARGUMENT: model 不能为空' }
         }
+        // 思考等级是**模型级**的（v23）：没有生效模型就没有可归属的键，`withModelParams`
+        // 会原样返回 —— 那样 `mutate` 照样成功、回执 `{ok:true}`，但配置一个字节都没变，
+        // 网页端先乐观显示再被 status 重报打回，看着像「切了又弹回去」。
+        // 这里显式拒绝（与相邻两条守卫同一口径），别让它变成静默的空操作。
+        if (
+          request.reasoningEffort !== undefined &&
+          (current.providers[targetId]?.model ?? '').trim() === ''
+        ) {
+          return {
+            ok: false,
+            error: 'E_INVALID_ARGUMENT: 该 provider 尚未设置模型，无法写入模型级参数',
+          }
+        }
         const updated = settings!.mutate((draft) => {
           if (request.providerId !== undefined) draft.llm.active = request.providerId
           const provider = draft.llm.providers[targetId]
