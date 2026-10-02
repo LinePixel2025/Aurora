@@ -22,7 +22,7 @@ import type {
 import { api, clearAuth, getToken, loadStoredAuth, saveAuth } from '../lib/api'
 import { extractRemoteLlm, type RemoteLlmConfig } from '../lib/remote-llm'
 import { command, nextRequestId, rejectAllCommands, socket } from '../lib/socket'
-import { summarizeInput } from './events'
+import { flushStreamDeltas, summarizeInput } from './events'
 import {
   actionNotice,
   ensureSessionState,
@@ -149,6 +149,10 @@ function historyToAssistant(msg: CenterSessionHistoryMessage): ChatItem {
  */
 function mergeHistory(session: SessionState, history: CenterSessionHistoryMessage[]): void {
   if (history.length === 0) return
+  // 先落在途的流式增量：历史是按 `id` / 内容与实时条目配对的，缓存里的正文还没写进
+  // `items` 时配对判据会看不到它（虽然本会话 id 命中时不重复，但顺序会漂）——
+  // 与 `done` / `error` 之前那条 flush 同一理由（deltaBuffer 语义 4）。
+  flushStreamDeltas()
   const liveUserCounts = new Map<string, number>()
   for (const item of session.items) {
     if (item.kind !== 'user') continue
@@ -192,7 +196,8 @@ function mergeHistory(session: SessionState, history: CenterSessionHistoryMessag
             ...(ask.answersByQuestion === undefined
               ? {}
               : { answersByQuestion: ask.answersByQuestion }),
-          },        },
+          },
+        },
       })
       continue
     }

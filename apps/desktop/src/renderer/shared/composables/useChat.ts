@@ -29,7 +29,7 @@ import type {
   TokenUsage,
   WindowName,
 } from '@aurora/shared'
-import { createDeltaBuffer } from './useChatDeltaBuffer.js'
+import { createDeltaBuffer } from '@aurora/shared/browser'
 
 export interface ChatMessage {
   id: string
@@ -221,7 +221,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
    *
    * 一个 SSE token = 一次 IPC 推送，真实推理模型 100+ token/s 时渲染层每秒被叫醒上百次；
    * text / reasoning 只入队，真正的累加合并到**下一帧**一次做完（每帧一次组件渲染）。
-   * 语义与边界见 `useChatDeltaBuffer.ts`；这里只负责注入 rAF 与把批次写进消息。
+   * 语义与边界见共享的 `@aurora/shared/browser` 的 `deltaBuffer`（2026-10-02 起单源，网页端同用一份）；这里只负责注入 rAF 与把批次写进消息。
    */
   const deltaBuffer = createDeltaBuffer<ChatDelta>(
     (batches) => {

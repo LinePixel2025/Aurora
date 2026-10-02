@@ -6,10 +6,58 @@
  * 聚合是**原地增量**：text 追加、reasoning 追加、tool 按 call.id 合并、job 一张卡覆盖、
  * subagent 按 callId 覆盖。渲染层按 `item` 身份缓存 Markdown / 折叠态，所以除了新增条目，
  * 不要整体替换数组或条目对象。
+ *
+ * **流式增量按帧合并**（2026-10-02）：`text` / `reasoning` 不再每条 WS 帧直接改 `items`，
+ * 而是入队到共享的 `createDeltaBuffer`（与桌面端同一份实现，docs/07 §2.3），一帧只 apply
+ * 一次 —— 一个 token 就是一条 WS 帧，100+ token/s 时渲染层每秒被叫醒上百次，每次都要重跑
+ * 组件渲染 + Markdown 全量重解析 + `innerHTML` 替换。四条语义（同 key 合并 / 一帧一次 /
+ * 顺序保持 / **终态前先 flush**）见 `deltaBuffer.ts`。
  */
 import type { AgentEvent } from '@aurora/shared'
-import { ensureSessionState, state, type ChatItem, type SessionState } from './store'
+import { createDeltaBuffer } from '@aurora/shared/browser'
+import { ensureSessionState, sessionKey, state, type ChatItem, type SessionState } from './store'
 import { applyUsage } from './usage'
+
+/** 一条待合并的流式增量（同一条消息的 text / reasoning 各自按入队顺序累加） */
+type PendingDelta = { kind: 'text' | 'reasoning'; delta: string }
+
+/** 缓冲键：会话与消息三元组用 NUL 分隔（会话 id 是 `center-*` / uuid，不含 NUL） */
+function streamKeyOf(clientId: string, sessionId: string, messageId: string): string {
+  return `${clientId}\u0000${sessionId}\u0000${messageId}`
+}
+
+/**
+ * 按帧合并缓冲：apply 时才按 id 找回条目（**不能**在入队时找 —— 消息条目可能还没建出来，
+ * 提前解析会把「入队顺序」换成「到达顺序」，帧边界上的插入位置就会漂）。
+ */
+const streamBuffer = createDeltaBuffer<PendingDelta>(
+  (batches) => {
+    for (const batch of batches) {
+      const [clientId, sessionId, messageId] = batch.key.split('\u0000')
+      if (clientId === undefined || sessionId === undefined || messageId === undefined) continue
+      const session = state.sessions.get(sessionKey(clientId, sessionId))
+      if (session === undefined) continue
+      const item = ensureAssistant(session, messageId)
+      for (const value of batch.values) {
+        if (value.kind === 'text') {
+          item.content += value.delta
+          continue
+        }
+        item.reasoning = (item.reasoning ?? '') + value.delta
+        item.reasoningAt = Date.now()
+      }
+    }
+  },
+  {
+    requestFrame: (callback) => window.requestAnimationFrame(callback),
+    cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+  },
+)
+
+/** 立即应用已入队的增量（终态事件 / 历史合并之前调用，见 deltaBuffer 的语义 4） */
+export function flushStreamDeltas(): void {
+  streamBuffer.flush()
+}
 
 function ensureAssistant(session: SessionState, messageId: string): ChatItem {
   const existing = session.items.find((item) => item.kind === 'assistant' && item.id === messageId)
@@ -73,14 +121,18 @@ export function applyEvent(clientId: string, sessionId: string, event: AgentEven
       break
     }
     case 'text': {
-      const item = ensureAssistant(session, event.messageId)
-      item.content += event.delta
+      // 入队而非直接写：同一帧内的多条增量合并成一次 apply（见文件头的流式合并说明）
+      streamBuffer.push(streamKeyOf(clientId, sessionId, event.messageId), {
+        kind: 'text',
+        delta: event.delta,
+      })
       break
     }
     case 'reasoning': {
-      const item = ensureAssistant(session, event.messageId)
-      item.reasoning = (item.reasoning ?? '') + event.delta
-      item.reasoningAt = Date.now()
+      streamBuffer.push(streamKeyOf(clientId, sessionId, event.messageId), {
+        kind: 'reasoning',
+        delta: event.delta,
+      })
       break
     }
     case 'tool': {
@@ -147,6 +199,9 @@ export function applyEvent(clientId: string, sessionId: string, event: AgentEven
       break
     }
     case 'done': {
+      // 终态前先 flush：否则这一帧还在缓存的正文会**晚于** done 落地，
+      // 「收尾时读到的内容」就不是最终内容（deltaBuffer 语义 4）
+      flushStreamDeltas()
       session.pending = false
       const now = Date.now()
       for (const item of session.items) {
@@ -156,6 +211,7 @@ export function applyEvent(clientId: string, sessionId: string, event: AgentEven
       break
     }
     case 'error': {
+      flushStreamDeltas()
       session.pending = false
       session.items.push({
         id: `error-${event.seq}`,

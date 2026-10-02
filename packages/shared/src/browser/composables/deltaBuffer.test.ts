@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createDeltaBuffer, type DeltaBatch } from './useChatDeltaBuffer.js'
+import { createDeltaBuffer, type DeltaBatch } from './deltaBuffer.js'
 
 /**
  * 假帧调度器：不真跑 rAF，把回调收起来由测试手动驱动 —— 单测要验的正是
