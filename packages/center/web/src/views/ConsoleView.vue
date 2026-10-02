@@ -100,7 +100,11 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
 
 <template>
   <div class="console" data-panel="console">
-    <aside class="rail" :class="{ 'drawer-open': drawer === 'rail' }">
+    <aside
+      class="rail-drawer"
+      data-field="rail-container"
+      :class="{ 'drawer-open': drawer === 'rail' }"
+    >
       <ClientRail
         :entries="clientsSorted"
         :selected-id="state.selectedClientId"
@@ -122,7 +126,8 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
         </button>
         <span class="main-title">{{ entry?.client.name ?? '未选择设备' }}</span>
         <span v-if="entry" class="main-sub">
-          {{ entry.client.online ? '在线' : '离线' }} · {{ entry.status?.mode ?? entry.client.mode }}
+          {{ entry.client.online ? '在线' : '离线' }} ·
+          {{ entry.status?.mode ?? entry.client.mode }}
         </span>
         <span class="grow" />
         <button
@@ -148,7 +153,9 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
       <div class="stack">
         <PendingBar />
 
-        <div class="thread">
+        <!-- data-session-id：给验证 harness 一个"当前会话是哪一个"的稳定读数
+             （新建会话的 id 由服务器分配，网页这边只能从 DOM 上取） -->
+        <div class="thread" :data-session-id="session?.sessionId ?? ''">
           <div ref="contentRef" class="thread-inner">
             <template v-if="session && entry">
               <UsageStrip :entry="entry" :session="session" />
@@ -197,7 +204,11 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
       </div>
     </section>
 
-    <aside class="panel" :class="{ collapsed: panelCollapsed, 'drawer-open': drawer === 'panel' }">
+    <aside
+      class="panel-drawer"
+      data-field="panel-container"
+      :class="{ collapsed: panelCollapsed, 'drawer-open': drawer === 'panel' }"
+    >
       <SessionPanel :entry="entry" :session="session" />
     </aside>
 
@@ -231,7 +242,7 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
   overflow: hidden;
 }
 
-.rail {
+.rail-drawer {
   width: 264px;
   min-width: 0;
   display: flex;
@@ -382,7 +393,7 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
   font-size: var(--text-xs);
 }
 
-.panel {
+.panel-drawer {
   width: 300px;
   min-width: 0;
   display: flex;
@@ -395,7 +406,7 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
     opacity var(--transition-fast);
 }
 
-.panel.collapsed {
+.panel-drawer.collapsed {
   width: 0;
   opacity: 0;
   border-color: transparent;
@@ -407,7 +418,7 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
 }
 
 @media (max-width: 960px) {
-  .panel {
+  .panel-drawer {
     width: 260px;
   }
 }
@@ -415,11 +426,14 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
 @media (max-width: 720px) {
   .console {
     grid-template-columns: minmax(0, 1fr);
+    /* 两行：主区吃掉剩余高度、底部标签栏按内容高（不写这一行，grid 的默认 stretch 会把
+       标签栏拉成半屏高的巨型胶囊 —— harness 的 tabsHeight 读数实测 245px） */
+    grid-template-rows: minmax(0, 1fr) auto;
     position: relative;
   }
 
-  .rail,
-  .panel {
+  .rail-drawer,
+  .panel-drawer {
     position: absolute;
     top: 0;
     bottom: 0;
@@ -433,21 +447,21 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
       opacity var(--transition-fast);
   }
 
-  .rail {
+  .rail-drawer {
     left: 0;
     border-right: 1px solid var(--border-subtle);
     transform: translateX(-8px);
   }
 
-  .panel {
+  .panel-drawer {
     right: 0;
     border-left: 1px solid var(--border-subtle);
     transform: translateX(8px);
     width: min(84vw, 320px);
   }
 
-  .rail.drawer-open,
-  .panel.drawer-open {
+  .rail-drawer.drawer-open,
+  .panel-drawer.drawer-open {
     opacity: 1;
     pointer-events: auto;
     transform: translateX(0);

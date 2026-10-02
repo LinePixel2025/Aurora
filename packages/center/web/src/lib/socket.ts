@@ -108,27 +108,52 @@ export function nextRequestId(): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-/** 上行一条命令并等 result 回执；ok=false / 超时 / 连接未就绪都按错误处理 */
-export function command<T>(message: CenterWebMessage, timeoutMs = 30_000): Promise<T> {
+/**
+ * 上行一条命令并等 result 回执；ok=false / 超时都按错误处理。
+ *
+ * ⚠️ **连接还没就绪时先等一小段**（`waitForOpenMs`，默认 8s）再发，不当场失败：
+ * 界面在挂载时就会自动拉数据（会话面板列会话、自动化页拉列表），那一刻 WS 可能还在
+ * 握手 —— 旧实现直接 reject，界面就永久停在「与 Center 的连接尚未建立，请稍候重试」上，
+ * 除非用户自己手点一次刷新（harness 的 automations / panel-sessions 两个场景实测如此）。
+ * 等待是**有界**的：超过上限仍按错误返回，不把明显离线的情况伪装成"正在重试"。
+ */
+export function command<T>(
+  message: CenterWebMessage,
+  timeoutMs = 30_000,
+  waitForOpenMs = 8_000,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    if (!socket.send(message)) {
-      reject(new Error('与 Center 的连接尚未建立，请稍候重试'))
-      return
+    const startedAt = Date.now()
+    const attempt = (): void => {
+      if (socket.send(message)) {
+        const timer = window.setTimeout(() => {
+          pendingCommands.delete(message.requestId)
+          reject(new Error('Center 未在时限内回执（客户端可能离线或正忙）'))
+        }, timeoutMs)
+        pendingCommands.set(message.requestId, {
+          resolve: resolve as (data: unknown) => void,
+          reject,
+          timer,
+        })
+        return
+      }
+      if (Date.now() - startedAt >= waitForOpenMs) {
+        reject(new Error('与 Center 的连接尚未建立，请稍候重试'))
+        return
+      }
+      window.setTimeout(attempt, 120)
     }
-    const timer = window.setTimeout(() => {
-      pendingCommands.delete(message.requestId)
-      reject(new Error('Center 未在时限内回执（客户端可能离线或正忙）'))
-    }, timeoutMs)
-    pendingCommands.set(message.requestId, {
-      resolve: resolve as (data: unknown) => void,
-      reject,
-      timer,
-    })
+    attempt()
   })
 }
 
 /** `result` 帧到达：按 requestId 结算（未知 id 一律忽略 —— 协议只增不改） */
-export function settleCommand(requestId: string, ok: boolean, data?: unknown, error?: string): void {
+export function settleCommand(
+  requestId: string,
+  ok: boolean,
+  data?: unknown,
+  error?: string,
+): void {
   const pending = pendingCommands.get(requestId)
   if (pending === undefined) return
   pendingCommands.delete(requestId)

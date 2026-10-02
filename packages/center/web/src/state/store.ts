@@ -215,7 +215,8 @@ export const activeSession = computed<SessionState | null>(() =>
   state.activeSessionKey ? (state.sessions.get(state.activeSessionKey) ?? null) : null,
 )
 
-export const sessionKey = (clientId: string, sessionId: string): string => `${clientId}:${sessionId}`
+export const sessionKey = (clientId: string, sessionId: string): string =>
+  `${clientId}:${sessionId}`
 
 /** 在线优先，其次按名称排序（ClientInfo 层面，快照与条目排序共用） */
 export function compareClientInfo(a: ClientInfo, b: ClientInfo): number {

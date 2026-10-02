@@ -62,7 +62,7 @@ function toggle(): void {
       `t-${tool.state}`,
       { open, settled: tool.state !== 'running', 'has-subagent': tool.subagent !== undefined },
     ]"
-    :data-field="tool.subagent === undefined ? undefined : 'chat.task-card'"
+    :data-field="tool.subagent === undefined ? undefined : 'chat.task-row'"
   >
     <button
       type="button"
@@ -92,7 +92,11 @@ function toggle(): void {
 
     <SubagentCard v-if="tool.subagent" :snapshot="tool.subagent" />
 
-    <Transition name="collapse" @enter="collapseHooks.enter" @before-leave="collapseHooks.beforeLeave">
+    <Transition
+      name="collapse"
+      @enter="collapseHooks.enter"
+      @before-leave="collapseHooks.beforeLeave"
+    >
       <div v-if="open" class="tool-body" data-field="chat.tool-body">
         <p class="body-label">参数</p>
         <pre class="tool-args">{{ argsText }}</pre>

@@ -13,6 +13,7 @@
  */
 import { computed, ref, watch } from 'vue'
 import type { CenterProjectOption, ModeId, PermissionMode, ReasoningEffort } from '@aurora/shared'
+import type { Ref } from 'vue'
 import type { ClientEntry, SessionState } from '../../state'
 import {
   activateSession,
@@ -63,7 +64,17 @@ const TOOL_SWITCHES = [
 ] as const
 
 const tab = ref<PanelTab>('sessions')
-const busy = ref(false)
+/**
+ * 在途标志**按组分开**（会话列表 / 模型 / 远程配置）。
+ *
+ * 一个面板一个 `busy` 曾经把三组操作绑在一起：面板挂载时会自动拉一次会话列表，
+ * 那一两百毫秒里配置开关点下去会被 `if (busy.value) return` 静默吞掉（用户视角是
+ * "点了没反应"，harness 的 panel-config 场景实测如此）。分组之后只有**同一组**的
+ * 重复点击才被忽略，跨组互不阻塞。
+ */
+const sessionBusy = ref(false)
+const llmBusy = ref(false)
+const configBusy = ref(false)
 const error = ref('')
 const projects = ref<CenterProjectOption[]>([])
 /** 行内提示（如「跟随全局需在客户端操作」），键 = sessionId */
@@ -103,13 +114,13 @@ function failureText(reason: unknown): string {
 async function refresh(): Promise<void> {
   const id = clientId.value
   if (id === '' || !online.value) return
-  busy.value = true
+  sessionBusy.value = true
   error.value = ''
   const [sessionsResult, projectsResult] = await Promise.allSettled([
     listSessions(id),
     listProjects(id),
   ])
-  busy.value = false
+  sessionBusy.value = false
   if (clientId.value !== id) return // 期间已切走设备
   const failure = [sessionsResult, projectsResult].find(
     (result): result is PromiseRejectedResult => result.status === 'rejected',
@@ -118,10 +129,10 @@ async function refresh(): Promise<void> {
   if (projectsResult.status === 'fulfilled') projects.value = projectsResult.value
 }
 
-/** 单行操作统一入口：失败后重拉列表，把本地视图对齐回客户端的真实状态 */
-async function run(action: () => Promise<void>): Promise<void> {
-  if (busy.value) return
-  busy.value = true
+/** 操作统一入口：失败后重拉列表，把本地视图对齐回客户端的真实状态 */
+async function run(flag: Ref<boolean>, action: () => Promise<void>): Promise<void> {
+  if (flag.value) return
+  flag.value = true
   error.value = ''
   try {
     await action()
@@ -129,7 +140,7 @@ async function run(action: () => Promise<void>): Promise<void> {
     error.value = failureText(err)
     if (clientId.value !== '') void listSessions(clientId.value).catch(() => {})
   } finally {
-    busy.value = false
+    flag.value = false
   }
 }
 
@@ -182,14 +193,14 @@ function viewSession(sessionId: string): void {
 function onActivate(sessionId: string): void {
   const id = clientId.value
   if (id === '') return
-  void run(() => activateSession(id, sessionId))
+  void run(sessionBusy, () => activateSession(id, sessionId))
 }
 
 function onVisibility(sessionId: string, event: Event): void {
   const id = clientId.value
   if (id === '') return
   const visible = (event.target as HTMLInputElement).checked
-  void run(() => setSessionVisibility(id, sessionId, visible))
+  void run(sessionBusy, () => setSessionVisibility(id, sessionId, visible))
 }
 
 function onPermission(sessionId: string, event: Event): void {
@@ -201,14 +212,14 @@ function onPermission(sessionId: string, event: Event): void {
     return
   }
   setRowHint(sessionId, '')
-  void run(() => setSessionPermission(id, sessionId, value))
+  void run(sessionBusy, () => setSessionPermission(id, sessionId, value))
 }
 
 function onProject(sessionId: string, event: Event): void {
   const id = clientId.value
   if (id === '') return
   const projectId = (event.target as HTMLSelectElement).value
-  void run(() => setSessionProject(id, sessionId, projectId))
+  void run(sessionBusy, () => setSessionProject(id, sessionId, projectId))
 }
 
 function onProvider(event: Event): void {
@@ -216,7 +227,7 @@ function onProvider(event: Event): void {
   if (id === '') return
   const providerId = (event.target as HTMLSelectElement).value
   if (providerId === '' || providerId === llm.value?.activeProviderId) return
-  void run(() => switchLlm(id, { providerId }))
+  void run(llmBusy, () => switchLlm(id, { providerId }))
 }
 
 function onModel(event: Event): void {
@@ -224,7 +235,7 @@ function onModel(event: Event): void {
   if (id === '') return
   const model = (event.target as HTMLSelectElement).value
   if (model === '' || model === llm.value?.model) return
-  void run(() => switchLlm(id, { model }))
+  void run(llmBusy, () => switchLlm(id, { model }))
 }
 
 function onEffort(event: Event): void {
@@ -232,20 +243,20 @@ function onEffort(event: Event): void {
   if (id === '') return
   const reasoningEffort = (event.target as HTMLSelectElement).value as ReasoningEffort
   if (reasoningEffort === llm.value?.reasoningEffort) return
-  void run(() => switchLlm(id, { reasoningEffort }))
+  void run(llmBusy, () => switchLlm(id, { reasoningEffort }))
 }
 
 function onMode(mode: ModeId): void {
   const id = clientId.value
   if (id === '' || mode === currentMode.value) return
-  void run(() => switchMode(id, mode))
+  void run(configBusy, () => switchMode(id, mode))
 }
 
 function onToggle(path: string, event: Event): void {
   const id = clientId.value
   if (id === '') return
   const checked = (event.target as HTMLInputElement).checked
-  void run(() => updateConfig(id, { [path]: checked }))
+  void run(configBusy, () => updateConfig(id, { [path]: checked }))
 }
 
 /** 开关的当前值来自 `client.status.agent.tools`（路径与白名单一一对应） */
@@ -273,10 +284,10 @@ function toolValue(path: string): boolean | undefined {
         type="button"
         class="ghost"
         data-action="panel.refresh"
-        :disabled="busy || !online"
+        :disabled="sessionBusy || !online"
         @click="refresh"
       >
-        {{ busy ? '同步中…' : '刷新' }}
+        {{ sessionBusy ? '同步中…' : '刷新' }}
       </button>
     </header>
 
@@ -327,7 +338,7 @@ function toolValue(path: string): boolean | undefined {
                 type="button"
                 class="mini"
                 data-action="panel.activate"
-                :disabled="busy || !online"
+                :disabled="sessionBusy || !online"
                 title="让客户端主界面切到该会话"
                 @click="onActivate(item.sessionId)"
               >
@@ -338,7 +349,7 @@ function toolValue(path: string): boolean | undefined {
                   type="checkbox"
                   data-action="panel.visibility"
                   :checked="item.centerVisible !== false"
-                  :disabled="busy || !online"
+                  :disabled="sessionBusy || !online"
                   @change="onVisibility(item.sessionId, $event)"
                 />
                 <span>可见</span>
@@ -347,7 +358,7 @@ function toolValue(path: string): boolean | undefined {
                 class="select"
                 data-field="panel.permission"
                 :value="item.permissionMode ?? ''"
-                :disabled="busy || !online"
+                :disabled="sessionBusy || !online"
                 title="会话级权限档（选「跟随全局」不发起命令）"
                 @change="onPermission(item.sessionId, $event)"
               >
@@ -364,7 +375,7 @@ function toolValue(path: string): boolean | undefined {
                 class="select"
                 data-field="panel.project"
                 :value="item.projectId ?? ''"
-                :disabled="busy || !online"
+                :disabled="sessionBusy || !online"
                 title="会话绑定的项目"
                 @change="onProject(item.sessionId, $event)"
               >
@@ -379,7 +390,9 @@ function toolValue(path: string): boolean | undefined {
             </p>
           </li>
         </ul>
-        <p v-else-if="!busy" class="note">暂无远程会话——新建会话或发一条消息后会出现在这里。</p>
+        <p v-else-if="!sessionBusy" class="note">
+          暂无远程会话——新建会话或发一条消息后会出现在这里。
+        </p>
       </template>
     </div>
 
@@ -395,7 +408,7 @@ function toolValue(path: string): boolean | undefined {
               class="select"
               data-field="panel.provider"
               :value="llm?.activeProviderId ?? ''"
-              :disabled="busy || providerIds.length === 0"
+              :disabled="llmBusy || providerIds.length === 0"
               @change="onProvider"
             >
               <option v-if="providerIds.length === 0" value="">未读取到模型配置</option>
@@ -408,7 +421,7 @@ function toolValue(path: string): boolean | undefined {
               class="select"
               data-field="panel.model"
               :value="llm?.model ?? ''"
-              :disabled="busy || modelOptions.length === 0"
+              :disabled="llmBusy || modelOptions.length === 0"
               @change="onModel"
             >
               <option v-if="modelOptions.length === 0" value="">—</option>
@@ -421,7 +434,7 @@ function toolValue(path: string): boolean | undefined {
               class="select"
               data-field="panel.effort"
               :value="llm?.reasoningEffort ?? 'auto'"
-              :disabled="busy || !llm"
+              :disabled="llmBusy || !llm"
               @change="onEffort"
             >
               <option v-for="level in REASONING_LEVELS" :key="level" :value="level">
@@ -448,7 +461,7 @@ function toolValue(path: string): boolean | undefined {
               type="button"
               class="mode-btn"
               :class="{ on: currentMode === mode.id }"
-              :disabled="busy || currentMode === mode.id"
+              :disabled="configBusy || currentMode === mode.id"
               :data-action="`panel.mode-${mode.id}`"
               @click="onMode(mode.id)"
             >
@@ -462,7 +475,7 @@ function toolValue(path: string): boolean | undefined {
             <input
               type="checkbox"
               :checked="toolValue(item.path)"
-              :disabled="busy"
+              :disabled="configBusy"
               :data-switch="item.path"
               @change="onToggle(item.path, $event)"
             />

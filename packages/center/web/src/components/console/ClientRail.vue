@@ -23,7 +23,7 @@ const countLabel = computed(() => `${props.entries.length} 台 · ${onlineCount.
 </script>
 
 <template>
-  <aside class="rail" aria-label="客户端设备">
+  <aside class="rail" data-panel="rail" aria-label="客户端设备">
     <header class="rail-head">
       <span class="rail-title">设备</span>
       <span class="rail-count">{{ countLabel }}</span>

@@ -62,8 +62,8 @@ async function decide(approved: boolean): Promise<void> {
     </header>
 
     <p class="intro">
-      工具 <span class="mono">{{ entry.request.toolName }}</span> 属于敏感操作
-      （文件移动 / 删除、命令执行、MCP 工具等），需要你确认后才会执行。
+      工具 <span class="mono">{{ entry.request.toolName }}</span> 属于敏感操作 （文件移动 /
+      删除、命令执行、MCP 工具等），需要你确认后才会执行。
     </p>
 
     <pre class="args mono">{{ inputText }}</pre>

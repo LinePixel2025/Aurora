@@ -124,7 +124,7 @@ defineExpose({ open })
       @click="toggle"
     >
       <span v-if="streaming" class="think-orbit spin" aria-hidden="true" />
-      <span class="thinking-label">{{ label }}</span>
+      <span class="thinking-label" data-field="chat.thinking-label">{{ label }}</span>
       <span v-if="streaming" class="thinking-elapsed">{{ secondsText }}</span>
       <span class="grow" />
       <ChevronRight class="chevron" :size="13" :stroke-width="1.8" aria-hidden="true" />
@@ -132,8 +132,14 @@ defineExpose({ open })
 
     <Transition name="fade">
       <div v-if="open" class="thinking-body" data-field="chat.thinking-body">
-        <p ref="textEl" class="thinking-text" data-field="chat.thinking-text" @scroll.passive="onScroll">
-          {{ reasoning }}<span v-if="streaming" class="streaming-caret thinking-caret" aria-hidden="true" />
+        <p
+          ref="textEl"
+          class="thinking-text"
+          data-field="chat.thinking-text"
+          @scroll.passive="onScroll"
+        >
+          {{ reasoning
+          }}<span v-if="streaming" class="streaming-caret thinking-caret" aria-hidden="true" />
         </p>
       </div>
     </Transition>

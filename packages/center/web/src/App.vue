@@ -8,7 +8,16 @@
  *   没有轮询兜底，所以这里必须如实显示链路状态）。
  */
 import { computed, onMounted, watch } from 'vue'
-import { boot, booted, currentUser, logout, showNotice, state, wsStatus } from './state'
+import {
+  actionNotice,
+  boot,
+  booted,
+  currentUser,
+  logout,
+  showNotice,
+  state,
+  wsStatus,
+} from './state'
 import { navigate, route } from './router'
 import {
   Blocks,
@@ -145,6 +154,14 @@ const onlineCount = computed(
       <DeviceView v-else-if="route.name === 'device'" />
       <LoginView v-else />
     </main>
+
+    <!-- 非阻断提示（待办栏的批复 / 过期、代码复制失败、语音失败…）：6s 自消隐，
+         不打断操作 —— 与桌面端的瞬时提示同款语义，只是网页端挂在壳上全局一份 -->
+    <Transition name="rise">
+      <p v-if="actionNotice !== ''" class="notice" data-field="shell.notice" role="status">
+        {{ actionNotice }}
+      </p>
+    </Transition>
   </template>
 </template>
 
@@ -308,6 +325,25 @@ const onlineCount = computed(
 .logout:hover {
   background: var(--fill-2);
   color: var(--text-primary);
+}
+
+/* 非阻断提示：贴在视口底部居中，压在内容之上但不挡输入卡（--z-toast 是唯一的提示层） */
+.notice {
+  position: fixed;
+  left: 50%;
+  bottom: var(--space-5);
+  transform: translateX(-50%);
+  z-index: var(--z-toast);
+  max-width: min(560px, calc(100vw - 2 * var(--space-4)));
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  text-align: center;
+  box-shadow: var(--shadow-3);
 }
 
 @media (max-width: 720px) {

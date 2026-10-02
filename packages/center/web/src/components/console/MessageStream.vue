@@ -56,11 +56,23 @@ function toggleTrace(item: ChatItem): void {
 }
 
 /* 收尾折叠：助手消息从流式转为已收尾时收起过程；用户点开过的保持点开。
-   历史回放条目（streaming 恒为 false）第一次被看到时就归入折叠。 */
+   历史回放条目（streaming 恒为 false）第一次被看到时就归入折叠。
+
+   ⚠️ 判据必须是 `streaming` 的**边沿**，所以这里 watch 一个由它派生的签名字符串：
+   事件聚合是**原地**改 `item.streaming`（不换数组、不换条目对象），watch 数组引用
+   在 done 事件上根本不会触发 —— 实测症状是「答完了轨迹还大开着」（harness 的
+   trace-collapsed 场景）。用 computed 读 `streaming` 才会建立真正的依赖。 */
+const foldSignature = computed(() =>
+  props.session.items
+    .filter((item) => item.kind === 'assistant')
+    .map((item) => `${item.id}:${item.streaming === true ? '1' : '0'}`)
+    .join('|'),
+)
+
 watch(
-  () => props.session.items,
-  (items) => {
-    for (const item of items) {
+  foldSignature,
+  () => {
+    for (const item of props.session.items) {
       if (item.kind !== 'assistant') continue
       if (!seen.has(item.id)) {
         seen.add(item.id)
@@ -71,7 +83,7 @@ watch(
       else folded.add(item.id)
     }
   },
-  { immediate: true, deep: false },
+  { immediate: true },
 )
 
 /* ── Markdown：按消息缓存（内容变了才重新解析）；图表由共享水合器接管 ── */
@@ -192,7 +204,10 @@ async function speak(item: ChatItem): Promise<void> {
   stopSpeak()
   synthesizingId.value = item.id
   try {
-    const { audioBase64, mimeType } = await synthesizeSpeech(props.entry.client.clientId, item.content)
+    const { audioBase64, mimeType } = await synthesizeSpeech(
+      props.entry.client.clientId,
+      item.content,
+    )
     if (audioBase64 === '') throw new Error('客户端没有回传音频数据')
     const binary = atob(audioBase64)
     const bytes = new Uint8Array(binary.length)
@@ -219,8 +234,7 @@ async function speak(item: ChatItem): Promise<void> {
 const failedCount = (item: ChatItem): number =>
   item.tools.filter((tool) => tool.state === 'error').length
 
-const hasTrace = (item: ChatItem): boolean =>
-  item.tools.length > 0 || (item.reasoning ?? '') !== ''
+const hasTrace = (item: ChatItem): boolean => item.tools.length > 0 || (item.reasoning ?? '') !== ''
 
 const showLoading = computed(() => {
   const hasStreamingAssistant = props.session.items.some(
@@ -231,7 +245,13 @@ const showLoading = computed(() => {
 </script>
 
 <template>
-  <div ref="streamEl" class="stream" data-field="chat.messages" aria-live="polite" @click="onContentClick">
+  <div
+    ref="streamEl"
+    class="stream"
+    data-field="chat.messages"
+    aria-live="polite"
+    @click="onContentClick"
+  >
     <p v-if="session.items.length === 0 && !session.pending" class="empty">
       这个远程会话还是空的。在下面输入一句话，Agent 会在客户端上执行并把过程实时回传到这里。
     </p>
@@ -255,7 +275,10 @@ const showLoading = computed(() => {
       <JobCard v-else-if="item.kind === 'job' && item.job" :job="item.job" />
 
       <!-- 子代理卡（没有配套工具行时的回落渲染） -->
-      <SubagentCard v-else-if="item.kind === 'subagent' && item.subagent" :snapshot="item.subagent" />
+      <SubagentCard
+        v-else-if="item.kind === 'subagent' && item.subagent"
+        :snapshot="item.subagent"
+      />
 
       <!-- 助手消息：轨迹容器（思考 → 工具行） + 正文 -->
       <div v-else-if="item.kind === 'assistant'" class="row r-assistant">
@@ -279,6 +302,9 @@ const showLoading = computed(() => {
             <AgentToolRow v-for="tool in item.tools" :key="tool.id" :tool="tool" />
           </AgentTrace>
 
+          <!-- Markdown 的唯一出口：渲染器 `html:false` 先转义再套白名单标记，链接 scheme
+               走 validateLink（javascript: 拒绝）—— 与桌面端同一条安全基线 -->
+          <!-- eslint-disable-next-line vue/no-v-html -->
           <div class="md" data-field="chat.markdown" v-html="htmlOf(item, 'content')" />
 
           <div class="msg-foot">
@@ -292,7 +318,9 @@ const showLoading = computed(() => {
               @click="speak(item)"
             >
               <Volume2 :size="13" :stroke-width="1.7" aria-hidden="true" />
-              {{ synthesizingId === item.id ? '合成中…' : speakingId === item.id ? '停止' : '朗读' }}
+              {{
+                synthesizingId === item.id ? '合成中…' : speakingId === item.id ? '停止' : '朗读'
+              }}
             </button>
           </div>
         </div>

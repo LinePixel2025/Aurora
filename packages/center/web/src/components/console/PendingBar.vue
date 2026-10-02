@@ -56,7 +56,9 @@ const clientNameOf = (clientId: string): string =>
 /** 待办来源设备（去重，展示用） */
 const sourceNames = computed(() =>
   [
-    ...new Set([...openConfirms.value, ...openAsks.value].map((item) => clientNameOf(item.clientId))),
+    ...new Set(
+      [...openConfirms.value, ...openAsks.value].map((item) => clientNameOf(item.clientId)),
+    ),
   ].join('、'),
 )
 </script>
