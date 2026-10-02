@@ -557,20 +557,25 @@
   `modelId` = 该 provider 的 `model`；**换模型即换等级**，同一 provider 的不同模型各有一套值）：
   `auto` = **不下发**该参数（映射成 `undefined`），
   `low` / `medium` / `high` 原样透传。**设置页与对话窗输入区两处入口写的是同一个字段，没有第二份来源**，
-  也不做按会话覆盖；改完对**下一次**请求生效，无需重启。
+  **不按会话覆盖**（等级是模型级参数，会话级模型只决定用哪个模型）；改完对**下一次**请求生效，无需重启。
   无可用 provider 时控件**不隐藏**，而是 `disabled` + 提示「先在「设置 → AI 模型」里配置并选中一个模型」
   ——用户抱怨的正是「找不到按钮」，在没有模型时彻底藏起来会让同一个抱怨复现；
   禁用态至少是「找得到但用不了」，并且指向了修复路径。
 - **模型选择（本轮）**：输入区（`.composer-bar`）与「思考」并排还有一个「模型」下拉
   （`data-field="chat.model"`，`ModelPickerSelect.vue`），选项来自**当前生效 provider** 的
-  `llm.providers.<active>.modelList`；选中即把该 provider 的 `llm.providers.<active>.model`
-  改成这一项，下一次请求生效（主进程每次请求都重新读 `settings.get().llm`，无需重启）。
-  **模型页与对话窗读写的是同一份列表**：模型页维护 `modelList`、对话窗从同一份列表里选，
+  `llm.providers.<active>.modelList`；**选中写入的是「本会话的模型覆盖」**
+  （`chat:setSessionModel` → 会话文件 `meta.llm = { providerId, model }`，docs/06 §3），
+  下一次请求生效（主进程每轮经 `createForSession` 现解析，无需重启）；
+  菜单里多一项「跟随全局」用于**清除覆盖**（回到全局 `llm.active` 的 `model`）。
+  设置页「AI 模型」页签仍写**全局默认**（`llm.providers.<active>.model`）——两处**不是同一份数据**：
+  全局是「默认」，会话覆盖是「这个会话用它」，解析链只有一级、未覆盖即跟随全局。
+  **模型页与对话窗读写的是同一份候选列表**：模型页维护 `modelList`、对话窗从同一份列表里选，
   没有第二份来源。当前 `model` 不在列表里（或列表为空）时，下拉把当前值显示为
   「`<model>`（不在列表中）」而不是悄悄替换成别的模型。
   **打开编辑卡时，当前生效模型总会占一行**（渲染层重建草稿时把 `model` 补进候选列表），
   所以引导页建出来的 provider（落盘的是 `modelList: []`）也能就地配置它的模型级参数；
   落盘时 `modelList` 仍会被归一为「候选列表 ∪ {`model`}」。
+  会话左栏行在**覆盖态**显示模型小徽标（跟随全局时不显示 —— 靠它看出「这个会话绑了模型」）。
   无可用 provider 时**与思考等级一样**「不隐藏、只 `disabled`」，并给出同一句去设置页的提示。
 - **权限下拉的换行口径（本轮）**：菜单项的说明文字**允许换行** —— 长文案的实际容器
   `.perm-item-body` 必须有 `white-space: normal`（祖先 `.composer-bar` 的 `white-space: nowrap`

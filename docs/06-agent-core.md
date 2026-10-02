@@ -39,15 +39,28 @@ export interface LlmProvider {
   第二个实现 `OpenAiResponsesProvider`（OpenAI **Responses API**，v22 新增）见 §3.2。
   多模态（图片输入）见 §3.1。
 - 设置中可保存多组模型配置并切换默认；思考等级等参数可调（v23 起随模型绑定，见下）。
-  （「会话级可选模型」目前**没有实现**：每个 provider 只有一个生效的 `model`，也不做按会话覆盖
-  —— 见 07 §2.3。另有一份候选列表 `llm.providers.<id>.modelList` 只决定 UI 里能选什么，
-  对话窗选模型写回的就是 `model` 本身，内核侧只认 `model`，见 08 §1/§5。）
+  另有一份候选列表 `llm.providers.<id>.modelList` 只决定 UI 里能选什么，
+  内核侧只认生效的 `(providerId, model)`，见 08 §1/§5。
+- **会话级模型（本轮）**：每个会话可以覆盖「用哪个模型」——覆盖写在**会话文件自身**
+  （`sessions/<id>.json` 的 `meta.llm = { providerId, model }`，经 `chat:setSessionModel` 写入 /
+  清除），**不是配置项、不进 `CONFIG_VERSION` 迁移链**（与 `meta.projectId` / `meta.permissionMode`
+  同一条零迁移路子）。解析链只有一级：**会话覆盖 > 全局 `llm.active` + 该 provider 的 `model`**
+  —— 覆盖里的 provider 已被删除 / model 为空时**静默回落全局**（逐次执行不刷 warn，
+  与 `meta.projectId` 绑定失效同款）。
+  存 `(providerId, model)` **一对**而不是只存 model：模型名可跨 provider 重名，且思考等级等参数
+  是 `providers.<pid>.modelParams[<model>]` 名下的（见下），只存 model 会在切 provider 后取错参数表。
+  取值口径：内核每轮经注入的 `AgentProviderFactory.createForSession({ sessionId })` 现解析
+  （`provider.create()` 仍是全局语义、`isReady()` 仍看全局；未注入 `createForSession` 的老装配器
+  行为逐字不变）；子代理（§19）经 `parentSessionIdOf` 剥回父会话，**继承父会话的模型**。
+  Center 的 `session.setModel` 远程命令（docs/12 §6.3）走同一个 `SessionStore.setModelOverride`；
+  网页端会话行可看可切（docs/12 §6.3）。
 - 可靠性：指数退避重试、单请求超时（默认 60s）、流式中断可取消（AbortSignal 贯穿到 IPC）。
 - `ChatRequest.reasoningEffort` 由
   `llm.providers.<id>.modelParams.<modelId>.reasoningEffort` 驱动，取值
   `auto | low | medium | high`；`auto`（默认）时**不下发** `reasoning_effort` 字段。
   设置页「AI 模型」的模型行内参数与对话窗输入区的「思考」下拉**两处入口写的是同一个字段，
-  没有第二份来源**（也不做按会话覆盖）：改哪一处，下一次请求都按新值下发。
+  没有第二份来源**：改哪一处，下一次请求都按新值下发。（等级**本身不按会话覆盖** ——
+  会话级模型只决定「用哪个模型」，等级随该模型的参数表取，见上条。）
   **v23 起思考等级随模型绑定**：`modelParams` 是**按模型 id 键的参数表**
   （`Record<modelId, { reasoningEffort, contextWindow, vision }>`；`modelList` 仍是 `string[]`
   候选列表），参数取的是**当前生效模型**（`llm.providers.<id>.model`）名下的那一份 ——

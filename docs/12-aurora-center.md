@@ -115,6 +115,7 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
   { type: 'session.event', sessionId, event }  // event 为内核 AgentEvent 原样转发（JSON 可序列化）
   { type: 'confirm.request', request }         // 敏感工具确认请求（ConfirmRequestPayload：confirmId/sessionId/toolName/input/createdAt/expiresAt）
   { type: 'ask.request', request }             // 向用户提问的请求（AskUserRequestPayload，v0.3.3；§5 第 4 步）
+  { type: 'ask.settled', requestId, sessionId, outcome }  // 提问已在客户端结算（本轮；outcome = answered/skipped/timedOut/aborted）
 
 服务器 → 客户端
   { type: 'welcome', serverVersion, clientId }
@@ -128,8 +129,10 @@ CenterCommand =
   | { kind: 'config.update',  requestId, patch }      // 白名单校验后落到 SettingsStore（§7）
   | { kind: 'mode.switch',    requestId, mode }       // 等价 config.update 的 modes.current，语义独立成命令
   | { kind: 'confirm.resolve', requestId, confirmId, approved }  // 网页端确认卡批复的转发
-  | { kind: 'ask.resolve', requestId, sessionId, answers, skipped? }  // 网页端提问卡作答的转发（v0.3.3，§5）；result.data 携带 { settled }
+  | { kind: 'ask.resolve', requestId, sessionId, answers, skipped?, answersByQuestion? }  // 网页端提问卡作答的转发（v0.3.3，§5）；result.data 携带 { settled }
   | { kind: 'session.history', requestId, sessionId } // 历史回放（v0.2.4，§6.3）；result.data 携带 CenterSessionHistoryMessage[]
+  | { kind: 'session.setModel', requestId, sessionId, providerId?, model }  // 会话级模型覆盖（本轮，§6.3）；model 为空串 = 清除覆盖
+  | { kind: 'file.send',      requestId, fileId, name, size }  // 服务器 → 客户端下发文件（本轮，§5）；客户端用自身令牌下载后落盘
   | { kind: 'stt.transcribe', requestId, audioBase64, mime }  // 语音识别中转（v0.3.2，§6.4）；客户端用本机已配 provider 转写
   | { kind: 'tts.synthesize', requestId, text }               // 朗读合成中转（v0.3.2，§6.4）；result.data 携带 { audioBase64, mimeType }
 ```
@@ -168,9 +171,13 @@ WS 快照（管理端的 REST 只做首次水合），页面停留期间在线�
 REST：`POST /api/auth/login`、`POST /api/auth/register`（§3）、`POST /api/client/login`（**无需已登录**：
 客户端用 `{ username, password, clientId }` 换客户端令牌）、**设备授权三端点**（§4.3，`start` / `poll`
 无需登录，`authorize` 需网页会话）、`GET /api/me`、`GET /api/clients`（按角色过滤）、
-`GET /api/files`（文件清单，属主过滤）、`GET /api/files/:fileId`（鉴权下载）、`DELETE /api/files/:fileId`
-（属主或管理员删除）、管理员 `POST /api/users`、`GET /api/admin/clients`、`DELETE /api/users/:id`、
-`DELETE /api/admin/clients/:id`（吊销客户端）。
+`GET /api/files`（文件清单，属主过滤）、`GET /api/files/:fileId`（**网页会话**鉴权下载）、
+`POST /api/uploads`（**本轮**：网页上传给指定客户端，`?clientId=` 目标；网页会话鉴权）、
+`DELETE /api/files/:fileId`（属主或管理员删除）、管理员 `POST /api/users`、`GET /api/admin/clients`、
+`DELETE /api/users/:id`、`DELETE /api/admin/clients/:id`（吊销客户端）。
+另有一条**客户端令牌**鉴权的下载路由 `GET /api/client/files/:fileId`（**本轮**，`Bearer <clientToken>`
++ `X-Client-Id`）：`file.send` 命令里客户端据此把文件拉回本机 —— 原有的 `/api/files/:id` 只认网页会话，
+客户端令牌拿不到，两条路由的鉴权口径不可互换。
 
 WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义请求头）：
 
@@ -183,8 +190,10 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
   { type: 'config.update',  requestId, clientId, patch }
   { type: 'mode.switch',    requestId, clientId, mode }
   { type: 'confirm.resolve', requestId, clientId, confirmId, approved }
-  { type: 'ask.resolve', requestId, clientId, sessionId, answers, skipped? }  // 提问卡作答（v0.3.3，§5）
+  { type: 'ask.resolve', requestId, clientId, sessionId, answers, skipped?, answersByQuestion? }  // 提问卡作答（v0.3.3，§5）
   { type: 'session.history', requestId, clientId, sessionId }  // 历史回放（v0.2.4，§6.3）
+  { type: 'session.setModel', requestId, clientId, sessionId, providerId?, model }  // 会话级模型（本轮，§6.3）
+  { type: 'file.send', requestId, clientId, fileId }           // 把暂存文件推给该客户端落盘（本轮，§5）
   { type: 'stt.transcribe',  requestId, clientId, audioBase64, mime }  // 语音识别中转（v0.3.2，§6.4）
   { type: 'tts.synthesize',  requestId, clientId, text }               // 朗读合成中转（v0.3.2，§6.4）
 
@@ -196,6 +205,7 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
   { type: 'file.received', fileId, clientId, name, size, note?, at }
   { type: 'confirm.request', clientId, sessionId, request }  // 客户端转来的确认卡
   { type: 'ask.request', clientId, sessionId, request }      // 客户端转来的提问卡（v0.3.3）；网页重连时服务器回放未过期项
+  { type: 'ask.settled', clientId, sessionId, requestId, outcome }  // 提问已在客户端结算（本轮），网页据此收起卡片
 ```
 
 路由规则（`hub.ts`）：命令按 `clientId` 找到该客户端的连接；`session.event` / `confirm.request` /
@@ -211,10 +221,14 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
 | 超时 | 60s，超时**按拒绝** | 180s，超时**按「用户未回答」**继续（模型说明假设） |
 | 客户端离线 | 补发队列（FIFO 20，重连 flush） | 同款补发队列 |
 | 网页刷新后 | **不回放**（窗口短，属既有行为） | **回放未过期项**（`pendingAsks`，见下），否则刷新一下就永远答不上 |
+| 客户端先作答/超时 | 本地结算即结束（网页卡随之失效） | 客户端上行 `ask.settled`（本轮）→ 服务器摘除 `pendingAsks` 并广播，网页卡**立即收起** |
 
 `hub` 的 `pendingAsks`（requestId → 请求体）只在内存里、按 requestId 幂等覆盖，
-在 `ask.resolve` 或过期后被清除；`registerWeb` 时随 `sendStatusTo` 一起回放未过期项 ——
-**不新增任何持久化**（与"服务器不缓存会话内容"同口径，这里缓存的是一条尚未结算的待答问题）。
+在 `ask.settled`（客户端结算，本轮）、网页 `ask.resolve`、或过期后被清除；客户端断开
+（`dropClientSessions`）时**连同该客户端的条目一起清** —— 否则离线陈旧提问会被新页签回放、
+点了必然得到 `E_CLIENT_OFFLINE`。`registerWeb` 时随 `sendStatusTo` 一起回放未过期项 ——
+**不新增任何持久化**（与"服务器不缓存会话内容"同口径，这里缓存的是一条尚未结算的待答问题）；
+提问的**长期留痕**在客户端（会话文件 `asks` sidecar，§5），历史回放时随 `session.history` 回来。
 
 ### 4.3 设备授权登录（docs/12 §3 主路径 2）
 
@@ -259,13 +273,20 @@ GET /api/client/device/info?code=<userCode>                      （无需登录
    确认请求进**补发队列**（FIFO 上限 20 条，重连后 flush；长时间离线仍按本地 60s 超时拒绝）。
    网页端除会话视图内的卡之外，另有**全局待批复确认卡栏**（ConsoleView 顶部）展示所有未过期
    请求——本地会话来源的请求没有会话视图，只能在这里批复；
-   **向用户提问（`ask_user`，v0.3.3 起）**：Agent 在远程会话里调用 `ask_user` 时，客户端在弹
-   本机提问卡的同时把 `ask.request` 推给 Center（`AskUserService.onRequest` → 仅 `center-`
-   前缀会话上行，离线进同一补发队列）→ 网页端的提问卡（会话内 + 全局待办栏，与会话内本地卡
-   **先到先得**）作答 → `ask.resolve` 转回客户端调 `AskUserService.resolve`（已结算 /
-   未知 requestId 返回 `false`，网页端据此提示"已失效"）→ Agent 在**同一次请求内**拿到答案继续。
+   **向用户提问（`ask_user`，v0.3.3 起；本轮补齐流内渲染与留痕）**：Agent 在远程会话里调用
+   `ask_user` 时，客户端在弹本机提问卡的同时把 `ask.request` 推给 Center
+   （`AskUserService.onRequest` → 仅 `center-` 前缀会话上行，离线进同一补发队列）→
+   网页端在**该会话的消息流内**渲染提问卡（未打开该会话时另在顶部待办栏列一条，点进去即可作答，
+   两处都可答、与会话内本地卡**先到先得**）→ 作答经 `ask.resolve` 转回客户端调
+   `AskUserService.resolve`（已结算 / 未知 requestId 返回 `false`，网页端据此提示"已失效"）→
+   Agent 在**同一次请求内**拿到答案继续。
    超时（180s）/ 跳过 / 中止都按「用户未回答」结算，模型说明假设后继续，不挂死；网页刷新后
-   服务器回放未过期的提问（`pendingAsks`，§4.2）——这是它与 60s 确认卡唯一的通道差异；
+   服务器回放未过期的提问（`pendingAsks`，§4.2）。**客户端先作答 / 超时 / 中止时上行
+   `ask.settled`（本轮）**：服务器摘除 `pendingAsks` 并广播，网页卡立即收起 ——
+   此前本地结算不外发，网页卡会一直挂着倒计时、直到用户点了提交才被告知已失效。
+   提问的**长期留痕**（问题、选项、作答、结算原因）随会话文件持久化（`StoredSession.asks`），
+   历史回放（第 7 步）时作为 `kind: 'ask'` 的条目回到网页端，渲染成**只读的已结算卡**
+   —— 刷新页面 / 换设备后「刚才问了什么、答了什么」仍然可见；
 5. 「发送文件」：用户在远程会话里让 Agent 发文件 → Agent 调 `center_send_file`
    （§8）→ 客户端 HTTP `POST /api/ingest/files`（客户端令牌鉴权，尺寸受
    `center.maxFileMb` 限制）→ 服务器落盘并 `file.received` 通知 → 网页端出现
@@ -274,12 +295,23 @@ GET /api/client/device/info?code=<userCode>                      （无需登录
    手动删除（§10）。`center_send_file` **不逐次确认、直接发送**（v0.2.4：闸门在配置层
    —— `center.enabled` / `center.allowFileTransfer` / `center.maxFileMb`，见 §8 与
    docs/06 §11.2）；
+   **反方向「网页 → 客户端」（本轮）**：网页端在控制台对选中设备点「发送文件」
+   （或文件管理页对某条暂存文件点「发送到客户端」）→ `POST /api/uploads`（网页会话鉴权，
+   `?clientId=` 指目标）把文件存进同一个 `FileStore`（`source: 'web'` 标记来源）→
+   WS `file.send` → 服务器查索引补齐 name/size 后下发 `cmd` → 客户端校验
+   `center.allowFileTransfer`，再用**自身令牌**走 `GET /api/client/files/:fileId` 流式拉回，
+   落盘到本机下载目录（重名追加 ` (1)`，超 `center.maxFileMb` 拒绝）并弹系统通知告知路径，
+   回执带 `{ path }`。该命令的待回执超时**放宽到 10 分钟**（大文件远超 15s，
+   否则服务器会先超时把成功下载报成 `E_CLIENT_TIMEOUT`）；
 6. **会话管理（v0.2.3 起，仅 `center-` 会话，§6.3）**：网页端可枚举客户端的远程会话
    （`session.list`）、让客户端主界面切到某个会话（`session.activate`）、为会话开关
    **客户端左栏可见性**（`session.visibility`，缺省可见，隐藏仍可远程输入）、覆盖
    **会话级权限档**（`session.setPermission`，SessionMeta 数据，不动全局
    `agent.permissionMode`）、绑定**会话级项目**（`session.setProject`，复用 docs/06 §5.1
-   会话级项目链）。历史 center- 会话（客户端侧已存在、非本页签创建）的事件流对属主可见
+   会话级项目链）、覆盖**会话级模型**（`session.setModel`，本轮：写会话文件
+   `meta.llm = { providerId, model }`，`model` 为空串 = 清除覆盖回落全局，
+   与全局 `llm.switch` 是两份数据 —— 详见 §6.3）。历史 center- 会话（客户端侧已存在、
+   非本页签创建）的事件流对属主可见
    （服务器在 `sessionOwners` 未命中时回落到客户端登记表的属主）；
 7. **历史回放（v0.2.4 起，仅 `center-` 会话）**：网页端打开某个远程会话时发
    `session.history` → 服务器按普通命令转发（授权 / 离线判定同其他命令）→ 客户端从
@@ -354,12 +386,13 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
 
 | 命令（web → server → client） | 语义与边界 |
 |---|---|
-| `session.list` | 枚举客户端的 `center-` 会话（`CenterSessionSummary[]`：标题 / 更新时间 / projectId / 权限覆盖 / 可见性） |
-| `session.history`（v0.2.4） | 拉取某个 `center-` 会话的历史（`CenterSessionHistoryMessage[]`，`result.data` 携带；客户端只回 `center-` 前缀会话，最近 200 条）。仅用于网页端打开会话时的回放，服务器不缓存 |
+| `session.list` | 枚举客户端的 `center-` 会话（`CenterSessionSummary[]`：标题 / 更新时间 / projectId / 权限覆盖 / 可见性 / 模型覆盖 `llm`） |
+| `session.history`（v0.2.4） | 拉取某个 `center-` 会话的历史（`CenterSessionHistoryMessage[]`，`result.data` 携带；客户端只回 `center-` 前缀会话，最近 200 条）。条目含 `kind: 'message' \| 'ask'`：`ask` 是提问留痕（本轮，渲染成只读已结算卡）。仅用于网页端打开会话时的回放，服务器不缓存 |
 | `session.activate` | 让客户端主界面切到指定会话（经 `chat:remoteActivate` 推送通道驱动渲染层 `switchSession`；会话未落盘时客户端兜底创建） |
 | `session.visibility` | 开关该会话在客户端左栏的可见性（`SessionMeta.centerVisible`，缺省可见；隐藏仍可远程输入）。落盘成功后客户端经 `chat:centerVisibilityChanged` 推送通知渲染层重拉会话列表（v0.2.4） |
 | `session.setPermission` | **会话级权限档覆盖**（`SessionMeta.permissionMode`，生效于该会话的确认判定：会话覆盖 > 全局档）。不动全局 `agent.permissionMode`——全局档仍只能由用户在本机设置页调 |
 | `session.setProject` | 会话绑定项目（复用 docs/06 §5.1 会话级项目链；`''` 清除；projectId 必须在客户端 `projects.list` 内） |
+| `session.setModel`（本轮） | **会话级模型覆盖**（`SessionMeta.llm = { providerId, model }`，docs/06 §3：会话覆盖 > 全局 `llm.active`）。`model` 为空串 = 清除覆盖；providerId 缺省沿用全局激活 provider。与 `llm.switch` 是**两份数据**：后者改的是全局默认（所有未覆盖会话立刻跟随），本命令只作用于该会话 |
 | `project.list` | 客户端项目选项（`CenterProjectOption[]`，绑定下拉用） |
 | `llm.switch` | 切客户端模型 / 思考等级：`providerId`（→ `llm.active`）、`model` / `reasoningEffort`（→ 激活 provider 的对应字段，经 `settings.mutate` 即时生效）。**绝不触碰** `apiKeyEnc` / `baseUrl`；可选项列表由网页端从 `config.get` 的脱敏配置取 |
 | `automation.list` | 枚举客户端的自动化（`AutomationListResult`：`user` 自建 + `builtin` 内置），docs/13 §10 |
@@ -502,11 +535,18 @@ aurora-center version
   **内部**展开看只读对话，与桌面端同构）；`done` 结束 loading；`error` 红条；
   **待办栏**（v0.3.3）同时承接敏感工具确认卡（倒计时 + 批准 / 拒绝）与提问卡
   （header / 问题 / 选项单选多选 / 自由文本 + 提交 / 跳过，倒计时按 `expiresAt`）。
-  ⚠️ 与桌面端的**有意分叉**：桌面端是「会话内浮层卡 + 全局待办栏」两处，
-  网页端只有**一条**（会话流上方，会话未打开时也在）—— 浏览器里再叠一层浮层会挡住输入卡，
-  而这条栏本来就在视线内。两者共用同一份 state，先到先得，行为完全一致。
-  过期的卡片在栏里整条摘除（并给一条非阻断提示），不再显示「已过期」灰态
-  （网页端的栏按 `remainingMs > 0` 过滤）。
+  **两张卡的面板位置**：桌面端确认卡与提问卡都是「会话内浮层卡 + 全局待办栏」两处；
+  **提问卡（本轮起）**网页端对齐成两处：**该会话的流内**渲染完整可答卡（与会话里的消息同序），
+  以及**未打开该会话时**顶部的待办栏条目（点进去跳到会话再答）—— 同一张卡不会同时出现两处，
+  两处都答仍是先到先得。敏感工具确认卡**有意分叉**：网页端只有待办栏一条
+  （浏览器里再叠一层浮层会挡住输入卡，而这条栏本来就在视线内）。
+  两者共用同一份 state，行为完全一致。
+  **提问卡结算（本轮）**：页面内作答走 `ask.resolve`；客户端本地先作答 / 超时 / 中止时
+  服务器广播 `ask.settled`，网页端据此**立即收起卡片**（不再挂着倒计时等用户点了才报失效）。
+  已结算的提问以**只读卡**留在会话流内（显示所选答案 / 未回答 / 已超时），
+  刷新后随 `session.history` 的 `kind: 'ask'` 条目回来 —— 见 §5 第 4 步。
+  ⚠️ 已过期/已结算的**只读灰态**只在流内的历史条目上出现（待办栏仍按 `remainingMs > 0`
+  过滤掉，不显示灰态）。
 - **视觉单源（v0.3.3 起）**：观感与桌面端**同一套令牌**——设计变量 / 暗浅主题 /
   `aurora-*` keyframes / 过渡预设 / 语义图标查表（`toolIcons` / `toolLabels`）/
   吸底状态机全部来自 `@aurora/shared/browser`（`theme.css` 与各纯函数模块），
@@ -542,7 +582,9 @@ aurora-center version
   （`session.list` 拉取），每项提供：切换查看（网页本地）、「在客户端打开」
   （`session.activate`）、可见性开关（`session.visibility`）、权限档下拉
   （`session.setPermission`，含「跟随全局」）、项目下拉（`session.setProject` +
-  `project.list`）。
+  `project.list`）、**模型下拉（本轮）**（`session.setModel`，选项 = 该会话生效 provider 的
+  `modelList`，含「跟随全局」清除项；provider 的切换仍只在「模型」页签的全局默认上做）。
+  同一面板的「模型」页签改的是**全局默认**（`llm.switch`），与这里的会话级覆盖是两份数据。
 - **全局待批复确认卡栏（v0.2.3）**：ConsoleView 顶部常驻，展示所有未过期的
   `confirm.request`，行内批准 / 拒绝；与会话视图内的卡先到先得。
   （v0.2.4 起只有 `center-` 会话来源的请求 —— 本地会话的 `center_send_file` 已改为
@@ -557,8 +599,11 @@ aurora-center version
   的组件不可选）；底部运行历史（时间 / 自动化 / 状态 / 用时，可按自动化筛选）。
   刷新为显式按钮 + 操作后重拉（桌面端的 `automation:changed` 推送不经 Center WS，
   网页端不做实时订阅）。
-- 文件管理页：全部上传文件的表格（名称 / 来源客户端 / 大小 / 备注 / 上传与过期时间），
-  行内下载与删除，过期前 < 24h 显示倒计时。
+- 文件管理页：全部上传文件的表格（名称 / 来源客户端 / 大小 / 备注 / 上传与过期时间 /
+  **来源**：客户端发送 or 网页上传，本轮），行内下载与删除，过期前 < 24h 显示倒计时。
+  **本轮新增「发送到客户端」**：行内选一台设备，把该暂存文件推给客户端落盘（§5 第 5 步）；
+  控制台对选中设备也有「发送文件」（先上传再推送），按 `ClientStatus.center.allowFileTransfer`
+  门控渲染（不具备能力就不渲染按钮，与语音门控同口径）。
 - **语音（v0.3.2，§6.4）**：composer 麦克风按钮（按 `ClientStatus.voice.stt` 门控，
   未配置连按钮都不渲染）录音 → `stt.transcribe` 中转识别 → 文本填入输入框；
   助手消息行内「朗读」按钮（按 `voice.tts` 门控）→ `tts.synthesize` 中转合成 → blob 播放。
