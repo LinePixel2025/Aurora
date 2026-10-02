@@ -6,7 +6,7 @@
  *   无清单时整卡不渲染）；
  * - classroom：当前/下节课卡（ClassIsland 桥接 status，非 classisland provider 时隐藏）、
  *   今日课程卡（perception lessons）、分类流水（ClassificationLedger 紧凑版）、打开感知文件夹；
- * - work：工作目录卡（workspaceDir + 打开 / 前往设置）、办公能力提示卡；
+ * - work：工作目录卡（workspaceDir + 打开 / 前往设置）；
  * - 通用：系统状态卡（时间 / 电量 / 网络 / 前台应用）。
  * 非当前模式的功能**一律不渲染**（不是 disabled）。
  *
@@ -291,17 +291,6 @@ watch(showClassislandCard, (now) => {
           </AppButton>
         </div>
       </section>
-
-      <section class="ctx-card">
-        <header class="ctx-head">
-          <strong>办公能力</strong>
-        </header>
-        <ul class="ctx-tips tiny muted">
-          <li>文档 / 表格 / 演示文稿：通过 run_command 驱动 Office 自动化</li>
-          <li>read_file / write_file / list_dir 组合处理本地资料</li>
-          <li>覆盖或删除文件前会先向你确认</li>
-        </ul>
-      </section>
     </template>
 
     <!--
@@ -422,16 +411,6 @@ watch(showClassislandCard, (now) => {
 .ctx-actions {
   display: flex;
   gap: var(--space-2);
-}
-
-/* 会话项目下拉：与卡片内文案同宽，观感对齐 ctx-path（细边框 + 次级填充） */
-.ctx-tips {
-  margin: 0;
-  padding-left: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  line-height: var(--leading-normal);
 }
 
 /* 今日课程列表 */
