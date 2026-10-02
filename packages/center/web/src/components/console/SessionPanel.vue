@@ -12,7 +12,14 @@
  * （`session.setPermission` 的 permissionMode 必填），选它只提示回客户端操作。
  */
 import { computed, ref, watch } from 'vue'
-import type { CenterProjectOption, ModeId, PermissionMode, ReasoningEffort } from '@aurora/shared'
+import type {
+  CenterProjectOption,
+  CenterSessionSummary,
+  ModeId,
+  PermissionMode,
+  ReasoningEffort,
+} from '@aurora/shared'
+import { resolveSessionModel } from '@aurora/shared/browser'
 import type { Ref } from 'vue'
 import type { ClientEntry, SessionState } from '../../state'
 import {
@@ -21,6 +28,7 @@ import {
   listProjects,
   listSessions,
   openRemoteSession,
+  setSessionModel,
   setSessionPermission,
   setSessionProject,
   setSessionVisibility,
@@ -222,6 +230,58 @@ function onProject(sessionId: string, event: Event): void {
   void run(sessionBusy, () => setSessionProject(id, sessionId, projectId))
 }
 
+/** 全会话级的模型判据（会话行的模型下拉用，docs/06 §3 / §6.3 本轮） */
+const modelLlmLike = computed(() => {
+  const current = llm.value
+  const config = remoteLlm.value
+  if (!current || !config) return null
+  const providers: Record<string, { model: string }> = {}
+  for (const [id, provider] of Object.entries(config.providers)) {
+    providers[id] = { model: provider.model }
+  }
+  return { active: current.activeProviderId, providers }
+})
+
+/** 会话的**生效**模型（覆盖 > 全局；失效覆盖静默回落）—— 与客户端同用 shared 的唯一口径 */
+function effectiveSessionModel(summary: CenterSessionSummary) {
+  const base = modelLlmLike.value
+  if (base === null) return null
+  return resolveSessionModel(base, summary.llm ?? null)
+}
+
+/** 会话行的模型下拉当前值：本会话的覆盖（空串 = 跟随全局那条选项） */
+function sessionModelValue(summary: CenterSessionSummary): string {
+  const effective = effectiveSessionModel(summary)
+  return effective !== null && effective.overridden ? effective.model : ''
+}
+
+/** 会话行的候选模型：生效 provider 的 modelList ∪ 当前覆盖值（列表里没有也要显示） */
+function sessionModelChoices(summary: CenterSessionSummary): string[] {
+  const effective = effectiveSessionModel(summary)
+  if (effective === null) return []
+  const list = remoteLlm.value?.providers[effective.providerId]?.modelList ?? []
+  return effective.overridden && !list.includes(effective.model)
+    ? [effective.model, ...list]
+    : list
+}
+
+/** 「跟随全局」选项文案：把客户端全局默认模型名写进去 */
+function sessionFollowGlobal(summary: CenterSessionSummary): string {
+  const globalModel = llm.value?.model ?? ''
+  // 有覆盖时全局默认可能来自另一个 provider（覆盖钉住的 provider）；用全局快照的模型名即可
+  return globalModel === '' ? '跟随全局' : `跟随全局（${globalModel}）`
+}
+
+function onSessionModel(summary: CenterSessionSummary, event: Event): void {
+  const id = clientId.value
+  if (id === '') return
+  const model = (event.target as HTMLSelectElement).value
+  const effective = effectiveSessionModel(summary)
+  // 清除覆盖时不传 providerId（客户端会写 null）；设置时钉住当前生效 provider
+  const providerId = model === '' ? '' : (effective?.providerId ?? '')
+  void run(sessionBusy, () => setSessionModel(id, summary.sessionId, providerId, model))
+}
+
 function onProvider(event: Event): void {
   const id = clientId.value
   if (id === '') return
@@ -382,6 +442,23 @@ function toolValue(path: string): boolean | undefined {
                 <option value="">不绑定项目</option>
                 <option v-for="project in projects" :key="project.id" :value="project.id">
                   {{ project.name }}
+                </option>
+              </select>
+              <!--
+                会话级模型（docs/06 §3，本轮）：空串 = 跟随客户端全局默认（选项文案里有具体模型名）。
+                只在这台设备的配置切片已拉回、且该会话生效 provider 有候选时渲染可用下拉。
+              -->
+              <select
+                class="select"
+                data-field="panel.session-model"
+                :value="sessionModelValue(item)"
+                :disabled="sessionBusy || !online || modelLlmLike === null"
+                title="该会话使用的模型（覆盖客户端全局默认）"
+                @change="onSessionModel(item, $event)"
+              >
+                <option value="">{{ sessionFollowGlobal(item) }}</option>
+                <option v-for="model in sessionModelChoices(item)" :key="model" :value="model">
+                  {{ model }}
                 </option>
               </select>
             </div>

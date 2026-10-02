@@ -219,6 +219,13 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     usernameOf: (userId) => auth.getUser(userId)?.username ?? '',
     serverVersion,
     logger,
+    // `file.send` 转发前补齐 name/size（docs/12 §5）；查不到（已过期 / 已删）→ 命令回 E_NOT_FOUND
+    fileLookup: (fileId) => {
+      const record = files.get(fileId)
+      return record === undefined
+        ? undefined
+        : { clientId: record.clientId, name: record.name, size: record.size }
+    },
   })
 
   const http: Server = createServer((req, res) => {
@@ -598,6 +605,15 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       return
     }
 
+    // 客户端令牌可用的下载路由（本轮 docs/12 §5）：`file.send` 命令里客户端用它把文件拉回本机。
+    // **必须放在 web-session 门禁之前** —— 下面那条 `/api/files/:fileId` 只认网页会话，
+    // 客户端令牌拿不到；两条路由的鉴权口径不可互换。
+    const clientFileDownload = /^\/api\/client\/files\/([^/]+)$/.exec(path)
+    if (clientFileDownload && req.method === 'GET') {
+      await serveFileToClient(req, res, clientFileDownload[1] as string)
+      return
+    }
+
     // 设备授权登录（docs/12 §4.3）：start / poll 是客户端入口（无需登录），
     // authorize 需网页会话（用户在网页上确认），放在鉴权段之后。
     if (path === '/api/client/device/start' && req.method === 'POST') {
@@ -696,6 +712,41 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         return
       }
       sendJson(res, 200, { ok: true, clientId: info.clientId })
+      return
+    }
+
+    // 网页上传给指定客户端（本轮 docs/12 §5）：`?clientId=` 是目标设备，必须属于该用户（或管理员）。
+    // 存进同一个 FileStore（`source: 'web'` 供文件页标注来源），随后由 WS `file.send` 推给客户端落盘。
+    // 鉴权头与字段沿用上传对端的形状（`X-File-Name` UTF-8 编码）。
+    if (path === '/api/uploads' && req.method === 'POST') {
+      const targetClientId = url.searchParams.get('clientId') ?? ''
+      const target = clients.get(targetClientId)
+      if (target === undefined) {
+        sendJson(res, 404, { error: 'E_CLIENT_NOT_FOUND' })
+        return
+      }
+      if (user.role !== 'admin' && target.ownerUserId !== user.id) {
+        sendJson(res, 403, { error: 'E_FORBIDDEN' })
+        return
+      }
+      const rawName = req.headers['x-file-name']
+      const name = decodeURIComponent(Array.isArray(rawName) ? (rawName[0] ?? '') : (rawName ?? ''))
+      try {
+        const record = await files.save({
+          clientId: targetClientId,
+          name,
+          source: 'web',
+          content: req,
+        })
+        sendJson(res, 200, { fileId: record.fileId, name: record.name, size: record.size })
+      } catch (error) {
+        if (error instanceof FileTooLargeError) {
+          sendJson(res, 413, { error: error.message })
+          return
+        }
+        logger?.error('网页上传失败', { clientId: targetClientId, error: String(error) })
+        sendJson(res, 500, { error: 'E_UPLOAD_FAILED' })
+      }
       return
     }
 
@@ -852,6 +903,56 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(record.name)}`,
       },
       { fileId },
+    )
+  }
+
+  /**
+   * 客户端令牌下载暂存文件（`file.send` 的对端，本轮 docs/12 §5）。
+   *
+   * 双因子鉴权与上传对称（`Bearer <clientToken>` + `X-Client-Id`，同 `handleIngest`）。
+   * 授权两条之一即可：文件来源**就是这台客户端**（网页为它上传的，`source: 'web'`），
+   * 或这台客户端与文件来源属于**同一个用户**（同一账号下的设备之间转发）。
+   * 少一条判定的后果是任何客户端猜到 fileId 就能拉到别人上传的文件。
+   */
+  async function serveFileToClient(
+    req: IncomingMessage,
+    res: ServerResponse,
+    fileId: string,
+  ): Promise<void> {
+    const token = bearerOf(req)
+    const clientIdHeader = req.headers['x-client-id']
+    const clientId = Array.isArray(clientIdHeader)
+      ? (clientIdHeader[0] ?? '')
+      : (clientIdHeader ?? '')
+    const pair = await auth.verifyClientToken(token, clientId).catch(() => undefined)
+    if (pair === undefined) {
+      sendJson(res, 401, { error: 'E_UNAUTHORIZED' })
+      return
+    }
+    const record = files.get(fileId)
+    if (record === undefined) {
+      sendJson(res, 404, { error: 'E_NOT_FOUND' })
+      return
+    }
+    const source = clients.get(record.clientId)
+    const sameUser = source !== undefined && source.ownerUserId === pair.userId
+    if (record.clientId !== pair.clientId && !sameUser) {
+      sendJson(res, 403, { error: 'E_FORBIDDEN' })
+      return
+    }
+    const path = files.pathOf(fileId)
+    if (path === undefined) {
+      sendJson(res, 404, { error: 'E_NOT_FOUND' })
+      return
+    }
+    streamFile(
+      res,
+      path,
+      {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(record.name)}`,
+      },
+      { fileId, clientId: pair.clientId },
     )
   }
 
@@ -1042,6 +1143,8 @@ function toFileEntryInfo(record: {
   note?: string
   at: string
   expiresAt: string
+  /** 来源标记（本轮）：缺省按 `'client'` 归化（旧索引没有这个键） */
+  source?: 'client' | 'web'
 }): FileEntryInfo {
   return {
     fileId: record.fileId,
@@ -1051,6 +1154,8 @@ function toFileEntryInfo(record: {
     ...(record.note === undefined ? {} : { note: record.note }),
     uploadedAt: record.at,
     expiresAt: record.expiresAt,
+    // 旧索引没有这个键（= 客户端上传）：只在网页上传时带出来，渲染层据它标注「来自网页」
+    ...(record.source === undefined ? {} : { source: record.source }),
   }
 }
 

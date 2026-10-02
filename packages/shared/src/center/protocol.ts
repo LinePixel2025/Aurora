@@ -80,9 +80,19 @@ export type AskUserRequestPayload = AskUserRequest
 export interface AskResolvePayload {
   /** 选中的选项 label 或自由输入的文本（多选时多条） */
   answers: string[]
+  /** 逐问作答（`questions[]` 多问时的分组答案；单问时缺省） */
+  answersByQuestion?: string[][]
   /** 用户主动跳过（语义比超时更明确）；`answers` 非空时可以不带 */
   skipped?: boolean
 }
+
+/**
+ * 提问的结算原因（客户端 → 服务器 `ask.settled`，本轮）。
+ *
+ * 与内核 `AskUserAnswer` 的三态一一对应，另加 `skipped`（用户点了跳过）：
+ * 网页端据此把卡片切成「已作答 / 已跳过 / 已超时 / 已中止」的只读态。
+ */
+export type AskSettleOutcome = 'answered' | 'skipped' | 'timedOut' | 'aborted'
 
 /** 设备授权登录（客户端点「登录账户」→ 打开 Center 网页 → 网页确认后客户端自动拿到令牌，docs/12 §4.3） */
 export interface DeviceLoginChallenge {
@@ -106,7 +116,7 @@ export type DeviceLoginPollResult =
   | { status: 'denied' }
   | { status: 'approved'; token: string; username: string }
 
-/** 客户端上传文件的索引条目（网页端文件管理页与 `file.received` 通知共用） */
+/** 客户端上传 / 网页上传的文件索引条目（网页端文件管理页与 `file.received` 通知共用） */
 export interface FileEntryInfo {
   fileId: string
   clientId: string
@@ -116,6 +126,12 @@ export interface FileEntryInfo {
   uploadedAt: string
   /** 24 小时后自动删除的时间点 */
   expiresAt: string
+  /**
+   * 来源（本轮，**可选**：旧客户端 / 旧索引不下发，消费方缺省按 `'client'` 处理）：
+   * `'client'` = 客户端经 `center_send_file` 上传；`'web'` = 网页端 `POST /api/uploads` 上传
+   * （用于「发给某个客户端」）。
+   */
+  source?: 'client' | 'web'
 }
 
 /** 服务器发给客户端的命令 */
@@ -147,8 +163,17 @@ export type CenterCommand =
       requestId: string
       sessionId: string
       answers: string[]
+      /** 逐问作答（`questions[]` 多问时的分组答案；单问 / 旧客户端不带） */
+      answersByQuestion?: string[][]
       skipped?: boolean
     }
+  /**
+   * 把文件推给客户端落盘（本轮，docs/12 §5）：服务器查 `FileStore` 补齐 `name` / `size`
+   * 后下发，客户端校验 `center.allowFileTransfer`，再用**自身令牌**走
+   * `GET /api/client/files/:fileId` 流式拉回、写进本机下载目录，回执带 `{ path }`。
+   * 待回执超时按 `FILE_KINDS` 放宽到 10 分钟（大文件远超 15s）。
+   */
+  | { kind: 'file.send'; requestId: string; fileId: string; name: string; size: number }
   // ── 远程会话管理（docs/12 §6.3，仅 center- 会话）──
   /** 枚举客户端的 center- 会话；`result.data` 携带 `CenterSessionSummary[]` */
   | { kind: 'session.list'; requestId: string }
@@ -162,9 +187,21 @@ export type CenterCommand =
       requestId: string
       sessionId: string
       permissionMode: PermissionMode
-    }
-  /** 会话绑定项目（`''` 清除绑定）；`projectId` 必须在客户端 `projects.list` 内 */
+    }  /** 会话绑定项目（`''` 清除绑定）；`projectId` 必须在客户端 `projects.list` 内 */
   | { kind: 'session.setProject'; requestId: string; sessionId: string; projectId: string }
+  /**
+   * 会话级模型覆盖（本轮，docs/06 §3 / docs/12 §6.3）：写会话文件
+   * `meta.llm = { providerId, model }`；`model` 为空串 = **清除覆盖**（回落全局 `llm.active`）。
+   * 与 `llm.switch`（全局默认）是**两份数据**：后者改的是所有未覆盖会话立刻跟随的默认值。
+   */
+  | {
+      kind: 'session.setModel'
+      requestId: string
+      sessionId: string
+      /** 缺省沿用客户端全局激活的 provider */
+      providerId?: string
+      model: string
+    }
   /** 客户端项目选项列表；`result.data` 携带 `CenterProjectOption[]` */
   | { kind: 'project.list'; requestId: string }
   /**
@@ -233,6 +270,19 @@ export type CenterClientMessage =
    * 转发路由同 `confirm.request`（属主 + 管理员），网页端刷新后由服务器回放未过期项。
    */
   | { type: 'ask.request'; request: AskUserRequestPayload }
+  /**
+   * 提问已在**客户端**结算（本轮，docs/12 §5）：本地作答 / 跳过 / 超时 / 中止都发一条，
+   * 服务器据此摘除 `pendingAsks` 并广播（网页卡立即收起，不必等自己的倒计时走到 0）。
+   *
+   * 补发队列**不参与**：结算通知过期即无意义（网页端的卡会按自己的 `expiresAt` 消失），
+   * 离线时直接丢弃并 debug 留痕。
+   */
+  | {
+      type: 'ask.settled'
+      requestId: string
+      sessionId: string
+      outcome: AskSettleOutcome
+    }
 
 /** 服务器 → 客户端 */
 export type CenterServerMessage =
@@ -265,6 +315,12 @@ export interface CenterSessionSummary {
   permissionMode?: PermissionMode
   /** 客户端主界面左栏是否可见（缺省 = 可见） */
   centerVisible?: boolean
+  /**
+   * 会话级模型覆盖（本轮，docs/06 §3）：`meta.llm`。
+   * **缺省 = 跟随全局** `llm.active` 的 provider 与其 `model`；网页端会话行的模型下拉据此
+   * 显示「跟随全局」还是具体模型（选项来自该会话生效 provider 的 `modelList`）。
+   */
+  llm?: { providerId: string; model: string }
 }
 
 /** 客户端项目选项（`project.list` 的 `result.data`，网页端会话绑项目下拉用） */
@@ -335,6 +391,17 @@ export type CenterWebMessage =
       sessionId: string
       projectId: string
     }
+  /** 会话级模型覆盖（本轮，docs/06 §3）：`model` 空串 = 清除覆盖、回落全局 */
+  | {
+      type: 'session.setModel'
+      requestId: string
+      clientId: string
+      sessionId: string
+      providerId?: string
+      model: string
+    }
+  /** 把暂存文件推给该客户端落盘（本轮，docs/12 §5）：先 `POST /api/uploads` 拿到 fileId 再发它 */
+  | { type: 'file.send'; requestId: string; clientId: string; fileId: string }
   | { type: 'project.list'; requestId: string; clientId: string }
   /** 历史回放（v0.2.4，docs/12 §6.3）：客户端读盘回传，`result.data` 携带历史消息数组 */
   | { type: 'session.history'; requestId: string; clientId: string; sessionId: string }
@@ -408,6 +475,17 @@ export type CenterWebServerMessage =
       sessionId: string
       request: AskUserRequestPayload
     }
+  /**
+   * 提问已在客户端结算（本轮，docs/12 §5）：服务器摘除 `pendingAsks` 后广播给同一受众，
+   * 网页端据此把卡片收起（或切成只读的已结算卡）。
+   */
+  | {
+      type: 'ask.settled'
+      clientId: string
+      sessionId: string
+      requestId: string
+      outcome: AskSettleOutcome
+    }
 
 /** 历史回放里的单条工具调用（客户端 SessionStore 的渲染层形状，`input` 已是解析后的对象） */
 export interface CenterHistoryToolCall {
@@ -434,6 +512,34 @@ export interface CenterSessionHistoryMessage {
   createdAt: string
   reasoning?: string
   toolCalls?: CenterHistoryToolCall[]
+  /**
+   * 条目种类（本轮，**可选**：旧客户端不下发，消费方缺省按 `'message'` 处理）。
+   * `'ask'` = 提问留痕（`StoredSession.asks` 的条目），网页端渲染成**只读的已结算卡**；
+   * 这类条目 `content` 是问题原文（搜索 / 复制仍可用），细节在 `ask` 里。
+   */
+  kind?: 'message' | 'ask'
+  /** `kind === 'ask'` 时的提问详情（问题 / 选项 / 作答 / 结算原因） */
+  ask?: CenterHistoryAsk
+}
+
+/**
+ * 历史回放里的提问留痕（`kind: 'ask'` 条目，本轮）。
+ *
+ * 由客户端在会话文件里持久化（`StoredSession.asks`，有界环），因此刷新页面 / 换设备后
+ * 「刚才问了什么、答了什么」仍然可见 —— 服务器依旧零存储。
+ */
+export interface CenterHistoryAsk {
+  requestId: string
+  question: string
+  header?: string
+  options?: { label: string; description?: string }[]
+  /** 是否多选（决定只读卡上把多个答案并列还是取一条） */
+  multiSelect: boolean
+  /** 逐问作答（多问时按 questions 顺序；单问时 `answers` 与它等价） */
+  answers: string[]
+  answersByQuestion?: string[][]
+  outcome: AskSettleOutcome
+  settledAt: string
 }
 
 /** 远程会话的 sessionId 前缀（客户端渲染层据此区分远程会话） */

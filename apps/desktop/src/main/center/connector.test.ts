@@ -615,6 +615,7 @@ describe('CenterConnector · 远程会话管理命令（docs/12 §6.3）', () =>
     listProjects: ReturnType<typeof vi.fn>
     switchLlm: ReturnType<typeof vi.fn>
     history: ReturnType<typeof vi.fn>
+    setModel: ReturnType<typeof vi.fn>
   }
 
   /** 装好 sessionManager 的 harness（默认全部成功，测试可改返回值 / 换实现） */
@@ -640,6 +641,7 @@ describe('CenterConnector · 远程会话管理命令（docs/12 §6.3）', () =>
       listProjects: vi.fn(() => [{ id: 'proj-1', name: '演示项目' }]),
       switchLlm: vi.fn(async () => ({ ok: true })),
       history: vi.fn(async () => ({ ok: true, data: [] })),
+      setModel: vi.fn(async () => ({ ok: true })),
     }
     harness.deps.sessionManager = {
       listSessions: spies.listSessions,
@@ -650,6 +652,7 @@ describe('CenterConnector · 远程会话管理命令（docs/12 §6.3）', () =>
       listProjects: spies.listProjects,
       switchLlm: spies.switchLlm,
       history: spies.history,
+      setModel: spies.setModel,
     }
     return { harness, spies }
   }
@@ -712,6 +715,25 @@ describe('CenterConnector · 远程会话管理命令（docs/12 §6.3）', () =>
       projectId: 'proj-1',
     })
     expect(spies.setProject).toHaveBeenCalledWith('center-abc', 'proj-1')
+
+    // 会话级模型（本轮，docs/06 §3）：providerId 缺省时透传空串（实现端沿用全局激活 provider）
+    await sendCmd(socket, {
+      kind: 'session.setModel',
+      requestId: 'm-5b',
+      sessionId: 'center-abc',
+      providerId: 'p-session',
+      model: 'm-session',
+    })
+    expect(spies.setModel).toHaveBeenCalledWith('center-abc', 'p-session', 'm-session')
+
+    // model 空串 = 清除覆盖，原样透传（是否合法由实现端裁决）
+    await sendCmd(socket, {
+      kind: 'session.setModel',
+      requestId: 'm-5c',
+      sessionId: 'center-abc',
+      model: '',
+    })
+    expect(spies.setModel).toHaveBeenCalledWith('center-abc', '', '')
 
     await sendCmd(socket, { kind: 'project.list', requestId: 'm-6' })
     expect(socket.lastMessage()).toMatchObject({
@@ -1223,6 +1245,74 @@ describe('CenterConnector · 语音中转（docs/12 §6.4）', () => {
     })
     expect(spies.transcribe).not.toHaveBeenCalled()
     expect(socket.lastMessage()).toMatchObject({ ok: false, error: 'E_REMOTE_DISABLED' })
+  })
+
+  /**
+   * 服务器下发文件（`file.send`，本轮 docs/12 §5）：闸门是 `center.allowFileTransfer`
+   *（不是 allowRemoteSession），成功回执带落盘路径。
+   */
+  it('file.send：闸门为 allowFileTransfer；成功回执带 path', async () => {
+    const harness = makeConnector()
+    const receive = vi.fn(async () => ({ ok: true, path: 'D:\\Downloads\\报告.pdf' }))
+    harness.deps.fileReceiver = { receive }
+    const socket = openSocket(harness)
+
+    await sendCmd(socket, {
+      kind: 'file.send',
+      requestId: 'f-1',
+      fileId: 'file-1',
+      name: '报告.pdf',
+      size: 2048,
+    })
+    expect(receive).toHaveBeenCalledWith({ fileId: 'file-1', name: '报告.pdf', size: 2048 })
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'f-1',
+      ok: true,
+      data: { path: 'D:\\Downloads\\报告.pdf' },
+    })
+
+    // 关掉文件传输：本地闸门直接拒绝，不碰 receiver
+    const deniedHarness = makeConnector({ allowFileTransfer: false })
+    const deniedReceive = vi.fn(async () => ({ ok: true }))
+    deniedHarness.deps.fileReceiver = { receive: deniedReceive }
+    const deniedSocket = openSocket(deniedHarness)
+    await sendCmd(deniedSocket, {
+      kind: 'file.send',
+      requestId: 'f-2',
+      fileId: 'file-1',
+      name: '报告.pdf',
+      size: 2048,
+    })
+    expect(deniedReceive).not.toHaveBeenCalled()
+    expect(deniedSocket.lastMessage()).toMatchObject({ ok: false, error: 'E_REMOTE_DISABLED' })
+  })
+
+  it('file.send：未注入 fileReceiver（老装配器）回 E_UNSUPPORTED；receiver 报错回该错误', async () => {
+    const harness = makeConnector()
+    const socket = openSocket(harness)
+    await sendCmd(socket, {
+      kind: 'file.send',
+      requestId: 'f-3',
+      fileId: 'file-1',
+      name: 'a.txt',
+      size: 1,
+    })
+    expect(socket.lastMessage()).toMatchObject({ ok: false, error: 'E_UNSUPPORTED' })
+
+    const failing = makeConnector()
+    failing.deps.fileReceiver = {
+      receive: vi.fn(async () => ({ ok: false, error: 'E_IO: 磁盘已满' })),
+    }
+    const failingSocket = openSocket(failing)
+    await sendCmd(failingSocket, {
+      kind: 'file.send',
+      requestId: 'f-4',
+      fileId: 'file-1',
+      name: 'a.txt',
+      size: 1,
+    })
+    expect(failingSocket.lastMessage()).toMatchObject({ ok: false, error: 'E_IO: 磁盘已满' })
   })
 
   it('service 抛错：中文错误文案透传给网页端（超时 / 限流等由 provider 侧描述）', async () => {

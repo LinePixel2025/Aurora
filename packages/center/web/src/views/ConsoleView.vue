@@ -15,11 +15,14 @@ import {
   openRemoteSession,
   selectedEntry,
   selectClient,
+  sendFile,
   sessionViewTick,
+  showNotice,
   startSession,
   state,
 } from '../state'
-import { PanelRight, Plus, useStickToBottom } from '@aurora/shared/browser'
+import { api } from '../lib/api'
+import { PanelRight, Paperclip, Plus, useStickToBottom } from '@aurora/shared/browser'
 import ClientRail from '../components/console/ClientRail.vue'
 import MessageStream from '../components/console/MessageStream.vue'
 import Composer from '../components/console/Composer.vue'
@@ -96,6 +99,36 @@ function openSession(sessionId: string): void {
 }
 
 const sessionList = computed(() => entry.value?.remoteSessions ?? [])
+
+/* ── 发送文件给客户端（docs/12 §5，本轮）─────────────────────────────
+ * 门控口径同语音：客户端没有允许文件传输（`center.allowFileTransfer`）时
+ * **连按钮都不渲染**（不是 disabled）—— 能力位来自 `ClientStatus.center`。 */
+const fileInput = ref<HTMLInputElement | null>(null)
+const sendingFile = ref(false)
+const canSendFile = computed(
+  () => entry.value !== null && entry.value.client.online && entry.value.status?.center.allowFileTransfer === true,
+)
+
+function pickFile(): void {
+  fileInput.value?.click()
+}
+
+async function onFilePicked(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 同一个文件连发两次也要触发 change
+  const target = entry.value
+  if (!file || target === null || sendingFile.value) return
+  sendingFile.value = true
+  try {
+    const uploaded = await api.uploadFile(file, target.client.clientId)
+    await sendFile(target.client.clientId, uploaded.fileId)
+  } catch (error) {
+    showNotice(`发送文件失败：${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    sendingFile.value = false
+  }
+}
 </script>
 
 <template>
@@ -130,6 +163,25 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
           {{ entry.status?.mode ?? entry.client.mode }}
         </span>
         <span class="grow" />
+        <button
+          v-if="canSendFile"
+          type="button"
+          class="head-btn"
+          data-action="console.send-file"
+          :disabled="sendingFile"
+          title="选择本机文件并发送到该客户端（保存到它的下载目录）"
+          @click="pickFile"
+        >
+          <Paperclip :size="14" :stroke-width="1.8" aria-hidden="true" />
+          发送文件
+        </button>
+        <input
+          ref="fileInput"
+          type="file"
+          class="hidden-file-input"
+          data-field="console.send-file-input"
+          @change="onFilePicked"
+        />
         <button
           v-if="session"
           type="button"
@@ -310,6 +362,14 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
 }
 
 .rail-toggle {
+  display: none;
+}
+
+/*
+ * 「发送文件」用的隐藏 file input（本轮 docs/12 §5）：`display: none` 的元素
+ * 仍然可以被 `.click()` 程序化触发，因此不必用「视觉隐藏但占位」那套写法。
+ */
+.hidden-file-input {
   display: none;
 }
 

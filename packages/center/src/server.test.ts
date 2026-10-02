@@ -1347,3 +1347,63 @@ describe('Aurora Center · 服务器锁文件（P2-17）', () => {
     expect(await inspectServerLock(dir)).toBe('none')
   }, 20_000)
 })
+
+describe('Aurora Center · 网页上传与客户端令牌下载（本轮 docs/12 §5）', () => {
+  it('网页上传到指定客户端 → source=web；客户端令牌可下载，网页会话令牌在该路由 401', async () => {
+    const content = '网页上传的内容 —— 发到客户端的文件'
+    const user = await login(USER)
+    const upload = await fetch(`${base}/api/uploads?clientId=client-e2e-1`, {
+      method: 'POST',
+      headers: {
+        ...authed(user.token),
+        'X-File-Name': encodeURIComponent('从网页发的.txt'),
+        'Content-Type': 'application/octet-stream',
+      },
+      body: content,
+    })
+    expect(upload.status).toBe(200)
+    const { fileId } = (await upload.json()) as { fileId: string }
+
+    // 文件页列表里带 source=web（旧索引没有这个键 = 客户端上传）
+    const list = await fetch(`${base}/api/files`, { headers: authed(user.token) })
+    const entries = ((await list.json()) as { files: Array<{ fileId: string; source?: string }> })
+      .files
+    expect(entries.find((item) => item.fileId === fileId)?.source).toBe('web')
+
+    // 客户端令牌（file.send 的对端）能下载
+    const clientToken = await getAnyClientToken()
+    const clientDownload = await fetch(`${base}/api/client/files/${fileId}`, {
+      headers: { Authorization: `Bearer ${clientToken}`, 'X-Client-Id': 'client-e2e-1' },
+    })
+    expect(clientDownload.status).toBe(200)
+    expect(await clientDownload.text()).toBe(content)
+
+    // 网页会话令牌在客户端路由上不认（两条路由鉴权口径不可互换）
+    const webOnClientRoute = await fetch(`${base}/api/client/files/${fileId}`, {
+      headers: authed(user.token),
+    })
+    expect(webOnClientRoute.status).toBe(401)
+  })
+
+  it('网页上传未鉴权 / 目标客户端不属于该用户 → 401 / 403', async () => {
+    const anonymous = await fetch(`${base}/api/uploads?clientId=client-e2e-1`, {
+      method: 'POST',
+      headers: { 'X-File-Name': 'x.txt', 'Content-Type': 'application/octet-stream' },
+      body: 'nope',
+    })
+    expect(anonymous.status).toBe(401)
+
+    // alice 不是 client-e2e-* 之外设备的属主：挑一台登记但非她名下的不存在设备 → 404
+    const user = await login(USER)
+    const missing = await fetch(`${base}/api/uploads?clientId=client-does-not-exist`, {
+      method: 'POST',
+      headers: {
+        ...authed(user.token),
+        'X-File-Name': 'x.txt',
+        'Content-Type': 'application/octet-stream',
+      },
+      body: 'nope',
+    })
+    expect(missing.status).toBe(404)
+  })
+})

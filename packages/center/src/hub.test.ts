@@ -821,6 +821,24 @@ describe('Hub · 远程会话管理与 LLM 切换（docs/12 §6.3）', () => {
         expectCmd: { kind: 'project.list', requestId: 'r6' },
       },
       {
+        // 会话级模型（本轮，docs/06 §3）：原样透传 providerId + model
+        message: {
+          type: 'session.setModel',
+          requestId: 'r6b',
+          clientId: 'c1',
+          sessionId: 'center-a',
+          providerId: 'p2',
+          model: 'model-9',
+        },
+        expectCmd: {
+          kind: 'session.setModel',
+          requestId: 'r6b',
+          sessionId: 'center-a',
+          providerId: 'p2',
+          model: 'model-9',
+        },
+      },
+      {
         message: {
           type: 'llm.switch',
           requestId: 'r7',
@@ -1316,5 +1334,117 @@ describe('Hub · 语音中转（docs/12 §6.4）', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+/**
+ * 文件下发（`file.send`，本轮 docs/12 §5）。
+ *
+ * 这是**唯一一条会往用户磁盘写东西**的下行命令，因此除了转发本身，必须钉住两条拒绝：
+ * 文件不存在（已过期 / 已删）、以及「把别人上传的文件推给我名下的设备」。
+ */
+describe('Aurora Center · 文件下发（file.send）', () => {
+  /** 带 fileLookup 的 hub：`files` 是 fileId → 归属客户端名 */
+  async function makeFileHub(files: Record<string, string>): Promise<Harness> {
+    const dir = await mkdtemp(join(tmpdir(), 'aurora-center-hub-files-'))
+    const clients = new ClientRegistry({ dataDir: dir })
+    await clients.init()
+    const hub = new Hub({
+      clients,
+      usernameOf: (id) => `user-${id}`,
+      serverVersion: () => '0.0.0-test',
+      fileLookup: (fileId) => {
+        const source = files[fileId]
+        return source === undefined
+          ? undefined
+          : { clientId: source, name: `${fileId}.bin`, size: 42 }
+      },
+    })
+    return {
+      hub,
+      clients,
+      connectClient(clientId) {
+        const sent: unknown[] = []
+        const conn: ClientConn = { clientId, send: (m) => sent.push(m), close: () => {} }
+        hub.registerClient(conn, STATUS)
+        return { sent, conn }
+      },
+      connectWeb(user) {
+        webConnSeq += 1
+        const sent: unknown[] = []
+        const conn: WebConn = { id: `w-${webConnSeq}`, user, send: (m) => sent.push(m) }
+        hub.registerWeb(conn)
+        return { id: conn.id, sent, conn }
+      },
+    }
+  }
+
+  it('服务器补齐 name/size 后转发（客户端不必自己 HEAD）', async () => {
+    const harness = await makeFileHub({ 'f-1': 'c1' })
+    await seedClient(harness, 'c1', 'u1')
+    const target = harness.connectClient('c1')
+    target.sent.length = 0
+    const web = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    web.sent.length = 0
+
+    harness.hub.handleWebMessage(web.conn, {
+      type: 'file.send',
+      requestId: 'fs-1',
+      clientId: 'c1',
+      fileId: 'f-1',
+    })
+    expect(target.sent.at(-1)).toMatchObject({
+      type: 'cmd',
+      cmd: { kind: 'file.send', requestId: 'fs-1', fileId: 'f-1', name: 'f-1.bin', size: 42 },
+    })
+  })
+
+  it('文件不存在（已过期 / 已删）：直接回 E_NOT_FOUND，不下发命令', async () => {
+    const harness = await makeFileHub({})
+    await seedClient(harness, 'c1', 'u1')
+    const target = harness.connectClient('c1')
+    target.sent.length = 0
+    const web = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    web.sent.length = 0
+
+    harness.hub.handleWebMessage(web.conn, {
+      type: 'file.send',
+      requestId: 'fs-2',
+      clientId: 'c1',
+      fileId: 'missing',
+    })
+    expect(web.sent.at(-1)).toMatchObject({ type: 'result', requestId: 'fs-2', ok: false, error: 'E_NOT_FOUND' })
+    expect(target.sent).toEqual([])
+  })
+
+  it('跨租户：把我名下的文件推给别人的设备 → E_FORBIDDEN；推给自己名下另一台可以', async () => {
+    const harness = await makeFileHub({ 'f-mine': 'c1', 'f-theirs': 'c9' })
+    await seedClient(harness, 'c1', 'u1')
+    await seedClient(harness, 'c2', 'u1')
+    await seedClient(harness, 'c9', 'u2')
+    harness.connectClient('c1')
+    const target = harness.connectClient('c2')
+    target.sent.length = 0
+    const web = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    web.sent.length = 0
+
+    // 别人的客户端上传的文件：即使我想推给我自己的设备也不许（跨租户读）
+    harness.hub.handleWebMessage(web.conn, {
+      type: 'file.send',
+      requestId: 'fs-3',
+      clientId: 'c2',
+      fileId: 'f-theirs',
+    })
+    expect(web.sent.at(-1)).toMatchObject({ ok: false, error: 'E_FORBIDDEN' })
+    expect(target.sent).toEqual([])
+
+    // 同一账号下 c1 → c2 的转发是允许的（文件来源也是我的）
+    harness.hub.handleWebMessage(web.conn, {
+      type: 'file.send',
+      requestId: 'fs-4',
+      clientId: 'c2',
+      fileId: 'f-mine',
+    })
+    expect(target.sent.at(-1)).toMatchObject({ cmd: { kind: 'file.send', requestId: 'fs-4' } })
   })
 })

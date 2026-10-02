@@ -114,6 +114,37 @@ export const api = {
   files(): Promise<{ files: FileEntryInfo[] }> {
     return request('/api/files')
   },
+  /**
+   * 网页上传一个文件给指定客户端（docs/12 §5，本轮）：`POST /api/uploads?clientId=`。
+   * 二进制体不带 JSON 头，文件名走 `X-File-Name`（与客户端上传同款编码）。
+   * 上传成功后由 `commands.sendFile` 推给客户端落盘。
+   */
+  async uploadFile(
+    file: File,
+    clientId: string,
+  ): Promise<{ fileId: string; name: string; size: number }> {
+    const token = getToken()
+    const response = await fetch(`/api/uploads?clientId=${encodeURIComponent(clientId)}`, {
+      method: 'POST',
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'X-File-Name': encodeURIComponent(file.name),
+        'Content-Type': 'application/octet-stream',
+      },
+      body: file,
+    })
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`
+      try {
+        const data = (await response.json()) as { error?: string }
+        if (data.error) message = data.error
+      } catch {
+        // 错误体不是 JSON：保留状态码信息
+      }
+      throw new ApiError(message, response.status)
+    }
+    return (await response.json()) as { fileId: string; name: string; size: number }
+  },
   deleteFile(fileId: string): Promise<{ ok: true }> {
     return request(`/api/files/${encodeURIComponent(fileId)}`, 'DELETE')
   },

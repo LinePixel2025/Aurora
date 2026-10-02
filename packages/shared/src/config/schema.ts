@@ -258,6 +258,18 @@ export interface EffectiveSessionModel {
 }
 
 /**
+ * `resolveSessionModel` 的入参形状：**只取它真正用到的两个字段**。
+ *
+ * 刻意收窄而不是要整个 `LlmSettings`：Center 网页端手里只有脱敏后的配置切片
+ * （provider 只有 `model` / `modelList` 等），拿不到也不该有 `apiKeyEnc` / `baseUrl`。
+ * 收窄后两端都能传自己的快照，判定仍走同一份实现。
+ */
+export interface SessionModelSource {
+  active: string
+  providers: Record<string, { model: string } | undefined>
+}
+
+/**
  * 会话生效模型（**唯一口径**，docs/06 §3 会话级模型）。
  *
  * 解析链只有一级：**会话覆盖 > 全局 `llm.active` + 该 provider 的 `model`**。
@@ -266,7 +278,7 @@ export interface EffectiveSessionModel {
  * Center 网页端的会话行都走它）。
  */
 export function resolveSessionModel(
-  llm: Pick<LlmSettings, 'active' | 'providers'>,
+  llm: SessionModelSource,
   override?: SessionModelOverrideLike | null,
 ): EffectiveSessionModel {
   const globalModel = llm.providers[llm.active]?.model ?? ''

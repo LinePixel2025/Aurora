@@ -135,6 +135,28 @@ export interface CenterConnectorDeps {
       model?: string
       reasoningEffort?: ReasoningEffort
     }): Promise<{ ok: boolean; error?: string }>
+    /**
+     * 会话级模型覆盖（docs/06 §3，本轮 `session.setModel`）：写会话文件
+     * `meta.llm = { providerId, model }`；`model` 空串 = **清除覆盖**（回落全局档）。
+     * 写入由装配层实现（`SessionStore.setModelOverride`），connector 只做分派与闸门。
+     */
+    setModel(
+      sessionId: string,
+      providerId: string,
+      model: string,
+    ): Promise<{ ok: boolean; error?: string }>
+  }
+  /**
+   * 接收服务器下发的文件（`file.send`，本轮 docs/12 §5）：装配层负责「用自身令牌下载
+   * → 写进本机下载目录 → 通知用户」，connector 只做闸门（`allowFileTransfer`）与回执。
+   * 未注入时该命令回 `E_UNSUPPORTED`（老装配器兼容）。
+   */
+  fileReceiver?: {
+    receive(input: {
+      fileId: string
+      name: string
+      size: number
+    }): Promise<{ ok: boolean; path?: string; error?: string }>
   }
   /** 远程自动化管理（docs/13 §10）：与远程会话同组，受 allowRemoteSession 闸门 */
   automation?: AutomationRemotePort
@@ -583,6 +605,7 @@ export class CenterConnector {
       case 'session.visibility':
       case 'session.setPermission':
       case 'session.setProject':
+      case 'session.setModel':
       case 'session.history':
       case 'project.list': {
         // 会话管理属 session 类别：受 allowRemoteSession 闸门
@@ -628,6 +651,15 @@ export class CenterConnector {
             }
             case 'session.setProject': {
               const result = await manager.setProject(cmd.sessionId, cmd.projectId)
+              reply(result.ok, undefined, result.error)
+              return
+            }
+            case 'session.setModel': {
+              const result = await manager.setModel(
+                cmd.sessionId,
+                cmd.providerId ?? '',
+                cmd.model,
+              )
               reply(result.ok, undefined, result.error)
               return
             }
@@ -780,6 +812,36 @@ export class CenterConnector {
           reply(true)
         } catch (error) {
           this.logger.warn('远程 LLM 切换执行失败', { error: String(error) })
+          reply(false, undefined, 'E_UNKNOWN')
+        }
+        return
+      }
+      case 'file.send': {
+        // 服务器下发的文件（本轮 docs/12 §5）：闸门是 `center.allowFileTransfer`
+        //（与 hello 上报的能力位同源；关掉时连能力位都是 false，网页端按钮也不渲染）。
+        if (!config.allowFileTransfer) {
+          reply(false, undefined, 'E_REMOTE_DISABLED')
+          return
+        }
+        const receiver = this.deps.fileReceiver
+        if (receiver === undefined) {
+          reply(false, undefined, 'E_UNSUPPORTED')
+          return
+        }
+        try {
+          const result = await receiver.receive({
+            fileId: cmd.fileId,
+            name: cmd.name,
+            size: cmd.size,
+          })
+          if (!result.ok) {
+            reply(false, undefined, result.error ?? 'E_UNKNOWN')
+            return
+          }
+          // 回执带落盘路径：网页端据此提示「已保存到 …」，比只说"成功"有用得多
+          reply(true, result.path === undefined ? undefined : { path: result.path })
+        } catch (error) {
+          this.logger.warn('接收服务器文件失败', { fileId: cmd.fileId, error: String(error) })
           reply(false, undefined, 'E_UNKNOWN')
         }
         return

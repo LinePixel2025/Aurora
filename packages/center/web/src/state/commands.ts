@@ -283,6 +283,30 @@ export async function listProjects(clientId: string): Promise<CenterProjectOptio
 }
 
 /**
+ * 会话级模型覆盖（docs/06 §3，本轮）：`model` 空串 = 清除覆盖（回落全局 `llm.active`）。
+ * 成功后乐观更新会话摘要上的 `llm`（`session.list` 的刷新会兜底）。
+ */
+export async function setSessionModel(
+  clientId: string,
+  sessionId: string,
+  providerId: string,
+  model: string,
+): Promise<void> {
+  await command({
+    type: 'session.setModel',
+    requestId: nextRequestId(),
+    clientId,
+    sessionId,
+    ...(providerId === '' ? {} : { providerId }),
+    model,
+  })
+  const summary = state.clients.get(clientId)?.remoteSessions.find((s) => s.sessionId === sessionId)
+  if (!summary) return
+  if (model === '' || providerId === '') delete summary.llm
+  else summary.llm = { providerId, model }
+}
+
+/**
  * 远程切模型 / 思考等级（专用命令，不走 config.update 白名单，docs/12 §6.3）。
  * 成功后乐观更新本地 llm 快照（client.status 随后也会推新值兜底），并**补拉一次配置切片**：
  * contextWindow 只能从 `config.get` 的 modelParams[模型] 拿到，不在 status 快照里。
@@ -458,6 +482,29 @@ export async function synthesizeSpeech(
 }
 
 // ───────────────────────── 会话输入 ─────────────────────────
+
+/**
+ * 把服务器上的一份暂存文件推给客户端落盘（docs/12 §5，本轮）。
+ *
+ * 两条入口共用：控制台「发送文件」（先 `api.uploadFile` 拿到 fileId 再调它）与
+ * 文件页「发送到客户端」（已有 fileId 直接调）。回执 `data.path` 是客户端侧的
+ * 落盘绝对路径，提示里带上它用户才知道去哪儿找 —— 只回一句"成功"等于没说。
+ *
+ * 大文件下载较慢（服务器侧待回执超时给到 10 分钟），这里用同一量级的等待。
+ */
+export async function sendFile(clientId: string, fileId: string): Promise<string> {
+  const data = await command<{ path?: string }>(
+    { type: 'file.send', requestId: nextRequestId(), clientId, fileId },
+    FILE_COMMAND_TIMEOUT_MS,
+  )
+  const path = typeof data?.path === 'string' ? data.path : ''
+  const text = path === '' ? '已发送到客户端' : `已保存到客户端：${path}`
+  showNotice(text)
+  return text
+}
+
+/** 文件下发的等待窗口（毫秒）：与服务器侧 `FILE_KINDS` 的超时同量级（10 分钟略短一点） */
+const FILE_COMMAND_TIMEOUT_MS = 9 * 60_000
 
 /** 发送输入：乐观插入用户气泡（后续 user-message 事件按「内容 + 出现次数」逐条配对） */
 export async function sendInput(session: SessionState, text: string): Promise<void> {

@@ -104,6 +104,7 @@ import { CenterConnector } from './center/connector.js'
 import { DeviceLoginController, type DeviceLoginOutcome } from './center/device-login.js'
 import { requestClientLogin } from './center/client-login.js'
 import { uploadFileToCenter } from './center/ingest.js'
+import { downloadFileFromCenter } from './center/deliver.js'
 import {
   applyWhitelistedPaths,
   buildClientStatus,
@@ -1341,6 +1342,39 @@ async function bootstrap(): Promise<void> {
     // 网页端对提问卡的作答（docs/12 §5，v0.3.3）走 AskUserService.resolve 结算；
     // 未知 / 已结算 requestId 幂等返回 false（本地卡与网页卡先到先得，settled=false 也算 ok）。
     resolveAsk: (input) => askUserService?.resolve(input) ?? false,
+    // 服务器下发的文件落地（docs/12 §5，本轮 `file.send`）：拉回本机下载目录并通知用户。
+    // 目标目录用系统「下载」目录（用户最熟悉的位置）；大小上限复用 `center.maxFileMb`。
+    fileReceiver: {
+      receive: async (input) => {
+        const maxBytes = Math.max(1, settings!.get().center.maxFileMb) * 1024 * 1024
+        try {
+          const result = await downloadFileFromCenter({
+            serverUrl: settings!.get().center.serverUrl,
+            token: settings!.getSecret('center.token'),
+            clientId: settings!.get().center.clientId,
+            fileId: input.fileId,
+            name: input.name,
+            targetDir: app.getPath('downloads'),
+            maxBytes,
+          })
+          logger?.info('已接收来自 Aurora Center 的文件', {
+            fileId: input.fileId,
+            name: input.name,
+            size: result.size,
+            path: result.path,
+          })
+          notify('已收到文件', `${input.name}\n${result.path}`, result.path)
+          return { ok: true, path: result.path }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          logger?.warn('接收来自 Aurora Center 的文件失败', {
+            fileId: input.fileId,
+            error: message,
+          })
+          return { ok: false, error: `E_IO: ${message}` }
+        }
+      },
+    },
     applyRemotePatch: async (patch) => {
       const rehearsal = structuredClone(settings!.get())
       if (!applyWhitelistedPaths(rehearsal, patch)) return '配置结构无法应用该补丁'
@@ -1396,6 +1430,8 @@ async function bootstrap(): Promise<void> {
             ...(summary.centerVisible === undefined
               ? {}
               : { centerVisible: summary.centerVisible }),
+            // 会话级模型覆盖（docs/06 §3，本轮）：未覆盖不带键（网页端显示「跟随全局」）
+            ...(summary.llm === undefined ? {} : { llm: summary.llm }),
           }))
       },
       activateSession: async (sessionId) => {
@@ -1468,6 +1504,25 @@ async function bootstrap(): Promise<void> {
           providerId: request.providerId,
           modelChanged: request.model !== undefined,
           reasoningEffort: request.reasoningEffort,
+        })
+        return { ok: true }
+      },
+      // 会话级模型覆盖（docs/06 §3，本轮 `session.setModel`）：与 `chat:setSessionModel`
+      // 同一口径 —— 写会话文件 meta.llm，不动全局 llm.active。`model` 空串 = 清除覆盖。
+      setModel: async (sessionId, providerId, model) => {
+        const trimmedModel = model.trim()
+        const effectiveProviderId = providerId.trim() || settings!.get().llm.active
+        // 清除路径（model 空）= 不校验 provider，直接删键
+        if (trimmedModel === '') {
+          await sessions!.setModelOverride(sessionId, null)
+          return { ok: true }
+        }
+        if (settings!.get().llm.providers[effectiveProviderId] === undefined) {
+          return { ok: false, error: 'E_INVALID_ARGUMENT: 模型配置不存在（可能已被删除）' }
+        }
+        await sessions!.setModelOverride(sessionId, {
+          providerId: effectiveProviderId,
+          model: trimmedModel,
         })
         return { ok: true }
       },

@@ -7,7 +7,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { FileEntryInfo } from '@aurora/shared'
 import { ApiError, api, fileUrl } from '../lib/api'
 import { formatBytes, formatRemaining, formatTime, remainingMs } from '../lib/format'
-import { state } from '../state'
+import { sendFile, showNotice, state } from '../state'
 
 const files = ref<FileEntryInfo[]>([])
 const loading = ref(true)
@@ -70,6 +70,40 @@ async function remove(file: FileEntryInfo): Promise<void> {
 }
 
 onMounted(() => void load())
+
+/* ── 把暂存文件推给客户端（docs/12 §5，本轮）────────────────────────
+ * 目标设备选一个就行（不逐行选）：文件页的用途是「把某份暂存文件发回某台设备」，
+ * 逐行挂一个设备下拉会让表格挤成一片。离线 / 未允许文件传输的设备不在候选里。 */
+const targetClientId = ref('')
+const sendingFileId = ref('')
+
+const sendTargets = computed(() =>
+  [...state.clients.values()].filter(
+    (entry) =>
+      entry.client.online && entry.status?.center.allowFileTransfer !== false,
+  ),
+)
+
+/** 来源标注（本轮）：客户端上传 vs 网页上传（网页上传是「发给某个客户端」的中间态） */
+function sourceLabel(file: FileEntryInfo): string {
+  return file.source === 'web' ? '来自网页' : '客户端'
+}
+
+async function sendTo(file: FileEntryInfo): Promise<void> {
+  const target = targetClientId.value
+  if (target === '' || sendingFileId.value !== '') return
+  sendingFileId.value = file.fileId
+  error.value = ''
+  try {
+    await sendFile(target, file.fileId)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '发送失败'
+    error.value = message
+    showNotice(`发送文件失败：${message}`)
+  } finally {
+    sendingFileId.value = ''
+  }
+}
 </script>
 
 <template>
@@ -89,6 +123,22 @@ onMounted(() => void load())
       <button class="ui-btn ui-btn--ghost" type="button" @click="load">刷新</button>
     </header>
 
+    <!-- 目标设备（本轮）：行内「发送到客户端」用它；没有可发设备时整条提示隐藏 -->
+    <div v-if="sendTargets.length > 0" class="files-target">
+      <label class="files-target-label" for="files-target-select">发送到设备</label>
+      <select
+        id="files-target-select"
+        v-model="targetClientId"
+        class="files-target-select"
+        data-field="files.target-client"
+      >
+        <option value="">选择一个在线设备…</option>
+        <option v-for="item in sendTargets" :key="item.client.clientId" :value="item.client.clientId">
+          {{ item.client.name }}
+        </option>
+      </select>
+    </div>
+
     <p v-if="error" class="ui-error">{{ error }}</p>
 
     <div v-if="loading" class="files-loading" aria-busy="true">
@@ -107,6 +157,7 @@ onMounted(() => void load())
           <thead>
             <tr>
               <th>名称</th>
+              <th>来源</th>
               <th>来源客户端</th>
               <th>大小</th>
               <th>备注</th>
@@ -118,6 +169,7 @@ onMounted(() => void load())
           <tbody>
             <tr v-for="file in files" :key="file.fileId" data-field="files.row">
               <td class="files-name">{{ file.name }}</td>
+              <td class="files-dim" data-field="files.source">{{ sourceLabel(file) }}</td>
               <td class="files-dim">{{ clientName(file.clientId) }}</td>
               <td class="files-dim files-num">{{ formatBytes(file.size) }}</td>
               <td class="files-dim files-note">{{ file.note || '—' }}</td>
@@ -137,6 +189,21 @@ onMounted(() => void load())
                   >
                     下载
                   </a>
+                  <button
+                    v-if="sendTargets.length > 0"
+                    class="ui-btn ui-btn--ghost"
+                    type="button"
+                    data-action="files.send-to-client"
+                    :disabled="targetClientId === '' || sendingFileId !== ''"
+                    :title="
+                      targetClientId === ''
+                        ? '先在上方选择目标设备'
+                        : '把这份暂存文件发到该设备的下载目录'
+                    "
+                    @click="sendTo(file)"
+                  >
+                    {{ sendingFileId === file.fileId ? '发送中…' : '发送到客户端' }}
+                  </button>
                   <button
                     class="ui-btn ui-btn--danger"
                     type="button"
@@ -178,6 +245,31 @@ onMounted(() => void load())
 
 .files-hint {
   color: var(--accent-text);
+}
+
+/* 目标设备选择条（本轮「发送到客户端」）：与页头保持同一条呼吸间距 */
+.files-target {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.files-target-label {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.files-target-select {
+  min-height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--fill-1);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
 }
 
 .files-loading {

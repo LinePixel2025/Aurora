@@ -25,6 +25,12 @@ export interface FileRecord {
   at: string
   /** 过期时间点（= at + 24h）；旧索引缺失时按 at 兜底补算 */
   expiresAt: string
+  /**
+   * 来源（本轮，**可选**：旧索引缺字段按 `'client'` 处理）：
+   * `'client'` = 客户端 `center_send_file` 上传；`'web'` = 网页端 `POST /api/uploads` 上传
+   * （用于「发给某个客户端」）。只影响文件页的来源标注，不参与鉴权。
+   */
+  source?: 'client' | 'web'
 }
 
 export interface FileStoreOptions {
@@ -118,6 +124,8 @@ export class FileStore {
     clientId: string
     name: string
     note?: string
+    /** 来源标记（本轮）：缺省 `'client'`（客户端上传）；网页端上传写 `'web'` */
+    source?: 'client' | 'web'
     content: Readable
   }): Promise<FileRecord> {
     const base = basenameSafe(input.name)
@@ -148,13 +156,16 @@ export class FileStore {
       ...(input.note === undefined || input.note === '' ? {} : { note: input.note }),
       at,
       expiresAt: new Date(new Date(at).getTime() + FILE_TTL_MS).toISOString(),
+      // 缺省不写 `source`（旧索引的形状保持不变，读取侧按 'client' 归化）
+      ...(input.source === undefined || input.source === 'client' ? {} : { source: input.source }),
     }
     this.records.push(record)
     await this.index.save(this.records)
-    this.logger?.info('收到客户端文件', {
+    this.logger?.info('收到上传文件', {
       clientId: input.clientId,
       name: record.name,
       size: record.size,
+      source: input.source ?? 'client',
     })
     return record
   }

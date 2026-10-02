@@ -42,6 +42,12 @@ export interface HubDeps {
   usernameOf(userId: string): string
   serverVersion(): string
   logger?: Logger
+  /**
+   * 查暂存文件（`file.send` 用，本轮 docs/12 §5）：服务器据此在转发前补齐 `name` / `size`。
+   * 返回 `undefined` = 文件不存在 / 已过期 → 命令回 `E_NOT_FOUND` 且不进 pending。
+   * 未注入时该命令一律 `E_NOT_FOUND`（老装配器兼容）。
+   */
+  fileLookup?: (fileId: string) => { clientId: string; name: string; size: number } | undefined
 }
 
 /** 待回执命令的超时：session.input 的回执是"客户端收下了"（毫秒级），15s 足够宽裕 */
@@ -55,6 +61,15 @@ const PENDING_TIMEOUT_MS = 15_000
 const VOICE_PENDING_TIMEOUT_MS = 60_000
 /** 语音中转命令（按 cmd.kind 判定，用放宽后的超时） */
 const VOICE_KINDS: ReadonlySet<string> = new Set(['stt.transcribe', 'tts.synthesize'])
+
+/**
+ * 文件下发命令（`file.send`，本轮 docs/12 §5）的待回执超时：客户端要把文件**流式下载**
+ * 到本机（可能几十 MB），15s 必然不够 —— 沿用默认值会让服务器**先于客户端**超时，
+ * 把一次成功的下载报成 `E_CLIENT_TIMEOUT`（与 `VOICE_KINDS` 同一类坑）。
+ */
+const FILE_PENDING_TIMEOUT_MS = 10 * 60_000
+/** 文件下发命令（按 cmd.kind 判定，用放宽后的超时） */
+const FILE_KINDS: ReadonlySet<string> = new Set(['file.send'])
 
 /**
  * 待回执条目（P1-03），键为 `${webConnId}:${requestId}`。
@@ -85,6 +100,7 @@ const SESSION_OWNER_KINDS: ReadonlySet<string> = new Set([
   'session.visibility',
   'session.setPermission',
   'session.setProject',
+  'session.setModel',
 ])
 
 export class Hub {
@@ -279,6 +295,22 @@ export class Hub {
           projectId: message.projectId,
         })
         break
+      case 'session.setModel':
+        // 会话级模型覆盖（本轮，docs/06 §3）：会话数据操作（毫秒级），沿用默认待回执超时。
+        // `model` 为空串 = 清除覆盖 —— 原样透传，是否合法由客户端裁决。
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'session.setModel',
+          requestId: message.requestId,
+          sessionId: message.sessionId,
+          ...(message.providerId === undefined ? {} : { providerId: message.providerId }),
+          model: message.model,
+        })
+        break
+      case 'file.send':
+        // 把暂存文件推给该客户端落盘（本轮，docs/12 §5）：**服务器查索引补齐 name/size**
+        // 后再下发（客户端不必自己 HEAD），查不到直接回 E_NOT_FOUND 不进 pending。
+        this.forwardFileSend(conn, message.clientId, message.requestId, message.fileId)
+        break
       case 'project.list':
         this.forwardCommand(conn, message.clientId, {
           kind: 'project.list',
@@ -389,6 +421,45 @@ export class Hub {
   }
 
   /**
+   * 文件下发（`file.send`，本轮 docs/12 §5）：授权 → 查索引补齐 name/size → 交给 `forwardCommand`。
+   *
+   * 校验比普通命令多一条：**文件的来源客户端也必须是这个用户的**（或他是管理员），
+   * 否则任何登录用户都能把自己名下的文件推给别人的设备（跨租户写入对方磁盘）。
+   * 网页自己上传的文件来源就是目标客户端，天然通过。
+   */
+  private forwardFileSend(
+    conn: WebConn,
+    clientId: string,
+    requestId: string,
+    fileId: string,
+  ): void {
+    const denial = this.authorize(conn, clientId)
+    if (denial !== undefined) {
+      conn.send({ type: 'result', requestId, ok: false, error: denial })
+      return
+    }
+    const record = this.deps.fileLookup?.(fileId)
+    if (record === undefined) {
+      conn.send({ type: 'result', requestId, ok: false, error: 'E_NOT_FOUND' })
+      return
+    }
+    if (conn.user.role !== 'admin') {
+      const source = this.deps.clients.get(record.clientId)
+      if (source === undefined || source.ownerUserId !== conn.user.id) {
+        conn.send({ type: 'result', requestId, ok: false, error: 'E_FORBIDDEN' })
+        return
+      }
+    }
+    this.forwardCommand(conn, clientId, {
+      kind: 'file.send',
+      requestId,
+      fileId,
+      name: record.name,
+      size: record.size,
+    })
+  }
+
+  /**
    * 通用命令转发：授权 → 在线 → 白名单预检 → 记 pending → 发给客户端。
    * `precheckError` 由调用方传入（config.update 的白名单预检），非空直接回执。
    */
@@ -419,8 +490,13 @@ export class Hub {
       this.sessionOwners.set(cmd.sessionId, { userId: conn.user.id, clientId })
     }
     const key = pendingKey(conn.id, requestId)
-    // 语音中转的回执要等客户端调完本机 provider（30s 级），用放宽后的超时
-    const timeoutMs = VOICE_KINDS.has(cmd.kind) ? VOICE_PENDING_TIMEOUT_MS : PENDING_TIMEOUT_MS
+    // 超时按命令分级：语音要等本机 provider（30s 级 → 60s）；文件下发要等整份文件落盘
+    // （可能几十 MB → 10 分钟）；其余（会话数据 / 配置）毫秒级，15s 足够。
+    const timeoutMs = VOICE_KINDS.has(cmd.kind)
+      ? VOICE_PENDING_TIMEOUT_MS
+      : FILE_KINDS.has(cmd.kind)
+        ? FILE_PENDING_TIMEOUT_MS
+        : PENDING_TIMEOUT_MS
     const timer = setTimeout(() => {
       const current = this.pending.get(key)
       // 只回收自己那一条：同一条网页连接复用同一个 requestId 时（协议上允许），
