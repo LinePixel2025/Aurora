@@ -10,7 +10,7 @@
  * 会话视图内的卡与本栏共用同一份 state，先到先得 —— 任意一处结算，另一处随 state 消失。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { expireAsk, expireConfirm, state } from '../../state'
+import { askCardOf, expireAsk, expireConfirm, sessionKey, state } from '../../state'
 import { remainingMs } from '../../lib/format'
 import AskCard from './AskCard.vue'
 import ConfirmCard from './ConfirmCard.vue'
@@ -33,8 +33,16 @@ onBeforeUnmount(() => {
 const openConfirms = computed(() =>
   state.confirms.filter((entry) => remainingMs(entry.request.expiresAt, now.value) > 0),
 )
+/**
+ * 提问卡的待办条目（本轮）：**正在看的那个会话里的提问不再列在这里** ——
+ * 它已经渲染在那段对话的流内（可答、且答完会留痕），重复列一张同样的卡只会让人困惑。
+ * 确认卡不受影响（它本来就只有这一条栏）。
+ */
 const openAsks = computed(() =>
-  state.asks.filter((entry) => remainingMs(entry.request.expiresAt, now.value) > 0),
+  state.asks.filter((entry) => {
+    if (remainingMs(entry.request.expiresAt, now.value) <= 0) return false
+    return sessionKey(entry.clientId, entry.sessionId) !== state.activeSessionKey
+  }),
 )
 const total = computed(() => openConfirms.value.length + openAsks.value.length)
 
@@ -84,7 +92,9 @@ const sourceNames = computed(() =>
       <AskCard
         v-for="entry in openAsks"
         :key="`ask-${entry.request.requestId}`"
-        :entry="entry"
+        :ask="askCardOf(entry)"
+        :client-id="entry.clientId"
+        :session-id="entry.sessionId"
         :remaining-ms="remainingMs(entry.request.expiresAt, now)"
         @resolved="sweepExpired()"
       />

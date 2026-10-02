@@ -99,7 +99,7 @@ import { ProactiveScheduler } from './proactive.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
 import { HotkeyManager } from './hotkey.js'
 import { SessionBridge, toConfirmRequest } from './center/session-bridge.js'
-import { createAskRelay } from './center/ask-relay.js'
+import { createAskRelay, createAskSettleRelay } from './center/ask-relay.js'
 import { CenterConnector } from './center/connector.js'
 import { DeviceLoginController, type DeviceLoginOutcome } from './center/device-login.js'
 import { requestClientLogin } from './center/client-login.js'
@@ -189,7 +189,7 @@ import {
 } from './tools/session-project.js'
 import { createFileTodoPort, type FileTodoPort } from './tools/todo-port.js'
 // `ask_user` 的装配层实现（docs/06 §21）：卡片推送 + 等回执（3 分钟超时按"未回答"继续）
-import { createAskUserService, type AskUserService } from './ask-user.js'
+import { ASK_USER_TIMEOUT_MS, createAskUserService, type AskUserService } from './ask-user.js'
 import { createNetWebFetchPort } from './tools/web-fetch.js'
 import { createElectronClipboardImagePort, createElectronClipboardPort } from './tools/clipboard.js'
 import { createNodeImageIo, createViewImagePort } from './tools/image-read-port.js'
@@ -389,6 +389,22 @@ let jobStore: JobStore | undefined
  * 否则回执会送到一个没有 pending 提问的服务上（表现是"点了提交没反应"，静默超时）。
  */
 let askUserService: AskUserService | undefined
+
+/**
+ * 在途提问的原文（本轮，docs/12 §5）：`ask.settled` 只带 requestId / 作答 / 结算原因，
+ * 而 Center 的提问留痕需要问题本身 —— 提问推出去时先在这记一份、结算时取用并删除。
+ * 只记 `center-` 会话的（本地会话的提问卡是瞬时卡片，不落 sidecar）。
+ */
+const askQuestionText = new Map<
+  string,
+  {
+    question: string
+    header?: string
+    options?: { label: string; description?: string }[]
+    multiSelect: boolean
+    createdAt: string
+  }
+>()
 
 function createSnapshotPortFor(config: Settings['agent']['snapshots']): SnapshotPort {
   return createFileSnapshotPort({
@@ -1467,11 +1483,12 @@ async function bootstrap(): Promise<void> {
       },
       listProjects: () =>
         settings!.get().projects.list.map((project) => ({ id: project.id, name: project.name })),
-      // 历史回放（docs/12 §5 第 7 步，v0.2.4）：rendererHistory 过滤 tool/system 角色、
-      // 把工具卡参数解析成对象，形状即协议的 CenterSessionHistoryMessage。
+      // 历史回放（docs/12 §5 第 7 步，v0.2.4；本轮加提问留痕）：
+      // rendererHistoryWithAsks 过滤 tool/system 角色、把工具卡参数解析成对象，
+      // 并把提问留痕按时间交错进去（`kind: 'ask'`），形状即协议的 CenterSessionHistoryMessage。
       // 上限 200 条防历史超长会话把回执 payload 撑爆；center- 前缀校验在连接器。
       history: async (sessionId) => {
-        const messages = await sessions!.rendererHistory(sessionId, 200)
+        const messages = await sessions!.rendererHistoryWithAsks(sessionId, 200)
         return { ok: true, data: messages satisfies CenterSessionHistoryMessage[] }
       },
       // llm.switch 的 handler（docs/12 §6.3）：只点改 active / model / reasoningEffort，
@@ -1601,6 +1618,56 @@ async function bootstrap(): Promise<void> {
       ...(logger === undefined ? {} : { logger }),
     }),
   )
+  // 提问在本地结算（本轮，docs/12 §5）：上行 `ask.settled`，让网页端的卡片立即收起 ——
+  // 此前网页卡只能靠自己的倒计时，本地先答了它也不知道。闸门与上行同源（仅 center- 会话
+  // + allowRemoteSession），离线不入队（结算通知过期即无意义，见 createAskSettleRelay）。
+  askUserService?.onSettle(
+    createAskSettleRelay({
+      emit: () => centerConfirmEmit,
+      allowRemoteSession: () => settings!.get().center.allowRemoteSession,
+      ...(logger === undefined ? {} : { logger }),
+    }),
+  )
+  // 提问留痕（本轮，docs/12 §5）：**只对 `center-` 会话**落盘 —— 留痕的消费方是
+  // Center 的历史回放（`session.history` 的 `kind: 'ask'` 条目）；本地会话的提问卡
+  // 是刻意的瞬时卡片，给它们写 sidecar 只会让本地会话文件白长。
+  //
+  // 提问原文在这里先记一份（结算事件只带 requestId / 作答 / 结算原因），
+  // 键是 requestId，结算后立刻删；上限 50 条兜住"提问后客户端直接退出"的泄漏。
+  askUserService?.onRequest((request) => {
+    if (!request.sessionId.startsWith(CENTER_SESSION_PREFIX)) return
+    if (askQuestionText.size >= 50) {
+      const oldest = askQuestionText.keys().next().value
+      if (oldest !== undefined) askQuestionText.delete(oldest)
+    }
+    askQuestionText.set(request.requestId, {
+      question: request.question,
+      ...(request.header === undefined ? {} : { header: request.header }),
+      ...(request.options === undefined ? {} : { options: request.options }),
+      multiSelect: request.multiSelect,
+      createdAt: new Date(request.expiresAt - ASK_USER_TIMEOUT_MS).toISOString(),
+    })
+  })
+  askUserService?.onSettle((event) => {
+    if (!event.sessionId.startsWith(CENTER_SESSION_PREFIX)) return
+    const question = askQuestionText.get(event.requestId)
+    const settledAt = new Date().toISOString()
+    sessions?.appendAskRecord(event.sessionId, {
+      requestId: event.requestId,
+      question: question?.question ?? '',
+      ...(question?.header === undefined ? {} : { header: question.header }),
+      ...(question?.options === undefined ? {} : { options: question.options }),
+      multiSelect: question?.multiSelect === true,
+      answers: [...event.answers],
+      ...(event.answersByQuestion === undefined
+        ? {}
+        : { answersByQuestion: event.answersByQuestion.map((group) => [...group]) }),
+      outcome: event.outcome,
+      createdAt: question?.createdAt ?? settledAt,
+      settledAt,
+    })
+    askQuestionText.delete(event.requestId)
+  })
 
   // 7.2 分类管线装配（docs/05 §3、docs/02 §5.2）
   //     chokidar 监听 → 并发队列 → utilityProcess 内容提取 → 规则/LLM 判定 → 落盘 → 通知

@@ -14,6 +14,7 @@
 import { computed, reactive, ref } from 'vue'
 import type { RemoteLlmConfig } from '../lib/remote-llm'
 import type {
+  AskSettleOutcome,
   AskUserRequestPayload,
   AutomationCatalog,
   AutomationDefinition,
@@ -54,7 +55,7 @@ export interface ToolItem {
 
 export interface ChatItem {
   id: string
-  kind: 'user' | 'assistant' | 'error' | 'job' | 'subagent'
+  kind: 'user' | 'assistant' | 'error' | 'job' | 'subagent' | 'ask'
   content: string
   /** 思考过程增量聚合（按 messageId 归属到助手消息） */
   reasoning?: string
@@ -67,11 +68,49 @@ export interface ChatItem {
   job?: JobSummary
   /** kind = subagent：该 task 调用的最新快照（按 callId 合并覆盖） */
   subagent?: SubagentSnapshot
+  /**
+   * kind = ask：提问卡（本轮，docs/12 §5）。
+   *
+   * 实时路径来自 `ask.request`（网页端把卡插进该会话的流内），历史回放路径来自
+   * `session.history` 的 `kind: 'ask'` 条目 —— 两条都带着已结算信息（`settled`），
+   * 因此刷新 / 换设备后「刚才问了什么、答了什么」仍然可见。
+   */
+  ask?: AskCardItem
   /** 本条消息的起止时刻（渲染层观测）：轨迹摘要的耗时列用 */
   startedAt?: number
   endedAt?: number
   /** 思考增量最后到达时刻（思考块秒数心跳的基准；每轮思考重置） */
   reasoningAt?: number
+}
+
+/** 提问卡在会话流里的数据（提问原文 + 选项 + 结算结果） */
+export interface AskCardItem {
+  requestId: string
+  question: string
+  header?: string
+  options?: { label: string; description?: string }[]
+  multiSelect: boolean
+  /** 过期时间点（毫秒）：未结算的卡用它显示倒计时 */
+  expiresAt: number
+  /** 是否允许自由文本作答（缺省 true；false 时不渲染自由输入框） */
+  allowCustom?: boolean
+  /** 一次多问（1–4 个）：渲染成卡内分节；缺省 = 单问 */
+  questions?: {
+    question: string
+    header?: string
+    options?: { label: string; description?: string }[]
+    multiSelect: boolean
+  }[]
+  /** 结算结果（本地 / 网页端作答、超时、中止都会走到这里；undefined = 仍待作答） */
+  settled?: AskSettleInfo
+}
+
+/** 提问的结算信息（`ask.settled` 下行 / 网页端自己作答 / 历史回放共用一份形状） */
+export interface AskSettleInfo {
+  outcome: AskSettleOutcome
+  /** 作答内容（`outcome === 'answered'` 时非空） */
+  answers: string[]
+  answersByQuestion?: string[][]
 }
 
 export interface SessionState {
@@ -139,7 +178,6 @@ export interface AskEntry {
   sessionId: string
   request: AskUserRequestPayload
 }
-
 // ───────────────────────── 状态 ─────────────────────────
 
 export interface CenterState {
@@ -292,4 +330,78 @@ export function selectClient(clientId: string): void {
   const entry = state.clients.get(clientId)
   const last = entry?.sessionIds.at(-1)
   state.activeSessionKey = last ? sessionKey(clientId, last) : ''
+}
+
+// ───────────────────────── 提问卡（docs/12 §5，本轮） ─────────────────────────
+
+/** 流内提问卡条目的 id：与待办栏的 requestId 同源，便于两条路径互相定位 */
+export function askItemId(requestId: string): string {
+  return `ask-${requestId}`
+}
+
+/**
+ * 把一张提问卡插进**该会话的流内**（实时路径；幂等）。
+ *
+ * 与待办栏（`state.asks`）并存：控制台顶部那条只在「该提问所属会话未打开」时展示，
+ * 流内这张则跟着消息一起排 —— 同一张卡不会同时出现两处。
+ * 会话状态不存在时先建（事件可能早于网页端打开会话到达）。
+ */
+export function pushAskItem(clientId: string, sessionId: string, request: AskUserRequestPayload): void {
+  const session = ensureSessionState(clientId, sessionId)
+  const id = askItemId(request.requestId)
+  if (session.items.some((item) => item.id === id)) return
+  session.items.push({
+    id,
+    kind: 'ask',
+    content: request.question,
+    tools: [],
+    ask: {
+      requestId: request.requestId,
+      question: request.question,
+      ...(request.header === undefined ? {} : { header: request.header }),
+      ...(request.options === undefined ? {} : { options: request.options }),
+      multiSelect: request.multiSelect,
+      expiresAt: request.expiresAt,
+      // 本轮：只许选 / 一次多问都随卡片带过来（网页端与桌面端同一套渲染口径）
+      ...(request.allowCustom === false ? { allowCustom: false } : {}),
+      ...(request.questions === undefined ? {} : { questions: request.questions }),
+    },
+  })
+}
+
+/**
+ * 结算一张提问卡（本地作答 / 网页端自己作答 / 超时 / 中止都走这里）。
+ *
+ * 两处状态一起收：待办栏条目**移除**（它只列待答的），流内条目**保留并打上结算结果**
+ * （留痕：刷新后仍能从历史回放看到「问了什么、答了什么」）。
+ */
+export function settleAsk(
+  clientId: string,
+  requestId: string,
+  info: AskSettleInfo,
+): void {
+  const index = state.asks.findIndex(
+    (entry) => entry.clientId === clientId && entry.request.requestId === requestId,
+  )
+  if (index >= 0) state.asks.splice(index, 1)
+  const id = askItemId(requestId)
+  for (const session of state.sessions.values()) {
+    if (session.clientId !== clientId) continue
+    const item = session.items.find((entry) => entry.id === id)
+    if (item?.ask !== undefined) item.ask.settled = info
+  }
+}
+
+/** 待办栏里的提问条目 → 卡片数据（AskCard 的数据驱动形状，与流内条目同形） */
+export function askCardOf(entry: AskEntry): AskCardItem {
+  return {
+    requestId: entry.request.requestId,
+    question: entry.request.question,
+    ...(entry.request.header === undefined ? {} : { header: entry.request.header }),
+    ...(entry.request.options === undefined ? {} : { options: entry.request.options }),
+    multiSelect: entry.request.multiSelect,
+    expiresAt: entry.request.expiresAt,
+    ...(entry.request.allowCustom === false ? { allowCustom: false } : {}),
+    ...(entry.request.questions === undefined ? {} : { questions: entry.request.questions }),
+  }
 }

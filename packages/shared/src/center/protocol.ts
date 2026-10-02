@@ -282,6 +282,10 @@ export type CenterClientMessage =
       requestId: string
       sessionId: string
       outcome: AskSettleOutcome
+      /** 结算时的作答（`outcome === 'answered'` 时非空）：网页端据此在只读卡上显示"答了什么" */
+      answers?: string[]
+      /** 逐问作答（多问时；单问 / 未作答缺省） */
+      answersByQuestion?: string[][]
     }
 
 /** 服务器 → 客户端 */
@@ -485,6 +489,9 @@ export type CenterWebServerMessage =
       sessionId: string
       requestId: string
       outcome: AskSettleOutcome
+      /** 结算时的作答（客户端本地作答时带上；超时 / 中止为空） */
+      answers?: string[]
+      answersByQuestion?: string[][]
     }
 
 /** 历史回放里的单条工具调用（客户端 SessionStore 的渲染层形状，`input` 已是解析后的对象） */

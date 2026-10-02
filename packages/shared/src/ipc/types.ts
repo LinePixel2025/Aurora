@@ -858,12 +858,30 @@ export interface AskUserRequest {
   multiSelect: boolean
   /** 到期时刻（毫秒时间戳）：卡片据此显示倒计时 */
   expiresAt: number
+  /**
+   * 是否允许自由文本作答（缺省 true；`false` 时卡片**不渲染**自由输入框）。
+   * 由 `ask_user` 工具的 `allowCustom` 决定，用于「只能从这几个选项里选」的场合。
+   */
+  allowCustom?: boolean
+  /**
+   * 一次多问（1–4 个，本轮）：渲染成一张卡里的分节，用户一次提交后按顺序回填
+   * `answersByQuestion`。缺省 = 单问（顶层的 `question` / `options` / `multiSelect`，
+   * 多问时它们是第一问的副本，供老消费方降级显示）。
+   */
+  questions?: {
+    question: string
+    header?: string
+    options?: { label: string; description?: string }[]
+    multiSelect: boolean
+  }[]
 }
 
 /** 渲染层回执：`answers` 为空且未 `skipped` 时主进程按「跳过」处理 */
 export interface AskUserAnswerInput {
   requestId: string
   answers: string[]
+  /** 逐问作答（一次多问时按 `questions` 顺序；单问时缺省。`answers` 是它的扁平化副本） */
+  answersByQuestion?: string[][]
   skipped?: boolean
 }
 

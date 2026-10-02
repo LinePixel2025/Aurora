@@ -5,7 +5,7 @@
  * 前者是 Aurora 自己的存储 / IPC 形状（带时间戳与工具卡片状态），
  * 后者是 LLM 侧线上形状，两者由 `history.ts` 负责转换。
  */
-import type { PermissionMode, SubagentSnapshot } from '@aurora/shared'
+import type { AskSettleOutcome, PermissionMode, SubagentSnapshot } from '@aurora/shared'
 
 export type StoredRole = 'user' | 'assistant' | 'tool' | 'system'
 
@@ -160,6 +160,36 @@ export interface StoredSession {
   messages: StoredMessage[]
   /** 会话级元信息；空 meta 不写这个键（老文件形状保持不变） */
   meta?: SessionMeta
+  /**
+   * 提问留痕（本轮，docs/12 §5）：Agent 问过什么、用户答了什么、怎么结算的。
+   *
+   * 与 `messages` **分开存**：它不是对话轮次，绝不能进模型上下文（`context()` 只读
+   * `messages`），只是给渲染层 / Center 回放看的记录。有界环（最近 50 条），空数组不写键。
+   */
+  asks?: StoredAskRecord[]
+}
+
+/**
+ * 一次提问的留痕（`StoredSession.asks` 的元素，本轮 docs/12 §5）。
+ *
+ * 字段与 Center 协议里的 `CenterHistoryAsk` 一一对应：客户端的这份结构经
+ * `rendererHistoryWithAsks` 原样交给网页端渲染成只读卡。
+ */
+export interface StoredAskRecord {
+  requestId: string
+  question: string
+  header?: string
+  options?: { label: string; description?: string }[]
+  multiSelect: boolean
+  /** 扁平化的作答（多选时多条；未作答为空数组） */
+  answers: string[]
+  /** 逐问作答（一次多问时按提问顺序；单问 / 未作答缺省） */
+  answersByQuestion?: string[][]
+  outcome: AskSettleOutcome
+  /** 提问时刻（ISO）：与消息一起排序用 */
+  createdAt: string
+  /** 结算时刻（ISO） */
+  settledAt: string
 }
 
 /** 追加一条消息的输入（`id` 缺省时由 SessionStore 生成） */
@@ -192,5 +222,7 @@ export interface NewMessage {
  * v2 → v3：消息新增可选 `images`（随消息发出的图片附件**路径**，docs/06 §3.1 多模态输入）。
  * 同样**不存在迁移脚本**：缺字段 = 没有图片附件，旧文件天然合法、无需重写；
  * 版本号只用于说明"这个文件可能带图片路径"。
+ * v3 → v4：新增可选 `asks`（提问留痕，本轮 docs/12 §5）。同款零迁移：缺字段 = 没有留痕，
+ * 旧文件天然合法；版本号只用于说明"这个文件可能带提问记录"。
  */
-export const SESSION_FILE_VERSION = 3 as const
+export const SESSION_FILE_VERSION = 4 as const

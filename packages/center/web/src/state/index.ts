@@ -9,7 +9,7 @@
 import type { CenterWebServerMessage } from '@aurora/shared'
 import { socket, settleCommand } from '../lib/socket'
 import { applyEvent } from './events'
-import { replaceClients, state, statusBuffer, wsStatus } from './store'
+import { pushAskItem, replaceClients, settleAsk, state, statusBuffer, wsStatus } from './store'
 
 export * from './store'
 export * from './events'
@@ -77,6 +77,21 @@ function handleServerMessage(message: CenterWebServerMessage): void {
         clientId: message.clientId,
         sessionId: message.sessionId,
         request: message.request,
+      })
+      // 流内那张卡（本轮，docs/12 §5）：提问属于某个会话，就该出现在那段对话里；
+      // 顶部待办栏只在「该会话未打开」时列它（见 PendingBar）。
+      pushAskItem(message.clientId, message.sessionId, message.request)
+      break
+    }
+    case 'ask.settled': {
+      // 客户端先结算了（本轮，docs/12 §5）：待办栏立即收起，流内卡切成只读并显示结果 ——
+      // 不再靠网页端自己的倒计时才发现"已经不用答了"。
+      settleAsk(message.clientId, message.requestId, {
+        outcome: message.outcome,
+        answers: Array.isArray(message.answers) ? [...message.answers] : [],
+        ...(Array.isArray(message.answersByQuestion)
+          ? { answersByQuestion: message.answersByQuestion.map((group) => [...group]) }
+          : {}),
       })
       break
     }

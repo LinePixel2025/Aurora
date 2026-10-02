@@ -21,13 +21,32 @@ const emit = defineEmits<{ resolved: [] }>()
 const now = ref(Date.now())
 const busy = ref(false)
 const error = ref<string | null>(null)
-const selected = ref<string[]>([])
-const freeText = ref('')
+
+/**
+ * 一次多问（本轮，docs/06 §21）：`request.questions` 存在时按分节渲染，
+ * 否则就是单问（`questions` 缺省时构造出一个只有一问的列表）—— 两态共用同一套
+ * 选中 / 自由输入的读写路径，避免"多问是另一套实现"的漂移。
+ */
+const parts = computed(() =>
+  props.request.questions !== undefined && props.request.questions.length > 0
+    ? props.request.questions
+    : [
+        {
+          question: props.request.question,
+          ...(props.request.header === undefined ? {} : { header: props.request.header }),
+          ...(props.request.options === undefined ? {} : { options: props.request.options }),
+          multiSelect: props.request.multiSelect,
+        },
+      ],
+)
+const multiQuestion = computed(() => parts.value.length > 1)
+/** 是否允许自由文本（`allowCustom: false` 时整张卡不渲染自由输入框） */
+const allowCustom = computed(() => props.request.allowCustom !== false)
 
 const deadline = Number.isFinite(props.request.expiresAt)
   ? props.request.expiresAt
   : Date.now() + 180_000
-/** 进度条基准：主进程默认 180s 超时，取卡片创建时刻到截止时刻 */
+/** 进度条基准：取卡片创建时刻到截止时刻（支持按次配置的 timeoutMs） */
 const totalMs = Math.max(1, deadline - Date.now())
 
 const remainingMs = computed(() => Math.max(0, deadline - now.value))
@@ -36,10 +55,20 @@ const progressPercent = computed(() =>
   Math.min(100, Math.max(0, Math.round((remainingMs.value / totalMs) * 100))),
 )
 const urgent = computed(() => remainingSeconds.value <= 30)
-const options = computed(() => props.request.options ?? [])
-const hasOptions = computed(() => options.value.length > 0)
-/** 能不能提交：选了选项，或自由输入框里有非空内容 */
-const canSubmit = computed(() => selected.value.length > 0 || freeText.value.trim() !== '')
+
+/** 每问的选中项与自由输入（单问时就是长度 1 的数组） */
+const selected = ref<string[][]>(parts.value.map(() => []))
+const freeText = ref<string[]>(parts.value.map(() => ''))
+
+function optionsOf(index: number): { label: string; description?: string }[] {
+  return parts.value[index]?.options ?? []
+}
+
+/** 该问有没有作答（选项或自由文本）—— 提交门控按「至少有一问答了」判 */
+function answeredInQuestion(index: number): boolean {
+  return (selected.value[index]?.length ?? 0) > 0 || (freeText.value[index] ?? '').trim() !== ''
+}
+const canSubmit = computed(() => parts.value.some((_, index) => answeredInQuestion(index)))
 
 const timer = window.setInterval(() => {
   now.value = Date.now()
@@ -54,32 +83,44 @@ onUnmounted(() => {
   window.clearInterval(timer)
 })
 
-function toggleOption(label: string): void {
-  if (props.request.multiSelect) {
-    selected.value = selected.value.includes(label)
-      ? selected.value.filter((item) => item !== label)
-      : [...selected.value, label]
+function toggleOption(index: number, label: string): void {
+  const current = selected.value[index] ?? []
+  if (parts.value[index]?.multiSelect === true) {
+    selected.value[index] = current.includes(label)
+      ? current.filter((item) => item !== label)
+      : [...current, label]
     return
   }
   // 单选：点一下就替换选中项（再点一次取消），提交仍走下面的按钮
-  selected.value = selected.value[0] === label ? [] : [label]
+  selected.value[index] = current[0] === label ? [] : [label]
 }
 
-function isSelected(label: string): boolean {
-  return selected.value.includes(label)
+function isSelected(index: number, label: string): boolean {
+  return (selected.value[index] ?? []).includes(label)
 }
 
-/** 提交：选项 + 自由输入（两者都给时都带上 —— 用户可能是"选 A，但补充一句"） */
+/** 某一问的答案（选项 + 自由输入；两者都给时都带上 —— 用户可能是"选 A，但补充一句"） */
+function answersOfQuestion(index: number): string[] {
+  const free = (freeText.value[index] ?? '').trim()
+  return [...(selected.value[index] ?? []), ...(free === '' ? [] : [free])]
+}
+
+/**
+ * 提交：多问时逐问回填 `answersByQuestion`，`answers` 是它的扁平化副本
+ * （供旧消费方 / 审计 —— 与主进程 `AskUserService.resolve` 的口径一致）。
+ */
 async function submit(skipped = false): Promise<void> {
   if (busy.value) return
   busy.value = true
   error.value = null
-  const answers = skipped
-    ? []
-    : [...selected.value, ...(freeText.value.trim() === '' ? [] : [freeText.value.trim()])]
+  const answersByQuestion = skipped
+    ? parts.value.map(() => [])
+    : parts.value.map((_, index) => answersOfQuestion(index))
+  const answers = skipped ? [] : answersByQuestion.flat()
   const result = await window.aurora.askUser.answer({
     requestId: props.request.requestId,
     answers,
+    ...(multiQuestion.value ? { answersByQuestion } : {}),
     skipped,
   })
   busy.value = false
@@ -104,39 +145,56 @@ async function submit(skipped = false): Promise<void> {
       >
     </header>
 
-    <p class="ask-question" data-field="chat.ask-user-question">{{ request.question }}</p>
+    <!-- 一次多问：每问一节（问题 + 选项 + 自由输入）；单问就是只有一节的那个特例 -->
+    <section
+      v-for="(part, index) in parts"
+      :key="index"
+      class="ask-part"
+      :data-field="multiQuestion ? 'chat.ask-user-part' : undefined"
+    >
+      <p v-if="multiQuestion && part.header" class="tiny muted part-head">{{ part.header }}</p>
+      <p class="ask-question" :data-field="index === 0 ? 'chat.ask-user-question' : undefined">
+        {{ part.question }}
+      </p>
 
-    <div v-if="hasOptions" class="options" :class="{ multi: request.multiSelect }">
-      <button
-        v-for="option in options"
-        :key="option.label"
-        type="button"
-        class="option press"
-        :class="{ active: isSelected(option.label) }"
-        :aria-pressed="isSelected(option.label)"
-        @click="toggleOption(option.label)"
+      <div
+        v-if="optionsOf(index).length > 0"
+        class="options"
+        :class="{ multi: part.multiSelect }"
       >
-        <span class="option-mark" aria-hidden="true">
-          <Check v-if="isSelected(option.label)" :size="11" :stroke-width="2.4" />
-        </span>
-        <span class="option-body">
-          <span class="option-label">{{ option.label }}</span>
-          <span v-if="option.description" class="tiny muted option-desc">
-            {{ option.description }}
+        <button
+          v-for="option in optionsOf(index)"
+          :key="option.label"
+          type="button"
+          class="option press"
+          :class="{ active: isSelected(index, option.label) }"
+          :aria-pressed="isSelected(index, option.label)"
+          @click="toggleOption(index, option.label)"
+        >
+          <span class="option-mark" aria-hidden="true">
+            <Check v-if="isSelected(index, option.label)" :size="11" :stroke-width="2.4" />
           </span>
-        </span>
-      </button>
-    </div>
+          <span class="option-body">
+            <span class="option-label">{{ option.label }}</span>
+            <span v-if="option.description" class="tiny muted option-desc">
+              {{ option.description }}
+            </span>
+          </span>
+        </button>
+      </div>
 
-    <div class="free">
-      <input
-        v-model="freeText"
-        class="free-input"
-        type="text"
-        :placeholder="hasOptions ? '或直接输入你的回答…' : '输入你的回答…'"
-        @keydown.enter="canSubmit && submit()"
-      />
-    </div>
+      <div v-if="allowCustom" class="free">
+        <input
+          v-model="freeText[index]"
+          class="free-input"
+          type="text"
+          :placeholder="
+            optionsOf(index).length > 0 ? '或直接输入你的回答…' : '输入你的回答…'
+          "
+          @keydown.enter="canSubmit && submit()"
+        />
+      </div>
+    </section>
 
     <div
       class="progress"
@@ -152,7 +210,7 @@ async function submit(skipped = false): Promise<void> {
 
     <footer class="row foot">
       <span class="tiny muted grow">
-        {{ request.multiSelect ? '可多选' : hasOptions ? '单选' : '自由回答' }}
+        {{ multiQuestion ? `${parts.length} 个问题` : request.multiSelect ? '可多选' : '单选' }}
         · 跳过 = 让 Agent 按自己的判断继续
       </span>
       <AppButton variant="ghost" size="sm" :disabled="busy" @click="submit(true)">
@@ -174,6 +232,24 @@ async function submit(skipped = false): Promise<void> {
 </template>
 
 <style scoped>
+/* 一次多问的分节（本轮）：节与节之间用细分隔线区分，别让两问的选项看成一串 */
+.ask-part {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ask-part + .ask-part {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.part-head {
+  margin: 0;
+  font-weight: var(--weight-medium);
+}
+
 .ask-user {
   display: flex;
   flex-direction: column;

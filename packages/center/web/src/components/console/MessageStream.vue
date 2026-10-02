@@ -10,7 +10,7 @@
  * - Markdown 走共享渲染器（`@aurora/shared/browser`），按消息缓存、代码块复制走容器
  *   事件委托（`v-html` 的节点绑不了事件）。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ChatItem, ClientEntry, SessionState } from '../../state'
 import { showNotice, synthesizeSpeech } from '../../state'
 import {
@@ -26,6 +26,7 @@ import AgentToolRow from './AgentToolRow.vue'
 import ThinkingBlock from './ThinkingBlock.vue'
 import JobCard from './JobCard.vue'
 import SubagentCard from './SubagentCard.vue'
+import AskCard from './AskCard.vue'
 
 const props = defineProps<{
   session: SessionState
@@ -35,6 +36,26 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{ jumpLatest: [] }>()
+
+/**
+ * 流内提问卡的秒级心跳（本轮）：倒计时只在**未结算**的卡上显示，但没有心跳就永远是
+ * 打开那一刻的读数。一张心跳服务本会话里所有提问卡（与待办栏同款做法）。
+ */
+const now = ref(Date.now())
+let askTimer: number | undefined
+onMounted(() => {
+  askTimer = window.setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
+})
+onBeforeUnmount(() => {
+  if (askTimer !== undefined) window.clearInterval(askTimer)
+})
+
+/** 卡片自己结算后无需额外处理：state 已更新（流内条目原地切成只读），这里只做一次滚动跟随 */
+function onAskResolved(): void {
+  emit('jumpLatest')
+}
 
 /**
  * 轨迹展开状态：用户主动点开的**保持点开**；收尾时折叠（历史条目默认折叠）。
@@ -296,6 +317,16 @@ const showLoading = computed(() => {
           <span v-if="item.code" class="code">{{ item.code }}</span>
         </div>
       </div>
+
+      <!-- 提问卡（本轮，docs/12 §5）：跟消息一起排；结算后原地变成只读卡（留痕） -->
+      <AskCard
+        v-else-if="item.kind === 'ask' && item.ask"
+        :ask="item.ask"
+        :client-id="session.clientId"
+        :session-id="session.sessionId"
+        :remaining-ms="item.ask.expiresAt - now"
+        @resolved="onAskResolved"
+      />
 
       <!-- 任务清单卡 -->
       <JobCard v-else-if="item.kind === 'job' && item.job" :job="item.job" />

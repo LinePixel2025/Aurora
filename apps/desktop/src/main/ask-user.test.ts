@@ -147,3 +147,68 @@ describe('createAskUserService', () => {
     await expect(promise).resolves.toMatchObject({ timedOut: true })
   })
 })
+
+
+/**
+ * 结算通知（本轮，docs/12 §5）：本地作答 / 跳过 / 超时 / 中止都要触发 `onSettle`，
+ * 且带上 outcome 与作答 —— Center 网页端靠它把卡片立刻收起（此前只能等自己的倒计时）。
+ */
+describe('createAskUserService · 结算通知（onSettle）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('作答与跳过：outcome 分别是 answered / skipped，且带上作答', async () => {
+    const { service, pushed } = makeService()
+    const events: Array<{ outcome: string; answers: string[] }> = []
+    service.onSettle((event) => events.push({ outcome: event.outcome, answers: event.answers }))
+
+    const first = service.ask(QUESTION, { sessionId: 'center-abc' })
+    service.resolve({ requestId: pushed[0]!.requestId, answers: ['科目资料文件夹'] })
+    await expect(first).resolves.toMatchObject({ answers: ['科目资料文件夹'] })
+    expect(events.at(-1)).toMatchObject({ outcome: 'answered', answers: ['科目资料文件夹'] })
+
+    const second = service.ask(QUESTION, { sessionId: 'center-abc' })
+    service.resolve({ requestId: pushed[1]!.requestId, answers: [], skipped: true })
+    await expect(second).resolves.toMatchObject({ skipped: true })
+    expect(events.at(-1)).toMatchObject({ outcome: 'skipped', answers: [] })
+  })
+
+  it('超时 / 中止：outcome 分别是 timedOut / aborted', async () => {
+    const { service } = makeService()
+    const outcomes: string[] = []
+    service.onSettle((event) => outcomes.push(event.outcome))
+
+    const timed = service.ask(QUESTION, { sessionId: 'center-abc' })
+    await vi.advanceTimersByTimeAsync(180_000)
+    await expect(timed).resolves.toMatchObject({ timedOut: true })
+    expect(outcomes).toEqual(['timedOut'])
+
+    const controller = new AbortController()
+    const aborted = service.ask(QUESTION, { sessionId: 'center-abc', signal: controller.signal })
+    controller.abort()
+    await expect(aborted).resolves.toMatchObject({ aborted: true })
+    expect(outcomes.at(-1)).toBe('aborted')
+  })
+
+  it('本次提问的 timeoutMs 覆盖服务缺省（等待时长按入参走）', async () => {
+    const { service, pushed } = makeService()
+    const pending = service.ask({ ...QUESTION, timeoutMs: 30_000 }, { sessionId: 'center-abc' })
+    expect(pushed[0]!.expiresAt - Date.now()).toBe(30_000)
+    await vi.advanceTimersByTimeAsync(30_000)
+    await expect(pending).resolves.toMatchObject({ timedOut: true })
+  })
+
+  it('取消订阅后不再收到（返回的解除函数生效）', () => {
+    const { service, pushed } = makeService()
+    const outcomes: string[] = []
+    const off = service.onSettle((event) => outcomes.push(event.outcome))
+    off()
+    void service.ask(QUESTION, { sessionId: 'center-abc' })
+    service.resolve({ requestId: pushed[0]!.requestId, answers: ['桌面'] })
+    expect(outcomes).toEqual([])
+  })
+})

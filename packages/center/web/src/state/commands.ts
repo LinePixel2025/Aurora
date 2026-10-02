@@ -29,6 +29,7 @@ import {
   replaceClients,
   sessionKey,
   sessionViewTick,
+  settleAsk,
   state,
   statusBuffer,
   type AskEntry,
@@ -164,6 +165,37 @@ function mergeHistory(session: SessionState, history: CenterSessionHistoryMessag
   )
   const prefix: ChatItem[] = []
   for (const msg of history) {
+    // 提问留痕（本轮，docs/12 §5）：客户端把提问与作答持久化在会话文件里，
+    // 随历史回放成 `kind: 'ask'` 条目 —— 渲染成**只读的已结算卡**。
+    // 已由实时路径落过同一张卡的（requestId 相同）跳过，避免刷新后出现两张。
+    if (msg.kind === 'ask') {
+      const ask = msg.ask
+      if (ask === undefined) continue
+      const id = `ask-${ask.requestId}`
+      if (session.items.some((item) => item.id === id)) continue
+      prefix.push({
+        id,
+        kind: 'ask',
+        content: ask.question,
+        tools: [],
+        ask: {
+          requestId: ask.requestId,
+          question: ask.question,
+          ...(ask.header === undefined ? {} : { header: ask.header }),
+          ...(ask.options === undefined ? {} : { options: ask.options }),
+          multiSelect: ask.multiSelect,
+          // 历史条目都是已结算的：没有倒计时，expiresAt 用一个已过去的值占位
+          expiresAt: 0,
+          settled: {
+            outcome: ask.outcome,
+            answers: ask.answers,
+            ...(ask.answersByQuestion === undefined
+              ? {}
+              : { answersByQuestion: ask.answersByQuestion }),
+          },        },
+      })
+      continue
+    }
     if (msg.role === 'user') {
       const seen = (historyUserSeen.get(msg.content) ?? 0) + 1
       historyUserSeen.set(msg.content, seen)
@@ -594,11 +626,6 @@ export function expireConfirm(entry: ConfirmEntry): void {
   showNotice('确认请求已过期，客户端会按拒绝处理')
 }
 
-function removeAsk(requestId: string): void {
-  const index = state.asks.findIndex((a) => a.request.requestId === requestId)
-  if (index >= 0) state.asks.splice(index, 1)
-}
-
 /**
  * 作答一张提问卡（v0.3.3，docs/12 §5）。
  *
@@ -608,18 +635,21 @@ function removeAsk(requestId: string): void {
  * 并收起卡片，不当错误（先到先得的另一侧）。
  */
 export async function resolveAsk(
-  entry: AskEntry,
+  target: { clientId: string; sessionId: string; requestId: string },
   answers: string[],
   skipped = false,
+  answersByQuestion?: string[][],
 ): Promise<boolean> {
   let settled = false
   try {
     const data = await command<{ settled?: boolean }>({
       type: 'ask.resolve',
-      requestId: entry.request.requestId,
-      clientId: entry.clientId,
-      sessionId: entry.sessionId,
+      requestId: target.requestId,
+      clientId: target.clientId,
+      sessionId: target.sessionId,
       answers,
+      // 多问的分组作答（本轮）：只在给定时带上，单问保持旧形状
+      ...(answersByQuestion === undefined ? {} : { answersByQuestion }),
       ...(skipped ? { skipped: true } : {}),
     })
     settled = data?.settled !== false
@@ -628,14 +658,20 @@ export async function resolveAsk(
     const reason = error instanceof Error ? error.message : String(error)
     showNotice(`作答未送达：${reason}`)
   } finally {
-    removeAsk(entry.request.requestId)
+    // 收卡片：`settled` 命中时流内那张同步切成只读（显示答了什么）；未命中（先到先得输了）
+    // 就按已结算记一条，同样不要再让人对着倒计时等
+    settleAsk(target.clientId, target.requestId, {
+      outcome: settled ? (skipped || answers.length === 0 ? 'skipped' : 'answered') : 'timedOut',
+      answers: settled ? answers : [],
+      ...(settled && answersByQuestion !== undefined ? { answersByQuestion } : {}),
+    })
   }
   return settled
 }
 
 /** 倒计时归零：客户端侧 180s 超时按「用户未回答」收尾（模型说明假设后继续），摘掉卡片并提示 */
 export function expireAsk(entry: AskEntry): void {
-  removeAsk(entry.request.requestId)
+  settleAsk(entry.clientId, entry.request.requestId, { outcome: 'timedOut', answers: [] })
   showNotice('提问已过期，Agent 会按「用户未回答」继续')
 }
 

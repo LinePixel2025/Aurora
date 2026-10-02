@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto'
 import {
   CENTER_REMOTE_CONFIG_PREFIXES,
   CENTER_SESSION_PREFIX,
+  type AskSettleOutcome,
   type AskUserRequestPayload,
   type CenterClientMessage,
   type CenterCommand,
@@ -89,6 +90,34 @@ interface PendingEntry {
 /** 纯对象判定（数组 / null / 标量一律不算）：入站消息的形状守卫共用（P0-01 / P1-02） */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** 结算原因归化：未知取值按 `'answered'`（客户端已结算，网页端只需要知道"可以收起了"） */
+function normalizeSettleOutcome(value: unknown): AskSettleOutcome {
+  return value === 'skipped' || value === 'timedOut' || value === 'aborted' ? value : 'answered'
+}
+
+/**
+ * 入站的字符串数组（`ask.settled` 的作答）：**整体要么是合法数组要么 undefined**。
+ *
+ * 畸形的入站帧（`answers: 'x'`、`answers: {}`、元素含非字符串）不让它半截通过：
+ * 只读卡宁可只显示结算原因，也不要显示一个来路不明的"答案"。
+ */
+function stringArrayOf(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.every((item) => typeof item === 'string') ? [...(value as string[])] : undefined
+}
+
+/** 二维字符串数组（多问时的分组作答）：逐层校验，任一层不合法即整体丢弃 */
+function stringMatrixOf(value: unknown): string[][] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const groups: string[][] = []
+  for (const group of value) {
+    const parsed = stringArrayOf(group)
+    if (parsed === undefined) return undefined
+    groups.push(parsed)
+  }
+  return groups
 }
 
 const pendingKey = (webConnId: string, requestId: string): string => `${webConnId}:${requestId}`
@@ -644,6 +673,39 @@ export class Hub {
         }
         break
       }
+      case 'ask.settled': {
+        // 提问已在客户端结算（本轮，docs/12 §5）：摘除 pendingAsks 并广播，网页卡立刻收起。
+        //
+        // 形状守卫（与 P0-01 同族）：字段缺失 / 类型不对一律静默丢弃 ——
+        // 客户端→网页这条链没有 requestId 可回错误帧，忽略就是协议允许的收尾方式。
+        if (typeof message.requestId !== 'string' || message.requestId === '') return
+        const pendingAsk = this.pendingAsks.get(message.requestId)
+        // 只受理**这台客户端**登记过的那条：别的客户端拿猜到的 requestId 伪造结算
+        // 会把别人还没答的卡片提前收掉（跨租户干扰）。登记表里没有 = 已结算过或从没登记，
+        // 幂等丢弃。
+        if (pendingAsk === undefined || pendingAsk.clientId !== clientId) return
+        this.pendingAsks.delete(message.requestId)
+        const record = this.deps.clients.get(clientId)
+        if (record === undefined) return
+        const outcome = normalizeSettleOutcome(message.outcome)
+        // 作答是**不可信入站数据**：非数组 / 元素非字符串一律丢弃（畸形帧不得让下游
+        // 渲染层拿到意外形状；只读卡拿不到答案就只显示结算原因）
+        const answers = stringArrayOf(message.answers)
+        const answersByQuestion = stringMatrixOf(message.answersByQuestion)
+        for (const web of this.webConns.values()) {
+          if (web.user.role !== 'admin' && web.user.id !== record.ownerUserId) continue
+          web.send({
+            type: 'ask.settled',
+            clientId,
+            sessionId: pendingAsk.sessionId,
+            requestId: message.requestId,
+            outcome,
+            ...(answers === undefined ? {} : { answers }),
+            ...(answersByQuestion === undefined ? {} : { answersByQuestion }),
+          })
+        }
+        break
+      }
       case 'status': {
         this.statusByClient.set(clientId, message.status)
         for (const web of this.webConns.values()) {
@@ -753,6 +815,12 @@ export class Hub {
   dropClientSessions(clientId: string): void {
     for (const [sessionId, owner] of this.sessionOwners) {
       if (owner.clientId === clientId) this.sessionOwners.delete(sessionId)
+    }
+    // 未结算的提问也一并清（本轮）：客户端已经断开，那张卡永远不会有本地结算通知了；
+    // 留着它会被新连上的网页端回放出来，点了必然得到 `E_CLIENT_OFFLINE`
+    //（且客户端重连后是**新的** requestId，那条永远不会被对上）。
+    for (const [requestId, entry] of this.pendingAsks) {
+      if (entry.clientId === clientId) this.pendingAsks.delete(requestId)
     }
   }
 }

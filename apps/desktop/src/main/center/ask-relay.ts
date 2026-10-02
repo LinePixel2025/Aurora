@@ -7,6 +7,7 @@
  * 离线不丢且只入队一次）。抽成纯函数后，装配处只剩一行。
  */
 import { CENTER_SESSION_PREFIX, type AskUserRequest } from '@aurora/shared'
+import type { AskSettleEvent } from '../ask-user.js'
 import { toAskRequest } from './session-bridge.js'
 
 export interface AskRelayDeps {
@@ -45,6 +46,46 @@ export function createAskRelay(deps: AskRelayDeps): (request: AskUserRequest) =>
     } catch (error) {
       deps.logger?.warn('向 Center 发送提问请求失败', { error: String(error) })
       deps.enqueue(message)
+    }
+  }
+}
+
+/**
+ * 生成 `AskUserService.onSettle` 的处理器（本轮，docs/12 §5）：本地结算 → 上行 `ask.settled`。
+ *
+ * 与上行同一条闸门（仅 `center-` 前缀 + `allowRemoteSession`），但**离线不入队**：
+ * 结算通知过期即无意义（网页端的卡会按自己的 `expiresAt` 消失，且它自己不持有任何状态），
+ * 排队反而会在重连后推一批早就失效的"已结算"给网页端。发不出去只记 debug。
+ */
+export function createAskSettleRelay(deps: {
+  emit: () => ((message: unknown) => void) | undefined
+  allowRemoteSession: () => boolean
+  logger?: {
+    warn(message: string, meta?: Record<string, unknown>): void
+    debug?(message: string, meta?: Record<string, unknown>): void
+  }
+}): (event: AskSettleEvent) => void {
+  return (event) => {
+    if (!event.sessionId.startsWith(CENTER_SESSION_PREFIX)) return
+    if (!deps.allowRemoteSession()) return
+    const emit = deps.emit()
+    if (emit === undefined) {
+      deps.logger?.debug?.('连接器离线，提问结算通知未送达', { requestId: event.requestId })
+      return
+    }
+    try {
+      emit({
+        type: 'ask.settled',
+        requestId: event.requestId,
+        sessionId: event.sessionId,
+        outcome: event.outcome,
+        answers: [...event.answers],
+        ...(event.answersByQuestion === undefined
+          ? {}
+          : { answersByQuestion: event.answersByQuestion.map((group) => [...group]) }),
+      })
+    } catch (error) {
+      deps.logger?.warn('向 Center 发送提问结算通知失败', { error: String(error) })
     }
   }
 }

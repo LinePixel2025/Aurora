@@ -171,6 +171,10 @@ const api: AuroraApi = {
       invoke(IPC.askUser.answer, {
         requestId: input.requestId,
         answers: input.answers,
+        // 多问的分组作答（本轮）：只在给定时带上，未给定时保持旧形状
+        ...(input.answersByQuestion === undefined
+          ? {}
+          : { answersByQuestion: input.answersByQuestion }),
         skipped: input.skipped === true,
       }),
   },

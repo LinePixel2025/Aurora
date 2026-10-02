@@ -55,7 +55,7 @@ describe('SessionStore', () => {
       sessionId: string
       messages: StoredMessage[]
     }
-    expect(persisted.version).toBe(3)
+    expect(persisted.version).toBe(4)
     expect(persisted.sessionId).toBe('quick')
     expect(persisted.messages).toHaveLength(3)
     expect(persisted.messages[2]?.toolCallId).toBe('c1')
@@ -734,7 +734,7 @@ describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 
 
     // setArchived 是 await 写盘的（不靠 300ms 防抖），因此此刻盘上已是最终内容
     const persisted = readFile(fs, 'quick')
-    expect(persisted['version']).toBe(3)
+    expect(persisted['version']).toBe(4)
     expect(metaOf(fs, 'quick')['archived']).toBe(true)
     expect(typeof metaOf(fs, 'quick')['archivedAt']).toBe('string')
 
@@ -803,7 +803,7 @@ describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 
     await store.setArchived('empty-one', true)
 
     const persisted = readFile(fs, 'empty-one')
-    expect(persisted['version']).toBe(3)
+    expect(persisted['version']).toBe(4)
     expect(persisted['messages']).toEqual([])
     expect(metaOf(fs, 'empty-one')['archived']).toBe(true)
     expect((await store.summaries()).find((item) => item.id === 'empty-one')?.title).toBe('新会话')
@@ -1207,5 +1207,82 @@ describe('SessionStore · 会话级模型覆盖（chat:setSessionModel，docs/06
     // 改权限不动模型覆盖
     await store.setPermissionMode('center-x', 'readonly')
     expect(metaOf(fs, 'center-x')['llm']).toEqual({ providerId: 'p2', model: 'm-b' })
+  })
+})
+
+describe('SessionStore · 提问留痕（StoredSession.asks，docs/12 §5）', () => {
+  function record(requestId: string, createdAt = '2025-01-02T00:00:00.000Z') {
+    return {
+      requestId,
+      question: `问题 ${requestId}`,
+      multiSelect: false,
+      answers: ['A'],
+      outcome: 'answered' as const,
+      createdAt,
+      settledAt: createdAt,
+    }
+  }
+
+  it('appendAskRecord 落盘可往返：重启后 rendererHistoryWithAsks 仍带 kind=ask 条目', async () => {
+    const { store, fs } = setup()
+    await store.append('center-a', { role: 'user', content: '你好' })
+    await store.appendAskRecord('center-a', record('ask-1'))
+    await store.flush()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const persisted = JSON.parse(fs.files.get(`${SESSION_DIR}\\center-a.json`) ?? '{}') as {
+      asks?: unknown[]
+    }
+    expect(persisted.asks).toHaveLength(1)
+
+    const store2 = new SessionStore({
+      dir: SESSION_DIR,
+      fs: new TestFileSystem({ ...Object.fromEntries(fs.files) }),
+      writeDebounceMs: 0,
+    })
+    const history = await store2.rendererHistoryWithAsks('center-a')
+    expect(history).toHaveLength(2)
+    expect(history[0]).toMatchObject({ kind: 'ask', content: '问题 ask-1' })
+    expect(history[0]!.ask).toMatchObject({ outcome: 'answered', answers: ['A'] })
+    expect(history[1]).toMatchObject({ role: 'user' })
+  })
+
+  it('同一 requestId 重复追加按覆盖（幂等）；有界环保留最近 50 条', async () => {
+    const { store } = setup()
+    await store.appendAskRecord('center-b', record('ask-1'))
+    await store.appendAskRecord('center-b', { ...record('ask-1'), answers: ['B'] })
+    await store.flush()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(await store.asksOf('center-b')).toHaveLength(1)
+    expect((await store.asksOf('center-b'))[0]!.answers).toEqual(['B'])
+
+    for (let index = 0; index < 60; index += 1) {
+      await store.appendAskRecord('center-c', record(`ask-${index}`))
+    }
+    await store.flush()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const kept = await store.asksOf('center-c')
+    expect(kept).toHaveLength(50)
+    expect(kept[0]!.requestId).toBe('ask-10')
+  })
+
+  it('畸形留痕按整条丢弃，且不影响消息读出（旁路字段不触发损坏备份）', async () => {
+    const { store } = setup({
+      [`${SESSION_DIR}\\center-d.json`]: JSON.stringify({
+        version: 4,
+        sessionId: 'center-d',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '你好')],
+        asks: [
+          { requestId: 'ok', question: 'q', createdAt: 'x', settledAt: 'y', outcome: 'answered' },
+          { requestId: 42, question: 'q' },
+          'not-an-object',
+        ],
+      }),
+    })
+    expect(await store.asksOf('center-d')).toHaveLength(1)
+    expect(await store.get('center-d')).toHaveLength(1)
+    // 没有 meta / asks 之外的东西被顺手写回（只读不重写）
+    expect(await store.summaries()).toHaveLength(1)
   })
 })

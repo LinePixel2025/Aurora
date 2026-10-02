@@ -130,11 +130,13 @@ const subagentRunning = computed(() => subagentRuns.value.some((run) => run.stat
 const sensitiveRequest = ref<SensitiveToolRequest | null>(null)
 let offSensitiveTool: (() => void) | null = null
 /**
- * Agent 提问卡片（`ask_user`，docs/06 §21）的当前请求。
- * 同一时刻最多一张：主循环同轮工具顺序执行，不会并发提问 —— 后来的请求直接覆盖旧的
- * （旧的那次在主进程侧已按超时结算，覆盖不会丢回执）。
+ * Agent 提问卡片（`ask_user`，docs/06 §21）的当前请求列表（本轮改为**按会话并存**）。
+ *
+ * 此前是单槽位 ref：跨会话并发提问时后到的会**覆盖**先到的那张，用户再也看不到它
+ * （内核那侧仍挂着等回执，只能等超时）—— Center 网页端早已用数组解决同一问题，
+ * 这里补齐。渲染时全部列出（不按当前会话过滤）：漏掉一张卡就等于让一个问题没人回答。
  */
-const askUserRequest = ref<AskUserRequest | null>(null)
+const askUserRequests = ref<AskUserRequest[]>([])
 let offAskUserRequest: (() => void) | null = null
 
 /** 拖拽中的附件绝对路径（发送后清空） */
@@ -272,7 +274,8 @@ onMounted(() => {
     sensitiveRequest.value = request
   })
   offAskUserRequest = window.aurora.askUser.onRequest((request) => {
-    askUserRequest.value = request
+    if (askUserRequests.value.some((item) => item.requestId === request.requestId)) return
+    askUserRequests.value = [...askUserRequests.value, request]
   })
   document.addEventListener('pointerdown', onComposerPointerDown)
   document.addEventListener('keydown', onDocumentEscape)
@@ -303,9 +306,9 @@ function resolveSensitive(): void {
   sensitiveRequest.value = null
 }
 
-/** 提问卡片的收尾：回执已由卡片自己发出，这里只把卡片收起（超时 / 跳过 / 已结算都走它） */
-function resolveAskUser(): void {
-  askUserRequest.value = null
+/** 提问卡片的收尾：回执已由卡片自己发出，这里只把**那一张**收起（超时 / 跳过 / 已结算都走它） */
+function resolveAskUser(requestId: string): void {
+  askUserRequests.value = askUserRequests.value.filter((item) => item.requestId !== requestId)
 }
 
 const guide = computed(() => {
@@ -1318,10 +1321,11 @@ async function markGuideDone(): Promise<void> {
         「要不要执行这个敏感动作」，提问问的是「这件事你想怎么办」，互不替代。
       -->
       <AskUserCard
-        v-if="askUserRequest"
-        :key="askUserRequest.requestId"
-        :request="askUserRequest"
-        @resolved="resolveAskUser"
+        v-for="request in askUserRequests"
+        :key="request.requestId"
+        :request="request"
+        :data-session-id="request.sessionId"
+        @resolved="resolveAskUser(request.requestId)"
       />
 
       <SensitiveToolCard

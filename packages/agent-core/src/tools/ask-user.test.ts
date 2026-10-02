@@ -153,3 +153,69 @@ describe('createAskUserTool', () => {
     expect(calls).toHaveLength(0)
   })
 })
+
+/**
+ * 本轮扩展（docs/06 §21）：`allowCustom` / `timeoutMs` / 一次多问。
+ *
+ * 三条都影响"卡片上渲染出什么"，因此判据是**端口收到的 question 对象**：
+ * 参数没透传就等于卡片上什么都没变。
+ */
+describe('ask_user · 本轮扩展（allowCustom / timeoutMs / 一次多问）', () => {
+  it('allowCustom: false 透传到端口；缺省不带该字段（老行为不变）', async () => {
+    const { tool, calls } = makeHarness({ answer: { answers: ['A'] } })
+    await tool.execute(
+      { question: '选一个', options: [{ label: 'A' }, { label: 'B' }], allowCustom: false },
+      { sessionId: 'main' },
+    )
+    expect(calls[0]!.question.allowCustom).toBe(false)
+
+    await tool.execute({ question: '选一个', options: [{ label: 'A' }] }, { sessionId: 'main' })
+    expect(calls[1]!.question.allowCustom).toBeUndefined()
+  })
+
+  it('timeoutMs 按区间钳制（30s–10min），非法值忽略', async () => {
+    const { tool, calls } = makeHarness({ answer: { answers: [] } })
+    await tool.execute({ question: 'q', timeoutMs: 1_000 }, { sessionId: 'main' })
+    expect(calls[0]!.question.timeoutMs).toBe(30_000)
+    await tool.execute({ question: 'q', timeoutMs: 99_999_999 }, { sessionId: 'main' })
+    expect(calls[1]!.question.timeoutMs).toBe(600_000)
+    await tool.execute({ question: 'q', timeoutMs: 'soon' }, { sessionId: 'main' })
+    expect(calls[2]!.question.timeoutMs).toBeUndefined()
+  })
+
+  it('一次多问：questions 全量透传，顶层取第一问（老消费方降级显示第一问）', async () => {
+    const { tool, calls } = makeHarness({ answer: { answers: ['A'], answersByQuestion: [['A'], []] } })
+    const result = await tool.execute(
+      {
+        question: '第一问？',
+        questions: [
+          { question: '第一问？', options: [{ label: 'A' }, { label: 'B' }] },
+          { question: '第二问？', options: [{ label: 'C' }, { label: 'D' }], multiSelect: true },
+        ],
+      },
+      { sessionId: 'main' },
+    )
+    const question = calls[0]!.question
+    expect(question.questions).toHaveLength(2)
+    expect(question.questions![1]!.multiSelect).toBe(true)
+    expect(question.question).toBe('第一问？')
+    expect(question.options?.map((item) => item.label)).toEqual(['A', 'B'])
+    // 回填给模型的是逐问的问答，而不是只抄第一问
+    expect(result.content).toContain('第二问？')
+  })
+
+  it('一次多问的上限与逐项校验：超过 4 问 / 缺 question 都不打扰用户', async () => {
+    const { tool, calls } = makeHarness({ answer: { answers: [] } })
+    const tooMany = await tool.execute(
+      { question: 'q', questions: Array.from({ length: 5 }, (_, i) => ({ question: `q${i}` })) },
+      { sessionId: 'main' },
+    )
+    expect(tooMany.isError).toBe(true)
+    const missing = await tool.execute(
+      { question: 'q', questions: [{ question: 'ok' }, { options: [{ label: 'A' }] }] },
+      { sessionId: 'main' },
+    )
+    expect(missing.isError).toBe(true)
+    expect(calls).toHaveLength(0)
+  })
+})

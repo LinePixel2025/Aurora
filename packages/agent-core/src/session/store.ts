@@ -27,6 +27,7 @@ import {
   type SessionMeta,
   type SessionModelOverride,
   type SessionSpace,
+  type StoredAskRecord,
   type StoredMessage,
   type StoredSession,
   type StoredToolCall,
@@ -34,6 +35,25 @@ import {
 
 export const SESSION_WRITE_DEBOUNCE_MS = 300
 const MAX_BACKUPS = 3
+/** 单会话保留的提问留痕条数（有界环）：长会话也不让 `asks` 无限增长 */
+export const MAX_ASK_RECORDS = 50
+
+/**
+ * Center 回放的条目（`rendererHistoryWithAsks` 的返回）：普通消息 + 提问留痕。
+ *
+ * 与协议里的 `CenterSessionHistoryMessage` 同形（`kind` / `ask` 都是可选，
+ * 老网页端忽略它们即可）。
+ */
+export type RendererHistoryEntry = {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: string
+  toolCalls?: AgentToolCall[]
+  reasoning?: string
+  kind?: 'ask'
+  ask?: StoredAskRecord
+}
 
 /**
  * 会话摘要（`chat:sessions`，docs/06 §4）。
@@ -97,6 +117,14 @@ export class SessionStore {
   private readonly cache = new Map<string, StoredMessage[]>()
   /** 会话级元信息（归档等）：与 `cache` / `loaded` / `dirty` 同一套懒加载 + 脏标记 */
   private readonly metaCache = new Map<string, SessionMeta>()
+  /**
+   * 提问留痕（本轮，docs/12 §5）：与元信息同一套懒加载 + 脏标记。
+   *
+   * 单独的 Map 而不是塞进 `meta`：它是**数组**且可能增长，而 `meta` 是"小而稳定"的
+   * 开关集合（`isEmptyMeta` 逐字段判空、每次都整份写）。分开之后留痕的有界环与
+   * 归档 / 可见性这些开关互不影响。
+   */
+  private readonly askCache = new Map<string, StoredAskRecord[]>()
   private readonly loaded = new Set<string>()
   /**
    * 首读去重：`id → 读盘中的 promise`（in-flight）。
@@ -214,6 +242,68 @@ export class SessionStore {
     }))
   }
 
+  /**
+   * 供 **Center 回放**用的历史（本轮，docs/12 §5）：在 `rendererHistory` 的基础上
+   * 把**提问留痕**按 `createdAt` 交错进去，条目带 `kind: 'ask'` 与 `ask` 详情。
+   *
+   * 为什么不直接改 `rendererHistory`：桌面渲染层的 `chat:history` 也吃那个方法，
+   * 而它认识的 `kind` 只有 user / assistant —— 多出来的 ask 条目会在主界面里渲染成
+   * 一条空气泡。回放是**另一个消费方**，就单独给一个方法，两边互不影响。
+   */
+  async rendererHistoryWithAsks(
+    sessionId: string,
+    limit?: number,
+  ): Promise<RendererHistoryEntry[]> {
+    const [messages, asks] = await Promise.all([this.rendererHistory(sessionId, limit), this.asksOf(sessionId)])
+    if (asks.length === 0) return messages
+    const entries: RendererHistoryEntry[] = [
+      ...messages,
+      ...asks.map((ask) => ({
+        id: `ask-${ask.requestId}`,
+        role: 'assistant' as const,
+        content: ask.question,
+        createdAt: ask.createdAt,
+        kind: 'ask' as const,
+        ask,
+      })),
+    ]
+    entries.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    return limit !== undefined && limit > 0 ? entries.slice(-limit) : entries
+  }
+
+  /**
+   * 追问留痕（`meta` 之外的旁路数据）：`undefined` 归一为 `[]`。
+   *
+   * 与 `modelOverrideOf` 不同，这里走 `ensureLoaded`：调用方都是允许 await 的
+   * 回放 / 落痕路径，没有"必须在同步 slot 里取值"的约束。
+   */
+  async asksOf(sessionId: string): Promise<StoredAskRecord[]> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    return [...(this.askCache.get(id) ?? [])]
+  }
+
+  /**
+   * 追加一条提问留痕（本轮，docs/12 §5）：本地问答结算后由装配层调用。
+   *
+   * - **有界环**：单会话只保留最近 `MAX_ASK_RECORDS` 条，防止长会话把文件越写越大；
+   * - 同一 `requestId` 重复追加按覆盖处理（幂等：结算通知可能重放）；
+   * - 先 `ensureLoaded` + **await 写盘完成**（与 `setProject` 同一条铁律）：
+   *   装配层是「发一条事件、不管结果」的监听器，若这里只排个微任务就返回，
+   *   `flush()`（退出前收尾）有可能在标记脏之前跑过 —— 那条留痕就丢了。
+   */
+  async appendAskRecord(sessionId: string, record: StoredAskRecord): Promise<void> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    const current = this.askCache.get(id) ?? []
+    const next = current.filter((item) => item.requestId !== record.requestId)
+    next.push(record)
+    this.askCache.set(id, next.slice(-MAX_ASK_RECORDS))
+    this.dirty.add(id)
+    this.scheduleWrite(id, 0)
+    await (this.writing.get(id) ?? Promise.resolve())
+  }
+
   /** 供 loop 使用的截断历史（不含本次用户输入）。 */
   async context(sessionId: string, options: TruncateOptions = {}): Promise<StoredMessage[]> {
     const messages = await this.get(sessionId)
@@ -275,6 +365,7 @@ export class SessionStore {
     await (this.writing.get(id) ?? Promise.resolve()).catch(() => undefined)
     this.cache.delete(id)
     this.metaCache.delete(id)
+    this.askCache.delete(id)
     this.loaded.delete(id)
     this.loading.delete(id)
     await this.fs.remove(sessionFilePath(this.dir, id))
@@ -664,7 +755,7 @@ export class SessionStore {
    * 同 id 视为同一条，取 cache 里那份（它可能已被 `updateToolCall` 就地更新过，状态更新）。
    */
   private async loadFromDisk(id: string, isCurrent?: () => boolean): Promise<void> {
-    const { messages, meta } = await this.readFromDisk(id)
+    const { messages, meta, asks } = await this.readFromDisk(id)
     // 读盘期间被 `remove()` 删掉了：`remove` 已清 cache/metaCache/loaded 并删了文件，
     // 这里再 `set` 会把已删会话以**完整内容**复活在内存（幽灵条目，直到重启）。
     // 判据是「`loading` 里那一条还是不是本次这个 task」—— `remove()` 会把它删掉。
@@ -676,6 +767,9 @@ export class SessionStore {
     )
     // meta 同理：读盘期间写下的 meta（归档等）比盘上那份新，不能反过来覆盖它
     if (!this.metaCache.has(id)) this.metaCache.set(id, meta)
+    // 留痕按 requestId 合并：读盘期间新结算的那条不能被盘上那份盖掉（与 meta 同一顾虑）
+    const cachedAsks = this.askCache.get(id)
+    this.askCache.set(id, cachedAsks === undefined ? asks : mergeAsks(asks, cachedAsks))
     this.loaded.add(id)
   }
 
@@ -692,15 +786,28 @@ export class SessionStore {
    * - `meta` 畸形（不是对象 / 是数组 / 字段类型不对）→ 只当空 meta，**备份都不做** ——
    *   meta 是新加的旁路信息，绝不能因为它坏了就把整份会话备份重建（那等于丢消息）。
    */
+  /**
+   * 读盘：消息 / 会话级 meta / 提问留痕一次读出（三者都在同一个文件里，没有理由读三遍）。
+   *
+   * 宽容口径（docs/06 §4）：
+   * - 文件**确实不存在** → 空 messages + 空 meta + 空 asks（首次运行，不是错误）；
+   * - 读取异常（EPERM / EBUSY / EIO —— Windows 上杀软与同步盘短暂锁文件现实存在）→
+   *   **原样上抛**，由 `ensureLoaded` 保证「不置 loaded、下次访问重试」（P2-01）：
+   *   在这里返回空快照会被当成装载成功，紧接着那一次写盘就用「只有新消息」的 payload
+   *   把会话文件整体覆盖掉 —— 这正是「空快照冲盘」家族（对照 `jobs/store.ts` 的 `isAbsent`）；
+   * - `messages` 不是数组 → 走既有损坏备份路径（文件结构已不可信）；
+   * - `meta` / `asks` 畸形（不是对象 / 是数组 / 字段类型不对）→ 只当空值，**备份都不做** ——
+   *   两者都是新加的旁路信息，绝不能因为它们坏了就把整份会话备份重建（那等于丢消息）。
+   */
   private async readFromDisk(
     id: string,
-  ): Promise<{ messages: StoredMessage[]; meta: SessionMeta }> {
+  ): Promise<{ messages: StoredMessage[]; meta: SessionMeta; asks: StoredAskRecord[] }> {
     const path = sessionFilePath(this.dir, id)
     let raw: string
     try {
       raw = await this.fs.readFile(path)
     } catch (error) {
-      if (await this.isAbsent(path, error)) return { messages: [], meta: {} }
+      if (await this.isAbsent(path, error)) return { messages: [], meta: {}, asks: [] }
       throw error
     }
 
@@ -708,14 +815,16 @@ export class SessionStore {
       const parsed: unknown = JSON.parse(raw)
       const messages = (parsed as StoredSession | null)?.messages
       if (!Array.isArray(messages)) throw new Error('messages 不是数组')
+      const session = parsed as StoredSession | null
       return {
         messages: messages.filter(isStoredMessage),
-        meta: normalizeMeta((parsed as StoredSession | null)?.meta),
+        meta: normalizeMeta(session?.meta),
+        asks: normalizeAsks(session?.asks),
       }
     } catch (error) {
       this.logger.error('会话文件解析失败，已备份并重建', { sessionId: id, error: String(error) })
       await this.backupCorrupt(id, path)
-      return { messages: [], meta: {} }
+      return { messages: [], meta: {}, asks: [] }
     }
   }
 
@@ -798,6 +907,7 @@ export class SessionStore {
         if (!this.dirty.has(id)) return
         this.dirty.delete(id)
         const meta = this.metaCache.get(id) ?? {}
+        const asks = this.askCache.get(id) ?? []
         const payload: StoredSession = {
           version: SESSION_FILE_VERSION,
           sessionId: id,
@@ -805,6 +915,8 @@ export class SessionStore {
           messages: this.cache.get(id) ?? [],
           // 空 meta 不写这个键：老文件（v1）的形状保持不变，不让每个会话文件都多一行 `"meta": {}`
           ...(isEmptyMeta(meta) ? {} : { meta }),
+          // 提问留痕（本轮）：没有留痕就不写键，老文件形状照旧
+          ...(asks.length === 0 ? {} : { asks }),
         }
         try {
           await this.fs.writeFileAtomic(
@@ -917,6 +1029,110 @@ function sameModelOverride(
 ): boolean {
   if (left === undefined || right === undefined) return left === right
   return left.providerId === right.providerId && left.model === right.model
+}
+
+/**
+ * 提问留痕归化：逐条走**白名单**，畸形条目整条丢弃（不猜测、不半截通过）。
+ *
+ * 与 `normalizeMeta` 同一条宽容哲学：留痕是旁路信息，坏掉只当没有，
+ * 绝不能因此把整份会话当损坏备份重建（那等于丢消息）。
+ */
+function normalizeAsks(value: unknown): StoredAskRecord[] {
+  if (!Array.isArray(value)) return []
+  const records: StoredAskRecord[] = []
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) continue
+    const candidate = item as Record<string, unknown>
+    const requestId = candidate['requestId']
+    const question = candidate['question']
+    const createdAt = candidate['createdAt']
+    const settledAt = candidate['settledAt']
+    if (
+      typeof requestId !== 'string' ||
+      requestId === '' ||
+      typeof question !== 'string' ||
+      typeof createdAt !== 'string' ||
+      typeof settledAt !== 'string'
+    ) {
+      continue
+    }
+    const outcome = candidate['outcome']
+    const answers = stringListOf(candidate['answers'])
+    records.push({
+      requestId,
+      question,
+      ...(typeof candidate['header'] === 'string' ? { header: candidate['header'] } : {}),
+      ...(normalizeOptions(candidate['options']) === undefined
+        ? {}
+        : { options: normalizeOptions(candidate['options'])! }),
+      multiSelect: candidate['multiSelect'] === true,
+      answers: answers ?? [],
+      ...(stringMatrixOf(candidate['answersByQuestion']) === undefined
+        ? {}
+        : { answersByQuestion: stringMatrixOf(candidate['answersByQuestion'])! }),
+      outcome:
+        outcome === 'skipped' || outcome === 'timedOut' || outcome === 'aborted'
+          ? outcome
+          : 'answered',
+      createdAt,
+      settledAt,
+    })
+  }
+  return records
+}
+
+/** 字符串数组（缺省 / 畸形一律 undefined，由调用方决定怎么兜） */
+function stringListOf(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.every((item) => typeof item === 'string') ? [...(value as string[])] : undefined
+}
+
+/** 二维字符串数组（多问的分组作答） */
+function stringMatrixOf(value: unknown): string[][] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const groups: string[][] = []
+  for (const group of value) {
+    const parsed = stringListOf(group)
+    if (parsed === undefined) return undefined
+    groups.push(parsed)
+  }
+  return groups
+}
+
+/** 选项归化（label 必须是非空字符串；description 可选） */
+function normalizeOptions(value: unknown): { label: string; description?: string }[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const options: { label: string; description?: string }[] = []
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) continue
+    const candidate = item as Record<string, unknown>
+    const label = candidate['label']
+    if (typeof label !== 'string' || label === '') continue
+    options.push({
+      label,
+      ...(typeof candidate['description'] === 'string'
+        ? { description: candidate['description'] }
+        : {}),
+    })
+  }
+  return options
+}
+
+/**
+ * 留痕合并（读盘 vs 内存）：盘上那份为底，内存里盘上没有的按原顺序补在后面。
+ *
+ * 与 `mergeMessages` 同一意图：读盘期间新结算的那条（内存里）不能被盘上的旧快照盖掉。
+ */
+function mergeAsks(onDisk: StoredAskRecord[], cached: StoredAskRecord[]): StoredAskRecord[] {
+  if (cached.length === 0) return onDisk
+  const seen = new Set(onDisk.map((item) => item.requestId))
+  const merged = [...onDisk]
+  for (const record of cached) {
+    if (seen.has(record.requestId)) continue
+    seen.add(record.requestId)
+    merged.push(record)
+  }
+  return merged.slice(-MAX_ASK_RECORDS)
 }
 
 /**
