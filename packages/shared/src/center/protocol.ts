@@ -187,7 +187,7 @@ export type CenterCommand =
       requestId: string
       sessionId: string
       permissionMode: PermissionMode
-    }  /** 会话绑定项目（`''` 清除绑定）；`projectId` 必须在客户端 `projects.list` 内 */
+    } /** 会话绑定项目（`''` 清除绑定）；`projectId` 必须在客户端 `projects.list` 内 */
   | { kind: 'session.setProject'; requestId: string; sessionId: string; projectId: string }
   /**
    * 会话级模型覆盖（本轮，docs/06 §3 / docs/12 §6.3）：写会话文件
@@ -369,6 +369,8 @@ export type CenterWebMessage =
       clientId: string
       sessionId: string
       answers: string[]
+      /** 逐问作答（`questions[]` 多问时；单问 / 旧网页不带） */
+      answersByQuestion?: string[][]
       skipped?: boolean
     }
   // ── 远程会话管理（docs/12 §6.3）：授权与回执同其他命令 ──

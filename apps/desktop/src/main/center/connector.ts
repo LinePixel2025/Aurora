@@ -185,7 +185,12 @@ export interface CenterConnectorDeps {
    * 幂等由 `AskUserService.resolve` 保证：未知 / 已结算的 requestId 返回 false，
    * 网页端据此提示「已失效」而不是当错误（本地卡与网页卡先到先得）。
    */
-  resolveAsk?: (input: { requestId: string; answers: string[]; skipped?: boolean }) => boolean
+  resolveAsk?: (input: {
+    requestId: string
+    answers: string[]
+    answersByQuestion?: string[][]
+    skipped?: boolean
+  }) => boolean
   /** 连接事件回调：绑定时传入发往 Center 的发送函数，断开时传 undefined */
   bindSessionEmit?: (emit: ((message: unknown) => void) | undefined) => void
   onStatusChange?: (state: ConnectionState, lastError?: string) => void
@@ -655,11 +660,7 @@ export class CenterConnector {
               return
             }
             case 'session.setModel': {
-              const result = await manager.setModel(
-                cmd.sessionId,
-                cmd.providerId ?? '',
-                cmd.model,
-              )
+              const result = await manager.setModel(cmd.sessionId, cmd.providerId ?? '', cmd.model)
               reply(result.ok, undefined, result.error)
               return
             }
@@ -906,6 +907,9 @@ export class CenterConnector {
         const resolved = this.deps.resolveAsk?.({
           requestId: cmd.requestId,
           answers: cmd.answers,
+          ...(cmd.answersByQuestion === undefined
+            ? {}
+            : { answersByQuestion: cmd.answersByQuestion }),
           ...(cmd.skipped === true ? { skipped: true } : {}),
         })
         reply(true, { settled: resolved ?? false })

@@ -169,6 +169,35 @@ describe('toAskRequest · 提问上行消息（v0.3.3）', () => {
     })
     expect('header' in message.request).toBe(false)
     expect('options' in message.request).toBe(false)
+    expect('allowCustom' in message.request).toBe(false)
+    expect('questions' in message.request).toBe(false)
     expect(JSON.parse(JSON.stringify(message))).toEqual(message)
+  })
+
+  it('一次多问与 allowCustom 原样透传（网页端渲染分节卡 / 隐藏自由输入框靠它们）', () => {
+    const message = toAskRequest({
+      requestId: 'ask-abc-3',
+      sessionId: 'center-abc',
+      question: '第一问',
+      multiSelect: false,
+      allowCustom: false,
+      questions: [
+        { question: '第一问', multiSelect: false },
+        { question: '第二问', header: '目录', multiSelect: true },
+      ],
+      expiresAt: 1_800_000_000_000,
+    })
+    expect(message.request).toEqual({
+      requestId: 'ask-abc-3',
+      sessionId: 'center-abc',
+      question: '第一问',
+      multiSelect: false,
+      allowCustom: false,
+      questions: [
+        { question: '第一问', multiSelect: false },
+        { question: '第二问', header: '目录', multiSelect: true },
+      ],
+      expiresAt: 1_800_000_000_000,
+    })
   })
 })

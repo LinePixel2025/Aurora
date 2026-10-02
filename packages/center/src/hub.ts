@@ -274,18 +274,22 @@ export class Hub {
           approved: message.approved,
         })
         break
-      case 'ask.resolve':
+      case 'ask.resolve': {
         // 提问卡作答（v0.3.3）：先把它从待答表里摘掉（同一 requestId 的第二条页签再作答时
         // 客户端会因已结算回 `settled: false`），再走与 confirm.resolve 同一条转发管道。
+        // 逐问作答过 stringMatrixOf：畸形入站帧整体清洗为 undefined，不让来路不明的答案下发。
         this.pendingAsks.delete(message.requestId)
+        const answersByQuestion = stringMatrixOf(message.answersByQuestion)
         this.forwardCommand(conn, message.clientId, {
           kind: 'ask.resolve',
           requestId: message.requestId,
           sessionId: message.sessionId,
           answers: message.answers,
+          ...(answersByQuestion === undefined ? {} : { answersByQuestion }),
           ...(message.skipped === true ? { skipped: true } : {}),
         })
         break
+      }
       // ── 远程会话管理（docs/12 §6.3）：授权与回执同其他命令 ──
       case 'session.list':
         this.forwardCommand(conn, message.clientId, {

@@ -443,15 +443,24 @@ describe('Hub · 提问卡路由（ask.request / ask.resolve，v0.3.3）', () =>
       clientId: 'c1',
       sessionId: 'center-abc',
       answers: ['dist'],
+      answersByQuestion: [['dist'], ['nvidia', 'cuda']],
     })
     const forwarded = client.sent.at(-1) as {
       type: string
-      cmd: { kind: string; requestId: string; sessionId: string; answers: string[]; skipped?: boolean }
+      cmd: {
+        kind: string
+        requestId: string
+        sessionId: string
+        answers: string[]
+        answersByQuestion?: string[][]
+        skipped?: boolean
+      }
     }
     expect(forwarded.cmd.kind).toBe('ask.resolve')
     expect(forwarded.cmd.requestId).toBe('ask-1')
     expect(forwarded.cmd.sessionId).toBe('center-abc')
     expect(forwarded.cmd.answers).toEqual(['dist'])
+    expect(forwarded.cmd.answersByQuestion).toEqual([['dist'], ['nvidia', 'cuda']])
     expect(forwarded.cmd.skipped).toBeUndefined()
 
     // 已作答 → 摘除；后续连上的页签不再回放
@@ -496,6 +505,40 @@ describe('Hub · 提问卡路由（ask.request / ask.resolve，v0.3.3）', () =>
       answers: ['dist'],
     })
     expect((owner.sent.at(-1) as { error?: string }).error).toBe('E_CLIENT_OFFLINE')
+  })
+
+  it('ask.resolve 的畸形 answersByQuestion 清洗为 undefined 不下发（stringMatrixOf）', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    client.sent.length = 0
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+
+    const send = (answersByQuestion: unknown) =>
+      harness.hub.handleWebMessage(owner.conn, {
+        type: 'ask.resolve',
+        requestId: 'ask-x',
+        clientId: 'c1',
+        sessionId: 'center-abc',
+        answers: ['x'],
+        ...(answersByQuestion === undefined ? {} : { answersByQuestion }),
+      } as Parameters<typeof harness.hub.handleWebMessage>[0])
+
+    // 非数组 / 元素非数组 / 组内含非字符串：整体丢弃
+    for (const bad of ['x', {}, [['a'], 3], [['a', 1]]]) {
+      client.sent.length = 0
+      send(bad)
+      const forwarded = client.sent.at(-1) as {
+        cmd: { answersByQuestion?: string[][] }
+      }
+      expect('answersByQuestion' in forwarded.cmd).toBe(false)
+    }
+
+    // 合法矩阵照常下发
+    send([['a'], ['b', 'c']])
+    const forwarded = client.sent.at(-1) as { cmd: { answersByQuestion?: string[][] } }
+    expect(forwarded.cmd.answersByQuestion).toEqual([['a'], ['b', 'c']])
   })
 
   it('registerClient 重连时保留上一轮的 voice 能力位（hello 占位快照不含它）', async () => {
@@ -1413,7 +1456,12 @@ describe('Aurora Center · 文件下发（file.send）', () => {
       clientId: 'c1',
       fileId: 'missing',
     })
-    expect(web.sent.at(-1)).toMatchObject({ type: 'result', requestId: 'fs-2', ok: false, error: 'E_NOT_FOUND' })
+    expect(web.sent.at(-1)).toMatchObject({
+      type: 'result',
+      requestId: 'fs-2',
+      ok: false,
+      error: 'E_NOT_FOUND',
+    })
     expect(target.sent).toEqual([])
   })
 

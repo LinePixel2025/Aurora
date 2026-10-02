@@ -553,6 +553,44 @@ describe('CenterConnector · ask.resolve（docs/12 §5，v0.3.3）', () => {
     expect(socket.lastMessage()).toMatchObject({ ok: true, data: { settled: true } })
   })
 
+  it('一次多问：answersByQuestion 原样透传给 resolveAsk（AskUserAnswerInput 同名字段）', async () => {
+    const harness = makeConnector()
+    const resolved: Array<{
+      requestId: string
+      answers: string[]
+      answersByQuestion?: string[][]
+      skipped?: boolean
+    }> = []
+    harness.deps.resolveAsk = (input) => {
+      resolved.push(input)
+      return true
+    }
+    const socket = openSocket(harness)
+    socket.emit(
+      'message',
+      JSON.stringify({
+        type: 'cmd',
+        cmd: {
+          kind: 'ask.resolve',
+          requestId: 'ask-8b',
+          sessionId: 'center-a',
+          answers: ['stable'],
+          answersByQuestion: [['stable'], ['nvidia', 'cuda']],
+        },
+      }),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(resolved).toEqual([
+      {
+        requestId: 'ask-8b',
+        answers: ['stable'],
+        answersByQuestion: [['stable'], ['nvidia', 'cuda']],
+      },
+    ])
+    expect(socket.lastMessage()).toMatchObject({ ok: true, data: { settled: true } })
+  })
+
   it('未命中 / 未注入：仍回 ok，settled=false（本地卡已作答或已超时，网页端提示「已失效」）', async () => {
     const harness = makeConnector()
     harness.deps.resolveAsk = () => false

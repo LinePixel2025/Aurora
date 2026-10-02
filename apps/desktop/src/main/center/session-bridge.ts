@@ -146,6 +146,8 @@ export function toAskRequest(request: AskUserRequest): {
       ...(request.header === undefined ? {} : { header: request.header }),
       ...(request.options === undefined ? {} : { options: request.options }),
       multiSelect: request.multiSelect,
+      ...(request.allowCustom === undefined ? {} : { allowCustom: request.allowCustom }),
+      ...(request.questions === undefined ? {} : { questions: request.questions }),
       expiresAt: request.expiresAt,
     },
   }
