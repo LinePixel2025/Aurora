@@ -10,6 +10,14 @@
  * 「快速对话」固定项随本轮移入 Agent对话区首行（`chat.quick-item` 锚点保留）。
  * 会话行统一用 SessionRow（四区共用同一视觉）。
  *
+ * Agent区两项细分（2026-10-03，docs/07 §2.3）：
+ * ① **Center 子分组**——`center-` 前缀会话（Aurora Center 网页端）拆成独立可折叠子分组
+ * （与项目子分组同一套视觉，默认展开；无 center 会话不渲染），行内 Center 药丸保留；
+ * ② **旧会话自动折叠**——本地会话与 Center 子分组各自只默认展示最近 8 条
+ * （`RECENT_LIMIT`），溢出收进「更早 · N」折叠行（默认收起）；当前激活会话落在溢出里时
+ * 强制可见（提到可见列表末尾），避免「切到旧会话后列表里找不到」。折叠态均为组件内
+ * 视图偏好（同 `archiveOpen` 口径，不落配置）。
+ *
  * 「任务」入口 2026-09-30 自 App.vue 收拢进这里——左栏固定项不再一处两式（去杂糅）。
  * 面板内的快速对话输入入口在**桌面提示条**（docs/07 §2.2），与本区首行共用同一会话。
  *
@@ -23,6 +31,7 @@
  */
 import { computed, ref } from 'vue'
 import type { ChatSessionSummary } from '@aurora/shared'
+import { CENTER_SESSION_PREFIX } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import { useWindowDrag } from '../../shared/composables/useWindowDrag.js'
 import { useModeStore } from '../../shared/stores.js'
@@ -52,7 +61,8 @@ const props = defineProps<{
   projectGroups: ProjectSessionGroup[]
   /** 工作目录对话（space:'work'，仅 Work 模式下由本组件渲染该区） */
   workSessions: ChatSessionSummary[]
-  /** Agent对话（space:'agent' 或未标记；不含 quick —— quick 是本区固定首行） */
+  /** Agent对话（space:'agent' 或未标记；不含 quick —— quick 是本区固定首行。
+   *  `center-` 前缀会话也在其中，由本组件按前缀拆出 Center 子分组） */
   agentSessions: ChatSessionSummary[]
   /** 已归档会话（同一 updatedAt 倒序；空数组时整个归档分组不渲染） */
   archivedSessions: ChatSessionSummary[]
@@ -119,6 +129,45 @@ function isProjectCollapsed(id: string): boolean {
 function toggleProject(id: string): void {
   collapsedProjects.value = { ...collapsedProjects.value, [id]: !isProjectCollapsed(id) }
 }
+
+/**
+ * 旧会话自动折叠的条数口径（2026-10-03，docs/07 §2.3）：本地会话与 Center 子分组各自
+ * 只默认展示最近 8 条（传入数组已按 updatedAt 倒序，直接取前 8），其余收进「更早 · N」。
+ */
+const RECENT_LIMIT = 8
+
+/** 「更早」折叠行展开态（组件内视图偏好，同 `archiveOpen` 口径，不落配置） */
+const localOlderOpen = ref(false)
+const centerOlderOpen = ref(false)
+
+/** Center 子分组展开态：默认**展开**（用户要能立刻看到网页端会话），组件内视图偏好 */
+const centerOpen = ref(true)
+
+/** 按 updatedAt 倒序的数组拆成「最近 N 条 + 溢出」；激活会话在溢出里时提到可见列表末尾 */
+function splitRecent(sessions: ChatSessionSummary[]): {
+  recent: ChatSessionSummary[]
+  older: ChatSessionSummary[]
+} {
+  if (sessions.length <= RECENT_LIMIT) return { recent: sessions, older: [] }
+  const recent = sessions.slice(0, RECENT_LIMIT)
+  const older = sessions.slice(RECENT_LIMIT)
+  const activeIndex = older.findIndex((item) => item.id === props.activeId)
+  if (activeIndex >= 0) recent.push(...older.splice(activeIndex, 1))
+  return { recent, older }
+}
+
+/** Agent区的本地会话（拆掉 center- 前缀后的部分） */
+const localAgentSessions = computed(() =>
+  props.agentSessions.filter((item) => !item.id.startsWith(CENTER_SESSION_PREFIX)),
+)
+
+/** Center 子分组的数据源（`center-` 前缀会话；空则整个子分组不渲染） */
+const centerSessions = computed(() =>
+  props.agentSessions.filter((item) => item.id.startsWith(CENTER_SESSION_PREFIX)),
+)
+
+const localSplit = computed(() => splitRecent(localAgentSessions.value))
+const centerSplit = computed(() => splitRecent(centerSessions.value))
 
 const modeName = computed(() => modeStore.current?.displayName ?? '未激活')
 
@@ -394,14 +443,124 @@ const noSessionsAtAll = computed(
               <span class="item-title">快速对话</span>
             </button>
           </div>
+          <!--
+            本地会话（2026-10-03 起只默认展示最近 `RECENT_LIMIT` 条）：`center-` 前缀会话
+            已拆到下方 Center 子分组，不再混在本列表里。
+          -->
           <SessionRow
-            v-for="item in props.agentSessions"
+            v-for="item in localSplit.recent"
             :key="item.id"
             :item="item"
             :active-id="props.activeId"
             @select="emit('select', $event)"
             @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
           />
+          <!--
+            「更早 · N」折叠行（默认收起；`:aria-expanded` 供探针读取）：溢出的旧会话收在这里，
+            展开后显示全部。当前激活会话落在溢出里时已被 `splitRecent` 提到上面可见列表末尾。
+          -->
+          <button
+            v-if="localSplit.older.length > 0"
+            type="button"
+            class="older-toggle hover-fill press"
+            data-field="chat.older-toggle"
+            :aria-expanded="localOlderOpen"
+            :title="localOlderOpen ? '收起更早会话' : '展开更早会话'"
+            @click="localOlderOpen = !localOlderOpen"
+          >
+            <ChevronRight
+              class="caret"
+              :class="{ open: localOlderOpen }"
+              :size="13"
+              :stroke-width="1.8"
+              aria-hidden="true"
+            />
+            <span class="item-title">更早 · {{ localSplit.older.length }}</span>
+          </button>
+          <template v-if="localSplit.older.length > 0 && localOlderOpen">
+            <SessionRow
+              v-for="item in localSplit.older"
+              :key="item.id"
+              :item="item"
+              :active-id="props.activeId"
+              @select="emit('select', $event)"
+              @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
+            />
+          </template>
+        </div>
+
+        <!--
+          Center 子分组（2026-10-03）：Aurora Center 网页端的会话（`center-` 前缀）在本区内
+          拆成独立可折叠子分组（与项目子分组同一套视觉：caret + 标题 + 数量徽标 +
+          `grid-template-rows: 0fr → 1fr` 折叠容器）。默认**展开**；组内无会话时不渲染。
+          SessionRow 行内的 Center 药丸保留不动。
+        -->
+        <div v-if="centerSessions.length > 0" class="center-group" data-field="chat.center-group">
+          <button
+            type="button"
+            class="project-head hover-fill press"
+            data-action="chat.toggle-center"
+            :aria-expanded="centerOpen"
+            :title="`Center（点击${centerOpen ? '收起' : '展开'}）`"
+            @click="centerOpen = !centerOpen"
+          >
+            <ChevronRight
+              class="caret"
+              :class="{ open: centerOpen }"
+              :size="13"
+              :stroke-width="1.8"
+              aria-hidden="true"
+            />
+            <span class="project-name">Center</span>
+            <span class="count-badge tiny">{{ centerSessions.length }}</span>
+          </button>
+          <!-- 折叠时加 `inert`：视觉裁掉了但键盘还能 Tab 进去（与项目子分组同口径） -->
+          <div
+            class="collapse"
+            :class="{ open: centerOpen }"
+            :inert="centerOpen ? undefined : true"
+          >
+            <div class="collapse-inner">
+              <div class="session-list">
+                <SessionRow
+                  v-for="item in centerSplit.recent"
+                  :key="item.id"
+                  :item="item"
+                  :active-id="props.activeId"
+                  @select="emit('select', $event)"
+                  @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
+                />
+                <button
+                  v-if="centerSplit.older.length > 0"
+                  type="button"
+                  class="older-toggle hover-fill press"
+                  data-field="chat.center-older-toggle"
+                  :aria-expanded="centerOlderOpen"
+                  :title="centerOlderOpen ? '收起更早会话' : '展开更早会话'"
+                  @click="centerOlderOpen = !centerOlderOpen"
+                >
+                  <ChevronRight
+                    class="caret"
+                    :class="{ open: centerOlderOpen }"
+                    :size="13"
+                    :stroke-width="1.8"
+                    aria-hidden="true"
+                  />
+                  <span class="item-title">更早 · {{ centerSplit.older.length }}</span>
+                </button>
+                <template v-if="centerSplit.older.length > 0 && centerOlderOpen">
+                  <SessionRow
+                    v-for="item in centerSplit.older"
+                    :key="item.id"
+                    :item="item"
+                    :active-id="props.activeId"
+                    @select="emit('select', $event)"
+                    @toggle-archive="(id, archived) => emit('archiveSession', id, archived)"
+                  />
+                </template>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -860,6 +1019,48 @@ const noSessionsAtAll = computed(
 .group-add:hover {
   background: var(--fill-3);
   color: var(--text-primary);
+}
+
+/* ── Center 子分组（Agent区内，复用 .project-head / .collapse 的折叠视觉） ── */
+.center-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* 与上方本地会话列表拉开一点：它是「另一来源」的会话 */
+  margin-top: var(--space-1);
+}
+
+/* ── 「更早 · N」折叠行：溢出旧会话的开关（样式对齐归档分组 toggle） ── */
+.older-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 5px var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  text-align: left;
+}
+
+.older-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.older-toggle .caret {
+  flex: 0 0 auto;
+  stroke: currentColor;
+  transition: transform var(--transition-fast);
+}
+
+.older-toggle .caret.open {
+  transform: rotate(90deg);
+}
+
+.older-toggle .item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── 归档分组：可点击的切换行（默认收起）+ 展开后的列表 ── */

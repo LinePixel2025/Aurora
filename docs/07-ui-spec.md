@@ -138,6 +138,14 @@
        （`data-action="chat.new-agent-session"`）与顶部「新对话」同效（都显式标 agent 空间）。
        旧「会话列表」锚点 `data-field="chat.session-list"` 挂在本区的列表容器上
        （Agent 空间是未标记会话的缺省分区，「主会话列表」的语义由它承接）。
+       **Center 子分组（2026-10-03）**：`center-` 前缀会话在本区内拆成独立可折叠子分组
+       （`data-field="chat.center-group"`，与项目子分组同一套视觉，默认展开，点标题行折叠；
+       无 center 会话不渲染，行内 Center 药丸保留）。
+       **旧会话自动折叠（2026-10-03）**：本地会话与 Center 子分组各自只默认展示最近 8 条
+       （`RECENT_LIMIT`），溢出收进「更早 · N」折叠行（本地 `chat.older-toggle` /
+       Center `chat.center-older-toggle`，默认收起，`aria-expanded` 跟展开态）；
+       当前激活会话落在溢出里时强制可见（提到可见列表末尾）。折叠态均为组件内视图偏好，
+       不落配置。
     固定顶置项其余三个不变：子代理（`chat.subagent-item`）/ 自动化（`chat.auto-item`）/
     任务（`chat.jobs-entry`）—— 前一个切**主区**，后两个开关**右栏面板**；「快速对话」不再
     是固定顶置项（它的入口随 Agent对话区下沉）。空态文案按分区显示：项目对话区空时不渲染
