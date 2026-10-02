@@ -24,7 +24,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { TokenUsage } from '@aurora/shared'
 import { formatExactCount, formatTokenCount } from '@aurora/shared/browser'
-import { ChevronDown, Gauge } from '../../shared/icons.js'
+import { ChevronDown, Gauge } from '@aurora/shared/browser'
 
 const props = withDefaults(
   defineProps<{

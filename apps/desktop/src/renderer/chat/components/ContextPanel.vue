@@ -25,7 +25,7 @@ import type { ClassIslandBridgeSnapshot, Lesson } from '@aurora/shared'
 import ClassificationLedger from '../../shared/components/ClassificationLedger.vue'
 import AgentTodoList from '../../shared/components/AgentTodoList.vue'
 import AppButton from '../../shared/components/AppButton.vue'
-import { CalendarClock, FolderOpen, School } from '../../shared/icons.js'
+import { CalendarClock, FolderOpen, School } from '@aurora/shared/browser'
 import type { TodoRow } from '../../shared/agentTodo.js'
 import {
   useModeStore,

@@ -62,7 +62,7 @@ import { appendProject, pickProjectEntry } from '../shared/projects.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
 import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.js'
-import { ArrowUp, Mic, PanelLeft, Trash2, X } from '../shared/icons.js'
+import { ArrowUp, Mic, PanelLeft, Trash2, X } from '@aurora/shared/browser'
 
 const chat = useChat('chat', 'main')
 const {

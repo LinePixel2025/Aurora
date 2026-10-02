@@ -17,7 +17,7 @@
  *   `settings:hasSecret` 查询。旧的手填配对令牌入口已移除（手动令牌功能面已整体删除）。
  */
 import { onUnmounted, ref, watch } from 'vue'
-import { ChevronRight } from '../../shared/icons.js'
+import { ChevronRight } from '@aurora/shared/browser'
 import type { CenterSettings, SettingsPatch } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'

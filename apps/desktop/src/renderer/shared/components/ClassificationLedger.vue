@@ -10,7 +10,7 @@
  * 主界面右栏的窄容器（约 260-300px）与设置页宽容器都不横向溢出。
  */
 import { computed, onMounted, ref } from 'vue'
-import { ChevronRight } from '../icons.js'
+import { ChevronRight } from '@aurora/shared/browser'
 import type { ClassificationState } from '@aurora/shared'
 import type { ClassificationRow } from '../composables/useClassification.js'
 import {

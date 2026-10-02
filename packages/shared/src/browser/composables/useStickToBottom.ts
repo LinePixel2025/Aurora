@@ -1,6 +1,11 @@
 /**
  * 「跟随最新」滚动（对话 / 日志类列表的自动滚到底）—— **Vue 薄壳**。
  *
+ * ⚠️ 2026-10-02 起本文件（与 `stickToBottomCore.ts`、其单测）由 `apps/desktop` 渲染层迁入
+ * `@aurora/shared/browser`，**桌面与 Center Web 共用同一份**。下面提到的 `.thread` /
+ * `MessageList` 是桌面端的容器与内容根；网页端的对应物是会话流的滚动容器与消息列表，
+ * 语义完全相同（都是从内容根向上找第一个 `overflow-y: auto|scroll|overlay` 的祖先）。
+ *
  * 语义与判定逻辑全在 `stickToBottomCore.ts`（纯逻辑、零 DOM，可被 vitest 的 node 环境直接收单测）；
  * 这里只做浏览器侧的事：
  *

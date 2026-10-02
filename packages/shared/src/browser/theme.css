@@ -1,13 +1,19 @@
 /**
- * Aurora 设计令牌与动效基线（docs/07 §1/§5）—— 四个窗口共用（各自 main.ts 里 import）。
+ * Aurora 设计令牌与动效基线（docs/07 §1/§5）—— **桌面四窗口 + Center Web 共用同一份**
+ * （2026-10-02 从 `apps/desktop/src/renderer/shared/theme.css` 迁到 `@aurora/shared/browser`，
+ * 两端各自 import 本文件；改这里等于改两端的全部界面，务必克制）。
  *
  * 约定（改这里等于改全部窗口，务必克制）：
  * - **既有令牌名一律保留**（值可以改）：`--bg-*` / `--border-*` / `--text-*` / `--status-*` /
  *   `--radius-sm|md|lg` / `--space-1..6` / `--transition-fast|base` / `--font-ui|mono` / `--aurora-gradient`。
  *   它们散布在各窗口的 scoped 样式里，删名字会导致大面积样式静默失效（CSS 变量不报错）。
+ *   其中 `--fill-*` / `--text-primary|secondary` / `--border-subtle` / `--radius-md|xs` /
+ *   `--text-sm|xs` / `--font-mono` 还被共享的 `md.css` 经 `--md-*` 映射消费（Markdown 观感），
+ *   改名前先确认没有第三个消费方。
  * - 新增能力一律用**新名字**（`--fill-*` / `--radius-xs|xl|pill` / `--dur-*` / `--ease-*` / `--shadow-*` / `--blur-*`）。
  * - 所有过渡必须走 `--transition-fast|base` 或 `--dur-*` + `--ease-*`，**不要写死时长** ——
  *   否则 `prefers-reduced-motion` 降级会漏掉它们。
+ * - 本文件里 Electron 专有的规则（如 `-webkit-app-region`）在浏览器里是 no-op，**不拆成两份**。
  *
  * 风格取向（BetaV2，Apple HIG / Pinguo tokens）：系统色锚点（蓝 #007AFF/#0A84FF、绿 #34C759/#30D158、
  * 红 #FF3B30/#FF453A、橙 #FF9500/#FF9F0A）+ iOS 灰阶中性面（亮 #f5f5f7 / 暗 #000000）+ 分层填充 +

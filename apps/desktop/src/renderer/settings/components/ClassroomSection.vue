@@ -14,7 +14,7 @@
  * 因此非 ClassRoom 模式下 DOM 里不存在任何 `modes.classroom.*` 控件。
  */
 import { computed, reactive, ref } from 'vue'
-import { ChevronRight } from '../../shared/icons.js'
+import { ChevronRight } from '@aurora/shared/browser'
 import type { ClassroomModeConfig } from '@aurora/shared'
 import AppToast from '../../shared/components/AppToast.vue'
 import ClassificationBehavior from './classroom/ClassificationBehavior.vue'

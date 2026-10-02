@@ -26,6 +26,19 @@ export * from './browser/markdown/codeBlock.js'
 export * from './utils/result.js'
 export * from './utils/logger.js'
 
+// ── 两端共用的渲染层资产（2026-10-02 起单源：桌面与 Center Web 同一份实现）──
+// 设计令牌 / 暗浅主题 / keyframes / 过渡预设 / 原子类在 `@aurora/shared/browser/theme.css`
+// （CSS 不是 JS 模块，由 build 脚本拷进 dist，两端各自 import 该路径）；
+// 视觉资产改这里就必须同时核对两端截图（与改 md.css 同一条规矩）。
+export * from './browser/icons.js'
+export * from './browser/toolIcons.js'
+export * from './browser/toolLabels.js'
+// 吸底状态机（core 纯逻辑 + Vue 薄壳）与实测高度折叠动画钩子：
+// core 的语义（意图只由真实输入发起、250ms 窗口按之后读数重判）两端必须逐字一致。
+export * from './browser/composables/stickToBottomCore.js'
+export * from './browser/composables/useStickToBottom.js'
+export * from './browser/composables/useCollapseTransition.js'
+
 // IPC 契约（仅类型）
 export * from './ipc/channels.js'
 export * from './ipc/types.js'

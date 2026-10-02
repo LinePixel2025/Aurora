@@ -17,7 +17,7 @@ import { computed } from 'vue'
 import type { AgentJob, AgentJobStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import { PENDING_REASON_TEXT } from '../../shared/composables/useChat.js'
-import { ListChecks } from '../../shared/icons.js'
+import { ListChecks } from '@aurora/shared/browser'
 
 const props = defineProps<{ jobs: AgentJob[] }>()
 

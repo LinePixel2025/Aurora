@@ -9,7 +9,7 @@
  * 状态圈语义与全局状态灯一致：进行中 = 强调蓝（呼吸），完成 = ok 绿，待办 = 中性灰。
  * 组件只读（勾选由 Agent 在会话里 `todo_write` 驱动），没有任何交互。
  */
-import { Check, Circle, LoaderCircle } from '../icons.js'
+import { Check, Circle, LoaderCircle } from '@aurora/shared/browser'
 import type { TodoRow } from '../agentTodo.js'
 
 /** 进度摘要由调用方的卡头承担（消息流卡「N 项」/ 右栏卡「n/m」），列表本身只渲染条目 */

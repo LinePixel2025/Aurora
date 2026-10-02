@@ -14,7 +14,7 @@
  * `data-caption-btn` 是 capture 探针定位的唯一抓手（`CHAT_COLLAPSE_CHECK`）。
  */
 import type { WindowName } from '@aurora/shared'
-import { Minus, X } from '../icons.js'
+import { Minus, X } from '@aurora/shared/browser'
 import { useWindowStore } from '../stores.js'
 
 const props = withDefaults(

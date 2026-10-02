@@ -40,7 +40,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { PermissionMode } from '@aurora/shared'
-import { ChevronDown, ShieldCheck, ShieldOff } from '../../shared/icons.js'
+import { ChevronDown, ShieldCheck, ShieldOff } from '@aurora/shared/browser'
 
 const props = withDefaults(
   defineProps<{

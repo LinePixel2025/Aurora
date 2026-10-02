@@ -17,7 +17,7 @@
  * 先 `saveProvider` → 再 `synthesize`；两个动作合成一个按钮会让"测试通则播放"变成必然失败的路径。
  */
 import { computed, reactive, ref, watch } from 'vue'
-import { ChevronRight } from '../../shared/icons.js'
+import { ChevronRight } from '@aurora/shared/browser'
 import {
   RESOURCE_NAME_PATTERN,
   RESOURCE_NAME_RULE,

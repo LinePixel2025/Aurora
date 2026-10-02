@@ -14,7 +14,7 @@
 import { computed } from 'vue'
 import type { ChatSessionSummary } from '@aurora/shared'
 import { CENTER_SESSION_PREFIX } from '@aurora/shared/browser'
-import { Archive, ArchiveRestore } from '../../shared/icons.js'
+import { Archive, ArchiveRestore } from '@aurora/shared/browser'
 
 const props = defineProps<{
   item: ChatSessionSummary

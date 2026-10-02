@@ -10,7 +10,7 @@
  * 页级 AppToast（本区组默认收起，常驻 Toast 也不可见，更没有本地渲染的理由）。
  */
 import { computed, onMounted, ref } from 'vue'
-import { ChevronRight } from '../../shared/icons.js'
+import { ChevronRight } from '@aurora/shared/browser'
 import type { SkillSummary, SkillsStatus } from '@aurora/shared'
 import AppButton from '../../shared/components/AppButton.vue'
 import SettingField from '../../shared/components/SettingField.vue'

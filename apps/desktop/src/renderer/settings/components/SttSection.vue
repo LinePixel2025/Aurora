@@ -11,7 +11,7 @@
  * 对话窗才渲染麦克风按钮 —— 未配置时连按钮都不出现（不是 disabled）。
  */
 import { computed, ref, watch } from 'vue'
-import { ChevronRight } from '../../shared/icons.js'
+import { ChevronRight } from '@aurora/shared/browser'
 import {
   RESOURCE_NAME_PATTERN,
   RESOURCE_NAME_RULE,

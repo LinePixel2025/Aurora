@@ -12,7 +12,7 @@
  * `lazyConnect` 收进「高级」折叠；新增服务器表单默认收起（空状态时由主按钮展开）。
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { ChevronRight } from '../../shared/icons.js'
+import { ChevronRight } from '@aurora/shared/browser'
 // 运行时值走浏览器子路径（`@aurora/shared` 主入口依赖 node:fs）；类型仍可从主入口取。
 import { RESOURCE_NAME_PATTERN, RESOURCE_NAME_RULE } from '@aurora/shared/browser'
 import type { McpServerConfig, McpServerStatus } from '@aurora/shared'

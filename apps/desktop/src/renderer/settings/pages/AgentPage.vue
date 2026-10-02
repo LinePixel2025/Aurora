@@ -34,7 +34,7 @@
  * 依赖 `node:fs`，一旦被拉进渲染层 bundle，Electron 构建会直接失败（AGENTS.md 架构硬约束 4）。
  */
 import { computed, ref } from 'vue'
-import { ChevronRight } from '../../shared/icons.js'
+import { ChevronRight } from '@aurora/shared/browser'
 import type {
   AgentSettings,
   AgentToolsConfig,

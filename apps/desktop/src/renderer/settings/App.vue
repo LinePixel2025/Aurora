@@ -35,9 +35,9 @@ import {
   LayoutGrid,
   MonitorSmartphone,
   Puzzle,
-  Settings,
+  SettingsGear,
   Sparkles,
-} from '../shared/icons.js'
+} from '@aurora/shared/browser'
 
 type PageId = 'general' | 'sessions' | 'modes' | 'llm' | 'voice' | 'agent' | 'center' | 'advanced'
 
@@ -57,7 +57,7 @@ const nav: NavItem[] = [
   { id: 'voice', label: '语音', icon: AudioLines },
   { id: 'agent', label: '智能与工具', icon: Puzzle },
   { id: 'center', label: 'Aurora Center', icon: MonitorSmartphone },
-  { id: 'advanced', label: '系统', icon: Settings },
+  { id: 'advanced', label: '系统', icon: SettingsGear },
 ]
 
 /**

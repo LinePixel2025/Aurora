@@ -21,7 +21,7 @@ import {
   Puzzle,
   School,
   Search,
-  Settings,
+  SettingsGear,
   Terminal,
   Wrench,
 } from './icons.js'
@@ -50,7 +50,7 @@ const TOOL_ICONS: Record<string, Component> = {
   task: Bot,
   // 向用户提问（docs/06 §21）：对话气泡（「问了一句」的语义），与 notify_user 的铃铛区分开
   ask_user: MessageSquare,
-  set_setting: Settings,
+  set_setting: SettingsGear,
   // ClassIsland 联动（v3）
   classisland_remind: School,
 }

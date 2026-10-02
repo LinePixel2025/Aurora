@@ -9,7 +9,7 @@
  * 关掉这里的开关后，Center 侧的对应操作会被客户端直接拒绝（`E_REMOTE_DISABLED`）。
  */
 import { ref, watch } from 'vue'
-import { ChevronRight } from '../../shared/icons.js'
+import { ChevronRight } from '@aurora/shared/browser'
 import type { CenterSettings, SettingsPatch } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'

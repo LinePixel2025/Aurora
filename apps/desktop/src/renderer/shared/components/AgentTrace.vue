@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
-import { ChevronRight, CircleCheck, CircleX } from '../icons.js'
+import { ChevronRight, CircleCheck, CircleX } from '@aurora/shared/browser'
 
 /**
  * **Agent 执行轨迹**（2026-10-01 视觉重塑：软胶囊 + 时间线，docs/07 §2.3 / §5.2）。

@@ -31,7 +31,7 @@
  */
 import { computed, reactive, ref, watch } from 'vue'
 import { formatTokenCount } from '@aurora/shared/browser'
-import { ChevronRight } from '../../shared/icons.js'
+import { ChevronRight } from '@aurora/shared/browser'
 import {
   DEFAULT_REASONING_EFFORT,
   LLM_PROVIDER_TYPE_LABELS,

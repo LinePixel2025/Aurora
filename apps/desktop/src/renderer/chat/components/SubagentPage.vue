@@ -23,7 +23,7 @@ import {
   FilePenLine,
   MessageSquare,
   ShieldCheck,
-} from '../../shared/icons.js'
+} from '@aurora/shared/browser'
 import SubagentTrace from '../../shared/components/SubagentTrace.vue'
 import SubagentConversation from '../../shared/components/SubagentConversation.vue'
 

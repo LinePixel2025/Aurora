@@ -11,14 +11,18 @@
  *   具名导入会被 Vite 摇树，未登记的图标不进产物；
  * - 尺寸走组件的 `size` 属性（默认继承 `currentColor` 与 `1.75` 描边宽）；
  *   需要与文字基线对齐的场合用 `.icon` 工具类（theme.css）约束 `flex: 0 0 auto`；
- * - 语义优先：同一动作在不同窗口必须用同一枚图标（例如「设置」一律 `Settings`）。
+ * - 语义优先：同一动作在不同窗口必须用同一枚图标（例如「设置」一律 `SettingsGear`）。
+ * - ⚠️ **齿轮图标在本模块叫 `SettingsGear`**：lucide 的 `Settings` 与 `config/schema.ts`
+ *   的配置类型 `Settings` 同名，而两者都要经 `@aurora/shared/browser` 桶文件导出
+ *   （`export *` 无法消歧，会以 TS2308 构建失败），因此图标侧改名。
+ *   要类型写 `Settings`，要图标写 `SettingsGear`。
  */
 
 export {
   // 窗口与导航
   PanelLeft,
   PanelRight,
-  Settings,
+  Settings as SettingsGear,
   House,
   LayoutGrid,
   SlidersHorizontal,

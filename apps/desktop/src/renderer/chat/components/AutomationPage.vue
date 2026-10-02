@@ -67,7 +67,7 @@ import {
   Workflow,
   X,
   Zap,
-} from '../../shared/icons.js'
+} from '@aurora/shared/browser'
 
 const settingsStore = useSettingsStore()
 

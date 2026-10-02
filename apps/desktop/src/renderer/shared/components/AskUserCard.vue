@@ -13,7 +13,7 @@
 import { computed, onUnmounted, ref } from 'vue'
 import type { AskUserRequest } from '@aurora/shared'
 import AppButton from './AppButton.vue'
-import { Check, CornerDownLeft, MessageSquare, SkipForward } from '../icons.js'
+import { Check, CornerDownLeft, MessageSquare, SkipForward } from '@aurora/shared/browser'
 
 const props = defineProps<{ request: AskUserRequest }>()
 const emit = defineEmits<{ resolved: [] }>()

@@ -15,7 +15,7 @@
  */
 import type { AutomationDescriptorField } from '@aurora/shared'
 import AppTooltip from '../../shared/components/AppTooltip.vue'
-import { CalendarDays, Hash, Info, ListFilter, TextCursorInput } from '../../shared/icons.js'
+import { CalendarDays, Hash, Info, ListFilter, TextCursorInput } from '@aurora/shared/browser'
 
 const props = defineProps<{
   field: AutomationDescriptorField

@@ -24,7 +24,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppButton from '../shared/components/AppButton.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
-import { ArrowUp, ChevronRight, MessageSquare, Settings, Square } from '../shared/icons.js'
+import { ArrowUp, ChevronRight, MessageSquare, SettingsGear, Square } from '@aurora/shared/browser'
 import { useChat } from '../shared/composables/useChat.js'
 import {
   useModeStore,
@@ -452,7 +452,7 @@ onUnmounted(() => {
             打开主界面
           </AppButton>
           <AppButton variant="ghost" size="sm" block class="press" @click="openSettings">
-            <Settings class="icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+            <SettingsGear class="icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
             设置
           </AppButton>
           <AppButton variant="ghost" size="sm" block class="press" @click="hideSelf">

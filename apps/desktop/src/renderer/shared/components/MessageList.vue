@@ -57,7 +57,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { AgentToolCall } from '@aurora/shared'
 import type { ChatMessage } from '../composables/useChat.js'
-import { useStickToBottom } from '../composables/useStickToBottom.js'
+import { useStickToBottom } from '@aurora/shared/browser'
 import '@aurora/shared/browser/markdown/md.css'
 import {
   ICON_CHECK,
@@ -67,7 +67,7 @@ import {
   type ChartHydrator,
 } from '@aurora/shared/browser'
 import { parseTaskInput, parseTodoWriteInput } from '../agentTodo.js'
-import { ArrowDown, ChevronRight, LoaderCircle, Square, Volume2 } from '../icons.js'
+import { ArrowDown, ChevronRight, LoaderCircle, Square, Volume2 } from '@aurora/shared/browser'
 import AgentTrace from './AgentTrace.vue'
 import AgentToolRow from './AgentToolRow.vue'
 

@@ -9,7 +9,7 @@
  * 每 5 秒轮询一次是 docs/12 §7 定下的最简单口径。
  */
 import { onMounted, onUnmounted, ref } from 'vue'
-import { ChevronRight } from '../../shared/icons.js'
+import { ChevronRight } from '@aurora/shared/browser'
 import type { CenterConnectionStatus } from '@aurora/shared/browser'
 import StatusDot from '../../shared/components/StatusDot.vue'
 

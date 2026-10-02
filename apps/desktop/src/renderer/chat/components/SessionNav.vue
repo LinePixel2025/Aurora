@@ -32,12 +32,12 @@ import {
   ListChecks,
   PanelRight,
   Plus,
-  Settings,
+  SettingsGear,
   Sparkles,
   SquarePen,
   Workflow,
   Zap,
-} from '../../shared/icons.js'
+} from '@aurora/shared/browser'
 import SessionRow from './SessionRow.vue'
 
 /** 项目对话的子分组：一个项目一组（含还没有会话的项目 —— 组头 `+` 是新建入口） */
@@ -469,7 +469,7 @@ const noSessionsAtAll = computed(
         aria-label="设置"
         @click="emit('openSettings')"
       >
-        <Settings :size="15" :stroke-width="1.5" aria-hidden="true" />
+        <SettingsGear :size="15" :stroke-width="1.5" aria-hidden="true" />
       </button>
     </footer>
   </div>

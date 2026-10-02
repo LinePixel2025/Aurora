@@ -16,7 +16,7 @@
  * - 删除必须显式声明 `removedProviders: [id]`（record 缺项 ≠ 删除）。
  */
 import { computed, ref, watch } from 'vue'
-import { ChevronRight } from '../../shared/icons.js'
+import { ChevronRight } from '@aurora/shared/browser'
 import {
   IMAGEGEN_PRESETS,
   IMAGEGEN_SIZES,

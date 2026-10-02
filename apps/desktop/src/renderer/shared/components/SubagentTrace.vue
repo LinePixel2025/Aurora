@@ -13,8 +13,8 @@
  */
 import { computed } from 'vue'
 import type { SubagentSnapshot, SubagentStep } from '@aurora/shared'
-import { Bot, Check, CircleCheck, CircleX, Clock, LoaderCircle } from '../icons.js'
-import { toolIconOf } from '../toolIcons.js'
+import { Bot, Check, CircleCheck, CircleX, Clock, LoaderCircle } from '@aurora/shared/browser'
+import { toolIconOf } from '@aurora/shared/browser'
 
 const props = withDefaults(
   defineProps<{

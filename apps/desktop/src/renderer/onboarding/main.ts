@@ -1,6 +1,6 @@
 import { createApp } from 'vue'
 import App from './App.vue'
-import '../shared/theme.css'
+import '@aurora/shared/browser/theme.css'
 import { bootstrapApp } from '../shared/bootstrap.js'
 
 const app = createApp(App)

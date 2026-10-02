@@ -24,8 +24,8 @@ import {
   FilePenLine,
   LoaderCircle,
   ShieldCheck,
-} from '../icons.js'
-import { toolIconOf } from '../toolIcons.js'
+} from '@aurora/shared/browser'
+import { toolIconOf } from '@aurora/shared/browser'
 
 const props = defineProps<{ snapshot: SubagentSnapshot }>()
 

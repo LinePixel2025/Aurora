@@ -13,7 +13,7 @@
  */
 import { computed, ref, watch } from 'vue'
 import type { SlashItem } from '../slashCommands.js'
-import { ChevronRight, Command, Puzzle } from '../../shared/icons.js'
+import { ChevronRight, Command, Puzzle } from '@aurora/shared/browser'
 
 const props = defineProps<{
   /** 已过滤 + 排序的候选（空数组时整块不渲染） */
