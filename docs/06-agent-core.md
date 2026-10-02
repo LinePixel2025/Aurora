@@ -172,6 +172,10 @@ export interface LlmProvider {
   归档这件事本身就需要一个落点）。`summaries()` 把 `archived` 透出给 `ChatSessionSummary`，
   渲染层据此分组（见 07 §2.3）。IPC 通道 `chat:archiveSession` 对普通会话与 quick 一视同仁。
   **已知边界**：`chat:sessions` 目前没有推送通道，归档只在发出请求的那个窗口即时生效。
+- **会话文件格式版本**（`SESSION_FILE_VERSION`，与 `CONFIG_VERSION` 是两条独立的链）：
+  v1 → v2 加 `meta`（上面那条）；v2 → v3 加 `StoredMessage.images`（图片附件**路径**，§3.1）；
+  **v3 → v4（本轮）** 加 `asks`（提问留痕，§24）—— 三条都是**可选字段、无迁移脚本**，
+  读取侧宽容归化（缺字段 = 没有那个能力），版本号只用于说明"这个文件可能带什么"。
 - **会话绑定项目（v17，2026-09，`chat:setSessionProject`）**：`meta` 新增可选
   `projectId?: string`（`''` 与缺字段都算未绑定，空 meta 判定同步覆盖，不写空键）；
   写入 / 清除走 `SessionStore.setProject`（幂等 + await 落盘，惯例与 `setArchived` 全同）。
@@ -2059,21 +2063,29 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
 
 | 工具 | 参数 | sensitivity |
 |---|---|---|
-| `ask_user` | `{ question, header?, options?: {label, description?}[], multiSelect? }` | safe |
+| `ask_user` | `{ question, header?, options?: {label, description?}[], multiSelect?, allowCustom?, timeoutMs?, questions? }` | safe |
 
-- **一次只问一个问题**：`options` 2–4 个（不给选项 = 用户看到自由输入框），
-  问题 ≤ 500 字符、选项文案 ≤ 60、选项说明 ≤ 200；多选只在不少于 2 个选项时才有意义
-  （工具会把「1 个选项 + multiSelect」归一成单选）。要连续澄清就多次调用 ——
-  批量提问会把用户淹没，那与「减少打扰」的初衷相反。
+- **一次只问一个问题**（除非用 `questions` 一次问相关的 2–4 件）：`options` 2–4 个
+  （不给选项 = 用户看到自由输入框），问题 ≤ 500 字符、选项文案 ≤ 60、选项说明 ≤ 200；
+  多选只在不少于 2 个选项时才有意义（工具会把「1 个选项 + multiSelect」归一成单选）。
+  **`questions`（本轮）** 是「一次问几件相关的事」的入口：逐项与单问同形，卡片渲染成
+  一张卡里的分节、用户一次提交，作答按顺序回填 `answersByQuestion`（`answers` 仍是它的
+  扁平副本供旧消费方用）；顶层的 `question` / `options` / `multiSelect` 取**第一问**的副本，
+  因此老客户端 / 老网页端天然降级成"显示第一问"。不相干的问题仍应拆成多轮 —— 批量提问
+  会把用户淹没，那与「减少打扰」的初衷相反。
+- **`allowCustom: false`（本轮）**：两端都不渲染自由输入框，用于「只能从这几个选项里选」
+  （如选一个已存在的 id）。**`timeoutMs`（本轮）**：这一次提问的等待时长，钳制在
+  30s–10min（缺省 180s）—— 需要用户去别处查一下再回来答的场合可以放宽。
 - **不是确认，也不替代确认**：`sensitivity: 'safe'`（不写盘、不执行命令，它的"危险"只是打扰用户），
   因此**在只读档也照常注册**。敏感动作该走的确认卡片与它并存、互不替代：
   确认问的是「要不要执行这个敏感动作」，提问问的是「这件事你想怎么办」。
 - **一定会有结论**：三条兜底出口都写在这里，因为内核在 `await` 它 ——
-  ① **超时**（默认 **3 分钟**，`ASK_USER_TIMEOUT_MS`）按「用户没答」结算；
+  ① **超时**（默认 **3 分钟**，`ASK_USER_TIMEOUT_MS`；可按次用 `timeoutMs` 覆盖）按「用户没答」结算；
   ② **跳过**（卡片上有这个入口，语义比超时明确）；
   ③ **请求被中止**（用户点停止 / 退出）立刻结算 aborted。
   三种情况回填给模型的都是「没有回答 + 请说明假设并继续，不要重复提问」，
   区别只在文案与 `isError`（只有 aborted 算错误 —— 这一轮已经不算数了）。
+  多问时回填**逐问列出**（`- 问题 → 作答`），不会只把第一问抄给模型。
 - **端口缺失时不静默失败**：未注入提问端口（单测 / 未来别的壳层）时工具回 `isError`
   并告诉模型"这里问不了人，改用假设继续" —— 静默成功会让模型以为问题已经问出去了。
   端口抛错同样转 `isError`（问答通道坏了不能把整轮请求带崩）。
@@ -2090,6 +2102,15 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   （本地会话不上行，与确认卡同口径；连接器离线时进同一补发队列）；网页作答经 `ask.resolve`
   转回 `AskUserService.resolve` —— 与本地卡**先到先得**（`resolve` 对已结算 requestId 返回
   false，重复批复不重复结算，本地卡照常显示）。网页刷新后未过期的提问由服务器回放。
+- **本地结算会外发（本轮，docs/12 §5）**：`AskUserService.onSettle` 在**四条结算路径**
+  （作答 / 跳过 / 超时 / 中止）都触发一次，装配层把 `center-` 会话的那条上行成
+  `ask.settled`，网页端据此**立刻收起卡片**（此前它只能靠自己的倒计时，本地先答了它也不知道）。
+  离线不入补发队列（过期即无意义）。
+- **提问留痕（本轮）**：`center-` 会话的问答以 `StoredSession.asks` sidecar 持久化
+  （会话文件格式 **v4**，有界环最近 50 条 / 同 requestId 幂等覆盖），
+  `rendererHistoryWithAsks` 把它按时间与消息交错带回 Center 回放 —— 刷新 / 换设备后
+  「问了什么、答了什么」仍然可见。**刻意不写成 system 消息**：`context()` 只读 `messages`，
+  留痕绝不进模型上下文。本地会话的提问卡仍是瞬时卡片（不留痕、不落 sidecar）。
 - **注册口径**：随 §18 的 `registerAgentCoreTools` 一并注册，**不受 `agent.tools.enabled` 门控**，
   也不按权限档摘除。
 

@@ -68,7 +68,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   —— 起**真实服务器子进程**（临时数据目录）+ 一台**协议忠实的桩客户端**（脚本化制造流式正文 /
   工具三态 / 子代理快照 / 确认卡 / 提问卡 / 文件上传）+ `puppeteer-core` 驱动的系统 Edge，
   逐场景推进状态后**截图 + 读 DOM**，写 `report.json`（口径同 `capture.ts`：任一条 `ok: false` → 退出码 2）。
-  当前基线 **62/62**（31 场景 × 暗浅两档）。开关：`AURORA_CWEB_ONLY`（子串过滤 / 特殊值 `failed`）、
+  当前基线 **74/74**（37 场景 × 暗浅两档）。开关：`AURORA_CWEB_ONLY`（子串过滤 / 特殊值 `failed`）、
   `AURORA_CWEB_THEME=dark|light`、`AURORA_CWEB_VIEWPORT=mobile`、`AURORA_CWEB_OUT`、
   `AURORA_CWEB_KEEP=1`（保留子服务器与数据目录排障）、`AURORA_CWEB_BROWSER`（找不到浏览器时明确 SKIP、退出码 0）。
   **改网页端 UI 别每次全量跑**：`pnpm --filter @aurora/center dev:web`（vite dev，`/api` 与它的 WS
@@ -115,7 +115,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
    工具语义查表 `toolIcons.ts` / `toolLabels.ts`、吸底状态机 `composables/stickToBottomCore.ts` +
    `useStickToBottom.ts`、实测高度动画 `useCollapseTransition.ts` 都在 `packages/shared/src/browser/`，
    **桌面四窗口与 Center Web 共用同一份**（center web 里的旧副本已删）。改这些 = 同时改两端界面：
-   改完必须跑 `AURORA_CAPTURE`（桌面，73/73）与 `verify:web`（网页，62/62）两边核对。
+   改完必须跑 `AURORA_CAPTURE`（桌面，73/73）与 `verify:web`（网页，74/74）两边核对。
    ⚠️ 齿轮图标在 shared 里叫 **`SettingsGear`**（lucide 的 `Settings` 与配置类型 `Settings` 同名，
    桶文件 `export *` 无法消歧 → TS2308）：要类型写 `Settings`、要图标写 `SettingsGear`。
    `lucide-vue-next` 与 `vue` 按同一条规矩声明在 `packages/shared` 的 devDependencies。

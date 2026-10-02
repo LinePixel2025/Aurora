@@ -569,12 +569,16 @@ aurora-center version
   （子串过滤；特殊值 `failed` = 只重跑上次失败的）、`AURORA_CWEB_THEME=dark|light`、
   `AURORA_CWEB_VIEWPORT=mobile`、`AURORA_CWEB_KEEP=1`（保留子服务器与数据目录排障）、
   `AURORA_CWEB_BROWSER`（指定浏览器；找不到浏览器时**明确 SKIP 并退出 0**）。
-  覆盖 31 个场景 ×（暗/浅两档）＝ 62 条断言：登录 / 设备授权 / 空态控制台 / 设备能力位芯片 /
+  覆盖 37 个场景 ×（暗/浅两档）＝ 74 条断言：登录 / 设备授权 / 空态控制台 / 设备能力位芯片 /
   语音门控两态 / 建会话 / 用户气泡 / 流式光标 / Markdown 代码块与外链（含复制按钮回执）/
   轨迹折叠与阅读顺序（思考 → 工具行 → 正文）/ 思考块（220px 内滚 + 秒数）/ 工具三态与
   展开体实测高度（`--collapse-h` 与 `scrollHeight` 相差 ≤ 2px）/ 子代理卡与**只读**对话视图 /
   任务清单卡 / 历史回放 / 确认卡（会话内 + 批复命令）/ 提问卡（选项 / 自由文本 / 作答命令 /
-  过期）/ 文件条与文件页 / 自动化 / 管理员 / 三个面板 / 主题两档 / 移动端单栏抽屉。
+  过期）/ **提问卡进会话流 + 客户端结算后切成只读**（`ask-in-stream`，本轮）/
+  文件条与文件页 / **文件页「发送到客户端」发出 `file.send`**（本轮）/ 自动化 / 管理员 /
+  三个面板 / **会话行模型下拉发出 `session.setModel`**（`panel-session-model`，本轮）/
+  主题两档 / **`prefers-reduced-motion` 兜底把过渡压到 1ms**（`reduced-motion`，本轮）/
+  移动端单栏抽屉。
   另有一条诊断工具 `pnpm --filter @aurora/center verify:web:status --server <url> --user <名>
   --password <密码>`：以管理员身份连上 Center 打印每个客户端的 `ClientStatus`（含 `voice`
   能力位），用来区分「客户端没上报语音」与「网页是旧包」（见 §6.1 的排查顺序）。

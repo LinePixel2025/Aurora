@@ -6572,10 +6572,15 @@ export const CHAT_MODEL_PICKER_ACT = `(async () => {
 })()`
 
 /**
- * 对话窗模型选择器探针 · 后半：配置里的 model 与 DOM 的 value 必须都变成新模型。
+ * 对话窗模型选择器探针 · 后半：**会话级模型**的判据（docs/06 §3，本轮起）。
  *
- * 两处都读的理由与思考等级那条一致：只读配置可能是界面没接线，只读 DOM 可能是本地 state。
- * 结束时把 model（与 modelList，如果这次是我们造出来的）写回原值。
+ * 口径变了：下拉写的是**本会话的覆盖**（`chat:setSessionModel` → 会话文件 `meta.llm`），
+ * 不再改全局 `llm.providers.<active>.model`。因此这里读三处并把「全局没被动过」也断言进去
+ * ——那正是这次改动最该被钉住的一条（对话窗不该再改别人的默认模型）：
+ * 1. 全局 `model` 仍是 `deepseek-chat`（没被下拉改动）；
+ * 2. 当前会话（`main`）的摘要里带 `llm.model = deepseek-reasoner`（覆盖写进去了）；
+ * 3. DOM 的 value 是新模型（界面接线没断）。
+ * 结束时**清掉本会话覆盖**（回到「跟随全局」）并把上半场造的全局 modelList / model 写回。
  */
 export const CHAT_MODEL_PICKER_CHECK = `(async () => {
   try {
@@ -6583,7 +6588,7 @@ export const CHAT_MODEL_PICKER_CHECK = `(async () => {
     if (!state.ok) return { pass: false, reason: 'settings.get failed' }
     const active = state.value.llm.active
     const provider = active === '' ? undefined : state.value.llm.providers[active]
-    const configModel = provider === undefined ? null : provider.model
+    const globalModel = provider === undefined ? null : provider.model
 
     const field = document.querySelector('[data-field="chat.model"]')
     const select =
@@ -6591,8 +6596,29 @@ export const CHAT_MODEL_PICKER_CHECK = `(async () => {
     const domValue = select === null ? null : select.value
     const optionCount = select === null ? 0 : select.options.length
 
+    // 会话覆盖：从会话摘要里找**带 llm 的那条**（不假定会话 id —— 截图夹具会把对话窗
+    // 切到别的会话上，写死的 id 会读成 null 而误判成"没写进去"）。
+    const sessions = await window.aurora.chat.sessions()
+    const overridden =
+      sessions.ok === true ? sessions.value.find((item) => item.llm !== undefined) : undefined
+    const sessionModel =
+      overridden === undefined || overridden.llm === undefined ? null : overridden.llm.model
+
+    // 还原：清掉本会话覆盖（空串 = 清除），再读一次会话摘要确认它真的没了。
+    // 判据取**状态**而不是 DOM 的 value：探针前半直接把 select.value 设成了新模型，
+    // 若界面状态回到空串，Vue 的 patch 认为"值没变"就不会去改 DOM，读到的仍是探针设的那个值。
+    const cleared = await window.aurora.chat.setSessionModel({
+      sessionId: overridden === undefined ? 'main' : overridden.id,
+      providerId: '',
+      model: '',
+    })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const afterSessions = await window.aurora.chat.sessions()
+    const stillOverridden =
+      afterSessions.ok === true && afterSessions.value.some((item) => item.llm !== undefined)
+
+    let restored = cleared.ok === true && !stillOverridden
     const probe = window.__auroraModelProbe
-    let restored = null
     if (probe !== undefined && probe.active !== '' && probe.before !== null) {
       const providers = state.value.llm.providers
       const target = providers[probe.active]
@@ -6602,28 +6628,29 @@ export const CHAT_MODEL_PICKER_CHECK = `(async () => {
         (list !== undefined &&
           list.length === probe.beforeList.length &&
           list.every((item, index) => item === probe.beforeList[index]))
-      if (target === undefined || (target.model === probe.before && listSame)) {
-        // 本来就已经是原值（我们只是补了 modelList 的除外）：无需写回
-        restored = true
-      } else {
+      if (target !== undefined && (target.model !== probe.before || !listSame)) {
         const patch = { ...target, model: probe.before }
         if (probe.beforeList !== null) patch.modelList = probe.beforeList
         const result = await window.aurora.settings.update({
           llm: { active: state.value.llm.active, providers: { ...providers, [probe.active]: patch } },
         })
-        restored = result.ok === true
+        restored = restored && result.ok === true
       }
     }
 
     return {
       pass:
-        configModel === 'deepseek-reasoner' &&
+        globalModel === 'deepseek-chat' &&
+        sessionModel === 'deepseek-reasoner' &&
         domValue === 'deepseek-reasoner' &&
         optionCount >= 2 &&
         restored === true,
-      configModel,
+      globalModel,
+      sessionModel,
       domValue,
       optionCount,
+      cleared: cleared.ok === true,
+      stillOverridden,
       restored,
     }
   } catch (error) {

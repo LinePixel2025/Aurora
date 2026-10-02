@@ -1608,10 +1608,15 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     在**没有可用 provider**（`llm.active` 指向的条目不存在）**或**它的 `modelList` 少于两个候选时
     造 / 补一个带**两个**模型 id 的（`modelList: ['deepseek-chat', 'deepseek-reasoner']`，并设为 `llm.active`），
     等 `settings:changed` 生效后把 `[data-field="chat.model"]` 切到第二个模型并派发 `change`，
-    等 600ms 让 `settings:update` 往返完成，并把原值记进 `window.__auroraModelProbe`；
-    check 再断言**配置里的 `model`**（`llm.providers[llm.active].model`）与
-    **DOM 里该 select 的 `.value`** 一致，且 **option 数 ≥ 2**，结束时把 `model` 写回原值。
-    `pass` = 三条件全真 —— 它同时钉住「两处读写的是同一个字段」与「探针事后恢复配置」。
+    等 600ms 让 IPC 往返完成，并把原值记进 `window.__auroraModelProbe`。
+    **check 的口径（本轮起，docs/06 §3 会话级模型）**：下拉写的是**本会话的覆盖**，
+    因此读三处 —— ① 全局 `llm.providers[llm.active].model` 必须**仍是** `deepseek-chat`
+    （对话框不再改全局默认，这条正是这次改动最该钉住的）；② 会话摘要里**带 `llm` 的那条**
+    的 `model` 是 `deepseek-reasoner`（覆盖写进去了；**不假定会话 id** —— 截图夹具会把对话窗
+    切到别的会话上，写死 `main` 会读成 null 而误判）；③ DOM 里该 select 的 `.value` 是新模型。
+    结束时**清掉本会话覆盖**（`chat:setSessionModel` 传空串）并再读一次会话摘要确认它真的没了
+    （判据取**状态**而不是 DOM 的 value：探针前半直接改过 `select.value`，界面状态回到空串时
+    Vue 认为"值没变"就不会去改 DOM，读到的仍是探针设的那个值 —— 这条曾经误报过一次 FAIL）。
   - **窗口拖动**（`WINDOW_DRAG_SCRIPT`，产物 `chat-drag.png` 与 `settings-drag.png`，两个窗口各一条场景）：
     量出所有**可见** `.drag-region`（`getBoundingClientRect()` 的宽或高为 0 视为不可见）并取**最大高度那条**，
     要求「至少有一个可见拖动区」且 **`maxHeight >= 32`**（够抓）；再读**那条**生效的 `app-region` 值为 `drag`

@@ -433,6 +433,10 @@ export class StubClient {
         return { text: '识别出的文本' }
       case 'tts.synthesize':
         return { audioBase64: silenceWavBase64(), mimeType: 'audio/wav' }
+      // 文件下发（本轮 docs/12 §5）：真实客户端回执带**落盘路径**，网页端据此提示
+      // 「已保存到客户端：<路径>」—— 桩机如实模拟，否则那条提示永远测不到。
+      case 'file.send':
+        return { path: `D:\\Downloads\\${cmd.name ?? 'file'}` }
       default:
         return {}
     }
@@ -486,6 +490,20 @@ export class StubClient {
 
   sendAsk(request) {
     this.sendRaw({ type: 'ask.request', request })
+  }
+
+  /**
+   * 提问在**客户端**结算（本轮，docs/12 §5）：与真实客户端一样经服务器上行，
+   * 服务器据此摘除 pendingAsks 并广播 ask.settled —— 网页端应立刻收起卡片。
+   */
+  sendAskSettled({ requestId, sessionId, outcome = 'answered', answers = [] }) {
+    this.sendRaw({
+      type: 'ask.settled',
+      requestId,
+      sessionId,
+      outcome,
+      answers,
+    })
   }
 
   setHistory(sessionId, messages) {

@@ -2075,6 +2075,203 @@ export const SCENARIOS = [
       )
     },
   },
+  // ── 34. 会话行模型下拉：显示生效模型并真的发 session.setModel（本轮 docs/06 §3） ──
+  {
+    name: 'panel-session-model',
+    async run(ctx) {
+      await fresh(ctx)
+      await ensurePanelSessions(ctx.page)
+      // 等配置切片就位：会话行的候选来自「生效 provider 的 modelList」，
+      // 而它只能从 `config.get` 的脱敏回执拿到（与「模型」页签同一条链）。
+      await ctx.page.waitForFunction(
+        () => {
+          const select = document.querySelector('[data-field="panel.session-model"]')
+          return (
+            (select !== null && !select.disabled && select.options.length >= 2) ||
+            document.querySelector('[data-field="panel.error"]') !== null
+          )
+        },
+        { timeout: TIMEOUT },
+      )
+      const before = await ctx.page.evaluate(() => {
+        const selects = [...document.querySelectorAll('[data-field="panel.session-model"]')]
+        const first = selects[0]
+        return {
+          count: selects.length,
+          value: first?.value ?? '',
+          firstOption: first?.options?.[0]?.textContent?.trim() ?? '',
+          options: first === undefined ? [] : [...first.options].map((option) => option.value),
+          panelError:
+            document.querySelector('[data-field="panel.error"]')?.textContent?.trim() ?? '',
+        }
+      })
+      // 「跟随全局（<全局模型>）」：未覆盖的会话必须显示这一条，而不是空白
+      const followGlobal = before.value === '' && /^跟随全局/.test(before.firstOption)
+      const candidates = before.options.includes('aurora-test-2')
+
+      let sent = null
+      if (candidates) {
+        const since = ctx.stub.mark()
+        await ctx.page.select('[data-field="panel.session-model"]', 'aurora-test-2')
+        sent = await ctx.stub.waitForCommand('session.setModel', { since, timeout: 4000 })
+      }
+      // 成功后网页端乐观更新该行的 llm（session.list 的刷新会兜底）→ 下拉值应变成新模型
+      const after = await ctx.page.evaluate(
+        () => document.querySelector('[data-field="panel.session-model"]')?.value ?? '',
+      )
+      return verdict(
+        {
+          perRowSelect: before.count >= 1,
+          followGlobalOption: followGlobal,
+          candidatesFromProvider: candidates,
+          commandSent: sent !== null,
+          commandModel: sent !== null && sent.model === 'aurora-test-2',
+          commandProvider: sent !== null && sent.providerId === 'p1',
+          valueApplied: after === 'aurora-test-2',
+        },
+        { before, sent, after, followGlobal },
+      )
+    },
+  },
+
+  // ── 35. 提问卡进会话流 + 客户端结算后立即收起（本轮 docs/12 §5） ──
+  {
+    name: 'ask-in-stream',
+    async run(ctx) {
+      await fresh(ctx)
+      // 打开夹具会话：这条提问的目标会话就是它 —— 卡应该出现在**流内**，
+      // 而不是顶部待办栏（同一张卡不重复出现，见 PendingBar 的过滤规则）。
+      await openFixtureSession(ctx)
+      ctx.stub.sendAsk(askRequest('ask-stream-1'))
+      await ctx.page.waitForSelector('[data-field="chat.ask-user-card"]', { timeout: TIMEOUT })
+
+      const inStream = await ctx.page.evaluate(() => ({
+        cards: document.querySelectorAll('[data-field="chat.ask-user-card"]').length,
+        inThread: document.querySelectorAll('.thread [data-field="chat.ask-user-card"]').length,
+        pendingBar: document.querySelectorAll('[data-panel="pending-bar"]').length,
+        options: document.querySelectorAll('[data-action="chat.ask-option"]').length,
+        progress: document.querySelectorAll('.ask-card .progress').length,
+      }))
+
+      // 客户端本地作答 → 服务器广播 ask.settled → 卡片原地切成只读
+      ctx.stub.sendAskSettled({
+        requestId: 'ask-stream-1',
+        sessionId: FIXTURE_OPEN_SESSION_ID,
+        outcome: 'answered',
+        answers: ['科目资料文件夹'],
+      })
+      const settledVisible = await ctx.page
+        .waitForSelector('[data-field="chat.ask-settled"]', { timeout: 3000 })
+        .then(() => true)
+        .catch(() => false)
+      const after = await ctx.page.evaluate(() => ({
+        settledLabel:
+          document.querySelector('[data-field="chat.ask-settled"]')?.textContent?.trim() ?? '',
+        answers: [...document.querySelectorAll('[data-field="chat.ask-answers"] .answer-chip')].map(
+          (node) => node.textContent.trim(),
+        ),
+        // 只读卡不再渲染输入与按钮（留痕是"记录"，不是"待办"）
+        inputs: document.querySelectorAll('[data-field="chat.ask-free"]').length,
+        submit: document.querySelectorAll('[data-action="chat.ask-submit"]').length,
+        cards: document.querySelectorAll('[data-field="chat.ask-user-card"]').length,
+      }))
+      return verdict(
+        {
+          cardInStream: inStream.cards === 1 && inStream.inThread === 1,
+          notInPendingBar: inStream.pendingBar === 0,
+          optionsRendered: inStream.options === 3,
+          progressBar: inStream.progress === 1,
+          settledShown: settledVisible && after.settledLabel === '已作答',
+          answersKept: after.answers.includes('科目资料文件夹'),
+          readOnlyAfterSettle: after.inputs === 0 && after.submit === 0,
+          cardStaysAsRecord: after.cards === 1,
+        },
+        { inStream, after, settledLabel: after.settledLabel },
+      )
+    },
+  },
+
+  // ── 36. 文件页「发送到客户端」：选目标设备 → 发出 file.send（本轮 docs/12 §5） ──
+  {
+    name: 'files-send-to-client',
+    async run(ctx) {
+      await fresh(ctx)
+      const uploaded = await ctx.stub.uploadFile({ name: '发给客户端.txt', content: 'fixture' })
+      await ctx.page.evaluate(() => {
+        window.location.hash = '#/files'
+      })
+      await ctx.page.waitForSelector('[data-panel="files-table"]', { timeout: TIMEOUT })
+
+      const before = await ctx.page.evaluate(() => ({
+        targets: document.querySelectorAll('[data-field="files.target-client"]').length,
+        buttons: document.querySelectorAll('[data-action="files.send-to-client"]').length,
+        sourceCell:
+          document.querySelector('[data-field="files.source"]')?.textContent?.trim() ?? '',
+      }))
+
+      // 未选目标设备时按钮禁用（提示"先选设备"），选了之后才可点
+      await ctx.page.select('[data-field="files.target-client"]', ctx.stub.clientId)
+      const since = ctx.stub.mark()
+      await ctx.page.click('[data-action="files.send-to-client"]')
+      const sent = await ctx.stub.waitForCommand('file.send', { since, timeout: 4000 })
+      // 客户端（桩机）回执后网页端给一条提示 —— 读 DOM 里出现过"已保存到客户端"即算送达
+      const notice = await ctx.page
+        .waitForFunction(() => (document.body.textContent ?? '').includes('已保存到客户端'), {
+          timeout: 4000,
+        })
+        .then(() => true)
+        .catch(() => false)
+
+      return verdict(
+        {
+          targetPicker: before.targets === 1,
+          sendButtons: before.buttons >= 1,
+          sourceLabel: before.sourceCell === '客户端',
+          commandSent: sent !== null,
+          commandFileId: sent !== null && sent.fileId === uploaded.fileId,
+          noticeShown: notice,
+        },
+        { before, sent, uploaded, notice },
+      )
+    },
+  },
+
+  // ── 37. prefers-reduced-motion：共享兜底真的把过渡压到 1ms（本轮 docs/07 §5.3） ──
+  {
+    name: 'reduced-motion',
+    async run(ctx) {
+      await fresh(ctx)
+      // 只保留 reduce 会**清掉** harness 设的 prefers-color-scheme，因此两个特征一起给
+      await ctx.page.emulateMediaFeatures([
+        { name: 'prefers-color-scheme', value: ctx.theme },
+        { name: 'prefers-reduced-motion', value: 'reduce' },
+      ])
+      const reading = await ctx.page.evaluate(() => {
+        const root = getComputedStyle(document.documentElement)
+        const body = getComputedStyle(document.body)
+        return {
+          matches: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+          durBase: root.getPropertyValue('--dur-base').trim(),
+          durFast: root.getPropertyValue('--dur-fast').trim(),
+          bodyTransition: body.transitionDuration,
+          bodyAnimation: body.animationDuration,
+        }
+      })
+      // 还原（同一主题下后续场景还要跑正常动效的判据）
+      await ctx.page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: ctx.theme }])
+      return verdict(
+        {
+          emulateApplied: reading.matches,
+          tokensCollapsed: reading.durBase === '1ms' && reading.durFast === '1ms',
+          // `* { transition-duration: 1ms !important }` 的兜底：body 上没有声明过渡也吃到了
+          blanketTransition: reading.bodyTransition === '0.001s',
+          blanketAnimation: reading.bodyAnimation === '0.001s',
+        },
+        { reading },
+        ['time 场景只读令牌与计算值，不依赖观感：任一环失效都会让这四个读数至少一个不成立'],
+      )
+    },
+  },
 ]
 
 /** 主题断言：body 背景 = `--bg-base` 解析值，且 `prefers-color-scheme` 与预期一致 */
