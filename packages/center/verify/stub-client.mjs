@@ -74,9 +74,14 @@ export const FIXTURE_OPEN_SESSION_ID = 'center-aaaaaaaaaa'
 export const FIXTURE_HISTORY_SESSION_ID = 'center-bbbbbbbbbb'
 export const FIXTURE_HISTORY_TITLE = '历史会话（回放）'
 
-export function fixtureSessionList() {
+/**
+ * 会话列表夹具：条数可调 —— `count > 2` 时在后面补 `count - 2` 条占位会话，
+ * 用来把「会话管理」面板撑出滚动条（`panel-sessions-scroll` 场景）。
+ * 前两条 id 固定（其它场景按 id 发事件），补的那批 id 形如 `center-fixture-<n>`。
+ */
+export function fixtureSessionList(count = 2) {
   const now = new Date()
-  return [
+  const base = [
     {
       sessionId: FIXTURE_OPEN_SESSION_ID,
       title: '远程会话',
@@ -92,6 +97,15 @@ export function fixtureSessionList() {
       centerVisible: true,
     },
   ]
+  for (let index = 2; index < count; index += 1) {
+    base.push({
+      sessionId: `center-fixture-${index}`,
+      title: `夹具会话 ${index}`,
+      updatedAt: new Date(now.getTime() - index * 60_000).toISOString(),
+      centerVisible: true,
+    })
+  }
+  return base
 }
 
 /** `project.list` 回执：两条选项（会话面板的「绑定项目」下拉） */
@@ -287,6 +301,8 @@ export class StubClient {
     this.commands = []
     this.status = defaultStatus()
     this.seq = 0
+    /** 会话列表条数（默认 2 条夹具会话；`setSessionCount` 可调大） */
+    this.sessionCount = 2
     /** sessionId → CenterSessionHistoryMessage[]（缺省 = 空历史） */
     this.history = new Map()
     this.welcome = null
@@ -396,7 +412,7 @@ export class StubClient {
       case 'session.input':
         return { agentRequestId: 'req-1' }
       case 'session.list':
-        return fixtureSessionList()
+        return fixtureSessionList(this.sessionCount)
       case 'session.history':
         return this.history.get(cmd.sessionId) ?? []
       case 'project.list':
@@ -438,6 +454,11 @@ export class StubClient {
       ...(patch.llm === undefined ? {} : { llm: { ...this.status.llm, ...patch.llm } }),
     }
     this.sendRaw({ type: 'status', status: this.status })
+  }
+
+  /** 会话列表条数（滚动场景把它调大把面板撑出滚动条；默认 2 = 两条夹具会话） */
+  setSessionCount(count) {
+    this.sessionCount = count
   }
 
   /** 恢复默认快照（每个场景开头调用：上一个场景的"摘掉语音位"不许渗到下一个） */

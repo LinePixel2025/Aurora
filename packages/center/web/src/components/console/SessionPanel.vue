@@ -495,6 +495,9 @@ function toolValue(path: string): boolean | undefined {
   gap: var(--space-2);
   min-width: 0;
   min-height: 0;
+  /* 撑满右侧抽屉：面板体才能拿到受限高度去滚动（否则整列按内容高撑出去，
+     被 `.panel-drawer` 的 overflow: hidden 裁掉 —— 会话多的时候滚不动） */
+  flex: 1 1 auto;
 }
 
 .panel-head {
@@ -584,6 +587,10 @@ function toolValue(path: string): boolean | undefined {
   flex-direction: column;
   gap: var(--space-2);
   min-width: 0;
+  /* 三件套缺一不可：吃剩余高度 + 允许被压缩 + 自己滚 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .note {

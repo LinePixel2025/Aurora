@@ -36,22 +36,29 @@ const props = defineProps<{
 
 const emit = defineEmits<{ jumpLatest: [] }>()
 
-/** 轨迹展开状态：用户主动点开的**保持点开**；收尾时折叠（历史条目默认折叠） */
-const userOpened = new Set<string>()
-const folded = new Set<string>()
+/**
+ * 轨迹展开状态：用户主动点开的**保持点开**；收尾时折叠（历史条目默认折叠）。
+ *
+ * ⚠️ 两个集合必须放进 `ref` 里 —— 普通 `new Set()` **不是响应式**的，`add` / `delete`
+ * 不会触发重渲染：点轨迹头时状态变了、界面不动（用户报的「无法展开 Agent 折叠起来的对话」
+ * 就是这个）。`ref` 会把对象值包成 reactive，集合的 `has/add/delete` 都会被追踪；
+ * 渲染函数里读的是 `.value.has(...)`，所以依赖建立得起来。
+ */
+const userOpened = ref(new Set<string>())
+const folded = ref(new Set<string>())
 const seen = new Set<string>()
 
 function traceOpen(item: ChatItem): boolean {
-  return userOpened.has(item.id) || !folded.has(item.id)
+  return userOpened.value.has(item.id) || !folded.value.has(item.id)
 }
 
 function toggleTrace(item: ChatItem): void {
   if (traceOpen(item)) {
-    userOpened.delete(item.id)
-    folded.add(item.id)
+    userOpened.value.delete(item.id)
+    folded.value.add(item.id)
   } else {
-    userOpened.add(item.id)
-    folded.delete(item.id)
+    userOpened.value.add(item.id)
+    folded.value.delete(item.id)
   }
 }
 
@@ -69,21 +76,40 @@ const foldSignature = computed(() =>
     .join('|'),
 )
 
+function applyFoldState(): void {
+  for (const item of props.session.items) {
+    if (item.kind !== 'assistant') continue
+    if (!seen.has(item.id)) {
+      seen.add(item.id)
+      if (item.streaming !== true) folded.value.add(item.id)
+      continue
+    }
+    if (item.streaming === true) folded.value.delete(item.id)
+    else folded.value.add(item.id)
+  }
+}
+
+watch(foldSignature, applyFoldState, { immediate: true })
+
+/**
+ * 第二条折叠入口：**本轮收尾**（`session.pending` 由 true → false）时再折一次。
+ *
+ * 为什么需要它：上面那条看的是"每条消息 streaming 的边沿"，而事件是分帧到达的 ——
+ * 增量极密时 watcher 可能只在"已经是 false"的那一刻被调度到，"流式期间观察到 true"
+ * 这个边沿压根没出现过，收尾就不折叠（harness 里用一次性灌四条事件的场景实测到）。
+ * `session.pending` 的收尾边沿与本轮消息条数无关，一定发生，用它兜住。
+ * 用户手动点开过的消息不受影响（`traceOpen` 里 userOpened 优先）。
+ */
 watch(
-  foldSignature,
-  () => {
+  () => props.session.pending,
+  (pending) => {
+    if (pending) return
     for (const item of props.session.items) {
-      if (item.kind !== 'assistant') continue
-      if (!seen.has(item.id)) {
-        seen.add(item.id)
-        if (item.streaming !== true) folded.add(item.id)
-        continue
-      }
-      if (item.streaming === true) folded.delete(item.id)
-      else folded.add(item.id)
+      if (item.kind !== 'assistant' || item.streaming === true) continue
+      seen.add(item.id)
+      folded.value.add(item.id)
     }
   },
-  { immediate: true },
 )
 
 /* ── Markdown：按消息缓存（内容变了才重新解析）；图表由共享水合器接管 ── */

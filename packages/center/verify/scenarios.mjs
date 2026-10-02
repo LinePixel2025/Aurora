@@ -43,6 +43,23 @@ function verdict(conditions, readings = {}, notes = []) {
 /** 页面侧统一的「可见性」读数：有尺寸才算真的渲染出来（v-if 命中但被裁掉不算） */
 const boxReadable = (box) => box !== null && box.h > 0 && box.w > 0
 
+/**
+ * 轮询到期望状态，**超时返回最后一次读数**（而不是抛 TimeoutError）。
+ *
+ * 失败时报告里最需要的是"当时到底读到了什么"：`aria-expanded` 还是 false =
+ * 点击没生效，这本身就是判据。用 `waitForFunction` 只会留一句 "Waiting failed"，
+ * 复盘时没有信息量（AGENTS 里记着这条教训）。
+ */
+async function waitForTraceState(read, predicate, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs
+  let last = await read()
+  while (!predicate(last) && Date.now() < deadline) {
+    await sleep(120)
+    last = await read()
+  }
+  return last
+}
+
 // ───────────────────────── 页面侧小工具（Node 侧） ─────────────────────────
 
 /** 清空桩机行为 → 恢复默认 status → reload 到指定 hash（每条场景的前置） */
@@ -87,13 +104,11 @@ async function freshLoggedOut(ctx) {
 /**
  * 等右栏会话面板真的拿到了会话行。
  *
- * ⚠️ 这里包含一条**恢复动作**（点面板自己的「刷新」），因为 SPA 有一处竞态：
- * `boot()` 先 REST 水合 clients（`replaceClients` 当场选中首台设备）、**之后**才
- * `connectSocket()`；面板挂载时的首拉（`session.list` / `config.get`）落在 WS 仍是
- * CONNECTING 的那一刻，`command()` 直接以「与 Center 的连接尚未建立，请稍候重试」失败，
- * 而 `watch(online)` 不会重试（REST 快照里 online 本来就是 true）。
- * 该缺陷由 `panel-sessions` / `panel-model` 两个场景**如实报 FAIL**（那里断言首拉成功、不点刷新）；
- * 这里只做"用户手点刷新"这条恢复路径，免得这一个缺陷把十几条依赖面板行的场景连带染红。
+ * 保留一条**恢复动作**（点面板自己的「刷新」）：这是用户遇到首拉失败时会走的真实路径。
+ * 说明：那个「面板挂载时的首拉落在 WS 握手期、命令当场失败」的竞态**已修**
+ * （`lib/socket.ts` 的 `command()` 现在会有界等待连接就绪再发），`panel-sessions` /
+ * `panel-model` 两个场景断言首拉成功、不再需要这里兜底。留着它是因为面板本身还有
+ * 「刷新」按钮，顺手当清场用，且能顺带覆盖那条按钮。
  */
 async function ensurePanelSessions(page) {
   await page.waitForFunction(
@@ -1711,6 +1726,170 @@ export const SCENARIOS = [
     theme: 'light',
     async run(ctx) {
       return themeCheck(ctx, 'light')
+    },
+  },
+
+  // ── 31. 会话管理面板要能滚（会话一多，最后一条必须够得着） ──
+  {
+    name: 'panel-sessions-scroll',
+    async run(ctx) {
+      // 先把会话列表撑到 24 条：两条夹具 + 22 条占位（见 fixtureSessionList(count)）
+      ctx.stub.setSessionCount(24)
+      await fresh(ctx)
+      await ctx.page.click('[data-action="panel.tab-sessions"]')
+      await ensurePanelSessions(ctx.page)
+      await ctx.page.waitForFunction(
+        () => document.querySelectorAll('[data-field="panel.session-row"]').length >= 20,
+        { timeout: TIMEOUT },
+      )
+      // 可见性一律相对**被裁剪的祖先**（右侧抽屉）：拿面板体自己的盒子比是恒真的假判据 ——
+      // 面板体在被裁之前能长到 3380px，"最后一行落在 body 盒子里"毫无信息量（首版实测如此）。
+      const sampleScroll = () =>
+        ctx.page.evaluate(() => {
+          const body = document.querySelector('[data-panel="panel.sessions"]')
+          const drawer = document.querySelector('[data-field="panel-container"]')
+          if (body === null) return null
+          const rows = [...body.querySelectorAll('[data-field="panel.session-row"]')]
+          const last = rows[rows.length - 1]
+          const clip = (drawer ?? body).getBoundingClientRect()
+          const lastBox = last?.getBoundingClientRect()
+          return {
+            rows: rows.length,
+            clientHeight: body.clientHeight,
+            scrollHeight: body.scrollHeight,
+            scrollTop: Math.round(body.scrollTop),
+            overflowY: getComputedStyle(body).overflowY,
+            clipHeight: Math.round(clip.height),
+            lastBottom: lastBox === undefined ? null : Math.round(lastBox.bottom),
+            clipBottom: Math.round(clip.bottom),
+            lastVisibleInClip:
+              lastBox === undefined
+                ? null
+                : lastBox.bottom <= clip.bottom + 1 && lastBox.top >= clip.top - 1,
+          }
+        })
+      const before = await sampleScroll()
+      // 滚到底（真实用户是滚轮/拖滚条；这里直接挪 scrollTop 读事实）
+      await ctx.page.evaluate(() => {
+        const body = document.querySelector('[data-panel="panel.sessions"]')
+        if (body !== null) body.scrollTop = body.scrollHeight
+      })
+      await sleep(200)
+      const after = await sampleScroll()
+      ctx.stub.setSessionCount(2)
+      return verdict(
+        {
+          rowsRendered: (before?.rows ?? 0) >= 20,
+          // 关键：容器必须真的可滚（内容高 > 可视高 + overflow 允许滚动）
+          scrollable:
+            before !== null &&
+            ['auto', 'scroll'].includes(before.overflowY) &&
+            before.scrollHeight > before.clientHeight,
+          scrollTopMoves: (after?.scrollTop ?? 0) > 0,
+          // 滚到底后最后一行必须真的落在抽屉可见区内（用户"够不着"的就是这一条）
+          lastRowReachable: after?.lastVisibleInClip === true,
+        },
+        { before, after },
+        [
+          '用户报「会话管理无法滚动」：面板体原本没有 flex/min-height/overflow 三件套，' +
+            '内容被外层 overflow: hidden 裁掉且滚不动 —— 这条场景把它钉住。',
+        ],
+      )
+    },
+  },
+
+  // ── 32. 折叠的轨迹必须能手动展开（点开后能再收起） ──
+  {
+    name: 'trace-toggle-folded',
+    async run(ctx) {
+      await fresh(ctx)
+      await openFixtureSession(ctx)
+      // 造一条**已收尾**的助手消息（思考 + 工具 + 正文）→ 收尾自动折叠
+      ctx.stub.sendEvent(FIXTURE_OPEN_SESSION_ID, {
+        type: 'reasoning',
+        messageId: 'm-fold',
+        round: 0,
+        delta: '先读课表，再按科目分组。',
+      })
+      await sleep(120)
+      ctx.stub.sendEvent(FIXTURE_OPEN_SESSION_ID, {
+        type: 'tool',
+        messageId: 'm-fold',
+        round: 0,
+        call: {
+          id: 't-fold',
+          name: 'read_file',
+          state: 'success',
+          input: { path: 'D:/课表.md' },
+          outputSummary: '已读取',
+        },
+      })
+      await sleep(120)
+      ctx.stub.sendEvent(FIXTURE_OPEN_SESSION_ID, {
+        type: 'text',
+        messageId: 'm-fold',
+        round: 0,
+        delta: '整理完了。',
+      })
+      await sleep(120)
+      ctx.stub.sendEvent(FIXTURE_OPEN_SESSION_ID, { type: 'done' })
+      const head = '[data-action="chat.trace-toggle"]'
+      // 先等收尾真的落定（`chat.trace-live` 变成 `chat.trace` = streaming 已被观察为 false），
+      // 再考"手动展开/收起"这件事本身 —— 否则展开失败与折叠慢一拍会混在一起说不清
+      await ctx.page.waitForFunction(
+        () => document.querySelectorAll('[data-field="chat.trace"]').length === 1,
+        { timeout: TIMEOUT },
+      )
+      await ctx.page.waitForSelector(head, { timeout: TIMEOUT })
+      /** 读当前轨迹状态：不硬等，状态没变就让读数说话（超时也带读数回报告） */
+      const readTrace = () =>
+        ctx.page.evaluate(() => {
+          const trace = document.querySelector('[data-field="chat.trace"]')
+          const clip = trace?.querySelector('.trace-clip')
+          return {
+            expanded:
+              trace
+                ?.querySelector('[data-action="chat.trace-toggle"]')
+                ?.getAttribute('aria-expanded') ?? null,
+            clipHeight:
+              clip === null || clip === undefined
+                ? null
+                : Math.round(clip.getBoundingClientRect().height),
+            thinkingVisible: (trace?.querySelector('.thinking') ?? null) !== null,
+            toolVisible: (trace?.querySelector('.tool-card') ?? null) !== null,
+          }
+        })
+      // ⚠️ 状态机看 `aria-expanded`，**几何量必须等过渡走完**再量：轨迹容器是
+      // `grid-template-rows: 0fr ↔ 1fr` 的 250ms 过渡，属性先变、高度后到 ——
+      // 首版在属性变化那一刻量 clipHeight，读到的永远是中间值（93px），把"已折叠"判成没折。
+      const settle = async (predicate) => {
+        const reading = await waitForTraceState(readTrace, predicate)
+        await sleep(400)
+        return { ...reading, ...(await readTrace()) }
+      }
+      const collapsed = await settle((state) => state.expanded === 'false')
+      // 点击展开（用户的真实路径）
+      await ctx.page.click(head)
+      const expanded = await settle((state) => state.expanded === 'true')
+      // 再点一次收回：展开 / 收起两个方向都要真的生效
+      await ctx.page.click(head)
+      const recollapsed = await settle((state) => state.expanded === 'false')
+      return verdict(
+        {
+          collapsedAfterDone: collapsed.expanded === 'false' && (collapsed.clipHeight ?? 99) <= 1,
+          expandsOnClick:
+            expanded.expanded === 'true' &&
+            (expanded.clipHeight ?? 0) > 40 &&
+            (expanded.clipHeight ?? 0) > (collapsed.clipHeight ?? 0) + 30,
+          showsThinkingAndTools: expanded.thinkingVisible && expanded.toolVisible,
+          collapsesAgain: recollapsed.expanded === 'false' && (recollapsed.clipHeight ?? 99) <= 1,
+        },
+        { collapsed, expanded, recollapsed },
+        [
+          '用户报「无法展开 Agent 折叠起来的对话」：展开状态用了普通 Set（Vue 不追踪），' +
+            'toggle 改了状态却不重渲染 —— 这条场景把「点开能展开、再点能收回」两侧都钉住。',
+        ],
+      )
     },
   },
 

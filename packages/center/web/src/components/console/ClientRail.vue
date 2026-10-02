@@ -114,6 +114,8 @@ const countLabel = computed(() => `${props.entries.length} 台 · ${onlineCount.
   gap: var(--space-2);
   min-width: 0;
   min-height: 0;
+  /* 同上：列表要拿到受限高度才能在自身内滚动 */
+  flex: 1 1 auto;
 }
 
 .rail-head {
@@ -163,6 +165,7 @@ const countLabel = computed(() => `${props.entries.length} 台 · ${onlineCount.
   margin: 0;
   padding: 0;
   list-style: none;
+  flex: 1 1 auto;
   overflow-y: auto;
   min-height: 0;
 }
