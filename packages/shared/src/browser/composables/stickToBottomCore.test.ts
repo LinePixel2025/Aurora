@@ -400,16 +400,81 @@ describe('stickToBottomCore', () => {
     h.runFrames()
     expect(h.distance()).toBe(0)
   })
+
+  // ────────── 触摸输入（移动端「滑不动对话」的回归防线，2026-10-03） ──────────
+  //
+  // 触摸滑动只产生 scroll 事件：不接 touch 意图，following 恒为 true，每次触摸产生的
+  // scroll 都被 alignOnce() 写回底部。语义与 wheel 的「两次读数」完全同构，但
+  // touch-release 之后的惯性期**只有 scroll 事件**，要靠更长的窗口（800ms）重判。
+
+  it('touch 意图：贴底时保持跟随；窗口期内 scroll 离底 → 关跟随且对齐帧闭嘴', () => {
+    const h = createHarness()
+    h.arrive(3000)
+    h.runFrames()
+    expect(h.core.isFollowing()).toBe(true)
+
+    // ① 手指按下拖动：此刻读数还在底部（合成器还没挪视口），判成跟随是正常的
+    h.intent('touch')
+    expect(h.core.isFollowing()).toBe(true)
+    const max = h.maxScroll()
+
+    // ② 拖动把视口挪上去并派发 scroll —— 窗口期内按当前位置重判：接管
+    h.arrive(3000, max - 240)
+    h.browserScroll()
+    expect(h.core.isFollowing()).toBe(false)
+
+    // ③ 窗口期内的对齐帧不许把触摸拖出去的视口吸回底部
+    h.runFrames()
+    expect(h.scrollTop()).toBe(max - 240)
+  })
+
+  it('touch-release 开长窗：300ms 后（超出普通 250ms 窗口）惯性读数仍重判，超过 800ms 后不再重判', () => {
+    const h = createHarness()
+    h.arrive(3000)
+    h.runFrames()
+    // 手指拖上去 → 抬离前先滚回底部：touch-release 此刻恢复跟随
+    h.arrive(3000, 100)
+    h.intent('wheel')
+    expect(h.core.isFollowing()).toBe(false)
+    h.arrive(3000, h.maxScroll())
+    h.intent('touch-release')
+    expect(h.core.isFollowing()).toBe(true)
+    const max = h.maxScroll()
+
+    // 惯性把视口滚远（抬离后 300ms，普通窗口早已过期）—— 长窗内照常重判
+    h.advance(300)
+    h.arrive(3000, max - 300)
+    h.browserScroll()
+    expect(h.core.isFollowing()).toBe(false)
+    // 惯性期内的对齐帧闭嘴（①″）
+    h.runFrames()
+    expect(h.scrollTop()).toBe(max - 300)
+
+    // 惯性又滚回底部（≤ 阈值）→ 长窗期内恢复跟随
+    h.arrive(3000, max - 10)
+    h.browserScroll()
+    expect(h.core.isFollowing()).toBe(true)
+
+    // 推进到超过 800ms：窗口过期，读数变化退回纯通知语义，不得再改跟随
+    h.advance(600)
+    h.arrive(3000, max - 400)
+    h.browserScroll()
+    expect(h.core.isFollowing()).toBe(true)
+  })
 })
 
 describe('shouldSnapOnIntent（吸底补齐的时机口径，2026-10-01 收窄）', () => {
-  it('只在滚条释放与向下滚轮时补齐；上滚滚轮 / 按键 / 滚条按下不得补', () => {
+  it('只在滚条释放、触摸抬离与向下滚轮时补齐；上滚滚轮 / 按键 / 滚条按下 / 拖动中不得补', () => {
     expect(shouldSnapOnIntent('pointer-release')).toBe(true)
+    // 触摸抬离同 pointer-release 语义（朝底部去的收尾；snapIfNearBottom 自带 ≤24px 守卫）
+    expect(shouldSnapOnIntent('touch-release')).toBe(true)
     expect(shouldSnapOnIntent('wheel', 120)).toBe(true)
     expect(shouldSnapOnIntent('wheel', -120)).toBe(false)
     // 拿不到方向时保守不补：宁可少吸一次，不可吞一次上滚
     expect(shouldSnapOnIntent('wheel')).toBe(false)
     expect(shouldSnapOnIntent('key')).toBe(false)
     expect(shouldSnapOnIntent('pointer')).toBe(false)
+    // 拖动刚开始方向未知，不补
+    expect(shouldSnapOnIntent('touch')).toBe(false)
   })
 })

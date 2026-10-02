@@ -17,8 +17,9 @@
  * 还是程序自己滚的。一次流式 delta 让内容长高 70px，程序在上一帧写下的 `scrollTop` 此刻
  * 读数就 > 24 —— 于是被误判成"用户接管"，此后所有输出都停在半路（用户报的「跟丢」）。
  * 更糟的是旧实现**没有自愈路径**：一旦被误判成 false，只有用户点「回到最新」或自己发消息才恢复。
- * 现在只有 wheel / 滚条拖拽 / 翻页键这类**真实输入**（`events.onUserScrollIntent`）才被当作
- * 用户意图，且仍需「实际距底 > threshold」这道**正向确认**才算接管（在底部继续滚滚轮不会误关）。
+ * 现在只有 wheel / 滚条拖拽 / 翻页键 / 触摸滑动这类**真实输入**（`events.onUserScrollIntent`）
+ * 才被当作用户意图，且仍需「实际距底 > threshold」这道**正向确认**才算接管
+ *（在底部继续滚滚轮不会误关）。
  *
  * **①′ 但"真实输入"与"读数"之间有一个时间差：窗口期内的读数必须重新判一次。**
  * 合成器线程先滚、主线程后收到输入事件（`passive: true` 的 wheel 尤其如此），输入到达那一刻
@@ -38,6 +39,15 @@
  * 重判都判不出去，逐次被吞，体感就是「滚轮滚不动」（2026-10-01 用户实测，回归防线
  * `stickToBottomCore.test.ts` 的两条竞速用例）。窗口收口（重判 / 过期）后对齐恢复常规语义。
  *
+ * **①‴ 触摸输入（移动端）：`touch` 走短窗，`touch-release` 开长窗。**
+ * touchmove 与 wheel 同理走 ①′ 的短窗（每次 move 都重开窗口 —— 拖动期间手指持续改视口，
+ * 按当前位置重判正是对齐帧闭嘴、第一下不被吞的机制）。但手指抬离（`touch-release`）之后
+ * 惯性滚动（momentum）**只产生 scroll 事件、不再产生任何输入事件**，250ms 盖不住整个
+ * 惯性期 —— 窗口一过，惯性读数退回 ① 的纯通知语义，跟随还停在"贴底"的旧判定上，
+ * 惯性滚出去的距离会被对齐帧逐次吸回底部（手机上「滑不动对话」的根因）。因此抬离开
+ * `DEFAULT_TOUCH_MOMENTUM_MS` 的长窗，惯性期内的读数照 ①′ 重判（滚远关跟随、
+ * 滚回底部恢复跟随），对齐帧照 ①″ 闭嘴。
+ *
  * **② 内容变高后必须自愈到"真的到底"。**
  * `scrollTop = scrollHeight - clientHeight` 用的是**写那一刻**的读数：DOM 变更发生在布局之前，
  * 同一帧里内容可能又长了一截（一次 markdown 块 / 一张工具卡 70–500px）。因此每帧对齐后
@@ -55,8 +65,9 @@ export interface StickMetrics {
   clientHeight: number
 }
 
-/** 用户意图的种类（只用来记日志/调试，语义一致：都表示"这是人在滚"） */
-export type StickIntentKind = 'wheel' | 'pointer' | 'pointer-release' | 'key'
+/** 用户意图的种类（`touch` / `touch-release` 的窗口差异见文件头 ①‴） */
+export type StickIntentKind =
+  'wheel' | 'pointer' | 'pointer-release' | 'key' | 'touch' | 'touch-release'
 
 /**
  * 解除订阅的函数（`onXxx` 的返回值）；**摘订阅必须由订阅方负责**。
@@ -171,23 +182,34 @@ const ALIGN_EPSILON = 1
 const DEFAULT_INTENT_WINDOW_MS = 250
 
 /**
+ * 触摸惯性（momentum）滚动的意图窗口时长（ms，仅 `touch-release` 使用，见文件头 ①‴）。
+ *
+ * 手指抬离后惯性滚动只产生 scroll 事件、不再有任何输入事件，普通 250ms 窗口盖不住
+ * 整个惯性期 —— 窗口一过，惯性滚出去的读数退回「内容可能变了」的纯通知语义，
+ * 会被对齐帧吸回底部。窗口期内语义与 ①′ 完全一致：滚远关跟随、滚回底部恢复跟随。
+ */
+const DEFAULT_TOUCH_MOMENTUM_MS = 800
+
+/**
  * 「贴底补齐」（薄壳的 `snapIfNearBottom`）该不该在这一记真实输入之后执行。
  *
  * 补齐的语义是「用户这记输入之后视口应当精确落在底部」——只有**朝底部去**的输入才成立：
- * 滚条拖拽释放（`pointer-release`）与向下滚轮（`deltaY > 0`）。
+ * 滚条拖拽释放（`pointer-release`）、触摸抬离（`touch-release`，同是拖动结束的收尾，
+ * `snapIfNearBottom` 自带 ≤24px 守卫，惯性已滚远时不会误吸）与向下滚轮（`deltaY > 0`）。
  * **向上滚轮绝不补**：输入到达那一刻读数还是"贴底"（合成器还没挪视口，见文件头 ①′），
  * 此刻补齐等于把用户即将发生的上滚预先吞掉 —— 小步长滚轮（触控板 / 高分辨率滚轮）
- * 逐次被吸回，体感就是「滚不动」。按键与滚条按下同理不补；拿不到方向时保守不补
- * （宁可少吸一次，不可吞一次上滚）。2026-10-01 收窄，此前是无差别补齐。
+ * 逐次被吸回，体感就是「滚不动」。按键与滚条按下同理不补；`touch` 方向未知
+ *（拖动才刚开始，读数还没变）保守不补。2026-10-01 收窄，此前是无差别补齐。
  */
 export function shouldSnapOnIntent(kind: StickIntentKind, wheelDeltaY?: number): boolean {
-  if (kind === 'pointer-release') return true
+  if (kind === 'pointer-release' || kind === 'touch-release') return true
   return kind === 'wheel' && wheelDeltaY !== undefined && wheelDeltaY > 0
 }
 
 export function createStickToBottomCore(options: StickToBottomCoreOptions): StickToBottomCore {
   const threshold = options.threshold ?? DEFAULT_THRESHOLD
   const intentWindowMs = options.intentWindowMs ?? DEFAULT_INTENT_WINDOW_MS
+  const touchMomentumMs = DEFAULT_TOUCH_MOMENTUM_MS
   const now = options.events.now ?? (() => Date.now())
   const maxSettleMs = options.events.maxSettleMs ?? DEFAULT_MAX_SETTLE_MS
 
@@ -329,7 +351,7 @@ export function createStickToBottomCore(options: StickToBottomCoreOptions): Stic
   }
 
   /**
-   * 真实用户输入（wheel / 滚条拖拽 / 翻页键）到达时的重新判定。
+   * 真实用户输入（wheel / 滚条拖拽 / 翻页键 / 触摸滑动）到达时的重新判定。
    *
    * **只有真实输入能走到这里** —— 程序滚动不会产生这些事件，这正是与旧实现的根本区别。
    * 判定是"当前位置"而不是"上滚还是下滚"（事件本身不带方向语义，读数才是事实）：
@@ -338,11 +360,14 @@ export function createStickToBottomCore(options: StickToBottomCoreOptions): Stic
    *
    * 中间那段"没到底但离底不远"落在 `following === false` 时**不恢复**：那多半是用户
    * 正在读最后一段，这时把跟随接回来会让下一条输出又一次把他拽走。
+   *
+   * 窗口时长按 kind 区分：`touch-release` 用惯性长窗（`DEFAULT_TOUCH_MOMENTUM_MS`，
+   * 见文件头 ①‴），其余走 `intentWindowMs`。
    */
-  function onUserIntent(_kind: StickIntentKind): void {
+  function onUserIntent(kind: StickIntentKind): void {
     // 开窗（见文件头 ①′）：这一判用的是"输入到达那一刻"的读数，而合成器可能还没把视口挪过去；
     // 紧随其后的那几次读数变化才是事实，要靠窗口期内的重判补上。
-    intentDeadline = now() + intentWindowMs
+    intentDeadline = now() + (kind === 'touch-release' ? touchMomentumMs : intentWindowMs)
     setFollowing(distanceToBottom() <= threshold)
   }
 

@@ -16,9 +16,11 @@
  *    - `scroll`：读数可能变了。**程序自己滚出来的 scroll 事件也走这条**，
  *      所以它绝不能改变跟随状态 —— 旧实现正是在这里用「距底 > 24px」判定的，
  *      一次流式 delta 就能把跟随误关掉，此后所有输出都停在半路（用户报的「跟丢」）。
- *    - `wheel` / 滚条 `pointerdown` / 翻页键：**真实输入**，只有它们能关闭跟随，
+ *    - `wheel` / 滚条 `pointerdown` / 翻页键 / 触摸滑动：**真实输入**，只有它们能关闭跟随，
  *      且引擎侧还有「实际离底超过阈值」这道正向确认（在底部继续滚滚轮不会误关）；
  *      判定是"当前位置"而不是"上滚还是下滚"，所以用户从历史滚回底部时跟随会恢复。
+ *      触摸（移动端）走 `touchmove` / `touchend` / `touchcancel` 三条：没有它们，触摸滑动
+ *      只产生 `scroll` 事件、意图永远不被调用，每次滑动都被对齐帧吸回底部（「滑不动」）。
  *    - `ResizeObserver`（内容根 + 容器）：容器尺寸变化（窗口从隐藏到显示、用户缩放）。
  *    - `visibilitychange` / `focus`：窗口从隐藏恢复可见时 `scrollTop` 可能已被浏览器夹取。
  *    ⚠️ 只监听内容根尺寸是**不够的**：`.thread` 是定高 flex 列、`MessageList` 根节点带
@@ -239,7 +241,7 @@ export function useStickToBottom(
   /**
    * 把原生监听挂到**当时的**滚动容器上。
    *
-   * `wheel` / `pointerdown` / `keydown` 每次 `rebind()` 都重新挂一遍（旧的那条在
+   * `wheel` / `pointerdown` / `keydown` / `touch*` 每次 `rebind()` 都重新挂一遍（旧的那条在
    * `nativeSubscriptions` 里收口）；`scroll` 这条转发给引擎 —— 引擎的订阅端口在
    * `createStickToBottomCore` 时就被消费掉了，之后换容器只能由这一层负责。
    *
@@ -272,17 +274,31 @@ export function useStickToBottom(
       if (isEditableTarget(event.target) || !SCROLL_KEYS.has(event.key)) return
       callback('key')
     }
+    // 触摸（移动端）：触摸滑动不产生 wheel，也不像滚条那样有 pointerdown/up 可认 ——
+    // 不接这三条，意图永远不被调用，每次触摸产生的 scroll 都被对齐帧吸回底部。
+    // `touchmove` **每次都算意图**（重开窗口并按当前位置重判）：拖动期间手指持续在改视口，
+    // 这正是「对齐帧闭嘴、第一下不被吞」的机制（core 文件头 ①′/①″）；`touch-release`
+    // 开**长窗**：抬离后的惯性滚动只产生 scroll 事件、不再有任何输入，250ms 短窗盖不住
+    // 惯性期（core 的 `DEFAULT_TOUCH_MOMENTUM_MS`）。不需要 `touchstart`：它不带位置变化。
+    const touchMove = (): void => callback('touch')
+    const touchRelease = (): void => callback('touch-release')
     target.addEventListener('scroll', onScroll, { passive: true })
     target.addEventListener('wheel', wheel, { passive: true })
     target.addEventListener('pointerdown', pointerDown, { passive: true })
     target.addEventListener('pointerup', pointerUp, { passive: true })
     target.addEventListener('keydown', keydown)
+    target.addEventListener('touchmove', touchMove, { passive: true })
+    target.addEventListener('touchend', touchRelease, { passive: true })
+    target.addEventListener('touchcancel', touchRelease, { passive: true })
     nativeSubscriptions.push(() => {
       target.removeEventListener('scroll', onScroll)
       target.removeEventListener('wheel', wheel)
       target.removeEventListener('pointerdown', pointerDown)
       target.removeEventListener('pointerup', pointerUp)
       target.removeEventListener('keydown', keydown)
+      target.removeEventListener('touchmove', touchMove)
+      target.removeEventListener('touchend', touchRelease)
+      target.removeEventListener('touchcancel', touchRelease)
     })
   }
 
