@@ -58,9 +58,7 @@ export function tasklistPlugin(md: MarkdownIt): void {
   const checkboxRule: RendererRule = (tokens, idx) => {
     const token = tokens[idx]
     const attrs = token?.attrs ?? []
-    const rendered = attrs
-      .map((attr) => ` ${attr[0]}="${String(attr[1] ?? '')}"`)
-      .join('')
+    const rendered = attrs.map((attr) => ` ${attr[0]}="${String(attr[1] ?? '')}"`).join('')
     return `<input${rendered}>`
   }
   md.renderer.rules[CHECKBOX_TOKEN] = checkboxRule

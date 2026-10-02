@@ -151,7 +151,9 @@
   font-size: var(--text-xs, 11px);
   cursor: pointer;
   opacity: 0;
-  transition: opacity var(--md-transition), color var(--md-transition);
+  transition:
+    opacity var(--md-transition),
+    color var(--md-transition);
 }
 .md .code-copy svg {
   width: 11px;

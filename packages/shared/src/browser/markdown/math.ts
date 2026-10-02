@@ -36,7 +36,12 @@ function renderTex(tex: string, displayMode: boolean): string {
 }
 
 /** 块级 `$$…$$`：同一行闭合，或跨行直到 `$$` 所在行 */
-function mathBlock(state: StateBlock, startLine: number, endLine: number, silent: boolean): boolean {
+function mathBlock(
+  state: StateBlock,
+  startLine: number,
+  endLine: number,
+  silent: boolean,
+): boolean {
   const start = state.bMarks[startLine] ?? 0
   const first = start + (state.tShift[startLine] ?? 0)
   const lineEnd = state.eMarks[startLine] ?? 0
