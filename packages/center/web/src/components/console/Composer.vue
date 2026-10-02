@@ -146,6 +146,11 @@ function discardRecording(): void {
   micState.value = 'idle'
 }
 
+/** 域名判定：含点且不是 IPv4 字面量（localhost / 单标签主机 / IP 都不算域名） */
+function isDomainHost(hostname: string): boolean {
+  return hostname.includes('.') && !/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)
+}
+
 async function toggleMic(): Promise<void> {
   if (micState.value === 'transcribing') return
   if (micState.value === 'recording') {
@@ -153,7 +158,18 @@ async function toggleMic(): Promise<void> {
     return
   }
   if (window.isSecureContext === false) {
-    showNotice('当前环境不支持录音：语音输入需要 HTTPS 或 localhost 访问')
+    // 浏览器硬限制：非安全上下文拿不到 navigator.mediaDevices，代码层绕不过。
+    // 域名入口大概率存在 https（换协议后端口用默认 443），IP / localhost 直连无解只能提示。
+    if (isDomainHost(location.hostname)) {
+      showNotice('语音输入需要 HTTPS，正在切换…')
+      location.replace(`https://${location.hostname}${location.pathname}${location.search}`)
+      return
+    }
+    showNotice('当前是 HTTP 直连，浏览器不允许网页录音；请用 HTTPS 域名访问后使用语音输入')
+    return
+  }
+  if (navigator.mediaDevices === undefined) {
+    showNotice('当前环境不支持网页录音（需要 HTTPS 或 localhost）')
     return
   }
   let stream: MediaStream
