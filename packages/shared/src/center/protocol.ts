@@ -7,6 +7,7 @@
  */
 import type {
   AgentEvent,
+  AskUserRequest,
   AutomationDefinition,
   AutomationMode,
   SubagentSnapshot,
@@ -66,6 +67,23 @@ export interface ConfirmRequestPayload {
   expiresAt: string
 }
 
+/**
+ * 向用户提问的请求（`ask_user`，v0.3.3，docs/12 §5）。
+ *
+ * 与 `AskUserRequest`（主进程 → 渲染层的 DTO，`../ipc/types.js`）**同一形状**：
+ * 客户端上行时原文转发、网页端直接当卡片数据用，不做字段改名。注意 `expiresAt` 是
+ * **毫秒时间戳**（不是 `ConfirmRequestPayload` 的 ISO 字符串），照抄会错。
+ */
+export type AskUserRequestPayload = AskUserRequest
+
+/** 网页端对提问卡的作答（网页 → 服务器 → 客户端；`answers` 为空且未 `skipped` 按跳过处理） */
+export interface AskResolvePayload {
+  /** 选中的选项 label 或自由输入的文本（多选时多条） */
+  answers: string[]
+  /** 用户主动跳过（语义比超时更明确）；`answers` 非空时可以不带 */
+  skipped?: boolean
+}
+
 /** 设备授权登录（客户端点「登录账户」→ 打开 Center 网页 → 网页确认后客户端自动拿到令牌，docs/12 §4.3） */
 export interface DeviceLoginChallenge {
   /** 设备码（客户端持有，轮询凭据） */
@@ -116,6 +134,21 @@ export type CenterCommand =
   | { kind: 'mode.switch'; requestId: string; mode: ModeId }
   /** 网页端对确认卡的批复（服务器只转发给发起会话的客户端） */
   | { kind: 'confirm.resolve'; requestId: string; confirmId: string; approved: boolean }
+  /**
+   * 网页端对提问卡的作答（v0.3.3，docs/12 §5）：服务器只转发给发起会话的客户端；
+   * 客户端调 `AskUserService.resolve`（对已结算 requestId 返回 `false`，先到先得），
+   * `result.data` 携带 `{ settled }`。
+   *
+   * `requestId` 语义见 `CenterWebMessage.ask.resolve` 的注释：它是**提问卡 id**，
+   * 原样穿到客户端并作为回执关联键。
+   */
+  | {
+      kind: 'ask.resolve'
+      requestId: string
+      sessionId: string
+      answers: string[]
+      skipped?: boolean
+    }
   // ── 远程会话管理（docs/12 §6.3，仅 center- 会话）──
   /** 枚举客户端的 center- 会话；`result.data` 携带 `CenterSessionSummary[]` */
   | { kind: 'session.list'; requestId: string }
@@ -195,6 +228,11 @@ export type CenterClientMessage =
   | { type: 'session.event'; sessionId: string; event: AgentEvent }
   /** 敏感工具确认请求，转发给该会话属主 + 管理员（docs/12 §5.1） */
   | { type: 'confirm.request'; request: ConfirmRequestPayload }
+  /**
+   * 向用户提问的请求（v0.3.3，docs/12 §5）：仅 `center-` 前缀会话上行，
+   * 转发路由同 `confirm.request`（属主 + 管理员），网页端刷新后由服务器回放未过期项。
+   */
+  | { type: 'ask.request'; request: AskUserRequestPayload }
 
 /** 服务器 → 客户端 */
 export type CenterServerMessage =
@@ -255,6 +293,23 @@ export type CenterWebMessage =
       clientId: string
       confirmId: string
       approved: boolean
+    }
+  /**
+   * 提问卡作答（v0.3.3，docs/12 §5）：授权 / 离线判定 / 回执同其他命令（`{ settled }`）。
+   *
+   * ⚠️ `requestId` 是**提问卡自身的 id**（客户端分配的 `ask-*`），不是网页端新生成的命令 id
+   * ——网页端与客户端都只有这一个 id 能指认"答的是哪张卡"，它同时充当回执的关联键
+   * （客户端在 `result.requestId` 里原样回显）。其它命令的 `requestId` 均为网页端生成，
+   * 这一条是例外；两条页签答同一张卡时会用同一个 id 各记一条 pending，按命令顺序 FIFO 配对
+   * （与 `settlePending` 的既有语义一致）。
+   */
+  | {
+      type: 'ask.resolve'
+      requestId: string
+      clientId: string
+      sessionId: string
+      answers: string[]
+      skipped?: boolean
     }
   // ── 远程会话管理（docs/12 §6.3）：授权与回执同其他命令 ──
   | { type: 'session.list'; requestId: string; clientId: string }
@@ -341,6 +396,17 @@ export type CenterWebServerMessage =
       clientId: string
       sessionId: string
       request: ConfirmRequestPayload
+    }
+  /**
+   * 向用户提问（v0.3.3，docs/12 §5）：路由同 `confirm.request`（客户端登记表属主 + 全部
+   * 管理员）；网页端新连上时服务器**回放未过期项**（`pendingAsks`，窗口 180s 比确认卡的
+   * 60s 长得多，不回放会让刷新一次就永远答不上）。
+   */
+  | {
+      type: 'ask.request'
+      clientId: string
+      sessionId: string
+      request: AskUserRequestPayload
     }
 
 /** 历史回放里的单条工具调用（客户端 SessionStore 的渲染层形状，`input` 已是解析后的对象） */
