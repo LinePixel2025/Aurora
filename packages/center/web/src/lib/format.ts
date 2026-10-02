@@ -92,11 +92,13 @@ export function subagentStatusLabel(status: string): string {
 }
 
 /**
- * 距过期时间点的剩余毫秒（已过期返回 0）；确认卡倒计时与文件剩余有效期共用。
+ * 距过期时间点的剩余毫秒（已过期返回 0）；确认卡 / 提问卡倒计时与文件剩余有效期共用。
  * `now` 由调用方传入（组件里用秒级心跳驱动重渲染）。
  */
-export function remainingMs(expiresAt: string, now = Date.now()): number {
-  const target = new Date(expiresAt).getTime()
+export function remainingMs(expiresAt: string | number, now = Date.now()): number {
+  // 确认卡 / 文件的 `expiresAt` 是 ISO 串；提问卡的 `expiresAt` 是**毫秒时间戳**
+  // （`AskUserRequest.expiresAt`，docs/12 §5）——两种形态都要吃得下
+  const target = typeof expiresAt === 'number' ? expiresAt : new Date(expiresAt).getTime()
   if (Number.isNaN(target)) return 0
   return Math.max(0, target - now)
 }

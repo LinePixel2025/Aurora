@@ -1,21 +1,24 @@
 <script setup lang="ts">
 /**
- * 登录 / 注册页。`embedded` 模式供设备确认页（#/device）内嵌：未登录的用户先在这里
- * 登录或注册，成功后由外层继续授权流程。注册成功返回与登录相同形状，直接进入登录态。
+ * 登录 / 注册卡片（docs/12 §3）。
+ *
+ * `embedded` 为真时去掉页级标题与外壳，供设备授权页内嵌（docs/12 §4.3：未登录先登录）。
+ * 注册成功即登录（服务器返回与 login 同形状）；注册关闭时服务器回 403 + 提示码，
+ * 这里翻译成一句人话。
  */
 import { ref } from 'vue'
-import { login, register } from '../store'
+import { login, register } from '../state'
+import { BookOpenText } from '@aurora/shared/browser'
 
 const props = defineProps<{ embedded?: boolean }>()
 
 const mode = ref<'login' | 'register'>('login')
 const username = ref('')
 const password = ref('')
-const confirmPassword = ref('')
-const submitting = ref(false)
+const confirm = ref('')
 const error = ref('')
+const busy = ref(false)
 
-/** 后端错误码 → 人话（原始 message 兜底展示） */
 function describeError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err)
   if (raw.includes('E_REGISTRATION_DISABLED')) return '注册已关闭，请联系管理员创建账户'
@@ -23,18 +26,22 @@ function describeError(err: unknown): string {
 }
 
 async function submit(): Promise<void> {
-  if (submitting.value) return
-  if (!username.value.trim() || !password.value) {
+  if (busy.value) return
+  if (username.value.trim() === '' || password.value === '') {
     error.value = '请输入用户名与密码'
     return
   }
   if (mode.value === 'register') {
-    if (password.value !== confirmPassword.value) {
+    if (password.value.length < 6) {
+      error.value = '密码至少 6 位'
+      return
+    }
+    if (password.value !== confirm.value) {
       error.value = '两次输入的密码不一致'
       return
     }
   }
-  submitting.value = true
+  busy.value = true
   error.value = ''
   try {
     if (mode.value === 'login') {
@@ -45,26 +52,31 @@ async function submit(): Promise<void> {
   } catch (err) {
     error.value = err instanceof Error ? describeError(err) : '操作失败，请稍后重试'
   } finally {
-    submitting.value = false
+    busy.value = false
   }
 }
 
 function switchMode(): void {
   mode.value = mode.value === 'login' ? 'register' : 'login'
   error.value = ''
-  confirmPassword.value = ''
 }
 </script>
 
 <template>
-  <div class="login-wrap" :class="{ embedded: props.embedded }">
-    <form class="card login-card" @submit.prevent="submit">
-      <h1 v-if="!props.embedded" class="login-title">Aurora Center</h1>
+  <div class="login-wrap" :class="{ embedded: props.embedded }" data-panel="login">
+    <form class="login-card" @submit.prevent="submit">
+      <template v-if="!props.embedded">
+        <span class="mark" aria-hidden="true">
+          <BookOpenText :size="22" :stroke-width="1.7" />
+        </span>
+        <h1 class="login-title">Aurora Center</h1>
+      </template>
       <p class="login-sub">
         {{
           mode === 'login' ? '登录以远程管理你的 Aurora 客户端' : '创建一个新的 Aurora Center 账户'
         }}
       </p>
+
       <label class="field">
         <span class="field-label">用户名</span>
         <input
@@ -73,8 +85,10 @@ function switchMode(): void {
           type="text"
           autocomplete="username"
           placeholder="用户名"
+          data-field="login.username"
         />
       </label>
+
       <label class="field">
         <span class="field-label">密码</span>
         <input
@@ -83,32 +97,34 @@ function switchMode(): void {
           type="password"
           :autocomplete="mode === 'login' ? 'current-password' : 'new-password'"
           :placeholder="mode === 'login' ? '密码' : '密码（至少 6 位）'"
+          data-field="login.password"
         />
       </label>
+
       <label v-if="mode === 'register'" class="field">
         <span class="field-label">确认密码</span>
         <input
-          v-model="confirmPassword"
+          v-model="confirm"
           class="input"
           type="password"
           autocomplete="new-password"
-          placeholder="再输入一次密码"
+          placeholder="再输一次密码"
+          data-field="login.confirm"
         />
       </label>
-      <p v-if="error" class="form-error">{{ error }}</p>
-      <button class="btn btn-primary btn-block" type="submit" :disabled="submitting">
-        <span v-if="submitting" class="spinner spinner-sm spinner-light"></span>
-        <span>{{
-          submitting
-            ? mode === 'login'
-              ? '登录中…'
-              : '注册中…'
-            : mode === 'login'
-              ? '登录'
-              : '注册'
-        }}</span>
+
+      <p v-if="error" class="login-error" data-field="login.error">{{ error }}</p>
+
+      <button class="btn-primary" type="submit" :disabled="busy" data-action="login.submit">
+        {{ busy ? '请稍候…' : mode === 'login' ? '登录' : '注册并登录' }}
       </button>
-      <button class="btn btn-ghost btn-block mode-switch" type="button" @click="switchMode">
+
+      <button
+        class="btn-mode"
+        type="button"
+        data-action="login.switch-mode"
+        @click="switchMode"
+      >
         {{ mode === 'login' ? '没有账户？注册一个' : '已有账户？返回登录' }}
       </button>
     </form>
@@ -117,57 +133,138 @@ function switchMode(): void {
 
 <style scoped>
 .login-wrap {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
+  display: grid;
+  place-items: center;
+  padding: var(--space-7) var(--space-4);
+  min-height: 60vh;
 }
 
-/* 设备确认页内嵌：不铺满整屏，卡片随内容收缩 */
 .login-wrap.embedded {
+  padding: var(--space-4) 0 0;
   min-height: 0;
-  padding: 0;
 }
 
 .login-card {
-  width: 360px;
-  max-width: 100%;
-  padding: 32px 28px;
+  width: min(380px, 100%);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+}
+
+.login-wrap.embedded .login-card {
+  box-shadow: none;
+  padding: 0;
+  width: 100%;
+  background: transparent;
+  border: none;
+}
+
+.mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--aurora-gradient);
+  color: var(--on-accent);
 }
 
 .login-title {
-  margin: 0 0 4px;
-  font-size: 22px;
-  text-align: center;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-display);
 }
 
 .login-sub {
-  margin: 0 0 22px;
-  text-align: center;
-  color: var(--text-2);
-  font-size: 13px;
+  margin: 0 0 var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
 }
 
 .field {
-  display: block;
-  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 
 .field-label {
-  display: block;
-  font-size: 13px;
-  color: var(--text-2);
-  margin-bottom: 6px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }
 
-.mode-switch {
-  margin-top: 10px;
+.input {
+  height: var(--control-h-md);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--fill-1);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-base);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--aurora-blue);
+  box-shadow: 0 0 0 1px var(--accent-ring);
+}
+
+.login-error {
+  margin: 0;
+  color: var(--danger-text);
+  font-size: var(--text-sm);
+}
+
+.btn-primary {
+  height: var(--control-h-md);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--aurora-blue);
+  color: var(--on-accent);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition: filter var(--transition-fast);
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.btn-mode {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  min-height: var(--control-h-sm);
+  border-radius: var(--radius-pill);
+  transition: color var(--transition-fast);
+}
+
+.btn-mode:hover {
+  color: var(--text-primary);
 }
 
 @media (max-width: 480px) {
-  .login-card {
-    padding: 24px 20px;
+  .input,
+  .btn-primary {
+    min-height: var(--hit-target);
   }
 }
 </style>

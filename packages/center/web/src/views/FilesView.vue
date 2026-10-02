@@ -5,9 +5,9 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { FileEntryInfo } from '@aurora/shared'
-import { ApiError, api, fileUrl } from '../api'
-import { formatBytes, formatRemaining, formatTime, remainingMs } from '../format'
-import { state } from '../store'
+import { ApiError, api, fileUrl } from '../lib/api'
+import { formatBytes, formatRemaining, formatTime, remainingMs } from '../lib/format'
+import { state } from '../state'
 
 const files = ref<FileEntryInfo[]>([])
 const loading = ref(true)
@@ -73,34 +73,37 @@ onMounted(() => void load())
 </script>
 
 <template>
-  <div class="files-view">
-    <div class="files-head">
-      <div>
-        <h2 class="files-title">文件管理</h2>
-        <p class="text-2 files-sub">
+  <section class="page files-page" data-panel="files-page">
+    <header class="files-head">
+      <div class="files-head-text">
+        <h1 class="page-title">文件</h1>
+        <p class="page-sub">
           客户端通过 Agent 发送的文件暂存在 Center，24 小时后自动删除。<span
             v-if="anyExpiringSoon"
-            class="expiring-hint"
+            class="files-hint"
           >
             剩余不足 24 小时的文件会显示倒计时。</span
           >
         </p>
       </div>
-      <button class="btn btn-ghost btn-sm" type="button" @click="load">刷新</button>
+      <button class="ui-btn ui-btn--ghost" type="button" @click="load">刷新</button>
+    </header>
+
+    <p v-if="error" class="ui-error">{{ error }}</p>
+
+    <div v-if="loading" class="files-loading" aria-busy="true">
+      <span class="ui-spinner spin" aria-hidden="true"></span>
     </div>
 
-    <p v-if="error" class="form-error">{{ error }}</p>
-    <div v-if="loading" class="boot-center files-loading"><span class="spinner"></span></div>
-
-    <div v-else-if="files.length === 0" class="card empty-card">
-      <p class="text-2">
+    <div v-else-if="files.length === 0" class="ui-card files-empty">
+      <p class="files-empty-text">
         暂无文件——在远程会话里让 Agent 调用 center_send_file 发送文件后，会出现在这里。
       </p>
     </div>
 
-    <div v-else class="card table-card">
-      <div class="table-scroll">
-        <table class="table">
+    <div v-else class="ui-card files-card">
+      <div class="files-scroll">
+        <table class="ui-table" data-panel="files-table">
           <thead>
             <tr>
               <th>名称</th>
@@ -109,94 +112,116 @@ onMounted(() => void load())
               <th>备注</th>
               <th>上传时间</th>
               <th>过期</th>
-              <th class="ta-right">操作</th>
+              <th class="files-end">操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="file in files" :key="file.fileId">
-              <td class="file-name">{{ file.name }}</td>
-              <td class="text-2">{{ clientName(file.clientId) }}</td>
-              <td class="text-2">{{ formatBytes(file.size) }}</td>
-              <td class="text-2 file-note">{{ file.note || '—' }}</td>
-              <td class="text-2">{{ formatTime(file.uploadedAt) }}</td>
+            <tr v-for="file in files" :key="file.fileId" data-field="files.row">
+              <td class="files-name">{{ file.name }}</td>
+              <td class="files-dim">{{ clientName(file.clientId) }}</td>
+              <td class="files-dim files-num">{{ formatBytes(file.size) }}</td>
+              <td class="files-dim files-note">{{ file.note || '—' }}</td>
+              <td class="files-dim files-num">{{ formatTime(file.uploadedAt) }}</td>
               <td>
-                <span class="text-2">{{ formatTime(file.expiresAt) }}</span>
+                <span class="files-dim files-num">{{ formatTime(file.expiresAt) }}</span>
                 <span v-if="remainingMs(file.expiresAt, now) < 24 * 3600 * 1000" class="countdown">
                   {{ expiresIn(file) }}
                 </span>
               </td>
-              <td class="ta-right actions">
-                <a
-                  class="btn btn-secondary btn-sm"
-                  :href="fileUrl(file.fileId)"
-                  :download="file.name"
-                >
-                  下载
-                </a>
-                <button
-                  class="btn btn-danger-ghost btn-sm"
-                  type="button"
-                  :disabled="removingId === file.fileId"
-                  @click="remove(file)"
-                >
-                  {{ removingId === file.fileId ? '删除中…' : '删除' }}
-                </button>
+              <td>
+                <div class="files-actions">
+                  <a
+                    class="ui-btn ui-btn--ghost"
+                    :href="fileUrl(file.fileId)"
+                    :download="file.name"
+                  >
+                    下载
+                  </a>
+                  <button
+                    class="ui-btn ui-btn--danger"
+                    type="button"
+                    data-action="files.delete"
+                    :disabled="removingId === file.fileId"
+                    @click="remove(file)"
+                  >
+                    {{ removingId === file.fileId ? '删除中…' : '删除' }}
+                  </button>
+                </div>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
-  </div>
+  </section>
 </template>
 
 <style scoped>
-.files-view {
-  display: grid;
-  gap: 14px;
+/* 外壳（App.vue 的 main.page）已提供页面留白时不再叠加一层内边距 */
+.page .page {
+  padding: 0;
 }
 
 .files-head {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
+  flex-wrap: wrap;
 }
 
-.files-title {
-  margin: 0 0 2px;
-  font-size: 18px;
+.files-head-text {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
 }
 
-.files-sub {
-  margin: 0;
-  font-size: 13px;
-}
-
-.expiring-hint {
-  color: var(--accent);
+.files-hint {
+  color: var(--accent-text);
 }
 
 .files-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-height: 200px;
 }
 
-.empty-card {
-  padding: 40px 24px;
+.files-empty {
+  padding: var(--space-7) var(--space-4);
   text-align: center;
 }
 
-.table-card {
-  padding: 8px 12px;
+.files-empty-text {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
 }
 
-.file-name {
-  font-weight: 500;
+.files-card {
+  padding: var(--space-3);
+}
+
+.files-scroll {
+  overflow-x: auto;
+}
+
+.files-name {
+  font-weight: var(--weight-medium);
   word-break: break-all;
   min-width: 160px;
 }
 
-.file-note {
+.files-dim {
+  color: var(--text-secondary);
+}
+
+.files-num {
+  font-variant-numeric: var(--num-tabular);
+  white-space: nowrap;
+}
+
+.files-note {
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -205,15 +230,148 @@ onMounted(() => void load())
 
 .countdown {
   display: block;
-  font-size: 12px;
-  color: var(--accent);
+  font-size: var(--text-xs);
+  color: var(--accent-text);
+  font-variant-numeric: var(--num-tabular);
 }
 
-.actions {
+.files-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
   white-space: nowrap;
 }
 
-.actions .btn + .btn {
-  margin-left: 6px;
+.files-end {
+  text-align: right;
+}
+
+/* ───────── 基础件（本页自持，样式单源在 @aurora/shared/browser/theme.css 的令牌） ───────── */
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  height: var(--control-h-sm);
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast),
+    transform var(--dur-press) var(--ease-standard);
+}
+
+.ui-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.ui-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ui-btn--ghost {
+  border-color: var(--border-subtle);
+}
+
+.ui-btn--ghost:hover:not(:disabled) {
+  background: var(--fill-2);
+}
+
+.ui-btn--danger {
+  color: var(--text-secondary);
+}
+
+.ui-btn--danger:hover:not(:disabled) {
+  background: var(--danger-fill);
+  color: var(--danger-text);
+}
+
+.ui-card {
+  background: var(--fill-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.ui-error {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--error-fill);
+  color: var(--error-text);
+  font-size: var(--text-sm);
+}
+
+.ui-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--fill-3);
+  border-top-color: var(--aurora-blue);
+  border-radius: var(--radius-pill);
+}
+
+.ui-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.ui-table th {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ui-table td {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
+}
+
+.ui-table tbody tr {
+  transition: background var(--transition-fast);
+}
+
+.ui-table tbody tr:hover {
+  background: var(--fill-2);
+}
+
+.ui-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+@media (max-width: 720px) {
+  .files-head {
+    align-items: stretch;
+  }
+
+  .ui-btn {
+    min-height: var(--hit-target);
+  }
+
+  .files-card {
+    padding: var(--space-2);
+  }
+
+  .ui-table {
+    min-width: 640px;
+  }
 }
 </style>

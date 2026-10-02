@@ -1,17 +1,11 @@
 /**
- * Aurora Center Web —— REST 封装与 WebSocket 客户端。
+ * Aurora Center Web —— REST 封装（docs/12 §4.2）。
  *
- * - 共享协议类型一律 `import type`（编译期擦除，运行时零依赖 @aurora/shared，
- *   SPA 的唯一运行时依赖是 vue）；
- * - WebSocket 断线自动重连：指数退避 1s→2s→4s→8s→15s 封顶；
- * - 登录令牌存 localStorage（7 天有效期由服务器控制，过期由 401 触发登出）。
+ * 共享协议类型一律 `import type`（编译期擦除）；运行时依赖只有 vue 与
+ * `@aurora/shared/browser`（Markdown 渲染器 / 设计令牌 / 图标查表）。
+ * 登录令牌存 localStorage（7 天有效期由服务器控制，过期由 401 触发登出）。
  */
-import type {
-  CenterWebMessage,
-  CenterWebServerMessage,
-  ClientInfo,
-  FileEntryInfo,
-} from '@aurora/shared'
+import type { ClientInfo, FileEntryInfo } from '@aurora/shared'
 
 export interface Me {
   id: string
@@ -160,87 +154,4 @@ export const api = {
       return request(`/api/admin/clients/${encodeURIComponent(clientId)}`, 'DELETE')
     },
   },
-}
-
-// ───────────────────────── WebSocket ─────────────────────────
-
-export type SocketStatus = 'idle' | 'connecting' | 'open' | 'closed'
-
-/**
- * 浏览器 → Center 的 WebSocket（`/api/ws?token=`，docs/12 §4.2）。
- * 断线自动重连：指数退避 1s 起步、15s 封顶；连接成功后清零。
- */
-export class CenterSocket {
-  onMessage: ((message: CenterWebServerMessage) => void) | null = null
-  onStatus: ((status: SocketStatus) => void) | null = null
-
-  private ws: WebSocket | null = null
-  private attempt = 0
-  private reconnectTimer: number | undefined
-  private stopped = true
-
-  connect(token: string): void {
-    this.stopped = false
-    this.attempt = 0
-    this.open(token)
-  }
-
-  close(): void {
-    this.stopped = true
-    if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer)
-    this.reconnectTimer = undefined
-    this.ws?.close()
-    this.ws = null
-    this.emitStatus('idle')
-  }
-
-  /** 连接未就绪时返回 false（调用方按错误处理，不排队） */
-  send(message: CenterWebMessage): boolean {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message))
-      return true
-    }
-    return false
-  }
-
-  private open(token: string): void {
-    this.emitStatus('connecting')
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(
-      `${protocol}://${window.location.host}/api/ws?token=${encodeURIComponent(token)}`,
-    )
-    this.ws = ws
-    ws.onopen = () => {
-      this.attempt = 0
-      this.emitStatus('open')
-    }
-    ws.onmessage = (event: MessageEvent) => {
-      try {
-        this.onMessage?.(JSON.parse(String(event.data)) as CenterWebServerMessage)
-      } catch {
-        // 非 JSON 帧一律忽略
-      }
-    }
-    ws.onclose = () => {
-      this.ws = null
-      if (this.stopped) {
-        this.emitStatus('idle')
-        return
-      }
-      this.emitStatus('closed')
-      /*
-       * 重连退避：1s 起、指数翻倍、**5s 封顶**（2026-09-29 从 15s 收紧）。
-       * 网页端的"在线/离线"完全靠这条 WS 推送（`clients` 全量快照，无轮询兜底），
-       * 所以断线期间页面上的在线状态就是**停住不动**的旧快照 —— 越早重连，越早对齐真实状态。
-       */
-      const delay = Math.min(5_000, 1000 * 2 ** this.attempt)
-      this.attempt += 1
-      this.reconnectTimer = window.setTimeout(() => this.open(token), delay)
-    }
-    // onerror 后必然跟随 onclose，重连统一在 onclose 处理
-  }
-
-  private emitStatus(status: SocketStatus): void {
-    this.onStatus?.(status)
-  }
 }

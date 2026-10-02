@@ -1,457 +1,491 @@
 <script setup lang="ts">
-import GlobalConfirmBar from '../components/GlobalConfirmBar.vue'
-import RemoteControlPanel from '../components/RemoteControlPanel.vue'
-import SessionListPanel from '../components/SessionListPanel.vue'
-import SessionView from '../components/SessionView.vue'
+/**
+ * 控制台（docs/12 §10）：`设备列表 | 会话流 | 控制面板` 三栏。
+ *
+ * - 主区独占全高，内容列 860px 中轴（与桌面端同一阅读动线）；右侧面板可收起（存 localStorage）；
+ * - 待办栏（确认卡 + 提问卡）常驻主区顶部 —— 本地会话来源的卡片没有会话视图，只能在这里处理；
+ * - 吸底跟随复用共享的 `useStickToBottom`（语义与桌面端逐字一致：意图只由真实输入发起、
+ *   250ms 窗口按之后的读数重判、非跟随时显示「回到最新」）；
+ * - ≤720px 单栏：设备列表与控制面板收进覆盖式抽屉，点开会话自动收起。
+ */
+import { computed, ref, watch } from 'vue'
 import {
   activeSession,
   clientsSorted,
-  selectClient,
+  openRemoteSession,
   selectedEntry,
+  selectClient,
   sessionViewTick,
   startSession,
   state,
-} from '../store'
-import { formatTime, platformLabel } from '../format'
-import { computed, ref, watch } from 'vue'
+} from '../state'
+import { PanelRight, Plus, useStickToBottom } from '@aurora/shared/browser'
+import ClientRail from '../components/console/ClientRail.vue'
+import MessageStream from '../components/console/MessageStream.vue'
+import Composer from '../components/console/Composer.vue'
+import SessionPanel from '../components/console/SessionPanel.vue'
+import PendingBar from '../components/console/PendingBar.vue'
+import UsageStrip from '../components/console/UsageStrip.vue'
+import FileStrip from '../components/console/FileStrip.vue'
 
-/**
- * 控制台布局（v0.3.2 重构：对话主导，docs/12 §10）：
- * - **对话主区独占全高**，客户端选择收紧为顶部下拉；
- * - 「会话列表 / 远程控制」收进**右侧可折叠边栏**（两个 tab），收起后对话全宽，
- *   折叠状态存 localStorage（移动端不持久化）；
- * - 旧版「远程控制 + 会话列表 + 对话区」同列纵向堆叠（对话区被压在下面）已废弃；
- * - ≤ 720px：对话区全屏，边栏变**覆盖式抽屉**（滑出盖在对话上，选中会话后自动收起）。
- */
+const PANEL_KEY = 'aurora-center-panel-collapsed'
 
-type SideTab = 'sessions' | 'remote'
-const sideTab = ref<SideTab>('sessions')
+const contentRef = ref<HTMLElement | null>(null)
+const { following, stick } = useStickToBottom(() => contentRef.value)
 
-const PANEL_KEY = 'aurora-center-side-panel'
-const MOBILE_QUERY = '(max-width: 720px)'
-
-function isMobile(): boolean {
-  return window.matchMedia(MOBILE_QUERY).matches
-}
-
-const panelOpen = ref(window.localStorage.getItem(PANEL_KEY) !== '0')
-
-function togglePanel(): void {
-  panelOpen.value = !panelOpen.value
-  // 移动端的抽屉开合是一次性的，不持久化——回桌面时边栏保持上次桌面态
-  if (!isMobile()) {
-    window.localStorage.setItem(PANEL_KEY, panelOpen.value ? '1' : '0')
-  }
-}
-
-// 移动端：从会话列表点开一个会话后自动收起抽屉，让对话区立刻全屏。
-// 用 store 的 viewTick 信号而不是 watch activeSessionKey：点开的就是当前激活会话时
-// key 不变，watch 收不到——但抽屉同样应该收起。
-watch(sessionViewTick, () => {
-  if (isMobile() && panelOpen.value) panelOpen.value = false
-})
-
+const panelCollapsed = ref(window.localStorage.getItem(PANEL_KEY) === '1')
+const drawer = ref<'none' | 'rail' | 'panel'>('none')
 const creating = ref(false)
 const createError = ref('')
 
-const selectedClient = computed(() => selectedEntry.value?.client ?? null)
+watch(panelCollapsed, (collapsed) => {
+  window.localStorage.setItem(PANEL_KEY, collapsed ? '1' : '0')
+})
 
-function onClientChange(event: Event): void {
-  const value = (event.target as HTMLSelectElement).value
-  if (value) selectClient(value)
-}
+/* 打开会话（含新建）后收起移动端抽屉：手机上主区才是主角 */
+watch(sessionViewTick, () => {
+  drawer.value = 'none'
+})
+
+const entry = computed(() => selectedEntry.value)
+const session = computed(() => activeSession.value)
+
+const remoteDisabled = computed(() => entry.value?.status?.center.allowRemoteSession === false)
+const offline = computed(() => entry.value !== null && !entry.value.client.online)
+
+const emptyHint = computed(() => {
+  if (entry.value === null) {
+    return '左侧还没有设备。在客户端的设置页开启 Aurora Center 并登录后，它会出现在这里。'
+  }
+  if (offline.value) return '这台设备已离线。它重新上线后（客户端会自动重连）就能继续操作。'
+  if (remoteDisabled.value) {
+    return '这台设备没有允许「远程会话」。请在客户端的设置页打开 Aurora Center 的对应开关。'
+  }
+  return ''
+})
 
 async function create(): Promise<void> {
-  const entry = selectedEntry.value
-  if (!entry || creating.value) return
+  const target = entry.value
+  if (target === null || creating.value) return
   creating.value = true
   createError.value = ''
   try {
-    await startSession(entry.client.clientId)
-  } catch (err) {
-    createError.value = err instanceof Error ? err.message : '创建会话失败'
+    await startSession(target.client.clientId)
+  } catch (error) {
+    createError.value = error instanceof Error ? error.message : String(error)
   } finally {
     creating.value = false
   }
 }
+
+function onSelect(clientId: string): void {
+  selectClient(clientId)
+  drawer.value = 'none'
+}
+
+/** 设备列表点「新建会话」：先切到该设备再建（列表项与当前选中项可能不是同一台） */
+async function createFor(clientId: string): Promise<void> {
+  if (state.selectedClientId !== clientId) selectClient(clientId)
+  await create()
+}
+
+function openSession(sessionId: string): void {
+  const clientId = entry.value?.client.clientId
+  if (clientId === undefined) return
+  openRemoteSession(clientId, sessionId)
+}
+
+const sessionList = computed(() => entry.value?.remoteSessions ?? [])
 </script>
 
 <template>
-  <div class="console-root">
-    <!-- 全局待批复确认卡栏：含本地会话来源的请求（无会话视图可去，只能在这里批复） -->
-    <GlobalConfirmBar />
+  <div class="console" data-panel="console">
+    <aside class="rail" :class="{ 'drawer-open': drawer === 'rail' }">
+      <ClientRail
+        :entries="clientsSorted"
+        :selected-id="state.selectedClientId"
+        @select="onSelect"
+        @create="createFor"
+      />
+    </aside>
+    <div v-if="drawer !== 'none'" class="scrim" @click="drawer = 'none'" />
 
-    <div class="console">
-      <section class="chat-main">
-        <!-- 顶部条：客户端紧凑下拉 + 边栏开关 -->
-        <div class="chat-topbar">
-          <label v-if="clientsSorted.length > 0" class="client-picker">
-            <span
-              class="dot"
-              :class="selectedClient?.online ? 'on' : 'off'"
-              aria-hidden="true"
-            ></span>
-            <select
-              class="input picker-select"
-              :value="state.selectedClientId"
-              title="切换客户端"
-              @change="onClientChange"
-            >
-              <option v-for="entry in clientsSorted" :key="entry.client.clientId" :value="entry.client.clientId">
-                {{ entry.client.name }} · {{ entry.client.online ? '在线' : '离线' }}
-              </option>
-            </select>
-          </label>
-          <span v-else class="text-2 picker-empty">还没有客户端接入——在 Aurora 设置里用 Center 账号登录后，设备会出现在这里</span>
+    <section class="main">
+      <div class="main-head">
+        <button
+          type="button"
+          class="head-btn rail-toggle"
+          data-action="console.open-rail"
+          @click="drawer = drawer === 'rail' ? 'none' : 'rail'"
+        >
+          设备
+        </button>
+        <span class="main-title">{{ entry?.client.name ?? '未选择设备' }}</span>
+        <span v-if="entry" class="main-sub">
+          {{ entry.client.online ? '在线' : '离线' }} · {{ entry.status?.mode ?? entry.client.mode }}
+        </span>
+        <span class="grow" />
+        <button
+          v-if="session"
+          type="button"
+          class="head-btn"
+          data-action="console.jump-latest"
+          @click="stick('smooth')"
+        >
+          回到最新
+        </button>
+        <button
+          type="button"
+          class="head-btn panel-toggle"
+          data-action="console.toggle-panel"
+          :title="panelCollapsed ? '展开控制面板' : '收起控制面板'"
+          @click="panelCollapsed = !panelCollapsed"
+        >
+          <PanelRight :size="14" :stroke-width="1.8" aria-hidden="true" />
+        </button>
+      </div>
 
-          <button
-            class="icon-btn"
-            type="button"
-            :title="panelOpen ? '收起边栏' : '展开边栏（会话列表 / 远程控制）'"
-            @click="togglePanel"
-          >
-            {{ panelOpen ? '▸' : '◂' }}
-          </button>
+      <div class="stack">
+        <PendingBar />
+
+        <div class="thread">
+          <div ref="contentRef" class="thread-inner">
+            <template v-if="session && entry">
+              <UsageStrip :entry="entry" :session="session" />
+              <FileStrip :entry="entry" />
+              <MessageStream
+                :session="session"
+                :entry="entry"
+                :following="following"
+                @jump-latest="stick('smooth')"
+              />
+            </template>
+
+            <div v-else class="centered-note">
+              <template v-if="emptyHint === '' && entry !== null">
+                <p>这台设备还没有打开的会话。</p>
+                <button
+                  type="button"
+                  class="btn-primary"
+                  :disabled="creating"
+                  data-action="console.new-session"
+                  @click="create()"
+                >
+                  <Plus :size="14" :stroke-width="1.8" aria-hidden="true" />
+                  {{ creating ? '正在创建…' : '新建远程会话' }}
+                </button>
+                <p v-if="createError" class="err">{{ createError }}</p>
+                <ul v-if="sessionList.length > 0" class="session-choices">
+                  <li v-for="item in sessionList.slice(0, 6)" :key="item.sessionId">
+                    <button
+                      type="button"
+                      class="session-choice"
+                      data-action="console.open-session"
+                      @click="openSession(item.sessionId)"
+                    >
+                      {{ item.title || item.sessionId }}
+                    </button>
+                  </li>
+                </ul>
+              </template>
+              <p v-else>{{ emptyHint }}</p>
+            </div>
+          </div>
         </div>
 
-        <SessionView
-          v-if="activeSession && selectedEntry"
-          :session="activeSession"
-          :entry="selectedEntry"
-          @new-session="create"
-        />
-        <div v-else-if="selectedEntry" class="card empty-card">
-          <h2 class="empty-title">{{ selectedEntry.client.name }}</h2>
-          <p class="text-2 empty-meta">
-            {{ platformLabel(selectedEntry.client.platform) }} · v{{
-              selectedEntry.client.version
-            }}
-            · 最近活跃 {{ formatTime(selectedEntry.client.lastSeenAt) }}
-          </p>
-          <p v-if="!selectedEntry.client.online" class="text-2">客户端当前离线，无法发起会话</p>
-          <p
-            v-else-if="selectedEntry.status && !selectedEntry.status.center.allowRemoteSession"
-            class="text-2"
-          >
-            该客户端未开启「远程会话」（center.allowRemoteSession），无法在此发起对话
-          </p>
-          <p v-if="createError" class="form-error">{{ createError }}</p>
-          <button
-            class="btn btn-primary"
-            type="button"
-            :disabled="!selectedEntry.client.online || creating"
-            @click="create"
-          >
-            {{ creating ? '创建中…' : '新建会话' }}
-          </button>
-        </div>
-        <div v-else class="card empty-card">
-          <p class="text-2">从上方选择一个客户端开始</p>
-        </div>
-      </section>
+        <Composer v-if="session && entry" :session="session" :entry="entry" />
+      </div>
+    </section>
 
-      <!-- 右侧边栏：桌面端常驻可折叠，移动端覆盖式抽屉 -->
-      <div
-        v-if="panelOpen"
-        class="drawer-backdrop"
-        aria-hidden="true"
-        @click="togglePanel"
-      ></div>
-      <aside v-if="panelOpen" class="card side-panel">
-        <div class="side-tabs" role="tablist">
-          <button
-            type="button"
-            class="side-tab"
-            :class="{ open: sideTab === 'sessions' }"
-            @click="sideTab = 'sessions'"
-          >
-            会话列表
-          </button>
-          <button
-            type="button"
-            class="side-tab"
-            :class="{ open: sideTab === 'remote' }"
-            @click="sideTab = 'remote'"
-          >
-            远程控制
-          </button>
-          <button class="side-close" type="button" title="收起" @click="togglePanel">✕</button>
-        </div>
-        <div v-show="sideTab === 'sessions'" class="side-body">
-          <SessionListPanel :entry="selectedEntry" />
-        </div>
-        <div v-show="sideTab === 'remote'" class="side-body">
-          <RemoteControlPanel :entry="selectedEntry" />
-        </div>
-      </aside>
-    </div>
+    <aside class="panel" :class="{ collapsed: panelCollapsed, 'drawer-open': drawer === 'panel' }">
+      <SessionPanel :entry="entry" :session="session" />
+    </aside>
+
+    <nav class="mobile-tabs">
+      <button
+        type="button"
+        class="head-btn"
+        data-action="console.open-rail-mobile"
+        @click="drawer = drawer === 'rail' ? 'none' : 'rail'"
+      >
+        设备
+      </button>
+      <button
+        type="button"
+        class="head-btn"
+        data-action="console.open-panel-mobile"
+        @click="drawer = drawer === 'panel' ? 'none' : 'panel'"
+      >
+        控制面板
+      </button>
+    </nav>
   </div>
 </template>
 
 <style scoped>
-/* 外层纵向：全局确认栏在顶、对话布局在下。
-   高度链（docs/12 §10）：根节点拿「100dvh − 顶栏 − 安全区 − page 上下 padding」
-   之内的全部高度并内部消化 —— GlobalConfirmBar 在场时由 flex 压缩 .console，
-   确认卡再高也只会压缩消息区，页面本身不产生文档流滚动（唯一滚动在 .msg-list）。
-   min-height 是极矮视口的兜底（低于它允许页面滚动，保证控制台可用）。 */
-.console-root {
+.console {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rail {
+  width: 264px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  height: calc(100vh - var(--topbar-h) - var(--safe-top) - var(--safe-bottom) - 40px);
-  height: calc(100dvh - var(--topbar-h) - var(--safe-top) - var(--safe-bottom) - 40px);
-  min-height: 320px;
+  background: var(--fill-1);
+  border-right: 1px solid var(--border-subtle);
+  overflow: hidden;
 }
 
-.console {
-  flex: 1;
-  min-height: 0; /* 高度链关键：允许被上面的确认栏压缩，滚动收进 .msg-list 内部 */
+.main {
   display: flex;
-  gap: 12px;
-  align-items: stretch;
-}
-
-/* 对话主区：独占全高，是布局的绝对主角 */
-.chat-main {
-  flex: 1;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
 }
 
-.chat-topbar {
-  flex: none;
+.main-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-width: 0;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  min-height: 44px;
 }
 
-.client-picker {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  max-width: 340px;
-  flex: none;
-}
-
-.picker-select {
-  width: auto;
-  max-width: 320px;
-  min-height: 34px;
-  padding: 5px 30px 5px 12px;
-  font-size: 13.5px;
-  /* 下拉箭头（原生 appearance 已去掉） */
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236e6e73' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-}
-
-.picker-empty {
-  flex: 1;
-  font-size: 13px;
+.main-title {
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.icon-btn {
-  margin-left: auto;
-  flex: none;
-  width: 34px;
-  height: 34px;
-  border: 0;
-  border-radius: 980px;
-  cursor: pointer;
-  background: rgba(0, 0, 0, 0.05);
-  color: var(--text-2);
-  font-size: 14px;
+.main-sub {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  flex: 0 0 auto;
+}
+
+.grow {
+  flex: 1 1 auto;
+}
+
+.head-btn {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  transition: background-color 0.15s ease;
-}
-
-.icon-btn:hover {
-  background: rgba(0, 0, 0, 0.09);
-  color: var(--text);
-}
-
-.empty-card {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 24px;
-  text-align: center;
-}
-
-.empty-title {
-  margin: 0;
-  font-size: 18px;
-}
-
-.empty-meta {
-  margin: 0 0 10px;
-  font-size: 13px;
-}
-
-/* ───────────────────────── 右侧边栏 ───────────────────────── */
-
-.side-panel {
-  flex: none;
-  width: 320px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.side-tabs {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.side-tab {
-  flex: 1;
-  min-height: 32px;
-  border: 0;
-  border-radius: 980px;
-  background: rgba(0, 0, 0, 0.05);
-  color: var(--text-2);
-  font: inherit;
-  font-size: 13px;
+  gap: var(--space-1);
+  min-height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
   cursor: pointer;
+  flex: 0 0 auto;
   transition:
-    background-color 0.15s ease,
-    color 0.15s ease;
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
-.side-tab.open {
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
+.head-btn:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
 }
 
-.side-close {
-  flex: none;
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--text-2);
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.side-close:hover {
-  background: rgba(0, 0, 0, 0.06);
-  color: var(--text);
-}
-
-/* 边栏面板的滚动收在这里；嵌套的 .card 在边栏里退成平面（去白底与阴影），视觉是一块面板 */
-.side-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-}
-
-.side-body > :deep(.card) {
-  background: transparent;
-  box-shadow: none;
-  border-radius: 0;
-  flex: 1 0 auto;
-}
-
-.drawer-backdrop {
+.rail-toggle {
   display: none;
 }
 
-/* ───────────────────────── 窄屏（≤720px）：对话全屏 + 覆盖式抽屉 ─────────────────────────
-   边栏变成 fixed 抽屉滑出、盖在对话上（带半透明遮罩），选中会话后自动收起；
-   替代旧版「内嵌分段展开限高 38%」——对话区在任何时候都是全屏主角。 */
-@media (max-width: 720px) {
-  .console-root {
-    height: calc(100vh - var(--topbar-h) - var(--safe-top) - var(--safe-bottom) - 32px);
-    height: calc(100dvh - var(--topbar-h) - var(--safe-top) - var(--safe-bottom) - 32px);
-    min-height: 0;
-  }
+.stack {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--space-4);
+  gap: var(--space-2);
+}
 
-  .console {
-    gap: 0;
-    position: relative;
-  }
+/* 会话流的滚动容器（吸底状态机从内容根向上找到的它） */
+.thread {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+}
 
-  .client-picker {
-    flex: 1;
-    max-width: none;
-  }
+.thread-inner {
+  max-width: 860px;
+  margin: 0 auto;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
 
-  .picker-select {
-    max-width: none;
-    width: 100%;
-    min-height: 40px;
-    font-size: 16px; /* iOS 聚焦缩放规避 */
-  }
+.thread-inner > * {
+  min-width: 0;
+}
 
-  .picker-empty {
-    font-size: 12.5px;
-  }
+.session-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: center;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
 
-  .icon-btn {
-    width: 40px;
-    height: 40px;
-  }
+.session-choice {
+  min-height: var(--control-h-xs);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--fill-1);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
 
-  .empty-card {
-    padding: 16px;
-  }
+.session-choice:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
 
-  .drawer-backdrop {
-    display: block;
-    position: fixed;
-    inset: 0;
-    z-index: 30;
-    background: rgba(0, 0, 0, 0.35);
-  }
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--control-h-md);
+  padding: 0 var(--space-4);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--aurora-blue);
+  color: var(--on-accent);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
 
-  .side-panel {
-    position: fixed;
-    top: calc(var(--topbar-h) + var(--safe-top) + 6px);
-    right: 0;
-    bottom: 0;
-    z-index: 31;
-    width: min(86vw, 360px);
-    border-radius: var(--radius) 0 0 0;
-    padding: 10px 10px calc(10px + var(--safe-bottom));
-    animation: drawer-in 0.18s ease;
-  }
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
 
-  .side-body {
-    -webkit-overflow-scrolling: touch;
+.err {
+  color: var(--danger-text);
+  font-size: var(--text-xs);
+}
+
+.panel {
+  width: 300px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--fill-1);
+  overflow: hidden;
+  transition:
+    width var(--dur-base) var(--ease-spring),
+    opacity var(--transition-fast);
+}
+
+.panel.collapsed {
+  width: 0;
+  opacity: 0;
+  border-color: transparent;
+}
+
+.mobile-tabs,
+.scrim {
+  display: none;
+}
+
+@media (max-width: 960px) {
+  .panel {
+    width: 260px;
   }
 }
 
-@keyframes drawer-in {
-  from {
-    transform: translateX(24px);
-    opacity: 0;
+@media (max-width: 720px) {
+  .console {
+    grid-template-columns: minmax(0, 1fr);
+    position: relative;
   }
-  to {
-    transform: translateX(0);
+
+  .rail,
+  .panel {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: var(--z-flyout);
+    width: min(84vw, 320px);
+    box-shadow: var(--shadow-3);
+    opacity: 0;
+    pointer-events: none;
+    transition:
+      transform var(--dur-base) var(--ease-spring),
+      opacity var(--transition-fast);
+  }
+
+  .rail {
+    left: 0;
+    border-right: 1px solid var(--border-subtle);
+    transform: translateX(-8px);
+  }
+
+  .panel {
+    right: 0;
+    border-left: 1px solid var(--border-subtle);
+    transform: translateX(8px);
+    width: min(84vw, 320px);
+  }
+
+  .rail.drawer-open,
+  .panel.drawer-open {
     opacity: 1;
+    pointer-events: auto;
+    transform: translateX(0);
+  }
+
+  .scrim {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: var(--z-sticky);
+    background: var(--overlay-scrim);
+  }
+
+  .stack {
+    padding: 0 var(--space-3);
+  }
+
+  .rail-toggle {
+    display: inline-flex;
+    min-height: var(--hit-target);
+  }
+
+  .panel-toggle {
+    display: none;
+  }
+
+  .mobile-tabs {
+    display: flex;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-3) var(--space-2);
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .mobile-tabs .head-btn {
+    flex: 1 1 0;
+    justify-content: center;
+    min-height: var(--hit-target);
+    background: var(--fill-1);
   }
 }
 </style>

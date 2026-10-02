@@ -52,15 +52,16 @@ function onWeekdayToggle(key: string, day: number, event: Event): void {
 </script>
 
 <template>
-  <div class="auto-fields">
+  <div class="af">
     <template v-for="field in fields" :key="field.key">
-      <label class="auto-field">
-        <span class="auto-field-label">{{ field.label }}</span>
+      <label class="af-field">
+        <span class="af-label">{{ field.label }}</span>
 
         <input
           v-if="field.type === 'text'"
-          class="input"
+          class="ui-input"
           type="text"
+          :data-field="`automation.${field.key}`"
           :placeholder="field.placeholder ?? ''"
           :value="
             typeof modelValue[field.key] === 'string' ? (modelValue[field.key] as string) : ''
@@ -70,8 +71,9 @@ function onWeekdayToggle(key: string, day: number, event: Event): void {
 
         <input
           v-else-if="field.type === 'number'"
-          class="input"
+          class="ui-input"
           type="number"
+          :data-field="`automation.${field.key}`"
           :min="field.min"
           :max="field.max"
           :step="field.step"
@@ -83,8 +85,9 @@ function onWeekdayToggle(key: string, day: number, event: Event): void {
 
         <input
           v-else-if="field.type === 'time'"
-          class="input"
+          class="ui-input"
           type="time"
+          :data-field="`automation.${field.key}`"
           :placeholder="field.placeholder ?? ''"
           :value="
             typeof modelValue[field.key] === 'string' ? (modelValue[field.key] as string) : ''
@@ -94,7 +97,8 @@ function onWeekdayToggle(key: string, day: number, event: Event): void {
 
         <select
           v-else-if="field.type === 'select'"
-          class="input"
+          class="ui-input"
+          :data-field="`automation.${field.key}`"
           :value="
             typeof modelValue[field.key] === 'string' ? (modelValue[field.key] as string) : ''
           "
@@ -105,8 +109,12 @@ function onWeekdayToggle(key: string, day: number, event: Event): void {
           </option>
         </select>
 
-        <span v-else-if="field.type === 'weekdays'" class="weekday-row">
-          <label v-for="(name, day) in WEEKDAY_NAMES" :key="day" class="weekday-item">
+        <span
+          v-else-if="field.type === 'weekdays'"
+          class="af-weekdays"
+          :data-field="`automation.${field.key}`"
+        >
+          <label v-for="(name, day) in WEEKDAY_NAMES" :key="day" class="af-weekday">
             <input
               type="checkbox"
               :checked="weekdayList(field.key).includes(day)"
@@ -116,45 +124,96 @@ function onWeekdayToggle(key: string, day: number, event: Event): void {
           </label>
         </span>
 
-        <small v-if="field.hint" class="auto-field-hint">{{ field.hint }}</small>
+        <small v-if="field.hint" class="af-hint">{{ field.hint }}</small>
       </label>
     </template>
   </div>
 </template>
 
 <style scoped>
-.auto-fields {
+.af {
   display: grid;
-  gap: 10px;
+  gap: var(--space-3);
 }
 
-.auto-field {
+.af-field {
   display: grid;
-  gap: 4px;
-  font-size: 13px;
+  gap: var(--space-1);
 }
 
-.auto-field-label {
-  color: var(--text-2);
-  font-size: 12.5px;
+.af-label {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
 }
 
-.auto-field-hint {
-  color: var(--muted);
-  font-size: 12px;
+.af-hint {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }
 
-.weekday-row {
+.af-weekdays {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: var(--space-1) var(--space-3);
 }
 
-.weekday-item {
+.af-weekday {
   display: flex;
   align-items: center;
-  gap: 3px;
-  font-size: 12.5px;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
   cursor: pointer;
+}
+
+.af-weekday input {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--aurora-blue);
+}
+
+/* ───────── 基础件（本页自持，样式单源在 @aurora/shared/browser/theme.css 的令牌） ───────── */
+
+.ui-input {
+  width: 100%;
+  height: var(--control-h-sm);
+  min-width: 0;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--fill-1);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  outline: none;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.ui-input::placeholder {
+  color: var(--text-muted);
+}
+
+.ui-input:focus {
+  border-color: var(--aurora-blue);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+select.ui-input {
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .ui-input {
+    min-height: var(--hit-target);
+  }
+
+  .af-weekday {
+    min-height: var(--hit-target);
+  }
 }
 </style>

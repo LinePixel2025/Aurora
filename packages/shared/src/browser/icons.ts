@@ -106,12 +106,17 @@ export {
   TriangleAlert,
   // Agent 提问卡片（`ask_user`）：跳过与提交
   SkipForward,
+  // 敏感工具确认卡（Center 网页端与桌面端同款语义）
+  ShieldAlert,
   // ClassIsland 联动
   School,
   CalendarClock,
   // 技能与扩展
   Puzzle,
   MessageSquare,
-  // Aurora Center（设置页导航，docs/12）
+  // Aurora Center（设置页导航与网页端顶栏，docs/12）
   MonitorSmartphone,
+  Blocks,
+  BookOpenText,
+  LogOut,
 } from 'lucide-vue-next'

@@ -15,8 +15,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && vite build",
     "build:web": "vite build",
+    "dev:web": "vite",
     "typecheck": "tsc -p tsconfig.json --noEmit && vue-tsc -p tsconfig.web.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "verify:web": "node verify/run.mjs",
+    "verify:web:status": "node verify/status-dump.mjs"
   },
   "dependencies": {
     "@aurora/shared": "workspace:*",
@@ -26,6 +29,7 @@
     "@types/node": "^22.10.2",
     "@types/ws": "^8.5.10",
     "@vitejs/plugin-vue": "^5.2.0",
+    "puppeteer-core": "^23.11.1",
     "typescript": "~5.7.2",
     "vite": "^6.0.0",
     "vue": "^3.5.13",

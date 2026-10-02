@@ -14,8 +14,9 @@ import type {
   AutomationRunStatus,
   AutomationTriggerKind,
 } from '@aurora/shared'
+import { History, Pencil, Play, Plus, Trash2, Workflow, X } from '@aurora/shared/browser'
 import AutomationFields from '../components/AutomationFields.vue'
-import { formatTime } from '../format'
+import { formatTime } from '../lib/format'
 import {
   clientsSorted,
   deleteAutomation,
@@ -26,7 +27,7 @@ import {
   saveAutomation,
   selectClient,
   state,
-} from '../store'
+} from '../state'
 
 // ───────────────────────── 设备选择与加载 ─────────────────────────
 
@@ -162,13 +163,13 @@ function statusLabel(status: AutomationRunStatus): string {
 function statusClass(status: AutomationRunStatus): string {
   switch (status) {
     case 'success':
-      return 'chip-ok'
+      return 'ui-chip--ok'
     case 'failed':
-      return 'chip-failed'
+      return 'ui-chip--danger'
     case 'running':
-      return 'chip-accent'
+      return 'ui-chip--accent'
     default:
-      return 'chip-muted'
+      return 'ui-chip--muted'
   }
 }
 
@@ -452,15 +453,19 @@ function filterHistory(automationId: string): void {
 </script>
 
 <template>
-  <div class="auto-view">
-    <div class="auto-head">
-      <div>
-        <h2 class="auto-title">自动化</h2>
-        <p class="text-2 auto-sub">远程管理客户端的自动化任务：定时与课堂条件触发（docs/13）。</p>
+  <section class="page auto-page" data-panel="automations-page">
+    <header class="auto-head">
+      <div class="auto-head-text">
+        <h1 class="page-title auto-title">
+          <Workflow :size="18" :stroke-width="1.8" aria-hidden="true" />
+          自动化
+        </h1>
+        <p class="page-sub">远程管理客户端的自动化任务：定时与课堂条件触发（docs/13）。</p>
       </div>
       <div class="auto-head-actions">
         <select
-          class="input device-select"
+          class="ui-input auto-device"
+          data-field="automations.client-select"
           :value="clientId"
           aria-label="选择客户端"
           @change="selectClient(($event.target as HTMLSelectElement).value)"
@@ -474,247 +479,289 @@ function filterHistory(automationId: string): void {
           </option>
         </select>
         <button
-          class="btn btn-ghost btn-sm"
+          class="ui-btn ui-btn--ghost"
           type="button"
           :disabled="loading || !online"
           @click="load"
         >
           刷新
         </button>
-        <button class="btn btn-primary btn-sm" type="button" :disabled="!online" @click="openNew">
+        <button class="ui-btn ui-btn--primary" type="button" :disabled="!online" @click="openNew">
+          <Plus :size="14" :stroke-width="1.9" aria-hidden="true" />
           新建自动化
         </button>
       </div>
-    </div>
+    </header>
 
-    <p v-if="!clientId" class="card empty-card text-2">暂无客户端——先在控制台添加设备。</p>
+    <p v-if="!clientId" class="ui-card auto-empty">暂无客户端——先在控制台添加设备。</p>
     <template v-else>
-      <p v-if="error" class="form-error">{{ error }}</p>
+      <p v-if="error" class="ui-error">{{ error }}</p>
       <p v-else-if="notice" class="auto-notice">{{ notice }}</p>
-      <p v-if="!online" class="text-2 auto-offline">客户端当前离线，无法读取或修改自动化。</p>
+      <p v-if="!online" class="auto-offline">客户端当前离线，无法读取或修改自动化。</p>
 
-      <div v-if="loading" class="boot-center auto-loading"><span class="spinner"></span></div>
+      <div v-if="loading" class="auto-loading" aria-busy="true">
+        <span class="ui-spinner spin" aria-hidden="true"></span>
+      </div>
 
       <template v-else>
-        <!-- Agent Mode -->
-        <section class="card auto-group">
-          <header class="group-head">
-            <span class="group-title">Agent Mode</span>
-            <span class="text-2 group-sub">触发后跑一次完整 Agent 会话</span>
-          </header>
-          <p v-if="agentDefs.length === 0" class="text-2 group-empty">暂无 Agent 模式自动化。</p>
-          <ul v-else class="auto-list">
-            <li v-for="def in agentDefs" :key="def.id" class="auto-card">
-              <div class="auto-main">
-                <div class="auto-name-row">
-                  <span class="auto-name">{{ def.name }}</span>
-                  <span v-if="!def.enabled" class="chip chip-muted">已停用</span>
-                  <span
-                    v-if="hasRunLimit(def)"
-                    class="chip"
-                    :class="runsExhausted(def) ? 'chip-failed' : 'chip-muted'"
-                    title="调用次数上限（用满后引擎自动停用）"
-                  >
-                    {{ runCountLabel(def) }}
-                  </span>
-                  <span
-                    v-if="runsExhausted(def)"
-                    class="chip chip-failed"
-                    title="调用次数已用尽，引擎已自动停用；提高上限或重置计数后可继续使用"
-                  >
-                    已用尽
-                  </span>
-                </div>
-                <span class="auto-trigger text-2">
-                  {{ conditionLabel(def.trigger.kind) }} · {{ describeTrigger(def) }}
-                </span>
-              </div>
-              <div class="auto-actions">
-                <label class="row-switch" title="启停该自动化">
-                  <input
-                    type="checkbox"
-                    :checked="def.enabled"
-                    :disabled="loading || !online"
-                    @change="onToggle(def, $event)"
-                  />
-                  <span>启用</span>
-                </label>
-                <button
-                  class="btn btn-secondary btn-sm"
-                  type="button"
-                  :disabled="!online"
-                  @click="onRun(def)"
-                >
-                  立即运行
-                </button>
-                <button
-                  class="btn btn-ghost btn-sm"
-                  type="button"
-                  :class="{ active: historyFilter === def.id }"
-                  @click="filterHistory(def.id)"
-                >
-                  历史
-                </button>
-                <button
-                  class="btn btn-ghost btn-sm"
-                  type="button"
-                  :disabled="!online"
-                  @click="openEdit(def)"
-                >
-                  编辑
-                </button>
-                <button
-                  class="btn btn-danger-ghost btn-sm"
-                  type="button"
-                  :disabled="!online"
-                  @click="onDelete(def)"
-                >
-                  删除
-                </button>
-              </div>
-            </li>
-          </ul>
-        </section>
-
-        <!-- Normal Mode -->
-        <section class="card auto-group">
-          <header class="group-head">
-            <span class="group-title">Normal Mode</span>
-            <span class="text-2 group-sub">触发后顺序执行预设操作组件</span>
-          </header>
-          <p v-if="normalDefs.length === 0" class="text-2 group-empty">暂无普通模式自动化。</p>
-          <ul v-else class="auto-list">
-            <li v-for="def in normalDefs" :key="def.id" class="auto-card">
-              <div class="auto-main">
-                <div class="auto-name-row">
-                  <span class="auto-name">{{ def.name }}</span>
-                  <span v-if="!def.enabled" class="chip chip-muted">已停用</span>
-                  <span
-                    v-if="hasRunLimit(def)"
-                    class="chip"
-                    :class="runsExhausted(def) ? 'chip-failed' : 'chip-muted'"
-                    title="调用次数上限（用满后引擎自动停用）"
-                  >
-                    {{ runCountLabel(def) }}
-                  </span>
-                  <span
-                    v-if="runsExhausted(def)"
-                    class="chip chip-failed"
-                    title="调用次数已用尽，引擎已自动停用；提高上限或重置计数后可继续使用"
-                  >
-                    已用尽
-                  </span>
-                </div>
-                <span class="auto-trigger text-2">
-                  {{ conditionLabel(def.trigger.kind) }} · {{ describeTrigger(def) }}
-                </span>
-              </div>
-              <div class="auto-actions">
-                <label class="row-switch" title="启停该自动化">
-                  <input
-                    type="checkbox"
-                    :checked="def.enabled"
-                    :disabled="loading || !online"
-                    @change="onToggle(def, $event)"
-                  />
-                  <span>启用</span>
-                </label>
-                <button
-                  class="btn btn-secondary btn-sm"
-                  type="button"
-                  :disabled="!online"
-                  @click="onRun(def)"
-                >
-                  立即运行
-                </button>
-                <button
-                  class="btn btn-ghost btn-sm"
-                  type="button"
-                  :class="{ active: historyFilter === def.id }"
-                  @click="filterHistory(def.id)"
-                >
-                  历史
-                </button>
-                <button
-                  class="btn btn-ghost btn-sm"
-                  type="button"
-                  :disabled="!online"
-                  @click="openEdit(def)"
-                >
-                  编辑
-                </button>
-                <button
-                  class="btn btn-danger-ghost btn-sm"
-                  type="button"
-                  :disabled="!online"
-                  @click="onDelete(def)"
-                >
-                  删除
-                </button>
-              </div>
-            </li>
-          </ul>
-
-          <!-- 内置自动化：引擎承接的既有自动操作，不可增删 -->
-          <template v-if="automations.builtin.length > 0">
-            <header class="group-head builtin-head">
-              <span class="group-title">内置</span>
-              <span class="text-2 group-sub">启停请在客户端设置页操作</span>
+        <div class="auto-groups" data-panel="automations-list">
+          <!-- Agent Mode -->
+          <section class="ui-card auto-group">
+            <header class="auto-group-head">
+              <span class="auto-group-title">Agent Mode</span>
+              <span class="auto-group-sub">触发后跑一次完整 Agent 会话</span>
             </header>
-            <ul class="auto-list">
-              <li v-for="def in automations.builtin" :key="def.id" class="auto-card builtin">
+            <p v-if="agentDefs.length === 0" class="auto-group-empty">暂无 Agent 模式自动化。</p>
+            <ul v-else class="auto-list">
+              <li
+                v-for="def in agentDefs"
+                :key="def.id"
+                class="auto-card"
+                data-field="automations.card"
+              >
                 <div class="auto-main">
                   <div class="auto-name-row">
                     <span class="auto-name">{{ def.name }}</span>
-                    <span class="chip chip-accent">内置</span>
-                    <span class="chip" :class="def.enabled ? 'chip-ok' : 'chip-muted'">
-                      {{ def.enabled ? '启用中' : '已停用' }}
+                    <span v-if="!def.enabled" class="ui-chip ui-chip--muted">已停用</span>
+                    <span
+                      v-if="hasRunLimit(def)"
+                      class="ui-chip"
+                      :class="runsExhausted(def) ? 'ui-chip--danger' : 'ui-chip--muted'"
+                      title="调用次数上限（用满后引擎自动停用）"
+                    >
+                      {{ runCountLabel(def) }}
+                    </span>
+                    <span
+                      v-if="runsExhausted(def)"
+                      class="ui-chip ui-chip--danger"
+                      title="调用次数已用尽，引擎已自动停用；提高上限或重置计数后可继续使用"
+                    >
+                      已用尽
                     </span>
                   </div>
-                  <span class="auto-trigger text-2">
+                  <span class="auto-trigger">
                     {{ conditionLabel(def.trigger.kind) }} · {{ describeTrigger(def) }}
                   </span>
                 </div>
                 <div class="auto-actions">
+                  <label class="auto-switch" title="启停该自动化">
+                    <input
+                      type="checkbox"
+                      data-action="automations.toggle"
+                      :checked="def.enabled"
+                      :disabled="loading || !online"
+                      @change="onToggle(def, $event)"
+                    />
+                    <span>启用</span>
+                  </label>
                   <button
-                    class="btn btn-secondary btn-sm"
+                    class="ui-btn ui-btn--ghost"
                     type="button"
+                    data-action="automations.run"
                     :disabled="!online"
                     @click="onRun(def)"
                   >
+                    <Play :size="13" :stroke-width="1.8" aria-hidden="true" />
                     立即运行
                   </button>
                   <button
-                    class="btn btn-ghost btn-sm"
+                    class="ui-btn ui-btn--ghost"
                     type="button"
-                    :class="{ active: historyFilter === def.id }"
+                    data-action="automations.edit"
+                    :disabled="!online"
+                    @click="openEdit(def)"
+                  >
+                    <Pencil :size="13" :stroke-width="1.8" aria-hidden="true" />
+                    编辑
+                  </button>
+                  <button
+                    class="ui-btn ui-btn--ghost auto-filter"
+                    :class="{ 'auto-filter--active': historyFilter === def.id }"
+                    type="button"
+                    data-action="automations.history"
                     @click="filterHistory(def.id)"
                   >
+                    <History :size="13" :stroke-width="1.8" aria-hidden="true" />
                     历史
+                  </button>
+                  <button
+                    class="ui-btn ui-btn--danger"
+                    type="button"
+                    data-action="automations.delete"
+                    :disabled="!online"
+                    @click="onDelete(def)"
+                  >
+                    <Trash2 :size="13" :stroke-width="1.8" aria-hidden="true" />
+                    删除
                   </button>
                 </div>
               </li>
             </ul>
-          </template>
-        </section>
+          </section>
+
+          <!-- Normal Mode -->
+          <section class="ui-card auto-group">
+            <header class="auto-group-head">
+              <span class="auto-group-title">Normal Mode</span>
+              <span class="auto-group-sub">触发后顺序执行预设操作组件</span>
+            </header>
+            <p v-if="normalDefs.length === 0" class="auto-group-empty">暂无普通模式自动化。</p>
+            <ul v-else class="auto-list">
+              <li
+                v-for="def in normalDefs"
+                :key="def.id"
+                class="auto-card"
+                data-field="automations.card"
+              >
+                <div class="auto-main">
+                  <div class="auto-name-row">
+                    <span class="auto-name">{{ def.name }}</span>
+                    <span v-if="!def.enabled" class="ui-chip ui-chip--muted">已停用</span>
+                    <span
+                      v-if="hasRunLimit(def)"
+                      class="ui-chip"
+                      :class="runsExhausted(def) ? 'ui-chip--danger' : 'ui-chip--muted'"
+                      title="调用次数上限（用满后引擎自动停用）"
+                    >
+                      {{ runCountLabel(def) }}
+                    </span>
+                    <span
+                      v-if="runsExhausted(def)"
+                      class="ui-chip ui-chip--danger"
+                      title="调用次数已用尽，引擎已自动停用；提高上限或重置计数后可继续使用"
+                    >
+                      已用尽
+                    </span>
+                  </div>
+                  <span class="auto-trigger">
+                    {{ conditionLabel(def.trigger.kind) }} · {{ describeTrigger(def) }}
+                  </span>
+                </div>
+                <div class="auto-actions">
+                  <label class="auto-switch" title="启停该自动化">
+                    <input
+                      type="checkbox"
+                      data-action="automations.toggle"
+                      :checked="def.enabled"
+                      :disabled="loading || !online"
+                      @change="onToggle(def, $event)"
+                    />
+                    <span>启用</span>
+                  </label>
+                  <button
+                    class="ui-btn ui-btn--ghost"
+                    type="button"
+                    data-action="automations.run"
+                    :disabled="!online"
+                    @click="onRun(def)"
+                  >
+                    <Play :size="13" :stroke-width="1.8" aria-hidden="true" />
+                    立即运行
+                  </button>
+                  <button
+                    class="ui-btn ui-btn--ghost"
+                    type="button"
+                    data-action="automations.edit"
+                    :disabled="!online"
+                    @click="openEdit(def)"
+                  >
+                    <Pencil :size="13" :stroke-width="1.8" aria-hidden="true" />
+                    编辑
+                  </button>
+                  <button
+                    class="ui-btn ui-btn--ghost auto-filter"
+                    :class="{ 'auto-filter--active': historyFilter === def.id }"
+                    type="button"
+                    data-action="automations.history"
+                    @click="filterHistory(def.id)"
+                  >
+                    <History :size="13" :stroke-width="1.8" aria-hidden="true" />
+                    历史
+                  </button>
+                  <button
+                    class="ui-btn ui-btn--danger"
+                    type="button"
+                    data-action="automations.delete"
+                    :disabled="!online"
+                    @click="onDelete(def)"
+                  >
+                    <Trash2 :size="13" :stroke-width="1.8" aria-hidden="true" />
+                    删除
+                  </button>
+                </div>
+              </li>
+            </ul>
+
+            <!-- 内置自动化：引擎承接的既有自动操作，不可增删 -->
+            <template v-if="automations.builtin.length > 0">
+              <header class="auto-group-head auto-builtin-head">
+                <span class="auto-group-title">内置</span>
+                <span class="auto-group-sub">启停请在客户端设置页操作</span>
+              </header>
+              <ul class="auto-list">
+                <li
+                  v-for="def in automations.builtin"
+                  :key="def.id"
+                  class="auto-card"
+                  data-field="automations.builtin-card"
+                >
+                  <div class="auto-main">
+                    <div class="auto-name-row">
+                      <span class="auto-name">{{ def.name }}</span>
+                      <span class="ui-chip ui-chip--accent">内置</span>
+                      <span class="ui-chip" :class="def.enabled ? 'ui-chip--ok' : 'ui-chip--muted'">
+                        {{ def.enabled ? '启用中' : '已停用' }}
+                      </span>
+                    </div>
+                    <span class="auto-trigger">
+                      {{ conditionLabel(def.trigger.kind) }} · {{ describeTrigger(def) }}
+                    </span>
+                  </div>
+                  <div class="auto-actions">
+                    <button
+                      class="ui-btn ui-btn--ghost"
+                      type="button"
+                      data-action="automations.run"
+                      :disabled="!online"
+                      @click="onRun(def)"
+                    >
+                      <Play :size="13" :stroke-width="1.8" aria-hidden="true" />
+                      立即运行
+                    </button>
+                    <button
+                      class="ui-btn ui-btn--ghost auto-filter"
+                      :class="{ 'auto-filter--active': historyFilter === def.id }"
+                      type="button"
+                      data-action="automations.history"
+                      @click="filterHistory(def.id)"
+                    >
+                      <History :size="13" :stroke-width="1.8" aria-hidden="true" />
+                      历史
+                    </button>
+                  </div>
+                </li>
+              </ul>
+            </template>
+          </section>
+        </div>
 
         <!-- 运行历史 -->
-        <section class="card auto-group">
-          <header class="group-head">
-            <span class="group-title">运行历史</span>
-            <span class="text-2 group-sub">
+        <section class="ui-card auto-group">
+          <header class="auto-group-head">
+            <span class="auto-group-title">运行历史</span>
+            <span class="auto-group-sub">
               {{ historyFilter === '' ? '最近 50 条' : '已按自动化筛选' }}
             </span>
             <button
               v-if="historyFilter !== ''"
-              class="btn btn-ghost btn-sm"
+              class="ui-btn ui-btn--ghost"
               type="button"
               @click="historyFilter = ''"
             >
               取消筛选
             </button>
             <button
-              class="btn btn-ghost btn-sm"
+              class="ui-btn ui-btn--ghost"
               type="button"
               :disabled="!online"
               @click="refreshHistory"
@@ -722,72 +769,114 @@ function filterHistory(automationId: string): void {
               刷新
             </button>
           </header>
-          <p v-if="historyRuns.length === 0" class="text-2 group-empty">暂无运行记录。</p>
-          <ul v-else class="history-list">
-            <li v-for="record in historyRuns" :key="record.id" class="history-row">
-              <span class="history-time text-2">{{ formatTime(record.triggeredAt) }}</span>
-              <button
-                class="history-name"
-                type="button"
-                @click="filterHistory(record.automationId)"
-              >
-                {{ record.automationName }}
-              </button>
-              <span class="chip" :class="record.mode === 'agent' ? 'chip-accent' : 'chip-muted'">
-                {{ record.mode === 'agent' ? 'Agent' : 'Normal' }}
-              </span>
-              <span class="chip" :class="statusClass(record.status)">
-                {{ statusLabel(record.status) }}
-              </span>
-              <span class="text-2 history-duration">{{ formatDuration(record.durationMs) }}</span>
-              <span v-if="record.sessionId" class="text-2 history-session" title="Agent 会话 id">
-                会话 {{ record.sessionId }}
-              </span>
-              <span v-else-if="record.error" class="history-error" :title="record.error">
-                {{ record.error }}
-              </span>
-            </li>
-          </ul>
+
+          <p v-if="historyRuns.length === 0" class="auto-group-empty">暂无运行记录。</p>
+          <div v-else class="auto-scroll">
+            <table class="ui-table" data-panel="automation-history">
+              <thead>
+                <tr>
+                  <th>触发时间</th>
+                  <th>自动化</th>
+                  <th>模式</th>
+                  <th>状态</th>
+                  <th>耗时</th>
+                  <th>会话 / 错误</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="record in historyRuns" :key="record.id">
+                  <td class="auto-dim auto-num">{{ formatTime(record.triggeredAt) }}</td>
+                  <td>
+                    <button
+                      class="auto-link"
+                      type="button"
+                      @click="filterHistory(record.automationId)"
+                    >
+                      {{ record.automationName }}
+                    </button>
+                  </td>
+                  <td>
+                    <span
+                      class="ui-chip"
+                      :class="record.mode === 'agent' ? 'ui-chip--accent' : 'ui-chip--muted'"
+                    >
+                      {{ record.mode === 'agent' ? 'Agent' : 'Normal' }}
+                    </span>
+                  </td>
+                  <td>
+                    <span class="ui-chip" :class="statusClass(record.status)">
+                      {{ statusLabel(record.status) }}
+                    </span>
+                  </td>
+                  <td class="auto-dim auto-num">{{ formatDuration(record.durationMs) }}</td>
+                  <td>
+                    <span
+                      v-if="record.sessionId"
+                      class="auto-dim auto-session"
+                      :title="record.sessionId"
+                    >
+                      会话 {{ record.sessionId }}
+                    </span>
+                    <span v-else-if="record.error" class="auto-error" :title="record.error">
+                      {{ record.error }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
       </template>
     </template>
 
     <!-- 新建 / 编辑弹层 -->
-    <div v-if="editorOpen" class="editor-mask" @click.self="editorOpen = false">
-      <div class="editor-card" role="dialog" aria-label="编辑自动化">
-        <header class="editor-head">
-          <span class="editor-title">{{ editingOriginal ? '编辑自动化' : '新建自动化' }}</span>
-          <button class="btn btn-ghost btn-sm" type="button" @click="editorOpen = false">
-            关闭
+    <div v-if="editorOpen" class="auto-mask" @click.self="editorOpen = false">
+      <div
+        class="auto-editor"
+        role="dialog"
+        aria-modal="true"
+        aria-label="编辑自动化"
+        data-panel="automation-editor"
+      >
+        <header class="auto-editor-head">
+          <span class="auto-editor-title">{{ editingOriginal ? '编辑自动化' : '新建自动化' }}</span>
+          <button
+            class="auto-icon-btn"
+            type="button"
+            aria-label="关闭"
+            data-action="automation.close"
+            @click="editorOpen = false"
+          >
+            <X :size="16" :stroke-width="1.8" aria-hidden="true" />
           </button>
         </header>
 
-        <div class="editor-body">
-          <label class="editor-field">
+        <div class="auto-editor-body">
+          <label class="auto-field">
             <span class="auto-field-label">名称</span>
-            <input v-model="editor.name" class="input" type="text" placeholder="自动化名称" />
+            <input v-model="editor.name" class="ui-input" type="text" placeholder="自动化名称" />
           </label>
 
-          <div class="editor-field">
+          <div class="auto-field">
             <span class="auto-field-label">模式</span>
-            <div class="mode-row">
-              <label class="mode-item">
+            <div class="auto-modes">
+              <label class="auto-mode">
                 <input v-model="editor.mode" type="radio" value="agent" />
                 <span>Agent Mode（跑一次 Agent 会话）</span>
               </label>
-              <label class="mode-item">
+              <label class="auto-mode">
                 <input v-model="editor.mode" type="radio" value="normal" />
                 <span>Normal Mode（执行操作组件）</span>
               </label>
             </div>
           </div>
 
-          <div class="editor-field">
+          <div class="auto-field">
             <span class="auto-field-label">调用次数上限</span>
-            <div class="runs-row">
+            <div class="auto-runs">
               <input
                 v-model="editor.maxRuns"
-                class="input runs-input"
+                class="ui-input auto-runs-input"
                 type="number"
                 min="0"
                 step="1"
@@ -796,9 +885,9 @@ function filterHistory(automationId: string): void {
                 aria-label="调用次数上限"
               />
               <template v-if="editingOriginal">
-                <span class="text-2 runs-current">当前已调用 {{ editor.runCount }} 次</span>
+                <span class="auto-dim auto-runs-current">当前已调用 {{ editor.runCount }} 次</span>
                 <button
-                  class="btn btn-ghost btn-sm"
+                  class="ui-btn ui-btn--ghost"
                   type="button"
                   :disabled="editor.runCount === 0"
                   title="把已调用次数清零后随本次保存一起回传"
@@ -814,9 +903,13 @@ function filterHistory(automationId: string): void {
             </p>
           </div>
 
-          <div class="editor-field">
+          <div class="auto-field">
             <span class="auto-field-label">触发器</span>
-            <select class="input" :value="editor.triggerKind" @change="onTriggerKindChange($event)">
+            <select
+              class="ui-input"
+              :value="editor.triggerKind"
+              @change="onTriggerKindChange($event)"
+            >
               <option
                 v-for="condition in catalog.conditions"
                 :key="condition.kind"
@@ -835,21 +928,21 @@ function filterHistory(automationId: string): void {
             />
           </div>
 
-          <label v-if="editor.mode === 'agent'" class="editor-field">
+          <label v-if="editor.mode === 'agent'" class="auto-field">
             <span class="auto-field-label">任务指令</span>
             <textarea
               v-model="editor.prompt"
-              class="input prompt-input"
+              class="ui-input auto-prompt"
               rows="4"
               placeholder="触发后 Agent 要做什么"
             ></textarea>
           </label>
 
-          <div v-else class="editor-field">
+          <div v-else class="auto-field">
             <span class="auto-field-label">操作组件（顺序执行）</span>
-            <div v-for="(action, index) in editor.actions" :key="index" class="action-row">
+            <div v-for="(action, index) in editor.actions" :key="index" class="auto-action-row">
               <select
-                class="input action-kind"
+                class="ui-input"
                 :value="action.kind"
                 @change="onActionKindChange(index, $event)"
               >
@@ -863,38 +956,41 @@ function filterHistory(automationId: string): void {
                 </option>
               </select>
               <AutomationFields
-                class="action-fields"
+                class="auto-action-fields"
                 :fields="catalog.actions.find((item) => item.kind === action.kind)?.fields ?? []"
                 :model-value="action.params"
                 @update:model-value="onActionParams(index, $event)"
               />
-              <button
-                class="btn btn-danger-ghost btn-sm"
-                type="button"
-                @click="removeAction(index)"
-              >
+              <button class="ui-btn ui-btn--danger" type="button" @click="removeAction(index)">
                 移除
               </button>
             </div>
             <button
-              class="btn btn-secondary btn-sm"
+              class="ui-btn ui-btn--ghost auto-action-add"
               type="button"
               :disabled="availableActions.length === 0 || editor.actions.length >= 10"
               @click="addAction"
             >
+              <Plus :size="13" :stroke-width="1.9" aria-hidden="true" />
               添加操作
             </button>
           </div>
         </div>
 
-        <footer class="editor-foot">
-          <p v-if="editorError" class="form-error editor-error">{{ editorError }}</p>
-          <button class="btn btn-ghost btn-sm" type="button" @click="editorOpen = false">
+        <footer class="auto-editor-foot">
+          <p v-if="editorError" class="ui-error auto-editor-error">{{ editorError }}</p>
+          <button
+            class="ui-btn ui-btn--ghost"
+            type="button"
+            data-action="automation.cancel"
+            @click="editorOpen = false"
+          >
             取消
           </button>
           <button
-            class="btn btn-primary btn-sm"
+            class="ui-btn ui-btn--primary"
             type="button"
+            data-action="automation.save"
             :disabled="!canSubmit || editorSaving"
             @click="submitEditor"
           >
@@ -903,93 +999,300 @@ function filterHistory(automationId: string): void {
         </footer>
       </div>
     </div>
-  </div>
+  </section>
 </template>
 
 <style scoped>
-.auto-view {
-  display: grid;
-  gap: 14px;
+/* 外壳（App.vue 的 main.page）已提供页面留白时不再叠加一层内边距 */
+.page .page {
+  padding: 0;
 }
+
+/* ───────── 基础件（本页自持，样式单源在 @aurora/shared/browser/theme.css 的令牌） ───────── */
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  height: var(--control-h-sm);
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast),
+    transform var(--dur-press) var(--ease-standard);
+}
+
+.ui-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.ui-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ui-btn--primary {
+  background: var(--aurora-blue);
+  color: var(--on-accent);
+}
+
+.ui-btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.ui-btn--ghost {
+  border-color: var(--border-subtle);
+}
+
+.ui-btn--ghost:hover:not(:disabled) {
+  background: var(--fill-2);
+}
+
+.ui-btn--danger {
+  color: var(--text-secondary);
+}
+
+.ui-btn--danger:hover:not(:disabled) {
+  background: var(--danger-fill);
+  color: var(--danger-text);
+}
+
+.ui-input {
+  width: 100%;
+  height: var(--control-h-sm);
+  min-width: 0;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--fill-1);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  outline: none;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.ui-input::placeholder {
+  color: var(--text-muted);
+}
+
+.ui-input:focus {
+  border-color: var(--aurora-blue);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+select.ui-input {
+  cursor: pointer;
+}
+
+.ui-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--fill-1);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  white-space: nowrap;
+}
+
+.ui-chip--ok {
+  background: var(--ok-fill);
+  color: var(--ok-text);
+}
+
+.ui-chip--danger {
+  background: var(--danger-fill);
+  color: var(--danger-text);
+}
+
+.ui-chip--accent {
+  background: var(--fill-1);
+  color: var(--accent-text);
+}
+
+.ui-chip--muted {
+  color: var(--text-muted);
+}
+
+.ui-card {
+  background: var(--fill-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.ui-error {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--error-fill);
+  color: var(--error-text);
+  font-size: var(--text-sm);
+}
+
+.ui-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--fill-3);
+  border-top-color: var(--aurora-blue);
+  border-radius: var(--radius-pill);
+}
+
+.ui-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.ui-table th {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ui-table td {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
+}
+
+.ui-table tbody tr {
+  transition: background var(--transition-fast);
+}
+
+.ui-table tbody tr:hover {
+  background: var(--fill-2);
+}
+
+.ui-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ───────── 本页布局（在基础件之后声明，便于就地覆盖宽度 / 高度等） ───────── */
 
 .auto-head {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   flex-wrap: wrap;
 }
 
-.auto-title {
-  margin: 0 0 2px;
-  font-size: 18px;
+.auto-head-text {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
 }
 
-.auto-sub {
-  margin: 0;
-  font-size: 13px;
+.auto-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .auto-head-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
-.device-select {
+.auto-device {
   width: auto;
-  max-width: 220px;
   min-width: 160px;
+  max-width: 220px;
 }
 
 .auto-notice {
   margin: 0;
-  font-size: 13px;
-  color: var(--ok);
+  color: var(--ok-text);
+  font-size: var(--text-sm);
 }
 
 .auto-offline {
   margin: 0;
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.auto-empty {
+  margin: 0;
+  padding: var(--space-7) var(--space-4);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  text-align: center;
 }
 
 .auto-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-height: 160px;
 }
 
-.auto-group {
-  padding: 12px 16px;
+.auto-groups {
   display: grid;
-  gap: 10px;
+  gap: var(--space-4);
 }
 
-.group-head {
+.auto-group {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  align-content: start;
+}
+
+.auto-group-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-3);
+  flex-wrap: wrap;
 }
 
-.group-title {
-  font-size: 15px;
-  font-weight: 600;
+.auto-group-title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-display);
 }
 
-.group-sub {
+.auto-group-sub {
   flex: 1;
-  font-size: 12.5px;
   min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
 }
 
-.group-empty {
+.auto-group-empty {
   margin: 0;
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
 }
 
-.builtin-head {
-  margin-top: 6px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
+.auto-builtin-head {
+  margin-top: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
 }
 
 .auto-list {
@@ -997,251 +1300,353 @@ function filterHistory(automationId: string): void {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .auto-card {
-  background: var(--bg);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-3);
   flex-wrap: wrap;
+  padding: var(--space-3);
+  background: var(--fill-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.auto-card:hover {
+  background: var(--fill-2);
 }
 
 .auto-main {
   display: grid;
-  gap: 3px;
-  min-width: 0;
+  gap: var(--space-1);
   flex: 1;
+  min-width: 0;
 }
 
 .auto-name-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
 .auto-name {
-  font-size: 13.5px;
-  font-weight: 500;
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
 }
 
 .auto-trigger {
-  font-size: 12.5px;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
 }
 
 .auto-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
-.row-switch {
-  display: flex;
+/* 启停开关：原生 checkbox 改外观，仍是可点 / 可键盘操作的同一个元素 */
+.auto-switch {
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 12.5px;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
-.chip-failed {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
-/* 历史列表 */
-.history-list {
-  list-style: none;
+.auto-switch input {
+  appearance: none;
+  flex: none;
+  width: 34px;
+  height: 20px;
   margin: 0;
   padding: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.history-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  font-size: 12.5px;
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
-}
-
-.history-row:nth-child(odd) {
-  background: var(--bg);
-}
-
-.history-time {
-  flex: none;
-  min-width: 140px;
-}
-
-.history-name {
-  border: 0;
-  background: transparent;
-  font: inherit;
-  color: var(--accent);
+  border-radius: var(--radius-pill);
+  background: var(--fill-3);
   cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.auto-switch input::after {
+  content: '';
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--text-secondary);
+  transition:
+    transform var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.auto-switch input:checked {
+  background: var(--aurora-blue);
+}
+
+.auto-switch input:checked::after {
+  background: var(--on-accent);
+  transform: translateX(14px);
+}
+
+.auto-switch input:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.auto-filter--active {
+  background: var(--fill-3);
+  color: var(--text-primary);
+}
+
+/* 运行历史 */
+.auto-scroll {
+  overflow-x: auto;
+}
+
+.auto-dim {
+  color: var(--text-secondary);
+}
+
+.auto-num {
+  font-variant-numeric: var(--num-tabular);
+  white-space: nowrap;
+}
+
+.auto-link {
   padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
 }
 
-.history-duration {
-  flex: none;
+.auto-link:hover {
+  text-decoration: underline;
 }
 
-.history-session {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 200px;
-}
-
-.history-error {
-  color: var(--danger);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.auto-session,
+.auto-error {
+  display: inline-block;
   max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+}
+
+.auto-error {
+  color: var(--danger-text);
 }
 
 /* 编辑弹层 */
-.editor-mask {
+.auto-mask {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.35);
+  z-index: var(--z-popover);
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 40px 16px;
+  padding: var(--space-6) var(--space-4);
   overflow-y: auto;
-  z-index: 50;
+  background: var(--overlay-scrim);
 }
 
-.editor-card {
-  background: var(--card);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
+.auto-editor {
   width: 560px;
   max-width: 100%;
   display: grid;
-  gap: 12px;
-  padding: 16px 20px;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  animation: aurora-pop-in var(--dur-base) var(--ease-spring) both;
 }
 
-.editor-head {
+.auto-editor-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-3);
 }
 
-.editor-title {
-  font-size: 15px;
-  font-weight: 600;
+.auto-editor-title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-display);
 }
 
-.editor-body {
+.auto-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.auto-icon-btn:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+.auto-editor-body {
   display: grid;
-  gap: 14px;
+  gap: var(--space-4);
 }
 
-.editor-field {
-  display: grid;
-  gap: 6px;
-  font-size: 13px;
-}
-
-.mode-row {
-  display: grid;
-  gap: 6px;
-}
-
-/* 字段小字说明（与 AutomationFields.vue 同款；本文件里触发器提示也用它） */
-.auto-field-hint {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-/* 调用次数上限：数字输入 + 当前计数 + 重置按钮 */
-.runs-row {
+.auto-editor-foot {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-end;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
-.runs-input {
+.auto-editor-error {
+  flex: 1;
+  min-width: 160px;
+}
+
+.auto-field {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.auto-field-label {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.auto-field-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.auto-modes {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.auto-mode {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.auto-runs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.auto-runs-input {
   width: 120px;
   flex: none;
 }
 
-.runs-current {
-  font-size: 12.5px;
+.auto-runs-current {
+  font-size: var(--text-xs);
 }
 
-.mode-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-}
-
-.prompt-input {
+.auto-prompt {
+  height: auto;
+  min-height: 96px;
+  padding: var(--space-2) var(--space-3);
+  line-height: var(--leading-normal);
   resize: vertical;
 }
 
-.action-row {
+.auto-action-row {
   display: grid;
   grid-template-columns: minmax(140px, 180px) 1fr auto;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: start;
-  background: var(--bg);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  padding: 8px 10px;
+  background: var(--fill-1);
 }
 
-.action-fields {
+.auto-action-fields {
   grid-column: 2;
+  min-width: 0;
 }
 
-.editor-foot {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.editor-error {
-  margin: 0;
-  flex: 1;
+.auto-action-add {
+  justify-self: start;
 }
 
 @media (max-width: 720px) {
+  .auto-head {
+    align-items: stretch;
+  }
+
+  .auto-head-actions {
+    align-items: stretch;
+  }
+
+  .auto-device {
+    max-width: none;
+    flex: 1 1 160px;
+  }
+
+  .auto-group {
+    padding: var(--space-3);
+  }
+
   .auto-card {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .action-row {
+  .auto-actions {
+    justify-content: flex-start;
+  }
+
+  .auto-action-row {
     grid-template-columns: 1fr;
   }
 
-  .action-fields {
+  .auto-action-fields {
     grid-column: 1;
   }
 
-  .history-time {
-    min-width: 0;
+  .ui-btn,
+  .ui-input {
+    min-height: var(--hit-target);
   }
 
-  .auto-group {
-    padding: 10px 12px;
+  .auto-switch {
+    min-height: var(--hit-target);
+  }
+
+  .ui-table {
+    min-width: 640px;
   }
 }
 </style>

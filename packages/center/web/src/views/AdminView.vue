@@ -11,9 +11,10 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import type { ClientInfo } from '@aurora/shared'
-import { api, type AdminUser } from '../api'
-import { formatTime, modeLabel, platformLabel } from '../format'
-import { state as centerState } from '../store'
+import { Plus } from '@aurora/shared/browser'
+import { api, type AdminUser } from '../lib/api'
+import { formatTime, modeLabel, platformLabel } from '../lib/format'
+import { state as centerState } from '../state'
 
 const users = ref<AdminUser[]>([])
 const clients = ref<ClientInfo[]>([])
@@ -144,93 +145,111 @@ onMounted(() => void loadAll())
 </script>
 
 <template>
-  <div class="admin">
-    <p v-if="error" class="form-error">{{ error }}</p>
-    <div v-if="loading" class="boot-center admin-loading"><span class="spinner"></span></div>
+  <section class="page admin" data-panel="admin-page">
+    <header class="admin-head">
+      <h1 class="page-title">管理</h1>
+      <p class="page-sub">
+        用户与客户端：普通用户只能看到自己名下的客户端，管理员可见并控制全部设备。
+      </p>
+    </header>
+
+    <p v-if="error" class="ui-error">{{ error }}</p>
+    <div v-if="loading" class="admin-loading" aria-busy="true">
+      <span class="ui-spinner spin" aria-hidden="true"></span>
+    </div>
 
     <template v-else>
       <!-- 用户管理 -->
-      <section class="card section-card">
-        <h3>用户管理</h3>
-        <p class="section-sub">管理员可见并控制所有客户端；普通用户只能看到自己名下的客户端。</p>
-        <div class="inline-form">
+      <section class="ui-card admin-section">
+        <header class="admin-section-head">
+          <h2 class="admin-section-title">用户管理</h2>
+          <p class="admin-section-sub">
+            管理员可见并控制所有客户端；普通用户只能看到自己名下的客户端。
+          </p>
+        </header>
+
+        <div class="admin-form">
           <input
             v-model="newUsername"
-            class="input input-inline"
+            class="ui-input"
             type="text"
             placeholder="用户名"
+            aria-label="用户名"
           />
           <input
             v-model="newPassword"
-            class="input input-inline"
+            class="ui-input"
             type="password"
             placeholder="密码（至少 6 位）"
+            aria-label="密码"
           />
-          <select v-model="newRole" class="input input-inline">
+          <select v-model="newRole" class="ui-input" aria-label="角色">
             <option value="user">普通用户</option>
             <option value="admin">管理员</option>
           </select>
           <button
-            class="btn btn-primary"
+            class="ui-btn ui-btn--primary"
             type="button"
             :disabled="creatingUser"
             @click="createUser"
           >
+            <Plus :size="14" :stroke-width="1.9" aria-hidden="true" />
             {{ creatingUser ? '创建中…' : '新建用户' }}
           </button>
         </div>
-        <p v-if="userError" class="form-error">{{ userError }}</p>
-        <div class="table-scroll">
-          <table class="table">
+
+        <p v-if="userError" class="ui-error">{{ userError }}</p>
+
+        <div class="admin-scroll">
+          <table class="ui-table" data-panel="admin-users">
             <thead>
               <tr>
                 <th>用户名</th>
                 <th>角色</th>
                 <th>创建时间</th>
-                <th class="ta-right">操作</th>
+                <th class="admin-end">操作</th>
               </tr>
             </thead>
             <tbody>
               <template v-for="user in users" :key="user.id">
-                <tr>
-                  <td>{{ user.username }}</td>
+                <tr data-field="admin.user-row">
+                  <td class="admin-name">{{ user.username }}</td>
                   <td>
-                    <span class="chip" :class="user.role === 'admin' ? 'chip-accent' : ''">
+                    <span class="ui-chip" :class="user.role === 'admin' ? 'ui-chip--accent' : ''">
                       {{ user.role === 'admin' ? '管理员' : '普通用户' }}
                     </span>
                   </td>
-                  <td class="text-2">{{ formatTime(user.createdAt) }}</td>
-                  <td class="ta-right actions">
-                    <button class="btn btn-ghost btn-sm" type="button" @click="resetId = user.id">
-                      重置密码
-                    </button>
-                    <button
-                      class="btn btn-danger-ghost btn-sm"
-                      type="button"
-                      @click="removeUser(user)"
-                    >
-                      删除
-                    </button>
+                  <td class="admin-dim admin-num">{{ formatTime(user.createdAt) }}</td>
+                  <td class="admin-end">
+                    <div class="admin-actions">
+                      <button class="ui-btn ui-btn--ghost" type="button" @click="resetId = user.id">
+                        重置密码
+                      </button>
+                      <button class="ui-btn ui-btn--danger" type="button" @click="removeUser(user)">
+                        删除
+                      </button>
+                    </div>
                   </td>
                 </tr>
-                <tr v-if="resetId === user.id">
-                  <td colspan="4" class="sub-row">
-                    <div class="inline-form">
+                <tr v-if="resetId === user.id" class="admin-sub-row">
+                  <td colspan="4">
+                    <div class="admin-form">
                       <input
                         v-model="resetPassword"
-                        class="input input-inline"
+                        class="ui-input"
                         type="password"
                         placeholder="新密码（至少 6 位）"
+                        aria-label="新密码"
                       />
                       <button
-                        class="btn btn-primary btn-sm"
+                        class="ui-btn ui-btn--primary"
                         type="button"
                         :disabled="resetting"
                         @click="confirmReset"
                       >
                         确定
                       </button>
-                      <button class="btn btn-ghost btn-sm" type="button" @click="resetId = ''">
+                      <button class="ui-btn ui-btn--ghost" type="button" @click="resetId = ''">
                         取消
                       </button>
                     </div>
@@ -243,12 +262,16 @@ onMounted(() => void loadAll())
       </section>
 
       <!-- 全部客户端 -->
-      <section class="card section-card">
-        <h3>全部客户端</h3>
-        <p class="section-sub">解除登记后客户端需要重新用账号登录才能接入。</p>
-        <p v-if="clientError" class="form-error">{{ clientError }}</p>
-        <div class="table-scroll">
-          <table class="table">
+      <section class="ui-card admin-section">
+        <header class="admin-section-head">
+          <h2 class="admin-section-title">全部客户端</h2>
+          <p class="admin-section-sub">解除登记后客户端需要重新用账号登录才能接入。</p>
+        </header>
+
+        <p v-if="clientError" class="ui-error">{{ clientError }}</p>
+
+        <div class="admin-scroll">
+          <table class="ui-table" data-panel="admin-clients">
             <thead>
               <tr>
                 <th>名称</th>
@@ -258,28 +281,38 @@ onMounted(() => void loadAll())
                 <th>模式</th>
                 <th>在线</th>
                 <th>最近活跃</th>
-                <th class="ta-right">操作</th>
+                <th class="admin-end">操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="client in clientRows" :key="client.clientId">
+              <tr v-for="client in clientRows" :key="client.clientId" data-field="admin.client-row">
                 <td>
-                  <span class="dot" :class="client.online ? 'on' : 'off'"></span>
-                  {{ client.name }}
+                  <span class="admin-client">
+                    <span
+                      class="admin-dot"
+                      :class="{ 'admin-dot--on': client.online }"
+                      aria-hidden="true"
+                    ></span>
+                    <span class="admin-name">{{ client.name }}</span>
+                  </span>
                 </td>
                 <td>{{ client.ownerUsername }}</td>
-                <td class="text-2">{{ platformLabel(client.platform) }}</td>
-                <td class="text-2">v{{ client.version }}</td>
-                <td class="text-2">{{ modeLabel(client.mode) }}</td>
+                <td class="admin-dim">{{ platformLabel(client.platform) }}</td>
+                <td class="admin-dim admin-num">v{{ client.version }}</td>
+                <td class="admin-dim">{{ modeLabel(client.mode) }}</td>
                 <td>
-                  <span class="chip" :class="client.online ? 'chip-ok' : 'chip-muted'">
+                  <span
+                    class="ui-chip"
+                    :class="client.online ? 'ui-chip--ok' : 'ui-chip--muted'"
+                    data-field="admin.client-online"
+                  >
                     {{ client.online ? '在线' : '离线' }}
                   </span>
                 </td>
-                <td class="text-2">{{ formatTime(client.lastSeenAt) }}</td>
-                <td class="ta-right">
+                <td class="admin-dim admin-num">{{ formatTime(client.lastSeenAt) }}</td>
+                <td class="admin-end">
                   <button
-                    class="btn btn-danger-ghost btn-sm"
+                    class="ui-btn ui-btn--danger"
                     type="button"
                     :disabled="deletingClientId === client.clientId"
                     @click="removeClient(client)"
@@ -289,72 +322,321 @@ onMounted(() => void loadAll())
                 </td>
               </tr>
               <tr v-if="clientRows.length === 0">
-                <td colspan="8" class="text-2">还没有客户端接入</td>
+                <td colspan="8" class="admin-empty">还没有客户端接入</td>
               </tr>
             </tbody>
           </table>
         </div>
       </section>
     </template>
-  </div>
+  </section>
 </template>
 
 <style scoped>
-.admin {
+/* 外壳（App.vue 的 main.page）已提供页面留白时不再叠加一层内边距 */
+.page .page {
+  padding: 0;
+}
+
+.admin-head {
   display: grid;
-  gap: 16px;
+  gap: var(--space-1);
 }
 
 .admin-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-height: 200px;
 }
 
-.section-card {
-  padding: 20px 22px;
+.admin-section {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
 }
 
-.section-card h3 {
-  margin: 0 0 2px;
-  font-size: 16px;
+.admin-section-head {
+  display: grid;
+  gap: var(--space-1);
 }
 
-.section-sub {
-  color: var(--text-2);
-  font-size: 13px;
-  margin: 0 0 14px;
+.admin-section-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-display);
 }
 
-.inline-form {
+.admin-section-sub {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.admin-form {
   display: flex;
-  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
   align-items: center;
+  gap: var(--space-2);
 }
 
-.actions {
+.admin-form .ui-input {
+  flex: 1 1 160px;
+}
+
+.admin-form .ui-btn {
+  flex: none;
+}
+
+.admin-scroll {
+  overflow-x: auto;
+}
+
+.admin-name {
+  font-weight: var(--weight-medium);
+  word-break: break-all;
+}
+
+.admin-dim {
+  color: var(--text-secondary);
+}
+
+.admin-num {
+  font-variant-numeric: var(--num-tabular);
   white-space: nowrap;
 }
 
-.actions .btn + .btn {
-  margin-left: 6px;
+.admin-client {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
-.sub-row td {
-  background: rgba(0, 0, 0, 0.02);
+.admin-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--status-idle);
 }
 
-.sub-row .inline-form {
-  margin-bottom: 0;
+.admin-dot--on {
+  background: var(--status-ok);
+}
+
+.admin-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+
+.admin-end {
+  text-align: right;
+}
+
+.admin-empty {
+  color: var(--text-secondary);
+}
+
+.admin-sub-row td {
+  background: var(--fill-2);
+}
+
+/* ───────── 基础件（本页自持，样式单源在 @aurora/shared/browser/theme.css 的令牌） ───────── */
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  height: var(--control-h-sm);
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast),
+    transform var(--dur-press) var(--ease-standard);
+}
+
+.ui-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.ui-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ui-btn--primary {
+  background: var(--aurora-blue);
+  color: var(--on-accent);
+}
+
+.ui-btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.ui-btn--ghost {
+  border-color: var(--border-subtle);
+}
+
+.ui-btn--ghost:hover:not(:disabled) {
+  background: var(--fill-2);
+}
+
+.ui-btn--danger {
+  color: var(--text-secondary);
+}
+
+.ui-btn--danger:hover:not(:disabled) {
+  background: var(--danger-fill);
+  color: var(--danger-text);
+}
+
+.ui-input {
+  height: var(--control-h-sm);
+  min-width: 0;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--fill-1);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  outline: none;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.ui-input::placeholder {
+  color: var(--text-muted);
+}
+
+.ui-input:focus {
+  border-color: var(--aurora-blue);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+select.ui-input {
+  cursor: pointer;
+}
+
+.ui-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--fill-1);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  white-space: nowrap;
+}
+
+.ui-chip--ok {
+  background: var(--ok-fill);
+  color: var(--ok-text);
+}
+
+.ui-chip--accent {
+  background: var(--fill-1);
+  color: var(--accent-text);
+}
+
+.ui-chip--muted {
+  color: var(--text-muted);
+}
+
+.ui-card {
+  background: var(--fill-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.ui-error {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--error-fill);
+  color: var(--error-text);
+  font-size: var(--text-sm);
+}
+
+.ui-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--fill-3);
+  border-top-color: var(--aurora-blue);
+  border-radius: var(--radius-pill);
+}
+
+.ui-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.ui-table th {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ui-table td {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
+}
+
+.ui-table tbody tr {
+  transition: background var(--transition-fast);
+}
+
+.ui-table tbody tr:hover {
+  background: var(--fill-2);
+}
+
+.ui-table tbody tr:last-child td {
+  border-bottom: 0;
 }
 
 @media (max-width: 720px) {
-  .section-card {
-    padding: 16px 14px;
+  .admin-section {
+    padding: var(--space-3);
   }
 
-  .inline-form .input-inline {
+  .ui-btn,
+  .ui-input {
+    min-height: var(--hit-target);
+  }
+
+  .admin-form .ui-input {
     flex: 1 1 140px;
+  }
+
+  .ui-table {
+    min-width: 640px;
   }
 }
 </style>

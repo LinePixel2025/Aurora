@@ -1,9 +1,7 @@
 /// <reference types="vite/client" />
 
-/** .vue 单文件组件的类型垫片（tsc / IDE 用；构建期由 @vitejs/plugin-vue 处理） */
-declare module '*.vue' {
-  import type { DefineComponent } from 'vue'
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const component: DefineComponent<Record<string, never>, Record<string, never>, any>
+declare module "*.vue" {
+  import type { DefineComponent } from "vue"
+  const component: DefineComponent<{}, {}, any>
   export default component
 }

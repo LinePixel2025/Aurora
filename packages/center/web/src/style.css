@@ -1,499 +1,70 @@
 /**
- * Aurora Center Web —— Apple 风格基础样式（docs/12 §10）。
+ * Center Web 自己的全局样式 —— **只放这里独有的东西**。
  *
- * 统一 token 化：颜色 / 圆角 / 阴影都在 :root 变量里，组件内只引用变量；
- * 共享类（卡片 / 按钮 / 输入框 / 表格 / 圆点 / 转圈）放这里，布局细节在各组件 scoped 内。
+ * 设计令牌 / 暗浅主题 / keyframes / 过渡预设 / 原子类（`.page` `.badge` `.surface-card`
+ * `.glass` `.spin` …）全部来自 `@aurora/shared/browser/theme.css`（桌面端同一份实现，
+ * 见 docs/07 §2.3 的「Center Web 对齐口径」）；组件里一律用那些令牌，
+ * 本文件只补浏览器环境需要、桌面窗口里不存在的部分。
  */
-:root {
-  --bg: #f5f5f7;
-  --card: #ffffff;
-  --text: #1d1d1f;
-  --text-2: #6e6e73;
-  --muted: #86868b;
-  --accent: #0071e3;
-  --accent-hover: #0062cc;
-  --accent-soft: rgba(0, 113, 227, 0.1);
-  --danger: #ff3b30;
-  --danger-hover: #e0342b;
-  --danger-soft: rgba(255, 59, 48, 0.1);
-  --ok: #34c759;
-  --ok-soft: rgba(52, 199, 89, 0.14);
-  --line: rgba(0, 0, 0, 0.08);
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.04);
-  --radius: 16px;
-  --radius-sm: 12px;
-  --topbar-h: 52px;
-  /* 刘海 / 手势条安全区（viewport-fit=cover，docs/12 §10 移动端适配）：
-     组件与高度计算统一引用这里的变量，不再各自手写 env() */
-  --safe-top: env(safe-area-inset-top, 0px);
-  --safe-right: env(safe-area-inset-right, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
-  --safe-left: env(safe-area-inset-left, 0px);
-}
 
-* {
-  box-sizing: border-box;
-}
-
+/* 视口与布局：控制台把高度锁在一屏（会话流自己滚动），其余页面跟随文档流 */
 html,
-body {
-  margin: 0;
-  padding: 0;
+body,
+#app {
+  min-height: 100%;
 }
 
-body {
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei',
-    sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.55;
-  -webkit-font-smoothing: antialiased;
-  /* 刘海 / 手势条安全区（viewport-fit=cover 时 env() 才有非零值） */
-  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
-}
-
-h1,
-h2,
-h3 {
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-/* ───────────────────────── 卡片 ───────────────────────── */
-
-.card {
-  background: var(--card);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-}
-
-/* ───────────────────────── 顶栏（毛玻璃） ───────────────────────── */
-
-.topbar {
-  position: sticky;
-  top: var(--safe-top);
-  z-index: 20;
-  height: var(--topbar-h);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  background: rgba(255, 255, 255, 0.72);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
-}
-
-.topbar-inner {
-  max-width: 1440px;
-  height: 100%;
-  margin: 0 auto;
-  padding: 0 20px;
+#app {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  flex-direction: column;
 }
 
-.brand {
-  font-size: 17px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--text);
-  text-decoration: none;
-}
-
-.topbar-right {
+main.app-main {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
+  flex-direction: column;
 }
 
-.topbar-link {
-  color: var(--text-2);
-  text-decoration: none;
-  font-size: 13px;
-  padding: 4px 10px;
-  border-radius: 980px;
-  transition:
-    color 0.15s ease,
-    background-color 0.15s ease;
+/* 键盘可达性：全局只给"可聚焦但自己没写样式"的元素一个统一焦点环 */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
-.topbar-link:hover {
-  color: var(--text);
-  background: rgba(0, 0, 0, 0.05);
-}
-
-.topbar-link.active {
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.topbar-user {
-  color: var(--text-2);
-  font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* WS 连接状态 */
-.ws-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-2);
-  background: rgba(0, 0, 0, 0.04);
-  border-radius: 980px;
-  padding: 3px 10px;
-  white-space: nowrap;
-}
-
-.ws-chip i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--muted);
-  flex: none;
-}
-
-.ws-chip.open i {
-  background: var(--ok);
-}
-
-.ws-chip.connecting i {
-  background: #ffcc00;
-}
-
-.ws-chip.closed i {
-  background: var(--danger);
-}
-
-/* ───────────────────────── 按钮 ───────────────────────── */
-
-.btn {
-  appearance: none;
-  border: 0;
-  cursor: pointer;
-  font: inherit;
-  color: var(--text);
-  border-radius: 980px;
-  padding: 8px 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  white-space: nowrap;
-  transition:
-    background-color 0.15s ease,
-    color 0.15s ease,
-    opacity 0.15s ease;
-}
-
-.btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.35);
-}
-
-.btn-primary {
-  background: var(--accent);
-  color: #fff;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-}
-
-.btn-secondary {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.btn-secondary:hover:not(:disabled) {
-  background: rgba(0, 113, 227, 0.18);
-}
-
-.btn-danger {
-  background: var(--danger);
-  color: #fff;
-}
-
-.btn-danger:hover:not(:disabled) {
-  background: var(--danger-hover);
-}
-
-.btn-danger-ghost {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
-.btn-danger-ghost:hover:not(:disabled) {
-  background: rgba(255, 59, 48, 0.18);
-}
-
-.btn-ghost {
-  background: rgba(0, 0, 0, 0.05);
-  color: var(--text);
-}
-
-.btn-ghost:hover:not(:disabled) {
-  background: rgba(0, 0, 0, 0.09);
-}
-
-.btn-sm {
-  padding: 4px 12px;
-  font-size: 13px;
-}
-
-.btn-block {
-  width: 100%;
-}
-
-/* ───────────────────────── 输入框 ───────────────────────── */
-
-.input {
-  width: 100%;
-  border: 0;
-  background: var(--bg);
-  border-radius: 12px;
-  padding: 9px 12px;
-  font: inherit;
-  color: var(--text);
-  outline: none;
-  transition:
-    box-shadow 0.15s ease,
-    background-color 0.15s ease;
-}
-
-.input::placeholder {
-  color: var(--muted);
-}
-
-.input:focus {
-  background: var(--card);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.35);
-}
-
-textarea.input {
-  resize: none;
-}
-
-select.input {
-  appearance: none;
-  cursor: pointer;
-}
-
-.input-inline {
-  width: auto;
-}
-
-/* ───────────────────────── 表格 ───────────────────────── */
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.table th {
-  text-align: left;
-  color: var(--text-2);
-  font-weight: 500;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--line);
-  white-space: nowrap;
-}
-
-.table td {
-  padding: 10px;
-  border-bottom: 1px solid var(--line);
-  vertical-align: middle;
-}
-
-.table tbody tr {
-  transition: background-color 0.12s ease;
-}
-
-.table tbody tr:hover {
-  background: rgba(0, 0, 0, 0.03);
-}
-
-.table tbody tr:last-child td {
-  border-bottom: 0;
-}
-
-/* ───────────────────────── 小件 ───────────────────────── */
-
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-  flex: none;
-}
-
-.dot.on {
-  background: var(--ok);
-}
-
-.dot.off {
-  background: #b0b0b6;
-}
-
-.chip {
-  display: inline-block;
-  font-size: 12px;
-  line-height: 1.6;
-  padding: 1px 10px;
-  border-radius: 980px;
-  background: var(--bg);
-  color: var(--text-2);
-  white-space: nowrap;
-}
-
-.chip-ok {
-  background: var(--ok-soft);
-  color: #1d7a35;
-}
-
-.chip-muted {
-  background: var(--bg);
-  color: var(--muted);
-}
-
-.chip-accent {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
+/* 转圈节点：共享 theme.css 只提供 `.spin`（旋转动画）与 `aurora-spin` 关键帧，
+   节点形状是各端自备的 —— 这里补浏览器端这一份（尺寸可被局部 `font-size` 覆盖的场合另说） */
 .spinner {
+  display: inline-block;
+  flex: none;
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 2px solid rgba(0, 0, 0, 0.12);
-  border-top-color: var(--accent);
-  animation: spin 0.8s linear infinite;
-  display: inline-block;
-  flex: none;
+  border: 2px solid var(--fill-3);
+  border-top-color: var(--aurora-blue);
+  animation: aurora-spin var(--dur-spin) linear infinite;
 }
 
-.spinner-sm {
-  width: 14px;
-  height: 14px;
+/* 居中提示块（空态 / 加载态公用） */
+.centered-note {
+  display: grid;
+  place-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  text-align: center;
 }
 
-.spinner-light {
-  border-color: rgba(255, 255, 255, 0.35);
-  border-top-color: #fff;
+/* 桌面端窗口里的拖动区在浏览器里是 no-op：显式说不参与（免得被误当拖拽把手） */
+.drag-region,
+.no-drag {
+  -webkit-app-region: no-drag;
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* ───────────────────────── 工具类 ───────────────────────── */
-
-.text-2 {
-  color: var(--text-2);
-}
-
-.ta-right {
-  text-align: right;
-}
-
-.mono {
-  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  word-break: break-all;
-  white-space: pre-wrap;
-}
-
-/* ───────────────────────── Markdown（v-html 注入，必须全局） ─────────────────────────
-   2026-10-02 起 .md-* 样式**单源**在 @aurora/shared/browser/markdown/md.css
-   （SessionView.vue 里 import 引入）：桌面与 Center Web 共用同一份渲染器与样式，
-   经 .md 上的 --md-* 局部变量映射到本页令牌（--text-2 / --accent / --radius-sm 等）。
-   这里不再重复声明 —— 改样式去 md.css 改，两端一起生效。 */
-
-.form-error {
-  color: var(--danger);
-  font-size: 13px;
-  margin: 6px 0;
-}
-
-/* 启动 / 空态居中转圈 */
-.boot-center {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* ───────────────────────── 移动端适配 ───────────────────────── */
-
-/* 表格横向滚动容器：窄屏不撑破布局（表格内容可横向滑） */
-.table-scroll {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}
-
-.table-scroll .table {
-  min-width: 640px;
-}
-
+/* 移动端：底部留出 iOS 手势条（输入区的 16px 字号在 Composer 里单独处理） */
 @media (max-width: 720px) {
-  /* 触摸尺寸：输入 / 按钮不小于 40px 高 */
-  .btn {
-    min-height: 40px;
-    padding: 9px 18px;
-  }
-
-  .btn-sm {
-    min-height: 40px;
-    padding: 7px 14px;
-  }
-
-  .input {
-    min-height: 40px;
-  }
-
-  /* 顶栏压缩：用户名让位给导航 */
-  .topbar-inner {
-    padding: 0 12px;
-    gap: 8px;
-  }
-
-  .topbar-user {
-    display: none;
-  }
-}
-
-@media (max-width: 480px) {
   body {
-    font-size: 13.5px;
-  }
-
-  .topbar-right {
-    gap: 5px;
-  }
-
-  .topbar-link {
-    padding: 6px 8px;
-    font-size: 12.5px;
-  }
-
-  .ws-chip {
-    display: none;
-  }
-
-  .brand {
-    font-size: 15px;
+    padding-bottom: env(safe-area-inset-bottom, 0);
   }
 }
