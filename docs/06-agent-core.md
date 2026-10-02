@@ -2072,6 +2072,11 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   而它自己又看不到回答之外的上下文，澄清需求是主代理的职责（子代理人设里也写明了）。
 - **IPC 契约**（`askUser:request` 推送 + `askUser:answer` 回执，docs/02 §6）：
   与 `proactive:*` **刻意分表**，因为两者对「超时」的语义相反（确认按拒绝、提问按未回答继续）。
+- **远程会话的提问经 Center 中转（v0.3.3，docs/12 §5）**：`center-` 前缀会话里提问时，
+  `AskUserService.onRequest` 除本机渲染层外还把 `ask.request` 上行到 Center
+  （本地会话不上行，与确认卡同口径；连接器离线时进同一补发队列）；网页作答经 `ask.resolve`
+  转回 `AskUserService.resolve` —— 与本地卡**先到先得**（`resolve` 对已结算 requestId 返回
+  false，重复批复不重复结算，本地卡照常显示）。网页刷新后未过期的提问由服务器回放。
 - **注册口径**：随 §18 的 `registerAgentCoreTools` 一并注册，**不受 `agent.tools.enabled` 门控**，
   也不按权限档摘除。
 

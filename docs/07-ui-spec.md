@@ -585,6 +585,24 @@
   （标题栏拖动区的改动不要碰输入区，见 §1 与 §5.3 的拖动探针）。
 - **窗口拖动（本轮）**：标题栏 `.head` 走统一的 `useWindowDrag('chat')`（`:class="dragClass"`），
   按钮区挂 `noDragClass`；详见 §1 与 §5.3 的拖动探针。
+- **Center Web 的对齐口径（v0.3.3，docs/12 §10）**：网页控制台是这套主界面的**同语言远端版**，
+  共用面与分叉面都定死在这里，避免两边各自漂移：
+  - **共用（唯一实现，两端引用）**：设计令牌 / 暗浅主题 / `aurora-*` keyframes / 过渡预设 /
+    原子类（`@aurora/shared/browser/theme.css`）；Markdown 渲染器与 `md.css`；
+    语义图标查表（`toolIcons` / `toolLabels`）与 `icons`；吸底状态机
+    （`stickToBottomCore` / `useStickToBottom`）；实测高度动画钩子（`useCollapseTransition`）。
+    改这些**必须同时核对两端**（与改 `md.css` 同规矩）。
+  - **分叉（有意，别再合并）**：`.vue` 标记结构（shared 走 tsc 构建、不处理 SFC）；
+    桌面端三栏是 `会话导航 | 主区 | 上下文面板`，网页端是 `客户端列表 | 会话流 | 控制面板`；
+    桌面端标题栏是 Windows caption 按钮，网页端是浏览器页签。
+  - **必须逐条对齐的行为**（探针同判据）：用户消息右对齐胶囊 / 助手左对齐纯文本；
+    流式只在末尾加光标；轨迹容器三段式（软胶囊摘要 + 竖脊时间线 + 思考 → 工具行 → 正文
+    阅读顺序）；思考块块头恒为「已深度思考」+ 流式秒数、220px 内滚、rAF 跟随；
+    工具行状态三态 + 语义图标 + 结果摘要上提 + 展开体走实测高度动画；
+    轨迹容器与思考块的折叠一律 `fade` / grid `0fr↔1fr`（只有 `.tool-body` 用 `--collapse-h`）；
+    确认卡与提问卡同一条待办栏（先到先得、幂等）；固定位 / 门控口径
+    （未配置 STT 连麦克风按钮都不渲染）。`data-field` / `data-action` 命名两端同名
+    （`chat.mic` / `chat.ask-user-card` / `chat.trace-live` / `chat.task-card` / `chat.todo-card` …）。
 ### 输入框规格（2026-09 输入框重做；2026-09-29 减负轮）
 
 目标是对齐主流 Agent Desktop（ChatGPT / Claude / Cursor 类）的输入动线：卡内自底向上依次是

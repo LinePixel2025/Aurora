@@ -112,6 +112,7 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
   { type: 'result', requestId, ok, data?, error? }
   { type: 'session.event', sessionId, event }  // event 为内核 AgentEvent 原样转发（JSON 可序列化）
   { type: 'confirm.request', request }         // 敏感工具确认请求（ConfirmRequestPayload：confirmId/sessionId/toolName/input/createdAt/expiresAt）
+  { type: 'ask.request', request }             // 向用户提问的请求（AskUserRequestPayload，v0.3.3；§5 第 4 步）
 
 服务器 → 客户端
   { type: 'welcome', serverVersion, clientId }
@@ -125,6 +126,7 @@ CenterCommand =
   | { kind: 'config.update',  requestId, patch }      // 白名单校验后落到 SettingsStore（§7）
   | { kind: 'mode.switch',    requestId, mode }       // 等价 config.update 的 modes.current，语义独立成命令
   | { kind: 'confirm.resolve', requestId, confirmId, approved }  // 网页端确认卡批复的转发
+  | { kind: 'ask.resolve', requestId, sessionId, answers, skipped? }  // 网页端提问卡作答的转发（v0.3.3，§5）；result.data 携带 { settled }
   | { kind: 'session.history', requestId, sessionId } // 历史回放（v0.2.4，§6.3）；result.data 携带 CenterSessionHistoryMessage[]
   | { kind: 'stt.transcribe', requestId, audioBase64, mime }  // 语音识别中转（v0.3.2，§6.4）；客户端用本机已配 provider 转写
   | { kind: 'tts.synthesize', requestId, text }               // 朗读合成中转（v0.3.2，§6.4）；result.data 携带 { audioBase64, mimeType }
@@ -179,6 +181,7 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
   { type: 'config.update',  requestId, clientId, patch }
   { type: 'mode.switch',    requestId, clientId, mode }
   { type: 'confirm.resolve', requestId, clientId, confirmId, approved }
+  { type: 'ask.resolve', requestId, clientId, sessionId, answers, skipped? }  // 提问卡作答（v0.3.3，§5）
   { type: 'session.history', requestId, clientId, sessionId }  // 历史回放（v0.2.4，§6.3）
   { type: 'stt.transcribe',  requestId, clientId, audioBase64, mime }  // 语音识别中转（v0.3.2，§6.4）
   { type: 'tts.synthesize',  requestId, clientId, text }               // 朗读合成中转（v0.3.2，§6.4）
@@ -190,12 +193,26 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
   { type: 'result', requestId, ok, data?, error? }
   { type: 'file.received', fileId, clientId, name, size, note?, at }
   { type: 'confirm.request', clientId, sessionId, request }  // 客户端转来的确认卡
+  { type: 'ask.request', clientId, sessionId, request }      // 客户端转来的提问卡（v0.3.3）；网页重连时服务器回放未过期项
 ```
 
 路由规则（`hub.ts`）：命令按 `clientId` 找到该客户端的连接；`session.event` / `confirm.request` /
-`file.received` 按**会话 / 客户端属主**（发起 `session.create` 的网页用户）+ 全部管理员回传；
-`confirm.resolve` 只转发给该客户端的连接。属主关系由服务器记账（`sessionId → webUserId`），
-不信任客户端自报。
+`ask.request` / `file.received` 按**会话 / 客户端属主**（发起 `session.create` 的网页用户）+
+全部管理员回传；`confirm.resolve` / `ask.resolve` 只转发给该客户端的连接。属主关系由服务器记账
+（`sessionId → webUserId`），不信任客户端自报。
+
+**确认卡与提问卡的两处差异**（都源于提问窗口更长，180s vs 60s）：
+
+| | 确认卡（v0.2.2） | 提问卡（v0.3.3） |
+|---|---|---|
+| 触发者 | 敏感工具（`sensitivity: 'confirm'`）执行前 | `ask_user` 工具（`safe` 级，不进确认链） |
+| 超时 | 60s，超时**按拒绝** | 180s，超时**按「用户未回答」**继续（模型说明假设） |
+| 客户端离线 | 补发队列（FIFO 20，重连 flush） | 同款补发队列 |
+| 网页刷新后 | **不回放**（窗口短，属既有行为） | **回放未过期项**（`pendingAsks`，见下），否则刷新一下就永远答不上 |
+
+`hub` 的 `pendingAsks`（requestId → 请求体）只在内存里、按 requestId 幂等覆盖，
+在 `ask.resolve` 或过期后被清除；`registerWeb` 时随 `sendStatusTo` 一起回放未过期项 ——
+**不新增任何持久化**（与"服务器不缓存会话内容"同口径，这里缓存的是一条尚未结算的待答问题）。
 
 ### 4.3 设备授权登录（docs/12 §3 主路径 2）
 
@@ -240,6 +257,13 @@ GET /api/client/device/info?code=<userCode>                      （无需登录
    确认请求进**补发队列**（FIFO 上限 20 条，重连后 flush；长时间离线仍按本地 60s 超时拒绝）。
    网页端除会话视图内的卡之外，另有**全局待批复确认卡栏**（ConsoleView 顶部）展示所有未过期
    请求——本地会话来源的请求没有会话视图，只能在这里批复；
+   **向用户提问（`ask_user`，v0.3.3 起）**：Agent 在远程会话里调用 `ask_user` 时，客户端在弹
+   本机提问卡的同时把 `ask.request` 推给 Center（`AskUserService.onRequest` → 仅 `center-`
+   前缀会话上行，离线进同一补发队列）→ 网页端的提问卡（会话内 + 全局待办栏，与会话内本地卡
+   **先到先得**）作答 → `ask.resolve` 转回客户端调 `AskUserService.resolve`（已结算 /
+   未知 requestId 返回 `false`，网页端据此提示"已失效"）→ Agent 在**同一次请求内**拿到答案继续。
+   超时（180s）/ 跳过 / 中止都按「用户未回答」结算，模型说明假设后继续，不挂死；网页刷新后
+   服务器回放未过期的提问（`pendingAsks`，§4.2）——这是它与 60s 确认卡唯一的通道差异；
 5. 「发送文件」：用户在远程会话里让 Agent 发文件 → Agent 调 `center_send_file`
    （§8）→ 客户端 HTTP `POST /api/ingest/files`（客户端令牌鉴权，尺寸受
    `center.maxFileMb` 限制）→ 服务器落盘并 `file.received` 通知 → 网页端出现
@@ -287,6 +311,17 @@ GET /api/client/device/info?code=<userCode>                      （无需登录
 provider 的 `baseUrl`/`model` 齐全，同桌面端门控口径）；`tts` = 本机 TTS 可用。网页端据此
 决定**是否渲染**麦克风 / 朗读按钮（未配置连按钮都不出现，不是 disabled）——字段缺失时
 按钮不渲染（向后兼容旧客户端）。
+
+能力位随**每一次** `status` 上行刷新：连接建立、`settings:changed`（改 STT/TTS 配置即触发）、
+远程命令（`llm.switch` / `config.update` / `mode.switch`）之后都会重报。**重连不丢能力位**：
+`hello` 派生的占位快照只带 capabilities、不含 `voice`，因此 `hub.registerClient` 在覆盖已存
+快照时**沿用旧 `voice`**（新连接的第一条真 `status` 毫秒级到达即刷新）——否则每次重连都会把
+带 voice 的完整快照换成"没有语音"，恰好在此刻新连上的网页页签会读到一个没有麦克风按钮的界面。
+⚠️ 排查「配置了语音但网页没有按钮」时按这个顺序看：① 本机设置页是否**启用**了 STT/TTS
+（`enabled` + `active` 指向存在的 provider，TTS 还要 `voice` 齐全）——桌面端同款门控，
+桌面没有按钮则网页也不会有；② 网页包是否与客户端同版本（语音 UI 自 v0.3.2 才有，
+旧镜像 tag 部署的 Center 提供的整份前端根本没有这两个按钮，见 `deploy/README.md`）；
+③ 用 `pnpm --filter @aurora/center verify:web:status` 打印服务器侧的 `ClientStatus.voice`。
 
 ### 6.2 远程配置白名单（客户端侧强制）
 
@@ -458,7 +493,17 @@ aurora-center version
   渲染结果按消息缓存，代码块复制按钮走容器事件委托；用户气泡保持纯文本）；
   工具调用渲染为可折叠卡片；思考过程折叠块；
   任务清单（job）与子代理（subagent）各渲染为一张状态卡；`done` 结束
-  loading；`error` 红条；敏感工具确认卡显示在会话顶部（倒计时 + 批准 / 拒绝）。
+  loading；`error` 红条；**待办栏**（会话内 + 控制台顶部全局栏，同一套卡）同时承接
+  敏感工具确认卡（倒计时 + 批准 / 拒绝）与提问卡（v0.3.3：header / 问题 / 选项单选多选 /
+  自由文本 + 提交 / 跳过，倒计时按 `expiresAt`，已结算或超时置灰并如实显示「用户未回答」）。
+- **视觉单源（v0.3.3 起）**：观感与桌面端**同一套令牌**——设计变量 / 暗浅主题 /
+  `aurora-*` keyframes / 过渡预设 / 语义图标查表（`toolIcons` / `toolLabels`）/
+  吸底状态机全部来自 `@aurora/shared/browser`（`theme.css` 与各纯函数模块），
+  不再各自维护一份；Markdown 仍走共享渲染器与 `md.css`（§10 上一段）。
+  有意分叉的只有**标记结构**（`.vue` 组件不跨端共享——shared 走 tsc 构建、不处理 SFC），
+  因此两端组件的 `data-field` / `data-action` 命名保持同名（`chat.mic` /
+  `chat.ask-user-card` / `chat.trace-live` / `chat.task-card` / `chat.todo-card` …），
+  探针判据也就能逐条对齐。
 - **自动跟随滚动（v0.3.2 重做）**：与桌面端同一套「吸底」语义（`stickToBottomCore`
   搬运版）——跟随状态只由真实用户输入（滚轮 / 拖动 / 翻页键）关闭，流式增量的
   scroll 事件不关；250ms 意图窗口按之后的读数重判；非跟随态显示「回到底部」胶囊。
