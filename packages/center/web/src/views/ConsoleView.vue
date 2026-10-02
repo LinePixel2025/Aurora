@@ -517,6 +517,9 @@ async function onFilePicked(event: Event): Promise<void> {
     z-index: var(--z-flyout);
     width: min(84vw, 320px);
     box-shadow: var(--shadow-3);
+    /* 移动端抽屉浮在消息流上（身后只有半透明 scrim），半透明 `--fill-1` 会把底下
+       内容透出来 —— 换成它的不透明等价物 `--bg-raised`（桌面观感 = bg-base + fill-1 叠加） */
+    background: var(--bg-raised);
     opacity: 0;
     pointer-events: none;
     /* 窄屏两枚抽屉走的是 transform + opacity（合成器属性），覆盖掉桌面那份 `width` 提示 */

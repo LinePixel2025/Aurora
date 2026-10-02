@@ -1937,6 +1937,14 @@ export const SCENARIOS = [
         )
         .catch(() => undefined)
       const shown = await railOf()
+      // 抽屉底色必须不透明（用户报「二级菜单透明无底色」）：移动端抽屉浮在消息流上，
+      // 身后只有半透明 scrim —— 半透明填充令牌（--fill-1）会把底下消息透出来。
+      // 量 computed background-color 的 alpha：抽屉开着才量（收起态读数无意义）。
+      const drawerBg = await ctx.page.evaluate(() => {
+        const node = document.querySelector('[data-field="rail-container"]')
+        if (node === null) return null
+        return getComputedStyle(node).backgroundColor
+      })
       // 抽屉内容的可见/可点必须在**抽屉还开着**的这一刻量：会话一建出来抽屉就自动收起，
       // 那时外层 `pointer-events: none` 会继承到内层（读出来恒为 false —— 这是本探针
       // 第一版真实踩到的坑：量的是"收起后的展开体"）。
@@ -2053,6 +2061,11 @@ export const SCENARIOS = [
             hidden.pointerEvents === 'none',
           toggleButton: button !== null && button.h >= 39.5,
           drawerOpens: shown !== null && Number(shown.opacity) === 1,
+          // 「透明无底色」回归防线：抽屉底色必须完全不透明（rgb 无第四位 alpha 或 alpha === 1）
+          drawerOpaque:
+            drawerBg !== null &&
+            (drawerBg.startsWith('rgb(') || drawerBg.includes(', 1)')) &&
+            !drawerBg.includes('rgba('),
           sessionCreatedInDrawer: afterCreate.messages === 1,
           drawerAutoClosed: afterCreate.drawerOpen === false,
           // 打开抽屉后，里面的设备列表必须真的可见可点（这里的读数是"内层 ClientRail 根节点"）
@@ -2068,6 +2081,7 @@ export const SCENARIOS = [
           afterCreate,
           hit,
           drawerContent,
+          drawerBg,
           clickPath,
           drawerShot,
           notes: ['移动端：移动标签栏被 grid 行高拉伸成巨型胶囊（tabsHeight 读数 + 截图可核对）'],

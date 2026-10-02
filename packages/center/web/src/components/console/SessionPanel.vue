@@ -856,7 +856,10 @@ function toolValue(path: string): boolean | undefined {
 /* 窄屏：三段主体与控件保持单列可点，选择器占满整行 */
 @media (max-width: 720px) {
   .panel {
-    flex: 0 0 auto;
+    /* 移动端同样不能放开高度约束：抽屉浮层里 `.panel` 若按内容高撑出去，
+       会被 `.panel-drawer` 的 overflow: hidden 裁掉，会话列表滚不动 */
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
   .select {
