@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { SessionBridge, toConfirmRequest, type AgentLike } from './session-bridge.js'
+import { SessionBridge, toAskRequest, toConfirmRequest, type AgentLike } from './session-bridge.js'
 import type { AgentEvent, Logger } from '@aurora/shared'
 
 function makeAgent(): AgentLike & { events: AgentEvent[]; emit(event: AgentEvent): void } {
@@ -125,5 +125,50 @@ describe('toConfirmRequest · 确认卡上行消息', () => {
     })
     // createdAt 是发送时刻：合法的 ISO 时间戳即可
     expect(Number.isNaN(Date.parse(message.request.createdAt))).toBe(false)
+  })
+})
+
+describe('toAskRequest · 提问上行消息（v0.3.3）', () => {
+  it('AskUserRequest → ask.request：逐字段照搬，expiresAt 保持毫秒数（不是 ISO 串）', () => {
+    const expiresAt = Date.now() + 180_000
+    const message = toAskRequest({
+      requestId: 'ask-abc-1',
+      sessionId: 'center-abc',
+      question: '把产物放哪个目录？',
+      header: '目标目录',
+      options: [{ label: 'dist' }, { label: 'out', description: '自定义' }],
+      multiSelect: true,
+      expiresAt,
+    })
+    expect(message.type).toBe('ask.request')
+    expect(message.request).toEqual({
+      requestId: 'ask-abc-1',
+      sessionId: 'center-abc',
+      question: '把产物放哪个目录？',
+      header: '目标目录',
+      options: [{ label: 'dist' }, { label: 'out', description: '自定义' }],
+      multiSelect: true,
+      expiresAt,
+    })
+  })
+
+  it('可选字段缺省时不补 undefined 键（自由填写 / 无标题的卡片），且可 JSON 往返', () => {
+    const message = toAskRequest({
+      requestId: 'ask-abc-2',
+      sessionId: 'center-abc',
+      question: '继续吗？',
+      multiSelect: false,
+      expiresAt: 1_800_000_000_000,
+    })
+    expect(message.request).toEqual({
+      requestId: 'ask-abc-2',
+      sessionId: 'center-abc',
+      question: '继续吗？',
+      multiSelect: false,
+      expiresAt: 1_800_000_000_000,
+    })
+    expect('header' in message.request).toBe(false)
+    expect('options' in message.request).toBe(false)
+    expect(JSON.parse(JSON.stringify(message))).toEqual(message)
   })
 })

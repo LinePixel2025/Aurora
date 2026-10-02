@@ -352,6 +352,181 @@ describe('Hub · 确认卡路由（confirm.request / confirm.resolve）', () => 
   })
 })
 
+describe('Hub · 提问卡路由（ask.request / ask.resolve，v0.3.3）', () => {
+  const ASK_REQUEST = {
+    requestId: 'ask-1',
+    sessionId: 'center-abc',
+    question: '把产物放哪个目录？',
+    header: '目标目录',
+    options: [{ label: 'dist' }, { label: 'out', description: '自定义输出' }],
+    multiSelect: false,
+    expiresAt: Date.now() + 180_000,
+  }
+
+  it('ask.request 转发给属主 + 管理员，陌生人不收；畸形帧与未登记客户端都不抛', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    harness.connectClient('c1')
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    const stranger = harness.connectWeb({ id: 'u2', username: 'u2', role: 'user' })
+    const admin = harness.connectWeb({ id: 'u-admin', username: 'root', role: 'admin' })
+    owner.sent.length = stranger.sent.length = admin.sent.length = 0
+
+    harness.hub.handleClientMessage('c1', { type: 'ask.request', request: ASK_REQUEST })
+    const ownerMsgs = owner.sent.filter((m) => (m as { type: string }).type === 'ask.request')
+    const adminMsgs = admin.sent.filter((m) => (m as { type: string }).type === 'ask.request')
+    expect(ownerMsgs).toHaveLength(1)
+    expect(adminMsgs).toHaveLength(1)
+    expect(stranger.sent).toHaveLength(0)
+    const forwarded = ownerMsgs[0] as {
+      clientId: string
+      sessionId: string
+      request: { requestId: string; question: string; multiSelect: boolean }
+    }
+    expect(forwarded.clientId).toBe('c1')
+    expect(forwarded.sessionId).toBe('center-abc')
+    expect(forwarded.request.requestId).toBe('ask-1')
+    expect(forwarded.request.question).toBe('把产物放哪个目录？')
+    expect(forwarded.request.multiSelect).toBe(false)
+
+    // 缺 request 的畸形帧（P1-02 同族）：必须静默丢弃，不能抛 TypeError 逃出监听器
+    expect(() =>
+      harness.hub.handleClientMessage('c1', { type: 'ask.request' } as never),
+    ).not.toThrow()
+    expect(admin.sent.filter((m) => (m as { type: string }).type === 'ask.request')).toHaveLength(1)
+
+    // 未登记的客户端 → 无路由目标，静默忽略
+    expect(() =>
+      harness.hub.handleClientMessage('c-ghost', { type: 'ask.request', request: ASK_REQUEST }),
+    ).not.toThrow()
+  })
+
+  it('未过期的提问在新网页连上时回放；过期项入站即丢且不回放', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    harness.connectClient('c1')
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+    harness.hub.handleClientMessage('c1', { type: 'ask.request', request: ASK_REQUEST })
+    harness.hub.handleClientMessage('c1', {
+      type: 'ask.request',
+      request: { ...ASK_REQUEST, requestId: 'ask-old', expiresAt: Date.now() - 1 },
+    })
+    expect(owner.sent.filter((m) => (m as { type: string }).type === 'ask.request')).toHaveLength(1)
+
+    // 新页签（用户刷新页面）连上：未过期的那条被回放
+    const refreshed = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    const replayed = refreshed.sent.filter((m) => (m as { type: string }).type === 'ask.request')
+    expect(replayed).toHaveLength(1)
+    expect((replayed[0] as { request: { requestId: string } }).request.requestId).toBe('ask-1')
+    // 陌生人的新页签不收
+    const stranger = harness.connectWeb({ id: 'u2', username: 'u2', role: 'user' })
+    expect(
+      stranger.sent.filter((m) => (m as { type: string }).type === 'ask.request'),
+    ).toHaveLength(0)
+  })
+
+  it('ask.resolve 转发为 cmd 并从待答表摘除；result 回执转回网页端', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    client.sent.length = 0
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+    harness.hub.handleClientMessage('c1', { type: 'ask.request', request: ASK_REQUEST })
+
+    // 更正 requestId 语义：ask.resolve 的 requestId **就是提问卡 id**（客户端分配），
+    // 不是网页端新生成的命令 id —— 回执也用它关联（见 protocol.ts 的注释）。
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'ask.resolve',
+      requestId: 'ask-1',
+      clientId: 'c1',
+      sessionId: 'center-abc',
+      answers: ['dist'],
+    })
+    const forwarded = client.sent.at(-1) as {
+      type: string
+      cmd: { kind: string; requestId: string; sessionId: string; answers: string[]; skipped?: boolean }
+    }
+    expect(forwarded.cmd.kind).toBe('ask.resolve')
+    expect(forwarded.cmd.requestId).toBe('ask-1')
+    expect(forwarded.cmd.sessionId).toBe('center-abc')
+    expect(forwarded.cmd.answers).toEqual(['dist'])
+    expect(forwarded.cmd.skipped).toBeUndefined()
+
+    // 已作答 → 摘除；后续连上的页签不再回放
+    const later = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    expect(later.sent.filter((m) => (m as { type: string }).type === 'ask.request')).toHaveLength(0)
+
+    // 客户端 result（{ settled }）走通用 pending 通道转回网页端
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'ask-1',
+      ok: true,
+      data: { settled: false },
+    })
+    const result = owner.sent.at(-1) as { type: string; ok: boolean; data?: unknown }
+    expect(result.ok).toBe(true)
+    expect(result.data).toEqual({ settled: false })
+  })
+
+  it('ask.resolve 属主校验与离线判定同其他命令（非属主 E_FORBIDDEN、离线 E_CLIENT_OFFLINE）', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    harness.connectClient('c1')
+    const stranger = harness.connectWeb({ id: 'u2', username: 'u2', role: 'user' })
+    stranger.sent.length = 0
+    harness.hub.handleWebMessage(stranger.conn, {
+      type: 'ask.resolve',
+      requestId: 'web-21',
+      clientId: 'c1',
+      sessionId: 'center-abc',
+      answers: ['dist'],
+    })
+    expect((stranger.sent.at(-1) as { error?: string }).error).toBe('E_FORBIDDEN')
+
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+    harness.hub.removeClient('c1')
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'ask.resolve',
+      requestId: 'web-22',
+      clientId: 'c1',
+      sessionId: 'center-abc',
+      answers: ['dist'],
+    })
+    expect((owner.sent.at(-1) as { error?: string }).error).toBe('E_CLIENT_OFFLINE')
+  })
+
+  it('registerClient 重连时保留上一轮的 voice 能力位（hello 占位快照不含它）', async () => {
+    const harness = await makeHub()
+    const withVoice: ClientStatus = { ...STATUS, voice: { stt: true, tts: false } }
+    harness.hub.registerClient({ clientId: 'c1', send: () => {}, close: () => {} }, withVoice)
+    harness.hub.handleClientMessage('c1', { type: 'status', status: withVoice })
+    expect(harness.hub.getStatus('c1')?.voice).toEqual({ stt: true, tts: false })
+
+    // 重连：hello 派生的占位快照（无 voice）不得把能力位抹掉
+    harness.hub.registerClient({ clientId: 'c1', send: () => {}, close: () => {} }, STATUS)
+    expect(harness.hub.getStatus('c1')?.voice).toEqual({ stt: true, tts: false })
+
+    // 真 status 到达后按新值刷新（用户重连前关掉了语音）
+    harness.hub.handleClientMessage('c1', {
+      type: 'status',
+      status: { ...STATUS, voice: { stt: false, tts: false } },
+    })
+    expect(harness.hub.getStatus('c1')?.voice).toEqual({ stt: false, tts: false })
+
+    // 从未上报过 voice 的客户端（旧版）重连后依旧没有该字段（不凭空造 true）
+    harness.hub.registerClient({ clientId: 'c2', send: () => {}, close: () => {} }, STATUS)
+    harness.hub.registerClient(
+      { clientId: 'c2', send: () => {}, close: () => {} },
+      { ...STATUS, mode: 'classroom' },
+    )
+    expect(harness.hub.getStatus('c2')?.voice).toBeUndefined()
+    expect(harness.hub.getStatus('c2')?.mode).toBe('classroom')
+  })
+})
+
 describe('Hub · 状态与文件通知', () => {
   it('clients 快照按角色过滤：user 只见自己的，admin 见全部；在线状态准确', async () => {
     const harness = await makeHub()

@@ -158,6 +158,12 @@ export interface CenterConnectorDeps {
    * 返回是否命中（false = 已超时 / 已被本地结算 / id 未知）；未注入时不拦截。
    */
   resolveConfirm?: (confirmId: string, approved: boolean) => boolean
+  /**
+   * 结算一张在途提问卡（`ask.resolve` 命令，docs/12 §5，v0.3.3）。
+   * 幂等由 `AskUserService.resolve` 保证：未知 / 已结算的 requestId 返回 false，
+   * 网页端据此提示「已失效」而不是当错误（本地卡与网页卡先到先得）。
+   */
+  resolveAsk?: (input: { requestId: string; answers: string[]; skipped?: boolean }) => boolean
   /** 连接事件回调：绑定时传入发往 Center 的发送函数，断开时传 undefined */
   bindSessionEmit?: (emit: ((message: unknown) => void) | undefined) => void
   onStatusChange?: (state: ConnectionState, lastError?: string) => void
@@ -182,9 +188,11 @@ export const SERVER_PING_TIMEOUT_MS = 45_000
 /** 看门狗检查间隔：只做一次减法，5s 一轮足够（判定精度 = 检查间隔） */
 const SERVER_PING_CHECK_INTERVAL_MS = 5_000
 /**
- * 确认请求补发队列上限（docs/12 §5 第 4 步，v0.2.3）：连接器离线期间的确认请求
+ * 离线上行队列上限（docs/12 §5 第 4 步，v0.2.3）：连接器离线期间的确认请求
  * FIFO 入队、重连后 flush；满 20 条丢最旧并写日志 —— 长时间离线的请求本来就
- * 会按本地 60s 超时拒绝，补发只是兜「短暂断连」。
+ * 会按本地超时结算（确认 60s 按拒绝、提问 180s 按未回答），补发只是兜「短暂断连」。
+ * v0.3.3 起提问请求与确认请求**共用同一条队列与同一个上限**（两者都是「等人接手」的
+ * 一次性卡片，合并计数才真正兜住内存与积压）。
  */
 export const CONFIRM_QUEUE_LIMIT = 20
 
@@ -204,8 +212,11 @@ export class CenterConnector {
   /** 上次成功连接使用的配置签名；变化时强制重连 */
   private signature = ''
   private disposed = false
-  /** 确认请求补发队列（docs/12 §5 第 4 步）：离线入队、open 后 flush，FIFO 上限见 CONFIRM_QUEUE_LIMIT */
-  private readonly confirmQueue: unknown[] = []
+  /**
+   * 离线上行队列（docs/12 §5 第 4 步）：确认请求与提问请求共用，离线入队、open 后 flush，
+   * FIFO 上限见 CONFIRM_QUEUE_LIMIT。`kind` 只用于诊断计数，不影响发送顺序。
+   */
+  private readonly outboundQueue: { kind: 'confirm' | 'ask'; message: unknown }[] = []
 
   constructor(deps: CenterConnectorDeps) {
     this.deps = deps
@@ -307,31 +318,50 @@ export class CenterConnector {
    * 新请求的倒计时更长，旧请求大概率已按本地超时结算（先到先得的另一侧）。
    */
   enqueueConfirm(message: unknown): void {
-    while (this.confirmQueue.length >= CONFIRM_QUEUE_LIMIT) {
-      const dropped = this.confirmQueue.shift()
-      this.logger.warn('确认请求补发队列已满，丢弃最旧一条', {
-        preview: JSON.stringify(dropped).slice(0, 120),
+    this.enqueueOutbound('confirm', message)
+  }
+
+  /**
+   * 提问请求入补发队列（v0.3.3，docs/12 §5）：与确认请求同一条队列、同一个上限。
+   * 短暂断连（换网 / 服务器 5s 封顶的重连窗口）里提出的问题仍能送达网页端。
+   */
+  enqueueAsk(message: unknown): void {
+    this.enqueueOutbound('ask', message)
+  }
+
+  private enqueueOutbound(kind: 'confirm' | 'ask', message: unknown): void {
+    while (this.outboundQueue.length >= CONFIRM_QUEUE_LIMIT) {
+      const dropped = this.outboundQueue.shift()
+      this.logger.warn('离线上行队列已满，丢弃最旧一条', {
+        kind: dropped?.kind,
+        preview: JSON.stringify(dropped?.message).slice(0, 120),
       })
     }
-    this.confirmQueue.push(message)
+    this.outboundQueue.push({ kind, message })
   }
 
-  /** 补发队列当前长度（诊断用） */
+  /** 补发队列里的确认请求条数（诊断用） */
   pendingConfirmCount(): number {
-    return this.confirmQueue.length
+    return this.outboundQueue.filter((item) => item.kind === 'confirm').length
   }
 
-  /** socket open 后调用：按 FIFO 补发离线期间积压的确认请求；发送失败保留余量待下次重连 */
+  /** 补发队列里的提问请求条数（诊断用） */
+  pendingAskCount(): number {
+    return this.outboundQueue.filter((item) => item.kind === 'ask').length
+  }
+
+  /** socket open 后调用：按 FIFO 补发离线期间积压的卡片请求；发送失败保留余量待下次重连 */
   private flushConfirmQueue(): void {
     const socket = this.socket
     if (socket === undefined) return
-    while (this.confirmQueue.length > 0) {
-      const message = this.confirmQueue[0]
+    while (this.outboundQueue.length > 0) {
+      const item = this.outboundQueue[0]
+      if (item === undefined) break
       try {
-        socket.send(JSON.stringify(message))
-        this.confirmQueue.shift()
+        socket.send(JSON.stringify(item.message))
+        this.outboundQueue.shift()
       } catch (error) {
-        this.logger.warn('补发确认请求失败，保留队列待下次 flush', { error: String(error) })
+        this.logger.warn('补发卡片请求失败，保留队列待下次 flush', { error: String(error) })
         return
       }
     }
@@ -797,6 +827,26 @@ export class CenterConnector {
         // 幂等性由 proactive.resolve 保证（未知 confirmId 返回 false，不抛）。
         const settled = this.deps.resolveConfirm?.(cmd.confirmId, cmd.approved) ?? false
         reply(true, { settled })
+        return
+      }
+      case 'ask.resolve': {
+        // 网页端对提问卡的作答（v0.3.3，docs/12 §5）：语义与 confirm.resolve 同款 ——
+        // `settled: false` = 本地已作答 / 已超时 / id 未知，网页端提示「已失效」即可；
+        // 先到先得由 AskUserService.resolve 的幂等保证（本地卡照常显示、先点的胜出）。
+        //
+        // 与 confirm.resolve 的唯一差别是这里的**闸门更严**：提问属 session 类别，
+        // 关闭 `allowRemoteSession` 后连卡片都不会推给网页（index.ts 的上行钩子同款判定），
+        // 因此作答也必须同闸门拒绝 —— 否则会出现「能答一张自己没有的卡」的错位。
+        if (!config.allowRemoteSession) {
+          reply(false, undefined, 'E_REMOTE_DISABLED')
+          return
+        }
+        const resolved = this.deps.resolveAsk?.({
+          requestId: cmd.requestId,
+          answers: cmd.answers,
+          ...(cmd.skipped === true ? { skipped: true } : {}),
+        })
+        reply(true, { settled: resolved ?? false })
         return
       }
       default:

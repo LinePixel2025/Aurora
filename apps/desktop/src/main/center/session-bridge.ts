@@ -7,7 +7,7 @@
  * 全部与本地发送一致，远程会话在主界面历史里也照常可见。
  */
 import { CENTER_SESSION_PREFIX, type AgentEvent, type ConfirmRequestPayload } from '@aurora/shared'
-import type { Logger, SensitiveToolRequest } from '@aurora/shared'
+import type { AskUserRequest, AskUserRequestPayload, Logger, SensitiveToolRequest } from '@aurora/shared'
 
 /** 内核 AgentHost 的最小依赖面（`DesktopAgentHost` 结构性满足） */
 export interface AgentLike {
@@ -117,6 +117,30 @@ export function toConfirmRequest(request: SensitiveToolRequest): {
       toolName: request.toolName,
       input: request.input,
       createdAt: new Date().toISOString(),
+      expiresAt: request.expiresAt,
+    },
+  }
+}
+
+/**
+ * 向用户提问的请求 → `ask.request` 上行消息（docs/12 §5 的纯映射，导出供单测）。
+ *
+ * 形状**逐字段照搬** `AskUserRequest`（协议的 `AskUserRequestPayload` 就是它的别名）
+ * ——不做转换，也就不会出现「网页端按 ISO 字符串解析而这里其实给了毫秒数」这类错配。
+ */
+export function toAskRequest(request: AskUserRequest): {
+  type: 'ask.request'
+  request: AskUserRequestPayload
+} {
+  return {
+    type: 'ask.request',
+    request: {
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      question: request.question,
+      ...(request.header === undefined ? {} : { header: request.header }),
+      ...(request.options === undefined ? {} : { options: request.options }),
+      multiSelect: request.multiSelect,
       expiresAt: request.expiresAt,
     },
   }

@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto'
 import {
   CENTER_REMOTE_CONFIG_PREFIXES,
   CENTER_SESSION_PREFIX,
+  type AskUserRequestPayload,
   type CenterClientMessage,
   type CenterCommand,
   type CenterServerMessage,
@@ -95,6 +96,17 @@ export class Hub {
   private readonly sessionOwners = new Map<string, { userId: string; clientId: string }>()
   /** clientId → 最近一次状态快照（网页端展示开关 / 模式） */
   private readonly statusByClient = new Map<string, ClientStatus>()
+  /**
+   * requestId → 未过期的提问（`ask.request` 登记，v0.3.3 docs/12 §5）。
+   *
+   * 只存内存、不持久化（与「服务器不缓存会话内容」同口径，这里缓存的是一条尚未结算的
+   * 待答问题）；`ask.resolve` 或过期后被清除。网页端新连上时回放，否则刷新一次页签就
+   * 再也答不上（提问窗口 180s，比确认卡的 60s 长得多）。
+   */
+  private readonly pendingAsks = new Map<
+    string,
+    { clientId: string; sessionId: string; request: AskUserRequestPayload }
+  >()
 
   constructor(private readonly deps: HubDeps) {}
 
@@ -102,7 +114,17 @@ export class Hub {
 
   registerClient(conn: ClientConn, status: ClientStatus): void {
     this.clientConns.set(conn.clientId, conn)
-    this.statusByClient.set(conn.clientId, status)
+    // hello 派生的占位快照不含 `voice`（只带 capabilities，见 server.ts 的 helloToStatus），
+    // 而无条件覆盖会把上一轮带 voice 的完整快照换成「没有语音」——恰好此刻新连上的网页
+    // 页签就会读到一个没有麦克风 / 朗读按钮的界面。新连接的第一条真 `status` 毫秒级到达即
+    // 刷新，这里只需保住旧值。首次连接（或服务器重启后）没有旧值，行为不变。
+    const previous = this.statusByClient.get(conn.clientId)
+    this.statusByClient.set(
+      conn.clientId,
+      previous?.voice === undefined || status.voice !== undefined
+        ? status
+        : { ...status, voice: previous.voice },
+    )
     conn.send({
       type: 'welcome',
       serverVersion: this.deps.serverVersion(),
@@ -134,6 +156,7 @@ export class Hub {
     this.webConns.set(conn.id, conn)
     conn.send({ type: 'clients', clients: this.buildClientInfos(conn.user) })
     this.sendStatusTo(conn)
+    this.sendPendingAsksTo(conn)
   }
 
   removeWeb(connId: string): void {
@@ -204,6 +227,18 @@ export class Hub {
           requestId: message.requestId,
           confirmId: message.confirmId,
           approved: message.approved,
+        })
+        break
+      case 'ask.resolve':
+        // 提问卡作答（v0.3.3）：先把它从待答表里摘掉（同一 requestId 的第二条页签再作答时
+        // 客户端会因已结算回 `settled: false`），再走与 confirm.resolve 同一条转发管道。
+        this.pendingAsks.delete(message.requestId)
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'ask.resolve',
+          requestId: message.requestId,
+          sessionId: message.sessionId,
+          answers: message.answers,
+          ...(message.skipped === true ? { skipped: true } : {}),
         })
         break
       // ── 远程会话管理（docs/12 §6.3）：授权与回执同其他命令 ──
@@ -510,6 +545,29 @@ export class Hub {
         }
         break
       }
+      case 'ask.request': {
+        // 提问卡转发（v0.3.3）：路由与形状守卫都与 confirm.request 同款（属主 + 全部管理员；
+        // 缺 request 的畸形帧直接丢弃，不抛 TypeError 逃出监听器）。多一步登记 `pendingAsks`：
+        // 网页刷新后还能看到未过期的提问（见 sendPendingAsksTo）。
+        if (!isRecord(message.request)) return
+        const record = this.deps.clients.get(clientId)
+        if (record === undefined) return
+        const request = message.request as unknown as AskUserRequestPayload
+        if (this.isExpired(request.expiresAt)) return
+        // sessionId 取请求体里的（客户端消息本身不带它——request 就是 `AskUserRequest` 原文）
+        const sessionId = typeof request.sessionId === 'string' ? request.sessionId : ''
+        this.pendingAsks.set(request.requestId, { clientId, sessionId, request })
+        for (const web of this.webConns.values()) {
+          if (web.user.role !== 'admin' && web.user.id !== record.ownerUserId) continue
+          web.send({
+            type: 'ask.request',
+            clientId,
+            sessionId,
+            request,
+          })
+        }
+        break
+      }
       case 'status': {
         this.statusByClient.set(clientId, message.status)
         for (const web of this.webConns.values()) {
@@ -587,6 +645,32 @@ export class Hub {
       if (web.user.role !== 'admin' && record?.ownerUserId !== web.user.id) continue
       web.send({ type: 'client.status', clientId, status })
     }
+  }
+
+  /**
+   * 回放未过期的提问给刚连上的网页（v0.3.3，docs/12 §5）：路由规则与实时转发一致
+   * （属主 + 全部管理员）。顺手清掉过期项——过期项没有任何收方，留着只会让 Map 长草。
+   */
+  private sendPendingAsksTo(web: WebConn): void {
+    for (const [requestId, entry] of [...this.pendingAsks]) {
+      if (this.isExpired(entry.request.expiresAt)) {
+        this.pendingAsks.delete(requestId)
+        continue
+      }
+      const record = this.deps.clients.get(entry.clientId)
+      if (web.user.role !== 'admin' && record?.ownerUserId !== web.user.id) continue
+      web.send({
+        type: 'ask.request',
+        clientId: entry.clientId,
+        sessionId: entry.sessionId,
+        request: entry.request,
+      })
+    }
+  }
+
+  /** `expiresAt` 是毫秒时间戳（`AskUserRequestPayload` 的形状）；非数字按已过期处理 */
+  private isExpired(expiresAt: unknown): boolean {
+    return typeof expiresAt !== 'number' || !Number.isFinite(expiresAt) || expiresAt <= Date.now()
   }
 
   /** 客户端断开时丢弃其属主会话的记账（防 Map 无限增长；网页端刷新列表后自然收尾） */

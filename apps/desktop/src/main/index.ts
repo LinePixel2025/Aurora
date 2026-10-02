@@ -98,7 +98,7 @@ import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { ProactiveScheduler } from './proactive.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
 import { HotkeyManager } from './hotkey.js'
-import { SessionBridge, toConfirmRequest } from './center/session-bridge.js'
+import { SessionBridge, toAskRequest, toConfirmRequest } from './center/session-bridge.js'
 import { CenterConnector } from './center/connector.js'
 import { DeviceLoginController, type DeviceLoginOutcome } from './center/device-login.js'
 import { requestClientLogin } from './center/client-login.js'
@@ -1333,6 +1333,9 @@ async function bootstrap(): Promise<void> {
     version: app.getVersion(),
     platform: process.platform,
     hostname: () => osHostname(),
+    // 网页端对提问卡的作答（docs/12 §5，v0.3.3）走 AskUserService.resolve 结算；
+    // 未知 / 已结算 requestId 幂等返回 false（本地卡与网页卡先到先得，settled=false 也算 ok）。
+    resolveAsk: (input) => askUserService?.resolve(input) ?? false,
     applyRemotePatch: async (patch) => {
       const rehearsal = structuredClone(settings!.get())
       if (!applyWhitelistedPaths(rehearsal, patch)) return '配置结构无法应用该补丁'
@@ -1521,6 +1524,26 @@ async function bootstrap(): Promise<void> {
     } catch (error) {
       logger?.warn('向 Center 发送确认请求失败', { error: String(error) })
       centerConnector?.enqueueConfirm(toConfirmRequest(request))
+    }
+  })
+
+  // 提问卡双通道（docs/12 §5，v0.3.3）：`center-` 会话里 `ask_user` 提问时，本地卡片之外
+  // 同时经同一连接器推给 Center 网页端（路由给会话属主 + 管理员）。与确认卡的区别是**闸门
+  // 更严**：`center.allowRemoteSession` 关闭时整条通道静默（不下行、也拒绝网页作答，见
+  // connector 的 ask.resolve 分支）—— 本地卡照常显示，用户在本机答即可。
+  askUserService?.onRequest((request) => {
+    if (!request.sessionId.startsWith(CENTER_SESSION_PREFIX)) return
+    if (!settings!.get().center.allowRemoteSession) return
+    const emit = centerConfirmEmit
+    if (emit === undefined) {
+      centerConnector?.enqueueAsk(toAskRequest(request))
+      return
+    }
+    try {
+      emit(toAskRequest(request))
+    } catch (error) {
+      logger?.warn('向 Center 发送提问请求失败', { error: String(error) })
+      centerConnector?.enqueueAsk(toAskRequest(request))
     }
   })
 

@@ -349,6 +349,9 @@ describe('Aurora Center · 客户端上线', () => {
               tools: { enabled: true, files: true, search: true, open: true, terminal: true },
             },
             center: { allowRemoteSession: true, allowRemoteConfig: true, allowFileTransfer: true },
+            // 语音能力位：它是**唯一只存在于 status 消息**的字段（hello 占位快照不含），
+            // 因此这条竞态用例顺带钉住「hello 占位不得抹掉 voice」（docs/12 §6.1）
+            voice: { stt: true, tts: false },
           },
         }),
       )
@@ -364,10 +367,106 @@ describe('Aurora Center · 客户端上线', () => {
     const status = await waitForWeb(
       (m) => m['type'] === 'client.status' && m['clientId'] === 'client-race',
     )
-    const agent = (status['status'] as { agent: { tools: { files: boolean } } }).agent
-    expect(agent.tools.files).toBe(true)
+    const snapshot = status['status'] as {
+      agent: { tools: { files: boolean } }
+      voice?: { stt: boolean; tts: boolean }
+    }
+    expect(snapshot.agent.tools.files).toBe(true)
+    expect(snapshot.voice).toEqual({ stt: true, tts: false })
     ws.close()
     web.close()
+  }, 20_000)
+
+  it('提问卡端到端：ask.request 上行 → 网页作答 → 客户端收到 ask.resolve → 回执转回（v0.3.3）', async () => {
+    const paired = await clientLogin({
+      username: USER.username,
+      password: USER.password,
+      clientId: 'client-ask',
+    })
+    const askToken = paired.data['token'] as string
+    const ws = await connectClient(askToken, {
+      clientId: 'client-ask',
+      name: '提问机',
+      version: '0.1.6',
+      platform: 'win32',
+      mode: 'work',
+      capabilities: { session: true, remoteConfig: true, fileTransfer: true },
+    })
+    const waitForClient = collector(ws)
+    try {
+      const web = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${userToken}`)
+      const waitForWeb = collector(web)
+      await new Promise<void>((resolveOpen, reject) => {
+        web.once('open', () => resolveOpen())
+        web.once('error', reject)
+      })
+      try {
+        // 客户端提问 → 属主（alice）的网页端收到 ask.request
+        ws.send(
+          JSON.stringify({
+            type: 'ask.request',
+            request: {
+              requestId: 'ask-e2e-1',
+              sessionId: 'center-ask',
+              question: '发布到哪个通道？',
+              header: '发布范围',
+              options: [{ label: 'stable' }, { label: 'beta' }],
+              multiSelect: false,
+              expiresAt: Date.now() + 180_000,
+            },
+          }),
+        )
+        const ask = await waitForWeb((m) => m['type'] === 'ask.request')
+        expect(ask['clientId']).toBe('client-ask')
+        expect(ask['sessionId']).toBe('center-ask')
+        const request = ask['request'] as { requestId: string; question: string; multiSelect: boolean }
+        expect(request.requestId).toBe('ask-e2e-1')
+        expect(request.question).toBe('发布到哪个通道？')
+        expect(request.multiSelect).toBe(false)
+
+        // 网页作答 → 客户端收到 ask.resolve 命令（requestId 就是提问卡 id）
+        web.send(
+          JSON.stringify({
+            type: 'ask.resolve',
+            requestId: 'ask-e2e-1',
+            clientId: 'client-ask',
+            sessionId: 'center-ask',
+            answers: ['stable'],
+          }),
+        )
+        const command = await waitForClient((m) => m['type'] === 'cmd')
+        const inner = command['cmd'] as { kind: string; requestId: string; answers: string[] }
+        expect(inner.kind).toBe('ask.resolve')
+        expect(inner.requestId).toBe('ask-e2e-1')
+        expect(inner.answers).toEqual(['stable'])
+
+        // 客户端回执（{ settled }）→ 网页端按同一 id 收到
+        ws.send(
+          JSON.stringify({ type: 'result', requestId: 'ask-e2e-1', ok: true, data: { settled: true } }),
+        )
+        const result = await waitForWeb(
+          (m) => m['type'] === 'result' && m['requestId'] === 'ask-e2e-1',
+        )
+        expect(result['ok']).toBe(true)
+        expect(result['data']).toEqual({ settled: true })
+
+        // 已作答 → 服务器不再回放（刷新页签也看不到这张卡）
+        const refreshed = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${userToken}`)
+        const waitForRefreshed = collector(refreshed)
+        await new Promise<void>((resolveOpen, reject) => {
+          refreshed.once('open', () => resolveOpen())
+          refreshed.once('error', reject)
+        })
+        await expect(
+          waitForRefreshed((m) => m['type'] === 'ask.request', 800),
+        ).rejects.toThrow('等待消息超时')
+        refreshed.close()
+      } finally {
+        web.close()
+      }
+    } finally {
+      ws.close()
+    }
   }, 20_000)
 
   it('非法配对令牌的 hello 被拒绝（连接关闭）', async () => {

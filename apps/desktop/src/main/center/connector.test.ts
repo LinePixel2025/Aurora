@@ -486,6 +486,125 @@ describe('CenterConnector · confirm.resolve（docs/12 §5.1）', () => {
   })
 })
 
+describe('CenterConnector · ask.resolve（docs/12 §5，v0.3.3）', () => {
+  function openSocket(harness: Harness): FakeSocket {
+    harness.connector.start()
+    vi.advanceTimersByTime(1)
+    const socket = harness.lastSocket()
+    socket.emit('open')
+    return socket
+  }
+
+  it('网页端作答命中在途提问：调 resolveAsk（requestId 即提问卡 id）并回 settled=true', async () => {
+    const harness = makeConnector()
+    const resolved: Array<{ requestId: string; answers: string[]; skipped?: boolean }> = []
+    harness.deps.resolveAsk = (input) => {
+      resolved.push(input)
+      return true
+    }
+    const socket = openSocket(harness)
+    socket.emit(
+      'message',
+      JSON.stringify({
+        type: 'cmd',
+        cmd: {
+          kind: 'ask.resolve',
+          requestId: 'ask-7',
+          sessionId: 'center-a',
+          answers: ['stable'],
+        },
+      }),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(resolved).toEqual([{ requestId: 'ask-7', answers: ['stable'] }])
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      requestId: 'ask-7',
+      ok: true,
+      data: { settled: true },
+    })
+  })
+
+  it('跳过：skipped=true 原样透传，空 answers 交服务端按跳过结算', async () => {
+    const harness = makeConnector()
+    const resolved: Array<{ requestId: string; answers: string[]; skipped?: boolean }> = []
+    harness.deps.resolveAsk = (input) => {
+      resolved.push(input)
+      return true
+    }
+    const socket = openSocket(harness)
+    socket.emit(
+      'message',
+      JSON.stringify({
+        type: 'cmd',
+        cmd: {
+          kind: 'ask.resolve',
+          requestId: 'ask-8',
+          sessionId: 'center-a',
+          answers: [],
+          skipped: true,
+        },
+      }),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(resolved).toEqual([{ requestId: 'ask-8', answers: [], skipped: true }])
+    expect(socket.lastMessage()).toMatchObject({ ok: true, data: { settled: true } })
+  })
+
+  it('未命中 / 未注入：仍回 ok，settled=false（本地卡已作答或已超时，网页端提示「已失效」）', async () => {
+    const harness = makeConnector()
+    harness.deps.resolveAsk = () => false
+    const socket = openSocket(harness)
+    socket.emit(
+      'message',
+      JSON.stringify({
+        type: 'cmd',
+        cmd: { kind: 'ask.resolve', requestId: 'ask-9', sessionId: 'center-a', answers: ['x'] },
+      }),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(socket.lastMessage()).toMatchObject({ ok: true, data: { settled: false } })
+
+    const bare = makeConnector()
+    const socket2 = openSocket(bare)
+    socket2.emit(
+      'message',
+      JSON.stringify({
+        type: 'cmd',
+        cmd: { kind: 'ask.resolve', requestId: 'ask-10', sessionId: 'center-a', answers: ['x'] },
+      }),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(socket2.lastMessage()).toMatchObject({ ok: true, data: { settled: false } })
+  })
+
+  it('allowRemoteSession 关闭：拒绝作答且不结算（闸门比 confirm.resolve 更严）', async () => {
+    const harness = makeConnector({ allowRemoteSession: false })
+    const resolveAsk = vi.fn(() => true)
+    harness.deps.resolveAsk = resolveAsk
+    const socket = openSocket(harness)
+    socket.emit(
+      'message',
+      JSON.stringify({
+        type: 'cmd',
+        cmd: { kind: 'ask.resolve', requestId: 'ask-11', sessionId: 'center-a', answers: ['x'] },
+      }),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(resolveAsk).not.toHaveBeenCalled()
+    expect(socket.lastMessage()).toMatchObject({
+      type: 'result',
+      ok: false,
+      error: 'E_REMOTE_DISABLED',
+    })
+  })
+})
+
 describe('CenterConnector · 远程会话管理命令（docs/12 §6.3）', () => {
   interface ManagerSpies {
     listSessions: ReturnType<typeof vi.fn>
@@ -938,6 +1057,32 @@ describe('CenterConnector · 确认请求补发队列（docs/12 §5 第 4 步）
       n: 1,
     })
     expect(harness.connector.pendingConfirmCount()).toBe(0)
+  })
+
+  it('提问请求共用同一条队列：与确认请求按入队顺序 flush，计数各记各的', () => {
+    const harness = makeConnector()
+    harness.connector.enqueueConfirm({ type: 'confirm.request', n: 1 })
+    harness.connector.enqueueAsk({ type: 'ask.request', n: 2 })
+    harness.connector.enqueueAsk({ type: 'ask.request', n: 3 })
+    expect(harness.connector.pendingConfirmCount()).toBe(1)
+    expect(harness.connector.pendingAskCount()).toBe(2)
+
+    const socket = openSocket(harness)
+    expect(JSON.parse(socket.sent[2] as string)).toMatchObject({ type: 'confirm.request', n: 1 })
+    expect(JSON.parse(socket.sent[3] as string)).toMatchObject({ type: 'ask.request', n: 2 })
+    expect(JSON.parse(socket.sent[4] as string)).toMatchObject({ type: 'ask.request', n: 3 })
+    expect(harness.connector.pendingConfirmCount()).toBe(0)
+    expect(harness.connector.pendingAskCount()).toBe(0)
+  })
+
+  it('上限对两种请求合并计数：满 20 条丢最旧（不按 kind 各留 20）', () => {
+    const harness = makeConnector()
+    for (let i = 0; i < 12; i += 1) harness.connector.enqueueConfirm({ type: 'confirm.request', n: i })
+    for (let i = 0; i < 12; i += 1) harness.connector.enqueueAsk({ type: 'ask.request', n: i })
+    expect(harness.connector.pendingConfirmCount() + harness.connector.pendingAskCount()).toBe(20)
+    // 最旧的 4 条确认被丢，剩余 8 确认 + 12 提问
+    expect(harness.connector.pendingConfirmCount()).toBe(8)
+    expect(harness.connector.pendingAskCount()).toBe(12)
   })
 })
 
