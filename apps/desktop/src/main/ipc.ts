@@ -43,6 +43,7 @@ import {
   type ChatAttachmentPreviewRequest,
   type ChatHistoryRequest,
   type ChatMessageDto,
+  type ChatSessionModelRequest,
   type ChatSessionProjectRequest,
   type ChatSessionSummary,
   type CenterConnectionStatus,
@@ -672,6 +673,38 @@ export function registerIpc(deps: DesktopDeps): () => void {
       }
       return deps.sessions.setProject(sessionId, projectId).then(
         () => ok({ projectId }),
+        (error: unknown) =>
+          err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      )
+    },
+  )
+  /**
+   * 覆盖 / 清除会话级模型（docs/06 §3，本轮）。
+   *
+   * 与 `chat:setSessionProject` 同一条惯例：状态写在会话文件自身的 `meta.llm` 里
+   * （**不是配置项**，与 settings 无关），`setModelOverride` 幂等且 await 落盘完成，
+   * 渲染层拿到 ok 后立刻拉 `chat:sessions` 就能读到新覆盖。
+   * `model` / `providerId` 空串 = **清除覆盖**（回落全局 `llm.active`）；
+   * providerId 不在 `llm.providers` 里**报错而不静默** —— 静默成功后请求仍走全局档，
+   * 用户却以为会话绑上了模型，最难排查。
+   */
+  handle<{ providerId: string; model: string }>(
+    IPC.chat.setSessionModel,
+    (request: ChatSessionModelRequest) => {
+      const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+      const providerId = typeof request?.providerId === 'string' ? request.providerId.trim() : ''
+      const model = typeof request?.model === 'string' ? request.model.trim() : ''
+      if (sessionId === '') {
+        return Promise.resolve(err('E_INVALID_ARGUMENT', 'sessionId 不能为空'))
+      }
+      // 清除路径：model 或 providerId 为空都按「清除覆盖」处理（不校验 provider 存在性）
+      const clearing = providerId === '' || model === ''
+      if (!clearing && deps.settings.get().llm.providers[providerId] === undefined) {
+        return Promise.resolve(err('E_INVALID_ARGUMENT', '模型配置不存在（可能已被删除）'))
+      }
+      const value = clearing ? null : { providerId, model }
+      return deps.sessions.setModelOverride(sessionId, value).then(
+        () => ok(clearing ? { providerId: '', model: '' } : { providerId, model }),
         (error: unknown) =>
           err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
       )

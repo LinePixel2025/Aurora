@@ -228,7 +228,9 @@ async function runSubagent(
   options: TaskToolOptions,
   request: SubagentRequest,
 ): Promise<ToolResult> {
-  const config = options.provider.create()
+  // 会话级模型（docs/06 §3）：传**父会话** id（本文件填的就是父会话，见 SubagentRequest 注释），
+  // 子代理因此继承父会话的模型覆盖；未覆盖时装配层回落全局档。
+  const config = options.provider.create({ sessionId: request.sessionId })
   if (config === undefined) {
     return {
       content: '还没有可用的 AI 模型配置，无法派生子代理。',

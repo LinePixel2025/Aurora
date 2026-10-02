@@ -12,12 +12,18 @@ import {
   type AgentProviderFactory,
   type ConfirmDecision,
   type ProviderConfig,
+  type SessionModelOverride,
 } from '@aurora/agent-core'
 import { createLlmProvider } from './llm-provider.js'
 import type { AgentEvent, AgentHost, LlmSettings, LlmProviderConfig } from '@aurora/shared'
 import type { Logger, PermissionMode } from '@aurora/shared'
 // 三档权限的判定是纯函数、主进程与渲染层共用同一份（docs/06 §11.2）
-import { isWithinRoot, permissionTargetOf, resolveModelParams } from '@aurora/shared'
+import {
+  isWithinRoot,
+  permissionTargetOf,
+  resolveModelParams,
+  resolveSessionModel,
+} from '@aurora/shared'
 import type {
   ModeManagerLike,
   PerceptionLike,
@@ -138,6 +144,18 @@ export class DesktopAgentHost implements AgentHost {
 }
 
 /**
+ * provider 工厂的可选依赖（v-next 会话级模型，docs/06 §3）。
+ */
+export interface ProviderFactoryOptions {
+  /**
+   * 会话级模型覆盖：同步读会话 meta（`SessionStore.modelOverrideOf`），
+   * 未覆盖 / 缓存未装载返回 `undefined`。缺省 = 无会话级能力（行为与从前逐字一致，
+   * 老装配器与单测不受影响）。
+   */
+  sessionModelOf?: (sessionId: string) => SessionModelOverride | undefined
+}
+
+/**
  * 用当前设置即时构造 provider（每次请求都重新读取 + 解密）。
  * 这样在设置页改完 API Key / 模型后**无需重启**即可生效。
  *
@@ -146,11 +164,17 @@ export class DesktopAgentHost implements AgentHost {
  *
  * `create({ allowFallback: true })` 额外提供**启动自愈**：默认条目不可用时临时回退到
  * 另一个可用条目（只影响本次请求构造，不写配置）。见下方 `fallback`。
+ *
+ * `create({ sessionId })`（v-next，docs/06 §3）叠加**会话级模型覆盖**：
+ * 该会话在 `meta.llm` 里写了 `(providerId, model)` 且它仍然可用时，用这一对构造；
+ * 覆盖指向的 provider 已被删除 / model 为空 / Key 取不到 → **静默回落全局档**
+ * （只记 `debug`：会话级绑定是可选的，逐次执行刷 warn 只会淹掉真问题）。
  */
 export function createProviderFactory(
   settings: SettingsStoreLike,
   logger: Logger,
   resolveFetch?: () => typeof fetch | undefined,
+  options?: ProviderFactoryOptions,
 ): AgentProviderFactory {
   /**
    * 用某个已配置条目构造 provider。
@@ -230,20 +254,47 @@ export function createProviderFactory(
   }
 
   return {
-    create(options?: { allowFallback?: boolean }): ProviderConfig | undefined {
+    create(createOptions?: {
+      allowFallback?: boolean
+      sessionId?: string
+    }): ProviderConfig | undefined {
       const llm: LlmSettings = settings.get().llm
+      // 会话级覆盖（docs/06 §3）：判据收在 shared 的 `resolveSessionModel`（唯一口径，
+      // 渲染层与 Center 网页端同用一份）—— 这里只负责「拿它算出来的 (pid, model) 去构造」，
+      // 构造不出来（Key 没配 / baseUrl 空）再回落全局档，绝不把会话拖成 E_NO_MODEL。
+      const override =
+        createOptions?.sessionId === undefined
+          ? undefined
+          : options?.sessionModelOf?.(createOptions.sessionId)
+      const effective = resolveSessionModel(llm, override)
+      if (effective.overridden) {
+        const overrideConfig: LlmProviderConfig | undefined = llm.providers[effective.providerId]
+        if (overrideConfig !== undefined) {
+          const builtOverride = build(effective.providerId, {
+            ...overrideConfig,
+            model: effective.model,
+          })
+          if (builtOverride !== undefined) return builtOverride
+          logger.debug('会话级模型覆盖不可用，已回落全局档', {
+            sessionId: createOptions?.sessionId,
+            providerId: effective.providerId,
+            model: effective.model,
+          })
+        }
+      }
+
       const providerId = llm.active
       if (providerId === '') {
         logger.debug('尚未选择默认模型配置')
-        return allowFallbackOf(options) ? fallback(llm) : undefined
+        return allowFallbackOf(createOptions) ? fallback(llm) : undefined
       }
       const config: LlmProviderConfig | undefined = llm.providers[providerId]
       if (config === undefined) {
         logger.warn('默认模型配置不存在', { providerId })
-        return allowFallbackOf(options) ? fallback(llm) : undefined
+        return allowFallbackOf(createOptions) ? fallback(llm) : undefined
       }
       const built = build(providerId, config)
-      if (built === undefined && allowFallbackOf(options)) return fallback(llm)
+      if (built === undefined && allowFallbackOf(createOptions)) return fallback(llm)
       return built
     },
   }

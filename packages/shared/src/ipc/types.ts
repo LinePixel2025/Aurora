@@ -578,6 +578,13 @@ export interface ChatSessionSummary {
    * **缺省（不含这个键）= 可见**；false = Center 已把该会话从左栏隐藏（仍可远程输入）。
    */
   centerVisible?: boolean
+  /**
+   * 会话级模型覆盖（docs/06 §3，本轮，`meta.llm`）。
+   * **缺省（不含这个键）= 跟随全局** `llm.active` 的 provider 与其 `model`；
+   * 含这个键 = 该会话用这一对 `(providerId, model)`。渲染层据此在下拉里显示本会话的模型、
+   * 会话行显示覆盖徽标（见 docs/07 §2.3）。
+   */
+  llm?: { providerId: string; model: string }
 }
 
 /** 远程会话激活推送（docs/12 §6.3，v0.2.3）：主进程驱动主界面切到指定会话 */
@@ -620,6 +627,22 @@ export interface ChatSessionProjectRequest {
   sessionId: string
   /** 目标项目 id；空串 = 清除绑定 */
   projectId: string
+}
+
+/**
+ * 会话级模型覆盖（`chat:setSessionModel`，docs/06 §3，本轮）。
+ *
+ * 写的是会话文件自身的 `meta.llm = { providerId, model }`（与 `setSessionProject` 同一条路），
+ * **不是配置项**、不进 `CONFIG_VERSION` 迁移链。`model` 空串（或 providerId 空串）= **清除覆盖**，
+ * 回落全局 `llm.active` 的 provider 与其 `model`。
+ * 思考等级不在这里 —— 它是模型级参数（`modelParams[<model>]`），随所选模型取。
+ */
+export interface ChatSessionModelRequest {
+  sessionId: string
+  /** 目标 provider id；空串与 `model` 空串同为「清除覆盖」 */
+  providerId: string
+  /** 目标模型 id；空串 = 清除覆盖 */
+  model: string
 }
 
 // ───────────────────────── 感知（P5 补全） ─────────────────────────
@@ -1509,6 +1532,17 @@ export interface AuroraApi {
      * 绑定到不存在的项目返回 `{ ok: false }`（静默成功会让用户以为绑定生效了）。
      */
     setSessionProject(request: ChatSessionProjectRequest): Promise<Result<{ projectId: string }>>
+    /**
+     * 覆盖 / 清除一个会话的模型（docs/06 §3，本轮）。
+     *
+     * 状态写在会话文件自身的 `meta.llm` 里；**幂等**，且主进程会等到落盘完成才返回，
+     * 因此调用后紧跟一次 `sessions()` 一定能读到新覆盖。`model`（或 `providerId`）空串 =
+     * 清除覆盖、回落全局档；providerId 不在 `llm.providers` 里返回 `{ ok: false }`
+     * （静默成功会让用户以为绑定生效了，实际请求仍走全局档）。
+     */
+    setSessionModel(
+      request: ChatSessionModelRequest,
+    ): Promise<Result<{ providerId: string; model: string }>>
     /**
      * Job（任务）列表（v15，docs/06 §4.1）。
      *

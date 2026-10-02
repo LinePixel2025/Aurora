@@ -56,8 +56,13 @@ export interface AgentProviderFactory {
    * `allowFallback` 只由**装配层的自愈路径**使用（step-02 §6）：配置被写坏、导致
    * `llm.active` 指向不存在的 provider 时，回退到「有 baseUrl + model + 可用 Key」的
    * 最近可用条目，避免 AI 彻底失能。缺省 `false`——正常路径行为与从前完全一致。
+   *
+   * `sessionId`（docs/06 §3 会话级模型）：给了它就按该会话的覆盖 `(providerId, model)`
+   * 构造；未覆盖 / 覆盖失效（provider 已删）时回落全局档 —— 回落由装配层的实现负责，
+   * 内核只传 id。**刻意是同步的**：调用点在 `send()` 的 `E_BUSY` 检查与 `active.set` 之间，
+   * 那里不能出现 await（否则防双跑守卫失效）。缺省不传 = 全局档，与从前逐字一致。
    */
-  create(options?: { allowFallback?: boolean }): ProviderConfig | undefined
+  create(options?: { allowFallback?: boolean; sessionId?: string }): ProviderConfig | undefined
 }
 
 /**
@@ -326,7 +331,7 @@ export class KernelAgentHost implements AgentHostContract {
       return { requestId }
     }
 
-    const config = this.deps.provider.create()
+    const config = this.deps.provider.create({ sessionId })
     if (config === undefined) {
       this.emit({
         type: 'error',

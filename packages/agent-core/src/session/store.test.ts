@@ -1094,3 +1094,118 @@ describe('SessionStore · 远程会话管理（centerVisible / permissionMode，
     expect(metaOf(fs, 'center-abc')['permissionMode']).toBe('confirm')
   })
 })
+
+describe('SessionStore · 会话级模型覆盖（chat:setSessionModel，docs/06 §3）', () => {
+  it('setModelOverride 写盘可往返：重启后 modelOverrideOf / summaries 仍带 llm', async () => {
+    const { store, fs } = setup({
+      [`${SESSION_DIR}\\s1.json`]: JSON.stringify({
+        version: 3,
+        sessionId: 's1',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '你好')],
+      }),
+    })
+    await store.setModelOverride('s1', { providerId: 'p1', model: 'm-a' })
+    expect(metaOf(fs, 's1')['llm']).toEqual({ providerId: 'p1', model: 'm-a' })
+
+    // 重新构造 store（模拟重启）：从磁盘装载后仍读得到覆盖
+    const fs2 = new TestFileSystem({ ...Object.fromEntries(fs.files) })
+    const store2 = new SessionStore({ dir: SESSION_DIR, fs: fs2, writeDebounceMs: 0 })
+    // 同步读依赖「会话已装载」这条装配不变量（内核 send 前的会话列表拉取），先 get 装载
+    await store2.get('s1')
+    expect(store2.modelOverrideOf('s1')).toEqual({ providerId: 'p1', model: 'm-a' })
+    const summaries = await store2.summaries()
+    expect(summaries.find((item) => item.id === 's1')?.llm).toEqual({
+      providerId: 'p1',
+      model: 'm-a',
+    })
+  })
+
+  it('null / 空串清除覆盖且不留空键；同值幂等不写盘', async () => {
+    const { store, fs } = setup()
+    await store.setModelOverride('s2', { providerId: 'p1', model: 'm-a' })
+    const writes = fs.writeLog.length
+
+    // 同值幂等：不写盘
+    await store.setModelOverride('s2', { providerId: 'p1', model: 'm-a' })
+    expect(fs.writeLog.length).toBe(writes)
+
+    // 空串 / null 都按清除处理（删键，不留 `"llm": {...空}`）
+    await store.setModelOverride('s2', null)
+    expect('llm' in metaOf(fs, 's2')).toBe(false)
+    expect(store.modelOverrideOf('s2')).toBeUndefined()
+
+    // 双重清除幂等
+    const afterClear = fs.writeLog.length
+    await store.setModelOverride('s2', null)
+    expect(fs.writeLog.length).toBe(afterClear)
+
+    // providerId / model 任一为空 = 清除（不落半截条目）
+    await store.setModelOverride('s2', { providerId: '', model: 'm-a' })
+    expect('llm' in metaOf(fs, 's2')).toBe(false)
+    await store.setModelOverride('s2', { providerId: 'p1', model: '  ' })
+    expect('llm' in metaOf(fs, 's2')).toBe(false)
+  })
+
+  it('未覆盖会话 modelOverrideOf 返回 undefined，summaries 不含 llm 键（也不多写空 meta）', async () => {
+    const { store, fs } = setup({
+      [`${SESSION_DIR}\\s3.json`]: JSON.stringify({
+        version: 3,
+        sessionId: 's3',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '你好')],
+      }),
+    })
+    expect(store.modelOverrideOf('s3')).toBeUndefined()
+    const summaries = await store.summaries()
+    expect(summaries.find((item) => item.id === 's3')).not.toHaveProperty('llm')
+    // 只读不重写：磁盘上仍没有 meta 键
+    expect(readFile(fs, 's3')['meta']).toBeUndefined()
+  })
+
+  it('老文件 / 畸形 llm 宽容读出：半截条目（缺 providerId / 非字符串）按未覆盖处理', async () => {
+    const { store } = setup({
+      [`${SESSION_DIR}\\s4.json`]: JSON.stringify({
+        version: 3,
+        sessionId: 's4',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '你好')],
+        meta: { llm: { providerId: 'p1' } },
+      }),
+      [`${SESSION_DIR}\\s5.json`]: JSON.stringify({
+        version: 3,
+        sessionId: 's5',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '你好')],
+        meta: { llm: 'not-an-object' },
+      }),
+      [`${SESSION_DIR}\\s6.json`]: JSON.stringify({
+        version: 3,
+        sessionId: 's6',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        messages: [message('user', '你好')],
+        meta: { llm: { providerId: '  ', model: 'm-a' } },
+      }),
+    })
+    expect(await store.summaries()).toBeDefined() // 装载三条
+    expect(store.modelOverrideOf('s4')).toBeUndefined()
+    expect(store.modelOverrideOf('s5')).toBeUndefined()
+    expect(store.modelOverrideOf('s6')).toBeUndefined()
+  })
+
+  it('模型覆盖与既有 meta 字段共用同一份 meta：互不覆盖', async () => {
+    const { store, fs } = setup()
+    await store.setModelOverride('center-x', { providerId: 'p2', model: 'm-b' })
+    await store.setPermissionMode('center-x', 'auto')
+    await store.setProject('center-x', 'proj-2')
+
+    const meta = metaOf(fs, 'center-x')
+    expect(meta['llm']).toEqual({ providerId: 'p2', model: 'm-b' })
+    expect(meta['permissionMode']).toBe('auto')
+    expect(meta['projectId']).toBe('proj-2')
+
+    // 改权限不动模型覆盖
+    await store.setPermissionMode('center-x', 'readonly')
+    expect(metaOf(fs, 'center-x')['llm']).toEqual({ providerId: 'p2', model: 'm-b' })
+  })
+})

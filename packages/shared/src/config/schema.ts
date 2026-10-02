@@ -243,6 +243,42 @@ export function resolveModelParams(
   return normalizeModelParams(provider.modelParams?.[modelId ?? provider.model])
 }
 
+/** 会话级模型覆盖的**存储形状**（会话文件 `meta.llm`，与 agent-core 的 `SessionModelOverride` 同形） */
+export interface SessionModelOverrideLike {
+  providerId: string
+  model: string
+}
+
+/** 会话生效模型（`resolveSessionModel` 的结果） */
+export interface EffectiveSessionModel {
+  providerId: string
+  model: string
+  /** true = 该会话用自己的覆盖；false = 跟随全局 `llm.active` */
+  overridden: boolean
+}
+
+/**
+ * 会话生效模型（**唯一口径**，docs/06 §3 会话级模型）。
+ *
+ * 解析链只有一级：**会话覆盖 > 全局 `llm.active` + 该 provider 的 `model`**。
+ * 覆盖里的 provider 已被删除 / model 为空白 → **静默回落全局**（与主进程
+ * `createProviderFactory` 的判据同源，两端不许各写一套；渲染层的模型下拉与
+ * Center 网页端的会话行都走它）。
+ */
+export function resolveSessionModel(
+  llm: Pick<LlmSettings, 'active' | 'providers'>,
+  override?: SessionModelOverrideLike | null,
+): EffectiveSessionModel {
+  const globalModel = llm.providers[llm.active]?.model ?? ''
+  if (override !== null && override !== undefined) {
+    const model = override.model.trim()
+    if (llm.providers[override.providerId] !== undefined && model !== '') {
+      return { providerId: override.providerId, model, overridden: true }
+    }
+  }
+  return { providerId: llm.active, model: globalModel, overridden: false }
+}
+
 export const LlmProviderSchema = z.object({
   type: LlmProviderTypeSchema,
   baseUrl: z.string(),

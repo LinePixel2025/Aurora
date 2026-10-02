@@ -25,6 +25,7 @@ import {
   SESSION_FILE_VERSION,
   type NewMessage,
   type SessionMeta,
+  type SessionModelOverride,
   type SessionSpace,
   type StoredMessage,
   type StoredSession,
@@ -396,6 +397,44 @@ export class SessionStore {
   }
 
   /**
+   * 会话级模型覆盖（docs/06 §3，本轮；`chat:setSessionModel` 与 Center `session.setModel`）。
+   *
+   * - **幂等**：目标值与当前值相同（含「都未覆盖」）→ 直接返回，不写盘；
+   * - `null` / providerId 或 model 为空串 = **清除覆盖**（删键，回落全局 `llm.active`）；
+   * - 先 `ensureLoaded`（别把已在盘上的消息冲掉）+ **await 写盘完成**：调用方拿到返回后
+   *   立刻拉 `chat:sessions` / `session.list` 一定能读到新覆盖（与 `setProject` 同一条铁律）。
+   */
+  async setModelOverride(sessionId: string, value: SessionModelOverride | null): Promise<void> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    const current = this.metaCache.get(id) ?? {}
+    const nextValue = normalizeModelOverride(value)
+    if (sameModelOverride(normalizeModelOverride(current.llm), nextValue)) return
+
+    const next: SessionMeta = { ...current }
+    if (nextValue === undefined) delete next.llm
+    else next.llm = nextValue
+    this.metaCache.set(id, next)
+    this.dirty.add(id)
+    this.scheduleWrite(id, 0)
+    await (this.writing.get(id) ?? Promise.resolve())
+  }
+
+  /**
+   * 会话级模型覆盖（**同步**，只读内存缓存；undefined = 未覆盖，跟随全局）。
+   *
+   * 为什么必须是同步的：消费方是内核 `send()` 里的 provider 解析点，而那里**不能新增 await**
+   * ——`E_BUSY` 检查与 `active.set` 之间一旦有 await，同会话两条请求会双双越过防双跑的
+   * 守卫（`send()` 里那段注释说的就是这个）。依赖的装配层不变量与 `projectOf` 同款：
+   * **一次会话的发送之前，会话列表必然已装载**（渲染层启动即拉 `chat:sessions` → `summaries()`
+   * 逐个 `get()`；Center 的 `session.list` 同款）—— 新建的空会话读不到覆盖，而新会话本来就
+   * 不可能有覆盖，因此这条回落是安全的。
+   */
+  modelOverrideOf(sessionId: string): SessionModelOverride | undefined {
+    return normalizeModelOverride(this.metaCache.get(normalizeSessionId(sessionId))?.llm)
+  }
+
+  /**
    * 会话空间（docs/06 §4 会话三分）。
    *
    * - **幂等**：与当前空间相同（含「都是未标记」）→ 直接返回，不写盘；
@@ -515,6 +554,8 @@ export class SessionStore {
         // permissionMode 缺省跟随全局（同样不带键）
         ...(meta.centerVisible === undefined ? {} : { centerVisible: meta.centerVisible }),
         ...(meta.permissionMode === undefined ? {} : { permissionMode: meta.permissionMode }),
+        // 会话级模型覆盖（docs/06 §3，本轮）：未覆盖不带键（= 跟随全局，与 projectId 同款「有键才有值」）
+        ...(meta.llm === undefined ? {} : { llm: meta.llm }),
         // 会话空间（docs/06 §4）：未标记 = Agent 空间，不带键（与 projectId 同款「有键才有值」）
         ...(meta.space === undefined ? {} : { space: meta.space }),
       })
@@ -843,7 +884,39 @@ function normalizeMeta(value: unknown): SessionMeta {
   // 会话空间只认已启用的两个取值（'code' 预留未启用）；畸形值按未标记（Agent 空间）处理
   const space = candidate['space']
   if (space === 'agent' || space === 'work') meta.space = space
+  // 会话级模型覆盖：必须是 `{ providerId, model }` 两个非空字符串（缺一个按「未覆盖」归化，
+  // 与写入侧 normalizeModelOverride 同口径）—— 半截条目会让解析链取错 provider 的参数表
+  const llm = candidate['llm']
+  if (typeof llm === 'object' && llm !== null && !Array.isArray(llm)) {
+    const override = normalizeModelOverride(llm as SessionModelOverride)
+    if (override !== undefined) meta.llm = override
+  }
   return meta
+}
+
+/**
+ * 归一模型覆盖：`(providerId, model)` **两个都非空**才算有效，任一缺失 / 空白按「未覆盖」。
+ *
+ * 归一收在一处（读取侧 `normalizeMeta` 与写入侧 `setModelOverride` 共用），
+ * 否则「写进一个空串 providerId」会让文件里多一条半截记录、幂等判定也判不准。
+ */
+function normalizeModelOverride(
+  value: SessionModelOverride | null | undefined,
+): SessionModelOverride | undefined {
+  if (value === null || value === undefined) return undefined
+  const providerId = typeof value.providerId === 'string' ? value.providerId.trim() : ''
+  const model = typeof value.model === 'string' ? value.model.trim() : ''
+  if (providerId === '' || model === '') return undefined
+  return { providerId, model }
+}
+
+/** 模型覆盖相等判定（undefined 与 undefined 相等；用于 `setModelOverride` 的幂等短路） */
+function sameModelOverride(
+  left: SessionModelOverride | undefined,
+  right: SessionModelOverride | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right
+  return left.providerId === right.providerId && left.model === right.model
 }
 
 /**
@@ -862,6 +935,8 @@ function isEmptyMeta(meta: SessionMeta): boolean {
     // 这里再兜一道：不让 `"centerVisible": true` 把每个会话文件多写一行
     meta.centerVisible === undefined &&
     meta.permissionMode === undefined &&
+    // llm 只有写入了有效覆盖才有信息量；setModelOverride 写入侧已归一，这里再兜一道
+    meta.llm === undefined &&
     // space 只有 'work' 才有信息量（'agent' = 缺省空间），setSpace / createSession 写入侧已归一
     (meta.space === undefined || meta.space === 'agent')
   )

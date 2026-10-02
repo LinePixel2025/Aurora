@@ -62,6 +62,17 @@ function formatRelativeTime(iso: string): string {
     >
       <span class="item-title">{{ title }}</span>
       <span v-if="isCenter" class="item-tag tiny" title="来自 Aurora Center 网页端">Center</span>
+      <!--
+        会话级模型徽标（docs/06 §3，本轮）：**只在覆盖态出现** —— 跟随全局时不显示，
+        否则每一行都挂一个「模型」标签，等于没信息。`item-llm` 用与 Center 标签同款的小字风格。
+      -->
+      <span
+        v-if="item.llm"
+        class="item-tag item-llm tiny"
+        :title="`本会话模型：${item.llm.model}`"
+      >
+        {{ item.llm.model }}
+      </span>
       <span class="item-time tiny muted">{{ formatRelativeTime(item.updatedAt) }}</span>
     </button>
     <!--
@@ -202,5 +213,22 @@ function formatRelativeTime(iso: string): string {
   color: var(--accent-text);
   line-height: 16px;
   letter-spacing: 0;
+}
+
+/*
+ * 模型徽标可能很长（`deepseek-reasoner`）：允许收缩并省略号，避免把标题挤成一条线。
+ * `max-width` 给到 96px 是因为它只是「这个会话绑过模型」的提示，完整值在 title 与
+ * 输入区下拉里都能看全（docs/07 §5.4：关键信息看全的路径要留在手边）。
+ */
+/*
+ * 模型徽标可能很长（`deepseek-reasoner`）：允许收缩并省略号，避免把标题挤成一条线。
+ * `max-width` 给到 96px 是因为它只是「这个会话绑过模型」的提示，完整值在 title 与
+ * 输入区下拉里都能看全（docs/07 §5.4：关键信息看全的路径要留在手边）。
+ */
+.item-llm {
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

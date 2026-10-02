@@ -36,6 +36,7 @@ import {
   DEFAULT_REASONING_EFFORT,
   resolveModelParams,
   resolvePermissionMode,
+  resolveSessionModel,
   type ReasoningEffort,
 } from '@aurora/shared/browser'
 import AppButton from '../shared/components/AppButton.vue'
@@ -452,38 +453,76 @@ function onCancelJob(id: string): void {
 // ────────────── 头部的两个 provider 控件：模型 / 思考等级（docs/06 §3） ──────────────
 
 /**
- * 「模型」与「思考等级」两个下拉读写的是**同一个 provider 子树**，只是字段不同：
- * `llm.providers.<active>.model`（唯一生效值）与 `.modelParams.<当前模型>.reasoningEffort`
- *（v23 起思考等级随模型绑定）。
+ * 这一组控件有两个数据面（docs/06 §3，本轮起）：
  *
- * 与设置页「AI 模型」卡写的是同一份数据（单一事实来源），**没有按会话覆盖**；
- * 保存成功后 `settings:changed` 会把新配置推回 store，两个控件随之更新。
- * 每次发送时主进程都会重读配置，因此写完**下一次发送**立即生效。
+ * 1. **会话级模型**（「模型」下拉）：写的是**本会话**的 `meta.llm = { providerId, model }`
+ *    （`chat:setSessionModel`），空串 = 清除覆盖、跟随全局。会话数据不是配置，不进 `config.json`；
+ * 2. **全局默认**（「思考等级」下拉，以及设置页「AI 模型」卡）：写配置
+ *    `llm.providers.<生效 provider>.modelParams.<生效模型>.reasoningEffort`（v23 起随模型绑定）。
+ *
+ * 「生效」= `resolveSessionModel(settings.llm, 本会话覆盖)` 的结果（**唯一口径**，与主进程
+ * `createProviderFactory` 同源）：覆盖里的 provider 已被删除 / model 为空 → 静默回落全局档。
+ * 保存成功后 `settings:changed` 会把新配置推回 store，会话覆盖由 `loadSessions()` 刷新。
+ * 每次发送时主进程都会重解析，因此写完**下一次发送**立即生效。
  */
 const activeProviderId = computed(() => settingsStore.settings?.llm.active ?? '')
 
-/** 当前生效 provider；没有可用 provider（未配置 / active 指向不存在的 id）时为 `null` */
+/** 全局激活的 provider（未覆盖时的生效者，也是「跟随全局」文案里的那个）；无 → `null` */
 const activeProvider = computed<LlmProviderConfig | null>(() => {
   const settings = settingsStore.settings
   if (!settings) return null
   return settings.llm.providers[activeProviderId.value] ?? null
 })
 
-/** 模型下拉的当前值（`model` 是唯一生效值；空串 = 还没填） */
-const currentModel = computed<string>(() => activeProvider.value?.model ?? '')
+/** 本会话的模型覆盖（`meta.llm`）；会话不在列表里 / 未覆盖 → `undefined`（跟随全局） */
+const sessionModelOverride = computed(() => {
+  const summary = sessions.value.find((item) => item.id === sessionId.value)
+  return summary?.llm
+})
 
-/** 模型下拉的候选列表（去重与空串过滤是 `ModelPickerSelect` 的事） */
-const modelOptions = computed<string[]>(() => activeProvider.value?.modelList ?? [])
+/** 会话**生效**模型（覆盖 > 全局；失效覆盖静默回落）—— 两个控件与发送链共用这一份 */
+const effectiveModel = computed(() => {
+  const settings = settingsStore.settings
+  if (!settings) return null
+  return resolveSessionModel(settings.llm, sessionModelOverride.value)
+})
+
+/** 生效 provider（覆盖里的那个 / 全局激活的）；没有可用 provider 时为 `null` */
+const effectiveProvider = computed<LlmProviderConfig | null>(() => {
+  const settings = settingsStore.settings
+  const effective = effectiveModel.value
+  if (!settings || effective === null) return null
+  return settings.llm.providers[effective.providerId] ?? null
+})
 
 /**
- * 当前生效**模型**的生成参数（v23，docs/08 §1）：思考等级 / 上下文窗口都在
- * `llm.providers.<active>.modelParams.<当前模型>` 下，随模型绑定 —— 换个模型就是另一套值。
+ * 模型下拉的当前值 = **本会话的覆盖**（空串 = 跟随全局）。
+ * 「跟随全局」那条选项的文案由 `followGlobalLabel` 给出，里面写着全局默认是哪个模型。
+ */
+const currentModel = computed<string>(() =>
+  effectiveModel.value?.overridden === true ? effectiveModel.value.model : '',
+)
+
+/** 「跟随全局」选项文案：把全局默认模型名写进去，用户不必去设置页确认自己会跟到哪个 */
+const followGlobalLabel = computed(() => {
+  const globalModel = activeProvider.value?.model ?? ''
+  return globalModel === '' ? '跟随全局（全局未设置）' : `跟随全局（${globalModel}）`
+})
+
+/** 模型下拉的候选列表（生效 provider 的 `modelList`；去重与空串过滤是组件的事） */
+const modelOptions = computed<string[]>(() => effectiveProvider.value?.modelList ?? [])
+
+/**
+ * **生效模型**的生成参数（v23，docs/08 §1）：思考等级 / 上下文窗口都在
+ * `llm.providers.<生效 provider>.modelParams.<生效模型>` 下，随模型绑定 —— 换个模型就是另一套值。
  * 取值走 shared 的**唯一**入口 `resolveModelParams`（键未命中 / 字段缺失时按字段回落默认，
- * 消费端绝不拿到 `undefined`）。没有可用 provider 时为 `null`。
+ * 消费端绝不拿到 `undefined`）。没有可用 provider / 生效模型为空时为 `null`。
  */
 const currentModelParams = computed(() => {
-  const provider = activeProvider.value
-  return provider === null ? null : resolveModelParams(provider)
+  const provider = effectiveProvider.value
+  const effective = effectiveModel.value
+  if (provider === null || effective === null || effective.model === '') return null
+  return resolveModelParams(provider, effective.model)
 })
 
 /** 当前生效模型的思考等级；没有可用 provider 时为 `null`（此时控件禁用而不是隐藏） */
@@ -499,14 +538,14 @@ const missingProviderTitle = '先在「设置 → AI 模型」里配置并选中
 
 /** 模型下拉的 tooltip（Chromium 不给禁用态的原生控件弹 title） */
 const modelTitle = computed(() =>
-  activeProvider.value === null
+  effectiveProvider.value === null
     ? missingProviderTitle
-    : '当前使用的模型（候选来自「设置 → AI 模型」的模型列表）；改完对下一次请求生效',
+    : '本会话使用的模型（「跟随全局」= 不覆盖，用设置页的默认模型）；改完对下一次请求生效',
 )
 
 /** 思考下拉的 tooltip：无 provider → 指向修复路径；有 provider → 说明这个参数的含义 */
 const effortTitle = computed(() =>
-  activeProvider.value === null
+  effectiveProvider.value === null
     ? missingProviderTitle
     : '思考等级（越高越深入，但更慢更贵）；auto 不下发该参数，兼容性最好',
 )
@@ -541,21 +580,26 @@ function stripSecretFields(provider: LlmProviderConfig): LlmProviderConfig {
 }
 
 /**
- * 更新当前 provider 的若干字段——「模型」与「思考等级」两个下拉共用的写入路径。
+ * 更新某个 provider 的若干字段——「思考等级」下拉的写入路径（写的是**全局配置**）。
  *
  * patch 必须**原样回传 `llm.active` 与全部 `providers`**（`settings:update` 只有顶层浅合并，
  * 分组级局部更新缺一条就丢配置），但每一个 provider 都要先过 `stripSecretFields()`。
  * deepClone 由 `settingsStore.update()` 统一处理（Proxy 不可结构化克隆）。
+ * `providerId` 缺省 = 全局激活的那个；传生效 provider 是为了让会话覆盖了模型时，
+ * 等级写进**那个模型**名下的参数表。
  */
-async function updateActiveProvider(patch: Partial<LlmProviderConfig>): Promise<boolean> {
+async function updateActiveProvider(
+  patch: Partial<LlmProviderConfig>,
+  providerId?: string,
+): Promise<boolean> {
   const settings = settingsStore.settings
-  const id = activeProviderId.value
+  const id = providerId ?? activeProviderId.value
   if (!settings || id === '') return false
   const provider = settings.llm.providers[id]
   if (!provider) return false
   const providers: Record<string, LlmProviderConfig> = {}
-  for (const [providerId, item] of Object.entries(settings.llm.providers)) {
-    providers[providerId] = stripSecretFields(item)
+  for (const [itemId, item] of Object.entries(settings.llm.providers)) {
+    providers[itemId] = stripSecretFields(item)
   }
   providers[id] = { ...stripSecretFields(provider), ...patch }
   const ok = await settingsStore.update({
@@ -569,37 +613,56 @@ async function updateActiveProvider(patch: Partial<LlmProviderConfig>): Promise<
 }
 
 /**
- * 写入思考等级（`auto` 由主进程装配层映射成「不下发」）；只在值真的变了时写。
+ * 写入**生效模型**的思考等级（`auto` 由主进程装配层映射成「不下发」）；只在值真的变了时写。
  *
- * 等级是**模型级**的（v23）：写的是 `provider.modelParams[provider.model]`，
+ * 等级是**模型级**的（v23）：写的是 `providers.<生效 provider>.modelParams[<生效模型>]`，
  * 而且**整份替换**该键的对象（不是原地改一个字段）—— `modelParams` 的三个子字段里
  * 只写它会让另外两项被静默重置成默认值 —— 三项一起写。
- * 当前模型为空串时不写（没有「生效模型」可归属，与迁移的「model 为空不造条目」同口径）。
+ * 生效模型为空串时不写（没有「生效模型」可归属，与迁移的「model 为空不造条目」同口径）。
  */
 async function setEffort(next: ReasoningEffort): Promise<void> {
-  const provider = activeProvider.value
-  if (provider === null) return
-  const modelId = provider.model
-  if (modelId === '' || resolveModelParams(provider).reasoningEffort === next) return
+  const provider = effectiveProvider.value
+  const effective = effectiveModel.value
+  if (provider === null || effective === null) return
+  const modelId = effective.model
+  if (modelId === '' || resolveModelParams(provider, modelId).reasoningEffort === next) return
   if (
-    await updateActiveProvider({
-      modelParams: {
-        ...provider.modelParams,
-        [modelId]: { ...resolveModelParams(provider), reasoningEffort: next },
+    await updateActiveProvider(
+      {
+        modelParams: {
+          ...provider.modelParams,
+          [modelId]: { ...resolveModelParams(provider, modelId), reasoningEffort: next },
+        },
       },
-    })
+      effective.providerId,
+    )
   ) {
     flashPickerHint(`思考等级已改为 ${next}`)
   }
 }
 
-/** 写入当前 provider 的模型（`modelList` 只是候选，不跟着改）；下一次发送即生效 */
+/**
+ * 写入**本会话**的模型覆盖（`chat:setSessionModel`，docs/06 §3）；`next` 为空串 = 清除覆盖、跟随全局。
+ *
+ * 值没变就直接返回（含「都跟随全局」）：一次无谓的写盘会让会话文件多刷一次 updatedAt。
+ * 落盘成功后重拉会话列表，`sessionModelOverride` 随之更新（覆盖是会话数据，不经 settings 推送）。
+ */
 async function setModel(next: string): Promise<void> {
-  const provider = activeProvider.value
-  if (provider === null || provider.model === next) return
-  if (await updateActiveProvider({ model: next })) {
-    flashPickerHint(`模型已切换为 ${next}`)
+  const effective = effectiveModel.value
+  if (effective === null) return
+  const unchanged = next === '' ? !effective.overridden : effective.model === next
+  if (unchanged) return
+  const result = await window.aurora.chat.setSessionModel({
+    sessionId: sessionId.value,
+    providerId: next === '' ? '' : effective.providerId,
+    model: next,
+  })
+  if (!result.ok) {
+    chatError.value = result.message
+    return
   }
+  await loadSessions()
+  flashPickerHint(next === '' ? '本会话已跟随全局模型' : `本会话模型已切换为 ${next}`)
 }
 
 // ───────────────────────── 语音朗读（TTS，docs/06 §13） ─────────────────────────
@@ -1389,7 +1452,8 @@ async function markGuideDone(): Promise<void> {
                 class="composer-picker"
                 :model-value="currentModel"
                 :models="modelOptions"
-                :disabled="activeProvider === null"
+                :fallback-label="followGlobalLabel"
+                :disabled="effectiveProvider === null"
                 :title="modelTitle"
                 @update:model-value="setModel"
               />

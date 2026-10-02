@@ -2,11 +2,12 @@
 /**
  * 模型下拉（对话窗输入区专用的紧凑版，docs/07 §2.3）。
  *
- * 读写的是 `llm.providers.<active>.model`——它与设置页「AI 模型」卡的「模型名」输入框、
- * 以及「模型列表」编辑区里的「当前使用」标记是**同一份数据**（`model` 是唯一生效值，
- * `modelList` 只是候选）。因此本组件不保存本地状态：值始终来自 props（配置 = 单一事实来源），
- * 选择只 `emit` 出去，落盘由调用方完成（分组级局部更新要求原样回传全部 provider，
- * 且不能带回渲染层的空 `apiKeyEnc`——那些坑都在调用方 `chat/App.vue` 的 `updateActiveProvider()` 里踩过并写明了）。
+ * **值语义（本轮起，docs/06 §3 会话级模型）**：`modelValue` 是**本会话的模型覆盖**
+ * （`meta.llm.model`），空串 = 没有覆盖、跟随全局 —— 因此空串在这里是个**可选项**
+ * （`fallbackLabel` 那条「跟随全局（xxx）」），不再是「缺值」。
+ * 全局默认（`llm.providers.<active>.model`）由调用方算进 `fallbackLabel` 的文案里；
+ * 本组件不保存本地状态（配置/会话数据 = 单一事实来源），选择只 `emit` 出去，
+ * 落盘由调用方完成（`chat:setSessionModel`；全局默认仍归设置页）。
  *
  * 与 `ThinkingLevelSelect.vue` 的分工：那个管 `reasoningEffort`，这个管 `model`；
  * 两者的尺寸 / 边框 / 聚焦样式逐字对齐，才像同一条工具带上的两个控件。
@@ -18,14 +19,21 @@ import { computed } from 'vue'
 
 const props = withDefaults(
   defineProps<{
-    /** 当前生效模型（`llm.providers.<active>.model`）；空串 = 还没填 */
+    /**
+     * 本会话的模型覆盖（`meta.llm.model`）；**空串 = 跟随全局**（显示 `fallbackLabel` 那条）
+     */
     modelValue: string
-    /** 候选模型 id 列表（`llm.providers.<active>.modelList`） */
+    /** 候选模型 id 列表（生效 provider 的 `modelList`） */
     models: string[]
+    /**
+     * 「跟随全局」选项文案（如 `跟随全局（deepseek-chat）`）。
+     * 非空时插在选项首位、值为 `''`，并**取代**旧的「未选择模型」禁用占位。
+     */
+    fallbackLabel?: string
     disabled?: boolean
     title?: string
   }>(),
-  { disabled: false, title: '' },
+  { disabled: false, title: '', fallbackLabel: '' },
 )
 
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
@@ -38,7 +46,12 @@ const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
  * 「能压缩的说明不占版面」不等于「关键信息可以看不全」，看全的路径要留在手边）。
  */
 const hoverTitle = computed(() => {
-  const full = props.modelValue === '' ? '未选择模型' : props.modelValue
+  const full =
+    props.modelValue === ''
+      ? props.fallbackLabel === ''
+        ? '未选择模型'
+        : props.fallbackLabel
+      : props.modelValue
   return props.title === '' ? full : `${full}｜${props.title}`
 })
 
@@ -49,13 +62,12 @@ interface ModelOption {
 }
 
 /**
- * 选项 = 候选去重（保持原有顺序）后按需在最前面插一条「越界 / 占位」项。
+ * 选项 = 「跟随全局」（可选的清除项）+ 候选去重（保持原有顺序），当前值不在候选里时如实补一条。
  *
- * - 空串候选直接丢掉：它只会和「未选择模型」占位项同值打架（`option[value=""]` 会出现两条）。
- * - 当前值不在候选里（含候选为空）：**如实显示它是什么**并标注「（不在列表中）」，
+ * - 空串候选直接丢掉：它只会和「跟随全局」那条同值打架（`option[value=""]` 会出现两条）。
+ * - 当前值不在候选里（含候选为空）且非空串：**如实显示它是什么**并标注「（不在列表中）」，
  *   而不是悄悄替换成候选里的第一个——那等于替用户改了模型，且设置页还显示着旧值。
- * - 当前值为空串：插一条「未选择模型」占位；它**永远不可选**（它是「没有值」的可视化，
- *   不是一个能选中的模型），候选为空时它是唯一选项，正好把控件留成可见的禁用态入口。
+ * - `fallbackLabel` 缺省（老调用方）时保持旧行为：空串插一条不可选的「未选择模型」占位。
  */
 const options = computed<ModelOption[]>(() => {
   const list: ModelOption[] = []
@@ -72,7 +84,9 @@ const options = computed<ModelOption[]>(() => {
       disabled: false,
     })
   }
-  if (props.modelValue === '') {
+  if (props.fallbackLabel !== '') {
+    list.unshift({ value: '', label: props.fallbackLabel, disabled: false })
+  } else if (props.modelValue === '') {
     list.unshift({ value: '', label: '未选择模型', disabled: true })
   }
   return list

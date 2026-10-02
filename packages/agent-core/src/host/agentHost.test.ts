@@ -89,6 +89,11 @@ async function createHarness(options: {
   visionGetter?: () => boolean
   /** 图片读盘端口（v22）：缺省不注入 = 图片只落盘不重放 */
   loadImages?: AgentHostDeps['loadImages']
+  /**
+   * 观察 `provider.create()` 的入参（docs/06 §3 会话级模型）：
+   * 内核必须把发起会话的 id 传下去，否则装配层永远解析不到会话覆盖。
+   */
+  onCreate?: (options: { allowFallback?: boolean; sessionId?: string } | undefined) => void
 }): Promise<Harness> {
   const fs = options.fs ?? new TestFileSystem()
   const sessions = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
@@ -111,8 +116,9 @@ async function createHarness(options: {
   const host = new KernelAgentHost({
     sessions,
     provider: {
-      create: () =>
-        options.withProvider === false
+      create: (createOptions) => {
+        options.onCreate?.(createOptions)
+        return options.withProvider === false
           ? undefined
           : {
               provider,
@@ -131,7 +137,8 @@ async function createHarness(options: {
               ...(options.reasoningEffort === undefined
                 ? {}
                 : { reasoningEffort: options.reasoningEffort }),
-            },
+            }
+      },
     },
     tools,
     skills,
@@ -696,6 +703,34 @@ describe('KernelAgentHost', () => {
     await harness.waitForDone()
     const roles = harness.provider.calls[1]?.messages.map((item) => item.role)
     expect(roles).toEqual(['system', 'user', 'assistant', 'user'])
+  })
+})
+
+/**
+ * 会话级模型（docs/06 §3，本轮）：内核只负责把 `sessionId` **传给装配层**，
+ * 覆盖怎么解析（读会话 meta、失效回落）全在装配层 —— 这里钉住「传对了 id」这一环，
+ * 因为它是唯一一处「不传就永远退回全局档」而不会报错的静默失效。
+ */
+describe('KernelAgentHost · 会话级模型（provider.create 收到 sessionId）', () => {
+  it('send() 把发起会话的 id 交给 provider.create', async () => {
+    const seen: Array<string | undefined> = []
+    const harness = await createHarness({
+      rounds: [{ text: 'ok' }],
+      onCreate: (createOptions) => seen.push(createOptions?.sessionId),
+    })
+    await harness.send('hi', 'center-abc')
+    await harness.waitForDone()
+    expect(seen).toContain('center-abc')
+  })
+
+  it('未传 sessionId 的调用（isReady 探测）不带上会话 id', async () => {
+    const seen: Array<string | undefined> = []
+    const harness = await createHarness({
+      rounds: [{ text: 'ok' }],
+      onCreate: (createOptions) => seen.push(createOptions?.sessionId),
+    })
+    expect(harness.host.isReady()).toBe(true)
+    expect(seen).toEqual([undefined])
   })
 })
 

@@ -68,6 +68,22 @@ export interface StoredMessage {
 export type SessionSpace = 'agent' | 'work'
 
 /**
+ * 会话级模型覆盖（docs/06 §3，`sessions/<id>.json` 的 `meta.llm`）。
+ *
+ * 只存**一对** `(providerId, model)` 而不是只存 model：模型名可跨 provider 重名，
+ * 且思考等级 / 上下文窗口等参数是按 `providers.<pid>.modelParams[<model>]` 取的
+ * （`resolveModelParams` 的唯一口径）—— 只存 model 会在切全局 provider 后取错参数表。
+ *
+ * 解析链只有一级：**会话覆盖 > 全局 `llm.active` 的 provider + 它的 `model`**。
+ * 覆盖里的 provider 已被删除 / model 为空时**静默回落全局**（与 `meta.projectId`
+ * 绑定失效同款：会话级绑定是可选的，逐次执行不刷 warn）。
+ */
+export interface SessionModelOverride {
+  providerId: string
+  model: string
+}
+
+/**
  * 会话级元信息（`userData/sessions/<sessionId>.json` 的 `meta` 字段，docs/06 §4）。
  *
  * 刻意存在**会话文件自身**里，不做 sidecar 索引：`listSessions()` 把 `sessions/`
@@ -124,6 +140,16 @@ export interface SessionMeta {
    * **AI 不可写**（改档位 = 自我提权）。同样是会话数据，不进 CONFIG_VERSION。
    */
   permissionMode?: PermissionMode
+  /**
+   * 会话级模型覆盖（docs/06 §3，本轮）。
+   *
+   * **缺省（undefined）= 跟随全局** `llm.active` + 该 provider 的 `model`；写了就只对
+   * 该会话生效（内核每轮经注入的 `AgentProviderFactory.createForSession` 现解析）。
+   * 写入入口只有本机渲染层（`chat:setSessionModel`）与 Center 的 `session.setModel` 命令。
+   * 同样是**会话数据**：不进 `config.json`、不进 `CONFIG_VERSION` 迁移链，
+   * 读取侧按白名单宽容归化（老文件缺字段 = 未覆盖）。
+   */
+  llm?: SessionModelOverride
 }
 
 /** `userData/sessions/<sessionId>.json` 的结构（v1 无 `meta`，读取侧必须容忍） */

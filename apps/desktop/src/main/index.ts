@@ -1045,16 +1045,20 @@ async function bootstrap(): Promise<void> {
   // 7.1.5 provider 工厂提取成常量：KernelAgentHost 与 `task` 子代理共享同一实例，
   //     「常规构造失败 → 临时回退可用条目」的启动自愈语义（docs/06 §12、step 02 第 6 条）
   //     两处一致；create() 每次请求即时构造，设置页改 Key 后无需重启即生效。
-  const providerFactory = createProviderFactory(settings, logger.child('llm'), () => netFetch)
+  // 会话级模型覆盖（docs/06 §3）：同步读会话 meta（`SessionStore.modelOverrideOf`）——
+  // 覆盖失效 / 未装载一律回落全局档，回落语义与日志都在 `createProviderFactory` 里。
+  const providerFactory = createProviderFactory(settings, logger.child('llm'), () => netFetch, {
+    sessionModelOf: (sessionId) => sessions?.modelOverrideOf(sessionId),
+  })
   const agentProvider: AgentProviderFactory = {
-    create: () => {
+    create: (options?: { allowFallback?: boolean; sessionId?: string }) => {
       try {
-        const config = providerFactory.create()
+        const config = providerFactory.create(options)
         if (config !== undefined) return config
-        return providerFactory.create({ allowFallback: true })
+        return providerFactory.create({ ...options, allowFallback: true })
       } catch (error) {
         logger?.warn('默认模型配置构造失败，尝试回退到可用条目', { error: String(error) })
-        return providerFactory.create({ allowFallback: true })
+        return providerFactory.create({ ...options, allowFallback: true })
       }
     },
   }
