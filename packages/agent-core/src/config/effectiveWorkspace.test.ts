@@ -15,10 +15,6 @@ const SESSION_ROOT = resolve('top', 'session-root')
 const WORKSPACE_DIR = resolve('top', 'workspace-dir')
 const HOME_DIR = resolve('top', 'home-dir')
 
-function project(id: string, root: string): ProjectConfig {
-  return { id, name: id, root }
-}
-
 /** 真实 Settings 桩：只改 projects 与 agent.tools.workspaceDir。 */
 function settingsWith(options: {
   list?: ProjectConfig[]

@@ -119,12 +119,7 @@ function switchMode(): void {
         {{ busy ? '请稍候…' : mode === 'login' ? '登录' : '注册并登录' }}
       </button>
 
-      <button
-        class="btn-mode"
-        type="button"
-        data-action="login.switch-mode"
-        @click="switchMode"
-      >
+      <button class="btn-mode" type="button" data-action="login.switch-mode" @click="switchMode">
         {{ mode === 'login' ? '没有账户？注册一个' : '已有账户？返回登录' }}
       </button>
     </form>

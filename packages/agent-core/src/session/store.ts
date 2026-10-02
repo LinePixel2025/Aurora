@@ -600,9 +600,12 @@ export class SessionStore {
     const inFlight = this.loading.get(id)
     // 已有在途读盘：直接复用它，既不重复读盘也不提前置 loaded
     if (inFlight !== undefined) return inFlight
+    // 这里必须「先声明、后赋值」：`isCurrent` 闭包要按**身份**比对「我这条还在不在 loading
+    // 里」，而它引用的正是这个 promise 自身 —— 写成 `const task = …` 会在初始值里引用自己。
     let task: Promise<void>
     // 传 `isCurrent`：`remove()` 会把本 id 的 `loading` 条目删掉，读盘完成后据此丢弃结果，
     // 避免「先删会话、后读到盘」把已删会话复活（与 P2-02 是同一家族的另一半）。
+    // eslint-disable-next-line prefer-const -- 自引用闭包，见上（`prefer-const` 报在赋值行）
     task = this.loadFromDisk(id, () => this.loading.get(id) === task).finally(() => {
       if (this.loading.get(id) === task) this.loading.delete(id)
     })

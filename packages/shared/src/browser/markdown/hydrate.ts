@@ -18,6 +18,13 @@
  * 天然不存在「执行任意 JS」的路径。
  */
 import { CHART_SOURCE_LIMITS, type ChartKind } from './chart.js'
+// 动态 import 的类型别名：`typeof import('mermaid')` 这种内联写法会被
+// @typescript-eslint/consistent-type-imports 判错，改成具名 `import type`（语义等价）
+import type mermaid from 'mermaid'
+import type * as echartsCore from 'echarts/core'
+
+type MermaidModule = typeof mermaid
+type EchartsCoreModule = typeof echartsCore
 
 export interface ChartHydratorOptions {
   /** 当前主题（mermaid 主题跟随；默认 'light'） */
@@ -56,16 +63,16 @@ function cacheSet(key: string, value: { html: string } | { spec: Record<string, 
   artifactCache.set(key, value)
 }
 
-let mermaidLoader: Promise<typeof import('mermaid').default> | null = null
+let mermaidLoader: Promise<MermaidModule> | null = null
 
-async function loadMermaid(): Promise<typeof import('mermaid').default> {
+async function loadMermaid(): Promise<MermaidModule> {
   mermaidLoader ??= import('mermaid').then((mod) => mod.default)
   return mermaidLoader
 }
 
-let echartsLoader: Promise<typeof import('echarts/core')> | null = null
+let echartsLoader: Promise<EchartsCoreModule> | null = null
 
-async function loadEcharts(): Promise<typeof import('echarts/core')> {
+async function loadEcharts(): Promise<EchartsCoreModule> {
   echartsLoader ??= Promise.all([
     import('echarts/core'),
     import('echarts/charts'),

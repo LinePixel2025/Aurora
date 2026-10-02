@@ -192,9 +192,7 @@ function mergeRemoteSessions(entry: ClientEntry, list: CenterSessionSummary[]): 
   const merged = new Map<string, CenterSessionSummary>()
   for (const item of entry.remoteSessions) merged.set(item.sessionId, item)
   for (const item of list) merged.set(item.sessionId, item)
-  entry.remoteSessions = [...merged.values()].sort((a, b) =>
-    b.updatedAt.localeCompare(a.updatedAt),
-  )
+  entry.remoteSessions = [...merged.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }
 
 /** 拉取客户端的 center- 会话列表并合并进本地状态 */

@@ -7,7 +7,12 @@
  * 全部与本地发送一致，远程会话在主界面历史里也照常可见。
  */
 import { CENTER_SESSION_PREFIX, type AgentEvent, type ConfirmRequestPayload } from '@aurora/shared'
-import type { AskUserRequest, AskUserRequestPayload, Logger, SensitiveToolRequest } from '@aurora/shared'
+import type {
+  AskUserRequest,
+  AskUserRequestPayload,
+  Logger,
+  SensitiveToolRequest,
+} from '@aurora/shared'
 
 /** 内核 AgentHost 的最小依赖面（`DesktopAgentHost` 结构性满足） */
 export interface AgentLike {

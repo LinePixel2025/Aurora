@@ -16,15 +16,12 @@ export const ICON_COPY =
 export const ICON_CHECK =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>'
 
-export const CODE_COPY_BUTTON =
-  `<button type="button" class="code-copy" aria-label="复制代码">${ICON_COPY}<span class="code-copy-label">复制</span></button>`
+export const CODE_COPY_BUTTON = `<button type="button" class="code-copy" aria-label="复制代码">${ICON_COPY}<span class="code-copy-label">复制</span></button>`
 
 /** 渲染一个完整代码块（含复制按钮壳）；`body` 必须是**已转义**的 HTML */
 export function renderCodeBlock(body: string, lang: string | undefined): string {
   const langAttr =
-    lang === undefined || lang === ''
-      ? ''
-      : ` data-lang="${lang.replace(/[^a-zA-Z0-9+#.-]/g, '')}"`
+    lang === undefined || lang === '' ? '' : ` data-lang="${lang.replace(/[^a-zA-Z0-9+#.-]/g, '')}"`
   return (
     `<div class="code-block">${CODE_COPY_BUTTON}` +
     `<pre class="md-code"${langAttr}><code class="hljs">${body}</code></pre></div>`

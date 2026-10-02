@@ -19,7 +19,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import type {
   ChatSessionSummary,
   ProjectConfig,
-  ProjectRuntimeStatus,
   ProjectsSettings,
   ProjectStatus,
 } from '@aurora/shared'

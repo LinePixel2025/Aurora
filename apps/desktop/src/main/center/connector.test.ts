@@ -1077,7 +1077,8 @@ describe('CenterConnector · 确认请求补发队列（docs/12 §5 第 4 步）
 
   it('上限对两种请求合并计数：满 20 条丢最旧（不按 kind 各留 20）', () => {
     const harness = makeConnector()
-    for (let i = 0; i < 12; i += 1) harness.connector.enqueueConfirm({ type: 'confirm.request', n: i })
+    for (let i = 0; i < 12; i += 1)
+      harness.connector.enqueueConfirm({ type: 'confirm.request', n: i })
     for (let i = 0; i < 12; i += 1) harness.connector.enqueueAsk({ type: 'ask.request', n: i })
     expect(harness.connector.pendingConfirmCount() + harness.connector.pendingAskCount()).toBe(20)
     // 最旧的 4 条确认被丢，剩余 8 确认 + 12 提问

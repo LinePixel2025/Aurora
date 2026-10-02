@@ -31,7 +31,11 @@ const KIND_LABEL: Record<ChartKind, string> = {
  * 产出占位结构。`source` 会被**转义**后放进 `<pre>`（与代码块同一套转义口径），
  * 因此 `</pre>` 之类的注入不可能提前终止标签。
  */
-export function renderChartPlaceholder(kind: ChartKind, source: string, escape: (raw: string) => string): string {
+export function renderChartPlaceholder(
+  kind: ChartKind,
+  source: string,
+  escape: (raw: string) => string,
+): string {
   const label = KIND_LABEL[kind]
   return (
     `<div class="md-chart" data-chart="${kind}" data-state="pending">` +

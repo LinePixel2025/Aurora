@@ -20,7 +20,7 @@
 // 从**本包**导入，两端宿主不必各自声明依赖（pnpm 严格链接下宿主解析不到它）
 import 'katex/dist/katex.min.css'
 import MarkdownIt from 'markdown-it'
-import type { MarkdownIt as MarkdownItInstance, RendererRule } from 'markdown-it'
+import type { MarkdownIt as MarkdownItInstance } from 'markdown-it'
 import { admonitionPlugin } from './admonition.js'
 import { isChartKind, renderChartPlaceholder } from './chart.js'
 import { renderCodeBlock } from './codeBlock.js'
@@ -176,9 +176,5 @@ export const MARKDOWN_CONTRACT_CLASSES = [
 ] as const
 
 // 图表水合运行时（P2）：宿主容器创建水合器即可（见 hydrate.ts 的用法与失效分析）
-export {
-  createChartHydrator,
-  type ChartHydrator,
-  type ChartHydratorOptions,
-} from './hydrate.js'
+export { createChartHydrator, type ChartHydrator, type ChartHydratorOptions } from './hydrate.js'
 export { CHART_KINDS, CHART_SOURCE_LIMITS, type ChartKind } from './chart.js'

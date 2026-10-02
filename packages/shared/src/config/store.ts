@@ -739,11 +739,11 @@ function matchImageGenProviderKey(key: string): string | undefined {
   return matched?.[1]
 }
 
-/**
- * MCP 凭据路径里受控的「标记」段（`mcp.servers.<name>.<marker>.<KEY>`）。
- * 明文路径与密文路径的写法是 `.env.KEY` / `.envEnc.KEY`（headers 同款）。
+/*
+ * MCP 凭据路径里受控的「标记」段是 `mcp.servers.<name>.<marker>.<KEY>`：
+ * 明文路径与密文路径的写法为 `.env.KEY` / `.envEnc.KEY`（headers 同款）。
+ * 这里不再放一份常量副本 —— 之前那份从未被消费，只是 lint 的一个未用变量。
  */
-const MCP_SECRET_MARKERS = ['envEnc', 'headersEnc', 'env', 'headers'] as const
 
 interface McpSecretPath {
   server: string
