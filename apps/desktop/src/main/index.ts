@@ -98,7 +98,8 @@ import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { ProactiveScheduler } from './proactive.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
 import { HotkeyManager } from './hotkey.js'
-import { SessionBridge, toAskRequest, toConfirmRequest } from './center/session-bridge.js'
+import { SessionBridge, toConfirmRequest } from './center/session-bridge.js'
+import { createAskRelay } from './center/ask-relay.js'
 import { CenterConnector } from './center/connector.js'
 import { DeviceLoginController, type DeviceLoginOutcome } from './center/device-login.js'
 import { requestClientLogin } from './center/client-login.js'
@@ -1528,24 +1529,19 @@ async function bootstrap(): Promise<void> {
   })
 
   // 提问卡双通道（docs/12 §5，v0.3.3）：`center-` 会话里 `ask_user` 提问时，本地卡片之外
-  // 同时经同一连接器推给 Center 网页端（路由给会话属主 + 管理员）。与确认卡的区别是**闸门
-  // 更严**：`center.allowRemoteSession` 关闭时整条通道静默（不下行、也拒绝网页作答，见
-  // connector 的 ask.resolve 分支）—— 本地卡照常显示，用户在本机答即可。
-  askUserService?.onRequest((request) => {
-    if (!request.sessionId.startsWith(CENTER_SESSION_PREFIX)) return
-    if (!settings!.get().center.allowRemoteSession) return
-    const emit = centerConfirmEmit
-    if (emit === undefined) {
-      centerConnector?.enqueueAsk(toAskRequest(request))
-      return
-    }
-    try {
-      emit(toAskRequest(request))
-    } catch (error) {
-      logger?.warn('向 Center 发送提问请求失败', { error: String(error) })
-      centerConnector?.enqueueAsk(toAskRequest(request))
-    }
-  })
+  // 同时经同一连接器推给 Center 网页端（路由给会话属主 + 管理员）。判定逻辑（前缀过滤 /
+  // 闸门 / 离线入队）抽在 `center/ask-relay.ts` 里，理由见那个文件的头注释。
+  // 与确认卡的区别是**闸门更严**：`center.allowRemoteSession` 关闭时整条通道静默
+  //（不下行、也拒绝网页作答，见 connector 的 ask.resolve 分支）—— 本地卡照常显示，
+  // 用户在本机答即可。
+  askUserService?.onRequest(
+    createAskRelay({
+      emit: () => centerConfirmEmit,
+      allowRemoteSession: () => settings!.get().center.allowRemoteSession,
+      enqueue: (message) => centerConnector?.enqueueAsk(message),
+      ...(logger === undefined ? {} : { logger }),
+    }),
+  )
 
   // 7.2 分类管线装配（docs/05 §3、docs/02 §5.2）
   //     chokidar 监听 → 并发队列 → utilityProcess 内容提取 → 规则/LLM 判定 → 落盘 → 通知
