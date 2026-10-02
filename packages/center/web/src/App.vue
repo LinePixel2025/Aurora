@@ -87,85 +87,114 @@ const onlineCount = computed(
 </script>
 
 <template>
-  <div v-if="!booted" class="boot" data-panel="boot">
-    <span class="spinner" aria-label="正在加载" />
-  </div>
+  <!--
+    启动态 → 壳的切换：`page` 预设（共享）+ `mode="out-in"`。
+    两者高度完全不同（boot 是整屏居中、壳是顶栏 + 全高主区），同屏交叉会让页面上下弹一下，
+    out-in 先把 spinner 淡出再让壳进来，交接是干净的。
+  -->
+  <Transition name="page" mode="out-in">
+    <div v-if="!booted" key="boot" class="boot" data-panel="boot">
+      <span class="spinner" aria-label="正在加载" />
+    </div>
 
-  <template v-else>
-    <header v-if="!needsLogin" class="topbar">
-      <div class="topbar-inner">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">
-            <BookOpenText :size="17" :stroke-width="1.8" />
-          </span>
-          <span class="brand-name">Aurora</span>
-          <span class="brand-sub">Center</span>
-        </div>
+    <div v-else key="shell" class="shell">
+      <header v-if="!needsLogin" class="topbar">
+        <div class="topbar-inner">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true">
+              <BookOpenText :size="17" :stroke-width="1.8" />
+            </span>
+            <span class="brand-name">Aurora</span>
+            <span class="brand-sub">Center</span>
+          </div>
 
-        <nav class="nav" aria-label="主导航">
-          <button
-            v-for="item in visibleNav"
-            :key="item.name"
-            type="button"
-            class="nav-item"
-            :class="{ active: route.name === item.name }"
-            :data-action="`nav.${item.name}`"
-            @click="navigate(item.name)"
+          <nav class="nav" aria-label="主导航">
+            <button
+              v-for="item in visibleNav"
+              :key="item.name"
+              type="button"
+              class="nav-item"
+              :class="{ active: route.name === item.name }"
+              :data-action="`nav.${item.name}`"
+              @click="navigate(item.name)"
+            >
+              <component :is="item.icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
+              <span>{{ item.label }}</span>
+            </button>
+          </nav>
+
+          <span class="grow" />
+
+          <span
+            v-if="state.clients.size > 0"
+            class="client-count"
+            data-field="shell.client-count"
+            :title="`${onlineCount} 台在线 / 共 ${state.clients.size} 台`"
           >
-            <component :is="item.icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
-            <span>{{ item.label }}</span>
+            <MonitorSmartphone :size="13" :stroke-width="1.8" aria-hidden="true" />
+            {{ onlineCount }} / {{ state.clients.size }}
+          </span>
+
+          <span class="ws-chip" :class="`ws-${wsStatus}`" data-field="shell.ws" :title="wsLabel">
+            <i class="ws-dot" aria-hidden="true" />
+            {{ wsLabel }}
+          </span>
+
+          <span class="user">
+            {{ currentUser?.username ?? '' }}
+            <span v-if="currentUser?.role === 'admin'" class="badge">管理员</span>
+          </span>
+
+          <button type="button" class="logout" data-action="auth.logout" @click="logout()">
+            <LogOut :size="14" :stroke-width="1.8" aria-hidden="true" />
+            退出
           </button>
-        </nav>
+        </div>
+      </header>
 
-        <span class="grow" />
+      <!--
+        主区视图切换同样走 `page`（out-in）：两个视图的滚动位置 / 高度互不相干，
+        交叉淡入会让新旧两屏内容叠在同一个滚动容器上（旧页还在滚、新页已经进场）。
+        每个分支给显式 key：路由名不同但组件复用的场合也能被 out-in 正确区分。
+      -->
+      <main class="app-main">
+        <Transition name="page" mode="out-in">
+          <ConsoleView v-if="!needsLogin && route.name === 'console'" key="console" />
+          <AutomationsView
+            v-else-if="!needsLogin && route.name === 'automations'"
+            key="automations"
+          />
+          <FilesView v-else-if="!needsLogin && route.name === 'files'" key="files" />
+          <AdminView v-else-if="!needsLogin && route.name === 'admin'" key="admin" />
+          <DeviceView v-else-if="route.name === 'device'" key="device" />
+          <LoginView v-else key="login" />
+        </Transition>
+      </main>
 
-        <span
-          v-if="state.clients.size > 0"
-          class="client-count"
-          data-field="shell.client-count"
-          :title="`${onlineCount} 台在线 / 共 ${state.clients.size} 台`"
-        >
-          <MonitorSmartphone :size="13" :stroke-width="1.8" aria-hidden="true" />
-          {{ onlineCount }} / {{ state.clients.size }}
-        </span>
-
-        <span class="ws-chip" :class="`ws-${wsStatus}`" data-field="shell.ws" :title="wsLabel">
-          <i class="ws-dot" aria-hidden="true" />
-          {{ wsLabel }}
-        </span>
-
-        <span class="user">
-          {{ currentUser?.username ?? '' }}
-          <span v-if="currentUser?.role === 'admin'" class="badge">管理员</span>
-        </span>
-
-        <button type="button" class="logout" data-action="auth.logout" @click="logout()">
-          <LogOut :size="14" :stroke-width="1.8" aria-hidden="true" />
-          退出
-        </button>
-      </div>
-    </header>
-
-    <main class="app-main">
-      <ConsoleView v-if="!needsLogin && route.name === 'console'" />
-      <AutomationsView v-else-if="!needsLogin && route.name === 'automations'" />
-      <FilesView v-else-if="!needsLogin && route.name === 'files'" />
-      <AdminView v-else-if="!needsLogin && route.name === 'admin'" />
-      <DeviceView v-else-if="route.name === 'device'" />
-      <LoginView v-else />
-    </main>
-
-    <!-- 非阻断提示（待办栏的批复 / 过期、代码复制失败、语音失败…）：6s 自消隐，
-         不打断操作 —— 与桌面端的瞬时提示同款语义，只是网页端挂在壳上全局一份 -->
-    <Transition name="rise">
-      <p v-if="actionNotice !== ''" class="notice" data-field="shell.notice" role="status">
-        {{ actionNotice }}
-      </p>
-    </Transition>
-  </template>
+      <!-- 非阻断提示（待办栏的批复 / 过期、代码复制失败、语音失败…）：6s 自消隐，
+           不打断操作 —— 与桌面端的瞬时提示同款语义，只是网页端挂在壳上全局一份 -->
+      <Transition name="rise">
+        <p v-if="actionNotice !== ''" class="notice" data-field="shell.notice" role="status">
+          {{ actionNotice }}
+        </p>
+      </Transition>
+    </div>
+  </Transition>
 </template>
 
 <style scoped>
+/*
+ * 壳（顶栏 + 主区 + 提示）：原来是 `v-if/v-else` 的 `<template>` 片段、直接挂在 #app 的
+ * 列布局下；包进 `<Transition>` 后需要一层真实元素，于是这里把那份「撑满 + 纵向排列」
+ * 接下来 —— 不接的话顶栏与主区会从 flex 子项变成普通块，主区拿不到剩余高度。
+ */
+.shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .boot {
   display: grid;
   place-items: center;
@@ -285,12 +314,19 @@ const onlineCount = computed(
   background: var(--status-idle);
 }
 
+/*
+ * 通路状态点用共享的 `aurora-breathe` 呼吸：这是**唯一**的"网页端 ↔ 服务器通路"信号，
+ * 静止的点在一屏都是静物的顶栏里很容易被看漏。只让「已连接 / 连接中」呼吸 ——
+ * 断开是静态红点：它要的是"出事了"而不是"还活着"。
+ */
 .ws-open .ws-dot {
   background: var(--status-ok);
+  animation: aurora-breathe var(--dur-breathe) var(--ease-standard) infinite;
 }
 
 .ws-connecting .ws-dot {
   background: var(--status-unread);
+  animation: aurora-breathe var(--dur-breathe) var(--ease-standard) infinite;
 }
 
 .ws-closed .ws-dot {

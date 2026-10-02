@@ -260,9 +260,7 @@ function sessionModelChoices(summary: CenterSessionSummary): string[] {
   const effective = effectiveSessionModel(summary)
   if (effective === null) return []
   const list = remoteLlm.value?.providers[effective.providerId]?.modelList ?? []
-  return effective.overridden && !list.includes(effective.model)
-    ? [effective.model, ...list]
-    : list
+  return effective.overridden && !list.includes(effective.model) ? [effective.model, ...list] : list
 }
 
 /** 「跟随全局」选项文案：把客户端全局默认模型名写进去 */
@@ -342,7 +340,7 @@ function toolValue(path: string): boolean | undefined {
       <button
         v-if="entry && tab === 'sessions'"
         type="button"
-        class="ghost"
+        class="ghost hover-fill"
         data-action="panel.refresh"
         :disabled="sessionBusy || !online"
         @click="refresh"
@@ -357,7 +355,7 @@ function toolValue(path: string): boolean | undefined {
         :key="item.id"
         type="button"
         role="tab"
-        class="tab"
+        class="tab hover-fill"
         :class="{ open: tab === item.id }"
         :aria-selected="tab === item.id"
         :data-action="`panel.tab-${item.id}`"
@@ -396,7 +394,7 @@ function toolValue(path: string): boolean | undefined {
             <div class="row-controls">
               <button
                 type="button"
-                class="mini"
+                class="mini hover-fill"
                 data-action="panel.activate"
                 :disabled="sessionBusy || !online"
                 title="让客户端主界面切到该会话"
@@ -600,6 +598,11 @@ function toolValue(path: string): boolean | undefined {
   color: var(--text-muted);
 }
 
+/*
+ * 面板里的三枚次要按钮（刷新 / 页签 / 行内操作）hover 底色统一走共享 `.hover-fill`：
+ * 它们原先各自抄了一份 `transition: background-color var(--transition-fast)` + `:hover`。
+ * 页签的选中态用复合选择器压过 `.hover-fill:hover`（选中项悬停不该退成 hover 那一档）。
+ */
 .ghost {
   flex: 0 0 auto;
   margin-left: auto;
@@ -608,11 +611,6 @@ function toolValue(path: string): boolean | undefined {
   border-radius: var(--radius-pill);
   color: var(--text-secondary);
   font-size: var(--text-sm);
-  transition: background-color var(--transition-fast);
-}
-
-.ghost:hover {
-  background: var(--fill-2);
 }
 
 .ghost:disabled {
@@ -634,16 +632,10 @@ function toolValue(path: string): boolean | undefined {
   border-radius: var(--radius-pill);
   color: var(--text-secondary);
   font-size: var(--text-sm);
-  transition:
-    background-color var(--transition-fast),
-    color var(--transition-fast);
+  transition: color var(--transition-fast);
 }
 
-.tab:hover {
-  background: var(--fill-2);
-}
-
-.tab.open {
+.tab.hover-fill.open {
   background: var(--fill-3);
   color: var(--text-primary);
   font-weight: var(--weight-medium);
@@ -747,11 +739,6 @@ function toolValue(path: string): boolean | undefined {
   border-radius: var(--radius-pill);
   color: var(--text-secondary);
   font-size: var(--text-xs);
-  transition: background-color var(--transition-fast);
-}
-
-.mini:hover {
-  background: var(--fill-2);
 }
 
 .mini:disabled {

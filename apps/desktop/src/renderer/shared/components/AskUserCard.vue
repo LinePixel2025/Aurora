@@ -157,11 +157,7 @@ async function submit(skipped = false): Promise<void> {
         {{ part.question }}
       </p>
 
-      <div
-        v-if="optionsOf(index).length > 0"
-        class="options"
-        :class="{ multi: part.multiSelect }"
-      >
+      <div v-if="optionsOf(index).length > 0" class="options" :class="{ multi: part.multiSelect }">
         <button
           v-for="option in optionsOf(index)"
           :key="option.label"
@@ -188,9 +184,7 @@ async function submit(skipped = false): Promise<void> {
           v-model="freeText[index]"
           class="free-input"
           type="text"
-          :placeholder="
-            optionsOf(index).length > 0 ? '或直接输入你的回答…' : '输入你的回答…'
-          "
+          :placeholder="optionsOf(index).length > 0 ? '或直接输入你的回答…' : '输入你的回答…'"
           @keydown.enter="canSubmit && submit()"
         />
       </div>

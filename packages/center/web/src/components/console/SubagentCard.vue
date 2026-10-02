@@ -22,9 +22,17 @@ import {
   ShieldCheck,
 } from '@aurora/shared/browser'
 import { toolIconOf } from '@aurora/shared/browser'
+import { useCollapseTransition } from '@aurora/shared/browser'
 import { subagentStatusLabel } from '../../lib/format'
 
 const props = defineProps<{ snapshot: SubagentSnapshot }>()
+
+/**
+ * 卡内工具调用展开体的**实测高度**钩子（与 `AgentToolRow` 那处唯一的实测高度动画同款）：
+ * `.collapse-*` 的终点缺省是 `70vh`，不接线时内容只有一两百像素、全部位移被挤在时间轴
+ * 前一小段 —— 表现就是「展开先飞快长满再空转、收起先空转末尾猛缩」。
+ */
+const collapseHooks = useCollapseTransition()
 
 const expanded = ref(false)
 /** 展开了参数 / 结果正文的工具调用 id（默认收起：先看清「做了什么」，细节再点开） */
@@ -246,7 +254,11 @@ function toggleTool(id: string): void {
                     aria-hidden="true"
                   />
                 </button>
-                <Transition name="collapse">
+                <Transition
+                  name="collapse"
+                  @enter="collapseHooks.enter"
+                  @before-leave="collapseHooks.beforeLeave"
+                >
                   <div v-if="isToolOpen(call.id)" class="tool-body">
                     <template v-if="call.args !== undefined">
                       <span class="label">参数</span>

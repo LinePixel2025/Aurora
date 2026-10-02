@@ -72,34 +72,40 @@ const sourceNames = computed(() =>
 </script>
 
 <template>
-  <section v-if="total > 0" class="pending-bar" data-panel="pending-bar">
-    <header class="bar-head">
-      <strong>待处理（{{ total }}）</strong>
-      <span class="bar-sub">确认与提问 · 与客户端上的卡片先到先得 · 超时按各自语义收尾</span>
-      <span class="grow" />
-      <span v-if="sourceNames !== ''" class="bar-src">来源 {{ sourceNames }}</span>
-    </header>
+  <!--
+    淡入淡出（本轮）：待办栏是「有人在等你」的信号，硬切出来会让人怀疑是不是自己点错了；
+    `fade` 预设来自共享 theme.css（时长走令牌，`prefers-reduced-motion` 一并降级）。
+  -->
+  <Transition name="fade">
+    <section v-if="total > 0" class="pending-bar" data-panel="pending-bar">
+      <header class="bar-head">
+        <strong>待处理（{{ total }}）</strong>
+        <span class="bar-sub">确认与提问 · 与客户端上的卡片先到先得 · 超时按各自语义收尾</span>
+        <span class="grow" />
+        <span v-if="sourceNames !== ''" class="bar-src">来源 {{ sourceNames }}</span>
+      </header>
 
-    <div class="bar-list">
-      <ConfirmCard
-        v-for="entry in openConfirms"
-        :key="`confirm-${entry.request.confirmId}`"
-        :entry="entry"
-        :remaining-ms="remainingMs(entry.request.expiresAt, now)"
-        @resolved="sweepExpired()"
-      />
+      <div class="bar-list">
+        <ConfirmCard
+          v-for="entry in openConfirms"
+          :key="`confirm-${entry.request.confirmId}`"
+          :entry="entry"
+          :remaining-ms="remainingMs(entry.request.expiresAt, now)"
+          @resolved="sweepExpired()"
+        />
 
-      <AskCard
-        v-for="entry in openAsks"
-        :key="`ask-${entry.request.requestId}`"
-        :ask="askCardOf(entry)"
-        :client-id="entry.clientId"
-        :session-id="entry.sessionId"
-        :remaining-ms="remainingMs(entry.request.expiresAt, now)"
-        @resolved="sweepExpired()"
-      />
-    </div>
-  </section>
+        <AskCard
+          v-for="entry in openAsks"
+          :key="`ask-${entry.request.requestId}`"
+          :ask="askCardOf(entry)"
+          :client-id="entry.clientId"
+          :session-id="entry.sessionId"
+          :remaining-ms="remainingMs(entry.request.expiresAt, now)"
+          @resolved="sweepExpired()"
+        />
+      </div>
+    </section>
+  </Transition>
 </template>
 
 <style scoped>

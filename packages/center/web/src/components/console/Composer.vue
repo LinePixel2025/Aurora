@@ -42,7 +42,39 @@ function autoGrow(): void {
   const el = inputEl.value
   if (el === null) return
   el.style.height = 'auto'
-  el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+  const lines = countLines(el)
+  const height = Math.min(el.scrollHeight, 200)
+  // 高度过渡只开在**行数变化**的那一帧：逐键增减字符时高度每帧都会变一点点，
+  // 常驻过渡会跟输入抢帧（观感是光标附近的字在抖）。加类 → 写高度在同一个 task 里，
+  // 过渡拿到的起点仍是上一帧的高度。
+  if (lines !== growLines) {
+    growLines = lines
+    el.classList.add('grow-anim')
+    if (growTimer !== undefined) window.clearTimeout(growTimer)
+    growTimer = window.setTimeout(() => {
+      el.classList.remove('grow-anim')
+      growTimer = undefined
+    }, 200)
+  }
+  el.style.height = `${height}px`
+}
+
+/** 上一次量到的行数（`autoGrow` 用它判"行数有没有变"） */
+let growLines = 0
+let growTimer: number | undefined
+
+/**
+ * 当前内容占几行：`scrollHeight` 减掉上下内边距再除以行高。
+ * 判据是**行数**而不是像素差 —— 同一行里多打几个字也会让宽度变化、`scrollHeight` 偶尔抖动，
+ * 按像素判会把"没换行"的那一帧也当成换行。
+ */
+function countLines(el: HTMLTextAreaElement): number {
+  const style = getComputedStyle(el)
+  const lineHeight = Number.parseFloat(style.lineHeight)
+  if (!Number.isFinite(lineHeight) || lineHeight <= 0) return 1
+  const padding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom)
+  const content = el.scrollHeight - (Number.isFinite(padding) ? padding : 0)
+  return Math.max(1, Math.round(content / lineHeight))
 }
 
 watch(draft, () => void nextTick(autoGrow))
@@ -162,6 +194,7 @@ async function toggleMic(): Promise<void> {
 }
 
 onBeforeUnmount(() => {
+  if (growTimer !== undefined) window.clearTimeout(growTimer)
   if (recorder !== null) {
     recorder.onstop = null
     discardRecording()
@@ -294,6 +327,14 @@ const micTitle = computed(() => {
 
 .composer-input:focus {
   outline: none;
+}
+
+/*
+ * 高度过渡（行数变化的那一帧由 `autoGrow` 临时挂上）：textarea 的高度跳变发生在
+ * 「一行变成两行 / 两行退回一行」时 —— 那时才值得 150ms 的过渡；常驻过渡会与输入抢帧。
+ */
+.composer-input.grow-anim {
+  transition: height var(--dur-fast) var(--ease-standard);
 }
 
 .composer-bar {

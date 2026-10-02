@@ -92,6 +92,15 @@ async function createFor(clientId: string): Promise<void> {
   await create()
 }
 
+/**
+ * 「回到最新」走平滑滚动，但尊重系统「减少动态效果」：命中的用户是**主动**关掉动画的，
+ * 平滑滚动的时间轴对他们同样属于"多余的动态"（与桌面端 `MessageList.jumpToLatest` 同款）。
+ */
+function jumpToLatest(): void {
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+  stick(reduceMotion ? 'auto' : 'smooth')
+}
+
 function openSession(sessionId: string): void {
   const clientId = entry.value?.client.clientId
   if (clientId === undefined) return
@@ -106,7 +115,10 @@ const sessionList = computed(() => entry.value?.remoteSessions ?? [])
 const fileInput = ref<HTMLInputElement | null>(null)
 const sendingFile = ref(false)
 const canSendFile = computed(
-  () => entry.value !== null && entry.value.client.online && entry.value.status?.center.allowFileTransfer === true,
+  () =>
+    entry.value !== null &&
+    entry.value.client.online &&
+    entry.value.status?.center.allowFileTransfer === true,
 )
 
 function pickFile(): void {
@@ -145,7 +157,9 @@ async function onFilePicked(event: Event): Promise<void> {
         @create="createFor"
       />
     </aside>
-    <div v-if="drawer !== 'none'" class="scrim" @click="drawer = 'none'" />
+    <Transition name="fade">
+      <div v-if="drawer !== 'none'" class="scrim" @click="drawer = 'none'" />
+    </Transition>
 
     <section class="main">
       <div class="main-head">
@@ -187,7 +201,7 @@ async function onFilePicked(event: Event): Promise<void> {
           type="button"
           class="head-btn"
           data-action="console.jump-latest"
-          @click="stick('smooth')"
+          @click="jumpToLatest()"
         >
           回到最新
         </button>
@@ -216,7 +230,7 @@ async function onFilePicked(event: Event): Promise<void> {
                 :session="session"
                 :entry="entry"
                 :following="following"
-                @jump-latest="stick('smooth')"
+                @jump-latest="jumpToLatest()"
               />
             </template>
 
@@ -461,6 +475,9 @@ async function onFilePicked(event: Event): Promise<void> {
   border-left: 1px solid var(--border-subtle);
   background: var(--fill-1);
   overflow: hidden;
+  /* 展开 / 收起是**布局级**过渡（宽度参与主区排版），提前提一层合成提示省掉首帧的抖动；
+     只给这一处（及窄屏那两枚抽屉）——全站铺 `will-change` 会白占显存。 */
+  will-change: width;
   transition:
     width var(--dur-base) var(--ease-spring),
     opacity var(--transition-fast);
@@ -502,6 +519,8 @@ async function onFilePicked(event: Event): Promise<void> {
     box-shadow: var(--shadow-3);
     opacity: 0;
     pointer-events: none;
+    /* 窄屏两枚抽屉走的是 transform + opacity（合成器属性），覆盖掉桌面那份 `width` 提示 */
+    will-change: transform, opacity;
     transition:
       transform var(--dur-base) var(--ease-spring),
       opacity var(--transition-fast);

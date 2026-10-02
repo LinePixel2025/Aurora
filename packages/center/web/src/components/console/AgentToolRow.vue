@@ -321,6 +321,17 @@ function toggle(): void {
   animation: aurora-tint-out var(--dur-tint) var(--ease-standard) both;
 }
 
+/*
+ * `prefers-reduced-motion`：全局兜底把动画压到 1ms，而 `both` 的**终点会停在起点的底色上**
+ * （1ms 内跑完 = 肉眼看到的是一块常驻的高亮底），所以这里直接不提底色；
+ * 状态点那一下确认仍保留（终态是常驻语义，不是纯动效）。与桌面端 `AgentToolRow` 同款。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .tool-card.settled .tool-head {
+    animation: none;
+  }
+}
+
 /* 折叠动画要的是裁剪，不是让内容重新排版：展开体里的滚动容器不许被 flex 压缩 */
 .tool-body {
   display: flex;

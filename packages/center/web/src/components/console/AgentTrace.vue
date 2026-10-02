@@ -217,10 +217,13 @@ watch(
   transform: rotate(90deg);
 }
 
-/* 开合 = grid 轨道过渡：终点 1fr 每帧现解，流式内容继续长也不裁 */
+/* 开合 = grid 轨道过渡：终点 1fr 每帧现解，流式内容继续长也不裁。
+   `grid-template-rows` 是布局级属性、每一帧都要重新排版轨道，先提一层合成提示
+   （全站只此一处与右栏宽度那处，不铺开）。 */
 .trace-clip {
   display: grid;
   grid-template-rows: 0fr;
+  will-change: grid-template-rows;
   transition: grid-template-rows var(--dur-base) var(--ease-standard);
 }
 

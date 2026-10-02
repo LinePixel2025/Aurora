@@ -829,176 +829,182 @@ function filterHistory(automationId: string): void {
       </template>
     </template>
 
-    <!-- 新建 / 编辑弹层 -->
-    <div v-if="editorOpen" class="auto-mask" @click.self="editorOpen = false">
-      <div
-        class="auto-editor"
-        role="dialog"
-        aria-modal="true"
-        aria-label="编辑自动化"
-        data-panel="automation-editor"
-      >
-        <header class="auto-editor-head">
-          <span class="auto-editor-title">{{ editingOriginal ? '编辑自动化' : '新建自动化' }}</span>
-          <button
-            class="auto-icon-btn"
-            type="button"
-            aria-label="关闭"
-            data-action="automation.close"
-            @click="editorOpen = false"
-          >
-            <X :size="16" :stroke-width="1.8" aria-hidden="true" />
-          </button>
-        </header>
-
-        <div class="auto-editor-body">
-          <label class="auto-field">
-            <span class="auto-field-label">名称</span>
-            <input v-model="editor.name" class="ui-input" type="text" placeholder="自动化名称" />
-          </label>
-
-          <div class="auto-field">
-            <span class="auto-field-label">模式</span>
-            <div class="auto-modes">
-              <label class="auto-mode">
-                <input v-model="editor.mode" type="radio" value="agent" />
-                <span>Agent Mode（跑一次 Agent 会话）</span>
-              </label>
-              <label class="auto-mode">
-                <input v-model="editor.mode" type="radio" value="normal" />
-                <span>Normal Mode（执行操作组件）</span>
-              </label>
-            </div>
-          </div>
-
-          <div class="auto-field">
-            <span class="auto-field-label">调用次数上限</span>
-            <div class="auto-runs">
-              <input
-                v-model="editor.maxRuns"
-                class="ui-input auto-runs-input"
-                type="number"
-                min="0"
-                step="1"
-                inputmode="numeric"
-                placeholder="0"
-                aria-label="调用次数上限"
-              />
-              <template v-if="editingOriginal">
-                <span class="auto-dim auto-runs-current">当前已调用 {{ editor.runCount }} 次</span>
-                <button
-                  class="ui-btn ui-btn--ghost"
-                  type="button"
-                  :disabled="editor.runCount === 0"
-                  title="把已调用次数清零后随本次保存一起回传"
-                  @click="editor.runCount = 0"
-                >
-                  重置计数
-                </button>
-              </template>
-            </div>
-            <p class="auto-field-hint">0 = 不限；用满后自动停用。</p>
-            <p v-if="editingOriginal && runsExhausted(editingOriginal)" class="auto-field-hint">
-              该自动化已用尽次数并被引擎自动停用：提高上限或重置计数后，还需重新启用。
-            </p>
-          </div>
-
-          <div class="auto-field">
-            <span class="auto-field-label">触发器</span>
-            <select
-              class="ui-input"
-              :value="editor.triggerKind"
-              @change="onTriggerKindChange($event)"
+    <!-- 新建 / 编辑弹层（遮罩淡入淡出，本轮：弹层是「挡住了别处」的强信号，硬切太跳） -->
+    <Transition name="fade">
+      <div v-if="editorOpen" class="auto-mask" @click.self="editorOpen = false">
+        <div
+          class="auto-editor"
+          role="dialog"
+          aria-modal="true"
+          aria-label="编辑自动化"
+          data-panel="automation-editor"
+        >
+          <header class="auto-editor-head">
+            <span class="auto-editor-title">{{
+              editingOriginal ? '编辑自动化' : '新建自动化'
+            }}</span>
+            <button
+              class="auto-icon-btn"
+              type="button"
+              aria-label="关闭"
+              data-action="automation.close"
+              @click="editorOpen = false"
             >
-              <option
-                v-for="condition in catalog.conditions"
-                :key="condition.kind"
-                :value="condition.kind"
-              >
-                {{ condition.label }}{{ condition.requiresSchedule ? '（依赖课程表）' : '' }}
-              </option>
-            </select>
-            <p v-if="editingCondition" class="auto-field-hint">
-              {{ editingCondition.description }}
-            </p>
-            <AutomationFields
-              :fields="editingCondition?.fields ?? []"
-              :model-value="editor.params"
-              @update:model-value="editor.params = $event"
-            />
-          </div>
+              <X :size="16" :stroke-width="1.8" aria-hidden="true" />
+            </button>
+          </header>
 
-          <label v-if="editor.mode === 'agent'" class="auto-field">
-            <span class="auto-field-label">任务指令</span>
-            <textarea
-              v-model="editor.prompt"
-              class="ui-input auto-prompt"
-              rows="4"
-              placeholder="触发后 Agent 要做什么"
-            ></textarea>
-          </label>
+          <div class="auto-editor-body">
+            <label class="auto-field">
+              <span class="auto-field-label">名称</span>
+              <input v-model="editor.name" class="ui-input" type="text" placeholder="自动化名称" />
+            </label>
 
-          <div v-else class="auto-field">
-            <span class="auto-field-label">操作组件（顺序执行）</span>
-            <div v-for="(action, index) in editor.actions" :key="index" class="auto-action-row">
+            <div class="auto-field">
+              <span class="auto-field-label">模式</span>
+              <div class="auto-modes">
+                <label class="auto-mode">
+                  <input v-model="editor.mode" type="radio" value="agent" />
+                  <span>Agent Mode（跑一次 Agent 会话）</span>
+                </label>
+                <label class="auto-mode">
+                  <input v-model="editor.mode" type="radio" value="normal" />
+                  <span>Normal Mode（执行操作组件）</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="auto-field">
+              <span class="auto-field-label">调用次数上限</span>
+              <div class="auto-runs">
+                <input
+                  v-model="editor.maxRuns"
+                  class="ui-input auto-runs-input"
+                  type="number"
+                  min="0"
+                  step="1"
+                  inputmode="numeric"
+                  placeholder="0"
+                  aria-label="调用次数上限"
+                />
+                <template v-if="editingOriginal">
+                  <span class="auto-dim auto-runs-current"
+                    >当前已调用 {{ editor.runCount }} 次</span
+                  >
+                  <button
+                    class="ui-btn ui-btn--ghost"
+                    type="button"
+                    :disabled="editor.runCount === 0"
+                    title="把已调用次数清零后随本次保存一起回传"
+                    @click="editor.runCount = 0"
+                  >
+                    重置计数
+                  </button>
+                </template>
+              </div>
+              <p class="auto-field-hint">0 = 不限；用满后自动停用。</p>
+              <p v-if="editingOriginal && runsExhausted(editingOriginal)" class="auto-field-hint">
+                该自动化已用尽次数并被引擎自动停用：提高上限或重置计数后，还需重新启用。
+              </p>
+            </div>
+
+            <div class="auto-field">
+              <span class="auto-field-label">触发器</span>
               <select
                 class="ui-input"
-                :value="action.kind"
-                @change="onActionKindChange(index, $event)"
+                :value="editor.triggerKind"
+                @change="onTriggerKindChange($event)"
               >
                 <option
-                  v-for="descriptor in catalog.actions"
-                  :key="descriptor.kind"
-                  :value="descriptor.kind"
-                  :disabled="!descriptor.available"
+                  v-for="condition in catalog.conditions"
+                  :key="condition.kind"
+                  :value="condition.kind"
                 >
-                  {{ descriptor.label }}{{ descriptor.available ? '' : '（不可用）' }}
+                  {{ condition.label }}{{ condition.requiresSchedule ? '（依赖课程表）' : '' }}
                 </option>
               </select>
+              <p v-if="editingCondition" class="auto-field-hint">
+                {{ editingCondition.description }}
+              </p>
               <AutomationFields
-                class="auto-action-fields"
-                :fields="catalog.actions.find((item) => item.kind === action.kind)?.fields ?? []"
-                :model-value="action.params"
-                @update:model-value="onActionParams(index, $event)"
+                :fields="editingCondition?.fields ?? []"
+                :model-value="editor.params"
+                @update:model-value="editor.params = $event"
               />
-              <button class="ui-btn ui-btn--danger" type="button" @click="removeAction(index)">
-                移除
+            </div>
+
+            <label v-if="editor.mode === 'agent'" class="auto-field">
+              <span class="auto-field-label">任务指令</span>
+              <textarea
+                v-model="editor.prompt"
+                class="ui-input auto-prompt"
+                rows="4"
+                placeholder="触发后 Agent 要做什么"
+              ></textarea>
+            </label>
+
+            <div v-else class="auto-field">
+              <span class="auto-field-label">操作组件（顺序执行）</span>
+              <div v-for="(action, index) in editor.actions" :key="index" class="auto-action-row">
+                <select
+                  class="ui-input"
+                  :value="action.kind"
+                  @change="onActionKindChange(index, $event)"
+                >
+                  <option
+                    v-for="descriptor in catalog.actions"
+                    :key="descriptor.kind"
+                    :value="descriptor.kind"
+                    :disabled="!descriptor.available"
+                  >
+                    {{ descriptor.label }}{{ descriptor.available ? '' : '（不可用）' }}
+                  </option>
+                </select>
+                <AutomationFields
+                  class="auto-action-fields"
+                  :fields="catalog.actions.find((item) => item.kind === action.kind)?.fields ?? []"
+                  :model-value="action.params"
+                  @update:model-value="onActionParams(index, $event)"
+                />
+                <button class="ui-btn ui-btn--danger" type="button" @click="removeAction(index)">
+                  移除
+                </button>
+              </div>
+              <button
+                class="ui-btn ui-btn--ghost auto-action-add"
+                type="button"
+                :disabled="availableActions.length === 0 || editor.actions.length >= 10"
+                @click="addAction"
+              >
+                <Plus :size="13" :stroke-width="1.9" aria-hidden="true" />
+                添加操作
               </button>
             </div>
-            <button
-              class="ui-btn ui-btn--ghost auto-action-add"
-              type="button"
-              :disabled="availableActions.length === 0 || editor.actions.length >= 10"
-              @click="addAction"
-            >
-              <Plus :size="13" :stroke-width="1.9" aria-hidden="true" />
-              添加操作
-            </button>
           </div>
-        </div>
 
-        <footer class="auto-editor-foot">
-          <p v-if="editorError" class="ui-error auto-editor-error">{{ editorError }}</p>
-          <button
-            class="ui-btn ui-btn--ghost"
-            type="button"
-            data-action="automation.cancel"
-            @click="editorOpen = false"
-          >
-            取消
-          </button>
-          <button
-            class="ui-btn ui-btn--primary"
-            type="button"
-            data-action="automation.save"
-            :disabled="!canSubmit || editorSaving"
-            @click="submitEditor"
-          >
-            {{ editorSaving ? '保存中…' : '保存' }}
-          </button>
-        </footer>
+          <footer class="auto-editor-foot">
+            <p v-if="editorError" class="ui-error auto-editor-error">{{ editorError }}</p>
+            <button
+              class="ui-btn ui-btn--ghost"
+              type="button"
+              data-action="automation.cancel"
+              @click="editorOpen = false"
+            >
+              取消
+            </button>
+            <button
+              class="ui-btn ui-btn--primary"
+              type="button"
+              data-action="automation.save"
+              :disabled="!canSubmit || editorSaving"
+              @click="submitEditor"
+            >
+              {{ editorSaving ? '保存中…' : '保存' }}
+            </button>
+          </footer>
+        </div>
       </div>
-    </div>
+    </Transition>
   </section>
 </template>
 

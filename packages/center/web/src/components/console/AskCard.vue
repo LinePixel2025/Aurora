@@ -213,9 +213,7 @@ async function submit(skipped = false): Promise<void> {
           v-model="freeText[index]"
           class="free-input"
           type="text"
-          :placeholder="
-            optionsOf(index).length > 0 ? '也可以补充一句（可选）' : '输入你的回答'
-          "
+          :placeholder="optionsOf(index).length > 0 ? '也可以补充一句（可选）' : '输入你的回答'"
           :disabled="expired || busy"
           data-field="chat.ask-free"
           @keydown.enter.prevent="submit(false)"

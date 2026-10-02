@@ -40,7 +40,7 @@ const countLabel = computed(() => `${props.entries.length} 台 · ${onlineCount.
       <li v-for="entry in entries" :key="entry.client.clientId" class="rail-item">
         <button
           type="button"
-          class="rail-row"
+          class="rail-row hover-fill"
           :class="{ active: entry.client.clientId === selectedId }"
           data-field="rail.client-row"
           :data-client-id="entry.client.clientId"
@@ -180,6 +180,12 @@ const countLabel = computed(() => `${props.entries.length} 台 · ${onlineCount.
   border-bottom: 1px solid var(--border-subtle);
 }
 
+/*
+ * 行的 hover 底色走共享 `.hover-fill`（与桌面端侧栏同款）：只留颜色过渡在本组件，
+ * 免得两处各写一份一模一样的 `background-color var(--transition-fast)`。
+ * `.active` 用复合选择器提高特异性压过 `.hover-fill:hover` —— 选中行悬停时
+ * 不该退成 hover 那一档（桌面端 SessionNav 也是这么处理冲突的）。
+ */
 .rail-row {
   display: flex;
   flex-direction: column;
@@ -189,16 +195,10 @@ const countLabel = computed(() => `${props.entries.length} 台 · ${onlineCount.
   padding: var(--space-2) var(--space-3);
   text-align: left;
   color: var(--text-secondary);
-  transition:
-    background-color var(--transition-fast),
-    color var(--transition-fast);
+  transition: color var(--transition-fast);
 }
 
-.rail-row:hover {
-  background: var(--fill-2);
-}
-
-.rail-row.active {
+.rail-row.hover-fill.active {
   background: var(--fill-3);
   color: var(--text-primary);
 }
@@ -218,8 +218,10 @@ const countLabel = computed(() => `${props.entries.length} 台 · ${onlineCount.
   background: var(--status-idle);
 }
 
+/* 在线 = 呼吸（共享 `aurora-breathe`）；离线保持静态灰点 —— 它在等下一次上线，不是"活着" */
 .rail-dot.on {
   background: var(--status-ok);
+  animation: aurora-breathe var(--dur-breathe) var(--ease-standard) infinite;
 }
 
 .rail-name {

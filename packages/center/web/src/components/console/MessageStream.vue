@@ -289,6 +289,37 @@ const showLoading = computed(() => {
   )
   return props.session.pending && !hasStreamingAssistant
 })
+
+/**
+ * 「整表替换」窗口（切会话 / 历史回放）：这一段里**关掉**进出场动画。
+ *
+ * `<TransitionGroup name="rise">` 的 leave 只改 opacity / transform，被换掉的条目在
+ * `--dur-base` 内仍然占位，而新条目同时进场 —— 列表高度瞬时接近翻倍、滚动条跟着跳两次。
+ * 整表替换本来就是「内容整体换掉」，不该有「一条条浮现」的语义；流式追加**不换**数组引用，
+ * 因此逐条进场只在真正新增时发生（与桌面端 `MessageList` 的 `swapping` 同款策略）。
+ *
+ * 关的是**一段短窗口**（80ms）而不是只关一帧：历史回放是一串事件分几拍落地的
+ * （用户消息 / 助手消息 / 工具行各自一个 patch），只关一帧的话从第二拍起又放动画，
+ * 于是旧条目还在离开、新条目已经开始浮起。
+ */
+const swapping = ref(false)
+let swapTimer: number | undefined
+
+function markSwapping(): void {
+  swapping.value = true
+  if (swapTimer !== undefined) window.clearTimeout(swapTimer)
+  swapTimer = window.setTimeout(() => {
+    swapping.value = false
+    swapTimer = undefined
+  }, 80)
+}
+
+watch(() => props.session.items, markSwapping)
+watch(() => props.session.sessionId, markSwapping)
+
+onBeforeUnmount(() => {
+  if (swapTimer !== undefined) window.clearTimeout(swapTimer)
+})
 </script>
 
 <template>
@@ -303,101 +334,123 @@ const showLoading = computed(() => {
       这个远程会话还是空的。在下面输入一句话，Agent 会在客户端上执行并把过程实时回传到这里。
     </p>
 
-    <template v-for="item in session.items" :key="item.id">
-      <!-- 用户消息：右对齐胶囊 -->
-      <div v-if="item.kind === 'user'" class="row r-user" data-field="chat.user-message">
-        <div class="bubble">{{ item.content }}</div>
-      </div>
-
-      <!-- 错误条 -->
-      <div v-else-if="item.kind === 'error'" class="row r-error" data-field="chat.error">
-        <div class="error-box">
-          <strong>出错了</strong>
-          <span>{{ item.content }}</span>
-          <span v-if="item.code" class="code">{{ item.code }}</span>
+    <!--
+      条目进场：`rise`（共享预设）+ `:css="!swapping"`（整表替换的那一段关掉动画，见脚本注释）。
+      `tag="div"` 的包装元素自己扛下原来的列布局 —— 包装元素是 `TransitionGroup` 必须的，
+      不把 `.stream` 的 flex/间距挪一份到这里，所有条目就会挤成无间距的一摞。
+    -->
+    <TransitionGroup name="rise" tag="div" class="stream-items" :css="!swapping">
+      <template v-for="item in session.items" :key="item.id">
+        <!-- 用户消息：右对齐胶囊 -->
+        <div v-if="item.kind === 'user'" class="row r-user" data-field="chat.user-message">
+          <div class="bubble">{{ item.content }}</div>
         </div>
-      </div>
 
-      <!-- 提问卡（本轮，docs/12 §5）：跟消息一起排；结算后原地变成只读卡（留痕） -->
-      <AskCard
-        v-else-if="item.kind === 'ask' && item.ask"
-        :ask="item.ask"
-        :client-id="session.clientId"
-        :session-id="session.sessionId"
-        :remaining-ms="item.ask.expiresAt - now"
-        @resolved="onAskResolved"
-      />
-
-      <!-- 任务清单卡 -->
-      <JobCard v-else-if="item.kind === 'job' && item.job" :job="item.job" />
-
-      <!-- 子代理卡（没有配套工具行时的回落渲染） -->
-      <SubagentCard
-        v-else-if="item.kind === 'subagent' && item.subagent"
-        :snapshot="item.subagent"
-      />
-
-      <!-- 助手消息：轨迹容器（思考 → 工具行） + 正文 -->
-      <div v-else-if="item.kind === 'assistant'" class="row r-assistant">
-        <div class="assistant-body">
-          <AgentTrace
-            v-if="hasTrace(item)"
-            :steps="item.tools.length"
-            :failed="failedCount(item)"
-            :running="item.streaming === true"
-            :started-at="item.startedAt"
-            :ended-at="item.endedAt"
-            :open="traceOpen(item)"
-            @toggle="toggleTrace(item)"
-          >
-            <ThinkingBlock
-              v-if="(item.reasoning ?? '') !== ''"
-              :reasoning="item.reasoning ?? ''"
-              :streaming="item.streaming === true"
-              :last-at="item.reasoningAt"
-            />
-            <AgentToolRow v-for="tool in item.tools" :key="tool.id" :tool="tool" />
-          </AgentTrace>
-
-          <!-- Markdown 的唯一出口：渲染器 `html:false` 先转义再套白名单标记，链接 scheme
-               走 validateLink（javascript: 拒绝）—— 与桌面端同一条安全基线 -->
-          <!-- eslint-disable-next-line vue/no-v-html -->
-          <div class="md" data-field="chat.markdown" v-html="htmlOf(item, 'content')" />
-
-          <div class="msg-foot">
-            <span v-if="item.streaming" class="streaming-caret" aria-hidden="true" />
-            <button
-              v-else-if="ttsReady && item.content.trim() !== ''"
-              type="button"
-              class="speak-btn"
-              :class="{ active: speakingId === item.id }"
-              :data-action="speakingId === item.id ? 'stop-speak' : 'speak-message'"
-              @click="speak(item)"
-            >
-              <Volume2 :size="13" :stroke-width="1.7" aria-hidden="true" />
-              {{
-                synthesizingId === item.id ? '合成中…' : speakingId === item.id ? '停止' : '朗读'
-              }}
-            </button>
+        <!-- 错误条 -->
+        <div v-else-if="item.kind === 'error'" class="row r-error" data-field="chat.error">
+          <div class="error-box">
+            <strong>出错了</strong>
+            <span>{{ item.content }}</span>
+            <span v-if="item.code" class="code">{{ item.code }}</span>
           </div>
         </div>
-      </div>
-    </template>
+
+        <!-- 提问卡（本轮，docs/12 §5）：跟消息一起排；结算后原地变成只读卡（留痕） -->
+        <AskCard
+          v-else-if="item.kind === 'ask' && item.ask"
+          :ask="item.ask"
+          :client-id="session.clientId"
+          :session-id="session.sessionId"
+          :remaining-ms="item.ask.expiresAt - now"
+          @resolved="onAskResolved"
+        />
+
+        <!-- 任务清单卡 -->
+        <JobCard v-else-if="item.kind === 'job' && item.job" :job="item.job" />
+
+        <!-- 子代理卡（没有配套工具行时的回落渲染） -->
+        <SubagentCard
+          v-else-if="item.kind === 'subagent' && item.subagent"
+          :snapshot="item.subagent"
+        />
+
+        <!-- 助手消息：轨迹容器（思考 → 工具行） + 正文 -->
+        <div v-else-if="item.kind === 'assistant'" class="row r-assistant">
+          <div class="assistant-body">
+            <AgentTrace
+              v-if="hasTrace(item)"
+              :steps="item.tools.length"
+              :failed="failedCount(item)"
+              :running="item.streaming === true"
+              :started-at="item.startedAt"
+              :ended-at="item.endedAt"
+              :open="traceOpen(item)"
+              @toggle="toggleTrace(item)"
+            >
+              <ThinkingBlock
+                v-if="(item.reasoning ?? '') !== ''"
+                :reasoning="item.reasoning ?? ''"
+                :streaming="item.streaming === true"
+                :last-at="item.reasoningAt"
+              />
+              <!-- 工具行在一轮里逐个出现，走 `tool` 预设分行错峰（见本文件样式末尾） -->
+              <TransitionGroup
+                v-if="item.tools.length > 0"
+                name="tool"
+                tag="div"
+                class="tools"
+                :css="!swapping"
+              >
+                <AgentToolRow v-for="tool in item.tools" :key="tool.id" :tool="tool" />
+              </TransitionGroup>
+            </AgentTrace>
+
+            <!-- Markdown 的唯一出口：渲染器 `html:false` 先转义再套白名单标记，链接 scheme
+                 走 validateLink（javascript: 拒绝）—— 与桌面端同一条安全基线 -->
+            <!-- eslint-disable-next-line vue/no-v-html -->
+            <div class="md" data-field="chat.markdown" v-html="htmlOf(item, 'content')" />
+
+            <div class="msg-foot">
+              <span v-if="item.streaming" class="streaming-caret" aria-hidden="true" />
+              <button
+                v-else-if="ttsReady && item.content.trim() !== ''"
+                type="button"
+                class="speak-btn"
+                :class="{ active: speakingId === item.id }"
+                :data-action="speakingId === item.id ? 'stop-speak' : 'speak-message'"
+                @click="speak(item)"
+              >
+                <Volume2 :size="13" :stroke-width="1.7" aria-hidden="true" />
+                {{
+                  synthesizingId === item.id ? '合成中…' : speakingId === item.id ? '停止' : '朗读'
+                }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </template>
+    </TransitionGroup>
 
     <div v-if="showLoading" class="pending-row" data-field="chat.pending">
-      <span class="spinner" aria-hidden="true" />
+      <!-- 三点等待用共享的 `aurora-typing-bounce`（与桌面端同一枚关键帧），
+           比转圈更贴合「模型正在吐字」的语义；错峰的延迟写成令牌的倍数，
+           `prefers-reduced-motion` 压时长时跟着一起缩。 -->
+      <span class="typing" aria-hidden="true"><i /><i /><i /></span>
       正在生成…
     </div>
 
-    <button
-      v-if="!following && session.items.length > 0"
-      type="button"
-      class="jump-latest"
-      data-action="chat.jump-latest"
-      @click="emit('jumpLatest')"
-    >
-      回到最新
-    </button>
+    <!-- 「回到最新」只做淡入淡出：位置由 sticky 决定，位移会溢出到消息之上 -->
+    <Transition name="fade">
+      <button
+        v-if="!following && session.items.length > 0"
+        type="button"
+        class="jump-latest"
+        data-action="chat.jump-latest"
+        @click="emit('jumpLatest')"
+      >
+        回到最新
+      </button>
+    </Transition>
   </div>
 </template>
 
@@ -408,6 +461,16 @@ const showLoading = computed(() => {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4) 0 var(--space-5);
+}
+
+/*
+ * `TransitionGroup` 的包装元素：条目自己的列布局（原来挂在 `.stream` 上的那份）
+ * 必须跟着挪进来 —— 包装元素是块级元素，不留这一份的话所有条目会失去间距。
+ */
+.stream-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 .empty {
@@ -512,6 +575,29 @@ const showLoading = computed(() => {
   font-size: var(--text-sm);
 }
 
+/* 三点等待：形状与节奏与桌面端 `.typing` 逐字一致（同一份 `aurora-typing-bounce`） */
+.typing {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.typing i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--aurora-blue);
+  animation: aurora-typing-bounce var(--dur-bounce) infinite ease-in-out;
+}
+
+/* 延迟写成 `--dur-bounce` 的倍数：reduced-motion 把时长压到 1ms 时错峰也一并消失 */
+.typing i:nth-child(2) {
+  animation-delay: calc(var(--dur-bounce) * 0.15);
+}
+
+.typing i:nth-child(3) {
+  animation-delay: calc(var(--dur-bounce) * 0.3);
+}
+
 .jump-latest {
   position: sticky;
   bottom: var(--space-2);
@@ -533,5 +619,53 @@ const showLoading = computed(() => {
 .jump-latest:hover {
   background: var(--fill-2);
   color: var(--text-primary);
+}
+
+/* ── 工具行进场（TransitionGroup name="tool"）──
+   同一轮里工具行是逐个出现的：轻微上浮 + 淡入，比条目自身的 `rise` 更短更轻
+   （一轮可能连着长出好几行，动作太重整个消息区会像在跳）。
+   theme.css 没有 `tool-*` 预设，按桌面端 `MessageList.vue` 的定义在本地 scoped 里补一份。 */
+.tool-enter-active {
+  transition:
+    opacity var(--dur-base) var(--ease-standard),
+    transform var(--dur-base) var(--ease-spring);
+}
+
+.tool-leave-active {
+  transition:
+    opacity var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
+}
+
+.tool-enter-from {
+  opacity: 0;
+  transform: translateY(6px) scale(0.985);
+}
+
+.tool-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+/*
+ * 同一批行错开 40ms 出现（第 2 / 3 / 4 行起）。
+ * 必须挂在 enter / leave 的 active 类下：`transition-delay` 是**常驻生效**的，
+ * 只写 `.tool-card:nth-child(2)` 会让这一行此后任何过渡都晚 40ms 起步（误伤别的动效）。
+ * 选择器按子组件根节点（`.tool-card`）匹配：scoped 的 `[data-v]` 与子组件根上的父 scope id
+ * 会同时命中，用法与桌面端那份一致。
+ */
+.tools > .tool-card:nth-child(2).tool-enter-active,
+.tools > .tool-card:nth-child(2).tool-leave-active {
+  transition-delay: 40ms;
+}
+
+.tools > .tool-card:nth-child(3).tool-enter-active,
+.tools > .tool-card:nth-child(3).tool-leave-active {
+  transition-delay: 80ms;
+}
+
+.tools > .tool-card:nth-child(n + 4).tool-enter-active,
+.tools > .tool-card:nth-child(n + 4).tool-leave-active {
+  transition-delay: 120ms;
 }
 </style>
