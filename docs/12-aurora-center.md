@@ -1,6 +1,8 @@
 # 12 · Aurora Center —— 网页端控制中心
 
-状态：`已定稿`（v0.2.0 随本设计首次落地；2026-09 扩展轮：注册、设备授权登录、确认卡网页批复、文件 24h 管理与自动删除、移动端适配，并删除手动配对令牌；v0.2.5：§6.3 追加 `automation.*` 六命令、§10 追加自动化视图）
+状态：`已定稿`（v0.2.0 随本设计首次落地；2026-09 扩展轮：注册、设备授权登录、确认卡网页批复、文件 24h 管理与自动删除、移动端适配，并删除手动配对令牌；v0.2.5：§6.3 追加 `automation.*` 六命令、§10 追加自动化视图；
+v0.3.3：§4/§5 追加 `ask.request` / `ask.resolve`（提问中转）、§6.1 补语音能力位的重连语义、
+§10 整节按三栏控制台重写并补验证 harness）
 
 Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控制台**：
 
@@ -473,18 +475,22 @@ aurora-center version
   scp → `docker compose up -d --build`，服务器全程无需访问 npm）；步骤、更新与安全
   注意（纯 HTTP 明文风险、反代 / cloudflared 加 TLS）见 `packages/center/deploy/README.md`。
 
-## 10. Web UI（Apple 风格）
+## 10. Web UI（与桌面端同源的克制风格）
 
 - 技术栈：Vue 3 + vite + 原生 CSS（不引 UI 库）。hash 路由：`#/login`（登录 / 注册切换）、
-  `#/`（客户端 + 会话）、`#/files`（文件管理）、`#/device`（设备授权确认页，未登录可访问）、
-  `#/admin`（用户 / 全部客户端）。
-- 视觉基调：`-apple-system, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei"`
-  字体栈；`#f5f5f7` 底 + 白色大圆角卡片（12–16px）+ `#0071e3` 主色（Apple 蓝）；
-  顶栏毛玻璃（`backdrop-filter: saturate(180%) blur(20px)`）；克制阴影、无重边框。
-- **布局（v0.3.2 重构：对话主导）**：控制台 = 顶部客户端紧凑选择器 + **对话主区独占全高**
-  + 右侧可折叠边栏（两个 tab：「会话列表」/「远程控制」，一键收起后对话全宽，
-  折叠状态存 localStorage）。此前「远程控制 + 会话列表 + 对话区」同列纵向堆叠、
-  对话区被压在下面的布局已废弃。
+  `#/`（控制台）、`#/files`（文件管理）、`#/device`（设备授权确认页，未登录可访问）、
+  `#/admin`（用户 / 全部客户端）、`#/automations`（自动化）。
+- 视觉基调（**v0.3.3 起与桌面端同一份 `theme.css`**，见下面的「视觉单源」）：系统字体栈、
+  分层填充、大圆角、柔和阴影、克制阴影无重边框；暗浅两档由 `prefers-color-scheme`
+  驱动（**没有**独立的主题开关）。旧版 Center 自带的那套调色板
+  （`#f5f5f7` / `#0071e3` / 12–16px 圆角）已随本轮重写退役。
+- **布局（v0.3.3 重写：三栏控制台）**：`设备列表(264px) | 会话流(1fr, 内容列 860px 中轴)
+  | 控制面板(300px, 可收起，状态存 localStorage)`；待办栏常驻会话流上方。
+  顶栏是网页自己的（品牌 + 四个导航项 + 在线台数 + WS 链路状态 + 账号 + 退出）。
+  会话流 / 输入卡的阅读动线与桌面端一致（860px 中轴）。
+- **开发态**：`pnpm --filter @aurora/center dev:web` 起 vite dev，`/api`（含它的 WebSocket）
+  代理到本地 Center（默认 `http://127.0.0.1:8787`，`AURORA_CENTER_URL` 可改）。
+  生产托管方式不变：服务器直接吐 `dist-web`。
 - 会话渲染按 `messageId` 聚合 `text` 增量；助手正文与思考块走 **Markdown 渲染**
   （v0.3.2 起自写渲染器；**2026-10-02 起与桌面端共用同一份实现** ——
   `@aurora/shared/browser` 的 markdown 渲染器 + `md.css`，含表格 / 提示块 / 任务列表 /
@@ -492,10 +498,15 @@ aurora-center version
   懒加载分包 + 按源码缓存 + 视口内才渲染）；HTML 转义 + scheme 白名单防 XSS；
   渲染结果按消息缓存，代码块复制按钮走容器事件委托；用户气泡保持纯文本）；
   工具调用渲染为可折叠卡片；思考过程折叠块；
-  任务清单（job）与子代理（subagent）各渲染为一张状态卡；`done` 结束
-  loading；`error` 红条；**待办栏**（会话内 + 控制台顶部全局栏，同一套卡）同时承接
-  敏感工具确认卡（倒计时 + 批准 / 拒绝）与提问卡（v0.3.3：header / 问题 / 选项单选多选 /
-  自由文本 + 提交 / 跳过，倒计时按 `expiresAt`，已结算或超时置灰并如实显示「用户未回答」）。
+  任务清单（job）与子代理（subagent）各渲染为一张状态卡（子代理快照挂在 `task` 工具行
+  **内部**展开看只读对话，与桌面端同构）；`done` 结束 loading；`error` 红条；
+  **待办栏**（v0.3.3）同时承接敏感工具确认卡（倒计时 + 批准 / 拒绝）与提问卡
+  （header / 问题 / 选项单选多选 / 自由文本 + 提交 / 跳过，倒计时按 `expiresAt`）。
+  ⚠️ 与桌面端的**有意分叉**：桌面端是「会话内浮层卡 + 全局待办栏」两处，
+  网页端只有**一条**（会话流上方，会话未打开时也在）—— 浏览器里再叠一层浮层会挡住输入卡，
+  而这条栏本来就在视线内。两者共用同一份 state，先到先得，行为完全一致。
+  过期的卡片在栏里整条摘除（并给一条非阻断提示），不再显示「已过期」灰态
+  （网页端的栏按 `remainingMs > 0` 过滤）。
 - **视觉单源（v0.3.3 起）**：观感与桌面端**同一套令牌**——设计变量 / 暗浅主题 /
   `aurora-*` keyframes / 过渡预设 / 语义图标查表（`toolIcons` / `toolLabels`）/
   吸底状态机全部来自 `@aurora/shared/browser`（`theme.css` 与各纯函数模块），
@@ -504,9 +515,29 @@ aurora-center version
   因此两端组件的 `data-field` / `data-action` 命名保持同名（`chat.mic` /
   `chat.ask-user-card` / `chat.trace-live` / `chat.task-card` / `chat.todo-card` …），
   探针判据也就能逐条对齐。
-- **自动跟随滚动（v0.3.2 重做）**：与桌面端同一套「吸底」语义（`stickToBottomCore`
-  搬运版）——跟随状态只由真实用户输入（滚轮 / 拖动 / 翻页键）关闭，流式增量的
-  scroll 事件不关；250ms 意图窗口按之后的读数重判；非跟随态显示「回到底部」胶囊。
+- **自动跟随滚动**：与桌面端同一套「吸底」语义（`stickToBottomCore`，v0.3.3 起
+  是**同一份实现**而不是搬运版）——跟随状态只由真实用户输入（滚轮 / 拖动 / 翻页键）关闭，
+  流式增量的 scroll 事件不关；250ms 意图窗口按之后的读数重判；非跟随态显示「回到最新」。
+- **视觉与行为验收 harness（v0.3.3，`packages/center/verify/`）**：桌面端有
+  `AURORA_CAPTURE` 那套 Electron 截图 + DOM 探针，网页端原先**没有任何"看得见它"的手段**。
+  现在有 `pnpm --filter @aurora/center verify:web`：起**真实服务器子进程**（临时数据目录）
+  + 一台**协议忠实的桩客户端**（`verify/stub-client.mjs`，负责脚本化地制造流式正文 / 工具三态 /
+  子代理快照 / 确认卡 / 提问卡 / 文件上传）+ `puppeteer-core` 驱动的系统 Edge/Chrome，
+  逐场景推进状态后**截图 + 读 DOM**，最后写 `report.json`（与 `capture.ts` 同一口径：
+  每条含 `{ name, file, result, checked, ok }`，任何一条 `ok: false` → 退出码 2）。
+  开关：`AURORA_CWEB_OUT`（输出目录，默认 `%TEMP%/aurora-cweb`）、`AURORA_CWEB_ONLY`
+  （子串过滤；特殊值 `failed` = 只重跑上次失败的）、`AURORA_CWEB_THEME=dark|light`、
+  `AURORA_CWEB_VIEWPORT=mobile`、`AURORA_CWEB_KEEP=1`（保留子服务器与数据目录排障）、
+  `AURORA_CWEB_BROWSER`（指定浏览器；找不到浏览器时**明确 SKIP 并退出 0**）。
+  覆盖 31 个场景 ×（暗/浅两档）＝ 62 条断言：登录 / 设备授权 / 空态控制台 / 设备能力位芯片 /
+  语音门控两态 / 建会话 / 用户气泡 / 流式光标 / Markdown 代码块与外链（含复制按钮回执）/
+  轨迹折叠与阅读顺序（思考 → 工具行 → 正文）/ 思考块（220px 内滚 + 秒数）/ 工具三态与
+  展开体实测高度（`--collapse-h` 与 `scrollHeight` 相差 ≤ 2px）/ 子代理卡与**只读**对话视图 /
+  任务清单卡 / 历史回放 / 确认卡（会话内 + 批复命令）/ 提问卡（选项 / 自由文本 / 作答命令 /
+  过期）/ 文件条与文件页 / 自动化 / 管理员 / 三个面板 / 主题两档 / 移动端单栏抽屉。
+  另有一条诊断工具 `pnpm --filter @aurora/center verify:web:status --server <url> --user <名>
+  --password <密码>`：以管理员身份连上 Center 打印每个客户端的 `ClientStatus`（含 `voice`
+  能力位），用来区分「客户端没上报语音」与「网页是旧包」（见 §6.1 的排查顺序）。
 - **会话管理面板（v0.2.3，§6.3）**：客户端面板内列出该客户端的 `center-` 会话
   （`session.list` 拉取），每项提供：切换查看（网页本地）、「在客户端打开」
   （`session.activate`）、可见性开关（`session.visibility`）、权限档下拉
@@ -532,10 +563,14 @@ aurora-center version
   未配置连按钮都不渲染）录音 → `stt.transcribe` 中转识别 → 文本填入输入框；
   助手消息行内「朗读」按钮（按 `voice.tts` 门控）→ `tts.synthesize` 中转合成 → blob 播放。
   录音需安全上下文（HTTPS / localhost），见 §6.4 已知限制。
-- **移动端适配（v0.3.2 重做）**：≤ 720px 与 ≤ 480px 两档断点——对话区**全屏**为主角，
-  会话列表 / 远程控制收进**覆盖式抽屉**（滑出盖在对话上、关闭即回全屏，替代旧版
-  「内嵌分段展开限高 38%」）；客户端选择器收紧为顶部下拉；表格横向滚动、
-  触摸目标 ≥ 40px、safe-area 与 composer 16px 输入字号（规避 iOS 聚焦缩放）。
+- **移动端适配（v0.3.3 跟随三栏布局重做）**：≤ 720px 单栏——会话流占满，**设备列表与
+  控制面板都变成覆盖式抽屉**（`grid-template-rows: minmax(0,1fr) auto`：主区吃剩余高度、
+  底部标签栏按内容高），开会话后抽屉自动收起；表格横向滚动、触摸目标 ≥ `--hit-target`（40px）、
+  safe-area 与 composer 16px 输入字号（规避 iOS 聚焦缩放）。
+  ⚠️ 外层抽屉容器**不要**与子组件根节点共用类名（`.rail`）：Vue 会把父组件的 scope 属性
+  一并加到子组件根节点上，于是「离屏抽屉」那套 `opacity: 0 / pointer-events: none` 也套到了
+  内层列表上（打开抽屉也看不见内容，harness 的 `mobile-single-column` 实测抓到过）。
+  现在外层叫 `.rail-drawer` / `.panel-drawer`，内层列表用 `data-panel="rail"` 标识。
 
 ## 11. 安全边界与非目标（v1）
 

@@ -4,6 +4,15 @@
 本目录提供**离线容器化部署**方案：构建机打出自包含产物 → 上传服务器 → docker compose 启动，
 服务器全程不需要访问 npm（适合国内云主机）。
 
+> ⚠️ **镜像里的前端就是 `dist-web`**（`Dockerfile` 只 `COPY dist-web`，容器内不跑构建）。
+> 少跑一次 `pnpm --filter @aurora/center build` 就会把一个**旧前端**打进镜像 —— 典型症状是
+> 「客户端明明配了语音，网页上却没有麦克风 / 朗读按钮」（语音 UI 自 v0.3.2 才有）。
+> 怀疑线上是旧包时，用 `pnpm --filter @aurora/center verify:web:status --server <url> --user <名>
+> --password <密码>` 打印客户端的 `ClientStatus`（含 `voice`）：能力位是 `true` 而网页没有按钮，
+> 就是网页包旧了。
+>
+> `docker-compose.yml` 的 `image:` tag 跟版本号走（当前 `0.3.2`）：别在同一 tag 上反复覆盖，
+> 否则排障时说不清线上跑的是哪一版。
 ## 1. 构建机：打部署包
 
 ```bash

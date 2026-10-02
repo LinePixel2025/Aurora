@@ -63,6 +63,19 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   所以一轮的下限仍在 20 秒上下，它的价值是**聚焦**（只跑相关断言、不被无关噪声干扰），
   不是把 24 秒压到几秒。**提交前仍必须跑全量**。
   另有一条跨进程续跑段用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
+- **Center 网页端验收（视觉 + 行为，`packages/center/verify/`）**：
+  `pnpm --filter @aurora/center build && pnpm --filter @aurora/center verify:web`
+  —— 起**真实服务器子进程**（临时数据目录）+ 一台**协议忠实的桩客户端**（脚本化制造流式正文 /
+  工具三态 / 子代理快照 / 确认卡 / 提问卡 / 文件上传）+ `puppeteer-core` 驱动的系统 Edge，
+  逐场景推进状态后**截图 + 读 DOM**，写 `report.json`（口径同 `capture.ts`：任一条 `ok: false` → 退出码 2）。
+  当前基线 **62/62**（31 场景 × 暗浅两档）。开关：`AURORA_CWEB_ONLY`（子串过滤 / 特殊值 `failed`）、
+  `AURORA_CWEB_THEME=dark|light`、`AURORA_CWEB_VIEWPORT=mobile`、`AURORA_CWEB_OUT`、
+  `AURORA_CWEB_KEEP=1`（保留子服务器与数据目录排障）、`AURORA_CWEB_BROWSER`（找不到浏览器时明确 SKIP、退出码 0）。
+  **改网页端 UI 别每次全量跑**：`pnpm --filter @aurora/center dev:web`（vite dev，`/api` 与它的 WS
+  一起代理到本地 Center，`AURORA_CENTER_URL` 改目标），秒级迭代；生产托管方式不变（服务器吐 `dist-web`）。
+  诊断**真实部署**的语音能力位：`pnpm --filter @aurora/center verify:web:status --server <url>
+  --user <名> --password <密码>`（管理员身份连上去打印每个客户端的 `ClientStatus`，含 `voice`）——
+  用来区分「客户端没上报语音」与「网页是旧包」（后者见 `packages/center/deploy/README.md`）。
 - **窗口截图核对（前端视觉验收）**：`$env:AURORA_CAPTURE="$env:TEMP\aurora-capture"; pnpm dev`，会把四个窗口、
   提示条两态、设置页各页与各条 DOM 探针场景（面板 / 收起 / 自动滚底 / 门控 / 拖动 / 思考等级 /
   模型列表与模型选择 / 真实写盘 / 提示条收尾图）截成一批 PNG ——
@@ -97,6 +110,15 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
    宿主解析不到兄弟包的依赖（Center 曾因此在 `vite build` 报 unresolved import）；
    两库无 `eval`，生产 CSP `script-src 'self'` 下动态 chunk 可正常加载（已核 mermaid 12 /
    echarts 6 的 dist）。
+   **视觉资产的其余部分也走同一条单源（2026-10-02 起）**：设计令牌 / 暗浅主题 / `aurora-*`
+   keyframes / 过渡预设 / 原子类在 `@aurora/shared/browser/theme.css`；图标清单 `icons.ts`、
+   工具语义查表 `toolIcons.ts` / `toolLabels.ts`、吸底状态机 `composables/stickToBottomCore.ts` +
+   `useStickToBottom.ts`、实测高度动画 `useCollapseTransition.ts` 都在 `packages/shared/src/browser/`，
+   **桌面四窗口与 Center Web 共用同一份**（center web 里的旧副本已删）。改这些 = 同时改两端界面：
+   改完必须跑 `AURORA_CAPTURE`（桌面，73/73）与 `verify:web`（网页，62/62）两边核对。
+   ⚠️ 齿轮图标在 shared 里叫 **`SettingsGear`**（lucide 的 `Settings` 与配置类型 `Settings` 同名，
+   桶文件 `export *` 无法消歧 → TS2308）：要类型写 `Settings`、要图标写 `SettingsGear`。
+   `lucide-vue-next` 与 `vue` 按同一条规矩声明在 `packages/shared` 的 devDependencies。
 5. **重任务走子进程**：文档内容提取等 CPU/IO 重活由 `utilityProcess.fork` 启动 `extract-worker`（`electron.vite.config.ts` 的第二个 main 入口），不阻塞主进程事件循环。
 6. **IPC 命名**：通道用 `namespace:action`（如 `chat:send`、`mcp:status`）；事件推送 `on/off` 成对暴露；大 payload（文件全文）只在主进程 / worker 内流转，不进渲染进程。
 
@@ -408,6 +430,23 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   设备授权登录
   （`center:deviceLogin` IPC）与账号密码直登的**凭据落库路径共用同一函数**，改落库只改一处；
   上传文件 24h TTL 清理在 `packages/center/src/files.ts`（启动 + 每 15 分钟一轮）。
+- **提问卡中转（`ask_user`，v0.3.3，docs/12 §5）**：Agent 向用户提问时，本地卡片之外经
+  `ask.request` 上行到 Center（网页端渲染提问卡）、网页作答经 `ask.resolve` 下行回
+  `AskUserService.resolve`，与本地卡**先到先得**（幂等，回执 `{ settled }`）。三条口径别改错：
+  ① 只有 `center-` 前缀会话上行，且受 `center.allowRemoteSession` 闸门约束（比确认卡更严：
+  关掉时连卡片都不推、也拒绝网页作答）；② `ask.resolve` 的 `requestId` 是**提问卡自身的 id**
+  （客户端分配），不是网页端生成的命令 id —— 与其它命令的约定相反，改协议时别顺手“统一”；
+  ③ 服务器为提问卡保留 `pendingAsks` 并在网页**新连上时回放未过期项**（180s 窗口，不回放会让
+  刷新一下页永远答不上）；**确认卡没有这条回放**（60s 窗口，属既有行为），别把两者抄成一样。
+  装配逻辑抽在 `main/center/ask-relay.ts`（纯函数、有单测）；把三层串起来的真端到端在
+  `main/center/ask-relay.e2e.test.ts`（真服务器 + 真连接器 + 真 AskUserService，跑在 vitest 里，
+  不需要 Electron —— 所以 `apps/desktop` 有一个**仅测试用**的 `@aurora/center` devDependency）。
+- **Center 部署要「先构建、再打镜像」（docs/12 §10 / `packages/center/deploy/README.md`）**：
+  `deploy/Dockerfile` 只 `COPY dist-web`，镜像里不跑构建 —— 忘了先在构建机执行
+  `pnpm --filter @aurora/center build` 就会把一个**旧前端**打进镜像（症状正是「客户端配了语音，
+  网页上没有麦克风/朗读按钮」：那段 UI 是 v0.3.2 才有的）。`docker-compose.yml` 的镜像 tag
+  也要跟着版本号走（本轮从 `0.3.0` 提到当前版本），别在同一 tag 上反复覆盖 —— 排障时说不清
+  线上到底是哪一版。
 - **远程会话与本地发送是同一条链**：Center 的 `session.input` → `SessionBridge` →
   `agent.send({ origin: 'center' })`（`SendMessageRequest.origin` 已放宽）。
   只转发 `center-` 前缀会话的事件；别在别处再写一条"远程专用"发送通路。
