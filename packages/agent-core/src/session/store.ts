@@ -119,6 +119,8 @@ export class SessionStore {
   private readonly onWriteError: ((error: Error) => void) | undefined
 
   private readonly cache = new Map<string, StoredMessage[]>()
+  /** 消息 id → 会话 id。工具状态更新是热路径，避免每次扫描所有会话。 */
+  private readonly messageOwners = new Map<string, string>()
   /** 会话级元信息（归档等）：与 `cache` / `loaded` / `dirty` 同一套懒加载 + 脏标记 */
   private readonly metaCache = new Map<string, SessionMeta>()
   /**
@@ -195,13 +197,19 @@ export class SessionStore {
         ? {}
         : { images: message.images }),
     }
-    const next = [...(this.cache.get(id) ?? []), stored]
-    // 条数上限：与上下文截断同一套规则，保证不拆散工具调用组
-    const trimmed =
-      this.maxMessages > 0 && next.length > this.maxMessages
-        ? truncateHistory(next, { maxChars: 0, maxMessages: this.maxMessages }).messages
-        : next
-    this.cache.set(id, trimmed)
+    const current = this.cache.get(id) ?? []
+    // 常态原地追加，避免长任务每条消息都复制整个历史数组（O(n²)）。
+    // 只有触发条数上限时才走截断并重建数组。
+    current.push(stored)
+    let messages = current
+    if (this.maxMessages > 0 && current.length > this.maxMessages) {
+      messages = truncateHistory(current, { maxChars: 0, maxMessages: this.maxMessages }).messages
+      this.cache.set(id, messages)
+      this.indexMessages(id, messages)
+    } else {
+      this.cache.set(id, current)
+      this.messageOwners.set(stored.id, id)
+    }
     this.dirty.add(id)
     this.scheduleWrite(id)
     return stored
@@ -342,7 +350,11 @@ export class SessionStore {
 
   /** 原地更新某条消息里的工具卡片状态（不新增消息）。 */
   async updateToolCall(messageId: string, call: StoredToolCall): Promise<void> {
-    for (const [id, messages] of this.cache) {
+    const indexedId = this.messageOwners.get(messageId)
+    const candidates: Array<[string, StoredMessage[] | undefined]> =
+      indexedId === undefined ? [...this.cache.entries()] : [[indexedId, this.cache.get(indexedId)]]
+    for (const [id, messages] of candidates) {
+      if (messages === undefined) continue
       const target = messages.find((message) => message.id === messageId)
       if (target === undefined) continue
       const calls = target.toolCalls ?? []
@@ -350,6 +362,7 @@ export class SessionStore {
       if (index >= 0) calls[index] = { ...call }
       else calls.push({ ...call })
       target.toolCalls = calls
+      this.messageOwners.set(messageId, id)
       this.dirty.add(id)
       this.scheduleWrite(id)
       return
@@ -391,6 +404,7 @@ export class SessionStore {
   async clear(sessionId: string): Promise<void> {
     const id = normalizeSessionId(sessionId)
     await this.ensureLoaded(id)
+    for (const message of this.cache.get(id) ?? []) this.messageOwners.delete(message.id)
     this.cache.set(id, [])
     this.loaded.add(id)
     this.dirty.add(id)
@@ -419,6 +433,7 @@ export class SessionStore {
     }
     this.dirty.delete(id)
     await (this.writing.get(id) ?? Promise.resolve()).catch(() => undefined)
+    for (const message of this.cache.get(id) ?? []) this.messageOwners.delete(message.id)
     this.cache.delete(id)
     this.metaCache.delete(id)
     this.askCache.delete(id)
@@ -851,6 +866,7 @@ export class SessionStore {
       id,
       cached === undefined || cached.length === 0 ? messages : mergeMessages(messages, cached),
     )
+    this.indexMessages(id, this.cache.get(id) ?? [])
     // meta 同理：读盘期间写下的 meta（归档等）比盘上那份新，不能反过来覆盖它
     if (!this.metaCache.has(id)) this.metaCache.set(id, meta)
     // 留痕按 requestId 合并：读盘期间新结算的那条不能被盘上那份盖掉（与 meta 同一顾虑）
@@ -975,6 +991,13 @@ export class SessionStore {
     }, delayMs)
     timer.unref?.()
     this.timers.set(id, timer)
+  }
+
+  private indexMessages(id: string, messages: readonly StoredMessage[]): void {
+    for (const [messageId, owner] of this.messageOwners) {
+      if (owner === id) this.messageOwners.delete(messageId)
+    }
+    for (const message of messages) this.messageOwners.set(message.id, id)
   }
 
   /**

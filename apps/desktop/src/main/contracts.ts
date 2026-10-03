@@ -110,6 +110,8 @@ export interface WindowManagerLike {
   /** 切换最大化（标题栏双击 / caption 按钮） */
   toggleMaximize(name: WindowName): WindowState
   focus(name: WindowName): void
+  /** 向已存在的指定窗口推送事件；窗口不存在时静默跳过。 */
+  sendTo(name: WindowName, channel: string, payload: unknown): void
   onStateChanged(listener: (state: WindowState) => void): () => void
 }
 

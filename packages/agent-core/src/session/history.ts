@@ -50,32 +50,35 @@ function messageWeight(message: StoredMessage): number {
   return message.content.length
 }
 
-/**
- * 找到工具调用组的**宿主**下标。
- *
- * 返回 `null` 表示这条 `tool` 消息是孤儿（没有对应的 assistant 调用），
- * 这类消息必须整条丢弃：只留工具结果而丢了发起它的调用，
- * OpenAI 兼容服务会直接拒绝请求。
- */
-function toolCallOwner(messages: readonly StoredMessage[], index: number): number | null {
-  const message = messages[index]
-  if (message === undefined || message.role !== 'tool') return null
-  if (message.toolCallId === undefined) return null
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    const candidate = messages[cursor]
-    if (candidate === undefined) break
-    if (candidate.role === 'user') break
-    if (candidate.role !== 'assistant') continue
-    const calls = candidate.toolCalls ?? []
-    if (calls.some((item) => item.id === message.toolCallId)) return cursor
+/** 一次线性建立工具结果归属，避免截断时对每条 tool 结果反复向前扫描。 */
+function toolCallOwners(messages: readonly StoredMessage[]): Array<number | null> {
+  const owners = new Map<string, number>()
+  const result: Array<number | null> = []
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]
+    if (message === undefined) {
+      result.push(null)
+      continue
+    }
+    if (message.role === 'user') {
+      owners.clear()
+      result.push(index)
+      continue
+    }
+    if (message.role === 'assistant') {
+      for (const call of message.toolCalls ?? []) owners.set(call.id, index)
+      result.push(index)
+      continue
+    }
+    if (message.role === 'tool') {
+      result.push(
+        message.toolCallId === undefined ? null : (owners.get(message.toolCallId) ?? null),
+      )
+      continue
+    }
+    result.push(index)
   }
-  return null
-}
-
-/** 一条消息所属工具组的起始下标（非工具消息即其自身） */
-function groupHead(messages: readonly StoredMessage[], index: number): number {
-  const owner = toolCallOwner(messages, index)
-  return owner ?? index
+  return result
 }
 
 /**
@@ -92,11 +95,12 @@ export function truncateHistory(
   if (messages.length === 0) return { messages: [], dropped: 0, truncated: false }
 
   let start = 0
+  const owners = toolCallOwners(messages)
 
   if (maxMessages > 0 && messages.length > maxMessages) {
     start = Math.max(0, messages.length - maxMessages)
     while (start > 0 && start < messages.length && messages[start]?.role === 'tool') {
-      start = groupHead(messages, start)
+      start = owners[start] ?? start
     }
   }
 
@@ -109,7 +113,7 @@ export function truncateHistory(
       const weight = messageWeight(message)
       if (total + weight > maxChars) break
       total += weight
-      cut = message.role === 'tool' ? groupHead(messages, index) : index
+      cut = message.role === 'tool' ? (owners[index] ?? index) : index
     }
     start = cut
   }
@@ -119,7 +123,8 @@ export function truncateHistory(
 
   // 防御：起点不能落在 tool 结果上，否则整条丢弃该孤儿（或回退到其宿主）
   while (start < messages.length - 1 && messages[start]?.role === 'tool') {
-    start = groupHead(messages, start) === start ? start + 1 : groupHead(messages, start)
+    const owner = owners[start] ?? start
+    start = owner === start ? start + 1 : owner
   }
 
   const kept = messages.slice(start)
@@ -151,9 +156,7 @@ export function filterMessagesWithinWindow(
 
   // 组归属：tool 结果归其宿主 assistant 下标，其余消息各自成组。
   // `null` = 找不到宿主的真孤儿（整条丢弃，同 `truncateHistory` 的处置）。
-  const headOf: Array<number | null> = messages.map((message, index) =>
-    message.role === 'tool' ? toolCallOwner(messages, index) : index,
-  )
+  const headOf = toolCallOwners(messages)
 
   // 组内任一条落在窗内 → 整组保留（含早于 cutoff 的宿主，属刻意的边界回拉）
   const retainedGroups = new Set<number>()

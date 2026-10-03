@@ -26,6 +26,7 @@ export interface EventBuffer {
 
 /** 可以合并的两类事件（流式增量） */
 type StreamEvent = Extract<AgentEvent, { type: 'text' | 'reasoning' }>
+type SubagentEvent = Extract<AgentEvent, { type: 'subagent' }>
 
 /** 默认合并窗口（约一帧，60Hz）：再大就会让人眼看出「一段一段地蹦」 */
 const DEFAULT_WINDOW_MS = 16
@@ -81,6 +82,20 @@ export function createEventBuffer(
         // 这里再 schedule 只会撞上 `timer !== null` 提前返回。
         return
       }
+      // 子代理进度是“当前快照”而不是日志：同一帧内只保留最新快照，
+      // 避免大型任务把每一步都唤醒所有渲染进程。队列位置不变，仍保证它
+      // 与前后的 text / tool 事件维持原有相对顺序。
+      if (isSubagentEvent(event)) {
+        const tail = queue[queue.length - 1]
+        if (
+          tail !== undefined &&
+          isSubagentEvent(tail) &&
+          subagentKey(tail) === subagentKey(event)
+        ) {
+          queue[queue.length - 1] = event
+          return
+        }
+      }
       queue.push(event)
       schedule()
     },
@@ -100,7 +115,15 @@ function isStreamEvent(event: AgentEvent): event is StreamEvent {
   return event.type === 'text' || event.type === 'reasoning'
 }
 
+function isSubagentEvent(event: AgentEvent): event is SubagentEvent {
+  return event.type === 'subagent'
+}
+
 /** 合并的分组键：四元全同才算同一条流。用 \u0000 分隔避免 id 里出现分隔符导致误判 */
 function streamKey(event: StreamEvent): string {
   return [event.type, event.sessionId, event.requestId, event.messageId].join('\u0000')
+}
+
+function subagentKey(event: SubagentEvent): string {
+  return [event.sessionId, event.requestId, event.messageId, event.callId].join('\u0000')
 }

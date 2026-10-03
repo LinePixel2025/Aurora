@@ -753,7 +753,15 @@ async function* runToolStreaming(
   }
   const emitProgress = (payload: ToolProgress): void => {
     if (payload.kind === 'subagent') latest = payload.snapshot
-    queue.push(payload)
+    // 子代理进度描述的是同一份“当前快照”，不是必须逐条回放的日志。
+    // 生产者可能在消费方下一次调度前连续上报多步，合并队尾可避免无界队列和
+    // 大型任务期间的内存 / 事件循环抖动；最终快照仍由 latest 保留。
+    const tail = queue[queue.length - 1]
+    if (payload.kind === 'subagent' && tail?.kind === 'subagent') {
+      queue[queue.length - 1] = payload
+    } else {
+      queue.push(payload)
+    }
     notify()
   }
 

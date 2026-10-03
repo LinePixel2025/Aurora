@@ -1654,8 +1654,13 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 | 层 | 位置 | 做什么 |
 |---|---|---|
 | 主进程 | `main/event-buffer.ts` | 相邻（队列尾）且 `(sessionId, requestId, messageId, type)` 全同的 `text` / `reasoning` 增量拼接合并为一条（保留**首条**的 `seq`），窗口 **16ms** 批量下发 |
+| 主进程 / 内核 | `main/event-buffer.ts`、`loop/agentLoop.ts` | 同一子代理调用的连续进度是“当前快照”而非日志：消费窗口内只保留最新快照，终态仍由工具结果单独落盘，避免大型任务积压事件与重复唤醒渲染进程 |
 | 渲染层状态 | `renderer/shared/composables/useChatDeltaBuffer.ts` | 同一帧内同 `messageId` 的增量合并为一次消息写入，**每帧最多 apply 一次** |
 | 渲染层视图 | `MessageList.vue` | markdown 结果按**消息对象**（`WeakMap`）缓存，只有该条 `content` 变了才重跑解析 |
+
+子代理历史快照在 `useChat` 中维护增量索引，水合或工具卡更新时才重建 / 更新索引；实时进度不再为每个快照扫描整段消息历史。索引只改变聚合路径，不改变“实时事件优先、历史快照补齐”的展示口径。
+
+主代理的长任务路径也遵循同一原则：`SessionStore.append` 常态原地追加消息，只有触发条数上限时才重建截断数组；工具卡更新按消息 id 维护会话归属索引，避免每次状态变化扫描全部会话。工具注册表缓存稳定排序后的 LLM 工具定义，请求级过滤视图复用列表；历史截断与 quick 窗口先线性建立工具调用归属索引，避免对每条 `tool` 结果反复向前扫描。
 
 三条硬约束（改这三层时不许破）：
 - **顺序与终态不能变**：主进程的 `done` / `error` / `user-message` 与渲染层的任何**非增量**事件

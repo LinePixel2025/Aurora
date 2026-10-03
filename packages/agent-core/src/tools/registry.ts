@@ -132,15 +132,24 @@ export function filterTools(source: ToolSource, hidden: readonly string[]): Tool
   if (hidden.length === 0) return source
   const blocked = new Set(hidden)
   const visible = <T extends { name: string }>(tool: T): boolean => !blocked.has(tool.name)
+  let listCache: ToolDefinition[] | undefined
+  let llmToolsCache: LlmToolDefinition[] | undefined
   return {
     get: (name) => (blocked.has(name) ? undefined : source.get(name)),
-    list: () => source.list().filter(visible),
-    toLlmTools: () => source.toLlmTools().filter(visible),
+    list: () => {
+      if (listCache === undefined) listCache = source.list().filter(visible)
+      return listCache
+    },
+    toLlmTools: () => {
+      if (llmToolsCache === undefined) llmToolsCache = source.toLlmTools().filter(visible)
+      return llmToolsCache
+    },
   }
 }
 
 export class ToolRegistry implements ToolSource {
   private readonly tools = new Map<string, ToolDefinition>()
+  private llmToolsCache: LlmToolDefinition[] | undefined
   /**
    * 被 MCP 实现**覆盖掉**的旧定义（名字 → 原实现）。
    *
@@ -167,6 +176,7 @@ export class ToolRegistry implements ToolSource {
       this.log.push({ message: 'MCP 工具覆盖同名工具', detail: tool.name })
     }
     this.tools.set(tool.name, tool)
+    this.llmToolsCache = undefined
   }
 
   /**
@@ -178,6 +188,7 @@ export class ToolRegistry implements ToolSource {
    */
   unregister(name: string): boolean {
     const removed = this.tools.delete(name)
+    if (removed) this.llmToolsCache = undefined
     const previous = this.shadowed.get(name)
     if (removed && previous !== undefined) {
       this.shadowed.delete(name)
@@ -212,17 +223,17 @@ export class ToolRegistry implements ToolSource {
    * 系统提示词里的工具清单（`describeTools`）必须用**这一个**有序列表生成，两处才同序。
    */
   toLlmTools(): LlmToolDefinition[] {
-    return (
-      this.list()
-        .map((tool) => ({
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.parameters,
-        }))
-        // 按名字排序（**不用 localeCompare**：它是 locale 相关的，跨机器可能给不同结果）。
-        // 顺序稳定 = tools 数组成为可缓存前缀的一部分；先摘除再重建的 sync() 不会再打乱它。
-        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-    )
+    if (this.llmToolsCache !== undefined) return this.llmToolsCache
+    this.llmToolsCache = this.list()
+      .map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      }))
+      // 按名字排序（**不用 localeCompare**：它是 locale 相关的，跨机器可能给不同结果）。
+      // 顺序稳定 = tools 数组成为可缓存前缀的一部分；先摘除再重建的 sync() 不会再打乱它。
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    return this.llmToolsCache
   }
 
   get conflicts(): ReadonlyArray<{ message: string; detail?: string }> {

@@ -1106,7 +1106,10 @@ export function registerIpc(deps: DesktopDeps): () => void {
   // 合并只作用于相邻的 text / reasoning；done / error / user-message 先 flush 再同步发，
   // 保证终态不会越过它前面的增量先到（见 event-buffer.ts 的语义说明）。
   const eventBuffer = createEventBuffer((event) => {
-    broadcast(IPC.chat.event, event)
+    // 对话事件只有 chat / edge-bar 两个窗口订阅；设置与引导窗口没有 useChat，
+    // 不应被高密度流式 IPC 无谓唤醒。窗口不存在时 sendTo 会静默跳过。
+    deps.windows.sendTo('chat', IPC.chat.event, event)
+    deps.windows.sendTo('edge-bar', IPC.chat.event, event)
   })
   const offAgent = deps.agent.onEvent((event) => {
     eventBuffer.push(event)

@@ -145,6 +145,9 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   const reasoningTargetId = ref<string | null>(null)
   /** 本会话的子代理运行（实时，key = 工具调用 id）；切换会话时清空 */
   const liveSubagents = ref<SubagentRun[]>([])
+  /** 已落盘子代理快照索引：避免每次实时进度都扫描整份消息历史。 */
+  const historicalSubagents = new Map<string, SubagentRun>()
+  const historicalSubagentsVersion = ref(0)
   /**
    * 本会话的**任务（Job）**列表（新的在前）：「任务」面板的数据源（docs/06 §4.1）。
    *
@@ -203,17 +206,15 @@ export function useChat(windowName: WindowName, context: ChatContext) {
    * （重启后仍可回看）。同一 `callId` 以实时那份为准 —— 它更新。
    */
   const subagentRuns = computed<SubagentRun[]>(() => {
+    // 显式读取版本号：索引是非响应式 Map，只有真正改变时才重新合并排序。
+    historicalSubagentsVersion.value
     const merged = new Map<string, SubagentRun>()
     for (const run of liveSubagents.value) {
       merged.set(run.callId === '' ? run.taskId : run.callId, run)
     }
-    for (const message of messages.value) {
-      for (const call of message.toolCalls ?? []) {
-        if (call.subagent === undefined) continue
-        const key = call.subagent.callId === '' ? call.subagent.taskId : call.subagent.callId
-        if (merged.has(key)) continue
-        merged.set(key, { ...call.subagent, messageId: message.id })
-      }
+    for (const [key, run] of historicalSubagents) {
+      if (merged.has(key)) continue
+      merged.set(key, run)
     }
     return [...merged.values()].sort((left, right) => right.startedAt - left.startedAt)
   })
@@ -658,6 +659,11 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     if (index >= 0) list[index] = { ...call }
     else list.push({ ...call })
     message.toolCalls = [...list]
+    if (call.subagent !== undefined) {
+      const key = call.subagent.callId === '' ? call.subagent.taskId : call.subagent.callId
+      historicalSubagents.set(key, { ...call.subagent, messageId: message.id })
+      historicalSubagentsVersion.value += 1
+    }
     // 刻意**不碰 `pending`**：它表达的是「这条消息还在生成中」，只有请求收尾（done / error /
     // abort）才该把它清掉。早先这里写 `pending = content === ''`，后果是「正文已到、工具还在跑」
     // 的那一轮中途就把 pending 清成 false —— 依赖 `pending === false` 的入口（朗读按钮）
@@ -673,6 +679,21 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     if (current === undefined) return
     list[index] = { ...current, subagent: snapshot }
     message.toolCalls = [...list]
+    const key = snapshot.callId === '' ? snapshot.taskId : snapshot.callId
+    historicalSubagents.set(key, { ...snapshot, messageId: message.id })
+    historicalSubagentsVersion.value += 1
+  }
+
+  function rebuildHistoricalSubagents(nextMessages: readonly ChatMessage[]): void {
+    historicalSubagents.clear()
+    for (const message of nextMessages) {
+      for (const call of message.toolCalls ?? []) {
+        if (call.subagent === undefined) continue
+        const key = call.subagent.callId === '' ? call.subagent.taskId : call.subagent.callId
+        historicalSubagents.set(key, { ...call.subagent, messageId: message.id })
+      }
+    }
+    historicalSubagentsVersion.value += 1
   }
 
   /**
@@ -726,6 +747,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       merged.push(message)
     }
     messages.value = merged
+    rebuildHistoricalSubagents(merged)
   }
 
   /**
@@ -995,6 +1017,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     assistantId = null
     finishedRequests.clear()
     liveSubagents.value = []
+    historicalSubagents.clear()
+    historicalSubagentsVersion.value += 1
     // 任务列表也是「本会话」的：旧会话的条目不能留在面板上（下面的 refreshJobs 重新拉）
     jobs.value = []
     pendingNotice.value = null

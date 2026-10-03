@@ -28,6 +28,29 @@ function doneEvent(seq: number): AgentEvent {
   return { type: 'done', sessionId: 's1', requestId: 'r1', seq }
 }
 
+function subagentEvent(seq: number, report: string): AgentEvent {
+  return {
+    type: 'subagent',
+    sessionId: 's1',
+    requestId: 'r1',
+    seq,
+    round: 0,
+    messageId: 'm1',
+    callId: 'call-1',
+    subagent: {
+      taskId: 'task-1',
+      callId: 'call-1',
+      description: '任务',
+      prompt: '执行',
+      status: 'running',
+      startedAt: 1,
+      steps: [],
+      toolCalls: 0,
+      ...(report === '' ? {} : { report }),
+    },
+  }
+}
+
 describe('createEventBuffer', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -163,6 +186,20 @@ describe('createEventBuffer', () => {
     expect(sent).toHaveLength(1)
     expect(sent[0]).toMatchObject({ seq: 0 })
     expect(sent[0]?.type === 'text' ? sent[0].delta.length : 0).toBe(100)
+  })
+
+  it('同一子代理在一个窗口内只保留最新快照', () => {
+    const sent: AgentEvent[] = []
+    const buffer = createEventBuffer((event) => sent.push(event))
+
+    buffer.push(subagentEvent(1, '开始'))
+    buffer.push(subagentEvent(2, '进行中'))
+    buffer.push(subagentEvent(3, '最新'))
+    vi.advanceTimersByTime(16)
+
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ type: 'subagent', seq: 3 })
+    expect(sent[0]?.type === 'subagent' ? sent[0].subagent.report : undefined).toBe('最新')
   })
 
   it('windowMs 可注入（单测 / 需要更激进合并的调用方）', () => {
