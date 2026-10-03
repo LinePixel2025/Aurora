@@ -64,7 +64,7 @@ import { useChat } from '../shared/composables/useChat.js'
 import { useTts } from '../shared/composables/useTts.js'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { useCtxTabs } from './composables/useCtxTabs.js'
-import { CTX_TABS_MAX, type CtxTabKind } from './composables/ctxTabsCore.js'
+import { CTX_TABS_MAX, type CtxTab, type CtxTabKind } from './composables/ctxTabsCore.js'
 import { appendProject, pickProjectEntry } from '../shared/projects.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
@@ -302,9 +302,10 @@ watch(
  * 复用左栏左下角那条提示（`chat.project-notice` 通道）—— 它在子代理 / 自动化页照样可见，
  * 语义是「左栏动作的结果」而不是「项目专用」，这里借它的位置不必新造一条 toast。
  */
-function onNewCtxTab(kind: CtxTabKind): void {
+function onNewCtxTab(kind: CtxTabKind): CtxTab | null {
   const opened = openCtxTab(kind)
   if (opened === null) flashProjectNotice('error', `标签已达上限（${CTX_TABS_MAX} 个），先关掉一个`)
+  return opened
 }
 
 /** 关标签：把「已挂载」记录一并清掉（编号会被复用，留着会让新标签一开就挂载） */
@@ -318,17 +319,21 @@ function onCloseCtxTab(id: string): void {
 }
 
 /**
- * Agent 展示目标（`show_preview` 工具，2026-10-03，docs/06 §14）：主进程推来 `preview:show`
- * 时投给**浏览器标签** —— 激活中的是浏览器标签就用它，否则用最近激活过的那个，都没有才新建
- * （2026-10-03 二次修订：右栏可多开，不能每来一次展示就再开一个标签）。
- * `token` 单调递增 —— 同一目标再次展示（或用户手动切走后又展示）也必须重新导航，
+ * 「把某个地址交给某个标签」的唯一通道（2026-10-03，docs/07 §2.3 / docs/06 §14）：
+ * 两个来源共用它 ——
+ * ① `show_preview` 工具（主进程推 `preview:show`）：**复用**已有的浏览器标签
+ *    （激活中的是浏览器标签就用它，否则用最近激活过的那个），没有才新建；
+ * ② 网页自己要求另开标签（`target="_blank"` / `window.open`，主进程推 `browser:openTab`）：
+ *    **总是新开一个**浏览器标签（那是站点的原意，别把用户当前页顶掉）。
+ * `token` 单调递增 —— 同一地址在同一个标签上再次投递也必须重新导航，
  * 仅靠 url 相等判不出「又来了一次」。
  */
-const previewTarget = ref<BrowserTarget | null>(null)
-/** 这个展示目标投给哪个标签（非该标签的浏览器面板收到 null → 停在自己的主页） */
-const previewTabId = ref('')
-let previewTokenSequence = 0
+const panelTarget = ref<BrowserTarget | null>(null)
+/** 这个目标投给哪个标签（非该标签的浏览器面板收到 null → 停在自己的主页） */
+const panelTargetTabId = ref('')
+let panelTokenSequence = 0
 let offPreviewShow: (() => void) | null = null
+let offBrowserOpenTab: (() => void) | null = null
 
 /** 右栏宽度（px）：存 localStorage（视图偏好不进 config schema），280–720 夹取 */
 const CTX_WIDTH_KEY = 'aurora.chat.ctxWidth'
@@ -566,12 +571,27 @@ onMounted(() => {
     // 都没有才新建 —— 每来一次展示就再开一个标签只会把标签条淹掉。
     const tab = ensureCtxKind('browser')
     if (tab === null) return
-    previewTabId.value = tab.id
-    previewTarget.value = {
+    panelTargetTabId.value = tab.id
+    panelTarget.value = {
       url: event.url,
       display: event.display,
       title: event.title,
-      token: (previewTokenSequence += 1),
+      token: (panelTokenSequence += 1),
+    }
+  })
+  // 站点自开标签（`target="_blank"` / `window.open`，docs/07 §2.3）：**总是新开**一个浏览器标签
+  // —— 站点本来要的是「新窗口」，别把用户正在看的页顶掉（旧口径正是同窗导航）。
+  offBrowserOpenTab = window.aurora.browser.onOpenTab((event) => {
+    contextOpen.value = true
+    // 走与「＋」菜单同一条入口（到上限时同样给一条可见提示，而不是静默什么也不发生）
+    const tab = onNewCtxTab('browser')
+    if (tab === null) return
+    panelTargetTabId.value = tab.id
+    panelTarget.value = {
+      url: event.url,
+      display: event.url,
+      title: '',
+      token: (panelTokenSequence += 1),
     }
   })
   document.addEventListener('pointerdown', onComposerPointerDown)
@@ -596,6 +616,8 @@ onUnmounted(() => {
   offAskUserRequest = null
   offPreviewShow?.()
   offPreviewShow = null
+  offBrowserOpenTab?.()
+  offBrowserOpenTab = null
   document.removeEventListener('pointerdown', onComposerPointerDown)
   document.removeEventListener('keydown', onDocumentEscape)
   window.removeEventListener('resize', onViewportResize)
@@ -1968,8 +1990,9 @@ async function markGuideDone(): Promise<void> {
             />
             <BrowserPanel
               v-else
-              :target="tab.id === previewTabId ? previewTarget : null"
+              :target="tab.id === panelTargetTabId ? panelTarget : null"
               @title="(title) => setCtxTabTitle(tab.id, title)"
+              @new-tab="onNewCtxTab('browser')"
             />
           </div>
         </template>

@@ -434,7 +434,14 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   `display:none` —— 网页不重载、xterm 不重建），**上下文面板维持 `v-if`**（激活才挂载）：
   旧断言 `jobsHiddenOnFiles`（files 下 `chat.jobs` 必须缺席）正依赖后者，别统一成一种；
   ③ `webviewTag` 只对 chat 窗口开启（BrowserPanel 用 `createElement('webview')`
-  绕开 Vue 编译器；`remove()` 只在**关标签**时发生）；`@lydell/node-pty` 必须
+  绕开 Vue 编译器；`remove()` 只在**关标签**时发生）。**webview 必须设 `allowpopups`**
+  （2026-10-03 实测：不带它，guest 的 `window.open` / `target="_blank"` 请求在图层就被丢掉、
+  到不了 `setWindowOpenHandler`，「点链接没反应」的老问题正是这么来的；开了也没有真弹窗 ——
+  主进程对一切请求 `deny`）。**站点自开标签**（2026-10-03）：
+  `target="_blank"` / `window.open` 的 http(s) 目标走主进程 `setWindowOpenHandler` →
+  `browser:openTab` 推送 → 渲染层**另开一个浏览器标签**加载它（旧口径是「同窗导航」，
+  会把当前页顶掉）；**只有 http(s) 放行**，file: / 自定义 / `about:blank` 一律拒绝；
+`@lydell/node-pty` 必须
   留在 electron-builder 的 `asarUnpack`（.node 不能进 asar）。**终端每个标签一个 shell**
   （主进程按 `terminalId` 记账、每窗口上限 6、关标签 = kill 该 PTY）——
   别改回「每窗口一个 shell」：那样两个终端标签会共用同一条 PTY。终端是用户手动操作面，

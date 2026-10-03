@@ -430,6 +430,18 @@ export interface PreviewShowEvent {
   title: string
 }
 
+/**
+ * `browser:openTab` 推送（站点自开标签，2026-10-03，主进程 → 渲染层）。
+ *
+ * 网页里 `target="_blank"` / `window.open` 的 http(s) 目标：渲染层收到后**另开一个
+ * 浏览器标签**并让它加载 `url`（当前页不动）。`url` 已由主进程按白名单过滤过
+ *（只放行 http(s)，见 window-manager 的 `setWindowOpenHandler`）。
+ */
+export interface BrowserOpenTabEvent {
+  /** 站点请求打开的地址（http/https） */
+  url: string
+}
+
 // ───────────────────────── PTY 终端（右栏「终端」标签，2026-10-03） ─────────────────────────
 
 export interface TerminalCreateRequest {
@@ -1653,6 +1665,13 @@ export interface AuroraApi {
      * 「浏览器」tab 并加载目标；`sessionId` 不是当前会话时渲染层忽略。
      */
     onShow(listener: (event: PreviewShowEvent) => void): () => void
+  }
+  browser: {
+    /**
+     * 站点自开标签（`target="_blank"` / `window.open` 的 http(s) 目标，on/off 成对）：
+     * 主界面收到后**另开一个浏览器标签**加载 `url`（当前页不动）。
+     */
+    onOpenTab(listener: (event: BrowserOpenTabEvent) => void): () => void
   }
   terminal: {
     /**

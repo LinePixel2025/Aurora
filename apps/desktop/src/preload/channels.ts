@@ -71,6 +71,9 @@ const CHANNELS = {
     show: 'preview:show',
   },
   // 右栏「终端」（2026-10-03）：与 shared 契约同构，编译期双向断言兜住
+  browser: {
+    openTab: 'browser:openTab',
+  },
   terminal: {
     create: 'terminal:create',
     input: 'terminal:input',

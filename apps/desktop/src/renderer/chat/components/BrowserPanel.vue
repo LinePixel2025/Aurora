@@ -22,7 +22,8 @@ export interface BrowserTarget {
  * - `file://` 只走 Agent 工具（`show_preview`）那条受主进程校验的通道 —— 目标必须落在
  *   会话边界根之内才可能到达这里，地址栏永远不接受它；
  * - webview **不带 allowpopups**（弹窗类 window.open 被 guest 层直接拦掉，
- *   主进程 `window-manager.ts` 的 `setWindowOpenHandler` 把 http(s) 目标改成同窗导航）；
+ *   主进程 `window-manager.ts` 的 `setWindowOpenHandler` 把 http(s) 目标交给渲染层
+ *   **另开一个浏览器标签**（`browser:openTab`，2026-10-03））；
  * - webviewTag 只在 chat 窗口开启（window-manager.ts），guest 是独立进程，
  *   不破坏渲染层沙箱。
  *
@@ -31,13 +32,21 @@ export interface BrowserTarget {
  * 可迁移的会话状态，接受这个简化）。
  */
 import { onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowLeft, ArrowRight, House, RotateCw, X } from '@aurora/shared/browser'
+import { ArrowLeft, ArrowRight, House, Plus, RotateCw, X } from '@aurora/shared/browser'
 
 const HOME_URL = 'https://www.bing.com'
 
 const props = defineProps<{ target?: BrowserTarget | null }>()
-/** 标签标题上报（docs/07 §2.3）：页面标题优先，页面没给就用主机名回落 */
-const emit = defineEmits<{ (event: 'title', title: string): void }>()
+/**
+ * 上报两件事：
+ * - `title`：标签标题（页面标题优先，页面没给就用主机名回落）；
+ * - `new-tab`：用户在浏览器自己的工具条上点了「新建标签页」（2026-10-03）——
+ *   由父级再开一个**同类标签**（右栏标签条是唯一记账方，面板不自己造标签）。
+ */
+const emit = defineEmits<{
+  (event: 'title', title: string): void
+  (event: 'new-tab'): void
+}>()
 
 /** 主机名回落（离线 / 加载失败时页面标题往往不会有）：`https://a.b/c` → `a.b` */
 function hostLabel(url: string): string {
@@ -140,7 +149,15 @@ function refreshNavState(): void {
 
 onMounted(() => {
   const element = document.createElement('webview') as unknown as WebviewLike & HTMLElement
-  // 刻意**不设 allowpopups**：guest 的 window.open 一律被拦（http(s) 由主进程改成同窗导航）
+  /**
+   * **必须设 `allowpopups`**（2026-10-03 二次修订，实测教训）：不带它时 guest 的
+   * `window.open` / `target="_blank"` 请求在图层就被丢掉，**根本到不了主进程的
+   * `setWindowOpenHandler`** —— 表现为「页内点链接毫无反应」，之前那版「同窗导航」的修法
+   * 因此从来没真正生效过（只有真实点击才暴露：合成 click 没有用户手势，走的是另一条被拦的路径）。
+   * 开了它也不会有真弹窗：主进程的 handler 对**一切**请求返回 `deny`，
+   * http(s) 转成我们自己的浏览器标签（`browser:openTab`），其余协议直接拒绝。
+   */
+  element.setAttribute('allowpopups', '')
   element.setAttribute('style', 'width:100%;height:100%;display:flex;')
   element.addEventListener('did-start-loading', () => {
     loading.value = true
@@ -253,6 +270,20 @@ watch(
         @click="goHome"
       >
         <House :size="14" :stroke-width="1.8" aria-hidden="true" />
+      </button>
+      <!--
+        新建标签页（2026-10-03 用户口径「浏览器标签页本身可以新建一个浏览器标签页」）：
+        工具条右端一枚 ＋，就地再开一个浏览器标签（新标签加载主页）——
+        入口不再只藏在右栏标签条的「＋」菜单里。关标签仍走标签条上的 ✕。
+      -->
+      <button
+        type="button"
+        class="bp-btn"
+        title="新建标签页"
+        data-field="chat.browser-new-tab"
+        @click="emit('new-tab')"
+      >
+        <Plus :size="14" :stroke-width="1.8" aria-hidden="true" />
       </button>
     </div>
     <p v-if="failure !== ''" class="bp-failure tiny" data-field="chat.browser-failure">

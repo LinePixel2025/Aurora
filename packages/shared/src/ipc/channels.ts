@@ -67,6 +67,17 @@ export const IPC = {
     show: 'preview:show',
   },
   /**
+   * 内置浏览器的**站点自开标签**（2026-10-03，主进程 → 渲染层，on/off 成对）。
+   *
+   * 网页里 `target="_blank"` / `window.open` 的 http(s) 目标不再把当前页顶掉（旧口径是
+   * 「同窗导航」），而是让右栏**另开一个浏览器标签**加载它 —— 用户口径「网站需要单独跳出
+   * 一个标签页的话可以单开」。非 http(s)（file: / 自定义协议 / about:blank）仍一律拒绝。
+   */
+  browser: {
+    /** 站点请求另开标签：{ url }（地址栏回显同一个 URL） */
+    openTab: 'browser:openTab',
+  },
+  /**
    * 右栏「终端」tab（2026-10-03，docs/07 §2.3）：PTY 交互终端。
    * `data` / `exit` 是主进程 → 渲染层的推送（on/off 成对），且**只推给创建终端的窗口**。
    */

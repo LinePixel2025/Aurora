@@ -343,12 +343,18 @@
       `RotateCw` ⇄ `X` / `House`，26×26 命中区）：2026-10-03 之前用的是 `‹ › ⟳ ⌂` 字形，
       在应用字体栈里又细又淡、置灰后几乎不可见（用户口径「没有刷新、上一步等按钮」），
       故整体换成语义图标并把禁用态从 `opacity 0.35` 提到「置灰但看得见」（0.55 + `--text-muted`）。
+      工具条右端另有**「新建标签页」（`chat.browser-new-tab`，2026-10-03）**：
+      就地再开一个浏览器标签（新标签加载主页）—— 入口不再只藏在右栏标签条的「＋」菜单里。
       地址栏只接受
       http / https（入口即拒绝其它协议），无协议输入按主机名分流：本机地址
       （`localhost` / `127.0.0.1` / `[::1]` / `0.0.0.0`）补 `http://`，其余补 `https://`；
-      **不带 allowpopups**，但 `window.open` / `target="_blank"` 不再被整个丢弃 ——
-      主进程在 `did-attach-webview` 上装了 `setWindowOpenHandler`：http(s) 目标**同窗导航**、
-      其余协议拒绝（弹窗语义没了，链接点得动了）。
+      **webview 设了 `allowpopups`**（不带它时 guest 的弹窗请求在图层就被丢掉、到不了主进程的
+      `setWindowOpenHandler` —— 「页内点链接毫无反应」的根因，2026-10-03 实测），
+      但主进程对**一切**请求返回 `deny`（不会出现真弹窗），于是 `window.open` / `target="_blank"`：
+      主进程在 `did-attach-webview` 上装了 `setWindowOpenHandler`（2026-10-03 二次修订）：
+      http(s) 目标**另开一个浏览器标签**（推 `browser:openTab` → 渲染层 `openCtxTab('browser')`
+      → 新标签加载该地址），**当前页原地不动**；其余协议（file: / 自定义 / `about:blank`）拒绝。
+      旧口径是「同窗导航」（点一下就把当前页顶掉）—— 站点本来要的是新窗口，那个语义现在被如实满足。
       `webviewTag` 只对 chat 窗口开启（window-manager.ts，guest 是独立进程不破坏沙箱）。
       加载失败（离线 / 域名不存在 / 代理不可用）在面板上给出可见提示
       （`chat.browser-failure`），不静默白屏。
@@ -1719,10 +1725,15 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     `preview:show`（通道与 payload 形状与工具实际推送一致，由主进程 `webContents.send` 发出）；
     check 断言右栏**自动切到「浏览器」tab**、webview 真的加载了 `file://` 夹具
     （读 `webview.getURL()`，轮询到就绪为止 —— 「面板在但没导航过去」是最可能的失效）、
-    地址栏显示原始路径、**导航工具条四枚按钮都在且量得出尺寸**
-    （`chat.browser-back` / `-forward` / `-reload` / `-home`，宽高 > 8px ——
+    地址栏显示原始路径、**导航工具条五枚按钮都在且量得出尺寸**
+    （`chat.browser-back` / `-forward` / `-reload` / `-home` / `-new-tab`，宽高 > 8px ——
     2026-10-03 之前是 `‹ › ⟳ ⌂` 字形按钮，用户口径「没有刷新、上一步等按钮」，
-    这条把「有真正可见的按钮」钉住）。主进程侧的目标校验（http(s) / 越界 / 不存在 /
+    这条把「有真正可见的按钮」钉住）、**切标签不重载**（页面里打标记 → 切走再切回 → 标记仍在
+    且 guest `innerWidth` 没塌成 0），以及**标签页自己开标签的两条链路**（用户口径
+    「点击超链接后，网站需要单独跳出一个标签页的话可以单开」）：① 点工具条 ＋ → 新开一个
+    浏览器标签并激活；② 在页内点 `target="_blank"` 链接 → 同样**新开**标签加载该地址，
+    而**当前页原地不动**（夹具的 `getURL()` 仍是 fixture.html —— 「链接把当前页顶掉」正是
+    旧口径的失效形态）；两条都收尾关掉新标签。主进程侧的目标校验（http(s) / 越界 / 不存在 /
     `file:` 之外的协议 / 子代理会话 id 剥回父会话）由
     `apps/desktop/src/main/tools/preview-port.test.ts` 覆盖，
     工具层契约由 `packages/agent-core/src/tools/preview.test.ts` 覆盖；

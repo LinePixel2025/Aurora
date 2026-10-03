@@ -9,6 +9,7 @@
 import { join } from 'node:path'
 import { BrowserWindow, nativeTheme, screen, type Display } from 'electron'
 import {
+  IPC,
   WINDOW_NAMES,
   createInitialWindowState,
   hideWindow as hideInState,
@@ -347,21 +348,25 @@ export class WindowManager {
       this.hide(name)
     })
     /**
-     * 右栏内置浏览器的「新窗口」语义（2026-10-03，docs/07 §2.3）。
+     * 右栏内置浏览器的「新窗口」语义（2026-10-03，docs/07 §2.3；同日二次修订）。
      *
      * webview 刻意不带 `allowpopups`，于是 `window.open` / `target="_blank"` 默认被整个
      * 丢弃 —— 用户在搜索结果页点一条链接毫无反应（看起来就像"浏览器坏了"）。
-     * 这里把它改成**同窗内导航**：不新开窗口（沙箱与窗口管理语义都保持不变），
-     * 但链接点得动。只放行 http(s)：其它协议（file: / 自定义协议）一律拒绝，
-     * 与地址栏的入口校验同一口径。
+     * 第一版把它改成**同窗内导航**（把当前页顶掉）；2026-10-03 按用户口径改为
+     * **另开一个浏览器标签**：主进程只负责把 URL 转给渲染层（`browser:openTab`），
+     * 由右栏标签条开出新标签 —— 站点本来要「新窗口」的语义因此被如实满足，
+     * 再也不会有「点一下当前页就没了」。
+     * **只放行 http(s)**：file: / 自定义协议 / `about:blank` 一律拒绝（与地址栏同一口径），
+     * 沙箱与窗口管理语义不变（仍然不新开 Electron 窗口）。
      */
     if (name === 'chat') {
       win.webContents.on('did-attach-webview', (_event, guest) => {
         guest.setWindowOpenHandler(({ url }) => {
           if (/^https?:\/\//i.test(url)) {
-            // 不能在处理函数里同步 loadURL（导航会被这次拒绝打断），挪到下一拍
+            // 处理函数里 return deny 之后 guest 就与这次请求脱钩了，转交渲染层开新标签
+            const target = win.webContents
             setImmediate(() => {
-              guest.loadURL(url).catch(() => undefined)
+              if (!target.isDestroyed()) target.send(IPC.browser.openTab, { url })
             })
           }
           return { action: 'deny' }

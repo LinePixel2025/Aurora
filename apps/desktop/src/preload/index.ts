@@ -102,6 +102,10 @@ const api: AuroraApi = {
     // Agent 展示推送（show_preview 工具）：主进程 → 渲染层，on/off 成对
     onShow: (listener) => subscribe(IPC.preview.show, listener),
   },
+  browser: {
+    // 站点自开标签（target="_blank" / window.open 的 http(s) 目标）：主进程 → 渲染层，成对
+    onOpenTab: (listener) => subscribe(IPC.browser.openTab, listener),
+  },
   terminal: {
     // 右栏「终端」（docs/07 §2.3）：PTY 交互终端，输出经 data/exit 推送（on/off 成对）
     create: (request) => invoke(IPC.terminal.create, request),

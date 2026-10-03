@@ -20,7 +20,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { nativeTheme, type BrowserWindow } from 'electron'
+import { nativeTheme, webContents, type BrowserWindow } from 'electron'
 import {
   createFileSnapshotPort,
   type AskUserAnswer,
@@ -2046,6 +2046,71 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
 })()`
 
 /**
+ * 在夹具页里**真点**那个 `target="_blank"` 链接（2026-10-03，docs/07 §2.3）。
+ *
+ * 为什么不能用 `element.click()`：Chromium 的弹窗拦截只看**用户手势**，脚本合成、
+ * 没有激活的 `target="_blank"` 导航会被直接丢掉 —— 实测 `blankOpened` 恒为 false。
+ * 这里走与 `chat-trace-wheel` 同一套 CDP：attach 到**夹具页那个 guest**，
+ * 用 `Input.dispatchMouseEvent` 在链接中心发一对真实的 mousePressed / mouseReleased。
+ */
+async function clickFixtureBlankLink(
+  win: BrowserWindow,
+): Promise<{ ok: boolean; reason?: string; rect?: string }> {
+  // mainAct 在 act 之后、check 之前跑：此刻夹具页可能还在加载，先等它出现
+  let guest: Electron.WebContents | null = null
+  for (let attempt = 0; attempt < 40 && guest === null; attempt += 1) {
+    const found = webContents.getAllWebContents().find((wc) => {
+      try {
+        return (wc.getURL() ?? '').indexOf('fixture.html') !== -1
+      } catch {
+        return false
+      }
+    })
+    guest = found ?? null
+    if (guest === null) await wait(200)
+  }
+  if (guest === null) return { ok: false, reason: '没找到夹具页的 guest' }
+
+  const point = (await guest.executeJavaScript(
+    '(() => { const a = document.getElementById("probe-blank"); if (a === null) return null; const r = a.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } })()',
+    true,
+  )) as { x: number; y: number } | null
+  if (point === null) return { ok: false, reason: '夹具页里没有 probe-blank 链接' }
+
+  const dbg = guest.debugger
+  try {
+    dbg.attach('1.3')
+  } catch {
+    // 已附加（例如 devtools 开着）就直接复用
+  }
+  try {
+    await dbg.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: point.x,
+      y: point.y,
+      button: 'left',
+      clickCount: 1,
+    })
+    await wait(60)
+    await dbg.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: point.x,
+      y: point.y,
+      button: 'left',
+      clickCount: 1,
+    })
+  } finally {
+    try {
+      dbg.detach()
+    } catch {
+      // 未附加时 detach 会抛，忽略
+    }
+  }
+  void win
+  return { ok: true, rect: `${point.x},${point.y}` }
+}
+
+/**
  * 右栏多标签场景（2026-10-03 二次修订，docs/07 §2.3）。
  *
  * 与 `chat-right-tabs` 的分工：那条场景直接点 `chat.ctx-tab-<id>` 锚点切标签
@@ -2655,28 +2720,58 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
   }
   try {
     const act = window.__auroraFileProjectAct || { ok: false, reason: 'act 没有留下读数' }
-    const tab = document.querySelector('[data-field="chat.ctx-tab-browser"]')
-    const browserActive = tab !== null && (tab.className || '').indexOf('active') !== -1
-    const panelOn = document.querySelector('[data-field="chat.browser"]') !== null
-    const urlInput = document.querySelector('.bp-url')
+    // ⚠️ 场景里可能**同时开着多个浏览器标签**（本场景最后那段会由链接另开一个）：
+    // 所有查询都必须按标签 id 定位，querySelector 会抓到 DOM 里第一个（可能是
+    // display:none 的隐藏面板，矩形为 0 → 断言假 FAIL）。
+    const primaryPane = document.querySelector('.ctx-pane[data-tab-id="browser"]')
+    const inPrimary = (selector) => (primaryPane === null ? null : primaryPane.querySelector(selector))
+    const activeTabNow = () => {
+      const el = document.querySelector(
+        '[data-field="chat.ctx-tab-list"] [data-tab-id][class*="active"]',
+      )
+      return el === null ? '' : el.getAttribute('data-tab-id') || ''
+    }
+    // 「推送把右栏切到浏览器」：激活的是**某个**浏览器标签（推送先到、链接后点 ——
+    // 夹具页能加载出来本身就依赖这条链路）
+    const browserActive = activeTabNow().indexOf('browser') === 0
+    const panelOn = primaryPane !== null
+    const urlInput = inPrimary('.bp-url')
     const urlValue = urlInput === null ? '' : urlInput.value || ''
-    // webview 的 getURL()：加载完成的唯一可信读数（DOM 在而没导航过去是最可能的失效）
+    // webview 的 getURL()：加载完成的唯一可信读数（DOM 在而没导航过去是最可能的失效）。
+    // 按 **URL** 找那个 guest：它可能不是当前激活标签里的那一个。
+    const findGuest = (part) => {
+      for (const el of document.querySelectorAll('webview')) {
+        try {
+          if (typeof el.getURL === 'function' && (el.getURL() || '').indexOf(part) !== -1) return el
+        } catch (error) {
+          /* 还没导航完的 guest 读不到 URL：忽略 */
+        }
+      }
+      return null
+    }
     let loaded = ''
-    const guest = document.querySelector('[data-field="chat.browser-host"] webview')
+    let guest = null
     for (let attempt = 0; attempt < 30; attempt += 1) {
-      try {
-        loaded = guest !== null && typeof guest.getURL === 'function' ? guest.getURL() || '' : ''
-      } catch (error) { loaded = '' }
+      guest = findGuest('fixture.html')
+      loaded = guest === null ? '' : guest.getURL() || ''
       if (loaded.indexOf('fixture.html') !== -1) break
       await wait(200)
     }
 
     // 导航工具条（2026-10-03）：后退 / 前进 / 刷新 / 主页 —— 存在且量得出尺寸
-    const toolbarIds = ['back', 'forward', 'reload', 'home'].filter(
-      (id) => document.querySelector('[data-field="chat.browser-' + id + '"]') !== null,
+    // 工具条断言：**存在性**按主标签的 pane 查（唯一的那份），**尺寸**必须在
+    // 「当前可见的那个浏览器 pane」里量 —— 隐藏的 pane 是 display:none，矩形恒为 0，
+    // 拿它量尺寸必然假 FAIL（本场景此刻激活的可能是链接另开的那个标签）。
+    const toolbarIds = ['back', 'forward', 'reload', 'home', 'new-tab'].filter(
+      (id) => inPrimary('[data-field="chat.browser-' + id + '"]') !== null,
     )
-    const browserBarSized = ['back', 'forward', 'reload', 'home'].every((id) => {
-      const el = document.querySelector('[data-field="chat.browser-' + id + '"]')
+    const visibleBrowserPane = () =>
+      Array.from(document.querySelectorAll('.ctx-pane[data-tab-kind="browser"]')).find(
+        (el) => el.getBoundingClientRect().width > 8,
+      ) ?? null
+    const browserBarSized = ['back', 'forward', 'reload', 'home', 'new-tab'].every((id) => {
+      const pane = visibleBrowserPane()
+      const el = pane === null ? null : pane.querySelector('[data-field="chat.browser-' + id + '"]')
       if (el === null) return false
       const r = el.getBoundingClientRect()
       return r.width > 8 && r.height > 8
@@ -2709,6 +2804,76 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
     }
     const guestSized = guestInnerWidth > 120
 
+    // **浏览器标签页自己的「新建标签」**（2026-10-03 用户口径）：工具条右端那枚 ＋ 与
+    // 网页里的 target="_blank" 链接，都必须**另开一个浏览器标签**，而不是把当前页顶掉。
+    const browserTabIds = () =>
+      Array.from(document.querySelectorAll('[data-field="chat.ctx-tab-list"] [data-tab-id]'))
+        .map((el) => el.getAttribute('data-tab-id') || '')
+        .filter((id) => id.indexOf('browser') === 0)
+    const activeTabId = () => {
+      const el = document.querySelector(
+        '[data-field="chat.ctx-tab-list"] [data-tab-id][class*="active"]',
+      )
+      return el === null ? '' : el.getAttribute('data-tab-id') || ''
+    }
+    const closeTabById = async (id) => {
+      const btn = document.querySelector('[data-field="chat.ctx-tab-close-' + id + '"]')
+      if (btn !== null) {
+        btn.click()
+        await wait(350)
+      }
+    }
+    // ① 工具条 ＋
+    const beforePlus = browserTabIds().length
+    let toolbarOpened = false
+    let toolbarNewId = ''
+    const newTabBtn = inPrimary('[data-field="chat.browser-new-tab"]')
+    if (newTabBtn !== null) {
+      newTabBtn.click()
+      for (let attempt = 0; attempt < 30 && !toolbarOpened; attempt += 1) {
+        const ids = browserTabIds()
+        if (ids.length > beforePlus) {
+          toolbarOpened = true
+          toolbarNewId = ids[ids.length - 1]
+        } else {
+          await wait(200)
+        }
+      }
+    }
+    const toolbarNewActive = toolbarNewId !== '' && activeTabId() === toolbarNewId
+    await closeTabById(toolbarNewId)
+
+    // ② 网页里的 target="_blank" 链接（mainAct 已用 CDP 真点过 → 这里只读结果）：
+    //    新标签必须**新开**出来并加载该地址，而当前页原地不动。
+    let blankOpened = false
+    let blankNewId = ''
+    let blankUrl = ''
+    let fixtureKept = false
+    for (let attempt = 0; attempt < 30 && !blankOpened; attempt += 1) {
+      for (const el of document.querySelectorAll('[data-field="chat.browser-host"] webview')) {
+        try {
+          const url = typeof el.getURL === 'function' ? el.getURL() || '' : ''
+          if (url.indexOf('probe-blank') !== -1) {
+            blankUrl = url
+            blankOpened = true
+          }
+        } catch (error) {
+          /* 还没导航完的 guest 读不到 URL：忽略 */
+        }
+      }
+      if (!blankOpened) await wait(250)
+    }
+    // 新标签是「追加实例」（browser-2…）且被激活；主标签（browser）保持自己的夹具页
+    const activeAfterBlank = activeTabId()
+    const blankNewActive = blankOpened && activeAfterBlank.indexOf('browser-') === 0
+    blankNewId = blankNewActive ? activeAfterBlank : ''
+    try {
+      fixtureKept = guest !== null && (guest.getURL() || '').indexOf('fixture.html') !== -1
+    } catch (error) {
+      fixtureKept = false
+    }
+    await closeTabById(blankNewId)
+
     // 收尾：切回原会话 + 撤销项目登记（与 chat-file-project 同一套）
     let restored = false
     const prevText = window.__auroraFileProjectPrevText || ''
@@ -2738,6 +2903,14 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
       noReload,
       guestInnerWidth,
       guestSized,
+      toolbarOpened,
+      toolbarNewId,
+      toolbarNewActive,
+      blankOpened,
+      blankNewId,
+      blankUrl,
+      blankNewActive,
+      fixtureKept,
       restored,
       pass:
         act.ok === true &&
@@ -2748,11 +2921,19 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
         urlValue.indexOf('fixture.html') !== -1 &&
         // 导航工具条四枚按钮都在且有实际尺寸（2026-10-03：此前是字形按钮，
         // 又细又淡到被当成「没有按钮」——这里钉住「有尺寸的按钮」这个事实）
-        toolbarIds.join('|') === 'back|forward|reload|home' &&
+        toolbarIds.join('|') === 'back|forward|reload|home|new-tab' &&
         browserBarSized &&
         // 切标签往返：页面没重载（标记仍在）且回来后 guest 视口没塌成 0
         noReload &&
-        guestSized,
+        guestSized &&
+        // 浏览器标签页自己的「新建标签」：工具条 ＋ 与 target=_blank 链接都另开标签，
+        // 且原页面原地不动（当前页被顶掉正是旧口径的失效形态）
+        toolbarOpened &&
+        toolbarNewActive &&
+        blankOpened &&
+        blankUrl.indexOf('probe-blank') !== -1 &&
+        blankNewActive &&
+        fixtureKept,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -9594,13 +9775,18 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
         await mkdir(join(root, 'assets'), { recursive: true })
         await writeFile(
           join(root, 'assets', 'fixture.html'),
-          '<!doctype html><meta charset="utf-8"><h1>项目夹具页</h1>',
+          [
+            '<!doctype html><meta charset="utf-8"><h1>项目夹具页</h1>',
+            // 站点「另开一个标签页」的现场：target=_blank 的 http(s) 链接
+            // （右栏必须**新开**一个浏览器标签加载它，当前页原地不动）
+            '<a id="probe-blank" href="https://example.com/probe-blank" target="_blank">另开标签</a>',
+          ].join('\n'),
           'utf8',
         )
         await manager.reload('chat', {})
       },
       act: chatFileProjectAct(captureProjectRoot(userData)),
-      mainAct: (win) => {
+      mainAct: async (win) => {
         const fixture = join(captureProjectRoot(userData), 'assets', 'fixture.html')
         win.webContents.send(IPC.preview.show, {
           sessionId: 'chat-seed-project',
@@ -9608,7 +9794,10 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
           display: fixture,
           title: '项目夹具页',
         })
-        return { pass: true, sent: fixture }
+        // 站点自开标签：用 CDP 在夹具页里**真点**那个 target="_blank" 链接
+        // （合成 click 没有用户手势，会被 Chromium 的弹窗拦截丢掉）
+        const blankClick = await clickFixtureBlankLink(win)
+        return { pass: blankClick.ok, sent: fixture, blankClick }
       },
       check: CHAT_PREVIEW_TOOL_CHECK,
     },
