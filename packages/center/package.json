@@ -1,6 +1,6 @@
 {
   "name": "@aurora/center",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "type": "module",
   "description": "Aurora Center —— 网页控制中心服务器 + CLI（docs/12）",
