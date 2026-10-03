@@ -62,6 +62,14 @@ export const CTX_TAB_BUTTONS_WIDTH = 56
 /** 标签宽度的上限：空间有富余时标签可以变宽（浏览器同款），但不至于宽得没边 */
 export const CTX_TAB_WIDTH_MAX = 160
 
+/**
+ * 标签宽度的**硬下限**（2026-10-03 修「＋ 按钮在最窄处被裁掉」）：
+ * 空间实在不够时，标签退到这一档把位置让给「＋N」「＋」两枚按钮 ——
+ * 按钮是被裁掉就没法点的（`.ctx-tab-list` 的 `overflow: hidden` 会把它切掉），
+ * 而标签窄一点仍然可点、可读（图标 + 省略号）。
+ */
+export const CTX_TAB_WIDTH_MIN = 48
+
 /** 下一个可用 id：首个实例 = 种类名，追加实例 = `<kind>-2` / `<kind>-3`…（关闭后可复用编号） */
 export function nextCtxTabId(kind: CtxTabKind, tabs: readonly CtxTab[]): string {
   if (!tabs.some((tab) => tab.id === kind)) return kind
@@ -163,17 +171,22 @@ export interface CtxTabWindow {
 }
 
 /**
- * 单个标签的**实际宽度**：最小 CTX_TAB_WIDTH（绝不缩窄 —— 用户口径），空间有富余时
- * 长到 CTX_TAB_WIDTH_MAX 为止（浏览器同款：标签少/栏宽时标题多露几个字）。
- * 容量按最小宽度算（`ctxTabCapacity`），所以算出来的宽度永远不会把标签挤出可视区。
+ * 单个标签的**实际宽度**：先把「＋N」「＋」两枚按钮与间距留够，剩下的才是标签的 ——
+ * 上限 CTX_TAB_WIDTH_MAX（空间富余时变宽，浏览器同款）、下限 CTX_TAB_WIDTH_MIN
+ * （右栏被挤到 280px 这类窄局面下让位给按钮）。
+ *
+ * ⚠️ 这里的下限**不是** CTX_TAB_WIDTH（88）：88 是「舒适宽」，一旦把它当下限，
+ * 窄栏下 `88 + 56 + 间距` 就超过可用宽，`overflow: hidden` 会把最后那枚「＋」直接裁掉
+ * ——只查 DOM 存在性的探针全绿，用户点不到（2026-10-03 实测）。
  */
 export function ctxTabWidth(listWidth: number, visibleCount: number): number {
   if (visibleCount <= 0) return CTX_TAB_WIDTH
   // 间距共 visibleCount + 1 档：标签之间 visibleCount − 1，加上「最后一个标签 → ＋N」与
   // 「＋N → ＋」两档（＋N 不在场时那一档空着，宁可留着也不把标签顶出可视区）
   const usable = listWidth - CTX_TAB_BUTTONS_WIDTH - (visibleCount + 1) * CTX_TAB_GAP
-  if (!Number.isFinite(usable) || usable <= 0) return CTX_TAB_WIDTH
-  return Math.max(CTX_TAB_WIDTH, Math.min(CTX_TAB_WIDTH_MAX, Math.floor(usable / visibleCount)))
+  if (!Number.isFinite(usable) || usable <= 0) return CTX_TAB_WIDTH_MIN
+  const fitted = Math.floor(usable / visibleCount)
+  return Math.max(CTX_TAB_WIDTH_MIN, Math.min(CTX_TAB_WIDTH_MAX, fitted))
 }
 
 /**

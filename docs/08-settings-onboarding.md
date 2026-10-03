@@ -274,7 +274,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **25**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **26**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.modelParams.<modelId>.reasoningEffort`（v5 新增，v23 起按模型绑定）：
@@ -625,7 +625,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 25`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 26`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -696,10 +696,16 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `v24 → v25`（**退役全局 `projects.current`**（见 §1 的 `projects`）：从 `projects` 分组里
   **删除该字段**（置空串等于让死字段永生），`list` / `maxAgentsBytes` 原样保留；
   界面的「设为当前」与左栏「当前」徽标随本轮一并退役 —— 项目改由会话绑定
-  （`sessions/<id>.json` 的 `meta.projectId`，见 06 §5.1））。
-  二十五条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
-  方向是放宽），重复执行结果一致 —— `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **25** 条。
+  （`sessions/<id>.json` 的 `meta.projectId`，见 06 §5.1））、
+  `v25 → v26`（**主界面默认尺寸上调**：1120×720 → 1280×800（min 940×600 → 1060×660，
+  见 07 §2.3）。窗口几何是**用户态**（拖动即落盘），所以这一步只做一次「跟着新默认长大」的
+  补偿：`general.windowState.chat` 的宽 / 高若**小于**新默认就抬到新默认，**只放大、不缩小**
+  —— 用户自己拖得更大的尺寸原样保留；几何缺失时不动 `general`。窗口管理器还有第二级抬底
+  （`SPECS.chat` 的 minWidth / minHeight 会把越界旧值夹上来），两者不冲突）。
+  二十六条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**），重复执行结果一致 ——
+  `pnpm verify` 的迁移条数断言
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **26** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程

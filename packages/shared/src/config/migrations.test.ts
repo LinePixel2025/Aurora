@@ -182,7 +182,9 @@ describe('配置迁移链', () => {
   })
 
   describe('v3 → v4（移除 AI 悬浮窗 service-dock）', () => {
-    const CHAT_GEOMETRY = { x: 1480, y: 200, width: 420, height: 640 }
+    // 尺寸取 1400×900（≥ v25 → v26 抬底用的新默认 1280×800）：本组断言的是
+    // 「删掉被退役的窗口、其它窗口几何原样」，用会被 v26 放大的小尺寸会串味
+    const CHAT_GEOMETRY = { x: 1480, y: 200, width: 1400, height: 900 }
     const DOCK_GEOMETRY = { x: 900, y: 960, width: 56, height: 56 }
     const loadWindowState = (raw: Record<string, unknown>): Record<string, unknown> => {
       const general = raw['general'] as Record<string, unknown>
@@ -400,7 +402,9 @@ describe('配置迁移链', () => {
   })
 
   describe('v5 → v6（移除独立小窗 mini-chat；补齐 readonlyPrefixes 与 modelList）', () => {
-    const CHAT_GEOMETRY = { x: 1480, y: 200, width: 420, height: 640 }
+    // 尺寸取 1400×900（≥ v25 → v26 抬底用的新默认 1280×800）：本组断言的是
+    // 「删掉被退役的窗口、其它窗口几何原样」，用会被 v26 放大的小尺寸会串味
+    const CHAT_GEOMETRY = { x: 1480, y: 200, width: 1400, height: 900 }
     const MINI_GEOMETRY = { x: 1500, y: 260, width: 320, height: 480 }
     const SETTINGS_GEOMETRY = { x: 700, y: 120, width: 900, height: 700 }
     const loadWindowState = (raw: Record<string, unknown>): Record<string, unknown> => {
@@ -1099,6 +1103,7 @@ describe('配置迁移链', () => {
         'v22 → v23：v22 → v23：把 provider 级 reasoningEffort / contextWindow / vision 搬进 modelParams[model]，删除 temperature',
         'v23 → v24：v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
         'v24 → v25：v24 → v25：退役全局 projects.current（项目改为按会话绑定，docs/06 §5.1）',
+        'v25 → v26：v25 → v26：主界面默认尺寸上调到 1280×800（历史窗口几何只放大不缩小）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1136,6 +1141,7 @@ describe('配置迁移链', () => {
         'v22 → v23：v22 → v23：把 provider 级 reasoningEffort / contextWindow / vision 搬进 modelParams[model]，删除 temperature',
         'v23 → v24：v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
         'v24 → v25：v24 → v25：退役全局 projects.current（项目改为按会话绑定，docs/06 §5.1）',
+        'v25 → v26：v25 → v26：主界面默认尺寸上调到 1280×800（历史窗口几何只放大不缩小）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1540,6 +1546,7 @@ describe('配置迁移链', () => {
       expect(outcome.applied).toEqual([
         'v23 → v24：v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
         'v24 → v25：v24 → v25：退役全局 projects.current（项目改为按会话绑定，docs/06 §5.1）',
+        'v25 → v26：v25 → v26：主界面默认尺寸上调到 1280×800（历史窗口几何只放大不缩小）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -1605,6 +1612,37 @@ describe('配置迁移链', () => {
       })
       const twice = migrate({ ...once.data, version: 23 })
       expect(twice.data['stt']).toEqual(once.data['stt'])
+    })
+  })
+
+  describe('v25 → v26（主界面默认尺寸上调到 1280×800）', () => {
+    const chatOf = (raw: Record<string, unknown>): Record<string, unknown> => {
+      const general = raw['general'] as Record<string, unknown>
+      const windowState = general['windowState'] as Record<string, unknown>
+      return windowState['chat'] as Record<string, unknown>
+    }
+
+    it('小于新默认的 chat 几何被放大（只放大，x/y 原样）', () => {
+      const outcome = migrate({
+        version: 25,
+        general: { windowState: { chat: { x: 10, y: 20, width: 1120, height: 720 } } },
+      })
+      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied[0]).toContain('v25 → v26')
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+      expect(chatOf(outcome.data)).toEqual({ x: 10, y: 20, width: 1280, height: 800 })
+    })
+
+    it('用户自己拖得更大的尺寸原样保留（不缩小）；缺 chat 几何时不动 general', () => {
+      const big = migrate({
+        version: 25,
+        general: { windowState: { chat: { x: 1, y: 2, width: 1920, height: 1080 } } },
+      })
+      expect(chatOf(big.data)).toEqual({ x: 1, y: 2, width: 1920, height: 1080 })
+
+      const none = migrate({ version: 25, general: { language: 'zh-CN' } })
+      expect(none.data['general']).toEqual({ language: 'zh-CN' })
+      expect(none.data['version']).toBe(CONFIG_VERSION)
     })
   })
 })

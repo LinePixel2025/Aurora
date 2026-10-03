@@ -15,7 +15,7 @@ apps/desktop/
   src/preload/       沙箱化 contextBridge 白名单（自包含，见下）
   src/renderer/      四个窗口入口：edge-bar / chat /
                      settings / onboarding + shared/ 共享组件
-                     （chat 即主界面：1120×720 常驻三栏；可直接输入的快速对话在**提示条面板**
+                     （chat 即主界面：1280×800 常驻三栏；可直接输入的快速对话在**提示条面板**
                      ——窗口 focusable 跟随展开/收起切换；主界面左栏固定项点击切 quick 会话；
                      主界面与设置有 Windows 式「最小化 / 关闭」caption 按钮，关闭 = 隐藏）
 packages/shared/     配置 Schema、SettingsStore、IPC 契约、模式/窗口类型
@@ -133,7 +133,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   外链一律 `target=_blank` + `rel="noopener noreferrer nofollow"`；图片降级为链接
   （生产 CSP `img-src 'self' data:` 会拦远程图）。
 - **文件/命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
-- **配置改动**（当前 `CONFIG_VERSION = 24`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
+- **配置改动**（当前 `CONFIG_VERSION = 26`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 
 ## 文档先行（Docs-first）
 
@@ -412,14 +412,18 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   再同步 `set_setting` 的工具 description 与 systemPrompt 的 settingsHint。
   v9 起 `todo_write` / `todo_read` / `task` 由 `registerAgentCoreTools` 注册（见 docs/06 §18 / §19），
   同样**不受 `agent.tools.enabled` 门控**。
-- **主界面 `chat` 窗口是 1120×720、`alwaysOnTop=false` 的常驻大窗**（三栏布局 + 右栏模式感知，
-  关闭仍 = 隐藏），别按旧版 420×640 侧弹交互窗的心智模型理解它的几何、层级与探针坐标。
+- **主界面 `chat` 窗口是 1280×800（min 1060×660，2026-10-03 二次修订）、`alwaysOnTop=false` 的
+  常驻大窗**（三栏布局 + 右栏模式感知，关闭仍 = 隐藏），别按旧版 420×640 侧弹交互窗的
+  心智模型理解它的几何、层级与探针坐标。最小宽 1060 = 左栏 240 + 主区下限 420 + 右栏 384 + 16；
+  存量窗口由 `v25 → v26` 迁移放大一次（只放大不缩小），别把窗口几何再塞回别的迁移里。
 - **右栏是多标签容器（浏览器式，2026-10-03 二次修订，docs/07 §2.3）**：一个标签 = 一个面板
   实例 —— 文件 / 终端 / 浏览器可各开多个（追加实例 id 为 `files-2` / `browser-2`…，
   首个沿用种类名），**「上下文」是单例**（JobPanel + ContextPanel 收在它里面，旧探针零改动）。
   初始四标签「上下文 / 文件 / 终端 / 浏览器」（**缺省激活上下文**），「＋」（`chat.ctx-new-tab`）
-  开新标签；**溢出 = 固定 88px 不缩窄 + 「＋N」菜单折叠（`chat.ctx-tab-more`）+
-  滑动窗口保证激活标签可见**，总数上限 12。宽度 384px 缺省、可拖拽
+  开新标签；**溢出 = 固定 88px + 「＋N」菜单折叠（`chat.ctx-tab-more`）+ 滑动窗口保证激活标签
+  可见**（**88 是舒适宽、不是下限**：空间不够时标签让到 48，先把「＋N」「＋」两枚按钮的宽度
+  留够 —— 把它当硬下限时，右栏被挤到 280px 会让「＋」被 `overflow: hidden` 裁掉：DOM 里在、
+  矩形也在、就是点不到，2026-10-03 用户实测），总数上限 12。宽度 384px 缺省、可拖拽
   （localStorage `aurora.chat.ctxWidth`，不进 config schema）。**左栏同样可拖拽**
   （`aurora.chat.navWidth`，240px 缺省，与右栏共用 `startColumnResize`）。六个易踩点：
   ① 两侧栏的 `--ctx-w` / `--nav-w`（内联）装的就是**实际生效宽度**：
@@ -449,7 +453,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   锚点被 `v-if` 摘掉就是静默 FAIL（或更糟：探针替应用做了决定）。
 - **主区下限 420 / 窗口按钮固定右上角（2026-10-03 用户实测，两条都别再改回去）**：
   ① 两侧栏宽度是 `min(期望, 窗口 − 另一侧 − 420)`（`MAIN_MIN_WIDTH`）：右栏上限提到 720 后，
-  在 1120px 的窗口里拖到上限会把对话区挤成一条（~175px，一列一个字）、窗口像坏了；
+  在 1120px 的窄窗口里拖到上限会把对话区挤成一条（~175px，一列一个字）、窗口像坏了；
   ② `WindowCaption` 三键**挂在窗口右上角**（`.window-caption`，app-shell 直属、`position: fixed`，
   与设置窗同款），**不要**再排回主区标题栏的末尾 —— 主区一窄整组按钮就被推出主区、压在右栏
   tab 条上。配套：`--head-h`（48px）让标题栏与 tab 条同高、tab 条按 `--caption-w`（132px）

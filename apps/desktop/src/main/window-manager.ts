@@ -69,12 +69,24 @@ const SPECS: Record<WindowName, WindowSpec> = {
     place: 'edge',
   },
   chat: {
-    // BetaV2（Design/betav2-spec.md §2）：chat 从小交互窗升级为**主界面**（1120×720），
-    // 不再置顶、居中显示；frame:false / 几何持久化 / 关闭=隐藏 机制不变。
-    width: 1120,
-    height: 720,
-    minWidth: 940,
-    minHeight: 600,
+    // BetaV2（Design/betav2-spec.md §2）：chat 从小交互窗升级为**主界面**，不再置顶、居中显示；
+    // frame:false / 几何持久化 / 关闭=隐藏 机制不变。
+    /**
+     * 2026-10-03 二次修订（用户口径「调大默认窗口大小」）：**默认 1280×800、最小 1060×660**。
+     * 上限刻意不取更大：`chat-stream-burst` 实测「主区越宽 → 消息里的图表画布每帧越大」，
+     * 1360×860 下这台机器（ToDesk 虚拟显示 + 软件光栅）的流式帧距掉到 300ms 级、
+     * 比 2026-09-26 修掉的回归还差；1280×800 是「明显变大且流式仍然跟手」的档位。
+     *
+     * 最小宽 **1060 = 左栏默认 240 + 主区下限 420 + 右栏默认 384 + 16 余量** —— 低于它，
+     * 右栏就会被挤到 280（那时标签条只剩 132px 可用，虽然现在会正确让位、但毕竟不是
+     * 「三栏各按默认宽并存」的舒适态）。高度从 600 抬到 660，给右栏的卡片列表一点余量。
+     * 存量窗口有**两级抬底**：① 这里的 minWidth/minHeight 会把越界的旧几何夹上来；
+     * ② `v25 → v26` 迁移把仍小于新默认的几何放大一次（**只放大、不缩小**）。
+     */
+    width: 1280,
+    height: 800,
+    minWidth: 1060,
+    minHeight: 660,
     resizable: true,
     transparent: false,
     alwaysOnTop: false,

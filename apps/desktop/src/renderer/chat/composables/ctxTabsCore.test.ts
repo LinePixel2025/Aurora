@@ -12,6 +12,7 @@ import {
   CTX_TAB_GAP,
   CTX_TAB_WIDTH,
   CTX_TAB_WIDTH_MAX,
+  CTX_TAB_WIDTH_MIN,
   closeCtxTab,
   ctxTabCapacity,
   ctxTabWidth,
@@ -134,22 +135,34 @@ describe('ctxTabCapacity（固定宽度不缩窄，塞不下就折叠）', () =>
   })
 })
 
-describe('ctxTabWidth（最小 88 不缩窄，富余时长到 160）', () => {
+describe('ctxTabWidth（先留够按钮，再给标签；88 是舒适宽、不是下限）', () => {
   it('默认宽下 2 个可见标签正好填满（88px × 2 + 两枚按钮 + 间距 ≤ 236）', () => {
     const width = ctxTabWidth(236, 2)
     expect(width).toBe(CTX_TAB_WIDTH)
     expect(width * 2 + CTX_TAB_BUTTONS_WIDTH + 3 * CTX_TAB_GAP).toBeLessThanOrEqual(236)
   })
 
-  it('栏宽 / 标签少时变宽（但不是无限宽），绝不小于 88', () => {
+  it('栏宽 / 标签少时变宽（但不是无限宽）', () => {
     expect(ctxTabWidth(564, 2)).toBe(CTX_TAB_WIDTH_MAX)
     expect(ctxTabWidth(420, 3)).toBeGreaterThan(CTX_TAB_WIDTH)
-    expect(ctxTabWidth(120, 1)).toBe(CTX_TAB_WIDTH)
-    expect(ctxTabWidth(0, 3)).toBe(CTX_TAB_WIDTH)
   })
 
-  it('宽度 × 可见数 + 按钮 + 间距不超过可用宽（宽度只会比容量判据更宽松）', () => {
-    for (const listWidth of [236, 300, 420, 564, 720]) {
+  it('最窄局面（右栏 280px → 标签条 132px）标签让位到 74px，两枚按钮完整放得下', () => {
+    // 用户实测的 bug 现场：88 + 56 + 间距 超过 132 → overflow:hidden 把「＋」裁掉、点不到
+    const width = ctxTabWidth(132, 1)
+    expect(width).toBe(74)
+    expect(width).toBeLessThan(CTX_TAB_WIDTH)
+    expect(width).toBeGreaterThanOrEqual(CTX_TAB_WIDTH_MIN)
+    expect(width + CTX_TAB_BUTTONS_WIDTH + 2 * CTX_TAB_GAP).toBeLessThanOrEqual(132)
+  })
+
+  it('空间小到连 48 都放不下时兜底到 CTX_TAB_WIDTH_MIN（不返回 0 / 负数）', () => {
+    expect(ctxTabWidth(60, 1)).toBe(CTX_TAB_WIDTH_MIN)
+    expect(ctxTabWidth(0, 3)).toBe(CTX_TAB_WIDTH_MIN)
+  })
+
+  it('宽度 × 可见数 + 按钮 + 间距不超过可用宽（含最窄的一批宽度）', () => {
+    for (const listWidth of [132, 150, 200, 236, 300, 420, 564, 720]) {
       const visible = Math.min(ctxTabCapacity(listWidth), 6)
       const total =
         ctxTabWidth(listWidth, visible) * visible +

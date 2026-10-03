@@ -2216,6 +2216,80 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
     const resetWidth = asideEl === null ? 0 : Math.round(asideEl.getBoundingClientRect().width)
     const widthRestored = Math.abs(resetWidth - 384) < 2
 
+    // ⑤″ 最窄局面（2026-10-03 用户实测：「加号按钮会变得不可用」）：
+    // 把右栏拖到最小宽 280 → 标签条只剩 132px 可用。判据不能只量「元素在不在」，
+    // 要量**矩形落在标签条可视区内** + **elementFromPoint 真的命中它** ——
+    // 之前标签按 88px 起步、按钮跟在后面，标签条的 overflow:hidden 把「＋」整枚裁掉：
+    // DOM 在、矩形也在（只是不在可视区），点不到，看着就是「按钮没了」。
+    const inListView = (selector) => {
+      const el = document.querySelector(selector)
+      const list = document.querySelector('[data-field="chat.ctx-tab-list"]')
+      if (el === null || list === null) return false
+      const r = el.getBoundingClientRect()
+      const lr = list.getBoundingClientRect()
+      return r.width > 8 && r.height > 8 && r.right <= lr.right + 1 && r.left >= lr.left - 1
+    }
+    dragResizer('[data-field="chat.ctx-resizer"]', Math.round(window.innerWidth) - 280)
+    await wait(450)
+    const narrowEl = document.querySelector('aside.context')
+    const narrowWidth = narrowEl === null ? 0 : Math.round(narrowEl.getBoundingClientRect().width)
+    const narrowVisible = visibleIds().length
+    const narrowTabWidth = (() => {
+      const el = document.querySelector('[data-field="chat.ctx-tab-list"] [data-tab-id]')
+      return el === null ? 0 : Math.round(el.getBoundingClientRect().width)
+    })()
+    const narrowMoreInView = inListView('[data-field="chat.ctx-tab-more"]')
+    const narrowPlusInView = inListView('[data-field="chat.ctx-new-tab"]')
+    let narrowPlusUsable = false
+    const plusEl = document.querySelector('[data-field="chat.ctx-new-tab"]')
+    if (plusEl !== null) {
+      const r = plusEl.getBoundingClientRect()
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+      const hitOk = hit !== null && (hit === plusEl || plusEl.contains(hit))
+      plusEl.click()
+      await wait(250)
+      const menu = document.querySelector('[data-field="chat.ctx-new-menu"]')
+      const menuOpen = menu !== null && getComputedStyle(menu).display !== 'none'
+      narrowPlusUsable = hitOk && menuOpen
+      plusEl.click()
+      await wait(200)
+    }
+    dragResizer('[data-field="chat.ctx-resizer"]', Math.round(window.innerWidth) - 384)
+    await wait(300)
+    const narrowResetEl = document.querySelector('[data-field="chat.ctx-resizer"]')
+    if (narrowResetEl !== null)
+      narrowResetEl.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    await wait(450)
+
+    // ⑤‴ 左栏缩到最小（200px）时，左栏自己的「＋」入口仍然可点（同一句反馈的另一半）：
+    // 逐个量矩形 + elementFromPoint 命中测试；存在但不满足可见/命中的一律记进未就绪名单。
+    dragResizer('[data-field="chat.nav-resizer"]', 200)
+    await wait(450)
+    const navAside = document.querySelector('aside.nav')
+    const navRect = navAside === null ? null : navAside.getBoundingClientRect()
+    const navPlusIds = [
+      'chat.add-project',
+      'chat.new-agent-session',
+      'chat.new-project-session',
+      'chat.new-work-session',
+    ]
+    let navPlusPresent = 0
+    const navPlusMissing = []
+    for (const id of navPlusIds) {
+      const el = document.querySelector('[data-action="' + id + '"]')
+      if (el === null) continue
+      navPlusPresent += 1
+      const r = el.getBoundingClientRect()
+      const inside = navRect !== null && r.right <= navRect.right + 1 && r.left >= navRect.left - 1
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+      const hitOk = hit !== null && (hit === el || el.contains(hit))
+      if (!(r.width > 8 && r.height > 8 && inside && hitOk)) navPlusMissing.push(id)
+    }
+    const navMinPlusOk = navPlusPresent > 0 && navPlusMissing.length === 0
+    const navResetEl = document.querySelector('[data-field="chat.nav-resizer"]')
+    if (navResetEl !== null) navResetEl.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    await wait(450)
+
     // ⑥ 收尾：关掉多开的两个标签（browser-2 / terminal-2），把步骤 ④ 关掉的那个默认标签
     // 补回来（种类 id 会复用，补回来的就是原来那个 id），再激活回「上下文」——
     // 本场景**不 reload**，收尾不干净会污染后面的场景（docs/07 §5.3 的教训）。
@@ -2272,6 +2346,15 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
       widenWorks,
       resetWidth,
       widthRestored,
+      narrowWidth,
+      narrowVisible,
+      narrowTabWidth,
+      narrowMoreInView,
+      narrowPlusInView,
+      narrowPlusUsable,
+      navPlusPresent,
+      navPlusMissing,
+      navMinPlusOk,
       restoredCount,
       restored,
       pass:
@@ -2289,6 +2372,15 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
         // 容量确实随宽度变（不是写死的可见数），且收尾把宽度与标签集都复原
         widenWorks &&
         widthRestored &&
+        // 最窄局面：标签让位，两枚按钮完整可见且「＋」真的点得开（用户实测的失效现场）
+        narrowWidth <= 282 &&
+        narrowVisible >= 1 &&
+        narrowTabWidth >= 40 &&
+        narrowMoreInView &&
+        narrowPlusInView &&
+        narrowPlusUsable &&
+        // 左栏缩到最小时，左栏自己的「＋」入口仍可点
+        navMinPlusOk &&
         restored,
     }
   } catch (error) {
@@ -3885,9 +3977,17 @@ const BURST_HEARTBEAT_MS = 20
  *（防止出现真正离谱的单次卡顿），真正参与判定的是下面的心跳 / 帧两组。
  *
  * 口径：修复后实测值 × 约 3 倍；实测为 0 的那项给绝对下限（0 × 3 = 0 会把机器抖动判成 FAIL）。
+ *
+ * **2026-10-03 重标定 `count`（6 → 20）**：主界面默认尺寸从 1120×720 提到 1280×800 ——
+ * 主区越宽，消息里的图表画布每帧越大，软件光栅的每帧开销跟着涨，`count` 就是这条曲线的
+ * 指示器（同一台机器上的全量实测：1120×720 → 1；1280×800 → 9；1360×860 → 16/27/53）。
+ * 20 的三条判据都成立：① 是「新默认窗口」实测 9 的约 2.2 倍余量；② **仍小于「窗口再往大调」
+ * 的量级**（1360×860 实测 16–53 —— 这条阈值顺带看住「别把默认窗口调得更大」）；
+ * ③ `maxMs` / `blockingMs` 两项保持原值不动 —— 真正的巨型卡顿照样 FAIL。
+ * 主判据仍是心跳 / 帧两组（本次实测最坏心跳 114.8 / 阈值 160）。
  */
 const BURST_LONG_TASK_LIMITS = {
-  count: 6,
+  count: 20,
   maxMs: 160,
   blockingMs: 150,
 }
@@ -3923,10 +4023,16 @@ const BURST_LONG_TASK_LIMITS = {
  * 夹具体量而不是渲染路径；同时段 longTaskCount 16→6（修 `chart.resize()` 的每帧重绘后）
  * 已回限内，maxHeartbeatMs / maxFrameGapMs 也都在限内。口径按仓库既定规则「改夹具规模
  * 必须重新标定」执行，140 仍比修复前的 238 低 40%，真回归（渲染跟不上输出）照样 FAIL。
+ *
+ * **2026-10-03 再把 `heartbeatOverrunMs` 放到 3600（2400 → 3600）**：主界面默认尺寸提到
+ * 1280×800 后，本机全量实测 2034 / 2326 —— 贴着 2400 的下沿，下一轮机器再忙一点就是
+ * 「恒红收税」（本仓反复踩过）。3600 仍是修复前量纲（4749）的 76%，真回归照样 FAIL；
+ * 主判据 `maxUnhiddenHeartbeatMs`（160）与 `maxFrameGapMs`（110）**一分没动**，
+ * 本次实测 128.8 / 79.2，仍是能抓住「渲染跟不上输出」的那一把尺。
  */
 const BURST_LAG_LIMITS = {
   maxHeartbeatMs: 160,
-  heartbeatOverrunMs: 2400,
+  heartbeatOverrunMs: 3600,
   maxFrameGapMs: 110,
   droppedFrames: 140,
 }

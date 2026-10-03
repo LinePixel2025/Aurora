@@ -941,6 +941,48 @@ const migrateV24ToV25: Migration = {
   },
 }
 
+/**
+ * v25 → v26：主界面默认尺寸上调（1120×720 → 1280×800，min 940×600 → 1060×660）。
+ *
+ * 窗口几何是**用户态**（拖动即落盘），所以这里只做一次「跟着新默认长大」的补偿：
+ * 存量 chat 窗口的宽/高若**小于**新默认就抬到新默认，**只放大、不缩小** ——
+ * 用户自己拖得更大的尺寸原样保留。窗口管理器还有第二级抬底（`SPECS.chat` 的
+ * minWidth/minHeight 会把越界旧值夹上来），两者不冲突。
+ *
+ * 数值**写死在这里**（不在迁移里读运行时常量）：迁移必须冻结成「当时做了什么」，
+ * 以后默认值再变也只能靠新的迁移步去改，否则同一份老配置会被改写出不同结果。
+ */
+const migrateV25ToV26: Migration = {
+  from: 25,
+  to: 26,
+  describe: 'v25 → v26：主界面默认尺寸上调到 1280×800（历史窗口几何只放大不缩小）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+
+    const general = asRecord(raw['general'])
+    const windowState = asRecord(general?.['windowState'])
+    const chat = asRecord(windowState?.['chat'])
+    if (general !== undefined && windowState !== undefined && chat !== undefined) {
+      const width = typeof chat['width'] === 'number' ? chat['width'] : undefined
+      const height = typeof chat['height'] === 'number' ? chat['height'] : undefined
+      next['general'] = {
+        ...general,
+        windowState: {
+          ...windowState,
+          chat: {
+            ...chat,
+            ...(width === undefined ? {} : { width: Math.max(width, 1280) }),
+            ...(height === undefined ? {} : { height: Math.max(height, 800) }),
+          },
+        },
+      }
+    }
+
+    next['version'] = 26
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -967,6 +1009,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV22ToV23,
   migrateV23ToV24,
   migrateV24ToV25,
+  migrateV25ToV26,
 ]
 
 export interface MigrationOutcome {
