@@ -67,6 +67,15 @@ const CHANNELS = {
   preview: {
     read: 'preview:read',
   },
+  // 右栏「终端」（2026-10-03）：与 shared 契约同构，编译期双向断言兜住
+  terminal: {
+    create: 'terminal:create',
+    input: 'terminal:input',
+    resize: 'terminal:resize',
+    kill: 'terminal:kill',
+    data: 'terminal:data',
+    exit: 'terminal:exit',
+  },
   window: {
     show: 'window:show',
     hide: 'window:hide',

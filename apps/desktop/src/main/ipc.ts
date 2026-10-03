@@ -45,6 +45,9 @@ import {
   type ChatMessageDto,
   type FilePreviewRequest,
   type FilePreviewResult,
+  type TerminalCreateRequest,
+  type TerminalInputRequest,
+  type TerminalResizeRequest,
   type ChatSessionModelRequest,
   type ChatSessionProjectRequest,
   type ChatSessionSummary,
@@ -118,6 +121,7 @@ import type {
 import { resolveSubjectFolder } from './paths.js'
 import { buildInitCommandContext, isInitCommand } from './agent-commands.js'
 import { buildFilePreview } from './file-preview.js'
+import type { TerminalService } from './terminal-service.js'
 import { extractPatchSecrets, mergeSettingsPatch } from './settings-patch.js'
 import { redactSettings } from './settings-redact.js'
 import { createEventBuffer } from './event-buffer.js'
@@ -190,6 +194,8 @@ export interface DesktopDeps {
    * 生成 AGENTS.md 的目标目录。未注入时 `/init` 原样透传（模型只看到三个字符，按普通提问处理）。
    */
   workspaceRootOf?: (sessionId?: string) => string | undefined
+  /** PTY 终端（terminal:*，docs/07 §2.3）。未装配时四条通道按 E_INVALID_STATE 如实报错 */
+  terminal?: TerminalService
   /** Job 存储（chat:jobs / resumeJob / cancelJob，docs/06 §4.1，v15） */
   jobs?: JobStore
   /** ClassIsland 桥接（classisland:*，docs/05 §3.4 v2/v3） */
@@ -626,6 +632,51 @@ export function registerIpc(deps: DesktopDeps): () => void {
       .catch((error: unknown) =>
         err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
       )
+  })
+  /**
+   * 右栏「终端」（2026-10-03，docs/07 §2.3）：PTY 交互终端。
+   *
+   * 刻意**不走上面的 `handle` 封装**：create 需要发起窗口的 `event.sender.id`
+   * （输出只推给创建它的窗口 + 每窗口一个常驻 shell 的记账键），而封装把 event 吞掉了。
+   * 其余三条不需要 sender，直接透传给服务。
+   */
+  ipcMain.handle(IPC.terminal.create, (event, request: TerminalCreateRequest) => {
+    const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+    if (sessionId === '' || deps.terminal === undefined) {
+      return Promise.resolve(err('E_INVALID_STATE', '终端服务不可用'))
+    }
+    try {
+      return ok(deps.terminal.create(event.sender.id, sessionId))
+    } catch (error) {
+      return err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
+    }
+  })
+  handle<boolean>(IPC.terminal.input, (request: TerminalInputRequest) => {
+    if (deps.terminal === undefined) return err('E_INVALID_STATE', '终端服务不可用')
+    if (typeof request?.terminalId !== 'string' || typeof request?.data !== 'string') {
+      return err('E_INVALID_ARGUMENT', '终端输入参数不完整')
+    }
+    deps.terminal.input(request.terminalId, request.data)
+    return ok(true)
+  })
+  handle<boolean>(IPC.terminal.resize, (request: TerminalResizeRequest) => {
+    if (deps.terminal === undefined) return err('E_INVALID_STATE', '终端服务不可用')
+    if (
+      typeof request?.terminalId !== 'string' ||
+      typeof request?.cols !== 'number' ||
+      typeof request?.rows !== 'number'
+    ) {
+      return err('E_INVALID_ARGUMENT', '终端尺寸参数不完整')
+    }
+    deps.terminal.resize(request.terminalId, request.cols, request.rows)
+    return ok(true)
+  })
+  handle<boolean>(IPC.terminal.kill, (request: { terminalId?: string }) => {
+    if (deps.terminal === undefined) return err('E_INVALID_STATE', '终端服务不可用')
+    const terminalId = typeof request?.terminalId === 'string' ? request.terminalId : ''
+    if (terminalId === '') return err('E_INVALID_ARGUMENT', '缺少 terminalId')
+    deps.terminal.killByTerminalId(terminalId)
+    return ok(true)
   })
   /**
    * 附件缩略图（v22 多模态输入，docs/07 §2.3）：渲染层 chip 上那张 48×48 的图。

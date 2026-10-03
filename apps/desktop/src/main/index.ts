@@ -94,6 +94,7 @@ import { SETTINGS_HINT } from './settings-hint.js'
 // 图片附件读盘（多模态输入，docs/06 §3.1）：与渲染层预览同一套读法，上限不同
 import { readImages } from './attachments.js'
 import { registerIpc, createSettingsWriter, restoreSnapshot, type DesktopDeps } from './ipc.js'
+import { TerminalService } from './terminal-service.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { ProactiveScheduler } from './proactive.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
@@ -183,10 +184,7 @@ import { AutomationStore } from './automation/store.js'
 import { automationRunProfile } from './automation/run-profile.js'
 import { ensureElevation, inspectElevatedUserData, disableRequireAdmin } from './elevation.js'
 import type { AutomationActionPorts } from './automation/actions.js'
-import {
-  adaptForSubagent,
-  createSessionProjectResolver,
-} from './tools/session-project.js'
+import { adaptForSubagent, createSessionProjectResolver } from './tools/session-project.js'
 import { createFileTodoPort, type FileTodoPort } from './tools/todo-port.js'
 // `ask_user` 的装配层实现（docs/06 §21）：卡片推送 + 等回执（3 分钟超时按"未回答"继续）
 import { ASK_USER_TIMEOUT_MS, createAskUserService, type AskUserService } from './ask-user.js'
@@ -349,6 +347,8 @@ let classIslandNotifier: ClassIslandNotifier | undefined
 /** 构造当前 provider 用的配置签名（变化时重建） */
 let classIslandSignature = ''
 let disposeIpc: (() => void) | undefined
+/** PTY 终端服务（terminal:*，docs/07 §2.3）：每窗口一个常驻 shell，退出前统一 kill */
+let terminalService: TerminalService | undefined
 /** 工具表与电脑操控装配器提到模块级：`runSmokeTest` 要在真实进程里断言它们（docs/06 §11） */
 let tools: ToolRegistry | undefined
 /**
@@ -1996,6 +1996,14 @@ async function bootstrap(): Promise<void> {
       syncClassification()
     },
   }
+  // 右栏「终端」（docs/07 §2.3）：PTY 常驻 shell 服务；cwd 走会话工作目录回落链。
+  // 刻意在 registerIpc **之前**创建：handlers 在调用时才读 deps.terminal，
+  // 但先建好能让「注册即注入」的顺序看得见，不留一个可被踩中的中间态。
+  terminalService = new TerminalService({
+    logger: logger.child('terminal'),
+    rootOf: (sessionId) => sessionProjects.boundaryRoot(sessionId),
+  })
+  deps.terminal = terminalService
   desktopDeps = deps
   disposeIpc = registerIpc(deps)
 
@@ -4511,6 +4519,8 @@ function createSummarizer(
 async function shutdown(): Promise<void> {
   logger?.info('Aurora 退出中')
   disposeIpc?.()
+  // PTY shell 先收掉：孤儿 conpty 进程会一直挂着，比任何落盘失败都难看
+  terminalService?.dispose()
   centerConnector?.dispose()
   sessionBridge?.dispose()
   perception?.stop()

@@ -98,6 +98,15 @@ const api: AuroraApi = {
     // 右栏「文件」预览（docs/07 §2.3）：路径边界与大小上限都在主进程侧判定
     read: (request) => invoke(IPC.preview.read, request),
   },
+  terminal: {
+    // 右栏「终端」（docs/07 §2.3）：PTY 交互终端，输出经 data/exit 推送（on/off 成对）
+    create: (request) => invoke(IPC.terminal.create, request),
+    input: (request) => invoke(IPC.terminal.input, request),
+    resize: (request) => invoke(IPC.terminal.resize, request),
+    kill: (request) => invoke(IPC.terminal.kill, request),
+    onData: (listener) => subscribe(IPC.terminal.data, listener),
+    onExit: (listener) => subscribe(IPC.terminal.exit, listener),
+  },
   window: {
     show: (name) => invoke(IPC.window.show, name),
     hide: (name) => invoke(IPC.window.hide, name),

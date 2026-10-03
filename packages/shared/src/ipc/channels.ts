@@ -55,6 +55,24 @@ export const IPC = {
   preview: {
     read: 'preview:read',
   },
+  /**
+   * 右栏「终端」tab（2026-10-03，docs/07 §2.3）：PTY 交互终端。
+   * `data` / `exit` 是主进程 → 渲染层的推送（on/off 成对），且**只推给创建终端的窗口**。
+   */
+  terminal: {
+    /** 创建（或复用）发起窗口的常驻 shell */
+    create: 'terminal:create',
+    /** 向 shell 写入（键盘输入） */
+    input: 'terminal:input',
+    /** 尺寸变化（cols/rows） */
+    resize: 'terminal:resize',
+    /** 主动关闭 shell */
+    kill: 'terminal:kill',
+    /** shell 输出推送：{ terminalId, data } */
+    data: 'terminal:data',
+    /** shell 退出推送：{ terminalId, exitCode } */
+    exit: 'terminal:exit',
+  },
   window: {
     show: 'window:show',
     hide: 'window:hide',

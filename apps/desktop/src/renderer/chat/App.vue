@@ -54,6 +54,7 @@ import SlashCommandMenu from './components/SlashCommandMenu.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import JobPanel from './components/JobPanel.vue'
 import FilePreviewPanel from './components/FilePreviewPanel.vue'
+import TerminalPanel from './components/TerminalPanel.vue'
 import SessionNav from './components/SessionNav.vue'
 import SubagentPage from './components/SubagentPage.vue'
 import AutomationPage from './components/AutomationPage.vue'
@@ -115,9 +116,10 @@ const jobsOpen = ref(true)
 // ── 右栏功能 tab 与可拖拽调宽（2026-10-03，docs/07 §2.3） ──
 
 /** 右栏功能 tab：`id` 同时是探针锚点后缀（`chat.ctx-tab-<id>`）与窗格切换键 */
-type RightTabId = 'files' | 'context'
+type RightTabId = 'files' | 'terminal' | 'context'
 const rightTabs: Array<{ id: RightTabId; label: string }> = [
   { id: 'files', label: '文件' },
+  { id: 'terminal', label: '终端' },
   { id: 'context', label: '上下文' },
 ]
 /** 缺省「上下文」：旧探针（右栏展开 / 模式卡门控）读的就是这块 DOM，零改动兼容 */
@@ -1697,6 +1699,10 @@ async function markGuideDone(): Promise<void> {
         <div v-else-if="rightTab === 'files'" class="ctx-pane">
           <FilePreviewPanel :session-id="sessionId" />
         </div>
+        <!-- 终端是单列 flex（组件内部自管布局与滚动），不吃两行网格 -->
+        <div v-else-if="rightTab === 'terminal'" class="ctx-pane">
+          <TerminalPanel :session-id="sessionId" />
+        </div>
       </div>
     </aside>
 
@@ -1834,8 +1840,9 @@ body.ctx-resizing .context {
   min-width: 0;
 }
 
-/* 文件预览面板是单列 flex（组件内部自管滚动），不吃两行网格 */
-.ctx-pane > :deep(.fp) {
+/* 文件预览 / 终端面板是单列 flex（组件内部自管滚动），不吃两行网格 */
+.ctx-pane > :deep(.fp),
+.ctx-pane > :deep(.tp) {
   grid-row: 1 / -1;
   min-height: 0;
 }

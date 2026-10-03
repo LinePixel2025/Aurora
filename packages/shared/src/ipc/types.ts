@@ -386,6 +386,41 @@ export interface FilePreviewResult {
   note?: string
 }
 
+// ───────────────────────── PTY 终端（右栏「终端」tab，2026-10-03） ─────────────────────────
+
+export interface TerminalCreateRequest {
+  /** cwd 按**发起会话**的工作目录回落链解析（docs/06 §5.1） */
+  sessionId: string
+}
+
+export interface TerminalCreateResult {
+  /** 终端 id（同一窗口重复 create 返回同一个 id = 复用常驻 shell） */
+  terminalId: string
+}
+
+export interface TerminalInputRequest {
+  terminalId: string
+  /** 键盘输入（含控制序列，原样透传给 PTY） */
+  data: string
+}
+
+export interface TerminalResizeRequest {
+  terminalId: string
+  cols: number
+  rows: number
+}
+
+/** `terminal:data` / `terminal:exit` 推送（只发给创建终端的窗口） */
+export interface TerminalDataEvent {
+  terminalId: string
+  data: string
+}
+
+export interface TerminalExitEvent {
+  terminalId: string
+  exitCode: number
+}
+
 // ───────────────────────── 窗口 ─────────────────────────
 
 export interface WindowState {
@@ -1562,6 +1597,23 @@ export interface AuroraApi {
      * `resolveWithin` 口径）；文本 2 MB / 图片 10 MB 上限，超限截断或拒绝。
      */
     read(request: FilePreviewRequest): Promise<Result<FilePreviewResult>>
+  }
+  terminal: {
+    /**
+     * 创建（或复用）发起窗口的常驻 PTY shell（docs/07 §2.3 右栏「终端」tab）。
+     * 同一窗口重复调用返回同一个 `terminalId`；窗口销毁时 shell 由主进程收掉。
+     */
+    create(request: TerminalCreateRequest): Promise<Result<TerminalCreateResult>>
+    /** 键盘输入原样透传（非终端 id / 已退出时静默丢弃） */
+    input(request: TerminalInputRequest): Promise<Result<boolean>>
+    /** cols/rows 变化同步给 PTY（越界值主进程夹取） */
+    resize(request: TerminalResizeRequest): Promise<Result<boolean>>
+    /** 主动关闭 shell */
+    kill(request: { terminalId: string }): Promise<Result<boolean>>
+    /** shell 输出推送（on/off 成对；只推给创建终端的窗口） */
+    onData(listener: (event: TerminalDataEvent) => void): () => void
+    /** shell 退出推送（on/off 成对） */
+    onExit(listener: (event: TerminalExitEvent) => void): () => void
   }
   chat: {
     send(request: SendMessageRequest): Promise<Result<{ requestId: string }>>

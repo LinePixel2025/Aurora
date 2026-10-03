@@ -37,6 +37,11 @@ extraResources:
 
 asar: true
 
+# 原生模块（PTY 终端，2026-10-03）：@lydell/node-pty 的预编译 .node 二进制
+# 不能进 asar（Electron 运行时要从真实文件路径加载），解包到 app.asar.unpacked
+asarUnpack:
+  - node_modules/@lydell/node-pty/**
+
 win:
   icon: resources/icon.ico
   # 不签名（用户决策）：跳过 electron-builder 的签名/exe 元数据步骤。
