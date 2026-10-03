@@ -3,9 +3,13 @@
  * Windows 式窗口按钮（2026-09 重构新增，docs/07 §2.3 / §2.5）。
  *
  * 应用全部窗口都是 `frame: false`，此前主界面与设置没有任何系统标题栏按钮；
- * 本组件在自绘头部里补上「最小化 / 关闭」两枚标准 caption 按钮：
+ * 本组件在自绘头部里补上「最小化 / 最大化 / 关闭」三枚标准 caption 按钮
+ * （2026-10 起补齐最大化——Windows 通用顺序：最小化、最大化、关闭）：
  * - 「最小化」走 `window:minimize` **真最小化**（进任务栏，可从任务栏恢复；
  *   只有 chat / settings 的 spec 允许，其余窗口主进程侧是 no-op）；
+ * - 「最大化」走 `window:toggleMaximize`；图标按 WindowState.maximized 在
+ *   最大化（还原双框）与普通（单框）之间切换，状态由主进程在
+ *   maximize / unmaximize 事件时广播（含拖动区双击的原生路径）；
  * - 「关闭」沿用应用约定 = **隐藏窗口**（`window:hide`，不退出应用，退出只走托盘）。
  *
  * 命中区 46×32px（Windows 11 caption 规格的压缩版，与 44px 头部同高），
@@ -14,23 +18,29 @@
  * `data-caption-btn` 是 capture 探针定位的唯一抓手（`CHAT_COLLAPSE_CHECK`）。
  */
 import type { WindowName } from '@aurora/shared'
-import { Minus, X } from '@aurora/shared/browser'
+import { Copy, Minus, Square, X } from '@aurora/shared/browser'
 import { useWindowStore } from '../stores.js'
 
 const props = withDefaults(
   defineProps<{
     /** 目标窗口（按钮直接对它调 minimize / hide，不经过父级转发） */
     window: WindowName
-    /** 不可最小化的窗口（提示条等）只渲染「关闭」；chat / settings 默认两枚都渲染 */
+    /** 不可最小化的窗口（提示条等）只渲染「关闭」；chat / settings 默认三枚都渲染 */
     minimizable?: boolean
+    /** 不可最大化的窗口不渲染「最大化」；chat / settings 的 spec 都是 maximizable */
+    maximizable?: boolean
   }>(),
-  { minimizable: true },
+  { minimizable: true, maximizable: true },
 )
 
 const windowStore = useWindowStore()
 
 function onMinimize(): void {
   void windowStore.minimize(props.window)
+}
+
+function onToggleMaximize(): void {
+  void windowStore.toggleMaximize(props.window)
 }
 
 function onClose(): void {
@@ -50,6 +60,24 @@ function onClose(): void {
       @click="onMinimize"
     >
       <Minus :size="12" :stroke-width="1" aria-hidden="true" />
+    </button>
+    <button
+      v-if="maximizable"
+      type="button"
+      class="caption-btn no-drag press"
+      data-caption-btn="maximize"
+      :title="windowStore.state.maximized?.[window] ? '向下还原' : '最大化'"
+      :aria-label="windowStore.state.maximized?.[window] ? '向下还原窗口' : '最大化窗口'"
+      @click="onToggleMaximize"
+    >
+      <!-- 最大化 = 单框；最大化中 = 双框（还原）。描边对齐 Minus 的利落感 -->
+      <Copy
+        v-if="windowStore.state.maximized?.[window]"
+        :size="11"
+        :stroke-width="1"
+        aria-hidden="true"
+      />
+      <Square v-else :size="10" :stroke-width="1" aria-hidden="true" />
     </button>
     <button
       type="button"

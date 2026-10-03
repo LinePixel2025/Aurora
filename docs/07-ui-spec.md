@@ -551,8 +551,12 @@
     `min-height: 100%`，内容超过一屏后根节点的盒子被钉在一屏高、多出来的部分按**溢出**渲染 ——
     元素尺寸不再变化，只监听尺寸会漏掉每一次流式增量（若 `.thread` 是普通块级容器，其根节点会跟着内容长高，
     尺寸变化本身就能被观察到，因此不会复现这个问题）。`AURORA_CAPTURE` 的自动滚底探针正是靠"内容确实比窗口高"这条守卫把这个坑钉住的。
-- **关闭 / 最小化（2026-09 重构起）**：标题栏右侧是 Windows 式窗口按钮（`WindowCaption.vue`）——
-  「最小化」真最小化（进任务栏，可从任务栏恢复），「关闭」= **直接隐藏窗口**；
+- **关闭 / 最小化 / 最大化（2026-09 重构起；2026-10 补齐最大化）**：标题栏右侧是 Windows 式窗口按钮
+  （`WindowCaption.vue`，顺序对齐 Windows 通用布局：最小化、最大化、关闭）——
+  「最小化」真最小化（进任务栏，可从任务栏恢复），「最大化」走 `window:toggleMaximize`
+  （图标按 `WindowState.maximized` 在「最大化 / 向下还原」间切换；主进程在 maximize / unmaximize
+  事件时广播，覆盖拖动区双击这条不经 `toggleMaximize` 的原生路径），
+  「关闭」= **直接隐藏窗口**；
   正在进行的流式回复**不会**因此中止（`hide()` 不触碰 `chat:abort`，见 02 §2.2「关闭 = 隐藏」）。
   双击头部拖动区 = 切换最大化（最大化时几何不落盘，还原后按原尺寸恢复）。
 - **侧栏（2026-09 重构起）**：三栏布局的左栏（240px，可折叠）常驻承载品牌行 / 新对话 /
@@ -654,7 +658,7 @@
   越界仍询问，无项目时与从前一样不再逐次询问、只写日志留痕。
   写盘时**同时写两个字段**（`agent.permissionMode` = 选中档，`advanced.confirmSensitiveTools` =
   `档位 !== 'auto'`）：后者是老开关，两者由 `resolvePermissionMode()` 合成生效档位，
-  分开写会出现「界面选 confirm、实际生效 auto」的错位。与设置页「智能与工具」页读写的
+  分开写会出现「界面选 confirm、实际生效 auto」的错位。与设置页「Agent 设置」页读写的
   **是同一份配置**，没有第二份来源。
   三个细节是有意的：
   - 放宽权限的档位（完全权限）用**警示色常驻**（不是一闪而过的 toast）——闸门开着这件事必须一直看得见；
@@ -881,14 +885,17 @@
 ### 2.5 设置窗口
 
 - 单窗口分栏（**BetaV2**：8 页合并为 **6 页**；2026-09 重构起条目为图标 + 单行文字；v0.2.0 起新增 **Aurora Center** 页共 **7 页**）：侧栏按四组排列 —— **基础**（常规 `general` /
-  模式 `modes`）／**智能**（AI 模型 `llm` / 语音 `voice` / 智能与工具 `agent`）／**连接**（Aurora Center `center`）／
+  模式 `modes`）／**智能**（AI 模型 `llm` / 语音 `voice` / Agent 设置 `agent`）／**连接**（Aurora Center `center`）／
   **系统**（高级 `advanced`）；`SETTINGS_PAGE_IDS = ['general','modes','llm','voice','agent','center','advanced']`。
   当前项用分层填充 + 左侧**强调色**指示条（不再用品牌渐变）。合并口径：Skill 与 MCP 并入 `agent` 页、
   STT 并入 `voice` 页、生图模型并入 `llm` 页、勿扰时段并入 `general` 页（全局 + 提示条两组同区）；
   旧深链兼容映射：`?page=tts→voice`、`?page=skills|mcp→agent`。
-- **窗口按钮（2026-09 重构起）**：本窗无系统标题栏（`frame: false`），侧栏品牌行右侧提供
-  与主界面同款的 Windows 式「最小化 / 关闭」按钮（`WindowCaption.vue`，
-  `data-caption-btn="minimize" | "close"`）；「关闭」= **隐藏窗口**（Esc 等效；
+- **窗口按钮（2026-09 重构起；2026-10 移位 + 补齐最大化）**：本窗无系统标题栏（`frame: false`），
+  Windows 式「最小化 / 最大化 / 关闭」按钮（`WindowCaption.vue`，
+  `data-caption-btn="minimize" | "maximize" | "close"`）**贴窗口右上缘**（根元素上
+  `position: fixed; top: 0; right: 0`，不随内容滚动；2026-10 起从侧栏品牌行右移出，
+  对齐 Windows 通用布局——三键在窗口右上角，不在侧栏里）；
+  「关闭」= **隐藏窗口**（Esc 等效；
   不退出应用，退出只走托盘菜单），「最小化」真最小化进任务栏。
   侧栏导航条目改为**图标 + 单行文字**（不再带两行说明文案）。
 - **可拖动区域（本轮补齐）**：侧栏顶部（`.sidebar-drag` 透明条 + 品牌行 `.brand`，
@@ -953,7 +960,7 @@
   切换后 baseURL / 模型名的提示词随之改写 —— 两套接口的字段语义不同，见 docs/06 §15.1）。
   凭据行的展示规则与 AI 模型页一致（只显示「凭据已保存 / 缺少凭据」，密文不进渲染层）。
   字段与门控矩阵见 docs/08 §1 / §6.1。
-- **智能与工具页（2026-09 信息架构收拢）**：页内三组（电脑操控工具 / 技能 / MCP 服务器）同为可折叠
+- **Agent 设置页（2026-09 信息架构收拢；2026-10 前称「智能与工具」）**：页内三组（电脑操控工具 / 技能 / MCP 服务器）同为可折叠
   section-card，折叠策略 —— 「电脑操控工具」**默认展开**（本页主配置面，`agent.tools.*` 探针依赖），
   「技能」「MCP 服务器」**默认收起**（组锚点 `data-group="skills"` / `data-group="mcp"`，
   capture 探针先点开两组、等渲染与折叠动画走完再计数，见 §5.3）。**组头摘要承载状态**（收起也能看清）：
@@ -989,8 +996,8 @@
   `ScheduleEditor`（课表 provider / 节次 / ClassIsland 连接测试 / 课前提醒）/
   `ClassificationBehavior`（自动移动 / 置信阈值 / 兜底文件夹 + 分类流水）。
   「感知文件夹」「科目」默认展开，「课表」「分类行为」默认折叠并在折叠头显示状态摘要。
-  （BetaV2）智能与工具页 = agent.tools 区组 + 技能区组 + MCP 区组（三组同页折叠；折叠策略 / 组头摘要 /
-  安全文案 / Toast / 启停控件的现行口径见上面「智能与工具页（2026-09 信息架构收拢）」条目；
+  （BetaV2）Agent 设置页 = agent.tools 区组 + 技能区组 + MCP 区组（三组同页折叠；折叠策略 / 组头摘要 /
+  安全文案 / Toast / 启停控件的现行口径见上面「Agent 设置页（2026-09 信息架构收拢）」条目；
   MCP 状态灯仍用 `StatusDot`，`lazyConnect` 收进折叠区）；高级页（BetaV2）为「网络 / 日志 / 安全 / 危险操作」四卡
   （勿扰时段已并入常规页），「重置为默认配置」需就地二次确认（不再用原生 `confirm`）。
 
@@ -1389,7 +1396,7 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     `opacity: 0` 但占位保持可命中的控件（会话行归档钮）同样要达标。
   - **设置页安全区巡检**（`SETTINGS_OVERFLOW_ACT` / `SETTINGS_OVERFLOW_CHECK`，
     产物 `settings-overflow.png`，2026-09-29）：act 依次点开左侧**全部 7 个导航项**
-    （通用 / 模式 / AI 模型 / 语音 / 智能与工具 / Aurora Center / 系统），逐页量 `main.content` 内
+    （通用 / 模式 / AI 模型 / 语音 / Agent 设置 / Aurora Center / 系统），逐页量 `main.content` 内
     **每个元素**的矩形，只查**横向**溢出（纵向滚动是正常行为、不算），
     探出内容区左右边界超过 1px 的节点记账；check 断言**页数 ≥ 7**（防"导航没点全还判 PASS"）
     且违规页数为 0。这条把「安全区」从自动化页扩到了最可能出现"长标签 + 窄控件"的设置页。
@@ -1522,7 +1529,7 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     与非空行容器二选一；
     **agent 页**见下条；**旧深链别名**（`SETTINGS_LEGACY_ALIAS_SCRIPT`，产物 `settings-legacy-tts-alias.png`）：
     `?page=tts` 必须经 `LEGACY_PAGE_ALIASES` 落到合并后的「语音」页（`tts.enabled` 与 `stt.enabled` 都在）；
-  - **「智能与工具」页门控**（`SETTINGS_AGENT_FIELDS_SCRIPT`；BetaV2 六页 IA 下原「电脑操控」页
+  - **「Agent 设置」页门控**（`SETTINGS_AGENT_FIELDS_SCRIPT`；BetaV2 六页 IA 下原「电脑操控」页
     并入技能 + MCP 两区组）：读 `agent.tools.enabled` 复选框的**实际状态**，
     开着时要求终端 / 文件 / **文件检索** / 打开**四栏**的详情字段都在
     （`terminalFields/filesFields > 0`、`searchFields >= 2`、`openFields > 0`，

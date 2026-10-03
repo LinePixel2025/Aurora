@@ -5373,7 +5373,7 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
 })()`
 
 /**
- * 「智能与工具」设置页门控探针（docs/08 §6.1、step 5；BetaV2 六页 IA）。
+ * 「Agent 设置」（原「智能与工具」）设置页门控探针（docs/08 §6.1、step 5；BetaV2 六页 IA）。
  *
  * 与 `SETTINGS_FIELDS_SCRIPT` 同一套路：`data-field` 计数 + `data-empty` 列表，
  * 但这里要额外读**总开关的实际状态**——`agent.tools.enabled` 为 false 时三个分栏控件
@@ -6476,7 +6476,11 @@ export const WINDOW_DRAG_SCRIPT = `(() => {
       regionValue = (
         style.getPropertyValue('-webkit-app-region') || style.getPropertyValue('app-region') || ''
       ).trim()
-      const button = biggest.querySelector('button')
+      // 按钮命中检验有两个现场：按钮**在拖动区内**（chat 头部，验证 no-drag 不被 drag 吃掉）
+      // 与按钮**不在任何拖动区内**（设置窗 2026-10 起 caption 贴窗口右上缘 fixed 定位，
+      // 不在拖动区里）——后者回退到全局关闭按钮，验证的语义变成「没被别的浮层盖住」。
+      const button =
+        biggest.querySelector('button') || document.querySelector('[data-caption-btn="close"]')
       if (button !== null) {
         const rect = button.getBoundingClientRect()
         buttonLabel = (button.textContent || '').trim()
@@ -8605,7 +8609,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       // 前置 act 展开「课表」分组（默认收起，否则课前提醒字段不在 DOM）；
       // 「AI 模型」页（BetaV2）：对话展示开关 + 生图模型区组；
       // 「语音」页（BetaV2 合并 TTS + STT）：两个区组各自的常显字段与列表空态二选一；
-      // 「智能与工具」页（BetaV2 合并技能 + MCP）：预期空状态见 SETTINGS_AGENT_FIELDS_SCRIPT；
+      // 「Agent 设置」页（BetaV2 合并技能 + MCP）：预期空状态见 SETTINGS_AGENT_FIELDS_SCRIPT；
       // 技能 / MCP 区组默认收起（docs/07 §2.5），探针在 check 里自己先展开再计数（async），
       // 所以这里**不需要**像 modes 页那样配 act —— PNG 拍到的正是默认收起态。
       // 「AI 模型」页也配一个拍图前置（step-06）：把页面**底部**的生图区组滚进视口 ——
@@ -8682,7 +8686,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     check: SETTINGS_SNAPSHOT_LIST_CHECK,
   })
   // 设置窗拖动区（step-06）：侧栏顶部 / `.brand` / 内容区顶部三处至少要有一条 ≥ 32px 的可见拖动区，
-  // 且拖动区里的按钮仍能被 elementFromPoint 命中（不被 `-webkit-app-region: drag` 吃掉点击）。
+  // 且窗口按钮仍能被 elementFromPoint 命中 —— 按钮在拖动区内验证 no-drag（chat），
+  // 不在拖动区内则回退到全局关闭按钮、验证没被浮层盖住（设置窗 caption 已贴窗口右上缘）。
   plan.push({
     name: 'settings',
     file: 'settings-drag.png',

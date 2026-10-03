@@ -148,8 +148,8 @@ onMounted(() => {
     <Transition name="collapse">
       <div v-if="open" class="group-body">
         <p class="section-desc">
-          以 <code class="mono">SKILL.md</code> 描述的可复用能力包，存放于内置
-          <code class="mono">skills/</code> 与用户技能目录；模型按描述自动匹配，也可用
+          以 <code class="mono">SKILL.md</code> 描述的能力包，存于内置
+          <code class="mono">skills/</code> 与用户技能目录；模型按描述自动匹配，也可
           <code class="mono">/技能名</code> 或 <code class="mono">@技能名</code> 显式调用。
         </p>
 
@@ -158,11 +158,7 @@ onMounted(() => {
           label="用户技能目录"
           :hint="
             status
-              ? `留空 = 使用默认目录 ｜ 当前生效：${status.userDir}${
-                  status.scannedAt
-                    ? ` · 上次扫描：${new Date(status.scannedAt).toLocaleString()}`
-                    : ''
-                }`
+              ? `留空 = 使用默认目录 ｜ 当前生效：${status.userDir}`
               : '留空 = 使用默认目录（用户数据目录 / skills）'
           "
         >
@@ -183,6 +179,9 @@ onMounted(() => {
             {{ rescanning ? '扫描中…' : '重新扫描' }}
           </AppButton>
           <AppButton size="sm" variant="ghost" @click="openDir">打开用户技能目录</AppButton>
+          <span v-if="status?.scannedAt" class="tiny muted scan-at">
+            上次扫描：{{ new Date(status.scannedAt).toLocaleString() }}
+          </span>
         </div>
 
         <!-- 空状态：没有技能就没有可启停的对象（skills.disabled 不出现） -->
@@ -215,8 +214,12 @@ onMounted(() => {
                     {{ skill.description }}
                   </p>
                 </td>
-                <td class="tiny muted clamp-2" :title="skill.whenToUse ?? ''">
-                  {{ skill.whenToUse ?? '—' }}
+                <td class="tiny muted">
+                  <!-- clamp 挂在内层元素上：td 自身被 display:-webkit-box 接管后
+                       会脱离表格单元格布局，两行截断失效、文字溢出（2026-10 实测） -->
+                  <span class="clamp-2" :title="skill.whenToUse ?? ''">
+                    {{ skill.whenToUse ?? '—' }}
+                  </span>
                 </td>
                 <td class="tiny muted">{{ skill.hasScripts ? 'scripts/' : '—' }}</td>
                 <td>
@@ -252,6 +255,11 @@ onMounted(() => {
 .enable-cell {
   flex: none;
   white-space: nowrap;
+}
+
+/* 「上次扫描」时间跟在操作按钮行尾，与按钮基线对齐 */
+.scan-at {
+  margin-left: var(--space-2);
 }
 
 .table {

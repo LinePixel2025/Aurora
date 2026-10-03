@@ -191,7 +191,13 @@ export class WindowManager {
   }
 
   getState(): WindowState {
-    return { visible: { ...this.state.visible }, primary: this.state.primary }
+    // maximized 现算（不进状态机）：它描述的是窗口的真实几何，不是「应该可见」的意图
+    const maximized: Partial<Record<WindowName, boolean>> = {}
+    for (const name of WINDOW_NAMES) {
+      const win = this.windows.get(name)
+      if (win && !win.isDestroyed() && win.isMaximized()) maximized[name] = true
+    }
+    return { visible: { ...this.state.visible }, primary: this.state.primary, maximized }
   }
 
   onStateChanged(listener: (state: WindowState) => void): () => void {
@@ -327,6 +333,10 @@ export class WindowManager {
     // 几何事件走**去抖 + 短路**入口（P2-08）：拖动期间不再每帧全量 mutate / 广播一次
     win.on('moved', () => this.scheduleGeometryPersist(name, win))
     win.on('resized', () => this.scheduleGeometryPersist(name, win))
+    // 最大化态变化要广播：渲染层 caption 的「最大化 / 还原」图标据此切换
+    //（含标题栏拖动区双击这条不经 toggleMaximize 的原生路径）
+    win.on('maximize', () => this.emit())
+    win.on('unmaximize', () => this.emit())
     win.on('closed', () => {
       // 先收掉待落盘的几何定时器：窗口没了，它再去改配置就是一次"幽灵写入"
       this.cancelGeometryTimer(name)

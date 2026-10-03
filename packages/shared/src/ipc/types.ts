@@ -367,6 +367,11 @@ export interface WindowState {
   visible: Partial<Record<WindowName, boolean>>
   /** 当前主对话窗口；交互窗是唯一候选（独立小窗已删除，docs/07 §3） */
   primary: 'chat' | null
+  /**
+   * 各窗口当前是否处于最大化（自绘 caption 的「最大化 / 还原」按钮据此切换图标）。
+   * 由 WindowManager 在 getState 时**现算**（不进状态机），未创建 / 已销毁的窗口不出现。
+   */
+  maximized?: Partial<Record<WindowName, boolean>>
 }
 
 // ───────────────────────── 更新（docs/04 §P6、docs/09） ─────────────────────────

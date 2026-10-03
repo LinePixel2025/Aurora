@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 智能与工具设置页（docs/06 §11、docs/08 §1，BetaV2 六页 IA）：
+ * Agent 设置页（docs/06 §11、docs/08 §1，BetaV2 六页 IA；2026-10 前称「智能与工具」）：
  * 「电脑操控工具」「技能」「MCP 服务器」三个可折叠区组同页（spec §9）。
  *
  * 2026-09 信息架构收拢（docs/07 §2.5）：工具组默认展开、技能 / MCP 默认收起
@@ -344,7 +344,7 @@ async function openWorkspace(): Promise<void> {
   <!-- page-agent：样式钩子，本页把 collapse 动画的高度上限抬高（见 settings.css） -->
   <section class="page page-agent">
     <header>
-      <h1 class="page-title">智能与工具</h1>
+      <h1 class="page-title">Agent 设置</h1>
       <p class="page-sub">电脑操控工具、技能与 MCP 服务器。</p>
     </header>
 

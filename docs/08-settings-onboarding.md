@@ -842,11 +842,11 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     ClassRoom 区组 + Work 区组，见 §7）；
   - **AI 能力**：`llm` AI 模型（provider 管理 + 「显示思考过程」开关 + 生图模型区组，见 §5）、
     `voice` 语音（TTS 区组 + STT 区组）、
-    `agent` 智能与工具（`agent.tools` 区组 + 技能区组 + MCP 区组，三组同页折叠）；
+    `agent` Agent 设置（`agent.tools` 区组 + 技能区组 + MCP 区组，三组同页折叠；2026-10 前称「智能与工具」）；
   - **系统**：`advanced` 系统（网络 / 日志 / 安全 / 危险操作）。
   - 旧页深链兼容映射：`?page=tts` → `voice`、`?page=skills|mcp` → `agent`；
     `general` / `modes` / `llm` / `advanced` 页 id 不变，旧深链继续可用。
-- **Skill 管理**（目标 6 页 IA 下为「智能与工具」页的技能区组）：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。
+- **Skill 管理**（目标 6 页 IA 下为「Agent 设置」页的技能区组）：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。
   - 实现状态（v0.6.0）：`skills.userDir` **真正生效**（此前运行时硬编码 `userData/skills`，
     配置项是死字段）。空串回落 `userData/skills`；填自定义目录后保存会**按新目录重扫**。
     页面显示「当前生效目录」与「上次扫描时间」，并提供**真实的**「重新扫描」
@@ -854,7 +854,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     `skills:status` 的 `failed` / `warnings` 并在页面提示，不再静默吞掉。
     另：目录切换复用**同一个注册表实例**（`setUserDir` + 重扫）——`use_skill` 工具的闭包
     与提示词组装都持有该实例，换实例会让它们继续指向旧表，表现为「改了目录但模型仍看到旧技能」。
-- **MCP 管理**（目标 6 页 IA 下为「智能与工具」页的 MCP 区组）：服务器列表、添加（stdio 命令 / HTTP URL）、连接状态灯、错误日志。
+- **MCP 管理**（目标 6 页 IA 下为「Agent 设置」页的 MCP 区组）：服务器列表、添加（stdio 命令 / HTTP URL）、连接状态灯、错误日志。
   - 实现状态（v0.3.0）：列表读写与凭据脱敏沿用 v0.1.0；**状态灯**由 `mcp:status` /
     `mcp:statusChanged` 驱动（`ready` / `connecting` / `error` 三态，`error` 时展示
     最近一次失败原因），`lazyConnect` 可在设置页切换（收在「高级」折叠里）。

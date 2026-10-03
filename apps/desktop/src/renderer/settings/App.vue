@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 设置窗口（docs/07 §2.5、docs/08 §5/§6）：单窗口分栏七页
- * 通用 / 模式 / AI 模型 / 语音 / 智能与工具 / Aurora Center / 系统（BetaV2 由 8 页合并而来，spec §9）。
+ * 通用 / 模式 / AI 模型 / 语音 / Agent 设置 / Aurora Center / 系统（BetaV2 由 8 页合并而来，spec §9）。
  *
  * 合并去向：TtsPage → voice（与 STT 同页）；SkillsPage / McpPage → agent；
  * AdvancedPage 的勿扰时段 → general。旧深链（`?page=tts|skills|mcp`）经
@@ -10,8 +10,9 @@
  * 本窗无系统标题栏（`frame: false`），拖动能力由 `useWindowDrag('settings')` 统一提供
  * （docs/07 §1），共三处：侧栏顶部透明条（16px）、侧栏品牌行（min-height 36px，实测 ≈39px）、
  * 内容区顶部拖动带（10px）。
- * 品牌行右侧是 Windows 式「最小化 / 关闭」按钮（WindowCaption，2026-09 起；
- * 「关闭」= 隐藏窗口，`Esc` 等效；不退出应用，退出只走托盘菜单）。
+ * Windows 式窗口按钮（WindowCaption）挂在**窗口右上角**（`position: fixed`，2026-10 起
+ * 从品牌行右移出——Windows 通用布局是三键贴窗口右上缘，不在侧栏里）；
+ * 「关闭」= 隐藏窗口，`Esc` 等效；不退出应用，退出只走托盘菜单。
  * 侧栏导航条目为图标 + 单行文字（旧两行说明文案已删，docs/07 §2.5）。
  */
 import { computed, onMounted, onUnmounted, ref, type Component } from 'vue'
@@ -55,7 +56,7 @@ const nav: NavItem[] = [
   { id: 'modes', label: '模式', icon: LayoutGrid },
   { id: 'llm', label: 'AI 模型', icon: Cpu },
   { id: 'voice', label: '语音', icon: AudioLines },
-  { id: 'agent', label: '智能与工具', icon: Puzzle },
+  { id: 'agent', label: 'Agent 设置', icon: Puzzle },
   { id: 'center', label: 'Aurora Center', icon: MonitorSmartphone },
   { id: 'advanced', label: '系统', icon: SettingsGear },
 ]
@@ -151,6 +152,8 @@ function select(id: PageId): void {
 
 <template>
   <div class="settings">
+    <!-- Windows 式窗口按钮：贴窗口右上缘（通用布局），fixed 定位不随内容滚动 -->
+    <WindowCaption window="settings" class="window-caption" />
     <aside class="sidebar">
       <!-- 侧栏顶部拖动条：透明、无内容，作用是把「能拖的区域」从品牌行往上顶到窗口最上缘 -->
       <div class="sidebar-drag" :class="dragClass" aria-hidden="true" />
@@ -162,8 +165,6 @@ function select(id: PageId): void {
           <strong>Aurora</strong>
           <p class="tiny muted">设置</p>
         </div>
-        <!-- Windows 式窗口按钮：最小化 + 关闭（= 隐藏，Esc 等效）；见 docs/07 §2.5 -->
-        <WindowCaption window="settings" />
       </div>
       <nav>
         <template v-for="group in grouped" :key="group.title">
@@ -220,6 +221,18 @@ function select(id: PageId): void {
   grid-template-columns: 200px 1fr;
   height: 100vh;
   background: var(--bg-base);
+}
+
+/**
+ * 窗口按钮贴窗口右上缘（Windows 通用布局）：fixed 相对窗口视口定位，
+ * 不随 `.content` 滚动；层高于拖动带与页面内容。按钮自带 no-drag，
+ * 悬停命中区不受侧栏 / 拖动带影响。
+ */
+.window-caption {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 30;
 }
 
 .sidebar {
