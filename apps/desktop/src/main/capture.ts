@@ -2513,6 +2513,98 @@ export function chatFileProjectAct(root: string): string {
 }
 
 /**
+ * 无标签页时的左栏工具快捷入口（2026-10-03，docs/07 §2.3）。
+ *
+ * 现场（截图停在这里）：reload 回初始四标签后，**走真实 ✕ 按钮**把四个标签逐个关掉 ——
+ * 右栏标签条只剩「＋」，左栏会话滚动区顶部出现「工具」分组（四张卡片）。
+ * 截图要一眼看到：卡片长什么样、右栏确实是空的。
+ * 后续（check 里）：卡片矩形与命中、点「文件」卡片把标签开回来、卡片区随之消失。
+ */
+export const CHAT_CTX_EMPTY_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const report = { ok: false, reason: '', closed: 0 }
+  window.__auroraCtxEmptyAct = report
+  try {
+    // 关一个标签后标签条会重排 —— 每轮重新取「第一个关闭钮」，直到一个都不剩
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const close = document.querySelector('[data-field^="chat.ctx-tab-close-"]')
+      if (close === null) break
+      close.click()
+      report.closed += 1
+      await wait(200)
+    }
+    await wait(400)
+    const shortcuts = document.querySelector('[data-field="chat.tool-shortcuts"]')
+    report.ok = shortcuts !== null
+    if (!report.ok) report.reason = '关完所有标签后左栏没有出现工具快捷卡片'
+    return report
+  } catch (error) {
+    report.reason = String(error)
+    return report
+  }
+})()`
+
+/**
+ * 无标签页工具快捷卡片的断言（2026-10-03，docs/07 §2.3）。
+ *
+ * 现场（act 留下）：右栏标签全关、左栏「工具」四张卡片在。
+ * 断言：① 标签确实一个不剩；② 四张卡片锚点齐（context / files / terminal / browser）；
+ * ③ 每张卡片**矩形** ≥ 80×30（左栏 200px 最窄时也要放得下两列）；④ 卡片中心
+ * `elementFromPoint` 真的命中卡片（只查 DOM 存在会漏「被裁掉 / 被盖住」这一类失效）；
+ * ⑤ 点「文件」卡片 → 文件标签回来、卡片区消失、文件窗格挂上 —— 闭环。
+ * 本场景排在 chat 组末尾，收尾不再有 chat 场景依赖初始标签集。
+ */
+export const CHAT_CTX_EMPTY_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const report = { ok: false, reason: '' }
+  try {
+    const act = window.__auroraCtxEmptyAct || { ok: false, reason: 'act 没有留下读数' }
+    const kinds = ['context', 'files', 'terminal', 'browser']
+    const allTabs = () => document.querySelectorAll('[data-field^="chat.ctx-tab-"][data-tab-id]').length
+    const cards = kinds.map((k) => document.querySelector('[data-action="chat.tool-open-' + k + '"]'))
+    const cardPresent = cards.every((el) => el !== null)
+    const rectOk = cards.every((el) => {
+      if (el === null) return false
+      const r = el.getBoundingClientRect()
+      return r.width >= 80 && r.height >= 30
+    })
+    const hitOk = cards.every((el) => {
+      if (el === null) return false
+      const r = el.getBoundingClientRect()
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+      return hit !== null && (el === hit || el.contains(hit))
+    })
+    const emptyBefore = allTabs() === 0
+    const fileCard = document.querySelector('[data-action="chat.tool-open-files"]')
+    if (fileCard !== null) fileCard.click()
+    let reopened = false
+    for (let attempt = 0; attempt < 25 && !reopened; attempt += 1) {
+      reopened = document.querySelector('[data-field="chat.ctx-tab-files"]') !== null
+      if (!reopened) await wait(200)
+    }
+    const shortcutsGone = document.querySelector('[data-field="chat.tool-shortcuts"]') === null
+    const paneShown = document.querySelector('[data-tab-kind="files"]') !== null
+    report.detail = {
+      closed: act.closed,
+      emptyBefore,
+      cardPresent,
+      rectOk,
+      hitOk,
+      reopened,
+      shortcutsGone,
+      paneShown,
+    }
+    report.ok =
+      act.ok && emptyBefore && cardPresent && rectOk && hitOk && reopened && shortcutsGone && paneShown
+    if (!report.ok && report.reason === '') report.reason = '工具快捷卡片的开标签链路没有闭环'
+    return report
+  } catch (error) {
+    report.reason = String(error)
+    return report
+  }
+})()`
+
+/**
  * 右栏文件面板＝项目文件夹的断言（2026-10-03，docs/07 §2.3；同日补导航与布局护栏）。
  *
  * 现场（act 留下）：会话切到绑项目的种子会话、停在「文件」tab、列表已出。
@@ -10024,6 +10116,19 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: CHAT_TRACE_WHEEL_ACT,
       mainAct: chatTraceWheelMainAct,
       check: CHAT_TRACE_WHEEL_CHECK,
+    },
+    // 无标签页时的左栏工具快捷入口（2026-10-03，docs/07 §2.3）：prepare reload 回
+    // 初始四标签 → act 走真实 ✕ 关掉全部（截图停在这里：左栏四张卡片 + 右栏空白）→
+    // check 验证卡片矩形 / 命中，并点「文件」卡片把标签开回来。
+    // **排在 chat 组末尾**：它把标签集与面板挂载状态改过了，后面不应再有 chat 场景。
+    {
+      name: 'chat',
+      file: 'chat-ctx-empty-tools.png',
+      prepare: async () => {
+        await manager.reload('chat', {})
+      },
+      act: CHAT_CTX_EMPTY_ACT,
+      check: CHAT_CTX_EMPTY_CHECK,
     },
     // 五段共用同一窗口，不能加 query / reload；本地占位凭据只在隔离 userData 中保存，绝不测试连接。
     // 双主题场景（step-06）刻意排在五段**之前**：它只等第 0 段就位、不点任何页脚按钮，

@@ -308,6 +308,16 @@ function onNewCtxTab(kind: CtxTabKind): CtxTab | null {
   return opened
 }
 
+/**
+ * 左栏「工具」快捷卡片（2026-10-03，docs/07 §2.3）：右栏标签**全关**时它们是重开入口 ——
+ * 先把右栏展开（用户可能把它收起过），再走与「＋」菜单同一条开标签链路
+ * （含到上限时的可见提示）。开出一个标签后左栏那张卡片区就自动消失。
+ */
+function openCtxTabFromNav(kind: CtxTabKind): void {
+  contextOpen.value = true
+  onNewCtxTab(kind)
+}
+
 /** 关标签：把「已挂载」记录一并清掉（编号会被复用，留着会让新标签一开就挂载） */
 function onCloseCtxTab(id: string): void {
   closeCtxTab(id)
@@ -1595,6 +1605,7 @@ async function markGuideDone(): Promise<void> {
         :jobs-count="jobs.length"
         :jobs-running="jobsRunning"
         :jobs-open="jobsOpen"
+        :ctx-empty="ctxTabs.length === 0"
         @new-session="startNewSession"
         @new-agent-session="startAgentSession"
         @new-project-session="startProjectSession"
@@ -1606,6 +1617,7 @@ async function markGuideDone(): Promise<void> {
         @open-automations="view = 'automations'"
         @toggle-right-panel="contextOpen = !contextOpen"
         @toggle-jobs="toggleJobs"
+        @open-ctx-tab="openCtxTabFromNav"
         @open-settings="windowStore.show('settings')"
       />
     </aside>
