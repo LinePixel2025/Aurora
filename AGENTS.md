@@ -245,6 +245,19 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   2.6 段只读档的"内容一字未变"同款（文件压根没被写成功过）。加判据时先问一句
   「**调用失败时这条会不会也成立**」。
 
+### 2026-10-03 追加（`prettier --write` 会改坏 `.vue` 模板）
+
+- **`prettier --write` 会把 `.vue` 模板里的多语句内联事件处理器拆行并吞掉分号**：
+  `@click.stop="moreOpen = !moreOpen; newOpen = false"` 格式化后变成 `@click.stop="` +
+  两行语句（**没有分号分隔**）+ `"` → **模板编译报错**，dev 下 Vite 在窗口里弹错误遮罩，
+  整个截图流程卡死（本轮实测：全量截图停在某个场景 12 分钟不动，报告一张不写）。
+  最阴的一点：**`tsc` 与 `vue-tsc` 全绿**（它们不校验内联处理器的 JS），只有 Vite 编译 /
+  运行期才炸 —— 别因为"typecheck 过了"就以为 .vue 改安全了。
+  规矩：① 模板里**不写多语句内联处理器**，一律抽成具名方法（`@click.stop="toggleMore"`）；
+  ② `prettier --write` 之后**必须重跑一次构建**（`pnpm --filter @aurora/desktop build`）
+  再进截图 —— 本轮正是靠窗口上那层 Vite 错误遮罩才定位到的（typecheck / 单测 / 探针脚本
+  校验三道都放行）。
+
 
 ## 尚未生效 / 已知限制（别误当成 bug）
 
@@ -401,22 +414,39 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   同样**不受 `agent.tools.enabled` 门控**。
 - **主界面 `chat` 窗口是 1120×720、`alwaysOnTop=false` 的常驻大窗**（三栏布局 + 右栏模式感知，
   关闭仍 = 隐藏），别按旧版 420×640 侧弹交互窗的心智模型理解它的几何、层级与探针坐标。
-- **右栏已 Tab 化（2026-10-03，docs/07 §2.3）**：「文件 / 终端 / 浏览器 / 上下文」四个 tab，
-  既有 JobPanel + ContextPanel 收在**缺省的「上下文」tab**（旧探针因此零改动）；宽度 384px
-  缺省、可拖拽（localStorage `aurora.chat.ctxWidth`，不进 config schema）。**左栏同样可拖拽**
-  （`aurora.chat.navWidth`，240px 缺省，与右栏共用 `startColumnResize`）。四个易踩点：
+- **右栏是多标签容器（浏览器式，2026-10-03 二次修订，docs/07 §2.3）**：一个标签 = 一个面板
+  实例 —— 文件 / 终端 / 浏览器可各开多个（追加实例 id 为 `files-2` / `browser-2`…，
+  首个沿用种类名），**「上下文」是单例**（JobPanel + ContextPanel 收在它里面，旧探针零改动）。
+  初始四标签「上下文 / 文件 / 终端 / 浏览器」（**缺省激活上下文**），「＋」（`chat.ctx-new-tab`）
+  开新标签；**溢出 = 固定 88px 不缩窄 + 「＋N」菜单折叠（`chat.ctx-tab-more`）+
+  滑动窗口保证激活标签可见**，总数上限 12。宽度 384px 缺省、可拖拽
+  （localStorage `aurora.chat.ctxWidth`，不进 config schema）。**左栏同样可拖拽**
+  （`aurora.chat.navWidth`，240px 缺省，与右栏共用 `startColumnResize`）。六个易踩点：
   ① 两侧栏的 `--ctx-w` / `--nav-w`（内联）装的就是**实际生效宽度**：
   `App.vue` 的 `navEffWidth` / `ctxEffWidth` = `min(期望值, 窗口 − 另一侧 − MAIN_MIN_WIDTH 420)`，
   resize 时重算。栏内子组件（JobPanel / ContextPanel / SessionNav 的 `.nav-inner`）读同一个变量，
   别再回硬编码 264px，也别在 CSS 里另写一套窗口比例夹取；
-  ② `webviewTag` 只对 chat 窗口开启（BrowserPanel 用 `createElement('webview')`
-  绕开 Vue 编译器，重挂载会重载页面——这是已知取舍不是 bug）；③ `@lydell/node-pty` 必须
-  留在 electron-builder 的 `asarUnpack`（.node 不能进 asar），终端是用户手动操作面，
-  **别给它接 AI 工具面或确认闸门**（`show_preview` 走的是浏览器 tab，不是终端）；
+  ② **面板生命周期分两档**：文件 / 终端 / 浏览器**首次激活挂载后常驻**（切标签只是
+  `display:none` —— 网页不重载、xterm 不重建），**上下文面板维持 `v-if`**（激活才挂载）：
+  旧断言 `jobsHiddenOnFiles`（files 下 `chat.jobs` 必须缺席）正依赖后者，别统一成一种；
+  ③ `webviewTag` 只对 chat 窗口开启（BrowserPanel 用 `createElement('webview')`
+  绕开 Vue 编译器；`remove()` 只在**关标签**时发生）；`@lydell/node-pty` 必须
+  留在 electron-builder 的 `asarUnpack`（.node 不能进 asar）。**终端每个标签一个 shell**
+  （主进程按 `terminalId` 记账、每窗口上限 6、关标签 = kill 该 PTY）——
+  别改回「每窗口一个 shell」：那样两个终端标签会共用同一条 PTY。终端是用户手动操作面，
+  **别给它接 AI 工具面或确认闸门**（`show_preview` 走的是浏览器标签，不是终端）；
   ④ **`onHeadersReceived` 的 CSP 注入必须只作用于自家窗口的页面**（按
   `details.webContentsId` 是否属于 `BrowserWindow.getAllWindows()` 判定，2026-10-03 修）：
   无条件注入会把 webview 里加载的外部页面一起打瘸（强加 `script-src 'self'` → 内联脚本 /
-  CDN 资源全被拒），症状是「内置浏览器白屏、浏览器里点链接没反应」——别把它"简化"回无条件注入。
+  CDN 资源全被拒），症状是「内置浏览器白屏、浏览器里点链接没反应」——别把它"简化"回无条件注入；
+  ⑤ **标签条不得压三键**（用户点名）：`.ctx-tab-list` 永远右让 `--caption-w`（132px）
+  且带 `overflow: hidden` —— 拖宽过渡的**瞬时溢出被裁掉**，而不是画到按钮底下；
+  「＋」/「＋N」两个菜单只许**向下**弹（永远不进 caption 矩形）。护栏：`chat-right-tabs`
+  的 `captionPinned` / `captionTabOverlap` + 新场景 `chat-ctx-tabs` 的菜单矩形断言；
+  ⑥ **折叠标签的锚点必须仍在 DOM 里**：＋N 菜单内容常驻（`v-show` 收起），
+  因为 `chat-right-tabs` / `chat-preview-show` / `chat-file-project` / `chat-terminal`
+  四个场景都直接 `querySelector('[data-field="chat.ctx-tab-*"]').click()` ——
+  锚点被 `v-if` 摘掉就是静默 FAIL（或更糟：探针替应用做了决定）。
 - **主区下限 420 / 窗口按钮固定右上角（2026-10-03 用户实测，两条都别再改回去）**：
   ① 两侧栏宽度是 `min(期望, 窗口 − 另一侧 − 420)`（`MAIN_MIN_WIDTH`）：右栏上限提到 720 后，
   在 1120px 的窗口里拖到上限会把对话区挤成一条（~175px，一列一个字）、窗口像坏了；

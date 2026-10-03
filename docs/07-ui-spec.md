@@ -213,11 +213,41 @@
     **刻意不给 `data-empty` 锚点**：设置页探针把 `data-empty` 当作"门控空状态"白名单来断言，
     这里的空态不是门控行为，多一个锚点只会把探针口径搅浑。
     面板整体按内容增高，条目多了在自己的列表里滚（`max-height: 300px`），不把上下文栏挤没。
-  - **右栏功能 tab（2026-10-03 新增，docs/07 §2.3）**：右栏顶部是一条功能 tab 条
-    （「文件 / 终端 / 浏览器 / 上下文」，锚点 `chat.ctx-tab-<id>`），原有内容整体收进
-    「上下文」tab —— 任务面板与模式感知上下文栏的两行网格语义逐字保留，
-    **缺省激活「上下文」**（旧探针读的 DOM 不动）。左栏「任务」入口会先切到上下文 tab
-    再翻面板显隐（任务面板收在 tab 里，直接翻看不见）。
+  - **右栏功能标签 = 浏览器式多标签（2026-10-03 新增，同日升级为「可多开」）**：
+    右栏顶部是一条**可多开的标签条**（`chat.ctx-tabs`，标签锚点 `chat.ctx-tab-<id>`），
+    一个标签 = 一个面板实例：**文件 / 终端 / 浏览器可各开多个**（追加实例的 id 为
+    `files-2` / `browser-2`…，首个实例沿用种类名），**「上下文」是单例**（任务面板 +
+    模式感知上下文栏的两行网格语义逐字保留，整体收在它里面）。
+    初始标签集 = **「上下文 / 文件 / 终端 / 浏览器」**（每种一个，**缺省激活「上下文」**
+    —— 旧探针读的 DOM 与四个锚点逐字保留）。
+    - **开新标签**：「＋」（`chat.ctx-new-tab`）弹出 `chat.ctx-new-menu`（文件 / 终端 /
+      浏览器 / 上下文；「上下文」已在就切过去、不在则重建），标签总数上限 **12**。
+    - **标签形制**：图标 + 标题 + 关闭 ✕（`chat.ctx-tab-close-<id>`，悬停 / 激活才显形，
+      命中区 ≥ 24×24）。标题由**面板上报**：文件 = 当前目录名或文件名、终端 = cwd 末段、
+      浏览器 = 页面标题（`page-title-updated`，回落主机名）、上下文 = 固定「上下文」。
+      关闭终端标签 = `terminal:kill`（浏览器式语义：关标签就是关那个 shell）。
+    - **溢出折叠 = 固定数量 + 「＋N」菜单**（2026-10-03 用户口径）：标签**不缩窄**
+      （固定 88px），可见数量由标签条**实测宽度**算出
+      （`capacity = max(1, ⌊(可用宽 − ＋/＋N 两枚按钮) / 88⌋)`）；放不下的收进
+      `chat.ctx-tab-more`（＋N 按钮，弹出 `chat.ctx-more-menu` 列出被折叠标签，可切换 /
+      可关闭）。**滑动窗口**：激活标签永远落在可见区（浏览器同款）—— 从 ＋N 菜单激活一个
+      被折叠的标签时，窗口滑过去把它带回来。384px 默认宽下可见 2 个、拖到 720px 可见 5 个。
+    - **⚠️ 三键让位（2026-10-03 用户点名，逐字保留）**：标签条右端仍按 `--caption-w`
+      （132px）留位；标签条**不横向滚动**（折叠替代滚动），`.ctx-tab-list` 带
+      `overflow: hidden` —— 宽度过渡的瞬时溢出被**裁掉**，绝不会画到三键底下；
+      两个下拉菜单一律**向下**弹出（在 48px 顶带之下），永不进 caption 矩形。
+      护栏：`chat-right-tabs` 的 `captionPinned` / `captionTabOverlap` 保持绿；
+      新场景 `chat-ctx-tabs` 另断言**菜单打开时**的矩形与三键无交集。
+    - **面板生命周期**：文件 / 终端 / 浏览器面板**首次激活挂载、之后常驻**
+      （切走只是 `display:none`）—— 切标签不再重载网页（v1 的「重挂载即重载」取舍已消）、
+      不再重建 xterm；**「上下文」面板维持原 `v-if` 口径**（激活才挂载）：它没有本地状态，
+      且旧探针 `jobsHiddenOnFiles`（files 下 `chat.jobs` 必须缺席）正依赖这条语义。
+      **标签是窗口级的**（不是每会话一套）：面板内容仍随当前会话变化（文件面板切会话即
+      重新 bootstrap、终端标签保留自己的 shell、浏览器标签与会话无关）。
+      **刻意不做跨重启记忆**：恢复浏览器 / 终端标签会在启动时偷偷加载页面、拉起 shell，
+      收益不抵惊扰；宽度记忆（localStorage）不受影响。
+    左栏「任务」入口会先**确保上下文标签在**（被关掉则重建）并激活它，再翻面板显隐
+    （任务面板收在标签里，直接翻看不见）。
     右栏宽度 264 → **384px 缺省**，左缘把手（`chat.ctx-resizer`）可拖拽调宽
     （**280–720px** 夹取，localStorage 记忆、双击复位；视图偏好**不进 config schema**），
     JobPanel / ContextPanel 的固定宽跟随 `--ctx-w`（折叠时收 0 的语义不变）。
@@ -269,17 +299,22 @@
       与文件工具不同，**根不可用时直接拒绝**——渲染层主动读盘通道不退回无边界），
       文本 2 MB 超限截断、图片 10 MB 上限、前 8 KB NUL 字节判二进制（`main/file-preview.ts`）；
       列目录上限与排序在 `main/file-list.ts`。
-    - **「终端」tab（`TerminalPanel`，`chat.terminal`）**：PTY 交互终端
-      （@lydell/node-pty + xterm 6）。**每个窗口一个常驻 shell**（主进程按窗口记账，
-      切 tab 不杀、窗口销毁才 kill、退出统一 dispose）；渲染层 xterm 实例模块级单例 +
-      容器 detach/attach —— 切 tab 不丢 scrollback。**底色固定纯黑**
-      （2026-10-03 用户口径：终端就该是黑的；此前跟随 `prefers-color-scheme`，
+    - **「终端」标签（`TerminalPanel`，`chat.terminal`）**：PTY 交互终端
+      （@lydell/node-pty + xterm 6）。**每个标签一个 shell**（2026-10-03 二次修订：
+      主进程按 `terminalId` 记账，每次 `terminal:create` 出**新的** PTY、不再按窗口复用；
+      每窗口上限 6 个、超限如实报错；窗口销毁时该窗口全部 shell 一起 kill、
+      应用退出统一 dispose）。渲染层 xterm 是**面板实例自己的**（组件卸载即
+      `dispose` + `terminal:kill`）；面板常驻（见上条）因此天然保住 scrollback ——
+      模块级单例 + 容器 detach/attach 的老做法已删除。
+      标签标题取 **cwd 末段**（`TerminalCreateResult.cwd`，回落「终端」），多开时彼此可辨。
+      **底色固定纯黑**（2026-10-03 用户口径：终端就该是黑的；此前跟随 `prefers-color-scheme`，
       浅色系统下拿到白底黑字，与「终端」的视觉预期不符）—— 容器 `.tp-host` 与
       xterm `theme.background` 两处都是 `#000`，viewport 由 xterm 按主题着色。
       尺寸跟随用**挂在容器上的 ResizeObserver**（rAF 合并）：左 / 右栏拖拽调宽、
-      窗口缩放、面板重挂载都会让容器尺寸变化，只挂 window resize 会让 PTY 停在旧列数。
-      cwd 按会话工作目录回落链解析；输出只推给创建它的窗口；Windows 默认 PowerShell；
-      shell 退出显示 exit code 并可重开。
+      窗口缩放、标签激活（常驻面板从 `display:none` 回来）都会让容器尺寸变化，
+      只挂 window resize 会让 PTY 停在旧列数。
+      cwd 按会话工作目录回落链解析（**创建那一刻**解析一次）；输出按 `terminalId` 过滤后
+      只推给创建它的窗口；Windows 默认 PowerShell；shell 退出显示 exit code 并可重开。
       终端是**用户的手动操作面**：不进 AI 工具面、不接确认闸门。IPC：`terminal:create /
       input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
       打包：`@lydell/node-pty` 经 electron-builder `asarUnpack` 解出（.node 不能进 asar）。
@@ -306,13 +341,17 @@
       判据改为按 `webContentsId` 归属（`BrowserWindow.getAllWindows()` 里没有的就是 guest），
       与协议 / 端口 / 开发态 URL 形态无关；`file://` 预览页同样跳过（外域页面本该由
       它自己的 CSP 约束）。
-      **已知取舍**：webview 重挂载会重载页面 —— 切到别的 tab 再回来，当前页面重新加载。
+      **切标签不再重载**（2026-10-03 二次修订）：浏览器面板随标签常驻，切走只是隐藏，
+      webview 只在**标签关闭**时 `remove()`；标签标题跟随页面标题
+      （`page-title-updated`，回落主机名）。隐藏期间页面照常运行（与真浏览器一致）。
     - **Agent 展示（`show_preview` 工具 → `preview:show` 推送）**：Agent 产出的
       HTML 报告 / 网页 / 图片可以直接在右栏看，不必把内容贴进对话。工具目标两类：
       `http(s)` 网址，或**会话边界根之内**的本地文件（相对路径按会话工作目录解析，
       `file://` 转换在主进程完成；越界即拒绝 —— 校验在 `main/tools/preview-port.ts`，
-      与文件工具同一个 `resolveWithin`）。推送到达时主界面**自动展开右栏、切到「浏览器」tab**
-      并加载目标（本地文件的地址栏显示原始路径而不是 file:// URL）；只接受
+      与文件工具同一个 `resolveWithin`）。推送到达时主界面**自动展开右栏并把目标投给
+      「浏览器」标签**（2026-10-03 二次修订：已有浏览器标签就**复用** —— 激活中的是浏览器
+      标签就用它，否则用最近激活过的那个；都没有才新建并激活），加载目标
+      （本地文件的地址栏显示原始路径而不是 file:// URL）；只接受
       `sessionId === 当前会话` 的展示请求（后台会话不该顶掉用户正在看的右栏）。
   - **右栏（模式感知上下文栏）**：栏内（任务面板之下）第一张是任务清单卡
     （当前会话最后一次 `todo_write` 的结构化清单，
@@ -1286,7 +1325,12 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
      `<userData>/jobs/main.json`（**必须早于面板首读**），场景只 reload 让面板重新挂载，act **不点任何按钮**）→
      `chat-right-tabs.png`（2026-10-03 右栏功能 tab：act 在「文件」tab 输入一个必然越界的
      绝对路径点预览，等错误文案出现后截图 —— 越界判定在 stat **之前**，离线可跑、不碰用户目录；
-     check 再依次切四个 tab 断言互斥、终端 xterm 跨 tab 往返存活、宽度变量生效）→
+     check 再依次切四个 tab 断言互斥、终端 xterm 跨 tab 往返存活、宽度变量生效；
+     2026-10-03 二次修订后「目标标签被折叠」时经「＋N」菜单进入）→
+     `chat-ctx-tabs.png`（2026-10-03 二次修订 右栏多标签：act 用「＋」菜单开第二个浏览器标签、
+     展开「＋N」菜单截图、从菜单激活一个被折叠的标签、关掉一个标签、再开第二个终端标签，
+     收尾恢复初始四标签；check 断言折叠计数与 `＋N` 按钮、滑动窗口把激活标签带回可见区、
+     菜单矩形与三键无交集、两个终端是**不同** PTY）→
      `chat-subagent-page.png`（点左栏「子代理」固定项进页面，check 收尾切回对话流）→
      `chat-automation.png` / `chat-automation-normal.png` / `chat-automation-editor.png` /
      `chat-automation-history.png`（自动化页四连，v19；见下面「自动化页四连」一条）→
@@ -1591,10 +1635,14 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     2026-10-03）：act 切到「文件」tab、在路径框输入 `C:\Windows\win.ini`（必然在会话边界根之外）
     并点预览，等 `chat.file-preview-error` 出现后**停在该 tab 截图**——越界判定发生在 stat
     **之前**，因此离线可跑、且不写任何用户目录（Agent 空间会话的边界根是真实桌面）；
-    act 末尾顺带初始化终端 tab 让 xterm 挂上。check 断言：四个 tab 锚点与拖拽把手都在、
+    act 末尾顺带初始化终端 tab 让 xterm 挂上（2026-10-03 二次修订后目标标签可能被折叠：
+    act/check 一律直接点 `chat.ctx-tab-<id>` 锚点 —— 折叠时它在 ＋N 菜单里，但**仍是可点的
+    元素**（`.click()` 与可见性无关）；标签条自身的折叠 / 菜单交互由 `chat-ctx-tabs`
+    场景用真实 UI 覆盖，两者分工见那条的场景注释）。check 断言：
+    四个 tab 锚点与拖拽把手都在、
     右栏宽度落在 280–720px（`--ctx-w` 变量真的驱动布局）、越界文案含「边界」、
     **tab 互斥**（files 下 `chat.jobs` 缺席、context 下恢复——旧探针零改动兼容正依赖这条）、
-    终端 `.xterm` 跨 tab 往返仍在且行文本长度不减少（模块级单例 + 容器 detach/attach）、
+    终端 `.xterm` 跨 tab 往返仍在且行文本长度不减少（面板常驻：切走只是 `display:none`）、
     浏览器面板出现（webview 不等待网络加载）、文件 tab 的面包屑根段恒在且预览态点
     「返回列表」（`chat.file-exit`）后列表容器回来、**左栏把手在且宽度由 `--nav-w` 内联变量真正驱动**、
     **两侧把手各拖一次真的改宽度**（合成 down → move → up，buttons 恒为 1：左栏拖到 320、
@@ -1608,6 +1656,20 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     2026-10-03 的撑破 bug 会让它们被推出可视区，而只查 DOM 存在性的探针全绿）。成功路径
     （真实读盘 / 截断 / 二进制 / 目录与缺失文件）由 `apps/desktop/src/main/file-preview.test.ts`
     与 `file-list.test.ts` 用真实临时目录覆盖；
+  - **右栏多标签（开 / ＋N 折叠 / 滑动窗口 / 多终端）**（`CHAT_CTX_TABS_ACT` /
+    `CHAT_CTX_TABS_CHECK`，产物 `chat-ctx-tabs.png`，2026-10-03 二次修订）：
+    act 全程走**真实 UI**（不点隐藏锚点）：① 点 `chat.ctx-new-tab` 开「＋」菜单 → 点「浏览器」
+    项（等第二个浏览器面板挂载）；② 点 `chat.ctx-tab-more` 展开「＋N」菜单**停在这里截图**；
+    ③ 点菜单里第一条被折叠的标签（记下它的 `data-tab-id`）→ 等它激活；④ 点它的 ✕ 关掉；
+    ⑤ 再经「＋」开一个终端标签（等第二个 `.xterm` 挂上）；⑥ 收尾：关掉新增的标签、激活回
+    「上下文」（**自带收尾**，不依赖别的场景自律）。check 断言：**折叠计数**（`＋N` 按钮的
+    数字 = 标签总数 − 可见数）、**滑动窗口**（从菜单激活的那个标签，矩形落在标签条可视区内
+    —— 激活标签永远看得见）、**菜单矩形与三键矩形无交集**（菜单只许向下弹）、
+    **两个终端是不同 PTY**（两个 `chat.terminal-host` 的 `data-terminal-id` 互异且非空 ——
+    主进程多实例真在工作，只数 DOM 个数是数不出共享同一个 shell 的）、
+    **容量随宽度变化**（把右栏拖宽 → 同时可见的标签变多：「固定数量」是按标签条实测宽度算的，
+    不是写死的 2；拖完双击复位回 384），关闭后 `＋N` 数字回落、
+    收尾后标签总数回到初始 4；
   - **终端 tab 截图**（`CHAT_TERMINAL_ACT` / `CHAT_TERMINAL_CHECK`，产物 `chat-terminal.png`，
     2026-10-03）：不 reload（复用上一场景初始化好的常驻 shell，截图里自带 PowerShell 提示符），
     check 断言 `.xterm` 在 + 容器与 viewport 底色纯黑；行文本只作诊断字段（单独跑本场景时

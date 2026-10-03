@@ -1438,7 +1438,9 @@ Content-Type: application/json
 ## 14. 扩展工具六件套（v0.0.1；`show_preview` 于 2026-10-03 补入）
 
 v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/betav2-spec.md §6.2），
-2026-10-03 起再加 `show_preview`（把成果展示到桌面右栏的预览面板，见 §14.3）。
+2026-10-03 起再加 `show_preview`（把成果展示到桌面右栏的预览面板，见 07 §2.3 的
+「Agent 展示」——渲染层收到推送后把目标投给**浏览器标签**：已有就复用、没有才新建，
+2026-10-03 二次修订）。
 分层与 §11 的电脑操控工具同一套：**内核只定义工具与端口**（`tools/web-fetch.ts` /
 `tools/clipboard.ts` / `tools/notify.ts` / `tools/imagegen.ts` / `tools/preview.ts`，
 纯 Node、可单测），真实系统能力由主进程实现端口后注入（`apps/desktop/src/main/tools/`
@@ -1451,7 +1453,7 @@ v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/b
 | `clipboard_write` {text} | `ClipboardPort.write(text)` | 同上（`clipboard.writeText`） | **confirm** |
 | `notify_user` {title, body} | `NotifyPort.show(title, body)` | `createNotificationPort`（映射到 `NotificationService.notify`，复用去重 / 点击打开 / 日志） | safe |
 | `generate_image` {prompt, size?} | `ImageGenPort.generate({prompt, size?})` | `createImageGenPort` → `ImageGenService`（§15） | **confirm**（花 API 费用） |
-| `show_preview` {target, title?} | `PreviewPort.show(target, {sessionId, title})` | `createPreviewPort`（目标校验 + 推送到 chat 窗口，§14.3） | safe |
+| `show_preview` {target, title?} | `PreviewPort.show(target, {sessionId, title})` | `createPreviewPort`（目标校验 + 推送到 chat 窗口；渲染层投放见 07 §2.3） | safe |
 
 `generate_image` 只管**写**图，且**不受门控**（任何模型都能照着描述生图）；补齐「看图」三件套的
 `view_image` / `screenshot` / `clipboard_read_image` 是 §25 的图像工具，门控口径与本节六件套**相反**
