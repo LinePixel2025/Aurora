@@ -43,6 +43,8 @@ import {
   type ChatAttachmentPreviewRequest,
   type ChatHistoryRequest,
   type ChatMessageDto,
+  type FilePreviewRequest,
+  type FilePreviewResult,
   type ChatSessionModelRequest,
   type ChatSessionProjectRequest,
   type ChatSessionSummary,
@@ -115,6 +117,7 @@ import type {
 } from './contracts.js'
 import { resolveSubjectFolder } from './paths.js'
 import { buildInitCommandContext, isInitCommand } from './agent-commands.js'
+import { buildFilePreview } from './file-preview.js'
 import { extractPatchSecrets, mergeSettingsPatch } from './settings-patch.js'
 import { redactSettings } from './settings-redact.js'
 import { createEventBuffer } from './event-buffer.js'
@@ -606,6 +609,24 @@ export function registerIpc(deps: DesktopDeps): () => void {
         )
     },
   )
+  /**
+   * 右栏「文件」预览（2026-10-03，docs/07 §2.3）：路径边界 / 大小上限 / 二进制探测
+   * 全在主进程侧（`file-preview.ts`），渲染层只拿结果。
+   */
+  handle<FilePreviewResult>(IPC.preview.read, (request: FilePreviewRequest) => {
+    const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+    if (sessionId === '') {
+      return Promise.resolve(err('E_INVALID_ARGUMENT', '缺少 sessionId'))
+    }
+    return buildFilePreview(
+      { rootOf: (id) => deps.workspaceRootOf?.(id) },
+      { sessionId, path: request?.path ?? '' },
+    )
+      .then(ok)
+      .catch((error: unknown) =>
+        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      )
+  })
   /**
    * 附件缩略图（v22 多模态输入，docs/07 §2.3）：渲染层 chip 上那张 48×48 的图。
    *

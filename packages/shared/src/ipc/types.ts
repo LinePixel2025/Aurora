@@ -361,6 +361,31 @@ export interface ImageGenReadResult {
   dataUrl: string
 }
 
+// ───────────────────────── 文件预览（右栏「文件」tab，2026-10-03） ─────────────────────────
+
+export interface FilePreviewRequest {
+  /** 预览按**发起会话**解析边界根（会话绑定项目 > 会话空间目录 > …，docs/06 §5.1） */
+  sessionId: string
+  /** 绝对路径；越界（边界根之外）主进程拒绝 */
+  path: string
+}
+
+export interface FilePreviewResult {
+  /** 归一后的绝对路径（主进程回填，渲染层据此存「最近预览」） */
+  path: string
+  /** 内容形态：markdown 走渲染器、text 纯文本、image 走 dataUrl，其余一律 unsupported */
+  kind: 'markdown' | 'text' | 'image' | 'unsupported'
+  /** `kind = 'markdown' | 'text'` 时的文本内容（超限截断，`truncated` 标记） */
+  content?: string
+  /** `kind = 'image'` 时的 data URL（`data:image/<ext>;base64,…`） */
+  dataUrl?: string
+  bytes: number
+  /** 文本超出预览上限被截断 */
+  truncated?: boolean
+  /** kind = unsupported 时的原因说明 */
+  note?: string
+}
+
 // ───────────────────────── 窗口 ─────────────────────────
 
 export interface WindowState {
@@ -1529,6 +1554,14 @@ export interface AuroraApi {
      * 桥接不可用时返回 `{ ok: false, error }`，不抛错。
      */
     notify(request: ClassIslandNotifyRequest): Promise<Result<ClassIslandNotifyResult>>
+  }
+  preview: {
+    /**
+     * 读一个文件用于右栏预览（docs/07 §2.3 右栏「文件」tab，2026-10-03）。
+     * 路径必须在**发起会话**的边界根之内（越界返回 `ok: false`，与 file-port 同一条
+     * `resolveWithin` 口径）；文本 2 MB / 图片 10 MB 上限，超限截断或拒绝。
+     */
+    read(request: FilePreviewRequest): Promise<Result<FilePreviewResult>>
   }
   chat: {
     send(request: SendMessageRequest): Promise<Result<{ requestId: string }>>

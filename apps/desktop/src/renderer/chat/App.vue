@@ -53,6 +53,7 @@ import ComposerPermissionSelect from './components/ComposerPermissionSelect.vue'
 import SlashCommandMenu from './components/SlashCommandMenu.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import JobPanel from './components/JobPanel.vue'
+import FilePreviewPanel from './components/FilePreviewPanel.vue'
 import SessionNav from './components/SessionNav.vue'
 import SubagentPage from './components/SubagentPage.vue'
 import AutomationPage from './components/AutomationPage.vue'
@@ -110,6 +111,84 @@ const contextOpen = ref(true)
  * 面板收起后 `chat.jobs` 整块不渲染（入口按钮自带角标，收起了也看得出有几条任务）。
  */
 const jobsOpen = ref(true)
+
+// ── 右栏功能 tab 与可拖拽调宽（2026-10-03，docs/07 §2.3） ──
+
+/** 右栏功能 tab：`id` 同时是探针锚点后缀（`chat.ctx-tab-<id>`）与窗格切换键 */
+type RightTabId = 'files' | 'context'
+const rightTabs: Array<{ id: RightTabId; label: string }> = [
+  { id: 'files', label: '文件' },
+  { id: 'context', label: '上下文' },
+]
+/** 缺省「上下文」：旧探针（右栏展开 / 模式卡门控）读的就是这块 DOM，零改动兼容 */
+const rightTab = ref<RightTabId>('context')
+
+/** 右栏宽度（px）：存 localStorage（视图偏好不进 config schema），280–560 夹取 */
+const CTX_WIDTH_KEY = 'aurora.chat.ctxWidth'
+const CTX_WIDTH_DEFAULT = 384
+const CTX_WIDTH_MIN = 280
+const CTX_WIDTH_MAX = 560
+
+function loadCtxWidth(): number {
+  try {
+    const parsed = Number(window.localStorage.getItem(CTX_WIDTH_KEY))
+    if (!Number.isFinite(parsed)) return CTX_WIDTH_DEFAULT
+    return Math.min(CTX_WIDTH_MAX, Math.max(CTX_WIDTH_MIN, parsed))
+  } catch {
+    return CTX_WIDTH_DEFAULT
+  }
+}
+
+const ctxWidth = ref(loadCtxWidth())
+
+function saveCtxWidth(): void {
+  try {
+    window.localStorage.setItem(CTX_WIDTH_KEY, String(ctxWidth.value))
+  } catch {
+    /* 存不进去只是丢掉宽度记忆，不影响功能 */
+  }
+}
+
+function resetCtxWidth(): void {
+  ctxWidth.value = CTX_WIDTH_DEFAULT
+  saveCtxWidth()
+}
+
+/**
+ * 拖拽调宽：pointerdown 后捕获指针，向左拖 = 变宽（width = 窗口右缘 - 指针 x）。
+ * resize 期间给 `document.body` 挂 `user-select: none`（防选中文字）+ 关掉过渡
+ * （`.ctx-resizing` 类），松手恢复并落 localStorage。
+ */
+function onCtxResizeStart(event: PointerEvent): void {
+  event.preventDefault()
+  const target = event.currentTarget
+  if (!(target instanceof HTMLElement)) return
+  target.setPointerCapture(event.pointerId)
+  document.body.classList.add('ctx-resizing')
+  const onMove = (move: PointerEvent): void => {
+    ctxWidth.value = Math.min(
+      CTX_WIDTH_MAX,
+      Math.max(CTX_WIDTH_MIN, window.innerWidth - move.clientX),
+    )
+  }
+  const onUp = (): void => {
+    target.removeEventListener('pointermove', onMove)
+    target.removeEventListener('pointerup', onUp)
+    document.body.classList.remove('ctx-resizing')
+    saveCtxWidth()
+  }
+  target.addEventListener('pointermove', onMove)
+  target.addEventListener('pointerup', onUp)
+}
+
+/**
+ * 「任务」入口：切 tab 到「上下文」再翻转面板显隐 —— 任务面板收在上下文 tab 里，
+ * 用户在「文件」tab 点任务入口时直接翻 `jobsOpen` 会看不到任何反馈。
+ */
+function toggleJobs(): void {
+  rightTab.value = 'context'
+  jobsOpen.value = !jobsOpen.value
+}
 /** 是否还有任务在跑（左栏入口角标用 running 色，与「子代理」角标同一口径） */
 const jobsRunning = computed(() => jobs.value.some((job) => job.status === 'running'))
 /**
@@ -1263,7 +1342,7 @@ async function markGuideDone(): Promise<void> {
         @open-subagents="view = 'subagents'"
         @open-automations="view = 'automations'"
         @toggle-right-panel="contextOpen = !contextOpen"
-        @toggle-jobs="jobsOpen = !jobsOpen"
+        @toggle-jobs="toggleJobs"
         @open-settings="windowStore.show('settings')"
       />
     </aside>
@@ -1564,20 +1643,61 @@ async function markGuideDone(): Promise<void> {
       </template>
     </main>
 
-    <!-- ── 右栏：任务面板 + 模式感知上下文 + 任务清单 ── -->
-    <aside class="context" :class="{ collapsed: !contextOpen }">
+    <!-- ── 右栏：功能 tab（文件 / 上下文）+ 可拖拽调宽（2026-10-03，docs/07 §2.3） ── -->
+    <aside
+      class="context"
+      :class="{ collapsed: !contextOpen }"
+      :style="{ '--ctx-w': `${ctxWidth}px` }"
+    >
       <!--
-        「任务（Job）」面板（2026-09 新增，docs/06 §4.1）：停在右栏顶部、上下文栏之上 ——
-        长任务被暂停是**要用户动手**的状态，位置比上下文信息更靠前。
-        `data-field="chat.jobs"` 挂在容器上，面板自身另有 `chat.job-panel`（同一元素只挂一个锚点）。
-        出入用全局 fade（grid 行高不做高度动画，避免挤压下方的上下文栏）。
+        拖拽调宽把手（左缘 6px 竖条，cursor: col-resize）：宽度存 localStorage
+        （视图偏好不进 config schema，与 docs/07 的既定原则一致），280–560px 夹取。
+        双击复位默认宽。收起态不渲染（width 为 0 时把手没有意义）。
       -->
-      <Transition name="fade">
-        <div v-if="jobsOpen" class="jobs-host" data-field="chat.jobs">
-          <JobPanel :jobs="jobs" @resume="onResumeJob" @cancel="onCancelJob" />
+      <div
+        v-if="contextOpen"
+        class="ctx-resizer"
+        data-field="chat.ctx-resizer"
+        title="拖动调宽；双击复位"
+        @pointerdown="onCtxResizeStart"
+        @dblclick="resetCtxWidth"
+      />
+      <!--
+        功能 tab 条：`data-field="chat.ctx-tab-<id>"` 是探针锚点。
+        「上下文」是缺省 tab：既有的右栏内容（任务面板 + 模式感知卡）整体收在这里，
+        旧探针（右栏展开态断言、模式卡门控断言）不需要任何改动。
+      -->
+      <div class="ctx-tabs" data-field="chat.ctx-tabs">
+        <button
+          v-for="tab in rightTabs"
+          :key="tab.id"
+          type="button"
+          class="ctx-tab"
+          :class="{ active: rightTab === tab.id }"
+          :data-field="`chat.ctx-tab-${tab.id}`"
+          :aria-pressed="rightTab === tab.id"
+          @click="rightTab = tab.id"
+        >
+          {{ tab.label }}
+        </button>
+      </div>
+      <div class="ctx-panes">
+        <!--
+          「上下文」tab：任务面板（JobPanel）+ 模式感知上下文栏（ContextPanel），
+          两行网格语义与 tab 化之前逐字一致（jobs 在 auto 行、上下文栏在 1fr 行）。
+        -->
+        <div v-if="rightTab === 'context'" class="ctx-pane ctx-pane-context">
+          <Transition name="fade">
+            <div v-if="jobsOpen" class="jobs-host" data-field="chat.jobs">
+              <JobPanel :jobs="jobs" @resume="onResumeJob" @cancel="onCancelJob" />
+            </div>
+          </Transition>
+          <ContextPanel :todos="currentTodos" />
         </div>
-      </Transition>
-      <ContextPanel :todos="currentTodos" />
+        <div v-else-if="rightTab === 'files'" class="ctx-pane">
+          <FilePreviewPanel :session-id="sessionId" />
+        </div>
+      </div>
     </aside>
 
     <!--
@@ -1639,26 +1759,95 @@ async function markGuideDone(): Promise<void> {
 }
 
 .context {
-  width: 264px;
+  /* 宽度可拖拽（2026-10-03）：内联 `--ctx-w`（280–560px，localStorage 记忆），缺省 384 */
+  width: var(--ctx-w, 384px);
   background: var(--fill-1);
   border-left: 1px solid var(--border-subtle);
+  position: relative;
   /**
-   * 两行网格：任务面板（按内容高度，超高时面板内部自己滚）+ 上下文栏（占满剩余高度）。
-   * 行号在下面两条规则里显式指定：任务面板收起（v-if）时上下文栏仍落在 `1fr` 那一行，
-   * 不会被 `auto` 行压扁 —— 百分比高度在 auto 行上的解析是不可靠的。
+   * 两行网格：tab 条（auto）+ 功能窗格（占满剩余高度）。
    */
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-/* 任务面板容器（右栏第一行）：宽度跟着栏走（264px），高度由面板内容决定 */
+/* 拖拽调宽把手：贴左缘的 6px 竖条（可命中区比视觉宽），hover / 拖拽中亮起 */
+.ctx-resizer {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  z-index: 5;
+  cursor: col-resize;
+}
+
+.ctx-resizer:hover,
+body.ctx-resizing .ctx-resizer {
+  background: var(--aurora-blue);
+  opacity: 0.4;
+}
+
+/* 拖拽中关掉宽度过渡（否则每帧都在追 animated width，拖不动也拖不跟手） */
+body.ctx-resizing .context {
+  transition: none;
+}
+
+/* 功能 tab 条 */
+.ctx-tabs {
+  display: flex;
+  gap: 2px;
+  padding: var(--space-1) var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ctx-tab {
+  padding: 4px 10px 5px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.ctx-tab:hover {
+  color: var(--text-secondary);
+}
+
+.ctx-tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--aurora-blue);
+}
+
+/* 功能窗格容器：单个激活的 tab 独占 */
+.ctx-panes {
+  display: grid;
+  min-height: 0;
+}
+
+.ctx-pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 文件预览面板是单列 flex（组件内部自管滚动），不吃两行网格 */
+.ctx-pane > :deep(.fp) {
+  grid-row: 1 / -1;
+  min-height: 0;
+}
+
+/* 任务面板容器（上下文 tab 第一行）：宽度跟着栏走，高度由面板内容决定 */
 .jobs-host {
   grid-row: 1;
   min-width: 0;
 }
 
 /* ContextPanel 的根（`.ctx-inner`）恒在第二行：收起任务面板时它独占整列 */
-.context > .ctx-inner {
+.ctx-pane-context > .ctx-inner {
   grid-row: 2;
 }
 

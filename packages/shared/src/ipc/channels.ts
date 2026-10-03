@@ -51,6 +51,10 @@ export const IPC = {
     generate: 'imagegen:generate',
     read: 'imagegen:read',
   },
+  /** 右栏「文件」预览（2026-10-03）：主进程读盘，路径受会话边界根约束（docs/07 §2.3） */
+  preview: {
+    read: 'preview:read',
+  },
   window: {
     show: 'window:show',
     hide: 'window:hide',

@@ -94,6 +94,10 @@ const api: AuroraApi = {
     generate: (request) => invoke(IPC.imagegen.generate, request),
     read: (request) => invoke(IPC.imagegen.read, request),
   },
+  preview: {
+    // 右栏「文件」预览（docs/07 §2.3）：路径边界与大小上限都在主进程侧判定
+    read: (request) => invoke(IPC.preview.read, request),
+  },
   window: {
     show: (name) => invoke(IPC.window.show, name),
     hide: (name) => invoke(IPC.window.hide, name),

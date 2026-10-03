@@ -324,12 +324,13 @@ watch(showClassislandCard, (now) => {
 </template>
 
 <style scoped>
-/* 固定 264px：外层 aside 折叠时宽度收 0，这里保持内容不被压缩换行 */
+/* 固定像素宽（跟随右栏 `--ctx-w` 变量，2026-10-03 起可拖拽调宽）：
+   外层 aside 折叠时宽度收 0，这里保持内容不被压缩换行 */
 .ctx-inner {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  width: 264px;
+  width: var(--ctx-w, 384px);
   height: 100%;
   padding: var(--space-3);
   overflow-y: auto;

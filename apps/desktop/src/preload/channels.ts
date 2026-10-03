@@ -63,6 +63,10 @@ const CHANNELS = {
     generate: 'imagegen:generate',
     read: 'imagegen:read',
   },
+  // 右栏「文件」预览（2026-10-03）：与 shared 契约同构，编译期双向断言兜住
+  preview: {
+    read: 'preview:read',
+  },
   window: {
     show: 'window:show',
     hide: 'window:hide',
