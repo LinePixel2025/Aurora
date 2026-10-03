@@ -216,8 +216,6 @@ const onlineCount = computed(
   gap: var(--space-3);
   padding: var(--space-2) var(--space-4);
   min-height: 52px;
-  max-width: 1440px;
-  margin: 0 auto;
   width: 100%;
 }
 

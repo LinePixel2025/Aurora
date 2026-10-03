@@ -291,27 +291,15 @@ const countLabel = computed(() => `${props.entries.length} 台 · ${onlineCount.
   color: var(--text-muted);
 }
 
-/* 窄屏：设备栏转成横向条，靠横滚保持可用（不把纵向空间让给列表） */
+/* 窄屏（抽屉态）：设备列表保持竖排，卡片占满抽屉宽度，纵向滚动挑选 */
 @media (max-width: 720px) {
   .rail {
     flex: 0 0 auto;
     min-width: 0;
   }
 
-  .rail-list {
-    flex-direction: row;
-    overflow-x: auto;
-    overflow-y: hidden;
-  }
-
   .rail-item {
-    flex: 0 0 auto;
-    width: min(78vw, 260px);
-  }
-
-  .rail-item:not(:last-child) {
-    border-bottom: none;
-    border-right: 1px solid var(--border-subtle);
+    width: 100%;
   }
 }
 </style>
