@@ -635,11 +635,12 @@ const noSessionsAtAll = computed(
 </template>
 
 <style scoped>
-/* 固定 240px：外层 aside 折叠时宽度收 0，这里保持内容不被压缩换行 */
+/* 宽度跟随外层 aside 的 `--nav-w`（2026-10-03 起可拖拽调宽）：内容按同一宽度排版，
+   折叠时 aside 宽度收 0，这里保持内容不被压缩换行（与右栏 `--ctx-w` 同款） */
 .nav-inner {
   display: flex;
   flex-direction: column;
-  width: 240px;
+  width: var(--nav-w, 240px);
   height: 100%;
   padding: var(--space-3);
   gap: var(--space-2);

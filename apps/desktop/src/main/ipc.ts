@@ -16,6 +16,7 @@ import {
   type SnapshotPort,
 } from '@aurora/agent-core'
 import { resolveWorkspaceOpenTarget } from './tools/workspace-target.js'
+import { buildFileList } from './file-list.js'
 import {
   buildAttachmentPreview,
   imageFallbackBlock,
@@ -43,6 +44,8 @@ import {
   type ChatAttachmentPreviewRequest,
   type ChatHistoryRequest,
   type ChatMessageDto,
+  type FileListRequest,
+  type FileListResult,
   type FilePreviewRequest,
   type FilePreviewResult,
   type TerminalCreateRequest,
@@ -627,6 +630,27 @@ export function registerIpc(deps: DesktopDeps): () => void {
     return buildFilePreview(
       { rootOf: (id) => deps.workspaceRootOf?.(id) },
       { sessionId, path: request?.path ?? '' },
+    )
+      .then(ok)
+      .catch((error: unknown) =>
+        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      )
+  })
+  /**
+   * 右栏「文件」tab 的目录列表（2026-10-03，docs/07 §2.3）：缺省列出会话边界根
+   * （绑定了项目 → 项目文件夹），逐层进入。边界判定与读盘同样全在主进程侧（`file-list.ts`）。
+   */
+  handle<FileListResult>(IPC.preview.list, (request: FileListRequest) => {
+    const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+    if (sessionId === '') {
+      return Promise.resolve(err('E_INVALID_ARGUMENT', '缺少 sessionId'))
+    }
+    return buildFileList(
+      { rootOf: (id) => deps.workspaceRootOf?.(id) },
+      {
+        sessionId,
+        ...(typeof request?.path === 'string' ? { path: request.path } : {}),
+      },
     )
       .then(ok)
       .catch((error: unknown) =>

@@ -873,7 +873,8 @@ async function openWorkspace(): Promise<void> {
               >、<code class="mono">set_setting</code>，以及 MCP 与扩展工具（<code class="mono"
                 >web_fetch</code
               >、<code class="mono">clipboard_read</code>、<code class="mono">clipboard_write</code
-              >、<code class="mono">notify_user</code>、<code class="mono">generate_image</code>）——
+              >、<code class="mono">notify_user</code>、<code class="mono">generate_image</code
+              >、<code class="mono">show_preview</code>）——
               它们不受总开关与档位门控，敏感的仍逐次确认。
             </p>
           </div>

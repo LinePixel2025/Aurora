@@ -8,7 +8,8 @@
  *   一个模块级持有的容器元素上（detach 而不是 dispose），scrollback / 会话状态原样保留，
  *   切回来重新 attach。这就是「终端是持续存在的会话」而不是「每次点开的新输入框」。
  *
- * 主题：跟随系统明暗（`prefers-color-scheme`），变化时热更新 xterm 的 theme 配置。
+ * 主题：**固定黑底**（2026-10-03 用户口径：终端就该是黑的，不随系统明暗切换）。
+ * 此前跟随 `prefers-color-scheme`，浅色系统下拿到白底黑字 —— 与「终端」的视觉预期不符。
  */
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
@@ -17,25 +18,15 @@ import '@xterm/xterm/css/xterm.css'
 
 const props = defineProps<{ sessionId: string }>()
 
-/** xterm 配色（暗 / 浅两档，色值与 shared 的设计令牌观感对齐；xterm 吃不了 CSS 变量） */
-const XTERM_THEMES = {
-  dark: {
-    background: '#141414',
-    foreground: '#d4d4d4',
-    cursor: '#4c9fff',
-    selectionBackground: '#31445f',
-  },
-  light: {
-    background: '#fafafa',
-    foreground: '#242424',
-    cursor: '#1f6feb',
-    selectionBackground: '#b6d0f0',
-  },
+/** xterm 配色：黑底浅字（xterm 吃不了 CSS 变量，色值写在这里；容器底色见 `.tp-host`） */
+const XTERM_THEME = {
+  background: '#000000',
+  foreground: '#e6e6e6',
+  cursor: '#4c9fff',
+  selectionBackground: '#31445f',
+  black: '#1a1a1a',
+  brightBlack: '#6b6b6b',
 } as const
-
-function currentThemeName(): 'light' | 'dark' {
-  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
-}
 
 interface TerminalSession {
   term: Terminal
@@ -59,14 +50,13 @@ const starting = ref(false)
 
 function ensureSession(): TerminalSession {
   if (session !== null) return session
-  const name = currentThemeName()
   const term = new Terminal({
     fontSize: 12,
     fontFamily: '"Cascadia Mono", Consolas, "Courier New", monospace',
     cursorBlink: true,
     convertEol: false,
     scrollback: 5000,
-    theme: XTERM_THEMES[name],
+    theme: XTERM_THEME,
   })
   const fit = new FitAddon()
   term.loadAddon(fit)
@@ -129,13 +119,27 @@ function fitNow(): void {
   }
 }
 
-function onThemeChange(): void {
-  if (session === null) return
-  session.term.options.theme = XTERM_THEMES[currentThemeName()]
+/**
+ * 尺寸跟随：**挂在容器上的 ResizeObserver** 是主路径 —— 左 / 右栏拖拽调宽、窗口缩放、
+ * 面板重挂载都会让容器尺寸变化，而窗口 `resize` 事件在这三种里只覆盖第二种
+ * （2026-10-03 起两侧侧栏都可拖拽，只靠 window resize 会让 PTY 停留在旧列数）。
+ * 用 rAF 合并同一帧内的多次触发。
+ */
+let resizeObserver: ResizeObserver | null = null
+let fitScheduled = false
+
+function scheduleFit(): void {
+  if (fitScheduled) return
+  fitScheduled = true
+  window.requestAnimationFrame(() => {
+    fitScheduled = false
+    fitNow()
+  })
 }
 
-let themeQuery: MediaQueryList | null = null
-let onThemeChangeRef: (() => void) | null = null
+function onWindowResize(): void {
+  scheduleFit()
+}
 
 onMounted(() => {
   const current = ensureSession()
@@ -146,22 +150,20 @@ onMounted(() => {
   exited.value = current.exited
   void startShell()
   fitNow()
-  // 主题热切换 + 窗口尺寸变化时的重排
-  themeQuery = window.matchMedia?.('(prefers-color-scheme: light)') ?? null
-  onThemeChangeRef = onThemeChange
-  themeQuery?.addEventListener?.('change', onThemeChange)
+  window.addEventListener('resize', onWindowResize)
+  if (typeof ResizeObserver === 'function' && hostEl.value !== null) {
+    resizeObserver = new ResizeObserver(() => scheduleFit())
+    resizeObserver.observe(hostEl.value)
+  }
 })
 
 onUnmounted(() => {
-  themeQuery?.removeEventListener?.('change', onThemeChangeRef ?? (() => undefined))
+  window.removeEventListener('resize', onWindowResize)
+  resizeObserver?.disconnect()
+  resizeObserver = null
   // detach（不 dispose）：xterm 与容器留在模块级，下次挂载原样接回
   session?.container.remove()
 })
-
-// 挂在窗口 resize 上（面板宽度可拖拽，右栏变宽也要重排）
-function onWindowResize(): void {
-  fitNow()
-}
 
 /** shell 退出后的「重新打开」：清掉旧标记再走 create（主进程会 spawn 新 shell） */
 function restart(): void {
@@ -171,7 +173,6 @@ function restart(): void {
 }
 watch(hostEl, (el) => {
   if (el !== null) {
-    window.addEventListener('resize', onWindowResize)
     // 首帧布局后 fit 一次（挂载时容器尺寸可能还是 0）
     window.requestAnimationFrame(() => fitNow())
   } else {
@@ -235,7 +236,9 @@ watch(hostEl, (el) => {
   min-height: 0;
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: var(--bg-base);
+  /* 固定黑底（终端容器与 xterm 的 theme.background 同色）：挂载首帧 / shell 启动前
+     也不会闪一块浅色底（浅色系统下此前正是白底） */
+  background: #000000;
 }
 
 .tp-host :deep(.xterm) {

@@ -55,7 +55,7 @@ import ContextPanel from './components/ContextPanel.vue'
 import JobPanel from './components/JobPanel.vue'
 import FilePreviewPanel from './components/FilePreviewPanel.vue'
 import TerminalPanel from './components/TerminalPanel.vue'
-import BrowserPanel from './components/BrowserPanel.vue'
+import BrowserPanel, { type BrowserTarget } from './components/BrowserPanel.vue'
 import SessionNav from './components/SessionNav.vue'
 import SubagentPage from './components/SubagentPage.vue'
 import AutomationPage from './components/AutomationPage.vue'
@@ -114,6 +114,113 @@ const contextOpen = ref(true)
  */
 const jobsOpen = ref(true)
 
+// ── 左栏 / 右栏宽度记忆（2026-10-03，docs/07 §2.3） ──
+
+/** 宽度存 localStorage（视图偏好不进 config schema） */
+const NAV_WIDTH_KEY = 'aurora.chat.navWidth'
+const NAV_WIDTH_DEFAULT = 240
+const NAV_WIDTH_MIN = 200
+const NAV_WIDTH_MAX = 420
+
+const navEl = ref<HTMLElement | null>(null)
+
+/**
+ * 读一个宽度记忆值。键不存在时 `getItem` 返回 null，而 `Number(null) === 0` 是有限数 ——
+ * 直接 Number() 会走进 clamp 拿到下限（右栏首版就是这个 bug：默认 384 从未生效）。
+ */
+function loadWidth(key: string, fallback: number, min: number, max: number): number {
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (raw === null) return fallback
+    const parsed = Number(raw)
+    if (!Number.isFinite(parsed)) return fallback
+    return Math.min(max, Math.max(min, parsed))
+  } catch {
+    return fallback
+  }
+}
+
+function saveWidth(key: string, value: number): void {
+  try {
+    window.localStorage.setItem(key, String(value))
+  } catch {
+    /* 存不进去只是丢掉宽度记忆，不影响功能 */
+  }
+}
+
+const navWidth = ref(loadWidth(NAV_WIDTH_KEY, NAV_WIDTH_DEFAULT, NAV_WIDTH_MIN, NAV_WIDTH_MAX))
+
+function saveNavWidth(): void {
+  saveWidth(NAV_WIDTH_KEY, navWidth.value)
+}
+
+function resetNavWidth(): void {
+  navWidth.value = NAV_WIDTH_DEFAULT
+  saveNavWidth()
+}
+
+/**
+ * 侧栏拖拽调宽的公共实现（左栏 / 右栏共用，宽度记忆键与夹取范围由调用方给）。
+ *
+ * pointerdown 后捕获指针并挂 move / up；move 期间给 `document.body` 挂 `col-resizing`
+ * （关掉宽度过渡 + 禁止选中文字），松手恢复并落 localStorage。
+ * 双击复位由调用方挂在把手上（`.nav-resizer` / `.ctx-resizer` 的 dblclick）。
+ *
+ * ⚠️ `move.buttons === 0` 必须跳过：capture 的命中区探针会派发**合成 PointerEvent**
+ * （坐标常为 0 或窗口边界），若照单全收就会把宽度算成 0 再被 clamp 到下限并写进
+ * localStorage —— 2026-10-03 实跑抓到过（快照里右栏莫名 280px）。真实拖动时 buttons 恒为 1。
+ * ⚠️ `setPointerCapture` 在合成事件上会抛（没有活动指针）：捕获失败只影响"指针移出把手
+ * 仍能收到 move"这一条，事件监听照常挂，因此 try/catch 吞掉而不是提前 return。
+ */
+function startColumnResize(
+  event: PointerEvent,
+  options: {
+    min: number
+    max: number
+    /** 由指针 x 坐标算出该时刻的宽度 */
+    widthAt: (clientX: number) => number
+    apply: (width: number) => void
+    save: () => void
+  },
+): void {
+  if (event.button !== 0) return
+  event.preventDefault()
+  const target = event.currentTarget
+  if (!(target instanceof HTMLElement)) return
+  try {
+    target.setPointerCapture(event.pointerId)
+  } catch {
+    /* 合成事件无活动指针：照常挂监听 */
+  }
+  document.body.classList.add('col-resizing')
+  const onMove = (move: PointerEvent): void => {
+    if (move.buttons === 0) return
+    options.apply(Math.min(options.max, Math.max(options.min, options.widthAt(move.clientX))))
+  }
+  const onUp = (): void => {
+    target.removeEventListener('pointermove', onMove)
+    target.removeEventListener('pointerup', onUp)
+    document.body.classList.remove('col-resizing')
+    options.save()
+  }
+  target.addEventListener('pointermove', onMove)
+  target.addEventListener('pointerup', onUp)
+}
+
+/** 左栏：左缘贴窗口左缘，宽度 = 指针 x − 左栏左缘 */
+function onNavResizeStart(event: PointerEvent): void {
+  const left = navEl.value?.getBoundingClientRect().left ?? 0
+  startColumnResize(event, {
+    min: NAV_WIDTH_MIN,
+    max: NAV_WIDTH_MAX,
+    widthAt: (clientX) => clientX - left,
+    apply: (width) => {
+      navWidth.value = width
+    },
+    save: saveNavWidth,
+  })
+}
+
 // ── 右栏功能 tab 与可拖拽调宽（2026-10-03，docs/07 §2.3） ──
 
 /** 右栏功能 tab：`id` 同时是探针锚点后缀（`chat.ctx-tab-<id>`）与窗格切换键 */
@@ -127,34 +234,25 @@ const rightTabs: Array<{ id: RightTabId; label: string }> = [
 /** 缺省「上下文」：旧探针（右栏展开 / 模式卡门控）读的就是这块 DOM，零改动兼容 */
 const rightTab = ref<RightTabId>('context')
 
+/**
+ * Agent 展示目标（`show_preview` 工具，2026-10-03，docs/06 §14）：主进程推来 `preview:show`
+ * 时切到「浏览器」tab 并把它交给 BrowserPanel 加载。`token` 单调递增 —— 同一目标再次
+ * 展示（或用户手动切走后又展示）也必须重新导航，仅靠 url 相等判不出「又来了一次」。
+ */
+const previewTarget = ref<BrowserTarget | null>(null)
+let previewTokenSequence = 0
+let offPreviewShow: (() => void) | null = null
+
 /** 右栏宽度（px）：存 localStorage（视图偏好不进 config schema），280–560 夹取 */
 const CTX_WIDTH_KEY = 'aurora.chat.ctxWidth'
 const CTX_WIDTH_DEFAULT = 384
 const CTX_WIDTH_MIN = 280
 const CTX_WIDTH_MAX = 560
 
-function loadCtxWidth(): number {
-  try {
-    const raw = window.localStorage.getItem(CTX_WIDTH_KEY)
-    // 键不存在时 getItem 返回 null，而 `Number(null) === 0` 是有限数 ——
-    // 直接 Number() 会走进 clamp 拿到下限 280（首版就是这个 bug：默认 384 从未生效）
-    if (raw === null) return CTX_WIDTH_DEFAULT
-    const parsed = Number(raw)
-    if (!Number.isFinite(parsed)) return CTX_WIDTH_DEFAULT
-    return Math.min(CTX_WIDTH_MAX, Math.max(CTX_WIDTH_MIN, parsed))
-  } catch {
-    return CTX_WIDTH_DEFAULT
-  }
-}
-
-const ctxWidth = ref(loadCtxWidth())
+const ctxWidth = ref(loadWidth(CTX_WIDTH_KEY, CTX_WIDTH_DEFAULT, CTX_WIDTH_MIN, CTX_WIDTH_MAX))
 
 function saveCtxWidth(): void {
-  try {
-    window.localStorage.setItem(CTX_WIDTH_KEY, String(ctxWidth.value))
-  } catch {
-    /* 存不进去只是丢掉宽度记忆，不影响功能 */
-  }
+  saveWidth(CTX_WIDTH_KEY, ctxWidth.value)
 }
 
 function resetCtxWidth(): void {
@@ -162,38 +260,17 @@ function resetCtxWidth(): void {
   saveCtxWidth()
 }
 
-/**
- * 拖拽调宽：pointerdown 后捕获指针，向左拖 = 变宽（width = 窗口右缘 - 指针 x）。
- * resize 期间给 `document.body` 挂 `user-select: none`（防选中文字）+ 关掉过渡
- * （`.ctx-resizing` 类），松手恢复并落 localStorage。
- *
- * ⚠️ `move.buttons === 0` 必须跳过：capture 的命中区探针会派发**合成 PointerEvent**
- * （坐标常为 0 或窗口边界），若照单全收就会把宽度算成 0 再被 clamp 到下限并写进
- * localStorage —— 2026-10-03 实跑抓到过（快照里右栏莫名 280px）。真实拖动时
- * buttons 恒为 1，这条不误伤。
- */
+/** 右栏：右缘贴窗口右缘，宽度 = 窗口宽 − 指针 x */
 function onCtxResizeStart(event: PointerEvent): void {
-  if (event.button !== 0) return
-  event.preventDefault()
-  const target = event.currentTarget
-  if (!(target instanceof HTMLElement)) return
-  target.setPointerCapture(event.pointerId)
-  document.body.classList.add('ctx-resizing')
-  const onMove = (move: PointerEvent): void => {
-    if (move.buttons === 0) return
-    ctxWidth.value = Math.min(
-      CTX_WIDTH_MAX,
-      Math.max(CTX_WIDTH_MIN, window.innerWidth - move.clientX),
-    )
-  }
-  const onUp = (): void => {
-    target.removeEventListener('pointermove', onMove)
-    target.removeEventListener('pointerup', onUp)
-    document.body.classList.remove('ctx-resizing')
-    saveCtxWidth()
-  }
-  target.addEventListener('pointermove', onMove)
-  target.addEventListener('pointerup', onUp)
+  startColumnResize(event, {
+    min: CTX_WIDTH_MIN,
+    max: CTX_WIDTH_MAX,
+    widthAt: (clientX) => window.innerWidth - clientX,
+    apply: (width) => {
+      ctxWidth.value = width
+    },
+    save: saveCtxWidth,
+  })
 }
 
 /**
@@ -308,6 +385,17 @@ const projectGroups = computed(() => {
 })
 
 /**
+ * 当前会话绑定的项目名（右栏「文件」tab 的标题用，2026-10-03，docs/07 §2.3）：
+ * 未绑定 / 绑定项已被删除（孤儿绑定在解析链上按未绑定回落）都返回 undefined ——
+ * 展示口径必须与 `boundaryRoot` 的回落一致，否则标题会写着一个实际不生效的项目名。
+ */
+const currentProjectName = computed(() => {
+  const projectId = sessions.value.find((item) => item.id === sessionId.value)?.projectId
+  if (projectId === undefined || !knownProjectIds.value.has(projectId)) return undefined
+  return settingsStore.settings?.projects.list.find((project) => project.id === projectId)?.name
+})
+
+/**
  * 已归档会话（左栏「已归档 · N」分组的数据源，docs/07 §2.3）。
  *
  * 归档判定严格按 `archived === true`：`false`（显式取消归档过）与 `undefined`（从未归档的
@@ -372,6 +460,18 @@ onMounted(() => {
     if (askUserRequests.value.some((item) => item.requestId === request.requestId)) return
     askUserRequests.value = [...askUserRequests.value, request]
   })
+  // Agent 展示（`show_preview` 工具，docs/06 §14）：切到浏览器 tab 并加载目标
+  offPreviewShow = window.aurora.preview.onShow((event) => {
+    if (event.sessionId !== sessionId.value) return
+    contextOpen.value = true
+    rightTab.value = 'browser'
+    previewTarget.value = {
+      url: event.url,
+      display: event.display,
+      title: event.title,
+      token: (previewTokenSequence += 1),
+    }
+  })
   document.addEventListener('pointerdown', onComposerPointerDown)
   document.addEventListener('keydown', onDocumentEscape)
   // 水合当前会话（main）→ 会话列表：左栏立刻有内容
@@ -390,6 +490,8 @@ onUnmounted(() => {
   offSensitiveTool = null
   offAskUserRequest?.()
   offAskUserRequest = null
+  offPreviewShow?.()
+  offPreviewShow = null
   document.removeEventListener('pointerdown', onComposerPointerDown)
   document.removeEventListener('keydown', onDocumentEscape)
   if (pickerHintTimer !== null) window.clearTimeout(pickerHintTimer)
@@ -1329,7 +1431,25 @@ async function markGuideDone(): Promise<void> {
 <template>
   <div class="app-shell">
     <!-- ── 左栏：品牌 / 新对话 / 快速对话面板 / 会话列表 / 底部工具 ── -->
-    <aside class="nav" :class="{ collapsed: !navOpen }">
+    <aside
+      ref="navEl"
+      class="nav"
+      :class="{ collapsed: !navOpen }"
+      :style="{ '--nav-w': `${navWidth}px` }"
+    >
+      <!--
+        拖拽调宽把手（右缘 6px 竖条，cursor: col-resize）：与右栏同一套实现
+        （`startColumnResize`），宽度存 localStorage、200–420px 夹取、双击复位。
+        收起态不渲染（width 为 0 时把手没有意义）。
+      -->
+      <div
+        v-if="navOpen"
+        class="nav-resizer"
+        data-field="chat.nav-resizer"
+        title="拖动调宽；双击复位"
+        @pointerdown="onNavResizeStart"
+        @dblclick="resetNavWidth"
+      />
       <!--
         左栏固定项已整体收进 SessionNav（2026-09-30 去杂糅：任务入口从本组件迁入，
         不再一处两式）。`chat.jobs-entry` 锚点随按钮迁走，面板容器锚点仍是 `chat.jobs`。
@@ -1710,14 +1830,15 @@ async function markGuideDone(): Promise<void> {
           <ContextPanel :todos="currentTodos" />
         </div>
         <div v-else-if="rightTab === 'files'" class="ctx-pane">
-          <FilePreviewPanel :session-id="sessionId" />
+          <FilePreviewPanel :session-id="sessionId" :project-name="currentProjectName" />
         </div>
         <!-- 终端是单列 flex（组件内部自管布局与滚动），不吃两行网格 -->
         <div v-else-if="rightTab === 'terminal'" class="ctx-pane">
           <TerminalPanel :session-id="sessionId" />
         </div>
         <div v-else-if="rightTab === 'browser'" class="ctx-pane">
-          <BrowserPanel />
+          <!-- `target` = Agent 的展示请求（show_preview 工具）；缺省 null = 面板自己的主页行为 -->
+          <BrowserPanel :target="previewTarget" />
         </div>
       </div>
     </aside>
@@ -1735,7 +1856,7 @@ async function markGuideDone(): Promise<void> {
 
 <style scoped>
 /**
- * 三栏 grid（spec §3）：左栏 232px 可折叠 · 主区自适应 · 右栏 264px 可折叠。
+ * 三栏 grid（spec §3）：左栏 240px（可调 200–420）· 主区自适应 · 右栏 384px（可调 280–560）。
  * 折叠用「宽度收 0 + 内容固定宽被裁剪」而不是 v-show：display:none 没有过渡，
  * 而宽度过渡能让侧栏沿 --ease-spring 滑入滑出（prefers-reduced-motion 全局降级）。
  */
@@ -1772,7 +1893,9 @@ async function markGuideDone(): Promise<void> {
 }
 
 .nav {
-  width: 240px;
+  /* 宽度可拖拽（2026-10-03）：内联 `--nav-w`（200–420px，localStorage 记忆），缺省 240 */
+  width: var(--nav-w, 240px);
+  position: relative;
   background: var(--fill-1);
   border-right: 1px solid var(--border-subtle);
   /* 左栏固定项已整体收进 SessionNav：单行网格，SessionNav 占满整栏（含底部固定项） */
@@ -1793,7 +1916,7 @@ async function markGuideDone(): Promise<void> {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-/* 拖拽调宽把手：贴左缘的 6px 竖条（可命中区比视觉宽），hover / 拖拽中亮起 */
+/* 拖拽调宽把手：左右栏各贴自己的内缘（6px 竖条，可命中区比视觉宽），hover / 拖拽中亮起 */
 .ctx-resizer {
   position: absolute;
   left: -3px;
@@ -1804,14 +1927,31 @@ async function markGuideDone(): Promise<void> {
   cursor: col-resize;
 }
 
+.nav-resizer {
+  position: absolute;
+  right: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  z-index: 5;
+  cursor: col-resize;
+}
+
 .ctx-resizer:hover,
-body.ctx-resizing .ctx-resizer {
+.nav-resizer:hover,
+body.col-resizing .ctx-resizer,
+body.col-resizing .nav-resizer {
   background: var(--aurora-blue);
   opacity: 0.4;
 }
 
-/* 拖拽中关掉宽度过渡（否则每帧都在追 animated width，拖不动也拖不跟手） */
-body.ctx-resizing .context {
+/* 拖拽中关掉宽度过渡（否则每帧都在追 animated width，拖不动也拖不跟手）+ 禁止选中文字 */
+body.col-resizing {
+  user-select: none;
+}
+
+body.col-resizing .context,
+body.col-resizing .nav {
   transition: none;
 }
 

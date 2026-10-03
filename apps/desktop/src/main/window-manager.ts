@@ -334,6 +334,28 @@ export class WindowManager {
       event.preventDefault()
       this.hide(name)
     })
+    /**
+     * 右栏内置浏览器的「新窗口」语义（2026-10-03，docs/07 §2.3）。
+     *
+     * webview 刻意不带 `allowpopups`，于是 `window.open` / `target="_blank"` 默认被整个
+     * 丢弃 —— 用户在搜索结果页点一条链接毫无反应（看起来就像"浏览器坏了"）。
+     * 这里把它改成**同窗内导航**：不新开窗口（沙箱与窗口管理语义都保持不变），
+     * 但链接点得动。只放行 http(s)：其它协议（file: / 自定义协议）一律拒绝，
+     * 与地址栏的入口校验同一口径。
+     */
+    if (name === 'chat') {
+      win.webContents.on('did-attach-webview', (_event, guest) => {
+        guest.setWindowOpenHandler(({ url }) => {
+          if (/^https?:\/\//i.test(url)) {
+            // 不能在处理函数里同步 loadURL（导航会被这次拒绝打断），挪到下一拍
+            setImmediate(() => {
+              guest.loadURL(url).catch(() => undefined)
+            })
+          }
+          return { action: 'deny' }
+        })
+      })
+    }
     // 几何事件走**去抖 + 短路**入口（P2-08）：拖动期间不再每帧全量 mutate / 广播一次
     win.on('moved', () => this.scheduleGeometryPersist(name, win))
     win.on('resized', () => this.scheduleGeometryPersist(name, win))

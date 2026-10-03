@@ -54,6 +54,17 @@ export const IPC = {
   /** 右栏「文件」预览（2026-10-03）：主进程读盘，路径受会话边界根约束（docs/07 §2.3） */
   preview: {
     read: 'preview:read',
+    /**
+     * 列目录（2026-10-03）：右栏「文件」tab 变成小文件管理器 —— 缺省列出**会话项目根**
+     * （未绑定项目时是会话空间目录），可在边界根内逐层进入。
+     */
+    list: 'preview:list',
+    /**
+     * Agent 展示推送（`show_preview` 工具，2026-10-03，主进程 → 渲染层，on/off 成对）：
+     * 主进程校验目标（http(s) 或边界根内的本地文件）后，让主界面右栏切到「浏览器」tab
+     * 并展示它 —— 成果直接出现在对话旁边，而不是把大段内容贴进消息里。
+     */
+    show: 'preview:show',
   },
   /**
    * 右栏「终端」tab（2026-10-03，docs/07 §2.3）：PTY 交互终端。
@@ -244,6 +255,8 @@ export type IpcChannel =
   | (typeof IPC.tts)[keyof typeof IPC.tts]
   | (typeof IPC.stt)[keyof typeof IPC.stt]
   | (typeof IPC.imagegen)[keyof typeof IPC.imagegen]
+  | (typeof IPC.preview)[keyof typeof IPC.preview]
+  | (typeof IPC.terminal)[keyof typeof IPC.terminal]
   | (typeof IPC.window)[keyof typeof IPC.window]
   | (typeof IPC.perception)[keyof typeof IPC.perception]
   | (typeof IPC.project)[keyof typeof IPC.project]

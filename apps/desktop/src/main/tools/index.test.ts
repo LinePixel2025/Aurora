@@ -9,6 +9,7 @@ import {
   type ImageGenPort,
   type NotifyPort,
   type OpenPort,
+  type PreviewPort,
   type ScreenshotPort,
   type SettingsToolPort,
   type SettingsWriteOutcome,
@@ -492,6 +493,9 @@ describe('registerExtensionTools', () => {
       clipboard: { read: async () => '', write: async () => undefined } as ClipboardPort,
       notify: { show: async () => undefined } as NotifyPort,
       imageGen: { generate: async () => ({ filePath: 'C:\\g\\1.png' }) } as ImageGenPort,
+      preview: {
+        show: async () => ({ url: 'https://example.com', display: 'https://example.com' }),
+      } as PreviewPort,
     }
   }
 
@@ -500,7 +504,7 @@ describe('registerExtensionTools', () => {
     return { tools, registry }
   }
 
-  it('注册扩展工具五件套，敏感级与文档一致（clipboard / generate_image = confirm）', () => {
+  it('注册扩展工具六件套，敏感级与文档一致（clipboard / generate_image = confirm，show_preview = safe）', () => {
     const { tools, registry } = setupExtension()
     expect(registry.sync()).toEqual([...EXTENSION_TOOL_NAMES])
     expect(tools.get('web_fetch')?.sensitivity).toBe('safe')
@@ -508,6 +512,8 @@ describe('registerExtensionTools', () => {
     expect(tools.get('clipboard_read')?.sensitivity).toBe('confirm')
     expect(tools.get('clipboard_write')?.sensitivity).toBe('confirm')
     expect(tools.get('generate_image')?.sensitivity).toBe('confirm')
+    // 右栏展示（2026-10-03）：不写盘 / 不起进程，目标会显示在地址栏里 → safe
+    expect(tools.get('show_preview')?.sensitivity).toBe('safe')
   })
 
   it('不受 agent.tools.enabled 门控（与 set_setting 同级），且不影响其它工具', () => {

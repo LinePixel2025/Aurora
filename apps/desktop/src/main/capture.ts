@@ -19,13 +19,14 @@
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { nativeTheme, type BrowserWindow } from 'electron'
 import {
   createFileSnapshotPort,
   type AskUserAnswer,
   type AskUserQuestion,
 } from '@aurora/agent-core'
-import { createNoopLogger, nodeFileSystem, type Logger, type WindowName } from '@aurora/shared'
+import { IPC, createNoopLogger, nodeFileSystem, type Logger, type WindowName } from '@aurora/shared'
 import type { WindowManager } from './window-manager.js'
 /**
  * 设置页可深链的页面 id，需与 `renderer/settings/App.vue` 的 `PageId` 保持一致。
@@ -1750,6 +1751,13 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     const resizer = has('[data-field="chat.ctx-resizer"]')
     const aside = document.querySelector('aside.context')
     const asideWidth = aside === null ? 0 : aside.getBoundingClientRect().width
+    // 左栏调宽（2026-10-03）：把手在 + 宽度真的由 --nav-w 驱动（内联变量与实测宽度一致）
+    const navEl = document.querySelector('aside.nav')
+    const navResizer = has('[data-field="chat.nav-resizer"]')
+    const navWidth = navEl === null ? 0 : navEl.getBoundingClientRect().width
+    const navInlineVar = navEl === null ? '' : navEl.style.getPropertyValue('--nav-w') || ''
+    const navResizerOk =
+      navResizer && navInlineVar !== '' && Math.abs(Number.parseFloat(navInlineVar) - navWidth) < 2
     // 诊断字段（不进 pass）：宽度记忆的持久值 + 布局链路的三个读数 ——
     // 「右栏莫名变窄」时要能一眼看出是 localStorage 残值、变量没生效，还是被 grid 压缩
     let storedWidth = null
@@ -1767,6 +1775,20 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     const errorText = errorEl === null ? '' : (errorEl.textContent || '').trim()
     const filePanelOn = has('[data-field="chat.file-preview"]')
     const jobsHiddenOnFiles = !has('[data-field="chat.jobs"]')
+    // 文件管理器（2026-10-03）：目录条（根标签 + 相对路径）恒在 ——
+    // 列表容器只在列表视图里（act 停在**预览态**：越界拒绝的现场就是预览视图的错误行），
+    // 所以先点「返回」切回列表再断言容器与条目。条目内容取决于会话边界根，这里不追究具体文件
+    // （项目现场的断言见 chat-file-project）。
+    const fileDirBar = has('[data-field="chat.file-root"]')
+    let fileListBack = false
+    if (has('[data-field="chat.file-back"]')) {
+      const back = document.querySelector('[data-field="chat.file-back"]')
+      if (back !== null) back.click()
+      await wait(250)
+      fileListBack = has('[data-field="chat.file-list"]')
+    } else {
+      fileListBack = has('[data-field="chat.file-list"]')
+    }
 
     // 终端 tab：切过去读行文本（act 已初始化过，模块级单例应直接可见）
     clickTab('terminal')
@@ -1774,6 +1796,19 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     const terminalOn = has('[data-field="chat.terminal"]')
     const xtermOn = has('[data-field="chat.terminal-host"] .xterm')
     const textBefore = rowText()
+    // 终端黑底（2026-10-03 用户口径）：容器必须是纯黑 —— 此前跟随 prefers-color-scheme，
+    // 浅色系统下拿到白底，这条把口径钉死在「黑」。xterm 自己的元素底色是**透明**的
+    // （它把 theme.background 画进 canvas，CSS 链上看是透明），所以断言的是
+    // 「容器纯黑 + viewport 不引入别的颜色」：有效底色 = 容器色，就是黑。
+    const hostEl = document.querySelector('[data-field="chat.terminal-host"]')
+    const xtermEl = document.querySelector('[data-field="chat.terminal-host"] .xterm')
+    const viewportEl = document.querySelector('[data-field="chat.terminal-host"] .xterm-viewport')
+    const hostBg = hostEl === null ? '' : getComputedStyle(hostEl).backgroundColor
+    const xtermBg = xtermEl === null ? '' : getComputedStyle(xtermEl).backgroundColor
+    const viewportBg = viewportEl === null ? '' : getComputedStyle(viewportEl).backgroundColor
+    const terminalBgOk =
+      hostBg === 'rgb(0, 0, 0)' &&
+      (viewportBg === '' || viewportBg === 'rgba(0, 0, 0, 0)' || viewportBg === 'rgb(0, 0, 0)')
 
     // 切走再切回：xterm 必须仍在、缓冲不丢
     clickTab('files')
@@ -1793,6 +1828,39 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     await wait(300)
     const contextOn = has('[data-field="chat.jobs"]') && has('.ctx-inner')
 
+    // 侧栏拖拽调宽（2026-10-03）：**拖一次真的改宽度**才算数 ——
+    // 「把手在 + 变量驱动布局」推不出拖动可用（此前踩过：合成 PointerEvent 会被
+    // buttons===0 的守卫吞掉、setPointerCapture 在合成事件上会抛）。这里如实复刻
+    // down → move → up（buttons 恒为 1），把宽度拖到目标值再双击复位。
+    const dragResizer = (selector, toX) => {
+      const el = document.querySelector(selector)
+      if (el === null) return false
+      const opts = { bubbles: true, pointerId: 7, clientX: el.getBoundingClientRect().left }
+      el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, button: 0, buttons: 1 }))
+      el.dispatchEvent(new PointerEvent('pointermove', { ...opts, button: 0, buttons: 1, clientX: toX }))
+      el.dispatchEvent(new PointerEvent('pointerup', { ...opts, button: 0, buttons: 0, clientX: toX }))
+      return true
+    }
+    const dbl = (selector) => {
+      const el = document.querySelector(selector)
+      if (el !== null) el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    }
+    const navResizerEl = has('[data-field="chat.nav-resizer"]')
+    dragResizer('[data-field="chat.nav-resizer"]', 320)
+    await wait(300)
+    const navElNow = document.querySelector('aside.nav')
+    const navDragged = navElNow === null ? 0 : Math.round(navElNow.getBoundingClientRect().width)
+    dbl('[data-field="chat.nav-resizer"]')
+    await wait(300)
+    const navBack = navElNow === null ? 0 : Math.round(navElNow.getBoundingClientRect().width)
+    dragResizer('[data-field="chat.ctx-resizer"]', Math.round(window.innerWidth) - 420)
+    await wait(300)
+    const asideNow = document.querySelector('aside.context')
+    const ctxDragged = asideNow === null ? 0 : Math.round(asideNow.getBoundingClientRect().width)
+    dbl('[data-field="chat.ctx-resizer"]')
+    await wait(300)
+    const ctxBack = asideNow === null ? 0 : Math.round(asideNow.getBoundingClientRect().width)
+
     return {
       tabsPresent,
       resizer,
@@ -1804,6 +1872,19 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
       errorText,
       filePanelOn,
       jobsHiddenOnFiles,
+      fileDirBar,
+      fileListBack,
+      navResizer,
+      navWidth,
+      navInlineVar,
+      navResizerEl,
+      navDragged,
+      navBack,
+      ctxDragged,
+      ctxBack,
+      hostBg,
+      xtermBg,
+      viewportBg,
       terminalOn,
       xtermOn,
       xtermBack,
@@ -1820,6 +1901,18 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
           ? Math.abs(asideWidth - 384) < 2
           : asideWidth >= 280 && asideWidth <= 560) &&
         filePanelOn &&
+        // 文件管理器：目录条恒在，预览态点返回后列表容器回来
+        fileDirBar &&
+        fileListBack &&
+        // 左栏把手在，且宽度由 --nav-w 内联变量真正驱动
+        navResizerOk &&
+        // 两侧拖拽真的改宽度，双击各回缺省（240 / 384）
+        navDragged === 320 &&
+        navBack === 240 &&
+        ctxDragged === 420 &&
+        ctxBack === 384 &&
+        // 终端黑底（容器纯黑 + viewport 不引入别的颜色）
+        terminalBgOk &&
         // 越界必须被拒且说清原因（file-preview.ts 的文案）
         errorText.indexOf('边界') !== -1 &&
         // tab 互斥：上下文 tab 的 DOM 在 files 下必须缺席（v-if 切换是真的）
@@ -1830,6 +1923,301 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
         textAfter.length >= textBefore.length &&
         browserOn &&
         contextOn,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 右栏「文件」tab＝会话项目文件夹的现场准备（2026-10-03，docs/07 §2.3）。
+ *
+ * 三步：① 经 `settings:update` 登记项目「截图项目」指向 prepare 建出的目录
+ * （与 settingsProjectAct 同一条口径 —— 启动后写 config.json 对运行中的进程无效）；
+ * ② 切到**绑定了该项目的会话**（`sessions/chat-seed-project.json` 的种子会话，
+ *    `meta.projectId = 'capture'`）；切之前记下当前激活行，收尾由 check 点它回来；
+ * ③ 切到「文件」tab 并等 prepare 种的那份文件出现。
+ *
+ * act 的返回值不进 report，所以把现场读数挂在 `window` 上（check 里读）——
+ * act 里的失败（没找到会话行 / 没等到列表）必须能被 check 看见，否则会静默假 PASS。
+ */
+export function chatFileProjectAct(root: string): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const report = { ok: false, reason: '', switched: false, listed: false }
+  window.__auroraFileProjectAct = report
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) { report.reason = state.message; return report }
+    const updated = await window.aurora.settings.update({
+      projects: {
+        ...state.value.projects,
+        list: [{ id: 'capture', name: '截图项目', root: ${JSON.stringify(root)} }],
+      },
+    })
+    if (!updated.ok) { report.reason = updated.message; return report }
+    await wait(400)
+    // 收尾要回到原来那条会话：用应用自己的行按钮（active 类即当前会话），不猜标题
+    const activeRow = document.querySelector('button.nav-item.active')
+    window.__auroraFileProjectPrevText = activeRow === null ? '' : activeRow.textContent || ''
+    let target = null
+    for (let attempt = 0; attempt < 20 && target === null; attempt += 1) {
+      const rows = Array.from(document.querySelectorAll('button.nav-item'))
+      target = rows.find((row) => (row.textContent || '').indexOf('project-seed') !== -1) || null
+      if (target === null) await wait(200)
+    }
+    if (target === null) { report.reason = '没有找到 project-seed 会话行'; return report }
+    target.click()
+    report.switched = true
+    await wait(500)
+    const tab = document.querySelector('[data-field="chat.ctx-tab-files"]')
+    if (tab === null) { report.reason = '没有文件 tab'; return report }
+    tab.click()
+    for (let attempt = 0; attempt < 25 && !report.listed; attempt += 1) {
+      const listText = document.querySelector('[data-field="chat.file-list"]')?.textContent || ''
+      report.listed = listText.indexOf('报告.md') !== -1
+      if (!report.listed) await wait(200)
+    }
+    if (!report.listed) report.reason = '文件列表里没有出现 prepare 种的文件'
+    report.ok = report.listed
+    return report
+  } catch (error) {
+    report.reason = String(error)
+    return report
+  }
+})()`
+}
+
+/**
+ * 右栏文件面板＝项目文件夹的断言（2026-10-03，docs/07 §2.3）。
+ *
+ * 现场（act 留下）：会话切到绑项目的种子会话、停在「文件」tab、列表已出。
+ * 断言：① 根标签是「项目：截图项目」（绑定生效的**可见**证据）；
+ * ② 根目录列出 prepare 种的目录与文件（目录排在前）；
+ * ③ 点目录进下层（相对路径变 assets、上级按钮可点），点上级回到根；
+ * ④ 点文件在面板内预览（markdown 正文可见 + 返回按钮出现），点返回回列表。
+ * 收尾：点回原来的会话行 + 撤销项目登记（后续场景读到的仍是出厂门控）。
+ */
+export const CHAT_FILE_PROJECT_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const text = (selector) => {
+    const el = document.querySelector(selector)
+    return el === null ? '' : (el.textContent || '').replace(/\\s+/g, ' ').trim()
+  }
+  try {
+    const act = window.__auroraFileProjectAct || { ok: false, reason: 'act 没有留下读数' }
+    const rootLabel = text('[data-field="chat.file-root"]')
+    const dirText = () => text('[data-field="chat.file-dir"]')
+    const rows = () => Array.from(document.querySelectorAll('[data-field="chat.file-list"] .fp-row'))
+    const rowNamed = (name) => rows().find((row) => (row.textContent || '').indexOf(name) !== -1)
+    const dirAtRoot = dirText()
+    const rootEntries = rows().map((row) => (row.textContent || '').replace(/\\s+/g, ' ').trim())
+    const assetsRow = rowNamed('assets')
+    const reportRow = rowNamed('报告.md')
+    // 目录在前（第一行必须是 assets 这个目录）
+    const dirsFirst = rows().length > 0 && (rows()[0].className || '').indexOf('dir') !== -1
+
+    // ② → ③ 点目录进下层，再点上级回来
+    let intoDir = false
+    let upText = ''
+    if (assetsRow) {
+      assetsRow.click()
+      for (let attempt = 0; attempt < 20 && dirText() !== 'assets'; attempt += 1) await wait(150)
+      intoDir = dirText() === 'assets'
+      const up = document.querySelector('[data-field="chat.file-up"]')
+      upText = up === null ? '' : up.textContent || ''
+      if (up !== null) up.click()
+      for (let attempt = 0; attempt < 20 && dirText() !== dirAtRoot; attempt += 1) await wait(150)
+    }
+    const backToRoot = dirText() === dirAtRoot
+
+    // ④ 点文件 → 面板内预览 → 返回列表
+    let previewText = ''
+    let backButton = false
+    let backToList = false
+    if (reportRow) {
+      reportRow.click()
+      for (let attempt = 0; attempt < 25 && previewText.indexOf('文件面板') === -1; attempt += 1) {
+        previewText = text('.fp-markdown') || text('.fp-text')
+        if (previewText.indexOf('文件面板') === -1) await wait(150)
+      }
+      backButton = document.querySelector('[data-field="chat.file-back"]') !== null
+      const back = document.querySelector('[data-field="chat.file-back"]')
+      if (back !== null) back.click()
+      await wait(250)
+      backToList = document.querySelector('[data-field="chat.file-list"]') !== null
+    }
+
+    // 收尾：切回原会话 + 撤销项目登记（两条都要成功才认 restored）
+    let restored = false
+    const prevText = window.__auroraFileProjectPrevText || ''
+    if (prevText !== '') {
+      const rowsAll = Array.from(document.querySelectorAll('button.nav-item'))
+      const prev = rowsAll.find((row) => (row.textContent || '') === prevText)
+      if (prev) { prev.click(); await wait(400) }
+    }
+    const state = await window.aurora.settings.get()
+    if (state.ok) {
+      await window.aurora.settings.update({ projects: { ...state.value.projects, list: [] } })
+      await wait(300)
+    }
+    // 还原判据：项目分组标签消失（项目登记确实撤掉了）
+    restored = text('.nav').indexOf('截图项目') === -1
+
+    return {
+      actOk: act.ok,
+      actReason: act.reason || '',
+      rootLabel,
+      dirAtRoot,
+      rootEntries,
+      dirsFirst,
+      intoDir,
+      upText,
+      backToRoot,
+      previewShown: previewText.indexOf('文件面板') !== -1,
+      backButton,
+      backToList,
+      restored,
+      pass:
+        act.ok === true &&
+        rootLabel.indexOf('项目：截图项目') !== -1 &&
+        rootEntries.join('|').indexOf('assets') !== -1 &&
+        rootEntries.join('|').indexOf('报告.md') !== -1 &&
+        dirsFirst &&
+        intoDir &&
+        upText.indexOf('⤴') !== -1 &&
+        backToRoot &&
+        previewText.indexOf('文件面板') !== -1 &&
+        backButton &&
+        backToList &&
+        restored,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * `show_preview` 推送链路的断言（2026-10-03，docs/06 §14）。
+ *
+ * 分流的口径：**主进程侧**的目标校验（http(s) / 边界根内的本地文件 / 越界拒绝）由
+ * `preview-port.test.ts` 覆盖；这里断言**渲染层那半条链**：收到 `preview:show` 后
+ * 右栏自动切到「浏览器」tab、webview 真的加载了目标（`getURL()` 是 file:// 且指向夹具）、
+ * 地址栏显示原始路径而不是 file:// URL。
+ *
+ * 推送由 `mainAct` 合成（与工具实际走的 `windows.sendTo('chat', IPC.preview.show, …)`
+ * 是同一条通道、同一个 payload 形状）；会话 id 必须与当前会话一致才被渲染层采纳 ——
+ * 这也正是本场景先切到种子会话的原因。
+ */
+export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const text = (selector) => {
+    const el = document.querySelector(selector)
+    return el === null ? '' : (el.textContent || '').replace(/\\s+/g, ' ').trim()
+  }
+  try {
+    const act = window.__auroraFileProjectAct || { ok: false, reason: 'act 没有留下读数' }
+    const tab = document.querySelector('[data-field="chat.ctx-tab-browser"]')
+    const browserActive = tab !== null && (tab.className || '').indexOf('active') !== -1
+    const panelOn = document.querySelector('[data-field="chat.browser"]') !== null
+    const urlInput = document.querySelector('.bp-url')
+    const urlValue = urlInput === null ? '' : urlInput.value || ''
+    // webview 的 getURL()：加载完成的唯一可信读数（DOM 在而没导航过去是最可能的失效）
+    let loaded = ''
+    const guest = document.querySelector('[data-field="chat.browser-host"] webview')
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      try {
+        loaded = guest !== null && typeof guest.getURL === 'function' ? guest.getURL() || '' : ''
+      } catch (error) { loaded = '' }
+      if (loaded.indexOf('fixture.html') !== -1) break
+      await wait(200)
+    }
+
+    // 收尾：切回原会话 + 撤销项目登记（与 chat-file-project 同一套）
+    let restored = false
+    const prevText = window.__auroraFileProjectPrevText || ''
+    if (prevText !== '') {
+      const rowsAll = Array.from(document.querySelectorAll('button.nav-item'))
+      const prev = rowsAll.find((row) => (row.textContent || '') === prevText)
+      if (prev) { prev.click(); await wait(400) }
+    }
+    const state = await window.aurora.settings.get()
+    if (state.ok) {
+      await window.aurora.settings.update({ projects: { ...state.value.projects, list: [] } })
+      await wait(300)
+    }
+    const contextTab = document.querySelector('[data-field="chat.ctx-tab-context"]')
+    if (contextTab !== null) { contextTab.click(); await wait(300) }
+    restored = text('.nav').indexOf('截图项目') === -1
+
+    return {
+      actOk: act.ok,
+      actReason: act.reason || '',
+      browserActive,
+      panelOn,
+      urlValue,
+      guestUrl: loaded,
+      restored,
+      pass:
+        act.ok === true &&
+        browserActive &&
+        panelOn &&
+        loaded.indexOf('fixture.html') !== -1 &&
+        loaded.indexOf('file://') === 0 &&
+        urlValue.indexOf('fixture.html') !== -1,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 右栏「终端」tab 的截图现场（2026-10-03，docs/07 §2.3）。
+ *
+ * ACT 只切到终端 tab（切走再切回由 `chat-right-tabs` 的 check 覆盖往返存活）；
+ * CHECK 断言 **xterm 在 + 容器与 viewport 的底色是纯黑** —— 2026-10-03 的用户口径
+ * （此前跟随 `prefers-color-scheme`，浅色系统下是白底黑字）。
+ * 行文本只作诊断字段（不进 pass）：本场景**不 reload**，终端是上一个场景初始化过的
+ * 常驻 shell，截图里通常带着 PowerShell 提示符；单独跑本场景（ONLY=terminal）时
+ * 新 shell 可能还没有输出，不该因此判 FAIL。
+ */
+export const CHAT_TERMINAL_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const tab = document.querySelector('[data-field="chat.ctx-tab-terminal"]')
+    if (tab === null) return { ok: false, reason: '没有终端 tab' }
+    tab.click()
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      if (document.querySelector('[data-field="chat.terminal-host"] .xterm') !== null) break
+      await wait(200)
+    }
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_TERMINAL_CHECK = `(async () => {
+  const bgOf = (selector) => {
+    const el = document.querySelector(selector)
+    return el === null ? '' : getComputedStyle(el).backgroundColor
+  }
+  try {
+    const xtermOn = document.querySelector('[data-field="chat.terminal-host"] .xterm') !== null
+    const hostBg = bgOf('[data-field="chat.terminal-host"]')
+    const viewportBg = bgOf('[data-field="chat.terminal-host"] .xterm-viewport')
+    const rows = document.querySelector('[data-field="chat.terminal-host"] .xterm-rows')
+    const rowText = rows === null ? '' : (rows.textContent || '').trim()
+    return {
+      xtermOn,
+      hostBg,
+      viewportBg,
+      rowTextLength: rowText.length,
+      rowTextHead: rowText.slice(0, 60),
+      pass:
+        xtermOn &&
+        hostBg === 'rgb(0, 0, 0)' &&
+        viewportBg === 'rgb(0, 0, 0)',
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -8510,6 +8898,60 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       },
       act: CHAT_RIGHT_TABS_ACT,
       check: CHAT_RIGHT_TABS_CHECK,
+    },
+    // 终端 tab 的视觉证据（2026-10-03）：黑底 + xterm 在。**不 reload** —— 复用上一个
+    // 场景初始化好的常驻 shell，截图里带着提示符；单独跑本场景也不会 FAIL（见 CHECK 注释）。
+    {
+      name: 'chat',
+      file: 'chat-terminal.png',
+      act: CHAT_TERMINAL_ACT,
+      check: CHAT_TERMINAL_CHECK,
+    },
+    // 文件 tab ＝ 会话项目文件夹（2026-10-03，docs/07 §2.3）：prepare 在项目根建出目录与
+    // 一份 markdown；act 登记项目 + 切到绑项目的种子会话 + 打开文件 tab；check 断言
+    // 根标签「项目：截图项目」、目录在前、逐层进出、点文件预览、点返回回列表，
+    // 收尾切回原会话并撤销项目登记（后续场景读到的仍是出厂门控）。
+    {
+      name: 'chat',
+      file: 'chat-file-project.png',
+      prepare: async () => {
+        const root = captureProjectRoot(userData)
+        await mkdir(join(root, 'assets'), { recursive: true })
+        await writeFile(join(root, '报告.md'), '# 项目报告\n\n文件面板应该看到这份文件。\n', 'utf8')
+        await manager.reload('chat', {})
+      },
+      act: chatFileProjectAct(captureProjectRoot(userData)),
+      check: CHAT_FILE_PROJECT_CHECK,
+    },
+    // `show_preview` 推送链路的渲染层半边（2026-10-03，docs/06 §14）：act 与上一条同款
+    // （切到绑项目的会话），mainAct 合成一条 `preview:show`（通道与 payload 形状与工具
+    // 实际推送一致），check 断言右栏自动切到「浏览器」tab、webview 真的加载了 file:// 夹具、
+    // 地址栏显示原始路径。主进程侧的目标校验由 preview-port.test.ts 覆盖。
+    {
+      name: 'chat',
+      file: 'chat-preview-tool.png',
+      prepare: async () => {
+        const root = captureProjectRoot(userData)
+        await mkdir(join(root, 'assets'), { recursive: true })
+        await writeFile(
+          join(root, 'assets', 'fixture.html'),
+          '<!doctype html><meta charset="utf-8"><h1>项目夹具页</h1>',
+          'utf8',
+        )
+        await manager.reload('chat', {})
+      },
+      act: chatFileProjectAct(captureProjectRoot(userData)),
+      mainAct: (win) => {
+        const fixture = join(captureProjectRoot(userData), 'assets', 'fixture.html')
+        win.webContents.send(IPC.preview.show, {
+          sessionId: 'chat-seed-project',
+          url: pathToFileURL(fixture).toString(),
+          display: fixture,
+          title: '项目夹具页',
+        })
+        return { pass: true, sent: fixture }
+      },
+      check: CHAT_PREVIEW_TOOL_CHECK,
     },
     // 综合概览（step 5）：右栏挂「任务」面板 + 上下文卡，用于人工核对布局。
     // 「当前项目」卡已随项目管理迁设置页（2026-09-30）：这里改为断言右栏**不再有**项目卡

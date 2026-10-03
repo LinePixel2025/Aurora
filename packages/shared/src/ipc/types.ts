@@ -386,6 +386,50 @@ export interface FilePreviewResult {
   note?: string
 }
 
+export interface FileListRequest {
+  /** 与 `FilePreviewRequest` 同一条边界链（按**发起会话**解析边界根，docs/06 §5.1） */
+  sessionId: string
+  /** 要列出的目录绝对路径；空 / 缺省 = 列出会话边界根本身 */
+  path?: string
+}
+
+export interface FileListEntry {
+  name: string
+  /** 绝对路径（点开即用，渲染层不需要自己拼） */
+  path: string
+  kind: 'dir' | 'file'
+  /** 文件字节数；目录为 0 */
+  bytes: number
+}
+
+export interface FileListResult {
+  /** 会话边界根（项目文件夹 / 会话空间目录）：「向上」止于此，渲染层不允许再往上走 */
+  root: string
+  /** 本次列出的目录（绝对路径） */
+  dir: string
+  /** 目录在前、同类按名称（数字感知）升序 */
+  entries: FileListEntry[]
+  /** 条目数超过上限被截断（只列前 N 条） */
+  truncated?: boolean
+}
+
+/**
+ * `preview:show` 推送（`show_preview` 工具，2026-10-03，主进程 → 渲染层）。
+ *
+ * 渲染层只认**当前会话**的展示请求（`sessionId` 对不上就丢弃）—— 避免后台会话
+ * （自动化 / 远程）把用户正在看的右栏顶掉。
+ */
+export interface PreviewShowEvent {
+  /** 发起展示的会话（工具执行时的 `ctx.sessionId`） */
+  sessionId: string
+  /** 可直接加载进 webview 的地址（http/https 或 `file://` 本地文件） */
+  url: string
+  /** 地址栏展示串：URL 原样；本地文件显示原始路径 */
+  display: string
+  /** 来源标题（工具入参 `title`，缺省为空串） */
+  title: string
+}
+
 // ───────────────────────── PTY 终端（右栏「终端」tab，2026-10-03） ─────────────────────────
 
 export interface TerminalCreateRequest {
@@ -1597,6 +1641,16 @@ export interface AuroraApi {
      * `resolveWithin` 口径）；文本 2 MB / 图片 10 MB 上限，超限截断或拒绝。
      */
     read(request: FilePreviewRequest): Promise<Result<FilePreviewResult>>
+    /**
+     * 列一个目录（docs/07 §2.3，2026-10-03）：缺省列出会话边界根（项目文件夹 /
+     * 会话空间目录），路径同样受边界根约束；目录在前、同类按名称升序，超上限截断。
+     */
+    list(request: FileListRequest): Promise<Result<FileListResult>>
+    /**
+     * Agent 展示推送（`show_preview` 工具，on/off 成对）：主界面据此把右栏切到
+     * 「浏览器」tab 并加载目标；`sessionId` 不是当前会话时渲染层忽略。
+     */
+    onShow(listener: (event: PreviewShowEvent) => void): () => void
   }
   terminal: {
     /**

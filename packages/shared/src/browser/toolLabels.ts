@@ -69,6 +69,8 @@ export function toolLabelOf(name: string, input: unknown): ToolLabel | null {
       return { verb: '读取剪贴板' }
     case 'generate_image':
       return { verb: '生成图片', object: pickObject(input, ['prompt']) }
+    case 'show_preview':
+      return { verb: '展示', object: pickObject(input, ['title', 'target']) }
     case 'use_skill':
       return { verb: '调用技能', object: pickObject(input, ['name', 'skill', 'id']) }
     case 'set_setting':

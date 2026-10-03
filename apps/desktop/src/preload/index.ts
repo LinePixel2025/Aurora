@@ -97,6 +97,10 @@ const api: AuroraApi = {
   preview: {
     // 右栏「文件」预览（docs/07 §2.3）：路径边界与大小上限都在主进程侧判定
     read: (request) => invoke(IPC.preview.read, request),
+    // 列目录（小文件管理器，2026-10-03）：同样只在主进程侧解析边界与读盘
+    list: (request) => invoke(IPC.preview.list, request),
+    // Agent 展示推送（show_preview 工具）：主进程 → 渲染层，on/off 成对
+    onShow: (listener) => subscribe(IPC.preview.show, listener),
   },
   terminal: {
     // 右栏「终端」（docs/07 §2.3）：PTY 交互终端，输出经 data/exit 推送（on/off 成对）

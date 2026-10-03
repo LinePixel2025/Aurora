@@ -197,6 +197,8 @@ import { createScreenshotPort } from './tools/screenshot-port.js'
 import { visionEnabled } from './vision.js'
 import { createNotificationPort } from './tools/notify.js'
 import { createImageGenPort } from './tools/imagegen-port.js'
+// 右栏成果展示（`show_preview`，docs/06 §14）：目标校验 + 推送到 chat 窗口
+import { createPreviewPort } from './tools/preview-port.js'
 import { createSettingsPort } from './tools/settings-port.js'
 import { createCommandRunner } from './tools/command-runner.js'
 import { createNodeFilePort } from './tools/file-port.js'
@@ -473,7 +475,7 @@ let deviceLoginController: DeviceLoginController | undefined
 let deviceLoginServerUrl = ''
 /** 设备授权登录最终结果的渲染层订阅（center:deviceLoginResult 推送） */
 const deviceLoginListeners = new Set<(result: CenterDeviceLoginResult) => void>()
-/** 扩展工具五件套装配器（docs/06 §14）：与 set_setting 同级，不受 agent.tools.enabled 门控 */
+/** 扩展工具六件套装配器（docs/06 §14）：与 set_setting 同级，不受 agent.tools.enabled 门控 */
 let extensionTools: ExtensionToolsRegistry | undefined
 /**
  * 图像工具装配器（看图 / 截屏 / 读剪贴板图片，docs/06 §25）：**按模型能力注册** ——
@@ -635,12 +637,27 @@ async function bootstrap(): Promise<void> {
         "form-action 'none'",
       ].join('; ')
 
+  /**
+   * 只给 **Aurora 自己的窗口页面**注入 CSP（2026-10-03 修复）。
+   *
+   * 此前无条件注入每条响应 —— 包括右栏内置浏览器（`webview`）里加载的外部页面：
+   * 那些页面被强加了 `default-src 'self'; script-src 'self'`（相对于**它自己的**源），
+   * 于是内联脚本、CDN 脚本、外域样式/图片全被 Chromium 拒绝，页面白屏或半残
+   * （最小复现：`webview` 加载带内联脚本 + 外域脚本的本地页，实测两条都被拒）。
+   *
+   * 判据用 `webContentsId` 归属而不是 URL 前缀：guest 是独立 webContents，
+   * 不在 `BrowserWindow.getAllWindows()` 里 —— 与协议 / 端口 / 开发态 URL 形态无关，
+   * `file://` 预览页同样按"不是自家窗口"跳过。webview 里**没有** CSP 是正确语义：
+   * 外域页面本该由它自己的 CSP 约束，不是由 Aurora 的。
+   */
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const isOwnWindow = BrowserWindow.getAllWindows().some(
+      (win) => !win.isDestroyed() && win.webContents.id === details.webContentsId,
+    )
     callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        'Content-Security-Policy': [csp],
-      },
+      responseHeaders: isOwnWindow
+        ? { ...details.responseHeaders, 'Content-Security-Policy': [csp] }
+        : { ...details.responseHeaders },
     })
   })
 
@@ -989,9 +1006,9 @@ async function bootstrap(): Promise<void> {
     generatedDir: join(userData, 'generated'),
     resolveFetch: () => netFetch,
   })
-  // 7.1.3 扩展工具五件套（docs/06 §14）：web_fetch / clipboard_read / clipboard_write /
-  //     notify_user / generate_image。与 set_setting 同级——不受 `agent.tools.enabled` 门控，
-  //     敏感动作靠工具自身的 `sensitivity: 'confirm'` 逐次确认。
+  // 7.1.3 扩展工具六件套（docs/06 §14）：web_fetch / clipboard_read / clipboard_write /
+  //     notify_user / generate_image / show_preview。与 set_setting 同级——不受
+  //     `agent.tools.enabled` 门控，敏感动作靠工具自身的 `sensitivity: 'confirm'` 逐次确认。
   //     NotificationService 在下方 7.2 才装配，这里按调用时点取值（工具执行时必然已就绪）。
   extensionTools = registerExtensionTools({
     tools,
@@ -1002,6 +1019,18 @@ async function bootstrap(): Promise<void> {
       notify: (request) => notifications?.notify(request) ?? false,
     }),
     imageGen: createImageGenPort(imageGenService),
+    // `show_preview`（2026-10-03）：本地文件边界 / 相对路径基准都按**会话**解析
+    //（`toolchainProjects` 即 file-port / command-runner 用的同一份取值器，子代理剥回父会话）；
+    // 推送前先 showChat —— 窗口被隐藏时用户什么也看不到，展示就失去了意义。
+    preview: createPreviewPort({
+      workspaceDirOf: (sessionId) => toolchainProjects.workspaceDir(sessionId),
+      boundaryRootOf: (sessionId) => toolchainProjects.boundaryRoot(sessionId),
+      present: (payload) => {
+        windows?.showChat()
+        windows?.sendTo('chat', IPC.preview.show, payload)
+      },
+      logger: logger.child('tools'),
+    }),
   })
   // 7.1.3b 图像工具（docs/06 §25）：view_image / screenshot / clipboard_read_image。
   //     门控是**模型能力**而不是开关：当前生效模型没开图片输入就一个都不注册（判据见 vision.ts）。
@@ -1027,7 +1056,7 @@ async function bootstrap(): Promise<void> {
     }),
   })
   // 7.1.4 Agent 内核自带工具（docs/06 §18/§19）：todo_write / todo_read / task。
-  //     与 set_setting / 扩展工具五件套同级——不受 `agent.tools.enabled` 门控
+  //     与 set_setting / 扩展工具六件套同级——不受 `agent.tools.enabled` 门控
   //     （todo / task 是 Agent 自身能力，不是电脑操控）。
   //     清单按会话落盘到 `<userData>/todos/`（子代理用 `<sessionId>-sub` 独立清单）。
   todoPort = createFileTodoPort({
@@ -1095,7 +1124,7 @@ async function bootstrap(): Promise<void> {
     getConfirmTool: () => confirmTool,
   })
   // 7.1.6 ClassIsland 提醒工具（docs/05 §3.4 v3）：`classisland_remind`。
-  //     与扩展工具五件套同级——不受 `agent.tools.enabled` 门控；但**按可用性注册**：
+  //     与扩展工具六件套同级——不受 `agent.tools.enabled` 门控；但**按可用性注册**：
   //     桥接未配置时先不进工具表（模型看不到就不会承诺），用户填完端点后
   //     `settings:changed` 触发 `syncToolRegistries()` 自动补上，无需重启。
   classIslandTools = registerClassIslandTools({
@@ -4607,7 +4636,7 @@ function adaptProactive(scheduler: ProactiveScheduler): ProactiveLike {
  * 四个装配器必须一起同步：
  * - `computerTools`：按 `agent.tools.*` 重建 8 个电脑操控工具；
  * - `settingsTool`：重建 `set_setting`（不受 `agent.tools.enabled` 影响，见 tools/index.ts）；
- * - `extensionTools`：重建扩展工具五件套（同样不受 `agent.tools.enabled` 影响）；
+ * - `extensionTools`：重建扩展工具六件套（同样不受 `agent.tools.enabled` 影响）；
  * - `agentCoreTools`：重建 todo_write / todo_read / task（同样不受门控，见 tools/index.ts）。
  *
  * 拆开写会让「改开关后工具表变化」的时机不一致：后三者不依赖 `agent.tools.enabled`，

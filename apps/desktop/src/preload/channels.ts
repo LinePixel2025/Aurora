@@ -66,6 +66,9 @@ const CHANNELS = {
   // 右栏「文件」预览（2026-10-03）：与 shared 契约同构，编译期双向断言兜住
   preview: {
     read: 'preview:read',
+    // 列目录 + Agent 展示推送（show_preview 工具）：同上，双向断言兜住
+    list: 'preview:list',
+    show: 'preview:show',
   },
   // 右栏「终端」（2026-10-03）：与 shared 契约同构，编译期双向断言兜住
   terminal: {

@@ -18,6 +18,7 @@ import {
   ImageIcon,
   ListChecks,
   MessageSquare,
+  PanelRight,
   Puzzle,
   School,
   Search,
@@ -44,6 +45,8 @@ const TOOL_ICONS: Record<string, Component> = {
   clipboard_read: ClipboardCopy,
   clipboard_write: ClipboardCopy,
   generate_image: ImageIcon,
+  // 右栏成果展示（2026-10-03）：用「右栏」图标本身，与右栏 tab 条的语义一致
+  show_preview: PanelRight,
   // 内核工具
   todo_write: ListChecks,
   todo_read: ListChecks,
