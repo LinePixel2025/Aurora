@@ -1914,18 +1914,28 @@ Aurora 只讲 OpenAI 兼容协议，而主流网关（DeepSeek / OpenAI / 硅基
   **两者都缺 → `undefined`，不拿其它数字冒充**（例如拿 `prompt_tokens` 填进去）——
   0 与「没回传」在界面上必须可区分。实现上 `cachedTokens` 在缺省时**整个字段不出现在 `usage`
   事件里**（不是带一个 `undefined` 的键），与同目录 `done` 事件的缺省口径一致。
-- 展示口径：只在对话窗的「上下文详解」条展示**最近一轮**的命中量，**不落盘**——
-  它是可再生的观测值，写进会话存储只会让持久化契约多一个可变字段。
-  折叠态文案形如 `512 / 128k · 缓存命中 512（100%）`（命中片段是
-  `data-field="chat.context-cache"`，嵌在 `chat.context-usage` 文案里；**v23 起它只出现在折叠条上**
-  ——展开的详解卡只剩「本轮输入 / 上下文窗口 / 模型」三行，不再单列命中量）：
-  - 百分比 = `Math.min(100, Math.round(cachedTokens / promptTokens * 100))`——
+- 展示口径（2026-10-03 起）：对话窗「上下文详解」条显示**平均缓存命中率**——
+  分子 / 分母都是**累计**（`usage.totals.cachedTokens / usage.totals.promptTokens`），
+  折叠态文案形如 `512 / 128k · 平均缓存命中 100%`（命中片段是
+  `data-field="chat.context-cache"`，嵌在 `chat.context-usage` 文案里）：
+  - 单轮命中率抖动大，平均值才反映 provider 缓存的真实收益；绝对数（累计命中 / 累计输入）
+    在展开的详解卡里；
+  - 百分比 = `Math.min(100, Math.round(totalCached / totalPrompt * 100))`——
     `cachedTokens` 是**服务端报的命中数**，正常不会超过 `promptTokens`，但桩服务 / 异常网关
-    可能给出不一致的数据，界面不显示「缓存命中 512（400%）」这类荒谬值；
-  - `promptTokens` 为 0 或缺失时**只显示绝对数、不显示百分比**（不编造分母）；
-  - `cachedTokens` **缺省时整段不渲染**（不显示「缓存命中 0」——那会与「没回传」混淆）。
+    可能给出不一致的数据，界面不显示「平均缓存命中 400%」这类荒谬值；
+  - 累计 prompt 为 0 时不显示（不编造分母）；
+  - **provider 是否回传**以 `latest.cachedTokens` 是否缺省判定（totals 累计后无法区分
+    「没回传」与「全没命中」）——未回传时那一段**整段不渲染**（不显示「平均缓存命中 0%」）。
+- 持久口径（2026-10-03 起，**本条推翻「不落盘」的旧口径**）：主进程在每轮 usage 事件处
+  **先累计进 `meta.usage`、再广播事件**（`SessionStore.addUsage`，随会话文件落盘，
+  字段：`promptTokens / completionTokens / totalTokens / cachedTokens / rounds`）。
+  渲染层切回会话时以 `chat:sessions` 摘要带出的 `meta.usage` 为**种子**恢复累计，
+  之后逐轮继续累加——平均命中率因此按**会话**算，跨切换、跨重启连续，
+  不再是「本窗口本次观看期间」的口径。
 - 累计口径：渲染层把每轮 `cachedTokens` 累加进 `usage.totals.cachedTokens`（缺省按 0 累加），
-  与 prompt / completion / total 三个累计量同一条 `usage` 事件路径。
+  与 prompt / completion / total 三个累计量同一条 `usage` 事件路径；
+  防重集合 `countedUsage`（键 `requestId#round`）**跨会话切换不清**——
+  切回后迟到的旧事件不能把种子里的轮次再加一遍。
 
 ### 21.5 明确不做
 
@@ -1933,7 +1943,7 @@ Aurora 只讲 OpenAI 兼容协议，而主流网关（DeepSeek / OpenAI / 硅基
   （与既有 `stream_options` 降级同一个坑）。
 - **不加任何配置字段**（因此没有迁移、没有新设置页 UI）：前缀稳定化是内核的固定行为，
   不需要用户开关。
-- 本轮不做 prompt 费用累计统计与缓存命中率的长期报表（只做「最近一轮」的即时展示）。
+- 本轮不做 prompt 费用累计统计与长期报表（平均缓存命中率见 §21.4 的 `meta.usage` 持久口径）。
 
 
 ## 22. Aurora Center 工具与 create_skill（v0.2.0）

@@ -55,6 +55,7 @@
  * `data-field` 的 `chat.messages` / `chat.todo-card` / `chat.task-card` / `chat.thinking-live` 保留。
  */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import type { Ref } from 'vue'
 import type { AgentToolCall } from '@aurora/shared'
 import type { ChatMessage } from '../composables/useChat.js'
 import { useStickToBottom } from '@aurora/shared/browser'
@@ -99,6 +100,13 @@ const props = withDefaults(
      * 收拢路径，重复调用幂等。
      */
     settledRequestId?: string | null
+    /**
+     * 当前会话 id（2026-10-03 会话状态增强）：显示状态（折叠 / 展开 / 已结算动画 / 图片预览）
+     * 按会话分桶存在**模块级**缓存里，调用方须以 `:key="sessionId"` 让组件随会话重挂载 ——
+     * 重挂载后从桶里恢复，切走再切回「过程显示」不再消失（docs/07 §2.3）。
+     * 缺省落 `_default` 桶（不切会话的窗口行为与从前一致）。
+     */
+    sessionId?: string
   }>(),
   {
     emptyHint: '开始一段对话吧',
@@ -109,8 +117,61 @@ const props = withDefaults(
     showThinking: true,
     thinkingTargetId: null,
     settledRequestId: null,
+    sessionId: '',
   },
 )
+
+/**
+ * 显示状态的**会话分桶**（模块级，2026-10-03 会话状态增强）。
+ *
+ * 消息正文 / 思考 / 工具卡在切回会话后能由 `chat:history` 恢复，丢的从来是**渲染层
+ * 显示状态**：轨迹折叠 / 展开、思考块开合、工具行开合、终态确认动画（防重放）、
+ * 生图预览缓存。把它们按会话存进模块级桶，组件随会话重挂载（`:key="sessionId"`）
+ * 后从桶里取回，切走再切回就不再「过程显示全部消失」。
+ *
+ * 只存内存、有界（最多 64 个会话，超出丢最旧的）：重启后重建是可接受的 ——
+ * 落盘持久化的是计时（`AgentToolCall.startedAt/endedAt`）与用量（`meta.usage`）。
+ */
+interface SessionDisplayState {
+  thinkingOpen: Ref<string[]>
+  traceOpenedIds: Set<string>
+  historyFoldedIds: Set<string>
+  openedIds: Ref<string[]>
+  settledIds: Set<string>
+  imagePreviews: Map<string, string>
+}
+
+const displayBuckets = new Map<string, SessionDisplayState>()
+const DISPLAY_BUCKET_LIMIT = 64
+
+function displayBucketOf(id: string): SessionDisplayState {
+  const existing = displayBuckets.get(id)
+  if (existing !== undefined) return existing
+  const created: SessionDisplayState = {
+    thinkingOpen: ref<string[]>([]),
+    traceOpenedIds: reactive(new Set<string>()),
+    historyFoldedIds: reactive(new Set<string>()),
+    openedIds: ref<string[]>([]),
+    settledIds: reactive(new Set<string>()),
+    imagePreviews: reactive(new Map<string, string>()),
+  }
+  // 有界：超出上限丢最旧的桶（Map 迭代序即插入序）
+  while (displayBuckets.size >= DISPLAY_BUCKET_LIMIT) {
+    const oldest = displayBuckets.keys().next().value
+    if (oldest === undefined) break
+    displayBuckets.delete(oldest)
+  }
+  displayBuckets.set(id, created)
+  return created
+}
+
+const displayState = displayBucketOf(props.sessionId ?? '_default')
+const thinkingOpen = displayState.thinkingOpen
+const traceOpenedIds = displayState.traceOpenedIds
+const historyFoldedIds = displayState.historyFoldedIds
+const openedIds = displayState.openedIds
+const settledIds = displayState.settledIds
+const imagePreviews = displayState.imagePreviews
 
 const emit = defineEmits<{
   (event: 'speak', text: string, id: string): void
@@ -173,8 +234,8 @@ function onSpeakClick(message: ChatMessage): void {
  * 语义在轨迹重构后**刻意保持原样**：思考块自己的开合（点 `.thinking-head`）与
  * 轨迹容器的开合（点 `.trace-head`）是两个独立状态，「用户点开就保持点开」这条
  * 靠这两个集合各自成立。流式结束后这里会被清空（回到「已深度思考」摘要行）。
+ * （2026-10-03 起按会话分桶：声明见 `displayBucketOf`。）
  */
-const thinkingOpen = ref<string[]>([])
 
 /**
  * 折叠时的思考块文案。
@@ -196,8 +257,8 @@ function isThinkingOpen(id: string): boolean {
  * 它只装"用户意图"一件事 —— 流式期间正在思考的那条由 `traceOpen` 直接判定，
  * 不混进来（见下方「轨迹自动折叠」一节）。与 `historyFoldedIds` 一起构成
  * `traceOpen(message)`：折叠判定本身没有额外的开关变量。
+ * （2026-10-03 起按会话分桶：声明见 `displayBucketOf`。）
  */
-const traceOpenedIds = reactive(new Set<string>())
 
 // ────────── 思考块内的自动翻滚（块内部的小滚动区，独立于消息区） ──────────
 
@@ -496,8 +557,9 @@ const swapping = ref(false)
  * 从没进过集合 → 收尾边沿收不掉它 → 轨迹**永远停在展开态**，用户看到的就是
  * 「模型答完了，工作过程还铺在那里不折叠」。收尾必须按"这一轮追加了哪些消息"来收，
  * 而不是按"哪些被打开过"。
+ *
+ * （2026-10-03 起按会话分桶：声明见 `displayBucketOf`。）
  */
-const historyFoldedIds = reactive(new Set<string>())
 
 /**
  * 这条消息的轨迹是否展开。
@@ -675,15 +737,32 @@ function traceFailed(message: ChatMessage): boolean {
 }
 
 /**
- * 整条轨迹的耗时（折叠胶囊右侧，2026-10-01 重塑新增）：**渲染层计时**口径 ——
+ * 一次工具调用的计时区间（毫秒）。**优先读持久时间戳**（`call.startedAt` / `call.endedAt`，
+ * 内核随工具卡落盘）——切走再切回、重启后耗时仍是真实值；旧历史没有时间戳时才落到
+ * 渲染层观察值（`timings`），两者都没有 → `undefined`（不伪造数据）。
+ */
+function callSpanOf(call: AgentToolCall): { start: number; end: number | null } | undefined {
+  if (call.startedAt !== undefined) {
+    const start = Date.parse(call.startedAt)
+    if (Number.isFinite(start)) {
+      if (call.endedAt === undefined) return { start, end: null }
+      const endedAt = Date.parse(call.endedAt)
+      return { start, end: Number.isFinite(endedAt) ? endedAt : null }
+    }
+  }
+  return timings.get(call.id)
+}
+
+/**
+ * 整条轨迹的耗时（折叠胶囊右侧，2026-10-01 重塑新增）：
  * 首个工具开始到末个工具结束（正在跑的按当前 tick 算）。
- * 历史水合的行没有任何计时记录 → 空串，与工具行耗时同一条「不伪造数据」口径。
+ * 计时来源见 `callSpanOf`（持久时间戳优先，本地观察兜底）；两者皆无 → 空串。
  */
 function traceDuration(message: ChatMessage): string {
   let start = Number.POSITIVE_INFINITY
   let end = 0
   for (const call of message.toolCalls ?? []) {
-    const record = timings.get(call.id)
+    const record = callSpanOf(call)
     if (record === undefined) continue
     start = Math.min(start, record.start)
     end = Math.max(end, record.end ?? nowTick.value)
@@ -705,16 +784,18 @@ function cardField(call: AgentToolCall): string | undefined {
   return undefined
 }
 
-/** 已展开的工具行 id（默认全部折叠，保持轨迹干净） */
-const openedIds = ref<string[]>([])
+/**
+ * 已展开的工具行 id（默认全部折叠，保持轨迹干净）。
+ * （2026-10-03 起按会话分桶：声明见 `displayBucketOf`。）
+ */
 
 /**
  * 已经「翻到终态」并播放过确认动画的卡片 id。
  *
  * 一次性动画靠「类只加一次」实现：状态从 running 翻到 success/error 时把 id 记下来，
  * 之后即使组件重渲染也不会重放（`aurora-confirm` 在类存在期间只跑一次）。
+ * （2026-10-03 起按会话分桶：声明见 `displayBucketOf`。）
  */
-const settledIds = reactive(new Set<string>())
 
 function isSettled(id: string): boolean {
   return settledIds.has(id)
@@ -731,8 +812,8 @@ function toggle(id: string): void {
 }
 
 /**
- * 耗时是**渲染层计时**：`AgentToolCall` 没有时间字段（packages/shared/src/ipc/types.ts），
- * 因此只对本次渲染期间观察到的调用计时（历史水合出来的卡片不显示耗时），不伪造数据。
+ * 本地兜底计时：**优先级低于**工具卡自带的持久时间戳（`call.startedAt` / `call.endedAt`，
+ * 内核随工具卡落盘）——只有旧历史（没有时间戳的行）才落到这份观察值上，不伪造数据。
  */
 const timings = reactive(new Map<string, { start: number; end: number | null }>())
 const nowTick = ref(Date.now())
@@ -796,8 +877,7 @@ function isGeneratedImage(call: AgentToolCall): boolean {
   return call.name === 'generate_image' && call.state === 'success'
 }
 
-/** call.id → dataUrl；空串表示已尝试但失败（不再重试），缺项表示尚未尝试 */
-const imagePreviews = reactive(new Map<string, string>())
+/** call.id → dataUrl；空串表示已尝试但失败（不再重试），缺项表示尚未尝试（按会话分桶） */
 
 async function loadImagePreview(callId: string, filePath: string): Promise<void> {
   try {
@@ -863,11 +943,11 @@ onUnmounted(() => {
 })
 
 /**
- * 本次调用的耗时文案（**渲染层观察到的**，历史水合出来的行返回空串）。
- * `AgentToolCall` 没有时间字段（packages/shared/src/ipc/types.ts），所以这里不伪造数据。
+ * 本次调用的耗时文案。计时来源见 `callSpanOf`：持久时间戳优先（历史水合的行
+ * 现在也能显示真实耗时），本地观察兜底；两者皆无 → 空串（不伪造数据）。
  */
 function toolDuration(call: AgentToolCall): string {
-  const record = timings.get(call.id)
+  const record = callSpanOf(call)
   if (record === undefined) return ''
   const end = record.end ?? nowTick.value
   const seconds = Math.max(0, end - record.start) / 1000

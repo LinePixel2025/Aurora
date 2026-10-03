@@ -851,8 +851,11 @@ export class KernelAgentHost implements AgentHostContract {
               break
             }
             case 'usage': {
-              // token 用量（docs/06 §16.2）：只做展示（输入框底部的上下文详解），不落盘 ——
-              // 它是「这一轮请求的上下文占用」，重放历史时重新收集没有意义
+              // token 用量（docs/06 §16.2）：展示之外，本轮起同步累加进会话 meta
+              //（meta.usage，随会话落盘）——渲染层切回会话时以它为种子恢复累计口径。
+              // 刻意**先累计、后广播**：渲染层若在「累计之后、种子之前」的窗口里收到事件，
+              // 种子（meta）也已包含这一轮，不会少计。
+              void this.deps.sessions.addUsage(sessionId, event.usage).catch(() => undefined)
               this.emit({
                 type: 'usage',
                 sessionId,

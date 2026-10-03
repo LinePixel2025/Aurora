@@ -590,6 +590,12 @@ export interface ChatSessionSummary {
    * 会话行显示覆盖徽标（见 docs/07 §2.3）。
    */
   llm?: { providerId: string; model: string }
+  /**
+   * 会话级用量累计（docs/06 §4，`meta.usage`；本轮新增）。
+   * **缺省（不含这个键）= 该会话从未回传过 usage**。渲染层切回会话时以它为种子恢复
+   * 用量累计与平均缓存命中率（跨切换、跨重启连续）。
+   */
+  usage?: SessionUsageStats
 }
 
 /** 远程会话激活推送（docs/12 §6.3，v0.2.3）：主进程驱动主界面切到指定会话 */
@@ -960,6 +966,14 @@ export interface AgentToolCall {
   state: 'running' | 'success' | 'error'
   outputSummary?: string
   /**
+   * 工具调用**发起**时刻（ISO 时间戳，随工具卡持久化）。
+   * 渲染层的耗时徽章以它为计时起点 —— 切走会话再切回、甚至重启后，耗时仍是真实值，
+   * 不再从「渲染层首次观察到 running 的那一刻」重新起表。
+   */
+  startedAt?: string
+  /** 工具调用**结算**（success / error）时刻；`running` 态没有这个字段 */
+  endedAt?: string
+  /**
    * `task` 子代理工具的运行快照（docs/06 §19、docs/07 §2.3）。
    * 随工具卡状态一起持久化，因此「子代理」页面在重启后仍能回看历史运行。
    */
@@ -986,6 +1000,24 @@ export interface TokenUsage {
    * 因此解析侧遇到非法值宁可整条省略，也**不要**填 0。
    */
   cachedTokens?: number
+}
+
+/**
+ * 会话级用量累计（`sessions/<id>.json` 的 `meta.usage`，随会话落盘）。
+ *
+ * 与「本次会话窗口内逐轮累加」的渲染层 totals 不同：它是主进程在每轮 usage 事件
+ * 发出时同步累计的**持久值**，跨切换、跨重启都连续。渲染层切回会话时以它为种子，
+ * 之后逐轮继续累加 —— 平均缓存命中率（`cachedTokens / promptTokens`）因此按**会话**
+ * 而不是「本窗口本次观看期间」计算。
+ */
+export interface SessionUsageStats {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  /** 累计命中量（provider 未回传缓存字段的轮次按 0 计入） */
+  cachedTokens: number
+  /** 已累计的 LLM 轮次（provider 未回传 usage 的轮次不计） */
+  rounds: number
 }
 
 // ───────────────────────── 子代理（`task` 工具） ─────────────────────────

@@ -310,6 +310,9 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
           name: event.call.name,
           arguments: event.call.arguments,
           state: 'running',
+          // 发起时刻随工具卡落盘：渲染层耗时徽章的真实计时起点（切走再切回、重启后
+          // 都从它算，不再由渲染层「首次观察到 running」重新起表）
+          startedAt: new Date().toISOString(),
         })
         continue
       }
@@ -332,6 +335,8 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       for (const call of calls) {
         call.state = 'error'
         call.outputSummary ??= '流中断未执行'
+        // 从未执行的调用没有 startedAt 之外的可靠时刻：结算时刻就是收敛这一刻
+        call.endedAt ??= new Date().toISOString()
       } // 已产出的文本与思考链先落盘，避免用户看到的内容在历史里消失
       if (text !== '' || reasoning !== '' || calls.length > 0) {
         await appendAssistant(options, messageId, text, calls, reasoning)
@@ -410,6 +415,8 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
 
       call.state = outcome.state
       call.outputSummary = outcome.summary
+      // 结算时刻随工具卡落盘（与 startedAt 配对，渲染层据此显示真实耗时）
+      call.endedAt = new Date().toISOString()
       // 子代理快照随工具卡一起持久化（渲染层「子代理」页面据此回看历史运行）
       if (outcome.subagent !== undefined) call.subagent = outcome.subagent
       // 持久化工具卡片状态（同一 messageId 原地更新，渲染层据此刷新）
@@ -512,6 +519,7 @@ async function settleUnexecutedCalls(
     if (call.state !== 'running') continue
     call.state = 'error'
     call.outputSummary ??= summary
+    call.endedAt ??= new Date().toISOString()
     await options.updateToolCall(messageId, { ...call })
   }
 }
@@ -654,6 +662,8 @@ function toAgentToolCall(call: StoredToolCall): AgentToolCall {
       : { input: parseArguments(call.arguments) }),
     state: call.state,
     ...(call.outputSummary === undefined ? {} : { outputSummary: call.outputSummary }),
+    ...(call.startedAt === undefined ? {} : { startedAt: call.startedAt }),
+    ...(call.endedAt === undefined ? {} : { endedAt: call.endedAt }),
     ...(call.subagent === undefined ? {} : { subagent: call.subagent }),
   }
 }

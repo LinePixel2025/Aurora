@@ -688,15 +688,16 @@
   命令名都很短，模糊匹配会让 `/s` 命中一堆不相干的技能，反而要多按几次方向键。
   `@` 提及、MCP 工具补全**仍未实现**（技能与命令之外没有第二类候选）。
 - **上下文详解条**（`ComposerContextBar.vue`，`data-field="chat.context"`）：卡片最底部一条细状态栏，
-  折叠态显示 `上下文 <已用> / <窗口> <进度条> <百分比>` + 本会话累计，最近一轮有缓存命中量时
-  紧凑文案里一并带出命中 token 数（探针锚点 `chat.context-usage` 的文案因此含「缓存命中」）。
-  点开在上方弹出明细（`data-field="chat.context-detail"`）——**只有三行**：本轮输入 /
-  上下文窗口 / 模型（缓存命中只留在折叠条上，不再进明细卡）。
+  折叠态显示 `上下文 <已用> / <窗口> <进度条> <百分比>` + 本会话累计；2026-10-03 起紧凑文案里的
+  命中片段改为**平均缓存命中率**（`平均缓存命中 N%`，分子分母都是**累计**，06 §21.4 ——
+  替换早先的「本次缓存命中」单轮口径；探针锚点 `chat.context-usage` 的文案因此含「平均缓存命中」）。
+  点开在上方弹出明细（`data-field="chat.context-detail"`）——本轮输入 / 上下文窗口 / 模型 /
+  **平均缓存命中**（绝对数与占比）四行。
   - **分子**：最近一轮的 `promptTokens`（`usage` 事件，06 §16.2）——就是这一轮真实送进模型的上下文长度；
-  - **缓存命中**：最近一轮的缓存命中 token 数（`cachedTokens`，06 §21.4）——来自 provider 回传的
-    `prompt_tokens_details.cached_tokens`（OpenAI 形态）或 `prompt_cache_hit_tokens`（DeepSeek 形态），
-    明细里另给出占比（命中量 / 本轮的 `promptTokens`）。**两者都缺就整项不显示** ——
-    既不写「缓存命中 0」也不占位：那会把「provider 没回传」显示成「一条都没命中」，两者必须可区分；
+  - **平均缓存命中**：`totals.cachedTokens / totals.promptTokens`（累计口径，含种子恢复的部分，
+    06 §21.4）——按**会话**算，跨切换、跨重启连续。provider 是否回传缓存字段以
+    `latest.cachedTokens` 是否缺省判定，**未回传时整项不显示** ——
+    既不写「平均缓存命中 0%」也不占位：那会把「provider 没回传」显示成「一条都没命中」，两者必须可区分；
   - **分母**：当前生效模型在 `llm.providers.<active>.modelParams.<modelId>.contextWindow`
     （v11 新增，**v23 起按模型绑定**，08 §1；`modelId` = 该 provider 的 `model`）。**0 = 未知**，此时
     不显示进度条与百分比，明细里给出去设置页填的路径——不编造分母；
@@ -781,8 +782,9 @@
   `chat-archive.png`（归档分组）；
   以及 `chat-stream.png`（**唯一一条 DOM 级端到端**：capture 在跑这一段前竖起本地桩 LLM 并把
   `llm.active` 指向它 → 探针把提示词写进 textarea、点发送 → 断言助手气泡里出现了桩服务的回复文本、
-  且上下文条显示**真实 token**（`512 / 128k`）与**缓存命中片段**（`缓存命中 512（100%）`，
-  `data-field="chat.context-cache"`）而不是「暂无用量数据」。
+  且上下文条显示**真实 token**（`512 / 128k`）与**平均缓存命中率**（`平均缓存命中 100%`，
+  `data-field="chat.context-cache"`；桩数据 cached == prompt，无论累计几轮占比恒为 100%）
+  而不是「暂无用量数据」。
   为什么这条必须有：`AURORA_SMOKE` 的脚本跑在引导窗里，只能从**事件层**断言流式
   （06 §16.2 的 text / usage 事件），读不到对话窗 DOM；而两个模式互斥 ——
   「事件对了、界面没画出来」这类问题只有这里能抓到），
@@ -1557,14 +1559,15 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
       列表的空状态用的是普通文案元素（**不是** `data-empty`），否则本页会多出一块 `unexpected` 直接 FAIL。
       总开关关着时仍只要求总开关自己还在；
     - `chat-stream.png` 的**缓存命中片段**（`data-field="chat.context-cache"`，折叠态嵌在
-      `chat.context-usage` 里面；`cachedTokens` 见 §2.3 与 06 §21.4）：桩 LLM 在本轮固定回
-      `prompt_tokens = 512` + `prompt_tokens_details.cached_tokens = 512`，因此实测文案是
-      `512 / 128k  · 缓存命中 512（100%）`（`chat.context-usage`）、`累计 528`（`.ctx-total`）。
-      探针要求 `chat.context-cache` 的文案同时含「缓存命中」「512」「100%」三个子串 ——
+      `chat.context-usage` 里面；06 §21.4）：桩 LLM 在本轮固定回
+      `prompt_tokens = 512` + `prompt_tokens_details.cached_tokens = 512`，2026-10-03 起实测文案是
+      `512 / 128k  · 平均缓存命中 100%`（`chat.context-usage`；分子分母都是 **totals 累计**，
+      桩数据 cached == prompt，无论累计几轮占比恒为 100%）、`累计 528`（`.ctx-total`）。
+      探针要求 `chat.context-cache` 的文案同时含「平均缓存命中」「100%」两个子串 ——
       只断言「含缓存命中」时，命中量丢了（只剩标题）或百分比算错都照样能过。
       **分母与分子必须自洽**（桩数据 `cached <= prompt`）：写反会算出大于 100% 的占比，
       展示侧的 `Math.min(100, …)` 虽然夹住了，桩数据也不该自相矛盾。
-      未回传 `cachedTokens` 时整段不渲染（不写「缓存命中 0」，那会把「没回传」显示成「一条都没命中」）；
+      未回传 `cachedTokens` 时整段不渲染（不写「平均缓存命中 0%」，那会把「没回传」显示成「一条都没命中」）；
   - **缓存前缀稳定性的端到端断言在 `AURORA_SMOKE` 侧**（`index.ts` 的 `runSmokeTest`，06 §21.1）：
     capture **只**覆盖「命中量落到 DOM」这一半，另两条 —— 连续两轮的系统提示词静态前缀逐字节
     相同、`tools` 数组逐个相同且已排序 —— 读的是**桩服务收到的请求体**，只有 smoke 能拿到，

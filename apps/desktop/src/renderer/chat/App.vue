@@ -1364,6 +1364,8 @@ async function markGuideDone(): Promise<void> {
         <AppToast v-if="ttsErrorToast" tone="error">朗读失败：{{ ttsErrorToast }}</AppToast>
 
         <MessageList
+          :key="sessionId"
+          :session-id="sessionId"
           :messages="messages"
           empty-hint="这是 Aurora 主界面：可以问系统状态、让 Aurora 帮忙整理资料，也可以直接把文件拖进来。"
           :tts-available="ttsReady"

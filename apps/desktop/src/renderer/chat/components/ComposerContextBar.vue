@@ -14,10 +14,12 @@
  * 分母（上下文窗口）来自**当前生效模型**的 `llm.providers.<active>.modelParams.<模型>`（v23 起
  * 随模型绑定），为 0 = 未知，同样只显示分子、不显示比例。
  *
- * 前缀缓存命中量（`latest.cachedTokens`，docs/06 §21.4）是**另一个分子**：命中提示条上那一段
- * 的百分比分母是**本轮的 `promptTokens`**（命中量 / 送进去的 prompt），
- * 与上面「已用 / 窗口」的占用百分比不是一回事。字段缺省 = provider 没回传，
- * 此时那一段**整段不渲染**（绝不写「缓存命中 0」——那会把「没回传」显示成「一条都没命中」）。
+ * 前缀缓存命中率（docs/06 §21.4）是**另一个分子**：折叠条显示的是**平均缓存命中率**
+ * （2026-10-03 起，替换早先的「本次缓存命中」）——分母是 `totals.promptTokens`（本会话
+ * 累计送进模型的 prompt，含种子恢复的部分），分子是 `totals.cachedTokens`。按**会话**算
+ * 而不是按「本轮」：单轮命中率抖动大，平均值才反映 provider 缓存的真实收益。
+ * 「provider 是否回传缓存字段」仍以 `latest.cachedTokens` 是否缺省判定（totals 累计后
+ * 无法区分「没回传」与「全没命中」）；未回传时那一段**整段不渲染**（绝不写「缓存命中 0」）。
  *
  * 数值全部来自 props，组件只做格式化与配色，不发任何请求。
  */
@@ -106,33 +108,30 @@ const summary = computed(() => {
   return props.contextWindow > 0 ? `${used} / ${formatTokens(props.contextWindow)}` : used
 })
 
-/** 最近一轮的缓存命中量；null = provider 没回传这个字段（与「回传了 0」不同） */
-const cachedTokens = computed<number | null>(() => props.latest?.cachedTokens ?? null)
-
 /**
- * 命中占比（0–100 的整数）；没有命中量、或本轮 `promptTokens` 为 0 / 缺失时返回 null
- * ——那种情况下只显示绝对数，不编造分母。
+ * 平均缓存命中率（0–100 整数，docs/06 §21.4）：
+ * 分母 = `totals.promptTokens`（本会话累计送进模型的 prompt），分子 = `totals.cachedTokens`
+ * （累计命中量）。provider 回传过缓存字段才显示 —— 判定用 `latest.cachedTokens` 是否缺省
+ * （totals 累计后无法区分「没回传」与「全没命中」）；没有累计（prompt 为 0）同样不显示。
  *
- * 上限夹到 100：`cached` 是**服务端报的命中数**，正常不会超过 `promptTokens`，
- * 但桩服务 / 异常网关可能给出不一致的数据，界面不能显示「缓存命中 512（400%）」这种荒谬值。
+ * 上限夹到 100：`cachedTokens` 是**服务端报的命中数**，正常不会超过 prompt，
+ * 但桩服务 / 异常网关可能给出不一致的数据，界面不能显示「平均缓存命中 400%」这种荒谬值。
  */
 const cachedPercent = computed<number | null>(() => {
-  const cached = cachedTokens.value
-  const prompt = props.latest?.promptTokens ?? 0
-  if (cached === null || prompt <= 0) return null
+  if (props.latest?.cachedTokens === undefined) return null
+  const prompt = props.totals.promptTokens
+  if (prompt <= 0) return null
+  const cached = props.totals.cachedTokens ?? 0
   return Math.min(100, Math.round((cached / prompt) * 100))
 })
 
 /**
- * 缓存命中文案（`chat.context-cache` 锚点）；缺省时为空串 —— 模板据此**整段不渲染**。
- * 数字用紧凑写法（与折叠态的占用数字同口径），百分比只在能算出分母时附上。
+ * 缓存命中文案（`chat.context-cache` 锚点）；null 时为空串 —— 模板据此**整段不渲染**。
+ * 绝对数（累计命中 / 累计输入）在上方详情卡里，折叠条只保留平均值一个数。
  */
-const cachedText = computed(() => {
-  const cached = cachedTokens.value
-  if (cached === null) return ''
-  const count = `缓存命中 ${formatTokens(cached)}`
-  return cachedPercent.value === null ? count : `${count}（${cachedPercent.value}%）`
-})
+const cachedText = computed(() =>
+  cachedPercent.value === null ? '' : `平均缓存命中 ${cachedPercent.value}%`,
+)
 </script>
 
 <template>
@@ -162,6 +161,19 @@ const cachedText = computed(() => {
           <div class="ctx-row">
             <dt>模型</dt>
             <dd class="mono">{{ model === '' ? '未配置' : model }}</dd>
+          </div>
+          <div class="ctx-row">
+            <dt>平均缓存命中</dt>
+            <dd>
+              <template v-if="cachedPercent !== null">
+                {{ cachedPercent }}%
+                <span class="tiny muted">
+                  （{{ formatExact(props.totals.cachedTokens ?? 0) }} /
+                  {{ formatExact(props.totals.promptTokens) }} tokens）
+                </span>
+              </template>
+              <span v-else class="tiny muted">模型未回传缓存字段</span>
+            </dd>
           </div>
         </dl>
         <p class="tiny muted ctx-note">

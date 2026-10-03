@@ -5,7 +5,12 @@
  * 前者是 Aurora 自己的存储 / IPC 形状（带时间戳与工具卡片状态），
  * 后者是 LLM 侧线上形状，两者由 `history.ts` 负责转换。
  */
-import type { AskSettleOutcome, PermissionMode, SubagentSnapshot } from '@aurora/shared'
+import type {
+  AskSettleOutcome,
+  PermissionMode,
+  SessionUsageStats,
+  SubagentSnapshot,
+} from '@aurora/shared'
 
 export type StoredRole = 'user' | 'assistant' | 'tool' | 'system'
 
@@ -16,6 +21,13 @@ export interface StoredToolCall {
   arguments: string
   state: 'running' | 'success' | 'error'
   outputSummary?: string
+  /**
+   * 工具调用发起时刻（ISO，随工具卡落盘）：渲染层耗时徽章的真实计时起点。
+   * 切走会话再切回、重启后，耗时都从这两个字段算，不再由渲染层重新起表。
+   */
+  startedAt?: string
+  /** 结算（success / error）时刻；`running` 态没有这个字段 */
+  endedAt?: string
   /**
    * `task` 子代理的运行快照（docs/06 §19）。
    *
@@ -150,6 +162,13 @@ export interface SessionMeta {
    * 读取侧按白名单宽容归化（老文件缺字段 = 未覆盖）。
    */
   llm?: SessionModelOverride
+  /**
+   * 会话级用量累计（本轮，docs/06 §16.2）：主进程在每轮 usage 事件处同步累加。
+   * 渲染层切回会话时以它为种子恢复「平均缓存命中率」等累计口径——
+   * 跨切换、跨重启连续。同样是**会话数据**：不进 config.json、不进 CONFIG_VERSION，
+   * 读取侧按白名单宽容归化（畸形值整段丢弃 = 没有累计）。
+   */
+  usage?: SessionUsageStats
 }
 
 /** `userData/sessions/<sessionId>.json` 的结构（v1 无 `meta`，读取侧必须容忍） */

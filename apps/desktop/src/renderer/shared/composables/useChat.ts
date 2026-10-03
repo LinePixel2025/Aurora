@@ -178,6 +178,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
   })
   /** 已计入 `usage.totals` 的 `(requestId, round)`，防重复累加（同一序号只来一次） */
   const countedUsage = new Set<string>()
+  /** 防重集合上限：与 `finishedRequests` 同一套「只留最近」口径，长会话不无限增长 */
+  const COUNTED_USAGE_LIMIT = 512
 
   const statusTone = computed<'idle' | 'running' | 'unread' | 'error'>(() => {
     if (error.value) return 'error'
@@ -338,6 +340,13 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         const key = `${event.requestId}#${event.round}`
         if (!countedUsage.has(key)) {
           countedUsage.add(key)
+          // 只留最近若干条（插入序即 FIFO）：集合跨会话切换**不清** —— 切走再切回后
+          // 迟到的 usage 事件（该轮已包含在主进程的 meta.usage 种子里）靠它防重复累加
+          while (countedUsage.size > COUNTED_USAGE_LIMIT) {
+            const oldest = countedUsage.values().next().value
+            if (oldest === undefined) break
+            countedUsage.delete(oldest)
+          }
           usage.value = {
             latest: event.usage,
             totals: {
@@ -391,6 +400,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         // 任务可能刚进入 paused（轮次用尽 / 预算触顶）：立即对齐一次列表，
         // 让「继续」按钮在回复结束的同一刻出现，而不是等下一次切会话。
         void refreshJobs()
+        // 切走时在流式的会话：那轮已整轮落盘，重拉一次把完整正文换进来
+        maybeResyncAfterSettle()
         break
       }
       case 'error': {
@@ -406,6 +417,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         finishRequest(event.requestId)
         // 出错同样是「本轮收尾」：轨迹与思考块照收（与 done 同一条收拢路径，P2-20）
         lastSettledRequestId.value = event.requestId
+        // 错误前已落盘的部分（正文 / 思考 / 工具卡）同样可能只有半截在屏，重拉对齐
+        maybeResyncAfterSettle()
         break
       }
       default:
@@ -596,13 +609,41 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     }
   }
 
-  /** 切换会话 / 清空会话时复位 token 用量（它记的是「这一个会话」的消耗） */
+  /**
+   * 复位 token 用量的「最近一轮」并把累计清零（切会话 / 清空视图时调用）。
+   *
+   * 累计**不会就此丢失**：切回会话时 `seedUsageFromSummary` 会以主进程落盘的
+   * `meta.usage`（`chat:sessions` 摘要带出）为种子恢复 —— 那是跨切换、跨重启连续的
+   * 持久累计（平均缓存命中率按**会话**算，不按「本窗口本次观看期间」算）。
+   * `countedUsage` 刻意**不在这里清**：它的键是全局唯一的 `requestId#round`，
+   * 保留它才能挡住切回后迟到的旧事件把种子里的轮次再加一遍。
+   */
   function resetUsage(): void {
     usage.value = {
       latest: null,
       totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0 },
     }
-    countedUsage.clear()
+  }
+
+  /**
+   * 以会话摘要里带出的 `meta.usage` 为种子恢复累计（切回会话 / 窗口首次装载时调用）。
+   *
+   * 主进程在每轮 usage 事件处**先累计 meta、后广播事件**，因此任何时刻的 meta 值
+   * 都 ≥ 渲染层已计入的部分 —— 用「覆盖」而不是「相加」不会丢轮次；此后到达的
+   * usage 事件继续在种子之上逐轮累加。
+   */
+  function seedUsageFromSummary(summary: ChatSessionSummary | undefined): void {
+    const stats = summary?.usage
+    if (stats === undefined) return
+    usage.value = {
+      ...usage.value,
+      totals: {
+        promptTokens: stats.promptTokens,
+        completionTokens: stats.completionTokens,
+        totalTokens: stats.totalTokens,
+        cachedTokens: stats.cachedTokens,
+      },
+    }
   }
 
   /** 切换会话 / 发起新请求前复位思考镜像（旧请求的增量不能泄进新请求） */
@@ -714,6 +755,9 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       ...item,
       active: item.id === sessionId.value,
     }))
+    // 用量累计以落盘的 meta.usage 为种子恢复（挂载 / 切会话都走这里，一处收口）：
+    // meta 是「每轮先累计、后广播」的持久值，覆盖渲染层累计不会少计
+    seedUsageFromSummary(sessions.value.find((item) => item.id === sessionId.value))
   }
 
   /**
@@ -916,9 +960,28 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     return true
   }
 
+  /**
+   * 切走时**正在流式**的会话（会话 id 集合）。
+   *
+   * 流式正文只有整轮结束才落盘（agentLoop 的 `appendAssistant` 在轮末）：切走再切回时，
+   * hydrate 快照里没有那轮的半成品正文 —— 之后到达的增量只能「接着写」，前半段就丢了。
+   * 这里记下「切走时在跑」的会话；该会话的 `done` / `error` 到达后强制重拉一次
+   * （`maybeResyncAfterSettle`），把完整落盘的那轮换进来。
+   */
+  const resyncOnSettle = new Set<string>()
+
+  /** 收尾（done / error）后的定点重拉：只对「切走时在流式」的会话做一次 */
+  function maybeResyncAfterSettle(): void {
+    if (!resyncOnSettle.has(sessionId.value)) return
+    resyncOnSettle.delete(sessionId.value)
+    void hydrate({ force: true })
+  }
+
   /** 切换到指定会话（重新水合）。切换会中断本地流式状态，但不 abort 服务端请求。 */
   async function switchSession(id: string): Promise<void> {
     if (id === sessionId.value) return
+    // 切走时正在流式：那轮的半成品正文切回后拿不全，记下来等收尾后定点重拉
+    if (streaming.value) resyncOnSettle.add(sessionId.value)
     // 在途增量先落地：下面要整表换掉 messages，留着缓冲会在新会话里凭空插出一条旧消息
     deltaBuffer.flush()
     sessionId.value = id

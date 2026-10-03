@@ -17,6 +17,8 @@ import {
   type ChatSessionSummary,
   type FileSystemPort,
   type PermissionMode,
+  type SessionUsageStats,
+  type TokenUsage,
 } from '@aurora/shared'
 import type { Logger } from '@aurora/shared'
 import { createNoopLogger } from '@aurora/shared'
@@ -254,7 +256,10 @@ export class SessionStore {
     sessionId: string,
     limit?: number,
   ): Promise<RendererHistoryEntry[]> {
-    const [messages, asks] = await Promise.all([this.rendererHistory(sessionId, limit), this.asksOf(sessionId)])
+    const [messages, asks] = await Promise.all([
+      this.rendererHistory(sessionId, limit),
+      this.asksOf(sessionId),
+    ])
     if (asks.length === 0) return messages
     const entries: RendererHistoryEntry[] = [
       ...messages,
@@ -324,6 +329,32 @@ export class SessionStore {
       this.scheduleWrite(id)
       return
     }
+  }
+
+  /**
+   * 累加一次会话级用量（docs/06 §16.2，本轮）：内核在每轮 usage 事件处调用。
+   *
+   * - **只加不减**：渲染层的「清空消息区」只清视图不清这里 —— 它统计的是会话一生的消耗；
+   * - 写入走 300ms 防抖（与消息落盘同一套脏标记）：每轮一次的频次不需要即时落盘，
+   *   异常断电最坏丢最后一轮的累计；
+   * - **不 await 写盘**：调用方（内核事件转发路径）是热路径，落盘由防抖与 flush 兜底；
+   * - 负数按 0 计（手改文件的防御）：累计值没有「回拨」的合法来源。
+   */
+  async addUsage(sessionId: string, usage: TokenUsage): Promise<void> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    const current = this.metaCache.get(id) ?? {}
+    const prev = current.usage
+    const next: SessionUsageStats = {
+      promptTokens: (prev?.promptTokens ?? 0) + Math.max(0, usage.promptTokens),
+      completionTokens: (prev?.completionTokens ?? 0) + Math.max(0, usage.completionTokens),
+      totalTokens: (prev?.totalTokens ?? 0) + Math.max(0, usage.totalTokens),
+      cachedTokens: (prev?.cachedTokens ?? 0) + Math.max(0, usage.cachedTokens ?? 0),
+      rounds: (prev?.rounds ?? 0) + 1,
+    }
+    this.metaCache.set(id, { ...current, usage: next })
+    this.dirty.add(id)
+    this.scheduleWrite(id)
   }
 
   /**
@@ -649,6 +680,8 @@ export class SessionStore {
         ...(meta.llm === undefined ? {} : { llm: meta.llm }),
         // 会话空间（docs/06 §4）：未标记 = Agent 空间，不带键（与 projectId 同款「有键才有值」）
         ...(meta.space === undefined ? {} : { space: meta.space }),
+        // 会话级用量累计（docs/06 §16.2，本轮）：从未回传过 usage 的会话不带键
+        ...(meta.usage === undefined ? {} : { usage: meta.usage }),
       })
     }
     return items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
@@ -1003,7 +1036,42 @@ function normalizeMeta(value: unknown): SessionMeta {
     const override = normalizeModelOverride(llm as SessionModelOverride)
     if (override !== undefined) meta.llm = override
   }
+  // 会话级用量累计（docs/06 §16.2，本轮）：四个数值字段齐全且非负才算有效，
+  // 半截 / 畸形条目整段丢弃（= 没有累计），不猜测、不半截通过
+  const usage = normalizeUsageStats(candidate['usage'])
+  if (usage !== undefined) meta.usage = usage
   return meta
+}
+
+/** 用量累计归化（读取侧 `normalizeMeta` 与写入侧 `addUsage` 共用一条口径） */
+function normalizeUsageStats(value: unknown): SessionUsageStats | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const candidate = value as Record<string, unknown>
+  const promptTokens = candidate['promptTokens']
+  const completionTokens = candidate['completionTokens']
+  const totalTokens = candidate['totalTokens']
+  const cachedTokens = candidate['cachedTokens']
+  const rounds = candidate['rounds']
+  if (
+    typeof promptTokens !== 'number' ||
+    !Number.isFinite(promptTokens) ||
+    promptTokens < 0 ||
+    typeof completionTokens !== 'number' ||
+    !Number.isFinite(completionTokens) ||
+    completionTokens < 0 ||
+    typeof totalTokens !== 'number' ||
+    !Number.isFinite(totalTokens) ||
+    totalTokens < 0 ||
+    typeof cachedTokens !== 'number' ||
+    !Number.isFinite(cachedTokens) ||
+    cachedTokens < 0 ||
+    typeof rounds !== 'number' ||
+    !Number.isFinite(rounds) ||
+    rounds < 0
+  ) {
+    return undefined
+  }
+  return { promptTokens, completionTokens, totalTokens, cachedTokens, rounds }
 }
 
 /**
@@ -1153,6 +1221,13 @@ function isEmptyMeta(meta: SessionMeta): boolean {
     meta.permissionMode === undefined &&
     // llm 只有写入了有效覆盖才有信息量；setModelOverride 写入侧已归一，这里再兜一道
     meta.llm === undefined &&
+    // usage 四个字段全 0（rounds 也为 0）与「从未累计」等价，不落键
+    (meta.usage === undefined ||
+      (meta.usage.promptTokens === 0 &&
+        meta.usage.completionTokens === 0 &&
+        meta.usage.totalTokens === 0 &&
+        meta.usage.cachedTokens === 0 &&
+        meta.usage.rounds === 0)) &&
     // space 只有 'work' 才有信息量（'agent' = 缺省空间），setSpace / createSession 写入侧已归一
     (meta.space === undefined || meta.space === 'agent')
   )
@@ -1177,6 +1252,8 @@ function toAgentToolCall(call: StoredToolCall & { input?: unknown }): AgentToolC
     ...(input === undefined ? {} : { input }),
     state: call.state,
     ...(call.outputSummary === undefined ? {} : { outputSummary: call.outputSummary }),
+    ...(call.startedAt === undefined ? {} : { startedAt: call.startedAt }),
+    ...(call.endedAt === undefined ? {} : { endedAt: call.endedAt }),
     ...(call.subagent === undefined ? {} : { subagent: call.subagent }),
   }
 }

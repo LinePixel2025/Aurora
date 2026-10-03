@@ -2631,10 +2631,12 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
  * ③ 上下文条显示**真实 token 数**（桩服务的结束片带 usage → 界面必须不再是「暂无用量数据」），
  *    且累计同样非零 —— 这条同时钉住 usage 事件 → useChat → 上下文条整条链；
  * ④ **缓存命中片段**（`data-field="chat.context-cache"`，docs/06 §21.4）：桩服务回传
- *    `prompt_tokens_details.cached_tokens = 512`，折叠态文案里必须出现「缓存命中 512（100%）」
- *    —— 512 = 分母 `promptTokens`，因此占比恰好 100%（桩数据自洽：`cached <= prompt`）。
- *    这条钉的是「字段解析 → 事件 → 展示」整条链里**最后一段**：解析丢了字段时这里没有该节点，
- *    百分比算错时数字对不上（`Math.min(100, …)` 夹住的那类荒谬值也因此不可能出现）；
+ *    `prompt_tokens_details.cached_tokens = 512`，折叠态文案是**平均缓存命中率**
+ *    （2026-10-03 起替换「本次缓存命中」）——分子 / 分母都是 totals（累计），桩数据
+ *    自洽（cached == prompt），因此无论累计几轮占比恒为 100%，文案必须是
+ *    「平均缓存命中 100%」。绝对数（512 / 512）移进了详情卡，折叠条不再显示。
+ *    这条钉的是「字段解析 → 事件 → totals 累计 → 展示」整条链里**最后一段**：
+ *    解析丢了字段时这里没有该节点，分母算错时占比对不上。
  * ⑤ 流式已收尾（`.thread.streaming` 不存在），即「流式态不会卡住」；
  * ⑥ **往返真的发生过**（`streamStarted === true`）与**流式期间消息区 `aria-busy` 为真**
  *    （`ariaBusyDuringStream === 'true'`，收尾后必须翻回 `'false'`）——
@@ -2778,11 +2780,10 @@ export function chatStreamCheck(marker: string, reasoningMarker: string): string
         usageText.indexOf('暂无用量数据') === -1 &&
         /[0-9]/.test(usageText) &&
         /[0-9]/.test(totals) &&
-        // 缓存命中片段（docs/06 §21.4）：桩服务固定回 512 命中 / 512 prompt，占比 100%。
-        // 三个子串都要在 —— 只断言「含缓存命中」时，算错的分母（或丢了命中量只剩标题）
-        // 照样能过；数字与占比是这条探针真正的信息量。
-        cacheText.indexOf('缓存命中') !== -1 &&
-        cacheText.indexOf('512') !== -1 &&
+        // 缓存命中片段（docs/06 §21.4）：桩服务每轮都回 512 命中 / 512 prompt，占比恒 100%。
+        // 折叠条文案是「平均缓存命中 N%」（totals 口径）——占比必须出现；
+        // 「平均缓存命中」前缀同时钉住「provider 没回传时整段不渲染」的口径没被改坏。
+        cacheText.indexOf('平均缓存命中') !== -1 &&
         cacheText.indexOf('100%') !== -1 &&
         stillStreaming === false &&
         lastThinkingLabel.indexOf('已深度思考') !== -1 &&
