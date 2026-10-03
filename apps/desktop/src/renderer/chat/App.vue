@@ -56,12 +56,15 @@ import JobPanel from './components/JobPanel.vue'
 import FilePreviewPanel from './components/FilePreviewPanel.vue'
 import TerminalPanel from './components/TerminalPanel.vue'
 import BrowserPanel, { type BrowserTarget } from './components/BrowserPanel.vue'
+import CtxTabStrip from './components/CtxTabStrip.vue'
 import SessionNav from './components/SessionNav.vue'
 import SubagentPage from './components/SubagentPage.vue'
 import AutomationPage from './components/AutomationPage.vue'
 import { useChat } from '../shared/composables/useChat.js'
 import { useTts } from '../shared/composables/useTts.js'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
+import { useCtxTabs } from './composables/useCtxTabs.js'
+import { CTX_TABS_MAX, type CtxTabKind } from './composables/ctxTabsCore.js'
 import { appendProject, pickProjectEntry } from '../shared/projects.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
@@ -258,25 +261,72 @@ function onNavResizeStart(event: PointerEvent): void {
   })
 }
 
-// ── 右栏功能 tab 与可拖拽调宽（2026-10-03，docs/07 §2.3） ──
+// ── 右栏多标签（浏览器式）与可拖拽调宽（2026-10-03，docs/07 §2.3） ──
 
-/** 右栏功能 tab：`id` 同时是探针锚点后缀（`chat.ctx-tab-<id>`）与窗格切换键 */
-type RightTabId = 'files' | 'terminal' | 'browser' | 'context'
-const rightTabs: Array<{ id: RightTabId; label: string }> = [
-  { id: 'files', label: '文件' },
-  { id: 'terminal', label: '终端' },
-  { id: 'browser', label: '浏览器' },
-  { id: 'context', label: '上下文' },
-]
-/** 缺省「上下文」：旧探针（右栏展开 / 模式卡门控）读的就是这块 DOM，零改动兼容 */
-const rightTab = ref<RightTabId>('context')
+/**
+ * 标签状态（记账在 `composables/ctxTabsCore.ts`，这里只是接线）：
+ * 一个标签 = 一个面板实例，文件 / 终端 / 浏览器可各开多个，「上下文」是单例。
+ * 初始四标签「上下文 / 文件 / 终端 / 浏览器」且缺省激活「上下文」—— 旧探针读的 DOM 与
+ * `chat.ctx-tab-<kind>` 锚点因此逐字保留（docs/07 §2.3）。
+ */
+const {
+  tabs: ctxTabs,
+  activeId: ctxActiveId,
+  activate: activateCtxTab,
+  openTab: openCtxTab,
+  ensureKind: ensureCtxKind,
+  closeTab: closeCtxTab,
+  setTitle: setCtxTabTitle,
+} = useCtxTabs()
+
+/**
+ * 已挂载过的标签（**首次激活挂载、之后常驻**，docs/07 §2.3）：文件 / 终端 / 浏览器面板
+ * 切走只是 `display:none` —— 网页不重载、xterm 不重建。**上下文面板不走这条**（它维持
+ * 原来的 `v-if` 口径：激活才挂载），旧断言 `jobsHiddenOnFiles` 正依赖那条语义。
+ * 用不可变 Set 换引用：`Set` 的增删不是响应式的，改引用才触发模板重算。
+ */
+const ctxMountedTabs = ref<Set<string>>(new Set())
+watch(
+  ctxActiveId,
+  (id) => {
+    const tab = ctxTabs.value.find((item) => item.id === id)
+    if (tab === undefined || tab.kind === 'context') return
+    if (ctxMountedTabs.value.has(id)) return
+    ctxMountedTabs.value = new Set(ctxMountedTabs.value).add(id)
+  },
+  { immediate: true },
+)
+
+/**
+ * 开新标签（「＋」菜单）：到上限时给一条可见提示，而不是静默什么都不发生。
+ * 复用左栏左下角那条提示（`chat.project-notice` 通道）—— 它在子代理 / 自动化页照样可见，
+ * 语义是「左栏动作的结果」而不是「项目专用」，这里借它的位置不必新造一条 toast。
+ */
+function onNewCtxTab(kind: CtxTabKind): void {
+  const opened = openCtxTab(kind)
+  if (opened === null) flashProjectNotice('error', `标签已达上限（${CTX_TABS_MAX} 个），先关掉一个`)
+}
+
+/** 关标签：把「已挂载」记录一并清掉（编号会被复用，留着会让新标签一开就挂载） */
+function onCloseCtxTab(id: string): void {
+  closeCtxTab(id)
+  if (ctxMountedTabs.value.has(id)) {
+    const next = new Set(ctxMountedTabs.value)
+    next.delete(id)
+    ctxMountedTabs.value = next
+  }
+}
 
 /**
  * Agent 展示目标（`show_preview` 工具，2026-10-03，docs/06 §14）：主进程推来 `preview:show`
- * 时切到「浏览器」tab 并把它交给 BrowserPanel 加载。`token` 单调递增 —— 同一目标再次
- * 展示（或用户手动切走后又展示）也必须重新导航，仅靠 url 相等判不出「又来了一次」。
+ * 时投给**浏览器标签** —— 激活中的是浏览器标签就用它，否则用最近激活过的那个，都没有才新建
+ * （2026-10-03 二次修订：右栏可多开，不能每来一次展示就再开一个标签）。
+ * `token` 单调递增 —— 同一目标再次展示（或用户手动切走后又展示）也必须重新导航，
+ * 仅靠 url 相等判不出「又来了一次」。
  */
 const previewTarget = ref<BrowserTarget | null>(null)
+/** 这个展示目标投给哪个标签（非该标签的浏览器面板收到 null → 停在自己的主页） */
+const previewTabId = ref('')
 let previewTokenSequence = 0
 let offPreviewShow: (() => void) | null = null
 
@@ -322,11 +372,11 @@ function onCtxResizeStart(event: PointerEvent): void {
 }
 
 /**
- * 「任务」入口：切 tab 到「上下文」再翻转面板显隐 —— 任务面板收在上下文 tab 里，
- * 用户在「文件」tab 点任务入口时直接翻 `jobsOpen` 会看不到任何反馈。
+ * 「任务」入口：确保「上下文」标签在（被关掉时重建）并激活它，再翻转面板显隐 ——
+ * 任务面板收在上下文标签里，用户在「终端」标签点任务入口时直接翻 `jobsOpen` 会看不到反馈。
  */
 function toggleJobs(): void {
-  rightTab.value = 'context'
+  ensureCtxKind('context')
   jobsOpen.value = !jobsOpen.value
 }
 /** 是否还有任务在跑（左栏入口角标用 running 色，与「子代理」角标同一口径） */
@@ -508,11 +558,15 @@ onMounted(() => {
     if (askUserRequests.value.some((item) => item.requestId === request.requestId)) return
     askUserRequests.value = [...askUserRequests.value, request]
   })
-  // Agent 展示（`show_preview` 工具，docs/06 §14）：切到浏览器 tab 并加载目标
+  // Agent 展示（`show_preview` 工具，docs/06 §14）：投给浏览器标签并加载目标
   offPreviewShow = window.aurora.preview.onShow((event) => {
     if (event.sessionId !== sessionId.value) return
     contextOpen.value = true
-    rightTab.value = 'browser'
+    // 复用口径（2026-10-03 二次修订）：激活中的是浏览器标签就用它，否则用最近激活过的那个，
+    // 都没有才新建 —— 每来一次展示就再开一个标签只会把标签条淹掉。
+    const tab = ensureCtxKind('browser')
+    if (tab === null) return
+    previewTabId.value = tab.id
     previewTarget.value = {
       url: event.url,
       display: event.display,
@@ -1854,48 +1908,71 @@ async function markGuideDone(): Promise<void> {
         @dblclick="resetCtxWidth"
       />
       <!--
-        功能 tab 条：`data-field="chat.ctx-tab-<id>"` 是探针锚点。
-        「上下文」是缺省 tab：既有的右栏内容（任务面板 + 模式感知卡）整体收在这里，
-        旧探针（右栏展开态断言、模式卡门控断言）不需要任何改动。
+        标签条（`CtxTabStrip`）：浏览器式多标签 —— 「＋」开新标签、「＋N」折叠溢出、
+        滑动窗口保证激活标签可见、右端按 `--caption-w` 给窗口三键让位。锚点口径：
+        `chat.ctx-tabs` / `chat.ctx-tab-<id>` / `chat.ctx-tab-close-<id>` /
+        `chat.ctx-tab-more` / `chat.ctx-new-tab`（菜单：`chat.ctx-more-menu` /
+        `chat.ctx-new-menu` / `chat.ctx-new-<kind>`）。
       -->
-      <div class="ctx-tabs" data-field="chat.ctx-tabs">
-        <button
-          v-for="tab in rightTabs"
-          :key="tab.id"
-          type="button"
-          class="ctx-tab"
-          :class="{ active: rightTab === tab.id }"
-          :data-field="`chat.ctx-tab-${tab.id}`"
-          :aria-pressed="rightTab === tab.id"
-          @click="rightTab = tab.id"
-        >
-          {{ tab.label }}
-        </button>
-      </div>
+      <CtxTabStrip
+        :tabs="ctxTabs"
+        :active-id="ctxActiveId"
+        @activate="activateCtxTab"
+        @close="onCloseCtxTab"
+        @new-tab="onNewCtxTab"
+      />
       <div class="ctx-panes">
-        <!--
-          「上下文」tab：任务面板（JobPanel）+ 模式感知上下文栏（ContextPanel），
-          两行网格语义与 tab 化之前逐字一致（jobs 在 auto 行、上下文栏在 1fr 行）。
-        -->
-        <div v-if="rightTab === 'context'" class="ctx-pane ctx-pane-context">
-          <Transition name="fade">
-            <div v-if="jobsOpen" class="jobs-host" data-field="chat.jobs">
-              <JobPanel :jobs="jobs" @resume="onResumeJob" @cancel="onCancelJob" />
-            </div>
-          </Transition>
-          <ContextPanel :todos="currentTodos" />
-        </div>
-        <div v-else-if="rightTab === 'files'" class="ctx-pane">
-          <FilePreviewPanel :session-id="sessionId" :project-name="currentProjectName" />
-        </div>
-        <!-- 终端是单列 flex（组件内部自管布局与滚动），不吃两行网格 -->
-        <div v-else-if="rightTab === 'terminal'" class="ctx-pane">
-          <TerminalPanel :session-id="sessionId" />
-        </div>
-        <div v-else-if="rightTab === 'browser'" class="ctx-pane">
-          <!-- `target` = Agent 的展示请求（show_preview 工具）；缺省 null = 面板自己的主页行为 -->
-          <BrowserPanel :target="previewTarget" />
-        </div>
+        <template v-for="tab in ctxTabs" :key="tab.id">
+          <!--
+            「上下文」标签：任务面板（JobPanel）+ 模式感知上下文栏（ContextPanel），
+            两行网格语义与 tab 化之前逐字一致（jobs 在 auto 行、上下文栏在 1fr 行）。
+            **维持 v-if 口径**（激活才挂载）：它没有本地状态，而旧断言 `jobsHiddenOnFiles`
+            （files 下 `chat.jobs` 必须缺席）正依赖这条语义（docs/07 §2.3）。
+          -->
+          <div
+            v-if="tab.kind === 'context' && tab.id === ctxActiveId"
+            class="ctx-pane ctx-pane-context"
+            :data-tab-kind="tab.kind"
+            :data-tab-id="tab.id"
+          >
+            <Transition name="fade">
+              <div v-if="jobsOpen" class="jobs-host" data-field="chat.jobs">
+                <JobPanel :jobs="jobs" @resume="onResumeJob" @cancel="onCancelJob" />
+              </div>
+            </Transition>
+            <ContextPanel :todos="currentTodos" />
+          </div>
+          <!--
+            文件 / 终端 / 浏览器标签：**首次激活挂载、之后常驻**（切走只是 display:none）——
+            网页不重载、xterm 不重建。所有窗格叠在同一格 grid 里（`.ctx-pane` 的 grid-area），
+            隐藏态不占位，因此面板尺寸在激活时一次到位（xterm 的 ResizeObserver 靠它重排）。
+          -->
+          <div
+            v-else-if="tab.kind !== 'context' && ctxMountedTabs.has(tab.id)"
+            v-show="tab.id === ctxActiveId"
+            class="ctx-pane"
+            :data-tab-kind="tab.kind"
+            :data-tab-id="tab.id"
+          >
+            <FilePreviewPanel
+              v-if="tab.kind === 'files'"
+              :session-id="sessionId"
+              :project-name="currentProjectName"
+              @title="(title) => setCtxTabTitle(tab.id, title)"
+            />
+            <!-- 终端是单列 flex（组件内部自管布局与滚动），不吃两行网格 -->
+            <TerminalPanel
+              v-else-if="tab.kind === 'terminal'"
+              :session-id="sessionId"
+              @title="(title) => setCtxTabTitle(tab.id, title)"
+            />
+            <BrowserPanel
+              v-else
+              :target="tab.id === previewTabId ? previewTarget : null"
+              @title="(title) => setCtxTabTitle(tab.id, title)"
+            />
+          </div>
+        </template>
       </div>
     </aside>
 
@@ -2044,57 +2121,27 @@ body.col-resizing .nav {
   transition: none;
 }
 
-/* 功能 tab 条：与主区标题栏**同高**（`--head-h`），窗口按钮固定在这条带的右端 */
-.ctx-tabs {
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
-  min-height: var(--head-h, 48px);
-  /* 右侧给 caption 三键留位：它们是 fixed 在窗口右上角的，tab 不许滑到它们底下。
-     栏窄时（面板 < ~340px）四个 tab 放不下 —— 自己横向滚动，绝不压到按钮上。 */
-  padding: 0 calc(var(--caption-w, 132px) + var(--space-2)) 0 var(--space-2);
-  overflow-x: auto;
-  scrollbar-width: none;
-  border-bottom: 1px solid var(--border-subtle);
-}
+/*
+ * 功能标签条已整体迁进 `components/CtxTabStrip.vue`（多标签：开 / 关 / ＋N 折叠 /
+ * 滑动窗口 / 三键让位都在那里）—— 不要再在本组件里写 `.ctx-tabs` / `.ctx-tab` 样式：
+ * scoped 样式对子组件**根元素**同样生效，两处并存会互相覆盖。
+ */
 
-.ctx-tabs::-webkit-scrollbar {
-  display: none;
-}
-
-.ctx-tab {
-  /* 撑满横带：激活态的 2px 下划线因此与标题栏底边同线 */
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 10px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  font-family: inherit;
-  cursor: pointer;
-}
-
-.ctx-tab:hover {
-  color: var(--text-secondary);
-}
-
-.ctx-tab.active {
-  color: var(--text-primary);
-  border-bottom-color: var(--aurora-blue);
-}
-
-/* 功能窗格容器：单个激活的 tab 独占 */
+/* 窗格容器：所有标签的面板**叠在同一格 grid** 里（`.ctx-pane` 的 grid-area: 1/1） */
 .ctx-panes {
   display: grid;
   min-height: 0;
   min-width: 0;
   grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
+/*
+ * 每个标签一个窗格，全部占同一格（1/1）：激活的那个在流内，其余 `display:none`
+ * （v-show）—— 隐藏态不占位，因此没有「两个面板并排」的中间态。
+ */
 .ctx-pane {
+  grid-area: 1 / 1;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-columns: minmax(0, 1fr);

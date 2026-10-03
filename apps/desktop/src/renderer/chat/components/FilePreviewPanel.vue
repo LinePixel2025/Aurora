@@ -39,6 +39,9 @@ const props = defineProps<{
   projectName?: string
 }>()
 
+/** 标签标题上报（docs/07 §2.3）：预览态 = 文件名，列表态 = 当前目录名 */
+const emit = defineEmits<{ (event: 'title', title: string): void }>()
+
 /** 一个浏览位置：目录 + （可选）要预览的文件。`file` 为空即该目录的列表态 */
 interface Location {
   dir: string
@@ -134,6 +137,40 @@ function parentOf(dir: string): string {
   const cut = Math.max(dir.lastIndexOf('\\'), dir.lastIndexOf('/'))
   return cut > 0 ? dir.slice(0, cut) : dir
 }
+
+/**
+ * 标签标题上报（docs/07 §2.3）：右栏标签条上要一眼看出「这个文件标签在哪儿」——
+ * 预览态取文件名，列表态取当前目录名；还在根上（或根不叫 projectName）就用项目名 /
+ * 根目录末段 / 「工作目录」逐级回落。切会话重新 bootstrap 时这里跟着重算。
+ */
+function lastSegment(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  return trimmed.split(/[\\/]/).pop() ?? ''
+}
+
+watch(
+  [view, current, listing, rootLabel],
+  () => {
+    if (view.value === 'preview' && current.value !== null) {
+      const name = lastSegment(current.value.path)
+      emit('title', name === '' ? '预览' : name)
+      return
+    }
+    const info = listing.value
+    if (info === null) {
+      emit('title', props.projectName ?? '文件')
+      return
+    }
+    if (relativeTo(info.root, info.dir) === '') {
+      const name = props.projectName ?? lastSegment(info.root)
+      emit('title', name === '' ? '工作目录' : name)
+      return
+    }
+    const name = lastSegment(info.dir)
+    emit('title', name === '' ? '文件' : name)
+  },
+  { immediate: true },
+)
 
 /**
  * 面包屑：根之后逐级可点的段（末段即当前目录）。`root` 拿不到时为空数组 ——

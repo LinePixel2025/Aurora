@@ -36,6 +36,18 @@ import { ArrowLeft, ArrowRight, House, RotateCw, X } from '@aurora/shared/browse
 const HOME_URL = 'https://www.bing.com'
 
 const props = defineProps<{ target?: BrowserTarget | null }>()
+/** 标签标题上报（docs/07 §2.3）：页面标题优先，页面没给就用主机名回落 */
+const emit = defineEmits<{ (event: 'title', title: string): void }>()
+
+/** 主机名回落（离线 / 加载失败时页面标题往往不会有）：`https://a.b/c` → `a.b` */
+function hostLabel(url: string): string {
+  try {
+    const parsed = new URL(url)
+    return parsed.hostname === '' ? url : parsed.hostname
+  } catch {
+    return url
+  }
+}
 
 const urlInput = ref('')
 const loading = ref(false)
@@ -132,6 +144,9 @@ onMounted(() => {
   element.setAttribute('style', 'width:100%;height:100%;display:flex;')
   element.addEventListener('did-start-loading', () => {
     loading.value = true
+    // 先把标签标题落到主机名：离线 / 加载失败时不会有 page-title-updated，
+    // 标签至少要能分辨「这是哪一页」（成功加载后会被真正的页面标题覆盖）
+    if (view !== null) emit('title', hostLabel(view.src))
   })
   element.addEventListener('did-stop-loading', () => {
     loading.value = false
@@ -146,6 +161,12 @@ onMounted(() => {
   })
   element.addEventListener('did-navigate', refreshNavState)
   element.addEventListener('did-navigate-in-page', refreshNavState)
+  // 页面标题 → 标签标题（`page-title-updated` 是 webview 的标准事件；拿不到就保持主机名）
+  element.addEventListener('page-title-updated', (event: never) => {
+    const detail = event as unknown as { title?: unknown }
+    const title = typeof detail.title === 'string' ? detail.title.trim() : ''
+    if (title !== '') emit('title', title)
+  })
   element.addEventListener('did-fail-load', (event: never) => {
     const detail = event as unknown as WebviewFailEvent
     // -3 = ERR_ABORTED：用户主动停止 / 新导航打断旧导航，不是失败
