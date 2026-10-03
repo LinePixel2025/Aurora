@@ -120,21 +120,28 @@ const jobsOpen = ref(true)
 const NAV_WIDTH_KEY = 'aurora.chat.navWidth'
 const NAV_WIDTH_DEFAULT = 240
 const NAV_WIDTH_MIN = 200
-/** 左栏上限（2026-10-03 提高）：420 → 520，且再受窗口相对上限约束（见 columnMaxWidth） */
+/** 左栏上限（2026-10-03 提高）：420 → 520，且再受「主区下限」约束（见 roomFor） */
 const NAV_WIDTH_MAX = 520
 
-/** 侧栏宽度相对窗口的上限：再宽也要给主区留出空间（左栏 40% / 右栏 62%） */
-const NAV_WIDTH_RATIO = 0.4
-const CTX_WIDTH_RATIO = 0.62
-
 /**
- * 某一侧的实际上限 = min(绝对上限, 窗口宽 × 比例)，且不低于下限。
+ * 主区最小宽度（2026-10-03 用户实测）：两侧栏再宽也要给它留这么多。
  *
- * 拖动时按**当下窗口宽**算（窗口最大化时右栏能拖得更宽），CSS 侧另有一条 `min(…, 62vw)`
- * 兜底：窗口缩小后已存下的宽度会跟着收，不会把主区挤没。
+ * 起因：右栏上限提到 720 后，在 1120px 的窗口里拖到上限会把对话区挤成一条
+ * （量出来 ~175px，消息一列一个字），窗口看着像坏了。现在两侧栏的**实际宽度**
+ * 都是 `min(期望宽度, 窗口宽 − 另一侧宽度 − 本值)`，拖到头也只是把主区压到这条线。
+ * 窗口最小尺寸 940（window-manager）下 200 + 280 + 460 仍然富余，这条线踩得到。
  */
-function columnMaxWidth(min: number, absolute: number, ratio: number): number {
-  return Math.max(min, Math.min(absolute, Math.round(window.innerWidth * ratio)))
+const MAIN_MIN_WIDTH = 420
+
+/** 视口宽：窗口缩放后要重算两侧的可用上限（宽度记忆是 px，不跟着窗口走） */
+const viewportWidth = ref(window.innerWidth)
+function onViewportResize(): void {
+  viewportWidth.value = window.innerWidth
+}
+
+/** 本侧栏还能占多少：扣掉另一侧（收起的当 0）与主区下限 */
+function roomFor(other: number): number {
+  return Math.max(0, viewportWidth.value - other - MAIN_MIN_WIDTH)
 }
 
 const navEl = ref<HTMLElement | null>(null)
@@ -164,8 +171,8 @@ function saveWidth(key: string, value: number): void {
 }
 
 /**
- * 读一个宽度记忆值：按**绝对**上下限夹取（窗口相对上限交给 CSS 的 `min(…, Nvw)`，
- * 这样窗口缩小后存下来的宽度会跟着收，而不是被写坏成一个小值）。
+ * 读一个宽度记忆值：按**绝对**上下限夹取。窗口相关的收窄不写回这里 ——
+ * 存的是用户的**期望宽度**，窗口缩小只是让它暂时显示得更窄（见下方 effective 计算）。
  */
 const navWidth = ref(loadWidth(NAV_WIDTH_KEY, NAV_WIDTH_DEFAULT, NAV_WIDTH_MIN, NAV_WIDTH_MAX))
 
@@ -226,12 +233,23 @@ function startColumnResize(
   target.addEventListener('pointerup', onUp)
 }
 
+/**
+ * 左栏**实际生效**宽度：期望宽度再受「主区下限 + 另一侧栏」约束。
+ *
+ * CSS 里写的 `var(--nav-w)` 是内联进去的这个值（不是用户拖出的期望值）—— 栏内的
+ * SessionNav / JobPanel 因此天然跟着实际宽度排版，窗口缩小时不会比 aside 还宽。
+ */
+const navEffWidth = computed(() => {
+  const other = contextOpen.value ? ctxWidth.value : 0
+  return Math.max(NAV_WIDTH_MIN, Math.min(navWidth.value, roomFor(other)))
+})
+
 /** 左栏：左缘贴窗口左缘，宽度 = 指针 x − 左栏左缘 */
 function onNavResizeStart(event: PointerEvent): void {
   const left = navEl.value?.getBoundingClientRect().left ?? 0
   startColumnResize(event, {
     min: NAV_WIDTH_MIN,
-    max: columnMaxWidth(NAV_WIDTH_MIN, NAV_WIDTH_MAX, NAV_WIDTH_RATIO),
+    max: NAV_WIDTH_MAX,
     widthAt: (clientX) => clientX - left,
     apply: (width) => {
       navWidth.value = width
@@ -268,12 +286,18 @@ const CTX_WIDTH_DEFAULT = 384
 const CTX_WIDTH_MIN = 280
 /**
  * 右栏上限（2026-10-03 提高）：560 → 720。这一条是用户点名要的 —— 预览长文件、
- * 看代码块时 560 上限太窄，内容被挤成一列。实际可用上限再受窗口相对上限约束
- * （`columnMaxWidth`，62%），窗口最大化时能拖到 720，小窗口下自动收窄。
+ * 看代码块时 560 上限太窄，内容被挤成一列。实际生效宽度 = `min(期望, 窗口 − 左栏 − 主区下限)`
+ * （`ctxEffWidth`）：窗口最大化时能拖到 720，小窗口下自动收窄，**主区不会被挤没**。
  */
 const CTX_WIDTH_MAX = 720
 
 const ctxWidth = ref(loadWidth(CTX_WIDTH_KEY, CTX_WIDTH_DEFAULT, CTX_WIDTH_MIN, CTX_WIDTH_MAX))
+
+/** 右栏**实际生效**宽度（读左栏的生效值，避免两侧互相引用成环） */
+const ctxEffWidth = computed(() => {
+  const other = navOpen.value ? navEffWidth.value : 0
+  return Math.max(CTX_WIDTH_MIN, Math.min(ctxWidth.value, roomFor(other)))
+})
 
 function saveCtxWidth(): void {
   saveWidth(CTX_WIDTH_KEY, ctxWidth.value)
@@ -288,7 +312,7 @@ function resetCtxWidth(): void {
 function onCtxResizeStart(event: PointerEvent): void {
   startColumnResize(event, {
     min: CTX_WIDTH_MIN,
-    max: columnMaxWidth(CTX_WIDTH_MIN, CTX_WIDTH_MAX, CTX_WIDTH_RATIO),
+    max: CTX_WIDTH_MAX,
     widthAt: (clientX) => window.innerWidth - clientX,
     apply: (width) => {
       ctxWidth.value = width
@@ -498,6 +522,8 @@ onMounted(() => {
   })
   document.addEventListener('pointerdown', onComposerPointerDown)
   document.addEventListener('keydown', onDocumentEscape)
+  // 窗口缩放 → 重算两侧栏的生效宽度（宽度记忆是 px，主区下限靠 viewportWidth 兜）
+  window.addEventListener('resize', onViewportResize)
   // 水合当前会话（main）→ 会话列表：左栏立刻有内容
   void hydrate().then(() => loadSessions())
   // 任务（Job）列表与消息同样在挂载时水合：重启后暂停的长任务必须立刻可见（docs/06 §4.1）
@@ -518,6 +544,7 @@ onUnmounted(() => {
   offPreviewShow = null
   document.removeEventListener('pointerdown', onComposerPointerDown)
   document.removeEventListener('keydown', onDocumentEscape)
+  window.removeEventListener('resize', onViewportResize)
   if (pickerHintTimer !== null) window.clearTimeout(pickerHintTimer)
   pickerHintTimer = null
   disposeRecording()
@@ -1459,11 +1486,12 @@ async function markGuideDone(): Promise<void> {
       ref="navEl"
       class="nav"
       :class="{ collapsed: !navOpen }"
-      :style="{ '--nav-w': `${navWidth}px` }"
+      :style="{ '--nav-w': `${navEffWidth}px` }"
     >
       <!--
         拖拽调宽把手（右缘 6px 竖条，cursor: col-resize）：与右栏同一套实现
-        （`startColumnResize`），宽度存 localStorage、200–520px 夹取（再受窗口 40% 约束）、双击复位。
+        （`startColumnResize`），宽度存 localStorage、200–520px 夹取、
+        实际渲染宽度再受「主区下限」约束（`navEffWidth`，见上文注释）、双击复位。
         收起态不渲染（width 为 0 时把手没有意义）。
       -->
       <div
@@ -1513,7 +1541,7 @@ async function markGuideDone(): Promise<void> {
         （`maximizable: true` 后 WM_NCLBUTTONDBLCLK 语义），页面侧不再挂 dblclick——
         拖动区收不到页面鼠标事件，重复挂只会造成双重切换。最大化期间几何不落盘（persistGeometry 跳过）。
       -->
-      <header class="head" :class="dragClass">
+      <header class="head" :class="[dragClass, { 'head--corner': !contextOpen }]">
         <button
           type="button"
           class="icon-btn press"
@@ -1556,10 +1584,12 @@ async function markGuideDone(): Promise<void> {
           </button>
         </div>
         <!--
-          Windows 式窗口按钮：「最小化」真最小化进任务栏；「关闭」= 隐藏窗口
-          （正在进行的流式回复不会中止，`hide()` 不触碰 `chat:abort`，docs/02 §2.2）。
+          窗口按钮**不再**排在这里：三枚 caption 按钮固定挂在窗口右上角
+          （`.window-caption`，app-shell 直属子节点，`position: fixed`）—— 与设置窗同一套
+          做法。此前它们排在主区标题栏末尾：右栏一宽，主区标题栏装不下整组按钮，
+          按钮就被推出主区、压在右栏的 tab 上（2026-10-03 用户实测）。
+          右栏收起时主区右缘就是窗口右缘，标题栏靠 `--caption-w` 让位（`.head--corner`）。
         -->
-        <WindowCaption window="chat" />
       </header>
 
       <!--
@@ -1806,12 +1836,14 @@ async function markGuideDone(): Promise<void> {
     <aside
       class="context"
       :class="{ collapsed: !contextOpen }"
-      :style="{ '--ctx-w': `${ctxWidth}px` }"
+      :style="{ '--ctx-w': `${ctxEffWidth}px` }"
     >
       <!--
         拖拽调宽把手（左缘 6px 竖条，cursor: col-resize）：宽度存 localStorage
-        （视图偏好不进 config schema，与 docs/07 的既定原则一致），280–720px 夹取（再受窗口 62% 约束）。
-        双击复位默认宽。收起态不渲染（width 为 0 时把手没有意义）。
+        （视图偏好不进 config schema，与 docs/07 的既定原则一致），280–720px 夹取；
+        **实际渲染宽度**再受「主区下限」约束（`ctxEffWidth`：窗口 − 左栏 − 420），
+        窗口最大化时能拖到 720，小窗口下自动收窄。双击复位默认宽。
+        收起态不渲染（width 为 0 时把手没有意义）。
       -->
       <div
         v-if="contextOpen"
@@ -1868,6 +1900,14 @@ async function markGuideDone(): Promise<void> {
     </aside>
 
     <!--
+      Windows 式窗口按钮（最小化 / 最大化 / 关闭）：**固定挂在窗口右上角**，不参与主区
+      标题栏的流式排布 —— 右栏展开时它就落在右栏 tab 条的右端（tab 条已按 `--caption-w`
+      让位，两者不会叠）。与设置窗同款（settings/App.vue 也是 fixed 到右上角）。
+      组件内部的按钮自带 `.no-drag`，不破坏标题栏拖动区。
+    -->
+    <WindowCaption window="chat" class="window-caption" />
+
+    <!--
       左栏动作的结果提示（「添加项目」成功 / 失败，2026-10-01）：挂在 app-shell 层而不是
       composer 里 —— composer 只在 `view === 'chat'` 时挂载，而左栏那个按钮在子代理 /
       自动化页照样能点，提示必须跟着它走。`pointer-events: none` 保证不挡住左栏底部的按钮。
@@ -1880,8 +1920,9 @@ async function markGuideDone(): Promise<void> {
 
 <style scoped>
 /**
- * 三栏 grid（spec §3）：左栏 240px（可调 200–520 · 窗口 40%）· 主区自适应 · 右栏 384px
- * （可调 280–720 · 窗口 62%）。
+ * 三栏 grid（spec §3）：左栏 240px（可调 200–520）· 主区自适应（**下限 420**）· 右栏 384px
+ * （可调 280–720）。两侧栏的实际渲染宽度由 `navEffWidth` / `ctxEffWidth` 算好后内联进
+ * `--nav-w` / `--ctx-w`（`min(期望, 窗口 − 另一侧 − 420)`）。
  * 折叠用「宽度收 0 + 内容固定宽被裁剪」而不是 v-show：display:none 没有过渡，
  * 而宽度过渡能让侧栏沿 --ease-spring 滑入滑出（prefers-reduced-motion 全局降级）。
  *
@@ -1890,9 +1931,14 @@ async function markGuideDone(): Promise<void> {
  * 会横向撑破 aside —— 表现是「文字被窗口右缘切断、目录条上的按钮整排消失」
  * （它们被推到可视区之外，DOM 里还在，所以只查 DOM 的探针全绿）。minmax(0, 1fr) +
  * 面板内的 min-width:0 把内容锁在栏宽内，超出部分由面板自己滚动。
- * 同理，宽度写 `min(变量, Nvw)`：窗口缩小时已存的宽度跟着收，主区不会被挤没。
+ *
+ * `--head-h` / `--caption-w` 是**顶部横带**的两个常量：主区标题栏与右栏 tab 条同高，
+ * 窗口按钮固定在这条带的右端（tab 条按 `--caption-w` 让位，两者不叠）。
  */
 .app-shell {
+  --head-h: 48px;
+  /** caption 三键的整组宽度（3 × 44px，见 WindowCaption）：右栏 tab 条按它让位 */
+  --caption-w: 132px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   height: 100vh;
@@ -1926,13 +1972,12 @@ async function markGuideDone(): Promise<void> {
 
 .nav {
   /**
-   * 宽度可拖拽（2026-10-03）：内联 `--nav-w`（200–520px，localStorage 记忆），缺省 240。
-   * `--nav-w-eff` = 实际生效宽度（再受窗口 40% 约束，拖拽上限同口径见 columnMaxWidth）：
-   * **栏内所有「跟栏等宽」的子元素都读它**（SessionNav 的 `.nav-inner`），
-   * 一是窗口缩小时不会比 aside 还宽，二是折叠动画期间内容按固定宽排版、不跟着挤压换行。
+   * 宽度可拖拽（2026-10-03）：内联 `--nav-w` 已经是**实际生效宽度**（`navEffWidth` =
+   * `min(期望值, 窗口 − 右栏 − 主区下限)`），所以栏内所有「跟栏等宽」的子元素
+   * （SessionNav 的 `.nav-inner`）读同一个变量即可 —— 一是窗口缩小时不会比 aside 还宽，
+   * 二是折叠动画期间内容按固定宽排版、不跟着挤压换行。
    */
-  --nav-w-eff: min(var(--nav-w, 240px), 40vw);
-  width: var(--nav-w-eff);
+  width: var(--nav-w, 240px);
   position: relative;
   background: var(--fill-1);
   border-right: 1px solid var(--border-subtle);
@@ -1944,10 +1989,9 @@ async function markGuideDone(): Promise<void> {
 }
 
 .context {
-  /** 宽度可拖拽（2026-10-03）：内联 `--ctx-w`（280–720px，localStorage 记忆），缺省 384。
-   *  `--ctx-w-eff` 是实际生效宽度（见 `.nav` 的注释）：JobPanel / ContextPanel 读它。 */
-  --ctx-w-eff: min(var(--ctx-w, 384px), 62vw);
-  width: var(--ctx-w-eff);
+  /** 宽度可拖拽（2026-10-03）：内联 `--ctx-w` 同样是**实际生效宽度**（`ctxEffWidth`）。
+   *  JobPanel / ContextPanel 读同一个变量。 */
+  width: var(--ctx-w, 384px);
   background: var(--fill-1);
   border-left: 1px solid var(--border-subtle);
   position: relative;
@@ -2000,16 +2044,30 @@ body.col-resizing .nav {
   transition: none;
 }
 
-/* 功能 tab 条 */
+/* 功能 tab 条：与主区标题栏**同高**（`--head-h`），窗口按钮固定在这条带的右端 */
 .ctx-tabs {
   display: flex;
+  align-items: stretch;
   gap: 2px;
-  padding: var(--space-1) var(--space-2) 0;
+  min-height: var(--head-h, 48px);
+  /* 右侧给 caption 三键留位：它们是 fixed 在窗口右上角的，tab 不许滑到它们底下。
+     栏窄时（面板 < ~340px）四个 tab 放不下 —— 自己横向滚动，绝不压到按钮上。 */
+  padding: 0 calc(var(--caption-w, 132px) + var(--space-2)) 0 var(--space-2);
+  overflow-x: auto;
+  scrollbar-width: none;
   border-bottom: 1px solid var(--border-subtle);
 }
 
+.ctx-tabs::-webkit-scrollbar {
+  display: none;
+}
+
 .ctx-tab {
-  padding: 4px 10px 5px;
+  /* 撑满横带：激活态的 2px 下划线因此与标题栏底边同线 */
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
@@ -2085,11 +2143,33 @@ body.col-resizing .nav {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  /* 右侧不留内边距：WindowCaption 的悬停命中区要贴到窗口右缘（Windows 习惯） */
+  /* 右侧不留内边距：窗口按钮固定贴在窗口右缘（Windows 习惯），由 `.head--corner` 让位 */
   padding: var(--space-2) 0 var(--space-2) var(--space-4);
-  min-height: 48px;
+  min-height: var(--head-h, 48px);
   background: var(--fill-1);
   border-bottom: 1px solid var(--border-subtle);
+}
+
+/*
+ * 窗口按钮固定挂在窗口右上角：右栏收起时主区右缘就是窗口右缘，标题栏末尾的
+ * 「清空」按钮会正好落在 caption 三键底下 —— 这一档补上让位宽度。
+ * 右栏展开时按钮落在右栏 tab 条那侧（tab 条自己让位），标题栏不需要留白。
+ */
+.head--corner {
+  padding-right: var(--caption-w, 132px);
+}
+
+/*
+ * Windows 式窗口按钮整组：`position: fixed` 贴窗口右上角（与设置窗同款），
+ * 高度与顶部横带一致（`--head-h`），悬停底色因此与标题栏、tab 条连成一条。
+ */
+.window-caption {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  height: var(--head-h, 48px);
 }
 
 .head-name {

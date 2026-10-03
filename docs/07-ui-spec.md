@@ -220,14 +220,17 @@
     再翻面板显隐（任务面板收在 tab 里，直接翻看不见）。
     右栏宽度 264 → **384px 缺省**，左缘把手（`chat.ctx-resizer`）可拖拽调宽
     （**280–720px** 夹取，localStorage 记忆、双击复位；视图偏好**不进 config schema**），
-    JobPanel / ContextPanel 的固定宽跟随 `--ctx-w-eff`（＝ `min(--ctx-w, 62vw)`；
-    折叠时收 0 的语义不变）。
+    JobPanel / ContextPanel 的固定宽跟随 `--ctx-w`（折叠时收 0 的语义不变）。
     **左栏同样可拖拽**（2026-10-03）：右缘把手 `chat.nav-resizer`，240px 缺省、
-    **200–520px** 夹取、`--nav-w-eff` 驱动（`SessionNav` 的 `.nav-inner` 跟随它，
-    折叠时收 0 的语义不变），与右栏共用同一段拖拽实现（`startColumnResize`）。
-    **上下限与窗口宽相关**（2026-10-03 修订）：拖拽上限 = `min(绝对上限, 窗口宽 × 比例)`
-    （左栏 40% / 右栏 62%，`columnMaxWidth`），宽度本身写 `min(变量, Nvw)` ——
-    窗口最大化时右栏能拖到 720px，窗口缩小时已存的宽度跟着收、主区不会被挤没。
+    **200–520px** 夹取，`SessionNav` 的 `.nav-inner` 跟随 `--nav-w`（折叠时收 0 的语义不变），
+    与右栏共用同一段拖拽实现（`startColumnResize`）。
+    **两侧栏的实际渲染宽度 = `min(期望宽度, 窗口宽 − 另一侧宽度 − 主区下限)`**
+    （2026-10-03 二次修订）：`App.vue` 的 `navEffWidth` / `ctxEffWidth` 算好后**内联**进
+    `--nav-w` / `--ctx-w`（所以栏内子组件读到的就是实际宽度），窗口 resize 时重算；
+    **主区下限 `MAIN_MIN_WIDTH = 420`** —— 起因是右栏上限提到 720 后，在 1120px 的窗口里
+    拖到上限会把对话区挤成一条（量出来 ~175px，消息一列一个字），窗口看着像坏了。
+    存储的永远是用户的**期望宽度**，窗口缩小时只是暂时显示得更窄，窗口变大即恢复。
+    窗口最大化时右栏能真正拖到 720px。
     **⚠️ 横向锁死（同日修，用户实测「按钮整排消失」）**：`.app-shell` / `.nav` / `.context` /
     `.ctx-panes` / `.ctx-pane` 的列轨一律 `minmax(0, 1fr)`，面板内部处处 `min-width: 0`，
     文件预览的 markdown 容器另有 `overflow-wrap: anywhere`。此前用隐含的 `auto` 列轨，
@@ -236,6 +239,14 @@
     整排推出可视区**（DOM 里还在，所以只查 DOM 存在性的探针全绿）。护栏是
     `chat-right-tabs` / `chat-file-project` 两条探针里的 `asideOverflowX` 与
     `fileToolbarInView` / `toolbarInView`（量矩形，不量存在）。
+    **⚠️ 窗口按钮固定挂在窗口右上角**（2026-10-03 二次修订）：`WindowCaption` 从主区标题栏
+    末尾移出，作为 app-shell 直属子节点 `position: fixed` 贴窗口右上角（与设置窗同款）。
+    此前它排在主区标题栏的流式末尾 —— 主区一窄（右栏拖宽）整组按钮就被推出主区、
+    **压在右栏 tab 条上**。配套两条：`.app-shell` 的 `--head-h`（48px）让主区标题栏与
+    右栏 tab 条**同高**（顶带连续），tab 条按 `--caption-w`（132px）右侧让位，
+    右栏收起时主区标题栏挂 `.head--corner` 同样让位（否则「清空」按钮落在三键底下）。
+    护栏：`chat-right-tabs` 探针断言三键贴右缘、贴顶且**与 tab 矩形无交集**（`captionPinned`
+    / `captionTabOverlap`）。
     - **「文件」tab（`FilePreviewPanel`，`chat.file-preview`）**：**小文件管理器 + 预览**
       （2026-10-03 起）。顶部路径输入与「最近预览」（localStorage，最多 8 条）保留；
       工具条（`chat.file-bar`）＝ **面包屑 + 导航**：
@@ -1552,6 +1563,8 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     产物 `chat-right-panel-toggle.png`，BetaV2）：act 内点两次 `chat.right-panel-toggle`
     走「展开 → 收起 → 展开」，三态记录暂存渲染层；check 断言三态全部成立、且截图时刻右栏
     **仍是展开的**（收起态只允许活在两次点击之间的瞬时，截图本身就是三栏默认布局的证据）；
+    另在**收起态**量一次顶部横带（2026-10-03 补）：窗口三键仍贴窗口右缘贴顶，
+    标题栏的「清空」按钮已让位、两者矩形不相交（`collapsedCaptionPinned` / `collapsedOverlap`）；
   - **右栏模式感知**（`CHAT_RIGHT_PANEL_WORK_ACT` / `CHAT_RIGHT_PANEL_WORK_CHECK`，
     产物 `chat-right-panel-work.png`，BetaV2）：经 `window.aurora.mode.set('work')` 切模式后，
     右栏必须**整体**换成「工作目录」卡、classroom 的「今日课程」卡消失
@@ -1585,9 +1598,10 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     浏览器面板出现（webview 不等待网络加载）、文件 tab 的面包屑根段恒在且预览态点
     「返回列表」（`chat.file-exit`）后列表容器回来、**左栏把手在且宽度由 `--nav-w` 内联变量真正驱动**、
     **两侧把手各拖一次真的改宽度**（合成 down → move → up，buttons 恒为 1：左栏拖到 320、
-    右栏拖到 420，双击各回缺省 240 / 384 —— 「把手在」推不出「拖得动」；
-    再往左拖 900px 断言宽度落在**取整后的窗口 62%**（> 旧上限 560）且此时工具条按钮仍在可视区内）、
-    **终端黑底**
+    右栏拖到 420，双击各回缺省 240 / 384 —— 「把手在」推不出「拖得动」；再往左拖 900px
+    断言宽度取到 `min(720, 窗口 − 左栏 − 420)`、**主区不被压到 380 以下**且工具条按钮仍在
+    可视区内）、**窗口按钮固定右上角**（三键贴窗口右缘、`top ≤ 4`，且与右栏 tab 矩形
+    **无交集** —— 用户实测的正是按钮压在 tab 上的现场）、**终端黑底**
     （容器与 `.xterm-viewport` 的底色都是纯黑 —— xterm 的 `.xterm` 元素本身是透明的，
     它把主题背景画进 canvas，因此判据取容器 + viewport）、
     **右栏不横向撑破**（`asideOverflowX` ≤ 0，且四枚文件工具条按钮的矩形都落在 aside 矩形内 ——

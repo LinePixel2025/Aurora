@@ -405,10 +405,11 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   既有 JobPanel + ContextPanel 收在**缺省的「上下文」tab**（旧探针因此零改动）；宽度 384px
   缺省、可拖拽（localStorage `aurora.chat.ctxWidth`，不进 config schema）。**左栏同样可拖拽**
   （`aurora.chat.navWidth`，240px 缺省，与右栏共用 `startColumnResize`）。四个易踩点：
-  ① 栏宽的**实际值**变量是 `--ctx-w-eff`（右栏，＝ `min(--ctx-w, 62vw)`，定义在 App.vue 的
-  `.context`）与 `--nav-w-eff`（左栏，`40vw`）—— JobPanel / ContextPanel / SessionNav 读它们，
-  改宽度口径别再回硬编码 264px。**别读裸 `--ctx-w` / `--nav-w`**：那只是期望宽度，
-  窗口窄时比 aside 还宽、内容会被裁掉；② `webviewTag` 只对 chat 窗口开启（BrowserPanel 用 `createElement('webview')`
+  ① 两侧栏的 `--ctx-w` / `--nav-w`（内联）装的就是**实际生效宽度**：
+  `App.vue` 的 `navEffWidth` / `ctxEffWidth` = `min(期望值, 窗口 − 另一侧 − MAIN_MIN_WIDTH 420)`，
+  resize 时重算。栏内子组件（JobPanel / ContextPanel / SessionNav 的 `.nav-inner`）读同一个变量，
+  别再回硬编码 264px，也别在 CSS 里另写一套窗口比例夹取；
+  ② `webviewTag` 只对 chat 窗口开启（BrowserPanel 用 `createElement('webview')`
   绕开 Vue 编译器，重挂载会重载页面——这是已知取舍不是 bug）；③ `@lydell/node-pty` 必须
   留在 electron-builder 的 `asarUnpack`（.node 不能进 asar），终端是用户手动操作面，
   **别给它接 AI 工具面或确认闸门**（`show_preview` 走的是浏览器 tab，不是终端）；
@@ -416,11 +417,19 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   `details.webContentsId` 是否属于 `BrowserWindow.getAllWindows()` 判定，2026-10-03 修）：
   无条件注入会把 webview 里加载的外部页面一起打瘸（强加 `script-src 'self'` → 内联脚本 /
   CDN 资源全被拒），症状是「内置浏览器白屏、浏览器里点链接没反应」——别把它"简化"回无条件注入。
+- **主区下限 420 / 窗口按钮固定右上角（2026-10-03 用户实测，两条都别再改回去）**：
+  ① 两侧栏宽度是 `min(期望, 窗口 − 另一侧 − 420)`（`MAIN_MIN_WIDTH`）：右栏上限提到 720 后，
+  在 1120px 的窗口里拖到上限会把对话区挤成一条（~175px，一列一个字）、窗口像坏了；
+  ② `WindowCaption` 三键**挂在窗口右上角**（`.window-caption`，app-shell 直属、`position: fixed`，
+  与设置窗同款），**不要**再排回主区标题栏的末尾 —— 主区一窄整组按钮就被推出主区、压在右栏
+  tab 条上。配套：`--head-h`（48px）让标题栏与 tab 条同高、tab 条按 `--caption-w`（132px）
+  右侧让位、右栏收起时标题栏挂 `.head--corner` 让位。护栏：`chat-right-tabs` 探针的
+  `captionPinned` / `captionTabOverlap`（三键贴右缘贴顶、与 tab 矩形无交集）与
+  `navMainKept` / `ctxMainKept`（主区 ≥ 380）。
 - **右栏横向必须锁死（2026-10-03 用户实测「按钮整排消失」，别再退回 `auto` 列轨）**：
   `.app-shell` / `.nav` / `.context` / `.ctx-panes` / `.ctx-pane` 的列轨一律 `minmax(0, 1fr)`，
   面板内处处 `min-width: 0`，文件预览的 markdown 容器另加 `overflow-wrap: anywhere`；
-  宽度写 `min(变量, Nvw)`，拖拽上限同口径（`columnMaxWidth` = `min(绝对上限, 窗口宽 × 比例)`，
-  左栏 40% / 右栏 62%；绝对上限左 520 / 右 720）。原因：隐含 `auto` 列轨的下限是内容的
+  绝对上限：左栏 520 / 右栏 720。原因：隐含 `auto` 列轨的下限是内容的
   **min-content** —— 预览一份带长 URL / 长代码行的文件时整栏被撑宽，超出部分被
   `overflow: hidden` 裁掉，**正文被窗口右缘切断、工具条按钮被推出可视区**（DOM 里都在，
   所以只查 DOM 存在性的探针全绿，用户看到的是「文件管理器没有返回按钮」）。

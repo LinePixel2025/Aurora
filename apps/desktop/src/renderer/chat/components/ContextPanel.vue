@@ -324,15 +324,14 @@ watch(showClassislandCard, (now) => {
 </template>
 
 <style scoped>
-/* 固定像素宽（跟随右栏实际宽度 `--ctx-w-eff`，2026-10-03 起可拖拽调宽）：
+/* 固定像素宽（跟随右栏实际宽度 `--ctx-w`，2026-10-03 起可拖拽调宽）：
    外层 aside 折叠时宽度收 0，这里保持内容不被压缩换行。
-   ⚠️ 读 `--ctx-w-eff` 而不是裸 `--ctx-w`：后者是**期望**宽度，实际宽度还受窗口 62% 约束
-   （见 App.vue 的 `.context`）—— 窗口缩小时按裸变量排版会比 aside 宽，右侧被裁掉。 */
+   变量是 App.vue 算好的**实际生效宽度**（已扣掉主区下限），读同一个即可。 */
 .ctx-inner {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  width: var(--ctx-w-eff, 384px);
+  width: var(--ctx-w, 384px);
   min-width: 0;
   height: 100%;
   padding: var(--space-3);

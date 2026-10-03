@@ -1876,10 +1876,14 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
       if (el !== null) el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
     }
     const navResizerEl = has('[data-field="chat.nav-resizer"]')
+    // 主区宽度读数：两侧栏再宽也不许把它压到 420 以下（App.vue 的 MAIN_MIN_WIDTH）
+    const mainEl = document.querySelector('main.main')
+    const mainWidth = () => (mainEl === null ? 0 : Math.round(mainEl.getBoundingClientRect().width))
     dragResizer('[data-field="chat.nav-resizer"]', 320)
     await wait(300)
     const navElNow = document.querySelector('aside.nav')
     const navDragged = navElNow === null ? 0 : Math.round(navElNow.getBoundingClientRect().width)
+    const navMainKept = mainWidth() >= 380
     dbl('[data-field="chat.nav-resizer"]')
     await wait(300)
     const navBack = navElNow === null ? 0 : Math.round(navElNow.getBoundingClientRect().width)
@@ -1887,23 +1891,61 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     await wait(300)
     const asideNow = document.querySelector('aside.context')
     const ctxDragged = asideNow === null ? 0 : Math.round(asideNow.getBoundingClientRect().width)
+    const ctxMainKept = mainWidth() >= 380
     dbl('[data-field="chat.ctx-resizer"]')
     await wait(300)
     const ctxBack = asideNow === null ? 0 : Math.round(asideNow.getBoundingClientRect().width)
 
-    // 上限提高（2026-10-03 用户点名「最大宽度不够」）：再往左拖 900px（远大于旧上限 560），
-    // 实际宽度应落在**取整后的窗口 62%**（＝ min(绝对上限 720, 窗口 62%)）——
-    // 同时工具条按钮必须仍在可视区内（宽栏态下也别被推出栏外）。
+    // 上限提高（2026-10-03 用户点名「最大宽度不够」）：往左拖 900px（远超旧上限 560）——
+    // 实际宽度取 **min(绝对上限 720, 窗口 − 左栏 − 主区下限 420)**，且此时
+    // ① 主区仍在 380 以上（用户实测踩过：主区被挤成一条、标题栏按钮压到右栏 tab 上）
+    // ② 文件工具条按钮仍在右栏可视区内。
     // 先切回「文件」tab：探针此刻停在 context tab 上，文件工具条根本不在 DOM 里。
     clickTab('files')
     await wait(250)
     dragResizer('[data-field="chat.ctx-resizer"]', Math.round(window.innerWidth) - 900)
     await wait(300)
     const ctxMaxDrag = asideNow === null ? 0 : Math.round(asideNow.getBoundingClientRect().width)
-    const ctxMaxExpected = Math.round(window.innerWidth * 0.62)
+    // 期望值 = min(绝对上限 720, 窗口 − 左栏（此刻 240）− 主区下限 420)；探针侧手算同一口径
+    const navWidthNow =
+      navElNow === null ? 0 : Math.round(navElNow.getBoundingClientRect().width)
+    const ctxMaxRoom = Math.round(window.innerWidth) - navWidthNow - 420
+    const ctxMaxAtCap = ctxMaxDrag >= 720 - 1 || ctxMaxDrag >= ctxMaxRoom - 1
+    const ctxMaxMainKept = mainWidth() >= 380
     const toolbarAtMax = toolbarInView()
     dbl('[data-field="chat.ctx-resizer"]')
     await wait(300)
+
+    // 窗口按钮固定挂在窗口右上角（2026-10-03 用户口径）：三枚都在窗口右缘的横带里，
+    // 且**不与右栏 tab 条重叠**（此前按钮跟着主区标题栏排，右栏一宽就被推过去压在 tab 上）。
+    const captionRects = ['minimize', 'maximize', 'close'].map((id) => {
+      const el = document.querySelector('[data-caption-btn="' + id + '"]')
+      return el === null ? null : el.getBoundingClientRect()
+    })
+    // 窗口右缘取 app-shell 的右边界（fixed 元素贴的是这个可视区，不是 documentElement）
+    const shellEl = document.querySelector('.app-shell')
+    const viewportRight = shellEl === null ? window.innerWidth : shellEl.getBoundingClientRect().right
+    const captionGeometry = captionRects.map((r) =>
+      r === null ? 'null' : Math.round(r.left) + ',' + Math.round(r.top) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height),
+    )
+    const captionPinned =
+      captionRects.every((r) => r !== null) &&
+      // 只有最后一枚（关闭）贴窗口右缘；三枚都贴顶（top ≤ 4）
+      captionRects[2].right >= viewportRight - 2 &&
+      captionRects.every((r) => r.top <= 4)
+    const tabRects = Array.from(document.querySelectorAll('.ctx-tab')).map((el) =>
+      el.getBoundingClientRect(),
+    )
+    const captionTabOverlap = captionRects.some((c) =>
+      tabRects.some(
+        (t) =>
+          c !== null &&
+          c.left < t.right - 1 &&
+          c.right > t.left + 1 &&
+          c.top < t.bottom - 1 &&
+          c.bottom > t.top + 1,
+      ),
+    )
 
     return {
       tabsPresent,
@@ -1929,7 +1971,13 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
       ctxDragged,
       ctxBack,
       ctxMaxDrag,
-      ctxMaxExpected,
+      ctxMaxRoom,
+      ctxMaxAtCap,
+      ctxMaxMainKept,
+      navMainKept,
+      captionPinned,
+      captionGeometry,
+      captionTabOverlap,
       toolbarAtMax,
       hostBg,
       xtermBg,
@@ -1958,16 +2006,23 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
         fileToolbarInView &&
         // 左栏把手在，且宽度由 --nav-w 内联变量真正驱动
         navResizerOk &&
-        // 两侧拖拽真的改宽度，双击各回缺省（240 / 384）
-        navDragged === 320 &&
+        // 两侧拖拽真的改宽度，双击各回缺省（240 / 384）——
+        // 「把手在」推不出「拖得动」；同时主区不许被挤到 380 以下
+        navDragged >= 300 &&
+        navMainKept &&
         navBack === 240 &&
-        ctxDragged === 420 &&
+        ctxDragged >= 400 &&
+        ctxMainKept &&
         ctxBack === 384 &&
-        // 上限提高（2026-10-03）：再往左拖到远超旧上限（560）时，宽度落在 62% 窗口宽上，
-        // 且工具条按钮在宽栏态下仍在可视区内
-        ctxMaxDrag === ctxMaxExpected &&
-        ctxMaxDrag > 560 &&
+        // 上限提高（2026-10-03）：拖到极限时宽度取 min(720, 窗口 − 左栏 − 主区下限)，
+        // 主区仍在 380 以上，工具条按钮在可视区内
+        ctxMaxAtCap &&
+        ctxMaxDrag > 400 &&
+        ctxMaxMainKept &&
         toolbarAtMax &&
+        // 窗口按钮固定在窗口右上角，且不与右栏 tab 条重叠（用户实测的现场）
+        captionPinned &&
+        captionTabOverlap === false &&
         // 终端黑底（容器纯黑 + viewport 不引入别的颜色）
         terminalBgOk &&
         // 越界必须被拒且说清原因（file-preview.ts 的文案）
@@ -3039,6 +3094,8 @@ export const CHAT_HIT_TARGETS_CHECK = `(() => {
     const zoneOf = (el) => {
       if (el.closest('.nav') !== null) return 'sidebar'
       if (el.closest('.head') !== null) return 'header'
+      // 窗口按钮在窗口右上角（fixed），语义上仍属标题栏
+      if (el.closest('.window-caption') !== null) return 'header'
       if (el.closest('.composer-box') !== null) return 'composer'
       if (el.closest('.thread') !== null) return 'thread'
       return 'other'
@@ -3069,7 +3126,9 @@ export const CHAT_HIT_TARGETS_CHECK = `(() => {
       })
     }
     document.querySelectorAll('.nav button, .nav a').forEach(consider)
-    document.querySelectorAll('.head button, .head [data-caption-btn]').forEach(consider)
+    document.querySelectorAll('.head button').forEach(consider)
+    // 窗口按钮已移到窗口右上角（.window-caption，fixed）—— 照样要量命中面积
+    document.querySelectorAll('.window-caption button, [data-caption-btn]').forEach(consider)
     document.querySelectorAll('.composer-box button, .composer-box select').forEach(consider)
     document.querySelectorAll('.thread button').forEach(consider)
 
@@ -5076,11 +5135,29 @@ export const CHAT_RIGHT_PANEL_TOGGLE_ACT = `(async () => {
     toggle.click()
     await wait(600)
     const afterHide = !isOpen()
+    // 收起态的顶部横带（2026-10-03 用户口径「三键固定在窗口右上角、别破坏协调性」）：
+    // 此刻主区右缘就是窗口右缘 —— 窗口按钮仍贴右缘贴顶，且标题栏的「清空」按钮
+    // 必须已经让位（靠 .head--corner 的 padding-right），两者的矩形不许相交。
+    const rectOf = (el) => (el === null ? null : el.getBoundingClientRect())
+    const trashRect = rectOf(document.querySelector('.head-actions button'))
+    const closeRect = rectOf(document.querySelector('[data-caption-btn="close"]'))
+    const shellRight =
+      document.querySelector('.app-shell')?.getBoundingClientRect().right ?? window.innerWidth
+    const collapsedCaptionPinned =
+      closeRect !== null && closeRect.top <= 4 && closeRect.right >= shellRight - 2
+    const collapsedOverlap =
+      trashRect !== null && closeRect !== null && trashRect.right > closeRect.left + 2
     toggle.click()
     await wait(600)
     const afterShow = isOpen()
-    window.__auroraRightPanelProbe = { before, afterHide, afterShow }
-    return { ok: true, before, afterHide, afterShow }
+    window.__auroraRightPanelProbe = {
+      before,
+      afterHide,
+      afterShow,
+      collapsedCaptionPinned,
+      collapsedOverlap,
+    }
+    return { ok: true, before, afterHide, afterShow, collapsedCaptionPinned, collapsedOverlap }
   } catch (error) {
     return { ok: false, reason: String(error) }
   }
@@ -5089,6 +5166,8 @@ export const CHAT_RIGHT_PANEL_TOGGLE_ACT = `(async () => {
 /**
  * 右栏开关探针 · 后半：act 记录的「收起又展开」三态必须全部成立，且此刻右栏仍是展开的
  * （展开态 = 截图里的布局，收起只允许存在于两次点击之间的瞬时）。
+ * 另断言**收起态**的顶部横带：窗口按钮固定在窗口右上角（贴顶贴右缘），
+ * 标题栏的「清空」按钮已按 `--caption-w` 让位、两者矩形不相交。
  */
 export const CHAT_RIGHT_PANEL_TOGGLE_CHECK = `(() => {
   try {
@@ -5104,6 +5183,9 @@ export const CHAT_RIGHT_PANEL_TOGGLE_CHECK = `(() => {
         probe.before === true &&
         probe.afterHide === true &&
         probe.afterShow === true &&
+        // 收起态：窗口按钮仍固定在右上角，且标题栏的「清空」已让位（不叠）
+        probe.collapsedCaptionPinned === true &&
+        probe.collapsedOverlap === false &&
         openNow,
     }
   } catch (error) {
