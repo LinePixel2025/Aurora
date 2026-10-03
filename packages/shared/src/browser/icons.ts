@@ -36,6 +36,11 @@ export {
   ArrowUp,
   ArrowDown,
   ArrowLeft,
+  // 右栏面板导航（2026-10-03）：文件面板后退/前进、浏览器刷新
+  // —— 此前这几处用的是字形 `‹ › ⟳ ⤴`，在应用字体栈里又细又淡（截图核对时几乎看不见），
+  // 换成语义图标后与其余按钮同一套线条语言
+  ArrowRight,
+  RotateCw,
   // 对话与输入
   Sparkles,
   SquarePen,

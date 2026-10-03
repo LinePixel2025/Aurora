@@ -31,6 +31,7 @@ export interface BrowserTarget {
  * 可迁移的会话状态，接受这个简化）。
  */
 import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { ArrowLeft, ArrowRight, House, RotateCw, X } from '@aurora/shared/browser'
 
 const HOME_URL = 'https://www.bing.com'
 
@@ -179,32 +180,41 @@ watch(
 
 <template>
   <div class="bp" data-field="chat.browser">
-    <div class="bp-bar">
+    <!--
+      导航工具条：后退 / 前进 / 刷新（加载中变停止）/ 地址栏 / 主页。
+      图标走 shared 的 lucide 清单（此前是 `‹ › ⟳ ⌂` 字形：在应用字体栈里又细又淡，
+      浅色主题下几乎看不见，被当成「根本没有按钮」）。
+    -->
+    <div class="bp-bar" data-field="chat.browser-bar">
       <button
         type="button"
         class="bp-btn"
         title="后退"
+        data-field="chat.browser-back"
         :disabled="!canGoBack"
         @click="view?.goBack()"
       >
-        ‹
+        <ArrowLeft :size="14" :stroke-width="1.8" aria-hidden="true" />
       </button>
       <button
         type="button"
         class="bp-btn"
         title="前进"
+        data-field="chat.browser-forward"
         :disabled="!canGoForward"
         @click="view?.goForward()"
       >
-        ›
+        <ArrowRight :size="14" :stroke-width="1.8" aria-hidden="true" />
       </button>
       <button
         type="button"
         class="bp-btn"
-        :title="loading ? '停止' : '刷新'"
+        :title="loading ? '停止加载' : '刷新'"
+        data-field="chat.browser-reload"
         @click="loading ? view?.stop() : view?.reload()"
       >
-        {{ loading ? '×' : '⟳' }}
+        <X v-if="loading" :size="14" :stroke-width="1.8" aria-hidden="true" />
+        <RotateCw v-else :size="13" :stroke-width="1.8" aria-hidden="true" />
       </button>
       <input
         v-model="urlInput"
@@ -214,7 +224,15 @@ watch(
         spellcheck="false"
         @keydown.enter="navigate(urlInput)"
       />
-      <button type="button" class="bp-btn" title="主页" @click="goHome">⌂</button>
+      <button
+        type="button"
+        class="bp-btn"
+        title="主页"
+        data-field="chat.browser-home"
+        @click="goHome"
+      >
+        <House :size="14" :stroke-width="1.8" aria-hidden="true" />
+      </button>
     </div>
     <p v-if="failure !== ''" class="bp-failure tiny" data-field="chat.browser-failure">
       {{ failure }}
@@ -228,6 +246,7 @@ watch(
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   height: 100%;
   padding: var(--space-2);
   gap: var(--space-1);
@@ -237,13 +256,14 @@ watch(
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+  min-width: 0;
 }
 
 .bp-btn {
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -251,7 +271,6 @@ watch(
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
-  font-size: var(--text-sm);
   cursor: pointer;
 }
 
@@ -260,14 +279,17 @@ watch(
   color: var(--text-primary);
 }
 
+/* 置灰要「看得见但不亮」：0.35 透明度在浅色主题下约等于消失（用户口径：没有按钮） */
 .bp-btn:disabled {
-  opacity: 0.35;
+  color: var(--text-muted);
+  opacity: 0.55;
   cursor: default;
 }
 
 .bp-url {
   flex: 1 1 auto;
   min-width: 0;
+  margin: 0 2px;
   padding: 4px 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -292,6 +314,7 @@ watch(
 .bp-host {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--bg-base);

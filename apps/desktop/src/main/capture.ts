@@ -1781,14 +1781,44 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     // （项目现场的断言见 chat-file-project）。
     const fileDirBar = has('[data-field="chat.file-root"]')
     let fileListBack = false
-    if (has('[data-field="chat.file-back"]')) {
-      const back = document.querySelector('[data-field="chat.file-back"]')
-      if (back !== null) back.click()
+    // 预览态点「返回列表」（锚点 chat.file-exit）：**不是**工具条上的历史「后退」——
+    // 这次预览是越界拒绝（没有成功导航），历史里没有可退的一步，退出按钮必须能兜底。
+    if (has('[data-field="chat.file-exit"]')) {
+      const exit = document.querySelector('[data-field="chat.file-exit"]')
+      if (exit !== null) exit.click()
       await wait(250)
       fileListBack = has('[data-field="chat.file-list"]')
     } else {
       fileListBack = has('[data-field="chat.file-list"]')
     }
+    // 布局护栏（2026-10-03 用户实测）：右栏内容不得横向撑破 —— 撑破时工具条按钮会被
+    // 推到 aside 可视区之外（DOM 在、探针绿、用户看不见）。这里量两个事实：
+    // aside 的 scrollWidth 不超 clientWidth，且四枚工具条按钮的矩形落在 aside 矩形内。
+    const asideEl = document.querySelector('aside.context')
+    const asideOverflowX = asideEl === null ? -1 : asideEl.scrollWidth - asideEl.clientWidth
+    // 矩形每次现取（下面还有「拖到上限再量一次」的用法）
+    const toolbarInView = () => {
+      const panel = document.querySelector('aside.context')
+      if (panel === null) return false
+      const panelRect = panel.getBoundingClientRect()
+      return [
+        '[data-field="chat.file-back"]',
+        '[data-field="chat.file-forward"]',
+        '[data-field="chat.file-up"]',
+        '[data-field="chat.file-refresh"]',
+      ].every((selector) => {
+        const el = document.querySelector(selector)
+        if (el === null) return false
+        const r = el.getBoundingClientRect()
+        return (
+          r.width > 0 &&
+          r.height > 0 &&
+          r.left >= panelRect.left - 1 &&
+          r.right <= panelRect.right + 1
+        )
+      })
+    }
+    const fileToolbarInView = toolbarInView()
 
     // 终端 tab：切过去读行文本（act 已初始化过，模块级单例应直接可见）
     clickTab('terminal')
@@ -1861,6 +1891,20 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     await wait(300)
     const ctxBack = asideNow === null ? 0 : Math.round(asideNow.getBoundingClientRect().width)
 
+    // 上限提高（2026-10-03 用户点名「最大宽度不够」）：再往左拖 900px（远大于旧上限 560），
+    // 实际宽度应落在**取整后的窗口 62%**（＝ min(绝对上限 720, 窗口 62%)）——
+    // 同时工具条按钮必须仍在可视区内（宽栏态下也别被推出栏外）。
+    // 先切回「文件」tab：探针此刻停在 context tab 上，文件工具条根本不在 DOM 里。
+    clickTab('files')
+    await wait(250)
+    dragResizer('[data-field="chat.ctx-resizer"]', Math.round(window.innerWidth) - 900)
+    await wait(300)
+    const ctxMaxDrag = asideNow === null ? 0 : Math.round(asideNow.getBoundingClientRect().width)
+    const ctxMaxExpected = Math.round(window.innerWidth * 0.62)
+    const toolbarAtMax = toolbarInView()
+    dbl('[data-field="chat.ctx-resizer"]')
+    await wait(300)
+
     return {
       tabsPresent,
       resizer,
@@ -1874,6 +1918,8 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
       jobsHiddenOnFiles,
       fileDirBar,
       fileListBack,
+      asideOverflowX,
+      fileToolbarInView,
       navResizer,
       navWidth,
       navInlineVar,
@@ -1882,6 +1928,9 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
       navBack,
       ctxDragged,
       ctxBack,
+      ctxMaxDrag,
+      ctxMaxExpected,
+      toolbarAtMax,
       hostBg,
       xtermBg,
       viewportBg,
@@ -1896,14 +1945,17 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
         tabsPresent &&
         resizer &&
         // 宽度：无记忆值（首次跑）时必须就是缺省 384px（Number(null) === 0 被 clamp 到
-        // 下限那个 bug 靠这条钉住）；有记忆值则落在 280–560 的合法区间
+        // 下限那个 bug 靠这条钉住）；有记忆值则落在 280–720 的合法区间
         (storedWidth === null
           ? Math.abs(asideWidth - 384) < 2
-          : asideWidth >= 280 && asideWidth <= 560) &&
+          : asideWidth >= 280 && asideWidth <= 720) &&
         filePanelOn &&
-        // 文件管理器：目录条恒在，预览态点返回后列表容器回来
+        // 文件管理器：目录条恒在，预览态点「返回列表」后列表容器回来
         fileDirBar &&
         fileListBack &&
+        // 布局护栏：右栏不横向撑破，工具条按钮都在可视区内
+        asideOverflowX <= 0 &&
+        fileToolbarInView &&
         // 左栏把手在，且宽度由 --nav-w 内联变量真正驱动
         navResizerOk &&
         // 两侧拖拽真的改宽度，双击各回缺省（240 / 384）
@@ -1911,6 +1963,11 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
         navBack === 240 &&
         ctxDragged === 420 &&
         ctxBack === 384 &&
+        // 上限提高（2026-10-03）：再往左拖到远超旧上限（560）时，宽度落在 62% 窗口宽上，
+        // 且工具条按钮在宽栏态下仍在可视区内
+        ctxMaxDrag === ctxMaxExpected &&
+        ctxMaxDrag > 560 &&
+        toolbarAtMax &&
         // 终端黑底（容器纯黑 + viewport 不引入别的颜色）
         terminalBgOk &&
         // 越界必须被拒且说清原因（file-preview.ts 的文案）
@@ -1989,13 +2046,18 @@ export function chatFileProjectAct(root: string): string {
 }
 
 /**
- * 右栏文件面板＝项目文件夹的断言（2026-10-03，docs/07 §2.3）。
+ * 右栏文件面板＝项目文件夹的断言（2026-10-03，docs/07 §2.3；同日补导航与布局护栏）。
  *
  * 现场（act 留下）：会话切到绑项目的种子会话、停在「文件」tab、列表已出。
- * 断言：① 根标签是「项目：截图项目」（绑定生效的**可见**证据）；
+ * 断言：① 面包屑根段是「项目：截图项目」（绑定生效的**可见**证据）；
  * ② 根目录列出 prepare 种的目录与文件（目录排在前）；
- * ③ 点目录进下层（相对路径变 assets、上级按钮可点），点上级回到根；
- * ④ 点文件在面板内预览（markdown 正文可见 + 返回按钮出现），点返回回列表。
+ * ③ 进目录 → 面包屑出现该段；**后退**回根（面包屑只剩根段、后退置灰）→
+ *    **前进**再进一层 → 「上级」回根（用户点名「进入文件夹后无法返回」）；
+ * ④ 点文件在面板内预览（markdown 正文可见 + 「返回列表」按钮在），点它回列表；
+ * ⑤ **布局护栏**：预览「宽内容.md」（长 URL / 长标识符 / 长代码行）时 ——
+ *    aside 与面板都不许横向溢出，且工具条五枚按钮的矩形必须落在 aside 可视矩形内。
+ *    这一条是对着用户实测症状写的：内容撑破右栏后按钮被推到可视区之外，
+ *    **只查 DOM 存在的探针会全绿**（按钮在 DOM 里、`getBoundingClientRect` 也有值）。
  * 收尾：点回原来的会话行 + 撤销项目登记（后续场景读到的仍是出厂门控）。
  */
 export const CHAT_FILE_PROJECT_CHECK = `(async () => {
@@ -2007,33 +2069,48 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
   try {
     const act = window.__auroraFileProjectAct || { ok: false, reason: 'act 没有留下读数' }
     const rootLabel = text('[data-field="chat.file-root"]')
-    const dirText = () => text('[data-field="chat.file-dir"]')
+    // 面包屑各段文本（根段 = 「项目：截图项目」，其后逐级目录）
+    const crumbs = () =>
+      Array.from(document.querySelectorAll('[data-field="chat.file-crumbs"] .fp-crumb')).map(
+        (el) => (el.textContent || '').replace(/\\s+/g, ' ').trim(),
+      )
     const rows = () => Array.from(document.querySelectorAll('[data-field="chat.file-list"] .fp-row'))
     const rowNamed = (name) => rows().find((row) => (row.textContent || '').indexOf(name) !== -1)
-    const dirAtRoot = dirText()
+    const rootCrumbs = crumbs()
     const rootEntries = rows().map((row) => (row.textContent || '').replace(/\\s+/g, ' ').trim())
     const assetsRow = rowNamed('assets')
     const reportRow = rowNamed('报告.md')
+    const wideRow = rowNamed('宽内容.md')
     // 目录在前（第一行必须是 assets 这个目录）
     const dirsFirst = rows().length > 0 && (rows()[0].className || '').indexOf('dir') !== -1
 
-    // ② → ③ 点目录进下层，再点上级回来
+    // ③ 进目录 → 后退回根 → 前进再进一层 → 上级回根
     let intoDir = false
-    let upText = ''
+    let backToRoot = false
+    let forwardIntoTarget = false
     if (assetsRow) {
       assetsRow.click()
-      for (let attempt = 0; attempt < 20 && dirText() !== 'assets'; attempt += 1) await wait(150)
-      intoDir = dirText() === 'assets'
+      for (let attempt = 0; attempt < 20 && crumbs().length < 2; attempt += 1) await wait(150)
+      intoDir = crumbs().join('>').indexOf('assets') !== -1
+      const back = document.querySelector('[data-field="chat.file-back"]')
+      if (back !== null) back.click()
+      for (let attempt = 0; attempt < 20 && crumbs().length > 1; attempt += 1) await wait(150)
+      // 回到根：面包屑只剩根段
+      backToRoot = crumbs().length === 1
+      // 前进按钮此时应可用，点它回到 assets 层
+      const forward = document.querySelector('[data-field="chat.file-forward"]')
+      if (forward !== null) forward.click()
+      for (let attempt = 0; attempt < 20 && crumbs().length < 2; attempt += 1) await wait(150)
+      forwardIntoTarget = crumbs().join('>').indexOf('assets') !== -1
       const up = document.querySelector('[data-field="chat.file-up"]')
-      upText = up === null ? '' : up.textContent || ''
       if (up !== null) up.click()
-      for (let attempt = 0; attempt < 20 && dirText() !== dirAtRoot; attempt += 1) await wait(150)
+      for (let attempt = 0; attempt < 20 && crumbs().length > 1; attempt += 1) await wait(150)
     }
-    const backToRoot = dirText() === dirAtRoot
+    const upBackToRoot = crumbs().length === 1
 
-    // ④ 点文件 → 面板内预览 → 返回列表
+    // ④ 点文件 → 面板内预览 → 「返回列表」
     let previewText = ''
-    let backButton = false
+    let exitButton = false
     let backToList = false
     if (reportRow) {
       reportRow.click()
@@ -2041,11 +2118,55 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
         previewText = text('.fp-markdown') || text('.fp-text')
         if (previewText.indexOf('文件面板') === -1) await wait(150)
       }
-      backButton = document.querySelector('[data-field="chat.file-back"]') !== null
-      const back = document.querySelector('[data-field="chat.file-back"]')
-      if (back !== null) back.click()
+      exitButton = document.querySelector('[data-field="chat.file-exit"]') !== null
+      const exit = document.querySelector('[data-field="chat.file-exit"]')
+      if (exit !== null) exit.click()
       await wait(250)
       backToList = document.querySelector('[data-field="chat.file-list"]') !== null
+    }
+
+    // ⑤ 宽内容：预览它，量「有没有横向撑破」+ 工具条按钮是否真的在可视区内
+    let wideText = ''
+    let overflowX = -1
+    let panelOverflowX = -1
+    let toolbarInView = false
+    let wideExitOk = false
+    if (wideRow) {
+      wideRow.click()
+      for (let attempt = 0; attempt < 25 && wideText.indexOf('宽内容夹具') === -1; attempt += 1) {
+        wideText = text('.fp-markdown') || text('.fp-text')
+        if (wideText.indexOf('宽内容夹具') === -1) await wait(150)
+      }
+      await wait(200)
+      const aside = document.querySelector('aside.context')
+      const panel = document.querySelector('[data-field="chat.file-preview"]')
+      overflowX = aside === null ? -1 : aside.scrollWidth - aside.clientWidth
+      panelOverflowX = panel === null ? -1 : panel.scrollWidth - panel.clientWidth
+      const asideRect = aside === null ? null : aside.getBoundingClientRect()
+      const inView = (selector) => {
+        const el = document.querySelector(selector)
+        if (el === null || asideRect === null) return false
+        const r = el.getBoundingClientRect()
+        return (
+          r.width > 0 &&
+          r.height > 0 &&
+          r.left >= asideRect.left - 1 &&
+          r.right <= asideRect.right + 1 &&
+          r.top >= asideRect.top - 1 &&
+          r.bottom <= asideRect.bottom + 1
+        )
+      }
+      toolbarInView = [
+        '[data-field="chat.file-back"]',
+        '[data-field="chat.file-forward"]',
+        '[data-field="chat.file-up"]',
+        '[data-field="chat.file-refresh"]',
+        '[data-field="chat.file-exit"]',
+      ].every(inView)
+      const exit = document.querySelector('[data-field="chat.file-exit"]')
+      if (exit !== null) exit.click()
+      await wait(250)
+      wideExitOk = document.querySelector('[data-field="chat.file-list"]') !== null
     }
 
     // 收尾：切回原会话 + 撤销项目登记（两条都要成功才认 restored）
@@ -2068,28 +2189,43 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
       actOk: act.ok,
       actReason: act.reason || '',
       rootLabel,
-      dirAtRoot,
+      rootCrumbs,
       rootEntries,
       dirsFirst,
       intoDir,
-      upText,
       backToRoot,
+      forwardIntoTarget,
+      upBackToRoot,
       previewShown: previewText.indexOf('文件面板') !== -1,
-      backButton,
+      exitButton,
       backToList,
+      wideShown: wideText.indexOf('宽内容夹具') !== -1,
+      overflowX,
+      panelOverflowX,
+      toolbarInView,
+      wideExitOk,
       restored,
       pass:
         act.ok === true &&
         rootLabel.indexOf('项目：截图项目') !== -1 &&
+        rootCrumbs.length === 1 &&
         rootEntries.join('|').indexOf('assets') !== -1 &&
         rootEntries.join('|').indexOf('报告.md') !== -1 &&
+        rootEntries.join('|').indexOf('宽内容.md') !== -1 &&
         dirsFirst &&
         intoDir &&
-        upText.indexOf('⤴') !== -1 &&
         backToRoot &&
+        forwardIntoTarget &&
+        upBackToRoot &&
         previewText.indexOf('文件面板') !== -1 &&
-        backButton &&
+        exitButton &&
         backToList &&
+        wideText.indexOf('宽内容夹具') !== -1 &&
+        // 布局护栏：右栏与面板都不横向溢出，工具条按钮全在可视区内
+        overflowX <= 0 &&
+        panelOverflowX <= 0 &&
+        toolbarInView &&
+        wideExitOk &&
         restored,
     }
   } catch (error) {
@@ -2133,6 +2269,17 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
       await wait(200)
     }
 
+    // 导航工具条（2026-10-03）：后退 / 前进 / 刷新 / 主页 —— 存在且量得出尺寸
+    const toolbarIds = ['back', 'forward', 'reload', 'home'].filter(
+      (id) => document.querySelector('[data-field="chat.browser-' + id + '"]') !== null,
+    )
+    const browserBarSized = ['back', 'forward', 'reload', 'home'].every((id) => {
+      const el = document.querySelector('[data-field="chat.browser-' + id + '"]')
+      if (el === null) return false
+      const r = el.getBoundingClientRect()
+      return r.width > 8 && r.height > 8
+    })
+
     // 收尾：切回原会话 + 撤销项目登记（与 chat-file-project 同一套）
     let restored = false
     const prevText = window.__auroraFileProjectPrevText || ''
@@ -2157,6 +2304,8 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
       panelOn,
       urlValue,
       guestUrl: loaded,
+      browserBar: toolbarIds,
+      browserBarSized: browserBarSized,
       restored,
       pass:
         act.ok === true &&
@@ -2164,7 +2313,11 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
         panelOn &&
         loaded.indexOf('fixture.html') !== -1 &&
         loaded.indexOf('file://') === 0 &&
-        urlValue.indexOf('fixture.html') !== -1,
+        urlValue.indexOf('fixture.html') !== -1 &&
+        // 导航工具条四枚按钮都在且有实际尺寸（2026-10-03：此前是字形按钮，
+        // 又细又淡到被当成「没有按钮」——这里钉住「有尺寸的按钮」这个事实）
+        toolbarIds.join('|') === 'back|forward|reload|home' &&
+        browserBarSized,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -8909,7 +9062,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     },
     // 文件 tab ＝ 会话项目文件夹（2026-10-03，docs/07 §2.3）：prepare 在项目根建出目录与
     // 一份 markdown；act 登记项目 + 切到绑项目的种子会话 + 打开文件 tab；check 断言
-    // 根标签「项目：截图项目」、目录在前、逐层进出、点文件预览、点返回回列表，
+    // 根标签「项目：截图项目」、目录在前、逐层进出（含后退/前进历史）、点文件预览、
+    // 返回列表，**外加一条布局护栏**：预览带长行的宽内容时右栏不许横向撑破
+    // （2026-10-03 用户实测：撑破后工具条按钮被推出可视区，看着像「完全没有按钮」）。
     // 收尾切回原会话并撤销项目登记（后续场景读到的仍是出厂门控）。
     {
       name: 'chat',
@@ -8918,6 +9073,26 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
         const root = captureProjectRoot(userData)
         await mkdir(join(root, 'assets'), { recursive: true })
         await writeFile(join(root, '报告.md'), '# 项目报告\n\n文件面板应该看到这份文件。\n', 'utf8')
+        // 宽内容夹具：长 URL + 长标识符 + 长代码行 —— 三样都是「不许撑破右栏」的现场
+        await writeFile(
+          join(root, '宽内容.md'),
+          [
+            '# 宽内容夹具',
+            '',
+            '长 URL：https://example.com/' + 'very-long-path-segment-'.repeat(6) + 'end',
+            '',
+            '长标识符：' + 'unbreakable_token_'.repeat(10),
+            '',
+            '代码块：',
+            '',
+            '```js',
+            'const long = "' + 'x'.repeat(160) + '"',
+            '```',
+            '',
+            '结尾一段，用来确认正文仍然正常渲染。',
+          ].join('\n') + '\n',
+          'utf8',
+        )
         await manager.reload('chat', {})
       },
       act: chatFileProjectAct(captureProjectRoot(userData)),

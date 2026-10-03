@@ -404,10 +404,11 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **右栏已 Tab 化（2026-10-03，docs/07 §2.3）**：「文件 / 终端 / 浏览器 / 上下文」四个 tab，
   既有 JobPanel + ContextPanel 收在**缺省的「上下文」tab**（旧探针因此零改动）；宽度 384px
   缺省、可拖拽（localStorage `aurora.chat.ctxWidth`，不进 config schema）。**左栏同样可拖拽**
-  （`aurora.chat.navWidth`，240px 缺省 / 200–420；`--nav-w` 是 SessionNav 内容宽的唯一来源，
-  与右栏共用 `startColumnResize`）。四个易踩点：
-  ① 右栏宽度变量 `--ctx-w` 是 JobPanel / ContextPanel 固定宽的唯一来源，改宽度口径别再回
-  硬编码 264px；② `webviewTag` 只对 chat 窗口开启（BrowserPanel 用 `createElement('webview')`
+  （`aurora.chat.navWidth`，240px 缺省，与右栏共用 `startColumnResize`）。四个易踩点：
+  ① 栏宽的**实际值**变量是 `--ctx-w-eff`（右栏，＝ `min(--ctx-w, 62vw)`，定义在 App.vue 的
+  `.context`）与 `--nav-w-eff`（左栏，`40vw`）—— JobPanel / ContextPanel / SessionNav 读它们，
+  改宽度口径别再回硬编码 264px。**别读裸 `--ctx-w` / `--nav-w`**：那只是期望宽度，
+  窗口窄时比 aside 还宽、内容会被裁掉；② `webviewTag` 只对 chat 窗口开启（BrowserPanel 用 `createElement('webview')`
   绕开 Vue 编译器，重挂载会重载页面——这是已知取舍不是 bug）；③ `@lydell/node-pty` 必须
   留在 electron-builder 的 `asarUnpack`（.node 不能进 asar），终端是用户手动操作面，
   **别给它接 AI 工具面或确认闸门**（`show_preview` 走的是浏览器 tab，不是终端）；
@@ -415,16 +416,35 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   `details.webContentsId` 是否属于 `BrowserWindow.getAllWindows()` 判定，2026-10-03 修）：
   无条件注入会把 webview 里加载的外部页面一起打瘸（强加 `script-src 'self'` → 内联脚本 /
   CDN 资源全被拒），症状是「内置浏览器白屏、浏览器里点链接没反应」——别把它"简化"回无条件注入。
-- **终端底色是固定黑（2026-10-03 用户口径）**：`TerminalPanel` 里就一份 `XTERM_THEME`
-  （`background: '#000000'`）与 `.tp-host { background: #000 }`，**不要再按
-  `prefers-color-scheme` 分两档**（浅色系统下白底黑字正是被用户点名的问题）。
-  `.xterm` 元素本身是透明的（xterm 把主题背景画进 canvas），判据取容器 + `.xterm-viewport`。
+- **右栏横向必须锁死（2026-10-03 用户实测「按钮整排消失」，别再退回 `auto` 列轨）**：
+  `.app-shell` / `.nav` / `.context` / `.ctx-panes` / `.ctx-pane` 的列轨一律 `minmax(0, 1fr)`，
+  面板内处处 `min-width: 0`，文件预览的 markdown 容器另加 `overflow-wrap: anywhere`；
+  宽度写 `min(变量, Nvw)`，拖拽上限同口径（`columnMaxWidth` = `min(绝对上限, 窗口宽 × 比例)`，
+  左栏 40% / 右栏 62%；绝对上限左 520 / 右 720）。原因：隐含 `auto` 列轨的下限是内容的
+  **min-content** —— 预览一份带长 URL / 长代码行的文件时整栏被撑宽，超出部分被
+  `overflow: hidden` 裁掉，**正文被窗口右缘切断、工具条按钮被推出可视区**（DOM 里都在，
+  所以只查 DOM 存在性的探针全绿，用户看到的是「文件管理器没有返回按钮」）。
+  回归护栏：capture 的 `chat-right-tabs` / `chat-file-project` 探针读 `asideOverflowX`
+  与按钮矩形的 `toolbarInView`（**量矩形，不量存在**）。
 - **文件 tab 是「小文件管理器 + 预览」（2026-10-03，docs/07 §2.3）**：根 = 会话边界根
   （绑了项目就是项目文件夹，标签「项目：<名>」；孤儿绑定按未绑定展示）——列目录走
   `preview:list`（`main/file-list.ts`，上限 500 条、目录在前、名称数字感知排序），
   预览走 `preview:read`，两条都在主进程侧做 `resolveWithin` 边界校验，**根不可用时直接拒绝**。
+  **导航＝浏览器式历史栈**：位置 `{ dir, file? }`，进目录 / 预览文件 / 点面包屑 / 上级 /
+  路径输入都是 push 一步（前进链截断）；工具条四钮 `chat.file-back` / `-forward` / `-up` /
+  `-refresh` 已**图标化**（`ArrowLeft` / `ArrowRight` / `ArrowUp` / `RotateCw`），
+  **别改回 `⟳ ⤴` 字形**（字形又细又淡，被用户当成"没有按钮"）；预览态「返回列表」
+  （`chat.file-exit`）＝ 后退一步，无历史可退时退回当前目录列表。面包屑
+  （`chat.file-crumbs`，根段 `chat.file-root`）末段即当前目录；旧的 `chat.file-dir` 锚点已删。
   `show_preview` 的「成果展示」走浏览器 tab（`preview:show` 推送 → 自动切 tab），
   别把两件事混成同一条通道。
+- **浏览器 tab 的工具条是图标按钮（2026-10-03）**：`chat.browser-back` / `-forward` /
+  `-reload`（加载中变停止）/ `-home`，26×26 命中区、禁用态 `opacity 0.55 + --text-muted`
+  （此前 `opacity 0.35` 的字形在浅色主题下几乎不可见，用户口径「没有刷新、上一步等按钮」）。
+- **终端底色是固定黑（2026-10-03 用户口径）**：`TerminalPanel` 里就一份 `XTERM_THEME`
+  （`background: '#000000'`）与 `.tp-host { background: #000 }`，**不要再按
+  `prefers-color-scheme` 分两档**（浅色系统下白底黑字正是被用户点名的问题）。
+  `.xterm` 元素本身是透明的（xterm 把主题背景画进 canvas），判据取容器 + `.xterm-viewport`。
 - **输入卡有两条硬口径（2026-09-29 减负轮，docs/07 §2.3），别再改回去**：
   ① 权限 / 模型 / 思考三枚控件一律 `--control-h-xs`（28px）+ pill 圆角 + **静止态零边框**
   （悬停才浮 `--fill-2`），三者的尺寸与状态样式**逐字对齐** —— 40px + 逐枚边框会把输入卡

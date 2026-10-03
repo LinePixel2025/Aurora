@@ -219,19 +219,39 @@
     **缺省激活「上下文」**（旧探针读的 DOM 不动）。左栏「任务」入口会先切到上下文 tab
     再翻面板显隐（任务面板收在 tab 里，直接翻看不见）。
     右栏宽度 264 → **384px 缺省**，左缘把手（`chat.ctx-resizer`）可拖拽调宽
-    （280–560px 夹取，localStorage 记忆、双击复位；视图偏好**不进 config schema**），
-    JobPanel / ContextPanel 的固定宽跟随 `--ctx-w` 变量（折叠时收 0 的语义不变）。
+    （**280–720px** 夹取，localStorage 记忆、双击复位；视图偏好**不进 config schema**），
+    JobPanel / ContextPanel 的固定宽跟随 `--ctx-w-eff`（＝ `min(--ctx-w, 62vw)`；
+    折叠时收 0 的语义不变）。
     **左栏同样可拖拽**（2026-10-03）：右缘把手 `chat.nav-resizer`，240px 缺省、
-    200–420px 夹取、`--nav-w` 变量驱动（`SessionNav` 的 `.nav-inner` 跟随它，
+    **200–520px** 夹取、`--nav-w-eff` 驱动（`SessionNav` 的 `.nav-inner` 跟随它，
     折叠时收 0 的语义不变），与右栏共用同一段拖拽实现（`startColumnResize`）。
+    **上下限与窗口宽相关**（2026-10-03 修订）：拖拽上限 = `min(绝对上限, 窗口宽 × 比例)`
+    （左栏 40% / 右栏 62%，`columnMaxWidth`），宽度本身写 `min(变量, Nvw)` ——
+    窗口最大化时右栏能拖到 720px，窗口缩小时已存的宽度跟着收、主区不会被挤没。
+    **⚠️ 横向锁死（同日修，用户实测「按钮整排消失」）**：`.app-shell` / `.nav` / `.context` /
+    `.ctx-panes` / `.ctx-pane` 的列轨一律 `minmax(0, 1fr)`，面板内部处处 `min-width: 0`，
+    文件预览的 markdown 容器另有 `overflow-wrap: anywhere`。此前用隐含的 `auto` 列轨，
+    其下限是内容的 **min-content** —— 预览一份带长 URL / 长代码行的文件时整栏内容被撑宽，
+    超出 aside 的部分被 `overflow: hidden` 裁掉：**正文被窗口右缘切断、目录条上的按钮
+    整排推出可视区**（DOM 里还在，所以只查 DOM 存在性的探针全绿）。护栏是
+    `chat-right-tabs` / `chat-file-project` 两条探针里的 `asideOverflowX` 与
+    `fileToolbarInView` / `toolbarInView`（量矩形，不量存在）。
     - **「文件」tab（`FilePreviewPanel`，`chat.file-preview`）**：**小文件管理器 + 预览**
       （2026-10-03 起）。顶部路径输入与「最近预览」（localStorage，最多 8 条）保留；
-      目录条（`chat.file-root`）显示**根标签 + 当前相对路径**：会话绑定了项目时根就是
-      **项目文件夹**（标签「项目：<名>」），未绑定时是会话空间目录（标签「工作目录」）——
-      标签与 `boundaryRoot` 的回落链同源（孤儿绑定按未绑定展示）。列表
-      （`chat.file-list`）缺省列出根目录：目录在前、同类按名称数字感知升序（上限 500 条，
-      超出标 `truncated`），点目录进入下一层（`chat.file-dir` 跟着变，「上级」`chat.file-up`
-      止于边界根）、点文件在**同一面板内**预览（「返回」`chat.file-back` 切回列表）。
+      工具条（`chat.file-bar`）＝ **面包屑 + 导航**：
+      - 面包屑（`chat.file-crumbs`）以根段（`chat.file-root`）起头 —— 会话绑定了项目时根就是
+        **项目文件夹**（标签「项目：<名>」），未绑定时是会话空间目录（标签「工作目录」）——
+        标签与 `boundaryRoot` 的回落链同源（孤儿绑定按未绑定展示）；其后逐级可点跳转，
+        末段即当前目录；深路径时面包屑自己横向滚动，不挤压右侧导航按钮；
+      - 导航四钮（`chat.file-back` / `chat.file-forward` / `chat.file-up` / `chat.file-refresh`）
+        是 **lucide 图标按钮**（`ArrowLeft` / `ArrowRight` / `ArrowUp` / `RotateCw`）；
+        此前用 `⟳ ⤴` 字形，又细又淡，且被上面那条撑破问题推出可视区 —— 两处都已修。
+      **导航模型＝与浏览器同构的历史栈**：一个位置是 `{ dir, file? }`（`file` 为空即列表态），
+      进目录 / 预览文件 / 点面包屑 / 上级 / 路径输入都是 push 一步（前进链在 push 时截断），
+      后退 / 前进在栈里移动；预览态的「返回列表」（`chat.file-exit`）＝后退一步
+      （历史里前一条正是同目录的列表态），没有可退的一步时退回当前目录的列表态。
+      列表（`chat.file-list`）缺省列出根目录：目录在前、同类按名称数字感知升序（上限 500 条，
+      超出标 `truncated`）；「上级」止于边界根。
       markdown 走 shared 渲染器（与消息正文同一安全基线）、纯文本、图片（data URL）、
       二进制/超限/越界如实给原因。读盘走 `preview:read`、列目录走 `preview:list`：
       路径必须在**发起会话边界根之内**（复用 file-port `resolveWithin` 的 realpath 前缀校验；
@@ -253,7 +273,13 @@
       input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
       打包：`@lydell/node-pty` 经 electron-builder `asarUnpack` 解出（.node 不能进 asar）。
     - **「浏览器」tab（`BrowserPanel`，`chat.browser`）**：webview 内置浏览器
-      （URL 栏 + 后退/前进/刷新/停止 + 主页；缺省主页 bing.com）。地址栏只接受
+      （工具条 `chat.browser-bar`：后退 `chat.browser-back` / 前进 `chat.browser-forward` /
+      刷新·加载中变停止 `chat.browser-reload` / 地址栏 / 主页 `chat.browser-home`；
+      缺省主页 bing.com）。四枚导航钮是 **lucide 图标按钮**（`ArrowLeft` / `ArrowRight` /
+      `RotateCw` ⇄ `X` / `House`，26×26 命中区）：2026-10-03 之前用的是 `‹ › ⟳ ⌂` 字形，
+      在应用字体栈里又细又淡、置灰后几乎不可见（用户口径「没有刷新、上一步等按钮」），
+      故整体换成语义图标并把禁用态从 `opacity 0.35` 提到「置灰但看得见」（0.55 + `--text-muted`）。
+      地址栏只接受
       http / https（入口即拒绝其它协议），无协议输入按主机名分流：本机地址
       （`localhost` / `127.0.0.1` / `[::1]` / `0.0.0.0`）补 `http://`，其余补 `https://`；
       **不带 allowpopups**，但 `window.open` / `target="_blank"` 不再被整个丢弃 ——
@@ -1553,39 +1579,51 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     并点预览，等 `chat.file-preview-error` 出现后**停在该 tab 截图**——越界判定发生在 stat
     **之前**，因此离线可跑、且不写任何用户目录（Agent 空间会话的边界根是真实桌面）；
     act 末尾顺带初始化终端 tab 让 xterm 挂上。check 断言：四个 tab 锚点与拖拽把手都在、
-    右栏宽度落在 280–560px（`--ctx-w` 变量真的驱动布局）、越界文案含「边界」、
+    右栏宽度落在 280–720px（`--ctx-w` 变量真的驱动布局）、越界文案含「边界」、
     **tab 互斥**（files 下 `chat.jobs` 缺席、context 下恢复——旧探针零改动兼容正依赖这条）、
     终端 `.xterm` 跨 tab 往返仍在且行文本长度不减少（模块级单例 + 容器 detach/attach）、
-    浏览器面板出现（webview 不等待网络加载）、文件 tab 的目录条恒在且预览态点「返回」后
-    列表容器回来、**左栏把手在且宽度由 `--nav-w` 内联变量真正驱动**、
+    浏览器面板出现（webview 不等待网络加载）、文件 tab 的面包屑根段恒在且预览态点
+    「返回列表」（`chat.file-exit`）后列表容器回来、**左栏把手在且宽度由 `--nav-w` 内联变量真正驱动**、
     **两侧把手各拖一次真的改宽度**（合成 down → move → up，buttons 恒为 1：左栏拖到 320、
-    右栏拖到 420，双击各回缺省 240 / 384 —— 「把手在」推不出「拖得动」）、**终端黑底**
+    右栏拖到 420，双击各回缺省 240 / 384 —— 「把手在」推不出「拖得动」；
+    再往左拖 900px 断言宽度落在**取整后的窗口 62%**（> 旧上限 560）且此时工具条按钮仍在可视区内）、
+    **终端黑底**
     （容器与 `.xterm-viewport` 的底色都是纯黑 —— xterm 的 `.xterm` 元素本身是透明的，
-    它把主题背景画进 canvas，因此判据取容器 + viewport）。成功路径（真实读盘 / 截断 /
-    二进制 / 目录与缺失文件）由 `apps/desktop/src/main/file-preview.test.ts` 与
-    `file-list.test.ts` 用真实临时目录覆盖；
+    它把主题背景画进 canvas，因此判据取容器 + viewport）、
+    **右栏不横向撑破**（`asideOverflowX` ≤ 0，且四枚文件工具条按钮的矩形都落在 aside 矩形内 ——
+    2026-10-03 的撑破 bug 会让它们被推出可视区，而只查 DOM 存在性的探针全绿）。成功路径
+    （真实读盘 / 截断 / 二进制 / 目录与缺失文件）由 `apps/desktop/src/main/file-preview.test.ts`
+    与 `file-list.test.ts` 用真实临时目录覆盖；
   - **终端 tab 截图**（`CHAT_TERMINAL_ACT` / `CHAT_TERMINAL_CHECK`，产物 `chat-terminal.png`，
     2026-10-03）：不 reload（复用上一场景初始化好的常驻 shell，截图里自带 PowerShell 提示符），
     check 断言 `.xterm` 在 + 容器与 viewport 底色纯黑；行文本只作诊断字段（单独跑本场景时
     新 shell 可能还没有输出，不该判 FAIL）；
   - **文件 tab ＝ 会话项目文件夹**（`chatFileProjectAct(root)` / `CHAT_FILE_PROJECT_CHECK`，
-    产物 `chat-file-project.png`，2026-10-03）：prepare 在项目根种出 `assets/` 与 `报告.md`；
+    产物 `chat-file-project.png`，2026-10-03）：prepare 在项目根种出 `assets/`、`报告.md`
+    与 `宽内容.md`（长 URL + 长标识符 + 长代码行 —— 撑破现场的夹具）；
     act 经 `settings:update` 登记项目「截图项目」→ 点左栏那条绑项目的种子会话
     （`sessions/chat-seed-project.json`，`meta.projectId = 'capture'`）→ 切到「文件」tab；
     act 的返回值不进 report，读数挂在 `window.__auroraFileProjectAct` 上由 check 读取
-    （act 自己的失败必须能被看见，否则会静默假 PASS）。check 断言：根标签「项目：截图项目」、
-    根目录里 `assets` 与 `报告.md` 都在且**目录排在前**、点目录进下层（相对路径变 `assets`、
-    上级按钮可点）、点上级回根、点文件在面板内预览（markdown 正文可见 + 返回按钮）、
-    点返回回列表；**收尾**点回原会话行（用应用自己的行按钮，不猜标题）+ 撤销项目登记，
-    两条都并入 `restored`；
+    （act 自己的失败必须能被看见，否则会静默假 PASS）。check 断言：面包屑根段「项目：截图项目」
+    （且此时只有一段）、根目录里 `assets` / `报告.md` / `宽内容.md` 都在且**目录排在前**、
+    **导航历史**（点目录进下层 → 面包屑多一段 → 点「后退」回根只剩一段 → 点「前进」再进下层
+    → 点「上级」回根）、点文件在面板内预览（markdown 正文可见 + 「返回列表」按钮在）、
+    点它回列表、**宽内容布局护栏**（预览 `宽内容.md` 时 `aside.scrollWidth` 与
+    `.fp` 的 `scrollWidth` 都不超 `clientWidth`，且工具条五枚按钮的矩形全落在 aside 可视矩形内）、
+    宽内容预览也能退出回列表；**收尾**点回原会话行（用应用自己的行按钮，不猜标题）+
+    撤销项目登记，两条都并入 `restored`；
   - **`show_preview` 推送链路的渲染层半边**（`chatFileProjectAct` + `mainAct` /
     `CHAT_PREVIEW_TOOL_CHECK`，产物 `chat-preview-tool.png`，2026-10-03）：act 同上（切到
     绑项目的会话，会话 id 必须与推送的 `sessionId` 一致才被采纳）；`mainAct` 合成一条
     `preview:show`（通道与 payload 形状与工具实际推送一致，由主进程 `webContents.send` 发出）；
     check 断言右栏**自动切到「浏览器」tab**、webview 真的加载了 `file://` 夹具
     （读 `webview.getURL()`，轮询到就绪为止 —— 「面板在但没导航过去」是最可能的失效）、
-    地址栏显示原始路径。主进程侧的目标校验（http(s) / 越界 / 不存在 / `file:` 之外的协议 /
-    子代理会话 id 剥回父会话）由 `apps/desktop/src/main/tools/preview-port.test.ts` 覆盖，
+    地址栏显示原始路径、**导航工具条四枚按钮都在且量得出尺寸**
+    （`chat.browser-back` / `-forward` / `-reload` / `-home`，宽高 > 8px ——
+    2026-10-03 之前是 `‹ › ⟳ ⌂` 字形按钮，用户口径「没有刷新、上一步等按钮」，
+    这条把「有真正可见的按钮」钉住）。主进程侧的目标校验（http(s) / 越界 / 不存在 /
+    `file:` 之外的协议 / 子代理会话 id 剥回父会话）由
+    `apps/desktop/src/main/tools/preview-port.test.ts` 覆盖，
     工具层契约由 `packages/agent-core/src/tools/preview.test.ts` 覆盖；
   - **思考过程折叠块**（`CHAT_THINKING_BLOCK_ACT` / `CHAT_THINKING_BLOCK_CHECK`，
     产物 `chat-thinking-block.png`，BetaV2）：前提是 `seedChatTtsHistory` 种下的带 `reasoning`

@@ -635,12 +635,14 @@ const noSessionsAtAll = computed(
 </template>
 
 <style scoped>
-/* 宽度跟随外层 aside 的 `--nav-w`（2026-10-03 起可拖拽调宽）：内容按同一宽度排版，
-   折叠时 aside 宽度收 0，这里保持内容不被压缩换行（与右栏 `--ctx-w` 同款） */
+/* 宽度跟随外层 aside 的**实际**宽度 `--nav-w-eff`（2026-10-03 起可拖拽调宽）：内容按同一宽度排版，
+   折叠时 aside 宽度收 0，这里保持内容不被压缩换行（与右栏 `--ctx-w-eff` 同款）。
+   ⚠️ 不要读裸 `--nav-w`：那只是期望宽度，实际还受窗口 40% 约束（见 App.vue 的 `.nav`）。 */
 .nav-inner {
   display: flex;
   flex-direction: column;
-  width: var(--nav-w, 240px);
+  width: var(--nav-w-eff, 240px);
+  min-width: 0;
   height: 100%;
   padding: var(--space-3);
   gap: var(--space-2);

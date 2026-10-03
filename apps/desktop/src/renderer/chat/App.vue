@@ -120,7 +120,22 @@ const jobsOpen = ref(true)
 const NAV_WIDTH_KEY = 'aurora.chat.navWidth'
 const NAV_WIDTH_DEFAULT = 240
 const NAV_WIDTH_MIN = 200
-const NAV_WIDTH_MAX = 420
+/** 左栏上限（2026-10-03 提高）：420 → 520，且再受窗口相对上限约束（见 columnMaxWidth） */
+const NAV_WIDTH_MAX = 520
+
+/** 侧栏宽度相对窗口的上限：再宽也要给主区留出空间（左栏 40% / 右栏 62%） */
+const NAV_WIDTH_RATIO = 0.4
+const CTX_WIDTH_RATIO = 0.62
+
+/**
+ * 某一侧的实际上限 = min(绝对上限, 窗口宽 × 比例)，且不低于下限。
+ *
+ * 拖动时按**当下窗口宽**算（窗口最大化时右栏能拖得更宽），CSS 侧另有一条 `min(…, 62vw)`
+ * 兜底：窗口缩小后已存下的宽度会跟着收，不会把主区挤没。
+ */
+function columnMaxWidth(min: number, absolute: number, ratio: number): number {
+  return Math.max(min, Math.min(absolute, Math.round(window.innerWidth * ratio)))
+}
 
 const navEl = ref<HTMLElement | null>(null)
 
@@ -148,6 +163,10 @@ function saveWidth(key: string, value: number): void {
   }
 }
 
+/**
+ * 读一个宽度记忆值：按**绝对**上下限夹取（窗口相对上限交给 CSS 的 `min(…, Nvw)`，
+ * 这样窗口缩小后存下来的宽度会跟着收，而不是被写坏成一个小值）。
+ */
 const navWidth = ref(loadWidth(NAV_WIDTH_KEY, NAV_WIDTH_DEFAULT, NAV_WIDTH_MIN, NAV_WIDTH_MAX))
 
 function saveNavWidth(): void {
@@ -212,7 +231,7 @@ function onNavResizeStart(event: PointerEvent): void {
   const left = navEl.value?.getBoundingClientRect().left ?? 0
   startColumnResize(event, {
     min: NAV_WIDTH_MIN,
-    max: NAV_WIDTH_MAX,
+    max: columnMaxWidth(NAV_WIDTH_MIN, NAV_WIDTH_MAX, NAV_WIDTH_RATIO),
     widthAt: (clientX) => clientX - left,
     apply: (width) => {
       navWidth.value = width
@@ -243,11 +262,16 @@ const previewTarget = ref<BrowserTarget | null>(null)
 let previewTokenSequence = 0
 let offPreviewShow: (() => void) | null = null
 
-/** 右栏宽度（px）：存 localStorage（视图偏好不进 config schema），280–560 夹取 */
+/** 右栏宽度（px）：存 localStorage（视图偏好不进 config schema），280–720 夹取 */
 const CTX_WIDTH_KEY = 'aurora.chat.ctxWidth'
 const CTX_WIDTH_DEFAULT = 384
 const CTX_WIDTH_MIN = 280
-const CTX_WIDTH_MAX = 560
+/**
+ * 右栏上限（2026-10-03 提高）：560 → 720。这一条是用户点名要的 —— 预览长文件、
+ * 看代码块时 560 上限太窄，内容被挤成一列。实际可用上限再受窗口相对上限约束
+ * （`columnMaxWidth`，62%），窗口最大化时能拖到 720，小窗口下自动收窄。
+ */
+const CTX_WIDTH_MAX = 720
 
 const ctxWidth = ref(loadWidth(CTX_WIDTH_KEY, CTX_WIDTH_DEFAULT, CTX_WIDTH_MIN, CTX_WIDTH_MAX))
 
@@ -264,7 +288,7 @@ function resetCtxWidth(): void {
 function onCtxResizeStart(event: PointerEvent): void {
   startColumnResize(event, {
     min: CTX_WIDTH_MIN,
-    max: CTX_WIDTH_MAX,
+    max: columnMaxWidth(CTX_WIDTH_MIN, CTX_WIDTH_MAX, CTX_WIDTH_RATIO),
     widthAt: (clientX) => window.innerWidth - clientX,
     apply: (width) => {
       ctxWidth.value = width
@@ -1439,7 +1463,7 @@ async function markGuideDone(): Promise<void> {
     >
       <!--
         拖拽调宽把手（右缘 6px 竖条，cursor: col-resize）：与右栏同一套实现
-        （`startColumnResize`），宽度存 localStorage、200–420px 夹取、双击复位。
+        （`startColumnResize`），宽度存 localStorage、200–520px 夹取（再受窗口 40% 约束）、双击复位。
         收起态不渲染（width 为 0 时把手没有意义）。
       -->
       <div
@@ -1786,7 +1810,7 @@ async function markGuideDone(): Promise<void> {
     >
       <!--
         拖拽调宽把手（左缘 6px 竖条，cursor: col-resize）：宽度存 localStorage
-        （视图偏好不进 config schema，与 docs/07 的既定原则一致），280–560px 夹取。
+        （视图偏好不进 config schema，与 docs/07 的既定原则一致），280–720px 夹取（再受窗口 62% 约束）。
         双击复位默认宽。收起态不渲染（width 为 0 时把手没有意义）。
       -->
       <div
@@ -1856,9 +1880,17 @@ async function markGuideDone(): Promise<void> {
 
 <style scoped>
 /**
- * 三栏 grid（spec §3）：左栏 240px（可调 200–420）· 主区自适应 · 右栏 384px（可调 280–560）。
+ * 三栏 grid（spec §3）：左栏 240px（可调 200–520 · 窗口 40%）· 主区自适应 · 右栏 384px
+ * （可调 280–720 · 窗口 62%）。
  * 折叠用「宽度收 0 + 内容固定宽被裁剪」而不是 v-show：display:none 没有过渡，
  * 而宽度过渡能让侧栏沿 --ease-spring 滑入滑出（prefers-reduced-motion 全局降级）。
+ *
+ * ⚠️ `grid-template-columns: minmax(0, 1fr)` 不能省（2026-10-03 实测踩过）：隐含的
+ * `auto` 列表格轨的下限是**内容的 min-content**，预览一份带长代码行的文件时整栏内容
+ * 会横向撑破 aside —— 表现是「文字被窗口右缘切断、目录条上的按钮整排消失」
+ * （它们被推到可视区之外，DOM 里还在，所以只查 DOM 的探针全绿）。minmax(0, 1fr) +
+ * 面板内的 min-width:0 把内容锁在栏宽内，超出部分由面板自己滚动。
+ * 同理，宽度写 `min(变量, Nvw)`：窗口缩小时已存的宽度跟着收，主区不会被挤没。
  */
 .app-shell {
   display: grid;
@@ -1893,27 +1925,40 @@ async function markGuideDone(): Promise<void> {
 }
 
 .nav {
-  /* 宽度可拖拽（2026-10-03）：内联 `--nav-w`（200–420px，localStorage 记忆），缺省 240 */
-  width: var(--nav-w, 240px);
+  /**
+   * 宽度可拖拽（2026-10-03）：内联 `--nav-w`（200–520px，localStorage 记忆），缺省 240。
+   * `--nav-w-eff` = 实际生效宽度（再受窗口 40% 约束，拖拽上限同口径见 columnMaxWidth）：
+   * **栏内所有「跟栏等宽」的子元素都读它**（SessionNav 的 `.nav-inner`），
+   * 一是窗口缩小时不会比 aside 还宽，二是折叠动画期间内容按固定宽排版、不跟着挤压换行。
+   */
+  --nav-w-eff: min(var(--nav-w, 240px), 40vw);
+  width: var(--nav-w-eff);
   position: relative;
   background: var(--fill-1);
   border-right: 1px solid var(--border-subtle);
   /* 左栏固定项已整体收进 SessionNav：单行网格，SessionNav 占满整栏（含底部固定项） */
   display: grid;
   grid-template-rows: minmax(0, 1fr);
+  /* 同右栏：锁住横向 —— 长会话标题不许把栏撑破（撑破会连底部固定项一起挤出可视区） */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .context {
-  /* 宽度可拖拽（2026-10-03）：内联 `--ctx-w`（280–560px，localStorage 记忆），缺省 384 */
-  width: var(--ctx-w, 384px);
+  /** 宽度可拖拽（2026-10-03）：内联 `--ctx-w`（280–720px，localStorage 记忆），缺省 384。
+   *  `--ctx-w-eff` 是实际生效宽度（见 `.nav` 的注释）：JobPanel / ContextPanel 读它。 */
+  --ctx-w-eff: min(var(--ctx-w, 384px), 62vw);
+  width: var(--ctx-w-eff);
   background: var(--fill-1);
   border-left: 1px solid var(--border-subtle);
   position: relative;
   /**
    * 两行网格：tab 条（auto）+ 功能窗格（占满剩余高度）。
+   * 列轨用 `minmax(0, 1fr)` 而不是隐含 auto：auto 的下限是内容 min-content，
+   * 预览带长行的文件时会把整栏撑宽（按钮被挤出可视区，见 .app-shell 的注释）。
    */
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* 拖拽调宽把手：左右栏各贴自己的内缘（6px 竖条，可命中区比视觉宽），hover / 拖拽中亮起 */
@@ -1987,13 +2032,18 @@ body.col-resizing .nav {
 .ctx-panes {
   display: grid;
   min-height: 0;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .ctx-pane {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
+  /* 面板内容再宽也只在自己内部滚动，绝不撑破右栏 */
+  overflow: hidden;
 }
 
 /* 文件预览 / 终端 / 浏览器面板是单列 flex（组件内部自管滚动），不吃两行网格 */

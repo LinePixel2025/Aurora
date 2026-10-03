@@ -205,13 +205,15 @@ const summary = computed(() => {
 </template>
 
 <style scoped>
-/* 固定像素宽（跟随右栏 `--ctx-w` 变量，2026-10-03 起可拖拽调宽）：
-   外层 aside 折叠时宽度收 0，这里保持内容不被压缩换行（与右栏同一口径） */
+/* 固定像素宽（跟随右栏实际宽度 `--ctx-w-eff`，2026-10-03 起可拖拽调宽）：
+   外层 aside 折叠时宽度收 0，这里保持内容不被压缩换行（与右栏同一口径）。
+   ⚠️ 读 `--ctx-w-eff`（实际生效宽度，还受窗口 62% 约束），不要读裸 `--ctx-w`。 */
 .job-panel {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  width: var(--ctx-w, 384px);
+  width: var(--ctx-w-eff, 384px);
+  min-width: 0;
   padding: var(--space-3) var(--space-3) 0;
   background: var(--fill-1);
   border-bottom: 1px solid var(--border-subtle);
