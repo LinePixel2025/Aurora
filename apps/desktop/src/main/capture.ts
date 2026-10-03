@@ -1662,14 +1662,18 @@ export const CHAT_JOB_PANEL_CHECK = `(async () => {
 })()`
 
 /**
- * 右栏功能 tab 场景（2026-10-03，docs/07 §2.3）。
+ * 右栏功能 tab 场景（2026-10-03，docs/07 §2.3；同日二次修订为多标签）。
  *
  * act 顺序刻意是「先终端、后文件、**停在文件 tab 不再切走**」：
  * - 文件预览的越界拒绝现场要留在截图里（输入框里的路径 + 红色错误文案）——
- *   切走再切回会让 `FilePreviewPanel` 因 `v-if` 重挂载、内部 state 全部清空
- *   （第一版就踩了这个：切回 files 之后截图里输入框是空的、errorText 也是空串）；
+ *   切走再切回会让 `FilePreviewPanel` 的输入框与错误文案随历史栈复位（第一版就踩了
+ *   这个：切回 files 之后截图里输入框是空的、errorText 也是空串）；
  * - 终端只是**初始化**（等 `.xterm` 挂上即返回，PTY 输出是异步的，不等 banner）；
- *   跨 tab 往返存活的断言在 check 里做。
+ *   切标签往返存活的断言在 check 里做。
+ *
+ * 切标签一律直接点 `chat.ctx-tab-<id>` 锚点（**折叠时锚点在 ＋N 菜单里，仍是可点的
+ * 元素** —— `.click()` 与可见性无关）；标签条自身的折叠 / 菜单交互由 `chat-ctx-tabs`
+ * 场景用真实 UI 覆盖，两者分工见那条的场景注释。
  *
  * 越界路径选 `C:\\Windows\\win.ini`：越界判定发生在 stat **之前**，因此路径是否存在
  * 无关（离线可跑），也**不写任何用户目录** —— Agent 空间会话的边界根是真实桌面，
@@ -1685,7 +1689,7 @@ export const CHAT_RIGHT_TABS_ACT = `(async () => {
       el.click()
       return true
     }
-    // 终端 tab：等 xterm 的根节点挂上（组件挂载即创建模块级实例）
+    // 终端 tab：等 xterm 的根节点挂上（面板**首次激活挂载**，之后常驻）
     clickTab('terminal')
     let xterm = false
     for (let attempt = 0; attempt < 40 && !xterm; attempt += 1) {
@@ -1727,8 +1731,8 @@ export const CHAT_RIGHT_TABS_ACT = `(async () => {
  * ② 越界文案含「边界」（安全拒绝在渲染层链路可见，act 留下的现场）；
  * ③ tab 互斥：切到 files 时 `chat.jobs`（上下文 tab 的 DOM）不在，切回 context 时恢复 ——
  *    「旧探针零改动兼容」正依赖这条：上下文 tab 的 DOM 结构逐字保留；
- * ④ 终端 `xterm` 跨 tab 往返存活（模块级单例 + 容器 detach/attach）：切走再切回后
- *    `.xterm` 仍在、行文本长度不减少（缓冲没有丢）；
+ * ④ 终端 `xterm` 跨标签往返存活（面板首次激活挂载、之后常驻，切走只是 `display:none`）：
+ *    切走再切回后 `.xterm` 仍在、行文本长度不减少（缓冲没有丢）；
  * ⑤ 浏览器 tab 面板出现（webview 不等待网络加载 —— 离线可跑）。
  */
 export const CHAT_RIGHT_TABS_CHECK = `(async () => {
@@ -1820,7 +1824,7 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     }
     const fileToolbarInView = toolbarInView()
 
-    // 终端 tab：切过去读行文本（act 已初始化过，模块级单例应直接可见）
+    // 终端标签：切过去读行文本（act 已初始化过，常驻面板应直接可见）
     clickTab('terminal')
     await wait(300)
     const terminalOn = has('[data-field="chat.terminal"]')
@@ -2035,6 +2039,257 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
         textAfter.length >= textBefore.length &&
         browserOn &&
         contextOn,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 右栏多标签场景（2026-10-03 二次修订，docs/07 §2.3）。
+ *
+ * 与 `chat-right-tabs` 的分工：那条场景直接点 `chat.ctx-tab-<id>` 锚点切标签
+ * （折叠时锚点在 ＋N 菜单里，`.click()` 照样派发 —— 它覆盖的是面板生命周期 / 宽度 /
+ * caption 互斥），**标签条自身的开 / 折叠 / 关闭交互由本场景走真实 UI 覆盖**。
+ *
+ * 现场（截图停在这里）：用「＋」菜单开出第二个浏览器标签后，**展开「＋N」菜单** ——
+ * 截图要一眼看到三件事：可见标签 + 「＋N」按钮 + 被折叠标签的菜单（菜单在 48px 顶带
+ * **之下**，不碰窗口三键）。后续的激活 / 关闭 / 第二个终端都在 check 里做（截图之后）。
+ */
+export const CHAT_CTX_TABS_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const report = { ok: false, reason: '', opened: false, menuOpen: false }
+  window.__auroraCtxTabsAct = report
+  try {
+    // ① 「＋」菜单 → 新建浏览器标签（第二个浏览器实例）
+    const plus = document.querySelector('[data-field="chat.ctx-new-tab"]')
+    if (plus === null) { report.reason = '没有 ＋ 按钮'; return report }
+    plus.click()
+    await wait(200)
+    const item = document.querySelector('[data-field="chat.ctx-new-browser"]')
+    if (item === null) { report.reason = '新建菜单里没有浏览器项'; return report }
+    item.click()
+    await wait(500)
+    report.opened = document.querySelector('[data-tab-id="browser-2"]') !== null
+    if (!report.opened) { report.reason = '第二个浏览器标签没有出现'; return report }
+    // ② 展开「＋N」菜单（截图停在这里）
+    const more = document.querySelector('[data-field="chat.ctx-tab-more"]')
+    if (more === null) { report.reason = '没有 ＋N 按钮（标签没被折叠？）'; return report }
+    more.click()
+    await wait(300)
+    const menu = document.querySelector('[data-field="chat.ctx-more-menu"]')
+    report.menuOpen = menu !== null && getComputedStyle(menu).display !== 'none'
+    report.ok = report.opened && report.menuOpen
+    if (!report.ok) report.reason = '＋N 菜单没有展开'
+    return report
+  } catch (error) {
+    report.reason = String(error)
+    return report
+  }
+})()`
+
+/**
+ * 右栏多标签的断言（2026-10-03 二次修订，docs/07 §2.3）。
+ *
+ * 六件事（现场由 ACT 留下：第二个浏览器标签 + 展开的 ＋N 菜单）：
+ * ① **折叠计数**：＋N 的文案 = 标签总数 − 可见数（可见 = 矩形宽 > 8 的那些 ——
+ *    被折叠的标签在菜单里，`display:none` 的矩形宽是 0）；
+ * ② **菜单不碰三键**：菜单打开时的矩形与任意 caption 按钮矩形**无交集**，且菜单整体在
+ *    48px 顶带之下（`top >= 44`）—— 用户点名的「不要遮挡三键」就钉在这两条上；
+ * ③ **滑动窗口**：从菜单激活一个被折叠的标签后，它必须回到可见区（否则用户会看着别的
+ *    标签、内容却是另一个的）；
+ * ④ **关闭**：点它的 ✕ → 标签总数回落；
+ * ⑤ **多终端是不同 PTY**：再开一个终端标签后，两个 `chat.terminal-host` 的
+ *    `data-terminal-id` 互异且非空 —— 只数 DOM 个数是数不出「两个标签共用一条 shell」的
+ *    （那正是「每窗口一个 shell」时代的失效形态）；
+ * ⑥ **收尾**：把多开的两个标签关掉、激活回「上下文」，标签总数回到初始 4 ——
+ *    本场景不 reload，收尾不干净会污染后面的场景（docs/07 §5.3 的教训）。
+ */
+export const CHAT_CTX_TABS_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const act = window.__auroraCtxTabsAct || { ok: false, reason: 'act 没有留下读数' }
+    // 标签条**可见区**里有哪些标签：只看列表里的（菜单打开时，被折叠的标签也在 DOM 且
+    // 有尺寸 —— 按「矩形宽 > 8」判会把菜单项一起数进来，那正是这一版探针踩过的坑）
+    const stripTabs = () =>
+      Array.from(document.querySelectorAll('[data-field="chat.ctx-tab-list"] [data-tab-id]'))
+    const visibleIds = () =>
+      stripTabs()
+        .filter((el) => el.getBoundingClientRect().width > 8)
+        .map((el) => el.getAttribute('data-tab-id'))
+    /**
+     * 全部标签（可见 + 被折叠）：用「chat.ctx-tab-」前缀 + data-tab-id 两个条件一起选 ——
+     * 窗格也有 data-tab-id，只按后者数会把窗格一起数进来（这一版探针踩过）。
+     */
+    const allTabs = () =>
+      Array.from(document.querySelectorAll('[data-field^="chat.ctx-tab-"][data-tab-id]'))
+    const textOf = (selector) => {
+      const el = document.querySelector(selector)
+      return el === null ? '' : (el.textContent || '').trim()
+    }
+    const overlap = (a, b) =>
+      a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1
+
+    const total = allTabs().length
+    const visible = visibleIds()
+    const folded = total - visible.length
+    const moreLabel = textOf('[data-field="chat.ctx-tab-more"]')
+    const countOk = folded > 0 && moreLabel === '+' + folded
+
+    // 菜单（act 展开的现场）：向下弹、不碰三键
+    const menu = document.querySelector('[data-field="chat.ctx-more-menu"]')
+    const menuOpen = menu !== null && getComputedStyle(menu).display !== 'none'
+    const menuRect = menu === null ? null : menu.getBoundingClientRect()
+    const captionRects = Array.from(document.querySelectorAll('[data-caption-btn]')).map((el) =>
+      el.getBoundingClientRect()
+    )
+    const menuClearOfCaption =
+      menuRect !== null && captionRects.every((rect) => !overlap(menuRect, rect))
+    const menuBelowHead = menuRect !== null && menuRect.top >= 44
+    const menuItems = menu === null ? [] : Array.from(menu.querySelectorAll('[data-tab-id]'))
+    const menuCountsFolded = menuItems.length === folded
+
+    // ③ 从菜单激活一个被折叠的标签 → 滑动窗口把它带回可见区
+    const pickId = menuItems.length === 0 ? '' : menuItems[0].getAttribute('data-tab-id')
+    if (menuItems.length > 0) menuItems[0].click()
+    await wait(400)
+    const pickedVisible = pickId !== '' && visibleIds().indexOf(pickId) !== -1
+    const pickedEl = pickId === '' ? null : document.querySelector('[data-tab-id="' + pickId + '"]')
+    const pickedActive = pickedEl !== null && (pickedEl.className || '').indexOf('active') !== -1
+
+    // ④ 关掉它（✕）
+    const closeBtn = pickId === '' ? null : document.querySelector('[data-field="chat.ctx-tab-close-' + pickId + '"]')
+    if (closeBtn !== null) closeBtn.click()
+    await wait(400)
+    const afterClose = allTabs().length
+    const closed = afterClose === total - 1
+
+    // ⑤ 再开一个终端标签 → 两个终端必须是不同的 PTY
+    // 先把**默认**终端标签激活并等它的 PTY 就绪（本场景可能单独跑，那时它还没挂载过），
+    // 再开第二个 —— 两个 host 都就绪才谈得上「是不是同一条 shell」。
+    const defaultTerm = document.querySelector('[data-field="chat.ctx-tab-terminal"]')
+    if (defaultTerm !== null) defaultTerm.click()
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const host = document.querySelector('[data-field="chat.terminal-host"]')
+      if (host !== null && (host.getAttribute('data-terminal-id') || '') !== '') break
+      await wait(250)
+    }
+    const plus = document.querySelector('[data-field="chat.ctx-new-tab"]')
+    if (plus !== null) plus.click()
+    await wait(200)
+    const termItem = document.querySelector('[data-field="chat.ctx-new-terminal"]')
+    if (termItem !== null) termItem.click()
+    let twoTerms = false
+    let terminalIds = []
+    for (let attempt = 0; attempt < 40 && !twoTerms; attempt += 1) {
+      const hosts = Array.from(document.querySelectorAll('[data-field="chat.terminal-host"]'))
+      terminalIds = hosts.map((el) => el.getAttribute('data-terminal-id') || '')
+      twoTerms =
+        hosts.length >= 2 &&
+        terminalIds.every((id) => id !== '') &&
+        new Set(terminalIds).size === terminalIds.length
+      if (!twoTerms) await wait(250)
+    }
+
+    // ⑤′ 容量随宽度变化：把右栏拖宽 → 同时可见的标签变多。
+    // 「固定数量」是**按标签条实测宽度算出来的**（固定 88px 不缩窄 → 宽度里能塞几个就显示几个），
+    // 不是写死的 2 —— 这一条把它钉住。拖完双击复位（与 chat-right-tabs 同款，收尾不留脏宽度）。
+    const dragResizer = (selector, toX) => {
+      const el = document.querySelector(selector)
+      if (el === null) return false
+      const opts = { bubbles: true, pointerId: 9, clientX: el.getBoundingClientRect().left }
+      el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, button: 0, buttons: 1 }))
+      el.dispatchEvent(
+        new PointerEvent('pointermove', { ...opts, button: 0, buttons: 1, clientX: toX }),
+      )
+      el.dispatchEvent(new PointerEvent('pointerup', { ...opts, button: 0, buttons: 0, clientX: toX }))
+      return true
+    }
+    dragResizer('[data-field="chat.ctx-resizer"]', Math.round(window.innerWidth) - 560)
+    await wait(450)
+    const wideVisible = visibleIds().length
+    const widenWorks = wideVisible > visible.length
+    const resizerEl = document.querySelector('[data-field="chat.ctx-resizer"]')
+    if (resizerEl !== null) resizerEl.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    await wait(450)
+    const asideEl = document.querySelector('aside.context')
+    const resetWidth = asideEl === null ? 0 : Math.round(asideEl.getBoundingClientRect().width)
+    const widthRestored = Math.abs(resetWidth - 384) < 2
+
+    // ⑥ 收尾：关掉多开的两个标签（browser-2 / terminal-2），把步骤 ④ 关掉的那个默认标签
+    // 补回来（种类 id 会复用，补回来的就是原来那个 id），再激活回「上下文」——
+    // 本场景**不 reload**，收尾不干净会污染后面的场景（docs/07 §5.3 的教训）。
+    for (const id of ['browser-2', 'terminal-2']) {
+      const btn = document.querySelector('[data-field="chat.ctx-tab-close-' + id + '"]')
+      if (btn !== null) {
+        btn.click()
+        await wait(300)
+      }
+    }
+    for (const kind of ['context', 'files', 'terminal', 'browser']) {
+      if (document.querySelector('[data-tab-id="' + kind + '"]') !== null) continue
+      const reopen = document.querySelector('[data-field="chat.ctx-new-tab"]')
+      if (reopen === null) break
+      reopen.click()
+      await wait(200)
+      const item = document.querySelector('[data-field="chat.ctx-new-' + kind + '"]')
+      if (item === null) break
+      item.click()
+      await wait(350)
+    }
+    const contextTab = document.querySelector('[data-field="chat.ctx-tab-context"]')
+    if (contextTab !== null) {
+      contextTab.click()
+      await wait(300)
+    }
+    const restoredCount = allTabs().length
+    const contextEl = document.querySelector('[data-field="chat.ctx-tab-context"]')
+    const restored =
+      restoredCount === 4 &&
+      contextEl !== null &&
+      (contextEl.className || '').indexOf('active') !== -1
+
+    return {
+      actOk: act.ok,
+      actReason: act.reason || '',
+      moreLabel,
+      total,
+      visible,
+      folded,
+      countOk,
+      menuOpen,
+      menuCountsFolded,
+      menuClearOfCaption,
+      menuBelowHead,
+      pickId,
+      pickedVisible,
+      pickedActive,
+      afterClose,
+      closed,
+      terminalIds,
+      twoTerms,
+      wideVisible,
+      widenWorks,
+      resetWidth,
+      widthRestored,
+      restoredCount,
+      restored,
+      pass:
+        act.ok === true &&
+        countOk &&
+        menuOpen &&
+        menuCountsFolded &&
+        menuClearOfCaption &&
+        menuBelowHead &&
+        pickId !== '' &&
+        pickedVisible &&
+        pickedActive &&
+        closed &&
+        twoTerms &&
+        // 容量确实随宽度变（不是写死的可见数），且收尾把宽度与标签集都复原
+        widenWorks &&
+        widthRestored &&
+        restored,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -2335,6 +2590,33 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
       return r.width > 8 && r.height > 8
     })
 
+    // **切标签不重载**（2026-10-03 二次修订，docs/07 §2.3）：浏览器面板随标签常驻，
+    // 切走只是 display:none。判据取两个**实测事实**：
+    // ① 先在页面里打一个标记，切到文件标签再切回来，标记仍在 —— 页面没有被重新加载
+    //    （旧版「webview 重挂载即重载」的失效形态会让标记消失）；
+    // ② 回来后 guest 的 innerWidth 仍是面板宽度量级 —— 从 display:none 回来时视口没被
+    //    塌成 0（那是「切回来一片空白」的典型失效）。
+    let noReload = false
+    let guestInnerWidth = 0
+    if (guest !== null && typeof guest.executeJavaScript === 'function') {
+      try {
+        await guest.executeJavaScript('window.__auroraNoReload = 42')
+        const filesTab = document.querySelector('[data-field="chat.ctx-tab-files"]')
+        if (filesTab !== null) { filesTab.click(); await wait(500) }
+        const backTab = document.querySelector('[data-field="chat.ctx-tab-browser"]')
+        if (backTab !== null) { backTab.click(); await wait(500) }
+        const raw = await guest.executeJavaScript(
+          'JSON.stringify({ marker: window.__auroraNoReload || 0, width: window.innerWidth })',
+        )
+        const parsed = JSON.parse(raw)
+        noReload = parsed.marker === 42
+        guestInnerWidth = typeof parsed.width === 'number' ? parsed.width : 0
+      } catch (error) {
+        noReload = false
+      }
+    }
+    const guestSized = guestInnerWidth > 120
+
     // 收尾：切回原会话 + 撤销项目登记（与 chat-file-project 同一套）
     let restored = false
     const prevText = window.__auroraFileProjectPrevText || ''
@@ -2361,6 +2643,9 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
       guestUrl: loaded,
       browserBar: toolbarIds,
       browserBarSized: browserBarSized,
+      noReload,
+      guestInnerWidth,
+      guestSized,
       restored,
       pass:
         act.ok === true &&
@@ -2372,7 +2657,10 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
         // 导航工具条四枚按钮都在且有实际尺寸（2026-10-03：此前是字形按钮，
         // 又细又淡到被当成「没有按钮」——这里钉住「有尺寸的按钮」这个事实）
         toolbarIds.join('|') === 'back|forward|reload|home' &&
-        browserBarSized,
+        browserBarSized &&
+        // 切标签往返：页面没重载（标记仍在）且回来后 guest 视口没塌成 0
+        noReload &&
+        guestSized,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -9134,6 +9422,15 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: CHAT_RIGHT_TABS_ACT,
       check: CHAT_RIGHT_TABS_CHECK,
     },
+    // 右栏多标签（2026-10-03 二次修订，docs/07 §2.3）：**不 reload** —— 走真实 UI 用
+    // 「＋」菜单开出第二个浏览器标签、展开「＋N」菜单（截图停在这里），check 再验证
+    // 折叠计数、菜单不碰三键、滑动窗口、关闭回落、两个终端是不同 PTY，收尾回初始四标签。
+    {
+      name: 'chat',
+      file: 'chat-ctx-tabs.png',
+      act: CHAT_CTX_TABS_ACT,
+      check: CHAT_CTX_TABS_CHECK,
+    },
     // 终端 tab 的视觉证据（2026-10-03）：黑底 + xterm 在。**不 reload** —— 复用上一个
     // 场景初始化好的常驻 shell，截图里带着提示符；单独跑本场景也不会 FAIL（见 CHECK 注释）。
     {
@@ -9141,8 +9438,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       file: 'chat-terminal.png',
       act: CHAT_TERMINAL_ACT,
       check: CHAT_TERMINAL_CHECK,
-    },
-    // 文件 tab ＝ 会话项目文件夹（2026-10-03，docs/07 §2.3）：prepare 在项目根建出目录与
+    }, // 文件 tab ＝ 会话项目文件夹（2026-10-03，docs/07 §2.3）：prepare 在项目根建出目录与
     // 一份 markdown；act 登记项目 + 切到绑项目的种子会话 + 打开文件 tab；check 断言
     // 根标签「项目：截图项目」、目录在前、逐层进出（含后退/前进历史）、点文件预览、
     // 返回列表，**外加一条布局护栏**：预览带长行的宽内容时右栏不许横向撑破
