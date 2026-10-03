@@ -56,7 +56,6 @@ import {
   TODO_WRITE_TOOL_NAME,
   createCenterSendFileTool,
   createCenterStatusTool,
-  SHOW_PREVIEW_TOOL_NAME,
   type AgentProviderFactory,
   type AskUserPort,
   type CenterPort,

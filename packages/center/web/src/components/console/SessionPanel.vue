@@ -264,7 +264,7 @@ function sessionModelChoices(summary: CenterSessionSummary): string[] {
 }
 
 /** 「跟随全局」选项文案：把客户端全局默认模型名写进去 */
-function sessionFollowGlobal(summary: CenterSessionSummary): string {
+function sessionFollowGlobal(): string {
   const globalModel = llm.value?.model ?? ''
   // 有覆盖时全局默认可能来自另一个 provider（覆盖钉住的 provider）；用全局快照的模型名即可
   return globalModel === '' ? '跟随全局' : `跟随全局（${globalModel}）`
@@ -454,7 +454,7 @@ function toolValue(path: string): boolean | undefined {
                 title="该会话使用的模型（覆盖客户端全局默认）"
                 @change="onSessionModel(item, $event)"
               >
-                <option value="">{{ sessionFollowGlobal(item) }}</option>
+                <option value="">{{ sessionFollowGlobal() }}</option>
                 <option v-for="model in sessionModelChoices(item)" :key="model" :value="model">
                   {{ model }}
                 </option>
