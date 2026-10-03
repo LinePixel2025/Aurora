@@ -661,8 +661,10 @@ export function registerIpc(deps: DesktopDeps): () => void {
    * 右栏「终端」（2026-10-03，docs/07 §2.3）：PTY 交互终端。
    *
    * 刻意**不走上面的 `handle` 封装**：create 需要发起窗口的 `event.sender.id`
-   * （输出只推给创建它的窗口 + 每窗口一个常驻 shell 的记账键），而封装把 event 吞掉了。
+   * （输出只推给创建它的窗口 + 按窗口记账的销毁清理），而封装把 event 吞掉了。
    * 其余三条不需要 sender，直接透传给服务。
+   * 2026-10-03 二次修订：**一个标签一条 PTY**（create 不再复用），到上限时服务抛中文错误，
+   * 这里折成 `E_UNKNOWN` 回执，渲染层面板原样显示原因。
    */
   ipcMain.handle(IPC.terminal.create, (event, request: TerminalCreateRequest) => {
     const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''

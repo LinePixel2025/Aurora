@@ -430,7 +430,7 @@ export interface PreviewShowEvent {
   title: string
 }
 
-// ───────────────────────── PTY 终端（右栏「终端」tab，2026-10-03） ─────────────────────────
+// ───────────────────────── PTY 终端（右栏「终端」标签，2026-10-03） ─────────────────────────
 
 export interface TerminalCreateRequest {
   /** cwd 按**发起会话**的工作目录回落链解析（docs/06 §5.1） */
@@ -438,8 +438,10 @@ export interface TerminalCreateRequest {
 }
 
 export interface TerminalCreateResult {
-  /** 终端 id（同一窗口重复 create 返回同一个 id = 复用常驻 shell） */
+  /** 终端 id（每次 create 都是**新的** shell —— 一个标签一条 PTY，2026-10-03 二次修订） */
   terminalId: string
+  /** 创建时解析出的工作目录（渲染层拿它做标签标题：取末段，如 `Aurora`） */
+  cwd: string
 }
 
 export interface TerminalInputRequest {
@@ -1654,15 +1656,16 @@ export interface AuroraApi {
   }
   terminal: {
     /**
-     * 创建（或复用）发起窗口的常驻 PTY shell（docs/07 §2.3 右栏「终端」tab）。
-     * 同一窗口重复调用返回同一个 `terminalId`；窗口销毁时 shell 由主进程收掉。
+     * 新建一条 PTY shell（docs/07 §2.3 右栏「终端」标签）：**每次调用都是新 shell**
+     * （一个标签一条 PTY，2026-10-03 二次修订；此前是「每窗口一个 shell」的复用语义）。
+     * 每个窗口上限 6 条，超限返回可读错误；窗口销毁时该窗口全部 shell 由主进程收掉。
      */
     create(request: TerminalCreateRequest): Promise<Result<TerminalCreateResult>>
     /** 键盘输入原样透传（非终端 id / 已退出时静默丢弃） */
     input(request: TerminalInputRequest): Promise<Result<boolean>>
     /** cols/rows 变化同步给 PTY（越界值主进程夹取） */
     resize(request: TerminalResizeRequest): Promise<Result<boolean>>
-    /** 主动关闭 shell */
+    /** 主动关闭一条 shell（关闭标签 = 关闭那条 PTY） */
     kill(request: { terminalId: string }): Promise<Result<boolean>>
     /** shell 输出推送（on/off 成对；只推给创建终端的窗口） */
     onData(listener: (event: TerminalDataEvent) => void): () => void
