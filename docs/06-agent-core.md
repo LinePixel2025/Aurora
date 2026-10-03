@@ -202,6 +202,24 @@ export interface LlmProvider {
   窗口模式下**跳过滚动摘要**：不读、不写累计摘要（summaries），`systemPrompt` 不注入
   「更早对话的摘要」小节 —— 旧摘要本身就是同样的污染源。其余会话不受影响，仍全量组装。
   装配开关是 `AgentHostDeps.quickContextWindowMs`（默认 0 = 不启用，行为与从前完全一致）。
+- **会话级用量累计（2026-10-03，`meta.usage`）**：内核在每轮 usage 事件处
+  **先调 `SessionStore.addUsage` 累计进 meta、再广播事件**（字段
+  `promptTokens / completionTokens / totalTokens / cachedTokens / rounds`，随会话文件落盘，
+  300ms 防抖）。渲染层切回会话时以 `chat:sessions` 摘要带出的这份值为**种子**恢复累计
+  （覆盖而非相加——meta 恒 ≥ 渲染层已计入部分），平均缓存命中率因此按**会话**算、
+  跨切换跨重启连续（展示口径见 §21.4）。
+- **手动压缩（2026-10-03，`/compact` → `chat:compact` → `agent.compact`）**：
+  把**当时的全部消息**交给注入的 summarizer 压成一段摘要，写进 `meta.compact`
+  `{ summary, at, upToMessageId }`（`SessionStore.setCompact`，await 落盘）。
+  此后 `run()` 组装历史时只取 `upToMessageId` **之后**的消息（游标 id 被条数环挤掉时
+  按全量兜底），摘要经 `previousSummary` 链注入 systemPrompt 的 `historySummary` 小节——
+  **消息本体不删**，历史仍可在界面回看。三条口径：
+  ① 在跑的会话**拒绝压缩**（E_BUSY 语义，`CompactOutcome.ok: false` 表达，不抛错）；
+  ② 内存 `summaries` Map 与 `meta.compact` 由 compact() 写成同一份——进程内自动压缩链
+  从内存续写，重启后回落落盘的 `meta.compact`（自动压缩的内存摘要仍不落盘，维持原口径）；
+  ③ `/compact` 由渲染层斜杠命令**直接调 IPC**，不进 `chat:send` 发送链。
+  回归护栏：`agentHost.test.ts` 的「手动压缩 /compact」组（落盘 / 组装裁剪 / 摘要注入 /
+  在跑拒绝 / 空会话与无 summarizer 拒绝）。
 - **user-message 事件（2026-09 起）**：`AgentEvent` 新增变体
   `{ type: 'user-message', sessionId, requestId, content, createdAt: number }` ——
   `content` 是用户原文（trim 后，不含技能改写），不带消息 id；内核在 `run()` 开始时广播。
@@ -515,6 +533,15 @@ interface AgentHostDeps {
   同一请求内重复调用同一技能直接返回"已注入，无需重复"。
 - **显式调用**：用户消息以 `/skill名` 或 `@skill名` 开头时，在调用 LLM 之前先把该技能正文注入；
   未知技能名不算错误（按普通文本处理）。
+- **内置命令 `/init`（2026-10-03，与技能表无关的主进程命令）**：渲染层斜杠菜单选中后
+  照常走 `chat:send` 发送链（用户气泡就是 `/init` 三个字符），`ipc.ts` 在透传前识别
+  整串 `/init`（`main/agent-commands.ts` 的 `isInitCommand`），把初始化指令正文拼进本轮
+  `extraContext`（与技能正文同一通道，只影响本轮、不落盘）。指令要求模型：先探查项目
+  结构 → 已有 AGENTS.md 时**补全而非推翻重写** → 用 `write_file` 写在**会话边界根**下
+  （`DesktopDeps.workspaceRootOf` = `sessionProjects.boundaryRoot` 回落链，与 file-port
+  边界同源；未绑定项目时指令里说明这是 Agent 空间固定目录）→ 写完一句话总结。
+  写入走模型自己的 `write_file`，受权限档 / 项目根边界约束，**不开任何旁路**；
+  边界根解析不出时 `/init` 原样透传（按普通提问处理）。
 - **v1 内置 Skill 规划**：
   - `file-classify`：分类管线专用（内容证据 → 科目判定）；
   - `system-status`：直接读取感知当前值（电量 / 网络 / 前台应用等）；

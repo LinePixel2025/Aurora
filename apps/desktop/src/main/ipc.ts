@@ -114,6 +114,7 @@ import type {
   CenterConnectionLike,
 } from './contracts.js'
 import { resolveSubjectFolder } from './paths.js'
+import { buildInitCommandContext, isInitCommand } from './agent-commands.js'
 import { extractPatchSecrets, mergeSettingsPatch } from './settings-patch.js'
 import { redactSettings } from './settings-redact.js'
 import { createEventBuffer } from './event-buffer.js'
@@ -181,6 +182,11 @@ export interface DesktopDeps {
    * 未注入 = 不做边界校验（与 `resolveWithin` 未配根时逐字一致）。
    */
   snapshotGuard?: WorkspaceGuardOptions
+  /**
+   * 会话边界根（`sessionProjects.boundaryRoot` 的回落链，docs/06 §5.1）：`/init` 内置命令
+   * 生成 AGENTS.md 的目标目录。未注入时 `/init` 原样透传（模型只看到三个字符，按普通提问处理）。
+   */
+  workspaceRootOf?: (sessionId?: string) => string | undefined
   /** Job 存储（chat:jobs / resumeJob / cancelJob，docs/06 §4.1，v15） */
   jobs?: JobStore
   /** ClassIsland 桥接（classisland:*，docs/05 §3.4 v2/v3） */
@@ -547,10 +553,26 @@ export function registerIpc(deps: DesktopDeps): () => void {
     // 刻意**不在渲染层**读文件 —— 渲染进程没有 fs 能力，也不该有。
     try {
       const prepared = await prepareAttachments(deps, request.attachments)
+      // 内置命令 `/init`（docs/06 §6）：指令正文拼进 extraContext（与技能正文同一通道），
+      // 用户气泡显示的仍是三个字符 `/init`。边界根解析不出时原样透传，不造一个假目录。
+      const extraSections: Array<string | undefined> = [prepared.extraContext]
+      if (isInitCommand(request.text)) {
+        const root = deps.workspaceRootOf?.(request.sessionId) ?? ''
+        if (root !== '') {
+          const projectId = await deps.sessions.projectIdOf(request.sessionId)
+          extraSections.push(
+            buildInitCommandContext({ root, isProjectRoot: projectId !== undefined }),
+          )
+        }
+      }
+      const extraContext = extraSections
+        .map((section) => section?.trim() ?? '')
+        .filter((section) => section !== '')
+        .join('\n\n')
       return await deps.agent
         .send({
           ...request,
-          ...(prepared.extraContext === undefined ? {} : { extraContext: prepared.extraContext }),
+          ...(extraContext === '' ? {} : { extraContext }),
           ...(prepared.images.length === 0 ? {} : { images: prepared.images }),
         })
         .then(ok, (error: unknown) =>
@@ -560,6 +582,30 @@ export function registerIpc(deps: DesktopDeps): () => void {
       return err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
     }
   })
+  /**
+   * 手动压缩会话上下文（`/compact`，docs/06 §4）：渲染层斜杠命令**选中即调**这条通道
+   * （不进 `chat:send` —— 压缩不产生流式回复，走发送链会让输入区永远停在「流式中」）。
+   * 结局用 `CompactOutcome` 表达（不抛错），失败原因原样回给渲染层展示。
+   */
+  handle<{ summaryChars: number; coveredMessages: number }>(
+    IPC.chat.compact,
+    (request: { sessionId?: string }) => {
+      const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+      if (sessionId === '') {
+        return Promise.resolve(err('E_INVALID_ARGUMENT', '缺少 sessionId'))
+      }
+      return deps.agent
+        .compact(sessionId)
+        .then((outcome) =>
+          outcome.ok
+            ? ok({ summaryChars: outcome.summaryChars, coveredMessages: outcome.coveredMessages })
+            : err('E_UNKNOWN', outcome.error),
+        )
+        .catch((error: unknown) =>
+          err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+        )
+    },
+  )
   /**
    * 附件缩略图（v22 多模态输入，docs/07 §2.3）：渲染层 chip 上那张 48×48 的图。
    *

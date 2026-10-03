@@ -101,6 +101,16 @@ export class DesktopAgentHost implements AgentHost {
     return this.options.kernel.abort(requestId)
   }
 
+  /** 该会话是否正在跑请求（`/compact` 的 E_BUSY 判定；透传内核） */
+  isBusy(sessionId: string): boolean {
+    return this.options.kernel.isBusy(sessionId)
+  }
+
+  /** 手动压缩会话上下文（`/compact`，docs/06 §4；透传内核，结局由 CompactOutcome 表达） */
+  compact(sessionId: string) {
+    return this.options.kernel.compact(sessionId)
+  }
+
   onEvent(listener: (event: AgentEvent) => void): () => void {
     this.listeners.add(listener)
     return () => {

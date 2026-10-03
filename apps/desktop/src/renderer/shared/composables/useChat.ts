@@ -1091,6 +1091,36 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     activeRequest = result.value.requestId
   }
 
+  /**
+   * 手动压缩当前会话上下文（`/compact`，docs/06 §4）：调 `chat:compact`，
+   * 结果以一条系统提示落进消息区。
+   *
+   * 刻意**不走 `send()`**：压缩不产生流式回复，走发送链会把输入区永远停在「流式中」
+   * （没有 done 事件来收尾）。流式期间直接跳过（主进程侧还有 E_BUSY 兜底）。
+   */
+  async function compactContext(): Promise<void> {
+    if (streaming.value) return
+    const target = sessionId.value
+    let result: Awaited<ReturnType<typeof window.aurora.chat.compact>>
+    try {
+      result = await window.aurora.chat.compact(target)
+    } catch (cause) {
+      error.value = String(cause)
+      return
+    }
+    if (sessionId.value !== target) return
+    if (result.ok) {
+      messages.value.push({
+        id: `c-${Date.now()}`,
+        role: 'system',
+        content: `上下文已压缩：${result.value.coveredMessages} 条消息压成 ${result.value.summaryChars} 字摘要，之后的请求只携带压缩点之后的内容（历史消息仍可在本会话回看）。`,
+        createdAt: Date.now(),
+      })
+      return
+    }
+    error.value = result.message
+  }
+
   async function abort(): Promise<void> {
     if (activeRequest === null) return
     const requestId = activeRequest
@@ -1161,6 +1191,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     newSession,
     send,
     abort,
+    /** 手动压缩当前会话上下文（/compact，docs/06 §4） */
+    compactContext,
     clear,
     markRead,
   }

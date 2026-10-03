@@ -57,6 +57,7 @@ import type {
   WindowName,
   WindowState,
 } from '@aurora/shared'
+import type { CompactOutcome } from '@aurora/agent-core'
 import type { ConfirmResolution } from './proactive.js'
 
 /** 也用于 agent-host 的最小依赖面 */
@@ -209,6 +210,13 @@ export interface AgentHost {
   abort(requestId: string): boolean
   onEvent(listener: (event: AgentEvent) => void): () => void
   isReady(): boolean
+  /** 该会话是否正在跑请求（`/compact` 的 E_BUSY 判定用；`KernelAgentHost.isBusy`） */
+  isBusy(sessionId: string): boolean
+  /**
+   * 手动压缩会话上下文（`/compact`，docs/06 §4）：把全部消息压成摘要写进 `meta.compact`，
+   * 此后组装请求只取压缩点之后的消息。**不抛错**：结局用 `CompactOutcome` 表达。
+   */
+  compact(sessionId: string): Promise<CompactOutcome>
 }
 
 /** LLM 连接测试：由主进程用解密后的凭据构造 provider 后调用 */

@@ -96,6 +96,23 @@ export interface SessionModelOverride {
 }
 
 /**
+ * 手动压缩留痕（`/compact`，2026-10-03，docs/06 §4）。
+ *
+ * 用户显式触发（渲染层 `/compact` 命令 → `chat:compact` → 内核 `agent.compact`）：
+ * 把**当时的全部消息**压成一段摘要存进 `meta.compact`，此后组装请求时只取
+ * `upToMessageId` 之后的消息、摘要注入 systemPrompt 的 `historySummary` 小节——
+ * 上下文占用显著下降，而**消息本体不删**（历史仍可在界面回看）。
+ */
+export interface SessionCompact {
+  /** 压缩摘要文本（随每次组装注入 systemPrompt；也参与后续自动压缩的累计链） */
+  summary: string
+  /** 压缩时刻（ISO） */
+  at: string
+  /** 压缩覆盖到的最后一条消息 id：组装请求时只取它**之后**的消息 */
+  upToMessageId: string
+}
+
+/**
  * 会话级元信息（`userData/sessions/<sessionId>.json` 的 `meta` 字段，docs/06 §4）。
  *
  * 刻意存在**会话文件自身**里，不做 sidecar 索引：`listSessions()` 把 `sessions/`
@@ -169,6 +186,12 @@ export interface SessionMeta {
    * 读取侧按白名单宽容归化（畸形值整段丢弃 = 没有累计）。
    */
   usage?: SessionUsageStats
+  /**
+   * 手动压缩留痕（`/compact`，本轮）：`undefined` = 从未手动压缩过。
+   * 与自动压缩（内存 `summaries` Map，重启即丢）不同，这里**随会话文件落盘**，
+   * 重启后上下文仍然是压缩后的口径。同样是会话数据，零迁移。
+   */
+  compact?: SessionCompact
 }
 
 /** `userData/sessions/<sessionId>.json` 的结构（v1 无 `meta`，读取侧必须容忍） */

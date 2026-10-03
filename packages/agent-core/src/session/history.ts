@@ -258,8 +258,13 @@ export async function compressHistory(
   }
 }
 
-/** 从最新开始保留，直到达到文本预算（丢弃部分越旧越先被舍弃）。 */
-function trimForSummary(messages: readonly StoredMessage[]): StoredMessage[] {
+/**
+ * 从最新开始保留，直到达到文本预算（丢弃部分越旧越先被舍弃）。
+ *
+ * `compressHistory` 内部用；**手动压缩**（`KernelAgentHost.compact`，直接把全量消息
+ * 交给 summarizer）也用它裁剪输入 —— 两条路共用同一份预算口径，别再抄第二份。
+ */
+export function trimForSummary(messages: readonly StoredMessage[]): StoredMessage[] {
   const kept: StoredMessage[] = []
   let total = 0
   for (let index = messages.length - 1; index >= 0; index -= 1) {

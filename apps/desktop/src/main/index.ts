@@ -1867,6 +1867,9 @@ async function bootstrap(): Promise<void> {
       workspaceRoot: (sessionId) => sessionProjects.boundaryRoot(sessionId),
       logger: logger.child('snapshots'),
     },
+    // `/init` 内置命令的生成目标目录（docs/06 §6）：同一条 boundaryRoot 回落链，
+    // 与快照 guard、file-port 边界同源（别再抄第二份解析）
+    workspaceRootOf: (sessionId) => sessionProjects.boundaryRoot(sessionId),
     snapshots: {
       capture: (input) => ensureSnapshotPort().capture(input),
       list: (query) => ensureSnapshotPort().list(query),

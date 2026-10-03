@@ -4,7 +4,12 @@
  * 纯逻辑：所有系统能力（模型凭据解密、模式提示词、感知摘要、会话存储）
  * 由主进程以依赖形式注入，因此可在 Node 里完整单测。
  */
-import type { AgentEvent, AgentHost as AgentHostContract, AgentToolCall } from '@aurora/shared'
+import type {
+  AgentCompactOutcome,
+  AgentEvent,
+  AgentHost as AgentHostContract,
+  AgentToolCall,
+} from '@aurora/shared'
 import type { Logger } from '@aurora/shared'
 import { createJob, toJobSummary, type AgentJob, type JobPendingReason } from '../jobs/types.js'
 import type { JobPatch, JobStore } from '../jobs/store.js'
@@ -22,6 +27,7 @@ import {
   compressHistory,
   DEFAULT_MAX_CHARS,
   filterMessagesWithinWindow,
+  trimForSummary,
   type SummarizeFn,
 } from '../session/history.js'
 import type { SessionStore } from '../session/store.js'
@@ -185,6 +191,9 @@ export const ERROR_NO_MODEL = 'E_NO_MODEL'
 export const ERROR_BUSY = 'E_BUSY'
 /** 续跑时 job 不处于 `paused`（已完成 / 在跑 / 出错）：拒绝而不是"假装续跑" */
 export const ERROR_JOB_STATE = 'E_JOB_STATE'
+
+/** 手动压缩结局：形状定义在 shared（`AgentCompactOutcome`，contracts 与内核共用一份） */
+export type CompactOutcome = AgentCompactOutcome
 
 /**
  * 发出事件时的入参形状：`seq` 由 `emit` 统一分配（docs/06 §16.1），
@@ -431,6 +440,57 @@ export class KernelAgentHost implements AgentHostContract {
     this.sessionApprovals.delete(sessionId)
   }
 
+  /**
+   * 手动压缩会话上下文（`/compact`，2026-10-03，docs/06 §4）：把**当时的全部消息**
+   * 交给注入的 summarizer 压成一段摘要，写进 `meta.compact`（随会话文件落盘）。
+   *
+   * 三条口径：
+   * - **消息本体不删**：历史仍完整留在会话文件 / 界面上；压缩只改变「组装请求」的口径 ——
+   *   `run()` 组装历史时只取 `compact.upToMessageId` **之后**的消息，摘要注入 systemPrompt；
+   * - 在跑的会话**拒绝压缩**（E_BUSY 语义）：压缩点取「当前最后一条消息」，与在跑请求
+   *   正在追加的消息会产生竞态（压完又长出窗口外的内容，摘要覆盖不全）；
+   * - 内存 `summaries` Map **同步覆盖**为这份摘要：进程内的自动压缩链从它续写
+   *   （`run()` 的 previousSummary 取值优先内存 Map，重启后才回落 `meta.compact`）。
+   */
+  async compact(sessionId: string): Promise<CompactOutcome> {
+    if (this.active.has(sessionId)) {
+      return { ok: false, error: '该会话正在回复中，请等待或先停止当前回复再压缩' }
+    }
+    const summarize = this.deps.summarize
+    if (summarize === undefined) {
+      return { ok: false, error: '当前没有可用的摘要能力（未配置模型或 summarizer 未注入）' }
+    }
+    const stored = await this.deps.sessions.get(sessionId)
+    if (stored.length === 0) {
+      return { ok: false, error: '会话还没有可压缩的内容' }
+    }
+    try {
+      const text = await summarize({
+        dropped: trimForSummary(stored),
+        previousSummary: this.summaries.get(sessionId),
+      })
+      const summary = text.trim()
+      if (summary === '') {
+        return { ok: false, error: '摘要结果为空，未做压缩' }
+      }
+      const last = stored[stored.length - 1]
+      await this.deps.sessions.setCompact(sessionId, {
+        summary,
+        at: (this.deps.clock ?? ((): Date => new Date()))().toISOString(),
+        upToMessageId: last?.id ?? '',
+      })
+      this.summaries.set(sessionId, summary)
+      this.logger.info('已手动压缩会话上下文', {
+        sessionId,
+        summaryChars: summary.length,
+        coveredMessages: stored.length,
+      })
+      return { ok: true, summaryChars: summary.length, coveredMessages: stored.length }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   // ───────────────────────── 内部 ─────────────────────────
 
   /**
@@ -610,17 +670,34 @@ export class KernelAgentHost implements AgentHostContract {
         const quickWindowMs = this.deps.quickContextWindowMs ?? 0
         const quickWindowActive = sessionId === 'quick' && quickWindowMs > 0
         const storedMessages = await this.deps.sessions.get(sessionId)
-        const scopedMessages = quickWindowActive
-          ? filterMessagesWithinWindow(storedMessages, quickWindowMs)
-          : storedMessages
+        // 手动压缩游标（/compact，docs/06 §4）：`upToMessageId` **之前**的消息不进组装，
+        // 由 `meta.compact.summary` 顶替（元文本进 systemPrompt，下一条 compressHistory
+        // 的 previousSummary 优先取内存 Map——compact() 会把两者写成同一份，
+        // 进程内它总是最新的；重启后内存 Map 为空，才回落落盘的 meta.compact）。
+        // 游标 id 已被条数环挤掉（找不到）时按「全部进组装」兜底：摘要链仍然连续，
+        // 只是这部分旧消息会被重复计入 —— 这是极端长会话下的可接受退化。
+        const compacted = await this.deps.sessions.compactOf(sessionId)
+        const scopedMessages = sliceAfterCompact(
+          quickWindowActive
+            ? filterMessagesWithinWindow(storedMessages, quickWindowMs)
+            : storedMessages,
+          compacted?.upToMessageId,
+        )
+        const inMemorySummary = this.summaries.get(sessionId)
         const compression = await compressHistory(scopedMessages, {
           maxChars: this.deps.maxChars ?? DEFAULT_MAX_CHARS,
           ...(quickWindowActive || this.deps.summarize === undefined
             ? {}
             : { summarize: this.deps.summarize }),
-          ...(quickWindowActive || this.summaries.get(sessionId) === undefined
+          ...(quickWindowActive
             ? {}
-            : { previousSummary: this.summaries.get(sessionId) }),
+            : {
+                previousSummary:
+                  inMemorySummary ??
+                  (compacted === undefined || compacted.summary === ''
+                    ? undefined
+                    : compacted.summary),
+              }),
         })
         if (!quickWindowActive && compression.summary !== undefined) {
           this.summaries.set(sessionId, compression.summary)
@@ -1122,6 +1199,21 @@ export type { AgentToolCall }
 function joinSections(parts: Array<string | undefined>): string | undefined {
   const kept = parts.map((part) => part?.trim() ?? '').filter((part) => part !== '')
   return kept.length === 0 ? undefined : kept.join('\n\n')
+}
+
+/**
+ * 取「手动压缩游标之后」的消息（`run()` 组装用）：找不到游标 id（被条数环挤掉 /
+ * 会话刚清理过）时**全量返回** —— 宁可让摘要与历史有一段重叠，也不能把窗口之后的
+ * 真实历史丢掉。
+ */
+function sliceAfterCompact(
+  messages: readonly StoredMessage[],
+  upToMessageId: string | undefined,
+): StoredMessage[] {
+  if (upToMessageId === undefined || upToMessageId === '') return [...messages]
+  let index = messages.length - 1
+  while (index >= 0 && messages[index]?.id !== upToMessageId) index -= 1
+  return index < 0 ? [...messages] : messages.slice(index + 1)
 }
 
 /**

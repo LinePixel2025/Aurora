@@ -1572,6 +1572,12 @@ export interface AuroraApi {
      */
     deleteSession(sessionId: string): Promise<Result<boolean>>
     /**
+     * 手动压缩会话上下文（`/compact`，docs/06 §4）：把全部消息压成摘要写进 `meta.compact`，
+     * 此后组装请求只取压缩点之后的消息（消息本体不删，历史仍可回看）。
+     * 在跑的会话拒绝（`ok: false`，错误文案即 E_BUSY 语义）；不抛错。
+     */
+    compact(sessionId: string): Promise<Result<{ summaryChars: number; coveredMessages: number }>>
+    /**
      * 归档 / 取消归档一个会话（docs/06 §4）。
      *
      * 状态写在会话文件自身的 `meta` 里；**幂等**，且主进程会等到落盘完成才返回，

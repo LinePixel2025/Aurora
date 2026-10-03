@@ -139,6 +139,8 @@ const api: AuroraApi = {
     newSession: (options) => invoke(IPC.chat.newSession, options),
     // 真删除会话（docs/08 会话管理页）：不可逆，二次确认由调用方负责
     deleteSession: (sessionId) => invoke(IPC.chat.deleteSession, { sessionId }),
+    // 手动压缩上下文（/compact，docs/06 §4）：渲染层斜杠命令直接调，不进 chat:send
+    compact: (sessionId: string) => invoke(IPC.chat.compact, { sessionId }),
     archiveSession: (request) => invoke(IPC.chat.archiveSession, request),
     setSessionProject: (request) => invoke(IPC.chat.setSessionProject, request),
     // 会话级模型覆盖（docs/06 §3，本轮）：model 空串 = 清除覆盖

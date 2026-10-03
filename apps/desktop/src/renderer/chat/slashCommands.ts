@@ -42,6 +42,20 @@ export const BUILTIN_COMMANDS: readonly SlashItem[] = [
     description: '只清当前视图，已保存的历史不受影响',
   },
   {
+    id: 'command:init',
+    kind: 'command',
+    name: 'init',
+    label: '初始化 AGENTS.md',
+    description: '探查当前项目并生成 / 补全 AGENTS.md 指南',
+  },
+  {
+    id: 'command:compact',
+    kind: 'command',
+    name: 'compact',
+    label: '压缩上下文',
+    description: '把历史压成摘要，降低后续请求的上下文占用',
+  },
+  {
     id: 'command:subagents',
     kind: 'command',
     name: 'subagents',

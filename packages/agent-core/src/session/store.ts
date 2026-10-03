@@ -26,6 +26,7 @@ import { DEFAULT_MAX_MESSAGES, truncateHistory, type TruncateOptions } from './h
 import {
   SESSION_FILE_VERSION,
   type NewMessage,
+  type SessionCompact,
   type SessionMeta,
   type SessionModelOverride,
   type SessionSpace,
@@ -557,6 +558,34 @@ export class SessionStore {
   }
 
   /**
+   * 手动压缩留痕（`/compact`，2026-10-03，docs/06 §4）：内核 `agent.compact` 生成摘要后调用。
+   *
+   * - `compact === null` = 清除留痕（当前无调用方，留给未来的「撤销压缩」）；
+   * - 先 `ensureLoaded` + **await 写盘完成**（与 `setProject` 同一条铁律）：
+   *   渲染层拿到 ok 后立刻能从 `chat:sessions` / 后续组装读到新状态；
+   * - 消息本体**不动**：压缩只是「组装口径」的变化，历史仍完整留在会话文件里。
+   */
+  async setCompact(sessionId: string, compact: SessionCompact | null): Promise<void> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    const current = this.metaCache.get(id) ?? {}
+    const next: SessionMeta = { ...current }
+    if (compact === null) delete next.compact
+    else next.compact = compact
+    this.metaCache.set(id, next)
+    this.dirty.add(id)
+    this.scheduleWrite(id, 0)
+    await (this.writing.get(id) ?? Promise.resolve())
+  }
+
+  /** 手动压缩留痕（**异步**，必要时先读盘；undefined = 从未手动压缩过）。 */
+  async compactOf(sessionId: string): Promise<SessionCompact | undefined> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    return this.metaCache.get(id)?.compact
+  }
+
+  /**
    * 会话空间（docs/06 §4 会话三分）。
    *
    * - **幂等**：与当前空间相同（含「都是未标记」）→ 直接返回，不写盘；
@@ -1040,6 +1069,9 @@ function normalizeMeta(value: unknown): SessionMeta {
   // 半截 / 畸形条目整段丢弃（= 没有累计），不猜测、不半截通过
   const usage = normalizeUsageStats(candidate['usage'])
   if (usage !== undefined) meta.usage = usage
+  // 手动压缩留痕（/compact，本轮）：三个字段齐全且 summary 非空才算有效
+  const compact = normalizeCompact(candidate['compact'])
+  if (compact !== undefined) meta.compact = compact
   return meta
 }
 
@@ -1072,6 +1104,25 @@ function normalizeUsageStats(value: unknown): SessionUsageStats | undefined {
     return undefined
   }
   return { promptTokens, completionTokens, totalTokens, cachedTokens, rounds }
+}
+
+/** 压缩留痕归化（`normalizeMeta` 用）：summary 非空 + at / upToMessageId 齐全才算有效 */
+function normalizeCompact(value: unknown): SessionCompact | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const candidate = value as Record<string, unknown>
+  const summary = candidate['summary']
+  const at = candidate['at']
+  const upToMessageId = candidate['upToMessageId']
+  if (
+    typeof summary !== 'string' ||
+    summary.trim() === '' ||
+    typeof at !== 'string' ||
+    typeof upToMessageId !== 'string' ||
+    upToMessageId === ''
+  ) {
+    return undefined
+  }
+  return { summary, at, upToMessageId }
 }
 
 /**
@@ -1228,6 +1279,7 @@ function isEmptyMeta(meta: SessionMeta): boolean {
         meta.usage.totalTokens === 0 &&
         meta.usage.cachedTokens === 0 &&
         meta.usage.rounds === 0)) &&
+    meta.compact === undefined &&
     // space 只有 'work' 才有信息量（'agent' = 缺省空间），setSpace / createSession 写入侧已归一
     (meta.space === undefined || meta.space === 'agent')
   )

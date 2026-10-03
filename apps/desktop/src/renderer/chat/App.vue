@@ -81,6 +81,7 @@ const {
   pendingNotice,
   send: sendMessage,
   abort,
+  compactContext,
   clear,
   hydrate,
   loadSessions,
@@ -1125,6 +1126,14 @@ function applySlash(item: SlashItem): void {
       break
     case 'clear':
       clear()
+      break
+    case 'init':
+      // 内置命令：照常走发送链，`/init` 三个字符进历史，主进程把指令正文拼进本轮
+      // extraContext（docs/06 §6）——模型读项目结构后用 write_file 生成 / 补全 AGENTS.md
+      void sendMessage('/init')
+      break
+    case 'compact':
+      void compactContext()
       break
     case 'stop':
       void abort()

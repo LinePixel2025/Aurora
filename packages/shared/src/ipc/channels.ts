@@ -117,6 +117,11 @@ export const IPC = {
      */
     deleteSession: 'chat:deleteSession',
     /**
+     * 手动压缩会话上下文（`/compact`，docs/06 §4）：把全部消息压成摘要写进 `meta.compact`，
+     * 此后组装请求只取压缩点之后的消息。消息本体不删。在跑的会话拒绝（E_BUSY 文案）。
+     */
+    compact: 'chat:compact',
+    /**
      * 真删除会话成功后的跨窗口推送（on/off 成对，docs/07 §2.3）：
      * 主进程在 `chat:deleteSession` 删除成功后向所有窗口广播 `{ sessionId }`，
      * chat 窗口据此重拉会话列表，当前会话被删时按「最近会话 / 新建」回落。

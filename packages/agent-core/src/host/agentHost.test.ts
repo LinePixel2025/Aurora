@@ -1025,6 +1025,125 @@ describe('KernelAgentHost · 历史摘要压缩（docs/06 §4）', () => {
   })
 })
 
+describe('KernelAgentHost · 手动压缩 /compact（docs/06 §4）', () => {
+  interface CompactHarness extends Harness {
+    counter: { summaryCalls: number }
+  }
+
+  async function createCompactHarness(options?: {
+    summarize?: boolean
+    /** 注册一个由外部闸门控制的 echo 工具（造「正在回复中」的现场） */
+    gateEcho?: boolean
+  }): Promise<CompactHarness & { releaseEcho: () => void }> {
+    const fs = new TestFileSystem()
+    const sessions = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
+    const logger = createMemoryLogger()
+    const skills = new SkillsBridge(await createSkills())
+    const tools = new ToolRegistry()
+    skills.registerInto(tools)
+    // 闸门工具：execute 挂起直到测试放行，保证 compact 调用时 active 槽确实被占着
+    let releaseEcho: () => void = () => undefined
+    if (options?.gateEcho === true) {
+      tools.register({
+        name: 'echo',
+        description: '回显（带闸门）',
+        parameters: { type: 'object' },
+        execute: async () =>
+          new Promise((resolve) => {
+            releaseEcho = () => resolve({ content: 'echo:done', summary: '已回显' })
+          }),
+      })
+    }
+
+    const provider = createFakeProvider(
+      options?.gateEcho === true
+        ? [{ toolCalls: [{ id: 'call-1', name: 'echo', arguments: '{}' }] }, { text: '完成' }]
+        : [{ text: '收到' }],
+    )
+    const events: AgentEvent[] = []
+    const counter = { summaryCalls: 0 }
+    const host = new KernelAgentHost({
+      sessions,
+      provider: { create: () => ({ provider, model: 'fake-model' }) },
+      tools,
+      skills,
+      logger,
+      ...(options?.summarize === false
+        ? {}
+        : {
+            summarize: async (input) => {
+              counter.summaryCalls += 1
+              return `手动压缩摘要标记（此前 ${input.dropped.length} 条，${
+                input.previousSummary ?? '无前摘要'
+              }）`
+            },
+          }),
+    })
+    host.onEvent((event) => events.push(event))
+    return {
+      host,
+      events,
+      sessions,
+      tools,
+      provider,
+      counter,
+      logger,
+      releaseEcho: () => releaseEcho(),
+      send: (text, sessionId = 'quick') => host.send({ sessionId, text, origin: 'chat' }),
+      async waitForDone(timeoutMs = 2_000) {
+        const deadline = Date.now() + timeoutMs
+        while (Date.now() < deadline) {
+          if (events.some((event) => event.type === 'done' || event.type === 'error')) return
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+      },
+    }
+  }
+
+  it('compact 写入 meta.compact，后续请求只带压缩点之后的消息且摘要进系统提示词', async () => {
+    const harness = await createCompactHarness()
+    await harness.sessions.append('quick', { role: 'user', content: '很久以前的一段长对话' })
+    await harness.sessions.append('quick', { role: 'assistant', content: '好的' })
+
+    const outcome = await harness.host.compact('quick')
+    expect(outcome).toMatchObject({ ok: true, coveredMessages: 2 })
+    // 留痕落盘（writeDebounceMs = 0 + setCompact await 写盘完成）
+    const compacted = await harness.sessions.compactOf('quick')
+    expect(compacted?.summary).toContain('手动压缩摘要标记')
+    expect(compacted?.upToMessageId).toBe((await harness.sessions.get('quick')).at(-1)?.id)
+
+    await harness.send('现在呢')
+    await harness.waitForDone()
+    const sent = harness.provider.calls[0]?.messages ?? []
+    // 压缩点之前的消息不再进请求；摘要以 historySummary 进系统提示词
+    expect(sent.some((message) => message.content === '很久以前的一段长对话')).toBe(false)
+    expect(sent[0]?.role).toBe('system')
+    expect(sent[0]?.content).toContain('手动压缩摘要标记')
+    expect(sent.at(-1)?.content).toBe('现在呢')
+  })
+
+  it('在跑的会话拒绝压缩；空会话 / 无 summarizer 也如实拒绝', async () => {
+    const harness = await createCompactHarness({ gateEcho: true })
+    await harness.sessions.append('quick', { role: 'user', content: '触发一轮工具调用' })
+    await harness.send('跑起来')
+    // active 槽已占住（send 返回即已 set），工具被闸门挂起：压缩必须被拒
+    const busy = await harness.host.compact('quick')
+    expect(busy).toMatchObject({ ok: false })
+    if (!busy.ok) expect(busy.error).toContain('正在回复中')
+
+    harness.releaseEcho()
+    await harness.waitForDone()
+
+    // 空会话
+    const empty = await harness.host.compact('brand-new')
+    expect(empty).toMatchObject({ ok: false })
+    // 无 summarizer
+    const bare = await createCompactHarness({ summarize: false })
+    await bare.sessions.append('quick', { role: 'user', content: '有内容' })
+    expect(await bare.host.compact('quick')).toMatchObject({ ok: false })
+  })
+})
+
 describe('KernelAgentHost · quick 会话滑动窗口（docs/06 §4）', () => {
   /** 与装配层一致的窗口常量（5 分钟） */
   const WINDOW_MS = 5 * 60_000
