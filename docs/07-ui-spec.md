@@ -83,7 +83,8 @@
 - **主界面规格（BetaV2）**：默认 **1120×720**（min 940×600）、resizable、**alwaysOnTop 关闭**（false）、
   place **center**；`frame: false`、几何持久化、关闭 = 隐藏 均不变（见 docs/02 §2.2）。
   旧口径（约 420×640、alwaysOnTop 开启）自本轮废弃。
-- **三栏布局（2026-09 重构起）**：`sidebar(240px, 可折叠) | main(1fr) | context(264px, 可折叠)`，
+- **三栏布局（2026-09 重构起）**：`sidebar(240px, 可折叠) | main(1fr) | context(384px, 可折叠、
+  可拖拽调宽 280–560px，2026-10-03 起 —— 此前为固定 264px)`，
   栏间用分隔而非悬浮卡片；主区消息与 composer 居中排布（内容列最大宽 860px），
   对齐主流 Agent Desktop 的阅读动线：
   - **左栏（2026-09-30 会话三分起）**：品牌行（单色 mark + Aurora）→「新对话」按钮
@@ -212,6 +213,33 @@
     **刻意不给 `data-empty` 锚点**：设置页探针把 `data-empty` 当作"门控空状态"白名单来断言，
     这里的空态不是门控行为，多一个锚点只会把探针口径搅浑。
     面板整体按内容增高，条目多了在自己的列表里滚（`max-height: 300px`），不把上下文栏挤没。
+  - **右栏功能 tab（2026-10-03 新增，docs/07 §2.3）**：右栏顶部是一条功能 tab 条
+    （「文件 / 终端 / 浏览器 / 上下文」，锚点 `chat.ctx-tab-<id>`），原有内容整体收进
+    「上下文」tab —— 任务面板与模式感知上下文栏的两行网格语义逐字保留，
+    **缺省激活「上下文」**（旧探针读的 DOM 不动）。左栏「任务」入口会先切到上下文 tab
+    再翻面板显隐（任务面板收在 tab 里，直接翻看不见）。
+    右栏宽度 264 → **384px 缺省**，左缘把手（`chat.ctx-resizer`）可拖拽调宽
+    （280–560px 夹取，localStorage 记忆、双击复位；视图偏好**不进 config schema**），
+    JobPanel / ContextPanel 的固定宽跟随 `--ctx-w` 变量（折叠时收 0 的语义不变）。
+    - **「文件」tab（`FilePreviewPanel`，`chat.file-preview`）**：路径输入 + 最近预览
+      （localStorage，最多 8 条）。markdown 走 shared 渲染器（与消息正文同一安全基线）、
+      纯文本、图片（data URL）、二进制/超限/越界如实给原因。读盘走新 IPC `preview:read`：
+      路径必须在**发起会话边界根之内**（复用 file-port `resolveWithin` 的 realpath 前缀校验；
+      与文件工具不同，**根不可用时直接拒绝**——渲染层主动读盘通道不退回无边界），
+      文本 2 MB 超限截断、图片 10 MB 上限、前 8 KB NUL 字节判二进制（`main/file-preview.ts`）。
+    - **「终端」tab（`TerminalPanel`，`chat.terminal`）**：PTY 交互终端
+      （@lydell/node-pty + xterm 6）。**每个窗口一个常驻 shell**（主进程按窗口记账，
+      切 tab 不杀、窗口销毁才 kill、退出统一 dispose）；渲染层 xterm 实例模块级单例 +
+      容器 detach/attach —— 切 tab 不丢 scrollback。cwd 按会话工作目录回落链解析；
+      输出只推给创建它的窗口；Windows 默认 PowerShell；shell 退出显示 exit code 并可重开。
+      终端是**用户的手动操作面**：不进 AI 工具面、不接确认闸门。IPC：`terminal:create /
+      input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
+      打包：`@lydell/node-pty` 经 electron-builder `asarUnpack` 解出（.node 不能进 asar）。
+    - **「浏览器」tab（`BrowserPanel`，`chat.browser`）**：webview 内置浏览器
+      （URL 栏 + 后退/前进/刷新/停止 + 主页；缺省主页 bing.com）。地址栏只接受
+      http / https（入口即拒绝其它协议）；**不带 allowpopups**（guest 弹窗全拦）；
+      `webviewTag` 只对 chat 窗口开启（window-manager.ts，guest 是独立进程不破坏沙箱）。
+      **已知取舍**：webview 重挂载会重载页面 —— 切到别的 tab 再回来，当前页面重新加载。
   - **右栏（模式感知上下文栏）**：栏内（任务面板之下）第一张是任务清单卡
     （当前会话最后一次 `todo_write` 的结构化清单，
     无清单不渲染）；classroom = 课堂状态卡（`data-field="context.classisland-card"`，
@@ -1182,6 +1210,9 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
      （v14 文件备份卡：prepare 种真实快照并 flush 落索引 + reload，act 点一次「回滚」停在待确认态）→
      `chat-job-panel.png`（v15 右栏「任务」面板：夹具在跑计划前种下 `paused` 的
      `<userData>/jobs/main.json`（**必须早于面板首读**），场景只 reload 让面板重新挂载，act **不点任何按钮**）→
+     `chat-right-tabs.png`（2026-10-03 右栏功能 tab：act 在「文件」tab 输入一个必然越界的
+     绝对路径点预览，等错误文案出现后截图 —— 越界判定在 stat **之前**，离线可跑、不碰用户目录；
+     check 再依次切四个 tab 断言互斥、终端 xterm 跨 tab 往返存活、宽度变量生效）→
      `chat-subagent-page.png`（点左栏「子代理」固定项进页面，check 收尾切回对话流）→
      `chat-automation.png` / `chat-automation-normal.png` / `chat-automation-editor.png` /
      `chat-automation-history.png`（自动化页四连，v19；见下面「自动化页四连」一条）→
@@ -1480,6 +1511,16 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     `chat.job-item` ≥ 1、面板文本含「已暂停」与「轮次上限」（暂停原因必须说清"停在哪"，
     而不是一句含糊的"未完成"）、含 `read_file` 与 `token`（面板的价值是"看得见进度"）、
     `chat.job-resume` 存在（返回值里另记了它的文案 `resumeLabel`，只作信息、不参与 `pass`）；
+  - **右栏功能 tab**（`CHAT_RIGHT_TABS_ACT` / `CHAT_RIGHT_TABS_CHECK`，产物 `chat-right-tabs.png`，
+    2026-10-03）：act 切到「文件」tab、在路径框输入 `C:\Windows\win.ini`（必然在会话边界根之外）
+    并点预览，等 `chat.file-preview-error` 出现后**停在该 tab 截图**——越界判定发生在 stat
+    **之前**，因此离线可跑、且不写任何用户目录（Agent 空间会话的边界根是真实桌面）；
+    act 末尾顺带初始化终端 tab 让 xterm 挂上。check 断言：四个 tab 锚点与拖拽把手都在、
+    右栏宽度落在 280–560px（`--ctx-w` 变量真的驱动布局）、越界文案含「边界」、
+    **tab 互斥**（files 下 `chat.jobs` 缺席、context 下恢复——旧探针零改动兼容正依赖这条）、
+    终端 `.xterm` 跨 tab 往返仍在且行文本长度不减少（模块级单例 + 容器 detach/attach）、
+    浏览器面板出现（webview 不等待网络加载）。成功路径（真实读盘 / 截断 / 二进制 / 目录与
+    缺失文件）由 `apps/desktop/src/main/file-preview.test.ts` 用真实临时目录覆盖；
   - **思考过程折叠块**（`CHAT_THINKING_BLOCK_ACT` / `CHAT_THINKING_BLOCK_CHECK`，
     产物 `chat-thinking-block.png`，BetaV2）：前提是 `seedChatTtsHistory` 种下的带 `reasoning`
     （标记 `capture-reasoning-probe`）的助手消息 —— 本场景先 reload 让渲染层重新水合 main 会话，

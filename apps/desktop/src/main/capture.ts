@@ -1661,6 +1661,182 @@ export const CHAT_JOB_PANEL_CHECK = `(async () => {
 })()`
 
 /**
+ * 右栏功能 tab 场景（2026-10-03，docs/07 §2.3）。
+ *
+ * act 顺序刻意是「先终端、后文件、**停在文件 tab 不再切走**」：
+ * - 文件预览的越界拒绝现场要留在截图里（输入框里的路径 + 红色错误文案）——
+ *   切走再切回会让 `FilePreviewPanel` 因 `v-if` 重挂载、内部 state 全部清空
+ *   （第一版就踩了这个：切回 files 之后截图里输入框是空的、errorText 也是空串）；
+ * - 终端只是**初始化**（等 `.xterm` 挂上即返回，PTY 输出是异步的，不等 banner）；
+ *   跨 tab 往返存活的断言在 check 里做。
+ *
+ * 越界路径选 `C:\\Windows\\win.ini`：越界判定发生在 stat **之前**，因此路径是否存在
+ * 无关（离线可跑），也**不写任何用户目录** —— Agent 空间会话的边界根是真实桌面，
+ * 不该被截屏流程污染。成功路径（真实读盘 / 截断 / 二进制探测 / 目录与缺失文件报错）
+ * 已由 `file-preview.test.ts` 用真实临时目录覆盖。
+ */
+export const CHAT_RIGHT_TABS_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const clickTab = (id) => {
+      const el = document.querySelector('[data-field="chat.ctx-tab-' + id + '"]')
+      if (el === null) return false
+      el.click()
+      return true
+    }
+    // 终端 tab：等 xterm 的根节点挂上（组件挂载即创建模块级实例）
+    clickTab('terminal')
+    let xterm = false
+    for (let attempt = 0; attempt < 40 && !xterm; attempt += 1) {
+      xterm = document.querySelector('[data-field="chat.terminal-host"] .xterm') !== null
+      if (!xterm) await wait(150)
+    }
+    await wait(600)
+    // 文件 tab：输入越界路径并点预览，等错误文案出现；**停在这里截图**
+    const filesOk = clickTab('files')
+    await wait(300)
+    const input = document.querySelector('.fp-input')
+    let typed = false
+    if (input !== null) {
+      input.value = ${JSON.stringify('C:\\Windows\\win.ini')}
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await wait(150)
+      const go = document.querySelector('.fp-go')
+      if (go !== null) {
+        go.click()
+        typed = true
+      }
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        if (document.querySelector('[data-field="chat.file-preview-error"]') !== null) break
+        await wait(150)
+      }
+    }
+    return { ready: true, filesOk, typed, xterm }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 右栏功能 tab 探针（2026-10-03，docs/07 §2.3）。
+ *
+ * 断言五件事：
+ * ① tab 条（4 个锚点）与拖拽把手（`chat.ctx-resizer`）都在，右栏宽度落在
+ *    280–560px（`--ctx-w` 变量真的驱动了布局，而不是内联宽度写死）；
+ * ② 越界文案含「边界」（安全拒绝在渲染层链路可见，act 留下的现场）；
+ * ③ tab 互斥：切到 files 时 `chat.jobs`（上下文 tab 的 DOM）不在，切回 context 时恢复 ——
+ *    「旧探针零改动兼容」正依赖这条：上下文 tab 的 DOM 结构逐字保留；
+ * ④ 终端 `xterm` 跨 tab 往返存活（模块级单例 + 容器 detach/attach）：切走再切回后
+ *    `.xterm` 仍在、行文本长度不减少（缓冲没有丢）；
+ * ⑤ 浏览器 tab 面板出现（webview 不等待网络加载 —— 离线可跑）。
+ */
+export const CHAT_RIGHT_TABS_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const has = (selector) => document.querySelector(selector) !== null
+    const clickTab = (id) => {
+      const el = document.querySelector('[data-field="chat.ctx-tab-' + id + '"]')
+      if (el === null) return false
+      el.click()
+      return true
+    }
+    const rowText = () => {
+      const rows = document.querySelector('[data-field="chat.terminal-host"] .xterm-rows')
+      return rows === null ? '' : (rows.textContent || '').trim()
+    }
+    const tabsPresent = ['files', 'terminal', 'browser', 'context'].every((id) =>
+      has('[data-field="chat.ctx-tab-' + id + '"]'),
+    )
+    const resizer = has('[data-field="chat.ctx-resizer"]')
+    const aside = document.querySelector('aside.context')
+    const asideWidth = aside === null ? 0 : aside.getBoundingClientRect().width
+    // 诊断字段（不进 pass）：宽度记忆的持久值 + 布局链路的三个读数 ——
+    // 「右栏莫名变窄」时要能一眼看出是 localStorage 残值、变量没生效，还是被 grid 压缩
+    let storedWidth = null
+    try {
+      storedWidth = window.localStorage.getItem('aurora.chat.ctxWidth')
+    } catch {
+      storedWidth = 'unavailable'
+    }
+    const inlineWidthVar = aside === null ? '' : (aside.style.getPropertyValue('--ctx-w') || '')
+    const shellWidth =
+      document.querySelector('.app-shell')?.getBoundingClientRect().width ?? 0
+    const asideMinWidth = aside === null ? '' : getComputedStyle(aside).minWidth
+    // 现场（act 停在 files）：越界拒绝的文案
+    const errorEl = document.querySelector('[data-field="chat.file-preview-error"]')
+    const errorText = errorEl === null ? '' : (errorEl.textContent || '').trim()
+    const filePanelOn = has('[data-field="chat.file-preview"]')
+    const jobsHiddenOnFiles = !has('[data-field="chat.jobs"]')
+
+    // 终端 tab：切过去读行文本（act 已初始化过，模块级单例应直接可见）
+    clickTab('terminal')
+    await wait(300)
+    const terminalOn = has('[data-field="chat.terminal"]')
+    const xtermOn = has('[data-field="chat.terminal-host"] .xterm')
+    const textBefore = rowText()
+
+    // 切走再切回：xterm 必须仍在、缓冲不丢
+    clickTab('files')
+    await wait(250)
+    clickTab('terminal')
+    await wait(300)
+    const xtermBack = has('[data-field="chat.terminal-host"] .xterm')
+    const textAfter = rowText()
+
+    // 浏览器 tab：只断言面板出现（webview 加载不等待）
+    clickTab('browser')
+    await wait(300)
+    const browserOn = has('[data-field="chat.browser"]')
+
+    // 上下文 tab：旧 DOM（任务面板 + 模式感知卡）恢复
+    clickTab('context')
+    await wait(300)
+    const contextOn = has('[data-field="chat.jobs"]') && has('.ctx-inner')
+
+    return {
+      tabsPresent,
+      resizer,
+      asideWidth,
+      storedWidth,
+      inlineWidthVar,
+      shellWidth,
+      asideMinWidth,
+      errorText,
+      filePanelOn,
+      jobsHiddenOnFiles,
+      terminalOn,
+      xtermOn,
+      xtermBack,
+      textBeforeLength: textBefore.length,
+      textAfterLength: textAfter.length,
+      browserOn,
+      contextOn,
+      pass:
+        tabsPresent &&
+        resizer &&
+        // 宽度：无记忆值（首次跑）时必须就是缺省 384px（Number(null) === 0 被 clamp 到
+        // 下限那个 bug 靠这条钉住）；有记忆值则落在 280–560 的合法区间
+        (storedWidth === null
+          ? Math.abs(asideWidth - 384) < 2
+          : asideWidth >= 280 && asideWidth <= 560) &&
+        filePanelOn &&
+        // 越界必须被拒且说清原因（file-preview.ts 的文案）
+        errorText.indexOf('边界') !== -1 &&
+        // tab 互斥：上下文 tab 的 DOM 在 files 下必须缺席（v-if 切换是真的）
+        jobsHiddenOnFiles &&
+        terminalOn &&
+        xtermOn &&
+        xtermBack &&
+        textAfter.length >= textBefore.length &&
+        browserOn &&
+        contextOn,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
  * 综合概览卡的探针（step 5）：右栏出现「任务」面板 + 上下文卡，用于人工核对布局。
  *
  * 断言的是**布局不冲突**：任务面板在且显示真内容（「已暂停」），同时断言两类
@@ -2525,6 +2701,10 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
     const slashNew = count('[data-field="chat.slash-new"]')
     const slashCommandItems = count('[data-field="chat.slash-menu"] [data-kind="command"]')
     const slashSkillItems = count('[data-field="chat.slash-menu"] [data-kind="skill"]')
+    // 2026-10-03 新增的两条内置命令（/init、/compact）按锚点断言而不是只数数量 ——
+    // 数量断言在「加命令」时无谓变红，锚点断言能同时证明「新命令真的注册到了菜单」
+    const slashInit = count('[data-field="chat.slash-init"]')
+    const slashCompact = count('[data-field="chat.slash-compact"]')
     const permissionLabel = textOf('[data-field="chat.permission"]')
     const usageText = textOf('[data-field="chat.context-usage"]')
 
@@ -2564,6 +2744,8 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
       slashNew,
       slashCommandItems,
       slashSkillItems,
+      slashInit,
+      slashCompact,
       permissionLabel,
       permissionMenuClosed: count('[data-field="chat.permission-menu"]'),
       contextBar: count('[data-field="chat.context"]'),
@@ -2572,8 +2754,11 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
       pass:
         menu !== null &&
         slashNew > 0 &&
-        // 命令组恒有 4 条内置命令；技能组取决于内置 skills 目录（扫到几个列几个）
-        slashCommandItems === 4 &&
+        // 命令组 ≥ 4 条内置命令（2026-10-03 新增 /init、/compact → 6 条；取下限，
+        // 再加命令不再无谓变红），且两条新命令的锚点必须在菜单里
+        slashCommandItems >= 4 &&
+        slashInit === 1 &&
+        slashCompact === 1 &&
         slashSkillItems >= 1 &&
         permissionLabel.indexOf('完全权限') !== -1 &&
         count('[data-field="chat.permission-menu"]') === 0 &&
@@ -3729,8 +3914,9 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
 
     // ── 详解卡的形状断言（此刻卡是展开的）──
     // capture 的顺序是「先拍 PNG、后跑 check」，而展开详解卡的代码就在 check 里 ——
-    // 没有任何截图能拍到它的展开态，所以「只留三行」这件事只能在这里客观钉住：
-    // 标签集合恰为三项且顺序一致、说明里不再出现「消息条数」（统计项已随精简移除）。
+    // 没有任何截图能拍到它的展开态，所以「只有这几行」这件事只能在这里客观钉住：
+    // 标签集合恰为四行且顺序一致、说明里不再出现「消息条数」（统计项已随精简移除）。
+    // 2026-10-03：缓存命中从折叠条搬进详解卡（折叠条改显示平均命中率）→ 3 行变 4 行。
     const detailCard = document.querySelector('[data-field="chat.context-detail"]')
     const detailLabels =
       detailCard === null
@@ -3743,7 +3929,7 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
       detailCard === null
         ? ''
         : ((detailCard.querySelector('.ctx-note') || {}).textContent || '').trim()
-    const expectedLabels = ['输入（最近一轮）', '上下文窗口', '模型']
+    const expectedLabels = ['输入（最近一轮）', '上下文窗口', '模型', '平均缓存命中']
     const detailShape =
       detailCard !== null &&
       detailRows === expectedLabels.length &&
@@ -8312,6 +8498,18 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
         await manager.reload('chat', {})
       },
       check: CHAT_JOB_PANEL_CHECK,
+    },
+    // 右栏功能 tab（2026-10-03，docs/07 §2.3）：文件预览的越界拒绝现场（截图停在 files）
+    // + 终端 xterm 初始化 + tab 互斥与跨 tab 往返存活。越界判定在 stat 之前，离线可跑、
+    // 不碰任何用户目录；成功路径由 file-preview.test.ts 覆盖。
+    {
+      name: 'chat',
+      file: 'chat-right-tabs.png',
+      prepare: async () => {
+        await manager.reload('chat', {})
+      },
+      act: CHAT_RIGHT_TABS_ACT,
+      check: CHAT_RIGHT_TABS_CHECK,
     },
     // 综合概览（step 5）：右栏挂「任务」面板 + 上下文卡，用于人工核对布局。
     // 「当前项目」卡已随项目管理迁设置页（2026-09-30）：这里改为断言右栏**不再有**项目卡

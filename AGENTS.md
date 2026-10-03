@@ -400,6 +400,14 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   同样**不受 `agent.tools.enabled` 门控**。
 - **主界面 `chat` 窗口是 1120×720、`alwaysOnTop=false` 的常驻大窗**（三栏布局 + 右栏模式感知，
   关闭仍 = 隐藏），别按旧版 420×640 侧弹交互窗的心智模型理解它的几何、层级与探针坐标。
+- **右栏已 Tab 化（2026-10-03，docs/07 §2.3）**：「文件 / 终端 / 浏览器 / 上下文」四个 tab，
+  既有 JobPanel + ContextPanel 收在**缺省的「上下文」tab**（旧探针因此零改动）；宽度 384px
+  缺省、可拖拽（localStorage `aurora.chat.ctxWidth`，不进 config schema）。三个易踩点：
+  ① 右栏宽度变量 `--ctx-w` 是 JobPanel / ContextPanel 固定宽的唯一来源，改宽度口径别再回
+  硬编码 264px；② `webviewTag` 只对 chat 窗口开启（BrowserPanel 用 `createElement('webview')`
+  绕开 Vue 编译器，重挂载会重载页面——这是已知取舍不是 bug）；③ `@lydell/node-pty` 必须
+  留在 electron-builder 的 `asarUnpack`（.node 不能进 asar），终端是用户手动操作面，
+  **别给它接 AI 工具面或确认闸门**。
 - **输入卡有两条硬口径（2026-09-29 减负轮，docs/07 §2.3），别再改回去**：
   ① 权限 / 模型 / 思考三枚控件一律 `--control-h-xs`（28px）+ pill 圆角 + **静止态零边框**
   （悬停才浮 `--fill-2`），三者的尺寸与状态样式**逐字对齐** —— 40px + 逐枚边框会把输入卡

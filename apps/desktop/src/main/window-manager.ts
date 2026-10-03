@@ -292,6 +292,10 @@ export class WindowManager {
         contextIsolation: true,
         sandbox: true,
         nodeIntegration: false,
+        // 右栏「浏览器」tab（2026-10-03，docs/07 §2.3）：webview 标签在
+        // contextIsolation + sandbox 下可用（guest 是独立进程，不破坏沙箱）；
+        // 只对 chat 窗口开启（唯一有浏览器面板的窗口）
+        webviewTag: name === 'chat',
         devTools: this.options.isDev,
       },
     })

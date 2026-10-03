@@ -55,6 +55,7 @@ import ContextPanel from './components/ContextPanel.vue'
 import JobPanel from './components/JobPanel.vue'
 import FilePreviewPanel from './components/FilePreviewPanel.vue'
 import TerminalPanel from './components/TerminalPanel.vue'
+import BrowserPanel from './components/BrowserPanel.vue'
 import SessionNav from './components/SessionNav.vue'
 import SubagentPage from './components/SubagentPage.vue'
 import AutomationPage from './components/AutomationPage.vue'
@@ -116,10 +117,11 @@ const jobsOpen = ref(true)
 // ── 右栏功能 tab 与可拖拽调宽（2026-10-03，docs/07 §2.3） ──
 
 /** 右栏功能 tab：`id` 同时是探针锚点后缀（`chat.ctx-tab-<id>`）与窗格切换键 */
-type RightTabId = 'files' | 'terminal' | 'context'
+type RightTabId = 'files' | 'terminal' | 'browser' | 'context'
 const rightTabs: Array<{ id: RightTabId; label: string }> = [
   { id: 'files', label: '文件' },
   { id: 'terminal', label: '终端' },
+  { id: 'browser', label: '浏览器' },
   { id: 'context', label: '上下文' },
 ]
 /** 缺省「上下文」：旧探针（右栏展开 / 模式卡门控）读的就是这块 DOM，零改动兼容 */
@@ -133,7 +135,11 @@ const CTX_WIDTH_MAX = 560
 
 function loadCtxWidth(): number {
   try {
-    const parsed = Number(window.localStorage.getItem(CTX_WIDTH_KEY))
+    const raw = window.localStorage.getItem(CTX_WIDTH_KEY)
+    // 键不存在时 getItem 返回 null，而 `Number(null) === 0` 是有限数 ——
+    // 直接 Number() 会走进 clamp 拿到下限 280（首版就是这个 bug：默认 384 从未生效）
+    if (raw === null) return CTX_WIDTH_DEFAULT
+    const parsed = Number(raw)
     if (!Number.isFinite(parsed)) return CTX_WIDTH_DEFAULT
     return Math.min(CTX_WIDTH_MAX, Math.max(CTX_WIDTH_MIN, parsed))
   } catch {
@@ -160,14 +166,21 @@ function resetCtxWidth(): void {
  * 拖拽调宽：pointerdown 后捕获指针，向左拖 = 变宽（width = 窗口右缘 - 指针 x）。
  * resize 期间给 `document.body` 挂 `user-select: none`（防选中文字）+ 关掉过渡
  * （`.ctx-resizing` 类），松手恢复并落 localStorage。
+ *
+ * ⚠️ `move.buttons === 0` 必须跳过：capture 的命中区探针会派发**合成 PointerEvent**
+ * （坐标常为 0 或窗口边界），若照单全收就会把宽度算成 0 再被 clamp 到下限并写进
+ * localStorage —— 2026-10-03 实跑抓到过（快照里右栏莫名 280px）。真实拖动时
+ * buttons 恒为 1，这条不误伤。
  */
 function onCtxResizeStart(event: PointerEvent): void {
+  if (event.button !== 0) return
   event.preventDefault()
   const target = event.currentTarget
   if (!(target instanceof HTMLElement)) return
   target.setPointerCapture(event.pointerId)
   document.body.classList.add('ctx-resizing')
   const onMove = (move: PointerEvent): void => {
+    if (move.buttons === 0) return
     ctxWidth.value = Math.min(
       CTX_WIDTH_MAX,
       Math.max(CTX_WIDTH_MIN, window.innerWidth - move.clientX),
@@ -1703,6 +1716,9 @@ async function markGuideDone(): Promise<void> {
         <div v-else-if="rightTab === 'terminal'" class="ctx-pane">
           <TerminalPanel :session-id="sessionId" />
         </div>
+        <div v-else-if="rightTab === 'browser'" class="ctx-pane">
+          <BrowserPanel />
+        </div>
       </div>
     </aside>
 
@@ -1840,9 +1856,10 @@ body.ctx-resizing .context {
   min-width: 0;
 }
 
-/* 文件预览 / 终端面板是单列 flex（组件内部自管滚动），不吃两行网格 */
+/* 文件预览 / 终端 / 浏览器面板是单列 flex（组件内部自管滚动），不吃两行网格 */
 .ctx-pane > :deep(.fp),
-.ctx-pane > :deep(.tp) {
+.ctx-pane > :deep(.tp),
+.ctx-pane > :deep(.bp) {
   grid-row: 1 / -1;
   min-height: 0;
 }

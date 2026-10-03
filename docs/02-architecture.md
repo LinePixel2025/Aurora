@@ -157,6 +157,12 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
 ## 6. IPC 契约约定
 
 - 通道命名：`namespace:action`，如 `chat:send`、`settings:get`、`classify:subscribe`。
+- **右栏工具化通道（2026-10-03，docs/07 §2.3）**：`preview:read`（文件预览：路径受会话
+  边界根 realpath 校验 + 文本 2 MB / 图片 10 MB 上限，实现 `main/file-preview.ts`）、
+  `chat:compact`（手动压缩上下文 → 内核 `agent.compact`，06 §4）、
+  `terminal:create / input / resize / kill` + 推送 `terminal:data / exit`
+  （PTY 终端，`main/terminal-service.ts`；create 需要发起窗口的 `event.sender.id`，
+  输出只推给创建窗口）。preload 白名单与 shared 双向断言同步更新。
 - 窗口控制（`window:*`）：`show` / `hide` / `toggle` / `showChat` / `setPosition` /
   `setEdgeBarExpanded` / `minimize` / `toggleMaximize` / `getState`，事件推送 `window:stateChanged`。
   `minimize` 真最小化（进任务栏，chat / 设置可用）；`toggleMaximize` 切换最大化

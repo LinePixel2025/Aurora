@@ -1145,6 +1145,30 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       JSON.stringify({ unarchiveResult, foundUnarchived }),
     )
 
+    // ─────────── 手动压缩上下文 /compact（2026-10-03，docs/06 §4） ───────────
+    // 这条覆盖 IPC 通道 + 服务装配链路的**运行时**部分（内核侧的落盘 / 组装裁剪 /
+    // 摘要注入 / 拒绝路径已有 agentHost.test.ts 的用例）。用 quick 会话：前面已发过
+    // 两轮，有可压缩的内容；summarizer 走桩 LLM（离线可跑）。
+    // 之后的 smoke 段不再依赖 quick 的历史，因此压缩带来的裁剪不影响后续断言。
+    const compactResult = expectOk(
+      'chat.compact',
+      await window.aurora.chat.compact('quick'),
+    )
+    record(
+      'chat.compact 压缩有内容的会话并回执条数与字数',
+      compactResult !== null && compactResult.summaryChars > 0 && compactResult.coveredMessages >= 1,
+      JSON.stringify(compactResult),
+    )
+    // 空会话必须**如实拒绝**：假装成功会让界面报「已压缩」而实际什么都没发生
+    const compactEmpty = await window.aurora.chat.compact('smoke-compact-empty')
+    record(
+      'chat.compact 对空会话如实拒绝',
+      compactEmpty !== null &&
+        compactEmpty.ok === false &&
+        String(compactEmpty.message || '').indexOf('没有可压缩') !== -1,
+      JSON.stringify(compactEmpty),
+    )
+
     // ─────────────── ClassIsland 桥接（docs/05 §3.4 v2） ───────────────
     // 自测前置（seedSmokeClassroom）会把课表来源切到 classisland 并写一份夹具 JSON，
     // 因此这里断言的是**真实读取链路**：写文件 → provider 解析 → 今日课程。
