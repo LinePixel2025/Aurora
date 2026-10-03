@@ -266,7 +266,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **电脑操控工具已由 5 个扩到 8 个**（2026-09 新增 `edit_file` / `grep` / `glob`，
   见 docs/06 §11.5 / §11.6）：三者都在 `agent.tools.enabled` 总开关与各自子开关
   （`edit_file` 随 `files.enabled`、`grep` / `glob` 随 `search.enabled`）之下 ——
-  与「扩展工具五件套不受门控」的口径**相反**，别按五件套理解它们。
+  与「扩展工具六件套不受门控」的口径**相反**，别按六件套理解它们。
 - **三档权限与项目根边界已落地（2026-09-26），但仍无 OS 级沙箱**：`agent.permissionMode` 取值
   `readonly` / `confirm` / `auto`（**默认 `auto` = 完全权限**，2026-09-29 起出厂档；镜像的老开关
   `advanced.confirmSensitiveTools` 出厂同为 `false`）—— `readonly` 档**不注册**写入 / 执行类工具
@@ -385,9 +385,10 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **`agent.loop` 的三个上限是以 getter 注入内核的**（`() => settings.get().agent.loop.maxRounds`
   这种形式）：写成构造时常量值就变成"改设置要重启才生效"的死字段 ——
   与上面「配置字段"能写"不等于"生效"」是同一个坑，本仓库已修过一批。
-- **BetaV2 新能力的注册口径**：STT / 生图 / 新工具五件套（`web_fetch` / `notify_user` /
-  `clipboard_read` / `clipboard_write` / `generate_image`）**不走 `agent.tools.enabled` 门控**
-  （那个总开关管的是 8 个电脑操控工具），敏感项靠 `sensitivity: 'confirm'` 逐次确认；
+- **BetaV2 新能力的注册口径**：STT / 生图 / 扩展工具六件套（`web_fetch` / `notify_user` /
+  `clipboard_read` / `clipboard_write` / `generate_image` / `show_preview`）**不走
+  `agent.tools.enabled` 门控**（那个总开关管的是 8 个电脑操控工具），敏感项靠
+  `sensitivity: 'confirm'` 逐次确认；
   ⚠️ **反例与它们同期**：2026-09 新增的 `edit_file` / `grep` / `glob` **是电脑操控工具、受总开关门控**
   （分别随 `files.enabled` / `search.enabled`，见「尚未生效 / 已知限制」那条）——
   不要因为"同期落地"就把它们也当成不受门控的扩展工具；
@@ -402,12 +403,28 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   关闭仍 = 隐藏），别按旧版 420×640 侧弹交互窗的心智模型理解它的几何、层级与探针坐标。
 - **右栏已 Tab 化（2026-10-03，docs/07 §2.3）**：「文件 / 终端 / 浏览器 / 上下文」四个 tab，
   既有 JobPanel + ContextPanel 收在**缺省的「上下文」tab**（旧探针因此零改动）；宽度 384px
-  缺省、可拖拽（localStorage `aurora.chat.ctxWidth`，不进 config schema）。三个易踩点：
+  缺省、可拖拽（localStorage `aurora.chat.ctxWidth`，不进 config schema）。**左栏同样可拖拽**
+  （`aurora.chat.navWidth`，240px 缺省 / 200–420；`--nav-w` 是 SessionNav 内容宽的唯一来源，
+  与右栏共用 `startColumnResize`）。四个易踩点：
   ① 右栏宽度变量 `--ctx-w` 是 JobPanel / ContextPanel 固定宽的唯一来源，改宽度口径别再回
   硬编码 264px；② `webviewTag` 只对 chat 窗口开启（BrowserPanel 用 `createElement('webview')`
   绕开 Vue 编译器，重挂载会重载页面——这是已知取舍不是 bug）；③ `@lydell/node-pty` 必须
   留在 electron-builder 的 `asarUnpack`（.node 不能进 asar），终端是用户手动操作面，
-  **别给它接 AI 工具面或确认闸门**。
+  **别给它接 AI 工具面或确认闸门**（`show_preview` 走的是浏览器 tab，不是终端）；
+  ④ **`onHeadersReceived` 的 CSP 注入必须只作用于自家窗口的页面**（按
+  `details.webContentsId` 是否属于 `BrowserWindow.getAllWindows()` 判定，2026-10-03 修）：
+  无条件注入会把 webview 里加载的外部页面一起打瘸（强加 `script-src 'self'` → 内联脚本 /
+  CDN 资源全被拒），症状是「内置浏览器白屏、浏览器里点链接没反应」——别把它"简化"回无条件注入。
+- **终端底色是固定黑（2026-10-03 用户口径）**：`TerminalPanel` 里就一份 `XTERM_THEME`
+  （`background: '#000000'`）与 `.tp-host { background: #000 }`，**不要再按
+  `prefers-color-scheme` 分两档**（浅色系统下白底黑字正是被用户点名的问题）。
+  `.xterm` 元素本身是透明的（xterm 把主题背景画进 canvas），判据取容器 + `.xterm-viewport`。
+- **文件 tab 是「小文件管理器 + 预览」（2026-10-03，docs/07 §2.3）**：根 = 会话边界根
+  （绑了项目就是项目文件夹，标签「项目：<名>」；孤儿绑定按未绑定展示）——列目录走
+  `preview:list`（`main/file-list.ts`，上限 500 条、目录在前、名称数字感知排序），
+  预览走 `preview:read`，两条都在主进程侧做 `resolveWithin` 边界校验，**根不可用时直接拒绝**。
+  `show_preview` 的「成果展示」走浏览器 tab（`preview:show` 推送 → 自动切 tab），
+  别把两件事混成同一条通道。
 - **输入卡有两条硬口径（2026-09-29 减负轮，docs/07 §2.3），别再改回去**：
   ① 权限 / 模型 / 思考三枚控件一律 `--control-h-xs`（28px）+ pill 圆角 + **静止态零边框**
   （悬停才浮 `--fill-2`），三者的尺寸与状态样式**逐字对齐** —— 40px + 逐枚边框会把输入卡

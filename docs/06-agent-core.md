@@ -1435,12 +1435,14 @@ Content-Type: application/json
   的非实时路径；`output.audio.url` 的 24h 有效期对朗读场景（拿到即播）绰绰有余，
   Aurora 不做音频缓存。
 
-## 14. 扩展工具五件套（v0.0.1）
+## 14. 扩展工具六件套（v0.0.1；`show_preview` 于 2026-10-03 补入）
 
-v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/betav2-spec.md §6.2）。
+v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/betav2-spec.md §6.2），
+2026-10-03 起再加 `show_preview`（把成果展示到桌面右栏的预览面板，见 §14.3）。
 分层与 §11 的电脑操控工具同一套：**内核只定义工具与端口**（`tools/web-fetch.ts` /
-`tools/clipboard.ts` / `tools/notify.ts` / `tools/imagegen.ts`，纯 Node、可单测），
-真实系统能力由主进程实现端口后注入（`apps/desktop/src/main/tools/` 下对应实现）。
+`tools/clipboard.ts` / `tools/notify.ts` / `tools/imagegen.ts` / `tools/preview.ts`，
+纯 Node、可单测），真实系统能力由主进程实现端口后注入（`apps/desktop/src/main/tools/`
+下对应实现）。
 
 | 工具 | 端口（内核） | 主进程实现 | 敏感级 |
 |---|---|---|---|
@@ -1449,21 +1451,23 @@ v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/b
 | `clipboard_write` {text} | `ClipboardPort.write(text)` | 同上（`clipboard.writeText`） | **confirm** |
 | `notify_user` {title, body} | `NotifyPort.show(title, body)` | `createNotificationPort`（映射到 `NotificationService.notify`，复用去重 / 点击打开 / 日志） | safe |
 | `generate_image` {prompt, size?} | `ImageGenPort.generate({prompt, size?})` | `createImageGenPort` → `ImageGenService`（§15） | **confirm**（花 API 费用） |
+| `show_preview` {target, title?} | `PreviewPort.show(target, {sessionId, title})` | `createPreviewPort`（目标校验 + 推送到 chat 窗口，§14.3） | safe |
 
 `generate_image` 只管**写**图，且**不受门控**（任何模型都能照着描述生图）；补齐「看图」三件套的
-`view_image` / `screenshot` / `clipboard_read_image` 是 §25 的图像工具，门控口径与本节五件套**相反**
+`view_image` / `screenshot` / `clipboard_read_image` 是 §25 的图像工具，门控口径与本节六件套**相反**
 （按当前生效模型的 `vision` 注册）—— 别把三者按「不受门控」理解。
 
 ### 14.1 注册口径
 
 - 装配器是 `main/tools/index.ts` 的 `registerExtensionTools`，与 `registerSettingsTool` **同级**：
   **不受 `agent.tools.enabled` 门控**——它们不在 `COMPUTER_TOOL_NAMES` 里，「看网页 / 收通知 /
-  生图」不属于「电脑操控」的开关语义；`syncToolRegistries()`（主进程唯一的工具表同步入口）每次
+  生图 / 展示成果」不属于「电脑操控」的开关语义；`syncToolRegistries()`（主进程唯一的工具表同步入口）每次
   先按名字全量摘除再重建，与电脑操控工具同一拍热生效。
 - 敏感动作不靠开关、靠确认：`clipboard_read` / `clipboard_write` / `generate_image` 都是
   `sensitivity: 'confirm'`，每次调用过 §5 的 `confirmTool`（§9.1 的确认卡片）。
 - `clipboard` 端口实现是主进程里**唯一必须 import electron** 的工具文件，因此没有单测；
-  其余端口实现（`web-fetch.ts` / `notify.ts` / `imagegen-port.ts`）保持不依赖 Electron。
+  其余端口实现（`web-fetch.ts` / `notify.ts` / `imagegen-port.ts` / `preview-port.ts`）
+  保持不依赖 Electron（推送动作由装配层以 `present` 回调注入）。
 
 ### 14.2 `web_fetch` 的行为边界
 

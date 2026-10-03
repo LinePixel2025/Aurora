@@ -221,25 +221,62 @@
     右栏宽度 264 → **384px 缺省**，左缘把手（`chat.ctx-resizer`）可拖拽调宽
     （280–560px 夹取，localStorage 记忆、双击复位；视图偏好**不进 config schema**），
     JobPanel / ContextPanel 的固定宽跟随 `--ctx-w` 变量（折叠时收 0 的语义不变）。
-    - **「文件」tab（`FilePreviewPanel`，`chat.file-preview`）**：路径输入 + 最近预览
-      （localStorage，最多 8 条）。markdown 走 shared 渲染器（与消息正文同一安全基线）、
-      纯文本、图片（data URL）、二进制/超限/越界如实给原因。读盘走新 IPC `preview:read`：
+    **左栏同样可拖拽**（2026-10-03）：右缘把手 `chat.nav-resizer`，240px 缺省、
+    200–420px 夹取、`--nav-w` 变量驱动（`SessionNav` 的 `.nav-inner` 跟随它，
+    折叠时收 0 的语义不变），与右栏共用同一段拖拽实现（`startColumnResize`）。
+    - **「文件」tab（`FilePreviewPanel`，`chat.file-preview`）**：**小文件管理器 + 预览**
+      （2026-10-03 起）。顶部路径输入与「最近预览」（localStorage，最多 8 条）保留；
+      目录条（`chat.file-root`）显示**根标签 + 当前相对路径**：会话绑定了项目时根就是
+      **项目文件夹**（标签「项目：<名>」），未绑定时是会话空间目录（标签「工作目录」）——
+      标签与 `boundaryRoot` 的回落链同源（孤儿绑定按未绑定展示）。列表
+      （`chat.file-list`）缺省列出根目录：目录在前、同类按名称数字感知升序（上限 500 条，
+      超出标 `truncated`），点目录进入下一层（`chat.file-dir` 跟着变，「上级」`chat.file-up`
+      止于边界根）、点文件在**同一面板内**预览（「返回」`chat.file-back` 切回列表）。
+      markdown 走 shared 渲染器（与消息正文同一安全基线）、纯文本、图片（data URL）、
+      二进制/超限/越界如实给原因。读盘走 `preview:read`、列目录走 `preview:list`：
       路径必须在**发起会话边界根之内**（复用 file-port `resolveWithin` 的 realpath 前缀校验；
       与文件工具不同，**根不可用时直接拒绝**——渲染层主动读盘通道不退回无边界），
-      文本 2 MB 超限截断、图片 10 MB 上限、前 8 KB NUL 字节判二进制（`main/file-preview.ts`）。
+      文本 2 MB 超限截断、图片 10 MB 上限、前 8 KB NUL 字节判二进制（`main/file-preview.ts`）；
+      列目录上限与排序在 `main/file-list.ts`。
     - **「终端」tab（`TerminalPanel`，`chat.terminal`）**：PTY 交互终端
       （@lydell/node-pty + xterm 6）。**每个窗口一个常驻 shell**（主进程按窗口记账，
       切 tab 不杀、窗口销毁才 kill、退出统一 dispose）；渲染层 xterm 实例模块级单例 +
-      容器 detach/attach —— 切 tab 不丢 scrollback。cwd 按会话工作目录回落链解析；
-      输出只推给创建它的窗口；Windows 默认 PowerShell；shell 退出显示 exit code 并可重开。
+      容器 detach/attach —— 切 tab 不丢 scrollback。**底色固定纯黑**
+      （2026-10-03 用户口径：终端就该是黑的；此前跟随 `prefers-color-scheme`，
+      浅色系统下拿到白底黑字，与「终端」的视觉预期不符）—— 容器 `.tp-host` 与
+      xterm `theme.background` 两处都是 `#000`，viewport 由 xterm 按主题着色。
+      尺寸跟随用**挂在容器上的 ResizeObserver**（rAF 合并）：左 / 右栏拖拽调宽、
+      窗口缩放、面板重挂载都会让容器尺寸变化，只挂 window resize 会让 PTY 停在旧列数。
+      cwd 按会话工作目录回落链解析；输出只推给创建它的窗口；Windows 默认 PowerShell；
+      shell 退出显示 exit code 并可重开。
       终端是**用户的手动操作面**：不进 AI 工具面、不接确认闸门。IPC：`terminal:create /
       input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
       打包：`@lydell/node-pty` 经 electron-builder `asarUnpack` 解出（.node 不能进 asar）。
     - **「浏览器」tab（`BrowserPanel`，`chat.browser`）**：webview 内置浏览器
       （URL 栏 + 后退/前进/刷新/停止 + 主页；缺省主页 bing.com）。地址栏只接受
-      http / https（入口即拒绝其它协议）；**不带 allowpopups**（guest 弹窗全拦）；
+      http / https（入口即拒绝其它协议），无协议输入按主机名分流：本机地址
+      （`localhost` / `127.0.0.1` / `[::1]` / `0.0.0.0`）补 `http://`，其余补 `https://`；
+      **不带 allowpopups**，但 `window.open` / `target="_blank"` 不再被整个丢弃 ——
+      主进程在 `did-attach-webview` 上装了 `setWindowOpenHandler`：http(s) 目标**同窗导航**、
+      其余协议拒绝（弹窗语义没了，链接点得动了）。
       `webviewTag` 只对 chat 窗口开启（window-manager.ts，guest 是独立进程不破坏沙箱）。
+      加载失败（离线 / 域名不存在 / 代理不可用）在面板上给出可见提示
+      （`chat.browser-failure`），不静默白屏。
+      **⚠️ 应用 CSP 只注入自家窗口的页面**（2026-10-03 修复，`main/index.ts`）：
+      `onHeadersReceived` 此前无条件注入 `default-src 'self'` 等指令，**连 webview 里的
+      外部页面一起打瘸**（内联脚本、CDN 脚本、外域样式/图片全被拒 → 白屏或半残，
+      实测复现：同一段页面在注入前 `{inline:0,ext:0}`、注入后脚本被 Chromium 明确拒绝）。
+      判据改为按 `webContentsId` 归属（`BrowserWindow.getAllWindows()` 里没有的就是 guest），
+      与协议 / 端口 / 开发态 URL 形态无关；`file://` 预览页同样跳过（外域页面本该由
+      它自己的 CSP 约束）。
       **已知取舍**：webview 重挂载会重载页面 —— 切到别的 tab 再回来，当前页面重新加载。
+    - **Agent 展示（`show_preview` 工具 → `preview:show` 推送）**：Agent 产出的
+      HTML 报告 / 网页 / 图片可以直接在右栏看，不必把内容贴进对话。工具目标两类：
+      `http(s)` 网址，或**会话边界根之内**的本地文件（相对路径按会话工作目录解析，
+      `file://` 转换在主进程完成；越界即拒绝 —— 校验在 `main/tools/preview-port.ts`，
+      与文件工具同一个 `resolveWithin`）。推送到达时主界面**自动展开右栏、切到「浏览器」tab**
+      并加载目标（本地文件的地址栏显示原始路径而不是 file:// URL）；只接受
+      `sessionId === 当前会话` 的展示请求（后台会话不该顶掉用户正在看的右栏）。
   - **右栏（模式感知上下文栏）**：栏内（任务面板之下）第一张是任务清单卡
     （当前会话最后一次 `todo_write` 的结构化清单，
     无清单不渲染）；classroom = 课堂状态卡（`data-field="context.classisland-card"`，
@@ -1519,8 +1556,37 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     右栏宽度落在 280–560px（`--ctx-w` 变量真的驱动布局）、越界文案含「边界」、
     **tab 互斥**（files 下 `chat.jobs` 缺席、context 下恢复——旧探针零改动兼容正依赖这条）、
     终端 `.xterm` 跨 tab 往返仍在且行文本长度不减少（模块级单例 + 容器 detach/attach）、
-    浏览器面板出现（webview 不等待网络加载）。成功路径（真实读盘 / 截断 / 二进制 / 目录与
-    缺失文件）由 `apps/desktop/src/main/file-preview.test.ts` 用真实临时目录覆盖；
+    浏览器面板出现（webview 不等待网络加载）、文件 tab 的目录条恒在且预览态点「返回」后
+    列表容器回来、**左栏把手在且宽度由 `--nav-w` 内联变量真正驱动**、
+    **两侧把手各拖一次真的改宽度**（合成 down → move → up，buttons 恒为 1：左栏拖到 320、
+    右栏拖到 420，双击各回缺省 240 / 384 —— 「把手在」推不出「拖得动」）、**终端黑底**
+    （容器与 `.xterm-viewport` 的底色都是纯黑 —— xterm 的 `.xterm` 元素本身是透明的，
+    它把主题背景画进 canvas，因此判据取容器 + viewport）。成功路径（真实读盘 / 截断 /
+    二进制 / 目录与缺失文件）由 `apps/desktop/src/main/file-preview.test.ts` 与
+    `file-list.test.ts` 用真实临时目录覆盖；
+  - **终端 tab 截图**（`CHAT_TERMINAL_ACT` / `CHAT_TERMINAL_CHECK`，产物 `chat-terminal.png`，
+    2026-10-03）：不 reload（复用上一场景初始化好的常驻 shell，截图里自带 PowerShell 提示符），
+    check 断言 `.xterm` 在 + 容器与 viewport 底色纯黑；行文本只作诊断字段（单独跑本场景时
+    新 shell 可能还没有输出，不该判 FAIL）；
+  - **文件 tab ＝ 会话项目文件夹**（`chatFileProjectAct(root)` / `CHAT_FILE_PROJECT_CHECK`，
+    产物 `chat-file-project.png`，2026-10-03）：prepare 在项目根种出 `assets/` 与 `报告.md`；
+    act 经 `settings:update` 登记项目「截图项目」→ 点左栏那条绑项目的种子会话
+    （`sessions/chat-seed-project.json`，`meta.projectId = 'capture'`）→ 切到「文件」tab；
+    act 的返回值不进 report，读数挂在 `window.__auroraFileProjectAct` 上由 check 读取
+    （act 自己的失败必须能被看见，否则会静默假 PASS）。check 断言：根标签「项目：截图项目」、
+    根目录里 `assets` 与 `报告.md` 都在且**目录排在前**、点目录进下层（相对路径变 `assets`、
+    上级按钮可点）、点上级回根、点文件在面板内预览（markdown 正文可见 + 返回按钮）、
+    点返回回列表；**收尾**点回原会话行（用应用自己的行按钮，不猜标题）+ 撤销项目登记，
+    两条都并入 `restored`；
+  - **`show_preview` 推送链路的渲染层半边**（`chatFileProjectAct` + `mainAct` /
+    `CHAT_PREVIEW_TOOL_CHECK`，产物 `chat-preview-tool.png`，2026-10-03）：act 同上（切到
+    绑项目的会话，会话 id 必须与推送的 `sessionId` 一致才被采纳）；`mainAct` 合成一条
+    `preview:show`（通道与 payload 形状与工具实际推送一致，由主进程 `webContents.send` 发出）；
+    check 断言右栏**自动切到「浏览器」tab**、webview 真的加载了 `file://` 夹具
+    （读 `webview.getURL()`，轮询到就绪为止 —— 「面板在但没导航过去」是最可能的失效）、
+    地址栏显示原始路径。主进程侧的目标校验（http(s) / 越界 / 不存在 / `file:` 之外的协议 /
+    子代理会话 id 剥回父会话）由 `apps/desktop/src/main/tools/preview-port.test.ts` 覆盖，
+    工具层契约由 `packages/agent-core/src/tools/preview.test.ts` 覆盖；
   - **思考过程折叠块**（`CHAT_THINKING_BLOCK_ACT` / `CHAT_THINKING_BLOCK_CHECK`，
     产物 `chat-thinking-block.png`，BetaV2）：前提是 `seedChatTtsHistory` 种下的带 `reasoning`
     （标记 `capture-reasoning-probe`）的助手消息 —— 本场景先 reload 让渲染层重新水合 main 会话，
