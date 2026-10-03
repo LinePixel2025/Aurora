@@ -26,15 +26,24 @@ afterAll(async () => {
   if (outside !== '') await nodeFs.rm(outside, { recursive: true, force: true })
 })
 
-function setup(): { port: ReturnType<typeof createPreviewPort>; shown: PreviewPresentPayload[] } {
+function setup(options: { urlMode?: 'internal' | 'external' } = {}): {
+  port: ReturnType<typeof createPreviewPort>
+  shown: PreviewPresentPayload[]
+  external: string[]
+} {
   const shown: PreviewPresentPayload[] = []
+  const external: string[] = []
   const port = createPreviewPort({
     workspaceDirOf: () => base,
     boundaryRootOf: () => base,
     present: (payload) => shown.push(payload),
+    urlMode: () => options.urlMode ?? 'internal',
+    openExternal: async (url) => {
+      external.push(url)
+    },
     logger: createMemoryLogger(),
   })
-  return { port, shown }
+  return { port, shown, external }
 }
 
 describe('createPreviewPort（show_preview 的主进程实现）', () => {
@@ -46,6 +55,7 @@ describe('createPreviewPort（show_preview 的主进程实现）', () => {
     })
     expect(outcome.url).toBe('https://example.com/a?b=1')
     expect(outcome.display).toBe('https://example.com/a?b=1')
+    expect(outcome.openedIn).toBe('panel')
     expect(shown).toEqual([
       {
         sessionId: 's1',
@@ -54,6 +64,22 @@ describe('createPreviewPort（show_preview 的主进程实现）', () => {
         title: '示例',
       },
     ])
+  })
+
+  it('urlMode=external 时 URL 交给外部浏览器，不推送右栏；本地文件仍走右栏', async () => {
+    const { port, shown, external } = setup({ urlMode: 'external' })
+    await expect(
+      port.show('https://example.com/a?b=1', { sessionId: 's1', title: '示例' }),
+    ).resolves.toEqual({
+      url: 'https://example.com/a?b=1',
+      display: 'https://example.com/a?b=1',
+      openedIn: 'external',
+    })
+    expect(external).toEqual(['https://example.com/a?b=1'])
+    expect(shown).toEqual([])
+
+    await port.show(join('reports', 'index.html'), { sessionId: 's1', title: '' })
+    expect(shown).toHaveLength(1)
   })
 
   it('其它协议在入口即拒绝（file: / javascript: 都不放行）', async () => {
@@ -79,6 +105,7 @@ describe('createPreviewPort（show_preview 的主进程实现）', () => {
     await expect(port.show(target, { sessionId: 's1', title: '' })).resolves.toEqual({
       url: pathToFileURL(target).toString(),
       display: target,
+      openedIn: 'panel',
     })
   })
 
@@ -110,6 +137,8 @@ describe('createPreviewPort（show_preview 的主进程实现）', () => {
       workspaceDirOf: () => base,
       boundaryRootOf: () => undefined,
       present: (payload) => shown.push(payload),
+      urlMode: () => 'internal',
+      openExternal: async () => {},
       logger: createMemoryLogger(),
     })
     await expect(

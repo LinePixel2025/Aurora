@@ -53,7 +53,7 @@ interface FakeCalls {
    * 并进去会让既有那些逐字断言（`toEqual({ path, content, mode })`）全部变红。
    */
   outside: Array<{ method: string; allowOutside: boolean | undefined }>
-  open: string[]
+  open: Array<{ target: string; options?: { sessionId?: string } }>
   /** 搜索两方法由 `search.test.ts` 的假端口覆盖，这里的桩只为让类型过（回带空结果） */
   findFiles: FindFilesOptions[]
   searchText: SearchTextOptions[]
@@ -131,8 +131,8 @@ function createFakes(
     ...overrides,
   }
   const open: OpenPort = {
-    async open(target) {
-      calls.open.push(target)
+    async open(target, options) {
+      calls.open.push({ target, ...(options === undefined ? {} : { options }) })
       if (openImpl !== undefined) await openImpl(target)
     },
   }
@@ -706,16 +706,22 @@ describe('open_path', () => {
     const tool = toolOf(toolsOf(fakes), 'open_path')
 
     const result = await tool.execute({ target: '  https://example.com/a b  ' }, ctx)
-    expect(fakes.calls.open).toEqual(['https://example.com/a b'])
+    expect(fakes.calls.open).toEqual([
+      {
+        target: 'https://example.com/a b',
+        options: { sessionId: 'test-session' },
+      },
+    ])
     expect(result.content).toBe('已打开：https://example.com/a b')
     expect(result.isError).toBeUndefined()
   })
 
-  it('description 写清支持的目标类型与默认程序处理', () => {
+  it('description 写清支持的目标类型与浏览器分流', () => {
     const tool = createOpenTool({ open: createFakes().open })
     expect(tool.name).toBe('open_path')
     expect(tool.sensitivity).toBe('confirm')
-    expect(tool.description).toContain('Windows 默认程序')
+    expect(tool.description).toContain('内置浏览器')
+    expect(tool.description).toContain('系统默认浏览器')
     expect(tool.description).toContain('文件夹')
     expect(tool.description).toContain('程序名')
   })

@@ -174,7 +174,8 @@ export interface LlmProvider {
   **已知边界**：`chat:sessions` 目前没有推送通道，归档只在发出请求的那个窗口即时生效。
 - **会话文件格式版本**（`SESSION_FILE_VERSION`，与 `CONFIG_VERSION` 是两条独立的链）：
   v1 → v2 加 `meta`（上面那条）；v2 → v3 加 `StoredMessage.images`（图片附件**路径**，§3.1）；
-  **v3 → v4（本轮）** 加 `asks`（提问留痕，§24）—— 三条都是**可选字段、无迁移脚本**，
+  **v3 → v4** 加 `asks`（提问留痕，§24）；**v4 → v5（本轮）** 给工具卡加
+  `displayImages`（对话图片区，§14）—— 四条都是**可选字段、无迁移脚本**，
   读取侧宽容归化（缺字段 = 没有那个能力），版本号只用于说明"这个文件可能带什么"。
 - **会话绑定项目（v17，2026-09，`chat:setSessionProject`）**：`meta` 新增可选
   `projectId?: string`（`''` 与缺字段都算未绑定，空 meta 判定同步覆盖，不写空键）；
@@ -694,9 +695,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   `write_file` 写文本（`mode` 缺省 `overwrite`，`append` 追加）；`edit_file` 对文本做
   **精确局部替换**（读前守卫 + 唯一性拒绝 + 行尾保真，见 §11.6）；`list_dir` 列目录项；
   `grep` 按正则搜**内容**、`glob` 按模式匹配**文件名**（两者规格见 §11.5）；
-  `open_path` 交系统默认程序处理——`http(s)://` / `mailto:` 走 `shell.openExternal`，
-  其它路径走 `shell.openPath`（由 Windows 关联程序决定打开方式，Aurora 不指定具体程序），
-  都不等待目标程序退出。
+  `open_path` 打开 `http(s)://` 时按 `agent.tools.open.urlMode` 选择右栏内置浏览器（默认）或
+  `shell.openExternal`；`mailto:` 和本地路径仍走系统默认程序。所有打开动作都不等待目标程序退出。
 - **`read_file` 输出契约（2026-09 起）**：结果首行是
   `文件：<绝对路径>（共 <totalLines> 行 / <totalBytes> 字节；本次显示第 <from>–<to> 行）`，
   内容每行带 **`<行号>: ` 前缀**（行号 1 起始、相对文件开头、**不随 `offset` 改变**，
@@ -1435,14 +1435,16 @@ Content-Type: application/json
   的非实时路径；`output.audio.url` 的 24h 有效期对朗读场景（拿到即播）绰绰有余，
   Aurora 不做音频缓存。
 
-## 14. 扩展工具六件套（v0.0.1；`show_preview` 于 2026-10-03 补入）
+## 14. 扩展工具七件套（v0.0.1；`show_preview` / `show_image` 后续补入）
 
 v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/betav2-spec.md §6.2），
-2026-10-03 起再加 `show_preview`（把成果展示到桌面右栏的预览面板，见 07 §2.3 的
+2026-10-03 起加 `show_preview`（把成果展示到桌面右栏的预览面板，见 07 §2.3 的
 「Agent 展示」——渲染层收到推送后把目标投给**浏览器标签**：已有就复用、没有才新建，
-2026-10-03 二次修订）。
+2026-10-03 二次修订）；2026-10-04 加 `show_image`（把本地图片加入**对话图片区**，
+并按同一套无路径元数据同步到 Center）。
 分层与 §11 的电脑操控工具同一套：**内核只定义工具与端口**（`tools/web-fetch.ts` /
-`tools/clipboard.ts` / `tools/notify.ts` / `tools/imagegen.ts` / `tools/preview.ts`，
+`tools/clipboard.ts` / `tools/notify.ts` / `tools/imagegen.ts` / `tools/preview.ts` /
+`tools/image-display.ts`，
 纯 Node、可单测），真实系统能力由主进程实现端口后注入（`apps/desktop/src/main/tools/`
 下对应实现）。
 
@@ -1452,11 +1454,13 @@ v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/b
 | `clipboard_read` () | `ClipboardPort.read()` | `createElectronClipboardPort`（Electron `clipboard.readText`） | **confirm**（隐私） |
 | `clipboard_write` {text} | `ClipboardPort.write(text)` | 同上（`clipboard.writeText`） | **confirm** |
 | `notify_user` {title, body} | `NotifyPort.show(title, body)` | `createNotificationPort`（映射到 `NotificationService.notify`，复用去重 / 点击打开 / 日志） | safe |
-| `generate_image` {prompt, size?} | `ImageGenPort.generate({prompt, size?})` | `createImageGenPort` → `ImageGenService`（§15） | **confirm**（花 API 费用） |
-| `show_preview` {target, title?} | `PreviewPort.show(target, {sessionId, title})` | `createPreviewPort`（目标校验 + 推送到 chat 窗口；渲染层投放见 07 §2.3） | safe |
+| `generate_image` {prompt, size?} | `ImageGenPort.generate({prompt, sessionId, size?})` | `createImageGenPort` → `ImageGenService`（§15） | **confirm**（花 API 费用） |
+| `show_preview` {target, title?} | `PreviewPort.show(target, {sessionId, title})` | `createPreviewPort`（目标校验 + 推送到 chat 窗口；URL 去向遵守 `urlMode`） | safe |
+| `show_image` {path, caption?} | `ImageDisplayPort.prepareImage(...)` | `createImageDisplayPort`（格式 / 大小 / 会话边界校验 + 图片元数据） | safe |
 
-`generate_image` 只管**写**图，且**不受门控**（任何模型都能照着描述生图）；补齐「看图」三件套的
-`view_image` / `screenshot` / `clipboard_read_image` 是 §25 的图像工具，门控口径与本节六件套**相反**
+`generate_image` 只管**写**图，且**不受门控**（任何模型都能照着描述生图）；成功后其产物
+自动进入对话图片区。补齐「看图」三件套的
+`view_image` / `screenshot` / `clipboard_read_image` 是 §25 的图像工具，门控口径与本节七件套**相反**
 （按当前生效模型的 `vision` 注册）—— 别把三者按「不受门控」理解。
 
 ### 14.1 注册口径
@@ -1997,7 +2001,7 @@ Aurora Center（docs/12）连接建立后，Agent 获得两个 Center 工具；�
 - **注册门控**：`center.enabled === true` 且 `center.serverUrl` 非空**才注册**（未配置时
   连工具都不出现，与 STT/TTS 的按钮门控同口径）；`center_send_file` 另受
   `center.allowFileTransfer` 约束（关闭时工具明确报错而非消失）。**不受**
-  `agent.tools.enabled` 门控（与扩展工具五件套同口径）。v0.2.4 起它不再逐次确认 ——
+  `agent.tools.enabled` 门控（与扩展工具七件套同口径）。v0.2.4 起它不再逐次确认 ——
   安全闸门就是这三层配置开关（见 §11.2），用户要求发文件零打扰。
 - **只读前缀联动**：`center.*` 整组在 `SETTINGS_READONLY_PREFIXES` 里 —— 连接目标是
   数据外发通道，AI 的 `set_setting` 不得启用 / 改向 / 填令牌（自我外联 = 数据外泄）。
@@ -2213,7 +2217,7 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
 
 ### 25.4 与权限档、配置 Schema 的关系
 
-- **只读档（`agent.permissionMode === 'readonly'`）不摘这三个工具**：与 §14 的扩展工具五件套同口径 ——
+- **只读档（`agent.permissionMode === 'readonly'`）不摘这三个工具**：与 §14 的扩展工具七件套同口径 ——
   `screenshot` / `clipboard_read_image` 写的是 app 自己的目录（不是用户文件）、`view_image` 纯读，
   因此不属于「写入 / 执行类工具」。
 - **无配置 Schema 变更**：本能力不新增配置字段、不推进 `CONFIG_VERSION`、无新迁移

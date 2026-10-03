@@ -983,6 +983,42 @@ const migrateV25ToV26: Migration = {
   },
 }
 
+/**
+ * v26 → v27：模型打开网址默认进右栏内置浏览器，并允许切到外部浏览器。
+ *
+ * 只处理**已存在**的 `agent.tools.open` 分组：缺失时交给默认配置兜底，
+ * 不凭空造半截对象。已有合法值原样保留，缺字段才补 `internal`。
+ */
+const migrateV26ToV27: Migration = {
+  from: 26,
+  to: 27,
+  describe: 'v26 → v27：agent.tools.open 补 urlMode（默认内置浏览器）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const agent = asRecord(raw['agent'])
+    const tools = asRecord(agent?.['tools'])
+    const open = asRecord(tools?.['open'])
+
+    if (agent !== undefined && tools !== undefined && open !== undefined) {
+      next['agent'] = {
+        ...agent,
+        tools: {
+          ...tools,
+          open: {
+            ...open,
+            ...(open['urlMode'] === 'internal' || open['urlMode'] === 'external'
+              ? { urlMode: open['urlMode'] }
+              : { urlMode: 'internal' }),
+          },
+        },
+      }
+    }
+
+    next['version'] = 27
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1010,6 +1046,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV23ToV24,
   migrateV24ToV25,
   migrateV25ToV26,
+  migrateV26ToV27,
 ]
 
 export interface MigrationOutcome {

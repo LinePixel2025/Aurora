@@ -23,7 +23,7 @@ function createHarness(options: { error?: unknown } = {}): Harness {
     show: async (target, showOptions) => {
       if (options.error !== undefined) throw options.error
       calls.push({ target, options: showOptions })
-      return { url: `file:///${target}`, display: target }
+      return { url: `file:///${target}`, display: target, openedIn: 'panel' }
     },
   }
   return { tool: createShowPreviewTool({ port }), calls }
@@ -58,6 +58,22 @@ describe('createShowPreviewTool', () => {
     await tool.execute({ target: 'https://example.com' }, CONTEXT)
     await tool.execute({ target: 'https://example.com', title: '   ' }, CONTEXT)
     expect(calls.map((call) => call.options.title)).toEqual(['', ''])
+  })
+
+  it('端口回报外部浏览器打开时，回填文案与实际去向一致', async () => {
+    const calls: Array<{ target: string; options: PreviewShowOptions }> = []
+    const tool = createShowPreviewTool({
+      port: {
+        show: async (target, showOptions) => {
+          calls.push({ target, options: showOptions })
+          return { url: target, display: target, openedIn: 'external' }
+        },
+      },
+    })
+    const result = await tool.execute({ target: 'https://example.com' }, CONTEXT)
+    expect(result.isError).toBeUndefined()
+    expect(result.summary).toBe('已在外部浏览器打开')
+    expect(result.content).toContain('外部浏览器')
   })
 
   it('缺少 target（或全空白）时报错且不触碰端口', async () => {

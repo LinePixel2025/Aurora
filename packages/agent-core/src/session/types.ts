@@ -7,6 +7,7 @@
  */
 import type {
   AskSettleOutcome,
+  ChatDisplayImage,
   PermissionMode,
   SessionUsageStats,
   SubagentSnapshot,
@@ -35,6 +36,17 @@ export interface StoredToolCall {
    * 「子代理」页面在重启后仍能回看历史运行（步骤、耗时与最终报告）。
    */
   subagent?: SubagentSnapshot
+  /**
+   * 本工具调用产出的对话图片（docs/06 §14，SESSION_FILE_VERSION 5）。
+   *
+   * `path` 是客户端内部字段：`rendererHistory` / Center 回放只投影成
+   * `ChatDisplayImage`（无路径），真实文件按 id 读取。
+   */
+  displayImages?: StoredDisplayImage[]
+}
+
+export interface StoredDisplayImage extends ChatDisplayImage {
+  path: string
 }
 
 export interface StoredMessage {
@@ -266,5 +278,7 @@ export interface NewMessage {
  * 版本号只用于说明"这个文件可能带图片路径"。
  * v3 → v4：新增可选 `asks`（提问留痕，本轮 docs/12 §5）。同款零迁移：缺字段 = 没有留痕，
  * 旧文件天然合法；版本号只用于说明"这个文件可能带提问记录"。
+ * v4 → v5：工具调用新增可选 `displayImages`（对话图片展示，docs/06 §14）。
+ * 同样零迁移：缺字段 = 没有展示图片，旧文件天然合法。
  */
-export const SESSION_FILE_VERSION = 4 as const
+export const SESSION_FILE_VERSION = 5 as const

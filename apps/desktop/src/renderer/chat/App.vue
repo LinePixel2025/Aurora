@@ -57,6 +57,7 @@ import FilePreviewPanel from './components/FilePreviewPanel.vue'
 import TerminalPanel from './components/TerminalPanel.vue'
 import BrowserPanel, { type BrowserTarget } from './components/BrowserPanel.vue'
 import CtxTabStrip from './components/CtxTabStrip.vue'
+import CtxQuickAccess from './components/CtxQuickAccess.vue'
 import SessionNav from './components/SessionNav.vue'
 import SubagentPage from './components/SubagentPage.vue'
 import AutomationPage from './components/AutomationPage.vue'
@@ -299,8 +300,8 @@ watch(
 
 /**
  * 开新标签（「＋」菜单）：到上限时给一条可见提示，而不是静默什么都不发生。
- * 复用左栏左下角那条提示（`chat.project-notice` 通道）—— 它在子代理 / 自动化页照样可见，
- * 语义是「左栏动作的结果」而不是「项目专用」，这里借它的位置不必新造一条 toast。
+ * 复用窗口左下角那条提示（`chat.project-notice` 通道）—— 它在子代理 / 自动化页照样可见，
+ * 语义是「壳层动作的结果」而不是「项目专用」，这里借它的位置不必新造一条 toast。
  */
 function onNewCtxTab(kind: CtxTabKind): CtxTab | null {
   const opened = openCtxTab(kind)
@@ -309,11 +310,11 @@ function onNewCtxTab(kind: CtxTabKind): CtxTab | null {
 }
 
 /**
- * 左栏「工具」快捷卡片（2026-10-03，docs/07 §2.3）：右栏标签**全关**时它们是重开入口 ——
+ * 右栏空态的工具快捷卡片（2026-10-03，docs/07 §2.3）：右栏标签**全关**时它们是重开入口 ——
  * 先把右栏展开（用户可能把它收起过），再走与「＋」菜单同一条开标签链路
- * （含到上限时的可见提示）。开出一个标签后左栏那张卡片区就自动消失。
+ * （含到上限时的可见提示）。开出一个标签后右栏空态卡片区就自动消失。
  */
-function openCtxTabFromNav(kind: CtxTabKind): void {
+function openCtxTabFromEmpty(kind: CtxTabKind): void {
   contextOpen.value = true
   onNewCtxTab(kind)
 }
@@ -1605,7 +1606,6 @@ async function markGuideDone(): Promise<void> {
         :jobs-count="jobs.length"
         :jobs-running="jobsRunning"
         :jobs-open="jobsOpen"
-        :ctx-empty="ctxTabs.length === 0"
         @new-session="startNewSession"
         @new-agent-session="startAgentSession"
         @new-project-session="startProjectSession"
@@ -1617,7 +1617,6 @@ async function markGuideDone(): Promise<void> {
         @open-automations="view = 'automations'"
         @toggle-right-panel="contextOpen = !contextOpen"
         @toggle-jobs="toggleJobs"
-        @open-ctx-tab="openCtxTabFromNav"
         @open-settings="windowStore.show('settings')"
       />
     </aside>
@@ -1956,6 +1955,11 @@ async function markGuideDone(): Promise<void> {
         @new-tab="onNewCtxTab"
       />
       <div class="ctx-panes">
+        <!--
+          右栏空标签态：标签全关后，重开入口直接留在右栏正文区 ——
+          `chat.tool-shortcuts` / `chat.tool-open-<kind>` 仍是原探针锚点。
+        -->
+        <CtxQuickAccess v-if="ctxTabs.length === 0" @open="openCtxTabFromEmpty" />
         <template v-for="tab in ctxTabs" :key="tab.id">
           <!--
             「上下文」标签：任务面板（JobPanel）+ 模式感知上下文栏（ContextPanel），

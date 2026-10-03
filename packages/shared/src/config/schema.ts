@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 26 as const
+export const CONFIG_VERSION = 27 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -806,6 +806,14 @@ export const AgentToolsSchema = z.object({
   }),
   open: z.object({
     enabled: z.boolean(),
+    /**
+     * 模型打开 http(s) 网址时的去向（v27，docs/06 §11 / §14）：
+     * `internal` = 右栏内置浏览器（默认）；`external` = 系统默认浏览器。
+     *
+     * 只约束模型发起的 `open_path` 与 `show_preview`；本地文件预览、自动化打开网址、
+     * 设备授权登录和用户手动入口不读取本字段。
+     */
+    urlMode: z.enum(['internal', 'external']).default('internal'),
   }),
 })
 export type AgentToolsConfig = z.infer<typeof AgentToolsSchema>

@@ -58,6 +58,21 @@ export interface ToolImage {
   image: LlmImageInput
 }
 
+/**
+ * 对话图片区的一张图片（`show_image` / `generate_image`）。
+ *
+ * 与 `ToolImage` 分开：`ToolImage` 是“立即回填给模型看”的输入；`ToolDisplayImage`
+ * 只用于用户界面展示。`path` 仅由内核透传给会话存储，渲染层与 Center 只拿
+ * `ChatDisplayImage` 的无路径投影。
+ */
+export interface ToolDisplayImage {
+  id: string
+  path: string
+  name: string
+  mime: string
+  caption?: string
+}
+
 export interface ToolResult {
   /** 回填给模型的结果文本（会进入上下文，注意长度） */
   content: string
@@ -75,6 +90,11 @@ export interface ToolResult {
    * 附在本轮全部 tool 结果之后下发（tool 角色只能带字符串，两套协议都一样）。
    */
   images?: readonly ToolImage[]
+  /**
+   * 工具产出的对话展示图片：循环随工具卡持久化，并在 success 的 `tool` 事件里
+   * 下发无路径元数据。与 `images` 互不替代。
+   */
+  displayImages?: readonly ToolDisplayImage[]
 }
 
 export interface ToolDefinition {

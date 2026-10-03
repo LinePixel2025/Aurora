@@ -396,7 +396,7 @@ describe('配置迁移链', () => {
         },
         files: { enabled: true, maxReadBytes: 262_144 },
         search: { enabled: true, maxResults: 200 },
-        open: { enabled: true },
+        open: { enabled: true, urlMode: 'internal' },
       })
     })
   })
@@ -1104,6 +1104,7 @@ describe('配置迁移链', () => {
         'v23 → v24：v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
         'v24 → v25：v24 → v25：退役全局 projects.current（项目改为按会话绑定，docs/06 §5.1）',
         'v25 → v26：v25 → v26：主界面默认尺寸上调到 1280×800（历史窗口几何只放大不缩小）',
+        'v26 → v27：v26 → v27：agent.tools.open 补 urlMode（默认内置浏览器）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1142,6 +1143,7 @@ describe('配置迁移链', () => {
         'v23 → v24：v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
         'v24 → v25：v24 → v25：退役全局 projects.current（项目改为按会话绑定，docs/06 §5.1）',
         'v25 → v26：v25 → v26：主界面默认尺寸上调到 1280×800（历史窗口几何只放大不缩小）',
+        'v26 → v27：v26 → v27：agent.tools.open 补 urlMode（默认内置浏览器）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1547,6 +1549,7 @@ describe('配置迁移链', () => {
         'v23 → v24：v23 → v24：归一 stt.providers 各条目的 type（语音输入新增阿里云百炼原生 ASR）',
         'v24 → v25：v24 → v25：退役全局 projects.current（项目改为按会话绑定，docs/06 §5.1）',
         'v25 → v26：v25 → v26：主界面默认尺寸上调到 1280×800（历史窗口几何只放大不缩小）',
+        'v26 → v27：v26 → v27：agent.tools.open 补 urlMode（默认内置浏览器）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -1627,8 +1630,9 @@ describe('配置迁移链', () => {
         version: 25,
         general: { windowState: { chat: { x: 10, y: 20, width: 1120, height: 720 } } },
       })
-      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied).toHaveLength(2)
       expect(outcome.applied[0]).toContain('v25 → v26')
+      expect(outcome.applied[1]).toContain('v26 → v27')
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(chatOf(outcome.data)).toEqual({ x: 10, y: 20, width: 1280, height: 800 })
     })
@@ -1643,6 +1647,48 @@ describe('配置迁移链', () => {
       const none = migrate({ version: 25, general: { language: 'zh-CN' } })
       expect(none.data['general']).toEqual({ language: 'zh-CN' })
       expect(none.data['version']).toBe(CONFIG_VERSION)
+    })
+  })
+
+  describe('v26 → v27（模型打开网址默认走内置浏览器）', () => {
+    it('已有 open 分组只补缺字段，用户已选外部浏览器则原样保留', () => {
+      const missing = migrate({
+        version: 26,
+        agent: { tools: { open: { enabled: true } } },
+      })
+      const missingAgent = missing.data['agent'] as Record<string, unknown>
+      const missingTools = missingAgent['tools'] as Record<string, unknown>
+      expect(missingTools['open']).toEqual({ enabled: true, urlMode: 'internal' })
+      expect(missing.applied[0]).toContain('v26 → v27')
+
+      const external = migrate({
+        version: 26,
+        agent: { tools: { open: { enabled: true, urlMode: 'external' } } },
+      })
+      const externalAgent = external.data['agent'] as Record<string, unknown>
+      const externalTools = externalAgent['tools'] as Record<string, unknown>
+      expect(externalTools['open']).toEqual({ enabled: true, urlMode: 'external' })
+    })
+
+    it('open 分组缺失时不凭空造对象；非法旧值回落 internal；重复迁移幂等', () => {
+      const none = migrate({ version: 26, agent: { tools: { enabled: true } } })
+      const noneAgent = none.data['agent'] as Record<string, unknown>
+      const noneTools = noneAgent['tools'] as Record<string, unknown>
+      expect(noneTools['open']).toBeUndefined()
+
+      const once = migrate({
+        version: 26,
+        agent: { tools: { open: { enabled: true, urlMode: 'browser' } } },
+      })
+      const again = migrate({ ...once.data, version: 26 })
+      expect(again.data['agent']).toEqual(once.data['agent'])
+      expect(
+        (
+          ((again.data['agent'] as Record<string, unknown>)['tools'] as Record<string, unknown>)[
+            'open'
+          ] as Record<string, unknown>
+        )['urlMode'],
+      ).toBe('internal')
     })
   })
 })

@@ -415,6 +415,13 @@ export class StubClient {
         return fixtureSessionList(this.sessionCount)
       case 'session.history':
         return this.history.get(cmd.sessionId) ?? []
+      case 'session.readImage':
+        return {
+          dataUrl:
+            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+          name: 'proof.png',
+          mime: 'image/png',
+        }
       case 'project.list':
         return FIXTURE_PROJECTS
       case 'config.get':

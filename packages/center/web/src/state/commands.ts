@@ -13,6 +13,7 @@ import type {
   AutomationRun,
   CenterProjectOption,
   CenterSessionHistoryMessage,
+  ChatDisplayImageReadResult,
   CenterSessionSummary,
   CenterWebMessage,
   ClientStatus,
@@ -117,6 +118,29 @@ async function fetchSessionHistory(
   return Array.isArray(data) ? data : []
 }
 
+/** 按 imageId 让客户端现场读一张对话图片；服务器只转发，不缓存图片内容。 */
+export async function readDisplayImage(
+  clientId: string,
+  sessionId: string,
+  imageId: string,
+): Promise<ChatDisplayImageReadResult> {
+  const data = await command<ChatDisplayImageReadResult>({
+    type: 'session.readImage',
+    requestId: nextRequestId(),
+    clientId,
+    sessionId,
+    imageId,
+  })
+  if (
+    typeof data?.dataUrl !== 'string' ||
+    typeof data.name !== 'string' ||
+    typeof data.mime !== 'string'
+  ) {
+    throw new Error('客户端没有返回有效图片')
+  }
+  return data
+}
+
 /** 历史消息 → 助手 ChatItem（工具卡入参经 summarizeInput 压成单行，与实时聚合同口径） */
 function historyToAssistant(msg: CenterSessionHistoryMessage): ChatItem {
   return {
@@ -132,6 +156,7 @@ function historyToAssistant(msg: CenterSessionHistoryMessage): ChatItem {
       ...(call.input === undefined ? {} : { input: call.input }),
       ...(call.outputSummary === undefined ? {} : { outputSummary: call.outputSummary }),
       ...(call.subagent === undefined ? {} : { subagent: call.subagent }),
+      ...(call.displayImages === undefined ? {} : { displayImages: call.displayImages }),
     })),
     streaming: false, // 历史条目都是已收尾的消息，不显示流式光标
   }

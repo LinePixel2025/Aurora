@@ -42,6 +42,8 @@ import {
   type ChatArchiveRequest,
   type ChatAttachmentPreview,
   type ChatAttachmentPreviewRequest,
+  type ChatDisplayImageReadRequest,
+  type ChatDisplayImageReadResult,
   type ChatHistoryRequest,
   type ChatMessageDto,
   type FileListRequest,
@@ -170,6 +172,8 @@ export interface DesktopDeps {
   skills: SkillsInfoLike
   /** 会话历史（chat:history 水合，docs/06 §4） */
   sessions: SessionStore
+  /** 对话图片读取（chat:readDisplayImage，docs/06 §14） */
+  readDisplayImage: (request: ChatDisplayImageReadRequest) => Promise<ChatDisplayImageReadResult>
   /** 分类管线（classification:*，docs/05 §3） */
   classification: ClassificationControllerLike
   /** 敏感工具确认（proactive:*，docs/06 §5） */
@@ -820,6 +824,22 @@ export function registerIpc(deps: DesktopDeps): () => void {
         (error: unknown) =>
           err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
       )
+    },
+  )
+  handle<ChatDisplayImageReadResult>(
+    IPC.chat.readDisplayImage,
+    (request: ChatDisplayImageReadRequest) => {
+      const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
+      const imageId = typeof request?.imageId === 'string' ? request.imageId : ''
+      if (sessionId === '' || imageId === '') {
+        return Promise.resolve(err('E_INVALID_ARGUMENT', '缺少 sessionId 或 imageId'))
+      }
+      return deps
+        .readDisplayImage({ sessionId, imageId })
+        .then(ok)
+        .catch((error: unknown) =>
+          err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+        )
     },
   )
   /**

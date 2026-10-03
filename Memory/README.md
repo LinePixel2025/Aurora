@@ -10,6 +10,7 @@
 
 | 日期 | 主题 | 标签 | 文件 |
 | --- | --- | --- | --- |
+| 2026-10-04 | 内置浏览器、对话图片与 HarmonyOS Sans 的接线口径 | 浏览器, 图片, 字体, Center, 打包 | [2026-10-04-browser-image-fonts.md](2026-10-04-browser-image-fonts.md) |
 | 2026-10-03 | DSH 的技能根清单与 `.system` 陷阱（技能该放哪一层） | 环境, 技能, DSH, 坑 | [2026-10-03-dsh-skill-roots.md](2026-10-03-dsh-skill-roots.md) |
 | 2026-10-03 | 已移除的功能 / 未生效字段 / 别误当 bug 的行为清单 | 限制, 状态, 坑 | [2026-10-03-known-limits.md](2026-10-03-known-limits.md) |
 | 2026-10-03 | 界面文案、输入卡与 Vue scoped 样式的三条硬口径 | UI, 文案, 样式, 坑 | [2026-10-03-ui-style-and-copy.md](2026-10-03-ui-style-and-copy.md) |

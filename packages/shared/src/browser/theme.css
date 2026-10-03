@@ -21,6 +21,59 @@
  * **品牌不再使用双色渐变**：`--aurora-gradient` 即纯强调色值，全仓禁用 aurora 绿×蓝的
  * 135° 斜向品牌 linear-gradient（功能性渐变如遮罩渐隐允许，须注释说明）。
  */
+
+/*
+ * HarmonyOS Sans 字体（2026-10-04）：字体文件随包分发、不修改原始 TTF。
+ * Latin 与简体中文字形分两个 family；代码 / 终端继续使用下面的等宽栈。
+ */
+@font-face {
+  font-family: 'HarmonyOS Sans';
+  src: url('./assets/fonts/HarmonyOS_Sans_Regular.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HarmonyOS Sans';
+  src: url('./assets/fonts/HarmonyOS_Sans_Medium.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HarmonyOS Sans';
+  src: url('./assets/fonts/HarmonyOS_Sans_Bold.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 600 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HarmonyOS Sans SC';
+  src: url('./assets/fonts/HarmonyOS_Sans_SC_Regular.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HarmonyOS Sans SC';
+  src: url('./assets/fonts/HarmonyOS_Sans_SC_Medium.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HarmonyOS Sans SC';
+  src: url('./assets/fonts/HarmonyOS_Sans_SC_Bold.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 600 900;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
 
@@ -91,11 +144,9 @@
   --glass-fallback: rgba(28, 28, 30, 0.96);
 
   /* ───────── 字体 ───────── */
-  /* Windows 上没有真 SF，用系统 UI 字体栈近似；中文回落到雅黑 */
-  --font-ui:
-    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Segoe UI Variable Text',
-    'Segoe UI', 'Microsoft YaHei UI', '微软雅黑', system-ui, sans-serif;
-  --font-display: 'SF Pro Display', 'Segoe UI Variable Display', var(--font-ui);
+  /* 界面与正文统一使用随包 HarmonyOS Sans；代码 / 终端保持等宽。 */
+  --font-ui: 'HarmonyOS Sans', 'HarmonyOS Sans SC', system-ui, sans-serif;
+  --font-display: 'HarmonyOS Sans', 'HarmonyOS Sans SC', var(--font-ui);
   --font-mono: 'Cascadia Code', 'Consolas', 'JetBrains Mono', monospace;
 
   /* 字号阶梯：正文 13.5px（Mac 观感），标题用 display 字体 + 负字距 */

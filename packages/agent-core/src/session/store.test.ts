@@ -55,7 +55,7 @@ describe('SessionStore', () => {
       sessionId: string
       messages: StoredMessage[]
     }
-    expect(persisted.version).toBe(4)
+    expect(persisted.version).toBe(5)
     expect(persisted.sessionId).toBe('quick')
     expect(persisted.messages).toHaveLength(3)
     expect(persisted.messages[2]?.toolCallId).toBe('c1')
@@ -228,6 +228,51 @@ describe('SessionStore', () => {
     expect(all.map((item) => item.content)).toEqual(['q1', 'a1', 'q2'])
     const limited = await store.rendererHistory('quick', 2)
     expect(limited.map((item) => item.content)).toEqual(['a1', 'q2'])
+  })
+
+  it('对话展示图片随工具卡持久化：历史只投影无路径元数据，displayImageOf 保留内部路径', async () => {
+    const { store, fs } = setup()
+    await store.append('quick', {
+      role: 'assistant',
+      content: '',
+      toolCalls: [
+        {
+          id: 'c-img',
+          name: 'show_image',
+          arguments: '{"path":"result.png"}',
+          state: 'success',
+          displayImages: [
+            {
+              id: 'img-1',
+              path: 'C:\\work\\result.png',
+              name: 'result.png',
+              mime: 'image/png',
+              caption: '最终结果',
+            },
+          ],
+        },
+      ],
+    })
+    await store.flush()
+
+    const history = await store.rendererHistory('quick')
+    expect(history[0]?.toolCalls?.[0]?.displayImages).toEqual([
+      { id: 'img-1', name: 'result.png', mime: 'image/png', caption: '最终结果' },
+    ])
+    expect(history[0]?.toolCalls?.[0]?.input).toEqual({ name: 'result.png' })
+    expect(JSON.stringify(history)).not.toContain('C:\\\\work')
+    expect(await store.displayImageOf('quick', 'img-1')).toEqual({
+      id: 'img-1',
+      path: 'C:\\work\\result.png',
+      name: 'result.png',
+      mime: 'image/png',
+      caption: '最终结果',
+    })
+
+    const persisted = JSON.parse(fs.files.get(`${SESSION_DIR}\\quick.json`) ?? '{}') as {
+      version: number
+    }
+    expect(persisted.version).toBe(5)
   })
 
   it('listSessions 合并内存与磁盘会话', async () => {
@@ -734,7 +779,7 @@ describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 
 
     // setArchived 是 await 写盘的（不靠 300ms 防抖），因此此刻盘上已是最终内容
     const persisted = readFile(fs, 'quick')
-    expect(persisted['version']).toBe(4)
+    expect(persisted['version']).toBe(5)
     expect(metaOf(fs, 'quick')['archived']).toBe(true)
     expect(typeof metaOf(fs, 'quick')['archivedAt']).toBe('string')
 
@@ -803,7 +848,7 @@ describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 
     await store.setArchived('empty-one', true)
 
     const persisted = readFile(fs, 'empty-one')
-    expect(persisted['version']).toBe(4)
+    expect(persisted['version']).toBe(5)
     expect(persisted['messages']).toEqual([])
     expect(metaOf(fs, 'empty-one')['archived']).toBe(true)
     expect((await store.summaries()).find((item) => item.id === 'empty-one')?.title).toBe('新会话')

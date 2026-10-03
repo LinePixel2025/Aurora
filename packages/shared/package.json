@@ -22,7 +22,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node -e \"const fs=require('fs'),path=require('path');for(const f of ['markdown/md.css','theme.css']){const to='dist/browser/'+f;fs.mkdirSync(path.dirname(to),{recursive:true});fs.copyFileSync('src/browser/'+f,to)}\"",
+    "build": "tsc -p tsconfig.json && node -e \"const fs=require('fs'),path=require('path');for(const f of ['markdown/md.css','theme.css']){const to='dist/browser/'+f;fs.mkdirSync(path.dirname(to),{recursive:true});fs.copyFileSync('src/browser/'+f,to)}fs.cpSync('src/browser/assets','dist/browser/assets',{recursive:true})\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },

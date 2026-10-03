@@ -190,6 +190,7 @@ export const DEFAULT_AGENT_TOOLS = {
   },
   open: {
     enabled: true,
+    urlMode: 'internal',
   },
 } as const
 

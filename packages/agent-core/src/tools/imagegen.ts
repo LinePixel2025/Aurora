@@ -8,13 +8,17 @@
  * 安全边界：生图要花 API 费用，`sensitivity: 'confirm'`，逐次过
  * `confirmTool` 钩子；耗时可能较长，工具描述里向模型交代清楚。
  */
-import type { ToolDefinition, ToolResult } from './registry.js'
+import type { ToolDefinition, ToolDisplayImage, ToolResult } from './registry.js'
 
 export const IMAGE_GEN_TOOL_NAME = 'generate_image'
 
 export interface ImageGenPort {
-  /** 调用生图模型并把图片写入本地；成功返回文件绝对路径 */
-  generate(input: { prompt: string; size?: string }): Promise<{ filePath: string }>
+  /** 调用生图模型并把图片写入本地；成功返回路径与自动展示元数据 */
+  generate(input: {
+    prompt: string
+    sessionId: string
+    size?: string
+  }): Promise<{ filePath: string; displayImage?: ToolDisplayImage }>
 }
 
 export interface ImageGenToolOptions {
@@ -26,7 +30,7 @@ export function createImageGenTool(options: ImageGenToolOptions): ToolDefinition
     name: IMAGE_GEN_TOOL_NAME,
     description:
       '调用生图模型生成图片并保存到本地，成功返回文件路径；耗时可能较长，不要在同一轮里重复发起。' +
-      '生成前先向用户确认描述与尺寸（本工具会请求用户确认）。',
+      '生成前先向用户确认描述与尺寸（本工具会请求用户确认）。生成成功后的图片会自动展示在对话里。',
     parameters: {
       type: 'object',
       properties: {
@@ -40,7 +44,7 @@ export function createImageGenTool(options: ImageGenToolOptions): ToolDefinition
       additionalProperties: false,
     },
     sensitivity: 'confirm',
-    execute: async (input): Promise<ToolResult> => {
+    execute: async (input, ctx): Promise<ToolResult> => {
       const record = asRecord(input)
       const prompt = readNonEmptyString(record, 'prompt')
       if (prompt === undefined) {
@@ -54,11 +58,13 @@ export function createImageGenTool(options: ImageGenToolOptions): ToolDefinition
       try {
         const result = await options.port.generate({
           prompt,
+          sessionId: ctx.sessionId,
           ...(size === undefined ? {} : { size }),
         })
         return {
           content: `已保存到 ${result.filePath}`,
           summary: '已生成图片',
+          ...(result.displayImage === undefined ? {} : { displayImages: [result.displayImage] }),
         }
       } catch (error) {
         return {

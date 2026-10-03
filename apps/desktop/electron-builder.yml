@@ -34,6 +34,8 @@ extraResources:
     to: skills
     filter:
       - '**/*'
+  - from: ../../packages/shared/src/browser/assets/fonts/HarmonyOS-Sans-LICENSE.txt
+    to: licenses/HarmonyOS-Sans-LICENSE.txt
 
 asar: true
 

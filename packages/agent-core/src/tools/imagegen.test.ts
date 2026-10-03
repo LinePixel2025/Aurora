@@ -14,16 +14,24 @@ const CONTEXT = { sessionId: 'session-test' }
 
 interface Harness {
   tool: ToolDefinition
-  calls: Array<{ prompt: string; size?: string }>
+  calls: Array<{ prompt: string; sessionId: string; size?: string }>
 }
 
 function createHarness(options: { error?: unknown } = {}): Harness {
-  const calls: Array<{ prompt: string; size?: string }> = []
+  const calls: Array<{ prompt: string; sessionId: string; size?: string }> = []
   const port: ImageGenPort = {
     generate: async (input) => {
       if (options.error !== undefined) throw options.error
       calls.push(input)
-      return { filePath: 'C:\\Users\\u\\AppData\\Roaming\\Aurora\\generated\\img-1.png' }
+      return {
+        filePath: 'C:\\Users\\u\\AppData\\Roaming\\Aurora\\generated\\img-1.png',
+        displayImage: {
+          id: 'img-1',
+          path: 'C:\\Users\\u\\AppData\\Roaming\\Aurora\\generated\\img-1.png',
+          name: 'img-1.png',
+          mime: 'image/png',
+        },
+      }
     },
   }
   return { tool: createImageGenTool({ port }), calls }
@@ -45,19 +53,20 @@ describe('createImageGenTool', () => {
     const { tool, calls } = createHarness()
     const result = await tool.execute({ prompt: '一只在雪地里的橘猫' }, CONTEXT)
 
-    expect(calls).toEqual([{ prompt: '一只在雪地里的橘猫' }])
+    expect(calls).toEqual([{ prompt: '一只在雪地里的橘猫', sessionId: 'session-test' }])
     expect(result.isError).toBeUndefined()
     expect(result.content).toMatch(/^已保存到 .+\.png$/)
     expect(result.summary).toBe('已生成图片')
+    expect(result.displayImages?.[0]?.name).toBe('img-1.png')
   })
 
   it('size 可选且透传，未传时不带 size 字段', async () => {
     const { tool, calls } = createHarness()
     await tool.execute({ prompt: '猫', size: '1024x1024' }, CONTEXT)
-    expect(calls[0]).toEqual({ prompt: '猫', size: '1024x1024' })
+    expect(calls[0]).toEqual({ prompt: '猫', sessionId: 'session-test', size: '1024x1024' })
 
     await tool.execute({ prompt: '狗' }, CONTEXT)
-    expect(calls[1]).toEqual({ prompt: '狗' })
+    expect(calls[1]).toEqual({ prompt: '狗', sessionId: 'session-test' })
   })
 
   it('缺少 prompt 时报错且不触碰端口', async () => {

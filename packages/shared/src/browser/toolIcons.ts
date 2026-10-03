@@ -47,6 +47,8 @@ const TOOL_ICONS: Record<string, Component> = {
   generate_image: ImageIcon,
   // 右栏成果展示（2026-10-03）：用「右栏」图标本身，与右栏 tab 条的语义一致
   show_preview: PanelRight,
+  // 对话图片（2026-10-04）：与生图同用图片图标，语义落在“展示成果”而不是“生成”
+  show_image: ImageIcon,
   // 内核工具
   todo_write: ListChecks,
   todo_read: ListChecks,

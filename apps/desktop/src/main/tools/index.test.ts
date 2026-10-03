@@ -492,9 +492,36 @@ describe('registerExtensionTools', () => {
       webFetch: { fetch: async () => ({ status: 200, text: '' }) } as WebFetchPort,
       clipboard: { read: async () => '', write: async () => undefined } as ClipboardPort,
       notify: { show: async () => undefined } as NotifyPort,
-      imageGen: { generate: async () => ({ filePath: 'C:\\g\\1.png' }) } as ImageGenPort,
+      imageGen: {
+        generate: async () => ({
+          filePath: 'C:\\g\\1.png',
+          displayImage: {
+            id: 'img-1',
+            path: 'C:\\g\\1.png',
+            name: '1.png',
+            mime: 'image/png',
+          },
+        }),
+      } as ImageGenPort,
+      imageDisplay: {
+        prepareImage: async () => ({
+          id: 'img-2',
+          path: 'C:\\g\\2.png',
+          name: '2.png',
+          mime: 'image/png',
+        }),
+        readImage: async () => ({
+          dataUrl: 'data:image/png;base64,AA==',
+          name: '2.png',
+          mime: 'image/png',
+        }),
+      },
       preview: {
-        show: async () => ({ url: 'https://example.com', display: 'https://example.com' }),
+        show: async () => ({
+          url: 'https://example.com',
+          display: 'https://example.com',
+          openedIn: 'panel' as const,
+        }),
       } as PreviewPort,
     }
   }
@@ -504,7 +531,7 @@ describe('registerExtensionTools', () => {
     return { tools, registry }
   }
 
-  it('注册扩展工具六件套，敏感级与文档一致（clipboard / generate_image = confirm，show_preview = safe）', () => {
+  it('注册扩展工具七件套，敏感级与文档一致（clipboard / generate_image = confirm，展示工具 = safe）', () => {
     const { tools, registry } = setupExtension()
     expect(registry.sync()).toEqual([...EXTENSION_TOOL_NAMES])
     expect(tools.get('web_fetch')?.sensitivity).toBe('safe')
@@ -514,6 +541,7 @@ describe('registerExtensionTools', () => {
     expect(tools.get('generate_image')?.sensitivity).toBe('confirm')
     // 右栏展示（2026-10-03）：不写盘 / 不起进程，目标会显示在地址栏里 → safe
     expect(tools.get('show_preview')?.sensitivity).toBe('safe')
+    expect(tools.get('show_image')?.sensitivity).toBe('safe')
   })
 
   it('不受 agent.tools.enabled 门控（与 set_setting 同级），且不影响其它工具', () => {

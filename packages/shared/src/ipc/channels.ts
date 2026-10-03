@@ -181,6 +181,11 @@ export const IPC = {
      * 上限 `PREVIEW_MAX_BYTES`，超出即如实回 `note` 不返回半张图）。
      */
     readAttachment: 'chat:readAttachment',
+    /**
+     * 助手消息图片区（`show_image` / `generate_image`，docs/06 §14）：
+     * 按会话 + imageId 读盘并只回 data URL。
+     */
+    readDisplayImage: 'chat:readDisplayImage',
   },
   /** 全局快捷键注册状态（docs/07 §5、docs/08 §1） */
   hotkey: {

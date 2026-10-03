@@ -171,6 +171,8 @@ const api: AuroraApi = {
     cancelJob: (request) => invoke(IPC.chat.cancelJob, request),
     // 附件缩略图（v22 多模态输入，docs/07 §2.3）：主进程读盘 → data URL，渲染层只拿结果
     readAttachment: (request) => invoke(IPC.chat.readAttachment, request),
+    // 助手消息图片区：同样只回 data URL，原图路径不进入渲染层
+    readDisplayImage: (request) => invoke(IPC.chat.readDisplayImage, request),
     // 附件拖拽：同步返回路径，渲染层再把它放进 chat.send 的 attachments
     filePath: (file) => filePathOf(file),
   },

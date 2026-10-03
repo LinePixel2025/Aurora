@@ -31,6 +31,7 @@ import {
   type SessionModelOverride,
   type SessionSpace,
   type StoredAskRecord,
+  type StoredDisplayImage,
   type StoredMessage,
   type StoredSession,
   type StoredToolCall,
@@ -314,6 +315,29 @@ export class SessionStore {
   async context(sessionId: string, options: TruncateOptions = {}): Promise<StoredMessage[]> {
     const messages = await this.get(sessionId)
     return truncateHistory(messages, options).messages
+  }
+
+  /**
+   * 按 `(sessionId, imageId)` 查一张对话展示图片。
+   *
+   * 只从已落盘的 assistant 工具卡里查，不接受调用方给路径；读取侧因此永远拿到
+   * 应用记录的图片，而不是一个可被 Center 任意构造的本地路径。
+   */
+  async displayImageOf(
+    sessionId: string,
+    imageId: string,
+  ): Promise<StoredDisplayImage | undefined> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    const targetId = imageId.trim()
+    if (targetId === '') return undefined
+    for (const message of this.cache.get(id) ?? []) {
+      for (const call of message.toolCalls ?? []) {
+        const found = storedDisplayImagesOf(call).find((item) => item.id === targetId)
+        if (found !== undefined) return { ...found }
+      }
+    }
+    return undefined
   }
 
   /** 原地更新某条消息里的工具卡片状态（不新增消息）。 */
@@ -1161,7 +1185,7 @@ function normalizeAsks(value: unknown): StoredAskRecord[] {
   const records: StoredAskRecord[] = []
   for (const item of value) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) continue
-    const candidate = item as Record<string, unknown>
+    const candidate = item as unknown as Record<string, unknown>
     const requestId = candidate['requestId']
     const question = candidate['question']
     const createdAt = candidate['createdAt']
@@ -1224,7 +1248,7 @@ function normalizeOptions(value: unknown): { label: string; description?: string
   const options: { label: string; description?: string }[] = []
   for (const item of value) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) continue
-    const candidate = item as Record<string, unknown>
+    const candidate = item as unknown as Record<string, unknown>
     const label = candidate['label']
     if (typeof label !== 'string' || label === '') continue
     options.push({
@@ -1298,16 +1322,75 @@ const TITLE_MAX_LENGTH = 24
  */
 function toAgentToolCall(call: StoredToolCall & { input?: unknown }): AgentToolCall {
   const input = call.input !== undefined ? call.input : parseArguments(call.arguments)
+  const visibleInput = rendererToolInput(call, input)
   return {
     id: call.id,
     name: call.name,
-    ...(input === undefined ? {} : { input }),
+    ...(visibleInput === undefined ? {} : { input: visibleInput }),
     state: call.state,
     ...(call.outputSummary === undefined ? {} : { outputSummary: call.outputSummary }),
     ...(call.startedAt === undefined ? {} : { startedAt: call.startedAt }),
     ...(call.endedAt === undefined ? {} : { endedAt: call.endedAt }),
     ...(call.subagent === undefined ? {} : { subagent: call.subagent }),
+    ...(storedDisplayImagesOf(call).length === 0
+      ? {}
+      : {
+          displayImages: storedDisplayImagesOf(call).map((item) => ({
+            id: item.id,
+            name: item.name,
+            mime: item.mime,
+            ...(item.caption === undefined ? {} : { caption: item.caption }),
+          })),
+        }),
   }
+}
+
+/** `show_image` 的 path 只留在会话存储内部，跨 IPC / Center 的投影不含本地路径。 */
+function rendererToolInput(call: StoredToolCall, input: unknown): unknown {
+  if (call.name !== 'show_image') return input
+  const record =
+    typeof input === 'object' && input !== null && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : undefined
+  const caption = typeof record?.['caption'] === 'string' ? record['caption'].trim() : ''
+  const name = call.displayImages?.[0]?.name
+  if (caption === '' && name === undefined) return undefined
+  return {
+    ...(caption === '' ? {} : { caption }),
+    ...(name === undefined ? {} : { name }),
+  }
+}
+
+/** 工具卡里的展示图片白名单归化：畸形条目整条丢弃，不把半截数据送进渲染层。 */
+function storedDisplayImagesOf(call: StoredToolCall): StoredDisplayImage[] {
+  if (!Array.isArray(call.displayImages)) return []
+  const images: StoredDisplayImage[] = []
+  for (const item of call.displayImages) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) continue
+    const candidate = item as unknown as Record<string, unknown>
+    if (
+      typeof candidate['id'] !== 'string' ||
+      candidate['id'] === '' ||
+      typeof candidate['path'] !== 'string' ||
+      candidate['path'] === '' ||
+      typeof candidate['name'] !== 'string' ||
+      candidate['name'] === '' ||
+      typeof candidate['mime'] !== 'string' ||
+      candidate['mime'] === ''
+    ) {
+      continue
+    }
+    images.push({
+      id: candidate['id'],
+      path: candidate['path'],
+      name: candidate['name'],
+      mime: candidate['mime'],
+      ...(typeof candidate['caption'] === 'string' && candidate['caption'].trim() !== ''
+        ? { caption: candidate['caption'] }
+        : {}),
+    })
+  }
+  return images
 }
 
 /** 参数解析：空串与非字符串都视为无参数；非法 JSON 保留原文（与循环侧同款口径） */

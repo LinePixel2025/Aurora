@@ -171,6 +171,13 @@ const onlineCount = computed(
         </Transition>
       </main>
 
+      <footer v-if="!needsLogin" class="font-notice">
+        HarmonyOS Sans Fonts © 2021 Huawei Device Co., Ltd.
+        <a href="/licenses/HarmonyOS-Sans-LICENSE.txt" target="_blank" rel="noopener noreferrer">
+          许可
+        </a>
+      </footer>
+
       <!-- 非阻断提示（待办栏的批复 / 过期、代码复制失败、语音失败…）：6s 自消隐，
            不打断操作 —— 与桌面端的瞬时提示同款语义，只是网页端挂在壳上全局一份 -->
       <Transition name="rise">
@@ -193,6 +200,15 @@ const onlineCount = computed(
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
+}
+
+.font-notice {
+  flex: 0 0 auto;
+  padding: 6px var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  text-align: center;
 }
 
 .boot {

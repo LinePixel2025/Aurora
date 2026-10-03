@@ -973,6 +973,42 @@ describe('Hub · 远程会话管理与 LLM 切换（docs/12 §6.3）', () => {
     expect(Array.isArray(result.data)).toBe(true)
   })
 
+  it('session.readImage 转发 imageId，并把 data URL 回执原样转回网页端', async () => {
+    const harness = await makeHub()
+    await seedClient(harness, 'c1', 'u1')
+    const client = harness.connectClient('c1')
+    client.sent.length = 0
+    const owner = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    owner.sent.length = 0
+
+    harness.hub.handleWebMessage(owner.conn, {
+      type: 'session.readImage',
+      requestId: 'img-r1',
+      clientId: 'c1',
+      sessionId: 'center-a',
+      imageId: 'img-1',
+    })
+    expect((client.sent.at(-1) as { cmd: unknown }).cmd).toEqual({
+      kind: 'session.readImage',
+      requestId: 'img-r1',
+      sessionId: 'center-a',
+      imageId: 'img-1',
+    })
+
+    const data = {
+      dataUrl: 'data:image/png;base64,AA==',
+      name: 'proof.png',
+      mime: 'image/png',
+    }
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'img-r1',
+      ok: true,
+      data,
+    })
+    expect(owner.sent.at(-1)).toMatchObject({ type: 'result', requestId: 'img-r1', ok: true, data })
+  })
+
   it('新命令的拒绝路径：非属主 E_FORBIDDEN、未登记客户端 E_CLIENT_NOT_FOUND、离线 E_CLIENT_OFFLINE', async () => {
     const harness = await makeHub()
     await seedClient(harness, 'c1', 'u1')

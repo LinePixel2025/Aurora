@@ -29,7 +29,7 @@
  * 本组件只负责展示与上报意图（emit），会话切换 / 建会话 / 开窗口 / 归档都由 App.vue 落地；
  * `data-field` / `data-action` 锚点是 capture 探针契约（spec §5.3），不可改名。
  */
-import { computed, ref, type Component } from 'vue'
+import { computed, ref } from 'vue'
 import type { ChatSessionSummary } from '@aurora/shared'
 import { CENTER_SESSION_PREFIX } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
@@ -38,21 +38,16 @@ import { useModeStore } from '../../shared/stores.js'
 import {
   Bot,
   ChevronRight,
-  FileText,
-  Globe,
-  LayoutGrid,
   ListChecks,
   PanelRight,
   Plus,
   SettingsGear,
   Sparkles,
   SquarePen,
-  Terminal,
   Workflow,
   Zap,
 } from '@aurora/shared/browser'
 import SessionRow from './SessionRow.vue'
-import type { CtxTabKind } from '../composables/ctxTabsCore'
 
 /** 项目对话的子分组：一个项目一组（含还没有会话的项目 —— 组头 `+` 是新建入口） */
 interface ProjectSessionGroup {
@@ -87,11 +82,6 @@ const props = defineProps<{
   jobsRunning: boolean
   /** 任务面板是否展开（入口激活态） */
   jobsOpen: boolean
-  /**
-   * 右栏标签是否**一个都不剩**（docs/07 §2.3）：为真时在会话滚动区顶部给出
-   * 「工具」快捷卡片，点一张就重开对应种类的标签（标签全关后的重开入口）。
-   */
-  ctxEmpty: boolean
 }>()
 
 const emit = defineEmits<{
@@ -114,8 +104,6 @@ const emit = defineEmits<{
   (event: 'toggleRightPanel'): void
   /** 任务面板开关（原 App.vue 的 .nav-jobs，2026-09-30 收拢进本组件） */
   (event: 'toggleJobs'): void
-  /** 工具快捷卡片：重开一个右栏标签（docs/07 §2.3「无标签页时的工具快捷入口」） */
-  (event: 'openCtxTab', kind: CtxTabKind): void
   (event: 'openSettings'): void
 }>()
 
@@ -200,18 +188,6 @@ const noSessionsAtAll = computed(
     props.archivedSessions.length === 0 &&
     props.projectGroups.every((group) => group.sessions.length === 0),
 )
-
-/**
- * 无标签页时的工具快捷入口（2026-10-03，docs/07 §2.3）：与右栏标签条 / 新建菜单
- * **同一套图标与语义**（上下文 / 文件 / 终端 / 浏览器）—— 这里只做「重开入口」，
- * 真正的开标签动作由 App.vue 落地（它还要把右栏展开）。
- */
-const TOOL_SHORTCUTS = [
-  { kind: 'context', label: '上下文', icon: LayoutGrid },
-  { kind: 'files', label: '文件', icon: FileText },
-  { kind: 'terminal', label: '终端', icon: Terminal },
-  { kind: 'browser', label: '浏览器', icon: Globe },
-] as const satisfies readonly { kind: CtxTabKind; label: string; icon: Component }[]
 </script>
 
 <template>
@@ -301,35 +277,6 @@ const TOOL_SHORTCUTS = [
     </button>
 
     <nav class="nav-scroll">
-      <!--
-        工具快捷入口（2026-10-03，docs/07 §2.3）：右栏标签**全关**时出现，四张卡片
-        对应右栏四种标签 —— 关完标签后不必再翻右上角的「＋」菜单，左栏就能重开。
-        本区只在空态存在（开出任意一个标签即消失），锚点 `chat.tool-shortcuts` /
-        `chat.tool-open-<kind>` 是 capture 探针契约，不可改名。
-      -->
-      <section v-if="props.ctxEmpty" class="tool-shortcuts" data-field="chat.tool-shortcuts">
-        <h3 class="group-caption">工具</h3>
-        <div class="tool-grid">
-          <button
-            v-for="item in TOOL_SHORTCUTS"
-            :key="item.kind"
-            type="button"
-            class="tool-card press"
-            :data-action="`chat.tool-open-${item.kind}`"
-            @click="emit('openCtxTab', item.kind)"
-          >
-            <component
-              :is="item.icon"
-              class="icon"
-              :size="14"
-              :stroke-width="1.6"
-              aria-hidden="true"
-            />
-            <span class="item-title">{{ item.label }}</span>
-          </button>
-        </div>
-      </section>
-
       <!--
         空态只在三区 + 归档组全空时出现：归档分组还在、或任一分区有会话时都不说「还没有会话」。
       -->
@@ -804,62 +751,6 @@ const TOOL_SHORTCUTS = [
   padding: 0 var(--space-2);
   letter-spacing: var(--tracking-eyebrow);
   text-transform: uppercase;
-}
-
-/* ── 无标签页时的工具快捷入口（2026-10-03，docs/07 §2.3） ──
-   两列卡片：240px 缺省宽下每张 ~112px，最窄 200px 仍有 ~96px，够「图标 + 三字标题」。
-   卡片高 32px 与左栏固定项同一条命中线（docs/07 §5.2 的高频动作下限）。 */
-.tool-shortcuts {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.tool-shortcuts .group-caption {
-  margin-top: 0;
-}
-
-.tool-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-1);
-}
-
-.tool-card {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  height: 32px;
-  padding: 0 var(--space-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--fill-1);
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: var(--text-sm);
-  text-align: left;
-  cursor: pointer;
-}
-
-.tool-card:hover {
-  background: var(--fill-2);
-  border-color: var(--border-strong);
-  color: var(--text-primary);
-}
-
-.tool-card .icon {
-  flex: 0 0 auto;
-  stroke: currentColor;
-}
-
-/* 卡片标题：可压缩 + 单行 + 省略号（与 .older-toggle / .archive-toggle 的 .item-title 同套） */
-.tool-card .item-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /**

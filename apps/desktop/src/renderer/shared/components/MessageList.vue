@@ -10,8 +10,8 @@
  * BetaV2 追加：
  * - 「思考过程」折叠块（`message.reasoning`，受 `showThinking` 门控）：流式中有新思考时
  *   自动展开（`thinkingTargetId`），请求结束后收起为「已深度思考」摘要行，手动可开合；
- * - `generate_image` 工具卡成功态渲染图片预览（`imagegen:read` 换 dataUrl，
- *   提取 / 读取失败维持纯文本，绝不阻塞消息流）。
+ * - `generate_image` / `show_image` 的成果进入助手消息图片区（按 id 向主进程读取
+ *   dataUrl，读取失败显示可读回退，绝不阻塞消息流）。
  *
  * 2026-09 重构追加（docs/07 §2.3「任务清单与子代理卡」）：
  * - `todo_write` 工具卡渲染为**结构化任务清单卡**（`data-field="chat.todo-card"`），
@@ -56,7 +56,7 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { Ref } from 'vue'
-import type { AgentToolCall } from '@aurora/shared'
+import type { AgentToolCall, ChatDisplayImage } from '@aurora/shared'
 import type { ChatMessage } from '../composables/useChat.js'
 import { useStickToBottom } from '@aurora/shared/browser'
 import '@aurora/shared/browser/markdown/md.css'
@@ -71,6 +71,7 @@ import { parseTaskInput, parseTodoWriteInput } from '../agentTodo.js'
 import { ArrowDown, ChevronRight, LoaderCircle, Square, Volume2 } from '@aurora/shared/browser'
 import AgentTrace from './AgentTrace.vue'
 import AgentToolRow from './AgentToolRow.vue'
+import DisplayImageGallery from './DisplayImageGallery.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -126,7 +127,7 @@ const props = withDefaults(
  *
  * 消息正文 / 思考 / 工具卡在切回会话后能由 `chat:history` 恢复，丢的从来是**渲染层
  * 显示状态**：轨迹折叠 / 展开、思考块开合、工具行开合、终态确认动画（防重放）、
- * 生图预览缓存。把它们按会话存进模块级桶，组件随会话重挂载（`:key="sessionId"`）
+ * 终态确认动画等。把它们按会话存进模块级桶，组件随会话重挂载（`:key="sessionId"`）
  * 后从桶里取回，切走再切回就不再「过程显示全部消失」。
  *
  * 只存内存、有界（最多 64 个会话，超出丢最旧的）：重启后重建是可接受的 ——
@@ -138,7 +139,6 @@ interface SessionDisplayState {
   historyFoldedIds: Set<string>
   openedIds: Ref<string[]>
   settledIds: Set<string>
-  imagePreviews: Map<string, string>
 }
 
 const displayBuckets = new Map<string, SessionDisplayState>()
@@ -153,7 +153,6 @@ function displayBucketOf(id: string): SessionDisplayState {
     historyFoldedIds: reactive(new Set<string>()),
     openedIds: ref<string[]>([]),
     settledIds: reactive(new Set<string>()),
-    imagePreviews: reactive(new Map<string, string>()),
   }
   // 有界：超出上限丢最旧的桶（Map 迭代序即插入序）
   while (displayBuckets.size >= DISPLAY_BUCKET_LIMIT) {
@@ -171,7 +170,6 @@ const traceOpenedIds = displayState.traceOpenedIds
 const historyFoldedIds = displayState.historyFoldedIds
 const openedIds = displayState.openedIds
 const settledIds = displayState.settledIds
-const imagePreviews = displayState.imagePreviews
 
 const emit = defineEmits<{
   (event: 'speak', text: string, id: string): void
@@ -199,6 +197,21 @@ function canSpeak(message: ChatMessage): boolean {
     message.pending !== true &&
     message.content.trim() !== ''
   )
+}
+
+/** 助手消息图片区：聚合所有成功工具卡里的展示图片，按 id 去重并保持调用顺序。 */
+function displayImagesOf(message: ChatMessage): ChatDisplayImage[] {
+  const images: ChatDisplayImage[] = []
+  const seen = new Set<string>()
+  for (const call of message.toolCalls ?? []) {
+    if (call.state !== 'success' || call.displayImages === undefined) continue
+    for (const image of call.displayImages) {
+      if (seen.has(image.id)) continue
+      seen.add(image.id)
+      images.push(image)
+    }
+  }
+  return images
 }
 
 /** 这条消息正在合成 / 正在播放；两者互斥，由 `useTts` 的状态决定。 */
@@ -860,55 +873,6 @@ function syncTimings(): void {
 
 watch(toolSignature, syncTimings, { immediate: true })
 
-// ───────────────────── 生图工具卡：图片预览（BetaV2） ─────────────────────
-
-/**
- * `generate_image` 成功后从 `outputSummary`（形如「已保存到 <路径>」）提取落盘路径。
- * 正则刻意宽容（冒号可有可无、允许句号收尾），提取失败就维持纯文本，不阻塞消息流。
- */
-function extractGeneratedImagePath(outputSummary: string | undefined): string | null {
-  if (outputSummary === undefined) return null
-  const match = outputSummary.match(/已保存到[:：]?\s*(.+?)\s*[。.]?\s*$/)
-  const path = match?.[1]?.trim() ?? ''
-  return path === '' ? null : path
-}
-
-function isGeneratedImage(call: AgentToolCall): boolean {
-  return call.name === 'generate_image' && call.state === 'success'
-}
-
-/** call.id → dataUrl；空串表示已尝试但失败（不再重试），缺项表示尚未尝试（按会话分桶） */
-
-async function loadImagePreview(callId: string, filePath: string): Promise<void> {
-  try {
-    const result = await window.aurora.imagegen.read({ filePath })
-    imagePreviews.set(callId, result.ok ? result.value.dataUrl : '')
-  } catch {
-    imagePreviews.set(callId, '')
-  }
-}
-
-/** 该工具行的预览 dataUrl；未加载 / 加载失败都返回 undefined（行维持纯文本） */
-function imagePreviewFor(call: AgentToolCall): string | undefined {
-  const dataUrl = imagePreviews.get(call.id)
-  return dataUrl === undefined || dataUrl === '' ? undefined : dataUrl
-}
-
-/** 与耗时统计共用同一签名（call id + state）：行翻到 success 时触发一次加载 */
-watch(toolSignature, () => {
-  for (const message of props.messages) {
-    for (const call of message.toolCalls ?? []) {
-      if (!isGeneratedImage(call) || imagePreviews.has(call.id)) continue
-      const filePath = extractGeneratedImagePath(call.outputSummary)
-      if (filePath === null) {
-        imagePreviews.set(call.id, '')
-        continue
-      }
-      void loadImagePreview(call.id, filePath)
-    }
-  }
-})
-
 /**
  * 图表水合器（P2）：挂在本组件的消息根容器上，负责把 ```mermaid / ```echarts 的占位
  * 渲染成真图（懒加载 + 按源码缓存 + 进入视口才渲染，见 hydrate.ts 的失效分析）。
@@ -1149,7 +1113,6 @@ async function onContentClick(event: MouseEvent): Promise<void> {
                 :settled="isSettled(call.id)"
                 :duration="toolDuration(call)"
                 :data-field="cardField(call)"
-                :image-preview="imagePreviewFor(call)"
                 @toggle="toggleToolRow(call.id)"
               />
             </TransitionGroup>
@@ -1160,6 +1123,11 @@ async function onContentClick(event: MouseEvent): Promise<void> {
           <!-- 安全说明：内容先经 renderMarkdown 转义，再套用白名单标记（见 shared/markdown.ts） -->
           <!-- eslint-disable-next-line vue/no-v-html -->
           <div v-else-if="message.content !== ''" class="md" v-html="htmlOf(message)" />
+          <DisplayImageGallery
+            v-if="displayImagesOf(message).length > 0"
+            :images="displayImagesOf(message)"
+            :session-id="props.sessionId"
+          />
 
           <!--
             朗读按钮（docs/06 §13）：正文之后。

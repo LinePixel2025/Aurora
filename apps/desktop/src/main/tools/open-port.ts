@@ -9,10 +9,28 @@ import type { OpenPort } from '@aurora/agent-core'
 
 /** 网页 / 邮件交给默认浏览器；其余（文件、文件夹、程序名）走系统关联 */
 const EXTERNAL_PATTERN = /^(https?:\/\/|mailto:)/i
+const URL_PATTERN = /^https?:\/\//i
 
-export function createShellOpenPort(): OpenPort {
+export interface ShellOpenPortOptions {
+  /** 模型打开 http(s) 时的去向；缺省维持旧行为（外部浏览器） */
+  urlMode?: () => 'internal' | 'external'
+  /** 内置浏览器投放回调（装配层负责 showChat + preview:show） */
+  present?: (target: string, sessionId: string) => void
+}
+
+export function createShellOpenPort(options: ShellOpenPortOptions = {}): OpenPort {
   return {
-    async open(target) {
+    async open(target, openOptions) {
+      const sessionId = openOptions?.sessionId ?? ''
+      if (
+        URL_PATTERN.test(target) &&
+        (options.urlMode?.() ?? 'external') === 'internal' &&
+        options.present !== undefined &&
+        sessionId !== ''
+      ) {
+        options.present(target, sessionId)
+        return
+      }
       if (EXTERNAL_PATTERN.test(target)) {
         await shell.openExternal(target)
         return

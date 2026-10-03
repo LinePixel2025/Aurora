@@ -7,6 +7,7 @@
  * 本文件不 import electron，可在 Node 里单测。
  */
 import type { ImageGenPort } from '@aurora/agent-core'
+import { buildDisplayImage } from './image-display-port.js'
 
 /** 结构化最小面：`ImageGenService`（main/imagegen.ts）满足 */
 export interface ImageGenServiceLike {
@@ -18,9 +19,16 @@ export interface ImageGenServiceLike {
 
 export function createImageGenPort(service: ImageGenServiceLike): ImageGenPort {
   return {
-    async generate(input: { prompt: string; size?: string }): Promise<{ filePath: string }> {
+    async generate(input: {
+      prompt: string
+      sessionId: string
+      size?: string
+    }): Promise<{ filePath: string; displayImage: Awaited<ReturnType<typeof buildDisplayImage>> }> {
       const result = await service.generate(input)
-      return { filePath: result.filePath }
+      return {
+        filePath: result.filePath,
+        displayImage: await buildDisplayImage(result.filePath, undefined),
+      }
     },
   }
 }

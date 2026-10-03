@@ -182,6 +182,7 @@ const MIME: Record<string, string> = {
   '.ico': 'image/x-icon',
   '.json': 'application/json; charset=utf-8',
   '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
 }
 
 /** 客户端 hello（协议见 packages/shared/src/center/protocol.ts；服务器只做宽松校验） */

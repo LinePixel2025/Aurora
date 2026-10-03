@@ -11,6 +11,7 @@
  *   事件委托（`v-html` 的节点绑不了事件）。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { ChatDisplayImage } from '@aurora/shared'
 import type { ChatItem, ClientEntry, SessionState } from '../../state'
 import { showNotice, synthesizeSpeech } from '../../state'
 import {
@@ -27,6 +28,7 @@ import ThinkingBlock from './ThinkingBlock.vue'
 import JobCard from './JobCard.vue'
 import SubagentCard from './SubagentCard.vue'
 import AskCard from './AskCard.vue'
+import DisplayImageGallery from './DisplayImageGallery.vue'
 
 const props = defineProps<{
   session: SessionState
@@ -81,6 +83,21 @@ function toggleTrace(item: ChatItem): void {
     userOpened.value.add(item.id)
     folded.value.delete(item.id)
   }
+}
+
+/** 一条助手消息的图片区：聚合成功工具行里的无路径元数据，按 id 去重。 */
+function displayImagesOf(item: ChatItem): ChatDisplayImage[] {
+  const images: ChatDisplayImage[] = []
+  const seen = new Set<string>()
+  for (const tool of item.tools) {
+    if (tool.state !== 'success' || tool.displayImages === undefined) continue
+    for (const image of tool.displayImages) {
+      if (seen.has(image.id)) continue
+      seen.add(image.id)
+      images.push(image)
+    }
+  }
+  return images
 }
 
 /* 收尾折叠：助手消息从流式转为已收尾时收起过程；用户点开过的保持点开。
@@ -409,6 +426,12 @@ onBeforeUnmount(() => {
                  走 validateLink（javascript: 拒绝）—— 与桌面端同一条安全基线 -->
             <!-- eslint-disable-next-line vue/no-v-html -->
             <div class="md" data-field="chat.markdown" v-html="htmlOf(item, 'content')" />
+            <DisplayImageGallery
+              v-if="displayImagesOf(item).length > 0"
+              :images="displayImagesOf(item)"
+              :client-id="session.clientId"
+              :session-id="session.sessionId"
+            />
 
             <div class="msg-foot">
               <span v-if="item.streaming" class="streaming-caret" aria-hidden="true" />

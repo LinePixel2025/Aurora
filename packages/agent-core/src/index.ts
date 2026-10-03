@@ -61,6 +61,7 @@ export * from './tools/clipboard.js'
 export * from './tools/notify.js'
 // 右栏成果展示（2026-10-03，docs/06 §14）：`show_preview` —— 同一条端口注入套路。
 export * from './tools/preview.js'
+export * from './tools/image-display.js'
 export * from './tools/center.js'
 export * from './tools/imagegen.js'
 // 图像工具（docs/06 §25）：看图 / 截屏（剪贴板图片工具与上面 clipboard 同文件）。

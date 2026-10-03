@@ -21,6 +21,7 @@ import type {
   AutomationListResult,
   AutomationRun,
   CenterSessionSummary,
+  ChatDisplayImage,
   ClientInfo,
   ClientStatus,
   ConfirmRequestPayload,
@@ -51,6 +52,8 @@ export interface ToolItem {
    * 一起被历史回放带回来），渲染成工具行**内部**的子代理卡（与桌面端同构）。
    */
   subagent?: SubagentSnapshot
+  /** 对话图片区（show_image / generate_image）：只含无路径元数据 */
+  displayImages?: ChatDisplayImage[]
 }
 
 export interface ChatItem {
@@ -346,7 +349,11 @@ export function askItemId(requestId: string): string {
  * 流内这张则跟着消息一起排 —— 同一张卡不会同时出现两处。
  * 会话状态不存在时先建（事件可能早于网页端打开会话到达）。
  */
-export function pushAskItem(clientId: string, sessionId: string, request: AskUserRequestPayload): void {
+export function pushAskItem(
+  clientId: string,
+  sessionId: string,
+  request: AskUserRequestPayload,
+): void {
   const session = ensureSessionState(clientId, sessionId)
   const id = askItemId(request.requestId)
   if (session.items.some((item) => item.id === id)) return
@@ -375,11 +382,7 @@ export function pushAskItem(clientId: string, sessionId: string, request: AskUse
  * 两处状态一起收：待办栏条目**移除**（它只列待答的），流内条目**保留并打上结算结果**
  * （留痕：刷新后仍能从历史回放看到「问了什么、答了什么」）。
  */
-export function settleAsk(
-  clientId: string,
-  requestId: string,
-  info: AskSettleInfo,
-): void {
+export function settleAsk(clientId: string, requestId: string, info: AskSettleInfo): void {
   const index = state.asks.findIndex(
     (entry) => entry.clientId === clientId && entry.request.requestId === requestId,
   )

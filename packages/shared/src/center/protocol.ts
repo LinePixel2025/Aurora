@@ -10,6 +10,7 @@ import type {
   AskUserRequest,
   AutomationDefinition,
   AutomationMode,
+  ChatDisplayImage,
   SubagentSnapshot,
 } from '../ipc/types.js'
 import type { ModeId, ReasoningEffort } from '../config/schema.js'
@@ -211,6 +212,12 @@ export type CenterCommand =
    */
   | { kind: 'session.history'; requestId: string; sessionId: string }
   /**
+   * 读取助手消息图片区的一张图片（`show_image` / `generate_image`）。
+   * 客户端按会话 + imageId 查记录并再次校验路径，`result.data` 携带
+   * `{ dataUrl, name, mime }`；服务器只转发，不缓存图片内容。
+   */
+  | { kind: 'session.readImage'; requestId: string; sessionId: string; imageId: string }
+  /**
    * 远程切模型 / 思考等级（docs/12 §6.3）。**专用命令，不走 config.update 白名单**：
    * `llm.providers.` 前缀会连带放行 `apiKeyEnc`，故只放行这三个字段的点改。
    */
@@ -337,6 +344,13 @@ export interface CenterProjectOption {
 export type CenterWebMessage =
   | { type: 'session.create'; requestId: string; clientId: string }
   | { type: 'session.input'; requestId: string; clientId: string; sessionId: string; text: string }
+  | {
+      type: 'session.readImage'
+      requestId: string
+      clientId: string
+      sessionId: string
+      imageId: string
+    }
   | {
       type: 'session.abort'
       requestId: string
@@ -505,6 +519,8 @@ export interface CenterHistoryToolCall {
   outputSummary?: string
   /** `task` 子代理工具的运行快照（与实时 `subagent` 事件同形状） */
   subagent?: SubagentSnapshot
+  /** 对话图片区元数据（无本地路径；网页按 imageId 走 `session.readImage` 读取） */
+  displayImages?: ChatDisplayImage[]
 }
 
 /**

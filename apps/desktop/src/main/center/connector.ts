@@ -123,6 +123,14 @@ export interface CenterConnectorDeps {
      */
     history(sessionId: string): Promise<{ ok: boolean; data?: unknown; error?: string }>
     /**
+     * 阅读一张对话展示图片（`session.readImage`，docs/06 §14）：
+     * `result.data` 携带 `{ dataUrl, name, mime }`，不暴露本机路径。
+     */
+    readImage?(
+      sessionId: string,
+      imageId: string,
+    ): Promise<{ ok: boolean; data?: unknown; error?: string }>
+    /**
      * 远程切模型 / 思考等级（专用命令，绝不触碰 apiKeyEnc / baseUrl）。
      *
      * `reasoningEffort` 的落值位置（v23 下沉后）在**当前模型**的
@@ -612,6 +620,7 @@ export class CenterConnector {
       case 'session.setProject':
       case 'session.setModel':
       case 'session.history':
+      case 'session.readImage':
       case 'project.list': {
         // 会话管理属 session 类别：受 allowRemoteSession 闸门
         if (!config.allowRemoteSession) {
@@ -671,6 +680,15 @@ export class CenterConnector {
             case 'session.history': {
               // 历史回放（docs/12 §5 第 7 步）：SessionStore 读盘，回执 data 携带历史消息
               const result = await manager.history(cmd.sessionId)
+              reply(result.ok, result.data, result.error)
+              return
+            }
+            case 'session.readImage': {
+              if (manager.readImage === undefined) {
+                reply(false, undefined, 'E_SESSION_NOT_FOUND')
+                return
+              }
+              const result = await manager.readImage(cmd.sessionId, cmd.imageId)
               reply(result.ok, result.data, result.error)
               return
             }

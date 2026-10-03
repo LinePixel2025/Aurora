@@ -32,6 +32,10 @@ export interface PreviewPortDeps {
   boundaryRootOf: (sessionId: string | undefined) => string | undefined
   /** 把展示请求推给渲染层（装配层负责 showChat + 通道推送） */
   present: (payload: PreviewPresentPayload) => void
+  /** 模型打开 URL 的去向（live getter；本地文件始终走右栏） */
+  urlMode: () => 'internal' | 'external'
+  /** 外部浏览器打开（装配层注入 Electron shell.openExternal） */
+  openExternal: (url: string) => Promise<void>
   logger: Logger
 }
 
@@ -51,6 +55,11 @@ export function createPreviewPort(deps: PreviewPortDeps): PreviewPort {
           throw new Error(`网址无法解析：${trimmed}`)
         }
         const href = url.toString()
+        if (deps.urlMode() === 'external') {
+          await deps.openExternal(href)
+          deps.logger.info('show_preview：已转交外部浏览器', { kind: 'url', url: href })
+          return { url: href, display: href, openedIn: 'external' }
+        }
         deps.present({
           sessionId: parentSessionIdOf(options.sessionId),
           url: href,
@@ -58,7 +67,7 @@ export function createPreviewPort(deps: PreviewPortDeps): PreviewPort {
           title: options.title,
         })
         deps.logger.info('show_preview：已推送到右栏预览', { kind: 'url', url: href })
-        return { url: href, display: href }
+        return { url: href, display: href, openedIn: 'panel' }
       }
 
       const root = deps.boundaryRootOf(options.sessionId)
@@ -90,7 +99,7 @@ export function createPreviewPort(deps: PreviewPortDeps): PreviewPort {
         title: options.title,
       })
       deps.logger.info('show_preview：已推送到右栏预览', { kind: 'file', path })
-      return { url, display: path }
+      return { url, display: path, openedIn: 'panel' }
     },
   }
 }

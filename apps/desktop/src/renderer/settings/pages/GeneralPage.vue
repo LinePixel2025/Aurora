@@ -457,6 +457,13 @@ async function toggleEdgeBar(): Promise<void> {
         </div>
       </SettingField>
 
+      <SettingField label="字体许可">
+        <p class="tiny muted">
+          HarmonyOS Sans Fonts © 2021 Huawei Device Co., Ltd.，依据 HarmonyOS Sans Fonts License
+          Agreement 随 Aurora 内置分发。
+        </p>
+      </SettingField>
+
       <SettingField label="更新状态">
         <div class="column grow">
           <AppToast :tone="updateTone">{{ updateLabel }}</AppToast>

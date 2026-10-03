@@ -2513,10 +2513,10 @@ export function chatFileProjectAct(root: string): string {
 }
 
 /**
- * 无标签页时的左栏工具快捷入口（2026-10-03，docs/07 §2.3）。
+ * 无标签页时的右栏工具快捷入口（2026-10-03，docs/07 §2.3）。
  *
  * 现场（截图停在这里）：reload 回初始四标签后，**走真实 ✕ 按钮**把四个标签逐个关掉 ——
- * 右栏标签条只剩「＋」，左栏会话滚动区顶部出现「工具」分组（四张卡片）。
+ * 右栏标签条只剩「＋」，右栏正文区出现「工具」分组（四张卡片）。
  * 截图要一眼看到：卡片长什么样、右栏确实是空的。
  * 后续（check 里）：卡片矩形与命中、点「文件」卡片把标签开回来、卡片区随之消失。
  */
@@ -2536,7 +2536,7 @@ export const CHAT_CTX_EMPTY_ACT = `(async () => {
     await wait(400)
     const shortcuts = document.querySelector('[data-field="chat.tool-shortcuts"]')
     report.ok = shortcuts !== null
-    if (!report.ok) report.reason = '关完所有标签后左栏没有出现工具快捷卡片'
+    if (!report.ok) report.reason = '关完所有标签后右栏没有出现工具快捷卡片'
     return report
   } catch (error) {
     report.reason = String(error)
@@ -2547,11 +2547,11 @@ export const CHAT_CTX_EMPTY_ACT = `(async () => {
 /**
  * 无标签页工具快捷卡片的断言（2026-10-03，docs/07 §2.3）。
  *
- * 现场（act 留下）：右栏标签全关、左栏「工具」四张卡片在。
+ * 现场（act 留下）：右栏标签全关、右栏「工具」四张卡片在。
  * 断言：① 标签确实一个不剩；② 四张卡片锚点齐（context / files / terminal / browser）；
- * ③ 每张卡片**矩形** ≥ 80×30（左栏 200px 最窄时也要放得下两列）；④ 卡片中心
+ * ③ 每张卡片**矩形** ≥ 80×30；④ 卡片中心
  * `elementFromPoint` 真的命中卡片（只查 DOM 存在会漏「被裁掉 / 被盖住」这一类失效）；
- * ⑤ 点「文件」卡片 → 文件标签回来、卡片区消失、文件窗格挂上 —— 闭环。
+ * ⑤ 卡片区位于右栏而不是左栏；⑥ 点「文件」卡片 → 文件标签回来、卡片区消失、文件窗格挂上 —— 闭环。
  * 本场景排在 chat 组末尾，收尾不再有 chat 场景依赖初始标签集。
  */
 export const CHAT_CTX_EMPTY_CHECK = `(async () => {
@@ -2575,6 +2575,9 @@ export const CHAT_CTX_EMPTY_CHECK = `(async () => {
       return hit !== null && (el === hit || el.contains(hit))
     })
     const emptyBefore = allTabs() === 0
+    const shortcuts = document.querySelector('[data-field="chat.tool-shortcuts"]')
+    const inRightPane = shortcuts !== null && shortcuts.closest('.context') !== null
+    const leftNavAbsent = shortcuts !== null && shortcuts.closest('.nav') === null
     const fileCard = document.querySelector('[data-action="chat.tool-open-files"]')
     if (fileCard !== null) fileCard.click()
     let reopened = false
@@ -2590,12 +2593,23 @@ export const CHAT_CTX_EMPTY_CHECK = `(async () => {
       cardPresent,
       rectOk,
       hitOk,
+      inRightPane,
+      leftNavAbsent,
       reopened,
       shortcutsGone,
       paneShown,
     }
     report.ok =
-      act.ok && emptyBefore && cardPresent && rectOk && hitOk && reopened && shortcutsGone && paneShown
+      act.ok &&
+      emptyBefore &&
+      cardPresent &&
+      rectOk &&
+      hitOk &&
+      inRightPane &&
+      leftNavAbsent &&
+      reopened &&
+      shortcutsGone &&
+      paneShown
     if (!report.ok && report.reason === '') report.reason = '工具快捷卡片的开标签链路没有闭环'
     return report
   } catch (error) {
@@ -9693,6 +9707,63 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
     JSON.stringify(projectSeed, null, 2),
     'utf8',
   )
+
+  // 5) 对话图片区（2026-10-04）：真实 PNG + 一条带 displayImages 的助手工具卡。
+  //    图片读取走 chat:readDisplayImage，不把路径送进渲染层。
+  const imageRoot = captureProjectRoot(userData)
+  await mkdir(imageRoot, { recursive: true })
+  const imagePath = join(imageRoot, 'display-image-proof.png')
+  await writeFile(
+    imagePath,
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  )
+  const imageSeedAt = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString()
+  const imageSeed = {
+    version: 5,
+    sessionId: 'chat-seed-images',
+    updatedAt: imageSeedAt,
+    messages: [
+      {
+        id: 'capture-image-u1',
+        role: 'user',
+        content: '展示一下生成结果',
+        createdAt: imageSeedAt,
+      },
+      {
+        id: 'capture-image-a1',
+        role: 'assistant',
+        content: '完成，图片如下。',
+        createdAt: imageSeedAt,
+        toolCalls: [
+          {
+            id: 'capture-image-t1',
+            name: 'show_image',
+            arguments: JSON.stringify({ path: imagePath, caption: '最终效果' }),
+            state: 'success',
+            outputSummary: '已展示图片',
+            displayImages: [
+              {
+                id: 'capture-display-image-1',
+                path: imagePath,
+                name: 'display-image-proof.png',
+                mime: 'image/png',
+                caption: '最终效果',
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    meta: { projectId: 'capture' },
+  }
+  await writeFile(
+    join(userData, 'sessions', 'chat-seed-images.json'),
+    JSON.stringify(imageSeed, null, 2),
+    'utf8',
+  )
 }
 
 export function defaultCapturePlan(manager: WindowManager, userData: string): CaptureTarget[] {
@@ -9892,6 +9963,76 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
         return { pass: blankClick.ok, sent: fixture, blankClick }
       },
       check: CHAT_PREVIEW_TOOL_CHECK,
+    },
+    // 对话图片区（2026-10-04）：夹具会话带 show_image 工具卡，图片从主进程按 id 读取。
+    // 同时核对 HarmonyOS Sans 已应用到消息区、mono 令牌未被替换。
+    {
+      name: 'chat',
+      file: 'chat-display-images.png',
+      prepare: async () => {
+        await manager.reload('chat', {})
+      },
+      act: `(async () => {
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+          const button = Array.from(document.querySelectorAll('.nav-item')).find((item) =>
+            (item.textContent || '').includes('展示一下生成结果'),
+          )
+          if (button && !button.classList.contains('active')) button.click()
+          const image = document.querySelector('[data-field="chat.display-images"] img')
+          const figure = document.querySelector('[data-field="chat.display-images"] figure')
+          if (image || figure) {
+            if (image) image.scrollIntoView({ block: 'center' })
+            else figure.scrollIntoView({ block: 'center' })
+            return { ok: true }
+          }
+          await wait(150)
+        }
+        return { ok: false, reason: '会话中没有出现图片区' }
+      })()`,
+      check: `(async () => {
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+        let reading = null
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+          const image = document.querySelector('[data-field="chat.display-images"] img')
+          const figure = document.querySelector('[data-field="chat.display-images"] figure')
+          const fallback = document.querySelector(
+            '[data-field="chat.display-images"] .display-image-fallback',
+          )
+          const root = getComputedStyle(document.documentElement)
+          reading = {
+            count: document.querySelectorAll('[data-field="chat.display-images"] figure').length,
+            imageCount: document.querySelectorAll('[data-field="chat.display-images"] img').length,
+            complete: image !== null && image.complete,
+            naturalWidth: image === null ? 0 : image.naturalWidth,
+            caption: figure === null ? '' : (figure.querySelector('figcaption')?.textContent || '').trim(),
+            leakedPath:
+              (document.body.textContent || '').includes('capture-project') &&
+              (document.body.textContent || '').includes('display-image-proof.png'),
+            error: fallback === null ? '' : fallback.getAttribute('data-error') || '',
+            bodyFont: getComputedStyle(document.body).fontFamily,
+            monoFont: root.getPropertyValue('--font-mono').trim(),
+          }
+          if (reading.naturalWidth > 0) break
+          await wait(200)
+        }
+        const conditions = {
+          count: reading !== null && reading.count === 1,
+          decoded: reading !== null && reading.complete && reading.naturalWidth > 0,
+          caption: reading !== null && reading.caption === '最终效果',
+          noPathLeak: reading !== null && reading.leakedPath === false,
+          harmonyFont: reading !== null && reading.bodyFont.includes('HarmonyOS Sans'),
+          monoPreserved:
+            reading !== null &&
+            (reading.monoFont.includes('Cascadia') || reading.monoFont.includes('monospace')),
+        }
+        return {
+          pass: Object.values(conditions).every(Boolean),
+          conditions,
+          reading,
+          reason: '',
+        }
+      })()`,
     },
     // 综合概览（step 5）：右栏挂「任务」面板 + 上下文卡，用于人工核对布局。
     // 「当前项目」卡已随项目管理迁设置页（2026-09-30）：这里改为断言右栏**不再有**项目卡
@@ -10117,8 +10258,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       mainAct: chatTraceWheelMainAct,
       check: CHAT_TRACE_WHEEL_CHECK,
     },
-    // 无标签页时的左栏工具快捷入口（2026-10-03，docs/07 §2.3）：prepare reload 回
-    // 初始四标签 → act 走真实 ✕ 关掉全部（截图停在这里：左栏四张卡片 + 右栏空白）→
+    // 无标签页时的右栏工具快捷入口（2026-10-03，docs/07 §2.3）：prepare reload 回
+    // 初始四标签 → act 走真实 ✕ 关掉全部（截图停在这里：右栏四张卡片）→
     // check 验证卡片矩形 / 命中，并点「文件」卡片把标签开回来。
     // **排在 chat 组末尾**：它把标签集与面板挂载状态改过了，后面不应再有 chat 场景。
     {

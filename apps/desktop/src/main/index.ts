@@ -197,6 +197,7 @@ import { createScreenshotPort } from './tools/screenshot-port.js'
 import { visionEnabled } from './vision.js'
 import { createNotificationPort } from './tools/notify.js'
 import { createImageGenPort } from './tools/imagegen-port.js'
+import { createImageDisplayPort } from './tools/image-display-port.js'
 // 右栏成果展示（`show_preview`，docs/06 §14）：目标校验 + 推送到 chat 窗口
 import { createPreviewPort } from './tools/preview-port.js'
 import { createSettingsPort } from './tools/settings-port.js'
@@ -475,8 +476,9 @@ let deviceLoginController: DeviceLoginController | undefined
 let deviceLoginServerUrl = ''
 /** 设备授权登录最终结果的渲染层订阅（center:deviceLoginResult 推送） */
 const deviceLoginListeners = new Set<(result: CenterDeviceLoginResult) => void>()
-/** 扩展工具六件套装配器（docs/06 §14）：与 set_setting 同级，不受 agent.tools.enabled 门控 */
+/** 扩展工具七件套装配器（docs/06 §14）：与 set_setting 同级，不受 agent.tools.enabled 门控 */
 let extensionTools: ExtensionToolsRegistry | undefined
+let imageDisplayPort: ReturnType<typeof createImageDisplayPort> | undefined
 /**
  * 图像工具装配器（看图 / 截屏 / 读剪贴板图片，docs/06 §25）：**按模型能力注册** ——
  * 当前生效模型没开图片输入时一个都不注册（判据与附件管线同源，见 `vision.ts`）。
@@ -990,7 +992,18 @@ async function bootstrap(): Promise<void> {
       logger: logger.child('tools'),
       snapshots: filePortSnapshots,
     }),
-    open: createShellOpenPort(),
+    open: createShellOpenPort({
+      urlMode: () => settings!.get().agent.tools.open.urlMode,
+      present: (target, sessionId) => {
+        windows?.showChat()
+        windows?.sendTo('chat', IPC.preview.show, {
+          sessionId,
+          url: target,
+          display: target,
+          title: '模型打开的网址',
+        })
+      },
+    }),
   })
   settingsTool = registerSettingsTool({ tools, port: settingsPort, logger: logger.child('tools') })
   // 7.1.2 STT / 生图服务（docs/06 §15）：出网走注入的 netFetch（代理生效），
@@ -1006,8 +1019,14 @@ async function bootstrap(): Promise<void> {
     generatedDir: join(userData, 'generated'),
     resolveFetch: () => netFetch,
   })
-  // 7.1.3 扩展工具六件套（docs/06 §14）：web_fetch / clipboard_read / clipboard_write /
-  //     notify_user / generate_image / show_preview。与 set_setting 同级——不受
+  imageDisplayPort = createImageDisplayPort({
+    workspaceDirOf: (sessionId) => toolchainProjects.workspaceDir(sessionId),
+    boundaryRootOf: (sessionId) => toolchainProjects.boundaryRoot(sessionId),
+    ownedDirs: OWNED_IMAGE_SUBDIRS.map((name) => join(userData, name)),
+    logger: logger.child('tools'),
+  })
+  // 7.1.3 扩展工具七件套（docs/06 §14）：web_fetch / clipboard_read / clipboard_write /
+  //     notify_user / generate_image / show_preview / show_image。与 set_setting 同级——不受
   //     `agent.tools.enabled` 门控，敏感动作靠工具自身的 `sensitivity: 'confirm'` 逐次确认。
   //     NotificationService 在下方 7.2 才装配，这里按调用时点取值（工具执行时必然已就绪）。
   extensionTools = registerExtensionTools({
@@ -1019,12 +1038,15 @@ async function bootstrap(): Promise<void> {
       notify: (request) => notifications?.notify(request) ?? false,
     }),
     imageGen: createImageGenPort(imageGenService),
+    imageDisplay: imageDisplayPort,
     // `show_preview`（2026-10-03）：本地文件边界 / 相对路径基准都按**会话**解析
     //（`toolchainProjects` 即 file-port / command-runner 用的同一份取值器，子代理剥回父会话）；
     // 推送前先 showChat —— 窗口被隐藏时用户什么也看不到，展示就失去了意义。
     preview: createPreviewPort({
       workspaceDirOf: (sessionId) => toolchainProjects.workspaceDir(sessionId),
       boundaryRootOf: (sessionId) => toolchainProjects.boundaryRoot(sessionId),
+      urlMode: () => settings!.get().agent.tools.open.urlMode,
+      openExternal: (url) => shell.openExternal(url),
       present: (payload) => {
         windows?.showChat()
         windows?.sendTo('chat', IPC.preview.show, payload)
@@ -1056,7 +1078,7 @@ async function bootstrap(): Promise<void> {
     }),
   })
   // 7.1.4 Agent 内核自带工具（docs/06 §18/§19）：todo_write / todo_read / task。
-  //     与 set_setting / 扩展工具六件套同级——不受 `agent.tools.enabled` 门控
+  //     与 set_setting / 扩展工具七件套同级——不受 `agent.tools.enabled` 门控
   //     （todo / task 是 Agent 自身能力，不是电脑操控）。
   //     清单按会话落盘到 `<userData>/todos/`（子代理用 `<sessionId>-sub` 独立清单）。
   todoPort = createFileTodoPort({
@@ -1124,7 +1146,7 @@ async function bootstrap(): Promise<void> {
     getConfirmTool: () => confirmTool,
   })
   // 7.1.6 ClassIsland 提醒工具（docs/05 §3.4 v3）：`classisland_remind`。
-  //     与扩展工具六件套同级——不受 `agent.tools.enabled` 门控；但**按可用性注册**：
+  //     与扩展工具七件套同级——不受 `agent.tools.enabled` 门控；但**按可用性注册**：
   //     桥接未配置时先不进工具表（模型看不到就不会承诺），用户填完端点后
   //     `settings:changed` 触发 `syncToolRegistries()` 自动补上，无需重启。
   classIslandTools = registerClassIslandTools({
@@ -1520,6 +1542,16 @@ async function bootstrap(): Promise<void> {
         const messages = await sessions!.rendererHistoryWithAsks(sessionId, 200)
         return { ok: true, data: messages satisfies CenterSessionHistoryMessage[] }
       },
+      readImage: async (sessionId, imageId) => {
+        const image = await sessions!.displayImageOf(sessionId, imageId)
+        if (image === undefined) return { ok: false, error: 'E_NOT_FOUND' }
+        try {
+          const data = await imageDisplayPort!.readImage({ path: image.path, sessionId })
+          return { ok: true, data }
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) }
+        }
+      },
       // llm.switch 的 handler（docs/12 §6.3）：只点改 active / model / reasoningEffort，
       // 绝不触碰 apiKeyEnc / baseUrl；settings.onChange 已驱动连接器重报 status。
       switchLlm: async (request) => {
@@ -1882,6 +1914,11 @@ async function bootstrap(): Promise<void> {
     imagegen: imageGenService,
     skills: skillsService,
     sessions,
+    readDisplayImage: async ({ sessionId, imageId }) => {
+      const image = await sessions!.displayImageOf(sessionId, imageId)
+      if (image === undefined) throw new Error('图片不存在或已被会话清理')
+      return imageDisplayPort!.readImage({ path: image.path, sessionId })
+    },
     classification,
     proactive: adaptProactive(proactiveScheduler),
     // Agent 向用户提问（docs/06 §21）：`ask:answer` 回执 + `askUser:request` 推送。
@@ -4636,7 +4673,7 @@ function adaptProactive(scheduler: ProactiveScheduler): ProactiveLike {
  * 四个装配器必须一起同步：
  * - `computerTools`：按 `agent.tools.*` 重建 8 个电脑操控工具；
  * - `settingsTool`：重建 `set_setting`（不受 `agent.tools.enabled` 影响，见 tools/index.ts）；
- * - `extensionTools`：重建扩展工具六件套（同样不受 `agent.tools.enabled` 影响）；
+ * - `extensionTools`：重建扩展工具七件套（同样不受 `agent.tools.enabled` 影响）；
  * - `agentCoreTools`：重建 todo_write / todo_read / task（同样不受门控，见 tools/index.ts）。
  *
  * 拆开写会让「改开关后工具表变化」的时机不一致：后三者不依赖 `agent.tools.enabled`，

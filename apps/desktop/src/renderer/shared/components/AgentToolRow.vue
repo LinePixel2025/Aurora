@@ -47,10 +47,8 @@ withDefaults(
     duration?: string
     /** 探针锚点：todo / task 行各有一个，其余行不带（`undefined` 时 Vue 省略属性） */
     dataField?: string
-    /** 生图预览的 dataUrl；未加载 / 加载失败时为 `undefined`（行维持纯文本） */
-    imagePreview?: string
   }>(),
-  { open: false, settled: false, duration: '', dataField: undefined, imagePreview: undefined },
+  { open: false, settled: false, duration: '', dataField: undefined },
 )
 
 const emit = defineEmits<{ (event: 'toggle'): void }>()
@@ -130,11 +128,6 @@ function subagentWriteGranted(call: AgentToolCall): boolean {
 function subagentToolsHint(call: AgentToolCall): string {
   const tools = call.subagent?.tools ?? []
   return tools.length === 0 ? '' : `可用工具：${tools.join('、')}`
-}
-
-/** `generate_image` 成功后展示图片预览（行内，一眼看到产物） */
-function isGeneratedImage(call: AgentToolCall): boolean {
-  return call.name === 'generate_image' && call.state === 'success'
 }
 
 /** 参数正文：JSON 缩进 + 800 字截断（模型输出畸形时兜底为字符串，绝不抛错） */
@@ -223,18 +216,6 @@ const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransiti
       点击行首展开的仍是原始参数 / 结果。解析失败时这里不渲染，回落纯行首。
     -->
     <AgentTodoList v-if="todosOf(call)" :todos="todosOf(call)!" dense class="tool-todos" />
-
-    <!--
-      生图预览（BetaV2）：成功行直接展示图片（懒加载、固定宽高比 + object-fit cover 防抖动）。
-      路径提取失败 / imagegen:read 失败时不渲染，行维持「已保存到 …」纯文本。
-    -->
-    <img
-      v-if="isGeneratedImage(call) && imagePreview !== undefined"
-      class="tool-image"
-      :src="imagePreview"
-      alt="生成的图片"
-      loading="lazy"
-    />
 
     <Transition name="collapse" @enter="collapseEnter" @before-leave="collapseLeave">
       <div v-if="open" class="tool-body">
@@ -540,19 +521,5 @@ const { enter: collapseEnter, beforeLeave: collapseLeave } = useCollapseTransiti
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-/* 生图预览（BetaV2）：固定宽高比 + cover，加载前后占位一致不抖动 */
-.tool-image {
-  display: block;
-  width: 100%;
-  max-width: 320px;
-  margin: 0 var(--space-2) var(--space-2) 2px;
-  aspect-ratio: 1 / 1;
-  max-height: 320px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  object-fit: cover;
-  background: var(--fill-2);
 }
 </style>

@@ -305,7 +305,11 @@ export interface DirEntry {
 }
 
 export interface OpenPort {
-  open(target: string): Promise<void>
+  /**
+   * 打开一个目标。`sessionId` 由工具调用上下文透传：主进程在“内置浏览器”模式下
+   * 需要把它带进 `preview:show`，确保只影响发起调用的那个会话。
+   */
+  open(target: string, options?: { sessionId?: string }): Promise<void>
 }
 
 export interface FileToolOptions {
@@ -342,7 +346,9 @@ export function createOpenTool(options: { open: OpenPort }): ToolDefinition {
   return {
     name: 'open_path',
     description:
-      '用系统默认方式打开目标：网页 URL（http/https）、mailto 链接、本地文件、文件夹、已安装程序名都能打开，交给 Windows 默认程序处理；不等待目标程序退出。打开后立即返回。',
+      '打开网页 URL（http/https）、mailto 链接、本地文件、文件夹或已安装程序名。' +
+      '网页按用户设置进入内置浏览器或系统默认浏览器；其余目标交给 Windows 默认程序处理。' +
+      '不等待目标程序退出，打开后立即返回。',
     parameters: {
       type: 'object',
       properties: {
@@ -355,7 +361,7 @@ export function createOpenTool(options: { open: OpenPort }): ToolDefinition {
       additionalProperties: false,
     },
     sensitivity: 'confirm',
-    execute: async (input): Promise<ToolResult> => {
+    execute: async (input, ctx): Promise<ToolResult> => {
       const target = readNonEmptyString(asRecord(input), 'target')
       if (target === undefined) {
         return {
@@ -365,7 +371,7 @@ export function createOpenTool(options: { open: OpenPort }): ToolDefinition {
         }
       }
       try {
-        await options.open.open(target)
+        await options.open.open(target, { sessionId: ctx.sessionId })
         return { content: `已打开：${target}`, summary: `已打开：${target}` }
       } catch (error) {
         return {

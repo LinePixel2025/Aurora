@@ -17,7 +17,7 @@ import type {
   LlmToolDefinition,
   ReasoningEffortLevel,
 } from '../llm/types.js'
-import type { ToolImage, ToolProgress, ToolSource } from '../tools/registry.js'
+import type { ToolDisplayImage, ToolImage, ToolProgress, ToolSource } from '../tools/registry.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
 
 export const DEFAULT_MAX_ROUNDS = 32
@@ -419,6 +419,16 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       call.endedAt = new Date().toISOString()
       // 子代理快照随工具卡一起持久化（渲染层「子代理」页面据此回看历史运行）
       if (outcome.subagent !== undefined) call.subagent = outcome.subagent
+      // 对话展示图片随工具卡持久化；路径只留在客户端内部，事件里由 toAgentToolCall 脱敏
+      if (outcome.displayImages !== undefined && outcome.displayImages.length > 0) {
+        call.displayImages = outcome.displayImages.map((item) => ({
+          id: item.id,
+          path: item.path,
+          name: item.name,
+          mime: item.mime,
+          ...(item.caption === undefined ? {} : { caption: item.caption }),
+        }))
+      }
       // 持久化工具卡片状态（同一 messageId 原地更新，渲染层据此刷新）
       await options.updateToolCall(assistant.id, { ...call })
 
@@ -654,17 +664,46 @@ function toAssistantMessage(message: StoredMessage): ChatRequestMessage {
 }
 
 function toAgentToolCall(call: StoredToolCall): AgentToolCall {
+  const rawInput = parseArguments(call.arguments)
+  const input = rendererToolInput(call, rawInput)
   return {
     id: call.id,
     name: call.name,
-    ...(parseArguments(call.arguments) === undefined
-      ? {}
-      : { input: parseArguments(call.arguments) }),
+    ...(input === undefined ? {} : { input }),
     state: call.state,
     ...(call.outputSummary === undefined ? {} : { outputSummary: call.outputSummary }),
     ...(call.startedAt === undefined ? {} : { startedAt: call.startedAt }),
     ...(call.endedAt === undefined ? {} : { endedAt: call.endedAt }),
     ...(call.subagent === undefined ? {} : { subagent: call.subagent }),
+    ...(call.displayImages === undefined || call.displayImages.length === 0
+      ? {}
+      : {
+          displayImages: call.displayImages.map((item) => ({
+            id: item.id,
+            name: item.name,
+            mime: item.mime,
+            ...(item.caption === undefined ? {} : { caption: item.caption }),
+          })),
+        }),
+  }
+}
+
+/**
+ * 展示给渲染层的工具入参。`show_image` 的 path 是本地路径，只允许留在会话存储内部；
+ * 事件 / 历史投影一律移除它，只保留说明与文件名（文件名来自 displayImages）。
+ */
+function rendererToolInput(call: StoredToolCall, input: unknown): unknown {
+  if (call.name !== 'show_image') return input
+  const record =
+    typeof input === 'object' && input !== null && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : undefined
+  const caption = typeof record?.['caption'] === 'string' ? record['caption'].trim() : ''
+  const name = call.displayImages?.[0]?.name
+  if (caption === '' && name === undefined) return undefined
+  return {
+    ...(caption === '' ? {} : { caption }),
+    ...(name === undefined ? {} : { name }),
   }
 }
 
@@ -685,6 +724,8 @@ interface ToolOutcome {
   subagent?: SubagentSnapshot
   /** 工具产出 / 读到的图片（图像工具，docs/06 §25）：随 tool 消息落盘路径、随合成 user 消息下发内容 */
   images?: readonly ToolImage[]
+  /** 对话图片区的展示图片（`show_image` / `generate_image`）：随工具卡持久化并脱敏下发 */
+  displayImages?: ToolDisplayImage[]
 }
 
 /**
@@ -853,6 +894,9 @@ async function runTool(
       // `isError` 的结果里带上图片会让模型看到"读失败但图在这儿"的自相矛盾输入
       ...(!isError && result.images !== undefined && result.images.length > 0
         ? { images: result.images }
+        : {}),
+      ...(!isError && result.displayImages !== undefined && result.displayImages.length > 0
+        ? { displayImages: [...result.displayImages] }
         : {}),
     }
   } catch (error) {

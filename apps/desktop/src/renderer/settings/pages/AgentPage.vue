@@ -147,7 +147,7 @@ const READONLY_COMPUTER_TOOL_NAMES: readonly ComputerToolName[] = [
  * 这里只覆盖 `COMPUTER_TOOL_NAMES` 里的 8 个电脑操控工具。只读档另有三类**不在本表**的名字
  * 仍会注册（因此只读档的小结不能只看这个数组）：`todo_read`（写入口 `todo_write` 在只读档不注册）
  * 由内核工具装配器注册、`use_skill` 由技能装配器注册、`set_setting` 由配置工具装配器注册，
- * 外加按服务器动态注册的 MCP 工具与扩展工具五件套 —— 它们都不受 `agent.tools.enabled` 门控，
+ * 外加按服务器动态注册的 MCP 工具与扩展工具七件套 —— 它们都不受 `agent.tools.enabled` 门控，
  * 在模板「当前生效工具」的只读分支里逐个列出。
  */
 const activeToolNames = computed<ComputerToolName[]>(() => {
@@ -204,6 +204,16 @@ async function saveFiles(patch: Partial<AgentToolsConfig['files']>): Promise<boo
 async function saveSearch(patch: Partial<AgentToolsConfig['search']>): Promise<boolean> {
   return save({ search: { ...tools.value.search, ...patch } })
 }
+
+/** 改打开子对象：完整子树回写，避免只改开关时把 urlMode 丢掉 */
+async function saveOpen(patch: Partial<AgentToolsConfig['open']>): Promise<boolean> {
+  return save({ open: { ...tools.value.open, ...patch } })
+}
+
+const OPEN_URL_MODES = [
+  { value: 'internal', label: '内置浏览器' },
+  { value: 'external', label: '外部浏览器' },
+] as const
 
 /**
  * 保存写前快照配置（v14）：与工具区组同一套回执口径（失败时 Toast 展示 `settingsStore.error`）。
@@ -809,7 +819,7 @@ async function openWorkspace(): Promise<void> {
           <div class="sub">
             <h3 class="sub-title">打开</h3>
             <p class="section-desc">
-              用系统默认程序打开路径（<code class="mono">open_path</code>）：敏感工具。
+              模型打开文件、目录或链接（<code class="mono">open_path</code>）：敏感工具。
             </p>
 
             <template v-if="tools.enabled">
@@ -822,12 +832,29 @@ async function openWorkspace(): Promise<void> {
                   <input
                     type="checkbox"
                     :checked="tools.open.enabled"
-                    @change="
-                      save({ open: { enabled: ($event.target as HTMLInputElement).checked } })
-                    "
+                    @change="saveOpen({ enabled: ($event.target as HTMLInputElement).checked })"
                   />
                   <span>允许模型打开文件、目录或链接（默认开启）</span>
                 </label>
+              </SettingField>
+
+              <SettingField
+                data-field="agent.tools.open.urlMode"
+                label="网页打开方式"
+                hint="只影响模型打开 http(s) 网址；本地文件始终进入右栏"
+              >
+                <div class="segmented" role="group" aria-label="网页打开方式">
+                  <button
+                    v-for="option in OPEN_URL_MODES"
+                    :key="option.value"
+                    type="button"
+                    :class="{ active: tools.open.urlMode === option.value }"
+                    :aria-pressed="tools.open.urlMode === option.value"
+                    @click="saveOpen({ urlMode: option.value })"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
               </SettingField>
             </template>
 
@@ -874,7 +901,7 @@ async function openWorkspace(): Promise<void> {
                 >web_fetch</code
               >、<code class="mono">clipboard_read</code>、<code class="mono">clipboard_write</code
               >、<code class="mono">notify_user</code>、<code class="mono">generate_image</code
-              >、<code class="mono">show_preview</code>）——
+              >、<code class="mono">show_preview</code>、<code class="mono">show_image</code>）——
               它们不受总开关与档位门控，敏感的仍逐次确认。
             </p>
           </div>
@@ -978,6 +1005,35 @@ async function openWorkspace(): Promise<void> {
 
 .wrap {
   flex-wrap: wrap;
+}
+
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--fill-1);
+}
+
+.segmented button {
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  border-radius: calc(var(--radius-sm) - 2px);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.segmented button:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+.segmented button.active {
+  background: var(--bg-overlay);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-hairline);
 }
 
 /* 「免确认命令模式」：列表 + 输入行竖排；容器本身挂 data-field，探针按数量断言（见 capture.ts） */

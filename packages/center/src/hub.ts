@@ -360,6 +360,15 @@ export class Hub {
           sessionId: message.sessionId,
         })
         break
+      case 'session.readImage':
+        // 对话图片读取：与历史回放同一条“客户端现场读、服务器只转发”的零存储路径。
+        this.forwardCommand(conn, message.clientId, {
+          kind: 'session.readImage',
+          requestId: message.requestId,
+          sessionId: message.sessionId,
+          imageId: message.imageId,
+        })
+        break
       case 'llm.switch':
         // 专用命令，不做 config.update 的白名单预检（checkPatch 只服务 config.update）
         this.forwardCommand(conn, message.clientId, {

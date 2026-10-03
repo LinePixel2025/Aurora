@@ -1077,6 +1077,20 @@ export interface ChatAttachmentPreview {
   note?: string
 }
 
+/**
+ * 助手消息里展示的一张图片（`show_image` / `generate_image`，docs/06 §14）。
+ *
+ * 渲染层与 Center 只拿到这份**无路径元数据**；真实文件按 `id` 通过 IPC / Center
+ * 命令向客户端按需读取。这样会话图片不需要把 base64 写进会话文件，也不会把本机路径
+ * 带出客户端。
+ */
+export interface ChatDisplayImage {
+  id: string
+  name: string
+  mime: string
+  caption?: string
+}
+
 export interface AgentToolCall {
   id: string
   name: string
@@ -1096,6 +1110,19 @@ export interface AgentToolCall {
    * 随工具卡状态一起持久化，因此「子代理」页面在重启后仍能回看历史运行。
    */
   subagent?: SubagentSnapshot
+  /** 本工具调用产出的对话图片；只含安全元数据，原图路径绝不跨 IPC / Center */
+  displayImages?: ChatDisplayImage[]
+}
+
+export interface ChatDisplayImageReadRequest {
+  sessionId: string
+  imageId: string
+}
+
+export interface ChatDisplayImageReadResult {
+  dataUrl: string
+  name: string
+  mime: string
 }
 
 // ───────────────────────── Token 用量（上下文详解，docs/07 §2.3） ─────────────────────────
@@ -1788,6 +1815,13 @@ export interface AuroraApi {
      * 渲染层据此退回纯文字 chip（不显示裂图）。
      */
     readAttachment(request: ChatAttachmentPreviewRequest): Promise<Result<ChatAttachmentPreview>>
+    /**
+     * 读取助手消息图片区的一张图片（`show_image` / `generate_image`）。
+     * 主进程按会话 + imageId 查会话记录并读盘，只回 data URL。
+     */
+    readDisplayImage(
+      request: ChatDisplayImageReadRequest,
+    ): Promise<Result<ChatDisplayImageReadResult>>
     /**
      * 拖拽文件的绝对路径（docs/07 §2.3）。
      *

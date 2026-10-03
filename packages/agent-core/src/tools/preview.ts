@@ -27,6 +27,8 @@ export interface PreviewShowOutcome {
   url: string
   /** 给用户看的目标串（本地文件是原始路径） */
   display: string
+  /** 实际去向：右栏面板或系统浏览器（URL 在 external 模式下） */
+  openedIn: 'panel' | 'external'
 }
 
 export interface PreviewPort {
@@ -75,8 +77,11 @@ export function createShowPreviewTool(options: ShowPreviewToolOptions): ToolDefi
       try {
         const outcome = await options.port.show(target, { sessionId: ctx.sessionId, title })
         return {
-          content: `已在右栏预览面板中展示：${outcome.display}`,
-          summary: '已展示预览',
+          content:
+            outcome.openedIn === 'external'
+              ? `已用外部浏览器打开：${outcome.display}`
+              : `已在右栏预览面板中展示：${outcome.display}`,
+          summary: outcome.openedIn === 'external' ? '已在外部浏览器打开' : '已展示预览',
         }
       } catch (error) {
         return {

@@ -7,7 +7,7 @@
  *
  * 门控口径（装配层负责，见 main/tools/index.ts）：`center.enabled` 且
  * `center.serverUrl` 非空**才注册**（未配置时连工具都不出现，与 STT/TTS 同口径）；
- * **不受** `agent.tools.enabled` 门控（与扩展工具五件套同口径）。
+ * **不受** `agent.tools.enabled` 门控（与扩展工具七件套同口径）。
  * `center_send_file` 的安全口径（v0.2.4）：**不逐次确认、直接发送** —— 用户明确要求
  * 「给 Center 发文件不该弹卡」。它的闸门是**注册与配置层**：`center.enabled` +
  * `serverUrl` 才注册、`center.allowFileTransfer` 可整体关闭、`center.maxFileMb` 限大小；

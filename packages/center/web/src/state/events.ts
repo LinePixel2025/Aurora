@@ -145,6 +145,7 @@ export function applyEvent(clientId: string, sessionId: string, event: AgentEven
         existing.state = call.state
         if (call.outputSummary) existing.outputSummary = call.outputSummary
         if (call.subagent) existing.subagent = call.subagent
+        if (call.displayImages) existing.displayImages = call.displayImages
       } else {
         item.tools.push({
           id: call.id,
@@ -154,6 +155,7 @@ export function applyEvent(clientId: string, sessionId: string, event: AgentEven
           ...(call.input === undefined ? {} : { input: call.input }),
           ...(call.outputSummary === undefined ? {} : { outputSummary: call.outputSummary }),
           ...(call.subagent === undefined ? {} : { subagent: call.subagent }),
+          ...(call.displayImages === undefined ? {} : { displayImages: call.displayImages }),
           startedAt: Date.now(),
           ...(call.state === 'running' ? {} : { endedAt: Date.now() }),
         })

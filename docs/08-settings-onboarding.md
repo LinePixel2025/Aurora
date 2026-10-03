@@ -2,7 +2,7 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v24）
+## 1. 配置 Schema（config.json，v27）
 
 ```jsonc
 {
@@ -274,7 +274,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **26**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **27**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.modelParams.<modelId>.reasoningEffort`（v5 新增，v23 起按模型绑定）：
@@ -436,7 +436,9 @@
   `files.enabled` 开关文件读写、`files.maxReadBytes` 是单次读取上限（字节）；
   `search.enabled` 开关文件检索（`grep` / `glob`，**v12 新增**）、`search.maxResults` 是**单次检索的
   结果条数上限**（1–1000，默认 200，超出即截断并在结果里标注）；
-  `open.enabled` 开关「打开路径」工具。
+  `open.enabled` 开关「打开路径」工具；`open.urlMode`（**v27 新增**）只控制模型打开
+  `http(s)` 网址时的去向：`internal`（默认，右栏内置浏览器）/ `external`（系统浏览器）。
+  本地文件预览、设备授权登录、自动化打开网址与用户手动入口不读取该字段。
 - `agent.tools.search.*`（**v12 新增**，见 06 §11.5）：文件检索工具 —— `grep`（按**正则**搜文件内容，
   回带路径 / 行号 / 命中行）与 `glob`（按**文件名模式**找文件，只回路径），两个都是 `safe` 级只读工具，
   用来替代「用 `list_dir` 逐层翻目录」。这两个字段**均可写**（显式登记在 `WRITABLE_PATH_OVERRIDES`，
@@ -625,7 +627,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 26`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 27`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -701,11 +703,13 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   见 07 §2.3）。窗口几何是**用户态**（拖动即落盘），所以这一步只做一次「跟着新默认长大」的
   补偿：`general.windowState.chat` 的宽 / 高若**小于**新默认就抬到新默认，**只放大、不缩小**
   —— 用户自己拖得更大的尺寸原样保留；几何缺失时不动 `general`。窗口管理器还有第二级抬底
-  （`SPECS.chat` 的 minWidth / minHeight 会把越界旧值夹上来），两者不冲突）。
-  二十六条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  （`SPECS.chat` 的 minWidth / minHeight 会把越界旧值夹上来），两者不冲突）、
+  `v26 → v27`（**模型打开网址默认走内置浏览器**：在已存在的 `agent.tools.open` 分组补
+  `urlMode: 'internal'`；已有合法值原样保留，分组缺失时交给默认配置兜底）。
+  二十七条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**），重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **26** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **27** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程

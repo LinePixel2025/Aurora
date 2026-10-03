@@ -266,13 +266,13 @@
       收益不抵惊扰；宽度记忆（localStorage）不受影响。
     左栏「任务」入口会先**确保上下文标签在**（被关掉则重建）并激活它，再翻面板显隐
     （任务面板收在标签里，直接翻看不见）。
-    - **无标签页时的工具快捷入口（2026-10-03 新增）**：右栏标签**全部关掉**之后
-      （`ctxTabs.length === 0`），左栏会话滚动区顶部出现「工具」分组（`chat.tool-shortcuts`），
+    - **无标签页时的工具快捷入口（2026-10-03 新增，2026-10-04 移至右栏）**：右栏标签**全部关掉**之后
+      （`ctxTabs.length === 0`），右栏正文区出现「工具」分组（`chat.tool-shortcuts`），
       四张卡片依次是右栏四种标签（上下文 / 文件 / 终端 / 浏览器，`chat.tool-open-<kind>`，
       图标与标签条 / 新建菜单同一套）。点卡片 = 打开该种类标签**并确保右栏展开** ——
-      标签全关后不必再翻右上角的「＋」菜单，左栏就能重开。
+      标签全关后不必再翻右上角的「＋」菜单，在右栏空态就能重开。
       本区**只在标签为空时存在**（它就是空态本身；有标签时留着只是占地方），
-      两列网格、卡片高 32px（与左栏固定项同一条命中线）。
+      位于右栏正文区、两列网格、卡片高 32px（与左栏固定项同一条命中线）。
     右栏宽度 264 → **384px 缺省**，左缘把手（`chat.ctx-resizer`）可拖拽调宽
     （**280–720px** 夹取，localStorage 记忆、双击复位；视图偏好**不进 config schema**），
     JobPanel / ContextPanel 的固定宽跟随 `--ctx-w`（折叠时收 0 的语义不变）。
@@ -1235,7 +1235,7 @@
 | 分隔线 | `--border-subtle` / `--border-strong` | iOS 语义：亮 `#d1d1d6` / `#c7c7cc`，暗 `#38383a` / `#48484a` |
 | 文本 | `--text-primary` / `--text-secondary` / `--text-muted` | 亮 `#1d1d1f` / `#6e6e73` / `#aeaeb2`，暗 `#f5f5f7` / `#aeaeb2` / `#7c7c80`；正文用 `--leading-normal(1.5)`、说明用 `--leading-relaxed(1.55)` |
 | 状态 | `--status-idle` / `-running` / `-unread` / `-error` / `-ok` | idle `#8e8e93`、running = 强调蓝、unread = 警告橙（`#FF9500`/`#FF9F0A`）、error `#FF3B30`/`#FF453A`、ok `#34C759`/`#30D158`，**四个窗口语义一致** |
-| 字体 | `--font-ui` / `--font-display` / `--font-mono` | SF 意向系统栈（`-apple-system` → `SF Pro Text` → `Segoe UI Variable` → 雅黑）；标题 `--tracking-display(-0.02em)`，分区标签 `--tracking-eyebrow(0.08em)`，数字 `--num-tabular` |
+| 字体 | `--font-ui` / `--font-display` / `--font-mono` | 随包 **HarmonyOS Sans + HarmonyOS Sans SC**（Regular / Medium / Bold，`font-display: swap`）；代码与终端保留 Cascadia / Consolas 等宽栈。标题 `--tracking-display(-0.02em)`，分区标签 `--tracking-eyebrow(0.08em)`，数字 `--num-tabular` |
 | 字号 | `--text-xs(11)` / `sm(12.5)` / `base(13.5)` / `lg(15)` / `xl(20)` / `2xl(26)` | 正文基准 `--text-base`；`--leading-tight(1.25)` / `normal(1.5)` |
 | 字重 | `--weight-regular(400)` / `medium(500)` / `semibold(600)` | |
 | 圆角 | `--radius-xs(6)` / `sm(10)` / `md(14)` / `lg(20)` / `xl(28)` / `pill(999)` | 档位不变，靠大半径营造连续圆角观感 |

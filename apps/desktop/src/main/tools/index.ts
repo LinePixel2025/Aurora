@@ -11,7 +11,7 @@
  * - `registerComputerTools`：电脑操控工具（8 个，含 `grep` / `glob`），受 `agent.tools.enabled` 门控
  *   （docs/06 §11）；
  * - `registerSettingsTool`：`set_setting`，不受门控（docs/06 §12）；
- * - `registerExtensionTools`：扩展工具六件套（含 2026-10-03 新增的 `show_preview`），不受门控（docs/06 §14）；
+ * - `registerExtensionTools`：扩展工具七件套（含 `show_preview` / `show_image`），不受门控（docs/06 §14）；
  * - `registerImageTools`：图像工具（看图 / 截屏 / 读剪贴板图片），**按模型能力注册** ——
  *   当前生效模型没开图片输入就一个都不注册（docs/06 §25）；
  * - `registerAgentCoreTools`：todo_write / todo_read / task / ask_user，不受门控（docs/06 §18/§19/§21）
@@ -41,6 +41,7 @@ import {
   createEditTool,
   createFileTools,
   createImageGenTool,
+  createShowImageTool,
   createNotifyTool,
   createOpenTool,
   createScreenshotTool,
@@ -64,6 +65,7 @@ import {
   type CommandRunner,
   type FilePort,
   type ImageGenPort,
+  type ImageDisplayPort,
   type NotifyPort,
   type OpenPort,
   type PreviewPort,
@@ -312,6 +314,7 @@ export const EXTENSION_TOOL_NAMES = [
   'notify_user',
   'generate_image',
   'show_preview',
+  'show_image',
 ] as const
 
 export interface ExtensionToolsDeps {
@@ -325,6 +328,8 @@ export interface ExtensionToolsDeps {
   notify: NotifyPort
   /** 生图端口（`generate_image`，main/tools/imagegen-port.ts → ImageGenService） */
   imageGen: ImageGenPort
+  /** 对话图片端口（`show_image`，main/tools/image-display-port.ts） */
+  imageDisplay: ImageDisplayPort
   /** 右栏展示端口（`show_preview`，main/tools/preview-port.ts → 推送到 chat 窗口） */
   preview: PreviewPort
 }
@@ -363,6 +368,7 @@ export function registerExtensionTools(deps: ExtensionToolsDeps): ExtensionTools
       deps.tools.register(createNotifyTool({ port: deps.notify }))
       deps.tools.register(createImageGenTool({ port: deps.imageGen }))
       deps.tools.register(createShowPreviewTool({ port: deps.preview }))
+      deps.tools.register(createShowImageTool({ port: deps.imageDisplay }))
 
       const names = EXTENSION_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
       deps.logger.info('已同步扩展工具', { names: [...names] })
@@ -411,7 +417,7 @@ export interface ImageToolsRegistry {
  * 它与图片附件管线共用**同一份判据**（`main/vision.ts`）：附件降级而工具照给，
  * 或反过来，都是自相矛盾的组合。
  *
- * 不受 `agent.tools.enabled` 门控（与扩展工具六件套同口径：「看图」不属于电脑操控的开关语义），
+ * 不受 `agent.tools.enabled` 门控（与扩展工具七件套同口径：「看图」不属于电脑操控的开关语义），
  * 也不按 `readonly` 档摘除（`view_image` 纯读；截屏与剪贴板读写的都是 app 自己的目录）。
  */
 export function registerImageTools(deps: ImageToolsDeps): ImageToolsRegistry {
@@ -607,7 +613,7 @@ export function registerClassIslandTools(deps: ClassIslandToolsDeps): ClassIslan
  *
  * 门控口径：`center.enabled` 且 `center.serverUrl` 非空**才注册**（未配置时连
  * 工具都不出现，与 STT/TTS 同口径）；**不受** `agent.tools.enabled` 门控
- * （与扩展工具六件套同口径）。`sync()` 每次重建实例：设置热改（开关 / 上限 /
+ * （与扩展工具七件套同口径）。`sync()` 每次重建实例：设置热改（开关 / 上限 /
  * 传输许可）立即生效，无需重启。
  */
 export interface CenterToolsDeps {

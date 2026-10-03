@@ -14,7 +14,7 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
   **白名单**约束（见 §7）；
 - 服务器是**纯 Node 程序**，Windows / Linux 均可运行，带 `aurora-center` CLI
   （一键启动、建账户、自更新）；
-- Web 端外观为**简约 Apple 风格**（系统字体栈、大圆角卡片、克制的灰阶与毛玻璃顶栏）。
+- Web 端外观与桌面端同源：**HarmonyOS Sans**、大圆角卡片、克制的灰阶与毛玻璃顶栏。
 
 ## 1. 总体拓扑
 
@@ -131,6 +131,7 @@ CenterCommand =
   | { kind: 'confirm.resolve', requestId, confirmId, approved }  // 网页端确认卡批复的转发
   | { kind: 'ask.resolve', requestId, sessionId, answers, skipped?, answersByQuestion? }  // 网页端提问卡作答的转发（v0.3.3，§5）；result.data 携带 { settled }
   | { kind: 'session.history', requestId, sessionId } // 历史回放（v0.2.4，§6.3）；result.data 携带 CenterSessionHistoryMessage[]
+  | { kind: 'session.readImage', requestId, sessionId, imageId } // 对话图片读取（v27，§14）；result.data 携带 { dataUrl, name, mime }，服务器不缓存
   | { kind: 'session.setModel', requestId, sessionId, providerId?, model }  // 会话级模型覆盖（本轮，§6.3）；model 为空串 = 清除覆盖
   | { kind: 'file.send',      requestId, fileId, name, size }  // 服务器 → 客户端下发文件（本轮，§5）；客户端用自身令牌下载后落盘
   | { kind: 'stt.transcribe', requestId, audioBase64, mime }  // 语音识别中转（v0.3.2，§6.4）；客户端用本机已配 provider 转写
@@ -389,6 +390,7 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
 |---|---|
 | `session.list` | 枚举客户端的 `center-` 会话（`CenterSessionSummary[]`：标题 / 更新时间 / projectId / 权限覆盖 / 可见性 / 模型覆盖 `llm`） |
 | `session.history`（v0.2.4） | 拉取某个 `center-` 会话的历史（`CenterSessionHistoryMessage[]`，`result.data` 携带；客户端只回 `center-` 前缀会话，最近 200 条）。条目含 `kind: 'message' \| 'ask'`：`ask` 是提问留痕（本轮，渲染成只读已结算卡）。仅用于网页端打开会话时的回放，服务器不缓存 |
+| `session.readImage`（v27） | 网页按 `{ sessionId, imageId }` 拉取助手消息图片区的一张图片。客户端从会话工具卡查 imageId、再次校验路径后返回 `{ dataUrl, name, mime }`；本地路径不离开客户端，服务器只转发不缓存 |
 | `session.activate` | 让客户端主界面切到指定会话（经 `chat:remoteActivate` 推送通道驱动渲染层 `switchSession`；会话未落盘时客户端兜底创建） |
 | `session.visibility` | 开关该会话在客户端左栏的可见性（`SessionMeta.centerVisible`，缺省可见；隐藏仍可远程输入）。落盘成功后客户端经 `chat:centerVisibilityChanged` 推送通知渲染层重拉会话列表（v0.2.4） |
 | `session.setPermission` | **会话级权限档覆盖**（`SessionMeta.permissionMode`，生效于该会话的确认判定：会话覆盖 > 全局档）。不动全局 `agent.permissionMode`——全局档仍只能由用户在本机设置页调 |
@@ -478,7 +480,7 @@ Electron 任何操作）：
   工具 `sensitivity: 'safe'`，确认链路（含推 Center 网页端）不再经过它 —— 安全闸门是
   `center.enabled` / `center.allowFileTransfer` / `center.maxFileMb` 三层配置开关
   （均只读前缀，AI 改不动），口径见 docs/06 §11.2。
-- 注册位置与扩展工具五件套一致（`registerExtensionTools` 一侧），**不受
+- 注册位置与扩展工具七件套一致（`registerExtensionTools` 一侧），**不受
   `agent.tools.enabled` 门控**；文档口径见 docs/06 §11.6。
 
 ## 9. CLI（`aurora-center`）

@@ -2250,7 +2250,144 @@ export const SCENARIOS = [
     },
   },
 
-  // ── 37. prefers-reduced-motion：共享兜底真的把过渡压到 1ms（本轮 docs/07 §5.3） ──
+  // ── 37. 对话图片：实时事件 → data URL 懒加载，且本地路径不外泄 ──
+  {
+    name: 'message-images-live',
+    async run(ctx) {
+      await fresh(ctx)
+      await openFixtureSession(ctx)
+      ctx.stub.sendEvent(FIXTURE_OPEN_SESSION_ID, {
+        type: 'tool',
+        messageId: 'm-image-live',
+        round: 0,
+        call: {
+          id: 't-image-live',
+          name: 'show_image',
+          state: 'success',
+          input: { path: 'D:/secret/proof.png', caption: '最终效果' },
+          outputSummary: '已展示图片',
+          displayImages: [
+            { id: 'img-live-1', name: 'proof.png', mime: 'image/png', caption: '最终效果' },
+          ],
+        },
+      })
+      ctx.stub.sendEvent(FIXTURE_OPEN_SESSION_ID, {
+        type: 'text',
+        messageId: 'm-image-live',
+        round: 0,
+        delta: '图片已生成。',
+      })
+      ctx.stub.sendEvent(FIXTURE_OPEN_SESSION_ID, { type: 'done' })
+      const selector = '[data-field="chat.display-images"] img'
+      const loaded = await ctx.page
+        .waitForFunction(
+          (target) => {
+            const image = document.querySelector(target)
+            return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0
+          },
+          { timeout: TIMEOUT },
+          selector,
+        )
+        .then(() => true)
+        .catch(() => false)
+      const reading = await ctx.page.evaluate((target) => {
+        const image = document.querySelector(target)
+        const text = document.body.textContent ?? ''
+        return {
+          count: document.querySelectorAll(target).length,
+          naturalWidth: image instanceof HTMLImageElement ? image.naturalWidth : 0,
+          caption: image?.closest('figure')?.querySelector('figcaption')?.textContent?.trim() ?? '',
+          leakedPath: text.includes('D:/secret/proof.png'),
+        }
+      }, selector)
+      const readImage = await ctx.stub.waitForCommand('session.readImage', {
+        timeout: 3000,
+      })
+      return verdict(
+        {
+          loaded,
+          count: reading.count === 1,
+          decoded: reading.naturalWidth > 0,
+          caption: reading.caption === '最终效果',
+          commandSent: readImage?.imageId === 'img-live-1',
+          noPathLeak: !reading.leakedPath,
+        },
+        { reading, readImage },
+      )
+    },
+  },
+
+  // ── 38. 对话图片历史回放：刷新后仍按 imageId 从客户端读取 ──
+  {
+    name: 'message-images-history',
+    async run(ctx) {
+      const history = fixtureHistoryMessages()
+      history[1].toolCalls[0].displayImages = [
+        { id: 'img-hist-1', name: 'report.png', mime: 'image/png', caption: '历史成果' },
+      ]
+      ctx.stub.history.set(FIXTURE_HISTORY_SESSION_ID, history)
+      await fresh(ctx)
+      await openFixtureSession(ctx, FIXTURE_HISTORY_SESSION_ID)
+      const selector = '[data-field="chat.display-images"] img'
+      const loaded = await ctx.page
+        .waitForFunction(
+          (target) => {
+            const image = document.querySelector(target)
+            return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0
+          },
+          { timeout: TIMEOUT },
+          selector,
+        )
+        .then(() => true)
+        .catch(() => false)
+      const readImage = await ctx.stub.waitForCommand('session.readImage', {
+        timeout: 3000,
+      })
+      return verdict(
+        {
+          loaded,
+          imageId: readImage?.imageId === 'img-hist-1',
+        },
+        { readImage },
+      )
+    },
+  },
+
+  // ── 39. HarmonyOS Sans：两端共享令牌与字体文件真的加载 ──
+  {
+    name: 'font-harmonyos',
+    async run(ctx) {
+      await fresh(ctx)
+      const reading = await ctx.page.evaluate(async () => {
+        await document.fonts.ready
+        const ui = getComputedStyle(document.documentElement).getPropertyValue('--font-ui').trim()
+        const mono = getComputedStyle(document.documentElement)
+          .getPropertyValue('--font-mono')
+          .trim()
+        const loaded = Array.from(document.fonts).filter(
+          (font) => font.family.includes('HarmonyOS') && font.status === 'loaded',
+        )
+        return {
+          ui,
+          mono,
+          body: getComputedStyle(document.body).fontFamily,
+          loaded: loaded.map((font) => font.family),
+          fontStarts: getComputedStyle(document.body).fontFamily.startsWith('"HarmonyOS Sans"'),
+        }
+      })
+      return verdict(
+        {
+          tokenHarmony: reading.ui.includes('HarmonyOS Sans'),
+          monoPreserved: reading.mono.includes('Cascadia') || reading.mono.includes('monospace'),
+          bodyHarmony: reading.fontStarts,
+          fontLoaded: reading.loaded.length > 0,
+        },
+        { reading },
+      )
+    },
+  },
+
+  // ── 40. prefers-reduced-motion：共享兜底真的把过渡压到 1ms（本轮 docs/07 §5.3） ──
   {
     name: 'reduced-motion',
     async run(ctx) {

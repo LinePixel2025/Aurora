@@ -86,7 +86,9 @@ electron-builder 首次打包会下载两样东西：Electron 发行包与打包
 - 目标：Windows x64 + **NSIS**（非 oneClick：用户可选安装目录，便于卸载）；
 - 产物名 `Aurora-Setup-<version>.exe`（无空格，便于 CI 与脚本处理）；
 - `files` 只收 `out/**`（electron-vite 产物）与 `package.json`；
-- `extraResources` 把 `skills/` 放到 `resources/skills`（SKILL.md 包不能进 asar）；
+- `extraResources` 把 `skills/` 放到 `resources/skills`（SKILL.md 包不能进 asar），并把
+  `HarmonyOS-Sans-LICENSE.txt` 放到 `resources/licenses/`；字体 TTF 由 shared 构建复制后
+  经 Vite 发射进 `out/renderer/assets`，随 `out/**/*` 一并进入安装包；
 - `signAndEditExecutable: false`：**不签名、也不改 exe 资源**。
   原因见 §4；将来接入证书时置为 `true` 并设置 `CSC_LINK` / `CSC_KEY_PASSWORD` 即可。
 - `app-update.yml` 由 electron-builder 自动生成并打进包内，指向 `Aurora-releases`。

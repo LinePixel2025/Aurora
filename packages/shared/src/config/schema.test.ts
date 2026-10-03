@@ -329,7 +329,7 @@ describe('SettingsSchema / defaults 一致性', () => {
       files: { enabled: true, maxReadBytes: 262_144 },
       // v12：文件检索（grep / glob）
       search: { enabled: true, maxResults: 200 },
-      open: { enabled: true },
+      open: { enabled: true, urlMode: 'internal' },
     })
 
     expect(fieldAccepts('agent.tools.terminal.timeoutMs', 60_000)).toBe(true)
