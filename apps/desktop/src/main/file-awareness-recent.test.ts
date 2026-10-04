@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parseRecentProbeOutput, recentEntryKey } from './file-awareness-recent.js'
 
 describe('file-awareness-recent', () => {
-  it('解析单条与数组，只保留四种 Office 扩展名', () => {
+  it('解析单条与数组，保留所有可感知文档与图片扩展名', () => {
     const one = parseRecentProbeOutput(
       JSON.stringify({
         target: 'D:\\Docs\\A.docx',
@@ -26,7 +26,7 @@ describe('file-awareness-recent', () => {
         },
       ]),
     )
-    expect(many.map((item) => item.target)).toEqual(['D:\\Docs\\A.pptx'])
+    expect(many.map((item) => item.target)).toEqual(['D:\\Docs\\A.pptx', 'D:\\Docs\\A.txt'])
   })
 
   it('畸形 JSON 与缺字段安全降级为空数组', () => {

@@ -173,6 +173,10 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
   最大化状态下几何不写入 `general.windowState`。
   `window:setEdgeBarExpanded` 驱动提示条两态宽度（收起 8px / 展开 328px，右缘固定，见 07 §2.2）；
   它只改窗口几何、不改可见性，因此**不广播** `stateChanged`。
+- **文件自感知窗口联动**（2026-10）：`awareness:presentNote` 接收 `{ noteId }`，主进程先
+  `show('memory')` 再向记忆库窗口推送 `awareness:notePresented`；事件只携带已登记的 noteId，
+  不接受任意路径。提示条点击最近理解、设置页入口都走这条展示链，系统默认程序打开仍只走
+  `awareness:openNote`（见 06 §26）。
 - **ClassIsland 联动通道**（2026-09 新增 `classisland:notify`）：让 ClassIsland 弹出提醒。
   入参 `ClassIslandNotifyRequest`（`title` / `body` / `channel?`），出参
   `Result<ClassIslandNotifyResult>`（`ok` / `error?` / `elapsedMs`）——

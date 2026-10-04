@@ -269,8 +269,8 @@ export function parseAwarenessAnalysis(raw: string): AwarenessAnalysis | undefin
     typeof record['suggestion'] === 'object' && record['suggestion'] !== null
       ? (record['suggestion'] as Record<string, unknown>)
       : null
-  const headline = suggestionRaw === null ? '' : stringValue(suggestionRaw['headline'], 160)
-  const body = suggestionRaw === null ? '' : stringValue(suggestionRaw['body'], 600)
+  const headline = suggestionRaw === null ? '' : stringValue(suggestionRaw['headline'], 24)
+  const body = suggestionRaw === null ? '' : stringValue(suggestionRaw['body'], 60)
   const suggestionConfidence =
     suggestionRaw === null ? 0 : Number(suggestionRaw['confidence'] ?? 0.7)
   const actionRaw =
@@ -279,7 +279,7 @@ export function parseAwarenessAnalysis(raw: string): AwarenessAnalysis | undefin
     suggestionRaw['action'] !== null
       ? (suggestionRaw['action'] as Record<string, unknown>)
       : null
-  const actionLabel = actionRaw === null ? '' : stringValue(actionRaw['label'], 40)
+  const actionLabel = actionRaw === null ? '' : stringValue(actionRaw['label'], 8)
   const actionPrompt = actionRaw === null ? '' : stringValue(actionRaw['prompt'], 2_000)
   const action =
     actionLabel === '' || actionPrompt === ''

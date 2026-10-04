@@ -2,6 +2,7 @@
 /** 文件自感知设置页（v28，docs/06 §26、docs/07 §2.5）。 */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { FileAwarenessNote, FileAwarenessRecord, FileAwarenessStatus } from '@aurora/shared'
+import { formatTokenCount } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
@@ -19,6 +20,15 @@ const recordsOpen = ref(false)
 let offChanged: (() => void) | null = null
 
 const config = computed(() => settingsStore.settings?.fileAwareness ?? null)
+const usageLabel = computed(() => {
+  const usage = status.value?.usage
+  return usage === undefined || usage.rounds <= 0 ? '暂无用量' : formatTokenCount(usage.totalTokens)
+})
+const usageTitle = computed(() => {
+  const usage = status.value?.usage
+  if (usage === undefined || usage.rounds <= 0) return '模型尚未回传 token 用量'
+  return `输入 ${usage.promptTokens} / 输出 ${usage.completionTokens} / 缓存 ${usage.cachedTokens} / ${usage.rounds} 轮`
+})
 const readyToEnable = computed(
   () =>
     config.value !== null &&
@@ -152,7 +162,7 @@ onUnmounted(() => {
   <section class="page">
     <header>
       <h1 class="page-title">文件自感知</h1>
-      <p class="page-sub">记录 Office 文件变化与使用记录，并生成可长期查阅的 Markdown 笔记。</p>
+      <p class="page-sub">记录图片与常见文档变化，并生成可长期查阅的 Markdown 笔记。</p>
     </header>
 
     <AppToast v-if="error" tone="error">{{ error }}</AppToast>
@@ -161,7 +171,7 @@ onUnmounted(() => {
     <section class="section-card">
       <h2 class="section-title">启用与授权</h2>
       <p class="section-desc">
-        开启后，选定目录中的 docx/pptx 正文会发给你配置的模型；doc/ppt 只记录使用与变化。
+        开启后，图片和可解析文档会发给你配置的模型；老式 doc/ppt/xls 只记录使用与变化。
       </p>
       <SettingField
         data-field="fileAwareness.contentConsentAccepted"
@@ -174,7 +184,7 @@ onUnmounted(() => {
             :checked="config?.contentConsentAccepted ?? false"
             @change="setConsent(($event.target as HTMLInputElement).checked)"
           />
-          我同意把选定目录内文档的截断正文发送给当前模型
+          我同意把选定目录内文档正文和图片发送给当前模型
         </label>
       </SettingField>
       <SettingField
@@ -195,7 +205,7 @@ onUnmounted(() => {
 
     <section class="section-card">
       <h2 class="section-title">扫描位置</h2>
-      <p class="section-desc">最多选择 3 个目录；首次扫描会把已有 docx/pptx 全部加入队列。</p>
+      <p class="section-desc">最多选择 3 个目录；首次扫描会把已有图片和可解析文档加入队列。</p>
       <SettingField data-field="fileAwareness.watchedDirs" label="监控目录">
         <div class="stack">
           <div v-for="dir in config?.watchedDirs ?? []" :key="dir" class="row spread">
@@ -214,7 +224,7 @@ onUnmounted(() => {
       <SettingField
         data-field="fileAwareness.knowledgeDir"
         label="Markdown 知识库"
-        hint="建议放在 Documents/Aurora/文件记忆；按格式与首次感知日期分文件夹"
+        hint="按文件格式与首次感知日期分文件夹，建议放在 Documents/Aurora/文件记忆"
       >
         <div class="row spread">
           <code class="mono path">{{ config?.knowledgeDir || '尚未选择' }}</code>
@@ -298,6 +308,10 @@ onUnmounted(() => {
           <dt>图片识别</dt>
           <dd>{{ status?.visionEnabled ? '已开启' : '仅分析文字' }}</dd>
         </div>
+        <div title="自感知后台分析的累计真实用量">
+          <dt>累计 Token</dt>
+          <dd data-field="fileAwareness.usage" :title="usageTitle">{{ usageLabel }}</dd>
+        </div>
       </dl>
       <p v-if="status?.current" class="tiny muted">正在分析：{{ status.current.fileName }}</p>
       <p v-if="status?.lastError" class="warn">{{ status.lastError }}</p>
@@ -326,7 +340,8 @@ onUnmounted(() => {
         <div>
           <h2 class="section-title">记忆库</h2>
           <p class="section-desc">
-            {{ notes.length }} 篇笔记 · {{ status?.conflictCount ?? 0 }} 个手工修改冲突
+            {{ status?.noteCount ?? notes.length }} 篇笔记 ·
+            {{ status?.conflictCount ?? 0 }} 个手工修改冲突
           </p>
         </div>
         <AppButton size="sm" @click="openMemory">打开记忆库</AppButton>
@@ -404,7 +419,7 @@ onUnmounted(() => {
 
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: var(--space-2);
 }
 

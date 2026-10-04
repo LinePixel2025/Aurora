@@ -144,7 +144,6 @@ import { isFileAwarenessSession } from './file-awareness-run-profile.js'
 const MAX_ATTACHMENT_CHARS = 8_000
 
 /** 快速会话 id（`useChat` 的 `sessionIdFor('quick')` 与 docs/06 §4 同一口径）。 */
-const QUICK_SESSION_ID = 'quick'
 /** 单条消息最多处理的附件数（图文合计；图片分片同样占这个额度） */
 const MAX_ATTACHMENTS = 5
 
@@ -1114,6 +1113,14 @@ export function registerIpc(deps: DesktopDeps): () => void {
       }
     },
   )
+  handle<boolean>(IPC.awareness.presentNote, async (request: FileAwarenessNoteRequest) => {
+    if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
+    const noteId = typeof request?.noteId === 'string' ? request.noteId.trim() : ''
+    if (noteId === '') return err('E_INVALID_ARGUMENT', '缺少笔记 id')
+    deps.windows.show('memory')
+    deps.windows.sendTo('memory', IPC.awareness.notePresented, { noteId })
+    return ok(true)
+  })
   handle<boolean>(IPC.awareness.analyzeNow, async (request: FileAwarenessAnalyzeRequest) => {
     if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
     if (typeof request?.path !== 'string' || request.path.trim() === '') {
@@ -1138,6 +1145,9 @@ export function registerIpc(deps: DesktopDeps): () => void {
         {
           suggestion: (id) => awareness.suggestion(id),
           createSession: () => deps.sessions.createSession({ space: 'agent' }),
+          // 先把空会话落盘，再允许主界面按 id 激活；否则 activate 会先于会话列表刷新，
+          // 目标 id 在磁盘 / 列表里都不存在，界面会停在原会话或落到错误现场。
+          persistSession: (sessionId) => deps.sessions.persistEmptySession(sessionId),
           presentSession: (sessionId) => {
             // 先打开并切主界面，再发送首条消息；事件即使早到也只会落进新会话历史，
             // remoteActivate 到达后渲染层会按同一 sessionId 水合出完整轮次。
@@ -1221,14 +1231,9 @@ export function registerIpc(deps: DesktopDeps): () => void {
     const eventSessionId = event.type === 'job' ? event.job.sessionId : event.sessionId
     // 文件自感知会话只在设置页展示运行记录，不唤醒 chat / edge-bar。
     if (isFileAwarenessSession(eventSessionId)) return
-    // 对话事件只有 chat / edge-bar 两个窗口订阅；设置与引导窗口没有 useChat，
+    // 对话事件只有主界面订阅；提示条已移除快速对话，设置与引导也没有 useChat，
     // 不应被高密度流式 IPC 无谓唤醒。窗口不存在时 sendTo 会静默跳过。
     deps.windows.sendTo('chat', IPC.chat.event, event)
-    // 提示条只显示 `quick` 会话（docs/07 §2.2）：主会话流式时把每帧事件也塞给它，
-    // 只会让那个常驻渲染进程每帧醒来再过滤掉。按会话路由，quick 才需要（2026-10-04 性能轮）。
-    if (eventSessionId === QUICK_SESSION_ID) {
-      deps.windows.sendTo('edge-bar', IPC.chat.event, event)
-    }
   })
   const offAgent = deps.agent.onEvent((event) => {
     eventBuffer.push(event)

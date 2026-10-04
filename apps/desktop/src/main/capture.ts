@@ -439,13 +439,17 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
         width: Math.round(rect.width),
       }
     })
-    // 快速对话（2026-09）：面板必须带输入框与发送钮（可直接在提示条里对话），
-    // 且 seed 的 quick 会话消息以气泡渲染出来
-    const quickInput = panel.querySelectorAll('.qc-composer input').length
-    const quickSend = panel.querySelectorAll('[data-action="edge-bar.quick-send"]').length
-    const quickBubbles = panel.querySelectorAll('.qc-msg').length
+    // 提示条不再承载快速对话；快速会话只保留在主界面左栏固定项。
+    const quickAbsent = panel.querySelector('.qc-composer, .qc-msg, .recent-card') === null
     const awarenessStatus = panel.querySelector('[data-field="edge-bar.awareness-status"]') !== null
     const insights = panel.querySelector('[data-field="edge-bar.insights"]') !== null
+    const insightRows = panel.querySelectorAll('.insight-row').length
+    const insightMore = panel.querySelectorAll('[data-field="edge-bar.insights-more"]').length
+    const insightScroller = panel.querySelector('.insight-list')
+    const insightScrollable =
+      insightScroller !== null &&
+      insightScroller.scrollHeight >= insightScroller.clientHeight &&
+      getComputedStyle(insightScroller).overflowY === 'auto'
     // 安全区（docs/07 §5.4）：面板里任何元素都不许探出窗口左右边界 ——
     // 提示条收起只有 8px 宽（展开态 328px），溢出的元素会被直接裁掉、用户点不到。
     let overflow = 0
@@ -472,11 +476,12 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       solidRounded,
       buttonCount: buttons.length,
       probes,
-      quickInput,
-      quickSend,
-      quickBubbles,
+      quickAbsent,
       awarenessStatus,
       insights,
+      insightRows,
+      insightMore,
+      insightScrollable,
       overflow,
       offenders,
       allClickable: probes.length > 0 && probes.every((p) => p.hit && p.insideWindow),
@@ -486,17 +491,88 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
         // 主进程已用 setShape 裁到 328，这里只留 4 DIP 舍入容差。
         width <= 332 &&
         panelStyle.width === '320px' &&
-        quickInput > 0 &&
-        quickSend > 0 &&
-        quickBubbles > 0 &&
+        quickAbsent &&
         awarenessStatus &&
         insights &&
+        insightRows === 5 &&
+        insightMore === 1 &&
+        insightScrollable &&
         overflow === 0 &&
         surfaceReady &&
         probes.every((p) => p.hit && p.insideWindow && p.width > 0),
     }
   } catch (error) {
     return { panel: false, reason: String(error), pass: false }
+  }
+})()`
+
+/** 多文件提醒：默认折叠，点击展开后可逐条忽略；忽略后排前面的提醒不再占一整组。 */
+export const EDGE_BAR_SUGGESTIONS_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const toggle = document.querySelector('[data-field="edge-bar.suggestions-toggle"]')
+    const collapsedItems = count('[data-field="edge-bar.awareness-item"]')
+    if (toggle === null) return { toggle: false, collapsedItems, pass: false }
+    toggle.click()
+    await wait(150)
+    const expandedItems = count('[data-field="edge-bar.awareness-item"]')
+    const ignore = document.querySelector('[data-field="edge-bar.awareness-item"] .suggestion-action.muted')
+    if (ignore !== null) ignore.click()
+    await wait(150)
+    const remainingItems = count('[data-field="edge-bar.awareness-item"]')
+    const single = count('[data-field="edge-bar.awareness"] .suggestion-title')
+    return {
+      toggle: true,
+      collapsedItems,
+      expandedItems,
+      remainingItems,
+      single,
+      pass:
+        collapsedItems === 0 &&
+        expandedItems === 2 &&
+        remainingItems === 0 &&
+        single === 1,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/** 切到 Work 并展开提示条：课堂「下一节」属于 ClassRoom 专属，不能在 Work 模式残留。 */
+export const EDGE_BAR_WORK_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const switched = await window.aurora.mode.set('work')
+    const el = document.querySelector('.edge')
+    if (el !== null) el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }))
+    await wait(350)
+    return { ok: switched.ok }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+export const EDGE_BAR_WORK_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const modes = await window.aurora.mode.list()
+    const active = modes.ok ? modes.value.find((mode) => mode.active)?.id || '' : ''
+    const labels = Array.from(document.querySelectorAll('.context-label')).map((node) =>
+      (node.textContent || '').trim(),
+    )
+    const noNextLesson = labels.indexOf('下一节') === -1
+    const restored = await window.aurora.mode.set('classroom')
+    await wait(120)
+    return {
+      active,
+      labels,
+      noNextLesson,
+      restored: restored.ok,
+      pass: active === 'work' && noNextLesson && restored.ok,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
   }
 })()`
 
@@ -1370,7 +1446,7 @@ export async function seedMemoryFixture(userData: string): Promise<void> {
     join(userData, 'file-awareness', 'state.json'),
     JSON.stringify(
       {
-        version: 1,
+        version: 2,
         notes: {
           [pptxNoteId]: {
             id: pptxNoteId,
@@ -1422,11 +1498,41 @@ export async function seedMemoryFixture(userData: string): Promise<void> {
           summary: `第 ${index + 1} 条文件自感知记录。`,
         })),
         recent: [],
-        suggestions: [],
+        suggestions: [
+          {
+            id: 'memory-capture-suggestion-1',
+            noteId: pptxNoteId,
+            sourcePath: 'D:\\感知\\电路课程.pptx',
+            sourceHash: 'memory-capture-hash',
+            headline: '电路笔记可补充公式',
+            body: '建议把欧姆定律整理成复习卡片。',
+            createdAt: now,
+            confidence: 0.9,
+            action: { label: '整理卡片', prompt: '请整理电路课程笔记中的公式。' },
+          },
+          {
+            id: 'memory-capture-suggestion-2',
+            noteId: docxNoteId,
+            sourcePath: 'D:\\感知\\数学复习.docx',
+            sourceHash: 'memory-capture-docx-hash',
+            headline: '数学复习可生成练习',
+            body: '二次函数缺少对应例题。',
+            createdAt: now,
+            confidence: 0.85,
+          },
+        ],
         ignoredSuggestionIds: [],
         dayKey: '2026-10-04',
         todayAnalyzed: 1,
         queueOverflow: 0,
+        usage: {
+          promptTokens: 1200,
+          completionTokens: 260,
+          totalTokens: 1460,
+          cachedTokens: 400,
+          rounds: 3,
+        },
+        usageBackfilled: true,
         recentDirectoryMtimeMs: 0,
       },
       null,
@@ -4105,6 +4211,29 @@ export const MEMORY_WINDOW_CHECK = `(async () => {
     const head = document.querySelector('.memory-head')
     const list = document.querySelector('.note-list')
     const detail = document.querySelector('.note-detail')
+    const search = document.querySelector('.note-filters .search')
+    const searchStyle = search === null ? null : getComputedStyle(search)
+    const searchVisible =
+      searchStyle !== null &&
+      searchStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
+      searchStyle.backgroundColor !== 'transparent' &&
+      Number.parseFloat(searchStyle.borderTopWidth) > 0
+    const filters = document.querySelector('.note-filters')
+    const filterStyle = filters === null ? null : getComputedStyle(filters)
+    const filterOpaque =
+      filterStyle !== null &&
+      filterStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
+      filterStyle.backgroundColor !== 'transparent'
+    if (list !== null) list.scrollTop = 240
+    await wait(100)
+    const filterRect = filters === null ? null : filters.getBoundingClientRect()
+    const filterHit =
+      filterRect === null
+        ? false
+        : (() => {
+            const hit = document.elementFromPoint(filterRect.left + 8, filterRect.top + 8)
+            return hit !== null && hit.closest('.note-filters') !== null
+          })()
     const bodyBackground = getComputedStyle(document.body).backgroundColor
     const listRect = list === null ? null : list.getBoundingClientRect()
     const detailRect = detail === null ? null : detail.getBoundingClientRect()
@@ -4114,15 +4243,50 @@ export const MEMORY_WINDOW_CHECK = `(async () => {
       listRect.width > 0 &&
       detailRect.width > 0 &&
       listRect.right <= detailRect.left + 1
+    const initialRows = count('.note-row')
+    const initialExpanded = count('.date-head.expanded')
+    const initialCollapsed = count('.date-head:not(.expanded)')
+    const docxFilter = document.querySelector('[data-field="memory.filter-format-docx"]')
+    if (docxFilter !== null) docxFilter.click()
+    await wait(150)
+    const docxFormats = count('.format-group')
+    const allFilter = document.querySelector('[data-field="memory.filter-format-all"]')
+    if (allFilter !== null) allFilter.click()
+    await wait(150)
+    const notesResult = await window.aurora.awareness.notes({ limit: 500 })
+    const activeId = document.querySelector('.note-row.active')?.getAttribute('data-note-id') || ''
+    const target = notesResult.ok
+      ? notesResult.value.find((note) => note.id !== activeId) || null
+      : null
+    const presented = target === null
+      ? { ok: false }
+      : await window.aurora.awareness.presentNote({ noteId: target.id })
+    await wait(250)
+    const presentedRow = document.querySelector('.note-row.active')
+    const presentedDate = presentedRow === null ? null : presentedRow.closest('.date-group')?.querySelector('.date-head')
+    const presentedSelection =
+      target !== null &&
+      presented.ok === true &&
+      presentedRow?.getAttribute('data-note-id') === target.id &&
+      presentedDate?.classList.contains('expanded') === true
     return {
       shell: shell !== null,
       head: head !== null,
       list: list !== null,
       detail: detail !== null,
+      searchVisible,
+      searchBackground: searchStyle === null ? '' : searchStyle.backgroundColor,
+      filterOpaque,
+      filterBackground: filterStyle === null ? '' : filterStyle.backgroundColor,
+      filterHit,
       bodyBackground,
-      rows: count('.note-row'),
+      rows: initialRows,
+      initialExpanded,
+      initialCollapsed,
       formatGroups: count('.format-group'),
       dateGroups: count('.date-group'),
+      docxFormats,
+      presentedSelection,
       markdown: count('.note-md'),
       captionMinimize: count('[data-caption-btn="minimize"]'),
       captionMaximize: count('[data-caption-btn="maximize"]'),
@@ -4134,17 +4298,21 @@ export const MEMORY_WINDOW_CHECK = `(async () => {
         head !== null &&
         list !== null &&
         detail !== null &&
+        searchVisible &&
+        filterOpaque &&
+        filterHit &&
         (bodyBackground === 'rgba(0, 0, 0, 0)' || bodyBackground === 'transparent') &&
-        count('.note-row') >= 1 &&
-        count('.format-group') >= 1 &&
-        count('.date-group') >= 1 &&
+        initialRows === 1 &&
+        initialExpanded === 1 &&
+        initialCollapsed >= 1 &&
+        count('.format-group') >= 2 &&
+        count('.date-group') >= 2 &&
+        docxFormats === 1 &&
+        presentedSelection &&
         count('.note-md') >= 1 &&
         count('[data-caption-btn="minimize"]') === 1 &&
         count('[data-caption-btn="maximize"]') === 1 &&
         count('[data-caption-btn="close"]') === 1 &&
-        count('.note-row') >= 2 &&
-        count('.format-group') >= 2 &&
-        count('.date-group') >= 2 &&
         noOverlap,
     }
   } catch (error) {
@@ -4165,12 +4333,40 @@ export const SETTINGS_AWARENESS_RECORDS_ACT = `(async () => {
   }
 })()`
 
+export const SETTINGS_AWARENESS_USAGE_CHECK = `(() => {
+  try {
+    const usage = document.querySelector('[data-field="fileAwareness.usage"]')
+    const text = usage === null ? '' : (usage.textContent || '').trim()
+    return {
+      usage: text,
+      title: usage === null ? '' : usage.getAttribute('title') || '',
+      pass: text !== '' && text !== '暂无用量',
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+export const SETTINGS_AWARENESS_SCROLL_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const usage = document.querySelector('[data-field="fileAwareness.usage"]')
+    if (usage === null) return { ok: false, reason: '累计 Token 不在 DOM' }
+    usage.scrollIntoView({ block: 'center' })
+    await wait(180)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
 export const SETTINGS_AWARENESS_RECORDS_CHECK = `(() => {
   try {
     const count = (selector) => document.querySelectorAll(selector).length
     const modal = document.querySelector('[data-field="fileAwareness.records-modal"]')
     const summaryRows = count('[data-field="fileAwareness.recent-list"] .record')
     const modalRows = modal === null ? 0 : modal.querySelectorAll('.record').length
+    const usage = document.querySelector('[data-field="fileAwareness.usage"]')?.textContent?.trim() || ''
     const close = document.querySelector('[data-field="fileAwareness.records-modal-close"]')
     if (close !== null) close.click()
     return {
@@ -4178,8 +4374,9 @@ export const SETTINGS_AWARENESS_RECORDS_CHECK = `(() => {
       summaryRows,
       modal: modal !== null,
       modalRows,
+      usage,
       closedAfter: document.querySelector('[data-field="fileAwareness.records-modal"]') === null,
-      pass: summaryRows === 5 && modal !== null && modalRows > 5,
+      pass: summaryRows === 5 && modal !== null && modalRows > 5 && usage !== '' && usage !== '暂无用量',
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -7013,7 +7210,7 @@ export const CHAT_TRACE_FOLD_CHECK = `(async () => {
 
 /**
  * 快速会话探针（BetaV2 口径不变，2026-09 重构确认）：点左栏固定项「快速对话」
- * 必须切到 sessionId='quick'（快速对话的**输入入口在桌面提示条面板**，docs/07 §2.2；
+ * 必须切到 sessionId='quick'（提示条输入入口已于 2026-10 移除，主界面左栏是唯一入口；
  * 主界面左栏固定项沿用「点击切主区会话」）。
  *
  * 激活的判据有二：`chat.quick-item` 拿到 `.active` 态，且主区标题 `.head-name` 变成
@@ -9924,7 +10121,7 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
     'utf8',
   )
 
-  // 快速会话（BetaV2）：提示条「最近消息」与主界面左栏「快速对话」都读 `quick.json`。
+  // 快速会话（BetaV2）：主界面左栏「快速对话」读取 `quick.json`。
   // 不种的话 edge-bar-expanded.png 的最近消息卡是一片大空白（视觉验收判过 fail）。
   const quick = {
     version: 1,
@@ -10088,6 +10285,44 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: EDGE_BAR_HOVER_SCRIPT,
       check: EDGE_BAR_PANEL_SCRIPT,
       // 展开要等主进程 setBounds 把窗口撑到 328px（跨进程异步，rAF 等不到它）
+      settleMs: 700,
+    },
+    {
+      name: 'edge-bar',
+      file: 'edge-bar-suggestions.png',
+      prepare: () => {
+        const now = new Date().toISOString()
+        manager.sendTo('edge-bar', IPC.awareness.suggestion, {
+          id: 'capture-suggestion-1',
+          noteId: 'memory-capture-pptx',
+          sourcePath: 'D:\\感知\\电路课程.pptx',
+          sourceHash: 'memory-capture-hash',
+          headline: '电路笔记可补充公式',
+          body: '建议整理欧姆定律。',
+          createdAt: now,
+          confidence: 0.9,
+          action: { label: '整理', prompt: '请整理电路课程笔记。' },
+        })
+        manager.sendTo('edge-bar', IPC.awareness.suggestion, {
+          id: 'capture-suggestion-2',
+          noteId: 'memory-capture-docx',
+          sourcePath: 'D:\\感知\\数学复习.docx',
+          sourceHash: 'memory-capture-docx-hash',
+          headline: '数学复习可生成练习',
+          body: '补充二次函数例题。',
+          createdAt: now,
+          confidence: 0.85,
+        })
+      },
+      act: EDGE_BAR_HOVER_SCRIPT,
+      check: EDGE_BAR_SUGGESTIONS_CHECK,
+      settleMs: 700,
+    },
+    {
+      name: 'edge-bar',
+      file: 'edge-bar-work.png',
+      act: EDGE_BAR_WORK_ACT,
+      check: EDGE_BAR_WORK_CHECK,
       settleMs: 700,
     },
     // 交互窗的场景顺序见函数头注释：能在窗口里操作 DOM 的都排在 chat-collapse 之前。
@@ -10660,7 +10895,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
           ? SETTINGS_MODES_EXPAND_ACT
           : page === 'llm'
             ? SETTINGS_LLM_SCROLL_ACT
-            : undefined,
+            : page === 'awareness'
+              ? SETTINGS_AWARENESS_SCROLL_ACT
+              : undefined,
       check:
         page === 'general'
           ? SETTINGS_FIELDS_SCRIPT
@@ -10674,7 +10911,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
                   ? SETTINGS_CENTER_FIELDS_SCRIPT
                   : page === 'agent'
                     ? SETTINGS_AGENT_FIELDS_SCRIPT
-                    : undefined,
+                    : page === 'awareness'
+                      ? SETTINGS_AWARENESS_USAGE_CHECK
+                      : undefined,
     })
   }
   // 旧深链别名（BetaV2）：`?page=tts` 应映射到「语音」页（TTS + STT 都在）；

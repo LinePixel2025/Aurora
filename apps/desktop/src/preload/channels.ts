@@ -204,6 +204,8 @@ const CHANNELS = {
     records: 'awareness:records',
     notes: 'awareness:notes',
     readNote: 'awareness:readNote',
+    presentNote: 'awareness:presentNote',
+    notePresented: 'awareness:notePresented',
     analyzeNow: 'awareness:analyzeNow',
     ignore: 'awareness:ignore',
     execute: 'awareness:execute',

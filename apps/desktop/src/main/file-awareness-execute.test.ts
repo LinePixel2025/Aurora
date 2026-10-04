@@ -31,13 +31,16 @@ describe('executeFileAwarenessSuggestion', () => {
         calls.push('create')
         return 'chat-new-1'
       },
+      persistSession: async (sessionId) => {
+        calls.push(`persist:${sessionId}`)
+      },
       presentSession: (sessionId) => calls.push(`present:${sessionId}`),
       send,
       removeSession: async () => undefined,
     })
 
     expect(result).toEqual({ ok: true, value: { sessionId: 'chat-new-1' } })
-    expect(calls).toEqual(['create', 'present:chat-new-1', 'send:chat-new-1'])
+    expect(calls).toEqual(['create', 'persist:chat-new-1', 'present:chat-new-1', 'send:chat-new-1'])
     expect(send).toHaveBeenCalledOnce()
   })
 
@@ -45,6 +48,7 @@ describe('executeFileAwarenessSuggestion', () => {
     const createSession = vi.fn(async () => 'chat-new-1')
     const common = {
       createSession,
+      persistSession: vi.fn(async () => undefined),
       presentSession: vi.fn(),
       send: vi.fn(async () => undefined),
       removeSession: vi.fn(async () => undefined),
@@ -67,6 +71,7 @@ describe('executeFileAwarenessSuggestion', () => {
     const result = await executeFileAwarenessSuggestion('s-1', {
       suggestion: () => SUGGESTION,
       createSession: async () => 'chat-new-1',
+      persistSession: async () => undefined,
       presentSession: () => undefined,
       send: async () => {
         throw new Error('provider unavailable')

@@ -3,6 +3,8 @@ import {
   EVIDENCE_LIMIT_BYTES,
   decodeText,
   extract,
+  isAwarenessContentExtension,
+  isAwarenessObservedExtension,
   listZipEntries,
   normalizeWhitespace,
   readImageSize,
@@ -11,6 +13,40 @@ import {
 
 const readFileOf = (content: Buffer | string) => async (): Promise<Buffer> =>
   typeof content === 'string' ? Buffer.from(content, 'utf8') : content
+
+describe('自感知文件类型', () => {
+  it('正文分析覆盖图片、Office、PDF、开放文档与常见文本', () => {
+    for (const ext of [
+      'png',
+      'jpg',
+      'webp',
+      'docx',
+      'xlsx',
+      'pptx',
+      'pdf',
+      'odt',
+      'ods',
+      'odp',
+      'rtf',
+      'html',
+      'epub',
+      'txt',
+      'md',
+      'csv',
+      'json',
+    ]) {
+      expect(isAwarenessContentExtension(ext)).toBe(true)
+    }
+  })
+
+  it('老式 Office 只观察使用记录，不进入正文分析', () => {
+    for (const ext of ['doc', 'ppt', 'xls']) {
+      expect(isAwarenessObservedExtension(ext)).toBe(true)
+      expect(isAwarenessContentExtension(ext)).toBe(false)
+    }
+    expect(isAwarenessObservedExtension('zip')).toBe(false)
+  })
+})
 
 describe('truncateEvidence', () => {
   it('未超限时原样返回', () => {
@@ -149,16 +185,26 @@ describe('extract', () => {
     expect(result.warnings).toEqual([])
   })
 
-  it('Office 文档：走注入的解析器且正文进入证据', async () => {
+  it('Office 文档：优先转结构化 Markdown，并保留文档元数据', async () => {
     const result = await extract({
       path: 'D:\\感知\\物理.pptx',
       ext: 'pptx',
       sizeBytes: 100,
       readFile: readFileOf(''),
-      parseOffice: async () => ({ toText: () => '欧姆定律 电路图' }),
+      parseOffice: async () => ({
+        type: 'pptx',
+        metadata: { title: '电路基础', author: 'Aurora' },
+        toText: () => '不应优先走的纯文本',
+        to: async (format) => ({
+          value: format === 'md' ? '# 欧姆定律\n\n- 电路图' : '不应优先走的纯文本',
+        }),
+      }),
     })
     expect(result.kind).toBe('document')
     expect(result.evidence).toContain('欧姆定律')
+    expect(result.evidence).toContain('提取格式：Markdown')
+    expect(result.evidence).toContain('标题：电路基础')
+    expect(result.evidence).not.toContain('不应优先走的纯文本')
   })
 
   it('Office 内嵌图片：正文与图片元数据进入证据，图片字节单独返回给视觉分析', async () => {
@@ -249,7 +295,7 @@ describe('extract', () => {
     expect(result.warnings.join()).toContain('老式二进制')
   })
 
-  it('图片：给出文件名、大小与尺寸，并说明未启用 OCR', async () => {
+  it('图片：默认给出文件名、大小与尺寸，不读取视觉输入', async () => {
     const png = Buffer.alloc(24)
     png.writeUInt32BE(0x89504e47, 0)
     png.writeUInt32BE(640, 16)
@@ -262,7 +308,32 @@ describe('extract', () => {
     })
     expect(result.kind).toBe('image')
     expect(result.evidence).toContain('640×480')
-    expect(result.evidence).toContain('OCR')
+    expect(result.evidence).toContain('未作为视觉输入')
+    expect(result.documentImages).toEqual([])
+  })
+
+  it('图片：模型支持视觉输入时把源图作为图片分片返回', async () => {
+    const png = Buffer.alloc(24)
+    png.writeUInt32BE(0x89504e47, 0)
+    png.writeUInt32BE(640, 16)
+    png.writeUInt32BE(480, 20)
+    const result = await extract({
+      path: 'D:\\感知\\note.png',
+      ext: 'png',
+      sizeBytes: png.length,
+      readFile: readFileOf(png),
+      extractImages: true,
+    })
+    expect(result.evidence).toContain('源图片已读取')
+    expect(result.documentImages).toEqual([
+      {
+        name: 'note.png',
+        mimeType: 'image/png',
+        extension: 'png',
+        dataBase64: png.toString('base64'),
+        altText: '源文件图片',
+      },
+    ])
   })
 
   it('压缩包：列出条目清单', async () => {

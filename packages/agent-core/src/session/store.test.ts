@@ -81,6 +81,50 @@ describe('SessionStore', () => {
     expect(generated.id).not.toBe(preallocated)
   })
 
+  it('usageTotals 按会话前缀汇总真实 meta.usage，不混入普通会话', async () => {
+    const { store, fs } = setup()
+    await store.addUsage('awareness-a', {
+      promptTokens: 100,
+      completionTokens: 20,
+      totalTokens: 120,
+      cachedTokens: 40,
+    })
+    await store.addUsage('awareness-b', {
+      promptTokens: 50,
+      completionTokens: 10,
+      totalTokens: 60,
+      cachedTokens: 0,
+    })
+    await store.addUsage('chat-c', {
+      promptTokens: 999,
+      completionTokens: 1,
+      totalTokens: 1_000,
+    })
+    await store.flush()
+    expect(await store.usageTotals('awareness-')).toEqual({
+      promptTokens: 150,
+      completionTokens: 30,
+      totalTokens: 180,
+      cachedTokens: 40,
+      rounds: 2,
+    })
+    expect(await store.usageTotals('missing-')).toBeUndefined()
+
+    const reloaded = new SessionStore({
+      dir: SESSION_DIR,
+      fs,
+      logger: createMemoryLogger(),
+      writeDebounceMs: 0,
+    })
+    expect(await reloaded.usageTotals('awareness-')).toEqual({
+      promptTokens: 150,
+      completionTokens: 30,
+      totalTokens: 180,
+      cachedTokens: 40,
+      rounds: 2,
+    })
+  })
+
   it('nextMessageId 不落盘、不与自动生成的 id 相撞', async () => {
     const { store, fs } = setup()
     const a = store.nextMessageId()
@@ -376,6 +420,16 @@ describe('SessionStore · 会话列表与新建（chat:sessions / chat:newSessio
     const first = await store.createSession()
     const second = await store.createSession()
     expect(first).not.toBe(second)
+  })
+
+  it('persistEmptySession 让外部激活目标先进入会话列表，且仍是空会话', async () => {
+    const { store, fs } = setup()
+    const id = await store.createSession({ space: 'agent' })
+    expect(await fs.exists(sessionFilePath(SESSION_DIR, id))).toBe(false)
+    await store.persistEmptySession(id)
+    expect(await fs.exists(sessionFilePath(SESSION_DIR, id))).toBe(true)
+    expect(await store.listSessions()).toContain(id)
+    expect(await store.get(id)).toEqual([])
   })
 })
 

@@ -452,6 +452,15 @@ describe('buildToolGuidance', () => {
     expect(buildToolGuidance(['read_file'])).not.toContain('screenshot')
   })
 
+  it('文件自感知工具出现时提示先检索再按 noteId 读取', () => {
+    const guidance = buildToolGuidance(['awareness_recent', 'awareness_search', 'awareness_read'])
+    expect(guidance).toContain('用户提到“记忆库、最近理解、以前看过的文件”时')
+    expect(guidance).toContain('awareness_recent')
+    expect(guidance).toContain('awareness_search')
+    expect(guidance).toContain('awareness_read')
+    expect(buildToolGuidance(['read_file'])).not.toContain('awareness_search')
+  })
+
   it('只注册 todo_write 时不出现 edit_file / grep / glob 的规范', () => {
     const guidance = buildToolGuidance(['todo_write'])
     expect(guidance).toContain('多步/多项任务先调用 todo_write 建立清单')

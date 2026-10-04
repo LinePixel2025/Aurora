@@ -87,7 +87,7 @@ export interface ModeGuide {
 ```
 
 1. **内容提取（Extractor，utilityProcess 内执行）**
-   - 文档（PDF / docx / pptx / xlsx / md / txt）：抽取前 N 段文本；
+   - 文档（PDF / Office / ODF / RTF / HTML / EPUB / Markdown / TXT 等）：抽取结构化文本；
    - 图片：文件名 + 元数据（OCR 为 P1 可选）；
    - 压缩包 / 其他：文件名 + 扩展名 + 元数据；
    - 证据大小上限 8KB，控制成本与耗时。
@@ -106,7 +106,7 @@ export interface ModeGuide {
 > |---|---|---|
 > | 监听 / 稳定判定 | `main/file-watcher.ts`（chokidar） | `depth: 0`（科目文件夹在感知文件夹内，递归会造成自触发）、`awaitWriteFinish` 等价「连续两次 stat 尺寸不变」、忽略隐藏 / `~$*` / `*.tmp` / `*.crdownload` / `Thumbs.db`；**抑制集** + **监听代次**双重防回环（旧 watcher 的迟到事件按代次丢弃）。`ignoreInitial: false`：Aurora 启动前就已拖入的文件同样要归类 |
 > | 队列 | `main/classify/queue.ts` | 并发 2、同路径去重、单文件失败不影响队列；每阶段发事件供渲染层实时刷新 |
-> | 内容提取 | `main/extract.ts`（纯逻辑）+ `extract-worker.ts`（utilityProcess 入口）+ `extract-pool.ts`（主进程侧池） | 用 **officeparser@7.8.0** 解析 pdf/docx/pptx/xlsx 等；txt/md/csv 自行读取（含 UTF-8/UTF-16/GBK 嗅探）；图片给尺寸、压缩包给条目清单；证据按**字节**做 head 70% + tail 30% 截断（只留头会丢文末结论、只留尾会丢标题线索）。超时 15s、崩溃重启、`import()` 懒加载；**任何失败都降级为「文件名证据」，绝不中断管线** |
+> | 内容提取 | `main/extract.ts`（纯逻辑）+ `extract-worker.ts`（utilityProcess 入口）+ `extract-pool.ts`（主进程侧池） | 用 **officeparser@7.8.0** 解析 PDF、DOCX/PPTX/XLSX、ODF、RTF、HTML、EPUB；表格优先 CSV、其余优先 Markdown；文本类自行读取（含 UTF-8/UTF-16/GBK 嗅探）；图片给尺寸与可选视觉输入，压缩包给条目清单；证据按**字节**做 head 70% + tail 30% 截断（分类 8KB、自感知 24KB，只留头会丢文末结论、只留尾会丢标题线索）。超时 15s、崩溃重启、`import()` 懒加载；**任何失败都降级为「文件名证据」，绝不中断管线** |
 > | 规则 | `main/classify/rules.ts` | 优先级：科目名字面命中(0.95) > 配置关键词(0.92) > 用户修正沉淀的学习规则(0.90)；不同科目同权重并列时**放弃并交给模型**（不猜）。规则只处理文件名（读内容就不省成本了） |
 > | LLM 分类 | `main/classify/llm.ts` | 复用 OpenAI 兼容 provider 的 `response_format: json_object`；解析失败**降温度重试一次**，仍失败按未判定处理；科目必须在配置列表内；输出用括号平衡法抽取（能正确处理 `reason` 里的 `}`） |
 > | 落盘 | `main/classify/paths.ts` | 优先 `rename`；失败回退 `copy` + **大小校验**后删源（校验不过则保留原文件并报错）；重名加 ` (1)`/` (2)`；`classification.autoMove=false` 时只记流水不动文件 |

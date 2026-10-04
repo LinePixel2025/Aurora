@@ -263,6 +263,12 @@ export function buildToolGuidance(toolNames: readonly string[]): string | undefi
         '磁盘上的图片用 `view_image`（读文本仍用 `read_file`）。',
     )
   }
+  if (has('awareness_recent') || has('awareness_search')) {
+    lines.push(
+      '- 用户提到“记忆库、最近理解、以前看过的文件”时，先用 `awareness_recent` 或 `awareness_search`；' +
+        '拿到笔记 id 后用 `awareness_read` 读取内容，不要猜知识库文件路径。',
+    )
+  }
   return lines.join('\n')
 }
 

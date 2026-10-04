@@ -736,6 +736,47 @@ export class SessionStore {
   }
 
   /**
+   * 汇总指定前缀会话的持久化 token 用量（docs/06 §26，自感知设置页）。
+   *
+   * 只读取 `meta.usage`：未缓存的会话走一次 `readFromDisk`，但**不装载消息到长期缓存**。
+   * 单条损坏只跳过并记警告，不能让一个坏会话拖垮设置页的累计值。
+   */
+  async usageTotals(prefix: string): Promise<SessionUsageStats | undefined> {
+    const normalized = prefix.trim()
+    if (normalized === '') return undefined
+    const total: SessionUsageStats = {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      cachedTokens: 0,
+      rounds: 0,
+    }
+    let found = false
+    for (const id of await this.listSessions()) {
+      if (!id.startsWith(normalized)) continue
+      let usage = this.metaCache.get(id)?.usage
+      if (usage === undefined && !this.metaCache.has(id)) {
+        try {
+          usage = (await this.readFromDisk(id)).meta.usage
+        } catch (error) {
+          this.logger.warn('读取会话用量失败，已跳过', {
+            sessionId: id,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+      if (usage === undefined || usage.rounds <= 0) continue
+      found = true
+      total.promptTokens += usage.promptTokens
+      total.completionTokens += usage.completionTokens
+      total.totalTokens += usage.totalTokens
+      total.cachedTokens += usage.cachedTokens
+      total.rounds += usage.rounds
+    }
+    return found ? total : undefined
+  }
+
+  /**
    * 会话摘要列表（`chat:sessions`，docs/06 §4）。
    *
    * 标题取**首条用户消息**的前若干字符：这比 let 模型生成标题便宜得多，
@@ -835,6 +876,21 @@ export class SessionStore {
       this.metaCache.set(id, { space })
     }
     return id
+  }
+
+  /**
+   * 把刚创建的内存会话持久化为空会话文件。
+   *
+   * `createSession()` 刻意不落空文件；但“外部动作先激活新会话、再发送首条消息”的场景
+   * 需要它已经出现在 `listSessions()` 中，否则主界面会刷新不到目标 id，激活到错误现场。
+   * 正常交互式新建仍不需要调用本方法。
+   */
+  async persistEmptySession(sessionId: string): Promise<void> {
+    const id = normalizeSessionId(sessionId)
+    await this.ensureLoaded(id)
+    this.dirty.add(id)
+    this.scheduleWrite(id)
+    await this.flush()
   }
 
   /**

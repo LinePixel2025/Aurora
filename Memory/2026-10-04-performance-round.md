@@ -48,8 +48,9 @@ source: 模型自动记录
 9. **配置热路径不深拷贝**：`SettingsStore.snapshot()` 返回只读当前快照，agent loop 的
    `maxRounds` / `maxTotalTokens` / `autoContinueRounds` / 项目字节上限 getter 都走它；
    `get()` 仍是深拷贝（设置页 / 迁移等低频路径用）。
-10. **chat 事件只对 quick 推给提示条**：`ipc.ts` 的 eventBuffer 按事件会话路由，
-    `quick` 才 `sendTo('edge-bar')`；主会话流式不再每帧唤醒 8px 提示条渲染进程。
+10. **chat 事件只推主界面**：`ipc.ts` 的 eventBuffer 不再向提示条发送任何对话事件。
+    2026-10-05 提示条快速对话删除后，这一条比原先的“只对 quick 推给提示条”更彻底：
+    常驻 8px 渲染进程不会被流式 delta 唤醒。
 11. **字符预算要算工具参数，且必须宽容畸形数据**：`messageWeight` 把 `toolCalls[].arguments`
     计入预算；读取时用 `typeof === 'string'` 守卫 —— 截图 / 手工夹具的历史可能只有 `input`
     没有 `arguments`，直接 `.length` 会让整次 Agent 请求失败（本轮首次截图实测）。
@@ -68,8 +69,9 @@ source: 模型自动记录
 14. **chokidar 懒加载**（`file-watcher.ts`）：只有真正 `watch(dir)` 时才 `import('chokidar')`；
     未启用 ClassRoom 感知 / 未配置 `watchDir` 的进程不加载。文件监听相关测试仍走注入，
     另补了一条**真实 chokidar** 的回归（动态 import 的默认导出互操作别写坏）。
-15. **提示条收起态不拉感知、不水合历史**（`edge-bar/main.ts` + `App.vue`）：`bootstrapApp`
-    不再 `trackPerception`；展开时才 `perception.refresh()` + 30s 轮询，并才 `chat.hydrate()`。
+15. **提示条收起态不拉感知、不读历史**（`edge-bar/main.ts` + `App.vue`）：`bootstrapApp`
+    不再 `trackPerception`；展开时才 `perception.refresh()` + 30s 轮询。提示条快速对话已于
+    2026-10-05 删除，不再有 `chat.hydrate()` 这条恢复链。
     8px 竖条不再强迫主进程加载 `systeminformation` / 起 DNS 探测。
 
 ## 验证

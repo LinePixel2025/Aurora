@@ -16,8 +16,9 @@ source: 模型自动记录
    常驻入口为提示条 + 托盘。
 4. **独立小窗（mini-chat）已删除**（迁移到 v6：`v5 → v6` 删除 `general.windowState['mini-chat']`）；
    2026-09 重构起标题栏是 Windows 式 caption 按钮 ——「关闭」= **直接隐藏窗口**（正在进行的流式回复不中止），
-   「最小化」真最小化进任务栏；「快速对话」（`sessionId = quick`）的输入入口在提示条面板
-   （左栏固定项点击切会话），历史会话列表在左栏，提示条面板操作入口由 4 个减为 3 个。
+   「最小化」真最小化进任务栏；「快速对话」（`sessionId = quick`）只从主界面左栏固定项进入
+   （提示条面板的快速对话已于 2026-10-05 移除），历史会话列表在左栏，提示条面板操作入口
+   由 4 个减为 3 个。
 5. **未配置 provider 时连麦克风按钮都不渲染**（不是 disabled）：`stt.enabled` + `stt.active` 指向一个
    `baseUrl` / `model` 齐全的 provider **才渲染**（`data-field="chat.mic"`）；TTS「朗读」按钮同款口径。
 6. **8 个电脑操控工具受 `agent.tools.enabled` 总开关门控**，而**扩展工具六件套不受门控** —— 两组口径相反。
@@ -62,7 +63,8 @@ source: 模型自动记录
   读取失败按「错误是否变化」分级记日志（变化才 warn，持续同一错误 debug），别改回全量 warn。
   ⚠️ 旧 AGENTS.md 里这个路径被写成了 `%APPDATA%\ClassIslandurora-bridge\...`（少了一个反斜杠），
   别照抄那份错字。
-- Skill 的 `scripts/` 永不自动执行（只注入指令正文）；图片 OCR 未启用（只取文件名与尺寸）。
+- Skill 的 `scripts/` 永不自动执行（只注入指令正文）；本地 OCR 未启用。自感知图片走视觉模型，
+  关闭 vision 时才降级为文件名 / 尺寸 / 格式元数据。
   多语言、ARM64 / 便携版、macOS / Linux 未开始。
 - Work Mode 的 `modes.work.workspaceDir` 自 v0.2.4 起已接进工具执行链的统一回落链，不再是死字段
   （见 `Memory/2026-10-03-permissions-and-project-root.md`）。

@@ -15,6 +15,8 @@ import {
 export interface FileAwarenessExecutionDeps {
   suggestion(id: string): FileAwarenessSuggestion | undefined
   createSession(): Promise<string>
+  /** 让新会话先出现在会话列表 / 磁盘，再允许主界面按 id 激活。 */
+  persistSession(sessionId: string): Promise<void>
   presentSession(sessionId: string): void
   send(input: {
     sessionId: string
@@ -39,6 +41,7 @@ export async function executeFileAwarenessSuggestion(
   }
 
   const sessionId = await deps.createSession()
+  await deps.persistSession(sessionId)
   deps.presentSession(sessionId)
   try {
     await deps.send({

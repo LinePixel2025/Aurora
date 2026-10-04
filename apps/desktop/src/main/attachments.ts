@@ -14,7 +14,7 @@
  */
 import type { LlmImageInput } from '@aurora/agent-core'
 
-/** 判定为「图片」的扩展名（小写、不含点）。与 `extract.ts` 的 `IMAGE_EXT` 有意重叠但**不等同**：
+/** 判定为「图片」的扩展名（小写、不含点）。与 `extract.ts` 的图片集合有意重叠但**不等同**：
  *  那边是「分类管线的图片类型」，这边是「能作为图片分片发给模型」的格式子集 ——
  *  `tif` / `svg` 归前者不归后者（模型侧普遍不认这两种）。 */
 export const IMAGE_EXTENSIONS: readonly string[] = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']

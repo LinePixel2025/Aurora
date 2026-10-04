@@ -8,6 +8,7 @@
 import { execFile } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { basename, extname, join } from 'node:path'
+import { isAwarenessObservedExtension } from './extract.js'
 
 export interface RecentUsageEntry {
   target: string
@@ -24,8 +25,6 @@ export interface RecentUsageProbeOptions {
   recentDir?: string
   exec?: (file: string, args: readonly string[]) => Promise<{ stdout: string; stderr?: string }>
 }
-
-const OFFICE_EXTENSIONS = new Set(['.docx', '.pptx', '.doc', '.ppt'])
 
 const RECENT_SCRIPT = [
   "$ErrorActionPreference='SilentlyContinue'",
@@ -57,7 +56,8 @@ export function parseRecentProbeOutput(raw: string): RecentUsageEntry[] {
     const shortcutPath = typeof record['shortcutPath'] === 'string' ? record['shortcutPath'] : ''
     const observedAt = typeof record['observedAt'] === 'string' ? record['observedAt'] : ''
     if (target === '' || shortcutPath === '' || observedAt === '') continue
-    if (!OFFICE_EXTENSIONS.has(extname(target).toLowerCase())) continue
+    const ext = extname(target).toLowerCase().replace(/^\./, '')
+    if (!isAwarenessObservedExtension(ext)) continue
     result.push({ target, shortcutPath, observedAt })
   }
   return result

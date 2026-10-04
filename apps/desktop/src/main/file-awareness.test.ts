@@ -77,24 +77,33 @@ describe('FileAwarenessService', () => {
         sourceHash: 'hash-v1',
       }),
       analyze: async () => {
-        return JSON.stringify({
-          title: '高数第三章',
-          summary: '一元二次方程复习资料。',
-          topics: ['一元二次方程'],
-          keyPoints: ['求根公式'],
-          relationships: [],
-          changes: [],
-          tags: ['数学'],
-          suggestion: {
-            headline: '可与第二章笔记关联',
-            body: '这份资料延续了上一章的方法。',
-            confidence: 0.9,
-            action: {
-              label: '整理关联',
-              prompt: '请基于高数第三章的分析，整理与第二章的关联。',
+        return {
+          text: JSON.stringify({
+            title: '高数第三章',
+            summary: '一元二次方程复习资料。',
+            topics: ['一元二次方程'],
+            keyPoints: ['求根公式'],
+            relationships: [],
+            changes: [],
+            tags: ['数学'],
+            suggestion: {
+              headline: '可与第二章笔记关联',
+              body: '这份资料延续了上一章的方法。',
+              confidence: 0.9,
+              action: {
+                label: '整理关联',
+                prompt: '请基于高数第三章的分析，整理与第二章的关联。',
+              },
             },
+          }),
+          usage: {
+            promptTokens: 120,
+            completionTokens: 20,
+            totalTokens: 140,
+            cachedTokens: 40,
+            rounds: 1,
           },
-        })
+        }
       },
       providerReady: () => true,
       canNotify: () => true,
@@ -127,6 +136,13 @@ describe('FileAwarenessService', () => {
     expect(service.suggestion(suggestions[0]!)?.action?.label).toBe('整理关联')
     expect(service.status().todayAnalyzed).toBe(1)
     expect(service.status().visionEnabled).toBe(false)
+    expect(service.status().usage).toEqual({
+      promptTokens: 120,
+      completionTokens: 20,
+      totalTokens: 140,
+      cachedTokens: 40,
+      rounds: 1,
+    })
 
     expect(service.ignoreSuggestion(suggestions[0]!)).toBe(true)
     await service.flush()
@@ -183,16 +199,18 @@ describe('FileAwarenessService', () => {
         if (input.images?.[0] !== undefined) {
           imageContents.push(await fs.readFile(input.images[0]))
         }
-        return JSON.stringify({
-          title: '电路课程',
-          summary: '包含电路图。',
-          topics: [],
-          keyPoints: [],
-          relationships: [],
-          changes: [],
-          tags: ['物理'],
-          suggestion: null,
-        })
+        return {
+          text: JSON.stringify({
+            title: '电路课程',
+            summary: '包含电路图。',
+            topics: [],
+            keyPoints: [],
+            relationships: [],
+            changes: [],
+            tags: ['物理'],
+            suggestion: null,
+          }),
+        }
       },
       providerReady: () => true,
       visionReady: () => true,
@@ -209,6 +227,145 @@ describe('FileAwarenessService', () => {
     expect(imageContents[0]?.equals(Buffer.from([1, 2, 3, 4]))).toBe(true)
     expect(service.status().visionEnabled).toBe(true)
     await expect(fs.readFile(analyzedImages[0]![0]!)).rejects.toThrow()
+    await service.close()
+  })
+
+  it('状态 v2 只回填一次历史用量，重启不重复累计', async () => {
+    const root = join(tmpdir(), `aurora-awareness-usage-${randomUUID()}`)
+    const userData = join(root, 'userData')
+    const settings = createDefaultSettings()
+    const first = new FileAwarenessService({
+      userData,
+      settings: () => settings,
+      logger: createNoopLogger(),
+      extract: async () => {
+        throw new Error('not used')
+      },
+      analyze: async () => ({ text: '{}' }),
+      providerReady: () => true,
+      canNotify: () => false,
+      initialUsage: async () => ({
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+        cachedTokens: 40,
+        rounds: 1,
+      }),
+    })
+    await first.init()
+    expect(first.status().usage?.totalTokens).toBe(120)
+    await first.flush()
+    await first.close()
+
+    const second = new FileAwarenessService({
+      userData,
+      settings: () => settings,
+      logger: createNoopLogger(),
+      extract: async () => {
+        throw new Error('not used')
+      },
+      analyze: async () => ({ text: '{}' }),
+      providerReady: () => true,
+      canNotify: () => false,
+      initialUsage: async () => ({
+        promptTokens: 900,
+        completionTokens: 100,
+        totalTokens: 1_000,
+        cachedTokens: 0,
+        rounds: 9,
+      }),
+    })
+    await second.init()
+    expect(second.status().usage?.totalTokens).toBe(120)
+    await second.close()
+  })
+
+  it('扫描图片与常见文档，legacy Office 只记录不分析', async () => {
+    const root = join(tmpdir(), `aurora-awareness-formats-${randomUUID()}`)
+    const watched = join(root, 'files')
+    const knowledge = join(root, 'notes')
+    const userData = join(root, 'userData')
+    await fs.mkdir(watched, { recursive: true })
+    const png = Buffer.alloc(24)
+    png.writeUInt32BE(0x89504e47, 0)
+    png.writeUInt32BE(16, 16)
+    png.writeUInt32BE(16, 20)
+    await fs.writeFile(join(watched, '示意图.png'), png)
+    await fs.writeFile(join(watched, '讲义.pdf'), 'fake pdf')
+    await fs.writeFile(join(watched, '说明.txt'), '一段说明文字')
+    await fs.writeFile(join(watched, '旧资料.doc'), 'legacy')
+
+    const settings = createDefaultSettings()
+    settings.fileAwareness = {
+      enabled: true,
+      contentConsentAccepted: true,
+      watchedDirs: [watched],
+      knowledgeDir: knowledge,
+      includeRecent: false,
+      suggestionsEnabled: false,
+      dailyAnalysisLimit: 20,
+      maxFileMb: 100,
+    }
+    const seenExts: string[] = []
+    const service = new FileAwarenessService({
+      userData,
+      settings: () => settings,
+      logger: createNoopLogger(),
+      createWatcher: () => new FakeWatcher(),
+      tickMs: 20,
+      extract: async (input) => {
+        seenExts.push(input.ext)
+        return {
+          kind: input.ext === 'png' ? 'image' : 'document',
+          evidence: `结构化证据：${input.ext}`,
+          evidenceChars: 20,
+          warnings: [],
+          degraded: false,
+          sourceHash: `hash-${input.ext}`,
+          ...(input.ext !== 'png' || !input.includeImages
+            ? {}
+            : {
+                documentImages: [
+                  {
+                    name: '示意图.png',
+                    mimeType: 'image/png',
+                    extension: 'png',
+                    dataBase64: png.toString('base64'),
+                  },
+                ],
+              }),
+        }
+      },
+      analyze: async () => ({
+        text: JSON.stringify({
+          title: '感知笔记',
+          summary: '完成结构化分析。',
+          topics: [],
+          keyPoints: [],
+          relationships: [],
+          changes: [],
+          tags: [],
+          suggestion: null,
+        }),
+      }),
+      providerReady: () => true,
+      visionReady: () => true,
+      canNotify: () => false,
+      openPath: async () => undefined,
+    })
+
+    await service.init()
+    await waitFor(() => service.notes().length === 3)
+    await service.drain()
+    expect(new Set(seenExts)).toEqual(new Set(['png', 'pdf', 'txt']))
+    expect(
+      service
+        .notes()
+        .map((note) => note.ext)
+        .sort(),
+    ).toEqual(['pdf', 'png', 'txt'])
+    expect(service.records().some((record) => record.ext === 'doc')).toBe(true)
+    expect(service.notes().some((note) => note.ext === 'doc')).toBe(false)
     await service.close()
   })
 })

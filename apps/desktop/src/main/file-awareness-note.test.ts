@@ -107,6 +107,24 @@ describe('file-awareness-note', () => {
     expect(parsed?.suggestion?.action).toBeNull()
   })
 
+  it('提醒文案按短口径截断，避免提示条重新变成长段落', () => {
+    const parsed = parseAwarenessAnalysis(
+      JSON.stringify({
+        title: '数学',
+        summary: '摘要',
+        suggestion: {
+          headline: '标'.repeat(40),
+          body: '文'.repeat(80),
+          confidence: 0.8,
+          action: { label: '动'.repeat(12), prompt: '执行操作' },
+        },
+      }),
+    )
+    expect(parsed?.suggestion?.headline).toHaveLength(24)
+    expect(parsed?.suggestion?.body).toHaveLength(60)
+    expect(parsed?.suggestion?.action?.label).toHaveLength(8)
+  })
+
   it('相关性评分优先同文件、同目录与共享标签', () => {
     const current = { title: '数学', sourcePath: 'D:\\Docs\\数学\\A.docx', tags: ['方程'] }
     const close = candidateScore(

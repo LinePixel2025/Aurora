@@ -29,6 +29,10 @@ interface ExtractRequest {
   hashContent?: boolean
   /** 文件自感知需要内嵌图片；分类管线保持缺省，避免额外解码与内存峰值。 */
   extractDocumentImages?: boolean
+  /** 源文件本身就是图片时，是否把它作为视觉模型输入。 */
+  extractImages?: boolean
+  /** 自感知使用更高的结构化证据上限；分类管线保持缺省。 */
+  evidenceLimitBytes?: number
 }
 
 interface ExtractResponse {
@@ -48,7 +52,7 @@ let parserPromise:
   | Promise<
       | ((
           path: string,
-          config?: { extractAttachments?: boolean },
+          config?: { extractAttachments?: boolean; includeRawContent?: boolean },
         ) => Promise<{
           toText(): string
           to?(format: 'text'): Promise<{ value: string } | string>
@@ -68,7 +72,7 @@ let parserPromise:
 async function loadParser(): Promise<
   | ((
       path: string,
-      config?: { extractAttachments?: boolean },
+      config?: { extractAttachments?: boolean; includeRawContent?: boolean },
     ) => Promise<{
       toText(): string
       to?(format: 'text'): Promise<{ value: string } | string>
@@ -88,7 +92,7 @@ async function loadParser(): Promise<
       const mod = requireExternal('officeparser') as {
         parseOffice(
           file: string,
-          config?: { extractAttachments?: boolean },
+          config?: { extractAttachments?: boolean; includeRawContent?: boolean },
         ): Promise<{
           toText(): string
           to?(format: 'text'): Promise<{ value: string } | string>
@@ -102,8 +106,10 @@ async function loadParser(): Promise<
           }>
         }>
       }
-      return (file: string, config?: { extractAttachments?: boolean }) =>
-        mod.parseOffice(file, config)
+      return (
+        file: string,
+        config?: { extractAttachments?: boolean; includeRawContent?: boolean },
+      ) => mod.parseOffice(file, config)
     } catch {
       return undefined
     }
@@ -120,12 +126,17 @@ async function handle(request: ExtractRequest): Promise<ExtractResponse> {
       ext: request.ext,
       sizeBytes: request.sizeBytes,
       readFile: (target) => fs.readFile(target),
+      ...(request.extractImages === true ? { extractImages: true } : {}),
+      ...(request.evidenceLimitBytes === undefined
+        ? {}
+        : { evidenceLimitBytes: request.evidenceLimitBytes }),
       ...(parseOffice === undefined
         ? {}
         : {
             parseOffice: (target: string) =>
               parseOffice(target, {
                 extractAttachments: request.extractDocumentImages === true,
+                includeRawContent: false,
               }),
           }),
     })

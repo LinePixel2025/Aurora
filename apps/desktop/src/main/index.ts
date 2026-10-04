@@ -118,6 +118,7 @@ import { resolveScheduleProvider, type IScheduleProvider } from './schedule.js'
 import { resolveSubjectFolder } from './paths.js'
 import { AuroraFileWatcher } from './file-watcher.js'
 import { ExtractPool, type ExtractWorkerChild } from './extract-pool.js'
+import { SELF_AWARENESS_EVIDENCE_LIMIT_BYTES } from './extract.js'
 import { ClassificationHistory } from './classification-history.js'
 import { ClassificationService, type ClassifyProviderFactory } from './classification.js'
 import { NotificationService } from './notifications.js'
@@ -170,6 +171,7 @@ import {
 import {
   registerAgentCoreTools,
   registerAutomationTools,
+  registerAwarenessTools,
   registerCenterTools,
   registerClassIslandTools,
   registerComputerTools,
@@ -211,7 +213,10 @@ import { createNodeFilePort } from './tools/file-port.js'
 import { createShellOpenPort } from './tools/open-port.js'
 import { FileAwarenessService } from './file-awareness.js'
 import { FileAwarenessAnalyzer } from './file-awareness-agent.js'
-import { fileAwarenessRunProfile } from './file-awareness-run-profile.js'
+import {
+  FILE_AWARENESS_SESSION_PREFIX,
+  fileAwarenessRunProfile,
+} from './file-awareness-run-profile.js'
 
 const isDev = !app.isPackaged
 
@@ -348,6 +353,7 @@ let proactiveScheduler: ProactiveScheduler | undefined
 let automationStore: AutomationStore | undefined
 let automationEngine: AutomationEngine | undefined
 let automationTools: { sync(): string[] } | undefined
+let awarenessTools: { sync(): string[] } | undefined
 const automationDefinitionListeners = new Set<() => void>()
 const automationHistoryListeners = new Set<() => void>()
 let edgeBarScheduler: EdgeBarScheduler | undefined
@@ -1228,6 +1234,24 @@ async function bootstrap(): Promise<void> {
     },
     getSettings: () => settings!.get(),
   })
+  // 文件自感知只读工具（docs/06 §26）：状态始终可见，其余三个按启用 / 授权动态注册。
+  awarenessTools = registerAwarenessTools({
+    tools,
+    logger: logger.child('tools'),
+    active: () => fileAwareness?.status().active === true,
+    port: {
+      status: () => {
+        if (fileAwareness === undefined) throw new Error('文件自感知尚未装配')
+        return fileAwareness.status()
+      },
+      notes: (limit) => fileAwareness?.notes(limit) ?? [],
+      records: (limit) => fileAwareness?.records(limit) ?? [],
+      readNote: async (noteId) => {
+        if (fileAwareness === undefined) throw new Error('文件自感知尚未装配')
+        return await fileAwareness.readNote(noteId)
+      },
+    },
+  })
   syncToolRegistries()
 
   const mcpLogger = logger.child('mcp')
@@ -1395,9 +1419,12 @@ async function bootstrap(): Promise<void> {
       awarenessExtractPool!.extract({
         ...input,
         hashContent: true,
-        extractDocumentImages: true,
+        extractDocumentImages: input.includeImages,
+        extractImages: input.includeImages,
+        evidenceLimitBytes: SELF_AWARENESS_EVIDENCE_LIMIT_BYTES,
       }),
     analyze: (input) => fileAwarenessAnalyzer!.analyze(input),
+    initialUsage: () => sessions!.usageTotals(FILE_AWARENESS_SESSION_PREFIX),
     providerReady: () => {
       const llm = settings!.snapshot().llm
       const provider = llm.providers[llm.active]
@@ -1425,6 +1452,7 @@ async function bootstrap(): Promise<void> {
     },
   })
   await fileAwareness.init()
+  syncToolRegistries()
   const llm = new LlmTester({
     settings,
     logger: logger.child('llm'),
@@ -5040,6 +5068,8 @@ function syncToolRegistries(): void {
   centerTools?.sync()
   // 自动化管理工具（docs/13 §8）：只读档切档即时生效
   automationTools?.sync()
+  // 文件自感知工具（docs/06 §26）：启用 / 授权 / 知识库可用性变化即时生效
+  awarenessTools?.sync()
 }
 
 function syncClassification(): void {

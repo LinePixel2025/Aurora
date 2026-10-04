@@ -4,7 +4,12 @@
  * 复用 KernelAgentHost，但按 `origin: 'file-awareness'` 走无工具运行档；这里只把一次请求
  * 的流式正文聚合为最终字符串，交给文件自感知服务解析。
  */
-import type { AgentEvent, AgentHost, Logger } from '@aurora/shared'
+import type { AgentEvent, AgentHost, Logger, SessionUsageStats } from '@aurora/shared'
+
+export interface FileAwarenessAnalyzeResult {
+  text: string
+  usage?: SessionUsageStats
+}
 
 export interface FileAwarenessAgentOptions {
   agent: AgentHost
@@ -16,7 +21,8 @@ interface Pending {
   requestId?: string
   sessionId: string
   text: string
-  resolve: (text: string) => void
+  usage?: SessionUsageStats
+  resolve: (result: FileAwarenessAnalyzeResult) => void
   reject: (error: Error) => void
   timer: NodeJS.Timeout
 }
@@ -37,8 +43,8 @@ export class FileAwarenessAnalyzer {
     text: string
     extraContext?: string
     images?: readonly string[]
-  }): Promise<string> {
-    return await new Promise<string>((resolve, reject) => {
+  }): Promise<FileAwarenessAnalyzeResult> {
+    return await new Promise<FileAwarenessAnalyzeResult>((resolve, reject) => {
       const pending: Pending = {
         sessionId: input.sessionId,
         text: '',
@@ -97,8 +103,18 @@ export class FileAwarenessAnalyzer {
       pending.text += event.delta
       return
     }
+    if (event.type === 'usage') {
+      pending.usage = addUsage(pending.usage, {
+        promptTokens: event.usage.promptTokens,
+        completionTokens: event.usage.completionTokens,
+        totalTokens: event.usage.totalTokens,
+        cachedTokens: event.usage.cachedTokens ?? 0,
+        rounds: 1,
+      })
+      return
+    }
     if (event.type === 'done') {
-      this.settleBySession(event.sessionId, undefined, pending.text)
+      this.settleBySession(event.sessionId, undefined, pending.text, pending.usage)
       return
     }
     if (event.type === 'error') {
@@ -106,7 +122,12 @@ export class FileAwarenessAnalyzer {
     }
   }
 
-  private settleBySession(sessionId: string, error?: Error, text = ''): void {
+  private settleBySession(
+    sessionId: string,
+    error?: Error,
+    text = '',
+    usage?: SessionUsageStats,
+  ): void {
     const pending =
       this.preparing.get(sessionId) ??
       ((): Pending | undefined => {
@@ -125,6 +146,19 @@ export class FileAwarenessAnalyzer {
       chars: text.length,
     })
     if (error !== undefined) pending.reject(error)
-    else pending.resolve(text)
+    else pending.resolve({ text, ...(usage === undefined ? {} : { usage }) })
+  }
+}
+
+function addUsage(
+  current: SessionUsageStats | undefined,
+  next: SessionUsageStats,
+): SessionUsageStats {
+  return {
+    promptTokens: (current?.promptTokens ?? 0) + Math.max(0, next.promptTokens),
+    completionTokens: (current?.completionTokens ?? 0) + Math.max(0, next.completionTokens),
+    totalTokens: (current?.totalTokens ?? 0) + Math.max(0, next.totalTokens),
+    cachedTokens: (current?.cachedTokens ?? 0) + Math.max(0, next.cachedTokens),
+    rounds: (current?.rounds ?? 0) + Math.max(0, next.rounds),
   }
 }

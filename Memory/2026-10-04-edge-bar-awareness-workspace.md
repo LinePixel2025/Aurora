@@ -1,6 +1,6 @@
 ---
 date: 2026-10-04
-title: edge-bar 是自感知工作台，不是通用状态卡堆叠
+title: edge-bar 是自感知工作台，不承载快速对话
 tags: [UI, edge-bar, 自感知, 毛玻璃]
 source: 模型自动记录
 ---
@@ -27,11 +27,29 @@ source: 模型自动记录
 
 - 展开宽度改为 **328px = 320px 工作台 + 8px 竖条**；几何常量与 `.panel { width: 320px }`
   必须同步，视觉探针按 320px / 328px 验收。
-- 信息架构固定为：自感知状态总览 → 可行动建议 → 最近理解（notes/records）→ 紧凑快速对话
-  → 下一节课 / 系统 chips。标题栏放隐藏按钮，底部保留「打开主界面 / 记忆库 / 设置」三入口。
+- 信息架构固定为：自感知状态总览 → 可行动建议 → 最近理解（notes/records）→
+  下一节课 / 系统 chips。标题栏放隐藏按钮，底部保留「打开主界面 / 记忆库 / 设置」三入口。
 - 自感知数据只在展开态读取：`awareness.status / notes / records` 首次拉取，`onChanged` 事件驱动，
   30s 低频兜底；收起态不轮询。
 - 主界面内容区使用 `--glass-content` tint：原生 Acrylic 仍在窗后可见，但正文不再直接与后方窗口
   抢对比度；侧栏 / 标题栏 / 输入区继续使用更厚的 `--glass-shell` / `--glass-bar` / `.glass-panel`。
 - 截图夹具必须提前种好 `file-awareness/state.json` 并开启自感知，否则 edge-bar 的“最近理解”
   与统计只能拍到空态。
+
+## 2026-10-05 修订：删除提示条快速对话
+
+用户实测 320px 面板里的快速对话过小、消息不可用；它不是单纯隐藏卡片那么简单，背后还有
+独立 `useChat('edge-bar', 'quick')`、输入焦点跟随展开、失焦补收、5 分钟刷新和流式贴底整条链。
+
+结论：
+
+- **提示条不再挂 `useChat`、输入框、消息流或快速会话刷新定时器**；`quick` 会话只从主界面
+  左栏固定项进入，数据与主界面共用，不因提示条移除而删除。
+- 窗口始终保持 `focusable: false`；不要再为提示条输入框恢复 `setFocusable(true)` /
+  `quickFocused` / 失焦补收这一组特例。
+- 面板内容顺序固定为：自感知状态总览 → 文件提醒 → 最近理解 → 上下文摘要 → 三入口。
+  截图探针改为断言 `.qc-composer / .qc-msg / .recent-card` 均不存在。
+
+同日补充：**「下一节」只在 `modes.current === 'classroom'` 时渲染**。Work / Code 模式
+即使感知摘要里仍存在 `lessons`，也不能显示课堂课表；提示条只保留该模式自己的提示与系统 chips。
+回归场景 `edge-bar-work` 会切到 Work，断言「下一节」不在 DOM，再还原 ClassRoom。

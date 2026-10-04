@@ -1049,7 +1049,10 @@ export interface FileAwarenessStatus {
   todayAnalyzed: number
   queueDepth: number
   queueOverflow: number
+  noteCount: number
   conflictCount: number
+  /** 自感知后台分析的真实 provider 用量；从未回传过 usage 时不带键。 */
+  usage?: SessionUsageStats
   lastScanAt?: string
   lastError?: string
   current?: {
@@ -1089,6 +1092,8 @@ export interface FileAwarenessNote {
   sourceAvailable: boolean
   conflict: boolean
   excerpt: string
+  /** 后台分析得到的标签；关键词搜索与 Agent 工具会使用。 */
+  tags: string[]
 }
 
 export interface FileAwarenessNoteContent {
@@ -2043,6 +2048,10 @@ export interface AuroraApi {
     notes(request?: FileAwarenessListRequest): Promise<Result<FileAwarenessNote[]>>
     /** 读取一篇已登记笔记的 Markdown；只接受 noteId，不接受任意路径。 */
     readNote(request: FileAwarenessNoteRequest): Promise<Result<FileAwarenessNoteContent>>
+    /** 在记忆库窗口选中并展示一篇笔记（不是系统默认程序打开）。 */
+    presentNote(request: FileAwarenessNoteRequest): Promise<Result<boolean>>
+    /** 记忆库窗口接收“选中并展示笔记”推送（on/off 成对）。 */
+    onNotePresented(listener: (request: FileAwarenessNoteRequest) => void): () => void
     analyzeNow(request: FileAwarenessAnalyzeRequest): Promise<Result<boolean>>
     ignore(request: FileAwarenessSuggestionAction): Promise<Result<boolean>>
     /** 用建议里的 Agent action 新建会话并发送首条消息；工具权限仍走既有确认链。 */

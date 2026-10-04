@@ -32,7 +32,15 @@ class FakeAgent implements AgentHost {
         messageId: 'm1',
         delta: 'true}',
       })
-      this.emit({ type: 'done', sessionId: request.sessionId, requestId, seq: 3 })
+      this.emit({
+        type: 'usage',
+        sessionId: request.sessionId,
+        requestId,
+        seq: 3,
+        round: 0,
+        usage: { promptTokens: 12, completionTokens: 3, totalTokens: 15, cachedTokens: 4 },
+      })
+      this.emit({ type: 'done', sessionId: request.sessionId, requestId, seq: 4 })
     })
     return { requestId }
   }
@@ -68,9 +76,16 @@ describe('FileAwarenessAnalyzer', () => {
   it('聚合 text 增量并在 done 收尾；dispose 后解绑', async () => {
     const agent = new FakeAgent()
     const analyzer = new FileAwarenessAnalyzer({ agent, logger: createNoopLogger() })
-    await expect(analyzer.analyze({ sessionId: 'awareness-1', text: '分析' })).resolves.toBe(
-      '{"ok":true}',
-    )
+    await expect(analyzer.analyze({ sessionId: 'awareness-1', text: '分析' })).resolves.toEqual({
+      text: '{"ok":true}',
+      usage: {
+        promptTokens: 12,
+        completionTokens: 3,
+        totalTokens: 15,
+        cachedTokens: 4,
+        rounds: 1,
+      },
+    })
     analyzer.dispose()
   })
 })

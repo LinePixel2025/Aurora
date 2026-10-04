@@ -88,6 +88,13 @@ import {
   createAutomationTools,
   type AutomationManagePort,
 } from './automation-tools.js'
+import {
+  AWARENESS_ACTIVE_TOOL_NAMES,
+  AWARENESS_STATUS_TOOL_NAME,
+  AWARENESS_TOOL_NAMES,
+  createAwarenessTools,
+  type AwarenessToolPort,
+} from './awareness-tools.js'
 // 类型导入（编译期擦除，无运行期依赖）：`task` 子代理的写权限要把确认交回
 // 主进程那条判定链，形状直接复用 `createConfirmTool` 的返回类型，不再抄第二份。
 import type { ConfirmToolDecision } from './../agent-host.js'
@@ -701,6 +708,45 @@ export function registerAutomationTools(deps: AutomationToolsDeps): { sync(): st
 
       const names = AUTOMATION_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
       deps.logger.info('已同步自动化工具', { names: [...names] })
+      return [...names]
+    },
+  }
+}
+
+export interface AwarenessToolsDeps {
+  tools: ToolRegistry
+  logger: Logger
+  port: AwarenessToolPort
+  /** 仅在自感知启用、已授权且知识库可用时注册非状态工具。 */
+  active: () => boolean
+}
+
+/**
+ * 文件自感知只读工具装配器（docs/06 §26）。
+ *
+ * `awareness_status` 始终可见，便于 Agent 解释“为什么现在没有记忆能力”；
+ * 其余三个会读取笔记内容，因此在功能未启用 / 未授权时从工具表摘除。
+ */
+export function registerAwarenessTools(deps: AwarenessToolsDeps): { sync(): string[] } {
+  return {
+    sync(): string[] {
+      for (const name of AWARENESS_TOOL_NAMES) deps.tools.unregister(name)
+      const all = createAwarenessTools(deps.port)
+      const active = deps.active()
+      for (const tool of all) {
+        if (
+          !active &&
+          tool.name !== AWARENESS_STATUS_TOOL_NAME &&
+          AWARENESS_ACTIVE_TOOL_NAMES.includes(
+            tool.name as (typeof AWARENESS_ACTIVE_TOOL_NAMES)[number],
+          )
+        ) {
+          continue
+        }
+        deps.tools.register(tool)
+      }
+      const names = AWARENESS_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
+      deps.logger.info('已同步文件自感知工具', { names: [...names] })
       return [...names]
     },
   }

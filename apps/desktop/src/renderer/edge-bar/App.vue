@@ -7,12 +7,9 @@
  *   移开鼠标 → 面板淡出后再把窗口收回 8px（否则屏幕右侧会留一块看不见却挡鼠标的区域）；
  * - 点击竖条 → 呼出主界面（`window:showChat`，chat 窗即主界面）；展开态下竖条仍贴着屏幕右缘，
  *   仍是有效点击目标；
- * - 面板内容：AI 状态 → 当前模式 → **快速对话**（输入框直接在面板里与 Aurora 对话，
- *   2026-09 起取代只读的「最近消息」）→ 今日课程（仅 ClassRoom 模式）→ 系统状态，
- *   底部是三个操作入口。Work 等非 ClassRoom 模式下课堂卡不渲染，面板自然更矮；
- *   对话数据仍是快速会话（`sessionId = 'quick'`，独立 useChat 实例）。
- *   窗口创建时 `focusable: false`（悬停不抢焦点），**展开时主进程临时 setFocusable(true)**——
- *   否则输入框拿不到键盘焦点；收起时交还并失焦（见 window-manager）。
+ * - 面板内容：自感知状态 → 文件提醒 → 最近理解 → 上下文摘要，底部是三个操作入口。
+ *   提示条不承载对话输入；快速会话仍从主界面左栏固定项进入。
+ *   窗口始终保持 `focusable: false`，悬停展开不抢键盘焦点。
  *
  * 几何预算（不要突破）：展开窗口 328px = 竖条 8px + 面板 320px。
  * 面板宽度写死 320px，任何内部布局都在这个宽度内成立，否则会被窗口裁切。
@@ -21,7 +18,7 @@
  * 垂直居中 + 当前折叠态」推导（`window-manager.ts` 的 `edge` 分支），不参与用户拖动，
  * 因此模板里不挂 `drag-region`（不在 `useWindowDrag` 的清单里，docs/07 §2.2）。
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
   FileAwarenessNote,
   FileAwarenessRecord,
@@ -31,17 +28,15 @@ import type {
 import AppButton from '../shared/components/AppButton.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import {
-  ArrowUp,
   BookOpen,
+  ChevronDown,
   FolderSearch,
   LoaderCircle,
   MessageSquare,
   SettingsGear,
   Sparkles,
-  Square,
   X,
 } from '@aurora/shared/browser'
-import { useChat } from '../shared/composables/useChat.js'
 import {
   useModeStore,
   usePerceptionStore,
@@ -59,31 +54,25 @@ const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
 const perception = usePerceptionStore()
-const chat = useChat('edge-bar', 'quick')
-const { statusTone } = chat
 
 const expanded = ref(false)
-/** 鼠标是否在提示条窗口内（leave 触发后若输入框仍持有焦点，收起要等失焦再补） */
+/** 鼠标是否在提示条窗口内 */
 const mouseInside = ref(false)
-/** 快速对话输入框是否持有焦点：聚焦期间移开鼠标**不收起面板**（正在打字） */
-const quickFocused = ref(false)
 let expandTimer: ReturnType<typeof setTimeout> | undefined
 let collapseTimer: ReturnType<typeof setTimeout> | undefined
 let shrinkTimer: ReturnType<typeof setTimeout> | undefined
-let suggestionTimer: ReturnType<typeof setTimeout> | undefined
 
 function clearTimers(): void {
   clearTimeout(expandTimer)
   clearTimeout(collapseTimer)
   clearTimeout(shrinkTimer)
-  clearTimeout(suggestionTimer)
   expandTimer = undefined
   collapseTimer = undefined
   shrinkTimer = undefined
-  suggestionTimer = undefined
 }
 
-const suggestion = ref<FileAwarenessSuggestion | null>(null)
+const suggestions = ref<FileAwarenessSuggestion[]>([])
+const suggestionsExpanded = ref(false)
 const suggestionBusy = ref(false)
 const suggestionError = ref('')
 let offAwarenessSuggestion: (() => void) | null = null
@@ -94,25 +83,11 @@ const awarenessBusy = ref(false)
 let offAwarenessChanged: (() => void) | null = null
 let awarenessPromise: Promise<void> | null = null
 
-function clearSuggestion(): void {
-  clearTimeout(suggestionTimer)
-  suggestionTimer = undefined
-  suggestion.value = null
-  suggestionBusy.value = false
-  suggestionError.value = ''
-}
-
-function armSuggestionCollapse(): void {
-  clearTimeout(suggestionTimer)
-  suggestionTimer = setTimeout(() => {
-    suggestionTimer = undefined
-    suggestion.value = null
-    if (!mouseInside.value) scheduleCollapse()
-  }, 12_000)
-}
-
 function onAwarenessSuggestion(next: FileAwarenessSuggestion): void {
-  suggestion.value = next
+  if (suggestions.value.some((item) => item.id === next.id)) return
+  const before = suggestions.value.length
+  suggestions.value = [next, ...suggestions.value]
+  if (before === 1) suggestionsExpanded.value = false
   suggestionError.value = ''
   suggestionBusy.value = false
   clearTimeout(collapseTimer)
@@ -121,12 +96,10 @@ function onAwarenessSuggestion(next: FileAwarenessSuggestion): void {
   shrinkTimer = undefined
   void windowStore.setEdgeBarExpanded(true)
   expanded.value = true
-  armSuggestionCollapse()
 }
 
-async function executeSuggestion(): Promise<void> {
-  const current = suggestion.value
-  if (current === null || current.action === undefined || suggestionBusy.value) return
+async function executeSuggestion(current: FileAwarenessSuggestion): Promise<void> {
+  if (current.action === undefined || suggestionBusy.value) return
   suggestionBusy.value = true
   suggestionError.value = ''
   try {
@@ -135,32 +108,36 @@ async function executeSuggestion(): Promise<void> {
       suggestionError.value = result.message
       return
     }
-    clearSuggestion()
+    removeSuggestion(current.id)
     collapseNow()
   } finally {
     suggestionBusy.value = false
   }
 }
 
-async function viewSuggestion(): Promise<void> {
-  const current = suggestion.value
-  if (current === null) return
-  await window.aurora.awareness.openNote({ noteId: current.noteId })
-  clearSuggestion()
+async function viewSuggestion(current: FileAwarenessSuggestion): Promise<void> {
+  const result = await window.aurora.awareness.presentNote({ noteId: current.noteId })
+  if (!result.ok) suggestionError.value = result.message
 }
 
-async function openSuggestionSource(): Promise<void> {
-  const current = suggestion.value
-  if (current === null) return
+async function openSuggestionSource(current: FileAwarenessSuggestion): Promise<void> {
   await window.aurora.awareness.openSource({ noteId: current.noteId })
-  clearSuggestion()
 }
 
-async function ignoreSuggestion(): Promise<void> {
-  const current = suggestion.value
-  if (current === null) return
+async function ignoreSuggestion(current: FileAwarenessSuggestion): Promise<void> {
   await window.aurora.awareness.ignore({ suggestionId: current.id })
-  clearSuggestion()
+  removeSuggestion(current.id)
+}
+
+function removeSuggestion(id: string): void {
+  suggestions.value = suggestions.value.filter((item) => item.id !== id)
+  if (suggestions.value.length < 2) suggestionsExpanded.value = false
+  suggestionBusy.value = false
+  suggestionError.value = ''
+}
+
+function toggleSuggestions(): void {
+  suggestionsExpanded.value = !suggestionsExpanded.value
 }
 
 /**
@@ -236,6 +213,7 @@ type InsightItem = {
   detail: string
   time: string
   kind: string
+  sortAt: string
   noteId?: string
   tone: 'done' | 'active' | 'warning' | 'idle'
 }
@@ -274,30 +252,40 @@ function recordTone(record: FileAwarenessRecord): InsightItem['tone'] {
 }
 
 const insightItems = computed<InsightItem[]>(() => {
-  const noteItems: InsightItem[] = awarenessNotes.value.slice(0, 3).map((note) => ({
+  const noteItems: InsightItem[] = awarenessNotes.value.map((note) => ({
     id: `note-${note.id}`,
     title: note.title,
     detail: note.excerpt || note.sourcePath,
     time: formatClock(note.updatedAt),
     kind: note.ext.toUpperCase(),
+    sortAt: note.updatedAt,
     noteId: note.id,
     tone: note.conflict ? 'warning' : 'done',
   }))
-  if (noteItems.length >= 3) return noteItems
   const seen = new Set(awarenessNotes.value.map((note) => note.sourcePath.toLowerCase()))
   const recordItems: InsightItem[] = awarenessRecords.value
     .filter((record) => !seen.has(record.sourcePath.toLowerCase()))
-    .slice(0, 3 - noteItems.length)
     .map((record) => ({
       id: `record-${record.id}`,
       title: record.fileName,
       detail: record.summary || record.error || `${recordLabel(record)} · 尚未生成笔记`,
       time: formatClock(record.occurredAt),
       kind: record.ext.toUpperCase() || record.kind,
+      sortAt: record.occurredAt,
       ...(record.noteId === undefined ? {} : { noteId: record.noteId }),
       tone: recordTone(record),
     }))
   return [...noteItems, ...recordItems]
+    .sort((left, right) => right.sortAt.localeCompare(left.sortAt))
+    .slice(0, 5)
+})
+
+const insightTotal = computed(() => {
+  const seen = new Set(awarenessNotes.value.map((note) => note.sourcePath.toLowerCase()))
+  return (
+    awarenessNotes.value.length +
+    awarenessRecords.value.filter((record) => !seen.has(record.sourcePath.toLowerCase())).length
+  )
 })
 
 const systemChips = computed(() => {
@@ -355,71 +343,27 @@ function scheduleCollapse(): void {
   }, COLLAPSE_DELAY_MS)
 }
 
-/** 移开鼠标：正在快速对话输入框里打字时不收起，等失焦再补收 */
 function onPointerLeave(): void {
   mouseInside.value = false
-  if (quickFocused.value) return
   scheduleCollapse()
 }
-
-/** 输入框失焦而鼠标早已离开窗口：补走一次收起，否则面板会悬在屏幕外等待不到离开事件 */
-watch(quickFocused, (focused) => {
-  if (focused || mouseInside.value || !expanded.value) return
-  scheduleCollapse()
-})
 
 /** 面板内的操作：立即收起（用户已经明确做了选择，不需要动画缓冲） */
 function collapseNow(): void {
   clearTimers()
-  // 显式复位输入框聚焦态：收起守卫（onPointerLeave 的 quickFocused 分支）不能依赖
-  // 「收起前 blur 必然先发生」这个隐含时序，否则残留 true 会让面板悬停不收
-  quickFocused.value = false
   expanded.value = false
   void windowStore.setEdgeBarExpanded(false)
 }
 
 const statusLabel = computed(() =>
-  statusTone.value === 'error'
-    ? '异常'
-    : statusTone.value === 'running'
-      ? '思考中'
-      : statusTone.value === 'unread'
-        ? '有未读'
+  awarenessTone.value === 'error'
+    ? '需处理'
+    : awarenessTone.value === 'running'
+      ? '感知中'
+      : awarenessTone.value === 'unread'
+        ? '待处理'
         : '闲置',
 )
-
-/** 快速对话输入内容（发送后清空） */
-const quickInput = ref('')
-/** 消息滚动容器（新内容贴底） */
-const quickListEl = ref<HTMLElement | null>(null)
-
-/**
- * 快速对话的消息（正序，最近 20 条）：面板不承载长历史，
- * 更早的对话在主界面左栏点「快速对话」看全量。
- */
-const quickMessages = computed(() =>
-  chat.messages.value.filter((message) => message.content.trim() !== '').slice(-20),
-)
-
-/** 新消息 / 流式增量贴底：迷你视图不做「用户接管」复杂度 */
-const quickTail = computed(() => {
-  const last = quickMessages.value.at(-1)
-  return `${quickMessages.value.length}:${last?.content.length ?? 0}`
-})
-
-watch(quickTail, () => {
-  void scrollToQuickBottom()
-})
-
-async function scrollToQuickBottom(): Promise<void> {
-  await nextTick()
-  const el = quickListEl.value
-  if (el !== null) el.scrollTop = el.scrollHeight
-}
-
-/** 快速会话自动刷新间隔（docs/07 §2.2）：面板展开期间每 5 分钟重拉一次 */
-const QUICK_REFRESH_INTERVAL_MS = 5 * 60_000
-let quickRefreshTimer: ReturnType<typeof setInterval> | undefined
 /**
  * 展开期间的系统状态刷新间隔（与右栏 ContextPanel 同口径 30s）。
  *
@@ -429,21 +373,9 @@ let quickRefreshTimer: ReturnType<typeof setInterval> | undefined
 const PERCEPTION_REFRESH_INTERVAL_MS = 30_000
 let perceptionTimer: ReturnType<typeof setInterval> | undefined
 
-/**
- * 展开态强制重拉快速会话（最近 20 条）并贴底（docs/07 §2.2）：
- * 窗口常驻，只在挂载时水合一次的话，主界面 / 其它窗口发出的新消息永远进不来。
- * 守卫：仅展开中且非流式时执行 —— 流式重拉会把正在输出的回复搅乱。
- */
-function refreshQuickSession(): void {
-  if (!expanded.value || chat.streaming.value) return
-  void chat.hydrate({ force: true, limit: 20 }).then(() => scrollToQuickBottom())
-}
-
 watch(expanded, (isOpen) => {
-  // 收起：停掉自动刷新，避免后台空转（感知与快速会话都不再拉取）
+  // 收起：停掉自动刷新，避免后台空转。
   if (!isOpen) {
-    clearInterval(quickRefreshTimer)
-    quickRefreshTimer = undefined
     clearInterval(perceptionTimer)
     perceptionTimer = undefined
     return
@@ -455,19 +387,7 @@ watch(expanded, (isOpen) => {
     void perception.refresh()
     void refreshAwareness()
   }, PERCEPTION_REFRESH_INTERVAL_MS)
-  if (!chat.streaming.value)
-    void chat.hydrate({ force: true, limit: 20 }).then(() => scrollToQuickBottom())
-  clearInterval(quickRefreshTimer)
-  quickRefreshTimer = setInterval(refreshQuickSession, QUICK_REFRESH_INTERVAL_MS)
 })
-
-/** 面板里发送快速对话：同一 `quick` 会话，主界面左栏固定项点开即见全量 */
-async function sendQuick(): Promise<void> {
-  const text = quickInput.value.trim()
-  if (text === '' || chat.streaming.value) return
-  quickInput.value = ''
-  await chat.send(text)
-}
 
 const modelLabel = computed(() => settingsStore.activeProvider?.model ?? '未配置模型')
 
@@ -482,8 +402,8 @@ const modeHint = computed(() => {
 
 const isClassroom = computed(() => modeStore.current?.id === 'classroom')
 const lessons = computed(() => perception.summary?.lessons ?? [])
-const nextLesson = computed(() => lessons.value[0] ?? null)
-const visibleQuickMessages = computed(() => quickMessages.value.slice(-4))
+/** 课堂摘要只在 ClassRoom 模式生效；Work / Code 模式不能借用课堂状态。 */
+const nextLesson = computed(() => (isClassroom.value ? (lessons.value[0] ?? null) : null))
 
 async function openChat(): Promise<void> {
   collapseNow()
@@ -500,7 +420,7 @@ async function openInsight(item: InsightItem): Promise<void> {
     await openMemory()
     return
   }
-  const result = await window.aurora.awareness.openNote({ noteId: item.noteId })
+  const result = await window.aurora.awareness.presentNote({ noteId: item.noteId })
   if (!result.ok) {
     await openMemory()
     return
@@ -544,14 +464,13 @@ async function hideSelf(): Promise<void> {
   await windowStore.hide('edge-bar')
 }
 
-// 面板的「最近消息」要真有内容：**展开时**才水合（收起态不读历史、不拉感知）
+// 面板数据只在展开时读取；收起态不轮询感知或记忆。
 onMounted(() => {
   offAwarenessSuggestion = window.aurora.awareness.onSuggestion((item) => {
     onAwarenessSuggestion(item)
   })
   offAwarenessChanged = window.aurora.awareness.onChanged(onAwarenessChanged)
   if (expanded.value) {
-    void chat.hydrate()
     void perception.refresh()
     void refreshAwareness()
   }
@@ -559,7 +478,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   clearTimers()
-  clearInterval(quickRefreshTimer)
   clearInterval(perceptionTimer)
   offAwarenessSuggestion?.()
   offAwarenessSuggestion = null
@@ -584,7 +502,7 @@ onUnmounted(() => {
       @click="onStripClick"
     >
       <span class="strip-dot">
-        <StatusDot :tone="statusTone" :size="6" :title="statusLabel" />
+        <StatusDot :tone="awarenessTone" :size="6" :title="statusLabel" />
       </span>
       <span class="strip-label">AURORA</span>
     </button>
@@ -637,7 +555,7 @@ onUnmounted(() => {
                 <small>队列</small>
               </span>
               <span class="metric">
-                <strong>{{ awarenessNotes.length }}</strong>
+                <strong>{{ awarenessStatus?.noteCount ?? awarenessNotes.length }}</strong>
                 <small>记忆</small>
               </span>
             </div>
@@ -652,36 +570,106 @@ onUnmounted(() => {
           </section>
 
           <section
-            v-if="suggestion"
+            v-if="suggestions.length === 1"
             class="card suggestion anim-rise"
             data-field="edge-bar.awareness"
           >
             <div class="card-head">
-              <p class="card-title">可行动建议</p>
+              <p class="card-title">文件提醒</p>
               <span class="badge">新</span>
             </div>
-            <strong class="suggestion-title">{{ suggestion.headline }}</strong>
-            <p class="suggestion-body">{{ suggestion.body }}</p>
+            <strong class="suggestion-title">{{ suggestions[0]?.headline }}</strong>
+            <p class="suggestion-body">{{ suggestions[0]?.body }}</p>
             <p v-if="suggestionError !== ''" class="suggestion-error">{{ suggestionError }}</p>
             <div class="suggestion-actions">
               <button
-                v-if="suggestion.action"
+                v-if="suggestions[0]?.action"
                 type="button"
                 class="suggestion-action primary"
                 :disabled="suggestionBusy"
-                @click="executeSuggestion"
+                @click="suggestions[0] && executeSuggestion(suggestions[0])"
               >
-                {{ suggestionBusy ? '正在创建…' : suggestion.action.label }}
+                {{ suggestionBusy ? '正在创建…' : suggestions[0]?.action?.label }}
               </button>
-              <button type="button" class="suggestion-action" @click="viewSuggestion">
+              <button
+                type="button"
+                class="suggestion-action"
+                @click="suggestions[0] && viewSuggestion(suggestions[0])"
+              >
                 查看分析
               </button>
-              <button type="button" class="suggestion-action" @click="openSuggestionSource">
+              <button
+                type="button"
+                class="suggestion-action"
+                @click="suggestions[0] && openSuggestionSource(suggestions[0])"
+              >
                 打开文件
               </button>
-              <button type="button" class="suggestion-action muted" @click="ignoreSuggestion">
+              <button
+                type="button"
+                class="suggestion-action muted"
+                @click="suggestions[0] && ignoreSuggestion(suggestions[0])"
+              >
                 忽略
               </button>
+            </div>
+          </section>
+
+          <section
+            v-else-if="suggestions.length > 1"
+            class="card suggestion anim-rise"
+            data-field="edge-bar.awareness"
+          >
+            <button
+              type="button"
+              class="suggestion-group-toggle"
+              data-field="edge-bar.suggestions-toggle"
+              :aria-expanded="suggestionsExpanded"
+              @click="toggleSuggestions"
+            >
+              <span>
+                <strong>{{ suggestions.length }} 个文件有新提醒</strong>
+                <small>点击{{ suggestionsExpanded ? '收起' : '展开' }}全部提醒</small>
+              </span>
+              <ChevronDown
+                :size="14"
+                :stroke-width="1.8"
+                :class="{ rotated: suggestionsExpanded }"
+                aria-hidden="true"
+              />
+            </button>
+            <p v-if="suggestionError !== ''" class="suggestion-error">{{ suggestionError }}</p>
+            <div v-if="suggestionsExpanded" class="suggestion-group-list">
+              <article
+                v-for="item in suggestions"
+                :key="item.id"
+                class="suggestion-item"
+                data-field="edge-bar.awareness-item"
+              >
+                <strong class="suggestion-title">{{ item.headline }}</strong>
+                <p class="suggestion-body">{{ item.body }}</p>
+                <div class="suggestion-actions">
+                  <button
+                    v-if="item.action"
+                    type="button"
+                    class="suggestion-action primary"
+                    :disabled="suggestionBusy"
+                    @click="executeSuggestion(item)"
+                  >
+                    {{ suggestionBusy ? '正在创建…' : item.action.label }}
+                  </button>
+                  <button type="button" class="suggestion-action" @click="viewSuggestion(item)">
+                    查看
+                  </button>
+                  <button
+                    type="button"
+                    class="suggestion-action muted"
+                    @click="ignoreSuggestion(item)"
+                  >
+                    忽略
+                  </button>
+                </div>
+              </article>
             </div>
           </section>
 
@@ -691,7 +679,7 @@ onUnmounted(() => {
                 <BookOpen :size="13" :stroke-width="1.8" aria-hidden="true" />
                 <p class="card-title">最近理解</p>
               </span>
-              <button type="button" class="text-action press" @click="openMemory">全部</button>
+              <span v-if="insightTotal > 0" class="badge">{{ insightTotal }}</span>
             </div>
             <div v-if="insightItems.length > 0" class="insight-list">
               <button
@@ -711,66 +699,15 @@ onUnmounted(() => {
               </button>
             </div>
             <p v-else class="empty">开启文件自感知后，这里会显示最近理解的文件。</p>
-          </section>
-
-          <section class="card recent-card anim-rise">
-            <div class="card-head">
-              <span class="section-heading">
-                <MessageSquare :size="13" :stroke-width="1.8" aria-hidden="true" />
-                <p class="card-title">快速对话</p>
-              </span>
-              <span v-if="visibleQuickMessages.length > 0" class="badge">{{
-                visibleQuickMessages.length
-              }}</span>
-            </div>
-            <div ref="quickListEl" class="qc-list">
-              <p v-if="visibleQuickMessages.length === 0 && !chat.streaming.value" class="empty">
-                直接输入，与 Aurora 快速对话
-              </p>
-              <div
-                v-for="message in visibleQuickMessages"
-                :key="message.id"
-                class="qc-msg"
-                :class="`r-${message.role}`"
-              >
-                <p class="qc-text">{{ message.content.replace(/\s+/g, ' ').trim() }}</p>
-              </div>
-              <span v-if="chat.streaming.value" class="qc-typing"><i /><i /><i /></span>
-            </div>
-            <p v-if="chat.error.value !== null" class="qc-error">{{ chat.error.value }}</p>
-            <div class="qc-composer">
-              <input
-                v-model="quickInput"
-                type="text"
-                placeholder="快速提问…"
-                aria-label="快速对话输入"
-                @keydown.enter.prevent="sendQuick"
-                @focus="quickFocused = true"
-                @blur="quickFocused = false"
-              />
-              <button
-                v-if="chat.streaming.value"
-                type="button"
-                class="qc-send stop press"
-                title="停止"
-                aria-label="停止回复"
-                @click="chat.abort()"
-              >
-                <Square :size="12" :stroke-width="2" aria-hidden="true" />
-              </button>
-              <button
-                v-else
-                type="button"
-                class="qc-send press"
-                data-action="edge-bar.quick-send"
-                :disabled="quickInput.trim() === ''"
-                title="发送（Enter）"
-                aria-label="发送快速对话"
-                @click="sendQuick"
-              >
-                <ArrowUp :size="13" :stroke-width="2.2" aria-hidden="true" />
-              </button>
-            </div>
+            <button
+              v-if="insightTotal > 5"
+              type="button"
+              class="insight-more press"
+              data-field="edge-bar.insights-more"
+              @click="openMemory"
+            >
+              更多记录
+            </button>
           </section>
 
           <section
@@ -976,8 +913,7 @@ onUnmounted(() => {
   overflow-x: hidden;
 }
 
-.panel-scroll::-webkit-scrollbar,
-.qc-list::-webkit-scrollbar {
+.panel-scroll::-webkit-scrollbar {
   width: 6px;
 }
 
@@ -1148,6 +1084,14 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  max-height: 236px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.insight-list::-webkit-scrollbar,
+.suggestion-group-list::-webkit-scrollbar {
+  width: 6px;
 }
 
 .insight-row {
@@ -1225,6 +1169,21 @@ onUnmounted(() => {
   background: var(--status-unread);
 }
 
+.insight-more {
+  width: 100%;
+  margin-top: var(--space-1);
+  padding: 6px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--fill-1);
+  color: var(--accent-text);
+  font: inherit;
+  font-size: var(--text-xs);
+}
+
+.insight-more:hover {
+  background: var(--fill-2);
+}
+
 .context-card {
   gap: var(--space-2);
 }
@@ -1274,15 +1233,72 @@ onUnmounted(() => {
 
 .suggestion-title {
   display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--text-sm);
   line-height: 1.4;
 }
 
 .suggestion-body {
   margin: var(--space-2) 0;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   color: var(--text-secondary);
   font-size: var(--text-xs);
   line-height: 1.5;
+}
+
+.suggestion-group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 2px 0;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.suggestion-group-toggle > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.suggestion-group-toggle strong {
+  font-size: var(--text-sm);
+}
+
+.suggestion-group-toggle small {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.suggestion-group-toggle svg {
+  flex: 0 0 auto;
+  transition: transform var(--transition-fast);
+}
+
+.suggestion-group-toggle svg.rotated {
+  transform: rotate(180deg);
+}
+
+.suggestion-group-list {
+  display: grid;
+  gap: var(--space-2);
+  max-height: 300px;
+  margin-top: var(--space-2);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.suggestion-item {
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--fill-1);
 }
 
 .suggestion-actions {
@@ -1391,165 +1407,6 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* 快速对话卡吸收面板剩余高度，让全高面板看起来是刻意排版而不是留白 */
-.recent-card {
-  flex: 0 1 auto;
-  min-height: 150px;
-  max-height: 300px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-/* 空态在吸收来的高度里居中，避免出现「卡片很高、文字贴在顶上」 */
-.recent-card > .empty {
-  margin: auto 0;
-  text-align: center;
-}
-
-/* 消息列表：占满卡片剩余高度，内部滚动、新内容贴底 */
-.qc-list {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  overflow-y: auto;
-  padding-right: 2px;
-}
-
-.qc-msg {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.qc-msg.r-user {
-  align-items: flex-end;
-}
-
-/* 气泡：用户强调色浅填充右对齐，助手分层填充左对齐（与主界面 QuickChat 同一套语义） */
-.qc-text {
-  margin: 0;
-  max-width: 94%;
-  padding: 4px 9px;
-  border-radius: var(--radius-md);
-  font-size: var(--text-sm);
-  line-height: var(--leading-normal);
-  color: var(--text-primary);
-  overflow-wrap: anywhere;
-}
-
-.r-user .qc-text {
-  background: color-mix(in srgb, var(--aurora-blue) 20%, transparent);
-}
-
-.r-assistant .qc-text {
-  background: var(--fill-1);
-}
-
-.qc-typing {
-  display: inline-flex;
-  gap: 4px;
-  padding: 2px 2px 0;
-}
-
-.qc-typing i {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--aurora-blue);
-  animation: qc-bounce 1s infinite ease-in-out;
-}
-
-.qc-typing i:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.qc-typing i:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes qc-bounce {
-  0%,
-  100% {
-    opacity: 0.35;
-    transform: translateY(0);
-  }
-  50% {
-    opacity: 1;
-    transform: translateY(-2px);
-  }
-}
-
-.qc-error {
-  margin: 0;
-  font-size: var(--text-xs);
-  line-height: var(--leading-tight);
-  color: var(--error-text);
-  overflow-wrap: anywhere;
-}
-
-/* 输入行：紧凑输入框 + 圆形发送 / 停止钮（面板宽度固定，控件保持单行） */
-.qc-composer {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.qc-composer input {
-  flex: 1;
-  min-width: 0;
-  height: 28px;
-  padding: 0 var(--space-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-pill);
-  background: var(--fill-1);
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-  outline: none;
-  transition: border-color var(--transition-fast);
-}
-
-.qc-composer input:focus {
-  border-color: var(--aurora-blue);
-}
-
-.qc-composer input::placeholder {
-  color: var(--text-muted);
-}
-
-.qc-send {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-pill);
-  background: var(--aurora-gradient);
-  color: var(--on-accent);
-  transition:
-    opacity var(--transition-fast),
-    background var(--transition-fast);
-}
-
-.qc-send:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.qc-send svg {
-  flex: 0 0 auto;
-  stroke: currentColor;
-}
-
-/* 停止态：中性填充 + 方块图标（停止不是主动作，不抢强调色） */
-.qc-send.stop {
-  background: var(--fill-3);
-  color: var(--text-primary);
 }
 
 .lesson-list {

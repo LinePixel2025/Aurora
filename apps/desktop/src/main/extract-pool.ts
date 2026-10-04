@@ -20,6 +20,10 @@ export interface ExtractPoolRequest {
   hashContent?: boolean
   /** 文件自感知需要内嵌图片；分类管线保持缺省，避免额外解码与内存峰值。 */
   extractDocumentImages?: boolean
+  /** 源文件本身就是图片时，是否把它作为视觉模型输入。 */
+  extractImages?: boolean
+  /** 证据文本上限；缺省为分类管线的 8KB。 */
+  evidenceLimitBytes?: number
 }
 
 export interface ExtractPoolResult {
@@ -139,6 +143,10 @@ export class ExtractPool {
           sizeBytes: request.sizeBytes,
           ...(request.hashContent === true ? { hashContent: true } : {}),
           ...(request.extractDocumentImages === true ? { extractDocumentImages: true } : {}),
+          ...(request.extractImages === true ? { extractImages: true } : {}),
+          ...(request.evidenceLimitBytes === undefined
+            ? {}
+            : { evidenceLimitBytes: request.evidenceLimitBytes }),
         })
       } catch (error) {
         clearTimeout(timer)

@@ -541,7 +541,7 @@
     `center.token ⇄ center.tokenEnc`），`SettingsStore` 的四处凭据读写与主进程 `redactSettings`
     都不需要为它改动。
 - `fileAwareness`（**v28 新增**，见 06 §26）：文件自感知。`enabled` 与
-  `contentConsentAccepted` 同时为真才允许读取正文并调用模型；`watchedDirs` 最多 3 个，
+  `contentConsentAccepted` 同时为真才允许读取图片 / 文档正文并调用模型；`watchedDirs` 最多 3 个，
   `knowledgeDir` 是用户可见 Markdown 知识库；`includeRecent` 控制 Windows 最近使用记录，
   `suggestionsEnabled` 控制提示条气泡，`dailyAnalysisLimit`（1–200，默认 20）和
   `maxFileMb`（1–500，默认 100）控制后台预算。整组在 `SETTINGS_READONLY_PREFIXES` 里：

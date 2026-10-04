@@ -599,7 +599,6 @@ export class WindowManager {
     this.edgeBarExpanded = expanded
     const win = this.windows.get('edge-bar')
     if (!win || win.isDestroyed()) return this.getState()
-    this.applyEdgeBarFocusable(win, expanded)
     win.setBounds(
       resizeEdgeBarKeepingAnchor(
         win.getBounds(),
@@ -612,25 +611,6 @@ export class WindowManager {
     this.applyEdgeBarShape(win)
     this.persistGeometry('edge-bar', win)
     return this.getState()
-  }
-
-  /**
-   * 提示条的可聚焦态跟随展开 / 收起切换（2026-09 快速对话上线）。
-   *
-   * 面板里有快速对话输入框，`focusable: false` 的窗口无法被激活，点输入框也拿不到键盘焦点；
-   * 展开时临时允许聚焦（**悬停仍不抢焦点**——setFocusable 不会主动取焦，只有用户真点输入框
-   * 才会激活窗口），收起时交还并主动失焦，避免 8px 竖条残留键盘焦点。
-   */
-  private applyEdgeBarFocusable(win: BrowserWindow, focusable: boolean): void {
-    try {
-      win.setFocusable(focusable)
-      if (!focusable && win.isFocused()) win.blur()
-    } catch (error) {
-      this.options.logger.debug('切换提示条可聚焦状态失败', {
-        focusable,
-        error: String(error),
-      })
-    }
   }
 
   /**
@@ -837,7 +817,6 @@ export class WindowManager {
     this.edgeBarExpanded = false
     const win = this.windows.get('edge-bar')
     if (!win || win.isDestroyed()) return
-    this.applyEdgeBarFocusable(win, false)
     win.setBounds(
       resizeEdgeBarKeepingAnchor(
         win.getBounds(),

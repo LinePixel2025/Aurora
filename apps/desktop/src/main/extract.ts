@@ -5,7 +5,8 @@
  * - **不 import electron**，可在单测里直接调用（T0 已验证 officeparser 在 Electron
  *   utilityProcess 内可用，Node 24.18 + pdfjs-dist 6 的 ESM 动态 import 正常）。
  * - 任何提取失败都**降级为「文件名 + 元数据」证据**，绝不抛错、绝不中断分类管线。
- * - 证据上限 8KB（docs/05 §3.2），按 head/tail 采样，避免把成本花在首尾重复的页眉上。
+ * - 分类管线证据上限 8KB（docs/05 §3.2），自感知使用更高的结构证据上限；
+ *   两者都按 head/tail 采样，避免把成本花在首尾重复的页眉上。
  */
 
 export type EvidenceKind = 'text' | 'document' | 'image' | 'archive' | 'binary' | 'unknown'
@@ -30,16 +31,18 @@ export interface ExtractedDocumentImage {
   altText?: string
 }
 
-/** 证据上限 8KB（docs/05 §3.2「证据大小上限 8KB，控制成本与耗时」） */
+/** 分类管线证据上限 8KB（docs/05 §3.2「证据大小上限 8KB，控制成本与耗时」） */
 export const EVIDENCE_LIMIT_BYTES = 8 * 1024
+/** 自感知需要保留更多标题 / 表格 / 结论上下文；仍设置硬上限，避免单文件挤爆模型预算。 */
+export const SELF_AWARENESS_EVIDENCE_LIMIT_BYTES = 24 * 1024
 
 /** 单次文件自感知分析最多送入模型的图片数 / 单张与合计原始字节上限。 */
 export const MAX_DOCUMENT_IMAGES = 8
 export const MAX_DOCUMENT_IMAGE_BYTES = 8 * 1024 * 1024
 export const MAX_DOCUMENT_IMAGE_TOTAL_BYTES = 24 * 1024 * 1024
 
-/** 纯文本格式：我们自己读，officeparser 不支持这些扩展名 */
-const PLAIN_TEXT_EXT = new Set([
+/** 纯文本格式：直接按编码嗅探读取，避免经过重型解析器。 */
+export const PLAIN_TEXT_EXTENSIONS = new Set([
   'txt',
   'md',
   'markdown',
@@ -55,8 +58,8 @@ const PLAIN_TEXT_EXT = new Set([
   'vtt',
 ])
 
-/** 交给 officeparser 的扩展名（与 T0 spike 实测的支持集一致） */
-const OFFICE_EXT = new Set([
+/** 交给 officeparser 的结构化文档扩展名。 */
+export const OFFICE_EXTENSIONS = new Set([
   'docx',
   'pptx',
   'xlsx',
@@ -68,13 +71,35 @@ const OFFICE_EXT = new Set([
   'html',
   'htm',
   'epub',
-  // csv/md 同时在 PLAIN_TEXT_EXT 里——优先走自己的读取器（更快、不依赖解析器）
+  // csv/md 同时在文本集合里——优先走自己的读取器（更快、不依赖解析器）
 ])
 
-const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'svg'])
+export const IMAGE_EXTENSIONS = new Set([
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'bmp',
+  'webp',
+  'tif',
+  'tiff',
+  'svg',
+])
+/** 当前视觉模型链路可直接消费的图片；其余图片保留元数据 / 文件名证据。 */
+export const VISUAL_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'])
 const ARCHIVE_EXT = new Set(['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz'])
 /** 老式二进制 Office：无零依赖解析方案，只给文件名 + 类型说明 */
-const LEGACY_OFFICE_EXT = new Set(['doc', 'ppt', 'xls'])
+export const LEGACY_OFFICE_EXTENSIONS = new Set(['doc', 'ppt', 'xls'])
+
+/** 可进入自感知正文分析的文件类型。 */
+export function isAwarenessContentExtension(ext: string): boolean {
+  return PLAIN_TEXT_EXTENSIONS.has(ext) || OFFICE_EXTENSIONS.has(ext) || IMAGE_EXTENSIONS.has(ext)
+}
+
+/** 需要被自感知记录 / 最近使用追踪的文件类型；legacy Office 仅观察，不尝试解析正文。 */
+export function isAwarenessObservedExtension(ext: string): boolean {
+  return isAwarenessContentExtension(ext) || LEGACY_OFFICE_EXTENSIONS.has(ext)
+}
 
 export interface ExtractInput {
   /** 文件绝对路径 */
@@ -87,6 +112,10 @@ export interface ExtractInput {
   readFile(path: string): Promise<Buffer>
   /** 调用 officeparser（注入以便单测；worker 内传 require 实现） */
   parseOffice?(path: string): Promise<OfficeParseResult>
+  /** 是否把源图片作为视觉模型输入一并返回；缺省 false。 */
+  extractImages?: boolean
+  /** 证据文本上限；缺省为分类管线的 8KB。 */
+  evidenceLimitBytes?: number
 }
 
 interface OfficeAttachmentLike {
@@ -99,15 +128,33 @@ interface OfficeAttachmentLike {
 }
 
 interface OfficeParseResult {
+  type?: string
+  metadata?: OfficeMetadataLike
   toText(): string
-  to?(format: 'text'): Promise<{ value: string } | string>
+  to?(
+    format: 'text' | 'md' | 'csv',
+    config?: Record<string, unknown>,
+  ): Promise<{ value: string } | string>
   attachments?: OfficeAttachmentLike[]
+}
+
+interface OfficeMetadataLike {
+  title?: string
+  author?: string
+  lastModifiedBy?: string
+  created?: Date | string
+  modified?: Date | string
+  description?: string
+  subject?: string
+  pages?: number
+  keywords?: string
 }
 
 export async function extract(input: ExtractInput): Promise<ExtractResult> {
   const { path, ext, sizeBytes } = input
   const warnings: string[] = []
   const fileName = baseName(path)
+  const evidenceLimitBytes = input.evidenceLimitBytes ?? EVIDENCE_LIMIT_BYTES
 
   const header = [
     `文件名：${fileName}`,
@@ -116,29 +163,40 @@ export async function extract(input: ExtractInput): Promise<ExtractResult> {
   ].join('\n')
 
   // 1. 纯文本：直接读，编码嗅探
-  if (PLAIN_TEXT_EXT.has(ext)) {
+  if (PLAIN_TEXT_EXTENSIONS.has(ext)) {
     try {
       const buffer = await input.readFile(path)
       const text = decodeText(buffer)
-      return finalize('text', `${header}\n\n正文：\n${normalizeWhitespace(text)}`, warnings)
+      return finalize(
+        'text',
+        `${header}\n\n正文：\n${normalizeWhitespace(text)}`,
+        warnings,
+        [],
+        evidenceLimitBytes,
+      )
     } catch (error) {
       warnings.push(`读取文本失败：${describe(error)}`)
-      return finalize('text', header, warnings)
+      return finalize('text', header, warnings, [], evidenceLimitBytes)
     }
   }
 
-  // 2. 图片：文件名 + 元数据（OCR 为 P1 可选，见 docs/05 §3.2；本轮不启用）
-  if (IMAGE_EXT.has(ext)) {
+  // 2. 图片：文件头元数据 + 可选的视觉模型输入；不做本地 OCR。
+  if (IMAGE_EXTENSIONS.has(ext)) {
     try {
       const buffer = await input.readFile(path)
       const dimensions = readImageSize(buffer, ext)
       const lines = [header]
       if (dimensions) lines.push(`尺寸：${dimensions.width}×${dimensions.height}`)
-      lines.push('（图片仅提供文件名与元数据；OCR 未启用）')
-      return finalize('image', lines.join('\n'), warnings)
+      const visualImage = buildSourceImageAttachment(ext, fileName, buffer, warnings, input)
+      lines.push(
+        visualImage.length === 0
+          ? '（图片仅提供文件名与元数据；未作为视觉输入）'
+          : '（源图片已读取，随本次请求交给视觉模型）',
+      )
+      return finalize('image', lines.join('\n'), warnings, visualImage, evidenceLimitBytes)
     } catch (error) {
       warnings.push(`读取图片元数据失败：${describe(error)}`)
-      return finalize('image', header, warnings)
+      return finalize('image', header, warnings, [], evidenceLimitBytes)
     }
   }
 
@@ -156,46 +214,53 @@ export async function extract(input: ExtractInput): Promise<ExtractResult> {
         warnings.push(`读取压缩包目录失败：${describe(error)}`)
       }
     }
-    return finalize('archive', lines.join('\n'), warnings)
+    return finalize('archive', lines.join('\n'), warnings, [], evidenceLimitBytes)
   }
 
   // 4. 老式二进制 Office：提示用文件名判断
-  if (LEGACY_OFFICE_EXT.has(ext)) {
+  if (LEGACY_OFFICE_EXTENSIONS.has(ext)) {
     warnings.push(`.${ext} 为老式二进制格式，无法抽取正文`)
     return finalize(
       'binary',
       `${header}\n（老式二进制 Office 格式，请依据文件名判断科目）`,
       warnings,
+      [],
+      evidenceLimitBytes,
     )
   }
 
   // 5. Office / PDF：交给 officeparser
-  if (OFFICE_EXT.has(ext) || input.parseOffice !== undefined) {
+  if (OFFICE_EXTENSIONS.has(ext) || input.parseOffice !== undefined) {
     if (input.parseOffice === undefined) {
       warnings.push('解析器不可用，降级为文件名证据')
-      return finalize('document', header, warnings)
+      return finalize('document', header, warnings, [], evidenceLimitBytes)
     }
     try {
       const parsed = await input.parseOffice(path)
-      const text = normalizeWhitespace(await officeTextOf(parsed))
+      const preferredFormat = ext === 'xlsx' || ext === 'ods' ? 'csv' : 'md'
+      const text = normalizeWhitespace(await officeTextOf(parsed, preferredFormat))
       const collected = collectDocumentImages(parsed.attachments ?? [], warnings)
       const imageSection = renderDocumentImageEvidence(collected)
       if (text.trim() === '' && collected.images.length === 0 && collected.total === 0) {
         warnings.push('解析结果为空，降级为文件名证据')
-        return finalize('document', header, warnings)
+        return finalize('document', header, warnings, [], evidenceLimitBytes)
       }
       const body: string[] = [header]
-      if (text.trim() !== '') body.push('', '正文：', text)
+      const structure = renderOfficeStructure(parsed, preferredFormat)
+      if (structure !== '') body.push('', '文档结构：', structure)
+      if (text.trim() !== '') {
+        body.push('', preferredFormat === 'csv' ? '表格内容：' : '结构化正文：', text)
+      }
       if (imageSection !== '') body.push('', imageSection)
-      return finalize('document', body.join('\n'), warnings, collected.images)
+      return finalize('document', body.join('\n'), warnings, collected.images, evidenceLimitBytes)
     } catch (error) {
       warnings.push(`解析失败，降级为文件名证据：${describe(error)}`)
-      return finalize('document', header, warnings)
+      return finalize('document', header, warnings, [], evidenceLimitBytes)
     }
   }
 
   // 6. 其他：只给文件名 + 元数据
-  return finalize('unknown', header, warnings)
+  return finalize('unknown', header, warnings, [], evidenceLimitBytes)
 }
 
 /** 拼装结果并按 8KB 上限做 head/tail 截断。 */
@@ -204,24 +269,125 @@ function finalize(
   evidence: string,
   warnings: string[],
   documentImages: ExtractedDocumentImage[] = [],
+  evidenceLimitBytes = EVIDENCE_LIMIT_BYTES,
 ): ExtractResult {
   const evidenceChars = evidence.length
   return {
     kind,
-    evidence: truncateEvidence(evidence, EVIDENCE_LIMIT_BYTES),
+    evidence: truncateEvidence(evidence, evidenceLimitBytes),
     evidenceChars,
     warnings,
     documentImages,
   }
 }
 
-async function officeTextOf(parsed: OfficeParseResult): Promise<string> {
+async function officeTextOf(
+  parsed: OfficeParseResult,
+  preferredFormat: 'md' | 'csv',
+): Promise<string> {
   if (parsed.to !== undefined) {
-    const converted = await parsed.to('text')
-    if (typeof converted === 'string') return converted
-    if (typeof converted.value === 'string') return converted.value
+    const config =
+      preferredFormat === 'csv'
+        ? {
+            generateIds: false,
+            includeFormatting: false,
+            includeImages: false,
+            includeCharts: false,
+            renderMetadata: false,
+          }
+        : {
+            generateIds: false,
+            includeFormatting: false,
+            includeImages: false,
+            includeCharts: false,
+            renderMetadata: false,
+            mdConfig: { fallbackToHtml: false, dialect: 'commonmark' },
+          }
+    try {
+      const converted = await parsed.to(preferredFormat, config)
+      if (typeof converted === 'string') return converted
+      if (typeof converted.value === 'string') return converted.value
+    } catch {
+      // 老解析器 / 特殊格式不支持结构化输出时，退回纯文本。
+    }
+    try {
+      const fallback = await parsed.to('text')
+      if (typeof fallback === 'string') return fallback
+      if (typeof fallback.value === 'string') return fallback.value
+    } catch {
+      // 继续走同步 toText()
+    }
   }
   return parsed.toText()
+}
+
+function renderOfficeStructure(parsed: OfficeParseResult, preferredFormat: 'md' | 'csv'): string {
+  const lines: string[] = []
+  if (parsed.type !== undefined && parsed.type.trim() !== '') {
+    lines.push(`解析类型：${parsed.type.trim()}`)
+  }
+  lines.push(
+    `提取格式：${preferredFormat === 'csv' ? 'CSV（表格）' : 'Markdown（保留标题与表格）'}`,
+  )
+  const metadata = parsed.metadata
+  if (metadata !== undefined) {
+    const entries: string[] = []
+    appendMeta(entries, '标题', metadata.title)
+    appendMeta(entries, '作者', metadata.author)
+    appendMeta(entries, '主题', metadata.subject)
+    appendMeta(entries, '关键词', metadata.keywords)
+    if (metadata.pages !== undefined && Number.isFinite(metadata.pages)) {
+      entries.push(`页数：${metadata.pages}`)
+    }
+    appendMeta(entries, '说明', metadata.description)
+    lines.push(...entries)
+  }
+  return lines.join('\n')
+}
+
+function appendMeta(lines: string[], label: string, value: string | undefined): void {
+  const normalized = value?.trim()
+  if (normalized !== undefined && normalized !== '') lines.push(`${label}：${normalized}`)
+}
+
+function buildSourceImageAttachment(
+  ext: string,
+  name: string,
+  buffer: Buffer,
+  warnings: string[],
+  input: ExtractInput,
+): ExtractedDocumentImage[] {
+  if (input.extractImages !== true) return []
+  if (!VISUAL_IMAGE_EXTENSIONS.has(ext)) {
+    warnings.push(`源图片 .${ext} 不支持直接交给当前视觉模型，仅保留元数据`)
+    return []
+  }
+  if (buffer.length > MAX_DOCUMENT_IMAGE_BYTES) {
+    warnings.push(
+      `源图片超过 ${Math.round(MAX_DOCUMENT_IMAGE_BYTES / 1024 / 1024)} MiB，未作为视觉输入`,
+    )
+    return []
+  }
+  const mimeType = IMAGE_MIME_TYPES[ext]
+  if (mimeType === undefined) return []
+  return [
+    {
+      name,
+      mimeType,
+      extension: ext === 'jpeg' ? 'jpg' : ext,
+      dataBase64: buffer.toString('base64'),
+      altText: '源文件图片',
+    },
+  ]
+}
+
+const IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+  webp: 'image/webp',
 }
 
 const DOCUMENT_IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {

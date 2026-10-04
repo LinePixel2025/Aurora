@@ -1,9 +1,16 @@
 <script setup lang="ts">
 /** 文件自感知记忆库独立窗口（docs/06 §26、docs/07 §2.6）。 */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { FileAwarenessNote, FileAwarenessNoteContent } from '@aurora/shared'
 import { renderMarkdown } from '@aurora/shared/browser'
-import { BookOpen, FileText, FolderOpen, Search, TriangleAlert } from '@aurora/shared/browser'
+import {
+  BookOpen,
+  ChevronDown,
+  FileText,
+  FolderOpen,
+  Search,
+  TriangleAlert,
+} from '@aurora/shared/browser'
 import AppButton from '../shared/components/AppButton.vue'
 import AppToast from '../shared/components/AppToast.vue'
 import WindowCaption from '../shared/components/WindowCaption.vue'
@@ -13,9 +20,14 @@ const notes = ref<FileAwarenessNote[]>([])
 const selectedId = ref('')
 const content = ref<FileAwarenessNoteContent | null>(null)
 const query = ref('')
+const formatFilter = ref('all')
+const dateFilter = ref<'all' | 'today' | '7d' | '30d'>('all')
+const expandedDateKeys = ref<Set<string>>(new Set())
+const previewEl = ref<HTMLElement | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 let offChanged: (() => void) | null = null
+let offNotePresented: (() => void) | null = null
 let loadToken = 0
 
 const { dragClass, noDragClass } = useWindowDrag('memory')
@@ -34,15 +46,26 @@ interface NoteFormatGroup {
 }
 
 const selected = computed(() => notes.value.find((note) => note.id === selectedId.value) ?? null)
+const availableFormats = computed(() => {
+  const formats = new Set(notes.value.map((note) => note.ext.trim().toLowerCase() || 'other'))
+  return [...formats].sort((left, right) => formatRank(left) - formatRank(right))
+})
 const filteredNotes = computed(() => {
   const keyword = query.value.trim().toLowerCase()
-  if (keyword === '') return notes.value
-  return notes.value.filter(
-    (note) =>
-      note.title.toLowerCase().includes(keyword) ||
-      note.sourcePath.toLowerCase().includes(keyword) ||
-      note.excerpt.toLowerCase().includes(keyword),
-  )
+  const cutoff = dateCutoff(dateFilter.value)
+  return notes.value.filter((note) => {
+    const ext = note.ext.trim().toLowerCase() || 'other'
+    if (formatFilter.value !== 'all' && ext !== formatFilter.value) return false
+    if (cutoff !== undefined) {
+      const created = Date.parse(note.createdAt)
+      if (!Number.isFinite(created) || created < cutoff) return false
+    }
+    if (keyword === '') return true
+    return [note.title, note.sourcePath, note.excerpt, ...note.tags]
+      .join('\n')
+      .toLowerCase()
+      .includes(keyword)
+  })
 })
 const groupedNotes = computed<NoteFormatGroup[]>(() => {
   const formats = new Map<string, Map<string, FileAwarenessNote[]>>()
@@ -61,7 +84,7 @@ const groupedNotes = computed<NoteFormatGroup[]>(() => {
       const dateGroups = [...dates.entries()]
         .sort(([left], [right]) => right.localeCompare(left))
         .map(([key, items]) => ({
-          key,
+          key: `${ext}:${key}`,
           label: formatDay(key),
           notes: items,
         }))
@@ -76,6 +99,19 @@ const groupedNotes = computed<NoteFormatGroup[]>(() => {
 const markdownHtml = computed(() => renderMarkdown(content.value?.content ?? ''))
 const noteCountLabel = computed(() => `${notes.value.length} 篇`)
 const searchCountLabel = computed(() => `${filteredNotes.value.length} 篇匹配`)
+const selectedDateKey = computed(() => {
+  const note = selected.value ?? notes.value[0]
+  return note === undefined ? '' : groupKeyOf(note)
+})
+
+watch(filteredNotes, (items) => {
+  if (items.length === 0) {
+    content.value = null
+    return
+  }
+  if (items.some((note) => note.id === selectedId.value)) return
+  void selectNote(items[0]!)
+})
 
 function formatTime(value: string): string {
   const date = new Date(value)
@@ -99,13 +135,77 @@ function formatDay(day: string): string {
 function formatLabelOf(ext: string): string {
   if (ext === 'docx') return 'Word 文档'
   if (ext === 'pptx') return 'PowerPoint 演示文稿'
+  if (ext === 'xlsx') return 'Excel 表格'
+  if (ext === 'pdf') return 'PDF'
+  if (ext === 'odt' || ext === 'odp' || ext === 'ods') return 'OpenDocument'
+  if (ext === 'rtf') return '富文本'
+  if (ext === 'html' || ext === 'htm') return '网页'
+  if (ext === 'epub') return '电子书'
+  if (
+    [
+      'txt',
+      'md',
+      'markdown',
+      'csv',
+      'tsv',
+      'json',
+      'xml',
+      'yaml',
+      'yml',
+      'log',
+      'tex',
+      'srt',
+      'vtt',
+    ].includes(ext)
+  ) {
+    return '文本'
+  }
+  if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'svg'].includes(ext)) {
+    return '图片'
+  }
   return ext.toUpperCase()
 }
 
 function formatRank(ext: string): number {
   if (ext === 'docx') return 0
   if (ext === 'pptx') return 1
-  return 2
+  if (ext === 'xlsx') return 2
+  if (ext === 'pdf') return 3
+  if (ext === 'odt' || ext === 'odp' || ext === 'ods') return 4
+  if (ext === 'rtf' || ext === 'html' || ext === 'htm' || ext === 'epub') return 5
+  if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'svg'].includes(ext)) return 6
+  return 7
+}
+
+function dateCutoff(filter: 'all' | 'today' | '7d' | '30d'): number | undefined {
+  if (filter === 'all') return undefined
+  const now = new Date()
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  if (filter === 'today') return start.getTime()
+  const days = filter === '7d' ? 6 : 29
+  start.setDate(start.getDate() - days)
+  return start.getTime()
+}
+
+function groupKeyOf(note: FileAwarenessNote): string {
+  const ext = note.ext.trim().toLowerCase() || 'other'
+  return `${ext}:${dayKeyOf(note.createdAt || note.updatedAt)}`
+}
+
+function isDateExpanded(key: string): boolean {
+  return expandedDateKeys.value.has(key)
+}
+
+function toggleDateGroup(key: string): void {
+  const next = new Set(expandedDateKeys.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expandedDateKeys.value = next
+}
+
+function expandDateGroup(key: string): void {
+  if (key === '' || expandedDateKeys.value.has(key)) return
+  expandedDateKeys.value = new Set([...expandedDateKeys.value, key])
 }
 
 function fileNameOf(path: string): string {
@@ -123,6 +223,7 @@ async function refresh(): Promise<void> {
   if (selectedId.value === '' || !notes.value.some((note) => note.id === selectedId.value)) {
     selectedId.value = notes.value[0]?.id ?? ''
   }
+  expandDateGroup(selectedDateKey.value)
   await loadContent()
 }
 
@@ -147,9 +248,25 @@ async function loadContent(): Promise<void> {
 }
 
 async function selectNote(note: FileAwarenessNote): Promise<void> {
-  if (selectedId.value === note.id) return
   selectedId.value = note.id
+  expandDateGroup(groupKeyOf(note))
   await loadContent()
+  await nextTick()
+  if (previewEl.value !== null) previewEl.value.scrollTop = 0
+}
+
+async function presentNote(noteId: string): Promise<void> {
+  if (!notes.value.some((note) => note.id === noteId)) await refresh()
+  const note = notes.value.find((item) => item.id === noteId)
+  if (note === undefined) {
+    error.value = '没有找到对应笔记'
+    return
+  }
+  selectedId.value = note.id
+  expandDateGroup(groupKeyOf(note))
+  await loadContent()
+  await nextTick()
+  if (previewEl.value !== null) previewEl.value.scrollTop = 0
 }
 
 async function openKnowledge(): Promise<void> {
@@ -188,11 +305,16 @@ async function onMarkdownClick(event: MouseEvent): Promise<void> {
 onMounted(() => {
   void refresh()
   offChanged = window.aurora.awareness.onChanged(() => void refresh())
+  offNotePresented = window.aurora.awareness.onNotePresented(
+    ({ noteId }) => void presentNote(noteId),
+  )
 })
 
 onUnmounted(() => {
   offChanged?.()
   offChanged = null
+  offNotePresented?.()
+  offNotePresented = null
 })
 </script>
 
@@ -202,13 +324,11 @@ onUnmounted(() => {
       <div class="head-title">
         <BookOpen :size="16" :stroke-width="1.6" aria-hidden="true" />
         <strong>记忆库</strong>
-        <span class="badge">{{ query.trim() === '' ? noteCountLabel : searchCountLabel }}</span>
+        <span class="badge">{{
+          filteredNotes.length === notes.length ? noteCountLabel : searchCountLabel
+        }}</span>
       </div>
       <div class="head-tools" :class="noDragClass">
-        <label class="search">
-          <Search :size="13" :stroke-width="1.7" aria-hidden="true" />
-          <input v-model="query" type="search" placeholder="搜索笔记或来源…" />
-        </label>
         <AppButton size="sm" variant="ghost" @click="openKnowledge">
           <FolderOpen :size="13" :stroke-width="1.7" aria-hidden="true" />
           文件夹
@@ -219,6 +339,43 @@ onUnmounted(() => {
 
     <div class="memory-body">
       <aside class="note-list glass-shell rail-surface anim-shell-left" aria-label="笔记列表">
+        <div class="note-filters" :class="noDragClass">
+          <label class="search">
+            <Search :size="13" :stroke-width="1.7" aria-hidden="true" />
+            <input v-model="query" type="search" placeholder="搜索标题、来源或内容…" />
+          </label>
+          <div class="filter-pills" aria-label="格式筛选">
+            <button
+              type="button"
+              class="filter-pill"
+              :class="{ active: formatFilter === 'all' }"
+              data-field="memory.filter-format-all"
+              @click="formatFilter = 'all'"
+            >
+              全部
+            </button>
+            <button
+              v-for="ext in availableFormats"
+              :key="ext"
+              type="button"
+              class="filter-pill"
+              :class="{ active: formatFilter === ext }"
+              :data-field="`memory.filter-format-${ext}`"
+              @click="formatFilter = ext"
+            >
+              {{ formatLabelOf(ext) }}
+            </button>
+          </div>
+          <label class="date-filter">
+            <span>时间</span>
+            <select v-model="dateFilter">
+              <option value="all">全部</option>
+              <option value="today">今天</option>
+              <option value="7d">近 7 天</option>
+              <option value="30d">近 30 天</option>
+            </select>
+          </label>
+        </div>
         <p v-if="filteredNotes.length === 0" class="empty">
           {{ notes.length === 0 ? '暂无 Markdown 笔记' : '没有匹配的笔记' }}
         </p>
@@ -228,27 +385,41 @@ onUnmounted(() => {
             <span class="group-count">{{ format.count }}</span>
           </h2>
           <div v-for="date in format.dates" :key="date.key" class="date-group">
-            <h3 class="date-head">{{ date.label }}</h3>
             <button
-              v-for="note in date.notes"
-              :key="note.id"
               type="button"
-              class="note-row"
-              :class="{ active: note.id === selectedId }"
-              @click="selectNote(note)"
+              class="date-head"
+              :class="{ expanded: isDateExpanded(date.key) }"
+              :data-date-key="date.key"
+              :aria-expanded="isDateExpanded(date.key)"
+              @click="toggleDateGroup(date.key)"
             >
-              <span class="note-row-head">
-                <strong>{{ note.title }}</strong>
-                <TriangleAlert
-                  v-if="note.conflict"
-                  :size="12"
-                  :stroke-width="1.8"
-                  aria-label="手工修改冲突"
-                />
-              </span>
-              <span class="note-source">{{ fileNameOf(note.sourcePath) }}</span>
-              <span class="note-meta">更新 {{ formatTime(note.updatedAt) }}</span>
+              <ChevronDown :size="12" :stroke-width="1.8" aria-hidden="true" />
+              <span>{{ date.label }}</span>
+              <span class="group-count">{{ date.notes.length }}</span>
             </button>
+            <div v-if="isDateExpanded(date.key)" class="date-notes">
+              <button
+                v-for="note in date.notes"
+                :key="note.id"
+                type="button"
+                class="note-row"
+                :class="{ active: note.id === selectedId }"
+                :data-note-id="note.id"
+                @click="selectNote(note)"
+              >
+                <span class="note-row-head">
+                  <strong>{{ note.title }}</strong>
+                  <TriangleAlert
+                    v-if="note.conflict"
+                    :size="12"
+                    :stroke-width="1.8"
+                    aria-label="手工修改冲突"
+                  />
+                </span>
+                <span class="note-source">{{ fileNameOf(note.sourcePath) }}</span>
+                <span class="note-meta">更新 {{ formatTime(note.updatedAt) }}</span>
+              </button>
+            </div>
           </div>
         </section>
       </aside>
@@ -276,7 +447,7 @@ onUnmounted(() => {
               </AppButton>
             </div>
           </div>
-          <div class="preview">
+          <div ref="previewEl" class="preview">
             <p v-if="loading" class="empty">正在读取笔记…</p>
             <template v-else-if="content">
               <p v-if="content.truncated" class="warn">笔记较大，预览已截断。</p>
@@ -336,13 +507,22 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  width: 240px;
+  width: 100%;
   height: 30px;
   padding: 0 var(--space-2);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-pill);
-  background: var(--glass-surface);
+  background: color-mix(in srgb, var(--bg-raised) 90%, var(--text-primary) 10%);
   color: var(--text-muted);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.search:focus-within {
+  border-color: var(--aurora-blue);
+  background: var(--fill-3);
 }
 
 .search svg {
@@ -370,6 +550,63 @@ onUnmounted(() => {
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-2);
+}
+
+.note-filters {
+  position: sticky;
+  top: calc(-1 * var(--space-2));
+  z-index: 2;
+  display: grid;
+  gap: var(--space-2);
+  margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-2)) 0;
+  padding: var(--space-2);
+  background: var(--bg-raised);
+  box-shadow: 0 1px 0 var(--border-subtle);
+}
+
+.filter-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.filter-pill {
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--fill-1);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+}
+
+.filter-pill:hover {
+  background: var(--fill-2);
+}
+
+.filter-pill.active {
+  background: color-mix(in srgb, var(--aurora-blue) 18%, transparent);
+  color: var(--accent-text);
+}
+
+.date-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.date-filter select {
+  height: 26px;
+  min-width: 96px;
+  padding: 0 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: var(--glass-surface);
+  color: var(--text-primary);
+  font: inherit;
 }
 
 .format-group + .format-group {
@@ -410,10 +647,38 @@ onUnmounted(() => {
 }
 
 .date-head {
+  width: 100%;
+  gap: var(--space-1);
   min-height: 24px;
+  border: 0;
+  background: transparent;
   color: var(--text-muted);
   font-size: var(--text-xs);
   font-weight: var(--weight-regular);
+  text-align: left;
+}
+
+.date-head:hover {
+  color: var(--text-secondary);
+}
+
+.date-head svg {
+  flex: 0 0 auto;
+  transition: transform var(--transition-fast);
+}
+
+.date-head.expanded svg {
+  transform: rotate(180deg);
+}
+
+.date-head .group-count {
+  margin-left: auto;
+}
+
+.date-notes {
+  display: grid;
+  gap: 2px;
+  margin-top: 2px;
 }
 
 .note-row {
