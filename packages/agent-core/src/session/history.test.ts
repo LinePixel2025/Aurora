@@ -50,6 +50,23 @@ describe('truncateHistory', () => {
     expect(relaxed.messages.map((item) => item.id)).toEqual(['2', '3'])
   })
 
+  it('工具调用参数计入字符预算（不只看正文）', () => {
+    const messages = [
+      msg({ id: 'u1', role: 'user', content: 'q' }),
+      msg({
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'edit_file', arguments: 'x'.repeat(100), state: 'success' }],
+      }),
+      msg({ id: 'u2', role: 'user', content: 'z'.repeat(50) }),
+    ]
+    // 预算 120：最后一条 50 放得下；assistant 的工具参数 100 一算就超 → 只保留最后一条。
+    // 旧实现只算 `content.length`，assistant 权重为 0，会把整组留到预算之外。
+    const result = truncateHistory(messages, { maxChars: 120 })
+    expect(result.messages.map((item) => item.id)).toEqual(['u2'])
+  })
+
   it('工具组：结果保留时宿主也要保留', () => {
     const messages = [
       msg({ id: 'u1', role: 'user', content: 'q' }),

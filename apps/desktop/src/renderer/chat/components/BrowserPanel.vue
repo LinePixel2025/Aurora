@@ -36,7 +36,7 @@ import { ArrowLeft, ArrowRight, House, Plus, RotateCw, X } from '@aurora/shared/
 
 const HOME_URL = 'https://www.bing.com'
 
-const props = defineProps<{ target?: BrowserTarget | null }>()
+const props = defineProps<{ target?: BrowserTarget | null; active?: boolean }>()
 /**
  * 上报两件事：
  * - `title`：标签标题（页面标题优先，页面没给就用主机名回落）；
@@ -64,6 +64,55 @@ const canGoBack = ref(false)
 const canGoForward = ref(false)
 /** 加载失败提示（did-fail-load；离线 / 域名不存在 / 代理不可用都会走到这里） */
 const failure = ref('')
+
+/**
+ * 隐藏标签的**空闲页面回收**（2026-10-04 性能轮，docs/07 §2.3）。
+ *
+ * 浏览器标签首次激活后常驻，切走只是 `display:none`；但每个 webview 是独立 guest 进程，
+ * 开过十几个网页就常驻十几个进程。这里在标签连续 10 分钟未激活时把页面导航到
+ * `about:blank` 释放它（标签 / 地址 / 标题保留），再次激活按原地址重载 ——
+ * 代价是一次可接受的重载，换回有界的常驻内存。
+ */
+const IDLE_RELEASE_MS = 10 * 60_000
+const RELEASED_URL = 'about:blank'
+let idleTimer: number | null = null
+let releasedUrl: string | null = null
+
+function isTabActive(): boolean {
+  return props.active !== false
+}
+
+function cancelIdleRelease(): void {
+  if (idleTimer === null) return
+  window.clearTimeout(idleTimer)
+  idleTimer = null
+}
+
+function scheduleIdleRelease(): void {
+  cancelIdleRelease()
+  if (view === null || isTabActive()) return
+  idleTimer = window.setTimeout(() => {
+    idleTimer = null
+    releaseIdlePage()
+  }, IDLE_RELEASE_MS)
+}
+
+function releaseIdlePage(): void {
+  if (view === null || isTabActive()) return
+  const current = view.src
+  if (current === '' || current === RELEASED_URL) return
+  releasedUrl = current
+  view.stop()
+  view.src = RELEASED_URL
+}
+
+function restoreIdlePage(): void {
+  cancelIdleRelease()
+  if (releasedUrl === null || view === null) return
+  const url = releasedUrl
+  releasedUrl = null
+  view.src = url
+}
 
 const hostEl = ref<HTMLElement | null>(null)
 /** webview 是 Electron 注册的自定义元素，Vue 编译器不认识 —— 用 createElement 绕开。
@@ -119,6 +168,8 @@ function navigate(raw: string): void {
     return
   }
   failure.value = ''
+  cancelIdleRelease()
+  releasedUrl = null
   view.src = url.toString()
 }
 
@@ -133,6 +184,8 @@ let displayOverride: { url: string; display: string } | null = null
 function show(target: BrowserTarget): void {
   if (view === null) return
   failure.value = ''
+  cancelIdleRelease()
+  releasedUrl = null
   displayOverride = { url: target.url, display: target.display }
   view.src = target.url
 }
@@ -163,12 +216,14 @@ onMounted(() => {
     loading.value = true
     // 先把标签标题落到主机名：离线 / 加载失败时不会有 page-title-updated，
     // 标签至少要能分辨「这是哪一页」（成功加载后会被真正的页面标题覆盖）
-    if (view !== null) emit('title', hostLabel(view.src))
+    // 空闲回收导航到 about:blank 时不改标题（保留用户最后看的那一页）
+    if (view !== null && releasedUrl === null) emit('title', hostLabel(view.src))
   })
   element.addEventListener('did-stop-loading', () => {
     loading.value = false
     refreshNavState()
-    if (view !== null) {
+    // 空闲回收导航到 about:blank 时不要把地址栏改掉（保留用户最后看的地址）
+    if (view !== null && releasedUrl === null) {
       // 工具展示的本地文件：地址栏回填原始路径（file:// URL 对用户没有可读性）
       urlInput.value =
         displayOverride !== null && displayOverride.url === view.src
@@ -198,9 +253,11 @@ onMounted(() => {
   } else {
     goHome()
   }
+  scheduleIdleRelease()
 })
 
 onUnmounted(() => {
+  cancelIdleRelease()
   if (view !== null) {
     view.remove()
     view = null
@@ -213,6 +270,16 @@ watch(
   () => {
     if (props.target != null) show(props.target)
   },
+)
+
+// 标签激活 / 隐藏：激活时恢复被回收的页面，隐藏时开始计时
+watch(
+  () => isTabActive(),
+  (active) => {
+    if (active) restoreIdlePage()
+    else scheduleIdleRelease()
+  },
+  { immediate: true },
 )
 </script>
 

@@ -95,6 +95,20 @@ export interface SessionStoreOptions {
   writeDebounceMs?: number
   /** 单会话消息上限（默认 2000） */
   maxMessages?: number
+  /**
+   * 内存里同时保留的**已装载会话**上限（默认 8）。
+   *
+   * 脏的 / 正在写盘的 / 正在读盘的会话永不淘汰；被淘汰的会话只丢消息数组
+   * （`metaCache` 保留），下次 `ensureLoaded` 自动重读（2026-10-04 性能轮）。
+   */
+  maxLoadedSessions?: number
+  /**
+   * 会话被淘汰前要求的最短空闲时间（默认 5 分钟）。
+   *
+   * 只防「加载完立刻被另一条异步链淘汰」的竞态；`summaries()` 的临时装载另有
+   * `releaseTransient` 显式释放，不依赖这个阈值。
+   */
+  loadedIdleMs?: number
   onWriteError?: (error: Error) => void
 }
 
@@ -116,6 +130,8 @@ export class SessionStore {
   private readonly logger: Logger
   private readonly writeDebounceMs: number
   private readonly maxMessages: number
+  private readonly maxLoadedSessions: number
+  private readonly loadedIdleMs: number
   private readonly onWriteError: ((error: Error) => void) | undefined
 
   private readonly cache = new Map<string, StoredMessage[]>()
@@ -139,6 +155,15 @@ export class SessionStore {
    * 因此不存在「已标记 loaded、内容却还没装填」的中间态（原因见 `ensureLoaded`）。
    */
   private readonly loading = new Map<string, Promise<void>>()
+  /** 会话 LRU 访问序：Map 的迭代序即"最久未访问在前" */
+  private readonly lastAccess = new Map<string, number>()
+  /**
+   * 会话摘要缓存（`chat:sessions`）。
+   *
+   * 键是会话 id，值是**不含 active** 的摘要；任何写盘排队（`scheduleWrite`）都会失效它。
+   * 意义：`summaries()` 不必为了算标题 / 条数把每个会话的消息常驻内存，也不会重复读盘。
+   */
+  private readonly summaryCache = new Map<string, SessionSummary>()
   private readonly dirty = new Set<string>()
   private readonly writing = new Map<string, Promise<void>>()
   private readonly timers = new Map<string, NodeJS.Timeout>()
@@ -150,11 +175,18 @@ export class SessionStore {
     this.logger = options.logger ?? createNoopLogger()
     this.writeDebounceMs = options.writeDebounceMs ?? SESSION_WRITE_DEBOUNCE_MS
     this.maxMessages = options.maxMessages ?? DEFAULT_MAX_MESSAGES
+    this.maxLoadedSessions = Math.max(1, options.maxLoadedSessions ?? 8)
+    this.loadedIdleMs = Math.max(0, options.loadedIdleMs ?? 5 * 60_000)
     this.onWriteError = options.onWriteError
   }
 
   get directory(): string {
     return this.dir
+  }
+
+  /** 当前内存里保留的已装载会话数（诊断 / 单测用；不含只读 meta）。 */
+  get loadedSessionCount(): number {
+    return this.cache.size
   }
 
   /**
@@ -437,6 +469,8 @@ export class SessionStore {
     this.cache.delete(id)
     this.metaCache.delete(id)
     this.askCache.delete(id)
+    this.summaryCache.delete(id)
+    this.lastAccess.delete(id)
     this.loaded.delete(id)
     this.loading.delete(id)
     await this.fs.remove(sessionFilePath(this.dir, id))
@@ -712,8 +746,18 @@ export class SessionStore {
    * 由渲染层决定分组（storage 层不做过滤，避免「归档后从磁盘消失了」这类误判）。
    */
   async summaries(activeId?: string): Promise<SessionSummary[]> {
+    const normalizedActive = activeId === undefined ? undefined : normalizeSessionId(activeId)
     const items: SessionSummary[] = []
     for (const id of await this.listSessions()) {
+      // 摘要缓存命中：不读盘、不装载消息（写盘排队时会被 `scheduleWrite` 失效）
+      const cached = this.summaryCache.get(id)
+      if (cached !== undefined) {
+        items.push(this.withActive(cached, normalizedActive))
+        continue
+      }
+      // 未装载过的会话只**临时**装载：算完摘要立刻释放消息数组（`metaCache` 保留），
+      // 避免 `chat:sessions` 把磁盘上每个会话的全部消息都常驻内存。
+      const wasLoaded = this.cache.has(id)
       // 逐条隔离（P2-01 的配套）：读盘错误在 `get()` 上**如实上抛**是对的方向，但聚合层
       // 不能被单点拖垮 —— 否则一个文件被瞬时占用（Windows 杀软 / 同步盘）就会让整个
       // `chat:sessions` 返回 E_UNKNOWN、左栏一条都不显示。失败者跳过（下次访问自愈）。
@@ -727,32 +771,43 @@ export class SessionStore {
         })
         continue
       }
-      const meta = this.metaCache.get(id) ?? {}
-      const firstUser = messages.find((message) => message.role === 'user')
-      const last = messages[messages.length - 1]
-      items.push({
-        id,
-        title: titleFor(firstUser),
-        updatedAt: last?.createdAt ?? createdAtFromId(id) ?? new Date(0).toISOString(),
-        messageCount: messages.filter(
-          (message) => message.role === 'user' || message.role === 'assistant',
-        ).length,
-        ...(activeId === undefined ? {} : { active: id === normalizeSessionId(activeId) }),
-        ...(meta.archived === undefined ? {} : { archived: meta.archived }),
-        ...(this.projectOf(id) === undefined ? {} : { projectId: this.projectOf(id) }),
-        // 远程会话管理（docs/12 §6.3）：visibility 缺省可见（undefined = 不带键），
-        // permissionMode 缺省跟随全局（同样不带键）
-        ...(meta.centerVisible === undefined ? {} : { centerVisible: meta.centerVisible }),
-        ...(meta.permissionMode === undefined ? {} : { permissionMode: meta.permissionMode }),
-        // 会话级模型覆盖（docs/06 §3，本轮）：未覆盖不带键（= 跟随全局，与 projectId 同款「有键才有值」）
-        ...(meta.llm === undefined ? {} : { llm: meta.llm }),
-        // 会话空间（docs/06 §4）：未标记 = Agent 空间，不带键（与 projectId 同款「有键才有值」）
-        ...(meta.space === undefined ? {} : { space: meta.space }),
-        // 会话级用量累计（docs/06 §16.2，本轮）：从未回传过 usage 的会话不带键
-        ...(meta.usage === undefined ? {} : { usage: meta.usage }),
-      })
+      const summary = this.buildSummary(id, messages, this.metaCache.get(id) ?? {})
+      this.summaryCache.set(id, summary)
+      if (!wasLoaded) this.releaseTransient(id)
+      items.push(this.withActive(summary, normalizedActive))
     }
     return items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+  }
+
+  /** 摘要的 `active` 只属于**当前这次调用**，不写进 `summaryCache`（否则会串台）。 */
+  private withActive(summary: SessionSummary, activeId: string | undefined): SessionSummary {
+    return activeId === undefined ? { ...summary } : { ...summary, active: summary.id === activeId }
+  }
+
+  private buildSummary(id: string, messages: StoredMessage[], meta: SessionMeta): SessionSummary {
+    const firstUser = messages.find((message) => message.role === 'user')
+    const last = messages[messages.length - 1]
+    const projectId = this.projectOf(id)
+    return {
+      id,
+      title: titleFor(firstUser),
+      updatedAt: last?.createdAt ?? createdAtFromId(id) ?? new Date(0).toISOString(),
+      messageCount: messages.filter(
+        (message) => message.role === 'user' || message.role === 'assistant',
+      ).length,
+      ...(meta.archived === undefined ? {} : { archived: meta.archived }),
+      ...(projectId === undefined ? {} : { projectId }),
+      // 远程会话管理（docs/12 §6.3）：visibility 缺省可见（undefined = 不带键），
+      // permissionMode 缺省跟随全局（同样不带键）
+      ...(meta.centerVisible === undefined ? {} : { centerVisible: meta.centerVisible }),
+      ...(meta.permissionMode === undefined ? {} : { permissionMode: meta.permissionMode }),
+      // 会话级模型覆盖（docs/06 §3，本轮）：未覆盖不带键（= 跟随全局，与 projectId 同款「有键才有值」）
+      ...(meta.llm === undefined ? {} : { llm: meta.llm }),
+      // 会话空间（docs/06 §4）：未标记 = Agent 空间，不带键（与 projectId 同款「有键才有值」）
+      ...(meta.space === undefined ? {} : { space: meta.space }),
+      // 会话级用量累计（docs/06 §16.2，本轮）：从未回传过 usage 的会话不带键
+      ...(meta.usage === undefined ? {} : { usage: meta.usage }),
+    }
   }
 
   /**
@@ -772,6 +827,7 @@ export class SessionStore {
       this.loaded.add(id)
       this.cache.set(id, [])
     }
+    this.touch(id)
     const space = options?.space
     // 只为 'work' 落缓存键：'agent' 是缺省空间（`spaceOf` 已归一），写 `{ space: 'agent' }`
     // 会让 summaries / isEmptyMeta 出现「有键但无信息量」的空值键
@@ -829,7 +885,10 @@ export class SessionStore {
    * 调用方（`get` / `append` / `summaries`…）拿到的是异常而不是一份空快照）。
    */
   private async ensureLoaded(id: string): Promise<void> {
-    if (this.loaded.has(id)) return
+    if (this.loaded.has(id)) {
+      this.touch(id)
+      return
+    }
     const inFlight = this.loading.get(id)
     // 已有在途读盘：直接复用它，既不重复读盘也不提前置 loaded
     if (inFlight !== undefined) return inFlight
@@ -843,7 +902,10 @@ export class SessionStore {
       if (this.loading.get(id) === task) this.loading.delete(id)
     })
     this.loading.set(id, task)
-    return task
+    return task.then(() => {
+      this.touch(id)
+      this.evictIfOverCapacity()
+    })
   }
 
   /**
@@ -873,6 +935,57 @@ export class SessionStore {
     const cachedAsks = this.askCache.get(id)
     this.askCache.set(id, cachedAsks === undefined ? asks : mergeAsks(asks, cachedAsks))
     this.loaded.add(id)
+  }
+
+  // ───────────────────────── 内存有界（2026-10-04 性能轮） ─────────────────────────
+
+  /** 标记一次访问（LRU：Map 迭代序即最久未访问在前） */
+  private touch(id: string): void {
+    this.lastAccess.delete(id)
+    this.lastAccess.set(id, Date.now())
+  }
+
+  /**
+   * 超过上限时淘汰最久未访问的会话。
+   *
+   * 三条不可淘汰：脏的 / 有待写定时器的 / 正在读盘的 —— 淘汰它们会让「内存快照」丢失或
+   * 让写盘拿到不完整数据（`append` / `updateToolCall` 依赖 cache 里有完整历史）。
+   * 刻意**不看 `writing`**：那张 map 保留的是已结算的 promise（串行写盘队列的队尾），
+   * 拿它当"在写盘"判据会让淘汰永远不生效；真正的在途写在 `dirty` 清除前都受保护。
+   * 另外只在空闲超过 `loadedIdleMs` 后动手，避开「加载完立刻被另一条异步链淘汰」的竞态。
+   */
+  private evictIfOverCapacity(): void {
+    if (this.cache.size <= this.maxLoadedSessions) return
+    const now = Date.now()
+    for (const id of [...this.cache.keys()]) {
+      if (this.cache.size <= this.maxLoadedSessions) break
+      if (this.dirty.has(id) || this.timers.has(id)) continue
+      if (this.loading.has(id)) continue
+      if (now - (this.lastAccess.get(id) ?? 0) < this.loadedIdleMs) continue
+      this.evictSession(id)
+    }
+  }
+
+  /** 只丢消息数组与留痕（`metaCache` 保留：归档 / 项目 / 用量都是小对象，重读成本不值当） */
+  private evictSession(id: string): void {
+    for (const message of this.cache.get(id) ?? []) this.messageOwners.delete(message.id)
+    this.cache.delete(id)
+    this.askCache.delete(id)
+    this.loaded.delete(id)
+    this.lastAccess.delete(id)
+  }
+
+  /**
+   * 释放「只为算一次摘要而临时装载」的会话。
+   *
+   * `summaries()` 专用：调用前记录 `wasLoaded`，未装载过的会话读盘算完摘要后立刻释放，
+   * 这样 `chat:sessions` 的内存占用与磁盘会话总量脱钩（2026-10-04 性能轮）。
+   * 脏 / 有待写定时器 / 在读的一律不释放，语义与 `evictIfOverCapacity` 一致。
+   */
+  private releaseTransient(id: string): void {
+    if (this.dirty.has(id) || this.timers.has(id)) return
+    if (this.loading.has(id)) return
+    this.evictSession(id)
   }
 
   /**
@@ -974,6 +1087,9 @@ export class SessionStore {
   }
 
   private scheduleWrite(id: string, delayMs = this.writeDebounceMs): void {
+    // 任何写盘排队都意味着会话内容 / meta 可能已变：摘要缓存必须失效，
+    // 否则 `chat:sessions` 会回旧标题 / 旧条数 / 旧归档标记。
+    this.summaryCache.delete(id)
     if (delayMs <= 0) {
       const existing = this.timers.get(id)
       if (existing) {

@@ -114,6 +114,16 @@ export function useStickToBottom(
   let lastHeartbeatHeight = -1
   let lastHeartbeatTop = -1
   let guardHandle: number | null = null
+  /** 空闲档的定时器句柄（活跃档走 rAF，两者互斥） */
+  let guardTimer: number | null = null
+  /**
+   * 最近一次「可能影响滚动」的活动时刻（DOM 变更 / 尺寸变化 / 用户意图 / 程序贴底）。
+   *
+   * 心跳不再无条件 60fps：只在最近 `GUARD_ACTIVE_WINDOW_MS` 内有过活动时逐帧巡检，
+   * 空闲后自动降到 `GUARD_IDLE_INTERVAL_MS` 一次 —— 既保住「观察者静默失效」的兜底，
+   * 又不让聊天窗口开着就永久空转（2026-10-04 性能轮）。
+   */
+  let lastActivityAt = 0
   /** 引擎要求的 `scroll` 通知（由绑在容器上的原生监听转发） */
   let notifyScroll: (() => void) | null = null
   /** 引擎要求的"尺寸变化"通知（由 `rebind()` 里的 ResizeObserver 转发） */
@@ -133,6 +143,19 @@ export function useStickToBottom(
    * 重新挂监听是这一层的事，卸载时统一收口（`onUnmounted`）。
    */
   const nativeSubscriptions: Array<() => void> = []
+
+  const GUARD_IDLE_INTERVAL_MS = 250
+  const GUARD_ACTIVE_WINDOW_MS = 1_200
+
+  function noteActivity(): void {
+    lastActivityAt = Date.now()
+    // 活动到来时把在等的空闲定时器换成下一帧，流式期间因此恢复逐帧。
+    if (guardTimer !== null) {
+      window.clearTimeout(guardTimer)
+      guardTimer = null
+    }
+    scheduleGuardFrame()
+  }
 
   /** 把引擎的跟随状态同步进 `ref`（引擎是唯一权威，渲染层只读它渲染「回到最新」入口） */
   function sync(): void {
@@ -160,6 +183,8 @@ export function useStickToBottom(
   function resolveScroller(): HTMLElement | null {
     const live = content()
     if (live === null) return scroller
+    // 缓存命中：容器仍连接且确实包含内容根，就不必再逐层 getComputedStyle。
+    if (scroller !== null && scroller.isConnected && scroller.contains(live)) return scroller
     const found = findScroller(live)
     if (found !== null) scroller = found
     return found ?? scroller
@@ -208,6 +233,7 @@ export function useStickToBottom(
     resizeObserver?.disconnect()
     if (typeof ResizeObserver !== 'undefined') {
       resizeObserver = new ResizeObserver(() => {
+        noteActivity()
         notifyResize?.()
         core?.onMutated()
       })
@@ -219,11 +245,13 @@ export function useStickToBottom(
       if (disposed) return
       // 观察的节点还活着吗？（脱离文档的节点永远不触发，也不会报错）
       if (observed.isConnected) {
+        noteActivity()
         core?.onMutated()
         return
       }
       // 节点已被换掉：重新解析后再滚一次，这一轮的内容变更不丢
       rebind()
+      noteActivity()
       core?.onMutated()
     })
     mutationObserver.observe(observed, { childList: true, characterData: true, subtree: true })
@@ -236,6 +264,7 @@ export function useStickToBottom(
     // 一直是**注释写了、实现漏了**（2026-09-30 就写在文档里，直到 2026-10-01 才补上实现）。
     if (intentCallback !== null) bindScroller(intentCallback)
     core?.refresh()
+    noteActivity()
   }
 
   /**
@@ -252,7 +281,10 @@ export function useStickToBottom(
     for (const unsubscribe of nativeSubscriptions.splice(0)) unsubscribe()
     const target = scroller
     if (target === null) return
-    const onScroll = (): void => notifyScroll?.()
+    const onScroll = (): void => {
+      noteActivity()
+      notifyScroll?.()
+    }
     // 滚轮：只认纵向（触控板横扫与对话区滚动无关）；方向交给吸底补齐判（见 onUserIntent）
     const wheel = (event: WheelEvent): void => {
       if (Math.abs(event.deltaY) < Math.abs(event.deltaX)) return
@@ -320,29 +352,54 @@ export function useStickToBottom(
    *
    * 顺带承担结构校对：引擎读到的容器必须是内容根当下的真实祖先，错位就重新绑定。
    */
-  function startStructureGuard(): void {
-    const step = (): void => {
-      if (disposed) return
-      guardHandle = window.requestAnimationFrame(step)
-      const live = content()
-      if (live === null) return
-      const candidate = findScroller(live)
-      if (!live.isConnected || candidate === null || candidate !== scroller) {
-        rebind()
-        return
-      }
-      const height = candidate.scrollHeight
-      const top = candidate.scrollTop
-      const heightChanged = height !== lastHeartbeatHeight
-      const topChanged = top !== lastHeartbeatTop
-      lastHeartbeatHeight = height
-      lastHeartbeatTop = top
-      // 接管态下用户自己滚出来的 `scrollTop` 变化不是"内容变更"：只更新基准、不驱动引擎
-      const following = core?.isFollowing() ?? true
-      if (!heightChanged && !(topChanged && following)) return
+  /** 排下一次巡检：活跃档用 rAF（逐帧），空闲档用 250ms 定时器（见 `lastActivityAt`）。 */
+  function scheduleGuardFrame(): void {
+    if (disposed || guardHandle !== null || guardTimer !== null) return
+    guardHandle = window.requestAnimationFrame(guardStep)
+  }
+
+  function scheduleGuardIdle(): void {
+    if (disposed || guardHandle !== null || guardTimer !== null) return
+    guardTimer = window.setTimeout(guardStep, GUARD_IDLE_INTERVAL_MS)
+  }
+
+  function guardStep(): void {
+    guardHandle = null
+    guardTimer = null
+    if (disposed) return
+    const live = content()
+    if (live === null) {
+      scheduleGuardIdle()
+      return
+    }
+    const candidate =
+      scroller !== null && scroller.isConnected && scroller.contains(live)
+        ? scroller
+        : findScroller(live)
+    if (!live.isConnected || candidate === null || candidate !== scroller) {
+      rebind()
+      scheduleGuardIdle()
+      return
+    }
+    const height = candidate.scrollHeight
+    const top = candidate.scrollTop
+    const heightChanged = height !== lastHeartbeatHeight
+    const topChanged = top !== lastHeartbeatTop
+    lastHeartbeatHeight = height
+    lastHeartbeatTop = top
+    // 接管态下用户自己滚出来的 `scrollTop` 变化不是"内容变更"：只更新基准、不驱动引擎
+    const following = core?.isFollowing() ?? true
+    if (heightChanged || (topChanged && following)) {
+      lastActivityAt = Date.now()
       core?.onMutated()
     }
-    guardHandle = window.requestAnimationFrame(step)
+    if (Date.now() - lastActivityAt < GUARD_ACTIVE_WINDOW_MS) scheduleGuardFrame()
+    else scheduleGuardIdle()
+  }
+
+  function startStructureGuard(): void {
+    lastActivityAt = Date.now()
+    scheduleGuardFrame()
   }
 
   onMounted(() => {
@@ -396,6 +453,7 @@ export function useStickToBottom(
           // 收尾（含吸底补齐）是没人调用的死代码 —— lint 不在日常验证循环里，一直没暴露。
           // `rebind()` 重挂原生监听时拿的也是这个包装（`intentCallback`）。
           intentCallback = (kind, wheelDeltaY) => {
+            noteActivity()
             callback(kind)
             sync()
             if (shouldSnapOnIntent(kind, wheelDeltaY)) snapIfNearBottom()
@@ -408,7 +466,10 @@ export function useStickToBottom(
         },
         onTransitionEnd: (callback) => {
           const target = contentEl
-          const listener = (): void => callback()
+          const listener = (): void => {
+            noteActivity()
+            callback()
+          }
           target?.addEventListener('transitionend', listener)
           return () => target?.removeEventListener('transitionend', listener)
         },
@@ -450,6 +511,8 @@ export function useStickToBottom(
     core = null
     if (guardHandle !== null) window.cancelAnimationFrame(guardHandle)
     guardHandle = null
+    if (guardTimer !== null) window.clearTimeout(guardTimer)
+    guardTimer = null
     mutationObserver?.disconnect()
     mutationObserver = null
     resizeObserver?.disconnect()
@@ -466,6 +529,7 @@ export function useStickToBottom(
   }
 
   function stick(behavior: ScrollBehavior = 'auto'): void {
+    noteActivity()
     // 顺序要紧：先让引擎接管（它会在下一帧持续纠正），再按调用方要求的动效滚一次。
     // 平滑滚动由浏览器插值、会被随后的写入打断 —— 所以只在调用方显式要求时用它。
     core?.stick()
@@ -474,6 +538,7 @@ export function useStickToBottom(
   }
 
   function refresh(): void {
+    noteActivity()
     rebind()
     core?.refresh()
     sync()

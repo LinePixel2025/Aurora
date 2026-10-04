@@ -11,11 +11,28 @@
 import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promises as dns } from 'node:dns'
-import si from 'systeminformation'
+import type systeminformation from 'systeminformation'
 import type { ClassIslandBridgeSnapshot, Logger, PerceptionSummary } from '@aurora/shared'
 import { parseClock, type Lesson } from './schedule.js'
 
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'] as const
+
+/**
+ * `systeminformation` 按需加载（2026-10-04 性能轮）。
+ *
+ * 实测静态 require 约 8MB RSS / 89ms；它只在电源 / 网卡采集时用得到，
+ * 而感知摘要本身已经是按需消费（提示条展开、聊天上下文、系统提示词）。
+ * 首帧启动不再为它付费，纯空闲时也不会加载。
+ */
+type SysteminformationModule = typeof systeminformation
+let systeminformationPromise: Promise<SysteminformationModule> | null = null
+
+function loadSysteminformation(): Promise<SysteminformationModule> {
+  systeminformationPromise ??= import('systeminformation').then(
+    (mod) => (mod.default ?? mod) as SysteminformationModule,
+  )
+  return systeminformationPromise
+}
 
 /** 前台窗口探针输出标记（stdout 里唯一的机器可读行）。 */
 const FOREGROUND_MARKER = 'AURORA_FG|'
@@ -56,8 +73,13 @@ export interface PerceptionOptions {
   networkIntervalMs?: number
   /** 电源采集间隔，默认 5min（docs/06 §8.1） */
   powerIntervalMs?: number
-  /** 前台窗口采集间隔，默认 5s（docs/06 §8.1） */
-  foregroundIntervalMs?: number
+  /**
+   * 前台窗口采集的 TTL，默认 60s（docs/06 §8.1，2026-10-04 性能轮）。
+   *
+   * 探针要新建 `powershell.exe` 并现场 `Add-Type` 编译 C#，单次成本 1s 级 CPU；
+   * 因此**不挂后台定时器**，只在 `summary()` 消费时按 TTL 非阻塞刷新。
+   */
+  foregroundTtlMs?: number
   /** 探测使用的 DNS 服务器 */
   dnsTarget?: string
   /**
@@ -85,49 +107,68 @@ export class PerceptionHub {
   private readonly logger: Logger
   private readonly networkIntervalMs: number
   private readonly powerIntervalMs: number
-  private readonly foregroundIntervalMs: number
+  private readonly foregroundTtlMs: number
   private readonly dnsTarget: string
   private timers: NodeJS.Timeout[] = []
+  private started = false
+  private timersStarted = false
   private power: PerceptionSummary['battery'] | undefined
   private network: PerceptionSummary['network'] | undefined
   private foreground: PerceptionSummary['foreground'] | undefined
   private foregroundBusy = false
+  /** 上次前台探针的**尝试**时刻（成功 / 失败都算，失败也按 TTL 重试，避免持续失败时刷探针） */
+  private foregroundCheckedAt = 0
 
   constructor(options: PerceptionOptions) {
     this.options = options
     this.logger = options.logger
     this.networkIntervalMs = options.networkIntervalMs ?? 30_000
     this.powerIntervalMs = options.powerIntervalMs ?? 300_000
-    this.foregroundIntervalMs = options.foregroundIntervalMs ?? 5_000
+    this.foregroundTtlMs = Math.max(0, options.foregroundTtlMs ?? 60_000)
     this.dnsTarget = options.dnsTarget ?? '223.5.5.5'
   }
 
   start(): void {
-    void this.refreshPower()
-    void this.refreshNetwork()
-    void this.refreshForeground()
-    this.timers.push(setInterval(() => void this.refreshPower(), this.powerIntervalMs))
-    this.timers.push(setInterval(() => void this.refreshNetwork(), this.networkIntervalMs))
-    this.timers.push(setInterval(() => void this.refreshForeground(), this.foregroundIntervalMs))
-    for (const timer of this.timers) timer.unref?.()
-    this.logger.debug('系统感知已启动', {
+    // 不在这里做首次采集、也不起定时器：让**第一次真正消费**（`summary()`）才激活。
+    // 这样纯空闲的进程不会加载 systeminformation / 起 DNS 探测（ADR-007 的降级语义不变）。
+    this.started = true
+    this.logger.debug('系统感知已就绪（消费时按需激活）', {
       networkIntervalMs: this.networkIntervalMs,
       powerIntervalMs: this.powerIntervalMs,
-      foregroundIntervalMs: this.foregroundIntervalMs,
+      foregroundTtlMs: this.foregroundTtlMs,
     })
   }
 
   stop(): void {
     for (const timer of this.timers) clearInterval(timer)
     this.timers = []
+    this.timersStarted = false
+  }
+
+  /**
+   * 第一次 `summary()` 时启动电源 / 网络周期采集。
+   *
+   * 只有被消费过的事实数据才值得维护周期任务；纯空闲进程（提示条收起、没聊天、没设置页）
+   * 永远不激活，省掉 `systeminformation` 的常驻与每 30s 的 DNS 探测。
+   */
+  private ensureTimersStarted(): void {
+    if (!this.started || this.timersStarted) return
+    this.timersStarted = true
+    this.timers.push(setInterval(() => void this.refreshPower(), this.powerIntervalMs))
+    this.timers.push(setInterval(() => void this.refreshNetwork(), this.networkIntervalMs))
+    for (const timer of this.timers) timer.unref?.()
   }
 
   /** 当前感知摘要（用于上下文注入与 `system-status` Skill）。 */
   async summary(): Promise<PerceptionSummary> {
     const now = new Date()
+    this.ensureTimersStarted()
     await this.ensureBaseCollections()
-    // 前台窗口由定时器维持；首次 summary 早于首次探测时补一次（不等待，避免拖慢系统提示词组装）
-    if (this.foreground === undefined && !this.foregroundBusy) void this.refreshForeground()
+    // 前台窗口没有后台定时器：按 TTL 懒刷新。**不等待**，避免 1s 级探针拖慢系统提示词组装；
+    // 首次探测完成前该项保持 unknown（ADR-007），下一轮 summary 自然拿到值。
+    if (!this.foregroundBusy && Date.now() - this.foregroundCheckedAt >= this.foregroundTtlMs) {
+      void this.refreshForeground()
+    }
 
     const display = this.readDisplay()
     const lessons = await this.readLessons(now)
@@ -195,12 +236,16 @@ export class PerceptionHub {
   // ───────────────────────── 采集 ─────────────────────────
 
   private async ensureBaseCollections(): Promise<void> {
-    if (this.power === undefined) await this.refreshPower()
-    if (this.network === undefined) await this.refreshNetwork()
+    // 首次激活时并行采集：两次都要等 systeminformation 的模块加载，串行只会白等一轮
+    await Promise.all([
+      this.power === undefined ? this.refreshPower() : Promise.resolve(),
+      this.network === undefined ? this.refreshNetwork() : Promise.resolve(),
+    ])
   }
 
   private async refreshPower(): Promise<void> {
     try {
+      const si = await loadSysteminformation()
       const battery = await si.battery()
       this.power = {
         hasBattery: battery.hasBattery,
@@ -226,6 +271,7 @@ export class PerceptionHub {
   private async refreshForeground(): Promise<void> {
     if (this.foregroundBusy) return
     this.foregroundBusy = true
+    this.foregroundCheckedAt = Date.now()
     try {
       const stdout = await this.runForegroundProbe()
       const parsed = parseForegroundProbe(stdout)
@@ -291,7 +337,8 @@ export class PerceptionHub {
   }
 
   private async probeDns(): Promise<boolean> {
-    const resolver = new dns.Resolver({ timeout: 2000, tries: 1 })
+    // 800ms 足够识别本机连通性；首次 summary 会同步等待这一步，别让离线场景拖 2s
+    const resolver = new dns.Resolver({ timeout: 800, tries: 1 })
     try {
       resolver.setServers([this.dnsTarget])
       await resolver.resolve4('www.baidu.com')
@@ -303,6 +350,7 @@ export class PerceptionHub {
 
   private async readInterfaceType(): Promise<string> {
     try {
+      const si = await loadSysteminformation()
       const stats = await si.networkInterfaceDefault()
       return stats === '' ? '未知' : stats
     } catch {

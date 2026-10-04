@@ -277,6 +277,30 @@ describe('ClassIslandProvider', () => {
     expect(status.lastSyncAt).not.toBeNull()
   })
 
+  it('TTL 内重复 getToday 复用上次读取；force 才穿透', async () => {
+    let reads = 0
+    const provider = new ClassIslandProvider({
+      source: 'file',
+      endpoint: 'D:\\bridge.json',
+      timeoutMs: 1000,
+      readFile: async () => {
+        reads += 1
+        return payloadOf([
+          { weekday: monday.getDay(), startTime: '08:00', endTime: '08:45', subject: '数学' },
+        ])
+      },
+      logger: createMemoryLogger(),
+    })
+
+    await expect(provider.getToday(monday)).resolves.toHaveLength(1)
+    await expect(provider.getToday(monday)).resolves.toHaveLength(1)
+    expect(reads).toBe(1)
+
+    // 显式刷新（refreshIfStale 判定过期后）走 force，穿透 TTL
+    await provider.getToday(monday, true)
+    expect(reads).toBe(2)
+  })
+
   it('test() 返回今日预览且不改动既有状态语义', async () => {
     const provider = providerFor(
       payloadOf([

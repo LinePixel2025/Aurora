@@ -93,7 +93,7 @@ md.renderer.rules.code_inline = (tokens, idx) => {
  * `mermaid` / `echarts` 是**图表围栏**（P2）：产出可水合的占位结构（源码转义保留，
  * 渲染失败即回退展示源码），真正的渲染在 `hydrate.ts` 里按需异步进行。
  */
-md.renderer.rules.fence = (tokens, idx) => {
+md.renderer.rules.fence = (tokens, idx, _options, env) => {
   const token = tokens[idx]
   if (token === undefined) return ''
   const info = token.info?.trim() ?? ''
@@ -102,8 +102,13 @@ md.renderer.rules.fence = (tokens, idx) => {
   if (isChartKind(lang)) {
     return renderChartPlaceholder(lang, token.content ?? '', (raw) => md.utils.escapeHtml(raw))
   }
-  const highlighted = highlightCode(token.content ?? '', lang === '' ? undefined : lang)
-  return renderCodeBlock(highlighted, lang === '' ? undefined : lang)
+  // 流式未收盘期间跳过语法高亮（`env.highlight === false`）：代码块还在增长时每帧整块
+  // 重跑 highlight.js 是 O(n²) 的主要来源，收盘后再按完整内容高亮一次即可。
+  const body =
+    env?.highlight === false
+      ? md.utils.escapeHtml(token.content ?? '')
+      : highlightCode(token.content ?? '', lang === '' ? undefined : lang)
+  return renderCodeBlock(body, lang === '' ? undefined : lang)
 }
 
 /** 缩进代码块：无语言，正文原样转义 */
@@ -148,9 +153,21 @@ md.use(mathPlugin)
  * 输入异常（undefined / 非字符串）按空串处理 —— 调用方是流式渲染管线，
  * 丢一条空消息不该把整页炸掉。
  */
-export function renderMarkdown(source: string | undefined | null): string {
+export interface RenderMarkdownOptions {
+  /**
+   * 是否对围栏代码块做语法高亮，缺省 `true`。
+   * 流式消息传 `false`（正文还在增长，高亮成本随长度线性叠加且每帧重跑）。
+   */
+  highlight?: boolean
+}
+
+export function renderMarkdown(
+  source: string | undefined | null,
+  options: RenderMarkdownOptions = {},
+): string {
   if (typeof source !== 'string' || source === '') return ''
-  return md.render(source)
+  // markdown-it 的 Env 是 `{ [key: string]: any }`；这里显式收窄成受控选项再传入。
+  return md.render(source, options as Record<string, unknown>)
 }
 
 /** 供测试与两端样式核对：契约类名清单（改输出结构时先改这里） */

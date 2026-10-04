@@ -1,6 +1,12 @@
 <script setup lang="ts">
-/** 助手消息图片区：只拿无路径元数据，按 imageId 向主进程按需读取 data URL。 */
-import { onBeforeUnmount, reactive, watch } from 'vue'
+/**
+ * 助手消息图片区：只拿无路径元数据，按 imageId 向主进程**按需**读取 data URL。
+ *
+ * 性能口径（2026-10-04）：进入视口附近（IntersectionObserver，rootMargin 300px）才读盘，
+ * 且请求带 `maxDimension`（长边 720）由主进程缩略 —— 原图最大 10MB，多图会话直接 base64
+ * 会让渲染进程常驻几百 MB。缺省不读；已读的缩略图保留。
+ */
+import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import type { ChatDisplayImage } from '@aurora/shared'
 
 const props = defineProps<{ images: ChatDisplayImage[]; sessionId: string }>()
@@ -13,6 +19,10 @@ interface ImageState {
 
 const state = reactive(new Map<string, ImageState>())
 let requestId = 0
+const rootEl = ref<HTMLElement | null>(null)
+const visible = ref(false)
+let observer: IntersectionObserver | null = null
+const THUMBNAIL_MAX_DIMENSION = 720
 
 async function loadImage(image: ChatDisplayImage): Promise<void> {
   const existing = state.get(image.id)
@@ -27,6 +37,7 @@ async function loadImage(image: ChatDisplayImage): Promise<void> {
     const result = await window.aurora.chat.readDisplayImage({
       sessionId: props.sessionId,
       imageId: image.id,
+      maxDimension: THUMBNAIL_MAX_DIMENSION,
     })
     if (current !== requestId) return
     if (result.ok) state.set(image.id, { loading: false, dataUrl: result.value.dataUrl })
@@ -42,6 +53,12 @@ async function loadImage(image: ChatDisplayImage): Promise<void> {
 
 function reload(): void {
   requestId += 1
+  state.clear()
+  loadAllVisible()
+}
+
+function loadAllVisible(): void {
+  if (!visible.value) return
   for (const image of props.images) void loadImage(image)
 }
 
@@ -51,13 +68,40 @@ watch(
   { immediate: true },
 )
 
+onMounted(() => {
+  const el = rootEl.value
+  if (el === null || typeof IntersectionObserver !== 'function') {
+    visible.value = true
+    loadAllVisible()
+    return
+  }
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return
+      visible.value = true
+      observer?.disconnect()
+      observer = null
+      loadAllVisible()
+    },
+    { rootMargin: '300px 0px' },
+  )
+  observer.observe(el)
+})
+
 onBeforeUnmount(() => {
   requestId += 1
+  observer?.disconnect()
+  observer = null
 })
 </script>
 
 <template>
-  <div v-if="images.length > 0" class="display-images" data-field="chat.display-images">
+  <div
+    v-if="images.length > 0"
+    ref="rootEl"
+    class="display-images"
+    data-field="chat.display-images"
+  >
     <figure v-for="image in images" :key="image.id" class="display-image" :data-image-id="image.id">
       <img
         v-if="state.get(image.id)?.dataUrl"

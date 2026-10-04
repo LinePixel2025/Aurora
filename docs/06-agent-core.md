@@ -195,6 +195,11 @@ export interface LlmProvider {
   无项目不再等于无边界（**不是 OS 级沙箱**，`run_command` 仍是当前用户权限）。
   space 与 projectId 一样是**会话数据**：不进 `config.json`、不进 `CONFIG_VERSION` 迁移链。
 - 渲染层挂载时通过 `chat:history` 水合消息列表，因此重启后交互窗仍能看到历史。
+- **会话内存有界（2026-10-04 性能轮）**：`SessionStore` 的 `cache` 只保留最近活跃的若干个
+  已装载会话（`maxLoadedSessions`，默认 8；脏的 / 正在写盘的 / 正在读盘的永不淘汰），
+  被淘汰的会话下次 `ensureLoaded` 自动重读；`summaries()` 不再把每个会话的消息都常驻内存 ——
+  它先用 `summaryCache` 命中已算过的摘要，未装载的会话按「读盘 → 算摘要 → 立即释放消息」处理，
+  因此 `chat:sessions` 的内存占用与磁盘会话总量脱钩（归因见 Memory 的性能轮记录）。
 - 上下文窗口管理：超长自动摘要压缩（P1）；v1 先按 **字符上限（默认 60k）** 截断旧消息并保留系统提示词，
   且截断时保证「assistant(toolCalls) + 其后 tool 结果」成对保留。
 - **quick 会话滑动窗口（2026-09 起）**：快速会话（`sessionId = 'quick'`）组装 LLM 上下文时
@@ -586,13 +591,19 @@ interface AgentHostDeps {
 | 当前时间 / 星期 / 日期 | 进程内定时器 | 分钟级 | 课程表、问候语 |
 | 电源状态（AC / 电池 / 电量） | systeminformation | 状态变化 + 5min | 低电量提醒等主动服务 |
 | 网络连通性 | 系统探测（DNS） | 30s | 联网任务前置检查 |
-| 前台窗口 / 应用 | PowerShell 探针（`GetForegroundWindow` + `GetWindowTextW` + 进程名） | 5s | 上下文感知（“我在写什么”） |
+| 前台窗口 / 应用 | PowerShell 探针（`GetForegroundWindow` + `GetWindowTextW` + 进程名） | 摘要即时读取（TTL 60s，非阻塞刷新，无后台定时器） | 上下文感知（“我在写什么”） |
 | 显示器 / 屏幕状态 | Electron `screen`（主进程注入） | 摘要即时读取 | 窗口贴边策略 |
 | 课程表（ClassRoom） | `manual` provider / ClassIsland 桥接 | 摘要即时读取 + 课前轮询（15s，自动化引擎节拍，docs/13 §3） | 课前提醒、`timetable` Skill |
 
 - 前台窗口**不引入 `active-win`**：该原生模块预编译产物杀软误报多（03 §3），v1 直接用 PowerShell 探针；
   探针 stdout 由**导出的纯函数** `parseForegroundProbe` 解析，因此解析逻辑可单测、
   探测失败只降级为 `unknown`（ADR-007）。
+  ⚠️ 探针本身要**新建 `powershell.exe` 并现场 `Add-Type` 编译 C#**，单次成本约 1s 级 CPU：
+  因此**不挂后台定时器**，只在 `summary()` 消费时按 TTL（`foregroundTtlMs`，默认 60s）
+  **非阻塞**触发一次刷新，空闲时零开销；首次探测未完成前该项按 `unknown` 展示，绝不阻塞系统提示词组装。
+- `systeminformation`（电源 / 网卡）与整个感知采集**在第一次 `summary()` 消费时才激活**：
+  提示条收起、没有聊天、没开设置页的纯空闲进程不加载它、也不起 30s DNS 探测；
+  首次激活并行采电源 + 网络，DNS 超时收紧到 800ms（2026-10-04 性能轮）。
 - ClassIsland 联动（`provider: 'classisland'`，v0.6.0 落地；v3 见 05 §3.4）：
   读桥接插件写出的本地 JSON 或本机回环端点，**读取失败一律降级为空课表、不抛错不阻塞**。
   未配置端点时仍走空实现——语义从「功能未实现」变为「已配置但尚未接线」。
@@ -1463,6 +1474,11 @@ v8 起内核新增五个「看 / 通知 / 剪贴板 / 生图」工具（Design/b
 `view_image` / `screenshot` / `clipboard_read_image` 是 §25 的图像工具，门控口径与本节七件套**相反**
 （按当前生效模型的 `vision` 注册）—— 别把三者按「不受门控」理解。
 
+**对话图片区按需加载（2026-10-04 性能轮）**：`DisplayImageGallery` 用 `IntersectionObserver`
+只在图片进入视口附近时才调 `chat:readDisplayImage`；请求带 `maxDimension`（列表默认 720），
+主进程用 `nativeImage` 缩到该边长后再回 data URL —— 原图最大 10MB，不缩尺寸直接 base64
+会让多图会话的渲染进程常驻几百 MB。原图仍只在磁盘上，后续「查看大图」需要时再单独读。
+
 ### 14.1 注册口径
 
 - 装配器是 `main/tools/index.ts` 的 `registerExtensionTools`，与 `registerSettingsTool` **同级**：
@@ -1656,7 +1672,7 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 | 主进程 | `main/event-buffer.ts` | 相邻（队列尾）且 `(sessionId, requestId, messageId, type)` 全同的 `text` / `reasoning` 增量拼接合并为一条（保留**首条**的 `seq`），窗口 **16ms** 批量下发 |
 | 主进程 / 内核 | `main/event-buffer.ts`、`loop/agentLoop.ts` | 同一子代理调用的连续进度是“当前快照”而非日志：消费窗口内只保留最新快照，终态仍由工具结果单独落盘，避免大型任务积压事件与重复唤醒渲染进程 |
 | 渲染层状态 | `renderer/shared/composables/useChatDeltaBuffer.ts` | 同一帧内同 `messageId` 的增量合并为一次消息写入，**每帧最多 apply 一次** |
-| 渲染层视图 | `MessageList.vue` | markdown 结果按**消息对象**（`WeakMap`）缓存，只有该条 `content` 变了才重跑解析 |
+| 渲染层视图 | `MessageList.vue` | markdown 结果按**消息对象**（`WeakMap`）缓存，只有该条 `content` 变了才重跑解析；**流式未收盘的消息按 ~80ms 节流重解析、且不做语法高亮**（代码块按转义纯文本显示），`done` / `error` 收盘后再一次性高亮 —— 长代码块因此不会每帧重跑 highlight.js |
 
 子代理历史快照在 `useChat` 中维护增量索引，水合或工具卡更新时才重建 / 更新索引；实时进度不再为每个快照扫描整段消息历史。索引只改变聚合路径，不改变“实时事件优先、历史快照补齐”的展示口径。
 
@@ -1671,6 +1687,13 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 
 **为什么仍然不做逐字打字机**：正文是 `v-html` 渲染的 markdown，Vue 对 `v-html` 不做 DOM diff
 （见 07 §2.3）；按帧做真打字机等于每帧重解析 markdown，与本轮「把每 token 的重活降下来」的目标相反。
+
+**2026-10-04 追加的第三条放大器**：`highlightCode` 对**正在增长**的围栏代码块是 O(n²) ——
+每帧整块重跑 highlight.js，实测 TypeScript 20KB 约 48ms、45KB 约 145ms，未知语言走
+`highlightAuto` 时 5KB 就要约 300ms。因此流式期间高亮**整体跳过**，并且 `highlightCode`
+对超过 `MAX_HIGHLIGHT_CHARS`（40KB）的代码块、以及未知语言的**长**代码块一律回落转义纯文本；
+`highlightAuto` 只保留给很短的未知语言片段。这条口径与桌面 / Center 两端共享（`packages/shared`），
+改这里必须同时跑两端截图。
 
 **回归防线**：原有流式探针只发 2 条分片，密度太低、**必然测不出**这个 BUG。新增爆发探针
 （`chat-stream-burst`：桩服务按 `burst-probe` 标记各发 150 条 reasoning / content、间隔 5ms，

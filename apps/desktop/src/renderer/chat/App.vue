@@ -2007,6 +2007,7 @@ async function markGuideDone(): Promise<void> {
             <BrowserPanel
               v-else
               :target="tab.id === panelTargetTabId ? panelTarget : null"
+              :active="tab.id === ctxActiveId"
               @title="(title) => setCtxTabTitle(tab.id, title)"
               @new-tab="onNewCtxTab('browser')"
             />

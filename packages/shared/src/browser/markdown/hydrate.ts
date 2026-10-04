@@ -107,6 +107,12 @@ export function createChartHydrator(
 ): ChartHydrator {
   let disposed = false
   let scanScheduled = false
+  /**
+   * 本次待扫的子树根：`null` = 全量扫描（初始 / 外部 `scan()`）。
+   * 流式期间 `v-html` 每帧替换正文，MutationObserver 只把**新增节点**交进来，
+   * 避免对整棵消息树反复 `querySelectorAll`（长对话下是每帧 O(DOM) 的隐性开销）。
+   */
+  let pendingRoots: Element[] | null = null
 
   const visible = new WeakSet<Element>()
   const observed = new WeakSet<Element>()
@@ -126,25 +132,47 @@ export function createChartHydrator(
         )
       : null
 
-  const mutation = new MutationObserver(() => scheduleScan())
+  const mutation = new MutationObserver((records) => {
+    const roots: Element[] = []
+    for (const record of records) {
+      for (const node of Array.from(record.addedNodes)) {
+        if (node.nodeType === Node.ELEMENT_NODE) roots.push(node as Element)
+      }
+    }
+    // 没有新增元素的 mutation（纯文本 / 属性变化）不需要扫描图表占位。
+    if (roots.length > 0) scheduleScan(roots)
+  })
 
-  function scheduleScan(): void {
+  function scheduleScan(roots?: Element[]): void {
     if (disposed || scanScheduled) return
     scanScheduled = true
+    pendingRoots = roots === undefined ? null : roots
     // rAF 合并：流式期间每帧都会触发 mutation，同一帧只扫一次
     const run = (): void => {
       scanScheduled = false
-      if (!disposed) scan()
+      const roots = pendingRoots
+      pendingRoots = null
+      if (!disposed) scan(roots)
     }
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
     else window.setTimeout(run, 16)
   }
 
-  function scan(): void {
+  const CHART_PENDING_SELECTOR = '.md-chart[data-state="pending"]'
+
+  function scan(roots: Element[] | null = null): void {
     // Array.from：lib 里没有 DOM.Iterable，NodeList 不能直接 for...of
-    const nodes = Array.from(
-      container.querySelectorAll<HTMLElement>('.md-chart[data-state="pending"]'),
-    )
+    const nodes: HTMLElement[] = []
+    if (roots === null) {
+      nodes.push(...Array.from(container.querySelectorAll<HTMLElement>(CHART_PENDING_SELECTOR)))
+    } else {
+      for (const root of roots) {
+        if (root instanceof HTMLElement && root.matches(CHART_PENDING_SELECTOR)) nodes.push(root)
+        for (const node of Array.from(root.querySelectorAll<HTMLElement>(CHART_PENDING_SELECTOR))) {
+          nodes.push(node)
+        }
+      }
+    }
     for (const node of nodes) {
       if (observed.has(node)) continue
       observed.add(node)
@@ -321,7 +349,7 @@ export function createChartHydrator(
   scan()
 
   return {
-    scan,
+    scan: () => scan(),
     dispose(): void {
       disposed = true
       mutation.disconnect()

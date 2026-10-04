@@ -207,7 +207,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
    */
   const subagentRuns = computed<SubagentRun[]>(() => {
     // 显式读取版本号：索引是非响应式 Map，只有真正改变时才重新合并排序。
-    historicalSubagentsVersion.value
+    void historicalSubagentsVersion.value
     const merged = new Map<string, SubagentRun>()
     for (const run of liveSubagents.value) {
       merged.set(run.callId === '' ? run.taskId : run.callId, run)

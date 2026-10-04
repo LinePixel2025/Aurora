@@ -251,6 +251,13 @@ export interface ClassIslandSourceOptions {
    * 让「路径对不上」从静默空课表变成用户可见的诊断信息。
    */
   fallbackFilePath?: string
+  /**
+   * 源读取的 TTL（默认 10s，2026-10-04 性能轮，docs/05 §3.4）。
+   *
+   * 感知摘要逐 attempt 读、自动化引擎 15s tick、右栏 30s 轮询会叠加调用 `getToday`；
+   * TTL 内的重复调用直接复用上次结果，不再读文件 / 发 HTTP。测试连接与显式刷新穿透 TTL。
+   */
+  cacheTtlMs?: number
   logger?: Logger
 }
 
@@ -383,6 +390,9 @@ function clampTimeout(value: number): number {
  */
 export const STATUS_MAX_AGE_MS = 15_000
 
+/** ClassIsland 源读取的默认 TTL（docs/05 §3.4） */
+export const DEFAULT_CLASSISLAND_CACHE_TTL_MS = 10_000
+
 function describeError(error: unknown): string {
   if (error instanceof Error) {
     return error.name === 'AbortError' ? '请求超时' : error.message
@@ -422,6 +432,9 @@ export class ClassIslandProvider implements IScheduleProvider {
   }
   /** 上次读取的时刻（`refreshIfStale` 据此判断缓存是否过期） */
   private lastReadAt = 0
+  /** 上次**真正读源**的时刻（TTL 用；`lastReadAt` 仍服务状态接口的 15s 判据） */
+  private lastFetchedAt = 0
+  private readonly cacheTtlMs: number
   /** 上次读取到的原始文本（用于跳过重复解析） */
   private lastRaw: string | undefined
   private lastLessons: Lesson[] = []
@@ -434,6 +447,7 @@ export class ClassIslandProvider implements IScheduleProvider {
 
   constructor(options: ClassIslandSourceOptions) {
     this.options = options
+    this.cacheTtlMs = Math.max(0, options.cacheTtlMs ?? DEFAULT_CLASSISLAND_CACHE_TTL_MS)
   }
 
   getStatus(): ClassIslandProviderStatus {
@@ -456,14 +470,14 @@ export class ClassIslandProvider implements IScheduleProvider {
   async refreshIfStale(maxAgeMs = STATUS_MAX_AGE_MS): Promise<void> {
     if (Date.now() - this.lastReadAt < maxAgeMs) return
     try {
-      await this.getToday(new Date())
+      await this.getToday(new Date(), true)
     } catch {
       /* 读取失败已记入 status，这里不再抛 */
     }
   }
 
-  async getToday(now: Date): Promise<Lesson[]> {
-    const lessons = await this.readLessons()
+  async getToday(now: Date, force = false): Promise<Lesson[]> {
+    const lessons = await this.readLessons(force)
     const weekday = now.getDay()
     return lessons.filter((lesson) => lesson.weekday === weekday).map((lesson) => ({ ...lesson }))
   }
@@ -502,8 +516,13 @@ export class ClassIslandProvider implements IScheduleProvider {
     }
   }
 
-  private async readLessons(): Promise<Lesson[]> {
-    this.lastReadAt = Date.now()
+  private async readLessons(force = false): Promise<Lesson[]> {
+    const now = Date.now()
+    if (!force && this.lastFetchedAt !== 0 && now - this.lastFetchedAt < this.cacheTtlMs) {
+      return this.lastLessons.map((lesson) => ({ ...lesson }))
+    }
+    this.lastFetchedAt = now
+    this.lastReadAt = now
     const read = await readClassIslandSource(this.options)
 
     if (read.raw === undefined) {

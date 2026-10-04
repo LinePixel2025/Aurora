@@ -694,14 +694,49 @@ function jumpToLatest(): void {
  * `{ ...message }` 会把 `reasoning` 一起读成依赖，于是**每条思考增量都会让整份对话的
  * markdown 全量重解析**（增量 × transcript 长度）。本函数只读 `id` 与 `content`。
  */
-const htmlCache = new WeakMap<ChatMessage, { content: string; html: string }>()
+const htmlCache = new WeakMap<ChatMessage, { content: string; html: string; rich: boolean }>()
+
+/**
+ * 流式消息的 markdown 重解析节流（2026-10-04 性能轮）。
+ *
+ * 未收盘（`message.pending === true`）的消息还在增长：每个 rAF 批次都会改 `content`，
+ * 若每次都整份重解析 + 重高亮，代价与已生成长度成正比，全过程退化成 O(n²)。这里把
+ * 重解析压到 ~80ms 一次，并且**收盘前不做语法高亮**（`renderMarkdown(..., { highlight: false })`）；
+ * `done` / `error` 把 `pending` 翻成 false 时会立刻按完整内容重新渲染并补上高亮。
+ * 定时器只负责"没有新增量也要把最后一次节流补上"，不改变内容语义。
+ */
+const STREAM_RENDER_THROTTLE_MS = 80
+const streamRenderTick = ref(0)
+const streamRenderAt = new WeakMap<ChatMessage, number>()
+let streamRenderTimer: number | null = null
+
+function scheduleStreamRender(): void {
+  if (streamRenderTimer !== null) return
+  streamRenderTimer = window.setTimeout(() => {
+    streamRenderTimer = null
+    streamRenderTick.value += 1
+  }, STREAM_RENDER_THROTTLE_MS)
+}
 
 function htmlOf(message: ChatMessage): string {
+  // 订阅节流脉冲：定时器到点后强制重跑一次渲染，补上窗口内最后一次增量。
+  void streamRenderTick.value
   const cached = htmlCache.get(message)
-  if (cached !== undefined && cached.content === message.content) return cached.html
+  const rich = message.pending !== true
+  if (cached !== undefined && cached.content === message.content && cached.rich === rich) {
+    return cached.html
+  }
+  if (!rich && cached !== undefined) {
+    const last = streamRenderAt.get(message) ?? 0
+    if (Date.now() - last < STREAM_RENDER_THROTTLE_MS) {
+      scheduleStreamRender()
+      return cached.html
+    }
+  }
   // 复制按钮的壳由渲染器直接产出（CODE_COPY_BUTTON 在 code-block 里），这里只做解析缓存
-  const html = renderMarkdown(message.content)
-  htmlCache.set(message, { content: message.content, html })
+  const html = renderMarkdown(message.content, { highlight: rich })
+  htmlCache.set(message, { content: message.content, html, rich })
+  if (!rich) streamRenderAt.set(message, Date.now())
   return html
 }
 
@@ -898,6 +933,8 @@ onMounted(() => {
 onUnmounted(() => {
   if (ticker !== null) window.clearInterval(ticker)
   ticker = null
+  if (streamRenderTimer !== null) window.clearTimeout(streamRenderTimer)
+  streamRenderTimer = null
   // 思考侧的两笔在途资源：合并滚动用的 rAF 与读秒 interval，卸载时都必须收掉
   if (thinkingFrame !== null) window.cancelAnimationFrame(thinkingFrame)
   thinkingFrame = null

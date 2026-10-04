@@ -54,18 +54,34 @@ function prettyPrint(input: unknown): string {
   }
 }
 
-const timer = window.setInterval(() => {
+/**
+ * 倒计时只显示到秒：每 1s 刷一次读数即可；真正的超时收口用一次性 `setTimeout`
+ * 精确落在 deadline，不靠 interval 撞时机（旧实现 250ms = 4 倍无谓重渲染）。
+ */
+let timer: number | null = null
+let expireTimer: number | null = null
+
+function stopTimers(): void {
+  if (timer !== null) window.clearInterval(timer)
+  timer = null
+  if (expireTimer !== null) window.clearTimeout(expireTimer)
+  expireTimer = null
+}
+
+timer = window.setInterval(() => {
   now.value = Date.now()
-  if (now.value >= deadline) {
-    window.clearInterval(timer)
+}, 1000)
+expireTimer = window.setTimeout(
+  () => {
+    now.value = Date.now()
+    stopTimers()
     // 主进程已按超时拒绝：收起卡片，不再回执
     emit('resolved', false)
-  }
-}, 250)
+  },
+  Math.max(0, deadline - Date.now()),
+)
 
-onUnmounted(() => {
-  window.clearInterval(timer)
-})
+onUnmounted(stopTimers)
 
 async function decide(approved: boolean, always = false): Promise<void> {
   if (busy.value) return

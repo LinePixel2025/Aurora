@@ -76,6 +76,8 @@ export interface ModeGuide {
 
 - 配置项：`modes.classroom.watchDir`（设置页与引导均可配置）。
 - 监听：chokidar 监听 `add`；**稳定判定** = `awaitWriteFinish` + 连续两次 stat 尺寸不变（防“还在复制中”）。
+  **chokidar 按需加载**（2026-10-04 性能轮）：静态 require 约 4MB RSS / 47ms，
+  只有真正 `watch(dir)` 时才 `import('chokidar')`；未启用感知 / 未配置 `watchDir` 的进程不加载。
 - 忽略：隐藏文件、临时文件（`~$*`、`*.tmp`、`.DS_Store`、缩略图缓存等）。
 
 ### 3.2 分类管线
@@ -211,6 +213,7 @@ ClassIsland ──(C# 插件)──▶ 本地 JSON 契约 ──(读文件 / 读
 | 失败语义 | **一律降级为空课表 + 记日志与告警，绝不抛出** | 课前提醒是增强能力，不能因为桥接插件没装就把主流程带崩（ADR-007） |
 | 数据校验 | 逐行校验，非法行跳过并累积告警（带行号） | 宁可少一节课，也不要在错误的时间打开错误的科目文件夹 |
 | 重复解析 | 按**原始文本**缓存，文本未变则复用上次结果 | 避免同一批告警每 30s 刷一次日志 |
+| 读取频率 | provider 内置 TTL（默认 10s，`cacheTtlMs`）：TTL 内直接复用上次读取结果，显式测试 / 刷新才穿透 | 感知摘要逐 attempt 读、自动化引擎 15s tick、右栏 30s 轮询叠加时不再每次读文件 / 发 HTTP |
 | provider 生命周期 | 按配置签名（source / endpoint / timeout）缓存单例，签名变化即重建 | 保留"文本未变则不重解析"的缓存必须跨 tick 存活；端点变更要立即生效 |
 | 超时 | `timeoutMs`（默认 3000，Schema 约束 200–30000） | 桥接卡死时不能让 tick 挂住 |
 | 可观测 | `classisland:status`（上次同步时间 / 今日课程数 / 告警 / 错误）+ `classisland:test`（立即解析并回传今日预览） | 「读不到」必须可诊断，否则用户只会看到"课前提醒没触发" |

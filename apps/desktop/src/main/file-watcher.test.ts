@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { AuroraFileWatcher, extOf, shouldIgnore, type WatcherLike } from './file-watcher.js'
 
 /** 假 chokidar：手动触发 add / error 事件 */
@@ -67,6 +70,29 @@ describe('shouldIgnore', () => {
   it('正常文档不忽略', () => {
     expect(shouldIgnore('数学作业.pdf')).toBe(false)
     expect(shouldIgnore('课件.pptx')).toBe(false)
+  })
+})
+
+describe('AuroraFileWatcher · 默认 chokidar 懒加载', () => {
+  it('未注入 createWatcher 时动态加载 chokidar 并能收到新增文件', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aurora-fw-'))
+    const fileWatcher = new AuroraFileWatcher({ stabilityThresholdMs: 20, pollIntervalMs: 10 })
+    const seen: string[] = []
+    fileWatcher.onAdd((file) => seen.push(file.fileName))
+    try {
+      await fileWatcher.watch(dir)
+      // chokidar 的 ready 是异步的：给它一点时间挂上原生监听再写文件
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      await writeFile(join(dir, 'hw.pdf'), 'x', 'utf8')
+      const deadline = Date.now() + 3000
+      while (seen.length === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+      expect(seen).toContain('hw.pdf')
+    } finally {
+      await fileWatcher.stop()
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })
 

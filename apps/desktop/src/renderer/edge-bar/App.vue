@@ -168,6 +168,14 @@ async function scrollToQuickBottom(): Promise<void> {
 /** 快速会话自动刷新间隔（docs/07 §2.2）：面板展开期间每 5 分钟重拉一次 */
 const QUICK_REFRESH_INTERVAL_MS = 5 * 60_000
 let quickRefreshTimer: ReturnType<typeof setInterval> | undefined
+/**
+ * 展开期间的系统状态刷新间隔（与右栏 ContextPanel 同口径 30s）。
+ *
+ * 收起时**完全不拉感知**（2026-10-04 性能轮）：提示条常驻但 8px 收起态不显示这些数据，
+ * 挂载即 `perception.refresh()` 会让主进程为每个用户都加载 systeminformation、起 DNS 探测。
+ */
+const PERCEPTION_REFRESH_INTERVAL_MS = 30_000
+let perceptionTimer: ReturnType<typeof setInterval> | undefined
 
 /**
  * 展开态强制重拉快速会话（最近 20 条）并贴底（docs/07 §2.2）：
@@ -180,12 +188,17 @@ function refreshQuickSession(): void {
 }
 
 watch(expanded, (isOpen) => {
-  // 收起：停掉自动刷新，避免后台空转
+  // 收起：停掉自动刷新，避免后台空转（感知与快速会话都不再拉取）
   if (!isOpen) {
     clearInterval(quickRefreshTimer)
     quickRefreshTimer = undefined
+    clearInterval(perceptionTimer)
+    perceptionTimer = undefined
     return
   }
+  void perception.refresh()
+  clearInterval(perceptionTimer)
+  perceptionTimer = setInterval(() => void perception.refresh(), PERCEPTION_REFRESH_INTERVAL_MS)
   if (!chat.streaming.value)
     void chat.hydrate({ force: true, limit: 20 }).then(() => scrollToQuickBottom())
   clearInterval(quickRefreshTimer)
@@ -299,14 +312,18 @@ async function hideSelf(): Promise<void> {
   await windowStore.hide('edge-bar')
 }
 
-// 面板的「最近消息」要真有内容：挂载时按快速会话水合一次（只读；不改变提示条自身状态）
+// 面板的「最近消息」要真有内容：**展开时**才水合（收起态不读历史、不拉感知）
 onMounted(() => {
-  void chat.hydrate()
+  if (expanded.value) {
+    void chat.hydrate()
+    void perception.refresh()
+  }
 })
 
 onUnmounted(() => {
   clearTimers()
   clearInterval(quickRefreshTimer)
+  clearInterval(perceptionTimer)
 })
 </script>
 

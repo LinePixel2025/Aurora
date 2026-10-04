@@ -61,9 +61,23 @@ hljs.registerAliases(['c++'], { languageName: 'cpp' })
 
 /**
  * 高亮一段代码，返回 **已转义** 的 HTML（hljs 的输出就是转义后的，直接进 `<code>`）。
- * 语言未知 / 高亮抛错时回落为纯转义文本 —— 高亮失败绝不吞掉代码本身。
+ * 语言未知 / 高亮抛错 / 输入超限时回落为纯转义文本 —— 高亮失败绝不吞掉代码本身。
+ *
+ * **性能边界（2026-10-04 性能轮）**：
+ * - `MAX_HIGHLIGHT_CHARS`：超过就完全不高亮。实测 45KB TypeScript 单次高亮约 145ms，
+ *   流式期间整块重跑会让主线程饱和（长代码块是 O(n²) 的主要来源）。
+ * - `AUTO_HIGHLIGHT_MAX_CHARS`：语言未知时不再对长文本调 `highlightAuto`（它要遍历
+ *   全部注册语言，实测 5KB 就要约 300ms）；只在很短的片段上保留自动识别。
  */
+
+/** 单次高亮的输入上限（字符）；超过直接按纯文本转义 */
+export const MAX_HIGHLIGHT_CHARS = 40_000
+
+/** 语言未知时允许 `highlightAuto` 的最大输入（字符）；超过一律纯文本 */
+export const AUTO_HIGHLIGHT_MAX_CHARS = 2_000
+
 export function highlightCode(code: string, lang: string | undefined): string {
+  if (code.length > MAX_HIGHLIGHT_CHARS) return escapeForCode(code)
   if (lang !== undefined && lang !== '' && hljs.getLanguage(lang) !== undefined) {
     try {
       return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
@@ -71,11 +85,14 @@ export function highlightCode(code: string, lang: string | undefined): string {
       // fall through：语言注册了但某段输入触发解析错误（罕见），按无语言处理
     }
   }
-  try {
-    return hljs.highlightAuto(code).value
-  } catch {
-    return escapeForCode(code)
+  if (code.length <= AUTO_HIGHLIGHT_MAX_CHARS) {
+    try {
+      return hljs.highlightAuto(code).value
+    } catch {
+      /* fall through */
+    }
   }
+  return escapeForCode(code)
 }
 
 /** 与 markdown-it 内部同一套转义口径，兜底用 */

@@ -114,6 +114,9 @@ electron-builder 首次打包会下载两样东西：Electron 发行包与打包
 - `apps/desktop/src/main/updater-port.ts` —— electron-updater 适配层：
   只有**已打包**应用才可用（`app.isPackaged`），开发态一律 `disabled`（降级为不联网）；
   `autoDownload = false` / `autoInstallOnAppQuit = false`：**由用户决定**何时下载与安装。
+  **electron-updater 按需加载**（2026-10-04 性能轮）：静态 require 约 16MB RSS / 190ms，
+  未打包的 dev 进程与「还没到 20s 自动检查」的窗口期都不加载它；进度监听先记在适配层，
+  等模块真正加载时再挂一条原生监听统一转发。
 - 启动后延迟 20s 静默检查一次（失败只记 warn，不打断启动）；
   设置页与托盘菜单提供手动检查/下载/安装入口。
 

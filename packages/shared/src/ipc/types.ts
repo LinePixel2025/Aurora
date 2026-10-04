@@ -1117,6 +1117,12 @@ export interface AgentToolCall {
 export interface ChatDisplayImageReadRequest {
   sessionId: string
   imageId: string
+  /**
+   * 可选：把返回图片的最长边缩到这个像素数再回 data URL（列表缩略图用，docs/06 §14）。
+   *
+   * 原图最大 10MB，直接 base64 会让多图会话的渲染进程常驻几百 MB；缺省 / <=0 时原样返回。
+   */
+  maxDimension?: number
 }
 
 export interface ChatDisplayImageReadResult {

@@ -1290,7 +1290,7 @@ async function bootstrap(): Promise<void> {
       return sessionProjects.boundaryRoot(sessionId)
     },
     resolveCwd: () => process.cwd(),
-    resolveMaxBytes: () => settings!.get().projects.maxAgentsBytes,
+    resolveMaxBytes: () => settings!.snapshot().projects.maxAgentsBytes,
   })
 
   const kernel = new KernelAgentHost({
@@ -1342,9 +1342,11 @@ async function bootstrap(): Promise<void> {
     // 三个上限都走 **getter** —— 设置页改完下一次请求即生效（v15 之前 maxRounds 是常量值，
     // 改配置必须重启，属于"能写但不生效"的死字段）。
     jobs: jobStore,
-    maxRounds: () => settings!.get().agent.loop.maxRounds,
-    maxTotalTokens: () => settings!.get().agent.loop.maxTotalTokens,
-    autoContinueRounds: () => settings!.get().agent.loop.autoContinueRounds,
+    // 上限类 getter 走 snapshot()（只读、不深拷贝）：每次 attempt / 每轮都会读，
+    // `get()` 的整份深拷贝在这里是纯浪费（docs/08 §2，2026-10-04 性能轮）。
+    maxRounds: () => settings!.snapshot().agent.loop.maxRounds,
+    maxTotalTokens: () => settings!.snapshot().agent.loop.maxTotalTokens,
+    autoContinueRounds: () => settings!.snapshot().agent.loop.autoContinueRounds,
     // 运行档（v0.2.8，docs/06 §5.2 / docs/13 §7.1）：自动化触发的会话换一套人设
     // （无人值守：不反问、自己决定、做完汇报）并摘掉写类自动化工具
     // （create / update / delete / run）——「自动化 → 会话 → 自动化」不得成为闭环。

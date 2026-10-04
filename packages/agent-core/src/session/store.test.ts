@@ -683,6 +683,43 @@ describe('SessionStore · 读盘错误两态（P2-01）与删除竞态（P2-02�
     // 只是「这一次跳过」：下次访问自愈（读错误仍然不产生空快照冲盘）
     expect((await store.summaries()).map((item) => item.id).sort()).toEqual(['main', 'other'])
   })
+
+  it('summaries() 不把未装载会话的消息常驻内存；第二次命中摘要缓存不重复读盘', async () => {
+    const fs = new CountingFileSystem({
+      [seedPath('a')]: seedFile('a'),
+      [seedPath('b')]: seedFile('b'),
+    })
+    const store = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0, maxMessages: 5 })
+
+    expect((await store.summaries()).map((item) => item.id).sort()).toEqual(['a', 'b'])
+    // 只为算摘要临时装载过，算完立刻释放：内存里不保留任何会话消息
+    expect(store.loadedSessionCount).toBe(0)
+
+    const readsAfterFirst = fs.readCount
+    expect((await store.summaries()).map((item) => item.id).sort()).toEqual(['a', 'b'])
+    // 摘要缓存命中：第二次不再读盘
+    expect(fs.readCount).toBe(readsAfterFirst)
+  })
+
+  it('超过 maxLoadedSessions 的干净会话被淘汰，重读后内容不丢', async () => {
+    const store = new SessionStore({
+      dir: SESSION_DIR,
+      fs: new TestFileSystem(),
+      writeDebounceMs: 0,
+      maxMessages: 5,
+      maxLoadedSessions: 1,
+      loadedIdleMs: 0,
+    })
+    await store.append('a', { role: 'user', content: 'A' })
+    await store.flush()
+    await store.append('b', { role: 'user', content: 'B' })
+    await store.flush()
+
+    // 装载 b 时容量超 1，a 干净且空闲 → 被淘汰；b 保留
+    expect(store.loadedSessionCount).toBe(1)
+    // 再次访问 a 自动重读，内容不丢
+    expect((await store.get('a')).map((item) => item.content)).toEqual(['A'])
+  })
 })
 
 /** 读回某会话文件的原始 JSON（断言落盘形状用） */

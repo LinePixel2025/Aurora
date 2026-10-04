@@ -230,6 +230,17 @@ export class SettingsStore {
     return deepClone(this.current)
   }
 
+  /**
+   * 返回**当前配置的只读快照**（不深拷贝）。
+   *
+   * 专供每次请求 / 每轮工具执行都会读的**热路径 getter**（agent loop 的上限、预算、
+   * 自动续轮、项目字节上限等），避免每 attempt 深拷贝整份配置（2026-10-04 性能轮）。
+   * 调用方**只读**；需要改写时仍走 `get()` / `mutate()`。
+   */
+  snapshot(): Readonly<Settings> {
+    return this.current
+  }
+
   /** 主功能是否可用：必须存在可用的默认模型配置。 */
   needsOnboarding(): boolean {
     const { active, providers } = this.current.llm

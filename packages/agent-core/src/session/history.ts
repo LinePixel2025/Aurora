@@ -45,9 +45,21 @@ export interface TruncateResult {
   truncated: boolean
 }
 
-/** 消息在上下文里的粗算长度（content + 工具参数） */
+/**
+ * 消息在上下文里的粗算长度（content + 工具参数）。
+ *
+ * 工具调用参数必须计入：`edit_file` / `write_file` 这类工具的 `arguments` 可能远大于正文，
+ * 漏算会让字符预算被系统性低估、上下文实际超出预期（2026-10-04 性能轮）。
+ */
 function messageWeight(message: StoredMessage): number {
-  return message.content.length
+  // 宽容磁盘 / 夹具里的历史数据：`content` 或工具卡 `arguments` 都可能是缺省 / 非字符串
+  // （渲染层水合形状用 `input` 对象，截图夹具直接写 JSON 时可能没有 `arguments`），
+  // 这里只按"实际能算出的字符串长度"计权，绝不让畸形历史把整次请求打挂。
+  let weight = typeof message.content === 'string' ? message.content.length : 0
+  for (const call of message.toolCalls ?? []) {
+    if (typeof call.arguments === 'string') weight += call.arguments.length
+  }
+  return weight
 }
 
 /** 一次线性建立工具结果归属，避免截断时对每条 tool 结果反复向前扫描。 */

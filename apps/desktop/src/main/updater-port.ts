@@ -8,7 +8,7 @@
  * - 下载进度转成百分比后推给 `UpdateService`。
  */
 import { app } from 'electron'
-import electronUpdater from 'electron-updater'
+import type { AppUpdater } from 'electron-updater'
 import type { Logger } from '@aurora/shared'
 import type { UpdaterPort } from './updater.js'
 
@@ -16,22 +16,53 @@ import type { UpdaterPort } from './updater.js'
 export const UPDATE_FEED_ENV = 'AURORA_UPDATE_FEED'
 
 export function createUpdaterPort(logger: Logger): UpdaterPort {
-  const { autoUpdater } = electronUpdater
-
-  autoUpdater.autoDownload = false
-  // 关掉"退出时静默安装"：用户点了"安装并重启"才换版本，避免意外升级
-  autoUpdater.autoInstallOnAppQuit = false
-  autoUpdater.logger = {
-    info: (message?: unknown) => logger.info('updater', { message: String(message) }),
-    warn: (message?: unknown) => logger.warn('updater', { message: String(message) }),
-    error: (message?: unknown) => logger.error('updater', { message: String(message) }),
-    debug: (message?: unknown) => logger.debug('updater', { message: String(message) }),
-  }
-
   const overrideFeed = (process.env[UPDATE_FEED_ENV] ?? '').trim()
-  if (overrideFeed !== '') {
-    logger.warn('更新源被环境变量覆盖（仅用于自测）', { feed: overrideFeed })
-    autoUpdater.setFeedURL({ provider: 'generic', url: overrideFeed })
+  /**
+   * electron-updater **按需加载**（2026-10-04 性能轮）。
+   *
+   * 实测静态 `require('electron-updater')` 约 16MB RSS / 190ms；而它只在「已打包 +
+   * 20s 后自动检查更新」或用户手动点检查时才用得到。未打包的 dev 进程因此完全不为它付费。
+   * 进度监听也先记在本地 Set 里，等模块真正加载时再挂一条原生监听统一转发。
+   */
+  let autoUpdater: AppUpdater | null = null
+  let loading: Promise<AppUpdater> | null = null
+  const progressListeners = new Set<
+    (progress: { percent: number; transferred: number; total: number }) => void
+  >()
+
+  const load = (): Promise<AppUpdater> => {
+    if (autoUpdater !== null) return Promise.resolve(autoUpdater)
+    loading ??= import('electron-updater').then((mod) => {
+      const instance =
+        (mod as unknown as { autoUpdater?: AppUpdater }).autoUpdater ??
+        (mod as unknown as { default?: { autoUpdater?: AppUpdater } }).default?.autoUpdater
+      if (instance === undefined) throw new Error('electron-updater 未导出 autoUpdater')
+      instance.autoDownload = false
+      // 关掉"退出时静默安装"：用户点了"安装并重启"才换版本，避免意外升级
+      instance.autoInstallOnAppQuit = false
+      instance.logger = {
+        info: (message?: unknown) => logger.info('updater', { message: String(message) }),
+        warn: (message?: unknown) => logger.warn('updater', { message: String(message) }),
+        error: (message?: unknown) => logger.error('updater', { message: String(message) }),
+        debug: (message?: unknown) => logger.debug('updater', { message: String(message) }),
+      }
+      if (overrideFeed !== '') {
+        logger.warn('更新源被环境变量覆盖（仅用于自测）', { feed: overrideFeed })
+        instance.setFeedURL({ provider: 'generic', url: overrideFeed })
+      }
+      instance.on('download-progress', (progress) => {
+        for (const listener of progressListeners) {
+          listener({
+            percent: progress.percent ?? 0,
+            transferred: progress.transferred ?? 0,
+            total: progress.total ?? 0,
+          })
+        }
+      })
+      autoUpdater = instance
+      return instance
+    })
+    return loading
   }
 
   return {
@@ -43,7 +74,7 @@ export function createUpdaterPort(logger: Logger): UpdaterPort {
           ? 'github: LinePixel2025/Aurora-releases'
           : undefined,
     async checkForUpdates() {
-      const result = await autoUpdater.checkForUpdates()
+      const result = await (await load()).checkForUpdates()
       if (result === null || result === undefined) return null
       const version = result.updateInfo?.version ?? ''
       if (version === '') return null
@@ -51,28 +82,19 @@ export function createUpdaterPort(logger: Logger): UpdaterPort {
       return version === app.getVersion() ? null : { version }
     },
     async downloadUpdate() {
-      await autoUpdater.downloadUpdate()
+      await (await load()).downloadUpdate()
     },
     quitAndInstall() {
-      // isSilent=false 让安装器显示进度；isForceRunAfter=true 安装后自动启动
-      autoUpdater.quitAndInstall(false, true)
+      const install = (instance: AppUpdater): void => {
+        // isSilent=false 让安装器显示进度；isForceRunAfter=true 安装后自动启动
+        instance.quitAndInstall(false, true)
+      }
+      if (autoUpdater !== null) install(autoUpdater)
+      else void load().then(install, () => undefined)
     },
     onDownloadProgress(listener) {
-      const handler = (progress: {
-        percent?: number
-        transferred?: number
-        total?: number
-      }): void => {
-        listener({
-          percent: progress.percent ?? 0,
-          transferred: progress.transferred ?? 0,
-          total: progress.total ?? 0,
-        })
-      }
-      autoUpdater.on('download-progress', handler)
-      return () => {
-        autoUpdater.off('download-progress', handler)
-      }
+      progressListeners.add(listener)
+      return () => progressListeners.delete(listener)
     },
   }
 }

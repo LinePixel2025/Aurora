@@ -627,6 +627,9 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 路径：Electron `userData`（`%APPDATA%/Aurora/`），配置文件 `config.json`、会话 `sessions/`、
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
+- 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
+  `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（`maxRounds` / 预算 /
+  自动续轮等）热路径使用，避免每 attempt 深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
 - 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 27`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、

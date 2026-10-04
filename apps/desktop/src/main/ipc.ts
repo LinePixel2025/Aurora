@@ -8,7 +8,7 @@
  */
 import { dirname, join } from 'node:path'
 import { promises as nodeFs } from 'node:fs'
-import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
+import { BrowserWindow, app, dialog, ipcMain, nativeImage, shell } from 'electron'
 import {
   resolveProjectRootById,
   type JobStore,
@@ -133,6 +133,9 @@ import { createEventBuffer } from './event-buffer.js'
 
 /** 附件正文入上下文的字符上限（超出截断，避免一个 PDF 吃掉整个上下文预算） */
 const MAX_ATTACHMENT_CHARS = 8_000
+
+/** 快速会话 id（`useChat` 的 `sessionIdFor('quick')` 与 docs/06 §4 同一口径）。 */
+const QUICK_SESSION_ID = 'quick'
 /** 单条消息最多处理的附件数（图文合计；图片分片同样占这个额度） */
 const MAX_ATTACHMENTS = 5
 
@@ -834,9 +837,13 @@ export function registerIpc(deps: DesktopDeps): () => void {
       if (sessionId === '' || imageId === '') {
         return Promise.resolve(err('E_INVALID_ARGUMENT', '缺少 sessionId 或 imageId'))
       }
+      const maxDimension =
+        typeof request?.maxDimension === 'number' && Number.isFinite(request.maxDimension)
+          ? Math.floor(request.maxDimension)
+          : 0
       return deps
         .readDisplayImage({ sessionId, imageId })
-        .then(ok)
+        .then((result) => ok(shrinkDisplayImage(result, maxDimension)))
         .catch((error: unknown) =>
           err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
         )
@@ -1109,7 +1116,12 @@ export function registerIpc(deps: DesktopDeps): () => void {
     // 对话事件只有 chat / edge-bar 两个窗口订阅；设置与引导窗口没有 useChat，
     // 不应被高密度流式 IPC 无谓唤醒。窗口不存在时 sendTo 会静默跳过。
     deps.windows.sendTo('chat', IPC.chat.event, event)
-    deps.windows.sendTo('edge-bar', IPC.chat.event, event)
+    // 提示条只显示 `quick` 会话（docs/07 §2.2）：主会话流式时把每帧事件也塞给它，
+    // 只会让那个常驻渲染进程每帧醒来再过滤掉。按会话路由，quick 才需要（2026-10-04 性能轮）。
+    const eventSessionId = event.type === 'job' ? event.job.sessionId : event.sessionId
+    if (eventSessionId === QUICK_SESSION_ID) {
+      deps.windows.sendTo('edge-bar', IPC.chat.event, event)
+    }
   })
   const offAgent = deps.agent.onEvent((event) => {
     eventBuffer.push(event)
@@ -1164,6 +1176,36 @@ export function registerIpc(deps: DesktopDeps): () => void {
     offDeviceLogin()
     offAutomationDefinitions()
     offAutomationHistory()
+  }
+}
+
+/**
+ * 对话图片缩略（docs/06 §14，2026-10-04 性能轮）。
+ *
+ * `readDisplayImage` 回的是原图 data URL（单图上限 10MB）；列表缩略图只需要长边
+ * `maxDimension` 像素，用 `nativeImage` 解码后重采样再转回 PNG data URL。
+ * 任何解码 / 缩放失败都**原样放行**：宁可回一次大图，也不能让图片展示整体挂掉。
+ */
+function shrinkDisplayImage(
+  result: ChatDisplayImageReadResult,
+  maxDimension: number,
+): ChatDisplayImageReadResult {
+  if (maxDimension <= 0) return result
+  try {
+    const image = nativeImage.createFromDataURL(result.dataUrl)
+    if (image.isEmpty()) return result
+    const size = image.getSize()
+    const longest = Math.max(size.width, size.height)
+    if (longest <= maxDimension || longest === 0) return result
+    const scale = maxDimension / longest
+    const resized = image.resize({
+      width: Math.max(1, Math.round(size.width * scale)),
+      height: Math.max(1, Math.round(size.height * scale)),
+      quality: 'good',
+    })
+    return { ...result, dataUrl: resized.toDataURL(), mime: 'image/png' }
+  } catch {
+    return result
   }
 }
 

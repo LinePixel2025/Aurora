@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderMarkdown } from './index.js'
 import { renderCodeBlock } from './codeBlock.js'
+import { highlightCode, MAX_HIGHLIGHT_CHARS } from './highlight.js'
 
 describe('输出契约（两端共用的类名）', () => {
   it('标题：# 映射为 h3 且带 .md-h（对话正文不与大标题抢层级）', () => {
@@ -57,6 +58,31 @@ describe('输出契约（两端共用的类名）', () => {
     expect(html).toContain('data-lang="js"')
     expect(html).toContain('<code class="hljs">')
     expect(html).toContain('hljs-keyword')
+  })
+
+  it('流式未收盘：highlight:false 只转义不高亮，收盘后高亮回来', () => {
+    const source = '```js\nconst x = 1\n```'
+    const streamed = renderMarkdown(source, { highlight: false })
+    // 结构与转义保留，只是不高亮
+    expect(streamed).toContain('<div class="code-block">')
+    expect(streamed).toContain('<code class="hljs">')
+    expect(streamed).toContain('const x = 1')
+    expect(streamed).not.toContain('hljs-keyword')
+    // 收盘（默认选项）高亮回来
+    expect(renderMarkdown(source)).toContain('hljs-keyword')
+  })
+
+  it('超长代码块与未知语言长代码不做语法高亮（性能上限）', () => {
+    const long = 'const x = 1\n'.repeat(Math.ceil(MAX_HIGHLIGHT_CHARS / 12) + 1)
+    const longHtml = highlightCode(long, 'javascript')
+    expect(longHtml).not.toContain('hljs-keyword')
+    expect(longHtml).toContain('const x = 1')
+
+    // 未知语言的长文本不再走 highlightAuto（5KB 就要 ~300ms）
+    const unknown = 'SELECT * FROM table_name;\n'.repeat(200)
+    const unknownHtml = highlightCode(unknown, 'not-a-language')
+    expect(unknownHtml).not.toContain('hljs-keyword')
+    expect(unknownHtml).toContain('SELECT')
   })
 
   it('未知语言的代码块：正文照常转义保留（高亮失败不吞代码）', () => {

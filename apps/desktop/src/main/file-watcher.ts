@@ -12,7 +12,7 @@
  */
 import { basename, relative } from 'node:path'
 import { promises as fs } from 'node:fs'
-import chokidar from 'chokidar'
+import type chokidarModule from 'chokidar'
 
 export interface WatchedFile {
   path: string
@@ -89,7 +89,7 @@ export class AuroraFileWatcher {
     await this.stop()
     this.dir = dir
     const generation = ++this.generation
-    const watcher = this.createWatcher(dir)
+    const watcher = await this.createWatcher(dir)
     watcher.on('add', (path) => void this.handleEvent(path, generation, 'add'))
     // 同时监听 change：用户在感知文件夹里**覆盖**同名文件（例如重新导出一份作业）
     // 只会产生 change 而非 add，只监听 add 会让这类改动永远不被重新判定。
@@ -136,8 +136,15 @@ export class AuroraFileWatcher {
 
   // ───────────────────────── 内部 ─────────────────────────
 
-  private createWatcher(dir: string): WatcherLike {
+  /**
+   * 默认走 chokidar；**按需加载**（2026-10-04 性能轮）：
+   * 实测静态 require 约 4MB RSS / 47ms，而只有真正开始监听感知文件夹时才需要它，
+   * 未启用 ClassRoom 感知 / 未配置 watchDir 的进程不该为它付费。
+   */
+  private async createWatcher(dir: string): Promise<WatcherLike> {
     if (this.options.createWatcher) return this.options.createWatcher(dir)
+    const mod = await import('chokidar')
+    const chokidar = (mod.default ?? mod) as typeof chokidarModule
     const instance = chokidar.watch(dir, {
       // 只看第一层：科目文件夹在内部，递归监听会造成自触发
       depth: 0,

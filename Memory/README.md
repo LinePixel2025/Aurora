@@ -10,6 +10,7 @@
 
 | 日期 | 主题 | 标签 | 文件 |
 | --- | --- | --- | --- |
+| 2026-10-04 | 客户端性能轮：探针 / 流式渲染 / 会话内存 / 心跳 / 图片 / 轮询的长期口径 | 性能, CPU, 渲染, 内存, 坑 | [2026-10-04-performance-round.md](2026-10-04-performance-round.md) |
 | 2026-10-04 | 内置浏览器、对话图片与 HarmonyOS Sans 的接线口径 | 浏览器, 图片, 字体, Center, 打包 | [2026-10-04-browser-image-fonts.md](2026-10-04-browser-image-fonts.md) |
 | 2026-10-03 | DSH 的技能根清单与 `.system` 陷阱（技能该放哪一层） | 环境, 技能, DSH, 坑 | [2026-10-03-dsh-skill-roots.md](2026-10-03-dsh-skill-roots.md) |
 | 2026-10-03 | 已移除的功能 / 未生效字段 / 别误当 bug 的行为清单 | 限制, 状态, 坑 | [2026-10-03-known-limits.md](2026-10-03-known-limits.md) |
