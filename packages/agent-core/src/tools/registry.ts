@@ -147,6 +147,25 @@ export function filterTools(source: ToolSource, hidden: readonly string[]): Tool
   }
 }
 
+/** 只保留白名单工具，返回**只读视图**；空数组即"本次运行没有工具"。 */
+export function allowTools(source: ToolSource, allowed: readonly string[]): ToolSource {
+  const permit = new Set(allowed)
+  const visible = <T extends { name: string }>(tool: T): boolean => permit.has(tool.name)
+  let listCache: ToolDefinition[] | undefined
+  let llmToolsCache: LlmToolDefinition[] | undefined
+  return {
+    get: (name) => (permit.has(name) ? source.get(name) : undefined),
+    list: () => {
+      if (listCache === undefined) listCache = source.list().filter(visible)
+      return listCache
+    },
+    toLlmTools: () => {
+      if (llmToolsCache === undefined) llmToolsCache = source.toLlmTools().filter(visible)
+      return llmToolsCache
+    },
+  }
+}
+
 export class ToolRegistry implements ToolSource {
   private readonly tools = new Map<string, ToolDefinition>()
   private llmToolsCache: LlmToolDefinition[] | undefined

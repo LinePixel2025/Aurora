@@ -610,13 +610,14 @@ describe('FileJobStore · origin 白名单（P1-10）', () => {
     resume: true,
     center: true,
     automation: true,
+    'file-awareness': true,
   }
   const SHARED_ORIGINS = Object.keys(ORIGIN_TABLE) as Array<AgentJob['origin']>
 
-  it('五个取值逐字对齐 shared（少一个就会被读侧整条跳过）', () => {
-    expect(SHARED_ORIGINS).toHaveLength(5)
+  it('六个取值逐字对齐 shared（少一个就会被读侧整条跳过）', () => {
+    expect(SHARED_ORIGINS).toHaveLength(6)
     expect([...SHARED_ORIGINS].sort()).toEqual(
-      ['automation', 'center', 'chat', 'edge-bar', 'resume'].sort(),
+      ['automation', 'center', 'chat', 'edge-bar', 'file-awareness', 'resume'].sort(),
     )
   })
 

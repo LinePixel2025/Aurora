@@ -16,6 +16,8 @@ export interface ExtractPoolRequest {
   path: string
   ext: string
   sizeBytes: number
+  /** 文件自感知需要内容哈希；分类管线保持缺省，避免额外全量读盘。 */
+  hashContent?: boolean
 }
 
 export interface ExtractPoolResult {
@@ -23,6 +25,7 @@ export interface ExtractPoolResult {
   evidence: string
   evidenceChars: number
   warnings: string[]
+  sourceHash?: string
   /** 是否走了降级路径（超时 / 崩溃 / 解析器失败） */
   degraded: boolean
 }
@@ -130,6 +133,7 @@ export class ExtractPool {
           path: request.path,
           ext: request.ext,
           sizeBytes: request.sizeBytes,
+          ...(request.hashContent === true ? { hashContent: true } : {}),
         })
       } catch (error) {
         clearTimeout(timer)
@@ -185,6 +189,7 @@ export class ExtractPool {
             evidence?: string
             evidenceChars?: number
             warnings?: string[]
+            sourceHash?: string
             error?: string
           }
         | undefined
@@ -200,6 +205,7 @@ export class ExtractPool {
           evidence: payload.evidence ?? '',
           evidenceChars: payload.evidenceChars ?? (payload.evidence ?? '').length,
           warnings: payload.warnings ?? [],
+          ...(payload.sourceHash === undefined ? {} : { sourceHash: payload.sourceHash }),
           degraded: (payload.warnings ?? []).length > 0,
         })
         return

@@ -14,6 +14,10 @@ import type {
   AutomationHistoryQuery,
   AutomationListResult,
   AutomationRun,
+  FileAwarenessNote,
+  FileAwarenessRecord,
+  FileAwarenessStatus,
+  FileAwarenessSuggestion,
   CenterDeviceLoginRequest,
   CenterDeviceLoginResult,
   CenterDeviceLoginStarted,
@@ -318,6 +322,24 @@ export interface AutomationControllerLike {
   onDefinitionsChanged(listener: () => void): () => void
   /** 运行记录变化（IPC 层广播 `automation:historyChanged`） */
   onHistoryChanged(listener: () => void): () => void
+}
+
+/** 文件自感知（docs/06 §26）：IPC 与设置页只依赖这一小面。 */
+export interface FileAwarenessControllerLike {
+  status(): FileAwarenessStatus
+  records(limit?: number): FileAwarenessRecord[]
+  notes(limit?: number): FileAwarenessNote[]
+  analyzeNow(path: string): Promise<boolean>
+  ignoreSuggestion(id: string): boolean
+  knowledgeDir(): string
+  openNote(noteId: string): Promise<string>
+  openSource(noteId: string): Promise<string>
+  clearHistory(): void
+  scanNow(): Promise<number>
+  reconfigure(): Promise<void>
+  flush(): Promise<void>
+  onChanged(listener: () => void): () => void
+  onSuggestion(listener: (suggestion: FileAwarenessSuggestion) => void): () => void
 }
 
 /** 自动更新（docs/09）：主进程用 UpdateService，IPC 只依赖这个最小面 */

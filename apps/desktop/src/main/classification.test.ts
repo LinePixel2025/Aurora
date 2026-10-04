@@ -181,6 +181,17 @@ function settingsWith(overrides: {
     },
     // v19 新增顶层分组（自动化，docs/13）：本用例不涉及自动化，保持默认态
     automations: { enabled: true },
+    // v28 新增顶层分组（文件自感知）：本用例不涉及，保持默认关闭
+    fileAwareness: {
+      enabled: false,
+      contentConsentAccepted: false,
+      watchedDirs: [],
+      knowledgeDir: '',
+      includeRecent: true,
+      suggestionsEnabled: true,
+      dailyAnalysisLimit: 20,
+      maxFileMb: 100,
+    },
     // v21 新增顶层分组（外观，docs/08 §1）：本用例不涉及外观，保持默认态
     appearance: { accent: 'aurora' },
   }

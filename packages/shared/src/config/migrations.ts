@@ -15,6 +15,7 @@ import {
   DEFAULT_AGENT_TOOLS,
   DEFAULT_CLASSIFICATION,
   DEFAULT_CLASSISLAND_SCHEDULE,
+  DEFAULT_FILE_AWARENESS,
   DEFAULT_IMAGEGEN,
   DEFAULT_REASONING_EFFORT,
   DEFAULT_STT,
@@ -1019,6 +1020,23 @@ const migrateV26ToV27: Migration = {
   },
 }
 
+/** v27 → v28：补齐默认关闭的文件自感知分组（docs/06 §26）。 */
+const migrateV27ToV28: Migration = {
+  from: 27,
+  to: 28,
+  describe: 'v27 → v28：补齐 fileAwareness（默认关闭，显式同意后才读取正文）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const existing = asRecord(raw['fileAwareness'])
+    next['fileAwareness'] = {
+      ...DEFAULT_FILE_AWARENESS,
+      ...(existing ?? {}),
+    }
+    next['version'] = 28
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1047,6 +1065,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV24ToV25,
   migrateV25ToV26,
   migrateV26ToV27,
+  migrateV27ToV28,
 ]
 
 export interface MigrationOutcome {

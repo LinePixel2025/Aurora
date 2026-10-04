@@ -22,6 +22,7 @@
  * 因此模板里不挂 `drag-region`（不在 `useWindowDrag` 的清单里，docs/07 §2.2）。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { FileAwarenessSuggestion } from '@aurora/shared'
 import AppButton from '../shared/components/AppButton.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import { ArrowUp, ChevronRight, MessageSquare, SettingsGear, Square } from '@aurora/shared/browser'
@@ -54,14 +55,67 @@ const quickFocused = ref(false)
 let expandTimer: ReturnType<typeof setTimeout> | undefined
 let collapseTimer: ReturnType<typeof setTimeout> | undefined
 let shrinkTimer: ReturnType<typeof setTimeout> | undefined
+let suggestionTimer: ReturnType<typeof setTimeout> | undefined
 
 function clearTimers(): void {
   clearTimeout(expandTimer)
   clearTimeout(collapseTimer)
   clearTimeout(shrinkTimer)
+  clearTimeout(suggestionTimer)
   expandTimer = undefined
   collapseTimer = undefined
   shrinkTimer = undefined
+  suggestionTimer = undefined
+}
+
+const suggestion = ref<FileAwarenessSuggestion | null>(null)
+let offAwarenessSuggestion: (() => void) | null = null
+
+function clearSuggestion(): void {
+  clearTimeout(suggestionTimer)
+  suggestionTimer = undefined
+  suggestion.value = null
+}
+
+function armSuggestionCollapse(): void {
+  clearTimeout(suggestionTimer)
+  suggestionTimer = setTimeout(() => {
+    suggestionTimer = undefined
+    suggestion.value = null
+    if (!mouseInside.value) scheduleCollapse()
+  }, 12_000)
+}
+
+function onAwarenessSuggestion(next: FileAwarenessSuggestion): void {
+  suggestion.value = next
+  clearTimeout(collapseTimer)
+  collapseTimer = undefined
+  clearTimeout(shrinkTimer)
+  shrinkTimer = undefined
+  void windowStore.setEdgeBarExpanded(true)
+  expanded.value = true
+  armSuggestionCollapse()
+}
+
+async function viewSuggestion(): Promise<void> {
+  const current = suggestion.value
+  if (current === null) return
+  await window.aurora.awareness.openNote({ noteId: current.noteId })
+  clearSuggestion()
+}
+
+async function openSuggestionSource(): Promise<void> {
+  const current = suggestion.value
+  if (current === null) return
+  await window.aurora.awareness.openSource({ noteId: current.noteId })
+  clearSuggestion()
+}
+
+async function ignoreSuggestion(): Promise<void> {
+  const current = suggestion.value
+  if (current === null) return
+  await window.aurora.awareness.ignore({ suggestionId: current.id })
+  clearSuggestion()
 }
 
 /**
@@ -314,6 +368,9 @@ async function hideSelf(): Promise<void> {
 
 // 面板的「最近消息」要真有内容：**展开时**才水合（收起态不读历史、不拉感知）
 onMounted(() => {
+  offAwarenessSuggestion = window.aurora.awareness.onSuggestion((item) => {
+    onAwarenessSuggestion(item)
+  })
   if (expanded.value) {
     void chat.hydrate()
     void perception.refresh()
@@ -324,6 +381,8 @@ onUnmounted(() => {
   clearTimers()
   clearInterval(quickRefreshTimer)
   clearInterval(perceptionTimer)
+  offAwarenessSuggestion?.()
+  offAwarenessSuggestion = null
 })
 </script>
 
@@ -345,6 +404,30 @@ onUnmounted(() => {
     <transition name="sheet">
       <aside v-if="expanded" class="panel glass">
         <div class="panel-scroll">
+          <section
+            v-if="suggestion"
+            class="card suggestion anim-rise"
+            data-field="edge-bar.awareness"
+          >
+            <div class="card-head">
+              <p class="card-title">文件建议</p>
+              <span class="badge">新</span>
+            </div>
+            <strong class="suggestion-title">{{ suggestion.headline }}</strong>
+            <p class="suggestion-body">{{ suggestion.body }}</p>
+            <div class="suggestion-actions">
+              <button type="button" class="suggestion-action" @click="viewSuggestion">
+                查看分析
+              </button>
+              <button type="button" class="suggestion-action" @click="openSuggestionSource">
+                打开文件
+              </button>
+              <button type="button" class="suggestion-action muted" @click="ignoreSuggestion">
+                忽略
+              </button>
+            </div>
+          </section>
+
           <!-- ① AI 状态 -->
           <section class="card anim-rise">
             <div class="row">
@@ -595,6 +678,48 @@ onUnmounted(() => {
   padding: var(--space-3);
   border-radius: var(--radius-md);
   background: var(--fill-1);
+}
+
+.suggestion {
+  border-color: var(--accent-ring);
+}
+
+.suggestion-title {
+  display: block;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
+.suggestion-body {
+  margin: var(--space-2) 0;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.suggestion-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.suggestion-action {
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 4px 7px;
+  background: var(--fill-2);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.suggestion-action.muted {
+  color: var(--text-muted);
+}
+
+.suggestion-action:hover {
+  background: var(--fill-3);
 }
 
 .card-head {

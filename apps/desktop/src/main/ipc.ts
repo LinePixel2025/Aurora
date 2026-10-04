@@ -50,6 +50,10 @@ import {
   type FileListResult,
   type FilePreviewRequest,
   type FilePreviewResult,
+  type FileAwarenessAnalyzeRequest,
+  type FileAwarenessListRequest,
+  type FileAwarenessNoteRequest,
+  type FileAwarenessSuggestionAction,
   type TerminalCreateRequest,
   type TerminalInputRequest,
   type TerminalResizeRequest,
@@ -122,6 +126,7 @@ import type {
   UpdateControllerLike,
   WindowManagerLike,
   CenterConnectionLike,
+  FileAwarenessControllerLike,
 } from './contracts.js'
 import { resolveSubjectFolder } from './paths.js'
 import { buildInitCommandContext, isInitCommand } from './agent-commands.js'
@@ -130,6 +135,7 @@ import type { TerminalService } from './terminal-service.js'
 import { extractPatchSecrets, mergeSettingsPatch } from './settings-patch.js'
 import { redactSettings } from './settings-redact.js'
 import { createEventBuffer } from './event-buffer.js'
+import { isFileAwarenessSession } from './file-awareness-run-profile.js'
 
 /** 附件正文入上下文的字符上限（超出截断，避免一个 PDF 吃掉整个上下文预算） */
 const MAX_ATTACHMENT_CHARS = 8_000
@@ -219,6 +225,8 @@ export interface DesktopDeps {
   center?: CenterConnectionLike
   /** 自动化引擎（automation:*，docs/13 §9）。未装配时六条通道按 E_INVALID_STATE 如实报错 */
   automation?: AutomationControllerLike
+  /** 文件自感知（awareness:*，docs/06 §26）。未装配时按不可用状态回答。 */
+  awareness?: FileAwarenessControllerLike
   logger: Logger
   paths: { userData: string; logs: string; config: string; builtinSkills: string }
   isDev: boolean
@@ -744,11 +752,10 @@ export function registerIpc(deps: DesktopDeps): () => void {
   // 「当前会话」由渲染层判定：不同窗口用的是不同会话（quick / main），
   // 主进程不知道哪个正在被看，因此不在这里标 active。
   handle<ChatSessionSummary[]>(IPC.chat.sessions, () =>
-    deps.sessions
-      .summaries()
-      .then(ok, (error: unknown) =>
-        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
-      ),
+    deps.sessions.summaries().then(
+      (items) => ok(items.filter((item) => !isFileAwarenessSession(item.id))),
+      (error: unknown) => err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+    ),
   )
   /**
    * 新建会话（docs/06 §4 会话三分，2026-09-30）。
@@ -1077,6 +1084,66 @@ export function registerIpc(deps: DesktopDeps): () => void {
     return ok(deps.automation.catalog())
   })
 
+  // ───────────────────────── 文件自感知（docs/06 §26） ─────────────────────────
+
+  handle(IPC.awareness.status, async () => {
+    if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
+    return ok(deps.awareness.status())
+  })
+  handle(IPC.awareness.records, async (request: FileAwarenessListRequest = {}) => {
+    if (deps.awareness === undefined) return ok([])
+    return ok(deps.awareness.records(request.limit))
+  })
+  handle(IPC.awareness.notes, async (request: FileAwarenessListRequest = {}) => {
+    if (deps.awareness === undefined) return ok([])
+    return ok(deps.awareness.notes(request.limit))
+  })
+  handle<boolean>(IPC.awareness.analyzeNow, async (request: FileAwarenessAnalyzeRequest) => {
+    if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
+    if (typeof request?.path !== 'string' || request.path.trim() === '') {
+      return err('E_INVALID_ARGUMENT', '缺少文件路径')
+    }
+    return ok(await deps.awareness.analyzeNow(request.path))
+  })
+  handle<boolean>(IPC.awareness.ignore, async (request: FileAwarenessSuggestionAction) => {
+    if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
+    if (typeof request?.suggestionId !== 'string') {
+      return err('E_INVALID_ARGUMENT', '缺少建议 id')
+    }
+    return ok(deps.awareness.ignoreSuggestion(request.suggestionId))
+  })
+  handle<string>(IPC.awareness.openKnowledge, async () => {
+    const dir = deps.awareness?.knowledgeDir().trim() ?? ''
+    if (dir === '') return err('E_INVALID_STATE', '尚未配置知识库目录')
+    const error = await shell.openPath(dir)
+    return error === '' ? ok(dir) : err('E_IO', error)
+  })
+  handle<string>(IPC.awareness.openNote, async (request: FileAwarenessNoteRequest) => {
+    if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
+    try {
+      return ok(await deps.awareness.openNote(request.noteId))
+    } catch (error) {
+      return err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
+    }
+  })
+  handle<string>(IPC.awareness.openSource, async (request: FileAwarenessNoteRequest) => {
+    if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
+    try {
+      return ok(await deps.awareness.openSource(request.noteId))
+    } catch (error) {
+      return err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
+    }
+  })
+  handle<boolean>(IPC.awareness.clearHistory, async () => {
+    if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
+    deps.awareness.clearHistory()
+    return ok(true)
+  })
+  handle<number>(IPC.awareness.scanNow, async () => {
+    if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
+    return ok(await deps.awareness.scanNow())
+  })
+
   // ───────────────────────── 更新（docs/09） ─────────────────────────
 
   handle<UpdateState>(IPC.update.getState, () => ok(deps.updater.getState()))
@@ -1113,12 +1180,14 @@ export function registerIpc(deps: DesktopDeps): () => void {
   // 合并只作用于相邻的 text / reasoning；done / error / user-message 先 flush 再同步发，
   // 保证终态不会越过它前面的增量先到（见 event-buffer.ts 的语义说明）。
   const eventBuffer = createEventBuffer((event) => {
+    const eventSessionId = event.type === 'job' ? event.job.sessionId : event.sessionId
+    // 文件自感知会话只在设置页展示运行记录，不唤醒 chat / edge-bar。
+    if (isFileAwarenessSession(eventSessionId)) return
     // 对话事件只有 chat / edge-bar 两个窗口订阅；设置与引导窗口没有 useChat，
     // 不应被高密度流式 IPC 无谓唤醒。窗口不存在时 sendTo 会静默跳过。
     deps.windows.sendTo('chat', IPC.chat.event, event)
     // 提示条只显示 `quick` 会话（docs/07 §2.2）：主会话流式时把每帧事件也塞给它，
     // 只会让那个常驻渲染进程每帧醒来再过滤掉。按会话路由，quick 才需要（2026-10-04 性能轮）。
-    const eventSessionId = event.type === 'job' ? event.job.sessionId : event.sessionId
     if (eventSessionId === QUICK_SESSION_ID) {
       deps.windows.sendTo('edge-bar', IPC.chat.event, event)
     }
@@ -1158,6 +1227,14 @@ export function registerIpc(deps: DesktopDeps): () => void {
     deps.automation?.onHistoryChanged(() => {
       broadcast(IPC.automation.historyChanged, undefined)
     }) ?? (() => {})
+  const offAwareness =
+    deps.awareness?.onChanged(() => {
+      broadcast(IPC.awareness.changed, undefined)
+    }) ?? (() => {})
+  const offAwarenessSuggestion =
+    deps.awareness?.onSuggestion((suggestion) => {
+      deps.windows.sendTo('edge-bar', IPC.awareness.suggestion, suggestion)
+    }) ?? (() => {})
 
   return () => {
     for (const [channel] of handlers) ipcMain.removeHandler(channel)
@@ -1176,6 +1253,8 @@ export function registerIpc(deps: DesktopDeps): () => void {
     offDeviceLogin()
     offAutomationDefinitions()
     offAutomationHistory()
+    offAwareness()
+    offAwarenessSuggestion()
   }
 }
 

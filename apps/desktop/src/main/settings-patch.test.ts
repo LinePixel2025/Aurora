@@ -507,3 +507,31 @@ describe('mergeSettingsPatch · center 分组（v16，docs/12）', () => {
     expect(draft.center.serverUrl).toBe('ws://new')
   })
 })
+
+describe('mergeSettingsPatch · fileAwareness 分组（v28）', () => {
+  it('设置页选择的目录、授权与预算真正写入 draft', () => {
+    const draft = createDefaultSettings()
+    mergeSettingsPatch(draft, {
+      fileAwareness: {
+        enabled: true,
+        contentConsentAccepted: true,
+        watchedDirs: ['D:\\示例'],
+        knowledgeDir: 'D:\\知识库',
+        includeRecent: false,
+        suggestionsEnabled: false,
+        dailyAnalysisLimit: 7,
+        maxFileMb: 50,
+      },
+    })
+    expect(draft.fileAwareness).toEqual({
+      enabled: true,
+      contentConsentAccepted: true,
+      watchedDirs: ['D:\\示例'],
+      knowledgeDir: 'D:\\知识库',
+      includeRecent: false,
+      suggestionsEnabled: false,
+      dailyAnalysisLimit: 7,
+      maxFileMb: 50,
+    })
+  })
+})

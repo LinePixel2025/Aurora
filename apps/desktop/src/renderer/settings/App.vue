@@ -25,6 +25,7 @@ import VoicePage from './pages/VoicePage.vue'
 import AgentPage from './pages/AgentPage.vue'
 import CenterPage from './pages/CenterPage.vue'
 import AdvancedPage from './pages/AdvancedPage.vue'
+import FileAwarenessPage from './pages/FileAwarenessPage.vue'
 import WindowCaption from '../shared/components/WindowCaption.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
@@ -34,13 +35,15 @@ import {
   Cpu,
   House,
   LayoutGrid,
+  FolderSearch,
   MonitorSmartphone,
   Puzzle,
   SettingsGear,
   Sparkles,
 } from '@aurora/shared/browser'
 
-type PageId = 'general' | 'sessions' | 'modes' | 'llm' | 'voice' | 'agent' | 'center' | 'advanced'
+type PageId =
+  'general' | 'sessions' | 'modes' | 'llm' | 'voice' | 'agent' | 'awareness' | 'center' | 'advanced'
 
 interface NavItem {
   id: PageId
@@ -57,6 +60,7 @@ const nav: NavItem[] = [
   { id: 'llm', label: 'AI 模型', icon: Cpu },
   { id: 'voice', label: '语音', icon: AudioLines },
   { id: 'agent', label: 'Agent 设置', icon: Puzzle },
+  { id: 'awareness', label: '文件自感知', icon: FolderSearch },
   { id: 'center', label: 'Aurora Center', icon: MonitorSmartphone },
   { id: 'advanced', label: '系统', icon: SettingsGear },
 ]
@@ -67,7 +71,7 @@ const nav: NavItem[] = [
  */
 const navGroups: Array<{ title: string; ids: PageId[] }> = [
   { title: '基础', ids: ['general', 'sessions', 'modes'] },
-  { title: '智能', ids: ['llm', 'voice', 'agent'] },
+  { title: '智能', ids: ['llm', 'voice', 'agent', 'awareness'] },
   { title: '连接', ids: ['center'] },
   { title: '系统', ids: ['advanced'] },
 ]
@@ -90,6 +94,7 @@ const pages: Record<PageId, Component> = {
   llm: LlmPage,
   voice: VoicePage,
   agent: AgentPage,
+  awareness: FileAwarenessPage,
   center: CenterPage,
   advanced: AdvancedPage,
 }

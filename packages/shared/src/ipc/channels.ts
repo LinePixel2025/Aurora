@@ -261,6 +261,21 @@ export const IPC = {
     /** 运行记录落库 / 状态变化推送（on/off 成对）：历史面板开着时重拉 */
     historyChanged: 'automation:historyChanged',
   },
+  /** 文件自感知（v28，docs/06 §26） */
+  awareness: {
+    status: 'awareness:status',
+    records: 'awareness:records',
+    notes: 'awareness:notes',
+    analyzeNow: 'awareness:analyzeNow',
+    ignore: 'awareness:ignore',
+    openKnowledge: 'awareness:openKnowledge',
+    openNote: 'awareness:openNote',
+    openSource: 'awareness:openSource',
+    clearHistory: 'awareness:clearHistory',
+    scanNow: 'awareness:scanNow',
+    suggestion: 'awareness:suggestion',
+    changed: 'awareness:changed',
+  },
 } as const
 
 export type IpcChannel =

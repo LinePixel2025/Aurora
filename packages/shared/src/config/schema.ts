@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 27 as const
+export const CONFIG_VERSION = 28 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -709,6 +709,9 @@ export const SETTINGS_READONLY_PREFIXES = [
   // 总闸门 —— AI 关掉它可以让用户的自动化静默失效，打开并配合 automation_* 工具
   // 等于自己给自己排程。AI 增删自动化走专用工具（逐次确认），不经这里。
   'automations',
+  // 文件自感知（v28，docs/06 §26）：整组同时改变文件读取范围、正文出网与后台预算，
+  // 属自我扩权 / 数据外发路径，只能由用户在设置页开启与调整。
+  'fileAwareness',
 ] as const
 
 export const AdvancedSchema = z.object({
@@ -947,6 +950,24 @@ export const AutomationsSchema = z.object({
 })
 export type AutomationsSettings = z.infer<typeof AutomationsSchema>
 
+/**
+ * 文件自感知（v28，docs/06 §26）。
+ *
+ * 整组只读：它同时决定本机文件读取范围、正文出网与后台任务预算，AI 不能自行开启或放宽。
+ * 只有用户显式同意后，后台才允许把 `.docx/.pptx` 的截断正文发给你配置的模型。
+ */
+export const FileAwarenessSchema = z.object({
+  enabled: z.boolean().default(false),
+  contentConsentAccepted: z.boolean().default(false),
+  watchedDirs: z.array(z.string()).max(3).default([]),
+  knowledgeDir: z.string().default(''),
+  includeRecent: z.boolean().default(true),
+  suggestionsEnabled: z.boolean().default(true),
+  dailyAnalysisLimit: z.number().int().min(1).max(200).default(20),
+  maxFileMb: z.number().int().min(1).max(500).default(100),
+})
+export type FileAwarenessSettings = z.infer<typeof FileAwarenessSchema>
+
 export const SettingsSchema = z.object({
   version: z.number().int().min(0),
   general: GeneralSchema,
@@ -962,6 +983,7 @@ export const SettingsSchema = z.object({
   agent: AgentSchema,
   center: CenterSchema,
   automations: AutomationsSchema,
+  fileAwareness: FileAwarenessSchema,
   appearance: AppearanceSchema,
 })
 
@@ -998,6 +1020,7 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
     '只读黑名单的配置自身不允许通过工具修改（防自我收紧；放宽本就不生效）',
   center: 'Center 连接是数据外发通道，不允许通过工具启用或改向（docs/12 §7）',
   automations: '自动化总开关是用户对后台动作的总闸门，不允许通过工具修改（docs/13 §2.2）',
+  fileAwareness: '文件自感知会读取文件并发送正文，必须由用户显式配置，不允许通过工具修改',
 }
 
 /** 显式可写覆盖表的一条登记：模式 + 中文说明。 */

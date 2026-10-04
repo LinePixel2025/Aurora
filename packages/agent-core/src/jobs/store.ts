@@ -646,6 +646,7 @@ const ORIGINS: readonly AgentJob['origin'][] = [
   'resume',
   'center',
   'automation',
+  'file-awareness',
 ]
 
 /**

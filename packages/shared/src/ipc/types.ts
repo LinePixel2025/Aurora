@@ -155,6 +155,8 @@ export interface SettingsPatch {
   center?: Omit<Partial<Settings['center']>, 'tokenEnc'>
   /** 自动化总开关（v19，docs/13 §2.2）：定义与历史不进配置，这里只有这一个闸门 */
   automations?: Partial<Settings['automations']>
+  /** 文件自感知（v28，docs/06 §26）：顶层浅合并，调用方需回传完整分组。 */
+  fileAwareness?: Partial<Settings['fileAwareness']>
   /** 外观自定义（v21，docs/08 §1）：顶层浅合并（当前只有强调色主题） */
   appearance?: Partial<Settings['appearance']>
 }
@@ -1029,6 +1031,88 @@ export interface SensitiveToolRequest {
   expiresAt: string
 }
 
+// ───────────────────────── 文件自感知（v28，docs/06 §26） ─────────────────────────
+
+export interface FileAwarenessStatus {
+  enabled: boolean
+  consentAccepted: boolean
+  active: boolean
+  waitingForModel: boolean
+  knowledgeDir: string
+  knowledgeDirAvailable: boolean
+  watchedDirs: string[]
+  includeRecent: boolean
+  suggestionsEnabled: boolean
+  dailyAnalysisLimit: number
+  todayAnalyzed: number
+  queueDepth: number
+  queueOverflow: number
+  conflictCount: number
+  lastScanAt?: string
+  lastError?: string
+  current?: {
+    fileName: string
+    sourcePath: string
+  }
+}
+
+export type FileAwarenessRecordStatus =
+  'observed' | 'queued' | 'analyzing' | 'done' | 'skipped' | 'error' | 'conflict'
+
+export interface FileAwarenessRecord {
+  id: string
+  sourcePath: string
+  fileName: string
+  ext: string
+  kind: 'add' | 'change' | 'rename' | 'delete' | 'recent'
+  status: FileAwarenessRecordStatus
+  occurredAt: string
+  sourceAvailable: boolean
+  noteId?: string
+  notePath?: string
+  summary?: string
+  error?: string
+}
+
+export interface FileAwarenessNote {
+  id: string
+  title: string
+  sourcePath: string
+  notePath: string
+  updatedAt: string
+  sourceAvailable: boolean
+  conflict: boolean
+  excerpt: string
+}
+
+export interface FileAwarenessSuggestion {
+  id: string
+  noteId: string
+  sourcePath: string
+  sourceHash: string
+  headline: string
+  body: string
+  createdAt: string
+  confidence: number
+}
+
+export interface FileAwarenessListRequest {
+  /** 缺省 100，上限 500 */
+  limit?: number
+}
+
+export interface FileAwarenessAnalyzeRequest {
+  path: string
+}
+
+export interface FileAwarenessSuggestionAction {
+  suggestionId: string
+}
+
+export interface FileAwarenessNoteRequest {
+  noteId: string
+}
+
 // ───────────────────────── 对话（Agent 内核，docs/06 §4/§5） ─────────────────────────
 
 export interface SendMessageRequest {
@@ -1038,7 +1122,7 @@ export interface SendMessageRequest {
    * 系统提示词会被注入的来源窗口，用于日志与后续多窗口路由；
    * 'center' = 远程会话（docs/12）；'automation' = 自动化触发（docs/13 §7，无人值守）。
    */
-  origin: WindowName | 'center' | 'automation'
+  origin: WindowName | 'center' | 'automation' | 'file-awareness'
   /**
    * 附件绝对路径列表（拖拽发送，docs/07 §2.3）。
    * 主进程按扩展名分成两类：**图片**（png / jpg / jpeg / webp / gif / bmp）走多模态图片分片
@@ -1352,7 +1436,7 @@ export interface AgentJob {
   requestId?: string
   status: AgentJobStatus
   /** `center` = 由 Aurora Center 远程会话发起（docs/12 §5）；`automation` = 自动化触发（docs/13） */
-  origin: 'chat' | 'edge-bar' | 'resume' | 'center' | 'automation'
+  origin: 'chat' | 'edge-bar' | 'resume' | 'center' | 'automation' | 'file-awareness'
   /** 本 job 的用户消息原文（续跑不再重复落盘，靠它还原上下文） */
   text: string
   /** 已经跑到第几轮（从 0 起） */
@@ -1922,5 +2006,20 @@ export interface AuroraApi {
     onChanged(listener: () => void): () => void
     /** 运行记录落库 / 状态变化推送（on/off 成对） */
     onHistoryChanged(listener: () => void): () => void
+  }
+  /** 文件自感知（v28，docs/06 §26） */
+  awareness: {
+    status(): Promise<Result<FileAwarenessStatus>>
+    records(request?: FileAwarenessListRequest): Promise<Result<FileAwarenessRecord[]>>
+    notes(request?: FileAwarenessListRequest): Promise<Result<FileAwarenessNote[]>>
+    analyzeNow(request: FileAwarenessAnalyzeRequest): Promise<Result<boolean>>
+    ignore(request: FileAwarenessSuggestionAction): Promise<Result<boolean>>
+    openKnowledge(): Promise<Result<string>>
+    openNote(request: FileAwarenessNoteRequest): Promise<Result<string>>
+    openSource(request: FileAwarenessNoteRequest): Promise<Result<string>>
+    clearHistory(): Promise<Result<boolean>>
+    scanNow(): Promise<Result<number>>
+    onSuggestion(listener: (suggestion: FileAwarenessSuggestion) => void): () => void
+    onChanged(listener: () => void): () => void
   }
 }

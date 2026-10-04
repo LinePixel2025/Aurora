@@ -2,7 +2,7 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v27）
+## 1. 配置 Schema（config.json，v28）
 
 ```jsonc
 {
@@ -231,6 +231,18 @@
   // 不进迁移链；历史上限 500 条，超出淘汰最旧），配置里只有这一道闸门
   "automations": {
     "enabled": true             // 关闭 = 引擎停止评估与触发（定义与历史原样保留）
+  },
+  // v28 新增：文件自感知（docs/06 §26）。整组在默认黑名单里；只有用户显式同意后
+  // 才会提取正文并发送给你配置的模型。
+  "fileAwareness": {
+    "enabled": false,
+    "contentConsentAccepted": false,
+    "watchedDirs": [],
+    "knowledgeDir": "",
+    "includeRecent": true,
+    "suggestionsEnabled": true,
+    "dailyAnalysisLimit": 20,
+    "maxFileMb": 100
   }
 }
 ```
@@ -527,6 +539,12 @@
   - **不引入任何凭据路径**：本组没有密文（对照 `apiKeyEnc` / `envEnc` / `headersEnc` /
     `center.token ⇄ center.tokenEnc`），`SettingsStore` 的四处凭据读写与主进程 `redactSettings`
     都不需要为它改动。
+- `fileAwareness`（**v28 新增**，见 06 §26）：文件自感知。`enabled` 与
+  `contentConsentAccepted` 同时为真才允许读取正文并调用模型；`watchedDirs` 最多 3 个，
+  `knowledgeDir` 是用户可见 Markdown 知识库；`includeRecent` 控制 Windows 最近使用记录，
+  `suggestionsEnabled` 控制提示条气泡，`dailyAnalysisLimit`（1–200，默认 20）和
+  `maxFileMb`（1–500，默认 100）控制后台预算。整组在 `SETTINGS_READONLY_PREFIXES` 里：
+  它同时改变文件读取范围、数据出网与后台任务，AI 不得自行开启或放宽。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -708,8 +726,10 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   —— 用户自己拖得更大的尺寸原样保留；几何缺失时不动 `general`。窗口管理器还有第二级抬底
   （`SPECS.chat` 的 minWidth / minHeight 会把越界旧值夹上来），两者不冲突）、
   `v26 → v27`（**模型打开网址默认走内置浏览器**：在已存在的 `agent.tools.open` 分组补
-  `urlMode: 'internal'`；已有合法值原样保留，分组缺失时交给默认配置兜底）。
-  二十七条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  `urlMode: 'internal'`；已有合法值原样保留，分组缺失时交给默认配置兜底）、
+  `v27 → v28`（**文件自感知**：补齐默认关闭的 `fileAwareness` 分组；只补缺失键，
+  不覆盖已有值）。
+  二十八条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**），重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
   （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **27** 条。

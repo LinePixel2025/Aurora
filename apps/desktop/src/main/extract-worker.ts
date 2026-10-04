@@ -14,6 +14,8 @@
  */
 import { createRequire } from 'node:module'
 import { promises as fs } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import { extract, type EvidenceKind } from './extract.js'
 
 /** 在 CJS 产物里解析外部依赖（officeparser 是 CJS，其内部再动态 import ESM 的 pdfjs） */
@@ -24,6 +26,7 @@ interface ExtractRequest {
   path: string
   ext: string
   sizeBytes: number
+  hashContent?: boolean
 }
 
 interface ExtractResponse {
@@ -33,6 +36,7 @@ interface ExtractResponse {
   evidence?: string
   evidenceChars?: number
   warnings?: string[]
+  sourceHash?: string
   error?: string
 }
 
@@ -58,6 +62,7 @@ async function loadParser(): Promise<
 
 async function handle(request: ExtractRequest): Promise<ExtractResponse> {
   try {
+    const sourceHash = request.hashContent === true ? await sha256File(request.path) : undefined
     const parseOffice = await loadParser()
     const result = await extract({
       path: request.path,
@@ -73,6 +78,7 @@ async function handle(request: ExtractRequest): Promise<ExtractResponse> {
       evidence: result.evidence,
       evidenceChars: result.evidenceChars,
       warnings: result.warnings,
+      ...(sourceHash === undefined ? {} : { sourceHash }),
     }
   } catch (error) {
     // 提取失败也不应让 worker 崩掉：由主进程决定降级策略
@@ -82,6 +88,16 @@ async function handle(request: ExtractRequest): Promise<ExtractResponse> {
       error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
     }
   }
+}
+
+function sha256File(path: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256')
+    const stream = createReadStream(path)
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.on('error', reject)
+    stream.on('end', () => resolve(hash.digest('hex')))
+  })
 }
 
 process.parentPort.on('message', (message) => {

@@ -96,7 +96,7 @@ import { readImages } from './attachments.js'
 import { registerIpc, createSettingsWriter, restoreSnapshot, type DesktopDeps } from './ipc.js'
 import { TerminalService } from './terminal-service.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
-import { ProactiveScheduler } from './proactive.js'
+import { isQuietHour, ProactiveScheduler } from './proactive.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
 import { HotkeyManager } from './hotkey.js'
 import { SessionBridge, toConfirmRequest } from './center/session-bridge.js'
@@ -204,6 +204,9 @@ import { createSettingsPort } from './tools/settings-port.js'
 import { createCommandRunner } from './tools/command-runner.js'
 import { createNodeFilePort } from './tools/file-port.js'
 import { createShellOpenPort } from './tools/open-port.js'
+import { FileAwarenessService } from './file-awareness.js'
+import { FileAwarenessAnalyzer } from './file-awareness-agent.js'
+import { fileAwarenessRunProfile } from './file-awareness-run-profile.js'
 
 const isDev = !app.isPackaged
 
@@ -330,6 +333,10 @@ let updater: UpdateService | undefined
 let classification: ClassificationService | undefined
 let fileWatcher: AuroraFileWatcher | undefined
 let extractPool: ExtractPool | undefined
+/** 文件自感知独立提取池，避免与 ClassRoom 分类互相排队饿死（docs/06 §26）。 */
+let awarenessExtractPool: ExtractPool | undefined
+let fileAwareness: FileAwarenessService | undefined
+let fileAwarenessAnalyzer: FileAwarenessAnalyzer | undefined
 let notifications: NotificationService | undefined
 let proactiveScheduler: ProactiveScheduler | undefined
 // 自动化引擎（docs/13）：定义与历史存 `<userData>/automations/`，内置课前提醒由引擎承接
@@ -804,6 +811,7 @@ async function bootstrap(): Promise<void> {
     rendererUrl: process.env['ELECTRON_RENDERER_URL'],
     rendererDir,
     isDev,
+    backgroundThrottling: !smokeMode,
   })
 
   // 5. Skill 注册表（内置 skills/ + 用户技能目录）
@@ -1351,7 +1359,7 @@ async function bootstrap(): Promise<void> {
     // （无人值守：不反问、自己决定、做完汇报）并摘掉写类自动化工具
     // （create / update / delete / run）——「自动化 → 会话 → 自动化」不得成为闭环。
     // 判据是 origin 或会话 id 前缀；普通会话返回 undefined，提示词与工具面与从前逐字一致。
-    runProfileFor: (context) => automationRunProfile(context),
+    runProfileFor: (context) => fileAwarenessRunProfile(context) ?? automationRunProfile(context),
   })
   agent = new DesktopAgentHost({
     settings,
@@ -1361,6 +1369,49 @@ async function bootstrap(): Promise<void> {
     kernel,
     confirmTool,
   })
+  fileAwarenessAnalyzer = new FileAwarenessAnalyzer({
+    agent,
+    logger: logger.child('awareness-agent'),
+  })
+  awarenessExtractPool = new ExtractPool({
+    fork: () =>
+      utilityProcess.fork(join(__dirname, 'extract-worker.js'), [], {
+        serviceName: 'aurora-awareness-extract',
+      }) as unknown as ExtractWorkerChild,
+    logger: logger.child('awareness-extract'),
+  })
+  fileAwareness = new FileAwarenessService({
+    userData,
+    settings: () => settings!.get(),
+    logger: logger.child('file-awareness'),
+    extract: (input) => awarenessExtractPool!.extract({ ...input, hashContent: true }),
+    analyze: (input) => fileAwarenessAnalyzer!.analyze(input),
+    providerReady: () => {
+      const llm = settings!.snapshot().llm
+      const provider = llm.providers[llm.active]
+      return (
+        provider !== undefined &&
+        provider.baseUrl.trim() !== '' &&
+        provider.model.trim() !== '' &&
+        settings!.getSecret(`llm.providers.${llm.active}.apiKey`) !== ''
+      )
+    },
+    canNotify: () => {
+      const current = settings!.get()
+      return (
+        current.fileAwareness.suggestionsEnabled &&
+        current.general.edgeBar.enabled &&
+        windows?.isVisible('edge-bar') === true &&
+        !isQuietHour(new Date(), current.advanced.quietHours) &&
+        !isQuietHour(new Date(), current.general.edgeBar.quietHours)
+      )
+    },
+    openPath: async (path) => {
+      const error = await shell.openPath(path)
+      if (error !== '') throw new Error(error)
+    },
+  })
+  await fileAwareness.init()
   const llm = new LlmTester({
     settings,
     logger: logger.child('llm'),
@@ -1985,6 +2036,7 @@ async function bootstrap(): Promise<void> {
         }
       },
     },
+    awareness: fileAwareness!,
     mcpStatus: () => mcp?.statuses() ?? [],
     onMcpStatusChanged: (listener) => {
       mcpStatusListeners.add(listener)
@@ -2062,6 +2114,7 @@ async function bootstrap(): Promise<void> {
       tray?.refresh()
       // 感知文件夹 / 科目 / 阈值变更后，让分类管线按新配置重新武装
       syncClassification()
+      void fileAwareness?.reconfigure()
     },
   }
   // 右栏「终端」（docs/07 §2.3）：PTY 常驻 shell 服务；cwd 走会话工作目录回落链。
@@ -2395,7 +2448,9 @@ async function bindSmokeProject(sessionId: string, projectId: string, root: stri
 }
 
 async function runSmokeTest(userData: string): Promise<void> {
-  const target = BrowserWindow.getAllWindows()[0]
+  // 断言覆盖真实对话链，脚本必须注入 chat 窗口；不能依赖 `getAllWindows()` 的顺序
+  //（onboarding / edge-bar 谁先创建会随后续窗口改动漂移）。
+  const target = windows?.ensure('chat') ?? BrowserWindow.getAllWindows()[0]
   if (!target) {
     logger?.error('自测失败：没有可用窗口')
     return
@@ -4608,7 +4663,12 @@ async function shutdown(): Promise<void> {
   await fileWatcher?.stop().catch(() => undefined)
   await classification?.drain().catch(() => undefined)
   await classification?.close().catch(() => undefined)
+  fileAwarenessAnalyzer?.dispose()
+  await fileAwareness?.close().catch((error: unknown) => {
+    logger?.warn('退出前关闭文件自感知失败', { error: String(error) })
+  })
   extractPool?.close()
+  awarenessExtractPool?.close()
   // 会话与任务清单必须在退出前收尾（docs/06 §4 / §18，同一套防抖 + flush 约定）
   skillsService?.stopWatching()
   await sessions?.flush().catch((error: unknown) => {

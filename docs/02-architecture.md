@@ -13,6 +13,7 @@
 │  └───────────┘ └──────────────┘ └───────────────┘ └────────────────────────┘  │
 │  ┌───────────┐ ┌──────────────┐ ┌───────────────────────────────────────────┐ │
 │  │FileWatcher│ │Perception    │ │AgentHost ── 装配 agent-core               │ │
+│  │Awareness  │ │              │ │                                          │ │
 │  │智慧文件夹  │ │系统感知采集   │ │  ├ LlmProviders ├ Session ├ Loop(工具循环)│ │
 │  └───────────┘ └──────────────┘ │  ├ Skills ├ McpClientHub ├ Context       │ │
 │                                 │  └ Proactive(主动引导)                    │ │
@@ -56,6 +57,7 @@
 | `settings-store` | 配置读写、schema 校验、版本迁移、safeStorage 凭据 |
 | `mode-manager` | 模式注册表、切换流程、引导状态（见 05） |
 | `file-watcher` | 智慧感知文件夹监听、稳定判定、抑制自触发（见 05 §3.1） |
+| `file-awareness` | 递归文件监听、Windows 最近使用、持久队列、后台文档分析、Markdown 笔记与服务气泡（见 06 §26） |
 | `classification` + `classify/*` | 分类队列、规则缓存、LLM 判定、科目映射与落盘（见 05 §3.2） |
 | `classification-history` | 分类流水持久化（`userData/classification.json`，见 08 §1.2） |
 | `extract` / `extract-worker` / `extract-pool` | 内容提取（utilityProcess 隔离、超时与降级） |

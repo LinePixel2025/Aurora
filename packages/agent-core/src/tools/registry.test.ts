@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ToolRegistry, filterTools } from './registry.js'
+import { ToolRegistry, allowTools, filterTools } from './registry.js'
 import type { LlmToolParameterSchema } from '../llm/types.js'
 
 const params: LlmToolParameterSchema = { type: 'object', properties: {} }
@@ -92,6 +92,27 @@ describe('filterTools', () => {
   it('空摘除名单直接返回原注册表（普通会话零开销、零行为变化）', () => {
     const source = registry()
     expect(filterTools(source, [])).toBe(source)
+  })
+})
+
+describe('allowTools', () => {
+  const registry = (): ToolRegistry => {
+    const tools = new ToolRegistry()
+    for (const name of ['read_file', 'write_file']) tools.register(makeTool(name))
+    return tools
+  }
+
+  it('白名单为空时模型看不见也调不到任何工具', () => {
+    const view = allowTools(registry(), [])
+    expect(view.list()).toEqual([])
+    expect(view.toLlmTools()).toEqual([])
+    expect(view.get('read_file')).toBeUndefined()
+  })
+
+  it('只保留列出的工具且复用同一缓存', () => {
+    const view = allowTools(registry(), ['read_file'])
+    expect(view.list().map((tool) => tool.name)).toEqual(['read_file'])
+    expect(view.list()).toBe(view.list())
   })
 })
 

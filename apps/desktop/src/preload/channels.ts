@@ -198,6 +198,21 @@ const CHANNELS = {
     changed: 'automation:changed',
     historyChanged: 'automation:historyChanged',
   },
+  // 文件自感知（v28，docs/06 §26）：与 shared 契约同构，编译期双向断言兜住
+  awareness: {
+    status: 'awareness:status',
+    records: 'awareness:records',
+    notes: 'awareness:notes',
+    analyzeNow: 'awareness:analyzeNow',
+    ignore: 'awareness:ignore',
+    openKnowledge: 'awareness:openKnowledge',
+    openNote: 'awareness:openNote',
+    openSource: 'awareness:openSource',
+    clearHistory: 'awareness:clearHistory',
+    scanNow: 'awareness:scanNow',
+    suggestion: 'awareness:suggestion',
+    changed: 'awareness:changed',
+  },
 } as const
 
 /**

@@ -36,6 +36,8 @@ export interface WindowManagerOptions {
   rendererUrl?: string
   rendererDir: string
   isDev: boolean
+  /** 自测时关闭后台节流，保证隐藏 / 后台窗口仍按正常时钟处理 IPC。 */
+  backgroundThrottling?: boolean
 }
 
 interface WindowSpec {
@@ -310,6 +312,7 @@ export class WindowManager {
         // 只对 chat 窗口开启（唯一有浏览器面板的窗口）
         webviewTag: name === 'chat',
         devTools: this.options.isDev,
+        backgroundThrottling: this.options.backgroundThrottling ?? true,
       },
     })
 

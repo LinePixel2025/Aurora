@@ -32,7 +32,7 @@ import {
 } from '../session/history.js'
 import type { SessionStore } from '../session/store.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
-import { filterTools, type ToolRegistry, type ToolSource } from '../tools/registry.js'
+import { allowTools, filterTools, type ToolRegistry, type ToolSource } from '../tools/registry.js'
 
 export interface ProviderConfig {
   provider: LoopProvider
@@ -84,6 +84,11 @@ export interface RunProfile {
   persona?: string
   runContext?: string
   hiddenTools?: readonly string[]
+  /**
+   * 白名单工具面。给出时，仅列出的工具对本次运行可见；与 `hiddenTools` 同时存在时，
+   * 白名单先生效，再应用隐藏项。空数组 = 无工具（文件自感知分析使用）。
+   */
+  allowedTools?: readonly string[]
 }
 
 export interface AgentHostDeps {
@@ -543,10 +548,13 @@ export class KernelAgentHost implements AgentHostContract {
      * 注册表是进程级、按时重建的，而"哪些工具能用"是请求级的）。三处消费
      * （提示词工具清单 / 工具使用规范 / 循环执行）都走这一个来源，三处才同口径。
      */
-    const tools: ToolSource =
-      profile?.hiddenTools === undefined || profile.hiddenTools.length === 0
-        ? this.deps.tools
-        : filterTools(this.deps.tools, profile.hiddenTools)
+    let tools: ToolSource = this.deps.tools
+    if (profile?.allowedTools !== undefined) {
+      tools = allowTools(tools, profile.allowedTools)
+    }
+    if (profile?.hiddenTools !== undefined && profile.hiddenTools.length > 0) {
+      tools = filterTools(tools, profile.hiddenTools)
+    }
     /** 本请求的 job；未注入 `jobs` 时恒为 undefined，行为与 v15 之前完全一致 */
     let job: AgentJob | undefined
 

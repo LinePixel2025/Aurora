@@ -127,6 +127,18 @@ export const DEFAULT_IMAGEGEN = {
   providers: {},
 } as const
 
+/** 文件自感知默认配置（docs/06 §26）：默认关闭，且未同意正文出网。 */
+export const DEFAULT_FILE_AWARENESS = {
+  enabled: false,
+  contentConsentAccepted: false,
+  watchedDirs: [] as string[],
+  knowledgeDir: '',
+  includeRecent: true,
+  suggestionsEnabled: true,
+  dailyAnalysisLimit: 20,
+  maxFileMb: 100,
+} as const
+
 /**
  * 新建 provider 时的思考等级默认值（docs/08 §1、docs/06 §11）。
  *
@@ -327,6 +339,7 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
   automations: {
     enabled: true,
   },
+  fileAwareness: { ...DEFAULT_FILE_AWARENESS },
 }
 
 /** 返回一份全新的默认配置（避免调用方共享同一引用）。 */

@@ -45,6 +45,7 @@ export const SETTINGS_PAGE_IDS = [
   'llm',
   'voice',
   'agent',
+  'awareness',
   'center',
   'advanced',
 ] as const

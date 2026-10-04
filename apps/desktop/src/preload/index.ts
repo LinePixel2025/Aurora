@@ -233,6 +233,20 @@ const api: AuroraApi = {
     onChanged: (listener) => subscribe(IPC.automation.changed, listener),
     onHistoryChanged: (listener) => subscribe(IPC.automation.historyChanged, listener),
   },
+  awareness: {
+    status: () => invoke(IPC.awareness.status),
+    records: (request) => invoke(IPC.awareness.records, request),
+    notes: (request) => invoke(IPC.awareness.notes, request),
+    analyzeNow: (request) => invoke(IPC.awareness.analyzeNow, request),
+    ignore: (request) => invoke(IPC.awareness.ignore, request),
+    openKnowledge: () => invoke(IPC.awareness.openKnowledge),
+    openNote: (request) => invoke(IPC.awareness.openNote, request),
+    openSource: (request) => invoke(IPC.awareness.openSource, request),
+    clearHistory: () => invoke(IPC.awareness.clearHistory),
+    scanNow: () => invoke(IPC.awareness.scanNow),
+    onSuggestion: (listener) => subscribe(IPC.awareness.suggestion, listener),
+    onChanged: (listener) => subscribe(IPC.awareness.changed, listener),
+  },
 }
 
 contextBridge.exposeInMainWorld('aurora', api)

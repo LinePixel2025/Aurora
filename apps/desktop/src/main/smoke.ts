@@ -409,6 +409,11 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     expectOk('window.hide(chat)', await win.hide('chat'))
     const hidden = expectOk('window.getState#3', await win.getState())
     record('window.hide(chat) 后 chat 不可见、primary 归空且提示条仍在', hidden?.visible['chat'] !== true && hidden?.primary === null && hidden?.visible['edge-bar'] === true, JSON.stringify(hidden))
+    // 对话事件断言必须保证 chat 页面处于可见状态：隐藏 Electron 页面会触发后台节流，
+    // 渲染层里等待事件的 50ms 循环会被大幅拉长，最终得到“主进程已跑完、事件数组仍为空”
+    // 的假 FAIL。显隐语义已由上面两条断言覆盖，这里恢复可见只为后续真实 IPC 链路。
+    expectOk('window.showChat#事件链路', await win.showChat())
+    await wait(500)
 
     // 9. 真实对话链路（chat:send → 工具循环 → chat:event 流式 → chat:history）
     //    quick 会话由主进程在自测前清空，因此这里的条数断言是确定的。
@@ -503,8 +508,9 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     const subTool = subevents.filter((e) => e.type === 'tool' && e.call.name === 'task')
     const seqs = subevents.map((e) => e.seq)
     record(
-      '子代理进度事件到达（≥2 次：开始与终态）',
-      subProgress.length >= 2,
+      '子代理进度事件到达（至少终态；同帧开始+终态会被事件缓冲合并）',
+      subProgress.length >= 1 &&
+        subProgress[subProgress.length - 1]?.subagent?.status !== undefined,
       'count=' + subProgress.length,
     )
     record(
