@@ -20,6 +20,10 @@ describe('toolLabelOf', () => {
       verb: '搜索',
       object: 'trace',
     })
+    expect(toolLabelOf('office_edit', { path: 'report.docx' })).toEqual({
+      verb: '编辑 Office',
+      object: 'report.docx',
+    })
   })
 
   it('没有值得摘参数的工具只给动词', () => {

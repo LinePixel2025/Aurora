@@ -33,6 +33,7 @@ export default defineConfig({
         input: {
           index: r('src/main/index.ts'),
           'extract-worker': r('src/main/extract-worker.ts'),
+          'office-worker': r('src/main/office-worker.ts'),
         },
       },
     },

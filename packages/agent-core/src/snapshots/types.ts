@@ -24,6 +24,11 @@ export interface SnapshotCaptureInput {
   toolCallId?: string
   origin: SnapshotRef['origin']
   mode?: 'overwrite' | 'append'
+  /**
+   * 已读取的二进制原内容。Office 工具已在 worker 前读过源文件，
+   * 这份字节让快照层不必再做一次 UTF-8 往返；缺省时仍按文本路径读取。
+   */
+  bytes?: Uint8Array
 }
 
 export interface SnapshotCaptureResult {

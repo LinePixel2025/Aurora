@@ -119,10 +119,12 @@ import { resolveScheduleProvider, type IScheduleProvider } from './schedule.js'
 import { resolveSubjectFolder } from './paths.js'
 import { AuroraFileWatcher } from './file-watcher.js'
 import { ExtractPool, type ExtractWorkerChild } from './extract-pool.js'
+import { OfficePool, type OfficeChildLike } from './office-pool.js'
 import { SELF_AWARENESS_EVIDENCE_LIMIT_BYTES } from './extract.js'
 import { ClassificationHistory } from './classification-history.js'
 import { ClassificationService, type ClassifyProviderFactory } from './classification.js'
 import { NotificationService } from './notifications.js'
+import { createNodeOfficePort } from './tools/office-port.js'
 import { UpdateService } from './updater.js'
 import { createUpdaterPort } from './updater-port.js'
 import { createTray, type TrayController } from './tray.js'
@@ -482,7 +484,21 @@ function ensureSnapshotPort(): SnapshotPort {
   snapshotPort = createSnapshotPortFor(config)
   return snapshotPort
 }
+
+function ensureOfficePool(): OfficePool {
+  officePool ??= new OfficePool({
+    fork: () =>
+      utilityProcess.fork(join(__dirname, 'office-worker.js'), [], {
+        serviceName: 'aurora-office',
+      }) as unknown as OfficeChildLike,
+    ...(logger === undefined ? {} : { logger: logger.child('office-worker') }),
+  })
+  return officePool
+}
+
 let computerTools: ComputerTools | undefined
+/** Office worker 池：懒启动；超时 / 崩溃后下一次请求重建。 */
+let officePool: OfficePool | undefined
 /** `set_setting` 装配器（docs/06 §12）：与电脑操控工具分开注册，互不摘除 */
 let settingsTool: SettingsToolRegistry | undefined
 /** `classisland_remind` 装配器（docs/05 §3.4 v3）：按桥接可用性注册 / 摘除 */
@@ -933,7 +949,7 @@ async function bootstrap(): Promise<void> {
   const skillBridge = new SkillsBridge(skills)
   skillBridge.registerInto(tools)
 
-  // 7.1 电脑操控工具（docs/06 §11）：按 `agent.tools.*` 注册 8 个工具。
+  // 7.1 电脑操控工具（docs/06 §11）：按 `agent.tools.*` 注册全部工具。
   //     必须在内核（KernelAgentHost）构造前装配，否则第一次请求的工具表是空的。
   //     `sync()` 是唯一的开关落地点：这里一次、`onSettingsChanged` 一次 → 改完立即生效。
   //     缺省工作目录 / 搜索根由装配层按 §5.1 三级回落现算（项目根 > workspaceDir > 主目录，
@@ -1018,6 +1034,12 @@ async function bootstrap(): Promise<void> {
       workspaceRoot: (sessionId) => toolchainProjects.boundaryRoot(sessionId),
       logger: logger.child('tools'),
       snapshots: filePortSnapshots,
+    }),
+    office: createNodeOfficePort({
+      pool: ensureOfficePool(),
+      snapshots: filePortSnapshots,
+      workspaceRoot: (sessionId) => toolchainProjects.boundaryRoot(sessionId),
+      logger: logger.child('office'),
     }),
     open: createShellOpenPort({
       urlMode: () => settings!.get().agent.tools.open.urlMode,
@@ -3721,6 +3743,9 @@ async function runSmokeTest(userData: string): Promise<void> {
     'read_file',
     'write_file',
     'edit_file',
+    'office_read',
+    'office_create',
+    'office_edit',
     'list_dir',
     'open_path',
     'grep',
@@ -3740,17 +3765,23 @@ async function runSmokeTest(userData: string): Promise<void> {
     const writeFile = tools?.get('write_file')
     const editFile = tools?.get('edit_file')
     const readFile = tools?.get('read_file')
+    const officeRead = tools?.get('office_read')
+    const officeCreate = tools?.get('office_create')
+    const officeEdit = tools?.get('office_edit')
     const grep = tools?.get('grep')
     const glob = tools?.get('glob')
     record(
-      '敏感级与文档一致（run_command / write_file / edit_file = confirm，read_file / grep / glob = safe）',
+      '敏感级与文档一致（run_command / write_file / edit_file / office_create / office_edit = confirm，read_file / office_read / grep / glob = safe）',
       runCommand?.sensitivity === 'confirm' &&
         writeFile?.sensitivity === 'confirm' &&
         editFile?.sensitivity === 'confirm' &&
+        officeCreate?.sensitivity === 'confirm' &&
+        officeEdit?.sensitivity === 'confirm' &&
         readFile?.sensitivity === 'safe' &&
+        officeRead?.sensitivity === 'safe' &&
         grep?.sensitivity === 'safe' &&
         glob?.sensitivity === 'safe',
-      `run_command=${runCommand?.sensitivity ?? 'missing'} write_file=${writeFile?.sensitivity ?? 'missing'} edit_file=${editFile?.sensitivity ?? 'missing'} read_file=${readFile?.sensitivity ?? 'missing'} grep=${grep?.sensitivity ?? 'missing'} glob=${glob?.sensitivity ?? 'missing'}`,
+      `run_command=${runCommand?.sensitivity ?? 'missing'} write_file=${writeFile?.sensitivity ?? 'missing'} edit_file=${editFile?.sensitivity ?? 'missing'} office_create=${officeCreate?.sensitivity ?? 'missing'} office_edit=${officeEdit?.sensitivity ?? 'missing'} read_file=${readFile?.sensitivity ?? 'missing'} office_read=${officeRead?.sensitivity ?? 'missing'} grep=${grep?.sensitivity ?? 'missing'} glob=${glob?.sensitivity ?? 'missing'}`,
     )
 
     // 真实执行一条命令并读回产物。
@@ -3764,6 +3795,8 @@ async function runSmokeTest(userData: string): Promise<void> {
     let executed = false
     let readBackOk = false
     let listedOk = false
+    let officeOk = false
+    let officeDetail = ''
     let commandDetail = ''
     try {
       await fs.mkdir(probeDir, { recursive: true })
@@ -3793,6 +3826,38 @@ async function runSmokeTest(userData: string): Promise<void> {
         listed.isError !== true &&
         listed.content.includes(basename(probeFile))
       if (!listedOk && listed !== undefined) commandDetail = listed.content.slice(0, 120)
+
+      const officeFile = join(probeDir, 'aurora-office-smoke.docx')
+      const created = await officeCreate?.execute(
+        {
+          path: officeFile,
+          format: 'docx',
+          content: {
+            title: 'Aurora Office Smoke',
+            blocks: [{ type: 'paragraph', text: 'AURORA_OFFICE_OK' }],
+          },
+        },
+        { sessionId: 'smoke' },
+      )
+      const officeReadBack = await officeRead?.execute({ path: officeFile }, { sessionId: 'smoke' })
+      const officeEdited = await officeEdit?.execute(
+        {
+          path: officeFile,
+          operations: [
+            { type: 'replace_text', find: 'AURORA_OFFICE_OK', replace: 'AURORA_OFFICE_EDITED' },
+          ],
+        },
+        { sessionId: 'smoke' },
+      )
+      officeOk =
+        created !== undefined &&
+        created.isError !== true &&
+        officeReadBack !== undefined &&
+        officeReadBack.isError !== true &&
+        officeReadBack.content.includes('AURORA_OFFICE_OK') &&
+        officeEdited !== undefined &&
+        officeEdited.isError !== true
+      officeDetail = officeEdited?.content.slice(0, 140) ?? created?.content.slice(0, 140) ?? ''
     } catch (error) {
       commandDetail = `异常：${String(error)}`
     }
@@ -3803,6 +3868,7 @@ async function runSmokeTest(userData: string): Promise<void> {
       `exit=${executed ? 'ok' : 'fail'} readBack=${readBackOk ? 'ok' : 'fail'} file=${probeFile}`,
     )
     record('list_dir 能在该目录看到刚写入的文件', listedOk, commandDetail)
+    record('Office 专用工具在真实 worker 中创建、读取并另存编辑', officeOk, officeDetail)
     await fs.rm(probeDir, { recursive: true, force: true }).catch(() => undefined)
 
     // 4.1 搜索层（docs/06 §11.5）：`glob` 按名字找、`grep` 按内容找，都走真实文件系统。
@@ -4859,6 +4925,7 @@ async function shutdown(): Promise<void> {
   })
   extractPool?.close()
   awarenessExtractPool?.close()
+  officePool?.close()
   // 会话与任务清单必须在退出前收尾（docs/06 §4 / §18，同一套防抖 + flush 约定）
   skillsService?.stopWatching()
   await sessions?.flush().catch((error: unknown) => {
@@ -4923,7 +4990,7 @@ function adaptProactive(scheduler: ProactiveScheduler): ProactiveLike {
 /**
  * 工具注册表的**唯一**同步入口（docs/06 §11、§12、§14、§18/§19）。 *
  * 四个装配器必须一起同步：
- * - `computerTools`：按 `agent.tools.*` 重建 8 个电脑操控工具；
+ * - `computerTools`：按 `agent.tools.*` 重建全部电脑操控工具；
  * - `settingsTool`：重建 `set_setting`（不受 `agent.tools.enabled` 影响，见 tools/index.ts）；
  * - `extensionTools`：重建扩展工具七件套（同样不受 `agent.tools.enabled` 影响）；
  * - `agentCoreTools`：重建 todo_write / todo_read / task（同样不受门控，见 tools/index.ts）。

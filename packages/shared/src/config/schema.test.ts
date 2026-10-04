@@ -305,12 +305,15 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(SettingsSchema.parse(settings).llm.providers['deepseek']?.modelList).toEqual([])
   })
 
-  it('电脑操控工具配置：默认值完整、字段路径可校验（v5；v12 起 8 个工具）', () => {
+  it('电脑操控工具配置：默认值完整、字段路径可校验（v5；Office 工具已并入）', () => {
     expect([...COMPUTER_TOOL_NAMES]).toEqual([
       'run_command',
       'read_file',
       'write_file',
       'edit_file',
+      'office_read',
+      'office_create',
+      'office_edit',
       'list_dir',
       'open_path',
       'grep',

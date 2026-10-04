@@ -66,7 +66,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：`$env:AURORA_SMOKE='1'; pnpm dev`，
   结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`（调试渲染层加 `AURORA_DEVTOOLS=1`）。
-  **全量约 25 秒、178 条断言应当全绿（`SUMMARY 178/178 passed`）**——**先把基线修绿再动被测代码**。
+  **全量约 25 秒、183 条断言应当全绿（`SUMMARY 183/183 passed`）**——**先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
   **提交前仍必须跑全量**。
 - **Center 网页端验收（视觉 + 行为）**：`pnpm --filter @aurora/center build && pnpm --filter @aurora/center verify:web`
@@ -161,6 +161,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **service-dock（v4）/ mini-chat（v6）已移除**；「关闭」= 隐藏窗口（流式回复不中止），别按旧窗口心智模型理解。
 - 未配置 STT provider 时麦克风按钮**根本不渲染**（不是 disabled）；TTS「朗读」同款口径。
 - **门控口径两组相反**：扩展工具六件套（`web_fetch` / `notify_user` / `clipboard_*` / `generate_image` / `show_preview`）**不受** `agent.tools.enabled`；
-  电脑操控工具 8 个（含 `edit_file` / `grep` / `glob`）**受**总开关与子开关门控；`todo_*` / `task` 不受门控。
-- 办公文件（docx / xlsx / pptx）**没有专用工具**（读只走附件提取、写只能 `run_command` + Office COM）；Code Mode 为占位实现。
+  电脑操控工具（含 `edit_file` / Office / `grep` / `glob`）**受**总开关与子开关门控；`todo_*` / `task` 不受门控。
+- 办公文件（docx / xlsx / pptx）已有 `office_read` / `office_create` / `office_edit` 专用工具：
+  走 utilityProcess 中的纯 JS 引擎，默认另存、显式覆盖才写回并先做二进制快照；旧格式与复杂 COM 能力仍是显式兜底。
 - Markdown 渲染 P3（目录 / 折叠 / 脚注 / 引用 chip）唯一副本在 `git stash@{0}` —— **清 stash 前先落地或转分支**。

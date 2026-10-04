@@ -2,7 +2,7 @@
 
 状态：`已定稿`（v1 基线；P3 已完成——会话 / 工具循环 / Skill 执行 / MCP 客户端均已落地，
 "已定稿"指设计不变，实现细节见各节标注的 v1 / P3 范围）。
-2026-09 工具面扩充：电脑操控工具 5 → **8** 个（新增 `edit_file` / `grep` / `glob`，见 §11.5 / §11.6），
+2026-09 工具面扩充：电脑操控工具新增 `edit_file` / `grep` / `glob`（见 §11.5 / §11.6），
 `run_command` 新增免确认模式列表（§11.7），系统提示词改为「静态在前、易变在后」并补上
 prompt caching 的前缀稳定化与命中观测口径（§21）。
 v0.2.8 内核新增**运行档**：`AgentHostDeps.runProfileFor` + `RunProfile`（人设 / `## 本次运行` /
@@ -680,8 +680,10 @@ interface AgentHostDeps {
 v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电脑操控工具，把命令执行与文件读写
 接进 §5 的工具循环。工具定义（名称 / 参数 Schema / 敏感级）留在 `packages/agent-core`，
 真正的系统调用落在主进程并**经构造参数注入**，内核仍不依赖 Electron / DOM（见 §2 分层）。
-2026-09 该工具集由 5 个扩到 **8 个**——新增 `edit_file`（精确替换，§11.6）与
-`grep` / `glob`（内容与文件名检索，§11.5），门控与注册路径沿用同一套（`COMPUTER_TOOL_NAMES`）。
+2026-09 新增 `edit_file`（精确替换，§11.6）与 `grep` / `glob`（内容与文件名检索，§11.5）。
+2026-10 再新增 `office_read` / `office_create` / `office_edit` 三个 Office 专用工具：
+DOCX / XLSX / PPTX 的创建、读取和常用编辑默认走纯 JS worker，不再让模型手写 PowerShell COM；
+三个工具并入 `COMPUTER_TOOL_NAMES`，共用 `agent.tools.files.enabled`，因此当前工具集为 **11 个**。
 
 > 另有内核工具 `set_setting`（AI 修改自身配置，实现文件
 > `packages/agent-core/src/tools/settings.ts` + `apps/desktop/src/main/tools/settings-port.ts`）——
@@ -694,6 +696,9 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 | `read_file` | `{ path, offset?, limit?, maxBytes? }` | safe | `packages/agent-core/src/tools/files.ts` + `apps/desktop/src/main/tools/file-port.ts` |
 | `write_file` | `{ path, content, mode?: 'overwrite' \| 'append' }` | confirm | 同上 |
 | `edit_file` | `{ path, oldString, newString, replaceAll? }` | confirm | `packages/agent-core/src/tools/edit.ts` + `apps/desktop/src/main/tools/file-port.ts` |
+| `office_read` | `{ path, target?, offset?, limit? }` | safe | `packages/agent-core/src/tools/office.ts` + `apps/desktop/src/main/tools/office-port.ts` + `office-worker.ts` |
+| `office_create` | `{ path, format, content?, templatePath?, templateData?, overwrite? }` | confirm | 同上 |
+| `office_edit` | `{ path, saveAs?, overwrite?, operations }` | confirm | 同上 |
 | `list_dir` | `{ path, limit? }` | safe | 同上（`files.ts`） |
 | `open_path` | `{ target }` | confirm | `packages/agent-core/src/tools/files.ts` + `apps/desktop/src/main/tools/open-port.ts` |
 | `grep` | `{ pattern, path?, include? }` | safe | `packages/agent-core/src/tools/search.ts` + `apps/desktop/src/main/tools/file-port.ts` |
@@ -705,6 +710,9 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 - **工具语义**：`run_command` 执行单条命令并采集 stdout / stderr；`read_file` 按 UTF-8 读文本；
   `write_file` 写文本（`mode` 缺省 `overwrite`，`append` 追加）；`edit_file` 对文本做
   **精确局部替换**（读前守卫 + 唯一性拒绝 + 行尾保真，见 §11.6）；`list_dir` 列目录项；
+  `office_read/create/edit` 只处理 `.docx` / `.xlsx` / `.pptx`，在 `utilityProcess` 中懒加载
+  `@office-open/*`，**不依赖本机 Office、不执行宏、不自动转 PDF**；编辑前必须 `office_read`，
+  默认另存新文件，只有 `overwrite: true` 才覆盖源文件且必须先成功保存二进制快照。
   `grep` 按正则搜**内容**、`glob` 按模式匹配**文件名**（两者规格见 §11.5）；
   `open_path` 打开 `http(s)://` 时按 `agent.tools.open.urlMode` 选择右栏内置浏览器（默认）或
   `shell.openExternal`；`mailto:` 和本地路径仍走系统默认程序。所有打开动作都不等待目标程序退出。
@@ -747,8 +755,9 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   `agent.tools.files.{enabled,maxReadBytes}`、`agent.tools.search.{enabled,maxResults}`、
   `agent.tools.open.enabled`；**`agent.permissionMode`（v13）是工具面的总闸门**，见 §11.2。
   - **开关分派（`registerComputerTools.sync()` 是唯一落地点）**：`agent.tools.enabled` 是**总开关**
-    （为 `false` 时 8 个工具一个都不注册）；`terminal.enabled` → `run_command`；
-    `files.enabled` → `read_file` / `write_file` / `edit_file` / `list_dir`；
+    （为 `false` 时全部工具一个都不注册）；`terminal.enabled` → `run_command`；
+    `files.enabled` → `read_file` / `write_file` / `edit_file` / `office_read` /
+    `office_create` / `office_edit` / `list_dir`；
     `search.enabled` → `grep` / `glob`；`open.enabled` → `open_path`。
     各子开关只决定对应工具是否注册；`false` 时该工具**不出现在工具清单里**（非「注册后拒绝」）。
     `edit_file` **不单独设开关**，与 `write_file` 共用 `files.enabled`（避免设置页开关膨胀）。
@@ -757,7 +766,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 
 ### 11.1 安全边界
 
-- **逐次确认**：`run_command` / `write_file` / `edit_file` / `open_path` 四个 `sensitivity = 'confirm'`
+- **逐次确认**：`run_command` / `write_file` / `edit_file` / `office_create` / `office_edit` /
+  `open_path` 这些 `sensitivity = 'confirm'`
   的工具，
   **每一次调用**都走 §5 的 `confirmTool` 钩子（主进程侧由 §9.1 的 `ProactiveScheduler` 承载；
   应用内恒注入该钩子，未注入时内核不拦截——这是内核的可测试性设计，不是可配置项）。
@@ -765,7 +775,7 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   工具卡片置 `error`、循环继续。
   唯一的例外是命中 `agent.tools.terminal.allowPatterns` 的 `run_command`（用户显式配置的免确认模式）
   ——**只对 `run_command` 生效**，跳过确认卡片但**仍写审计日志**，语义见 §11.7。
-- **总开关**：`agent.tools.enabled = false` 时 8 个工具**完全不注册**——模型在工具清单里看不到
+- **总开关**：`agent.tools.enabled = false` 时全部电脑操控工具**完全不注册**——模型在工具清单里看不到
   它们，系统提示词里也没有相应说明，因而不可能产生确认卡片或任何本机副作用。
 - **`workspaceDir` 只是默认工作目录，不是沙箱**：`run_command` 的缺省 `cwd`（`grep` / `glob` 的缺省
   搜索根同理）取的是 §5.1 `effectiveWorkspaceDir` 那条回落链——**当前项目根（配置了当前项目时）>
@@ -1046,7 +1056,8 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 
 ### 11.8 写前快照与回滚（v14）
 
-`write_file`（`overwrite` 与 `append` 都算）与 `edit_file` 在**真正落盘之前**，把磁盘上的
+`write_file`（`overwrite` 与 `append` 都算）、`edit_file` 与显式覆盖的 Office 写入在
+**真正落盘之前**，把磁盘上的
 **原内容**存进 `<userData>/backups/<sessionId>/`；用户在设置页「智能与工具」页的文件备份区组
 （v0.2.4 起迁入设置页）把某个文件回到某一份快照。
 
@@ -1056,9 +1067,11 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
   索引是 `<backups>/<sessionId>/index.json`（`SnapshotRef[]`）。
   **刻意不用原文件名**：同一路径可能被改多次（撞名）、原名可能含非法字符；
   原名只存在索引的 `path` 字段里。id 里时间戳在前 ⇒ 同一文件下**字典序 = 时间序**。
-- **触发点与顺序**：`file-port.writeText` 里 `resolveWithin`（边界）→ **`capture`（留底）** →
+- **触发点与顺序**：`file-port.writeText` / Office 端口里 `resolveWithin`（边界）→ **`capture`（留底）** →
   `mkdir` → 原子写 / 追加。顺序不能换 —— 换过来就是"改完才备份"，备份里已是新内容，回滚等于没回滚。
   主写失败时**不回滚快照**（保命优先：文件可能已被部分改写），并把快照 id 写进错误信息。
+- **二进制**：Office 快照直接保存原始字节（`SnapshotCaptureInput.bytes`），不得经 UTF-8 往返；
+  `origin` 为 `office_edit`。快照读回与回滚本来就使用 `Uint8Array`，因此可无损恢复 `.docx/.xlsx/.pptx`。
 - **跳过不静默**：目标不存在 → 记一条 `exists: false`（回滚它 = **删除**该文件）；
   是目录 / 符号链接 → 跳过；超过 `agent.snapshots.maxSnapshotBytes` → 跳过；
   `agent.snapshots.enabled = false` → 跳过。四种情况都会在**工具结果里**写明"未保存快照：…"，
@@ -1281,7 +1294,7 @@ AI 彻底失能、连改回来的机会都没有」是一条必须堵死的路�
 
 ### 12.6 已知边界
 
-- **`agent.tools.enabled = false` 会摘掉 8 个电脑操控工具**（§11.1），但 `set_setting` **仍然注册**：
+- **`agent.tools.enabled = false` 会摘掉全部电脑操控工具**（§11.1），但 `set_setting` **仍然注册**：
   AI 仍可（在用户确认后）改 `agent.tools.*`，包括把总开关打回来。在重新打开之前，
   `run_command` / `read_file` / `write_file` / `edit_file` / `list_dir` / `open_path` / `grep` / `glob`
   在它的工具清单里不存在

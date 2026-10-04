@@ -2,8 +2,8 @@
  * Work Mode（docs/05 §4）—— BetaV2 初步实装。
  *
  * 面向办公场景：Office 文档 / 表格 / 演示文稿 / PDF 的处理、总结与生成。
- * 引导两步（工作目录 → 确认完成）；系统提示词指导 Agent 用 PowerShell COM
- * 自动化 Office，并强调覆盖 / 删除 / 移动前确认、产出文件落入工作目录、
+ * 引导两步（工作目录 → 确认完成）；系统提示词指导 Agent 优先使用结构化 Office 工具，
+ * 并强调覆盖 / 删除 / 移动前确认、产出文件落入工作目录、
  * 本模式不含课堂 / 课程表 / 课件分类功能（那些属于 ClassRoom Mode）。
  */
 import type { IMode, ModeContext, ModeGuide, Settings } from '@aurora/shared'
@@ -92,8 +92,12 @@ export function createWorkMode(): IMode {
         '工作目录按单一回落链解析（docs/06 §5.1）：会话绑定项目 > 当前项目 > 本模式工作目录 > 电脑操控工具工作目录 > 用户主目录。',
         '不显式传 cwd 的命令、不传根的文件与检索工具、写入边界与免确认判定都落在同一条链解析出的目录上 ——',
         '提示词与工具链同源，不要假设存在别的「工作目录」；产出文件保存到该目录。',
-        '工作方式：用 run_command 执行 PowerShell 完成任务，Office 自动化走 COM（如 New-Object -ComObject Excel.Application），',
-        '配合 read_file / write_file / list_dir 读取与生成文件；操作要点与常见坑参考 office-work 技能。',
+        '工作方式：优先使用 office_read / office_create / office_edit 处理 DOCX / XLSX / PPTX；',
+        '这些工具不依赖本机 Office，也不应为了普通创建 / 编辑再手写 PowerShell COM。',
+        '默认另存新文件；只有用户明确要求覆盖时才传 overwrite，工具会强制先保存二进制快照。',
+        '旧格式 .doc / .xls / .ppt、宏、复杂 SmartArt / 图表 / 动画或 PDF 导出若确需 COM，',
+        '先明确说明风险并征得用户同意，再走 run_command；结构化工具报不支持时不得自动改用 COM。',
+        '普通文本 / CSV / Markdown 仍用 read_file / write_file / list_dir；操作要点参考 office-work 技能。',
         '安全约束：覆盖 / 删除 / 移动用户的文件之前，必须先说明将要做什么并等待用户确认。',
         '职责边界：本模式不含课堂 / 课程表 / 课件分类功能——那些属于 ClassRoom Mode；',
         '若用户提出这类需求，请说明边界并引导其切换模式。',

@@ -108,6 +108,9 @@ const TOOL_GATES: Record<ComputerToolName, (t: AgentToolsConfig) => boolean> = {
   read_file: (t) => t.files.enabled,
   write_file: (t) => t.files.enabled,
   edit_file: (t) => t.files.enabled,
+  office_read: (t) => t.files.enabled,
+  office_create: (t) => t.files.enabled,
+  office_edit: (t) => t.files.enabled,
   list_dir: (t) => t.files.enabled,
   open_path: (t) => t.open.enabled,
   // 文件检索（grep / glob）归 v12 新增的 `agent.tools.search` 开关，与 files 分开
@@ -136,6 +139,7 @@ const permissionReadonly = computed(() => permissionMode.value === 'readonly')
  */
 const READONLY_COMPUTER_TOOL_NAMES: readonly ComputerToolName[] = [
   'read_file',
+  'office_read',
   'list_dir',
   'grep',
   'glob',
@@ -144,7 +148,7 @@ const READONLY_COMPUTER_TOOL_NAMES: readonly ComputerToolName[] = [
 /**
  * 当前档位 + 配置下**会注册**的工具名，顺序照 `COMPUTER_TOOL_NAMES`（即注册顺序，便于比对）。
  *
- * 这里只覆盖 `COMPUTER_TOOL_NAMES` 里的 8 个电脑操控工具。只读档另有三类**不在本表**的名字
+ * 这里覆盖 `COMPUTER_TOOL_NAMES` 里的全部电脑操控工具。只读档另有三类**不在本表**的名字
  * 仍会注册（因此只读档的小结不能只看这个数组）：`todo_read`（写入口 `todo_write` 在只读档不注册）
  * 由内核工具装配器注册、`use_skill` 由技能装配器注册、`set_setting` 由配置工具装配器注册，
  * 外加按服务器动态注册的 MCP 工具与扩展工具七件套 —— 它们都不受 `agent.tools.enabled` 门控，

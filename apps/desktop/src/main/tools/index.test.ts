@@ -8,6 +8,7 @@ import {
   type FilePort,
   type ImageGenPort,
   type NotifyPort,
+  type OfficePort,
   type OpenPort,
   type PreviewPort,
   type ScreenshotPort,
@@ -40,7 +41,7 @@ const HOME = 'C:\\Users\\tester'
 /**
  * 当前装配器能**真正创建出来**的电脑操控工具（顺序照 `COMPUTER_TOOL_NAMES`）。
  *
- * 与 `COMPUTER_TOOL_NAMES`（v12 起 8 个名字）刻意区分开：常量是「对外承诺的工具名全集」，
+ * 与 `COMPUTER_TOOL_NAMES` 刻意区分开：常量是「对外承诺的工具名全集」，
  * 本列表是「`registerComputerTools` 眼下真的能造出来的子集」——v12 起 8 个全部交付
  * （`grep` / `glob` 由 step 3、`edit_file` 由 step 4），两者一致但**仍然显式列出**：
  * 新增工具时同步加名字，断言保持逐条精确（不用 `toContain` 这类弱断言）。
@@ -50,6 +51,9 @@ const IMPLEMENTED_COMPUTER_TOOLS = [
   'read_file',
   'write_file',
   'edit_file',
+  'office_read',
+  'office_create',
+  'office_edit',
   'list_dir',
   'open_path',
   'grep',
@@ -152,6 +156,23 @@ function fakeOpenPort(): OpenPort {
   return { async open() {} }
 }
 
+function fakeOfficePort(): OfficePort {
+  return {
+    async resolve(path) {
+      return path
+    },
+    async read() {
+      throw new Error('fake office read')
+    },
+    async create() {
+      throw new Error('fake office create')
+    },
+    async edit() {
+      throw new Error('fake office edit')
+    },
+  }
+}
+
 function fakeRunner(stdout = 'AURORA_FAKE_OK'): CommandRunner & { calls: unknown[] } {
   const calls: unknown[] = []
   const runner = (async (request) => {
@@ -202,6 +223,7 @@ function setup(
     sessionWorkspaceDir,
     run: runner,
     files,
+    office: fakeOfficePort(),
     open: fakeOpenPort(),
   })
   return { tools, registry, port }
@@ -241,6 +263,7 @@ describe('registerComputerTools', () => {
         (sessionId !== undefined ? roots[sessionId] : undefined) ?? HOME,
       run: runner,
       files: fakeFilePort(),
+      office: fakeOfficePort(),
       open: fakeOpenPort(),
     })
     registry.sync()
@@ -298,12 +321,18 @@ describe('registerComputerTools', () => {
           name !== 'read_file' &&
           name !== 'write_file' &&
           name !== 'edit_file' &&
+          name !== 'office_read' &&
+          name !== 'office_create' &&
+          name !== 'office_edit' &&
           name !== 'list_dir',
       ),
     )
     expect(tools.get('read_file')).toBeUndefined()
     expect(tools.get('write_file')).toBeUndefined()
     expect(tools.get('edit_file')).toBeUndefined()
+    expect(tools.get('office_read')).toBeUndefined()
+    expect(tools.get('office_create')).toBeUndefined()
+    expect(tools.get('office_edit')).toBeUndefined()
     expect(tools.get('list_dir')).toBeUndefined()
     expect(tools.get('open_path')).toBeDefined()
   })
@@ -456,6 +485,7 @@ describe('registerSettingsTool', () => {
       sessionWorkspaceDir: () => HOME,
       run: fakeRunner(),
       files: fakeFilePort(),
+      office: fakeOfficePort(),
       open: fakeOpenPort(),
     })
     const settingsRegistry = registerSettingsTool({
@@ -564,6 +594,7 @@ describe('registerExtensionTools', () => {
       sessionWorkspaceDir: () => HOME,
       run: fakeRunner(),
       files: fakeFilePort(),
+      office: fakeOfficePort(),
       open: fakeOpenPort(),
     })
     const extensionRegistry = registerExtensionTools({
@@ -701,12 +732,14 @@ describe('registerAgentCoreTools', () => {
  */
 describe('readonly 档（只读 = 不进工具表）', () => {
   /** 只读档下**仍在表里**的电脑操控工具：8 个里只剩这 4 个（都是只读的） */
-  const READONLY_COMPUTER_TOOLS = ['read_file', 'list_dir', 'grep', 'glob'] as const
+  const READONLY_COMPUTER_TOOLS = ['read_file', 'office_read', 'list_dir', 'grep', 'glob'] as const
   /** 只读档下**被摘掉**的：写 / 执行 / 有系统副作用 */
   const READONLY_BLOCKED_TOOLS = [
     'run_command',
     'write_file',
     'edit_file',
+    'office_create',
+    'office_edit',
     'open_path',
     // `todo_write` 的 sensitivity 是 `safe`，但它往 <userData>/todos/<sid>.json 落盘
     'todo_write',
@@ -722,6 +755,7 @@ describe('readonly 档（只读 = 不进工具表）', () => {
       sessionWorkspaceDir: () => HOME,
       run: fakeRunner(),
       files: fakeFilePort(),
+      office: fakeOfficePort(),
       open: fakeOpenPort(),
     })
     const core = registerAgentCoreTools({
@@ -773,7 +807,7 @@ describe('readonly 档（只读 = 不进工具表）', () => {
 
     expect(computer.sync()).toEqual([])
     expect(COMPUTER_TOOL_NAMES.every((name) => tools.get(name) === undefined)).toBe(true)
-    // 总开关管的是 8 个电脑操控工具，不碰 Agent 内核工具（既有口径，与档位无关）
+    // 总开关管的是电脑操控工具，不碰 Agent 内核工具（既有口径，与档位无关）
     expect(core.sync()).toEqual(['todo_read', 'task', 'ask_user'])
   })
 

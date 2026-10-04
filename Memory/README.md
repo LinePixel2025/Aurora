@@ -10,6 +10,7 @@
 
 | 日期 | 主题 | 标签 | 文件 |
 | --- | --- | --- | --- |
+| 2026-10-05 | Office 主路径改为结构化 worker，COM 只做显式兜底 | Office, worker, agent, snapshot, 坑 | [2026-10-05-office-structured-tools.md](2026-10-05-office-structured-tools.md) |
 | 2026-10-05 | 自感知后台模型必须严格、记忆过期只停用不删除 | 自感知, 模型, 记忆, 隐私, 坑 | [2026-10-05-awareness-model-and-memory-expiry.md](2026-10-05-awareness-model-and-memory-expiry.md) |
 | 2026-10-05 | 自感知建议执行必须先持久化新会话再激活 | 自感知, session, IPC, 坑 | [2026-10-05-awareness-execute-session-order.md](2026-10-05-awareness-execute-session-order.md) |
 | 2026-10-05 | 自感知覆盖图片与常用文档，Office 走结构化提取 | 自感知, 文档, 图片, officeparser, 性能 | [2026-10-05-awareness-file-types-office-extraction.md](2026-10-05-awareness-file-types-office-extraction.md) |

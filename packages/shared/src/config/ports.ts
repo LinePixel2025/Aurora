@@ -11,8 +11,12 @@ import { dirname, join } from 'node:path'
 export interface FileSystemPort {
   exists(path: string): Promise<boolean>
   readFile(path: string): Promise<string>
+  /** 二进制读；Office 快照与回滚必须走它，不能借 UTF-8 往返。 */
+  readFileBytes?(path: string): Promise<Uint8Array>
   /** 原子写：写临时文件后 rename（docs/08 §2）。 */
   writeFileAtomic(path: string, content: string): Promise<void>
+  /** 二进制原子写；与 `writeFileAtomic` 同一套临时文件 + rename 约定。 */
+  writeFileAtomicBytes?(path: string, content: Uint8Array): Promise<void>
   rename(from: string, to: string): Promise<void>
   remove(path: string): Promise<void>
   mkdirp(path: string): Promise<void>
@@ -31,11 +35,25 @@ export const nodeFileSystem: FileSystemPort = {
   async readFile(path) {
     return fs.readFile(path, 'utf8')
   },
+  async readFileBytes(path) {
+    return fs.readFile(path)
+  },
   async writeFileAtomic(path, content) {
     await fs.mkdir(dirname(path), { recursive: true })
     const tmp = `${path}.${process.pid}.${Date.now()}.tmp`
     try {
       await fs.writeFile(tmp, content, 'utf8')
+      await fs.rename(tmp, path)
+    } catch (error) {
+      await fs.rm(tmp, { force: true }).catch(() => undefined)
+      throw error
+    }
+  },
+  async writeFileAtomicBytes(path, content) {
+    await fs.mkdir(dirname(path), { recursive: true })
+    const tmp = `${path}.${process.pid}.${Date.now()}.tmp`
+    try {
+      await fs.writeFile(tmp, content)
       await fs.rename(tmp, path)
     } catch (error) {
       await fs.rm(tmp, { force: true }).catch(() => undefined)

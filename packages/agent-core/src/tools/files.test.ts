@@ -222,7 +222,7 @@ function toolOf(tools: ToolDefinition[], name: string): ToolDefinition {
 /**
  * `createFileTools` 交付的**文件类**工具（显式列出，不写死长度）。
  *
- * 刻意不用「`COMPUTER_TOOL_NAMES` 去掉 `run_command`」这种全局过滤：v12 的常量有 8 个名字，
+ * 刻意不用「`COMPUTER_TOOL_NAMES` 去掉 `run_command`」这种全局过滤：常量为工具名全集，
  * 其中 `edit_file`（step 4 交付）、`grep` / `glob`（step 3 交付）都不由本工厂创建，
  * 过滤条件必须显式说清「哪些是文件类」而不是「除了谁都是文件类」。
  */

@@ -5,9 +5,16 @@
  * 也不靠墙钟走毫秒来制造先后顺序（那样"新的在前"与环形淘汰的用例会时快时慢地抖）。
  */
 import { createHash } from 'node:crypto'
+import { lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { createMemoryLogger, type FileSystemPort, type Logger } from '@aurora/shared'
+import {
+  createMemoryLogger,
+  nodeFileSystem,
+  type FileSystemPort,
+  type Logger,
+} from '@aurora/shared'
 import { TestFileSystem } from '../testing/fileSystem.js'
 import {
   createFileSnapshotPort,
@@ -707,5 +714,40 @@ describe('createFileSnapshotPort —— 查询与会话目录', () => {
     h.fs.files.delete(join(DIR, ref.contentPath))
     expect(await h.port.readContent(ref)).toBeUndefined()
     expect(await h.port.readContent(seededRef({ exists: false, contentPath: '' }))).toBeUndefined()
+  })
+})
+
+describe('createFileSnapshotPort —— 二进制快照', () => {
+  it('Office 二进制内容原样保存并可读回', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'aurora-snapshot-bin-'))
+    try {
+      const file = join(root, 'report.docx')
+      const original = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0x10, 0x80])
+      await writeFile(file, original)
+      const port = createFileSnapshotPort({
+        dir: join(root, 'backups'),
+        fs: nodeFileSystem,
+        writeDebounceMs: 0,
+        stat: async (path) => {
+          const info = await lstat(path)
+          return { isFile: info.isFile(), isDirectory: info.isDirectory(), size: info.size }
+        },
+      })
+      const captured = await port.capture({
+        sessionId: 's1',
+        path: file,
+        origin: 'office_edit',
+        bytes: original,
+      })
+      if (captured.snapshot === undefined) throw new Error('expected snapshot')
+      const read = await port.readContent(captured.snapshot)
+      expect(Buffer.from(read?.bytes ?? [])).toEqual(original)
+      await port.flush()
+      expect((await readFile(join(root, 'backups', captured.snapshot.contentPath))).length).toBe(
+        original.length,
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

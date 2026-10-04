@@ -1440,7 +1440,7 @@ export interface SnapshotRef {
   /** 触发它的工具调用 id */
   toolCallId?: string
   /** `rollback` = 回滚**之前**留下的那一份（所以回滚也能被再次回滚） */
-  origin: 'write_file' | 'edit_file' | 'rollback'
+  origin: 'write_file' | 'edit_file' | 'office_edit' | 'rollback'
   createdAt: string
   /** 内容文件名（相对快照目录；`exists: false` 时为空串） */
   contentPath: string

@@ -752,6 +752,9 @@ export const COMPUTER_TOOL_NAMES = [
   'read_file',
   'write_file',
   'edit_file',
+  'office_read',
+  'office_create',
+  'office_edit',
   'list_dir',
   'open_path',
   'grep',
@@ -767,7 +770,7 @@ export type ComputerToolName = (typeof COMPUTER_TOOL_NAMES)[number]
  * 模型仍可显式传入其它路径，安全靠"逐次确认 + 输出上限 + 总开关"而不是路径限制。
  */
 export const AgentToolsSchema = z.object({
-  /** 总开关；false 时 8 个工具一个都不注册。 */
+  /** 总开关；false 时全部电脑操控工具一个都不注册。 */
   enabled: z.boolean(),
   workspaceDir: z.string(),
   terminal: z.object({

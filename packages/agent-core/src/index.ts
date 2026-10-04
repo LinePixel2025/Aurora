@@ -55,6 +55,8 @@ export * from './tools/command-allow.js'
 export * from './tools/search.js'
 // 精确替换工具（docs/06 §11.6）：edit_file + 会话级「改前先读」守卫契约。
 export * from './tools/edit.js'
+// Office 专用工具（docs/06 §11）：结构化创建 / 读取 / 常用编辑，端口由主进程 worker 注入。
+export * from './tools/office.js'
 // 扩展工具（Design/betav2-spec.md §6）：同上，端口由主进程注入。
 export * from './tools/web-fetch.js'
 export * from './tools/clipboard.js'

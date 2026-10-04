@@ -34,6 +34,9 @@ const TOOL_ICONS: Record<string, Component> = {
   write_file: FileText,
   // 精确局部替换（v12，docs/06 §11.6）：与 read/write 同族的文件形 + 一支笔
   edit_file: FilePenLine,
+  office_read: FileText,
+  office_create: FileText,
+  office_edit: FilePenLine,
   list_dir: FolderOpen,
   open_path: FolderOpen,
   // 搜索层（v12，docs/06 §11.5）：grep 按**内容**找（放大镜）、glob 按**文件名**找（文件夹 + 放大镜）

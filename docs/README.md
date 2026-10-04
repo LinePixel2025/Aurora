@@ -24,7 +24,7 @@ Acrylic，侧栏与 Center 统一 `.rail-surface`，四个入口加入低开销�
 `setShape()` 把可见/可交互区域裁成收起 8px、展开 328px；
 ⑦ **Electron 44 API 迁移与验证**：剪贴板改为 Promise + `ClipboardItem`，图片读取改用
 `clipboard.read()`；`console-message` 改用事件对象字段；
-验证基线为 2400 条单测、182 条 Electron 冒烟全绿；桌面截图 83 个产物 / 78 条探针 0 失败；
+验证基线为 2435 条单测、183 条 Electron 冒烟全绿；桌面截图 83 个产物 / 78 条探针 0 失败；
 流式爆发最坏心跳 86.1ms、最坏帧间隔 70.9ms。
 面向用户的说明见 [release-notes/v0.4.0.md](./release-notes/v0.4.0.md)。
 

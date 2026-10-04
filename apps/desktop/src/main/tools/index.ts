@@ -8,7 +8,7 @@
  * 因此不进本文件的依赖 —— 由 `main/index.ts` 直接构造后注入。）
  *
  * 本文件现有这些装配器：
- * - `registerComputerTools`：电脑操控工具（8 个，含 `grep` / `glob`），受 `agent.tools.enabled` 门控
+ * - `registerComputerTools`：电脑操控工具（含 Office 与 `grep` / `glob`），受 `agent.tools.enabled` 门控
  *   （docs/06 §11）；
  * - `registerSettingsTool`：`set_setting`，不受门控（docs/06 §12）；
  * - `registerExtensionTools`：扩展工具七件套（含 `show_preview` / `show_image`），不受门控（docs/06 §14）；
@@ -43,6 +43,7 @@ import {
   createImageGenTool,
   createShowImageTool,
   createNotifyTool,
+  createOfficeTools,
   createOpenTool,
   createScreenshotTool,
   createSearchTools,
@@ -67,6 +68,7 @@ import {
   type ImageGenPort,
   type ImageDisplayPort,
   type NotifyPort,
+  type OfficePort,
   type OpenPort,
   type PreviewPort,
   type ReadTracker,
@@ -133,6 +135,8 @@ export interface ComputerToolsDeps {
   sessionWorkspaceDir: (sessionId: string | undefined) => string
   run: CommandRunner
   files: FilePort
+  /** Office 结构化创建 / 读取 / 编辑端口（main/tools/office-port.ts）。 */
+  office: OfficePort
   open: OpenPort
 }
 
@@ -174,7 +178,7 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
 
   return {
     sync(): string[] {
-      // 先全量摘掉全部 8 个名字（含上一次注册、以及被关掉的分支），再按当前配置重建。
+      // 先全量摘掉全部电脑操控工具名（含上一次注册、以及被关掉的分支），再按当前配置重建。
       // 不存在的名字 `unregister` 返回 false，忽略即可。
       for (const name of toolNames) deps.tools.unregister(name)
 
@@ -186,7 +190,7 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
 
       const cfg = settings.agent.tools
       if (!cfg.enabled) {
-        // 既有第一条分支，**优先级高于档位**：总开关关掉时 8 个工具一个都不注册，
+        // 既有第一条分支，**优先级高于档位**：总开关关掉时全部工具一个都不注册，
         // 与档位是 readonly 还是 auto 无关（本来就关得更彻底，不必再看档位）。
         deps.logger.info('电脑操控工具总开关已关闭：全部工具都不注册', {
           names: [...toolNames],
@@ -237,6 +241,12 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
         // 只读档**整行跳过**：它按 oldString/newString 改写既有文件，与 `write_file` 同类。
         if (!readonly) {
           deps.tools.register(createEditTool({ files: deps.files, readTracker }))
+        }
+        // Office 专用工具与文件工具共用 `files.enabled`：读取在只读档保留，
+        // 创建 / 编辑与 write_file / edit_file 同档摘除。
+        for (const tool of createOfficeTools({ office: deps.office, readTracker })) {
+          if (readonly && tool.name !== 'office_read') continue
+          deps.tools.register(tool)
         }
       }
 

@@ -352,10 +352,11 @@ v1 占位的 Work Mode 在 BetaV2 完成**初步实装**（`packages/modes/src/w
      失败只告警、不阻断激活）；
   2. 确认完成（回复「知道了」）→ 置 `modes.work.guideCompleted`。
 - **职责（systemPrompt）**：办公文档助手——擅长 Word 文档、Excel 表格、PowerPoint 演示文稿与
-  PDF 的处理、总结与生成；指导 Agent 用 `run_command` 执行 PowerShell 完成 Office 自动化
-  （COM：`New-Object -ComObject Excel.Application` 等，操作要点见 `skills/office-work`），
-  配合 `read_file` / `write_file` / `list_dir` 完成任务；**覆盖 / 删除 / 移动文件前必须先向
-  用户确认**；产出文件保存到生效工作目录。
+  PDF 的处理、总结与生成；优先使用 `office_read` / `office_create` / `office_edit` 处理
+  DOCX / XLSX / PPTX（纯 JS worker，不依赖本机 Office），默认另存、显式覆盖才写回源文件并
+  先保存二进制快照；只有用户明确要求旧格式、宏、复杂格式或 PDF 导出等高级能力时，才说明风险
+  并经确认走 `run_command` COM 兜底。**覆盖 / 删除 / 移动文件前必须先向用户确认**；
+  产出文件保存到生效工作目录。
 - **工作目录是回落链的一级（v0.2.4，Codex 式统一，docs/06 §5.1）**：`modes.work.workspaceDir`
   不再是提示词里的孤立概念 —— 它插在 `effectiveWorkspaceDir` 回落链的
   **当前项目根之后、`agent.tools.workspaceDir` 之前**（仅当激活模式为 Work 且目录非空时参与）。

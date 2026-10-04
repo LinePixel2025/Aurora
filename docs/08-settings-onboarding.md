@@ -196,7 +196,7 @@
       "autoContinueRounds": 8   // 0–8；轮次用完后自动再续几轮，0 = 不自动续、直接暂停等点「继续」
     },
     "tools": {
-      "enabled": true,          // 电脑操控工具总开关；false 时 8 个工具都不注册
+      "enabled": true,          // 电脑操控工具总开关；false 时全部工具都不注册
       "workspaceDir": "",       // 工具默认工作目录；空串 = 按 06 §5.1 回落链（Work 模式目录 > 它 > 主目录）
       "terminal": {
         "enabled": true,
@@ -446,12 +446,13 @@
 - `modes.classroom.schedule.classisland.timeoutMs` 同时是**提醒命令通道**（05 §3.4 v3）文件模式
   轮询 `command-result.json` 的超时预算 —— 桥接不可用时按此超时返回 `ok: false`，不阻塞调用方。
 - `agent.tools`（v5 新增，见 06 §11）：5 个开关 + 4 个上限 + 1 份免确认模式列表 ——
-  `enabled` 是电脑操控工具**总开关**（`false` 时 8 个工具都不注册）；`workspaceDir` 是 **`run_command`
+  `enabled` 是电脑操控工具**总开关**（`false` 时全部工具都不注册）；`workspaceDir` 是 **`run_command`
   的缺省 `cwd`**，同时也是 `grep` / `glob` 的**缺省搜索根**（取值按 06 §5.1 的 `effectiveWorkspaceDir`
   回落链：**当前项目根（配置了当前项目时）> 激活模式工作目录（Work）> `workspaceDir` > 用户主目录**，没配当前项目时与既往一致；
   它只作**默认值**、不是沙箱；其余文件类工具不读它，见 06 §11.1 / §11.5）；`terminal.enabled` 开关终端工具、
   `terminal.timeoutMs` 是单次命令超时（毫秒）、`terminal.maxOutputChars` 是回传输出的截断上限；
-  `files.enabled` 开关文件读写、`files.maxReadBytes` 是单次读取上限（字节）；
+  `files.enabled` 开关文件读写与 Office 专用工具（`office_read` / `office_create` / `office_edit`）、
+  `files.maxReadBytes` 是单次文本读取上限（字节）；Office 读取在只读档保留，创建 / 编辑与写文件同档摘除；
   `search.enabled` 开关文件检索（`grep` / `glob`，**v12 新增**）、`search.maxResults` 是**单次检索的
   结果条数上限**（1–1000，默认 200，超出即截断并在结果里标注）；
   `open.enabled` 开关「打开路径」工具；`open.urlMode`（**v27 新增**）只控制模型打开
@@ -927,7 +928,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     结果条数上限（`search.maxResults`）两项，控制 `grep` / `glob` 两个只读检索工具是否注册
     与单次返回多少条结果（见 06 §11.5）。
   - 总开关 `agent.tools.enabled` 关闭后 `run_command` / `read_file` / `write_file` / `edit_file` /
-    `list_dir` / `open_path` / `grep` / `glob` 8 个工具都不注册（模型看不到它们）；总开关本身**常显**，
+    `list_dir` / `open_path` / `grep` / `glob` 以及 Office 工具都不注册（模型看不到它们）；总开关本身**常显**，
     否则关掉就再也无法启用（门控见 §6.1）。
   - 总开关**不是把 AI 锁死**：`set_setting` 仍会注册，AI 仍可（在用户确认后）改 `agent.tools.*`
     把总开关打回来（见 06 §12.6）。`set_setting` 写 `agent.tools.<子字段>` 时

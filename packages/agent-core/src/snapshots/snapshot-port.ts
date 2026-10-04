@@ -112,7 +112,7 @@ export interface FileSnapshotPortOptions {
 type Probe =
   | { status: 'missing' }
   | { status: 'skipped'; reason: SnapshotSkipReason }
-  | { status: 'ok'; content: string; bytes: number }
+  | { status: 'ok'; content: string | Uint8Array; bytes: number }
 
 /** 单个会话的内存态（懒加载 + 防抖 + 串行链条都在这里） */
 interface SessionState {
@@ -168,7 +168,7 @@ class FileSnapshotPort implements SnapshotPort {
     const sessionId = normalizeSessionId(input.sessionId)
     try {
       const createdAt = this.now()
-      const probe = await this.probe(input.path)
+      const probe = await this.probe(input.path, input.bytes)
 
       if (probe.status === 'skipped') return { skipped: probe.reason }
 
@@ -190,12 +190,12 @@ class FileSnapshotPort implements SnapshotPort {
         return { snapshot: ref }
       }
 
-      const sha256 = createHash('sha256').update(probe.content, 'utf8').digest('hex')
+      const sha256 = createHash('sha256').update(probe.content).digest('hex')
       const id = `${toFileStamp(createdAt)}-${sha256.slice(0, 8)}` // 8 位内容散列：同毫秒不同内容也不会撞 id
       const contentPath = join(sessionId, `${id}${SNAPSHOT_EXT}`)
       // 内容先落盘、成功后才写索引：索引里出现的每一条都必须有内容文件（exists:true 时）
       await this.fs.mkdirp(sessionDirOf(this.dir, sessionId))
-      await this.fs.writeFileAtomic(join(this.dir, contentPath), probe.content)
+      await this.writeSnapshotContent(join(this.dir, contentPath), probe.content)
       const ref: SnapshotRef = {
         ...this.baseRef(input, sessionId, createdAt),
         id,
@@ -256,8 +256,11 @@ class FileSnapshotPort implements SnapshotPort {
     }
     for (const path of candidates) {
       try {
-        const raw = await this.fs.readFile(path)
-        return { bytes: new TextEncoder().encode(raw), truncated: ref.truncated === true }
+        const bytes =
+          this.fs.readFileBytes !== undefined
+            ? await this.fs.readFileBytes(path)
+            : new TextEncoder().encode(await this.fs.readFile(path))
+        return { bytes, truncated: ref.truncated === true }
       } catch {
         /* 试下一个候选；都不行就返回 undefined（文件被手动删掉不算异常） */
       }
@@ -311,7 +314,13 @@ class FileSnapshotPort implements SnapshotPort {
    * 注入 `stat` 时先看元信息再决定读不读——**太大的文件绝不能先读进来再判**，
    * 否则"512KiB 上限"只挡住了落盘、没挡住内存里那几百 MB。
    */
-  private async probe(path: string): Promise<Probe> {
+  private async probe(path: string, supplied?: Uint8Array): Promise<Probe> {
+    if (supplied !== undefined) {
+      if (supplied.byteLength > this.maxSnapshotBytes) {
+        return { status: 'skipped', reason: 'too-large' }
+      }
+      return { status: 'ok', content: supplied, bytes: supplied.byteLength }
+    }
     if (this.stat) {
       let info: SnapshotStatInfo
       try {
@@ -340,6 +349,17 @@ class FileSnapshotPort implements SnapshotPort {
     const bytes = byteLength(content)
     if (bytes > this.maxSnapshotBytes) return { status: 'skipped', reason: 'too-large' }
     return { status: 'ok', content, bytes }
+  }
+
+  private async writeSnapshotContent(path: string, content: string | Uint8Array): Promise<void> {
+    if (typeof content === 'string') {
+      await this.fs.writeFileAtomic(path, content)
+      return
+    }
+    if (this.fs.writeFileAtomicBytes === undefined) {
+      throw new Error('文件系统端口不支持写二进制快照')
+    }
+    await this.fs.writeFileAtomicBytes(path, content)
   }
 
   private baseRef(
@@ -718,7 +738,10 @@ function isSnapshotRef(value: unknown): value is SnapshotRef {
     candidate['id'] !== '' &&
     typeof candidate['sessionId'] === 'string' &&
     typeof candidate['path'] === 'string' &&
-    (origin === 'write_file' || origin === 'edit_file' || origin === 'rollback') &&
+    (origin === 'write_file' ||
+      origin === 'edit_file' ||
+      origin === 'office_edit' ||
+      origin === 'rollback') &&
     typeof candidate['createdAt'] === 'string' &&
     typeof contentPath === 'string' &&
     // 本端口自己写的 contentPath 永远是 `<sessionId>/<id>.snap`，含 `..` 的一律当畸形条目丢掉
