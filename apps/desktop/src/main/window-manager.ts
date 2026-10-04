@@ -151,7 +151,17 @@ const LIGHT_BACKGROUND = '#f5f5f7'
  * 必须由 Windows DWM 的 Acrylic 提供底层材质。Windows 11 22H2 以下或其它平台会自动
  * 回退原有不透明底色，渲染层 body 保持透明但不会裸漏桌面。
  */
-const NATIVE_GLASS_WINDOWS = new Set<WindowName>(['edge-bar', 'chat'])
+/**
+ * 2026-10-04 修订：提示条退出原生 Acrylic。
+ *
+ * Acrylic 与窗口阴影都按 BrowserWindow 的矩形区域绘制；面板自身再圆角也只能盖住中间，
+ * 左上 / 左下会露出矩形材质或阴影。提示条改为透明窗口 + 自包含圆角玻璃面板，
+ * 主界面继续保留能真实采样桌面的 Acrylic。
+ */
+const NATIVE_GLASS_WINDOWS = new Set<WindowName>(['chat', 'settings', 'memory'])
+
+/** 常规窗口使用 Acrylic；最大化时临时退出，还原完成后再重建。 */
+const NATIVE_WINDOW_MATERIAL = 'acrylic' as const
 
 function supportsNativeGlass(name: WindowName): boolean {
   return process.platform === 'win32' && NATIVE_GLASS_WINDOWS.has(name)
@@ -203,6 +213,8 @@ export class WindowManager {
   private edgeBarExpanded = false
   /** 已成功启用原生材质的窗口；失败时同步回到不透明回退。 */
   private readonly nativeGlassWindows = new Set<WindowName>()
+  /** 还原后重建 Acrylic 的延迟任务；最大化 / 关闭前会取消。 */
+  private readonly materialTimers = new Map<WindowName, ReturnType<typeof setTimeout>>()
   private themeListenerActive = true
   /** 几何事件的收尾去抖定时器（每个窗口一个，P2-08） */
   private readonly geometryTimers = new Map<WindowName, ReturnType<typeof setTimeout>>()
@@ -338,10 +350,13 @@ export class WindowManager {
       minimizable: spec.minimizable,
       maximizable: spec.maximizable,
       fullscreenable: false,
-      backgroundColor: supportsNativeGlass(name) ? '#00000000' : windowBackgroundColor(),
+      // 提示条是纯透明窗口：Acrylic 与系统窗口阴影都按矩形绘制，会从圆角面板后漏出来。
+      ...(name === 'edge-bar' ? { hasShadow: false } : {}),
+      backgroundColor:
+        spec.transparent || supportsNativeGlass(name) ? '#00000000' : windowBackgroundColor(),
       // Windows 的桌面模糊由系统材质提供；透明窗口里的 CSS backdrop-filter 只能模糊
       // 页面自身内容，无法模糊桌面。失败时保留 CSS `.glass` 回退。
-      ...(supportsNativeGlass(name) ? { backgroundMaterial: 'acrylic' as const } : {}),
+      ...(supportsNativeGlass(name) ? { backgroundMaterial: NATIVE_WINDOW_MATERIAL } : {}),
       title: titleFor(name),
       webPreferences: {
         preload: this.options.preloadPath,
@@ -358,19 +373,7 @@ export class WindowManager {
     })
 
     win.setMenuBarVisibility(false)
-    if (supportsNativeGlass(name)) {
-      try {
-        win.setBackgroundMaterial('acrylic')
-        this.nativeGlassWindows.add(name)
-      } catch (error) {
-        this.nativeGlassWindows.delete(name)
-        if (name === 'chat') win.setBackgroundColor(windowBackgroundColor())
-        this.options.logger.debug('系统毛玻璃材质不可用，回退不透明窗口底色', {
-          window: name,
-          error: String(error),
-        })
-      }
-    }
+    if (supportsNativeGlass(name)) this.applyWindowMaterial(name, win)
     // 提示条透明度取自设置（docs/08 §1）；窗口创建时即应用，避免一次可见的跳变
     if (name === 'edge-bar') {
       this.applyEdgeBarOpacity(this.options.settings.get().general.edgeBar.opacity)
@@ -454,11 +457,18 @@ export class WindowManager {
     win.on('resized', () => this.scheduleGeometryPersist(name, win))
     // 最大化态变化要广播：渲染层 caption 的「最大化 / 还原」图标据此切换
     //（含标题栏拖动区双击这条不经 toggleMaximize 的原生路径）
-    win.on('maximize', () => this.emit())
-    win.on('unmaximize', () => this.emit())
+    win.on('maximize', () => {
+      this.setNativeMaterialState(name, win, true)
+      this.emit()
+    })
+    win.on('unmaximize', () => {
+      this.setNativeMaterialState(name, win, false)
+      this.emit()
+    })
     win.on('closed', () => {
       // 先收掉待落盘的几何定时器：窗口没了，它再去改配置就是一次"幽灵写入"
       this.cancelGeometryTimer(name)
+      this.cancelMaterialTimer(name)
       this.geometryBounds.delete(name)
       this.windows.delete(name)
       this.nativeGlassWindows.delete(name)
@@ -491,6 +501,77 @@ export class WindowManager {
     } catch (error) {
       this.options.logger.debug('设置提示条透明度失败', { opacity: clamped, error: String(error) })
     }
+  }
+
+  /**
+   * 应用窗口原生材质。
+   *
+   * 常规窗口使用 Acrylic；最大化态由 `setNativeMaterialState()` 临时退出。
+   */
+  private applyWindowMaterial(name: WindowName, win: BrowserWindow): void {
+    if (!supportsNativeGlass(name) || win.isDestroyed()) return
+    try {
+      win.setBackgroundColor('#00000000')
+      win.setBackgroundMaterial(NATIVE_WINDOW_MATERIAL)
+      this.nativeGlassWindows.add(name)
+    } catch (error) {
+      this.nativeGlassWindows.delete(name)
+      if (name === 'chat' || name === 'settings' || name === 'memory') {
+        win.setBackgroundColor(windowBackgroundColor())
+      }
+      this.options.logger.debug('系统毛玻璃材质不可用，回退不透明窗口底色', {
+        window: name,
+        error: String(error),
+      })
+    }
+  }
+
+  /**
+   * 最大化 / 还原时的材质状态切换。
+   *
+   * 事件发生后再读 `isMaximized()` 可能仍是旧值，因此状态由事件直接传入。
+   * 还原时先保持实底 160ms，再切回“透明背景 + 无 DWM 材质”。
+   * 同一 window handle 上重新挂 Acrylic 会恢复灰态，隐藏 / 重显也洗不掉，
+   * 因此还原后由 CSS 玻璃层继续承担视觉，不再重新启用 Acrylic。
+   */
+  private setNativeMaterialState(name: WindowName, win: BrowserWindow, maximized: boolean): void {
+    if (!supportsNativeGlass(name) || win.isDestroyed()) return
+    this.cancelMaterialTimer(name)
+    if (maximized) {
+      try {
+        win.setBackgroundMaterial('none')
+        win.setBackgroundColor(windowBackgroundColor())
+        this.nativeGlassWindows.delete(name)
+      } catch (error) {
+        this.options.logger.debug('最大化时退出原生材质失败', {
+          window: name,
+          error: String(error),
+        })
+      }
+      return
+    }
+    const timer = setTimeout(() => {
+      this.materialTimers.delete(name)
+      if (win.isDestroyed() || win.isMaximized()) return
+      try {
+        win.setBackgroundMaterial('none')
+        win.setBackgroundColor('#00000000')
+        this.nativeGlassWindows.delete(name)
+      } catch (error) {
+        this.options.logger.debug('还原时重置原生材质失败', {
+          window: name,
+          error: String(error),
+        })
+      }
+    }, 160)
+    this.materialTimers.set(name, timer)
+  }
+
+  private cancelMaterialTimer(name: WindowName): void {
+    const timer = this.materialTimers.get(name)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.materialTimers.delete(name)
   }
 
   private quitting = false
@@ -602,7 +683,7 @@ export class WindowManager {
     return this.getState()
   }
 
-  /** 切换最大化（标题栏双击 / caption 按钮）。最大化期间 `persistGeometry` 会跳过落盘。 */
+  /** 切换系统最大化（标题栏双击 / caption 按钮）。最大化期间 `persistGeometry` 会跳过落盘。 */
   toggleMaximize(name: WindowName): WindowState {
     const win = this.windows.get(name)
     if (win === undefined || win.isDestroyed() || !SPECS[name].maximizable) {

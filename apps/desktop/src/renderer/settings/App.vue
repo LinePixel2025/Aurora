@@ -156,10 +156,10 @@ function select(id: PageId): void {
 </script>
 
 <template>
-  <div class="settings">
+  <div class="settings anim-window">
     <!-- Windows 式窗口按钮：贴窗口右上缘（通用布局），fixed 定位不随内容滚动 -->
     <WindowCaption window="settings" class="window-caption" />
-    <aside class="sidebar glass-shell">
+    <aside class="sidebar glass-shell rail-surface anim-shell-left">
       <!-- 侧栏顶部拖动条：透明、无内容，作用是把「能拖的区域」从品牌行往上顶到窗口最上缘 -->
       <div class="sidebar-drag" :class="dragClass" aria-hidden="true" />
       <div class="brand" :class="dragClass">
@@ -202,7 +202,7 @@ function select(id: PageId): void {
       </div>
     </aside>
 
-    <main class="content">
+    <main class="content anim-pane">
       <!-- 内容区顶部拖动带：见下方 `.content-drag` 注释里「为什么不用 sticky」 -->
       <div class="content-drag" :class="dragClass" aria-hidden="true" />
       <AppToast v-if="needsOnboarding" tone="warn" class="banner">
@@ -213,9 +213,12 @@ function select(id: PageId): void {
       </AppToast>
 
       <!-- 页切换动画（theme.css `page` 预设）：out-in 保证同一时刻只有一页参与布局，不产生双页跳动 -->
-      <Transition name="page" mode="out-in">
-        <component :is="pages[active]" :key="active" />
-      </Transition>
+      <!--
+        这里刻意不用 `name="page" mode="out-in"`：设置页切换必须等旧页 transitionend 才挂新页，
+        透明原生窗口一旦漏事件，Aurora Center 等页面会整块不挂载。新页直接挂载，只用一次性
+        `.anim-pane` 做入场；页面可用性不依赖旧页动画收尾。
+      -->
+      <component :is="pages[active]" :key="active" class="anim-pane" />
     </main>
   </div>
 </template>
@@ -246,7 +249,6 @@ function select(id: PageId): void {
   gap: var(--space-3);
   /* 顶部不留内边距：拖动条要顶到窗口最上缘，否则最上面 16px 仍是抓不到的空白 */
   padding: 0 var(--space-3) var(--space-4);
-  border-right: 1px solid var(--border-subtle);
 }
 
 /**
@@ -410,6 +412,7 @@ nav > .nav-group:first-child {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  background-color: var(--glass-content);
 }
 
 /**

@@ -1567,11 +1567,11 @@ async function markGuideDone(): Promise<void> {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell anim-window">
     <!-- ── 左栏：品牌 / 新对话 / 快速对话面板 / 会话列表 / 底部工具 ── -->
     <aside
       ref="navEl"
-      class="nav glass-shell"
+      class="nav glass-shell rail-surface anim-shell-left"
       :class="{ collapsed: !navOpen }"
       :style="{ '--nav-w': `${navEffWidth}px` }"
     >
@@ -1622,7 +1622,7 @@ async function markGuideDone(): Promise<void> {
     </aside>
 
     <!-- ── 主区 ── -->
-    <main class="main">
+    <main class="main anim-pane">
       <!--
         双击头部拖动区 = 切换最大化：frame:false 窗口的 drag region 双击由 Windows 原生接管
         （`maximizable: true` 后 WM_NCLBUTTONDBLCLK 语义），页面侧不再挂 dblclick——
@@ -1921,7 +1921,7 @@ async function markGuideDone(): Promise<void> {
 
     <!-- ── 右栏：功能 tab（文件 / 上下文）+ 可拖拽调宽（2026-10-03，docs/07 §2.3） ── -->
     <aside
-      class="context glass-shell"
+      class="context glass-shell rail-surface rail-surface-end anim-shell-right"
       :class="{ collapsed: !contextOpen }"
       :style="{ '--ctx-w': `${ctxEffWidth}px` }"
     >
@@ -2097,7 +2097,6 @@ async function markGuideDone(): Promise<void> {
    */
   width: var(--nav-w, 240px);
   position: relative;
-  border-right: 1px solid var(--border-strong);
   /* 左栏固定项已整体收进 SessionNav：单行网格，SessionNav 占满整栏（含底部固定项） */
   display: grid;
   grid-template-rows: minmax(0, 1fr);
@@ -2109,7 +2108,6 @@ async function markGuideDone(): Promise<void> {
   /** 宽度可拖拽（2026-10-03）：内联 `--ctx-w` 同样是**实际生效宽度**（`ctxEffWidth`）。
    *  JobPanel / ContextPanel 读同一个变量。 */
   width: var(--ctx-w, 384px);
-  border-left: 1px solid var(--border-strong);
   position: relative;
   /**
    * 两行网格：tab 条（auto）+ 功能窗格（占满剩余高度）。

@@ -197,7 +197,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="memory">
+  <div class="memory anim-window">
     <header class="memory-head glass-bar" :class="dragClass">
       <div class="head-title">
         <BookOpen :size="16" :stroke-width="1.6" aria-hidden="true" />
@@ -218,7 +218,7 @@ onUnmounted(() => {
     </header>
 
     <div class="memory-body">
-      <aside class="note-list glass-shell" aria-label="笔记列表">
+      <aside class="note-list glass-shell rail-surface anim-shell-left" aria-label="笔记列表">
         <p v-if="filteredNotes.length === 0" class="empty">
           {{ notes.length === 0 ? '暂无 Markdown 笔记' : '没有匹配的笔记' }}
         </p>
@@ -253,7 +253,7 @@ onUnmounted(() => {
         </section>
       </aside>
 
-      <main class="note-detail">
+      <main class="note-detail anim-pane">
         <template v-if="selected">
           <div class="detail-head glass-bar">
             <div class="detail-title">
@@ -370,7 +370,6 @@ onUnmounted(() => {
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-2);
-  border-right: 1px solid var(--border-subtle);
 }
 
 .format-group + .format-group {
@@ -472,6 +471,7 @@ onUnmounted(() => {
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
+  background-color: var(--glass-content);
 }
 
 .detail-head {

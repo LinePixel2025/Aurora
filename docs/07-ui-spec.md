@@ -37,7 +37,7 @@
 - **行为**：
   - 悬停 → 展开面板；标题栏右上角是「隐藏」图标，底部主操作区固定为
     「打开主界面 / 记忆库 / 设置」**三个**入口（**BetaV2**：「打开对话窗口」更名「打开主界面」）；
-  - 点击竖条 → 打开 / 聚焦主界面（**BetaV2**：chat 已是居中主界面，不再「贴右缘滑出」，见 §2.3）；这是提示条的主操作，**展开态下竖条仍是有效点击目标**；
+  - 点击竖条 → 打开 / 聚焦主界面（**BetaV2**：chat 已是居中主界面，不再「贴右缘滑出」，见 §2.3）；这是提示条的主操作，**展开态下竖条仍是有效点击目标**；竖条的 `title` 只在收起态出现（展开态面板已有同名主按钮，避免原生提示浮在面板内容上），`aria-label` 始终保留；
   - 移开鼠标 → 面板收起，窗口尺寸收回竖条尺寸（8×200），不留不可见的遮挡区域。
   - 实现状态（前端刷新轮）：
     - 两态由 IPC **`window:setEdgeBarExpanded`** 驱动（渲染层 → preload → `WindowManager.setEdgeBarExpanded`），
@@ -82,11 +82,12 @@
     （`window-manager.ts` 里也写明了「不参与用户拖动」）。允许拖动会让**两套几何来源打架**：
     用户拖出来的位置会被下一次展开 / 收起复位，观感是「拖了没用还乱跳」。
     因此它不挂 `drag-region`，也不在 `DRAGGABLE_WINDOWS` 清单里（见 §1）。
-- **可配置**：显示 / 隐藏、透明度、静默时段。提示条材质固定为**毛玻璃**：Windows 上使用
-  Electron 原生 `backgroundMaterial: 'acrylic'`，面板叠加更薄的半透明 tint 与 `backdrop-filter`；
-  acrylic 不可用时回落 `.glass` 的实体背景。`general.edgeBar.opacity` 只作为整窗额外透明度，
-  不再是“有没有玻璃感”的来源。
-  - 实现状态（v0.6.0；2026-10-04 改为 acrylic）：`general.edgeBar.opacity` 保存后即时应用（`setOpacity`，范围 0.2–1.0）；
+- **可配置**：显示 / 隐藏、透明度、静默时段。提示条使用**自包含圆角玻璃**，不启用原生 Acrylic：
+  Windows 的 `backgroundMaterial` 与系统窗口阴影都按整个 BrowserWindow 矩形绘制，圆角面板
+  无法闭合左上 / 左下角，会露出矩形材质与阴影（2026-10-04 用户实测）。面板用高不透明度
+  `--glass-fallback` tint + 自身阴影收成完整圆角；主界面仍保留原生 Mica 系统材质。
+  `general.edgeBar.opacity` 只作为整窗额外透明度，不再是“有没有玻璃感”的来源。
+  - 实现状态（v0.6.0；2026-10-04 退出 acrylic）：`general.edgeBar.opacity` 保存后即时应用（`setOpacity`，范围 0.2–1.0）；
     `general.edgeBar.quietHours` 由 `main/edge-bar-scheduler.ts` 每 30s 判定，**仅控制提示条自身显隐**，
     与 `advanced.quietHours`（控制主动打扰：课前提醒 / 敏感工具确认）职责分离、互不影响。
     可见性只在状态翻转时切换，避免反复 show 把用户刚手动隐藏的提示条拉回来。
@@ -111,10 +112,15 @@
   ② `v25 → v26` 迁移把仍小于新默认的 chat 几何放大一次（**只放大、不缩小**，见 docs/08 §1）。
   旧口径（约 420×640、alwaysOnTop 开启）自 BetaV2 废弃。
 - **原生毛玻璃（2026-10-04，Windows 11 22H2+）**：主界面 BrowserWindow 使用
-  `backgroundMaterial: 'acrylic'`，渲染层 body 透明，桌面与后方窗口轮廓由系统材质真实采样；
+  `backgroundMaterial: 'acrylic'`，渲染层 body 透明，系统材质提供长驻窗口的桌面层次；
   页面侧栏、标题栏、输入区再叠加 CSS 玻璃作为可读性层。系统材质不可用或非 win32 时
-  自动回退原有不透明 `--bg-base`，不得用透明窗口裸漏桌面。设置窗、引导窗与记忆库继续保持
-  不透明基座，避免多窗同时采样桌面造成 GPU 重绘与可读性问题。
+  自动回退原有不透明 `--bg-base`，不得用透明窗口裸漏桌面。设置窗与记忆库同样启用原生 Mica
+  （侧栏使用标准玻璃、内容区叠 `--glass-content` 可读性 tint）；引导窗继续保持
+  不透明基座，避免所有窗口同时采样桌面造成 GPU 重绘与可读性问题。
+  **最大化时临时退出 Acrylic，还原后保持透明 CSS 玻璃回退**：`maximize` / `unmaximize` 事件直接传状态，
+  避免事件后再读 `isMaximized()` 拿到旧值。最大化先切主题实色底；向下还原后保持实底 160ms，
+  再切回透明背景 + `backgroundMaterial: none`，不再重新挂 Acrylic。同一窗口句柄重新启用
+  Acrylic 会恢复灰色 DWM 状态，隐藏 / 重显也无法清理；还原后由 CSS 玻璃层继续承担视觉。
 - **三栏布局（2026-09 重构起）**：`sidebar(240px, 可折叠) | main(1fr) | context(384px, 可折叠、
   可拖拽调宽 280–560px，2026-10-03 起 —— 此前为固定 264px)`，
   栏间用分隔而非悬浮卡片；左右栏使用 `--bg-raised` 实体面与 `--border-strong` 分界，
@@ -1271,6 +1277,9 @@
 Aurora Glass 2.0 把毛玻璃从“少量浮层专属”推进到所有固定工作台：窗口画布、侧栏、顶部栏、
 输入区、设置与引导壳体、提示条、记忆库和 Center 工作台共享同一套 frosted 材质；
 正文卡片与重复列表只使用轻透明表面，不逐项叠加 `backdrop-filter`，避免滚动时产生嵌套模糊重绘。
+左栏 / 右栏 / 设置侧栏 / 记忆库笔记列 / Center 导轨统一挂 `.rail-surface`：顶部极淡纵向高光、
+直线内缘与渐隐 hairline 组成一块连续工作台，不再用通长实线边框成「矩形套圆矩形」；
+内缘不再做大圆角，避免三栏接缝出现突兀的弧形缺口。
 
 ### 5.1 设计令牌
 
@@ -1335,7 +1344,8 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
   `.fade-*`（内容切换；**轨迹容器与思考块的展开 / 收起也走它**，见下面硬约定）、
   `.collapse-*`（`max-height` 展开，**终点取实测高度** `--collapse-h`，
   见 §2.3 与下面的硬约定；工具行展开体 / 设置页折叠区块）、
-  **`.page-*`（BetaV2 新增：设置页横向切换，fade + `translateX(12px)`，250ms `--ease-standard`，
+  **`.page-*`（BetaV2 新增：设置页 / Center 页面横向切换，fade + `translateX(10px)` + `scale(.998)`，
+  250ms `--ease-smooth`，
   新页从右进、旧页往左退）**。
 - **硬约定**：快 / 标准 / 慢动作分别为 150 / 250 / 350ms；颜色和透明度走 standard、大面积位移走 smooth、进场展开走 spring。所有过渡/动画必须走 `--transition-*` 或 `--dur-*` + `--ease-*`，不写死时长；
   `prefers-reduced-motion: reduce` 下把三个时长压到 1ms 并让位移动画立刻落位（theme.css 里已全局兜底）。
@@ -1377,6 +1387,14 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     卡片打底扫光与 `aurora-edge-breathe` 边框呼吸已从对话区删除，
     **但 keyframes 保留**（子代理页 / 自动化页仍在用），别顺手删。
 - 系统实时切换主题时只更新语义色与非透明原生底色，不改变窗体几何、配置或转场路径；`prefers-reduced-motion: reduce` 在明暗两档均将动画/过渡压到 1ms，状态灯停止呼吸。
+- **2026-10-04 工作台入场动效**：新增 `.anim-window` / `.anim-shell-left` / `.anim-shell-right` /
+  `.anim-pane` 四个一次性类，分别用于整窗、左右工作台和主内容入场；只动 `opacity + transform`
+  （≤8px / ≤0.5% 缩放），250ms `--ease-smooth` 收束，不做常驻 `will-change`、不做无限循环、
+  不逐条动画长列表。`prefers-reduced-motion` 仍由文末全局兜底压成瞬时落位。
+- **页面切换留白护栏**：`.page-*` 的透明度下限为 0.94–0.96，不从 0 开始；设置页
+  **不再用 `mode="out-in"`**，新页直接挂载并只走一次性 `.anim-pane` 入场，避免透明原生窗口
+  漏掉 `transitionend` 时 Aurora Center 等新页不挂载。`settings-overflow` 巡检同时记录每页
+  `.page` 的可见高度 / 透明度与正文长度，空白页一律 FAIL。
 - 页面骨架统一用 `.page` / `.page-title` / `.page-sub`；页面需要不同内边距时在自己的 scoped 样式里覆盖
   （scoped 选择器优先级更高，覆盖安全）。
 
@@ -1389,11 +1407,13 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
   （引导那张排在五段序列**之前**：只等第 0 段就位、不点页脚按钮，因此阶段推进与原有五条断言不受影响；
   交互窗那张排在最前，仍在 `chat-collapse.png` 之前）。主题探针 `themeProbeScript` 断言四件事：
   ① `matchMedia('(prefers-color-scheme: light|dark)')` 命中目标档；② 文档根的计算值 `color-scheme` 等于目标档；
-  ③ `--bg-base` 等于该档基座（**BetaV2**：深 `#000000` / 浅 `#f5f5f7`）：提示条与
-  Windows 主界面原生 Acrylic 档的 `body` 背景 alpha 0，其它窗口背景不透明、与基座同色；
+  ③ `--bg-base` 等于该档基座（**BetaV2**：深 `#000000` / 浅 `#f5f5f7`）：提示条，
+  以及 Windows 主界面 / 设置窗 / 记忆库原生 Acrylic 档的 `body` 背景 alpha 0，
+  其它窗口背景不透明、与基座同色；
   ④ 正文与基座的对比度 ≥ 4.5:1，且明暗极性正确
   （浅色不许白字、深色不许黑字）。**原生窗口底色渲染层读不到**，由同一条 `checks` 记录里的 `native` 字段断言
-  （主进程侧 `themeNativeCheck` 读 `BrowserWindow.getBackgroundColor()`），`pass` 取渲染层与主进程结果相与 ——
+  （原生玻璃窗由 `nativeGlassCheck` 读 `usesNativeGlass()`，实色窗由 `themeNativeCheck`
+  读 `BrowserWindow.getBackgroundColor()`），`pass` 取渲染层与主进程结果相与 ——
   原有交互探针各自独立执行、不被替换。两份 `report.json` 均要求每条 `ok:true`、存在的 `result.pass:true`，
   且**配了探针的条目必须有 `result`**（`checked === true` 时 `result` 不得为空，见下面「产物」一段），
   并逐张比对文字、卡片、按钮和引导完成页。

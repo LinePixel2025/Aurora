@@ -569,11 +569,17 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="edge" :class="{ expanded }" @mouseenter="onPointerEnter" @mouseleave="onPointerLeave">
+  <div
+    class="edge anim-window"
+    :class="{ expanded }"
+    @mouseenter="onPointerEnter"
+    @mouseleave="onPointerLeave"
+  >
     <button
       class="strip"
       type="button"
-      title="打开 Aurora 主界面"
+      :title="expanded ? undefined : '打开 Aurora 主界面'"
+      aria-label="打开 Aurora 主界面"
       @pointerdown="onStripPointerDown"
       @click="onStripClick"
     >
@@ -827,9 +833,8 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  background: color-mix(in srgb, var(--glass-panel) 76%, transparent);
-  backdrop-filter: var(--glass-filter-thin);
-  -webkit-backdrop-filter: var(--glass-filter-thin);
+  /* 提示条不启用原生 Acrylic：不再暴露矩形 DWM 材质，圆角必须由自己闭合。 */
+  background: color-mix(in srgb, var(--glass-fallback) 94%, transparent);
   border-left: 1px solid var(--glass-border);
   border-radius: 6px 0 0 6px;
   box-shadow: var(--shadow-1);
@@ -880,19 +885,13 @@ onUnmounted(() => {
   padding: var(--space-3);
   border-radius: var(--radius-xl) 0 0 var(--radius-xl);
   border-color: var(--glass-border);
-  background: color-mix(in srgb, var(--glass-panel) 82%, transparent);
-  backdrop-filter: var(--glass-filter-thick) brightness(1.04);
-  -webkit-backdrop-filter: var(--glass-filter-thick) brightness(1.04);
+  background: color-mix(in srgb, var(--glass-fallback) 96%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   box-shadow:
     inset 0 1px 0 var(--glass-highlight),
     var(--shadow-3);
   overflow: hidden;
-}
-
-@supports not (backdrop-filter: blur(1px)) {
-  .panel {
-    background: var(--glass-fallback);
-  }
 }
 
 /* 品牌识别元素：面板顶部 1px 极光高光（只此一处，不满屏渐变） */

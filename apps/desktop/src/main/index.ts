@@ -157,6 +157,7 @@ import {
   defaultCapturePlan,
   failedCaptureFiles,
   filterCapturePlan,
+  nativeGlassCheck,
   parseCaptureTokens,
   registerAskUserSpawner,
   seedChatTtsHistory,
@@ -2376,6 +2377,7 @@ async function runCapture(dir: string): Promise<void> {
           await manager.reload('memory', {})
         },
         check: MEMORY_WINDOW_CHECK,
+        nativeCheck: nativeGlassCheck(manager, 'memory'),
       },
       {
         name: 'settings',
@@ -3570,6 +3572,26 @@ async function runSmokeTest(userData: string): Promise<void> {
         barBack.width === barCollapsed.width &&
         barBack.height === barCollapsed.height,
       JSON.stringify(barBack),
+    )
+    windows?.ensure('chat')
+    const nativeBeforeMaximize = windows?.usesNativeGlass('chat') === true
+    windows?.toggleMaximize('chat')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    const maximizedState = windows?.getState().maximized ?? {}
+    const maximized = maximizedState.chat === true
+    const nativeWhileMaximized = windows?.usesNativeGlass('chat') === true
+    windows?.toggleMaximize('chat')
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    const nativeAfterRestore = windows?.usesNativeGlass('chat') === true
+    record(
+      '最大化临时退出 Acrylic，还原后保持透明 CSS 玻璃回退',
+      nativeBeforeMaximize && maximized && !nativeWhileMaximized && !nativeAfterRestore,
+      JSON.stringify({
+        nativeBeforeMaximize,
+        maximized,
+        nativeWhileMaximized,
+        nativeAfterRestore,
+      }),
     )
   }
 

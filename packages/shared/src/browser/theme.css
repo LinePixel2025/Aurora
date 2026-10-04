@@ -497,6 +497,74 @@ select {
     var(--shadow-hairline);
 }
 
+/**
+ * 侧栏 / 导轨的一体化材质（2026-10-04）。
+ *
+ * 旧观感是「整块矩形玻璃 + 内部一排圆矩形」：外缘只有直线，内侧却反复出现
+ * 圆角选中块，层级像两个互不相干的盒子。这里保留固定侧栏的几何与命中区，
+ * 只把材质收成一个连续工作台：
+ * - 顶部一层极淡高光 + 底部回落的纵向渐变，替代平铺色；
+ * - 内容内缘用渐隐 hairline 代替通长实线；
+ * - 内缘保持直线，材质连续但三栏接缝不切出突兀的弧形缺口。
+ *
+ * 这是静态材质，不含 `backdrop-filter` 之外的动画；`--rail-surface-end`
+ * 用于右栏 / 右侧面板（分隔线镜像到左边）。
+ */
+.rail-surface {
+  position: relative;
+  background-color: color-mix(in srgb, var(--glass-tint) 92%, var(--bg-raised));
+  background-image:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--text-primary) 3.5%, transparent),
+      transparent 22%
+    ),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--text-primary) 1.8%, transparent),
+      transparent 34%
+    );
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--shadow-hairline);
+}
+
+.rail-surface::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  width: 1px;
+  z-index: var(--z-sticky);
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    color-mix(in srgb, var(--border-strong) 72%, transparent) 16%,
+    color-mix(in srgb, var(--border-subtle) 70%, transparent) 84%,
+    transparent
+  );
+}
+
+.rail-surface-end {
+  background-image:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--text-primary) 3.5%, transparent),
+      transparent 22%
+    ),
+    linear-gradient(
+      270deg,
+      color-mix(in srgb, var(--text-primary) 1.8%, transparent),
+      transparent 34%
+    );
+}
+
+.rail-surface-end::after {
+  inset-inline-end: auto;
+  inset-inline-start: 0;
+}
+
 @supports not (backdrop-filter: blur(1px)) {
   .glass,
   .glass-panel,
@@ -870,6 +938,87 @@ select {
 }
 
 /**
+ * 2026-10-04：工作台入场编排。
+ *
+ * 只在窗口 / 三栏 / 页面首次挂载时跑一次，且只动合成层属性（opacity + transform）。
+ * 不做常驻 `will-change`、不做无限循环、不逐条动画长列表 —— 长列表的反馈继续交给
+ * `.hover-fill` / `.interactive` 这类 150ms 微交互。
+ */
+@keyframes aurora-window-in {
+  from {
+    opacity: 0.96;
+    transform: translateY(6px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes aurora-shell-in-left {
+  from {
+    opacity: 0.92;
+    transform: translateX(-8px) scale(0.997);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes aurora-shell-in-right {
+  from {
+    opacity: 0.92;
+    transform: translateX(8px) scale(0.997);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes aurora-pane-in {
+  from {
+    opacity: 0.94;
+    transform: translateY(7px) scale(0.998);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.anim-window,
+.anim-shell,
+.anim-shell-left,
+.anim-shell-right,
+.anim-pane {
+  animation-duration: var(--dur-base);
+  animation-timing-function: var(--ease-smooth);
+  animation-fill-mode: both;
+}
+
+.anim-window {
+  animation-name: aurora-window-in;
+}
+
+.anim-shell {
+  animation-name: aurora-window-in;
+}
+
+.anim-shell-left {
+  animation-name: aurora-shell-in-left;
+}
+
+.anim-shell-right {
+  animation-name: aurora-shell-in-right;
+}
+
+.anim-pane {
+  animation-name: aurora-pane-in;
+}
+
+/**
  * 运行中元素的边框呼吸：边框色在「淡 → 强调色 → 淡」之间缓慢往复。
  * 配合扫光表达「这块还活着」——扫光是横向动、呼吸是整框渐变，同屏不冲突。
  */
@@ -1010,17 +1159,18 @@ select {
 .page-leave-active {
   transition:
     opacity var(--dur-base) var(--ease-standard),
-    transform var(--dur-base) var(--ease-standard);
+    transform var(--dur-base) var(--ease-smooth);
 }
 
 .page-enter-from {
-  opacity: 0;
-  transform: translateX(12px);
+  /* 不从 0 开始：透明原生窗口上合成器漏掉 transitionend 时，页面也不会整块消失。 */
+  opacity: 0.96;
+  transform: translateX(10px) scale(0.998);
 }
 
 .page-leave-to {
-  opacity: 0;
-  transform: translateX(-12px);
+  opacity: 0.94;
+  transform: translateX(-8px) scale(0.998);
 }
 
 /* ───────── 系统偏好降级 ───────── */
@@ -1046,6 +1196,11 @@ select {
     --canvas-cool: transparent;
     --canvas-warm: transparent;
     --canvas-grid: transparent;
+  }
+
+  .rail-surface,
+  .rail-surface-end {
+    background-image: none;
   }
 }
 
@@ -1080,7 +1235,12 @@ select {
   .anim-rise,
   .anim-pop,
   .anim-slide-left,
-  .anim-slide-right {
+  .anim-slide-right,
+  .anim-window,
+  .anim-shell,
+  .anim-shell-left,
+  .anim-shell-right,
+  .anim-pane {
     animation: none;
     opacity: 1;
     transform: none;

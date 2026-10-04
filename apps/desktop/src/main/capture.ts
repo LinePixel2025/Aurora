@@ -421,6 +421,10 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
           ? Number(backgroundParts[3])
           : 1
     const frosted = panelBackdrop.indexOf('blur') !== -1 && panelAlpha < 0.7
+    // 2026-10-04：提示条退出原生 Acrylic / backdrop-filter，改为高不透明度自包含圆角玻璃，
+    // 避免 Windows 矩形材质与窗口阴影从圆角外露出。探针接受“毛玻璃”或“实体圆角”两种成熟形态。
+    const solidRounded = panelBackdrop === 'none' && panelAlpha >= 0.9
+    const surfaceReady = frosted || solidRounded
     const buttons = Array.from(panel.querySelectorAll('.actions button'))
     const probes = buttons.map((button) => {
       const rect = button.getBoundingClientRect()
@@ -465,6 +469,7 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       panelBackground,
       panelAlpha,
       frosted,
+      solidRounded,
       buttonCount: buttons.length,
       probes,
       quickInput,
@@ -485,7 +490,7 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
         awarenessStatus &&
         insights &&
         overflow === 0 &&
-        frosted &&
+        surfaceReady &&
         probes.every((p) => p.hit && p.insideWindow && p.width > 0),
     }
   } catch (error) {
@@ -4098,6 +4103,7 @@ export const MEMORY_WINDOW_CHECK = `(async () => {
     const head = document.querySelector('.memory-head')
     const list = document.querySelector('.note-list')
     const detail = document.querySelector('.note-detail')
+    const bodyBackground = getComputedStyle(document.body).backgroundColor
     const listRect = list === null ? null : list.getBoundingClientRect()
     const detailRect = detail === null ? null : detail.getBoundingClientRect()
     const noOverlap =
@@ -4111,6 +4117,7 @@ export const MEMORY_WINDOW_CHECK = `(async () => {
       head: head !== null,
       list: list !== null,
       detail: detail !== null,
+      bodyBackground,
       rows: count('.note-row'),
       formatGroups: count('.format-group'),
       dateGroups: count('.date-group'),
@@ -4125,6 +4132,7 @@ export const MEMORY_WINDOW_CHECK = `(async () => {
         head !== null &&
         list !== null &&
         detail !== null &&
+        (bodyBackground === 'rgba(0, 0, 0, 0)' || bodyBackground === 'transparent') &&
         count('.note-row') >= 1 &&
         count('.format-group') >= 1 &&
         count('.date-group') >= 1 &&
@@ -8989,7 +8997,7 @@ export const SETTINGS_LLM_MULTIMODAL_CHECK = `(async () => {
  * 设置页「安全区」巡检（`settings-overflow.png`，2026-09-29，docs/07 §5.4）。
  *
  * 用户反馈「文字与组件位置没协调好、许多文字冲出组件」时，此前的几何护栏只覆盖了
- * 自动化页（卡片 / 磁贴内不探出边界）。设置页有 7 个页面、几十个区组，是最可能出现
+ * 自动化页（卡片 / 磁贴内不探出边界）。设置页有 9 个页面、几十个区组，是最可能出现
  * 「长标签 + 窄控件」的场合，因此单列一条**横向溢出**巡检（纵向滚动是正常行为，不算）：
  * act 依次点开左侧每一个导航项、量当前页内容区（`main.content`）内**每个元素**的矩形，
  * 把探出内容区左右边界超过 1px 的节点记下来；check 断言所有页面都是 0，
@@ -9030,7 +9038,27 @@ export const SETTINGS_OVERFLOW_ACT = `(async () => {
           }
         }
       }
-      report.push({ label, bad, box: Math.round(box.width), offenders })
+      // 2026-10-04 用户实测：透明原生窗口 + out-in 页面切换偶发停在空过渡态。
+      // 逐页把“当前页真的有可见内容”也记下来，避免巡检只查溢出、空白页照样 PASS。
+      // 页面根类不保证都叫 page（SessionsPage 用 sessions-page）：取内容区第一个
+      // 非拖动带 / 非顶栏提示的直接子节点，才是当前路由页组件根。
+      const page = content.querySelector(':scope > :not(.content-drag):not(.banner)')
+      const pageRect = page === null ? null : page.getBoundingClientRect()
+      const pageOpacity = page === null ? 0 : Number(getComputedStyle(page).opacity)
+      const pageVisible =
+        pageRect !== null && pageRect.width > 0 && pageRect.height > 0 && pageOpacity >= 0.5
+      const textLength = (content.textContent || '').trim().length
+      report.push({
+        label,
+        bad,
+        box: Math.round(box.width),
+        offenders,
+        pageVisible,
+        textLength,
+        pageOpacity,
+        pageHeight: pageRect === null ? 0 : Math.round(pageRect.height),
+        pageClass: page === null ? '' : String(page.className),
+      })
     }
     window.__auroraSettingsOverflow = report
     return { pages: report.length }
@@ -9043,11 +9071,15 @@ export const SETTINGS_OVERFLOW_CHECK = `(() => {
   try {
     const report = window.__auroraSettingsOverflow ?? []
     const bad = report.filter((item) => (item.bad ?? 0) !== 0)
+    const blank = report.filter(
+      (item) => item.pageVisible !== true || Number(item.textLength || 0) < 20,
+    )
     return {
       pages: report.length,
       labels: report.map((item) => item.label),
       bad,
-      pass: report.length >= 7 && bad.length === 0,
+      blank,
+      pass: report.length >= 9 && bad.length === 0 && blank.length === 0,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -9482,6 +9514,17 @@ export function themeNativeCheck(
       expected,
       observed: observed ?? null,
     }
+  }
+}
+
+/** 原生玻璃窗口的材质断言（渲染层看不到 DWM 材质，只能从主进程读真实启用态）。 */
+export function nativeGlassCheck(
+  manager: WindowManager,
+  name: WindowName,
+): () => { pass: boolean } & Record<string, unknown> {
+  return () => {
+    const nativeGlass = manager.usesNativeGlass(name)
+    return { pass: nativeGlass, window: name, material: 'acrylic', nativeGlass }
   }
 }
 
@@ -10054,15 +10097,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       name: 'chat',
       file: 'theme-chat.png',
       check: themeProbeScript({ theme, transparent: true }),
-      nativeCheck: () => {
-        const nativeGlass = manager.usesNativeGlass('chat')
-        return {
-          pass: nativeGlass,
-          window: 'chat',
-          material: 'acrylic',
-          nativeGlass,
-        }
-      },
+      nativeCheck: nativeGlassCheck(manager, 'chat'),
     },
     // 左栏结构 + 出厂门控现场（BetaV2）：quick-item / session-list / new-session 锚点、
     // 右栏默认展开且 classroom 卡在、麦克风按钮**不存在**（stt 未配置时连按钮都不渲染）。
@@ -10585,8 +10620,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     name: 'settings',
     file: 'theme-settings.png',
     query: { page: 'general' },
-    check: themeProbeScript({ theme, transparent: false }),
-    nativeCheck: themeNativeCheck(manager, 'settings', theme),
+    check: themeProbeScript({ theme, transparent: true }),
+    nativeCheck: nativeGlassCheck(manager, 'settings'),
   })
   // ClassIsland 联动（v3）：新增的设置项只在「provider = classisland + 至少一节课程」时渲染，
   // 出厂默认（manual + lessons: []) 数不到它们，因此单独补一个场景：

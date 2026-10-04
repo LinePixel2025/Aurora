@@ -146,7 +146,7 @@ async function onFilePicked(event: Event): Promise<void> {
 <template>
   <div class="console" data-panel="console">
     <aside
-      class="rail-drawer glass-shell"
+      class="rail-drawer glass-shell rail-surface anim-shell-left"
       data-field="rail-container"
       :class="{ 'drawer-open': drawer === 'rail' }"
     >
@@ -271,7 +271,7 @@ async function onFilePicked(event: Event): Promise<void> {
     </section>
 
     <aside
-      class="panel-drawer glass-shell"
+      class="panel-drawer glass-shell rail-surface rail-surface-end anim-shell-right"
       data-field="panel-container"
       :class="{ collapsed: panelCollapsed, 'drawer-open': drawer === 'panel' }"
     >
@@ -313,7 +313,6 @@ async function onFilePicked(event: Event): Promise<void> {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border-subtle);
   overflow: hidden;
 }
 
@@ -471,7 +470,6 @@ async function onFilePicked(event: Event): Promise<void> {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--border-subtle);
   overflow: hidden;
   /* 展开 / 收起是**布局级**过渡（宽度参与主区排版），提前提一层合成提示省掉首帧的抖动；
      只给这一处（及窄屏那两枚抽屉）——全站铺 `will-change` 会白占显存。 */
@@ -530,13 +528,11 @@ async function onFilePicked(event: Event): Promise<void> {
 
   .rail-drawer {
     left: 0;
-    border-right: 1px solid var(--border-subtle);
     transform: translateX(-8px);
   }
 
   .panel-drawer {
     right: 0;
-    border-left: 1px solid var(--border-subtle);
     transform: translateX(8px);
     width: min(84vw, 320px);
   }

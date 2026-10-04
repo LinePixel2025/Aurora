@@ -250,7 +250,7 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
 </script>
 
 <template>
-  <div class="onboarding glass-surface-strong">
+  <div class="onboarding glass-surface-strong anim-window">
     <!-- 标题栏：整行可拖动（窗口无系统边框），右侧是步骤圆点进度 -->
     <header class="head glass-bar" :class="dragClass">
       <div class="brand">
@@ -276,7 +276,7 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
       </div>
     </header>
 
-    <main class="body">
+    <main class="body anim-pane">
       <transition :name="transitionName" mode="out-in">
         <!-- ① 欢迎 -->
         <section v-if="stepIndex === 0" key="welcome" class="pane">

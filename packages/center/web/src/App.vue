@@ -98,7 +98,7 @@ const onlineCount = computed(
     </div>
 
     <div v-else key="shell" class="shell">
-      <header v-if="!needsLogin" class="topbar glass-bar">
+      <header v-if="!needsLogin" class="topbar glass-bar anim-pane">
         <div class="topbar-inner">
           <div class="brand">
             <span class="brand-mark" aria-hidden="true">
