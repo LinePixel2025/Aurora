@@ -20,6 +20,26 @@ const recordsOpen = ref(false)
 let offChanged: (() => void) | null = null
 
 const config = computed(() => settingsStore.settings?.fileAwareness ?? null)
+const providers = computed(() =>
+  Object.entries(settingsStore.settings?.llm.providers ?? {}).map(([id, provider]) => ({
+    id,
+    ...provider,
+  })),
+)
+const backgroundProvider = computed(() => {
+  const id = config.value?.backgroundModel.providerId ?? ''
+  return providers.value.find((provider) => provider.id === id) ?? null
+})
+const backgroundModels = computed(() => {
+  const provider = backgroundProvider.value
+  const selected = config.value?.backgroundModel.model.trim() ?? ''
+  const models: string[] = []
+  for (const id of [selected, provider?.model ?? '', ...(provider?.modelList ?? [])]) {
+    const value = id.trim()
+    if (value !== '' && !models.includes(value)) models.push(value)
+  }
+  return models
+})
 const usageLabel = computed(() => {
   const usage = status.value?.usage
   return usage === undefined || usage.rounds <= 0 ? '暂无用量' : formatTokenCount(usage.totalTokens)
@@ -47,6 +67,27 @@ async function save(patch: Partial<NonNullable<typeof config.value>>): Promise<v
     message.value = '已保存'
     await refresh()
   }
+}
+
+async function setBackgroundProvider(providerId: string): Promise<void> {
+  const provider = providers.value.find((item) => item.id === providerId)
+  await save({
+    backgroundModel: {
+      providerId,
+      model: providerId === '' ? '' : (provider?.model.trim() ?? ''),
+    },
+  })
+}
+
+async function setBackgroundModel(model: string): Promise<void> {
+  const current = config.value
+  if (current === null) return
+  await save({
+    backgroundModel: {
+      providerId: current.backgroundModel.providerId,
+      model,
+    },
+  })
 }
 
 async function refresh(): Promise<void> {
@@ -171,7 +212,7 @@ onUnmounted(() => {
     <section class="section-card">
       <h2 class="section-title">启用与授权</h2>
       <p class="section-desc">
-        开启后，图片和可解析文档会发给你配置的模型；老式 doc/ppt/xls 只记录使用与变化。
+        开启后，图片和可解析文档会发给所选后台模型；老式 doc/ppt/xls 只记录使用与变化。
       </p>
       <SettingField
         data-field="fileAwareness.contentConsentAccepted"
@@ -184,7 +225,7 @@ onUnmounted(() => {
             :checked="config?.contentConsentAccepted ?? false"
             @change="setConsent(($event.target as HTMLInputElement).checked)"
           />
-          我同意把选定目录内文档正文和图片发送给当前模型
+          我同意把选定目录内文档正文和图片发送给所选后台模型
         </label>
       </SettingField>
       <SettingField
@@ -256,8 +297,71 @@ onUnmounted(() => {
     </section>
 
     <section class="section-card">
+      <h2 class="section-title">后台模型</h2>
+      <p class="section-desc">用于文件后台分析；显式选择不可用时暂停，不静默改用主模型。</p>
+      <SettingField
+        data-field="fileAwareness.backgroundModel.providerId"
+        label="模型服务"
+        hint="跟随主模型时不单独指定；显式选择后文件正文只发给这个模型"
+      >
+        <select
+          class="input"
+          :value="config?.backgroundModel.providerId ?? ''"
+          @change="setBackgroundProvider(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">跟随主模型</option>
+          <option
+            v-if="(config?.backgroundModel.providerId ?? '') !== '' && backgroundProvider === null"
+            :value="config?.backgroundModel.providerId ?? ''"
+          >
+            所选服务不存在（{{ config?.backgroundModel.providerId }}）
+          </option>
+          <option v-for="provider in providers" :key="provider.id" :value="provider.id">
+            {{ provider.id }}
+          </option>
+        </select>
+      </SettingField>
+      <SettingField
+        v-if="(config?.backgroundModel.providerId ?? '') !== ''"
+        data-field="fileAwareness.backgroundModel.model"
+        label="分析模型"
+        hint="从所选服务的模型列表中选择"
+      >
+        <select
+          class="input"
+          :value="config?.backgroundModel.model ?? ''"
+          @change="setBackgroundModel(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">请选择模型</option>
+          <option v-for="model in backgroundModels" :key="model" :value="model">
+            {{ model }}
+          </option>
+        </select>
+      </SettingField>
+    </section>
+
+    <section class="section-card">
       <h2 class="section-title">后台预算</h2>
       <p class="section-desc">每日额度和单文件上限控制模型成本；队列跨重启保留。</p>
+      <SettingField
+        data-field="fileAwareness.defaultMemoryTtlDays"
+        label="记忆默认有效期（天）"
+        hint="0 = 永不过期；跟随默认的记忆在重新分析后自动续期"
+      >
+        <input
+          class="input input-num"
+          type="number"
+          min="0"
+          max="3650"
+          step="1"
+          :value="config?.defaultMemoryTtlDays ?? 0"
+          @change="
+            save({
+              defaultMemoryTtlDays: Number(($event.target as HTMLInputElement).value),
+            })
+          "
+        />
+      </SettingField>
       <SettingField data-field="fileAwareness.dailyAnalysisLimit" label="每日分析上限">
         <input
           class="input"
@@ -305,6 +409,10 @@ onUnmounted(() => {
           <dd>{{ status?.conflictCount ?? 0 }}</dd>
         </div>
         <div>
+          <dt>过期记忆</dt>
+          <dd>{{ status?.expiredNoteCount ?? 0 }}</dd>
+        </div>
+        <div>
           <dt>图片识别</dt>
           <dd>{{ status?.visionEnabled ? '已开启' : '仅分析文字' }}</dd>
         </div>
@@ -313,6 +421,7 @@ onUnmounted(() => {
           <dd data-field="fileAwareness.usage" :title="usageTitle">{{ usageLabel }}</dd>
         </div>
       </dl>
+      <p v-if="status?.modelError" class="warn">{{ status.modelError }}</p>
       <p v-if="status?.current" class="tiny muted">正在分析：{{ status.current.fileName }}</p>
       <p v-if="status?.lastError" class="warn">{{ status.lastError }}</p>
     </section>

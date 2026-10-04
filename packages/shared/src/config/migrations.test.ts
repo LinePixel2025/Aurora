@@ -1106,6 +1106,7 @@ describe('配置迁移链', () => {
         'v25 → v26：v25 → v26：主界面默认尺寸上调到 1280×800（历史窗口几何只放大不缩小）',
         'v26 → v27：v26 → v27：agent.tools.open 补 urlMode（默认内置浏览器）',
         'v27 → v28：v27 → v28：补齐 fileAwareness（默认关闭，显式同意后才读取正文）',
+        'v28 → v29：v28 → v29：补齐 fileAwareness 记忆过期与后台模型',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1146,6 +1147,7 @@ describe('配置迁移链', () => {
         'v25 → v26：v25 → v26：主界面默认尺寸上调到 1280×800（历史窗口几何只放大不缩小）',
         'v26 → v27：v26 → v27：agent.tools.open 补 urlMode（默认内置浏览器）',
         'v27 → v28：v27 → v28：补齐 fileAwareness（默认关闭，显式同意后才读取正文）',
+        'v28 → v29：v28 → v29：补齐 fileAwareness 记忆过期与后台模型',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1553,6 +1555,7 @@ describe('配置迁移链', () => {
         'v25 → v26：v25 → v26：主界面默认尺寸上调到 1280×800（历史窗口几何只放大不缩小）',
         'v26 → v27：v26 → v27：agent.tools.open 补 urlMode（默认内置浏览器）',
         'v27 → v28：v27 → v28：补齐 fileAwareness（默认关闭，显式同意后才读取正文）',
+        'v28 → v29：v28 → v29：补齐 fileAwareness 记忆过期与后台模型',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -1633,10 +1636,11 @@ describe('配置迁移链', () => {
         version: 25,
         general: { windowState: { chat: { x: 10, y: 20, width: 1120, height: 720 } } },
       })
-      expect(outcome.applied).toHaveLength(3)
+      expect(outcome.applied).toHaveLength(4)
       expect(outcome.applied[0]).toContain('v25 → v26')
       expect(outcome.applied[1]).toContain('v26 → v27')
       expect(outcome.applied[2]).toContain('v27 → v28')
+      expect(outcome.applied[3]).toContain('v28 → v29')
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(chatOf(outcome.data)).toEqual({ x: 10, y: 20, width: 1280, height: 800 })
     })
@@ -1708,8 +1712,10 @@ describe('配置迁移链', () => {
         suggestionsEnabled: true,
         dailyAnalysisLimit: 20,
         maxFileMb: 100,
+        defaultMemoryTtlDays: 0,
+        backgroundModel: { providerId: '', model: '' },
       })
-      expect(missing.applied).toHaveLength(1)
+      expect(missing.applied).toHaveLength(2)
 
       const existing = migrate({
         version: 27,
@@ -1724,9 +1730,49 @@ describe('配置迁移链', () => {
         suggestionsEnabled: true,
         dailyAnalysisLimit: 7,
         maxFileMb: 100,
+        defaultMemoryTtlDays: 0,
+        backgroundModel: { providerId: '', model: '' },
       })
       const twice = migrate({ ...existing.data, version: 27 })
       expect(twice.data['fileAwareness']).toEqual(existing.data['fileAwareness'])
+    })
+  })
+
+  describe('v28 → v29（记忆过期与后台模型）', () => {
+    it('补齐默认值，已有 fileAwareness 字段与后台模型原样保留', () => {
+      const missing = migrate({
+        version: 28,
+        fileAwareness: {
+          enabled: true,
+          watchedDirs: ['D:\\Docs'],
+          dailyAnalysisLimit: 7,
+        },
+      })
+      expect(missing.applied).toHaveLength(1)
+      expect(missing.data['fileAwareness']).toEqual({
+        enabled: true,
+        contentConsentAccepted: false,
+        watchedDirs: ['D:\\Docs'],
+        knowledgeDir: '',
+        includeRecent: true,
+        suggestionsEnabled: true,
+        dailyAnalysisLimit: 7,
+        maxFileMb: 100,
+        defaultMemoryTtlDays: 0,
+        backgroundModel: { providerId: '', model: '' },
+      })
+
+      const existing = migrate({
+        version: 28,
+        fileAwareness: {
+          defaultMemoryTtlDays: 30,
+          backgroundModel: { providerId: 'deepseek', model: 'deepseek-reasoner' },
+        },
+      })
+      expect(existing.data['fileAwareness']).toMatchObject({
+        defaultMemoryTtlDays: 30,
+        backgroundModel: { providerId: 'deepseek', model: 'deepseek-reasoner' },
+      })
     })
   })
 })

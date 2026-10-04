@@ -508,7 +508,7 @@ describe('mergeSettingsPatch · center 分组（v16，docs/12）', () => {
   })
 })
 
-describe('mergeSettingsPatch · fileAwareness 分组（v28）', () => {
+describe('mergeSettingsPatch · fileAwareness 分组（v29）', () => {
   it('设置页选择的目录、授权与预算真正写入 draft', () => {
     const draft = createDefaultSettings()
     mergeSettingsPatch(draft, {
@@ -521,6 +521,8 @@ describe('mergeSettingsPatch · fileAwareness 分组（v28）', () => {
         suggestionsEnabled: false,
         dailyAnalysisLimit: 7,
         maxFileMb: 50,
+        defaultMemoryTtlDays: 14,
+        backgroundModel: { providerId: 'deepseek', model: 'deepseek-chat' },
       },
     })
     expect(draft.fileAwareness).toEqual({
@@ -532,6 +534,8 @@ describe('mergeSettingsPatch · fileAwareness 分组（v28）', () => {
       suggestionsEnabled: false,
       dailyAnalysisLimit: 7,
       maxFileMb: 50,
+      defaultMemoryTtlDays: 14,
+      backgroundModel: { providerId: 'deepseek', model: 'deepseek-chat' },
     })
   })
 })

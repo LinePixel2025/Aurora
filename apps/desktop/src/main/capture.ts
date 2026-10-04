@@ -517,6 +517,13 @@ export const EDGE_BAR_SUGGESTIONS_CHECK = `(async () => {
     toggle.click()
     await wait(150)
     const expandedItems = count('[data-field="edge-bar.awareness-item"]')
+    const title = document.querySelector('[data-field="edge-bar.awareness-item"] .suggestion-title')
+    const body = document.querySelector('[data-field="edge-bar.awareness-item"] .suggestion-body')
+    const longTextUnclipped =
+      title !== null &&
+      body !== null &&
+      getComputedStyle(title).whiteSpace !== 'nowrap' &&
+      body.scrollHeight <= body.clientHeight + 1
     const ignore = document.querySelector('[data-field="edge-bar.awareness-item"] .suggestion-action.muted')
     if (ignore !== null) ignore.click()
     await wait(150)
@@ -526,11 +533,13 @@ export const EDGE_BAR_SUGGESTIONS_CHECK = `(async () => {
       toggle: true,
       collapsedItems,
       expandedItems,
+      longTextUnclipped,
       remainingItems,
       single,
       pass:
         collapsedItems === 0 &&
         expandedItems === 2 &&
+        longTextUnclipped &&
         remainingItems === 0 &&
         single === 1,
     }
@@ -1446,7 +1455,7 @@ export async function seedMemoryFixture(userData: string): Promise<void> {
     join(userData, 'file-awareness', 'state.json'),
     JSON.stringify(
       {
-        version: 2,
+        version: 3,
         notes: {
           [pptxNoteId]: {
             id: pptxNoteId,
@@ -1465,6 +1474,7 @@ export async function seedMemoryFixture(userData: string): Promise<void> {
             summary: '涵盖欧姆定律与电路图的课程笔记。',
             tags: ['物理', '电路'],
             relatedNoteIds: [],
+            expiry: { mode: 'inherit' },
           },
           [docxNoteId]: {
             id: docxNoteId,
@@ -1483,6 +1493,10 @@ export async function seedMemoryFixture(userData: string): Promise<void> {
             summary: '二次函数与一元二次方程的复习笔记。',
             tags: ['数学'],
             relatedNoteIds: [],
+            expiry: {
+              mode: 'at',
+              at: '2020-01-01T00:00:00.000Z',
+            },
           },
         },
         queue: [],
@@ -4269,6 +4283,10 @@ export const MEMORY_WINDOW_CHECK = `(async () => {
       presented.ok === true &&
       presentedRow?.getAttribute('data-note-id') === target.id &&
       presentedDate?.classList.contains('expanded') === true
+    const expiryControl = count('[data-field="memory.note-expiry"]')
+    const expiryState =
+      (document.querySelector('[data-field="memory.note-expiry-state"]')?.textContent || '').trim()
+    const expiredRows = count('.note-row.expired')
     return {
       shell: shell !== null,
       head: head !== null,
@@ -4287,6 +4305,9 @@ export const MEMORY_WINDOW_CHECK = `(async () => {
       dateGroups: count('.date-group'),
       docxFormats,
       presentedSelection,
+      expiryControl,
+      expiryState,
+      expiredRows,
       markdown: count('.note-md'),
       captionMinimize: count('[data-caption-btn="minimize"]'),
       captionMaximize: count('[data-caption-btn="maximize"]'),
@@ -4309,6 +4330,9 @@ export const MEMORY_WINDOW_CHECK = `(async () => {
         count('.date-group') >= 2 &&
         docxFormats === 1 &&
         presentedSelection &&
+        expiryControl === 1 &&
+        expiryState !== '' &&
+        expiredRows >= 1 &&
         count('.note-md') >= 1 &&
         count('[data-caption-btn="minimize"]') === 1 &&
         count('[data-caption-btn="maximize"]') === 1 &&
@@ -8429,6 +8453,16 @@ export const WINDOW_DRAG_SCRIPT = `(() => {
     let regionValue = null
     let buttonLabel = null
     let buttonHit = null
+    const settingsShell = document.querySelector('.settings') !== null
+    const fullWidthAtTop =
+      !settingsShell ||
+      regions.some(
+        (item) =>
+          item.visible &&
+          item.top <= 1 &&
+          item.w >= document.documentElement.clientWidth - 1 &&
+          item.h >= 32,
+      )
     if (biggest !== null) {
       const style = getComputedStyle(biggest)
       regionValue = (
@@ -8451,9 +8485,15 @@ export const WINDOW_DRAG_SCRIPT = `(() => {
       regions,
       maxHeight: Math.round(maxHeight),
       regionValue,
+      fullWidthAtTop,
       buttonLabel,
       buttonHit,
-      pass: regions.some((item) => item.visible) && maxHeight >= 32 && regionValue === 'drag' && buttonHit === true,
+      pass:
+        regions.some((item) => item.visible) &&
+        maxHeight >= 32 &&
+        regionValue === 'drag' &&
+        fullWidthAtTop &&
+        buttonHit === true,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -10297,8 +10337,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
           noteId: 'memory-capture-pptx',
           sourcePath: 'D:\\感知\\电路课程.pptx',
           sourceHash: 'memory-capture-hash',
-          headline: '电路笔记可补充公式',
-          body: '建议整理欧姆定律。',
+          headline: '电路笔记可补充公式并整理成复习卡',
+          body: '建议把欧姆定律、串联与并联电路、电压电流关系和常见题型整理成复习卡，再补一份自测题。',
           createdAt: now,
           confidence: 0.9,
           action: { label: '整理', prompt: '请整理电路课程笔记。' },

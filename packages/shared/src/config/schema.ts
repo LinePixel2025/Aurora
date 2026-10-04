@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 28 as const
+export const CONFIG_VERSION = 29 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -951,7 +951,7 @@ export const AutomationsSchema = z.object({
 export type AutomationsSettings = z.infer<typeof AutomationsSchema>
 
 /**
- * 文件自感知（v28，docs/06 §26）。
+ * 文件自感知（v29，docs/06 §26）。
  *
  * 整组只读：它同时决定本机文件读取范围、正文出网与后台任务预算，AI 不能自行开启或放宽。
  * 只有用户显式同意后，后台才允许把 `.docx/.pptx` 的截断正文发给你配置的模型。
@@ -965,6 +965,20 @@ export const FileAwarenessSchema = z.object({
   suggestionsEnabled: z.boolean().default(true),
   dailyAnalysisLimit: z.number().int().min(1).max(200).default(20),
   maxFileMb: z.number().int().min(1).max(500).default(100),
+  /**
+   * 记忆默认有效期（天）。0 = 永不过期；跟随默认的记忆按最近一次 updatedAt 续期。
+   */
+  defaultMemoryTtlDays: z.number().int().min(0).max(3650).default(0),
+  /**
+   * 后台分析专用模型；providerId 为空时跟随全局 llm.active。
+   * 显式选择后不再静默回退，避免把文件正文发给用户未指定的模型。
+   */
+  backgroundModel: z
+    .object({
+      providerId: z.string().default(''),
+      model: z.string().default(''),
+    })
+    .default({ providerId: '', model: '' }),
 })
 export type FileAwarenessSettings = z.infer<typeof FileAwarenessSchema>
 

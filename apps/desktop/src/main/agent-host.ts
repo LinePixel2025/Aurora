@@ -163,6 +163,11 @@ export interface ProviderFactoryOptions {
    * 老装配器与单测不受影响）。
    */
   sessionModelOf?: (sessionId: string) => SessionModelOverride | undefined
+  /**
+   * 该会话是否使用**严格专用模型**：显式配置但不可用时返回 undefined，
+   * 不允许回落到全局档。文件自感知用它保证文件正文不会发给未选择的模型。
+   */
+  strictSessionModelOf?: (sessionId: string) => boolean
 }
 
 /**
@@ -285,12 +290,31 @@ export function createProviderFactory(
             model: effective.model,
           })
           if (builtOverride !== undefined) return builtOverride
+          if (options?.strictSessionModelOf?.(createOptions?.sessionId ?? '') === true) {
+            logger.warn('专用模型配置不可用，已暂停请求（不回落全局模型）', {
+              sessionId: createOptions?.sessionId,
+              providerId: effective.providerId,
+              model: effective.model,
+            })
+            return undefined
+          }
           logger.debug('会话级模型覆盖不可用，已回落全局档', {
             sessionId: createOptions?.sessionId,
             providerId: effective.providerId,
             model: effective.model,
           })
         }
+      }
+      if (
+        createOptions?.sessionId !== undefined &&
+        options?.strictSessionModelOf?.(createOptions.sessionId) === true
+      ) {
+        logger.warn('专用模型配置不可用，已暂停请求（不回落全局模型）', {
+          sessionId: createOptions.sessionId,
+          providerId: effective.providerId,
+          model: effective.model,
+        })
+        return undefined
       }
 
       const providerId = llm.active

@@ -66,6 +66,17 @@ function build(settings: Settings, sessionModel?: { providerId: string; model: s
   })
 }
 
+function buildStrict(
+  settings: Settings,
+  sessionModel: { providerId: string; model: string },
+  secrets: Record<string, string> = {},
+) {
+  return createProviderFactory(storeOf(settings, secrets), createMemoryLogger(), undefined, {
+    sessionModelOf: () => sessionModel,
+    strictSessionModelOf: () => true,
+  })
+}
+
 describe('createProviderFactory · 全局档（未传 sessionId）', () => {
   it('用 llm.active 的 provider 与其 model 构造', () => {
     const factory = build(settingsWith())
@@ -132,5 +143,39 @@ describe('createProviderFactory · 会话级模型覆盖（docs/06 §3）', () =
   it('未覆盖（sessionModelOf 返回 undefined）→ 全局档', () => {
     const config = build(settingsWith()).create({ sessionId: 'center-abc' })
     expect(config?.model).toBe('m-global')
+  })
+
+  it('严格专用模型命中时正常构造，思考等级取所选模型', () => {
+    const settings = settingsWith()
+    settings.llm.providers['p-session']!.modelParams = {
+      'm-session': { reasoningEffort: 'high', contextWindow: 0, vision: false },
+    }
+    const config = buildStrict(settings, {
+      providerId: 'p-session',
+      model: 'm-session',
+    }).create({ sessionId: 'awareness-note' })
+    expect(config?.provider.id).toBe('p-session')
+    expect(config?.model).toBe('m-session')
+    expect(config?.reasoningEffort).toBe('high')
+  })
+
+  it('严格专用模型 provider 失效 / 模型为空 / Key 缺失时返回 undefined，不回落全局', () => {
+    expect(
+      buildStrict(settingsWith(), { providerId: 'p-gone', model: 'm-session' }).create({
+        sessionId: 'awareness-note',
+      }),
+    ).toBeUndefined()
+    expect(
+      buildStrict(settingsWith(), { providerId: 'p-session', model: '' }).create({
+        sessionId: 'awareness-note',
+      }),
+    ).toBeUndefined()
+    expect(
+      buildStrict(
+        settingsWith(),
+        { providerId: 'p-session', model: 'm-session' },
+        { 'llm.providers.p-session.apiKey': '' },
+      ).create({ sessionId: 'awareness-note' }),
+    ).toBeUndefined()
   })
 })

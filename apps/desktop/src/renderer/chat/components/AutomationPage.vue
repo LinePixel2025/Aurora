@@ -600,6 +600,9 @@ const detailLoading = ref(false)
 async function openHistory(): Promise<void> {
   historyOpen.value = true
   detail.value = null
+  // 同一个弹窗在 Agent / Normal 之间快速切换时，旧列表不能先以“当前标签”的身份
+  // 闪现一轮再被新请求替换；清空后由 loading 态说明正在重读。
+  runs.value = []
   await refreshHistory()
 }
 

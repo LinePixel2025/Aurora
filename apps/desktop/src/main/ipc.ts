@@ -54,8 +54,11 @@ import {
   type FileAwarenessAnalyzeRequest,
   type FileAwarenessExecution,
   type FileAwarenessListRequest,
+  type FileAwarenessNote,
   type FileAwarenessNoteContent,
+  type FileAwarenessNoteExpiry,
   type FileAwarenessNoteRequest,
+  type FileAwarenessSetNoteExpiryRequest,
   type FileAwarenessSuggestionAction,
   type TerminalCreateRequest,
   type TerminalInputRequest,
@@ -1113,6 +1116,21 @@ export function registerIpc(deps: DesktopDeps): () => void {
       }
     },
   )
+  handle<FileAwarenessNote>(
+    IPC.awareness.setNoteExpiry,
+    async (request: FileAwarenessSetNoteExpiryRequest) => {
+      if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
+      const noteId = typeof request?.noteId === 'string' ? request.noteId.trim() : ''
+      if (noteId === '') return err('E_INVALID_ARGUMENT', '缺少笔记 id')
+      const expiry = parseFileAwarenessNoteExpiry(request?.expiry)
+      if (expiry === undefined) return err('E_INVALID_ARGUMENT', '过期策略无效')
+      try {
+        return ok(deps.awareness.setNoteExpiry(noteId, expiry))
+      } catch (error) {
+        return err('E_IO', error instanceof Error ? error.message : String(error))
+      }
+    },
+  )
   handle<boolean>(IPC.awareness.presentNote, async (request: FileAwarenessNoteRequest) => {
     if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
     const noteId = typeof request?.noteId === 'string' ? request.noteId.trim() : ''
@@ -1705,6 +1723,22 @@ async function openPath(deps: DesktopDeps, request: OpenPathRequest): Promise<Re
     return ok(target)
   } catch (error) {
     return err('E_IO', error instanceof Error ? error.message : String(error))
+  }
+}
+
+function parseFileAwarenessNoteExpiry(value: unknown): FileAwarenessNoteExpiry | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (record['mode'] === 'inherit') return { mode: 'inherit' }
+  if (record['mode'] === 'never') return { mode: 'never' }
+  if (record['mode'] !== 'at' || typeof record['at'] !== 'string') return undefined
+  const at = record['at'].trim()
+  if (at === '' || !Number.isFinite(Date.parse(at))) return undefined
+  const preset = record['preset']
+  return {
+    mode: 'at',
+    at: new Date(at).toISOString(),
+    ...(preset === 'at24' || preset === 'at7' || preset === 'at30' ? { preset } : {}),
   }
 }
 

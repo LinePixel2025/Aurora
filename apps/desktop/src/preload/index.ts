@@ -238,6 +238,7 @@ const api: AuroraApi = {
     records: (request) => invoke(IPC.awareness.records, request),
     notes: (request) => invoke(IPC.awareness.notes, request),
     readNote: (request) => invoke(IPC.awareness.readNote, request),
+    setNoteExpiry: (request) => invoke(IPC.awareness.setNoteExpiry, request),
     presentNote: (request) => invoke(IPC.awareness.presentNote, request),
     onNotePresented: (listener) => subscribe(IPC.awareness.notePresented, listener),
     analyzeNow: (request) => invoke(IPC.awareness.analyzeNow, request),

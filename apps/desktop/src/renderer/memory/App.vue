@@ -1,7 +1,11 @@
 <script setup lang="ts">
 /** 文件自感知记忆库独立窗口（docs/06 §26、docs/07 §2.6）。 */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { FileAwarenessNote, FileAwarenessNoteContent } from '@aurora/shared'
+import type {
+  FileAwarenessNote,
+  FileAwarenessNoteContent,
+  FileAwarenessNoteExpiry,
+} from '@aurora/shared'
 import { renderMarkdown } from '@aurora/shared/browser'
 import {
   BookOpen,
@@ -26,6 +30,8 @@ const expandedDateKeys = ref<Set<string>>(new Set())
 const previewEl = ref<HTMLElement | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
+const customExpiryValue = ref('')
+const customExpiryOpen = ref(false)
 let offChanged: (() => void) | null = null
 let offNotePresented: (() => void) | null = null
 let loadToken = 0
@@ -103,6 +109,12 @@ const selectedDateKey = computed(() => {
   const note = selected.value ?? notes.value[0]
   return note === undefined ? '' : groupKeyOf(note)
 })
+const selectedExpiryChoice = computed(() => {
+  const expiry = selected.value?.expiry
+  if (expiry?.mode === 'never') return 'never'
+  if (expiry?.mode === 'at') return expiry.preset ?? 'custom'
+  return 'inherit'
+})
 
 watch(filteredNotes, (items) => {
   if (items.length === 0) {
@@ -113,9 +125,88 @@ watch(filteredNotes, (items) => {
   void selectNote(items[0]!)
 })
 
+watch(selected, (note) => {
+  customExpiryOpen.value = note?.expiry.mode === 'at'
+  customExpiryValue.value = toLocalDateTimeInput(
+    note?.expiry.mode === 'at' ? note.expiry.at : undefined,
+  )
+})
+
 function formatTime(value: string): string {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function toLocalDateTimeInput(value?: string): string {
+  const date =
+    value === undefined ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000) : new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (number: number): string => String(number).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+    date.getHours(),
+  )}:${pad(date.getMinutes())}`
+}
+
+function expiryLabel(note: FileAwarenessNote): string {
+  if (note.expired) return '已过期'
+  if (note.expiry.mode === 'never') return '永不过期'
+  if (note.expiresAt === undefined) return '跟随默认 · 永不过期'
+  const date = new Date(note.expiresAt)
+  if (Number.isNaN(date.getTime())) return '到期时间无效'
+  const prefix = note.expiry.mode === 'inherit' ? '默认续期至 ' : '到期 '
+  return `${prefix}${date.toLocaleString('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })}`
+}
+
+async function applyExpiry(expiry: FileAwarenessNoteExpiry): Promise<void> {
+  const note = selected.value
+  if (note === null) return
+  const result = await window.aurora.awareness.setNoteExpiry({ noteId: note.id, expiry })
+  if (!result.ok) {
+    error.value = result.message
+    return
+  }
+  notes.value = notes.value.map((item) => (item.id === result.value.id ? result.value : item))
+  error.value = null
+}
+
+async function setExpiryChoice(value: string): Promise<void> {
+  if (value === 'inherit') {
+    customExpiryOpen.value = false
+    await applyExpiry({ mode: 'inherit' })
+    return
+  }
+  if (value === 'never') {
+    customExpiryOpen.value = false
+    await applyExpiry({ mode: 'never' })
+    return
+  }
+  if (value === 'custom') {
+    customExpiryOpen.value = true
+    return
+  }
+  const days = value === 'at24' ? 1 : value === 'at7' ? 7 : value === 'at30' ? 30 : 0
+  if (days === 0) return
+  customExpiryOpen.value = false
+  await applyExpiry({
+    mode: 'at',
+    at: new Date(Date.now() + days * 24 * 60 * 60 * 1_000).toISOString(),
+    preset: value as 'at24' | 'at7' | 'at30',
+  })
+}
+
+async function applyCustomExpiry(): Promise<void> {
+  const at = new Date(customExpiryValue.value)
+  if (Number.isNaN(at.getTime())) {
+    error.value = '请选择有效的到期时间'
+    return
+  }
+  await applyExpiry({ mode: 'at', at: at.toISOString() })
+  customExpiryOpen.value = false
 }
 
 function dayKeyOf(value: string): string {
@@ -403,7 +494,7 @@ onUnmounted(() => {
                 :key="note.id"
                 type="button"
                 class="note-row"
-                :class="{ active: note.id === selectedId }"
+                :class="{ active: note.id === selectedId, expired: note.expired }"
                 :data-note-id="note.id"
                 @click="selectNote(note)"
               >
@@ -417,7 +508,9 @@ onUnmounted(() => {
                   />
                 </span>
                 <span class="note-source">{{ fileNameOf(note.sourcePath) }}</span>
-                <span class="note-meta">更新 {{ formatTime(note.updatedAt) }}</span>
+                <span class="note-meta">
+                  更新 {{ formatTime(note.updatedAt) }} · {{ expiryLabel(note) }}
+                </span>
               </button>
             </div>
           </div>
@@ -430,6 +523,34 @@ onUnmounted(() => {
             <div class="detail-title">
               <h1>{{ selected.title }}</h1>
               <p>{{ selected.sourcePath }}</p>
+              <div class="detail-expiry" :class="{ expired: selected.expired }">
+                <label>
+                  <span>提供给 Agent</span>
+                  <select
+                    data-field="memory.note-expiry"
+                    :value="selectedExpiryChoice"
+                    @change="setExpiryChoice(($event.target as HTMLSelectElement).value)"
+                  >
+                    <option value="inherit">跟随默认</option>
+                    <option value="never">永不过期</option>
+                    <option value="at24">24 小时</option>
+                    <option value="at7">7 天</option>
+                    <option value="at30">30 天</option>
+                    <option value="custom">自定义时间</option>
+                  </select>
+                </label>
+                <div v-if="customExpiryOpen" class="custom-expiry">
+                  <input
+                    v-model="customExpiryValue"
+                    data-field="memory.note-expiry-custom"
+                    type="datetime-local"
+                  />
+                  <AppButton size="sm" variant="ghost" @click="applyCustomExpiry">应用</AppButton>
+                </div>
+                <span class="expiry-summary" data-field="memory.note-expiry-state">
+                  {{ expiryLabel(selected) }}
+                </span>
+              </div>
             </div>
             <div class="detail-actions">
               <AppButton size="sm" variant="ghost" @click="openWithSystem">
@@ -700,6 +821,11 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 
+.note-row.expired .note-row-head strong,
+.note-row.expired .note-source {
+  color: var(--text-muted);
+}
+
 .note-row-head {
   display: flex;
   align-items: center;
@@ -763,6 +889,56 @@ onUnmounted(() => {
   overflow-wrap: anywhere;
   color: var(--text-muted);
   font-size: var(--text-xs);
+}
+
+.detail-expiry {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.detail-expiry label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.detail-expiry select,
+.detail-expiry input {
+  height: 28px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.detail-expiry input {
+  min-width: 190px;
+}
+
+.detail-expiry.expired .expiry-summary {
+  color: var(--status-unread);
+}
+
+.custom-expiry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.expiry-summary {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-variant-numeric: var(--num-tabular);
 }
 
 .detail-actions {

@@ -191,6 +191,8 @@ function settingsWith(overrides: {
       suggestionsEnabled: true,
       dailyAnalysisLimit: 20,
       maxFileMb: 100,
+      defaultMemoryTtlDays: 0,
+      backgroundModel: { providerId: '', model: '' },
     },
     // v21 新增顶层分组（外观，docs/08 §1）：本用例不涉及外观，保持默认态
     appearance: { accent: 'aurora' },

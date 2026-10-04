@@ -1,6 +1,7 @@
 /** 文件自感知笔记与分析 JSON 的纯逻辑（docs/06 §26）。 */
 import { createHash } from 'node:crypto'
 import { basename, extname, relative } from 'node:path'
+import type { FileAwarenessNoteExpiry } from '@aurora/shared'
 
 export const GENERATED_START = '<!-- aurora:generated:start -->'
 export const GENERATED_END = '<!-- aurora:generated:end -->'
@@ -53,6 +54,7 @@ export interface AwarenessNoteRecord {
   summary: string
   tags: string[]
   relatedNoteIds: string[]
+  expiry: FileAwarenessNoteExpiry
 }
 
 export interface KnowledgeIndexEntry {
@@ -65,6 +67,8 @@ export interface KnowledgeIndexEntry {
   updatedAt: string
   summary: string
   tags: string[]
+  expiresAt?: string
+  expired: boolean
 }
 
 export function stableNoteId(sourcePath: string): string {
@@ -157,6 +161,63 @@ export function createNoteMarkdown(title: string, block: string): string {
   return `# ${title.trim() || '文件笔记'}\n\n${block}\n`
 }
 
+/**
+ * 单条记忆的有效到期信息。
+ *
+ * 来源分三种：
+ * - inherit：按最近一次理解时间和全局默认天数计算，重新分析后自然续期；
+ * - never：永不过期；
+ * - at：固定绝对时间，不随更新续期。
+ *
+ * 损坏的固定时间按已过期处理，避免状态文件被手改后把未知记忆继续送给 Agent。
+ */
+export function noteExpiryInfo(
+  note: Pick<AwarenessNoteRecord, 'updatedAt' | 'expiry'>,
+  defaultMemoryTtlDays: number,
+  nowMs = Date.now(),
+): { expiresAt?: string; expired: boolean } {
+  if (note.expiry.mode === 'never') return { expired: false }
+  if (note.expiry.mode === 'at') {
+    const at = Date.parse(note.expiry.at)
+    if (!Number.isFinite(at)) return { expired: true }
+    return {
+      expiresAt: new Date(at).toISOString(),
+      expired: at <= nowMs,
+    }
+  }
+  const days = Number.isFinite(defaultMemoryTtlDays)
+    ? Math.max(0, Math.floor(defaultMemoryTtlDays))
+    : 0
+  if (days === 0) return { expired: false }
+  const updated = Date.parse(note.updatedAt)
+  if (!Number.isFinite(updated)) return { expired: true }
+  const at = updated + days * 24 * 60 * 60 * 1_000
+  return {
+    expiresAt: new Date(at).toISOString(),
+    expired: at <= nowMs,
+  }
+}
+
+/** 只接受三种合法策略；缺省 / 损坏值回落 inherit。 */
+export function normalizeNoteExpiry(value: unknown): FileAwarenessNoteExpiry {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return { mode: 'inherit' }
+  }
+  const record = value as Record<string, unknown>
+  if (record['mode'] === 'never') return { mode: 'never' }
+  if (record['mode'] === 'at') {
+    const at = typeof record['at'] === 'string' ? record['at'].trim() : ''
+    if (at === '') return { mode: 'inherit' }
+    const preset = record['preset']
+    return {
+      mode: 'at',
+      at,
+      ...(preset === 'at24' || preset === 'at7' || preset === 'at30' ? { preset } : {}),
+    }
+  }
+  return { mode: 'inherit' }
+}
+
 /** 生成知识库根目录的 Markdown 索引；只读展示，不参与生成区合并。 */
 export function renderKnowledgeIndex(input: {
   entries: readonly KnowledgeIndexEntry[]
@@ -192,6 +253,7 @@ export function renderKnowledgeIndex(input: {
         lines.push(`- [${escapeLinkText(item.title)}](<${relativePath}>)`)
         lines.push(`  - ID：\`${item.id}\``)
         lines.push(`  - 来源：\`${item.sourcePath}\``)
+        if (item.expired) lines.push('  - 状态：已过期（不再提供给 Agent）')
         if (item.tags.length > 0) lines.push(`  - 标签：${item.tags.join('、')}`)
         if (item.summary.trim() !== '') {
           lines.push(`  - 摘要：${item.summary.replace(/\s+/g, ' ').trim().slice(0, 180)}`)

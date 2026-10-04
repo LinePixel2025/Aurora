@@ -59,6 +59,8 @@ describe('FileAwarenessService', () => {
       suggestionsEnabled: true,
       dailyAnalysisLimit: 20,
       maxFileMb: 100,
+      defaultMemoryTtlDays: 0,
+      backgroundModel: { providerId: '', model: '' },
     }
     const watcher = new FakeWatcher()
     const suggestions: string[] = []
@@ -144,6 +146,18 @@ describe('FileAwarenessService', () => {
       rounds: 1,
     })
 
+    const expired = service.setNoteExpiry(note!.id, {
+      mode: 'at',
+      at: '2020-01-01T00:00:00.000Z',
+    })
+    expect(expired.expired).toBe(true)
+    expect(service.notes().some((item) => item.id === note!.id && item.expired)).toBe(true)
+    expect(service.agentNotes()).toEqual([])
+    expect(service.agentRecords()).toEqual([])
+    expect(service.status().expiredNoteCount).toBe(1)
+    await expect(service.readAgentNote(note!.id)).rejects.toThrow('不再提供给 Agent')
+    await expect(service.readNote(note!.id)).resolves.toMatchObject({ noteId: note!.id })
+
     expect(service.ignoreSuggestion(suggestions[0]!)).toBe(true)
     await service.flush()
     await service.close()
@@ -168,6 +182,8 @@ describe('FileAwarenessService', () => {
       suggestionsEnabled: false,
       dailyAnalysisLimit: 20,
       maxFileMb: 100,
+      defaultMemoryTtlDays: 0,
+      backgroundModel: { providerId: '', model: '' },
     }
     const watcher = new FakeWatcher()
     const analyzedImages: string[][] = []
@@ -305,6 +321,8 @@ describe('FileAwarenessService', () => {
       suggestionsEnabled: false,
       dailyAnalysisLimit: 20,
       maxFileMb: 100,
+      defaultMemoryTtlDays: 0,
+      backgroundModel: { providerId: '', model: '' },
     }
     const seenExts: string[] = []
     const service = new FileAwarenessService({

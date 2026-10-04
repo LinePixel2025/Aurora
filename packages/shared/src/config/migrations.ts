@@ -1037,6 +1037,27 @@ const migrateV27ToV28: Migration = {
   },
 }
 
+/** v28 → v29：补齐记忆默认有效期与自感知后台模型（docs/06 §26）。 */
+const migrateV28ToV29: Migration = {
+  from: 28,
+  to: 29,
+  describe: 'v28 → v29：补齐 fileAwareness 记忆过期与后台模型',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const existing = asRecord(raw['fileAwareness'])
+    next['fileAwareness'] = {
+      ...DEFAULT_FILE_AWARENESS,
+      ...(existing ?? {}),
+      backgroundModel: {
+        ...DEFAULT_FILE_AWARENESS.backgroundModel,
+        ...(asRecord(existing?.['backgroundModel']) ?? {}),
+      },
+    }
+    next['version'] = 29
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1066,6 +1087,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV25ToV26,
   migrateV26ToV27,
   migrateV27ToV28,
+  migrateV28ToV29,
 ]
 
 export interface MigrationOutcome {

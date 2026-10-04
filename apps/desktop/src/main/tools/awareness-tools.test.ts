@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { ToolRegistry, type ToolContext } from '@aurora/agent-core'
-import { createMemoryLogger, type FileAwarenessNote, type FileAwarenessStatus } from '@aurora/shared'
+import {
+  createMemoryLogger,
+  type FileAwarenessNote,
+  type FileAwarenessStatus,
+} from '@aurora/shared'
 import {
   AWARENESS_READ_TOOL_NAME,
   AWARENESS_RECENT_TOOL_NAME,
@@ -25,6 +29,8 @@ const note: FileAwarenessNote = {
   conflict: false,
   excerpt: '二次函数与一元二次方程。',
   tags: ['数学', '复习'],
+  expiry: { mode: 'inherit' },
+  expired: false,
 }
 
 const status: FileAwarenessStatus = {
@@ -32,6 +38,7 @@ const status: FileAwarenessStatus = {
   consentAccepted: true,
   active: true,
   waitingForModel: false,
+  modelError: '所选后台模型缺少 API Key',
   knowledgeDir: 'D:\\memory',
   knowledgeDirAvailable: true,
   watchedDirs: ['D:\\学习'],
@@ -43,6 +50,7 @@ const status: FileAwarenessStatus = {
   queueDepth: 2,
   queueOverflow: 0,
   noteCount: 1,
+  expiredNoteCount: 0,
   conflictCount: 0,
   usage: {
     promptTokens: 120,
@@ -85,6 +93,8 @@ describe('文件自感知只读工具', () => {
     const result = await tools[0]!.execute({}, ctx)
     expect(result.content).toContain('累计 token：140')
     expect(result.content).toContain('笔记：1')
+    expect(result.content).toContain('过期：0')
+    expect(result.content).toContain('模型：所选后台模型缺少 API Key')
   })
 
   it('搜索标签并分页读取已知 noteId', async () => {

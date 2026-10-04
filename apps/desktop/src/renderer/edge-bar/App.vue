@@ -389,7 +389,18 @@ watch(expanded, (isOpen) => {
   }, PERCEPTION_REFRESH_INTERVAL_MS)
 })
 
-const modelLabel = computed(() => settingsStore.activeProvider?.model ?? '未配置模型')
+const modelLabel = computed(() => {
+  const current = settingsStore.settings
+  if (current === null) return '未配置模型'
+  const selected = current.fileAwareness.backgroundModel
+  const providerId = selected.providerId.trim()
+  if (providerId === '') {
+    return current.llm.providers[current.llm.active]?.model.trim() || '未配置模型'
+  }
+  const provider = current.llm.providers[providerId]
+  if (provider === undefined) return '后台模型不可用'
+  return selected.model.trim() || provider.model.trim() || '未选择后台模型'
+})
 
 /** 模式提示：未完成引导 / 未就绪时给一句话，正常时为空串（不占版面） */
 const modeHint = computed(() => {
@@ -1233,19 +1244,16 @@ onUnmounted(() => {
 
 .suggestion-title {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: var(--text-sm);
   line-height: 1.4;
 }
 
 .suggestion-body {
   margin: var(--space-2) 0;
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--text-secondary);
   font-size: var(--text-xs);
   line-height: 1.5;

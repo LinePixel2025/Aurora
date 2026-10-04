@@ -1038,6 +1038,8 @@ export interface FileAwarenessStatus {
   consentAccepted: boolean
   active: boolean
   waitingForModel: boolean
+  /** 后台模型不可用时的可操作原因；正常或未启用时不带键。 */
+  modelError?: string
   knowledgeDir: string
   knowledgeDirAvailable: boolean
   watchedDirs: string[]
@@ -1050,6 +1052,7 @@ export interface FileAwarenessStatus {
   queueDepth: number
   queueOverflow: number
   noteCount: number
+  expiredNoteCount: number
   conflictCount: number
   /** 自感知后台分析的真实 provider 用量；从未回传过 usage 时不带键。 */
   usage?: SessionUsageStats
@@ -1094,7 +1097,18 @@ export interface FileAwarenessNote {
   excerpt: string
   /** 后台分析得到的标签；关键词搜索与 Agent 工具会使用。 */
   tags: string[]
+  /** 单条过期策略；inherit = 跟随全局默认并按 updatedAt 续期。 */
+  expiry: FileAwarenessNoteExpiry
+  /** 当前有效到期时间（ISO）；undefined = 永不过期。 */
+  expiresAt?: string
+  /** 当前时刻是否已停止提供给 Agent；仍可在记忆库中查看。 */
+  expired: boolean
 }
+
+export type FileAwarenessNoteExpiry =
+  | { mode: 'inherit' }
+  | { mode: 'never' }
+  | { mode: 'at'; at: string; preset?: 'at24' | 'at7' | 'at30' }
 
 export interface FileAwarenessNoteContent {
   noteId: string
@@ -1145,6 +1159,11 @@ export interface FileAwarenessExecution {
 
 export interface FileAwarenessNoteRequest {
   noteId: string
+}
+
+export interface FileAwarenessSetNoteExpiryRequest {
+  noteId: string
+  expiry: FileAwarenessNoteExpiry
 }
 
 // ───────────────────────── 对话（Agent 内核，docs/06 §4/§5） ─────────────────────────
@@ -2048,6 +2067,8 @@ export interface AuroraApi {
     notes(request?: FileAwarenessListRequest): Promise<Result<FileAwarenessNote[]>>
     /** 读取一篇已登记笔记的 Markdown；只接受 noteId，不接受任意路径。 */
     readNote(request: FileAwarenessNoteRequest): Promise<Result<FileAwarenessNoteContent>>
+    /** 设置单条记忆的过期策略；过期只停止提供给 Agent，不删除笔记。 */
+    setNoteExpiry(request: FileAwarenessSetNoteExpiryRequest): Promise<Result<FileAwarenessNote>>
     /** 在记忆库窗口选中并展示一篇笔记（不是系统默认程序打开）。 */
     presentNote(request: FileAwarenessNoteRequest): Promise<Result<boolean>>
     /** 记忆库窗口接收“选中并展示笔记”推送（on/off 成对）。 */

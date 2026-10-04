@@ -8,8 +8,7 @@
  * `LEGACY_PAGE_ALIASES` 映射到新页，截图核对工具与新老调用方都不受影响。
  *
  * 本窗无系统标题栏（`frame: false`），拖动能力由 `useWindowDrag('settings')` 统一提供
- * （docs/07 §1），共三处：侧栏顶部透明条（16px）、侧栏品牌行（min-height 36px，实测 ≈39px）、
- * 内容区顶部拖动带（10px）。
+ * （docs/07 §1）：窗口顶部一条完整的 32px 标题带，滚动内容始终不会盖住它。
  * Windows 式窗口按钮（WindowCaption）挂在**窗口右上角**（`position: fixed`，2026-10 起
  * 从品牌行右移出——Windows 通用布局是三键贴窗口右上缘，不在侧栏里）；
  * 「关闭」= 隐藏窗口，`Esc` 等效；不退出应用，退出只走托盘菜单。
@@ -127,7 +126,7 @@ const active = ref<PageId>(initialPage())
 const settingsStore = useSettingsStore()
 const windowStore = useWindowStore()
 const perception = usePerceptionStore()
-/** 本窗可拖（docs/07 §1 / §2.5）：拖动区见模板里的 `.sidebar-drag` / `.brand` / `.content-drag`；
+/** 本窗可拖（docs/07 §1 / §2.5）：拖动区见模板里的 `.titlebar-drag` / `.brand`；
  *  WindowCaption 的按钮自带 no-drag（组件内部显式挂类），这里不再需要 noDragClass */
 const { dragClass } = useWindowDrag('settings')
 
@@ -157,11 +156,11 @@ function select(id: PageId): void {
 
 <template>
   <div class="settings anim-window">
-    <!-- Windows 式窗口按钮：贴窗口右上缘（通用布局），fixed 定位不随内容滚动 -->
-    <WindowCaption window="settings" class="window-caption" />
+    <div class="titlebar-drag" :class="dragClass">
+      <!-- Windows 式窗口按钮：位于窗口标题带右端，按钮自身 no-drag。 -->
+      <WindowCaption window="settings" class="window-caption" />
+    </div>
     <aside class="sidebar glass-shell rail-surface anim-shell-left">
-      <!-- 侧栏顶部拖动条：透明、无内容，作用是把「能拖的区域」从品牌行往上顶到窗口最上缘 -->
-      <div class="sidebar-drag" :class="dragClass" aria-hidden="true" />
       <div class="brand" :class="dragClass">
         <span class="brand-mark" aria-hidden="true">
           <Sparkles :size="12" :stroke-width="1.6" />
@@ -203,8 +202,6 @@ function select(id: PageId): void {
     </aside>
 
     <main class="content anim-pane">
-      <!-- 内容区顶部拖动带：见下方 `.content-drag` 注释里「为什么不用 sticky」 -->
-      <div class="content-drag" :class="dragClass" aria-hidden="true" />
       <AppToast v-if="needsOnboarding" tone="warn" class="banner">
         尚未完成 AI 模型配置：主功能不可用，请前往「AI 模型」页配置。
       </AppToast>
@@ -227,40 +224,39 @@ function select(id: PageId): void {
 .settings {
   display: grid;
   grid-template-columns: 200px 1fr;
+  grid-template-rows: 32px minmax(0, 1fr);
   height: 100vh;
   background: transparent;
 }
 
 /**
- * 窗口按钮贴窗口右上缘（Windows 通用布局）：fixed 相对窗口视口定位，
- * 不随 `.content` 滚动；层高于拖动带与页面内容。按钮自带 no-drag，
- * 悬停命中区不受侧栏 / 拖动带影响。
+ * 顶部标题带：这是设置窗唯一的窗口拖动入口，始终贴在窗口最上缘且不随内容滚动。
+ * `WindowCaption` 自带 no-drag，右侧三枚按钮仍可点击。
  */
-.window-caption {
-  position: fixed;
-  top: 0;
-  right: 0;
+.titlebar-drag {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
   z-index: 30;
+  min-width: 0;
+  background: var(--glass-bar);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.window-caption {
+  display: flex;
+  height: 100%;
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  /* 顶部不留内边距：拖动条要顶到窗口最上缘，否则最上面 16px 仍是抓不到的空白 */
   padding: 0 var(--space-3) var(--space-4);
-}
-
-/**
- * 侧栏顶部拖动条：透明无内容，16px。
- * `margin-bottom` 抵消 `.sidebar` 的 `gap`（12px），让品牌行的**位置**与改动前一致
- * （16px 拖动条顶替了同高的顶部内边距），但它并**不与品牌行首尾相接**——负 margin 只抵掉了 gap，
- * 两者之间仍隔 12px，实测拖动区高度分别为 16px 与 ≈39px（探针取最大高度那条判定，够 32px）。
- */
-.sidebar-drag {
-  flex: 0 0 auto;
-  height: var(--space-4);
-  margin-bottom: calc(-1 * var(--space-3));
+  grid-column: 1;
+  grid-row: 2;
 }
 
 .brand {
@@ -407,33 +403,14 @@ nav > .nav-group:first-child {
  * 内部的 `.content-drag` 依赖这里的 `display: flex; flex-direction: column` —— 改这两条前先看它。
  */
 .content {
+  grid-column: 2;
+  grid-row: 2;
   overflow-y: auto;
   padding: var(--space-5);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   background-color: var(--glass-content);
-}
-
-/**
- * 内容区顶部拖动带：10px 透明条，解决「内容区右上角完全没有可抓手」的问题。
- *
- * **方案选择（step-06 第 3 节给的两个方案里选前者）**：普通 flex 子项，不用 `position: sticky`。
- * - `.content` 本来就是 `display:flex; flex-direction:column` 的滚动容器，因此这个方案
- *   不需要动 `.content` 的结构声明，改动面最小；
- * - 关键是**不遮挡**：sticky 会把带子钉在滚动视口顶部，长页面滚到底部时它永久盖住视口
- *   最上面 10px 的内容 —— 带子透明，截图看不出来，而那 10px 里的按钮却点不到，
- *   属于最难排查的遮挡；普通流内的带子会随内容一起滚出视口，任何滚动位置都不会与内容重叠。
- * - 滚下去之后拖动仍然可用：侧栏那 ≈55px 不随内容滚动（窗口任何滚动位置都抓得到）。
- *
- * 已知量：带子在 `.content` 的 24px 顶部内边距之下，所以内容区最上面 24px 仍是死区
- * （拖动请用带子下方 10px 或侧栏）；`margin-bottom` 抵消 `.content` 的 `gap`，
- * 页面内容因此只比改动前低 10px（不抵消的话会低 22px）。
- */
-.content-drag {
-  flex: 0 0 auto;
-  height: 10px;
-  margin-bottom: calc(-1 * var(--space-3));
 }
 
 .banner {

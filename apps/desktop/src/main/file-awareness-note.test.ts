@@ -6,7 +6,9 @@ import {
   candidateScore,
   createNoteMarkdown,
   mergeGeneratedBlock,
+  noteExpiryInfo,
   noteRelativePath,
+  normalizeNoteExpiry,
   parseAwarenessAnalysis,
   renderGeneratedBlock,
   renderKnowledgeIndex,
@@ -18,6 +20,51 @@ describe('file-awareness-note', () => {
   it('稳定 id 与文件名对路径大小写归一，并清理非法字符', () => {
     expect(stableNoteId('D:\\Docs\\A.docx')).toBe(stableNoteId('d:/docs/a.docx'))
     expect(safeNoteStem('数学:第一课?', 'abc123')).toBe('数学-第一课---abc123.md')
+  })
+
+  it('inherit 按 updatedAt 续期，固定 at 不随 updatedAt 变化', () => {
+    const updatedAt = '2026-10-01T00:00:00.000Z'
+    const inherit = noteExpiryInfo(
+      { updatedAt, expiry: { mode: 'inherit' } },
+      7,
+      Date.parse('2026-10-05T00:00:00.000Z'),
+    )
+    expect(inherit).toEqual({
+      expiresAt: '2026-10-08T00:00:00.000Z',
+      expired: false,
+    })
+    const expired = noteExpiryInfo(
+      { updatedAt, expiry: { mode: 'inherit' } },
+      3,
+      Date.parse('2026-10-05T00:00:00.000Z'),
+    )
+    expect(expired.expired).toBe(true)
+
+    const fixed = noteExpiryInfo(
+      {
+        updatedAt: '2026-10-04T00:00:00.000Z',
+        expiry: { mode: 'at', at: '2026-10-05T00:00:00.000Z' },
+      },
+      365,
+      Date.parse('2026-10-05T01:00:00.000Z'),
+    )
+    expect(fixed).toEqual({
+      expiresAt: '2026-10-05T00:00:00.000Z',
+      expired: true,
+    })
+  })
+
+  it('过期策略归一：缺省 / 损坏值回落 inherit，合法 preset 保留', () => {
+    expect(normalizeNoteExpiry(undefined)).toEqual({ mode: 'inherit' })
+    expect(normalizeNoteExpiry({ mode: 'at', at: '' })).toEqual({ mode: 'inherit' })
+    expect(normalizeNoteExpiry({ mode: 'never' })).toEqual({ mode: 'never' })
+    expect(
+      normalizeNoteExpiry({ mode: 'at', at: '2026-10-05T00:00:00.000Z', preset: 'at7' }),
+    ).toEqual({
+      mode: 'at',
+      at: '2026-10-05T00:00:00.000Z',
+      preset: 'at7',
+    })
   })
 
   it('知识库路径按格式与首次感知日期分层', () => {
@@ -46,6 +93,7 @@ describe('file-awareness-note', () => {
           updatedAt: '2026-10-04T08:00:00.000Z',
           summary: '待办与提醒',
           tags: ['项目'],
+          expired: false,
         },
       ],
     })

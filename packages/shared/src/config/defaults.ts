@@ -137,6 +137,11 @@ export const DEFAULT_FILE_AWARENESS = {
   suggestionsEnabled: true,
   dailyAnalysisLimit: 20,
   maxFileMb: 100,
+  defaultMemoryTtlDays: 0,
+  backgroundModel: {
+    providerId: '',
+    model: '',
+  },
 } as const
 
 /**

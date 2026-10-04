@@ -16,6 +16,7 @@ import type {
   AutomationRun,
   FileAwarenessNote,
   FileAwarenessNoteContent,
+  FileAwarenessNoteExpiry,
   FileAwarenessRecord,
   FileAwarenessStatus,
   FileAwarenessSuggestion,
@@ -331,6 +332,7 @@ export interface FileAwarenessControllerLike {
   records(limit?: number): FileAwarenessRecord[]
   notes(limit?: number): FileAwarenessNote[]
   readNote(noteId: string): Promise<FileAwarenessNoteContent>
+  setNoteExpiry(noteId: string, expiry: FileAwarenessNoteExpiry): FileAwarenessNote
   analyzeNow(path: string): Promise<boolean>
   ignoreSuggestion(id: string): boolean
   suggestion(id: string): FileAwarenessSuggestion | undefined

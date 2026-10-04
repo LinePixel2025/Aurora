@@ -55,10 +55,11 @@ export function createAwarenessStatusTool(port: AwarenessToolPort): ToolDefiniti
           `运行：${status.active ? '正在感知' : status.waitingForModel ? '等待模型' : '未运行'}`,
           `今日分析：${status.todayAnalyzed}/${status.dailyAnalysisLimit}`,
           `队列：${status.queueDepth}（溢出 ${status.queueOverflow}）`,
-          `笔记：${status.noteCount}；冲突：${status.conflictCount}`,
+          `笔记：${status.noteCount}；过期：${status.expiredNoteCount}；冲突：${status.conflictCount}`,
           `图片识别：${status.visionEnabled ? '已开启' : '仅分析文字'}`,
           `累计 token：${formatUsage(status.usage)}`,
         ]
+        if (status.modelError !== undefined) lines.push(`模型：${status.modelError}`)
         if (status.current !== undefined) lines.push(`当前文件：${status.current.fileName}`)
         if (status.lastError !== undefined) lines.push(`最近错误：${status.lastError}`)
         return {
@@ -158,7 +159,12 @@ export function createAwarenessSearchTool(port: AwarenessToolPort): ToolDefiniti
           summary: '日期参数无效',
         }
       }
-      if (query === undefined && ext === undefined && since.value === undefined && until.value === undefined) {
+      if (
+        query === undefined &&
+        ext === undefined &&
+        since.value === undefined &&
+        until.value === undefined
+      ) {
         return {
           content: '至少提供 query、ext、since、until 中的一个筛选条件。',
           isError: true,
@@ -169,8 +175,10 @@ export function createAwarenessSearchTool(port: AwarenessToolPort): ToolDefiniti
       const matches = port.notes(500).filter((note) => {
         if (ext !== undefined && note.ext.toLowerCase() !== ext) return false
         const created = Date.parse(note.createdAt)
-        if (since.value !== undefined && (!Number.isFinite(created) || created < since.value)) return false
-        if (until.value !== undefined && (!Number.isFinite(created) || created > until.value)) return false
+        if (since.value !== undefined && (!Number.isFinite(created) || created < since.value))
+          return false
+        if (until.value !== undefined && (!Number.isFinite(created) || created > until.value))
+          return false
         if (query === undefined) return true
         return [note.title, note.sourcePath, note.excerpt, ...note.tags]
           .join('\n')
@@ -202,7 +210,10 @@ export function createAwarenessReadTool(port: AwarenessToolPort): ToolDefinition
     parameters: {
       type: 'object',
       properties: {
-        noteId: { type: 'string', description: 'awareness_search / awareness_recent 返回的笔记 id' },
+        noteId: {
+          type: 'string',
+          description: 'awareness_search / awareness_recent 返回的笔记 id',
+        },
         offset: { type: 'number', description: '起始字符偏移，默认 0' },
         maxChars: {
           type: 'number',
@@ -220,20 +231,13 @@ export function createAwarenessReadTool(port: AwarenessToolPort): ToolDefinition
         return { content: '缺少参数：noteId。', isError: true, summary: '缺少 noteId' }
       }
       const offset = clampInteger(record?.['offset'], 0, 0, Number.MAX_SAFE_INTEGER)
-      const maxChars = clampInteger(
-        record?.['maxChars'],
-        DEFAULT_READ_CHARS,
-        1,
-        MAX_READ_CHARS,
-      )
+      const maxChars = clampInteger(record?.['maxChars'], DEFAULT_READ_CHARS, 1, MAX_READ_CHARS)
       try {
         const note = await port.readNote(noteId)
         const chunk = note.content.slice(offset, offset + maxChars)
         const nextOffset = offset + chunk.length
         const truncated = nextOffset < note.content.length
-        const footer = truncated
-          ? `\n\n[已截断；可继续用 offset=${nextOffset} 读取]`
-          : ''
+        const footer = truncated ? `\n\n[已截断；可继续用 offset=${nextOffset} 读取]` : ''
         return {
           content: `# ${note.title}\n来源：${note.sourcePath}\n\n${chunk}${footer}`,
           summary: truncated ? '已读取笔记片段' : '已读取笔记',

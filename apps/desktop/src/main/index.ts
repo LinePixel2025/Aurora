@@ -47,6 +47,7 @@ import {
   nodeFileSystem,
   // 三档权限的生效档位（docs/06 §11.2）：确认判定与工具注册必须读同一个来源
   resolvePermissionMode,
+  resolveModelParams,
   err,
   ok,
   type CenterConnectionStatus,
@@ -216,7 +217,14 @@ import { FileAwarenessAnalyzer } from './file-awareness-agent.js'
 import {
   FILE_AWARENESS_SESSION_PREFIX,
   fileAwarenessRunProfile,
+  isFileAwarenessSession,
 } from './file-awareness-run-profile.js'
+import {
+  fileAwarenessModelError,
+  fileAwarenessModelOverride,
+  hasExplicitFileAwarenessModel,
+  resolveFileAwarenessModel,
+} from './file-awareness-model.js'
 
 const isDev = !app.isPackaged
 
@@ -1135,16 +1143,35 @@ async function bootstrap(): Promise<void> {
   // 会话级模型覆盖（docs/06 §3）：同步读会话 meta（`SessionStore.modelOverrideOf`）——
   // 覆盖失效 / 未装载一律回落全局档，回落语义与日志都在 `createProviderFactory` 里。
   const providerFactory = createProviderFactory(settings, logger.child('llm'), () => netFetch, {
-    sessionModelOf: (sessionId) => sessions?.modelOverrideOf(sessionId),
+    sessionModelOf: (sessionId) => {
+      if (isFileAwarenessSession(sessionId)) return fileAwarenessModelOverride(settings!.get())
+      return sessions?.modelOverrideOf(sessionId)
+    },
+    strictSessionModelOf: (sessionId) =>
+      isFileAwarenessSession(sessionId) && hasExplicitFileAwarenessModel(settings!.get()),
   })
   const agentProvider: AgentProviderFactory = {
     create: (options?: { allowFallback?: boolean; sessionId?: string }) => {
       try {
         const config = providerFactory.create(options)
         if (config !== undefined) return config
+        if (
+          options?.sessionId !== undefined &&
+          isFileAwarenessSession(options.sessionId) &&
+          hasExplicitFileAwarenessModel(settings!.get())
+        ) {
+          return undefined
+        }
         return providerFactory.create({ ...options, allowFallback: true })
       } catch (error) {
         logger?.warn('默认模型配置构造失败，尝试回退到可用条目', { error: String(error) })
+        if (
+          options?.sessionId !== undefined &&
+          isFileAwarenessSession(options.sessionId) &&
+          hasExplicitFileAwarenessModel(settings!.get())
+        ) {
+          return undefined
+        }
         return providerFactory.create({ ...options, allowFallback: true })
       }
     },
@@ -1244,11 +1271,11 @@ async function bootstrap(): Promise<void> {
         if (fileAwareness === undefined) throw new Error('文件自感知尚未装配')
         return fileAwareness.status()
       },
-      notes: (limit) => fileAwareness?.notes(limit) ?? [],
-      records: (limit) => fileAwareness?.records(limit) ?? [],
+      notes: (limit) => fileAwareness?.agentNotes(limit) ?? [],
+      records: (limit) => fileAwareness?.agentRecords(limit) ?? [],
       readNote: async (noteId) => {
         if (fileAwareness === undefined) throw new Error('文件自感知尚未装配')
-        return await fileAwareness.readNote(noteId)
+        return await fileAwareness.readAgentNote(noteId)
       },
     },
   })
@@ -1425,17 +1452,16 @@ async function bootstrap(): Promise<void> {
       }),
     analyze: (input) => fileAwarenessAnalyzer!.analyze(input),
     initialUsage: () => sessions!.usageTotals(FILE_AWARENESS_SESSION_PREFIX),
-    providerReady: () => {
-      const llm = settings!.snapshot().llm
-      const provider = llm.providers[llm.active]
-      return (
-        provider !== undefined &&
-        provider.baseUrl.trim() !== '' &&
-        provider.model.trim() !== '' &&
-        settings!.getSecret(`llm.providers.${llm.active}.apiKey`) !== ''
-      )
+    providerReady: () =>
+      fileAwarenessModelError(settings!.get(), (path) => settings!.getSecret(path)) === undefined,
+    modelError: () => fileAwarenessModelError(settings!.get(), (path) => settings!.getSecret(path)),
+    visionReady: () => {
+      const current = settings!.get()
+      const selected = resolveFileAwarenessModel(current)
+      const provider = current.llm.providers[selected.providerId]
+      if (provider === undefined || selected.model.trim() === '') return false
+      return resolveModelParams(provider, selected.model).vision === true
     },
-    visionReady: () => visionEnabled(settings!.get()),
     canNotify: () => {
       const current = settings!.get()
       return (

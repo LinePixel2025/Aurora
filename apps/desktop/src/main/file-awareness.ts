@@ -11,6 +11,7 @@ import { basename, dirname, extname, join, normalize, relative } from 'node:path
 import type {
   FileAwarenessNote,
   FileAwarenessNoteContent,
+  FileAwarenessNoteExpiry,
   FileAwarenessRecord,
   FileAwarenessRecordStatus,
   FileAwarenessStatus,
@@ -31,7 +32,9 @@ import {
   createNoteMarkdown,
   KNOWLEDGE_INDEX_FILE,
   mergeGeneratedBlock,
+  normalizeNoteExpiry,
   noteRelativePath,
+  noteExpiryInfo,
   parseAwarenessAnalysis,
   renderGeneratedBlock,
   renderKnowledgeIndex,
@@ -54,7 +57,7 @@ const SUGGESTION_LIMIT = 100
 const RECENT_LIMIT = 5_000
 const VERSION_LIMIT = 20
 const VERSION_TOTAL_BYTES = 50 * 1024 * 1024
-const STATE_VERSION = 2
+const STATE_VERSION = 3
 const DEFAULT_TICK_MS = 1_000
 const RECENT_POLL_MS = 60_000
 /** 记忆库窗口读取单篇笔记的上限；超出时如实标记截断，不把整份大文件塞进渲染层。 */
@@ -133,6 +136,8 @@ export interface FileAwarenessOptions {
   /** 首次升级到状态 v2 时，从既有 `awareness-*` 会话回填累计用量。 */
   initialUsage?: () => Promise<SessionUsageStats | undefined>
   providerReady: () => boolean
+  /** 后台专用模型不可用时的原因；缺省表示无附加错误。 */
+  modelError?: () => string | undefined
   /** 当前模型是否开启视觉输入；关闭时仍分析正文，但不把内嵌图片作为图片分片发送。 */
   visionReady?: () => boolean
   canNotify: () => boolean
@@ -211,11 +216,13 @@ export class FileAwarenessService {
     this.stopTimers()
     if (!shouldRun) {
       this.watchedRootsKey = ''
+      await this.refreshKnowledgeIndex()
       this.emitChanged()
       return
     }
     const dirs = uniquePaths(awareness.watchedDirs)
     await this.migrateKnowledgeLayout()
+    await this.refreshKnowledgeIndex()
     const rootsKey = dirs.map((dir) => normalize(dir).toLowerCase()).join('|')
     const rootsChanged = rootsKey !== this.watchedRootsKey
     this.watchedRootsKey = rootsKey
@@ -273,11 +280,14 @@ export class FileAwarenessService {
     const knowledgeDirAvailable =
       awareness.knowledgeDir.trim() !== '' && pathExists(awareness.knowledgeDir)
     const enabled = awareness.enabled && awareness.contentConsentAccepted
+    const modelError = this.options.modelError?.()
+    const expiredNoteCount = this.expiredNoteCount()
     return {
       enabled: awareness.enabled,
       consentAccepted: awareness.contentConsentAccepted,
       active: enabled && this.watcher !== undefined && knowledgeDirAvailable,
       waitingForModel: enabled && !this.options.providerReady(),
+      ...(modelError === undefined || modelError === '' ? {} : { modelError }),
       knowledgeDir: awareness.knowledgeDir,
       knowledgeDirAvailable,
       watchedDirs: [...awareness.watchedDirs],
@@ -289,6 +299,7 @@ export class FileAwarenessService {
       queueDepth: this.state.queue.length,
       queueOverflow: this.state.queueOverflow,
       noteCount: Object.keys(this.state.notes).length,
+      expiredNoteCount,
       conflictCount: Object.values(this.state.notes).filter((note) => note.conflict).length,
       ...(this.state.usage === undefined ? {} : { usage: cloneUsage(this.state.usage) }),
       ...(this.state.lastScanAt === undefined ? {} : { lastScanAt: this.state.lastScanAt }),
@@ -305,19 +316,35 @@ export class FileAwarenessService {
     return Object.values(this.state.notes)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .slice(0, clampLimit(limit))
-      .map((note) => ({
-        id: note.id,
-        title: note.title,
-        sourcePath: note.sourcePath,
-        notePath: note.notePath,
-        ext: note.ext,
-        createdAt: note.createdAt,
-        updatedAt: note.updatedAt,
-        sourceAvailable: note.sourceAvailable,
-        conflict: note.conflict,
-        excerpt: note.summary,
-        tags: [...note.tags],
-      }))
+      .map((note) => this.noteView(note))
+  }
+
+  /** Agent 工具可见的记忆：过期记忆仍留在记忆库，但不参与后台联想与工具读取。 */
+  agentNotes(limit = 100): FileAwarenessNote[] {
+    return this.notes(500)
+      .filter((note) => !note.expired)
+      .slice(0, clampLimit(limit))
+  }
+
+  /** Agent 侧 recent：过滤掉与过期记忆同源的历史记录，避免从运行摘要侧漏出。 */
+  agentRecords(limit = 100): FileAwarenessRecord[] {
+    const expiredIds = new Set(
+      Object.values(this.state.notes)
+        .filter((note) => this.noteExpiry(note).expired)
+        .map((note) => note.id),
+    )
+    const expiredPaths = new Set(
+      Object.values(this.state.notes)
+        .filter((note) => this.noteExpiry(note).expired)
+        .map((note) => normalize(note.sourcePath).toLowerCase()),
+    )
+    return this.state.records
+      .filter(
+        (record) =>
+          !(record.noteId !== undefined && expiredIds.has(record.noteId)) &&
+          !expiredPaths.has(normalize(record.sourcePath).toLowerCase()),
+      )
+      .slice(0, clampLimit(limit))
   }
 
   async readNote(noteId: string): Promise<FileAwarenessNoteContent> {
@@ -336,6 +363,28 @@ export class FileAwarenessService {
       truncated,
       conflict: note.conflict,
     }
+  }
+
+  async readAgentNote(noteId: string): Promise<FileAwarenessNoteContent> {
+    const note = this.state.notes[noteId]
+    if (note === undefined) throw new Error('笔记不存在')
+    if (this.noteExpiry(note).expired) throw new Error('该记忆已过期，不再提供给 Agent')
+    return await this.readNote(noteId)
+  }
+
+  setNoteExpiry(noteId: string, expiry: FileAwarenessNoteExpiry): FileAwarenessNote {
+    const note = this.state.notes[noteId]
+    if (note === undefined) throw new Error('笔记不存在')
+    note.expiry = structuredClone(expiry)
+    this.schedulePersist()
+    void this.refreshKnowledgeIndex().catch((error: unknown) => {
+      this.options.logger.warn('刷新知识库过期状态失败', {
+        noteId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
+    this.emitChanged()
+    return this.noteView(note)
   }
 
   suggestion(id: string): FileAwarenessSuggestion | undefined {
@@ -647,7 +696,8 @@ export class FileAwarenessService {
     imagePaths: readonly string[] = [],
   ): Promise<AwarenessAnalysis> {
     const candidates = this.candidatesFor(note).slice(0, 20)
-    const prompt = buildAnalysisPrompt(note, extraction, candidates, imagePaths.length)
+    const promptNote = this.noteExpiry(note).expired ? { ...note, summary: '', tags: [] } : note
+    const prompt = buildAnalysisPrompt(promptNote, extraction, candidates, imagePaths.length)
     const raw = await this.analyzeOnce({
       sessionId: `awareness-${note.id}`,
       text: prompt,
@@ -758,17 +808,22 @@ export class FileAwarenessService {
     const knowledgeDir = this.options.settings().fileAwareness.knowledgeDir.trim()
     if (knowledgeDir === '') return
     this.indexEntries = Object.values(this.state.notes)
-      .map((note) => ({
-        id: note.id,
-        title: note.title,
-        sourcePath: note.sourcePath,
-        notePath: note.notePath,
-        ext: note.ext,
-        createdAt: note.createdAt,
-        updatedAt: note.updatedAt,
-        summary: note.summary,
-        tags: [...note.tags],
-      }))
+      .map((note) => {
+        const expiry = this.noteExpiry(note)
+        return {
+          id: note.id,
+          title: note.title,
+          sourcePath: note.sourcePath,
+          notePath: note.notePath,
+          ext: note.ext,
+          createdAt: note.createdAt,
+          updatedAt: note.updatedAt,
+          summary: note.summary,
+          tags: [...note.tags],
+          ...(expiry.expiresAt === undefined ? {} : { expiresAt: expiry.expiresAt }),
+          expired: expiry.expired,
+        }
+      })
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     await fs.mkdir(knowledgeDir, { recursive: true })
     await atomicWrite(
@@ -867,7 +922,11 @@ export class FileAwarenessService {
 
   private candidatesFor(note: AwarenessNoteRecord): AwarenessNoteRecord[] {
     return this.indexEntries
-      .filter((candidate) => candidate.id !== note.id)
+      .filter((candidate) => {
+        if (candidate.id === note.id) return false
+        const record = this.state.notes[candidate.id]
+        return record !== undefined && !this.noteExpiry(record).expired
+      })
       .map((candidate) => ({
         candidate,
         score: candidateScore(candidate, {
@@ -908,6 +967,7 @@ export class FileAwarenessService {
       summary: '',
       tags: [],
       relatedNoteIds: [],
+      expiry: { mode: 'inherit' },
     }
     this.state.notes[id] = note
     return note
@@ -1183,6 +1243,38 @@ export class FileAwarenessService {
     }
     this.options.onSuggestion?.(copy)
   }
+
+  private noteView(note: AwarenessNoteRecord): FileAwarenessNote {
+    const expiry = this.noteExpiry(note)
+    return {
+      id: note.id,
+      title: note.title,
+      sourcePath: note.sourcePath,
+      notePath: note.notePath,
+      ext: note.ext,
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt,
+      sourceAvailable: note.sourceAvailable,
+      conflict: note.conflict,
+      excerpt: note.summary,
+      tags: [...note.tags],
+      expiry: structuredClone(note.expiry),
+      ...(expiry.expiresAt === undefined ? {} : { expiresAt: expiry.expiresAt }),
+      expired: expiry.expired,
+    }
+  }
+
+  private noteExpiry(note: AwarenessNoteRecord): { expiresAt?: string; expired: boolean } {
+    return noteExpiryInfo(
+      note,
+      this.options.settings().fileAwareness.defaultMemoryTtlDays,
+      this.now().getTime(),
+    )
+  }
+
+  private expiredNoteCount(): number {
+    return Object.values(this.state.notes).filter((note) => this.noteExpiry(note).expired).length
+  }
 }
 
 function emptyState(dayKey: string): AwarenessPersistedState {
@@ -1208,11 +1300,21 @@ function normalizeState(
 ): AwarenessPersistedState {
   const base = emptyState(dayKey)
   const usage = normalizeUsage(raw.usage)
+  const notes: Record<string, AwarenessNoteRecord> = {}
+  if (isRecord(raw.notes)) {
+    for (const [id, value] of Object.entries(raw.notes)) {
+      if (!isRecord(value)) continue
+      notes[id] = {
+        ...(value as unknown as AwarenessNoteRecord),
+        expiry: normalizeNoteExpiry(value['expiry']),
+      }
+    }
+  }
   return {
     ...base,
     ...raw,
     version: STATE_VERSION,
-    notes: isRecord(raw.notes) ? (raw.notes as Record<string, AwarenessNoteRecord>) : {},
+    notes,
     queue: Array.isArray(raw.queue) ? raw.queue : [],
     records: Array.isArray(raw.records) ? raw.records : [],
     recent: Array.isArray(raw.recent) ? raw.recent : [],
