@@ -7,17 +7,24 @@
 
 ## 当前实现状态
 
-**当前版本 v0.4.0（Electron 44.5.1 升级与原生窗口材质回归修复），配置 Schema v27（无迁移）** ——
-五块：
+**当前版本 v0.4.0（Electron 44.5.1 升级、文件自感知 / 记忆库与原生窗口材质），
+配置 Schema v28（迁移 v27 → v28，补齐默认关闭的 `fileAwareness`）** ——
+七块：
 ① **运行时升级**：Electron 33.4.11 → **44.5.1**（Chromium 130 → 152、Node 20.18 → 24.18.1、
 V8 13.0 → 15.2），主进程、utility process 与原生模块统一到 Electron 44 ABI；
-② **原生最大化恢复**：Electron 44 修复 Acrylic 材质更新链路，chat / settings / memory
+② **文件自感知与知识库**：监控目录与最近使用记录，docx / pptx 后台分析、内嵌图片视觉分析、
+Markdown 稳定笔记、冲突保护、格式/日期分层知识库与根目录 `INDEX.md`；
+③ **建议执行与记忆库**：可行动建议可直接创建 Agent 会话执行；新增独立记忆库窗口，
+左栏按格式/日期分组、右栏安全 Markdown 预览；设置页提供联网同意、队列、记录与知识库控制；
+④ **提示条与 Aurora Glass 2.0**：提示条扩为 328px 自感知工作台；主界面 / 设置 / 记忆库启用原生
+Acrylic，侧栏与 Center 统一 `.rail-surface`，四个入口加入低开销入场动效，并修复窗口缩放快捷键；
+⑤ **原生最大化恢复**：Electron 44 修复 Acrylic 材质更新链路，chat / settings / memory
 恢复系统 `maximize()` / `unmaximize()`，删除工作区缩放与逻辑最大化补丁；
-③ **提示条透明窗口适配**：透明 frameless 窗口被平台最小宽度夹取时，继续贴边并用
+⑥ **提示条透明窗口适配**：透明 frameless 窗口被平台最小宽度夹取时，继续贴边并用
 `setShape()` 把可见/可交互区域裁成收起 8px、展开 328px；
-④ **Electron 44 API 迁移**：剪贴板改为 Promise + `ClipboardItem`，图片读取改用
+⑦ **Electron 44 API 迁移与验证**：剪贴板改为 Promise + `ClipboardItem`，图片读取改用
 `clipboard.read()`；`console-message` 改用事件对象字段；
-⑤ **验证基线**：2400 条单测、182 条 Electron 冒烟全绿；桌面截图 83 个产物 / 78 条探针 0 失败；
+验证基线为 2400 条单测、182 条 Electron 冒烟全绿；桌面截图 83 个产物 / 78 条探针 0 失败；
 流式爆发最坏心跳 86.1ms、最坏帧间隔 70.9ms。
 面向用户的说明见 [release-notes/v0.4.0.md](./release-notes/v0.4.0.md)。
 
