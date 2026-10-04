@@ -242,7 +242,11 @@ function titleOf(tab: CtxTab): string {
       ＋N 菜单：`v-show` 常驻 DOM（不是 v-if）—— 折叠标签的 `chat.ctx-tab-<id>` 锚点因此
       始终存在，旧场景直接 click 隐藏锚点也能切过去；菜单本身只在 48px 顶带**下方**弹出。
     -->
-    <div v-show="moreOpen" class="ctx-menu ctx-more-menu" data-field="chat.ctx-more-menu">
+    <div
+      v-show="moreOpen"
+      class="ctx-menu ctx-more-menu glass-panel"
+      data-field="chat.ctx-more-menu"
+    >
       <p class="ctx-menu-caption">被折叠的标签 · {{ hiddenTabs.length }}</p>
       <div
         v-for="tab in hiddenTabs"
@@ -271,7 +275,7 @@ function titleOf(tab: CtxTab): string {
     </div>
 
     <!-- 新建标签菜单（v-show 同理：条目锚点常驻） -->
-    <div v-show="newOpen" class="ctx-menu ctx-new-menu" data-field="chat.ctx-new-menu">
+    <div v-show="newOpen" class="ctx-menu ctx-new-menu glass-panel" data-field="chat.ctx-new-menu">
       <button
         v-for="kind in CTX_TAB_KINDS"
         :key="kind"
@@ -299,7 +303,13 @@ function titleOf(tab: CtxTab): string {
   align-items: stretch;
   min-height: var(--head-h, 48px);
   padding: 0 calc(var(--caption-w, 132px) + var(--space-2)) 0 var(--space-2);
-  border-bottom: 1px solid var(--border-subtle);
+  /*
+   * 这条横带参与“可见标签数量”的计算：材质类若补出四边框，会挤掉 2px 并把
+   * 刚新建的标签推进 +N 菜单。玻璃底色保留，几何按原设计只占一条底边。
+   */
+  border: 0;
+  border-bottom: 1px solid var(--glass-border-soft);
+  box-shadow: none;
 }
 
 /*
@@ -462,8 +472,8 @@ function titleOf(tab: CtxTab): string {
   min-width: 176px;
   padding: var(--space-1);
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-strong);
-  background: var(--bg-raised);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-panel);
   box-shadow: var(--shadow-2);
 }
 

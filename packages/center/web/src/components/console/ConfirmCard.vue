@@ -49,7 +49,11 @@ async function decide(approved: boolean): Promise<void> {
 </script>
 
 <template>
-  <article class="confirm-card" :class="{ urgent, expired }" data-field="chat.confirm-card">
+  <article
+    class="confirm-card glass-panel"
+    :class="{ urgent, expired }"
+    data-field="chat.confirm-card"
+  >
     <header class="head">
       <span class="mark" aria-hidden="true">
         <ShieldAlert :size="14" :stroke-width="1.7" />
@@ -101,7 +105,7 @@ async function decide(approved: boolean): Promise<void> {
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--danger-border);
   border-radius: var(--radius-md);
-  background: var(--bg-raised);
+  background: var(--glass-panel);
   box-shadow: var(--shadow-2);
   animation: aurora-pop-in var(--dur-base) var(--ease-spring) both;
 }

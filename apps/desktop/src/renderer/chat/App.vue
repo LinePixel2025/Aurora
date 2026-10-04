@@ -1571,7 +1571,7 @@ async function markGuideDone(): Promise<void> {
     <!-- ── 左栏：品牌 / 新对话 / 快速对话面板 / 会话列表 / 底部工具 ── -->
     <aside
       ref="navEl"
-      class="nav"
+      class="nav glass-shell"
       :class="{ collapsed: !navOpen }"
       :style="{ '--nav-w': `${navEffWidth}px` }"
     >
@@ -1628,7 +1628,7 @@ async function markGuideDone(): Promise<void> {
         （`maximizable: true` 后 WM_NCLBUTTONDBLCLK 语义），页面侧不再挂 dblclick——
         拖动区收不到页面鼠标事件，重复挂只会造成双重切换。最大化期间几何不落盘（persistGeometry 跳过）。
       -->
-      <header class="head" :class="[dragClass, { 'head--corner': !contextOpen }]">
+      <header class="head glass-bar" :class="[dragClass, { 'head--corner': !contextOpen }]">
         <button
           type="button"
           class="icon-btn press"
@@ -1778,7 +1778,7 @@ async function markGuideDone(): Promise<void> {
             </span>
           </div>
 
-          <div ref="composerBoxEl" class="composer-box" :class="{ streaming }">
+          <div ref="composerBoxEl" class="composer-box glass-surface-strong" :class="{ streaming }">
             <!--
               斜杠命令浮层（2026-09 输入框重做）：贴在输入卡上方。
               键盘（↑↓ / Enter / Tab / Esc）由下面 textarea 的 onComposerKeydown 统一处理，
@@ -1921,7 +1921,7 @@ async function markGuideDone(): Promise<void> {
 
     <!-- ── 右栏：功能 tab（文件 / 上下文）+ 可拖拽调宽（2026-10-03，docs/07 §2.3） ── -->
     <aside
-      class="context"
+      class="context glass-shell"
       :class="{ collapsed: !contextOpen }"
       :style="{ '--ctx-w': `${ctxEffWidth}px` }"
     >
@@ -1948,6 +1948,7 @@ async function markGuideDone(): Promise<void> {
         `chat.ctx-new-menu` / `chat.ctx-new-<kind>`）。
       -->
       <CtxTabStrip
+        class="glass-surface-strong"
         :tabs="ctxTabs"
         :active-id="ctxActiveId"
         @activate="activateCtxTab"
@@ -2060,7 +2061,7 @@ async function markGuideDone(): Promise<void> {
   grid-template-columns: auto minmax(0, 1fr) auto;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg-base);
+  background: transparent;
   color: var(--text-primary);
 }
 
@@ -2096,7 +2097,6 @@ async function markGuideDone(): Promise<void> {
    */
   width: var(--nav-w, 240px);
   position: relative;
-  background: var(--bg-raised);
   border-right: 1px solid var(--border-strong);
   /* 左栏固定项已整体收进 SessionNav：单行网格，SessionNav 占满整栏（含底部固定项） */
   display: grid;
@@ -2109,7 +2109,6 @@ async function markGuideDone(): Promise<void> {
   /** 宽度可拖拽（2026-10-03）：内联 `--ctx-w` 同样是**实际生效宽度**（`ctxEffWidth`）。
    *  JobPanel / ContextPanel 读同一个变量。 */
   width: var(--ctx-w, 384px);
-  background: var(--bg-raised);
   border-left: 1px solid var(--border-strong);
   position: relative;
   /**
@@ -2223,6 +2222,11 @@ body.col-resizing .nav {
   flex-direction: column;
   min-width: 0;
   height: 100vh;
+  /*
+   * 主区是透明 body 上最大的阅读面：保留原生 Acrylic 的桌面层次，但加一层低透明度
+   * 内容 tint，避免后方窗口文字直接穿过正文。侧栏 / 标题栏仍用各自更厚的玻璃层。
+   */
+  background-color: var(--glass-content);
 }
 
 .head {
@@ -2233,7 +2237,6 @@ body.col-resizing .nav {
   /* 右侧不留内边距：窗口按钮固定贴在窗口右缘（Windows 习惯），由 `.head--corner` 让位 */
   padding: var(--space-2) 0 var(--space-2) var(--space-4);
   min-height: var(--head-h, 48px);
-  background: var(--fill-1);
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -2415,7 +2418,7 @@ body.col-resizing .nav {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-4) var(--space-4);
-  background: var(--bg-base);
+  border-top: 1px solid var(--glass-border-soft);
 }
 
 /* 输入卡与消息列同轴心：同一根 860px 中轴线上下贯通 */
@@ -2484,8 +2487,8 @@ body.col-resizing .nav {
   gap: 2px;
   padding: var(--space-2) var(--space-3) var(--space-1);
   border-radius: var(--radius-lg);
-  border: 1px solid var(--border-subtle);
-  background: var(--fill-1);
+  border: 1px solid var(--glass-border-soft);
+  background-color: var(--glass-input);
   transition:
     border-color var(--transition-base),
     box-shadow var(--transition-base);

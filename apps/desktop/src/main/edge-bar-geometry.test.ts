@@ -46,7 +46,7 @@ describe('提示条几何（docs/07 §2.2）', () => {
     expect(expandedEdgeBarHeight(tiny)).toBe(EDGE_BAR_COLLAPSED_HEIGHT)
   })
 
-  it('展开：右缘与垂直中心不变，宽度 8→228、高度变高', () => {
+  it('展开：右缘与垂直中心不变，宽度 8→328、高度变高', () => {
     const collapsed = placeEdgeBar(WORK_AREA, collapsedSize())
     const expanded = resizeEdgeBarKeepingAnchor(collapsed, expandedSize(WORK_AREA), WORK_AREA)
     expect(expanded.width).toBe(EDGE_BAR_WIDTHS.expanded)
@@ -55,7 +55,7 @@ describe('提示条几何（docs/07 §2.2）', () => {
     expect(centerOf(expanded)).toBe(centerOf(collapsed))
   })
 
-  it('收起：228→8 后与初始收起态完全一致（往返幂等）', () => {
+  it('收起：328→8 后与初始收起态完全一致（往返幂等）', () => {
     const collapsed = placeEdgeBar(WORK_AREA, collapsedSize())
     const expanded = resizeEdgeBarKeepingAnchor(collapsed, expandedSize(WORK_AREA), WORK_AREA)
     const back = resizeEdgeBarKeepingAnchor(expanded, collapsedSize(), WORK_AREA)

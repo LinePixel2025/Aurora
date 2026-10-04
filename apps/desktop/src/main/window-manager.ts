@@ -145,6 +145,19 @@ const DARK_BACKGROUND = '#000000'
 const LIGHT_BACKGROUND = '#f5f5f7'
 
 /**
+ * 需要真实采样桌面内容的系统毛玻璃窗口。
+ *
+ * CSS `backdrop-filter` 只能采样同一渲染页面的内容；主界面要看见后方桌面 / 窗口，
+ * 必须由 Windows DWM 的 Acrylic 提供底层材质。Windows 11 22H2 以下或其它平台会自动
+ * 回退原有不透明底色，渲染层 body 保持透明但不会裸漏桌面。
+ */
+const NATIVE_GLASS_WINDOWS = new Set<WindowName>(['edge-bar', 'chat'])
+
+function supportsNativeGlass(name: WindowName): boolean {
+  return process.platform === 'win32' && NATIVE_GLASS_WINDOWS.has(name)
+}
+
+/**
  * 几何落盘的**收尾去抖**间隔（ms，P2-08）。
  *
  * Windows 上拖动 / 缩放期间 `moved` / `resized` 每秒触发 30–60 次；每次落盘都会
@@ -188,6 +201,8 @@ export class WindowManager {
   private readonly zoomFactors = new Map<number, number>()
   /** 提示条是否处于展开（面板）态；默认收起为 8px 竖条（docs/07 §2.2） */
   private edgeBarExpanded = false
+  /** 已成功启用原生材质的窗口；失败时同步回到不透明回退。 */
+  private readonly nativeGlassWindows = new Set<WindowName>()
   private themeListenerActive = true
   /** 几何事件的收尾去抖定时器（每个窗口一个，P2-08） */
   private readonly geometryTimers = new Map<WindowName, ReturnType<typeof setTimeout>>()
@@ -202,7 +217,8 @@ export class WindowManager {
     const color = windowBackgroundColor()
     for (const name of ['chat', 'settings', 'memory', 'onboarding'] as const) {
       const win = this.windows.get(name)
-      if (win && !win.isDestroyed()) win.setBackgroundColor(color)
+      if (!win || win.isDestroyed() || this.nativeGlassWindows.has(name)) continue
+      win.setBackgroundColor(color)
     }
     // 系统外观切换是低频事件，也是「浅色下先闪一层深色底」唯一能查的现场记录，因此按 info 落盘
     this.options.logger.info('系统外观已切换，同步窗口底色', {
@@ -256,12 +272,17 @@ export class WindowManager {
     return win.getBounds()
   }
 
-  /** 截图核对读取真实原生底色；Electron 33 返回 #RRGGBB，不包含透明度。 */
+  /** 截图核对读取真实原生底色；原生玻璃窗口由材质断言接管，返回 undefined。 */
   getBackgroundColor(name: WindowName): string | undefined {
-    if (name === 'edge-bar') return undefined
+    if (this.nativeGlassWindows.has(name)) return undefined
     const win = this.windows.get(name)
     if (!win || win.isDestroyed()) return undefined
     return win.getBackgroundColor()
+  }
+
+  /** 当前窗口是否已启用 Windows 系统毛玻璃材质（供视觉验收断言）。 */
+  usesNativeGlass(name: WindowName): boolean {
+    return this.nativeGlassWindows.has(name)
   }
 
   /**
@@ -317,12 +338,10 @@ export class WindowManager {
       minimizable: spec.minimizable,
       maximizable: spec.maximizable,
       fullscreenable: false,
-      backgroundColor: name === 'edge-bar' ? '#00000000' : windowBackgroundColor(),
+      backgroundColor: supportsNativeGlass(name) ? '#00000000' : windowBackgroundColor(),
       // Windows 的桌面模糊由系统材质提供；透明窗口里的 CSS backdrop-filter 只能模糊
       // 页面自身内容，无法模糊桌面。失败时保留 CSS `.glass` 回退。
-      ...(name === 'edge-bar' && process.platform === 'win32'
-        ? { backgroundMaterial: 'acrylic' as const }
-        : {}),
+      ...(supportsNativeGlass(name) ? { backgroundMaterial: 'acrylic' as const } : {}),
       title: titleFor(name),
       webPreferences: {
         preload: this.options.preloadPath,
@@ -339,11 +358,15 @@ export class WindowManager {
     })
 
     win.setMenuBarVisibility(false)
-    if (name === 'edge-bar' && process.platform === 'win32') {
+    if (supportsNativeGlass(name)) {
       try {
         win.setBackgroundMaterial('acrylic')
+        this.nativeGlassWindows.add(name)
       } catch (error) {
-        this.options.logger.debug('提示条毛玻璃材质不可用，回退 CSS 玻璃', {
+        this.nativeGlassWindows.delete(name)
+        if (name === 'chat') win.setBackgroundColor(windowBackgroundColor())
+        this.options.logger.debug('系统毛玻璃材质不可用，回退不透明窗口底色', {
+          window: name,
           error: String(error),
         })
       }
@@ -438,6 +461,7 @@ export class WindowManager {
       this.cancelGeometryTimer(name)
       this.geometryBounds.delete(name)
       this.windows.delete(name)
+      this.nativeGlassWindows.delete(name)
       this.loadTasks.delete(name)
     })
     win.webContents.on('render-process-gone', (_event, details) => {
@@ -491,7 +515,7 @@ export class WindowManager {
   hide(name: WindowName): WindowState {
     const before = this.state
     this.state = hideInState(this.state, name)
-    // 提示条隐藏时收回竖条尺寸：否则下次显示会残留展开态的 228px 宽，
+    // 提示条隐藏时收回竖条尺寸：否则下次显示会残留展开态的 328px 宽，
     // 在鼠标移开后又变成一块「看不见但挡鼠标」的区域（docs/07 §2.2）。
     if (name === 'edge-bar') this.collapseEdgeBar()
     this.applyVisibility(name, false)
@@ -520,7 +544,7 @@ export class WindowManager {
   }
 
   /**
-   * 提示条收起态（8px 竖条）/ 展开态（228px 全高面板）切换（docs/07 §2.2）。
+   * 提示条收起态（8px 竖条）/ 展开态（328px 全高面板）切换（docs/07 §2.2）。
    *
    * 只改尺寸与位置，**不动可见性、不广播状态变化**——可见性没变，广播只会制造无意义的渲染层更新。
    * 展开 / 收起保持**右缘与垂直中心固定**（向左、向上下生长）；窗口尚未创建时只记录标记，
@@ -747,7 +771,7 @@ export class WindowManager {
 
     switch (spec.place) {
       case 'edge':
-        // 提示条：贴工作区配置侧边缘、垂直居中，宽度按折叠态（收起 8 / 展开 228）。
+        // 提示条：贴工作区配置侧边缘、垂直居中，宽度按折叠态（收起 8 / 展开 328）。
         // 显示器与屏幕侧 v21 起可配置（general.edgeBar.display / position，现读即生效）
         return placeEdgeBar(this.edgeBarDisplay().workArea, this.sizeFor(name), this.edgeBarSide())
       case 'chat':
@@ -818,7 +842,7 @@ export class WindowManager {
     if (name === 'edge-bar') {
       // 提示条**完全不复用持久化几何**：它不参与用户拖动，位置与尺寸都由「工作区右缘 +
       // 垂直居中 + 当前折叠态」唯一决定（`computeBounds` 的 `edge` 分支）。
-      // 复用会踩两个坑：收起态继承展开态的 228px 宽（屏幕右侧留下看不见却挡鼠标的区域）；
+      // 复用会踩两个坑：收起态继承展开态的 328px 宽（屏幕右侧留下看不见却挡鼠标的区域）；
       // 展开态退出时存下的是 y=24，下次启动竖条跑到屏幕顶部而不是居中。
       return undefined
     }

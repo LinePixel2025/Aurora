@@ -250,9 +250,9 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
 </script>
 
 <template>
-  <div class="onboarding">
+  <div class="onboarding glass-surface-strong">
     <!-- 标题栏：整行可拖动（窗口无系统边框），右侧是步骤圆点进度 -->
-    <header class="head" :class="dragClass">
+    <header class="head glass-bar" :class="dragClass">
       <div class="brand">
         <span class="brand-mark" />
         <div>
@@ -457,7 +457,7 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
     </main>
 
     <!-- 底部操作：左为反馈区，右侧主按钮是视觉锚点 -->
-    <footer class="foot">
+    <footer class="foot glass-bar">
       <div class="grow foot-note">
         <AppToast v-if="error" tone="error">{{ error }}</AppToast>
         <AppToast v-else-if="!settingsStore.cryptoAvailable" tone="warn">
@@ -529,7 +529,7 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
   overflow: hidden;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  background: var(--bg-raised);
+  background-color: var(--glass-surface-strong);
 }
 
 /* ───────── 顶部：拖动区 + 步骤圆点进度 ───────── */
@@ -681,9 +681,11 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
 .mode-card {
   padding: var(--space-4);
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  background: var(--fill-1);
-  box-shadow: var(--shadow-hairline);
+  border: 1px solid var(--glass-border-soft);
+  background: var(--glass-surface);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--shadow-hairline);
   text-align: left;
 }
 

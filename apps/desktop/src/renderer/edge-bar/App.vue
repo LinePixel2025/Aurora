@@ -3,7 +3,7 @@
  * 右侧提示条（docs/07 §2.2）：贴屏幕右缘的 8px 竖条 + 悬停展开的全高面板。
  *
  * 行为契约（step-02 落地，本步只换外观与动效，事件绑定与 IPC 调用保持不变）：
- * - 悬停 → 主进程把窗口加宽到 228px（`window:setEdgeBarExpanded`），面板从右滑入；
+ * - 悬停 → 主进程把窗口加宽到 328px（`window:setEdgeBarExpanded`），面板从右滑入；
  *   移开鼠标 → 面板淡出后再把窗口收回 8px（否则屏幕右侧会留一块看不见却挡鼠标的区域）；
  * - 点击竖条 → 呼出主界面（`window:showChat`，chat 窗即主界面）；展开态下竖条仍贴着屏幕右缘，
  *   仍是有效点击目标；
@@ -14,18 +14,33 @@
  *   窗口创建时 `focusable: false`（悬停不抢焦点），**展开时主进程临时 setFocusable(true)**——
  *   否则输入框拿不到键盘焦点；收起时交还并失焦（见 window-manager）。
  *
- * 几何预算（不要突破）：展开窗口 228px = 竖条 8px + 面板 220px。
- * 面板宽度写死 220px，任何内部布局都在这个宽度内成立，否则会被窗口裁切。
+ * 几何预算（不要突破）：展开窗口 328px = 竖条 8px + 面板 320px。
+ * 面板宽度写死 320px，任何内部布局都在这个宽度内成立，否则会被窗口裁切。
  *
  * 拖动：**刻意不提供**。本窗 `focusable: false`，位置与尺寸完全由主进程按「工作区右缘 +
  * 垂直居中 + 当前折叠态」推导（`window-manager.ts` 的 `edge` 分支），不参与用户拖动，
  * 因此模板里不挂 `drag-region`（不在 `useWindowDrag` 的清单里，docs/07 §2.2）。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { FileAwarenessSuggestion } from '@aurora/shared'
+import type {
+  FileAwarenessNote,
+  FileAwarenessRecord,
+  FileAwarenessStatus,
+  FileAwarenessSuggestion,
+} from '@aurora/shared'
 import AppButton from '../shared/components/AppButton.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
-import { ArrowUp, ChevronRight, MessageSquare, SettingsGear, Square } from '@aurora/shared/browser'
+import {
+  ArrowUp,
+  BookOpen,
+  FolderSearch,
+  LoaderCircle,
+  MessageSquare,
+  SettingsGear,
+  Sparkles,
+  Square,
+  X,
+} from '@aurora/shared/browser'
 import { useChat } from '../shared/composables/useChat.js'
 import {
   useModeStore,
@@ -72,6 +87,12 @@ const suggestion = ref<FileAwarenessSuggestion | null>(null)
 const suggestionBusy = ref(false)
 const suggestionError = ref('')
 let offAwarenessSuggestion: (() => void) | null = null
+const awarenessStatus = ref<FileAwarenessStatus | null>(null)
+const awarenessNotes = ref<FileAwarenessNote[]>([])
+const awarenessRecords = ref<FileAwarenessRecord[]>([])
+const awarenessBusy = ref(false)
+let offAwarenessChanged: (() => void) | null = null
+let awarenessPromise: Promise<void> | null = null
 
 function clearSuggestion(): void {
   clearTimeout(suggestionTimer)
@@ -141,6 +162,159 @@ async function ignoreSuggestion(): Promise<void> {
   await window.aurora.awareness.ignore({ suggestionId: current.id })
   clearSuggestion()
 }
+
+/**
+ * 自感知工作台数据：只在面板展开时拉取，事件驱动 + 30s 低频兜底。
+ *
+ * status / notes / records 都是主进程内存快照，按需读取；不在这里轮询文件系统，
+ * 避免常驻提示条重新引入后台 CPU / IO。
+ */
+async function refreshAwareness(): Promise<void> {
+  if (awarenessPromise !== null) return awarenessPromise
+  awarenessBusy.value = true
+  awarenessPromise = (async () => {
+    try {
+      const [statusResult, notesResult, recordsResult] = await Promise.all([
+        window.aurora.awareness.status(),
+        window.aurora.awareness.notes({ limit: 50 }),
+        window.aurora.awareness.records({ limit: 12 }),
+      ])
+      if (statusResult.ok) awarenessStatus.value = statusResult.value
+      if (notesResult.ok) awarenessNotes.value = notesResult.value
+      if (recordsResult.ok) awarenessRecords.value = recordsResult.value
+    } finally {
+      awarenessBusy.value = false
+      awarenessPromise = null
+    }
+  })()
+  return awarenessPromise
+}
+
+function onAwarenessChanged(): void {
+  if (!expanded.value) return
+  void refreshAwareness()
+}
+
+const awarenessTone = computed<'idle' | 'running' | 'unread' | 'error'>(() => {
+  const status = awarenessStatus.value
+  if (status?.lastError) return 'error'
+  if (!status?.enabled || !status.consentAccepted) return 'idle'
+  if (status.waitingForModel || !status.knowledgeDirAvailable) return 'unread'
+  return status.active ? 'running' : 'idle'
+})
+
+const awarenessLabel = computed(() => {
+  const status = awarenessStatus.value
+  if (status === null) return '读取状态…'
+  if (!status.enabled || !status.consentAccepted) return '未启用'
+  if (!status.knowledgeDirAvailable) return '知识库不可用'
+  if (status.waitingForModel) return '等待模型'
+  if (status.lastError) return '需要处理'
+  return status.active ? '正在感知' : '已暂停'
+})
+
+const awarenessHint = computed(() => {
+  const status = awarenessStatus.value
+  if (status === null) return '正在读取文件自感知状态'
+  if (!status.enabled || !status.consentAccepted) return '在设置中开启后，才会分析选定目录'
+  if (!status.knowledgeDirAvailable) return '知识库目录不存在，文件仍不会出网'
+  if (status.waitingForModel) return '监听已就绪，配置模型后开始分析'
+  if (status.lastError) return status.lastError
+  if (status.current) return `正在读取 ${status.current.fileName}`
+  return status.lastScanAt ? '已同步最近文件变化' : '等待目录中的新变化'
+})
+
+const awarenessProgress = computed(() => {
+  const status = awarenessStatus.value
+  if (status === null || status.dailyAnalysisLimit <= 0) return 0
+  return Math.min(100, Math.round((status.todayAnalyzed / status.dailyAnalysisLimit) * 100))
+})
+
+type InsightItem = {
+  id: string
+  title: string
+  detail: string
+  time: string
+  kind: string
+  noteId?: string
+  tone: 'done' | 'active' | 'warning' | 'idle'
+}
+
+function formatClock(value: string | undefined): string {
+  if (value === undefined || value === '') return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+function recordLabel(record: FileAwarenessRecord): string {
+  switch (record.status) {
+    case 'analyzing':
+      return '分析中'
+    case 'queued':
+      return '排队中'
+    case 'done':
+      return '已理解'
+    case 'conflict':
+      return '有冲突'
+    case 'error':
+      return '失败'
+    case 'skipped':
+      return '已跳过'
+    default:
+      return '已发现'
+  }
+}
+
+function recordTone(record: FileAwarenessRecord): InsightItem['tone'] {
+  if (record.status === 'analyzing') return 'active'
+  if (record.status === 'error' || record.status === 'conflict') return 'warning'
+  if (record.status === 'done') return 'done'
+  return 'idle'
+}
+
+const insightItems = computed<InsightItem[]>(() => {
+  const noteItems: InsightItem[] = awarenessNotes.value.slice(0, 3).map((note) => ({
+    id: `note-${note.id}`,
+    title: note.title,
+    detail: note.excerpt || note.sourcePath,
+    time: formatClock(note.updatedAt),
+    kind: note.ext.toUpperCase(),
+    noteId: note.id,
+    tone: note.conflict ? 'warning' : 'done',
+  }))
+  if (noteItems.length >= 3) return noteItems
+  const seen = new Set(awarenessNotes.value.map((note) => note.sourcePath.toLowerCase()))
+  const recordItems: InsightItem[] = awarenessRecords.value
+    .filter((record) => !seen.has(record.sourcePath.toLowerCase()))
+    .slice(0, 3 - noteItems.length)
+    .map((record) => ({
+      id: `record-${record.id}`,
+      title: record.fileName,
+      detail: record.summary || record.error || `${recordLabel(record)} · 尚未生成笔记`,
+      time: formatClock(record.occurredAt),
+      kind: record.ext.toUpperCase() || record.kind,
+      ...(record.noteId === undefined ? {} : { noteId: record.noteId }),
+      tone: recordTone(record),
+    }))
+  return [...noteItems, ...recordItems]
+})
+
+const systemChips = computed(() => {
+  const summary = perception.summary
+  if (summary === null) return []
+  const chips: string[] = []
+  if (summary.battery) {
+    chips.push(
+      summary.battery.hasBattery
+        ? `${summary.battery.percent}%${summary.battery.isCharging ? ' 充电中' : ''}`
+        : '交流电',
+    )
+  }
+  if (summary.network) chips.push(summary.network.online ? '网络在线' : '网络离线')
+  if (summary.foreground) chips.push(summary.foreground.app || summary.foreground.title)
+  return chips
+})
 
 /**
  * 悬停进入：窗口先加宽，面板后出现 —— 反过来的话面板会先被 8px 窗口裁掉再跳出来。
@@ -220,7 +394,7 @@ const quickInput = ref('')
 const quickListEl = ref<HTMLElement | null>(null)
 
 /**
- * 快速对话的消息（正序，最近 20 条）：220px 面板装不下长历史，
+ * 快速对话的消息（正序，最近 20 条）：面板不承载长历史，
  * 更早的对话在主界面左栏点「快速对话」看全量。
  */
 const quickMessages = computed(() =>
@@ -275,8 +449,12 @@ watch(expanded, (isOpen) => {
     return
   }
   void perception.refresh()
+  void refreshAwareness()
   clearInterval(perceptionTimer)
-  perceptionTimer = setInterval(() => void perception.refresh(), PERCEPTION_REFRESH_INTERVAL_MS)
+  perceptionTimer = setInterval(() => {
+    void perception.refresh()
+    void refreshAwareness()
+  }, PERCEPTION_REFRESH_INTERVAL_MS)
   if (!chat.streaming.value)
     void chat.hydrate({ force: true, limit: 20 }).then(() => scrollToQuickBottom())
   clearInterval(quickRefreshTimer)
@@ -303,55 +481,31 @@ const modeHint = computed(() => {
 })
 
 const isClassroom = computed(() => modeStore.current?.id === 'classroom')
-const classroom = computed(() => settingsStore.settings?.modes.classroom ?? null)
-const subjectCount = computed(() => classroom.value?.subjects.length ?? 0)
-const watchDir = computed(() => {
-  const dir = classroom.value?.watchDir ?? ''
-  if (dir === '') return '未设置'
-  const segments = dir.split(/[\\/]/).filter((part) => part !== '')
-  return segments[segments.length - 1] ?? dir
-})
-
 const lessons = computed(() => perception.summary?.lessons ?? [])
-
-/** 系统状态：逐项成行（值缺失的采集项直接不出现，不做假数据） */
-const statusRows = computed<Array<{ label: string; value: string }>>(() => {
-  const summary = perception.summary
-  if (!summary) return []
-  const rows: Array<{ label: string; value: string }> = [
-    { label: '时间', value: `${summary.localTime} ${summary.weekday}` },
-  ]
-  if (summary.battery) {
-    rows.push({
-      label: '电源',
-      value: summary.battery.hasBattery
-        ? `${summary.battery.percent}%${summary.battery.isCharging ? ' · 充电中' : ''}`
-        : '已接通交流电',
-    })
-  }
-  if (summary.network) {
-    const type =
-      summary.network.type === '' || summary.network.type === '未知' ? '' : summary.network.type
-    rows.push({
-      label: '网络',
-      value: summary.network.online ? `在线${type === '' ? '' : ` · ${type}`}` : '离线',
-    })
-  }
-  if (summary.foreground) {
-    rows.push({ label: '前台', value: summary.foreground.title || summary.foreground.app })
-  }
-  if (summary.display) {
-    rows.push({
-      label: '显示器',
-      value: `${summary.display.width}×${summary.display.height} · ${summary.display.count} 屏`,
-    })
-  }
-  return rows
-})
+const nextLesson = computed(() => lessons.value[0] ?? null)
+const visibleQuickMessages = computed(() => quickMessages.value.slice(-4))
 
 async function openChat(): Promise<void> {
   collapseNow()
   await windowStore.showChat()
+}
+
+async function openMemory(): Promise<void> {
+  collapseNow()
+  await windowStore.show('memory')
+}
+
+async function openInsight(item: InsightItem): Promise<void> {
+  if (item.noteId === undefined) {
+    await openMemory()
+    return
+  }
+  const result = await window.aurora.awareness.openNote({ noteId: item.noteId })
+  if (!result.ok) {
+    await openMemory()
+    return
+  }
+  collapseNow()
 }
 
 /**
@@ -395,9 +549,11 @@ onMounted(() => {
   offAwarenessSuggestion = window.aurora.awareness.onSuggestion((item) => {
     onAwarenessSuggestion(item)
   })
+  offAwarenessChanged = window.aurora.awareness.onChanged(onAwarenessChanged)
   if (expanded.value) {
     void chat.hydrate()
     void perception.refresh()
+    void refreshAwareness()
   }
 })
 
@@ -407,6 +563,8 @@ onUnmounted(() => {
   clearInterval(perceptionTimer)
   offAwarenessSuggestion?.()
   offAwarenessSuggestion = null
+  offAwarenessChanged?.()
+  offAwarenessChanged = null
 })
 </script>
 
@@ -426,15 +584,74 @@ onUnmounted(() => {
     </button>
 
     <transition name="sheet">
-      <aside v-if="expanded" class="panel glass">
+      <aside v-if="expanded" class="panel glass" data-field="edge-bar.panel">
+        <header class="panel-head">
+          <div class="brand-lockup">
+            <span class="brand-mark" aria-hidden="true">
+              <Sparkles :size="14" :stroke-width="1.8" />
+            </span>
+            <span class="brand-copy">
+              <strong>Aurora</strong>
+              <span class="tiny muted">{{ statusLabel }} · {{ modelLabel }}</span>
+            </span>
+          </div>
+          <button
+            type="button"
+            class="head-hide press"
+            data-action="edge-bar.hide"
+            title="隐藏提示条"
+            aria-label="隐藏提示条"
+            @click="hideSelf"
+          >
+            <X :size="13" :stroke-width="2" aria-hidden="true" />
+          </button>
+        </header>
+
         <div class="panel-scroll">
+          <section class="awareness-hero anim-rise" data-field="edge-bar.awareness-status">
+            <div class="hero-head">
+              <span class="hero-icon" aria-hidden="true">
+                <FolderSearch :size="15" :stroke-width="1.8" />
+              </span>
+              <span class="hero-copy">
+                <span class="eyebrow">文件自感知</span>
+                <strong>{{ awarenessLabel }}</strong>
+              </span>
+              <StatusDot :tone="awarenessTone" :size="7" :title="awarenessLabel" />
+            </div>
+            <p class="hero-hint">{{ awarenessHint }}</p>
+
+            <div class="metric-grid">
+              <span class="metric">
+                <strong>{{ awarenessStatus?.todayAnalyzed ?? 0 }}</strong>
+                <small>/ {{ awarenessStatus?.dailyAnalysisLimit ?? 0 }} 今日</small>
+              </span>
+              <span class="metric">
+                <strong>{{ awarenessStatus?.queueDepth ?? 0 }}</strong>
+                <small>队列</small>
+              </span>
+              <span class="metric">
+                <strong>{{ awarenessNotes.length }}</strong>
+                <small>记忆</small>
+              </span>
+            </div>
+            <span class="progress-track" aria-hidden="true">
+              <i :style="{ width: `${awarenessProgress}%` }" />
+            </span>
+
+            <div v-if="awarenessStatus?.current" class="live-file">
+              <LoaderCircle class="spin" :size="13" :stroke-width="1.8" aria-hidden="true" />
+              <span>{{ awarenessStatus.current.fileName }}</span>
+            </div>
+          </section>
+
           <section
             v-if="suggestion"
             class="card suggestion anim-rise"
             data-field="edge-bar.awareness"
           >
             <div class="card-head">
-              <p class="card-title">文件建议</p>
+              <p class="card-title">可行动建议</p>
               <span class="badge">新</span>
             </div>
             <strong class="suggestion-title">{{ suggestion.headline }}</strong>
@@ -462,48 +679,50 @@ onUnmounted(() => {
             </div>
           </section>
 
-          <!-- ① AI 状态 -->
-          <section class="card anim-rise">
-            <div class="row">
-              <StatusDot :tone="statusTone" :title="statusLabel" />
-              <strong class="status-text">{{ statusLabel }}</strong>
-              <span class="grow" />
-              <span class="meta">{{ settingsStore.appInfo?.appVersion ?? '' }}</span>
-            </div>
-            <p class="meta">模型 · {{ modelLabel }}</p>
-          </section>
-
-          <!-- ② 当前模式 -->
-          <section class="card anim-rise" style="animation-delay: 30ms">
-            <p class="card-title">当前模式</p>
-            <strong class="mode-name">{{ modeStore.current?.displayName ?? '未激活' }}</strong>
-            <p v-if="modeHint !== ''" class="warn">{{ modeHint }}</p>
-            <div v-if="isClassroom" class="key-value">
-              <span class="meta">感知文件夹</span>
-              <span class="value">{{ watchDir }}</span>
-            </div>
-            <div v-if="isClassroom" class="key-value">
-              <span class="meta">科目</span>
-              <span class="value">{{ subjectCount }} 个</span>
-            </div>
-          </section>
-
-          <!--
-            ③ 快速对话（2026-09 取代只读的「最近消息」）：输入框直接在面板里与 Aurora 对话。
-            撑满中部（flex 吸收剩余高度），消息列表内部滚动、新内容贴底；
-            输入框聚焦期间移开鼠标不收起（见 onPointerLeave / quickFocused 守卫）。
-          -->
-          <section class="card recent-card anim-rise" style="animation-delay: 60ms">
+          <section class="card insight-card anim-rise" data-field="edge-bar.insights">
             <div class="card-head">
-              <p class="card-title">快速对话</p>
-              <span v-if="quickMessages.length > 0" class="badge">{{ quickMessages.length }}</span>
+              <span class="section-heading">
+                <BookOpen :size="13" :stroke-width="1.8" aria-hidden="true" />
+                <p class="card-title">最近理解</p>
+              </span>
+              <button type="button" class="text-action press" @click="openMemory">全部</button>
+            </div>
+            <div v-if="insightItems.length > 0" class="insight-list">
+              <button
+                v-for="item in insightItems"
+                :key="item.id"
+                type="button"
+                class="insight-row press"
+                @click="openInsight(item)"
+              >
+                <span class="insight-kind">{{ item.kind }}</span>
+                <span class="insight-main">
+                  <strong>{{ item.title }}</strong>
+                  <small>{{ item.detail }}</small>
+                </span>
+                <span class="insight-time">{{ item.time }}</span>
+                <span class="insight-tone" :class="`t-${item.tone}`" aria-hidden="true" />
+              </button>
+            </div>
+            <p v-else class="empty">开启文件自感知后，这里会显示最近理解的文件。</p>
+          </section>
+
+          <section class="card recent-card anim-rise">
+            <div class="card-head">
+              <span class="section-heading">
+                <MessageSquare :size="13" :stroke-width="1.8" aria-hidden="true" />
+                <p class="card-title">快速对话</p>
+              </span>
+              <span v-if="visibleQuickMessages.length > 0" class="badge">{{
+                visibleQuickMessages.length
+              }}</span>
             </div>
             <div ref="quickListEl" class="qc-list">
-              <p v-if="quickMessages.length === 0 && !chat.streaming.value" class="empty">
+              <p v-if="visibleQuickMessages.length === 0 && !chat.streaming.value" class="empty">
                 直接输入，与 Aurora 快速对话
               </p>
               <div
-                v-for="message in quickMessages"
+                v-for="message in visibleQuickMessages"
                 :key="message.id"
                 class="qc-msg"
                 :class="`r-${message.role}`"
@@ -548,50 +767,36 @@ onUnmounted(() => {
             </div>
           </section>
 
-          <!-- ④ 今日课程（仅 ClassRoom 模式） -->
-          <section v-if="isClassroom" class="card anim-rise" style="animation-delay: 90ms">
-            <div class="card-head">
-              <p class="card-title">今日课程</p>
-              <span v-if="lessons.length > 0" class="badge">{{ lessons.length }}</span>
-            </div>
-            <ul v-if="lessons.length > 0" class="lesson-list">
-              <li v-for="(lesson, index) in lessons" :key="`${lesson.startTime}-${index}`">
-                <span class="lesson-time">{{ lesson.startTime }}</span>
-                <span class="lesson-subject">{{ lesson.subject }}</span>
-              </li>
-            </ul>
-            <p v-else class="empty">今天没有更多课程</p>
-          </section>
-
-          <!-- ⑤ 系统状态 -->
           <section
-            class="card anim-rise"
-            :style="{ animationDelay: isClassroom ? '120ms' : '90ms' }"
+            v-if="nextLesson || systemChips.length > 0 || modeHint !== ''"
+            class="card context-card anim-rise"
           >
-            <p class="card-title">系统状态</p>
-            <dl v-if="statusRows.length > 0" class="status-list">
-              <div v-for="row in statusRows" :key="row.label" class="status-row">
-                <dt>{{ row.label }}</dt>
-                <dd>{{ row.value }}</dd>
-              </div>
-            </dl>
-            <p v-else class="empty">感知数据尚未就绪</p>
+            <div v-if="nextLesson" class="context-line">
+              <span class="context-label">下一节</span>
+              <strong>{{ nextLesson.startTime }} {{ nextLesson.subject }}</strong>
+            </div>
+            <div v-else-if="modeHint !== ''" class="context-line">
+              <span class="context-label">{{ isClassroom ? '课堂' : '模式' }}</span>
+              <strong>{{ modeHint }}</strong>
+            </div>
+            <div v-if="systemChips.length > 0" class="chip-row">
+              <span v-for="chip in systemChips" :key="chip" class="mini-chip">{{ chip }}</span>
+            </div>
           </section>
         </div>
 
-        <!-- 操作区：3 个入口，主入口用 primary（capture 面板探针按 `.actions button` 做命中测试） -->
         <section class="actions">
           <AppButton variant="primary" size="sm" block class="press" @click="openChat">
             <MessageSquare class="icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
             打开主界面
           </AppButton>
+          <AppButton variant="ghost" size="sm" block class="press" @click="openMemory">
+            <BookOpen class="icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
+            记忆库
+          </AppButton>
           <AppButton variant="ghost" size="sm" block class="press" @click="openSettings">
             <SettingsGear class="icon" :size="14" :stroke-width="1.7" aria-hidden="true" />
             设置
-          </AppButton>
-          <AppButton variant="ghost" size="sm" block class="press" @click="hideSelf">
-            <ChevronRight class="icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
-            隐藏提示条
           </AppButton>
         </section>
       </aside>
@@ -606,7 +811,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   align-items: stretch;
-  /* 窗口宽度就是内容宽度（收起 8 / 展开 228）；保留 hidden 兜住圆角与滑入动画的溢出 */
+  /* 窗口宽度就是内容宽度（收起 8 / 展开 328）；保留 hidden 兜住圆角与滑入动画的溢出 */
   overflow: hidden;
 }
 
@@ -622,13 +827,14 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  background: color-mix(in srgb, var(--aurora-gradient) 72%, transparent);
-  backdrop-filter: blur(var(--blur-thin)) saturate(180%);
-  -webkit-backdrop-filter: blur(var(--blur-thin)) saturate(180%);
+  background: color-mix(in srgb, var(--glass-panel) 76%, transparent);
+  backdrop-filter: var(--glass-filter-thin);
+  -webkit-backdrop-filter: var(--glass-filter-thin);
+  border-left: 1px solid var(--glass-border);
   border-radius: 6px 0 0 6px;
   box-shadow: var(--shadow-1);
-  /* 常驻元素：静置时压暗一点，别在桌面右缘挂着一条刺眼的亮条 */
-  filter: brightness(0.82);
+  /* 常驻元素：静置时稍压暗，避免在桌面右缘变成一条纯色装饰条。 */
+  filter: brightness(0.9);
   transition:
     width var(--dur-fast) var(--ease-spring),
     filter var(--transition-fast);
@@ -655,29 +861,28 @@ onUnmounted(() => {
   writing-mode: vertical-rl;
   font-size: 8px;
   font-weight: var(--weight-semibold);
-  letter-spacing: 2px;
-  /* 极光渐变上的文字在明暗两档都使用专用深色前景。 */
-  color: var(--on-accent);
+  letter-spacing: 1.6px;
+  color: var(--text-secondary);
 }
 
-/* ───────── 展开面板（220px 预算） ───────── */
+/* ───────── 展开面板（320px 感知工作台） ───────── */
 
 .panel {
   position: absolute;
   top: 0;
   bottom: 0;
-  /* 右缘留出 8px 竖条，面板正好占满 228 - 8 = 220px；再宽会被窗口裁切 */
+  /* 右缘留出 8px 竖条，面板 320px；总窗口 328px */
   right: 8px;
-  width: 220px;
+  width: 320px;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
-  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
-  border-color: color-mix(in srgb, var(--border-subtle) 72%, transparent);
-  background: color-mix(in srgb, var(--bg-glass) 52%, transparent);
-  backdrop-filter: blur(var(--blur-thick)) saturate(180%) brightness(1.04);
-  -webkit-backdrop-filter: blur(var(--blur-thick)) saturate(180%) brightness(1.04);
+  border-radius: var(--radius-xl) 0 0 var(--radius-xl);
+  border-color: var(--glass-border);
+  background: color-mix(in srgb, var(--glass-panel) 82%, transparent);
+  backdrop-filter: var(--glass-filter-thick) brightness(1.04);
+  -webkit-backdrop-filter: var(--glass-filter-thick) brightness(1.04);
   box-shadow:
     inset 0 1px 0 var(--glass-highlight),
     var(--shadow-3);
@@ -695,11 +900,71 @@ onUnmounted(() => {
   content: '';
   position: absolute;
   top: 0;
-  left: var(--space-3);
-  right: var(--space-3);
+  left: var(--space-4);
+  right: var(--space-4);
   height: 1px;
   background: var(--aurora-gradient);
   opacity: 0.8;
+}
+
+.panel-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 36px;
+  padding: 0 var(--space-1);
+}
+
+.brand-lockup,
+.section-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--aurora-blue) 16%, transparent);
+  color: var(--accent-text);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.brand-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.brand-copy strong {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  line-height: var(--leading-tight);
+}
+
+.head-hide {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.head-hide:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
 }
 
 .panel-scroll {
@@ -707,7 +972,7 @@ onUnmounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -724,8 +989,284 @@ onUnmounted(() => {
   gap: var(--space-1);
   min-width: 0;
   padding: var(--space-3);
+  border: 1px solid var(--glass-border-soft);
   border-radius: var(--radius-md);
+  background: var(--glass-surface);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.awareness-hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--aurora-blue) 9%, transparent),
+      transparent 58%
+    ),
+    var(--glass-surface-strong);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--shadow-hairline);
+}
+
+.hero-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.hero-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--aurora-blue) 15%, transparent);
+  color: var(--accent-text);
+}
+
+.hero-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+
+.hero-copy strong {
+  font-size: var(--text-lg);
+  line-height: var(--leading-tight);
+}
+
+.eyebrow {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+}
+
+.hero-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-1);
+}
+
+.metric {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
   background: var(--fill-1);
+}
+
+.metric strong {
+  font-size: var(--text-lg);
+  font-variant-numeric: var(--num-tabular);
+}
+
+.metric small {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.progress-track {
+  display: block;
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--fill-2);
+}
+
+.progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--aurora-blue);
+  transition: width var(--dur-base) var(--ease-standard);
+}
+
+.live-file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--glass-border-soft);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.live-file span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insight-card {
+  gap: var(--space-2);
+}
+
+.section-heading {
+  color: var(--text-muted);
+}
+
+.section-heading .card-title {
+  color: inherit;
+}
+
+.text-action {
+  flex: 0 0 auto;
+  padding: 2px var(--space-1);
+  border-radius: var(--radius-xs);
+  color: var(--accent-text);
+  font-size: var(--text-xs);
+  transition: background var(--transition-fast);
+}
+
+.text-action:hover {
+  background: var(--fill-2);
+}
+
+.insight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.insight-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  text-align: left;
+  transition: background var(--transition-fast);
+}
+
+.insight-row:hover {
+  background: var(--fill-2);
+}
+
+.insight-kind {
+  padding: 2px 5px;
+  border-radius: var(--radius-xs);
+  background: var(--fill-2);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.03em;
+}
+
+.insight-main {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.insight-main strong,
+.insight-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insight-main strong {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.insight-main small,
+.insight-time {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.insight-time {
+  font-variant-numeric: var(--num-tabular);
+}
+
+.insight-tone {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-idle);
+}
+
+.insight-tone.t-done {
+  background: var(--status-ok);
+}
+
+.insight-tone.t-active {
+  background: var(--status-running);
+  box-shadow: 0 0 0 3px var(--status-running-ring);
+}
+
+.insight-tone.t-warning {
+  background: var(--status-unread);
+}
+
+.context-card {
+  gap: var(--space-2);
+}
+
+.context-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.context-line strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+
+.context-label {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.mini-chip {
+  max-width: 100%;
+  padding: 3px 7px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--fill-1);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .suggestion {
@@ -855,8 +1396,9 @@ onUnmounted(() => {
 
 /* 快速对话卡吸收面板剩余高度，让全高面板看起来是刻意排版而不是留白 */
 .recent-card {
-  flex: 1 1 auto;
-  min-height: 132px;
+  flex: 0 1 auto;
+  min-height: 150px;
+  max-height: 300px;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -951,7 +1493,7 @@ onUnmounted(() => {
   overflow-wrap: anywhere;
 }
 
-/* 输入行：紧凑输入框 + 圆形发送 / 停止钮（面板宽只有 220px，控件必须收窄） */
+/* 输入行：紧凑输入框 + 圆形发送 / 停止钮（面板宽度固定，控件保持单行） */
 .qc-composer {
   flex: 0 0 auto;
   display: flex;

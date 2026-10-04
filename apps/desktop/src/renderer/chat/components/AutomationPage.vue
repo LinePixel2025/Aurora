@@ -884,7 +884,7 @@ function closeHistory(): void {
     <Transition name="fade">
       <div v-if="editorOpen && draft !== null" class="modal-scrim" @click.self="closeEditor()">
         <div
-          class="modal editor anim-pop"
+          class="modal editor glass-panel anim-pop"
           role="dialog"
           aria-modal="true"
           data-field="automation.editor"
@@ -1151,7 +1151,7 @@ function closeHistory(): void {
     <Transition name="fade">
       <div v-if="historyOpen" class="modal-scrim" @click.self="closeHistory()">
         <div
-          class="modal history anim-pop"
+          class="modal history glass-panel anim-pop"
           role="dialog"
           aria-modal="true"
           data-field="automation.history-panel"
@@ -1665,8 +1665,8 @@ function closeHistory(): void {
   max-height: min(660px, calc(100vh - 56px));
   border-radius: var(--radius-lg);
   /* 弹层专用底色令牌（`--surface-1` 不存在 —— 用了它弹窗会透明、页面内容透进来） */
-  background: var(--bg-overlay);
-  border: 1px solid var(--border-subtle);
+  background: var(--glass-panel);
+  border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-2);
   animation: aurora-pop-in var(--dur-base) var(--ease-spring) both;
 }

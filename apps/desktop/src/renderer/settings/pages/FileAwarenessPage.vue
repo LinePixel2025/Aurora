@@ -337,7 +337,7 @@ onUnmounted(() => {
   <Teleport to="body">
     <div v-if="recordsOpen" class="modal-scrim" @click.self="closeRecords">
       <section
-        class="records-modal anim-pop"
+        class="records-modal glass-panel anim-pop"
         role="dialog"
         aria-modal="true"
         aria-labelledby="awareness-records-title"
@@ -409,7 +409,7 @@ onUnmounted(() => {
 }
 
 .status-grid div {
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   padding: var(--space-3);
   background: var(--fill-1);
@@ -447,7 +447,7 @@ onUnmounted(() => {
   overflow: hidden;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  background: var(--bg-overlay);
+  background: var(--glass-panel);
   box-shadow: var(--shadow-3);
 }
 

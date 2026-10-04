@@ -15,7 +15,7 @@
  *   否则 `prefers-reduced-motion` 降级会漏掉它们。
  * - 本文件里 Electron 专有的规则（如 `-webkit-app-region`）在浏览器里是 no-op，**不拆成两份**。
  *
- * 风格取向（BetaV2，Apple HIG / Pinguo tokens）：系统色锚点（蓝 #007AFF/#0A84FF、绿 #34C759/#30D158、
+ * 风格取向（BetaV2 / Aurora Glass 2.0，Apple HIG / Pinguo tokens）：系统色锚点（蓝 #007AFF/#0A84FF、绿 #34C759/#30D158、
  * 红 #FF3B30/#FF453A、橙 #FF9500/#FF9F0A）+ iOS 灰阶中性面（亮 #f5f5f7 / 暗 #000000）+ 分层填充 +
  * 大圆角 + 更淡更扩散的柔和阴影；留白充足，不用霓虹 / 渐变彩带 / 拟物。
  * **品牌不再使用双色渐变**：`--aurora-gradient` 即纯强调色值，全仓禁用 aurora 绿×蓝的
@@ -100,7 +100,7 @@
   --bg-base: var(--neutral-900);
   --bg-raised: var(--neutral-800);
   --bg-overlay: #2c2c2e;
-  --bg-glass: rgba(28, 28, 30, 0.72);
+  --bg-glass: rgba(22, 22, 25, 0.66);
   /* 分层填充：越靠上层越亮（卡片 → 悬停 → 选中） */
   --fill-1: rgba(255, 255, 255, 0.07);
   --fill-2: rgba(255, 255, 255, 0.1);
@@ -142,6 +142,19 @@
   --scrollbar-hover: rgba(255, 255, 255, 0.24);
   --glass-highlight: rgba(255, 255, 255, 0.06);
   --glass-fallback: rgba(28, 28, 30, 0.96);
+  --glass-tint: rgba(22, 22, 25, 0.62);
+  --glass-bar: rgba(22, 22, 25, 0.72);
+  --glass-panel: rgba(22, 22, 25, 0.78);
+  --glass-content: rgba(18, 18, 21, 0.54);
+  --glass-surface: rgba(255, 255, 255, 0.055);
+  --glass-surface-strong: rgba(255, 255, 255, 0.09);
+  --glass-input: color-mix(in srgb, var(--glass-content) 82%, var(--glass-surface-strong));
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-border-soft: rgba(255, 255, 255, 0.085);
+  --glass-saturation: 165%;
+  --canvas-cool: rgba(10, 132, 255, 0.045);
+  --canvas-warm: rgba(48, 209, 88, 0.022);
+  --canvas-grid: rgba(255, 255, 255, 0.018);
 
   /* ───────── 字体 ───────── */
   /* 界面与正文统一使用随包 HarmonyOS Sans；代码 / 终端保持等宽。 */
@@ -203,6 +216,9 @@
   --blur-thin: 12px;
   --blur: 24px;
   --blur-thick: 40px;
+  --glass-filter-thin: blur(var(--blur-thin)) saturate(var(--glass-saturation));
+  --glass-filter: blur(var(--blur)) saturate(var(--glass-saturation));
+  --glass-filter-thick: blur(var(--blur-thick)) saturate(var(--glass-saturation));
 
   /* ───────── 阴影（BetaV2：更淡、更扩散；越上层越散）───────── */
   --shadow-hairline: 0 1px 2px -1px rgba(0, 0, 0, 0.4);
@@ -276,7 +292,7 @@
     --bg-base: var(--neutral-50);
     --bg-raised: #ffffff;
     --bg-overlay: rgba(255, 255, 255, 0.96);
-    --bg-glass: rgba(255, 255, 255, 0.72);
+    --bg-glass: rgba(255, 255, 255, 0.64);
     --fill-1: rgba(0, 0, 0, 0.045);
     --fill-2: rgba(0, 0, 0, 0.07);
     --fill-3: rgba(0, 0, 0, 0.1);
@@ -313,6 +329,18 @@
     --scrollbar-hover: rgba(0, 0, 0, 0.28);
     --glass-highlight: rgba(255, 255, 255, 0.08);
     --glass-fallback: rgba(255, 255, 255, 0.98);
+    --glass-tint: rgba(255, 255, 255, 0.62);
+    --glass-bar: rgba(255, 255, 255, 0.72);
+    --glass-panel: rgba(255, 255, 255, 0.82);
+    --glass-content: rgba(255, 255, 255, 0.64);
+    --glass-surface: rgba(255, 255, 255, 0.58);
+    --glass-surface-strong: rgba(255, 255, 255, 0.76);
+    --glass-input: color-mix(in srgb, var(--glass-content) 82%, var(--glass-surface-strong));
+    --glass-border: rgba(255, 255, 255, 0.9);
+    --glass-border-soft: rgba(60, 60, 67, 0.1);
+    --canvas-cool: rgba(0, 122, 255, 0.035);
+    --canvas-warm: rgba(52, 199, 89, 0.02);
+    --canvas-grid: rgba(0, 0, 0, 0.018);
 
     --shadow-hairline: 0 1px 2px -1px rgba(0, 0, 0, 0.05);
     --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.06);
@@ -334,7 +362,26 @@ body {
   font-size: var(--text-base);
   line-height: var(--leading-normal);
   color: var(--text-primary);
-  background: var(--bg-base);
+  background-color: var(--bg-base);
+  /*
+   * Aurora Glass 2.0 的低对比度画布采样层：一层极淡的双色环境光 + 48px 网格。
+   * 它只让固定玻璃面有可观察的折射层次，不是品牌渐变，也不添加离散光斑。
+   */
+  background-image:
+    linear-gradient(
+      135deg,
+      var(--canvas-cool),
+      transparent 38%,
+      transparent 62%,
+      var(--canvas-warm)
+    ),
+    linear-gradient(var(--canvas-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--canvas-grid) 1px, transparent 1px);
+  background-size:
+    auto,
+    48px 48px,
+    48px 48px;
+  background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -342,6 +389,7 @@ body {
 html:has(body.transparent),
 body.transparent {
   background: transparent;
+  background-image: none;
 }
 
 #app {
@@ -394,22 +442,67 @@ select {
 /* ───────── 材质 ───────── */
 
 /**
- * 玻璃层（BetaV2 更克制）：模糊 24 + 提饱和 180% + 1px 内描边高光 + 柔和外阴影。
+ * 玻璃层（Aurora Glass 2.0）：三档固定工作台 + 一档重复卡片材质。
  * 不支持 backdrop-filter 的环境回落到几乎不透明的实色，避免文字糊在背景上。
  */
+.glass,
+.glass-panel,
+.glass-shell,
+.glass-bar,
+.glass-surface,
+.glass-surface-strong {
+  /* 固定工作台已有自己的单边分隔线：材质层只改颜色，绝不补出四边框改变盒模型。 */
+  border-color: var(--glass-border-soft);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--shadow-hairline);
+}
+
+.glass-shell {
+  background-color: var(--glass-tint);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  border-color: var(--glass-border-soft);
+}
+
+.glass-bar {
+  background-color: var(--glass-bar);
+  backdrop-filter: var(--glass-filter-thin);
+  -webkit-backdrop-filter: var(--glass-filter-thin);
+  border-color: var(--glass-border-soft);
+}
+
+.glass-panel,
 .glass {
-  background: var(--bg-glass);
-  backdrop-filter: blur(var(--blur)) saturate(180%);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
-  border: 1px solid var(--border-subtle);
+  background-color: var(--glass-panel);
+  backdrop-filter: var(--glass-filter-thick);
+  -webkit-backdrop-filter: var(--glass-filter-thick);
+  border: 1px solid var(--glass-border);
   box-shadow:
     inset 0 1px 0 var(--glass-highlight),
     var(--shadow-2);
 }
 
+.glass-surface {
+  background-color: var(--glass-surface);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--shadow-hairline);
+}
+
+.glass-surface-strong {
+  background-color: var(--glass-surface-strong);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--shadow-hairline);
+}
+
 @supports not (backdrop-filter: blur(1px)) {
-  .glass {
-    background: var(--glass-fallback);
+  .glass,
+  .glass-panel,
+  .glass-shell,
+  .glass-bar {
+    background-color: var(--glass-fallback);
   }
 }
 
@@ -504,10 +597,12 @@ select {
 
 /* 静止卡片使用细边界；交互抬升由 .interactive 提供。 */
 .surface-card {
-  background: var(--fill-1);
-  border: 1px solid var(--border-subtle);
+  background: var(--glass-surface);
+  border: 1px solid var(--glass-border-soft);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-hairline);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--shadow-hairline);
 }
 
 /**
@@ -929,6 +1024,30 @@ select {
 }
 
 /* ───────── 系统偏好降级 ───────── */
+
+/**
+ * 减少透明度 / 高对比度：固定玻璃退回不透明材质，画布采样层同步关闭。
+ * 这是可读性优先的硬降级，不改变布局、尺寸与交互命中区。
+ */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root {
+    --glass-filter-thin: none;
+    --glass-filter: none;
+    --glass-filter-thick: none;
+    --glass-tint: var(--glass-fallback);
+    --glass-bar: var(--glass-fallback);
+    --glass-panel: var(--glass-fallback);
+    --glass-content: var(--bg-base);
+    --glass-surface: var(--bg-raised);
+    --glass-surface-strong: var(--bg-overlay);
+    --glass-input: var(--bg-overlay);
+    --glass-border: var(--border-strong);
+    --glass-border-soft: var(--border-subtle);
+    --canvas-cool: transparent;
+    --canvas-warm: transparent;
+    --canvas-grid: transparent;
+  }
+}
 
 /**
  * `prefers-reduced-motion`：把时长压到 1ms 并让所有位移动画立即落位。

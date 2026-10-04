@@ -143,7 +143,7 @@ async function submit(skipped = false): Promise<void> {
 
 <template>
   <article
-    class="ask-card"
+    class="ask-card glass-panel"
     :class="{ urgent, expired, settled: readonly }"
     data-field="chat.ask-user-card"
   >
@@ -266,9 +266,9 @@ async function submit(skipped = false): Promise<void> {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
-  background: var(--bg-raised);
+  background: var(--glass-panel);
   box-shadow: var(--shadow-2);
   animation: aurora-pop-in var(--dur-base) var(--ease-spring) both;
 }

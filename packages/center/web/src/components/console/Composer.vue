@@ -235,7 +235,7 @@ const micTitle = computed(() => {
 
 <template>
   <div class="composer">
-    <div class="composer-box" :class="{ streaming: session.pending }">
+    <div class="composer-box glass-panel" :class="{ streaming: session.pending }">
       <textarea
         ref="inputEl"
         v-model="draft"
@@ -314,9 +314,9 @@ const micTitle = computed(() => {
   max-width: 860px;
   margin: 0 auto;
   padding: var(--space-2) var(--space-3) var(--space-1);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
-  background: var(--fill-1);
+  background: var(--glass-panel);
   transition:
     border-color var(--transition-fast),
     box-shadow var(--transition-fast);

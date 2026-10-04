@@ -64,7 +64,7 @@ function switchMode(): void {
 
 <template>
   <div class="login-wrap" :class="{ embedded: props.embedded }" data-panel="login">
-    <form class="login-card" @submit.prevent="submit">
+    <form class="login-card glass-panel" @submit.prevent="submit">
       <template v-if="!props.embedded">
         <span class="mark" aria-hidden="true">
           <BookOpenText :size="22" :stroke-width="1.7" />
@@ -145,7 +145,6 @@ function switchMode(): void {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  background: var(--bg-raised);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-2);

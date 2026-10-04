@@ -198,7 +198,7 @@ onUnmounted(() => {
 
 <template>
   <div class="memory">
-    <header class="memory-head" :class="dragClass">
+    <header class="memory-head glass-bar" :class="dragClass">
       <div class="head-title">
         <BookOpen :size="16" :stroke-width="1.6" aria-hidden="true" />
         <strong>记忆库</strong>
@@ -218,7 +218,7 @@ onUnmounted(() => {
     </header>
 
     <div class="memory-body">
-      <aside class="note-list" aria-label="笔记列表">
+      <aside class="note-list glass-shell" aria-label="笔记列表">
         <p v-if="filteredNotes.length === 0" class="empty">
           {{ notes.length === 0 ? '暂无 Markdown 笔记' : '没有匹配的笔记' }}
         </p>
@@ -255,7 +255,7 @@ onUnmounted(() => {
 
       <main class="note-detail">
         <template v-if="selected">
-          <div class="detail-head">
+          <div class="detail-head glass-bar">
             <div class="detail-title">
               <h1>{{ selected.title }}</h1>
               <p>{{ selected.sourcePath }}</p>
@@ -300,7 +300,7 @@ onUnmounted(() => {
   grid-template-rows: var(--head-h, 48px) minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
-  background: var(--bg-base);
+  background: transparent;
   color: var(--text-primary);
 }
 
@@ -310,7 +310,6 @@ onUnmounted(() => {
   gap: var(--space-3);
   padding-left: var(--space-4);
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-raised);
 }
 
 .head-title {
@@ -342,7 +341,7 @@ onUnmounted(() => {
   padding: 0 var(--space-2);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-pill);
-  background: var(--fill-1);
+  background: var(--glass-surface);
   color: var(--text-muted);
 }
 
@@ -372,7 +371,6 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: var(--space-2);
   border-right: 1px solid var(--border-subtle);
-  background: var(--bg-raised);
 }
 
 .format-group + .format-group {

@@ -150,7 +150,11 @@ async function submit(skipped = false): Promise<void> {
 </script>
 
 <template>
-  <article class="ask-user anim-pop" :class="{ urgent }" data-field="chat.ask-user-card">
+  <article
+    class="ask-user glass-panel anim-pop"
+    :class="{ urgent }"
+    data-field="chat.ask-user-card"
+  >
     <header class="row">
       <MessageSquare :size="14" :stroke-width="1.8" aria-hidden="true" class="ask-icon" />
       <strong class="ask-title">{{ request.header ?? '需要你确认' }}</strong>
@@ -267,8 +271,8 @@ async function submit(skipped = false): Promise<void> {
   margin: 0 var(--space-4) var(--space-2);
   padding: var(--space-3);
   border-radius: var(--radius-lg);
-  background: var(--bg-overlay);
-  border: 1px solid var(--border-subtle);
+  background: var(--glass-panel);
+  border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-2);
 }
 

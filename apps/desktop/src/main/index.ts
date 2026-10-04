@@ -2219,6 +2219,29 @@ async function runCapture(dir: string): Promise<void> {
   // 而交互窗 onMounted 就会读一次，计划开始后再写文件已经晚了（见 defaultCapturePlan 注释）。
   // `app.getPath('userData')` 在隔离模式下就是那个临时目录（见文件头注释）。
   await seedChatTtsHistory(app.getPath('userData'))
+  /**
+   * 自感知工作台截图现场：状态、最近理解、队列和记忆数都要有真实内容。
+   * state.json 必须在 FileAwarenessService 首次读取前落地；配置更新后再 init()
+   * 让运行中的服务重新读取夹具，而不是只让设置页看到开关。
+   */
+  const captureUserData = app.getPath('userData')
+  await seedMemoryFixture(captureUserData)
+  await fileAwareness?.init()
+  if (settings !== undefined) {
+    const current = settings.get()
+    settings.update({
+      fileAwareness: {
+        ...current.fileAwareness,
+        enabled: true,
+        contentConsentAccepted: true,
+        watchedDirs: [join(captureUserData, 'memory-fixture')],
+        knowledgeDir: join(captureUserData, 'memory-fixture'),
+        includeRecent: true,
+        suggestionsEnabled: true,
+      },
+    })
+    await settings.flush()
+  }
   // ClassIsland 课堂状态卡的夹具（同上：必须在窗口首次读之前落盘）
   await seedClassIslandFixture(app.getPath('userData'))
   // 「任务」面板的 paused job 夹具（v15，docs/06 §4.1）：**同样必须在窗口首次读之前**——

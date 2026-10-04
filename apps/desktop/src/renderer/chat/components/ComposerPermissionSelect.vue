@@ -174,7 +174,7 @@ onBeforeUnmount(() => {
     </button>
 
     <Transition name="pop">
-      <div v-if="open" class="perm-menu" role="menu" data-field="chat.permission-menu">
+      <div v-if="open" class="perm-menu glass-panel" role="menu" data-field="chat.permission-menu">
         <!-- 只读：最严的一档，收窄权限不需要二次确认（单击即提交） -->
         <button
           type="button"
@@ -356,8 +356,8 @@ onBeforeUnmount(() => {
   width: 320px;
   padding: var(--space-1);
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-strong);
-  background: var(--bg-raised);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-panel);
   box-shadow: var(--shadow-2);
   /* 兜住极端窄窗 / 高 DPI：卡片自己裁掉溢出，长串（模型 id、路径）在词内也能断 */
   overflow: hidden;

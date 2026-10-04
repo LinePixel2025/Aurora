@@ -82,7 +82,7 @@ onBeforeUnmount(hide)
       <div
         v-if="open"
         ref="bubble"
-        class="app-tip"
+        class="app-tip glass-panel"
         :class="placement"
         role="tooltip"
         :style="{ left: `${pos.x}px`, top: `${pos.y}px` }"
@@ -105,8 +105,8 @@ onBeforeUnmount(hide)
   max-width: min(280px, calc(100vw - 24px));
   padding: 5px var(--space-2);
   border-radius: var(--radius-xs);
-  background: var(--bg-overlay);
-  border: 1px solid var(--border-subtle);
+  background: var(--glass-panel);
+  border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-2);
   color: var(--text-primary);
   font-size: var(--text-xs);

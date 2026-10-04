@@ -54,7 +54,12 @@ function indexOf(item: SlashItem): number {
 </script>
 
 <template>
-  <div v-if="items.length > 0" class="slash" role="listbox" data-field="chat.slash-menu">
+  <div
+    v-if="items.length > 0"
+    class="slash glass-panel"
+    role="listbox"
+    data-field="chat.slash-menu"
+  >
     <div ref="listEl" class="slash-list">
       <template v-if="commands.length > 0">
         <p class="slash-group tiny muted">命令</p>
@@ -129,8 +134,8 @@ function indexOf(item: SlashItem): number {
   bottom: calc(100% + 6px);
   z-index: var(--z-flyout);
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-strong);
-  background: var(--bg-raised);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-panel);
   box-shadow: var(--shadow-2);
   overflow: hidden;
 }

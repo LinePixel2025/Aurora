@@ -159,7 +159,7 @@ function select(id: PageId): void {
   <div class="settings">
     <!-- Windows 式窗口按钮：贴窗口右上缘（通用布局），fixed 定位不随内容滚动 -->
     <WindowCaption window="settings" class="window-caption" />
-    <aside class="sidebar">
+    <aside class="sidebar glass-shell">
       <!-- 侧栏顶部拖动条：透明、无内容，作用是把「能拖的区域」从品牌行往上顶到窗口最上缘 -->
       <div class="sidebar-drag" :class="dragClass" aria-hidden="true" />
       <div class="brand" :class="dragClass">
@@ -225,7 +225,7 @@ function select(id: PageId): void {
   display: grid;
   grid-template-columns: 200px 1fr;
   height: 100vh;
-  background: var(--bg-base);
+  background: transparent;
 }
 
 /**
@@ -247,7 +247,6 @@ function select(id: PageId): void {
   /* 顶部不留内边距：拖动条要顶到窗口最上缘，否则最上面 16px 仍是抓不到的空白 */
   padding: 0 var(--space-3) var(--space-4);
   border-right: 1px solid var(--border-subtle);
-  background: var(--bg-raised);
 }
 
 /**

@@ -138,7 +138,7 @@ const cachedText = computed(() =>
   <div ref="rootEl" class="ctx" :class="[tone, { open }]">
     <!-- 详情卡向上弹：这一条贴着窗口底部，向下弹会被裁掉 -->
     <Transition name="pop">
-      <div v-if="open" class="ctx-card" data-field="chat.context-detail">
+      <div v-if="open" class="ctx-card glass-panel" data-field="chat.context-detail">
         <p class="ctx-card-title tiny muted">上下文详解</p>
         <dl class="ctx-grid">
           <div class="ctx-row">
@@ -366,8 +366,8 @@ const cachedText = computed(() =>
   z-index: var(--z-flyout);
   padding: var(--space-3);
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-strong);
-  background: var(--bg-raised);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-panel);
   box-shadow: var(--shadow-2);
 }
 

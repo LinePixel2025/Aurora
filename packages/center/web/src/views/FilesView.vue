@@ -79,8 +79,7 @@ const sendingFileId = ref('')
 
 const sendTargets = computed(() =>
   [...state.clients.values()].filter(
-    (entry) =>
-      entry.client.online && entry.status?.center.allowFileTransfer !== false,
+    (entry) => entry.client.online && entry.status?.center.allowFileTransfer !== false,
   ),
 )
 
@@ -133,7 +132,11 @@ async function sendTo(file: FileEntryInfo): Promise<void> {
         data-field="files.target-client"
       >
         <option value="">选择一个在线设备…</option>
-        <option v-for="item in sendTargets" :key="item.client.clientId" :value="item.client.clientId">
+        <option
+          v-for="item in sendTargets"
+          :key="item.client.clientId"
+          :value="item.client.clientId"
+        >
           {{ item.client.name }}
         </option>
       </select>
@@ -393,9 +396,10 @@ async function sendTo(file: FileEntryInfo): Promise<void> {
 }
 
 .ui-card {
-  background: var(--fill-1);
-  border: 1px solid var(--border-subtle);
+  background: var(--glass-surface);
+  border: 1px solid var(--glass-border-soft);
   border-radius: var(--radius-md);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
 }
 
 .ui-error {

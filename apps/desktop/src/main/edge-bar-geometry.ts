@@ -20,12 +20,12 @@ export interface Size {
 
 /**
  * 提示条两态宽度：收起态是贴着屏幕右缘的 8px 竖条；
- * 展开态 228px = 200px 面板 + 8px 竖条 + 20px 余量（面板自身的 padding / 阴影 / 圆角需要这点空间，
- * 否则内容会被窗口边缘裁掉）。
+ * 展开态 328px = 320px 感知工作台 + 8px 竖条。320px 用于同时容纳自感知状态、
+ * 最近理解与紧凑快速对话，避免旧版 220px 下每张卡片都被压成两三行。
  *
- * 与渲染层 `edge-bar/App.vue` 的 `.panel { width: 220px }` 是同一份约定，改一处必须同时改另一处。
+ * 与渲染层 `edge-bar/App.vue` 的 `.panel { width: 320px }` 是同一份约定，改一处必须同时改另一处。
  */
-export const EDGE_BAR_WIDTHS = { collapsed: 8, expanded: 228 } as const
+export const EDGE_BAR_WIDTHS = { collapsed: 8, expanded: 328 } as const
 
 /**
  * 提示条贴附的屏幕侧（v21，`general.edgeBar.position`，docs/07 §2.2）。

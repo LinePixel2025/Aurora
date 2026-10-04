@@ -22,8 +22,9 @@ withDefaults(defineProps<{ tone?: 'info' | 'warn' | 'error' | 'ok' }>(), { tone:
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
-  border: 1px solid var(--border-subtle);
-  background: var(--fill-1);
+  border: 1px solid var(--glass-border-soft);
+  background: var(--glass-surface);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
   color: var(--text-secondary);
 }
 

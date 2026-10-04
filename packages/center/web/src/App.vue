@@ -98,7 +98,7 @@ const onlineCount = computed(
     </div>
 
     <div v-else key="shell" class="shell">
-      <header v-if="!needsLogin" class="topbar">
+      <header v-if="!needsLogin" class="topbar glass-bar">
         <div class="topbar-inner">
           <div class="brand">
             <span class="brand-mark" aria-hidden="true">
@@ -181,7 +181,12 @@ const onlineCount = computed(
       <!-- 非阻断提示（待办栏的批复 / 过期、代码复制失败、语音失败…）：6s 自消隐，
            不打断操作 —— 与桌面端的瞬时提示同款语义，只是网页端挂在壳上全局一份 -->
       <Transition name="rise">
-        <p v-if="actionNotice !== ''" class="notice" data-field="shell.notice" role="status">
+        <p
+          v-if="actionNotice !== ''"
+          class="notice glass-panel"
+          data-field="shell.notice"
+          role="status"
+        >
           {{ actionNotice }}
         </p>
       </Transition>
@@ -200,6 +205,7 @@ const onlineCount = computed(
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
+  background: transparent;
 }
 
 .font-notice {
@@ -219,9 +225,6 @@ const onlineCount = computed(
 
 .topbar {
   flex: 0 0 auto;
-  background: var(--bg-glass);
-  backdrop-filter: blur(var(--blur)) saturate(180%);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
   border-bottom: 1px solid var(--border-subtle);
   padding-top: var(--safe-top, env(safe-area-inset-top, 0px));
 }
@@ -387,9 +390,9 @@ const onlineCount = computed(
   max-width: min(560px, calc(100vw - 2 * var(--space-4)));
   margin: 0;
   padding: var(--space-2) var(--space-4);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-pill);
-  background: var(--bg-raised);
+  background: var(--glass-panel);
   color: var(--text-primary);
   font-size: var(--text-sm);
   text-align: center;

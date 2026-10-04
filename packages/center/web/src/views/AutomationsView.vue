@@ -833,7 +833,7 @@ function filterHistory(automationId: string): void {
     <Transition name="fade">
       <div v-if="editorOpen" class="auto-mask" @click.self="editorOpen = false">
         <div
-          class="auto-editor"
+          class="auto-editor glass-panel"
           role="dialog"
           aria-modal="true"
           aria-label="编辑自动化"
@@ -1139,9 +1139,10 @@ select.ui-input {
 }
 
 .ui-card {
-  background: var(--fill-1);
-  border: 1px solid var(--border-subtle);
+  background: var(--glass-surface);
+  border: 1px solid var(--glass-border-soft);
   border-radius: var(--radius-md);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
 }
 
 .ui-error {
@@ -1475,8 +1476,8 @@ select.ui-input {
   display: grid;
   gap: var(--space-4);
   padding: var(--space-4) var(--space-5);
-  background: var(--bg-raised);
-  border: 1px solid var(--border-subtle);
+  background: var(--glass-panel);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-3);
   animation: aurora-pop-in var(--dur-base) var(--ease-spring) both;

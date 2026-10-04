@@ -440,8 +440,10 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
     const quickInput = panel.querySelectorAll('.qc-composer input').length
     const quickSend = panel.querySelectorAll('[data-action="edge-bar.quick-send"]').length
     const quickBubbles = panel.querySelectorAll('.qc-msg').length
+    const awarenessStatus = panel.querySelector('[data-field="edge-bar.awareness-status"]') !== null
+    const insights = panel.querySelector('[data-field="edge-bar.insights"]') !== null
     // 安全区（docs/07 §5.4）：面板里任何元素都不许探出窗口左右边界 ——
-    // 提示条整窗只有 8px 宽（展开态 228px），溢出的元素会被直接裁掉、用户点不到。
+    // 提示条收起只有 8px 宽（展开态 328px），溢出的元素会被直接裁掉、用户点不到。
     let overflow = 0
     const offenders = []
     for (const node of panel.querySelectorAll('*')) {
@@ -468,15 +470,20 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       quickInput,
       quickSend,
       quickBubbles,
+      awarenessStatus,
+      insights,
       overflow,
       offenders,
       allClickable: probes.length > 0 && probes.every((p) => p.hit && p.insideWindow),
       pass:
         buttons.length === 3 &&
-        width <= 228 &&
+        width <= 328 &&
+        panelStyle.width === '320px' &&
         quickInput > 0 &&
         quickSend > 0 &&
         quickBubbles > 0 &&
+        awarenessStatus &&
+        insights &&
         overflow === 0 &&
         frosted &&
         probes.every((p) => p.hit && p.insideWindow && p.width > 0),
@@ -10035,7 +10042,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       file: 'edge-bar-expanded.png',
       act: EDGE_BAR_HOVER_SCRIPT,
       check: EDGE_BAR_PANEL_SCRIPT,
-      // 展开要等主进程 setBounds 把窗口撑到 228px（跨进程异步，rAF 等不到它）
+      // 展开要等主进程 setBounds 把窗口撑到 328px（跨进程异步，rAF 等不到它）
       settleMs: 700,
     },
     // 交互窗的场景顺序见函数头注释：能在窗口里操作 DOM 的都排在 chat-collapse 之前。
@@ -10046,8 +10053,16 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     {
       name: 'chat',
       file: 'theme-chat.png',
-      check: themeProbeScript({ theme, transparent: false }),
-      nativeCheck: themeNativeCheck(manager, 'chat', theme),
+      check: themeProbeScript({ theme, transparent: true }),
+      nativeCheck: () => {
+        const nativeGlass = manager.usesNativeGlass('chat')
+        return {
+          pass: nativeGlass,
+          window: 'chat',
+          material: 'acrylic',
+          nativeGlass,
+        }
+      },
     },
     // 左栏结构 + 出厂门控现场（BetaV2）：quick-item / session-list / new-session 锚点、
     // 右栏默认展开且 classroom 卡在、麦克风按钮**不存在**（stt 未配置时连按钮都不渲染）。

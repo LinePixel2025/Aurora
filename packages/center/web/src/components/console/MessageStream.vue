@@ -467,7 +467,7 @@ onBeforeUnmount(() => {
       <button
         v-if="!following && session.items.length > 0"
         type="button"
-        class="jump-latest"
+        class="jump-latest glass-panel"
         data-action="chat.jump-latest"
         @click="emit('jumpLatest')"
       >
@@ -568,7 +568,7 @@ onBeforeUnmount(() => {
   gap: var(--space-1);
   min-height: 24px;
   padding: 0 var(--space-2);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-pill);
   background: var(--fill-1);
   color: var(--text-muted);
@@ -629,7 +629,7 @@ onBeforeUnmount(() => {
   padding: 0 var(--space-3);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-pill);
-  background: var(--bg-raised);
+  background: var(--glass-panel);
   color: var(--text-secondary);
   font-size: var(--text-xs);
   cursor: pointer;

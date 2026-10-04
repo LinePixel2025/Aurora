@@ -146,7 +146,7 @@ async function onFilePicked(event: Event): Promise<void> {
 <template>
   <div class="console" data-panel="console">
     <aside
-      class="rail-drawer"
+      class="rail-drawer glass-shell"
       data-field="rail-container"
       :class="{ 'drawer-open': drawer === 'rail' }"
     >
@@ -162,7 +162,7 @@ async function onFilePicked(event: Event): Promise<void> {
     </Transition>
 
     <section class="main">
-      <div class="main-head">
+      <div class="main-head glass-bar">
         <button
           type="button"
           class="head-btn rail-toggle"
@@ -271,14 +271,14 @@ async function onFilePicked(event: Event): Promise<void> {
     </section>
 
     <aside
-      class="panel-drawer"
+      class="panel-drawer glass-shell"
       data-field="panel-container"
       :class="{ collapsed: panelCollapsed, 'drawer-open': drawer === 'panel' }"
     >
       <SessionPanel :entry="entry" :session="session" />
     </aside>
 
-    <nav class="mobile-tabs">
+    <nav class="mobile-tabs glass-bar">
       <button
         type="button"
         class="head-btn"
@@ -313,7 +313,6 @@ async function onFilePicked(event: Event): Promise<void> {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--fill-1);
   border-right: 1px solid var(--border-subtle);
   overflow: hidden;
 }
@@ -473,7 +472,6 @@ async function onFilePicked(event: Event): Promise<void> {
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--border-subtle);
-  background: var(--fill-1);
   overflow: hidden;
   /* 展开 / 收起是**布局级**过渡（宽度参与主区排版），提前提一层合成提示省掉首帧的抖动；
      只给这一处（及窄屏那两枚抽屉）——全站铺 `will-change` 会白占显存。 */
@@ -519,7 +517,8 @@ async function onFilePicked(event: Event): Promise<void> {
     box-shadow: var(--shadow-3);
     /* 移动端抽屉浮在消息流上（身后只有半透明 scrim），半透明 `--fill-1` 会把底下
        内容透出来 —— 换成它的不透明等价物 `--bg-raised`（桌面观感 = bg-base + fill-1 叠加） */
-    background: var(--bg-raised);
+    /* 移动端抽屉覆盖消息流，必须保持不透明；玻璃只保留边框与阴影层次。 */
+    background-color: var(--bg-raised);
     opacity: 0;
     pointer-events: none;
     /* 窄屏两枚抽屉走的是 transform + opacity（合成器属性），覆盖掉桌面那份 `width` 提示 */

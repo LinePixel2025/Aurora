@@ -104,7 +104,7 @@ async function decide(approved: boolean, always = false): Promise<void> {
 </script>
 
 <template>
-  <article class="sensitive anim-pop" :class="{ urgent }">
+  <article class="sensitive glass-panel anim-pop" :class="{ urgent }">
     <header class="row">
       <StatusDot tone="error" title="敏感工具确认" />
       <strong>敏感工具执行前需确认</strong>
@@ -161,7 +161,7 @@ async function decide(approved: boolean, always = false): Promise<void> {
   padding: var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--danger-border);
-  background: var(--bg-raised);
+  background: var(--glass-panel);
   box-shadow: var(--shadow-3);
   transition: border-color var(--transition-base);
 }

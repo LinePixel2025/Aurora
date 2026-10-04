@@ -64,7 +64,7 @@ async function authorize(approve: boolean): Promise<void> {
 
 <template>
   <div class="device-wrap" data-panel="device">
-    <div class="device-card">
+    <div class="device-card glass-panel">
       <template v-if="phase === 'loading'">
         <div class="center"><span class="spinner" aria-label="正在加载" /></div>
       </template>
@@ -154,7 +154,6 @@ async function authorize(approve: boolean): Promise<void> {
 .device-card {
   width: min(420px, 100%);
   padding: var(--space-6);
-  background: var(--bg-raised);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-2);
