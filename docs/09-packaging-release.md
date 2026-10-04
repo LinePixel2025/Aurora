@@ -152,8 +152,25 @@ electron-builder 首次打包会下载两样东西：Electron 发行包与打包
 ### Git tag 规范（以后每个版本都适用）
 
 - 版本 tag 一律使用 **annotated tag**：`git tag -a vX.Y.Z`，不用轻量 tag。
-- tag message 必须写详细，至少包含：版本主题、底层依赖变化、用户可感知变化、
-  兼容 / 迁移说明、主要验证结果与安装包名。
+- **每次打包安装包前**，先相对上一版本 tag 汇总差异：
+
+  ```text
+  git log --reverse --pretty=format:'%h %s' <上一版本tag>..HEAD
+  git diff --stat <上一版本tag>..HEAD
+  ```
+
+  差异清单与更新点必须写进 `docs/release-notes/vX.Y.Z.md`，不能只写当前主主题。
+- tag message **直接使用同一份 Release Notes 文件**：
+
+  ```text
+  git tag -a vX.Y.Z -F docs/release-notes/vX.Y.Z.md --cleanup=verbatim
+  ```
+
+  禁止只写 `Aurora vX.Y.Z` 或版本号。
+- Release Notes 至少包含：相对上一版本的全部功能更新、修复、性能 / 外观变化、底层依赖变化、
+  配置 / 数据迁移、兼容说明、主要验证结果与安装包名。
+- `scripts/release.mjs` 已强制要求 `--notes-file`；它会自动识别上一版本 tag、打印提交与 diff，
+  并拒绝缺少上一版本对比的 Release Notes。
 - commit message 可以简短，但 tag 是发布说明的一部分，不能只写版本号。
 - 推送时同时推分支与 tag：`git push origin main && git push origin vX.Y.Z`。
 

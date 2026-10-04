@@ -10,7 +10,7 @@
  *   node scripts/release.mjs --publish       # 额外用 gh 上传产物到 releases 仓库
  *   node scripts/release.mjs --publish --push # 再把 tag 推到 origin
  *   node scripts/release.mjs --skip-package  # 只校验已有产物 + 打 tag
- *   --notes-file docs/release-notes/v<版本>.md # 详细 Release Notes（约定必传，见 docs/release-notes/）
+ *   --notes-file docs/release-notes/v<版本>.md # 必传：完整版本差异与 Release Notes
  *
  * 环境变量：
  *   GH_TOKEN  —— `--publish` 时 gh CLI 需要（repo 权限即可）
@@ -33,8 +33,9 @@ const shouldPush = args.has('--push')
 const skipPackage = args.has('--skip-package')
 
 /**
- * 详细 Release Notes（约定：每个版本必须在 docs/release-notes/ 存档一份，
- * 上传时用它作为 Release 正文，不要用单行默认文案）。
+ * 详细 Release Notes（硬规则：每个版本必须在 docs/release-notes/ 存档一份，
+ * 内容必须相对上一版本 tag 汇总全部更新点；同一份正文同时用于 annotated tag
+ * 与 GitHub Release，不能用单行默认文案）。
  * 用法：node scripts/release.mjs --publish --push --notes-file docs/release-notes/v0.0.4.md
  */
 const notesFileFlag = process.argv.indexOf('--notes-file')
@@ -50,6 +51,36 @@ if (notesFile !== undefined) {
 const packageJson = JSON.parse(await fs.readFile(join(root, 'package.json'), 'utf8'))
 const version = packageJson.version
 const tag = `v${version}`
+
+const previousTag = capture('git', ['tag', '--merged', 'HEAD', '--sort=-version:refname'])
+  .split('\n')
+  .map((item) => item.trim())
+  .find((item) => /^v\d+\.\d+\.\d+$/.test(item) && item !== tag)
+
+if (notesFile === undefined) {
+  console.error(
+    '缺少 --notes-file：每次打包安装包都必须提供相对上一版本的完整 Release Notes。\n' +
+      '例如：node scripts/release.mjs --publish --push --notes-file docs/release-notes/vX.Y.Z.md',
+  )
+  process.exit(2)
+}
+
+const notesText = await fs.readFile(notesFile, 'utf8')
+if (previousTag !== undefined && !notesText.includes(previousTag)) {
+  console.error(
+    `Release Notes 未包含上一版本 tag ${previousTag}：请先相对该版本汇总全部更新点，` +
+      '再打包和创建 tag。',
+  )
+  process.exit(2)
+}
+
+if (previousTag !== undefined) {
+  console.log(`\n上一版本 tag：${previousTag}`)
+  console.log('\n相对上一版本的提交：')
+  console.log(capture('git', ['log', '--reverse', '--pretty=format:%h %s', `${previousTag}..HEAD`]))
+  console.log('\n相对上一版本的改动统计：')
+  console.log(capture('git', ['diff', '--stat', `${previousTag}..HEAD`]))
+}
 
 /**
  * Windows 下 `shell: true` 时 Node 只是用空格把参数拼起来、不做转义，
@@ -128,7 +159,7 @@ const existingTag = capture('git', ['tag', '--list', tag])
 if (existingTag === tag) {
   console.log(`\ntag ${tag} 已存在，跳过创建`)
 } else {
-  run('git', ['tag', '-a', tag, '-m', `Aurora ${tag}`])
+  run('git', ['tag', '-a', tag, '-F', notesFile, '--cleanup=verbatim'])
 }
 
 // ── 5. 上传（显式触发） ──
@@ -161,10 +192,6 @@ if (shouldPublish) {
       run('gh', ['release', 'edit', tag, '--repo', RELEASES_REPO, '--notes-file', notesFile])
     }
   } catch {
-    const notesArgs =
-      notesFile !== undefined
-        ? ['--notes-file', notesFile]
-        : ['--notes', `Aurora ${tag}（Windows x64 安装包，未签名）`]
     run('gh', [
       'release',
       'create',
@@ -173,7 +200,8 @@ if (shouldPublish) {
       RELEASES_REPO,
       '--title',
       `Aurora ${tag}`,
-      ...notesArgs,
+      '--notes-file',
+      notesFile,
     ])
   }
 

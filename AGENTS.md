@@ -116,6 +116,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **不写 `docs/xx §n` 这类文档引用**；删的是冗余，**边界 / 后果 / 修复路径必须保留**；
   改文案后要同步核对断言了原文串的探针场景（`chat-composer-slash` 等）。
 - **提交信息**用 Conventional Commits、描述用中文（`feat(v0.5.0): ...` / `fix: ...` / `docs: ...`）。
+- **发布 tag**：每次打包安装包前必须相对上一版本 tag 汇总全部更新点，写入
+  `docs/release-notes/vX.Y.Z.md`，并把它作为 annotated tag 的完整 message；禁止只写
+  `Aurora vX.Y.Z`。（发布脚本会硬检查 `--notes-file` 与上一版本对比）
 
 ## 文档先行（Docs-first）
 
