@@ -36,6 +36,7 @@ export class FileAwarenessAnalyzer {
     sessionId: string
     text: string
     extraContext?: string
+    images?: readonly string[]
   }): Promise<string> {
     return await new Promise<string>((resolve, reject) => {
       const pending: Pending = {
@@ -56,6 +57,9 @@ export class FileAwarenessAnalyzer {
           text: input.text,
           origin: 'file-awareness',
           ...(input.extraContext === undefined ? {} : { extraContext: input.extraContext }),
+          ...(input.images === undefined || input.images.length === 0
+            ? {}
+            : { images: input.images }),
         })
         .then(({ requestId }) => {
           if (this.preparing.get(input.sessionId) !== pending) return

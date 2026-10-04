@@ -16,7 +16,7 @@ import { createRequire } from 'node:module'
 import { promises as fs } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { extract, type EvidenceKind } from './extract.js'
+import { extract, type EvidenceKind, type ExtractedDocumentImage } from './extract.js'
 
 /** 在 CJS 产物里解析外部依赖（officeparser 是 CJS，其内部再动态 import ESM 的 pdfjs） */
 const requireExternal = createRequire(import.meta.url)
@@ -27,6 +27,8 @@ interface ExtractRequest {
   ext: string
   sizeBytes: number
   hashContent?: boolean
+  /** 文件自感知需要内嵌图片；分类管线保持缺省，避免额外解码与内存峰值。 */
+  extractDocumentImages?: boolean
 }
 
 interface ExtractResponse {
@@ -36,23 +38,72 @@ interface ExtractResponse {
   evidence?: string
   evidenceChars?: number
   warnings?: string[]
+  documentImages?: ExtractedDocumentImage[]
   sourceHash?: string
   error?: string
 }
 
 /** 懒加载解析器：只有真的遇到 Office / PDF 文件时才付加载成本 */
 let parserPromise:
-  Promise<((path: string) => Promise<{ toText(): string }>) | undefined> | undefined
+  | Promise<
+      | ((
+          path: string,
+          config?: { extractAttachments?: boolean },
+        ) => Promise<{
+          toText(): string
+          to?(format: 'text'): Promise<{ value: string } | string>
+          attachments?: Array<{
+            type?: string
+            mimeType?: string
+            data?: string
+            name?: string
+            extension?: string
+            altText?: string
+          }>
+        }>)
+      | undefined
+    >
+  | undefined
 
 async function loadParser(): Promise<
-  ((path: string) => Promise<{ toText(): string }>) | undefined
+  | ((
+      path: string,
+      config?: { extractAttachments?: boolean },
+    ) => Promise<{
+      toText(): string
+      to?(format: 'text'): Promise<{ value: string } | string>
+      attachments?: Array<{
+        type?: string
+        mimeType?: string
+        data?: string
+        name?: string
+        extension?: string
+        altText?: string
+      }>
+    }>)
+  | undefined
 > {
   parserPromise ??= (async () => {
     try {
       const mod = requireExternal('officeparser') as {
-        parseOffice(file: string): Promise<{ toText(): string }>
+        parseOffice(
+          file: string,
+          config?: { extractAttachments?: boolean },
+        ): Promise<{
+          toText(): string
+          to?(format: 'text'): Promise<{ value: string } | string>
+          attachments?: Array<{
+            type?: string
+            mimeType?: string
+            data?: string
+            name?: string
+            extension?: string
+            altText?: string
+          }>
+        }>
       }
-      return (file: string) => mod.parseOffice(file)
+      return (file: string, config?: { extractAttachments?: boolean }) =>
+        mod.parseOffice(file, config)
     } catch {
       return undefined
     }
@@ -69,7 +120,14 @@ async function handle(request: ExtractRequest): Promise<ExtractResponse> {
       ext: request.ext,
       sizeBytes: request.sizeBytes,
       readFile: (target) => fs.readFile(target),
-      ...(parseOffice === undefined ? {} : { parseOffice }),
+      ...(parseOffice === undefined
+        ? {}
+        : {
+            parseOffice: (target: string) =>
+              parseOffice(target, {
+                extractAttachments: request.extractDocumentImages === true,
+              }),
+          }),
     })
     return {
       id: request.id,
@@ -78,6 +136,7 @@ async function handle(request: ExtractRequest): Promise<ExtractResponse> {
       evidence: result.evidence,
       evidenceChars: result.evidenceChars,
       warnings: result.warnings,
+      documentImages: result.documentImages,
       ...(sourceHash === undefined ? {} : { sourceHash }),
     }
   } catch (error) {

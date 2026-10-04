@@ -405,6 +405,22 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
     // 面板没挂载正是这条探针要防的故障，必须 pass:false（早退分支不能静默）
     if (!panel) return { panel: false, pass: false, reason: 'no .panel' }
     const width = document.documentElement.clientWidth
+    const panelStyle = getComputedStyle(panel)
+    const panelBackdrop = panelStyle.backdropFilter || panelStyle.webkitBackdropFilter || ''
+    const panelBackground = panelStyle.backgroundColor
+    const backgroundMatch = panelStyle.backgroundColor.match(/rgba?\\(([^)]+)\\)/)
+    const backgroundParts =
+      backgroundMatch === null
+        ? []
+        : backgroundMatch[1].split(/[,\\s]+/).filter((item) => item !== '')
+    const slashAlpha = /\\/\\s*([\\d.]+)\\s*\\)/.exec(panelStyle.backgroundColor)
+    const panelAlpha =
+      slashAlpha !== null
+        ? Number(slashAlpha[1])
+        : backgroundParts.length > 3
+          ? Number(backgroundParts[3])
+          : 1
+    const frosted = panelBackdrop.indexOf('blur') !== -1 && panelAlpha < 0.7
     const buttons = Array.from(panel.querySelectorAll('.actions button'))
     const probes = buttons.map((button) => {
       const rect = button.getBoundingClientRect()
@@ -442,7 +458,11 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       panel: true,
       windowWidth: width,
       windowHeight: document.documentElement.clientHeight,
-      styled: getComputedStyle(panel).width,
+      styled: panelStyle.width,
+      panelBackdrop,
+      panelBackground,
+      panelAlpha,
+      frosted,
       buttonCount: buttons.length,
       probes,
       quickInput,
@@ -458,6 +478,7 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
         quickSend > 0 &&
         quickBubbles > 0 &&
         overflow === 0 &&
+        frosted &&
         probes.every((p) => p.hit && p.insideWindow && p.width > 0),
     }
   } catch (error) {
@@ -1274,6 +1295,131 @@ export async function seedSnapshotFixture(userData: string): Promise<string> {
   // 场景就会以"没有记录"假 FAIL（验收标准里专门点了这一条）。
   await port.flush()
   return target
+}
+
+/**
+ * 记忆库截图夹具：写一份真实笔记与 `file-awareness/state.json`。
+ *
+ * FileAwarenessService 在 bootstrap 阶段已读过一次状态，调用方写完后需再 `init()` 一次
+ * 才会让运行中的实例读到这份夹具；这不是产品路径，只服务 `AURORA_CAPTURE`。
+ */
+export async function seedMemoryFixture(userData: string): Promise<void> {
+  const now = new Date().toISOString()
+  const pptxNoteId = 'memory-capture-pptx'
+  const docxNoteId = 'memory-capture-docx'
+  const pptxNotePath = join(
+    userData,
+    'memory-fixture',
+    'pptx',
+    '2026-10-04',
+    '电路课程笔记--memory-capture-pptx.md',
+  )
+  const docxNotePath = join(
+    userData,
+    'memory-fixture',
+    'docx',
+    '2026-10-03',
+    '数学复习笔记--memory-capture-docx.md',
+  )
+  await mkdir(join(pptxNotePath, '..'), { recursive: true })
+  await mkdir(join(docxNotePath, '..'), { recursive: true })
+  await writeFile(
+    pptxNotePath,
+    [
+      '# 电路课程笔记',
+      '',
+      '## 摘要',
+      '',
+      '这份讲义涵盖欧姆定律、串联电路与并联电路。',
+      '',
+      '## 关键信息',
+      '',
+      '- 电压、电流与电阻的关系',
+      '- 电路图中的电源与负载标注',
+      '',
+      '## 代码示例',
+      '',
+      '```ts',
+      'const voltage = current * resistance',
+      '```',
+      '',
+    ].join('\n'),
+    'utf8',
+  )
+  await writeFile(
+    docxNotePath,
+    ['# 数学复习笔记', '', '## 摘要', '', '这份文档整理了二次函数与一元二次方程。', ''].join('\n'),
+    'utf8',
+  )
+  await mkdir(join(userData, 'file-awareness'), { recursive: true })
+  await writeFile(
+    join(userData, 'file-awareness', 'state.json'),
+    JSON.stringify(
+      {
+        version: 1,
+        notes: {
+          [pptxNoteId]: {
+            id: pptxNoteId,
+            title: '电路课程笔记',
+            sourcePath: 'D:\\感知\\电路课程.pptx',
+            sourceHash: 'memory-capture-hash',
+            sizeBytes: 1024,
+            mtimeMs: Date.now(),
+            ext: 'pptx',
+            notePath: pptxNotePath,
+            createdAt: now,
+            updatedAt: now,
+            sourceAvailable: true,
+            conflict: false,
+            usageCount: 3,
+            summary: '涵盖欧姆定律与电路图的课程笔记。',
+            tags: ['物理', '电路'],
+            relatedNoteIds: [],
+          },
+          [docxNoteId]: {
+            id: docxNoteId,
+            title: '数学复习笔记',
+            sourcePath: 'D:\\感知\\数学复习.docx',
+            sourceHash: 'memory-capture-docx-hash',
+            sizeBytes: 2048,
+            mtimeMs: Date.now() - 86_400_000,
+            ext: 'docx',
+            notePath: docxNotePath,
+            createdAt: '2026-10-03T08:00:00.000Z',
+            updatedAt: '2026-10-03T08:00:00.000Z',
+            sourceAvailable: true,
+            conflict: false,
+            usageCount: 1,
+            summary: '二次函数与一元二次方程的复习笔记。',
+            tags: ['数学'],
+            relatedNoteIds: [],
+          },
+        },
+        queue: [],
+        records: Array.from({ length: 7 }, (_, index) => ({
+          id: `memory-capture-record-${index + 1}`,
+          sourcePath: `D:\\感知\\记录-${index + 1}.${index % 2 === 0 ? 'pptx' : 'docx'}`,
+          fileName: `记录-${index + 1}.${index % 2 === 0 ? 'pptx' : 'docx'}`,
+          ext: index % 2 === 0 ? 'pptx' : 'docx',
+          kind: 'change',
+          status: 'done',
+          occurredAt: new Date(Date.now() - index * 3_600_000).toISOString(),
+          sourceAvailable: true,
+          summary: `第 ${index + 1} 条文件自感知记录。`,
+        })),
+        recent: [],
+        suggestions: [],
+        ignoredSuggestionIds: [],
+        dayKey: '2026-10-04',
+        todayAnalyzed: 1,
+        queueOverflow: 0,
+        recentDirectoryMtimeMs: 0,
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  )
 }
 
 /**
@@ -3857,6 +4003,8 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
     const quickItem = document.querySelector('[data-field="chat.quick-item"]')
     const sessionList = document.querySelector('[data-field="chat.session-list"]')
     const rightToggle = document.querySelector('[data-field="chat.right-panel-toggle"]')
+    const nav = document.querySelector('.nav')
+    const shell = document.querySelector('.app-shell')
     const context = document.querySelector('.context')
     const ctxCards = Array.from(
       document.querySelectorAll('.context .ctx-card .ctx-head strong'),
@@ -3865,6 +4013,9 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
       (document.querySelector('.head-name') || {}).textContent || ''
     ).trim()
     const todoRows = count('[data-field="chat.todo-card"] .todo-row')
+    const navBg = nav === null ? '' : getComputedStyle(nav).backgroundColor
+    const shellBg = shell === null ? '' : getComputedStyle(shell).backgroundColor
+    const navBorder = nav === null ? '' : getComputedStyle(nav).borderRightColor
     return {
       headTitle: headName,
       quickItem: quickItem !== null,
@@ -3876,6 +4027,10 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
       sessionRows: count('[data-field="chat.session-list"] .nav-item'),
       newSessionButton: count('[data-action="chat.new-session"]'),
       rightToggle: rightToggle !== null,
+      navBg,
+      shellBg,
+      navBorder,
+      sidebarLayered: navBg !== '' && shellBg !== '' && navBg !== shellBg,
       contextCollapsed: context === null ? null : context.classList.contains('collapsed'),
       contextCards: ctxCards,
       todoCard: count('[data-field="chat.todo-card"]'),
@@ -3897,6 +4052,10 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
         count('[data-field="chat.session-list"] .nav-item') > 0 &&
         count('[data-action="chat.new-session"]') > 0 &&
         rightToggle !== null &&
+        navBg !== '' &&
+        shellBg !== '' &&
+        navBg !== shellBg &&
+        navBorder !== '' &&
         context !== null &&
         context.classList.contains('collapsed') === false &&
         ctxCards.some((name) => name.indexOf('系统状态') !== -1) &&
@@ -3911,6 +4070,99 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
         count('[data-caption-btn="minimize"]') > 0 &&
         count('[data-caption-btn="close"]') > 0 &&
         count('[data-field="chat.mic"]') === 0,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/** 记忆库独立窗口：双栏结构、窗口按钮与空态都在，且列表 / 预览没有横向互压。 */
+export const MEMORY_WINDOW_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    for (let attempt = 0; attempt < 20 && count('.note-row') === 0; attempt += 1) {
+      await wait(100)
+    }
+    for (let attempt = 0; attempt < 20 && count('.note-md') === 0; attempt += 1) {
+      await wait(100)
+    }
+    const shell = document.querySelector('.memory')
+    const head = document.querySelector('.memory-head')
+    const list = document.querySelector('.note-list')
+    const detail = document.querySelector('.note-detail')
+    const listRect = list === null ? null : list.getBoundingClientRect()
+    const detailRect = detail === null ? null : detail.getBoundingClientRect()
+    const noOverlap =
+      listRect !== null &&
+      detailRect !== null &&
+      listRect.width > 0 &&
+      detailRect.width > 0 &&
+      listRect.right <= detailRect.left + 1
+    return {
+      shell: shell !== null,
+      head: head !== null,
+      list: list !== null,
+      detail: detail !== null,
+      rows: count('.note-row'),
+      formatGroups: count('.format-group'),
+      dateGroups: count('.date-group'),
+      markdown: count('.note-md'),
+      captionMinimize: count('[data-caption-btn="minimize"]'),
+      captionMaximize: count('[data-caption-btn="maximize"]'),
+      captionClose: count('[data-caption-btn="close"]'),
+      empty: count('.empty') > 0,
+      noOverlap,
+      pass:
+        shell !== null &&
+        head !== null &&
+        list !== null &&
+        detail !== null &&
+        count('.note-row') >= 1 &&
+        count('.format-group') >= 1 &&
+        count('.date-group') >= 1 &&
+        count('.note-md') >= 1 &&
+        count('[data-caption-btn="minimize"]') === 1 &&
+        count('[data-caption-btn="maximize"]') === 1 &&
+        count('[data-caption-btn="close"]') === 1 &&
+        count('.note-row') >= 2 &&
+        count('.format-group') >= 2 &&
+        count('.date-group') >= 2 &&
+        noOverlap,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+export const SETTINGS_AWARENESS_RECORDS_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const more = document.querySelector('[data-field="fileAwareness.recent-more"]')
+    if (more === null) return { ok: false, reason: '查看更多按钮未出现' }
+    more.click()
+    await wait(250)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+export const SETTINGS_AWARENESS_RECORDS_CHECK = `(() => {
+  try {
+    const count = (selector) => document.querySelectorAll(selector).length
+    const modal = document.querySelector('[data-field="fileAwareness.records-modal"]')
+    const summaryRows = count('[data-field="fileAwareness.recent-list"] .record')
+    const modalRows = modal === null ? 0 : modal.querySelectorAll('.record').length
+    const close = document.querySelector('[data-field="fileAwareness.records-modal-close"]')
+    if (close !== null) close.click()
+    return {
+      more: count('[data-field="fileAwareness.recent-more"]'),
+      summaryRows,
+      modal: modal !== null,
+      modalRows,
+      closedAfter: document.querySelector('[data-field="fileAwareness.records-modal"]') === null,
+      pass: summaryRows === 5 && modal !== null && modalRows > 5,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -10556,7 +10808,7 @@ export function parseCaptureTokens(value: string | undefined): string[] {
 /**
  * 按窗口名（`AURORA_CAPTURE_WINDOWS`）与场景文件名（`AURORA_CAPTURE_ONLY`）过滤截图清单。
  *
- * 两级过滤各管一件事：窗口名只有四个（edge-bar / chat / settings / onboarding），
+ * 两级过滤各管一件事：窗口名只有五个（edge-bar / chat / settings / memory / onboarding），
  * 粗到没法只跑"会话三分那一张"；`only` 按 `file` 做**子串**匹配 —— 写 `session-groups`
  * 或 `chat-session-groups.png` 都能命中，它才是把一轮五六十张收敛成"改到哪张跑哪张"的那级。
  *

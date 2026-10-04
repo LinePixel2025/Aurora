@@ -16,6 +16,12 @@ export interface AwarenessSuggestionPayload {
   headline: string
   body: string
   confidence: number
+  action: AwarenessAgentAction | null
+}
+
+export interface AwarenessAgentAction {
+  label: string
+  prompt: string
 }
 
 export interface AwarenessAnalysis {
@@ -267,6 +273,21 @@ export function parseAwarenessAnalysis(raw: string): AwarenessAnalysis | undefin
   const body = suggestionRaw === null ? '' : stringValue(suggestionRaw['body'], 600)
   const suggestionConfidence =
     suggestionRaw === null ? 0 : Number(suggestionRaw['confidence'] ?? 0.7)
+  const actionRaw =
+    suggestionRaw !== null &&
+    typeof suggestionRaw['action'] === 'object' &&
+    suggestionRaw['action'] !== null
+      ? (suggestionRaw['action'] as Record<string, unknown>)
+      : null
+  const actionLabel = actionRaw === null ? '' : stringValue(actionRaw['label'], 40)
+  const actionPrompt = actionRaw === null ? '' : stringValue(actionRaw['prompt'], 2_000)
+  const action =
+    actionLabel === '' || actionPrompt === ''
+      ? null
+      : {
+          label: actionLabel,
+          prompt: actionPrompt,
+        }
   const suggestion =
     headline === '' || body === ''
       ? null
@@ -276,6 +297,7 @@ export function parseAwarenessAnalysis(raw: string): AwarenessAnalysis | undefin
           confidence: Number.isFinite(suggestionConfidence)
             ? Math.min(1, Math.max(0, suggestionConfidence))
             : 0.7,
+          action,
         }
 
   const title = stringValue(record['title'], 120)

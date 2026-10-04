@@ -82,11 +82,29 @@ describe('file-awareness-note', () => {
 
   it('解析严格 JSON，并从代码围栏外仍可提取对象', () => {
     const parsed = parseAwarenessAnalysis(`\`\`\`json
-{"title":"数学","summary":"摘要","topics":["方程"],"keyPoints":["根"],"relationships":[{"noteId":"n1","relation":"同章","confidence":0.9}],"changes":[],"tags":["数学"],"suggestion":{"headline":"有后续练习","body":"可以继续整理","confidence":0.8}}
+{"title":"数学","summary":"摘要","topics":["方程"],"keyPoints":["根"],"relationships":[{"noteId":"n1","relation":"同章","confidence":0.9}],"changes":[],"tags":["数学"],"suggestion":{"headline":"有后续练习","body":"可以继续整理","confidence":0.8,"action":{"label":"整理练习","prompt":"请把这份资料里的练习整理成待办清单。"}}}
 \`\`\``)
     expect(parsed?.relationships[0]?.noteId).toBe('n1')
     expect(parsed?.suggestion?.headline).toBe('有后续练习')
+    expect(parsed?.suggestion?.action?.label).toBe('整理练习')
     expect(parseAwarenessAnalysis('not json')).toBeUndefined()
+  })
+
+  it('建议 action 不完整时降级为不可执行，不影响建议正文', () => {
+    const parsed = parseAwarenessAnalysis(
+      JSON.stringify({
+        title: '数学',
+        summary: '摘要',
+        suggestion: {
+          headline: '有后续练习',
+          body: '可以继续整理',
+          confidence: 0.8,
+          action: { label: '', prompt: '执行操作' },
+        },
+      }),
+    )
+    expect(parsed?.suggestion?.headline).toBe('有后续练习')
+    expect(parsed?.suggestion?.action).toBeNull()
   })
 
   it('相关性评分优先同文件、同目录与共享标签', () => {

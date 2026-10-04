@@ -18,10 +18,25 @@ export interface ExtractResult {
   evidenceChars: number
   /** 提取过程中的告警（如解析器报错后退化） */
   warnings: string[]
+  /** `docx/pptx` 等 OOXML 内嵌、可交给视觉模型分析的图片（已在上限内）。 */
+  documentImages: ExtractedDocumentImage[]
+}
+
+export interface ExtractedDocumentImage {
+  name: string
+  mimeType: string
+  extension: string
+  dataBase64: string
+  altText?: string
 }
 
 /** 证据上限 8KB（docs/05 §3.2「证据大小上限 8KB，控制成本与耗时」） */
 export const EVIDENCE_LIMIT_BYTES = 8 * 1024
+
+/** 单次文件自感知分析最多送入模型的图片数 / 单张与合计原始字节上限。 */
+export const MAX_DOCUMENT_IMAGES = 8
+export const MAX_DOCUMENT_IMAGE_BYTES = 8 * 1024 * 1024
+export const MAX_DOCUMENT_IMAGE_TOTAL_BYTES = 24 * 1024 * 1024
 
 /** 纯文本格式：我们自己读，officeparser 不支持这些扩展名 */
 const PLAIN_TEXT_EXT = new Set([
@@ -71,7 +86,22 @@ export interface ExtractInput {
   /** 读取文件内容（注入以便单测；worker 内传 fs 实现） */
   readFile(path: string): Promise<Buffer>
   /** 调用 officeparser（注入以便单测；worker 内传 require 实现） */
-  parseOffice?(path: string): Promise<{ toText(): string }>
+  parseOffice?(path: string): Promise<OfficeParseResult>
+}
+
+interface OfficeAttachmentLike {
+  type?: string
+  mimeType?: string
+  data?: string
+  name?: string
+  extension?: string
+  altText?: string
+}
+
+interface OfficeParseResult {
+  toText(): string
+  to?(format: 'text'): Promise<{ value: string } | string>
+  attachments?: OfficeAttachmentLike[]
 }
 
 export async function extract(input: ExtractInput): Promise<ExtractResult> {
@@ -147,12 +177,17 @@ export async function extract(input: ExtractInput): Promise<ExtractResult> {
     }
     try {
       const parsed = await input.parseOffice(path)
-      const text = normalizeWhitespace(parsed.toText())
-      if (text.trim() === '') {
+      const text = normalizeWhitespace(await officeTextOf(parsed))
+      const collected = collectDocumentImages(parsed.attachments ?? [], warnings)
+      const imageSection = renderDocumentImageEvidence(collected)
+      if (text.trim() === '' && collected.images.length === 0 && collected.total === 0) {
         warnings.push('解析结果为空，降级为文件名证据')
         return finalize('document', header, warnings)
       }
-      return finalize('document', `${header}\n\n正文：\n${text}`, warnings)
+      const body: string[] = [header]
+      if (text.trim() !== '') body.push('', '正文：', text)
+      if (imageSection !== '') body.push('', imageSection)
+      return finalize('document', body.join('\n'), warnings, collected.images)
     } catch (error) {
       warnings.push(`解析失败，降级为文件名证据：${describe(error)}`)
       return finalize('document', header, warnings)
@@ -164,14 +199,123 @@ export async function extract(input: ExtractInput): Promise<ExtractResult> {
 }
 
 /** 拼装结果并按 8KB 上限做 head/tail 截断。 */
-function finalize(kind: EvidenceKind, evidence: string, warnings: string[]): ExtractResult {
+function finalize(
+  kind: EvidenceKind,
+  evidence: string,
+  warnings: string[],
+  documentImages: ExtractedDocumentImage[] = [],
+): ExtractResult {
   const evidenceChars = evidence.length
   return {
     kind,
     evidence: truncateEvidence(evidence, EVIDENCE_LIMIT_BYTES),
     evidenceChars,
     warnings,
+    documentImages,
   }
+}
+
+async function officeTextOf(parsed: OfficeParseResult): Promise<string> {
+  if (parsed.to !== undefined) {
+    const converted = await parsed.to('text')
+    if (typeof converted === 'string') return converted
+    if (typeof converted.value === 'string') return converted.value
+  }
+  return parsed.toText()
+}
+
+const DOCUMENT_IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/bmp': 'bmp',
+}
+
+function collectDocumentImages(
+  attachments: readonly OfficeAttachmentLike[],
+  warnings: string[],
+): {
+  total: number
+  images: ExtractedDocumentImage[]
+  lines: string[]
+} {
+  const imageAttachments = attachments.filter((item) => {
+    const mime = (item.mimeType ?? '').toLowerCase()
+    return item.type === 'image' || mime.startsWith('image/')
+  })
+  const images: ExtractedDocumentImage[] = []
+  const lines: string[] = []
+  let totalBytes = 0
+
+  for (const [index, attachment] of imageAttachments.entries()) {
+    const name = (attachment.name ?? `image-${index + 1}`).trim() || `image-${index + 1}`
+    const mime = (attachment.mimeType ?? '').toLowerCase()
+    const extension = DOCUMENT_IMAGE_EXTENSIONS[mime]
+    const alt = (attachment.altText ?? '').trim()
+    const label = alt === '' ? name : `${name}（${alt}）`
+    const dataBase64 = normalizeBase64(attachment.data ?? '')
+
+    if (extension === undefined) {
+      const reason = `不支持视觉模型输入（${mime || attachment.extension || '未知格式'}）`
+      lines.push(`- ${label}：未读取（${reason}）`)
+      warnings.push(`内嵌图片 ${name} ${reason}`)
+      continue
+    }
+    if (dataBase64 === '') {
+      lines.push(`- ${label}：未读取（图片数据为空或缺失）`)
+      warnings.push(`内嵌图片 ${name} 数据为空，已跳过`)
+      continue
+    }
+    const bytes = base64ByteLength(dataBase64)
+    if (bytes > MAX_DOCUMENT_IMAGE_BYTES) {
+      lines.push(`- ${label}：未读取（超过 8 MiB）`)
+      warnings.push(`内嵌图片 ${name} 超过 8 MiB，已跳过`)
+      continue
+    }
+    if (images.length >= MAX_DOCUMENT_IMAGES) {
+      lines.push(`- ${label}：未读取（单次最多分析 ${MAX_DOCUMENT_IMAGES} 张）`)
+      warnings.push(`内嵌图片 ${name} 因数量上限未读取`)
+      continue
+    }
+    if (totalBytes + bytes > MAX_DOCUMENT_IMAGE_TOTAL_BYTES) {
+      lines.push(`- ${label}：未读取（本次图片总量超过 24 MiB）`)
+      warnings.push(`内嵌图片 ${name} 因总量上限未读取`)
+      continue
+    }
+    totalBytes += bytes
+    images.push({
+      name,
+      mimeType: mime,
+      extension,
+      dataBase64,
+      ...(alt === '' ? {} : { altText: alt }),
+    })
+    lines.push(`- ${label}：已提取，随本次请求交给视觉模型`)
+  }
+
+  return { total: imageAttachments.length, images, lines }
+}
+
+function renderDocumentImageEvidence(input: {
+  total: number
+  images: ExtractedDocumentImage[]
+  lines: string[]
+}): string {
+  if (input.total === 0) return ''
+  return [`内嵌图片：${input.total} 张，本次读取 ${input.images.length} 张`, ...input.lines].join(
+    '\n',
+  )
+}
+
+function normalizeBase64(value: string): string {
+  const comma = value.indexOf(',')
+  return (comma >= 0 ? value.slice(comma + 1) : value).replace(/\s+/g, '')
+}
+
+function base64ByteLength(value: string): number {
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor((value.length * 3) / 4) - padding)
 }
 
 /**

@@ -147,6 +147,9 @@ import {
   ASK_USER_CAPTURE_QUESTION,
   captureWindows,
   CHAT_TRACE_FOLD_CHECK,
+  MEMORY_WINDOW_CHECK,
+  SETTINGS_AWARENESS_RECORDS_ACT,
+  SETTINGS_AWARENESS_RECORDS_CHECK,
   chatStreamAct,
   chatStreamBurstAct,
   chatStreamBurstCheck,
@@ -157,6 +160,7 @@ import {
   parseCaptureTokens,
   registerAskUserSpawner,
   seedChatTtsHistory,
+  seedMemoryFixture,
   seedJobFixture,
   seedClassIslandFixture,
   seedAutomationFixture,
@@ -1379,12 +1383,19 @@ async function bootstrap(): Promise<void> {
         serviceName: 'aurora-awareness-extract',
       }) as unknown as ExtractWorkerChild,
     logger: logger.child('awareness-extract'),
+    // 内嵌图片提取比纯正文多一轮附件解码；超时仍按期降级，不拖住后台队列。
+    timeoutMs: 30_000,
   })
   fileAwareness = new FileAwarenessService({
     userData,
     settings: () => settings!.get(),
     logger: logger.child('file-awareness'),
-    extract: (input) => awarenessExtractPool!.extract({ ...input, hashContent: true }),
+    extract: (input) =>
+      awarenessExtractPool!.extract({
+        ...input,
+        hashContent: true,
+        extractDocumentImages: true,
+      }),
     analyze: (input) => fileAwarenessAnalyzer!.analyze(input),
     providerReady: () => {
       const llm = settings!.snapshot().llm
@@ -1396,6 +1407,7 @@ async function bootstrap(): Promise<void> {
         settings!.getSecret(`llm.providers.${llm.active}.apiKey`) !== ''
       )
     },
+    visionReady: () => visionEnabled(settings!.get()),
     canNotify: () => {
       const current = settings!.get()
       return (
@@ -2331,6 +2343,24 @@ async function runCapture(dir: string): Promise<void> {
       chatStreamTarget,
       chatTraceFoldTarget,
       chatBurstTarget,
+      // 记忆库独立窗口放在性能场景之后：多一个可见渲染窗口会污染 burst 的帧间隔读数。
+      {
+        name: 'memory',
+        file: 'memory-window.png',
+        prepare: async () => {
+          await seedMemoryFixture(app.getPath('userData'))
+          await fileAwareness?.init()
+          await manager.reload('memory', {})
+        },
+        check: MEMORY_WINDOW_CHECK,
+      },
+      {
+        name: 'settings',
+        file: 'settings-awareness-records.png',
+        query: { page: 'awareness' },
+        act: SETTINGS_AWARENESS_RECORDS_ACT,
+        check: SETTINGS_AWARENESS_RECORDS_CHECK,
+      },
     ],
     process.env['AURORA_CAPTURE_WINDOWS'],
     captureOnly,

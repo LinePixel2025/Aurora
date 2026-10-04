@@ -10,7 +10,7 @@
  *
  * 纯逻辑注入：`fork` 由调用方传入，因此本模块可在单测里用假子进程完整覆盖。
  */
-import type { EvidenceKind } from './extract.js'
+import type { EvidenceKind, ExtractedDocumentImage } from './extract.js'
 
 export interface ExtractPoolRequest {
   path: string
@@ -18,6 +18,8 @@ export interface ExtractPoolRequest {
   sizeBytes: number
   /** 文件自感知需要内容哈希；分类管线保持缺省，避免额外全量读盘。 */
   hashContent?: boolean
+  /** 文件自感知需要内嵌图片；分类管线保持缺省，避免额外解码与内存峰值。 */
+  extractDocumentImages?: boolean
 }
 
 export interface ExtractPoolResult {
@@ -25,6 +27,8 @@ export interface ExtractPoolResult {
   evidence: string
   evidenceChars: number
   warnings: string[]
+  /** 旧调用方 / 降级夹具可省略；文件自感知按空数组处理。 */
+  documentImages?: ExtractedDocumentImage[]
   sourceHash?: string
   /** 是否走了降级路径（超时 / 崩溃 / 解析器失败） */
   degraded: boolean
@@ -134,6 +138,7 @@ export class ExtractPool {
           ext: request.ext,
           sizeBytes: request.sizeBytes,
           ...(request.hashContent === true ? { hashContent: true } : {}),
+          ...(request.extractDocumentImages === true ? { extractDocumentImages: true } : {}),
         })
       } catch (error) {
         clearTimeout(timer)
@@ -189,6 +194,7 @@ export class ExtractPool {
             evidence?: string
             evidenceChars?: number
             warnings?: string[]
+            documentImages?: ExtractedDocumentImage[]
             sourceHash?: string
             error?: string
           }
@@ -205,6 +211,9 @@ export class ExtractPool {
           evidence: payload.evidence ?? '',
           evidenceChars: payload.evidenceChars ?? (payload.evidence ?? '').length,
           warnings: payload.warnings ?? [],
+          ...(payload.documentImages === undefined
+            ? {}
+            : { documentImages: payload.documentImages }),
           ...(payload.sourceHash === undefined ? {} : { sourceHash: payload.sourceHash }),
           degraded: (payload.warnings ?? []).length > 0,
         })
@@ -249,6 +258,7 @@ function degraded(request: ExtractPoolRequest, reason: string): ExtractPoolResul
     evidence: `文件名：${name}\n大小：${request.sizeBytes} B\n（内容提取降级：${reason}）`,
     evidenceChars: 0,
     warnings: [reason],
+    documentImages: [],
     degraded: true,
   }
 }

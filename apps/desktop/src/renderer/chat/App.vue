@@ -2096,8 +2096,8 @@ async function markGuideDone(): Promise<void> {
    */
   width: var(--nav-w, 240px);
   position: relative;
-  background: var(--fill-1);
-  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-raised);
+  border-right: 1px solid var(--border-strong);
   /* 左栏固定项已整体收进 SessionNav：单行网格，SessionNav 占满整栏（含底部固定项） */
   display: grid;
   grid-template-rows: minmax(0, 1fr);
@@ -2109,8 +2109,8 @@ async function markGuideDone(): Promise<void> {
   /** 宽度可拖拽（2026-10-03）：内联 `--ctx-w` 同样是**实际生效宽度**（`ctxEffWidth`）。
    *  JobPanel / ContextPanel 读同一个变量。 */
   width: var(--ctx-w, 384px);
-  background: var(--fill-1);
-  border-left: 1px solid var(--border-subtle);
+  background: var(--bg-raised);
+  border-left: 1px solid var(--border-strong);
   position: relative;
   /**
    * 两行网格：tab 条（auto）+ 功能窗格（占满剩余高度）。

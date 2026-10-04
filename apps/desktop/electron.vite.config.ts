@@ -9,6 +9,7 @@ const windowEntries = {
   'edge-bar': r('src/renderer/edge-bar/index.html'),
   chat: r('src/renderer/chat/index.html'),
   settings: r('src/renderer/settings/index.html'),
+  memory: r('src/renderer/memory/index.html'),
   onboarding: r('src/renderer/onboarding/index.html'),
 }
 

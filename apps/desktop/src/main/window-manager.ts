@@ -7,7 +7,7 @@
  * - 位置 / 尺寸写入 `general.windowState`，跨启动保留。
  */
 import { join } from 'node:path'
-import { BrowserWindow, nativeTheme, screen, type Display } from 'electron'
+import { BrowserWindow, nativeTheme, screen, shell, type Display } from 'electron'
 import {
   IPC,
   WINDOW_NAMES,
@@ -27,6 +27,7 @@ import {
   resizeEdgeBarKeepingAnchor,
   type EdgeBarSide,
 } from './edge-bar-geometry.js'
+import { zoomActionForInput } from './zoom-shortcuts.js'
 
 export interface WindowManagerOptions {
   settings: SettingsStore
@@ -112,6 +113,20 @@ const SPECS: Record<WindowName, WindowSpec> = {
     maximizable: true,
     place: 'center',
   },
+  memory: {
+    width: 1040,
+    height: 720,
+    minWidth: 760,
+    minHeight: 520,
+    resizable: true,
+    transparent: false,
+    alwaysOnTop: false,
+    skipTaskbar: false,
+    focusable: true,
+    minimizable: true,
+    maximizable: true,
+    place: 'center',
+  },
   onboarding: {
     width: 720,
     height: 560,
@@ -169,6 +184,8 @@ export class WindowManager {
   private readonly options: WindowManagerOptions
   /** 各窗口当前这次加载的 in-flight promise（`whenLoaded()` 用；窗口销毁时清理） */
   private readonly loadTasks = new Map<WindowName, Promise<void>>()
+  /** 每个 webContents 当前的缩放倍率；刷新 / 重载后重新应用。 */
+  private readonly zoomFactors = new Map<number, number>()
   /** 提示条是否处于展开（面板）态；默认收起为 8px 竖条（docs/07 §2.2） */
   private edgeBarExpanded = false
   private themeListenerActive = true
@@ -183,7 +200,7 @@ export class WindowManager {
   private readonly geometryBounds = new Map<WindowName, WindowBounds>()
   private readonly syncWindowBackgrounds = (): void => {
     const color = windowBackgroundColor()
-    for (const name of ['chat', 'settings', 'onboarding'] as const) {
+    for (const name of ['chat', 'settings', 'memory', 'onboarding'] as const) {
       const win = this.windows.get(name)
       if (win && !win.isDestroyed()) win.setBackgroundColor(color)
     }
@@ -301,6 +318,11 @@ export class WindowManager {
       maximizable: spec.maximizable,
       fullscreenable: false,
       backgroundColor: name === 'edge-bar' ? '#00000000' : windowBackgroundColor(),
+      // Windows 的桌面模糊由系统材质提供；透明窗口里的 CSS backdrop-filter 只能模糊
+      // 页面自身内容，无法模糊桌面。失败时保留 CSS `.glass` 回退。
+      ...(name === 'edge-bar' && process.platform === 'win32'
+        ? { backgroundMaterial: 'acrylic' as const }
+        : {}),
       title: titleFor(name),
       webPreferences: {
         preload: this.options.preloadPath,
@@ -317,6 +339,15 @@ export class WindowManager {
     })
 
     win.setMenuBarVisibility(false)
+    if (name === 'edge-bar' && process.platform === 'win32') {
+      try {
+        win.setBackgroundMaterial('acrylic')
+      } catch (error) {
+        this.options.logger.debug('提示条毛玻璃材质不可用，回退 CSS 玻璃', {
+          error: String(error),
+        })
+      }
+    }
     // 提示条透明度取自设置（docs/08 §1）；窗口创建时即应用，避免一次可见的跳变
     if (name === 'edge-bar') {
       this.applyEdgeBarOpacity(this.options.settings.get().general.edgeBar.opacity)
@@ -376,6 +407,25 @@ export class WindowManager {
         })
       })
     }
+    if (name === 'memory') {
+      // 记忆库里的 Markdown 链接不接管当前窗口：http(s) 交给系统浏览器，其余一律拒绝。
+      const openExternal = (url: string): void => {
+        if (!/^https?:\/\//i.test(url)) return
+        void shell.openExternal(url).catch((error: unknown) => {
+          this.options.logger.warn('打开记忆库外链失败', { url, error: String(error) })
+        })
+      }
+      win.webContents.setWindowOpenHandler(({ url }) => {
+        openExternal(url)
+        return { action: 'deny' }
+      })
+      win.webContents.on('will-navigate', (event, url) => {
+        const current = win.webContents.getURL()
+        if (url === current) return
+        event.preventDefault()
+        openExternal(url)
+      })
+    }
     // 几何事件走**去抖 + 短路**入口（P2-08）：拖动期间不再每帧全量 mutate / 广播一次
     win.on('moved', () => this.scheduleGeometryPersist(name, win))
     win.on('resized', () => this.scheduleGeometryPersist(name, win))
@@ -396,6 +446,7 @@ export class WindowManager {
     })
 
     void this.trackLoad(name, win, query)
+    this.installZoomShortcuts(win)
     this.windows.set(name, win)
     this.options.logger.debug('窗口已创建', { window: name, bounds })
     return win
@@ -637,6 +688,38 @@ export class WindowManager {
     }
   }
 
+  /**
+   * 自家窗口的缩放快捷键。
+   *
+   * Electron 默认菜单被隐藏后，`Ctrl + 加号` 在不同键盘布局下不一定走 Chromium 内置动作；
+   * 这里统一接管 `Ctrl +/-/0`，并在刷新后恢复当前倍率。
+   */
+  private installZoomShortcuts(win: BrowserWindow): void {
+    const contents = win.webContents
+    const contentsId = contents.id
+    contents.on('before-input-event', (event, input) => {
+      const action = zoomActionForInput(input)
+      if (action === undefined) return
+      event.preventDefault()
+      const current = contents.getZoomFactor()
+      const next = action === 'reset' ? 1 : clamp(current + (action === 'in' ? 0.1 : -0.1), 0.5, 3)
+      contents.setZoomFactor(next)
+      this.zoomFactors.set(contentsId, next)
+      this.options.logger.debug('窗口缩放快捷键', {
+        window: win.getTitle(),
+        action,
+        factor: next,
+      })
+    })
+    contents.on('did-finish-load', () => {
+      const factor = this.zoomFactors.get(contentsId)
+      if (factor !== undefined && factor !== 1) contents.setZoomFactor(factor)
+    })
+    contents.once('destroyed', () => {
+      this.zoomFactors.delete(contentsId)
+    })
+  }
+
   /** 复位提示条折叠标记并同步收缩真实窗口（窗口不存在时只清标记）。 */
   private collapseEdgeBar(): void {
     if (!this.edgeBarExpanded) return
@@ -845,6 +928,7 @@ function titleFor(name: WindowName): string {
     'edge-bar': 'Aurora 提示条',
     chat: 'Aurora 对话',
     settings: 'Aurora 设置',
+    memory: 'Aurora 记忆库',
     onboarding: 'Aurora 首次引导',
   }
   return titles[name]

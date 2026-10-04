@@ -248,8 +248,9 @@
 ```
 
 - 字段说明：`llm.providers` 支持多组模型配置，`llm.active` 指定默认；`modes.classroom.subjects` 即科目 → 文件夹映射（见 05 §3）；`schedule.provider` 为 `manual | classisland`（见 05 §3.4）。
-- `general.windowState` 的 key 集合即 `WINDOW_NAMES`：`edge-bar` / `chat` / `settings` / `onboarding`
-  （v4 起移除 `service-dock`、v6 起移除 `mini-chat`，两个窗口均已删除）。
+- `general.windowState` 的 key 集合即 `WINDOW_NAMES`：`edge-bar` / `chat` / `settings` / `memory` / `onboarding`
+  （v4 起移除 `service-dock`、v6 起移除 `mini-chat`，两个窗口均已删除；`memory` 为记忆库
+  独立窗口，仅扩枚举不推进 `CONFIG_VERSION` —— 旧配置没有该键时保持默认不可见）。
 - `general.language` 是**未生效的死字段**（无 i18n 消费方，见 §6.1 门控矩阵），保留仅为避免再动一次配置版本。
 - `mcp.lazyConnect`：连接策略（见 06 §7）。`false`（默认）= 启动即连；`true` = 首次使用某个 MCP 工具时才连接。
 - MCP 环境变量的**变量名**由 `envEnc` 的键表达，设置页据此展示"已配置的变量名"，
@@ -545,6 +546,7 @@
   `suggestionsEnabled` 控制提示条气泡，`dailyAnalysisLimit`（1–200，默认 20）和
   `maxFileMb`（1–500，默认 100）控制后台预算。整组在 `SETTINGS_READONLY_PREFIXES` 里：
   它同时改变文件读取范围、数据出网与后台任务，AI 不得自行开启或放宽。
+  内嵌图片是否真正读取由当前全局模型的 `vision` 决定；运行状态会如实显示「已开启 / 仅分析文字」。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -847,7 +849,8 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 
 ## 6. 其他设置页
 
-- **常规**（`general.*`）：开机自启、全局快捷键、提示条（显示 / 透明度 / 独立勿扰时段）均已生效。
+- **常规**（`general.*`）：开机自启、全局快捷键、提示条（显示 / 额外透明度 / 独立勿扰时段）均已生效；
+  提示条本体固定使用毛玻璃材质，透明度设置只叠加整窗淡化，不替代材质。
   **「启动」区组新增「以管理员身份运行」开关**（v20，`data-field="general.requireAdmin"`，
   出厂开）：启动时未提权会弹 UAC 重新拉起（理由与四条边界见 §1 的 `general.requireAdmin`），
   提示文案已写明「改动重启后生效」。

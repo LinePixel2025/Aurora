@@ -61,12 +61,14 @@ describe('窗口可见性状态机（docs/07 §3）', () => {
     state = showWindow(state, 'chat')
     state = showWindow(state, 'settings')
     state = showWindow(state, 'onboarding')
+    state = showWindow(state, 'memory')
     expect(isVisible(state, 'chat')).toBe(true)
     expect(state.primary).toBe('chat')
     expect(isPrimaryWindow('chat')).toBe(true)
     expect(isPrimaryWindow('settings')).toBe(false)
+    expect(isPrimaryWindow('memory')).toBe(false)
     expect(isPrimaryWindow('edge-bar')).toBe(false)
-    expect(listVisible(state)).toEqual(['chat', 'settings', 'onboarding'])
+    expect(listVisible(state)).toEqual(['chat', 'settings', 'memory', 'onboarding'])
   })
 
   it('状态更新不可变（不修改入参）', () => {

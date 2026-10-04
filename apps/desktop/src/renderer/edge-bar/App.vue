@@ -69,12 +69,16 @@ function clearTimers(): void {
 }
 
 const suggestion = ref<FileAwarenessSuggestion | null>(null)
+const suggestionBusy = ref(false)
+const suggestionError = ref('')
 let offAwarenessSuggestion: (() => void) | null = null
 
 function clearSuggestion(): void {
   clearTimeout(suggestionTimer)
   suggestionTimer = undefined
   suggestion.value = null
+  suggestionBusy.value = false
+  suggestionError.value = ''
 }
 
 function armSuggestionCollapse(): void {
@@ -88,6 +92,8 @@ function armSuggestionCollapse(): void {
 
 function onAwarenessSuggestion(next: FileAwarenessSuggestion): void {
   suggestion.value = next
+  suggestionError.value = ''
+  suggestionBusy.value = false
   clearTimeout(collapseTimer)
   collapseTimer = undefined
   clearTimeout(shrinkTimer)
@@ -95,6 +101,24 @@ function onAwarenessSuggestion(next: FileAwarenessSuggestion): void {
   void windowStore.setEdgeBarExpanded(true)
   expanded.value = true
   armSuggestionCollapse()
+}
+
+async function executeSuggestion(): Promise<void> {
+  const current = suggestion.value
+  if (current === null || current.action === undefined || suggestionBusy.value) return
+  suggestionBusy.value = true
+  suggestionError.value = ''
+  try {
+    const result = await window.aurora.awareness.execute({ suggestionId: current.id })
+    if (!result.ok) {
+      suggestionError.value = result.message
+      return
+    }
+    clearSuggestion()
+    collapseNow()
+  } finally {
+    suggestionBusy.value = false
+  }
 }
 
 async function viewSuggestion(): Promise<void> {
@@ -415,7 +439,17 @@ onUnmounted(() => {
             </div>
             <strong class="suggestion-title">{{ suggestion.headline }}</strong>
             <p class="suggestion-body">{{ suggestion.body }}</p>
+            <p v-if="suggestionError !== ''" class="suggestion-error">{{ suggestionError }}</p>
             <div class="suggestion-actions">
+              <button
+                v-if="suggestion.action"
+                type="button"
+                class="suggestion-action primary"
+                :disabled="suggestionBusy"
+                @click="executeSuggestion"
+              >
+                {{ suggestionBusy ? '正在创建…' : suggestion.action.label }}
+              </button>
               <button type="button" class="suggestion-action" @click="viewSuggestion">
                 查看分析
               </button>
@@ -588,7 +622,9 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  background: var(--aurora-gradient);
+  background: color-mix(in srgb, var(--aurora-gradient) 72%, transparent);
+  backdrop-filter: blur(var(--blur-thin)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--blur-thin)) saturate(180%);
   border-radius: 6px 0 0 6px;
   box-shadow: var(--shadow-1);
   /* 常驻元素：静置时压暗一点，别在桌面右缘挂着一条刺眼的亮条 */
@@ -638,8 +674,20 @@ onUnmounted(() => {
   gap: var(--space-2);
   padding: var(--space-3);
   border-radius: var(--radius-lg) 0 0 var(--radius-lg);
-  box-shadow: var(--shadow-3);
+  border-color: color-mix(in srgb, var(--border-subtle) 72%, transparent);
+  background: color-mix(in srgb, var(--bg-glass) 52%, transparent);
+  backdrop-filter: blur(var(--blur-thick)) saturate(180%) brightness(1.04);
+  -webkit-backdrop-filter: blur(var(--blur-thick)) saturate(180%) brightness(1.04);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--shadow-3);
   overflow: hidden;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .panel {
+    background: var(--glass-fallback);
+  }
 }
 
 /* 品牌识别元素：面板顶部 1px 极光高光（只此一处，不满屏渐变） */
@@ -718,8 +766,31 @@ onUnmounted(() => {
   color: var(--text-muted);
 }
 
+.suggestion-action.primary {
+  border-color: transparent;
+  background: var(--aurora-blue);
+  color: var(--on-accent);
+}
+
+.suggestion-action:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .suggestion-action:hover {
   background: var(--fill-3);
+}
+
+.suggestion-action.primary:hover:not(:disabled) {
+  background: var(--aurora-blue);
+  filter: brightness(1.08);
+}
+
+.suggestion-error {
+  margin: 0 0 var(--space-2);
+  color: var(--error-text);
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
 }
 
 .card-head {

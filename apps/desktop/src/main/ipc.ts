@@ -16,6 +16,7 @@ import {
   type SnapshotPort,
 } from '@aurora/agent-core'
 import { resolveWorkspaceOpenTarget } from './tools/workspace-target.js'
+import { executeFileAwarenessSuggestion } from './file-awareness-execute.js'
 import { buildFileList } from './file-list.js'
 import {
   buildAttachmentPreview,
@@ -51,7 +52,9 @@ import {
   type FilePreviewRequest,
   type FilePreviewResult,
   type FileAwarenessAnalyzeRequest,
+  type FileAwarenessExecution,
   type FileAwarenessListRequest,
+  type FileAwarenessNoteContent,
   type FileAwarenessNoteRequest,
   type FileAwarenessSuggestionAction,
   type TerminalCreateRequest,
@@ -1098,6 +1101,19 @@ export function registerIpc(deps: DesktopDeps): () => void {
     if (deps.awareness === undefined) return ok([])
     return ok(deps.awareness.notes(request.limit))
   })
+  handle<FileAwarenessNoteContent>(
+    IPC.awareness.readNote,
+    async (request: FileAwarenessNoteRequest) => {
+      if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
+      const noteId = typeof request?.noteId === 'string' ? request.noteId.trim() : ''
+      if (noteId === '') return err('E_INVALID_ARGUMENT', '缺少笔记 id')
+      try {
+        return ok(await deps.awareness.readNote(noteId))
+      } catch (error) {
+        return err('E_IO', error instanceof Error ? error.message : String(error))
+      }
+    },
+  )
   handle<boolean>(IPC.awareness.analyzeNow, async (request: FileAwarenessAnalyzeRequest) => {
     if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
     if (typeof request?.path !== 'string' || request.path.trim() === '') {
@@ -1112,6 +1128,28 @@ export function registerIpc(deps: DesktopDeps): () => void {
     }
     return ok(deps.awareness.ignoreSuggestion(request.suggestionId))
   })
+  handle<FileAwarenessExecution>(
+    IPC.awareness.execute,
+    (request: FileAwarenessSuggestionAction) => {
+      if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
+      const awareness = deps.awareness
+      return executeFileAwarenessSuggestion(
+        typeof request?.suggestionId === 'string' ? request.suggestionId : '',
+        {
+          suggestion: (id) => awareness.suggestion(id),
+          createSession: () => deps.sessions.createSession({ space: 'agent' }),
+          presentSession: (sessionId) => {
+            // 先打开并切主界面，再发送首条消息；事件即使早到也只会落进新会话历史，
+            // remoteActivate 到达后渲染层会按同一 sessionId 水合出完整轮次。
+            deps.windows.showChat()
+            deps.windows.sendTo('chat', IPC.chat.remoteActivate, { sessionId })
+          },
+          send: (input) => deps.agent.send(input),
+          removeSession: (sessionId) => deps.sessions.remove(sessionId),
+        },
+      )
+    },
+  )
   handle<string>(IPC.awareness.openKnowledge, async () => {
     const dir = deps.awareness?.knowledgeDir().trim() ?? ''
     if (dir === '') return err('E_INVALID_STATE', '尚未配置知识库目录')

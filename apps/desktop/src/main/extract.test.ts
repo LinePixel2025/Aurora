@@ -161,6 +161,44 @@ describe('extract', () => {
     expect(result.evidence).toContain('欧姆定律')
   })
 
+  it('Office 内嵌图片：正文与图片元数据进入证据，图片字节单独返回给视觉分析', async () => {
+    const imageBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nWQAAAAASUVORK5CYII='
+    const result = await extract({
+      path: 'D:\\感知\\物理.pptx',
+      ext: 'pptx',
+      sizeBytes: 100,
+      readFile: readFileOf(''),
+      parseOffice: async () => ({
+        toText: () => '不应走的旧正文接口',
+        to: async () => ({ value: '欧姆定律 电路图' }),
+        attachments: [
+          {
+            type: 'image',
+            mimeType: 'image/png',
+            data: imageBase64,
+            name: '电路图.png',
+            altText: '串联电路',
+          },
+        ],
+      }),
+    })
+    expect(result.kind).toBe('document')
+    expect(result.evidence).toContain('欧姆定律')
+    expect(result.evidence).toContain('内嵌图片：1 张')
+    expect(result.evidence).toContain('串联电路')
+    expect(result.evidence).not.toContain(imageBase64)
+    expect(result.documentImages).toEqual([
+      {
+        name: '电路图.png',
+        mimeType: 'image/png',
+        extension: 'png',
+        dataBase64: imageBase64,
+        altText: '串联电路',
+      },
+    ])
+  })
+
   it('解析器抛错 → 降级为文件名证据且记入告警（绝不抛错）', async () => {
     const result = await extract({
       path: 'D:\\感知\\数学.pdf',

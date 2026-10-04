@@ -1043,6 +1043,8 @@ export interface FileAwarenessStatus {
   watchedDirs: string[]
   includeRecent: boolean
   suggestionsEnabled: boolean
+  /** 当前全局模型是否开启图片输入；关闭时仍分析正文，但不会读取内嵌图片。 */
+  visionEnabled: boolean
   dailyAnalysisLimit: number
   todayAnalyzed: number
   queueDepth: number
@@ -1079,10 +1081,24 @@ export interface FileAwarenessNote {
   title: string
   sourcePath: string
   notePath: string
+  /** 源文件格式（docx / pptx…），记忆库左侧一级分组。 */
+  ext: string
+  /** 首次感知时间；知识库目录按这个日期分层。 */
+  createdAt: string
   updatedAt: string
   sourceAvailable: boolean
   conflict: boolean
   excerpt: string
+}
+
+export interface FileAwarenessNoteContent {
+  noteId: string
+  title: string
+  sourcePath: string
+  notePath: string
+  content: string
+  truncated: boolean
+  conflict: boolean
 }
 
 export interface FileAwarenessSuggestion {
@@ -1094,6 +1110,15 @@ export interface FileAwarenessSuggestion {
   body: string
   createdAt: string
   confidence: number
+  /** 仅当建议可直接转成一次 Agent 任务时存在；由用户点击执行按钮后才真正创建会话。 */
+  action?: FileAwarenessAgentAction
+}
+
+export interface FileAwarenessAgentAction {
+  /** 气泡按钮文案，例如「整理成待办」。 */
+  label: string
+  /** 新 Agent 会话的首条用户消息；必须自包含，不依赖文件自感知后台会话。 */
+  prompt: string
 }
 
 export interface FileAwarenessListRequest {
@@ -1107,6 +1132,10 @@ export interface FileAwarenessAnalyzeRequest {
 
 export interface FileAwarenessSuggestionAction {
   suggestionId: string
+}
+
+export interface FileAwarenessExecution {
+  sessionId: string
 }
 
 export interface FileAwarenessNoteRequest {
@@ -2012,8 +2041,12 @@ export interface AuroraApi {
     status(): Promise<Result<FileAwarenessStatus>>
     records(request?: FileAwarenessListRequest): Promise<Result<FileAwarenessRecord[]>>
     notes(request?: FileAwarenessListRequest): Promise<Result<FileAwarenessNote[]>>
+    /** 读取一篇已登记笔记的 Markdown；只接受 noteId，不接受任意路径。 */
+    readNote(request: FileAwarenessNoteRequest): Promise<Result<FileAwarenessNoteContent>>
     analyzeNow(request: FileAwarenessAnalyzeRequest): Promise<Result<boolean>>
     ignore(request: FileAwarenessSuggestionAction): Promise<Result<boolean>>
+    /** 用建议里的 Agent action 新建会话并发送首条消息；工具权限仍走既有确认链。 */
+    execute(request: FileAwarenessSuggestionAction): Promise<Result<FileAwarenessExecution>>
     openKnowledge(): Promise<Result<string>>
     openNote(request: FileAwarenessNoteRequest): Promise<Result<string>>
     openSource(request: FileAwarenessNoteRequest): Promise<Result<string>>

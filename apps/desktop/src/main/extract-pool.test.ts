@@ -46,8 +46,12 @@ function fakeChild(options: { shape?: 'bare' | 'wrapped' } = {}) {
   }
 }
 
-function requestOf(message: unknown): { id: string; path: string } {
-  return message as { id: string; path: string }
+function requestOf(message: unknown): {
+  id: string
+  path: string
+  extractDocumentImages?: boolean
+} {
+  return message as { id: string; path: string; extractDocumentImages?: boolean }
 }
 
 describe('unwrapChildMessage', () => {
@@ -107,6 +111,38 @@ describe('ExtractPool · 子进程回包', () => {
     fake.reply({ id: sent.id, ok: true, kind: 'text', evidence: 'hi', evidenceChars: 2 })
 
     await expect(promise).resolves.toMatchObject({ kind: 'text', evidence: 'hi', degraded: false })
+  })
+
+  it('文件自感知请求带回内嵌图片数据', async () => {
+    const fake = fakeChild()
+    const pool = new ExtractPool({ fork: () => fake.child, timeoutMs: 5_000 })
+    const promise = pool.extract({
+      path: 'D:\\感知\\课程.pptx',
+      ext: 'pptx',
+      sizeBytes: 10,
+      extractDocumentImages: true,
+    })
+    const sent = requestOf(fake.messages[0])
+    expect(sent.extractDocumentImages).toBe(true)
+    fake.reply({
+      id: sent.id,
+      ok: true,
+      kind: 'document',
+      evidence: '正文',
+      evidenceChars: 2,
+      warnings: [],
+      documentImages: [
+        {
+          name: '图.png',
+          mimeType: 'image/png',
+          extension: 'png',
+          dataBase64: 'AQID',
+        },
+      ],
+    })
+    await expect(promise).resolves.toMatchObject({
+      documentImages: [{ name: '图.png', mimeType: 'image/png', extension: 'png' }],
+    })
   })
 
   it('回包 id 不匹配时忽略（不误解其它请求的结果）', async () => {

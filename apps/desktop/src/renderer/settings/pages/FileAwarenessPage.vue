@@ -5,14 +5,17 @@ import type { FileAwarenessNote, FileAwarenessRecord, FileAwarenessStatus } from
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
-import { useSettingsStore } from '../../shared/stores.js'
+import { useSettingsStore, useWindowStore } from '../../shared/stores.js'
+import FileAwarenessRecordList from '../components/FileAwarenessRecordList.vue'
 
 const settingsStore = useSettingsStore()
+const windowStore = useWindowStore()
 const status = ref<FileAwarenessStatus | null>(null)
 const records = ref<FileAwarenessRecord[]>([])
 const notes = ref<FileAwarenessNote[]>([])
 const error = ref<string | null>(null)
 const message = ref<string | null>(null)
+const recordsOpen = ref(false)
 let offChanged: (() => void) | null = null
 
 const config = computed(() => settingsStore.settings?.fileAwareness ?? null)
@@ -96,6 +99,10 @@ async function openKnowledge(): Promise<void> {
   if (!result.ok) error.value = result.message
 }
 
+async function openMemory(): Promise<void> {
+  await windowStore.show('memory')
+}
+
 async function scanNow(): Promise<void> {
   const result = await window.aurora.awareness.scanNow()
   if (!result.ok) error.value = result.message
@@ -118,29 +125,26 @@ async function analyzeRecord(record: FileAwarenessRecord): Promise<void> {
   else message.value = result.value ? '已加入分析队列' : '该文件不支持内容分析'
 }
 
-async function openNote(note: FileAwarenessNote): Promise<void> {
-  const result = await window.aurora.awareness.openNote({ noteId: note.id })
-  if (!result.ok) error.value = result.message
+function closeRecords(): void {
+  recordsOpen.value = false
 }
 
-async function openSource(note: FileAwarenessNote): Promise<void> {
-  const result = await window.aurora.awareness.openSource({ noteId: note.id })
-  if (!result.ok) error.value = result.message
-}
-
-function formatTime(value: string): string {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || !recordsOpen.value) return
+  event.stopImmediatePropagation()
+  closeRecords()
 }
 
 onMounted(() => {
   void refresh()
   offChanged = window.aurora.awareness.onChanged(() => void refresh())
+  window.addEventListener('keydown', onKeydown, true)
 })
 
 onUnmounted(() => {
   offChanged?.()
   offChanged = null
+  window.removeEventListener('keydown', onKeydown, true)
 })
 </script>
 
@@ -266,7 +270,7 @@ onUnmounted(() => {
       </SettingField>
       <div class="row wrap">
         <AppButton size="sm" @click="scanNow">立即扫描</AppButton>
-        <AppButton size="sm" variant="ghost" @click="openKnowledge">打开知识库</AppButton>
+        <AppButton size="sm" variant="ghost" @click="openKnowledge">打开知识库文件夹</AppButton>
         <AppButton size="sm" variant="ghost" @click="clearHistory">清空历史</AppButton>
       </div>
     </section>
@@ -290,58 +294,75 @@ onUnmounted(() => {
           <dt>笔记冲突</dt>
           <dd>{{ status?.conflictCount ?? 0 }}</dd>
         </div>
+        <div>
+          <dt>图片识别</dt>
+          <dd>{{ status?.visionEnabled ? '已开启' : '仅分析文字' }}</dd>
+        </div>
       </dl>
       <p v-if="status?.current" class="tiny muted">正在分析：{{ status.current.fileName }}</p>
       <p v-if="status?.lastError" class="warn">{{ status.lastError }}</p>
     </section>
 
     <section class="section-card">
-      <h2 class="section-title">最近记录</h2>
-      <div v-if="records.length === 0" class="empty">暂无文件记录</div>
-      <div v-for="record in records.slice(0, 20)" :key="record.id" class="record">
-        <div class="record-main">
-          <strong>{{ record.fileName }}</strong>
-          <span class="tiny muted"
-            >{{ record.kind }} · {{ record.status }} · {{ formatTime(record.occurredAt) }}</span
-          >
-          <p v-if="record.summary" class="tiny">{{ record.summary }}</p>
-          <p v-if="record.error" class="warn tiny">{{ record.error }}</p>
-        </div>
+      <div class="row spread">
+        <h2 class="section-title">最近记录</h2>
         <AppButton
-          v-if="record.ext === 'docx' || record.ext === 'pptx'"
+          v-if="records.length > 5"
           size="sm"
           variant="ghost"
-          @click="analyzeRecord(record)"
+          data-field="fileAwareness.recent-more"
+          @click="recordsOpen = true"
         >
-          分析
+          查看更多
         </AppButton>
+      </div>
+      <div data-field="fileAwareness.recent-list">
+        <FileAwarenessRecordList :records="records.slice(0, 5)" @analyze="analyzeRecord" />
       </div>
     </section>
 
     <section class="section-card">
-      <h2 class="section-title">笔记</h2>
-      <div v-if="notes.length === 0" class="empty">暂无 Markdown 笔记</div>
-      <article v-for="note in notes.slice(0, 20)" :key="note.id" class="note-card">
-        <div class="row spread">
-          <strong>{{ note.title }}</strong>
-          <span v-if="note.conflict" class="warn tiny">手工修改冲突</span>
+      <div class="row spread">
+        <div>
+          <h2 class="section-title">记忆库</h2>
+          <p class="section-desc">
+            {{ notes.length }} 篇笔记 · {{ status?.conflictCount ?? 0 }} 个手工修改冲突
+          </p>
         </div>
-        <p class="tiny muted">{{ note.sourcePath }}</p>
-        <p class="note-excerpt">{{ note.excerpt || '暂无摘要' }}</p>
-        <div class="row wrap">
-          <AppButton size="sm" variant="ghost" @click="openNote(note)">打开笔记</AppButton>
+        <AppButton size="sm" @click="openMemory">打开记忆库</AppButton>
+      </div>
+    </section>
+  </section>
+
+  <Teleport to="body">
+    <div v-if="recordsOpen" class="modal-scrim" @click.self="closeRecords">
+      <section
+        class="records-modal anim-pop"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="awareness-records-title"
+        data-field="fileAwareness.records-modal"
+      >
+        <header class="modal-head">
+          <div>
+            <h2 id="awareness-records-title" class="modal-title">最近记录</h2>
+            <p class="tiny muted">共 {{ records.length }} 条</p>
+          </div>
           <AppButton
             size="sm"
             variant="ghost"
-            :disabled="!note.sourceAvailable"
-            @click="openSource(note)"
+            data-field="fileAwareness.records-modal-close"
+            @click="closeRecords"
           >
-            打开源文件
+            关闭
           </AppButton>
+        </header>
+        <div class="modal-body">
+          <FileAwarenessRecordList :records="records" @analyze="analyzeRecord" />
         </div>
-      </article>
-    </section>
-  </section>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -387,9 +408,7 @@ onUnmounted(() => {
   gap: var(--space-2);
 }
 
-.status-grid div,
-.record,
-.note-card {
+.status-grid div {
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: var(--space-3);
@@ -406,32 +425,55 @@ onUnmounted(() => {
   font-weight: var(--weight-semibold);
 }
 
-.record {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-top: var(--space-2);
-}
-
-.record-main {
-  display: grid;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.note-card {
-  display: grid;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
-}
-
-.note-excerpt {
-  margin: 0;
-  line-height: 1.55;
-}
-
 .warn {
   color: var(--status-unread);
+}
+
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-popover);
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+  background: var(--overlay-scrim);
+}
+
+.records-modal {
+  width: min(760px, calc(100vw - 48px));
+  max-height: min(720px, calc(100vh - 80px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-overlay);
+  box-shadow: var(--shadow-3);
+}
+
+.modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+}
+
+.modal-head p {
+  margin: var(--space-1) 0 0;
+}
+
+.modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--space-4) var(--space-4);
 }
 
 @media (max-width: 760px) {
