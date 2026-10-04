@@ -2,9 +2,9 @@
 
 将 Windows 接入 AI 生态的**系统级 Agent 工具**：常驻系统托盘，以「屏幕右缘提示条」的轻量形态提供无感、自主的 AI 服务。
 
-> 当前版本：**0.1.0** —— ClassIsland 联动升级到 v3（Aurora 既能读课堂状态，也能让 ClassIsland
-> 弹提醒；课前提前分钟数可配）；对话里「深度思考 / 工具调用」的顺序与归属整体修复并加大动效；
-> 新增子代理独立页面；渲染层图标统一换成 lucide。
+> 当前版本：**0.4.0** —— 桌面客户端升级到 Electron 44.5.1（Chromium 152 / Node 24.18.1），
+> 恢复 Windows 原生最大化并保持 Acrylic；提示条用 `setShape()` 适配透明窗口平台最小宽度；
+> 剪贴板与 `console-message` 完成 Electron 44 API 迁移。
 > 历史进度见 [`docs/README.md`](./docs/README.md)「当前实现状态」。
 > 需求源头见 [`Aurora.md`](./Aurora.md)，设计与验收标准见 [`docs/`](./docs/README.md)（单一事实来源）。
 > 用户手册见 [docs/10](./docs/10-user-guide.md)，隐私说明见 [docs/11](./docs/11-privacy.md)。
@@ -12,16 +12,16 @@
 ## 快速开始
 
 ```bash
-pnpm install          # 首次会下载 Electron 运行时（约 100MB）
+pnpm install          # 安装依赖；Electron 44 首次运行时按需下载
 pnpm dev              # 启动 Electron：托盘 + 首次引导窗口
 ```
 
 首次启动流程：欢迎 → **AI 模型配置（必填）** → 模式选择 → ClassRoom 设置 → 完成。
 完成后 Aurora 常驻托盘并显示右侧提示条（悬停展开面板、点击呼出交互窗）；配置写入 `%APPDATA%/Aurora/config.json`，API Key 使用系统安全存储加密。
 
-> 若 `pnpm install` 时 Electron 二进制下载失败（企业代理 / 证书拦截），
-> 可在 `apps/desktop/node_modules/electron` 下执行
-> `$env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'; node install.js`。
+> Electron 42+ 不再通过 `postinstall` 下载二进制，首次执行 Electron 命令时才会按需下载。
+> 若企业代理 / 证书拦截导致下载失败，可先设置镜像后触发安装：
+> `$env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'; pnpm --filter @aurora/desktop exec electron --version`。
 
 ## 常用命令
 
@@ -30,7 +30,7 @@ pnpm dev              # 启动 Electron：托盘 + 首次引导窗口
 | `pnpm dev` | 启动 Electron（主进程 / preload / 渲染层 HMR） |
 | `pnpm build` | 构建三个包 + Electron 产物（`apps/desktop/out`） |
 | `pnpm typecheck` | 全仓类型检查（含 `vue-tsc`） |
-| `pnpm test` | vitest 单测（shared / agent-core / modes / 主进程纯逻辑），595 项 |
+| `pnpm test` | vitest 单测（shared / agent-core / modes / 主进程纯逻辑），2400 项 |
 | `pnpm verify` | 真实磁盘的配置层验收脚本（需先 `pnpm build`），26 项断言 |
 | `pnpm lint` / `pnpm format` | ESLint / Prettier |
 | `node scripts/generate-icons.mjs` | 重新生成占位图标（托盘 / 应用图标） |
@@ -38,7 +38,7 @@ pnpm dev              # 启动 Electron：托盘 + 首次引导窗口
 ### 端到端自测（真实 Electron + preload + IPC）
 
 ```powershell
-$env:AURORA_SMOKE='1'; pnpm dev   # 启动后自动跑约 60 项链路断言，结果见日志并自动退出
+$env:AURORA_SMOKE='1'; pnpm dev   # 启动后自动跑 182 项链路断言，结果见日志并自动退出
 Get-Content "$env:TEMP\aurora-smoke-logs\aurora-*.log" | Select-String 'AURORA_SMOKE_RESULT'
 ```
 
@@ -84,7 +84,7 @@ docs/                   项目文档（SSOT）
 - **P3 Agent 内核（本版本核心）**
   - `session`：`userData/sessions/*.json` 持久化（原子写 + 300ms 防抖 + 退出前 flush）、
     损坏文件备份重建、字符预算截断且**不拆散「工具调用 + 工具结果」对**
-  - `loop`：工具调用循环（上限 8 轮、同轮工具顺序执行、工具失败回填不中断、abort 贯穿到 HTTP 流）
+  - `loop`：工具调用循环（`agent.loop.maxRounds`，默认 32、同轮工具顺序执行、工具失败回填不中断、abort 贯穿到 HTTP 流）
   - `context`：系统提示词 = 人设 + 模式片段 + 感知摘要 + Skill 清单 + 工具清单 + 安全规则
   - `skills/bridge`：`use_skill` 把技能正文注入上下文（**不执行脚本**）；支持 `/skill名`、`@skill名` 显式调用
   - `mcp`：自研最小 JSON-RPC 客户端（**零新增依赖**）+ stdio `Content-Length` 分帧 + streamable-http、
@@ -147,4 +147,3 @@ docs/                   项目文档（SSOT）
   供重启后恢复历史；不会上传到任何第三方（除发送给用户自己配置的模型服务外）。
 - MCP 服务器以**用户显式配置的命令**启动子进程，参数以 argv 数组传递、绝不经过 shell；
   Agent 不会自行执行任意命令（Skill 自带脚本在 v1 也不自动执行）。
-

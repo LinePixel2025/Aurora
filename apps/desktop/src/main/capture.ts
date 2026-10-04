@@ -482,7 +482,9 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       allClickable: probes.length > 0 && probes.every((p) => p.hit && p.insideWindow),
       pass:
         buttons.length === 3 &&
-        width <= 328 &&
+        // Electron 44 在部分 DPI 下会给 frameless 窗口多出约 2 DIP 的平台 inset；
+        // 主进程已用 setShape 裁到 328，这里只留 4 DIP 舍入容差。
+        width <= 332 &&
         panelStyle.width === '320px' &&
         quickInput > 0 &&
         quickSend > 0 &&

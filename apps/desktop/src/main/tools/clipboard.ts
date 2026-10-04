@@ -12,7 +12,7 @@
 import { randomBytes } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { basename, join } from 'node:path'
-import { clipboard } from 'electron'
+import { clipboard, nativeImage } from 'electron'
 import type { Logger } from '@aurora/shared'
 import type { ClipboardImagePort, ClipboardPort, ToolImage } from '@aurora/agent-core'
 import { imageFileName, selectExpiredFiles } from './image-store.js'
@@ -26,10 +26,10 @@ export function createElectronClipboardPort(): ClipboardPort {
   return {
     async read(): Promise<string> {
       // 非文本内容（图片 / 文件）readText 返回空串，由工具层折叠成「剪贴板为空」提示
-      return clipboard.readText()
+      return await clipboard.readText()
     },
     async write(text: string): Promise<void> {
-      clipboard.writeText(text)
+      await clipboard.writeText(text)
     },
   }
 }
@@ -48,10 +48,24 @@ export function createElectronClipboardImagePort(
   const keep = options.keep ?? CLIPBOARD_IMAGE_KEEP
   return {
     async capture(): Promise<ToolImage | undefined> {
-      const image = clipboard.readImage()
+      const items = await clipboard.read()
+      const item = items.find((candidate) =>
+        candidate.types.some((type) => type.startsWith('image/')),
+      )
+      const mime = item?.types.find((type) => type.startsWith('image/'))
       // 剪贴板里没有图片是**正常情形**（不是错误）：返回 undefined，由工具层如实回填
-      if (image.isEmpty()) return undefined
-      const png = image.toPNG()
+      if (item === undefined || mime === undefined) return undefined
+      const blob = await item.getType(mime)
+      if (!(blob instanceof Blob)) return undefined
+      const raw = Buffer.from(await blob.arrayBuffer())
+      if (raw.byteLength === 0) return undefined
+      const png =
+        mime === PNG_MIME
+          ? raw
+          : (() => {
+              const image = nativeImage.createFromBuffer(raw)
+              return image.isEmpty() ? Buffer.alloc(0) : image.toPNG()
+            })()
       if (png.byteLength === 0) return undefined
 
       await fs.mkdir(options.dir, { recursive: true })

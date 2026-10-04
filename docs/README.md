@@ -7,17 +7,27 @@
 
 ## 当前实现状态
 
-**当前版本 v0.3.9（客户端性能优化：CPU / 渲染 / 内存 / 启动），配置 Schema v27（无迁移）** ——
+**当前版本 v0.4.0（Electron 44.5.1 升级与原生窗口材质回归修复），配置 Schema v27（无迁移）** ——
 五块：
-① **空闲 CPU**：前台窗口探针 5s 定时器 → 60s TTL 懒刷新，系统感知首次消费才激活；
-纯空闲时不再周期性启动 PowerShell 探针；
-② **流式渲染**：未收盘消息节流 + 跳过高亮、收盘后一次性高亮，超长代码块与未知语言
-不再走昂贵高亮；爆发探针最坏心跳 91ms、最坏帧间隔 63ms（限额 160 / 110ms）；
-③ **内存**：会话摘要不再把全部会话消息常驻、已装载会话 LRU 有界；对话图片进入视口才读
-并由主进程缩略；隐藏浏览器标签 10 分钟无激活释放页面；
-④ **启动**：electron-updater / systeminformation / chokidar 改为按需加载，
-生产构建启动约 244ms（上一版 610–693ms）；
-⑤ **运行态**：空闲 60 秒 CPU 约 1.28% 单核，四进程 RSS 约 377MB。
+① **运行时升级**：Electron 33.4.11 → **44.5.1**（Chromium 130 → 152、Node 20.18 → 24.18.1、
+V8 13.0 → 15.2），主进程、utility process 与原生模块统一到 Electron 44 ABI；
+② **原生最大化恢复**：Electron 44 修复 Acrylic 材质更新链路，chat / settings / memory
+恢复系统 `maximize()` / `unmaximize()`，删除工作区缩放与逻辑最大化补丁；
+③ **提示条透明窗口适配**：透明 frameless 窗口被平台最小宽度夹取时，继续贴边并用
+`setShape()` 把可见/可交互区域裁成收起 8px、展开 328px；
+④ **Electron 44 API 迁移**：剪贴板改为 Promise + `ClipboardItem`，图片读取改用
+`clipboard.read()`；`console-message` 改用事件对象字段；
+⑤ **验证基线**：2400 条单测、182 条 Electron 冒烟全绿；桌面截图 83 个产物 / 78 条探针 0 失败；
+流式爆发最坏心跳 86.1ms、最坏帧间隔 70.9ms。
+面向用户的说明见 [release-notes/v0.4.0.md](./release-notes/v0.4.0.md)。
+
+**v0.3.9（客户端性能优化：CPU / 渲染 / 内存 / 启动），配置 Schema v27（无迁移）** ——
+五块：
+① 空闲 CPU：前台窗口探针 5s 定时器 → 60s TTL 懒刷新，系统感知首次消费才激活；
+② 流式渲染：未收盘消息节流 + 跳过高亮、收盘后一次性高亮；
+③ 内存：会话摘要不常驻全部消息、已装载会话 LRU 有界；
+④ 启动：electron-updater / systeminformation / chokidar 按需加载；
+⑤ 运行态：空闲 60 秒 CPU 约 1.28% 单核，四进程 RSS 约 377MB。
 面向用户的说明见 [release-notes/v0.3.9.md](./release-notes/v0.3.9.md)。
 
 **v0.3.8（内置浏览器开关 / 对话图片与 Center 同步 / HarmonyOS Sans），

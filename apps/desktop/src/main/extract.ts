@@ -3,7 +3,7 @@
  *
  * 设计约束：
  * - **不 import electron**，可在单测里直接调用（T0 已验证 officeparser 在 Electron
- *   utilityProcess 内可用，Node 20.18 + pdfjs-dist 6 的 ESM 动态 import 正常）。
+ *   utilityProcess 内可用，Node 24.18 + pdfjs-dist 6 的 ESM 动态 import 正常）。
  * - 任何提取失败都**降级为「文件名 + 元数据」证据**，绝不抛错、绝不中断分类管线。
  * - 证据上限 8KB（docs/05 §3.2），按 head/tail 采样，避免把成本花在首尾重复的页眉上。
  */

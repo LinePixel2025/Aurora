@@ -8,7 +8,7 @@
 
 | 领域 | 选型 | 说明 |
 |---|---|---|
-| 桌面壳 | **Electron**（^31+） | 托盘 / 多窗口 / 置顶 / 贴边成熟 |
+| 桌面壳 | **Electron**（^44.5.1） | 托盘 / 多窗口 / 置顶 / 贴边成熟；Chromium 152 / Node 24 |
 | 前端框架 | **Vue 3**（Composition API + `<script setup>`，^3.5） | 多窗口共享逻辑友好 |
 | 构建 | **electron-vite + Vite** | 多 HTML 窗口入口、HMR |
 | 状态管理 | **Pinia**（^2） | 渲染层轻量状态 |
@@ -97,7 +97,7 @@
 
 | 依赖 | 风险 | 缓解 |
 |---|---|---|
-| officeparser（v7.8.0，锁主版本） | 体积较大（含 pdfjs-dist / tesseract.js / `@napi-rs/canvas` 预编译二进制），原文抽取质量受文件影响，可能被杀软误报 | 只在 `utilityProcess` 内 `import()` 懒加载（用户不放文档就不付成本）；提取失败一律降级为「文件名证据」，分类管线不受影响；OCR 默认不启用（其 postinstall 仅赞助请求，已在 `pnpm-workspace.yaml` 显式放行 false 避免联网）；**不升 v8**（engines 要求 Node ≥22.13，而 Electron 33 内置 Node 20.18） |
+| officeparser（v7.8.0，锁主版本） | 体积较大（含 pdfjs-dist / tesseract.js / `@napi-rs/canvas` 预编译二进制），原文抽取质量受文件影响，可能被杀软误报 | 只在 `utilityProcess` 内 `import()` 懒加载（用户不放文档就不付成本）；提取失败一律降级为「文件名证据」，分类管线不受影响；OCR 默认不启用（其 postinstall 仅赞助请求，已在 `pnpm-workspace.yaml` 显式放行 false 避免联网）；当前 Electron 44 内置 Node 24.18.1 已满足 v8 的 engines 要求，但 v8 仍待在真实文档夹具上单独验证，验证前保持 v7.8.0 |
 | tesseract.js（officeparser 传递依赖） | 体积与安装期联网 | `allowBuilds: false` 拒绝其 postinstall；本轮不启用 OCR |
 | systeminformation | 命令开销 | 感知项独立调度，低频轮询 + 事件触发 |
 | @modelcontextprotocol/sdk | 演进较快 | **v1 未引入**：MCP 客户端为自研最小 JSON-RPC 实现（见 06 §7），零依赖、可单测 |

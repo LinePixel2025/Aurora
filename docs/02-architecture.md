@@ -168,11 +168,10 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
   输出只推给创建窗口）。preload 白名单与 shared 双向断言同步更新。
 - 窗口控制（`window:*`）：`show` / `hide` / `toggle` / `showChat` / `setPosition` /
   `setEdgeBarExpanded` / `minimize` / `toggleMaximize` / `getState`，事件推送 `window:stateChanged`。
-  `minimize` 真最小化（进任务栏，chat / 设置可用）；`toggleMaximize` 切换最大化
-  （**当前无渲染层调用方**：frame:false 拖动区的双击最大化由 Windows 原生接管
-  ——`maximizable: true` 后的 HTCAPTION 语义，页面收不到 drag region 的鼠标事件；
-  通道预留给后续 caption 最大化按钮。最大化状态下几何不写入 `general.windowState`）。
-  `window:setEdgeBarExpanded` 驱动提示条两态宽度（收起 8px / 展开 228px，右缘固定，见 07 §2.2）；
+  `minimize` 真最小化（进任务栏，chat / 设置 / 记忆库可用）；`toggleMaximize` 切换系统最大化
+  （caption 按钮与拖动区双击）。Electron 44 起 Acrylic 与系统最大化兼容，不再做工作区缩放；
+  最大化状态下几何不写入 `general.windowState`。
+  `window:setEdgeBarExpanded` 驱动提示条两态宽度（收起 8px / 展开 328px，右缘固定，见 07 §2.2）；
   它只改窗口几何、不改可见性，因此**不广播** `stateChanged`。
 - **ClassIsland 联动通道**（2026-09 新增 `classisland:notify`）：让 ClassIsland 弹出提醒。
   入参 `ClassIslandNotifyRequest`（`title` / `body` / `channel?`），出参

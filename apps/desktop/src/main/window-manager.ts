@@ -160,7 +160,7 @@ const LIGHT_BACKGROUND = '#f5f5f7'
  */
 const NATIVE_GLASS_WINDOWS = new Set<WindowName>(['chat', 'settings', 'memory'])
 
-/** 常规窗口使用 Acrylic；最大化时临时退出，还原完成后再重建。 */
+/** 常规窗口使用 Acrylic；Electron 44 起系统最大化已能稳定保持材质。 */
 const NATIVE_WINDOW_MATERIAL = 'acrylic' as const
 
 function supportsNativeGlass(name: WindowName): boolean {
@@ -211,10 +211,10 @@ export class WindowManager {
   private readonly zoomFactors = new Map<number, number>()
   /** 提示条是否处于展开（面板）态；默认收起为 8px 竖条（docs/07 §2.2） */
   private edgeBarExpanded = false
+  /** 提示条当前的原生 shape（窗口坐标，供自测断言可见区域）。 */
+  private edgeBarShape: WindowBounds[] = []
   /** 已成功启用原生材质的窗口；失败时同步回到不透明回退。 */
   private readonly nativeGlassWindows = new Set<WindowName>()
-  /** 还原后重建 Acrylic 的延迟任务；最大化 / 关闭前会取消。 */
-  private readonly materialTimers = new Map<WindowName, ReturnType<typeof setTimeout>>()
   private themeListenerActive = true
   /** 几何事件的收尾去抖定时器（每个窗口一个，P2-08） */
   private readonly geometryTimers = new Map<WindowName, ReturnType<typeof setTimeout>>()
@@ -284,6 +284,11 @@ export class WindowManager {
     return win.getBounds()
   }
 
+  /** 提示条当前原生 shape；空数组表示恢复为整窗矩形。 */
+  getEdgeBarShape(): readonly WindowBounds[] {
+    return this.edgeBarShape
+  }
+
   /** 截图核对读取真实原生底色；原生玻璃窗口由材质断言接管，返回 undefined。 */
   getBackgroundColor(name: WindowName): string | undefined {
     if (this.nativeGlassWindows.has(name)) return undefined
@@ -351,7 +356,9 @@ export class WindowManager {
       maximizable: spec.maximizable,
       fullscreenable: false,
       // 提示条是纯透明窗口：Acrylic 与系统窗口阴影都按矩形绘制，会从圆角面板后漏出来。
-      ...(name === 'edge-bar' ? { hasShadow: false } : {}),
+      // 同时关闭 thickFrame：Electron 41.3 起 frameless 窗口的外部 resize inset 会把
+      // 请求的 8px 收起态夹到 33px；提示条本身不参与原生拖拽缩放，不需要这层边框。
+      ...(name === 'edge-bar' ? { hasShadow: false, thickFrame: false } : {}),
       backgroundColor:
         spec.transparent || supportsNativeGlass(name) ? '#00000000' : windowBackgroundColor(),
       // Windows 的桌面模糊由系统材质提供；透明窗口里的 CSS backdrop-filter 只能模糊
@@ -373,6 +380,10 @@ export class WindowManager {
     })
 
     win.setMenuBarVisibility(false)
+    if (name === 'edge-bar') {
+      this.normalizeEdgeBarBounds(win)
+      this.applyEdgeBarShape(win)
+    }
     if (supportsNativeGlass(name)) this.applyWindowMaterial(name, win)
     // 提示条透明度取自设置（docs/08 §1）；窗口创建时即应用，避免一次可见的跳变
     if (name === 'edge-bar') {
@@ -381,11 +392,11 @@ export class WindowManager {
     if (this.options.isDev) {
       const name$ = name
       // dev：把渲染层日志转发到主进程终端，便于排查白屏 / CSP / 脚本错误
-      win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-        this.options.logger.debug('[renderer] ' + message, {
+      win.webContents.on('console-message', (details) => {
+        this.options.logger.debug('[renderer] ' + details.message, {
           window: name$,
-          level,
-          source: `${sourceId}:${line}`,
+          level: details.level,
+          source: `${details.sourceId}:${details.lineNumber}`,
         })
       })
       win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
@@ -457,21 +468,18 @@ export class WindowManager {
     win.on('resized', () => this.scheduleGeometryPersist(name, win))
     // 最大化态变化要广播：渲染层 caption 的「最大化 / 还原」图标据此切换
     //（含标题栏拖动区双击这条不经 toggleMaximize 的原生路径）
-    win.on('maximize', () => {
-      this.setNativeMaterialState(name, win, true)
-      this.emit()
-    })
+    win.on('maximize', () => this.emit())
     win.on('unmaximize', () => {
-      this.setNativeMaterialState(name, win, false)
+      if (supportsNativeGlass(name)) this.applyWindowMaterial(name, win)
       this.emit()
     })
     win.on('closed', () => {
       // 先收掉待落盘的几何定时器：窗口没了，它再去改配置就是一次"幽灵写入"
       this.cancelGeometryTimer(name)
-      this.cancelMaterialTimer(name)
       this.geometryBounds.delete(name)
       this.windows.delete(name)
       this.nativeGlassWindows.delete(name)
+      if (name === 'edge-bar') this.edgeBarShape = []
       this.loadTasks.delete(name)
     })
     win.webContents.on('render-process-gone', (_event, details) => {
@@ -506,7 +514,8 @@ export class WindowManager {
   /**
    * 应用窗口原生材质。
    *
-   * 常规窗口使用 Acrylic；最大化态由 `setNativeMaterialState()` 临时退出。
+   * 常规窗口使用 Acrylic。Electron 44 已修复系统最大化期间的 DWM 材质更新，
+   * 因此最大化不再需要退出材质或改写窗口几何。
    */
   private applyWindowMaterial(name: WindowName, win: BrowserWindow): void {
     if (!supportsNativeGlass(name) || win.isDestroyed()) return
@@ -524,54 +533,6 @@ export class WindowManager {
         error: String(error),
       })
     }
-  }
-
-  /**
-   * 最大化 / 还原时的材质状态切换。
-   *
-   * 事件发生后再读 `isMaximized()` 可能仍是旧值，因此状态由事件直接传入。
-   * 还原时先保持实底 160ms，再切回“透明背景 + 无 DWM 材质”。
-   * 同一 window handle 上重新挂 Acrylic 会恢复灰态，隐藏 / 重显也洗不掉，
-   * 因此还原后由 CSS 玻璃层继续承担视觉，不再重新启用 Acrylic。
-   */
-  private setNativeMaterialState(name: WindowName, win: BrowserWindow, maximized: boolean): void {
-    if (!supportsNativeGlass(name) || win.isDestroyed()) return
-    this.cancelMaterialTimer(name)
-    if (maximized) {
-      try {
-        win.setBackgroundMaterial('none')
-        win.setBackgroundColor(windowBackgroundColor())
-        this.nativeGlassWindows.delete(name)
-      } catch (error) {
-        this.options.logger.debug('最大化时退出原生材质失败', {
-          window: name,
-          error: String(error),
-        })
-      }
-      return
-    }
-    const timer = setTimeout(() => {
-      this.materialTimers.delete(name)
-      if (win.isDestroyed() || win.isMaximized()) return
-      try {
-        win.setBackgroundMaterial('none')
-        win.setBackgroundColor('#00000000')
-        this.nativeGlassWindows.delete(name)
-      } catch (error) {
-        this.options.logger.debug('还原时重置原生材质失败', {
-          window: name,
-          error: String(error),
-        })
-      }
-    }, 160)
-    this.materialTimers.set(name, timer)
-  }
-
-  private cancelMaterialTimer(name: WindowName): void {
-    const timer = this.materialTimers.get(name)
-    if (timer === undefined) return
-    clearTimeout(timer)
-    this.materialTimers.delete(name)
   }
 
   private quitting = false
@@ -647,6 +608,8 @@ export class WindowManager {
         this.edgeBarSide(),
       ),
     )
+    this.normalizeEdgeBarBounds(win)
+    this.applyEdgeBarShape(win)
     this.persistGeometry('edge-bar', win)
     return this.getState()
   }
@@ -671,6 +634,48 @@ export class WindowManager {
   }
 
   /**
+   * 把提示条按可见锚点贴回工作区边缘。
+   *
+   * Electron 44 对透明窗口会施加平台最小宽度，收起态请求 8px 时实际 HWND 可能被夹到
+   * 33px 左右。布局仍把 `.strip` 放在窗口右缘，因此这里以**实际宽度**重算 x：
+   * 右侧模式让窗口右缘贴工作区右缘，左侧模式让窗口左缘贴工作区左缘；多余透明区域
+   * 由 `applyEdgeBarShape()` 裁掉，既不可见也不接收鼠标。
+   */
+  private normalizeEdgeBarBounds(win: BrowserWindow): void {
+    if (win.isDestroyed()) return
+    const area = this.edgeBarDisplay().workArea
+    const current = win.getBounds()
+    const x = this.edgeBarSide() === 'left' ? area.x : area.x + area.width - current.width
+    const maxY = Math.max(area.y, area.y + area.height - current.height)
+    const y = clamp(Math.round(area.y + (area.height - current.height) / 2), area.y, maxY)
+    if (current.x !== x || current.y !== y) win.setBounds({ ...current, x, y })
+  }
+
+  /** 按当前两态把提示条裁到目标宽度：收起 8px、展开 328px；多余平台 inset 不绘制、不可点。 */
+  private applyEdgeBarShape(win: BrowserWindow): void {
+    if (win.isDestroyed()) return
+    if (process.platform !== 'win32' && process.platform !== 'linux') return
+    const bounds = win.getBounds()
+    const desiredWidth = this.edgeBarExpanded ? EDGE_BAR_WIDTHS.expanded : EDGE_BAR_WIDTHS.collapsed
+    if (bounds.width <= desiredWidth) {
+      win.setShape([])
+      this.edgeBarShape = []
+      return
+    }
+    const width = desiredWidth
+    const shape = [
+      {
+        x: Math.max(0, bounds.width - width),
+        y: 0,
+        width,
+        height: bounds.height,
+      },
+    ]
+    win.setShape(shape)
+    this.edgeBarShape = shape
+  }
+
+  /**
    * Windows 式标题栏：真最小化（进任务栏，可从任务栏恢复）。
    * 只有 spec 允许的窗口（chat / settings）响应；不可最小化窗口是 no-op（渲染层不渲染按钮）。
    */
@@ -683,7 +688,7 @@ export class WindowManager {
     return this.getState()
   }
 
-  /** 切换系统最大化（标题栏双击 / caption 按钮）。最大化期间 `persistGeometry` 会跳过落盘。 */
+  /** 切换系统最大化（标题栏双击 / caption 按钮）。最大化期间几何不落盘。 */
   toggleMaximize(name: WindowName): WindowState {
     const win = this.windows.get(name)
     if (win === undefined || win.isDestroyed() || !SPECS[name].maximizable) {
@@ -691,6 +696,7 @@ export class WindowManager {
     }
     if (win.isMaximized()) win.unmaximize()
     else win.maximize()
+    this.emit()
     return this.getState()
   }
 
@@ -840,6 +846,8 @@ export class WindowManager {
         this.edgeBarSide(),
       ),
     )
+    this.normalizeEdgeBarBounds(win)
+    this.applyEdgeBarShape(win)
   }
 
   private computeBounds(
@@ -978,8 +986,8 @@ export class WindowManager {
    *   若照写，鼠标每次掠过右缘的展开/收起都会触发一次配置写 + `settings:changed`，
    *   进而让主进程重建托盘菜单 —— 纯 UI 悬停不该有这种写入放大；
    * - 已销毁：`getBounds` 会抛，且写进去的几何没有任何意义；
-   * - 最大化态：工作区尺寸是系统给的，落盘会把「还原后的窗口」撑满整屏 —— 只记录用户手动
-   *   调整出来的常规几何，还原尺寸交给 `isMaximized` 判定。
+   * - 最大化态：工作区尺寸不是用户拖出来的，落盘会把「还原后的窗口」撑满整屏 —— 只记录用户手动
+   *   调整出来的常规几何，还原尺寸交给逻辑最大化 / `isMaximized` 判定。
    */
   private isPersistableGeometry(name: WindowName, win: BrowserWindow): boolean {
     if (name === 'edge-bar') return false

@@ -37,7 +37,7 @@ export interface ExtractPoolResult {
 /**
  * 子进程的最小结构面（Electron 的 UtilityProcess 天然满足）。
  *
- * **注意 message 的形状不对称**（已用真实 Electron 33 探针实测）：
+ * **注意 message 的形状不对称**（已用真实 Electron 探针实测）：
  * - 子进程 → 父进程：payload **裸传**，`UtilityProcess.on('message')` 拿到的就是 payload
  *   本身（`{ id, ok, evidence }`），**没有** `.data` 包装；
  * - 父进程 → 子进程：payload 被包在 `{ data, ports }` 里，子进程必须读 `message.data`。

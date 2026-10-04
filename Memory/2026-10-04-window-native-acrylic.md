@@ -72,3 +72,57 @@ Electron `BrowserWindow` 的 webContents 是一个独立合成面。CSS `backdro
 无法清理。还原后使用透明 `backgroundColor + backgroundMaterial: none`，由 CSS 玻璃层继续表达。
 **不要**在事件回调里回读 `isMaximized()` 判断目标状态，否则可能拿到切换前旧值。
 冒烟探针覆盖「最大化退出 Acrylic → 还原后保持无 DWM 材质回退」。
+
+## 2026-10-04 最大化灰色底再修订：工作区缩放
+
+用户再次实测：毛玻璃窗口最大化后再还原，背景仍是灰色。上一版「最大化退出 Acrylic，还原后保持透明无材质」本身就会露出灰色 DWM/合成器底；同一 HWND 重新挂 Acrylic 则会把最大化期间的灰态带回来。
+
+结论：毛玻璃窗口（chat / settings / memory）**不要走系统 `WS_MAXIMIZE`**。caption 最大化改为 `setBounds(当前显示器 workArea)`，`WindowState.maximized` 由逻辑最大化态现算。拖动区双击 / Win+↑ 的原生 maximize 事件立即 unmaximize 并改走同一条工作区缩放。还原后 Acrylic 保持开启，禁止再切成透明无材质底。
+
+## 2026-10-05 公开案例核对与原生入口补丁
+
+上网核对的 Electron 公开案例（Electron 33 本地实行）：
+
+- [#41824](https://github.com/electron/electron/issues/41824)：`frame: false + backgroundMaterial` 最大化会永久破坏窗口，材质消失 / 背景变黑 / 圆角与边框丢失；这是最早的系统性问题。
+- [#42393](https://github.com/electron/electron/issues/42393)：Windows 11 上启用 `backgroundMaterial` 后最大化变黑、圆角消失，Electron 30 / 33 均可复现。
+- [#46753](https://github.com/electron/electron/issues/46753)：即使 Electron 35.2.1，拖拽到顶部 / 标题栏双击 / 从最大化拖回，仍会走一条材质丢失路径；只有程序化最大化按钮有时不受影响。
+- [PR #45456](https://github.com/electron/electron/pull/45456)：Electron 34 / 35 的临时修复把 translucent 窗口的最大化改成 `setBounds(workArea)`；**没有进入 Electron 33 线**。
+- [PR #47386](https://github.com/electron/electron/pull/47386)：后续根因修复（Chromium 的 `DwmExtendFrameIntoClientArea` 会破坏材质）落在 38 线，并回移到 37.2.6 / 36；[#48031](https://github.com/electron/electron/issues/48031) 又记录到后续版本的黑色 / 灰色底回归。
+
+Electron 33 阶段因此保留「工作区缩放」兜底；2026-10-05 升到 Electron 44 后该兜底已退役。
+
+2026-10-05 实测补了一条关键边界：caption 按钮的工作区缩放正常，但拖动区双击 / Win+↑ 的原生
+`maximize()` 路径曾失败。根因是 `maximize` 事件里立即 `unmaximize()` 后，系统还会异步落一次
+原来的普通尺寸，紧接着调用的 `setBounds(workArea)` 被它覆盖。修正为先等 `unmaximize` 事件，
+再在 0 / 60 / 140ms 三个落位点重试工作区尺寸；期间用 `convertingNativeMaximize` 锁住泛型
+`unmaximize` 监听器，避免异步事件顺序把逻辑最大化态清掉。若用户在这段窗口内主动还原，
+`logicalMaximized` 已被清空，重试会自行停止。
+
+冒烟回归护栏同时覆盖两条入口：caption 的工作区缩放，以及直接调用原生 `maximize()` 后
+必须仍落到 workArea、原生 `isMaximized()` 为 false、Acrylic 保持开启、还原几何可逆。
+
+## 2026-10-05 Electron 44：恢复原生最大化与提示条 shape
+
+Electron 升级到 44.5.1 后，先在真实 Windows 环境中做了直通诊断：临时绕过 Aurora 的工作区
+缩放，直接调用系统 `maximize()`，再通过 `DwmGetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE)`
+读取材质。结果在最大化与还原两步都保持 `3`（`DWMSBT_TRANSIENTWINDOW`，即 Acrylic），
+且原生 `isMaximized()` 语义正常。说明 Electron 44 已修复 Electron 33 的材质锁死路径。
+
+结论：
+
+- chat / settings / memory 删除逻辑最大化、`restoreBounds`、`convertingNativeMaximize` 与
+  0 / 60 / 140ms 重试链，恢复直接 `win.maximize()` / `win.unmaximize()`。
+- `WindowState.maximized` 重新直接读 `win.isMaximized()`；最大化期间仍不落盘几何。
+- Electron 44 冒烟护栏改为断言「系统最大化保持、Acrylic 保持、还原几何可逆」。
+- 提示条是另一类问题：Electron 44 对透明 frameless 窗口施加约 33 DIP 的最小宽度，
+  收起态请求 8px 会被夹到 33 / 34px。处理方式是继续请求目标尺寸，但用实际宽度把窗口
+  锚到工作区边缘，并调用 `win.setShape()` 把可见与可交互区域裁成 8px（展开态 328px），
+  多余透明区不绘制、不接收鼠标。`getEdgeBarShape()` 作为探针读取口。
+- Electron 44 破坏性迁移已处理：`clipboard.readText/writeText` Promise 化，
+  剪贴板图片改为 `clipboard.read()` + `ClipboardItem`；
+  `console-message` 改用事件对象字段（`level/message/lineNumber/sourceId`）。
+
+验证基线（Electron 44.5.1）：`pnpm typecheck`、`pnpm test`（2400）、`pnpm build` 全绿；
+全量 Electron 冒烟 182/182；桌面全量截图 83 个产物 / 78 条探针 0 失败（含流式爆发探针）；
+`pnpm lint`、`pnpm package` 通过，打包产物 `Aurora-Setup-0.3.9.exe` 为 Electron 44.5.1；
+`win-unpacked` 在跳过预期 UAC 等待后进入 `Aurora 就绪`。

@@ -1,7 +1,7 @@
 {
   "name": "@aurora/desktop",
   "productName": "Aurora",
-  "version": "0.3.9",
+  "version": "0.4.0",
   "private": true,
   "description": "Aurora Electron 桌面壳",
   "main": "./out/main/index.js",
@@ -36,7 +36,7 @@
     "@types/ws": "^8.5.10",
     "@vitejs/plugin-vue": "^5.2.1",
     "@vue/tsconfig": "^0.7.0",
-    "electron": "^33.2.1",
+    "electron": "^44.5.1",
     "electron-builder": "^26.15.3",
     "electron-vite": "^2.3.0",
     "lucide-vue-next": "^1.0.0",

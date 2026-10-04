@@ -45,7 +45,7 @@ Task/Job 持久化与续跑），详见 §5 变更记录最后一条。
   与注册表（3 个内置技能）、工具注册表骨架、`chat:send` → `chat:event` IPC 契约与
   占位 AgentHost（返回真实感知摘要 + 下一阶段说明）。
 - P3：**Agent 内核完整落地**（`packages/agent-core`）——  `session`（会话持久化 `userData/sessions/*.json`、原子写 + 防抖、损坏备份重建、字符预算截断且不拆散工具调用对）、
-  `loop`（工具调用循环，上限 8 轮、同轮工具顺序执行、失败回填不中断、abort 贯穿）、
+  `loop`（工具调用循环，轮次上限按 `agent.loop.maxRounds` 配置、默认 32、同轮工具顺序执行、失败回填不中断、abort 贯穿）、
   `context`（系统提示词组装：人设 / 模式 / 感知 / Skill / 工具 / 安全规则）、
   `skills/bridge`（`use_skill` 注入技能正文，**不执行脚本**；支持 `/skill`、`@skill` 显式调用）、
   `mcp`（自研最小 JSON-RPC 客户端 + stdio `Content-Length` 分帧 + streamable-http、`McpClientHub`
@@ -55,8 +55,8 @@ Task/Job 持久化与续跑），详见 §5 变更记录最后一条。
   设置页 MCP 状态灯接入 `mcp:status` / `mcp:statusChanged`。
 - P5 前置：时间/电源/网络感知采集，缺失项降级为 `unknown`。
 
-**验证方式**：`pnpm test`（500 项单测）、`pnpm verify`（26 项真实磁盘验收）、
-`AURORA_SMOKE=1 pnpm dev`（77 项真实 Electron + preload + IPC 链路断言；使用临时 userData
+**验证方式**：`pnpm test`（当前 2400 项单测）、`pnpm verify`（26 项真实磁盘验收）、
+`AURORA_SMOKE=1 pnpm dev`（当前 182 项真实 Electron + preload + IPC 链路断言；使用临时 userData
 与本地假 LLM 桩服务，**离线可跑**；含实时投放文件触发的分类管线与课前提醒端到端断言）。
 
 依赖关系：P0 → P1 → P2、P3 可并行 → P4（依赖 P2+P3）→ P5 → P6。P4 与 P5 部分可并行（分类管线 vs 感知采集互不依赖）。

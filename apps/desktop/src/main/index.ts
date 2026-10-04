@@ -3523,26 +3523,34 @@ async function runSmokeTest(userData: string): Promise<void> {
     const rightEdge = workArea.x + workArea.width
     windows?.setEdgeBarExpanded(false)
     const barCollapsed = windows?.getBounds('edge-bar')
+    const collapsedShape = windows?.getEdgeBarShape()[0]
     windows?.setEdgeBarExpanded(true)
     const barExpanded = windows?.getBounds('edge-bar')
+    const expandedShape = windows?.getEdgeBarShape()[0]
     windows?.setEdgeBarExpanded(false)
     const barBack = windows?.getBounds('edge-bar')
+    const backShape = windows?.getEdgeBarShape()[0]
     record(
-      '提示条收起态真实窗口约 8px 宽且贴右缘',
+      '提示条收起态可见 shape 仍为 8px，透明富余区被裁掉且窗口贴右缘',
       barCollapsed !== undefined &&
-        near(barCollapsed.width, EDGE_BAR_WIDTHS.collapsed, 4) &&
+        collapsedShape !== undefined &&
+        near(collapsedShape.width, EDGE_BAR_WIDTHS.collapsed, 1) &&
+        near(collapsedShape.x, barCollapsed.width - collapsedShape.width, 1) &&
         near(barCollapsed.x + barCollapsed.width, rightEdge, 4),
-      JSON.stringify(barCollapsed),
+      JSON.stringify({ bounds: barCollapsed, shape: collapsedShape }),
     )
     record(
-      '提示条展开态真实窗口约 228px 宽、右缘与垂直中心不变',
+      '提示条展开态真实窗口约 328px 宽、shape 裁到 328px 且右缘与垂直中心不变',
       barCollapsed !== undefined &&
         barExpanded !== undefined &&
         near(barExpanded.width, EDGE_BAR_WIDTHS.expanded, 4) &&
         near(barExpanded.x + barExpanded.width, barCollapsed.x + barCollapsed.width, 3) &&
         near(barExpanded.y + barExpanded.height / 2, barCollapsed.y + barCollapsed.height / 2, 3) &&
+        expandedShape !== undefined &&
+        near(expandedShape.width, EDGE_BAR_WIDTHS.expanded, 1) &&
+        near(expandedShape.x, barExpanded.width - expandedShape.width, 1) &&
         barExpanded.height > barCollapsed.height,
-      JSON.stringify(barExpanded),
+      JSON.stringify({ bounds: barExpanded, shape: expandedShape }),
     )
     record(
       '提示条展开态占满工作区高度（面板按钮不会被挤出可视区）',
@@ -3552,47 +3560,100 @@ async function runSmokeTest(userData: string): Promise<void> {
       barExpanded !== undefined ? `height=${barExpanded.height}, workArea=${workArea.height}` : '',
     )
     record(
-      '提示条展开比收起宽出约 220px（8 -> 228）',
-      barCollapsed !== undefined &&
-        barExpanded !== undefined &&
-        near(
-          barExpanded.width - barCollapsed.width,
-          EDGE_BAR_WIDTHS.expanded - EDGE_BAR_WIDTHS.collapsed,
-          4,
-        ),
-      barCollapsed !== undefined && barExpanded !== undefined
-        ? `delta=${barExpanded.width - barCollapsed.width}`
-        : 'undefined',
+      '提示条展开后 shape 限制为 328px，收起后重新收成 8px',
+      expandedShape !== undefined &&
+        near(expandedShape.width, EDGE_BAR_WIDTHS.expanded, 1) &&
+        backShape !== undefined &&
+        near(backShape.width, EDGE_BAR_WIDTHS.collapsed, 1),
+      JSON.stringify({ expandedShape, backShape }),
     )
     record(
-      '提示条收起后真实窗口回到初始矩形（往返幂等）',
+      '提示条收起后真实窗口与可见 shape 回到初始档位（往返幂等）',
       barBack !== undefined &&
         barCollapsed !== undefined &&
-        barBack.x === barCollapsed.x &&
-        barBack.width === barCollapsed.width &&
-        barBack.height === barCollapsed.height,
-      JSON.stringify(barBack),
+        backShape !== undefined &&
+        collapsedShape !== undefined &&
+        near(barBack.x, barCollapsed.x, 2) &&
+        near(barBack.width, barCollapsed.width, 2) &&
+        near(barBack.height, barCollapsed.height, 2) &&
+        near(backShape.width, collapsedShape.width, 1),
+      JSON.stringify({ before: barCollapsed, after: barBack, shape: backShape }),
     )
     windows?.ensure('chat')
+    const nativeChat = BrowserWindow.getAllWindows().find((win) => win.getTitle() === 'Aurora 对话')
     const nativeBeforeMaximize = windows?.usesNativeGlass('chat') === true
+    const boundsBeforeMaximize = windows?.getBounds('chat')
     windows?.toggleMaximize('chat')
-    await new Promise((resolve) => setTimeout(resolve, 200))
+    await new Promise((resolve) => setTimeout(resolve, 350))
     const maximizedState = windows?.getState().maximized ?? {}
     const maximized = maximizedState.chat === true
     const nativeWhileMaximized = windows?.usesNativeGlass('chat') === true
+    const nativeMaximized = nativeChat?.isMaximized() === true
     windows?.toggleMaximize('chat')
     await new Promise((resolve) => setTimeout(resolve, 350))
     const nativeAfterRestore = windows?.usesNativeGlass('chat') === true
+    const restoredMaximized = windows?.getState().maximized?.chat === true
+    const boundsAfterRestore = windows?.getBounds('chat')
+    const restoredGeometry =
+      boundsBeforeMaximize !== undefined &&
+      boundsAfterRestore !== undefined &&
+      near(boundsAfterRestore.x, boundsBeforeMaximize.x, 8) &&
+      near(boundsAfterRestore.y, boundsBeforeMaximize.y, 8) &&
+      near(boundsAfterRestore.width, boundsBeforeMaximize.width, 8) &&
+      near(boundsAfterRestore.height, boundsBeforeMaximize.height, 8)
     record(
-      '最大化临时退出 Acrylic，还原后保持透明 CSS 玻璃回退',
-      nativeBeforeMaximize && maximized && !nativeWhileMaximized && !nativeAfterRestore,
+      '毛玻璃窗口使用系统最大化，还原后仍保持 Acrylic',
+      nativeBeforeMaximize &&
+        maximized &&
+        nativeMaximized &&
+        nativeWhileMaximized &&
+        nativeAfterRestore &&
+        restoredMaximized !== true &&
+        restoredGeometry,
       JSON.stringify({
         nativeBeforeMaximize,
         maximized,
+        nativeMaximized,
         nativeWhileMaximized,
         nativeAfterRestore,
+        restoredMaximized,
+        restoredGeometry,
+        boundsBeforeMaximize,
+        boundsAfterRestore,
       }),
     )
+
+    // 拖动区双击 / Win+↑ 直接触发原生 maximize，也必须保持原生最大化语义与材质。
+    if (nativeChat !== undefined) {
+      nativeChat.maximize()
+      await new Promise((resolve) => setTimeout(resolve, 350))
+      const nativeEntryMaximized = windows?.getState().maximized?.chat === true
+      const nativeEntryStayedNative = nativeChat.isMaximized() === true
+      windows?.toggleMaximize('chat')
+      await new Promise((resolve) => setTimeout(resolve, 350))
+      const nativeRestoreBounds = windows?.getBounds('chat')
+      const nativeEntryRestored =
+        nativeRestoreBounds !== undefined &&
+        boundsBeforeMaximize !== undefined &&
+        near(nativeRestoreBounds.x, boundsBeforeMaximize.x, 8) &&
+        near(nativeRestoreBounds.y, boundsBeforeMaximize.y, 8) &&
+        near(nativeRestoreBounds.width, boundsBeforeMaximize.width, 8) &&
+        near(nativeRestoreBounds.height, boundsBeforeMaximize.height, 8)
+      record(
+        '原生 maximize 入口保持系统最大化语义，关闭后还原几何',
+        nativeEntryMaximized &&
+          nativeEntryStayedNative &&
+          windows?.usesNativeGlass('chat') === true &&
+          nativeEntryRestored,
+        JSON.stringify({
+          nativeEntryMaximized,
+          nativeEntryStayedNative,
+          nativeGlassAfterRestore: windows?.usesNativeGlass('chat') === true,
+          nativeEntryRestored,
+          boundsAfterNativeEntryRestore: windows?.getBounds('chat'),
+        }),
+      )
+    }
   }
 
   // 4. 电脑操控工具（docs/06 §11）：用**真实的 Windows 进程与文件系统**证明

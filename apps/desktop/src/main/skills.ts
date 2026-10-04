@@ -30,8 +30,9 @@ export interface SkillsServiceOptions {
   logger: Logger
   /**
    * 监听实现，仅供单测注入（默认 `node:fs` 的 `watch`）。
-   * 真实 watch 的 error 行为随运行时漂移：Electron 33 的 Node 20 对「监听根被删」报
-   * EPERM，Node 24 同场景只刷 change 风暴、根本不报错 —— error 分支只能靠假 watcher 钉住。
+   * 真实 watch 的 error 行为随运行时漂移：Electron 33 / Node 20 对「监听根被删」报
+   * EPERM，Electron 44 / Node 24 同场景只刷 change 风暴、根本不报错 —— error 分支
+   * 只能靠假 watcher 钉住。
    */
   watchImpl?: typeof watch
 }

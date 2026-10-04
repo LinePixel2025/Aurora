@@ -117,10 +117,13 @@
   自动回退原有不透明 `--bg-base`，不得用透明窗口裸漏桌面。设置窗与记忆库同样启用原生 Mica
   （侧栏使用标准玻璃、内容区叠 `--glass-content` 可读性 tint）；引导窗继续保持
   不透明基座，避免所有窗口同时采样桌面造成 GPU 重绘与可读性问题。
-  **最大化时临时退出 Acrylic，还原后保持透明 CSS 玻璃回退**：`maximize` / `unmaximize` 事件直接传状态，
-  避免事件后再读 `isMaximized()` 拿到旧值。最大化先切主题实色底；向下还原后保持实底 160ms，
-  再切回透明背景 + `backgroundMaterial: none`，不再重新挂 Acrylic。同一窗口句柄重新启用
-  Acrylic 会恢复灰色 DWM 状态，隐藏 / 重显也无法清理；还原后由 CSS 玻璃层继续承担视觉。
+  **Electron 44 起恢复系统原生最大化**：Electron 33 的 `backgroundMaterial` 会在
+  `WS_MAXIMIZE` 后把 Acrylic 锁成灰底，旧版曾用工作区缩放规避；Electron 44 已修复材质
+  更新链路，chat / settings / memory 恢复调用 `BrowserWindow.maximize()` / `unmaximize()`，
+  最大化期间 DWM 材质与还原后的 Acrylic 都保持正常。最大化期间几何不落盘。
+  提示条仍不参与系统最大化：Electron 44 对透明 frameless 窗口会施加约 33 DIP 的平台最小
+  宽度，因此提示条用 `setBounds` + `setShape` 把可见/可交互区域精确裁成收起 8px、展开
+  328px，多余透明区不绘制、不接收鼠标。
 - **三栏布局（2026-09 重构起）**：`sidebar(240px, 可折叠) | main(1fr) | context(384px, 可折叠、
   可拖拽调宽 280–560px，2026-10-03 起 —— 此前为固定 264px)`，
   栏间用分隔而非悬浮卡片；左右栏使用 `--bg-raised` 实体面与 `--border-strong` 分界，

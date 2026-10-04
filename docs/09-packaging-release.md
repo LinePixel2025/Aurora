@@ -149,6 +149,14 @@ electron-builder 首次打包会下载两样东西：Electron 发行包与打包
   **升级不会丢失配置与会话**（`%APPDATA%/Aurora` 不在安装目录内，
   且卸载时也不删除该目录）。
 
+### Git tag 规范（以后每个版本都适用）
+
+- 版本 tag 一律使用 **annotated tag**：`git tag -a vX.Y.Z`，不用轻量 tag。
+- tag message 必须写详细，至少包含：版本主题、底层依赖变化、用户可感知变化、
+  兼容 / 迁移说明、主要验证结果与安装包名。
+- commit message 可以简短，但 tag 是发布说明的一部分，不能只写版本号。
+- 推送时同时推分支与 tag：`git push origin main && git push origin vX.Y.Z`。
+
 ## 8. 已知限制
 
 - 只出 Windows x64；ARM64 / 便携版（portable）后续按需增加。

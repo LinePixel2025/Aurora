@@ -853,7 +853,7 @@ const noSessionsAtAll = computed(
  *
  * 相比「测量 scrollHeight 再写 max-height」，这个写法不需要知道内容高度、
  * 不会在内容变化时算错，也天然支持两边都缓动（Chromium 105+ 支持 fr 过渡；
- * 本仓 Electron 33 = Chromium 130）。内层 `overflow: hidden` 负责裁切。
+ * 本仓 Electron 44 = Chromium 152）。内层 `overflow: hidden` 负责裁切。
  */
 .collapse {
   display: grid;
