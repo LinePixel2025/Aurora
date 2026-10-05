@@ -221,6 +221,7 @@ export class SessionStore {
       role: message.role,
       content: message.content,
       createdAt: message.createdAt ?? new Date().toISOString(),
+      ...(message.requestId === undefined ? {} : { requestId: message.requestId }),
       ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls }),
       ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
       ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
@@ -264,6 +265,7 @@ export class SessionStore {
       role: 'user' | 'assistant'
       content: string
       createdAt: string
+      requestId?: string
       toolCalls?: AgentToolCall[]
       reasoning?: string
     }>
@@ -279,6 +281,7 @@ export class SessionStore {
       role: message.role,
       content: message.content,
       createdAt: message.createdAt,
+      ...(message.requestId === undefined ? {} : { requestId: message.requestId }),
       ...(message.toolCalls === undefined
         ? {}
         : { toolCalls: message.toolCalls.map((call) => toAgentToolCall(call)) }),
@@ -509,9 +512,7 @@ export class SessionStore {
    * 不存在 / 尚未落盘的会话返回“未生成、未 pending”，不创建任何文件；
    * 消费方是主进程的自动标题服务，需要在发送前判断是否已有标题或需要重试。
    */
-  async titleStateOf(
-    sessionId: string,
-  ): Promise<{ title?: string; pending: boolean }> {
+  async titleStateOf(sessionId: string): Promise<{ title?: string; pending: boolean }> {
     const id = normalizeSessionId(sessionId)
     // 正常发送前 `chat:send` 已读过该会话历史，缓存里能同步判定；已有标题直接短路，
     // 不在每条用户消息上扫描 sessions 目录。

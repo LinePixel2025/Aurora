@@ -19,7 +19,7 @@ import { ensureSessionState, sessionKey, state, type ChatItem, type SessionState
 import { applyUsage } from './usage'
 
 /** 一条待合并的流式增量（同一条消息的 text / reasoning 各自按入队顺序累加） */
-type PendingDelta = { kind: 'text' | 'reasoning'; delta: string }
+type PendingDelta = { kind: 'text' | 'reasoning'; requestId: string; delta: string }
 
 /** 缓冲键：会话与消息三元组用 NUL 分隔（会话 id 是 `center-*` / uuid，不含 NUL） */
 function streamKeyOf(clientId: string, sessionId: string, messageId: string): string {
@@ -37,7 +37,8 @@ const streamBuffer = createDeltaBuffer<PendingDelta>(
       if (clientId === undefined || sessionId === undefined || messageId === undefined) continue
       const session = state.sessions.get(sessionKey(clientId, sessionId))
       if (session === undefined) continue
-      const item = ensureAssistant(session, messageId)
+      const requestId = batch.values[0]?.requestId ?? ''
+      const item = ensureAssistant(session, messageId, requestId)
       for (const value of batch.values) {
         if (value.kind === 'text') {
           item.content += value.delta
@@ -59,14 +60,18 @@ export function flushStreamDeltas(): void {
   streamBuffer.flush()
 }
 
-function ensureAssistant(session: SessionState, messageId: string): ChatItem {
+function ensureAssistant(session: SessionState, messageId: string, requestId: string): ChatItem {
   const existing = session.items.find((item) => item.kind === 'assistant' && item.id === messageId)
-  if (existing) return existing
+  if (existing) {
+    if (existing.requestId === undefined && requestId !== '') existing.requestId = requestId
+    return existing
+  }
   const created: ChatItem = {
     id: messageId,
     kind: 'assistant',
     content: '',
     tools: [],
+    ...(requestId === '' ? {} : { requestId }),
     streaming: true,
     startedAt: Date.now(),
   }
@@ -110,6 +115,8 @@ export function applyEvent(clientId: string, sessionId: string, event: AgentEven
       )
       if (optimistic) {
         optimistic.id = `user-${event.seq}`
+        optimistic.requestId = event.requestId
+        optimistic.createdAt = event.createdAt
         break
       }
       session.items.push({
@@ -117,6 +124,8 @@ export function applyEvent(clientId: string, sessionId: string, event: AgentEven
         kind: 'user',
         content: event.content,
         tools: [],
+        requestId: event.requestId,
+        createdAt: event.createdAt,
       })
       break
     }
@@ -124,6 +133,7 @@ export function applyEvent(clientId: string, sessionId: string, event: AgentEven
       // 入队而非直接写：同一帧内的多条增量合并成一次 apply（见文件头的流式合并说明）
       streamBuffer.push(streamKeyOf(clientId, sessionId, event.messageId), {
         kind: 'text',
+        requestId: event.requestId,
         delta: event.delta,
       })
       break
@@ -131,12 +141,13 @@ export function applyEvent(clientId: string, sessionId: string, event: AgentEven
     case 'reasoning': {
       streamBuffer.push(streamKeyOf(clientId, sessionId, event.messageId), {
         kind: 'reasoning',
+        requestId: event.requestId,
         delta: event.delta,
       })
       break
     }
     case 'tool': {
-      const item = ensureAssistant(session, event.messageId)
+      const item = ensureAssistant(session, event.messageId, event.requestId)
       const call = event.call
       const existing = item.tools.find((tool) => tool.id === call.id)
       if (existing) {

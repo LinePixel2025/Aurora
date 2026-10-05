@@ -39,7 +39,7 @@ describe('normalizeSessionId', () => {
 describe('SessionStore', () => {
   it('追加消息并原子落盘（含工具消息）', async () => {
     const { store, fs } = setup()
-    await store.append('quick', { role: 'user', content: '你好' })
+    await store.append('quick', { role: 'user', content: '你好', requestId: 'req-1' })
     await store.append('quick', {
       role: 'assistant',
       content: '',
@@ -55,9 +55,10 @@ describe('SessionStore', () => {
       sessionId: string
       messages: StoredMessage[]
     }
-    expect(persisted.version).toBe(6)
+    expect(persisted.version).toBe(7)
     expect(persisted.sessionId).toBe('quick')
     expect(persisted.messages).toHaveLength(3)
+    expect(persisted.messages[0]?.requestId).toBe('req-1')
     expect(persisted.messages[2]?.toolCallId).toBe('c1')
     // 没有 meta 的会话不该凭空多出一个 `"meta": {}`（老文件形状保持不变）
     expect('meta' in persisted).toBe(false)
@@ -221,6 +222,7 @@ describe('SessionStore', () => {
     await store.append('quick', {
       role: 'assistant',
       content: 'a1',
+      requestId: 'req-history',
       toolCalls: [
         {
           id: 'c1',
@@ -248,6 +250,7 @@ describe('SessionStore', () => {
     })
 
     const history = await store.rendererHistory('quick')
+    expect(history[0]?.requestId).toBe('req-history')
     const calls = history[0]?.toolCalls ?? []
     expect(calls[0]).toMatchObject({
       id: 'c1',
@@ -316,7 +319,7 @@ describe('SessionStore', () => {
     const persisted = JSON.parse(fs.files.get(`${SESSION_DIR}\\quick.json`) ?? '{}') as {
       version: number
     }
-    expect(persisted.version).toBe(6)
+    expect(persisted.version).toBe(7)
   })
 
   it('listSessions 合并内存与磁盘会话', async () => {
@@ -378,9 +381,7 @@ describe('SessionStore · 会话列表与新建（chat:sessions / chat:newSessio
     const { store, fs } = setup()
     await store.append('main', { role: 'user', content: '原始需求很长很长' })
     await expect(store.setTitle('main', '整理数学作业')).resolves.toBe(true)
-    expect((await store.summaries()).find((item) => item.id === 'main')?.title).toBe(
-      '整理数学作业',
-    )
+    expect((await store.summaries()).find((item) => item.id === 'main')?.title).toBe('整理数学作业')
     expect(metaOf(fs, 'main')['title']).toBe('整理数学作业')
 
     const reopened = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
@@ -912,7 +913,7 @@ describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 
 
     // setArchived 是 await 写盘的（不靠 300ms 防抖），因此此刻盘上已是最终内容
     const persisted = readFile(fs, 'quick')
-    expect(persisted['version']).toBe(6)
+    expect(persisted['version']).toBe(7)
     expect(metaOf(fs, 'quick')['archived']).toBe(true)
     expect(typeof metaOf(fs, 'quick')['archivedAt']).toBe('string')
 
@@ -981,7 +982,7 @@ describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 
     await store.setArchived('empty-one', true)
 
     const persisted = readFile(fs, 'empty-one')
-    expect(persisted['version']).toBe(6)
+    expect(persisted['version']).toBe(7)
     expect(persisted['messages']).toEqual([])
     expect(metaOf(fs, 'empty-one')['archived']).toBe(true)
     expect((await store.summaries()).find((item) => item.id === 'empty-one')?.title).toBe('新会话')

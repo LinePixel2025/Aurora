@@ -1351,6 +1351,22 @@ describe('job 生命周期（v15）', () => {
     expect(summaries.at(-1)?.job.lastStep).toBe('echo ✓')
   })
 
+  it('同一请求落盘的用户 / 助手 / 工具消息共享 requestId', async () => {
+    const harness = await createHarness({
+      rounds: [
+        { toolCalls: [{ id: 'c-request', name: 'echo', arguments: '{"text":"q"}' }] },
+        { text: '完成' },
+      ],
+    })
+
+    const { requestId } = await harness.send('请求分组')
+    await harness.waitForDone()
+
+    const messages = await harness.sessions.get('quick')
+    expect(messages.length).toBeGreaterThanOrEqual(3)
+    expect(messages.every((message) => message.requestId === requestId)).toBe(true)
+  })
+
   it('轮次用尽且没有自动续轮额度 → job 落 paused / pendingReason max-rounds', async () => {
     const fs = new TestFileSystem()
     const jobs = createJobs(fs, tickingClock())

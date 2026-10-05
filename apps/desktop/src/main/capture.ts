@@ -5362,7 +5362,9 @@ export function chatStreamBurstCheck(markers: {
     const markers = ${markerLiteral}
     const assistants = Array.from(document.querySelectorAll('.message.r-assistant'))
     const lastAssistant = assistants[assistants.length - 1]
-    const lastMarkdown = lastAssistant === undefined ? null : lastAssistant.querySelector('.md')
+    // 请求级折叠后，展开体里的中间 work-message 也是 .md；只取气泡直属的最终正文。
+    const lastMarkdown =
+      lastAssistant === undefined ? null : lastAssistant.querySelector('.bubble > .md')
     const lastContent = lastMarkdown === null ? '' : (lastMarkdown.textContent || '')
     const contentHasStart = lastContent.indexOf(markers.textStart) !== -1
     const contentHasEnd = lastContent.indexOf(markers.textEnd) !== -1
@@ -10646,7 +10648,7 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
   )
   const imageSeedAt = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString()
   const imageSeed = {
-    version: 6,
+    version: 7,
     sessionId: 'chat-seed-images',
     updatedAt: imageSeedAt,
     messages: [
@@ -10655,12 +10657,14 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
         role: 'user',
         content: '展示一下生成结果',
         createdAt: imageSeedAt,
+        requestId: 'capture-image-request',
       },
       {
         id: 'capture-image-a1',
         role: 'assistant',
-        content: '完成，图片如下。',
+        content: '我来生成一张教学图，完成后核对内容。',
         createdAt: imageSeedAt,
+        requestId: 'capture-image-request',
         toolCalls: [
           {
             id: 'capture-image-t1',
@@ -10679,6 +10683,13 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
             ],
           },
         ],
+      },
+      {
+        id: 'capture-image-a2',
+        role: 'assistant',
+        content: '图已生成，内容与标题、方程式和装置标注均已核对。',
+        createdAt: new Date(Date.parse(imageSeedAt) + 1_000).toISOString(),
+        requestId: 'capture-image-request',
       },
     ],
     meta: { projectId: 'capture' },
@@ -10979,6 +10990,12 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
           const fallback = document.querySelector(
             '[data-field="chat.display-images"] .display-image-fallback',
           )
+          const trace = document.querySelector('.message.r-assistant .trace')
+          const finalMd = Array.from(
+            document.querySelectorAll('.message.r-assistant .bubble > .md'),
+          ).find((node) => (node.textContent || '').includes('图已生成'))
+          const work = trace === null ? null : trace.querySelector('.work-message')
+          const traceBody = trace === null ? null : trace.querySelector('.trace-body')
           const root = getComputedStyle(document.documentElement)
           reading = {
             count: document.querySelectorAll('[data-field="chat.display-images"] figure').length,
@@ -10986,6 +11003,25 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
             complete: image !== null && image.complete,
             naturalWidth: image === null ? 0 : image.naturalWidth,
             caption: figure === null ? '' : (figure.querySelector('figcaption')?.textContent || '').trim(),
+            assistantCount: document.querySelectorAll('.message.r-assistant').length,
+            traceCount: document.querySelectorAll('.message.r-assistant .trace').length,
+            traceCollapsed:
+              trace !== null &&
+              !trace.classList.contains('open') &&
+              traceBody !== null &&
+              Math.round(traceBody.getBoundingClientRect().height) === 0,
+            workDetail:
+              work !== null && (work.textContent || '').includes('我来生成一张教学图'),
+            finalBeforeImage:
+              finalMd !== null &&
+              image !== null &&
+              finalMd.getBoundingClientRect().top <= image.getBoundingClientRect().top,
+            traceBeforeFinal:
+              trace !== null &&
+              finalMd !== null &&
+              trace.getBoundingClientRect().top <= finalMd.getBoundingClientRect().top,
+            summary: trace === null ? '' : (trace.querySelector('.trace-summary')?.textContent || '').trim(),
+            duration: trace === null ? '' : (trace.querySelector('.trace-duration')?.textContent || '').trim(),
             leakedPath:
               (document.body.textContent || '').includes('capture-project') &&
               (document.body.textContent || '').includes('display-image-proof.png'),
@@ -11000,6 +11036,13 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
           count: reading !== null && reading.count === 1,
           decoded: reading !== null && reading.complete && reading.naturalWidth > 0,
           caption: reading !== null && reading.caption === '最终效果',
+          singleAssistant: reading !== null && reading.assistantCount === 1,
+          singleTrace: reading !== null && reading.traceCount === 1,
+          collapsed: reading !== null && reading.traceCollapsed === true,
+          workDetail: reading !== null && reading.workDetail === true,
+          order: reading !== null && reading.traceBeforeFinal && reading.finalBeforeImage,
+          stepSummary: reading !== null && reading.summary.includes('1 步'),
+          totalDuration: reading !== null && reading.duration.includes('总用时'),
           noPathLeak: reading !== null && reading.leakedPath === false,
           harmonyFont: reading !== null && reading.bodyFont.includes('HarmonyOS Sans'),
           monoPreserved:

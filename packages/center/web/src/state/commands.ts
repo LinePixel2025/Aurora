@@ -147,6 +147,8 @@ function historyToAssistant(msg: CenterSessionHistoryMessage): ChatItem {
     id: msg.id,
     kind: 'assistant',
     content: msg.content,
+    ...(msg.requestId === undefined ? {} : { requestId: msg.requestId }),
+    createdAt: Date.parse(msg.createdAt) || Date.now(),
     ...(msg.reasoning === undefined || msg.reasoning === '' ? {} : { reasoning: msg.reasoning }),
     tools: (msg.toolCalls ?? []).map((call) => ({
       id: call.id,
@@ -237,6 +239,8 @@ function mergeHistory(session: SessionState, history: CenterSessionHistoryMessag
         kind: 'user',
         content: msg.content,
         tools: [],
+        ...(msg.requestId === undefined ? {} : { requestId: msg.requestId }),
+        createdAt: Date.parse(msg.createdAt) || Date.now(),
       })
       continue
     }
@@ -577,6 +581,7 @@ export async function sendInput(session: SessionState, text: string): Promise<vo
     kind: 'user',
     content: trimmed,
     tools: [],
+    createdAt: Date.now(),
   })
   session.pending = true
   try {

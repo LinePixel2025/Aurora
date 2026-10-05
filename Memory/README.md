@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-06 | Agent 对话流按请求折叠，图片后置且流式期不能做最终消息分组                     | agent, 渲染, 性能, 会话, 坑            | [2026-10-06-agent-request-turn-grouping.md](2026-10-06-agent-request-turn-grouping.md)                       |
 | 2026-10-05 | 会话自动标题是异步侧链路，不能阻塞回复或回填旧会话                             | session, title, agent, IPC, 坑         | [2026-10-05-session-auto-title.md](2026-10-05-session-auto-title.md)                                         |
 | 2026-10-05 | 自动化详情改为单例独立窗口，弹层不再受主区层级影响                             | UI, automation, window, IPC            | [2026-10-05-automation-standalone-window.md](2026-10-05-automation-standalone-window.md)                     |
 | 2026-10-05 | 提示条置顶需要 screen-saver 等级与 watchdog 恢复                               | edge-bar, Windows, 窗口, 坑            | [2026-10-05-edge-bar-topmost-watchdog.md](2026-10-05-edge-bar-topmost-watchdog.md)                           |

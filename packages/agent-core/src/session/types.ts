@@ -55,6 +55,8 @@ export interface StoredMessage {
   content: string
   /** ISO 时间戳 */
   createdAt: string
+  /** 产生这条消息的 Agent 请求 id；旧文件缺省。 */
+  requestId?: string
   /** assistant 消息发起的工具调用 */
   toolCalls?: StoredToolCall[]
   /**
@@ -274,6 +276,8 @@ export interface NewMessage {
   id?: string
   role: StoredRole
   content: string
+  /** 产生这条消息的 Agent 请求 id；装配层统一注入。 */
+  requestId?: string
   toolCalls?: StoredToolCall[]
   toolCallId?: string
   /** assistant 消息的思考链全文（不参与 API 请求构造） */
@@ -295,5 +299,7 @@ export interface NewMessage {
  * 旧文件天然合法；版本号只用于说明"这个文件可能带提问记录"。
  * v4 → v5：工具调用新增可选 `displayImages`（对话图片展示，docs/06 §14）。
  * 同样零迁移：缺字段 = 没有展示图片，旧文件天然合法。
+ * v6 → v7：消息新增可选 `requestId`（请求级工作折叠 / 总用时）。同款零迁移：
+ * 缺字段 = 老历史，由渲染层按相邻助手消息回退分组。
  */
-export const SESSION_FILE_VERSION = 6 as const
+export const SESSION_FILE_VERSION = 7 as const

@@ -64,7 +64,10 @@ import {
   ICON_CHECK,
   ICON_COPY,
   createChartHydrator,
+  formatTurnDuration,
+  groupAgentTurns,
   renderMarkdown,
+  selectFinalAssistant,
   type ChartHydrator,
 } from '@aurora/shared/browser'
 import { parseTaskInput, parseTodoWriteInput } from '../agentTodo.js'
@@ -101,6 +104,13 @@ const props = withDefaults(
      * 收拢路径，重复调用幂等。
      */
     settledRequestId?: string | null
+    /** 最近一次正常完成的时刻（请求级总用时终点）；历史水合时为 null。 */
+    settledAt?: number | null
+    /**
+     * 最近一段是否允许按请求折叠。发送中 / 失败 / 暂停为 false，历史水合为 true；
+     * 更早的已完成请求不受它影响。
+     */
+    latestTurnGroupable?: boolean
     /**
      * 当前会话 id（2026-10-03 会话状态增强）：显示状态（折叠 / 展开 / 已结算动画 / 图片预览）
      * 按会话分桶存在**模块级**缓存里，调用方须以 `:key="sessionId"` 让组件随会话重挂载 ——
@@ -118,6 +128,8 @@ const props = withDefaults(
     showThinking: true,
     thinkingTargetId: null,
     settledRequestId: null,
+    settledAt: null,
+    latestTurnGroupable: true,
     sessionId: '',
   },
 )
@@ -212,6 +224,122 @@ function displayImagesOf(message: ChatMessage): ChatDisplayImage[] {
     }
   }
   return images
+}
+
+interface AssistantTurnGroup {
+  key: string
+  requestId?: string
+  messages: ChatMessage[]
+  final: ChatMessage
+  startedAt: number
+  isLast: boolean
+}
+
+interface AgentTraceView {
+  key: string
+  target: ChatMessage
+  messages: ChatMessage[]
+  /** 有值时表示请求级折叠，正文只保留这一条。 */
+  finalId?: string
+  summary: string
+  running: boolean
+  failed: boolean
+  duration: string
+}
+
+/**
+ * 请求级分组只负责“哪些消息合成一个工作胶囊”。最终结论取最后一条正文非空消息；
+ * 纯思考 / 纯工具轮没有可展示的结论时不启用分组，继续走原来的逐消息轨迹。
+ */
+const assistantTurnGroups = computed<AssistantTurnGroup[]>(() => {
+  const candidates: Array<{
+    key: string
+    requestId?: string
+    messages: ChatMessage[]
+    startedAt: number
+  }> = []
+  let previousUser: ChatMessage | undefined
+
+  for (const row of groupAgentTurns(props.messages)) {
+    if (row.kind === 'message') {
+      if (row.message.role === 'user') previousUser = row.message
+      continue
+    }
+    const requestId = row.requestId
+    const userMatches =
+      previousUser !== undefined &&
+      ((requestId === undefined && previousUser.requestId === undefined) ||
+        (requestId !== undefined && previousUser.requestId === requestId))
+    candidates.push({
+      key: row.key,
+      ...(requestId === undefined ? {} : { requestId }),
+      messages: [...row.messages],
+      startedAt: (userMatches ? previousUser!.createdAt : row.messages[0]!.createdAt) || 0,
+    })
+  }
+
+  const groups: AssistantTurnGroup[] = []
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index]
+    if (candidate === undefined) continue
+    // 正在流式的最后一段不做 final 选择：它会读 growing content，令整段分组在每个 token 重算。
+    if (props.streaming && index === candidates.length - 1) continue
+    const final = selectFinalAssistant(candidate.messages)
+    if (final === undefined) continue
+    groups.push({
+      ...candidate,
+      final,
+      isLast: index === candidates.length - 1,
+    })
+  }
+  return groups
+})
+
+/** 实际切换为请求级折叠的最终消息 → 分组。发送中 / 失败 / 暂停的最后一组被排除。 */
+const groupedFinalById = computed<Map<string, AssistantTurnGroup>>(() => {
+  const grouped = new Map<string, AssistantTurnGroup>()
+  for (const group of assistantTurnGroups.value) {
+    if (props.streaming && group.isLast) continue
+    if (group.isLast && !props.latestTurnGroupable) continue
+    grouped.set(group.final.id, group)
+  }
+  return grouped
+})
+
+const groupedWorkIds = computed<Set<string>>(() => {
+  const ids = new Set<string>()
+  for (const group of groupedFinalById.value.values()) {
+    for (const message of group.messages) {
+      if (message.id !== group.final.id) ids.add(message.id)
+    }
+  }
+  return ids
+})
+
+function groupForFinal(message: ChatMessage): AssistantTurnGroup | undefined {
+  return groupedFinalById.value.get(message.id)
+}
+
+function isGroupedWorkMessage(message: ChatMessage): boolean {
+  return groupedWorkIds.value.has(message.id)
+}
+
+function displayImagesOfMessages(messages: readonly ChatMessage[]): ChatDisplayImage[] {
+  const images: ChatDisplayImage[] = []
+  const seen = new Set<string>()
+  for (const message of messages) {
+    for (const image of displayImagesOf(message)) {
+      if (seen.has(image.id)) continue
+      seen.add(image.id)
+      images.push(image)
+    }
+  }
+  return images
+}
+
+function displayImagesForMessage(message: ChatMessage): ChatDisplayImage[] {
+  const group = groupForFinal(message)
+  return group === undefined ? displayImagesOf(message) : displayImagesOfMessages(group.messages)
 }
 
 /** 这条消息正在合成 / 正在播放；两者互斥，由 `useTts` 的状态决定。 */
@@ -820,6 +948,150 @@ function traceDuration(message: ChatMessage): string {
   return seconds < 0.1 ? '<0.1s' : `${seconds.toFixed(1)}s`
 }
 
+function callsOfMessages(messages: readonly ChatMessage[]): AgentToolCall[] {
+  const calls: AgentToolCall[] = []
+  const seen = new Set<string>()
+  for (const message of messages) {
+    for (const call of message.toolCalls ?? []) {
+      if (seen.has(call.id)) continue
+      seen.add(call.id)
+      calls.push(call)
+    }
+  }
+  return calls
+}
+
+function traceSummaryOfMessages(messages: readonly ChatMessage[], running: boolean): string {
+  const parts: string[] = []
+  if (props.showThinking && messages.some((message) => (message.reasoning ?? '') !== '')) {
+    parts.push(running ? '思考中…' : THINKING_LABEL)
+  }
+  const calls = callsOfMessages(messages)
+  if (calls.length > 0) {
+    parts.push(`${calls.length} 步`)
+    const failed = calls.filter((call) => call.state === 'error').length
+    if (failed > 0) parts.push(`${failed} 个失败`)
+  }
+  return parts.length === 0 ? '执行轨迹' : parts.join(' · ')
+}
+
+function groupDuration(group: AssistantTurnGroup): string {
+  const end =
+    group.isLast && props.settledAt !== null && props.settledAt !== undefined
+      ? props.settledAt
+      : group.final.createdAt
+  if (group.startedAt <= 0 || end < group.startedAt) return ''
+  const value = formatTurnDuration(end - group.startedAt)
+  return value === '' ? '' : `总用时 ${value}`
+}
+
+/**
+ * 每条可展示消息映射到一把轨迹。请求级分组只映射到最终消息；其它消息仍是自己一条。
+ * `target` 仅用于兼容既有探针锚点与点击出口。
+ */
+const traceViewsByMessageId = computed<Map<string, AgentTraceView>>(() => {
+  const views = new Map<string, AgentTraceView>()
+  for (const group of groupedFinalById.value.values()) {
+    const calls = callsOfMessages(group.messages)
+    views.set(group.final.id, {
+      key: group.key,
+      target: group.final,
+      messages: group.messages,
+      finalId: group.final.id,
+      summary: traceSummaryOfMessages(group.messages, false),
+      running: false,
+      failed: calls.some((call) => call.state === 'error'),
+      duration: groupDuration(group),
+    })
+  }
+
+  for (const message of props.messages) {
+    if (views.has(message.id) || message.role !== 'assistant' || !hasTrace(message)) continue
+    views.set(message.id, {
+      key: message.id,
+      target: message,
+      messages: [message],
+      summary: traceSummary(message),
+      running: traceRunning(message),
+      failed: traceFailed(message),
+      duration: traceDuration(message),
+    })
+  }
+  return views
+})
+
+function traceViewOf(message: ChatMessage): AgentTraceView | undefined {
+  return traceViewsByMessageId.value.get(message.id)
+}
+
+function traceOpenView(view: AgentTraceView): boolean {
+  if (view.finalId === undefined) return traceOpen(view.target)
+  if (
+    traceOpenedIds.has(view.key) ||
+    view.messages.some((message) => traceOpenedIds.has(message.id))
+  ) {
+    return true
+  }
+  if (historyFoldedIds.has(view.key)) return false
+  return false
+}
+
+function toggleTraceView(view: AgentTraceView): void {
+  if (view.finalId === undefined) {
+    toggleTrace(view.target)
+    return
+  }
+  const memberIds = view.messages.map((message) => message.id)
+  if (traceOpenView(view)) {
+    traceOpenedIds.delete(view.key)
+    for (const id of memberIds) traceOpenedIds.delete(id)
+    historyFoldedIds.add(view.key)
+  } else {
+    traceOpenedIds.add(view.key)
+    historyFoldedIds.delete(view.key)
+  }
+  restick()
+}
+
+function traceMessagesOf(message: ChatMessage): ChatMessage[] {
+  return traceViewOf(message)?.messages ?? []
+}
+
+function traceOpenOf(message: ChatMessage): boolean {
+  const view = traceViewOf(message)
+  return view === undefined ? false : traceOpenView(view)
+}
+
+function traceSummaryOf(message: ChatMessage): string {
+  return traceViewOf(message)?.summary ?? ''
+}
+
+function traceRunningOf(message: ChatMessage): boolean {
+  return traceViewOf(message)?.running ?? false
+}
+
+function traceFailedOf(message: ChatMessage): boolean {
+  return traceViewOf(message)?.failed ?? false
+}
+
+function traceDurationOf(message: ChatMessage): string {
+  return traceViewOf(message)?.duration ?? ''
+}
+
+function traceFinalIdOf(message: ChatMessage): string | undefined {
+  return traceViewOf(message)?.finalId
+}
+
+function isWorkText(detail: ChatMessage, finalMessage: ChatMessage): boolean {
+  const finalId = traceFinalIdOf(finalMessage)
+  return finalId !== undefined && detail.id !== finalId && detail.content !== ''
+}
+
+function toggleTraceOf(message: ChatMessage): void {
+  const view = traceViewOf(message)
+  if (view !== undefined) toggleTraceView(view)
+}
+
 /**
  * 工具行的探针锚点：todo / task 行各有一个，其余行不带（`undefined` 时 Vue 省略属性）。
  * 判定逻辑与 `AgentToolRow` 里的一致（解析失败即回落通用行）。
@@ -1038,23 +1310,23 @@ async function onContentClick(event: MouseEvent): Promise<void> {
       否则被换掉的消息会以「只改透明度、不脱离文档流」的方式占位 250ms，与新消息同时存在。
     -->
     <TransitionGroup name="rise" :css="!swapping">
-      <article
-        v-for="message in messages"
-        :key="message.id"
-        class="message"
-        :class="[`r-${message.role}`, { error: message.error, pending: message.pending }]"
-      >
-        <span class="avatar" aria-hidden="true">
-          {{ message.role === 'user' ? '我' : message.role === 'assistant' ? 'A' : 'S' }}
-        </span>
-        <div class="bubble">
-          <!-- 附件 chip（docs/07 §2.3）：只显示文件名，正文已在主进程提取并入上下文 -->
-          <div v-if="(message.attachments?.length ?? 0) > 0" class="attached">
-            <span v-for="name in message.attachments" :key="name" class="attached-chip tiny">
-              {{ name }}
-            </span>
-          </div>
-          <!--
+      <template v-for="message in messages" :key="message.id">
+        <article
+          v-if="!isGroupedWorkMessage(message)"
+          class="message"
+          :class="[`r-${message.role}`, { error: message.error, pending: message.pending }]"
+        >
+          <span class="avatar" aria-hidden="true">
+            {{ message.role === 'user' ? '我' : message.role === 'assistant' ? 'A' : 'S' }}
+          </span>
+          <div class="bubble">
+            <!-- 附件 chip（docs/07 §2.3）：只显示文件名，正文已在主进程提取并入上下文 -->
+            <div v-if="(message.attachments?.length ?? 0) > 0" class="attached">
+              <span v-for="name in message.attachments" :key="name" class="attached-chip tiny">
+                {{ name }}
+              </span>
+            </div>
+            <!--
             **执行轨迹**（2026-09-30 轨迹视觉重构，docs/07 §2.3）：一条助手消息的
             「思考 + 工具调用」收进一个容器 —— 折叠态是一行摘要（`AgentTrace` 的一行），
             展开态是左缘竖脊 + 节点圆点。
@@ -1065,140 +1337,146 @@ async function onContentClick(event: MouseEvent): Promise<void> {
             文案（含「已深度思考」）与 `.thinking.streaming .thinking-text` —— 整块 `v-if`
             会让那两条断言在折叠态直接失效。位置仍在正文`.md`**之前**（探针按 DOM 先后断言）。
           -->
-          <AgentTrace
-            v-if="message.role === 'assistant' && hasTrace(message)"
-            :open="traceOpen(message)"
-            :summary="traceSummary(message)"
-            :running="traceRunning(message)"
-            :failed="traceFailed(message)"
-            :duration="traceDuration(message)"
-            @toggle="toggleTrace(message)"
-          >
-            <!--
-              思考过程折叠块（BetaV2）：受 `showThinking`（general.chat.showThinking）门控，
-              关闭时整块不渲染。文案恒为「已深度思考」（`thinkingLabel` 的注释说明了原因），
-              「思考中…」只在轨迹摘要行里出现。
-            -->
-            <div
-              v-if="showThinking && (message.reasoning ?? '') !== ''"
-              class="thinking"
-              :class="[
-                { open: isThinkingOpen(message.id), streaming: thinkingTargetId === message.id },
-              ]"
-              :data-field="thinkingTargetId === message.id ? 'chat.thinking-live' : undefined"
+            <AgentTrace
+              v-if="traceViewOf(message)"
+              :open="traceOpenOf(message)"
+              :summary="traceSummaryOf(message)"
+              :running="traceRunningOf(message)"
+              :failed="traceFailedOf(message)"
+              :duration="traceDurationOf(message)"
+              @toggle="toggleTraceOf(message)"
             >
-              <button
-                type="button"
-                class="thinking-head"
-                :aria-expanded="isThinkingOpen(message.id)"
-                @click="toggleThinkingAndStick(message.id)"
-              >
+              <template v-for="detail in traceMessagesOf(message)" :key="detail.id">
                 <!--
-                  流式期间的一枚**公转指示点**（旋转，不是轨迹那条横向平移扫光）：
-                  旋转由全局 `.spin`（`aurora-spin` + `--dur-spin`）提供 —— scoped 里的
-                  @keyframes 会被 Vue 改名，跨组件复用的关键帧必须走全局样式。
-                  `prefers-reduced-motion` 由 theme.css 文末的全局兜底压掉（转 1 次即停）。
-                  chevron 统一挂行尾 —— 与工具行 / 轨迹胶囊同一套行语言（2026-10-01 重塑）。
-                -->
-                <span
-                  v-if="thinkingTargetId === message.id"
-                  class="think-orbit spin"
-                  aria-hidden="true"
-                />
-                <span class="tiny thinking-label">{{ thinkingLabel() }}</span>
-                <!-- 已思考的秒数：只在流式接收思考期间出现，结束后回到纯「已深度思考」文案 -->
-                <span v-if="thinkingTargetId === message.id" class="tiny thinking-elapsed">
-                  {{ thinkingSeconds }}s
-                </span>
-                <span class="grow" />
-                <ChevronRight class="chevron" :size="13" :stroke-width="1.8" aria-hidden="true" />
-              </button>
-              <!--
-                思考正文一律走**纯淡入**（`fade`），不做高度动画。
-                原因：这块内容在流式期间会以 token 速率持续长高，而高度动画的终点是
-                「点开那一刻量到的高度」，过渡期间 `.collapse-*-active` 的 `overflow: hidden`
-                会把后长出来的部分裁掉 —— 过渡类一摘就是一次可见的补跳
-                （docs/07 §5.2 硬约定②）。轨迹容器同理。
+                思考过程折叠块（BetaV2）：受 `showThinking`（general.chat.showThinking）门控，
+                关闭时整块不渲染。请求级折叠展开后，每一轮的思考都按原顺序保留在这里。
               -->
-              <Transition name="fade">
-                <div v-if="isThinkingOpen(message.id)" class="thinking-body">
-                  <!-- 流式期间尾部带光标，读起来是"还在写"而不是"卡住了" -->
-                  <p class="thinking-text" @scroll.passive="onThinkScroll">
-                    {{ message.reasoning }}
-                  </p>
-                  <span
-                    v-if="thinkingTargetId === message.id"
-                    class="streaming-caret thinking-caret"
-                    aria-hidden="true"
-                  />
+                <div
+                  v-if="showThinking && (detail.reasoning ?? '') !== ''"
+                  class="thinking"
+                  :class="[
+                    {
+                      open: isThinkingOpen(detail.id),
+                      streaming: thinkingTargetId === detail.id,
+                    },
+                  ]"
+                  :data-field="thinkingTargetId === detail.id ? 'chat.thinking-live' : undefined"
+                >
+                  <button
+                    type="button"
+                    class="thinking-head"
+                    :aria-expanded="isThinkingOpen(detail.id)"
+                    @click="toggleThinkingAndStick(detail.id)"
+                  >
+                    <span
+                      v-if="thinkingTargetId === detail.id"
+                      class="think-orbit spin"
+                      aria-hidden="true"
+                    />
+                    <span class="tiny thinking-label">{{ thinkingLabel() }}</span>
+                    <span v-if="thinkingTargetId === detail.id" class="tiny thinking-elapsed">
+                      {{ thinkingSeconds }}s
+                    </span>
+                    <span class="grow" />
+                    <ChevronRight
+                      class="chevron"
+                      :size="13"
+                      :stroke-width="1.8"
+                      aria-hidden="true"
+                    />
+                  </button>
+                  <Transition name="fade">
+                    <div v-if="isThinkingOpen(detail.id)" class="thinking-body">
+                      <p class="thinking-text" @scroll.passive="onThinkScroll">
+                        {{ detail.reasoning }}
+                      </p>
+                      <span
+                        v-if="thinkingTargetId === detail.id"
+                        class="streaming-caret thinking-caret"
+                        aria-hidden="true"
+                      />
+                    </div>
+                  </Transition>
                 </div>
-              </Transition>
-            </div>
 
-            <!-- 工具执行行：todo_write / task 有结构化行首，其余为通用行（docs/06 §5） -->
-            <TransitionGroup
-              v-if="(message.toolCalls?.length ?? 0) > 0"
-              name="tool"
-              tag="div"
-              class="tools"
-            >
-              <AgentToolRow
-                v-for="call in message.toolCalls"
-                :key="call.id"
-                :call="call"
-                :open="isOpen(call.id)"
-                :settled="isSettled(call.id)"
-                :duration="toolDuration(call)"
-                :data-field="cardField(call)"
-                @toggle="toggleToolRow(call.id)"
-              />
-            </TransitionGroup>
-          </AgentTrace>
-          <span v-if="message.pending && message.content === ''" class="typing">
-            <i /><i /><i />
-          </span>
-          <!-- 安全说明：内容先经 renderMarkdown 转义，再套用白名单标记（见 shared/markdown.ts） -->
-          <!-- eslint-disable-next-line vue/no-v-html -->
-          <div v-else-if="message.content !== ''" class="md" v-html="htmlOf(message)" />
-          <DisplayImageGallery
-            v-if="displayImagesOf(message).length > 0"
-            :images="displayImagesOf(message)"
-            :session-id="props.sessionId"
-          />
+                <!-- 工具执行行：todo_write / task 有结构化行首，其余为通用行（docs/06 §5） -->
+                <TransitionGroup
+                  v-if="(detail.toolCalls?.length ?? 0) > 0"
+                  name="tool"
+                  tag="div"
+                  class="tools"
+                >
+                  <AgentToolRow
+                    v-for="call in detail.toolCalls"
+                    :key="call.id"
+                    :call="call"
+                    :open="isOpen(call.id)"
+                    :settled="isSettled(call.id)"
+                    :duration="toolDuration(call)"
+                    :data-field="cardField(call)"
+                    @toggle="toggleToolRow(call.id)"
+                  />
+                </TransitionGroup>
 
-          <!--
+                <!-- 工作期间的中间正文也属于过程；最终结论的正文只在外层渲染一次。 -->
+                <!-- eslint-disable vue/no-v-html -->
+                <div
+                  v-if="isWorkText(detail, message)"
+                  class="md work-message"
+                  v-html="htmlOf(detail)"
+                />
+                <!-- eslint-enable vue/no-v-html -->
+              </template>
+            </AgentTrace>
+            <span v-if="message.pending && message.content === ''" class="typing">
+              <i /><i /><i />
+            </span>
+            <!-- 安全说明：内容先经 renderMarkdown 转义，再套用白名单标记（见 shared/markdown.ts） -->
+            <!-- eslint-disable-next-line vue/no-v-html -->
+            <div v-else-if="message.content !== ''" class="md" v-html="htmlOf(message)" />
+            <DisplayImageGallery
+              v-if="
+                displayImagesForMessage(message).length > 0 &&
+                (!streaming || groupForFinal(message) !== undefined)
+              "
+              :images="displayImagesForMessage(message)"
+              :session-id="props.sessionId"
+            />
+
+            <!--
             朗读按钮（docs/06 §13）：正文之后。
             只在 `canSpeak` 成立时渲染 —— 未配置 TTS 时按钮**不存在**（不是 disabled）。
             播放实现只有 `useTts` 一份，这里只发事件，不碰 Audio。
           -->
-          <button
-            v-if="canSpeak(message)"
-            type="button"
-            class="speak-btn tiny"
-            :class="{ active: isSpeaking(message.id) }"
-            :disabled="isTtsLoading(message.id)"
-            :data-action="isSpeaking(message.id) ? 'stop-speak' : 'speak-message'"
-            @click="onSpeakClick(message)"
-          >
-            <!-- 合成中给个旋转指示：按钮是 disabled 的，不动的话看不出还在等 -->
-            <LoaderCircle
-              v-if="isTtsLoading(message.id)"
-              class="spin"
-              :size="12"
-              :stroke-width="1.8"
-              aria-hidden="true"
-            />
-            <Square
-              v-else-if="isSpeaking(message.id)"
-              :size="11"
-              :stroke-width="2"
-              aria-hidden="true"
-            />
-            <Volume2 v-else :size="12" :stroke-width="1.8" aria-hidden="true" />
-            {{ speakLabel(message) }}
-          </button>
-        </div>
-      </article>
+            <button
+              v-if="canSpeak(message)"
+              type="button"
+              class="speak-btn tiny"
+              :class="{ active: isSpeaking(message.id) }"
+              :disabled="isTtsLoading(message.id)"
+              :data-action="isSpeaking(message.id) ? 'stop-speak' : 'speak-message'"
+              @click="onSpeakClick(message)"
+            >
+              <!-- 合成中给个旋转指示：按钮是 disabled 的，不动的话看不出还在等 -->
+              <LoaderCircle
+                v-if="isTtsLoading(message.id)"
+                class="spin"
+                :size="12"
+                :stroke-width="1.8"
+                aria-hidden="true"
+              />
+              <Square
+                v-else-if="isSpeaking(message.id)"
+                :size="11"
+                :stroke-width="2"
+                aria-hidden="true"
+              />
+              <Volume2 v-else :size="12" :stroke-width="1.8" aria-hidden="true" />
+              {{ speakLabel(message) }}
+            </button>
+          </div>
+        </article>
+      </template>
     </TransitionGroup>
     <slot />
 
@@ -1530,6 +1808,36 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   line-height: var(--leading-relaxed);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/*
+ * 请求级折叠展开后的中间正文：与思考 / 工具行共用左缘时间线。
+ * 最终结论永远在外面保持可见，这里只承载工作期间的阶段性说明。
+ */
+.work-message {
+  position: relative;
+  padding: 4px 0 var(--space-2) 20px;
+  color: var(--text-secondary);
+}
+
+.work-message::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 10.5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  box-shadow: 0 0 0 3px var(--bg-base);
+}
+
+.work-message > :first-child {
+  margin-top: 0;
+}
+
+.work-message > :last-child {
+  margin-bottom: 0;
 }
 
 /* 光标贴在滚动区右下角：正文在滚，光标始终可见 */

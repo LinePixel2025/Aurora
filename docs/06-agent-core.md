@@ -183,7 +183,8 @@ export interface LlmProvider {
   v1 → v2 加 `meta`（上面那条）；v2 → v3 加 `StoredMessage.images`（图片附件**路径**，§3.1）；
   **v3 → v4** 加 `asks`（提问留痕，§24）；**v4 → v5（本轮）** 给工具卡加
   `displayImages`（对话图片区，§14）；**v5 → v6** 给 `meta` 加 `title` / `titleState` ——
-  五条都是**可选字段、无迁移脚本**，
+  **v6 → v7** 给消息加可选 `requestId`（请求级工作折叠与总用时）—— 六条都是
+  **可选字段、无迁移脚本**，
   读取侧宽容归化（缺字段 = 没有那个能力），版本号只用于说明"这个文件可能带什么"。
 - **会话绑定项目（v17，2026-09，`chat:setSessionProject`）**：`meta` 新增可选
   `projectId?: string`（`''` 与缺字段都算未绑定，空 meta 判定同步覆盖，不写空键）；
@@ -1674,6 +1675,9 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 - `runAgentLoop`：每轮**先领 id**（`messageId`），`text` 与 `reasoning` 增量都**立即转发**并带上它；
   该轮结束时 `append` 用**同一个 id** 落盘。于是渲染层那条"边流边渲染的半成品"与磁盘上的最终
   消息**就是同一条**，水合按 id 合并时不会把它换掉、也不会重复出现。
+- `AgentHost` 在持久化用户 / 助手 / 工具消息时统一写入本轮 `requestId`（自动续轮沿用，手动续跑
+  产生新的 requestId）。桌面端与 Center 都用它把一次请求的中间正文 / 思考 / 工具调用收成一个
+  工作胶囊；旧历史缺 requestId 时按相邻助手消息回退分组。
 
 由此带来三个直接的界面结果（见 docs/07 §2.3）：
 

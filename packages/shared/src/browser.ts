@@ -41,6 +41,8 @@ export * from './browser/composables/useCollapseTransition.js'
 // 流式增量的按帧合并缓冲（2026-10-02 迁入）：桌面端 `useChat` 与网页端 `state/events` 共用一份
 // —— 四条语义（同 key 合并 / 一帧一次 apply / 顺序保持 / flush 立即）两端必须逐字一致。
 export * from './browser/composables/deltaBuffer.js'
+// 请求级工作分组（桌面与 Center 共用同一份边界语义）。
+export * from './browser/agentTurns.js'
 
 // IPC 契约（仅类型）
 export * from './ipc/channels.js'

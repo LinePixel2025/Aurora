@@ -2293,10 +2293,21 @@ export const SCENARIOS = [
       const reading = await ctx.page.evaluate((target) => {
         const image = document.querySelector(target)
         const text = document.body.textContent ?? ''
+        const trace = document.querySelector('.assistant-body .trace')
+        const markdown = document.querySelector('.assistant-body > [data-field="chat.markdown"]')
         return {
           count: document.querySelectorAll(target).length,
           naturalWidth: image instanceof HTMLImageElement ? image.naturalWidth : 0,
           caption: image?.closest('figure')?.querySelector('figcaption')?.textContent?.trim() ?? '',
+          traceBeforeFinal:
+            trace !== null &&
+            markdown !== null &&
+            trace.getBoundingClientRect().top <= markdown.getBoundingClientRect().top,
+          finalBeforeImage:
+            markdown !== null &&
+            image !== null &&
+            markdown.getBoundingClientRect().top <= image.getBoundingClientRect().top,
+          duration: trace?.querySelector('.trace-duration')?.textContent?.trim() ?? '',
           leakedPath: text.includes('D:/secret/proof.png'),
         }
       }, selector)
@@ -2309,6 +2320,8 @@ export const SCENARIOS = [
           count: reading.count === 1,
           decoded: reading.naturalWidth > 0,
           caption: reading.caption === '最终效果',
+          order: reading.traceBeforeFinal && reading.finalBeforeImage,
+          totalDuration: reading.duration.includes('总用时'),
           commandSent: readImage?.imageId === 'img-live-1',
           noPathLeak: !reading.leakedPath,
         },

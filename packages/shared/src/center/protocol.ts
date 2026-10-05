@@ -535,6 +535,8 @@ export interface CenterSessionHistoryMessage {
   role: 'user' | 'assistant'
   content: string
   createdAt: string
+  /** 产生这条消息的 Agent 请求 id；旧客户端不下发，网页端按相邻助手消息回退分组。 */
+  requestId?: string
   reasoning?: string
   toolCalls?: CenterHistoryToolCall[]
   /**

@@ -60,6 +60,10 @@ export interface ChatItem {
   id: string
   kind: 'user' | 'assistant' | 'error' | 'job' | 'subagent' | 'ask'
   content: string
+  /** 产生这条消息的 Agent 请求 id；旧历史缺省。 */
+  requestId?: string
+  /** 用户发送 / 历史创建时刻（毫秒）；请求级总用时的起点。 */
+  createdAt?: number
   /** 思考过程增量聚合（按 messageId 归属到助手消息） */
   reasoning?: string
   tools: ToolItem[]

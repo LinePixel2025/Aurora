@@ -44,6 +44,8 @@ export interface ChatMessage {
    * user 气泡随后会由 `user-message` 广播补上 seq（同一条消息的确认）。
    */
   seq?: number
+  /** 产生这条消息的 Agent 请求 id（实时事件 / 历史回放透传）。 */
+  requestId?: string
   /** 工具执行卡片（运行中 / 成功 / 失败） */
   toolCalls?: AgentToolCall[]
   /** 本条用户消息携带的附件文件名（仅用于气泡内展示） */
@@ -69,8 +71,8 @@ export interface SubagentRun extends SubagentSnapshot {
  * 这条语义会在帧边界上翻车。
  */
 type ChatDelta =
-  | { kind: 'text'; messageId: string; seq: number; delta: string }
-  | { kind: 'reasoning'; messageId: string; seq: number; delta: string }
+  | { kind: 'text'; messageId: string; requestId: string; seq: number; delta: string }
+  | { kind: 'reasoning'; messageId: string; requestId: string; seq: number; delta: string }
 
 /** 对话上下文（原为窗口名映射；mini-chat 删除后改为显式声明，会话 id 保持不变） */
 export type ChatContext = 'main' | 'quick' | 'settings'
@@ -119,6 +121,9 @@ export function useChat(windowName: WindowName, context: ChatContext) {
    * 同一条收拢路径（幂等，重复无害）；切会话 / 清空时复位为 null。
    */
   const lastSettledRequestId = ref<string | null>(null)
+  /** 最近一次正常完成请求的时刻与可折叠标记；历史水合默认按已完成处理。 */
+  const lastSettledAt = ref<number | null>(null)
+  const latestTurnGroupable = ref(true)
   const unread = ref(false)
   const error = ref<string | null>(null)
   /** 会话列表（`chat:sessions`），仅交互窗使用 */
@@ -232,7 +237,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         for (const delta of batch.values) {
           // messageFor 必须**在 apply 时**才调用：它可能新建消息并按 seq 插入，
           // 提前调用会把「入队顺序」换成「到达顺序」，帧边界上的插入位置就会变
-          const message = messageFor(delta.messageId, delta.seq)
+          const message = messageFor(delta.messageId, delta.seq, delta.requestId)
           if (message === undefined) continue
           if (delta.kind === 'text') {
             message.content += delta.delta
@@ -303,6 +308,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
           if (existing) {
             existing.seq = event.seq
             existing.createdAt = event.createdAt
+            existing.requestId = event.requestId
           }
           break
         }
@@ -312,6 +318,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
           content,
           createdAt: event.createdAt,
           seq: event.seq,
+          requestId: event.requestId,
         })
         break
       }
@@ -319,6 +326,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         deltaBuffer.push(event.messageId, {
           kind: 'text',
           messageId: event.messageId,
+          requestId: event.requestId,
           seq: event.seq,
           delta: event.delta,
         })
@@ -328,6 +336,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         deltaBuffer.push(event.messageId, {
           kind: 'reasoning',
           messageId: event.messageId,
+          requestId: event.requestId,
           seq: event.seq,
           delta: event.delta,
         })
@@ -362,14 +371,14 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         break
       }
       case 'tool': {
-        const message = messageFor(event.messageId, event.seq)
+        const message = messageFor(event.messageId, event.seq, event.requestId)
         if (message) upsertToolCall(message, event.call)
         break
       }
       case 'subagent': {
         // 子代理进度（docs/06 §19）：同时更新工具卡上的快照（卡片就地长出进度）
         // 与「子代理」页面的实时列表
-        const message = messageFor(event.messageId, event.seq)
+        const message = messageFor(event.messageId, event.seq, event.requestId)
         if (message) patchToolCall(message, event.callId, event.subagent)
         const run: SubagentRun = { ...event.subagent, messageId: event.messageId }
         const key = run.callId === '' ? run.taskId : run.callId
@@ -398,6 +407,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         // 收尾信号（P2-20）：MessageList 的折叠收尾据此触发 —— 非本窗口发起的轮次
         // 在 `streaming` 上无边沿，只有这条显式信号能让它收拢成一行摘要。
         lastSettledRequestId.value = event.requestId
+        lastSettledAt.value = Date.now()
+        latestTurnGroupable.value = event.pendingReason === undefined
         // 任务可能刚进入 paused（轮次用尽 / 预算触顶）：立即对齐一次列表，
         // 让「继续」按钮在回复结束的同一刻出现，而不是等下一次切会话。
         void refreshJobs()
@@ -418,6 +429,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
         finishRequest(event.requestId)
         // 出错同样是「本轮收尾」：轨迹与思考块照收（与 done 同一条收拢路径，P2-20）
         lastSettledRequestId.value = event.requestId
+        lastSettledAt.value = Date.now()
+        latestTurnGroupable.value = false
         // 错误前已落盘的部分（正文 / 思考 / 工具卡）同样可能只有半截在屏，重拉对齐
         maybeResyncAfterSettle()
         break
@@ -550,9 +563,10 @@ export function useChat(windowName: WindowName, context: ChatContext) {
    * 早先一律 `push` 到末尾：一旦事件顺序略有出入（陈旧请求、水合竞态），
    * 工具卡就会挂到列表末尾的新消息上，看起来就是「顺序错乱」。
    */
-  function messageFor(messageId: string, seq: number): ChatMessage | undefined {
+  function messageFor(messageId: string, seq: number, requestId: string): ChatMessage | undefined {
     const existing = messageById(messageId)
     if (existing) {
+      if (existing.requestId === undefined) existing.requestId = requestId
       assistantId = messageId
       return existing
     }
@@ -563,6 +577,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       pending: true,
       createdAt: Date.now(),
       seq,
+      requestId,
     }
     assistantId = messageId
     insertOrdered(created)
@@ -1027,6 +1042,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     streaming.value = false
     // 收尾信号是「本会话本轮」的：切走后旧值不能在新会话里再触发一次收拢
     lastSettledRequestId.value = null
+    lastSettledAt.value = null
+    latestTurnGroupable.value = true
     activeRequest = null
     assistantId = null
     finishedRequests.clear()
@@ -1085,6 +1102,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
 
     streaming.value = true
     unread.value = false
+    lastSettledAt.value = null
+    latestTurnGroupable.value = false
     activeRequest = null
     assistantId = null
     resetReasoning()
@@ -1164,6 +1183,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     const requestId = activeRequest
     await window.aurora.chat.abort(requestId)
     streaming.value = false
+    lastSettledAt.value = null
+    latestTurnGroupable.value = false
     settleReasoning()
     settlePending()
     // 本地主动中止：紧随其后的内核事件一律丢弃（否则「已停止」之后还会继续长内容）
@@ -1180,6 +1201,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     liveSubagents.value = []
     // 清空同理：收尾信号属于「本轮」，清空后不该留着让 MessageList 再收拢一次
     lastSettledRequestId.value = null
+    lastSettledAt.value = null
+    latestTurnGroupable.value = true
     resetUsage()
     resetReasoning()
   }
@@ -1204,6 +1227,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
      * MessageList 的折叠收尾据此触发（`streaming` 边沿之外的第二个入口，docs/07 §2.3）。
      */
     lastSettledRequestId,
+    lastSettledAt,
+    latestTurnGroupable,
     /** 本会话 token 用量（输入框底部「上下文详解」的数据源，docs/07 §2.3） */
     usage,
     /** 本会话的子代理运行（「子代理」页面用，新的在前） */
@@ -1290,6 +1315,7 @@ function toChatMessage(dto: ChatMessageDto): ChatMessage {
     role: dto.role,
     content: dto.content,
     createdAt: Date.parse(dto.createdAt) || Date.now(),
+    ...(dto.requestId === undefined ? {} : { requestId: dto.requestId }),
     ...(dto.toolCalls === undefined ? {} : { toolCalls: dto.toolCalls }),
     ...(dto.reasoning === undefined || dto.reasoning === '' ? {} : { reasoning: dto.reasoning }),
   }

@@ -319,7 +319,8 @@ GET /api/client/device/info?code=<userCode>                      （无需登录
    `session.history` → 服务器按普通命令转发（授权 / 离线判定同其他命令）→ 客户端从
    SessionStore 读该会话的渲染层历史（`rendererHistory`，最近 200 条）经 `result` 回执
    带回 → 网页端映射进会话 items（助手消息按存储消息 id 对齐、用户消息按内容去重，
-   与实时事件聚合同一套口径）。**服务器不缓存任何会话内容**——历史只在回执里路过；
+   与实时事件聚合同一套口径；可选 `requestId` 用于请求级工作折叠，旧客户端缺字段时按相邻
+   助手消息回退）。**服务器不缓存任何会话内容**——历史只在回执里路过；
    `applyEvent` 对未见过的会话**补建空壳再应用**（不再丢弃），事件先于历史到达时
    按 id / 内容去重合并，历史条目排在实时条目之前；
 8. **可见性变更的客户端同步（v0.2.4 起）**：`session.visibility` 在客户端落盘成功后，
@@ -389,7 +390,7 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
 | 命令（web → server → client） | 语义与边界 |
 |---|---|
 | `session.list` | 枚举客户端的 `center-` 会话（`CenterSessionSummary[]`：标题 / 更新时间 / projectId / 权限覆盖 / 可见性 / 模型覆盖 `llm`） |
-| `session.history`（v0.2.4） | 拉取某个 `center-` 会话的历史（`CenterSessionHistoryMessage[]`，`result.data` 携带；客户端只回 `center-` 前缀会话，最近 200 条）。条目含 `kind: 'message' \| 'ask'`：`ask` 是提问留痕（本轮，渲染成只读已结算卡）。仅用于网页端打开会话时的回放，服务器不缓存 |
+| `session.history`（v0.2.4） | 拉取某个 `center-` 会话的历史（`CenterSessionHistoryMessage[]`，`result.data` 携带；客户端只回 `center-` 前缀会话，最近 200 条）。条目含 `kind: 'message' \| 'ask'`：`ask` 是提问留痕（本轮，渲染成只读已结算卡）；普通消息可带 `requestId` 供请求级折叠。仅用于网页端打开会话时的回放，服务器不缓存 |
 | `session.readImage`（v27） | 网页按 `{ sessionId, imageId }` 拉取助手消息图片区的一张图片。客户端从会话工具卡查 imageId、再次校验路径后返回 `{ dataUrl, name, mime }`；本地路径不离开客户端，服务器只转发不缓存 |
 | `session.activate` | 让客户端主界面切到指定会话（经 `chat:remoteActivate` 推送通道驱动渲染层 `switchSession`；会话未落盘时客户端兜底创建） |
 | `session.visibility` | 开关该会话在客户端左栏的可见性（`SessionMeta.centerVisible`，缺省可见；隐藏仍可远程输入）。落盘成功后客户端经 `chat:centerVisibilityChanged` 推送通知渲染层重拉会话列表（v0.2.4） |
@@ -535,6 +536,8 @@ aurora-center version
   代码高亮 / 可点击外链，以及 P2 的 KaTeX 公式与 mermaid / echarts 图表（同一水合器，
   懒加载分包 + 按源码缓存 + 视口内才渲染）；HTML 转义 + scheme 白名单防 XSS；
   渲染结果按消息缓存，代码块复制按钮走容器事件委托；用户气泡保持纯文本）；
+  正常完成的请求按 `requestId` 收成一个工作胶囊（摘要含步骤数与总用时，展开看思考 / 工具 /
+  中间正文），最终结论和对话图片保持在胶囊外且图片位于结论之后；失败 / 取消 / 暂停保留过程；
   工具调用渲染为可折叠卡片；思考过程折叠块；
   任务清单（job）与子代理（subagent）各渲染为一张状态卡（子代理快照挂在 `task` 工具行
   **内部**展开看只读对话，与桌面端同构）；`done` 结束 loading；`error` 红条；

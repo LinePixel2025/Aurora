@@ -18,7 +18,9 @@ import {
   ICON_CHECK,
   ICON_COPY,
   createChartHydrator,
+  groupAgentTurns,
   renderMarkdown,
+  selectFinalAssistant,
   type ChartHydrator,
 } from '@aurora/shared/browser'
 import { Volume2 } from '@aurora/shared/browser'
@@ -72,10 +74,30 @@ const folded = ref(new Set<string>())
 const seen = new Set<string>()
 
 function traceOpen(item: ChatItem): boolean {
-  return userOpened.value.has(item.id) || !folded.value.has(item.id)
+  const group = groupForFinal(item)
+  if (group === undefined) return userOpened.value.has(item.id) || !folded.value.has(item.id)
+  if (
+    userOpened.value.has(group.key) ||
+    group.messages.some((message) => userOpened.value.has(message.id))
+  ) {
+    return true
+  }
+  return false
 }
 
 function toggleTrace(item: ChatItem): void {
+  const group = groupForFinal(item)
+  if (group !== undefined) {
+    if (traceOpen(item)) {
+      userOpened.value.delete(group.key)
+      for (const message of group.messages) userOpened.value.delete(message.id)
+      folded.value.add(group.key)
+    } else {
+      userOpened.value.add(group.key)
+      folded.value.delete(group.key)
+    }
+    return
+  }
   if (traceOpen(item)) {
     userOpened.value.delete(item.id)
     folded.value.add(item.id)
@@ -92,6 +114,160 @@ function displayImagesOf(item: ChatItem): ChatDisplayImage[] {
   for (const tool of item.tools) {
     if (tool.state !== 'success' || tool.displayImages === undefined) continue
     for (const image of tool.displayImages) {
+      if (seen.has(image.id)) continue
+      seen.add(image.id)
+      images.push(image)
+    }
+  }
+  return images
+}
+
+interface AssistantTurnGroup {
+  key: string
+  requestId?: string
+  messages: ChatItem[]
+  final: ChatItem
+  startedAt?: number
+  endedAt?: number
+  isLast: boolean
+}
+
+function latestTurnGroupable(): boolean {
+  if (props.session.pending) return false
+  let lastUserIndex = -1
+  for (let index = props.session.items.length - 1; index >= 0; index -= 1) {
+    if (props.session.items[index]?.kind === 'user') {
+      lastUserIndex = index
+      break
+    }
+  }
+  const tail = props.session.items.slice(lastUserIndex + 1)
+  if (tail.some((item) => item.kind === 'error')) return false
+  for (let index = tail.length - 1; index >= 0; index -= 1) {
+    const item = tail[index]
+    if (item?.kind === 'job') return item.job?.status === 'done'
+  }
+  return true
+}
+
+const assistantTurnGroups = computed<AssistantTurnGroup[]>(() => {
+  const candidates: Array<{
+    key: string
+    requestId?: string
+    messages: ChatItem[]
+    startedAt?: number
+    endedAt?: number
+  }> = []
+  let previousUser: ChatItem | undefined
+
+  for (const row of groupAgentTurns(props.session.items)) {
+    if (row.kind === 'message') {
+      if (row.message.kind === 'user') previousUser = row.message
+      continue
+    }
+    const requestId = row.requestId
+    const userMatches =
+      previousUser !== undefined &&
+      ((requestId === undefined && previousUser.requestId === undefined) ||
+        (requestId !== undefined && previousUser.requestId === requestId))
+    const first = row.messages[0]
+    candidates.push({
+      key: row.key,
+      ...(requestId === undefined ? {} : { requestId }),
+      messages: [...row.messages],
+      ...(userMatches
+        ? { startedAt: previousUser?.createdAt }
+        : { startedAt: first?.startedAt ?? first?.createdAt }),
+      endedAt:
+        row.messages[row.messages.length - 1]?.endedAt ??
+        row.messages[row.messages.length - 1]?.startedAt ??
+        row.messages[row.messages.length - 1]?.createdAt,
+    })
+  }
+
+  const groups: AssistantTurnGroup[] = []
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index]
+    if (candidate === undefined) continue
+    if (props.session.pending && index === candidates.length - 1) continue
+    const final = selectFinalAssistant(candidate.messages)
+    if (final === undefined) continue
+    groups.push({
+      ...candidate,
+      final,
+      endedAt: final.endedAt ?? final.startedAt ?? final.createdAt,
+      isLast: index === candidates.length - 1,
+    })
+  }
+  return groups
+})
+
+const groupedFinalById = computed<Map<string, AssistantTurnGroup>>(() => {
+  const grouped = new Map<string, AssistantTurnGroup>()
+  for (const group of assistantTurnGroups.value) {
+    if (group.isLast && !latestTurnGroupable()) continue
+    grouped.set(group.final.id, group)
+  }
+  return grouped
+})
+
+const groupedWorkIds = computed<Set<string>>(() => {
+  const ids = new Set<string>()
+  for (const group of groupedFinalById.value.values()) {
+    for (const item of group.messages) {
+      if (item.id !== group.final.id) ids.add(item.id)
+    }
+  }
+  return ids
+})
+
+function groupForFinal(item: ChatItem): AssistantTurnGroup | undefined {
+  return groupedFinalById.value.get(item.id)
+}
+
+function isGroupedWorkItem(item: ChatItem): boolean {
+  return groupedWorkIds.value.has(item.id)
+}
+
+function traceMessagesOf(item: ChatItem): ChatItem[] {
+  return groupForFinal(item)?.messages ?? [item]
+}
+
+function traceFinalIdOf(item: ChatItem): string | undefined {
+  return groupForFinal(item)?.final.id
+}
+
+function isWorkText(detail: ChatItem, finalItem: ChatItem): boolean {
+  const finalId = traceFinalIdOf(finalItem)
+  return finalId !== undefined && detail.id !== finalId && detail.content !== ''
+}
+
+function traceStepsOf(item: ChatItem): number {
+  const messages = traceMessagesOf(item)
+  const calls = new Set<string>()
+  for (const message of messages) {
+    for (const tool of message.tools) calls.add(tool.id)
+  }
+  return calls.size
+}
+
+function traceFailedOf(item: ChatItem): number {
+  return traceMessagesOf(item).reduce((total, message) => total + failedCount(message), 0)
+}
+
+function traceSpanOf(item: ChatItem): { startedAt?: number; endedAt?: number } {
+  const group = groupForFinal(item)
+  if (group === undefined) return { startedAt: item.startedAt, endedAt: item.endedAt }
+  return { startedAt: group.startedAt, endedAt: group.endedAt }
+}
+
+function displayImagesForItem(item: ChatItem): ChatDisplayImage[] {
+  const group = groupForFinal(item)
+  if (group === undefined) return displayImagesOf(item)
+  const images: ChatDisplayImage[] = []
+  const seen = new Set<string>()
+  for (const message of group.messages) {
+    for (const image of displayImagesOf(message)) {
       if (seen.has(image.id)) continue
       seen.add(image.id)
       images.push(image)
@@ -298,8 +474,6 @@ async function speak(item: ChatItem): Promise<void> {
 const failedCount = (item: ChatItem): number =>
   item.tools.filter((tool) => tool.state === 'error').length
 
-const hasTrace = (item: ChatItem): boolean => item.tools.length > 0 || (item.reasoning ?? '') !== ''
-
 const showLoading = computed(() => {
   const hasStreamingAssistant = props.session.items.some(
     (item) => item.kind === 'assistant' && item.streaming === true,
@@ -358,99 +532,122 @@ onBeforeUnmount(() => {
     -->
     <TransitionGroup name="rise" tag="div" class="stream-items" :css="!swapping">
       <template v-for="item in session.items" :key="item.id">
-        <!-- 用户消息：右对齐胶囊 -->
-        <div v-if="item.kind === 'user'" class="row r-user" data-field="chat.user-message">
-          <div class="bubble">{{ item.content }}</div>
-        </div>
-
-        <!-- 错误条 -->
-        <div v-else-if="item.kind === 'error'" class="row r-error" data-field="chat.error">
-          <div class="error-box">
-            <strong>出错了</strong>
-            <span>{{ item.content }}</span>
-            <span v-if="item.code" class="code">{{ item.code }}</span>
+        <template v-if="!isGroupedWorkItem(item)">
+          <!-- 用户消息：右对齐胶囊 -->
+          <div v-if="item.kind === 'user'" class="row r-user" data-field="chat.user-message">
+            <div class="bubble">{{ item.content }}</div>
           </div>
-        </div>
 
-        <!-- 提问卡（本轮，docs/12 §5）：跟消息一起排；结算后原地变成只读卡（留痕） -->
-        <AskCard
-          v-else-if="item.kind === 'ask' && item.ask"
-          :ask="item.ask"
-          :client-id="session.clientId"
-          :session-id="session.sessionId"
-          :remaining-ms="item.ask.expiresAt - now"
-          @resolved="onAskResolved"
-        />
-
-        <!-- 任务清单卡 -->
-        <JobCard v-else-if="item.kind === 'job' && item.job" :job="item.job" />
-
-        <!-- 子代理卡（没有配套工具行时的回落渲染） -->
-        <SubagentCard
-          v-else-if="item.kind === 'subagent' && item.subagent"
-          :snapshot="item.subagent"
-        />
-
-        <!-- 助手消息：轨迹容器（思考 → 工具行） + 正文 -->
-        <div v-else-if="item.kind === 'assistant'" class="row r-assistant">
-          <div class="assistant-body">
-            <AgentTrace
-              v-if="hasTrace(item)"
-              :steps="item.tools.length"
-              :failed="failedCount(item)"
-              :running="item.streaming === true"
-              :started-at="item.startedAt"
-              :ended-at="item.endedAt"
-              :open="traceOpen(item)"
-              @toggle="toggleTrace(item)"
-            >
-              <ThinkingBlock
-                v-if="(item.reasoning ?? '') !== ''"
-                :reasoning="item.reasoning ?? ''"
-                :streaming="item.streaming === true"
-                :last-at="item.reasoningAt"
-              />
-              <!-- 工具行在一轮里逐个出现，走 `tool` 预设分行错峰（见本文件样式末尾） -->
-              <TransitionGroup
-                v-if="item.tools.length > 0"
-                name="tool"
-                tag="div"
-                class="tools"
-                :css="!swapping"
-              >
-                <AgentToolRow v-for="tool in item.tools" :key="tool.id" :tool="tool" />
-              </TransitionGroup>
-            </AgentTrace>
-
-            <!-- Markdown 的唯一出口：渲染器 `html:false` 先转义再套白名单标记，链接 scheme
-                 走 validateLink（javascript: 拒绝）—— 与桌面端同一条安全基线 -->
-            <!-- eslint-disable-next-line vue/no-v-html -->
-            <div class="md" data-field="chat.markdown" v-html="htmlOf(item, 'content')" />
-            <DisplayImageGallery
-              v-if="displayImagesOf(item).length > 0"
-              :images="displayImagesOf(item)"
-              :client-id="session.clientId"
-              :session-id="session.sessionId"
-            />
-
-            <div class="msg-foot">
-              <span v-if="item.streaming" class="streaming-caret" aria-hidden="true" />
-              <button
-                v-else-if="ttsReady && item.content.trim() !== ''"
-                type="button"
-                class="speak-btn"
-                :class="{ active: speakingId === item.id }"
-                :data-action="speakingId === item.id ? 'stop-speak' : 'speak-message'"
-                @click="speak(item)"
-              >
-                <Volume2 :size="13" :stroke-width="1.7" aria-hidden="true" />
-                {{
-                  synthesizingId === item.id ? '合成中…' : speakingId === item.id ? '停止' : '朗读'
-                }}
-              </button>
+          <!-- 错误条 -->
+          <div v-else-if="item.kind === 'error'" class="row r-error" data-field="chat.error">
+            <div class="error-box">
+              <strong>出错了</strong>
+              <span>{{ item.content }}</span>
+              <span v-if="item.code" class="code">{{ item.code }}</span>
             </div>
           </div>
-        </div>
+
+          <!-- 提问卡（本轮，docs/12 §5）：跟消息一起排；结算后原地变成只读卡（留痕） -->
+          <AskCard
+            v-else-if="item.kind === 'ask' && item.ask"
+            :ask="item.ask"
+            :client-id="session.clientId"
+            :session-id="session.sessionId"
+            :remaining-ms="item.ask.expiresAt - now"
+            @resolved="onAskResolved"
+          />
+
+          <!-- 任务清单卡 -->
+          <JobCard v-else-if="item.kind === 'job' && item.job" :job="item.job" />
+
+          <!-- 子代理卡（没有配套工具行时的回落渲染） -->
+          <SubagentCard
+            v-else-if="item.kind === 'subagent' && item.subagent"
+            :snapshot="item.subagent"
+          />
+
+          <!-- 助手消息：轨迹容器（思考 → 工具行） + 正文 -->
+          <div v-else-if="item.kind === 'assistant'" class="row r-assistant">
+            <div class="assistant-body">
+              <AgentTrace
+                v-if="
+                  traceMessagesOf(item).some(
+                    (message) => message.tools.length > 0 || (message.reasoning ?? '') !== '',
+                  )
+                "
+                :steps="traceStepsOf(item)"
+                :failed="traceFailedOf(item)"
+                :running="item.streaming === true && groupForFinal(item) === undefined"
+                :started-at="traceSpanOf(item).startedAt"
+                :ended-at="traceSpanOf(item).endedAt"
+                :open="traceOpen(item)"
+                @toggle="toggleTrace(item)"
+              >
+                <template v-for="detail in traceMessagesOf(item)" :key="detail.id">
+                  <ThinkingBlock
+                    v-if="(detail.reasoning ?? '') !== ''"
+                    :reasoning="detail.reasoning ?? ''"
+                    :streaming="detail.streaming === true"
+                    :last-at="detail.reasoningAt"
+                  />
+                  <!-- 工具行在一轮里逐个出现，走 `tool` 预设分行错峰（见本文件样式末尾） -->
+                  <TransitionGroup
+                    v-if="detail.tools.length > 0"
+                    name="tool"
+                    tag="div"
+                    class="tools"
+                    :css="!swapping"
+                  >
+                    <AgentToolRow v-for="tool in detail.tools" :key="tool.id" :tool="tool" />
+                  </TransitionGroup>
+                  <!-- 工作期间的中间正文也属于过程；最终结论只在外层渲染一次。 -->
+                  <!-- eslint-disable vue/no-v-html -->
+                  <div
+                    v-if="isWorkText(detail, item)"
+                    class="md work-message"
+                    v-html="htmlOf(detail, 'content')"
+                  />
+                  <!-- eslint-enable vue/no-v-html -->
+                </template>
+              </AgentTrace>
+
+              <!-- Markdown 的唯一出口：渲染器 `html:false` 先转义再套白名单标记，链接 scheme
+                 走 validateLink（javascript: 拒绝）—— 与桌面端同一条安全基线 -->
+              <!-- eslint-disable-next-line vue/no-v-html -->
+              <div class="md" data-field="chat.markdown" v-html="htmlOf(item, 'content')" />
+              <DisplayImageGallery
+                v-if="
+                  displayImagesForItem(item).length > 0 &&
+                  (!item.streaming || groupForFinal(item) !== undefined)
+                "
+                :images="displayImagesForItem(item)"
+                :client-id="session.clientId"
+                :session-id="session.sessionId"
+              />
+
+              <div class="msg-foot">
+                <span v-if="item.streaming" class="streaming-caret" aria-hidden="true" />
+                <button
+                  v-else-if="ttsReady && item.content.trim() !== ''"
+                  type="button"
+                  class="speak-btn"
+                  :class="{ active: speakingId === item.id }"
+                  :data-action="speakingId === item.id ? 'stop-speak' : 'speak-message'"
+                  @click="speak(item)"
+                >
+                  <Volume2 :size="13" :stroke-width="1.7" aria-hidden="true" />
+                  {{
+                    synthesizingId === item.id
+                      ? '合成中…'
+                      : speakingId === item.id
+                        ? '停止'
+                        : '朗读'
+                  }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
       </template>
     </TransitionGroup>
 
@@ -552,6 +749,36 @@ onBeforeUnmount(() => {
   line-height: var(--leading-relaxed);
   color: var(--text-primary);
   word-break: break-word;
+}
+
+/*
+ * 请求级折叠展开后的中间正文：沿用轨迹左缘时间线的缩进与节点语言。
+ * 最终结论位于折叠体之外，始终可见。
+ */
+.work-message {
+  position: relative;
+  padding: 4px 0 var(--space-2) 20px;
+  color: var(--text-secondary);
+}
+
+.work-message::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 10.5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  box-shadow: 0 0 0 3px var(--bg-base);
+}
+
+.work-message > :first-child {
+  margin-top: 0;
+}
+
+.work-message > :last-child {
+  margin-bottom: 0;
 }
 
 .msg-foot {

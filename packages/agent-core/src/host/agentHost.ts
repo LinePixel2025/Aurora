@@ -870,7 +870,8 @@ export class KernelAgentHost implements AgentHostContract {
           ...(this.deps.confirmTool === undefined
             ? {}
             : { confirmTool: this.wrapConfirmTool(sessionId) }),
-          append: (message: NewMessage) => this.deps.sessions.append(sessionId, message),
+          append: (message: NewMessage) =>
+            this.deps.sessions.append(sessionId, { ...message, requestId }),
           // 正文流式的 id 预领（docs/06 §16.2）：与 append 共用同一个计数器，
           // 因此「边流边发」用的 id 就是落盘后的 id，渲染层那条消息不需要被替换
           nextMessageId: () => this.deps.sessions.nextMessageId(),

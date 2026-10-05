@@ -82,6 +82,8 @@ const {
   statusTone,
   reasoningTargetId,
   lastSettledRequestId,
+  lastSettledAt,
+  latestTurnGroupable,
   subagentRuns,
   usage,
   jobs,
@@ -1739,6 +1741,8 @@ async function markGuideDone(): Promise<void> {
           :show-thinking="showThinking"
           :thinking-target-id="reasoningTargetId"
           :settled-request-id="lastSettledRequestId"
+          :settled-at="lastSettledAt"
+          :latest-turn-groupable="latestTurnGroupable"
           @speak="speakMessage"
           @stop-speak="tts.stop"
         />

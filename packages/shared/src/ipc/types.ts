@@ -1451,6 +1451,12 @@ export interface ChatMessageDto {
   content: string
   /** ISO 时间戳 */
   createdAt: string
+  /**
+   * 产生这条消息的 Agent 请求 id（同一请求的用户 / 助手消息共享）。
+   *
+   * 旧会话没有该字段；渲染层会按相邻助手消息回退分组，不要求迁移旧文件。
+   */
+  requestId?: string
   /** assistant 消息发起的工具调用（含最终状态），供渲染层显示执行卡片 */
   toolCalls?: AgentToolCall[]
   /** 模型思考过程（reasoning_content 聚合），供「思考过程」折叠块展示 */

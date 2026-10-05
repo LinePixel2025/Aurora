@@ -36,12 +36,12 @@ const summary = computed(() => {
   return props.failed > 0 ? `${base} · ${props.failed} 个失败` : base
 })
 
-/** 耗时：秒级一位小数（<10s），更久取整；没有起止时刻（历史回放）不显示 */
+/** 总用时：秒级一位小数（<10s），更久取整；没有起止时刻（旧历史）不显示。 */
 const duration = computed(() => {
   const { startedAt, endedAt } = props
   if (startedAt === undefined || endedAt === undefined) return ''
   const seconds = Math.max(0, (endedAt - startedAt) / 1000)
-  return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`
+  return `总用时 ${seconds < 0.1 ? '<0.1' : seconds.toFixed(1)}s`
 })
 
 /** 展开体限高内滚：滚动位置不在底部时给下缘渐隐（scrollHeight 读取按需，折叠态不读） */
