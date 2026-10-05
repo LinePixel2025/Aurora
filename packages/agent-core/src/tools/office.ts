@@ -167,8 +167,10 @@ function createOfficeCreateTool(
     description: [
       '创建 DOCX / XLSX / PPTX，或从模板复制并填充 {{placeholder}}。',
       'content 是格式专用结构化 JSON；有 templatePath 时 templateData 指定占位符值，content 作为可选追加内容。',
+      'DOCX 的 heading 会落成 Heading1–Heading6 大纲样式，bullets / numbered 会生成真实 Word 编号（可传 level: 0–8）。',
       '默认拒绝覆盖已有文件；只有用户明确要求覆盖时传 overwrite=true，并在写入前自动保存二进制快照。',
       '不依赖本机 Office，不执行宏、不自动转 PDF，也不处理旧格式 .doc / .xls / .ppt。',
+      '工具报不支持时如实说明限制；不要手写 OOXML / ZIP 冒充 Office 文件，也不要自动改用 COM。',
     ].join(''),
     parameters: {
       type: 'object',
@@ -178,7 +180,7 @@ function createOfficeCreateTool(
         content: {
           type: 'object',
           description:
-            'DOCX {title?,blocks?}；XLSX {sheets:[{name,rows}]}；PPTX {title?,slides:[{title?,bullets?,notes?,image?}]}。无模板时必填，有模板时作为追加内容。',
+            'DOCX {title?,blocks?}（heading/bullets/numbered/table/image 等）；XLSX {sheets:[{name,rows}]}；PPTX {title?,slides:[{title?,bullets?,notes?,image?}]}。无模板时必填，有模板时作为追加内容。',
         },
         templatePath: { type: 'string', description: '可选模板文件路径' },
         templateData: {

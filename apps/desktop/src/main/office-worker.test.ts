@@ -1,7 +1,8 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { parseDocument } from '@office-open/docx'
 import { handleOfficeRequest } from './office-worker.js'
 
 let dir = ''
@@ -27,6 +28,8 @@ describe('office-worker 真实引擎闭环', () => {
         blocks: [
           { type: 'heading', level: 2, text: '概览' },
           { type: 'paragraph', text: '状态：{{status}}' },
+          { type: 'bullets', items: ['第一项'] },
+          { type: 'numbered', items: ['步骤一'] },
           { type: 'table', headers: ['项目', '结果'], rows: [['交付', '完成']] },
         ],
       },
@@ -43,6 +46,32 @@ describe('office-worker 真实引擎闭环', () => {
     })
     expect(read.ok).toBe(true)
     expect(read.read?.content).toContain('季度报告')
+
+    const parsed = (await parseDocument(new Uint8Array(await readFile(path)))) as unknown as {
+      numbering?: { abstractNumberings?: { levels?: { format?: string }[] }[] }
+      sections?: { children?: { paragraph?: Record<string, unknown> }[] }[]
+    }
+    const formats = (parsed.numbering?.abstractNumberings ?? []).flatMap((item) =>
+      (item.levels ?? []).map((level) => level.format),
+    )
+    expect(formats).toContain('decimal')
+    expect(formats).toContain('bullet')
+    const children = parsed.sections?.[0]?.children ?? []
+    const paragraphs = children
+      .map((child) => child.paragraph)
+      .filter((paragraph): paragraph is Record<string, unknown> => paragraph !== undefined)
+    const serialized = JSON.stringify(parsed)
+    expect(paragraphs.some((paragraph) => paragraph['heading'] === 'Heading1')).toBe(true)
+    expect(serialized).toContain('第一项')
+    expect(serialized).toContain('步骤一')
+    expect(serialized).not.toContain('• 第一项')
+    expect(serialized).not.toContain('1. 步骤一')
+    expect(
+      paragraphs.find((paragraph) => paragraph['text'] === '第一项')?.['numbering'],
+    ).toBeTruthy()
+    expect(
+      paragraphs.find((paragraph) => paragraph['text'] === '步骤一')?.['numbering'],
+    ).toBeTruthy()
 
     const editedPath = join(dir, 'report-edited.docx')
     const edited = await handleOfficeRequest({
@@ -116,6 +145,52 @@ describe('office-worker 真实引擎闭环', () => {
     expect(read.ok).toBe(true)
     expect(read.read?.content).toContain('B2=5')
     expect(read.read?.content).toContain('D2==B2*C2')
+  })
+
+  it('DOCX 模板占位符替换与列表追加都保留真实编号', async () => {
+    const template = join(dir, 'template.docx')
+    const createdTemplate = await handleOfficeRequest({
+      id: '1',
+      action: 'create',
+      outputPath: template,
+      format: 'docx',
+      content: {
+        title: '模板',
+        blocks: [{ type: 'paragraph', text: '姓名：{{name}}' }],
+      },
+    })
+    expect(createdTemplate.ok).toBe(true)
+
+    const output = join(dir, 'template-filled.docx')
+    const filled = await handleOfficeRequest({
+      id: '2',
+      action: 'create',
+      outputPath: output,
+      format: 'docx',
+      templatePath: template,
+      templateData: { name: '张三' },
+      content: {
+        blocks: [
+          { type: 'bullets', items: ['第一项'] },
+          { type: 'numbered', items: ['步骤一'] },
+        ],
+      },
+    })
+    expect(filled.ok).toBe(true)
+
+    const parsed = (await parseDocument(new Uint8Array(await readFile(output)))) as unknown as {
+      numbering?: { abstractNumberings?: { levels?: { format?: string }[] }[] }
+    }
+    const formats = (parsed.numbering?.abstractNumberings ?? []).flatMap((item) =>
+      (item.levels ?? []).map((level) => level.format),
+    )
+    const serialized = JSON.stringify(parsed)
+    expect(serialized).toContain('姓名：')
+    expect(serialized).toContain('张三')
+    expect(serialized).toContain('第一项')
+    expect(serialized).toContain('步骤一')
+    expect(formats).toContain('bullet')
+    expect(formats).toContain('decimal')
   })
 
   it('PPTX 创建 → 追加幻灯片 → 删除原幻灯片', async () => {

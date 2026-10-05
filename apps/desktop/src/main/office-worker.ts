@@ -17,6 +17,11 @@ import type {
 
 type UnknownRecord = Record<string, unknown>
 
+const DOCX_BULLET_REFERENCE = 'aurora-bullets'
+const DOCX_NUMBER_REFERENCE = 'aurora-numbered'
+const DOCX_LIST_LEVEL_COUNT = 9
+let docxListInstance = 0
+
 interface OfficeLibs {
   docx: {
     generateDocument(options: unknown): Promise<unknown>
@@ -191,14 +196,14 @@ async function patchTemplate(
   appendContent: unknown,
 ): Promise<unknown> {
   if (format === 'docx') {
-    return await libs.docx.patchDocument({
+    const patched = await libs.docx.patchDocument({
       data: template,
       outputType: 'nodebuffer',
       placeholders: mapDocxPlaceholders(templateData),
-      ...(appendContent === undefined
-        ? {}
-        : { append: await docxChildren(asRecord(appendContent) ?? {}) }),
     })
+    return appendContent === undefined
+      ? patched
+      : await appendDocxChildren(libs, toBytes(patched), asRecord(appendContent) ?? {})
   }
   if (format === 'xlsx') {
     const appendSheets = asRecord(appendContent)?.['sheets']
@@ -269,30 +274,11 @@ async function applyDocxOperation(
     )
   }
   if (type === 'append_content') {
-    return toBytes(
-      await libs.docx.patchDocument({
-        data: bytes,
-        outputType: 'nodebuffer',
-        append: await docxChildren(asRecord(operation['content']) ?? {}),
-      }),
-    )
+    return await appendDocxChildren(libs, bytes, asRecord(operation['content']) ?? {})
   }
   if (type === 'replace_section') {
     const index = requiredInt(operation, 'index')
-    return toBytes(
-      await libs.docx.patchDocument({
-        data: bytes,
-        outputType: 'nodebuffer',
-        sections: {
-          replace: [
-            {
-              index,
-              section: { children: await docxChildren(asRecord(operation['content']) ?? {}) },
-            },
-          ],
-        },
-      }),
-    )
+    return await replaceDocxSection(libs, bytes, index, asRecord(operation['content']) ?? {})
   }
   throw unsupportedOperation('DOCX', type, warnings)
 }
@@ -447,6 +433,7 @@ async function docxOptions(content: UnknownRecord): Promise<UnknownRecord> {
   return {
     ...(typeof content['title'] === 'string' ? { title: content['title'] } : {}),
     sections: [{ children: await docxChildren(content) }],
+    numbering: docxNumberingOptions(),
   }
 }
 
@@ -490,11 +477,18 @@ async function docxChildren(content: UnknownRecord): Promise<unknown[]> {
     }
     if (type === 'bullets' || type === 'numbered') {
       const items = arrayOfStrings(block['items'])
-      for (const [index, item] of items.entries()) {
+      const level = clampInt(block['level'], 0, DOCX_LIST_LEVEL_COUNT - 1, 0)
+      const instance = docxListInstance++
+      for (const item of items) {
         children.push({
           paragraph: {
             ...(pageBreakBefore ? { pageBreakBefore: true } : {}),
-            children: [{ text: type === 'bullets' ? `• ${item}` : `${index + 1}. ${item}` }],
+            numbering: {
+              reference: type === 'bullets' ? DOCX_BULLET_REFERENCE : DOCX_NUMBER_REFERENCE,
+              level,
+              instance,
+            },
+            children: [{ text: item }],
           },
         })
         pageBreakBefore = false
@@ -526,6 +520,103 @@ async function docxChildren(content: UnknownRecord): Promise<unknown[]> {
     children.push({ paragraph: { pageBreakBefore: true, children: [] } })
   }
   return children
+}
+
+async function appendDocxChildren(
+  libs: OfficeLibs,
+  bytes: Uint8Array,
+  content: UnknownRecord,
+): Promise<Uint8Array> {
+  const document = await parseDocx(libs, bytes)
+  const sections = Array.isArray(document['sections']) ? document['sections'] : []
+  const children = await docxChildren(content)
+  if (sections.length === 0) {
+    sections.push({ children })
+  } else {
+    const index = sections.length - 1
+    const section = asRecord(sections[index]) ?? {}
+    section['children'] = [
+      ...(Array.isArray(section['children']) ? section['children'] : []),
+      ...children,
+    ]
+    sections[index] = section
+  }
+  document['sections'] = sections
+  return toBytes(await libs.docx.generateDocument(withDocxNumbering(document)))
+}
+
+async function replaceDocxSection(
+  libs: OfficeLibs,
+  bytes: Uint8Array,
+  index: number,
+  content: UnknownRecord,
+): Promise<Uint8Array> {
+  const document = await parseDocx(libs, bytes)
+  const sections = Array.isArray(document['sections']) ? document['sections'] : []
+  if (index < 0 || index >= sections.length) {
+    throw new Error(`DOCX section 不存在：${index}（当前共 ${sections.length} 节）`)
+  }
+  const section = asRecord(sections[index]) ?? {}
+  section['children'] = await docxChildren(content)
+  sections[index] = section
+  document['sections'] = sections
+  return toBytes(await libs.docx.generateDocument(withDocxNumbering(document)))
+}
+
+async function parseDocx(libs: OfficeLibs, bytes: Uint8Array): Promise<UnknownRecord> {
+  const parsed = asRecord(await libs.docx.parseDocument(bytes))
+  if (parsed === undefined) throw new Error('DOCX 解析结果不是对象')
+  return parsed
+}
+
+function withDocxNumbering(document: UnknownRecord): UnknownRecord {
+  return { ...document, numbering: mergeDocxNumbering(document['numbering']) }
+}
+
+function mergeDocxNumbering(existing: unknown): UnknownRecord {
+  const numbering = asRecord(existing) ?? {}
+  const current = arrayOfRecords(numbering['abstractNumberings']).filter(
+    (item) =>
+      item['reference'] !== DOCX_BULLET_REFERENCE && item['reference'] !== DOCX_NUMBER_REFERENCE,
+  )
+  return {
+    ...numbering,
+    abstractNumberings: [...current, ...docxNumberingDefinitions()],
+  }
+}
+
+function docxNumberingOptions(): UnknownRecord {
+  return { abstractNumberings: docxNumberingDefinitions() }
+}
+
+function docxNumberingDefinitions(): UnknownRecord[] {
+  const bulletCharacters = ['•', '○', '▪']
+  return [
+    {
+      reference: DOCX_BULLET_REFERENCE,
+      properties: { multiLevelType: 'hybridMultilevel' },
+      levels: Array.from({ length: DOCX_LIST_LEVEL_COUNT }, (_, level) => ({
+        level,
+        format: 'bullet',
+        text: bulletCharacters[level % bulletCharacters.length] ?? '•',
+        alignment: 'left',
+        suffix: 'tab',
+        paragraph: { indent: { left: 720 * (level + 1), hanging: 360 } },
+      })),
+    },
+    {
+      reference: DOCX_NUMBER_REFERENCE,
+      properties: { multiLevelType: 'multilevel' },
+      levels: Array.from({ length: DOCX_LIST_LEVEL_COUNT }, (_, level) => ({
+        level,
+        format: 'decimal',
+        text: `%${level + 1}.`,
+        alignment: 'left',
+        suffix: 'tab',
+        paragraph: { indent: { left: 720 * (level + 1), hanging: 360 } },
+      })),
+    },
+  ]
 }
 
 async function docxPicture(path: string, block: UnknownRecord): Promise<unknown[]> {

@@ -7,7 +7,8 @@
  * 1. **不走 shell**：命令作为 `-Command` 的**单个 argv 元素**交给 `spawn`，不传 `shell: true`，
  *    否则 cmd.exe 会二次解析引号与 `%VAR%`（AGENTS.md「绝不经过 shell」）。
  * 2. **中文编码**：Windows PowerShell 5.1 默认按控制台代码页（中文系统为 GBK）输出，
- *    不显式设 `[Console]::OutputEncoding` / `$OutputEncoding`，中文必然乱码。
+ *    不先切活动代码页并显式设 `[Console]::OutputEncoding` / `$OutputEncoding`，
+ *    中文（尤其是原生命令输出）可能乱码。
  * 3. **超时要杀进程树**：Node 的 `child.kill()` 在 Windows 上杀不掉孙进程
  *    （`pnpm` / `npm` 这类会派生），残留的孤儿进程继续占端口、改磁盘，
  *    因此走 `taskkill /PID <pid> /T /F`。
@@ -56,10 +57,11 @@ export const DEFAULT_TIMEOUT_MS = 60_000
 
 /**
  * 编码前缀：`$ProgressPreference` 关掉进度条（它会污染 stdout），
- * 后两行把控制台输出编码与管道编码都设成 UTF-8。
+ * `chcp` 切原生命令共用的活动代码页，后两行把控制台输出编码与管道编码都设成 UTF-8。
  */
 const ENCODING_PREFIX =
   "$ProgressPreference='SilentlyContinue'; " +
+  'chcp.com 65001 > $null; ' +
   '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' +
   '$OutputEncoding=[System.Text.Encoding]::UTF8; '
 

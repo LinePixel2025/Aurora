@@ -149,6 +149,8 @@ describe('createTerminalTool', () => {
     expect(asked.isError).toBe(true)
     expect(asked.summary).toBe('执行超时（>1500ms）已被终止')
     expect(asked.content).toContain('已终止（超时）')
+    expect(asked.content).toContain('达到 1500ms 超时上限')
+    expect(asked.content).toContain('空输出不代表命令未开始执行')
 
     // 请求 800ms 会被抬到下限 1000ms：summary 里必须是 1000 而不是 800（说的就是实际生效值）
     const clamped = await tool.execute({ command: 'Start-Sleep 10', timeoutMs: 800 }, CONTEXT)
@@ -164,6 +166,7 @@ describe('createTerminalTool', () => {
     expect(result.isError).toBe(true)
     expect(result.summary).toBe('已取消')
     expect(result.content).toContain('已终止（已取消）')
+    expect(result.content).toContain('这不代表目标命令自身失败')
   })
 
   it('runner 抛错 → isError，content 为「命令执行失败：<message>」', async () => {
@@ -252,6 +255,24 @@ describe('formatCommandOutput', () => {
     expect(text).toContain('耗时：210ms')
     expect(text).toContain('stdout：\nhi')
     expect(text).toContain('stderr：\nwarn')
+  })
+
+  it('超时 / 取消时明确说明进程树已终止与空输出语义', () => {
+    const timeout = formatCommandOutput(
+      fakeResult({ timedOut: true, exitCode: null, durationMs: 500 }),
+      1_000,
+      1_500,
+    )
+    expect(timeout).toContain('退出码：已终止（超时）')
+    expect(timeout).toContain('达到 1500ms 超时上限')
+    expect(timeout).toContain('空输出不代表命令未开始执行')
+
+    const aborted = formatCommandOutput(
+      fakeResult({ aborted: true, exitCode: null, durationMs: 50 }),
+      1_000,
+    )
+    expect(aborted).toContain('退出码：已终止（已取消）')
+    expect(aborted).toContain('这不代表目标命令自身失败')
   })
 
   it('空段省略（无 stdout / stderr 时只剩头部）', () => {

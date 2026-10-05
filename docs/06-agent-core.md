@@ -713,6 +713,9 @@ DOCX / XLSX / PPTX 的创建、读取和常用编辑默认走纯 JS worker，不
   `office_read/create/edit` 只处理 `.docx` / `.xlsx` / `.pptx`，在 `utilityProcess` 中懒加载
   `@office-open/*`，**不依赖本机 Office、不执行宏、不自动转 PDF**；编辑前必须 `office_read`，
   默认另存新文件，只有 `overwrite: true` 才覆盖源文件且必须先成功保存二进制快照。
+  DOCX 的 `heading` 必须落成 `Heading1`–`Heading6` 大纲样式，`bullets` / `numbered`
+  必须落成 `w:numPr` + `word/numbering.xml` 的真实编号（`numbered` 支持 0–8 级），
+  不得用字面 `•` / `1.` 加缩进冒充；生成包保留 `styles.xml` / `numbering.xml` / `theme1.xml`。
   `grep` 按正则搜**内容**、`glob` 按模式匹配**文件名**（两者规格见 §11.5）；
   `open_path` 打开 `http(s)://` 时按 `agent.tools.open.urlMode` 选择右栏内置浏览器（默认）或
   `shell.openExternal`；`mailto:` 和本地路径仍走系统默认程序。所有打开动作都不等待目标程序退出。
@@ -804,9 +807,13 @@ DOCX / XLSX / PPTX 的创建、读取和常用编辑默认走纯 JS worker，不
 - **超时按进程树终止**：`agent.tools.terminal.timeoutMs` 到期后用 `taskkill /T /F` 杀掉整棵
   进程树；只调 Node 的 `child.kill()` 在 Windows 上杀不掉孙进程（`npm` / `pnpm` 这类会派生孙进程，
   留下孤儿进程继续占端口、改磁盘）。
+- **终止诊断不靠“有没有报错”**：命令结果头部必须明确区分超时与被取消，并说明整棵进程树已强制
+  终止；空 stdout / stderr 不代表命令未开始执行。COM 启动阶段的静默挂起属于“超时且没有业务输出”，
+  调用方必须按超时停止、不重试，并分别检查目标文件是否生成、Office 进程是否残留。
 - **UTF-8 输出约定**：命令按 UTF-8 采集输出。PowerShell 5.1 默认按控制台代码页输出，
-  spawn 时必须显式设 `[Console]::OutputEncoding`（必要时含 `$OutputEncoding`），
-  否则中文一律乱码。
+  spawn 时必须先 `chcp 65001`，再显式设 `[Console]::OutputEncoding` 与 `$OutputEncoding`，
+  否则中文（尤其是原生命令输出）可能乱码。即使编码前缀正确，**stdout 里的中文也不能作为
+  Office 文件内容的校验依据**；校验必须回读目标文件本身（结构化读取或 XML/逐段核对）。
 - **不做命令黑名单**：黑名单必然漏（`cmd /c`、编码 / 转义、`$()`、别名、脚本文件都能绕过），
   安全边界由「**逐次确认 + 输出上限 + 总开关**」三道构成，而不是字符串匹配。
 

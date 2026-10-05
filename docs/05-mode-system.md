@@ -354,9 +354,12 @@ v1 占位的 Work Mode 在 BetaV2 完成**初步实装**（`packages/modes/src/w
 - **职责（systemPrompt）**：办公文档助手——擅长 Word 文档、Excel 表格、PowerPoint 演示文稿与
   PDF 的处理、总结与生成；优先使用 `office_read` / `office_create` / `office_edit` 处理
   DOCX / XLSX / PPTX（纯 JS worker，不依赖本机 Office），默认另存、显式覆盖才写回源文件并
-  先保存二进制快照；只有用户明确要求旧格式、宏、复杂格式或 PDF 导出等高级能力时，才说明风险
-  并经确认走 `run_command` COM 兜底。**覆盖 / 删除 / 移动文件前必须先向用户确认**；
-  产出文件保存到生效工作目录。
+  先保存二进制快照。结构化工具不支持旧格式、宏、复杂格式或 PDF 导出时，如实说明限制并停止，
+  **不得手写 OOXML / ZIP 假装成功，也不得在失败后自动改用 COM**；只有用户明确要求高级能力时，
+  才说明风险并经确认走受控 `run_command` COM 兜底。COM 首次调用必须使用短超时与逐步输出标记，
+  启动阶段超时即停止、不重试、不并行。**覆盖 / 删除 / 移动文件前必须先向用户确认**；
+  产出文件保存到生效工作目录。DOCX 的标题和列表必须生成 Word 大纲样式与真实编号，
+  不能用“看起来像标题”的直接格式或字面 `•` / 序号冒充。
 - **工作目录是回落链的一级（v0.2.4，Codex 式统一，docs/06 §5.1）**：`modes.work.workspaceDir`
   不再是提示词里的孤立概念 —— 它插在 `effectiveWorkspaceDir` 回落链的
   **当前项目根之后、`agent.tools.workspaceDir` 之前**（仅当激活模式为 Work 且目录非空时参与）。

@@ -52,6 +52,21 @@ describe.skipIf(process.platform !== 'win32')('createCommandRunner（真实 Powe
   )
 
   it(
+    '原生命令中文输出不乱码（chcp 65001 回归）',
+    async () => {
+      const result = await runner({
+        command: 'cmd /c echo 中文原生命令输出',
+        timeoutMs: TIMEOUT,
+      })
+
+      expect(result.stdout).toContain('中文原生命令输出')
+      expect(result.stdout).not.toContain('\uFFFD')
+      expect(result.exitCode).toBe(0)
+    },
+    TIMEOUT,
+  )
+
+  it(
     'stderr 单独采集',
     async () => {
       const result = await runner({

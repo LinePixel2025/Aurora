@@ -152,6 +152,7 @@ export function createTerminalTool(options: TerminalToolOptions): ToolDefinition
         content: formatCommandOutput(
           { ...result, command: result.command ?? parsed.command },
           options.maxOutputChars,
+          timeoutMs,
         ),
         isError: !ok,
         summary: summarize(result, timeoutMs),
@@ -167,13 +168,23 @@ export function createTerminalTool(options: TerminalToolOptions): ToolDefinition
  * 随后是 stdout、stderr（空段省略）。总长超过 `maxOutputChars` 时保留**头部 60% + 尾部 40%**，
  * 中间插一行 `…（已截断 N 字符）…`——尾部不丢是关键。
  */
-export function formatCommandOutput(result: CommandResult, maxOutputChars: number): string {
+export function formatCommandOutput(
+  result: CommandResult,
+  maxOutputChars: number,
+  timeoutMs?: number,
+): string {
   const header: string[] = []
   const command = result.command?.trim() ?? ''
   if (command !== '') header.push(`命令：${command}`)
   header.push(`工作目录：${result.cwd}`)
   header.push(`退出码：${describeExitCode(result)}`)
   header.push(`耗时：${Math.round(result.durationMs)}ms`)
+  if (result.timedOut) {
+    const limit = timeoutMs === undefined ? '超时上限' : `${timeoutMs}ms 超时上限`
+    header.push(`终止详情：达到 ${limit}，已强制终止整棵进程树；空输出不代表命令未开始执行。`)
+  } else if (result.aborted) {
+    header.push('终止详情：执行被取消并强制终止整棵进程树；这不代表目标命令自身失败。')
+  }
 
   const sections = [header.join('\n')]
   const stdout = trimTrailingBlank(result.stdout)
