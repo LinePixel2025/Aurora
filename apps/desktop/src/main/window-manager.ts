@@ -37,6 +37,11 @@ export interface WindowManagerOptions {
   rendererUrl?: string
   rendererDir: string
   isDev: boolean
+  /**
+   * 窗口 / 任务栏图标（绝对路径）。dev 下 exe 是 `electron.exe`，不给这一项就会顶着
+   * Electron 默认的原子图标；拿不到路径时留空，让 Electron 回落到 exe 自身图标。
+   */
+  iconPath?: string
   /** 自测时关闭后台节流，保证隐藏 / 后台窗口仍按正常时钟处理 IPC。 */
   backgroundThrottling?: boolean
 }
@@ -343,6 +348,7 @@ export class WindowManager {
       ...bounds,
       width: bounds.width ?? size.width,
       height: bounds.height ?? size.height,
+      ...(this.options.iconPath === undefined ? {} : { icon: this.options.iconPath }),
       ...(spec.minWidth === undefined ? {} : { minWidth: spec.minWidth }),
       ...(spec.minHeight === undefined ? {} : { minHeight: spec.minHeight }),
       show: false,

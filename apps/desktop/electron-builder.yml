@@ -36,6 +36,14 @@ extraResources:
       - '**/*'
   - from: ../../packages/shared/src/browser/assets/fonts/HarmonyOS-Sans-LICENSE.txt
     to: licenses/HarmonyOS-Sans-LICENSE.txt
+  # 托盘图标：主进程按 `process.resourcesPath/tray.png` 查找（src/main/index.ts 的
+  # resolveTrayIcon）。`files` 只打 `out/**` + `package.json`，不显式带上的话
+  # 打包后找不到该文件，托盘会静默退回内置的兜底圆点。
+  - from: resources/tray.png
+    to: tray.png
+  # 窗口 / 任务栏图标（`resolveWindowIcon`）：16px 的 tray.png 在任务栏上会糊，用 256 那张。
+  - from: resources/icon-256.png
+    to: icon-256.png
 
 asar: true
 
@@ -46,13 +54,14 @@ asarUnpack:
 
 win:
   icon: resources/icon.ico
-  # 不签名（用户决策）：跳过 electron-builder 的签名/exe 元数据步骤。
-  # 原因：该步骤依赖 winCodeSign 工具链（signtool.exe），
-  #   - 首次打包需要从 GitHub 下载，内网/代理环境会因证书链被拦而**打包失败**；
-  #   - 镜像源上并没有这个资源（实测 404）。
-  # 未签名安装包的功能完全正常，只是首装会出现 SmartScreen「未知发行者」提示（docs/09 §4）。
-  # 将来接入证书时：置为 true，并设置 CSC_LINK / CSC_KEY_PASSWORD 环境变量即可。
-  signAndEditExecutable: false
+  # 只跳过签名，**保留** exe 资源编辑（图标 / 版本信息照常写入）。
+  # 别退回 `signAndEditExecutable: false` —— 它会把写 exe 图标这一步一起跳掉，
+  # 打出来的 Aurora.exe 会停在 Electron 默认图标（2026-10-05 实测）。
+  # 只关签名时资源编辑走 electron-builder 自带的 app-builder，不触发 winCodeSign 下载
+  # （同日实测：本地缓存无 winCodeSign，--dir 打包仍成功），所以内网/离线照常出图。
+  # 未签名安装包功能完全正常，只是首装会出现 SmartScreen「未知发行者」提示（docs/09 §4）。
+  # 将来接入证书时：去掉这一行，并设置 CSC_LINK / CSC_KEY_PASSWORD 环境变量即可。
+  signExecutable: false
   target:
     - target: nsis
       arch:

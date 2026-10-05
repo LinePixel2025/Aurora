@@ -254,7 +254,7 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
     <!-- 标题栏：整行可拖动（窗口无系统边框），右侧是步骤圆点进度 -->
     <header class="head glass-bar" :class="dragClass">
       <div class="brand">
-        <span class="brand-mark" />
+        <span class="brand-mark aurora-mark" />
         <div>
           <h1>Aurora</h1>
           <p class="brand-sub">把 Windows 接入 AI 生态 · 首次引导</p>
@@ -440,7 +440,7 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
 
         <!-- ⑤ 完成 -->
         <section v-else key="done" class="pane done-pane">
-          <span class="brand-mark xl anim-pop" />
+          <span class="brand-mark xl aurora-mark anim-pop" />
           <h2 class="pane-title anim-rise">一切就绪</h2>
           <p class="lead anim-rise">
             Aurora 已常驻系统托盘。默认模型：<strong>{{
@@ -569,13 +569,13 @@ const hasModeForm = computed(() => form.mode === 'classroom' || form.mode === 'w
   flex: 0 0 auto;
   width: 28px;
   height: 28px;
-  border-radius: 50%;
-  background: var(--aurora-gradient);
+  border-radius: 9px;
 }
 
 .brand-mark.xl {
   width: var(--space-8);
   height: var(--space-8);
+  border-radius: var(--radius-lg);
 }
 
 .progress-wrap {

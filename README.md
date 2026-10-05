@@ -33,7 +33,7 @@ pnpm dev              # 启动 Electron：托盘 + 首次引导窗口
 | `pnpm test` | vitest 单测（shared / agent-core / modes / 主进程纯逻辑），2400 项 |
 | `pnpm verify` | 真实磁盘的配置层验收脚本（需先 `pnpm build`），26 项断言 |
 | `pnpm lint` / `pnpm format` | ESLint / Prettier |
-| `node scripts/generate-icons.mjs` | 重新生成占位图标（托盘 / 应用图标） |
+| `pnpm icons` | 由 `scripts/assets/aurora-icon.png` 重新生成托盘 / 应用图标（含 `.ico`） |
 
 ### 端到端自测（真实 Electron + preload + IPC）
 
@@ -114,7 +114,7 @@ docs/                   项目文档（SSOT）
 
 | 内容 | 说明 |
 |---|---|
-| 代码签名证书 | 待证书；接入时把 `signAndEditExecutable` 改回 `true` 即可 |
+| 代码签名证书 | 待证书；接入时去掉 `win.signExecutable: false` 并配置 `CSC_LINK` / `CSC_KEY_PASSWORD` |
 | 启动耗时 / 内存优化 | P6 余下打磨项 |
 | Code Mode | 仍为占位（提示词 + 引导），能力位见 docs/05 §4；Work Mode 已于 0.0.1 初步实装 |
 | OCR 图片识别 | 图片目前只取文件名与尺寸，不识别文字 |

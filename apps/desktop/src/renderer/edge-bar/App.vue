@@ -34,7 +34,6 @@ import {
   LoaderCircle,
   MessageSquare,
   SettingsGear,
-  Sparkles,
   X,
 } from '@aurora/shared/browser'
 import {
@@ -522,9 +521,7 @@ onUnmounted(() => {
       <aside v-if="expanded" class="panel glass" data-field="edge-bar.panel">
         <header class="panel-head">
           <div class="brand-lockup">
-            <span class="brand-mark" aria-hidden="true">
-              <Sparkles :size="14" :stroke-width="1.8" />
-            </span>
+            <span class="brand-mark aurora-mark" aria-hidden="true" />
             <span class="brand-copy">
               <strong>Aurora</strong>
               <span class="tiny muted">{{ statusLabel }} · {{ modelLabel }}</span>
@@ -873,15 +870,10 @@ onUnmounted(() => {
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
   flex: 0 0 auto;
   width: 28px;
   height: 28px;
   border-radius: 9px;
-  background: color-mix(in srgb, var(--aurora-blue) 16%, transparent);
-  color: var(--accent-text);
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
 }
 
 .brand-copy {

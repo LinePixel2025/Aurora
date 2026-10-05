@@ -849,6 +849,7 @@ async function bootstrap(): Promise<void> {
     rendererUrl: process.env['ELECTRON_RENDERER_URL'],
     rendererDir,
     isDev,
+    iconPath: resolveWindowIcon(),
     backgroundThrottling: !smokeMode,
   })
 
@@ -5315,6 +5316,24 @@ function resolveTrayIcon(): string {
   }
   logger?.warn('未找到托盘图标，使用内置兜底图标')
   return ''
+}
+
+/**
+ * 窗口 / 任务栏图标。用 256px 那张而不是 `tray.png`（16px 在任务栏上糊）。
+ * 候选顺序与 `resolveTrayIcon` 一致：打包后先看 `resources/`（extraResources 带过来的），
+ * 再看 dev 下的仓库资源目录。找不到就返回 undefined，交给 Electron 回落到 exe 图标。
+ */
+function resolveWindowIcon(): string | undefined {
+  const candidates = [
+    join(process.resourcesPath ?? '', 'icon-256.png'),
+    join(__dirname, '../../resources/icon-256.png'),
+    join(app.getAppPath(), 'resources/icon-256.png'),
+  ]
+  for (const candidate of candidates) {
+    if (candidate !== '' && existsSync(candidate)) return candidate
+  }
+  logger?.warn('未找到窗口图标，任务栏沿用可执行文件图标')
+  return undefined
 }
 
 function resolveBuiltinSkillsDir(): string {

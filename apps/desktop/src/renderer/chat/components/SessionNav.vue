@@ -42,7 +42,6 @@ import {
   PanelRight,
   Plus,
   SettingsGear,
-  Sparkles,
   SquarePen,
   Workflow,
   Zap,
@@ -194,9 +193,7 @@ const noSessionsAtAll = computed(
   <div class="nav-inner">
     <!-- 品牌行：拖动区（窗口 frame:false）；区内按钮由全局规则自动 no-drag -->
     <div class="brand" :class="dragClass">
-      <span class="brand-mark" aria-hidden="true">
-        <Sparkles :size="13" :stroke-width="1.6" />
-      </span>
+      <span class="brand-mark aurora-mark" aria-hidden="true" />
       <strong class="brand-name">Aurora</strong>
     </div>
 
@@ -658,19 +655,9 @@ const noSessionsAtAll = computed(
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
+  flex: 0 0 auto;
   width: 22px;
   height: 22px;
-  border-radius: var(--radius-xs);
-  background: var(--aurora-gradient);
-  box-shadow: var(--shadow-hairline);
-}
-
-/* 单色 mark：强调色底 + 白色光芒线，BetaV2 禁用双色品牌渐变 */
-.brand-mark svg {
-  flex: 0 0 auto;
-  stroke: var(--on-accent);
 }
 
 .brand-name {

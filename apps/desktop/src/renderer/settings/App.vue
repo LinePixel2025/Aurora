@@ -38,7 +38,6 @@ import {
   MonitorSmartphone,
   Puzzle,
   SettingsGear,
-  Sparkles,
 } from '@aurora/shared/browser'
 
 type PageId =
@@ -162,9 +161,7 @@ function select(id: PageId): void {
     </div>
     <aside class="sidebar glass-shell rail-surface anim-shell-left">
       <div class="brand" :class="dragClass">
-        <span class="brand-mark" aria-hidden="true">
-          <Sparkles :size="12" :stroke-width="1.6" />
-        </span>
+        <span class="brand-mark aurora-mark" aria-hidden="true" />
         <div class="brand-text">
           <strong>Aurora</strong>
           <p class="tiny muted">设置</p>
@@ -281,18 +278,9 @@ function select(id: PageId): void {
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
+  flex: 0 0 auto;
   width: 22px;
   height: 22px;
-  border-radius: 50%;
-  background: var(--aurora-gradient);
-  box-shadow: var(--shadow-hairline);
-}
-
-.brand-mark svg {
-  flex: 0 0 auto;
-  stroke: var(--on-accent);
 }
 
 .brand p {

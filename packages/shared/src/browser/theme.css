@@ -602,6 +602,20 @@ select {
   -webkit-app-region: no-drag;
 }
 
+/**
+ * 品牌标：桌面与 Center Web 的**同一条**规则。
+ * 图来自 `scripts/assets/aurora-icon.png`，由 `pnpm icons` 同步成 `assets/aurora-mark.png`；
+ * 尺寸由使用处给（`width` / `height`），这里只管铺图与圆角 ——
+ * **不要在组件里另写 `background-image`**，否则两端又会各画各的。
+ */
+.aurora-mark {
+  background-image: url('./assets/aurora-mark.png');
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  border-radius: var(--radius-xs);
+}
+
 .row {
   display: flex;
   align-items: center;

@@ -1028,7 +1028,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
     @click="onContentClick"
   >
     <div v-if="messages.length === 0" class="empty anim-rise">
-      <span class="empty-orb" aria-hidden="true" />
+      <span class="empty-orb aurora-mark" aria-hidden="true" />
       <p class="empty-title">开始对话</p>
       <p class="empty-hint tiny muted">{{ emptyHint }}</p>
     </div>
@@ -1224,7 +1224,7 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   min-height: 100%;
 }
 
-/* ── 空状态：品牌渐变圆点 + 一句引导，进场一次 ── */
+/* ── 空状态：应用图标 + 一句引导，进场一次（图标图形来自共享 `.aurora-mark`） ── */
 .empty {
   display: flex;
   flex-direction: column;
@@ -1236,10 +1236,9 @@ async function onContentClick(event: MouseEvent): Promise<void> {
 }
 
 .empty-orb {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: var(--aurora-gradient);
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-2);
 }
 

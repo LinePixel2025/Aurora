@@ -21,7 +21,6 @@ import {
 import { navigate, route } from './router'
 import {
   Blocks,
-  BookOpenText,
   FolderOpen,
   LogOut,
   MonitorSmartphone,
@@ -101,9 +100,7 @@ const onlineCount = computed(
       <header v-if="!needsLogin" class="topbar glass-bar anim-pane">
         <div class="topbar-inner">
           <div class="brand">
-            <span class="brand-mark" aria-hidden="true">
-              <BookOpenText :size="17" :stroke-width="1.8" />
-            </span>
+            <span class="brand-mark aurora-mark" aria-hidden="true" />
             <span class="brand-name">Aurora</span>
             <span class="brand-sub">Center</span>
           </div>
@@ -249,13 +246,10 @@ const onlineCount = computed(
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
+  flex: 0 0 auto;
   width: 26px;
   height: 26px;
   border-radius: var(--radius-sm);
-  background: var(--aurora-gradient);
-  color: var(--on-accent);
 }
 
 .brand-sub {

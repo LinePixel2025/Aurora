@@ -225,16 +225,17 @@ Task/Job 持久化与续跑），详见 §5 变更记录最后一条。
   - **打包已落地**：`apps/desktop/electron-builder.yml`（Windows x64 + NSIS，非 oneClick），
     产物 `Aurora-Setup-<version>.exe` + `latest.yml` + `*.blockmap`；
     `extraResources` 把内置 `skills/` 放到 `resources/skills`；
-    `scripts/generate-icons.mjs` 现在直接产出 `icon.ico`（多尺寸，7 个条目），打包不再依赖
-    winCodeSign 工具链。
+    设计稿 `scripts/assets/aurora-icon.png`，`scripts/generate-icons.mjs` 直接产出
+    `icon.ico`（多尺寸，7 个条目）与各尺寸 PNG，打包不再依赖 winCodeSign 工具链。
   - **自动更新已落地（原 P7 项，随 P6 一起做）**：主进程 `UpdateService` 状态机 +
     electron-updater 适配层，设置页「更新」区与托盘入口；更新源为**公开 releases 仓库**，
     源码仓库保持私有，客户端不携带任何凭证（docs/09 §1）。
   - **发布流程**：`pnpm release`（本地，构建→打包→校验→打 tag→可选上传）与
     `.github/workflows/release.yml`（云端打包发布，**按需手动触发**；配置
     `secrets.RELEASE_TOKEN` 后可恢复 `v*` tag 自动触发）。
-  - **不签名**（用户决策）：`signAndEditExecutable: false`，首装会出现 SmartScreen
-    「未知发行者」提示，用户操作说明见 docs/09 §4；接入证书时改一个布尔值即可。
+  - **不签名**（用户决策）：`win.signExecutable: false`（只跳签名，保留 exe 图标 /
+    版本资源编辑），首装会出现 SmartScreen「未知发行者」提示，用户操作说明见
+    docs/09 §4；接入证书时去掉该字段即可。
   - **已验证**：`pnpm verify:release`（产物 14 项，含 sha512/size 与实际文件一致性）+
     `pnpm verify:update`（**启动已打包应用对着本地更新源真的发现新版本**，5 项）。
   - **待做**：代码签名证书、启动耗时 / 内存优化。
