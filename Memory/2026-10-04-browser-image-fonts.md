@@ -20,7 +20,8 @@ source: 模型自动记录
 - 工具契约是 `show_image { path, caption? }`；`generate_image` 成功后也自动写入同一
   `displayImages` 通道。两者共用 `ImageDisplayPort`，不要保留工具行内旧的小图预览。
 - 展示元数据是 `ChatDisplayImage { id, name, mime, caption? }`；真实 `path` 只存在于
-  会话文件（`StoredToolCall.displayImages`，`SESSION_FILE_VERSION = 5`），绝不跨 IPC / Center。
+  会话文件（`StoredToolCall.displayImages`，v5 引入该字段；当前版本见
+  `SESSION_FILE_VERSION`），绝不跨 IPC / Center。
 - 桌面按 `chat:readDisplayImage`、Center 按 `session.readImage` 现场读字节；Center
   服务端不缓存图片。原文件移动 / 删除、客户端离线时展示“图片不可用”回退，不伪造成功。
 - `show_image` 与 `show_preview` 都属扩展工具组，不受 `agent.tools.enabled` 门控；图片路径

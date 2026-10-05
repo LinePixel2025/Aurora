@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-05 | 会话自动标题是异步侧链路，不能阻塞回复或回填旧会话                             | session, title, agent, IPC, 坑         | [2026-10-05-session-auto-title.md](2026-10-05-session-auto-title.md)                                         |
 | 2026-10-05 | 自动化详情改为单例独立窗口，弹层不再受主区层级影响                             | UI, automation, window, IPC            | [2026-10-05-automation-standalone-window.md](2026-10-05-automation-standalone-window.md)                     |
 | 2026-10-05 | 提示条置顶需要 screen-saver 等级与 watchdog 恢复                               | edge-bar, Windows, 窗口, 坑            | [2026-10-05-edge-bar-topmost-watchdog.md](2026-10-05-edge-bar-topmost-watchdog.md)                           |
 | 2026-10-05 | Center Web 的 mobile-single-column 探针读在动画中途，基线就红                  | center, 验收, 探针, 坑                 | [2026-10-05-cweb-mobile-drawer-probe.md](2026-10-05-cweb-mobile-drawer-probe.md)                             |

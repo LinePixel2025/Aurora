@@ -1117,6 +1117,60 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       typeof newSessionId === 'string' && newSessionId.length > 0 && newSessionId !== 'quick',
       String(newSessionId),
     )
+    if (typeof newSessionId === 'string') {
+      let offTitle = () => {}
+      const titleEvent = new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          offTitle()
+          resolve(null)
+        }, 8_000)
+        offTitle = window.aurora.chat.onSessionTitleChanged((event) => {
+          if (event.sessionId !== newSessionId) return
+          clearTimeout(timer)
+          offTitle()
+          resolve(event)
+        })
+      })
+      let offDone = () => {}
+      const doneEvent = new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          offDone()
+          resolve(false)
+        }, 15_000)
+        offDone = window.aurora.chat.onEvent((event) => {
+          if (event.type !== 'done' || event.sessionId !== newSessionId) return
+          clearTimeout(timer)
+          offDone()
+          resolve(true)
+        })
+      })
+      const titleSend = expectOk(
+        'chat.send(自动标题)',
+        await window.aurora.chat.send({
+          sessionId: newSessionId,
+          text: '请帮我整理高数错题',
+          origin: 'chat',
+        }),
+      )
+      const generated = await titleEvent
+      const settled = await doneEvent
+      const titleSessions = expectOk(
+        'chat.sessions(自动标题)',
+        await window.aurora.chat.sessions(),
+      )
+      const persistedTitle =
+        Array.isArray(titleSessions) &&
+        titleSessions.find((item) => item.id === newSessionId)?.title
+      record(
+        '首条用户需求异步生成并推送会话标题',
+        titleSend !== null &&
+          settled === true &&
+          generated !== null &&
+          generated.title === '整理冒烟会话' &&
+          persistedTitle === '整理冒烟会话',
+        JSON.stringify({ generated, persistedTitle }),
+      )
+    }
 
     // ─────────── 归档 / 取消归档往返（docs/06 §4） ───────────
     // 状态写在会话文件自身的 meta 里，而不是配置或 sidecar 索引：因此

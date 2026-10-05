@@ -55,7 +55,7 @@ describe('SessionStore', () => {
       sessionId: string
       messages: StoredMessage[]
     }
-    expect(persisted.version).toBe(5)
+    expect(persisted.version).toBe(6)
     expect(persisted.sessionId).toBe('quick')
     expect(persisted.messages).toHaveLength(3)
     expect(persisted.messages[2]?.toolCallId).toBe('c1')
@@ -316,7 +316,7 @@ describe('SessionStore', () => {
     const persisted = JSON.parse(fs.files.get(`${SESSION_DIR}\\quick.json`) ?? '{}') as {
       version: number
     }
-    expect(persisted.version).toBe(5)
+    expect(persisted.version).toBe(6)
   })
 
   it('listSessions 合并内存与磁盘会话', async () => {
@@ -372,6 +372,48 @@ describe('SessionStore · 会话列表与新建（chat:sessions / chat:newSessio
     const title = summaries.find((item) => item.id === 'main')?.title ?? ''
     expect(title.endsWith('…')).toBe(true)
     expect(title.length).toBeLessThanOrEqual(25)
+  })
+
+  it('meta.title 优先于首条消息回退，并随会话落盘 / 重读', async () => {
+    const { store, fs } = setup()
+    await store.append('main', { role: 'user', content: '原始需求很长很长' })
+    await expect(store.setTitle('main', '整理数学作业')).resolves.toBe(true)
+    expect((await store.summaries()).find((item) => item.id === 'main')?.title).toBe(
+      '整理数学作业',
+    )
+    expect(metaOf(fs, 'main')['title']).toBe('整理数学作业')
+
+    const reopened = new SessionStore({ dir: SESSION_DIR, fs, writeDebounceMs: 0 })
+    expect((await reopened.summaries()).find((item) => item.id === 'main')?.title).toBe(
+      '整理数学作业',
+    )
+  })
+
+  it('pending 与空会话只改内存：首条消息落盘时才写入 meta', async () => {
+    const { store, fs } = setup()
+    const id = await store.createSession()
+    expect(await store.markTitlePending(id)).toBe(true)
+    expect(await store.titleStateOf(id)).toEqual({ pending: true })
+    expect((await fs.readdir(SESSION_DIR)).includes(`${id}.json`)).toBe(false)
+
+    await store.append(id, { role: 'user', content: '第一条需求' })
+    await store.flush()
+    expect(metaOf(fs, id)['titleState']).toBe('pending')
+
+    expect(await store.setTitle(id, '整理第一条需求')).toBe(true)
+    expect(metaOf(fs, id)['title']).toBe('整理第一条需求')
+    expect(metaOf(fs, id)['titleState']).toBeUndefined()
+  })
+
+  it('标题写入幂等；已删会话不会被异步标题结果复活', async () => {
+    const { store, fs } = setup()
+    await store.append('gone', { role: 'user', content: '需求' })
+    await store.setTitle('gone', '原标题')
+    await store.remove('gone')
+
+    await expect(store.setTitle('gone', '迟到标题')).resolves.toBe(false)
+    await expect(store.markTitlePending('gone')).resolves.toBe(false)
+    expect((await fs.readdir(SESSION_DIR)).includes('gone.json')).toBe(false)
   })
 
   it('空会话标题为「新会话」', async () => {
@@ -870,7 +912,7 @@ describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 
 
     // setArchived 是 await 写盘的（不靠 300ms 防抖），因此此刻盘上已是最终内容
     const persisted = readFile(fs, 'quick')
-    expect(persisted['version']).toBe(5)
+    expect(persisted['version']).toBe(6)
     expect(metaOf(fs, 'quick')['archived']).toBe(true)
     expect(typeof metaOf(fs, 'quick')['archivedAt']).toBe('string')
 
@@ -939,7 +981,7 @@ describe('SessionStore · 会话 meta 与归档（chat:archiveSession，docs/06 
     await store.setArchived('empty-one', true)
 
     const persisted = readFile(fs, 'empty-one')
-    expect(persisted['version']).toBe(5)
+    expect(persisted['version']).toBe(6)
     expect(persisted['messages']).toEqual([])
     expect(metaOf(fs, 'empty-one')['archived']).toBe(true)
     expect((await store.summaries()).find((item) => item.id === 'empty-one')?.title).toBe('新会话')

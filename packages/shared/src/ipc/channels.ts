@@ -171,6 +171,11 @@ export const IPC = {
      * chat 窗口据此重拉会话列表，当前会话被删时按「最近会话 / 新建」回落。
      */
     sessionDeleted: 'chat:sessionDeleted',
+    /**
+     * 会话自动标题变更推送（docs/06 §4，on/off 成对）：
+     * 主进程生成并落盘成功后广播 `{ sessionId, title }`。
+     */
+    sessionTitleChanged: 'chat:sessionTitleChanged',
     /** Job（任务）列表 / 续跑 / 取消（v15，docs/06 §4.1） */
     jobs: 'chat:jobs',
     resumeJob: 'chat:resumeJob',

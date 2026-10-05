@@ -188,6 +188,13 @@ export interface DesktopDeps {
   skills: SkillsInfoLike
   /** 会话历史（chat:history 水合，docs/06 §4） */
   sessions: SessionStore
+  /**
+   * 会话自动标题（docs/06 §4）。chat:send 接受首条 / pending 重试请求后异步调用；
+   * 不注入时退化为旧的“首条消息前 24 字”标题。
+   */
+  sessionTitles?: {
+    schedule(sessionId: string, firstUserText?: string, attachments?: readonly string[]): void
+  }
   /** 对话图片读取（chat:readDisplayImage，docs/06 §14） */
   readDisplayImage: (request: ChatDisplayImageReadRequest) => Promise<ChatDisplayImageReadResult>
   /** 分类管线（classification:*，docs/05 §3） */
@@ -586,6 +593,11 @@ export function registerIpc(deps: DesktopDeps): () => void {
     // 取决于 `llm.providers.<id>.modelParams.<模型>.vision`），其余提取成文本后拼进本轮消息。
     // 刻意**不在渲染层**读文件 —— 渲染进程没有 fs 能力，也不该有。
     try {
+      // 首条用户消息判定必须在 agent.send 之前完成：send 返回后内核已经异步开跑，
+      // 再读历史会把刚追加的这条也算进去；pending 重试则由标题服务自行判断。
+      const hadUserMessage = (await deps.sessions.get(request.sessionId)).some(
+        (message) => message.role === 'user',
+      )
       const prepared = await prepareAttachments(deps, request.attachments)
       // 内置命令 `/init`（docs/06 §6）：指令正文拼进 extraContext（与技能正文同一通道），
       // 用户气泡显示的仍是三个字符 `/init`。边界根解析不出时原样透传，不造一个假目录。
@@ -608,6 +620,15 @@ export function registerIpc(deps: DesktopDeps): () => void {
           ...request,
           ...(extraContext === '' ? {} : { extraContext }),
           ...(prepared.images.length === 0 ? {} : { images: prepared.images }),
+        })
+        .then((result) => {
+          // 不 await 标题：它与主回复并行，且失败绝不影响这次对话。
+          deps.sessionTitles?.schedule(
+            request.sessionId,
+            hadUserMessage ? undefined : request.text,
+            hadUserMessage ? [] : (request.attachments ?? []),
+          )
+          return result
         })
         .then(ok, (error: unknown) =>
           err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),

@@ -672,7 +672,10 @@ export interface ClassIslandNotifyResult {
 /** 会话摘要（`chat:sessions`，docs/06 §4） */
 export interface ChatSessionSummary {
   id: string
-  /** 取首条用户消息前若干字符；空会话用「新会话」 */
+  /**
+   * 会话标题：优先取主进程异步生成的 `meta.title`；
+   * 生成前 / 失败时回退首条用户消息前 24 字，空会话用「新会话」。
+   */
   title: string
   /** 最后一条消息时间（ISO 时间戳）；空会话取创建/发现时间 */
   updatedAt: string
@@ -739,6 +742,15 @@ export interface ChatRemoteVisibilityEvent {
  */
 export interface ChatSessionDeletedEvent {
   sessionId: string
+}
+
+/**
+ * 会话标题变更推送（`chat:sessionTitleChanged`，docs/06 §4）：
+ * 主进程异步生成标题并落盘成功后广播，chat 渲染层原位更新列表，不重新水合消息。
+ */
+export interface ChatSessionTitleChangedEvent {
+  sessionId: string
+  title: string
 }
 
 /** 归档 / 取消归档请求（`chat:archiveSession`，docs/06 §4） */
@@ -1903,6 +1915,11 @@ export interface AuroraApi {
      * 按「左栏最近一条会话回落，列表空则新建」处理。
      */
     onSessionDeleted(listener: (event: ChatSessionDeletedEvent) => void): () => void
+    /**
+     * 会话自动标题变更推送（docs/06 §4，on/off 成对）：
+     * 主进程生成并落盘成功后广播 `{ sessionId, title }`，渲染层原位更新会话列表。
+     */
+    onSessionTitleChanged(listener: (event: ChatSessionTitleChangedEvent) => void): () => void
     /**
      * 新建会话并返回其 id。
      *

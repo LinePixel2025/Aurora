@@ -15,6 +15,7 @@
  */
 import { createServer, type Server, type ServerResponse } from 'node:http'
 import { createNoopLogger, type Logger } from '@aurora/shared'
+import { TITLE_PROMPT_MARKER } from './session-title.js'
 
 export const STUB_MARKER = 'AURORA_STUB_OK'
 export const STUB_MODEL = 'aurora-smoke-model'
@@ -184,6 +185,8 @@ export interface StubLlmServer {
   classifyRequestCount(): number
   /** 对话请求次数 */
   chatRequestCount(): number
+  /** 自动标题请求次数 */
+  titleRequestCount(): number
   close(): Promise<void>
 }
 
@@ -194,9 +197,16 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
   const recordedRequests: StubChatRequestRecord[] = []
 
   const chatRequests = (): StubRequest[] =>
-    requests.filter((item) => item.path.endsWith('/chat/completions') && !isClassifyRequest(item))
+    requests.filter(
+      (item) =>
+        item.path.endsWith('/chat/completions') &&
+        !isClassifyRequest(item) &&
+        !isTitleRequest(item),
+    )
   const classifyRequests = (): StubRequest[] =>
     requests.filter((item) => item.path.endsWith('/chat/completions') && isClassifyRequest(item))
+  const titleRequests = (): StubRequest[] =>
+    requests.filter((item) => item.path.endsWith('/chat/completions') && isTitleRequest(item))
 
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = []
@@ -214,7 +224,7 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
       requests.push(record)
       // 对话请求另存一份定型快照（**在分流之前**：分流只决定回什么，不影响"收到了什么"）。
       // 只收 `/chat/completions`：`/models` 没有 messages，分类与子代理由标记字段区分。
-      if (path.endsWith('/chat/completions')) {
+      if (path.endsWith('/chat/completions') && !isTitleRequest(record)) {
         recordedRequests.push({
           messages: body?.messages ?? [],
           tools: Array.isArray(body?.tools)
@@ -238,6 +248,23 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
         'cache-control': 'no-cache',
         connection: 'keep-alive',
       })
+
+      // ── 自动标题分流（docs/06 §4）：标题请求不进入对话请求计数 / 定型快照 ──
+      if (isTitleRequest(record)) {
+        sendSse(res, {
+          choices: [
+            {
+              index: 0,
+              delta: { content: '整理冒烟会话' },
+              finish_reason: null,
+            },
+          ],
+        })
+        sendSseStop(res)
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
 
       // ── 分类分流 ──
       if (isClassifyRequest(record)) {
@@ -671,6 +698,7 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
       requests.some((item) => Array.isArray(item.body?.tools) && item.body.tools.length > 0),
     classifyRequestCount: () => classifyRequests().length,
     chatRequestCount: () => chatRequests().length,
+    titleRequestCount: () => titleRequests().length,
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()))
     },
@@ -705,6 +733,16 @@ function isClassifyRequest(request: StubRequest): boolean {
       message.role === 'system' &&
       typeof message.content === 'string' &&
       message.content.includes(CLASSIFY_PROMPT_MARKER),
+  )
+}
+
+/** 请求是否为自动标题请求：user 正文带标题服务标记。 */
+function isTitleRequest(request: StubRequest): boolean {
+  return (request.body?.messages ?? []).some(
+    (message) =>
+      message.role === 'user' &&
+      typeof message.content === 'string' &&
+      message.content.includes(TITLE_PROMPT_MARKER),
   )
 }
 

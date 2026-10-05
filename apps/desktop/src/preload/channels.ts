@@ -133,6 +133,8 @@ const CHANNELS = {
     compact: 'chat:compact',
     // 会话删除推送（docs/07 §2.3）：删除成功后主进程广播被删 id，同上，双向断言兜住
     sessionDeleted: 'chat:sessionDeleted',
+    // 会话自动标题推送（docs/06 §4）：生成成功后广播 { sessionId, title }
+    sessionTitleChanged: 'chat:sessionTitleChanged',
     jobs: 'chat:jobs',
     resumeJob: 'chat:resumeJob',
     cancelJob: 'chat:cancelJob',

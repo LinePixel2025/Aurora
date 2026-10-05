@@ -4722,6 +4722,102 @@ export function chatStreamCheck(marker: string, reasoningMarker: string): string
 }
 
 /**
+ * 自动标题截图场景：真实 UI 新建会话 → 发首条需求 → 等标题生成。
+ *
+ * act 保留原会话的按钮引用，check 断言完后再切回去，避免这个新会话影响后面的场景。
+ * 标题文本来自离线桩服务的固定响应，因此探针不依赖真实模型。
+ */
+export function chatAutoTitleAct(question: string): string {
+  return `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const create = document.querySelector('[data-action="chat.new-session"]')
+    if (create === null) return { ready: false, reason: '新建会话按钮不存在' }
+    create.click()
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const box = document.querySelector('.composer-input')
+      if (box !== null) break
+      await wait(100)
+    }
+    const box = document.querySelector('.composer-input')
+    const send = document.querySelector('.composer-box [aria-label="发送"]')
+    if (box === null || send === null) {
+      return { ready: false, reason: '新会话输入区未就绪' }
+    }
+    box.focus()
+    box.value = ${JSON.stringify(question)}
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await wait(150)
+    const beforeAssistants = document.querySelectorAll('.message.r-assistant').length
+    send.click()
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const activeTitle = document.querySelector('.nav-row.active .item-title')
+      const head = document.querySelector('.head-name')
+      const title = activeTitle === null ? '' : (activeTitle.textContent || '').trim()
+      const headTitle = head === null ? '' : (head.textContent || '').trim()
+      const assistants = document.querySelectorAll('.message.r-assistant').length
+      const streaming = document.querySelector('.thread.streaming') !== null
+      if (
+        title === '整理冒烟会话' &&
+        headTitle === '整理冒烟会话' &&
+        assistants > beforeAssistants &&
+        streaming === false
+      ) {
+        return { ready: true, title, headTitle }
+      }
+      await wait(100)
+    }
+    return { ready: false, reason: '等待自动标题超时' }
+  } catch (error) {
+    return { ready: false, reason: String(error) }
+  }
+})()`
+}
+
+export const CHAT_AUTO_TITLE_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const textOf = (selector) => {
+      const el = document.querySelector(selector)
+      return el === null ? '' : (el.textContent || '').trim()
+    }
+    const title = textOf('.nav-row.active .item-title')
+    const headTitle = textOf('.head-name')
+    const sessions = await window.aurora.chat.sessions()
+    const persisted =
+      sessions && sessions.ok === true
+        ? (sessions.value.find((item) => item.title === '整理冒烟会话') || {}).title || ''
+        : ''
+    const userCount = document.querySelectorAll('.message.r-user').length
+    const assistantCount = document.querySelectorAll('.message.r-assistant').length
+    // quick 是稳定的固定入口；截图场景只关心标题链，不需要把后续场景钉回某个历史会话。
+    const quick = document.querySelector('[data-field="chat.quick-item"]')
+    if (quick) quick.click()
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (textOf('.nav-row.active .item-title') !== '整理冒烟会话') break
+      await wait(100)
+    }
+    return {
+      title,
+      headTitle,
+      persisted,
+      userCount,
+      assistantCount,
+      restored: textOf('.nav-row.active .item-title') !== '整理冒烟会话',
+      pass:
+        title === '整理冒烟会话' &&
+        headTitle === '整理冒烟会话' &&
+        persisted === '整理冒烟会话' &&
+        userCount === 1 &&
+        assistantCount >= 1 &&
+        textOf('.nav-row.active .item-title') !== '整理冒烟会话',
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
  * 爆发场景在渲染层存放观测结果的槽位（act 装仪器、check 读结果，两段脚本不共享作用域）
  */
 const BURST_PROBE_SLOT = '__auroraStreamBurstProbe'
@@ -10264,7 +10360,7 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
   )
   const imageSeedAt = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString()
   const imageSeed = {
-    version: 5,
+    version: 6,
     sessionId: 'chat-seed-images',
     updatedAt: imageSeedAt,
     messages: [

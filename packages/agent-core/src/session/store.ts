@@ -504,6 +504,103 @@ export class SessionStore {
   }
 
   /**
+   * 读取标题生成状态（**异步**，必要时先读盘）。
+   *
+   * 不存在 / 尚未落盘的会话返回“未生成、未 pending”，不创建任何文件；
+   * 消费方是主进程的自动标题服务，需要在发送前判断是否已有标题或需要重试。
+   */
+  async titleStateOf(
+    sessionId: string,
+  ): Promise<{ title?: string; pending: boolean }> {
+    const id = normalizeSessionId(sessionId)
+    // 正常发送前 `chat:send` 已读过该会话历史，缓存里能同步判定；已有标题直接短路，
+    // 不在每条用户消息上扫描 sessions 目录。
+    if (this.loaded.has(id) || this.cache.has(id)) {
+      const cached = this.metaCache.get(id) ?? {}
+      return {
+        ...(cached.title === undefined ? {} : { title: cached.title }),
+        pending: cached.titleState === 'pending',
+      }
+    }
+    if (!(await this.hasSessionRecord(id))) return { pending: false }
+    await this.ensureLoaded(id)
+    const meta = this.metaCache.get(id) ?? {}
+    return {
+      ...(meta.title === undefined ? {} : { title: meta.title }),
+      pending: meta.titleState === 'pending',
+    }
+  }
+
+  /**
+   * 标记标题生成开始。
+   *
+   * - 已有非空 `meta.title` 时返回 `false`（永不自动覆盖）；
+   * - 已 pending 时返回 `true`，让调用方继续重试；
+   * - 通过 `hasSessionRecord` 防删除竞态：异步结果不能把已删会话重新写出来；
+   * - 空会话只改内存 meta，不写盘 —— 等首条消息 append 时随消息一起落盘，
+   *   保持“空会话不落盘”的既有不变量。
+   */
+  async markTitlePending(sessionId: string): Promise<boolean> {
+    const id = normalizeSessionId(sessionId)
+    if (!(await this.hasSessionRecord(id))) return false
+    await this.ensureLoaded(id)
+    // ensureLoaded 期间可能被 remove；loaded 被 remove 清掉时不能再写内存 meta。
+    if (!this.loaded.has(id)) return false
+    const current = this.metaCache.get(id) ?? {}
+    if (current.title !== undefined && current.title.trim() !== '') return false
+    if (current.titleState === 'pending') return true
+    this.metaCache.set(id, { ...current, titleState: 'pending' })
+    this.markMetaDirtyIfPersistable(id)
+    return true
+  }
+
+  /**
+   * 写入自动生成标题。
+   *
+   * 非空标题成功后删除 `titleState`；同值幂等。空标题按失败处理，不改 meta。
+   * 与 `markTitlePending` 同款：已删会话不能复活；空会话只改内存，首条消息
+   * append 时一起落盘。
+   */
+  async setTitle(sessionId: string, title: string): Promise<boolean> {
+    const id = normalizeSessionId(sessionId)
+    const normalized = title.replace(/\s+/g, ' ').trim()
+    if (normalized === '') return false
+    if (!(await this.hasSessionRecord(id))) return false
+    await this.ensureLoaded(id)
+    if (!this.loaded.has(id)) return false
+    const current = this.metaCache.get(id) ?? {}
+    if (current.title === normalized && current.titleState === undefined) return true
+    const next: SessionMeta = { ...current, title: normalized }
+    delete next.titleState
+    this.metaCache.set(id, next)
+    this.markMetaDirtyIfPersistable(id)
+    if (this.dirty.has(id) || this.timers.has(id)) {
+      await (this.writing.get(id) ?? Promise.resolve())
+    }
+    return true
+  }
+
+  /** 是否存在会话记录（内存已装载或磁盘已有）；不触发创建，供标题写入防复活。 */
+  private async hasSessionRecord(sessionId: string): Promise<boolean> {
+    const id = normalizeSessionId(sessionId)
+    if (this.loaded.has(id) || this.cache.has(id)) return true
+    return (await this.listSessions()).includes(id)
+  }
+
+  /**
+   * 标题 meta 变更后的落盘策略：空会话只改内存，等首条消息 append 一起写；
+   * 已有消息的会话立即排队写盘，保证调用方拿到返回后 `summaries()` 可见。
+   */
+  private markMetaDirtyIfPersistable(sessionId: string): void {
+    // 空会话没有写盘排队，但标题 / pending 仍改变了 `summaries()` 的结果；
+    // 不失效摘要缓存时，刚推送到界面的标题会与下一次列表读取打架。
+    this.summaryCache.delete(sessionId)
+    if ((this.cache.get(sessionId) ?? []).length === 0) return
+    this.dirty.add(sessionId)
+    this.scheduleWrite(sessionId, 0)
+  }
+
+  /**
    * 会话绑定的项目 id（docs/06 §5.1 会话级项目，`chat:setSessionProject`）。
    *
    * - **幂等**：目标值与当前值相同（含「都未绑定」）→ 直接返回，不写盘；
@@ -831,7 +928,7 @@ export class SessionStore {
     const projectId = this.projectOf(id)
     return {
       id,
-      title: titleFor(firstUser),
+      title: meta.title?.trim() || titleFor(firstUser),
       updatedAt: last?.createdAt ?? createdAtFromId(id) ?? new Date(0).toISOString(),
       messageCount: messages.filter(
         (message) => message.role === 'user' || message.role === 'assistant',
@@ -1262,6 +1359,15 @@ function normalizeMeta(value: unknown): SessionMeta {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
   const candidate = value as Record<string, unknown>
   const meta: SessionMeta = {}
+  // 自动标题只接受非空字符串；长标题在写入侧已清洗，这里再兜一道上限，
+  // 防止手改 / 旧夹具把列表撑坏。标题存在时丢弃残留的 pending 状态。
+  if (typeof candidate['title'] === 'string') {
+    const title = candidate['title'].replace(/\s+/g, ' ').trim().slice(0, 80)
+    if (title !== '') meta.title = title
+  }
+  if (meta.title === undefined && candidate['titleState'] === 'pending') {
+    meta.titleState = 'pending'
+  }
   if (typeof candidate['archived'] === 'boolean') meta.archived = candidate['archived']
   if (typeof candidate['archivedAt'] === 'string') meta.archivedAt = candidate['archivedAt']
   if (typeof candidate['pinned'] === 'boolean') meta.pinned = candidate['pinned']
@@ -1481,6 +1587,8 @@ function mergeAsks(onDisk: StoredAskRecord[], cached: StoredAskRecord[]): Stored
  */
 function isEmptyMeta(meta: SessionMeta): boolean {
   return (
+    (meta.title === undefined || meta.title.trim() === '') &&
+    meta.titleState === undefined &&
     meta.archived === undefined &&
     meta.archivedAt === undefined &&
     meta.pinned === undefined &&

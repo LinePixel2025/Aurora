@@ -156,6 +156,8 @@ const api: AuroraApi = {
     onCenterVisibilityChanged: (listener) => subscribe(IPC.chat.centerVisibilityChanged, listener),
     // 会话删除推送（docs/07 §2.3）：主进程删成功后广播被删 id，各窗口重拉列表并对齐当前会话
     onSessionDeleted: (listener) => subscribe(IPC.chat.sessionDeleted, listener),
+    // 会话自动标题推送（docs/06 §4）：生成成功后原位更新列表，不重新水合消息
+    onSessionTitleChanged: (listener) => subscribe(IPC.chat.sessionTitleChanged, listener),
     // 会话三分（docs/06 §4）：space / projectId 只透传（纯字面量，无 Proxy 克隆问题）
     newSession: (options) => invoke(IPC.chat.newSession, options),
     // 真删除会话（docs/08 会话管理页）：不可逆，二次确认由调用方负责

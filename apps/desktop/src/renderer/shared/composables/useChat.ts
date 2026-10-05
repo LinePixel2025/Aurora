@@ -460,6 +460,19 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     void handleSessionDeleted(event.sessionId)
   })
 
+  /**
+   * 会话自动标题推送（docs/06 §4）：标题已落盘，按 id 原位替换会话项。
+   * 不重新水合消息、不切换会话；列表尚未包含目标时补拉一次列表即可。
+   */
+  const disposeSessionTitle = window.aurora.chat.onSessionTitleChanged((event) => {
+    const target = sessions.value.find((item) => item.id === event.sessionId)
+    if (target !== undefined) {
+      target.title = event.title
+      return
+    }
+    void loadSessions()
+  })
+
   onScopeDispose(() => {
     // 先 flush 再 dispose：卸载瞬间已入队的增量不能丢（消息正文会缺尾），
     // dispose 只负责取消在途帧与清空缓冲（组件已经没了，不再 apply）
@@ -469,6 +482,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     disposeRemoteActivate()
     disposeCenterVisibility()
     disposeSessionDeleted()
+    disposeSessionTitle()
   })
 
   /**

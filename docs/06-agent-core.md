@@ -172,10 +172,18 @@ export interface LlmProvider {
   归档这件事本身就需要一个落点）。`summaries()` 把 `archived` 透出给 `ChatSessionSummary`，
   渲染层据此分组（见 07 §2.3）。IPC 通道 `chat:archiveSession` 对普通会话与 quick 一视同仁。
   **已知边界**：`chat:sessions` 目前没有推送通道，归档只在发出请求的那个窗口即时生效。
+- **会话自动标题（2026-10-05，`meta.title` / `titleState`）**：用户可见会话发出**首条用户需求**
+  后，主进程异步复用该会话当前生效模型，把需求总结成 6–14 字的单行任务名，写入
+  `meta.title`。标题请求与主回复并行，不阻塞对话、不新增聊天消息、不进会话历史，也不计
+  `meta.usage`。成功时经 `chat:sessionTitleChanged` 推送 `{ sessionId, title }`，左栏与主区标题
+  原位更新；失败时静默保留“首条用户消息前 24 字”的回退标题，并把内部 `titleState: 'pending'`
+  留在会话 meta 中，后续用户发送时重试。`awareness-` / `auto-` / `-sub` 等隐藏后台会话跳过；
+  升级前已有且没有 `pending` 标记的旧会话不批量回填。`meta.title` 非空时永不自动覆盖。
 - **会话文件格式版本**（`SESSION_FILE_VERSION`，与 `CONFIG_VERSION` 是两条独立的链）：
   v1 → v2 加 `meta`（上面那条）；v2 → v3 加 `StoredMessage.images`（图片附件**路径**，§3.1）；
   **v3 → v4** 加 `asks`（提问留痕，§24）；**v4 → v5（本轮）** 给工具卡加
-  `displayImages`（对话图片区，§14）—— 四条都是**可选字段、无迁移脚本**，
+  `displayImages`（对话图片区，§14）；**v5 → v6** 给 `meta` 加 `title` / `titleState` ——
+  五条都是**可选字段、无迁移脚本**，
   读取侧宽容归化（缺字段 = 没有那个能力），版本号只用于说明"这个文件可能带什么"。
 - **会话绑定项目（v17，2026-09，`chat:setSessionProject`）**：`meta` 新增可选
   `projectId?: string`（`''` 与缺字段都算未绑定，空 meta 判定同步覆盖，不写空键）；
@@ -2159,7 +2167,8 @@ docs/13 §7）：
 
 - **会话 id**：`sessionId = runId = auto-<ts36>-<n>`。runId 在 `agent.send` **之前**就落进运行记录，
   因此即便 send 失败（如未配置模型），历史仍能指向「本该承载本次任务的会话」；
-  会话标题沿用既有的「首条用户消息前 24 字」推导（`SessionStore.titleFor`，即任务指令摘要）。
+  隐藏后台会话不参与自动标题，沿用既有的「首条用户消息前 24 字」推导
+  （`SessionStore.titleFor`，即任务指令摘要）。
 - **origin**：`SendMessageRequest.origin` 与 `AgentJob.origin` 的联合类型各扩一个 `'automation'`
   成员（job 字段形状见 §4.1）。内核不为它分支 —— 只写进 job 记录与日志，扩联合即安全。
 - **`extraContext`**：按契约注入触发上下文（自动化名称 + 触发描述，如「距上课 3 分钟」，

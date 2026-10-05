@@ -104,6 +104,7 @@ import { SETTINGS_HINT } from './settings-hint.js'
 import { readImages } from './attachments.js'
 import { registerIpc, createSettingsWriter, restoreSnapshot, type DesktopDeps } from './ipc.js'
 import { TerminalService } from './terminal-service.js'
+import { SessionTitleService } from './session-title.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { isQuietHour, ProactiveScheduler } from './proactive.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
@@ -159,11 +160,13 @@ import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
 import {
   ASK_USER_CAPTURE_QUESTION,
   captureWindows,
+  CHAT_AUTO_TITLE_CHECK,
   CHAT_TRACE_FOLD_CHECK,
   MEMORY_WINDOW_CHECK,
   SETTINGS_AWARENESS_RECORDS_ACT,
   SETTINGS_AWARENESS_RECORDS_CHECK,
   chatStreamAct,
+  chatAutoTitleAct,
   chatStreamBurstAct,
   chatStreamBurstCheck,
   chatStreamCheck,
@@ -1238,6 +1241,13 @@ async function bootstrap(): Promise<void> {
       }
     },
   }
+  const sessionTitles = new SessionTitleService({
+    sessions,
+    provider: agentProvider,
+    logger: logger.child('session-title'),
+    // 标题落盘成功后才广播：渲染层看到标题时，重启 / Center 再拉列表也一定读得到。
+    onTitle: (event) => windows?.sendTo('chat', IPC.chat.sessionTitleChanged, event),
+  })
   agentCoreTools = registerAgentCoreTools({
     tools,
     logger: logger.child('tools'),
@@ -2096,6 +2106,7 @@ async function bootstrap(): Promise<void> {
     imagegen: imageGenService,
     skills: skillsService,
     sessions,
+    sessionTitles,
     readDisplayImage: async ({ sessionId, imageId }) => {
       const image = await sessions!.displayImageOf(sessionId, imageId)
       if (image === undefined) throw new Error('图片不存在或已被会话清理')
@@ -2493,6 +2504,13 @@ async function runCapture(dir: string): Promise<void> {
       reasoningEnd: BURST_REASONING_END_MARKER,
     }),
   }
+  const chatAutoTitleTarget: CaptureTarget = {
+    name: 'chat',
+    file: 'chat-auto-title.png',
+    prepare: useCaptureStub,
+    act: chatAutoTitleAct('请帮我整理高数错题'),
+    check: CHAT_AUTO_TITLE_CHECK,
+  }
   // 场景级过滤：`AURORA_CAPTURE_ONLY=<文件名子串, ...>`；特殊值 `failed` = 只重跑上次
   // `report.json` 里没过的那几张（修完一轮只重验红的，不必全量重跑五六十张）。
   // ⚠️ `failed` 落在"上次全绿"时得到的是**空数组**，那表示"没有要重验的"，
@@ -2516,6 +2534,7 @@ async function runCapture(dir: string): Promise<void> {
       chatStreamTarget,
       chatTraceFoldTarget,
       chatBurstTarget,
+      chatAutoTitleTarget,
       // 记忆库独立窗口放在性能场景之后：多一个可见渲染窗口会污染 burst 的帧间隔读数。
       {
         name: 'memory',

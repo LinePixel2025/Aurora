@@ -37,7 +37,7 @@ export interface StoredToolCall {
    */
   subagent?: SubagentSnapshot
   /**
-   * 本工具调用产出的对话图片（docs/06 §14，SESSION_FILE_VERSION 5）。
+   * 本工具调用产出的对话图片（docs/06 §14，v5 引入该字段）。
    *
    * `path` 是客户端内部字段：`rendererHistory` / Center 回放只投影成
    * `ChatDisplayImage`（无路径），真实文件按 id 读取。
@@ -132,6 +132,21 @@ export interface SessionCompact {
  * 也正因如此它**不进 `config.json`**，不需要配置迁移。
  */
 export interface SessionMeta {
+  /**
+   * 自动生成 / 未来手动设置的会话标题。
+   *
+   * 非空时优先于“首条用户消息前 24 字”的回退标题；生成失败不写这个字段，
+   * 由 `titleState: 'pending'` 记录后续发送需要重试。属于会话数据，
+   * 不进 `config.json` / `CONFIG_VERSION`。
+   */
+  title?: string
+  /**
+   * 标题生成状态（内部重试标记）。
+   *
+   * 只在标题请求已经开始但尚未成功时写 `'pending'`；成功写入 title 后删除。
+   * 旧会话没有这个字段，因此不会被批量回填。
+   */
+  titleState?: 'pending'
   /** 已归档：从主列表移入「已归档」分组，但会话本身照常可读可继续对话 */
   archived?: boolean
   /** 归档时刻（ISO）；取消归档时清掉 */
@@ -281,4 +296,4 @@ export interface NewMessage {
  * v4 → v5：工具调用新增可选 `displayImages`（对话图片展示，docs/06 §14）。
  * 同样零迁移：缺字段 = 没有展示图片，旧文件天然合法。
  */
-export const SESSION_FILE_VERSION = 5 as const
+export const SESSION_FILE_VERSION = 6 as const
