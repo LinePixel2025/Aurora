@@ -193,7 +193,6 @@ const noSessionsAtAll = computed(
   <div class="nav-inner">
     <!-- 品牌行：拖动区（窗口 frame:false）；区内按钮由全局规则自动 no-drag -->
     <div class="brand" :class="dragClass">
-      <span class="brand-mark aurora-mark" aria-hidden="true" />
       <strong class="brand-name">Aurora</strong>
     </div>
 
@@ -649,15 +648,8 @@ const noSessionsAtAll = computed(
 .brand {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
   min-height: 36px;
-  padding: 0 var(--space-1);
-}
-
-.brand-mark {
-  flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
+  padding: 0 var(--space-3);
 }
 
 .brand-name {

@@ -161,7 +161,6 @@ function select(id: PageId): void {
     </div>
     <aside class="sidebar glass-shell rail-surface anim-shell-left">
       <div class="brand" :class="dragClass">
-        <span class="brand-mark aurora-mark" aria-hidden="true" />
         <div class="brand-text">
           <strong>Aurora</strong>
           <p class="tiny muted">设置</p>
@@ -259,10 +258,9 @@ function select(id: PageId): void {
 .brand {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  /* 拖动条高度的下限（探针要求 ≥ 32px）：品牌标记 22px，两行文案本身还会把它撑到 ≈39px */
+  /* 拖动条高度的下限（探针要求 ≥ 32px）：两行文案本身会把品牌行撑到约 39px */
   min-height: 36px;
-  padding: 0 0 0 var(--space-2);
+  padding: 0 0 0 var(--space-3);
 }
 
 .brand-text {
@@ -275,12 +273,6 @@ function select(id: PageId): void {
   font-family: var(--font-display);
   font-size: var(--text-base);
   letter-spacing: var(--tracking-display);
-}
-
-.brand-mark {
-  flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
 }
 
 .brand p {

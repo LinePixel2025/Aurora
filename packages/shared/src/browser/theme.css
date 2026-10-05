@@ -616,6 +616,12 @@ select {
   border-radius: var(--radius-xs);
 }
 
+/** 只保留主体 A 的透明品牌标，供主界面聊天空态等无底板场景使用。 */
+.aurora-mark-bare {
+  background-image: url('./assets/aurora-mark-transparent.png');
+  border-radius: 0;
+}
+
 .row {
   display: flex;
   align-items: center;

@@ -225,8 +225,9 @@ Task/Job 持久化与续跑），详见 §5 变更记录最后一条。
   - **打包已落地**：`apps/desktop/electron-builder.yml`（Windows x64 + NSIS，非 oneClick），
     产物 `Aurora-Setup-<version>.exe` + `latest.yml` + `*.blockmap`；
     `extraResources` 把内置 `skills/` 放到 `resources/skills`；
-    设计稿 `scripts/assets/aurora-icon.png`，`scripts/generate-icons.mjs` 直接产出
-    `icon.ico`（多尺寸，7 个条目）与各尺寸 PNG，打包不再依赖 winCodeSign 工具链。
+    设计稿 `scripts/assets/aurora-icon.png`，`scripts/generate-icons.mjs` 先居中裁成正方形、
+    再套透明圆角矩形蒙版，直接产出 `icon.ico`（多尺寸，7 个条目）与各尺寸 PNG，
+    另派生无底透明品牌标供主界面空态使用；打包不再依赖 winCodeSign 工具链。
   - **自动更新已落地（原 P7 项，随 P6 一起做）**：主进程 `UpdateService` 状态机 +
     electron-updater 适配层，设置页「更新」区与托盘入口；更新源为**公开 releases 仓库**，
     源码仓库保持私有，客户端不携带任何凭证（docs/09 §1）。

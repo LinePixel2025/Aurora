@@ -41,8 +41,17 @@ source: 模型自动记录
 
 ## 图标生成
 
-- 设计稿唯一来源：`scripts/assets/aurora-icon.png`（811×778 8bit RGBA）。
-  `pnpm icons` 居中裁成正方形后用**面积平均**重采样出 16/24/32/48/64/128/256，
-  产出 `tray.png` / `tray-16/32.png` / `icon-64/256.png` / `icon.ico`（7 条目）。
+- 设计稿唯一来源：`scripts/assets/aurora-icon.png`（当前 780×760 8bit RGBA）。
+  `pnpm icons` 居中裁成正方形、套透明圆角矩形蒙版（半径 = 边长 22%）后，用**面积平均**
+  重采样出 16/24/32/48/64/128/256，产出 `tray.png` / `tray-16/32.png` / `icon-64/256.png` /
+  `icon.ico`（7 条目）。
 - 缩到 16px 时一个目标像素要平均约 48×48 个源像素，**不能用最近邻**，否则托盘严重锯齿。
 - 换图标 = 换那张 PNG 再跑 `pnpm icons`，不要手改派生出来的 PNG / ICO。
+
+## 2026-10-06 修订：圆角矩形品牌稿
+
+- 用户要求新品牌稿必须裁成圆角矩形再替换：源图仍是方形设计稿，但生成器固定套透明
+  圆角矩形蒙版，`tray`、窗口 / 任务栏、`icon.ico` 与共享 `aurora-mark.png` 都不再带方角。
+- 圆角只加在生成链里，不手改派生产物；以后换稿同样只替换源 PNG 后跑 `pnpm icons`。
+- 主界面聊天空态另用 `aurora-mark-transparent.png` + `.aurora-mark-bare`：按明度把白底和阴影
+  归零，只保留黑色主体 A 的 alpha，不共享圆角底板稿。

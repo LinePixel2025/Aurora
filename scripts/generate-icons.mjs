@@ -2,9 +2,10 @@
 /**
  * 生成 Aurora 图标（托盘 + 应用图标）。
  *
- * 设计稿：`scripts/assets/aurora-icon.png`（浅色底 + 极光渐变字母 A + 金色横杠）。
- * 这里把设计稿居中裁成正方形，再用面积平均（box filter）重采样出各尺寸，
- * 所以从 16px 托盘到 256px 应用图标都是同一张稿子，改稿只需替换这张 PNG。
+ * 设计稿：`scripts/assets/aurora-icon.png`（浅色底 + 黑色字母 A）。
+ * 这里把设计稿居中裁成正方形，再套透明圆角矩形蒙版，最后用面积平均（box filter）
+ * 重采样出各尺寸，所以从 16px 托盘到 256px 应用图标都是同一张圆角稿子，
+ * 改稿只需替换这张 PNG。
  *
  * 为什么用脚本生成：仓库运行时只消费 PNG / ICO，不把多份派生产物当手改资产。
  * 解码 / 重采样 / 编码全部用纯 Node（zlib + 手写 PNG / ICO chunk），离线、可重复，
@@ -96,6 +97,60 @@ function cropSquare(image) {
     image.pixels.copy(pixels, y * side * 4, from, from + side * 4)
   }
   return { width: side, height: side, pixels }
+}
+
+/**
+ * 透明圆角矩形蒙版。
+ *
+ * 圆角半径取边长的 22%，边缘由 1px 覆盖带做抗锯齿；再交给面积平均重采样，
+ * 16px 托盘图标也不会出现硬方角。
+ */
+const ROUNDED_CORNER_RATIO = 0.22
+
+function applyRoundedRectMask(image) {
+  const { width, height, pixels } = image
+  const radius = Math.min(width, height) * ROUNDED_CORNER_RATIO
+  const halfWidth = width / 2
+  const halfHeight = height / 2
+  const out = Buffer.from(pixels)
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const qx = Math.abs(x + 0.5 - halfWidth) - (halfWidth - radius)
+      const qy = Math.abs(y + 0.5 - halfHeight) - (halfHeight - radius)
+      const distance =
+        Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - radius
+      const coverage = Math.min(1, Math.max(0, 0.5 - distance))
+      if (coverage >= 1) continue
+      const alphaIndex = (y * width + x) * 4 + 3
+      out[alphaIndex] = Math.round(out[alphaIndex] * coverage)
+    }
+  }
+
+  return { width, height, pixels: out }
+}
+
+/**
+ * 仅保留主体图形的透明稿。
+ *
+ * 明度越低越保留、越高越透明；低于约 6% 的浅灰阴影直接归零。输出像素统一为黑色，
+ * 只让 alpha 表达抗锯齿，避免把源图的白底或阴影带到深色背景上。
+ */
+function createTransparentMark(image) {
+  const { width, height, pixels } = image
+  const out = Buffer.alloc(width * height * 4)
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4
+      const luminance = 0.2126 * pixels[i] + 0.7152 * pixels[i + 1] + 0.0722 * pixels[i + 2]
+      const coverage = Math.min(1, Math.max(0, (200 - luminance) / 150))
+      const alpha = coverage <= 0.06 ? 0 : (coverage - 0.06) / 0.94
+      out[i + 3] = Math.round(pixels[i + 3] * alpha)
+    }
+  }
+
+  return { width, height, pixels: out }
 }
 
 /**
@@ -199,8 +254,10 @@ function crc32(buffer) {
 /* ------------------------------------------------------------------ *
  * 输出
  * ------------------------------------------------------------------ */
-const master = cropSquare(decodePng(readFileSync(sourcePath)))
-console.log(`source ${sourcePath} → square ${master.width}×${master.height}`)
+const square = cropSquare(decodePng(readFileSync(sourcePath)))
+const master = applyRoundedRectMask(square)
+const transparentMark = createTransparentMark(square)
+console.log(`source ${sourcePath} → square ${square.width}×${square.height} → rounded rect`)
 
 const targets = [
   ['tray-16.png', 16],
@@ -234,6 +291,22 @@ const markSize = 256
 writeFileSync(markPath, encodePng(markSize, resizeArea(master, markSize)))
 console.log(
   `generated packages/shared/src/browser/assets/aurora-mark.png (${markSize}×${markSize})`,
+)
+
+// 主界面聊天空态：只保留主体 A，不带白底、圆角卡片或投影
+const bareMarkPath = join(
+  here,
+  '..',
+  'packages',
+  'shared',
+  'src',
+  'browser',
+  'assets',
+  'aurora-mark-transparent.png',
+)
+writeFileSync(bareMarkPath, encodePng(markSize, resizeArea(transparentMark, markSize)))
+console.log(
+  `generated packages/shared/src/browser/assets/aurora-mark-transparent.png (${markSize}×${markSize})`,
 )
 
 /**
