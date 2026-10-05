@@ -3609,9 +3609,8 @@ export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
 })()`
 
 /**
- * 「自动化」页面探针组（docs/13 §11、docs/07 §5.3）：四个场景共用一次进入（chat-automation
- * 打开页面 → chat-automation-normal 切 Normal tab 看内置区 → chat-automation-editor 开编辑器
- * → chat-automation-history 开历史并回放 Agent 运行），最后一张收尾时点「返回对话」还原主区。
+ * 「自动化」探针组（docs/13 §11、docs/07 §5.3）：主界面看列表 /
+ * 内置区，`automation` 独立窗口看编辑器 / 历史与 Agent 回放。
  *
  * 数据来自 `seedAutomationFixture` 种下的 2 份 Normal 定义（一份计数 3/10、一份已用尽 5/5，
  * 用于次数徽章）+ 2 条历史（normal / agent 各一条，agent 记录指向 seed 的 `auto-capture1` 会话），
@@ -3741,17 +3740,18 @@ export const CHAT_AUTOMATION_NORMAL_CHECK = `(() => {
 export const CHAT_AUTOMATION_EDITOR_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
-    const btn = document.querySelector('[data-action="automation.new"]')
-    if (btn === null) return { clicked: false, reason: 'no automation.new' }
-    btn.click()
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    const opened = await window.aurora.automation.openWindow({ view: 'editor', mode: 'normal' })
+    for (let attempt = 0; attempt < 30; attempt += 1) {
       if (document.querySelector('[data-field="automation.editor"]') !== null) break
       await wait(100)
     }
     await wait(200)
-    return { clicked: true }
+    return {
+      opened: opened.ok,
+      editor: document.querySelector('[data-field="automation.editor"]') !== null,
+    }
   } catch (error) {
-    return { clicked: false, reason: String(error) }
+    return { opened: false, reason: String(error) }
   }
 })()`
 
@@ -3884,16 +3884,8 @@ export const CHAT_AUTOMATION_EDITOR_CHECK = `(async () => {
 export const CHAT_AUTOMATION_HISTORY_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
-    // 历史面板按当前 tab 过滤（产品口径）：先切到 Agent tab，面板里才有可回放的 Agent 记录
-    const tab = document.querySelector('[data-field="automation.tab-agent"]')
-    if (tab !== null) {
-      tab.click()
-      await wait(200)
-    }
-    const btn = document.querySelector('[data-action="automation.history"]')
-    if (btn === null) return { clicked: false, reason: 'no automation.history' }
-    btn.click()
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    const opened = await window.aurora.automation.openWindow({ view: 'history', mode: 'agent' })
+    for (let attempt = 0; attempt < 30; attempt += 1) {
       if (document.querySelector('[data-field="automation.history-panel"]') !== null) break
       await wait(100)
     }
@@ -3908,9 +3900,13 @@ export const CHAT_AUTOMATION_HISTORY_ACT = `(async () => {
       }
       await wait(200)
     }
-    return { clicked: true, opened: row !== null }
+    return {
+      opened:
+        opened.ok && document.querySelector('[data-field="automation.history-panel"]') !== null,
+      detail: row !== null,
+    }
   } catch (error) {
-    return { clicked: false, reason: String(error) }
+    return { opened: false, reason: String(error) }
   }
 })()`
 
@@ -3939,17 +3935,12 @@ export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
       ((panelAfter.textContent || '').indexOf('capture-automation-run') !== -1)
 
     // Normal tab 的历史：**只显示触发时间与状态**（无详情层，产品口径 docs/13 §11）
-    const closeAgent = document.querySelector('[data-action="automation.history-close"]')
-    if (closeAgent !== null) closeAgent.click()
-    await wait(200)
     const tabNormal = document.querySelector('[data-field="automation.tab-normal"]')
     if (tabNormal !== null) {
       tabNormal.click()
       await wait(200)
     }
-    const historyBtn = document.querySelector('[data-action="automation.history"]')
-    if (historyBtn !== null) historyBtn.click()
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
       if (count('.run-item') > 0) break
       await wait(120)
     }
@@ -3960,14 +3951,6 @@ export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
       (el.textContent || '').trim(),
     )
 
-    // 收尾：关弹窗 → 点「返回对话」还原主区（后续 chat-classisland-status 等场景依赖对话流）
-    const closeNormal = document.querySelector('[data-action="automation.history-close"]')
-    if (closeNormal !== null) closeNormal.click()
-    await wait(200)
-    const back = document.querySelector('[data-action="automation-back"]')
-    if (back !== null) back.click()
-    await wait(250)
-    const restored = document.querySelector('[data-field="automation.page"]') === null
     const result = {
       panel: panel !== null,
       agentRuns,
@@ -3978,7 +3961,6 @@ export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
       normalClickable,
       normalHasTime,
       normalStatuses,
-      restored,
       pass:
         panel !== null &&
         agentRuns >= 1 &&
@@ -3987,10 +3969,11 @@ export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
         agentMarker === true &&
         normalRuns >= 1 &&
         normalClickable === 0 &&
-        normalHasTime === true &&
-        restored === true,
+        normalHasTime === true,
     }
     void panelText
+    await window.aurora.window.hide('automation')
+    result.hidden = true
     return result
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -10804,8 +10787,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
           askUserCaptureAnswer.skipped !== true,
       }),
     },
-    // 自动化页四连（docs/13 §11）：进入页面 → Normal tab（内置区）→ 编辑器弹窗 →
-    // 历史 + Agent 回放；最后一张收尾时还原主区。数据来自 seedAutomationFixture。
+    // 自动化页与详情窗口（docs/13 §11）：进入页面 → Normal tab（内置区）→
+    // automation 窗口编辑器 → automation 窗口历史 + Agent 回放。数据来自 seedAutomationFixture。
     {
       name: 'chat',
       file: 'chat-automation.png',
@@ -10819,16 +10802,39 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       check: CHAT_AUTOMATION_NORMAL_CHECK,
     },
     {
-      name: 'chat',
-      file: 'chat-automation-editor.png',
+      name: 'automation',
+      file: 'automation-editor.png',
       act: CHAT_AUTOMATION_EDITOR_ACT,
       check: CHAT_AUTOMATION_EDITOR_CHECK,
     },
     {
-      name: 'chat',
-      file: 'chat-automation-history.png',
+      name: 'automation',
+      file: 'automation-history.png',
       act: CHAT_AUTOMATION_HISTORY_ACT,
       check: CHAT_AUTOMATION_HISTORY_CHECK,
+      mainAct: async () => {
+        const chat = webContents
+          .getAllWebContents()
+          .find((contents) => contents.getTitle() === 'Aurora 对话')
+        if (chat === undefined) return { pass: false, reason: 'no chat webContents' }
+        const restored = await chat.executeJavaScript(
+          `(async () => {
+            const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+            const back = document.querySelector('[data-action="automation-back"]')
+            if (back === null) return { ok: false, reason: 'no automation-back' }
+            back.click()
+            for (let attempt = 0; attempt < 20; attempt += 1) {
+              if (document.querySelector('.thread, [data-field="chat.subagent-page"]') !== null) break
+              await wait(100)
+            }
+            return {
+              ok: document.querySelector('[data-field="automation.page"]') === null,
+            }
+          })()`,
+          true,
+        )
+        return { pass: restored.ok === true, restored }
+      },
     },
     // ClassIsland 课堂状态卡：需要真实桥接产出，因此主进程侧先种夹具（见 seedClassIslandFixture），
     // 再由 act 把课表来源切到 classisland + 文件模式指向它；check 收尾还原成 manual。

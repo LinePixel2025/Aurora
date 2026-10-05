@@ -3715,6 +3715,69 @@ async function runSmokeTest(userData: string): Promise<void> {
         near(backShape.width, collapsedShape.width, 1),
       JSON.stringify({ before: barCollapsed, after: barBack, shape: backShape }),
     )
+    const nativeEdge = BrowserWindow.getAllWindows().find(
+      (win) => win.getTitle() === 'Aurora 提示条',
+    )
+    const edgeTopBefore = nativeEdge?.isAlwaysOnTop() === true
+    nativeEdge?.setAlwaysOnTop(false)
+    const edgeTopRestored = windows?.reassertEdgeBarTopForDiagnostics() === true
+    record(
+      '提示条置顶丢失后可立即恢复为 screen-saver 置顶',
+      edgeTopBefore && edgeTopRestored && nativeEdge?.isAlwaysOnTop() === true,
+      JSON.stringify({
+        before: edgeTopBefore,
+        restored: edgeTopRestored,
+        nativeAfter: nativeEdge?.isAlwaysOnTop() ?? null,
+      }),
+    )
+
+    const automationEditorState = await windows?.showWithPayload(
+      'automation',
+      IPC.automation.windowRequest,
+      {
+        requestId: 'smoke-automation-editor',
+        view: 'editor',
+        mode: 'normal',
+      },
+    )
+    await windows?.whenLoaded('automation')
+    const firstAutomationWindow = BrowserWindow.getAllWindows().find(
+      (win) => win.getTitle() === 'Aurora 自动化',
+    )
+    const automationEditorVisible = automationEditorState?.visible['automation'] === true
+    const automationHistoryState = await windows?.showWithPayload(
+      'automation',
+      IPC.automation.windowRequest,
+      {
+        requestId: 'smoke-automation-history',
+        view: 'history',
+        mode: 'agent',
+      },
+    )
+    const automationWindows = BrowserWindow.getAllWindows().filter(
+      (win) => win.getTitle() === 'Aurora 自动化',
+    )
+    const automationReused =
+      firstAutomationWindow !== undefined &&
+      automationWindows.length === 1 &&
+      automationWindows[0] === firstAutomationWindow
+    windows?.hide('automation')
+    const automationHidden = windows?.getState().visible['automation'] !== true
+    record(
+      '自动化详情窗口单例复用，可依次切换编辑器 / 历史并在关闭后隐藏',
+      automationEditorVisible &&
+        automationHistoryState?.visible['automation'] === true &&
+        automationReused &&
+        automationHidden,
+      JSON.stringify({
+        editorVisible: automationEditorVisible,
+        historyVisible: automationHistoryState?.visible['automation'] === true,
+        windowCount: automationWindows.length,
+        reused: automationReused,
+        hidden: automationHidden,
+      }),
+    )
+
     windows?.ensure('chat')
     const nativeChat = BrowserWindow.getAllWindows().find((win) => win.getTitle() === 'Aurora 对话')
     const nativeBeforeMaximize = windows?.usesNativeGlass('chat') === true

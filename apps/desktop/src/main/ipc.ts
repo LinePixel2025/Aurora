@@ -8,6 +8,7 @@
  */
 import { dirname, join } from 'node:path'
 import { promises as nodeFs } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { BrowserWindow, app, dialog, ipcMain, nativeImage, shell } from 'electron'
 import {
   resolveProjectRootById,
@@ -111,6 +112,7 @@ import {
   type AutomationHistoryQuery,
   type AutomationListResult,
   type AutomationRun,
+  type AutomationWindowRequest,
 } from '@aurora/shared'
 import type {
   AgentHost,
@@ -1087,6 +1089,32 @@ export function registerIpc(deps: DesktopDeps): () => void {
   handle<AutomationCatalog>(IPC.automation.catalog, async () => {
     if (deps.automation === undefined) return err('E_INVALID_STATE', '自动化引擎尚未装配')
     return ok(deps.automation.catalog())
+  })
+  handle<WindowState>(IPC.automation.openWindow, async (request: unknown) => {
+    const raw =
+      typeof request === 'object' && request !== null
+        ? (request as Record<string, unknown>)
+        : ({} as Record<string, unknown>)
+    const view = raw['view']
+    const mode = raw['mode']
+    if ((view !== 'history' && view !== 'editor') || (mode !== 'agent' && mode !== 'normal')) {
+      return err('E_INVALID_ARGUMENT', '自动化窗口参数无效')
+    }
+    const automationId =
+      view === 'editor' &&
+      typeof raw['automationId'] === 'string' &&
+      raw['automationId'].trim() !== ''
+        ? raw['automationId'].trim()
+        : undefined
+    const normalized: AutomationWindowRequest = {
+      requestId: randomUUID(),
+      view,
+      mode,
+      ...(automationId === undefined ? {} : { automationId }),
+    }
+    return ok(
+      await deps.windows.showWithPayload('automation', IPC.automation.windowRequest, normalized),
+    )
   })
 
   // ───────────────────────── 文件自感知（docs/06 §26） ─────────────────────────

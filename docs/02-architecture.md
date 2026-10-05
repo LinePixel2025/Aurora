@@ -36,52 +36,52 @@
 
 ### 2.2 窗口清单
 
-| 窗口 | 创建方 | 数量 | 形态与来源 |
-|---|---|---|---|
-| 托盘 Tray | 主进程 | 1 | 系统托盘图标 + 菜单（打开对话 / 设置 / 切换模式 / 退出） |
-| 提示条 Edge Bar | WindowManager | 每显示器 1（v1 主屏 1） | 屏幕右缘超薄竖条，悬停展开面板、点击呼出交互窗 |
-| 主界面（chat） | WindowManager | 1 | 1280×800 常驻三栏大窗（2026-10-03 二次修订；BetaV2 起为 1120×720，居中显示）；唯一主对话窗口；标题栏右侧有 Windows 式「最小化 / 关闭」按钮，关闭 = 隐藏 |
-| 设置窗口 | WindowManager | 1 | 单窗口分栏；无系统标题栏，侧栏顶部可拖动 + Windows 式「最小化 / 关闭」按钮（关闭 = 隐藏，Esc 等效） |
-| 记忆库窗口（memory） | WindowManager | 1 | 文件自感知知识库的独立浏览器；左侧笔记列表 + 右侧 Markdown 预览，设置页只管配置与入口（关闭 = 隐藏） |
-| 首次引导窗口 | WindowManager | 1 | 向导式 |
+| 窗口                 | 创建方        | 数量                    | 形态与来源                                                                                                                                              |
+| -------------------- | ------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 托盘 Tray            | 主进程        | 1                       | 系统托盘图标 + 菜单（打开对话 / 设置 / 切换模式 / 退出）                                                                                                |
+| 提示条 Edge Bar      | WindowManager | 每显示器 1（v1 主屏 1） | 屏幕右缘超薄竖条，悬停展开面板、点击呼出交互窗；始终置顶                                                                                                |
+| 主界面（chat）       | WindowManager | 1                       | 1280×800 常驻三栏大窗（2026-10-03 二次修订；BetaV2 起为 1120×720，居中显示）；唯一主对话窗口；标题栏右侧有 Windows 式「最小化 / 关闭」按钮，关闭 = 隐藏 |
+| 设置窗口             | WindowManager | 1                       | 单窗口分栏；无系统标题栏，侧栏顶部可拖动 + Windows 式「最小化 / 关闭」按钮（关闭 = 隐藏，Esc 等效）                                                     |
+| 记忆库窗口（memory） | WindowManager | 1                       | 文件自感知知识库的独立浏览器；左侧笔记列表 + 右侧 Markdown 预览，设置页只管配置与入口（关闭 = 隐藏）                                                    |
+| 首次引导窗口         | WindowManager | 1                       | 向导式                                                                                                                                                  |
 
-约定：**主界面、设置与记忆库窗口**显示任务栏图标（`skipTaskbar: false`）且可最小化 / 最大化（Windows 式标题栏按钮，2026-09 前端重构起）；提示条与引导窗口仍隐藏任务栏图标。所有窗口的「关闭」= 隐藏（仅托盘“退出”真正退出），托盘仍是统一管理入口。
+约定：**主界面、设置、记忆库与自动化详情窗口**显示任务栏图标（`skipTaskbar: false`）且可最小化 / 最大化（Windows 式标题栏按钮，2026-09 前端重构起）；提示条与引导窗口仍隐藏任务栏图标。所有窗口的「关闭」= 隐藏（仅托盘“退出”真正退出），托盘仍是统一管理入口。
 
 ## 3. 模块划分
 
 ### 3.1 主进程（`apps/desktop/src/main`）
 
-| 模块 | 职责 |
-|---|---|
-| `tray` | 托盘图标、菜单、状态徽标 |
-| `window-manager` | 窗口创建 / 显隐 / 置顶 / 贴边 / 多显示器位置记忆 |
-| `settings-store` | 配置读写、schema 校验、版本迁移、safeStorage 凭据 |
-| `mode-manager` | 模式注册表、切换流程、引导状态（见 05） |
-| `file-watcher` | 智慧感知文件夹监听、稳定判定、抑制自触发（见 05 §3.1） |
-| `file-awareness` | 递归文件监听、Windows 最近使用、持久队列、后台文档分析、Markdown 笔记与服务气泡（见 06 §26） |
-| `classification` + `classify/*` | 分类队列、规则缓存、LLM 判定、科目映射与落盘（见 05 §3.2） |
-| `classification-history` | 分类流水持久化（`userData/classification.json`，见 08 §1.2） |
-| `extract` / `extract-worker` / `extract-pool` | 内容提取（utilityProcess 隔离、超时与降级） |
-| `office-worker` / `office-pool` | Office 结构化读写；在 utilityProcess 中调用包内固定版 OfficeCLI，负责批处理、校验、渲染与 PDF 合成 |
-| `notifications` | 系统通知与点击打开路径（分类完成 / 待分类 / 课前提醒） |
-| `perception` | 系统感知采集器注册与调度（见 06 §8） |
-| `schedule` / `pre-class-reminder` | 课程表 provider 与课前 5 分钟提醒（见 05 §3.4） |
-| `proactive` | 主动引导调度与敏感工具确认（勿扰时段、超时按拒绝，见 06 §9） |
-| `agent-host` | 装配 agent-core 与 modes，向渲染层暴露统一 API |
-| `center/*` | Aurora Center 连接器：出站 WS、重连、远程命令处理（会话 / 配置 / 模式），见 12 |
-| `ipc` | IPC 通道注册（契约见 §6） |
+| 模块                                          | 职责                                                                                               |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `tray`                                        | 托盘图标、菜单、状态徽标                                                                           |
+| `window-manager`                              | 窗口创建 / 显隐 / 置顶 / 贴边 / 多显示器位置记忆                                                   |
+| `settings-store`                              | 配置读写、schema 校验、版本迁移、safeStorage 凭据                                                  |
+| `mode-manager`                                | 模式注册表、切换流程、引导状态（见 05）                                                            |
+| `file-watcher`                                | 智慧感知文件夹监听、稳定判定、抑制自触发（见 05 §3.1）                                             |
+| `file-awareness`                              | 递归文件监听、Windows 最近使用、持久队列、后台文档分析、Markdown 笔记与服务气泡（见 06 §26）       |
+| `classification` + `classify/*`               | 分类队列、规则缓存、LLM 判定、科目映射与落盘（见 05 §3.2）                                         |
+| `classification-history`                      | 分类流水持久化（`userData/classification.json`，见 08 §1.2）                                       |
+| `extract` / `extract-worker` / `extract-pool` | 内容提取（utilityProcess 隔离、超时与降级）                                                        |
+| `office-worker` / `office-pool`               | Office 结构化读写；在 utilityProcess 中调用包内固定版 OfficeCLI，负责批处理、校验、渲染与 PDF 合成 |
+| `notifications`                               | 系统通知与点击打开路径（分类完成 / 待分类 / 课前提醒）                                             |
+| `perception`                                  | 系统感知采集器注册与调度（见 06 §8）                                                               |
+| `schedule` / `pre-class-reminder`             | 课程表 provider 与课前 5 分钟提醒（见 05 §3.4）                                                    |
+| `proactive`                                   | 主动引导调度与敏感工具确认（勿扰时段、超时按拒绝，见 06 §9）                                       |
+| `agent-host`                                  | 装配 agent-core 与 modes，向渲染层暴露统一 API                                                     |
+| `center/*`                                    | Aurora Center 连接器：出站 WS、重连、远程命令处理（会话 / 配置 / 模式），见 12                     |
+| `ipc`                                         | IPC 通道注册（契约见 §6）                                                                          |
 
 ### 3.2 Agent 内核（`packages/agent-core`，纯 Node，不依赖 Electron）
 
-| 模块 | 职责 |
-|---|---|
-| `llm` | LLM Provider 抽象与 OpenAI 兼容实现（见 06 §3） |
-| `session` | 会话 / 消息历史 / 持久化 |
-| `loop` | 工具调用循环（Agent Loop，见 06 §5） |
-| `skills` | Skill 注册表、匹配、执行 |
-| `mcp` | MCP 客户端连接管理与工具注册 |
-| `context` | 上下文组装（人设 + 模式片段 + 感知摘要 + 工具清单 + 安全规则） |
-| `proactive` | 主动引导触发器注册与调度 |
+| 模块        | 职责                                                           |
+| ----------- | -------------------------------------------------------------- |
+| `llm`       | LLM Provider 抽象与 OpenAI 兼容实现（见 06 §3）                |
+| `session`   | 会话 / 消息历史 / 持久化                                       |
+| `loop`      | 工具调用循环（Agent Loop，见 06 §5）                           |
+| `skills`    | Skill 注册表、匹配、执行                                       |
+| `mcp`       | MCP 客户端连接管理与工具注册                                   |
+| `context`   | 上下文组装（人设 + 模式片段 + 感知摘要 + 工具清单 + 安全规则） |
+| `proactive` | 主动引导触发器注册与调度                                       |
 
 ### 3.3 模式包（`packages/modes`）
 
@@ -107,7 +107,7 @@ aurora/
 │     │  ├─ main/               # 主进程（§3.1 各模块）
 │     │  ├─ preload/            # contextBridge 白名单 API
 │     │  └─ renderer/           # Vue 3 应用
-│     │     ├─ windows/         # 各窗口入口：edge-bar / chat /
+│     │     ├─ windows/         # 各窗口入口：edge-bar / chat / automation /
 │     │     │                   #   settings / onboarding
 │     │     └─ shared/          # 渲染层共享组件与样式
 │     ├─ resources/             # 图标、托盘图标、安装器资源

@@ -901,6 +901,23 @@ export interface AutomationDefinition {
 
 export type AutomationRunStatus = 'running' | 'success' | 'failed' | 'interrupted'
 
+/** 自动化详情窗口承载的视图（docs/07 §2.2.1） */
+export type AutomationWindowView = 'history' | 'editor'
+
+/** 打开 / 切换自动化详情窗口的请求参数 */
+export interface AutomationOpenWindowRequest {
+  view: AutomationWindowView
+  mode: AutomationMode
+  /** 编辑器按 id 加载既有定义；新建 / 历史时省略 */
+  automationId?: string
+}
+
+/** 主进程在校验并落地打开请求后，向自动化详情窗口推送的最终参数 */
+export interface AutomationWindowRequest extends AutomationOpenWindowRequest {
+  /** 每次打开 / 切换递增，用于渲染层去重与重置视图 */
+  requestId: string
+}
+
 /** 一次自动化运行（Normal 只记触发时间与状态，不落操作明细；Agent 带 sessionId 供对话回放） */
 export interface AutomationRun {
   id: string
@@ -2055,6 +2072,10 @@ export interface AuroraApi {
     run(request: { id: string }): Promise<Result<{ runId: string }>>
     /** 组件目录（触发器 + 操作的表单元数据，available 现取） */
     catalog(): Promise<Result<AutomationCatalog>>
+    /** 打开 / 复用单例自动化详情窗口 */
+    openWindow(request: AutomationOpenWindowRequest): Promise<Result<WindowState>>
+    /** 详情窗口视图请求推送（on/off 成对） */
+    onWindowRequest(listener: (request: AutomationWindowRequest) => void): () => void
     /** 定义变化推送（on/off 成对） */
     onChanged(listener: () => void): () => void
     /** 运行记录落库 / 状态变化推送（on/off 成对） */

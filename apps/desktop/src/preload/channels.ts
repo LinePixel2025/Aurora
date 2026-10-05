@@ -195,6 +195,8 @@ const CHANNELS = {
     history: 'automation:history',
     run: 'automation:run',
     catalog: 'automation:catalog',
+    openWindow: 'automation:openWindow',
+    windowRequest: 'automation:windowRequest',
     changed: 'automation:changed',
     historyChanged: 'automation:historyChanged',
   },

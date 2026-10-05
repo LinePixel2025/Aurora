@@ -17,7 +17,14 @@ export const MODE_IDS = ['classroom', 'work', 'code'] as const
 export type ModeId = (typeof MODE_IDS)[number]
 export const ModeIdSchema = z.enum(MODE_IDS)
 
-export const WINDOW_NAMES = ['edge-bar', 'chat', 'settings', 'memory', 'onboarding'] as const
+export const WINDOW_NAMES = [
+  'edge-bar',
+  'chat',
+  'settings',
+  'memory',
+  'onboarding',
+  'automation',
+] as const
 export type WindowName = (typeof WINDOW_NAMES)[number]
 export const WindowNameSchema = z.enum(WINDOW_NAMES)
 

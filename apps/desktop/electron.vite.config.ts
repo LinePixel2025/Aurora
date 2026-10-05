@@ -11,6 +11,7 @@ const windowEntries = {
   settings: r('src/renderer/settings/index.html'),
   memory: r('src/renderer/memory/index.html'),
   onboarding: r('src/renderer/onboarding/index.html'),
+  automation: r('src/renderer/automation/index.html'),
 }
 
 /**

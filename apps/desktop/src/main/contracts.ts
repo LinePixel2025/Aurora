@@ -109,6 +109,8 @@ export interface WindowManagerLike {
   toggle(name: WindowName): WindowState
   showChat(): WindowState
   setPosition(name: WindowName, position: { x: number; y: number }): WindowState
+  /** 等待窗口加载完成后再推送 payload 并显示（自动化详情窗口打开链） */
+  showWithPayload(name: WindowName, channel: string, payload: unknown): Promise<WindowState>
   /** 提示条收起态（8px 竖条）/ 展开态（面板）切换（docs/07 §2.2） */
   setEdgeBarExpanded(expanded: boolean): WindowState
   /** Windows 式标题栏：真最小化（chat / 设置；docs/02 §2.2） */

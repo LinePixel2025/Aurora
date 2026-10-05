@@ -22,19 +22,19 @@
       "quietHours": null,
       // v21 新增：提示条贴附的显示器与屏幕侧（默认主显示器 + 右缘）
       "display": "primary", // 'primary' 主显示器 | 'cursor' 跟随鼠标所在显示器
-      "position": "right" // 'right' 屏幕右缘 | 'left' 屏幕左缘
+      "position": "right", // 'right' 屏幕右缘 | 'left' 屏幕左缘
     },
     // v30 新增：检测到 Game Bar 游戏或独占全屏 D3D 应用后，
     // 自动隐藏提示条并暂停文件自感知；退出后恢复。仅 Windows 生效。
     "gameMode": { "enabled": true },
     // v8 新增：对话窗展示偏好
     "chat": { "showThinking": true }, // 对话界面展示思考过程（MessageList 可折叠思考块的门控，docs/07 §2.3）
-    // 各窗口位置 / 尺寸记忆，key 集合见 WINDOW_NAMES（edge-bar / chat / settings / onboarding）
-    "windowState": {}
+    // 各窗口位置 / 尺寸记忆，key 集合见 WINDOW_NAMES
+    "windowState": {},
   },
   // v21 新增：外观自定义（用户在设置页选，Agent 也可经 set_setting 调）
   "appearance": {
-    "accent": "aurora" // 界面强调色：aurora 品牌蓝（默认）| teal | violet | rose | amber
+    "accent": "aurora", // 界面强调色：aurora 品牌蓝（默认）| teal | violet | rose | amber
   },
   "llm": {
     "active": "deepseek",
@@ -44,7 +44,7 @@
         "type": "openai-compat",
         "baseUrl": "https://api.deepseek.com",
         "apiKeyEnc": "<safeStorage 密文>",
-        "model": "deepseek-chat",  // 唯一生效值：请求实际用的模型就是它
+        "model": "deepseek-chat", // 唯一生效值：请求实际用的模型就是它
         // v23 新增：**按模型 id 键**的参数表（见下文的 modelParams 登记）。三个字段
         // 缺省回落 { reasoningEffort: 'auto', contextWindow: 0, vision: false }；
         // 未发生命中的模型一律按这份默认值理解 —— 不再有 provider 级的同名旧字段
@@ -55,70 +55,70 @@
             // v22 新增、v23 起按模型绑定：该模型是否支持**图片输入**（多模态，见 06 §3.1）。
             // 默认 false —— 关闭时图片附件按「未读取」降级为一行文字；
             // 对不支持视觉的模型发图片会被服务端 400
-            "vision": false
-          }
+            "vision": false,
+          },
         },
         // v6 新增：**候选**模型 id 列表（设置页「模型列表」与对话窗模型选择器共用，见 §5）
-        "modelList": ["deepseek-chat", "deepseek-reasoner"]
-      }
-    }
+        "modelList": ["deepseek-chat", "deepseek-reasoner"],
+      },
+    },
   },
   "tts": {
-    "enabled": true,           // 语音功能总开关；false 时对话窗不显示朗读按钮
-    "active": "",              // 默认 TTS provider id；空串 = 未配置（此时对话窗的朗读按钮不出现）
-    "autoRead": false,         // 助手回复结束后自动朗读
-    "maxChars": 2000,          // 单次朗读的文本上限（50–4096，超出截断）
+    "enabled": true, // 语音功能总开关；false 时对话窗不显示朗读按钮
+    "active": "", // 默认 TTS provider id；空串 = 未配置（此时对话窗的朗读按钮不出现）
+    "autoRead": false, // 助手回复结束后自动朗读
+    "maxChars": 2000, // 单次朗读的文本上限（50–4096，超出截断）
     "providers": {
       "siliconflow": {
-        "type": "openai-compat",  // openai-compat | dashscope（DashScope 原生协议，见 docs/06 §13.6）
+        "type": "openai-compat", // openai-compat | dashscope（DashScope 原生协议，见 docs/06 §13.6）
         "baseUrl": "https://api.siliconflow.cn/v1",
         "apiKeyEnc": "<safeStorage 密文>",
-        "model": "FunAudioLLM/CosyVoice2-0.5B",  // 唯一生效值：合成请求实际用的模型就是它
-        "voice": "alex",       // 音色 id，如 alloy / FunAudioLLM/CosyVoice2-0.5B:alex
-        "speed": 1,            // 0.25–4
-        "format": "mp3"        // mp3 | opus | aac | flac | wav | pcm
-      }
-    }
+        "model": "FunAudioLLM/CosyVoice2-0.5B", // 唯一生效值：合成请求实际用的模型就是它
+        "voice": "alex", // 音色 id，如 alloy / FunAudioLLM/CosyVoice2-0.5B:alex
+        "speed": 1, // 0.25–4
+        "format": "mp3", // mp3 | opus | aac | flac | wav | pcm
+      },
+    },
   },
   "stt": {
-    "enabled": false,          // 语音输入总开关；false 时对话窗连麦克风按钮都不渲染（门控口径同 TTS）
-    "active": "",              // 默认 STT provider id；空串 = 未配置（此时麦克风按钮不出现）
+    "enabled": false, // 语音输入总开关；false 时对话窗连麦克风按钮都不渲染（门控口径同 TTS）
+    "active": "", // 默认 STT provider id；空串 = 未配置（此时麦克风按钮不出现）
     "providers": {
       "openai": {
-        "type": "openai-compat",  // 或 "dashscope-native"（阿里云百炼原生 ASR，v24 起，见 06 §15.1）
-        "baseUrl": "https://api.openai.com/v1",  // 原生协议填服务根，如 https://dashscope.aliyuncs.com
+        "type": "openai-compat", // 或 "dashscope-native"（阿里云百炼原生 ASR，v24 起，见 06 §15.1）
+        "baseUrl": "https://api.openai.com/v1", // 原生协议填服务根，如 https://dashscope.aliyuncs.com
         "apiKeyEnc": "<safeStorage 密文>",
-        "model": "whisper-1",  // 唯一生效值：转写请求实际用的模型就是它（原生协议例：qwen3-asr-flash）
-        "language": "zh"       // 识别语言（zh / en 等，默认 zh）；空串 = 交给服务端自动检测
-      }
-    }
+        "model": "whisper-1", // 唯一生效值：转写请求实际用的模型就是它（原生协议例：qwen3-asr-flash）
+        "language": "zh", // 识别语言（zh / en 等，默认 zh）；空串 = 交给服务端自动检测
+      },
+    },
   },
   "imagegen": {
-    "enabled": false,          // 生图功能总开关
-    "active": "",              // 默认生图 provider id；空串 = 未配置
+    "enabled": false, // 生图功能总开关
+    "active": "", // 默认生图 provider id；空串 = 未配置
     "providers": {
       "openai": {
         "type": "openai-compat",
         "baseUrl": "https://api.openai.com/v1",
         "apiKeyEnc": "<safeStorage 密文>",
-        "model": "dall-e-3",   // 唯一生效值
-        "size": "1024x1024"    // 512x512 | 768x768 | 1024x1024 | 1024x1792 | 1792x1024 | auto（auto = 交给服务端决定）
-      }
-    }
+        "model": "dall-e-3", // 唯一生效值
+        "size": "1024x1024", // 512x512 | 768x768 | 1024x1024 | 1024x1792 | 1792x1024 | auto（auto = 交给服务端决定）
+      },
+    },
   },
   "modes": {
     "current": "classroom",
     "classroom": {
       "guideCompleted": false,
       "watchDir": "",
-      "subjects": [ { "name": "数学", "folder": "分类/数学", "keywords": [] } ],
+      "subjects": [{ "name": "数学", "folder": "分类/数学", "keywords": [] }],
       "schedule": {
         "provider": "manual",
         "lessons": [],
         // ClassIsland 桥接数据源（docs/05 §3.4 v2）：
         // source = "file"（读 JSON 文件）| "http"（读本机回环端点）；
         // endpoint 为空串表示尚未配置（此时 provider 返回空课表）
-        "classisland": { "source": "file", "endpoint": "", "timeoutMs": 3000 }
+        "classisland": { "source": "file", "endpoint": "", "timeoutMs": 3000 },
       },
       "preClassReminder": true,
       // v8 新增：课前提醒触发时是否自动打开科目文件夹（通知照发，仅门控打开动作）
@@ -128,12 +128,12 @@
       "classification": {
         "autoMove": true,
         "confidenceThreshold": 0.6,
-        "fallbackFolder": "待分类"
-      }
+        "fallbackFolder": "待分类",
+      },
     },
     // v8 起 Work 实装：workspaceDir = 办公工作目录，空串 = 未配置（由引导 / 设置页收集）
     "work": { "guideCompleted": false, "workspaceDir": "" },
-    "code": { "guideCompleted": false }
+    "code": { "guideCompleted": false },
   },
   "skills": { "userDir": "", "disabled": [] },
   "mcp": {
@@ -147,9 +147,9 @@
         "envEnc": {},
         // v9 新增：自定义请求头（键 = header 名，值 = safeStorage 密文；HTTP 传输消费，
         // stdio 条目上同样存在但通常用不到），见 06 §7
-        "headersEnc": {}
-      }
-    ]
+        "headersEnc": {},
+      },
+    ],
   },
   // v13 新增：项目机制（见 06 §5.1）。current 为空串 = 无项目（默认，行为与 v13 之前完全一致）；
   // list 里每条是 { id, name, root }，root 支持绝对路径或相对进程 cwd 的路径；
@@ -157,7 +157,7 @@
   "projects": {
     "current": "",
     "list": [],
-    "maxAgentsBytes": 32768
+    "maxAgentsBytes": 32768,
   },
   "advanced": {
     "proxy": "",
@@ -168,18 +168,28 @@
     // v6 新增：AI 改配置（set_setting）的路径黑名单，按路径段匹配，见 06 §12。
     // 只能在默认项之上追加限制：默认项始终生效，删掉或清空都不能放开（判定的第二道用的是硬编码常量）
     "readonlyPrefixes": [
-      "llm.providers", "tts.providers", "stt.providers", "imagegen.providers", "mcp.servers", "version",
-      "general.windowState", "advanced.proxy",
-      "general.onboarded", "general.firstRun", "general.launchAtLogin", "general.hotkey",
+      "llm.providers",
+      "tts.providers",
+      "stt.providers",
+      "imagegen.providers",
+      "mcp.servers",
+      "version",
+      "general.windowState",
+      "advanced.proxy",
+      "general.onboarded",
+      "general.firstRun",
+      "general.launchAtLogin",
+      "general.hotkey",
       "advanced.confirmSensitiveTools",
       // v13 新增：项目根同时决定注入的指令与权限边界；权限档位等于 Agent 自己的确认闸门
-      "projects", "agent.permissionMode",
+      "projects",
+      "agent.permissionMode",
       // v20 新增：提权是 Agent 自己能碰到的权限边界本身 —— AI 关掉它（或阻止自己重启提权）
       // 等于自己降低权限约束面，属自我提权；只能由用户在设置页改
       "general.requireAdmin",
       // 权限边界根的一级（boundaryRoot → Work 空间目录）：AI 改写它 = 把 confirm 档根内免确认扩到任意目录
-      "modes.work.workspaceDir"
-    ]
+      "modes.work.workspaceDir",
+    ],
   },
   "agent": {
     // v13 新增：三档权限 readonly | confirm | auto（默认 auto = 完全权限，2026-09-29 起）
@@ -187,53 +197,53 @@
     "permissionMode": "auto",
     // v14 新增：写前快照（见 06 §11.8）。写文件前把原内容留底，可在右栏「文件备份」卡回滚
     "snapshots": {
-      "enabled": true,          // 关掉后写文件不再留底，改动将不可回滚
-      "keepPerFile": 20,        // 同一个文件最多留几份（环形淘汰，最旧的先删）
-      "maxSnapshotBytes": 524288,        // 单个文件超过这个大小就不留底（工具结果里会说明）
-      "totalBudgetBytes": 209715200      // 备份目录总预算，超出时从最旧开始删
+      "enabled": true, // 关掉后写文件不再留底，改动将不可回滚
+      "keepPerFile": 20, // 同一个文件最多留几份（环形淘汰，最旧的先删）
+      "maxSnapshotBytes": 524288, // 单个文件超过这个大小就不留底（工具结果里会说明）
+      "totalBudgetBytes": 209715200, // 备份目录总预算，超出时从最旧开始删
     },
     // v15 新增：Agent 循环（见 06 §4.1）。轮次用尽 / 预算触顶时任务落「已暂停」，可续跑
     "loop": {
-      "maxRounds": 32,          // 1–128；一次请求内最多几轮「工具调用 → 结果回填」（默认 32）
-      "maxTotalTokens": 0,      // ≥0；累计 token 预算，0 = 不限，触顶即暂停
-      "autoContinueRounds": 8   // 0–8；轮次用完后自动再续几轮，0 = 不自动续、直接暂停等点「继续」
+      "maxRounds": 32, // 1–128；一次请求内最多几轮「工具调用 → 结果回填」（默认 32）
+      "maxTotalTokens": 0, // ≥0；累计 token 预算，0 = 不限，触顶即暂停
+      "autoContinueRounds": 8, // 0–8；轮次用完后自动再续几轮，0 = 不自动续、直接暂停等点「继续」
     },
     "tools": {
-      "enabled": true,          // 电脑操控工具总开关；false 时全部工具都不注册
-      "workspaceDir": "",       // 工具默认工作目录；空串 = 按 06 §5.1 回落链（Work 模式目录 > 它 > 主目录）
+      "enabled": true, // 电脑操控工具总开关；false 时全部工具都不注册
+      "workspaceDir": "", // 工具默认工作目录；空串 = 按 06 §5.1 回落链（Work 模式目录 > 它 > 主目录）
       "terminal": {
         "enabled": true,
         "timeoutMs": 60000,
         "maxOutputChars": 8000,
         // v12 新增：命中即免确认的命令模式（glob 全串匹配、大小写不敏感）；空数组 = 全部逐次确认
         // 只读：AI 的 set_setting 一律拒绝读写它（防自我提权），只能由用户在设置页维护，见 06 §11.7
-        "allowPatterns": []
+        "allowPatterns": [],
       },
       "files": { "enabled": true, "maxReadBytes": 262144 },
       // v12 新增：文件检索（grep / glob）的开关与单次检索的结果条数上限
       "search": { "enabled": true, "maxResults": 200 },
-      "open": { "enabled": true }
-    }
+      "open": { "enabled": true },
+    },
   },
   // v16 新增：Aurora Center 连接（docs/12）。整组在 SETTINGS_READONLY_PREFIXES 里 ——
   // 连接目标是数据外发通道，AI 的 set_setting 一律拒绝；只能由用户在设置页操作
   "center": {
-    "enabled": false,           // 总开关；false 时不连接 Center，center_* 工具也不注册
-    "serverUrl": "",            // Center 服务器地址（ws(s):// 或 http(s)://，连接时统一换 ws 协议）
+    "enabled": false, // 总开关；false 时不连接 Center，center_* 工具也不注册
+    "serverUrl": "", // Center 服务器地址（ws(s):// 或 http(s)://，连接时统一换 ws 协议）
     "tokenEnc": "<safeStorage 密文>", // 客户端令牌（凭据路径：center.token ⇄ center.tokenEnc，同 apiKey 链路；由账号登录颁发，见 12 §3）
-    "account": "",              // 已登录的 Center 账号名（v17 新增；非凭据，仅展示与诊断）
-    "clientId": "",             // 本机客户端 id（首次登录时生成并持久化；非凭据）
-    "displayName": "",          // 在 Center 展示的名字；空串 = 主机名
+    "account": "", // 已登录的 Center 账号名（v17 新增；非凭据，仅展示与诊断）
+    "clientId": "", // 本机客户端 id（首次登录时生成并持久化；非凭据）
+    "displayName": "", // 在 Center 展示的名字；空串 = 主机名
     "allowRemoteSession": true, // 允许 Center 远程开 session 对话（客户端侧最终闸门）
-    "allowRemoteConfig": true,  // 允许 Center 远程改配置（仍受 12 §6.2 白名单约束）
-    "allowFileTransfer": true,  // 允许 center_send_file 上传文件
-    "maxFileMb": 64             // 单个上传文件上限（1–512）
+    "allowRemoteConfig": true, // 允许 Center 远程改配置（仍受 12 §6.2 白名单约束）
+    "allowFileTransfer": true, // 允许 center_send_file 上传文件
+    "maxFileMb": 64, // 单个上传文件上限（1–512）
   },
   // v19 新增：自动化总开关（docs/13 §2.2）。自动化的**定义与历史不是配置** ——
   // 它们落在 `<userData>/automations/automations.json` 与 `history.json`（同会话 / 待办的口径，
   // 不进迁移链；历史上限 500 条，超出淘汰最旧），配置里只有这一道闸门
   "automations": {
-    "enabled": true             // 关闭 = 引擎停止评估与触发（定义与历史原样保留）
+    "enabled": true, // 关闭 = 引擎停止评估与触发（定义与历史原样保留）
   },
   // v28 新增：文件自感知（docs/06 §26）。整组在默认黑名单里；只有用户显式同意后
   // 才会提取正文并发送给你配置的模型。
@@ -249,16 +259,18 @@
     "defaultMemoryTtlDays": 0,
     "backgroundModel": {
       "providerId": "",
-      "model": ""
-    }
-  }
+      "model": "",
+    },
+  },
 }
 ```
 
 - 字段说明：`llm.providers` 支持多组模型配置，`llm.active` 指定默认；`modes.classroom.subjects` 即科目 → 文件夹映射（见 05 §3）；`schedule.provider` 为 `manual | classisland`（见 05 §3.4）。
-- `general.windowState` 的 key 集合即 `WINDOW_NAMES`：`edge-bar` / `chat` / `settings` / `memory` / `onboarding`
+- `general.windowState` 的 key 集合即 `WINDOW_NAMES`：`edge-bar` / `chat` / `settings` / `memory` /
+  `onboarding` / `automation`
   （v4 起移除 `service-dock`、v6 起移除 `mini-chat`，两个窗口均已删除；`memory` 为记忆库
-  独立窗口，仅扩枚举不推进 `CONFIG_VERSION` —— 旧配置没有该键时保持默认不可见）。
+  独立窗口，`automation` 为自动化详情窗口；两者仅扩枚举不推进 `CONFIG_VERSION` ——
+  旧配置没有该键时保持默认不可见）。
 - `general.language` 是**未生效的死字段**（无 i18n 消费方，见 §6.1 门控矩阵），保留仅为避免再动一次配置版本。
 - `mcp.lazyConnect`：连接策略（见 06 §7）。`false`（默认）= 启动即连；`true` = 首次使用某个 MCP 工具时才连接。
 - MCP 环境变量的**变量名**由 `envEnc` 的键表达，设置页据此展示"已配置的变量名"，
@@ -319,15 +331,15 @@
   - `reasoningEffort`：`auto | low | medium | high`（默认 `auto`，见上一条）；
   - `contextWindow`：整数 `0 … 2_000_000`（默认 `0`，`0` = 未知，见下一条）；
   - `vision`：布尔（默认 `false` = 不支持图片输入，见 §1 的 `vision` 登记条）。
-  **缺省回落**：shared 导出**唯一入口** `resolveModelParams(provider, modelId?)` ——
-  读 `provider.modelParams[modelId]`，**未命中键**（或键在但字段缺失 / 非法）时返回
-  `{ reasoningEffort: 'auto', contextWindow: 0, vision: false }`；`modelId` 缺省取
-  `provider.model`。主进程 / 渲染层 / Center **三处都走它**，不在任何一处再写一套默认值 ——
-  否则「同一个模型在设置页显示 128K、在对话窗按未知处理」这类分叉迟早出现。
-  `modelList` 仍是 `string[]`（只记**有哪些模型**），模型参数一律进 `modelParams`：两者不是
-  同一张表，往列表里加模型不会为它造条目（读到就按默认值），删列表项也不清它的参数。
-  `v22 → v23` 迁移把 provider 级的三个旧键搬进 `modelParams[provider.model]`（`model` 为空串时
-  写 `{}`），并删除 provider 级的旧键（见 §2）。
+    **缺省回落**：shared 导出**唯一入口** `resolveModelParams(provider, modelId?)` ——
+    读 `provider.modelParams[modelId]`，**未命中键**（或键在但字段缺失 / 非法）时返回
+    `{ reasoningEffort: 'auto', contextWindow: 0, vision: false }`；`modelId` 缺省取
+    `provider.model`。主进程 / 渲染层 / Center **三处都走它**，不在任何一处再写一套默认值 ——
+    否则「同一个模型在设置页显示 128K、在对话窗按未知处理」这类分叉迟早出现。
+    `modelList` 仍是 `string[]`（只记**有哪些模型**），模型参数一律进 `modelParams`：两者不是
+    同一张表，往列表里加模型不会为它造条目（读到就按默认值），删列表项也不清它的参数。
+    `v22 → v23` 迁移把 provider 级的三个旧键搬进 `modelParams[provider.model]`（`model` 为空串时
+    写 `{}`），并删除 provider 级的旧键（见 §2）。
 - `llm.providers.<id>.modelParams.<modelId>.contextWindow`（**v11 新增，v23 起按模型绑定**）：
   该模型的**上下文窗口**（token，整数，
   `0 … 2_000_000`，`.default(0)`）。**唯一用途**是对话窗输入框底部「上下文详解」条的
@@ -567,11 +579,11 @@
 `settings:get` / `settings:changed` 回传渲染层的对象会在上述 Schema 之外**补充两个只读标记**，
 用于让设置页显示"凭据是否已配置"，同时保证密文永不进入渲染进程：
 
-| 字段 | 位置 | 说明 |
-|---|---|---|
-| `apiKeySet` | `llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>` / `imagegen.providers.<id>` | `true` 表示该 provider 已保存 API Key（`apiKeyEnc` 始终回传空串） |
-| `envSet` | `mcp.servers[]` | 已配置的环境变量名列表（`envEnc` 始终回传空对象） |
-| `headersSet` | `mcp.servers[]` | 已配置的自定义请求头名列表（`headersEnc` 始终回传空对象；v9 新增） |
+| 字段         | 位置                                                                                           | 说明                                                               |
+| ------------ | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `apiKeySet`  | `llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>` / `imagegen.providers.<id>` | `true` 表示该 provider 已保存 API Key（`apiKeyEnc` 始终回传空串）  |
+| `envSet`     | `mcp.servers[]`                                                                                | 已配置的环境变量名列表（`envEnc` 始终回传空对象）                  |
+| `headersSet` | `mcp.servers[]`                                                                                | 已配置的自定义请求头名列表（`headersEnc` 始终回传空对象；v9 新增） |
 
 两者由主进程在回传前计算，不写入 `config.json`，因此不参与版本迁移。
 
@@ -590,8 +602,8 @@ provider 整体删除由 `llm.removedProviders` 显式声明（§5 第 5 条）�
 
 分类流水与规则缓存**不写入 config.json**（避免配置被高频重写），单独存放：
 
-| 文件 | 内容 | 说明 |
-|---|---|---|
+| 文件                           | 内容                                           | 说明                                                                  |
+| ------------------------------ | ---------------------------------------------- | --------------------------------------------------------------------- |
 | `userData/classification.json` | `{ version, records: ClassificationRecord[] }` | 分类流水（上限 500 条，新的在前）；原子写 + 300ms 防抖 + 损坏备份重建 |
 
 规则缓存**不单独持久化**，启动时由流水中的用户修正记录重建（见 05 §3.2），
@@ -1003,39 +1015,39 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 （不是 `disabled`、也不是 `opacity: 0`），原位置改为一段 `data-empty="<路径>"` 说明。
 门控矩阵：
 
-| 设置项（`data-field` 前缀） | 显示条件 |
-|---|---|
-| `modes.classroom.*` | `modes.current === 'classroom'` |
-| `modes.work.workspaceDir` | `modes.current === 'work'`（v8 起 Work 区组有字段，与 ClassRoom 区组同口径；`data-empty="modes.work"` 空状态随之取消） |
-| `modes.code.*` | 无字段：Code 选中时只显示「暂无可配置项」空状态（`data-empty="modes.code"`） |
-| `modes.classroom.schedule.classisland.*` | `schedule.provider === 'classisland'` |
-| `modes.classroom.preClassReminder` | `schedule.lessons.length > 0` |
-| `modes.classroom.preClassLeadMinutes` | 与 `preClassReminder` 同组同条件（`schedule.lessons.length > 0`；v10 新增） |
-| `modes.classroom.preClassOpenFolder` | 与 `preClassReminder` 同组同条件（`schedule.lessons.length > 0`；v8 新增） |
-| `modes.classroom.classification.confidenceThreshold` | `subjects.length > 0` |
-| `modes.classroom.classification.fallbackFolder` | `classification.autoMove === true` |
-| `general.edgeBar.opacity` / `general.edgeBar.quietHours.*` | `general.edgeBar.enabled === true`（`enabled` 开关本身常显，否则无法重新启用） |
-| `general.language` | **永不显示**（无 i18n 消费方的死字段，字段保留在 Schema 仅为配置兼容） |
-| `skills.disabled` | `skills.list()` 非空 |
-| `mcp.servers.*` / `mcp.lazyConnect` | `mcp.servers.length > 0` |
-| `llm.providers.*`（含 `modelList` 与 `modelParams.<modelId>.*`） | `llm.providers` 至少一项 |
-| `agent.tools.enabled` | 常显（否则无法重新启用） |
-| `agent.tools.workspaceDir` | 常显（总开关关着时也要能改默认工作目录） |
-| `agent.tools.terminal.*`（含只读的 `allowPatterns`）/ `files.*` / `search.*` / `open.enabled` | `agent.tools.enabled === true` |
-| `tts.enabled` | 常显（否则无法重新启用） |
-| `tts.providers.*` | `tts.providers` 至少一项，否则整块换成 `data-empty="tts.providers"` |
-| `tts.autoRead` / `tts.maxChars` | `tts.providers` 至少一项（没有 provider 时朗读无从发生） |
-| `stt.enabled` | 常显（否则无法重新启用；v8 新增，目标口径） |
-| `stt.providers.*` | `stt.providers` 至少一项，否则整块换成 `data-empty="stt.providers"` |
-| `imagegen.enabled` | 常显（否则无法重新启用；v8 新增，目标口径） |
-| `imagegen.providers.*` | `imagegen.providers` 至少一项，否则整块换成 `data-empty="imagegen.providers"` |
-| `general.chat.showThinking` | 常显（「AI 模型」页） |
-| `projects.*` | 常显（否则用户无法添加第一个项目；v13 新增）。`projects.list` 为空时列表区换成 `data-empty="projects.list"` 空状态（「尚未添加项目」），「添加项目」按钮**始终在** |
-| `agent.permissionMode` | 常显（权限档位必须随时能改回来；v13 新增） |
-| `agent.snapshots.*` | 常显（`enabled` 必须随时能改回来；v14 新增）。关掉 `enabled` 时三个数字字段整块换成 `data-empty="agent.snapshots"` |
-| `agent.loop.*` | 常显（**不跟 `agent.tools.enabled` 门控**：它管的是"一次请求怎么停下来"，不是"注册哪些工具"；v15 新增）。三个字段一次到位、没有空态 |
-| `automations.enabled` | 常显（总开关关掉必须还能开回来；v19 新增）。所在区组在「模式」页顶部，**不跟模式门控** |
-| `general.requireAdmin` | 常显（「常规」页「启动」区组；v20 新增）。被删掉 / 改名时 capture 的 general 页探针立刻报 FAIL |
+| 设置项（`data-field` 前缀）                                                                   | 显示条件                                                                                                                                                           |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `modes.classroom.*`                                                                           | `modes.current === 'classroom'`                                                                                                                                    |
+| `modes.work.workspaceDir`                                                                     | `modes.current === 'work'`（v8 起 Work 区组有字段，与 ClassRoom 区组同口径；`data-empty="modes.work"` 空状态随之取消）                                             |
+| `modes.code.*`                                                                                | 无字段：Code 选中时只显示「暂无可配置项」空状态（`data-empty="modes.code"`）                                                                                       |
+| `modes.classroom.schedule.classisland.*`                                                      | `schedule.provider === 'classisland'`                                                                                                                              |
+| `modes.classroom.preClassReminder`                                                            | `schedule.lessons.length > 0`                                                                                                                                      |
+| `modes.classroom.preClassLeadMinutes`                                                         | 与 `preClassReminder` 同组同条件（`schedule.lessons.length > 0`；v10 新增）                                                                                        |
+| `modes.classroom.preClassOpenFolder`                                                          | 与 `preClassReminder` 同组同条件（`schedule.lessons.length > 0`；v8 新增）                                                                                         |
+| `modes.classroom.classification.confidenceThreshold`                                          | `subjects.length > 0`                                                                                                                                              |
+| `modes.classroom.classification.fallbackFolder`                                               | `classification.autoMove === true`                                                                                                                                 |
+| `general.edgeBar.opacity` / `general.edgeBar.quietHours.*`                                    | `general.edgeBar.enabled === true`（`enabled` 开关本身常显，否则无法重新启用）                                                                                     |
+| `general.language`                                                                            | **永不显示**（无 i18n 消费方的死字段，字段保留在 Schema 仅为配置兼容）                                                                                             |
+| `skills.disabled`                                                                             | `skills.list()` 非空                                                                                                                                               |
+| `mcp.servers.*` / `mcp.lazyConnect`                                                           | `mcp.servers.length > 0`                                                                                                                                           |
+| `llm.providers.*`（含 `modelList` 与 `modelParams.<modelId>.*`）                              | `llm.providers` 至少一项                                                                                                                                           |
+| `agent.tools.enabled`                                                                         | 常显（否则无法重新启用）                                                                                                                                           |
+| `agent.tools.workspaceDir`                                                                    | 常显（总开关关着时也要能改默认工作目录）                                                                                                                           |
+| `agent.tools.terminal.*`（含只读的 `allowPatterns`）/ `files.*` / `search.*` / `open.enabled` | `agent.tools.enabled === true`                                                                                                                                     |
+| `tts.enabled`                                                                                 | 常显（否则无法重新启用）                                                                                                                                           |
+| `tts.providers.*`                                                                             | `tts.providers` 至少一项，否则整块换成 `data-empty="tts.providers"`                                                                                                |
+| `tts.autoRead` / `tts.maxChars`                                                               | `tts.providers` 至少一项（没有 provider 时朗读无从发生）                                                                                                           |
+| `stt.enabled`                                                                                 | 常显（否则无法重新启用；v8 新增，目标口径）                                                                                                                        |
+| `stt.providers.*`                                                                             | `stt.providers` 至少一项，否则整块换成 `data-empty="stt.providers"`                                                                                                |
+| `imagegen.enabled`                                                                            | 常显（否则无法重新启用；v8 新增，目标口径）                                                                                                                        |
+| `imagegen.providers.*`                                                                        | `imagegen.providers` 至少一项，否则整块换成 `data-empty="imagegen.providers"`                                                                                      |
+| `general.chat.showThinking`                                                                   | 常显（「AI 模型」页）                                                                                                                                              |
+| `projects.*`                                                                                  | 常显（否则用户无法添加第一个项目；v13 新增）。`projects.list` 为空时列表区换成 `data-empty="projects.list"` 空状态（「尚未添加项目」），「添加项目」按钮**始终在** |
+| `agent.permissionMode`                                                                        | 常显（权限档位必须随时能改回来；v13 新增）                                                                                                                         |
+| `agent.snapshots.*`                                                                           | 常显（`enabled` 必须随时能改回来；v14 新增）。关掉 `enabled` 时三个数字字段整块换成 `data-empty="agent.snapshots"`                                                 |
+| `agent.loop.*`                                                                                | 常显（**不跟 `agent.tools.enabled` 门控**：它管的是"一次请求怎么停下来"，不是"注册哪些工具"；v15 新增）。三个字段一次到位、没有空态                                |
+| `automations.enabled`                                                                         | 常显（总开关关掉必须还能开回来；v19 新增）。所在区组在「模式」页顶部，**不跟模式门控**                                                                             |
+| `general.requireAdmin`                                                                        | 常显（「常规」页「启动」区组；v20 新增）。被删掉 / 改名时 capture 的 general 页探针立刻报 FAIL                                                                     |
 
 校验方式（不是靠"看代码应该有 `v-if`"）：`AURORA_CAPTURE` 的 DOM 探针按页断言——
 `settings?page=general` 要求 `general.language` 计数为 0、`general.edgeBar.enabled` 存在且详情项 > 0、
@@ -1084,8 +1096,8 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
       不可用时提示去桥接插件 README 排障（插件未装 v3 / 端点未配 / 命令通道被关）。
 - **课前提醒**：`modes.classroom.preClassReminder` 开关 +「**提前分钟数**」
   （`modes.classroom.preClassLeadMinutes`，数字输入 1–30，默认 5，v10 新增：改完即时生效）
-  + 「提醒时自动打开科目文件夹」
-  （`modes.classroom.preClassOpenFolder`，v8 新增：通知照发，仅门控打开动作，见 05 §3.3）。
+  - 「提醒时自动打开科目文件夹」
+    （`modes.classroom.preClassOpenFolder`，v8 新增：通知照发，仅门控打开动作，见 05 §3.3）。
 - **分类行为**：`classification.autoMove`（自动移动）、`confidenceThreshold`（0–1 滑条）、
   `fallbackFolder`（兜底目录）。
 - **分类流水**：内嵌 `ClassificationLedger`（默认展开，50 条），可就地修正与打开文件夹。

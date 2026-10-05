@@ -26,6 +26,9 @@
 ### 2.2 右侧提示条（Edge Bar）
 
 - **形态**：贴屏幕右缘竖条（**收起态 8×200px**），悬停展开为感知工作台（**展开态窗口 328px 宽 × 工作区高 - 48px**），置顶。
+  置顶使用 `screen-saver` 等级，并在显示、展开、收起、系统显示配置变化与
+  `always-on-top-changed` 事件后重新断言；另有 10 秒 watchdog 只在原生置顶状态丢失时恢复。
+  不抢焦点、不改变可穿透性；独占全屏应用与 UAC 安全桌面仍由系统优先。
   **贴附显示器与屏幕侧可配置**（v21，`general.edgeBar.display` / `general.edgeBar.position`，
   docs/08 §1）：`display` = `primary`（主显示器，默认）/ `cursor`（跟随鼠标所在显示器）；
   `position` = `right`（屏幕右缘，默认）/ `left`（屏幕左缘）。设置页「常规 → 提示条」两个下拉；
@@ -91,6 +94,20 @@
     **游戏模式联动（v30）**：检测到 Windows 游戏时，提示条若当时可见会自动隐藏；
     退出游戏后按当前开关与勿扰设置恢复。进入前已由用户手动隐藏的提示条不会在退出时被拉起。
 
+### 2.2.1 自动化详情窗口（Automation Window）
+
+- **定位**：自动化列表仍留在主界面；运行历史与新建 / 编辑改为**单例真实 BrowserWindow**
+  （窗口名 `automation`），主界面不再承载这两个 Modal。
+- **规格**：默认 `780×720`、最小 `560×480`、resizable、非置顶、无 parent、
+  `skipTaskbar: false`、可最小化 / 最大化；关闭 / 取消 / Esc 均为隐藏，不退出应用。
+- **内容**：窗口只承载一个视图：
+  - `history`：运行历史 + Agent 对话回放；窗口内可切 Agent / Normal；
+  - `editor`：按 catalog 驱动的新建 / 编辑表单。
+- **打开链**：主界面的「历史 / 新建 / 编辑」经 `automation:openWindow` 发请求；
+  主进程校验后复用同一个窗口，等待页面加载完成再经 `automation:windowRequest` 推送视图参数。
+- **锚点**：保留 `automation.editor` / `automation.history-panel` / `automation.history-list`
+  及 `.run-item` / `.run-time` / `.clickable` / `.detail-message`，截图场景改为直接截 `automation` 窗口。
+
 ### 2.3 主界面（Chat Window）
 
 > **BetaV2**：交互窗（chat）升级为常驻**主界面**，本节规格按新口径改写；下文沿用「chat / 交互窗」
@@ -123,7 +140,7 @@
   宽度，因此提示条用 `setBounds` + `setShape` 把可见/可交互区域精确裁成收起 8px、展开
   328px，多余透明区不绘制、不接收鼠标。
 - **三栏布局（2026-09 重构起）**：`sidebar(240px, 可折叠) | main(1fr) | context(384px, 可折叠、
-  可拖拽调宽 280–560px，2026-10-03 起 —— 此前为固定 264px)`，
+可拖拽调宽 280–560px，2026-10-03 起 —— 此前为固定 264px)`，
   栏间用分隔而非悬浮卡片；左右栏使用 `--bg-raised` 实体面与 `--border-strong` 分界，
   和主对话区拉开层级，避免侧栏在浅色/深色主题下都只剩一层几乎不可见的 `--fill-1`。
   主区消息与 composer 居中排布（内容列最大宽 860px），
@@ -188,11 +205,11 @@
        Center `chat.center-older-toggle`，默认收起，`aria-expanded` 跟展开态）；
        当前激活会话落在溢出里时强制可见（提到可见列表末尾）。折叠态均为组件内视图偏好，
        不落配置。
-    固定顶置项其余三个不变：子代理（`chat.subagent-item`）/ 自动化（`chat.auto-item`）/
-    任务（`chat.jobs-entry`）—— 前一个切**主区**，后两个开关**右栏面板**；「快速对话」不再
-    是固定顶置项（它的入口随 Agent对话区下沉）。空态文案按分区显示：项目对话区空时不渲染
-    空态（没有项目就没有分组），Agent对话区空时显示「还没有会话」（与归档分组都空的联合判定
-    同旧口径，分区隐藏的 Work 区不参与该判定）。
+       固定顶置项其余三个不变：子代理（`chat.subagent-item`）/ 自动化（`chat.auto-item`）/
+       任务（`chat.jobs-entry`）—— 前一个切**主区**，后两个开关**右栏面板**；「快速对话」不再
+       是固定顶置项（它的入口随 Agent对话区下沉）。空态文案按分区显示：项目对话区空时不渲染
+       空态（没有项目就没有分组），Agent对话区空时显示「还没有会话」（与归档分组都空的联合判定
+       同旧口径，分区隐藏的 Work 区不参与该判定）。
   - **左栏固定项「任务」（v15 新增；2026-09-30 收拢进 SessionNav 顶部固定项组）**：
     `data-field="chat.jobs-entry"`，与 快速对话 / 子代理 / 自动化 同一组**顶部固定项**
     （旧「左栏底部固定项」的一处两式样式已随杂糅清理删除，`aside.nav` 回到单行网格）；
@@ -299,8 +316,8 @@
       重新 bootstrap、终端标签保留自己的 shell、浏览器标签与会话无关）。
       **刻意不做跨重启记忆**：恢复浏览器 / 终端标签会在启动时偷偷加载页面、拉起 shell，
       收益不抵惊扰；宽度记忆（localStorage）不受影响。
-    左栏「任务」入口会先**确保上下文标签在**（被关掉则重建）并激活它，再翻面板显隐
-    （任务面板收在标签里，直接翻看不见）。
+      左栏「任务」入口会先**确保上下文标签在**（被关掉则重建）并激活它，再翻面板显隐
+      （任务面板收在标签里，直接翻看不见）。
     - **无标签页时的工具快捷入口（2026-10-03 新增，2026-10-04 移至右栏）**：右栏标签**全部关掉**之后
       （`ctxTabs.length === 0`），右栏正文区出现「工具」分组（`chat.tool-shortcuts`），
       四张卡片依次是右栏四种标签（上下文 / 文件 / 终端 / 浏览器，`chat.tool-open-<kind>`，
@@ -308,35 +325,35 @@
       标签全关后不必再翻右上角的「＋」菜单，在右栏空态就能重开。
       本区**只在标签为空时存在**（它就是空态本身；有标签时留着只是占地方），
       位于右栏正文区、两列网格、卡片高 32px（与左栏固定项同一条命中线）。
-    右栏宽度 264 → **384px 缺省**，左缘把手（`chat.ctx-resizer`）可拖拽调宽
-    （**280–720px** 夹取，localStorage 记忆、双击复位；视图偏好**不进 config schema**），
-    JobPanel / ContextPanel 的固定宽跟随 `--ctx-w`（折叠时收 0 的语义不变）。
-    **左栏同样可拖拽**（2026-10-03）：右缘把手 `chat.nav-resizer`，240px 缺省、
-    **200–520px** 夹取，`SessionNav` 的 `.nav-inner` 跟随 `--nav-w`（折叠时收 0 的语义不变），
-    与右栏共用同一段拖拽实现（`startColumnResize`）。
-    **两侧栏的实际渲染宽度 = `min(期望宽度, 窗口宽 − 另一侧宽度 − 主区下限)`**
-    （2026-10-03 二次修订）：`App.vue` 的 `navEffWidth` / `ctxEffWidth` 算好后**内联**进
-    `--nav-w` / `--ctx-w`（所以栏内子组件读到的就是实际宽度），窗口 resize 时重算；
-    **主区下限 `MAIN_MIN_WIDTH = 420`** —— 起因是右栏上限提到 720 后，在 1120px 的窗口里
-    拖到上限会把对话区挤成一条（量出来 ~175px，消息一列一个字），窗口看着像坏了。
-    存储的永远是用户的**期望宽度**，窗口缩小时只是暂时显示得更窄，窗口变大即恢复。
-    窗口最大化时右栏能真正拖到 720px。
-    **⚠️ 横向锁死（同日修，用户实测「按钮整排消失」）**：`.app-shell` / `.nav` / `.context` /
-    `.ctx-panes` / `.ctx-pane` 的列轨一律 `minmax(0, 1fr)`，面板内部处处 `min-width: 0`，
-    文件预览的 markdown 容器另有 `overflow-wrap: anywhere`。此前用隐含的 `auto` 列轨，
-    其下限是内容的 **min-content** —— 预览一份带长 URL / 长代码行的文件时整栏内容被撑宽，
-    超出 aside 的部分被 `overflow: hidden` 裁掉：**正文被窗口右缘切断、目录条上的按钮
-    整排推出可视区**（DOM 里还在，所以只查 DOM 存在性的探针全绿）。护栏是
-    `chat-right-tabs` / `chat-file-project` 两条探针里的 `asideOverflowX` 与
-    `fileToolbarInView` / `toolbarInView`（量矩形，不量存在）。
-    **⚠️ 窗口按钮固定挂在窗口右上角**（2026-10-03 二次修订）：`WindowCaption` 从主区标题栏
-    末尾移出，作为 app-shell 直属子节点 `position: fixed` 贴窗口右上角（与设置窗同款）。
-    此前它排在主区标题栏的流式末尾 —— 主区一窄（右栏拖宽）整组按钮就被推出主区、
-    **压在右栏 tab 条上**。配套两条：`.app-shell` 的 `--head-h`（48px）让主区标题栏与
-    右栏 tab 条**同高**（顶带连续），tab 条按 `--caption-w`（132px）右侧让位，
-    右栏收起时主区标题栏挂 `.head--corner` 同样让位（否则「清空」按钮落在三键底下）。
-    护栏：`chat-right-tabs` 探针断言三键贴右缘、贴顶且**与 tab 矩形无交集**（`captionPinned`
-    / `captionTabOverlap`）。
+      右栏宽度 264 → **384px 缺省**，左缘把手（`chat.ctx-resizer`）可拖拽调宽
+      （**280–720px** 夹取，localStorage 记忆、双击复位；视图偏好**不进 config schema**），
+      JobPanel / ContextPanel 的固定宽跟随 `--ctx-w`（折叠时收 0 的语义不变）。
+      **左栏同样可拖拽**（2026-10-03）：右缘把手 `chat.nav-resizer`，240px 缺省、
+      **200–520px** 夹取，`SessionNav` 的 `.nav-inner` 跟随 `--nav-w`（折叠时收 0 的语义不变），
+      与右栏共用同一段拖拽实现（`startColumnResize`）。
+      **两侧栏的实际渲染宽度 = `min(期望宽度, 窗口宽 − 另一侧宽度 − 主区下限)`**
+      （2026-10-03 二次修订）：`App.vue` 的 `navEffWidth` / `ctxEffWidth` 算好后**内联**进
+      `--nav-w` / `--ctx-w`（所以栏内子组件读到的就是实际宽度），窗口 resize 时重算；
+      **主区下限 `MAIN_MIN_WIDTH = 420`** —— 起因是右栏上限提到 720 后，在 1120px 的窗口里
+      拖到上限会把对话区挤成一条（量出来 ~175px，消息一列一个字），窗口看着像坏了。
+      存储的永远是用户的**期望宽度**，窗口缩小时只是暂时显示得更窄，窗口变大即恢复。
+      窗口最大化时右栏能真正拖到 720px。
+      **⚠️ 横向锁死（同日修，用户实测「按钮整排消失」）**：`.app-shell` / `.nav` / `.context` /
+      `.ctx-panes` / `.ctx-pane` 的列轨一律 `minmax(0, 1fr)`，面板内部处处 `min-width: 0`，
+      文件预览的 markdown 容器另有 `overflow-wrap: anywhere`。此前用隐含的 `auto` 列轨，
+      其下限是内容的 **min-content** —— 预览一份带长 URL / 长代码行的文件时整栏内容被撑宽，
+      超出 aside 的部分被 `overflow: hidden` 裁掉：**正文被窗口右缘切断、目录条上的按钮
+      整排推出可视区**（DOM 里还在，所以只查 DOM 存在性的探针全绿）。护栏是
+      `chat-right-tabs` / `chat-file-project` 两条探针里的 `asideOverflowX` 与
+      `fileToolbarInView` / `toolbarInView`（量矩形，不量存在）。
+      **⚠️ 窗口按钮固定挂在窗口右上角**（2026-10-03 二次修订）：`WindowCaption` 从主区标题栏
+      末尾移出，作为 app-shell 直属子节点 `position: fixed` 贴窗口右上角（与设置窗同款）。
+      此前它排在主区标题栏的流式末尾 —— 主区一窄（右栏拖宽）整组按钮就被推出主区、
+      **压在右栏 tab 条上**。配套两条：`.app-shell` 的 `--head-h`（48px）让主区标题栏与
+      右栏 tab 条**同高**（顶带连续），tab 条按 `--caption-w`（132px）右侧让位，
+      右栏收起时主区标题栏挂 `.head--corner` 同样让位（否则「清空」按钮落在三键底下）。
+      护栏：`chat-right-tabs` 探针断言三键贴右缘、贴顶且**与 tab 矩形无交集**（`captionPinned`
+      / `captionTabOverlap`）。
     - **「文件」tab（`FilePreviewPanel`，`chat.file-preview`）**：**小文件管理器 + 预览**
       （2026-10-03 起）。顶部路径输入与「最近预览」（localStorage，最多 8 条）保留；
       工具条（`chat.file-bar`）＝ **面包屑 + 导航**：
@@ -347,18 +364,18 @@
       - 导航四钮（`chat.file-back` / `chat.file-forward` / `chat.file-up` / `chat.file-refresh`）
         是 **lucide 图标按钮**（`ArrowLeft` / `ArrowRight` / `ArrowUp` / `RotateCw`）；
         此前用 `⟳ ⤴` 字形，又细又淡，且被上面那条撑破问题推出可视区 —— 两处都已修。
-      **导航模型＝与浏览器同构的历史栈**：一个位置是 `{ dir, file? }`（`file` 为空即列表态），
-      进目录 / 预览文件 / 点面包屑 / 上级 / 路径输入都是 push 一步（前进链在 push 时截断），
-      后退 / 前进在栈里移动；预览态的「返回列表」（`chat.file-exit`）＝后退一步
-      （历史里前一条正是同目录的列表态），没有可退的一步时退回当前目录的列表态。
-      列表（`chat.file-list`）缺省列出根目录：目录在前、同类按名称数字感知升序（上限 500 条，
-      超出标 `truncated`）；「上级」止于边界根。
-      markdown 走 shared 渲染器（与消息正文同一安全基线）、纯文本、图片（data URL）、
-      二进制/超限/越界如实给原因。读盘走 `preview:read`、列目录走 `preview:list`：
-      路径必须在**发起会话边界根之内**（复用 file-port `resolveWithin` 的 realpath 前缀校验；
-      与文件工具不同，**根不可用时直接拒绝**——渲染层主动读盘通道不退回无边界），
-      文本 2 MB 超限截断、图片 10 MB 上限、前 8 KB NUL 字节判二进制（`main/file-preview.ts`）；
-      列目录上限与排序在 `main/file-list.ts`。
+        **导航模型＝与浏览器同构的历史栈**：一个位置是 `{ dir, file? }`（`file` 为空即列表态），
+        进目录 / 预览文件 / 点面包屑 / 上级 / 路径输入都是 push 一步（前进链在 push 时截断），
+        后退 / 前进在栈里移动；预览态的「返回列表」（`chat.file-exit`）＝后退一步
+        （历史里前一条正是同目录的列表态），没有可退的一步时退回当前目录的列表态。
+        列表（`chat.file-list`）缺省列出根目录：目录在前、同类按名称数字感知升序（上限 500 条，
+        超出标 `truncated`）；「上级」止于边界根。
+        markdown 走 shared 渲染器（与消息正文同一安全基线）、纯文本、图片（data URL）、
+        二进制/超限/越界如实给原因。读盘走 `preview:read`、列目录走 `preview:list`：
+        路径必须在**发起会话边界根之内**（复用 file-port `resolveWithin` 的 realpath 前缀校验；
+        与文件工具不同，**根不可用时直接拒绝**——渲染层主动读盘通道不退回无边界），
+        文本 2 MB 超限截断、图片 10 MB 上限、前 8 KB NUL 字节判二进制（`main/file-preview.ts`）；
+        列目录上限与排序在 `main/file-list.ts`。
     - **「终端」标签（`TerminalPanel`，`chat.terminal`）**：PTY 交互终端
       （@lydell/node-pty + xterm 6）。**每个标签一个 shell**（2026-10-03 二次修订：
       主进程按 `terminalId` 记账，每次 `terminal:create` 出**新的** PTY、不再按窗口复用；
@@ -376,7 +393,7 @@
       cwd 按会话工作目录回落链解析（**创建那一刻**解析一次）；输出按 `terminalId` 过滤后
       只推给创建它的窗口；Windows 默认 PowerShell；shell 退出显示 exit code 并可重开。
       终端是**用户的手动操作面**：不进 AI 工具面、不接确认闸门。IPC：`terminal:create /
-      input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
+input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
       打包：`@lydell/node-pty` 经 electron-builder `asarUnpack` 解出（.node 不能进 asar）。
     - **「浏览器」tab（`BrowserPanel`，`chat.browser`）**：webview 内置浏览器
       （工具条 `chat.browser-bar`：后退 `chat.browser-back` / 前进 `chat.browser-forward` /
@@ -541,13 +558,13 @@
     「模型答完了，工作过程还铺着不折叠」就是这个（回归防线：`chat-trace-fold` 探针，
     桩服务的 `SKILL_ONLY_MARKER` 分流专门造这个现场）。
   - **工具行（`AgentToolRow.vue`）**：见下条「工具行」。
-  探针锚点（`chat-trace.png` / `chat-thinking-block.png` / `chat-tool-card-open.png` 依赖）：
-  `.message.r-assistant .thinking`、`.thinking-head`、`.thinking-body`、`.thinking-text`、
-  `.thinking.streaming .thinking-text`、`.tool-card`、`.tool-head`、`.tool-icon`（每行恰好一枚）、
-  `.tool-body`（带内联 `--collapse-h`）、`.tool-args`；`.thinking` 必须仍在同气泡 `.md` **之前**。
-  折叠态下展开体**仍在 DOM 里**（grid `0fr` 收成零高度、内层 `overflow: hidden`，见 §5.2）：
-  `capture` 的两条探针要先读到折叠态的 `.thinking-head` 文案（含「已深度思考」）与
-  `.thinking.streaming .thinking-text` 锚点，整块 `v-if` 掉会让它们在折叠的那一帧失效。
+    探针锚点（`chat-trace.png` / `chat-thinking-block.png` / `chat-tool-card-open.png` 依赖）：
+    `.message.r-assistant .thinking`、`.thinking-head`、`.thinking-body`、`.thinking-text`、
+    `.thinking.streaming .thinking-text`、`.tool-card`、`.tool-head`、`.tool-icon`（每行恰好一枚）、
+    `.tool-body`（带内联 `--collapse-h`）、`.tool-args`；`.thinking` 必须仍在同气泡 `.md` **之前**。
+    折叠态下展开体**仍在 DOM 里**（grid `0fr` 收成零高度、内层 `overflow: hidden`，见 §5.2）：
+    `capture` 的两条探针要先读到折叠态的 `.thinking-head` 文案（含「已深度思考」）与
+    `.thinking.streaming .thinking-text` 锚点，整块 `v-if` 掉会让它们在折叠的那一帧失效。
 - **工具行（2026-09-30 轨迹重构）**：`todo_write` 渲染为**结构化清单行**
   （`data-field="chat.todo-card"`：状态圈（待办 ○ / 进行中 ◐ / 完成 ✓）+ 条目 + 进度摘要），
   `task` 渲染为**子代理行**（`data-field="chat.task-card"`：任务简述 + 「可读写」徽章 + 步骤数 +
@@ -663,11 +680,11 @@
   后长出来的部分会被裁掉、过渡类一摘再补跳一次。所以两类折叠体**只淡入（`name="fade"`）、
   不做高度动画**：
   ① **内容正在持续生长** —— 流式期间思考块与**整条轨迹容器**都在长（轨迹的自动展开
-     恰好命中这个场景）。轨迹容器（2026-10-01 起）改走 **grid `0fr ↔ 1fr`**：过渡终点是
-     `1fr`，**每一帧都按当下内容现解**，动画期间内容再长也不会被裁掉 —— 实测高度动画的
-     病根是「终点在动画开始那一刻量定」，grid 方案不量高度，从根上避开；同时保住高度
-     动效（纯 fade 的展开观感是「下面整段瞬移」）。思考块仍是 `name="fade"`
-     （`v-if` 挂载式 + 正文 220px 内滚，实测高度对它本就不适用）；
+  恰好命中这个场景）。轨迹容器（2026-10-01 起）改走 **grid `0fr ↔ 1fr`**：过渡终点是
+  `1fr`，**每一帧都按当下内容现解**，动画期间内容再长也不会被裁掉 —— 实测高度动画的
+  病根是「终点在动画开始那一刻量定」，grid 方案不量高度，从根上避开；同时保住高度
+  动效（纯 fade 的展开观感是「下面整段瞬移」）。思考块仍是 `name="fade"`
+  （`v-if` 挂载式 + 正文 220px 内滚，实测高度对它本就不适用）；
   ② **折叠体自己带 `max-height` / 本身就是滚动容器** —— 子代理页的「任务指令」
   （`.run-prompt` 自己有 `max-height: 160px; overflow-y: auto`，可见高度由它自身决定；
   真要给它做高度动画，就得先摘掉它自己的 `max-height` 才能量到真实内容高，
@@ -831,6 +848,7 @@
     确认卡与提问卡同一条待办栏（先到先得、幂等）；固定位 / 门控口径
     （未配置 STT 连麦克风按钮都不渲染）。`data-field` / `data-action` 命名两端同名
     （`chat.mic` / `chat.ask-user-card` / `chat.trace-live` / `chat.task-card` / `chat.todo-card` …）。
+
 ### 输入框规格（2026-09 输入框重做；2026-09-29 减负轮）
 
 目标是对齐主流 Agent Desktop（ChatGPT / Claude / Cursor 类）的输入动线：卡内自底向上依次是
@@ -898,10 +916,10 @@
     06 §4；**不走发送链**——压缩没有流式回复，走了输入区会永远停在「流式中」）；
   - 技能（选中**只补全**成 `/技能名 `，焦点留在输入框）：来自 `skills:list` 里 `enabled`
     的技能，与内核 `parseExplicitInvocation` 认的 `/` 前缀调用是同一套（06 §6）。
-  键盘：`↑` / `↓` 移动高亮、`Enter` / `Tab` 确认、`Esc` 关闭（输入内容一变即重新打开）。
-  浮层打开时 `Enter` **属于浮层**，不会把半截命令发出去。过滤是**前缀匹配**而非模糊匹配：
-  命令名都很短，模糊匹配会让 `/s` 命中一堆不相干的技能，反而要多按几次方向键。
-  `@` 提及、MCP 工具补全**仍未实现**（技能与命令之外没有第二类候选）。
+    键盘：`↑` / `↓` 移动高亮、`Enter` / `Tab` 确认、`Esc` 关闭（输入内容一变即重新打开）。
+    浮层打开时 `Enter` **属于浮层**，不会把半截命令发出去。过滤是**前缀匹配**而非模糊匹配：
+    命令名都很短，模糊匹配会让 `/s` 命中一堆不相干的技能，反而要多按几次方向键。
+    `@` 提及、MCP 工具补全**仍未实现**（技能与命令之外没有第二类候选）。
 - **上下文详解条**（`ComposerContextBar.vue`，`data-field="chat.context"`）：卡片最底部一条细状态栏，
   折叠态显示 `上下文 <已用> / <窗口> <进度条> <百分比>` + 本会话累计；2026-10-03 起紧凑文案里的
   命中片段改为**平均缓存命中率**（`平均缓存命中 N%`，分子分母都是**累计**，06 §21.4 ——
@@ -1016,6 +1034,7 @@
 > 原因是渲染进程拿不到文件系统能力，加选择器要新开一条 IPC + 主进程 `dialog.showOpenDialog`。
 
 > **新增（v0.4.0 / v0.5.0）**：
+>
 > - **分类流水**（`ClassificationLedger.vue`）：可折叠区块，默认收起，展示
 >   时间 / 文件 / 状态 / 科目 · 来源 · 置信 · 依据，支持「改到其他科目」「打开所在文件夹」「清空流水」；
 >   交互窗与设置页共用同一组件（分别给 20 / 50 条）。
@@ -1030,7 +1049,7 @@
   **不是会话**：切过去不动 `sessionId`、不触发水合、不清空消息，输入区与右栏照旧，
   靠页头「返回对话」按钮（`data-action="automation-back"`）或左栏点任意会话切回。
   `auto-` 前缀的自动化会话**不进左栏会话列表**（渲染层过滤，与 `center-` 会话同款口径，
-  见 docs/13 §7），回看那次对话的唯一入口是历史弹窗。
+  见 docs/13 §7），回看那次对话的唯一入口是自动化详情窗口的历史视图。
 - **骨架**：根锚点 `data-field="automation.page"`，列表容器 `data-field="automation.list"`；
   顶部工具行 = 双 tab「Agent Mode」（`data-field="automation.tab-agent"`）/
   「Normal Mode」（`automation.tab-normal`）+ 右侧「历史」（`data-action="automation.history"`）
@@ -1057,10 +1076,9 @@
   （`modes.classroom.preClassReminder` / `preClassOpenFolder`，走既有 `settings:update`），
   **没有编辑 / 删除**；「沿用 ClassRoom 的设置（提前分钟数 / 勿扰时段），在「设置 → 模式」里调整」
   这句**不再占版面**，改挂在区组头的说明标记上（悬停即见）。语义与迁移口径见 docs/13 §6。
-- **编辑器弹窗**（仓库**首个 Modal**，`data-field="automation.editor"`）：遮罩用 `--overlay-scrim` +
-  `z-index: var(--z-popover)`，弹窗底色用 **`--bg-overlay`** —— 它是**弹层专用令牌**，
-  写 `--surface-1` 这类不存在的名字会解析成透明、页面内容直接透进来；
-  宽 `min(640px, calc(100vw - 48px))`。字段自上而下（**全部走「左标签 / 右控件」两列网格**：
+- **编辑器视图**（独立 `automation` BrowserWindow，`data-field="automation.editor"`）：
+  由主界面的「新建 / 编辑」经 `automation:openWindow` 打开，单例复用。
+  字段自上而下（**全部走「左标签 / 右控件」两列网格**：
   标签列 92px、控件列 `minmax(0, 1fr)`，两侧各在自己的格子里，长标签换行也不会挤压控件 —— §5.4）：
   名称 → 模式单选（两个 `.mode-option`，各带图标与一行小字）→
   **触发条件 = 图标磁贴网格**（容器 `data-field="automation.trigger-kind"` 持 `role="radiogroup"`；
@@ -1081,22 +1099,20 @@
   点一下换组件；`available: false` 的组件**不出现**而不是 disabled）+ 移除钮 + 参数网格；
   「添加操作」`data-action="automation.add-action"`，**上限 10 个**，到顶即 disabled，
   区组头右侧显示 `n/10`）。
-  底部「取消」（`data-action="automation.editor-cancel"`）/「保存」；三条关闭路径 ——
-  点遮罩（`@click.self`，点弹窗内部不关）、「取消」、**Esc**（组件在 `window` 上挂 `keydown`
-  监听：编辑器优先，其次是历史弹窗；历史里正展开某条运行回放时，第一下 Esc 只收回放 ——
-  与「一层一层退」的直觉一致）。
-- **历史弹窗**（`data-field="automation.history-panel"`，关闭钮
+  底部「取消」（`data-action="automation.editor-cancel"`）/「保存」；关闭路径 = 窗口关闭钮 /
+  「取消」/ **Esc**，均为隐藏窗口。历史视图里正展开某条运行回放时，第一下 Esc 只收回放。
+- **历史视图**（`data-field="automation.history-panel"`，关闭钮
   `data-action="automation.history-close"`）：列表容器 `data-field="automation.history-list"`，
   每条 = **状态图标**（进行中旋转 / 成功对勾 / 失败叉 / 已中断停止，与状态文案同色）
-  + **触发时间 + 归属自动化名 + 状态 + 用时**；
-  同样**按当前 tab 过滤**（Agent tab 只列 Agent 运行）。**Agent 记录可点开**（行加 `.clickable`）
-  → 弹窗内展开**对话回放**（`.detail-message`，「任务」/「Agent」两侧气泡，数据经既有
-  `chat:history` 按 `sessionId` 读取，见 docs/13 §7；会话被删则显示「会话已被删除或还没有消息」）；
-  **Normal 记录不可点、没有详情层** —— 产品口径是「只显示触发时间与状态，不展示具体操作」。
-  `.run-item` / `.run-time` / `.clickable` / `.detail-message` 四个类名是 capture 探针契约，别改名。
+  - **触发时间 + 归属自动化名 + 状态 + 用时**；
+    同样**按当前 tab 过滤**（Agent tab 只列 Agent 运行）。**Agent 记录可点开**（行加 `.clickable`）
+    → 窗口内展开**对话回放**（`.detail-message`，「任务」/「Agent」两侧气泡，数据经既有
+    `chat:history` 按 `sessionId` 读取，见 docs/13 §7；会话被删则显示「会话已被删除或还没有消息」）；
+    **Normal 记录不可点、没有详情层** —— 产品口径是「只显示触发时间与状态，不展示具体操作」。
+    `.run-item` / `.run-time` / `.clickable` / `.detail-message` 四个类名是 capture 探针契约，别改名。
 - **门控口径**：catalog 里 `available: false` 的操作组件（如未配置桥接时的 ClassIsland 提醒）
   **在选项里不出现**，不是 `disabled` —— 与麦克风 / 朗读按钮同款口径。
-- **推送订阅**：`automation:changed` → 重拉列表；`automation:historyChanged` → 历史弹窗开着时重拉
+- **推送订阅**：`automation:changed` → 重拉列表；`automation:historyChanged` → 历史视图开着时重拉
   （通道清单见 docs/13 §9）。
 
 ### 2.5 设置窗口
@@ -1131,6 +1147,7 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
 整个 sticky 筛选区必须使用全宽不透明的 `--bg-raised` 层，不能只在滚动容器上叠透明渐变，
 否则向下滚动时笔记文字会从筛选区后面透出来，看起来像“搜索框没有背景”。
 设置页的「打开记忆库」入口只负责 `window:show('memory')`，不把完整列表继续复制在设置页。
+
 - **窗口按钮（2026-09 重构起；2026-10 移位 + 补齐最大化）**：本窗无系统标题栏（`frame: false`），
   Windows 式「最小化 / 最大化 / 关闭」按钮（`WindowCaption.vue`，
   `data-caption-btn="minimize" | "maximize" | "close"`）**贴窗口右上缘**（根元素上
@@ -1276,45 +1293,46 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
 
 方向（**BetaV2 / Aurora Glass 2.0**：Apple HIG / Pinguo tokens）：**克制的 Apple 风桌面界面** —— 系统色锚点
 （蓝 `#007AFF`/`#0A84FF`、绿 `#34C759`/`#30D158`、红 `#FF3B30`/`#FF453A`、橙 `#FF9500`/`#FF9F0A`）
-+ iOS 灰阶中性面 + 分层填充 + 大圆角 + 更淡更扩散的柔和阴影；静止卡片靠 1px 边界与留白区分层次，
-阴影留给悬停和浮层；留白充足，右栏与主区之间用分隔而非悬浮卡片。
-**品牌不再使用双色渐变**：强调色 = Apple 系统蓝纯色，`--aurora-gradient` 即纯强调色值，
-全仓禁用 aurora 绿×蓝的 135° 斜向品牌渐变（功能性渐变如遮罩渐隐允许，须注释说明）；
-不用霓虹 / 渐变彩带 / 拟物。**明暗跟随系统**：默认深色，Windows 外观切到浅色时四窗同步切换
-（令牌与窗口底色口径见 §5.1「系统明暗双档」，截图验收见 §5.3）；不提供手动主题开关。
-Aurora Glass 2.0 把毛玻璃从“少量浮层专属”推进到所有固定工作台：窗口画布、侧栏、顶部栏、
-输入区、设置与引导壳体、提示条、记忆库和 Center 工作台共享同一套 frosted 材质；
-正文卡片与重复列表只使用轻透明表面，不逐项叠加 `backdrop-filter`，避免滚动时产生嵌套模糊重绘。
-左栏 / 右栏 / 设置侧栏 / 记忆库笔记列 / Center 导轨统一挂 `.rail-surface`：顶部极淡纵向高光、
-直线内缘与渐隐 hairline 组成一块连续工作台，不再用通长实线边框成「矩形套圆矩形」；
-内缘不再做大圆角，避免三栏接缝出现突兀的弧形缺口。
+
+- iOS 灰阶中性面 + 分层填充 + 大圆角 + 更淡更扩散的柔和阴影；静止卡片靠 1px 边界与留白区分层次，
+  阴影留给悬停和浮层；留白充足，右栏与主区之间用分隔而非悬浮卡片。
+  **品牌不再使用双色渐变**：强调色 = Apple 系统蓝纯色，`--aurora-gradient` 即纯强调色值，
+  全仓禁用 aurora 绿×蓝的 135° 斜向品牌渐变（功能性渐变如遮罩渐隐允许，须注释说明）；
+  不用霓虹 / 渐变彩带 / 拟物。**明暗跟随系统**：默认深色，Windows 外观切到浅色时四窗同步切换
+  （令牌与窗口底色口径见 §5.1「系统明暗双档」，截图验收见 §5.3）；不提供手动主题开关。
+  Aurora Glass 2.0 把毛玻璃从“少量浮层专属”推进到所有固定工作台：窗口画布、侧栏、顶部栏、
+  输入区、设置与引导壳体、提示条、记忆库和 Center 工作台共享同一套 frosted 材质；
+  正文卡片与重复列表只使用轻透明表面，不逐项叠加 `backdrop-filter`，避免滚动时产生嵌套模糊重绘。
+  左栏 / 右栏 / 设置侧栏 / 记忆库笔记列 / Center 导轨统一挂 `.rail-surface`：顶部极淡纵向高光、
+  直线内缘与渐隐 hairline 组成一块连续工作台，不再用通长实线边框成「矩形套圆矩形」；
+  内缘不再做大圆角，避免三栏接缝出现突兀的弧形缺口。
 
 ### 5.1 设计令牌
 
 全部定义在 `packages/shared/src/browser/theme.css`，桌面窗口与 Center Web 共用（各自入口里 import）。
 
-| 类别 | 令牌 | 值 / 说明 |
-|---|---|---|
-| 品牌（强调 / 成功） | `--aurora-blue` / `--aurora-green` / `--aurora-gradient` | Apple 系统色：亮 `#007AFF` / `#34C759`，暗 `#0A84FF` / `#30D158`；`--aurora-gradient` = **纯强调色值**（**BetaV2 起废弃双色渐变**） |
-| 原始中性阶 | `--neutral-900/850/800/700/600/500/400/300/200/100/50` | iOS 灰阶 `#000000` 到 `#f5f5f7`；850 为 Aurora 自有 `#0b0c0f`（保留兼容）；仅语义层消费原始阶 |
-| 底色 | `--bg-base` / `--bg-raised` / `--bg-overlay` / `--bg-glass` | 暗 `#000000` / `#1c1c1e` / `#2c2c2e` / `rgba(28,28,30,.72)`；亮 `#f5f5f7` / `#ffffff` / 白 `rgba(255,255,255,.96)` / `rgba(255,255,255,.72)` |
-| 分层填充 | `--fill-1` / `--fill-2` / `--fill-3` | 悬浮层 → 卡片 → 悬停/选中，逐层变亮：亮 `rgba(0,0,0,.045/.07/.10)`，暗 `rgba(255,255,255,.07/.10/.14)` |
-| 分隔线 | `--border-subtle` / `--border-strong` | iOS 语义：亮 `#d1d1d6` / `#c7c7cc`，暗 `#38383a` / `#48484a` |
-| 文本 | `--text-primary` / `--text-secondary` / `--text-muted` | 亮 `#1d1d1f` / `#6e6e73` / `#aeaeb2`，暗 `#f5f5f7` / `#aeaeb2` / `#7c7c80`；正文用 `--leading-normal(1.5)`、说明用 `--leading-relaxed(1.55)` |
-| 状态 | `--status-idle` / `-running` / `-unread` / `-error` / `-ok` | idle `#8e8e93`、running = 强调蓝、unread = 警告橙（`#FF9500`/`#FF9F0A`）、error `#FF3B30`/`#FF453A`、ok `#34C759`/`#30D158`，**四个窗口语义一致** |
-| 字体 | `--font-ui` / `--font-display` / `--font-mono` | 随包 **HarmonyOS Sans + HarmonyOS Sans SC**（Regular / Medium / Bold，`font-display: swap`）；代码与终端保留 Cascadia / Consolas 等宽栈。标题 `--tracking-display(-0.02em)`，分区标签 `--tracking-eyebrow(0.08em)`，数字 `--num-tabular` |
-| 字号 | `--text-xs(11)` / `sm(12.5)` / `base(13.5)` / `lg(15)` / `xl(20)` / `2xl(26)` | 正文基准 `--text-base`；`--leading-tight(1.25)` / `normal(1.5)` |
-| 字重 | `--weight-regular(400)` / `medium(500)` / `semibold(600)` | |
-| 圆角 | `--radius-xs(6)` / `sm(10)` / `md(14)` / `lg(20)` / `xl(28)` / `pill(999)` | 档位不变，靠大半径营造连续圆角观感 |
-| 间距 | `--space-1..10`（4/8/12/16/24/32/48/64/96/128） | 4px 栅格；大阶用于空状态与引导留白 |
-| 材质 | `--blur-thin(12)` / `--blur(24)` / `--blur-thick(40)`；`--glass-*` / `--canvas-*` | Aurora Glass 2.0：固定工作台用 `.glass-shell` / `.glass-bar` / `.glass-panel`，重复卡片用 `.glass-surface`；玻璃只上固定和低频重绘层，正文滚动区不逐项模糊；不支持 `backdrop-filter`、`prefers-reduced-transparency` 或 `prefers-contrast: more` 时回落实色 |
-| 阴影 | `--shadow-hairline` / `--shadow-1/2/3` | **BetaV2：更淡更扩散**；静止卡片只用细描边与 hairline；浮层/悬停用带负 spread 的 2，模态用 3 |
-| 控件 | `--control-h-sm/md/lg` / `--hit-target` | 32/40/48px 按钮高度、40px 图标命中目标；动作圆角统一 `--radius-pill`，输入框使用 `--radius-sm/md`，卡片使用 `--radius-md/lg` |
-| 语义色 | `--on-accent` / `--accent-text` / `--accent-ring` / `--status-running-ring` / `--danger-*` / `--error-*` / `--warning-*` / `--ok-*` / `--overlay-scrim` | 强调色上的前景为白色；点 / 面用系统原色，文字态（`--*-text`）用可读的加深 / 提亮变体；状态色只用于状态，不用来装饰卡片 |
-| 缓动 | `--ease-standard` / `--ease-spring` / `--ease-smooth` | 颜色/透明度用 standard，大面积位移用 smooth，出现/展开用 spring |
-| 时长 | `--dur-fast(150)` / `base(250)` / `slow(350)` / `press(120)` / `pulse(1600)`；`--transition-fast\|base` | `--dur-press` / `--dur-pulse` 为 BetaV2 新增（按下微缩 / 脉冲环），`--transition-*` 是前两者的组合别名 |
-| 时长（循环与终态，2026-09 动画轮 / 轨迹轮） | `--dur-spin(1200)` / `--dur-caret(1100)` / `--dur-bounce(1000)` / `--dur-breathe(2400)` / `--dur-tint(800)` | 循环动画（加载旋转 / 流式光标 / 三点等待 / 边框呼吸）节奏与「出现」动画不同，单列令牌；`--dur-tint` 是 2026-09-30 轨迹重构新增（工具行**终态底色淡出** `aurora-tint-out` 用），**新名 append-only** |
-| 层级 | `--z-sticky` / `--z-flyout` / `--z-popover` / `--z-toast` | **2026-09 新增**（1 / 20 / 30 / 200）：浮出物的唯一来源。此前是散落在三个组件里的 `z-index: 20/20/30` 魔数，直接后果是输入区浮层互相遮挡（见 §2.3「三个浮层的锚点与层级」）。**新代码不许再写 z-index 字面量**（`edge-bar` 内部那处 `z-index: 1` 是窗内分层，保持原样） |
+| 类别                                        | 令牌                                                                                                                                                    | 值 / 说明                                                                                                                                                                                                                                                               |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 品牌（强调 / 成功）                         | `--aurora-blue` / `--aurora-green` / `--aurora-gradient`                                                                                                | Apple 系统色：亮 `#007AFF` / `#34C759`，暗 `#0A84FF` / `#30D158`；`--aurora-gradient` = **纯强调色值**（**BetaV2 起废弃双色渐变**）                                                                                                                                     |
+| 原始中性阶                                  | `--neutral-900/850/800/700/600/500/400/300/200/100/50`                                                                                                  | iOS 灰阶 `#000000` 到 `#f5f5f7`；850 为 Aurora 自有 `#0b0c0f`（保留兼容）；仅语义层消费原始阶                                                                                                                                                                           |
+| 底色                                        | `--bg-base` / `--bg-raised` / `--bg-overlay` / `--bg-glass`                                                                                             | 暗 `#000000` / `#1c1c1e` / `#2c2c2e` / `rgba(28,28,30,.72)`；亮 `#f5f5f7` / `#ffffff` / 白 `rgba(255,255,255,.96)` / `rgba(255,255,255,.72)`                                                                                                                            |
+| 分层填充                                    | `--fill-1` / `--fill-2` / `--fill-3`                                                                                                                    | 悬浮层 → 卡片 → 悬停/选中，逐层变亮：亮 `rgba(0,0,0,.045/.07/.10)`，暗 `rgba(255,255,255,.07/.10/.14)`                                                                                                                                                                  |
+| 分隔线                                      | `--border-subtle` / `--border-strong`                                                                                                                   | iOS 语义：亮 `#d1d1d6` / `#c7c7cc`，暗 `#38383a` / `#48484a`                                                                                                                                                                                                            |
+| 文本                                        | `--text-primary` / `--text-secondary` / `--text-muted`                                                                                                  | 亮 `#1d1d1f` / `#6e6e73` / `#aeaeb2`，暗 `#f5f5f7` / `#aeaeb2` / `#7c7c80`；正文用 `--leading-normal(1.5)`、说明用 `--leading-relaxed(1.55)`                                                                                                                            |
+| 状态                                        | `--status-idle` / `-running` / `-unread` / `-error` / `-ok`                                                                                             | idle `#8e8e93`、running = 强调蓝、unread = 警告橙（`#FF9500`/`#FF9F0A`）、error `#FF3B30`/`#FF453A`、ok `#34C759`/`#30D158`，**四个窗口语义一致**                                                                                                                       |
+| 字体                                        | `--font-ui` / `--font-display` / `--font-mono`                                                                                                          | 随包 **HarmonyOS Sans + HarmonyOS Sans SC**（Regular / Medium / Bold，`font-display: swap`）；代码与终端保留 Cascadia / Consolas 等宽栈。标题 `--tracking-display(-0.02em)`，分区标签 `--tracking-eyebrow(0.08em)`，数字 `--num-tabular`                                |
+| 字号                                        | `--text-xs(11)` / `sm(12.5)` / `base(13.5)` / `lg(15)` / `xl(20)` / `2xl(26)`                                                                           | 正文基准 `--text-base`；`--leading-tight(1.25)` / `normal(1.5)`                                                                                                                                                                                                         |
+| 字重                                        | `--weight-regular(400)` / `medium(500)` / `semibold(600)`                                                                                               |                                                                                                                                                                                                                                                                         |
+| 圆角                                        | `--radius-xs(6)` / `sm(10)` / `md(14)` / `lg(20)` / `xl(28)` / `pill(999)`                                                                              | 档位不变，靠大半径营造连续圆角观感                                                                                                                                                                                                                                      |
+| 间距                                        | `--space-1..10`（4/8/12/16/24/32/48/64/96/128）                                                                                                         | 4px 栅格；大阶用于空状态与引导留白                                                                                                                                                                                                                                      |
+| 材质                                        | `--blur-thin(12)` / `--blur(24)` / `--blur-thick(40)`；`--glass-*` / `--canvas-*`                                                                       | Aurora Glass 2.0：固定工作台用 `.glass-shell` / `.glass-bar` / `.glass-panel`，重复卡片用 `.glass-surface`；玻璃只上固定和低频重绘层，正文滚动区不逐项模糊；不支持 `backdrop-filter`、`prefers-reduced-transparency` 或 `prefers-contrast: more` 时回落实色             |
+| 阴影                                        | `--shadow-hairline` / `--shadow-1/2/3`                                                                                                                  | **BetaV2：更淡更扩散**；静止卡片只用细描边与 hairline；浮层/悬停用带负 spread 的 2，模态用 3                                                                                                                                                                            |
+| 控件                                        | `--control-h-sm/md/lg` / `--hit-target`                                                                                                                 | 32/40/48px 按钮高度、40px 图标命中目标；动作圆角统一 `--radius-pill`，输入框使用 `--radius-sm/md`，卡片使用 `--radius-md/lg`                                                                                                                                            |
+| 语义色                                      | `--on-accent` / `--accent-text` / `--accent-ring` / `--status-running-ring` / `--danger-*` / `--error-*` / `--warning-*` / `--ok-*` / `--overlay-scrim` | 强调色上的前景为白色；点 / 面用系统原色，文字态（`--*-text`）用可读的加深 / 提亮变体；状态色只用于状态，不用来装饰卡片                                                                                                                                                  |
+| 缓动                                        | `--ease-standard` / `--ease-spring` / `--ease-smooth`                                                                                                   | 颜色/透明度用 standard，大面积位移用 smooth，出现/展开用 spring                                                                                                                                                                                                         |
+| 时长                                        | `--dur-fast(150)` / `base(250)` / `slow(350)` / `press(120)` / `pulse(1600)`；`--transition-fast\|base`                                                 | `--dur-press` / `--dur-pulse` 为 BetaV2 新增（按下微缩 / 脉冲环），`--transition-*` 是前两者的组合别名                                                                                                                                                                  |
+| 时长（循环与终态，2026-09 动画轮 / 轨迹轮） | `--dur-spin(1200)` / `--dur-caret(1100)` / `--dur-bounce(1000)` / `--dur-breathe(2400)` / `--dur-tint(800)`                                             | 循环动画（加载旋转 / 流式光标 / 三点等待 / 边框呼吸）节奏与「出现」动画不同，单列令牌；`--dur-tint` 是 2026-09-30 轨迹重构新增（工具行**终态底色淡出** `aurora-tint-out` 用），**新名 append-only**                                                                     |
+| 层级                                        | `--z-sticky` / `--z-flyout` / `--z-popover` / `--z-toast`                                                                                               | **2026-09 新增**（1 / 20 / 30 / 200）：浮出物的唯一来源。此前是散落在三个组件里的 `z-index: 20/20/30` 魔数，直接后果是输入区浮层互相遮挡（见 §2.3「三个浮层的锚点与层级」）。**新代码不许再写 z-index 字面量**（`edge-bar` 内部那处 `z-index: 1` 是窗内分层，保持原样） |
 
 **硬约束**：既有令牌名（`--bg-*`、`--border-*`、`--text-*`、`--status-*`、`--radius-sm|md|lg`、
 `--space-1..6`、`--transition-fast|base`、`--font-ui|mono`、`--aurora-gradient`）**只增不删**——
@@ -1325,6 +1343,7 @@ Aurora Glass 2.0 把毛玻璃从“少量浮层专属”推进到所有固定工
 组件只引用语义令牌，不直接引用原始中性阶或另写颜色字面量。分层卡片用 `--fill-1`，悬停用 `--fill-2`，选中用 `--fill-3`；输入框用 1px 紧聚焦环。每屏一个主动作，其余使用次要或弱动作。玻璃材质用于悬浮面板，不铺满页面；静止卡片保持边界清楚、正文不降低透明度。
 
 **Aurora Glass 2.0 性能与可读性约束**：
+
 - 玻璃分三层：`glass-shell`（左右栏 / 设置侧栏 / Center 导轨，标准模糊）、`glass-bar`（顶部栏 / 输入带 / 页脚，薄模糊）、`glass-panel`（提示条面板 / 模态 / 浮层，厚模糊）。
 - 只有上述固定层允许 `backdrop-filter`；`section-card`、消息气泡、工具卡、列表行等重复元素使用 `glass-surface` 的轻透明背景与内高光，不叠加模糊。
 - 输入卡使用 `--glass-input`：它由内容 tint 与轻抬升表面混合，避免输入区再嵌套一层 `glass-bar` 后合成成不协调的白色实底。
@@ -1452,8 +1471,8 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
      ——用户实测「右栏缩到最小后加号按钮不可用」的回归护栏；另把左栏拖到 200px 断言
      左栏自己的「＋」入口（加项目 / 新建会话）同样可点）→
      `chat-subagent-page.png`（点左栏「子代理」固定项进页面，check 收尾切回对话流）→
-     `chat-automation.png` / `chat-automation-normal.png` / `chat-automation-editor.png` /
-     `chat-automation-history.png`（自动化页四连，v19；见下面「自动化页四连」一条）→
+     `chat-automation.png` / `chat-automation-normal.png` / `automation-editor.png` /
+     `automation-history.png`（自动化页 + 独立窗口，v19；见下面「自动化页与详情窗口」一条）→
      `chat-thinking-block.png`（reload 水合 seed 思考块后点开）→ `chat-quick-session.png`（展开侧栏快速对话面板）→
      `chat-thinking-level.png` → `chat-model-picker.png` → `chat-tts.png`（reload，朗读按钮）→
      `chat-drag.png` → `chat-collapse.png`（点击写在 check 里，见下）→ `chat.png`（自动滚底）→
@@ -1488,11 +1507,11 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
      「思考等级 / 结构 / 模型列表」三条的配置改写与恢复口径见下面各条探针说明。
   5. **提示条收尾**：`edge-bar-collapsed-final.png`（收起，不留展开态）→
      `edge-bar-after-click.png`（先 `hide('chat')` 复位再点竖条，回归「点击呼出交互窗」）。
-  `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）；
-  再细一级用 `AURORA_CAPTURE_ONLY='session-groups'`（按 PNG 文件名**子串**匹配，逗号分隔），
-  特殊值 `failed` = 只重跑上次 `report.json` 里未通过的场景（`ok:false` 或探针 `pass:false`）——
-  修完一轮只重验红掉的那几张，不必全量重跑；上次全绿时它是**空清单**，一张不跑且退出码为 0
-  （"没有要重验的"不等于"没匹配上"，后者退出码是 1）。
+     `AURORA_CAPTURE_WINDOWS=edge-bar,settings` 只截指定窗口（逗号分隔）；
+     再细一级用 `AURORA_CAPTURE_ONLY='session-groups'`（按 PNG 文件名**子串**匹配，逗号分隔），
+     特殊值 `failed` = 只重跑上次 `report.json` 里未通过的场景（`ok:false` 或探针 `pass:false`）——
+     修完一轮只重验红掉的那几张，不必全量重跑；上次全绿时它是**空清单**，一张不跑且退出码为 0
+     （"没有要重验的"不等于"没匹配上"，后者退出码是 1）。
   - **截图时机的等待策略**（2026-10-01）：每个场景在 `act` 结束后等**两帧 rAF**（保证 DOM 变更
     已经画出来），再补一个 settle —— 缺省 260ms，按场景里最长的 CSS transition（220ms 级）留余量。
     `executeJavaScript(act, true)` 本身是 await 的，所以 act 内部的异步（写配置、reload、IPC 往返）
@@ -1502,10 +1521,10 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     ⚠️ 别把 rAF 当成万能的：把等待一刀切短之后，`edge-bar-expanded.png` 从 79KB 掉到 7.6KB ——
     画面还停在竖条、DOM 却已是展开态，而**探针照样 PASS**（它只读 DOM，不看画面）。
     这类回归只有压缩 PNG 的字节数或人眼看图才发现得了。
-  仅开发态生效；与 `AURORA_SMOKE` 同时设置时**截图优先**（自测不会执行）。
-  进程退出码：0 = 全部成功，1 = 一张图都没写出，2 = **存在失败项**——
-  截图/探针抛错（`ok:false`）、探针 `pass === false`，或 `checked` 为真却拿不到 `result`
-  （配了探针但脚本静默返回 `undefined`，见下面「产物」一段）。
+    仅开发态生效；与 `AURORA_SMOKE` 同时设置时**截图优先**（自测不会执行）。
+    进程退出码：0 = 全部成功，1 = 一张图都没写出，2 = **存在失败项**——
+    截图/探针抛错（`ok:false`）、探针 `pass === false`，或 `checked` 为真却拿不到 `result`
+    （配了探针但脚本静默返回 `undefined`，见下面「产物」一段）。
 - **userData 会自动隔离（必须，不是可选）**：**多条**探针会**临时改写真实配置**——
   至少包括：门控场景（切到 Work 模式、翻 `classification.autoMove`）、
   `chat-right-panel-work`（经 `mode.set` 切 `modes.current` 到 work，check 收尾切回 classroom）、
@@ -1690,39 +1709,42 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     （只读 —— 用户无法干预的口径判据）；check 收尾点「回到对话」并断言页面已消失
     —— 后续场景（composer / 自动滚底）依赖对话流在前台。
     这条同时验证「子代理快照随工具卡持久化 → 页面读回」这条链路（`06 §19`）；
-  - **自动化页四连**（`CHAT_AUTOMATION_*`，产物 `chat-automation.png` / `chat-automation-normal.png` /
-    `chat-automation-editor.png` / `chat-automation-history.png`，v19，docs/13 §11）：
+  - **自动化页与详情窗口**（`CHAT_AUTOMATION_*`，产物 `chat-automation.png` /
+    `chat-automation-normal.png` / `automation-editor.png` / `automation-history.png`，
+    v19，docs/13 §11）：
     现场由 `seedAutomationFixture` 种下 —— 1 份 Normal 定义（`am-capture1`「早读提醒」，
     `daily 07:30`）+ 2 条历史（normal / agent 各一条，agent 那条指向种子会话 `auto-capture1`）
-    + 该会话文件（任务与回复各一条，均带探针标记 `capture-automation-run`）。
-    ⚠️ **与其它夹具不同：种完必须 reload 一次自动化引擎**（`AutomationEngine.reload()`）——
-    引擎在 `bootstrap()` 里就已启动、`AutomationStore` 首读即缓存空表（in-flight 的 `ensureLoaded`），
-    不重读就是「夹具写了、界面照样是空的」（首跑实测 0 条），机制同 `seedJobFixture` 那条注释；
-    四张连做**一条链**（共用一次进入，最后一张收尾还原主区）：
-    ① 点左栏 `chat.auto-item` 进页面 → 断言 `automation.page` / 双 tab /「历史」/「新建自动化」/
-    「返回对话」锚点都在、左栏项为 **`.active`**；
-    ② 点 `automation.tab-normal` → 断言 `automation.builtin` 在、`automation.builtin-toggle`
-    **恰好 2**（两条内置）、自建项 `automation.item-am-capture1` 恰好 1、`automation.toggle`
-    恰好 1（切到 Normal tab 后 Agent 定义不在列表里 —— 顺带钉住「按 tab 过滤」）；
-    另断言**次数徽章**（v0.2.8，docs/13 §3.1）：`automation.runs` **恰好 2 枚**、
-    文本含 `3/10` 与 `5/5`、**`.exhausted` 恰好 1 枚**（seed 的第二份定义已用尽 ——
-    用尽转警示色是 DOM 事实，不靠截图猜）；
-    ③ 点 `automation.new` → 断言**条件磁贴**（`automation.trigger-kind` 容器下 `[data-kind]`）**≥ 7**
-    （catalog 七类）且**每枚磁贴都有图标**、磁贴内元素不探出磁贴矩形（安全区几何护栏）、
-    至少 1 行操作组件（`[data-field^="automation.action-"]`）且每行胶囊都有图标、
-    编辑器内**原生 `<select>` 数为 0**、名称输入框与数字字段都在、
-    **`automation.max-runs`（调用次数上限）输入可用**（v0.2.8：写入 `42` 后读回同一值
-    = 双向绑定真的接上了，不只是"元素在 DOM 里"），
-    再派发一次 `pointerenter` 断言悬浮提示真的出现（`body > .app-tip` 文案非空、不探出视口）
-    且 `pointerleave` 后自行收回，然后点 `automation.editor-cancel` 并断言弹窗**已消失**
-    （不留残影，后续场景还要操作列表）；
-    ④ 先切回 Agent tab 再点「历史」→ 点开一条 Agent 记录（`.run-item.clickable`）断言
-    `.detail-message` **≥ 2** 且面板文本含 seed 标记（证明回放的是**真实会话**，不是占位）；
-    随后关弹窗 → 切 Normal tab → 重开历史，断言 Normal 记录 `clickable === 0`
-    （**不可点、无详情层**，产品口径）且 `.run-time` 存在；
-    收尾关弹窗 + 点「返回对话」断言页面消失（后续 `chat-classisland-status` 等场景依赖对话流在前台）。
-    这一组同时钉住三条产品语义：**按 tab 分别过滤**、**两种记录的详情口径不同**、
-    自动化页与子代理页一样是**主区替换内容**（不属任何会话）；
+    - 该会话文件（任务与回复各一条，均带探针标记 `capture-automation-run`）。
+      ⚠️ **与其它夹具不同：种完必须 reload 一次自动化引擎**（`AutomationEngine.reload()`）——
+      引擎在 `bootstrap()` 里就已启动、`AutomationStore` 首读即缓存空表（in-flight 的 `ensureLoaded`），
+      不重读就是「夹具写了、界面照样是空的」（首跑实测 0 条），机制同 `seedJobFixture` 那条注释；
+      主界面两张 + `automation` 窗口两张；独立窗口内由 `act` 调
+      `automation:openWindow`，验证编辑器 / 历史不再受主区层级影响。
+      ① 点左栏 `chat.auto-item` 进页面 → 断言 `automation.page` / 双 tab /「历史」/「新建自动化」/
+      「返回对话」锚点都在、左栏项为 **`.active`**；
+      ② 点 `automation.tab-normal` → 断言 `automation.builtin` 在、`automation.builtin-toggle`
+      **恰好 2**（两条内置）、自建项 `automation.item-am-capture1` 恰好 1、`automation.toggle`
+      恰好 1（切到 Normal tab 后 Agent 定义不在列表里 —— 顺带钉住「按 tab 过滤」）；
+      另断言**次数徽章**（v0.2.8，docs/13 §3.1）：`automation.runs` **恰好 2 枚**、
+      文本含 `3/10` 与 `5/5`、**`.exhausted` 恰好 1 枚**（seed 的第二份定义已用尽 ——
+      用尽转警示色是 DOM 事实，不靠截图猜）；
+      ③ `automation` 窗口内打开 editor 请求，断言**条件磁贴**
+      （`automation.trigger-kind` 容器下 `[data-kind]`）**≥ 7**
+      （catalog 七类）且**每枚磁贴都有图标**、磁贴内元素不探出磁贴矩形（安全区几何护栏）、
+      至少 1 行操作组件（`[data-field^="automation.action-"]`）且每行胶囊都有图标、
+      编辑器内**原生 `<select>` 数为 0**、名称输入框与数字字段都在、
+      **`automation.max-runs`（调用次数上限）输入可用**（v0.2.8：写入 `42` 后读回同一值
+      = 双向绑定真的接上了，不只是"元素在 DOM 里"），
+      再派发一次 `pointerenter` 断言悬浮提示真的出现（`body > .app-tip` 文案非空、不探出视口）
+      且 `pointerleave` 后自行收回，然后 Esc 并断言编辑器**已隐藏**；
+      ④ `automation` 窗口内打开 history 请求，点开一条 Agent 记录
+      （`.run-item.clickable`）断言
+      `.detail-message` **≥ 2** 且面板文本含 seed 标记（证明回放的是**真实会话**，不是占位）；
+      随后切 Normal tab，断言 Normal 记录 `clickable === 0`
+      （**不可点、无详情层**，产品口径）且 `.run-time` 存在；
+      主界面自动化页仍保留，后续 `chat-classisland-status` 等场景可直接切回对话流。
+      这一组同时钉住三条产品语义：**按 tab 分别过滤**、**两种记录的详情口径不同**、
+      自动化页与子代理页一样是**主区替换内容**（不属任何会话）；
   - **右栏开关**（`CHAT_RIGHT_PANEL_TOGGLE_ACT` / `CHAT_RIGHT_PANEL_TOGGLE_CHECK`，
     产物 `chat-right-panel-toggle.png`，BetaV2）：act 内点两次 `chat.right-panel-toggle`
     走「展开 → 收起 → 展开」，三态记录暂存渲染层；check 断言三态全部成立、且截图时刻右栏
@@ -2029,7 +2051,7 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     （切到 Work 后 classroom 控件不在 DOM）；其余设置场景各自 reload，互相无顺序约束。
 - 截图前会等 `WindowManager.whenLoaded()`（`ensure()` 的加载是 fire-and-forget，
   不等会截到 0 字节空图），并对空图重试；连续空图直接判失败，不产出空文件。
-- 设置页深链：`main/window-manager.ts` 的 `ensure(name, query)` / `reload(name, query)`  给 URL / `loadFile` 传 query，仅截图场景使用，正常启动不带 query。
+- 设置页深链：`main/window-manager.ts` 的 `ensure(name, query)` / `reload(name, query)` 给 URL / `loadFile` 传 query，仅截图场景使用，正常启动不带 query。
 
 #### 5.3.1 排查一条 FAIL 探针的正确顺序（2026-09-30 「跟丢」排查的教训）
 
@@ -2094,13 +2116,13 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
    - **硬性下限**：任何指针目标 ≥ **24×24 CSS px**（WCAG 2.2 SC 2.5.8 AA）；
    - **高频动作**：新建会话 / 左栏固定项 / 任务入口 / 右栏开关 / 设置 / 发送 / 麦克风 /
      标题栏 caption ≥ **32×32**（本仓 `--hit-target: 40px` 的降级版：40 是理想，32 是下限）。
-   量的是**渲染出来的目标**（按钮 / 下拉），不是里面的图标 —— 图标小不是问题，它所在的按钮才是命中区。
-   `opacity: 0` 但占位保持可命中的控件（会话行的归档钮）同样要达标。
-   探针：`chat-hit-targets` 场景（`CHAT_HIT_TARGETS_CHECK`）量四个区（左栏 / 标题栏 / 输入区 /
-   消息区）里所有可见控件的矩形，把 `belowAbsolute` / `belowPrimary` 与全量尺寸写进 `report.json`。
-   **首次盘点的真实违例**（当场修掉，别再压回去）：会话行归档钮 22×22 → 24、
-   输入区上下文条 22 高 → 24、思考块块头 21 高 → 24、左栏固定项 30 高 → 32、
-   左栏底部图标钮 28 → 32、caption 按钮 31 高 → 32。
+     量的是**渲染出来的目标**（按钮 / 下拉），不是里面的图标 —— 图标小不是问题，它所在的按钮才是命中区。
+     `opacity: 0` 但占位保持可命中的控件（会话行的归档钮）同样要达标。
+     探针：`chat-hit-targets` 场景（`CHAT_HIT_TARGETS_CHECK`）量四个区（左栏 / 标题栏 / 输入区 /
+     消息区）里所有可见控件的矩形，把 `belowAbsolute` / `belowPrimary` 与全量尺寸写进 `report.json`。
+     **首次盘点的真实违例**（当场修掉，别再压回去）：会话行归档钮 22×22 → 24、
+     输入区上下文条 22 高 → 24、思考块块头 21 高 → 24、左栏固定项 30 高 → 32、
+     左栏底部图标钮 28 → 32、caption 按钮 31 高 → 32。
 5. **流式内容的可访问性（2026-09-29 调研后补）**：消息区根容器带
    `aria-live="polite"` + `aria-atomic="false"`，并在流式期间 `aria-busy="true"`、
    结束后翻回 `false`。**为什么用 `aria-busy` 而不是逐 token 播报**：逐 token 的 live region

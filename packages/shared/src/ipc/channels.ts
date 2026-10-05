@@ -256,6 +256,10 @@ export const IPC = {
     history: 'automation:history',
     run: 'automation:run',
     catalog: 'automation:catalog',
+    /** 打开单例自动化详情窗口（历史 / 编辑器），参数经 windowRequest 推送 */
+    openWindow: 'automation:openWindow',
+    /** 自动化详情窗口的视图请求推送（on/off 成对） */
+    windowRequest: 'automation:windowRequest',
     /** 定义变化推送（on/off 成对）：各窗口重拉 list */
     changed: 'automation:changed',
     /** 运行记录落库 / 状态变化推送（on/off 成对）：历史面板开着时重拉 */

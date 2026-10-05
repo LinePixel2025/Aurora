@@ -132,6 +132,20 @@ const SPECS: Record<WindowName, WindowSpec> = {
     maximizable: true,
     place: 'center',
   },
+  automation: {
+    width: 780,
+    height: 720,
+    minWidth: 560,
+    minHeight: 480,
+    resizable: true,
+    transparent: false,
+    alwaysOnTop: false,
+    skipTaskbar: false,
+    focusable: true,
+    minimizable: true,
+    maximizable: true,
+    place: 'center',
+  },
   onboarding: {
     width: 720,
     height: 560,
@@ -163,7 +177,7 @@ const LIGHT_BACKGROUND = '#f5f5f7'
  * 左上 / 左下会露出矩形材质或阴影。提示条改为透明窗口 + 自包含圆角玻璃面板，
  * 主界面继续保留能真实采样桌面的 Acrylic。
  */
-const NATIVE_GLASS_WINDOWS = new Set<WindowName>(['chat', 'settings', 'memory'])
+const NATIVE_GLASS_WINDOWS = new Set<WindowName>(['chat', 'settings', 'memory', 'automation'])
 
 /** 常规窗口使用 Acrylic；Electron 44 起系统最大化已能稳定保持材质。 */
 const NATIVE_WINDOW_MATERIAL = 'acrylic' as const
@@ -230,9 +244,13 @@ export class WindowManager {
    *（拖动停手后系统还会补几帧同样的 bounds，那些帧就是靠这里挡掉的）。
    */
   private readonly geometryBounds = new Map<WindowName, WindowBounds>()
+  /** 提示条置顶 watchdog：只在原生置顶状态意外丢失时恢复。 */
+  private edgeBarTopWatchdog: ReturnType<typeof setInterval> | undefined
+  private static readonly EDGE_BAR_TOP_LEVEL = 'screen-saver' as const
+  private static readonly EDGE_BAR_TOP_WATCHDOG_MS = 10_000
   private readonly syncWindowBackgrounds = (): void => {
     const color = windowBackgroundColor()
-    for (const name of ['chat', 'settings', 'memory', 'onboarding'] as const) {
+    for (const name of ['chat', 'settings', 'memory', 'automation', 'onboarding'] as const) {
       const win = this.windows.get(name)
       if (!win || win.isDestroyed() || this.nativeGlassWindows.has(name)) continue
       win.setBackgroundColor(color)
@@ -247,6 +265,19 @@ export class WindowManager {
   constructor(options: WindowManagerOptions) {
     this.options = options
     nativeTheme.on('updated', this.syncWindowBackgrounds)
+    this.edgeBarTopWatchdog = setInterval(() => {
+      const win = this.windows.get('edge-bar')
+      if (
+        win === undefined ||
+        win.isDestroyed() ||
+        this.state.visible['edge-bar'] !== true ||
+        win.isAlwaysOnTop()
+      ) {
+        return
+      }
+      this.options.logger.debug('提示条置顶状态丢失，watchdog 恢复')
+      this.reassertEdgeBarTopmost('watchdog')
+    }, WindowManager.EDGE_BAR_TOP_WATCHDOG_MS)
   }
 
   private disposeThemeListener(): void {
@@ -307,6 +338,19 @@ export class WindowManager {
     return this.nativeGlassWindows.has(name)
   }
 
+  /** 自测诊断：读取窗口原生置顶位。 */
+  isAlwaysOnTop(name: WindowName): boolean | undefined {
+    const win = this.windows.get(name)
+    if (!win || win.isDestroyed()) return undefined
+    return win.isAlwaysOnTop()
+  }
+
+  /** 自测诊断：立即走一次提示条置顶恢复逻辑并返回恢复后的原生状态。 */
+  reassertEdgeBarTopForDiagnostics(): boolean | undefined {
+    this.reassertEdgeBarTopmost('watchdog')
+    return this.isAlwaysOnTop('edge-bar')
+  }
+
   /**
    * 带 query 重新加载窗口（**仅截图场景使用**：设置页深链 `?page=<id>`，docs/07 §5）。
    *
@@ -327,6 +371,31 @@ export class WindowManager {
    */
   async whenLoaded(name: WindowName): Promise<void> {
     await this.loadTasks.get(name)
+  }
+
+  /**
+   * 显示窗口，并在**渲染层加载完成且事件订阅到位后**推送一次 payload。
+   *
+   * 自动化详情窗口首次创建时如果先 `show()` 再立刻 `sendTo()`，推送会早于 preload / Vue 监听，
+   * 表现是“点了历史但窗口空白”。这里把顺序固定为：ensure → await load → send → show。
+   */
+  async showWithPayload(name: WindowName, channel: string, payload: unknown): Promise<WindowState> {
+    const win = this.ensure(name)
+    await this.loadTasks.get(name)
+    if (win.isDestroyed()) return this.getState()
+
+    const before = this.state
+    const next = showInState(this.state, name)
+    this.state = next
+    for (const other of WINDOW_NAMES) {
+      if (before.visible[other] === true && next.visible[other] !== true) {
+        this.applyVisibility(other, false)
+      }
+    }
+    this.sendTo(name, channel, payload)
+    this.applyVisibility(name, true, win)
+    this.emit()
+    return this.getState()
   }
 
   /**
@@ -389,6 +458,7 @@ export class WindowManager {
     if (name === 'edge-bar') {
       this.normalizeEdgeBarBounds(win)
       this.applyEdgeBarShape(win)
+      this.reassertEdgeBarTopmost('created', false, win)
     }
     if (supportsNativeGlass(name)) this.applyWindowMaterial(name, win)
     // 提示条透明度取自设置（docs/08 §1）；窗口创建时即应用，避免一次可见的跳变
@@ -479,6 +549,12 @@ export class WindowManager {
       if (supportsNativeGlass(name)) this.applyWindowMaterial(name, win)
       this.emit()
     })
+    if (name === 'edge-bar') {
+      win.on('always-on-top-changed', (_event, isAlwaysOnTop) => {
+        if (isAlwaysOnTop) return
+        setImmediate(() => this.reassertEdgeBarTopmost('changed'))
+      })
+    }
     win.on('closed', () => {
       // 先收掉待落盘的几何定时器：窗口没了，它再去改配置就是一次"幽灵写入"
       this.cancelGeometryTimer(name)
@@ -531,7 +607,7 @@ export class WindowManager {
       this.nativeGlassWindows.add(name)
     } catch (error) {
       this.nativeGlassWindows.delete(name)
-      if (name === 'chat' || name === 'settings' || name === 'memory') {
+      if (name === 'chat' || name === 'settings' || name === 'memory' || name === 'automation') {
         win.setBackgroundColor(windowBackgroundColor())
       }
       this.options.logger.debug('系统毛玻璃材质不可用，回退不透明窗口底色', {
@@ -615,6 +691,7 @@ export class WindowManager {
     )
     this.normalizeEdgeBarBounds(win)
     this.applyEdgeBarShape(win)
+    this.reassertEdgeBarTopmost('expanded')
     this.persistGeometry('edge-bar', win)
     return this.getState()
   }
@@ -715,6 +792,7 @@ export class WindowManager {
   /** 退出前：允许窗口真正关闭并落盘几何信息。 */
   prepareQuit(): void {
     this.disposeThemeListener()
+    this.disposeEdgeBarTopWatchdog()
     this.quitting = true
     // 待落盘的几何先按真实窗口现读一次落盘，再清掉去抖定时器 —— 否则最后一帧拖动会留在
     // 定时器里，等它触发时窗口已经不在（`persistGeometry` 会因 isDestroyed 直接跳过）。
@@ -731,6 +809,7 @@ export class WindowManager {
 
   destroyAll(): void {
     this.disposeThemeListener()
+    this.disposeEdgeBarTopWatchdog()
     this.quitting = true
     for (const name of [...this.geometryTimers.keys()]) this.cancelGeometryTimer(name)
     for (const win of this.windows.values()) {
@@ -778,8 +857,10 @@ export class WindowManager {
       return
     }
     if (visible) {
-      if (name === 'edge-bar') win.showInactive()
-      else win.show()
+      if (name === 'edge-bar') {
+        win.showInactive()
+        this.reassertEdgeBarTopmost('shown', true)
+      } else win.show()
     } else {
       win.hide()
     }
@@ -833,6 +914,28 @@ export class WindowManager {
     )
     this.normalizeEdgeBarBounds(win)
     this.applyEdgeBarShape(win)
+    this.reassertEdgeBarTopmost('collapsed')
+  }
+
+  private disposeEdgeBarTopWatchdog(): void {
+    if (this.edgeBarTopWatchdog === undefined) return
+    clearInterval(this.edgeBarTopWatchdog)
+    this.edgeBarTopWatchdog = undefined
+  }
+
+  private reassertEdgeBarTopmost(
+    reason: 'created' | 'shown' | 'expanded' | 'collapsed' | 'changed' | 'watchdog',
+    moveTop = false,
+    winOverride?: BrowserWindow,
+  ): void {
+    const win = winOverride ?? this.windows.get('edge-bar')
+    if (win === undefined || win.isDestroyed()) return
+    try {
+      win.setAlwaysOnTop(true, WindowManager.EDGE_BAR_TOP_LEVEL)
+      if (moveTop) win.moveTop()
+    } catch (error) {
+      this.options.logger.warn('恢复提示条置顶失败', { reason, error: String(error) })
+    }
   }
 
   private computeBounds(
@@ -1027,6 +1130,7 @@ function titleFor(name: WindowName): string {
     chat: 'Aurora 对话',
     settings: 'Aurora 设置',
     memory: 'Aurora 记忆库',
+    automation: 'Aurora 自动化',
     onboarding: 'Aurora 首次引导',
   }
   return titles[name]

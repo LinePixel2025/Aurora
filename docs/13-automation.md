@@ -10,10 +10,10 @@
 
 自动化分两种模式：
 
-| 模式 | 触发后做什么 | 历史记什么 |
-|---|---|---|
-| **Agent Mode** | 用该自动化配置的**任务指令（prompt）驱动一次完整的 Agent 会话**（模型 + 工具循环，与会话页同一条内核链路） | 每次触发一条运行记录（触发时间 / 用时 / 状态 / 归属自动化）；点开记录可回看**该次对话全文** |
-| **Normal Mode** | 顺序执行预设的**操作组件**（系统通知 / ClassIsland 提醒 / 打开文件夹 / 打开网址 / 打开应用，见 §5） | 每次触发一条记录，**只显示触发时间**（与归属自动化、状态），不展开具体操作 |
+| 模式            | 触发后做什么                                                                                               | 历史记什么                                                                                  |
+| --------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **Agent Mode**  | 用该自动化配置的**任务指令（prompt）驱动一次完整的 Agent 会话**（模型 + 工具循环，与会话页同一条内核链路） | 每次触发一条运行记录（触发时间 / 用时 / 状态 / 归属自动化）；点开记录可回看**该次对话全文** |
+| **Normal Mode** | 顺序执行预设的**操作组件**（系统通知 / ClassIsland 提醒 / 打开文件夹 / 打开网址 / 打开应用，见 §5）        | 每次触发一条记录，**只显示触发时间**（与归属自动化、状态），不展开具体操作                  |
 
 两种模式共用同一套**触发器**（§4）与同一份历史存储；区别只在「触发后干什么」。
 
@@ -50,10 +50,10 @@ AutomationRun（运行记录）
 
 ### 2.1 数据文件（`<userData>/automations/`）
 
-| 文件 | 内容 |
-|---|---|
-| `automations.json` | `AutomationDefinition[]`（用户自建自动化） |
-| `history.json` | `AutomationRun[]`（运行历史，全量混排，按 `triggeredAt` 倒序展示；上限 **500** 条，超出淘汰最旧） |
+| 文件               | 内容                                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------------------- |
+| `automations.json` | `AutomationDefinition[]`（用户自建自动化）                                                        |
+| `history.json`     | `AutomationRun[]`（运行历史，全量混排，按 `triggeredAt` 倒序展示；上限 **500** 条，超出淘汰最旧） |
 
 存储实现遵循仓库统一约定（同 `SessionStore` / `JobStore`）：
 
@@ -148,10 +148,10 @@ automations: {
 
 ### 4.1 调度类（不依赖课程表）
 
-| kind | 参数 | 语义 | 去重键 |
-|---|---|---|---|
-| `daily` | `at: 'HH:mm'`、`weekdays?: number[]`（0=周日，缺省每天） | 每周指定天的 HH:mm 触发一次；**当天 `at` 已过且当日键未触发即补触发**（错过补偿，见下） | `daily-<ymd>-<at>`（`ymd` 为**本地**日期） |
-| `interval` | `everyMinutes: number`（5–1440） | 每 N 分钟触发一次 | `interval-<floor(nowMs / N)>`（对齐桶；同一桶只在**同一进程**内不重复，重启后若仍在同一桶会再触发一次） |
+| kind       | 参数                                                     | 语义                                                                                    | 去重键                                                                                                  |
+| ---------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `daily`    | `at: 'HH:mm'`、`weekdays?: number[]`（0=周日，缺省每天） | 每周指定天的 HH:mm 触发一次；**当天 `at` 已过且当日键未触发即补触发**（错过补偿，见下） | `daily-<ymd>-<at>`（`ymd` 为**本地**日期）                                                              |
+| `interval` | `everyMinutes: number`（5–1440）                         | 每 N 分钟触发一次                                                                       | `interval-<floor(nowMs / N)>`（对齐桶；同一桶只在**同一进程**内不重复，重启后若仍在同一桶会再触发一次） |
 
 - **daily 的「错过补偿」（P2-11，2026-10-01）**：判定从「当前分钟恰好等于 `at`」改为
   「`nowMinutes >= at` 且当日键未触发」。主进程在触发那一分钟缺席（睡眠 / 休眠、
@@ -178,13 +178,13 @@ automations: {
 课表是触发的事实来源（与既有课前提醒一致；status 快照只用于展示，桥接 README
 亦约定「快照不用于触发」）。manual 课表同样可用这些条件。
 
-| kind | 参数 | 语义 | 去重键 |
-|---|---|---|---|
-| `pre-class` | `leadMinutes: number`（1–120） | 距某节课开始 ≤ N 分钟（含启动补偿，同既有课前窗口 `0 ≤ minutesUntil ≤ lead`） | `<lessonKey>` |
-| `class-start` | — | 进入某节课（`startTime ≤ now < endTime`） | `<lessonKey>` |
-| `pre-end` | `leadMinutes: number`（1–120） | 正在上的课距结束 ≤ N 分钟 | `<lessonKey>` |
-| `class-end` | — | 某节课刚结束（`endTime ≤ now < endTime + 1min`） | `<lessonKey>` |
-| `next-lesson` | `subject: string`（科目名精确匹配） | 「下一节未开始的课」变为指定科目 | `<lessonKey>` |
+| kind          | 参数                                | 语义                                                                          | 去重键        |
+| ------------- | ----------------------------------- | ----------------------------------------------------------------------------- | ------------- |
+| `pre-class`   | `leadMinutes: number`（1–120）      | 距某节课开始 ≤ N 分钟（含启动补偿，同既有课前窗口 `0 ≤ minutesUntil ≤ lead`） | `<lessonKey>` |
+| `class-start` | —                                   | 进入某节课（`startTime ≤ now < endTime`）                                     | `<lessonKey>` |
+| `pre-end`     | `leadMinutes: number`（1–120）      | 正在上的课距结束 ≤ N 分钟                                                     | `<lessonKey>` |
+| `class-end`   | —                                   | 某节课刚结束（`endTime ≤ now < endTime + 1min`）                              | `<lessonKey>` |
+| `next-lesson` | `subject: string`（科目名精确匹配） | 「下一节未开始的课」变为指定科目                                              | `<lessonKey>` |
 
 - `lessonKey = <weekday>-<startTime>-<subject>`（复用 `schedule.ts` 既有函数）；
 - 跨天：临近午夜（`needsNextDayLessons`）时补查次日课程（同既有课前提醒的
@@ -199,16 +199,18 @@ automations: {
 ```ts
 interface AutomationConditionDescriptor {
   kind: AutomationTriggerKind
-  label: string            // 中文展示名
+  label: string // 中文展示名
   description: string
-  fields: AutomationDescriptorField[]   // 动态表单字段
-  requiresSchedule: boolean             // true = 依赖课程表（无课表数据时列为不可用）
+  fields: AutomationDescriptorField[] // 动态表单字段
+  requiresSchedule: boolean // true = 依赖课程表（无课表数据时列为不可用）
 }
 interface AutomationDescriptorField {
   key: string
   label: string
   type: 'text' | 'number' | 'time' | 'weekdays' | 'select'
-  min?: number; max?: number; step?: number
+  min?: number
+  max?: number
+  step?: number
   options?: { value: string; label: string }[]
   placeholder?: string
   hint?: string
@@ -218,13 +220,13 @@ interface AutomationDescriptorField {
 
 ## 5. 操作组件（Action，Normal Mode 的封闭能力集）
 
-| kind | 参数 | 语义 | 不可用时 |
-|---|---|---|---|
-| `system-notify` | `title`、`body`、`openPath?`（点击通知打开的目录） | 系统通知（`NotificationService`） | 不会 |
-| `classisland-remind` | `title`、`body`、`channel: 'custom' \| 'class-started' \| 'pre-class'` | 经 ClassIsland 桥接提醒通道弹出 | 未配置桥接时该组件在 catalog 中标记不可用（UI 不允许选；历史记录失败原因） |
-| `open-folder` | `target: 'subject' \| 'path'`；`subject?`（科目名，解析到科目文件夹）或 `path?`（绝对路径） | 用系统默认方式打开文件夹 | 目录解析为空 → 该次执行记 `warn` 跳过 |
-| `open-url` | `url`（必填，仅 http/https） | 用系统默认浏览器打开网址（`shell.openExternal`） | 不会（协议白名单在保存校验与执行器双层把守） |
-| `open-app` | `path`（必填，可执行文件 / `.lnk` 绝对路径） | 用系统默认方式打开应用（`shell.openPath`，不经 shell、无参数拼接面） | 不会 |
+| kind                 | 参数                                                                                        | 语义                                                                 | 不可用时                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `system-notify`      | `title`、`body`、`openPath?`（点击通知打开的目录）                                          | 系统通知（`NotificationService`）                                    | 不会                                                                       |
+| `classisland-remind` | `title`、`body`、`channel: 'custom' \| 'class-started' \| 'pre-class'`                      | 经 ClassIsland 桥接提醒通道弹出                                      | 未配置桥接时该组件在 catalog 中标记不可用（UI 不允许选；历史记录失败原因） |
+| `open-folder`        | `target: 'subject' \| 'path'`；`subject?`（科目名，解析到科目文件夹）或 `path?`（绝对路径） | 用系统默认方式打开文件夹                                             | 目录解析为空 → 该次执行记 `warn` 跳过                                      |
+| `open-url`           | `url`（必填，仅 http/https）                                                                | 用系统默认浏览器打开网址（`shell.openExternal`）                     | 不会（协议白名单在保存校验与执行器双层把守）                               |
+| `open-app`           | `path`（必填，可执行文件 / `.lnk` 绝对路径）                                                | 用系统默认方式打开应用（`shell.openPath`，不经 shell、无参数拼接面） | 不会                                                                       |
 
 **封闭性就是安全边界**：Normal Mode 没有 `run_command`、没有任意写——
 自动化的「无人值守」面被限制在通知 / 打开文件夹 / ClassIsland 提醒 / 打开网址 / 打开应用
@@ -239,10 +241,10 @@ interface AutomationDescriptorField {
 ClassRoom 模式既有的自动操作（**自动分类除外**，它是独立管线不动）改由自动化引擎
 以**内置自动化**承接，在 Normal Mode 列表中以「内置」徽章展示：
 
-| id | 触发 | 操作 | 启用条件（现读，不落新状态） |
-|---|---|---|---|
-| `builtin.pre-class-notify` | `pre-class`（`leadMinutes` 现读 `modes.classroom.preClassLeadMinutes`） | `system-notify`（标题「课前提醒：<科目>」、正文「HH:mm 上课，还有 N 分钟」、点击打开科目文件夹） | 当前模式 = classroom **且** `modes.classroom.preClassReminder` **且** 非勿扰时段 |
-| `builtin.pre-class-open-folder` | 同上 | `open-folder`（`target: 'subject'`，科目取自触发的课） | 当前模式 = classroom **且** `modes.classroom.preClassOpenFolder` **且** 非勿扰时段 |
+| id                              | 触发                                                                    | 操作                                                                                             | 启用条件（现读，不落新状态）                                                       |
+| ------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| `builtin.pre-class-notify`      | `pre-class`（`leadMinutes` 现读 `modes.classroom.preClassLeadMinutes`） | `system-notify`（标题「课前提醒：<科目>」、正文「HH:mm 上课，还有 N 分钟」、点击打开科目文件夹） | 当前模式 = classroom **且** `modes.classroom.preClassReminder` **且** 非勿扰时段   |
+| `builtin.pre-class-open-folder` | 同上                                                                    | `open-folder`（`target: 'subject'`，科目取自触发的课）                                           | 当前模式 = classroom **且** `modes.classroom.preClassOpenFolder` **且** 非勿扰时段 |
 
 - **行为与迁移前逐字一致**：同一去重键（`lessonKey`）、同一提前窗口、同一通知文案、
   勿扰语义、`onFired` 自测钩子——原 `PreClassReminder` 服务**退役删除**
@@ -256,7 +258,7 @@ ClassRoom 模式既有的自动操作（**自动分类除外**，它是独立管
 
 - **会话 id**：每次 Agent 触发创建专属会话，`sessionId = runId = auto-<ts36>-<n>`。
   `auto-` 前缀会话**不进主界面左栏会话列表**（渲染层过滤，与 `center-` 可见性同款
-  口径），只从自动化历史进入——历史弹窗经既有 `chat:history`（`sessionId`）回放对话。
+  口径），只从自动化历史窗口进入——历史视图经既有 `chat:history`（`sessionId`）回放对话。
 - **origin**：`SendMessageRequest.origin` 与 `AgentJob.origin` 的联合类型各扩一个
   `'automation'`（内核只把它写进 job 记录与日志，无分支逻辑，扩联合即安全）。
 - **标题**：会话标题沿用「首条用户消息前 24 字」推导（即任务指令摘要）。
@@ -275,7 +277,7 @@ ClassRoom 模式既有的自动操作（**自动分类除外**，它是独立管
   不要新建 / 修改 / 删除 / 触发任何自动化（自动化不能自我延续）、破坏性操作仍走确认卡片
   （无人应答按拒绝处理，那就改走安全路径或如实说明）、收尾如实汇报；
 - **摘掉四个写类自动化工具**（`hiddenTools = automation_create / automation_update /
-  automation_delete / automation_run`）：模型在「## 可用工具」与请求体的 `tools` 数组里
+automation_delete / automation_run`）：模型在「## 可用工具」与请求体的 `tools` 数组里
   都看不到它们；只读的 `automation_list` / `automation_history` 保留
   （纯读元数据、没有副作用，且"这次属于哪条自动化"对模型理解任务有帮助）；
 - **执行层还有一道拒绝**（第二道防线，§8）：即使被绕过（如 `task` 子代理从父表取
@@ -297,14 +299,14 @@ ClassRoom 模式既有的自动操作（**自动分类除外**，它是独立管
 `automation_list` / `automation_history` 为 `safe`，其余 `confirm` 进入确认链，
 再由 `confirm` / `auto` 档决定是否弹卡）：
 
-| 工具 | 灵敏度 | 参数摘要 |
-|---|---|---|
-| `automation_list` | safe | —（列定义 + 内置 + 摘要；每行显示「已调用 N/M」，用尽时附「（已用尽，自动停用）」） |
-| `automation_create` | confirm | name / mode / trigger{kind,params} / prompt 或 actions / **maxRuns?**（0 / 不填 = 不限） |
-| `automation_update` | confirm | id + 局部字段（含 enabled 启停、**maxRuns**、**resetRunCount: true** 清零计数） |
-| `automation_delete` | confirm | id |
-| `automation_run` | confirm | id（手动触发一次；已用尽则回「调用次数已用尽（N/M）：请提高上限或重置计数」） |
-| `automation_history` | safe | automationId? / limit?（默认 20） |
+| 工具                 | 灵敏度  | 参数摘要                                                                                 |
+| -------------------- | ------- | ---------------------------------------------------------------------------------------- |
+| `automation_list`    | safe    | —（列定义 + 内置 + 摘要；每行显示「已调用 N/M」，用尽时附「（已用尽，自动停用）」）      |
+| `automation_create`  | confirm | name / mode / trigger{kind,params} / prompt 或 actions / **maxRuns?**（0 / 不填 = 不限） |
+| `automation_update`  | confirm | id + 局部字段（含 enabled 启停、**maxRuns**、**resetRunCount: true** 清零计数）          |
+| `automation_delete`  | confirm | id                                                                                       |
+| `automation_run`     | confirm | id（手动触发一次；已用尽则回「调用次数已用尽（N/M）：请提高上限或重置计数」）            |
+| `automation_history` | safe    | automationId? / limit?（默认 20）                                                        |
 
 **自动化会话里四个写类工具被摘除且在 execute 里拒绝**（§7.1）：`automation_create` /
 `automation_update` / `automation_delete` / `automation_run` 在 `auto-` 前缀会话里
@@ -326,16 +328,16 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
 
 通道（`namespace:action`，`on/off` 成对推送）：
 
-| 通道 | 方向 | 载荷 |
-|---|---|---|
-| `automation:list` | 渲染层 → 主 | → `{ user: AutomationDefinition[], builtin: AutomationDefinition[] }` |
-| `automation:save` | 渲染层 → 主 | `AutomationDefinition`（id 为空 = 新建）→ 定义 |
-| `automation:delete` | 渲染层 → 主 | `{ id }` |
-| `automation:history` | 渲染层 → 主 | `{ automationId?, mode?, limit? }` → `AutomationRun[]` |
-| `automation:run` | 渲染层 → 主 | `{ id }` → `{ runId }` |
-| `automation:catalog` | 渲染层 → 主 | → `{ conditions, actions }`（§4.3；available 现取，不推送） |
-| `automation:changed` | 主 → 渲染层（推送） | —（定义变化，各窗口重拉 list） |
-| `automation:historyChanged` | 主 → 渲染层（推送） | —（新 run 落库 / 状态变化） |
+| 通道                        | 方向                | 载荷                                                                  |
+| --------------------------- | ------------------- | --------------------------------------------------------------------- |
+| `automation:list`           | 渲染层 → 主         | → `{ user: AutomationDefinition[], builtin: AutomationDefinition[] }` |
+| `automation:save`           | 渲染层 → 主         | `AutomationDefinition`（id 为空 = 新建）→ 定义                        |
+| `automation:delete`         | 渲染层 → 主         | `{ id }`                                                              |
+| `automation:history`        | 渲染层 → 主         | `{ automationId?, mode?, limit? }` → `AutomationRun[]`                |
+| `automation:run`            | 渲染层 → 主         | `{ id }` → `{ runId }`                                                |
+| `automation:catalog`        | 渲染层 → 主         | → `{ conditions, actions }`（§4.3；available 现取，不推送）           |
+| `automation:changed`        | 主 → 渲染层（推送） | —（定义变化，各窗口重拉 list）                                        |
+| `automation:historyChanged` | 主 → 渲染层（推送） | —（新 run 落库 / 状态变化）                                           |
 
 - 返回值统一 `Result<T>`；内置自动化的启停走**既有** `settings:update`
   （`modes.classroom.preClassReminder` / `preClassOpenFolder`），不新增通道；
@@ -351,12 +353,12 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
 
 **协议新增命令**（`CenterCommand` / `CenterWebMessage` 一一对应，带 `requestId` 回执）：
 
-| 命令 | 语义 |
-|---|---|
-| `automation.list` / `automation.catalog` | 拉定义与组件目录 |
-| `automation.save` / `automation.delete` | 新建 / 修改 / 删除（`automation.save` 原样转发） |
-| `automation.run` | 手动触发 |
-| `automation.history` | 拉运行历史 |
+| 命令                                     | 语义                                             |
+| ---------------------------------------- | ------------------------------------------------ |
+| `automation.list` / `automation.catalog` | 拉定义与组件目录                                 |
+| `automation.save` / `automation.delete`  | 新建 / 修改 / 删除（`automation.save` 原样转发） |
+| `automation.run`                         | 手动触发                                         |
+| `automation.history`                     | 拉运行历史                                       |
 
 - 命令受客户端 `allowRemoteSession` 闸门（自动化是会话级能力，与远程会话同组）；
   `center.enabled` 关闭时整组不可用；
@@ -384,7 +386,7 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
     行首是该条件的图标）+ 摘要（Agent Mode 为任务指令单行截断；Normal Mode 为**图标胶囊**，
     每个操作一枚「图标 + 短名」）+ 启停开关 + 立即运行 / 编辑 / 删除三枚图标钮（都带悬浮提示）；
     Normal tab 底部「内置」区展示两条内置自动化（徽章 + 开关映射既有配置 + 说明标记）；
-  - 编辑器（弹窗形态，仓库首个 Modal 组件，`--z-popover` + 遮罩令牌）：
+  - 编辑器（**独立 `automation` BrowserWindow**，单例；主界面只保留列表）：
     名称、模式单选（带图标）、**触发条件 = 图标磁贴网格**（7 类各带语义图标，
     description 走悬浮提示）、catalog 动态字段（`AutomationFieldInput.vue`：
     `select` → 分段胶囊、`weekdays` → 星期胶囊，**编辑器内无原生下拉**）、
@@ -398,7 +400,7 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
     （沿用原定义的启停状态，避免「编辑一次顺带启用」）；在列表上重新启用一条**已用尽**的
     自动化会就地提示「次数已用尽：请提高上限或重置计数」—— 打开不会立刻报错，但下一次触发
     会被引擎停回去（§3.1），如实说明而不是让用户以为「开了就能用」；
-  - **历史弹窗**：Agent tab 列出状态图标 / 触发时间 / 用时 / 归属自动化 / 「查看对话」入口，
+  - **历史独立窗口**：Agent tab 列出状态图标 / 触发时间 / 用时 / 归属自动化 / 「查看对话」入口，
     点行展开对话回放（数据 = `chat:history(sessionId)`，回放头带运行元信息）；
     失败记录在行内直接显示一行失败原因小字（两种模式同款）；
     Normal tab 只列触发时间（+ 自动化名 + 状态图标），**无详情层**（口径：不展示
@@ -406,7 +408,8 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
   - 文案密度与安全区的通用口径（悬浮提示组件 `AppTooltip`、左标签右控件、无原生下拉）
     见 docs/07 §5.4；
   - 推送订阅：`automation:changed` → 重拉列表；`automation:historyChanged` →
-    历史弹窗开着时重拉。
+    历史窗口开着时重拉；打开历史 / 新建 / 编辑经 `automation:openWindow`，
+    主进程复用同一个 `automation` 窗口并在加载完成后推送 `automation:windowRequest`。
 - **设置页**：「模式」页新增「自动化」区组（总开关 `automations.enabled`，
   `data-field="automations.enabled"`）。
 
@@ -446,8 +449,8 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
   （`onFired` 回执同款）；新增：种子自动化手动触发产生历史、Agent 触发产生
   `auto-` 会话且历史落 `success`。
 - **capture（`AURORA_CAPTURE`）**：`chat-automation.png`（自动化页双 tab + 列表 +
-  内置区 + data-field 门控计数）、`chat-automation-editor.png`（编辑器弹窗 +
-  触发器动态字段）、`chat-automation-history.png`（Normal 历史列表 / Agent 历史
+  内置区 + data-field 门控计数）、`automation-editor.png`（独立编辑器窗口 +
+  触发器动态字段）、`automation-history.png`（独立历史窗口的 Normal 历史 / Agent 历史
   详情弹窗）；设置页 modes 门控计数补 `automations.enabled`。
   v0.2.8 的夹具与断言：`seedAutomationFixture` 种两份定义（一份 `3/10` 未用尽、
   一份 `5/5` 已用尽且已停用），列表探针断言 **`automation.runs` 徽章恰好 2 枚**、

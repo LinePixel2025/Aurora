@@ -230,6 +230,8 @@ const api: AuroraApi = {
     history: (request) => invoke(IPC.automation.history, request),
     run: (request) => invoke(IPC.automation.run, request),
     catalog: () => invoke(IPC.automation.catalog),
+    openWindow: (request) => invoke(IPC.automation.openWindow, request),
+    onWindowRequest: (listener) => subscribe(IPC.automation.windowRequest, listener),
     onChanged: (listener) => subscribe(IPC.automation.changed, listener),
     onHistoryChanged: (listener) => subscribe(IPC.automation.historyChanged, listener),
   },
