@@ -1062,6 +1062,13 @@ export interface SensitiveToolRequest {
 
 // ───────────────────────── 文件自感知（v28，docs/06 §26） ─────────────────────────
 
+export type FileAwarenessAnalysisStage = 'queued' | 'extracting' | 'analyzing' | 'writing'
+
+export interface FileAwarenessAnalysisProgress {
+  stage: FileAwarenessAnalysisStage
+  fileName: string
+}
+
 export interface FileAwarenessStatus {
   enabled: boolean
   consentAccepted: boolean
@@ -1087,6 +1094,8 @@ export interface FileAwarenessStatus {
   usage?: SessionUsageStats
   lastScanAt?: string
   lastError?: string
+  /** 当前排队 / 分析文件的阶段进度；空闲时不带键。 */
+  analysisProgress?: FileAwarenessAnalysisProgress
   current?: {
     fileName: string
     sourcePath: string

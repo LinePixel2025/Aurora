@@ -38,6 +38,14 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<voi
   if (!predicate()) throw new Error('等待条件超时')
 }
 
+function createGate(): { promise: Promise<void>; open: () => void } {
+  let open!: () => void
+  const promise = new Promise<void>((resolve) => {
+    open = resolve
+  })
+  return { promise, open }
+}
+
 describe('FileAwarenessService', () => {
   it('首次扫描文档、后台分析、生成受保护的 Markdown 并发出建议', async () => {
     const root = join(tmpdir(), `aurora-awareness-${randomUUID()}`)
@@ -160,6 +168,99 @@ describe('FileAwarenessService', () => {
 
     expect(service.ignoreSuggestion(suggestions[0]!)).toBe(true)
     await service.flush()
+    await service.close()
+  })
+
+  it('状态按排队、提取、分析、写入推进，完成后清空进度', async () => {
+    const root = join(tmpdir(), `aurora-awareness-progress-${randomUUID()}`)
+    const watched = join(root, 'docs')
+    const knowledge = join(root, 'notes')
+    const userData = join(root, 'userData')
+    await fs.mkdir(watched, { recursive: true })
+    const source = join(watched, '阶段进度.docx')
+    await fs.writeFile(source, 'fake docx bytes')
+
+    const settings = createDefaultSettings()
+    settings.fileAwareness = {
+      enabled: true,
+      contentConsentAccepted: true,
+      watchedDirs: [watched],
+      knowledgeDir: knowledge,
+      includeRecent: false,
+      suggestionsEnabled: false,
+      dailyAnalysisLimit: 20,
+      maxFileMb: 100,
+      defaultMemoryTtlDays: 0,
+      backgroundModel: { providerId: '', model: '' },
+    }
+    let providerReady = false
+    const extractGate = createGate()
+    const analyzeGate = createGate()
+    const service = new FileAwarenessService({
+      userData,
+      settings: () => settings,
+      logger: createNoopLogger(),
+      createWatcher: () => new FakeWatcher(),
+      tickMs: 20,
+      extract: async () => {
+        await extractGate.promise
+        return {
+          kind: 'document',
+          evidence: '文件名：阶段进度.docx\n正文：阶段测试',
+          evidenceChars: 16,
+          warnings: [],
+          degraded: false,
+          sourceHash: 'hash-progress-v1',
+        }
+      },
+      analyze: async () => {
+        await analyzeGate.promise
+        return {
+          text: JSON.stringify({
+            title: '阶段进度',
+            summary: '验证分析阶段。',
+            topics: [],
+            keyPoints: [],
+            relationships: [],
+            changes: [],
+            tags: ['测试'],
+            suggestion: null,
+          }),
+        }
+      },
+      providerReady: () => providerReady,
+      canNotify: () => false,
+      openPath: async () => undefined,
+    })
+    const stages: string[] = []
+    const off = service.onChanged(() => {
+      const stage = service.status().analysisProgress?.stage ?? 'idle'
+      if (stages.at(-1) !== stage) stages.push(stage)
+    })
+
+    await service.init()
+    await waitFor(() => service.status().analysisProgress?.stage === 'queued')
+    expect(service.status().analysisProgress?.fileName).toBe('阶段进度.docx')
+
+    providerReady = true
+    await service.scanNow()
+    await waitFor(() => service.status().analysisProgress?.stage === 'extracting')
+    extractGate.open()
+    await waitFor(() => service.status().analysisProgress?.stage === 'analyzing')
+    analyzeGate.open()
+    await waitFor(() => service.notes().length === 1)
+    await service.drain()
+
+    expect(service.status().analysisProgress).toBeUndefined()
+    expect(stages.filter((stage) => stage !== 'idle').slice(0, 4)).toEqual([
+      'queued',
+      'extracting',
+      'analyzing',
+      'writing',
+    ])
+    expect(stages.at(-1)).toBe('idle')
+
+    off()
     await service.close()
   })
 

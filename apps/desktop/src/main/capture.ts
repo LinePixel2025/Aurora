@@ -442,6 +442,11 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
     // 提示条不再承载快速对话；快速会话只保留在主界面左栏固定项。
     const quickAbsent = panel.querySelector('.qc-composer, .qc-msg, .recent-card') === null
     const awarenessStatus = panel.querySelector('[data-field="edge-bar.awareness-status"]') !== null
+    const analysisProgress = panel.querySelector('[data-field="edge-bar.analysis-progress"]')
+    const analysisBar = analysisProgress?.querySelector('.progress-track')
+    const analysisValue = Number(analysisBar?.getAttribute('aria-valuenow') ?? Number.NaN)
+    const analysisText = analysisProgress?.querySelector('.live-file span')?.textContent?.trim() ?? ''
+    const quotaBarAbsent = panel.querySelector('.awareness-hero > .progress-track') === null
     const insights = panel.querySelector('[data-field="edge-bar.insights"]') !== null
     const insightRows = panel.querySelectorAll('.insight-row').length
     const insightMore = panel.querySelectorAll('[data-field="edge-bar.insights-more"]').length
@@ -478,6 +483,10 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       probes,
       quickAbsent,
       awarenessStatus,
+      analysisProgress: analysisProgress !== null,
+      analysisValue,
+      analysisText,
+      quotaBarAbsent,
       insights,
       insightRows,
       insightMore,
@@ -493,6 +502,11 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
         panelStyle.width === '320px' &&
         quickAbsent &&
         awarenessStatus &&
+        analysisProgress !== null &&
+        Number.isFinite(analysisValue) &&
+        analysisValue > 0 &&
+        analysisText !== '' &&
+        quotaBarAbsent &&
         insights &&
         insightRows === 5 &&
         insightMore === 1 &&
@@ -1499,7 +1513,17 @@ export async function seedMemoryFixture(userData: string): Promise<void> {
             },
           },
         },
-        queue: [],
+        queue: [
+          {
+            id: 'memory-capture-queued',
+            sourcePath: 'D:\\感知\\待分析课程.pdf',
+            ext: 'pdf',
+            kind: 'add',
+            sizeBytes: 4096,
+            mtimeMs: Date.now(),
+            enqueuedAt: now,
+          },
+        ],
         records: Array.from({ length: 7 }, (_, index) => ({
           id: `memory-capture-record-${index + 1}`,
           sourcePath: `D:\\感知\\记录-${index + 1}.${index % 2 === 0 ? 'pptx' : 'docx'}`,

@@ -20,6 +20,7 @@
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
+  FileAwarenessAnalysisStage,
   FileAwarenessNote,
   FileAwarenessRecord,
   FileAwarenessStatus,
@@ -30,6 +31,7 @@ import StatusDot from '../shared/components/StatusDot.vue'
 import {
   BookOpen,
   ChevronDown,
+  Clock,
   FolderSearch,
   LoaderCircle,
   MessageSquare,
@@ -189,6 +191,34 @@ const awarenessLabel = computed(() => {
   return status.active ? '正在感知' : '已暂停'
 })
 
+const ANALYSIS_STAGE_VIEW: Record<
+  FileAwarenessAnalysisStage,
+  { label: string; percent: number; running: boolean }
+> = {
+  queued: { label: '等待分析', percent: 8, running: false },
+  extracting: { label: '提取内容', percent: 35, running: true },
+  analyzing: { label: '分析内容', percent: 75, running: true },
+  writing: { label: '写入记忆', percent: 95, running: true },
+}
+
+const analysisProgress = computed<
+  | ((typeof ANALYSIS_STAGE_VIEW)[FileAwarenessAnalysisStage] & {
+      stage: FileAwarenessAnalysisStage
+      fileName: string
+    })
+  | null
+>(() => {
+  const status = awarenessStatus.value
+  const progress = status?.analysisProgress
+  if (status === null || progress === undefined) return null
+  if (!status.enabled || !status.consentAccepted || !status.knowledgeDirAvailable) return null
+  return {
+    ...ANALYSIS_STAGE_VIEW[progress.stage],
+    stage: progress.stage,
+    fileName: progress.fileName,
+  }
+})
+
 const awarenessHint = computed(() => {
   const status = awarenessStatus.value
   if (status === null) return '正在读取文件自感知状态'
@@ -196,14 +226,9 @@ const awarenessHint = computed(() => {
   if (!status.knowledgeDirAvailable) return '知识库目录不存在，文件仍不会出网'
   if (status.waitingForModel) return '监听已就绪，配置模型后开始分析'
   if (status.lastError) return status.lastError
-  if (status.current) return `正在读取 ${status.current.fileName}`
+  if (analysisProgress.value?.stage === 'queued') return '等待处理已发现的新文件'
+  if (analysisProgress.value !== null) return '后台正在处理文件内容'
   return status.lastScanAt ? '已同步最近文件变化' : '等待目录中的新变化'
-})
-
-const awarenessProgress = computed(() => {
-  const status = awarenessStatus.value
-  if (status === null || status.dailyAnalysisLimit <= 0) return 0
-  return Math.min(100, Math.round((status.todayAnalyzed / status.dailyAnalysisLimit) * 100))
 })
 
 type InsightItem = {
@@ -567,13 +592,37 @@ onUnmounted(() => {
                 <small>记忆</small>
               </span>
             </div>
-            <span class="progress-track" aria-hidden="true">
-              <i :style="{ width: `${awarenessProgress}%` }" />
-            </span>
-
-            <div v-if="awarenessStatus?.current" class="live-file">
-              <LoaderCircle class="spin" :size="13" :stroke-width="1.8" aria-hidden="true" />
-              <span>{{ awarenessStatus.current.fileName }}</span>
+            <div
+              v-if="analysisProgress"
+              class="analysis-progress anim-rise"
+              data-field="edge-bar.analysis-progress"
+            >
+              <span
+                class="progress-track"
+                :class="{ running: analysisProgress.running }"
+                role="progressbar"
+                :aria-label="`文件分析：${analysisProgress.label}，${analysisProgress.fileName}`"
+                :aria-valuenow="analysisProgress.percent"
+                :aria-valuetext="analysisProgress.label"
+              >
+                <i :style="{ width: `${analysisProgress.percent}%` }" />
+              </span>
+              <div class="live-file">
+                <Clock
+                  v-if="analysisProgress.stage === 'queued'"
+                  :size="13"
+                  :stroke-width="1.8"
+                  aria-hidden="true"
+                />
+                <LoaderCircle
+                  v-else
+                  class="spin"
+                  :size="13"
+                  :stroke-width="1.8"
+                  aria-hidden="true"
+                />
+                <span>{{ analysisProgress.label }} · {{ analysisProgress.fileName }}</span>
+              </div>
             </div>
           </section>
 
@@ -1025,6 +1074,11 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+.analysis-progress {
+  display: grid;
+  gap: var(--space-2);
+}
+
 .progress-track {
   display: block;
   height: 3px;
@@ -1035,10 +1089,25 @@ onUnmounted(() => {
 
 .progress-track i {
   display: block;
+  position: relative;
   height: 100%;
+  overflow: hidden;
   border-radius: inherit;
   background: var(--aurora-blue);
   transition: width var(--dur-base) var(--ease-standard);
+}
+
+.progress-track.running i::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--glass-highlight) 80%, transparent),
+    transparent
+  );
+  content: '';
+  animation: aurora-shimmer var(--dur-pulse) var(--ease-standard) infinite;
 }
 
 .live-file {
@@ -1046,8 +1115,6 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--glass-border-soft);
   color: var(--text-secondary);
   font-size: var(--text-sm);
 }

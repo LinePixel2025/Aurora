@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs'
 import { promises as fs } from 'node:fs'
 import { basename, dirname, extname, join, normalize, relative } from 'node:path'
 import type {
+  FileAwarenessAnalysisStage,
   FileAwarenessNote,
   FileAwarenessNoteContent,
   FileAwarenessNoteExpiry,
@@ -168,6 +169,7 @@ export class FileAwarenessService {
   private closed = false
   private watchedRootsKey = ''
   private current: { fileName: string; sourcePath: string } | undefined
+  private analysisStage: FileAwarenessAnalysisStage | undefined
   private indexEntries: KnowledgeIndexEntry[] = []
   private listeners = new Set<() => void>()
   private suggestionListeners = new Set<(suggestion: FileAwarenessSuggestion) => void>()
@@ -302,6 +304,16 @@ export class FileAwarenessService {
     const enabled = awareness.enabled && awareness.contentConsentAccepted
     const modelError = this.options.modelError?.()
     const expiredNoteCount = this.expiredNoteCount()
+    const queued = this.state.queue[0]
+    const analysisProgress =
+      this.current === undefined
+        ? queued === undefined
+          ? undefined
+          : { stage: 'queued' as const, fileName: basename(queued.sourcePath) }
+        : {
+            stage: this.analysisStage ?? 'extracting',
+            fileName: this.current.fileName,
+          }
     return {
       enabled: awareness.enabled,
       consentAccepted: awareness.contentConsentAccepted,
@@ -324,6 +336,7 @@ export class FileAwarenessService {
       ...(this.state.usage === undefined ? {} : { usage: cloneUsage(this.state.usage) }),
       ...(this.state.lastScanAt === undefined ? {} : { lastScanAt: this.state.lastScanAt }),
       ...(this.state.lastError === undefined ? {} : { lastError: this.state.lastError }),
+      ...(analysisProgress === undefined ? {} : { analysisProgress }),
       ...(this.current === undefined ? {} : { current: { ...this.current } }),
     }
   }
@@ -614,6 +627,7 @@ export class FileAwarenessService {
     const item = this.state.queue.shift()!
     this.queueRunning = true
     this.current = { fileName: basename(item.sourcePath), sourcePath: item.sourcePath }
+    this.analysisStage = 'extracting'
     this.patchLatestRecord(item.sourcePath, 'analyzing')
     this.emitChanged()
     try {
@@ -641,6 +655,7 @@ export class FileAwarenessService {
     } finally {
       this.queueRunning = false
       this.current = undefined
+      this.analysisStage = undefined
       this.schedulePersist()
       this.emitChanged()
       if (this.state.queue.length > 0) setTimeout(() => void this.processQueue(), 50).unref?.()
@@ -672,6 +687,7 @@ export class FileAwarenessService {
       this.patchLatestRecord(item.sourcePath, 'skipped', '内容未变化', old.id, old.notePath)
       return false
     }
+    this.setAnalysisStage('analyzing')
     const note = old ?? this.createNote(item, stat.sizeBytes, stat.mtimeMs, sourceHash)
     note.sourcePath = item.sourcePath
     note.sourceHash = sourceHash
@@ -703,6 +719,7 @@ export class FileAwarenessService {
     } finally {
       await this.cleanupDocumentImages(note.id).catch(() => undefined)
     }
+    this.setAnalysisStage('writing')
     note.title = analysis.title || note.title
     note.summary = analysis.summary || note.summary
     note.tags = analysis.tags
@@ -1175,6 +1192,12 @@ export class FileAwarenessService {
   private appendRecord(record: FileAwarenessRecord): void {
     this.state.records.unshift(record)
     if (this.state.records.length > RECORD_LIMIT) this.state.records.length = RECORD_LIMIT
+    this.emitChanged()
+  }
+
+  private setAnalysisStage(stage: FileAwarenessAnalysisStage): void {
+    if (this.analysisStage === stage) return
+    this.analysisStage = stage
     this.emitChanged()
   }
 
