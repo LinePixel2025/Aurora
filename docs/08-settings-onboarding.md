@@ -902,7 +902,9 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     按左栏三分口径分组展示（项目对话 / 工作目录对话 / Agent对话 / 已归档），行内提供
     **归档 / 取消归档**（可逆，`chat:archiveSession`）与**删除**（不可逆，
     `chat:deleteSession`：**两步确认** —— 第一次点翻成「确认删除」+「取消」，第二次点才真删；
-    主进程对「还有 running 任务」的会话拒绝 `E_INVALID_STATE`，删的是 `sessions/<id>.json` 文件本体）、
+    主进程对「还有 running 任务」的会话拒绝 `E_INVALID_STATE`；守卫通过后先清理
+    `todos/<id>.json` / `todos/<id>-sub.json`，再删 `sessions/<id>.json`，最后广播删除事件。
+    todo 清理失败时不删会话、不广播；`quick` 与普通会话走同一删除路径）、
     `modes` 模式（**自动化总开关区组（v19，`automations.enabled`，不跟模式门控）** + 模式卡 +
     ClassRoom 区组 + Work 区组，见 §7）；
   - **AI 能力**：`llm` AI 模型（provider 管理 + 「显示思考过程」开关 + 生图模型区组，见 §5）、

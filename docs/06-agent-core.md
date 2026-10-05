@@ -1829,6 +1829,10 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 - **持久化**：`userData/todos/<sessionId>.json`，主进程实现 `TodoPort`
   （原子写 + 300ms 防抖 + 退出前 `flush()`，与 `SessionStore` 同一套 `FileSystemPort` 约定，见 §4；
   文件损坏按 §4 会话文件同款处理——备份后重建为空清单）。内核只认注入的端口（§2 分层）。
+- **删除会话级联清理（2026-10-06）**：`chat:deleteSession` 在 running job 守卫通过后，
+  先删除 `<sessionId>.json` 与 `<sessionId>-sub.json`，再删除会话并在成功后广播。
+  todo 清理失败时不删会话、不广播；清理顺序不能反，否则固定会话 id（`main` / `quick`）
+  重建后会把上一条任务的清单重新注入系统提示词。
 - **systemPrompt 注入**：装配层按会话读清单生成摘要，经 `KernelAgentHost.todoSummary`
   传给内核，渲染为 §5 的固定小节「当前任务清单」（空清单自动省略）；注入与工具读写的是同一份。
 - **子代理**：§19 的子代理使用独立清单文件（`<sessionId>-sub`），与父会话清单互不影响。

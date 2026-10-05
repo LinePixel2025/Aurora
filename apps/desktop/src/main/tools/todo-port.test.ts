@@ -43,6 +43,54 @@ class CountingFileSystem extends TestFileSystem {
   }
 }
 
+/** 可挂起下一次写入，用来验证 removeSession 会等在途写盘结束后再删文件。 */
+class GatedWriteFileSystem extends TestFileSystem {
+  gateHit = false
+  private gate: Promise<void> | undefined
+
+  blockNextWrite(): () => void {
+    let release: () => void = () => undefined
+    this.gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    return release
+  }
+
+  override async writeFileAtomic(path: string, content: string): Promise<void> {
+    const gate = this.gate
+    this.gate = undefined
+    if (gate !== undefined) {
+      this.gateHit = true
+      await gate
+    }
+    return super.writeFileAtomic(path, content)
+  }
+}
+
+/** 可挂起下一次读取，用来验证 removeSession 不会被迟到的读盘结果复活。 */
+class GatedReadFileSystem extends TestFileSystem {
+  gateHit = false
+  private gate: Promise<void> | undefined
+
+  blockNextRead(): () => void {
+    let release: () => void = () => undefined
+    this.gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    return release
+  }
+
+  override async readFile(path: string): Promise<string> {
+    const gate = this.gate
+    this.gate = undefined
+    if (gate !== undefined) {
+      this.gateHit = true
+      await gate
+    }
+    return super.readFile(path)
+  }
+}
+
 describe('FileTodoPort', () => {
   it('write → read 往返；新实例从盘上懒加载同一份', async () => {
     const { fs, port } = setup({ debounceMs: 0 })
@@ -185,6 +233,78 @@ describe('FileTodoPort', () => {
     expect(await port.read('main-sub')).toEqual(subItems)
     expect(fs.files.has(join(TODO_DIR, 'main.json'))).toBe(true)
     expect(fs.files.has(join(TODO_DIR, 'main-sub.json'))).toBe(true)
+  })
+
+  it('removeSession 同时删除主清单与 -sub 清单，并清掉内存缓存', async () => {
+    const { fs, port } = setup({ debounceMs: 0 })
+    const mainPath = join(TODO_DIR, 'main.json')
+    const subPath = join(TODO_DIR, 'main-sub.json')
+    await port.write('main', [todo('t1', '主会话任务')])
+    await port.write('main-sub', [todo('t1', '子代理任务')])
+    await port.flush()
+    expect(fs.files.has(mainPath)).toBe(true)
+    expect(fs.files.has(subPath)).toBe(true)
+
+    await port.removeSession('main')
+
+    expect(fs.files.has(mainPath)).toBe(false)
+    expect(fs.files.has(subPath)).toBe(false)
+    expect(await port.read('main')).toEqual([])
+    expect(await port.read('main-sub')).toEqual([])
+  })
+
+  it('removeSession 取消防抖写入，flush 不会把已删除清单写回来', async () => {
+    const { fs, port } = setup()
+    const path = join(TODO_DIR, 's.json')
+    await port.write('s', [todo('t1', '未到防抖窗口')])
+    expect(fs.files.has(path)).toBe(false)
+
+    await port.removeSession('s')
+    await port.flush()
+
+    expect(fs.files.has(path)).toBe(false)
+    expect(await port.read('s')).toEqual([])
+  })
+
+  it('removeSession 等在途写入结束后再删文件，不会被随后完成的写盘复活', async () => {
+    const fs = new GatedWriteFileSystem()
+    const port = createFileTodoPort({ dir: TODO_DIR, fs, writeDebounceMs: 0 })
+    const path = join(TODO_DIR, 's.json')
+    const release = fs.blockNextWrite()
+
+    await port.write('s', [todo('t1', '在途写入')])
+    await vi.waitFor(() => expect(fs.gateHit).toBe(true))
+
+    const removing = port.removeSession('s')
+    release()
+    await removing
+
+    expect(fs.files.has(path)).toBe(false)
+    expect(await port.read('s')).toEqual([])
+  })
+
+  it('removeSession 不会被迟到的在途读盘结果复活', async () => {
+    const path = join(TODO_DIR, 's.json')
+    const fs = new GatedReadFileSystem({
+      [path]: JSON.stringify({
+        version: 1,
+        sessionId: 's',
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        todos: [todo('t1', '旧清单', 'in_progress')],
+      }),
+    })
+    const port = createFileTodoPort({ dir: TODO_DIR, fs, writeDebounceMs: 0 })
+    const release = fs.blockNextRead()
+
+    const reading = port.read('s')
+    await vi.waitFor(() => expect(fs.gateHit).toBe(true))
+
+    const removing = port.removeSession('s')
+    release()
+    await Promise.all([reading, removing])
+
+    expect(fs.files.has(path)).toBe(false)
+    expect(await port.read('s')).toEqual([])
   })
 
   it('并发首读 + write：写入不被读盘结果盖掉（内存与磁盘都读回刚写的清单）', async () => {

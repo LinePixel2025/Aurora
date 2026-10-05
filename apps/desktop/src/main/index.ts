@@ -102,7 +102,13 @@ import { createImageGenService } from './imagegen.js'
 import { SETTINGS_HINT } from './settings-hint.js'
 // 图片附件读盘（多模态输入，docs/06 §3.1）：与渲染层预览同一套读法，上限不同
 import { readImages } from './attachments.js'
-import { registerIpc, createSettingsWriter, restoreSnapshot, type DesktopDeps } from './ipc.js'
+import {
+  registerIpc,
+  createSettingsWriter,
+  deleteSessionState,
+  restoreSnapshot,
+  type DesktopDeps,
+} from './ipc.js'
 import { TerminalService } from './terminal-service.js'
 import { SessionTitleService } from './session-title.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
@@ -2125,6 +2131,8 @@ async function bootstrap(): Promise<void> {
     hotkey: hotkeys,
     // 写前快照（docs/06 §11.8）：ipc 的 snapshots:* 三条通道用它；配置变了由 ensureSnapshotPort 换实例
     jobs: jobStore,
+    // 删除会话时级联清理任务清单（docs/06 §18）：与 todo 工具共用同一个端口实例。
+    ...(todoPort === undefined ? {} : { todoCleanup: todoPort }),
     // 快照**回滚**路径的项目根边界（P2-07，docs/06 §11.8）：与 file-port / run_command
     // 同一个取值器（别再抄第二份），按快照所属会话现解析
     snapshotGuard: {
@@ -3452,6 +3460,80 @@ async function runSmokeTest(userData: string): Promise<void> {
     )
     record("Job：预算触顶落 paused 且 pendingReason='budget'", budgetOk, jobDetail)
     record('Job：取消后状态是 aborted（不是 paused）', cancelOk, jobDetail)
+  }
+
+  // 2.5.1 会话删除级联清理 todo（docs/06 §18）：running job 仍拒绝；守卫通过后
+  //       主清单与 -sub 清单随会话一起删除，避免固定会话 id 重建后复活旧任务。
+  if (smokeSection('2.5.1')) {
+    const sessionId = 'smoke-delete-todo'
+    const jobId = 'job-smoke-delete-todo'
+    let guardOk = false
+    let cascadeOk = false
+    let detail = ''
+    const sessionStore = sessions
+    const store = jobStore
+    const todos = todoPort
+    const deps = desktopDeps
+    try {
+      if (
+        sessionStore !== undefined &&
+        store !== undefined &&
+        todos !== undefined &&
+        deps !== undefined
+      ) {
+        const now = new Date().toISOString()
+        await sessionStore.append(sessionId, { role: 'user', content: '删除会话 Todo 级联测试' })
+        await todos.write(sessionId, [{ id: 't1', content: '主任务', status: 'in_progress' }])
+        await todos.write(`${sessionId}-sub`, [
+          { id: 't1', content: '子代理任务', status: 'pending' },
+        ])
+        await todos.flush()
+        await store.create({
+          id: jobId,
+          sessionId,
+          status: 'running',
+          origin: 'chat',
+          text: '删除会话 Todo 级联测试',
+          round: 0,
+          maxRounds: 8,
+          stepsDone: [],
+          todos: [],
+          cursor: { nextRound: 0 },
+          budget: { maxTotalTokens: 0, usedTokens: 0, autoContinued: 0 },
+          createdAt: now,
+          updatedAt: now,
+        })
+
+        const blocked = await deleteSessionState(deps, sessionId)
+        guardOk =
+          !blocked.ok &&
+          (await todos.read(sessionId)).length > 0 &&
+          (await sessionStore.get(sessionId)).length > 0
+
+        await store.update(jobId, {
+          status: 'aborted',
+          pendingReason: 'aborted',
+          updatedAt: new Date().toISOString(),
+        })
+        const deleted = await deleteSessionState(deps, sessionId)
+        await sessionStore.flush()
+        await todos.flush()
+        cascadeOk =
+          deleted.ok &&
+          !existsSync(join(userData, 'sessions', `${sessionId}.json`)) &&
+          !existsSync(join(todos.directory, `${sessionId}.json`)) &&
+          !existsSync(join(todos.directory, `${sessionId}-sub.json`)) &&
+          !(await sessionStore.listSessions()).includes(sessionId) &&
+          (await todos.read(sessionId)).length === 0
+        detail = `guard=${guardOk} cascade=${cascadeOk} result=${deleted.ok ? 'ok' : deleted.message}`
+      } else {
+        detail = 'sessionStore / jobStore / todoPort / desktopDeps 不可用'
+      }
+    } catch (error) {
+      detail = `异常：${String(error)}`
+    }
+    record('会话删除：running job 仍拒绝，且不会提前清掉 todo', guardOk, detail)
+    record('会话删除：守卫通过后级联清理主 todo 与 -sub todo', cascadeOk, detail)
   }
 
   // 2.6 跨特性集成（step 5）：把四步串成一条链 —— 选项目 → 设权限档 → Agent 真的写文件（留快照）

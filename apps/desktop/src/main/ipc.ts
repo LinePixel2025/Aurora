@@ -228,6 +228,8 @@ export interface DesktopDeps {
   terminal?: TerminalService
   /** Job 存储（chat:jobs / resumeJob / cancelJob，docs/06 §4.1，v15） */
   jobs?: JobStore
+  /** 删除会话时级联清理任务清单（docs/06 §18）。未注入时保留旧的单删会话行为。 */
+  todoCleanup?: { removeSession(sessionId: string): Promise<void> }
   /** ClassIsland 桥接（classisland:*，docs/05 §3.4 v2/v3） */
   classisland: ClassIslandController
   /** MCP 状态（mcp:status，docs/06 §7） */
@@ -922,6 +924,7 @@ export function registerIpc(deps: DesktopDeps): () => void {
    * 该会话还有 `running` 的 job（请求在跑或自动续轮中）时拒绝 `E_INVALID_STATE`（状态冲突）
    * （在跑的流随时会 append，删了会被下一轮写回来）；paused / 已结束的 job 随会话一起
    * 留在盘上无妨（会话没了它们也不可达，job 文件的 24h TTL 之外由会话删除兜底清理不在本轮范围）。
+   * 守卫通过后先清理该会话及其子代理的 todo，再删会话；todo 清理失败时不删会话、不广播。
    * 文件不存在（从未落盘的空会话）幂等返回 ok。
    *
    * **删除成功后**广播 `chat:sessionDeleted`（载荷带 sessionId，docs/07 §2.3）：
@@ -933,27 +936,12 @@ export function registerIpc(deps: DesktopDeps): () => void {
     if (sessionId === '') {
       return Promise.resolve(err('E_INVALID_ARGUMENT', 'sessionId 不能为空'))
     }
-    const jobs = deps.jobs
-    const guard =
-      jobs === undefined
-        ? Promise.resolve(false)
-        : jobs
-            .list({ sessionId, status: 'running' })
-            .then((running) => running.length > 0)
-            .catch(() => false)
-    return guard.then((busy) => {
-      if (busy) {
-        return err('E_INVALID_STATE', '会话有正在运行的任务，先取消或等它结束再删除')
+    return deleteSessionState(deps, sessionId).then((result) => {
+      if (result.ok) {
+        // 广播在**删除成功之后**（失败/被守卫拒绝时不发，避免渲染层对着不存在的删除动作回落）
+        broadcast(IPC.chat.sessionDeleted, { sessionId })
       }
-      return deps.sessions.remove(sessionId).then(
-        () => {
-          // 广播在**删除成功之后**（失败/被守卫拒绝时不发，避免渲染层对着不存在的删除动作回落）
-          broadcast(IPC.chat.sessionDeleted, { sessionId })
-          return ok(true)
-        },
-        (error: unknown) =>
-          err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
-      )
+      return result
     })
   })
   handle<SkillSummary[]>(IPC.skills.list, () => ok(deps.skills.list()))
@@ -1704,6 +1692,36 @@ async function resumeJob(
     resumeJobId: request.jobId,
   })
   return ok(result)
+}
+
+/**
+ * 删除一条会话的持久化状态。
+ *
+ * 顺序固定为：running job guard → 清理 todo（含子代理）→ 删除 session。
+ * 前一步失败时后续都不执行，调用方也不能广播 `chat:sessionDeleted`。
+ */
+export async function deleteSessionState(
+  deps: DesktopDeps,
+  sessionId: string,
+): Promise<Result<boolean>> {
+  const jobs = deps.jobs
+  const busy =
+    jobs === undefined
+      ? false
+      : await jobs
+          .list({ sessionId, status: 'running' })
+          .then((running) => running.length > 0)
+          .catch(() => false)
+  if (busy) {
+    return err('E_INVALID_STATE', '会话有正在运行的任务，先取消或等它结束再删除')
+  }
+  try {
+    await deps.todoCleanup?.removeSession(sessionId)
+    await deps.sessions.remove(sessionId)
+    return ok(true)
+  } catch (error) {
+    return err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
+  }
 }
 
 /** 取消一条未结束的 job：先 abort 正在跑的那条请求，再让 job 落 `aborted` */

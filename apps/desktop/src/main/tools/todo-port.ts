@@ -95,6 +95,18 @@ export class FileTodoPort implements TodoPort {
   }
 
   /**
+   * 删除某会话及其子代理的任务清单。
+   *
+   * 顺序不能反：先取消待写并排空在途写盘，再失效缓存 / 读盘，最后删文件。
+   * 否则防抖写或已经在途的读盘结果会在删除之后把旧清单重新写回来。
+   */
+  async removeSession(sessionId: string): Promise<void> {
+    const id = normalizeSessionId(sessionId)
+    await this.removeOne(id)
+    if (!id.endsWith('-sub')) await this.removeOne(`${id}-sub`)
+  }
+
+  /**
    * 立即落盘（退出前 / 单测使用）。
    *
    * 与 SessionStore 同一套「反复排空」语义：先等在途写入排队完成，
@@ -140,8 +152,10 @@ export class FileTodoPort implements TodoPort {
     const inFlight = this.loading.get(id)
     // 已有在途读盘：直接复用它，既不重复读盘也不提前置 loaded
     if (inFlight !== undefined) return inFlight
-    const task = this.loadFromDisk(id).finally(() => {
-      this.loading.delete(id)
+    let task: Promise<void>
+    // eslint-disable-next-line prefer-const -- 自引用闭包，见上（TS7022 不允许 const 直接引用自身）
+    task = this.loadFromDisk(id, () => this.loading.get(id) === task).finally(() => {
+      if (this.loading.get(id) === task) this.loading.delete(id)
     })
     this.loading.set(id, task)
     return task
@@ -154,10 +168,28 @@ export class FileTodoPort implements TodoPort {
    * （`cache` 里已有该项，含写入的是空清单这种情形），那份新快照整体优先，
    * 绝不能用读回来的旧清单把它盖掉——否则用户刚写的清单会被盘上的旧内容顶掉。
    */
-  private async loadFromDisk(id: string): Promise<void> {
+  private async loadFromDisk(id: string, isCurrent: () => boolean): Promise<void> {
     const todos = await this.readFromDisk(id)
+    // 读盘期间被 removeSession 删除：不能把已经删掉的清单重新装回缓存。
+    if (!isCurrent()) return
     if (!this.cache.has(id)) this.cache.set(id, todos)
     this.loaded.add(id)
+  }
+
+  /** 删一个清单文件；调用方负责主会话与 `-sub` 的组合口径。 */
+  private async removeOne(id: string): Promise<void> {
+    const timer = this.timers.get(id)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      this.timers.delete(id)
+    }
+    this.dirty.delete(id)
+    await (this.writing.get(id) ?? Promise.resolve()).catch(() => undefined)
+    this.cache.delete(id)
+    this.loaded.delete(id)
+    // remove() 会删掉在途读盘的身份标记，让读盘完成后的 isCurrent 检查失效。
+    this.loading.delete(id)
+    await this.fs.remove(todoFilePath(this.dir, id))
   }
 
   private async readFromDisk(id: string): Promise<TodoItem[]> {
