@@ -164,6 +164,7 @@ export class FileAwarenessService {
   private recentTimer: NodeJS.Timeout | undefined
   private persistTimer: NodeJS.Timeout | undefined
   private queueRunning = false
+  private suspended = false
   private closed = false
   private watchedRootsKey = ''
   private current: { fileName: string; sourcePath: string } | undefined
@@ -203,11 +204,30 @@ export class FileAwarenessService {
     return () => this.suggestionListeners.delete(listener)
   }
 
+  /**
+   * 游戏模式进出时的临时挂起（docs/06 §8.3）。
+   *
+   * 与用户配置的 `fileAwareness.enabled` 分离：挂起只停监听与队列推进，不修改配置、
+   * 不删除已排队任务 / 状态 / 笔记；当前正在执行的那一次分析允许收尾。
+   */
+  async suspend(): Promise<void> {
+    if (this.suspended || this.closed) return
+    this.suspended = true
+    await this.reconfigure()
+  }
+
+  async resume(): Promise<void> {
+    if (!this.suspended || this.closed) return
+    this.suspended = false
+    await this.reconfigure()
+  }
+
   async reconfigure(): Promise<void> {
     if (this.closed) return
     const settings = this.options.settings()
     const awareness = settings.fileAwareness
     const shouldRun =
+      !this.suspended &&
       awareness.enabled &&
       awareness.contentConsentAccepted &&
       awareness.watchedDirs.length > 0 &&
@@ -393,6 +413,7 @@ export class FileAwarenessService {
   }
 
   async analyzeNow(path: string): Promise<boolean> {
+    if (this.suspended) return false
     const ext = extOf(path)
     if (!isAwarenessContentExtension(ext)) return false
     const stat = await statFile(path)
@@ -431,6 +452,7 @@ export class FileAwarenessService {
   }
 
   async scanNow(): Promise<number> {
+    if (this.suspended) return 0
     const awareness = this.options.settings().fileAwareness
     let queued = 0
     for (const root of awareness.watchedDirs) {
@@ -465,6 +487,7 @@ export class FileAwarenessService {
   // ───────────────────────── 监听与最近使用 ─────────────────────────
 
   private async handleWatch(path: string, kind: 'add' | 'change'): Promise<void> {
+    if (this.suspended) return
     if (!this.matchesWatchedRoot(path)) return
     if (isIgnoredPath(path, this.options.settings(), this.options.userData)) return
     const ext = extOf(path)
@@ -519,7 +542,7 @@ export class FileAwarenessService {
   }
 
   private async pollRecent(baseline: boolean): Promise<void> {
-    if (this.closed) return
+    if (this.closed || this.suspended) return
     const awareness = this.options.settings().fileAwareness
     if (!awareness.includeRecent) return
     const probe = this.options.recentProbe ?? createRecentUsageProbe()
@@ -575,7 +598,7 @@ export class FileAwarenessService {
   // ───────────────────────── 队列与分析 ─────────────────────────
 
   private async processQueue(): Promise<void> {
-    if (this.closed || this.queueRunning) return
+    if (this.closed || this.suspended || this.queueRunning) return
     this.rollDay()
     if (this.state.queue.length === 0) return
     if (!this.options.providerReady()) return

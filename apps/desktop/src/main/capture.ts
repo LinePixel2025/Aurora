@@ -7304,6 +7304,8 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
     // v20：管理员提权开关（docs/08 §1）常显 —— 它是"会不会被权限卡住"的唯一开关，
     // 被顺手删掉/改名时这里立刻报 FAIL（与 general.launchAtLogin 同款常显口径）
     const requireAdminField = count('[data-field="general.requireAdmin"]')
+    // v30：游戏模式开关常显（docs/06 §8.3）
+    const gameModeField = count('[data-field="general.gameMode.enabled"]')
     // v13 项目机制（docs/06 §5.1）：项目区组常显，列表可空可非空 —— 只断言「空态或至少一行」，
     // 不写死条数（用户有几个项目都能过）。
     const projectsFields = count('[data-field^="projects."]')
@@ -7329,6 +7331,7 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
       edgeBarDetail,
       quietHoursFields,
       requireAdminField,
+      gameModeField,
       projectsFields,
       projectsRows,
       projectsEmpty,
@@ -7344,6 +7347,7 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
         languageFields === 0 &&
         quietHoursFields === 2 &&
         requireAdminField === 1 &&
+        gameModeField === 1 &&
         (edgeBarToggle === 0 ? edgeBarDetail === 0 : edgeBarDetail > 0) &&
         projectsFields === 0 &&
         projectsRows === 0 &&

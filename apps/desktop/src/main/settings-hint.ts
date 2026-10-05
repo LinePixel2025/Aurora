@@ -20,6 +20,7 @@ export const SETTINGS_HINT = [
   '- stt.enabled / active（语音输入开关与默认识别模型）',
   '- imagegen.enabled / active（图像生成开关与默认生图模型）',
   '- general.edgeBar.enabled / opacity / quietHours / display / position（提示条开关、透明度、勿扰时段与贴附的显示器 / 屏幕侧）',
+  '- general.gameMode.enabled（游戏模式联动开关）',
   '- general.chat.showThinking（对话界面是否展示思考过程）',
   '- appearance.accent（界面强调色主题：aurora / teal / violet / rose / amber）',
   '- modes.current（切换当前模式）',

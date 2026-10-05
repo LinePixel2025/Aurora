@@ -99,6 +99,7 @@ import { TerminalService } from './terminal-service.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { isQuietHour, ProactiveScheduler } from './proactive.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
+import { GameModeController, WindowsGameModeWatcher } from './game-mode.js'
 import { HotkeyManager } from './hotkey.js'
 import { SessionBridge, toConfirmRequest } from './center/session-bridge.js'
 import { createAskRelay, createAskSettleRelay } from './center/ask-relay.js'
@@ -367,6 +368,8 @@ let awarenessTools: { sync(): string[] } | undefined
 const automationDefinitionListeners = new Set<() => void>()
 const automationHistoryListeners = new Set<() => void>()
 let edgeBarScheduler: EdgeBarScheduler | undefined
+/** Windows 游戏模式联动（docs/06 §8.3） */
+let gameMode: GameModeController | undefined
 let hotkeys: HotkeyManager | undefined
 let skillsService: SkillsService | undefined
 /** 当前生效的出网 fetch（按代理设置重建） */
@@ -2204,6 +2207,7 @@ async function bootstrap(): Promise<void> {
       // 感知文件夹 / 科目 / 阈值变更后，让分类管线按新配置重新武装
       syncClassification()
       void fileAwareness?.reconfigure()
+      gameMode?.reconfigure()
     },
   }
   // 右栏「终端」（docs/07 §2.3）：PTY 常驻 shell 服务；cwd 走会话工作目录回落链。
@@ -2244,6 +2248,38 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('edge-bar'),
   })
   edgeBarScheduler.start()
+
+  // 8.2.2 游戏模式联动（docs/06 §8.3）：进入游戏时隐藏提示条并挂起文件自感知，
+  //       退出后恢复。检测放在单条常驻 PowerShell 子进程里，避免周期性新建进程。
+  let gameModeEdgeBarWasVisible = false
+  gameMode = new GameModeController({
+    enabled: () => settings!.get().general.gameMode.enabled,
+    watcher: new WindowsGameModeWatcher({ logger: logger.child('game-mode') }),
+    logger: logger.child('game-mode'),
+    enter: async () => {
+      gameModeEdgeBarWasVisible = windows?.isVisible('edge-bar') === true
+      if (gameModeEdgeBarWasVisible) windows?.hide('edge-bar')
+      await fileAwareness?.suspend()
+      logger?.info('检测到游戏，已进入游戏模式', {
+        edgeBarWasVisible: gameModeEdgeBarWasVisible,
+      })
+    },
+    exit: async () => {
+      await fileAwareness?.resume()
+      const current = settings!.get()
+      const canRestoreEdgeBar =
+        gameModeEdgeBarWasVisible &&
+        current.general.edgeBar.enabled &&
+        settings!.needsOnboarding() === false &&
+        !isQuietHour(new Date(), current.general.edgeBar.quietHours)
+      if (canRestoreEdgeBar) windows?.show('edge-bar')
+      logger?.info('游戏模式已退出，已恢复后台服务', {
+        edgeBarRestored: canRestoreEdgeBar,
+      })
+      gameModeEdgeBarWasVisible = false
+    },
+  })
+  gameMode.start()
 
   // 8.3 自动更新：延迟静默检查（不阻塞启动），并在有更新时通知托盘
   updater.scheduleAutoCheck()
@@ -4895,6 +4931,7 @@ async function shutdown(): Promise<void> {
   // 全局快捷键必须在退出前注销，否则会残留到进程消亡（Electron 只在正常退出时自动清）
   hotkeys?.dispose()
   edgeBarScheduler?.stop()
+  gameMode?.stop()
   // 主动引导：让在途的敏感工具确认立即失败，不留下悬挂的 Promise
   proactiveScheduler?.dispose()
   // 自动化引擎：停评估、清在途 Agent 运行监听，并落盘定义与历史

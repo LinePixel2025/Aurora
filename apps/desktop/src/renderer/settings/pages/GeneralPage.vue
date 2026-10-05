@@ -77,6 +77,7 @@ const edgeOpacity = ref(general.value?.edgeBar.opacity ?? 0.9)
 /** 提示条贴附的显示器与屏幕侧（v21，docs/08 §1） */
 const edgeDisplay = ref(general.value?.edgeBar.display ?? 'primary')
 const edgePosition = ref(general.value?.edgeBar.position ?? 'right')
+const gameModeEnabled = ref(general.value?.gameMode.enabled ?? true)
 
 // ── 外观自定义（v21，docs/08 §1）：强调色主题，Agent 也可经 set_setting 调 ──
 
@@ -135,6 +136,7 @@ async function saveEdgeQuiet(which: 'start' | 'end', value: string): Promise<voi
         display: edgeDisplay.value,
         position: edgePosition.value,
       },
+      gameMode: { enabled: gameModeEnabled.value },
     },
   })
   if (ok) saved.value = '已保存'
@@ -181,6 +183,7 @@ watch(
     edgeOpacity.value = next.general.edgeBar.opacity
     edgeDisplay.value = next.general.edgeBar.display
     edgePosition.value = next.general.edgeBar.position
+    gameModeEnabled.value = next.general.gameMode.enabled
     accent.value = next.appearance?.accent ?? 'aurora'
   },
   { immediate: true },
@@ -205,6 +208,7 @@ async function save(): Promise<void> {
         display: edgeDisplay.value,
         position: edgePosition.value,
       },
+      gameMode: { enabled: gameModeEnabled.value },
     },
   })
   if (ok) saved.value = '已保存'
@@ -223,6 +227,7 @@ async function saveEdgePlacement(): Promise<void> {
         display: edgeDisplay.value,
         position: edgePosition.value,
       },
+      gameMode: { enabled: gameModeEnabled.value },
     },
   })
   if (ok) saved.value = '已保存'
@@ -379,6 +384,19 @@ async function toggleEdgeBar(): Promise<void> {
       <p v-else class="section-desc" data-empty="general.edgeBar">
         提示条已停用：透明度与静默时段不可配，重新启用后可继续调整。
       </p>
+    </section>
+
+    <section class="section-card">
+      <h2 class="section-title">游戏模式</h2>
+      <p class="section-desc">检测到 Windows 游戏后，自动隐藏提示条并暂停文件自感知。</p>
+
+      <SettingField
+        data-field="general.gameMode.enabled"
+        label="自动游戏模式"
+        hint="识别 Game Bar 游戏或独占全屏应用，退出后自动恢复"
+      >
+        <input v-model="gameModeEnabled" type="checkbox" />
+      </SettingField>
     </section>
 
     <!-- 全局勿扰时段（advanced.quietHours）：与提示条静默时段同区但分属两组（spec §9） -->

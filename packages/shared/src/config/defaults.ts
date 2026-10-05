@@ -227,6 +227,10 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
       display: 'primary',
       position: 'right',
     },
+    // v30：Windows 游戏模式联动（docs/06 §8.3）
+    gameMode: {
+      enabled: true,
+    },
     windowState: {},
     chat: {
       showThinking: true,

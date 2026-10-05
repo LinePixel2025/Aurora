@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v29）
+## 1. 配置 Schema（config.json，v30）
 
 ```jsonc
 {
-  "version": 23,
+  "version": 30,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -24,6 +24,9 @@
       "display": "primary", // 'primary' 主显示器 | 'cursor' 跟随鼠标所在显示器
       "position": "right" // 'right' 屏幕右缘 | 'left' 屏幕左缘
     },
+    // v30 新增：检测到 Game Bar 游戏或独占全屏 D3D 应用后，
+    // 自动隐藏提示条并暂停文件自感知；退出后恢复。仅 Windows 生效。
+    "gameMode": { "enabled": true },
     // v8 新增：对话窗展示偏好
     "chat": { "showThinking": true }, // 对话界面展示思考过程（MessageList 可折叠思考块的门控，docs/07 §2.3）
     // 各窗口位置 / 尺寸记忆，key 集合见 WINDOW_NAMES（edge-bar / chat / settings / onboarding）
@@ -292,7 +295,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **29**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **30**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.modelParams.<modelId>.reasoningEffort`（v5 新增，v23 起按模型绑定）：
@@ -658,7 +661,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
   `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（`maxRounds` / 预算 /
   自动续轮等）热路径使用，避免每 attempt 深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 29`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 30`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -740,11 +743,13 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `v27 → v28`（**文件自感知**：补齐默认关闭的 `fileAwareness` 分组；只补缺失键，
   不覆盖已有值）、
   `v28 → v29`（**记忆过期与后台模型**：为 `fileAwareness` 补
-  `defaultMemoryTtlDays: 0` 与空的 `backgroundModel`；已有值原样保留）。
-  二十九条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  `defaultMemoryTtlDays: 0` 与空的 `backgroundModel`；已有值原样保留）、
+  `v29 → v30`（**游戏模式**：为已有 `general` 补 `gameMode: { enabled: true }`；
+  `general` 组缺失时不凭空造半截对象）。
+  三十条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**），重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **29** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **30** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程

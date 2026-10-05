@@ -627,6 +627,25 @@ interface AgentHostDeps {
   2. **事件总线**：课前 5 分钟触发（§9）、模式 / 触发器订阅；
   3. **工具查询**：`system-status` / `timetable` Skill 直接读取当前值回答用户。
 
+### 8.3 游戏模式联动（v30）
+
+- 配置 `general.gameMode.enabled`（默认开启）只控制**联动**，不改变 Windows 自身的 Game Mode 设置。
+  仅 Windows 生效；其它平台与未开启时不启动检测。
+- Windows 没有公开的「Game Mode 正在运行」查询 API，`AutoGameModeEnabled` 注册表值也只是用户
+  设置而非运行态。Aurora 用两个轻量信号做交叉判定：
+  1. `GameBarPresenceWriter.exe` 是否存在 —— Game Bar 识别到游戏后会启动该进程，
+     覆盖窗口化 / 无边框游戏；
+  2. `SHQueryUserNotificationState()` 是否返回 `QUNS_RUNNING_D3D_FULL_SCREEN` ——
+     覆盖 Game Bar 被禁用时的独占全屏 D3D 游戏，同时避开 PowerPoint 等普通全屏窗口。
+- 检测在**单条常驻 PowerShell 子进程**里完成（只在这一特性开启且平台为 Windows 时启动）；
+  首次加载 P/Invoke 后按短周期读取进程与系统状态，只在状态翻转时向主进程输出一行，避免每轮
+  新建 PowerShell / 重复 `Add-Type`。检测失败按「不在游戏中」降级，只记 debug 日志。
+- 进入游戏：提示条若当时可见则记住该状态并隐藏；随后调用文件自感知 `suspend()`，停止文件监听、
+  最近使用轮询与队列推进，但不删除已排队任务、状态或笔记。正在执行的那一次提取 / 分析允许收尾。
+- 退出游戏：文件自感知 `resume()` 并按当前设置重新监听与扫描；提示条只在进入前确实可见、
+  当前总开关允许且不在勿扰时段时恢复。关闭游戏模式开关时同样解除挂起并恢复提示条。
+- 已知边界：Game Bar 关闭且游戏使用无边框窗口时，两个信号都可能无法识别；该场景不猜、不误伤。
+
 ## 9. 主动引导（Proactive）
 
 - 触发器注册表：首次安装未完成、模式引导未完成、分类完成通知、课前 5 分钟……

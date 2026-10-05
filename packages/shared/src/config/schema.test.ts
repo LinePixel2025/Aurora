@@ -65,6 +65,12 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(createDefaultSettings().version).toBe(CONFIG_VERSION)
   })
 
+  it('游戏模式默认开启且是布尔开关（v30）', () => {
+    expect(createDefaultSettings().general.gameMode).toEqual({ enabled: true })
+    expect(fieldAccepts('general.gameMode.enabled', false)).toBe(true)
+    expect(fieldAccepts('general.gameMode.enabled', 'no')).toBe(false)
+  })
+
   it('默认科目为 05 §2 的九科模板，且 folder 指向 分类/<科目>', () => {
     const subjects = createDefaultSettings().modes.classroom.subjects
     expect(subjects.map((s) => s.name)).toEqual([...DEFAULT_SUBJECT_NAMES])

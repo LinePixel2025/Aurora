@@ -386,4 +386,59 @@ describe('FileAwarenessService', () => {
     expect(service.notes().some((note) => note.ext === 'doc')).toBe(false)
     await service.close()
   })
+
+  it('游戏模式挂起时停止监听与定时器，恢复后重新武装且不改配置', async () => {
+    const root = join(tmpdir(), `aurora-awareness-suspend-${randomUUID()}`)
+    const watched = join(root, 'docs')
+    const knowledge = join(root, 'notes')
+    const userData = join(root, 'userData')
+    await fs.mkdir(watched, { recursive: true })
+    await fs.mkdir(knowledge, { recursive: true })
+    const settings = createDefaultSettings()
+    settings.fileAwareness = {
+      enabled: true,
+      contentConsentAccepted: true,
+      watchedDirs: [watched],
+      knowledgeDir: knowledge,
+      includeRecent: false,
+      suggestionsEnabled: false,
+      dailyAnalysisLimit: 20,
+      maxFileMb: 100,
+      defaultMemoryTtlDays: 0,
+      backgroundModel: { providerId: '', model: '' },
+    }
+    const watchers: FakeWatcher[] = []
+    const service = new FileAwarenessService({
+      userData,
+      settings: () => settings,
+      logger: createNoopLogger(),
+      createWatcher: () => {
+        const watcher = new FakeWatcher()
+        watchers.push(watcher)
+        return watcher
+      },
+      tickMs: 20,
+      extract: async () => {
+        throw new Error('not used')
+      },
+      analyze: async () => ({ text: '{}' }),
+      providerReady: () => true,
+      canNotify: () => false,
+      openPath: async () => undefined,
+    })
+
+    await service.init()
+    expect(watchers).toHaveLength(1)
+    expect(service.status().active).toBe(true)
+
+    await service.suspend()
+    expect(service.status().active).toBe(false)
+    expect(watchers[0]?.closed).toBe(true)
+    expect(settings.fileAwareness.enabled).toBe(true)
+
+    await service.resume()
+    expect(watchers).toHaveLength(2)
+    expect(service.status().active).toBe(true)
+    await service.close()
+  })
 })

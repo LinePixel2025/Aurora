@@ -102,6 +102,8 @@ function settingsWith(overrides: {
         display: 'primary',
         position: 'right',
       },
+      // CONFIG_VERSION 30 新增：本用例不涉及游戏联动，保持默认态
+      gameMode: { enabled: true },
       // CONFIG_VERSION 20 新增（管理员提权，docs/08 §1）：本用例不涉及，保持默认态
       requireAdmin: true,
       // CONFIG_VERSION 8 新增子组：本用例不涉及对话展示，保持默认态

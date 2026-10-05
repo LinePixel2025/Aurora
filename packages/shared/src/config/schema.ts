@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 29 as const
+export const CONFIG_VERSION = 30 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -58,6 +58,17 @@ export const EdgeBarSchema = z.object({
 })
 
 /**
+ * 游戏模式联动（v30，docs/06 §8.3 / docs/08 §1）。
+ *
+ * 只控制 Aurora 的联动行为：检测到 Windows 游戏后隐藏提示条并暂停文件自感知。
+ * 不修改 Windows Game Mode 自身设置，也不在非 Windows 平台启动检测。
+ */
+export const GameModeSchema = z.object({
+  enabled: z.boolean().default(true),
+})
+export type GameModeSettings = z.infer<typeof GameModeSchema>
+
+/**
  * 外观自定义（v21，docs/08 §1）：用户在设置页选，Agent 也可经 `set_setting` 调
  * （`appearance.accent` 在 `WRITABLE_PATH_OVERRIDES` 登记）。渲染层由
  * `shared/appearance.ts` 应用到文档根 —— `aurora` = 内置品牌蓝（移除覆盖，跟随明暗档）。
@@ -72,6 +83,7 @@ export const GeneralSchema = z.object({
   launchAtLogin: z.boolean(),
   hotkey: z.string().min(1),
   edgeBar: EdgeBarSchema,
+  gameMode: GameModeSchema,
   /** 各窗口位置 / 尺寸记忆（docs/02 §2.2、docs/07 §2）。 */
   windowState: z.record(WindowNameSchema, z.record(z.string(), z.unknown())),
   /**
@@ -1093,6 +1105,7 @@ export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
   { pattern: 'general.edgeBar.quietHours', reason: '调整提示条的勿扰时段' },
   { pattern: 'general.edgeBar.display', reason: '切换提示条贴附的显示器' },
   { pattern: 'general.edgeBar.position', reason: '切换提示条贴附的屏幕侧' },
+  { pattern: 'general.gameMode.enabled', reason: '开关游戏模式联动' },
   { pattern: 'appearance.accent', reason: '切换界面强调色主题' },
   { pattern: 'general.chat.showThinking', reason: '开关对话界面的思考过程展示' },
   // 模式

@@ -1058,6 +1058,34 @@ const migrateV28ToV29: Migration = {
   },
 }
 
+/**
+ * v29 → v30：为已有 `general` 补游戏模式开关（docs/06 §8.3）。
+ *
+ * 与 v19 → v20 的 requireAdmin 同一口径：只为已有分组补缺字段，用户已写的值原样保留；
+ * `general` 整组缺失时交给 Schema 默认值兜底，不凭空造半截对象。
+ */
+const migrateV29ToV30: Migration = {
+  from: 29,
+  to: 30,
+  describe: 'v29 → v30：新增 general.gameMode（游戏模式联动，默认开启）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const general = asRecord(raw['general'])
+    if (general !== undefined) {
+      const gameMode = asRecord(general['gameMode'])
+      next['general'] = {
+        ...general,
+        gameMode: {
+          ...(gameMode ?? {}),
+          enabled: gameMode?.['enabled'] === false ? false : true,
+        },
+      }
+    }
+    next['version'] = 30
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1088,6 +1116,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV26ToV27,
   migrateV27ToV28,
   migrateV28ToV29,
+  migrateV29ToV30,
 ]
 
 export interface MigrationOutcome {
