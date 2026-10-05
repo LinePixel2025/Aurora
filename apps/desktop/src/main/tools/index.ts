@@ -137,6 +137,8 @@ export interface ComputerToolsDeps {
   files: FilePort
   /** Office 结构化创建 / 读取 / 编辑端口（main/tools/office-port.ts）。 */
   office: OfficePort
+  /** 包内 OfficeCLI 是否可用；缺省视为可用，便于纯装配单测。 */
+  officeAvailable?: () => boolean
   open: OpenPort
 }
 
@@ -242,11 +244,13 @@ export function registerComputerTools(deps: ComputerToolsDeps): ComputerTools {
         if (!readonly) {
           deps.tools.register(createEditTool({ files: deps.files, readTracker }))
         }
-        // Office 专用工具与文件工具共用 `files.enabled`：读取在只读档保留，
-        // 创建 / 编辑与 write_file / edit_file 同档摘除。
-        for (const tool of createOfficeTools({ office: deps.office, readTracker })) {
-          if (readonly && tool.name !== 'office_read') continue
-          deps.tools.register(tool)
+        // Office 专用工具与文件工具共用 `files.enabled`。OfficeCLI 缺失时整组不注册；
+        // 只读档只保留 safe 工具（read/help/render）。
+        if (deps.officeAvailable?.() !== false) {
+          for (const tool of createOfficeTools({ office: deps.office, readTracker })) {
+            if (readonly && tool.sensitivity === 'confirm') continue
+            deps.tools.register(tool)
+          }
         }
       }
 

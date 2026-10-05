@@ -53,16 +53,17 @@ export class OfficePool {
     const child = this.ensureChild()
     if (child === undefined) return failure('Office worker 不可用')
     const id = `office-${++this.counter}`
+    const timeoutMs = request.timeoutMs ?? this.timeoutMs
     return new Promise<OfficeWorkerResponse>((resolve) => {
       const timer = setTimeout(() => {
         this.options.logger?.warn('Office worker 超时，已终止且不自动重试', {
-          timeoutMs: this.timeoutMs,
+          timeoutMs,
           action: request.action,
         })
         this.pending = undefined
         this.restartChild()
-        resolve(failure(`Office 操作超时（${this.timeoutMs}ms），worker 已终止`))
-      }, this.timeoutMs)
+        resolve(failure(`Office 操作超时（${timeoutMs}ms），worker 已终止`))
+      }, timeoutMs)
       timer.unref?.()
       this.pending = { id, resolve, timer }
       try {

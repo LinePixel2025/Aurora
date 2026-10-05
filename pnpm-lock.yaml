@@ -56,15 +56,6 @@ importers:
       '@lydell/node-pty':
         specifier: 1.2.0-beta.15
         version: 1.2.0-beta.15
-      '@office-open/docx':
-        specifier: 0.14.6
-        version: 0.14.6
-      '@office-open/pptx':
-        specifier: 0.14.6
-        version: 0.14.6
-      '@office-open/xlsx':
-        specifier: 0.14.6
-        version: 0.14.6
       '@xterm/addon-fit':
         specifier: ^0.11.0
         version: 0.11.0
@@ -80,6 +71,9 @@ importers:
       officeparser:
         specifier: 7.8.0
         version: 7.8.0(supports-color@7.2.0)
+      pdf-lib:
+        specifier: 1.17.1
+        version: 1.17.1
       systeminformation:
         specifier: ^5.23.5
         version: 5.33.11
@@ -873,20 +867,11 @@ packages:
     resolution: {integrity: sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==}
     engines: {node: '>= 20.19.0'}
 
-  '@office-open/core@0.14.6':
-    resolution: {integrity: sha512-2nYvbuNO6QXt/srix5a/VtbLsbm6ZjzsrWRFGpdU+ls8ywFiYX/bvtrSc7N5GhRDMvCDYuqTS8z+KQ3Jtvy/Qg==}
+  '@pdf-lib/standard-fonts@1.0.0':
+    resolution: {integrity: sha512-hU30BK9IUN/su0Mn9VdlVKsWBS6GyhVfqjwl1FjZN4TxP6cCw0jP2w7V3Hf5uX7M0AZJ16vey9yE0ny7Sa59ZA==}
 
-  '@office-open/docx@0.14.6':
-    resolution: {integrity: sha512-GJ9mdkdf9eOP3r1rZ4mNoJ6CVcXECkyPn5bQenHKfL30bF89jap4aC2Sg4vX+ohUcX5/Oin0lIall1ogN978Hg==}
-
-  '@office-open/pptx@0.14.6':
-    resolution: {integrity: sha512-spU6sSbabrbANl+OKYCw3EPi4oL1vlXGvpt/RdU/fT40EEa2SI3akGE3TFloPfksi/gWwPbFYLOOl6WYpZFfsA==}
-
-  '@office-open/xlsx@0.14.6':
-    resolution: {integrity: sha512-8RjXybbJVi3rQqBxnT5aZvcNPNFzaNyDXGhwIKhlVuP0GCfjfR5aOj2vPJUEobpP8z5zOURcCe0iELSkXd7tQA==}
-
-  '@office-open/xml@0.14.6':
-    resolution: {integrity: sha512-pGRBuwyS2piyofaTZbCfDszRL5Yma7g2fqBIxGV7R7Qoxzb3Jx8ToklS5iGKmrtBHuDxRMX12vRhuml0fgP5JA==}
+  '@pdf-lib/upng@1.0.1':
+    resolution: {integrity: sha512-dQK2FUMQtowVP00mtIksrlZhdFXQZPC+taih1q4CvPZ5vqdxR/LKBaFg0oAfzd1GlHZXXSPdQfzQnt+ViGvEIQ==}
 
   '@peculiar/asn1-schema@2.9.4':
     resolution: {integrity: sha512-GjzePcT9Iw8NzeOPf73iNS9xM+TBhd/FilAfP+RQGkTMQJTVWtytN3JHJACCjf/ABNau5S7mS3g+DcuxmRgYEg==}
@@ -2848,6 +2833,9 @@ packages:
   package-manager-detector@1.8.0:
     resolution: {integrity: sha512-yQA4H19AmPEoMUeavPMDIe1higySl/gH/yaQrkT/s07Qp+7pp2hYz30N3z2l5BkjVkF9Ow6o0wjJamm2y7Sn0A==}
 
+  pako@1.0.11:
+    resolution: {integrity: sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw==}
+
   parent-module@1.0.1:
     resolution: {integrity: sha512-GQ2EWRpQV8/o+Aw8YqtfZZPfNRWZYkbidE9k5rpl/hC3vtHHBfGm2Ifi6qWV+coDGkrUKZAxE3Lot5kcsRlh+g==}
     engines: {node: '>=6'}
@@ -2880,6 +2868,9 @@ packages:
   pathval@2.0.1:
     resolution: {integrity: sha512-//nshmD55c46FuFw26xV/xFAaB5HF9Xdap7HJBBnrKdAd6/GxDBaNA1870O79+9ueg61cZLSVc+OaFlfmObYVQ==}
     engines: {node: '>= 14.16'}
+
+  pdf-lib@1.17.1:
+    resolution: {integrity: sha512-V/mpyJAoTsN4cnP31vc0wfNA1+p20evqqnap0KLoRUN0Yk/p3wN52DOEsL4oBFcLdb76hlpKPtzJIgo67j/XLw==}
 
   pdfjs-dist@6.1.200:
     resolution: {integrity: sha512-o8MolyzirkkLrcdsae/HEOiIcXWI7DS5zGpvqW8xTC2YUsW30rltFw2bDGvw/fskUdEMrQm2br68jzDS5BH2vw==}
@@ -3303,6 +3294,9 @@ packages:
   ts-dedent@2.3.0:
     resolution: {integrity: sha512-JfJeIHke7y2egdGGgRAvpCwYFUsHlM2gPcrVOxFkznt/4uzQ7HFmvE63iFHVLBJNDuyDOQgijDK/tXH/f6Msjg==}
     engines: {node: '>=6.10'}
+
+  tslib@1.14.1:
+    resolution: {integrity: sha512-Xni35NKzjgMrwevysHTCArtLDpPvye8zV/0E4EyYn43P7/7qvQwPh9BGkHewbMulVntbigmcT7rdX3BNo9wRJg==}
 
   tslib@2.3.0:
     resolution: {integrity: sha512-N82ooyxVNm6h1riLCoyS9e3fuJ3AMG2zIZs2Gd1ATcSFjSA23Q0fzjjZeh0jbJvWVDZ0cJT8yaNNaaXHzueNjg==}
@@ -4225,28 +4219,13 @@ snapshots:
 
   '@noble/hashes@2.4.0': {}
 
-  '@office-open/core@0.14.6':
+  '@pdf-lib/standard-fonts@1.0.0':
     dependencies:
-      '@noble/hashes': 2.4.0
-      '@office-open/xml': 0.14.6
-      fflate: 0.8.3
+      pako: 1.0.11
 
-  '@office-open/docx@0.14.6':
+  '@pdf-lib/upng@1.0.1':
     dependencies:
-      '@office-open/core': 0.14.6
-      '@office-open/xml': 0.14.6
-
-  '@office-open/pptx@0.14.6':
-    dependencies:
-      '@office-open/core': 0.14.6
-      '@office-open/xml': 0.14.6
-
-  '@office-open/xlsx@0.14.6':
-    dependencies:
-      '@office-open/core': 0.14.6
-      '@office-open/xml': 0.14.6
-
-  '@office-open/xml@0.14.6': {}
+      pako: 1.0.11
 
   '@peculiar/asn1-schema@2.9.4':
     dependencies:
@@ -6461,6 +6440,8 @@ snapshots:
 
   package-manager-detector@1.8.0: {}
 
+  pako@1.0.11: {}
+
   parent-module@1.0.1:
     dependencies:
       callsites: 3.1.0
@@ -6483,6 +6464,13 @@ snapshots:
   pathe@1.1.2: {}
 
   pathval@2.0.1: {}
+
+  pdf-lib@1.17.1:
+    dependencies:
+      '@pdf-lib/standard-fonts': 1.0.0
+      '@pdf-lib/upng': 1.0.1
+      pako: 1.0.11
+      tslib: 1.14.1
 
   pdfjs-dist@6.1.200:
     optionalDependencies:
@@ -6968,6 +6956,8 @@ snapshots:
       typescript: 5.9.3
 
   ts-dedent@2.3.0: {}
+
+  tslib@1.14.1: {}
 
   tslib@2.3.0: {}
 

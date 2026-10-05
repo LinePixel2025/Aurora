@@ -11,10 +11,12 @@ import {
   Bot,
   ClipboardCopy,
   FilePenLine,
+  FileDown,
   FileText,
   FolderOpen,
   FolderSearch,
   Globe,
+  Info,
   ImageIcon,
   ListChecks,
   MessageSquare,
@@ -24,6 +26,8 @@ import {
   Search,
   SettingsGear,
   Terminal,
+  Eye,
+  Code2,
   Wrench,
 } from './icons.js'
 
@@ -35,8 +39,12 @@ const TOOL_ICONS: Record<string, Component> = {
   // 精确局部替换（v12，docs/06 §11.6）：与 read/write 同族的文件形 + 一支笔
   edit_file: FilePenLine,
   office_read: FileText,
+  office_help: Info,
   office_create: FileText,
   office_edit: FilePenLine,
+  office_render: Eye,
+  office_pdf: FileDown,
+  office_raw_edit: Code2,
   list_dir: FolderOpen,
   open_path: FolderOpen,
   // 搜索层（v12，docs/06 §11.5）：grep 按**内容**找（放大镜）、glob 按**文件名**找（文件夹 + 放大镜）

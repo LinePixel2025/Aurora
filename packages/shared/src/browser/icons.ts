@@ -71,6 +71,7 @@ export {
   Terminal,
   FileText,
   FilePenLine,
+  FileDown,
   FolderOpen,
   Globe,
   Bell,
@@ -80,6 +81,8 @@ export {
   // 搜索层（grep / glob，v12）
   Search,
   FolderSearch,
+  Eye,
+  Code2,
   // 子代理（独立页面）
   Bot,
   // 自动化（独立页面，docs/13）：入口 / 编辑器 / 历史 / 启停

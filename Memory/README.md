@@ -13,7 +13,7 @@
 | 2026-10-05 | Center Web 的 mobile-single-column 探针读在动画中途，基线就红 | center, 验收, 探针, 坑 | [2026-10-05-cweb-mobile-drawer-probe.md](2026-10-05-cweb-mobile-drawer-probe.md) |
 | 2026-10-05 | 应用图标改设计稿，同时修掉托盘与 exe 图标在打包后丢失 | 图标, 打包, electron-builder, 坑 | [2026-10-05-app-icon-and-packaging.md](2026-10-05-app-icon-and-packaging.md) |
 | 2026-10-05 | Windows 游戏模式没有公开运行态 API，需用 Game Bar 进程与独占全屏状态识别 | 游戏模式, Windows, 性能, 坑 | [2026-10-05-windows-game-mode-detection.md](2026-10-05-windows-game-mode-detection.md) |
-| 2026-10-05 | Office 主路径改为结构化 worker，COM 只做显式兜底 | Office, worker, agent, snapshot, 坑 | [2026-10-05-office-structured-tools.md](2026-10-05-office-structured-tools.md) |
+| 2026-10-05 | Office 主路径改为包内 OfficeCLI，渲染与 PDF 走页面回看 | Office, OfficeCLI, agent, snapshot, 坑 | [2026-10-05-office-structured-tools.md](2026-10-05-office-structured-tools.md) |
 | 2026-10-05 | 自感知后台模型必须严格、记忆过期只停用不删除 | 自感知, 模型, 记忆, 隐私, 坑 | [2026-10-05-awareness-model-and-memory-expiry.md](2026-10-05-awareness-model-and-memory-expiry.md) |
 | 2026-10-05 | 自感知建议执行必须先持久化新会话再激活 | 自感知, session, IPC, 坑 | [2026-10-05-awareness-execute-session-order.md](2026-10-05-awareness-execute-session-order.md) |
 | 2026-10-05 | 自感知覆盖图片与常用文档，Office 走结构化提取 | 自感知, 文档, 图片, officeparser, 性能 | [2026-10-05-awareness-file-types-office-extraction.md](2026-10-05-awareness-file-types-office-extraction.md) |

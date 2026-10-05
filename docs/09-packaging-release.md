@@ -89,7 +89,9 @@ electron-builder 首次打包会下载两样东西：Electron 发行包与打包
 - `extraResources` 把 `skills/` 放到 `resources/skills`（SKILL.md 包不能进 asar）、把
   `resources/tray.png` 放到 `resources/`（托盘图标按 `process.resourcesPath` 查，
   不显式带上就找不到，托盘会退回内置兜底圆点），并把 `HarmonyOS-Sans-LICENSE.txt`
-  放到 `resources/licenses/`；字体 TTF 由 shared 构建复制后经 Vite 发射进
+  放到 `resources/licenses/`；Office 结构化工具使用的固定版 OfficeCLI v1.0.153
+  （Windows x64，SHA256 固定）和 Apache-2.0 许可证随包放到 `resources/officecli/`
+  与 `resources/licenses/`。字体 TTF 由 shared 构建复制后经 Vite 发射进
   `out/renderer/assets`，随 `out/**/*` 一并进入安装包；
 - `signExecutable: false`：**只跳过签名，保留 exe 资源编辑**（图标 / 版本信息照常写入）。
   不要退回 `signAndEditExecutable: false` —— 那会连 exe 图标一起跳掉，产物停在任何

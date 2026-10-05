@@ -41,10 +41,13 @@ describe('OfficePool', () => {
     const pool = new OfficePool({ fork: () => child, timeoutMs: 1000 })
     const pending = pool.run({
       action: 'read',
+      timeoutMs: 1000,
       path: 'a.docx',
       format: 'docx',
+      mode: 'summary',
       offset: 0,
       limit: 10,
+      depth: 1,
     })
     const request = child.messages[0] as { id: string }
     child.reply({
@@ -56,10 +59,13 @@ describe('OfficePool', () => {
 
     const second = pool.run({
       action: 'read',
+      timeoutMs: 1000,
       path: 'b.docx',
       format: 'docx',
+      mode: 'summary',
       offset: 0,
       limit: 10,
+      depth: 1,
     })
     const request2 = child.messages[1] as { id: string }
     child.reply({
@@ -80,17 +86,29 @@ describe('OfficePool', () => {
     const pool = new OfficePool({ fork, timeoutMs: 50 })
     const pending = pool.run({
       action: 'read',
+      timeoutMs: 50,
       path: 'a.docx',
       format: 'docx',
+      mode: 'summary',
       offset: 0,
       limit: 10,
+      depth: 1,
     })
     await vi.advanceTimersByTimeAsync(60)
     await expect(pending).resolves.toMatchObject({ ok: false })
     expect(first.killed).toBe(true)
     expect(fork).toHaveBeenCalledTimes(1)
 
-    void pool.run({ action: 'read', path: 'b.docx', format: 'docx', offset: 0, limit: 10 })
+    void pool.run({
+      action: 'read',
+      timeoutMs: 50,
+      path: 'b.docx',
+      format: 'docx',
+      mode: 'summary',
+      offset: 0,
+      limit: 10,
+      depth: 1,
+    })
     expect(fork).toHaveBeenCalledTimes(2)
     vi.useRealTimers()
   })
@@ -100,10 +118,13 @@ describe('OfficePool', () => {
     const pool = new OfficePool({ fork: () => child, timeoutMs: 1000 })
     const pending = pool.run({
       action: 'read',
+      timeoutMs: 1000,
       path: 'a.docx',
       format: 'docx',
+      mode: 'summary',
       offset: 0,
       limit: 10,
+      depth: 1,
     })
     child.exit(9)
     await expect(pending).resolves.toMatchObject({

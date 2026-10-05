@@ -1,956 +1,606 @@
 /**
- * Office worker —— 运行在 Electron utilityProcess 中。
+ * Office utility worker.
  *
- * 主进程只做路径边界、快照与原子替换；本文件负责结构化读取 / 生成 / patch。
- * 这里不能 import electron，也不能触发 Office COM。解析或写入失败会如实回传，
- * 不会自动降级到 PowerShell。
+ * It runs inside `utilityProcess` and delegates document work to the pinned
+ * OfficeCLI binary. No Electron or DOM APIs are used here.
  */
 import { promises as fs } from 'node:fs'
-import { extname } from 'node:path'
-import type { OfficeFormat } from '@aurora/agent-core'
+import { basename, dirname, extname, join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { PDFDocument } from 'pdf-lib'
+import type { OfficeBatchCommand, OfficeFormat, OfficeRawOperation } from '@aurora/agent-core'
+import {
+  OfficeCliRunner,
+  parseOfficeCliError,
+  type OfficeCliEnvelope,
+  type OfficeCliRunOptions,
+} from './office-cli.js'
 import type {
+  OfficeWorkerPdfResult,
+  OfficeWorkerReadResult,
+  OfficeWorkerRenderResult,
   OfficeWorkerRequest,
   OfficeWorkerResponse,
-  OfficeWorkerReadResult,
   OfficeWorkerWriteResult,
 } from './office-protocol.js'
 
 type UnknownRecord = Record<string, unknown>
 
-const DOCX_BULLET_REFERENCE = 'aurora-bullets'
-const DOCX_NUMBER_REFERENCE = 'aurora-numbered'
-const DOCX_LIST_LEVEL_COUNT = 9
-let docxListInstance = 0
-
-interface OfficeLibs {
-  docx: {
-    generateDocument(options: unknown): Promise<unknown>
-    patchDocument(options: UnknownRecord): Promise<unknown>
-    parseDocument(data: unknown): Promise<unknown>
-  }
-  xlsx: {
-    generateWorkbook(options: unknown): Promise<unknown>
-    patchWorkbook(options: UnknownRecord): Promise<unknown>
-    parseWorkbook(data: unknown): Promise<unknown>
-  }
-  pptx: {
-    generatePresentation(options: unknown): Promise<unknown>
-    patchPresentation(options: UnknownRecord): Promise<unknown>
-    parsePresentation(data: unknown): Promise<unknown>
+export interface OfficeWorkerDeps {
+  runner?: OfficeCliRunner
+  cliPath?: string
+  logger?: {
+    debug(message: string, detail?: Record<string, unknown>): void
+    warn(message: string, detail?: Record<string, unknown>): void
   }
 }
 
-let libsPromise: Promise<OfficeLibs> | undefined
+class OfficeCliOperationError extends Error {
+  readonly code?: string
+  readonly suggestion?: string
 
-async function loadLibs(): Promise<OfficeLibs> {
-  libsPromise ??= (async () => {
-    const [docx, xlsx, pptx] = await Promise.all([
-      import('@office-open/docx'),
-      import('@office-open/xlsx'),
-      import('@office-open/pptx'),
-    ])
-    return {
-      docx: {
-        generateDocument: async (options) =>
-          await (docx.generateDocument as (value: unknown) => Promise<unknown>)(options),
-        patchDocument: async (options) =>
-          await (docx.patchDocument as unknown as (value: UnknownRecord) => Promise<unknown>)(
-            options,
-          ),
-        parseDocument: async (data) =>
-          await (docx.parseDocument as (value: unknown) => Promise<unknown>)(data),
-      },
-      xlsx: {
-        generateWorkbook: async (options) =>
-          await (xlsx.generateWorkbook as (value: unknown) => Promise<unknown>)(options),
-        patchWorkbook: async (options) =>
-          await (xlsx.patchWorkbook as unknown as (value: UnknownRecord) => Promise<unknown>)(
-            options,
-          ),
-        parseWorkbook: async (data) =>
-          await (xlsx.parseWorkbook as (value: unknown) => Promise<unknown>)(data),
-      },
-      pptx: {
-        generatePresentation: async (options) =>
-          await (pptx.generatePresentation as (value: unknown) => Promise<unknown>)(options),
-        patchPresentation: async (options) =>
-          await (pptx.patchPresentation as unknown as (value: UnknownRecord) => Promise<unknown>)(
-            options,
-          ),
-        parsePresentation: async (data) =>
-          await (pptx.parsePresentation as (value: unknown) => Promise<unknown>)(data),
-      },
-    }
-  })()
-  return libsPromise
+  constructor(message: string, code?: string, suggestion?: string) {
+    super(message)
+    this.name = 'OfficeCliOperationError'
+    this.code = code
+    this.suggestion = suggestion
+  }
 }
 
 export async function handleOfficeRequest(
   request: OfficeWorkerRequest,
+  deps: OfficeWorkerDeps = {},
 ): Promise<OfficeWorkerResponse> {
   try {
+    const runner = resolveRunner(deps)
     if (request.action === 'read') {
-      const result = await readOffice(
-        request.path,
-        request.format,
-        request.target,
-        request.offset,
-        request.limit,
-      )
-      return { id: request.id, ok: true, read: result }
+      const read = await readOffice(runner, request, request.timeoutMs)
+      return { id: request.id, ok: true, read }
+    }
+    if (request.action === 'help') {
+      const content = await helpOffice(runner, request, request.timeoutMs)
+      return { id: request.id, ok: true, help: content }
     }
     if (request.action === 'create') {
-      const result = await createOffice(request)
-      return { id: request.id, ok: true, write: result }
+      const write = await createOffice(runner, request, deps.logger)
+      return { id: request.id, ok: true, write }
     }
-    const result = await editOffice(request)
-    return { id: request.id, ok: true, write: result }
+    if (request.action === 'edit') {
+      const write = await editOffice(runner, request, deps.logger)
+      return { id: request.id, ok: true, write }
+    }
+    if (request.action === 'raw-edit') {
+      const write = await rawEditOffice(runner, request, deps.logger)
+      return { id: request.id, ok: true, write }
+    }
+    if (request.action === 'render') {
+      const render = await renderOffice(runner, request, deps.logger)
+      return { id: request.id, ok: true, render }
+    }
+    const pdf = await pdfOffice(runner, request, deps.logger)
+    return { id: request.id, ok: true, pdf }
   } catch (error) {
+    const item = error instanceof OfficeCliOperationError ? error : undefined
     return {
       id: request.id,
       ok: false,
-      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      error: error instanceof Error ? error.message : String(error),
+      ...(item?.code === undefined ? {} : { code: item.code }),
+      ...(item?.suggestion === undefined ? {} : { suggestion: item.suggestion }),
     }
   }
+}
+
+function resolveRunner(deps: OfficeWorkerDeps): OfficeCliRunner {
+  if (deps.runner !== undefined) return deps.runner
+  const cliPath = deps.cliPath ?? process.env['AURORA_OFFICECLI_PATH'] ?? ''
+  if (cliPath === '') {
+    throw new Error('AURORA_OFFICECLI_PATH 未设置，Office worker 不可用')
+  }
+  return new OfficeCliRunner({ binaryPath: cliPath })
 }
 
 async function readOffice(
-  path: string,
-  format: OfficeFormat,
-  target: string | undefined,
-  offset: number,
-  limit: number,
+  runner: OfficeCliRunner,
+  request: Extract<OfficeWorkerRequest, { action: 'read' }>,
+  timeoutMs: number,
 ): Promise<OfficeWorkerReadResult> {
-  const libs = await loadLibs()
-  const data = await fs.readFile(path)
-  if (format === 'docx') {
-    const parsed = await libs.docx.parseDocument(data)
-    return summarizeDocx(parsed, offset, limit)
+  const options = cliOptions(timeoutMs)
+  if (request.mode === 'text') {
+    const start = request.offset + 1
+    const end = Math.max(start, request.offset + request.limit)
+    const run = await runner.run(
+      ['view', request.path, 'text', '--start', String(start), '--end', String(end)],
+      options,
+    )
+    if (run.code !== 0 || run.timedOut) throw cliRunError(run)
+    const text = truncatedText(run.stdout, Math.min(30_000, request.limit * 800))
+    return { ...text, warnings: [] }
   }
-  if (format === 'xlsx') {
-    const parsed = await libs.xlsx.parseWorkbook(data)
-    return summarizeXlsx(parsed, target, offset, limit)
+
+  let args: string[]
+  if (request.mode === 'summary') {
+    const [outline, stats] = await Promise.all([
+      runEnvelope<unknown>(runner, ['view', request.path, 'outline', '--json'], options),
+      runEnvelope<unknown>(runner, ['view', request.path, 'stats', '--json'], options),
+    ])
+    return renderJson({ outline, stats }, Math.min(30_000, request.limit * 800))
   }
-  const parsed = await libs.pptx.parsePresentation(data)
-  return summarizePptx(parsed, target, offset, limit)
+  if (request.mode === 'element') {
+    args = [
+      'get',
+      request.path,
+      requiredTarget(request.target),
+      '--depth',
+      String(request.depth),
+      '--json',
+    ]
+  } else if (request.mode === 'query') {
+    args = ['query', request.path, requiredTarget(request.target), '--json']
+  } else if (request.mode === 'issues') {
+    args = ['view', request.path, 'issues', '--limit', String(request.limit), '--json']
+  } else {
+    args = ['validate', request.path, '--json']
+  }
+  const data = await runEnvelope<unknown>(runner, args, options)
+  return renderJson(data, Math.min(30_000, request.limit * 800))
+}
+
+async function helpOffice(
+  runner: OfficeCliRunner,
+  request: Extract<OfficeWorkerRequest, { action: 'help' }>,
+  timeoutMs: number,
+): Promise<{ content: string; truncated: boolean }> {
+  const args = ['help', request.format]
+  if (request.verb !== undefined) args.push(request.verb)
+  if (request.element !== undefined) args.push(request.element)
+  const run = await runner.run(args, cliOptions(timeoutMs))
+  if (run.code !== 0 || run.timedOut) throw cliRunError(run)
+  return truncatedText(run.stdout, 30_000)
 }
 
 async function createOffice(
+  runner: OfficeCliRunner,
   request: Extract<OfficeWorkerRequest, { action: 'create' }>,
+  logger: OfficeWorkerDeps['logger'],
 ): Promise<OfficeWorkerWriteResult> {
-  const libs = await loadLibs()
-  let output: unknown
+  await fs.mkdir(dirname(request.outputPath), { recursive: true })
+  const options = cliOptions(request.timeoutMs)
   if (request.templatePath !== undefined) {
-    const template = await fs.readFile(request.templatePath)
-    output = await patchTemplate(
-      libs,
-      request.format,
-      template,
-      request.templateData ?? {},
-      request.content,
-    )
+    const dataFile = await writeTempJson(request.outputPath, 'template', request.templateData ?? {})
+    try {
+      await runEnvelope(
+        runner,
+        [
+          'merge',
+          request.templatePath,
+          request.outputPath,
+          '--data',
+          dataFile,
+          '--force',
+          '--json',
+        ],
+        options,
+      )
+    } finally {
+      await fs.rm(dataFile, { force: true }).catch(() => undefined)
+    }
   } else {
-    output = await generateFromContent(libs, request.format, request.content)
+    await runEnvelope(runner, ['create', request.outputPath, '--json'], options)
   }
-  const bytes = toBytes(output)
-  await fs.writeFile(request.outputPath, bytes)
-  await validateOutput(libs, request.format, request.outputPath)
-  return { bytes: bytes.byteLength, warnings: [] }
+  if (request.commands.length > 0) {
+    await applyBatch(runner, request.outputPath, request.commands, request.timeoutMs)
+  }
+  const warnings = await validateAndCollectWarnings(
+    runner,
+    request.outputPath,
+    request.timeoutMs,
+    logger,
+  )
+  return { bytes: await fileSize(request.outputPath), warnings }
 }
 
 async function editOffice(
+  runner: OfficeCliRunner,
   request: Extract<OfficeWorkerRequest, { action: 'edit' }>,
+  logger: OfficeWorkerDeps['logger'],
 ): Promise<OfficeWorkerWriteResult> {
-  const libs = await loadLibs()
-  let bytes = new Uint8Array(await fs.readFile(request.sourcePath))
-  const warnings: string[] = []
-  for (const [index, rawOperation] of request.operations.entries()) {
-    const operation = asRecord(rawOperation)
-    const type = stringOf(operation?.['type'])
-    if (operation === undefined || type === undefined || type === '') {
-      throw new Error(`第 ${index + 1} 条操作缺少 type`)
-    }
-    bytes = await applyOperation(libs, request.format, bytes, type, operation, warnings)
-  }
-  await fs.writeFile(request.outputPath, bytes)
-  await validateOutput(libs, request.format, request.outputPath)
-  return { bytes: bytes.byteLength, warnings }
-}
-
-async function generateFromContent(
-  libs: OfficeLibs,
-  format: OfficeFormat,
-  content: unknown,
-): Promise<unknown> {
-  const value = asRecord(content) ?? {}
-  if (format === 'docx') return await libs.docx.generateDocument(await docxOptions(value))
-  if (format === 'xlsx') return await libs.xlsx.generateWorkbook(xlsxOptions(value))
-  return await libs.pptx.generatePresentation(await pptxOptions(value))
-}
-
-async function patchTemplate(
-  libs: OfficeLibs,
-  format: OfficeFormat,
-  template: Uint8Array,
-  templateData: Record<string, unknown>,
-  appendContent: unknown,
-): Promise<unknown> {
-  if (format === 'docx') {
-    const patched = await libs.docx.patchDocument({
-      data: template,
-      outputType: 'nodebuffer',
-      placeholders: mapDocxPlaceholders(templateData),
-    })
-    return appendContent === undefined
-      ? patched
-      : await appendDocxChildren(libs, toBytes(patched), asRecord(appendContent) ?? {})
-  }
-  if (format === 'xlsx') {
-    const appendSheets = asRecord(appendContent)?.['sheets']
-    return await libs.xlsx.patchWorkbook({
-      data: template,
-      outputType: 'nodebuffer',
-      placeholders: templateData,
-      ...(Array.isArray(appendSheets) && appendSheets.length > 0
-        ? { worksheets: { append: appendSheets.map((sheet) => xlsxSheet(asRecord(sheet) ?? {})) } }
-        : {}),
-    })
-  }
-  const appendSlides = asRecord(appendContent)?.['slides']
-  return await libs.pptx.patchPresentation({
-    data: template,
-    outputType: 'nodebuffer',
-    placeholders: mapPptxPlaceholders(templateData),
-    ...(Array.isArray(appendSlides) && appendSlides.length > 0
-      ? {
-          slides: {
-            append: await Promise.all(
-              appendSlides.map((slide) => pptxSlide(asRecord(slide) ?? {})),
-            ),
-          },
-        }
-      : {}),
-  })
-}
-
-async function applyOperation(
-  libs: OfficeLibs,
-  format: OfficeFormat,
-  bytes: Uint8Array,
-  type: string,
-  operation: UnknownRecord,
-  warnings: string[],
-): Promise<Uint8Array> {
-  if (format === 'docx') return await applyDocxOperation(libs, bytes, type, operation, warnings)
-  if (format === 'xlsx') return await applyXlsxOperation(libs, bytes, type, operation, warnings)
-  return await applyPptxOperation(libs, bytes, type, operation, warnings)
-}
-
-async function applyDocxOperation(
-  libs: OfficeLibs,
-  bytes: Uint8Array,
-  type: string,
-  operation: UnknownRecord,
-  warnings: string[],
-): Promise<Uint8Array> {
-  if (type === 'replace_text') {
-    const find = requiredString(operation, 'find')
-    const replace = stringOf(operation['replace']) ?? ''
-    return toBytes(
-      await libs.docx.patchDocument({
-        data: bytes,
-        outputType: 'nodebuffer',
-        findReplace: { [find]: docxPatchValue(replace) },
-      }),
-    )
-  }
-  if (type === 'set_placeholders') {
-    return toBytes(
-      await libs.docx.patchDocument({
-        data: bytes,
-        outputType: 'nodebuffer',
-        placeholders: mapDocxPlaceholders(asRecord(operation['values']) ?? {}),
-      }),
-    )
-  }
-  if (type === 'append_content') {
-    return await appendDocxChildren(libs, bytes, asRecord(operation['content']) ?? {})
-  }
-  if (type === 'replace_section') {
-    const index = requiredInt(operation, 'index')
-    return await replaceDocxSection(libs, bytes, index, asRecord(operation['content']) ?? {})
-  }
-  throw unsupportedOperation('DOCX', type, warnings)
-}
-
-async function applyXlsxOperation(
-  libs: OfficeLibs,
-  bytes: Uint8Array,
-  type: string,
-  operation: UnknownRecord,
-  warnings: string[],
-): Promise<Uint8Array> {
-  if (type === 'replace_text') {
-    const find = requiredString(operation, 'find')
-    const replace = scalarOf(operation['replace'])
-    return toBytes(
-      await libs.xlsx.patchWorkbook({
-        data: bytes,
-        outputType: 'nodebuffer',
-        findReplace: { [find]: replace },
-      }),
-    )
-  }
-  if (type === 'set_placeholders') {
-    return toBytes(
-      await libs.xlsx.patchWorkbook({
-        data: bytes,
-        outputType: 'nodebuffer',
-        placeholders: asRecord(operation['values']) ?? {},
-      }),
-    )
-  }
-  if (type === 'append_sheets') {
-    const sheets = arrayOfRecords(operation['sheets'])
-    return toBytes(
-      await libs.xlsx.patchWorkbook({
-        data: bytes,
-        outputType: 'nodebuffer',
-        worksheets: { append: sheets.map((sheet) => xlsxSheet(sheet)) },
-      }),
-    )
-  }
-  if (type === 'remove_sheets') {
-    const names = arrayOfStrings(operation['names'])
-    if (names.length === 0) throw new Error('remove_sheets.names 不能为空')
-    return toBytes(
-      await libs.xlsx.patchWorkbook({
-        data: bytes,
-        outputType: 'nodebuffer',
-        worksheets: { remove: names },
-      }),
-    )
-  }
-  if (type === 'set_cells') {
-    const parsed = asRecord(await libs.xlsx.parseWorkbook(bytes))
-    if (parsed === undefined) throw new Error('无法解析工作簿以设置单元格')
-    for (const cell of arrayOfRecords(operation['cells'])) {
-      setWorkbookCell(parsed, cell)
-    }
-    warnings.push(
-      'set_cells 会重建工作簿；模板中的极少数未知扩展若未被解析器识别，可能在保存时被规范化。',
-    )
-    return toBytes(await libs.xlsx.generateWorkbook(parsed))
-  }
-  throw unsupportedOperation('XLSX', type, warnings)
-}
-
-async function applyPptxOperation(
-  libs: OfficeLibs,
-  bytes: Uint8Array,
-  type: string,
-  operation: UnknownRecord,
-  warnings: string[],
-): Promise<Uint8Array> {
-  if (type === 'replace_text') {
-    const find = requiredString(operation, 'find')
-    const replace = stringOf(operation['replace']) ?? ''
-    return toBytes(
-      await libs.pptx.patchPresentation({
-        data: bytes,
-        outputType: 'nodebuffer',
-        findReplace: { [find]: replace },
-      }),
-    )
-  }
-  if (type === 'set_placeholders') {
-    return toBytes(
-      await libs.pptx.patchPresentation({
-        data: bytes,
-        outputType: 'nodebuffer',
-        placeholders: mapPptxPlaceholders(asRecord(operation['values']) ?? {}),
-      }),
-    )
-  }
-  if (type === 'append_slides') {
-    const slides = await Promise.all(
-      arrayOfRecords(operation['slides']).map((slide) => pptxSlide(slide)),
-    )
-    return toBytes(
-      await libs.pptx.patchPresentation({
-        data: bytes,
-        outputType: 'nodebuffer',
-        slides: { append: slides },
-      }),
-    )
-  }
-  if (type === 'replace_slides') {
-    const replace: Record<number, unknown> = {}
-    for (const item of arrayOfRecords(operation['slides'])) {
-      replace[requiredInt(item, 'index')] = await pptxSlide(asRecord(item['slide']) ?? {})
-    }
-    return toBytes(
-      await libs.pptx.patchPresentation({
-        data: bytes,
-        outputType: 'nodebuffer',
-        slides: { replace },
-      }),
-    )
-  }
-  if (type === 'remove_slides') {
-    const indexes = arrayOfNumbers(operation['indexes'])
-    if (indexes.length === 0) throw new Error('remove_slides.indexes 不能为空')
-    return toBytes(
-      await libs.pptx.patchPresentation({
-        data: bytes,
-        outputType: 'nodebuffer',
-        slides: { remove: indexes },
-      }),
-    )
-  }
-  throw unsupportedOperation('PPTX', type, warnings)
-}
-
-function unsupportedOperation(format: string, type: string, warnings: string[]): Error {
-  warnings.push(`${format} 不支持操作 ${type}`)
-  return new Error(`${format} 不支持操作 ${type}；请改用支持的结构化操作或由用户明确要求 COM 兜底`)
-}
-
-async function validateOutput(libs: OfficeLibs, format: OfficeFormat, path: string): Promise<void> {
-  const data = await fs.readFile(path)
-  if (format === 'docx') {
-    await libs.docx.parseDocument(data)
-    return
-  }
-  if (format === 'xlsx') {
-    await libs.xlsx.parseWorkbook(data)
-    return
-  }
-  await libs.pptx.parsePresentation(data)
-}
-
-async function docxOptions(content: UnknownRecord): Promise<UnknownRecord> {
-  return {
-    ...(typeof content['title'] === 'string' ? { title: content['title'] } : {}),
-    sections: [{ children: await docxChildren(content) }],
-    numbering: docxNumberingOptions(),
-  }
-}
-
-async function docxChildren(content: UnknownRecord): Promise<unknown[]> {
-  const children: unknown[] = []
-  if (typeof content['title'] === 'string' && content['title'].trim() !== '') {
-    children.push({
-      paragraph: {
-        heading: 'Heading1',
-        children: [{ text: content['title'], bold: true, size: 40 }],
-      },
-    })
-  }
-  let pageBreakBefore = false
-  for (const rawBlock of Array.isArray(content['blocks']) ? content['blocks'] : []) {
-    const block = asRecord(rawBlock)
-    if (block === undefined) continue
-    const type = stringOf(block['type'])
-    if (type === 'pageBreak') {
-      pageBreakBefore = true
-      continue
-    }
-    const paragraphOptions: UnknownRecord = pageBreakBefore ? { pageBreakBefore: true } : {}
-    pageBreakBefore = false
-    if (type === 'heading') {
-      const level = clampInt(block['level'], 1, 6, 1)
-      children.push({
-        paragraph: {
-          ...paragraphOptions,
-          heading: `Heading${level}`,
-          children: [{ text: stringOf(block['text']) ?? '' }],
-        },
-      })
-      continue
-    }
-    if (type === 'paragraph') {
-      children.push({
-        paragraph: { ...paragraphOptions, children: [{ text: stringOf(block['text']) ?? '' }] },
-      })
-      continue
-    }
-    if (type === 'bullets' || type === 'numbered') {
-      const items = arrayOfStrings(block['items'])
-      const level = clampInt(block['level'], 0, DOCX_LIST_LEVEL_COUNT - 1, 0)
-      const instance = docxListInstance++
-      for (const item of items) {
-        children.push({
-          paragraph: {
-            ...(pageBreakBefore ? { pageBreakBefore: true } : {}),
-            numbering: {
-              reference: type === 'bullets' ? DOCX_BULLET_REFERENCE : DOCX_NUMBER_REFERENCE,
-              level,
-              instance,
-            },
-            children: [{ text: item }],
-          },
-        })
-        pageBreakBefore = false
-      }
-      continue
-    }
-    if (type === 'table') {
-      const headers = Array.isArray(block['headers']) ? block['headers'] : []
-      const rows = Array.isArray(block['rows']) ? block['rows'] : []
-      children.push({
-        table: {
-          rows: [headers, ...rows].map((row) => ({
-            cells: (Array.isArray(row) ? row : []).map((cell) => ({
-              children: [{ paragraph: String(cell ?? '') }],
-            })),
-          })),
-        },
-      })
-      continue
-    }
-    if (type === 'image') {
-      const path = stringOf(block['path'])
-      if (path !== undefined) {
-        children.push({ paragraph: { children: await docxPicture(path, block) } })
-      }
-    }
-  }
-  if (pageBreakBefore) {
-    children.push({ paragraph: { pageBreakBefore: true, children: [] } })
-  }
-  return children
-}
-
-async function appendDocxChildren(
-  libs: OfficeLibs,
-  bytes: Uint8Array,
-  content: UnknownRecord,
-): Promise<Uint8Array> {
-  const document = await parseDocx(libs, bytes)
-  const sections = Array.isArray(document['sections']) ? document['sections'] : []
-  const children = await docxChildren(content)
-  if (sections.length === 0) {
-    sections.push({ children })
-  } else {
-    const index = sections.length - 1
-    const section = asRecord(sections[index]) ?? {}
-    section['children'] = [
-      ...(Array.isArray(section['children']) ? section['children'] : []),
-      ...children,
-    ]
-    sections[index] = section
-  }
-  document['sections'] = sections
-  return toBytes(await libs.docx.generateDocument(withDocxNumbering(document)))
-}
-
-async function replaceDocxSection(
-  libs: OfficeLibs,
-  bytes: Uint8Array,
-  index: number,
-  content: UnknownRecord,
-): Promise<Uint8Array> {
-  const document = await parseDocx(libs, bytes)
-  const sections = Array.isArray(document['sections']) ? document['sections'] : []
-  if (index < 0 || index >= sections.length) {
-    throw new Error(`DOCX section 不存在：${index}（当前共 ${sections.length} 节）`)
-  }
-  const section = asRecord(sections[index]) ?? {}
-  section['children'] = await docxChildren(content)
-  sections[index] = section
-  document['sections'] = sections
-  return toBytes(await libs.docx.generateDocument(withDocxNumbering(document)))
-}
-
-async function parseDocx(libs: OfficeLibs, bytes: Uint8Array): Promise<UnknownRecord> {
-  const parsed = asRecord(await libs.docx.parseDocument(bytes))
-  if (parsed === undefined) throw new Error('DOCX 解析结果不是对象')
-  return parsed
-}
-
-function withDocxNumbering(document: UnknownRecord): UnknownRecord {
-  return { ...document, numbering: mergeDocxNumbering(document['numbering']) }
-}
-
-function mergeDocxNumbering(existing: unknown): UnknownRecord {
-  const numbering = asRecord(existing) ?? {}
-  const current = arrayOfRecords(numbering['abstractNumberings']).filter(
-    (item) =>
-      item['reference'] !== DOCX_BULLET_REFERENCE && item['reference'] !== DOCX_NUMBER_REFERENCE,
+  await fs.mkdir(dirname(request.outputPath), { recursive: true })
+  await fs.copyFile(request.sourcePath, request.outputPath)
+  await applyBatch(runner, request.outputPath, request.commands, request.timeoutMs)
+  const warnings = await validateAndCollectWarnings(
+    runner,
+    request.outputPath,
+    request.timeoutMs,
+    logger,
   )
+  return { bytes: await fileSize(request.outputPath), warnings }
+}
+
+async function rawEditOffice(
+  runner: OfficeCliRunner,
+  request: Extract<OfficeWorkerRequest, { action: 'raw-edit' }>,
+  logger: OfficeWorkerDeps['logger'],
+): Promise<OfficeWorkerWriteResult> {
+  const commands = request.operations.map(rawOperationCommand)
+  await fs.mkdir(dirname(request.outputPath), { recursive: true })
+  await fs.copyFile(request.sourcePath, request.outputPath)
+  await applyBatch(runner, request.outputPath, commands, request.timeoutMs)
+  const warnings = await validateAndCollectWarnings(
+    runner,
+    request.outputPath,
+    request.timeoutMs,
+    logger,
+  )
+  return { bytes: await fileSize(request.outputPath), warnings }
+}
+
+async function renderOffice(
+  runner: OfficeCliRunner,
+  request: Extract<OfficeWorkerRequest, { action: 'render' }>,
+  logger: OfficeWorkerDeps['logger'],
+): Promise<OfficeWorkerRenderResult> {
+  await fs.mkdir(request.outputDir, { recursive: true })
+  if (request.mode === 'html') {
+    const file = join(request.outputDir, `${safeStem(request.sourcePath)}.html`)
+    const run = await runner.run(
+      ['view', request.sourcePath, 'html'],
+      cliOptions(request.timeoutMs),
+    )
+    if (run.code !== 0 || run.timedOut) throw cliRunError(run)
+    await fs.writeFile(file, run.stdout, 'utf8')
+    return { files: [file], warnings: [] }
+  }
+  const pages = await resolveRenderPages(runner, request, request.timeoutMs)
+  const selected = pages.slice(0, request.maxPages)
+  const files: string[] = []
+  for (const [index, page] of selected.entries()) {
+    const file = join(request.outputDir, `${safeStem(request.sourcePath)}-${index + 1}.png`)
+    await captureScreenshot(runner, request.sourcePath, file, page, request.timeoutMs)
+    files.push(file)
+  }
+  logger?.debug('Office 截图完成', { source: request.sourcePath, count: files.length })
   return {
-    ...numbering,
-    abstractNumberings: [...current, ...docxNumberingDefinitions()],
+    files,
+    ...(pages.length === 1 ? { pageCount: 1 } : { pageCount: pages.length }),
+    warnings: [],
   }
 }
 
-function docxNumberingOptions(): UnknownRecord {
-  return { abstractNumberings: docxNumberingDefinitions() }
-}
-
-function docxNumberingDefinitions(): UnknownRecord[] {
-  const bulletCharacters = ['•', '○', '▪']
-  return [
-    {
-      reference: DOCX_BULLET_REFERENCE,
-      properties: { multiLevelType: 'hybridMultilevel' },
-      levels: Array.from({ length: DOCX_LIST_LEVEL_COUNT }, (_, level) => ({
-        level,
-        format: 'bullet',
-        text: bulletCharacters[level % bulletCharacters.length] ?? '•',
-        alignment: 'left',
-        suffix: 'tab',
-        paragraph: { indent: { left: 720 * (level + 1), hanging: 360 } },
-      })),
-    },
-    {
-      reference: DOCX_NUMBER_REFERENCE,
-      properties: { multiLevelType: 'multilevel' },
-      levels: Array.from({ length: DOCX_LIST_LEVEL_COUNT }, (_, level) => ({
-        level,
-        format: 'decimal',
-        text: `%${level + 1}.`,
-        alignment: 'left',
-        suffix: 'tab',
-        paragraph: { indent: { left: 720 * (level + 1), hanging: 360 } },
-      })),
-    },
-  ]
-}
-
-async function docxPicture(path: string, block: UnknownRecord): Promise<unknown[]> {
-  const extension = normalizeImageType(path)
-  return [
-    {
-      picture: {
-        data: await readImage(path),
-        type: extension,
-        transformation: {
-          width: stringOf(block['width']) ?? '8cm',
-          height: stringOf(block['height']) ?? '6cm',
-        },
+async function pdfOffice(
+  runner: OfficeCliRunner,
+  request: Extract<OfficeWorkerRequest, { action: 'pdf' }>,
+  logger: OfficeWorkerDeps['logger'],
+): Promise<OfficeWorkerPdfResult> {
+  await fs.mkdir(dirname(request.outputPath), { recursive: true })
+  const scratch = await fs.mkdtemp(join(tmpdir(), 'aurora-office-pdf-'))
+  try {
+    const pages = await resolveRenderPages(
+      runner,
+      {
+        ...request,
+        action: 'render',
+        mode: 'screenshot',
+        outputDir: scratch,
+        maxPages: Number.MAX_SAFE_INTEGER,
       },
-    },
-  ]
-}
-
-function xlsxOptions(content: UnknownRecord): UnknownRecord {
-  const worksheets = Array.isArray(content['sheets']) ? content['sheets'] : []
-  return {
-    ...(typeof content['title'] === 'string' ? { title: content['title'] } : {}),
-    worksheets: worksheets.map((sheet) => xlsxSheet(asRecord(sheet) ?? {})),
-  }
-}
-
-function xlsxSheet(sheet: UnknownRecord): UnknownRecord {
-  const name = stringOf(sheet['name']) ?? 'Sheet1'
-  const rows = Array.isArray(sheet['rows']) ? sheet['rows'] : []
-  return {
-    name,
-    rows: rows.map((rawRow) => ({
-      cells: (Array.isArray(rawRow) ? rawRow : []).map(xlsxCell),
-    })),
-  }
-}
-
-function xlsxCell(value: unknown): UnknownRecord {
-  if (value === null || value === undefined) return { value: null }
-  if (typeof value !== 'object' || Array.isArray(value)) return { value }
-  const cell = value as UnknownRecord
-  const out: UnknownRecord = { value: cell['value'] ?? null }
-  const formula = cell['formula']
-  if (typeof formula === 'string') out['formula'] = { formula, value: cell['value'] ?? 0 }
-  else if (typeof formula === 'object' && formula !== null) out['formula'] = formula
-  const style: UnknownRecord = {}
-  if (typeof cell['numFmt'] === 'string') style['numFmt'] = cell['numFmt']
-  if (cell['bold'] === true || cell['italic'] === true) {
-    style['font'] = {
-      ...(cell['bold'] === true ? { bold: true } : {}),
-      ...(cell['italic'] === true ? { italic: true } : {}),
+      request.timeoutMs,
+    )
+    const images: string[] = []
+    for (const [index, page] of pages.entries()) {
+      const file = join(scratch, `page-${index + 1}.png`)
+      await captureScreenshot(runner, request.sourcePath, file, page, request.timeoutMs)
+      images.push(file)
     }
-  }
-  if (typeof cell['fill'] === 'string') style['fill'] = { type: 'solid', color: cell['fill'] }
-  if (typeof cell['alignment'] === 'string') style['alignment'] = { horizontal: cell['alignment'] }
-  if (Object.keys(style).length > 0) out['style'] = style
-  return out
-}
-
-async function pptxOptions(content: UnknownRecord): Promise<UnknownRecord> {
-  const slides = Array.isArray(content['slides']) ? content['slides'] : []
-  return {
-    ...(typeof content['title'] === 'string' ? { title: content['title'] } : {}),
-    slides: await Promise.all(slides.map((slide) => pptxSlide(asRecord(slide) ?? {}))),
-  }
-}
-
-async function pptxSlide(slide: UnknownRecord): Promise<UnknownRecord> {
-  const children: unknown[] = []
-  const title = stringOf(slide['title'])
-  if (title !== undefined) {
-    children.push({
-      shape: {
-        x: 50,
-        y: 40,
-        width: 860,
-        height: 60,
-        textBody: {
-          paragraphs: [
-            {
-              properties: { alignment: 'center' },
-              children: [{ text: title, size: 32, bold: true }],
-            },
-          ],
-        },
-      },
+    if (images.length === 0) {
+      throw new OfficeCliOperationError('没有可导出的页面', 'empty_document')
+    }
+    const pdf = await PDFDocument.create()
+    for (const imagePath of images) {
+      const bytes = await fs.readFile(imagePath)
+      const embedded = await pdf.embedPng(bytes)
+      const width = Math.max(1, embedded.width / 2)
+      const height = Math.max(1, embedded.height / 2)
+      const page = pdf.addPage([width, height])
+      page.drawImage(embedded, { x: 0, y: 0, width, height })
+    }
+    const bytes = await pdf.save()
+    await fs.writeFile(request.outputPath, bytes)
+    logger?.debug('Office PDF 合成完成', {
+      source: request.sourcePath,
+      pages: images.length,
+      bytes: bytes.byteLength,
     })
+    return { bytes: bytes.byteLength, pages: images.length, warnings: [] }
+  } finally {
+    await fs.rm(scratch, { recursive: true, force: true }).catch(() => undefined)
   }
-  const bullets = arrayOfStrings(slide['bullets'])
-  if (bullets.length > 0) {
-    children.push({
-      shape: {
-        x: 50,
-        y: 130,
-        width: 860,
-        height: 390,
-        textBody: {
-          paragraphs: bullets.map((bullet) => ({
-            properties: { bullet: { type: 'char', char: '•' } },
-            children: [{ text: bullet, size: 20 }],
-          })),
-        },
-      },
+}
+
+interface RenderPage {
+  args: string[]
+}
+
+async function resolveRenderPages(
+  runner: OfficeCliRunner,
+  request: Extract<OfficeWorkerRequest, { action: 'render' | 'pdf' }>,
+  timeoutMs: number,
+): Promise<RenderPage[]> {
+  if (request.action === 'render' && request.target !== undefined) {
+    return [{ args: ['--range', request.target] }]
+  }
+  if (request.action === 'render' && request.grid !== undefined) {
+    return [{ args: ['--grid', String(request.grid), ...pageRangeArgs(request)] }]
+  }
+  if (request.format === 'xlsx') {
+    const sheets = await workbookSheets(runner, request.sourcePath, timeoutMs)
+    if (sheets.length > 0) {
+      return sheets.map((sheet) => ({ args: ['--range', sheetRange(sheet)] }))
+    }
+  }
+  const start = request.pageStart ?? 1
+  const end =
+    request.pageEnd ?? (await pageCount(runner, request.sourcePath, request.format, timeoutMs))
+  const from = Math.max(1, start)
+  const to = Math.max(from, end)
+  const pages: RenderPage[] = []
+  for (let page = from; page <= to; page += 1) {
+    pages.push({ args: ['--start', String(page), '--end', String(page)] })
+  }
+  return pages
+}
+
+function pageRangeArgs(
+  request: Extract<OfficeWorkerRequest, { action: 'render' | 'pdf' }>,
+): string[] {
+  const args: string[] = []
+  if (request.pageStart !== undefined) args.push('--start', String(request.pageStart))
+  if (request.pageEnd !== undefined) args.push('--end', String(request.pageEnd))
+  return args
+}
+
+async function pageCount(
+  runner: OfficeCliRunner,
+  path: string,
+  format: OfficeFormat,
+  timeoutMs: number,
+): Promise<number> {
+  const options = cliOptions(timeoutMs)
+  if (format === 'pptx') {
+    const data = await runEnvelope<UnknownRecord>(
+      runner,
+      ['view', path, 'outline', '--json'],
+      options,
+    )
+    const slides = Array.isArray(data['slides']) ? data['slides'] : []
+    return Math.max(1, slides.length)
+  }
+  const data = await runEnvelope<UnknownRecord>(
+    runner,
+    ['view', path, 'stats', '--page-count', '--json'],
+    options,
+  )
+  return positiveNumber(data['pages']) ?? positiveNumber(data['pageCount']) ?? 1
+}
+
+interface WorkbookSheet {
+  name: string
+  rows: number
+  cols: number
+}
+
+async function workbookSheets(
+  runner: OfficeCliRunner,
+  path: string,
+  timeoutMs: number,
+): Promise<WorkbookSheet[]> {
+  const data = await runEnvelope<UnknownRecord>(
+    runner,
+    ['view', path, 'outline', '--json'],
+    cliOptions(timeoutMs),
+  )
+  const sheets = Array.isArray(data['sheets']) ? data['sheets'] : []
+  return sheets
+    .map((raw) => asRecord(raw))
+    .filter((item): item is UnknownRecord => item !== undefined)
+    .map((sheet) => ({
+      name: String(sheet['name'] ?? 'Sheet1'),
+      rows: positiveNumber(sheet['rows']) ?? 1,
+      cols: positiveNumber(sheet['cols']) ?? 1,
+    }))
+}
+
+function sheetRange(sheet: WorkbookSheet): string {
+  const endColumn = columnName(Math.max(1, sheet.cols))
+  return `${sheet.name}!A1:${endColumn}${Math.max(1, sheet.rows)}`
+}
+
+async function captureScreenshot(
+  runner: OfficeCliRunner,
+  sourcePath: string,
+  outputPath: string,
+  page: RenderPage,
+  timeoutMs: number,
+): Promise<void> {
+  const run = await runner.run(
+    [
+      'view',
+      sourcePath,
+      'screenshot',
+      '--render',
+      'html',
+      '--screenshot-width',
+      '1600',
+      ...page.args,
+      '-o',
+      outputPath,
+    ],
+    cliOptions(timeoutMs),
+  )
+  if (run.code !== 0 || run.timedOut) throw cliRunError(run)
+  const info = await fs.stat(outputPath).catch(() => undefined)
+  if (info === undefined || info.size === 0) {
+    throw new OfficeCliOperationError(
+      `OfficeCLI 未生成截图：${outputPath}。请确认系统已安装 Edge/Chrome/Chromium。`,
+      'no_screenshot_backend',
+    )
+  }
+}
+
+async function applyBatch(
+  runner: OfficeCliRunner,
+  path: string,
+  commands: readonly OfficeBatchCommand[],
+  timeoutMs: number,
+): Promise<void> {
+  const input = await writeTempJson(path, 'batch', commands)
+  try {
+    const { envelope, run } = await runner.runJson<UnknownRecord>(
+      ['batch', path, '--input', input, '--json'],
+      cliOptions(timeoutMs),
+    )
+    if (!envelope.success || run.code !== 0 || run.timedOut) {
+      throw batchError(envelope, run)
+    }
+  } finally {
+    await fs.rm(input, { force: true }).catch(() => undefined)
+  }
+}
+
+async function validateAndCollectWarnings(
+  runner: OfficeCliRunner,
+  path: string,
+  timeoutMs: number,
+  logger: OfficeWorkerDeps['logger'],
+): Promise<string[]> {
+  const options = cliOptions(timeoutMs)
+  await runEnvelope(runner, ['validate', path, '--json'], options)
+  try {
+    const issues = await runEnvelope<UnknownRecord>(
+      runner,
+      ['view', path, 'issues', '--limit', '20', '--json'],
+      options,
+    )
+    const list = Array.isArray(issues['issues']) ? issues['issues'] : []
+    return list
+      .map((raw) => asRecord(raw))
+      .filter((issue): issue is UnknownRecord => issue !== undefined)
+      .map((issue) => String(issue['message'] ?? issue['description'] ?? 'Office 问题'))
+      .slice(0, 10)
+  } catch (error) {
+    logger?.warn('OfficeCLI issues 检查失败，保留 validate 结果', {
+      error: String(error),
     })
-  }
-  const image = asRecord(slide['image'])
-  const imagePath = stringOf(image?.['path'])
-  if (imagePath !== undefined) {
-    children.push({
-      shape: {
-        x: numberOr(image?.['x'], 100),
-        y: numberOr(image?.['y'], 180),
-        width: numberOr(image?.['width'], 600),
-        height: numberOr(image?.['height'], 320),
-        properties: {
-          fill: {
-            type: 'blip',
-            data: await readImage(imagePath),
-            imageType: normalizeImageType(imagePath),
-          },
-        },
-      },
-    })
-  }
-  return {
-    children,
-    ...(typeof slide['notes'] === 'string' ? { notes: slide['notes'] } : {}),
+    return []
   }
 }
 
-function setWorkbookCell(workbook: UnknownRecord, cell: UnknownRecord): void {
-  const sheetName = requiredString(cell, 'sheet')
-  const address = requiredString(cell, 'address').toUpperCase()
-  const sheets = Array.isArray(workbook['worksheets']) ? workbook['worksheets'] : []
-  const sheet = sheets
-    .map(asRecord)
-    .find((item) => item !== undefined && item['name'] === sheetName)
-  if (sheet === undefined) throw new Error(`工作表不存在：${sheetName}`)
-  const { row, col } = parseA1(address)
-  const rows = Array.isArray(sheet['rows']) ? sheet['rows'] : (sheet['rows'] = [])
-  const rowItem = asRecord(rows[row]) ?? (rows[row] = { cells: [] })
-  const cells = Array.isArray(rowItem['cells']) ? rowItem['cells'] : (rowItem['cells'] = [])
-  const next: UnknownRecord = { value: cell['value'] ?? null }
-  if (typeof cell['formula'] === 'string') {
-    next['formula'] = { formula: cell['formula'], value: cell['value'] ?? 0 }
+async function runEnvelope<T>(
+  runner: OfficeCliRunner,
+  args: readonly string[],
+  options: OfficeCliRunOptions,
+): Promise<T> {
+  const { envelope, run } = await runner.runJson<T>(args, options)
+  if (!envelope.success || run.code !== 0 || run.timedOut) {
+    throw envelope.error === undefined ? cliRunError(run) : officeError(envelope.error)
   }
-  const style = asRecord(cell['style'])
-  if (style !== undefined) next['style'] = style
-  else if (typeof cell['numFmt'] === 'string') next['style'] = { numFmt: cell['numFmt'] }
-  cells[col] = next
+  return envelope.data as T
 }
 
-function parseA1(address: string): { row: number; col: number } {
-  const match = /^([A-Z]+)(\d+)$/.exec(address)
-  if (match === null) throw new Error(`单元格地址非法：${address}`)
-  const letters = match[1] ?? ''
-  const rowText = match[2] ?? ''
-  let col = 0
-  for (const char of letters) col = col * 26 + (char.charCodeAt(0) - 64)
-  const row = Number(rowText) - 1
-  if (row < 0 || col <= 0) throw new Error(`单元格地址非法：${address}`)
-  return { row, col: col - 1 }
-}
-
-function summarizeDocx(parsed: unknown, offset: number, limit: number): OfficeWorkerReadResult {
-  const doc = asRecord(parsed) ?? {}
-  const sections = Array.isArray(doc['sections']) ? doc['sections'] : []
-  const lines: string[] = []
-  let paragraphIndex = 0
-  for (const [sectionIndex, rawSection] of sections.entries()) {
-    lines.push(`## 第 ${sectionIndex + 1} 节`)
-    const section = asRecord(rawSection) ?? {}
-    for (const rawChild of Array.isArray(section['children']) ? section['children'] : []) {
-      const child = asRecord(rawChild) ?? {}
-      const paragraph = asRecord(child['paragraph'])
-      if (paragraph !== undefined) {
-        const text = flattenText(paragraph)
-        if (text.trim() !== '') lines.push(`P${paragraphIndex}: ${text}`)
-        paragraphIndex += 1
-        continue
-      }
-      const table = asRecord(child['table'])
-      if (table !== undefined) {
-        const rows = Array.isArray(table['rows']) ? table['rows'] : []
-        lines.push(`TABLE: ${rows.length} 行`)
-      }
+function batchError(
+  envelope: OfficeCliEnvelope<UnknownRecord>,
+  run: Awaited<ReturnType<OfficeCliRunner['run']>>,
+): OfficeCliOperationError {
+  if (envelope.error !== undefined) return officeError(envelope.error)
+  const data = envelope.data ?? {}
+  const results = Array.isArray(data['results']) ? data['results'] : []
+  for (const raw of results) {
+    const item = asRecord(raw)
+    if (item?.['success'] === false) {
+      const index = typeof item['index'] === 'number' ? item['index'] + 1 : '?'
+      const message = String(item['error'] ?? 'OfficeCLI 命令失败')
+      const code = typeof item['code'] === 'string' ? item['code'] : undefined
+      return new OfficeCliOperationError(`第 ${index} 条命令失败：${message}`, code)
     }
   }
-  const allText = JSON.stringify(parsed)
-  const placeholders = [...new Set(allText.match(/\{\{[^{}]+\}\}/g) ?? [])]
-  if (placeholders.length > 0) lines.push(`占位符：${placeholders.join(', ')}`)
-  return paginate(lines, offset, limit, 20_000)
+  return cliRunError(run)
 }
 
-function summarizeXlsx(
-  parsed: unknown,
-  target: string | undefined,
-  offset: number,
-  limit: number,
-): OfficeWorkerReadResult {
-  const workbook = asRecord(parsed) ?? {}
-  const worksheets = Array.isArray(workbook['worksheets']) ? workbook['worksheets'] : []
-  const lines: string[] = []
-  for (const rawSheet of worksheets) {
-    const sheet = asRecord(rawSheet)
-    if (sheet === undefined) continue
-    const name = stringOf(sheet['name']) ?? 'Sheet'
-    if (target !== undefined && target !== name) continue
-    lines.push(`## ${name}`)
-    const rows = Array.isArray(sheet['rows']) ? sheet['rows'] : []
-    for (const [rowIndex, rawRow] of rows.entries()) {
-      const row = asRecord(rawRow) ?? {}
-      const cells = Array.isArray(row['cells']) ? row['cells'] : []
-      const values = cells.map((rawCell, colIndex) => {
-        const cell = asRecord(rawCell)
-        if (cell === undefined)
-          return `${columnName(colIndex)}${rowIndex + 1}=${String(rawCell ?? '')}`
-        const formula = asRecord(cell['formula'])
-        if (formula !== undefined)
-          return `${columnName(colIndex)}${rowIndex + 1}==${String(formula['formula'])}`
-        return `${columnName(colIndex)}${rowIndex + 1}=${String(cell['value'] ?? '')}`
-      })
-      if (values.length > 0) lines.push(values.join(' | '))
-    }
-  }
-  return paginate(lines, offset, limit, 20_000)
+function officeError(error: {
+  error: string
+  code?: string
+  suggestion?: string
+}): OfficeCliOperationError {
+  const suffix = error.suggestion === undefined ? '' : `（建议：${error.suggestion}）`
+  return new OfficeCliOperationError(`${error.error}${suffix}`, error.code, error.suggestion)
 }
 
-function summarizePptx(
-  parsed: unknown,
-  target: string | undefined,
-  offset: number,
-  limit: number,
-): OfficeWorkerReadResult {
-  const presentation = asRecord(parsed) ?? {}
-  const slides = Array.isArray(presentation['slides']) ? presentation['slides'] : []
-  const wanted = target === undefined ? undefined : Number(target)
-  const lines: string[] = []
-  for (const [index, rawSlide] of slides.entries()) {
-    if (wanted !== undefined && Number.isFinite(wanted) && index !== wanted) continue
-    const slide = asRecord(rawSlide) ?? {}
-    lines.push(`## 幻灯片 ${index + 1}`)
-    for (const rawChild of Array.isArray(slide['children']) ? slide['children'] : []) {
-      const child = asRecord(rawChild) ?? {}
-      const shape = asRecord(child['shape'])
-      const body = asRecord(shape?.['textBody'])
-      const text = flattenText(body)
-      if (text.trim() !== '') lines.push(text)
-    }
-    if (typeof slide['notes'] === 'string' && slide['notes'].trim() !== '') {
-      lines.push(`备注：${slide['notes']}`)
-    }
-  }
-  return paginate(lines, offset, limit, 20_000)
-}
-
-function paginate(
-  lines: string[],
-  offset: number,
-  limit: number,
-  maxChars: number,
-): OfficeWorkerReadResult {
-  const selected = lines.slice(offset, offset + limit)
-  let content = selected.join('\n')
-  let truncated = offset + selected.length < lines.length
-  if (content.length > maxChars) {
-    content = `${content.slice(0, maxChars)}\n…（内容过长已截断）`
-    truncated = true
-  }
-  return { content, truncated, warnings: [] }
-}
-
-function flattenText(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) return value.map(flattenText).join('')
-  const record = asRecord(value)
-  if (record === undefined) return ''
-  if (typeof record['text'] === 'string') return record['text']
-  if (record['children'] !== undefined) return flattenText(record['children'])
-  const paragraphs = Array.isArray(record['paragraphs']) ? record['paragraphs'] : []
-  return paragraphs.map(flattenText).join('\n')
-}
-
-function mapDocxPlaceholders(values: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(values).map(([key, value]) => [key, docxPatchValue(value)]),
+function cliRunError(run: Awaited<ReturnType<OfficeCliRunner['run']>>): OfficeCliOperationError {
+  const parsed = parseOfficeCliError(run.stderr.trim())
+  const base = run.timedOut
+    ? 'OfficeCLI 执行超时并被终止'
+    : `OfficeCLI 执行失败（退出码 ${run.code ?? 'unknown'}）`
+  return new OfficeCliOperationError(
+    `${base}${parsed.error === '' ? '' : `：${parsed.error}`}`,
+    parsed.code,
+    parsed.suggestion,
   )
 }
 
-function docxPatchValue(value: unknown): UnknownRecord {
+function rawOperationCommand(operation: OfficeRawOperation): OfficeBatchCommand {
   return {
-    type: 'paragraph',
-    children: Array.isArray(value) ? value.map(String) : [String(value ?? '')],
+    command: 'raw-set',
+    part: operation.part,
+    xpath: operation.xpath,
+    action: operation.action,
+    ...(operation.xml === undefined ? {} : { xml: operation.xml }),
   }
 }
 
-function mapPptxPlaceholders(values: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(values).map(([key, value]) => [
-      key,
-      Array.isArray(value) ? value.map(String) : String(value ?? ''),
-    ]),
+function cliOptions(timeoutMs: number): OfficeCliRunOptions {
+  return { timeoutMs }
+}
+
+function requiredTarget(target: string | undefined): string {
+  if (target === undefined || target.trim() === '') {
+    throw new OfficeCliOperationError('element / query 模式缺少 target', 'invalid_request')
+  }
+  return target
+}
+
+async function writeTempJson(nearPath: string, label: string, value: unknown): Promise<string> {
+  const file = join(
+    dirname(nearPath),
+    `.${basename(nearPath)}.aurora-${label}-${process.pid}-${Date.now()}.json`,
   )
+  await fs.writeFile(file, JSON.stringify(value), 'utf8')
+  return file
 }
 
-function toBytes(value: unknown): Uint8Array {
-  if (value instanceof Uint8Array) return value
-  if (value instanceof ArrayBuffer) return new Uint8Array(value)
-  if (Array.isArray(value)) return Uint8Array.from(value as number[])
-  throw new Error('Office 引擎返回了非二进制结果')
+async function fileSize(path: string): Promise<number> {
+  return (await fs.stat(path)).size
 }
 
-function scalarOf(value: unknown): string | number | boolean | Date {
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
-    return value
-  if (value instanceof Date) return value
-  return String(value ?? '')
+function renderJson(value: unknown, maxChars: number): OfficeWorkerReadResult {
+  const rendered = JSON.stringify(value, null, 2)
+  const limited = truncatedText(rendered, Math.max(1000, maxChars))
+  return { content: limited.content, truncated: limited.truncated, warnings: [] }
 }
 
-function requiredString(record: UnknownRecord, key: string): string {
-  const value = stringOf(record[key])
-  if (value === undefined || value === '') throw new Error(`缺少参数 ${key}`)
-  return value
+function truncatedText(value: string, maxChars: number): { content: string; truncated: boolean } {
+  if (value.length <= maxChars) return { content: value, truncated: false }
+  return {
+    content: `${value.slice(0, maxChars)}\n…（内容过长已截断）`,
+    truncated: true,
+  }
 }
 
-function requiredInt(record: UnknownRecord, key: string): number {
-  const value = record[key]
-  if (typeof value !== 'number' || !Number.isFinite(value))
-    throw new Error(`参数 ${key} 必须是数字`)
-  return Math.floor(value)
-}
-
-function stringOf(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() !== '' ? value : undefined
+function safeStem(path: string): string {
+  return (
+    basename(path, extname(path))
+      .replace(/[^\p{L}\p{N}._-]+/gu, '_')
+      .slice(0, 80) || 'office'
+  )
 }
 
 function asRecord(value: unknown): UnknownRecord | undefined {
@@ -959,36 +609,14 @@ function asRecord(value: unknown): UnknownRecord | undefined {
     : undefined
 }
 
-function arrayOfRecords(value: unknown): UnknownRecord[] {
-  return Array.isArray(value)
-    ? value.map(asRecord).filter((item): item is UnknownRecord => item !== undefined)
-    : []
-}
-
-function arrayOfStrings(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string')
-    : []
-}
-
-function arrayOfNumbers(value: unknown): number[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is number => typeof item === 'number')
-    : []
-}
-
-function clampInt(value: unknown, min: number, max: number, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value)
-    ? Math.min(Math.max(Math.floor(value), min), max)
-    : fallback
-}
-
-function numberOr(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined
 }
 
 function columnName(index: number): string {
-  let value = index + 1
+  let value = Math.max(1, index)
   let result = ''
   while (value > 0) {
     const remainder = (value - 1) % 26
@@ -996,19 +624,6 @@ function columnName(index: number): string {
     value = Math.floor((value - 1) / 26)
   }
   return result
-}
-
-function normalizeImageType(path: string): string {
-  const extension = extname(path).slice(1).toLowerCase()
-  if (extension === 'jpeg') return 'jpg'
-  if (extension === 'svg') return 'svg'
-  if (extension === 'bmp' || extension === 'gif' || extension === 'png' || extension === 'jpg')
-    return extension
-  throw new Error(`不支持的图片格式：${extension || '未知'}`)
-}
-
-async function readImage(path: string): Promise<Uint8Array> {
-  return new Uint8Array(await fs.readFile(path))
 }
 
 const parentPort = process.parentPort
@@ -1022,7 +637,7 @@ if (parentPort !== undefined) {
       try {
         parentPort.postMessage(response)
       } catch {
-        /* 父进程已退出 */
+        /* parent process exited */
       }
     })
   })

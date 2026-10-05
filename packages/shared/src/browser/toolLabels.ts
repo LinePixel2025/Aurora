@@ -53,10 +53,18 @@ export function toolLabelOf(name: string, input: unknown): ToolLabel | null {
       return { verb: '编辑', object: pickObject(input, ['path', 'file']) }
     case 'office_read':
       return { verb: '读取 Office', object: pickObject(input, ['path', 'file']) }
+    case 'office_help':
+      return { verb: '查询 Office 帮助', object: pickObject(input, ['element', 'format']) }
     case 'office_create':
       return { verb: '创建 Office', object: pickObject(input, ['path', 'file']) }
     case 'office_edit':
       return { verb: '编辑 Office', object: pickObject(input, ['path', 'file']) }
+    case 'office_render':
+      return { verb: '渲染 Office', object: pickObject(input, ['path', 'file']) }
+    case 'office_pdf':
+      return { verb: '导出 Office PDF', object: pickObject(input, ['path', 'file']) }
+    case 'office_raw_edit':
+      return { verb: 'raw 编辑 Office', object: pickObject(input, ['path', 'file']) }
     case 'list_dir':
       return { verb: '列出目录', object: pickObject(input, ['path', 'dir']) }
     case 'open_path':

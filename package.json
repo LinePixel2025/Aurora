@@ -1,6 +1,6 @@
 {
   "name": "aurora",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "description": "Aurora —— 将 Windows 接入 AI 生态的系统级 Agent 工具",
   "packageManager": "pnpm@11.15.1",
@@ -19,6 +19,7 @@
     "verify": "node scripts/verify-p1.mjs",
     "verify:release": "node scripts/verify-update.mjs",
     "verify:update": "node scripts/verify-update-e2e.mjs",
+    "officecli:fetch": "node scripts/fetch-officecli.mjs",
     "icons": "node scripts/generate-icons.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

@@ -24,7 +24,7 @@ source: 模型自动记录
 6. **电脑操控工具受 `agent.tools.enabled` 总开关门控**（现含 Office 专用工具），而**扩展工具六件套不受门控** —— 两组口径相反。
 7. **Code Mode 是占位实现**；Work Mode 已初步实装（guide + systemPrompt）。
 8. **`integrations/classisland-bridge` 不参与 CI 编译**（流水线没有 .NET SDK）。
-9. 办公文件已有 `office_read` / `office_create` / `office_edit` 专用工具；旧格式与复杂 COM 能力仍是显式兜底。
+9. 办公文件已有 `office_read/help/create/edit/render/pdf/raw_edit` 专用工具；旧格式与复杂 COM 能力仍是显式兜底。
 10. **Markdown 渲染 P3 尚未落地**。
 
 ## 原因

@@ -162,6 +162,6 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - 未配置 STT provider 时麦克风按钮**根本不渲染**（不是 disabled）；TTS「朗读」同款口径。
 - **门控口径两组相反**：扩展工具六件套（`web_fetch` / `notify_user` / `clipboard_*` / `generate_image` / `show_preview`）**不受** `agent.tools.enabled`；
   电脑操控工具（含 `edit_file` / Office / `grep` / `glob`）**受**总开关与子开关门控；`todo_*` / `task` 不受门控。
-- 办公文件（docx / xlsx / pptx）已有 `office_read` / `office_create` / `office_edit` 专用工具：
-  走 utilityProcess 中的纯 JS 引擎，默认另存、显式覆盖才写回并先做二进制快照；旧格式与复杂 COM 能力仍是显式兜底。
+- 办公文件（docx / xlsx / pptx）已有 `office_read/help/create/edit/render/pdf/raw_edit` 专用工具：
+  走 utilityProcess 中固定版 OfficeCLI；普通编辑禁止 raw/COM，默认另存、显式覆盖才写回并先做二进制快照。
 - Markdown 渲染 P3（目录 / 折叠 / 脚注 / 引用 chip）唯一副本在 `git stash@{0}` —— **清 stash 前先落地或转分支**。

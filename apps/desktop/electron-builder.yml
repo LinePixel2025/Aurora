@@ -44,6 +44,13 @@ extraResources:
   # 窗口 / 任务栏图标（`resolveWindowIcon`）：16px 的 tray.png 在任务栏上会糊，用 256 那张。
   - from: resources/icon-256.png
     to: icon-256.png
+  # Office 结构化工具引擎：固定版本、固定 SHA256，由 scripts/fetch-officecli.mjs 准备。
+  - from: resources/officecli
+    to: officecli
+    filter:
+      - '**/*'
+  - from: resources/officecli/LICENSE
+    to: licenses/OfficeCLI-LICENSE.txt
 
 asar: true
 

@@ -7457,12 +7457,16 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
         'edit_file',
         'office_create',
         'office_edit',
+        'office_pdf',
+        'office_raw_edit',
         'open_path',
         'todo_write',
       ]
       readonlyTools =
         listed.indexOf('read_file') !== -1 &&
         listed.indexOf('office_read') !== -1 &&
+        listed.indexOf('office_help') !== -1 &&
+        listed.indexOf('office_render') !== -1 &&
         listed.indexOf('list_dir') !== -1 &&
         forbidden.every((name) => listed.indexOf(name) === -1)
       await window.aurora.settings.update({

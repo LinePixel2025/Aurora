@@ -42,8 +42,8 @@ const HOME = 'C:\\Users\\tester'
  * 当前装配器能**真正创建出来**的电脑操控工具（顺序照 `COMPUTER_TOOL_NAMES`）。
  *
  * 与 `COMPUTER_TOOL_NAMES` 刻意区分开：常量是「对外承诺的工具名全集」，
- * 本列表是「`registerComputerTools` 眼下真的能造出来的子集」——v12 起 8 个全部交付
- * （`grep` / `glob` 由 step 3、`edit_file` 由 step 4），两者一致但**仍然显式列出**：
+ * 本列表是「`registerComputerTools` 眼下真的能造出来的子集」——当前 15 个全部交付，
+ * 两者一致但**仍然显式列出**：
  * 新增工具时同步加名字，断言保持逐条精确（不用 `toContain` 这类弱断言）。
  */
 const IMPLEMENTED_COMPUTER_TOOLS = [
@@ -52,8 +52,12 @@ const IMPLEMENTED_COMPUTER_TOOLS = [
   'write_file',
   'edit_file',
   'office_read',
+  'office_help',
   'office_create',
   'office_edit',
+  'office_render',
+  'office_pdf',
+  'office_raw_edit',
   'list_dir',
   'open_path',
   'grep',
@@ -169,6 +173,18 @@ function fakeOfficePort(): OfficePort {
     },
     async edit() {
       throw new Error('fake office edit')
+    },
+    async rawEdit() {
+      throw new Error('fake office raw edit')
+    },
+    async render() {
+      throw new Error('fake office render')
+    },
+    async pdf() {
+      throw new Error('fake office pdf')
+    },
+    async help() {
+      throw new Error('fake office help')
     },
   }
 }
@@ -322,8 +338,12 @@ describe('registerComputerTools', () => {
           name !== 'write_file' &&
           name !== 'edit_file' &&
           name !== 'office_read' &&
+          name !== 'office_help' &&
           name !== 'office_create' &&
           name !== 'office_edit' &&
+          name !== 'office_render' &&
+          name !== 'office_pdf' &&
+          name !== 'office_raw_edit' &&
           name !== 'list_dir',
       ),
     )
@@ -331,8 +351,12 @@ describe('registerComputerTools', () => {
     expect(tools.get('write_file')).toBeUndefined()
     expect(tools.get('edit_file')).toBeUndefined()
     expect(tools.get('office_read')).toBeUndefined()
+    expect(tools.get('office_help')).toBeUndefined()
     expect(tools.get('office_create')).toBeUndefined()
     expect(tools.get('office_edit')).toBeUndefined()
+    expect(tools.get('office_render')).toBeUndefined()
+    expect(tools.get('office_pdf')).toBeUndefined()
+    expect(tools.get('office_raw_edit')).toBeUndefined()
     expect(tools.get('list_dir')).toBeUndefined()
     expect(tools.get('open_path')).toBeDefined()
   })
@@ -731,8 +755,16 @@ describe('registerAgentCoreTools', () => {
  * 因此「改档位 → 再 sync 立即生效」在这里能被直接断言。
  */
 describe('readonly 档（只读 = 不进工具表）', () => {
-  /** 只读档下**仍在表里**的电脑操控工具：8 个里只剩这 4 个（都是只读的） */
-  const READONLY_COMPUTER_TOOLS = ['read_file', 'office_read', 'list_dir', 'grep', 'glob'] as const
+  /** 只读档下**仍在表里**的电脑操控工具（safe 工具）。 */
+  const READONLY_COMPUTER_TOOLS = [
+    'read_file',
+    'office_read',
+    'office_help',
+    'office_render',
+    'list_dir',
+    'grep',
+    'glob',
+  ] as const
   /** 只读档下**被摘掉**的：写 / 执行 / 有系统副作用 */
   const READONLY_BLOCKED_TOOLS = [
     'run_command',
@@ -740,6 +772,8 @@ describe('readonly 档（只读 = 不进工具表）', () => {
     'edit_file',
     'office_create',
     'office_edit',
+    'office_pdf',
+    'office_raw_edit',
     'open_path',
     // `todo_write` 的 sensitivity 是 `safe`，但它往 <userData>/todos/<sid>.json 落盘
     'todo_write',

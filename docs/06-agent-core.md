@@ -701,9 +701,11 @@ v0.7.0 起 Agent 从「只会说话」变为「能在本机动手」：新增电
 接进 §5 的工具循环。工具定义（名称 / 参数 Schema / 敏感级）留在 `packages/agent-core`，
 真正的系统调用落在主进程并**经构造参数注入**，内核仍不依赖 Electron / DOM（见 §2 分层）。
 2026-09 新增 `edit_file`（精确替换，§11.6）与 `grep` / `glob`（内容与文件名检索，§11.5）。
-2026-10 再新增 `office_read` / `office_create` / `office_edit` 三个 Office 专用工具：
-DOCX / XLSX / PPTX 的创建、读取和常用编辑默认走纯 JS worker，不再让模型手写 PowerShell COM；
-三个工具并入 `COMPUTER_TOOL_NAMES`，共用 `agent.tools.files.enabled`，因此当前工具集为 **11 个**。
+2026-10 再新增 `office_read` / `office_help` / `office_create` / `office_edit` /
+`office_render` / `office_pdf` / `office_raw_edit` 七个 Office 专用工具：
+DOCX / XLSX / PPTX 的读取、创建、元素级编辑、校验与渲染默认走包内固定版 OfficeCLI，
+不再让模型手写 PowerShell COM。七个工具并入 `COMPUTER_TOOL_NAMES`，共用
+`agent.tools.files.enabled`，因此当前电脑操控工具集为 **15 个**。
 
 > 另有内核工具 `set_setting`（AI 修改自身配置，实现文件
 > `packages/agent-core/src/tools/settings.ts` + `apps/desktop/src/main/tools/settings-port.ts`）——
@@ -716,9 +718,13 @@ DOCX / XLSX / PPTX 的创建、读取和常用编辑默认走纯 JS worker，不
 | `read_file` | `{ path, offset?, limit?, maxBytes? }` | safe | `packages/agent-core/src/tools/files.ts` + `apps/desktop/src/main/tools/file-port.ts` |
 | `write_file` | `{ path, content, mode?: 'overwrite' \| 'append' }` | confirm | 同上 |
 | `edit_file` | `{ path, oldString, newString, replaceAll? }` | confirm | `packages/agent-core/src/tools/edit.ts` + `apps/desktop/src/main/tools/file-port.ts` |
-| `office_read` | `{ path, target?, offset?, limit? }` | safe | `packages/agent-core/src/tools/office.ts` + `apps/desktop/src/main/tools/office-port.ts` + `office-worker.ts` |
-| `office_create` | `{ path, format, content?, templatePath?, templateData?, overwrite? }` | confirm | 同上 |
-| `office_edit` | `{ path, saveAs?, overwrite?, operations }` | confirm | 同上 |
+| `office_read` | `{ path, mode, target?, offset?, limit?, depth? }` | safe | `packages/agent-core/src/tools/office.ts` + `apps/desktop/src/main/tools/office-port.ts` + `office-worker.ts` |
+| `office_help` | `{ format, verb?, element? }` | safe | 同上 |
+| `office_create` | `{ path, format, templatePath?, templateData?, commands?, overwrite? }` | confirm | 同上 |
+| `office_edit` | `{ path, saveAs?, commands, overwrite? }` | confirm | 同上 |
+| `office_render` | `{ path, mode, target?, pageStart?, pageEnd?, grid?, maxPages? }` | safe | 同上 |
+| `office_pdf` | `{ path, outputPath?, pageStart?, pageEnd?, overwrite? }` | confirm | 同上 |
+| `office_raw_edit` | `{ path, saveAs?, rawOperations, overwrite? }` | confirm | 同上 |
 | `list_dir` | `{ path, limit? }` | safe | 同上（`files.ts`） |
 | `open_path` | `{ target }` | confirm | `packages/agent-core/src/tools/files.ts` + `apps/desktop/src/main/tools/open-port.ts` |
 | `grep` | `{ pattern, path?, include? }` | safe | `packages/agent-core/src/tools/search.ts` + `apps/desktop/src/main/tools/file-port.ts` |
@@ -730,12 +736,15 @@ DOCX / XLSX / PPTX 的创建、读取和常用编辑默认走纯 JS worker，不
 - **工具语义**：`run_command` 执行单条命令并采集 stdout / stderr；`read_file` 按 UTF-8 读文本；
   `write_file` 写文本（`mode` 缺省 `overwrite`，`append` 追加）；`edit_file` 对文本做
   **精确局部替换**（读前守卫 + 唯一性拒绝 + 行尾保真，见 §11.6）；`list_dir` 列目录项；
-  `office_read/create/edit` 只处理 `.docx` / `.xlsx` / `.pptx`，在 `utilityProcess` 中懒加载
-  `@office-open/*`，**不依赖本机 Office、不执行宏、不自动转 PDF**；编辑前必须 `office_read`，
-  默认另存新文件，只有 `overwrite: true` 才覆盖源文件且必须先成功保存二进制快照。
-  DOCX 的 `heading` 必须落成 `Heading1`–`Heading6` 大纲样式，`bullets` / `numbered`
-  必须落成 `w:numPr` + `word/numbering.xml` 的真实编号（`numbered` 支持 0–8 级），
-  不得用字面 `•` / `1.` 加缩进冒充；生成包保留 `styles.xml` / `numbering.xml` / `theme1.xml`。
+  七个 Office 工具只处理 `.docx` / `.xlsx` / `.pptx`，在 `utilityProcess` 中调用包内固定版
+  OfficeCLI，**不依赖本机 Office、不执行宏、不自动回退 COM**。`office_read` 返回稳定元素
+  路径并用 `mode` 选择摘要 / 文本 / 元素 / 查询 / issues / validate；`office_help` 查询可写
+  属性和示例；`office_create/edit` 用 OfficeCLI 的 `add/set/remove/move/swap` JSON 命令，
+  写入前必须 `office_read`，默认另存，只有 `overwrite: true` 才覆盖源文件且必须先保存二进制
+  快照。写盘前在**保留原扩展名**的同目录临时文件上执行 batch，再跑 `validate`，成功后原子
+  替换；失败与危险编辑不改源文件。`office_render` 用 HTML 渲染生成 PNG/HTML，`office_pdf`
+  逐页截图后用 `pdf-lib` 合成栅格 PDF。`office_raw_edit` 是唯一允许 `raw-set` 的独立
+  confirm 工具；普通 `office_edit` 不暴露 raw，失败后不得自动降级到 raw 或 COM。
   `grep` 按正则搜**内容**、`glob` 按模式匹配**文件名**（两者规格见 §11.5）；
   `open_path` 打开 `http(s)://` 时按 `agent.tools.open.urlMode` 选择右栏内置浏览器（默认）或
   `shell.openExternal`；`mailto:` 和本地路径仍走系统默认程序。所有打开动作都不等待目标程序退出。
@@ -780,7 +789,8 @@ DOCX / XLSX / PPTX 的创建、读取和常用编辑默认走纯 JS worker，不
   - **开关分派（`registerComputerTools.sync()` 是唯一落地点）**：`agent.tools.enabled` 是**总开关**
     （为 `false` 时全部工具一个都不注册）；`terminal.enabled` → `run_command`；
     `files.enabled` → `read_file` / `write_file` / `edit_file` / `office_read` /
-    `office_create` / `office_edit` / `list_dir`；
+    `office_help` / `office_create` / `office_edit` / `office_render` / `office_pdf` /
+    `office_raw_edit` / `list_dir`；
     `search.enabled` → `grep` / `glob`；`open.enabled` → `open_path`。
     各子开关只决定对应工具是否注册；`false` 时该工具**不出现在工具清单里**（非「注册后拒绝」）。
     `edit_file` **不单独设开关**，与 `write_file` 共用 `files.enabled`（避免设置页开关膨胀）。
@@ -790,7 +800,7 @@ DOCX / XLSX / PPTX 的创建、读取和常用编辑默认走纯 JS worker，不
 ### 11.1 安全边界
 
 - **逐次确认**：`run_command` / `write_file` / `edit_file` / `office_create` / `office_edit` /
-  `open_path` 这些 `sensitivity = 'confirm'`
+  `office_pdf` / `office_raw_edit` / `open_path` 这些 `sensitivity = 'confirm'`
   的工具，
   **每一次调用**都走 §5 的 `confirmTool` 钩子（主进程侧由 §9.1 的 `ProactiveScheduler` 承载；
   应用内恒注入该钩子，未注入时内核不拦截——这是内核的可测试性设计，不是可配置项）。
@@ -1096,7 +1106,8 @@ DOCX / XLSX / PPTX 的创建、读取和常用编辑默认走纯 JS worker，不
   `mkdir` → 原子写 / 追加。顺序不能换 —— 换过来就是"改完才备份"，备份里已是新内容，回滚等于没回滚。
   主写失败时**不回滚快照**（保命优先：文件可能已被部分改写），并把快照 id 写进错误信息。
 - **二进制**：Office 快照直接保存原始字节（`SnapshotCaptureInput.bytes`），不得经 UTF-8 往返；
-  `origin` 为 `office_edit`。快照读回与回滚本来就使用 `Uint8Array`，因此可无损恢复 `.docx/.xlsx/.pptx`。
+  `origin` 为 `office_edit` / `office_export`。快照读回与回滚本来就使用 `Uint8Array`，
+  因此可无损恢复 `.docx/.xlsx/.pptx/.pdf`。
 - **跳过不静默**：目标不存在 → 记一条 `exists: false`（回滚它 = **删除**该文件）；
   是目录 / 符号链接 → 跳过；超过 `agent.snapshots.maxSnapshotBytes` → 跳过；
   `agent.snapshots.enabled = false` → 跳过。四种情况都会在**工具结果里**写明"未保存快照：…"，

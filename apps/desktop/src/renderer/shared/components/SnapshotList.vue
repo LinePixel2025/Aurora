@@ -39,6 +39,7 @@ const SNAPSHOT_ORIGIN_LABELS: Record<SnapshotRef['origin'], string> = {
   write_file: '写文件',
   edit_file: '改文件',
   office_edit: 'Office 编辑',
+  office_export: 'Office 导出',
   rollback: '回滚前',
 }
 

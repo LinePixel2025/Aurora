@@ -6,7 +6,15 @@
  *  → 首次引导判断（无可用模型配置则进入引导向导，否则显示服务窗与提示条）。
  */
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, promises as fs, readdirSync, rmSync, statSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  promises as fs,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from 'node:fs'
 import { hostname as osHostname, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import {
@@ -493,10 +501,36 @@ function ensureOfficePool(): OfficePool {
     fork: () =>
       utilityProcess.fork(join(__dirname, 'office-worker.js'), [], {
         serviceName: 'aurora-office',
+        env: {
+          ...process.env,
+          AURORA_OFFICECLI_PATH: resolveOfficeCliPath(),
+          OFFICECLI_SKIP_UPDATE: '1',
+          OFFICECLI_NO_AUTO_INSTALL: '1',
+          OFFICECLI_NO_AUTO_RESIDENT: '1',
+        },
       }) as unknown as OfficeChildLike,
     ...(logger === undefined ? {} : { logger: logger.child('office-worker') }),
   })
   return officePool
+}
+
+function resolveOfficeCliPath(): string {
+  const override = process.env['AURORA_OFFICECLI_PATH']
+  if (override !== undefined && override.trim() !== '') return override
+  return app.isPackaged
+    ? join(process.resourcesPath, 'officecli', 'officecli.exe')
+    : join(app.getAppPath(), 'resources', 'officecli', 'officecli.exe')
+}
+
+function officeCliAvailable(): boolean {
+  const binary = resolveOfficeCliPath()
+  if (!existsSync(binary)) return false
+  try {
+    const version = readFileSync(join(binary, '..', 'VERSION.txt'), 'utf8')
+    return version.includes('version=1.0.153')
+  } catch {
+    return false
+  }
 }
 
 let computerTools: ComputerTools | undefined
@@ -1043,8 +1077,10 @@ async function bootstrap(): Promise<void> {
       pool: ensureOfficePool(),
       snapshots: filePortSnapshots,
       workspaceRoot: (sessionId) => toolchainProjects.boundaryRoot(sessionId),
+      renderRoot: join(userData, 'office-previews'),
       logger: logger.child('office'),
     }),
+    officeAvailable: officeCliAvailable,
     open: createShellOpenPort({
       urlMode: () => settings!.get().agent.tools.open.urlMode,
       present: (target, sessionId) => {
@@ -3760,7 +3796,7 @@ async function runSmokeTest(userData: string): Promise<void> {
   //    「模型真的能操控电脑」这条链路在主进程装配下是通的。
   //
   //    这里断言的是**已装配**的清单而不是 `COMPUTER_TOOL_NAMES` 全量：后者是「开关要认的名字」，
-  //    它的元素要等对应工具真正被创建出来才算数（v12 起 8 个全部交付，两处一致但仍显式列出）。
+  //    它的元素要等对应工具真正被创建出来才算数（当前 15 个全部交付，两处一致但仍显式列出）。
   //    显式列出而不写死长度：新增工具时同步加名字，断言仍是逐条精确的。
   const SMOKE_IMPLEMENTED_TOOLS = [
     'run_command',
@@ -3768,8 +3804,12 @@ async function runSmokeTest(userData: string): Promise<void> {
     'write_file',
     'edit_file',
     'office_read',
+    'office_help',
     'office_create',
     'office_edit',
+    'office_render',
+    'office_pdf',
+    'office_raw_edit',
     'list_dir',
     'open_path',
     'grep',
@@ -3790,22 +3830,30 @@ async function runSmokeTest(userData: string): Promise<void> {
     const editFile = tools?.get('edit_file')
     const readFile = tools?.get('read_file')
     const officeRead = tools?.get('office_read')
+    const officeHelp = tools?.get('office_help')
     const officeCreate = tools?.get('office_create')
     const officeEdit = tools?.get('office_edit')
+    const officeRender = tools?.get('office_render')
+    const officePdf = tools?.get('office_pdf')
+    const officeRawEdit = tools?.get('office_raw_edit')
     const grep = tools?.get('grep')
     const glob = tools?.get('glob')
     record(
-      '敏感级与文档一致（run_command / write_file / edit_file / office_create / office_edit = confirm，read_file / office_read / grep / glob = safe）',
+      '敏感级与文档一致（写类 Office / PDF / raw = confirm，read/help/render = safe）',
       runCommand?.sensitivity === 'confirm' &&
         writeFile?.sensitivity === 'confirm' &&
         editFile?.sensitivity === 'confirm' &&
         officeCreate?.sensitivity === 'confirm' &&
         officeEdit?.sensitivity === 'confirm' &&
+        officePdf?.sensitivity === 'confirm' &&
+        officeRawEdit?.sensitivity === 'confirm' &&
         readFile?.sensitivity === 'safe' &&
         officeRead?.sensitivity === 'safe' &&
+        officeHelp?.sensitivity === 'safe' &&
+        officeRender?.sensitivity === 'safe' &&
         grep?.sensitivity === 'safe' &&
         glob?.sensitivity === 'safe',
-      `run_command=${runCommand?.sensitivity ?? 'missing'} write_file=${writeFile?.sensitivity ?? 'missing'} edit_file=${editFile?.sensitivity ?? 'missing'} office_create=${officeCreate?.sensitivity ?? 'missing'} office_edit=${officeEdit?.sensitivity ?? 'missing'} read_file=${readFile?.sensitivity ?? 'missing'} office_read=${officeRead?.sensitivity ?? 'missing'} grep=${grep?.sensitivity ?? 'missing'} glob=${glob?.sensitivity ?? 'missing'}`,
+      `office_create=${officeCreate?.sensitivity ?? 'missing'} office_edit=${officeEdit?.sensitivity ?? 'missing'} office_pdf=${officePdf?.sensitivity ?? 'missing'} office_raw_edit=${officeRawEdit?.sensitivity ?? 'missing'} office_read=${officeRead?.sensitivity ?? 'missing'} office_help=${officeHelp?.sensitivity ?? 'missing'} office_render=${officeRender?.sensitivity ?? 'missing'}`,
     )
 
     // 真实执行一条命令并读回产物。
@@ -3856,21 +3904,42 @@ async function runSmokeTest(userData: string): Promise<void> {
         {
           path: officeFile,
           format: 'docx',
-          content: {
-            title: 'Aurora Office Smoke',
-            blocks: [{ type: 'paragraph', text: 'AURORA_OFFICE_OK' }],
-          },
+          commands: [
+            {
+              command: 'add',
+              parent: '/body',
+              type: 'paragraph',
+              props: { text: 'AURORA_OFFICE_OK' },
+            },
+          ],
         },
         { sessionId: 'smoke' },
       )
-      const officeReadBack = await officeRead?.execute({ path: officeFile }, { sessionId: 'smoke' })
+      const officeReadBack = await officeRead?.execute(
+        { path: officeFile, mode: 'text' },
+        { sessionId: 'smoke' },
+      )
       const officeEdited = await officeEdit?.execute(
         {
           path: officeFile,
-          operations: [
-            { type: 'replace_text', find: 'AURORA_OFFICE_OK', replace: 'AURORA_OFFICE_EDITED' },
+          overwrite: true,
+          commands: [
+            {
+              command: 'set',
+              path: '/',
+              props: { find: 'AURORA_OFFICE_OK', replace: 'AURORA_OFFICE_EDITED' },
+            },
           ],
         },
+        { sessionId: 'smoke' },
+      )
+      const officeRendered = await officeRender?.execute(
+        { path: officeFile, mode: 'screenshot', pageStart: 1, pageEnd: 1, maxPages: 1 },
+        { sessionId: 'smoke' },
+      )
+      const pdfPath = join(probeDir, 'aurora-office-smoke.pdf')
+      const officePdfResult = await officePdf?.execute(
+        { path: officeFile, outputPath: pdfPath },
         { sessionId: 'smoke' },
       )
       officeOk =
@@ -3880,8 +3949,18 @@ async function runSmokeTest(userData: string): Promise<void> {
         officeReadBack.isError !== true &&
         officeReadBack.content.includes('AURORA_OFFICE_OK') &&
         officeEdited !== undefined &&
-        officeEdited.isError !== true
-      officeDetail = officeEdited?.content.slice(0, 140) ?? created?.content.slice(0, 140) ?? ''
+        officeEdited.isError !== true &&
+        officeRendered !== undefined &&
+        officeRendered.isError !== true &&
+        (officeRendered.images?.length ?? 0) > 0 &&
+        officePdfResult !== undefined &&
+        officePdfResult.isError !== true &&
+        existsSync(pdfPath)
+      officeDetail =
+        officePdfResult?.content.slice(0, 140) ??
+        officeEdited?.content.slice(0, 140) ??
+        created?.content.slice(0, 140) ??
+        ''
     } catch (error) {
       commandDetail = `异常：${String(error)}`
     }

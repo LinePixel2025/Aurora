@@ -454,8 +454,10 @@
   回落链：**当前项目根（配置了当前项目时）> 激活模式工作目录（Work）> `workspaceDir` > 用户主目录**，没配当前项目时与既往一致；
   它只作**默认值**、不是沙箱；其余文件类工具不读它，见 06 §11.1 / §11.5）；`terminal.enabled` 开关终端工具、
   `terminal.timeoutMs` 是单次命令超时（毫秒）、`terminal.maxOutputChars` 是回传输出的截断上限；
-  `files.enabled` 开关文件读写与 Office 专用工具（`office_read` / `office_create` / `office_edit`）、
-  `files.maxReadBytes` 是单次文本读取上限（字节）；Office 读取在只读档保留，创建 / 编辑与写文件同档摘除；
+  `files.enabled` 开关文件读写与 Office 专用工具（`office_read` / `office_help` /
+  `office_create` / `office_edit` / `office_render` / `office_pdf` / `office_raw_edit`）、
+  `files.maxReadBytes` 是单次文本读取上限（字节）；Office safe 工具在只读档保留，
+  create / edit / pdf / raw 等 confirm 工具与写文件同档摘除；
   `search.enabled` 开关文件检索（`grep` / `glob`，**v12 新增**）、`search.maxResults` 是**单次检索的
   结果条数上限**（1–1000，默认 200，超出即截断并在结果里标注）；
   `open.enabled` 开关「打开路径」工具；`open.urlMode`（**v27 新增**）只控制模型打开

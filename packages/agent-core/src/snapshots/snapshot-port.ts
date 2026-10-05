@@ -741,6 +741,7 @@ function isSnapshotRef(value: unknown): value is SnapshotRef {
     (origin === 'write_file' ||
       origin === 'edit_file' ||
       origin === 'office_edit' ||
+      origin === 'office_export' ||
       origin === 'rollback') &&
     typeof candidate['createdAt'] === 'string' &&
     typeof contentPath === 'string' &&

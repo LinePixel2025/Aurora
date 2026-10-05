@@ -1,9 +1,8 @@
 /**
- * `OfficePort` 的主进程实现：路径边界、文件锁检查、worker 调用与原子替换。
- *
- * worker 只负责生成 / patch 与写临时文件；主进程负责把临时文件换到最终路径。
- * 因此任何解析失败、超时或崩溃都不会留下半截目标文件。
+ * Main-process `OfficePort`: path boundaries, file locks, snapshots, atomic
+ * replacement and rendering image handoff.
  */
+import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import { createNoopLogger, type Logger } from '@aurora/shared'
@@ -11,13 +10,20 @@ import type {
   OfficeCreateRequest,
   OfficeEditRequest,
   OfficeFormat,
+  OfficeHelpRequest,
+  OfficeHelpResult,
+  OfficePdfRequest,
+  OfficePdfResult,
   OfficePort,
+  OfficeRawEditRequest,
   OfficeReadRequest,
   OfficeReadResult,
+  OfficeRenderRequest,
+  OfficeRenderResult,
   OfficeWriteResult,
   SnapshotWriteOutcome,
 } from '@aurora/agent-core'
-import type { SnapshotPort } from '@aurora/agent-core'
+import type { SnapshotPort, ToolImage } from '@aurora/agent-core'
 import { resolveWithin, type OutsideOption, type WorkspaceGuardOptions } from './file-port.js'
 import type { OfficePool } from '../office-pool.js'
 import type { OfficeWorkerResponse, OfficeWorkerRunRequest } from '../office-protocol.js'
@@ -27,13 +33,20 @@ export interface NodeOfficePortOptions extends WorkspaceGuardOptions {
   snapshots?: Pick<SnapshotPort, 'capture'>
   logger?: Logger
   maxFileBytes?: number
+  renderRoot: string
+  normalTimeoutMs?: number
+  renderTimeoutMs?: number
 }
 
 export const DEFAULT_MAX_OFFICE_FILE_BYTES = 64 * 1024 * 1024
+export const DEFAULT_NORMAL_OFFICE_TIMEOUT_MS = 45_000
+export const DEFAULT_RENDER_OFFICE_TIMEOUT_MS = 120_000
 
 export function createNodeOfficePort(options: NodeOfficePortOptions): OfficePort {
   const logger = options.logger ?? createNoopLogger()
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_OFFICE_FILE_BYTES
+  const normalTimeoutMs = options.normalTimeoutMs ?? DEFAULT_NORMAL_OFFICE_TIMEOUT_MS
+  const renderTimeoutMs = options.renderTimeoutMs ?? DEFAULT_RENDER_OFFICE_TIMEOUT_MS
   const guard: WorkspaceGuardOptions = {
     workspaceRoot: options.workspaceRoot,
     enforceWorkspace: options.enforceWorkspace,
@@ -54,11 +67,14 @@ export function createNodeOfficePort(options: NodeOfficePortOptions): OfficePort
       await assertRegularFile(absolutePath, maxFileBytes)
       const response = await runWorker(options.pool, {
         action: 'read',
+        timeoutMs: normalTimeoutMs,
         path: absolutePath,
         format,
+        mode: request.mode,
         ...(request.target === undefined ? {} : { target: request.target }),
         offset: request.offset ?? 0,
         limit: request.limit ?? 80,
+        depth: request.depth ?? 1,
       })
       if (response.read === undefined) throw new Error('Office worker 未返回读取结果')
       return {
@@ -68,6 +84,18 @@ export function createNodeOfficePort(options: NodeOfficePortOptions): OfficePort
         truncated: response.read.truncated,
         warnings: response.read.warnings,
       }
+    },
+
+    async help(request: OfficeHelpRequest): Promise<OfficeHelpResult> {
+      const response = await runWorker(options.pool, {
+        action: 'help',
+        timeoutMs: normalTimeoutMs,
+        format: request.format,
+        ...(request.verb === undefined ? {} : { verb: request.verb }),
+        ...(request.element === undefined ? {} : { element: request.element }),
+      })
+      if (response.help === undefined) throw new Error('Office worker 未返回帮助内容')
+      return response.help
     },
 
     async create(request: OfficeCreateRequest): Promise<OfficeWriteResult> {
@@ -86,24 +114,21 @@ export function createNodeOfficePort(options: NodeOfficePortOptions): OfficePort
         assertFormatMatchesPath(request.format, templatePath)
         await assertRegularFile(templatePath, maxFileBytes)
       }
-      const content =
-        request.content === undefined
-          ? undefined
-          : await resolveOfficeAssets(request.content, request, guard)
       await fs.mkdir(dirname(outputPath), { recursive: true })
       const tempPath = tempPathFor(outputPath)
       try {
         const response = await runWorker(options.pool, {
           action: 'create',
+          timeoutMs: normalTimeoutMs,
           outputPath: tempPath,
           format: request.format,
-          ...(content === undefined ? {} : { content }),
+          commands: request.commands,
           ...(templatePath === undefined ? {} : { templatePath }),
           ...(request.templateData === undefined ? {} : { templateData: request.templateData }),
         })
         const bytes = response.write?.bytes ?? (await statSize(tempPath))
         const snapshot = exists
-          ? await captureRequiredSnapshot(options, request, outputPath, logger)
+          ? await captureRequiredSnapshot(options, request, outputPath, 'office_edit', logger)
           : undefined
         await replaceFile(tempPath, outputPath)
         return {
@@ -125,37 +150,30 @@ export function createNodeOfficePort(options: NodeOfficePortOptions): OfficePort
       const format = formatOf(sourcePath)
       await assertRegularFile(sourcePath, maxFileBytes)
       await assertNotLocked(sourcePath)
-      const outputPath =
-        request.overwrite === true
-          ? sourcePath
-          : request.saveAs === undefined
-            ? defaultSaveAsPath(sourcePath)
-            : await resolve(request.saveAs, request)
+      const outputPath = await resolveEditOutputPath(sourcePath, request, resolve)
       assertFormatMatchesPath(format, outputPath)
       const sameOutput = outputPath.toLowerCase() === sourcePath.toLowerCase()
+      const outputExists = await fileExists(outputPath)
       if (sameOutput && request.overwrite !== true) {
         throw new Error('saveAs 指向源文件；如需覆盖源文件请显式传 overwrite=true')
       }
-      if (!sameOutput && (await fileExists(outputPath)) && request.overwrite !== true) {
+      if (!sameOutput && outputExists && request.overwrite !== true) {
         throw new Error(`另存目标已存在：${outputPath}；请换一个 saveAs，或显式传 overwrite=true`)
       }
-      if (!sameOutput && (await fileExists(outputPath))) {
-        await assertNotLocked(outputPath)
-      }
-      await fs.mkdir(dirname(outputPath), { recursive: true })
+      if (outputExists) await assertNotLocked(outputPath)
       const tempPath = tempPathFor(outputPath)
       try {
         const response = await runWorker(options.pool, {
           action: 'edit',
+          timeoutMs: normalTimeoutMs,
           sourcePath,
           outputPath: tempPath,
           format,
-          operations: request.operations,
+          commands: request.commands,
         })
         const bytes = response.write?.bytes ?? (await statSize(tempPath))
-        const outputExists = await fileExists(outputPath)
         const snapshot = outputExists
-          ? await captureRequiredSnapshot(options, request, outputPath, logger)
+          ? await captureRequiredSnapshot(options, request, outputPath, 'office_edit', logger)
           : undefined
         await replaceFile(tempPath, outputPath)
         return {
@@ -171,7 +189,166 @@ export function createNodeOfficePort(options: NodeOfficePortOptions): OfficePort
         throw error
       }
     },
+
+    async rawEdit(request: OfficeRawEditRequest): Promise<OfficeWriteResult> {
+      const sourcePath = await resolve(request.path, request)
+      const format = formatOf(sourcePath)
+      await assertRegularFile(sourcePath, maxFileBytes)
+      await assertNotLocked(sourcePath)
+      const outputPath = await resolveEditOutputPath(sourcePath, request, resolve)
+      assertFormatMatchesPath(format, outputPath)
+      const sameOutput = outputPath.toLowerCase() === sourcePath.toLowerCase()
+      const outputExists = await fileExists(outputPath)
+      if (sameOutput && request.overwrite !== true) {
+        throw new Error('saveAs 指向源文件；如需覆盖源文件请显式传 overwrite=true')
+      }
+      if (!sameOutput && outputExists && request.overwrite !== true) {
+        throw new Error(`另存目标已存在：${outputPath}；请换一个 saveAs，或显式传 overwrite=true`)
+      }
+      if (outputExists) await assertNotLocked(outputPath)
+      const tempPath = tempPathFor(outputPath)
+      try {
+        const response = await runWorker(options.pool, {
+          action: 'raw-edit',
+          timeoutMs: normalTimeoutMs,
+          sourcePath,
+          outputPath: tempPath,
+          format,
+          operations: request.operations,
+        })
+        const bytes = response.write?.bytes ?? (await statSize(tempPath))
+        const snapshot = outputExists
+          ? await captureRequiredSnapshot(options, request, outputPath, 'office_edit', logger)
+          : undefined
+        await replaceFile(tempPath, outputPath)
+        return {
+          absolutePath: outputPath,
+          sourcePath,
+          format,
+          bytes,
+          ...(snapshot === undefined ? {} : { snapshot }),
+          warnings: response.write?.warnings ?? [],
+        }
+      } catch (error) {
+        await fs.rm(tempPath, { force: true }).catch(() => undefined)
+        throw error
+      }
+    },
+
+    async render(request: OfficeRenderRequest): Promise<OfficeRenderResult> {
+      const sourcePath = await resolve(request.path, request)
+      const format = formatOf(sourcePath)
+      await assertRegularFile(sourcePath, maxFileBytes)
+      const outputDir = await createRenderDir(options.renderRoot, request.sessionId)
+      const response = await runWorker(options.pool, {
+        action: 'render',
+        timeoutMs: renderTimeoutMs,
+        sourcePath,
+        format,
+        mode: request.mode,
+        outputDir,
+        ...(request.target === undefined ? {} : { target: request.target }),
+        ...(request.pageStart === undefined ? {} : { pageStart: request.pageStart }),
+        ...(request.pageEnd === undefined ? {} : { pageEnd: request.pageEnd }),
+        ...(request.grid === undefined ? {} : { grid: request.grid }),
+        maxPages: request.maxPages ?? 6,
+      })
+      if (response.render === undefined) throw new Error('Office worker 未返回渲染结果')
+      const images: ToolImage[] = []
+      if (request.mode === 'screenshot') {
+        for (const path of response.render.files) {
+          const bytes = await fs.readFile(path)
+          images.push({
+            path,
+            image: {
+              mimeType: 'image/png',
+              dataBase64: bytes.toString('base64'),
+              name: basename(path),
+            },
+          })
+        }
+      }
+      return {
+        sourcePath,
+        format,
+        files: response.render.files,
+        images,
+        ...(response.render.pageCount === undefined
+          ? {}
+          : { pageCount: response.render.pageCount }),
+        warnings: response.render.warnings,
+      }
+    },
+
+    async pdf(request: OfficePdfRequest): Promise<OfficePdfResult> {
+      const sourcePath = await resolve(request.path, request)
+      const format = formatOf(sourcePath)
+      await assertRegularFile(sourcePath, maxFileBytes)
+      const outputPath =
+        request.outputPath === undefined
+          ? defaultPdfPath(sourcePath)
+          : await resolve(request.outputPath, request)
+      if (extname(outputPath).toLowerCase() !== '.pdf') {
+        throw new Error(`PDF 输出必须使用 .pdf 扩展名：${outputPath}`)
+      }
+      const exists = await fileExists(outputPath)
+      if (exists && !request.overwrite) {
+        throw new Error(`PDF 已存在：${outputPath}；如需覆盖请显式传 overwrite=true`)
+      }
+      if (exists) await assertNotLocked(outputPath)
+      const tempPath = tempPathFor(outputPath)
+      try {
+        const response = await runWorker(options.pool, {
+          action: 'pdf',
+          timeoutMs: renderTimeoutMs,
+          sourcePath,
+          outputPath: tempPath,
+          format,
+          ...(request.pageStart === undefined ? {} : { pageStart: request.pageStart }),
+          ...(request.pageEnd === undefined ? {} : { pageEnd: request.pageEnd }),
+        })
+        const bytes = response.pdf?.bytes ?? (await statSize(tempPath))
+        const snapshot = exists
+          ? await captureRequiredSnapshot(options, request, outputPath, 'office_export', logger)
+          : undefined
+        await replaceFile(tempPath, outputPath)
+        return {
+          absolutePath: outputPath,
+          sourcePath,
+          format,
+          bytes,
+          pages: response.pdf?.pages ?? 1,
+          ...(snapshot === undefined ? {} : { snapshot }),
+          warnings: response.pdf?.warnings ?? [],
+        }
+      } catch (error) {
+        await fs.rm(tempPath, { force: true }).catch(() => undefined)
+        throw error
+      }
+    },
   }
+}
+
+async function resolveEditOutputPath(
+  sourcePath: string,
+  request: OfficeEditRequest | OfficeRawEditRequest,
+  resolve: (
+    path: string,
+    input?: { allowOutside?: boolean; sessionId?: string },
+  ) => Promise<string>,
+): Promise<string> {
+  if (request.overwrite === true) {
+    if (request.saveAs !== undefined) {
+      const requested = await resolve(request.saveAs, request)
+      if (requested.toLowerCase() !== sourcePath.toLowerCase()) {
+        throw new Error('overwrite=true 时 saveAs 只能指向源文件；请改为 overwrite=false')
+      }
+    }
+    return sourcePath
+  }
+  return request.saveAs === undefined
+    ? defaultSaveAsPath(sourcePath)
+    : resolve(request.saveAs, request)
 }
 
 async function runWorker(
@@ -179,7 +356,10 @@ async function runWorker(
   request: OfficeWorkerRunRequest,
 ): Promise<OfficeWorkerResponse & { ok: true }> {
   const response = await pool.run(request)
-  if (!response.ok) throw new Error(response.error ?? 'Office worker 执行失败')
+  if (!response.ok) {
+    const suffix = response.suggestion === undefined ? '' : `；建议：${response.suggestion}`
+    throw new Error(`${response.error ?? 'Office worker 执行失败'}${suffix}`)
+  }
   return response as OfficeWorkerResponse & { ok: true }
 }
 
@@ -236,18 +416,19 @@ async function captureRequiredSnapshot(
   options: NodeOfficePortOptions,
   request: { sessionId?: string; toolCallId?: string },
   path: string,
+  origin: 'office_edit' | 'office_export',
   logger: Logger,
 ): Promise<SnapshotWriteOutcome> {
   const snapshots = options.snapshots
   if (snapshots === undefined) {
-    throw new Error('写前快照尚未装配，已拒绝覆盖已有 Office 文件')
+    throw new Error('写前快照尚未装配，已拒绝覆盖已有文件')
   }
   const bytes = new Uint8Array(await fs.readFile(path))
   const result = await snapshots.capture({
     sessionId: request.sessionId ?? 'office',
     path,
     ...(request.toolCallId === undefined ? {} : { toolCallId: request.toolCallId }),
-    origin: 'office_edit',
+    origin,
     mode: 'overwrite',
     bytes,
   })
@@ -256,8 +437,8 @@ async function captureRequiredSnapshot(
   logger.warn('Office 覆盖前快照未成功，已拒绝写入', { path, reason })
   throw new Error(
     reason === 'too-large'
-      ? '原文件超过 agent.snapshots.maxSnapshotBytes，已拒绝原地覆盖；请另存新文件或提高快照上限'
-      : '写前快照不可用，已拒绝原地覆盖；请检查文件备份设置',
+      ? '原文件超过 agent.snapshots.maxSnapshotBytes，已拒绝覆盖；请另存新文件或提高快照上限'
+      : '写前快照不可用，已拒绝覆盖；请检查文件备份设置',
   )
 }
 
@@ -265,41 +446,11 @@ async function replaceFile(tempPath: string, outputPath: string): Promise<void> 
   await fs.rename(tempPath, outputPath)
 }
 
-async function resolveOfficeAssets(
-  value: unknown,
-  request: OutsideOption,
-  guard: WorkspaceGuardOptions,
-): Promise<unknown> {
-  if (Array.isArray(value)) {
-    return await Promise.all(value.map((item) => resolveOfficeAssets(item, request, guard)))
-  }
-  if (typeof value !== 'object' || value === null) return value
-  const record = value as Record<string, unknown>
-  const out: Record<string, unknown> = {}
-  const isImageBlock =
-    record['type'] === 'image' ||
-    (typeof record['path'] === 'string' && record['imageType'] !== undefined)
-  for (const [key, child] of Object.entries(record)) {
-    if (
-      (isImageBlock && key === 'path') ||
-      (key === 'image' && typeof child === 'object' && child !== null)
-    ) {
-      if (key === 'path' && typeof child === 'string') {
-        out[key] = await resolveOfficePath(child, request, guard)
-        continue
-      }
-      const image = child as Record<string, unknown>
-      if (typeof image['path'] === 'string') {
-        out[key] = {
-          ...((await resolveOfficeAssets(image, request, guard)) as Record<string, unknown>),
-          path: await resolveOfficePath(image['path'], request, guard),
-        }
-        continue
-      }
-    }
-    out[key] = await resolveOfficeAssets(child, request, guard)
-  }
-  return out
+async function createRenderDir(root: string, sessionId: string | undefined): Promise<string> {
+  const safeSession = (sessionId ?? 'office').replace(/[^\p{L}\p{N}._-]+/gu, '_')
+  const dir = join(root, safeSession, `${Date.now()}-${randomUUID()}`)
+  await fs.mkdir(dir, { recursive: true })
+  return dir
 }
 
 function formatOf(path: string): OfficeFormat {
@@ -326,8 +477,18 @@ function defaultSaveAsPath(sourcePath: string): string {
   return join(dirname(sourcePath), `${base}-Aurora-${stamp}${extension}`)
 }
 
+function defaultPdfPath(sourcePath: string): string {
+  const extension = extname(sourcePath)
+  return join(dirname(sourcePath), `${basename(sourcePath, extension)}.pdf`)
+}
+
 function tempPathFor(outputPath: string): string {
-  return `${outputPath}.${process.pid}.${Date.now()}.office.tmp`
+  const extension = extname(outputPath)
+  const base = basename(outputPath, extension)
+  return join(
+    dirname(outputPath),
+    `.${base}.aurora-${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}${extension}`,
+  )
 }
 
 async function fileExists(path: string): Promise<boolean> {

@@ -7,9 +7,10 @@
  * （组头摘要承载状态，capture 探针先展开再计数）；安全告诫只在本组说明里完整表述一次；
  * 技能 / MCP 区组的操作回执经 `notify` 事件上抛，由本页唯一的 AppToast 统一渲染。
  *
- * 「电脑操控」是给模型装上"手"的一组工具（`COMPUTER_TOOL_NAMES` 里那 8 个：run_command /
- * read_file / write_file / edit_file / list_dir / open_path / grep / glob）：默认全开，
- * 但命令执行与文件写入（含 edit_file）是敏感工具，越界时逐次确认后才执行。
+ * 「电脑操控」是给模型装上"手"的一组工具（`COMPUTER_TOOL_NAMES` 里的 run_command /
+ * read_file / write_file / edit_file / 七个 Office 工具 / list_dir / open_path /
+ * grep / glob）：默认全开，但命令执行与文件写入（含 Office 写类工具）是敏感工具，
+ * 越界时逐次确认后才执行。
  * 本页是这套工具的**唯一**开关面，保存后由主进程 `onSettingsChanged` →
  * `computerTools.sync()` 立即重注册，无需重启。
  *
@@ -109,8 +110,12 @@ const TOOL_GATES: Record<ComputerToolName, (t: AgentToolsConfig) => boolean> = {
   write_file: (t) => t.files.enabled,
   edit_file: (t) => t.files.enabled,
   office_read: (t) => t.files.enabled,
+  office_help: (t) => t.files.enabled,
   office_create: (t) => t.files.enabled,
   office_edit: (t) => t.files.enabled,
+  office_render: (t) => t.files.enabled,
+  office_pdf: (t) => t.files.enabled,
+  office_raw_edit: (t) => t.files.enabled,
   list_dir: (t) => t.files.enabled,
   open_path: (t) => t.open.enabled,
   // 文件检索（grep / glob）归 v12 新增的 `agent.tools.search` 开关，与 files 分开
@@ -140,6 +145,8 @@ const permissionReadonly = computed(() => permissionMode.value === 'readonly')
 const READONLY_COMPUTER_TOOL_NAMES: readonly ComputerToolName[] = [
   'read_file',
   'office_read',
+  'office_help',
+  'office_render',
   'list_dir',
   'grep',
   'glob',

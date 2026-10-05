@@ -62,6 +62,7 @@
 | `classification` + `classify/*` | 分类队列、规则缓存、LLM 判定、科目映射与落盘（见 05 §3.2） |
 | `classification-history` | 分类流水持久化（`userData/classification.json`，见 08 §1.2） |
 | `extract` / `extract-worker` / `extract-pool` | 内容提取（utilityProcess 隔离、超时与降级） |
+| `office-worker` / `office-pool` | Office 结构化读写；在 utilityProcess 中调用包内固定版 OfficeCLI，负责批处理、校验、渲染与 PDF 合成 |
 | `notifications` | 系统通知与点击打开路径（分类完成 / 待分类 / 课前提醒） |
 | `perception` | 系统感知采集器注册与调度（见 06 §8） |
 | `schedule` / `pre-class-reminder` | 课程表 provider 与课前 5 分钟提醒（见 05 §3.4） |

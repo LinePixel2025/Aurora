@@ -30,7 +30,16 @@ function fakePool(): OfficePool & { requests: OfficeWorkerRunRequest[] } {
           read: { content: 'summary', truncated: false, warnings: [] },
         }
       }
+      if (request.action === 'render') {
+        return { id: 'r', ok: true, render: { files: [], warnings: [] } }
+      }
+      if (request.action === 'help') {
+        return { id: 'h', ok: true, help: { content: 'help', truncated: false } }
+      }
       await writeFile(request.outputPath, 'generated')
+      if (request.action === 'pdf') {
+        return { id: 'w', ok: true, pdf: { bytes: 9, pages: 1, warnings: [] } }
+      }
       return { id: 'w', ok: true, write: { bytes: 9, warnings: [] } }
     },
   } as unknown as OfficePool & { requests: OfficeWorkerRunRequest[] }
@@ -51,13 +60,14 @@ describe('createNodeOfficePort', () => {
     const port = createNodeOfficePort({
       pool: fakePool(),
       snapshots: snapshots({ skipped: 'disabled' }),
+      renderRoot: join(dir, 'previews'),
     })
-    await expect(port.read({ path: file })).resolves.toMatchObject({
+    await expect(port.read({ path: file, mode: 'summary' })).resolves.toMatchObject({
       absolutePath: file,
       format: 'docx',
       content: 'summary',
     })
-    await expect(port.read({ path: join(dir, 'a.doc') })).rejects.toThrow('不支持')
+    await expect(port.read({ path: join(dir, 'a.doc'), mode: 'summary' })).rejects.toThrow('不支持')
   })
 
   it('create 默认拒绝覆盖已有文件', async () => {
@@ -66,9 +76,10 @@ describe('createNodeOfficePort', () => {
     const port = createNodeOfficePort({
       pool: fakePool(),
       snapshots: snapshots({ skipped: 'disabled' }),
+      renderRoot: join(dir, 'previews'),
     })
     await expect(
-      port.create({ path: file, format: 'docx', content: {}, overwrite: false }),
+      port.create({ path: file, format: 'docx', commands: [], overwrite: false }),
     ).rejects.toThrow('已存在')
   })
 
@@ -89,11 +100,15 @@ describe('createNodeOfficePort', () => {
         },
       })),
     }
-    const port = createNodeOfficePort({ pool: fakePool(), snapshots: snapshot })
+    const port = createNodeOfficePort({
+      pool: fakePool(),
+      snapshots: snapshot,
+      renderRoot: join(dir, 'previews'),
+    })
     const result = await port.create({
       path: file,
       format: 'docx',
-      content: {},
+      commands: [],
       overwrite: true,
       sessionId: 's1',
     })
@@ -107,11 +122,12 @@ describe('createNodeOfficePort', () => {
     const port = createNodeOfficePort({
       pool: fakePool(),
       snapshots: snapshots({ skipped: 'too-large' }),
+      renderRoot: join(dir, 'previews'),
     })
     const saved = await port.edit({
       path: source,
       overwrite: false,
-      operations: [{ type: 'replace_text', find: 'a', replace: 'b' }],
+      commands: [{ command: 'set', path: '/body/p[1]', props: { text: 'b' } }],
     })
     expect(saved.absolutePath).not.toBe(source)
     expect(await readFile(source, 'utf8')).toBe('old')
@@ -120,16 +136,16 @@ describe('createNodeOfficePort', () => {
       port.edit({
         path: source,
         overwrite: true,
-        operations: [{ type: 'replace_text', find: 'a', replace: 'b' }],
+        commands: [{ command: 'set', path: '/body/p[1]', props: { text: 'b' } }],
       }),
-    ).rejects.toThrow('已拒绝原地覆盖')
+    ).rejects.toThrow('已拒绝覆盖')
 
     await expect(
       port.edit({
         path: source,
         saveAs: source,
         overwrite: false,
-        operations: [{ type: 'replace_text', find: 'a', replace: 'b' }],
+        commands: [{ command: 'set', path: '/body/p[1]', props: { text: 'b' } }],
       }),
     ).rejects.toThrow('saveAs 指向源文件')
   })

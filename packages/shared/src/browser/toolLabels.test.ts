@@ -24,6 +24,14 @@ describe('toolLabelOf', () => {
       verb: '编辑 Office',
       object: 'report.docx',
     })
+    expect(toolLabelOf('office_render', { path: 'deck.pptx' })).toEqual({
+      verb: '渲染 Office',
+      object: 'deck.pptx',
+    })
+    expect(toolLabelOf('office_pdf', { path: 'report.docx' })).toEqual({
+      verb: '导出 Office PDF',
+      object: 'report.docx',
+    })
   })
 
   it('没有值得摘参数的工具只给动词', () => {

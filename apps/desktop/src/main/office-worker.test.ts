@@ -1,11 +1,15 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { parseDocument } from '@office-open/docx'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { OfficeCliRunner, OfficeCliRunResult } from './office-cli.js'
 import { handleOfficeRequest } from './office-worker.js'
 
 let dir = ''
+const PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+)
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'aurora-office-worker-'))
@@ -15,249 +19,212 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
-describe('office-worker 真实引擎闭环', () => {
-  it('DOCX 创建 → 读取 → 替换文字', async () => {
-    const path = join(dir, 'report.docx')
-    const created = await handleOfficeRequest({
-      id: '1',
-      action: 'create',
-      outputPath: path,
-      format: 'docx',
-      content: {
-        title: '季度报告',
-        blocks: [
-          { type: 'heading', level: 2, text: '概览' },
-          { type: 'paragraph', text: '状态：{{status}}' },
-          { type: 'bullets', items: ['第一项'] },
-          { type: 'numbered', items: ['步骤一'] },
-          { type: 'table', headers: ['项目', '结果'], rows: [['交付', '完成']] },
-        ],
+function okResult(stdout = ''): OfficeCliRunResult {
+  return { code: 0, stdout, stderr: '', timedOut: false }
+}
+
+function fakeRunner(options: {
+  run?: (args: readonly string[]) => Promise<OfficeCliRunResult>
+  json?: (args: readonly string[]) => Promise<{ envelope: unknown; run: OfficeCliRunResult }>
+}): OfficeCliRunner {
+  const run = vi.fn(async (args: readonly string[]) => (await options.run?.(args)) ?? okResult())
+  const runJson = vi.fn(async (args: readonly string[]) => {
+    if (options.json !== undefined) return options.json(args)
+    return { envelope: { success: true, data: {} }, run: okResult() }
+  })
+  return { run, runJson } as unknown as OfficeCliRunner
+}
+
+describe('office-worker OfficeCLI adapter', () => {
+  it('read text 直接返回 CLI 文本并带 warnings 字段', async () => {
+    const runner = fakeRunner({
+      run: async () => okResult('paragraph one\nparagraph two'),
+    })
+    const response = await handleOfficeRequest(
+      {
+        id: '1',
+        action: 'read',
+        timeoutMs: 1000,
+        path: 'a.docx',
+        format: 'docx',
+        mode: 'text',
+        offset: 0,
+        limit: 20,
+        depth: 1,
       },
-    })
-    expect(created.ok).toBe(true)
-
-    const read = await handleOfficeRequest({
-      id: '2',
-      action: 'read',
-      path,
-      format: 'docx',
-      offset: 0,
-      limit: 50,
-    })
-    expect(read.ok).toBe(true)
-    expect(read.read?.content).toContain('季度报告')
-
-    const parsed = (await parseDocument(new Uint8Array(await readFile(path)))) as unknown as {
-      numbering?: { abstractNumberings?: { levels?: { format?: string }[] }[] }
-      sections?: { children?: { paragraph?: Record<string, unknown> }[] }[]
-    }
-    const formats = (parsed.numbering?.abstractNumberings ?? []).flatMap((item) =>
-      (item.levels ?? []).map((level) => level.format),
+      { runner },
     )
-    expect(formats).toContain('decimal')
-    expect(formats).toContain('bullet')
-    const children = parsed.sections?.[0]?.children ?? []
-    const paragraphs = children
-      .map((child) => child.paragraph)
-      .filter((paragraph): paragraph is Record<string, unknown> => paragraph !== undefined)
-    const serialized = JSON.stringify(parsed)
-    expect(paragraphs.some((paragraph) => paragraph['heading'] === 'Heading1')).toBe(true)
-    expect(serialized).toContain('第一项')
-    expect(serialized).toContain('步骤一')
-    expect(serialized).not.toContain('• 第一项')
-    expect(serialized).not.toContain('1. 步骤一')
-    expect(
-      paragraphs.find((paragraph) => paragraph['text'] === '第一项')?.['numbering'],
-    ).toBeTruthy()
-    expect(
-      paragraphs.find((paragraph) => paragraph['text'] === '步骤一')?.['numbering'],
-    ).toBeTruthy()
-
-    const editedPath = join(dir, 'report-edited.docx')
-    const edited = await handleOfficeRequest({
-      id: '3',
-      action: 'edit',
-      sourcePath: path,
-      outputPath: editedPath,
-      format: 'docx',
-      operations: [{ type: 'replace_text', find: '{{status}}', replace: '正常' }],
-    })
-    if (!edited.ok) throw new Error(`edit failed: ${edited.error}`)
-
-    const reread = await handleOfficeRequest({
-      id: '4',
-      action: 'read',
-      path: editedPath,
-      format: 'docx',
-      offset: 0,
-      limit: 50,
-    })
-    expect(reread.ok).toBe(true)
-    expect(reread.read?.content).toContain('正常')
+    expect(response.ok, response.error).toBe(true)
+    expect(response.read?.content).toContain('paragraph one')
+    expect(response.read?.warnings).toEqual([])
   })
 
-  it('XLSX 创建 → set_cells → 再读取公式', async () => {
-    const path = join(dir, 'book.xlsx')
-    const created = await handleOfficeRequest({
-      id: '1',
-      action: 'create',
-      outputPath: path,
-      format: 'xlsx',
-      content: {
-        sheets: [
-          {
-            name: '数据',
-            rows: [
-              ['项目', '数量', '单价', '合计'],
-              ['苹果', 2, 3.5, { value: 7, formula: 'B2*C2' }],
-            ],
-          },
-        ],
+  it('create 先创建空白文件，再 batch、validate，并收集 issues', async () => {
+    const output = join(dir, 'created.docx')
+    const runner = fakeRunner({
+      json: async (args) => {
+        if (args[0] === 'create') await writeFile(args[1]!, 'docx-bytes')
+        if (args[0] === 'view' && args[2] === 'issues') {
+          return {
+            envelope: {
+              success: true,
+              data: { issues: [{ message: '字体不一致' }] },
+            },
+            run: okResult(),
+          }
+        }
+        return { envelope: { success: true, data: {} }, run: okResult() }
       },
     })
-    expect(created.ok).toBe(true)
+    const response = await handleOfficeRequest(
+      {
+        id: '1',
+        action: 'create',
+        timeoutMs: 1000,
+        outputPath: output,
+        format: 'docx',
+        commands: [{ command: 'add', parent: '/body', type: 'paragraph', props: { text: 'Hi' } }],
+      },
+      { runner },
+    )
+    expect(response.ok, response.error).toBe(true)
+    expect(response.write?.bytes).toBe(10)
+    expect(response.write?.warnings).toContain('字体不一致')
+    expect(await readFile(output, 'utf8')).toBe('docx-bytes')
+  })
 
-    const editedPath = join(dir, 'book-edited.xlsx')
-    const edited = await handleOfficeRequest({
-      id: '2',
-      action: 'edit',
-      sourcePath: path,
-      outputPath: editedPath,
-      format: 'xlsx',
-      operations: [
-        {
-          type: 'set_cells',
-          cells: [{ sheet: '数据', address: 'B2', value: 5 }],
+  it('edit 在输出副本上执行 batch，源文件不变', async () => {
+    const source = join(dir, 'source.docx')
+    const output = join(dir, 'output.docx')
+    await writeFile(source, 'source')
+    const runner = fakeRunner({
+      json: async (args) => {
+        if (args[0] === 'batch') {
+          await writeFile(args[1]!, 'edited')
+        }
+        return { envelope: { success: true, data: {} }, run: okResult() }
+      },
+    })
+    const response = await handleOfficeRequest(
+      {
+        id: '1',
+        action: 'edit',
+        timeoutMs: 1000,
+        sourcePath: source,
+        outputPath: output,
+        format: 'docx',
+        commands: [{ command: 'set', path: '/body/p[1]', props: { text: 'new' } }],
+      },
+      { runner },
+    )
+    expect(response.ok).toBe(true)
+    expect(await readFile(source, 'utf8')).toBe('source')
+    expect(await readFile(output, 'utf8')).toBe('edited')
+  })
+
+  it('render screenshot 写出 PNG 并返回文件路径', async () => {
+    const source = join(dir, 'deck.pptx')
+    await writeFile(source, 'pptx')
+    const runner = fakeRunner({
+      run: async (args) => {
+        if (args[0] === 'view' && args[2] === 'screenshot') {
+          const out = args[args.indexOf('-o') + 1]
+          if (out !== undefined) await writeFile(out, PNG)
+        }
+        return okResult()
+      },
+      json: async (args) => {
+        if (args[0] === 'view' && args[2] === 'outline') {
+          return {
+            envelope: { success: true, data: { slides: [{}, {}] } },
+            run: okResult(),
+          }
+        }
+        return { envelope: { success: true, data: {} }, run: okResult() }
+      },
+    })
+    const response = await handleOfficeRequest(
+      {
+        id: '1',
+        action: 'render',
+        timeoutMs: 1000,
+        sourcePath: source,
+        format: 'pptx',
+        mode: 'screenshot',
+        outputDir: join(dir, 'render'),
+        maxPages: 2,
+      },
+      { runner },
+    )
+    expect(response.ok).toBe(true)
+    expect(response.render?.files).toHaveLength(2)
+    expect(response.render?.pageCount).toBe(2)
+  })
+
+  it('pdf 用逐页截图合成一个可重新打开的 PDF', async () => {
+    const source = join(dir, 'deck.pptx')
+    const output = join(dir, 'deck.pdf')
+    await writeFile(source, 'pptx')
+    const runner = fakeRunner({
+      run: async (args) => {
+        if (args[0] === 'view' && args[2] === 'screenshot') {
+          const out = args[args.indexOf('-o') + 1]
+          if (out !== undefined) await writeFile(out, PNG)
+        }
+        return okResult()
+      },
+      json: async (args) => {
+        if (args[0] === 'view' && args[2] === 'outline') {
+          return {
+            envelope: { success: true, data: { slides: [{}] } },
+            run: okResult(),
+          }
+        }
+        return { envelope: { success: true, data: {} }, run: okResult() }
+      },
+    })
+    const response = await handleOfficeRequest(
+      {
+        id: '1',
+        action: 'pdf',
+        timeoutMs: 1000,
+        sourcePath: source,
+        outputPath: output,
+        format: 'pptx',
+      },
+      { runner },
+    )
+    expect(response.ok).toBe(true)
+    expect(response.pdf?.pages).toBe(1)
+    expect((await readFile(output)).subarray(0, 4).toString()).toBe('%PDF')
+  })
+
+  it('CLI 错误码与建议会原样回传', async () => {
+    const runner = fakeRunner({
+      json: async () => ({
+        envelope: {
+          success: false,
+          error: { error: 'Slide not found', code: 'not_found', suggestion: 'Use 1-3' },
         },
-      ],
+        run: { code: 1, stdout: '', stderr: '', timedOut: false },
+      }),
     })
-    expect(edited.ok).toBe(true)
-
-    const read = await handleOfficeRequest({
-      id: '3',
-      action: 'read',
-      path: editedPath,
-      format: 'xlsx',
-      target: '数据',
-      offset: 0,
-      limit: 20,
-    })
-    expect(read.ok).toBe(true)
-    expect(read.read?.content).toContain('B2=5')
-    expect(read.read?.content).toContain('D2==B2*C2')
-  })
-
-  it('DOCX 模板占位符替换与列表追加都保留真实编号', async () => {
-    const template = join(dir, 'template.docx')
-    const createdTemplate = await handleOfficeRequest({
-      id: '1',
-      action: 'create',
-      outputPath: template,
-      format: 'docx',
-      content: {
-        title: '模板',
-        blocks: [{ type: 'paragraph', text: '姓名：{{name}}' }],
+    const response = await handleOfficeRequest(
+      {
+        id: '1',
+        action: 'read',
+        timeoutMs: 1000,
+        path: 'deck.pptx',
+        format: 'pptx',
+        mode: 'issues',
+        offset: 0,
+        limit: 10,
+        depth: 1,
       },
-    })
-    expect(createdTemplate.ok).toBe(true)
-
-    const output = join(dir, 'template-filled.docx')
-    const filled = await handleOfficeRequest({
-      id: '2',
-      action: 'create',
-      outputPath: output,
-      format: 'docx',
-      templatePath: template,
-      templateData: { name: '张三' },
-      content: {
-        blocks: [
-          { type: 'bullets', items: ['第一项'] },
-          { type: 'numbered', items: ['步骤一'] },
-        ],
-      },
-    })
-    expect(filled.ok).toBe(true)
-
-    const parsed = (await parseDocument(new Uint8Array(await readFile(output)))) as unknown as {
-      numbering?: { abstractNumberings?: { levels?: { format?: string }[] }[] }
-    }
-    const formats = (parsed.numbering?.abstractNumberings ?? []).flatMap((item) =>
-      (item.levels ?? []).map((level) => level.format),
+      { runner },
     )
-    const serialized = JSON.stringify(parsed)
-    expect(serialized).toContain('姓名：')
-    expect(serialized).toContain('张三')
-    expect(serialized).toContain('第一项')
-    expect(serialized).toContain('步骤一')
-    expect(formats).toContain('bullet')
-    expect(formats).toContain('decimal')
-  })
-
-  it('PPTX 创建 → 追加幻灯片 → 删除原幻灯片', async () => {
-    const path = join(dir, 'deck.pptx')
-    const created = await handleOfficeRequest({
-      id: '1',
-      action: 'create',
-      outputPath: path,
-      format: 'pptx',
-      content: {
-        title: '演示',
-        slides: [{ title: '第一页', bullets: ['A', 'B'], notes: '备注' }],
-      },
-    })
-    expect(created.ok).toBe(true)
-
-    const editedPath = join(dir, 'deck-edited.pptx')
-    const edited = await handleOfficeRequest({
-      id: '2',
-      action: 'edit',
-      sourcePath: path,
-      outputPath: editedPath,
-      format: 'pptx',
-      operations: [
-        { type: 'append_slides', slides: [{ title: '第二页', bullets: ['C'] }] },
-        { type: 'remove_slides', indexes: [0] },
-      ],
-    })
-    expect(edited.ok).toBe(true)
-
-    const read = await handleOfficeRequest({
-      id: '3',
-      action: 'read',
-      path: editedPath,
-      format: 'pptx',
-      offset: 0,
-      limit: 50,
-    })
-    expect(read.ok).toBe(true)
-    expect(read.read?.content).toContain('第二页')
-  })
-
-  it('DOCX / PPTX 能嵌入本地图片', async () => {
-    const image = join(dir, 'pixel.png')
-    await writeFile(
-      image,
-      Buffer.from(
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
-        'base64',
-      ),
-    )
-    const docx = await handleOfficeRequest({
-      id: '1',
-      action: 'create',
-      outputPath: join(dir, 'with-image.docx'),
-      format: 'docx',
-      content: { blocks: [{ type: 'image', path: image, width: '2cm', height: '2cm' }] },
-    })
-    expect(docx.ok).toBe(true)
-
-    const pptx = await handleOfficeRequest({
-      id: '2',
-      action: 'create',
-      outputPath: join(dir, 'with-image.pptx'),
-      format: 'pptx',
-      content: { slides: [{ title: '图片页', image: { path: image, width: 200, height: 200 } }] },
-    })
-    expect(pptx.ok).toBe(true)
+    expect(response.ok).toBe(false)
+    expect(response.code).toBe('not_found')
+    expect(response.suggestion).toBe('Use 1-3')
   })
 })
