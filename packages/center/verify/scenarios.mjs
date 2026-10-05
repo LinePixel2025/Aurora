@@ -1913,6 +1913,16 @@ export const SCENARIOS = [
             transform: style.transform,
           }
         })
+      const settledClosed = await ctx.page
+        .waitForFunction(
+          () => {
+            const rail = document.querySelector('[data-field="rail-container"]')
+            return rail !== null && getComputedStyle(rail).opacity === '0'
+          },
+          { timeout: 3000 },
+        )
+        .then(() => true)
+        .catch(() => false)
       const hidden = await railOf()
       let clickPath = ''
       const button = await ctx.page.evaluate(() => {
@@ -2056,6 +2066,7 @@ export const SCENARIOS = [
       return verdict(
         {
           offCanvasWhenClosed:
+            settledClosed &&
             hidden !== null &&
             (hidden.left < 0 || Number(hidden.opacity) === 0) &&
             hidden.pointerEvents === 'none',
@@ -2076,6 +2087,7 @@ export const SCENARIOS = [
         },
         {
           hidden,
+          settledClosed,
           button,
           shown,
           afterCreate,

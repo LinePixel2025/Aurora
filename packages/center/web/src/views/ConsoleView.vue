@@ -524,6 +524,9 @@ async function onFilePicked(event: Event): Promise<void> {
     transition:
       transform var(--dur-base) var(--ease-spring),
       opacity var(--transition-fast);
+    /* 移动端抽屉的关闭态本身依赖 opacity / transform；共享入场动画使用
+       animation-fill-mode: both，终帧会持续覆盖这两个属性，导致抽屉视觉上一直打开。 */
+    animation: none;
   }
 
   .rail-drawer {
