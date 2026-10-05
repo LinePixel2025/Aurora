@@ -52,6 +52,16 @@ describe('file-awareness-note', () => {
       expiresAt: '2026-10-05T00:00:00.000Z',
       expired: true,
     })
+
+    const manual = noteExpiryInfo(
+      {
+        updatedAt: '2026-10-04T00:00:00.000Z',
+        expiry: { mode: 'at', at: '2099-01-01T00:00:00.000Z', preset: 'manual' },
+      },
+      365,
+      Date.parse('2026-10-05T01:00:00.000Z'),
+    )
+    expect(manual).toEqual({ expired: true })
   })
 
   it('过期策略归一：缺省 / 损坏值回落 inherit，合法 preset 保留', () => {
@@ -64,6 +74,17 @@ describe('file-awareness-note', () => {
       mode: 'at',
       at: '2026-10-05T00:00:00.000Z',
       preset: 'at7',
+    })
+    expect(
+      normalizeNoteExpiry({
+        mode: 'at',
+        at: '2026-10-05T00:00:00.000Z',
+        preset: 'manual',
+      }),
+    ).toEqual({
+      mode: 'at',
+      at: '2026-10-05T00:00:00.000Z',
+      preset: 'manual',
     })
   })
 

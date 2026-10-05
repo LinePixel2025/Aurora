@@ -12,6 +12,7 @@ const windowEntries = {
   memory: r('src/renderer/memory/index.html'),
   onboarding: r('src/renderer/onboarding/index.html'),
   automation: r('src/renderer/automation/index.html'),
+  'awareness-glow': r('src/renderer/awareness-glow/index.html'),
 }
 
 /**

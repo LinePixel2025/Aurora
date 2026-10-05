@@ -1146,7 +1146,8 @@ export interface FileAwarenessNote {
 export type FileAwarenessNoteExpiry =
   | { mode: 'inherit' }
   | { mode: 'never' }
-  | { mode: 'at'; at: string; preset?: 'at24' | 'at7' | 'at30' }
+  /** `manual` = 手动立即过期；`at` 只保存操作时间，判定始终为已过期且不自动续期。 */
+  | { mode: 'at'; at: string; preset?: 'at24' | 'at7' | 'at30' | 'manual' }
 
 export interface FileAwarenessNoteContent {
   noteId: string

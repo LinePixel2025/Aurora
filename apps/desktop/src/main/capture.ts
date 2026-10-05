@@ -89,8 +89,10 @@ export const ASK_USER_CAPTURE_QUESTION: AskUserQuestion = {
 /** 第二个选项的 label（探针用它断言"点哪个就回哪个"） */
 export const ASK_USER_CAPTURE_SECOND = ASK_USER_CAPTURE_QUESTION.options?.[1]?.label ?? ''
 
+export type CaptureWindowName = WindowName | 'awareness-glow'
+
 export interface CaptureTarget {
-  name: WindowName
+  name: CaptureWindowName
   /** 输出文件名（不含目录），默认 `<name>.png` */
   file?: string
   /** 需要深链时附带（如设置页 `{ page: 'llm' }`） */
@@ -144,7 +146,7 @@ export interface CaptureOptions {
   delayMs?: number
 }
 export interface CaptureCheck {
-  name: WindowName
+  name: CaptureWindowName
   file: string
   /** `check` 脚本的返回值（未提供 check 时为空） */
   result?: unknown
@@ -240,13 +242,26 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
       // 1) 先把窗口建出来并等首次加载结束（否则紧接着的 reload 会把它打断成 ERR_ABORTED）；
       // 2) query 目标再 reload 一次带上深链参数；
       // 3) 后续页面复用同一个窗口，只走 reload。
-      const win = manager.ensure(target.name)
-      await manager.whenLoaded(target.name)
-      if (target.query !== undefined) await manager.reload(target.name, target.query)
+      const requestedName = target.name
+      const internalGlow = requestedName === 'awareness-glow'
+      let win: BrowserWindow
+      if (internalGlow) {
+        win = manager.ensureAwarenessGlowForCapture()
+        await manager.whenAwarenessGlowLoaded()
+      } else {
+        win = manager.ensure(requestedName)
+        await manager.whenLoaded(requestedName)
+      }
+      if (target.query !== undefined) {
+        if (internalGlow) await manager.reloadAwarenessGlow(target.query)
+        else await manager.reload(requestedName, target.query)
+      }
       await target.prepare?.()
-      manager.show(target.name)
+      if (internalGlow) manager.showAwarenessGlow()
+      else manager.show(requestedName)
       // ensure() 里的加载是 fire-and-forget，必须显式等它结束（否则会截到空图）
-      await manager.whenLoaded(target.name)
+      if (internalGlow) await manager.whenAwarenessGlowLoaded()
+      else await manager.whenLoaded(requestedName)
       if (target.act !== undefined) {
         await wait(60)
         await win.webContents.executeJavaScript(target.act, true)
@@ -4495,6 +4510,103 @@ export const MEMORY_WINDOW_CHECK = `(async () => {
         count('[data-caption-btn="maximize"]') === 1 &&
         count('[data-caption-btn="close"]') === 1 &&
         noOverlap,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/** 记忆库手动过期：先选一篇仍有效的笔记，再通过真实按钮触发“立即过期”。 */
+export const MEMORY_EXPIRE_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const button = document.querySelector('[data-action="memory.expire-now"]')
+  const rows = Array.from(document.querySelectorAll('.note-row:not(.expired)'))
+  if (rows.length > 0) {
+    rows[0].click()
+    await wait(220)
+  }
+  const current = document.querySelector('[data-action="memory.expire-now"]')
+  if (current !== null && current.disabled !== true) current.click()
+  await wait(320)
+})()`
+
+export const MEMORY_EXPIRE_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    await wait(220)
+    const row = document.querySelector('.note-row.active')
+    const noteId = row?.getAttribute('data-note-id') || ''
+    const button = document.querySelector('[data-action="memory.expire-now"]')
+    const stateText =
+      (document.querySelector('[data-field="memory.note-expiry-state"]')?.textContent || '').trim()
+    const notes = await window.aurora.awareness.notes({ limit: 500 })
+    const note = notes.ok ? notes.value.find((item) => item.id === noteId) || null : null
+    const readable =
+      noteId === '' ? { ok: false } : await window.aurora.awareness.readNote({ noteId })
+    const manualExpiry =
+      note?.expiry.mode === 'at' && note.expiry.preset === 'manual' && note.expired === true
+    return {
+      row: row !== null,
+      expanded: row !== null && row.classList.contains('expired'),
+      stateText,
+      buttonDisabled: button !== null && button.disabled === true,
+      manualExpiry,
+      noteStillReadable: readable.ok === true,
+      pass:
+        row !== null &&
+        row.classList.contains('expired') &&
+        stateText.includes('已手动过期') &&
+        button !== null &&
+        button.disabled === true &&
+        manualExpiry &&
+        readable.ok === true,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/** 自感知流光的静态预览：只验证视觉层存在、可见并持续做合成动画，不依赖后台模型。 */
+export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    await wait(260)
+    const root = document.querySelector('[data-field="awareness-glow.root"]')
+    const line = document.querySelector('[data-field="awareness-glow.line"]')
+    const bloom = document.querySelector('[data-field="awareness-glow.bloom"]')
+    const halo = document.querySelector('.glow-halo')
+    const rootStyle = root === null ? null : getComputedStyle(root)
+    const lineStyle = line === null ? null : getComputedStyle(line)
+    const bloomStyle = bloom === null ? null : getComputedStyle(bloom)
+    const haloStyle = halo === null ? null : getComputedStyle(halo)
+    const opacity = rootStyle === null ? 0 : Number.parseFloat(rootStyle.opacity)
+    const lineHeight = lineStyle === null ? 0 : Number.parseFloat(lineStyle.height)
+    return {
+      root: root !== null,
+      line: line !== null,
+      bloom: bloom !== null,
+      halo: halo !== null,
+      active: root?.classList.contains('active') === true,
+      opacity,
+      lineHeight,
+      lineGradient: lineStyle?.backgroundImage || '',
+      bloomBlur: bloomStyle?.filter || '',
+      lineAnimation: lineStyle?.animationName || '',
+      haloAnimation: haloStyle?.animationName || '',
+      text: (root?.textContent || '').trim(),
+      pass:
+        root !== null &&
+        line !== null &&
+        bloom !== null &&
+        halo !== null &&
+        root.classList.contains('active') &&
+        opacity > 0.9 &&
+        lineHeight >= 1.5 &&
+        (lineStyle?.backgroundImage || '').includes('gradient') &&
+        (bloomStyle?.filter || '').includes('blur') &&
+        (lineStyle?.animationName || '') !== 'none' &&
+        (haloStyle?.animationName || '') !== 'none' &&
+        (root.textContent || '').trim() === '',
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -11450,8 +11562,8 @@ export function parseCaptureTokens(value: string | undefined): string[] {
 /**
  * 按窗口名（`AURORA_CAPTURE_WINDOWS`）与场景文件名（`AURORA_CAPTURE_ONLY`）过滤截图清单。
  *
- * 两级过滤各管一件事：窗口名只有五个（edge-bar / chat / settings / memory / onboarding），
- * 粗到没法只跑"会话三分那一张"；`only` 按 `file` 做**子串**匹配 —— 写 `session-groups`
+ * 两级过滤各管一件事：窗口名只能粗到某一类用户窗口（另有内部 `awareness-glow`），
+ * 通常没法只跑"会话三分那一张"；`only` 按 `file` 做**子串**匹配 —— 写 `session-groups`
  * 或 `chat-session-groups.png` 都能命中，它才是把一轮五六十张收敛成"改到哪张跑哪张"的那级。
  *
  * `only` 的取值用 `string[] | undefined` 而不是 `string | undefined`，是为了让

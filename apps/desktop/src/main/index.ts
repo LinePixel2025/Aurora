@@ -108,6 +108,7 @@ import { SessionTitleService } from './session-title.js'
 import type { ProactiveLike, SettingsStoreLike } from './contracts.js'
 import { isQuietHour, ProactiveScheduler } from './proactive.js'
 import { EdgeBarScheduler } from './edge-bar-scheduler.js'
+import { shouldShowAwarenessGlow } from './awareness-glow.js'
 import { GameModeController, WindowsGameModeWatcher } from './game-mode.js'
 import { HotkeyManager } from './hotkey.js'
 import { SessionBridge, toConfirmRequest } from './center/session-bridge.js'
@@ -159,9 +160,12 @@ import {
 import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
 import {
   ASK_USER_CAPTURE_QUESTION,
+  AWARENESS_GLOW_CAPTURE_CHECK,
   captureWindows,
   CHAT_AUTO_TITLE_CHECK,
   CHAT_TRACE_FOLD_CHECK,
+  MEMORY_EXPIRE_ACT,
+  MEMORY_EXPIRE_CHECK,
   MEMORY_WINDOW_CHECK,
   SETTINGS_AWARENESS_RECORDS_ACT,
   SETTINGS_AWARENESS_RECORDS_CHECK,
@@ -379,6 +383,7 @@ let awarenessTools: { sync(): string[] } | undefined
 const automationDefinitionListeners = new Set<() => void>()
 const automationHistoryListeners = new Set<() => void>()
 let edgeBarScheduler: EdgeBarScheduler | undefined
+let awarenessGlowHideTimer: ReturnType<typeof setTimeout> | undefined
 /** Windows 游戏模式联动（docs/06 §8.3） */
 let gameMode: GameModeController | undefined
 let hotkeys: HotkeyManager | undefined
@@ -2296,6 +2301,10 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('edge-bar'),
   })
   edgeBarScheduler.start()
+  fileAwareness.onChanged(syncAwarenessGlow)
+  windows.onStateChanged(syncAwarenessGlow)
+  settings.onChange(syncAwarenessGlow)
+  syncAwarenessGlow()
 
   // 8.2.2 游戏模式联动（docs/06 §8.3）：进入游戏时隐藏提示条并挂起文件自感知，
   //       退出后恢复。检测放在单条常驻 PowerShell 子进程里，避免周期性新建进程。
@@ -2345,6 +2354,7 @@ async function bootstrap(): Promise<void> {
   // 引导刚结束（或本就在正常态）时立刻重算一次提示条可见性：
   // 上面的 `needsOnboarding()` 守卫会让首次启动的 tick 判定为不可见
   edgeBarScheduler?.tick()
+  syncAwarenessGlow()
 
   logger.info('Aurora 就绪')
 
@@ -2546,6 +2556,30 @@ async function runCapture(dir: string): Promise<void> {
         },
         check: MEMORY_WINDOW_CHECK,
         nativeCheck: nativeGlassCheck(manager, 'memory'),
+      },
+      {
+        name: 'memory',
+        file: 'memory-expire-now.png',
+        act: MEMORY_EXPIRE_ACT,
+        check: MEMORY_EXPIRE_CHECK,
+      },
+      {
+        name: 'awareness-glow',
+        file: 'awareness-glow.png',
+        query: { preview: '1' },
+        check: AWARENESS_GLOW_CAPTURE_CHECK,
+        nativeCheck: () => {
+          const state = manager.getAwarenessGlowDiagnostics()
+          return {
+            pass:
+              state.exists &&
+              state.visible &&
+              state.alwaysOnTop === true &&
+              state.focused === false &&
+              state.mousePassthrough,
+            ...state,
+          }
+        },
       },
       {
         name: 'settings',
@@ -5098,6 +5132,11 @@ async function shutdown(): Promise<void> {
   // 全局快捷键必须在退出前注销，否则会残留到进程消亡（Electron 只在正常退出时自动清）
   hotkeys?.dispose()
   edgeBarScheduler?.stop()
+  if (awarenessGlowHideTimer !== undefined) {
+    clearTimeout(awarenessGlowHideTimer)
+    awarenessGlowHideTimer = undefined
+  }
+  windows?.hideAwarenessGlow()
   gameMode?.stop()
   // 主动引导：让在途的敏感工具确认立即失败，不留下悬挂的 Promise
   proactiveScheduler?.dispose()
@@ -5147,6 +5186,49 @@ async function shutdown(): Promise<void> {
  * 同步「开机自启」到系统（Windows 注册表 Run 项，由 Electron 维护）。
  * 幂等：仅在当前状态与期望不一致时写入，避免每次启动都改注册表。
  */
+const AWARENESS_GLOW_FADE_OUT_MS = 220
+
+function awarenessGlowShouldShow(): boolean {
+  if (settings === undefined || windows === undefined || fileAwareness === undefined) return false
+  const current = settings.get()
+  const status = fileAwareness.status()
+  return shouldShowAwarenessGlow({
+    edgeBarEnabled: current.general.edgeBar.enabled,
+    edgeBarVisible: windows.isVisible('edge-bar'),
+    needsOnboarding: settings.needsOnboarding(),
+    edgeBarQuiet: isQuietHour(new Date(), current.general.edgeBar.quietHours),
+    systemQuiet: isQuietHour(new Date(), current.advanced.quietHours),
+    awarenessEnabled: status.enabled,
+    consentAccepted: status.consentAccepted,
+    knowledgeDirAvailable: status.knowledgeDirAvailable,
+    ...(status.analysisProgress === undefined ? {} : { stage: status.analysisProgress.stage }),
+  })
+}
+
+/**
+ * 自感知流光的唯一显隐入口。
+ *
+ * 主进程只负责创建 / 显示 / 收起透明浮层；动画本身在渲染层用合成分层完成。分析结束后
+ * 等一帧级的淡出窗口再隐藏，若同一时间重新开始分析则直接取消隐藏。
+ */
+function syncAwarenessGlow(): void {
+  if (windows === undefined) return
+  if (awarenessGlowHideTimer !== undefined) {
+    clearTimeout(awarenessGlowHideTimer)
+    awarenessGlowHideTimer = undefined
+  }
+  if (awarenessGlowShouldShow()) {
+    windows.showAwarenessGlow()
+    return
+  }
+  if (!windows.isAwarenessGlowVisible()) return
+  awarenessGlowHideTimer = setTimeout(() => {
+    awarenessGlowHideTimer = undefined
+    if (!awarenessGlowShouldShow()) windows?.hideAwarenessGlow()
+  }, AWARENESS_GLOW_FADE_OUT_MS)
+  awarenessGlowHideTimer.unref?.()
+}
+
 function syncLaunchAtLogin(enabled: boolean): void {
   try {
     const current = app.getLoginItemSettings()

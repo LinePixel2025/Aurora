@@ -1787,7 +1787,9 @@ function parseFileAwarenessNoteExpiry(value: unknown): FileAwarenessNoteExpiry |
   return {
     mode: 'at',
     at: new Date(at).toISOString(),
-    ...(preset === 'at24' || preset === 'at7' || preset === 'at30' ? { preset } : {}),
+    ...(preset === 'at24' || preset === 'at7' || preset === 'at30' || preset === 'manual'
+      ? { preset }
+      : {}),
   }
 }
 

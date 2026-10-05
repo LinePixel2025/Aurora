@@ -168,6 +168,7 @@ export function createNoteMarkdown(title: string, block: string): string {
  * - inherit：按最近一次理解时间和全局默认天数计算，重新分析后自然续期；
  * - never：永不过期；
  * - at：固定绝对时间，不随更新续期。
+ *   其中 manual 表示用户在记忆库中手动立即过期，不依赖系统时钟且始终过期。
  *
  * 损坏的固定时间按已过期处理，避免状态文件被手改后把未知记忆继续送给 Agent。
  */
@@ -178,6 +179,7 @@ export function noteExpiryInfo(
 ): { expiresAt?: string; expired: boolean } {
   if (note.expiry.mode === 'never') return { expired: false }
   if (note.expiry.mode === 'at') {
+    if (note.expiry.preset === 'manual') return { expired: true }
     const at = Date.parse(note.expiry.at)
     if (!Number.isFinite(at)) return { expired: true }
     return {
@@ -212,7 +214,9 @@ export function normalizeNoteExpiry(value: unknown): FileAwarenessNoteExpiry {
     return {
       mode: 'at',
       at,
-      ...(preset === 'at24' || preset === 'at7' || preset === 'at30' ? { preset } : {}),
+      ...(preset === 'at24' || preset === 'at7' || preset === 'at30' || preset === 'manual'
+        ? { preset }
+        : {}),
     }
   }
   return { mode: 'inherit' }

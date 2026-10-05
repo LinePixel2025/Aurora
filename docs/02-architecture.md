@@ -44,8 +44,11 @@
 | 设置窗口             | WindowManager | 1                       | 单窗口分栏；无系统标题栏，侧栏顶部可拖动 + Windows 式「最小化 / 关闭」按钮（关闭 = 隐藏，Esc 等效）                                                     |
 | 记忆库窗口（memory） | WindowManager | 1                       | 文件自感知知识库的独立浏览器；左侧笔记列表 + 右侧 Markdown 预览，设置页只管配置与入口（关闭 = 隐藏）                                                    |
 | 首次引导窗口         | WindowManager | 1                       | 向导式                                                                                                                                                  |
+| 自感知流光浮层       | WindowManager | 1                       | 内部透明置顶浮层；仅在文件分析进行中、提示条可见时横跨目标显示器顶部。鼠标穿透、不可聚焦、不进 `WINDOW_NAMES` / 任务栏 / 窗口状态 |
 
 约定：**主界面、设置、记忆库与自动化详情窗口**显示任务栏图标（`skipTaskbar: false`）且可最小化 / 最大化（Windows 式标题栏按钮，2026-09 前端重构起）；提示条与引导窗口仍隐藏任务栏图标。所有窗口的「关闭」= 隐藏（仅托盘“退出”真正退出），托盘仍是统一管理入口。
+
+`awareness-glow` 是唯一的内部窗口例外：它只由主进程按自感知状态驱动，不暴露 `window:*` 操作，也不持久化几何。
 
 ## 3. 模块划分
 
@@ -108,7 +111,7 @@ aurora/
 │     │  ├─ preload/            # contextBridge 白名单 API
 │     │  └─ renderer/           # Vue 3 应用
 │     │     ├─ windows/         # 各窗口入口：edge-bar / chat / automation /
-│     │     │                   #   settings / onboarding
+│     │     │                   #   settings / onboarding；另有内部 awareness-glow
 │     │     └─ shared/          # 渲染层共享组件与样式
 │     ├─ resources/             # 图标、托盘图标、安装器资源
 │     └─ package.json

@@ -26,6 +26,11 @@ import {
   placeEdgeBar,
   type EdgeBarSide,
 } from './edge-bar-geometry.js'
+import {
+  AWARENESS_GLOW_HEIGHT,
+  awarenessGlowBounds,
+  type AwarenessGlowRect,
+} from './awareness-glow.js'
 import { zoomActionForInput } from './zoom-shortcuts.js'
 
 export interface WindowManagerOptions {
@@ -43,6 +48,15 @@ export interface WindowManagerOptions {
   iconPath?: string
   /** 自测时关闭后台节流，保证隐藏 / 后台窗口仍按正常时钟处理 IPC。 */
   backgroundThrottling?: boolean
+}
+
+export interface AwarenessGlowDiagnostics {
+  exists: boolean
+  visible: boolean
+  bounds?: AwarenessGlowRect
+  alwaysOnTop?: boolean
+  focused?: boolean
+  mousePassthrough: boolean
 }
 
 interface WindowSpec {
@@ -231,6 +245,10 @@ export class WindowManager {
   private edgeBarExpanded = false
   /** 提示条当前的原生 shape（窗口坐标，供自测断言可见区域）。 */
   private edgeBarShape: WindowBounds[] = []
+  /** 自感知顶部流光：内部透明窗口，不属于 `WINDOW_NAMES`，也不参与状态机 / 几何持久化。 */
+  private awarenessGlowWindow: BrowserWindow | undefined
+  private awarenessGlowLoad: Promise<void> | undefined
+  private awarenessGlowMousePassthrough = false
   /** 已成功启用原生材质的窗口；失败时同步回到不透明回退。 */
   private readonly nativeGlassWindows = new Set<WindowName>()
   private themeListenerActive = true
@@ -322,6 +340,64 @@ export class WindowManager {
   /** 提示条当前原生 shape；空数组表示恢复为整窗矩形。 */
   getEdgeBarShape(): readonly WindowBounds[] {
     return this.edgeBarShape
+  }
+
+  /**
+   * 显示自感知顶部流光，并在每次显示时按当前提示条显示器重新定位。
+   * 内部窗口没有窗口状态机：调用方只表达“当前是否应该显示”。
+   */
+  showAwarenessGlow(): boolean {
+    const win = this.ensureAwarenessGlow()
+    if (win.isDestroyed()) return false
+    const bounds = awarenessGlowBounds(this.edgeBarDisplay().workArea, AWARENESS_GLOW_HEIGHT)
+    win.setBounds(bounds)
+    this.reassertAwarenessGlowTopmost('shown', win)
+    win.showInactive()
+    return true
+  }
+
+  hideAwarenessGlow(): void {
+    const win = this.awarenessGlowWindow
+    if (win !== undefined && !win.isDestroyed()) win.hide()
+  }
+
+  isAwarenessGlowVisible(): boolean {
+    const win = this.awarenessGlowWindow
+    return win !== undefined && !win.isDestroyed() && win.isVisible()
+  }
+
+  /** 自测诊断：读取内部浮层的真实原生状态，不经过用户窗口 API。 */
+  getAwarenessGlowDiagnostics(): AwarenessGlowDiagnostics {
+    const win = this.awarenessGlowWindow
+    if (win === undefined || win.isDestroyed()) {
+      return { exists: false, visible: false, mousePassthrough: this.awarenessGlowMousePassthrough }
+    }
+    return {
+      exists: true,
+      visible: win.isVisible(),
+      bounds: win.getBounds(),
+      alwaysOnTop: win.isAlwaysOnTop(),
+      focused: win.isFocused(),
+      mousePassthrough: this.awarenessGlowMousePassthrough,
+    }
+  }
+
+  /** 截图核对等待内部浮层首次加载完成。 */
+  async whenAwarenessGlowLoaded(): Promise<void> {
+    await this.awarenessGlowLoad
+  }
+
+  /** 截图核对取内部浮层窗口；正常业务只通过 show / hide 驱动，不直接操作窗口。 */
+  ensureAwarenessGlowForCapture(): BrowserWindow {
+    return this.ensureAwarenessGlow()
+  }
+
+  /** 截图核对给内部浮层加 query（例如 `preview=1` 强制展示静止效果）。 */
+  async reloadAwarenessGlow(query: Record<string, string>): Promise<void> {
+    const win = this.ensureAwarenessGlow()
+    const task = this.load(win, 'awareness-glow', query)
+    this.awarenessGlowLoad = task
+    await task
   }
 
   /** 截图核对读取真实原生底色；原生玻璃窗口由材质断言接管，返回 undefined。 */
@@ -575,6 +651,70 @@ export class WindowManager {
     return win
   }
 
+  private ensureAwarenessGlow(): BrowserWindow {
+    const existing = this.awarenessGlowWindow
+    if (existing !== undefined && !existing.isDestroyed()) return existing
+
+    const bounds = awarenessGlowBounds(this.edgeBarDisplay().workArea, AWARENESS_GLOW_HEIGHT)
+    const win = new BrowserWindow({
+      ...bounds,
+      show: false,
+      frame: false,
+      resizable: false,
+      transparent: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      focusable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      hasShadow: false,
+      thickFrame: false,
+      backgroundColor: '#00000000',
+      title: 'Aurora 自感知流光',
+      webPreferences: {
+        preload: this.options.preloadPath,
+        contextIsolation: true,
+        sandbox: true,
+        nodeIntegration: false,
+        devTools: this.options.isDev,
+        backgroundThrottling: this.options.backgroundThrottling ?? true,
+      },
+    })
+
+    win.setMenuBarVisibility(false)
+    try {
+      // 浮层只是状态可视化：绝不能挡住顶端标题栏、桌面图标或窗口按钮。
+      win.setIgnoreMouseEvents(true, { forward: true })
+      this.awarenessGlowMousePassthrough = true
+    } catch (error) {
+      this.awarenessGlowMousePassthrough = false
+      this.options.logger.warn('自感知流光鼠标穿透不可用', { error: String(error) })
+    }
+    this.reassertAwarenessGlowTopmost('created', win)
+
+    win.on('always-on-top-changed', (_event, isAlwaysOnTop) => {
+      if (isAlwaysOnTop) return
+      setImmediate(() => this.reassertAwarenessGlowTopmost('changed', this.awarenessGlowWindow))
+    })
+    win.on('closed', () => {
+      if (this.awarenessGlowWindow === win) {
+        this.awarenessGlowWindow = undefined
+        this.awarenessGlowLoad = undefined
+        this.awarenessGlowMousePassthrough = false
+      }
+    })
+    win.webContents.on('render-process-gone', (_event, details) => {
+      this.options.logger.error('自感知流光渲染进程异常退出', { reason: details.reason })
+      if (!win.isDestroyed()) win.destroy()
+    })
+
+    this.awarenessGlowWindow = win
+    this.awarenessGlowLoad = this.load(win, 'awareness-glow')
+    this.options.logger.debug('自感知流光窗口已创建', { bounds })
+    return win
+  }
+
   /**
    * 应用提示条透明度（docs/07 §2.2、docs/08 §1 `general.edgeBar.opacity`）。
    *
@@ -770,6 +910,8 @@ export class WindowManager {
     this.disposeThemeListener()
     this.disposeEdgeBarTopWatchdog()
     this.quitting = true
+    const glow = this.awarenessGlowWindow
+    if (glow !== undefined && !glow.isDestroyed()) glow.hide()
     // 待落盘的几何先按真实窗口现读一次落盘，再清掉去抖定时器 —— 否则最后一帧拖动会留在
     // 定时器里，等它触发时窗口已经不在（`persistGeometry` 会因 isDestroyed 直接跳过）。
     for (const name of [...this.geometryTimers.keys()]) {
@@ -788,6 +930,10 @@ export class WindowManager {
     this.disposeEdgeBarTopWatchdog()
     this.quitting = true
     for (const name of [...this.geometryTimers.keys()]) this.cancelGeometryTimer(name)
+    const glow = this.awarenessGlowWindow
+    if (glow !== undefined && !glow.isDestroyed()) glow.destroy()
+    this.awarenessGlowWindow = undefined
+    this.awarenessGlowLoad = undefined
     for (const win of this.windows.values()) {
       if (!win.isDestroyed()) win.destroy()
     }
@@ -798,7 +944,7 @@ export class WindowManager {
 
   private async load(
     win: BrowserWindow,
-    name: WindowName,
+    name: WindowName | 'awareness-glow',
     query?: Record<string, string>,
   ): Promise<void> {
     const { rendererUrl, rendererDir } = this.options
@@ -903,6 +1049,19 @@ export class WindowManager {
       if (moveTop) win.moveTop()
     } catch (error) {
       this.options.logger.warn('恢复提示条置顶失败', { reason, error: String(error) })
+    }
+  }
+
+  private reassertAwarenessGlowTopmost(
+    reason: 'created' | 'shown' | 'changed',
+    winOverride?: BrowserWindow,
+  ): void {
+    const win = winOverride ?? this.awarenessGlowWindow
+    if (win === undefined || win.isDestroyed()) return
+    try {
+      win.setAlwaysOnTop(true, WindowManager.EDGE_BAR_TOP_LEVEL)
+    } catch (error) {
+      this.options.logger.warn('恢复自感知流光置顶失败', { reason, error: String(error) })
     }
   }
 

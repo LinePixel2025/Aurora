@@ -10,6 +10,7 @@ import { renderMarkdown } from '@aurora/shared/browser'
 import {
   BookOpen,
   ChevronDown,
+  CircleX,
   FileText,
   FolderOpen,
   Search,
@@ -126,7 +127,7 @@ watch(filteredNotes, (items) => {
 })
 
 watch(selected, (note) => {
-  customExpiryOpen.value = note?.expiry.mode === 'at'
+  customExpiryOpen.value = note?.expiry.mode === 'at' && note.expiry.preset !== 'manual'
   customExpiryValue.value = toLocalDateTimeInput(
     note?.expiry.mode === 'at' ? note.expiry.at : undefined,
   )
@@ -148,6 +149,7 @@ function toLocalDateTimeInput(value?: string): string {
 }
 
 function expiryLabel(note: FileAwarenessNote): string {
+  if (note.expiry.mode === 'at' && note.expiry.preset === 'manual') return '已手动过期'
   if (note.expired) return '已过期'
   if (note.expiry.mode === 'never') return '永不过期'
   if (note.expiresAt === undefined) return '跟随默认 · 永不过期'
@@ -185,6 +187,15 @@ async function setExpiryChoice(value: string): Promise<void> {
     await applyExpiry({ mode: 'never' })
     return
   }
+  if (value === 'manual') {
+    customExpiryOpen.value = false
+    await applyExpiry({
+      mode: 'at',
+      at: new Date().toISOString(),
+      preset: 'manual',
+    })
+    return
+  }
   if (value === 'custom') {
     customExpiryOpen.value = true
     return
@@ -197,6 +208,10 @@ async function setExpiryChoice(value: string): Promise<void> {
     at: new Date(Date.now() + days * 24 * 60 * 60 * 1_000).toISOString(),
     preset: value as 'at24' | 'at7' | 'at30',
   })
+}
+
+async function expireNow(): Promise<void> {
+  await setExpiryChoice('manual')
 }
 
 async function applyCustomExpiry(): Promise<void> {
@@ -536,9 +551,20 @@ onUnmounted(() => {
                     <option value="at24">24 小时</option>
                     <option value="at7">7 天</option>
                     <option value="at30">30 天</option>
+                    <option value="manual">已手动过期</option>
                     <option value="custom">自定义时间</option>
                   </select>
                 </label>
+                <AppButton
+                  size="sm"
+                  variant="ghost"
+                  data-action="memory.expire-now"
+                  :disabled="selectedExpiryChoice === 'manual'"
+                  @click="expireNow"
+                >
+                  <CircleX :size="13" :stroke-width="1.8" aria-hidden="true" />
+                  立即过期
+                </AppButton>
                 <div v-if="customExpiryOpen" class="custom-expiry">
                   <input
                     v-model="customExpiryValue"

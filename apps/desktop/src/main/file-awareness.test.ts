@@ -156,7 +156,8 @@ describe('FileAwarenessService', () => {
 
     const expired = service.setNoteExpiry(note!.id, {
       mode: 'at',
-      at: '2020-01-01T00:00:00.000Z',
+      at: '2099-01-01T00:00:00.000Z',
+      preset: 'manual',
     })
     expect(expired.expired).toBe(true)
     expect(service.notes().some((item) => item.id === note!.id && item.expired)).toBe(true)
@@ -165,6 +166,11 @@ describe('FileAwarenessService', () => {
     expect(service.status().expiredNoteCount).toBe(1)
     await expect(service.readAgentNote(note!.id)).rejects.toThrow('不再提供给 Agent')
     await expect(service.readNote(note!.id)).resolves.toMatchObject({ noteId: note!.id })
+
+    const restored = service.setNoteExpiry(note!.id, { mode: 'never' })
+    expect(restored.expired).toBe(false)
+    expect(service.agentNotes().some((item) => item.id === note!.id)).toBe(true)
+    await expect(service.readAgentNote(note!.id)).resolves.toMatchObject({ noteId: note!.id })
 
     expect(service.ignoreSuggestion(suggestions[0]!)).toBe(true)
     await service.flush()
