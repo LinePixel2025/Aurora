@@ -8,7 +8,7 @@
  * 三类动作，按顺序执行：
  * 1. `prepare()`：主进程侧准备（改窗口状态、切模式）；
  * 2. `act`：在目标窗口的**渲染层**里执行一段 JS —— 提示条的面板是悬停驱动的，
- *    只从主进程加宽窗口会拍到一个空窗口。`act` 让截图走真实的 hover / click 链路；
+ *    只从主进程扩大 shape 会拍到一个空窗口。`act` 让截图走真实的 hover / touch / click 链路；
  * 3. `check`：截图后在渲染层取一份**可判定的结果**（DOM 命中测试、IPC 回执），
  *    与服务端的 `AURORA_SMOKE` 互补 —— 截图回答"长什么样"，check 回答"能不能点"。
  *
@@ -103,7 +103,7 @@ export interface CaptureTarget {
    * 本场景独有的「等两帧渲染之后还要多久」覆盖值（缺省用 `CaptureOptions.delayMs`）。
    *
    * 只有**动到窗口本身**的场景才需要它：`act` 是 await 的，但"提示条展开"走的是
-   * 主进程 `setBounds`，属于**跨进程**异步 —— act 返回时画面还停在收起态
+   * 主进程 shape + IPC，属于**跨进程**异步 —— act 返回时画面还停在收起态
    *（2026-10-01 实测：把缺省等待从 700ms 收到 292ms 后，`edge-bar-expanded.png`
    * 从 79KB 掉到 7.6KB，画面是竖条、DOM 却已是展开态 —— 探针 PASS 但图是错的）。
    */
@@ -341,27 +341,178 @@ function mergeCheckResults(
  * 且必须自带 try/catch —— 抛错会让整张截图算失败，而探针本身只是想说明状态。
  */
 
-/** 模拟鼠标移入提示条（真实 hover 链路：120ms 后 IPC 加宽窗口 + 挂载面板） */
+/** 模拟鼠标移入提示条（真实 hover 链路：120ms 后 IPC 扩大 shape + 挂载面板） */
 export const EDGE_BAR_HOVER_SCRIPT = `(() => {
   try {
     const el = document.querySelector('.edge')
     if (!el) return { hovered: false, reason: 'no .edge' }
-    el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }))
+    el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, pointerType: 'mouse' }))
     return { hovered: true }
   } catch (error) {
     return { hovered: false, reason: String(error) }
   }
 })()`
 
-/** 模拟鼠标移出提示条（面板淡出 → 窗口收回 8px） */
+/** 模拟鼠标移出提示条（面板淡出 → shape 收回 8px） */
 export const EDGE_BAR_LEAVE_SCRIPT = `(() => {
   try {
     const el = document.querySelector('.edge')
     if (!el) return { left: false, reason: 'no .edge' }
-    el.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false }))
+    el.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false, pointerType: 'mouse' }))
     return { left: true }
   } catch (error) {
     return { left: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 弹出动效探针：从头走一遍「收起 → 鼠标悬停展开」，记录过渡进行中与终态。
+ *
+ * 结果存在渲染层全局供后续 check 读取；act 返回时动画已经收尾，不会把采样压力留给截图等待。
+ */
+export const EDGE_BAR_ANIMATION_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const root = document.querySelector('.edge')
+    if (!root) return { ok: false, reason: 'no .edge' }
+    root.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false, pointerType: 'mouse' }))
+    await wait(650)
+    root.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, pointerType: 'mouse' }))
+    await wait(190)
+    const panel = document.querySelector('[data-field="edge-bar.panel"]')
+    if (!panel) return { ok: false, reason: 'panel not mounted' }
+    const read = () => {
+      const node = document.querySelector('[data-field="edge-bar.panel"]')
+      if (!node) return null
+      const style = getComputedStyle(node)
+      return { opacity: style.opacity, transform: style.transform }
+    }
+    const probe = {
+      mounted: true,
+      running: panel.getAnimations().some((animation) => animation.playState === 'running'),
+      samples: [],
+      final: null,
+      stillMounted: false,
+    }
+    window.__auroraEdgeBarAnimationProbe = probe
+    for (let index = 0; index < 4; index += 1) {
+      await wait(40)
+      const sample = read()
+      if (sample) probe.samples.push(sample)
+    }
+    await wait(300)
+    probe.final = read()
+    probe.stillMounted = document.querySelector('[data-field="edge-bar.panel"]') !== null
+    return { ok: true }
+  } catch (error) {
+    window.__auroraEdgeBarAnimationProbe = { mounted: false, reason: String(error) }
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+export const EDGE_BAR_ANIMATION_CHECK = `(() => {
+  try {
+    const probe = window.__auroraEdgeBarAnimationProbe
+    const panel = document.querySelector('[data-field="edge-bar.panel"]')
+    const final = probe && probe.final ? probe.final : null
+    const moved =
+      probe && Array.isArray(probe.samples) && final
+        ? probe.samples.some((sample) => sample && (sample.transform !== final.transform || sample.opacity !== final.opacity))
+        : false
+    const settled =
+      final !== null &&
+      final.opacity === '1' &&
+      (final.transform === 'none' || final.transform === 'matrix(1, 0, 0, 1, 0, 0)')
+    return {
+      mounted: probe ? probe.mounted === true : false,
+      running: probe ? probe.running === true : false,
+      sampleCount: probe && Array.isArray(probe.samples) ? probe.samples.length : 0,
+      moved,
+      settled,
+      panel: panel !== null,
+      pass:
+        probe !== null &&
+        probe.mounted === true &&
+        probe.running === true &&
+        Array.isArray(probe.samples) &&
+        probe.samples.length >= 3 &&
+        moved &&
+        settled &&
+        probe.stillMounted === true &&
+        panel !== null,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 触摸探针：先确保收起，再派发一次 pointerType=touch 的按下。
+ * 期望面板展开且主界面保持隐藏，并等待超过任何 hover 收起延迟后仍然保持。
+ */
+export const EDGE_BAR_TOUCH_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const root = document.querySelector('.edge')
+    const strip = document.querySelector('.strip')
+    if (!root || !strip) return { activated: false, reason: 'no edge bar' }
+    root.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false, pointerType: 'mouse' }))
+    await wait(650)
+    strip.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        bubbles: true,
+        cancelable: true,
+        pointerType: 'touch',
+        pointerId: 1,
+        isPrimary: true,
+        buttons: 1,
+      }),
+    )
+    strip.dispatchEvent(
+      new PointerEvent('pointerup', {
+        bubbles: true,
+        pointerType: 'touch',
+        pointerId: 1,
+        isPrimary: true,
+      }),
+    )
+    // 真实触摸结束后兼容层可能补一条 pointerleave；触摸分支必须忽略它。
+    root.dispatchEvent(
+      new PointerEvent('pointerleave', { bubbles: false, pointerType: 'touch' }),
+    )
+    await wait(450)
+    return { activated: true }
+  } catch (error) {
+    return { activated: false, reason: String(error) }
+  }
+})()`
+
+export const EDGE_BAR_TOUCH_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    await wait(900)
+    const panel = document.querySelector('[data-field="edge-bar.panel"]')
+    const root = document.querySelector('.edge')
+    const state = await window.aurora.window.getState()
+    const style = panel === null ? null : getComputedStyle(panel)
+    const expanded = root !== null && root.classList.contains('expanded')
+    const chatVisible = state.ok === true && state.value.visible['chat'] === true
+    return {
+      panel: panel !== null,
+      expanded,
+      chatVisible,
+      opacity: style ? style.opacity : null,
+      transform: style ? style.transform : null,
+      pass:
+        panel !== null &&
+        expanded &&
+        !chatVisible &&
+        style !== null &&
+        style.opacity === '1' &&
+        (style.transform === 'none' || style.transform === 'matrix(1, 0, 0, 1, 0, 0)'),
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
   }
 })()`
 
@@ -496,9 +647,6 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       allClickable: probes.length > 0 && probes.every((p) => p.hit && p.insideWindow),
       pass:
         buttons.length === 3 &&
-        // Electron 44 在部分 DPI 下会给 frameless 窗口多出约 2 DIP 的平台 inset；
-        // 主进程已用 setShape 裁到 328，这里只留 4 DIP 舍入容差。
-        width <= 332 &&
         panelStyle.width === '320px' &&
         quickAbsent &&
         awarenessStatus &&
@@ -568,7 +716,9 @@ export const EDGE_BAR_WORK_ACT = `(async () => {
   try {
     const switched = await window.aurora.mode.set('work')
     const el = document.querySelector('.edge')
-    if (el !== null) el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }))
+    if (el !== null) {
+      el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, pointerType: 'mouse' }))
+    }
     await wait(350)
     return { ok: switched.ok }
   } catch (error) {
@@ -10444,8 +10594,26 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       file: 'edge-bar-expanded.png',
       act: EDGE_BAR_HOVER_SCRIPT,
       check: EDGE_BAR_PANEL_SCRIPT,
-      // 展开要等主进程 setBounds 把窗口撑到 328px（跨进程异步，rAF 等不到它）
+      // 展开要等主进程 shape 与渲染层面板挂载走完（跨进程异步，rAF 等不到它）
       settleMs: 700,
+    },
+    {
+      name: 'edge-bar',
+      file: 'edge-bar-animation.png',
+      prepare: () => {
+        manager.hide('chat')
+      },
+      act: EDGE_BAR_ANIMATION_ACT,
+      check: EDGE_BAR_ANIMATION_CHECK,
+    },
+    {
+      name: 'edge-bar',
+      file: 'edge-bar-touch.png',
+      prepare: () => {
+        manager.hide('chat')
+      },
+      act: EDGE_BAR_TOUCH_ACT,
+      check: EDGE_BAR_TOUCH_CHECK,
     },
     {
       name: 'edge-bar',

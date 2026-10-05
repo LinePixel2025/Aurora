@@ -41,20 +41,28 @@
   「下一节」是 ClassRoom 专属摘要：`modes.current !== 'classroom'` 时整条不渲染；
   Work / Code 模式只保留通用系统摘要与模式提示，不能复用课堂课表。
 - **行为**：
-  - 悬停 → 展开面板；标题栏右上角是「隐藏」图标，底部主操作区固定为
+  - **鼠标**悬停 → 120ms 后展开面板，移开 → 面板退出后收起；标题栏右上角是「隐藏」图标，底部主操作区固定为
     「打开主界面 / 记忆库 / 设置」**三个**入口（**BetaV2**：「打开对话窗口」更名「打开主界面」）；
-  - 点击竖条 → 打开 / 聚焦主界面（**BetaV2**：chat 已是居中主界面，不再「贴右缘滑出」，见 §2.3）；这是提示条的主操作，**展开态下竖条仍是有效点击目标**；竖条的 `title` 只在收起态出现（展开态面板已有同名主按钮，避免原生提示浮在面板内容上），`aria-label` 始终保留；
-  - 移开鼠标 → 面板收起，窗口尺寸收回竖条尺寸（8×200），不留不可见的遮挡区域。
+  - **鼠标**点击竖条 → 打开 / 聚焦主界面（**BetaV2**：chat 已是居中主界面，不再「贴右缘滑出」，见 §2.3）；
+    这是鼠标下的主操作，**展开态下竖条仍是有效点击目标**；竖条的 `title` 只在收起态出现
+    （展开态面板已有同名主按钮，避免原生提示浮在面板内容上），`aria-label` 始终保留；
+  - **触摸 / 触控笔**没有可靠的 hover：点按竖条直接展开 / 收起面板，不打开主界面；
+    展开后由用户再次点按竖条、点「隐藏」或执行面板操作显式收起，不因触摸合成的
+    hover / mouseleave 自动关闭。鼠标行为不受触摸分支影响。
   - 实现状态（前端刷新轮）：
-    - 两态由 IPC **`window:setEdgeBarExpanded`** 驱动（渲染层 → preload → `WindowManager.setEdgeBarExpanded`），
-      主进程执行 `setBounds`：**右缘固定 + 垂直中心固定**，宽度 8 ↔ 328px、高度 200px ↔ 工作区高 - 48px；
-      几何算术在 `main/edge-bar-geometry.ts`（纯函数 + 单测）。
+    - 两态由 IPC **`window:setEdgeBarExpanded`** 驱动（渲染层 → preload → `WindowManager.setEdgeBarExpanded`）。
+      主进程把 BrowserWindow **稳定保持在展开态宿主尺寸**（328px × 工作区高 - 48px），
+      两态只切换原生 `setShape`：收起态裁成贴边的 **8×200px 居中区域**，展开态裁成完整的
+      328px 面板区域。这样展开 / 收起只做合成动画，不再瞬切原生窗口尺寸，也不会留下
+      不可见的鼠标遮挡区；几何与 shape 算术在 `main/edge-bar-geometry.ts`（纯函数 + 单测）。
     - **展开态必须跟着长高**：面板内容（自感知总览 / 提醒 / 最近理解 / 上下文 + 3 个操作按钮）
       在 200px 里装不下，只加宽会得到「看得到面板却点不到按钮」——实测按钮落在 y=278~410、窗口仅 202px 高，
-      `elementFromPoint` 全部落空。`AURORA_CAPTURE` 的 DOM 探针会把这条钉住（见 §5.3）。
-    - 渲染层悬停延迟 120ms 展开（先加宽窗口再显示面板，避免面板被 8px 窗口裁掉）、
-      移开延迟 220ms 收起（等面板退出动画结束再收窗口）；窗口隐藏时主进程会把尺寸复位，
-      避免下次显示残留展开态尺寸。
+      `elementFromPoint` 全部落空。稳定宿主让展开态天然使用完整高度，
+      `AURORA_CAPTURE` 的 DOM 探针继续把这条钉住（见 §5.3）。
+    - 渲染层鼠标悬停延迟 120ms 展开、移开延迟 220ms 收起；面板在稳定宿主内做
+      **250ms 轻滑淡入 / 淡出**（右侧 20px + opacity），退出动画结束后才收回 shape。
+      触摸 / 触控笔在按下时直接切换并按同一次手势去重，合成的 click 不再走鼠标的
+      「打开主界面」分支。窗口隐藏时主进程会把 shape 复位为收起态。
     - **面板内容区 320px，`right: 8px`**：面板不能贴到窗口最右缘（否则会盖住 8px 竖条，
       「展开态竖条仍可点」就不成立、竖条的悬停反馈也看不见）。328 = 320 面板 + 8 竖条。
       面板内以“自感知总览 + 最近理解”为主要信息层级；所有分组只用轻透明 surface，
@@ -138,9 +146,9 @@
   `WS_MAXIMIZE` 后把 Acrylic 锁成灰底，旧版曾用工作区缩放规避；Electron 44 已修复材质
   更新链路，chat / settings / memory 恢复调用 `BrowserWindow.maximize()` / `unmaximize()`，
   最大化期间 DWM 材质与还原后的 Acrylic 都保持正常。最大化期间几何不落盘。
-  提示条仍不参与系统最大化：Electron 44 对透明 frameless 窗口会施加约 33 DIP 的平台最小
-  宽度，因此提示条用 `setBounds` + `setShape` 把可见/可交互区域精确裁成收起 8px、展开
-  328px，多余透明区不绘制、不接收鼠标。
+  提示条仍不参与系统最大化：宿主窗口固定使用展开态尺寸，两态只由 `setShape` 切换
+  可见 / 可交互区域（收起 8×200px、展开 328px），多余透明区不绘制、不接收鼠标，
+  原生窗口尺寸不再参与弹出动画。
 - **三栏布局（2026-09 重构起）**：`sidebar(240px, 可折叠) | main(1fr) | context(384px, 可折叠、
 可拖拽调宽 280–560px，2026-10-03 起 —— 此前为固定 264px)`，
   栏间用分隔而非悬浮卡片；左右栏使用 `--bg-raised` 实体面与 `--border-strong` 分界，
@@ -1457,7 +1465,9 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
   后续还会继续加，**不要按固定张数做校验**（这里列出的名字只是当前已知条目，不是清单全集）。
   场景按 `main/capture.ts` 的 `defaultCapturePlan` **实际顺序**执行，当前为五组：
   1. **提示条**：`edge-bar.png`（纯截图）→ `theme-edge-bar.png`（双主题，整窗透明）→
-     `edge-bar-expanded.png`（act 派发真实 hover，面板三按钮命中测试）。
+     `edge-bar-expanded.png`（act 派发真实鼠标 hover，面板三按钮命中测试）→
+     `edge-bar-animation.png`（记录 20px 轻滑淡入的进行中与终态）→
+     `edge-bar-touch.png`（派发触摸按下，断言面板展开、主界面不打开且不会自动收起）。
   2. **主界面（chat，BetaV2 三栏）**——顺序有约束（见下面「全局顺序」一条）：
      `theme-chat.png`（双主题）→ `chat-sidebar.png`（左栏结构 + **出厂门控现场**）→
      `chat-hit-targets.png`（命中区与可访问性盘点，不改状态）→
@@ -1523,7 +1533,7 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     已经画出来），再补一个 settle —— 缺省 260ms，按场景里最长的 CSS transition（220ms 级）留余量。
     `executeJavaScript(act, true)` 本身是 await 的，所以 act 内部的异步（写配置、reload、IPC 往返）
     在它返回时都已结束，不需要再用固定长等待去"兜"。**只有动到窗口本身的场景**才覆盖
-    `CaptureTarget.settleMs`：提示条展开走主进程 `setBounds`，属**跨进程**异步，rAF 等不到它
+    `CaptureTarget.settleMs`：提示条展开走主进程原生 shape + IPC，属**跨进程**异步，rAF 等不到它
     （`edge-bar-expanded` 因此保持 700ms）。
     ⚠️ 别把 rAF 当成万能的：把等待一刀切短之后，`edge-bar-expanded.png` 从 79KB 掉到 7.6KB ——
     画面还停在竖条、DOM 却已是展开态，而**探针照样 PASS**（它只读 DOM，不看画面）。

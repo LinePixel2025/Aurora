@@ -3665,13 +3665,12 @@ async function runSmokeTest(userData: string): Promise<void> {
     record('为第二次启动留下一条 paused 的 job（重启续跑验证的前置）', prepared, detail)
   }
 
-  // 3. 提示条两态：断言**真实 BrowserWindow 的几何**（不只状态机）。
-  //    纯函数由 edge-bar-geometry.test.ts 覆盖；这里证明 setBounds 在主进程链路里真的生效，
-  //    且展开/收起保持右缘与 y 不变（docs/07 §2.2）。
+  // 3. 提示条两态：断言**真实 BrowserWindow + 原生 shape**（不只状态机）。
+  //    纯函数由 edge-bar-geometry.test.ts 覆盖；这里证明稳定宿主只换 shape，
+  //    两态切换不会触发布局跳动，且收起态没有不可见的鼠标遮挡区（docs/07 §2.2）。
   //
-  //    注意：Windows 上 `getBounds()` 会带上窗口的不可见边框（实测 8px 请求 → 10px 返回，
-  //    且随 DPI 缩放变化），所以这里断言**不变量 + 容差**，而不是精确相等 ——
-  //    精确的几何算术由纯函数单测保证。
+  //    注意：Windows 的 `getBounds()` / `getShape()` 会带 DPI 或平台 inset 舍入，
+  //    因此这里断言**不变量 + 容差**，而不是精确相等。
   if (smokeSection('3')) {
     const near = (a: number, b: number, tolerance: number): boolean => Math.abs(a - b) <= tolerance
     const workArea = screen.getPrimaryDisplay().workArea
@@ -3686,25 +3685,28 @@ async function runSmokeTest(userData: string): Promise<void> {
     const barBack = windows?.getBounds('edge-bar')
     const backShape = windows?.getEdgeBarShape()[0]
     record(
-      '提示条收起态可见 shape 仍为 8px，透明富余区被裁掉且窗口贴右缘',
+      '提示条收起态只暴露贴右缘且垂直居中的 8×200px shape',
       barCollapsed !== undefined &&
         collapsedShape !== undefined &&
         near(collapsedShape.width, EDGE_BAR_WIDTHS.collapsed, 1) &&
+        near(collapsedShape.height, 200, 1) &&
+        near(collapsedShape.y, (barCollapsed.height - collapsedShape.height) / 2, 1) &&
         near(collapsedShape.x, barCollapsed.width - collapsedShape.width, 1) &&
         near(barCollapsed.x + barCollapsed.width, rightEdge, 4),
       JSON.stringify({ bounds: barCollapsed, shape: collapsedShape }),
     )
     record(
-      '提示条展开态真实窗口约 328px 宽、shape 裁到 328px 且右缘与垂直中心不变',
+      '提示条展开只换 shape：宿主几何不变，展开 shape 覆盖 328px 面板与完整高度',
       barCollapsed !== undefined &&
         barExpanded !== undefined &&
-        near(barExpanded.width, EDGE_BAR_WIDTHS.expanded, 4) &&
-        near(barExpanded.x + barExpanded.width, barCollapsed.x + barCollapsed.width, 3) &&
-        near(barExpanded.y + barExpanded.height / 2, barCollapsed.y + barCollapsed.height / 2, 3) &&
+        near(barExpanded.x, barCollapsed.x, 2) &&
+        near(barExpanded.y, barCollapsed.y, 2) &&
+        near(barExpanded.width, barCollapsed.width, 2) &&
+        near(barExpanded.height, barCollapsed.height, 2) &&
         expandedShape !== undefined &&
         near(expandedShape.width, EDGE_BAR_WIDTHS.expanded, 1) &&
         near(expandedShape.x, barExpanded.width - expandedShape.width, 1) &&
-        barExpanded.height > barCollapsed.height,
+        near(expandedShape.height, barExpanded.height, 1),
       JSON.stringify({ bounds: barExpanded, shape: expandedShape }),
     )
     record(
@@ -3715,23 +3717,26 @@ async function runSmokeTest(userData: string): Promise<void> {
       barExpanded !== undefined ? `height=${barExpanded.height}, workArea=${workArea.height}` : '',
     )
     record(
-      '提示条展开后 shape 限制为 328px，收起后重新收成 8px',
+      '提示条展开后 shape 为 328px，收起后重新收成 8×200px',
       expandedShape !== undefined &&
         near(expandedShape.width, EDGE_BAR_WIDTHS.expanded, 1) &&
         backShape !== undefined &&
-        near(backShape.width, EDGE_BAR_WIDTHS.collapsed, 1),
+        near(backShape.width, EDGE_BAR_WIDTHS.collapsed, 1) &&
+        near(backShape.height, 200, 1),
       JSON.stringify({ expandedShape, backShape }),
     )
     record(
-      '提示条收起后真实窗口与可见 shape 回到初始档位（往返幂等）',
+      '提示条收起后宿主仍稳定且可见 shape 回到初始档位（往返幂等）',
       barBack !== undefined &&
         barCollapsed !== undefined &&
         backShape !== undefined &&
         collapsedShape !== undefined &&
         near(barBack.x, barCollapsed.x, 2) &&
+        near(barBack.y, barCollapsed.y, 2) &&
         near(barBack.width, barCollapsed.width, 2) &&
         near(barBack.height, barCollapsed.height, 2) &&
-        near(backShape.width, collapsedShape.width, 1),
+        near(backShape.width, collapsedShape.width, 1) &&
+        near(backShape.height, collapsedShape.height, 1),
       JSON.stringify({ before: barCollapsed, after: barBack, shape: backShape }),
     )
     const nativeEdge = BrowserWindow.getAllWindows().find(

@@ -20,11 +20,10 @@ import {
   type WindowState,
 } from '@aurora/shared'
 import {
-  EDGE_BAR_COLLAPSED_HEIGHT,
   EDGE_BAR_WIDTHS,
+  edgeBarShape,
   expandedEdgeBarHeight,
   placeEdgeBar,
-  resizeEdgeBarKeepingAnchor,
   type EdgeBarSide,
 } from './edge-bar-geometry.js'
 import { zoomActionForInput } from './zoom-shortcuts.js'
@@ -312,7 +311,7 @@ export class WindowManager {
    * 读取窗口的**真实**几何（未创建 / 已销毁时返回 undefined）。
    *
    * 与 `getState()` 的区别：状态机只说"应该可见"，这里说的是窗口在桌面上的真实矩形，
-   * 供自测（AURORA_SMOKE）断言 setBounds 真的生效，而不是只改了状态字段。
+   * 供自测（AURORA_SMOKE）断言宿主几何与原生 shape 都真的生效，而不是只改了状态字段。
    */
   getBounds(name: WindowName): { x: number; y: number; width: number; height: number } | undefined {
     const win = this.windows.get(name)
@@ -670,37 +669,28 @@ export class WindowManager {
   /**
    * 提示条收起态（8px 竖条）/ 展开态（328px 全高面板）切换（docs/07 §2.2）。
    *
-   * 只改尺寸与位置，**不动可见性、不广播状态变化**——可见性没变，广播只会制造无意义的渲染层更新。
-   * 展开 / 收起保持**右缘与垂直中心固定**（向左、向上下生长）；窗口尚未创建时只记录标记，
-   * 下次 `show()` 会按标记建窗。
+   * 宿主窗口始终保持在展开态尺寸，这里只换原生 shape，**不动可见性、不广播状态变化**。
+   * 这样面板的滑入 / 淡出完全由渲染层合成动画完成，不会出现原生窗口尺寸瞬切。
+   * 窗口尚未创建时只记录标记，下次 `show()` 会按标记建窗。
    *
-   * 展开态要跟着长高：面板里的四块信息 + 四个操作按钮在 200px 高度里装不下，
+   * 展开态要跟着长高：面板里的四块信息 + 三个操作按钮在 200px 高度里装不下，
    * 按钮会被挤到可视区之外（实测按钮 top=278、窗口高 202）——用户看得到面板却点不到按钮。
    */
   setEdgeBarExpanded(expanded: boolean): WindowState {
     this.edgeBarExpanded = expanded
     const win = this.windows.get('edge-bar')
     if (!win || win.isDestroyed()) return this.getState()
-    win.setBounds(
-      resizeEdgeBarKeepingAnchor(
-        win.getBounds(),
-        this.sizeFor('edge-bar'),
-        this.edgeBarDisplay().workArea,
-        this.edgeBarSide(),
-      ),
-    )
     this.normalizeEdgeBarBounds(win)
     this.applyEdgeBarShape(win)
-    this.reassertEdgeBarTopmost('expanded')
-    this.persistGeometry('edge-bar', win)
+    this.reassertEdgeBarTopmost(expanded ? 'expanded' : 'collapsed')
     return this.getState()
   }
 
   /**
    * 把提示条按可见锚点贴回工作区边缘。
    *
-   * Electron 44 对透明窗口会施加平台最小宽度，收起态请求 8px 时实际 HWND 可能被夹到
-   * 33px 左右。布局仍把 `.strip` 放在窗口右缘，因此这里以**实际宽度**重算 x：
+   * 宿主始终按展开尺寸请求，Electron 44 的透明窗口最小宽度不会再参与两态切换。
+   * 布局仍把 `.strip` 放在窗口右缘，因此这里以**实际宽度**重算 x：
    * 右侧模式让窗口右缘贴工作区右缘，左侧模式让窗口左缘贴工作区左缘；多余透明区域
    * 由 `applyEdgeBarShape()` 裁掉，既不可见也不接收鼠标。
    */
@@ -714,26 +704,12 @@ export class WindowManager {
     if (current.x !== x || current.y !== y) win.setBounds({ ...current, x, y })
   }
 
-  /** 按当前两态把提示条裁到目标宽度：收起 8px、展开 328px；多余平台 inset 不绘制、不可点。 */
+  /** 按当前两态切换原生 shape；收起只留 8×200px，展开覆盖完整面板。 */
   private applyEdgeBarShape(win: BrowserWindow): void {
     if (win.isDestroyed()) return
     if (process.platform !== 'win32' && process.platform !== 'linux') return
     const bounds = win.getBounds()
-    const desiredWidth = this.edgeBarExpanded ? EDGE_BAR_WIDTHS.expanded : EDGE_BAR_WIDTHS.collapsed
-    if (bounds.width <= desiredWidth) {
-      win.setShape([])
-      this.edgeBarShape = []
-      return
-    }
-    const width = desiredWidth
-    const shape = [
-      {
-        x: Math.max(0, bounds.width - width),
-        y: 0,
-        width,
-        height: bounds.height,
-      },
-    ]
+    const shape = edgeBarShape(bounds, this.edgeBarExpanded)
     win.setShape(shape)
     this.edgeBarShape = shape
   }
@@ -898,20 +874,12 @@ export class WindowManager {
     })
   }
 
-  /** 复位提示条折叠标记并同步收缩真实窗口（窗口不存在时只清标记）。 */
+  /** 复位提示条折叠标记并收回原生 shape（窗口不存在时只清标记）。 */
   private collapseEdgeBar(): void {
     if (!this.edgeBarExpanded) return
     this.edgeBarExpanded = false
     const win = this.windows.get('edge-bar')
     if (!win || win.isDestroyed()) return
-    win.setBounds(
-      resizeEdgeBarKeepingAnchor(
-        win.getBounds(),
-        this.sizeFor('edge-bar'),
-        this.edgeBarDisplay().workArea,
-        this.edgeBarSide(),
-      ),
-    )
     this.normalizeEdgeBarBounds(win)
     this.applyEdgeBarShape(win)
     this.reassertEdgeBarTopmost('collapsed')
@@ -968,14 +936,11 @@ export class WindowManager {
     }
   }
 
-  /** 窗口当前应采用的尺寸：提示条按折叠态，其余取 SPECS 固定尺寸。 */
+  /** 窗口当前应采用的尺寸：提示条固定使用展开态宿主，其余取 SPECS 固定尺寸。 */
   private sizeFor(name: WindowName): { width: number; height: number } {
     const spec = SPECS[name]
     if (name === 'edge-bar') {
-      if (!this.edgeBarExpanded) {
-        return { width: EDGE_BAR_WIDTHS.collapsed, height: EDGE_BAR_COLLAPSED_HEIGHT }
-      }
-      // 展开态高度跟工作区走（全高面板），所以这里要读屏幕（贴附显示器，v21）
+      // 宿主高度跟工作区走（全高面板），两态只换 shape，所以这里始终读贴附显示器。
       return {
         width: EDGE_BAR_WIDTHS.expanded,
         height: expandedEdgeBarHeight(this.edgeBarDisplay().workArea),

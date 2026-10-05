@@ -2,11 +2,12 @@
 /**
  * 右侧提示条（docs/07 §2.2）：贴屏幕右缘的 8px 竖条 + 悬停展开的全高面板。
  *
- * 行为契约（step-02 落地，本步只换外观与动效，事件绑定与 IPC 调用保持不变）：
- * - 悬停 → 主进程把窗口加宽到 328px（`window:setEdgeBarExpanded`），面板从右滑入；
- *   移开鼠标 → 面板淡出后再把窗口收回 8px（否则屏幕右侧会留一块看不见却挡鼠标的区域）；
- * - 点击竖条 → 呼出主界面（`window:showChat`，chat 窗即主界面）；展开态下竖条仍贴着屏幕右缘，
- *   仍是有效点击目标；
+ * 行为契约：
+ * - 鼠标悬停 → 主进程把宿主 shape 扩到面板区域（`window:setEdgeBarExpanded`），面板从右滑入；
+ *   移开鼠标 → 面板淡出后再把 shape 收回 8px（否则屏幕右侧会留一块看不见却挡鼠标的区域）；
+ * - 鼠标点击竖条 → 呼出主界面（`window:showChat`，chat 窗即主界面）；展开态下竖条仍贴着
+ *   屏幕右缘，仍是有效点击目标；
+ * - 触摸 / 触控笔没有 hover：点按竖条直接展开 / 收起，且保持到用户显式收起；
  * - 面板内容：自感知状态 → 文件提醒 → 最近理解 → 上下文摘要，底部是三个操作入口。
  *   提示条不承载对话输入；快速会话仍从主界面左栏固定项进入。
  *   窗口始终保持 `focusable: false`，悬停展开不抢键盘焦点。
@@ -14,8 +15,8 @@
  * 几何预算（不要突破）：展开窗口 328px = 竖条 8px + 面板 320px。
  * 面板宽度写死 320px，任何内部布局都在这个宽度内成立，否则会被窗口裁切。
  *
- * 拖动：**刻意不提供**。本窗 `focusable: false`，位置与尺寸完全由主进程按「工作区右缘 +
- * 垂直居中 + 当前折叠态」推导（`window-manager.ts` 的 `edge` 分支），不参与用户拖动，
+ * 拖动：**刻意不提供**。本窗 `focusable: false`，宿主位置与尺寸由主进程按「工作区边缘 +
+ * 垂直居中 + 展开态宿主」推导，可见 / 可点区域再由原生 shape 裁切，不参与用户拖动，
  * 因此模板里不挂 `drag-region`（不在 `useWindowDrag` 的清单里，docs/07 §2.2）。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -49,27 +50,20 @@ import {
 const EXPAND_DELAY_MS = 120
 /** 移开多久才收起：给用户从竖条移到面板的容错时间 */
 const COLLAPSE_DELAY_MS = 220
-/** 面板退出动画时长，与 theme.css 的 --dur-base 对齐；收窗口必须晚于它，否则面板被裁掉 */
-const PANEL_EXIT_MS = 250
 const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
 const perception = usePerceptionStore()
 
 const expanded = ref(false)
-/** 鼠标是否在提示条窗口内 */
-const mouseInside = ref(false)
 let expandTimer: ReturnType<typeof setTimeout> | undefined
 let collapseTimer: ReturnType<typeof setTimeout> | undefined
-let shrinkTimer: ReturnType<typeof setTimeout> | undefined
 
 function clearTimers(): void {
   clearTimeout(expandTimer)
   clearTimeout(collapseTimer)
-  clearTimeout(shrinkTimer)
   expandTimer = undefined
   collapseTimer = undefined
-  shrinkTimer = undefined
 }
 
 const suggestions = ref<FileAwarenessSuggestion[]>([])
@@ -93,8 +87,6 @@ function onAwarenessSuggestion(next: FileAwarenessSuggestion): void {
   suggestionBusy.value = false
   clearTimeout(collapseTimer)
   collapseTimer = undefined
-  clearTimeout(shrinkTimer)
-  shrinkTimer = undefined
   void windowStore.setEdgeBarExpanded(true)
   expanded.value = true
 }
@@ -329,54 +321,66 @@ const systemChips = computed(() => {
 })
 
 /**
- * 悬停进入：窗口先加宽，面板后出现 —— 反过来的话面板会先被 8px 窗口裁掉再跳出来。
+ * 悬停进入：宿主 shape 先切换，面板后出现。宿主尺寸始终稳定，因此这里只负责
+ * 渲染层的淡入 / 滑入，不再触发原生窗口尺寸变化。
  *
  * **不做 `if (expanded.value) return` 早退**：主进程可能在我们不知情时把提示条隐藏
- * （勿扰时段的 `EdgeBarScheduler`、设置页的「立即显隐」），窗口已被收回 8px 而渲染层的
- * `expanded` 仍是 true；早退会让面板渲染在 8px 窗口里被裁掉且无法自愈。
+ * （勿扰时段的 `EdgeBarScheduler`、设置页的「立即显隐」），shape 已被收回 8px 而渲染层的
+ * `expanded` 仍是 true；早退会让面板渲染在收起 shape 里被裁掉且无法自愈。
  * `setEdgeBarExpanded` 在主进程是幂等的，无条件调用即是最省事的自愈路径。
  */
-function onPointerEnter(): void {
-  mouseInside.value = true
+function onPointerEnter(event: PointerEvent): void {
+  if (event.pointerType !== 'mouse') return
   clearTimeout(collapseTimer)
-  clearTimeout(shrinkTimer)
   collapseTimer = undefined
-  shrinkTimer = undefined
   expandTimer = setTimeout(() => {
     expandTimer = undefined
-    void (async () => {
-      await windowStore.setEdgeBarExpanded(true)
-      expanded.value = true
-    })()
+    expandPanel()
   }, EXPAND_DELAY_MS)
 }
 
-/** 收起链：面板先淡出，动画结束后再把窗口收回竖条（enter / leave / 失焦三条路径共用） */
+/** 收起链：面板先淡出，动画结束后再把 shape 收回竖条。 */
 function scheduleCollapse(): void {
   clearTimeout(expandTimer)
   expandTimer = undefined
   clearTimeout(collapseTimer)
   collapseTimer = setTimeout(() => {
     collapseTimer = undefined
-    expanded.value = false
-    clearTimeout(shrinkTimer)
-    shrinkTimer = setTimeout(() => {
-      shrinkTimer = undefined
-      void windowStore.setEdgeBarExpanded(false)
-    }, PANEL_EXIT_MS)
+    collapseNow()
   }, COLLAPSE_DELAY_MS)
 }
 
-function onPointerLeave(): void {
-  mouseInside.value = false
+function onPointerLeave(event: PointerEvent): void {
+  if (event.pointerType !== 'mouse') return
   scheduleCollapse()
 }
 
-/** 面板内的操作：立即收起（用户已经明确做了选择，不需要动画缓冲） */
+function expandPanel(): void {
+  clearTimers()
+  void (async () => {
+    await windowStore.setEdgeBarExpanded(true)
+    expanded.value = true
+  })()
+}
+
+function finishCollapse(): void {
+  if (expanded.value) return
+  void windowStore.setEdgeBarExpanded(false)
+}
+
+/** 面板退场结束后才收回原生 shape，避免固定计时器与真实过渡时长漂移。 */
+function onPanelAfterLeave(): void {
+  finishCollapse()
+}
+
+/** 面板内的操作：立即进入退场；shape 等 `after-leave` 再收回。 */
 function collapseNow(): void {
   clearTimers()
+  if (!expanded.value) {
+    finishCollapse()
+    return
+  }
   expanded.value = false
-  void windowStore.setEdgeBarExpanded(false)
 }
 
 const statusLabel = computed(() =>
@@ -463,27 +467,48 @@ async function openInsight(item: InsightItem): Promise<void> {
   collapseNow()
 }
 
-/**
- * 竖条的指针按下类型（触摸判定用）：click 事件本身不带 pointerType，
- * 先在 pointerdown 记一笔，click 里读。
- */
-let stripPointerType = 'mouse'
+let lastTouchToggleAt = 0
+let suppressClickUntil = 0
 
-/** 触摸屏没有 hover：点竖条 = 展开 / 收起面板（鼠标点竖条仍是打开主界面，docs/07 §2.2） */
-function onStripPointerDown(event: PointerEvent): void {
-  stripPointerType = event.pointerType
+function firesTouchEvents(event: MouseEvent): boolean {
+  const source = (
+    event as MouseEvent & {
+      sourceCapabilities?: { firesTouchEvents?: boolean }
+    }
+  ).sourceCapabilities
+  return source?.firesTouchEvents === true
 }
 
-function onStripClick(): void {
-  if (stripPointerType === 'touch') {
-    if (expanded.value) collapseNow()
-    else {
-      clearTimers()
-      void (async () => {
-        await windowStore.setEdgeBarExpanded(true)
-        expanded.value = true
-      })()
-    }
+/** 触摸 / 触控笔没有可靠 hover：点按竖条只负责展开 / 收起。 */
+function toggleForTouch(): void {
+  const now = performance.now()
+  if (now - lastTouchToggleAt < 500) return
+  lastTouchToggleAt = now
+  suppressClickUntil = now + 1_200
+  if (expanded.value) collapseNow()
+  else expandPanel()
+}
+
+/**
+ * `pointerdown` 在部分 Windows 触摸设备上可能直接派发为鼠标；
+ * `touchstart` 作为第二入口兜底，两者用时间窗去重，避免同一次点按连续翻转两次。
+ */
+function onStripPointerDown(event: PointerEvent): void {
+  if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return
+  event.preventDefault()
+  toggleForTouch()
+}
+
+function onStripTouchStart(event: TouchEvent): void {
+  event.preventDefault()
+  toggleForTouch()
+}
+
+function onStripClick(event: MouseEvent): void {
+  const now = performance.now()
+  if (now < suppressClickUntil) return
+  if (firesTouchEvents(event)) {
+    toggleForTouch()
     return
   }
   void openChat()
@@ -525,8 +550,8 @@ onUnmounted(() => {
   <div
     class="edge anim-window"
     :class="{ expanded }"
-    @mouseenter="onPointerEnter"
-    @mouseleave="onPointerLeave"
+    @pointerenter="onPointerEnter"
+    @pointerleave="onPointerLeave"
   >
     <button
       class="strip"
@@ -534,6 +559,7 @@ onUnmounted(() => {
       :title="expanded ? undefined : '打开 Aurora 主界面'"
       aria-label="打开 Aurora 主界面"
       @pointerdown="onStripPointerDown"
+      @touchstart="onStripTouchStart"
       @click="onStripClick"
     >
       <span class="strip-dot">
@@ -542,7 +568,7 @@ onUnmounted(() => {
       <span class="strip-label">AURORA</span>
     </button>
 
-    <transition name="sheet">
+    <transition name="sheet" @after-leave="onPanelAfterLeave">
       <aside v-if="expanded" class="panel glass" data-field="edge-bar.panel">
         <header class="panel-head">
           <div class="brand-lockup">
@@ -565,7 +591,7 @@ onUnmounted(() => {
         </header>
 
         <div class="panel-scroll">
-          <section class="awareness-hero anim-rise" data-field="edge-bar.awareness-status">
+          <section class="awareness-hero" data-field="edge-bar.awareness-status">
             <div class="hero-head">
               <span class="hero-icon" aria-hidden="true">
                 <FolderSearch :size="15" :stroke-width="1.8" />
@@ -594,7 +620,7 @@ onUnmounted(() => {
             </div>
             <div
               v-if="analysisProgress"
-              class="analysis-progress anim-rise"
+              class="analysis-progress"
               data-field="edge-bar.analysis-progress"
             >
               <span
@@ -628,7 +654,7 @@ onUnmounted(() => {
 
           <section
             v-if="suggestions.length === 1"
-            class="card suggestion anim-rise"
+            class="card suggestion"
             data-field="edge-bar.awareness"
           >
             <div class="card-head">
@@ -674,7 +700,7 @@ onUnmounted(() => {
 
           <section
             v-else-if="suggestions.length > 1"
-            class="card suggestion anim-rise"
+            class="card suggestion"
             data-field="edge-bar.awareness"
           >
             <button
@@ -730,7 +756,7 @@ onUnmounted(() => {
             </div>
           </section>
 
-          <section class="card insight-card anim-rise" data-field="edge-bar.insights">
+          <section class="card insight-card" data-field="edge-bar.insights">
             <div class="card-head">
               <span class="section-heading">
                 <BookOpen :size="13" :stroke-width="1.8" aria-hidden="true" />
@@ -769,7 +795,7 @@ onUnmounted(() => {
 
           <section
             v-if="nextLesson || systemChips.length > 0 || modeHint !== ''"
-            class="card context-card anim-rise"
+            class="card context-card"
           >
             <div v-if="nextLesson" class="context-line">
               <span class="context-label">下一节</span>
@@ -820,7 +846,10 @@ onUnmounted(() => {
 .strip {
   position: relative;
   flex: 0 0 auto;
+  align-self: center;
   width: 8px;
+  /* 与主进程收起 shape 的 200px 高度保持一致；稳定宿主不会再把元素拉伸到全高。 */
+  height: 200px;
   z-index: 1;
   display: flex;
   flex-direction: column;
@@ -886,6 +915,20 @@ onUnmounted(() => {
     inset 0 1px 0 var(--glass-highlight),
     var(--shadow-3);
   overflow: hidden;
+}
+
+/* 提示条专用轻滑淡入：不改全局 .sheet-*，避免影响其他抽屉。 */
+.panel.sheet-enter-active,
+.panel.sheet-leave-active {
+  transition:
+    opacity var(--dur-base) var(--ease-standard),
+    transform var(--dur-base) var(--ease-smooth);
+}
+
+.panel.sheet-enter-from,
+.panel.sheet-leave-to {
+  opacity: 0;
+  transform: translateX(20px);
 }
 
 /* 品牌识别元素：面板顶部 1px 极光高光（只此一处，不满屏渐变） */

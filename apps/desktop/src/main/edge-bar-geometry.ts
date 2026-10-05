@@ -21,7 +21,7 @@ export interface Size {
 /**
  * 提示条两态宽度：收起态是贴着屏幕右缘的 8px 竖条；
  * 展开态 328px = 320px 感知工作台 + 8px 竖条。320px 用于同时容纳自感知状态、
- * 最近理解与紧凑快速对话，避免旧版 220px 下每张卡片都被压成两三行。
+ * 最近理解与上下文摘要，避免旧版 220px 下每张卡片都被压成两三行。
  *
  * 与渲染层 `edge-bar/App.vue` 的 `.panel { width: 320px }` 是同一份约定，改一处必须同时改另一处。
  */
@@ -42,7 +42,7 @@ export const EDGE_BAR_EXPANDED_MARGIN = 24
 /**
  * 展开态高度：占满工作区高度减去上下边距（docs/07 §2.2「悬停展开为全高面板」）。
  *
- * 为什么要跟着长高：面板里有状态 / 模式 / 最近消息 / 系统状态四块信息 + 4 个操作按钮，
+ * 为什么要跟着长高：面板里有自感知 / 提醒 / 最近理解 / 上下文四块信息 + 3 个操作按钮，
  * 200px 高度装不下 —— 按钮会被挤到可视区域之外，用户"看得到面板却点不到按钮"。
  */
 export function expandedEdgeBarHeight(workArea: Rect): number {
@@ -73,27 +73,24 @@ export function placeEdgeBar(workArea: Rect, size: Size, side: EdgeBarSide = 'ri
 }
 
 /**
- * 两态切换：**`position` 侧边缘固定 + 垂直中心固定**，宽度与高度换成目标尺寸。
+ * 提示条当前可见 / 可交互的原生 shape（窗口坐标，贴渲染层实际使用的右缘）。
  *
- * 保持贴附侧边缘而不是对侧：提示条贴着屏幕物理边缘，收起态那 8px 必须始终贴着边缘，
- * 否则展开再收起后竖条会整体位移，屏幕最贴附侧反而漏出一条缝。
- * 保持垂直中心：展开成半屏高度时竖条的中心不能跳位，否则鼠标会"跑出"面板。
+ * 宿主 BrowserWindow 始终保持在展开态尺寸，两态只换 shape：展开覆盖完整面板宽度，
+ * 收起只留右下侧居中的 8×200px。由于当前窗口几何与左侧配置仍沿用既有右缘布局，
+ * 这里不额外翻转 shape，避免在动画修复中顺带改变 `position: left` 的既有观感。
  */
-export function resizeEdgeBarKeepingAnchor(
-  current: Rect,
-  size: Size,
-  workArea: Rect,
-  side: EdgeBarSide = 'right',
-): Rect {
-  const maxX = Math.max(workArea.x, workArea.x + workArea.width - size.width)
-  const maxY = Math.max(workArea.y, workArea.y + workArea.height - size.height)
-  const anchorX = side === 'left' ? current.x : current.x + current.width
-  const anchorTargetX = side === 'left' ? anchorX : anchorX - size.width
-  const centerY = current.y + current.height / 2
-  return {
-    x: Math.round(clamp(anchorTargetX, workArea.x, maxX)),
-    y: Math.round(clamp(centerY - size.height / 2, workArea.y, maxY)),
-    width: size.width,
-    height: size.height,
-  }
+export function edgeBarShape(host: Size, expanded: boolean): Rect[] {
+  const hostWidth = Math.max(0, Math.round(host.width))
+  const hostHeight = Math.max(0, Math.round(host.height))
+  const targetWidth = expanded ? EDGE_BAR_WIDTHS.expanded : EDGE_BAR_WIDTHS.collapsed
+  const width = Math.min(targetWidth, hostWidth)
+  const height = expanded ? hostHeight : Math.min(EDGE_BAR_COLLAPSED_HEIGHT, hostHeight)
+  return [
+    {
+      x: Math.max(0, hostWidth - width),
+      y: expanded ? 0 : Math.max(0, Math.round((hostHeight - height) / 2)),
+      width,
+      height,
+    },
+  ]
 }
