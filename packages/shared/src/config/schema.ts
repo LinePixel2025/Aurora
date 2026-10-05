@@ -688,7 +688,7 @@ export const SETTINGS_READONLY_PREFIXES = [
   // 等于改 Agent 的权限面与行为面，属自我提权路径 —— 只能由用户在设置页 / 界面触发。
   'projects',
   // Work 模式的工作目录（docs/06 §5.1）：它是**权限边界根回落链的一级**（`boundaryRoot` →
-  // Work 空间目录）—— AI 改写它等于把 `auto` 档「根内免确认」与 `confirm` 档「根内写免确认」
+  // Work 空间目录）—— AI 改写它等于把 `confirm` 档「根内免确认」
   // 扩到任意目录，与 `projects` 同构的自我提权路径。此前它登记在 `WRITABLE_PATH_OVERRIDES`
   // 里（覆盖表判定先于黑名单 → 双重放行）；只删覆盖表不够，会落回「Schema 登记过即默认可写」。
   // 只能由用户在设置页「模式 → Work」或引导问答改（都不经过本黑名单）。
@@ -829,16 +829,14 @@ export const AgentSchema = z.object({
   /**
    * 三档权限（v13，docs/06 §12.2）：
    * - `readonly`：写 / 执行 / 有系统副作用的工具**根本不注册**，模型在工具清单里看不到它们；
-   * - `confirm`：敏感工具逐次确认（最保守的一档，用户随时可以在对话窗 / 设置页切回来）；
-   * - `auto`：**默认档**（2026-09-29 起），只在项目根之内免确认，越界仍逐次确认。
+   * - `confirm`：旧 auto 语义（未配置项目直接放行；有项目时根内免确认、根外弹卡）；
+   * - `auto`：**默认档**（2026-09-29 起），完全权限，所有敏感工具不再弹确认卡。
    *
    * 默认档从 `confirm` 提到 `auto` 是产品决定：Aurora 是**系统级** Agent 工具，
    * 出厂就逐次确认会让绝大多数正常操作（改自己项目里的文件、跑一条构建）都要先点一次卡片，
-   * 用户实测反馈「默认权限太低」。放宽的同时保留两道真实护栏 ——
-   * ① `auto` 只在**当前项目根之内**免确认、越界仍问；
-   * ② 主进程对已存在的最近父目录做 realpath 前缀校验（`file-port.resolveWithin`），
-   * 指不到根内的写入直接 `E_PATH_OUTSIDE_WORKSPACE`。
-   * 没有配置当前项目时行为与 v12 之前一致（不逐次询问、只写日志留痕）。
+   * 用户实测反馈「默认权限太低」。`auto` 是完全权限，不再出现确认卡；
+   * `confirm` 档按项目根做「根内免确认、根外弹卡」，并由
+   * `file-port.resolveWithin` 的 realpath 前缀校验兜底。
    *
    * 与 `advanced.confirmSensitiveTools` 双开关并存，优先级见 docs/06 §12.2：
    * `confirmSensitiveTools === false` 时非 readonly 档被强制按 `auto` 处理；readonly 档下该布尔无效。

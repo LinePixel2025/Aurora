@@ -898,7 +898,7 @@ describe('readonly 档（只读 = 不进工具表）', () => {
  * 取值器**（生产侧由 session-project.ts 现解析，回落链单测在那边）—— 本组断言的是
  * **装配必须原样透传这个 getter**：端口实际收到的参数（runner 的 `cwd`、file 端口的 `root`）
  * 必须等于 getter 给的值，装配不得截留 / 二次加工。判定端由 `agent-host.test.ts`
- * 「auto 档 + run_command 不带显式 cwd」用例钉住，两者配对构成「判定 ↔ 执行一致」。
+ * `run_command` 缺省 cwd 的装配透传；确认判定由 `agent-host.test.ts` 钉住。
  */
 describe('缺省工作目录按会话回落', () => {
   const PROJECT = 'C:\\proj-root'

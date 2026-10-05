@@ -4,8 +4,8 @@
  *
  * 三档（`agent.permissionMode`，生效结果由调用方解析后传进来）：
  * - `readonly` 只读：写文件 / 执行命令类工具不会注册给模型；
- * - `confirm` 变更前确认：敏感工具执行前弹确认卡（用户手动收紧后的档位，**不再是出厂默认**）；
- * - `auto` 完全权限：仅在项目根之内免确认，越界仍会询问（**出厂默认档**，2026-09-29 起）。
+ * - `confirm` 变更前确认：项目根内直接执行，越界才弹确认卡（用户手动切回的边界档）；
+ * - `auto` 完全权限：所有敏感工具不再弹确认卡（**出厂默认档**，2026-09-29 起）。
  *
  * 生效档位由调用方 `resolvePermissionMode(settingsStore.settings)` 算好传入，**不是**直接读
  * `agent.permissionMode`：v13 之前只有 `advanced.confirmSensitiveTools` 一个开关，老配置里
@@ -80,19 +80,12 @@ const label = computed(() => {
   return props.mode === 'auto' ? '完全权限' : '变更前确认'
 })
 
-/**
- * 悬浮提示：一句话说清这一档**在两种项目状态下**各是什么行为。
- *
- * 「无项目时不再逐次询问」这半句不能省（2026-09-29 复核补回）：出厂默认就是这一档，
- * 而全新 userData 没有登记项目，此时没有「根内 / 越界」的判据、行为退化成完全不弹卡。
- * 只写「越界仍会询问」会让用户以为还有确认卡兜底 —— 标签与提示必须与
- * `agent-host.ts` 的 `auto` 分支一致（那两行的判定是：有根 → 根内放行、根外弹卡；无根 → 直接放行）。
- */
+/** 悬浮提示：一句话说清这一档的真实行为。 */
 const title = computed(() => {
   if (props.mode === 'readonly') return '只读：不注册写入与执行类工具'
   return props.mode === 'auto'
-    ? '完全权限：有项目时项目根内免确认、越界仍询问；未登记项目时不再逐次询问（只写日志）'
-    : '变更前确认：敏感工具执行前先弹确认卡'
+    ? '完全权限：所有敏感工具不再弹确认卡，可访问项目根外路径'
+    : '变更前确认：项目根内直接执行，越界才弹确认卡'
 })
 
 /** 完全权限档用警示色常驻提醒「闸门是开着的」，不做成一闪而过的 toast */
@@ -207,7 +200,8 @@ onBeforeUnmount(() => {
             <span class="perm-item-title"
               >变更前确认<em v-if="mode === 'confirm'" class="perm-item-now">当前</em></span
             >
-            <span class="tiny muted">写文件、执行命令、改设置都先弹确认卡</span>
+            <span class="tiny muted">项目根内直接执行，越界才弹确认卡</span>
+            <span class="tiny muted">未配置项目：直接执行</span>
           </span>
         </button>
 
@@ -229,14 +223,13 @@ onBeforeUnmount(() => {
               完全权限<em v-if="mode === 'auto'" class="perm-item-now">当前</em>
             </span>
             <!-- 说明文案压成两段短句：`.perm-item-body` 是 flex 列，每个 span 自成一行。
-                 两种项目状态的语义都要留着（有根 → 根内放行、根外弹卡；无根 → 直接放行，
-                 见 `agent-host.ts` 的 auto 分支）。「再点一次确认」那支逐字保持原样（探针子串）。 -->
+                 「再点一次确认」那支逐字保持原样（探针子串）。 -->
             <span v-if="pendingDanger" class="tiny muted">
-              再点一次确认：项目根内的敏感操作不再询问
+              再点一次确认：所有敏感操作不再询问
             </span>
             <template v-else>
-              <span class="tiny muted">有项目：根内免确认，越界仍询问</span>
-              <span class="tiny muted">无项目：不再逐次询问</span>
+              <span class="tiny muted">所有敏感操作不再询问</span>
+              <span class="tiny muted">可访问项目根外路径</span>
             </template>
           </span>
         </button>

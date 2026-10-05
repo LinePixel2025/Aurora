@@ -697,7 +697,7 @@ export interface AutomationToolsDeps {
  * 与 `registerAgentCoreTools` 同级、同口径：不受 `agent.tools.enabled` 门控；
  * **只读档摘掉写类工具**（create / update / delete / run），保留 list / history ——
  * 档位叫「只读」就必须真的没有副作用。`create` / `update` / `delete` / `run` 自身是
- * `sensitivity: 'confirm'`（逐次确认），AI 想给自己排程后台动作必须用户点头。
+ * `sensitivity: 'confirm'` 进入确认链，具体是否弹卡由权限档与项目边界决定。
  */
 export function registerAutomationTools(deps: AutomationToolsDeps): { sync(): string[] } {
   if (deps.getSettings === undefined) {

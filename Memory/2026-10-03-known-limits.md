@@ -33,7 +33,8 @@ source: 模型自动记录
   `apps/desktop/src/main/hotkey.ts` 会把真实原因回传设置页，用户改绑即可 —— **不要"修"成静默成功**。
 - 第 5 条是文档门控口径（docs/07 §2.3），不是渲染 bug。
 - 第 6 条容易搞反：「扩展工具六件套」（`web_fetch` / `notify_user` / `clipboard_read` / `clipboard_write` /
-  `generate_image` / `show_preview`）**不走** `agent.tools.enabled`，敏感项靠 `sensitivity: 'confirm'` 逐次确认；
+  `generate_image` / `show_preview`）**不走** `agent.tools.enabled`，敏感项进入 `sensitivity: 'confirm'`
+  确认链，是否弹卡由权限档与项目边界决定；
   而 2026-09 新增的 `edit_file` / `grep` / `glob` 与它们**同期但不同组**：是电脑操控工具、受总开关门控
   （`edit_file` 随 `files.enabled`、`grep` / `glob` 随 `search.enabled`，见 docs/06 §11.5 / §11.6）。
   同理，`todo_write` / `todo_read` / `task`（v9 起由 `registerAgentCoreTools` 注册，docs/06 §18 / §19）

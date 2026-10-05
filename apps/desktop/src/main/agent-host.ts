@@ -352,7 +352,7 @@ function fetchImplOf(resolveFetch?: () => typeof fetch | undefined): typeof fetc
 /**
  * 把主动引导的确认载体适配成内核需要的 `confirmTool` 钩子（docs/06 §5）。
  *
- * - 设置项 `advanced.confirmSensitiveTools` 关闭时**每次调用即时判断**并直接放行
+ * - `auto`（完全权限）**每次调用即时判断**并直接放行：不解析项目根、不弹确认卡
  *   （改设置无需重启；内核仍会按 `sensitivity` 写日志留痕）；
  * - `run_command` 命中用户维护的**免确认模式列表**（docs/06 §11.7）时跳过确认卡片、直接放行。
  *   这条路径是**减少打扰**、不是安全加固 —— 它只是少问一次，不增加任何权限，
@@ -381,11 +381,9 @@ export function createConfirmTool(options: {
    * 存在会话文件里，装配层可能要先读盘）。按**会话绑定**的项目根边界判定
    * （docs/06 §5.1；全局 `projects.current` 一级已于 v25 退役）。
    *
-   * `auto` 档的免确认边界就是它：**根内免确认、根外照常弹卡**。
+   * `confirm` 档的「根内写文件免确认」消费它；`auto` 完全权限档不消费。
    * 会话级项目（docs/06 §5.1）起它按 `info.sessionId` 解析——会话绑定了项目就用那个根，
-   * 未绑定 / 绑定已失效回落全局当前项目；无项目时没有"根内"可言 —— 此时 `auto` 档与
-   * v13 之前"关掉确认总开关"的行为一致（完全不弹卡），否则老用户一旦关掉那个开关
-   * 就会突然被逐次询问，等于静默改回了旧行为。
+   * 未绑定 / 绑定已失效回落全局当前项目。
    */
   projectRoot?: (sessionId: string) => Promise<string | undefined>
   logger?: Logger
@@ -404,7 +402,18 @@ export function createConfirmTool(options: {
       return false
     }
 
-    // ── 免确认模式（confirm / auto 两档都生效）──
+    // ── auto（完全权限）：直接放行，不解析项目根、不访问确认载体 ──
+    // 这是用户显式选择的权限档。返回 true 让内核按“已授权”透传 allowOutside，
+    // 因而项目根外也能执行；不再保留旧版“根内免确认、越界弹卡”的语义。
+    if (mode === 'auto') {
+      options.logger?.info('auto 档为完全权限，已跳过确认卡片并直接放行', {
+        tool: info.name,
+        sessionId: info.sessionId,
+      })
+      return true
+    }
+
+    // ── 免确认模式（仅 confirm 档需要）──
     // 命中即跳过卡片，但审计日志照写 —— 见上方函数注释。
     if (info.name === 'run_command') {
       const command = readCommand(info.input)
@@ -424,47 +433,20 @@ export function createConfirmTool(options: {
       }
     }
 
-    // ── auto 档：只在项目根之内免确认 ──
-    // （v0.2.4 起 center_send_file 改 `sensitivity: 'safe'` 直接发送，确认链路不再经过本函数，
-    //  外发类工具的特例名单随之删除 —— 它的闸门在注册层：center.enabled / allowFileTransfer / maxFileMb。）
-    if (mode === 'auto') {
-      // 根按**会话**解析（会话绑定项目 > 全局当前项目，docs/06 §5.1）；允许 await 读盘
+    // ── confirm 档：旧 auto 语义（根内免确认、越界确认、无项目直接放行）──
+    // 这是“变更前确认”档保留的项目边界行为：根内敏感工具直接执行；
+    // 根外回到确认卡；未配置项目时没有“根内 / 根外”判据，按直接放行。
+    if (mode === 'confirm') {
       const root = await options.projectRoot?.(info.sessionId)
       if (root === undefined || root.trim() === '') {
-        // 无项目：没有"根内"的判据。保持 v13 之前"关掉确认总开关 = 不再逐次询问"的语义，
-        // 否则老用户会因为这次升级突然被反复询问（静默的行为回退）。
-        options.logger?.info(
-          'auto 档且未配置项目，按免确认放行（边界校验仍生效，不带 allowOutside）',
-          {
-            tool: info.name,
-          },
-        )
+        options.logger?.info('confirm 档未配置项目，按旧 auto 语义免确认放行', {
+          tool: info.name,
+        })
         return 'machine'
       }
       const approved = reasonWithinRoot(info, root)
       if (approved !== undefined) {
-        options.logger?.info(
-          '调用落在项目根内，auto 档免确认放行（边界校验仍生效，不带 allowOutside）',
-          {
-            tool: info.name,
-            root,
-            target: approved,
-          },
-        )
-        return 'machine'
-      }
-    }
-
-    // ── confirm 档：工作目录内的文件写入 / 编辑免确认（v0.2.4，Codex 式 auto-edit）──
-    // Codex 的「Auto」档位把工作区内的文件改动设为自动放行、命令仍要过目（on-request）；
-    // Aurora 的 confirm 档从这里起对齐：write_file / edit_file 落在会话边界根之内
-    // （会话绑定项目 > 全局当前项目 > Work 模式工作目录，docs/06 §5.1）时跳过卡片，
-    // 越界 / 无根（未配项目且无 Work 工作目录）时维持逐次确认 —— 默认行为不变。
-    if (mode === 'confirm' && (info.name === 'write_file' || info.name === 'edit_file')) {
-      const root = await options.projectRoot?.(info.sessionId)
-      const approved = root === undefined ? undefined : reasonWithinRoot(info, root)
-      if (approved !== undefined) {
-        options.logger?.info('confirm 档：写入落在工作目录边界内，免确认放行（边界校验仍生效）', {
+        options.logger?.info('confirm 档：调用落在项目根内，免确认放行（边界校验仍生效）', {
           tool: info.name,
           root,
           target: approved,
@@ -490,14 +472,11 @@ export function createConfirmTool(options: {
 }
 
 /**
- * `auto` 档判定：该调用是否落在项目根内（返回被判定用的目标路径；不在 / 判不出时 undefined）。
+ * `confirm` 档的旧 auto 判定：返回被判定用的目标路径；不在 / 判不出时 undefined。
  *
- * 保守方向永远是"不自动放行"：
- * - 取不到目标路径（`permissionTargetOf` 返回 undefined）时只有 `run_command` 例外 ——
- *   缺省 `cwd` 回落到**生效工作目录**（配置了当前项目时即项目根——与 `registerComputerTools`
- *   的装配同源，`effectiveWorkspaceDir`），所以按根内判定；其余工具一律按越界处理（走确认）；
- * - **命令串里出现绝对路径时一律按越界处理**：我们不做 shell 解析，猜错一次就是静默越权，
- *   多问一次只是打扰（`docs/06 §11.2` 已写明这个取舍）。
+ * 保守方向永远是“不自动放行”：
+ * - 取不到目标路径时只有 `run_command` 例外：缺省 cwd 回落到生效工作目录（通常是项目根）；
+ * - 命令串里出现绝对路径时一律按越界处理，交给确认卡。
  */
 function reasonWithinRoot(
   info: { name: string; input: unknown },
@@ -508,24 +487,16 @@ function reasonWithinRoot(
     if (command !== undefined && containsAbsolutePath(command)) return undefined
   }
   const target = permissionTargetOf(info.name, info.input)
-  if (target === undefined) {
-    // `run_command` 缺省 `cwd` 回落到生效工作目录；配置了当前项目时即项目根——与
-    // `registerComputerTools` 的装配同源（`effectiveWorkspaceDir`），因此按根内处理；
-    // 其余工具拿不到目标路径就等于"不知道它要碰哪"，一律走确认。
-    return info.name === 'run_command' ? root : undefined
-  }
+  if (target === undefined) return info.name === 'run_command' ? root : undefined
   return isWithinRoot(target, root) ? target : undefined
 }
 
 /**
- * 命令串里是否出现"看起来是绝对路径"的片段。
+ * 命令串里是否出现“看起来是绝对路径”的片段。
  *
- * 只需要**宁可多问**：命中就退回确认卡片，不命中也不会漏掉真实越界（真越界会在执行时
- * 被 `command-runner` 的 cwd 校验拦下）。因此这里允许误报，不允许漏报。
+ * 只需要宁可多问：命中就回到确认卡；真越界会在执行时被 `command-runner` 的 cwd 校验拦下。
  */
 export function containsAbsolutePath(command: string): boolean {
-  // 盘符路径（C:\ / C:/）、UNC（\\server\share）、以及 POSIX 绝对路径（/usr/...）。
-  // 注意 `C:` 单独出现不算（可能是命令行参数里的 `key:value`），要求后面紧跟分隔符。
   return (
     /[A-Za-z]:[\\/]/.test(command) || command.includes('\\\\') || /(^|[\s"'=])[/\\]/.test(command)
   )

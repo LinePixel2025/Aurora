@@ -295,8 +295,8 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
   agent: {
     tools: { ...DEFAULT_AGENT_TOOLS },
     /*
-     * 三档权限默认 `auto`（完全权限，2026-09-29 起）：项目根之内免确认、越界仍确认 ——
-     * 逐次确认（`confirm`）不再是出厂档，用户随时能在对话窗 / 设置页切回去。
+     * 三档权限默认 `auto`（完全权限，2026-09-29 起）：所有敏感工具不再弹确认卡 ——
+     * `confirm` 不再是出厂档，用户随时能在对话窗 / 设置页切回旧 auto 的项目边界语义。
      * 改这条的理由与护栏见 schema.ts 上的长注释。
      */
     permissionMode: 'auto',

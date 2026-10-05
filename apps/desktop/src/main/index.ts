@@ -384,7 +384,7 @@ let terminalService: TerminalService | undefined
 let tools: ToolRegistry | undefined
 /**
  * 三档权限的确认判定（v13，docs/06 §11.2）：同样提到模块级 ——
- * `runSmokeTest` 要拿**注入内核的那个实例**断言「auto 档根内免确认 / 根外仍弹卡」，
+ * `runSmokeTest` 要拿**注入内核的那个实例**断言「auto 档完全权限 / confirm 档仍走确认」，
  * 另建一个 `createConfirmTool` 只会自证一个与生产无关的副本。
  */
 let confirmTool: ConfirmToolDecision | undefined
@@ -979,7 +979,7 @@ async function bootstrap(): Promise<void> {
   // Agent 空间（未标记 / 'agent'，含 quick 与历史会话）→ 固定 `桌面\Aurora`，
   // Work 空间（'work'）→ modes.work.workspaceDir（v25 起全局 current 已退役，无该回落级）。
   // 缺省 cwd / 搜索根、项目根边界（file-port / command-runner 的 workspaceRoot）、
-  // auto 档免确认判定与 AGENTS.md 注入**全部**走这一个解析器（session-project.ts）。
+  // 项目根边界与 AGENTS.md 注入**全部**走这一个解析器（session-project.ts）。
   // 同步取值走 `projectOf` / `spaceOf`（内存缓存；装配层不变量：会话的工具执行之前
   // agentLoop 必然已读过该会话）；确认钩子 / 指令注入允许 await，先 `projectIdOf` 预热再取。
   // Agent 空间目录懒创建：首次有 Agent 会话解析到它时建一次（失败只 warn —— 目录不存在时
@@ -1351,7 +1351,7 @@ async function bootstrap(): Promise<void> {
     // 免确认命令模式（docs/06 §11.7）：与 `mode` 同款闭包 —— 每次调用即时读设置，
     // 用户在设置页加完模式立刻生效，无需重启（该字段是只读前缀，AI 改不动）。
     allowPatterns: () => settings!.get().agent.tools.terminal.allowPatterns,
-    // auto 档的免确认边界 = 当前**会话**的项目根边界（会话绑定项目 > 会话空间目录 >
+    // confirm 档根内免确认边界 = 当前**会话**的项目根边界（会话绑定项目 > 会话空间目录 >
     // 激活模式目录；全局 `projects.current` 一级已于 v25 退役，docs/06 §5.1）。
     // 先 `projectIdOf` 预热（允许 await 读盘），再走与缺省 cwd / projectInstructions
     // 同源的解析器，别再抄第三份
@@ -2916,20 +2916,20 @@ async function runSmokeTest(userData: string): Promise<void> {
     )
   }
 
-  // 2.3 三档权限（v13，docs/06 §11.2）：只读档"根本不在工具表里"、auto 档根内免确认 / 根外仍确认。
+  // 2.3 三档权限（v13，docs/06 §11.2）：只读档"根本不在工具表里"、auto 档完全权限不再弹卡、
+  //     confirm 档保留旧 auto 的根内免确认与越界确认。
   //     这里断言的是**真实装配实例**（`syncToolRegistries()` 重建出的注册表 + 注入内核的同一个
   //     `confirmTool`）——单测各自覆盖过函数，但"改设置 → 注册表跟着变 → 确认判定跟着变"这条
   //     生效路径只有整机跑得出来。
   if (smokeSection('2.3')) {
     let readonlyToolNames: string[] = []
     let readonlyRemoved = false
-    let autoInsideApproved = false
     let autoInsideNoCard = false
     let autoInsideWritten = false
-    let autoOutsideCard = false
-    let outsideBlocked = false
-    let autoEscapeOk = false
-    let autoEscapeDetail = '前置不可用'
+    let autoOutsideNoCard = false
+    let autoOutsideWritten = false
+    let confirmBoundaryOk = false
+    let confirmBoundaryDetail = '前置不可用'
     let detail = ''
     const projectRoot = join(userData, 'smoke-permission-project')
     try {
@@ -2942,8 +2942,9 @@ async function runSmokeTest(userData: string): Promise<void> {
       if (settings !== undefined && confirmTool !== undefined && proactiveScheduler !== undefined) {
         const scheduler = proactiveScheduler
         const agentBefore = settings.get().agent
+        const advancedBefore = settings.get().advanced
         const projectsBefore = settings.get().projects
-        // 登记权限自测项目：auto 档的「根内」判据来自**会话绑定**的项目根
+        // 登记权限自测项目：confirm 档的「根内」判据来自**会话绑定**的项目根
         settings.update({
           projects: {
             ...projectsBefore,
@@ -2951,7 +2952,7 @@ async function runSmokeTest(userData: string): Promise<void> {
           },
         })
         // 会话 id 与项目 id 在这里**必须分开写**：绑的是会话，解析出来的根才是夹具根。
-        // 不绑的话下面两条 `confirmTool` 落不到 auto 档的「根内」分支，会去等 60s 确认超时。
+        // 不绑的话下面 confirm 档的链接取证落不到「根内」分支，会去等 60s 确认超时。
         await bindSmokeProject('smoke-permission', 'smoke-perm', projectRoot)
 
         // ① 只读档：写 / 执行 / 有副作用的工具必须从注册表里消失
@@ -2965,24 +2966,22 @@ async function runSmokeTest(userData: string): Promise<void> {
         )
         readonlyToolNames = kept
 
-        // ② auto 档 + 项目根内：确认判定直接放行（**不产生在途卡片**），且真的写得进去
+        // ② auto 档 + 项目根内：完全权限直接放行（**不产生在途卡片**），且真的写得进去
         settings.update({ agent: { ...agentBefore, permissionMode: 'auto' } })
         syncToolRegistries()
-        autoInsideApproved =
-          (await confirmTool({
-            name: 'write_file',
-            input: { path: insideFile },
-            sessionId: 'smoke-permission',
-            sensitivity: 'confirm',
-          })) !== false
-        autoInsideNoCard = scheduler.pendingCount === 0
-        // 机器放行（'machine'）不带 approvedByUser：真根内写入靠 realpath 判定照常通过
-        //（出处修复后的"无 UX 回归"证据 —— 旧写法手工塞批准头衔会固化旧语义）
+        const insideDecision = await confirmTool({
+          name: 'write_file',
+          input: { path: insideFile },
+          sessionId: 'smoke-permission',
+          sensitivity: 'confirm',
+        })
+        autoInsideNoCard = insideDecision === true && scheduler.pendingCount === 0
+        // 完全权限返回 true，内核会置 approvedByUser；这里直接模拟同一授权形态。
         const written = await tools
           ?.get('write_file')
           ?.execute(
             { path: insideFile, content: 'AURORA_PERMISSION_INSIDE' },
-            { sessionId: 'smoke-permission' },
+            { sessionId: 'smoke-permission', approvedByUser: true },
           )
         autoInsideWritten =
           written?.isError !== true &&
@@ -2990,8 +2989,32 @@ async function runSmokeTest(userData: string): Promise<void> {
             'AURORA_PERMISSION_INSIDE',
           )
 
-        // ②b auto 档 + 根内指向根外的链接：判定端机器放行（'machine'）、零弹卡，
-        //     端口层 realpath 兜底照常拒绝 —— 出处修复的端到端证据（docs/06 §11.2）。
+        // ②b auto 档 + 项目根外：完全权限直接放行、零弹卡，且把文件真的写进去。
+        const outsideDecision = await confirmTool({
+          name: 'write_file',
+          input: { path: outsideFile },
+          sessionId: 'smoke-permission',
+          sensitivity: 'confirm',
+        })
+        autoOutsideNoCard = outsideDecision === true && scheduler.pendingCount === 0
+        const outsideWrite = await tools
+          ?.get('write_file')
+          ?.execute(
+            { path: outsideFile, content: 'AURORA_PERMISSION_OUTSIDE' },
+            { sessionId: 'smoke-permission', approvedByUser: true },
+          )
+        autoOutsideWritten =
+          outsideWrite?.isError !== true &&
+          (await fs.readFile(outsideFile, 'utf8').catch(() => '')).includes(
+            'AURORA_PERMISSION_OUTSIDE',
+          )
+
+        // ②c confirm 档 + 根内指向根外的链接：判定端机器放行，执行端仍由 realpath 拒绝。
+        settings.update({
+          agent: { ...agentBefore, permissionMode: 'confirm' },
+          advanced: { ...advancedBefore, confirmSensitiveTools: true },
+        })
+        syncToolRegistries()
         const escapeTargetDir = join(userData, 'smoke-escape-target')
         const escapeLink = join(projectRoot, 'escape-link')
         const escapeProbe = join(escapeTargetDir, 'probe.txt')
@@ -3010,15 +3033,13 @@ async function runSmokeTest(userData: string): Promise<void> {
           linkCreated = false
         }
         if (linkCreated) {
-          // 取证一：判定层 —— linkPath 字符串落在根内，auto 档应机器放行且不产生在途卡片
-          const machineDecision = await confirmTool({
+          const boundaryDecision = await confirmTool({
             name: 'write_file',
             input: { path: join(escapeLink, 'probe.txt') },
             sessionId: 'smoke-permission',
             sensitivity: 'confirm',
           })
-          const escapeNoCard = scheduler.pendingCount === 0
-          // 取证二：执行端 —— ctx 不带头衔（机器放行），端口 realpath 应拒绝、根外不留文件
+          const boundaryNoCard = scheduler.pendingCount === 0
           const escaped = await tools
             ?.get('write_file')
             ?.execute(
@@ -3028,53 +3049,23 @@ async function runSmokeTest(userData: string): Promise<void> {
           const escapeBlocked =
             escaped?.isError === true &&
             (await fs.readFile(escapeProbe, 'utf8').catch(() => '')) === ''
-          autoEscapeOk = machineDecision === 'machine' && escapeNoCard && escapeBlocked
-          autoEscapeDetail = `machine:${machineDecision === 'machine'} noCard:${escapeNoCard} blocked:${escapeBlocked}`
-          // 收尾防悬挂
+          confirmBoundaryOk = boundaryDecision === 'machine' && boundaryNoCard && escapeBlocked
+          confirmBoundaryDetail = `machine:${boundaryDecision === 'machine'} noCard:${boundaryNoCard} blocked:${escapeBlocked}`
           await fs.rm(escapeLink, { force: true, recursive: true })
           await fs.rm(escapeTargetDir, { force: true, recursive: true })
         } else {
-          // 建不出 junction / 符号链接的环境差异：记 SKIP 注记、不 FAIL（与端口测试 skip 语义一致）
-          autoEscapeOk = true
-          autoEscapeDetail = 'SKIP:建不出link'
+          confirmBoundaryOk = true
+          confirmBoundaryDetail = 'SKIP:建不出link'
         }
-
-        // ③ auto 档 + 项目根外：仍要弹卡片（有在途确认），且未经放行时写不进去。
-        // ⚠️ 不能直接 `await confirmTool(...)`：它会一直等着用户回执（60s 超时）——
-        // 先把 Promise 挂起、轮询「有在途卡片」，再 rejectAll 收尾并回收那个 Promise。
-        const outsidePromise = confirmTool({
-          name: 'write_file',
-          input: { path: outsideFile },
-          sessionId: 'smoke-permission',
-          sensitivity: 'confirm',
-        })
-        let cardSeen = false
-        for (let attempt = 0; attempt < 40 && !cardSeen; attempt += 1) {
-          cardSeen = scheduler.pendingCount === 1
-          if (!cardSeen) await new Promise((resolve) => setTimeout(resolve, 25))
-        }
-        scheduler.rejectAll('smoke-permission')
-        const outsideDecision = await outsidePromise
-        autoOutsideCard = cardSeen && outsideDecision === false
-        const blocked = await tools
-          ?.get('write_file')
-          ?.execute(
-            { path: outsideFile, content: 'AURORA_PERMISSION_OUTSIDE' },
-            { sessionId: 'smoke-permission' },
-          )
-        outsideBlocked =
-          blocked?.isError === true &&
-          (await fs.readFile(outsideFile, 'utf8').catch(() => '')) === ''
 
         // 收尾：档位与项目都还原
-        settings.update({ agent: { ...agentBefore, permissionMode: 'confirm' } })
-        settings.update({ projects: { ...settings.get().projects, list: [] } })
+        settings.update({ agent: agentBefore, advanced: advancedBefore, projects: projectsBefore })
         syncToolRegistries()
         detail =
           `readonlyKept=[${readonlyToolNames.join(',')}] ` +
-          `autoInside=approve:${autoInsideApproved} noCard:${autoInsideNoCard} written:${autoInsideWritten} noWaiver:true ` +
-          `escape=${autoEscapeDetail} ` +
-          `autoOutside=card:${autoOutsideCard} blocked:${outsideBlocked}`
+          `autoInside=noCard:${autoInsideNoCard} written:${autoInsideWritten} ` +
+          `autoOutside=noCard:${autoOutsideNoCard} written:${autoOutsideWritten} ` +
+          `confirmBoundary=${confirmBoundaryDetail}`
       } else {
         detail = 'settings / confirmTool 不可用'
       }
@@ -3087,18 +3078,14 @@ async function runSmokeTest(userData: string): Promise<void> {
       detail,
     )
     record(
-      'auto 档：项目根内免确认且真的写成功；根外仍弹确认卡且未放行时写不进去',
-      autoInsideApproved &&
-        autoInsideNoCard &&
-        autoInsideWritten &&
-        autoOutsideCard &&
-        outsideBlocked,
+      'auto 档：项目根内外都直接放行、零弹卡，并且文件真的写入',
+      autoInsideNoCard && autoInsideWritten && autoOutsideNoCard && autoOutsideWritten,
       detail,
     )
     record(
-      'auto 根内经指向根外的链接写入被 realpath 兜底拒绝（机器放行零弹卡）',
-      autoEscapeOk,
-      `escape=${autoEscapeDetail} noWaiver:true`,
+      'confirm 档根内经指向根外的链接写入仍被 realpath 兜底拒绝',
+      confirmBoundaryOk,
+      `confirmBoundary=${confirmBoundaryDetail}`,
     )
   }
 
@@ -3410,7 +3397,7 @@ async function runSmokeTest(userData: string): Promise<void> {
             loop: { maxRounds: 2, maxTotalTokens: 0, autoContinueRounds: 0 },
           },
         })
-        // 会话绑定（v17 口径）：auto 档的「根内免确认」与 AGENTS.md 注入都按**会话**解析根，
+        // 会话绑定（v17 口径）：项目边界与 AGENTS.md 注入都按**会话**解析根，
         // 只设全局 current 落不到夹具根上 —— 断言会退化成"越界拒绝"。
         await bindSmokeProject('smoke-integration', projectId, projectRoot)
 

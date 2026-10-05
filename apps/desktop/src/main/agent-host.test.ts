@@ -10,7 +10,23 @@
  */
 import { describe, expect, it } from 'vitest'
 import type { Logger } from '@aurora/shared'
-import { createConfirmTool, type SensitiveToolConfirmerLike } from './agent-host.js'
+import {
+  createConfirmTool as createBaseConfirmTool,
+  type SensitiveToolConfirmerLike,
+} from './agent-host.js'
+
+/**
+ * 单测默认注入一个项目根：confirm 档恢复旧 auto 语义后，“未配置项目 = 直接放行”，
+ * 不注入根会让所有“未命中必须弹卡”的负对照失去证明力。
+ */
+function createConfirmTool(
+  options: Parameters<typeof createBaseConfirmTool>[0],
+): ReturnType<typeof createBaseConfirmTool> {
+  return createBaseConfirmTool({
+    ...options,
+    projectRoot: options.projectRoot ?? (async () => 'D:\\proj'),
+  })
+}
 
 /** 内核 `confirmTool` 钩子的入参（与 `ConfirmToolDecision` 一致；不用 `Parameters<>` 以免被索引访问影响） */
 interface ConfirmInfo {
@@ -95,12 +111,14 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
       allowPatterns: () => ['echo AURORA_ALLOW*'],
     })
 
-    const approved = await confirm(confirmInfo('run_command', { command: 'echo OTHER' }))
+    const approved = await confirm(
+      confirmInfo('run_command', { command: 'echo OTHER C:\\Windows' }),
+    )
 
     expect(approved).toBe(true)
     expect(requests).toHaveLength(1)
     expect(requests[0]!.toolName).toBe('run_command')
-    expect(requests[0]!.input).toEqual({ command: 'echo OTHER' })
+    expect(requests[0]!.input).toEqual({ command: 'echo OTHER C:\\Windows' })
     expect(requests[0]!.sessionId).toBe('test-session')
   })
 
@@ -112,13 +130,15 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
       allowPatterns: () => ['echo AURORA_ALLOW*'],
     })
 
-    const approved = await confirm(confirmInfo('run_command', { command: 'echo OTHER' }))
+    const approved = await confirm(
+      confirmInfo('run_command', { command: 'echo OTHER C:\\Windows' }),
+    )
 
     expect(approved).toBe(false)
     expect(requests).toHaveLength(1)
   })
 
-  it('input 缺 command 字段：走确认（不因拿不到命令而放行）', async () => {
+  it('input 缺 command 字段：旧 auto 的默认 cwd 分支机器放行，不弹卡片', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
@@ -128,13 +148,13 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     })
 
     for (const input of [{}, { cmd: 'git status' }, { Command: 'git status' }]) {
-      await confirm(confirmInfo('run_command', input))
+      expect(await confirm(confirmInfo('run_command', input))).toBe('machine')
     }
 
-    expect(requests).toHaveLength(3)
+    expect(requests).toHaveLength(0)
   })
 
-  it('input 不是对象（null / 裸字符串 / 数字 / 数组）：走确认', async () => {
+  it('input 不是对象（null / 裸字符串 / 数字 / 数组）：旧 auto 默认 cwd 分支机器放行', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
@@ -143,13 +163,13 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     })
 
     for (const input of [null, 'git status', 42, true, ['git status'], undefined]) {
-      await confirm(confirmInfo('run_command', input))
+      expect(await confirm(confirmInfo('run_command', input))).toBe('machine')
     }
 
-    expect(requests).toHaveLength(6)
+    expect(requests).toHaveLength(0)
   })
 
-  it('command 不是字符串（数字 / 对象 / 数组 / 布尔）：走确认', async () => {
+  it('command 不是字符串（数字 / 对象 / 数组 / 布尔）：旧 auto 默认 cwd 分支机器放行', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
@@ -159,13 +179,13 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     })
 
     for (const command of [123, { text: 'git status' }, ['git status'], true]) {
-      await confirm(confirmInfo('run_command', { command }))
+      expect(await confirm(confirmInfo('run_command', { command }))).toBe('machine')
     }
 
-    expect(requests).toHaveLength(4)
+    expect(requests).toHaveLength(0)
   })
 
-  it('command 是空串或纯空白：走确认（空命令不构成"命中"）', async () => {
+  it('command 是空串或纯空白：旧 auto 默认 cwd 分支机器放行', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
@@ -174,10 +194,10 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     })
 
     for (const command of ['', '   ', '\n\t']) {
-      await confirm(confirmInfo('run_command', { command }))
+      expect(await confirm(confirmInfo('run_command', { command }))).toBe('machine')
     }
 
-    expect(requests).toHaveLength(3)
+    expect(requests).toHaveLength(0)
   })
 
   it('命令首尾带空白：按 trim 后的串匹配（「被匹配的命令」=「被执行的命令」）', async () => {
@@ -214,10 +234,10 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
       allowPatterns: () => ['git status*'],
     })
 
-    await confirm(confirmInfo('run_command', { command: '  git diff  ' }))
+    await confirm(confirmInfo('run_command', { command: '  git diff C:\\Windows  ' }))
 
     expect(requests).toHaveLength(1)
-    expect(requests[0]!.input).toEqual({ command: '  git diff  ' })
+    expect(requests[0]!.input).toEqual({ command: '  git diff C:\\Windows  ' })
   })
 
   it('name 不是 run_command（write_file）：入参里带着命中模式的 command 也走确认', async () => {
@@ -239,7 +259,9 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
     const { proactive, requests } = createFakeProactive(false)
     const confirm = createConfirmTool({ proactive, mode: () => 'confirm' })
 
-    const approved = await confirm(confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK' }))
+    const approved = await confirm(
+      confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK C:\\Windows' }),
+    )
 
     expect(approved).toBe(false)
     expect(requests).toHaveLength(1)
@@ -253,7 +275,9 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
       allowPatterns: () => [],
     })
 
-    const approved = await confirm(confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK' }))
+    const approved = await confirm(
+      confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK C:\\Windows' }),
+    )
 
     expect(approved).toBe(true)
     expect(requests).toHaveLength(1)
@@ -268,15 +292,15 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
       allowPatterns: () => patterns,
     })
 
-    await confirm(confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK' }))
+    await confirm(confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK C:\\Windows' }))
     expect(requests).toHaveLength(1) // 空列表 → 弹卡片
 
     patterns = ['echo AURORA_ALLOW*']
-    await confirm(confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK' }))
+    await confirm(confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK C:\\Windows' }))
     expect(requests).toHaveLength(1) // 命中 → 不再弹卡片（计数没涨）
   })
 
-  it('auto 档且未配置项目：直接放行、不调用确认载体（等价于旧的"关掉确认总开关"语义）', async () => {
+  it('auto 档为完全权限：直接放行、不调用确认载体，并写 info 审计日志', async () => {
     const logger = createRecordingLogger()
     const { proactive, requests } = createFakeProactive(false)
     const confirm = createConfirmTool({
@@ -288,10 +312,10 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
 
     const approved = await confirm(confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK' }))
 
-    // 机器放行（出处不是用户当次卡片）：返回 'machine'，端口层项目根 realpath 兜底保留
-    expect(approved).toBe('machine')
+    // 用户已显式选择完全权限档：按已授权放行（后续 allowOutside 生效）
+    expect(approved).toBe(true)
     expect(requests).toHaveLength(0)
-    // 放行路径**会**留痕（info）：无项目时的 auto 放行必须可追溯，否则"为什么这次没弹卡片"无从查起
+    // 放行路径**会**留痕（info）：完全权限也必须有审计记录
     expect(logger.records).toHaveLength(1)
     expect(logger.records[0]?.level).toBe('info')
   })
@@ -360,7 +384,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
       logger,
     })
 
-    await confirm(confirmInfo('run_command', { command: 'echo OTHER' }))
+    await confirm(confirmInfo('run_command', { command: 'echo OTHER C:\\Windows' }))
 
     expect(logger.records).toHaveLength(0)
   })
@@ -375,7 +399,9 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
       logger,
     })
 
-    const approved = await confirm(confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK' }))
+    const approved = await confirm(
+      confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK C:\\Windows' }),
+    )
 
     // 匹配层的纵深防御真的生效：一条 `*` 不能变成"全部免确认"
     expect(approved).toBe(true)
@@ -403,7 +429,7 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
       })
 
       const approved = await confirm(
-        confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK' }),
+        confirmInfo('run_command', { command: 'echo AURORA_ALLOW_OK C:\\Windows' }),
       )
 
       expect(requests, `模式 ${patterns.join(',')} 不该放行`).toHaveLength(1)
@@ -417,7 +443,8 @@ describe('createConfirmTool 的免确认模式分支（run_command）', () => {
  * 三档权限的判定（docs/06 §11.2，v13）。
  *
  * 这几条钉的是"档位真的改变了行为"，而不只是"字段被存下来了"：
- * 只读档必须**拒绝**（工具层已经不注册，这里是双保险）、auto 档按项目根内/外分流、confirm 档不变。
+ * 只读档必须**拒绝**（工具层已经不注册，这里是双保险）、auto 档完全放行、
+ * confirm 档恢复旧 auto 的「根内免确认 / 越界确认 / 无项目免确认」。
  */
 describe('createConfirmTool 的三档权限判定', () => {
   const root = 'D:\\proj'
@@ -439,7 +466,7 @@ describe('createConfirmTool 的三档权限判定', () => {
     expect(logger.records[0]?.level).toBe('warn')
   })
 
-  it('auto 档 + 项目根内：免确认直接放行，并写 info 审计日志', async () => {
+  it('auto 档 + 项目根内：完全权限直接放行，并写 info 审计日志', async () => {
     const logger = createRecordingLogger()
     const { proactive, requests } = createFakeProactive(false)
     const confirm = createConfirmTool({
@@ -451,16 +478,16 @@ describe('createConfirmTool 的三档权限判定', () => {
 
     const approved = await confirm(confirmInfo('write_file', { path: 'D:\\proj\\sub\\a.txt' }))
 
-    expect(approved).toBe('machine')
+    expect(approved).toBe(true)
     expect(requests).toHaveLength(0)
     expect(logger.records[0]?.level).toBe('info')
     expect(metaOf(logger.records)).toMatchObject({
       tool: 'write_file',
-      target: 'D:\\proj\\sub\\a.txt',
+      sessionId: 'test-session',
     })
   })
 
-  it('auto 档 + 项目根外：仍走确认卡片（越界不免确认）', async () => {
+  it('auto 档 + 项目根外：仍然直接放行、不弹确认卡片', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
@@ -468,17 +495,17 @@ describe('createConfirmTool 的三档权限判定', () => {
       projectRoot: async () => root,
     })
 
-    // 兄弟目录（前缀相同但不在根内）与 `..` 穿越都必须回到确认卡片
+    // 完全权限不再按项目根分流：兄弟目录、`..` 穿越、绝对目标都直接放行
     expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj2\\a.txt' }))).toBe(true)
     expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj\\..\\other\\a.txt' }))).toBe(
       true,
     )
     // `edit_file` 走 `path`、`open_path` 走 `target`
     expect(await confirm(confirmInfo('open_path', { target: 'C:\\Windows' }))).toBe(true)
-    expect(requests).toHaveLength(3)
+    expect(requests).toHaveLength(0)
   })
 
-  it('auto 档 + run_command：cwd 在根内免确认，命令串里出现绝对路径时一律回到确认', async () => {
+  it('auto 档 + run_command：命令含绝对路径也不再弹卡', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
@@ -486,39 +513,34 @@ describe('createConfirmTool 的三档权限判定', () => {
       projectRoot: async () => root,
     })
 
-    // cwd 在根内、命令是相对命令 → 免确认（机器放行，返回 'machine'）
-    expect(await confirm(confirmInfo('run_command', { command: 'npm test', cwd: root }))).toBe(
-      'machine',
-    )
-    // cwd 缺省（回落到根）但命令里带了绝对路径 → 保守起见回到确认卡片
+    expect(await confirm(confirmInfo('run_command', { command: 'npm test', cwd: root }))).toBe(true)
     expect(
       await confirm(confirmInfo('run_command', { command: 'type C:\\Windows\\win.ini' })),
     ).toBe(true)
-    expect(requests).toHaveLength(1)
+    expect(requests).toHaveLength(0)
   })
 
-  it('auto 档 + run_command 不带显式 cwd：按缺省落根内判定，免确认放行（判定端配对用例）', async () => {
-    // 执行端缺省 cwd 已按 docs/06 §5.1 三级回落接进装配层（配了项目 = 项目根，
-    // 见 tools/index.test.ts「缺省工作目录三级回落」）；本用例钉判定端同一场景：
-    // `permissionTargetOf` 取不到路径时 `run_command` 走「按根内」分支（其余工具仍一律走确认）。
-    // 2026-09 独立审查指出该分支此前只有显式 cwd 用例，「判定↔执行配对」对缺省场景是空档。
+  it('auto 档不解析项目根：完全权限路径不得为确认判定额外读盘', async () => {
+    let rootCalls = 0
     const logger = createRecordingLogger()
     const { proactive, requests } = createFakeProactive(false)
     const confirm = createConfirmTool({
       proactive,
       mode: () => 'auto',
-      projectRoot: async () => root,
+      projectRoot: async () => {
+        rootCalls += 1
+        return root
+      },
       logger,
     })
 
-    // 机器放行（出处不是用户当次卡片），但审计留痕不变
-    expect(await confirm(confirmInfo('run_command', { command: 'npm test' }))).toBe('machine')
+    expect(await confirm(confirmInfo('run_command', { command: 'npm test' }))).toBe(true)
     expect(requests).toHaveLength(0)
-    // 机器放行同样留 info 审计痕
+    expect(rootCalls).toBe(0)
     expect(logger.records[0]?.level).toBe('info')
   })
 
-  it('confirm 档：根内写文件已免确认（v0.2.4），但 run_command 仍逐次确认', async () => {
+  it('confirm 档 + run_command：根内相对命令免确认，绝对路径回到确认', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
@@ -526,14 +548,16 @@ describe('createConfirmTool 的三档权限判定', () => {
       projectRoot: async () => root,
     })
 
-    // 放宽只覆盖 write_file / edit_file；命令类工具不在其列（Codex 式 auto-edit 的边界）
-    expect(await confirm(confirmInfo('run_command', { command: 'npm test' }))).toBe(true)
+    expect(await confirm(confirmInfo('run_command', { command: 'npm test' }))).toBe('machine')
+    expect(
+      await confirm(confirmInfo('run_command', { command: 'type C:\\Windows\\win.ini' })),
+    ).toBe(true)
     expect(requests).toHaveLength(1)
   })
 })
 
 /**
- * auto 档免确认路径（docs/06 §11.2）。
+ * 档位放行路径（docs/06 §11.2）。
  *
  * v0.2.4 起 `center_send_file` 改 `sensitivity: 'safe'` 直接发送（用户要求给 Center
  * 发文件不弹卡），确认链路不再经过 createConfirmTool —— 原外发类工具特例名单
@@ -543,7 +567,7 @@ describe('createConfirmTool 的三档权限判定', () => {
 describe('createConfirmTool 的档位放行路径（docs/06 §11.2）', () => {
   const root = 'D:\\proj'
 
-  it('confirm 档：write_file 落在边界根内免确认（v0.2.4 Codex 式 auto-edit）', async () => {
+  it('confirm 档：write_file 落在边界根内免确认（旧 auto 语义）', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
@@ -567,7 +591,19 @@ describe('createConfirmTool 的档位放行路径（docs/06 §11.2）', () => {
     expect(requests).toHaveLength(1)
   })
 
-  it('confirm 档：无边界根（未配项目）维持逐次确认', async () => {
+  it('confirm 档：open_path 目标是项目根内时也免确认', async () => {
+    const { proactive, requests } = createFakeProactive(true)
+    const confirm = createConfirmTool({
+      proactive,
+      mode: () => 'confirm',
+      projectRoot: async () => root,
+    })
+
+    expect(await confirm(confirmInfo('open_path', { target: 'D:\\proj\\docs' }))).toBe('machine')
+    expect(requests).toHaveLength(0)
+  })
+
+  it('confirm 档：无边界根（未配项目）按旧 auto 语义直接放行', async () => {
     const { proactive, requests } = createFakeProactive(true)
     const confirm = createConfirmTool({
       proactive,
@@ -575,11 +611,11 @@ describe('createConfirmTool 的档位放行路径（docs/06 §11.2）', () => {
       projectRoot: async () => undefined,
     })
 
-    expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj\\a.txt' }))).toBe(true)
-    expect(requests).toHaveLength(1)
+    expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj\\a.txt' }))).toBe('machine')
+    expect(requests).toHaveLength(0)
   })
 
-  it('对照：auto 档下普通工具（write_file）按原行为根内免确认', async () => {
+  it('对照：auto 档下普通工具（write_file）按完全权限直接放行', async () => {
     const { proactive, requests } = createFakeProactive(false)
     const confirm = createConfirmTool({
       proactive,
@@ -587,7 +623,7 @@ describe('createConfirmTool 的档位放行路径（docs/06 §11.2）', () => {
       projectRoot: async () => root,
     })
 
-    expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj\\a.txt' }))).toBe('machine')
+    expect(await confirm(confirmInfo('write_file', { path: 'D:\\proj\\a.txt' }))).toBe(true)
     expect(requests).toHaveLength(0)
   })
 
@@ -602,7 +638,7 @@ describe('createConfirmTool 的档位放行路径（docs/06 §11.2）', () => {
       },
     })
 
-    await confirm(confirmInfo('write_file', { path: 'D:\\proj\\a.txt' }))
+    await confirm(confirmInfo('write_file', { path: 'C:\\elsewhere\\a.txt' }))
     expect(seen).toEqual(['test-session'])
     expect(requests).toHaveLength(1)
   })

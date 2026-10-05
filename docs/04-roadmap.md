@@ -451,8 +451,9 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
   - **三档权限（v13，`agent.permissionMode ∈ {readonly, confirm, auto}`，默认 `auto` —— 2026-09-29
     起出厂即完全权限）**：
     `readonly` 档**根本不注册**写入 / 执行类工具（含 `todo_write`，保留 `todo_read`），
-    因此不是"注册后再拒绝"；`confirm` 档逐次确认（用户手动收紧后的档位）；
-    `auto` 档在**项目根之内**免确认（写 `info` 级审计日志）、越界仍逐次确认、未配置项目时只写日志。
+    因此不是"注册后再拒绝"；`confirm` 档恢复旧 auto 语义（根内直接执行、越界确认；
+    无项目直接放行）；
+    `auto` 档为**完全权限**：所有敏感工具直接放行、不再弹确认卡（写 `info` 级审计日志）。
     老的 `advanced.confirmSensitiveTools === false` 由 `auto` 档承接（与默认档镜像，出厂同为 `false`），
     且 **`readonly` 优先于该布尔**。确认卡片新增第三键「本会话都允许」
     （会话 × 工具名，仅内存、不落盘）。项目根边界是**两层**：`auto` 档「要不要弹卡」用**字符串级

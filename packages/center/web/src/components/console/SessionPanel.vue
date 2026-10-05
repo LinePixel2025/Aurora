@@ -50,8 +50,8 @@ const TABS: Array<{ id: PanelTab; label: string }> = [
 
 const PERMISSION_OPTIONS: Array<{ value: PermissionMode; label: string }> = [
   { value: 'readonly', label: '只读（readonly）' },
-  { value: 'confirm', label: '逐次确认（confirm）' },
-  { value: 'auto', label: '自动（auto，根内免确认）' },
+  { value: 'confirm', label: '项目内自动（confirm）' },
+  { value: 'auto', label: '自动（auto，完全权限）' },
 ]
 
 const REASONING_LEVELS: ReasoningEffort[] = ['auto', 'low', 'medium', 'high']

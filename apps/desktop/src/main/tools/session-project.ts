@@ -1,7 +1,7 @@
 /**
  * 会话级项目解析（docs/06 §5.1，v17）：「每个会话可以绑定一个项目」的**唯一解析口径**。
  *
- * 现状（v16 及之前）项目只有全局一份：`projects.current` 决定缺省工作目录、auto 档免确认
+ * 现状（v16 及之前）项目只有全局一份：`projects.current` 决定缺省工作目录、权限边界
  * 边界与 AGENTS.md 注入。v17 起会话可以绑定 `projects.list` 里的某一项
  * （`sessions/<id>.json` 的 `meta.projectId`，经 `chat:setSessionProject` 写入）；
  * 2026-09-30 会话三分（docs/06 §4）起再插入**会话空间**一级（`meta.space`）：
@@ -18,13 +18,13 @@
  * - 中心会话（`center-` 前缀）与本地会话**同一逻辑**，默认未绑定、Agent 空间，没有特殊分支。
  *
  * 这条链是 **Codex 式「一个会话一个工作目录」的唯一口径**（docs/05 §4 / docs/06 §5.1）：
- * 缺省 cwd、写入边界、auto 档免确认边界、提示词全部同源 —— Work 模式的
+ * 缺省 cwd、写入边界、confirm 档根内免确认、提示词全部同源 —— Work 模式的
  * `modes.work.workspaceDir` 不再是提示词里的孤立概念，而是链上的一级回落。
  *
  * 三条消费方（docs/06 §5.1 / §11.2）共用这里的解析结果，不得各写一份：
  * 1. 缺省工作目录 / 搜索根（`registerComputerTools` → terminal / search 工具的 getter）；
  * 2. 项目根边界（`file-port` / `command-runner` 的 `workspaceRoot` guard）与
- *    auto 档免确认判定（`agent-host.ts` 的 `createConfirmTool`）、confirm 档的
+ *    confirm 档根内免确认判定（`agent-host.ts` 的 `createConfirmTool`）、
  *    「根内写文件免确认」（v0.2.4，Codex 式 auto-edit）；
  * 3. 项目级 AGENTS.md 注入（`createProjectInstructionsSource` 的 `resolveRoot(sessionId)`）。
  *
@@ -75,8 +75,8 @@ export interface SessionProjectResolver {
    */
   projectRootOf(sessionId: string | undefined): string | undefined
   /**
-   * 该会话的项目根**边界**（端口 `workspaceRoot` guard、auto 档免确认判定与
-   * confirm 档「根内写免确认」用，docs/06 §5.1 / §11.2）：
+   * 该会话的项目根**边界**（端口 `workspaceRoot` guard 与 confirm 档
+   * 「根内免确认」用，docs/06 §5.1 / §11.2）：
    * 会话绑定项目 > 会话空间目录 > 激活模式工作目录（Work）。
    * Agent 空间恒可解析（`桌面\Aurora` 不依赖配置），因此**每个会话都有边界根** ——
    * 2026-09-30 起「无项目 = 无边界」的旧行为不再存在。

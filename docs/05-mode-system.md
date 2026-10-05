@@ -366,7 +366,7 @@ v1 占位的 Work Mode 在 BetaV2 完成**初步实装**（`packages/modes/src/w
   2026-09-30 会话三分起，**在 Work 模式下新建的「工作目录对话」会话**（`meta.space: 'work'`，
   docs/06 §4 / docs/07 §2.3）把工作目录**显式钉在会话上**：空间目录排在全局当前项目之前，
   这些会话的工作目录不随用户切 `projects.current` 漂移（绑了项目的会话仍以项目为准）。
-  缺省 `cwd` / 搜索根、写入边界、confirm 档「根内写免确认」与 auto 档免确认边界全部落在
+  缺省 `cwd` / 搜索根、写入边界与 confirm 档「根内免确认」全部落在
   同一条链解析出的目录上 —— 提示词与工具链同源，Work 模式不再与项目指定互相打架
   （二者都不配置时回落 `agent.tools.workspaceDir` / 主目录）。
 - **感知订阅**：`[{ kind: 'clock', intervalMs: 60000 }]`。

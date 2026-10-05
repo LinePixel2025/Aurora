@@ -572,7 +572,9 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     //     桩服务收到工具结果后把它的 **stdout 段**回显进收尾文本，命令是否真的执行因此可断言。
     const ALLOW_SESSION = 'smoke-allow'
     const DENY_SESSION = 'smoke-allow-deny'
-    const ALLOW_COMMAND = 'echo AURORA_ALLOW_OK'
+    // 带一个绝对路径片段：confirm 档恢复旧 auto 语义后，「未命中」必须靠绝对路径
+    // 强制回到确认卡；相对路径在项目根内会被机器放行，负对照会失效。
+    const ALLOW_COMMAND = 'echo AURORA_ALLOW_OK C:\\Windows'
     // 桩服务只回显 stdout 段（不带命令行头部），所以它出现在收尾文本里 === 命令真的跑出产物
     const ALLOW_OUTPUT_MARKER = 'AURORA_ALLOW_OK'
     const ALLOW_PROMPT = RUN_COMMAND_MARKER + '\n' + ALLOW_COMMAND
@@ -580,10 +582,9 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     /**
      * 本节必须跑在 **confirm 档**上（2026-09-29 起出厂默认是 auto，见 docs/06 §11.2）。
      *
-     * 两条断言是成对的：命中 → 不弹卡；未命中 → 弹卡。而 auto 档下「未命中」的命令
-     * 本来就不会弹卡（它是免确认档），负对照会因此失效（实测会连报两条 FAIL：
-     * 收不到卡片 + 命令被执行）。所以这里显式把档位切到 confirm 再跑，
-     * 这样「未命中仍弹卡」才是**允许列表本身**的证据，而不是档位的证据；收尾再还原成出厂默认。
+     * 两条断言是成对的：命中 → 不弹卡；未命中 → 弹卡。confirm 档现在也按旧 auto
+     * 语义做「根内免确认」，所以负对照命令必须带绝对路径，确保它确实回到确认卡。
+     * 收尾再还原成出厂默认。
      * ⚠️ 这段注释里不要写反引号：整个注入脚本是一个 template literal，写反引号会提前终止字符串。
      */
     const setPermissionMode = async (mode, legacy) => {

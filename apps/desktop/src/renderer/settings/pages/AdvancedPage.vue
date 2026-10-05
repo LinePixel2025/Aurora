@@ -181,7 +181,7 @@ async function resetAll(): Promise<void> {
     <section class="section-card">
       <h2 class="section-title">安全</h2>
       <p class="section-desc">
-        敏感工具是否先问你：<strong>只读</strong>不注册写入与命令类工具，<strong>变更前确认</strong>逐次弹卡，<strong>完全权限</strong>仅项目根内免确认。
+        敏感工具是否先问你：<strong>只读</strong>不注册写入与命令类工具，<strong>变更前确认</strong>项目根内直接执行、越界弹卡，<strong>完全权限</strong>不再弹卡。
       </p>
 
       <!--

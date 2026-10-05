@@ -15,6 +15,7 @@ source: 模型自动记录
    写目标又在 `userData` / `%TEMP%` 下 —— 这 13 条测的全成了「越界拒绝」。
 2. **每轮白扔 2 分钟**：`await confirmTool(...)` 在夹具落不到 auto 档"根内"分支时会静默走进「等用户回执」
    （一个 60s 超时），而失败详情只显示 `approve:false noCard:true`，看着像"没批准"。
+   （2026-10-05 起 `auto` 已改成完全权限直接返回，不再依赖"根内"夹具；这条保留作历史排查线索。）
 3. **半条断言从没跑过却一直报 ok**：`!text.includes('skipped.txt')` 这类判据在调用本身失败时恒真
    （错误文案里当然没有那个文件名）；2.6 段只读档的"内容一字未变"同款（文件压根没被写成功过）。
 4. **累计型阈值最先翻**：`droppedFrames`、`longTask.count`、`heartbeatOverrunMs` 这类「累计个数」在

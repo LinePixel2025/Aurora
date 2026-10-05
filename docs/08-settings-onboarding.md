@@ -174,7 +174,7 @@
       // v20 新增：提权是 Agent 自己能碰到的权限边界本身 —— AI 关掉它（或阻止自己重启提权）
       // 等于自己降低权限约束面，属自我提权；只能由用户在设置页改
       "general.requireAdmin",
-      // 权限边界根的一级（boundaryRoot → Work 空间目录）：AI 改写它 = 把根内免确认扩到任意目录
+      // 权限边界根的一级（boundaryRoot → Work 空间目录）：AI 改写它 = 把 confirm 档根内免确认扩到任意目录
       "modes.work.workspaceDir"
     ]
   },
@@ -274,8 +274,8 @@
   （相对 `watchDir` 或绝对路径）。
 - `advanced.confirmSensitiveTools`（v2 新增）：敏感工具（`sensitivity = 'confirm'`，含全部 MCP 工具
   与 `set_setting`）执行前是否要求用户确认（见 06 §5）。**默认 `false`**（2026-09-29 起，
-  与默认权限档 `auto` 镜像）：为 `false` 时由 `auto` 档承接 —— 有项目时项目根内免确认、
-  越界仍弹卡，未登记项目时不再逐次询问（只写日志留痕）；切回 `confirm` 档才是真正的逐次确认。
+  与默认权限档 `auto` 镜像）：为 `false` 时由 `auto` 档承接 —— **完全权限，所有敏感工具不再弹卡**；
+  切回 `confirm` 档会恢复旧 auto 的项目边界语义：根内直接执行、越界弹卡。
   **它本身在默认黑名单里**（见下一条）：改它等于摘掉 / 收紧敏感工具的确认闸门，属于 AI 自我提权，
   因此只允许用户在设置页手动改（设置页走 `settings:update`，不经过该黑名单）。
 - `advanced.readonlyPrefixes`（**v6 新增**，见 06 §12）：AI 通过 `set_setting` 改配置时的路径黑名单，
@@ -429,8 +429,8 @@
   （由引导问答 / 设置页收集）。它与电脑操控工具的 `agent.tools.workspaceDir` **是两个字段**：
   前者是 Work 模式的场景目录，后者只是 `run_command` 的缺省 `cwd`（见 06 §11）。
   **只读**（`SETTINGS_READONLY_PREFIXES`）：它是**权限边界根回落链的一级**（`boundaryRoot` 的
-  Work 空间目录，见 06 §5.1 / §11.2）—— AI 能改写它，就等于把 `auto` 档「根内免确认」与
-  `confirm` 档「根内写免确认」扩到任意目录 = **自我提权**（与 `projects` 整组被拉黑的理由完全同构）。
+  Work 空间目录，见 06 §5.1 / §11.2）—— AI 能改写它，就等于把 `confirm` 档
+  「根内免确认」扩到任意目录 = **自我提权**（与 `projects` 整组被拉黑的理由完全同构）。
   AI 的 `set_setting` 一律拒绝读写它；只能由用户在设置页「模式 → Work」或引导问答改
   （设置页走 `settings:update`、引导走 `guide-runner`，都不经过该黑名单）。
   **对照**：`agent.tools.workspaceDir` 仍可写 —— 它只是缺省 `cwd` / 搜索根、不是边界（06 §11.1）。
@@ -501,10 +501,9 @@
   切项目等于同时改 Agent 的**指令面**与**权限面**，属自我提权。
 - `agent.permissionMode`（**v13 新增**，见 06 §11.2）：三档权限
   `readonly`（只读：写 / 执行 / 有系统副作用的工具**根本不注册**，模型在工具清单里看不到它们）|
-  `confirm`（逐次确认：敏感工具每次执行前弹卡）|
-  `auto`（**默认档**，2026-09-29 起：只在**边界根**之内免确认，越界仍逐次确认；
-  2026-09-30 会话空间起每个会话都有边界根 —— 未绑项目 / 未设目录的会话以
-  `%USERPROFILE%\Desktop\Aurora`（Agent 空间）为界，见 06 §11.2）。
+  `confirm`（边界自动：项目根内直接执行、越界弹卡；无项目直接放行）|
+  `auto`（**默认档**，2026-09-29 起：完全权限，**所有敏感工具调用都不弹确认卡**；
+  项目根只作为缺省工作目录与 `confirm` 档边界，不再决定是否询问，见 06 §11.2）。
   与 `advanced.confirmSensitiveTools` **双开关并存**，优先级是：`confirmSensitiveTools === false` 时
   非 readonly 档被强制按 `auto` 处理；`readonly` 档下该布尔**无效**（只读优先）。
   两个字段是**镜像**关系（界面写档位时同时写老开关），出厂默认因此是
@@ -540,7 +539,8 @@
   - **只读（`SETTINGS_READONLY_PREFIXES`）**：这是用户对「AI 能不能自己安排后台动作」的**总闸门** ——
     AI 关掉它可以让用户的自动化静默失效，打开它再配合 `automation_*` 工具等于自己给自己排程。
     因此 AI 的 `set_setting` 对 `automations.*` 一律拒绝；AI 增删 / 启停自动化走**专用工具**
-    （`automation_list` / `automation_history` 为 `safe`，其余 `confirm` 逐次确认，docs/13 §8）。
+    （`automation_list` / `automation_history` 为 `safe`，其余 `confirm` 进入确认链，
+    是否弹卡由权限档与项目边界决定，docs/13 §8）。
   - `SettingsPatch` 新增可选 `automations` 字段（**顶层浅合并**，`{ automations: { enabled } }`
     的形状即可）；设置页那一处开关走 `settings:update`，不经过黑名单。
   - **不引入任何凭据路径**：本组没有密文（对照 `apiKeyEnc` / `envEnc` / `headersEnc` /
@@ -941,11 +941,11 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     注意 `read_file` / `write_file` / `edit_file` / `list_dir`
     **不读**该字段（相对路径按主进程 CWD 解析，打包应用该值不可预期，故文件类工具只适合用绝对路径；
     见 06 §11.4）。
-  - 逐次确认沿用 `sensitivity` 判定：`run_command` / `write_file` / `edit_file` / `open_path` 为
-    `confirm`（走 06 §5 的确认链路，勿扰时段或确认超时一律按拒绝；唯一的例外是命中
-    `agent.tools.terminal.allowPatterns` 的 `run_command`，见 06 §11.7），
-    `read_file` / `list_dir` / `grep` / `glob` 为 `safe`；
-    由 `advanced.confirmSensitiveTools` 统一开关，关闭后敏感工具不再询问（见 §1）。
+  - 敏感工具仍按 `sensitivity` 进入确认链路：`run_command` / `write_file` / `edit_file` /
+    `open_path` 为 `confirm`，`read_file` / `list_dir` / `grep` / `glob` 为 `safe`。
+    生效后由权限档决定：`auto` 完全权限直接放行；`confirm` 档按旧 auto 的项目边界执行
+    （根内直接执行、越界弹卡、无项目直接放行）；命中 `allowPatterns` 的 `run_command`
+    在 confirm 档仍免确认（见 06 §11.7）。
 - **语音**（`tts.*` / `stt.*`，v0.8.0 起）：目标 6 页 IA 下为「语音」页（`voice`，TTS 区组 + STT 区组；
   v8 前为「AI 能力」组第 2 项、仅 TTS）。TTS 区组提供「总开关」（`tts.enabled`）、「默认 TTS 模型」
   （`tts.active`）、「自动朗读」（`tts.autoRead`）、「截断上限」（`tts.maxChars`），以及 provider 列表的
@@ -976,9 +976,10 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   - 实现状态（v0.5.0）：**勿扰时段已实际拦截主动行为**——敏感工具确认在时段内直接拒绝
     （`ProactiveScheduler.isQuietHour`），课前提醒在时段内静默跳过。新增
     「敏感工具确认」开关（`advanced.confirmSensitiveTools`，**默认关闭** —— 2026-09-29 起
-    它与默认档 `auto` 镜像）：关闭后敏感工具不再逐次询问（`auto` 档语义：项目根内免确认、
-    越界仍问、无项目时只记日志留痕），且**每次调用即时判断**，改设置无需重启。
-    用户要最严的档位就在设置页「智能与工具」或对话窗把档位切回「变更前确认」。
+    它与默认档 `auto` 镜像）：关闭后敏感工具不再逐次询问（`auto` 档语义：完全权限、
+    所有敏感工具直接放行），且**每次调用即时判断**，改设置无需重启。
+    用户要在项目边界之外重新逐次确认，就在设置页「智能与工具」或对话窗把档位切回「变更前确认」；
+    该档现在恢复旧 auto 语义：项目根内直接执行、越界弹卡，无项目时直接放行。
   - 实现状态（v0.6.0）：**代理与日志级别真正生效**（此前是「存了不生效」的死配置）——
     - `advanced.proxy`：`main/net.ts` 交给 `session.setProxy`，出网改用 Electron `net.fetch`
       （走 Chromium 网络栈 → 自动遵守代理）并保留 `globalThis.fetch` 回落；

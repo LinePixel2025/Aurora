@@ -190,9 +190,9 @@ export interface LlmProvider {
   写入入口：`SessionStore.setSpace` + `createSession({ space })`（新建时只记**内存 pending meta**，
   首条消息 append 时才并入落盘 —— 保持「空会话不落盘」的不变量）；`chat:newSession` 的可选参数
   `{ space?, projectId? }` 是 IPC 层入口（`projectId` 校验存在性，同 `chat:setSessionProject`）。
-  空间目录是**回落链的一级**（§5.1）与**权限边界根**（§11.2）：Agent 会话在 `auto` 档下
-  桌面 Aurora 目录之内免确认、之外逐次确认 ——「Agent 在自己的工作区内划分权限」，
-  无项目不再等于无边界（**不是 OS 级沙箱**，`run_command` 仍是当前用户权限）。
+  空间目录是**回落链的一级**（§5.1）与 `confirm` 档的**权限边界根**（§11.2）：
+  `confirm` 档下 Agent 会话在桌面 Aurora 目录之内直接执行敏感工具、之外逐次确认；
+  `auto`（完全权限）不再弹确认卡（**不是 OS 级沙箱**，`run_command` 仍是当前用户权限）。
   space 与 projectId 一样是**会话数据**：不进 `config.json`、不进 `CONFIG_VERSION` 迁移链。
 - 渲染层挂载时通过 `chat:history` 水合消息列表，因此重启后交互窗仍能看到历史。
 - **会话内存有界（2026-10-04 性能轮）**：`SessionStore` 的 `cache` 只保留最近活跃的若干个
@@ -380,7 +380,7 @@ v17 起它就已经不决定会话的实际工作目录 / 边界，界面的「�
   激活模式目录 > `agent.tools.workspaceDir` > 主目录**；
 绑定项已被删除时**静默回落**空间目录（会话级绑定是可选的，逐次执行不刷 warn）。
 三处消费方全部按**会话**解析（`main/tools/session-project.ts` 是唯一解析口径，别另写第二份）：
-缺省 cwd / 搜索根（工具执行时经 `ctx.sessionId` 现调 getter）、项目根边界与 auto 档免确认判定
+缺省 cwd / 搜索根（工具执行时经 `ctx.sessionId` 现调 getter）、项目根边界与 confirm 档判定
 （`file-port` / `command-runner` 的 `workspaceRoot(sessionId)` 与 `createConfirmTool`）、
 AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时按会话解析）。
 其中缺省 cwd / 搜索根与边界根的取值经 `adaptForSubagent` 视图：子代理（§19）的 `-sub`
@@ -474,10 +474,11 @@ AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时�
 >   不执行工具、以「用户拒绝执行」文本回填模型、工具卡片置 `error`、**循环继续**
 >   （模型可改走别的路径或向用户说明）。
 > - **确认判定返回四态 decision（2026-09，`ConfirmDecision`）**：`false`（拒绝，见上）/
->   `true`（用户**当次**在确认卡片上点放行）/ `'always'`（用户**当次**点「总是允许」：
->   本次放行且本会话记住该工具名，见 §11.2 的会话级授权表）/ `'machine'`（**机器放行**：
->   auto 档根内字符串判定、auto 档无项目、`allowPatterns` 命中、已记住 `'always'` 后的会话
->   授权短路 —— 照常执行但不算用户批准）。仅 `true | 'always'` 由内核置 `ctx.approvedByUser`；
+>   `true`（用户**当次**在确认卡片上点放行，或用户已显式选择 `auto` 完全权限档）/
+>   `'always'`（用户**当次**点「总是允许」：本次放行且本会话记住该工具名，见 §11.2
+>   的会话级授权表）/ `'machine'`（**历史授权或免确认模式的机器放行**：
+>   `allowPatterns` 命中、已记住 `'always'` 后的会话授权短路 —— 照常执行但不算用户当次批准）。
+>   仅 `true | 'always'` 由内核置 `ctx.approvedByUser`；
 >   `'machine'` 不置位，工具拿不到 `allowOutside`，端口层的项目根 realpath 兜底**保留**
 >   （出处语义与边界效果见 §11.2）。
 > - **确认链路本身抛错按拒绝处理**：确认交互不可用时宁可不执行敏感操作。
@@ -827,21 +828,18 @@ DOCX / XLSX / PPTX 的创建、读取和常用编辑默认走纯 JS worker，不
 | 生效档位 | 何时出现 | 注册哪些工具 | 确认行为 |
 |---|---|---|---|
 | `readonly` | `agent.permissionMode === 'readonly'`（**只读优先**，老开关在这档无效） | 只注册只读工具：`read_file` / `list_dir` / `grep` / `glob` / `todo_read` / `use_skill` / `set_setting` / MCP 与扩展工具。**不注册** `run_command` / `write_file` / `edit_file` / `open_path` / `todo_write` / `todo_read` 以外的待办写侧 | 敏感工具本就不在清单里；若仍被调用（例如刚好在切换档位），`createConfirmTool` 直接**拒绝**并写 warn（双保险） |
-| `confirm` | 显式选了 `confirm` 且老开关为 `true`（用户手动收紧后的档位，**不再是出厂档**） | 与三档之前完全一致 | 与三档之前完全一致：逐次弹卡；命中 `allowPatterns` 的 `run_command` 免确认；根内写文件按 v0.2.4 的 Codex 式免确认 |
-| `auto` | **出厂默认**；或显式选了 `auto`；或 `advanced.confirmSensitiveTools === false`（老开关的语义由它承接） | 与三档之前完全一致 | **有边界根时**（2026-09-30 起**每个会话都有**：会话绑定项目 > 会话空间目录 > 全局当前项目，见下）：目标路径落在**边界根之内** → 免确认（写 `info` 审计日志）；根外 → 照常弹卡。**无边界根的路径不存在了**（Agent 空间的 `桌面\Aurora` 恒可解析），历史语境里的「无项目完全不弹卡」随之消失 |
+| `confirm` | 显式选了 `confirm` 且老开关为 `true`（用户手动切回的边界档，**不再是出厂档**） | 与三档之前完全一致 | **旧 auto 语义**：未配置项目时直接放行；有项目时根内免确认、根外弹卡；`run_command` 命令串含绝对路径时回到确认卡；命中 `allowPatterns` 的 `run_command` 仍免确认 |
+| `auto` | **出厂默认**；或显式选了 `auto`；或 `advanced.confirmSensitiveTools === false`（老开关的语义由它承接） | 与三档之前完全一致 | **完全权限：所有敏感工具调用直接放行，不再弹任何确认卡，也不访问确认载体**；项目根不再参与确认判定（仍可作为缺省工作目录 / `confirm` 档边界）。每次调用写 `info` 审计日志 |
 
 - **为什么默认档从 `confirm` 提到 `auto`（2026-09-29）**：Aurora 是系统级 Agent 工具，
   出厂就逐次确认会让绝大多数正常操作（改自己项目里的文件、跑一条构建）都要先点一次卡片，
-  用户反馈「默认权限太低」。放宽的同时保留两道真实护栏：① `auto` 只在**边界根之内**
-  免确认、越界仍问；② 主进程对已存在的最近父目录做 realpath 前缀校验
-  （`file-port.resolveWithin`，越界即 `E_PATH_OUTSIDE_WORKSPACE`）。
+  用户反馈「默认权限太低」。`auto` 是完全权限：用户显式选择这一档后，不再出现任何确认卡；
+  主进程仍对工具做参数与权限校验，但这不再是逐次交互。
   **边界根按会话解析（2026-09-30 起覆盖所有会话）**：**会话绑定项目 > 会话空间目录**
   （Agent 空间 → `%USERPROFILE%\Desktop\Aurora`；Work 空间 → `modes.work.workspaceDir`）
-  **> 全局当前项目**。空间目录恒可解析（Agent 空间不依赖任何配置），因此**每个会话都有边界根**
-  —— 未标记的历史会话（Agent 空间）从「无项目完全不弹卡」变为「`桌面\Aurora` 内免确认、
-  外逐次确认」，这是会话空间轮的**有意收紧**（「Agent 在自己的工作区内划分权限」）；
-  要恢复旧行为只能把档位切回显式 `confirm` 之外的老语义路径（已不存在）或 `readonly`。
-  界面文案（权限下拉的提示与菜单项）把边界状态写明，改文案时别只留「越界仍会询问」那半句。
+  **> 全局当前项目**。空间目录仍决定缺省工作目录，并参与 `confirm` 档的「根内免确认」；
+  完全权限档不做「根内 / 根外」分流。界面文案（权限下拉的提示与菜单项）必须写明
+  **完全权限 = 不再弹卡**。
   **只影响新装 / 缺字段的配置**（`zod` 默认值）：既有 `config.json` 里已持久化的
   `permissionMode` / `confirmSensitiveTools` 一律保持原值（含绝大多数沿用旧默认值的配置），
   需用户自行切换；因此本次**不进迁移链、不改 `CONFIG_VERSION`**。
@@ -854,35 +852,36 @@ DOCX / XLSX / PPTX 的创建、读取和常用编辑默认走纯 JS worker，不
   不落盘、不给渲染层也不给 AI），随会话存在；`'always'` 只由用户点按钮产生，
   超时 / 勿扰 / 推送失败一律是拒绝，**拒绝永远不会被升级成会话级授权**。
   （内核的确认判定是四态 decision，机器放行不是用户可选取值，出处语义见下。）
-- **`auto` 档的保守方向**（`reasonWithinRoot`）：取不到目标路径的工具（除 `run_command` 外）一律按越界处理；
-  `run_command` 缺省 `cwd` 视为根内（它会回落到项目根），但**命令串里出现绝对路径时一律回到确认卡片** ——
-  我们不做 shell 解析，猜错一次就是静默越权，多问一次只是打扰。
+- **`auto` 档不做路径启发式判定**：`createConfirmTool` 直接返回 `true`（用户已选完全权限授权），
+  不再解析项目根、不再访问 `ProactiveScheduler`，也不因命令里出现绝对路径而弹卡。
+  这条路径仍写 `info` 审计日志；真正的系统边界是当前 Windows 用户权限，而不是 Aurora 的确认卡。
 - **`center_send_file` 不逐次确认（v0.2.4）**：用户明确要求「给 Center 发文件直接发送」，
   原 v0.2.3 的外发类特例名单（`ALWAYS_CONFIRM_TOOLS`）随之删除。它的闸门在**注册与配置层**：
   `center.enabled` + `serverUrl` 才注册、`center.allowFileTransfer` 可整体关闭、
   `center.maxFileMb` 限大小 —— 三个开关都是用户在设置页维护的（`center.*` 在只读黑名单里，
   AI 自己改不动），逐次确认属重复设防。工具本身 `sensitivity: 'safe'`，
   确认链路（含推网页端）不再经过它。
-- **confirm 档根内写文件免确认（v0.2.4，Codex 式 auto-edit）**：`createConfirmTool` 在
-  confirm 档下对 `write_file` / `edit_file` 先按会话解析边界根（会话绑定项目 > 会话空间目录 >
-  全局当前项目 > Work 模式工作目录，docs/06 §5.1），落在根内即 `'machine'` 放行（审计日志照写），
-  越界 / 无根时维持逐次确认 —— Agent / Work 空间会话自 2026-09-30 起恒有根（同 auto 档的收紧）。
-  `run_command` 等其余敏感工具**不参与**这条放宽（对齐 Codex「工作区写自动、命令仍过目」）。
+- **confirm 档恢复旧 auto 语义（2026-10-05）**：`createConfirmTool` 在 confirm 档下按会话解析
+  边界根（会话绑定项目 > 会话空间目录 > 全局当前项目 > Work 模式工作目录，docs/06 §5.1）；
+  未配置项目或无可用根时直接机器放行；有根时根内调用免确认，根外回到确认卡。
+  `run_command` 走同一套判定：相对命令 / 根内 cwd 可免确认，命令串出现绝对路径时保守回到确认卡。
+  这条路径返回 `'machine'`，不置 `ctx.approvedByUser`，端口层 realpath 兜底仍然生效。
 - **项目根边界（两层，分工明确）**：
-  1. `auto` 档的"要不要问用户"用字符串级判定（`isWithinRoot`，含 `..` 段一律按越界）；
+  1. `confirm` 档的"要不要问用户"用字符串级判定（`isWithinRoot`，含 `..` 段一律按越界）；
   2. "能不能真碰"由主进程 `file-port.ts` 的 `resolveWithin` 用 **realpath** 判定：
      对已存在的最近父目录做 `realpath`（新文件场景目标可能不存在）后比较前缀，
      越界抛 `E_PATH_OUTSIDE_WORKSPACE`，工具层转成 `isError` 结果。
      这条校验只在**配置了当前项目**时启用（`workspaceRoot()` 返回 undefined = 行为与 v13 之前一字不差）。
      六个文件类入口（`readText` / `readWholeText` / `writeText` / `list` / `findFiles` / `searchText`）
-     与 `run_command.cwd` 都走它；确认钩子返回 `true | 'always'`（用户当次批准）的那一次调用
+     与 `run_command.cwd` 都走它；确认钩子返回 `true | 'always'`（用户当次批准或完全权限档）的那一次调用
      由内核置 `approvedByUser`，工具层据此透传 `allowOutside: true` 放行 ——
      于是"越界必须被确认后才可写"是可测的。
 - **`approvedByUser` 已区分出处（2026-09，四态 decision）**：确认判定 `ConfirmDecision` 取值
   `false | true | 'always' | 'machine'` —— `false` = 拒绝；`true` = 用户**当次**在确认卡片上点放行；
   `'always'` = 用户**当次**点「总是允许」（本次放行且本会话记住该工具名）；`'machine'` =
-  **无人参与或历史授权的机器放行**（`auto` 档根内字符串判定、`auto` 档无项目、`allowPatterns`
-  命中、已记住 `'always'` 后的会话授权短路）。仅 `true | 'always'` 置 `ctx.approvedByUser`
+  **历史授权或免确认模式的机器放行**（`allowPatterns` 命中、已记住 `'always'` 后的会话授权短路）。
+  `auto` 完全权限档返回 `true`（用户已显式选择完全权限），因此也置 `ctx.approvedByUser`。
+  仅 `true | 'always'` 置 `ctx.approvedByUser`
   并免掉 realpath 兜底；`'machine'` **照常执行但边界兜底保留**：内核不置 `approvedByUser`，
   工具拿不到 `allowOutside`，`resolveWithin` 照常校验。于是此前披露的「根内建指向根外的
   junction / 符号链接（`run_command` 里 `%USERPROFILE%\…` 形态不被 `containsAbsolutePath` 识别），
@@ -890,8 +889,8 @@ DOCX / XLSX / PPTX 的创建、读取和常用编辑默认走纯 JS worker，不
   这条出处区分还顺带兜住「判定与执行取值时刻不同步」的竞态（用户中途切项目时按新根判定、
   按旧实例烘焙目录执行）—— 机器放行 fail-closed 落回 realpath 校验，不再存在免校验窗口。
 - **`advanced.confirmSensitiveTools = false` 时的语义**（沿用既有行为，§5 / §9.1）：由 **`auto` 档**承接 ——
-  有项目时根内免确认、根外仍询问；无项目时直接放行不推卡片（与从前一致），内核仍按 `sensitivity`
-  写日志留痕。此时代码路径与用户自己在 PowerShell 里敲同样的命令**能力相当**（甚至略宽：命令以
+  所有敏感工具直接放行、不弹确认卡，内核仍按 `sensitivity` 写日志留痕。
+  此时代码路径与用户自己在 PowerShell 里敲同样的命令**能力相当**（甚至略宽：命令以
   `-NoProfile -NonInteractive -ExecutionPolicy Bypass` 启动，比默认执行策略更宽松，但同样**不是**管理员提权）
   ——`run_command` / `write_file` / `edit_file` / `open_path` 可能在无人确认的情况下执行，
   包括删除文件、改注册表、装软件这类不可逆操作。命中 §11.7 免确认模式的命令也是同一种
@@ -2140,7 +2139,7 @@ docs/13 §7）：
   进程重启时历史里遗留的 `running` 记录改判 `interrupted`（docs/13 §3）。
 - **敏感工具确认沿用既有确认链，自动化没有自己的权限体系**：无人值守时 **60s 超时默认拒绝**
   （`ProactiveScheduler` 既有语义，§9.1）。要「免打扰」得由用户把 `agent.permissionMode`
-  设为 `auto`（根内免确认，§11.2）或在会话里点「本会话都允许」（会话级授权表）——
+  设为 `auto`（完全权限，所有敏感工具不弹卡，§11.2）或在会话里点「本会话都允许」（会话级授权表）——
   **不为自动化新增静默放行通道**。
 - **运行档（v0.2.8，§5.2）**：这条会话不套交互式人设（换成「后台执行体」，不反问、做完汇报），
   多一段「## 本次运行」小节，并在**工具面**摘掉 `automation_create` / `automation_update` /

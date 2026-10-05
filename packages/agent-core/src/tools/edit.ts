@@ -134,7 +134,7 @@ export function createEditTool(options: EditToolOptions): ToolDefinition {
 
       let read: ReadWholeTextResult
       try {
-        // 已获用户批准（确认卡放行 / 免确认命中 / auto 档判定根内）时带上越界放行标记；
+        // 已获用户批准（确认卡放行 / 免确认命中 / auto 完全权限）时带上越界放行标记；
         // 未批准时不带 —— 缺省即"没批准"，端口照旧按越界拦截。sessionId 同步透传：
         // 端口的项目根边界按会话解析（docs/06 §5.1）。
         read = await options.files.readWholeText(path, maxEditBytes, outsideGuard(ctx))

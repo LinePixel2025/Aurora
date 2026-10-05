@@ -80,7 +80,7 @@ automations: {
 - 迁移：`migrations.ts` 追加 `v18 → v19`（补默认值，幂等、不覆盖用户已写值）；
 - **`automations` 整组加入 `SETTINGS_READONLY_PREFIXES`**：总开关是用户对「AI 能不能
   自己安排后台动作」的闸门，AI 的 `set_setting` 一律拒绝（同 `agent.permissionMode`
-  的自我提权逻辑）。AI 想增删自动化走 §8 的专用工具（逐次确认）。
+  的自我提权逻辑）。AI 想增删自动化走 §8 的专用工具（受权限档门控）。
 
 ## 3. 引擎（`apps/desktop/src/main/automation/engine.ts`）
 
@@ -111,7 +111,7 @@ automations: {
      （进程重启会话监听不存在了，不能永远「进行中」）。
 - **Agent 会话的确认卡**：无人值守时敏感工具确认 60s 超时默认拒绝
   （`ProactiveScheduler` 既有语义）。自动化场景的推荐姿势是在该会话上用
-  「本会话都允许」或把权限档设为 `auto`（根内免确认）——文档向用户说明，不做
+  「本会话都允许」或把权限档设为 `auto`（完全权限，不再弹卡）——文档向用户说明，不做
   新的静默放行通道。
 - **勿扰时段**：内置自动化保留既有语义（勿扰内跳过，§6）；用户自建自动化
   **不应用勿扰**（用户显式创建的定时任务不应被静默吞掉，在编辑界面提示）。
@@ -294,7 +294,8 @@ ClassRoom 模式既有的自动操作（**自动分类除外**，它是独立管
 
 **工具**（主进程 `apps/desktop/src/main/tools/automation-tools.ts` 注册，
 **不受 `agent.tools.enabled` 门控**——它们管自动化元数据而非本机操控；
-`automation_list` / `automation_history` 为 `safe`，其余 `confirm` 逐次确认）：
+`automation_list` / `automation_history` 为 `safe`，其余 `confirm` 进入确认链，
+再由 `confirm` / `auto` 档决定是否弹卡）：
 
 | 工具 | 灵敏度 | 参数摘要 |
 |---|---|---|

@@ -17,7 +17,7 @@ export type PermissionMode = 'readonly' | 'confirm' | 'auto'
  * 1. `agent.permissionMode === 'readonly'` → `'readonly'`（**只读优先**：`confirmSensitiveTools` 在这档无效）；
  * 2. `agent.permissionMode === 'auto'` → `'auto'`（**出厂默认档**，2026-09-29 起）；
  * 3. 否则 `advanced.confirmSensitiveTools === false` → `'auto'`（老开关的语义是"别再逐次问我"，
- *    现在由 auto 档承接：有项目时只在根内免确认，无项目时与从前完全一致）；
+ *    现在由 auto 档承接：完全权限，所有敏感工具不再弹确认卡）；
  * 4. 否则 → `'confirm'`（用户手动收紧后的档位：逐次弹卡）。
  */
 export function resolvePermissionMode(

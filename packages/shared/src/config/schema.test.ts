@@ -768,8 +768,8 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
   })
 
   it('Work 工作目录不可由 AI 改写（权限边界根的一级，P1-01）', () => {
-    // 它是 `boundaryRoot` 回落链的一级：AI 改写它 = 把 auto 档「根内免确认」与
-    // confirm 档「根内写免确认」扩到任意目录（与 `projects` 整组拉黑同构的自我提权）。
+    // 它是 `boundaryRoot` 回落链的一级：AI 改写它 = 把 confirm 档「根内免确认」
+    // 扩到任意目录（与 `projects` 整组拉黑同构的自我提权）。
     // 此前它登记在 `WRITABLE_PATH_OVERRIDES` 里（覆盖表判定先于黑名单 → 双重放行）；
     // 注意只删覆盖表登记**不够** —— 会落回「Schema 登记过即默认可写」。
     expect(canWriteSettingPath('modes.work.workspaceDir')).toBe(false)

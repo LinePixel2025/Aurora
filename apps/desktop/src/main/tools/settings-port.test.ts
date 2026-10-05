@@ -156,7 +156,7 @@ describe('createSettingsPort 的写入闸门（黑名单 × 顶层分组）', ()
 
   it('modes.work.workspaceDir 拒写（权限边界根的一级，P1-01）', async () => {
     const { store, port } = setup()
-    // 它是 boundaryRoot 回落链的一级：AI 改写它 = 把「根内免确认」扩到任意目录
+    // 它是 boundaryRoot 回落链的一级：AI 改写它 = 把 confirm 档「根内免确认」扩到任意目录
     const check = port.writable('modes.work.workspaceDir')
     expect(check.ok).toBe(false)
     // 拒绝理由来自硬编码黑名单（该路径在 `SETTINGS_READONLY_PREFIXES` 里，且不在覆盖表内）——

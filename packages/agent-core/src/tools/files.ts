@@ -455,7 +455,7 @@ function createReadFileTool(
           offsetLines,
           limitLines,
           maxBytes,
-          // 用户已批准（确认卡放行 / 免确认命中 / auto 档判定根内）时才带上放行标记
+          // 用户已批准（确认卡放行 / 免确认命中 / auto 完全权限）时才带上放行标记
           ...outsideGuard(ctx),
         })
         // 读过就给 `edit_file` 放行（docs/06 §11.6）；**以端口回带的绝对路径为键**，
