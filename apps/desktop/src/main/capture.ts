@@ -4604,6 +4604,10 @@ export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
       linePositionA !== linePositionB ||
       streakPositionA !== streakPositionB ||
       haloPositionA !== haloPositionB
+    const haloMask =
+      haloStyle?.getPropertyValue('mask-image') ||
+      haloStyle?.getPropertyValue('-webkit-mask-image') ||
+      ''
     return {
       root: root !== null,
       bloom: bloom !== null,
@@ -4620,6 +4624,7 @@ export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
       bloomAnimation: bloomStyle?.animationName || '',
       bloomIteration: bloomStyle?.animationIterationCount || '',
       haloAnimation: haloStyle?.animationName || '',
+      haloMask,
       lineAnimation: lineStyle?.animationName || '',
       lineBackgroundSize: lineStyle?.backgroundSize || '',
       streakAnimation: streakStyle?.animationName || '',
@@ -4641,6 +4646,7 @@ export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
         (bloomStyle?.animationIterationCount || '') === 'infinite' &&
         (haloStyle?.animationName || '').includes('awareness-glow-curtain') &&
         (haloStyle?.animationName || '').includes('awareness-glow-color-flow') &&
+        haloMask.includes('rgb(0, 0, 0) 0%') &&
         (lineStyle?.backgroundImage || '').includes('linear-gradient') &&
         (lineStyle?.backgroundSize || '') !== 'auto' &&
         (lineStyle?.animationName || '').includes('awareness-glow-flow') &&

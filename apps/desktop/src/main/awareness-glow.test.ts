@@ -32,7 +32,7 @@ describe('awareness-glow', () => {
     expect(visible({ knowledgeDirAvailable: false })).toBe(false)
   })
 
-  it('顶部几何跟随目标工作区并夹取高度', () => {
+  it('顶部几何跟随目标显示器并夹取高度', () => {
     expect(awarenessGlowBounds({ x: 1920, y: 40, width: 2560, height: 1400 })).toEqual({
       x: 1920,
       y: 40,

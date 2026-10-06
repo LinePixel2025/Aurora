@@ -43,15 +43,15 @@ export interface AwarenessGlowRect {
   height: number
 }
 
-/** 横跨工作区顶部；工作区比预设高度更矮时按工作区夹取。 */
+/** 横跨显示器顶部；显示器比预设高度更矮时按显示器夹取。 */
 export function awarenessGlowBounds(
-  workArea: AwarenessGlowRect,
+  displayBounds: AwarenessGlowRect,
   height = AWARENESS_GLOW_HEIGHT,
 ): AwarenessGlowRect {
   return {
-    x: Math.round(workArea.x),
-    y: Math.round(workArea.y),
-    width: Math.max(0, Math.round(workArea.width)),
-    height: Math.max(0, Math.min(Math.round(height), Math.round(workArea.height))),
+    x: Math.round(displayBounds.x),
+    y: Math.round(displayBounds.y),
+    width: Math.max(0, Math.round(displayBounds.width)),
+    height: Math.max(0, Math.min(Math.round(height), Math.round(displayBounds.height))),
   }
 }

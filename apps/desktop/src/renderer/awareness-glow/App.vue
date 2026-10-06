@@ -109,8 +109,8 @@ onUnmounted(() => {
   background:
     linear-gradient(
       101deg,
-      transparent 0%,
-      rgb(86 219 255 / 36%) 8%,
+      rgb(86 219 255 / 36%) 0%,
+      rgb(104 128 255 / 50%) 20%,
       rgb(104 128 255 / 56%) 27%,
       rgb(194 112 255 / 52%) 50%,
       rgb(246 127 220 / 40%) 70%,
@@ -127,11 +127,29 @@ onUnmounted(() => {
   background-repeat: repeat-x;
   filter: blur(4px);
   opacity: 0.9;
-  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 5%, #000 62%, transparent 100%);
-  mask-image: linear-gradient(180deg, transparent 0%, #000 5%, #000 62%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 62%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 62%, transparent 100%);
   animation:
     awareness-glow-curtain 11.5s ease-in-out -2.6s infinite,
     awareness-glow-color-flow 13s linear infinite;
+}
+
+.glow-halo::before {
+  position: absolute;
+  inset: -2px 0 auto;
+  height: 10px;
+  content: '';
+  background: linear-gradient(
+    100deg,
+    rgb(86 219 255 / 52%) 0%,
+    rgb(104 128 255 / 64%) 28%,
+    rgb(194 112 255 / 60%) 54%,
+    rgb(246 127 220 / 48%) 74%,
+    rgb(255 174 105 / 34%) 90%,
+    transparent 100%
+  );
+  filter: blur(4px);
+  opacity: 0.86;
 }
 
 .glow-halo::after {
@@ -164,8 +182,8 @@ onUnmounted(() => {
   background-repeat: no-repeat;
   filter: blur(5px);
   opacity: 0.86;
-  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 4%, #000 62%, transparent 100%);
-  mask-image: linear-gradient(180deg, transparent 0%, #000 4%, #000 62%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 62%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 62%, transparent 100%);
   animation: awareness-glow-flow 7.6s ease-in-out -1.2s infinite;
 }
 
@@ -185,8 +203,8 @@ onUnmounted(() => {
   background-repeat: no-repeat;
   filter: blur(10px);
   opacity: 0.46;
-  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 4%, #000 62%, transparent 100%);
-  mask-image: linear-gradient(180deg, transparent 0%, #000 4%, #000 62%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 62%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 62%, transparent 100%);
   animation: awareness-glow-flow-slow 10.6s ease-in-out -3.8s infinite;
 }
 

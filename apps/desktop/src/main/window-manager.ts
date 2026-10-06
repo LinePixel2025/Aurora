@@ -349,7 +349,7 @@ export class WindowManager {
   showAwarenessGlow(): boolean {
     const win = this.ensureAwarenessGlow()
     if (win.isDestroyed()) return false
-    const bounds = awarenessGlowBounds(this.edgeBarDisplay().workArea, AWARENESS_GLOW_HEIGHT)
+    const bounds = awarenessGlowBounds(this.edgeBarDisplay().bounds, AWARENESS_GLOW_HEIGHT)
     if (!sameBounds(win.getBounds(), bounds)) win.setBounds(bounds)
     // 分析阶段切换会频繁触发 sync；已可见时不再重复 show / 置顶，避免原生合成面被扰动。
     if (win.isVisible()) return true
@@ -657,7 +657,7 @@ export class WindowManager {
     const existing = this.awarenessGlowWindow
     if (existing !== undefined && !existing.isDestroyed()) return existing
 
-    const bounds = awarenessGlowBounds(this.edgeBarDisplay().workArea, AWARENESS_GLOW_HEIGHT)
+    const bounds = awarenessGlowBounds(this.edgeBarDisplay().bounds, AWARENESS_GLOW_HEIGHT)
     const win = new BrowserWindow({
       ...bounds,
       show: false,
