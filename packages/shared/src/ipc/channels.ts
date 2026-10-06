@@ -286,6 +286,7 @@ export const IPC = {
     openNote: 'awareness:openNote',
     openSource: 'awareness:openSource',
     clearHistory: 'awareness:clearHistory',
+    reset: 'awareness:reset',
     scanNow: 'awareness:scanNow',
     suggestion: 'awareness:suggestion',
     changed: 'awareness:changed',

@@ -1242,6 +1242,15 @@ export function registerIpc(deps: DesktopDeps): () => void {
     deps.awareness.clearHistory()
     return ok(true)
   })
+  handle<boolean>(IPC.awareness.reset, async () => {
+    if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
+    try {
+      await deps.awareness.resetAll()
+      return ok(true)
+    } catch (error) {
+      return err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
+    }
+  })
   handle<number>(IPC.awareness.scanNow, async () => {
     if (deps.awareness === undefined) return err('E_INVALID_STATE', '文件自感知尚未装配')
     return ok(await deps.awareness.scanNow())

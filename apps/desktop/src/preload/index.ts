@@ -252,6 +252,7 @@ const api: AuroraApi = {
     openNote: (request) => invoke(IPC.awareness.openNote, request),
     openSource: (request) => invoke(IPC.awareness.openSource, request),
     clearHistory: () => invoke(IPC.awareness.clearHistory),
+    reset: () => invoke(IPC.awareness.reset),
     scanNow: () => invoke(IPC.awareness.scanNow),
     onSuggestion: (listener) => subscribe(IPC.awareness.suggestion, listener),
     onChanged: (listener) => subscribe(IPC.awareness.changed, listener),

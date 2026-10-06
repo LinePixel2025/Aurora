@@ -167,6 +167,7 @@ import { EDGE_BAR_WIDTHS } from './edge-bar-geometry.js'
 import {
   ASK_USER_CAPTURE_QUESTION,
   AWARENESS_GLOW_CAPTURE_CHECK,
+  AWARENESS_GLOW_SETTLE_ACT,
   captureWindows,
   CHAT_AUTO_TITLE_CHECK,
   CHAT_TRACE_FOLD_CHECK,
@@ -379,6 +380,8 @@ let extractPool: ExtractPool | undefined
 let awarenessExtractPool: ExtractPool | undefined
 let fileAwareness: FileAwarenessService | undefined
 let fileAwarenessAnalyzer: FileAwarenessAnalyzer | undefined
+let agentActivityDetach: (() => void) | undefined
+const activeAgentRequests = new Set<string>()
 let notifications: NotificationService | undefined
 let proactiveScheduler: ProactiveScheduler | undefined
 // 自动化引擎（docs/13）：定义与历史存 `<userData>/automations/`，内置课前提醒由引擎承接
@@ -1555,11 +1558,26 @@ async function bootstrap(): Promise<void> {
         !isQuietHour(new Date(), current.general.edgeBar.quietHours)
       )
     },
+    removeAwarenessSessions: async () => {
+      const ids = (await sessions!.listSessions()).filter((id) =>
+        id.startsWith(FILE_AWARENESS_SESSION_PREFIX),
+      )
+      for (const id of ids) await sessions!.remove(id)
+    },
     openPath: async (path) => {
       const error = await shell.openPath(path)
       if (error !== '') throw new Error(error)
     },
   })
+  agentActivityDetach = agent.onEvent((event) => {
+    if (event.sessionId.startsWith(FILE_AWARENESS_SESSION_PREFIX)) return
+    if (event.type === 'queued') activeAgentRequests.add(event.requestId)
+    else if (event.type === 'done' || event.type === 'error') {
+      activeAgentRequests.delete(event.requestId)
+    }
+    fileAwareness?.setAgentBusy(activeAgentRequests.size > 0)
+  })
+  fileAwareness.setAgentBusy(activeAgentRequests.size > 0)
   await fileAwareness.init()
   syncToolRegistries()
   const llm = new LlmTester({
@@ -2574,7 +2592,11 @@ async function runCapture(dir: string): Promise<void> {
       {
         name: 'awareness-glow',
         file: 'awareness-glow.png',
-        query: { preview: '1' },
+        query: {
+          preview: '1',
+          holdMs: process.env['AURORA_GLOW_PREVIEW_MS'] ?? '1100',
+        },
+        act: AWARENESS_GLOW_SETTLE_ACT,
         check: AWARENESS_GLOW_CAPTURE_CHECK,
         nativeCheck: () => {
           const state = manager.getAwarenessGlowDiagnostics()
@@ -5208,6 +5230,9 @@ async function shutdown(): Promise<void> {
   terminalService?.dispose()
   centerConnector?.dispose()
   sessionBridge?.dispose()
+  agentActivityDetach?.()
+  agentActivityDetach = undefined
+  activeAgentRequests.clear()
   perception?.stop()
   agent?.dispose()
   updater?.dispose()
@@ -5268,7 +5293,8 @@ async function shutdown(): Promise<void> {
  * 同步「开机自启」到系统（Windows 注册表 Run 项，由 Electron 维护）。
  * 幂等：仅在当前状态与期望不一致时写入，避免每次启动都改注册表。
  */
-const AWARENESS_GLOW_FADE_OUT_MS = 220
+/** 流光渲染层退场动画约 620ms；原生窗口多留一帧再隐藏，避免裁掉尾段。 */
+const AWARENESS_GLOW_FADE_OUT_MS = 680
 
 function awarenessGlowShouldShow(): boolean {
   if (settings === undefined || windows === undefined || fileAwareness === undefined) return false

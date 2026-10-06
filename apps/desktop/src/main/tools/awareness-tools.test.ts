@@ -38,6 +38,7 @@ const status: FileAwarenessStatus = {
   consentAccepted: true,
   active: true,
   waitingForModel: false,
+  waitingForAgent: false,
   modelError: '所选后台模型缺少 API Key',
   knowledgeDir: 'D:\\memory',
   knowledgeDirAvailable: true,

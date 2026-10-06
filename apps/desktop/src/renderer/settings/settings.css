@@ -229,7 +229,12 @@
     border-color var(--transition-fast);
 }
 
-.settings .aurora-button:active {
+/* 按钮悬停只换色，不位移：避免指针停在边缘时按钮在光标下进出而产生误悬停 / 误按观感。 */
+.settings .aurora-button:hover:not(:disabled) {
+  transform: none;
+}
+
+.settings .aurora-button:active:not(:disabled) {
   transform: scale(0.97);
 }
 

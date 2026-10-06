@@ -14,6 +14,14 @@ withDefaults(
   }>(),
   { variant: 'secondary', disabled: false, block: false, size: 'md' },
 )
+
+/**
+ * 鼠标点击后释放焦点：避免指针已经离开时，后续 Enter / Space 再次触发上一次按钮。
+ * 键盘激活的 `detail` 为 0，仍保留正常焦点；仅拦截真实指针点击留下的焦点。
+ */
+function releasePointerFocus(event: MouseEvent): void {
+  if (event.detail > 0) (event.currentTarget as HTMLButtonElement).blur()
+}
 </script>
 
 <template>
@@ -22,6 +30,7 @@ withDefaults(
     :class="[`v-${variant}`, `s-${size}`, { block }]"
     :disabled="disabled"
     type="button"
+    @click="releasePointerFocus"
   >
     <slot />
   </button>

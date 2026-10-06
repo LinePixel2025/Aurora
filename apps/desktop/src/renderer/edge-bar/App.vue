@@ -169,6 +169,7 @@ const awarenessTone = computed<'idle' | 'running' | 'unread' | 'error'>(() => {
   const status = awarenessStatus.value
   if (status?.lastError) return 'error'
   if (!status?.enabled || !status.consentAccepted) return 'idle'
+  if (status.waitingForAgent) return 'unread'
   if (status.waitingForModel || !status.knowledgeDirAvailable) return 'unread'
   return status.active ? 'running' : 'idle'
 })
@@ -177,6 +178,7 @@ const awarenessLabel = computed(() => {
   const status = awarenessStatus.value
   if (status === null) return '读取状态…'
   if (!status.enabled || !status.consentAccepted) return '未启用'
+  if (status.waitingForAgent) return '等待 Agent'
   if (!status.knowledgeDirAvailable) return '知识库不可用'
   if (status.waitingForModel) return '等待模型'
   if (status.lastError) return '需要处理'
@@ -215,6 +217,7 @@ const awarenessHint = computed(() => {
   const status = awarenessStatus.value
   if (status === null) return '正在读取文件自感知状态'
   if (!status.enabled || !status.consentAccepted) return '在设置中开启后，才会分析选定目录'
+  if (status.waitingForAgent) return '前台 Agent 正在工作，自感知队列已暂停'
   if (!status.knowledgeDirAvailable) return '知识库目录不存在，文件仍不会出网'
   if (status.waitingForModel) return '监听已就绪，配置模型后开始分析'
   if (status.lastError) return status.lastError
@@ -243,10 +246,6 @@ function formatClock(value: string | undefined): string {
 
 function recordLabel(record: FileAwarenessRecord): string {
   switch (record.status) {
-    case 'analyzing':
-      return '分析中'
-    case 'queued':
-      return '排队中'
     case 'done':
       return '已理解'
     case 'conflict':
@@ -254,14 +253,11 @@ function recordLabel(record: FileAwarenessRecord): string {
     case 'error':
       return '失败'
     case 'skipped':
-      return '已跳过'
-    default:
-      return '已发现'
+      return record.kind === 'delete' ? '已删除' : '已跳过'
   }
 }
 
 function recordTone(record: FileAwarenessRecord): InsightItem['tone'] {
-  if (record.status === 'analyzing') return 'active'
   if (record.status === 'error' || record.status === 'conflict') return 'warning'
   if (record.status === 'done') return 'done'
   return 'idle'

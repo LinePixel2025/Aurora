@@ -14,7 +14,6 @@ import type {
   FileAwarenessNoteContent,
   FileAwarenessNoteExpiry,
   FileAwarenessRecord,
-  FileAwarenessRecordStatus,
   FileAwarenessStatus,
   FileAwarenessSuggestion,
   SessionUsageStats,
@@ -46,7 +45,6 @@ import {
 } from './file-awareness-note.js'
 import {
   createRecentUsageProbe,
-  fileNameOf,
   recentEntryKey,
   type RecentUsageEntry,
   type RecentUsageProbeResult,
@@ -58,7 +56,7 @@ const SUGGESTION_LIMIT = 100
 const RECENT_LIMIT = 5_000
 const VERSION_LIMIT = 20
 const VERSION_TOTAL_BYTES = 50 * 1024 * 1024
-const STATE_VERSION = 3
+const STATE_VERSION = 4
 const DEFAULT_TICK_MS = 1_000
 const RECENT_POLL_MS = 60_000
 /** 记忆库窗口读取单篇笔记的上限；超出时如实标记截断，不把整份大文件塞进渲染层。 */
@@ -142,6 +140,8 @@ export interface FileAwarenessOptions {
   /** 当前模型是否开启视觉输入；关闭时仍分析正文，但不把内嵌图片作为图片分片发送。 */
   visionReady?: () => boolean
   canNotify: () => boolean
+  /** 彻底重置时清理 `awareness-*` 后台会话；由主进程注入 SessionStore。 */
+  removeAwarenessSessions?: () => Promise<void>
   onSuggestion?: (suggestion: FileAwarenessSuggestion) => void
   onChanged?: () => void
   createWatcher?: (dirs: readonly string[]) => AwarenessWatcherLike
@@ -166,13 +166,16 @@ export class FileAwarenessService {
   private persistTimer: NodeJS.Timeout | undefined
   private queueRunning = false
   private suspended = false
+  private agentBusy = false
   private closed = false
   private watchedRootsKey = ''
+  private suppressNextRootScan = false
   private current: { fileName: string; sourcePath: string } | undefined
   private analysisStage: FileAwarenessAnalysisStage | undefined
   private indexEntries: KnowledgeIndexEntry[] = []
   private listeners = new Set<() => void>()
   private suggestionListeners = new Set<(suggestion: FileAwarenessSuggestion) => void>()
+  private resetInFlight: Promise<void> | undefined
 
   constructor(options: FileAwarenessOptions) {
     this.options = options
@@ -190,6 +193,7 @@ export class FileAwarenessService {
     await fs.rm(this.mediaDir, { recursive: true, force: true })
     this.state = await this.readState()
     this.rollDay()
+    await this.reconcileMissingSources()
     await this.backfillUsage()
     await this.migrateKnowledgeLayout()
     await this.refreshKnowledgeIndex()
@@ -222,6 +226,14 @@ export class FileAwarenessService {
     if (!this.suspended || this.closed) return
     this.suspended = false
     await this.reconfigure()
+  }
+
+  /** 前台 / 自动化 Agent 忙态门控：只暂停队列推进，不丢任务、不中断在途分析。 */
+  setAgentBusy(busy: boolean): void {
+    if (this.agentBusy === busy || this.closed) return
+    this.agentBusy = busy
+    this.emitChanged()
+    if (!busy) void this.processQueue()
   }
 
   async reconfigure(): Promise<void> {
@@ -268,7 +280,11 @@ export class FileAwarenessService {
       Math.max(250, this.options.tickMs ?? DEFAULT_TICK_MS),
     )
     this.queueTimer.unref?.()
-    if (rootsChanged) void this.scanNow()
+    if (rootsChanged) {
+      const suppressed = this.suppressNextRootScan
+      this.suppressNextRootScan = false
+      if (!suppressed) void this.scanNow()
+    }
     void this.processQueue()
     this.emitChanged()
   }
@@ -319,6 +335,7 @@ export class FileAwarenessService {
       consentAccepted: awareness.contentConsentAccepted,
       active: enabled && this.watcher !== undefined && knowledgeDirAvailable,
       waitingForModel: enabled && !this.options.providerReady(),
+      waitingForAgent: enabled && this.agentBusy,
       ...(modelError === undefined || modelError === '' ? {} : { modelError }),
       knowledgeDir: awareness.knowledgeDir,
       knowledgeDirAvailable,
@@ -464,8 +481,23 @@ export class FileAwarenessService {
     this.emitChanged()
   }
 
+  /**
+   * 完整重置 Aurora 管理的记忆数据。
+   *
+   * 不删除源文件和知识库目录中的无关文件；完成后恢复监听，但不自动扫描。
+   * 当前分析必须先收尾，避免重置后仍在途的写盘把笔记复活。
+   */
+  async resetAll(): Promise<void> {
+    if (this.resetInFlight !== undefined) return await this.resetInFlight
+    this.resetInFlight = this.performReset().finally(() => {
+      this.resetInFlight = undefined
+    })
+    return await this.resetInFlight
+  }
+
   async scanNow(): Promise<number> {
     if (this.suspended) return 0
+    await this.reconcileMissingSources()
     const awareness = this.options.settings().fileAwareness
     let queued = 0
     for (const root of awareness.watchedDirs) {
@@ -477,6 +509,59 @@ export class FileAwarenessService {
     void this.processQueue()
     this.emitChanged()
     return queued
+  }
+
+  private async performReset(): Promise<void> {
+    if (this.closed) return
+    const awareness = this.options.settings().fileAwareness
+    const knowledgeDir = awareness.knowledgeDir.trim()
+
+    await this.stopWatcher()
+    this.stopTimers()
+    this.state.queue = []
+    this.state.queueOverflow = 0
+    await this.waitForQueueIdle()
+
+    try {
+      const managedNotePaths = Object.values(this.state.notes)
+        .map((note) => note.notePath)
+        .filter((path) => path !== '' && knowledgeDir !== '' && within(knowledgeDir, path))
+      for (const path of new Set(managedNotePaths)) {
+        await fs.rm(path, { force: true })
+      }
+      if (knowledgeDir !== '') {
+        await fs.rm(join(knowledgeDir, KNOWLEDGE_INDEX_FILE), { force: true })
+      }
+      await fs.rm(this.versionsDir, { recursive: true, force: true })
+      await fs.rm(this.mediaDir, { recursive: true, force: true })
+
+      this.state = emptyState(this.dayKey())
+      this.state.usageBackfilled = true
+      this.indexEntries = []
+      await this.refreshKnowledgeIndex()
+      await this.persistNow()
+      await this.options.removeAwarenessSessions?.()
+    } finally {
+      if (!this.closed) {
+        const current = this.options.settings().fileAwareness
+        const dirs = uniquePaths(current.watchedDirs)
+        this.suppressNextRootScan = true
+        this.watchedRootsKey = dirs.map((dir) => normalize(dir).toLowerCase()).join('|')
+        await this.reconfigure().catch((error: unknown) => {
+          this.options.logger.warn('重置后恢复文件自感知监听失败', {
+            error: error instanceof Error ? error.message : String(error),
+          })
+        })
+        this.suppressNextRootScan = this.watcher === undefined
+        this.emitChanged()
+      }
+    }
+  }
+
+  private async waitForQueueIdle(): Promise<void> {
+    while (this.queueRunning) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
   }
 
   async openNote(noteId: string): Promise<string> {
@@ -507,16 +592,6 @@ export class FileAwarenessService {
     if (!isAwarenessObservedExtension(ext)) return
     const stat = await statFile(path)
     if (stat === undefined) return
-    this.appendRecord({
-      id: randomUUID(),
-      sourcePath: path,
-      fileName: basename(path),
-      ext,
-      kind,
-      status: 'observed',
-      occurredAt: this.now().toISOString(),
-      sourceAvailable: true,
-    })
     this.touchUsage(path)
     if (isAwarenessContentExtension(ext)) {
       this.enqueue({
@@ -532,26 +607,124 @@ export class FileAwarenessService {
   }
 
   private async handleUnlink(path: string): Promise<void> {
-    if (!this.matchesWatchedRoot(path)) return
+    const roots = uniquePaths(this.options.settings().fileAwareness.watchedDirs)
+    const root = roots.find((item) => within(item, path))
+    if (root === undefined) return
+    if (!(await pathIsDirectory(root))) {
+      this.recordError('监控目录暂不可访问，已保留现有记忆并等待目录恢复')
+      return
+    }
     const ext = extOf(path)
     if (!isAwarenessObservedExtension(ext)) return
-    for (const note of Object.values(this.state.notes)) {
-      if (samePath(note.sourcePath, path)) {
+    try {
+      const removed = await this.removeNoteForSource(path)
+      this.appendRecord({
+        id: randomUUID(),
+        sourcePath: path,
+        fileName: basename(path),
+        ext: removed?.ext ?? ext,
+        kind: 'delete',
+        status: 'skipped',
+        occurredAt: this.now().toISOString(),
+        sourceAvailable: false,
+        ...(removed === undefined
+          ? {}
+          : {
+              noteId: removed.id,
+              notePath: removed.notePath,
+              summary: '源文件已删除，已同步删除记忆',
+            }),
+      })
+      this.schedulePersist()
+    } catch (error) {
+      const message = `删除源文件对应记忆失败：${error instanceof Error ? error.message : String(error)}`
+      for (const note of Object.values(this.state.notes)) {
+        if (!samePath(note.sourcePath, path)) continue
         note.sourceAvailable = false
         note.updatedAt = this.now().toISOString()
       }
+      this.appendRecord({
+        id: randomUUID(),
+        sourcePath: path,
+        fileName: basename(path),
+        ext,
+        kind: 'delete',
+        status: 'error',
+        occurredAt: this.now().toISOString(),
+        sourceAvailable: false,
+        error: message,
+      })
+      this.recordError(message)
     }
-    this.appendRecord({
-      id: randomUUID(),
-      sourcePath: path,
-      fileName: basename(path),
-      ext,
-      kind: 'delete',
-      status: 'skipped',
-      occurredAt: this.now().toISOString(),
-      sourceAvailable: false,
-    })
+  }
+
+  /** 删除源文件对应的公开 Markdown、状态项、索引项与版本备份。 */
+  private async removeNoteForSource(sourcePath: string): Promise<AwarenessNoteRecord | undefined> {
+    const note = Object.values(this.state.notes).find((item) =>
+      samePath(item.sourcePath, sourcePath),
+    )
+    this.state.queue = this.state.queue.filter((item) => !samePath(item.sourcePath, sourcePath))
+    if (note === undefined) {
+      this.schedulePersist()
+      return undefined
+    }
+
+    const knowledgeDir = this.options.settings().fileAwareness.knowledgeDir.trim()
+    if (note.notePath !== '' && (knowledgeDir === '' || within(knowledgeDir, note.notePath))) {
+      await fs.rm(note.notePath, { force: true })
+    } else if (note.notePath !== '') {
+      this.options.logger.warn('跳过删除知识库目录外的旧笔记文件', {
+        noteId: note.id,
+        notePath: note.notePath,
+      })
+    }
+    await fs.rm(join(this.versionsDir, note.id), { recursive: true, force: true })
+    delete this.state.notes[note.id]
+    this.indexEntries = this.indexEntries.filter(
+      (entry) => entry.id !== note.id && !samePath(entry.sourcePath, sourcePath),
+    )
+    await this.refreshKnowledgeIndex()
     this.schedulePersist()
+    this.emitChanged()
+    return note
+  }
+
+  /**
+   * 处理应用离线期间发生的源文件删除。
+   *
+   * 只有监控根本身仍可访问时才核对，磁盘 / 网络共享掉线不会被误判成全量删除。
+   */
+  private async reconcileMissingSources(): Promise<void> {
+    const roots = uniquePaths(this.options.settings().fileAwareness.watchedDirs)
+    if (roots.length === 0) return
+    for (const note of Object.values(this.state.notes)) {
+      const root = roots.find((item) => within(item, note.sourcePath))
+      if (root === undefined || !(await pathIsDirectory(root))) continue
+      if ((await statFile(note.sourcePath)) !== undefined) continue
+      try {
+        const removed = await this.removeNoteForSource(note.sourcePath)
+        if (removed === undefined) continue
+        this.appendRecord({
+          id: randomUUID(),
+          sourcePath: note.sourcePath,
+          fileName: basename(note.sourcePath),
+          ext: note.ext,
+          kind: 'delete',
+          status: 'skipped',
+          occurredAt: this.now().toISOString(),
+          sourceAvailable: false,
+          noteId: note.id,
+          notePath: note.notePath,
+          summary: '源文件已不存在，已同步删除记忆',
+        })
+        this.schedulePersist()
+      } catch (error) {
+        const message = `核对源文件删除失败：${error instanceof Error ? error.message : String(error)}`
+        note.sourceAvailable = false
+        note.updatedAt = this.now().toISOString()
+        this.recordError(message)
+      }
+    }
   }
 
   private async pollRecent(baseline: boolean): Promise<void> {
@@ -584,16 +757,6 @@ export class FileAwarenessService {
     const inside =
       this.matchesWatchedRoot(entry.target) &&
       !isIgnoredPath(entry.target, this.options.settings(), this.options.userData)
-    this.appendRecord({
-      id: randomUUID(),
-      sourcePath: entry.target,
-      fileName: fileNameOf(entry.target),
-      ext,
-      kind: 'recent',
-      status: inside && isAwarenessContentExtension(ext) ? 'observed' : 'skipped',
-      occurredAt: entry.observedAt,
-      sourceAvailable: (await statFile(entry.target)) !== undefined,
-    })
     this.touchUsage(entry.target)
     if (!inside || !isAwarenessContentExtension(ext)) return
     const stat = await statFile(entry.target)
@@ -611,7 +774,7 @@ export class FileAwarenessService {
   // ───────────────────────── 队列与分析 ─────────────────────────
 
   private async processQueue(): Promise<void> {
-    if (this.closed || this.suspended || this.queueRunning) return
+    if (this.closed || this.suspended || this.agentBusy || this.queueRunning) return
     this.rollDay()
     if (this.state.queue.length === 0) return
     if (!this.options.providerReady()) return
@@ -628,7 +791,6 @@ export class FileAwarenessService {
     this.queueRunning = true
     this.current = { fileName: basename(item.sourcePath), sourcePath: item.sourcePath }
     this.analysisStage = 'extracting'
-    this.patchLatestRecord(item.sourcePath, 'analyzing')
     this.emitChanged()
     try {
       const analyzed = await this.analyzeItem(item, awareness)
@@ -670,11 +832,31 @@ export class FileAwarenessService {
   ): Promise<boolean> {
     const stat = await statFile(item.sourcePath)
     if (stat === undefined) {
-      this.patchLatestRecord(item.sourcePath, 'skipped', '文件已不存在')
+      this.appendRecord({
+        id: randomUUID(),
+        sourcePath: item.sourcePath,
+        fileName: basename(item.sourcePath),
+        ext: item.ext,
+        kind: item.kind,
+        status: 'error',
+        occurredAt: this.now().toISOString(),
+        sourceAvailable: false,
+        error: '文件已不存在',
+      })
       return false
     }
     if (stat.sizeBytes > awareness.maxFileMb * 1024 * 1024) {
-      this.patchLatestRecord(item.sourcePath, 'skipped', `文件超过 ${awareness.maxFileMb} MB`)
+      this.appendRecord({
+        id: randomUUID(),
+        sourcePath: item.sourcePath,
+        fileName: basename(item.sourcePath),
+        ext: item.ext,
+        kind: item.kind,
+        status: 'error',
+        occurredAt: this.now().toISOString(),
+        sourceAvailable: true,
+        error: `文件超过 ${awareness.maxFileMb} MB`,
+      })
       return false
     }
     const extraction = await this.options.extract({
@@ -686,7 +868,6 @@ export class FileAwarenessService {
     const sourceHash = extraction.sourceHash ?? hashText(extraction.evidence)
     const old = this.findNoteForSource(item.sourcePath, sourceHash)
     if (old !== undefined && old.sourceHash === sourceHash && old.sourceAvailable) {
-      this.patchLatestRecord(item.sourcePath, 'skipped', '内容未变化', old.id, old.notePath)
       return false
     }
     this.setAnalysisStage('analyzing')
@@ -721,13 +902,45 @@ export class FileAwarenessService {
     } finally {
       await this.cleanupDocumentImages(note.id).catch(() => undefined)
     }
+    if (this.state.notes[note.id] !== note) return false
+    if ((await statFile(item.sourcePath)) === undefined) {
+      const removed = await this.removeNoteForSource(item.sourcePath)
+      if (removed !== undefined) {
+        this.appendRecord({
+          id: randomUUID(),
+          sourcePath: item.sourcePath,
+          fileName: basename(item.sourcePath),
+          ext: item.ext,
+          kind: 'delete',
+          status: 'skipped',
+          occurredAt: this.now().toISOString(),
+          sourceAvailable: false,
+          noteId: removed.id,
+          notePath: removed.notePath,
+          summary: '源文件在分析中消失，已同步删除记忆',
+        })
+      }
+      return false
+    }
     this.setAnalysisStage('writing')
     note.title = analysis.title || note.title
     note.summary = analysis.summary || note.summary
     note.tags = analysis.tags
     note.relatedNoteIds = analysis.relationships.map((item) => item.noteId)
     await this.writeNote(note, analysis)
-    this.patchLatestRecord(item.sourcePath, 'done', note.summary, note.id, note.notePath)
+    this.appendRecord({
+      id: randomUUID(),
+      sourcePath: item.sourcePath,
+      fileName: basename(item.sourcePath),
+      ext: item.ext,
+      kind: item.kind,
+      status: note.conflict ? 'conflict' : 'done',
+      occurredAt: this.now().toISOString(),
+      sourceAvailable: true,
+      noteId: note.id,
+      notePath: note.notePath,
+      summary: note.summary,
+    })
     this.maybeSuggest(note, analysis)
     return true
   }
@@ -1056,16 +1269,6 @@ export class FileAwarenessService {
       mtimeMs: input.mtimeMs,
       enqueuedAt: this.now().toISOString(),
     })
-    this.appendRecord({
-      id: randomUUID(),
-      sourcePath: input.sourcePath,
-      fileName: basename(input.sourcePath),
-      ext: input.ext,
-      kind: input.kind,
-      status: 'queued',
-      occurredAt: this.now().toISOString(),
-      sourceAvailable: true,
-    })
   }
 
   private async scanRoot(root: string): Promise<number> {
@@ -1094,23 +1297,14 @@ export class FileAwarenessService {
     }
     await visit(root)
     found.sort((left, right) => right.mtimeMs - left.mtimeMs)
+    let queued = 0
     for (const item of found) {
       if (isAwarenessContentExtension(item.ext)) {
         this.enqueue({ ...item, sourcePath: item.path, kind: 'add' })
-      } else {
-        this.appendRecord({
-          id: randomUUID(),
-          sourcePath: item.path,
-          fileName: basename(item.path),
-          ext: item.ext,
-          kind: 'add',
-          status: 'observed',
-          occurredAt: this.now().toISOString(),
-          sourceAvailable: true,
-        })
+        queued += 1
       }
     }
-    return found.length
+    return queued
   }
 
   private createWatcher(dirs: readonly string[]): AwarenessWatcherLike {
@@ -1174,21 +1368,6 @@ export class FileAwarenessService {
       note.usageCount += 1
       note.lastUsedAt = this.now().toISOString()
     }
-  }
-
-  private patchLatestRecord(
-    sourcePath: string,
-    status: FileAwarenessRecordStatus,
-    summary?: string,
-    noteId?: string,
-    notePath?: string,
-  ): void {
-    const record = this.state.records.find((item) => samePath(item.sourcePath, sourcePath))
-    if (record === undefined) return
-    record.status = status
-    if (summary !== undefined) record.summary = summary
-    if (noteId !== undefined) record.noteId = noteId
-    if (notePath !== undefined) record.notePath = notePath
   }
 
   private appendRecord(record: FileAwarenessRecord): void {
@@ -1364,7 +1543,7 @@ function normalizeState(
     version: STATE_VERSION,
     notes,
     queue: Array.isArray(raw.queue) ? raw.queue : [],
-    records: Array.isArray(raw.records) ? raw.records : [],
+    records: normalizeRecords(raw.records),
     recent: Array.isArray(raw.recent) ? raw.recent : [],
     suggestions: Array.isArray(raw.suggestions) ? raw.suggestions : [],
     ignoredSuggestionIds: Array.isArray(raw.ignoredSuggestionIds)
@@ -1386,6 +1565,16 @@ function normalizeState(
         ? raw.recentDirectoryMtimeMs
         : 0,
   }
+}
+
+function normalizeRecords(value: unknown): FileAwarenessRecord[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((record): record is FileAwarenessRecord => {
+    if (!isRecord(record)) return false
+    const status = record['status']
+    if (status === 'skipped') return record['kind'] === 'delete'
+    return status === 'done' || status === 'error' || status === 'conflict'
+  })
 }
 
 function normalizeUsage(value: unknown): SessionUsageStats | undefined {

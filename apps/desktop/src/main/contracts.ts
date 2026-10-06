@@ -342,6 +342,7 @@ export interface FileAwarenessControllerLike {
   openNote(noteId: string): Promise<string>
   openSource(noteId: string): Promise<string>
   clearHistory(): void
+  resetAll(): Promise<void>
   scanNow(): Promise<number>
   reconfigure(): Promise<void>
   flush(): Promise<void>

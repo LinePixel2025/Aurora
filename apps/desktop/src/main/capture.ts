@@ -4566,65 +4566,87 @@ export const MEMORY_EXPIRE_CHECK = `(async () => {
   }
 })()`
 
+/** 自感知流光预览：默认等过入场，`holdMs` 用于手动延长观察时间。 */
+export const AWARENESS_GLOW_SETTLE_ACT = `(async () => {
+  const raw = Number(new URLSearchParams(window.location.search).get('holdMs') || '1100')
+  const holdMs = Number.isFinite(raw) ? Math.max(0, Math.min(raw, 60000)) : 1100
+  await new Promise((resolve) => setTimeout(resolve, holdMs))
+  return { ok: true }
+})()`
+
 /** 自感知流光的静态预览：只验证视觉层存在、可见并持续做合成动画，不依赖后台模型。 */
 export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
-    await wait(260)
+    await wait(900)
     const root = document.querySelector('[data-field="awareness-glow.root"]')
-    const line = document.querySelector('[data-field="awareness-glow.line"]')
     const bloom = document.querySelector('[data-field="awareness-glow.bloom"]')
     const halo = document.querySelector('.glow-halo')
-    const warp = document.querySelector('[data-field="awareness-glow.warp"]')
+    const line = document.querySelector('[data-field="awareness-glow.line"]')
+    const streak = document.querySelector('[data-field="awareness-glow.streak"]')
     const rootStyle = root === null ? null : getComputedStyle(root)
-    const lineStyle = line === null ? null : getComputedStyle(line)
     const bloomStyle = bloom === null ? null : getComputedStyle(bloom)
     const haloStyle = halo === null ? null : getComputedStyle(halo)
-    const warpStyle = warp === null ? null : getComputedStyle(warp)
+    const lineStyle = line === null ? null : getComputedStyle(line)
+    const streakStyle = streak === null ? null : getComputedStyle(streak)
     const opacity = rootStyle === null ? 0 : Number.parseFloat(rootStyle.opacity)
-    const lineHeight = lineStyle === null ? 0 : Number.parseFloat(lineStyle.height)
-    const warpOpacity = warpStyle === null ? 0 : Number.parseFloat(warpStyle.opacity)
-    const warpMask =
-      warpStyle?.getPropertyValue('mask-image') ||
-      warpStyle?.getPropertyValue('-webkit-mask-image') ||
-      ''
+    const linePositionA = lineStyle?.backgroundPosition || ''
+    const streakPositionA = streakStyle?.backgroundPosition || ''
+    const haloPositionA = haloStyle?.backgroundPosition || ''
+    await wait(650)
+    const lineStyleB = line === null ? null : getComputedStyle(line)
+    const streakStyleB = streak === null ? null : getComputedStyle(streak)
+    const haloStyleB = halo === null ? null : getComputedStyle(halo)
+    const linePositionB = lineStyleB?.backgroundPosition || ''
+    const streakPositionB = streakStyleB?.backgroundPosition || ''
+    const haloPositionB = haloStyleB?.backgroundPosition || ''
+    const motionChanged =
+      linePositionA !== linePositionB ||
+      streakPositionA !== streakPositionB ||
+      haloPositionA !== haloPositionB
     return {
       root: root !== null,
-      line: line !== null,
       bloom: bloom !== null,
       halo: halo !== null,
-      warp: warp !== null,
+      line: line !== null,
+      streak: streak !== null,
       active: root?.classList.contains('active') === true,
       opacity,
-      lineHeight,
-      lineGradient: lineStyle?.backgroundImage || '',
+      rootAnimation: rootStyle?.animationName || '',
+      rootTransition: rootStyle?.transitionDuration || '',
+      motionChanged,
       bloomBlur: bloomStyle?.filter || '',
-      lineAnimation: lineStyle?.animationName || '',
+      bloomBackground: bloomStyle?.backgroundImage || '',
+      bloomAnimation: bloomStyle?.animationName || '',
+      bloomIteration: bloomStyle?.animationIterationCount || '',
       haloAnimation: haloStyle?.animationName || '',
-      warpOpacity,
-      warpBlur: warpStyle?.filter || '',
-      warpGradient: warpStyle?.backgroundImage || '',
-      warpMask,
-      warpAnimation: warpStyle?.animationName || '',
+      lineAnimation: lineStyle?.animationName || '',
+      lineBackgroundSize: lineStyle?.backgroundSize || '',
+      streakAnimation: streakStyle?.animationName || '',
       text: (root?.textContent || '').trim(),
       pass:
         root !== null &&
-        line !== null &&
         bloom !== null &&
         halo !== null &&
-        warp !== null &&
+        line !== null &&
+        streak !== null &&
         root.classList.contains('active') &&
         opacity > 0.9 &&
-        lineHeight >= 1.5 &&
-        (lineStyle?.backgroundImage || '').includes('gradient') &&
+        (rootStyle?.animationName || '').includes('awareness-glow-enter') &&
+        (rootStyle?.transitionDuration || '').includes('0.62s') &&
+        motionChanged &&
         (bloomStyle?.filter || '').includes('blur') &&
-        (lineStyle?.animationName || '') !== 'none' &&
-        (haloStyle?.animationName || '') !== 'none' &&
-        warpOpacity > 0.1 &&
-        (warpStyle?.filter || '').includes('blur') &&
-        (warpStyle?.backgroundImage || '').includes('gradient') &&
-        warpMask.includes('gradient') &&
-        (warpStyle?.animationName || '') !== 'none' &&
+        (bloomStyle?.backgroundImage || '').includes('radial-gradient') &&
+        (bloomStyle?.animationName || '').includes('awareness-glow-bloom') &&
+        (bloomStyle?.animationIterationCount || '') === 'infinite' &&
+        (haloStyle?.animationName || '').includes('awareness-glow-curtain') &&
+        (haloStyle?.animationName || '').includes('awareness-glow-color-flow') &&
+        (lineStyle?.backgroundImage || '').includes('linear-gradient') &&
+        (lineStyle?.backgroundSize || '') !== 'auto' &&
+        (lineStyle?.animationName || '').includes('awareness-glow-flow') &&
+        !(lineStyle?.animationName || '').includes('reverse') &&
+        (streakStyle?.animationName || '').includes('awareness-glow-flow-slow') &&
+        !(streakStyle?.animationName || '').includes('reverse') &&
         (root.textContent || '').trim() === '',
     }
   } catch (error) {

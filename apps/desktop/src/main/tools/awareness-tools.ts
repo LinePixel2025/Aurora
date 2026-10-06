@@ -52,7 +52,15 @@ export function createAwarenessStatusTool(port: AwarenessToolPort): ToolDefiniti
         const status = port.status()
         const lines = [
           `启用：${status.enabled ? '是' : '否'}；正文分析授权：${status.consentAccepted ? '已同意' : '未同意'}`,
-          `运行：${status.active ? '正在感知' : status.waitingForModel ? '等待模型' : '未运行'}`,
+          `运行：${
+            status.waitingForAgent
+              ? '等待 Agent'
+              : status.active
+                ? '正在感知'
+                : status.waitingForModel
+                  ? '等待模型'
+                  : '未运行'
+          }`,
           `今日分析：${status.todayAnalyzed}/${status.dailyAnalysisLimit}`,
           `队列：${status.queueDepth}（溢出 ${status.queueOverflow}）`,
           `笔记：${status.noteCount}；过期：${status.expiredNoteCount}；冲突：${status.conflictCount}`,
@@ -271,10 +279,7 @@ function recordLabel(record: FileAwarenessRecord): string {
   if (record.status === 'done') return '已理解'
   if (record.status === 'error') return '失败'
   if (record.status === 'conflict') return '冲突'
-  if (record.status === 'analyzing') return '分析中'
-  if (record.status === 'queued') return '排队中'
-  if (record.status === 'skipped') return '已跳过'
-  return '已发现'
+  return record.kind === 'delete' ? '已删除' : '已跳过'
 }
 
 function parseBoundary(

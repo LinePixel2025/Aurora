@@ -17,6 +17,8 @@ const notes = ref<FileAwarenessNote[]>([])
 const error = ref<string | null>(null)
 const message = ref<string | null>(null)
 const recordsOpen = ref(false)
+const resetConfirming = ref(false)
+const resetting = ref(false)
 let offChanged: (() => void) | null = null
 
 const config = computed(() => settingsStore.settings?.fileAwareness ?? null)
@@ -167,6 +169,34 @@ async function clearHistory(): Promise<void> {
   else {
     message.value = '已清空运行记录'
     await refresh()
+  }
+}
+
+function requestReset(): void {
+  error.value = null
+  message.value = null
+  resetConfirming.value = true
+}
+
+function cancelReset(): void {
+  resetConfirming.value = false
+}
+
+async function resetSystem(): Promise<void> {
+  if (resetting.value) return
+  resetting.value = true
+  try {
+    const result = await window.aurora.awareness.reset()
+    if (!result.ok) {
+      error.value = result.message
+      return
+    }
+    resetConfirming.value = false
+    recordsOpen.value = false
+    message.value = '已重置自感知系统'
+    await refresh()
+  } finally {
+    resetting.value = false
   }
 }
 
@@ -386,6 +416,33 @@ onUnmounted(() => {
         <AppButton size="sm" @click="scanNow">立即扫描</AppButton>
         <AppButton size="sm" variant="ghost" @click="openKnowledge">打开知识库文件夹</AppButton>
         <AppButton size="sm" variant="ghost" @click="clearHistory">清空历史</AppButton>
+        <AppButton
+          v-if="!resetConfirming"
+          size="sm"
+          variant="danger"
+          data-action="awareness.reset"
+          :disabled="resetting"
+          @click="requestReset"
+        >
+          重置自感知系统
+        </AppButton>
+      </div>
+      <div v-if="resetConfirming" class="reset-confirm">
+        <p>将删除全部笔记、分析历史、用量与后台分析会话；配置和源文件保留，重置后不会自动重建。</p>
+        <div class="row wrap">
+          <AppButton
+            size="sm"
+            variant="danger"
+            data-action="awareness.reset-confirm"
+            :disabled="resetting"
+            @click="resetSystem"
+          >
+            {{ resetting ? '正在重置…' : '确认重置' }}
+          </AppButton>
+          <AppButton size="sm" variant="ghost" :disabled="resetting" @click="cancelReset">
+            取消
+          </AppButton>
+        </div>
       </div>
     </section>
 
@@ -394,7 +451,17 @@ onUnmounted(() => {
       <dl class="status-grid">
         <div>
           <dt>监听</dt>
-          <dd>{{ status?.active ? '运行中' : status?.waitingForModel ? '等待模型' : '未运行' }}</dd>
+          <dd>
+            {{
+              status?.waitingForAgent
+                ? '等待 Agent'
+                : status?.active
+                  ? '运行中'
+                  : status?.waitingForModel
+                    ? '等待模型'
+                    : '未运行'
+            }}
+          </dd>
         </div>
         <div>
           <dt>今日分析</dt>
@@ -551,6 +618,22 @@ onUnmounted(() => {
 
 .warn {
   color: var(--status-unread);
+}
+
+.reset-confirm {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-md);
+  background: var(--danger-fill);
+}
+
+.reset-confirm p {
+  margin: 0;
+  color: var(--danger-text);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
 }
 
 .modal-scrim {

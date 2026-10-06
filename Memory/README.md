@@ -10,6 +10,8 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-06 | 自感知源删除要清库、前台 Agent 忙时暂停队列、流光用完整状态机                   | 自感知, 删除, Agent, 流光, 坑          | [2026-10-06-awareness-source-agent-glow.md](2026-10-06-awareness-source-agent-glow.md)                       |
+| 2026-10-06 | 自感知重置只清 Aurora 管理数据，记录只保留变化终态                             | 自感知, 重置, 记录, UI, 坑             | [2026-10-06-awareness-reset-record-policy.md](2026-10-06-awareness-reset-record-policy.md)                   |
 | 2026-10-06 | 顶部流光连续分析多个文件时不能在文件切换处广播空闲帧                           | 自感知, 流光, 队列, Electron, 坑       | [2026-10-06-awareness-glow-batch-handoff.md](2026-10-06-awareness-glow-batch-handoff.md)                     |
 | 2026-10-06 | 删除会话必须级联清理 todo，否则固定会话重建会复活旧任务                        | session, todo, IPC, 生命周期, 坑       | [2026-10-06-session-delete-todo-cascade.md](2026-10-06-session-delete-todo-cascade.md)                       |
 | 2026-10-06 | Agent 对话流按请求折叠，图片后置且流式期不能做最终消息分组                     | agent, 渲染, 性能, 会话, 坑            | [2026-10-06-agent-request-turn-grouping.md](2026-10-06-agent-request-turn-grouping.md)                       |

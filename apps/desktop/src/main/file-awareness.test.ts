@@ -489,19 +489,20 @@ describe('FileAwarenessService', () => {
     await second.close()
   })
 
-  it('扫描图片与常见文档，legacy Office 只记录不分析', async () => {
+  it('递归扫描子目录中的图片与常见文档，legacy Office 不分析', async () => {
     const root = join(tmpdir(), `aurora-awareness-formats-${randomUUID()}`)
     const watched = join(root, 'files')
     const knowledge = join(root, 'notes')
     const userData = join(root, 'userData')
-    await fs.mkdir(watched, { recursive: true })
+    const nested = join(watched, '章节', '更深一层')
+    await fs.mkdir(nested, { recursive: true })
     const png = Buffer.alloc(24)
     png.writeUInt32BE(0x89504e47, 0)
     png.writeUInt32BE(16, 16)
     png.writeUInt32BE(16, 20)
-    await fs.writeFile(join(watched, '示意图.png'), png)
-    await fs.writeFile(join(watched, '讲义.pdf'), 'fake pdf')
-    await fs.writeFile(join(watched, '说明.txt'), '一段说明文字')
+    await fs.writeFile(join(nested, '示意图.png'), png)
+    await fs.writeFile(join(nested, '讲义.pdf'), 'fake pdf')
+    await fs.writeFile(join(nested, '说明.txt'), '一段说明文字')
     await fs.writeFile(join(watched, '旧资料.doc'), 'legacy')
 
     const settings = createDefaultSettings()
@@ -565,7 +566,12 @@ describe('FileAwarenessService', () => {
       openPath: async () => undefined,
     })
 
+    service.setAgentBusy(true)
     await service.init()
+    await waitFor(() => service.status().queueDepth === 3)
+    expect(service.status().waitingForAgent).toBe(true)
+    expect(seenExts).toEqual([])
+    service.setAgentBusy(false)
     await waitFor(() => service.notes().length === 3)
     await service.drain()
     expect(new Set(seenExts)).toEqual(new Set(['png', 'pdf', 'txt']))
@@ -575,8 +581,253 @@ describe('FileAwarenessService', () => {
         .map((note) => note.ext)
         .sort(),
     ).toEqual(['pdf', 'png', 'txt'])
-    expect(service.records().some((record) => record.ext === 'doc')).toBe(true)
     expect(service.notes().some((note) => note.ext === 'doc')).toBe(false)
+    expect(service.records().map((record) => record.status)).toEqual(['done', 'done', 'done'])
+    const beforeRescan = service.records().length
+    expect(await service.scanNow()).toBe(3)
+    await service.drain()
+    expect(service.records().length).toBe(beforeRescan)
+    await service.close()
+  })
+
+  it('源文件删除时同步删除 Markdown、状态项、索引与版本备份', async () => {
+    const root = join(tmpdir(), `aurora-awareness-unlink-${randomUUID()}`)
+    const watched = join(root, 'docs')
+    const knowledge = join(root, 'notes')
+    const userData = join(root, 'userData')
+    await fs.mkdir(watched, { recursive: true })
+    const source = join(watched, '待删除.docx')
+    await fs.writeFile(source, 'fake docx bytes')
+
+    const settings = createDefaultSettings()
+    settings.fileAwareness = {
+      enabled: true,
+      contentConsentAccepted: true,
+      watchedDirs: [watched],
+      knowledgeDir: knowledge,
+      includeRecent: false,
+      suggestionsEnabled: false,
+      dailyAnalysisLimit: 20,
+      maxFileMb: 100,
+      defaultMemoryTtlDays: 0,
+      backgroundModel: { providerId: '', model: '' },
+    }
+    const watcher = new FakeWatcher()
+    const service = new FileAwarenessService({
+      userData,
+      settings: () => settings,
+      logger: createNoopLogger(),
+      createWatcher: () => watcher,
+      tickMs: 20,
+      extract: async () => ({
+        kind: 'document',
+        evidence: '文件名：待删除.docx\n正文：删除验证',
+        evidenceChars: 18,
+        warnings: [],
+        degraded: false,
+        sourceHash: 'hash-unlink-v1',
+      }),
+      analyze: async () => ({
+        text: JSON.stringify({
+          title: '待删除笔记',
+          summary: '用于验证源文件删除。',
+          topics: [],
+          keyPoints: [],
+          relationships: [],
+          changes: [],
+          tags: ['测试'],
+          suggestion: null,
+        }),
+      }),
+      providerReady: () => true,
+      canNotify: () => false,
+      openPath: async () => undefined,
+    })
+
+    await service.init()
+    await waitFor(() => service.notes().length === 1)
+    await service.drain()
+    const note = service.notes()[0]!
+
+    watcher.emit('unlink', source)
+    await waitFor(() => service.notes().length === 0)
+    await expect(fs.stat(note.notePath)).rejects.toThrow()
+    await expect(fs.stat(join(userData, 'file-awareness', 'versions', note.id))).rejects.toThrow()
+    expect(
+      service
+        .records()
+        .some(
+          (record) => record.kind === 'delete' && record.summary === '源文件已删除，已同步删除记忆',
+        ),
+    ).toBe(true)
+    const index = await fs.readFile(join(knowledge, 'INDEX.md'), 'utf8')
+    expect(index).not.toContain('待删除笔记')
+    await service.close()
+  })
+
+  it('启动时核对并删除应用离线期间消失的源文件记忆', async () => {
+    const root = join(tmpdir(), `aurora-awareness-offline-unlink-${randomUUID()}`)
+    const watched = join(root, 'docs')
+    const knowledge = join(root, 'notes')
+    const userData = join(root, 'userData')
+    await fs.mkdir(watched, { recursive: true })
+    const source = join(watched, '离线删除.docx')
+    await fs.writeFile(source, 'fake docx bytes')
+
+    const settings = createDefaultSettings()
+    settings.fileAwareness = {
+      enabled: true,
+      contentConsentAccepted: true,
+      watchedDirs: [watched],
+      knowledgeDir: knowledge,
+      includeRecent: false,
+      suggestionsEnabled: false,
+      dailyAnalysisLimit: 20,
+      maxFileMb: 100,
+      defaultMemoryTtlDays: 0,
+      backgroundModel: { providerId: '', model: '' },
+    }
+    const createService = (): FileAwarenessService =>
+      new FileAwarenessService({
+        userData,
+        settings: () => settings,
+        logger: createNoopLogger(),
+        createWatcher: () => new FakeWatcher(),
+        tickMs: 20,
+        extract: async () => ({
+          kind: 'document',
+          evidence: '文件名：离线删除.docx\n正文：离线删除验证',
+          evidenceChars: 24,
+          warnings: [],
+          degraded: false,
+          sourceHash: 'hash-offline-unlink-v1',
+        }),
+        analyze: async () => ({
+          text: JSON.stringify({
+            title: '离线删除笔记',
+            summary: '用于验证启动核对。',
+            topics: [],
+            keyPoints: [],
+            relationships: [],
+            changes: [],
+            tags: ['测试'],
+            suggestion: null,
+          }),
+        }),
+        providerReady: () => true,
+        canNotify: () => false,
+        openPath: async () => undefined,
+      })
+
+    const first = createService()
+    await first.init()
+    await waitFor(() => first.notes().length === 1)
+    await first.drain()
+    const notePath = first.notes()[0]!.notePath
+    await first.close()
+
+    await fs.unlink(source)
+    const second = createService()
+    await second.init()
+    await waitFor(() => second.notes().length === 0)
+    await expect(fs.stat(notePath)).rejects.toThrow()
+    expect(second.records().some((record) => record.kind === 'delete')).toBe(true)
+    await second.close()
+  })
+
+  it('完整重置删除管理的笔记与状态，保留配置和无关文件且不自动重建', async () => {
+    const root = join(tmpdir(), `aurora-awareness-reset-${randomUUID()}`)
+    const watched = join(root, 'docs')
+    const knowledge = join(root, 'notes')
+    const userData = join(root, 'userData')
+    await fs.mkdir(watched, { recursive: true })
+    await fs.writeFile(join(watched, '待重置.docx'), 'fake docx bytes')
+
+    const settings = createDefaultSettings()
+    settings.fileAwareness = {
+      enabled: true,
+      contentConsentAccepted: true,
+      watchedDirs: [watched],
+      knowledgeDir: knowledge,
+      includeRecent: false,
+      suggestionsEnabled: false,
+      dailyAnalysisLimit: 20,
+      maxFileMb: 100,
+      defaultMemoryTtlDays: 0,
+      backgroundModel: { providerId: '', model: '' },
+    }
+    const watchers: FakeWatcher[] = []
+    let removedSessions = 0
+    const service = new FileAwarenessService({
+      userData,
+      settings: () => settings,
+      logger: createNoopLogger(),
+      createWatcher: () => {
+        const watcher = new FakeWatcher()
+        watchers.push(watcher)
+        return watcher
+      },
+      tickMs: 20,
+      extract: async () => ({
+        kind: 'document',
+        evidence: '文件名：待重置.docx\n正文：重置验证',
+        evidenceChars: 18,
+        warnings: [],
+        degraded: false,
+        sourceHash: 'hash-reset-v1',
+      }),
+      analyze: async () => ({
+        text: JSON.stringify({
+          title: '待重置',
+          summary: '用于验证完整重置。',
+          topics: [],
+          keyPoints: [],
+          relationships: [],
+          changes: [],
+          tags: ['测试'],
+          suggestion: null,
+        }),
+        usage: {
+          promptTokens: 10,
+          completionTokens: 5,
+          totalTokens: 15,
+          cachedTokens: 0,
+          rounds: 1,
+        },
+      }),
+      providerReady: () => true,
+      canNotify: () => false,
+      removeAwarenessSessions: async () => {
+        removedSessions += 1
+      },
+      openPath: async () => undefined,
+    })
+
+    await service.init()
+    await waitFor(() => service.notes().length === 1)
+    await service.drain()
+    const notePath = service.notes()[0]!.notePath
+    const unrelatedPath = join(knowledge, 'keep.txt')
+    await fs.writeFile(unrelatedPath, 'keep me')
+
+    await service.suspend()
+    await service.resetAll()
+
+    expect(removedSessions).toBe(1)
+    expect(service.notes()).toEqual([])
+    expect(service.records()).toEqual([])
+    expect(service.status().queueDepth).toBe(0)
+    expect(service.status().usage).toBeUndefined()
+    await expect(fs.stat(notePath)).rejects.toThrow()
+    await expect(fs.readFile(unrelatedPath, 'utf8')).resolves.toBe('keep me')
+    expect(service.status().active).toBe(false)
+    expect(watchers).toHaveLength(1)
+    await service.resume()
+    expect(service.status().active).toBe(true)
+    expect(watchers).toHaveLength(2)
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(service.status().queueDepth).toBe(0)
+    expect(service.notes()).toEqual([])
     await service.close()
   })
 

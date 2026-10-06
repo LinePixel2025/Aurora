@@ -1074,6 +1074,8 @@ export interface FileAwarenessStatus {
   consentAccepted: boolean
   active: boolean
   waitingForModel: boolean
+  /** 前台 / 自动化 Agent 正在工作时，自感知队列暂停但不丢任务。 */
+  waitingForAgent: boolean
   /** 后台模型不可用时的可操作原因；正常或未启用时不带键。 */
   modelError?: string
   knowledgeDir: string
@@ -1102,8 +1104,7 @@ export interface FileAwarenessStatus {
   }
 }
 
-export type FileAwarenessRecordStatus =
-  'observed' | 'queued' | 'analyzing' | 'done' | 'skipped' | 'error' | 'conflict'
+export type FileAwarenessRecordStatus = 'done' | 'skipped' | 'error' | 'conflict'
 
 export interface FileAwarenessRecord {
   id: string
@@ -2135,6 +2136,8 @@ export interface AuroraApi {
     openNote(request: FileAwarenessNoteRequest): Promise<Result<string>>
     openSource(request: FileAwarenessNoteRequest): Promise<Result<string>>
     clearHistory(): Promise<Result<boolean>>
+    /** 完整重置 Aurora 管理的记忆、历史与后台分析会话；保留配置和源文件。 */
+    reset(): Promise<Result<boolean>>
     scanNow(): Promise<Result<number>>
     onSuggestion(listener: (suggestion: FileAwarenessSuggestion) => void): () => void
     onChanged(listener: () => void): () => void
