@@ -343,14 +343,16 @@ export class WindowManager {
   }
 
   /**
-   * 显示自感知顶部流光，并在每次显示时按当前提示条显示器重新定位。
+   * 显示自感知顶部流光，并在目标工作区变化时重新定位。
    * 内部窗口没有窗口状态机：调用方只表达“当前是否应该显示”。
    */
   showAwarenessGlow(): boolean {
     const win = this.ensureAwarenessGlow()
     if (win.isDestroyed()) return false
     const bounds = awarenessGlowBounds(this.edgeBarDisplay().workArea, AWARENESS_GLOW_HEIGHT)
-    win.setBounds(bounds)
+    if (!sameBounds(win.getBounds(), bounds)) win.setBounds(bounds)
+    // 分析阶段切换会频繁触发 sync；已可见时不再重复 show / 置顶，避免原生合成面被扰动。
+    if (win.isVisible()) return true
     this.reassertAwarenessGlowTopmost('shown', win)
     win.showInactive()
     return true

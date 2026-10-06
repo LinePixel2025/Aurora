@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
@@ -265,6 +265,92 @@ describe('FileAwarenessService', () => {
       'writing',
     ])
     expect(stages.at(-1)).toBe('idle')
+
+    off()
+    await service.close()
+  })
+
+  it('连续分析多个文件时不在文件切换处暴露空闲或排队状态', async () => {
+    const root = join(tmpdir(), `aurora-awareness-batch-${randomUUID()}`)
+    const watched = join(root, 'docs')
+    const knowledge = join(root, 'notes')
+    const userData = join(root, 'userData')
+    await fs.mkdir(watched, { recursive: true })
+    await fs.writeFile(join(watched, '第一份.docx'), 'first')
+    await fs.writeFile(join(watched, '第二份.docx'), 'second')
+
+    const settings = createDefaultSettings()
+    settings.fileAwareness = {
+      enabled: true,
+      contentConsentAccepted: true,
+      watchedDirs: [watched],
+      knowledgeDir: knowledge,
+      includeRecent: false,
+      suggestionsEnabled: false,
+      dailyAnalysisLimit: 20,
+      maxFileMb: 100,
+      defaultMemoryTtlDays: 0,
+      backgroundModel: { providerId: '', model: '' },
+    }
+    let providerReady = false
+    const service = new FileAwarenessService({
+      userData,
+      settings: () => settings,
+      logger: createNoopLogger(),
+      createWatcher: () => new FakeWatcher(),
+      tickMs: 20,
+      extract: async (input) => {
+        const fileName = basename(input.path)
+        return {
+          kind: 'document',
+          evidence: `文件名：${fileName}\n正文：批量分析`,
+          evidenceChars: 20,
+          warnings: [],
+          degraded: false,
+          sourceHash: `hash-${fileName}`,
+        }
+      },
+      analyze: async () => ({
+        text: JSON.stringify({
+          title: '批量分析',
+          summary: '验证连续文件状态。',
+          topics: [],
+          keyPoints: [],
+          relationships: [],
+          changes: [],
+          tags: ['测试'],
+          suggestion: null,
+        }),
+      }),
+      providerReady: () => providerReady,
+      canNotify: () => false,
+      openPath: async () => undefined,
+    })
+    const sequence: string[] = []
+    const off = service.onChanged(() => {
+      const progress = service.status().analysisProgress
+      const key = `${progress?.stage ?? 'idle'}:${progress?.fileName ?? ''}`
+      if (sequence.at(-1) !== key) sequence.push(key)
+    })
+
+    await service.init()
+    await waitFor(() => service.status().analysisProgress?.stage === 'queued')
+
+    providerReady = true
+    await service.scanNow()
+    await waitFor(() => service.notes().length === 2)
+    await service.drain()
+
+    const extracting = sequence.filter((item) => item.startsWith('extracting:'))
+    expect(extracting).toHaveLength(2)
+    const firstIndex = sequence.indexOf(extracting[0]!)
+    const secondIndex = sequence.indexOf(extracting[1]!)
+    expect(firstIndex).toBeGreaterThanOrEqual(0)
+    expect(secondIndex).toBeGreaterThan(firstIndex)
+    const between = sequence.slice(firstIndex + 1, secondIndex)
+    expect(between.some((item) => item.startsWith('idle'))).toBe(false)
+    expect(between.some((item) => item.startsWith('queued'))).toBe(false)
+    expect(sequence.slice(secondIndex).filter((item) => item.startsWith('idle'))).toHaveLength(1)
 
     off()
     await service.close()

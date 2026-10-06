@@ -4575,17 +4575,25 @@ export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
     const line = document.querySelector('[data-field="awareness-glow.line"]')
     const bloom = document.querySelector('[data-field="awareness-glow.bloom"]')
     const halo = document.querySelector('.glow-halo')
+    const warp = document.querySelector('[data-field="awareness-glow.warp"]')
     const rootStyle = root === null ? null : getComputedStyle(root)
     const lineStyle = line === null ? null : getComputedStyle(line)
     const bloomStyle = bloom === null ? null : getComputedStyle(bloom)
     const haloStyle = halo === null ? null : getComputedStyle(halo)
+    const warpStyle = warp === null ? null : getComputedStyle(warp)
     const opacity = rootStyle === null ? 0 : Number.parseFloat(rootStyle.opacity)
     const lineHeight = lineStyle === null ? 0 : Number.parseFloat(lineStyle.height)
+    const warpOpacity = warpStyle === null ? 0 : Number.parseFloat(warpStyle.opacity)
+    const warpMask =
+      warpStyle?.getPropertyValue('mask-image') ||
+      warpStyle?.getPropertyValue('-webkit-mask-image') ||
+      ''
     return {
       root: root !== null,
       line: line !== null,
       bloom: bloom !== null,
       halo: halo !== null,
+      warp: warp !== null,
       active: root?.classList.contains('active') === true,
       opacity,
       lineHeight,
@@ -4593,12 +4601,18 @@ export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
       bloomBlur: bloomStyle?.filter || '',
       lineAnimation: lineStyle?.animationName || '',
       haloAnimation: haloStyle?.animationName || '',
+      warpOpacity,
+      warpBlur: warpStyle?.filter || '',
+      warpGradient: warpStyle?.backgroundImage || '',
+      warpMask,
+      warpAnimation: warpStyle?.animationName || '',
       text: (root?.textContent || '').trim(),
       pass:
         root !== null &&
         line !== null &&
         bloom !== null &&
         halo !== null &&
+        warp !== null &&
         root.classList.contains('active') &&
         opacity > 0.9 &&
         lineHeight >= 1.5 &&
@@ -4606,6 +4620,11 @@ export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
         (bloomStyle?.filter || '').includes('blur') &&
         (lineStyle?.animationName || '') !== 'none' &&
         (haloStyle?.animationName || '') !== 'none' &&
+        warpOpacity > 0.1 &&
+        (warpStyle?.filter || '').includes('blur') &&
+        (warpStyle?.backgroundImage || '').includes('gradient') &&
+        warpMask.includes('gradient') &&
+        (warpStyle?.animationName || '') !== 'none' &&
         (root.textContent || '').trim() === '',
     }
   } catch (error) {

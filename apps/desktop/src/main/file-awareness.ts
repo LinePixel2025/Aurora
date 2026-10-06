@@ -657,8 +657,10 @@ export class FileAwarenessService {
       this.current = undefined
       this.analysisStage = undefined
       this.schedulePersist()
-      this.emitChanged()
-      if (this.state.queue.length > 0) setTimeout(() => void this.processQueue(), 50).unref?.()
+      // 队列有余量时先同步启动下一项，避免在文件切换处广播一次伪造的 idle 状态。
+      // processQueue 会在真正开始新文件时自行 emit；只有它因门控无法推进时才补发空闲态。
+      if (this.state.queue.length > 0) void this.processQueue()
+      if (this.current === undefined) this.emitChanged()
     }
   }
 
