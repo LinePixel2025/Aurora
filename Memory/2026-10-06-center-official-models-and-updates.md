@@ -51,3 +51,19 @@ Center 现在同时承担三类容易混淆的职责：客户端连接与远程�
   同一份密钥备份在该次升级备份目录的 `.env`。Memory 不记录密钥值，后续升级不得覆盖或丢失该文件。
 - Center 自托管更新路由已发布 0.4.4：`http://120.24.223.65:8787/api/updates/latest.yml`，
   并发验证了安装包 Range 返回 `206`。
+
+## 发布双投硬规则
+
+- 每次上传桌面安装包时，必须使用**同一次打包产物**同时更新 GitHub Releases 与 Aurora Center；
+  `installer`、blockmap 与 `latest.yml` 三者在两端版本、size、sha512 必须一致。
+- 只上传 GitHub 会让客户端无法从 Center 看到新版本；只更新 Center 则会破坏 GitHub 回落链。
+  任一上传失败时本次发布按失败处理，不得对外宣布完成。
+- 推荐命令：
+
+  ```powershell
+  $env:AURORA_CENTER_PASSWORD='...'
+  pnpm release -- --publish --publish-center --center-url http://120.24.223.65:8787 --center-user admin --push --notes-file docs/release-notes/vX.Y.Z.md
+  ```
+
+- 发布后必须验证 `<Center>/api/updates/latest.yml` 返回 200、资产 Range 返回 206，
+  并确认 Center 数据目录 `releases/index.json` 已切到该版本。

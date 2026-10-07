@@ -332,7 +332,8 @@ Center 网页端移动端对话区保底 60% 高度（面板收进分段切换�
   启停改 checkbox 与其它区组统一；Toast 归一为页级一处；技能表 6 列 → 4 列；
   capture 探针联动改 async（先展开再计数），PNG 仍拍默认收起态。
 - **发布流程**：`scripts/release.mjs` 支持 `--notes-file` 上传详细 Release Notes
-  （存档于 [`docs/release-notes/`](./release-notes/)）。
+  （存档于 [`docs/release-notes/`](./release-notes/)）；每次上传安装包必须同时发布到
+  GitHub Releases 与 Aurora Center 更新源，缺少任一侧都不算发布完成。
 
 **v0.0.3（前端重构）本轮新增**：
 

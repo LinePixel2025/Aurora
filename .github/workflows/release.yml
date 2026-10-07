@@ -82,3 +82,17 @@ jobs:
             gh release create $tag --repo $repo --title "Aurora $tag" --notes "Aurora $tag（Windows x64 安装包，未签名）"
           }
           gh release upload $tag --repo $repo --clobber @assets
+
+      - name: Publish to Aurora Center
+        env:
+          AURORA_CENTER_PASSWORD: ${{ secrets.AURORA_CENTER_PASSWORD }}
+          AURORA_CENTER_URL: ${{ vars.AURORA_CENTER_URL || 'http://120.24.223.65:8787' }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:AURORA_CENTER_PASSWORD)) {
+            throw '缺少 secrets.AURORA_CENTER_PASSWORD，不能完成 GitHub + Center 双投发布'
+          }
+          node packages/center/bin/aurora-center.js releases publish `
+            --server $env:AURORA_CENTER_URL `
+            --user admin `
+            --dir apps/desktop/release

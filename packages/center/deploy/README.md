@@ -88,3 +88,22 @@ docker compose exec -T aurora-center node bin/aurora-center.js status --data /da
 
 `aurora-center update` 的 npm 自更新通道对本仓库**无效**（`@aurora/center` 是 private
 包，不走 npm 发布）——更新一律按 §1 重新打包上传。
+
+## 6. 桌面安装包发布双投
+
+每次发布桌面客户端时，安装包、blockmap 与 `latest.yml` 必须同时上传：
+
+1. GitHub Releases：`LinePixel2025/Aurora-releases`；
+2. Aurora Center 更新源：管理网页 Release 卡、`aurora-center releases publish` 或
+   `scripts/release.mjs --publish-center`。
+
+两端必须来自**同一次打包产物**，不得分别重新打包。发布后检查：
+
+```bash
+curl -fsS http://<Center>/api/updates/latest.yml
+curl -fsS -r 0-15 -o /dev/null -w '%{http_code}\n' \
+  http://<Center>/api/updates/Aurora-Setup-<版本>.exe
+```
+
+第二个命令应返回 `206`。只上传 GitHub、Center 尚未更新时，客户端无法通过 Center 触发更新，
+本次发布不视为完成。

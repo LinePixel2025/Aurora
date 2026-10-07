@@ -707,3 +707,5 @@ Center 短期签名代理地址，客户端不直接访问上游。网关不持�
 
 见 [09 §10](./09-packaging-release.md)。管理网页新增 Release 卡：当前版本、文件状态、
 上传、校验与发布；公开路由只提供 `latest.yml` 与已登记资产。上传接口仅管理员可用。
+**每次桌面安装包发布都必须把同一份 installer / blockmap / `latest.yml` 同时上传 GitHub
+Releases 与本 Center**；Center 未更新的版本即使 GitHub 已发布，也不得视为发布完成。

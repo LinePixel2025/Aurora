@@ -119,6 +119,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **发布 tag**：每次打包安装包前必须相对上一版本 tag 汇总全部更新点，写入
   `docs/release-notes/vX.Y.Z.md`，并把它作为 annotated tag 的完整 message；禁止只写
   `Aurora vX.Y.Z`。（发布脚本会硬检查 `--notes-file` 与上一版本对比）
+- **发布双投**：每次上传桌面安装包时必须同时上传 GitHub Releases 与 Aurora Center
+  更新源，三者 `installer / blockmap / latest.yml` 版本一致；只上传 GitHub 不算发布完成。
 
 ## 文档先行（Docs-first）
 

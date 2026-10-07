@@ -109,16 +109,24 @@ async function runReleases(
     err('缺少 --server 或 --dir')
     return 2
   }
-  const entries = await fs.readdir(dir)
-  const names = entries.filter(
-    (name) =>
-      name === 'latest.yml' ||
-      /^Aurora-Setup-\d+\.\d+\.\d+\.exe$/.test(name) ||
-      /^Aurora-Setup-\d+\.\d+\.\d+\.exe\.blockmap$/.test(name),
-  )
-  if (names.length < 3) {
-    err('发布目录需要同时包含 latest.yml、安装包与 blockmap')
+  const latest = await fs.readFile(join(dir, 'latest.yml'), 'utf8').catch(() => '')
+  const version = /^version:\s*(\S+)\s*$/m.exec(latest)?.[1] ?? ''
+  if (!/^\d+\.\d+\.\d+$/.test(version)) {
+    err('发布目录缺少合法的 latest.yml（version 字段无效）')
     return 2
+  }
+  const names = [
+    'latest.yml',
+    `Aurora-Setup-${version}.exe`,
+    `Aurora-Setup-${version}.exe.blockmap`,
+  ]
+  for (const name of names) {
+    try {
+      await fs.access(join(dir, name))
+    } catch {
+      err(`发布目录缺少 ${name}`)
+      return 2
+    }
   }
   const login = await fetch(`${server}/api/auth/login`, {
     method: 'POST',

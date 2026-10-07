@@ -26,12 +26,18 @@
 
 ```powershell
 pnpm release              # 构建 + 打包 + 校验产物 + 打 tag（不上传）
-pnpm release -- --publish # 再用 gh CLI 上传到 Aurora-releases
+pnpm release -- --publish --publish-center --center-url <Center 地址> --center-user admin
+                          # GitHub Releases + Center 更新源双投（Center 密码经 AURORA_CENTER_PASSWORD 提供）
 pnpm release -- --publish --push   # 顺便把 tag 推到 origin
 ```
 
 `scripts/release.mjs` 的预检：工作区必须干净（否则用 `--force` 显式承担"把未提交改动打进包"的风险）；
 产物校验通过才会打 tag。
+
+**发布完成条件（硬规则）**：每次上传安装包时，必须把同一版本的 `Aurora-Setup-<版本>.exe`、
+`Aurora-Setup-<版本>.exe.blockmap` 与 `latest.yml` 同时发布到 GitHub Releases 和 Aurora Center。
+只上传 GitHub、或只更新 Center 网页包但未同步 release 资产，都不算发布完成；Center 上传失败时，
+本次发布按失败处理，修复后把三个资产重新上传再宣布完成。
 
 ### CI（按需触发，不自动跑）
 
@@ -40,7 +46,7 @@ pnpm release -- --publish --push   # 顺便把 tag 推到 origin
 | Workflow | 触发 | 用途 |
 |---|---|---|
 | `ci.yml` | `workflow_dispatch` | 干净环境中跑 `format:check → lint → typecheck → test → build` |
-| `release.yml` | `workflow_dispatch` | 云端打包 + 上传到 `Aurora-releases`（需 `RELEASE_TOKEN`） |
+| `release.yml` | `workflow_dispatch` | 云端打包 + GitHub/Center 双投（需 `RELEASE_TOKEN`、`AURORA_CENTER_PASSWORD`，可选 `AURORA_CENTER_URL`） |
 
 手动发起：Actions 页面 → **Run workflow**，或 `gh workflow run ci.yml`。
 
@@ -55,6 +61,8 @@ pnpm release -- --publish --push   # 顺便把 tag 推到 origin
 >
 > CI 里刻意用 `electron-builder --publish never` + `gh release upload`，
 > 因为 electron-builder 的自动发布是往**当前仓库**发的，而我们的产物要去另一个仓库。
+> 上传 GitHub 后还会调用 `aurora-center releases publish` 同步 Center；缺少
+> `AURORA_CENTER_PASSWORD` 时步骤会直接失败，避免只发 GitHub 的半成品发布。
 
 ### 最小发布年龄（`minimumReleaseAge`，重要）
 
@@ -259,3 +267,6 @@ Content-Length、Range / 206；`latest.yml` 不缓存，安装包与 blockmap �
 
 发布入口有三条：`scripts/release.mjs --publish-center`、`aurora-center releases publish`
 与管理网页。CLI 与发布脚本通过管理员账号登录 Center 后调用上传接口，不新增长期发布密钥。
+无论使用哪个入口，都必须与同一个版本的 GitHub Release 同步双投；`latest.yml` 的 version、
+size 与 sha512 在两端必须一致。Center 发布完成后至少验证
+`GET <Center>/api/updates/latest.yml` 返回 200，并确认安装包 Range 请求返回 206。

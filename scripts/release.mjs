@@ -8,7 +8,8 @@
  * 用法：
  *   node scripts/release.mjs                 # 构建 + 打包 + 校验 + 打 tag（不上传）
  *   node scripts/release.mjs --publish       # 额外用 gh 上传产物到 releases 仓库
- *   node scripts/release.mjs --publish-center --center-url <url> --center-user <名>
+ *   node scripts/release.mjs --publish --publish-center --center-url <url> --center-user <名>
+ *                              # GitHub Releases 与 Center 必须双投
  *   node scripts/release.mjs --publish --push # 再把 tag 推到 origin
  *   node scripts/release.mjs --skip-package  # 只校验已有产物 + 打 tag
  *   --notes-file docs/release-notes/v<版本>.md # 必传：完整版本差异与 Release Notes
@@ -280,8 +281,17 @@ if (!shouldPublish && !shouldPublishCenter) {
     apps/desktop/release/Aurora-Setup-${version}.exe.blockmap \\
     apps/desktop/release/latest.yml
 
-或直接：node scripts/release.mjs --publish --push --notes-file docs/release-notes/v<版本>.md
+或直接双投：node scripts/release.mjs --publish --publish-center \
+    --center-url <Center 地址> --center-user admin --push \
+    --notes-file docs/release-notes/v<版本>.md
 ──────────────────────────────────────────────────────────────`)
+}
+
+if (shouldPublish && !shouldPublishCenter) {
+  console.warn(
+    '\n⚠️ 本次只上传了 GitHub Releases，尚未发布到 Aurora Center；' +
+      '在 Center 同步同一版本前，本次发布不算完成。',
+  )
 }
 
 console.log(
