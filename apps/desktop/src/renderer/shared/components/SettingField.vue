@@ -5,11 +5,36 @@
  * 文本输入与选择框统一高度，输入类控件共用圆角与紧聚焦环；
  * props 与插槽用法保持不变。
  */
-defineProps<{ label: string; hint?: string; required?: boolean }>()
+withDefaults(
+  defineProps<{
+    label: string
+    hint?: string
+    required?: boolean
+    /** 只含按钮的字段用 div：label 会把整行 hover / click 代理给内部按钮。 */
+    as?: 'label' | 'div'
+  }>(),
+  { as: 'label', hint: '', required: false },
+)
+
+/**
+ * `<label>` 会把点击转发给内部第一个可标注控件。只含按钮的字段（如 Center 的
+ * 「登录账户」）若保留这条默认行为，点标签文字 / 说明也会执行按钮；这里只拦这种代理，
+ * 普通输入框 / 选择框仍保留点击标签聚焦的便利。
+ */
+function onClick(event: MouseEvent): void {
+  const root = event.currentTarget
+  const target = event.target
+  if (!(root instanceof HTMLLabelElement) || !(target instanceof Element)) return
+  if (target.closest('button') !== null) return
+  const firstLabelable = root.querySelector<HTMLElement>(
+    'input:not([type="hidden"]), select, textarea, button',
+  )
+  if (firstLabelable instanceof HTMLButtonElement) event.preventDefault()
+}
 </script>
 
 <template>
-  <label class="field">
+  <component :is="as" class="field" @click="onClick">
     <span class="label">
       {{ label }}
       <span v-if="required" class="required">*</span>
@@ -18,7 +43,7 @@ defineProps<{ label: string; hint?: string; required?: boolean }>()
     <span class="control">
       <slot />
     </span>
-  </label>
+  </component>
 </template>
 
 <style scoped>

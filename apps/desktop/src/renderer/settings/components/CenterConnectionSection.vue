@@ -275,6 +275,7 @@ async function login(): Promise<void> {
           并后台轮询；按钮停在等待态直到结果推送（成功 / 过期 / 拒绝 / 出错）。
         -->
         <SettingField
+          as="div"
           data-field="center.deviceLogin"
           label="登录账户"
           hint="点击后打开浏览器，在 Center 网页登录并一键确认，桌面端自动拿到凭据"

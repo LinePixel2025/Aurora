@@ -1165,6 +1165,8 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
 未回传时显示“暂无用量”，不按字符估算。
 设置窗内的按钮只保留颜色与按下缩放，不在悬停时位移；鼠标点击结束后释放按钮焦点，避免指针已离开
 或后续键盘 Enter 再次触发上一次按钮操作。
+共享 `SettingField` 内只有按钮时必须用 `as="div"`：`label` 不仅会把点击代理给按钮，还会让整行 hover
+命中 button 的 `:hover`。按钮操作必须命中真实按钮才响应，避免 Center 等页面出现「鼠标未到按钮先响应」。
 
 - 单窗口分栏（**BetaV2**：8 页合并为 **6 页**；2026-09 重构起条目为图标 + 单行文字；v0.2.0 起新增 **Aurora Center** 页共 **7 页**）：侧栏按四组排列 —— **基础**（常规 `general` /
   模式 `modes`）／**智能**（AI 模型 `llm` / 语音 `voice` / Agent 设置 `agent`）／**连接**（Aurora Center `center`）／

@@ -8032,7 +8032,7 @@ export const SETTINGS_VOICE_FIELDS_SCRIPT = `(() => {
  * （设备授权主按钮）/「密码登录」（直登回落按钮）/ clientId 只读位；隔离 userData 无令牌 →
  * 徽章必须是「未登录」、clientId 显示「尚未生成」；连接状态卡（5s 轮询）必须常在。
  */
-export const SETTINGS_CENTER_FIELDS_SCRIPT = `(() => {
+export const SETTINGS_CENTER_FIELDS_SCRIPT = `(async () => {
   try {
     const count = (selector) => document.querySelectorAll(selector).length
     const activeNav = document.querySelector('.nav-item.active')
@@ -8046,6 +8046,14 @@ export const SETTINGS_CENTER_FIELDS_SCRIPT = `(() => {
     const passwordLoginButton = buttons.indexOf('密码登录')
     const badges = Array.from(document.querySelectorAll('.badge')).map((b) => (b.textContent || '').trim())
     const statusField = count('[data-field="center.status"]')
+    const deviceLoginField = document.querySelector('[data-field="center.deviceLogin"]')
+    const deviceLoginRootTag = deviceLoginField === null ? '' : deviceLoginField.tagName
+    const deviceLoginLabel = deviceLoginField === null ? null : deviceLoginField.querySelector('.label')
+    if (deviceLoginLabel instanceof HTMLElement) deviceLoginLabel.click()
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    const labelClickError = Array.from(document.querySelectorAll('.toast')).some((node) =>
+      ((node.textContent || '').indexOf('请先填写服务器地址') !== -1),
+    )
 
     return {
       page: activeNav === null ? 'unknown' : (activeNav.textContent || '').trim(),
@@ -8061,6 +8069,8 @@ export const SETTINGS_CENTER_FIELDS_SCRIPT = `(() => {
         badgeLoggedInAbsent: badges.indexOf('已登录') === -1,
         clientIdPlaceholder: (document.body.textContent || '').indexOf('尚未生成') !== -1,
         statusSectionPresent: statusField > 0,
+        labelClickIgnored: !labelClickError,
+        deviceLoginRootTag: deviceLoginRootTag,
       },
       pass:
         enabledToggle !== null &&
@@ -8072,7 +8082,9 @@ export const SETTINGS_CENTER_FIELDS_SCRIPT = `(() => {
         passwordLoginButton !== -1 &&
         badges.indexOf('未登录') !== -1 &&
         badges.indexOf('已登录') === -1 &&
-        statusField > 0,
+        statusField > 0 &&
+        !labelClickError &&
+        deviceLoginRootTag === 'DIV',
     }
   } catch (error) {
     return { reason: String(error), pass: false }
