@@ -93,9 +93,13 @@ function scrollTo(id: string): void {
   min-height: 64px;
   padding: 0 clamp(20px, 4vw, 64px);
   border-bottom: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--center-hero-bg) 78%, transparent);
-  -webkit-backdrop-filter: blur(20px) saturate(1.35);
-  backdrop-filter: blur(20px) saturate(1.35);
+  background-color: var(--center-hero-bg);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--center-hero-bg) 94%, white) 0%,
+    var(--center-hero-bg) 100%
+  );
+  box-shadow: inset 0 -1px 0 var(--glass-highlight);
 }
 
 .public-brand {

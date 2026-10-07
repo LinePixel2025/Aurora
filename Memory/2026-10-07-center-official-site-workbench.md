@@ -32,10 +32,9 @@ Mermaid / KaTeX 等全部静态挂在入口，加上共享 `theme.css` 里的中
 - **页面拆包**：`App.vue` 里所有非首屏页面一律 `defineAsyncComponent(() => import(...))`。
   官网首屏不能带 ECharts、管理端、Markdown / Mermaid / KaTeX 分包；`landing-page`
   验证场景同时断言无重型 chunk 与首屏 transfer budget。
-- **官网顶栏使用毛玻璃但必须有实底**：`PublicHeader` 以 `--center-hero-bg` 约 78%
-  不透明度叠加 `blur(20px) saturate(1.35)`；不能退化为完全透明的 `background`，
-  否则滚动时下方 hero 内容会透出并叠字。`landing-page` 的 `headerGlass` 判据同时检查
-  半透明底色和 `backdrop-filter: blur(...)`。
+- **官网顶栏必须有完全不透明实底**：`PublicHeader` 使用 `--center-hero-bg` 实底，
+  顶部仅叠加不透明渐变高光，不能用半透明 `background` 或仅靠 `backdrop-filter`。
+  否则滚动时下方 hero 内容会透出并叠字。`landing-page` 的 `headerOpaque` 判据负责回归。
 - **字体性能**：Center Web 在 `packages/center/web/src/style.css` 覆盖为系统优先字体栈，
   不回改桌面 / shared 字体资产。`font-system-performance` 断言不加载 HarmonyOS Sans SC
   资源；若以后要用随包字体，先解决中文 TTF 体积或子集化，不要直接删这条探针。

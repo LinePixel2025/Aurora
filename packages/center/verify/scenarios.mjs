@@ -369,8 +369,6 @@ export const SCENARIOS = [
         const header = document.querySelector('.public-header')
         const headerBackground =
           header instanceof HTMLElement ? getComputedStyle(header).backgroundColor : ''
-        const headerBackdropFilter =
-          header instanceof HTMLElement ? getComputedStyle(header).backdropFilter : ''
         const alpha = /^rgba\([^)]*,\s*([\d.]+)\)$/.test(headerBackground)
           ? Number(/^rgba\([^)]*,\s*([\d.]+)\)$/.exec(headerBackground)?.[1] ?? '1')
           : Number(/\/\s*([\d.]+)\s*\)$/.exec(headerBackground)?.[1] ?? '1')
@@ -387,8 +385,7 @@ export const SCENARIOS = [
           downloadHref: download?.getAttribute('href') ?? '',
           previewLoaded: preview instanceof HTMLImageElement && preview.naturalWidth > 0,
           headerBackground,
-          headerBackdropFilter,
-          headerGlass: alpha >= 0.65 && alpha < 1 && headerBackdropFilter.includes('blur'),
+          headerOpaque: alpha === 1,
           console: document.querySelectorAll('[data-panel="console"]').length,
           login: document.querySelectorAll('[data-panel="login"]').length,
           transferBytes: Math.round(
@@ -404,7 +401,7 @@ export const SCENARIOS = [
           headline: reading.headline.includes('Windows'),
           download: reading.downloadHref !== '',
           previewLoaded: reading.previewLoaded,
-          headerGlass: reading.headerGlass,
+          headerOpaque: reading.headerOpaque,
           noConsole: reading.console === 0,
           noLoginForm: reading.login === 0,
           noHeavyChunks: reading.heavyResources.length === 0,
