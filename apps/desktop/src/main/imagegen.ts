@@ -51,7 +51,9 @@ export interface ImageGenSettingsStoreLike {
 
 export interface ImageGenService {
   /** 生成图片并落盘。失败一律**抛出**（IPC 层折成 `Result.error`）。 */
-  generate(request: ImageGenGenerateRequest): Promise<{ filePath: string; dataUrl: string }>
+  generate(
+    request: ImageGenGenerateRequest & { providerId?: string },
+  ): Promise<{ filePath: string; dataUrl: string }>
   /** 读回已生成的图片（仅允许 generated 目录内），回 `data:` URL 供渲染层预览。 */
   read(request: ImageGenReadRequest): Promise<{ dataUrl: string }>
 }
@@ -72,7 +74,7 @@ export function createImageGenService(options: ImageGenServiceOptions): ImageGen
     readFile: async (path) => new Uint8Array(await readFile(path)),
   }
 
-  function resolveProvider(request: ImageGenGenerateRequest): {
+  function resolveProvider(request: ImageGenGenerateRequest & { providerId?: string }): {
     providerId: string
     baseUrl: string
     model: string
@@ -83,7 +85,7 @@ export function createImageGenService(options: ImageGenServiceOptions): ImageGen
     if (!config.enabled || config.active === '') {
       throw new Error('图像生成未配置：请先在设置中启用生图模型并选择默认 provider')
     }
-    const providerId = config.active
+    const providerId = request.providerId?.trim() || config.active
     const provider = config.providers[providerId]
     if (provider === undefined) {
       throw new Error(`图像生成未配置：生图模型「${providerId}」不存在`)
@@ -108,7 +110,7 @@ export function createImageGenService(options: ImageGenServiceOptions): ImageGen
   }
 
   return {
-    async generate(request: ImageGenGenerateRequest): Promise<{
+    async generate(request: ImageGenGenerateRequest & { providerId?: string }): Promise<{
       filePath: string
       dataUrl: string
     }> {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { SettingsStore, canonicalSecretPath, redactKeys } from './store.js'
 import { CONFIG_FILE_NAME } from './store.js'
-import { CONFIG_VERSION, type LlmProviderConfig } from './schema.js'
+import { CENTER_OFFICIAL_PROVIDER_IDS, CONFIG_VERSION, type LlmProviderConfig } from './schema.js'
 import { createDefaultSettings } from './defaults.js'
 import { createMemoryLogger } from '../utils/logger.js'
 import { MemoryFileSystem, createFakeCrypto, memoryPath } from '../testing/memoryFs.js'
@@ -67,6 +67,27 @@ describe('SettingsStore · 初始化', () => {
     await store.init()
     expect(await fsPort.readFile(configPath)).toBe(before)
     expect(store.get().general.language).toBe('en-US')
+  })
+
+  it('有效的 Center 官方语言模型可以替代本机默认模型完成引导', async () => {
+    const seeded = createDefaultSettings()
+    seeded.center.enabled = true
+    seeded.center.tokenEnc = 'cipher'
+    seeded.center.officialModels.llm = { enabled: true, model: 'deepseek-flash' }
+    seeded.llm.providers[CENTER_OFFICIAL_PROVIDER_IDS.llm] = {
+      ...llmProvider('deepseek-flash'),
+      baseUrl: 'https://center.example/api/model-gateway/llm',
+    }
+    const { store } = setup({
+      seed: { [memoryPath(CONFIG_FILE_NAME)]: JSON.stringify(seeded) },
+    })
+    const report = await store.init()
+
+    expect(report.needsOnboarding).toBe(false)
+    expect(store.needsOnboarding()).toBe(false)
+
+    store.update({ center: { ...store.get().center, tokenEnc: '' } })
+    expect(store.needsOnboarding()).toBe(true)
   })
 
   it('损坏的 JSON：备份原文件、重建默认、报告 corrupted', async () => {

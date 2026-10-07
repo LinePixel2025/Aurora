@@ -126,6 +126,7 @@ import { CenterConnector } from './center/connector.js'
 import { DeviceLoginController, type DeviceLoginOutcome } from './center/device-login.js'
 import { httpBaseUrlOf, requestClientLogin } from './center/client-login.js'
 import { CenterModelServices } from './center/model-services.js'
+import { resolveCapabilityRoute } from './center/service-routing.js'
 import { uploadFileToCenter } from './center/ingest.js'
 import { downloadFileFromCenter } from './center/deliver.js'
 import {
@@ -636,8 +637,8 @@ function createCenterAwareSettingsStore(base: SettingsStoreLike): SettingsStoreL
         centerModelServices?.service(capability) !== undefined &&
         next[capability].providers[providerId] !== undefined
       if (available) {
-        next[capability].active = providerId
-        if (capability !== 'llm') next[capability].enabled = true
+        if (capability === 'llm') next.llm.active = providerId
+        else next[capability].enabled = true
       } else {
         noticeFallback(capability)
       }
@@ -1225,15 +1226,28 @@ async function bootstrap(): Promise<void> {
   })
   const sttService = {
     transcribe: async (input: Parameters<typeof centerSttService.transcribe>[0]) => {
-      if (!settings!.get().center.officialModels.stt.enabled) {
-        return localSttService.transcribe(input)
+      const current = settings!.get()
+      const route = resolveCapabilityRoute(
+        '语音输入',
+        current.stt,
+        current.center.officialModels.stt.enabled,
+        CENTER_OFFICIAL_PROVIDER_IDS.stt,
+        (providerId, provider) =>
+          provider.baseUrl.trim() !== '' &&
+          provider.model.trim() !== '' &&
+          settings!.getSecret(`stt.providers.${providerId}.apiKey`) !== '',
+      )
+      if (route.mode === 'error') throw new Error(route.message)
+      if (route.mode === 'local') {
+        return localSttService.transcribe({ ...input, providerId: route.providerId })
       }
       try {
         return await centerSttService.transcribe(input)
       } catch (error) {
         emitOfficialFallback('stt', '语音识别')
         logger?.warn('Center 官方 STT 失败，回落本机模型', { error: String(error) })
-        return localSttService.transcribe(input)
+        if (route.fallbackProviderId === undefined) throw error
+        return localSttService.transcribe({ ...input, providerId: route.fallbackProviderId })
       }
     },
   }
@@ -1251,15 +1265,31 @@ async function bootstrap(): Promise<void> {
   })
   const imageGenService = {
     generate: async (input: Parameters<typeof centerImageGenService.generate>[0]) => {
-      if (!settings!.get().center.officialModels.imagegen.enabled) {
-        return localImageGenService.generate(input)
+      const current = settings!.get()
+      const route = resolveCapabilityRoute(
+        '图像生成',
+        current.imagegen,
+        current.center.officialModels.imagegen.enabled,
+        CENTER_OFFICIAL_PROVIDER_IDS.imagegen,
+        (providerId, provider) =>
+          provider.baseUrl.trim() !== '' &&
+          provider.model.trim() !== '' &&
+          settings!.getSecret(`imagegen.providers.${providerId}.apiKey`) !== '',
+      )
+      if (route.mode === 'error') throw new Error(route.message)
+      if (route.mode === 'local') {
+        return localImageGenService.generate({ ...input, providerId: route.providerId })
       }
       try {
         return await centerImageGenService.generate(input)
       } catch (error) {
         emitOfficialFallback('imagegen', '图像生成')
         logger?.warn('Center 官方生图失败，回落本机模型', { error: String(error) })
-        return localImageGenService.generate(input)
+        if (route.fallbackProviderId === undefined) throw error
+        return localImageGenService.generate({
+          ...input,
+          providerId: route.fallbackProviderId,
+        })
       }
     },
     read: (input: Parameters<typeof centerImageGenService.read>[0]) =>
@@ -1698,6 +1728,18 @@ async function bootstrap(): Promise<void> {
     // 内嵌图片提取比纯正文多一轮附件解码；超时仍按期降级，不拖住后台队列。
     timeoutMs: 30_000,
   })
+  const fileAwarenessCenterAvailability = (): {
+    enabled: boolean
+    available: boolean
+    tokenSet: boolean
+  } => {
+    const current = settings!.get()
+    return {
+      enabled: current.center.officialModels.llm.enabled,
+      available: centerModelServices?.service('llm') !== undefined,
+      tokenSet: settings!.getSecret('center.token') !== '',
+    }
+  }
   fileAwareness = new FileAwarenessService({
     userData,
     settings: () => settings!.get(),
@@ -1713,8 +1755,17 @@ async function bootstrap(): Promise<void> {
     analyze: (input) => fileAwarenessAnalyzer!.analyze(input),
     initialUsage: () => sessions!.usageTotals(FILE_AWARENESS_SESSION_PREFIX),
     providerReady: () =>
-      fileAwarenessModelError(settings!.get(), (path) => settings!.getSecret(path)) === undefined,
-    modelError: () => fileAwarenessModelError(settings!.get(), (path) => settings!.getSecret(path)),
+      fileAwarenessModelError(
+        settings!.get(),
+        (path) => settings!.getSecret(path),
+        fileAwarenessCenterAvailability(),
+      ) === undefined,
+    modelError: () =>
+      fileAwarenessModelError(
+        settings!.get(),
+        (path) => settings!.getSecret(path),
+        fileAwarenessCenterAvailability(),
+      ),
     visionReady: () => {
       const current = settings!.get()
       const selected = resolveFileAwarenessModel(current)
@@ -1771,15 +1822,32 @@ async function bootstrap(): Promise<void> {
   })
   const tts = {
     synthesize: async (request: Parameters<typeof centerTts.synthesize>[0]) => {
-      if (!settings!.get().center.officialModels.tts.enabled || request.providerId !== undefined) {
+      if (request.providerId !== undefined) {
         return localTts.synthesize(request)
+      }
+      const current = settings!.get()
+      const route = resolveCapabilityRoute(
+        'TTS',
+        current.tts,
+        current.center.officialModels.tts.enabled,
+        CENTER_OFFICIAL_PROVIDER_IDS.tts,
+        (providerId, provider) =>
+          provider.baseUrl.trim() !== '' &&
+          provider.model.trim() !== '' &&
+          provider.voice.trim() !== '' &&
+          settings!.getSecret(`tts.providers.${providerId}.apiKey`) !== '',
+      )
+      if (route.mode === 'error') throw new Error(route.message)
+      if (route.mode === 'local') {
+        return localTts.synthesize({ ...request, providerId: route.providerId })
       }
       try {
         return await centerTts.synthesize(request)
       } catch (error) {
         emitOfficialFallback('tts', '语音合成')
         logger?.warn('Center 官方 TTS 失败，回落本机模型', { error: String(error) })
-        return localTts.synthesize(request)
+        if (route.fallbackProviderId === undefined) throw error
+        return localTts.synthesize({ ...request, providerId: route.fallbackProviderId })
       }
     },
     test: (request: Parameters<typeof centerTts.test>[0]) => centerTts.test(request),

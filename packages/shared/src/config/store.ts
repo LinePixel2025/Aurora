@@ -12,6 +12,7 @@
  */
 import { join } from 'node:path'
 import {
+  CENTER_OFFICIAL_PROVIDER_IDS,
   RESOURCE_NAME_PATTERN,
   SettingsSchema,
   WINDOW_NAMES,
@@ -241,12 +242,26 @@ export class SettingsStore {
     return this.current
   }
 
-  /** 主功能是否可用：必须存在可用的默认模型配置。 */
+  /** 主功能是否可用：本机默认模型或有效的 Center 官方语言模型满足其一即可。 */
   needsOnboarding(): boolean {
     const { active, providers } = this.current.llm
-    if (active === '') return true
-    const provider = providers[active]
-    return provider === undefined || provider.apiKeyEnc === ''
+    if (active !== '') {
+      const provider = providers[active]
+      if (provider !== undefined && provider.apiKeyEnc !== '') return false
+    }
+
+    const official = this.current.center.officialModels.llm
+    const officialProvider = providers[CENTER_OFFICIAL_PROVIDER_IDS.llm]
+    if (
+      this.current.center.tokenEnc !== '' &&
+      official.enabled &&
+      officialProvider !== undefined &&
+      officialProvider.baseUrl.trim() !== '' &&
+      (official.model.trim() !== '' || officialProvider.model.trim() !== '')
+    ) {
+      return false
+    }
+    return true
   }
 
   isCryptoAvailable(): boolean {

@@ -575,8 +575,8 @@
   `knowledgeDir` 是用户可见 Markdown 知识库；`includeRecent` 控制 Windows 最近使用记录，
   `suggestionsEnabled` 控制提示条气泡，`dailyAnalysisLimit`（1–200，默认 20）和
   `maxFileMb`（1–500，默认 100）控制后台预算；`defaultMemoryTtlDays`（0–3650，默认 0）
-  控制跟随默认记忆的有效期，0 = 永不过期；`backgroundModel` 为空时跟随全局主模型，
-  显式选择后严格使用该 provider + model，不可用时暂停而不是回落。整组在 `SETTINGS_READONLY_PREFIXES` 里：
+  控制跟随默认记忆的有效期，0 = 永不过期；`backgroundModel` 由设置页固化为显式
+  provider + model，严格使用该选择，不可用时暂停而不是回落。整组在 `SETTINGS_READONLY_PREFIXES` 里：
   它同时改变文件读取范围、数据出网与后台任务，AI 不得自行开启或放宽。
   内嵌图片是否真正读取由有效后台模型的 `vision` 决定；运行状态会如实显示「已开启 / 仅分析文字」。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
@@ -790,7 +790,9 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 > 早期版本的「语言 / 主题」步骤已删除：`general.language` 是死字段（无 i18n 消费方），
 > 主题也没有实现，两件都不可配置。详见 §6.1 的门控矩阵。
 
-- **规则**：AI 模型配置未完成不允许进入主界面（需求：第一次安装要求用户填写）；测试连接失败允许先保存，但持续提示未通过。
+- **规则**：本机 AI 模型配置或可用的 Center 官方语言模型至少完成一项，才允许进入主界面；
+  只有 Center 登录、已启用官方语言模型且保留 Provider `center-llm` 有有效模型时同样视为已配置。
+  测试连接失败允许先保存，但持续提示未通过。
 - 引导可重跑：设置 → 模式 → “重新引导”。
 - **实现状态（v0.1.0）**：引导窗共 5 步（欢迎 → AI 模型 → 模式选择 → 模式设置 → 完成），
   其中「模式设置」对 ClassRoom 为表单式（感知文件夹 / 科目列表 / 课前提醒）；
@@ -814,8 +816,8 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
    - 名称（`.mono`）；
    - **凭据状态 badge**：`apiKeySet === true` → `凭据已保存`（ok），否则 `缺少凭据`（warn）——
      凭据**永不回显**（§1.1），编辑卡里的 API Key 是 write-only 输入，**留空 = 本次不修改**；
-   - 是否默认 badge（`默认` / 不显示）；
-   - 行尾操作：`编辑` / `设为默认`（已是默认时 disabled）/ `删除`。
+   - 当前默认仍以行外层 `.accent` 描边表达，不再显示独立 badge；
+   - 行尾操作：`编辑` / `删除`；默认模型由上方下拉切换。
    - 列表为空时是 `data-empty="llm.providers"` 的**空状态卡**（文案与「添加 AI 模型」主按钮），
      不画一排空行。
 4. **编辑卡**（`editingId` 是单值，因此**同一时刻最多一张卡**）：
@@ -1135,6 +1137,10 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `SETTINGS_READONLY_PREFIXES` 中，Agent 不能自行启用官方模型或改向 Center。
 - 登录并从 Center 拉取到模型目录后，主进程维护保留 Provider
   `center-llm` / `center-imagegen` / `center-tts` / `center-stt`。它们的 Base URL
-  由 `center.serverUrl` 推导，API Key 固定使用 `center.token`；本地模型页不提供编辑入口。
-- Center 页的开关决定全局覆盖；会话级覆盖仍遵循“会话 > 全局”。Center 离线、模型被停用时，
-  请求按现有本地 `active` Provider 回落，并在对应会话/能力首次回落时提示一次。
+  由 `center.serverUrl` 推导，API Key 固定使用 `center.token`；TTS / STT / 生图 Provider
+  页把启用后的条目显示为只读官方卡片，不提供编辑或删除入口。
+- 语言模型由 Center 页开关决定全局覆盖，会话级覆盖仍遵循“会话 > 全局”。
+  TTS / STT / 生图以各自 `active` 为实际分派依据：首次开启官方服务自动切到 `center-*`，
+  用户之后可在 Provider 页切回本地模型；官方开关保持开启但请求走本地。
+- Center 离线、模型被停用时，官方请求按现有本地候选回落，并在对应能力首次回落时提示一次；
+  若没有本地候选，保留原始错误。

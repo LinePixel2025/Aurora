@@ -18,6 +18,7 @@
 import { computed, ref, watch } from 'vue'
 import { ChevronRight } from '@aurora/shared/browser'
 import {
+  CENTER_OFFICIAL_PROVIDER_IDS,
   IMAGEGEN_PRESETS,
   IMAGEGEN_SIZES,
   RESOURCE_NAME_PATTERN,
@@ -28,6 +29,8 @@ import {
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
+import CenterOfficialProviderRow from './CenterOfficialProviderRow.vue'
+import { useCenterOfficialCatalog } from '../../shared/composables/useCenterOfficialCatalog.js'
 import { useSettingsStore } from '../../shared/stores.js'
 
 interface ProviderDraft extends ImageGenProviderConfig {
@@ -44,6 +47,7 @@ type PageMode = 'list' | 'add' | 'edit'
 const DEFAULT_SIZE = '1024x1024'
 
 const settingsStore = useSettingsStore()
+const { catalog } = useCenterOfficialCatalog()
 
 const newProviderId = ref('')
 const message = ref<string | null>(null)
@@ -60,9 +64,50 @@ const open = ref(true)
 const imagegen = computed(() => settingsStore.settings?.imagegen ?? null)
 const activeId = computed(() => imagegen.value?.active ?? '')
 const enabled = computed(() => imagegen.value?.enabled ?? false)
-const activeDraft = computed(
-  () => drafts.value.find((draft) => draft.id === activeId.value) ?? null,
+const officialProviderId = CENTER_OFFICIAL_PROVIDER_IDS.imagegen
+const officialSelection = computed(
+  () => settingsStore.settings?.center.officialModels.imagegen ?? { enabled: false, model: '' },
 )
+const officialProvider = computed(
+  () => settingsStore.settings?.imagegen.providers[officialProviderId] ?? null,
+)
+const officialEnabled = computed(() => officialSelection.value.enabled)
+const officialModel = computed(
+  () => officialProvider.value?.model.trim() || officialSelection.value.model.trim(),
+)
+const officialAvailable = computed(
+  () =>
+    officialEnabled.value &&
+    catalog.value?.services.imagegen !== undefined &&
+    officialProvider.value !== null &&
+    officialProvider.value.baseUrl.trim() !== '' &&
+    officialModel.value !== '',
+)
+const officialDetails = computed(() => [
+  `模型 ${officialModel.value || '未配置'}`,
+  `尺寸 ${officialProvider.value?.size ?? 'auto'}`,
+])
+const selectableProviders = computed<
+  Array<{ id: string; model: string; official: boolean; available: boolean }>
+>(() => [
+  ...(officialEnabled.value
+    ? [
+        {
+          id: officialProviderId,
+          model: officialModel.value,
+          official: true,
+          available: officialAvailable.value,
+        },
+      ]
+    : []),
+  ...drafts.value.map((draft) => ({
+    id: draft.id,
+    model: draft.model,
+    official: false,
+    available: true,
+  })),
+])
+const hasProviders = computed(() => selectableProviders.value.length > 0)
 
 function isEditing(id: string): boolean {
   return mode.value === 'edit' && editingId.value === id
@@ -202,7 +247,7 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
   }
   const ok = await settingsStore.update({
     imagegen: {
-      // 没有任何 provider 被设为默认时，第一个保存的自动成为默认
+      // 没有任何 provider 被设为默认时，第一个保存的自动成为默认。
       active: settings.imagegen.active === '' ? draft.id : settings.imagegen.active,
       providers: {
         ...settings.imagegen.providers,
@@ -229,6 +274,7 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
       return false
     }
     draft.apiKey = ''
+    draft.apiKeySet = true
     if (!result.value.persisted) {
       error.value = '安全存储不可用：API Key 只保留在本次运行的内存中'
     }
@@ -304,7 +350,7 @@ async function saveEnabled(next: boolean): Promise<void> {
   }
 }
 
-/** 设为默认：只改 `active`，provider 表原样回传 */
+/** 页头下拉切换默认模型：只改 `active`，provider 表原样回传 */
 async function setActive(id: string): Promise<void> {
   const settings = settingsStore.settings
   if (!settings) return
@@ -329,7 +375,7 @@ async function setActive(id: string): Promise<void> {
       <span class="section-title">生图模型</span>
       <span class="group-summary tiny muted grow">
         {{ enabled ? '已启用' : '已停用' }} ·
-        {{ drafts.length === 0 ? '未配置' : `${drafts.length} 个模型` }}
+        {{ hasProviders ? `${selectableProviders.length} 个模型` : '未配置' }}
       </span>
     </button>
 
@@ -367,35 +413,46 @@ async function setActive(id: string): Promise<void> {
           <select
             class="input"
             :value="activeId"
-            :disabled="drafts.length === 0"
+            :disabled="!hasProviders"
             @change="setActive(($event.target as HTMLSelectElement).value)"
           >
             <option value="">（未配置）</option>
-            <option v-for="draft in drafts" :key="draft.id" :value="draft.id">
-              {{ draft.id }}
+            <option
+              v-for="provider in selectableProviders"
+              :key="provider.id"
+              :value="provider.id"
+              :disabled="provider.official && !provider.available && provider.id !== activeId"
+            >
+              {{
+                provider.official
+                  ? `${provider.id} · ${provider.model || 'Center 官方'}`
+                  : provider.id
+              }}{{ provider.official && !provider.available ? '（Center 暂不可用）' : '' }}
             </option>
           </select>
         </SettingField>
         <!-- 空状态：没有模型时不摆一排空行，直接给主入口（锚点保留，capture 探针依赖它）。
              这里刻意只留**一句**文案 —— 相邻两句近义提示会让人在两句话之间找重点。 -->
-        <p v-if="drafts.length === 0" class="empty-inline" data-empty="imagegen.providers">
-          还没有生图模型：添加一个并设为默认后，Agent 才能生成图片。
+        <p v-if="!hasProviders" class="empty-inline" data-empty="imagegen.providers">
+          还没有生图模型：添加一个并在上方选为默认后，Agent 才能生成图片。
         </p>
 
         <!-- 空态自带主按钮（与 LlmPage 空态同款）：此时工具行不渲染，不会重复出现同名按钮 -->
-        <div v-if="drafts.length === 0 && mode !== 'add'" class="row wrap toolbar">
+        <div v-if="!hasProviders && mode !== 'add'" class="row wrap toolbar">
           <AppButton variant="primary" data-action="add-imagegen-provider" @click="startAdd">
             + 添加生图模型
           </AppButton>
         </div>
 
         <!-- 工具行 + 添加流程（mode === 'add'）：预设 chips 来自 IMAGEGEN_PRESETS -->
-        <div v-if="drafts.length > 0 || mode === 'add'" class="row wrap toolbar">
+        <div v-if="hasProviders || mode === 'add'" class="row wrap toolbar">
           <AppButton size="sm" :disabled="mode === 'add'" @click="startAdd">
             + 添加生图模型
           </AppButton>
           <span class="grow" />
-          <span v-if="drafts.length > 0" class="tiny muted">{{ drafts.length }} 个生图模型</span>
+          <span v-if="hasProviders" class="tiny muted">
+            {{ selectableProviders.length }} 个生图模型
+          </span>
         </div>
 
         <section v-if="mode === 'add'" class="form-block">
@@ -427,7 +484,16 @@ async function setActive(id: string): Promise<void> {
         </section>
 
         <!-- provider 目录行列表：容器上标 `imagegen.providers`，每行标 `imagegen.providers.<id>` -->
-        <div v-if="drafts.length > 0" class="provider-list" data-field="imagegen.providers">
+        <div v-if="hasProviders" class="provider-list" data-field="imagegen.providers">
+          <CenterOfficialProviderRow
+            v-if="officialEnabled"
+            capability="imagegen"
+            :provider-id="officialProviderId"
+            :model="officialModel"
+            :active="activeId === officialProviderId"
+            :available="officialAvailable"
+            :details="officialDetails"
+          />
           <article
             v-for="draft in drafts"
             :key="draft.id"
@@ -439,7 +505,6 @@ async function setActive(id: string): Promise<void> {
               <strong class="mono">{{ draft.id }}</strong>
               <span v-if="draft.apiKeySet" class="badge ok">凭据已保存</span>
               <span v-else class="badge warn">缺少凭据</span>
-              <span v-if="activeId === draft.id" class="badge ok">默认</span>
               <span class="grow" />
               <AppButton
                 size="sm"
@@ -448,14 +513,6 @@ async function setActive(id: string): Promise<void> {
                 @click="openEditor(draft.id)"
               >
                 编辑
-              </AppButton>
-              <AppButton
-                size="sm"
-                variant="ghost"
-                :disabled="activeId === draft.id"
-                @click="setActive(draft.id)"
-              >
-                {{ activeId === draft.id ? '已是默认' : '设为默认' }}
               </AppButton>
               <AppButton
                 size="sm"
@@ -555,11 +612,6 @@ async function setActive(id: string): Promise<void> {
           </article>
         </div>
 
-        <p v-if="drafts.length > 0" class="tiny muted">
-          改动需点「应用」后落盘；API Key 留空表示不修改已保存的凭据。当前默认：{{
-            activeDraft ? `${activeDraft.id} · ${activeDraft.model}` : '未配置'
-          }}。
-        </p>
       </div>
     </Transition>
   </section>
@@ -624,21 +676,9 @@ async function setActive(id: string): Promise<void> {
   background: var(--fill-2);
 }
 
-/* 默认行沿用 .accent 描边 + 左侧 3px 强调色指示条 */
+/* 默认行沿用 .accent 描边。 */
 .provider-row.accent {
   border-color: var(--aurora-blue);
-}
-
-.provider-row.accent::before {
-  content: '';
-  position: absolute;
-  left: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 60%;
-  border-radius: var(--radius-pill);
-  background: var(--aurora-blue);
 }
 
 /* 未落盘的新建卡提示：用告警色说明「现在还不是配置的一部分」 */

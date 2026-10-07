@@ -44,9 +44,10 @@ export interface LlmProvider {
 - **会话级模型（本轮）**：每个会话可以覆盖「用哪个模型」——覆盖写在**会话文件自身**
   （`sessions/<id>.json` 的 `meta.llm = { providerId, model }`，经 `chat:setSessionModel` 写入 /
   清除），**不是配置项、不进 `CONFIG_VERSION` 迁移链**（与 `meta.projectId` / `meta.permissionMode`
-  同一条零迁移路子）。解析链只有一级：**会话覆盖 > 全局 `llm.active` + 该 provider 的 `model`**
-  —— 覆盖里的 provider 已被删除 / model 为空时**静默回落全局**（逐次执行不刷 warn，
-  与 `meta.projectId` 绑定失效同款）。
+  同一条零迁移路子）。解析链为：**会话覆盖 > Center 官方语言模型（启用且目录可用）>
+  全局 `llm.active` + 该 provider 的 `model`**。覆盖里的 provider 已被删除 / model 为空时
+  **静默回落全局**（逐次执行不刷 warn，与 `meta.projectId` 绑定失效同款）；Center 官方不可用时
+  继续按现有回落与运行态提示处理。
   存 `(providerId, model)` **一对**而不是只存 model：模型名可跨 provider 重名，且思考等级等参数
   是 `providers.<pid>.modelParams[<model>]` 名下的（见下），只存 model 会在切 provider 后取错参数表。
   取值口径：内核每轮经注入的 `AgentProviderFactory.createForSession({ sessionId })` 现解析
@@ -54,6 +55,11 @@ export interface LlmProvider {
   行为逐字不变）；子代理（§19）经 `parentSessionIdOf` 剥回父会话，**继承父会话的模型**。
   Center 的 `session.setModel` 远程命令（docs/12 §6.3）走同一个 `SessionStore.setModelOverride`；
   网页端会话行可看可切（docs/12 §6.3）。
+  对话窗输入区的模型选择器采用「模型来源 + 模型」双下拉：来源为 `Center 官方` / `用户模型`，
+  不再提供「跟随全局」清除项。没有 `meta.llm` 的旧会话先如实显示当前实际生效的全局选择，
+  但不立即写盘；用户首次切换来源或模型时才写入覆盖。`用户模型` 聚合全部非 `center-*` Provider
+  的 `model` 与 `modelList`，保存的仍是 `providerId + model` 一对。Center 模型选中后，
+  思考等级按其目录参数只读展示，不允许改本地 `center-llm` 参数。
 - 可靠性：指数退避重试、单请求超时（默认 60s）、流式中断可取消（AbortSignal 贯穿到 IPC）。
 - `ChatRequest.reasoningEffort` 由
   `llm.providers.<id>.modelParams.<modelId>.reasoningEffort` 驱动，取值
@@ -2324,8 +2330,9 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   并生成用户可见 Markdown 笔记；老式 `.doc` / `.ppt` / `.xls` 只记录使用与变化，不做伪正文解析。
 - **启用闸门**：`fileAwareness.enabled && fileAwareness.contentConsentAccepted` 且知识库 / 模型可用。
   未满足时只维护索引与队列，不提取正文、不出网；整组配置对 `set_setting` 只读。
-- **后台模型**：`fileAwareness.backgroundModel.providerId` 为空时跟随全局 `llm.active`；
-  显式选择后使用该 provider + model 的 Base URL、Key、思考等级与 vision。显式模型不可用时
+- **后台模型**：设置页会把后台模型固化为显式的 provider + model；旧配置仍为空时运行时
+  兼容跟随全局 `llm.active`。显式选择使用该 provider + model 的 Base URL、Key、思考等级与 vision。
+  显式模型不可用时
   队列暂停并显示原因，**不回落主模型**，避免文件正文发给用户未选择的接收方。
 - **读取口径**：图片仅在有效后台模型开启视觉输入时读取像素并作为图片分片；否则只保留文件名、
   尺寸等元数据。文档优先走结构化提取：DOCX / PPTX / PDF / ODF / RTF / HTML / EPUB 输出

@@ -226,4 +226,27 @@ describe('createProviderFactory · Aurora Center 官方模型', () => {
       { requestedProviderId: 'center-llm', fallbackProviderId: 'p-global' },
     ])
   })
+
+  it('Center 官方关闭后，旧会话覆盖失效并回落第一个本地 Provider 的第一个模型', () => {
+    const settings = settingsWith()
+    settings.llm.providers['p-global'] = provider('m-second', ['m-first', 'm-second'])
+    settings.center.officialModels.llm = { enabled: false, model: 'm-center' }
+    settings.llm.providers['center-llm'] = provider('m-center', ['m-center'])
+    const factory = createProviderFactory(storeOf(settings), createMemoryLogger(), undefined, {
+      sessionModelOf: () => ({ providerId: 'center-llm', model: 'm-center' }),
+      centerOfficial: {
+        token: () => 'ac-token',
+        service: () => ({
+          type: 'openai-compat',
+          defaultModel: 'm-center',
+          models: [{ id: 'm-center' }],
+        }),
+        selection: () => settings.center.officialModels.llm,
+      },
+    })
+
+    const config = factory.create({ allowFallback: true, sessionId: 's-1' })
+    expect(config?.provider.id).toBe('p-global')
+    expect(config?.model).toBe('m-first')
+  })
 })

@@ -263,12 +263,13 @@
   - **主区**：头部拖拽区（侧栏开关 + 状态灯 + 会话标题 + 未配置徽章 + 清空（图标钮）+
     **Windows 式窗口按钮**：`最小化`（`data-caption-btn="minimize"`，真最小化进任务栏）与
     `关闭`（`data-caption-btn="close"`，= 隐藏窗口）；双击头部拖动区切换最大化）→
-    MessageList → composer。**「模型 / 思考等级」两个下拉移入 composer 工具行**
-    （对齐 ChatGPT / Claude Desktop；`data-field="chat.model"` / `chat.reasoningEffort` 锚点不变，
-    仅位置变化），「收起」文字按钮由 caption「关闭」按钮取代（隐藏语义不变）。
+    MessageList → composer。**「模型来源 / 模型 / 思考等级」三个下拉移入 composer 工具行**
+    （对齐 ChatGPT / Claude Desktop；`data-field="chat.modelSource"` / `chat.model` /
+    `chat.reasoningEffort`，旧 `chat.model` 锚点保留），「收起」文字按钮由 caption
+    「关闭」按钮取代（隐藏语义不变）。
   - **composer（2026-09 输入框重做，2026-09-29 减负轮，见下方「输入框规格」）**：单张悬浮卡
     （附件 chips → textarea → 工具行 → 上下文详解条）；工具行 = 权限模式 + 模型下拉 +
-    思考等级下拉 +（右侧）保存瞬时提示 + 麦克风 + 停止 / 发送；旧「会话：xxx ·
+    来源下拉 + 模型下拉 + 思考等级下拉 +（右侧）保存瞬时提示 + 麦克风 + 停止 / 发送；旧「会话：xxx ·
     可调用 Skill 与 MCP 工具」常驻 meta 文案移除，三枚工具控件是 28px 零边框「芯片」，
     占位文案只留一句（`输入消息…`）。
   - **右栏「任务」面板（v15 新增，`data-field="chat.jobs"`；面板自身 `chat.job-panel`）**：
@@ -830,17 +831,19 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   无可用 provider 时控件**不隐藏**，而是 `disabled` + 提示「先在「设置 → AI 模型」里配置并选中一个模型」
   ——用户抱怨的正是「找不到按钮」，在没有模型时彻底藏起来会让同一个抱怨复现；
   禁用态至少是「找得到但用不了」，并且指向了修复路径。
-- **模型选择（本轮）**：输入区（`.composer-bar`）与「思考」并排还有一个「模型」下拉
-  （`data-field="chat.model"`，`ModelPickerSelect.vue`），选项来自**当前生效 provider** 的
-  `llm.providers.<active>.modelList`；**选中写入的是「本会话的模型覆盖」**
-  （`chat:setSessionModel` → 会话文件 `meta.llm = { providerId, model }`，docs/06 §3），
-  下一次请求生效（主进程每轮经 `createForSession` 现解析，无需重启）；
-  菜单里多一项「跟随全局」用于**清除覆盖**（回到全局 `llm.active` 的 `model`）。
-  设置页「AI 模型」页签仍写**全局默认**（`llm.providers.<active>.model`）——两处**不是同一份数据**：
-  全局是「默认」，会话覆盖是「这个会话用它」，解析链只有一级、未覆盖即跟随全局。
-  **模型页与对话窗读写的是同一份候选列表**：模型页维护 `modelList`、对话窗从同一份列表里选，
-  没有第二份来源。当前 `model` 不在列表里（或列表为空）时，下拉把当前值显示为
-  「`<model>`（不在列表中）」而不是悄悄替换成别的模型。
+- **模型选择（来源 + 模型双下拉）**：输入区（`.composer-bar`）在权限之后、思考之前渲染
+  `chat.modelSource` 与 `chat.model` 两个紧凑下拉（`ModelPickerSelect.vue`）。
+  来源只保留 `Center 官方` / `用户模型`，不再提供「跟随全局」清除项：
+  Center 来源仅在 `center.officialModels.llm.enabled` 且保留 Provider `center-llm`
+  有候选模型时出现；用户模型聚合全部非 `center-*` Provider 的 `model` 与 `modelList`，
+  同名模型按 `Provider · 模型` 区分。切换来源立即选择该来源的默认模型并写入
+  `chat:setSessionModel({ providerId, model })`；切换模型同样立即写会话覆盖。
+  没有 `meta.llm` 的旧会话显示当前实际生效的全局选择但不补写，首次主动选择后才固化。
+  Center 模型不可用时来源整项隐藏，已有覆盖按现有运行态提示回落；Center 模型的思考等级
+  由管理员目录参数决定，本地下拉只读展示。
+  设置页「AI 模型」页签仍写**全局默认**（`llm.providers.<active>.model`）——全局是「默认」，
+  会话覆盖是「这个会话用它」。**模型页与对话窗读取同一份候选列表**，没有第二份来源。
+  当前 `model` 不在候选或来源已不可用时，下拉如实显示当前值并允许切到可用来源，不悄悄替换。
   **打开编辑卡时，当前生效模型总会占一行**（渲染层重建草稿时把 `model` 补进候选列表），
   所以引导页建出来的 provider（落盘的是 `modelList: []`）也能就地配置它的模型级参数；
   落盘时 `modelList` 仍会被归一为「候选列表 ∪ {`model`}」。
@@ -852,7 +855,7 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   （不再弹卡 / 可访问项目根外），例如「所有敏感操作不再询问」「可访问项目根外路径」；
   `pendingDanger` 那支「再点一次确认：项目根内的敏感操作不再询问」保持原样。
   **探针按 `textContent` 子串断言『完全权限』『再点一次确认』，改文案时必须保留这两个子串。**
-  `.composer-bar` 的控件顺序（2026-09 输入框重做后）：**权限模式** → **模型** → **思考**
+  `.composer-bar` 的控件顺序（来源双下拉后）：**权限模式** → **模型来源** → **模型** → **思考**
   → 弹性空隙 → 瞬时提示 → 麦克风 → 停止 / 发送；
   空间不足（右栏展开 / 窗口缩窄）时先让 `meta` / 提示文本让位（隐藏或
   `overflow: hidden` + `min-width: 0`），**发送按钮绝不能被挤出行外**
@@ -894,16 +897,17 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   （空内容 = 一行），换行后的第二行会被直接裁掉，用户看到的是「可直接拖入文」这种断句。
   键位说明（`Enter` 发送 / `Shift + Enter` 换行）**不再常驻**工具行 —— 原先挂在那里的
   `.composer-hint` 已移除，键位与其余能力（`/` 命令、拖入文件）一并只留在 textarea 的
-  `title` 悬浮提示里；工具行右侧只剩瞬时提示 `.picker-hint`（保存 / 切换成功那类自灭文案）。
+  `title` 悬浮提示里；工具行右侧只在流式期间按 Enter 时显示瞬时提示 `.picker-hint`，
+  模型 / 思考等级切换成功不再弹提示。
   流式中按 `Enter` 会给一句 2 秒自灭的提示（发送按钮同时是 disabled 的，两处口径一致）——
   `useChat.send` 在流式期间直接返回，若不提示就是「敲了 Enter 没反应也没说法」。
-- **工具行**（左 → 右）：**权限模式** + 模型下拉 + 思考等级下拉 + 弹性空隙 +
+- **工具行**（左 → 右）：**权限模式** + 模型来源下拉 + 模型下拉 + 思考等级下拉 + 弹性空隙 +
   （右侧）瞬时提示 + 麦克风（STT，门控口径不变）+ 停止（流式中）+ 发送。
-  压缩顺序与旧口径一致：先让瞬时提示文本让位，模型下拉可收缩到 72px，
+  压缩顺序与旧口径一致：先让瞬时提示文本让位；来源固定 96px、模型下拉可收缩到 76px，
   **发送按钮绝不能被挤出卡外**。
-- **三枚「芯片」的视觉口径**（减负轮）：权限 / 模型 / 思考都是 `--control-h-xs`（28px）高、
+- **四枚「芯片」的视觉口径**（减负轮）：权限 / 来源 / 模型 / 思考都是 `--control-h-xs`（28px）高、
   `--radius-pill` 圆角、**静止态零边框零底色**（只有文字与原生箭头），悬停 / 聚焦浮一层
-  `--fill-2`。三者必须逐字对齐才像同一条工具带上的控件；此前的 40px + 逐枚边框
+  `--fill-2`。四者必须逐字对齐才像同一条工具带上的控件；此前的 40px + 逐枚边框
   （三枚各带 1px 边框的 40px 控件）把输入卡顶成了一条设置工具栏，是「太丑 / 元素冗杂」的主因。
   28px 仍高于 WCAG 2.2 SC 2.5.8 的 24×24 命中下限（`chat-hit-targets` 探针按 24 判），
   发送 / 麦克风保持 32px。
@@ -1155,7 +1159,8 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
 预览迁到独立记忆库窗口，不再塞回设置页。未同意正文出网时开关保持不可启用。
 “最近记录”页内只显示最近 **5** 条；超过 5 条时标题右侧出现「查看更多」，点击后在设置窗内的
 滚动弹窗展示完整记录，逐条「分析」操作与页内列表共用同一记录组件。
-后台模型可跟随主模型或显式选择 provider + model；显式模型不可用时状态区显示原因。
+后台模型显式选择 provider + model；旧的空配置首次打开设置页时固化当前主模型，
+显式模型不可用时状态区显示原因。
 “运行状态”另显示“累计 Token”：provider 真实回传的输入 / 输出 / 缓存 / 轮次聚合；
 未回传时显示“暂无用量”，不按字符估算。
 设置窗内的按钮只保留颜色与按下缩放，不在悬停时位移；鼠标点击结束后释放按钮焦点，避免指针已离开
@@ -1233,8 +1238,8 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
     成功显示耗时并刷新回显，失败就地给出原因（插件不是 v3 / 命令通道关闭 / 超时）。
     **渲染层发送时只传字面量对象**：Vue 的 `reactive` / `ref` 代理过不了结构化克隆（`AGENTS.md`）。
 - **AI 模型页（本轮重写；BetaV2 增补）**：**目录行列表 + 一次只开一张编辑卡**（`editingId` 单值），不再平铺所有卡片——
-  行上只有名称 + 凭据状态 badge（`凭据已保存` / `缺少凭据`）+ 是否默认 + 行操作
-  （`编辑` / `设为默认` / `删除`）；当前默认行带 `.accent` 描边与左侧 3px 强调色指示条，行 hover 用 `--fill-2`；
+  行上只有名称 + 凭据状态 badge（`凭据已保存` / `缺少凭据`）+ 行操作
+  （`编辑` / `删除`）；当前默认行带 `.accent` 描边，行 hover 用 `--fill-2`；
   `删除` 是危险操作，先就地弹确认条（`data-action="confirm-remove-provider"`）再生效；
   列表为空时是 `data-empty="llm.providers"` 的空状态卡。BetaV2 新增：「显示思考过程」开关
   （`data-field="general.chat.showThinking"`）与**生图模型区组**（enabled / active / provider 编辑，
@@ -2003,7 +2008,7 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     `temperature` 字段已随 v23 从 Schema 与页面上删除，**不再**断言它存在。
     ⚠️ 这条探针找的是 `document.querySelector('.more')`（设置页里第一颗折叠按钮），而**列表态的行上没有折叠箭头**
     ——所以 act 先按真实用户路径点 `data-action="edit-provider"` 开卡，再点**卡内**那颗 `.more`
-    （`高级参数与连接测试`）。行上刻意只有「编辑 / 设为默认 / 删除」三个动作（删除另带就地二次确认条），
+    （`高级参数与连接测试`）。行上刻意只有「编辑 / 删除」两个动作（删除另带就地二次确认条），
     就是为了让「展开高级参数」只有一个入口、且仍是一次只开一张卡。
   - **AI 模型页结构**（`SETTINGS_LLM_STRUCTURE_ACT` / `SETTINGS_LLM_STRUCTURE_CHECK`，
     产物 `settings-llm-structure.png`）：act 点开第一行的 `data-action="edit-provider"`
@@ -2035,20 +2040,14 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
     唯一写盘的情况是**一个 provider 都没有**时先造一个（否则列表区不在 DOM 里，无从点开）；
     恢复（删掉刚加的那一行）在 check 里做。之所以仍排在 `settings-llm-params` **之前**，
     是为了少一次配置往返，也避免它把参数场景造出的 provider 状态搅乱。
-  - **对话窗模型选择器**（`CHAT_MODEL_PICKER_ACT` / `CHAT_MODEL_PICKER_CHECK`，
-    产物 `chat-model-picker.png`，交互窗一条）：act 先读 `settings.get()`，
-    在**没有可用 provider**（`llm.active` 指向的条目不存在）**或**它的 `modelList` 少于两个候选时
-    造 / 补一个带**两个**模型 id 的（`modelList: ['deepseek-chat', 'deepseek-reasoner']`，并设为 `llm.active`），
-    等 `settings:changed` 生效后把 `[data-field="chat.model"]` 切到第二个模型并派发 `change`，
-    等 600ms 让 IPC 往返完成，并把原值记进 `window.__auroraModelProbe`。
-    **check 的口径（本轮起，docs/06 §3 会话级模型）**：下拉写的是**本会话的覆盖**，
-    因此读三处 —— ① 全局 `llm.providers[llm.active].model` 必须**仍是** `deepseek-chat`
-    （对话框不再改全局默认，这条正是这次改动最该钉住的）；② 会话摘要里**带 `llm` 的那条**
-    的 `model` 是 `deepseek-reasoner`（覆盖写进去了；**不假定会话 id** —— 截图夹具会把对话窗
-    切到别的会话上，写死 `main` 会读成 null 而误判）；③ DOM 里该 select 的 `.value` 是新模型。
-    结束时**清掉本会话覆盖**（`chat:setSessionModel` 传空串）并再读一次会话摘要确认它真的没了
-    （判据取**状态**而不是 DOM 的 value：探针前半直接改过 `select.value`，界面状态回到空串时
-    Vue 认为"值没变"就不会去改 DOM，读到的仍是探针设的那个值 —— 这条曾经误报过一次 FAIL）。
+  - **对话窗模型来源 / 模型双下拉**（`CHAT_MODEL_PICKER_ACT` / `CHAT_MODEL_PICKER_CHECK`，
+    产物 `chat-model-picker.png`）：act 用 `capture-source` + `center-llm` 造出两个来源，
+    先记录旧会话没有 `meta.llm`，再切 `chat.modelSource=local` 验证本机默认模型，
+    随后切回 `center` 验证 `center-a` 默认写入，再选 `center-b`，最后切 `local` 并选
+    `deepseek-reasoner`。check 断言来源选项只有
+    `center` / `local`、Center 与本机覆盖都写进正确的 `(providerId, model)`、最终会话覆盖和
+    DOM 一致、全局 `llm.providers[capture-source].model` 未被改写；最后清覆盖并完整还原
+    两个 Provider、`llm.active` 与 Center 官方语言模型选择。
   - **窗口拖动**（`WINDOW_DRAG_SCRIPT`，产物 `chat-drag.png` 与 `settings-drag.png`，两个窗口各一条场景）：
     量出所有**可见** `.drag-region`（`getBoundingClientRect()` 的宽或高为 0 视为不可见）并取**最大高度那条**，
     要求「至少有一个可见拖动区」且 **`maxHeight >= 32`**（够抓）；再读**那条**生效的 `app-region` 值为 `drag`
@@ -2200,7 +2199,9 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
 - 语言模型作为全局默认覆盖，仍可在会话模型选择器里覆盖；
 - Center 不可用或模型被停用时回落本地 Provider，并在当前会话首次提示，不阻塞回复。
 
-本地 AI 模型 / 语音 / 生图页隐藏保留 Provider `center-*`，避免把自动维护的条目当成
-普通 Provider 编辑或删除。Center Web 新增 `#/usage`：用户看本人，管理员可按用户、
+勾选 TTS / STT / 生图官方服务后，对应 Provider 页显示只读 `center-*` 卡片，并加入默认模型
+下拉；卡片不能编辑凭据、Base URL、模型或删除。切回本地模型不会关闭
+Center 开关，官方卡片继续展示并标记为未作为默认；目录不可用时保留卡片并标注暂不可用。
+语言模型仍只通过会话模型选择器覆盖，不在 Provider 页显示。Center Web 新增 `#/usage`：用户看本人，管理员可按用户、
 设备、模型筛选全站；两页均显示总量卡、输入/输出/缓存折线图与最近记录。管理页新增
 官方模型配置与 Release 管理卡。

@@ -3,7 +3,7 @@
  * AI 模型设置页（docs/08 §5）：provider **目录行列表 + 一次只开一张编辑卡**。
  *
  * 信息架构（step-04）：页头摘要（当前默认 provider · 模型）→ 工具行（添加 Provider / 保存全部）
- * → provider 行列表（名称 + 凭据状态 + 是否默认 + 编辑 / 设为默认 / 删除）→ 空状态。
+ * → provider 行列表（名称 + 凭据状态 + 是否默认 + 编辑 / 删除）→ 空状态。
  * 危险操作走**就地二次确认**；凭据是 write-only 输入，页面永不回显明文（只显示「已保存 / 缺失」）。
  *
  * 编辑卡（`mode === 'edit' && editingId === id`，一次只渲染一张）从上到下是：
@@ -23,7 +23,7 @@
  * 在「模型名」里填的 id 会自动补进列表；删掉当前使用的那一项**不换模型**，只提示
  * 「当前模型已不在列表中」，改用哪个由用户自己点选 —— 见各 handler 的注释。
  *
- * 行上只有「名称 + 凭据状态 + 是否默认 + 编辑 / 设为默认 / 删除」四个动作，没有多余的折叠箭头：
+ * 行上只有「名称 + 凭据状态 + 是否默认 + 编辑 / 删除」三个动作，没有多余的折叠箭头：
  * 展开高级参数是**卡内**那颗 `.more` 的职责（capture 的 `SETTINGS_LLM_EFFORT_ACT` 会先点开卡再点它）。
  *
  * BetaV2 增量（spec §9）：页头下方新增「对话展示」小节（`general.chat.showThinking`）；
@@ -550,6 +550,7 @@ async function saveProvider(draft: ProviderDraft): Promise<boolean> {
       return false
     }
     draft.apiKey = ''
+    draft.apiKeySet = true
     if (!result.value.persisted) {
       error.value = '安全存储不可用：API Key 只保留在本次运行的内存中'
     }
@@ -670,20 +671,6 @@ async function removeProvider(id: string): Promise<void> {
   message.value = `已删除 ${id}`
 }
 
-async function setActive(id: string): Promise<void> {
-  const settings = settingsStore.settings
-  if (!settings) return
-  const ok = await settingsStore.update({
-    llm: { active: id, providers: settings.llm.providers },
-  })
-  if (!ok) error.value = settingsStore.error
-  else {
-    message.value = `默认模型已切换为 ${id}`
-    // needsOnboarding 靠它刷新：设为默认之后主功能才算可用
-    await settingsStore.refreshAppInfo()
-  }
-}
-
 async function testProvider(draft: ProviderDraft): Promise<void> {
   testing.value = draft.id
   error.value = null
@@ -776,9 +763,7 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
     <!-- 空状态：没有任何 provider 时不摆一排空行，直接给主入口（文案与主按钮保持不变） -->
     <section v-if="drafts.length === 0" class="section-card empty-state" data-empty="llm.providers">
       <h2 class="section-title">还没有 AI 模型配置</h2>
-      <p class="section-desc">
-        添加一个 Provider 并设为默认后主功能才可用；未配置时启动会进入首次引导向导。
-      </p>
+      <p class="section-desc">添加一个 Provider 后主功能才可用；未配置时启动会进入首次引导向导。</p>
       <div class="row">
         <AppButton variant="primary" @click="startAdd">添加 AI 模型</AppButton>
       </div>
@@ -831,7 +816,6 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
         <strong class="mono">{{ draft.id }}</strong>
         <span v-if="draft.apiKeySet" class="badge ok">凭据已保存</span>
         <span v-else class="badge warn">缺少凭据</span>
-        <span v-if="activeId === draft.id" class="badge ok">默认</span>
         <span class="grow" />
         <AppButton
           size="sm"
@@ -840,15 +824,6 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
           @click="openEditor(draft.id)"
         >
           编辑
-        </AppButton>
-        <AppButton
-          size="sm"
-          variant="ghost"
-          data-field="llm.active"
-          :disabled="activeId === draft.id"
-          @click="setActive(draft.id)"
-        >
-          {{ activeId === draft.id ? '已是默认' : '设为默认' }}
         </AppButton>
         <AppButton
           size="sm"
@@ -1211,10 +1186,6 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
       </template>
     </article>
 
-    <p v-if="drafts.length > 0" class="tiny muted">
-      改动需点「应用」或工具行的「保存全部」后落盘；API Key 留空表示不修改已保存的凭据。
-    </p>
-
     <!-- 生图模型区组（v8 新增）：独立 provider 体系，与聊天模型互不绑定 -->
     <ImageGenSection />
   </section>
@@ -1266,7 +1237,7 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
   font-size: var(--text-base);
 }
 
-/* 目录行：hover 用分层填充；默认行沿用 .accent 描边，再补左侧 3px 品牌色指示条 */
+/* 目录行：hover 用分层填充；默认行沿用 .accent 描边。 */
 .provider-row {
   position: relative;
   transition: background var(--transition-fast);
@@ -1277,19 +1248,7 @@ async function loadModels(draft: ProviderDraft): Promise<void> {
   background: var(--fill-2);
 }
 
-.provider-row.accent::before {
-  content: '';
-  position: absolute;
-  left: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 60%;
-  border-radius: var(--radius-pill);
-  background: var(--aurora-blue);
-}
-
-/* 折叠入口：与分组头一致的弱化按钮。**只在编辑卡内**出现（行上只有编辑 / 设为默认 / 删除三个动作，
+/* 折叠入口：与分组头一致的弱化按钮。**只在编辑卡内**出现（行上只有编辑 / 删除两个动作，
    行内那颗只留 chevron 的展开按钮已撤掉），所以这颗带 chevron + 文案 */
 .more {
   display: flex;

@@ -36,7 +36,6 @@ import {
   DEFAULT_REASONING_EFFORT,
   resolveModelParams,
   resolvePermissionMode,
-  resolveSessionModel,
   type ReasoningEffort,
 } from '@aurora/shared/browser'
 import AppButton from '../shared/components/AppButton.vue'
@@ -64,6 +63,12 @@ import AutomationPage from './components/AutomationPage.vue'
 import { useChat } from '../shared/composables/useChat.js'
 import { useTts } from '../shared/composables/useTts.js'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
+import {
+  buildModelPickerState,
+  type ModelPickerChoice,
+  type ModelPickerSourceId,
+} from '../shared/composables/modelPickerCore.js'
+import { useCenterOfficialCatalog } from '../shared/composables/useCenterOfficialCatalog.js'
 import { useCtxTabs } from './composables/useCtxTabs.js'
 import { CTX_TABS_MAX, type CtxTab, type CtxTabKind } from './composables/ctxTabsCore.js'
 import { appendProject, pickProjectEntry } from '../shared/projects.js'
@@ -73,6 +78,7 @@ import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.
 import { ArrowUp, Mic, PanelLeft, Trash2, X } from '@aurora/shared/browser'
 
 const chat = useChat('chat', 'main')
+const { catalog: centerCatalog } = useCenterOfficialCatalog()
 const {
   sessionId,
   messages,
@@ -795,24 +801,18 @@ function onCancelJob(id: string): void {
 /**
  * 这一组控件有两个数据面（docs/06 §3，本轮起）：
  *
- * 1. **会话级模型**（「模型」下拉）：写的是**本会话**的 `meta.llm = { providerId, model }`
- *    （`chat:setSessionModel`），空串 = 清除覆盖、跟随全局。会话数据不是配置，不进 `config.json`；
+ * 1. **会话级模型**（「模型来源 + 模型」双下拉）：写的是**本会话**
+ *    `meta.llm = { providerId, model }`（`chat:setSessionModel`）。会话数据不是配置，
+ *    不进 `config.json`；旧会话没有覆盖时只展示全局推导值，首次主动选择才固化；
  * 2. **全局默认**（「思考等级」下拉，以及设置页「AI 模型」卡）：写配置
  *    `llm.providers.<生效 provider>.modelParams.<生效模型>.reasoningEffort`（v23 起随模型绑定）。
  *
- * 「生效」= `resolveSessionModel(settings.llm, 本会话覆盖)` 的结果（**唯一口径**，与主进程
- * `createProviderFactory` 同源）：覆盖里的 provider 已被删除 / model 为空 → 静默回落全局档。
+ * 「生效」由 `buildModelPickerState()` 统一解析：会话覆盖 > Center 官方语言模型 > 本机
+ * `llm.active`；覆盖里的 provider 已被删除 / model 为空 → 静默回落全局档。
  * 保存成功后 `settings:changed` 会把新配置推回 store，会话覆盖由 `loadSessions()` 刷新。
  * 每次发送时主进程都会重解析，因此写完**下一次发送**立即生效。
  */
 const activeProviderId = computed(() => settingsStore.settings?.llm.active ?? '')
-
-/** 全局激活的 provider（未覆盖时的生效者，也是「跟随全局」文案里的那个）；无 → `null` */
-const activeProvider = computed<LlmProviderConfig | null>(() => {
-  const settings = settingsStore.settings
-  if (!settings) return null
-  return settings.llm.providers[activeProviderId.value] ?? null
-})
 
 /** 本会话的模型覆盖（`meta.llm`）；会话不在列表里 / 未覆盖 → `undefined`（跟随全局） */
 const sessionModelOverride = computed(() => {
@@ -820,11 +820,23 @@ const sessionModelOverride = computed(() => {
   return summary?.llm
 })
 
-/** 会话**生效**模型（覆盖 > 全局；失效覆盖静默回落）—— 两个控件与发送链共用这一份 */
-const effectiveModel = computed(() => {
+/** 模型来源 / 模型双下拉的唯一状态。没有会话覆盖时只展示全局推导值，不写盘。 */
+const modelPicker = computed(() => {
   const settings = settingsStore.settings
   if (!settings) return null
-  return resolveSessionModel(settings.llm, sessionModelOverride.value)
+  return buildModelPickerState(
+    settings,
+    sessionModelOverride.value,
+    centerCatalog.value?.services.llm !== undefined,
+  )
+})
+
+/** 会话**生效**模型（会话覆盖 > Center 官方 > 本机全局）—— 各控件与发送链共用这一份 */
+const effectiveModel = computed(() => {
+  const choice = modelPicker.value?.choice
+  return choice === undefined || choice === null
+    ? null
+    : { ...choice, overridden: modelPicker.value?.overridden === true }
 })
 
 /** 生效 provider（覆盖里的那个 / 全局激活的）；没有可用 provider 时为 `null` */
@@ -835,22 +847,15 @@ const effectiveProvider = computed<LlmProviderConfig | null>(() => {
   return settings.llm.providers[effective.providerId] ?? null
 })
 
-/**
- * 模型下拉的当前值 = **本会话的覆盖**（空串 = 跟随全局）。
- * 「跟随全局」那条选项的文案由 `followGlobalLabel` 给出，里面写着全局默认是哪个模型。
- */
-const currentModel = computed<string>(() =>
-  effectiveModel.value?.overridden === true ? effectiveModel.value.model : '',
-)
-
-/** 「跟随全局」选项文案：把全局默认模型名写进去，用户不必去设置页确认自己会跟到哪个 */
-const followGlobalLabel = computed(() => {
-  const globalModel = activeProvider.value?.model ?? ''
-  return globalModel === '' ? '跟随全局（全局未设置）' : `跟随全局（${globalModel}）`
+const effectiveModelLabel = computed(() => {
+  const effective = effectiveModel.value
+  return effective === null ? '' : `${effective.providerId} · ${effective.model}`
 })
 
-/** 模型下拉的候选列表（生效 provider 的 `modelList`；去重与空串过滤是组件的事） */
-const modelOptions = computed<string[]>(() => effectiveProvider.value?.modelList ?? [])
+/** Center 官方参数由管理员目录维护，本地思考等级下拉只读展示。 */
+const centerModelReadOnly = computed(
+  () => modelPicker.value?.centerReadOnly === true || modelPicker.value?.sourceId === 'center',
+)
 
 /**
  * **生效模型**的生成参数（v23，docs/08 §1）：思考等级 / 上下文窗口都在
@@ -880,17 +885,19 @@ const missingProviderTitle = '先在「设置 → AI 模型」里配置并选中
 const modelTitle = computed(() =>
   effectiveProvider.value === null
     ? missingProviderTitle
-    : '本会话使用的模型（「跟随全局」= 不覆盖，用设置页的默认模型）；改完对下一次请求生效',
+    : '本会话使用的模型；切换来源或模型会写入本会话覆盖，对下一次请求生效',
 )
 
 /** 思考下拉的 tooltip：无 provider → 指向修复路径；有 provider → 说明这个参数的含义 */
 const effortTitle = computed(() =>
   effectiveProvider.value === null
     ? missingProviderTitle
-    : '思考等级（越高越深入，但更慢更贵）；auto 不下发该参数，兼容性最好',
+    : centerModelReadOnly.value
+      ? 'Center 官方模型的思考等级由管理员目录配置，本机只读展示'
+      : '思考等级（越高越深入，但更慢更贵）；auto 不下发该参数，兼容性最好',
 )
 
-/** 两个下拉共用的保存结果轻提示（成功 2 秒后消失；失败走 chatError） */
+/** 输入区瞬时提示：当前只用于流式期间按 Enter 的操作说明，失败仍走 chatError。 */
 const pickerHint = ref<string | null>(null)
 let pickerHintTimer: number | null = null
 
@@ -961,48 +968,59 @@ async function updateActiveProvider(
  * 生效模型为空串时不写（没有「生效模型」可归属，与迁移的「model 为空不造条目」同口径）。
  */
 async function setEffort(next: ReasoningEffort): Promise<void> {
+  if (centerModelReadOnly.value) return
   const provider = effectiveProvider.value
   const effective = effectiveModel.value
   if (provider === null || effective === null) return
   const modelId = effective.model
   if (modelId === '' || resolveModelParams(provider, modelId).reasoningEffort === next) return
-  if (
-    await updateActiveProvider(
-      {
-        modelParams: {
-          ...provider.modelParams,
-          [modelId]: { ...resolveModelParams(provider, modelId), reasoningEffort: next },
-        },
+  await updateActiveProvider(
+    {
+      modelParams: {
+        ...provider.modelParams,
+        [modelId]: { ...resolveModelParams(provider, modelId), reasoningEffort: next },
       },
-      effective.providerId,
-    )
-  ) {
-    flashPickerHint(`思考等级已改为 ${next}`)
-  }
+    },
+    effective.providerId,
+  )
 }
 
 /**
- * 写入**本会话**的模型覆盖（`chat:setSessionModel`，docs/06 §3）；`next` 为空串 = 清除覆盖、跟随全局。
+ * 写入**本会话**的模型覆盖（`chat:setSessionModel`，docs/06 §3）。
  *
- * 值没变就直接返回（含「都跟随全局」）：一次无谓的写盘会让会话文件多刷一次 updatedAt。
+ * 值没变就直接返回：一次无谓的写盘会让会话文件多刷一次 updatedAt。
  * 落盘成功后重拉会话列表，`sessionModelOverride` 随之更新（覆盖是会话数据，不经 settings 推送）。
  */
-async function setModel(next: string): Promise<void> {
-  const effective = effectiveModel.value
-  if (effective === null) return
-  const unchanged = next === '' ? !effective.overridden : effective.model === next
-  if (unchanged) return
+async function persistModelChoice(next: ModelPickerChoice): Promise<void> {
   const result = await window.aurora.chat.setSessionModel({
     sessionId: sessionId.value,
-    providerId: next === '' ? '' : effective.providerId,
-    model: next,
+    providerId: next.providerId,
+    model: next.model,
   })
   if (!result.ok) {
     chatError.value = result.message
     return
   }
   await loadSessions()
-  flashPickerHint(next === '' ? '本会话已跟随全局模型' : `本会话模型已切换为 ${next}`)
+}
+
+async function setModel(next: ModelPickerChoice): Promise<void> {
+  const effective = effectiveModel.value
+  if (effective === null) return
+  const unchanged =
+    effective.providerId === next.providerId &&
+    effective.model === next.model &&
+    effective.overridden
+  if (unchanged) return
+  await persistModelChoice(next)
+}
+
+async function setModelSource(next: ModelPickerSourceId): Promise<void> {
+  const state = modelPicker.value
+  if (state === null || state.sourceId === next) return
+  const source = state.sources.find((item) => item.id === next)
+  if (source === undefined) return
+  await persistModelChoice(source.defaultChoice)
 }
 
 // ───────────────────────── 语音朗读（TTS，docs/06 §13） ─────────────────────────
@@ -1839,17 +1857,18 @@ async function markGuideDone(): Promise<void> {
               <!-- 模型 / 思考等级（2026-09 移入 composer 工具行）：data-field 锚点不变 -->
               <ModelPickerSelect
                 class="composer-picker"
-                :model-value="currentModel"
-                :models="modelOptions"
-                :fallback-label="followGlobalLabel"
-                :disabled="effectiveProvider === null"
+                :selection="modelPicker?.choice ?? null"
+                :sources="modelPicker?.sources ?? []"
+                :source-id="modelPicker?.sourceId ?? null"
+                :disabled="modelPicker?.choice === null"
                 :title="modelTitle"
-                @update:model-value="setModel"
+                @update:source="setModelSource"
+                @update:selection="setModel"
               />
               <ThinkingLevelSelect
                 class="composer-picker"
                 :model-value="effortValue"
-                :disabled="effort === null"
+                :disabled="effort === null || centerModelReadOnly"
                 :title="effortTitle"
                 @update:model-value="setEffort"
               />
@@ -1900,7 +1919,7 @@ async function markGuideDone(): Promise<void> {
               :totals="usage.totals"
               :context-window="currentContextWindow"
               :open="openFlyout === 'context'"
-              :model="currentModel"
+              :model="effectiveModelLabel"
               :streaming="streaming"
               @update:open="openFlyout = $event ? 'context' : null"
             />

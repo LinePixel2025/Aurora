@@ -70,4 +70,32 @@ describe('文件自感知后台模型解析', () => {
       fileAwarenessModelError(settingsWith('background', 'background-default'), () => ''),
     ).toContain('缺少 API Key')
   })
+
+  it('Center 官方后台模型使用 Center 目录与登录令牌校验', () => {
+    const settings = settingsWith('center-llm', 'deepseek-flash')
+    settings.llm.providers['center-llm'] = provider('deepseek-flash')
+    settings.llm.providers['center-llm']!.apiKeyEnc = ''
+
+    expect(
+      fileAwarenessModelError(settings, () => '', {
+        enabled: true,
+        available: true,
+        tokenSet: true,
+      }),
+    ).toBeUndefined()
+    expect(
+      fileAwarenessModelError(settings, () => '', {
+        enabled: false,
+        available: true,
+        tokenSet: true,
+      }),
+    ).toContain('未启用')
+    expect(
+      fileAwarenessModelError(settings, () => '', {
+        enabled: true,
+        available: false,
+        tokenSet: true,
+      }),
+    ).toContain('目录当前不可用')
+  })
 })

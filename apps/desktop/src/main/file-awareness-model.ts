@@ -1,5 +1,15 @@
 /** 文件自感知后台模型的唯一解析口径（docs/06 §26）。 */
-import type { Settings, SessionModelOverrideLike } from '@aurora/shared'
+import {
+  isCenterOfficialProviderId,
+  type Settings,
+  type SessionModelOverrideLike,
+} from '@aurora/shared'
+
+export interface FileAwarenessCenterAvailability {
+  enabled: boolean
+  available: boolean
+  tokenSet: boolean
+}
 
 export interface EffectiveFileAwarenessModel {
   providerId: string
@@ -47,6 +57,7 @@ export function hasExplicitFileAwarenessModel(settings: Settings): boolean {
 export function fileAwarenessModelError(
   settings: Settings,
   getSecret: (path: string) => string,
+  center?: FileAwarenessCenterAvailability,
 ): string | undefined {
   const selected = resolveFileAwarenessModel(settings)
   if (selected.providerId === '') return '尚未配置可用的 AI 模型'
@@ -61,6 +72,12 @@ export function fileAwarenessModelError(
   }
   if (provider.baseUrl.trim() === '') {
     return selected.overridden ? '所选后台模型缺少 Base URL' : '当前主模型缺少 Base URL'
+  }
+  if (isCenterOfficialProviderId(selected.providerId)) {
+    if (center?.enabled !== true) return 'Center 官方语言模型未启用'
+    if (center.available !== true) return 'Center 官方模型目录当前不可用'
+    if (center.tokenSet !== true) return 'Center 登录令牌不可用'
+    return undefined
   }
   if (getSecret(`llm.providers.${selected.providerId}.apiKey`) === '') {
     return selected.overridden ? '所选后台模型缺少 API Key' : '当前主模型缺少 API Key'

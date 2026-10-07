@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /** 文件自感知设置页（v28，docs/06 §26、docs/07 §2.5）。 */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { FileAwarenessNote, FileAwarenessRecord, FileAwarenessStatus } from '@aurora/shared'
-import { formatTokenCount } from '@aurora/shared/browser'
+import { formatTokenCount, isCenterOfficialProviderId } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
@@ -20,6 +20,7 @@ const recordsOpen = ref(false)
 const resetConfirming = ref(false)
 const resetting = ref(false)
 let offChanged: (() => void) | null = null
+let initializingBackgroundModel = false
 
 const config = computed(() => settingsStore.settings?.fileAwareness ?? null)
 const providers = computed(() =>
@@ -91,6 +92,53 @@ async function setBackgroundModel(model: string): Promise<void> {
     },
   })
 }
+
+/**
+ * 旧配置可能仍是空 providerId（历史上表示跟随主模型）。页面首次水合时把它固化成
+ * 当前主模型对应的显式 provider + model；后续更换主模型不会静默改变后台分析接收方。
+ */
+async function ensureExplicitBackgroundModel(): Promise<void> {
+  const current = config.value
+  const settings = settingsStore.settings
+  if (
+    current === null ||
+    settings === null ||
+    initializingBackgroundModel ||
+    current.backgroundModel.providerId.trim() !== ''
+  ) {
+    return
+  }
+  let providerId = settings.llm.active.trim()
+  let provider = settings.llm.providers[providerId]
+  const activeCenterDisabled =
+    isCenterOfficialProviderId(providerId) && !settings.center.officialModels.llm.enabled
+  if (providerId === '' || provider === undefined || activeCenterDisabled || provider.model.trim() === '') {
+    providerId =
+      Object.keys(settings.llm.providers).find((id) => {
+        if (isCenterOfficialProviderId(id)) return false
+        return (settings.llm.providers[id]?.model.trim() ?? '') !== ''
+      }) ?? ''
+    provider = settings.llm.providers[providerId]
+  }
+  const model = provider?.model.trim() ?? ''
+  if (providerId === '' || provider === undefined || model === '') return
+  initializingBackgroundModel = true
+  await settingsStore.update({
+    fileAwareness: {
+      ...current,
+      backgroundModel: { providerId, model },
+    },
+  })
+  initializingBackgroundModel = false
+}
+
+watch(
+  () => settingsStore.settings,
+  () => {
+    void ensureExplicitBackgroundModel()
+  },
+  { immediate: true },
+)
 
 async function refresh(): Promise<void> {
   const [statusResult, recordsResult, notesResult] = await Promise.all([
@@ -332,14 +380,16 @@ onUnmounted(() => {
       <SettingField
         data-field="fileAwareness.backgroundModel.providerId"
         label="模型服务"
-        hint="跟随主模型时不单独指定；显式选择后文件正文只发给这个模型"
+        hint="文件正文只会发送给这里显式选择的服务"
       >
         <select
           class="input"
           :value="config?.backgroundModel.providerId ?? ''"
           @change="setBackgroundProvider(($event.target as HTMLSelectElement).value)"
         >
-          <option value="">跟随主模型</option>
+          <option v-if="(config?.backgroundModel.providerId ?? '') === ''" value="" disabled>
+            请选择后台模型
+          </option>
           <option
             v-if="(config?.backgroundModel.providerId ?? '') !== '' && backgroundProvider === null"
             :value="config?.backgroundModel.providerId ?? ''"

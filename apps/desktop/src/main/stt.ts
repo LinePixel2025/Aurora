@@ -40,6 +40,8 @@ export interface SttTranscribeInput {
   mime: string
   /** 覆盖 provider 配置的识别语言；缺省用 `stt.providers.<id>.language`，空串 = 交给服务端自动检测 */
   language?: string
+  /** 主进程内部回落用：覆盖 `stt.active`，不进入 IPC 契约。 */
+  providerId?: string
 }
 
 export interface SttService {
@@ -75,7 +77,7 @@ export function createSttService(options: SttServiceOptions): SttService {
     if (!config.enabled || config.active === '') {
       throw new Error('语音输入未配置：请先在设置中启用语音输入并选择识别模型')
     }
-    const providerId = config.active
+    const providerId = input.providerId?.trim() || config.active
     const provider = config.providers[providerId]
     if (provider === undefined) {
       throw new Error(`语音输入未配置：识别模型「${providerId}」不存在`)

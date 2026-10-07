@@ -228,6 +228,10 @@ export function createProviderFactory(
     const officialCapability = officialCapabilityOf(providerId)
     let effectiveConfig = config
     if (officialCapability !== undefined) {
+      if (options?.centerOfficial?.selection(officialCapability)?.enabled !== true) {
+        if (!quiet) logger.warn('Center 官方能力已关闭', { providerId })
+        return undefined
+      }
       const service = options?.centerOfficial?.service(officialCapability)
       const token = options?.centerOfficial?.token() ?? ''
       if (service === undefined || token === '') {
@@ -314,8 +318,8 @@ export function createProviderFactory(
     sessionId?: string,
   ): ProviderConfig | undefined => {
     for (const [id, candidate] of Object.entries(llm.providers)) {
-      if (id === requestedProviderId) continue
-      const built = build(id, candidate, true)
+      if (id === requestedProviderId || isCenterOfficialProviderId(id)) continue
+      const built = build(id, { ...candidate, model: firstModelOf(candidate) }, true)
       if (built !== undefined) {
         logger.warn('默认模型配置不可用，已回退到可用条目', { active: llm.active, fallback: id })
         options?.centerOfficial?.onFallback?.({
@@ -335,7 +339,7 @@ export function createProviderFactory(
   ): ProviderConfig | undefined => {
     for (const [id, candidate] of Object.entries(llm.providers)) {
       if (id === requestedProviderId || isCenterOfficialProviderId(id)) continue
-      const built = build(id, candidate, true)
+      const built = build(id, { ...candidate, model: firstModelOf(candidate) }, true)
       if (built !== undefined) return built
     }
     return undefined
@@ -347,6 +351,7 @@ export function createProviderFactory(
       sessionId?: string
     }): ProviderConfig | undefined {
       const llm: LlmSettings = settings.get().llm
+      const official = options?.centerOfficial?.selection('llm')
       // 会话级覆盖（docs/06 §3）：判据收在 shared 的 `resolveSessionModel`（唯一口径，
       // 渲染层与 Center 网页端同用一份）—— 这里只负责「拿它算出来的 (pid, model) 去构造」，
       // 构造不出来（Key 没配 / baseUrl 空）再回落全局档，绝不把会话拖成 E_NO_MODEL。
@@ -355,6 +360,7 @@ export function createProviderFactory(
           ? undefined
           : options?.sessionModelOf?.(createOptions.sessionId)
       const effective = resolveSessionModel(llm, override)
+      let centerOverrideUnavailable = false
       if (effective.overridden) {
         const overrideConfig: LlmProviderConfig | undefined = llm.providers[effective.providerId]
         if (overrideConfig !== undefined) {
@@ -363,6 +369,8 @@ export function createProviderFactory(
             model: effective.model,
           })
           if (builtOverride !== undefined) return builtOverride
+          centerOverrideUnavailable =
+            centerOverrideUnavailable || isCenterOfficialProviderId(effective.providerId)
           if (options?.strictSessionModelOf?.(createOptions?.sessionId ?? '') === true) {
             logger.warn('专用模型配置不可用，已暂停请求（不回落全局模型）', {
               sessionId: createOptions?.sessionId,
@@ -398,8 +406,10 @@ export function createProviderFactory(
         })
         return undefined
       }
+      if (centerOverrideUnavailable) {
+        return fallback(llm, effective.providerId, createOptions?.sessionId)
+      }
 
-      const official = options?.centerOfficial?.selection('llm')
       const officialProviderId = CENTER_OFFICIAL_PROVIDER_IDS.llm
       if (official?.enabled === true) {
         const officialConfig = llm.providers[officialProviderId]
@@ -452,6 +462,14 @@ export function createProviderFactory(
       return built
     },
   }
+}
+
+function firstModelOf(provider: LlmProviderConfig): string {
+  for (const candidate of provider.modelList) {
+    const model = candidate.trim()
+    if (model !== '') return model
+  }
+  return provider.model.trim()
 }
 
 /** 只有显式要求自愈时才回退：普通调用（如设置页「测试连接」）必须如实报告失败。 */

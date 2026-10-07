@@ -6,16 +6,19 @@
  * 均由主进程维护。
  */
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { ChevronRight } from '@aurora/shared/browser'
-import type {
-  CenterOfficialCapability,
-  CenterOfficialModelCatalog,
-  CenterRuntimeNotice,
-  SettingsPatch,
+import {
+  CENTER_OFFICIAL_PROVIDER_IDS,
+  ChevronRight,
+  isCenterOfficialProviderId,
+  type CenterOfficialCapability,
+  type CenterOfficialModelCatalog,
+  type CenterRuntimeNotice,
+  type SettingsPatch,
 } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
+import { resolveCenterProviderToggle } from '../composables/centerProviderToggle.js'
 import { useSettingsStore } from '../../shared/stores.js'
 
 const settingsStore = useSettingsStore()
@@ -72,6 +75,44 @@ function optionLabel(capability: CenterOfficialCapability, id: string): string {
   return model?.label ? `${model.label} · ${id}` : id
 }
 
+function isUsableLocalProvider(
+  capability: Exclude<CenterOfficialCapability, 'llm'>,
+  providerId: string,
+): boolean {
+  const settings = settingsStore.settings
+  if (settings === null || isCenterOfficialProviderId(providerId)) return false
+  if (capability === 'tts') {
+    const provider = settings.tts.providers[providerId]
+    return (
+      provider !== undefined &&
+      provider.baseUrl.trim() !== '' &&
+      provider.model.trim() !== '' &&
+      provider.voice.trim() !== ''
+    )
+  }
+  if (capability === 'stt') {
+    const provider = settings.stt.providers[providerId]
+    return provider !== undefined && provider.baseUrl.trim() !== '' && provider.model.trim() !== ''
+  }
+  const provider = settings.imagegen.providers[providerId]
+  return provider !== undefined && provider.baseUrl.trim() !== '' && provider.model.trim() !== ''
+}
+
+function firstLocalProviderId(capability: Exclude<CenterOfficialCapability, 'llm'>): string {
+  const settings = settingsStore.settings
+  if (settings === null) return ''
+  const providers =
+    capability === 'tts'
+      ? settings.tts.providers
+      : capability === 'stt'
+        ? settings.stt.providers
+        : settings.imagegen.providers
+  for (const providerId of Object.keys(providers)) {
+    if (isUsableLocalProvider(capability, providerId)) return providerId
+  }
+  return ''
+}
+
 async function setSelection(
   capability: CenterOfficialCapability,
   enabled: boolean,
@@ -79,6 +120,8 @@ async function setSelection(
 ): Promise<void> {
   const current = selections.value?.[capability]
   if (current === undefined) return
+  const settings = settingsStore.settings
+  if (settings === null) return
   const service = serviceOf(capability)
   const nextModel = model ?? current.model ?? service?.defaultModel ?? service?.models[0]?.id ?? ''
   const patch: SettingsPatch = {
@@ -88,6 +131,22 @@ async function setSelection(
         [capability]: { enabled, model: nextModel },
       },
     },
+  }
+  if (capability !== 'llm') {
+    const providerId = CENTER_OFFICIAL_PROVIDER_IDS[capability]
+    const toggle = resolveCenterProviderToggle(
+      settings[capability],
+      providerId,
+      enabled,
+      firstLocalProviderId(capability),
+    )
+    if (capability === 'tts') {
+      patch.tts = { ...settings.tts, ...toggle }
+    } else if (capability === 'stt') {
+      patch.stt = { ...settings.stt, ...toggle }
+    } else {
+      patch.imagegen = { ...settings.imagegen, ...toggle }
+    }
   }
   const ok = await settingsStore.update(patch)
   if (!ok) error.value = settingsStore.error ?? '保存失败'

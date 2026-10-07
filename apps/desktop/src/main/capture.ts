@@ -8080,6 +8080,254 @@ export const SETTINGS_CENTER_FIELDS_SCRIPT = `(() => {
 })()`
 
 /**
+ * Center 官方 TTS / STT / 生图在 Provider 页的夹具。
+ *
+ * 目录事件在截图环境里没有真实 Center 服务，因此 UI 会显示 `Center 暂不可用` 分支；
+ * 场景仍可钉住「官方条目出现、默认项存在、无编辑/删除、本地覆盖与切回官方」。
+ */
+export const SETTINGS_CENTER_PROVIDER_ACT = `(async () => {
+  try {
+    const state = await window.aurora.settings.get()
+    if (!state.ok) return { ok: false, reason: 'settings.get failed' }
+    const s = state.value
+    const ttsId = 'capture-local-tts'
+    const sttId = 'capture-local-stt'
+    const imageId = 'capture-local-image'
+    window.__auroraCenterProviderProbe = {
+      before: {
+        center: s.center,
+        tts: s.tts,
+        stt: s.stt,
+        imagegen: s.imagegen,
+      },
+      ids: [ttsId, sttId, imageId, 'center-tts', 'center-stt', 'center-imagegen'],
+    }
+    const result = await window.aurora.settings.update({
+      center: {
+        ...s.center,
+        officialModels: {
+          ...s.center.officialModels,
+          tts: { enabled: true, model: 'center-tts-model' },
+          stt: { enabled: true, model: 'center-stt-model' },
+          imagegen: { enabled: true, model: 'center-image-model' },
+        },
+      },
+      tts: {
+        ...s.tts,
+        enabled: true,
+        active: 'center-tts',
+        providers: {
+          ...s.tts.providers,
+          [ttsId]: {
+            type: 'openai-compat',
+            baseUrl: 'https://tts.example.test/v1',
+            apiKeyEnc: '',
+            model: 'local-tts-model',
+            voice: 'alloy',
+            speed: 1,
+            format: 'mp3',
+          },
+          'center-tts': {
+            type: 'openai-compat',
+            baseUrl: 'http://127.0.0.1:8787/api/model-gateway/tts',
+            apiKeyEnc: '',
+            model: 'center-tts-model',
+            voice: 'center-voice',
+            speed: 1,
+            format: 'mp3',
+          },
+        },
+      },
+      stt: {
+        ...s.stt,
+        enabled: true,
+        active: 'center-stt',
+        providers: {
+          ...s.stt.providers,
+          [sttId]: {
+            type: 'openai-compat',
+            baseUrl: 'https://stt.example.test/v1',
+            apiKeyEnc: '',
+            model: 'local-stt-model',
+            language: 'zh',
+          },
+          'center-stt': {
+            type: 'openai-compat',
+            baseUrl: 'http://127.0.0.1:8787/api/model-gateway/stt',
+            apiKeyEnc: '',
+            model: 'center-stt-model',
+            language: 'zh',
+          },
+        },
+      },
+      imagegen: {
+        ...s.imagegen,
+        enabled: true,
+        active: 'center-imagegen',
+        providers: {
+          ...s.imagegen.providers,
+          [imageId]: {
+            type: 'openai-compat',
+            baseUrl: 'https://image.example.test/v1',
+            apiKeyEnc: '',
+            model: 'local-image-model',
+            size: '1024x1024',
+          },
+          'center-imagegen': {
+            type: 'openai-compat',
+            baseUrl: 'http://127.0.0.1:8787/api/model-gateway/imagegen',
+            apiKeyEnc: '',
+            model: 'center-image-model',
+            size: '1024x1024',
+          },
+        },
+      },
+    })
+    if (!result.ok) return { ok: false, reason: result.message }
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    const target =
+      document.querySelector('[data-field="tts.providers.center-tts"]') ||
+      document.querySelector('[data-field="stt.providers.center-stt"]') ||
+      document.querySelector('[data-field="imagegen.providers.center-imagegen"]')
+    if (target !== null) {
+      target.scrollIntoView({ block: 'center' })
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    }
+    return { ok: true, seeded: true }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+function centerProviderCheck(
+  capability: 'tts' | 'stt' | 'imagegen',
+  officialId: string,
+  localId: string,
+  restoreSettings = true,
+): string {
+  return `(async () => {
+    try {
+      const row = document.querySelector('[data-field="${capability}.providers.${officialId}"]')
+      const activeField = document.querySelector('[data-field="${capability}.active"] select')
+      const probe = window.__auroraCenterProviderProbe
+      const text = row === null ? '' : (row.textContent || '').trim()
+      const hasEdit = row === null ? true : row.querySelector('[data-action*="edit-"]') !== null
+      const hasRemove = row === null ? true : row.querySelector('[data-action*="remove-"]') !== null
+      const hasButton = row === null ? true : row.querySelector('button') !== null
+      const option = activeField === null
+        ? null
+        : Array.from(activeField.options).find((item) => item.value === '${officialId}')
+      const officialOption = option !== null && option !== undefined
+      const initialActive = activeField === null ? '' : activeField.value
+
+      let localOverride = false
+      if (activeField !== null) {
+        activeField.value = '${localId}'
+        activeField.dispatchEvent(new Event('change', { bubbles: true }))
+        await new Promise((resolve) => setTimeout(resolve, 350))
+        localOverride =
+          activeField.value === '${localId}' && row.classList.contains('accent') === false
+      }
+      let restored = !${restoreSettings}
+      if (${restoreSettings} && probe !== undefined) {
+        const removed = probe.ids.filter((id) => {
+          const group = id.indexOf('center-tts') === 0
+            ? probe.before.tts
+            : id.indexOf('center-stt') === 0
+              ? probe.before.stt
+              : id.indexOf('center-imagegen') === 0
+                ? probe.before.imagegen
+                : null
+          return group === null || group.providers[id] === undefined
+        })
+        const result = await window.aurora.settings.update({
+          center: probe.before.center,
+          tts: { ...probe.before.tts, removedProviders: removed.filter((id) => id.indexOf('tts') !== -1) },
+          stt: { ...probe.before.stt, removedProviders: removed.filter((id) => id.indexOf('stt') !== -1) },
+          imagegen: {
+            ...probe.before.imagegen,
+            removedProviders: removed.filter((id) => id.indexOf('image') !== -1),
+          },
+        })
+        restored = result.ok === true
+      }
+
+      return {
+        pass:
+          row !== null &&
+          activeField !== null &&
+          officialOption &&
+          initialActive === '${officialId}' &&
+          text.indexOf('Center 官方') !== -1 &&
+          text.indexOf('默认') === -1 &&
+          text.indexOf('Center 暂不可用') !== -1 &&
+          !hasEdit &&
+          !hasRemove &&
+          !hasButton &&
+          localOverride &&
+          restored,
+        row: row !== null,
+        officialOption,
+        initialActive,
+        hasEdit,
+        hasRemove,
+        hasButton,
+        localOverride,
+        restored,
+        text,
+      }
+    } catch (error) {
+      return { pass: false, reason: String(error) }
+    }
+  })()`
+}
+
+export const SETTINGS_CENTER_TTS_STT_CHECK = `(async () => {
+  try {
+    const tts = await ${centerProviderCheck('tts', 'center-tts', 'capture-local-tts', false)}
+    const stt = await ${centerProviderCheck('stt', 'center-stt', 'capture-local-stt', false)}
+    const restore = await (async () => {
+      const probe = window.__auroraCenterProviderProbe
+      if (probe === undefined) return false
+      const removed = probe.ids.filter((id) => {
+        const group = id.indexOf('center-tts') === 0
+          ? probe.before.tts
+          : id.indexOf('center-stt') === 0
+            ? probe.before.stt
+            : id.indexOf('center-imagegen') === 0
+              ? probe.before.imagegen
+              : null
+        return group === null || group.providers[id] === undefined
+      })
+      const result = await window.aurora.settings.update({
+        center: probe.before.center,
+        tts: { ...probe.before.tts, removedProviders: removed.filter((id) => id.indexOf('tts') !== -1) },
+        stt: { ...probe.before.stt, removedProviders: removed.filter((id) => id.indexOf('stt') !== -1) },
+        imagegen: {
+          ...probe.before.imagegen,
+          removedProviders: removed.filter((id) => id.indexOf('image') !== -1),
+        },
+      })
+      return result.ok === true
+    })()
+    return {
+      pass: tts.pass === true && stt.pass === true && restore,
+      tts,
+      stt,
+      restore,
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error) }
+  }
+})()`
+
+export const SETTINGS_CENTER_IMAGEGEN_CHECK = centerProviderCheck(
+  'imagegen',
+  'center-imagegen',
+  'capture-local-image',
+)
+
+/**
  * 「AI 模型」页新区组探针（BetaV2，spec §9）：「对话展示」与「生图模型」。
  *
  * - `general.chat.showThinking`（v8 新字段）：对话窗思考折叠块的唯一门控，开关必须常在；
@@ -8932,114 +9180,239 @@ export const WINDOW_DRAG_SCRIPT = `(() => {
 })()`
 
 /**
- * 对话窗模型选择器探针 · 前半（step-05）：把 [data-field="chat.model"] 切到第二个模型。
+ * 对话窗模型选择器探针 · 前半：造本机 + Center 两个来源，依次切 Center / 用户模型。
  *
- * 与思考等级那条同构：隔离 userData 起步时没有 provider，而「没有可用 provider」时两个选择器
- * 都按设计禁用，所以先造一个**带候选列表**的 provider（modelList 至少两个 id）再操作。
- * 原值（model 与 modelList）记到 window.__auroraModelProbe，供 check 阶段写回、不污染后续场景。
+ * 双下拉后 [data-field="chat.modelSource"] 管来源，[data-field="chat.model"] 管具体模型。
+ * 探针用 reserved id `capture-source` 和 `center-llm`，原值记到 window.__auroraModelProbe，
+ * check 阶段完整还原；不依赖会话已经有覆盖。
  */
 export const CHAT_MODEL_PICKER_ACT = `(async () => {
   try {
     const state = await window.aurora.settings.get()
     if (!state.ok) return { changed: false, reason: 'settings.get failed' }
     const providers = state.value.llm.providers
-    const active = state.value.llm.active !== '' ? state.value.llm.active : 'capture'
-    const existing = providers[active]
-    const models = ['deepseek-chat', 'deepseek-reasoner']
+    const localId = 'capture-source'
+    const centerId = 'center-llm'
+    const beforeLocal = providers[localId] === undefined ? null : providers[localId]
+    const beforeCenter = providers[centerId] === undefined ? null : providers[centerId]
+    const beforeOfficial = state.value.center.officialModels.llm
     window.__auroraModelProbe = {
-      active,
-      before: existing === undefined ? null : existing.model,
-      beforeList: existing === undefined ? null : existing.modelList,
+      active: state.value.llm.active,
+      beforeLocal,
+      beforeCenter,
+      beforeOfficial,
     }
 
-    const list = existing === undefined ? undefined : existing.modelList
-    if (existing === undefined || list === undefined || list.length < models.length) {
-      const result = await window.aurora.settings.update({
-        llm: {
-          active,
-          providers: {
-            ...providers,
-            [active]: {
-              type: 'openai-compat',
-              baseUrl: 'https://api.deepseek.com/v1',
-              apiKeyEnc: '',
-              model: 'deepseek-chat',
-              ...(existing === undefined ? {} : existing),
-              modelList: models,
-            },
+    const initialSessions = await window.aurora.chat.sessions()
+    const priorOverride =
+      initialSessions.ok === true
+        ? initialSessions.value.find((item) => item.llm !== undefined)
+        : undefined
+    window.__auroraModelProbe.priorOverride =
+      priorOverride === undefined || priorOverride.llm === undefined
+        ? null
+        : { sessionId: priorOverride.id, llm: priorOverride.llm }
+    if (priorOverride !== undefined) {
+      await window.aurora.chat.setSessionModel({
+        sessionId: priorOverride.id,
+        providerId: '',
+        model: '',
+      })
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+
+    const seeded = await window.aurora.settings.update({
+      llm: {
+        active: localId,
+        providers: {
+          [localId]: {
+            type: 'openai-compat',
+            baseUrl: 'https://api.deepseek.com/v1',
+            apiKeyEnc: '',
+            model: 'deepseek-chat',
+            modelList: ['deepseek-chat', 'deepseek-reasoner'],
+            modelParams: {},
+          },
+          [centerId]: {
+            type: 'openai-compat',
+            baseUrl: 'http://127.0.0.1:8787/api/model-gateway/llm',
+            apiKeyEnc: '',
+            model: 'center-a',
+            modelList: ['center-a', 'center-b'],
+            modelParams: {},
           },
         },
-      })
-      if (!result.ok) return { changed: false, reason: result.message }
-      await new Promise((resolve) => setTimeout(resolve, 600))
+      },
+      center: {
+        ...state.value.center,
+        officialModels: {
+          ...state.value.center.officialModels,
+          llm: { enabled: true, model: 'center-a' },
+        },
+      },
+    })
+    if (!seeded.ok) return { changed: false, reason: seeded.message }
+    await new Promise((resolve) => setTimeout(resolve, 700))
+
+    const sessionsAfterSeed = await window.aurora.chat.sessions()
+    window.__auroraModelProbe.overriddenAfterSeed =
+      sessionsAfterSeed.ok === true &&
+      sessionsAfterSeed.value.some((item) => item.llm !== undefined)
+
+    const findSelect = (field) => {
+      const node = document.querySelector('[data-field="' + field + '"]')
+      return node === null ? null : node.tagName === 'SELECT' ? node : node.querySelector('select')
     }
 
-    // 轮询等控件可用（同思考等级那条）：disabled 取决于渲染层 store 是否已水合，
-    // disabled 元素上的 change 事件不冒泡，会变成假 FAIL。本段在模板字符串里，注释不能带反引号。
-    let select = null
-    for (let attempt = 0; attempt < 10 && select === null; attempt += 1) {
-      const field = document.querySelector('[data-field="chat.model"]')
-      const candidate =
-        field === null ? null : field.tagName === 'SELECT' ? field : field.querySelector('select')
-      if (candidate !== null && candidate.disabled !== true) {
-        select = candidate
+    let sourceSelect = null
+    let modelSelect = null
+    for (let attempt = 0; attempt < 12 && (sourceSelect === null || modelSelect === null); attempt += 1) {
+      const sourceCandidate = findSelect('chat.modelSource')
+      const modelCandidate = findSelect('chat.model')
+      if (
+        sourceCandidate !== null &&
+        modelCandidate !== null &&
+        sourceCandidate.disabled !== true &&
+        modelCandidate.disabled !== true
+      ) {
+        sourceSelect = sourceCandidate
+        modelSelect = modelCandidate
       } else {
         await new Promise((resolve) => setTimeout(resolve, 250))
       }
     }
-    if (select === null) {
-      return { changed: false, reason: 'chat.model 下拉始终不可用（settingsStore 未水合？）' }
+    if (sourceSelect === null || modelSelect === null) {
+      return { changed: false, reason: '模型来源 / 模型下拉始终不可用' }
     }
-    const optionValues = Array.from(select.options).map((item) => item.value)
-    if (optionValues.indexOf('deepseek-reasoner') === -1) {
-      // 目标不在选项里就不硬切：切开只会静默拿到一个不是我们想要的值
-      return { changed: false, reason: 'deepseek-reasoner 不在选项里', options: optionValues }
+
+    const sourceValues = Array.from(sourceSelect.options).map((item) => item.value)
+    if (sourceValues.indexOf('center') === -1 || sourceValues.indexOf('local') === -1) {
+      return { changed: false, reason: '双下拉来源未同时出现', sourceValues }
     }
-    select.value = 'deepseek-reasoner'
-    select.dispatchEvent(new Event('change', { bubbles: true }))
+    window.__auroraModelProbe.initialSource = sourceSelect.value
+
+    sourceSelect.value = 'local'
+    sourceSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 700))
+
+    sourceSelect = findSelect('chat.modelSource')
+    sourceSelect.value = 'center'
+    sourceSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    const centerSessions = await window.aurora.chat.sessions()
+    const centerOverride =
+      centerSessions.ok === true ? centerSessions.value.find((item) => item.llm !== undefined) : undefined
+
+    modelSelect = findSelect('chat.model')
+    const centerOption = modelSelect === null
+      ? undefined
+      : Array.from(modelSelect.options).find((item) => {
+          try {
+            const parsed = JSON.parse(item.value)
+            return parsed[0] === 'center-llm' && parsed[1] === 'center-b'
+          } catch {
+            return false
+          }
+        })
+    if (centerOption === undefined || modelSelect === null) {
+      return { changed: false, reason: 'Center 候选 center-b 不存在' }
+    }
+    modelSelect.value = centerOption.value
+    modelSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const centerModelSessions = await window.aurora.chat.sessions()
+    const centerModelOverride =
+      centerModelSessions.ok === true
+        ? centerModelSessions.value.find((item) => item.llm !== undefined)
+        : undefined
+
+    sourceSelect = findSelect('chat.modelSource')
+    sourceSelect.value = 'local'
+    sourceSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 500))
+
+    modelSelect = findSelect('chat.model')
+    const localOption = modelSelect === null
+      ? undefined
+      : Array.from(modelSelect.options).find((item) => {
+          try {
+            const parsed = JSON.parse(item.value)
+            return parsed[0] === localId && parsed[1] === 'deepseek-reasoner'
+          } catch {
+            return false
+          }
+        })
+    if (localOption === undefined || modelSelect === null) {
+      return { changed: false, reason: '本机候选 deepseek-reasoner 不存在' }
+    }
+    modelSelect.value = localOption.value
+    modelSelect.dispatchEvent(new Event('change', { bubbles: true }))
     await new Promise((resolve) => setTimeout(resolve, 600))
-    return { changed: true, options: optionValues }
+    window.__auroraModelProbe.centerProvider =
+      centerOverride === undefined || centerOverride.llm === undefined
+        ? null
+        : centerOverride.llm.providerId
+    window.__auroraModelProbe.centerModel =
+      centerOverride === undefined || centerOverride.llm === undefined
+        ? null
+        : centerOverride.llm.model
+    window.__auroraModelProbe.centerSelectedProvider =
+      centerModelOverride === undefined || centerModelOverride.llm === undefined
+        ? null
+        : centerModelOverride.llm.providerId
+    window.__auroraModelProbe.centerSelectedModel =
+      centerModelOverride === undefined || centerModelOverride.llm === undefined
+        ? null
+        : centerModelOverride.llm.model
+    return {
+      changed: true,
+      sourceValues,
+      initialSource: window.__auroraModelProbe.initialSource,
+      overriddenAfterSeed: window.__auroraModelProbe.overriddenAfterSeed,
+      centerProvider: window.__auroraModelProbe.centerProvider,
+      centerModel: window.__auroraModelProbe.centerModel,
+      centerSelectedProvider: window.__auroraModelProbe.centerSelectedProvider,
+      centerSelectedModel: window.__auroraModelProbe.centerSelectedModel,
+    }
   } catch (error) {
     return { changed: false, reason: String(error) }
   }
 })()`
 
 /**
- * 对话窗模型选择器探针 · 后半：**会话级模型**的判据（docs/06 §3，本轮起）。
- *
- * 口径变了：下拉写的是**本会话的覆盖**（`chat:setSessionModel` → 会话文件 `meta.llm`），
- * 不再改全局 `llm.providers.<active>.model`。因此这里读三处并把「全局没被动过」也断言进去
- * ——那正是这次改动最该被钉住的一条（对话窗不该再改别人的默认模型）：
- * 1. 全局 `model` 仍是 `deepseek-chat`（没被下拉改动）；
- * 2. 当前会话（`main`）的摘要里带 `llm.model = deepseek-reasoner`（覆盖写进去了）；
- * 3. DOM 的 value 是新模型（界面接线没断）。
- * 结束时**清掉本会话覆盖**（回到「跟随全局」）并把上半场造的全局 modelList / model 写回。
+ * 对话窗模型选择器探针 · 后半：断言双下拉的会话覆盖、全局不变和来源还原。
  */
 export const CHAT_MODEL_PICKER_CHECK = `(async () => {
   try {
     const state = await window.aurora.settings.get()
     if (!state.ok) return { pass: false, reason: 'settings.get failed' }
-    const active = state.value.llm.active
-    const provider = active === '' ? undefined : state.value.llm.providers[active]
-    const globalModel = provider === undefined ? null : provider.model
+    const localId = 'capture-source'
+    const centerId = 'center-llm'
+    const globalProvider = state.value.llm.providers[localId]
+    const globalModel = globalProvider === undefined ? null : globalProvider.model
 
     const field = document.querySelector('[data-field="chat.model"]')
     const select =
       field === null ? null : field.tagName === 'SELECT' ? field : field.querySelector('select')
-    const domValue = select === null ? null : select.value
+    const sourceField = document.querySelector('[data-field="chat.modelSource"]')
+    const sourceSelect =
+      sourceField === null
+        ? null
+        : sourceField.tagName === 'SELECT'
+          ? sourceField
+          : sourceField.querySelector('select')
+    const domValue = select === null ? null : JSON.parse(select.value)
+    const sourceValue = sourceSelect === null ? null : sourceSelect.value
     const optionCount = select === null ? 0 : select.options.length
 
-    // 会话覆盖：从会话摘要里找**带 llm 的那条**（不假定会话 id —— 截图夹具会把对话窗
-    // 切到别的会话上，写死的 id 会读成 null 而误判成"没写进去"）。
     const sessions = await window.aurora.chat.sessions()
     const overridden =
       sessions.ok === true ? sessions.value.find((item) => item.llm !== undefined) : undefined
+    const sessionProvider =
+      overridden === undefined || overridden.llm === undefined ? null : overridden.llm.providerId
     const sessionModel =
       overridden === undefined || overridden.llm === undefined ? null : overridden.llm.model
 
-    // 还原：清掉本会话覆盖（空串 = 清除），再读一次会话摘要确认它真的没了。
-    // 判据取**状态**而不是 DOM 的 value：探针前半直接把 select.value 设成了新模型，
-    // 若界面状态回到空串，Vue 的 patch 认为"值没变"就不会去改 DOM，读到的仍是探针设的那个值。
     const cleared = await window.aurora.chat.setSessionModel({
       sessionId: overridden === undefined ? 'main' : overridden.id,
       providerId: '',
@@ -9052,39 +9425,62 @@ export const CHAT_MODEL_PICKER_CHECK = `(async () => {
 
     let restored = cleared.ok === true && !stillOverridden
     const probe = window.__auroraModelProbe
-    if (probe !== undefined && probe.active !== '' && probe.before !== null) {
-      const providers = state.value.llm.providers
-      const target = providers[probe.active]
-      const list = target === undefined ? undefined : target.modelList
-      const listSame =
-        probe.beforeList === null ||
-        (list !== undefined &&
-          list.length === probe.beforeList.length &&
-          list.every((item, index) => item === probe.beforeList[index]))
-      if (target !== undefined && (target.model !== probe.before || !listSame)) {
-        const patch = { ...target, model: probe.before }
-        if (probe.beforeList !== null) patch.modelList = probe.beforeList
-        const result = await window.aurora.settings.update({
-          llm: { active: state.value.llm.active, providers: { ...providers, [probe.active]: patch } },
+    if (probe !== undefined) {
+      if (probe.priorOverride !== null) {
+        const prior = await window.aurora.chat.setSessionModel({
+          sessionId: probe.priorOverride.sessionId,
+          providerId: probe.priorOverride.llm.providerId,
+          model: probe.priorOverride.llm.model,
         })
-        restored = restored && result.ok === true
+        restored = restored && prior.ok === true
       }
+      const removedProviders = []
+      const providers = {}
+      if (probe.beforeLocal === null) removedProviders.push(localId)
+      else providers[localId] = probe.beforeLocal
+      if (probe.beforeCenter === null) removedProviders.push(centerId)
+      else providers[centerId] = probe.beforeCenter
+      const result = await window.aurora.settings.update({
+        llm: { active: probe.active, providers, removedProviders },
+        center: {
+          ...state.value.center,
+          officialModels: {
+            ...state.value.center.officialModels,
+            llm: probe.beforeOfficial,
+          },
+        },
+      })
+      restored = restored && result.ok === true
     }
 
     return {
       pass:
+        probe !== undefined &&
+        probe.overriddenAfterSeed === false &&
+        probe.initialSource === 'center' &&
+        probe.centerProvider === 'center-llm' &&
+        probe.centerModel === 'center-a' &&
+        probe.centerSelectedProvider === 'center-llm' &&
+        probe.centerSelectedModel === 'center-b' &&
         globalModel === 'deepseek-chat' &&
+        sessionProvider === localId &&
         sessionModel === 'deepseek-reasoner' &&
-        domValue === 'deepseek-reasoner' &&
+        sourceValue === 'local' &&
+        domValue !== null &&
+        domValue[0] === localId &&
+        domValue[1] === 'deepseek-reasoner' &&
         optionCount >= 2 &&
         restored === true,
       globalModel,
+      sessionProvider,
       sessionModel,
       domValue,
+      sourceValue,
       optionCount,
       cleared: cleared.ok === true,
       stillOverridden,
       restored,
+      probe,
     }
   } catch (error) {
     return { pass: false, reason: String(error) }
@@ -11476,6 +11872,21 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     file: 'settings-legacy-tts-alias.png',
     query: { page: 'tts' },
     check: SETTINGS_LEGACY_ALIAS_SCRIPT,
+  })
+  // Center 官方 TTS / STT / 生图在 Provider 页的只读卡片（目录不可用时也要常显）。
+  plan.push({
+    name: 'settings',
+    file: 'settings-center-official-voice.png',
+    query: { page: 'voice' },
+    act: SETTINGS_CENTER_PROVIDER_ACT,
+    check: SETTINGS_CENTER_TTS_STT_CHECK,
+  })
+  plan.push({
+    name: 'settings',
+    file: 'settings-center-official-imagegen.png',
+    query: { page: 'llm' },
+    act: SETTINGS_CENTER_PROVIDER_ACT,
+    check: SETTINGS_CENTER_IMAGEGEN_CHECK,
   })
   // 「会话管理」页 · 项目区组（2026-09-30 自「通用」页迁入，docs/06 §5.1）：
   // prepare 先建出真实项目根（让"根可用"这个健康态成立），act 把项目登记进 projects.list，
