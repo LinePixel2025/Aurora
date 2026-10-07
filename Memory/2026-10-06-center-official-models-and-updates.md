@@ -39,3 +39,15 @@ Center 现在同时承担三类容易混淆的职责：客户端连接与远程�
   缺失时才回退包内 GitHub 源。Center 返回“已是最新”时不再尝试 GitHub。
 - Center Release 上传必须由管理员会话完成，先上传 staging，再校验 `latest.yml` 的 version /
   size / sha512 与 blockmap，全部通过才原子切换 latest；公开下载路由支持 Range。
+
+## 2026-10-07 发布与部署记录
+
+- 桌面端与 Center 已发布 **v0.4.4**；源码 `main` 与 annotated tag `v0.4.4` 已推送到
+  `LinePixel2025/Aurora`，安装包 / blockmap / `latest.yml` / Center 部署包已上传
+  `LinePixel2025/Aurora-releases`。
+- 阿里云 Center 已更新到 `aurora-center:0.4.4`，数据目录仍为 `/opt/aurora-center/data`；
+  升级前完整备份在 `/opt/aurora-center/backup-v044-20261007-080427/`。
+- `AURORA_CENTER_SECRET` 已生成并只保存在服务器 `/opt/aurora-center/.env`（权限 600）；
+  同一份密钥备份在该次升级备份目录的 `.env`。Memory 不记录密钥值，后续升级不得覆盖或丢失该文件。
+- Center 自托管更新路由已发布 0.4.4：`http://120.24.223.65:8787/api/updates/latest.yml`，
+  并发验证了安装包 Range 返回 `206`。
