@@ -7,7 +7,19 @@
 
 ## 当前实现状态
 
-**当前版本 v0.4.4（Aurora Center 官方模型网关、Token 用量与自托管更新），
+**当前版本 v0.4.5（Provider 与 Center 模型联动、会话模型来源双下拉与路由修复），
+配置 Schema v31（无迁移），桌面端与 Aurora Center 同步更新** ——
+三块：
+① **模型来源与模型双下拉**：对话窗直接区分 `Center 官方` 与 `用户模型`，用户模型聚合全部
+本机 Provider；切换来源或模型立即写入会话覆盖，旧会话先展示实际生效值但不补写；
+② **Center 官方模型路由**：Center 官方语言模型可独立满足全局默认与引导完成条件；
+Center 不可用或关闭时回落到可用本机 Provider，不再误判 onboarding 或静默切错来源；
+TTS / STT / 生图以各自 `active` 为实际路由，官方 Provider 只读展示；
+③ **修复与发布**：修复 Center「登录账户」字段整行 hover / 点击代理给按钮的问题；
+发布流程强制 GitHub Releases 与 Center 更新源双投。
+面向用户的说明见 [release-notes/v0.4.5.md](./release-notes/v0.4.5.md)。
+
+**上一版本 v0.4.4（Aurora Center 官方模型网关、Token 用量与自托管更新），
 配置 Schema v31（迁移 v30 → v31，新增 Center 官方模型选择），桌面端与 Aurora Center 同步更新** ——
 四块：
 ① **官方模型网关**：Center 统一提供语言模型、生图、TTS、STT；管理员保存加密上游密钥，
