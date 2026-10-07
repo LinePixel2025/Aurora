@@ -1679,7 +1679,8 @@ export const SCENARIOS = [
       return verdict(
         {
           page: reading.page === 1,
-          cards: reading.cards === 3,
+          // 2026-10-07 重构：主卡（区间总计）+ 输入 / 输出 / 缓存命中三张分项卡
+          cards: reading.cards === 4,
           chart: reading.canvas === 1,
           adminFilter: reading.userFilter === 1,
         },
@@ -2196,6 +2197,87 @@ export const SCENARIOS = [
           drawerShot,
           notes: ['移动端：移动标签栏被 grid 行高拉伸成巨型胶囊（tabsHeight 读数 + 截图可核对）'],
         },
+      )
+    },
+  },
+  // ── 33b. 移动工作台：底部导航贴底 / KPI 卡堆叠 / 表格卡片化 / 控制台让位（本轮） ──
+  {
+    name: 'mobile-workbench',
+    viewport: 'mobile',
+    async run(ctx) {
+      // 1. 用量页：底部导航真的 fixed 贴住视口底，KPI 四卡纵向堆叠，快捷 chips 在
+      await fresh(ctx, { hash: '#/usage', expect: '[data-panel="usage-page"]' })
+      await ctx.page.waitForSelector('[data-field="usage.chart"] canvas', { timeout: TIMEOUT })
+      const usage = await ctx.page.evaluate(() => {
+        const nav = document.querySelector('.wb-bottom-nav')
+        const rect = nav === null ? null : nav.getBoundingClientRect()
+        const style = nav === null ? null : getComputedStyle(nav)
+        const cards = [...document.querySelectorAll('.usage-card')].map((card) => {
+          const box = card.getBoundingClientRect()
+          return { w: Math.round(box.width), h: Math.round(box.height) }
+        })
+        const chips = [...document.querySelectorAll('.usage-quick-chip')].map((chip) =>
+          chip.textContent.trim(),
+        )
+        const mainPad = getComputedStyle(document.querySelector('.workbench-main')).paddingBottom
+        return {
+          nav:
+            nav === null || rect === null
+              ? null
+              : {
+                  h: Math.round(rect.height),
+                  bottom: Math.round(rect.bottom),
+                  viewportH: window.innerHeight,
+                  pinned: Math.abs(rect.bottom - window.innerHeight) <= 2,
+                  position: style.position,
+                  display: style.display,
+                },
+          cards,
+          chips,
+          mainPad,
+        }
+      })
+      const workbenchShot = join(ctx.outDir, `mobile-workbench-${ctx.theme}.png`)
+      await ctx.page.screenshot({ path: workbenchShot, fullPage: false }).catch(() => undefined)
+
+      // 2. 管理页：表格卡片化 —— thead 隐藏、td 带字段名（卡片化是 opt-in，管理页开了）
+      await fresh(ctx, { hash: '#/admin', expect: '[data-panel="admin-page"]' })
+      await ctx.page.waitForSelector('[data-panel="admin-users"]', { timeout: TIMEOUT })
+      const admin = await ctx.page.evaluate(() => {
+        const thead = document.querySelector('[data-panel="admin-users"] thead')
+        const labeled = document.querySelectorAll('[data-panel="admin-users"] td[data-label]')
+        const first = document.querySelector('[data-panel="admin-users"] td[data-label]')
+        return {
+          theadHidden: thead === null || getComputedStyle(thead).display === 'none',
+          labeledCells: labeled.length,
+          firstLabel: first?.getAttribute('data-label') ?? '',
+        }
+      })
+
+      // 3. 控制台页：底部导航让位（v-if 摘除，不与自带的移动标签栏叠两层）
+      await fresh(ctx)
+      const consoleRoute = await ctx.page.evaluate(() => ({
+        bottomNavGone: document.querySelector('.wb-bottom-nav') === null,
+        mobileTabs: document.querySelectorAll('.mobile-tabs').length,
+      }))
+
+      return verdict(
+        {
+          navPinned:
+            usage.nav !== null &&
+            usage.nav.pinned &&
+            usage.nav.position === 'fixed' &&
+            usage.nav.h >= 44,
+          kpiCardsStacked: usage.cards.length === 4 && usage.cards.every((card) => card.h > 0),
+          quickChips: usage.chips.length === 3,
+          mainPadReserved: Number.parseFloat(usage.mainPad) >= 56,
+          adminTheadHidden: admin.theadHidden,
+          adminLabeledCells: admin.labeledCells >= 4 && admin.firstLabel !== '',
+          consoleBottomNavGone: consoleRoute.bottomNavGone,
+          consoleMobileTabsKept: consoleRoute.mobileTabs === 1,
+        },
+        { usage, admin, consoleRoute },
+        ['移动端工作台：底部导航 / KPI 堆叠 / 表格卡片化 / 控制台让位（截图可核对）'],
       )
     },
   },

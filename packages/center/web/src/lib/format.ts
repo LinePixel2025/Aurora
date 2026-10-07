@@ -41,6 +41,19 @@ export function formatBytes(bytes: number): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${unit}`
 }
 
+/** Token 数的紧凑展示：1234567 → 1.2M，12345 → 12.3K（KPI 卡与图表轴共用）。 */
+export function formatTokens(count: number): string {
+  if (!Number.isFinite(count)) return String(count)
+  const abs = Math.abs(count)
+  if (abs >= 1_000_000) {
+    return `${(count / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`
+  }
+  if (abs >= 1_000) {
+    return `${(count / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}K`
+  }
+  return String(count)
+}
+
 // ───────────────────────── job / 子代理状态标签 ─────────────────────────
 
 /** AgentJobStatus → 中文标签（docs/06 §4.1） */

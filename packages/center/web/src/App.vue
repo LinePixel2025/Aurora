@@ -19,6 +19,7 @@ import { navigate, route } from './router'
 import PublicHeader from './components/PublicHeader.vue'
 import WorkbenchSidebar from './components/WorkbenchSidebar.vue'
 import { PanelLeft } from '@aurora/shared/browser'
+import { WORKBENCH_NAV } from './lib/nav'
 
 const LandingView = defineAsyncComponent(() => import('./views/LandingView.vue'))
 const LoginView = defineAsyncComponent(() => import('./views/LoginView.vue'))
@@ -109,6 +110,15 @@ function onLogout(): void {
   logout()
   navigate('home')
 }
+
+/**
+ * 底部导航（≤720px、非控制台页显示）：控制台页有自己的底部「设备 / 控制面板」
+ * 标签，两套一起会出现双层底栏。管理员项仍按角色过滤。
+ */
+const isConsoleRoute = computed(() => route.value.name === 'console')
+const bottomNavItems = computed(() =>
+  WORKBENCH_NAV.filter((item) => !(item.admin && currentUser.value?.role !== 'admin')),
+)
 </script>
 
 <template>
@@ -186,6 +196,20 @@ function onLogout(): void {
             </template>
           </Suspense>
         </main>
+
+        <nav v-if="!isConsoleRoute" class="wb-bottom-nav" aria-label="快捷导航">
+          <button
+            v-for="item in bottomNavItems"
+            :key="item.name"
+            type="button"
+            class="wb-bottom-item"
+            :class="{ active: route.name === item.name }"
+            @click="onNavigate(item.name)"
+          >
+            <component :is="item.icon" :size="19" :stroke-width="1.75" aria-hidden="true" />
+            <span>{{ item.label }}</span>
+          </button>
+        </nav>
       </div>
     </template>
 
@@ -214,6 +238,41 @@ function onLogout(): void {
   flex-direction: column;
 }
 
+/*
+ * 工作台氛围层（官网分支没有）：光斑铺在壳层最底（z-index:-1 + isolation 收在壳内，
+ * 不参与内容层级），侧栏 / 顶栏的毛玻璃磨的就是它 —— 没有这层，半透明底磨到的只是
+ * 纯色画布，玻璃感出不来。isolate 同时保证 -1 不会被 body 背景盖住。
+ */
+.app-shell:not(.app-shell--public) {
+  position: relative;
+  isolation: isolate;
+}
+
+.app-shell:not(.app-shell--public)::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      52rem 30rem at 8% -6%,
+      color-mix(in srgb, var(--center-signal) 9%, transparent),
+      transparent 62%
+    ),
+    radial-gradient(
+      46rem 28rem at 98% 10%,
+      color-mix(in srgb, var(--aurora-blue) 8%, transparent),
+      transparent 64%
+    ),
+    radial-gradient(
+      40rem 26rem at 50% 110%,
+      color-mix(in srgb, var(--center-signal) 6%, transparent),
+      transparent 60%
+    ),
+    var(--center-workspace);
+}
+
 .public-main {
   flex: 1 1 auto;
   min-width: 0;
@@ -240,7 +299,16 @@ function onLogout(): void {
   min-height: 58px;
   padding: 0 22px;
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--center-topbar);
+  /* 玻璃顶栏：与官网顶栏同款配方（半透明 + blur + saturate），不支持时回落实底 */
+  background: var(--center-wb-glass);
+  -webkit-backdrop-filter: var(--center-glass-blur);
+  backdrop-filter: var(--center-glass-blur);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .workbench-head {
+    background: var(--center-topbar);
+  }
 }
 
 .workbench-heading {
@@ -302,7 +370,8 @@ function onLogout(): void {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  background: var(--center-workspace);
+  /* 背景交给壳层氛围层：这里不透明会把毛玻璃要磨的光斑全盖住 */
+  background: transparent;
 }
 
 .workbench-main[data-route='console'] {
@@ -310,8 +379,51 @@ function onLogout(): void {
 }
 
 .mobile-nav-toggle,
-.sidebar-scrim {
+.sidebar-scrim,
+.wb-bottom-nav {
   display: none;
+}
+
+/*
+ * 移动端底部导航（≤720px、非控制台页）：实底浮条 —— 浮在页面内容上，半透明会把
+ * 正文透出来（同抽屉口径）。z-index 取 auto（定位层）：低于壳层抽屉(--z-flyout)
+ * 与壳层 scrim(--z-sticky)，开抽屉时被 scrim 正常盖住。
+ */
+.wb-bottom-nav {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  align-items: stretch;
+  gap: 2px;
+  padding: 6px 10px calc(6px + env(safe-area-inset-bottom, 0));
+  border-top: 1px solid var(--border-subtle);
+  background: var(--center-sidebar);
+}
+
+.wb-bottom-item {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 5px 2px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.wb-bottom-item.active {
+  background: var(--center-active);
+  color: var(--center-signal);
 }
 
 .boot,
@@ -369,8 +481,24 @@ function onLogout(): void {
     padding: 0 14px;
   }
 
+  /* 窄屏顶栏只留页面名：AURORA 前缀与设备数状态都是装饰 */
+  .workbench-heading span {
+    display: none;
+  }
+
   .head-status--devices {
     display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .wb-bottom-nav {
+    display: flex;
+  }
+
+  /* 底部导航占位：控制台页有自己的底部标签，不垫（高度锁定一屏不能少） */
+  .workbench-main:not([data-route='console']) {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0));
   }
 }
 </style>

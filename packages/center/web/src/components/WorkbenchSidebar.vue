@@ -1,13 +1,7 @@
 <script setup lang="ts">
 /** 登录后的固定导航：状态、页面入口与账号动作集中在同一条控制轨上。 */
-import {
-  Blocks,
-  FolderOpen,
-  Gauge,
-  LogOut,
-  MonitorSmartphone,
-  Sparkles,
-} from '@aurora/shared/browser'
+import { LogOut } from '@aurora/shared/browser'
+import { WORKBENCH_NAV } from '../lib/nav'
 import type { RouteName } from '../router'
 import type { Me } from '../lib/api'
 
@@ -23,13 +17,7 @@ const emit = defineEmits<{
   (event: 'logout'): void
 }>()
 
-const navItems = [
-  { name: 'console' as const, label: '控制台', icon: Sparkles, admin: false },
-  { name: 'usage' as const, label: '用量', icon: Gauge, admin: false },
-  { name: 'automations' as const, label: '自动化', icon: Blocks, admin: false },
-  { name: 'files' as const, label: '文件', icon: FolderOpen, admin: false },
-  { name: 'admin' as const, label: '管理', icon: MonitorSmartphone, admin: true },
-]
+const navItems = WORKBENCH_NAV
 </script>
 
 <template>
@@ -92,7 +80,17 @@ const navItems = [
   min-height: 0;
   padding: 18px 14px 14px;
   border-right: 1px solid var(--border-subtle);
-  background: var(--center-sidebar);
+  /* 桌面玻璃：磨砂磨的是壳层氛围光斑（App.vue 的 ::before）；只换底色与 blur，
+     不动 border（材质层不得改变布局占位）。不支持 backdrop-filter 时回落实底。 */
+  background: var(--center-wb-glass);
+  -webkit-backdrop-filter: var(--center-glass-blur);
+  backdrop-filter: var(--center-glass-blur);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .workbench-sidebar {
+    background: var(--center-sidebar);
+  }
 }
 
 .sidebar-brand {
@@ -266,6 +264,10 @@ const navItems = [
     box-shadow: var(--shadow-3);
     transform: translateX(-100%);
     transition: transform var(--dur-base) var(--ease-spring);
+    /* 浮在内容上的抽屉必须不透明（同控制台移动抽屉口径），玻璃只留桌面文档流内的一版 */
+    background: var(--center-sidebar);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   .workbench-sidebar.mobile-open {

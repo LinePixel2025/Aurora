@@ -206,7 +206,7 @@ onMounted(() => void loadAll())
         <p v-if="userError" class="ui-error">{{ userError }}</p>
 
         <div class="admin-scroll">
-          <table class="ui-table" data-panel="admin-users">
+          <table class="ui-table ui-table--cards" data-panel="admin-users">
             <thead>
               <tr>
                 <th>用户名</th>
@@ -218,14 +218,16 @@ onMounted(() => void loadAll())
             <tbody>
               <template v-for="user in users" :key="user.id">
                 <tr data-field="admin.user-row">
-                  <td class="admin-name">{{ user.username }}</td>
-                  <td>
+                  <td class="admin-name" data-label="用户名">{{ user.username }}</td>
+                  <td data-label="角色">
                     <span class="ui-chip" :class="user.role === 'admin' ? 'ui-chip--accent' : ''">
                       {{ user.role === 'admin' ? '管理员' : '普通用户' }}
                     </span>
                   </td>
-                  <td class="admin-dim admin-num">{{ formatTime(user.createdAt) }}</td>
-                  <td class="admin-end">
+                  <td class="admin-dim admin-num" data-label="创建时间">
+                    {{ formatTime(user.createdAt) }}
+                  </td>
+                  <td class="admin-end" data-label="操作">
                     <div class="admin-actions">
                       <button class="ui-btn ui-btn--ghost" type="button" @click="resetId = user.id">
                         重置密码
@@ -276,7 +278,7 @@ onMounted(() => void loadAll())
         <p v-if="clientError" class="ui-error">{{ clientError }}</p>
 
         <div class="admin-scroll">
-          <table class="ui-table" data-panel="admin-clients">
+          <table class="ui-table ui-table--cards" data-panel="admin-clients">
             <thead>
               <tr>
                 <th>名称</th>
@@ -291,7 +293,7 @@ onMounted(() => void loadAll())
             </thead>
             <tbody>
               <tr v-for="client in clientRows" :key="client.clientId" data-field="admin.client-row">
-                <td>
+                <td data-label="名称">
                   <span class="admin-client">
                     <span
                       class="admin-dot"
@@ -301,11 +303,11 @@ onMounted(() => void loadAll())
                     <span class="admin-name">{{ client.name }}</span>
                   </span>
                 </td>
-                <td>{{ client.ownerUsername }}</td>
-                <td class="admin-dim">{{ platformLabel(client.platform) }}</td>
-                <td class="admin-dim admin-num">v{{ client.version }}</td>
-                <td class="admin-dim">{{ modeLabel(client.mode) }}</td>
-                <td>
+                <td data-label="属主">{{ client.ownerUsername }}</td>
+                <td class="admin-dim" data-label="平台">{{ platformLabel(client.platform) }}</td>
+                <td class="admin-dim admin-num" data-label="版本">v{{ client.version }}</td>
+                <td class="admin-dim" data-label="模式">{{ modeLabel(client.mode) }}</td>
+                <td data-label="在线">
                   <span
                     class="ui-chip"
                     :class="client.online ? 'ui-chip--ok' : 'ui-chip--muted'"
@@ -314,8 +316,10 @@ onMounted(() => void loadAll())
                     {{ client.online ? '在线' : '离线' }}
                   </span>
                 </td>
-                <td class="admin-dim admin-num">{{ formatTime(client.lastSeenAt) }}</td>
-                <td class="admin-end">
+                <td class="admin-dim admin-num" data-label="最近活跃">
+                  {{ formatTime(client.lastSeenAt) }}
+                </td>
+                <td class="admin-end" data-label="操作">
                   <button
                     class="ui-btn ui-btn--danger"
                     type="button"
@@ -444,7 +448,9 @@ onMounted(() => void loadAll())
 }
 
 .admin-empty {
+  padding: var(--space-4) 0;
   color: var(--text-secondary);
+  text-align: center;
 }
 
 .admin-sub-row td {
@@ -639,10 +645,6 @@ select.ui-input {
 
   .admin-form .ui-input {
     flex: 1 1 140px;
-  }
-
-  .ui-table {
-    min-width: 640px;
   }
 }
 </style>

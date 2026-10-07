@@ -156,7 +156,7 @@ async function sendTo(file: FileEntryInfo): Promise<void> {
 
     <div v-else class="ui-card files-card">
       <div class="files-scroll">
-        <table class="ui-table" data-panel="files-table">
+        <table class="ui-table ui-table--cards" data-panel="files-table">
           <thead>
             <tr>
               <th>名称</th>
@@ -171,19 +171,23 @@ async function sendTo(file: FileEntryInfo): Promise<void> {
           </thead>
           <tbody>
             <tr v-for="file in files" :key="file.fileId" data-field="files.row">
-              <td class="files-name">{{ file.name }}</td>
-              <td class="files-dim" data-field="files.source">{{ sourceLabel(file) }}</td>
-              <td class="files-dim">{{ clientName(file.clientId) }}</td>
-              <td class="files-dim files-num">{{ formatBytes(file.size) }}</td>
-              <td class="files-dim files-note">{{ file.note || '—' }}</td>
-              <td class="files-dim files-num">{{ formatTime(file.uploadedAt) }}</td>
-              <td>
+              <td class="files-name" data-label="名称">{{ file.name }}</td>
+              <td class="files-dim" data-field="files.source" data-label="来源">
+                {{ sourceLabel(file) }}
+              </td>
+              <td class="files-dim" data-label="来源客户端">{{ clientName(file.clientId) }}</td>
+              <td class="files-dim files-num" data-label="大小">{{ formatBytes(file.size) }}</td>
+              <td class="files-dim files-note" data-label="备注">{{ file.note || '—' }}</td>
+              <td class="files-dim files-num" data-label="上传时间">
+                {{ formatTime(file.uploadedAt) }}
+              </td>
+              <td data-label="过期">
                 <span class="files-dim files-num">{{ formatTime(file.expiresAt) }}</span>
                 <span v-if="remainingMs(file.expiresAt, now) < 24 * 3600 * 1000" class="countdown">
                   {{ expiresIn(file) }}
                 </span>
               </td>
-              <td>
+              <td data-label="操作">
                 <div class="files-actions">
                   <a
                     class="ui-btn ui-btn--ghost"
@@ -466,8 +470,12 @@ async function sendTo(file: FileEntryInfo): Promise<void> {
     padding: var(--space-2);
   }
 
-  .ui-table {
-    min-width: 640px;
+  .files-target {
+    flex-wrap: wrap;
+  }
+
+  .files-target-select {
+    flex: 1 1 200px;
   }
 }
 </style>

@@ -307,7 +307,8 @@ async function onFilePicked(event: Event): Promise<void> {
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  background: var(--center-workspace);
+  /* 背景交给壳层氛围层（App.vue ::before），不透明会把玻璃要磨的光斑盖住 */
+  background: transparent;
 }
 
 .rail-drawer {
@@ -332,7 +333,16 @@ async function onFilePicked(event: Event): Promise<void> {
   padding: var(--space-2) var(--space-4);
   border-bottom: 1px solid var(--border-subtle);
   min-height: 48px;
-  background: var(--center-topbar);
+  /* 与壳层顶栏同一块玻璃：配方在 style.css 的令牌里 */
+  background: var(--center-wb-glass);
+  -webkit-backdrop-filter: var(--center-glass-blur);
+  backdrop-filter: var(--center-glass-blur);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .main-head {
+    background: var(--center-topbar);
+  }
 }
 
 .main-title {

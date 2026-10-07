@@ -26,6 +26,14 @@
    */
   --center-header-z: 40;
 
+  /*
+   * 登录后工作台的毛玻璃（侧栏 / 顶栏 / 控制台工具条共用）：配方与官网顶栏同款
+   * （约 0.72 alpha + blur(22px) saturate(1.4)），磨的对象是 App.vue 壳层的氛围光斑层。
+   * @supports 回退在各组件里写回 --center-sidebar / --center-topbar 实底。
+   */
+  --center-wb-glass: rgba(28, 34, 36, 0.72);
+  --center-glass-blur: blur(22px) saturate(1.4);
+
   --center-signal: #21c8b7;
   --center-signal-hover: #32dcc8;
   --center-signal-ink: #071512;
@@ -57,6 +65,7 @@
     --center-workspace: #eef2f1;
     --center-hero-bg: #f5f8f7;
     --center-header-glass: rgba(255, 255, 255, 0.72);
+    --center-wb-glass: rgba(255, 255, 255, 0.72);
     --center-band: #eaf0ef;
     --center-download-bg: #e3eeec;
     --center-auth-panel: rgba(255, 255, 255, 0.96);
@@ -166,6 +175,55 @@ body,
 :focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+/*
+ * 窄屏表格卡片化（opt-in：给 <table> 加 .ui-table--cards，td 标 data-label）。
+ * 不开的表（如自动化页）维持 min-width 横向滚动。字段名由 td 的 data-label 提供。
+ */
+@media (max-width: 720px) {
+  #app .ui-table--cards thead {
+    display: none;
+  }
+
+  #app .ui-table--cards,
+  #app .ui-table--cards tbody,
+  #app .ui-table--cards tr {
+    display: block;
+    width: 100%;
+  }
+
+  #app .ui-table--cards tr {
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  #app .ui-table--cards tr:last-child {
+    border-bottom: 0;
+  }
+
+  #app .ui-table--cards td {
+    display: block;
+    padding: var(--space-1) 0;
+    border-bottom: 0;
+    white-space: normal;
+    text-align: right;
+  }
+
+  #app .ui-table--cards td[data-label] {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  #app .ui-table--cards td[data-label]::before {
+    flex: none;
+    content: attr(data-label);
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    text-align: left;
+  }
 }
 
 /* 转圈节点：共享 theme.css 只提供 `.spin`（旋转动画）与 `aurora-spin` 关键帧，
