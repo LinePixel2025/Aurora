@@ -52,6 +52,16 @@ Center 现在同时承担三类容易混淆的职责：客户端连接与远程�
 - Center 自托管更新路由已发布 0.4.4：`http://120.24.223.65:8787/api/updates/latest.yml`，
   并发验证了安装包 Range 返回 `206`。
 
+## 2026-10-07 v0.4.5 Center 发布记录
+
+- 在阿里云 Center 新建独立管理员 `codex-release`；密码只保存在当前 Windows 用户环境变量
+  `AURORA_CENTER_PASSWORD`，Memory 不记录密码值。原有 `admin` / `Line` 账号未改动。
+- `Aurora-Setup-0.4.5.exe`、`Aurora-Setup-0.4.5.exe.blockmap`、`latest.yml` 已上传 Center
+  并发布；线上 `/api/updates/latest.yml` 返回 `0.4.5`，安装包 Range 返回 `206`。
+- 本机 GitHub 凭据当前无效，且 `api.github.com` / `ssh.github.com:443` 连接超时，因此
+  GitHub Releases 尚未同步。按双投硬规则，本次发布仍视为未完成；网络与凭据恢复后必须用
+  同一批产物补传 GitHub Releases，再宣布发布完成。
+
 ## 发布双投硬规则
 
 - 每次上传桌面安装包时，必须使用**同一次打包产物**同时更新 GitHub Releases 与 Aurora Center；
