@@ -366,6 +366,12 @@ export const SCENARIOS = [
       const reading = await ctx.page.evaluate(() => {
         const download = document.querySelector('[data-action="landing.download"]')
         const preview = document.querySelector('.stage-frame img')
+        const header = document.querySelector('.public-header')
+        const headerBackground =
+          header instanceof HTMLElement ? getComputedStyle(header).backgroundColor : ''
+        const alpha = headerBackground.startsWith('rgba')
+          ? /rgba\([^)]*,\s*([\d.]+)\)$/.exec(headerBackground)?.[1]
+          : undefined
         const resources = performance.getEntriesByType('resource')
         const heavyResources = resources
           .filter((entry) =>
@@ -378,6 +384,8 @@ export const SCENARIOS = [
           headline: document.querySelector('.hero h1')?.textContent?.trim() ?? '',
           downloadHref: download?.getAttribute('href') ?? '',
           previewLoaded: preview instanceof HTMLImageElement && preview.naturalWidth > 0,
+          headerBackground,
+          headerOpaque: alpha === undefined || Number(alpha) === 1,
           console: document.querySelectorAll('[data-panel="console"]').length,
           login: document.querySelectorAll('[data-panel="login"]').length,
           transferBytes: Math.round(
@@ -393,6 +401,7 @@ export const SCENARIOS = [
           headline: reading.headline.includes('Windows'),
           download: reading.downloadHref !== '',
           previewLoaded: reading.previewLoaded,
+          headerOpaque: reading.headerOpaque,
           noConsole: reading.console === 0,
           noLoginForm: reading.login === 0,
           noHeavyChunks: reading.heavyResources.length === 0,
