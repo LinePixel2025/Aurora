@@ -83,23 +83,31 @@ function scrollTo(id: string): void {
 </template>
 
 <style scoped>
+/*
+ * 毛玻璃顶栏：半透明底 + backdrop-filter，滚动时下方内容被磨砂压暗而不是透出叠字。
+ * 层级用 --center-header-z 压过页面内容（hero 用 z-index: 1，与旧 --z-sticky 同级会叠画）。
+ * 不支持 backdrop-filter 的浏览器退回 hero 实底，保证可读性。
+ */
 .public-header {
   position: sticky;
   top: 0;
-  z-index: var(--z-sticky);
+  z-index: var(--center-header-z);
   display: flex;
   align-items: center;
   gap: var(--space-4);
   min-height: 64px;
   padding: 0 clamp(20px, 4vw, 64px);
   border-bottom: 1px solid var(--border-subtle);
-  background-color: var(--center-hero-bg);
-  background-image: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--center-hero-bg) 94%, white) 0%,
-    var(--center-hero-bg) 100%
-  );
+  background: var(--center-header-glass);
+  -webkit-backdrop-filter: blur(22px) saturate(1.4);
+  backdrop-filter: blur(22px) saturate(1.4);
   box-shadow: inset 0 -1px 0 var(--glass-highlight);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .public-header {
+    background: var(--center-hero-bg);
+  }
 }
 
 .public-brand {

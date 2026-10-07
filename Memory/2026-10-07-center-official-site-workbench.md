@@ -32,9 +32,15 @@ Mermaid / KaTeX 等全部静态挂在入口，加上共享 `theme.css` 里的中
 - **页面拆包**：`App.vue` 里所有非首屏页面一律 `defineAsyncComponent(() => import(...))`。
   官网首屏不能带 ECharts、管理端、Markdown / Mermaid / KaTeX 分包；`landing-page`
   验证场景同时断言无重型 chunk 与首屏 transfer budget。
-- **官网顶栏必须有完全不透明实底**：`PublicHeader` 使用 `--center-hero-bg` 实底，
-  顶部仅叠加不透明渐变高光，不能用半透明 `background` 或仅靠 `backdrop-filter`。
-  否则滚动时下方 hero 内容会透出并叠字。`landing-page` 的 `headerOpaque` 判据负责回归。
+- **官网顶栏是毛玻璃（2026-10-07 晚修订，推翻同日早前「必须完全不透明实底」的结论）**：
+  `PublicHeader` 用 `--center-header-glass`（暗 `rgba(28,34,36,.72)` / 浅 `rgba(255,255,255,.72)`，
+  比 hero 略亮一档）+ `backdrop-filter: blur(22px) saturate(1.4)`；`@supports not (backdrop-filter)`
+  时退回 `--center-hero-bg` 实底保可读性。**此前三轮「透明叠字 / 内容透出」的真根因不是背景而是层级**：
+  共享 `--z-sticky` 在桌面语境里就是 1，官网 `.hero-copy` / `.hero-stage` 也是 `z-index: 1`，
+  同级时按 DOM 顺序 hero 永远叠画在顶栏上——背景改实底也只是「看着透明」（实测线上即如此）。
+  顶栏层级改用 `style.css` 新令牌 `--center-header-z: 40`（高于内容、低于 tooltip 120 / toast 200；
+  **不许复用 `--z-sticky`**）。`landing-page` 回归判据为 `headerGlass`（背景 alpha<1 且 backdrop 含 blur）
+  + `headerAboveContent`（headerZ > heroZ），旧的 `headerOpaque` 已删。
 - **字体性能**：Center Web 在 `packages/center/web/src/style.css` 覆盖为系统优先字体栈，
   不回改桌面 / shared 字体资产。`font-system-performance` 断言不加载 HarmonyOS Sans SC
   资源；若以后要用随包字体，先解决中文 TTF 体积或子集化，不要直接删这条探针。
@@ -62,3 +68,8 @@ Mermaid / KaTeX 等全部静态挂在入口，加上共享 `theme.css` 里的中
 - 部署后 `docker inspect` 健康状态为 `healthy`；外网验证：
   `/`、`/aurora-console-preview.png`、`/api/updates/current` 均返回 200，
   当前 release 仍为 `0.4.5`，`latest.yml` 与安装包资产未受前端升级影响。
+- **2026-10-07 晚补部署（顶栏毛玻璃轮，同 tag 0.4.5）**：当日 14:30–15:19 间针对顶栏连打
+  4 个包（ui → topbar → header-glass → header-opaque）都没修对——真根因是 `--z-sticky=1`
+  与 hero 同级的层级问题，改背景无效；毛玻璃 + `--center-header-z: 40` 才收敛。
+  部署包 `aurora-center-0.4.5-header-glassfix-<时间戳>.tar.gz`，流程同上（未做 data 备份，不涉数据格式）。
+  线上验证：curl 域名 CSS 含 `--center-header-z` 与 `center-header-glass`，裸 IP 实测滚动后内容不再叠画在顶栏上。

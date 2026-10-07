@@ -367,11 +367,18 @@ export const SCENARIOS = [
         const download = document.querySelector('[data-action="landing.download"]')
         const preview = document.querySelector('.stage-frame img')
         const header = document.querySelector('.public-header')
-        const headerBackground =
-          header instanceof HTMLElement ? getComputedStyle(header).backgroundColor : ''
+        const headerStyle = header instanceof HTMLElement ? getComputedStyle(header) : null
+        const headerBackground = headerStyle?.backgroundColor ?? ''
         const alpha = /^rgba\([^)]*,\s*([\d.]+)\)$/.test(headerBackground)
           ? Number(/^rgba\([^)]*,\s*([\d.]+)\)$/.exec(headerBackground)?.[1] ?? '1')
           : Number(/\/\s*([\d.]+)\s*\)$/.exec(headerBackground)?.[1] ?? '1')
+        const heroCopy = document.querySelector('.hero-copy')
+        const headerZ =
+          headerStyle?.zIndex !== undefined ? Number.parseFloat(headerStyle.zIndex) : Number.NaN
+        const heroZ =
+          heroCopy instanceof HTMLElement
+            ? Number.parseFloat(getComputedStyle(heroCopy).zIndex)
+            : Number.NaN
         const resources = performance.getEntriesByType('resource')
         const heavyResources = resources
           .filter((entry) =>
@@ -385,7 +392,10 @@ export const SCENARIOS = [
           downloadHref: download?.getAttribute('href') ?? '',
           previewLoaded: preview instanceof HTMLImageElement && preview.naturalWidth > 0,
           headerBackground,
-          headerOpaque: alpha === 1,
+          headerAlpha: alpha,
+          headerBackdrop: headerStyle?.backdropFilter ?? '',
+          headerZ,
+          heroZ,
           console: document.querySelectorAll('[data-panel="console"]').length,
           login: document.querySelectorAll('[data-panel="login"]').length,
           transferBytes: Math.round(
@@ -401,7 +411,11 @@ export const SCENARIOS = [
           headline: reading.headline.includes('Windows'),
           download: reading.downloadHref !== '',
           previewLoaded: reading.previewLoaded,
-          headerOpaque: reading.headerOpaque,
+          headerGlass: reading.headerAlpha < 1 && /blur/i.test(reading.headerBackdrop),
+          headerAboveContent:
+            Number.isFinite(reading.headerZ) &&
+            Number.isFinite(reading.heroZ) &&
+            reading.headerZ > reading.heroZ,
           noConsole: reading.console === 0,
           noLoginForm: reading.login === 0,
           noHeavyChunks: reading.heavyResources.length === 0,

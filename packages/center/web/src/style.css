@@ -19,6 +19,13 @@
     'Segoe UI Variable Display', 'Segoe UI Variable', 'Microsoft YaHei UI', 'PingFang SC',
     system-ui, sans-serif;
 
+  /*
+   * 官网顶栏的层级：页面内容（hero 等）用 z-index: 1，顶栏必须高于它们，
+   * 否则同层级按 DOM 顺序后者的 hero 会叠画在顶栏上（共享 --z-sticky 在
+   * 桌面语境里就是 1，官网顶栏不能复用）；又必须低于 tooltip（120）/ toast（200）。
+   */
+  --center-header-z: 40;
+
   --center-signal: #21c8b7;
   --center-signal-hover: #32dcc8;
   --center-signal-ink: #071512;
@@ -26,6 +33,7 @@
   --center-topbar: rgba(15, 19, 21, 0.92);
   --center-workspace: #090c0e;
   --center-hero-bg: #0b0f11;
+  --center-header-glass: rgba(28, 34, 36, 0.72);
   --center-band: #0f1315;
   --center-download-bg: #121a1a;
   --center-auth-panel: rgba(16, 21, 23, 0.94);
@@ -48,6 +56,7 @@
     --center-topbar: rgba(248, 250, 249, 0.94);
     --center-workspace: #eef2f1;
     --center-hero-bg: #f5f8f7;
+    --center-header-glass: rgba(255, 255, 255, 0.72);
     --center-band: #eaf0ef;
     --center-download-bg: #e3eeec;
     --center-auth-panel: rgba(255, 255, 255, 0.96);
