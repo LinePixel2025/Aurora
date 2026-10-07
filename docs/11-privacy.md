@@ -200,3 +200,15 @@ Skill 目录下的 `scripts/` **永远不会被自动执行**（技能只提供�
    `packages/agent-core/src/llm/` 与 `packages/agent-core/src/mcp/`；
    代理与网络栈接线在 `apps/desktop/src/main/net.ts`；
    脱敏逻辑在 `packages/shared/src/config/store.ts` 的 `redactKeys`。
+
+## 8. Aurora Center 官方模型
+
+启用 Center 官方模型后，对应请求会经 Center 网关转发到管理员配置的上游服务：
+
+- Center 在转发期间可见请求与回复正文，和远程会话明文同一边界，不额外承诺端到端加密；
+- Center 只持久化 token 用量元数据（时间、用户、客户端、模型、输入/输出/缓存 token），
+  不持久化提示词、回复、音频、图片或上游 API Key 明文；
+- 客户端不保存上游 API Key；Center 管理端保存的是以 `AURORA_CENTER_SECRET` 加密的密文；
+- Center 离线或能力停用时可回落本机模型，回落首次发生时界面会明确提示。
+
+公网使用时 Center 必须置于 HTTPS 反代之后；主密钥轮换前应先备份并不会自动解密旧数据。

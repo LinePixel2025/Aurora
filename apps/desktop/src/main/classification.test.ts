@@ -180,6 +180,12 @@ function settingsWith(overrides: {
       allowRemoteConfig: true,
       allowFileTransfer: true,
       maxFileMb: 64,
+      officialModels: {
+        llm: { enabled: false, model: '' },
+        imagegen: { enabled: false, model: '' },
+        tts: { enabled: false, model: '' },
+        stt: { enabled: false, model: '' },
+      },
     },
     // v19 新增顶层分组（自动化，docs/13）：本用例不涉及自动化，保持默认态
     automations: { enabled: true },

@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 30 as const
+export const CONFIG_VERSION = 31 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -929,6 +929,52 @@ export type AgentSettings = z.infer<typeof AgentSchema>
  * 填令牌只能由用户在设置页操作（走 `settings:update`，不经过该黑名单）。
  * 远程配置来自 Center 的另一条通道（docs/12 §6.2 白名单），也不走 `set_setting`。
  */
+export const CENTER_OFFICIAL_CAPABILITIES = ['llm', 'imagegen', 'tts', 'stt'] as const
+export type CenterOfficialCapability = (typeof CENTER_OFFICIAL_CAPABILITIES)[number]
+
+/**
+ * Center 官方模型的保留 Provider id。
+ *
+ * 这些条目由主进程在模型目录同步时维护，普通 Provider CRUD 不展示 / 不删除；
+ * API Key 固定取 `center.token`，不写入普通 Provider 的 `apiKeyEnc`。
+ */
+export const CENTER_OFFICIAL_PROVIDER_IDS = {
+  llm: 'center-llm',
+  imagegen: 'center-imagegen',
+  tts: 'center-tts',
+  stt: 'center-stt',
+} as const
+
+export type CenterOfficialProviderId =
+  (typeof CENTER_OFFICIAL_PROVIDER_IDS)[CenterOfficialCapability]
+
+export const CENTER_OFFICIAL_PROVIDER_ID_VALUES = Object.values(
+  CENTER_OFFICIAL_PROVIDER_IDS,
+) as readonly CenterOfficialProviderId[]
+
+export function isCenterOfficialProviderId(value: string): value is CenterOfficialProviderId {
+  return (CENTER_OFFICIAL_PROVIDER_ID_VALUES as readonly string[]).includes(value)
+}
+
+const CenterOfficialSelectionSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    model: z.string().default(''),
+  })
+  .default({})
+
+export const CenterOfficialModelsSchema = z
+  .object({
+    llm: CenterOfficialSelectionSchema,
+    imagegen: CenterOfficialSelectionSchema,
+    tts: CenterOfficialSelectionSchema,
+    stt: CenterOfficialSelectionSchema,
+  })
+  .default({})
+
+export type CenterOfficialModelSelection = z.infer<typeof CenterOfficialSelectionSchema>
+export type CenterOfficialModels = z.infer<typeof CenterOfficialModelsSchema>
+
 export const CenterSchema = z.object({
   /** 总开关；false 时不连接 Center，`center_*` 工具也不注册（未配置不注册，与 STT/TTS 同口径）。 */
   enabled: z.boolean().default(false),
@@ -955,6 +1001,8 @@ export const CenterSchema = z.object({
   allowFileTransfer: z.boolean().default(true),
   /** 单个上传文件上限（MB，1–512）。 */
   maxFileMb: z.number().int().min(1).max(512).default(64),
+  /** v31：Center 官方模型选择（全局覆盖；会话覆盖仍走 SessionMeta.llm）。 */
+  officialModels: CenterOfficialModelsSchema,
 })
 export type CenterSettings = z.infer<typeof CenterSchema>
 

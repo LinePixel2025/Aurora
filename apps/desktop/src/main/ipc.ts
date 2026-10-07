@@ -70,6 +70,8 @@ import {
   type CenterConnectionStatus,
   type CenterDeviceLoginRequest,
   type CenterDeviceLoginStarted,
+  type CenterOfficialModelCatalog,
+  type CenterRuntimeNotice,
   type CenterLoginRequest,
   type CenterLoginResult,
   type ClassIslandNotifyRequest,
@@ -256,6 +258,8 @@ export interface DesktopDeps {
    * 返回 `undefined` 表示该文件无法提取文本（按「仅文件名」降级处理）。
    */
   attachmentExtract?: (path: string) => Promise<AttachmentDigest | undefined>
+  /** 当前生效模型是否支持图片输入；缺省按持久化 settings 判定（测试兼容）。 */
+  visionEnabled?: () => boolean
   onQuit: () => void
   onSettingsChanged?: (settings: Settings) => void
 }
@@ -1053,6 +1057,13 @@ export function registerIpc(deps: DesktopDeps): () => void {
     IPC.center.deviceLoginCancel,
     () => deps.center?.deviceLoginCancel() ?? Promise.resolve(ok(true)),
   )
+  handle<CenterOfficialModelCatalog | null>(IPC.center.modelServices, () =>
+    ok(deps.center?.modelServices() ?? null),
+  )
+  handle<CenterOfficialModelCatalog | null>(IPC.center.refreshModelServices, async () => {
+    if (deps.center === undefined) return ok(null)
+    return ok(await deps.center.refreshModelServices())
+  })
 
   // ───────────────────────── 自动化（docs/13 §9） ─────────────────────────
 
@@ -1325,6 +1336,14 @@ export function registerIpc(deps: DesktopDeps): () => void {
     deps.center?.onDeviceLoginResult((result) => {
       broadcast(IPC.center.deviceLoginResult, result)
     }) ?? (() => {})
+  const offModelServices =
+    deps.center?.onModelServicesChanged((catalog) => {
+      broadcast(IPC.center.modelServicesChanged, catalog)
+    }) ?? (() => {})
+  const offRuntimeNotice =
+    deps.center?.onRuntimeNotice((notice: CenterRuntimeNotice) => {
+      broadcast(IPC.center.runtimeNotice, notice)
+    }) ?? (() => {})
   // 自动化定义 / 历史变化（docs/13 §9）：多窗口同步靠这两个推送重拉
   const offAutomationDefinitions =
     deps.automation?.onDefinitionsChanged(() => {
@@ -1346,6 +1365,8 @@ export function registerIpc(deps: DesktopDeps): () => void {
   return () => {
     for (const [channel] of handlers) ipcMain.removeHandler(channel)
     offSettings?.()
+    offModelServices()
+    offRuntimeNotice()
     offModes()
     offWindows()
     offAgent()
@@ -1496,7 +1517,7 @@ async function prepareAttachments(
  * `registerImageTools`）用的是**同一个函数**，两边不会漂移。
  */
 function visionEnabled(deps: DesktopDeps): boolean {
-  return resolveVisionEnabled(deps.settings.get())
+  return deps.visionEnabled?.() ?? resolveVisionEnabled(deps.settings.get())
 }
 
 /** 从绝对路径取文件名（渲染层传来的路径可能含 Windows 反斜杠） */

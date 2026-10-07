@@ -1111,6 +1111,7 @@ describe('配置迁移链', () => {
         'v27 → v28：v27 → v28：补齐 fileAwareness（默认关闭，显式同意后才读取正文）',
         'v28 → v29：v28 → v29：补齐 fileAwareness 记忆过期与后台模型',
         'v29 → v30：v29 → v30：新增 general.gameMode（游戏模式联动，默认开启）',
+        'v30 → v31：v30 → v31：新增 center.officialModels（Center 官方模型，默认全部关闭）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1153,6 +1154,7 @@ describe('配置迁移链', () => {
         'v27 → v28：v27 → v28：补齐 fileAwareness（默认关闭，显式同意后才读取正文）',
         'v28 → v29：v28 → v29：补齐 fileAwareness 记忆过期与后台模型',
         'v29 → v30：v29 → v30：新增 general.gameMode（游戏模式联动，默认开启）',
+        'v30 → v31：v30 → v31：新增 center.officialModels（Center 官方模型，默认全部关闭）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1166,6 +1168,12 @@ describe('配置迁移链', () => {
         allowRemoteConfig: true,
         allowFileTransfer: true,
         maxFileMb: 64,
+        officialModels: {
+          llm: { enabled: false, model: '' },
+          imagegen: { enabled: false, model: '' },
+          tts: { enabled: false, model: '' },
+          stt: { enabled: false, model: '' },
+        },
       })
     })
 
@@ -1562,6 +1570,7 @@ describe('配置迁移链', () => {
         'v27 → v28：v27 → v28：补齐 fileAwareness（默认关闭，显式同意后才读取正文）',
         'v28 → v29：v28 → v29：补齐 fileAwareness 记忆过期与后台模型',
         'v29 → v30：v29 → v30：新增 general.gameMode（游戏模式联动，默认开启）',
+        'v30 → v31：v30 → v31：新增 center.officialModels（Center 官方模型，默认全部关闭）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -1642,12 +1651,13 @@ describe('配置迁移链', () => {
         version: 25,
         general: { windowState: { chat: { x: 10, y: 20, width: 1120, height: 720 } } },
       })
-      expect(outcome.applied).toHaveLength(5)
+      expect(outcome.applied).toHaveLength(6)
       expect(outcome.applied[0]).toContain('v25 → v26')
       expect(outcome.applied[1]).toContain('v26 → v27')
       expect(outcome.applied[2]).toContain('v27 → v28')
       expect(outcome.applied[3]).toContain('v28 → v29')
       expect(outcome.applied[4]).toContain('v29 → v30')
+      expect(outcome.applied[5]).toContain('v30 → v31')
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(chatOf(outcome.data)).toEqual({ x: 10, y: 20, width: 1280, height: 800 })
     })
@@ -1725,7 +1735,7 @@ describe('配置迁移链', () => {
         defaultMemoryTtlDays: 0,
         backgroundModel: { providerId: '', model: '' },
       })
-      expect(missing.applied).toHaveLength(3)
+      expect(missing.applied).toHaveLength(4)
 
       const existing = migrate({
         version: 27,
@@ -1758,7 +1768,7 @@ describe('配置迁移链', () => {
           dailyAnalysisLimit: 7,
         },
       })
-      expect(missing.applied).toHaveLength(2)
+      expect(missing.applied).toHaveLength(3)
       expect(missing.data['fileAwareness']).toEqual({
         enabled: true,
         contentConsentAccepted: false,
@@ -1792,7 +1802,7 @@ describe('配置迁移链', () => {
         version: 29,
         general: { language: 'zh-CN' },
       })
-      expect(missing.applied).toHaveLength(1)
+      expect(missing.applied).toHaveLength(2)
       expect(missing.data['general']).toEqual({
         language: 'zh-CN',
         gameMode: { enabled: true },
@@ -1817,6 +1827,38 @@ describe('配置迁移链', () => {
       })
       const twice = migrate({ ...once.data, version: 29 })
       expect(twice.data['general']).toEqual(once.data['general'])
+    })
+  })
+
+  describe('v30 → v31（Center 官方模型）', () => {
+    it('为已有 center 补四类默认关闭选择，已有字段原样保留', () => {
+      const missing = migrate({
+        version: 30,
+        center: { enabled: true, serverUrl: 'wss://center.example.com' },
+      })
+      expect(missing.applied).toHaveLength(1)
+      expect(missing.data['center']).toMatchObject({
+        enabled: true,
+        serverUrl: 'wss://center.example.com',
+        officialModels: {
+          llm: { enabled: false, model: '' },
+          imagegen: { enabled: false, model: '' },
+          tts: { enabled: false, model: '' },
+          stt: { enabled: false, model: '' },
+        },
+      })
+
+      const existing = migrate({
+        version: 30,
+        center: {
+          officialModels: {
+            llm: { enabled: true, model: 'model-a' },
+          },
+        },
+      })
+      expect(
+        (existing.data['center'] as { officialModels: { llm: unknown } }).officialModels.llm,
+      ).toEqual({ enabled: true, model: 'model-a' })
     })
   })
 })

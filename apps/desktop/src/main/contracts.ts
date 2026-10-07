@@ -23,6 +23,8 @@ import type {
   CenterDeviceLoginRequest,
   CenterDeviceLoginResult,
   CenterDeviceLoginStarted,
+  CenterOfficialModelCatalog,
+  CenterRuntimeNotice,
   CenterLoginRequest,
   CenterLoginResult,
   ChatSessionSummary,
@@ -362,6 +364,11 @@ export interface CenterConnectionLike {
   onDeviceLoginResult(listener: (result: CenterDeviceLoginResult) => void): () => void
   /** 取消在途的设备授权轮询（幂等） */
   deviceLoginCancel(): Promise<Result<boolean>>
+  /** 官方模型目录 / 运行态提示 */
+  modelServices(): CenterOfficialModelCatalog | null
+  refreshModelServices(): Promise<CenterOfficialModelCatalog | null>
+  onModelServicesChanged(listener: (catalog: CenterOfficialModelCatalog | null) => void): () => void
+  onRuntimeNotice(listener: (notice: CenterRuntimeNotice) => void): () => void
 }
 
 export interface UpdateControllerLike {

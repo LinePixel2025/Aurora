@@ -577,13 +577,14 @@ aurora-center version
   （子串过滤；特殊值 `failed` = 只重跑上次失败的）、`AURORA_CWEB_THEME=dark|light`、
   `AURORA_CWEB_VIEWPORT=mobile`、`AURORA_CWEB_KEEP=1`（保留子服务器与数据目录排障）、
   `AURORA_CWEB_BROWSER`（指定浏览器；找不到浏览器时**明确 SKIP 并退出 0**）。
-  覆盖 37 个场景 ×（暗/浅两档）＝ 74 条断言：登录 / 设备授权 / 空态控制台 / 设备能力位芯片 /
+  覆盖 41 个场景 ×（暗/浅两档）＝ 82 条断言：登录 / 设备授权 / 空态控制台 / 设备能力位芯片 /
   语音门控两态 / 建会话 / 用户气泡 / 流式光标 / Markdown 代码块与外链（含复制按钮回执）/
   轨迹折叠与阅读顺序（思考 → 工具行 → 正文）/ 思考块（220px 内滚 + 秒数）/ 工具三态与
   展开体实测高度（`--collapse-h` 与 `scrollHeight` 相差 ≤ 2px）/ 子代理卡与**只读**对话视图 /
   任务清单卡 / 历史回放 / 确认卡（会话内 + 批复命令）/ 提问卡（选项 / 自由文本 / 作答命令 /
   过期）/ **提问卡进会话流 + 客户端结算后切成只读**（`ask-in-stream`，本轮）/
-  文件条与文件页 / **文件页「发送到客户端」发出 `file.send`**（本轮）/ 自动化 / 管理员 /
+  文件条与文件页 / **文件页「发送到客户端」发出 `file.send`**（本轮）/ 自动化 /
+  管理员 / 官方模型管理卡 / 自托管 Release 管理卡 / Token 用量页（总量卡 + 折线图画布 + 管理员筛选） /
   三个面板 / **会话行模型下拉发出 `session.setModel`**（`panel-session-model`，本轮）/
   主题两档 / **`prefers-reduced-motion` 兜底把过渡压到 1ms**（`reduced-motion`，本轮）/
   移动端单栏抽屉。
@@ -654,3 +655,55 @@ aurora-center version
   改掉所有会话的闸门"，会话级覆盖的作用面被限制在 Center 自己创建 / 可见的远程会话上。
 - Center 不存储会话历史（只转发事件流）；文件暂存 24h 自动删除，网页端也可手动删除。
 - 客户端一次只连一个 Center；`clientId` 本机生成、持久化于配置（非凭据）。
+
+## 12. 官方模型网关（v31）
+
+Center 可为登录客户端提供语言模型、生图、TTS 与 STT 四类官方能力。每类只有一个上游，
+但可开放多个模型；管理员才能配置 Base URL、协议与 API Key。
+
+### 12.1 数据与密钥
+
+`model-services.json` 保存每类能力的 `{ enabled, type, baseUrl, models, defaultModel }`，
+其中模型条目包含该能力需要的参数：
+
+- LLM：`reasoningEffort` / `contextWindow` / `vision`；
+- imagegen：`size`；
+- TTS：`voice` / `speed` / `format`；
+- STT：`language`。
+
+上游 API Key 以 `AURORA_CENTER_SECRET` 经 HKDF 派生 AES-256-GCM 密钥后落盘。主密钥缺失、
+轮换导致旧密文无法解密时，Center 仍可启动，但对应能力视为未配置并在管理页显示原因；
+接口只回传 `apiKeySet`，绝不回传密文或明文。
+
+### 12.2 客户端目录与网关
+
+`GET /api/client/model-services/catalog` 只接受客户端令牌，返回已启用且已开放的模型，
+不返回上游 Base URL、API Key 或未开放模型。
+
+`/api/model-gateway/*` 接受客户端令牌并按其绑定 `clientId` 鉴权，覆盖：
+
+```
+POST /api/model-gateway/llm/chat/completions
+POST /api/model-gateway/llm/responses
+GET  /api/model-gateway/llm/models
+POST /api/model-gateway/imagegen/images/generations
+POST /api/model-gateway/tts/audio/speech
+POST /api/model-gateway/tts/api/v1/services/aigc/multimodal-generation/generation
+POST /api/model-gateway/stt/audio/transcriptions
+POST /api/model-gateway/stt/api/v1/services/aigc/multimodal-generation/generation
+```
+
+网关保留上游协议、流式 SSE、工具调用与错误状态；DashScope TTS 返回的临时音频地址改写为
+Center 短期签名代理地址，客户端不直接访问上游。网关不持久化提示词、回复、图片或音频。
+
+### 12.3 Token 用量
+
+只有语言模型响应里**真实返回**的 usage 才记账，不按字符估算。明细落在
+`usage/YYYY-MM-DD.ndjson`，保留 180 天；终身累计按用户、客户端、模型保存在摘要文件中。
+`GET /api/usage` 对普通用户强制限定为本人，管理员可按用户 / 设备 / 模型 / 日期筛选。
+网页端 `#/usage` 展示终身总量、默认最近 30 天折线图与最近请求值。
+
+## 13. Center 自托管客户端更新
+
+见 [09 §10](./09-packaging-release.md)。管理网页新增 Release 卡：当前版本、文件状态、
+上传、校验与发布；公开路由只提供 `latest.yml` 与已登记资产。上传接口仅管理员可用。

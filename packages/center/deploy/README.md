@@ -11,7 +11,7 @@
 > --password <密码>` 打印客户端的 `ClientStatus`（含 `voice`）：能力位是 `true` 而网页没有按钮，
 > 就是网页包旧了。
 >
-> `docker-compose.yml` 的 `image:` tag 跟版本号走（当前 `0.4.3`）：别在同一 tag 上反复覆盖，
+> `docker-compose.yml` 的 `image:` tag 跟版本号走（当前 `0.4.4`）：别在同一 tag 上反复覆盖，
 > 否则排障时说不清线上跑的是哪一版。
 ## 1. 构建机：打部署包
 
@@ -44,6 +44,15 @@ mkdir -p data && chown 1000:1000 data   # 容器以 node(uid 1000) 运行
 tar -xzf aurora-center.tar.gz
 docker compose up -d --build
 ```
+
+要启用官方模型，部署前设置一个稳定且不可丢失的主密钥，并在容器中透传：
+
+```bash
+export AURORA_CENTER_SECRET='至少 32 字节的随机值'
+docker compose up -d
+```
+
+主密钥只用于加密上游 API Key；更换后旧密文不能自动解密，需在管理页重新填写。
 
 ## 3. 初始化与配对
 

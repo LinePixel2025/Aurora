@@ -15,6 +15,8 @@ import { Plus } from '@aurora/shared/browser'
 import { api, type AdminUser } from '../lib/api'
 import { formatTime, modeLabel, platformLabel } from '../lib/format'
 import { state as centerState } from '../state'
+import OfficialModelsAdmin from '../components/OfficialModelsAdmin.vue'
+import ReleaseAdmin from '../components/ReleaseAdmin.vue'
 
 const users = ref<AdminUser[]>([])
 const clients = ref<ClientInfo[]>([])
@@ -159,6 +161,9 @@ onMounted(() => void loadAll())
     </div>
 
     <template v-else>
+      <OfficialModelsAdmin />
+      <ReleaseAdmin />
+
       <!-- 用户管理 -->
       <section class="ui-card admin-section">
         <header class="admin-section-head">

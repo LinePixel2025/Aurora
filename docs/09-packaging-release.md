@@ -235,3 +235,27 @@ electron-builder 首次打包会下载两样东西：Electron 发行包与打包
 - **配置关闭时不做探测**：`requireAdmin = false` 直接跳过整条流程 —— `probeElevated` 是
   `spawnSync`，在 fltmc 拿不到结论的机器上还要等 PowerShell 起来（实测约 0.5s），
   关掉开关的用户不该白付这段启动延迟。
+
+## 10. Center 自托管更新源（v31）
+
+客户端仍保留 GitHub Releases 作为过渡回落，但正常更新优先走当前配置的 Aurora Center：
+
+- 更新地址由 `center.serverUrl` 推导为 `<http(s)-base>/api/updates`；
+- Center 未配置、`latest.yml` 缺失或检查失败时回落到包内 `app-update.yml` 的 GitHub 源；
+- Center 明确返回“已是最新”时不回落 GitHub，避免同一版本被两个源反复比较；
+- `AURORA_UPDATE_FEED` 仍是最高优先级，仅用于离线验收。
+
+Center 数据目录新增 `releases/`：
+
+| 文件 | 内容 |
+|---|---|
+| `releases/index.json` | 当前 latest 版本、文件清单、size、sha512 与发布时间 |
+| `releases/files/` | `Aurora-Setup-<version>.exe`、blockmap 与 `latest.yml` |
+
+公开下载路由为 `GET /api/updates/latest.yml` 与 `GET /api/updates/:asset`，支持 HEAD、
+Content-Length、Range / 206；`latest.yml` 不缓存，安装包与 blockmap 可长期缓存。
+上传 / 发布只允许管理员网页会话，且必须先把完整文件上传到暂存区，再校验
+`latest.yml` 的 version / size / sha512 与 blockmap 后原子切换；校验失败不得替换当前 latest。
+
+发布入口有三条：`scripts/release.mjs --publish-center`、`aurora-center releases publish`
+与管理网页。CLI 与发布脚本通过管理员账号登录 Center 后调用上传接口，不新增长期发布密钥。

@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createMemoryLogger } from '@aurora/shared'
 import type { UpdateState } from '@aurora/shared'
-import { UpdateService, describeUpdateError, type UpdaterPort } from './updater.js'
+import {
+  UpdateService,
+  describeUpdateError,
+  resolveUpdateFeeds,
+  type UpdaterPort,
+} from './updater.js'
 
 interface FakePortOptions {
   supported?: boolean
@@ -190,6 +195,22 @@ describe('UpdateService 状态机', () => {
     service.scheduleAutoCheck()
     service.dispose()
     expect(state.progressListeners.size).toBe(0)
+  })
+})
+
+describe('更新源选择', () => {
+  it('Center 优先并保留 GitHub 回退；未配置 Center 时只用 GitHub', () => {
+    expect(resolveUpdateFeeds('', 'http://center.example/api/updates')).toEqual([
+      'http://center.example/api/updates',
+      '',
+    ])
+    expect(resolveUpdateFeeds('', undefined)).toEqual([''])
+  })
+
+  it('调试环境覆盖拥有最高优先级且不启用回退', () => {
+    expect(resolveUpdateFeeds('http://127.0.0.1:9000/updates', 'http://center.example')).toEqual([
+      'http://127.0.0.1:9000/updates',
+    ])
   })
 })
 

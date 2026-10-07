@@ -340,6 +340,13 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     allowRemoteConfig: true,
     allowFileTransfer: true,
     maxFileMb: 64,
+    // v31：Center 官方模型默认全部关闭，配置保留在本机，凭据始终取 center.token。
+    officialModels: {
+      llm: { enabled: false, model: '' },
+      imagegen: { enabled: false, model: '' },
+      tts: { enabled: false, model: '' },
+      stt: { enabled: false, model: '' },
+    },
   },
   /**
    * 自动化（v19，docs/13）：总开关默认开启。自动化的定义与历史是用户数据，

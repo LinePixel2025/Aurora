@@ -223,6 +223,10 @@ const api: AuroraApi = {
     deviceLogin: (request) => invoke(IPC.center.deviceLogin, request),
     onDeviceLoginResult: (listener) => subscribe(IPC.center.deviceLoginResult, listener),
     deviceLoginCancel: () => invoke(IPC.center.deviceLoginCancel),
+    modelServices: () => invoke(IPC.center.modelServices),
+    refreshModelServices: () => invoke(IPC.center.refreshModelServices),
+    onModelServicesChanged: (listener) => subscribe(IPC.center.modelServicesChanged, listener),
+    onRuntimeNotice: (listener) => subscribe(IPC.center.runtimeNotice, listener),
   },
   // 自动化（docs/13 §9）：定义 CRUD + 历史 + 手动触发 + 组件目录
   automation: {

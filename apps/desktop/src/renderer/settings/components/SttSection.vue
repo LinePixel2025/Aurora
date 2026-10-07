@@ -17,6 +17,7 @@ import {
   RESOURCE_NAME_RULE,
   STT_PRESETS,
   STT_PROVIDER_TYPE_LABELS,
+  isCenterOfficialProviderId,
   type SttProviderConfig,
 } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
@@ -103,19 +104,21 @@ function syncDrafts(): void {
   if (!settings) return
   const previous = savedDrafts.value
   const editing = editingId.value
-  savedDrafts.value = Object.entries(settings.stt.providers).map(([id, provider]) => {
-    // 兑现上面那条注释：编辑卡正在改的那一份**按 id 复用旧对象引用** ——
-    // 广播到达（或任何即时保存动作触发的 `settings:changed`）都不回退卡内内容、不关编辑器。
-    // 其余行每次重建，别处改过的值照常反映到列表。
-    const reused = editing === id ? previous.find((draft) => draft.id === id) : undefined
-    if (reused !== undefined) return reused
-    return {
-      id,
-      ...provider,
-      apiKey: '',
-      apiKeySet: Boolean((provider as unknown as { apiKeySet?: boolean }).apiKeySet),
-    }
-  })
+  savedDrafts.value = Object.entries(settings.stt.providers)
+    .filter(([id]) => !isCenterOfficialProviderId(id))
+    .map(([id, provider]) => {
+      // 兑现上面那条注释：编辑卡正在改的那一份**按 id 复用旧对象引用** ——
+      // 广播到达（或任何即时保存动作触发的 `settings:changed`）都不回退卡内内容、不关编辑器。
+      // 其余行每次重建，别处改过的值照常反映到列表。
+      const reused = editing === id ? previous.find((draft) => draft.id === id) : undefined
+      if (reused !== undefined) return reused
+      return {
+        id,
+        ...provider,
+        apiKey: '',
+        apiKeySet: Boolean((provider as unknown as { apiKeySet?: boolean }).apiKeySet),
+      }
+    })
   // provider 被别处删掉（如 `set_setting`）时，编辑卡 / 确认条不能指着一个不存在的行。
   // 未落盘的新建草稿不在 settings 里，所以先把它排除在判断之外。
   if (editing !== null && !isCreating(editing) && !hasSaved(editing)) closeEditor()

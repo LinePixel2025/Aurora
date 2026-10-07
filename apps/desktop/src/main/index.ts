@@ -48,6 +48,7 @@ import {
 import type { AgentProviderFactory, SettingsToolPort, ToolDefinition } from '@aurora/agent-core'
 import {
   COMPUTER_TOOL_NAMES,
+  CENTER_OFFICIAL_PROVIDER_IDS,
   CENTER_SESSION_PREFIX,
   IPC,
   SettingsSchema,
@@ -62,6 +63,8 @@ import {
   type CenterDeviceLoginRequest,
   type CenterDeviceLoginResult,
   type CenterDeviceLoginStarted,
+  type CenterOfficialModelCatalog,
+  type CenterRuntimeNotice,
   type CenterLoginRequest,
   type CenterLoginResult,
   type CenterSessionHistoryMessage,
@@ -121,7 +124,8 @@ import { SessionBridge, toConfirmRequest } from './center/session-bridge.js'
 import { createAskRelay, createAskSettleRelay } from './center/ask-relay.js'
 import { CenterConnector } from './center/connector.js'
 import { DeviceLoginController, type DeviceLoginOutcome } from './center/device-login.js'
-import { requestClientLogin } from './center/client-login.js'
+import { httpBaseUrlOf, requestClientLogin } from './center/client-login.js'
+import { CenterModelServices } from './center/model-services.js'
 import { uploadFileToCenter } from './center/ingest.js'
 import { downloadFileFromCenter } from './center/deliver.js'
 import {
@@ -559,6 +563,7 @@ let settingsTool: SettingsToolRegistry | undefined
 let classIslandTools: ClassIslandToolsRegistry | undefined
 // Aurora Center（docs/12）：连接器 / 会话桥 / 工具表
 let centerConnector: CenterConnector | undefined
+let centerModelServices: CenterModelServices | undefined
 let sessionBridge: SessionBridge | undefined
 let centerTools: { sync(): string[] } | undefined
 /**
@@ -572,6 +577,99 @@ let deviceLoginController: DeviceLoginController | undefined
 let deviceLoginServerUrl = ''
 /** 设备授权登录最终结果的渲染层订阅（center:deviceLoginResult 推送） */
 const deviceLoginListeners = new Set<(result: CenterDeviceLoginResult) => void>()
+const centerModelServicesListeners = new Set<(catalog: CenterOfficialModelCatalog | null) => void>()
+const centerRuntimeNoticeListeners = new Set<(notice: CenterRuntimeNotice) => void>()
+const centerFallbackNoticeKeys = new Set<string>()
+
+function emitCenterRuntimeNotice(notice: CenterRuntimeNotice): void {
+  for (const listener of centerRuntimeNoticeListeners) listener(notice)
+}
+
+function emitOfficialFallback(capability: 'llm' | 'imagegen' | 'tts' | 'stt', label: string): void {
+  const key = `global:${capability}`
+  if (centerFallbackNoticeKeys.has(key)) return
+  centerFallbackNoticeKeys.add(key)
+  emitCenterRuntimeNotice({
+    capability,
+    message: `Aurora Center 官方${label}模型不可用，已回落到本机模型`,
+    at: new Date().toISOString(),
+  })
+}
+
+function createCenterAwareSettingsStore(base: SettingsStoreLike): SettingsStoreLike {
+  const reservedSecretOf = (path: string): string | undefined => {
+    for (const capability of ['tts', 'stt', 'imagegen'] as const) {
+      const providerId = CENTER_OFFICIAL_PROVIDER_IDS[capability]
+      if (
+        path === `${capability}.providers.${providerId}.apiKey` ||
+        path === `${capability}.providers.${providerId}.apiKeyEnc`
+      ) {
+        return base.getSecret('center.token')
+      }
+    }
+    return undefined
+  }
+  const noticeFallback = (capability: 'llm' | 'tts' | 'stt' | 'imagegen'): void => {
+    const key = `global:${capability}`
+    if (centerFallbackNoticeKeys.has(key)) return
+    centerFallbackNoticeKeys.add(key)
+    const label =
+      capability === 'llm'
+        ? '语言'
+        : capability === 'tts'
+          ? '语音合成'
+          : capability === 'stt'
+            ? '语音识别'
+            : '图像生成'
+    emitCenterRuntimeNotice({
+      capability,
+      message: `Aurora Center 官方${label}模型不可用，已回落到本机模型`,
+      at: new Date().toISOString(),
+    })
+  }
+  const applyOfficialSelection = (next: Settings): Settings => {
+    for (const capability of ['llm', 'tts', 'stt', 'imagegen'] as const) {
+      const selection = next.center.officialModels[capability]
+      if (!selection.enabled) continue
+      const providerId = CENTER_OFFICIAL_PROVIDER_IDS[capability]
+      const available =
+        centerModelServices?.service(capability) !== undefined &&
+        next[capability].providers[providerId] !== undefined
+      if (available) {
+        next[capability].active = providerId
+        if (capability !== 'llm') next[capability].enabled = true
+      } else {
+        noticeFallback(capability)
+      }
+    }
+    return next
+  }
+  return {
+    get: () => applyOfficialSelection(base.get()),
+    getSecret(path) {
+      return reservedSecretOf(path) ?? base.getSecret(path)
+    },
+    setSecret(path, plain) {
+      if (reservedSecretOf(path) !== undefined) return false
+      return base.setSecret(path, plain)
+    },
+    clearSecret(path) {
+      if (reservedSecretOf(path) !== undefined) return
+      base.clearSecret(path)
+    },
+    mutate(mutator) {
+      return base.mutate(mutator)
+    },
+    update(patch) {
+      return base.update(patch)
+    },
+    isCryptoAvailable: () => base.isCryptoAvailable(),
+    needsOnboarding: () => base.needsOnboarding(),
+    exportRedacted: () => applyOfficialSelection(base.exportRedacted()),
+    flush: () => base.flush(),
+    onChange: (listener) => base.onChange(listener),
+  }
+}
 /** 扩展工具七件套装配器（docs/06 §14）：与 set_setting 同级，不受 agent.tools.enabled 门控 */
 let extensionTools: ExtensionToolsRegistry | undefined
 let imageDisplayPort: ReturnType<typeof createImageDisplayPort> | undefined
@@ -1112,19 +1210,61 @@ async function bootstrap(): Promise<void> {
     }),
   })
   settingsTool = registerSettingsTool({ tools, port: settingsPort, logger: logger.child('tools') })
+  const centerSettings = createCenterAwareSettingsStore(settings)
   // 7.1.2 STT / 生图服务（docs/06 §15）：出网走注入的 netFetch（代理生效），
   //     生图落盘到 `userData/generated`（imagegen:read 的白名单根，见 ipc.ts 的路径校验）。
-  const sttService = createSttService({
-    settings,
+  const centerSttService = createSttService({
+    settings: centerSettings,
     logger: logger.child('stt'),
     resolveFetch: () => netFetch,
   })
-  const imageGenService = createImageGenService({
+  const localSttService = createSttService({
     settings,
+    logger: logger.child('stt-local'),
+    resolveFetch: () => netFetch,
+  })
+  const sttService = {
+    transcribe: async (input: Parameters<typeof centerSttService.transcribe>[0]) => {
+      if (!settings!.get().center.officialModels.stt.enabled) {
+        return localSttService.transcribe(input)
+      }
+      try {
+        return await centerSttService.transcribe(input)
+      } catch (error) {
+        emitOfficialFallback('stt', '语音识别')
+        logger?.warn('Center 官方 STT 失败，回落本机模型', { error: String(error) })
+        return localSttService.transcribe(input)
+      }
+    },
+  }
+  const centerImageGenService = createImageGenService({
+    settings: centerSettings,
     logger: logger.child('imagegen'),
     generatedDir: join(userData, 'generated'),
     resolveFetch: () => netFetch,
   })
+  const localImageGenService = createImageGenService({
+    settings,
+    logger: logger.child('imagegen-local'),
+    generatedDir: join(userData, 'generated'),
+    resolveFetch: () => netFetch,
+  })
+  const imageGenService = {
+    generate: async (input: Parameters<typeof centerImageGenService.generate>[0]) => {
+      if (!settings!.get().center.officialModels.imagegen.enabled) {
+        return localImageGenService.generate(input)
+      }
+      try {
+        return await centerImageGenService.generate(input)
+      } catch (error) {
+        emitOfficialFallback('imagegen', '图像生成')
+        logger?.warn('Center 官方生图失败，回落本机模型', { error: String(error) })
+        return localImageGenService.generate(input)
+      }
+    },
+    read: (input: Parameters<typeof centerImageGenService.read>[0]) =>
+      centerImageGenService.read(input),
+  }
   imageDisplayPort = createImageDisplayPort({
     workspaceDirOf: (sessionId) => toolchainProjects.workspaceDir(sessionId),
     boundaryRootOf: (sessionId) => toolchainProjects.boundaryRoot(sessionId),
@@ -1167,7 +1307,7 @@ async function bootstrap(): Promise<void> {
   imageTools = registerImageTools({
     tools,
     logger: logger.child('tools'),
-    visionEnabled: () => visionEnabled(settings!.get()),
+    visionEnabled: () => visionEnabled(centerSettings.get()),
     viewImage: createViewImagePort({
       io: createNodeImageIo(),
       // 与 file-port / command-runner **同一个**边界取值器（按会话解析项目根，docs/06 §5.1）
@@ -1216,6 +1356,25 @@ async function bootstrap(): Promise<void> {
       windows?.focus('chat')
     },
   })
+  centerModelServices = new CenterModelServices({
+    settings: settings!,
+    logger: logger.child('center-models'),
+    fetchImpl: () => netFetch,
+    config: () => {
+      const center = settings!.get().center
+      return {
+        enabled: center.enabled,
+        serverUrl: center.serverUrl,
+        token: settings!.getSecret('center.token'),
+        clientId: center.clientId,
+      }
+    },
+    onChanged: (catalog) => {
+      if (catalog !== null) centerFallbackNoticeKeys.clear()
+      for (const listener of centerModelServicesListeners) listener(catalog)
+    },
+  })
+
   // 7.1.5 provider 工厂提取成常量：KernelAgentHost 与 `task` 子代理共享同一实例，
   //     「常规构造失败 → 临时回退可用条目」的启动自愈语义（docs/06 §12、step 02 第 6 条）
   //     两处一致；create() 每次请求即时构造，设置页改 Key 后无需重启即生效。
@@ -1228,6 +1387,21 @@ async function bootstrap(): Promise<void> {
     },
     strictSessionModelOf: (sessionId) =>
       isFileAwarenessSession(sessionId) && hasExplicitFileAwarenessModel(settings!.get()),
+    centerOfficial: {
+      token: () => settings!.getSecret('center.token'),
+      service: (capability) => centerModelServices?.service(capability),
+      selection: (capability) => settings!.get().center.officialModels[capability],
+      onFallback: (input) => {
+        const key = `${input.sessionId ?? 'global'}:llm`
+        if (centerFallbackNoticeKeys.has(key)) return
+        centerFallbackNoticeKeys.add(key)
+        emitCenterRuntimeNotice({
+          capability: 'llm',
+          message: `Aurora Center 官方语言模型不可用，已回落到 ${input.fallbackProviderId || '本机模型'}`,
+          at: new Date().toISOString(),
+        })
+      },
+    },
   })
   const agentProvider: AgentProviderFactory = {
     create: (options?: { allowFallback?: boolean; sessionId?: string }) => {
@@ -1585,11 +1759,33 @@ async function bootstrap(): Promise<void> {
     logger: logger.child('llm'),
     resolveFetch: () => netFetch,
   })
-  const tts = new TtsSynthesizer({
-    settings,
+  const centerTts = new TtsSynthesizer({
+    settings: centerSettings,
     logger: logger.child('tts'),
     resolveFetch: () => netFetch,
   })
+  const localTts = new TtsSynthesizer({
+    settings,
+    logger: logger.child('tts-local'),
+    resolveFetch: () => netFetch,
+  })
+  const tts = {
+    synthesize: async (request: Parameters<typeof centerTts.synthesize>[0]) => {
+      if (!settings!.get().center.officialModels.tts.enabled || request.providerId !== undefined) {
+        return localTts.synthesize(request)
+      }
+      try {
+        return await centerTts.synthesize(request)
+      } catch (error) {
+        emitOfficialFallback('tts', '语音合成')
+        logger?.warn('Center 官方 TTS 失败，回落本机模型', { error: String(error) })
+        return localTts.synthesize(request)
+      }
+    },
+    test: (request: Parameters<typeof centerTts.test>[0]) => centerTts.test(request),
+    listModels: (request: Parameters<typeof centerTts.listModels>[0]) =>
+      centerTts.listModels(request),
+  }
 
   // 7.1a Aurora Center 连接（docs/12）：出站 WS + 远程会话桥 + 远程配置。
   //     远程会话与本地 chat:send 走同一个 DesktopAgentHost；远程配置先在副本上
@@ -1610,12 +1806,13 @@ async function bootstrap(): Promise<void> {
         allowFileTransfer: center.allowFileTransfer,
       }
     },
-    statusSnapshot: () => buildClientStatus(settings!.get(), app.getVersion(), process.platform),
+    statusSnapshot: () =>
+      buildClientStatus(centerSettings.get(), app.getVersion(), process.platform),
     // 语音中转（docs/12 §6.4）：与 `stt:transcribe` / `tts:synthesize` IPC **同一实例**
     //（sttService / tts 都在上方装配）；门控判定与 ClientStatus.voice 能力位共用
     // voiceReadiness（remote-control.ts），不在 connector 里另写一套口径。
     voice: {
-      readiness: () => voiceReadiness(settings!.get()),
+      readiness: () => voiceReadiness(centerSettings.get()),
       transcribe: async (input) => {
         return sttService.transcribe(input)
       },
@@ -1674,7 +1871,7 @@ async function bootstrap(): Promise<void> {
       return undefined
     },
     getRedactedConfig: () =>
-      JSON.parse(JSON.stringify(settings!.exportRedacted())) as Record<string, unknown>,
+      JSON.parse(JSON.stringify(centerSettings.exportRedacted())) as Record<string, unknown>,
     switchMode: async (mode) => {
       const result = await modes.setCurrent(mode)
       if (!result.ok) return result.message
@@ -1860,7 +2057,10 @@ async function bootstrap(): Promise<void> {
     // 未知 / 已结算 confirmId 幂等返回 false（settled=false 也算 ok）。
     resolveConfirm: (confirmId, approved) =>
       proactiveScheduler?.resolve(confirmId, approved) ?? false,
-    onStatusChange: () => tray?.refresh(),
+    onStatusChange: (state) => {
+      tray?.refresh()
+      if (state === 'connected') void centerModelServices?.refresh()
+    },
   })
   centerConnector.start()
   settings.onChange(() => centerConnector?.onConfigChanged())
@@ -2019,7 +2219,16 @@ async function bootstrap(): Promise<void> {
 
   // 7.3 自动更新（docs/09）：electron-updater 适配层 + 状态机
   updater = new UpdateService({
-    port: createUpdaterPort(logger.child('updater')),
+    port: createUpdaterPort(logger.child('updater'), {
+      centerFeed: () => {
+        const center = settings?.get().center
+        if (center === undefined || !center.enabled || center.serverUrl.trim() === '') {
+          return undefined
+        }
+        const base = httpBaseUrlOf(center.serverUrl)
+        return base === undefined ? undefined : `${base.replace(/\/+$/, '')}/api/updates`
+      },
+    }),
     currentVersion: app.getVersion(),
     logger: logger.child('updater'),
     // 自测/发布验证用：允许把"启动后延迟自动检查"调短（默认 20s）
@@ -2231,11 +2440,26 @@ async function bootstrap(): Promise<void> {
         deviceLoginController?.cancel()
         return Promise.resolve(ok(true))
       },
+      modelServices: () => centerModelServices?.current() ?? null,
+      refreshModelServices: () => centerModelServices?.refresh() ?? Promise.resolve(null),
+      onModelServicesChanged: (listener) => {
+        centerModelServicesListeners.add(listener)
+        return () => {
+          centerModelServicesListeners.delete(listener)
+        }
+      },
+      onRuntimeNotice: (listener) => {
+        centerRuntimeNoticeListeners.add(listener)
+        return () => {
+          centerRuntimeNoticeListeners.delete(listener)
+        }
+      },
     },
     logger: logger.child('ipc'),
     paths,
     isDev,
     smokeMode,
+    visionEnabled: () => visionEnabled(centerSettings.get()),
     smokeDiagnostics: () => ({
       enabled: true,
       preClassFired: smokeMode ? [...preClassFired] : undefined,
@@ -5434,6 +5658,7 @@ async function persistCenterLogin(
   if (mutated === undefined) {
     return err('E_IO', '登录成功但配置保存失败，请重试')
   }
+  void centerModelServices?.refresh()
   return ok({ account, tokenPersisted: persisted })
 }
 

@@ -326,6 +326,18 @@ export class AuthStore {
   }
 
   /**
+   * 网关 / 目录接口只需要 Bearer 令牌：令牌在颁发时已绑定 clientId，客户端无需再传设备 id。
+   * 未绑定 clientId 的历史令牌不通过此入口。
+   */
+  verifyBoundClientToken(token: string): ClientTokenRecord | undefined {
+    const record = this.tokenCache.find((entry) => entry.tokenHash === hashToken(token))
+    if (record === undefined || record.revokedAt !== undefined || record.clientId === '') {
+      return undefined
+    }
+    return record
+  }
+
+  /**
    * 账号登录颁发客户端令牌（docs/12 §3，v0.2.1）：创建**归属 `userId`、创建即绑定
    * `clientId`** 的令牌，并吊销同 `clientId` 的全部旧令牌（换账号 / 重新登录后旧凭据
    * 立即失效）。明文只在本次返回值出现一次。设备授权登录（docs/12 §4.3）也走这里。

@@ -1,0 +1,41 @@
+---
+date: 2026-10-06
+title: Center 官方模型网关与自托管更新的长期接线口径
+tags: [Center, 模型, 更新, 安全, 坑]
+source: 模型自动记录
+---
+
+# Center 官方模型与自托管更新
+
+## 现象
+
+Center 现在同时承担三类容易混淆的职责：客户端连接与远程控制、官方模型网关、安装包更新源。
+它们都要求登录 / Bearer 鉴权、都可能回落，但安全边界和数据留存不同。
+
+## 原因
+
+- 官方模型必须由 Center 持有上游 API Key 并转发，客户端只拿清洗后的模型目录；若把 Key
+  下发给客户端，Center 无法可信记账，也会扩大凭据暴露面。
+- 更新下载若依赖客户端令牌，令牌过期 / 未登录会阻断升级；现有 GitHub releases 本来就是
+  公开只读，因此 Center 更新路由采用公开下载 + 管理员上传。
+- 两种回落语义不能互换：模型失败是“提示后改走本机模型”，更新失败是“检查失败后改走 GitHub”。
+
+## 影响
+
+把更新下载也强制登录，会让无法登录的设备永远无法自我修复；把模型 Key 下发客户端，
+会让“管理员配置”变成仅在 UI 上成立。反过来，把模型失败静默回落，则可能把请求发给用户未选择的服务。
+
+## 结论与做法
+
+- `AURORA_CENTER_SECRET` 是官方模型上游 Key 的唯一主密钥；缺失 / 错误时 Center 仍启动，
+  仅把对应官方能力标为不可用。密钥不得回传网页或客户端。
+- 客户端官方模型使用保留 Provider id `center-llm` / `center-imagegen` / `center-tts` /
+  `center-stt`；这些条目由目录同步维护，API Key 固定取 `center.token`，本地 Provider 页隐藏。
+- 官方模型请求只记录真实 `usage` 元数据，按日 NDJSON 保留 180 天、终身累计摘要不放；
+  不持久化提示词、回复、音频或图片。
+- 官方模型不可用时，语言模型按会话、其余能力按全局能力去重提示一次，随后回落本机 `active`
+  Provider；没有本机 Provider 时明确报错，绝不静默发往其他服务。
+- 客户端更新优先 `<center.serverUrl>/api/updates`；只有 Center 未配置、请求失败或 `latest.yml`
+  缺失时才回退包内 GitHub 源。Center 返回“已是最新”时不再尝试 GitHub。
+- Center Release 上传必须由管理员会话完成，先上传 staging，再校验 `latest.yml` 的 version /
+  size / sha512 与 blockmap，全部通过才原子切换 latest；公开下载路由支持 Range。

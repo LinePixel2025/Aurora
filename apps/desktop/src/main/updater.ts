@@ -33,6 +33,13 @@ export interface UpdaterPort {
 
 export const AUTO_CHECK_DELAY_MS = 20_000
 
+/** 更新源顺序：调试覆盖 > Center > GitHub。空串表示使用包内 GitHub source。 */
+export function resolveUpdateFeeds(overrideFeed: string, centerFeed: string | undefined): string[] {
+  if (overrideFeed.trim() !== '') return [overrideFeed.trim()]
+  if (centerFeed === undefined || centerFeed.trim() === '') return ['']
+  return [centerFeed.trim(), '']
+}
+
 export interface UpdateServiceOptions {
   port: UpdaterPort
   /** 当前运行版本（app.getVersion()） */
@@ -83,7 +90,11 @@ export class UpdateService {
   }
 
   getState(): UpdateState {
-    return { ...this.state }
+    const feed = this.port.describeFeed()
+    return {
+      ...this.state,
+      ...(feed === undefined ? {} : { feed }),
+    }
   }
 
   onStateChanged(listener: (state: UpdateState) => void): () => void {

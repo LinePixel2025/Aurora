@@ -1,13 +1,14 @@
 services:
   aurora-center:
     build: .
-    image: aurora-center:0.4.3
+    image: aurora-center:0.4.4
     container_name: aurora-center
     restart: unless-stopped
     ports:
       - '8787:8787'
     environment:
       - AURORA_CENTER_DATA=/data
+      - AURORA_CENTER_SECRET=${AURORA_CENTER_SECRET:-}
     volumes:
       - ./data:/data
     healthcheck:

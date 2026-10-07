@@ -2,7 +2,7 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v30）
+## 1. 配置 Schema（config.json，v31）
 
 ```jsonc
 {
@@ -238,6 +238,13 @@
     "allowRemoteConfig": true, // 允许 Center 远程改配置（仍受 12 §6.2 白名单约束）
     "allowFileTransfer": true, // 允许 center_send_file 上传文件
     "maxFileMb": 64, // 单个上传文件上限（1–512）
+    "officialModels": {
+      // v31：Center 官方模型全局覆盖；会话级模型覆盖仍写 SessionMeta.llm
+      "llm": { "enabled": false, "model": "" },
+      "imagegen": { "enabled": false, "model": "" },
+      "tts": { "enabled": false, "model": "" },
+      "stt": { "enabled": false, "model": "" },
+    },
   },
   // v19 新增：自动化总开关（docs/13 §2.2）。自动化的**定义与历史不是配置** ——
   // 它们落在 `<userData>/automations/automations.json` 与 `history.json`（同会话 / 待办的口径，
@@ -675,7 +682,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
   `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（`maxRounds` / 预算 /
   自动续轮等）热路径使用，避免每 attempt 深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 30`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 31`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -759,11 +766,13 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `v28 → v29`（**记忆过期与后台模型**：为 `fileAwareness` 补
   `defaultMemoryTtlDays: 0` 与空的 `backgroundModel`；已有值原样保留）、
   `v29 → v30`（**游戏模式**：为已有 `general` 补 `gameMode: { enabled: true }`；
-  `general` 组缺失时不凭空造半截对象）。
-  三十条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  `general` 组缺失时不凭空造半截对象）、
+  `v30 → v31`（**Center 官方模型**：为已有 `center` 补四类默认关闭选择；
+  `center` 组缺失时交给默认配置兜底）。
+  三十一条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**），重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **30** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **31** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -1106,3 +1115,26 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 
 写入统一走 `settings.update({ modes: { ...当前 modes, classroom: { ...当前 classroom, ...补丁 } } })`：
 `settings:update` 是**按顶层分组浅合并**，因此必须展开当前分组，否则会丢掉未被提及的子字段。
+
+## 8. Aurora Center 官方模型（v31）
+
+`CONFIG_VERSION` 升到 **31**，`center` 新增 `officialModels`：
+
+```json
+{
+  "officialModels": {
+    "llm": { "enabled": false, "model": "" },
+    "imagegen": { "enabled": false, "model": "" },
+    "tts": { "enabled": false, "model": "" },
+    "stt": { "enabled": false, "model": "" }
+  }
+}
+```
+
+- 迁移 `v30 → v31` 只补缺失字段，四类能力默认关闭；`center.*` 整组仍在
+  `SETTINGS_READONLY_PREFIXES` 中，Agent 不能自行启用官方模型或改向 Center。
+- 登录并从 Center 拉取到模型目录后，主进程维护保留 Provider
+  `center-llm` / `center-imagegen` / `center-tts` / `center-stt`。它们的 Base URL
+  由 `center.serverUrl` 推导，API Key 固定使用 `center.token`；本地模型页不提供编辑入口。
+- Center 页的开关决定全局覆盖；会话级覆盖仍遵循“会话 > 全局”。Center 离线、模型被停用时，
+  请求按现有本地 `active` Provider 回落，并在对应会话/能力首次回落时提示一次。

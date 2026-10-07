@@ -29,6 +29,15 @@ export {
 } from './files.js'
 export { Hub, type HubDeps, type ClientConn, type WebConn } from './hub.js'
 export { JsonStore } from './store.js'
+export { createSecretBox, type SecretBox } from './secrets.js'
+export {
+  ModelServicesStore,
+  type ModelServicesStoreOptions,
+  type ResolvedOfficialService,
+} from './model-services.js'
+export { UsageStore, type UsageRecordInput, type UsageStoreOptions } from './usage.js'
+export { ReleaseStore, type ReleaseStoreOptions } from './releases.js'
+export { ModelGateway, type ModelGatewayOptions } from './model-gateway.js'
 export { checkUpdate, compareVersions, type UpdateCheckResult } from './update.js'
 export { serverVersion } from './version.js'
 export { DEFAULT_DATA_DIR, runCli } from './cli.js'

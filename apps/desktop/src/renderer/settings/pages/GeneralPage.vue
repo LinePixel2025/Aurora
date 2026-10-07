@@ -465,7 +465,7 @@ async function toggleEdgeBar(): Promise<void> {
         :hint="
           update.state?.feed
             ? `更新源：${update.state.feed}`
-            : '更新源：打包后内置（公开 releases 仓库）'
+            : '更新源：优先 Aurora Center，未配置时回落公开 releases 仓库'
         "
       >
         <div class="column grow">

@@ -15,16 +15,23 @@ import { extname, join, normalize } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type {
   CenterServerMessage,
+  CenterOfficialCapability,
   ClientStatus,
   FileEntryInfo,
   Logger,
   ModeId,
 } from '@aurora/shared'
+import { CENTER_OFFICIAL_CAPABILITIES } from '@aurora/shared'
 import { AuthError, AuthStore, type UserRecord } from './auth.js'
 import { ClientRegistry } from './clients.js'
 import { DeviceAuthStore } from './device.js'
 import { FILE_PRUNE_INTERVAL_MS, FileStore, FileTooLargeError } from './files.js'
 import { Hub, type ClientConn, type WebConn } from './hub.js'
+import { ModelGateway } from './model-gateway.js'
+import { ModelServicesStore } from './model-services.js'
+import { ReleaseStore } from './releases.js'
+import { createSecretBox } from './secrets.js'
+import { UsageStore } from './usage.js'
 import { serverVersion } from './version.js'
 
 export interface CenterServerOptions {
@@ -42,7 +49,8 @@ export interface RunningCenterServer {
   readonly hub: Hub
 }
 
-const MAX_JSON_BODY = 256 * 1024
+const MAX_JSON_BODY = 2 * 1024 * 1024
+const MAX_RELEASE_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 const HELLO_TIMEOUT_MS = 10_000
 /*
  * 半开连接的判死节奏（2026-09-29 提速，用户反馈「客户端下线时 Center 更新太慢」）：
@@ -205,6 +213,24 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     logger,
   })
   const device = new DeviceAuthStore({ logger })
+  const secretBox = createSecretBox(process.env['AURORA_CENTER_SECRET'])
+  const modelServices = new ModelServicesStore({
+    dataDir: options.dataDir,
+    secrets: secretBox,
+    logger,
+  })
+  const usage = new UsageStore({ dataDir: options.dataDir, logger })
+  const releases = new ReleaseStore({
+    dataDir: options.dataDir,
+    logger,
+    maxBytes: MAX_RELEASE_UPLOAD_BYTES,
+  })
+  const modelGateway = new ModelGateway({
+    services: modelServices,
+    usage,
+    secrets: secretBox,
+    logger,
+  })
   // 数据目录 config.json 的服务器自身开关（缺省放行）；init() 时读取一次
   let allowRegistration = true
   let pruneTimer: NodeJS.Timeout | undefined
@@ -601,6 +627,57 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       return
     }
 
+    // 公开客户端更新源（docs/09 §10）：latest.yml 与当前 index 中登记的资产。
+    if (path === '/api/updates/latest.yml' && (req.method === 'GET' || req.method === 'HEAD')) {
+      const file = releases.assetPath('latest.yml')
+      if (file === undefined) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      await serveReleaseAsset(req, res, file, false)
+      return
+    }
+    const updateAsset = /^\/api\/updates\/([^/]+)$/.exec(path)
+    if (updateAsset && (req.method === 'GET' || req.method === 'HEAD')) {
+      const file = releases.assetPath(decodeURIComponent(updateAsset[1] as string))
+      if (file === undefined) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      await serveReleaseAsset(req, res, file, true)
+      return
+    }
+
+    // DashScope TTS 的短期签名音频代理不携带客户端令牌（客户端按协议只 GET 签名 URL）。
+    if (path.startsWith('/api/model-gateway/tts/audio/')) {
+      if (await modelGateway.handleSignedAudio(req, res, url)) return
+    }
+
+    // 官方模型目录与网关都只认客户端 Bearer 令牌；令牌绑定 clientId。
+    if (path === '/api/client/model-services/catalog' && req.method === 'GET') {
+      const pair = auth.verifyBoundClientToken(bearerOf(req))
+      if (pair === undefined) {
+        sendJson(res, 401, { error: 'E_UNAUTHORIZED' })
+        return
+      }
+      sendJson(res, 200, modelServices.catalog())
+      return
+    }
+    if (path.startsWith('/api/model-gateway/')) {
+      const pair = auth.verifyBoundClientToken(bearerOf(req))
+      if (pair === undefined) {
+        sendJson(res, 401, { error: 'E_UNAUTHORIZED' })
+        return
+      }
+      const user = auth.getUser(pair.userId)
+      await modelGateway.handle(req, res, url, {
+        userId: pair.userId,
+        username: user?.username ?? '',
+        clientId: pair.clientId,
+      })
+      return
+    }
+
     if (path === '/api/ingest/files' && req.method === 'POST') {
       await handleIngest(req, res, url)
       return
@@ -678,6 +755,33 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     }
     if (path === '/api/clients' && req.method === 'GET') {
       sendJson(res, 200, { clients: hub.buildClientInfos(user) })
+      return
+    }
+    if (path === '/api/usage' && req.method === 'GET') {
+      const requestedUser = url.searchParams.get('userId') ?? ''
+      const query = {
+        ...(url.searchParams.get('from') === null
+          ? {}
+          : { from: url.searchParams.get('from') as string }),
+        ...(url.searchParams.get('to') === null
+          ? {}
+          : { to: url.searchParams.get('to') as string }),
+        ...(user.role === 'admin'
+          ? requestedUser === ''
+            ? {}
+            : { userId: requestedUser }
+          : { userId: user.id }),
+        ...(url.searchParams.get('clientId') === null
+          ? {}
+          : { clientId: url.searchParams.get('clientId') as string }),
+        ...(url.searchParams.get('model') === null
+          ? {}
+          : { model: url.searchParams.get('model') as string }),
+        ...(url.searchParams.get('limit') === null
+          ? {}
+          : { limit: Number(url.searchParams.get('limit')) || 100 }),
+      }
+      sendJson(res, 200, await usage.query(query))
       return
     }
 
@@ -788,6 +892,72 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     // ── 管理员 ──
     if (user.role !== 'admin') {
       sendJson(res, 403, { error: 'E_FORBIDDEN' })
+      return
+    }
+    if (path === '/api/admin/model-services' && req.method === 'GET') {
+      sendJson(res, 200, { services: modelServices.adminConfig() })
+      return
+    }
+    const modelServiceUpdate = /^\/api\/admin\/model-services\/([^/]+)$/.exec(path)
+    if (modelServiceUpdate && req.method === 'PUT') {
+      const capability = normalizeOfficialCapability(modelServiceUpdate[1] as string)
+      if (capability === undefined) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      try {
+        const body = await readJsonBody(req)
+        const saved = await modelServices.updateService(capability, body)
+        sendJson(res, 200, { service: saved })
+      } catch (error) {
+        sendJson(res, 400, {
+          error: error instanceof Error ? error.message : 'E_INVALID_ARGUMENT',
+        })
+      }
+      return
+    }
+    const modelServiceFetch = /^\/api\/admin\/model-services\/([^/]+)\/models$/.exec(path)
+    if (modelServiceFetch && req.method === 'POST') {
+      const capability = normalizeOfficialCapability(modelServiceFetch[1] as string)
+      if (capability === undefined) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      try {
+        const body = await readJsonBody(req)
+        sendJson(res, 200, { models: await modelServices.fetchModels(capability, body) })
+      } catch (error) {
+        sendJson(res, 502, {
+          error: error instanceof Error ? error.message : 'E_UPSTREAM_FAILED',
+        })
+      }
+      return
+    }
+    if (path === '/api/admin/releases' && req.method === 'GET') {
+      sendJson(res, 200, { current: releases.current() ?? null })
+      return
+    }
+    if (path === '/api/admin/releases/upload' && req.method === 'POST') {
+      const name = url.searchParams.get('name') ?? ''
+      try {
+        const body = await readRawBody(req, MAX_RELEASE_UPLOAD_BYTES)
+        await releases.stage(name, body)
+        sendJson(res, 200, { ok: true, name, size: body.byteLength })
+      } catch (error) {
+        sendJson(res, 400, {
+          error: error instanceof Error ? error.message : 'E_UPLOAD_FAILED',
+        })
+      }
+      return
+    }
+    if (path === '/api/admin/releases/publish' && req.method === 'POST') {
+      try {
+        sendJson(res, 200, { current: await releases.publish() })
+      } catch (error) {
+        sendJson(res, 400, {
+          error: error instanceof Error ? error.message : 'E_RELEASE_INVALID',
+        })
+      }
       return
     }
     if (path === '/api/admin/users' && req.method === 'GET') {
@@ -1066,6 +1236,9 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     await auth.init()
     await clients.init()
     await files.init()
+    await modelServices.init()
+    await usage.init()
+    await releases.init()
     allowRegistration = await readAllowRegistration(options.dataDir)
     // 启动清一次过期文件，之后每 15 分钟一轮（unref：不拦进程退出）
     await files.pruneExpired().catch((error) => {
@@ -1112,6 +1285,7 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     },
     close() {
       if (pruneTimer !== undefined) clearInterval(pruneTimer)
+      usage.close()
       return new Promise((resolveClose) => {
         void releaseLock().then(() => {
           clientWss.close()
@@ -1158,6 +1332,83 @@ function toFileEntryInfo(record: {
     // 旧索引没有这个键（= 客户端上传）：只在网页上传时带出来，渲染层据它标注「来自网页」
     ...(record.source === undefined ? {} : { source: record.source }),
   }
+}
+
+function normalizeOfficialCapability(value: string): CenterOfficialCapability | undefined {
+  return (CENTER_OFFICIAL_CAPABILITIES as readonly string[]).includes(value)
+    ? (value as CenterOfficialCapability)
+    : undefined
+}
+
+async function readRawBody(req: IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buffer.byteLength
+    if (size > limit) throw new Error('E_BODY_TOO_LARGE')
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks)
+}
+
+async function serveReleaseAsset(
+  req: IncomingMessage,
+  res: ServerResponse,
+  filePath: string,
+  immutable: boolean,
+): Promise<void> {
+  let stat
+  try {
+    stat = await fs.stat(filePath)
+  } catch {
+    sendJson(res, 404, { error: 'E_NOT_FOUND' })
+    return
+  }
+  const total = stat.size
+  const range = req.headers.range
+  let start = 0
+  let end = total - 1
+  let status = 200
+  if (typeof range === 'string' && /^bytes=/.test(range)) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range)
+    if (match !== null) {
+      const rawStart = match[1] ?? ''
+      const rawEnd = match[2] ?? ''
+      start = rawStart === '' ? 0 : Number(rawStart)
+      end = rawEnd === '' ? total - 1 : Number(rawEnd)
+      if (
+        !Number.isInteger(start) ||
+        !Number.isInteger(end) ||
+        start < 0 ||
+        start > end ||
+        start >= total
+      ) {
+        res.writeHead(416, { 'Content-Range': `bytes */${total}` })
+        res.end()
+        return
+      }
+      end = Math.min(end, total - 1)
+      status = 206
+    }
+  }
+  const headers: Record<string, string> = {
+    'Content-Type': filePath.endsWith('.yml')
+      ? 'text/yaml; charset=utf-8'
+      : 'application/octet-stream',
+    'Content-Length': String(end - start + 1),
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+  }
+  if (status === 206) headers['Content-Range'] = `bytes ${start}-${end}/${total}`
+  res.writeHead(status, headers)
+  if (req.method === 'HEAD') {
+    res.end()
+    return
+  }
+  const stream = createReadStream(filePath, { start, end })
+  stream.on('error', () => res.destroy())
+  stream.pipe(res)
 }
 
 function parseMessage(data: unknown): Record<string, unknown> | undefined {

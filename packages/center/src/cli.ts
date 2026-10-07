@@ -5,6 +5,7 @@
  *   start   启动服务器（未 init 时自动 init，管理员密码随机生成、打印一次）
  *   users   add / list / passwd / remove
  *   status  数据目录概览
+ *   releases publish  上传并发布客户端更新
  *   update  [--check] 检查或执行更新（npm 通道）
  *   version 版本号
  *
@@ -14,7 +15,7 @@
  * 设备授权登录（v0.2.1 起，docs/12 §3 / §4.3）。
  */
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -48,6 +49,7 @@ const USAGE = `aurora-center —— Aurora Center 控制中心（docs/12）
   aurora-center users   remove <名>
                         # 写命令（add / passwd / remove）需先停服，见 docs/12 §9
   aurora-center status  [--data <dir>]
+  aurora-center releases publish --server <url> --user <名> [--password <密码>] --dir <目录>
   aurora-center update  [--check] [--registry <npm 源>]
   aurora-center version
 `
@@ -77,6 +79,8 @@ export async function runCli(options: CliOptions): Promise<number> {
       return runUsers(argv.slice(1), out, err)
     case 'status':
       return runStatus(argv.slice(1), out, err)
+    case 'releases':
+      return runReleases(argv.slice(1), out, err)
     case 'update':
       return runUpdate(argv.slice(1), out, err)
     default:
@@ -84,6 +88,76 @@ export async function runCli(options: CliOptions): Promise<number> {
       out(USAGE)
       return 2
   }
+}
+
+async function runReleases(
+  argv: string[],
+  out: (s: string) => void,
+  err: (s: string) => void,
+): Promise<number> {
+  if (positional(argv, 0) !== 'publish') {
+    err('用法：aurora-center releases publish --server <url> --user <名> --dir <目录>')
+    return 2
+  }
+  const rest = argv.slice(1)
+  const server = flagOf(rest, '--server')?.replace(/\/+$/, '') ?? ''
+  const username = flagOf(rest, '--user') ?? 'admin'
+  const password =
+    flagOf(rest, '--password') ?? process.env['AURORA_CENTER_PASSWORD'] ?? (await promptPassword())
+  const dir = flagOf(rest, '--dir')
+  if (server === '' || dir === undefined) {
+    err('缺少 --server 或 --dir')
+    return 2
+  }
+  const entries = await fs.readdir(dir)
+  const names = entries.filter(
+    (name) =>
+      name === 'latest.yml' ||
+      /^Aurora-Setup-\d+\.\d+\.\d+\.exe$/.test(name) ||
+      /^Aurora-Setup-\d+\.\d+\.\d+\.exe\.blockmap$/.test(name),
+  )
+  if (names.length < 3) {
+    err('发布目录需要同时包含 latest.yml、安装包与 blockmap')
+    return 2
+  }
+  const login = await fetch(`${server}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  const loginBody = (await login.json().catch(() => ({}))) as { token?: string; error?: string }
+  if (!login.ok || typeof loginBody.token !== 'string') {
+    err(`Center 登录失败：${loginBody.error ?? `HTTP ${login.status}`}`)
+    return 1
+  }
+  const auth = { Authorization: `Bearer ${loginBody.token}` }
+  for (const name of names) {
+    const body = await fs.readFile(join(dir, name))
+    const response = await fetch(
+      `${server}/api/admin/releases/upload?name=${encodeURIComponent(name)}`,
+      { method: 'POST', headers: { ...auth, 'Content-Type': 'application/octet-stream' }, body },
+    )
+    if (!response.ok) {
+      const detail = (await response.json().catch(() => ({}))) as { error?: string }
+      err(`上传 ${name} 失败：${detail.error ?? `HTTP ${response.status}`}`)
+      return 1
+    }
+    out(`已上传 ${name}`)
+  }
+  const publish = await fetch(`${server}/api/admin/releases/publish`, {
+    method: 'POST',
+    headers: auth,
+  })
+  const publishBody = (await publish.json().catch(() => ({}))) as {
+    current?: { version?: string }
+    error?: string
+  }
+  if (!publish.ok) {
+    err(`发布失败：${publishBody.error ?? `HTTP ${publish.status}`}`)
+    return 1
+  }
+  out(`已发布 v${publishBody.current?.version ?? ''}`)
+  return 0
 }
 
 // ─────────────── 参数工具 ───────────────

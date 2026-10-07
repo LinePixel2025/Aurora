@@ -41,6 +41,7 @@ import {
   REASONING_EFFORT_LEVELS,
   RESOURCE_NAME_PATTERN,
   RESOURCE_NAME_RULE,
+  isCenterOfficialProviderId,
   resolveModelParams,
   type LlmModelParams,
   type LlmProviderConfig,
@@ -404,39 +405,41 @@ function syncDrafts(): void {
   if (!settings) return
   const previous = savedDrafts.value
   const editing = editingId.value
-  savedDrafts.value = Object.entries(settings.llm.providers).map(([id, provider]) => {
-    // 编辑卡正在改的那一份：按 id 复用**旧对象引用** —— 广播到达（或任何一个即时保存动作
-    // 触发的 `settings:changed`）都不回退卡内内容、不关编辑器。未落盘的新建草稿在
-    // `localDrafts` 里，不参与这里的重建，所以填了一半的内容也不会被抹掉。
-    // （其余行每次重建，别处改过的值——如另一个窗口改 baseURL——照常反映到列表。）
-    const reused = editing === id ? previous.find((draft) => draft.id === id) : undefined
-    if (reused !== undefined) {
-      // 复用的编辑草稿同样只在这张卡打开时渲染模型行，所以也要过一遍补行
-      // （用户删掉「当前使用」那一行后，下一次同步把它补回来 —— 这正是既有语义）。
-      adoptCurrentModel(reused)
-      return reused
-    }
-    const draft: ProviderDraft = {
-      id,
-      ...provider,
-      // 候选列表**深拷贝成新数组**：`{ ...provider }` 只浅拷贝，卡里直接改会和 store 里
-      // 尚未落盘的配置共用同一个数组（下一次 setActive / saveProvider 就把它一起写盘了）。
-      // 顺手把当前使用的模型补进去：它本来就是候选项之一，用户看得见两者是一致的。
-      modelList: mergeModelIds(provider.modelList, [provider.model.trim()]),
-      // 参数表同样**深拷贝成新对象**：只浅拷贝的话，卡里 `patchParams` 改的就是 settings
-      // 快照里那一份（下一次任意广播就把它带出去，且和「取消」的语义打架）。
-      modelParams: Object.fromEntries(
-        Object.entries(provider.modelParams ?? {}).map(([key, value]) => [key, { ...value }]),
-      ),
-      apiKey: '',
-      apiKeySet: Boolean((provider as unknown as { apiKeySet?: boolean }).apiKeySet),
-    }
-    // 「当前使用的模型」始终在候选列表里占一行（空列表 → 行数 1）。引导页落盘的 provider 是
-    // `modelList: []`，不补这一步，模型行内那三枚参数（第 6 条的唯一入口）在默认路径下
-    // 根本不渲染。`model` 为空时 `adoptCurrentModel` 原样不动，空白配置仍显示空态。
-    adoptCurrentModel(draft)
-    return draft
-  })
+  savedDrafts.value = Object.entries(settings.llm.providers)
+    .filter(([id]) => !isCenterOfficialProviderId(id))
+    .map(([id, provider]) => {
+      // 编辑卡正在改的那一份：按 id 复用**旧对象引用** —— 广播到达（或任何一个即时保存动作
+      // 触发的 `settings:changed`）都不回退卡内内容、不关编辑器。未落盘的新建草稿在
+      // `localDrafts` 里，不参与这里的重建，所以填了一半的内容也不会被抹掉。
+      // （其余行每次重建，别处改过的值——如另一个窗口改 baseURL——照常反映到列表。）
+      const reused = editing === id ? previous.find((draft) => draft.id === id) : undefined
+      if (reused !== undefined) {
+        // 复用的编辑草稿同样只在这张卡打开时渲染模型行，所以也要过一遍补行
+        // （用户删掉「当前使用」那一行后，下一次同步把它补回来 —— 这正是既有语义）。
+        adoptCurrentModel(reused)
+        return reused
+      }
+      const draft: ProviderDraft = {
+        id,
+        ...provider,
+        // 候选列表**深拷贝成新数组**：`{ ...provider }` 只浅拷贝，卡里直接改会和 store 里
+        // 尚未落盘的配置共用同一个数组（下一次 setActive / saveProvider 就把它一起写盘了）。
+        // 顺手把当前使用的模型补进去：它本来就是候选项之一，用户看得见两者是一致的。
+        modelList: mergeModelIds(provider.modelList, [provider.model.trim()]),
+        // 参数表同样**深拷贝成新对象**：只浅拷贝的话，卡里 `patchParams` 改的就是 settings
+        // 快照里那一份（下一次任意广播就把它带出去，且和「取消」的语义打架）。
+        modelParams: Object.fromEntries(
+          Object.entries(provider.modelParams ?? {}).map(([key, value]) => [key, { ...value }]),
+        ),
+        apiKey: '',
+        apiKeySet: Boolean((provider as unknown as { apiKeySet?: boolean }).apiKeySet),
+      }
+      // 「当前使用的模型」始终在候选列表里占一行（空列表 → 行数 1）。引导页落盘的 provider 是
+      // `modelList: []`，不补这一步，模型行内那三枚参数（第 6 条的唯一入口）在默认路径下
+      // 根本不渲染。`model` 为空时 `adoptCurrentModel` 原样不动，空白配置仍显示空态。
+      adoptCurrentModel(draft)
+      return draft
+    })
   // provider 被别处删掉（如 `set_setting` 或对话窗）时，编辑卡 / 确认条不能指着一个不存在的行。
   // 未落盘的新建草稿不在 settings 里，所以先把它排除在判断之外。
   if (editing !== null && !isCreating(editing) && !hasSaved(editing)) closeEditor()

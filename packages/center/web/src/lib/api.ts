@@ -5,7 +5,16 @@
  * `@aurora/shared/browser`（Markdown 渲染器 / 设计令牌 / 图标查表）。
  * 登录令牌存 localStorage（7 天有效期由服务器控制，过期由 401 触发登出）。
  */
-import type { ClientInfo, FileEntryInfo } from '@aurora/shared'
+import type {
+  CenterOfficialCapability,
+  CenterOfficialServiceConfig,
+  CenterOfficialServicesConfig,
+  CenterReleaseInfo,
+  CenterUsageQuery,
+  CenterUsageResponse,
+  ClientInfo,
+  FileEntryInfo,
+} from '@aurora/shared'
 
 export interface Me {
   id: string
@@ -109,6 +118,14 @@ export const api = {
   clients(): Promise<{ clients: ClientInfo[] }> {
     return request('/api/clients')
   },
+  usage(query: CenterUsageQuery = {}): Promise<CenterUsageResponse> {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    }
+    const suffix = params.size === 0 ? '' : `?${params.toString()}`
+    return request(`/api/usage${suffix}`)
+  },
 
   /** 客户端上传的文件列表（属主过滤后端已做，uploadedAt 倒序） */
   files(): Promise<{ files: FileEntryInfo[] }> {
@@ -183,6 +200,50 @@ export const api = {
     },
     deleteClient(clientId: string): Promise<{ ok: true }> {
       return request(`/api/admin/clients/${encodeURIComponent(clientId)}`, 'DELETE')
+    },
+    modelServices(): Promise<{ services: CenterOfficialServicesConfig }> {
+      return request('/api/admin/model-services')
+    },
+    updateModelService(
+      capability: CenterOfficialCapability,
+      config: Partial<CenterOfficialServiceConfig> & { apiKey?: string | null },
+    ): Promise<{ service: CenterOfficialServiceConfig }> {
+      return request(`/api/admin/model-services/${encodeURIComponent(capability)}`, 'PUT', config)
+    },
+    fetchModelServiceModels(
+      capability: CenterOfficialCapability,
+      config: Record<string, unknown>,
+    ): Promise<{ models: string[] }> {
+      return request(
+        `/api/admin/model-services/${encodeURIComponent(capability)}/models`,
+        'POST',
+        config,
+      )
+    },
+    release(): Promise<{ current: CenterReleaseInfo | null }> {
+      return request('/api/admin/releases')
+    },
+    async uploadRelease(file: File): Promise<{ ok: true; name: string; size: number }> {
+      const token = getToken()
+      const response = await fetch(
+        `/api/admin/releases/upload?name=${encodeURIComponent(file.name)}`,
+        {
+          method: 'POST',
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            'Content-Type': 'application/octet-stream',
+          },
+          body: file,
+        },
+      )
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string }
+        throw new ApiError(data.error ?? `HTTP ${response.status}`, response.status)
+      }
+      return (await response.json()) as { ok: true; name: string; size: number }
+    },
+    publishRelease(): Promise<{ current: CenterReleaseInfo }> {
+      return request('/api/admin/releases/publish', 'POST')
     },
   },
 }

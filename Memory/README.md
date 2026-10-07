@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-06 | Center 官方模型网关与自托管更新的长期接线口径                                  | Center, 模型, 更新, 安全, 坑           | [2026-10-06-center-official-models-and-updates.md](2026-10-06-center-official-models-and-updates.md)         |
 | 2026-10-06 | 自感知源删除要清库、前台 Agent 忙时暂停队列、流光用完整状态机                   | 自感知, 删除, Agent, 流光, 坑          | [2026-10-06-awareness-source-agent-glow.md](2026-10-06-awareness-source-agent-glow.md)                       |
 | 2026-10-06 | 自感知重置只清 Aurora 管理数据，记录只保留变化终态                             | 自感知, 重置, 记录, UI, 坑             | [2026-10-06-awareness-reset-record-policy.md](2026-10-06-awareness-reset-record-policy.md)                   |
 | 2026-10-06 | 顶部流光连续分析多个文件时不能在文件切换处广播空闲帧                           | 自感知, 流光, 队列, Electron, 坑       | [2026-10-06-awareness-glow-batch-handoff.md](2026-10-06-awareness-glow-batch-handoff.md)                     |

@@ -111,7 +111,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **绝不允许裸 `v-html` 模型原文**；链接 scheme 走 markdown-it `validateLink`（`javascript:` 拒绝）；
   外链一律 `target=_blank` + `rel="noopener noreferrer nofollow"`；图片降级为链接（生产 CSP `img-src 'self' data:` 会拦远程图）。
 - **文件 / 命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
-- **配置改动**（当前 `CONFIG_VERSION = 30`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
+- **配置改动**（当前 `CONFIG_VERSION = 31`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 - **界面文案口径**（用户连续两轮点名「冗杂」）：区组说明段 **≤45 汉字**、字段 hint **≤40 汉字**，各只写 1 句；
   **不写 `docs/xx §n` 这类文档引用**；删的是冗余，**边界 / 后果 / 修复路径必须保留**；
   改文案后要同步核对断言了原文串的探针场景（`chat-composer-slash` 等）。

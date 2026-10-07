@@ -1577,6 +1577,8 @@ export const SCENARIOS = [
         onlineText:
           document.querySelector('[data-field="admin.client-online"]')?.textContent?.trim() ?? '',
         clientRows: document.querySelectorAll('[data-field="admin.client-row"]').length,
+        officialModels: document.querySelectorAll('[data-panel="official-models"]').length,
+        releaseAdmin: document.querySelectorAll('[data-panel="release-admin"]').length,
       }))
       return verdict(
         {
@@ -1584,6 +1586,32 @@ export const SCENARIOS = [
           userRows: reading.userRows >= 1,
           clientsPanel: reading.clientsPanel === 1,
           onlineChip: reading.onlineChips >= 1 && reading.onlineText === '在线',
+          officialModels: reading.officialModels === 1,
+          releaseAdmin: reading.releaseAdmin === 1,
+        },
+        { reading },
+      )
+    },
+  },
+
+  // ── 26b. 用量：普通用户视图与折线图画布 ──
+  {
+    name: 'usage',
+    async run(ctx) {
+      await fresh(ctx, { hash: '#/usage', expect: '[data-panel="usage-page"]' })
+      await ctx.page.waitForSelector('[data-field="usage.chart"] canvas', { timeout: TIMEOUT })
+      const reading = await ctx.page.evaluate(() => ({
+        page: document.querySelectorAll('[data-panel="usage-page"]').length,
+        cards: document.querySelectorAll('.usage-card').length,
+        canvas: document.querySelectorAll('[data-field="usage.chart"] canvas').length,
+        userFilter: document.querySelectorAll('input[aria-label="用户 ID"]').length,
+      }))
+      return verdict(
+        {
+          page: reading.page === 1,
+          cards: reading.cards === 3,
+          chart: reading.canvas === 1,
+          adminFilter: reading.userFilter === 1,
         },
         { reading },
       )

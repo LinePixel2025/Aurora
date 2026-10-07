@@ -10,12 +10,17 @@
 import { app } from 'electron'
 import type { AppUpdater } from 'electron-updater'
 import type { Logger } from '@aurora/shared'
-import type { UpdaterPort } from './updater.js'
+import { resolveUpdateFeeds, type UpdaterPort } from './updater.js'
 
 /** 自测用：把更新源指到本地 HTTP 服务（必须是受信任的调试开关，默认不生效） */
 export const UPDATE_FEED_ENV = 'AURORA_UPDATE_FEED'
 
-export function createUpdaterPort(logger: Logger): UpdaterPort {
+export interface UpdaterPortOptions {
+  /** 当前 Center 的公开更新源；返回 undefined 时只用包内 GitHub source。 */
+  centerFeed?: () => string | undefined
+}
+
+export function createUpdaterPort(logger: Logger, options: UpdaterPortOptions = {}): UpdaterPort {
   const overrideFeed = (process.env[UPDATE_FEED_ENV] ?? '').trim()
   /**
    * electron-updater **按需加载**（2026-10-04 性能轮）。
@@ -70,16 +75,38 @@ export function createUpdaterPort(logger: Logger): UpdaterPort {
     describeFeed: () =>
       overrideFeed !== ''
         ? overrideFeed
-        : app.isPackaged
-          ? 'github: LinePixel2025/Aurora-releases'
-          : undefined,
+        : options.centerFeed?.() !== undefined
+          ? `Center: ${options.centerFeed?.()}（失败时回退 GitHub）`
+          : app.isPackaged
+            ? 'github: LinePixel2025/Aurora-releases'
+            : undefined,
     async checkForUpdates() {
-      const result = await (await load()).checkForUpdates()
-      if (result === null || result === undefined) return null
-      const version = result.updateInfo?.version ?? ''
-      if (version === '') return null
-      // electron-updater 在没有可用更新时也会返回当前版本
-      return version === app.getVersion() ? null : { version }
+      const updater = await load()
+      const center = options.centerFeed?.()
+      const feeds = resolveUpdateFeeds(overrideFeed, center)
+      let lastError: unknown
+      for (const feed of feeds) {
+        configureFeed(updater, feed, logger)
+        try {
+          const result = await updater.checkForUpdates()
+          if (result === null || result === undefined) {
+            return null
+          }
+          const version = result.updateInfo?.version ?? ''
+          if (version === '') {
+            return null
+          }
+          return version === app.getVersion() ? null : { version }
+        } catch (error) {
+          lastError = error
+          if (feed !== '' && feeds.length > 1) {
+            logger.warn('Center 更新源检查失败，回退 GitHub', { feed, error: String(error) })
+            continue
+          }
+          throw error
+        }
+      }
+      throw lastError ?? new Error('没有可用更新源')
     },
     async downloadUpdate() {
       await (await load()).downloadUpdate()
@@ -97,4 +124,21 @@ export function createUpdaterPort(logger: Logger): UpdaterPort {
       return () => progressListeners.delete(listener)
     },
   }
+}
+
+function configureFeed(updater: AppUpdater, feed: string, logger: Logger): void {
+  if (feed === '') {
+    updater.setFeedURL({
+      provider: 'github',
+      owner: 'LinePixel2025',
+      repo: 'Aurora-releases',
+    })
+    return
+  }
+  logger.info('使用更新源', { feed })
+  updater.setFeedURL({
+    provider: 'generic',
+    url: feed,
+    channel: 'latest',
+  })
 }

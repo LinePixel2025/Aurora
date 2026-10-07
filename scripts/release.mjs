@@ -8,12 +8,14 @@
  * 用法：
  *   node scripts/release.mjs                 # 构建 + 打包 + 校验 + 打 tag（不上传）
  *   node scripts/release.mjs --publish       # 额外用 gh 上传产物到 releases 仓库
+ *   node scripts/release.mjs --publish-center --center-url <url> --center-user <名>
  *   node scripts/release.mjs --publish --push # 再把 tag 推到 origin
  *   node scripts/release.mjs --skip-package  # 只校验已有产物 + 打 tag
  *   --notes-file docs/release-notes/v<版本>.md # 必传：完整版本差异与 Release Notes
  *
  * 环境变量：
  *   GH_TOKEN  —— `--publish` 时 gh CLI 需要（repo 权限即可）
+ *   AURORA_CENTER_PASSWORD —— `--publish-center` 的管理员密码
  */
 import { execFileSync } from 'node:child_process'
 import { promises as fs } from 'node:fs'
@@ -29,6 +31,7 @@ const RELEASES_REPO = 'LinePixel2025/Aurora-releases'
 
 const args = new Set(process.argv.slice(2))
 const shouldPublish = args.has('--publish')
+const shouldPublishCenter = args.has('--publish-center')
 const shouldPush = args.has('--push')
 const skipPackage = args.has('--skip-package')
 
@@ -213,7 +216,59 @@ if (shouldPublish) {
     run('git', ['push', 'origin', 'HEAD'])
     run('git', ['push', 'origin', tag])
   }
-} else {
+}
+
+if (shouldPublishCenter) {
+  const centerUrl = argValue('--center-url')?.replace(/\/+$/, '') ?? ''
+  const centerUser = argValue('--center-user') ?? 'admin'
+  const centerPassword = process.env.AURORA_CENTER_PASSWORD ?? ''
+  if (centerUrl === '' || centerPassword === '') {
+    console.error('--publish-center 需要 --center-url 与 AURORA_CENTER_PASSWORD')
+    process.exit(2)
+  }
+  const login = await fetch(`${centerUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: centerUser, password: centerPassword }),
+  })
+  const loginBody = await login.json().catch(() => ({}))
+  if (!login.ok || typeof loginBody.token !== 'string') {
+    console.error(`Center 登录失败：${loginBody.error ?? `HTTP ${login.status}`}`)
+    process.exit(2)
+  }
+  for (const artifact of artifacts) {
+    const body = await fs.readFile(join(releaseDir, artifact))
+    const response = await fetch(
+      `${centerUrl}/api/admin/releases/upload?name=${encodeURIComponent(artifact)}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${loginBody.token}`,
+          'Content-Type': 'application/octet-stream',
+        },
+        body,
+      },
+    )
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}))
+      console.error(`上传 ${artifact} 到 Center 失败：${detail.error ?? `HTTP ${response.status}`}`)
+      process.exit(2)
+    }
+    console.log(`已上传到 Center：${artifact}`)
+  }
+  const publish = await fetch(`${centerUrl}/api/admin/releases/publish`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${loginBody.token}` },
+  })
+  const publishBody = await publish.json().catch(() => ({}))
+  if (!publish.ok) {
+    console.error(`Center 发布失败：${publishBody.error ?? `HTTP ${publish.status}`}`)
+    process.exit(2)
+  }
+  console.log(`Center 已发布 v${publishBody.current?.version ?? version}`)
+}
+
+if (!shouldPublish && !shouldPublishCenter) {
   console.log(`
 ──────────────────────────────────────────────────────────────
 产物已就绪（未上传）：
@@ -229,4 +284,13 @@ if (shouldPublish) {
 ──────────────────────────────────────────────────────────────`)
 }
 
-console.log(`\n发布流程完成（tag ${tag}${shouldPublish ? '，已上传' : '，未上传'}）`)
+console.log(
+  `\n发布流程完成（tag ${tag}${shouldPublish ? '，已上传 GitHub' : ''}${
+    shouldPublishCenter ? '，已上传 Center' : ''
+  }${!shouldPublish && !shouldPublishCenter ? '，未上传' : ''}）`,
+)
+
+function argValue(name) {
+  const index = process.argv.indexOf(name)
+  return index === -1 ? undefined : process.argv[index + 1]
+}

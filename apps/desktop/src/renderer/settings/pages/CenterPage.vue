@@ -8,6 +8,7 @@
  * 本页走 settings:update 不受影响；登录凭据只经 `center:login` 由主进程写入凭据链路。
  */
 import CenterConnectionSection from '../components/CenterConnectionSection.vue'
+import CenterOfficialModelsSection from '../components/CenterOfficialModelsSection.vue'
 import CenterPermissionsSection from '../components/CenterPermissionsSection.vue'
 import CenterStatusSection from '../components/CenterStatusSection.vue'
 </script>
@@ -22,6 +23,7 @@ import CenterStatusSection from '../components/CenterStatusSection.vue'
     </header>
 
     <CenterConnectionSection />
+    <CenterOfficialModelsSection />
     <CenterPermissionsSection />
     <CenterStatusSection />
   </section>

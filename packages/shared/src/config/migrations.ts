@@ -1086,6 +1086,41 @@ const migrateV29ToV30: Migration = {
   },
 }
 
+/**
+ * v30 → v31：为已有 `center` 补官方模型选择（docs/08 §8）。
+ * 只补缺失字段，不改变已有 Center 连接与远端许可开关。
+ */
+const migrateV30ToV31: Migration = {
+  from: 30,
+  to: 31,
+  describe: 'v30 → v31：新增 center.officialModels（Center 官方模型，默认全部关闭）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const center = asRecord(raw['center'])
+    if (center !== undefined) {
+      const official = asRecord(center['officialModels'])
+      const selection = (key: 'llm' | 'imagegen' | 'tts' | 'stt'): Record<string, unknown> => {
+        const existing = asRecord(official?.[key])
+        return {
+          enabled: existing?.['enabled'] === true,
+          model: typeof existing?.['model'] === 'string' ? existing['model'] : '',
+        }
+      }
+      next['center'] = {
+        ...center,
+        officialModels: {
+          llm: selection('llm'),
+          imagegen: selection('imagegen'),
+          tts: selection('tts'),
+          stt: selection('stt'),
+        },
+      }
+    }
+    next['version'] = 31
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1117,6 +1152,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV27ToV28,
   migrateV28ToV29,
   migrateV29ToV30,
+  migrateV30ToV31,
 ]
 
 export interface MigrationOutcome {

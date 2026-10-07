@@ -248,6 +248,14 @@ export const IPC = {
     deviceLoginResult: 'center:deviceLoginResult',
     /** 取消在途的设备授权轮询（设置页关闭时调用；幂等） */
     deviceLoginCancel: 'center:deviceLoginCancel',
+    /** 官方模型目录（未登录/未拉到时为 null） */
+    modelServices: 'center:modelServices',
+    /** 手动刷新官方模型目录 */
+    refreshModelServices: 'center:refreshModelServices',
+    /** 官方模型目录变化推送（on/off 成对） */
+    modelServicesChanged: 'center:modelServicesChanged',
+    /** Center 远程模型回落 / 运行态提示（on/off 成对） */
+    runtimeNotice: 'center:runtimeNotice',
   },
   /**
    * 自动化（v0.2.5，docs/13 §9）：定义 CRUD + 历史 + 手动触发 + 组件目录。

@@ -188,6 +188,10 @@ const CHANNELS = {
     deviceLogin: 'center:deviceLogin',
     deviceLoginResult: 'center:deviceLoginResult',
     deviceLoginCancel: 'center:deviceLoginCancel',
+    modelServices: 'center:modelServices',
+    refreshModelServices: 'center:refreshModelServices',
+    modelServicesChanged: 'center:modelServicesChanged',
+    runtimeNotice: 'center:runtimeNotice',
   },
   // 自动化（docs/13 §9）：与 shared 契约同构，编译期双向断言会兜住
   automation: {

@@ -1053,6 +1053,20 @@ watch(
 
 /** 朗读失败提示：独立 toast，4 秒后自动收起（与输入区提示刻意分开） */
 const ttsErrorToast = ref<string | null>(null)
+const centerRuntimeNotice = ref<string | null>(null)
+let centerRuntimeNoticeTimer: number | null = null
+const offCenterRuntimeNotice = window.aurora.center.onRuntimeNotice((notice) => {
+  centerRuntimeNotice.value = notice.message
+  if (centerRuntimeNoticeTimer !== null) window.clearTimeout(centerRuntimeNoticeTimer)
+  centerRuntimeNoticeTimer = window.setTimeout(() => {
+    centerRuntimeNotice.value = null
+    centerRuntimeNoticeTimer = null
+  }, 6000)
+})
+onUnmounted(() => {
+  offCenterRuntimeNotice()
+  if (centerRuntimeNoticeTimer !== null) window.clearTimeout(centerRuntimeNoticeTimer)
+})
 let ttsErrorTimer: number | null = null
 
 watch(
@@ -1728,6 +1742,7 @@ async function markGuideDone(): Promise<void> {
 
         <!-- 朗读失败：独立 toast，4 秒后自动收起（不长时间驻留） -->
         <AppToast v-if="ttsErrorToast" tone="error">朗读失败：{{ ttsErrorToast }}</AppToast>
+        <AppToast v-if="centerRuntimeNotice" tone="warn">{{ centerRuntimeNotice }}</AppToast>
 
         <MessageList
           :key="sessionId"

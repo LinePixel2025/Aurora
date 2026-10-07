@@ -22,6 +22,7 @@ import { navigate, route } from './router'
 import {
   Blocks,
   FolderOpen,
+  Gauge,
   LogOut,
   MonitorSmartphone,
   Sparkles,
@@ -30,6 +31,7 @@ import LoginView from './views/LoginView.vue'
 import ConsoleView from './views/ConsoleView.vue'
 import AutomationsView from './views/AutomationsView.vue'
 import FilesView from './views/FilesView.vue'
+import UsageView from './views/UsageView.vue'
 import AdminView from './views/AdminView.vue'
 import DeviceView from './views/DeviceView.vue'
 
@@ -64,6 +66,7 @@ watch(
 
 const navItems = [
   { name: 'console' as const, label: '控制台', icon: Sparkles, admin: false },
+  { name: 'usage' as const, label: '用量', icon: Gauge, admin: false },
   { name: 'automations' as const, label: '自动化', icon: Blocks, admin: false },
   { name: 'files' as const, label: '文件', icon: FolderOpen, admin: false },
   { name: 'admin' as const, label: '管理', icon: MonitorSmartphone, admin: true },
@@ -157,6 +160,7 @@ const onlineCount = computed(
       <main class="app-main">
         <Transition name="page" mode="out-in">
           <ConsoleView v-if="!needsLogin && route.name === 'console'" key="console" />
+          <UsageView v-else-if="!needsLogin && route.name === 'usage'" key="usage" />
           <AutomationsView
             v-else-if="!needsLogin && route.name === 'automations'"
             key="automations"

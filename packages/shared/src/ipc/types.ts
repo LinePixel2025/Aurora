@@ -18,6 +18,7 @@ import type {
   TtsSettings,
   WindowName,
 } from '../config/schema.js'
+import type { CenterOfficialModelCatalog } from '../center/protocol.js'
 
 export type { ModeId, WindowName }
 
@@ -1705,6 +1706,13 @@ export interface CenterConnectionStatus {
   lastError?: string
 }
 
+/** Center 官方模型的运行态提示（回落本地模型等；仅展示，不阻断请求）。 */
+export interface CenterRuntimeNotice {
+  capability: 'llm' | 'imagegen' | 'tts' | 'stt'
+  message: string
+  at: string
+}
+
 /**
  * Aurora Center 账号登录（v0.2.1，docs/12 §3/§7）：渲染层 → 主进程的登录请求。
  * `password` 只在本次请求里使用 —— 主进程拿它换客户端令牌（写入凭据链路），
@@ -2088,6 +2096,16 @@ export interface AuroraApi {
     onDeviceLoginResult(listener: (result: CenterDeviceLoginResult) => void): () => void
     /** 取消在途的设备授权轮询（设置页关闭时调用；幂等，没有在途轮询时是 no-op） */
     deviceLoginCancel(): Promise<Result<boolean>>
+    /** 读取当前官方模型目录（未登录 / 未拉取到为 null） */
+    modelServices(): Promise<Result<CenterOfficialModelCatalog | null>>
+    /** 立即从 Center 刷新官方模型目录 */
+    refreshModelServices(): Promise<Result<CenterOfficialModelCatalog | null>>
+    /** 目录变化推送（on/off 成对） */
+    onModelServicesChanged(
+      listener: (catalog: CenterOfficialModelCatalog | null) => void,
+    ): () => void
+    /** 官方模型回落等运行态提示（on/off 成对） */
+    onRuntimeNotice(listener: (notice: CenterRuntimeNotice) => void): () => void
   }
   /** 自动化（docs/13 §9）：定义 CRUD + 历史 + 手动触发 + 组件目录 */
   automation: {

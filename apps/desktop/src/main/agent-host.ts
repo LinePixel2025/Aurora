@@ -10,16 +10,26 @@ import {
   isLlmError,
   matchAllowPatterns,
   type AgentProviderFactory,
+  type ChatEvent,
   type ConfirmDecision,
   type ProviderConfig,
   type SessionModelOverride,
 } from '@aurora/agent-core'
 import { createLlmProvider } from './llm-provider.js'
-import type { AgentEvent, AgentHost, LlmSettings, LlmProviderConfig } from '@aurora/shared'
+import type {
+  AgentEvent,
+  AgentHost,
+  CenterOfficialCapability,
+  CenterOfficialServiceCatalog,
+  LlmSettings,
+  LlmProviderConfig,
+} from '@aurora/shared'
 import type { Logger, PermissionMode } from '@aurora/shared'
 // 三档权限的判定是纯函数、主进程与渲染层共用同一份（docs/06 §11.2）
 import {
+  CENTER_OFFICIAL_PROVIDER_IDS,
   isWithinRoot,
+  isCenterOfficialProviderId,
   permissionTargetOf,
   resolveModelParams,
   resolveSessionModel,
@@ -168,6 +178,19 @@ export interface ProviderFactoryOptions {
    * 不允许回落到全局档。文件自感知用它保证文件正文不会发给未选择的模型。
    */
   strictSessionModelOf?: (sessionId: string) => boolean
+  /** Center 官方模型运行态：目录只存在于内存，API Key 仍取 center.token。 */
+  centerOfficial?: {
+    token: () => string
+    service: (capability: CenterOfficialCapability) => CenterOfficialServiceCatalog | undefined
+    selection: (
+      capability: CenterOfficialCapability,
+    ) => { enabled: boolean; model: string } | undefined
+    onFallback?: (input: {
+      requestedProviderId: string
+      fallbackProviderId: string
+      sessionId?: string
+    }) => void
+  }
 }
 
 /**
@@ -202,12 +225,41 @@ export function createProviderFactory(
     config: LlmProviderConfig,
     quiet = false,
   ): ProviderConfig | undefined => {
-    if (config.baseUrl.trim() === '' || config.model.trim() === '') {
+    const officialCapability = officialCapabilityOf(providerId)
+    let effectiveConfig = config
+    if (officialCapability !== undefined) {
+      const service = options?.centerOfficial?.service(officialCapability)
+      const token = options?.centerOfficial?.token() ?? ''
+      if (service === undefined || token === '') {
+        if (!quiet) logger.warn('Center 官方模型当前不可用', { providerId })
+        return undefined
+      }
+      if (!service.models.some((model) => model.id === config.model)) {
+        if (!quiet) logger.warn('Center 官方模型已不再开放当前模型', { providerId })
+        return undefined
+      }
+      const model = service.models.find((entry) => entry.id === config.model)
+      effectiveConfig = {
+        ...config,
+        modelParams: {
+          ...config.modelParams,
+          [config.model]: {
+            reasoningEffort: model?.reasoningEffort ?? 'auto',
+            contextWindow: model?.contextWindow ?? 0,
+            vision: model?.vision === true,
+          },
+        },
+      }
+    }
+    if (effectiveConfig.baseUrl.trim() === '' || effectiveConfig.model.trim() === '') {
       if (!quiet) logger.warn('模型配置缺少 baseUrl 或 model', { providerId })
       return undefined
     }
 
-    const apiKey = settings.getSecret(`llm.providers.${providerId}.apiKey`)
+    const apiKey =
+      officialCapability === undefined
+        ? settings.getSecret(`llm.providers.${providerId}.apiKey`)
+        : (options?.centerOfficial?.token() ?? '')
     if (apiKey === '') {
       if (!quiet) logger.warn('模型配置缺少 API Key（可能加密不可用或尚未填写）', { providerId })
       return undefined
@@ -215,7 +267,7 @@ export function createProviderFactory(
 
     // 模型能力与思考等级按**当前生效模型**解析（v23：`llm.providers.<id>.modelParams[model]`，
     // 唯一取值口径 `resolveModelParams`；缺省按 `provider.model` 取，未命中按字段回落默认）。
-    const params = resolveModelParams(config)
+    const params = resolveModelParams(effectiveConfig)
 
     // 「思考等级」按用户设置透传给内核；`auto` 约定为「不下发 reasoning_effort」，
     // 在内核边界之前就映射成 undefined —— 其它层不许再判断 `'auto'`。
@@ -224,9 +276,9 @@ export function createProviderFactory(
     return {
       provider: createLlmProvider(config.type, {
         id: providerId,
-        baseUrl: config.baseUrl,
+        baseUrl: effectiveConfig.baseUrl,
         apiKey,
-        defaultModel: config.model,
+        defaultModel: effectiveConfig.model,
         ...(fetchImplOf(resolveFetch) === undefined
           ? {}
           : { fetchImpl: fetchImplOf(resolveFetch) }),
@@ -239,7 +291,7 @@ export function createProviderFactory(
             ...(info.reason === undefined ? {} : { reason: info.reason }),
           }),
       }),
-      model: config.model,
+      model: effectiveConfig.model,
       // 能力开关（docs/06 §3.1）：内核据它决定要不要把历史里的图片读出来重放。
       // 默认档是**关**（模型级表未命中时 `resolveModelParams` 回落 `false`），与 Schema 一致。
       vision: params.vision === true,
@@ -256,14 +308,35 @@ export function createProviderFactory(
    * 触发场景有二：AI 把 `llm.active` 写空 / 写成一个不存在的 id（见 `set_setting` 的黑名单与
    * `SettingsStore.sanitize` 的重置），或用户在配置文件里手改错了字段。
    */
-  const fallback = (llm: LlmSettings): ProviderConfig | undefined => {
+  const fallback = (
+    llm: LlmSettings,
+    requestedProviderId: string,
+    sessionId?: string,
+  ): ProviderConfig | undefined => {
     for (const [id, candidate] of Object.entries(llm.providers)) {
-      if (id === llm.active) continue
+      if (id === requestedProviderId) continue
       const built = build(id, candidate, true)
       if (built !== undefined) {
         logger.warn('默认模型配置不可用，已回退到可用条目', { active: llm.active, fallback: id })
+        options?.centerOfficial?.onFallback?.({
+          requestedProviderId,
+          fallbackProviderId: id,
+          ...(sessionId === undefined ? {} : { sessionId }),
+        })
         return built
       }
+    }
+    return undefined
+  }
+
+  const pickFallback = (
+    llm: LlmSettings,
+    requestedProviderId: string,
+  ): ProviderConfig | undefined => {
+    for (const [id, candidate] of Object.entries(llm.providers)) {
+      if (id === requestedProviderId || isCenterOfficialProviderId(id)) continue
+      const built = build(id, candidate, true)
+      if (built !== undefined) return built
     }
     return undefined
   }
@@ -303,6 +376,15 @@ export function createProviderFactory(
             providerId: effective.providerId,
             model: effective.model,
           })
+          if (isCenterOfficialProviderId(effective.providerId)) {
+            options?.centerOfficial?.onFallback?.({
+              requestedProviderId: effective.providerId,
+              fallbackProviderId: llm.active,
+              ...(createOptions?.sessionId === undefined
+                ? {}
+                : { sessionId: createOptions.sessionId }),
+            })
+          }
         }
       }
       if (
@@ -317,18 +399,56 @@ export function createProviderFactory(
         return undefined
       }
 
+      const official = options?.centerOfficial?.selection('llm')
+      const officialProviderId = CENTER_OFFICIAL_PROVIDER_IDS.llm
+      if (official?.enabled === true) {
+        const officialConfig = llm.providers[officialProviderId]
+        if (officialConfig !== undefined) {
+          const builtOfficial = build(officialProviderId, {
+            ...officialConfig,
+            model: official.model || officialConfig.model,
+          })
+          if (builtOfficial !== undefined) {
+            const localFallback = pickFallback(llm, officialProviderId)
+            return localFallback === undefined
+              ? builtOfficial
+              : withProviderFallback(builtOfficial, localFallback, () =>
+                  options?.centerOfficial?.onFallback?.({
+                    requestedProviderId: officialProviderId,
+                    fallbackProviderId: localFallback.provider.id,
+                    ...(createOptions?.sessionId === undefined
+                      ? {}
+                      : { sessionId: createOptions.sessionId }),
+                  }),
+                )
+          }
+          options?.centerOfficial?.onFallback?.({
+            requestedProviderId: officialProviderId,
+            fallbackProviderId: llm.active,
+            ...(createOptions?.sessionId === undefined
+              ? {}
+              : { sessionId: createOptions.sessionId }),
+          })
+        }
+      }
       const providerId = llm.active
       if (providerId === '') {
         logger.debug('尚未选择默认模型配置')
-        return allowFallbackOf(createOptions) ? fallback(llm) : undefined
+        return allowFallbackOf(createOptions)
+          ? fallback(llm, officialProviderId, createOptions?.sessionId)
+          : undefined
       }
       const config: LlmProviderConfig | undefined = llm.providers[providerId]
       if (config === undefined) {
         logger.warn('默认模型配置不存在', { providerId })
-        return allowFallbackOf(createOptions) ? fallback(llm) : undefined
+        return allowFallbackOf(createOptions)
+          ? fallback(llm, providerId, createOptions?.sessionId)
+          : undefined
       }
       const built = build(providerId, config)
-      if (built === undefined && allowFallbackOf(createOptions)) return fallback(llm)
+      if (built === undefined && allowFallbackOf(createOptions)) {
+        return fallback(llm, providerId, createOptions?.sessionId)
+      }
       return built
     },
   }
@@ -337,6 +457,47 @@ export function createProviderFactory(
 /** 只有显式要求自愈时才回退：普通调用（如设置页「测试连接」）必须如实报告失败。 */
 function allowFallbackOf(options?: { allowFallback?: boolean }): boolean {
   return options?.allowFallback === true
+}
+
+function officialCapabilityOf(providerId: string): CenterOfficialCapability | undefined {
+  for (const [capability, id] of Object.entries(CENTER_OFFICIAL_PROVIDER_IDS)) {
+    if (id === providerId) return capability as CenterOfficialCapability
+  }
+  return undefined
+}
+
+/** Center 网关在连接建立后仍可能中途失败；只有尚未产出任何模型事件时才静默重试本地。 */
+function withProviderFallback(
+  primary: ProviderConfig,
+  fallback: ProviderConfig,
+  onFallback: () => void,
+): ProviderConfig {
+  const provider = {
+    id: primary.provider.id,
+    async *chat(
+      request: Parameters<typeof primary.provider.chat>[0],
+      signal?: AbortSignal,
+    ): ReturnType<typeof primary.provider.chat> {
+      let emitted = false
+      let failed: ChatEvent | undefined
+      for await (const event of primary.provider.chat(request, signal)) {
+        if (event.type === 'error') {
+          failed = event
+          break
+        }
+        emitted = true
+        yield event
+      }
+      if (failed === undefined) return
+      if (emitted) {
+        yield failed
+        return
+      }
+      onFallback()
+      yield* fallback.provider.chat(request, signal)
+    },
+  }
+  return { ...primary, provider }
 }
 
 /** 取当前出网 fetch；解析失败按「未提供」处理，让内核回落到全局 fetch。 */

@@ -646,3 +646,18 @@ aurora-center token create --user <你的用户名>   # 生成配对令牌（只
 **Q：托盘图标不见了？**
 Windows 可能把它收进了隐藏图标区（点任务栏的 `^`）。Aurora 关掉窗口只是隐藏，
 不会退出；要退出请右键托盘图标 → 退出。
+
+## 6b. 使用 Aurora Center 官方模型
+
+登录 Center 后，在「设置 → Aurora Center → 官方模型」选择要使用的语言模型、生图、
+TTS 或 STT 模型。官方模型的请求会经 Center 网关转发，Center 管理员配置上游密钥并可在
+「用量」页查看真实 token 统计；普通账号只看得到自己的用量。
+
+如果 Center 暂时离线或管理员停用了某个模型，客户端会提示一次并回落到本机原来的模型。
+要停止回落后继续使用本机模型，请在 Center 页关闭对应官方模型开关。
+
+## 6c. 从 Center 更新客户端
+
+已配置并登录 Center 的安装版优先从当前 Center 检查更新；Center 不可用或还没有
+`latest.yml` 时才回落到 GitHub Releases。管理员可在 Center 管理页上传安装包、latest.yml
+和 blockmap，也可以用仓库发布脚本或 `aurora-center releases publish` 发布。

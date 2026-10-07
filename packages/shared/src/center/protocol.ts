@@ -13,7 +13,7 @@ import type {
   ChatDisplayImage,
   SubagentSnapshot,
 } from '../ipc/types.js'
-import type { ModeId, ReasoningEffort } from '../config/schema.js'
+import type { CenterOfficialCapability, ModeId, ReasoningEffort } from '../config/schema.js'
 import type { PermissionMode } from '../config/permission.js'
 
 /** 客户端能力声明（hello 上报；服务器据此决定哪些命令可发） */
@@ -54,6 +54,142 @@ export interface ClientStatus {
    * STT/TTS 门控口径），字段缺失时同样不渲染（向后兼容）。
    */
   voice?: { stt: boolean; tts: boolean }
+}
+
+/** Center 官方模型能力（与 `CENTER_OFFICIAL_CAPABILITIES` 同源，单独导出供 Web 协议使用）。 */
+export const CENTER_OFFICIAL_CAPABILITY_LABELS = {
+  llm: '语言模型',
+  imagegen: '图像生成',
+  tts: '语音合成',
+  stt: '语音识别',
+} as const
+
+/** 管理端保存的一条官方模型；字段按能力取用，未用字段不下发。 */
+export interface CenterOfficialModelEntry {
+  id: string
+  label?: string
+  enabled: boolean
+  reasoningEffort?: ReasoningEffort
+  contextWindow?: number
+  vision?: boolean
+  size?: string
+  voice?: string
+  speed?: number
+  format?: string
+  language?: string
+}
+
+/** 单个官方能力的管理面配置（API Key 只以 apiKeySet 标记返回）。 */
+export interface CenterOfficialServiceConfig {
+  enabled: boolean
+  type: string
+  baseUrl: string
+  apiKeySet: boolean
+  defaultModel: string
+  models: CenterOfficialModelEntry[]
+  error?: string
+}
+
+export type CenterOfficialServicesConfig = Record<
+  CenterOfficialCapability,
+  CenterOfficialServiceConfig
+>
+
+/** 客户端可见的官方模型目录：不含上游 baseUrl / 密钥 / 未开放模型。 */
+export interface CenterOfficialModelCatalogEntry {
+  id: string
+  label?: string
+  reasoningEffort?: ReasoningEffort
+  contextWindow?: number
+  vision?: boolean
+  size?: string
+  voice?: string
+  speed?: number
+  format?: string
+  language?: string
+}
+
+export interface CenterOfficialServiceCatalog {
+  type: string
+  defaultModel: string
+  models: CenterOfficialModelCatalogEntry[]
+}
+
+export interface CenterOfficialModelCatalog {
+  revision: string
+  services: Partial<Record<CenterOfficialCapability, CenterOfficialServiceCatalog>>
+}
+
+/** Token 用量汇总（终身总量或查询区间）。 */
+export interface CenterTokenUsageTotals {
+  requests: number
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
+  totalTokens: number
+}
+
+/** 折线图的一天。 */
+export interface CenterTokenUsageDay {
+  date: string
+  requests: number
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
+  totalTokens: number
+}
+
+/** 最近请求元数据；刻意不含提示词 / 回复正文。 */
+export interface CenterTokenUsageRecord {
+  id: string
+  at: string
+  userId: string
+  username: string
+  clientId: string
+  model: string
+  promptTokens: number
+  completionTokens: number
+  cachedTokens?: number
+  totalTokens: number
+}
+
+export interface CenterUsageQuery {
+  from?: string
+  to?: string
+  userId?: string
+  clientId?: string
+  model?: string
+  limit?: number
+}
+
+export interface CenterUsageResponse {
+  scope: {
+    allUsers: boolean
+    userId: string
+  }
+  range: {
+    from: string
+    to: string
+  }
+  totals: CenterTokenUsageTotals
+  lifetime: CenterTokenUsageTotals
+  daily: CenterTokenUsageDay[]
+  recent: CenterTokenUsageRecord[]
+}
+
+/** Center 当前托管的一个客户端更新版本。 */
+export interface CenterReleaseFileInfo {
+  name: string
+  size: number
+  sha512: string
+  kind: 'installer' | 'blockmap' | 'manifest'
+}
+
+export interface CenterReleaseInfo {
+  version: string
+  publishedAt: string
+  channel: 'latest'
+  files: CenterReleaseFileInfo[]
 }
 
 /** 敏感工具确认请求（客户端 → 服务器 → 网页端转发，docs/12 §5.1） */
