@@ -303,13 +303,15 @@ async function onFilePicked(event: Event): Promise<void> {
 .console {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
+  flex: 1 1 auto;
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  background: var(--center-workspace);
 }
 
 .rail-drawer {
-  width: 264px;
+  width: 280px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -329,7 +331,8 @@ async function onFilePicked(event: Event): Promise<void> {
   gap: var(--space-2);
   padding: var(--space-2) var(--space-4);
   border-bottom: 1px solid var(--border-subtle);
-  min-height: 44px;
+  min-height: 48px;
+  background: var(--center-topbar);
 }
 
 .main-title {
@@ -357,7 +360,7 @@ async function onFilePicked(event: Event): Promise<void> {
   min-height: var(--control-h-sm);
   padding: 0 var(--space-2);
   border: none;
-  border-radius: var(--radius-pill);
+  border-radius: 7px;
   background: transparent;
   color: var(--text-secondary);
   font-size: var(--text-xs);
@@ -371,6 +374,11 @@ async function onFilePicked(event: Event): Promise<void> {
 .head-btn:hover {
   background: var(--fill-2);
   color: var(--text-primary);
+}
+
+.head-btn:disabled {
+  color: var(--text-muted);
+  cursor: default;
 }
 
 .rail-toggle {
@@ -390,7 +398,7 @@ async function onFilePicked(event: Event): Promise<void> {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 0 var(--space-4);
+  padding: 0 var(--space-5);
   gap: var(--space-2);
 }
 
@@ -448,9 +456,9 @@ async function onFilePicked(event: Event): Promise<void> {
   min-height: var(--control-h-md);
   padding: 0 var(--space-4);
   border: none;
-  border-radius: var(--radius-pill);
-  background: var(--aurora-blue);
-  color: var(--on-accent);
+  border-radius: 7px;
+  background: var(--center-signal);
+  color: var(--center-signal-ink);
   font-size: var(--text-sm);
   cursor: pointer;
 }
@@ -466,14 +474,13 @@ async function onFilePicked(event: Event): Promise<void> {
 }
 
 .panel-drawer {
-  width: 300px;
+  width: 320px;
   min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   /* 展开 / 收起是**布局级**过渡（宽度参与主区排版），提前提一层合成提示省掉首帧的抖动；
      只给这一处（及窄屏那两枚抽屉）——全站铺 `will-change` 会白占显存。 */
-  will-change: width;
   transition:
     width var(--dur-base) var(--ease-spring),
     opacity var(--transition-fast);
@@ -492,7 +499,7 @@ async function onFilePicked(event: Event): Promise<void> {
 
 @media (max-width: 960px) {
   .panel-drawer {
-    width: 260px;
+    width: 280px;
   }
 }
 

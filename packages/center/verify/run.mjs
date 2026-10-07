@@ -222,14 +222,10 @@ async function logout(page) {
  * 之后用 `reload` 而不是 `goto` —— 同一 URL（含 hash）的 goto 会被当成同文档导航，不重新加载。
  */
 async function resetAuth(page, baseUrl) {
-  if (page.url().startsWith('about:')) {
-    await page.goto(`${baseUrl}/#/login`, { waitUntil: 'domcontentloaded' })
-  }
-  await page.evaluate(() => {
-    window.localStorage.clear()
-    window.location.hash = '#/login'
-  })
-  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.evaluate(() => window.localStorage.clear()).catch(() => undefined)
+  // 在 hash 之前加唯一 query，强制真实文档导航；只改 hash 会被应用守卫在 reload 前
+  // 改回 console，随后 reload 落到官网而不是登录页。
+  await page.goto(`${baseUrl}/?verify=${Date.now()}#/login`, { waitUntil: 'domcontentloaded' })
 }
 
 // ───────────────────────── 主流程 ─────────────────────────

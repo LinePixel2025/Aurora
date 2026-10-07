@@ -1,0 +1,275 @@
+<script setup lang="ts">
+/** 登录后的固定导航：状态、页面入口与账号动作集中在同一条控制轨上。 */
+import {
+  Blocks,
+  FolderOpen,
+  Gauge,
+  LogOut,
+  MonitorSmartphone,
+  Sparkles,
+} from '@aurora/shared/browser'
+import type { RouteName } from '../router'
+import type { Me } from '../lib/api'
+
+const props = defineProps<{
+  routeName: RouteName
+  user: Me | null
+  onlineCount: number
+  totalCount: number
+}>()
+
+const emit = defineEmits<{
+  (event: 'navigate', name: RouteName): void
+  (event: 'logout'): void
+}>()
+
+const navItems = [
+  { name: 'console' as const, label: '控制台', icon: Sparkles, admin: false },
+  { name: 'usage' as const, label: '用量', icon: Gauge, admin: false },
+  { name: 'automations' as const, label: '自动化', icon: Blocks, admin: false },
+  { name: 'files' as const, label: '文件', icon: FolderOpen, admin: false },
+  { name: 'admin' as const, label: '管理', icon: MonitorSmartphone, admin: true },
+]
+</script>
+
+<template>
+  <aside class="workbench-sidebar" aria-label="Aurora Center 主导航">
+    <button type="button" class="sidebar-brand" @click="emit('navigate', 'console')">
+      <span class="sidebar-mark aurora-mark" aria-hidden="true" />
+      <span class="sidebar-brand-copy">
+        <strong>Aurora</strong>
+        <small>Center</small>
+      </span>
+    </button>
+
+    <div class="sidebar-status" data-field="shell.client-count">
+      <span class="status-pulse" :class="{ online: props.onlineCount > 0 }" aria-hidden="true" />
+      <span>{{ props.onlineCount }} / {{ props.totalCount }} 台在线</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <button
+        v-for="item in navItems.filter((entry) => !entry.admin || props.user?.role === 'admin')"
+        :key="item.name"
+        type="button"
+        class="sidebar-nav-item"
+        :class="{ active: props.routeName === item.name }"
+        :data-action="`nav.${item.name}`"
+        @click="emit('navigate', item.name)"
+      >
+        <component :is="item.icon" :size="17" :stroke-width="1.75" aria-hidden="true" />
+        <span>{{ item.label }}</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-account">
+      <div class="account-avatar" aria-hidden="true">
+        {{ (props.user?.username ?? '?').slice(0, 1).toUpperCase() }}
+      </div>
+      <div class="account-copy">
+        <strong>{{ props.user?.username ?? '' }}</strong>
+        <span>{{ props.user?.role === 'admin' ? '管理员' : '用户' }}</span>
+      </div>
+      <button
+        type="button"
+        class="account-logout"
+        title="退出登录"
+        aria-label="退出登录"
+        data-action="auth.logout"
+        @click="emit('logout')"
+      >
+        <LogOut :size="16" :stroke-width="1.8" aria-hidden="true" />
+      </button>
+    </div>
+  </aside>
+</template>
+
+<style scoped>
+.workbench-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 220px;
+  min-height: 0;
+  padding: 18px 14px 14px;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--center-sidebar);
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+}
+
+.sidebar-brand-copy {
+  display: grid;
+  gap: 1px;
+}
+
+.sidebar-brand-copy strong {
+  font-family: var(--font-display);
+  font-size: 16px;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.sidebar-brand-copy small {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.sidebar-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin: 16px 8px 18px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--fill-1);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-variant-numeric: var(--num-tabular);
+}
+
+.status-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-idle);
+}
+
+.status-pulse.online {
+  background: var(--status-ok);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-ok) 16%, transparent);
+}
+
+.sidebar-nav {
+  display: grid;
+  gap: 4px;
+}
+
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 40px;
+  padding: 0 11px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.sidebar-nav-item:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+.sidebar-nav-item.active {
+  background: var(--center-active);
+  color: var(--text-primary);
+}
+
+.sidebar-nav-item.active svg {
+  color: var(--center-signal);
+}
+
+.sidebar-account {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 48px;
+  margin-top: auto;
+  padding: 7px 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.account-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--center-active);
+  color: var(--center-signal);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.account-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.account-copy strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-copy span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.account-logout {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.account-logout:hover {
+  background: var(--fill-2);
+  color: var(--danger-text);
+}
+
+@media (max-width: 820px) {
+  .workbench-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: var(--z-flyout);
+    box-shadow: var(--shadow-3);
+    transform: translateX(-100%);
+    transition: transform var(--dur-base) var(--ease-spring);
+  }
+
+  .workbench-sidebar.mobile-open {
+    transform: translateX(0);
+  }
+}
+</style>

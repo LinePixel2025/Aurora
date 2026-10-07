@@ -790,7 +790,7 @@ export function logout(): void {
   statusBuffer.clear()
   state.selectedClientId = ''
   state.activeSessionKey = ''
-  window.location.hash = '#/login'
+  window.location.hash = '#/'
 }
 
 function connectSocket(): void {

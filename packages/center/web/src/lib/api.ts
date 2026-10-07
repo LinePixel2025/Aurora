@@ -118,6 +118,9 @@ export const api = {
   clients(): Promise<{ clients: ClientInfo[] }> {
     return request('/api/clients')
   },
+  currentRelease(): Promise<{ current: CenterReleaseInfo | null }> {
+    return request('/api/updates/current')
+  },
   usage(query: CenterUsageQuery = {}): Promise<CenterUsageResponse> {
     const params = new URLSearchParams()
     for (const [key, value] of Object.entries(query)) {

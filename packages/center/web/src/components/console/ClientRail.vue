@@ -171,6 +171,7 @@ const countLabel = computed(() => `${props.entries.length} 台 · ${onlineCount.
 }
 
 .rail-item {
+  contain: layout paint style;
   display: flex;
   flex-direction: column;
 }

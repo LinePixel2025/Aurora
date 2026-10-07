@@ -1,13 +1,10 @@
 <script setup lang="ts">
 /**
- * SPA 外壳：启动态 / 登录守卫 / 顶栏 / 路由出口（docs/12 §10）。
+ * Center Web 外壳：未登录官网 / 登录注册 / 设备授权 / 登录后工作台。
  *
- * - 未登录只允许 `#/login` 与 `#/device`（设备授权确认页未登录可访问，docs/12 §4.3）；
- * - 非管理员访问 `#/admin` 一律回控制台（服务器侧同样会拒绝）；
- * - 顶栏右侧的 WS 指示是**唯一**的"网页端 ↔ 服务器通路"信号（设备在线状态由推送驱动，
- *   没有轮询兜底，所以这里必须如实显示链路状态）。
+ * 所有非首屏视图走动态 import，避免官网首包带上 ECharts、管理端和 Markdown 渲染器。
  */
-import { computed, onMounted, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import {
   actionNotice,
   boot,
@@ -19,40 +16,57 @@ import {
   wsStatus,
 } from './state'
 import { navigate, route } from './router'
-import {
-  Blocks,
-  FolderOpen,
-  Gauge,
-  LogOut,
-  MonitorSmartphone,
-  Sparkles,
-} from '@aurora/shared/browser'
-import LoginView from './views/LoginView.vue'
-import ConsoleView from './views/ConsoleView.vue'
-import AutomationsView from './views/AutomationsView.vue'
-import FilesView from './views/FilesView.vue'
-import UsageView from './views/UsageView.vue'
-import AdminView from './views/AdminView.vue'
-import DeviceView from './views/DeviceView.vue'
+import PublicHeader from './components/PublicHeader.vue'
+import WorkbenchSidebar from './components/WorkbenchSidebar.vue'
+import { PanelLeft } from '@aurora/shared/browser'
+
+const LandingView = defineAsyncComponent(() => import('./views/LandingView.vue'))
+const LoginView = defineAsyncComponent(() => import('./views/LoginView.vue'))
+const DeviceView = defineAsyncComponent(() => import('./views/DeviceView.vue'))
+const ConsoleView = defineAsyncComponent(() => import('./views/ConsoleView.vue'))
+const UsageView = defineAsyncComponent(() => import('./views/UsageView.vue'))
+const AutomationsView = defineAsyncComponent(() => import('./views/AutomationsView.vue'))
+const FilesView = defineAsyncComponent(() => import('./views/FilesView.vue'))
+const AdminView = defineAsyncComponent(() => import('./views/AdminView.vue'))
 
 onMounted(() => {
   void boot()
 })
 
-/** 未登录时仍可访问的路由（登录页自身与设备授权页） */
-const publicRoutes = new Set(['login', 'device'])
+/** 未登录时仍可访问的路由（官网、登录页与设备授权页） */
+const publicRoutes = new Set(['home', 'login', 'device'])
 const needsLogin = computed(() => booted.value && currentUser.value === null)
+const isDeviceRoute = computed(() => route.value.name === 'device')
+const isPublicShell = computed(() => needsLogin.value || isDeviceRoute.value)
+const compactPublicHeader = computed(
+  () => route.value.name === 'device' || route.value.name === 'login',
+)
+const mobileNavOpen = ref(false)
+
+const activeView = computed(() => {
+  if (route.value.name === 'device') return DeviceView
+  if (needsLogin.value) {
+    if (route.value.name === 'login') return LoginView
+    return LandingView
+  }
+  if (route.value.name === 'usage') return UsageView
+  if (route.value.name === 'automations') return AutomationsView
+  if (route.value.name === 'files') return FilesView
+  if (route.value.name === 'admin') return AdminView
+  return ConsoleView
+})
 
 watch(
   [booted, needsLogin, route],
   () => {
     if (!booted.value) return
     const current = route.value.name
+    mobileNavOpen.value = false
     if (needsLogin.value) {
-      if (!publicRoutes.has(current)) navigate('login')
+      if (!publicRoutes.has(current)) navigate('home')
       return
     }
-    if (current === 'login') {
+    if (current === 'login' || current === 'home') {
       navigate('console')
       return
     }
@@ -64,321 +78,253 @@ watch(
   { immediate: true },
 )
 
-const navItems = [
-  { name: 'console' as const, label: '控制台', icon: Sparkles, admin: false },
-  { name: 'usage' as const, label: '用量', icon: Gauge, admin: false },
-  { name: 'automations' as const, label: '自动化', icon: Blocks, admin: false },
-  { name: 'files' as const, label: '文件', icon: FolderOpen, admin: false },
-  { name: 'admin' as const, label: '管理', icon: MonitorSmartphone, admin: true },
-]
-
-const visibleNav = computed(() =>
-  navItems.filter((item) => !item.admin || currentUser.value?.role === 'admin'),
-)
-
 const wsLabel = computed(() => {
   if (wsStatus.value === 'open') return '已连接'
   if (wsStatus.value === 'connecting') return '连接中…'
-  if (wsStatus.value === 'closed') return '已断开，重连中…'
+  if (wsStatus.value === 'closed') return '重连中…'
   return '未连接'
 })
 
 const onlineCount = computed(
   () => [...state.clients.values()].filter((entry) => entry.client.online).length,
 )
+
+const pageTitle = computed(() => {
+  const titles: Record<string, string> = {
+    console: '控制台',
+    usage: '用量',
+    automations: '自动化',
+    files: '文件',
+    admin: '管理',
+  }
+  return titles[route.value.name] ?? 'Aurora Center'
+})
+
+function onNavigate(name: Parameters<typeof navigate>[0]): void {
+  mobileNavOpen.value = false
+  navigate(name)
+}
+
+function onLogout(): void {
+  logout()
+  navigate('home')
+}
 </script>
 
 <template>
-  <!--
-    启动态 → 壳的切换：`page` 预设（共享）+ `mode="out-in"`。
-    两者高度完全不同（boot 是整屏居中、壳是顶栏 + 全高主区），同屏交叉会让页面上下弹一下，
-    out-in 先把 spinner 淡出再让壳进来，交接是干净的。
-  -->
-  <Transition name="page" mode="out-in">
-    <div v-if="!booted" key="boot" class="boot" data-panel="boot">
-      <span class="spinner" aria-label="正在加载" />
-    </div>
+  <div v-if="!booted" class="boot" data-panel="boot">
+    <span class="spinner" aria-label="正在加载" />
+  </div>
 
-    <div v-else key="shell" class="shell">
-      <header v-if="!needsLogin" class="topbar glass-bar anim-pane">
-        <div class="topbar-inner">
-          <div class="brand">
-            <span class="brand-mark aurora-mark" aria-hidden="true" />
-            <span class="brand-name">Aurora</span>
-            <span class="brand-sub">Center</span>
-          </div>
+  <div v-else class="app-shell" :class="{ 'app-shell--public': isPublicShell }">
+    <template v-if="isPublicShell">
+      <PublicHeader :compact="compactPublicHeader" />
+      <main
+        class="public-main"
+        :class="{ 'public-main--device': isDeviceRoute }"
+        data-panel="public-shell"
+      >
+        <Suspense>
+          <component :is="activeView" :key="route.name" />
+          <template #fallback>
+            <div class="route-loading"><span class="spinner" /></div>
+          </template>
+        </Suspense>
+      </main>
+    </template>
 
-          <nav class="nav" aria-label="主导航">
-            <button
-              v-for="item in visibleNav"
-              :key="item.name"
-              type="button"
-              class="nav-item"
-              :class="{ active: route.name === item.name }"
-              :data-action="`nav.${item.name}`"
-              @click="navigate(item.name)"
-            >
-              <component :is="item.icon" :size="14" :stroke-width="1.8" aria-hidden="true" />
-              <span>{{ item.label }}</span>
-            </button>
-          </nav>
+    <template v-else>
+      <WorkbenchSidebar
+        :class="{ 'mobile-open': mobileNavOpen }"
+        :route-name="route.name"
+        :user="currentUser"
+        :online-count="onlineCount"
+        :total-count="state.clients.size"
+        @navigate="onNavigate"
+        @logout="onLogout"
+      />
+      <Transition name="fade">
+        <button
+          v-if="mobileNavOpen"
+          type="button"
+          class="sidebar-scrim"
+          aria-label="关闭导航"
+          @click="mobileNavOpen = false"
+        />
+      </Transition>
 
-          <span class="grow" />
-
-          <span
-            v-if="state.clients.size > 0"
-            class="client-count"
-            data-field="shell.client-count"
-            :title="`${onlineCount} 台在线 / 共 ${state.clients.size} 台`"
+      <div class="workbench">
+        <header class="workbench-head">
+          <button
+            type="button"
+            class="mobile-nav-toggle"
+            aria-label="打开导航"
+            data-action="shell.open-nav"
+            @click="mobileNavOpen = true"
           >
-            <MonitorSmartphone :size="13" :stroke-width="1.8" aria-hidden="true" />
-            {{ onlineCount }} / {{ state.clients.size }}
-          </span>
-
-          <span class="ws-chip" :class="`ws-${wsStatus}`" data-field="shell.ws" :title="wsLabel">
-            <i class="ws-dot" aria-hidden="true" />
+            <PanelLeft :size="18" :stroke-width="1.8" aria-hidden="true" />
+          </button>
+          <div class="workbench-heading">
+            <span>AURORA /</span>
+            <strong>{{ pageTitle }}</strong>
+          </div>
+          <span class="grow" />
+          <span class="head-status" data-field="shell.ws">
+            <i :class="`ws-${wsStatus}`" aria-hidden="true" />
             {{ wsLabel }}
           </span>
-
-          <span class="user">
-            {{ currentUser?.username ?? '' }}
-            <span v-if="currentUser?.role === 'admin'" class="badge">管理员</span>
+          <span class="head-status head-status--devices">
+            {{ onlineCount }} / {{ state.clients.size }} 台在线
           </span>
+        </header>
 
-          <button type="button" class="logout" data-action="auth.logout" @click="logout()">
-            <LogOut :size="14" :stroke-width="1.8" aria-hidden="true" />
-            退出
-          </button>
-        </div>
-      </header>
+        <main class="workbench-main" :data-route="route.name">
+          <Suspense>
+            <component :is="activeView" :key="route.name" />
+            <template #fallback>
+              <div class="route-loading"><span class="spinner" /></div>
+            </template>
+          </Suspense>
+        </main>
+      </div>
+    </template>
 
-      <!--
-        主区视图切换同样走 `page`（out-in）：两个视图的滚动位置 / 高度互不相干，
-        交叉淡入会让新旧两屏内容叠在同一个滚动容器上（旧页还在滚、新页已经进场）。
-        每个分支给显式 key：路由名不同但组件复用的场合也能被 out-in 正确区分。
-      -->
-      <main class="app-main">
-        <Transition name="page" mode="out-in">
-          <ConsoleView v-if="!needsLogin && route.name === 'console'" key="console" />
-          <UsageView v-else-if="!needsLogin && route.name === 'usage'" key="usage" />
-          <AutomationsView
-            v-else-if="!needsLogin && route.name === 'automations'"
-            key="automations"
-          />
-          <FilesView v-else-if="!needsLogin && route.name === 'files'" key="files" />
-          <AdminView v-else-if="!needsLogin && route.name === 'admin'" key="admin" />
-          <DeviceView v-else-if="route.name === 'device'" key="device" />
-          <LoginView v-else key="login" />
-        </Transition>
-      </main>
-
-      <footer v-if="!needsLogin" class="font-notice">
-        HarmonyOS Sans Fonts © 2021 Huawei Device Co., Ltd.
-        <a href="/licenses/HarmonyOS-Sans-LICENSE.txt" target="_blank" rel="noopener noreferrer">
-          许可
-        </a>
-      </footer>
-
-      <!-- 非阻断提示（待办栏的批复 / 过期、代码复制失败、语音失败…）：6s 自消隐，
-           不打断操作 —— 与桌面端的瞬时提示同款语义，只是网页端挂在壳上全局一份 -->
-      <Transition name="rise">
-        <p
-          v-if="actionNotice !== ''"
-          class="notice glass-panel"
-          data-field="shell.notice"
-          role="status"
-        >
-          {{ actionNotice }}
-        </p>
-      </Transition>
-    </div>
-  </Transition>
+    <Transition name="rise">
+      <p
+        v-if="actionNotice !== ''"
+        class="notice glass-panel"
+        data-field="shell.notice"
+        role="status"
+      >
+        {{ actionNotice }}
+      </p>
+    </Transition>
+  </div>
 </template>
 
 <style scoped>
-/*
- * 壳（顶栏 + 主区 + 提示）：原来是 `v-if/v-else` 的 `<template>` 片段、直接挂在 #app 的
- * 列布局下；包进 `<Transition>` 后需要一层真实元素，于是这里把那份「撑满 + 纵向排列」
- * 接下来 —— 不接的话顶栏与主区会从 flex 子项变成普通块，主区拿不到剩余高度。
- */
-.shell {
+.app-shell {
   display: flex;
-  flex-direction: column;
   flex: 1 1 auto;
+  min-height: 100vh;
+  min-width: 0;
+}
+
+.app-shell--public {
+  flex-direction: column;
+}
+
+.public-main {
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
-  background: transparent;
 }
 
-.font-notice {
-  flex: 0 0 auto;
-  padding: 6px var(--space-4);
-  border-top: 1px solid var(--border-subtle);
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  text-align: center;
-}
-
-.boot {
+.public-main--device {
   display: grid;
-  place-items: center;
-  height: 100vh;
 }
 
-.topbar {
+.workbench {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.workbench-head {
+  display: flex;
+  align-items: center;
   flex: 0 0 auto;
+  gap: 12px;
+  min-height: 58px;
+  padding: 0 22px;
   border-bottom: 1px solid var(--border-subtle);
-  padding-top: var(--safe-top, env(safe-area-inset-top, 0px));
+  background: var(--center-topbar);
 }
 
-.topbar-inner {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-4);
-  min-height: 52px;
-  width: 100%;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-family: var(--font-display);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-semibold);
-  letter-spacing: var(--tracking-display);
-}
-
-.brand-mark {
-  flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-sm);
-}
-
-.brand-sub {
-  color: var(--text-muted);
-  font-weight: var(--weight-regular);
-  font-size: var(--text-sm);
-}
-
-.nav {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-left: var(--space-3);
-}
-
-.nav-item {
+.workbench-heading {
   display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-height: var(--control-h-sm);
-  padding: 0 var(--space-3);
-  border: none;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition:
-    background var(--transition-fast),
-    color var(--transition-fast);
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
 }
 
-.nav-item:hover {
-  background: var(--fill-2);
-  color: var(--text-primary);
+.workbench-heading span {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
 }
 
-.nav-item.active {
-  background: var(--fill-3);
+.workbench-heading strong {
   color: var(--text-primary);
+  font-size: var(--text-base);
+  font-weight: 500;
 }
 
 .grow {
   flex: 1 1 auto;
 }
 
-.client-count {
+.head-status {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 0 var(--space-2);
+  gap: 7px;
   color: var(--text-muted);
   font-size: var(--text-xs);
-  font-variant-numeric: var(--num-tabular);
+  white-space: nowrap;
 }
 
-.ws-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 0 var(--space-2);
-  min-height: 24px;
-  border-radius: var(--radius-pill);
-  background: var(--fill-1);
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-}
-
-.ws-dot {
+.head-status i {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--status-idle);
 }
 
-/*
- * 通路状态点用共享的 `aurora-breathe` 呼吸：这是**唯一**的"网页端 ↔ 服务器通路"信号，
- * 静止的点在一屏都是静物的顶栏里很容易被看漏。只让「已连接 / 连接中」呼吸 ——
- * 断开是静态红点：它要的是"出事了"而不是"还活着"。
- */
-.ws-open .ws-dot {
+.head-status i.ws-open {
   background: var(--status-ok);
-  animation: aurora-breathe var(--dur-breathe) var(--ease-standard) infinite;
 }
 
-.ws-connecting .ws-dot {
+.head-status i.ws-connecting {
   background: var(--status-unread);
-  animation: aurora-breathe var(--dur-breathe) var(--ease-standard) infinite;
 }
 
-.ws-closed .ws-dot {
+.head-status i.ws-closed {
   background: var(--status-error);
 }
 
-.user {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
+.workbench-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--center-workspace);
 }
 
-.logout {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-height: var(--control-h-sm);
-  padding: 0 var(--space-2);
-  border: none;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition:
-    background var(--transition-fast),
-    color var(--transition-fast);
+.workbench-main[data-route='console'] {
+  overflow: hidden;
 }
 
-.logout:hover {
-  background: var(--fill-2);
-  color: var(--text-primary);
+.mobile-nav-toggle,
+.sidebar-scrim {
+  display: none;
 }
 
-/* 非阻断提示：贴在视口底部居中，压在内容之上但不挡输入卡（--z-toast 是唯一的提示层） */
+.boot,
+.route-loading {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+}
+
+.route-loading {
+  min-height: 220px;
+}
+
 .notice {
   position: fixed;
   left: 50%;
@@ -389,7 +335,7 @@ const onlineCount = computed(
   margin: 0;
   padding: var(--space-2) var(--space-4);
   border: 1px solid var(--glass-border);
-  border-radius: var(--radius-pill);
+  border-radius: 8px;
   background: var(--glass-panel);
   color: var(--text-primary);
   font-size: var(--text-sm);
@@ -397,36 +343,33 @@ const onlineCount = computed(
   box-shadow: var(--shadow-3);
 }
 
-@media (max-width: 720px) {
-  .topbar-inner {
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
+@media (max-width: 820px) {
+  .mobile-nav-toggle {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-secondary);
   }
 
-  .nav {
-    order: 3;
-    width: 100%;
-    margin-left: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
+  .sidebar-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-sticky);
+    border: none;
+    background: var(--overlay-scrim);
   }
 
-  .nav::-webkit-scrollbar {
-    display: none;
+  .workbench-head {
+    min-height: 54px;
+    padding: 0 14px;
   }
 
-  .nav-item {
-    flex: 0 0 auto;
-    min-height: var(--hit-target);
-  }
-
-  .client-count,
-  .ws-chip {
-    display: none;
-  }
-
-  .user .badge {
+  .head-status--devices {
     display: none;
   }
 }

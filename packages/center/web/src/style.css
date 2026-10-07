@@ -7,6 +7,89 @@
  * 本文件只补浏览器环境需要、桌面窗口里不存在的部分。
  */
 
+:root {
+  /*
+   * Center Web 首屏经常在公网直连、中文 TTF 体积很大；官网与后台优先使用系统字体，
+   * 避免下载 HarmonyOS Sans SC 的三个字重。桌面端字体仍由共享 theme.css 提供。
+   */
+  --font-ui:
+    'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', 'Noto Sans CJK SC',
+    system-ui, sans-serif;
+  --font-display:
+    'Segoe UI Variable Display', 'Segoe UI Variable', 'Microsoft YaHei UI', 'PingFang SC',
+    system-ui, sans-serif;
+
+  --center-signal: #21c8b7;
+  --center-signal-hover: #32dcc8;
+  --center-signal-ink: #071512;
+  --center-sidebar: rgba(12, 16, 18, 0.96);
+  --center-topbar: rgba(15, 19, 21, 0.92);
+  --center-workspace: #090c0e;
+  --center-hero-bg: #0b0f11;
+  --center-band: #0f1315;
+  --center-download-bg: #121a1a;
+  --center-auth-panel: rgba(16, 21, 23, 0.94);
+  --center-card: rgba(255, 255, 255, 0.035);
+  --center-card-hover: rgba(255, 255, 255, 0.055);
+  --center-frame: #101517;
+  --center-frame-border: #2e393c;
+  --center-grid: rgba(255, 255, 255, 0.035);
+  --center-rail: rgba(255, 255, 255, 0.1);
+  --center-rail-strong: rgba(33, 200, 183, 0.48);
+  --center-active: rgba(33, 200, 183, 0.12);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --center-signal: #078f84;
+    --center-signal-hover: #0aa396;
+    --center-signal-ink: #ffffff;
+    --center-sidebar: rgba(245, 248, 247, 0.98);
+    --center-topbar: rgba(248, 250, 249, 0.94);
+    --center-workspace: #eef2f1;
+    --center-hero-bg: #f5f8f7;
+    --center-band: #eaf0ef;
+    --center-download-bg: #e3eeec;
+    --center-auth-panel: rgba(255, 255, 255, 0.96);
+    --center-card: rgba(255, 255, 255, 0.82);
+    --center-card-hover: #ffffff;
+    --center-frame: #e7eceb;
+    --center-frame-border: #c8d2d0;
+    --center-grid: rgba(10, 25, 24, 0.045);
+    --center-rail: rgba(10, 25, 24, 0.1);
+    --center-rail-strong: rgba(7, 143, 132, 0.45);
+    --center-active: rgba(7, 143, 132, 0.11);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--center-workspace);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+img {
+  max-width: 100%;
+}
+
 /* 视口与布局：控制台把高度锁在一屏（会话流自己滚动），其余页面跟随文档流 */
 html,
 body,
@@ -19,11 +102,55 @@ body,
   flex-direction: column;
 }
 
-main.app-main {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+/* 工作台通用页面：卡片降低装饰强度，让数据、表格和操作成为层级主体。 */
+#app .page {
+  width: 100%;
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: clamp(24px, 3vw, 42px) clamp(18px, 3vw, 42px) 56px;
+}
+
+#app .page-title {
+  font-family: var(--font-display);
+  font-size: clamp(24px, 2.2vw, 32px);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+}
+
+#app .page-sub {
+  max-width: 860px;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.65;
+}
+
+#app .ui-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--center-card);
+  box-shadow: none;
+}
+
+#app .ui-table {
+  font-size: var(--text-xs);
+}
+
+#app .ui-table th {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+#app .ui-table tbody tr:hover {
+  background: var(--center-card-hover);
+}
+
+#app .ui-input,
+#app select.ui-input {
+  border-radius: 7px;
+}
+
+#app .ui-btn {
+  border-radius: 7px;
 }
 
 /* 键盘可达性：全局只给"可聚焦但自己没写样式"的元素一个统一焦点环 */
@@ -66,5 +193,11 @@ main.app-main {
 @media (max-width: 720px) {
   body {
     padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
   }
 }

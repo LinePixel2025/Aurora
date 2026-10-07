@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-07 | Center 官网入口、登录后工作台与首屏性能的长期口径                              | Center, UI, 官网, 性能, 字体, 坑       | [2026-10-07-center-official-site-workbench.md](2026-10-07-center-official-site-workbench.md)                 |
 | 2026-10-07 | SettingField 的 label 会把整行 hover / 点击代理给内部按钮                      | UI, 表单, Center, 坑                   | [2026-10-07-setting-field-label-button-proxy.md](2026-10-07-setting-field-label-button-proxy.md)             |
 | 2026-10-06 | Center 官方模型网关与自托管更新的长期接线口径                                  | Center, 模型, 更新, 安全, 坑           | [2026-10-06-center-official-models-and-updates.md](2026-10-06-center-official-models-and-updates.md)         |
 | 2026-10-06 | 自感知源删除要清库、前台 Agent 忙时暂停队列、流光用完整状态机                   | 自感知, 删除, Agent, 流光, 坑          | [2026-10-06-awareness-source-agent-glow.md](2026-10-06-awareness-source-agent-glow.md)                       |

@@ -90,15 +90,15 @@ async function waitClientStatus(page) {
   )
 }
 
-/** 清登录态（`login-page` 场景用：它是唯一必须处于未登录状态的场景） */
-async function freshLoggedOut(ctx) {
+/** 清登录态并落到指定公开路由（官网 / 登录 / 设备授权场景共用） */
+async function freshLoggedOut(ctx, options = { hash: '#/login', expect: '[data-panel="login"]' }) {
   ctx.stub.commands.length = 0
   await ctx.page.evaluate(() => window.localStorage.clear())
-  await ctx.page.evaluate(() => {
-    window.location.hash = '#/login'
-  })
+  await ctx.page.evaluate((hash) => {
+    window.location.hash = hash
+  }, options.hash)
   await ctx.page.reload({ waitUntil: 'domcontentloaded' })
-  await ctx.page.waitForSelector('[data-panel="login"]', { timeout: TIMEOUT })
+  await ctx.page.waitForSelector(options.expect, { timeout: TIMEOUT })
 }
 
 /**
@@ -356,7 +356,54 @@ const askRequest = (requestId, ttlMs = 180_000) => ({
 // ───────────────────────── 场景表 ─────────────────────────
 
 export const SCENARIOS = [
-  // ── 1. 登录页（必须处于未登录态，先于登录执行） ──
+  // ── 1. 官网首页：公开入口、下载与真实控制台预览 ──
+  {
+    name: 'landing-page',
+    loggedOut: true,
+    async run(ctx) {
+      await freshLoggedOut(ctx, { hash: '#/', expect: '[data-panel="landing"]' })
+      await ctx.page.waitForSelector('[data-action="landing.download"]', { timeout: TIMEOUT })
+      const reading = await ctx.page.evaluate(() => {
+        const download = document.querySelector('[data-action="landing.download"]')
+        const preview = document.querySelector('.stage-frame img')
+        const resources = performance.getEntriesByType('resource')
+        const heavyResources = resources
+          .filter((entry) =>
+            /UsageView|charts-|mermaid|katex|Axis-|HarmonyOS_Sans_SC_/i.test(entry.name),
+          )
+          .map((entry) => entry.name)
+        return {
+          landing: document.querySelectorAll('[data-panel="landing"]').length,
+          nav: document.querySelectorAll('.public-nav button').length,
+          headline: document.querySelector('.hero h1')?.textContent?.trim() ?? '',
+          downloadHref: download?.getAttribute('href') ?? '',
+          previewLoaded: preview instanceof HTMLImageElement && preview.naturalWidth > 0,
+          console: document.querySelectorAll('[data-panel="console"]').length,
+          login: document.querySelectorAll('[data-panel="login"]').length,
+          transferBytes: Math.round(
+            resources.reduce((total, entry) => total + (entry.transferSize || 0), 0),
+          ),
+          heavyResources,
+        }
+      })
+      return verdict(
+        {
+          landing: reading.landing === 1,
+          nav: reading.nav === 3,
+          headline: reading.headline.includes('Windows'),
+          download: reading.downloadHref !== '',
+          previewLoaded: reading.previewLoaded,
+          noConsole: reading.console === 0,
+          noLoginForm: reading.login === 0,
+          noHeavyChunks: reading.heavyResources.length === 0,
+          transferBudget: reading.transferBytes < 1_600_000,
+        },
+        { reading },
+      )
+    },
+  },
+
+  // ── 2. 登录页（必须处于未登录态） ──
   {
     name: 'login-page',
     loggedOut: true,
@@ -1741,7 +1788,7 @@ export const SCENARIOS = [
     },
   },
 
-  // ── 30. 主题：body 背景必须等于该主题的 --bg-base ──
+  // ── 30. 主题：body 背景必须等于 Center 工作区令牌在该主题下的解析值 ──
   {
     name: 'theme-dark',
     theme: 'dark',
@@ -2406,9 +2453,9 @@ export const SCENARIOS = [
     },
   },
 
-  // ── 39. HarmonyOS Sans：两端共享令牌与字体文件真的加载 ──
+  // ── 39. Center 官网字体：系统优先，不把约 24MB 的中文 TTF 拉进首屏 ──
   {
-    name: 'font-harmonyos',
+    name: 'font-system-performance',
     async run(ctx) {
       await fresh(ctx)
       const reading = await ctx.page.evaluate(async () => {
@@ -2417,23 +2464,27 @@ export const SCENARIOS = [
         const mono = getComputedStyle(document.documentElement)
           .getPropertyValue('--font-mono')
           .trim()
-        const loaded = Array.from(document.fonts).filter(
+        const harmonyLoaded = Array.from(document.fonts).filter(
           (font) => font.family.includes('HarmonyOS') && font.status === 'loaded',
         )
+        const harmonyRequests = performance
+          .getEntriesByType('resource')
+          .filter((entry) => /HarmonyOS_Sans_SC_/i.test(entry.name))
         return {
           ui,
           mono,
           body: getComputedStyle(document.body).fontFamily,
-          loaded: loaded.map((font) => font.family),
-          fontStarts: getComputedStyle(document.body).fontFamily.startsWith('"HarmonyOS Sans"'),
+          harmonyLoaded: harmonyLoaded.map((font) => font.family),
+          harmonyRequests: harmonyRequests.map((entry) => entry.name),
         }
       })
       return verdict(
         {
-          tokenHarmony: reading.ui.includes('HarmonyOS Sans'),
+          systemPriority:
+            reading.ui.includes('Segoe UI Variable') && reading.ui.includes('system-ui'),
           monoPreserved: reading.mono.includes('Cascadia') || reading.mono.includes('monospace'),
-          bodyHarmony: reading.fontStarts,
-          fontLoaded: reading.loaded.length > 0,
+          noHarmonyFace: reading.harmonyLoaded.length === 0,
+          noCjkFontDownload: reading.harmonyRequests.length === 0,
         },
         { reading },
       )
@@ -2478,13 +2529,15 @@ export const SCENARIOS = [
   },
 ]
 
-/** 主题断言：body 背景 = `--bg-base` 解析值，且 `prefers-color-scheme` 与预期一致 */
+/** 主题断言：body 背景 = `--center-workspace` 解析值，且 `prefers-color-scheme` 与预期一致 */
 async function themeCheck(ctx, expected) {
   await fresh(ctx)
   const reading = await ctx.page.evaluate(() => {
-    const token = getComputedStyle(document.documentElement).getPropertyValue('--bg-base').trim()
+    const token = getComputedStyle(document.documentElement)
+      .getPropertyValue('--center-workspace')
+      .trim()
     const probe = document.createElement('div')
-    probe.style.backgroundColor = 'var(--bg-base)'
+    probe.style.backgroundColor = 'var(--center-workspace)'
     document.documentElement.appendChild(probe)
     const resolved = getComputedStyle(probe).backgroundColor
     probe.remove()

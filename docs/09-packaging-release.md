@@ -260,8 +260,10 @@ Center 数据目录新增 `releases/`：
 | `releases/index.json` | 当前 latest 版本、文件清单、size、sha512 与发布时间 |
 | `releases/files/` | `Aurora-Setup-<version>.exe`、blockmap 与 `latest.yml` |
 
-公开下载路由为 `GET /api/updates/latest.yml` 与 `GET /api/updates/:asset`，支持 HEAD、
-Content-Length、Range / 206；`latest.yml` 不缓存，安装包与 blockmap 可长期缓存。
+公开下载路由为 `GET /api/updates/latest.yml`、`GET /api/updates/current` 与
+`GET /api/updates/:asset`。`/current` 返回当前 `CenterReleaseInfo`（未发布时为
+`{ current: null }`），供官网下载区读取版本与安装包元数据；`latest.yml` 与资产路由支持 HEAD、
+Content-Length、Range / 206。`latest.yml` 与 `/current` 不缓存，安装包与 blockmap 可长期缓存。
 上传 / 发布只允许管理员网页会话，且必须先把完整文件上传到暂存区，再校验
 `latest.yml` 的 version / size / sha512 与 blockmap 后原子切换；校验失败不得替换当前 latest。
 

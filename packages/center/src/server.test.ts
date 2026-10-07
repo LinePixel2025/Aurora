@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -419,7 +420,11 @@ describe('Aurora Center · 客户端上线', () => {
         const ask = await waitForWeb((m) => m['type'] === 'ask.request')
         expect(ask['clientId']).toBe('client-ask')
         expect(ask['sessionId']).toBe('center-ask')
-        const request = ask['request'] as { requestId: string; question: string; multiSelect: boolean }
+        const request = ask['request'] as {
+          requestId: string
+          question: string
+          multiSelect: boolean
+        }
         expect(request.requestId).toBe('ask-e2e-1')
         expect(request.question).toBe('发布到哪个通道？')
         expect(request.multiSelect).toBe(false)
@@ -442,7 +447,12 @@ describe('Aurora Center · 客户端上线', () => {
 
         // 客户端回执（{ settled }）→ 网页端按同一 id 收到
         ws.send(
-          JSON.stringify({ type: 'result', requestId: 'ask-e2e-1', ok: true, data: { settled: true } }),
+          JSON.stringify({
+            type: 'result',
+            requestId: 'ask-e2e-1',
+            ok: true,
+            data: { settled: true },
+          }),
         )
         const result = await waitForWeb(
           (m) => m['type'] === 'result' && m['requestId'] === 'ask-e2e-1',
@@ -457,9 +467,9 @@ describe('Aurora Center · 客户端上线', () => {
           refreshed.once('open', () => resolveOpen())
           refreshed.once('error', reject)
         })
-        await expect(
-          waitForRefreshed((m) => m['type'] === 'ask.request', 800),
-        ).rejects.toThrow('等待消息超时')
+        await expect(waitForRefreshed((m) => m['type'] === 'ask.request', 800)).rejects.toThrow(
+          '等待消息超时',
+        )
         refreshed.close()
       } finally {
         web.close()
@@ -1405,5 +1415,49 @@ describe('Aurora Center · 网页上传与客户端令牌下载（本轮 docs/12
       body: 'nope',
     })
     expect(missing.status).toBe(404)
+  })
+})
+
+describe('Aurora Center · 公开更新目录', () => {
+  it('未发布时返回 null，管理员发布后返回官网可读的版本信息', async () => {
+    const empty = await fetch(`${base}/api/updates/current`)
+    expect(empty.status).toBe(200)
+    expect((await empty.json()) as unknown).toEqual({ current: null })
+
+    const installer = Buffer.from('public-installer')
+    const blockmap = Buffer.from('public-blockmap')
+    const sha512 = createHash('sha512').update(installer).digest('base64')
+    const manifest = [
+      'version: 9.9.9',
+      'files:',
+      '  - url: Aurora-Setup-9.9.9.exe',
+      `    sha512: ${sha512}`,
+      `    size: ${installer.byteLength}`,
+      '',
+    ].join('\n')
+    const upload = (name: string, body: Buffer) =>
+      fetch(`${base}/api/admin/releases/upload?name=${encodeURIComponent(name)}`, {
+        method: 'POST',
+        headers: {
+          ...authed(adminToken),
+          'Content-Type': 'application/octet-stream',
+        },
+        body,
+      })
+    expect((await upload('Aurora-Setup-9.9.9.exe', installer)).status).toBe(200)
+    expect((await upload('Aurora-Setup-9.9.9.exe.blockmap', blockmap)).status).toBe(200)
+    expect((await upload('latest.yml', Buffer.from(manifest))).status).toBe(200)
+    const published = await fetch(`${base}/api/admin/releases/publish`, {
+      method: 'POST',
+      headers: authed(adminToken),
+    })
+    expect(published.status).toBe(200)
+
+    const current = await fetch(`${base}/api/updates/current`)
+    const body = (await current.json()) as {
+      current: { version: string; files: Array<{ name: string; kind: string }> }
+    }
+    expect(body.current.version).toBe('9.9.9')
+    expect(body.current.files.some((file) => file.kind === 'installer')).toBe(true)
   })
 })

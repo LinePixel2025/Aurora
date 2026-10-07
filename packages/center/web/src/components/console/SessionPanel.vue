@@ -680,6 +680,7 @@ function toolValue(path: string): boolean | undefined {
 }
 
 .row {
+  contain: layout paint style;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);

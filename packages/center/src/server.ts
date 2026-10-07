@@ -627,7 +627,12 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       return
     }
 
-    // 公开客户端更新源（docs/09 §10）：latest.yml 与当前 index 中登记的资产。
+    // 公开客户端更新源（docs/09 §10）：官网读取当前版本元数据，客户端读取 latest.yml / 资产。
+    if (path === '/api/updates/current' && req.method === 'GET') {
+      res.setHeader('Cache-Control', 'no-cache')
+      sendJson(res, 200, { current: releases.current() ?? null })
+      return
+    }
     if (path === '/api/updates/latest.yml' && (req.method === 'GET' || req.method === 'HEAD')) {
       const file = releases.assetPath('latest.yml')
       if (file === undefined) {

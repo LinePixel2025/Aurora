@@ -530,7 +530,12 @@ onBeforeUnmount(() => {
       `tag="div"` 的包装元素自己扛下原来的列布局 —— 包装元素是 `TransitionGroup` 必须的，
       不把 `.stream` 的 flex/间距挪一份到这里，所有条目就会挤成无间距的一摞。
     -->
-    <TransitionGroup name="rise" tag="div" class="stream-items" :css="!swapping">
+    <TransitionGroup
+      name="rise"
+      tag="div"
+      class="stream-items"
+      :css="!swapping && session.items.length < 120"
+    >
       <template v-for="item in session.items" :key="item.id">
         <template v-if="!isGroupedWorkItem(item)">
           <!-- 用户消息：右对齐胶囊 -->
@@ -691,6 +696,10 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+
+.stream-items > * {
+  contain: layout paint style;
 }
 
 .empty {

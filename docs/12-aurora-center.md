@@ -2,7 +2,8 @@
 
 状态：`已定稿`（v0.2.0 随本设计首次落地；2026-09 扩展轮：注册、设备授权登录、确认卡网页批复、文件 24h 管理与自动删除、移动端适配，并删除手动配对令牌；v0.2.5：§6.3 追加 `automation.*` 六命令、§10 追加自动化视图；
 v0.3.3：§4/§5 追加 `ask.request` / `ask.resolve`（提问中转）、§6.1 补语音能力位的重连语义、
-§10 整节按三栏控制台重写并补验证 harness）
+§10 整节按三栏控制台重写并补验证 harness；2026-10-07：§10 改为官网入口 + 登录后工作台，
+公开更新目录提供官网下载信息）
 
 Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控制台**：
 
@@ -176,6 +177,9 @@ REST：`POST /api/auth/login`、`POST /api/auth/register`（§3）、`POST /api/
 `POST /api/uploads`（**本轮**：网页上传给指定客户端，`?clientId=` 目标；网页会话鉴权）、
 `DELETE /api/files/:fileId`（属主或管理员删除）、管理员 `POST /api/users`、`GET /api/admin/clients`、
 `DELETE /api/users/:id`、`DELETE /api/admin/clients/:id`（吊销客户端）。
+另有公开只读 `GET /api/updates/current`：返回当前 `CenterReleaseInfo`（未发布时
+`{ current: null }`），供官网下载区直接拿到版本、安装包 URL、size 与 sha512；它与
+`latest.yml` / 已登记资产的公开下载同属更新源，不走登录鉴权。
 另有一条**客户端令牌**鉴权的下载路由 `GET /api/client/files/:fileId`（**本轮**，`Bearer <clientToken>`
 + `X-Client-Id`）：`file.send` 命令里客户端据此把文件拉回本机 —— 原有的 `/api/files/:id` 只认网页会话，
 客户端令牌拿不到，两条路由的鉴权口径不可互换。
@@ -514,19 +518,29 @@ aurora-center version
   scp → `docker compose up -d --build`，服务器全程无需访问 npm）；步骤、更新与安全
   注意（纯 HTTP 明文风险、反代 / cloudflared 加 TLS）见 `packages/center/deploy/README.md`。
 
-## 10. Web UI（与桌面端同源的克制风格）
+## 10. Web UI（官网入口 + 登录后工作台）
 
 - 技术栈：Vue 3 + vite + 原生 CSS（不引 UI 库）。hash 路由：`#/login`（登录 / 注册切换）、
-  `#/`（控制台）、`#/files`（文件管理）、`#/device`（设备授权确认页，未登录可访问）、
+  `#/`（未登录官网，登录后控制台）、`#/files`（文件管理）、`#/device`（设备授权确认页，未登录可访问）、
   `#/admin`（用户 / 全部客户端）、`#/automations`（自动化）。
-- 视觉基调（**v0.3.3 起与桌面端同一份 `theme.css`**，见下面的「视觉单源」）：系统字体栈、
-  分层填充、大圆角、柔和阴影、克制阴影无重边框；暗浅两档由 `prefers-color-scheme`
-  驱动（**没有**独立的主题开关）。旧版 Center 自带的那套调色板
-  （`#f5f5f7` / `#0071e3` / 12–16px 圆角）已随本轮重写退役。
-- **布局（v0.3.3 重写：三栏控制台）**：`设备列表(264px) | 会话流(1fr, 内容列 860px 中轴)
-  | 控制面板(300px, 可收起，状态存 localStorage)`；待办栏常驻会话流上方。
-  顶栏是网页自己的（品牌 + 四个导航项 + 在线台数 + WS 链路状态 + 账号 + 退出）。
-  会话流 / 输入卡的阅读动线与桌面端一致（860px 中轴）。
+- **未登录官网**：`#/` 与 `#/login` 共用公开壳。首屏直接给出产品定位、主下载按钮、
+  “进入控制台”入口与真实控制台预览；后续依次是三个能力区、更新与安全区、下载区和页脚。
+  官网只读公开 `/api/updates/current`，不连接 WebSocket、不读取客户端列表；未发布或接口失败时
+  仍保持完整页面并提供通用下载入口。
+- **登录后工作台**：左侧 220px 固定导航（品牌 / 控制台 / 用量 / 自动化 / 文件 / 管理 /
+  账号 / 退出），右侧是页面工作区。顶栏只保留当前页标题、设备在线数、WebSocket 状态
+  和移动端菜单；不再是五枚导航按钮横排。
+- **控制台（保留三栏语义，重做层级）**：`设备列表(280px) | 会话流(1fr, 内容列 860px 中轴)
+  | 控制面板(320px, 可收起，状态存 localStorage)`；待办栏常驻会话流上方。
+  设备行、会话行、消息行使用 CSS containment 降低重排外溢；长消息流不再对整表启用逐条过渡。
+- **视觉基调**：Center Web 保留共享 `theme.css` 的令牌与暗浅语义，但官网与工作台使用
+  Center 自己的“控制面”组合：石墨黑 / 雾白底、冰青信号色、直线轨道和低圆角面板。
+  公开首屏是视觉主体，后台不再堆叠同等强度的装饰。暗浅两档仍由
+  `prefers-color-scheme` 驱动（**没有**独立主题开关）。
+- **性能**：所有非首屏页面通过动态 `import()` 拆包；ECharts、管理端组件和 Markdown /
+  Mermaid / KaTeX 不再进入官网首包。Center Web 明确回落到系统优先字体栈，避免首屏为
+  中文字体下载约 24MB TTF；桌面端字体口径不变。列表行使用 CSS containment，
+  并避免同时挂载多个页面。
 - **开发态**：`pnpm --filter @aurora/center dev:web` 起 vite dev，`/api`（含它的 WebSocket）
   代理到本地 Center（默认 `http://127.0.0.1:8787`，`AURORA_CENTER_URL` 可改）。
   生产托管方式不变：服务器直接吐 `dist-web`。
@@ -555,7 +569,7 @@ aurora-center version
   刷新后随 `session.history` 的 `kind: 'ask'` 条目回来 —— 见 §5 第 4 步。
   ⚠️ 已过期/已结算的**只读灰态**只在流内的历史条目上出现（待办栏仍按 `remainingMs > 0`
   过滤掉，不显示灰态）。
-- **视觉单源（v0.3.3 起）**：观感与桌面端**同一套令牌**——设计变量 / 暗浅主题 /
+- **视觉单源（v0.3.3 起）**：底层观感与桌面端**同一套令牌**——设计变量 / 暗浅主题 /
   `aurora-*` keyframes / 过渡预设 / 语义图标查表（`toolIcons` / `toolLabels`）/
   吸底状态机全部来自 `@aurora/shared/browser`（`theme.css` 与各纯函数模块），
   不再各自维护一份；Markdown 仍走共享渲染器与 `md.css`（§10 上一段）。
@@ -563,6 +577,7 @@ aurora-center version
   因此两端组件的 `data-field` / `data-action` 命名保持同名（`chat.mic` /
   `chat.ask-user-card` / `chat.trace-live` / `chat.task-card` / `chat.todo-card` …），
   探针判据也就能逐条对齐。
+  Center Web 只在自身 `style.css` 覆盖官网字体栈与工作台壳层，不反向影响桌面端。
 - **自动跟随滚动**：与桌面端同一套「吸底」语义（`stickToBottomCore`，v0.3.3 起
   是**同一份实现**而不是搬运版）——跟随状态只由真实用户输入（滚轮 / 拖动 / 翻页键）关闭，
   流式增量的 scroll 事件不关；250ms 意图窗口按之后的读数重判；非跟随态显示「回到最新」。
@@ -577,7 +592,8 @@ aurora-center version
   （子串过滤；特殊值 `failed` = 只重跑上次失败的）、`AURORA_CWEB_THEME=dark|light`、
   `AURORA_CWEB_VIEWPORT=mobile`、`AURORA_CWEB_KEEP=1`（保留子服务器与数据目录排障）、
   `AURORA_CWEB_BROWSER`（指定浏览器；找不到浏览器时**明确 SKIP 并退出 0**）。
-  覆盖 41 个场景 ×（暗/浅两档）＝ 82 条断言：登录 / 设备授权 / 空态控制台 / 设备能力位芯片 /
+  覆盖 42 个场景 ×（暗/浅两档）＝ 84 条断言：官网首页（下载信息、真实控制台预览、无重型分包） /
+  登录 / 设备授权 / 空态控制台 / 设备能力位芯片 /
   语音门控两态 / 建会话 / 用户气泡 / 流式光标 / Markdown 代码块与外链（含复制按钮回执）/
   轨迹折叠与阅读顺序（思考 → 工具行 → 正文）/ 思考块（220px 内滚 + 秒数）/ 工具三态与
   展开体实测高度（`--collapse-h` 与 `scrollHeight` 相差 ≤ 2px）/ 子代理卡与**只读**对话视图 /
@@ -586,7 +602,8 @@ aurora-center version
   文件条与文件页 / **文件页「发送到客户端」发出 `file.send`**（本轮）/ 自动化 /
   管理员 / 官方模型管理卡 / 自托管 Release 管理卡 / Token 用量页（总量卡 + 折线图画布 + 管理员筛选） /
   三个面板 / **会话行模型下拉发出 `session.setModel`**（`panel-session-model`，本轮）/
-  主题两档 / **`prefers-reduced-motion` 兜底把过渡压到 1ms**（`reduced-motion`，本轮）/
+  主题两档 / **Center 系统字体与不下载中文 TTF**（`font-system-performance`，本轮）/
+  **`prefers-reduced-motion` 兜底把过渡压到 1ms**（`reduced-motion`，本轮）/
   移动端单栏抽屉。
   另有一条诊断工具 `pnpm --filter @aurora/center verify:web:status --server <url> --user <名>
   --password <密码>`：以管理员身份连上 Center 打印每个客户端的 `ClientStatus`（含 `voice`

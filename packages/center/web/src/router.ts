@@ -6,7 +6,8 @@
  */
 import { ref } from 'vue'
 
-export type RouteName = 'login' | 'console' | 'usage' | 'admin' | 'files' | 'automations' | 'device'
+export type RouteName =
+  'home' | 'login' | 'console' | 'usage' | 'admin' | 'files' | 'automations' | 'device'
 
 export interface Route {
   name: RouteName
@@ -17,8 +18,9 @@ export interface Route {
 function parse(): Route {
   const raw = window.location.hash.replace(/^#\/?/, '')
   const [path = '', search = ''] = raw.split('?')
-  const name = (path.split('/')[0] || 'console') as RouteName
+  const name = (path.split('/')[0] || 'home') as RouteName
   const known: RouteName[] = [
+    'home',
     'login',
     'console',
     'usage',
@@ -28,7 +30,7 @@ function parse(): Route {
     'device',
   ]
   return {
-    name: known.includes(name) ? name : 'console',
+    name: known.includes(name) ? name : 'home',
     query: new URLSearchParams(search),
   }
 }
