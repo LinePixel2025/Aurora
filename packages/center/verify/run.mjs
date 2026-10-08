@@ -19,11 +19,17 @@
  *   AURORA_CWEB_VIEWPORT=mobile      只跑移动视口的场景（desktop = 只跑桌面）
  *   AURORA_CWEB_KEEP=1               跑完保留子服务器与临时数据目录（排障用）
  *   AURORA_CWEB_BROWSER=<exe>        指定浏览器可执行文件
+ *
+ * 夹具说明（2026-10-08）：整轮开跑前用**真实链路**灌 20 条 token 用量明细 —— 起一个假上游
+ * （`/v1/models` + `/v1/chat/completions` 带 usage），给子服务器设一个临时
+ * `AURORA_CENTER_SECRET`，管理员配好 llm 能力后用桩机自己的 client token 调 20 次网关。
+ * 这样「用量页分页」「官方模型拉取」验的都是真实服务器行为，而不是伪造的 NDJSON。
  */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { createServer } from 'node:net'
+import { createServer as createHttpServer } from 'node:http'
+import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -44,6 +50,18 @@ const DIST_INDEX = join(CENTER_ROOT, 'dist-web', 'index.html')
 /** 管理员账号（CLI `init` 建，密码已知；`start` 自动引导时密码是随机打印一次、拿不到） */
 const ADMIN_USER = 'admin'
 const ADMIN_PASSWORD = 'aurora-verify-1'
+
+/**
+ * 子服务器的临时主密钥：官方模型的上游 Key 只有它可用（`secrets.ts`）。
+ * 只作用于本轮临时数据目录，与线上 `/opt/aurora-center/.env` 无关。
+ */
+const VERIFY_CENTER_SECRET = 'cweb-verify-master-secret'
+
+/** 假上游开放的模型目录（`拉取模型` 的期望结果） */
+const UPSTREAM_MODELS = ['verify-model-1', 'verify-model-2', 'verify-model-3']
+
+/** 灌进用量的请求条数：15 条一页 → 第 1 页 15 条、第 2 页 5 条 */
+const SEED_USAGE_REQUESTS = 20
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -76,7 +94,7 @@ function findBrowser() {
 
 async function freePort() {
   return new Promise((resolve, reject) => {
-    const probe = createServer()
+    const probe = createNetServer()
     probe.once('error', reject)
     probe.listen(0, '127.0.0.1', () => {
       const address = probe.address()
@@ -84,6 +102,121 @@ async function freePort() {
       probe.close(() => resolve(port))
     })
   })
+}
+
+// ───────────────────────── 假上游 + 用量种子 ─────────────────────────
+
+/**
+ * 官方模型上游的**协议忠实桩**：`/v1/models` 给目录，`/v1/chat/completions` 回带 `usage`
+ * 的普通 JSON（网关对非流式响应同样记 usage，见 `model-gateway.ts`）。
+ * 「上游」本来就是外部系统，桩在这里是正确的边界 —— 浏览器与 Center 服务器都是真的。
+ */
+async function startUpstream() {
+  const server = createHttpServer((req, res) => {
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ data: UPSTREAM_MODELS.map((id) => ({ id })) }))
+      return
+    }
+    if (req.url === '/v1/chat/completions') {
+      req.resume()
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            id: 'chatcmpl-verify',
+            object: 'chat.completion',
+            model: UPSTREAM_MODELS[0],
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'ok' },
+                finish_reason: 'stop',
+              },
+            ],
+            usage: {
+              prompt_tokens: 10,
+              completion_tokens: 5,
+              total_tokens: 15,
+              prompt_tokens_details: { cached_tokens: 2 },
+            },
+          }),
+        )
+      })
+      return
+    }
+    res.writeHead(404).end()
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  return { server, port: typeof address === 'object' && address !== null ? address.port : 0 }
+}
+
+/** 管理员令牌缓存（每轮只登一次；夹具复位会反复用它） */
+let adminTokenCache = ''
+
+async function adminToken(baseUrl) {
+  if (adminTokenCache !== '') return adminTokenCache
+  const login = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: ADMIN_USER, password: ADMIN_PASSWORD }),
+  })
+  if (!login.ok) throw new Error(`夹具：管理员登录失败 HTTP ${login.status}`)
+  adminTokenCache = (await login.json()).token
+  return adminTokenCache
+}
+
+/**
+ * 把 llm 官方能力配成「指向假上游、开放前两个模型」。
+ *
+ * **幂等**：每个主题开跑前都会调一次 —— 管理端场景会改这份配置（保存成功与否都算），
+ * 两档主题必须从同一个服务端状态起跑，否则第一档的表现会污染第二档。
+ */
+async function configureLlmFixture(baseUrl, upstreamPort) {
+  const response = await fetch(`${baseUrl}/api/admin/model-services/llm`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${await adminToken(baseUrl)}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      enabled: true,
+      type: 'openai-compat',
+      baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+      apiKey: 'verify-upstream-key',
+      defaultModel: UPSTREAM_MODELS[0],
+      models: [
+        { id: UPSTREAM_MODELS[0], enabled: true },
+        { id: UPSTREAM_MODELS[1], enabled: true },
+      ],
+    }),
+  })
+  if (!response.ok) {
+    throw new Error(`夹具：配置官方模型失败 HTTP ${response.status} ${await response.text()}`)
+  }
+}
+
+/** 用桩机的 client token 真调网关 N 次，生成真实用量明细（不伪造 NDJSON） */
+async function seedUsageRecords({ baseUrl, clientToken }) {
+  for (let index = 0; index < SEED_USAGE_REQUESTS; index += 1) {
+    const response = await fetch(`${baseUrl}/api/model-gateway/llm/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${clientToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: UPSTREAM_MODELS[0],
+        messages: [{ role: 'user', content: `verify seed ${index}` }],
+        stream: false,
+      }),
+    })
+    if (!response.ok) {
+      throw new Error(`夹具：第 ${index + 1} 次网关调用失败 HTTP ${response.status}`)
+    }
+    await response.arrayBuffer()
+  }
 }
 
 // ───────────────────────── 服务器子进程 ─────────────────────────
@@ -100,10 +233,14 @@ async function freePort() {
  */
 async function startServer({ dataDir, port }) {
   const logs = { out: '', err: '' }
+  // 官方模型的上游 Key 需要主密钥才能落盘（secrets.ts）；给子进程一个本轮专用的值，
+  // 不读也不写开发机环境里可能存在的 AURORA_CENTER_SECRET。
+  const env = { ...process.env, AURORA_CENTER_SECRET: VERIFY_CENTER_SECRET }
   const runOnce = (args, label) =>
     new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [SERVER_BIN, ...args], {
         cwd: CENTER_ROOT,
+        env,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       child.stdout.on('data', (chunk) => {
@@ -131,6 +268,7 @@ async function startServer({ dataDir, port }) {
     [SERVER_BIN, 'start', '--port', String(port), '--data', dataDir],
     {
       cwd: CENTER_ROOT,
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
@@ -259,6 +397,7 @@ async function main() {
   let server = null
   let browser = null
   let stub = null
+  let upstream = null
   let fatal = null
 
   try {
@@ -286,6 +425,15 @@ async function main() {
     await stub.start()
     await stub.waitWelcome()
 
+    // 整轮开跑前灌夹具：假上游 + 官方模型配置 + 20 次真实网关调用（见文件头「夹具说明」）。
+    // 用桩机**自己的** client token，不重新 /api/client/login（那会顶掉桩机的会话）。
+    upstream = await startUpstream()
+    await configureLlmFixture(baseUrl, upstream.port)
+    await seedUsageRecords({ baseUrl, clientToken: stub.token })
+    console.log(
+      `夹具已就绪：假上游 127.0.0.1:${upstream.port}，灌入 ${SEED_USAGE_REQUESTS} 条用量明细`,
+    )
+
     const puppeteer = (await import('puppeteer-core')).default
     browser = await puppeteer.launch({
       executablePath: browserPath,
@@ -302,6 +450,9 @@ async function main() {
 
     const themes = themeSwitch === '' ? ['dark', 'light'] : [themeSwitch]
     for (const theme of themes) {
+      // 换主题前把官方模型夹具复位：管理端场景会改这份服务端配置，
+      // 不复位的话第一档留下的状态会让第二档从不同的起点起跑（实测被污染过）。
+      await configureLlmFixture(baseUrl, upstream.port)
       // CDP 设置 prefers-color-scheme：theme.css 只有 `:root` + light 媒体查询，
       // 不设这一项浏览器默认按 light 走（headless 的缺省是 light）
       await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: theme }])
@@ -410,6 +561,9 @@ async function main() {
       // 关不掉就算了，进程退出时会被回收
     }
     stub?.close()
+    if (upstream !== null) {
+      await new Promise((resolve) => upstream.server.close(() => resolve())).catch(() => undefined)
+    }
     if (server !== null) {
       if (keep) {
         console.log(`AURORA_CWEB_KEEP=1：保留服务器（port=${port}）与数据目录 ${dataDir}`)

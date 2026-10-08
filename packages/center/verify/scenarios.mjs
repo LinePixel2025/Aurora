@@ -1664,18 +1664,209 @@ export const SCENARIOS = [
     },
   },
 
-  // ── 26b. 用量：普通用户视图与折线图画布 ──
+  // ── 26c. 管理端官方模型：填写、拉取合并、行内校验与保存拦截 ──
+  {
+    name: 'official-models',
+    async run(ctx) {
+      await fresh(ctx, { hash: '#/admin', expect: '[data-panel="admin-page"]' })
+      await ctx.page.waitForSelector('[data-field="official.models-table"]', { timeout: TIMEOUT })
+
+      const read = () =>
+        ctx.page.evaluate(() => ({
+          tabs: document.querySelectorAll('.official-tab').length,
+          activeTabState:
+            document
+              .querySelector('.official-tab--active .official-tab-state')
+              ?.textContent?.trim() ?? '',
+          rows: document.querySelectorAll('[data-field="official.model-row"]').length,
+          openRows: [...document.querySelectorAll('[data-field="official.model-enabled"]')].filter(
+            (box) => box.checked,
+          ).length,
+          headers: [
+            ...document.querySelectorAll('[data-field="official.models-table"] thead th'),
+          ].map((th) => th.textContent.trim()),
+          labels: [...document.querySelectorAll('[data-field="official.models-table"] td')]
+            .map((td) => td.getAttribute('data-label'))
+            .filter((label) => label !== null),
+          count:
+            document.querySelector('[data-field="official.models-count"]')?.textContent?.trim() ??
+            '',
+          keyState:
+            document.querySelector('[data-field="official.apikey-state"]')?.textContent?.trim() ??
+            '',
+          keyError:
+            document.querySelector('[data-field="official.key-error"]')?.textContent?.trim() ?? '',
+          baseUrl: document.querySelector('[data-field="official.baseurl"]')?.value ?? '',
+          defaultModel:
+            document.querySelector('[data-field="official.default-model"]')?.value ?? '',
+          protocols: document.querySelectorAll('[data-field="official.type"] option').length,
+          // 种子模型的 reasoningEffort 是「未指定」（服务端不下发该字段）：
+          // 下拉必须显式显示「未指定（按 auto）」，不能是空白
+          reasoningText:
+            document
+              .querySelector('[data-field="official.model-row"] select[aria-label="思考等级"]')
+              ?.selectedOptions?.[0]?.textContent?.trim() ?? '',
+          dirty: document.querySelector('[data-field="official.dirty"]')?.textContent?.trim() ?? '',
+          rowError: document.querySelector('.official-row-error')?.textContent?.trim() ?? '',
+          error: document.querySelector('[data-field="official.error"]')?.textContent?.trim() ?? '',
+          message:
+            document.querySelector('[data-field="official.message"]')?.textContent?.trim() ?? '',
+          empty: document.querySelector('.official-models-empty')?.textContent?.trim() ?? '',
+        }))
+
+      const initial = await read()
+
+      // ① 拉取模型：合并而不是替换（夹具里已配 2 个，上游有 3 个 → 只新增 1 个且默认未开放）
+      await ctx.page.click('[data-action="official.fetch-models"]')
+      await ctx.page.waitForFunction(
+        () =>
+          (document.querySelector('[data-field="official.message"]')?.textContent ?? '').includes(
+            '新增',
+          ),
+        { timeout: TIMEOUT },
+      )
+      const fetched = await read()
+
+      // ② 全部开放 / 全部关闭
+      await ctx.page.click('[data-action="official.enable-all"]')
+      const allOpen = await waitForTraceState(read, (state) => state.openRows === 3)
+      await ctx.page.click('[data-action="official.disable-all"]')
+      const allClosed = await waitForTraceState(read, (state) => state.openRows === 0)
+      await ctx.page.click('[data-action="official.enable-all"]')
+
+      // ③ 新增一行 → 空 ID 行内报错；填成已存在的 id → 变成重复报错
+      await ctx.page.click('[data-action="official.add-model"]')
+      const added = await waitForTraceState(read, (state) => state.rows === 4)
+      const idInputs = await ctx.page.$$('[data-field="official.model-id"]')
+      const lastInput = idInputs[idInputs.length - 1]
+      if (lastInput === undefined) throw new Error('新增的模型行没有 ID 输入框')
+      await lastInput.type('verify-model-1')
+      const duplicated = await waitForTraceState(read, (state) => state.rowError.includes('重复'))
+
+      // ④ 保存被前端校验拦下（不发请求，服务端配置不变）
+      await ctx.page.click('[data-action="official.save"]')
+      const blocked = await waitForTraceState(read, (state) => state.error !== '')
+
+      // ⑤ 删掉重复行 → 行内错误消失；切到「图像生成」看该能力自己的空态
+      const removeButtons = await ctx.page.$$('[data-action="official.model-remove"]')
+      const lastRemove = removeButtons[removeButtons.length - 1]
+      if (lastRemove === undefined) throw new Error('新增的模型行没有删除按钮')
+      await lastRemove.evaluate((node) => node.scrollIntoView({ block: 'center' }))
+      await lastRemove.click()
+      await ctx.page.click('[data-action="official.tab-imagegen"]')
+      const imagegen = await waitForTraceState(read, (state) => state.empty !== '')
+
+      // ⑥ 图像生成：勾上启用但不填 Base URL → 保存被拦（服务端同款规则的前置版）
+      await ctx.page.click('[data-field="official.enabled"]')
+      await ctx.page.click('[data-action="official.save"]')
+      const imagegenBlocked = await waitForTraceState(read, (state) => state.error !== '')
+
+      // 收尾回到「语言模型」页签：场景结束时的画面要停在信息量最大的那一屏（模型表），
+      // 另外单独留一张模型表截图供肉眼核对布局
+      await ctx.page.click('[data-action="official.tab-llm"]')
+      await ctx.page.waitForSelector('[data-field="official.models-table"]', { timeout: TIMEOUT })
+      const tableShot = join(ctx.outDir, `official-models-table-${ctx.theme}.png`)
+      await ctx.page.screenshot({ path: tableShot, fullPage: false }).catch(() => undefined)
+      const restored = await read()
+
+      return verdict(
+        {
+          tabs: initial.tabs === 4,
+          activeTab:
+            initial.activeTabState.includes('已启用') && initial.activeTabState.includes('2 个'),
+          seededRows: initial.rows === 2 && initial.openRows === 2,
+          headers:
+            initial.headers.includes('开放') &&
+            initial.headers.includes('模型 ID') &&
+            initial.headers.includes('显示名'),
+          rowLabels: initial.labels.includes('模型 ID') && initial.labels.includes('上下文窗口'),
+          seededBaseUrl: initial.baseUrl.includes('127.0.0.1') && initial.baseUrl.endsWith('/v1'),
+          keySaved: initial.keyState === '已保存' && initial.keyError === '',
+          defaultModel: initial.defaultModel === 'verify-model-1',
+          protocols: initial.protocols === 2,
+          unspecifiedEffort: initial.reasoningText === '未指定（按 auto）',
+          noDirtyOnLoad: initial.dirty === '',
+          mergedNotReplaced:
+            fetched.rows === 3 && fetched.openRows === 2 && fetched.message.includes('新增 1 个'),
+          mergedCount: fetched.count.includes('已开放 2 / 共 3'),
+          bulkToggle: allOpen.openRows === 3 && allClosed.openRows === 0,
+          emptyRowFlagged: added.rows === 4 && added.rowError.includes('不能为空'),
+          duplicateFlagged: duplicated.rowError.includes('重复'),
+          duplicateDirty: duplicated.dirty !== '',
+          saveBlockedByClient: blocked.error.includes('模型 ID'),
+          imagegenEmpty: imagegen.empty !== '' && imagegen.rows === 0,
+          imagegenSaveBlocked: imagegenBlocked.error.includes('Base URL'),
+          // 切回语言模型：草稿仍在（3 行，含拉取新增的未开放条目）
+          restoredLlm: restored.rows === 3 && restored.dirty !== '',
+        },
+        {
+          initial,
+          fetched,
+          allOpen,
+          allClosed,
+          added,
+          duplicated,
+          blocked,
+          imagegen,
+          imagegenBlocked,
+          restored,
+        },
+        ['官方模型：拉取合并不替换 / 全开全关 / 行内校验 / 前端拦截（截图可核对）'],
+      )
+    },
+  },
+
+  // ── 26b. 用量：普通用户视图与折线图画布 + 「最近请求」每页 15 条的分页 ──
   {
     name: 'usage',
     async run(ctx) {
       await fresh(ctx, { hash: '#/usage', expect: '[data-panel="usage-page"]' })
       await ctx.page.waitForSelector('[data-field="usage.chart"] canvas', { timeout: TIMEOUT })
+      // 夹具：run.mjs 灌了 20 条真实用量（15 条一页 → 2 页）
+      await ctx.page.waitForSelector('[data-field="usage.recent-row"]', { timeout: TIMEOUT })
       const reading = await ctx.page.evaluate(() => ({
         page: document.querySelectorAll('[data-panel="usage-page"]').length,
         cards: document.querySelectorAll('.usage-card').length,
         canvas: document.querySelectorAll('[data-field="usage.chart"] canvas').length,
         userFilter: document.querySelectorAll('input[aria-label="用户 ID"]').length,
       }))
+      const readPager = () =>
+        ctx.page.evaluate(() => ({
+          rows: document.querySelectorAll('[data-field="usage.recent-row"]').length,
+          label:
+            document.querySelector('[data-field="usage.page-label"]')?.textContent?.trim() ?? '',
+          total:
+            document.querySelector('[data-field="usage.recent-total"]')?.textContent?.trim() ?? '',
+          prevDisabled: document.querySelector('[data-action="usage.page-prev"]')?.disabled ?? null,
+          nextDisabled: document.querySelector('[data-action="usage.page-next"]')?.disabled ?? null,
+        }))
+      const waitPage = (expected) =>
+        ctx.page.waitForFunction(
+          (target) =>
+            (document.querySelector('[data-field="usage.page-label"]')?.textContent ?? '').includes(
+              target,
+            ),
+          { timeout: TIMEOUT },
+          expected,
+        )
+
+      const first = await readPager()
+      await ctx.page.click('[data-action="usage.page-next"]')
+      await waitPage('2 / 2')
+      const second = await readPager()
+      await ctx.page.click('[data-action="usage.page-prev"]')
+      await waitPage('1 / 2')
+      const back = await readPager()
+
+      // 分页条在长表下方：单独截一张滚到底的画面供肉眼核对，再把页面滚回顶部，
+      // 让场景结束时的标准截图仍是「KPI 卡 + 折线图」那一屏
+      await ctx.page.evaluate(() => {
+        document.querySelector('[data-field="usage.pager"]')?.scrollIntoView({ block: 'end' })
+      })
+      const pagerShot = join(ctx.outDir, `usage-pager-${ctx.theme}.png`)
+      await ctx.page.screenshot({ path: pagerShot, fullPage: false }).catch(() => undefined)
+      await ctx.page.evaluate(() => window.scrollTo({ top: 0 }))
+
       return verdict(
         {
           page: reading.page === 1,
@@ -1683,8 +1874,17 @@ export const SCENARIOS = [
           cards: reading.cards === 4,
           chart: reading.canvas === 1,
           adminFilter: reading.userFilter === 1,
+          // 分页口径：一页 15 条，共 20 条 → 2 页；第 2 页 5 条
+          firstPageRows: first.rows === 15,
+          firstPageLabel: first.label.includes('1 / 2'),
+          pagedTotal: first.total.includes('20'),
+          firstPageEdge: first.prevDisabled === true && first.nextDisabled === false,
+          secondPageRows: second.rows === 5,
+          secondPageEdge: second.prevDisabled === false && second.nextDisabled === true,
+          backToFirst: back.rows === 15 && back.label.includes('1 / 2'),
         },
-        { reading },
+        { reading, first, second, back },
+        ['用量页分页：15 条一页，共 20 条夹具 → 2 页（截图可核对翻页前后）'],
       )
     },
   },
@@ -2254,6 +2454,22 @@ export const SCENARIOS = [
         }
       })
 
+      // 2b. 官方模型表同样卡片化（同一个全局 .ui-table--cards 口径，td 必须带 data-label）
+      await ctx.page.waitForSelector('[data-field="official.models-table"]', { timeout: TIMEOUT })
+      const official = await ctx.page.evaluate(() => {
+        const thead = document.querySelector('[data-field="official.models-table"] thead')
+        const labeled = document.querySelectorAll(
+          '[data-field="official.models-table"] td[data-label]',
+        )
+        const first = labeled[0]
+        return {
+          panel: document.querySelectorAll('[data-panel="official-models"]').length,
+          theadHidden: thead === null || getComputedStyle(thead).display === 'none',
+          labeledCells: labeled.length,
+          firstLabel: first?.getAttribute('data-label') ?? '',
+        }
+      })
+
       // 3. 控制台页：底部导航让位（v-if 摘除，不与自带的移动标签栏叠两层）
       await fresh(ctx)
       const consoleRoute = await ctx.page.evaluate(() => ({
@@ -2273,11 +2489,15 @@ export const SCENARIOS = [
           mainPadReserved: Number.parseFloat(usage.mainPad) >= 56,
           adminTheadHidden: admin.theadHidden,
           adminLabeledCells: admin.labeledCells >= 4 && admin.firstLabel !== '',
+          officialTheadHidden: official.panel === 1 && official.theadHidden,
+          officialLabeledCells: official.labeledCells >= 5 && official.firstLabel !== '',
           consoleBottomNavGone: consoleRoute.bottomNavGone,
           consoleMobileTabsKept: consoleRoute.mobileTabs === 1,
         },
-        { usage, admin, consoleRoute },
-        ['移动端工作台：底部导航 / KPI 堆叠 / 表格卡片化 / 控制台让位（截图可核对）'],
+        { usage, admin, official, consoleRoute },
+        [
+          '移动端工作台：底部导航 / KPI 堆叠 / 表格卡片化（含官方模型表）/ 控制台让位（截图可核对）',
+        ],
       )
     },
   },
