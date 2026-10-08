@@ -65,3 +65,25 @@ placeholder 的输入框」重做成有字段名 / 说明 / 校验的表单。�
 - 分页条本身用 `首页 / 上一页 / 第 x / y 页 · 共 N 条 / 下一页 / 末页`（`data-field="usage.page-label"`），
   边界与 loading 时禁用；截图证据在 `usage-pager-<theme>.png`、模型表在
   `official-models-table-<theme>.png`（场景内单独截图，标准截图为「结束时的整屏」）。
+
+## 部署记录（v0.4.7 → 阿里云，2026-10-08）
+
+- 本版只动 Center：`packages/center` 与 root / apps/desktop 一起升到 **0.4.7**
+  （镜像 tag 跟版本号走，别在同一 tag 上覆盖），`docs/release-notes/v0.4.7.md` 已写；
+  **桌面安装包未重新发布**，线上更新源仍是 0.4.5，属预期。
+- 部署包：`/opt/aurora-center/aurora-center-0.4.7-usage-paging-20261008-134027.tar.gz`（36.3 MB），
+  流程同 `deploy/README`：`shared build` → `center build` → `pnpm --filter @aurora/center deploy --prod --legacy`
+  → 删 `src/web/verify/deploy/tsconfig*.json/vite.config.ts` → 拷 Dockerfile + compose → tar → scp
+  → `docker compose up -d --build`。
+- 换装前备份：`backup-usage-paging-0.4.7-20261008-134050/`（bin / dist / dist-web / package.json /
+  Dockerfile / docker-compose.yml + **`.env`**）。容器 `healthy`、`restarts=0`、`/` 与
+  `/api/updates/current` 均 200，`data/`（clients.json / model-services.json / releases）未被触碰，
+  容器内 `AURORA_CENTER_SECRET` 长度 65（仍注入，值不记录）。
+- **验证「新前端真的上线」要看懒加载分包**：`#/usage`、`#/admin` 是 `defineAsyncComponent` 拆出来的，
+  标记（`usage-pager` / `official-models-table`）在 `UsageView-*.{js,css}`、`AdminView-*.{js,css}` 里，
+  **不在首屏 `index-*.css`** —— 只查首屏 CSS 会误判成「部署没生效」。
+- ⚠️ **本机到 GitHub 仍然不通**（2026-10-07 起）：`github.com:443` 与 `ssh.github.com:443` 都连不上，
+  本地 `main` 已累积 11 个未推提交（含 `v0.4.7` 的 release commit，**未创建 tag**）。
+  网络恢复后需补 `git push`（并按需补 tag），发布双投的 GitHub 侧同样待补。
+- SSH 仍必须带 `-i ~/.ssh/lineweb_aliyun`；另外 **PowerShell 用管道把多行脚本喂给 `ssh 'bash -s'`
+  会被截断**（只跑出第一段），要么写成单行命令、要么 scp 一个 .sh 再 `bash /tmp/x.sh`。
