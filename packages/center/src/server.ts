@@ -785,6 +785,10 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         ...(url.searchParams.get('limit') === null
           ? {}
           : { limit: Number(url.searchParams.get('limit')) || 100 }),
+        // 明细分页起点：非法值（NaN / 负数）在 UsageStore 里夹到 0
+        ...(url.searchParams.get('offset') === null
+          ? {}
+          : { offset: Number(url.searchParams.get('offset')) || 0 }),
       }
       sendJson(res, 200, await usage.query(query))
       return

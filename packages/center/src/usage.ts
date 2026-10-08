@@ -154,6 +154,7 @@ export class UsageStore {
     }
     const totals = totalsOf(filtered)
     const limit = Math.max(1, Math.min(500, query.limit ?? 100))
+    const offset = Math.max(0, Math.floor(query.offset ?? 0))
     const lifetime =
       query.userId === undefined
         ? { ...this.summary.lifetime }
@@ -164,7 +165,8 @@ export class UsageStore {
       totals,
       lifetime,
       daily: [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date)),
-      recent: filtered.slice(0, limit),
+      recent: filtered.slice(offset, offset + limit),
+      recentTotal: filtered.length,
     }
   }
 

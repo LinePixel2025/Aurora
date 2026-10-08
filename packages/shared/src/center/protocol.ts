@@ -159,7 +159,10 @@ export interface CenterUsageQuery {
   userId?: string
   clientId?: string
   model?: string
+  /** 明细分页条数（服务器夹到 1..500，默认 100） */
   limit?: number
+  /** 明细分页起点（服务器夹到 ≥0，默认 0）；daily / totals 永远按全量算，不受它影响 */
+  offset?: number
 }
 
 export interface CenterUsageResponse {
@@ -174,7 +177,10 @@ export interface CenterUsageResponse {
   totals: CenterTokenUsageTotals
   lifetime: CenterTokenUsageTotals
   daily: CenterTokenUsageDay[]
+  /** 本页明细（`recentTotal` 里的第 offset..offset+limit 条） */
   recent: CenterTokenUsageRecord[]
+  /** 区间内过滤后的明细总数（与 limit / offset 无关，供网页端算页数） */
+  recentTotal: number
 }
 
 /** Center 当前托管的一个客户端更新版本。 */

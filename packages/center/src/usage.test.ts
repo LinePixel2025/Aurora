@@ -52,6 +52,62 @@ describe('Center token 用量', () => {
     expect(alice.recent[0]?.username).toBe('alice')
   })
 
+  it('明细分页：limit / offset 只切 recent，recentTotal 与聚合不受影响', async () => {
+    let now = new Date('2026-10-01T10:00:00.000Z')
+    const { store } = await makeStore(() => now)
+    for (let index = 0; index < 20; index += 1) {
+      // 每条一个明确的分钟，排序可断言（新到旧）
+      now = new Date(`2026-10-01T10:${String(index).padStart(2, '0')}:00.000Z`)
+      await store.record({
+        userId: 'u1',
+        username: 'alice',
+        clientId: 'c1',
+        model: 'm1',
+        promptTokens: 10,
+        completionTokens: 1,
+      })
+    }
+
+    const first = await store.query({ from: '2026-10-01', to: '2026-10-01', limit: 15, offset: 0 })
+    expect(first.recentTotal).toBe(20)
+    expect(first.recent).toHaveLength(15)
+    // 总量 / 折线仍按全量算，与分页无关
+    expect(first.totals.requests).toBe(20)
+    expect(first.daily.map((day) => day.requests)).toEqual([20])
+    expect(first.recent[0]?.at).toBe('2026-10-01T10:19:00.000Z')
+    expect(first.recent[first.recent.length - 1]?.at).toBe('2026-10-01T10:05:00.000Z')
+
+    const second = await store.query({
+      from: '2026-10-01',
+      to: '2026-10-01',
+      limit: 15,
+      offset: 15,
+    })
+    expect(second.recentTotal).toBe(20)
+    expect(second.recent).toHaveLength(5)
+    expect(second.recent[0]?.at).toBe('2026-10-01T10:04:00.000Z')
+    expect(second.totals.requests).toBe(20)
+
+    const beyond = await store.query({
+      from: '2026-10-01',
+      to: '2026-10-01',
+      limit: 15,
+      offset: 999,
+    })
+    expect(beyond.recent).toEqual([])
+    expect(beyond.recentTotal).toBe(20)
+
+    // 负数 / 非整数一律夹到 0，不能变成 from 尾部切片
+    const negative = await store.query({
+      from: '2026-10-01',
+      to: '2026-10-01',
+      limit: 15,
+      offset: -5,
+    })
+    expect(negative.recent).toHaveLength(15)
+    expect(negative.recent[0]?.at).toBe('2026-10-01T10:19:00.000Z')
+  })
+
   it('清理超过保留期的日文件，但保留终身累计', async () => {
     let now = new Date('2026-01-01T00:00:00.000Z')
     const { dir, store } = await makeStore(() => now)

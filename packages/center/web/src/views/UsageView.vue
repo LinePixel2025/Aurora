@@ -4,13 +4,16 @@
  *
  * 普通用户只拿本人数据；管理员可用筛选查看全站。图表只画语言模型真实返回的 usage。
  * 结构：快捷区间 + 筛选 → 4 张 KPI 卡（区间总计 / 输入 / 输出 / 缓存命中）→ 趋势图 → 最近请求。
+ *
+ * 「最近请求」按 **PAGE_SIZE 一页**走服务端分页（`limit` + `offset`）：区间内可能有几千条，
+ * 整表倾倒既长又要把全部明细传一遍；`recentTotal` 由服务器给，页数不在前端猜。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import type { CenterUsageResponse } from '@aurora/shared'
+import type { CenterUsageQuery, CenterUsageResponse } from '@aurora/shared'
 import { api } from '../lib/api'
 import { currentUser, state } from '../state'
 import { formatTime, formatTokens } from '../lib/format'
@@ -56,7 +59,7 @@ function pickQuick(range: QuickRange): void {
     from.value = toDateInput(range === '7d' ? -6 : -29)
     to.value = toDateInput(0)
   }
-  void load()
+  applyFilters()
 }
 
 function onCustomDate(): void {
@@ -69,19 +72,43 @@ const quickItems: Array<{ key: QuickRange; label: string }> = [
   { key: '30d', label: '近 30 天' },
 ]
 
-// ── 数据加载 ──
+// ── 数据加载（明细分页） ──
 
-async function load(): Promise<void> {
+/** 「最近请求」每页条数：区间明细只按它取一页，翻页再取下一页 */
+const PAGE_SIZE = 15
+
+/** 当前页（1 基）；请求成功后才提交，失败时页码与表格都停在原地 */
+const page = ref(1)
+
+const recentTotal = computed(() => data.value?.recentTotal ?? 0)
+const pageCount = computed(() => Math.max(1, Math.ceil(recentTotal.value / PAGE_SIZE)))
+
+function usageQuery(target: number): CenterUsageQuery {
+  return {
+    ...(from.value === '' ? {} : { from: from.value }),
+    ...(to.value === '' ? {} : { to: to.value }),
+    ...(clientId.value === '' ? {} : { clientId: clientId.value }),
+    ...(model.value.trim() === '' ? {} : { model: model.value.trim() }),
+    ...(isAdmin.value && userId.value !== '' ? { userId: userId.value } : {}),
+    limit: PAGE_SIZE,
+    offset: (target - 1) * PAGE_SIZE,
+  }
+}
+
+async function load(target = page.value): Promise<void> {
   loading.value = true
   error.value = ''
+  let wanted = Math.max(1, target)
   try {
-    data.value = await api.usage({
-      ...(from.value === '' ? {} : { from: from.value }),
-      ...(to.value === '' ? {} : { to: to.value }),
-      ...(clientId.value === '' ? {} : { clientId: clientId.value }),
-      ...(model.value.trim() === '' ? {} : { model: model.value.trim() }),
-      ...(isAdmin.value && userId.value !== '' ? { userId: userId.value } : {}),
-    })
+    let result = await api.usage(usageQuery(wanted))
+    // 目标页越界（区间缩小 / 明细被清掉 / 手改过页码）：夹回末页，最多只重取一次
+    const pages = Math.max(1, Math.ceil(result.recentTotal / PAGE_SIZE))
+    if (result.recentTotal > 0 && wanted > pages) {
+      wanted = pages
+      result = await api.usage(usageQuery(wanted))
+    }
+    data.value = result
+    page.value = wanted
     await nextTick()
     renderChart()
   } catch (cause) {
@@ -89,6 +116,16 @@ async function load(): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+/** 筛选条件变了：回到第 1 页再查（查询按钮 / 快捷区间共用） */
+function applyFilters(): void {
+  void load(1)
+}
+
+function goToPage(target: number): void {
+  if (loading.value || target < 1 || target > pageCount.value || target === page.value) return
+  void load(target)
 }
 
 // ── KPI 派生值：全部带 0 守卫，空数据出「—」而不是 NaN ──
@@ -311,7 +348,12 @@ onBeforeUnmount(() => {
         placeholder="模型（可选）"
         aria-label="模型"
       />
-      <button class="ui-btn ui-btn--primary" type="button" :disabled="loading" @click="load">
+      <button
+        class="ui-btn ui-btn--primary"
+        type="button"
+        :disabled="loading"
+        @click="applyFilters"
+      >
         {{ loading ? '读取中…' : '查询' }}
       </button>
     </section>
@@ -349,38 +391,89 @@ onBeforeUnmount(() => {
     </section>
 
     <section class="ui-card usage-table-card">
-      <header>
+      <header class="usage-table-head">
         <h2>最近请求</h2>
+        <span v-if="recentTotal > 0" class="usage-table-total" data-field="usage.recent-total">
+          共 {{ recentTotal.toLocaleString() }} 条
+        </span>
       </header>
       <p v-if="(data?.recent.length ?? 0) === 0" class="usage-table-empty">暂无请求记录</p>
-      <div v-else class="usage-scroll">
-        <table class="ui-table ui-table--cards">
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th v-if="isAdmin">用户</th>
-              <th>设备</th>
-              <th>模型</th>
-              <th class="usage-end">输入</th>
-              <th class="usage-end">输出</th>
-              <th class="usage-end">合计</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="entry in data?.recent ?? []" :key="entry.id">
-              <td data-label="时间">{{ formatTime(entry.at) }}</td>
-              <td v-if="isAdmin" data-label="用户">{{ entry.username }}</td>
-              <td data-label="设备">{{ clientName(entry.clientId) }}</td>
-              <td class="mono" data-label="模型">{{ entry.model }}</td>
-              <td class="usage-end" data-label="输入">{{ entry.promptTokens.toLocaleString() }}</td>
-              <td class="usage-end" data-label="输出">
-                {{ entry.completionTokens.toLocaleString() }}
-              </td>
-              <td class="usage-end" data-label="合计">{{ entry.totalTokens.toLocaleString() }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <template v-else>
+        <div class="usage-scroll">
+          <table class="ui-table ui-table--cards" data-field="usage.recent-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th v-if="isAdmin">用户</th>
+                <th>设备</th>
+                <th>模型</th>
+                <th class="usage-end">输入</th>
+                <th class="usage-end">输出</th>
+                <th class="usage-end">合计</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="entry in data?.recent ?? []" :key="entry.id" data-field="usage.recent-row">
+                <td data-label="时间">{{ formatTime(entry.at) }}</td>
+                <td v-if="isAdmin" data-label="用户">{{ entry.username }}</td>
+                <td data-label="设备">{{ clientName(entry.clientId) }}</td>
+                <td class="mono" data-label="模型">{{ entry.model }}</td>
+                <td class="usage-end" data-label="输入">
+                  {{ entry.promptTokens.toLocaleString() }}
+                </td>
+                <td class="usage-end" data-label="输出">
+                  {{ entry.completionTokens.toLocaleString() }}
+                </td>
+                <td class="usage-end" data-label="合计">
+                  {{ entry.totalTokens.toLocaleString() }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <nav class="usage-pager" data-field="usage.pager" aria-label="最近请求翻页">
+          <button
+            class="ui-btn ui-btn--ghost"
+            type="button"
+            data-action="usage.page-first"
+            :disabled="loading || page <= 1"
+            @click="goToPage(1)"
+          >
+            首页
+          </button>
+          <button
+            class="ui-btn ui-btn--ghost"
+            type="button"
+            data-action="usage.page-prev"
+            :disabled="loading || page <= 1"
+            @click="goToPage(page - 1)"
+          >
+            上一页
+          </button>
+          <span class="usage-pager-label" data-field="usage.page-label">
+            第 {{ page }} / {{ pageCount }} 页
+          </span>
+          <button
+            class="ui-btn ui-btn--ghost"
+            type="button"
+            data-action="usage.page-next"
+            :disabled="loading || page >= pageCount"
+            @click="goToPage(page + 1)"
+          >
+            下一页
+          </button>
+          <button
+            class="ui-btn ui-btn--ghost"
+            type="button"
+            data-action="usage.page-last"
+            :disabled="loading || page >= pageCount"
+            @click="goToPage(pageCount)"
+          >
+            末页
+          </button>
+        </nav>
+      </template>
     </section>
   </section>
 </template>
@@ -530,6 +623,40 @@ onBeforeUnmount(() => {
   margin-bottom: var(--space-3);
 }
 
+.usage-table-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.usage-table-total {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: var(--num-tabular);
+}
+
+/* 分页条：翻页是次要动作，按钮走 ghost；页码用等宽数字避免跳动 */
+.usage-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.usage-pager-label {
+  min-width: 92px;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-variant-numeric: var(--num-tabular);
+  text-align: center;
+}
+
 .usage-table-card h2 {
   margin: 0;
   font-size: var(--text-lg);
@@ -550,6 +677,99 @@ onBeforeUnmount(() => {
 .usage-end {
   text-align: right;
   font-variant-numeric: var(--num-tabular);
+}
+
+/*
+ * ───────── 基础件（本页自持） ─────────
+ * 本页此前没带这一套：筛选框与按钮吃的是浏览器原生外观（只有 `#app .ui-*` 的圆角）。
+ * 配方与 AdminView / FilesView 同一份；圆角统一交给 style.css 的 `#app` 覆盖，别在这里抢。
+ */
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  height: var(--control-h-sm);
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast),
+    transform var(--dur-press) var(--ease-standard);
+}
+
+.ui-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.ui-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ui-btn--primary {
+  background: var(--aurora-blue);
+  color: var(--on-accent);
+}
+
+.ui-btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.ui-btn--ghost {
+  border-color: var(--border-subtle);
+}
+
+.ui-btn--ghost:hover:not(:disabled) {
+  background: var(--fill-2);
+}
+
+.ui-input {
+  height: var(--control-h-sm);
+  min-width: 0;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-subtle);
+  background: var(--fill-1);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  outline: none;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.ui-input::placeholder {
+  color: var(--text-muted);
+}
+
+.ui-input:focus {
+  border-color: var(--aurora-blue);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+select.ui-input {
+  cursor: pointer;
+}
+
+.ui-error {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--error-fill);
+  color: var(--error-text);
+  font-size: var(--text-sm);
 }
 
 @media (max-width: 900px) {
@@ -611,6 +831,23 @@ onBeforeUnmount(() => {
   .usage-table-card,
   .usage-chart-card {
     padding: var(--space-3);
+  }
+
+  /* 分页条：按钮铺开成两列，命中区够大；页码独占一行居中 */
+  .usage-pager {
+    justify-content: center;
+  }
+
+  .usage-pager .ui-btn {
+    flex: 1 1 calc(50% - var(--space-2));
+    min-height: var(--hit-target);
+  }
+
+  .usage-pager-label {
+    order: -1;
+    flex: 1 1 100%;
+    min-width: 0;
+    text-align: center;
   }
 }
 </style>
