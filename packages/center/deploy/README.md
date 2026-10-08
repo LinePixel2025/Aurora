@@ -11,7 +11,7 @@
 > --password <密码>` 打印客户端的 `ClientStatus`（含 `voice`）：能力位是 `true` 而网页没有按钮，
 > 就是网页包旧了。
 >
-> `docker-compose.yml` 的 `image:` tag 跟版本号走（当前 `0.4.5`）：别在同一 tag 上反复覆盖，
+> `docker-compose.yml` 的 `image:` tag 跟版本号走（当前 `0.4.7`）：别在同一 tag 上反复覆盖，
 > 否则排障时说不清线上跑的是哪一版。
 ## 1. 构建机：打部署包
 

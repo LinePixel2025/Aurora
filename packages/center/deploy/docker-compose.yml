@@ -1,7 +1,7 @@
 services:
   aurora-center:
     build: .
-    image: aurora-center:0.4.6
+    image: aurora-center:0.4.7
     container_name: aurora-center
     restart: unless-stopped
     ports:
