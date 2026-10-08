@@ -28,8 +28,9 @@ source: 模型自动记录
 
 - 毛玻璃「加了没效果」或「加了但抽屉 / scrim 层级错乱」，都容易被误判成 backdrop-filter 本身的问题。
 - 卡片强调底写了不生效，容易在 scoped / 全局之间反复加 !important 乱修。
-- 验收基线变了还按旧数字对账：verify:web 现在 **43 场景 × 明暗 = 86**（AGENTS.md 里的
-  「74/74（37 场景）」早已滞后，勿按它对账）。
+- 验收基线变了还按旧数字对账：verify:web 当时是 **43 场景 × 明暗 = 86**（`AGENTS.md` 里写的
+  「74/74（37 场景）」早已滞后）；**2026-10-08 起新基线是 88**（43 场景 × 暗浅 ＋ 2 个单档主题场景），
+  见 [2026-10-08-center-usage-paging-official-models-form.md](2026-10-08-center-usage-paging-official-models-form.md)。
 
 ## 结论与做法
 
@@ -75,4 +76,9 @@ source: 模型自动记录
 - 桌面更新源保持 **0.4.5**（`/api/updates/current` 仍返 0.4.5）——本版无桌面变更，属预期，
   不是漏发。桌面安装包与 blockmap 双投（GitHub + Center 源）本轮未做也不需要。
 - 按用户指示**未推 GitHub**（本地 `main` 有新提交 + annotated tag v0.4.6，只完成云端部署）。
+
+---
+
+**修订**：2026-10-08 —— 验收基线从 86 更新为 88（新增官方模型表单场景、用量页补分页断言），
+并把「AGENTS.md 的 74 已更正」这件事记进本轮新记忆。
 
