@@ -82,8 +82,10 @@ placeholder 的输入框」重做成有字段名 / 说明 / 校验的表单。�
 - **验证「新前端真的上线」要看懒加载分包**：`#/usage`、`#/admin` 是 `defineAsyncComponent` 拆出来的，
   标记（`usage-pager` / `official-models-table`）在 `UsageView-*.{js,css}`、`AdminView-*.{js,css}` 里，
   **不在首屏 `index-*.css`** —— 只查首屏 CSS 会误判成「部署没生效」。
-- ⚠️ **本机到 GitHub 仍然不通**（2026-10-07 起）：`github.com:443` 与 `ssh.github.com:443` 都连不上，
-  本地 `main` 已累积 11 个未推提交（含 `v0.4.7` 的 release commit，**未创建 tag**）。
-  网络恢复后需补 `git push`（并按需补 tag），发布双投的 GitHub 侧同样待补。
+- **GitHub 连通性是间歇的，别按一次探测就下结论**：本轮 `git ls-remote` 与 `ssh.github.com:443`
+  两次探测都超时（与 2026-10-07 同一现象），但几分钟后重试 `git push` 直接成功
+  （`ef6d16e..715c32d`，12 个提交）。做法：先提交、先把 Center 部署做完，末尾**重试一次**推送。
+  断网期间**不要**给版本打 tag（release 脚本发布时会自己建，重复的 tag 会让发布流程卡住）；
+  安装包未重新发布，故本版只有本地/远端提交 + 云端部署，没有 tag、没有 GitHub Release。
 - SSH 仍必须带 `-i ~/.ssh/lineweb_aliyun`；另外 **PowerShell 用管道把多行脚本喂给 `ssh 'bash -s'`
   会被截断**（只跑出第一段），要么写成单行命令、要么 scp 一个 .sh 再 `bash /tmp/x.sh`。
