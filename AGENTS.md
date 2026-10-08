@@ -71,7 +71,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **提交前仍必须跑全量**。
 - **Center 网页端验收（视觉 + 行为）**：`pnpm --filter @aurora/center build && pnpm --filter @aurora/center verify:web`
   —— 真实服务器子进程（临时数据目录）+ 协议忠实的桩客户端 + 系统 Edge，逐场景截图 / 读 DOM 并写 `report.json`
-  （口径同 `capture.ts`：任一条 `ok: false` → 退出码 2），当前基线 **74/74**（37 场景 × 暗浅两档）。
+  （口径同 `capture.ts`：任一条 `ok: false` → 退出码 2），当前基线 **88/88**（43 场景 × 暗浅两档 ＋ 2 个单档主题场景）。
+  整轮开跑前会用假上游 + 临时 `AURORA_CENTER_SECRET` 灌 20 条真实用量明细当夹具（见 docs/12 §10）。
   开关：`AURORA_CWEB_ONLY`（子串过滤 / 特殊值 `failed`）、`AURORA_CWEB_THEME=dark|light`、
   `AURORA_CWEB_VIEWPORT=mobile`、`AURORA_CWEB_OUT`、`AURORA_CWEB_KEEP=1`（保留子服务器与数据目录排障）、
   `AURORA_CWEB_BROWSER`（找不到浏览器时明确 SKIP、退出码 0）。
