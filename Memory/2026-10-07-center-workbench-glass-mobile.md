@@ -58,3 +58,21 @@ source: 模型自动记录
 - **单测环境坑**：`packages/center/src/model-gateway.e2e.test.ts` 在 Windows 上有
   `ENOTEMPTY: directory not empty, rmdir %TEMP%\aurora-center-gateway-*` 的清理竞态
   （afterEach 删目录时句柄未放），复跑即过——先重跑再排查，别当回归。
+
+## 部署记录（v0.4.6 → 阿里云）
+
+- 线上 `120.24.223.65` 从 `aurora-center:0.4.5` 升级为 `aurora-center:0.4.6`；
+  部署包 `/opt/aurora-center/aurora-center-0.4.6-workbench-20261007-171021.tar.gz`（37MB），
+  流程同 deploy/README（构建 → `pnpm deploy --legacy` → tar → scp → `docker compose up -d --build`）。
+- **SSH 免密必须带 `-i ~/.ssh/lineweb_aliyun`**：默认密钥直接 `Permission denied (publickey)`；
+  该专用密钥自 2026-09-27 首次部署起使用，命令模板：
+  `ssh -i ~/.ssh/lineweb_aliyun root@120.24.223.65 '<cmd>'`。
+- 换装前备份：`backup-workbench-0.4.6-20261007-171517/`（package.json / bin / dist / dist-web /
+  Dockerfile / compose + **`.env`**——服务器上确实存在 `.env`（含 AURORA_CENTER_SECRET），
+  备份清单里必须包含它）。
+- 验证证据：容器 `healthy`（次日复查 Up 20 小时无重启）；线上 CSS（`assets/index-*.css`）含
+  `center-wb-glass` ×4 与 `wb-bottom-nav` ×3（新前端确实上线）；域名 200。
+- 桌面更新源保持 **0.4.5**（`/api/updates/current` 仍返 0.4.5）——本版无桌面变更，属预期，
+  不是漏发。桌面安装包与 blockmap 双投（GitHub + Center 源）本轮未做也不需要。
+- 按用户指示**未推 GitHub**（本地 `main` 有新提交 + annotated tag v0.4.6，只完成云端部署）。
+

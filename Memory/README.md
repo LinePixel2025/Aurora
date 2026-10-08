@@ -10,7 +10,8 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| 2026-10-07 | Center 后台工作台毛玻璃与移动端适配的接线口径（含 verify:web 86 基线）          | Center, UI, 毛玻璃, 移动端, 探针, 坑   | [2026-10-07-center-workbench-glass-mobile.md](2026-10-07-center-workbench-glass-mobile.md)                   |
+| 2026-10-08 | git tag -a -F 发布说明会剥掉首行 # 标题，必须 --cleanup=verbatim               | 发布, git, 坑                          | [2026-10-08-git-tag-notes-comment-strip.md](2026-10-08-git-tag-notes-comment-strip.md)                       |
+| 2026-10-07 | Center 后台工作台毛玻璃与移动端适配的接线口径（含 verify:web 86 基线与 v0.4.6 云部署记录） | Center, UI, 毛玻璃, 移动端, 部署, 坑   | [2026-10-07-center-workbench-glass-mobile.md](2026-10-07-center-workbench-glass-mobile.md)                   |
 | 2026-10-07 | Center 官网入口、登录后工作台与首屏性能的长期口径                              | Center, UI, 官网, 性能, 字体, 坑       | [2026-10-07-center-official-site-workbench.md](2026-10-07-center-official-site-workbench.md)                 |
 | 2026-10-07 | SettingField 的 label 会把整行 hover / 点击代理给内部按钮                      | UI, 表单, Center, 坑                   | [2026-10-07-setting-field-label-button-proxy.md](2026-10-07-setting-field-label-button-proxy.md)             |
 | 2026-10-06 | Center 官方模型网关与自托管更新的长期接线口径                                  | Center, 模型, 更新, 安全, 坑           | [2026-10-06-center-official-models-and-updates.md](2026-10-06-center-official-models-and-updates.md)         |
