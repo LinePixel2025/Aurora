@@ -23,6 +23,7 @@ import type {
 } from '@aurora/shared'
 import { deepClone } from '@aurora/shared/browser'
 import { applyAppearance } from './appearance.js'
+import { createLoadGate } from './load-gate.js'
 
 export const useSettingsStore = defineStore('settings', () => {
   const settings = ref<Settings | null>(null)
@@ -35,15 +36,24 @@ export const useSettingsStore = defineStore('settings', () => {
   // 四个窗口无需各接一遍。明暗档位不在这里 —— 它落在主进程的 nativeTheme（见 appearance.ts）。
   watch(settings, (next) => applyAppearance(next?.appearance), { immediate: true })
 
+  // 「首读不许盖掉更晚的广播」的序号闸门：理由见 `load-gate.ts` 头注释
+  //（启动期先 load 再 bind 会永久丢掉落在两者之间的 settings:changed）。
+  const loadGate = createLoadGate()
+
   async function load(): Promise<void> {
     loading.value = true
     error.value = null
+    // 快照必须在**发起读取之前**取：读取期间到达的推送要么属于"更新"，要么就是本次的病态窗口
+    const mark = loadGate.snapshot()
     const [settingsResult, infoResult] = await Promise.all([
       window.aurora.settings.get(),
       window.aurora.app.getInfo(),
     ])
-    if (settingsResult.ok) settings.value = settingsResult.value
-    else error.value = settingsResult.message
+    // 首读期间收到过推送 → 放弃这份可能更旧的快照（推送的载荷同样是主进程的权威全量设置）
+    loadGate.write(mark, settingsResult, (result) => {
+      if (result.ok) settings.value = result.value
+    })
+    if (settingsResult.ok !== true) error.value = settingsResult.message
     if (infoResult.ok) appInfo.value = infoResult.value
     loading.value = false
   }
@@ -93,6 +103,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function bind(): () => void {
     return window.aurora.settings.onChanged((next) => {
+      loadGate.onPush()
       settings.value = next
     })
   }
@@ -127,10 +138,26 @@ export const useModeStore = defineStore('modes', () => {
   const modes = ref<ModeSummary[]>([])
   const error = ref<string | null>(null)
 
+  /**
+   * 「首读不许盖掉更晚的广播」的序号闸门（2026-10-10，配 `bootstrap.ts` 的
+   * 「先订阅、再加载」）。理由见 `load-gate.ts` 头注释：
+   *
+   * 启动期先 `load()` 再 `bind()` 会**永久丢掉**落在两者之间的 `mode:changed`
+   *（`load()` 拿到的是「切换前」的快照，丢失的广播不会再补）→ 主进程当前模式已是新值、
+   * 渲染层却永久停在旧值；而 `mode.set` 在「主进程已是目标值」时是 no-op
+   *（`packages/modes/src/manager.ts` 相同 id 提前 return、不 emit）→ 面板自己永远回不来。
+   * 改成先订阅之后，`load()` 的应答可能比广播**更晚**返回，所以首读期间收到过推送时
+   * 放弃这次写值（推送的载荷同样是主进程的权威全量状态，而且比这份快照新）。
+   */
+  const loadGate = createLoadGate()
+
   async function load(): Promise<void> {
+    const mark = loadGate.snapshot()
     const result = await window.aurora.mode.list()
-    if (result.ok) modes.value = result.value
-    else error.value = result.message
+    loadGate.write(mark, result, (value) => {
+      if (value.ok) modes.value = value.value
+    })
+    if (result.ok !== true) error.value = result.message
   }
 
   async function setCurrent(id: ModeId): Promise<boolean> {
@@ -156,6 +183,7 @@ export const useModeStore = defineStore('modes', () => {
 
   function bind(): () => void {
     return window.aurora.mode.onChanged((event: ModeChangedEvent) => {
+      loadGate.onPush()
       modes.value = event.modes
     })
   }
