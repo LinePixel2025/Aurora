@@ -2,7 +2,7 @@
 
 - Task: fix-flaky-chat-probes
 - Step: 1 / 7
-- Status: pending
+- Status: done
 - Depends on: none
 - Produces: 四条各自的复现命令、`report.json` 证据片段与归属结论（写在本文末「执行记录」里，供 step 2–5 直接引用）
 - Phase: 基础与配置

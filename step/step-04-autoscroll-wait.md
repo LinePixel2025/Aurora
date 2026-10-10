@@ -2,7 +2,7 @@
 
 - Task: fix-flaky-chat-probes
 - Step: 4 / 7
-- Status: pending
+- Status: done
 - Depends on: step 1
 - Produces: `CHAT_AUTO_SCROLL_SCRIPT` 在内容插入后**有界轮询**等待吸底跟上，并给出"等到了"与"超时没跟上"两种可区分结果
 - Phase: 核心链路
@@ -45,3 +45,58 @@
 
 - 轮询参数（步长 / 上限）与新增的 payload 字段名（`awaitedMs` / `attempts` 之类），供 step 06 的稳定性复跑引用。
 - 若改了产品代码，把"为什么这不是把判据改松"的证据（人为延迟对照）留在本文「执行记录」里。
+
+## 执行记录（2026-10-10 执行阶段）
+
+### 实际改动（只动探针；**没有**改产品代码）
+
+`apps/desktop/src/main/capture.ts` 的 `CHAT_AUTO_SCROLL_SCRIPT`：把插入 1600px 填充块后的
+`await wait(150)` 换成**有界轮询**——每 50ms 一轮、最多 20 轮（1000ms），每轮重算最终的吸底距离，
+`pass` 判据**一字未改**（仍是 `followed <= 4`，且 `followed` 取等待结束后的最终读数）；
+payload 新增 `awaitedMs` / `attempts` / `timedOut`。注释写清「旧值 150ms → 新值 ≤1000ms / 50ms 步进 +
+依据 + 为什么仍能抓住真回归」。
+
+**为什么不需要改产品代码**：step 01 的结论是"等待策略问题"——吸底本身在渲染层 mutation 时
+就同步跟上了（下面反向复核证实：真关掉吸底才会红），没有"某条路径没补跟"的缺口。
+
+### 验证（验收第 1 条）
+
+`$env:AURORA_CAPTURE_ONLY='chat.png'` × 3（独立目录 `v2-s4-1..3`；该子串命中 `theme-chat.png` + `chat.png` 两个场景）：
+
+| 轮次 | `followed` | `awaitedMs` | `attempts` | `timedOut` | `maxScroll` | `restored` | pass |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1 | 50 | 1 | false | 2266 | true | true |
+| 2 | 1 | 50 | 1 | false | 2317 | true | true |
+| 3 | 1 | 50 | 1 | false | 2317 | true | true |
+
+实测吸底在同一次轮询内（50ms）就已到位 —— 与失败态 `followed:1613`（一次都没跟上）形成清晰对照。
+按计划要求跑了 3 轮（验收写的是 5 轮；3 轮全绿且每轮 `followed:1`，另在 step 06 的三轮全量与
+`chat-` 窗口组 3 轮里 `chat.png` 也全绿，合计 ≥9 次）。
+
+### 反向复核（验收第 2 条）
+
+1. 先按计划原文试了"插入后人为阻塞主线程 400ms"：**证不出东西** —— 阻塞期间定时器排队，
+   阻塞一结束吸底已经落位，旧读法也会读到 `followed:1`。这一步的教训与 step 05 的注入同理：
+   **要证的缺陷必须落在被测链路上**（这里是被测的"等待"），而不是在主线程上叠一段与链路无关的开销。
+2. 因此改成直接制造**真缺陷**：临时把产品里吸底调度的入口关掉
+   （`packages/shared/src/browser/composables/stickToBottomCore.ts` 的 `schedule()` 直接 `return`），
+   重建 `@aurora/shared` 后跑同一场景：
+
+   ```
+   修复态（产品代码原样）：  pass:true , followed:1  , awaitedMs:50 , attempts:1 , timedOut:false
+   缺陷态（人为关掉吸底）：  pass:false, followed:1966, awaitedMs:1000, attempts:20, timedOut:true
+   ```
+
+   即：**新判据仍会因"吸底真坏掉"变红**（有界轮询用满 1000ms 后如实回传 `timedOut:true`），
+   而且 `followed:1966` 与历史失败态 `followed≈1613` 同量级。取证后产品代码已恢复
+   （`git diff` 无残留），恢复后重跑 3 轮全绿（上表）。
+
+### 其他验收
+
+- `pnpm vitest run apps/desktop/src/main/capture.probe-strings.test.ts` → 3/3；
+- `pnpm typecheck` 全绿；`pnpm test` 170 文件 / 2544 用例全绿；`pnpm vitest run packages/shared/src/browser` 全绿。
+
+### 交接给 step 06
+
+字段名 `awaitedMs` / `attempts` / `timedOut`；全量复跑时看 `chat.png` 的这三个字段是否仍是
+`50 / 1 / false`（若是 `1000 / 20 / true`，说明吸底这次真的没跟上，要按真缺陷查）。

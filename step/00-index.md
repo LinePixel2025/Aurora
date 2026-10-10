@@ -64,11 +64,11 @@
 
 | # | 文件 | 标题 | 状态 | 依赖 | 写范围 |
 |---|------|------|------|------|--------|
-| 1 | step-01-reproduce-and-triage.md | 四条抖动复现与归属定性 | pending | - | 只读 |
-| 2 | step-02-sidebar-mode-pollution.md | 修 chat-sidebar：启动期丢广播 + 场景自带前置 | pending | step 1 | `apps/desktop/src/main/capture.ts`、`apps/desktop/src/renderer/shared/bootstrap.ts`、`apps/desktop/src/renderer/shared/stores.ts`、`apps/desktop/src/renderer/shared/*.test.ts`、`docs/07-ui-spec.md` |
-| 3 | step-03-archive-identity-key.md | 修 chat-archive：身份键换稳定锚点 + act 前置轮询 | pending | step 1 | `apps/desktop/src/main/capture.ts`、`apps/desktop/src/renderer/chat/components/SessionRow.vue`（仅当需要 `data-session-id`）、`docs/07-ui-spec.md`（仅当新增锚点需要记进说明） |
-| 4 | step-04-autoscroll-wait.md | 修 chat.png：吸底跟随改有界轮询 | pending | step 1 | `apps/desktop/src/main/capture.ts`、`packages/shared/src/browser/composables/stickToBottomCore.ts`（仅当根因在产品侧） |
-| 5 | step-05-burst-robust-metric.md | 修 chat-stream-burst：换对单点离群不敏感的统计量 | pending | step 1 | `apps/desktop/src/main/capture.ts` |
+| 1 | step-01-reproduce-and-triage.md | 四条抖动复现与归属定性 | done | - | 只读 |
+| 2 | step-02-sidebar-mode-pollution.md | 修 chat-sidebar：启动期丢广播 + 场景自带前置 | done | step 1 | `apps/desktop/src/main/capture.ts`、`apps/desktop/src/renderer/shared/bootstrap.ts`、`apps/desktop/src/renderer/shared/stores.ts`、`apps/desktop/src/renderer/shared/*.test.ts`、`docs/07-ui-spec.md` |
+| 3 | step-03-archive-identity-key.md | 修 chat-archive：身份键换稳定锚点 + act 前置轮询 | done | step 1 | `apps/desktop/src/main/capture.ts`、`apps/desktop/src/renderer/chat/components/SessionRow.vue`（仅当需要 `data-session-id`）、`docs/07-ui-spec.md`（仅当新增锚点需要记进说明） |
+| 4 | step-04-autoscroll-wait.md | 修 chat.png：吸底跟随改有界轮询 | done | step 1 | `apps/desktop/src/main/capture.ts`、`packages/shared/src/browser/composables/stickToBottomCore.ts`（仅当根因在产品侧） |
+| 5 | step-05-burst-robust-metric.md | 修 chat-stream-burst：换对单点离群不敏感的统计量 | done | step 1 | `apps/desktop/src/main/capture.ts` |
 | 6 | step-06-stability-and-docs.md | 稳定性复跑与文档记忆回填 | pending | step 2,3,4,5 | `docs/07-ui-spec.md`、`Memory/`、`AGENTS.md` |
 | 7 | step-07-archive.md | 归档清理 | pending | step 1..6 | `step/` |
 
@@ -82,3 +82,49 @@
 ## 执行记录
 
 （供执行阶段追加：每步的实际改动与验证结果、git 提交清单、代码审查结论与处置）
+
+### 步骤状态与提交
+
+| Step | 状态 | 提交 |
+| --- | --- | --- |
+| 计划落盘（step/ 生成） | — | `dfccea3 docs(step): 生成四条抖动探针修复计划（fix-flaky-chat-probes）` |
+| 1 四条抖动复现与归属定性 | done（只读，无提交） | — |
+| 2 修 chat-sidebar（启动期丢广播 + 哨兵 + 场景前置） | done | `00eb82c`（产品修复）、`a68ae90`（探针侧） |
+| 3 修 chat-archive（身份键 + act 前置） | done | `0c1dea8` |
+| 4 修 chat.png（吸底改有界轮询） | done | `1fd93e7` |
+| 5 修 chat-stream-burst（离群容忍 + 灾难闸门） | done | `34ec468` |
+| 4b 帧等待有界兜底（整轮挂死） | done | 见下「额外修复」 |
+| 4c 窗口恢复可见时重启吸底巡检（`chat.png` 真红） | done | 见下「额外修复」 |
+| 6 稳定性复跑与文档记忆回填 | done | 见本步 `docs(...)` 提交 |
+
+### 额外修复（执行中发现，同属"抖动探针"范围）
+
+1. `fix(capture): 帧等待加有界兜底，避免隐藏窗口下整轮截图挂死` —— 三条滚动探针的裸
+   `requestAnimationFrame` 在隐藏窗口下永不 settle（实测 `g-full-dark-1` 在 `chat.png`
+   之后挂死 20 分钟、`report.json` 一张不写）。
+2. `fix(renderer): 窗口恢复可见时重启吸底心跳巡检` —— `useStickToBottom` 的
+   `onVisibility` 恢复可见时只 `refresh()`、不重排巡检，导致"MutationObserver 回调会停"
+   那条已知失效路径失去兜底（实测 `k-full-dark-1` 的 `chat.png`：`followed:1613`、
+   `timedOut:true`，而收尾 `stick()` 能恢复）。
+
+### 最终全量验收（step 6，代码冻结后）
+
+| 轮次 | 目录 | checks | 失败项 |
+| --- | --- | --- | --- |
+| dark-1 | `%TEMP%\n-full-dark-1` | 93 | 只有 `chat-model-picker.png`（范围外） |
+| dark-2 | `%TEMP%\n-full-dark-2` | 93 | 只有 `chat-model-picker.png` |
+| dark-3 | `%TEMP%\n-full-dark-3` | 93 | 只有 `chat-model-picker.png` |
+| light-1 | `%TEMP%\n-full-light-1` | 93 | 只有 `chat-model-picker.png` |
+
+`pnpm typecheck` 全绿；`pnpm test` **170 文件 / 2544 用例全绿**。
+
+### step 01 结论摘要（详见 step-01 执行记录）
+
+- 基线（同 HEAD 三轮全量）：dark-1 红 = `chat-model-picker` + `chat-archive`；dark-2 只有 `chat-model-picker`；
+  dark-3 红 = `chat-model-picker` + `chat-stream-burst`。
+- 四条归属：`chat-sidebar` = 渲染层启动期丢广播（跨窗口广播 + 固定等待的竞态，低概率）；
+  `chat-archive` = 身份键取整行文本（含相对时间）+ act 冷窗；`chat.png` = 一次性等待 150ms；
+  `chat-stream-burst` = 绝对最大值判据对单点离群敏感。
+- 工具事实两条：`AURORA_CAPTURE_ONLY` 是**子串**匹配（`chat.png` 会连带命中 `theme-chat.png`）；
+  同一目录会被下一轮覆盖 `report.json`（每轮必须独立目录）。
+- 判据口径：失败项 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`。

@@ -47,3 +47,87 @@
 ## 交接
 
 - 给 step 07：四轮 `report.json` 的路径、每步的 commit 清单、以及"待确认/遗留"清单（应当只有 `chat-model-picker` 这条范围外项）。
+
+## 执行记录（2026-10-10 执行阶段）
+
+### 1–2 稳定性复跑（验收第 1 条）
+
+命令（每轮独立目录）：`Remove-Item env:ELECTRON_RUN_AS_NODE; $env:AURORA_CAPTURE="$env:TEMP\<dir>"; $env:AURORA_CAPTURE_THEME='dark'|'light'; pnpm --config.verify-deps-before-run=false dev`
+
+**代码冻结后**（四条修复各自成 commit + 一个额外产品修复）的最终四轮：
+
+| 轮次 | 目录 | checks | 失败项 |
+| --- | --- | --- | --- |
+| dark-1 | `%TEMP%\n-full-dark-1` | 93 | **只有 `chat-model-picker.png`** |
+| dark-2 | `%TEMP%\n-full-dark-2` | 93 | **只有 `chat-model-picker.png`** |
+| dark-3 | `%TEMP%\n-full-dark-3` | 93 | **只有 `chat-model-picker.png`** |
+| light-1 | `%TEMP%\n-full-light-1` | 93 | **只有 `chat-model-picker.png`** |
+
+（每轮 139–143s。**这四轮就是验收第 1 条要的证据**：3 轮 dark 全量 + 1 轮 light 全量，
+失败项清单每轮都只剩范围之外的 `chat-model-picker.png`。）
+
+### 2b 过程中发现并修掉的两个额外缺陷（同属"抖动探针"范围）
+
+1. **整轮截图可能挂死**（不是一个探针红，而是**整轮不产出 `report.json`**）：
+   `g-full-dark-1` 在 `chat.png` 之后挂死 20 分钟、`report.json` 一张没写。
+   根因：`CHAT_AUTO_SCROLL_SCRIPT` / `CHAT_FOLLOW_BURST_SCRIPT` / `CHAT_FOLLOW_WHEEL_UP_SCRIPT`
+   都用裸 `requestAnimationFrame` 等两帧，而**窗口被隐藏时 Chromium 不派发 rAF**，
+   那个 promise 永不 settle。修法（`fix(capture): 帧等待加有界兜底…`）：
+   `Promise.race(帧, 120ms)` + `document.hidden` 时直接走定时器快路径（可见时语义不变）。
+   验证：`chat-follow-burst` / `chat-follow-wheel-up` / `chat-trace-wheel` 各 2 轮全绿，
+   此后 4 轮全量不再挂死。
+2. **`chat.png` 的全量真红**（`k-full-dark-1`：`followed:1613`、`awaitedMs:1000`、`attempts:20`、
+   `timedOut:true` —— 有界轮询等满 1s 吸底一次都没跟上，而收尾的 `stick()` 又能恢复）：
+   根因是**窗口从隐藏恢复可见后没人重启心跳巡检** —— `onVisibility` 端口只在
+   `document.hidden === true` 时跳过，恢复可见时只回调一次 `refresh()`（`refresh()` 只在
+   `following` 为真时排一帧对齐，**不重排巡检**），而隐藏期间 rAF 被暂停、定时器被节流，
+   巡检可能停在"已排帧但帧永不推进"的状态 → 文件头记录的"MutationObserver 回调会停"
+   那条路径失去兜底。修法（`fix(renderer): 窗口恢复可见时重启吸底心跳巡检`）：
+   在 `useStickToBottom` 的 `onVisibility` 里额外挂一个 `restartGuard`（重置巡检句柄 +
+   重排一帧 + `core.onMutated()`）。
+   验证：定向 4 轮全绿 + 其后 4 轮全量全绿。
+
+（另有一批 `v-full-dark-1..3` / `v-full-light-1` 与 `k-full-dark-*` 跑在**编辑进行中**
+（electron-vite watch 重建与编辑交错），不作为验收证据；其中出现的 `chat-stream-burst` 一次红
+无法排除构建交错干扰，而它在冻结后的 4 轮里全绿。）
+
+### 4 文档回填
+
+- `docs/07-ui-spec.md` §5.3：补齐四处口径变化 ——
+  ① `chat-sidebar.png` 的模式一致性哨兵 + `CHAT_SIDEBAR_ENSURE_CLASSROOM_ACT` + "启动期不漏事件"；
+  ② `chat-archive.png` 的身份键 = `data-session-id`（`movedTitle` 降为排障读数）；
+  ③ `chat.png` 的吸底改有界轮询（新增 `awaitedMs` / `attempts` / `timedOut`）；
+  ④ `chat-stream-burst.png` 的"离群容忍 + 灾难闸门"双闸门与新增 payload 字段；
+  ⑤ `chat-model-picker.png` 的**既存红项**说明与去向（另开任务，不许改写成永远 PASS）。
+- §2.3 行结构说明补 `data-session-id` 锚点。
+
+### 5 记忆
+
+新增 `Memory/2026-10-10-flaky-capture-probes.md`（四条抖动的根因与判据策略），
+并已同步 `Memory/README.md` 索引（新条目置顶）。
+
+### 6 AGENTS.md 基线回填
+
+「窗口截图核对」一节补：**全量 93 条 checks**、唯一恒红项 `chat-model-picker.png`、
+失败判定三选一口径、`AURORA_CAPTURE_ONLY` 子串匹配、每轮必须独立目录。
+
+### 7 提交清单
+
+| 提交 | 内容 |
+| --- | --- |
+| `dfccea3` | `docs(step): 生成四条抖动探针修复计划（fix-flaky-chat-probes）` |
+| `00eb82c` | `fix(renderer): 启动期改为先订阅再加载，避免永久丢掉 mode:changed`（step 2 产品修复 + `load-gate` 单测） |
+| `a68ae90` | `fix(capture): chat-sidebar 场景自带 classroom 前置并加模式一致性哨兵`（step 2 探针侧） |
+| `1fd93e7` | `fix(capture): chat.png 吸底跟随改成有界轮询`（step 4） |
+| `34ec468` | `fix(capture): chat-stream-burst 判据换成离群容忍 + 灾难闸门`（step 5） |
+| `0c1dea8` | `fix(capture): chat-archive 身份键换 data-session-id 并补 act 冷窗前置`（step 3） |
+| 本步 `docs(...)` | 文档（docs/07 + AGENTS.md + Memory）+ step 回填 |
+
+（另有两条额外修复各自的提交：`fix(capture): 帧等待加有界兜底…`、`fix(renderer): 窗口恢复可见时重启吸底心跳巡检`——
+提交清单以 `step/00-index.md`「执行记录」的实测 `git log` 为准。）
+
+### 最终状态
+
+- `pnpm typecheck` 全绿；`pnpm test` **170 文件 / 2544 用例全绿**；
+  `pnpm vitest run packages/shared/src/browser` 68/68（含吸底状态机既有用例）。
+

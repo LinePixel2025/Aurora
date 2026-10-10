@@ -1000,7 +1000,14 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   / `"chat.unarchive-current"`（最后一个在已归档提示条上）。
   会话项与 hover 归档钮是**同一行里的两个兄弟 `<button>`**（`.nav-row` 包 `.nav-item` + `.row-action`）：
   按钮不能嵌套（无效 HTML，浏览器会把内层甩出去），`.nav-item` 与 `data-field="chat.session-list"`
-  的契约因此原样保留。空态「还没有会话」只在**两份列表都空**时出现（全部归档时主列表为空、
+  的契约因此原样保留。
+  **行身份锚点 `data-session-id`（2026-10-10 新增）**：挂在 `.nav-row` 上，值就是会话 id，
+  四个分区（项目 / 工作 / Agent / 已归档）共用同一行组件所以都带。它是**唯一不会漂移**的
+  身份键 —— 行内 `.item-title` 是标题展示（空标题回落「新会话」，可重复），`.item-time` 是相对时间
+  （`刚刚` / `N 分钟前`，跨分钟就变）。`chat-archive` 探针原先拿整行文本当身份键，因此在
+  **计数已经正确迁移**的情况下仍然两边查找都失配（实测 payload
+  `afterArchive:{mainRows:2,archiveRows:2,inArchive:false,inMain:false}`）—— 探针现在改用本锚点。
+  空态「还没有会话」只在**两份列表都空**时出现（全部归档时主列表为空、
   归档分组仍在，此时提示「还没有会话」自相矛盾）。
   项目（v13 新增）：右栏卡锚点 `context.project-card`（警示徽标 `context.project-unavailable`）；
   设置页「会话管理 → 项目」区组的字段锚点沿用**配置路径原文** —— `projects.name` / `projects.root` /
@@ -1634,6 +1641,21 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     追加一个 1600px、`flex-shrink: 0` 的探针节点（等价于「内容变高」），断言 `.thread` 的
     `scrollHeight - scrollTop - clientHeight ≤ 4`；同时要求「内容确实比窗口高」（`maxScroll ≥ 200`）——
     否则探针没撑开内容时 `distance === 0` 会假 PASS（空 div 会被 flex 压扁，必须禁掉收缩）。
+    **2026-10-10：插入后的等待由固定 `wait(150)` 改成有界轮询**（每 50ms 一轮、最多 1000ms，
+    等 `followed <= 4` 这个真实结果），`pass` 判据一字未改（仍以**最终**读数判 `followed <= 4`），
+    payload 增 `awaitedMs` / `attempts` / `timedOut`。依据：吸底靠观察者 + 一帧对齐落位，
+    机器一忙就晚于 150ms（历史失败态 `followed` 恰好等于填充高度 = 一次都没跟上，而下一轮又是 1）；
+    有界是硬要求 —— 1000ms 到期就如实把最终读数与 `timedOut` 写进 payload 并 FAIL，
+    且本探针不派发任何输入事件，等待期间没有东西会替它把视口拨到底，所以真坏掉时等多久都不会自愈。
+    ⚠️ **窗口被隐藏时不要用裸 `requestAnimationFrame` 等两帧**：Chromium 在隐藏页面上不派发 rAF，
+    那个 promise 永不 settle，症状是**整轮 capture 挂死且 `report.json` 一张不写**
+    （2026-10-10 实测挂死 20 分钟）。三条滚动类探针统一步骤：`Promise.race(帧, 120ms)`
+    + `document.hidden === true` 时直接走定时器。
+    ⚠️ **吸底在"窗口隐藏→恢复可见"之后需要一次巡检重启**：`useStickToBottom` 的
+    `onVisibility` 端口恢复可见时只回调一次 `refresh()`（只在 `following` 为真时排一帧对齐，
+    不重排心跳巡检），而隐藏期间 rAF 被暂停、定时器被节流 —— 于是"MutationObserver 回调会停"
+    那条已知失效路径失去兜底，表现为窗口期内容变高却完全不跟随、调用方 `stick()` 才恢复。
+    现在恢复可见 / 重新获得焦点时会额外 `restartGuard()`（重排巡检 + `core.onMutated()`）。
     2026-09-30 起这条钉**语义**（"跟丢"修复轮）的三个阶段：
     ① 追加内容 → 必须自动到底；
     ② 位置在离底处 + 派发**真实 `WheelEvent`** → 跟随暂停、「↓ 回到最新」胶囊出现且**落在容器可视区内**
@@ -1726,6 +1748,14 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     出现；再点该行的 `[data-action="chat.unarchive-session"]` 撤销，断言计数/归属还原、
     **提示条消失**，收尾收起分组、清掉浮层与输入残留（后续场景看到的左栏与跑之前一致）。
     **为什么必须归档当前会话那一行**：提示条只在这时才显示，取主列表第一行的话它永远测不到。
+    **归属判定的身份键 = `data-session-id`**（2026-10-10 改）：此前取整行文本（`.nav-item` 的
+    `textContent`），而那一行含相对时间 `.item-time`；跨分钟时同一行的文本从「刚刚」变成
+    「N 分钟前」，**计数已经正确迁移、两边文本查找却都失配**（实测 payload
+    `afterArchive:{mainRows:2,archiveRows:2,inArchive:false,inMain:false}`，`movedTitle:"新会话刚刚"`）。
+    现在归档前后都用 `[data-session-id="<id>"]` 定位那一行，`movedTitle` 只作为**排障信息**
+    回传（值取 `.item-title` 的稳定标题文本），不参与判定；**计数 ±1 那条硬断言保持不变**。
+    反查探针若报"归属不符"，先看 `problems` 里是哪一条，再看 `movedTitle` / `movedNavText`
+    判断是不是文本漂移而不是挪错了行。
   - **高密度流式（本轮性能修复的回归防线）**（`CHAT_STREAM_BURST_ACT` / `CHAT_STREAM_BURST_CHECK`，
     产物 `chat-stream-burst.png`，2026-09-26）：桩服务按提示词里的 `burst-probe` 标记
     各发 150 条 `reasoning_content` / `content` 分片（间隔 5ms，贴近推理模型 100+ token/s 的密度），
@@ -1735,6 +1765,16 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     与阈值比对 —— 真正的判据是后两组（longtask 对「每片几毫秒的持续饱和」没有分辨力，
     详见 06 §16.3 的实测表与「证什么、不证什么」一段）。阈值按修复后实测值 × 约 3 倍标定，
     实测为 0 的项给绝对下限；**改桩密度或 transcript 规模必须重新标定**。
+    **2026-10-10 判据换成「离群容忍 + 灾难闸门」双闸门**（`maxFrameGapMs` / `maxHeartbeatMs`
+    的绝对最大值判据会让单个 GC 型停顿持续收税：11 轮里 5 轮越 110，而第二大帧距只有 33–75）：
+    - 离群容忍：`secondMaxFrameGapMs <= 110`、`secondMaxUnhiddenHeartbeatMs <= 160`
+      （去掉最大一个之后的第二大值仍须在稳态线内 —— 整体劣化时一大批值同时抬高，第二大同样越界）；
+    - 灾难闸门：`maxFrameGapMs <= 260`、`maxUnhiddenHeartbeatMs <= 260`
+      （单点烂到 260ms 以上照样 FAIL；修复前量纲 661.4 必红）；
+    - 累计量 `heartbeatOverrunMs`（3600）与 `droppedFrames`（140）**一分没动** ——
+      抓"渲染跟不上输出"那种回归主要靠它们（修复前 4749.4 / 238 两条今天就会红）。
+    payload 同步新增 `secondMaxFrameGapMs` / `secondMaxUnhiddenHeartbeatMs` / `gapsOverFrameLimit` /
+    `topFrameGaps` / `overLimitHeartbeats` 与 `limits.guards`，便于判"单点 vs 整体"。
     为什么必须有这一条：原有 `chat-stream.png` 的桩只发 2 条分片，密度低到
     「每条增量都重解析整份对话」也来得及 —— 这类 BUG 在它面前**必然 PASS**（见 06 §16.3）。
   - **主界面左栏结构 + 门控现场**（`CHAT_SIDEBAR_SCRIPT`，产物 `chat-sidebar.png`，BetaV2）：
@@ -1747,7 +1787,19 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     另外断言 2026-09 新增的两条：`chat.subagent-item` 恰好 1 个、角标 `chat.subagent-count`
     恰好 1 个（seed 的 `task` 工具卡带子代理快照），以及**每张工具卡头恰好一枚语义图标**
     （`.tool-card .tool-head .tool-icon` 数 == `.tool-card` 数）。
-    本场景不改任何状态，必须排在一切改配置 / 改会话的场景之前，保证读到出厂门控现场；
+    **模式一致性哨兵（2026-10-10 新增，探针由同步改 async）**：本探针额外读
+    `window.aurora.mode.list()` 得到主进程当前模式，并与面板卡片推出的模式比对，断言
+    ① `panelMatchesMain === true`、② `window.__auroraSidebarProbe.forcedToggle === false`
+    （本来就不该需要自愈）。为什么需要它：`chat-sidebar` 曾以"面板停在 work"失败过一次，
+    真根因是**渲染层启动期永久丢 `mode:changed`** —— `bootstrap.ts` 旧接线先 `load()` 再
+    `bind()`，落在两者之间的广播没有任何补偿，而 `mode.set` 在"主进程已是目标值"时是 no-op
+    → 面板自己永远回不来。产品侧已改成 **先订阅、再加载**（各 store 的 `loadGate` 保证"晚到的
+    加载应答不许盖掉更晚的广播"）；探针侧在 check 里保留**自愈**（不一致时做一次真实状态变化
+    classroom → work → classroom 把面板拉回，只为截图好看）但哨兵照旧 FAIL，并回传
+    `probeAttempts` / `probeWaitedMs` 区分"产品竞态复现"与"探针脚手架坏了"。
+    `chat-sidebar.png` 的 act（`CHAT_SIDEBAR_ENSURE_CLASSROOM_ACT`）**有界轮询**等到
+    「今日课程」真的渲染出来再截图（最多 3s），不做固定毫秒猜测。
+    本场景不改任何状态（只确认模式前置），必须排在一切改配置 / 改会话的场景之前，保证读到出厂门控现场；
   - **主界面命中区与可访问性盘点**（`CHAT_HIT_TARGETS_CHECK`，产物 `chat-hit-targets.png`，2026-09-29）：
     量左栏 / 标题栏 / 输入区 / 消息区里**所有可见可交互控件**的矩形，断言
     ① 无一低于 WCAG 2.2 SC 2.5.8 的 **24×24** 下限（`belowAbsolute` 必须为空）、
@@ -2074,6 +2126,12 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     `center` / `local`、Center 与本机覆盖都写进正确的 `(providerId, model)`、最终会话覆盖和
     DOM 一致、全局 `llm.providers[capture-source].model` 未被改写；最后清覆盖并完整还原
     两个 Provider、`llm.active` 与 Center 官方语言模型选择。
+    ⚠️ **它是当前的既存红项（2026-10-10 记录）**：把本轮改动 `git stash` 掉、按原码重建后跑同一轮
+    全量，唯一失败项就是它，payload 与改动后逐字相同（`sessionProvider:null`、
+    `domValue:["capture-source","deepseek-chat"]`、`optionCount:3`、`overriddenAfterSeed:false`）——
+    即"ACT 用 DOM `change` 事件驱动模型选择器 → 最后一次选模型没有落成会话覆盖"这条
+    **在改动前就存在**。它已被用户明确划出本轮范围，**另开任务**处理：不要顺手"修"它，
+    也不要为了让截图全绿把它改成永远 PASS。全量跑的验收口径因此是"**失败项只剩它一条**"。
   - **窗口拖动**（`WINDOW_DRAG_SCRIPT`，产物 `chat-drag.png` 与 `settings-drag.png`，两个窗口各一条场景）：
     量出所有**可见** `.drag-region`（`getBoundingClientRect()` 的宽或高为 0 视为不可见）并取**最大高度那条**，
     要求「至少有一个可见拖动区」且 **`maxHeight >= 32`**（够抓）；再读**那条**生效的 `app-region` 值为 `drag`

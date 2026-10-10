@@ -2,7 +2,7 @@
 
 - Task: fix-flaky-chat-probes
 - Step: 3 / 7
-- Status: pending
+- Status: done
 - Depends on: step 1
 - Produces: 冷窗可用的 `CHAT_ARCHIVE_ACT` 前置（含把就绪状态传进 check 的全局）+ `CHAT_ARCHIVE_CHECK` 用稳定身份键判定"那一条是否已挪到归档列表"
 - Phase: 核心链路
@@ -51,7 +51,48 @@
 - 若引入了 `data-session-id`，把属性名与所在文件写清（后续探针都能复用这个锚点）。
 - 给 step 06 的提醒：若本步改了 `docs/07-ui-spec.md`，step 06 的文档回填不要覆盖它。
 
-## 交接
+## 执行记录（2026-10-10 执行阶段）
 
-- 新的身份键表达式与行号；若引入了 `data-session-id`，把属性名与所在文件写清（后续探针都可以复用这个锚点）。
-- 给 step 06 的提醒：若本步改了 `docs/07-ui-spec.md`，step 06 的文档回填不要覆盖它。
+### 实际改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `apps/desktop/src/main/capture.ts`（`CHAT_ARCHIVE_ACT`） | 加**冷窗前置**：有界轮询等 `[data-field="chat.archive-toggle"]` 出现（最多 40×100ms）再 click，再轮询等归档列表出行；把 `{ready, toggleFound, rows, toggleAttempts, attempts, expanded, label, reason}` 写进 `window.__auroraArchiveProbe`（act 返回值会被丢弃，只能经全局变量传给 check）。 |
+| `apps/desktop/src/main/capture.ts`（`CHAT_ARCHIVE_CHECK`） | ① 读 `window.__auroraArchiveProbe`，`ready !== true` 直接进 `problems` → **前置没就绪变成显式失败**；② **身份键换成 `data-session-id`**：`movedSessionId = targetRow.getAttribute('data-session-id')`，归属判定用 `rowBySessionId('[data-field="chat.archive-list"]', id)` / `rowInMain`，取消归档那一段同改；③ `movedTitle` 改取 `.item-title` 文本、另回传 `movedNavText`（旧口径整行文本）与 `movedNavTime`（相对时间那段）作为**排障读数**；④ 取不到 `data-session-id` 时**如实报 problem**，不静默降级。**计数断言一字未改**（`mainRows` ±1 / `archiveRows` ±1 / 分组计数一致）。 |
+| `apps/desktop/src/renderer/chat/components/SessionRow.vue` | `.nav-row` 加 `:data-session-id="item.id"`（行身份的稳定锚点），组件头注释写清它为什么是唯一不漂移的键。 |
+| `docs/07-ui-spec.md` | §2.3 行结构说明补 `data-session-id`；§5.3 的 `chat-archive` 口径补"身份键 = `data-session-id`、`movedTitle` 只作排障"与旧口径的失败形态。 |
+
+### 验证（验收第 1、3 条）
+
+`$env:AURORA_CAPTURE_ONLY='chat-archive'` × 4（独立目录 `v-s3single-1..4`，**修复前这条 4/4 恒红**）：
+
+| 轮次 | `actProbe.ready` | `actProbe.rows` | `afterArchive` | `afterUnarchive` | `problems` | pass |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1–4（逐字相同） | true（`toggleAttempts:4`、`attempts:2`） | 1 | `{mainRows:2,archiveRows:2,inArchive:true,inMain:false}` | `{mainRows:3,archiveRows:1,inMain:true,inArchive:false}` | `[]` | true |
+
+另在 `chat-` 窗口组筛选跑（`v2-s3-1..3`，42 条 checks）里 `chat-archive.png` 也 **3/3 PASS**，
+payload 与上表同形（`movedSessionId:"main"`、`movedTitle:"新会话"`、`movedNavText:"新会话刚刚"`、
+`movedNavTime:"刚刚"`）。收尾后重跑 3 次（`v3-s3-1..3`）仍 3/3 PASS。
+
+### 反向复核（验收第 2 条，两条都做了）
+
+1. **act 前置**：单场景筛选跑在修复前是 `ariaExpanded:"false"` / `archiveRows:0` / 4/4 恒红
+   （step 01 执行记录已贴），根因是 toggle 由 `v-if="archivedSessions.length > 0"` 渲染、
+   act 只等 60ms。修复后同样条件下 `actProbe.ready:true`（等了约 400ms 才出现 toggle）。
+2. **身份键（决定性）**：在探针里临时用**旧键**（click 前冻结的整行文本 `"新会话刚刚"`）走一遍
+   归档，并等一次**真实的相对时间变化**（最多 65s；本轮 65s 内 `.item-time` 文本没变，如实记 `tempTimeChanged:false`）：
+
+   ```
+   "tempOldKeyMismatch":{"oldKey":"新会话刚刚","inArchive":false,"inMain":false,"newKeyInArchive":true}
+   ```
+
+   —— **旧键在"计数已正确迁移"的情况下两边都失配（`inArchive:false` / `inMain:false`），
+   与 step 01 复现到的历史失败态逐字同形；而同一轮的新键 `newKeyInArchive:true` 正确命中**。
+   即：新判据不是"被改松"了，而是把"身份键取错对象"这个真缺陷摘掉。取证后临时段已删除。
+
+### 说明 / 遗留
+
+- 本轮**没有**复现出"相对时间恰好跨分钟"这一条正向现场（`.item-time` 在 65s 内没变），
+  但反向复核已给出同形证据，且 step 01 的全量复现（`inArchive:false` / `inMain:false`）
+  就是这条漂移链的真实产物。机理在 `SessionRow.vue` 的 `formatRelativeTime`（`刚刚` → `N 分钟前`）。
+- `movedNavText` / `movedNavTime` 是**排障读数**（不参与判定），保留成本极低、定位价值高，故留在 payload 里。

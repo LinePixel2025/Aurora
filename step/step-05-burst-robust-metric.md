@@ -2,7 +2,7 @@
 
 - Task: fix-flaky-chat-probes
 - Step: 5 / 7
-- Status: pending
+- Status: done
 - Depends on: step 1
 - Produces: 高密度爆发探针的帧距 / 心跳判据改成"对单个离群点不敏感、对整体劣化敏感"，并在 `BURST_LAG_LIMITS` 注释里补齐「旧值 → 新值 + 依据 + 为什么仍能抓住真回归」
 - Phase: 核心链路
@@ -50,3 +50,73 @@
 
 - 新的判据表达式 + 常量名 + 行号；给 step 06 的稳定性复跑要看的字段名（`secondMaxFrameGapMs` / `frameGapsTop5`）。
 - 明确写"`chat-follow-burst.png` 未改 + 理由"。
+
+## 执行记录（2026-10-10 执行阶段）
+
+### 实际改动（只动 `apps/desktop/src/main/capture.ts`）
+
+1. **补帧距原料**：逐帧循环里新增 `frameGaps` 数组（隐藏帧的 `continue` 分支不计入），
+   就地维护 `secondMaxFrameGapMs`（去掉最大一个后的最大帧距）与 `gapsOverFrameLimit`
+   （越 `110` 的帧距个数）；排序后取前 5 大 → payload `frameGapsTop5`。
+2. **心跳同口径**：新增 `secondMaxUnhiddenHeartbeatMs` / `overLimitHeartbeats`（只统计未隐藏的样本）。
+3. **判据换成双闸门**：主判据 `secondMaxFrameGapMs <= 110` + `secondMaxUnhiddenHeartbeatMs <= 160`；
+   新增常量 `BURST_LAG_GUARDS = { maxFrameGapMs: 260, maxUnhiddenHeartbeatMs: 300 }` 作灾难闸门；
+   `heartbeatOverrunMs`(3600) / `droppedFrames`(140) / `BURST_LONG_TASK_LIMITS` **一分没动**。
+   payload 的 `limits` 增 `guards` 段。
+4. **注释**：`BURST_LAG_GUARDS` 上方补齐「旧口径 → 新口径 + 14 轮实测 + 两个闸门的锚点依据
+   + 为什么仍能抓住修复前那种整体劣化」，并显式写明"新判据**不靠** `secondMax` 去抓 137.5
+   那个量级的单帧值，判别力交给闸门与两个累计量"。
+
+### 验证（验收第 1 条）
+
+`$env:AURORA_CAPTURE_ONLY='chat-stream-burst'`，独立目录：
+
+| 轮次 | `secondMaxFrameGapMs` | `maxFrameGapMs` | `secondMaxUnhiddenHeartbeatMs` | `maxUnhiddenHeartbeatMs` | `droppedFrames` | `overrun` | pass |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| v4-1 | 66.6 | 75 | 111.7 | 113.7 | 15 | 400.4 | true |
+| v4-2 | 62.5 | 62.6 | 59 | 102.5（含隐藏拍 1012.3，已剔除） | 14 | 140 | true |
+| v3-2 | 54.2 | 124.8 | 55.5 | 126.7 | 13 | 126.9 | true |
+| v3-3 | 41.7 | 133.4 | 68.9 | 131.9 | 15 | 199.5 | true |
+| m-s5-1..5（标定批） | 49.9 / 33.4 / 74.9 / 37.6 / 50.1 | 112.5 / 33.4 / 129.2 / 41.7 / 112.6 | 60.2 / 60.7 / **111.4** / 58.7 / 61.4 | 115 / 126 / 151.6 / 126.3 / 114.4 | 1–23 | 134–520.9 | 5/5 true |
+
+**共 9 轮全绿**（标定 5 + 最终 4），`secondMaxFrameGapMs` 最坏 **74.9**（阈值 110 → 1.47× 余量）、
+`secondMaxUnhiddenHeartbeatMs` 最坏 **111.4**（阈值 160 → 1.44× 余量）；
+同时可见 `maxFrameGapMs` / `maxUnhiddenHeartbeatMs` 单项多次越过旧阈值（112.5–142 / 126.7–154）——
+正是"单点离群"的原始形态。
+
+**一次需要如实记录的中间态**：在把闸门初版定为 260/260 时，有一轮 `maxUnhiddenHeartbeatMs:198.5`
+（同轮 `secondMax` 100.8、帧侧 `secondMaxFrameGapMs` 61.9 全绿）被判红。这说明 260 对今天的
+**正常尾巴**只有 1.31× 余量，会把正常尖峰继续收税 —— 因此把心跳闸门重标定到 **300**（1.51× 余量，
+仍是修复前 661.4 的 45%），帧闸门保持 260（对 142.1 有 1.83×）。重标定后上述 9 轮全绿。
+
+### 反向复核（验收第 2 条，A/B 都做了）
+
+- **A · 整体劣化**：在 act 里从爆发轮起**每帧**插 130ms 忙等（修复前量纲 137.5）→
+  `secondMaxFrameGapMs:177 > 110` → **FAIL**（exit=2）。形态证据：
+  `frameGapsTop5:[282.9, 177, 170.7, 169.1, 165.1]`（前 5 大同量级 = **整体**而非单点）、
+  `gapsOverFrameLimit:28`、`droppedFrames:233`（>140）、`overrun:3993.3`（>3600）、`longTaskCount:30`。
+- **B · 单帧灾难**：爆发轮开始时一次性忙等 600ms →
+  `maxFrameGapMs:609.8 > 260` → **FAIL**（exit=2），同时
+  `frameGapsTop5:[609.8, 121.1, 76.5, 61.2, 60.7]`（1 个尖峰 + 4 个正常）、
+  `maxUnhiddenHeartbeatMs:606.2 > 300`、`maxLongTaskMs:600 > 160` —— **三条独立闸门同时红**，
+  证明"离群容忍"不是无底线。
+
+> ⚠️ 计划里给的 A 注入写法（每 5 帧插 250ms）会产生 `[250,16.7,16.7,16.7,16.7]` 的序列 →
+> 第二大只有 16.7，**新判据反而绿**，证不出任何东西。实际用的是"**每帧** 130ms"（子代理复核同结论）。
+
+### `chat-follow-burst.png`：**未改**（验收第 4 条）
+
+它用的是 `CHAT_FOLLOW_BURST_SCRIPT`（`capture.ts` 里独立常量），判据是 6 帧各测一次的
+「距底像素数」`maxDistance <= 4`，与 `BURST_*` 一族**零共用**（`BURST_LAG_LIMITS` /
+`BURST_LAG_GUARDS` / `BURST_PROBE_SLOT` / `BURST_HEARTBEAT_MS` 只出现在
+`chatStreamBurstAct` / `chatStreamBurstCheck` 里）。本次不动它。
+
+### 其他验收
+
+- `pnpm vitest run apps/desktop/src/main/capture.probe-strings.test.ts` → 3/3；`pnpm typecheck` 全绿；
+  `pnpm test` 170 文件 / 2544 用例全绿。
+
+### 交接给 step 06
+
+看 `chat-stream-burst.png` 的 `secondMaxFrameGapMs` / `secondMaxUnhiddenHeartbeatMs` /
+`frameGapsTop5` / `limits.guards`；若 `secondMax*` 越线，那是**整体劣化**（按真回归查）。
