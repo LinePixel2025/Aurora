@@ -88,6 +88,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`
   （只按 `pass === false` 会把纯截图场景误判成失败）。`AURORA_CAPTURE_ONLY` 是**子串**匹配
   （`'chat.png'` 连带命中 `theme-chat.png`），且**每轮必须写独立目录**（同目录会覆盖上一轮 `report.json`）。
+  **跑法预算（2026-10-10 用户口径）**：迭代期**只跑定向**（`AURORA_CAPTURE_ONLY`，7–15s/轮），
+  **全量截图只在最后验收阶段跑**（代码冻结后一次性跑满足口径的轮次，1 轮约 2.5 分钟）；
+  同理 `pnpm test` 迭代期只跑相关子集、全量放最后。验收口径本身不降级。
 - **CI 按需触发，不跟随 push / PR**（`.github/workflows/ci.yml`，Windows）：顺序
   `format:check → lint → typecheck → test → build`。日常验证靠本地
   `pnpm typecheck && pnpm test && pnpm build`（与 CI 同一套检查、全量约 15 秒）；

@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-10 | 截图验收的执行预算：迭代期只跑定向，全量截图只在最后验收阶段跑                 | 测试, 探针, capture, 流程, 性能        | [2026-10-10-full-capture-only-at-final-acceptance.md](2026-10-10-full-capture-only-at-final-acceptance.md)   |
 | 2026-10-10 | 四条抖动截图探针的根因与判据策略（模式广播 / 身份键 / 有界等待 / 离群容忍）    | 测试, 探针, capture, 抖动, 坑          | [2026-10-10-flaky-capture-probes.md](2026-10-10-flaky-capture-probes.md)                                     |
 | 2026-10-10 | 个性化三件套（明暗档位 / 毛玻璃开关 / set_appearance）的接线口径 + 沙箱跑不了 vitest 的边界 | UI, 主题, 毛玻璃, 配置, 工具, 沙箱, 坑 | [2026-10-10-personalization-theme-glass-tool.md](2026-10-10-personalization-theme-glass-tool.md)             |
 | 2026-10-08 | Center 用量明细分页与官方模型表单的接线口径（含 verify:web 夹具、88 基线与 v0.4.7 云部署）    | Center, 分页, 模型, 验收, 部署, 坑           | [2026-10-08-center-usage-paging-official-models-form.md](2026-10-08-center-usage-paging-official-models-form.md) |
