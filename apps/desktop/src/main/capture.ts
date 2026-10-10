@@ -751,13 +751,30 @@ export const EDGE_BAR_WORK_CHECK = `(async () => {
     )
     const noNextLesson = labels.indexOf('下一节') === -1
     const restored = await window.aurora.mode.set('classroom')
-    await wait(120)
+    // 还原确认改成**有界轮询**（旧写法只 await wait(120) 就返回）。
+    // 旧值 120ms 是「够本窗口重渲染」的猜测，而不是确认 —— 这个窗口的还原会广播
+    // mode:changed，别的窗口（chat 被 hide / 后台时）什么时候重渲染完全不在它的保证里。
+    // 新写法只负责「本窗口的还原动作确实生效」，并在返回值里写下等了多久
+    //（restoreWaitedMs），供 chat-sidebar 的假 FAIL 排查区分
+    //「还原没生效」与「别的窗口还没来得及重渲染」。真正的保证由各 chat 场景
+    // 自带前置承担（见 CHAT_SIDEBAR_ENSURE_CLASSROOM_ACT），不依赖本场景。
+    const startedAt = performance.now()
+    let restoreConfirmed = false
+    for (let attempt = 0; attempt < 12 && !restoreConfirmed; attempt += 1) {
+      const list = await window.aurora.mode.list()
+      restoreConfirmed = list.ok ? list.value.some((mode) => mode.active && mode.id === 'classroom') : false
+      if (!restoreConfirmed) await wait(120)
+    }
+    await wait(150)
+    const restoreWaitedMs = Math.round(performance.now() - startedAt)
     return {
       active,
       labels,
       noNextLesson,
       restored: restored.ok,
-      pass: active === 'work' && noNextLesson && restored.ok,
+      restoreConfirmed,
+      restoreWaitedMs,
+      pass: active === 'work' && noNextLesson && restored.ok && restoreConfirmed,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -4298,7 +4315,93 @@ export const CHAT_HIT_TARGETS_CHECK = `(() => {
   }
 })()`
 
-export const CHAT_SIDEBAR_SCRIPT = `(() => {
+/**
+ * 左栏结构探针 · 自带前置（2026-10-10）：**自己把 classroom 模式落实到位**再交给 check。
+ *
+ * 为什么必须有这一步：`CHAT_SIDEBAR_SCRIPT` 断言右栏上下文卡里有「今日课程」，
+ * 而「今日课程」只存在于 classroom 模式（`ContextPanel.vue` 里它是恒渲染的，不是条件渲染
+ * —— 所以卡片缺失只可能是模式不对）。此前这条场景**没有 act**，完全依赖前面
+ * `edge-bar-work` 场景把模式还原干净：实测 run2 的失败态是
+ * `contextCards:["任务清单","工作目录","系统状态"]`（= work 模式），而同一轮
+ * `edge-bar-work` 自己是 PASS 的。
+ *
+ * 真根因（2026-10-10 代码核实 + 本文件的哨兵）：**渲染层启动期会永久丢 `mode:changed`**
+ * —— `apps/desktop/src/renderer/shared/bootstrap.ts` 旧接线是先 `load()` 再 `bind()`，
+ * 落在两者之间的广播**没有任何补偿**，而 `mode.set` 在「主进程已是目标值」时是 no-op
+ * （`packages/modes/src/manager.ts` 相同 id 提前 return、不 emit）→ 面板自己永远回不来。
+ * 触发条件是这个窗口在 work 期间被建窗 / 重载（`edge-bar-work` →
+ * `requestGuideIfNeeded` → proactive `showChat()` → `WindowManager.show()` 会 `ensure()`）。
+ * 产品侧已在 bootstrap.ts 改成 **先订阅、再加载**（各 store 的 `loadGate` 兜住"晚到的应答
+ * 不许盖掉更晚的广播"），本文件里也补了**哨兵**：`CHAT_SIDEBAR_SCRIPT` 断言
+ * `forcedToggle === false` 且面板卡片推出的模式 === `mode.list()` 报的模式。
+ *
+ * 那为什么本 act 还要保留？两层：① check 里也带了自愈（面板与主进程不一致时做一次
+ * **真实的状态变化** classroom → work → classroom 把面板拉回来）—— 只为让截图好看，
+ * 自愈一旦被触发哨兵就 FAIL（见上面那段）；② 本 act 负责**确认前置真的生效**再截图：
+ * 判据不写「等固定毫秒」，而是**有界轮询真实结果**（等到「今日课程」真的在为止，
+ * 最多 20 × 150ms = 3s），超时如实回报 `ok:false` 与当前卡片列表。
+ *
+ * 收尾：本 act **不改别的状态**（只切模式），切到 classroom 正是 chat 组其余场景的
+ * 出厂现场（`chat-sidebar` 排在 chat 组最前，见计划注释），所以它天然是自恢复的。
+ */
+export const CHAT_SIDEBAR_ENSURE_CLASSROOM_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const readCards = () =>
+    Array.from(document.querySelectorAll('.context .ctx-card .ctx-head strong')).map((el) =>
+      (el.textContent || '').trim(),
+    )
+  try {
+    const switched = await window.aurora.mode.set('classroom')
+    let cards = readCards()
+    let attempts = 0
+    for (; attempts < 20; attempts += 1) {
+      if (cards.indexOf('今日课程') !== -1) break
+      await wait(150)
+      cards = readCards()
+    }
+    const ok = cards.indexOf('今日课程') !== -1
+    // 多给一拍：卡片已出现后再让 Vue 把其余卡片（任务清单 / 系统状态）也刷完，
+    // 免得 check 读到「课程卡在、别的卡还没回来」的中间态。
+    if (ok) await wait(150)
+    return {
+      ok,
+      attempts,
+      cards,
+      switched: switched.ok,
+      reason: ok ? '' : 'classroom 前置未在 3s 内生效（右栏仍读不到「今日课程」）',
+    }
+  } catch (error) {
+    return { ok: false, reason: String(error), cards: readCards() }
+  }
+})()`
+
+/**
+ * 左栏结构 + 出厂门控现场探针（2026-10-10 起改 async）。
+ *
+ * 与"前置"的分工：截图前的前置由同一场景的 act（`CHAT_SIDEBAR_ENSURE_CLASSROOM_ACT`）保证；
+ * 本探针自己负责**哨兵**——面板卡片推出的模式必须与 `mode.list()` 报的主进程模式一致，
+ * 且 `forcedToggle` 必须为 false（面板本来就该是对的）。不一致时先做一次真实状态变化
+ * 把面板拉回来（只为截图好看），但那条判据照旧 FAIL，并回传 `probeAttempts` / `probeWaitedMs`
+ * 便于区分"产品竞态又回来了"与"探针脚手架坏了"。
+ *
+ * 历史失败（2026-10-10 run2）：`contextCards` 里是 `工作目录`、缺 `今日课程` = 本探针跑在
+ * **work 模式**的残局上。真根因是**渲染层启动期永久丢 `mode:changed`**
+ *（`renderer/shared/bootstrap.ts` 旧接线先 load 再 bind，无补偿；
+ * 且 `mode.set` 同值是 no-op），触发条件是窗口在 work 期间被建窗。
+ * 产品侧已改成先订阅再加载，本探针补哨兵。classroom 的既有判据**一分没松**。
+ */
+export const CHAT_SIDEBAR_SCRIPT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const readCards = () =>
+    Array.from(document.querySelectorAll('.context .ctx-card .ctx-head strong')).map((el) =>
+      (el.textContent || '').trim(),
+    )
+  const panelOfCards = (cards) =>
+    cards.some((name) => name.indexOf('工作目录') !== -1)
+      ? 'work'
+      : cards.some((name) => name.indexOf('今日课程') !== -1)
+        ? 'classroom'
+        : 'unknown'
   try {
     const count = (selector) => document.querySelectorAll(selector).length
     const visible = (el) => {
@@ -4306,15 +4409,64 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
       const rect = el.getBoundingClientRect()
       return rect.width > 0 && rect.height > 0
     }
+    // ── 前置（自带，2026-10-10）：面板模式必须与**主进程**报的模式一致 ──
+    // 旧写法只依赖前一个场景（edge-bar-work）把模式还原干净；而模式切换是**跨窗口广播**，
+    // 落在渲染层启动窗口期（先 load 再 bind）的那一条会**永久丢失** —— 现场就是
+    // 「主进程已是 classroom、右栏却永久停在 work」。这里做两件事：
+    // ① 自愈：两者不一致时做一次**真实的状态变化**（classroom → work → classroom，
+    //    两次都是真变化、会 emit；同值 mode.set 是 no-op，拿它当前置必然超时），
+    //    只为让截图好看；② 把自愈事实记进 window.__auroraSidebarProbe，由下面的哨兵判 FAIL ——
+    //    **面板本来就该是对的**，一旦需要自愈就说明产品竞态又回来了。
+    const listed = await window.aurora.mode.list()
+    const mainMode =
+      listed && listed.ok === true
+        ? (listed.value.find((mode) => mode.active)?.id ?? '')
+        : ''
+    let cards = readCards()
+    const forcedToggle = panelOfCards(cards) !== mainMode
+    let attempts = 0
+    let waitedMs = 0
+    if (forcedToggle) {
+      const startedAt = performance.now()
+      // 先切到 work（若已经是 work 就跳过，避免同值 no-op）
+      const toWork = await window.aurora.mode.set('work')
+      for (; attempts < 20; attempts += 1) {
+        if (readCards().some((name) => name.indexOf('工作目录') !== -1)) break
+        await wait(100)
+      }
+      const toClassroom = await window.aurora.mode.set('classroom')
+      for (; attempts < 40; attempts += 1) {
+        if (readCards().some((name) => name.indexOf('今日课程') !== -1)) break
+        await wait(100)
+      }
+      waitedMs = Math.round(performance.now() - startedAt)
+      window.__auroraSidebarProbe = {
+        forcedToggle: true,
+        attempts,
+        waitedMs,
+        mainMode,
+        toWork: toWork.ok,
+        toClassroom: toClassroom.ok,
+      }
+      cards = readCards()
+    } else {
+      window.__auroraSidebarProbe = {
+        forcedToggle: false,
+        attempts: 0,
+        waitedMs: 0,
+        mainMode,
+      }
+    }
+    const probe = window.__auroraSidebarProbe
+    const panelMode = panelOfCards(cards)
+    const panelMatchesMain = mainMode !== '' && panelMode === mainMode
     const quickItem = document.querySelector('[data-field="chat.quick-item"]')
     const sessionList = document.querySelector('[data-field="chat.session-list"]')
     const rightToggle = document.querySelector('[data-field="chat.right-panel-toggle"]')
     const nav = document.querySelector('.nav')
     const shell = document.querySelector('.app-shell')
     const context = document.querySelector('.context')
-    const ctxCards = Array.from(
-      document.querySelectorAll('.context .ctx-card .ctx-head strong'),
-    ).map((el) => (el.textContent || '').trim())
+    const ctxCards = cards
     const headName = (
       (document.querySelector('.head-name') || {}).textContent || ''
     ).trim()
@@ -4339,6 +4491,13 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
       sidebarLayered: navBg !== '' && shellBg !== '' && navBg !== shellBg,
       contextCollapsed: context === null ? null : context.classList.contains('collapsed'),
       contextCards: ctxCards,
+      // 模式一致性（护栏）：主进程报的模式 + 面板卡片推出的模式 + 是否被迫自愈
+      mainMode,
+      panelMode,
+      panelMatchesMain,
+      forcedToggle: probe === undefined ? null : probe.forcedToggle,
+      probeAttempts: probe === undefined ? null : probe.attempts,
+      probeWaitedMs: probe === undefined ? null : probe.waitedMs,
       todoCard: count('[data-field="chat.todo-card"]'),
       todoRows,
       taskCard: count('[data-field="chat.task-card"]'),
@@ -4375,7 +4534,11 @@ export const CHAT_SIDEBAR_SCRIPT = `(() => {
         count('.tool-card .tool-head .tool-icon') === count('.tool-card') &&
         count('[data-caption-btn="minimize"]') > 0 &&
         count('[data-caption-btn="close"]') > 0 &&
-        count('[data-field="chat.mic"]') === 0,
+        count('[data-field="chat.mic"]') === 0 &&
+        // 哨兵（2026-10-10）：面板本来就该与主进程一致 —— 需要自愈即产品竞态复现
+        probe !== undefined &&
+        probe.forcedToggle === false &&
+        panelMatchesMain,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -11349,6 +11512,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     {
       name: 'chat',
       file: 'chat-sidebar.png',
+      // 自带前置（2026-10-10）：先自己确保 classroom 生效再截图 / 判据 ——
+      // 不再依赖前面 `edge-bar-work` 场景的跨窗口还原广播是否已经渲染到本窗口。
+      act: CHAT_SIDEBAR_ENSURE_CLASSROOM_ACT,
       check: CHAT_SIDEBAR_SCRIPT,
     },
     // 主界面点击成本盘点（2026-09-29）：只量尺寸、不改状态，紧跟 chat-sidebar 读同一份出厂现场
