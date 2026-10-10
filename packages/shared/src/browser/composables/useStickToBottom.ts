@@ -397,6 +397,23 @@ export function useStickToBottom(
     else scheduleGuardIdle()
   }
 
+  /**
+   * 窗口重新可见 / 重新获得焦点：把心跳巡检重新排起来，并补一次"内容变更"判定。
+   *
+   * 隐藏期间 rAF 被暂停、定时器被节流，巡检可能停在"已排帧但帧永不推进"的状态；
+   * 恢复可见后如果没人重排它，观察者那条失效路径（文件头上方注释记录的"MutationObserver
+   * 回调会停"）就没有兜底了 —— 表现是内容在长、视口冻住，直到调用方 `stick()` 才恢复。
+   * 这里补的正是这一步（调用方 `stick()` 不该是让界面回到最新的唯一路径）。
+   */
+  function restartGuard(): void {
+    if (disposed) return
+    lastActivityAt = Date.now()
+    guardHandle = null
+    guardTimer = null
+    scheduleGuardFrame()
+    core?.onMutated()
+  }
+
   function startStructureGuard(): void {
     lastActivityAt = Date.now()
     scheduleGuardFrame()
@@ -486,9 +503,18 @@ export function useStickToBottom(
           }
           document.addEventListener('visibilitychange', listener)
           window.addEventListener('focus', listener)
+          // **心跳巡检也要重启**（2026-10-10）：隐藏期间 rAF 不派发、`setTimeout` 被节流到秒级，
+          // 巡检很可能正好停在"已排帧但帧被暂停"的状态；恢复可见后没有任何东西重新排它
+          // （引擎的 `refresh()` 只在 `following` 为真时排一次对齐帧，**不重排巡检**）。
+          // 症状就是本轮实测到的：切回可见后 DOM 变更不再被巡检兜住，
+          // 窗口期（1000ms）内一次都没跟上、随后由调用方 `stick()` 又能正常恢复。
+          document.addEventListener('visibilitychange', restartGuard)
+          window.addEventListener('focus', restartGuard)
           return () => {
             document.removeEventListener('visibilitychange', listener)
             window.removeEventListener('focus', listener)
+            document.removeEventListener('visibilitychange', restartGuard)
+            window.removeEventListener('focus', restartGuard)
           }
         },
       },
