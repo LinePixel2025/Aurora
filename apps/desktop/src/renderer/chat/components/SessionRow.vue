@@ -10,6 +10,14 @@
  *
  * 归档（docs/07 §2.3）：可逆、不弹确认；`archived` 决定这一行的动作是归档还是取消归档。
  * 本组件只展示与上报意图（emit），切换 / 归档落地都在 App.vue。
+ *
+ * `data-session-id`（2026-10-10）：行身份的**稳定锚点**，给 capture 探针用。
+ * 背景：`chat-archive` 探针原先拿整行文本（`.nav-item` 的 textContent）当身份键，
+ * 而那一行里含 `.item-time` 的相对时间 —— 跨分钟时同一行的文本会从「刚刚」变成
+ * 「1 分钟前」，于是"归属"判定在计数已经正确迁移的情况下仍然失配（实测 payload：
+ * `afterArchive:{mainRows:2,archiveRows:2,inArchive:false,inMain:false}`）。
+ * 会话 id 是这一行唯一不会随渲染时间漂移的身份键；`.item-title` 只作标题展示，
+ * 空标题会回落成「新会话」而重复，不能单独当身份键。
  */
 import { computed } from 'vue'
 import type { ChatSessionSummary } from '@aurora/shared'
@@ -52,7 +60,7 @@ function formatRelativeTime(iso: string): string {
 </script>
 
 <template>
-  <div class="nav-row hover-fill" :class="{ active: isActive }">
+  <div class="nav-row hover-fill" :data-session-id="item.id" :class="{ active: isActive }">
     <button
       type="button"
       class="nav-item press"

@@ -6757,31 +6757,60 @@ export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
  * act 只展开归档分组（点 `chat.archive-toggle`，轮询等 `chat.archive-list` 出现），
  * 截图即「分组展开、已归档会话列在里面」的现场。归档 / 取消归档这条会改状态的往返放在 check 里
  * （截图先拍，动作后做），并由 check 收尾还原 —— 否则后面的场景看到的会是被改过的左栏。
+ *
+ * **2026-10-10 加冷窗前置**：分组 toggle 是 `v-if="archivedSessions.length > 0"` 渲染的
+ * （`SessionNav.vue`），会话列表是异步水合的 —— act 在 `capture.ts` 只等了 60ms 就执行，
+ * 于是**单场景筛选跑**（`AURORA_CAPTURE_ONLY='chat-archive'`）会稳定拿到 `toggle === null`：
+ * 4/4 轮 `ariaExpanded:"false"` / `archiveRows:0`，看着像探针坏了，其实是前置没就绪。
+ * 现在改成**有界轮询等 toggle 出现**（最多 40 × 100ms）再点，并把就绪状态写进
+ * `window.__auroraArchiveProbe` —— **不能只靠返回值**：`capture.ts` 的 act 返回值被丢弃
+ *（只合并 `mainAct`），所以 check 通过这个全局变量读取。
  */
 export const CHAT_ARCHIVE_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
-    const toggle = document.querySelector('[data-field="chat.archive-toggle"]')
+    let toggle = null
+    let toggleAttempts = 0
+    for (; toggleAttempts < 40; toggleAttempts += 1) {
+      toggle = document.querySelector('[data-field="chat.archive-toggle"]')
+      if (toggle !== null) break
+      await wait(100)
+    }
     if (toggle === null) {
-      return {
+      const failed = {
         ready: false,
+        toggleFound: false,
+        rows: 0,
+        toggleAttempts,
+        attempts: 0,
         reason: 'no [data-field="chat.archive-toggle"]（seed 的已归档会话没被读到？）',
       }
+      window.__auroraArchiveProbe = failed
+      return failed
     }
     toggle.click()
     let rows = 0
-    for (let attempt = 0; attempt < 15 && rows === 0; attempt += 1) {
+    let attempts = 0
+    for (; attempts < 20 && rows === 0; attempts += 1) {
       rows = document.querySelectorAll('[data-field="chat.archive-list"] .nav-item').length
       if (rows === 0) await wait(120)
     }
-    return {
-      ready: true,
+    const probe = {
+      ready: rows > 0,
+      toggleFound: true,
+      rows,
+      toggleAttempts,
+      attempts,
       expanded: toggle.getAttribute('aria-expanded'),
       label: (toggle.textContent || '').replace(/\\s+/g, ' ').trim(),
-      rows: rows,
+      reason: rows > 0 ? '' : '点了 toggle 但归档列表仍没有行',
     }
+    window.__auroraArchiveProbe = probe
+    return probe
   } catch (error) {
-    return { ready: false, reason: String(error) }
+    const failed = { ready: false, reason: String(error) }
+    window.__auroraArchiveProbe = failed
+    return failed
   }
 })()`
 
@@ -6810,7 +6839,13 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
     const textOf = (el) => ((el === null ? '' : el.textContent) || '').replace(/\\s+/g, ' ').trim()
     const toggle = document.querySelector('[data-field="chat.archive-toggle"]')
     const problems = []
+    // act 前置的就绪状态（act 的返回值会被丢弃，所以它写在 window 上）：
+    // ready !== true 必须变成**显式失败** —— 否则「前置没就绪」会像以前那样静默退化成一堆
+    // 看着像探针坏了的报错（实测：单场景筛选跑 4/4 轮 ariaExpanded=false / archiveRows=0）。
+    const actProbe = window.__auroraArchiveProbe
     const result = {
+      actProbe: actProbe === undefined ? null : actProbe,
+      actReady: actProbe !== undefined && actProbe.ready === true,
       groupPresent: count('[data-field="chat.archive-group"]') === 1,
       togglePresent: toggle !== null,
       ariaExpanded: toggle === null ? null : toggle.getAttribute('aria-expanded'),
@@ -6819,6 +6854,12 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
       archiveRows: count(ARCH),
       seedInMain: textOf(document.querySelector('[data-field="chat.session-list"]')).indexOf('archive-seed') !== -1,
       seedInArchive: textOf(document.querySelector('[data-field="chat.archive-list"]')).indexOf('archive-seed') !== -1,
+    }
+    if (result.actReady !== true) {
+      problems.push(
+        '归档分组前置未就绪（act 未拿到 toggle / 行）：' +
+          JSON.stringify(actProbe === undefined ? null : actProbe),
+      )
     }
     if (result.groupPresent !== true) problems.push('chat.archive-group 不存在')
     if (result.togglePresent !== true) problems.push('chat.archive-toggle 不存在')
@@ -6845,8 +6886,36 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
     result.targetWasActive = activeRow !== null
     const archiveButton =
       targetRow === null ? null : targetRow.querySelector('[data-action="chat.archive-session"]')
-    const movedTitle = targetRow === null ? '' : textOf(targetRow.querySelector('.nav-item'))
+    const movedTitle = targetRow === null ? '' : textOf(targetRow.querySelector('.item-title'))
+    // 身份键 = data-session-id（SessionRow.vue 的 .nav-row 上，2026-10-10 新增）。
+    // 旧口径取整行文本，而那一行含 .item-time 相对时间：跨分钟时同一行的文本从「刚刚」
+    // 变成「N 分钟前」，于是「归属」判定在**计数已经正确迁移**时仍然两边查找都失配
+    //（实测 payload：movedTitle「新会话刚刚」、
+    // afterArchive {mainRows:2,archiveRows:2,inArchive:false,inMain:false}）。
+    // 会话 id 才是唯一不会随渲染时间漂移的身份键；
+    // movedNavText 只作为排障信息回传（旧口径的文本快照，一眼看出是不是文本漂移）。
+    const movedSessionId = targetRow === null ? '' : targetRow.getAttribute('data-session-id') || ''
+    const rowBySessionId = (selector, sessionId) =>
+      Array.from(document.querySelectorAll(selector + ' .nav-row')).find(
+        (row) => row.getAttribute('data-session-id') === sessionId,
+      ) || null
+    const rowInArchive = (sessionId) =>
+      rowBySessionId('[data-field="chat.archive-list"]', sessionId) !== null
+    const rowInMain = (sessionId) =>
+      rowBySessionId('[data-field="chat.session-list"]', sessionId) !== null
+    // 身份键真取到时才用它做归属判定；取不到（行结构变了 / 没渲染出 data-session-id）
+    // 必须如实报出来，不能静默降级成"跳过归属判定"——那等于把断言变成永远通过。
+    const identityUsable = movedSessionId !== ''
+    if (identityUsable !== true) {
+      problems.push('行结构或探针契约变了：.nav-row 上没有 data-session-id（无法做归属判定）')
+    }
+    result.movedSessionId = movedSessionId
     result.movedTitle = movedTitle
+    result.movedNavText = targetRow === null ? '' : textOf(targetRow.querySelector('.nav-item'))
+    // 反向复核读数：旧口径里「会漂移的那一段」（.item-time 的相对时间）+ 旧口径的整行文本。
+    // 用来证明身份键换掉的原因 —— 同一行的相对时间跨分钟就会变，而计数断言仍是对的。
+    result.movedNavTime = targetRow === null ? '' : textOf(targetRow.querySelector('.item-time'))
+    result.identityUsable = identityUsable
     if (archiveButton === null) {
       problems.push('主列表里没有可归档的行（archive-session 按钮未找到）')
     } else {
@@ -6857,13 +6926,13 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
         archived =
           count(MAIN) === beforeMain - 1 &&
           count(ARCH) === beforeArchive + 1 &&
-          textOf(document.querySelector('[data-field="chat.archive-list"]')).indexOf(movedTitle) !== -1
+          rowInArchive(movedSessionId)
       }
       result.afterArchive = {
         mainRows: count(MAIN),
         archiveRows: count(ARCH),
-        inArchive: textOf(document.querySelector('[data-field="chat.archive-list"]')).indexOf(movedTitle) !== -1,
-        inMain: textOf(document.querySelector('[data-field="chat.session-list"]')).indexOf(movedTitle) !== -1,
+        inArchive: rowInArchive(movedSessionId),
+        inMain: rowInMain(movedSessionId),
       }
       if (
         result.afterArchive.mainRows !== beforeMain - 1 ||
@@ -6893,15 +6962,8 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
       }
 
       // 4) 再点一次撤销（必须做：后面的场景不该看到被改过的左栏）
-      const archiveRows = Array.from(document.querySelectorAll('[data-field="chat.archive-list"] .nav-row'))
-      let movedRow = null
-      for (const candidate of archiveRows) {
-        const item = candidate.querySelector('.nav-item')
-        if (item !== null && textOf(item).indexOf(movedTitle) === 0) {
-          movedRow = candidate
-          break
-        }
-      }
+      //    定位同样用 data-session-id（旧写法按 .nav-item 文本前缀匹配，同一条漂移链）。
+      const movedRow = rowBySessionId('[data-field="chat.archive-list"]', movedSessionId)
       const unarchiveButton = movedRow === null ? null : movedRow.querySelector('[data-action="chat.unarchive-session"]')
       if (unarchiveButton === null) {
         problems.push('归档列表里没找到刚归档那条的「取消归档」按钮')
@@ -6913,13 +6975,13 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
           restored =
             count(MAIN) === beforeMain &&
             count(ARCH) === beforeArchive &&
-            textOf(document.querySelector('[data-field="chat.session-list"]')).indexOf(movedTitle) !== -1
+            rowInMain(movedSessionId)
         }
         result.afterUnarchive = {
           mainRows: count(MAIN),
           archiveRows: count(ARCH),
-          inMain: textOf(document.querySelector('[data-field="chat.session-list"]')).indexOf(movedTitle) !== -1,
-          inArchive: textOf(document.querySelector('[data-field="chat.archive-list"]')).indexOf(movedTitle) !== -1,
+          inMain: rowInMain(movedSessionId),
+          inArchive: rowInArchive(movedSessionId),
         }
         if (
           result.afterUnarchive.mainRows !== beforeMain ||
