@@ -5417,6 +5417,52 @@ const BURST_LAG_LIMITS = {
 }
 
 /**
+ * 「灾难闸门」：对**单点**也生效的绝对上限（2026-10-10 新增，与上面的 LAG_LIMITS 分开 ——
+ * 它们语义相反：`BURST_LAG_LIMITS` 是"整体劣化"的容忍线，取值对着**稳态**量纲；
+ * 这里是"单帧烂到离谱"的兜底，取值对着**修复前**量纲）。
+ *
+ * 旧口径的问题（2026-10-10 实测，同一 HEAD，共 11 轮 `chat-stream-burst`）：
+ * `maxFrameGapMs` 5/11 轮越过 110（112.6 / 120.9 / 129.2 / 133.2 / 141.7），
+ * 而同一批轮次的 `secondMax` 量级只有 50–90、`droppedFrames` 恒定 13–20、
+ * `heartbeatOverrunMs` 105–232（阈值 3600），且**失败轮与通过轮的整体代价几乎相同**
+ *（141.7 那一帧自己就贡献 droppedFrames 7，其余 ~10 来自 33–50ms 的中等帧距）——
+ * 即越界来自**单个** GC / 首编译型停顿，不是"渲染跟不上输出"。
+ * 拿绝对最大值当判据，等于让单点离群持续收税（本仓反复踩过：恒红会训练人忽略红）。
+ *
+ * 新口径（离群容忍 + 灾难闸门，两条同时成立）：
+ * - `BURST_LAG_LIMITS.secondMax*`：去掉最大一个之后的第二大值仍须在稳态线内 ——
+ *   整体劣化时一大批值同时抬高，第二大同样越界；
+ * - `BURST_LAG_GUARDS.max*`：绝对上限挡住"单帧烂到离谱"这类灾难。
+ *
+ * 标定依据（2026-10-10 实测两批共 14 轮 `chat-stream-burst`）：
+ * **离群容忍线**（沿用 BURST_LAG_LIMITS 的 110 / 160）：
+ * - `secondMaxFrameGapMs` 最坏 121.1（其中"正常轮"最坏 66；121.1 出现在人为注入 600ms 灾难的对照轮），
+ *   5 轮正常单跑最坏 74.9 → 110 有 ≥1.47× 余量；
+ * - `secondMaxUnhiddenHeartbeatMs` 最坏 111.4 → 160 有 ≥1.44× 余量。
+ * **灾难闸门**（本常量）：取值对着"今天的正常尾巴"与"修复前量纲"两端中间的档位 ——
+ * - `maxFrameGapMs`：正常轮最坏 142.1（另有 135.4 / 135.5），取 **260** = 1.83× 余量，
+ *   且远低于修复前的整体劣化形态（本次对照注入 130ms/帧 → 单帧 282.9 也会撞线）；
+ * - `maxUnhiddenHeartbeatMs`：正常轮实测到过 198.5 的**单拍**尖峰（同轮 `secondMax` 只 100.8、
+ *   帧侧 `secondMaxFrameGapMs` 61.9 全绿 —— 即"单点离群"而不是渲染跟不上）。
+ *   260 对 198.5 只有 1.31× 余量，会把这类正常尖峰继续判红（标定第一版就是这么红的），
+ *   因此放到 **300** = 1.51× 余量、同时仍是修复前 661.4 的 45%（2.2× 判别力）。
+ *   再往上抬会开始吃掉"修复前那种整体劣化"的可分性，不再放宽。
+ *
+ * **为什么新口径仍能抓住修复前那种回归**（修复前实测：maxFrameGap 137.5 /
+ * maxUnhiddenHeartbeat 661.4 / heartbeatOverrun 4749.4 / droppedFrames 238）：
+ * 责任交给**四条互不依赖**的载体 —— `maxUnhiddenHeartbeatMs` 661.4 > 300、
+ * `droppedFrames` 238 > 140、`heartbeatOverrunMs` 4749 > 3600 三条今天就会红；
+ * 帧侧若整体劣化，主判据 `secondMaxFrameGapMs` 会先红（本次对照实测 177 > 110）。
+ * **新判据不靠 `secondMax` 去抓 137.5 那个量级的单帧值**（137.5 在 260 的闸门下是绿的），
+ * `secondMax` 只负责"单点不再收税"，判别力交给闸门与两个累计量 —— 这是刻意的分工，
+ * 别把它读成"阈值被抬松了"。
+ */
+const BURST_LAG_GUARDS = {
+  maxFrameGapMs: 260,
+  maxUnhiddenHeartbeatMs: 300,
+}
+
+/**
  * 思考 / 正文**高密度爆发**探针 · 前半（1-D 场景）。
  *
  * 为什么要有这一场：默认对话桩只发 2 条 reasoning + 2 条 content 分片，密度远低于真实推理
@@ -5642,6 +5688,8 @@ export function chatStreamBurstCheck(markers: {
       usable !== true || Array.isArray(probe.heartbeat.hidden) !== true ? [] : probe.heartbeat.hidden
     let maxHeartbeatMs = 0
     let maxUnhiddenHeartbeatMs = 0
+    let secondMaxUnhiddenHeartbeatMs = 0
+    let overLimitHeartbeats = 0
     let heartbeatOverrunMs = 0
     let hiddenHeartbeats = 0
     let heartbeatTotalMs = 0
@@ -5654,7 +5702,15 @@ export function chatStreamBurstCheck(markers: {
       // 超过 2 倍心跳间隔才算「这一拍被挤掉」，避免把正常的调度抖动算进来
       // 被节流（窗口隐藏）的那几拍单独剔除：那是渲染被暂停，不是主线程被占满
       if (hiddenFlags[index] !== true) {
-        if (sample > maxUnhiddenHeartbeatMs) maxUnhiddenHeartbeatMs = sample
+        // 次序统计量：记「第二大」与「超阈值个数」——单点离群点只抬 max，
+        // 真回归（整体劣化）会把这两个一起抬起来（见 BURST_LAG_GUARDS 的标定）。
+        if (sample >= maxUnhiddenHeartbeatMs) {
+          secondMaxUnhiddenHeartbeatMs = maxUnhiddenHeartbeatMs
+          maxUnhiddenHeartbeatMs = sample
+        } else if (sample > secondMaxUnhiddenHeartbeatMs) {
+          secondMaxUnhiddenHeartbeatMs = sample
+        }
+        if (sample > ${BURST_LAG_LIMITS.maxHeartbeatMs}) overLimitHeartbeats += 1
         heartbeatOverrunMs += Math.max(0, sample - ${BURST_HEARTBEAT_MS * 2})
       }
       gaps.push({ index, delta: Math.round(sample * 10) / 10, hidden: hiddenFlags[index] === true })
@@ -5669,8 +5725,11 @@ export function chatStreamBurstCheck(markers: {
     const frameHidden =
       usable !== true || Array.isArray(probe.frames.hidden) !== true ? [] : probe.frames.hidden
     let maxFrameGapMs = 0
+    let secondMaxFrameGapMs = 0
+    let gapsOverFrameLimit = 0
     let droppedFrames = 0
     let hiddenFrameGaps = 0
+    const frameGaps = []
     for (let index = 1; index < frames.length; index += 1) {
       // 跨越隐藏期的帧间隔同样是「渲染被暂停」，不是「渲染跟不上」——剔除并计数
       if (frameHidden[index] === true || frameHidden[index - 1] === true) {
@@ -5678,9 +5737,23 @@ export function chatStreamBurstCheck(markers: {
         continue
       }
       const gap = frames[index] - frames[index - 1]
-      if (gap > maxFrameGapMs) maxFrameGapMs = gap
+      frameGaps.push(Math.round(gap * 10) / 10)
+      // 次序统计量：与心跳同口径 ——
+      // secondMaxFrameGapMs 是「去掉最大那一帧之后的最大帧距」，gapsOverFrameLimit
+      // 是「越过 BURST_LAG_LIMITS.maxFrameGapMs 的帧距个数」。前者对单个 GC / 首编译型
+      // 停顿不敏感，后者直接量「有多少帧真的超了」，两者合起来分辨「单点离群」与「整体劣化」。
+      if (gap >= maxFrameGapMs) {
+        secondMaxFrameGapMs = maxFrameGapMs
+        maxFrameGapMs = gap
+      } else if (gap > secondMaxFrameGapMs) {
+        secondMaxFrameGapMs = gap
+      }
+      if (gap > ${BURST_LAG_LIMITS.maxFrameGapMs}) gapsOverFrameLimit += 1
       if (gap > 33) droppedFrames += Math.floor(gap / 16.7) - 1
     }
+    // 只留最大的 5 段（与 topHeartbeatGaps 同款）：这是判「单点离群 vs 整体劣化」的形态证据
+    frameGaps.sort((left, right) => right - left)
+    const frameGapsTop5 = frameGaps.slice(0, 5)
     const frameCount = frames.length
 
     // 采样是否真的从爆发轮开始（false = 样本里混着堆量轮的首屏开销，数值不可信）
@@ -5708,14 +5781,20 @@ export function chatStreamBurstCheck(markers: {
       topHeartbeatGaps: gaps.slice(0, 5),
       maxHeartbeatMs: Math.round(maxHeartbeatMs * 10) / 10,
       maxUnhiddenHeartbeatMs: Math.round(maxUnhiddenHeartbeatMs * 10) / 10,
+      secondMaxUnhiddenHeartbeatMs: Math.round(secondMaxUnhiddenHeartbeatMs * 10) / 10,
+      overLimitHeartbeats,
       heartbeatOverrunMs: Math.round(heartbeatOverrunMs * 10) / 10,
       frameCount,
       hiddenFrameGaps,
       maxFrameGapMs: Math.round(maxFrameGapMs * 10) / 10,
+      secondMaxFrameGapMs: Math.round(secondMaxFrameGapMs * 10) / 10,
+      gapsOverFrameLimit,
+      frameGapsTop5,
       droppedFrames,
       limits: {
         longTask: ${JSON.stringify(BURST_LONG_TASK_LIMITS)},
         lag: ${JSON.stringify(BURST_LAG_LIMITS)},
+        guards: ${JSON.stringify(BURST_LAG_GUARDS)},
       },
       pass:
         assistants.length >= 1 &&
@@ -5740,8 +5819,15 @@ export function chatStreamBurstCheck(markers: {
             maxLongTaskMs <= ${BURST_LONG_TASK_LIMITS.maxMs} &&
             totalBlockingMs <= ${BURST_LONG_TASK_LIMITS.blockingMs})) &&
         maxUnhiddenHeartbeatMs <= ${BURST_LAG_LIMITS.maxHeartbeatMs} &&
+        // 离群容忍：去掉最大一个之后的第二大值仍须在稳态线内
+        //（整体劣化时一大批值同时抬高，第二大同样越界；单点离群则只有 max 越界）
+        secondMaxUnhiddenHeartbeatMs <= ${BURST_LAG_LIMITS.maxHeartbeatMs} &&
+        // 灾难闸门：单拍被挤出上限以上即真灾难（修复前 661.4 必红）
+        maxUnhiddenHeartbeatMs <= ${BURST_LAG_GUARDS.maxUnhiddenHeartbeatMs} &&
         heartbeatOverrunMs <= ${BURST_LAG_LIMITS.heartbeatOverrunMs} &&
-        maxFrameGapMs <= ${BURST_LAG_LIMITS.maxFrameGapMs} &&
+        secondMaxFrameGapMs <= ${BURST_LAG_LIMITS.maxFrameGapMs} &&
+        // 灾难闸门：单帧卡到上限以上即真灾难
+        maxFrameGapMs <= ${BURST_LAG_GUARDS.maxFrameGapMs} &&
         droppedFrames <= ${BURST_LAG_LIMITS.droppedFrames},
     }
   } catch (error) {
