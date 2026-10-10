@@ -76,6 +76,8 @@ export * from './tools/task.js'
 export * from './tools/ask-user.js'
 // AI 修改自身配置（docs/06 §12）：同上，真实配置读写由主进程端口注入。
 export * from './tools/settings.js'
+// 外观三件套的语义化入口（v32，docs/06 §12.1）：复用同一个 SettingsToolPort。
+export * from './tools/appearance.js'
 export * from './mcp/errors.js'
 export * from './mcp/jsonrpc.js'
 export * from './mcp/transports.js'

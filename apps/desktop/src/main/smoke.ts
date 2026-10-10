@@ -136,6 +136,40 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       assertNoSecretLeak('settings.get 无凭据字段', settings)
     }
 
+    // 2.1 外观三件套（v32，docs/07 §5.1）：默认值 + 「改完即时生效」的**真链路**。
+    //     主题档位走 settings:update → 主进程 nativeTheme.themeSource → 渲染层
+    //     prefers-color-scheme；毛玻璃走 settings:changed → 文档根 data-glass → theme.css 令牌降级。
+    //     两条都**必须还原**：后面的用例不该看到被这一节改过的外观（截图与探针同样依赖默认档）。
+    //     注意本段在 String.raw 里：不用反引号、不用带反斜杠的正则。
+    if (settings) {
+      record('appearance 默认主题为跟随系统', settings.appearance && settings.appearance.theme === 'system', String(settings.appearance && settings.appearance.theme))
+      record('appearance 默认开启毛玻璃', settings.appearance && settings.appearance.glass === true, String(settings.appearance && settings.appearance.glass))
+    }
+
+    const waitColorScheme = async (mode) => {
+      const hit = await waitFor(
+        async () => (window.matchMedia && window.matchMedia('(prefers-color-scheme: ' + mode + ')').matches ? mode : ''),
+        (value) => value === mode,
+        3000,
+      )
+      return hit === mode
+    }
+
+    const darkApplied = expectOk('settings.update(appearance.theme=dark)', await window.aurora.settings.update({ appearance: { theme: 'dark' } }))
+    record('切暗色后 prefers-color-scheme 变为 dark', await waitColorScheme('dark'), darkApplied ? darkApplied.appearance.theme : '')
+    const lightApplied = expectOk('settings.update(appearance.theme=light)', await window.aurora.settings.update({ appearance: { theme: 'light' } }))
+    record('切亮色后 prefers-color-scheme 变为 light', await waitColorScheme('light'), lightApplied ? lightApplied.appearance.theme : '')
+
+    expectOk('settings.update(appearance.glass=false)', await window.aurora.settings.update({ appearance: { glass: false } }))
+    const glassMark = document.documentElement.getAttribute('data-glass')
+    record('关闭毛玻璃后文档根标记为 off', glassMark === 'off', String(glassMark))
+    const glassFilter = getComputedStyle(document.documentElement).getPropertyValue('--glass-filter').trim()
+    record('关闭毛玻璃后玻璃滤镜令牌降级为 none', glassFilter === 'none', glassFilter)
+
+    // 原生材质那半（Acrylic 卸没卸）渲染层读不到，由截图工具的原生断言覆盖（capture.ts nativeGlassCheck）。
+    const appearanceRestored = expectOk('settings.update(appearance 还原)', await window.aurora.settings.update({ appearance: { theme: 'system', glass: true } }))
+    record('外观已还原（主题跟随系统 / 毛玻璃开）', Boolean(appearanceRestored) && appearanceRestored.appearance.theme === 'system' && appearanceRestored.appearance.glass === true && document.documentElement.getAttribute('data-glass') === 'on', appearanceRestored ? JSON.stringify(appearanceRestored.appearance) : '')
+
     // 3. 模型配置由主进程在启动自测前写入（指向本地桩 LLM），这里只做读写/脱敏断言：
     //    若在此处再写一次 baseUrl，会把桩服务地址覆盖成真实服务，导致对话断言失败。
     const update = expectOk('settings.update(llm)', await window.aurora.settings.update({

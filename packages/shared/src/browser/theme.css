@@ -1225,6 +1225,46 @@ select {
 }
 
 /**
+ * 应用内的毛玻璃总开关（v32，`appearance.glass = false`）。
+ *
+ * 渲染层由 `renderer/shared/appearance.ts` 在文档根挂 `data-glass="off"`；
+ * 原生 Acrylic 那半同时被主进程摘掉（`WindowManager.applyGlass(false)`），
+ * 于是「关掉毛玻璃」= 整窗实色，不是"只关掉一半"。
+ *
+ * 令牌口径与上面的 `prefers-reduced-transparency` **同一份降级**（改一处必须同步另一处，
+ * `theme-css.test.ts` 会断言这里的自定义属性是那块的超集）：
+ * 三档滤镜置 `none`、玻璃面换实色令牌、画布采样层透明。
+ * 两处刻意的差别：
+ * - `--glass-fallback` 一并压成 `--bg-base` —— 提示条的圆角面板写的是
+ *   `color-mix(in srgb, var(--glass-fallback) 94%, transparent)`，不压它仍是约 90% 半透明；
+ * - `--glass-bar` / `--glass-panel` 用 `--bg-raised`（而不是 `--glass-fallback`）：
+ *   实色下要保住"抬升面比基座亮一档"的层次，与浅色档白面板叠在 `#f5f5f7` 上是同一套关系。
+ */
+:root[data-glass='off'] {
+  --glass-filter-thin: none;
+  --glass-filter: none;
+  --glass-filter-thick: none;
+  --glass-tint: var(--bg-base);
+  --glass-bar: var(--bg-raised);
+  --glass-panel: var(--bg-raised);
+  --glass-content: var(--bg-base);
+  --glass-surface: var(--bg-raised);
+  --glass-surface-strong: var(--bg-overlay);
+  --glass-input: var(--bg-overlay);
+  --glass-border: var(--border-strong);
+  --glass-border-soft: var(--border-subtle);
+  --glass-fallback: var(--bg-base);
+  --canvas-cool: transparent;
+  --canvas-warm: transparent;
+  --canvas-grid: transparent;
+}
+
+:root[data-glass='off'] .rail-surface,
+:root[data-glass='off'] .rail-surface-end {
+  background-image: none;
+}
+
+/**
  * `prefers-reduced-motion`：把时长压到 1ms 并让所有位移动画立即落位。
  * 断言方式：`transition-duration` 覆盖到全部元素（含内联 200ms 这类没走令牌的写法），
  * 保证降级是"全局兜底"而不是"只对守规矩的样式生效"。

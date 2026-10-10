@@ -189,15 +189,15 @@ const LIGHT_BACKGROUND = '#f5f5f7'
  * Acrylic 与窗口阴影都按 BrowserWindow 的矩形区域绘制；面板自身再圆角也只能盖住中间，
  * 左上 / 左下会露出矩形材质或阴影。提示条改为透明窗口 + 自包含圆角玻璃面板，
  * 主界面继续保留能真实采样桌面的 Acrylic。
+ *
+ * 2026-10（v32）：以上「要不要挂材质」还多一道用户开关 —— `appearance.glass`
+ * （设置页「通用 → 外观」，见 `glassAllowed()`）。它只影响这四个窗口的**原生材质**，
+ * 页面内的 CSS 玻璃由渲染层的 `data-glass="off"` 令牌降级负责，两侧同一时刻生效。
  */
 const NATIVE_GLASS_WINDOWS = new Set<WindowName>(['chat', 'settings', 'memory', 'automation'])
 
 /** 常规窗口使用 Acrylic；Electron 44 起系统最大化已能稳定保持材质。 */
 const NATIVE_WINDOW_MATERIAL = 'acrylic' as const
-
-function supportsNativeGlass(name: WindowName): boolean {
-  return process.platform === 'win32' && NATIVE_GLASS_WINDOWS.has(name)
-}
 
 /**
  * 几何落盘的**收尾去抖**间隔（ms，P2-08）。
@@ -301,6 +301,17 @@ export class WindowManager {
     if (!this.themeListenerActive) return
     nativeTheme.off('updated', this.syncWindowBackgrounds)
     this.themeListenerActive = false
+  }
+
+  /**
+   * 这个窗口**当前是否该挂原生材质**（v32）：平台 + 窗口名单 + 用户在「外观」里的毛玻璃开关。
+   *
+   * 三处共用同一份判据（建窗时的 `backgroundColor` / `backgroundMaterial`、最大化还原后的
+   * 重新挂载、`applyGlass()` 的即时切换）—— 别在某一处再写一份条件。
+   */
+  private glassAllowed(name: WindowName): boolean {
+    if (process.platform !== 'win32' || !NATIVE_GLASS_WINDOWS.has(name)) return false
+    return this.options.settings.get().appearance.glass
   }
 
   getState(): WindowState {
@@ -512,10 +523,10 @@ export class WindowManager {
       // 请求的 8px 收起态夹到 33px；提示条本身不参与原生拖拽缩放，不需要这层边框。
       ...(name === 'edge-bar' ? { hasShadow: false, thickFrame: false } : {}),
       backgroundColor:
-        spec.transparent || supportsNativeGlass(name) ? '#00000000' : windowBackgroundColor(),
+        spec.transparent || this.glassAllowed(name) ? '#00000000' : windowBackgroundColor(),
       // Windows 的桌面模糊由系统材质提供；透明窗口里的 CSS backdrop-filter 只能模糊
       // 页面自身内容，无法模糊桌面。失败时保留 CSS `.glass` 回退。
-      ...(supportsNativeGlass(name) ? { backgroundMaterial: NATIVE_WINDOW_MATERIAL } : {}),
+      ...(this.glassAllowed(name) ? { backgroundMaterial: NATIVE_WINDOW_MATERIAL } : {}),
       title: titleFor(name),
       webPreferences: {
         preload: this.options.preloadPath,
@@ -537,7 +548,7 @@ export class WindowManager {
       this.applyEdgeBarShape(win)
       this.reassertEdgeBarTopmost('created', false, win)
     }
-    if (supportsNativeGlass(name)) this.applyWindowMaterial(name, win)
+    if (this.glassAllowed(name)) this.applyWindowMaterial(name, win)
     // 提示条透明度取自设置（docs/08 §1）；窗口创建时即应用，避免一次可见的跳变
     if (name === 'edge-bar') {
       this.applyEdgeBarOpacity(this.options.settings.get().general.edgeBar.opacity)
@@ -623,7 +634,7 @@ export class WindowManager {
     //（含标题栏拖动区双击这条不经 toggleMaximize 的原生路径）
     win.on('maximize', () => this.emit())
     win.on('unmaximize', () => {
-      if (supportsNativeGlass(name)) this.applyWindowMaterial(name, win)
+      if (this.glassAllowed(name)) this.applyWindowMaterial(name, win)
       this.emit()
     })
     if (name === 'edge-bar') {
@@ -741,7 +752,7 @@ export class WindowManager {
    * 因此最大化不再需要退出材质或改写窗口几何。
    */
   private applyWindowMaterial(name: WindowName, win: BrowserWindow): void {
-    if (!supportsNativeGlass(name) || win.isDestroyed()) return
+    if (!this.glassAllowed(name) || win.isDestroyed()) return
     try {
       win.setBackgroundColor('#00000000')
       win.setBackgroundMaterial(NATIVE_WINDOW_MATERIAL)
@@ -755,6 +766,48 @@ export class WindowManager {
         window: name,
         error: String(error),
       })
+    }
+  }
+
+  /**
+   * 摘掉窗口原生材质，改回不透明主题底色（v32 的「关闭毛玻璃」）。
+   *
+   * 两步分开 try：`setBackgroundMaterial` 在非 win32 / 旧 Windows 上可能抛错，
+   * 但那**不能**拦住底色回退 —— 否则会出现"材质没挂上、底色又是透明的"的裸漏桌面。
+   */
+  private dropWindowMaterial(name: WindowName, win: BrowserWindow): void {
+    try {
+      win.setBackgroundMaterial('none')
+    } catch (error) {
+      this.options.logger.debug('卸载窗口材质失败，继续回退底色', {
+        window: name,
+        error: String(error),
+      })
+    }
+    try {
+      win.setBackgroundColor(windowBackgroundColor())
+    } catch (error) {
+      this.options.logger.debug('回退窗口底色失败', { window: name, error: String(error) })
+    }
+    this.nativeGlassWindows.delete(name)
+  }
+
+  /**
+   * 按 `appearance.glass` 即时切换**已创建窗口**的原生材质（v32，docs/07 §5.1）。
+   *
+   * 三条口径：
+   * - **幂等**：目标状态与当前一致就什么都不做 —— 任何一次配置变更都会走到这里，
+   *   反复重挂 Acrylic 会白白触发 DWM 材质更新（历史上最大化灰态正是这条路线的副作用）；
+   * - 未创建的窗口不处理：`ensure()` 建窗时会现读 `glassAllowed()` 取正确值；
+   * - 只碰原生材质，页面内的 CSS 玻璃由渲染层的 `data-glass="off"` 降级负责（同一份配置驱动）。
+   */
+  applyGlass(enabled: boolean): void {
+    for (const name of NATIVE_GLASS_WINDOWS) {
+      const win = this.windows.get(name)
+      if (win === undefined || win.isDestroyed()) continue
+      if (enabled === this.nativeGlassWindows.has(name)) continue
+      if (enabled) this.applyWindowMaterial(name, win)
+      else this.dropWindowMaterial(name, win)
     }
   }
 

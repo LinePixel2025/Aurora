@@ -158,7 +158,10 @@ export interface SettingsPatch {
   automations?: Partial<Settings['automations']>
   /** 文件自感知（v28，docs/06 §26）：顶层浅合并，调用方需回传完整分组。 */
   fileAwareness?: Partial<Settings['fileAwareness']>
-  /** 外观自定义（v21，docs/08 §1）：顶层浅合并（当前只有强调色主题） */
+  /**
+   * 外观自定义（v21 强调色；v32 起扩为明暗档位 / 强调色 / 毛玻璃，docs/08 §1）：
+   * 顶层浅合并，只传改动的键即可（`Object.assign(draft.appearance, patch.appearance)`）。
+   */
   appearance?: Partial<Settings['appearance']>
 }
 

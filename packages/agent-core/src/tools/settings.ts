@@ -68,6 +68,7 @@ export function createSettingsTool(options: SettingsToolOptions): ToolDefinition
       '修改立即生效，无需重启。可写范围：模型 provider 的 model / modelParams.<modelId>.reasoningEffort，' +
       '语音 TTS（tts.enabled / active / autoRead / maxChars）与语音输入 STT（stt.enabled / active），' +
       '生图（imagegen.enabled / active），提示条（general.edgeBar.*）与「显示思考过程」（general.chat.showThinking），' +
+      '界面外观（appearance.theme / accent / glass —— 这三项也有更顺手的 set_appearance 工具），' +
       '模式切换与课堂模式参数（modes.current / modes.classroom.*），' +
       '电脑操控工具的开关与参数（agent.tools.*，其中只读的免确认模式列表 ' +
       'agent.tools.terminal.allowPatterns 除外），技能（skills.userDir / skills.disabled），' +

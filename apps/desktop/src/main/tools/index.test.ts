@@ -481,10 +481,12 @@ describe('registerSettingsTool', () => {
     return { tools, registry, port }
   }
 
-  it('注册 set_setting，且敏感级为 confirm（改配置必须过确认卡片）', () => {
+  it('注册 set_setting 与 set_appearance（后者为 safe：纯视觉、即时可撤销），配置类敏感级为 confirm', () => {
     const { tools, registry } = setupSettings()
-    expect(registry.sync()).toEqual(['set_setting'])
+    expect(registry.sync()).toEqual(['set_setting', 'set_appearance'])
     expect(tools.get('set_setting')?.sensitivity).toBe('confirm')
+    // 外观三件套不弹确认卡：它不是"改一整片可写面"，改错了用户一句话就能改回来（docs/06 §12.1）
+    expect(tools.get('set_appearance')?.sensitivity).toBe('safe')
   })
 
   it('sync 幂等：重复调用不会留下两个实例', () => {
@@ -493,6 +495,7 @@ describe('registerSettingsTool', () => {
     const first = tools.get('set_setting')
     registry.sync()
     expect(tools.list().filter((tool) => tool.name === 'set_setting')).toHaveLength(1)
+    expect(tools.list().filter((tool) => tool.name === 'set_appearance')).toHaveLength(1)
     // 重建是刻意的（工具闭包按当前配置取值），但名字与敏感级必须一致
     expect(tools.get('set_setting')?.sensitivity).toBe(first?.sensitivity)
   })
@@ -535,8 +538,9 @@ describe('registerSettingsTool', () => {
     // 装配本身不看 `advanced.readonlyPrefixes`：黑名单为空 ≠ 全部可写，
     // 端口侧还有 `canWriteSettingPath` 的「Schema 必须识别该路径」兜底。
     const { tools, registry } = setupSettings()
-    expect(registry.sync()).toEqual(['set_setting'])
+    expect(registry.sync()).toEqual(['set_setting', 'set_appearance'])
     expect(tools.get('set_setting')).toBeDefined()
+    expect(tools.get('set_appearance')).toBeDefined()
   })
 })
 
@@ -823,6 +827,7 @@ describe('readonly 档（只读 = 不进工具表）', () => {
       'task',
       'ask_user',
       'set_setting',
+      'set_appearance',
     ])
     for (const name of READONLY_BLOCKED_TOOLS) {
       expect(tools.get(name)).toBeUndefined()
@@ -858,10 +863,16 @@ describe('readonly 档（只读 = 不进工具表）', () => {
       ...IMPLEMENTED_COMPUTER_TOOLS,
       ...AGENT_CORE_TOOL_NAMES,
       'set_setting',
+      'set_appearance',
     ])
     // 整张表逐条对齐：写类工具一个都没被档位逻辑误摘
     expect([...tools.list().map((tool) => tool.name)].sort()).toEqual(
-      [...IMPLEMENTED_COMPUTER_TOOLS, ...AGENT_CORE_TOOL_NAMES, 'set_setting'].sort(),
+      [
+        ...IMPLEMENTED_COMPUTER_TOOLS,
+        ...AGENT_CORE_TOOL_NAMES,
+        'set_setting',
+        'set_appearance',
+      ].sort(),
     )
   })
 
@@ -874,6 +885,7 @@ describe('readonly 档（只读 = 不进工具表）', () => {
       ...IMPLEMENTED_COMPUTER_TOOLS,
       ...AGENT_CORE_TOOL_NAMES,
       'set_setting',
+      'set_appearance',
     ])
   })
 
@@ -889,6 +901,7 @@ describe('readonly 档（只读 = 不进工具表）', () => {
       'task',
       'ask_user',
       'set_setting',
+      'set_appearance',
     ])
     expect(tools.get('write_file')).toBeUndefined()
   })
@@ -910,6 +923,7 @@ describe('readonly 档（只读 = 不进工具表）', () => {
       'task',
       'ask_user',
       'set_setting',
+      'set_appearance',
     ])
     for (const name of READONLY_BLOCKED_TOOLS) {
       expect(tools.get(name)).toBeUndefined()

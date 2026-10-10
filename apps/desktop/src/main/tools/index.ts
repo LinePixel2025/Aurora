@@ -10,7 +10,8 @@
  * 本文件现有这些装配器：
  * - `registerComputerTools`：电脑操控工具（含 Office 与 `grep` / `glob`），受 `agent.tools.enabled` 门控
  *   （docs/06 §11）；
- * - `registerSettingsTool`：`set_setting`，不受门控（docs/06 §12）；
+ * - `registerSettingsTool`：`set_setting` 与 `set_appearance`（v32 的外观三件套入口），
+ *   两者都不受门控（docs/06 §12）；
  * - `registerExtensionTools`：扩展工具七件套（含 `show_preview` / `show_image`），不受门控（docs/06 §14）；
  * - `registerImageTools`：图像工具（看图 / 截屏 / 读剪贴板图片），**按模型能力注册** ——
  *   当前生效模型没开图片输入就一个都不注册（docs/06 §25）；
@@ -36,6 +37,8 @@ import {
   type Settings,
 } from '@aurora/shared'
 import {
+  APPEARANCE_TOOL_NAME,
+  createAppearanceTool,
   createClipboardTools,
   createClipboardImageTool,
   createEditTool,
@@ -298,31 +301,36 @@ export interface SettingsToolRegistry {
   sync(): string[]
 }
 
-/** `set_setting` 的固定名字：注册 / 摘除 / smoke 断言共用，避免三处各写一份字符串。 */
-const SETTINGS_TOOL_NAME = 'set_setting'
+/** 本装配器负责的工具名集合：注册 / 摘除 / smoke 断言共用，避免多处各写一份字符串。 */
+export const SETTINGS_TOOL_NAMES = ['set_setting', APPEARANCE_TOOL_NAME] as const
 
 /**
- * `set_setting` 装配器（docs/06 §12）。
+ * 配置类工具装配器（docs/06 §12）：`set_setting` + `set_appearance`。
  *
  * 与 `registerComputerTools` 的关键差别：**不受 `agent.tools.enabled` 影响**。
  * 原因有两层：
- * 1. `set_setting` 不在 `COMPUTER_TOOL_NAMES` 里，`registerComputerTools.sync()` 只按那 5 个
+ * 1. 这两个都不在 `COMPUTER_TOOL_NAMES` 里，`registerComputerTools.sync()` 只按那 5 个
  *    名字摘除，两者天然互不干扰；
  * 2. 这恰恰是安全边界的一部分——总开关关掉后 AI 仍能改回 `agent.tools.*`，
  *    但改不回别的（`llm.providers` 等本来就在黑名单里）。
  *
  * 即便 `advanced.readonlyPrefixes` 被用户清空，这里**依然注册**：
  * 黑名单为空 ≠ 全部可写，`canWriteSettingPath` 的「Schema 必须识别该路径」永远生效。
+ *
+ * `set_appearance`（v32）与 `set_setting` 同处一个 sync：两者共用同一个 `SettingsToolPort`，
+ * 注册 / 摘除时机天然一致；区别只在参数形状与 sensitivity（外观是 `safe`，见 docs/06 §12.1）。
  */
 export function registerSettingsTool(deps: SettingsToolDeps): SettingsToolRegistry {
   return {
     sync(): string[] {
       // 先摘再注册（幂等）：工具实例按每次调用即时读配置，重建很便宜，
       // 且能保证"上一次注册的实例不会因为配置改变而留下旧闭包"。
-      deps.tools.unregister(SETTINGS_TOOL_NAME)
+      for (const name of SETTINGS_TOOL_NAMES) deps.tools.unregister(name)
       deps.tools.register(createSettingsTool({ port: deps.port, logger: deps.logger }))
-      deps.logger.info('已同步 set_setting 工具', { name: SETTINGS_TOOL_NAME })
-      return [SETTINGS_TOOL_NAME]
+      deps.tools.register(createAppearanceTool({ port: deps.port, logger: deps.logger }))
+      const names = SETTINGS_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
+      deps.logger.info('已同步配置类工具', { names: [...names] })
+      return [...names]
     },
   }
 }

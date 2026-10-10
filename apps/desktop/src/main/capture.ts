@@ -7720,6 +7720,12 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
     const requireAdminField = count('[data-field="general.requireAdmin"]')
     // v30：游戏模式开关常显（docs/06 §8.3）
     const gameModeField = count('[data-field="general.gameMode.enabled"]')
+    // v32：「外观」区组三件套常显（主题三档 / 强调色 / 毛玻璃开关）。
+    // 主题那档是**两个**锚点同名（区组里只有一组按钮），按数量 1 断言；
+    // 强调色沿用 v21 的锚点，毛玻璃是新增的 —— 三者一起挡住"新控件没接线"这类静默回归。
+    const appearanceTheme = count('[data-field="appearance.theme"]')
+    const appearanceAccent = count('[data-field="appearance.accent"]')
+    const appearanceGlass = count('[data-field="appearance.glass"]')
     // v13 项目机制（docs/06 §5.1）：项目区组常显，列表可空可非空 —— 只断言「空态或至少一行」，
     // 不写死条数（用户有几个项目都能过）。
     const projectsFields = count('[data-field^="projects."]')
@@ -7746,6 +7752,9 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
       quietHoursFields,
       requireAdminField,
       gameModeField,
+      appearanceTheme,
+      appearanceAccent,
+      appearanceGlass,
       projectsFields,
       projectsRows,
       projectsEmpty,
@@ -7762,6 +7771,9 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
         quietHoursFields === 2 &&
         requireAdminField === 1 &&
         gameModeField === 1 &&
+        appearanceTheme === 1 &&
+        appearanceAccent === 1 &&
+        appearanceGlass === 1 &&
         (edgeBarToggle === 0 ? edgeBarDetail === 0 : edgeBarDetail > 0) &&
         projectsFields === 0 &&
         projectsRows === 0 &&
@@ -8547,6 +8559,77 @@ export const SETTINGS_CLASSISLAND_FIELDS_SCRIPT = `(async () => {
     await wait(200)
     result.restored = count('[data-field="settings.classisland-notify-test"]') === 0
     result.pass = result.pass === true && result.restored === true
+    return result
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 毛玻璃关闭（v32）的现场准备：把 `appearance.glass` 关掉并等渲染层挂上 `data-glass="off"`。
+ *
+ * 只走 `settings:update`（SettingsStore 启动即把 config.json 读进内存缓存，直接改文件对运行中的
+ * 进程无效）。渲染层那半由 `settings:changed` → settings store 的 watch 应用，
+ * 原生材质那半由主进程 `onSettingsChanged` → `WindowManager.applyGlass(false)` 摘掉。
+ */
+export const APPEARANCE_GLASS_OFF_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const result = await window.aurora.settings.update({ appearance: { glass: false } })
+    if (!result.ok) return { ok: false, reason: result.message }
+    // 等广播回到渲染层：data-glass 是这一节的可观测证据
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (document.documentElement.getAttribute('data-glass') === 'off') break
+      await wait(50)
+    }
+    await wait(250)
+    return { ok: true, marked: document.documentElement.getAttribute('data-glass') }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 毛玻璃关闭探针（v32）：**渲染层**那半 + 收尾还原。
+ *
+ * 三件事：
+ * 1. 文档根标记为 `off`（`renderer/shared/appearance.ts` 的落点）；
+ * 2. 降级真生效 —— `--glass-filter` 的计算值是 `none`，且提示条面板用的
+ *    `--glass-fallback` 被压成实色（`--glass-content` 也换成了基座色，这里是抽两档代表）；
+ * 3. 收尾把 `appearance.glass` 还原成 `true` —— 后续场景（含两档主题截图）必须看到默认档，
+ *    否则 `theme-settings.png` 的原生材质断言会连带变红。
+ *
+ * 原生材质那半渲染层读不到（DWM 材质不在 DOM 里），由同一场景的 `mainAct`
+ * （`nativeGlassGoneCheck`）在主进程侧断言 —— 它必须跑在 check 的**还原动作之前**。
+ */
+export const APPEARANCE_GLASS_OFF_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const root = document.documentElement
+    const style = getComputedStyle(root)
+    const read = (name) => style.getPropertyValue(name).trim()
+    const marked = root.getAttribute('data-glass')
+    const filter = read('--glass-filter')
+    const thick = read('--glass-filter-thick')
+    const content = read('--glass-content')
+    const base = read('--bg-base')
+    const result = {
+      marked,
+      filter,
+      thick,
+      content,
+      base,
+      pass: marked === 'off' && filter === 'none' && thick === 'none' && content === base,
+    }
+    // 收尾还原：外观回默认档（毛玻璃开），并等标记切回 on
+    const restored = await window.aurora.settings.update({ appearance: { glass: true } })
+    result.restored = restored.ok === true
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (root.getAttribute('data-glass') === 'on') break
+      await wait(50)
+    }
+    result.restoredMark = root.getAttribute('data-glass')
+    result.pass = result.pass === true && result.restored === true && result.restoredMark === 'on'
     return result
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -10607,6 +10690,24 @@ export function nativeGlassCheck(
 }
 
 /**
+ * 关闭毛玻璃后的**原生侧**断言（v32）：材质必须真的摘掉了。
+ *
+ * 为什么必须由主进程断言：`appearance.glass = false` 的渲染层那半（`data-glass="off"` +
+ * 令牌降级）在页面里可读，但"Acrylic 卸没卸"只存在于 DWM 与 `WindowManager` 的内部状态里。
+ * 与 `nativeGlassCheck` 一起构成一对：**开着时必须挂上、关掉时必须摘掉** —— 只断言一半的话，
+ * 「开关接线错了但两端都看不出」这类回归会漏过去（例如只改了配置没驱动材质）。
+ */
+export function nativeGlassGoneCheck(
+  manager: WindowManager,
+  name: WindowName,
+): () => { pass: boolean } & Record<string, unknown> {
+  return () => {
+    const nativeGlass = manager.usesNativeGlass(name)
+    return { pass: !nativeGlass, window: name, material: 'none', nativeGlass }
+  }
+}
+
+/**
  * 引导的五张图复用同一个窗口实例：各 target 都不带 query，也不调用 reload，
  * 否则 Vue 的 stepIndex 会在每张图之间复位。每段只通过页面现有按钮前进。
  * 等待进度与 pane 标题同时出现，避免 Vue 的 out-in 过渡期拍到上一段或空白。
@@ -11832,6 +11933,21 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     query: { page: 'modes' },
     act: SETTINGS_CLASSISLAND_SEED_ACT,
     check: SETTINGS_CLASSISLAND_FIELDS_SCRIPT,
+  })
+  // 毛玻璃开关（v32）：先经 settings:update 关掉，检查渲染层令牌降级 + **原生材质真的摘掉**，
+  // check 收尾还原成开。刻意排在 `SETTINGS_PAGE_IDS` 循环**之后**：这一节会改配置，
+  // 而上面那批图（含 `theme-settings.png` 的原生材质断言）都要求默认档。
+  //
+  // ⚠️ 原生材质那半走 `mainAct`（在截图之前、还原之前跑），**不能**用 `nativeCheck` ——
+  // 后者的执行点在渲染层 `check` **之后**，而 check 收尾已经把 glass 改回 true，
+  // 那样只会读到"已经还原"的假结果（判据看似通过，实际什么都没证明）。
+  plan.push({
+    name: 'settings',
+    file: 'settings-appearance-glass-off.png',
+    query: { page: 'general' },
+    act: APPEARANCE_GLASS_OFF_ACT,
+    mainAct: async () => nativeGlassGoneCheck(manager, 'settings')(),
+    check: APPEARANCE_GLASS_OFF_CHECK,
   })
   for (const page of SETTINGS_PAGE_IDS) {
     plan.push({

@@ -26,6 +26,8 @@ export {
   House,
   LayoutGrid,
   SlidersHorizontal,
+  // 外观（v32）：`set_appearance` 工具卡的语义图标（调色板 = 外观三件套）
+  Palette,
   AudioLines,
   Cpu,
   Minus,

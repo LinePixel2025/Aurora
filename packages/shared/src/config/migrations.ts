@@ -1121,6 +1121,34 @@ const migrateV30ToV31: Migration = {
   },
 }
 
+/**
+ * v31 → v32：为已有 `appearance` 补明暗档位与毛玻璃开关（docs/08 §1、docs/07 §5.1）。
+ *
+ * 两条默认值都是「保持 v32 之前的行为」：`theme: 'system'`（此前 `nativeTheme.themeSource`
+ * 恒为 system）与 `glass: true`（此前原生 Acrylic 与页面玻璃一直开着）。
+ * 与 v20 → v21 的 appearance 同一套路：整组缺失补完整默认，已存在时只补缺字段，
+ * 用户已写的 `accent`（以及未来任何已写值）原样保留、幂等。
+ */
+const migrateV31ToV32: Migration = {
+  from: 31,
+  to: 32,
+  describe: 'v31 → v32：新增 appearance.theme / glass（明暗档位与毛玻璃开关）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const appearance = asRecord(next['appearance'])
+    next['appearance'] =
+      appearance === undefined
+        ? { theme: 'system', accent: 'aurora', glass: true }
+        : {
+            ...appearance,
+            theme: appearance['theme'] ?? 'system',
+            glass: appearance['glass'] ?? true,
+          }
+    next['version'] = 32
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1153,6 +1181,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV28ToV29,
   migrateV29ToV30,
   migrateV30ToV31,
+  migrateV31ToV32,
 ]
 
 export interface MigrationOutcome {

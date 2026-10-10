@@ -368,6 +368,14 @@ function smokeSection(section: string): boolean {
   return smokeOnlyTokens.length === 0 || smokeOnlyTokens.some((token) => section.includes(token))
 }
 
+/**
+ * 截图运行强制的主题档位（`AURORA_CAPTURE_THEME=dark|light`，docs/07 §5.3）。
+ *
+ * 只在「开发态 + 设了 `AURORA_CAPTURE`」时非空。它的优先级**高于** `appearance.theme`：
+ * 两档主题截图基线不能被用户设置顶掉（设置里若是 `deep` 档，探针会全红而不是"跟着设置走"）。
+ * 因此这里存的是**运行期独占标记**，`syncAppearance()` 见到它就整个跳过。
+ */
+let captureThemeOverride: 'dark' | 'light' | undefined
 let logger: FileLogger | undefined
 let settings: SettingsStore | undefined
 let windows: WindowManager | undefined
@@ -785,8 +793,11 @@ async function bootstrap(): Promise<void> {
     isDev && (process.env['AURORA_CAPTURE'] ?? '').trim() !== ''
       ? (process.env['AURORA_CAPTURE_THEME'] ?? '').trim()
       : undefined
-  nativeTheme.themeSource =
-    captureTheme === 'dark' || captureTheme === 'light' ? captureTheme : 'system'
+  // 三档外观（v32）：截图运行由环境变量独占；其余启动由 `appearance.theme` 决定，
+  // 这里先把「运行期独占标记」定下来，`syncAppearance()` 之后每次都要看它一眼（见该函数注释）。
+  captureThemeOverride =
+    captureTheme === 'dark' || captureTheme === 'light' ? captureTheme : undefined
+  nativeTheme.themeSource = captureThemeOverride ?? 'system'
 
   // 1. 日志。自测的 userData 是临时目录且退出即删，因此自测日志写到固定位置，
   //    方便 `Get-Content "$env:TEMP\aurora-smoke-logs\aurora-*.log"` 查看断言结果。
@@ -2565,6 +2576,11 @@ async function bootstrap(): Promise<void> {
       logger?.setLevel(next.advanced.logLevel)
       void applyAdvancedNetwork(next.advanced.proxy)
       windows?.applyEdgeBarOpacity(next.general.edgeBar.opacity)
+      // 外观三件套（v32，docs/07 §5.1）：档位落到 `nativeTheme.themeSource`、
+      // 毛玻璃开关即时摘 / 挂原生材质（幂等，值没变时内部直接返回）。
+      // 渲染层那半走 `settings:changed` 广播 → settings store 的 watch，不需要在这里推。
+      syncThemeSource()
+      windows?.applyGlass(next.appearance.glass)
       // 快捷键改绑（幂等：值没变时内部直接返回，不会闪断）
       hotkeys?.apply(next.general.hotkey)
       if (!next.general.edgeBar.enabled) windows?.hide('edge-bar')
@@ -2610,6 +2626,10 @@ async function bootstrap(): Promise<void> {
   // 8.2.1 提示条透明度与独立勿扰时段（docs/07 §2.2、docs/08 §1）：
   //       透明度立即应用；勿扰由 EdgeBarScheduler 每 30s 判定，与 advanced.quietHours 相互独立。
   windows.applyEdgeBarOpacity(settings.get().general.edgeBar.opacity)
+  // 外观档位（v32）：建窗时 `WindowManager` 已按 `appearance.*` 取过值，这里补一次
+  // 主题同步 —— `bootstrap()` 早期把 themeSource 定在 `system`，配置读完要落到用户档位。
+  // 毛玻璃那半不需要：窗口还没创建时建窗路径就会读到正确值（`applyGlass` 只管已存在的窗口）。
+  syncThemeSource()
   edgeBarScheduler = new EdgeBarScheduler({
     // 首次引导期间不显示提示条：那时用户还没配好模型，竖条只会挡视线
     enabled: () => settings!.get().general.edgeBar.enabled && settings!.needsOnboarding() === false,
@@ -5627,6 +5647,26 @@ function syncAwarenessGlow(): void {
     if (!awarenessGlowShouldShow()) windows?.hideAwarenessGlow()
   }, AWARENESS_GLOW_FADE_OUT_MS)
   awarenessGlowHideTimer.unref?.()
+}
+
+/**
+ * 界面明暗档位的唯一落地入口（v32，docs/07 §5.1）。
+ *
+ * `appearance.theme` → `nativeTheme.themeSource`；渲染层不经过这里，它照旧只读
+ * `prefers-color-scheme`（`nativeTheme` 变更会同步过去），因此「改完即时生效」不需要重建窗口。
+ *
+ * 三条口径：
+ * - **截图运行独占**：`AURORA_CAPTURE_THEME` 有值时整个跳过（两档主题基线不被用户设置顶掉）；
+ * - 值没变就不赋值：避免无谓的 `updated` 广播与四窗底色同步；
+ * - 配置还没加载（`settings === undefined`）时直接返回 —— 启动时序上它先于窗口创建。
+ */
+function syncThemeSource(): void {
+  const current = settings?.get()
+  if (current === undefined || captureThemeOverride !== undefined) return
+  const theme = current.appearance.theme
+  if (nativeTheme.themeSource === theme) return
+  nativeTheme.themeSource = theme
+  logger?.info('界面明暗档位已切换', { theme })
 }
 
 function syncLaunchAtLogin(enabled: boolean): void {

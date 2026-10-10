@@ -237,7 +237,9 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     },
   },
   appearance: {
+    theme: 'system',
     accent: 'aurora',
+    glass: true,
   },
   llm: {
     active: '',

@@ -1215,6 +1215,18 @@ v0.7.0 起 Agent 能读写**自己的配置**：内核新增内置工具 `set_se
 | 工具 | 参数 | sensitivity | 实现文件 |
 |---|---|---|---|
 | `set_setting` | `{ action: 'get', path }` / `{ action: 'list', group? }` / `{ action: 'set', values: Array<{ path, value }> }` | confirm | `packages/agent-core/src/tools/settings.ts` + `apps/desktop/src/main/tools/settings-port.ts` |
+| `set_appearance`（v32） | `{ theme?, accent?, glass? }`（三个都可选；全缺 = 只读当前外观） | safe | `packages/agent-core/src/tools/appearance.ts` + **同一个** `settings-port.ts` |
+
+- **`set_appearance` 与 `set_setting` 的关系**：它不是第二条写入通道 —— 仍然复用 `SettingsToolPort`
+  （`canWriteSettingPath` 判定 → `applyPatch` → Schema 二次校验 → 审计日志），只是给「换主题 / 换强调色 /
+  开关毛玻璃」这三件事一个**无路径**的语义化入口：参数是三个固定枚举 / 布尔字段，模型不需要记住
+  `appearance.*` 的路径，也不可能借它写到别的配置上。
+  因此它的 `sensitivity` 是 `safe`：三项都是**纯视觉、即时可撤销**、不碰文件 / 路径 / 凭据，
+  `confirm` 权限档下不该为「把界面换成暗色」弹一张确认卡（`set_setting` 保持 `confirm`，
+  因为它能改的是一整片可写面）。注册与 `set_setting` 同口径：**不受** `agent.tools.enabled` 门控
+  （§12.6），也不随 `readonly` 档摘除 —— 可写面本身仍由覆盖表与黑名单约束。
+- 三个字段的合法取值：`theme` = `system | light | dark`，`accent` = `aurora | teal | violet | rose | amber`，
+  `glass` = 布尔。枚举外 / 类型不符**在工具层就地失败**（不会写进去一半，也不会把非法值留给 Schema）。
 
 - `get`：读一个路径的当前值（值经脱敏）。不可读的路径（凭据类）返回 `isError` 与「该路径不可读」，
   与 `set` 用的是**同一套可写性判定**——不可写即不可读。
@@ -1796,7 +1808,9 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
   「## Agent 可修改的设置」，位于工具使用规范之后、安全规则之前（§5 的固定小节顺序）；空片段自动省略。
 - 主进程在 `main/settings-hint.ts` 维护**一段固定中文清单**：逐条列出 §12.2 显式可写覆盖表
   同口径的路径（`llm.providers.<id>.model/modelParams.<modelId>.reasoningEffort`、`tts.*`、`stt.*`、
-  `imagegen.*` 开关、`general.edgeBar.*`、`general.chat.showThinking`、`modes.current`、
+  `imagegen.*` 开关、`general.edgeBar.*`、`general.chat.showThinking`、
+  `appearance.theme / accent / glass`（v32 起；同一批字段也有语义化工具 `set_appearance`，见 §12.1）、
+  `modes.current`、
   `modes.classroom.*`、
   `agent.tools` 下的**逐条枚举**——`enabled` / `workspaceDir` /
   `terminal.{enabled,timeoutMs,maxOutputChars}` / `files.{enabled,maxReadBytes}` /

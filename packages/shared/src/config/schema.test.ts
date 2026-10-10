@@ -853,6 +853,18 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     expect(settingsReadonlyReason('agent.tools.search.maxResults')).toBeUndefined()
   })
 
+  it('外观三件套对 AI 开放（v32：主题 / 强调色 / 毛玻璃）', () => {
+    // 覆盖表登记了这三条（`set_setting` 工具描述、settingsHint 与 `set_appearance` 都向模型
+    // 承诺可写），任一条被判不可写就是「说能改但不能改」。
+    for (const path of ['appearance.theme', 'appearance.accent', 'appearance.glass']) {
+      expect(canWriteSettingPath(path), path).toBe(true)
+      expect(settingsReadonlyReason(path), path).toBeUndefined()
+    }
+    // 负对照：整组仍不是无差别放行 —— 不存在的子路径要落到「未知配置路径」那条兜底
+    expect(canWriteSettingPath('appearance.unknown')).toBe(false)
+    expect(settingsReadonlyReason('appearance.unknown')).toBe('未知配置路径')
+  })
+
   it('引导 / 首次运行 / 开机自启三个前缀不可被悄悄移出黑名单', () => {
     for (const path of ['general.launchAtLogin', 'general.onboarded', 'general.firstRun']) {
       expect(canWriteSettingPath(path), path).toBe(false)

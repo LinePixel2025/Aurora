@@ -32,9 +32,14 @@
     // 各窗口位置 / 尺寸记忆，key 集合见 WINDOW_NAMES
     "windowState": {},
   },
-  // v21 新增：外观自定义（用户在设置页选，Agent 也可经 set_setting 调）
+  // v21 新增：外观自定义（用户在设置页「通用 → 外观」选，Agent 也可经 set_setting / set_appearance 调）
   "appearance": {
+    // v32 新增：明暗档位。system 跟随系统（默认）| light 亮色 | dark 暗色。
+    // 落到主进程的 nativeTheme.themeSource，渲染层照旧只读 prefers-color-scheme（见 07 §5.1）
+    "theme": "system",
     "accent": "aurora", // 界面强调色：aurora 品牌蓝（默认）| teal | violet | rose | amber
+    // v32 新增：界面毛玻璃总开关。false = 原生 Acrylic 与页面内 .glass-* 一起退为实色（见 07 §5.1）
+    "glass": true,
   },
   "llm": {
     "active": "deepseek",
@@ -396,7 +401,7 @@
   AI 把窗口改大或打开视觉，只是把一条假事实告诉用户，出问题的还是用户）；`temperature` 已随
   v23 从 Schema 删除，不再存在这条可写路径（请求也不再下发它，见 06 §3）；
   ② **显式登记** —— `tts.enabled|active|autoRead|maxChars`、
-  `stt.enabled|active`、`imagegen.enabled|active`、`general.edgeBar.enabled|opacity|quietHours|display|position`、`appearance.accent`、
+  `stt.enabled|active`、`imagegen.enabled|active`、`general.edgeBar.enabled|opacity|quietHours|display|position`、`appearance.theme|accent|glass`、
   `general.chat.showThinking`、`modes.current`、`agent.tools.*`
   （`terminal.allowPatterns` **除外** —— 它在黑名单里，见 §1）、
   `skills.userDir|disabled`、`advanced.quietHours` 等本就可写的路径逐条入表
@@ -682,7 +687,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
   `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（`maxRounds` / 预算 /
   自动续轮等）热路径使用，避免每 attempt 深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 31`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 32`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -768,11 +773,15 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `v29 → v30`（**游戏模式**：为已有 `general` 补 `gameMode: { enabled: true }`；
   `general` 组缺失时不凭空造半截对象）、
   `v30 → v31`（**Center 官方模型**：为已有 `center` 补四类默认关闭选择；
-  `center` 组缺失时交给默认配置兜底）。
-  三十一条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  `center` 组缺失时交给默认配置兜底）、
+  `v31 → v32`（**外观：明暗档位与毛玻璃开关**，见 §1 的 `appearance`：为已有 `appearance`
+  补 `theme: 'system'` 与 `glass: true` 两个缺字段，用户已写的 `accent` 与已写值原样保留；
+  `appearance` 整组缺失时补完整默认 `{ theme: 'system', accent: 'aurora', glass: true }`
+  —— 与 `v20 → v21` 的 appearance 同一套路）。
+  三十二条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**），重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **31** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **32** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程

@@ -1112,6 +1112,7 @@ describe('配置迁移链', () => {
         'v28 → v29：v28 → v29：补齐 fileAwareness 记忆过期与后台模型',
         'v29 → v30：v29 → v30：新增 general.gameMode（游戏模式联动，默认开启）',
         'v30 → v31：v30 → v31：新增 center.officialModels（Center 官方模型，默认全部关闭）',
+        'v31 → v32：v31 → v32：新增 appearance.theme / glass（明暗档位与毛玻璃开关）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1155,6 +1156,7 @@ describe('配置迁移链', () => {
         'v28 → v29：v28 → v29：补齐 fileAwareness 记忆过期与后台模型',
         'v29 → v30：v29 → v30：新增 general.gameMode（游戏模式联动，默认开启）',
         'v30 → v31：v30 → v31：新增 center.officialModels（Center 官方模型，默认全部关闭）',
+        'v31 → v32：v31 → v32：新增 appearance.theme / glass（明暗档位与毛玻璃开关）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1571,6 +1573,7 @@ describe('配置迁移链', () => {
         'v28 → v29：v28 → v29：补齐 fileAwareness 记忆过期与后台模型',
         'v29 → v30：v29 → v30：新增 general.gameMode（游戏模式联动，默认开启）',
         'v30 → v31：v30 → v31：新增 center.officialModels（Center 官方模型，默认全部关闭）',
+        'v31 → v32：v31 → v32：新增 appearance.theme / glass（明暗档位与毛玻璃开关）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -1651,13 +1654,14 @@ describe('配置迁移链', () => {
         version: 25,
         general: { windowState: { chat: { x: 10, y: 20, width: 1120, height: 720 } } },
       })
-      expect(outcome.applied).toHaveLength(6)
+      expect(outcome.applied).toHaveLength(7)
       expect(outcome.applied[0]).toContain('v25 → v26')
       expect(outcome.applied[1]).toContain('v26 → v27')
       expect(outcome.applied[2]).toContain('v27 → v28')
       expect(outcome.applied[3]).toContain('v28 → v29')
       expect(outcome.applied[4]).toContain('v29 → v30')
       expect(outcome.applied[5]).toContain('v30 → v31')
+      expect(outcome.applied[6]).toContain('v31 → v32')
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(chatOf(outcome.data)).toEqual({ x: 10, y: 20, width: 1280, height: 800 })
     })
@@ -1735,7 +1739,8 @@ describe('配置迁移链', () => {
         defaultMemoryTtlDays: 0,
         backgroundModel: { providerId: '', model: '' },
       })
-      expect(missing.applied).toHaveLength(4)
+      expect(missing.applied).toHaveLength(5)
+      expect(missing.applied[4]).toContain('v31 → v32')
 
       const existing = migrate({
         version: 27,
@@ -1768,7 +1773,8 @@ describe('配置迁移链', () => {
           dailyAnalysisLimit: 7,
         },
       })
-      expect(missing.applied).toHaveLength(3)
+      expect(missing.applied).toHaveLength(4)
+      expect(missing.applied[3]).toContain('v31 → v32')
       expect(missing.data['fileAwareness']).toEqual({
         enabled: true,
         contentConsentAccepted: false,
@@ -1802,7 +1808,8 @@ describe('配置迁移链', () => {
         version: 29,
         general: { language: 'zh-CN' },
       })
-      expect(missing.applied).toHaveLength(2)
+      expect(missing.applied).toHaveLength(3)
+      expect(missing.applied[2]).toContain('v31 → v32')
       expect(missing.data['general']).toEqual({
         language: 'zh-CN',
         gameMode: { enabled: true },
@@ -1836,7 +1843,8 @@ describe('配置迁移链', () => {
         version: 30,
         center: { enabled: true, serverUrl: 'wss://center.example.com' },
       })
-      expect(missing.applied).toHaveLength(1)
+      expect(missing.applied).toHaveLength(2)
+      expect(missing.applied[1]).toContain('v31 → v32')
       expect(missing.data['center']).toMatchObject({
         enabled: true,
         serverUrl: 'wss://center.example.com',
@@ -1859,6 +1867,45 @@ describe('配置迁移链', () => {
       expect(
         (existing.data['center'] as { officialModels: { llm: unknown } }).officialModels.llm,
       ).toEqual({ enabled: true, model: 'model-a' })
+    })
+  })
+
+  describe('v31 → v32（外观：明暗档位与毛玻璃开关）', () => {
+    const appearanceOf = (raw: Record<string, unknown>): Record<string, unknown> =>
+      raw['appearance'] as Record<string, unknown>
+
+    it('为已有 appearance 补 theme / glass，用户已写的 accent 原样保留', () => {
+      const outcome = migrate({ version: 31, appearance: { accent: 'violet' } })
+      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied[0]).toContain('v31 → v32')
+      expect(appearanceOf(outcome.data)).toEqual({
+        theme: 'system',
+        accent: 'violet',
+        glass: true,
+      })
+      // 两条默认值都是「保持 v32 之前的行为」：主题跟随系统、毛玻璃开着
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+      expect(
+        SettingsSchema.safeParse({ ...createDefaultSettings(), ...outcome.data }).success,
+      ).toBe(true)
+    })
+
+    it('用户已写的 theme / glass 不被覆盖（幂等）', () => {
+      const once = migrate({
+        version: 31,
+        appearance: { theme: 'dark', accent: 'teal', glass: false },
+      })
+      expect(appearanceOf(once.data)).toEqual({ theme: 'dark', accent: 'teal', glass: false })
+
+      const twice = migrate({ ...once.data, version: 31 })
+      expect(twice.data['appearance']).toEqual(once.data['appearance'])
+      expect(appearanceOf(twice.data)['glass']).toBe(false)
+    })
+
+    it('appearance 整组缺失时补完整默认（与 v20 → v21 同一套路）', () => {
+      const outcome = migrate({ version: 31, general: { language: 'zh-CN' } })
+      expect(appearanceOf(outcome.data)).toEqual({ theme: 'system', accent: 'aurora', glass: true })
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
     })
   })
 })

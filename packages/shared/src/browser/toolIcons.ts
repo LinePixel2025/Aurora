@@ -20,6 +20,8 @@ import {
   ImageIcon,
   ListChecks,
   MessageSquare,
+  // 外观三件套（v32）：与「设置」的齿轮分开 —— 这条改的是界面观感，不是配置面
+  Palette,
   PanelRight,
   Puzzle,
   School,
@@ -67,6 +69,8 @@ const TOOL_ICONS: Record<string, Component> = {
   // 向用户提问（docs/06 §21）：对话气泡（「问了一句」的语义），与 notify_user 的铃铛区分开
   ask_user: MessageSquare,
   set_setting: SettingsGear,
+  // 外观（v32，docs/06 §12.1）：纯视觉偏好，用调色板与「设置」的齿轮区分开
+  set_appearance: Palette,
   // ClassIsland 联动（v3）
   classisland_remind: School,
 }

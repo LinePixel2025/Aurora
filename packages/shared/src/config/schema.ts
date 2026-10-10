@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 31 as const
+export const CONFIG_VERSION = 32 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -76,12 +76,37 @@ export const GameModeSchema = z.object({
 export type GameModeSettings = z.infer<typeof GameModeSchema>
 
 /**
- * 外观自定义（v21，docs/08 §1）：用户在设置页选，Agent 也可经 `set_setting` 调
- * （`appearance.accent` 在 `WRITABLE_PATH_OVERRIDES` 登记）。渲染层由
- * `shared/appearance.ts` 应用到文档根 —— `aurora` = 内置品牌蓝（移除覆盖，跟随明暗档）。
+ * 明暗档位（v32，docs/08 §1 / docs/07 §5.1）：`system` 跟随系统（默认，保持 v32 之前的行为），
+ * `light` / `dark` 由用户显式锁定。主进程把它落到 `nativeTheme.themeSource`，
+ * 渲染层照旧只读 `prefers-color-scheme`（**没有** `data-theme` 属性）。
+ */
+export const APPEARANCE_THEME_MODES = ['system', 'light', 'dark'] as const
+export const AppearanceThemeSchema = z.enum(APPEARANCE_THEME_MODES)
+export type AppearanceTheme = z.infer<typeof AppearanceThemeSchema>
+
+/**
+ * 强调色档位（v21）：`aurora` = 内置品牌蓝（默认）。**色值不在这一层** ——
+ * 渲染层的色值与中文名在 `renderer/shared/appearance.ts` / 设置页，这里只保证
+ * 「哪些键合法」只有一份（`set_appearance` 工具与设置页都照它校验，别各写一份枚举）。
+ */
+export const APPEARANCE_ACCENT_KEYS = ['aurora', 'teal', 'violet', 'rose', 'amber'] as const
+export const AppearanceAccentSchema = z.enum(APPEARANCE_ACCENT_KEYS)
+export type AppearanceAccent = z.infer<typeof AppearanceAccentSchema>
+
+/**
+ * 外观自定义（v21 新增强调色，v32 扩为三件套，docs/08 §1）：用户在设置页「通用 → 外观」选，
+ * Agent 也可经 `set_setting`（`appearance.*` 三条都在 `WRITABLE_PATH_OVERRIDES` 登记）
+ * 或语义化工具 `set_appearance`（docs/06 §12.1）调。渲染层由
+ * `shared/appearance.ts` 应用到文档根 —— `aurora` = 内置品牌蓝（移除覆盖，跟随明暗档）；
+ * `glass: false` 在文档根挂 `data-glass="off"`，由 `theme.css` 把毛玻璃降级为实色。
+ *
+ * 三个字段都不带 `.default()`：默认值只有 `createDefaultSettings()` 与迁移链两处来源
+ * （与同文件 `general.edgeBar.display` 同款形状），避免「Schema 默认值」与「迁移补值」两份口径。
  */
 export const AppearanceSchema = z.object({
-  accent: z.enum(['aurora', 'teal', 'violet', 'rose', 'amber']),
+  theme: AppearanceThemeSchema,
+  accent: AppearanceAccentSchema,
+  glass: z.boolean(),
 })
 export type AppearanceSettings = z.infer<typeof AppearanceSchema>
 
@@ -1165,7 +1190,9 @@ export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
   { pattern: 'general.edgeBar.display', reason: '切换提示条贴附的显示器' },
   { pattern: 'general.edgeBar.position', reason: '切换提示条贴附的屏幕侧' },
   { pattern: 'general.gameMode.enabled', reason: '开关游戏模式联动' },
+  { pattern: 'appearance.theme', reason: '切换界面明暗档位（跟随系统 / 亮色 / 暗色）' },
   { pattern: 'appearance.accent', reason: '切换界面强调色主题' },
+  { pattern: 'appearance.glass', reason: '开关界面毛玻璃效果（关掉后窗口与面板变实色）' },
   { pattern: 'general.chat.showThinking', reason: '开关对话界面的思考过程展示' },
   // 模式
   { pattern: 'modes.current', reason: '切换当前模式' },

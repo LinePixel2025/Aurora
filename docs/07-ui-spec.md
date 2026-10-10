@@ -150,6 +150,9 @@
   自动回退原有不透明 `--bg-base`，不得用透明窗口裸漏桌面。设置窗与记忆库同样启用原生 Mica
   （侧栏使用标准玻璃、内容区叠 `--glass-content` 可读性 tint）；引导窗继续保持
   不透明基座，避免所有窗口同时采样桌面造成 GPU 重绘与可读性问题。
+  **v32 起受 `appearance.glass` 门控**：该开关为 `false` 时窗口管理器不挂系统材质、
+  底色改回不透明 `--bg-base`，已存在的窗口由 `applyGlass(false)` 即时摘除材质（关闭=实色，
+  与页面令牌降级同一时刻生效）。
   **Electron 44 起恢复系统原生最大化**：Electron 33 的 `backgroundMaterial` 会在
   `WS_MAXIMIZE` 后把 Acrylic 锁成灰底，旧版曾用工作区缩放规避；Electron 44 已修复材质
   更新链路，chat / settings / memory 恢复调用 `BrowserWindow.maximize()` / `unmaximize()`，
@@ -1174,6 +1177,10 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   当前项用分层填充 + 左侧**强调色**指示条（不再用品牌渐变）。合并口径：Skill 与 MCP 并入 `agent` 页、
   STT 并入 `voice` 页、生图模型并入 `llm` 页、勿扰时段并入 `general` 页（全局 + 提示条两组同区）；
   旧深链兼容映射：`?page=tts→voice`、`?page=skills|mcp→agent`。
+- **「通用」页「外观」区组（v21 起强调色、v32 起三件套）**：主题（`data-field="appearance.theme"`，
+  三段式按钮「跟随系统 / 亮色 / 暗色」）→ 强调色（`data-field="appearance.accent"`，圆点色板）→
+  毛玻璃（`data-field="appearance.glass"`，复选框）。三项都是**改动即落盘**，主进程与四个窗口即时跟随，
+  不需要「保存」按钮；Agent 侧同一份字段由 `set_setting` / `set_appearance` 改（见 06 §12）。
 
 ### 2.6 记忆库窗口
 
@@ -1339,10 +1346,13 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
   阴影留给悬停和浮层；留白充足，右栏与主区之间用分隔而非悬浮卡片。
   **品牌不再使用双色渐变**：强调色 = Apple 系统蓝纯色，`--aurora-gradient` 即纯强调色值，
   全仓禁用 aurora 绿×蓝的 135° 斜向品牌渐变（功能性渐变如遮罩渐隐允许，须注释说明）；
-  不用霓虹 / 渐变彩带 / 拟物。**明暗跟随系统**：默认深色，Windows 外观切到浅色时四窗同步切换
-  （令牌与窗口底色口径见 §5.1「系统明暗双档」，截图验收见 §5.3）；不提供手动主题开关。
+  不用霓虹 / 渐变彩带 / 拟物。**明暗三档（v32 起可手动选）**：默认「跟随系统」（Windows 外观切到
+  浅色时四窗同步切换），用户也可在「通用 → 外观」显式锁定亮色 / 暗色；两档令牌与窗口底色口径见
+  §5.1「系统明暗双档」，截图验收见 §5.3。
   Aurora Glass 2.0 把毛玻璃从“少量浮层专属”推进到所有固定工作台：窗口画布、侧栏、顶部栏、
   输入区、设置与引导壳体、提示条、记忆库和 Center 工作台共享同一套 frosted 材质；
+  **v32 起可用 `appearance.glass` 整体关闭**（原生 Acrylic 与页面内 `.glass-*` 一起退为实色，
+  口径见 §5.1）。
   正文卡片与重复列表只使用轻透明表面，不逐项叠加 `backdrop-filter`，避免滚动时产生嵌套模糊重绘。
   左栏 / 右栏 / 设置侧栏 / 记忆库笔记列 / Center 导轨统一挂 `.rail-surface`：顶部极淡纵向高光、
   直线内缘与渐隐 hairline 组成一块连续工作台，不再用通长实线边框成「矩形套圆矩形」；
@@ -1390,13 +1400,21 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
 - 输入卡使用 `--glass-input`：它由内容 tint 与轻抬升表面混合，避免输入区再嵌套一层 `glass-bar` 后合成成不协调的白色实底。
 - 画布新增低对比度 `--canvas-*` 纹理，只作为玻璃背景采样层，不承担品牌装饰；不得新增离散光斑、渐变球或彩色 bokeh。
 - 系统要求减少透明度或提高对比度时，全部玻璃退回不透明材质；`prefers-reduced-motion` 继续沿用全局 1ms 降级。
+  **v32 起另有一条应用内开关**：`appearance.glass = false` 时渲染层在文档根挂 `data-glass="off"`，
+  `theme.css` 用**与上面这条系统降级同一份令牌口径**（三档 `--glass-filter*: none` + 玻璃面换实色令牌 +
+  画布采样层透明）把页面玻璃退成实色，并额外把 `--glass-fallback` 压成 `--bg-base`
+  （提示条的圆角面板走 `color-mix(--glass-fallback 94%, transparent)`，不压就仍是约 90% 半透明）；
+  原生材质那半由主进程 `WindowManager.applyGlass()` 摘掉（`setBackgroundMaterial('none')` + 不透明底色）。
+  **已知限制**：原生 Acrylic 是否跟随应用档位由 DWM 决定，系统级限制（`prefers-reduced-transparency`）
+  只降级页面令牌、不摘原生材质。
 
 **系统明暗双档（BetaV2 值已更新）**：默认深色保留上表暗档值；`@media (prefers-color-scheme: light)` 覆盖
 语义层及 `color-scheme: light`，基座 `#f5f5f7`、抬升面 `#ffffff`、玻璃白 `rgba(255,255,255,.72)`、
 主字 `#1d1d1f`、次字 `#6e6e73`、弱字 `#aeaeb2`、描边 `#d1d1d6` / `#c7c7cc`；
 强调与状态随档位切到 Apple 亮档系统色（蓝 `#007AFF` / 绿 `#34C759` / 红 `#FF3B30` / 橙 `#FF9500`），
 文字态再用可读的加深变体；焦点、危险按钮、选区、玻璃回退及阴影成对覆盖。
-Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观 `updated` 后非透明的
+Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起；默认 `system`，
+用户显式选了 `light` / `dark` 就锁定该档，主进程在启动与每次配置变更时同步一次）；创建和系统外观 `updated` 后非透明的
 主界面/设置/引导窗口底色与 CSS 基座一致（**BetaV2**：深 `#000000`、浅 `#f5f5f7`），提示条始终透明，
 所有窗口几何与用户配置不随主题改变。
 
@@ -1470,7 +1488,9 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
 
 - **双主题截图（step-06）**：只在**同时**指定 `AURORA_CAPTURE_THEME=dark|light` 与 `AURORA_CAPTURE=<目录>` 的
   开发截图运行里，`bootstrap()` 会在**创建任何窗口之前**把 `nativeTheme.themeSource` 设为该档；
-  普通启动（含只设 `AURORA_CAPTURE`、不指定档位）一律回到 `system`，即跟随 Windows 外观。
+  **该环境变量档位高于 `appearance.theme`（v32 起）**——截图运行期间设置里的档位不参与，
+  否则两档基线会被用户配置顶掉；普通启动（含只设 `AURORA_CAPTURE`、不指定档位）一律由
+  `appearance.theme` 决定（默认 `system`，即跟随 Windows 外观）。
   每窗各有一张主题场景：`theme-edge-bar.png` / `theme-chat.png` / `theme-settings.png` / `theme-onboarding.png`
   （引导那张排在五段序列**之前**：只等第 0 段就位、不点页脚按钮，因此阶段推进与原有五条断言不受影响；
   交互窗那张排在最前，仍在 `chat-collapse.png` 之前）。主题探针 `themeProbeScript` 断言四件事：
@@ -1546,7 +1566,11 @@ Electron `nativeTheme.themeSource` 常态保持 `system`；创建和系统外观
      `settings-tts-card.png`（深链用旧 id `tts`，顺带覆盖「旧链接上编辑卡流程照常可用」）→
      `settings-stt-card.png`（v24 新增；深链用新页 id `voice`，打开 STT 编辑卡并断言
      「接口协议」切到阿里云原生时 baseURL 提示词被改写）→
-     `settings-classroom-patch.png` → `settings-modes-work-gating.png`。
+     `settings-classroom-patch.png` → `settings-modes-work-gating.png` →
+     `settings-appearance-glass-off.png`（v32：act 关掉 `appearance.glass`，`mainAct` 断言**原生材质真的摘掉**
+     —— 必须在 check 的还原动作之前读，放到 `nativeCheck` 只会读到"已还原"的假结果；
+     check 断言文档根 `data-glass="off"` 与 `--glass-filter: none` / `--glass-content` 换成基座色，
+     收尾还原成开，后续场景与两档主题图仍看到默认档）。
      「思考等级 / 结构 / 模型列表」三条的配置改写与恢复口径见下面各条探针说明。
   5. **提示条收尾**：`edge-bar-collapsed-final.png`（收起，不留展开态）→
      `edge-bar-after-click.png`（先 `hide('chat')` 复位再点竖条，回归「点击呼出交互窗」）。

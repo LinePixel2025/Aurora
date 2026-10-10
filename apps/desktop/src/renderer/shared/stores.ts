@@ -30,9 +30,10 @@ export const useSettingsStore = defineStore('settings', () => {
   const error = ref<string | null>(null)
   const loading = ref(false)
 
-  // 外观跟随（v21）：settings 的每一条落回路径（load / update / reset / bind 推送）
-  // 都会写 `settings.value`，在这里统一应用强调色，四个窗口无需各接一遍。
-  watch(settings, (next) => applyAppearance(next?.appearance?.accent), { immediate: true })
+  // 外观跟随（v21 强调色；v32 起连毛玻璃一起）：settings 的每一条落回路径
+  // （load / update / reset / bind 推送）都会写 `settings.value`，在这里统一应用，
+  // 四个窗口无需各接一遍。明暗档位不在这里 —— 它落在主进程的 nativeTheme（见 appearance.ts）。
+  watch(settings, (next) => applyAppearance(next?.appearance), { immediate: true })
 
   async function load(): Promise<void> {
     loading.value = true

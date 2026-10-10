@@ -79,7 +79,9 @@ const edgeDisplay = ref(general.value?.edgeBar.display ?? 'primary')
 const edgePosition = ref(general.value?.edgeBar.position ?? 'right')
 const gameModeEnabled = ref(general.value?.gameMode.enabled ?? true)
 
-// ── 外观自定义（v21，docs/08 §1）：强调色主题，Agent 也可经 set_setting 调 ──
+// ── 外观自定义（v21 强调色；v32 扩为明暗档位 / 强调色 / 毛玻璃，docs/08 §1）──
+// 三项都「改动即落盘」：渲染层由 settings store 的 watch 应用到文档根，原生材质与
+// nativeTheme 由主进程在 onSettingsChanged 里同步，不需要重启、也没有「保存」按钮。
 
 /** 与 renderer/shared/appearance.ts 的 ACCENT_PRESETS 同一份约定（色值改两处要同步） */
 const ACCENTS = {
@@ -109,6 +111,41 @@ async function saveAccent(key: AccentKey): Promise<void> {
   if (ok) accent.value = key
   else error.value = settingsStore.error
 }
+
+/**
+ * 明暗档位（v32）：三档固定枚举，主进程把它落到 `nativeTheme.themeSource`，
+ * 渲染层的 `prefers-color-scheme` 随之变化 —— 这里只负责落盘与回读。
+ */
+const THEMES = [
+  { key: 'system', label: '跟随系统' },
+  { key: 'light', label: '亮色' },
+  { key: 'dark', label: '暗色' },
+] as const
+
+type ThemeKey = (typeof THEMES)[number]['key']
+
+const theme = ref<ThemeKey>(settingsStore.settings?.appearance?.theme ?? 'system')
+
+async function saveTheme(key: ThemeKey): Promise<void> {
+  if (key === theme.value) return
+  const ok = await settingsStore.update({ appearance: { theme: key } })
+  if (ok) theme.value = key
+  else error.value = settingsStore.error
+}
+
+/**
+ * 毛玻璃总开关（v32）：关掉后渲染层把玻璃令牌降级为实色、主进程摘掉原生 Acrylic
+ * （见 docs/07 §5.1）。两侧由同一份配置驱动，不存在"只关一半"。
+ */
+const glass = ref(settingsStore.settings?.appearance?.glass !== false)
+
+async function saveGlass(next: boolean): Promise<void> {
+  if (next === glass.value) return
+  const ok = await settingsStore.update({ appearance: { glass: next } })
+  if (ok) glass.value = next
+  else error.value = settingsStore.error
+}
+
 const saved = ref<string | null>(null)
 const error = ref<string | null>(null)
 
@@ -185,6 +222,8 @@ watch(
     edgePosition.value = next.general.edgeBar.position
     gameModeEnabled.value = next.general.gameMode.enabled
     accent.value = next.appearance?.accent ?? 'aurora'
+    theme.value = next.appearance?.theme ?? 'system'
+    glass.value = next.appearance?.glass !== false
   },
   { immediate: true },
 )
@@ -286,10 +325,26 @@ async function toggleEdgeBar(): Promise<void> {
       </SettingField>
     </section>
 
-    <!-- 外观自定义（v21，docs/08 §1）：强调色主题；Agent 也可经 set_setting 调同一字段 -->
+    <!-- 外观三件套（v21 强调色，v32 加明暗档位与毛玻璃）：Agent 也可经 set_appearance 调 -->
     <section class="section-card">
       <h2 class="section-title">外观</h2>
-      <p class="section-desc">界面强调色，改完即时生效，四个窗口统一跟随。</p>
+      <p class="section-desc">明暗档位、强调色与毛玻璃，改完即时生效，四个窗口统一跟随。</p>
+
+      <SettingField data-field="appearance.theme" label="主题" hint="默认跟随系统外观">
+        <div class="theme-row" role="radiogroup" aria-label="主题">
+          <button
+            v-for="item in THEMES"
+            :key="item.key"
+            type="button"
+            class="theme-option"
+            :class="{ active: theme === item.key }"
+            :aria-pressed="theme === item.key"
+            @click="saveTheme(item.key)"
+          >
+            {{ item.label }}
+          </button>
+        </div>
+      </SettingField>
 
       <SettingField data-field="appearance.accent" label="强调色" hint="默认为品牌蓝">
         <div class="accent-row" role="radiogroup" aria-label="强调色">
@@ -305,6 +360,10 @@ async function toggleEdgeBar(): Promise<void> {
             @click="saveAccent(key)"
           />
         </div>
+      </SettingField>
+
+      <SettingField data-field="appearance.glass" label="毛玻璃" hint="关闭后窗口与面板变为实色">
+        <input :checked="glass" type="checkbox" @change="saveGlass(!glass)" />
       </SettingField>
     </section>
 
@@ -544,6 +603,36 @@ async function toggleEdgeBar(): Promise<void> {
 /* 页面骨架由设置窗口提供；页面卡片沿用同一半径和静止边界。 */
 .page > .section-card {
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-hairline);
+}
+
+/* 主题三档（外观，v32）：分段控件，与 Agent 页「网页打开方式」同一套形状与状态色 */
+.theme-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--fill-1);
+}
+
+.theme-option {
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  border-radius: calc(var(--radius-sm) - 2px);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.theme-option:hover {
+  background: var(--fill-2);
+  color: var(--text-primary);
+}
+
+.theme-option.active {
+  background: var(--bg-overlay);
+  color: var(--text-primary);
   box-shadow: var(--shadow-hairline);
 }
 

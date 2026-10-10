@@ -202,8 +202,8 @@ function settingsWith(overrides: {
       defaultMemoryTtlDays: 0,
       backgroundModel: { providerId: '', model: '' },
     },
-    // v21 新增顶层分组（外观，docs/08 §1）：本用例不涉及外观，保持默认态
-    appearance: { accent: 'aurora' },
+    // v21 新增顶层分组（外观，docs/08 §1）：本用例不涉及外观，保持默认态（v32 起三件套）
+    appearance: { theme: 'system', accent: 'aurora', glass: true },
   }
 }
 
