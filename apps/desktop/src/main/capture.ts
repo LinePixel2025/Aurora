@@ -839,12 +839,34 @@ export const CHAT_AUTO_SCROLL_SCRIPT = `(async () => {
     filler.style.height = '1600px'
     filler.style.flexShrink = '0'
     list.appendChild(filler)
-    await wait(150)
+    // 等吸底跟上：**有界轮询**，不是固定 150ms（2026-10-10 改）。
+    //
+    // 旧值 150ms → 新值「最多 1000ms、每 50ms 一轮」，依据与边界：
+    // - 旧写法的隐含假设是「150ms 内一定跟上」，而吸底是渲染层的观察者 + 一帧对齐才落位，
+    //   机器一忙（本机是虚拟显示适配器压低合成器帧率）就会晚于 150ms —— 实测失败态
+    //   followed 恰好等于填充高度（1613），即吸底一次都没跟上，而**下一轮同一条探针
+    //   又报 followed 1**，说明这是时序抖动而不是功能坏掉。
+    // - 因此这里改成**等真实结果**（followed <= 4）而不是等时间；followed 仍取
+    //   **等待结束后的最终读数**，pass 判据一字未改（仍要求 followed <= 4）。
+    // - 为什么仍能抓住真回归：等待是**有界**的 —— 1000ms 到期就如实把
+    //   followedAfterWait / timedOut 写进 payload 并判 FAIL。吸底真坏掉时，
+    //   1000ms 内（旧判据的 6.7 倍窗口）它一次都不会跟上，followed 会停在
+    //   填充高度量级（上千），不可能靠"多等一会儿"自愈：本探针不派发任何输入事件，
+    //   等待期间没有任何东西会替它把视口拨到底。反向复核用「插入后阻塞主线程 400ms」
+    //   证明旧判据会红、新判据仍绿（见 step-04 执行记录）。
+    let followed = 0
+    let attempts = 0
+    let timedOut = false
+    for (; attempts < 20; attempts += 1) {
+      followed = Math.round(thread.scrollHeight - thread.scrollTop - thread.clientHeight)
+      if (followed <= 4) break
+      await wait(50)
+    }
+    timedOut = followed > 4
     // 排障：填充前后各读一次读数与"跟随胶囊是否存在"（气泡在 = following 已被关掉）
     const jumpBeforeProgrammatic = list.querySelector('.jump-latest') !== null
     const maxScroll = Math.round(thread.scrollHeight - thread.clientHeight)
     const scrolled = Math.round(thread.scrollTop)
-    const followed = maxScroll - scrolled
     const scrollHeight = Math.round(thread.scrollHeight)
     const clientHeight = thread.clientHeight
 
@@ -891,6 +913,10 @@ export const CHAT_AUTO_SCROLL_SCRIPT = `(async () => {
       pass: maxScroll >= 200 && followed <= 4 && jumpAfterScroll && jump.present && jump.inView && restored,
       scrollable: maxScroll >= 200,
       followed,
+      // 轮询的见证：等了多久 / 等了几轮 / 是不是等到超时（超时即"吸底一次都没跟上"）
+      awaitedMs: attempts * 50,
+      attempts,
+      timedOut,
       jumpAfterScroll,
       scrolled,
       maxScroll,
