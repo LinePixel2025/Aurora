@@ -822,7 +822,16 @@ export const CHAT_AUTO_SCROLL_SCRIPT = `(async () => {
     if (thread === null || list === null) {
       return { pass: false, reason: 'no .thread/.messages' }
     }
-    const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()))
+    // 等两帧渲染（**有界**，2026-10-10）：窗口被隐藏时 Chromium 不派发 rAF，
+    // 裸 requestAnimationFrame 的 promise 永不 settle → 整轮截图卡死且不写 report.json。
+    // 配 120ms 兜底 + 页面不可见时走定时器快路径：可见时行为与原来一致。
+    const frame = () =>
+      document.hidden === true
+        ? new Promise((resolve) => setTimeout(resolve, 32))
+        : Promise.race([
+            new Promise((resolve) => requestAnimationFrame(() => resolve())),
+            new Promise((resolve) => setTimeout(resolve, 120)),
+          ])
     const settle = async (count) => {
       for (let index = 0; index < count; index += 1) await frame()
     }
@@ -949,7 +958,17 @@ export const CHAT_FOLLOW_BURST_SCRIPT = `(async () => {
     if (thread === null || list === null) {
       return { pass: false, reason: 'no .thread/.messages' }
     }
-    const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()))
+    // 等两帧渲染（**有界**，2026-10-10）：窗口被隐藏时 Chromium 不派发 rAF，
+    // 裸 requestAnimationFrame 的 promise 永不 settle → 整轮截图卡死且不写 report.json
+    //（本轮实测：g-full-dark-1 在 chat.png 之后挂死 20 分钟、report.json 一张没写）。
+    // 配 120ms 兜底 + 页面不可见时走定时器快路径：可见时行为与原来一致。
+    const frame = () =>
+      document.hidden === true
+        ? new Promise((resolve) => setTimeout(resolve, 32))
+        : Promise.race([
+            new Promise((resolve) => requestAnimationFrame(() => resolve())),
+            new Promise((resolve) => setTimeout(resolve, 120)),
+          ])
     const distanceToBottom = () =>
       Math.round(thread.scrollHeight - thread.scrollTop - thread.clientHeight)
 
@@ -1030,7 +1049,16 @@ export const CHAT_FOLLOW_WHEEL_UP_SCRIPT = `(async () => {
     if (thread === null || list === null) {
       return { pass: false, reason: 'no .thread/.messages' }
     }
-    const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()))
+    // 等两帧渲染（**有界**，2026-10-10）：窗口被隐藏时 Chromium 不派发 rAF，
+    // 裸 requestAnimationFrame 的 promise 永不 settle → 整轮截图卡死且不写 report.json。
+    // 这里配 120ms 兜底 + 页面不可见时走定时器快路径：可见时行为与原来一致。
+    const frame = () =>
+      document.hidden === true
+        ? new Promise((resolve) => setTimeout(resolve, 32))
+        : Promise.race([
+            new Promise((resolve) => requestAnimationFrame(() => resolve())),
+            new Promise((resolve) => setTimeout(resolve, 120)),
+          ])
     const settle = async (count) => {
       for (let index = 0; index < count; index += 1) await frame()
     }
