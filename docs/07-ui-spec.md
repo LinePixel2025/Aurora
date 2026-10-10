@@ -1769,12 +1769,16 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     的绝对最大值判据会让单个 GC 型停顿持续收税：11 轮里 5 轮越 110，而第二大帧距只有 33–75）：
     - 离群容忍：`secondMaxFrameGapMs <= 110`、`secondMaxUnhiddenHeartbeatMs <= 160`
       （去掉最大一个之后的第二大值仍须在稳态线内 —— 整体劣化时一大批值同时抬高，第二大同样越界）；
-    - 灾难闸门：`maxFrameGapMs <= 260`、`maxUnhiddenHeartbeatMs <= 260`
-      （单点烂到 260ms 以上照样 FAIL；修复前量纲 661.4 必红）；
+    - 灾难闸门：`maxFrameGapMs <= 200`、`maxUnhiddenHeartbeatMs <= 260`
+      （单点烂到这个量级以上照样 FAIL；两者分别是"今天的正常尾巴 54.2 / 182.1"的 3.7× / 1.43×，
+      同时是修复前量纲 661.4 的 39% —— 判别力主要交给它们与两个累计量）。
+      ⚠️ **心跳侧必须与帧侧同口径**：旧的主判据 `maxUnhiddenHeartbeatMs <= 160` 已删除 ——
+      留着它会让闸门永远不可达（`secondMax <= max` 恒成立），"离群容忍"在心跳侧等于没做
+      （2026-10-10 独立审查发现的死条件；当时的 198.5 / 234.1 / 182.1 三轮单点尖峰都是被它判红的）。
     - 累计量 `heartbeatOverrunMs`（3600）与 `droppedFrames`（140）**一分没动** ——
       抓"渲染跟不上输出"那种回归主要靠它们（修复前 4749.4 / 238 两条今天就会红）。
     payload 同步新增 `secondMaxFrameGapMs` / `secondMaxUnhiddenHeartbeatMs` / `gapsOverFrameLimit` /
-    `topFrameGaps` / `overLimitHeartbeats` 与 `limits.guards`，便于判"单点 vs 整体"。
+    `frameGapsTop5` / `overLimitHeartbeats` 与 `limits.guards`，便于判"单点 vs 整体"。
     为什么必须有这一条：原有 `chat-stream.png` 的桩只发 2 条分片，密度低到
     「每条增量都重解析整份对话」也来得及 —— 这类 BUG 在它面前**必然 PASS**（见 06 §16.3）。
   - **主界面左栏结构 + 门控现场**（`CHAT_SIDEBAR_SCRIPT`，产物 `chat-sidebar.png`，BetaV2）：
@@ -1794,12 +1798,12 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     真根因是**渲染层启动期永久丢 `mode:changed`** —— `bootstrap.ts` 旧接线先 `load()` 再
     `bind()`，落在两者之间的广播没有任何补偿，而 `mode.set` 在"主进程已是目标值"时是 no-op
     → 面板自己永远回不来。产品侧已改成 **先订阅、再加载**（各 store 的 `loadGate` 保证"晚到的
-    加载应答不许盖掉更晚的广播"）；探针侧在 check 里保留**自愈**（不一致时做一次真实状态变化
-    classroom → work → classroom 把面板拉回，只为截图好看）但哨兵照旧 FAIL，并回传
-    `probeAttempts` / `probeWaitedMs` 区分"产品竞态复现"与"探针脚手架坏了"。
+    加载应答不许盖掉更晚的广播"）；探针侧**只记录事实、不做任何自愈**（不一致即判 FAIL），并回传 `mainMode` / `panelMode` 便于定位。
+    ⚠️ **刻意不自愈**（2026-10-10 独立审查）：`mode.set('work') → ('classroom')` 是真实产品状态变化（会走 `requestGuideIfNeeded`、可能建窗 / 抬引导），`location.reload()` 又会掐掉这段 check 脚本 —— 两者都比「如实 FAIL」更糟。
+
     `chat-sidebar.png` 的 act（`CHAT_SIDEBAR_ENSURE_CLASSROOM_ACT`）**有界轮询**等到
     「今日课程」真的渲染出来再截图（最多 3s），不做固定毫秒猜测。
-    本场景不改任何状态（只确认模式前置），必须排在一切改配置 / 改会话的场景之前，保证读到出厂门控现场；
+    本场景**只读**（act 的 `mode.set('classroom')` 在主进程已是 classroom 时是 no-op），必须排在一切改配置 / 改会话的场景之前，保证读到出厂门控现场；
   - **主界面命中区与可访问性盘点**（`CHAT_HIT_TARGETS_CHECK`，产物 `chat-hit-targets.png`，2026-09-29）：
     量左栏 / 标题栏 / 输入区 / 消息区里**所有可见可交互控件**的矩形，断言
     ① 无一低于 WCAG 2.2 SC 2.5.8 的 **24×24** 下限（`belowAbsolute` 必须为空）、

@@ -69,7 +69,7 @@
 | 3 | step-03-archive-identity-key.md | 修 chat-archive：身份键换稳定锚点 + act 前置轮询 | done | step 1 | `apps/desktop/src/main/capture.ts`、`apps/desktop/src/renderer/chat/components/SessionRow.vue`（仅当需要 `data-session-id`）、`docs/07-ui-spec.md`（仅当新增锚点需要记进说明） |
 | 4 | step-04-autoscroll-wait.md | 修 chat.png：吸底跟随改有界轮询 | done | step 1 | `apps/desktop/src/main/capture.ts`、`packages/shared/src/browser/composables/stickToBottomCore.ts`（仅当根因在产品侧） |
 | 5 | step-05-burst-robust-metric.md | 修 chat-stream-burst：换对单点离群不敏感的统计量 | done | step 1 | `apps/desktop/src/main/capture.ts` |
-| 6 | step-06-stability-and-docs.md | 稳定性复跑与文档记忆回填 | pending | step 2,3,4,5 | `docs/07-ui-spec.md`、`Memory/`、`AGENTS.md` |
+| 6 | step-06-stability-and-docs.md | 稳定性复跑与文档记忆回填 | done | step 2,3,4,5 | `docs/07-ui-spec.md`、`Memory/`、`AGENTS.md` |
 | 7 | step-07-archive.md | 归档清理 | pending | step 1..6 | `step/` |
 
 ## 审查重点
@@ -107,16 +107,29 @@
    那条已知失效路径失去兜底（实测 `k-full-dark-1` 的 `chat.png`：`followed:1613`、
    `timedOut:true`，而收尾 `stick()` 能恢复）。
 
-### 最终全量验收（step 6，代码冻结后）
+### 最终全量验收（step 6）
 
-| 轮次 | 目录 | checks | 失败项 |
-| --- | --- | --- | --- |
-| dark-1 | `%TEMP%\n-full-dark-1` | 93 | 只有 `chat-model-picker.png`（范围外） |
-| dark-2 | `%TEMP%\n-full-dark-2` | 93 | 只有 `chat-model-picker.png` |
-| dark-3 | `%TEMP%\n-full-dark-3` | 93 | 只有 `chat-model-picker.png` |
-| light-1 | `%TEMP%\n-full-light-1` | 93 | 只有 `chat-model-picker.png` |
+**审查前**（`n-full-*`）与**审查后修复完毕**（`z2-full-*`）两批都达标：
 
-`pnpm typecheck` 全绿；`pnpm test` **170 文件 / 2544 用例全绿**。
+| 批次 | 轮次 | 目录 | checks | 失败项 |
+| --- | --- | --- | --- | --- |
+| 审查前 | dark×3 + light×1 | `%TEMP%\n-full-dark-1..3` / `n-full-light-1` | 93 | 只有 `chat-model-picker.png`（范围外） |
+| 审查后 | dark×3 + light×1 | `%TEMP%\z2-full-dark-1..3` / `z2-full-light-1` | 93 | 只有 `chat-model-picker.png` |
+
+`pnpm typecheck` 全绿；`pnpm test` **171 文件 / 2546 用例全绿**（含新增 `bootstrap.test.ts` 顺序护栏）；
+`pnpm vitest run packages/shared/src/browser` 68/68；Center `verify:web` **88/88**（改了 shared 渲染层，两端都验）。
+
+### 独立代码审查结论与处置（step-runner 第 3 步）
+
+派了 4 个干净上下文审查子代理（正确性+验收 / 安全边界+约定 / 独立复跑核对 / 对抗性复核）。
+汇总：**有条件可交付**，无 P0；三条验收被独立复跑证实。发现并**已处置**的问题：
+P1 心跳侧旧判据使新闸门成为死代码（删旧判据、与帧侧同口径）、P1 闸门是对着被污染读数标定的
+（重标定 200/260）、P1 step-05 记录漏算两条红轮（已如实补记）、P2 探针"自愈"会改产品状态
+（取消自愈、docs 同步）、P2 docs 数值/字段名过时（已改）、P2 反向复核引用错误（已改）、
+P2 `restartGuard` 重复排链（先取消在途句柄）、P2 产品修复无护栏（新增 `bootstrap.test.ts`）、
+P3 `loadGate` 错误写入时机（已改）。
+**未处置（明确留给后续任务）**：`chat-ctx-empty-tools` 的探针缺 `pass` 字段（先于本次存在的判定盲点）。
+详细清单见 `step/step-06-stability-and-docs.md` 的「8 独立代码审查与处置」。
 
 ### step 01 结论摘要（详见 step-01 执行记录）
 

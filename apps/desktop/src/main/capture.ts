@@ -39,7 +39,7 @@ import type { WindowManager } from './window-manager.js'
  */
 export const SETTINGS_PAGE_IDS = [
   'general',
-  // 会话管理（2026-09-30 新增：项目管理自「通用」页迁入 + 会话列表）
+  // 会话管理（2026-09-30 新增：项目管理自"通用"页迁入 + 会话列表）
   'sessions',
   'modes',
   'llm',
@@ -80,7 +80,7 @@ export const ASK_USER_CAPTURE_QUESTION: AskUserQuestion = {
   header: '目标目录',
   options: [
     { label: '科目资料文件夹', description: '按课程表科目分类存放' },
-    { label: '桌面「本周课件」', description: '先堆在桌面，手动再整理' },
+    { label: '桌面"本周课件"', description: '先堆在桌面，手动再整理' },
     { label: '先别移动文件', description: '只生成清单，文件留在原地' },
   ],
   multiSelect: false,
@@ -102,7 +102,7 @@ export interface CaptureTarget {
   /** 截图前在目标窗口渲染层执行的 JS（模拟 hover / click 等真实交互） */
   act?: string
   /**
-   * 本场景独有的「等两帧渲染之后还要多久」覆盖值（缺省用 `CaptureOptions.delayMs`）。
+   * 本场景独有的"等两帧渲染之后还要多久"覆盖值（缺省用 `CaptureOptions.delayMs`）。
    *
    * 只有**动到窗口本身**的场景才需要它：`act` 是 await 的，但"提示条展开"走的是
    * 主进程 shape + IPC，属于**跨进程**异步 —— act 返回时画面还停在收起态
@@ -114,10 +114,10 @@ export interface CaptureTarget {
    * 截图前在**主进程侧**执行的动作（拿到 `BrowserWindow`）。
    *
    * 存在的理由：**JS 合成事件测不到原生输入管线** —— `dispatchEvent(new WheelEvent(...))`
-   * 能驱动得了监听器，却不触发合成器滚动，「程序把用户刚滚出去的视口吸回去」这类失效
+   * 能驱动得了监听器，却不触发合成器滚动，"程序把用户刚滚出去的视口吸回去"这类失效
    * 在合成事件面前必然 PASS。真实滚轮要走 CDP `Input.dispatchMouseEvent`
    * （`webContents.debugger`），只有主进程能挂 —— 见 `chat-trace-wheel` 场景
-   * 与 docs/07 §5.3「真实滚轮跟随」。返回值必须带 `pass`，与渲染层结果合并进同一条 checks 记录。
+   * 与 docs/07 §5.3"真实滚轮跟随"。返回值必须带 `pass`，与渲染层结果合并进同一条 checks 记录。
    */
   mainAct?: (
     win: BrowserWindow,
@@ -153,8 +153,8 @@ export interface CaptureCheck {
   /**
    * 该目标是否**配了**探针（`check` 或 `nativeCheck`）。
    *
-   * 必须单列一个字段：`result` 为空有两种含义 —— 「本来就没配探针」（纯截图场景，正常）
-   * 与「配了探针却没返回结果」（断言根本没生效）。只靠 `result` 分不出来，
+   * 必须单列一个字段：`result` 为空有两种含义 —— "本来就没配探针"（纯截图场景，正常）
+   * 与"配了探针却没返回结果"（断言根本没生效）。只靠 `result` 分不出来，
    * 后者会被当成通过（见 `failed` 的判定与下面的注释）。
    */
   checked: boolean
@@ -176,7 +176,7 @@ function wait(ms: number): Promise<void> {
 }
 
 /**
- * 「等两帧渲染」的脚本：`executeJavaScript(task, true)` 本身是 await 的，act 里所有异步
+ * "等两帧渲染"的脚本：`executeJavaScript(task, true)` 本身是 await 的，act 里所有异步
  * （写配置、reload、IPC 往返）在它返回时都已结束，差的只是浏览器把 DOM 变更画出来。
  * 窗口被隐藏时 rAF 不派发（promise 永不 settle），调用方必须配超时兜底。
  */
@@ -229,7 +229,7 @@ async function captureNonEmpty(win: BrowserWindow, attempts = 4, gapMs = 600): P
  */
 export async function captureWindows(options: CaptureOptions): Promise<CaptureResult> {
   const { dir, targets, manager, logger } = options
-  // `delayMs` 的语义是「rAF 之后额外等多久让动画收尾」，不是「固定等待总时长」
+  // `delayMs` 的语义是"rAF 之后额外等多久让动画收尾"，不是"固定等待总时长"
   //（总等待 = 两帧 rAF + 它）。缺省值按场景里最长的 CSS transition（220ms 级）留余量。
   const delayMs = options.delayMs ?? 260
   await mkdir(dir, { recursive: true })
@@ -315,7 +315,7 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
     // 判定要同时覆盖三种情况：探针明确返回 `pass:false`；截图 / 探针抛错（`ok:false`）；
     // 以及**配了探针却没拿到结果**（脚本提前 return / 没写 return / 返回 `null` —— 断言等于没跑）。
     // 前两版只看 `pass === false`：`result` 为空时一律算通过，
-    // 「静默丢一条」会以退出码 0 结束。所以 `checked` 字段必须参与判定
+    // "静默丢一条"会以退出码 0 结束。所以 `checked` 字段必须参与判定
     //（`result` 为空且 `checked === false` 才是正常的纯截图场景）。
     // 空值判据用 `== null` 同时覆盖 `undefined` 与 `null`（ESLint 的 eqeqeq 允许 `== null` 写法）。
     failed: checks.some(
@@ -381,7 +381,7 @@ export const EDGE_BAR_LEAVE_SCRIPT = `(() => {
 })()`
 
 /**
- * 弹出动效探针：从头走一遍「收起 → 鼠标悬停展开」，记录过渡进行中与终态。
+ * 弹出动效探针：从头走一遍"收起 → 鼠标悬停展开"，记录过渡进行中与终态。
  *
  * 结果存在渲染层全局供后续 check 读取；act 返回时动画已经收尾，不会把采样压力留给截图等待。
  */
@@ -532,7 +532,7 @@ export const EDGE_BAR_TOUCH_CHECK = `(async () => {
 })()`
 
 /**
- * 点击竖条 → 应呼出完整交互窗（回归「点击无法呼出交互窗」）。
+ * 点击竖条 → 应呼出完整交互窗（回归"点击无法呼出交互窗"）。
  * 直接 `.click()` 走的是真实 DOM 点击 → Vue handler → IPC → 主进程 show。
  */
 export const EDGE_BAR_CLICK_SCRIPT = `(async () => {
@@ -563,7 +563,7 @@ export const EDGE_BAR_CLICK_SCRIPT = `(async () => {
  * 面板可用性探针：面板是否挂载、三个按钮是否**真的能被点到**
  * （`elementFromPoint` 命中测试）且完全落在窗口宽度内。
  *
- * 这一条是「侧边栏点击无效」这类 bug 的关键断言：DOM 里存在按钮 ≠ 用户点得到。
+ * 这一条是"侧边栏点击无效"这类 bug 的关键断言：DOM 里存在按钮 ≠ 用户点得到。
  */
 export const EDGE_BAR_PANEL_SCRIPT = `(() => {
   try {
@@ -725,7 +725,7 @@ export const EDGE_BAR_SUGGESTIONS_CHECK = `(async () => {
   }
 })()`
 
-/** 切到 Work 并展开提示条：课堂「下一节」属于 ClassRoom 专属，不能在 Work 模式残留。 */
+/** 切到 Work 并展开提示条：课堂"下一节"属于 ClassRoom 专属，不能在 Work 模式残留。 */
 export const EDGE_BAR_WORK_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
@@ -752,11 +752,11 @@ export const EDGE_BAR_WORK_CHECK = `(async () => {
     const noNextLesson = labels.indexOf('下一节') === -1
     const restored = await window.aurora.mode.set('classroom')
     // 还原确认改成**有界轮询**（旧写法只 await wait(120) 就返回）。
-    // 旧值 120ms 是「够本窗口重渲染」的猜测，而不是确认 —— 这个窗口的还原会广播
+    // 旧值 120ms 是"够本窗口重渲染"的猜测，而不是确认 —— 这个窗口的还原会广播
     // mode:changed，别的窗口（chat 被 hide / 后台时）什么时候重渲染完全不在它的保证里。
-    // 新写法只负责「本窗口的还原动作确实生效」，并在返回值里写下等了多久
+    // 新写法只负责"本窗口的还原动作确实生效"，并在返回值里写下等了多久
     //（restoreWaitedMs），供 chat-sidebar 的假 FAIL 排查区分
-    //「还原没生效」与「别的窗口还没来得及重渲染」。真正的保证由各 chat 场景
+    //"还原没生效"与"别的窗口还没来得及重渲染"。真正的保证由各 chat 场景
     // 自带前置承担（见 CHAT_SIDEBAR_ENSURE_CLASSROOM_ACT），不依赖本场景。
     const startedAt = performance.now()
     let restoreConfirmed = false
@@ -784,10 +784,10 @@ export const EDGE_BAR_WORK_CHECK = `(async () => {
 /**
  * 对话自动滚底探针（交互窗专用）。
  *
- * 钉住的是「新消息不会自动拉到最新」这个 bug：滚动容器是窗口的 `.thread`，
+ * 钉住的是"新消息不会自动拉到最新"这个 bug：滚动容器是窗口的 `.thread`，
  * 内容变高时渲染层必须自己滚到底。这里不去驱动真实模型（截图跑在默认配置上，
  * 没有可用的 LLM），而是向 `.messages` 追加一个 1600px 的探针节点 ——
- * 对滚动逻辑而言与「新消息 / 流式增量把内容撑高」完全等价。
+ * 对滚动逻辑而言与"新消息 / 流式增量把内容撑高"完全等价。
  *
  * 两个必须注意的点（都踩过）：
  * - 探针节点要 `flex-shrink: 0`：`.messages` 是 `.thread`（固定高）的 flex 子项，
@@ -796,17 +796,17 @@ export const EDGE_BAR_WORK_CHECK = `(async () => {
  * - `pass` 里带 `maxScroll >= 200` 守卫：先确认"内容确实比窗口高"，再看"是否滚到了底"，
  *   否则一旦探针没撑开内容，`distance === 0` 会假 PASS。
  *
- * 2026-09-30（「跟丢」修复轮）把这条探针改成**可验证的三段**：
+ * 2026-09-30（"跟丢"修复轮）把这条探针改成**可验证的三段**：
  * ① 追加内容 → 必须自动到底（跟随的默认行为，实测通过）；
- * ② 位置在离底处 + 派发**真实 `wheel`** → 「↓ 回到最新」胶囊出现且落在可视区内
+ * ② 位置在离底处 + 派发**真实 `wheel`** → "↓ 回到最新"胶囊出现且落在可视区内
  *    （`position: sticky` 在"`.messages` 盒子被钉住、内容按溢出渲染"的布局里未必吸附得住）；
  * ③ 滚回底部（`scrollTop = max`）→ 胶囊消失（滞回的另一端）。
  *
  * 两条**已知缺口**（如实记下，别当成实现承诺 —— 2026-09-30 排查记录）：
- * 1. 「只程序改 `scrollTop`、不派发输入事件时跟随不被关掉」**没有**断言：实测该场景下
+ * 1. "只程序改 `scrollTop`、不派发输入事件时跟随不被关掉"**没有**断言：实测该场景下
  *    `following` 被关掉了，但 `onUserIntent`（`:root` 层的意图中转）从未被调用 ——
  *    而同时**捕获阶段**能确认 `wheel` 事件确实到达 `.thread`、`bindScroller` 也确实拿到了
- *    `.thread` 并挂了监听。即「意图回调没被触发、跟随却变了」这条矛盾尚未查清。
+ *    `.thread` 并挂了监听。即"意图回调没被触发、跟随却变了"这条矛盾尚未查清。
  * 2. 因为 ①，本探针末尾那一次 `wheel` 之后跟随仍处于暂停态（`restored` 为假），
  *    所以**跨场景状态**在 `chat-follow-burst` 之前可能是"暂停跟随"—— 那一条自带
  *    `scrollTop = scrollHeight` 与真实滚轮的收尾，独立可判，不受影响。
@@ -850,19 +850,19 @@ export const CHAT_AUTO_SCROLL_SCRIPT = `(async () => {
     list.appendChild(filler)
     // 等吸底跟上：**有界轮询**，不是固定 150ms（2026-10-10 改）。
     //
-    // 旧值 150ms → 新值「最多 1000ms、每 50ms 一轮」，依据与边界：
-    // - 旧写法的隐含假设是「150ms 内一定跟上」，而吸底是渲染层的观察者 + 一帧对齐才落位，
+    // 旧值 150ms → 新值"最多 1000ms、每 50ms 一轮"，依据与边界：
+    // - 旧写法的隐含假设是"150ms 内一定跟上"，而吸底是渲染层的观察者 + 一帧对齐才落位，
     //   机器一忙（本机是虚拟显示适配器压低合成器帧率）就会晚于 150ms —— 实测失败态
     //   followed 恰好等于填充高度（1613），即吸底一次都没跟上，而**下一轮同一条探针
     //   又报 followed 1**，说明这是时序抖动而不是功能坏掉。
     // - 因此这里改成**等真实结果**（followed <= 4）而不是等时间；followed 仍取
     //   **等待结束后的最终读数**，pass 判据一字未改（仍要求 followed <= 4）。
     // - 为什么仍能抓住真回归：等待是**有界**的 —— 1000ms 到期就如实把
-    //   followedAfterWait / timedOut 写进 payload 并判 FAIL。吸底真坏掉时，
-    //   1000ms 内（旧判据的 6.7 倍窗口）它一次都不会跟上，followed 会停在
-    //   填充高度量级（上千），不可能靠"多等一会儿"自愈：本探针不派发任何输入事件，
-    //   等待期间没有任何东西会替它把视口拨到底。反向复核用「插入后阻塞主线程 400ms」
-    //   证明旧判据会红、新判据仍绿（见 step-04 执行记录）。
+    //   followedAfterWait / timedOut 写进 payload 并判 FAIL。反向复核**不是**在探针里叠一段
+    //   阻塞（那样证不出东西：阻塞期间定时器排队、阻塞一结束吸底已落位，旧读法也会绿），
+    //   而是临时把产品里吸底调度的入口关掉（stickToBottomCore 的 schedule 直接 return）→
+    //   followed 1966 / timedOut true / FAIL；该对照轮也证明"慢"不会被等成"对"
+    //   （探针不派发任何输入事件，等待期间没有东西会替它把视口拨到底）。见 step-04 执行记录。
     let followed = 0
     let attempts = 0
     let timedOut = false
@@ -904,7 +904,7 @@ export const CHAT_AUTO_SCROLL_SCRIPT = `(async () => {
     }
     // ④ 收尾：**恢复跟随**，让后续场景拿到干净状态。
     //
-    // 点击真实的「↓ 回到最新」胶囊（走 jumpToLatest → stick）而不是"再派发一次滚轮"：
+    // 点击真实的"↓ 回到最新"胶囊（走 jumpToLatest → stick）而不是"再派发一次滚轮"：
     // 胶囊是应用自己的恢复入口，语义明确、不依赖意图回调（那条在本环境下不可靠，见头部注释）。
     // 这一步是必须的 —— 本探针在 ② 里把跟随关掉了，不收尾就会把后续场景
     //（实测：chat-follow-burst）整段留在"暂停跟随"里。
@@ -941,7 +941,7 @@ export const CHAT_AUTO_SCROLL_SCRIPT = `(async () => {
 })()`
 
 /**
- * 高密度流式的「自动跟随」探针（交互窗专用，2026-09-30 跟丢修复轮新增）。
+ * 高密度流式的"自动跟随"探针（交互窗专用，2026-09-30 跟丢修复轮新增）。
  *
  * 与 `CHAT_AUTO_SCROLL_SCRIPT` 的分工：那条钉**语义**（谁能改跟随状态），这条钉**持续跟进**。
  * 按 6 帧每帧长高约 120px 持续追加内容 —— 正是真实流式下 markdown 块 / 工具行密集插入的形态：
@@ -976,7 +976,7 @@ export const CHAT_FOLLOW_BURST_SCRIPT = `(async () => {
     //
     // 这条探针要求"内容增长时每帧都跟到底"，只有**跟随态**才成立；而它前面那个
     // CHAT_AUTO_SCROLL_SCRIPT 会主动把跟随关掉（那正是它在测的语义）。本探针
-    // 不能依赖别人有没有收尾干净 —— 点一次应用自己的「↓ 回到最新」胶囊（stick()），
+    // 不能依赖别人有没有收尾干净 —— 点一次应用自己的"↓ 回到最新"胶囊（stick()），
     // 把状态归位再开始量（2026-09-30 实测：缺这一步时 samples 从第一帧起就落后）。
     thread.scrollTop = thread.scrollHeight
     const jumpButton = list.querySelector('.jump-latest')
@@ -1000,7 +1000,7 @@ export const CHAT_FOLLOW_BURST_SCRIPT = `(async () => {
       trace.push({
         step: step,
         distance: distance,
-        // 跟随被关掉时右下角会浮出「回到最新」胶囊：拿它当"跟丢"的现场证据
+        // 跟随被关掉时右下角会浮出"回到最新"胶囊：拿它当"跟丢"的现场证据
         paused: list.querySelector('.jump-latest') !== null,
         scrollTop: Math.round(thread.scrollTop),
         growthHeight: Math.round(growth.getBoundingClientRect().height),
@@ -1026,7 +1026,7 @@ export const CHAT_FOLLOW_BURST_SCRIPT = `(async () => {
 })()`
 
 /**
- * 「视口贴在底部时上滚」探针（2026-10-01 用户实测：模型答完后**翻不动历史**）。
+ * "视口贴在底部时上滚"探针（2026-10-01 用户实测：模型答完后**翻不动历史**）。
  *
  * 与 `CHAT_AUTO_SCROLL_SCRIPT` 的分工：那条把 `scrollTop` 先拨到 0 **再**发滚轮 ——
  * 意图判定那一刻离底已经很远，天然能判出"用户接管"；而真实用户是**从底部**开始滚的：
@@ -1037,7 +1037,7 @@ export const CHAT_FOLLOW_BURST_SCRIPT = `(async () => {
  * 因此本探针如实复刻这两拍（**这正是合成器滚动的时序**，不是人为制造的边角）：
  * ① 贴底 → 派发真实 `wheel`（此刻仍读到底部）；
  * ② 浏览器把视口挪上去 + 派发 `scroll`；
- * 判据：这一滚必须**留在用户滚到的位置**（没被对齐帧拽回）且「↓ 回到最新」胶囊出现。
+ * 判据：这一滚必须**留在用户滚到的位置**（没被对齐帧拽回）且"↓ 回到最新"胶囊出现。
  *
  * 收尾自带（摘掉探针节点 + 点应用自己的胶囊恢复跟随），不把状态留给后面的场景 ——
  * 本仓在这类"探针之间互相污染"上踩过（见 AGENTS.md 的排查教训）。
@@ -1114,17 +1114,17 @@ export const CHAT_FOLLOW_WHEEL_UP_SCRIPT = `(async () => {
 })()`
 
 /**
- * 「展开轨迹后**真实滚轮**仍滚得动」探针 · 前半（2026-10-01，docs/07 §5.3「真实滚轮跟随」）。
+ * "展开轨迹后**真实滚轮**仍滚得动"探针 · 前半（2026-10-01，docs/07 §5.3"真实滚轮跟随"）。
  *
  * 既有 `CHAT_FOLLOW_WHEEL_UP_SCRIPT` 用 JS `dispatchEvent` 合成 wheel —— 它驱动得了**意图链路**
  * （监听器照收、判定照跑），却**绕过了原生滚轮管线**：合成事件不触发合成器滚动，
- * 「贴底时程序把用户刚滚出去的视口吸回去」这一类失效（意图与对齐帧的竞速、吸底补齐的时机）
+ * "贴底时程序把用户刚滚出去的视口吸回去"这一类失效（意图与对齐帧的竞速、吸底补齐的时机）
  * 全都发生在合成器与主线程之间，合成事件面前必然 PASS。
  *
  * 本场景分三段：本 act 造现场（跟随态 + 展开一条折叠轨迹 = `restick()` 结算帧在途 +
  * 探针填充块保证有得滚），把滚轮坐标与基线挂 window；主进程侧的 `chatTraceWheelMainAct`
  * 经 CDP `Input.dispatchMouseEvent`（type `mouseWheel`）发**真实滚轮**（走完整合成器管线）；
- * check 断言视口单调上移、离底超过阈值、「回到最新」胶囊出现，最后收尾还原。
+ * check 断言视口单调上移、离底超过阈值、"回到最新"胶囊出现，最后收尾还原。
  */
 export const CHAT_TRACE_WHEEL_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -1244,7 +1244,7 @@ async function chatTraceWheelMainAct(
  *
  * ① **滚得动**：总位移 ≥ 48px（14 步 × 12px，若有一步被吸回去就到不了这个数）；
  * ② **单调**：逐次采样不出现"视口被按回去"（相邻两步容差 1px 亚像素）；
- * ③ **接管成立**：结束时离底 ≥ 24px（跟随已翻成接管）且「回到最新」胶囊在场；
+ * ③ **接管成立**：结束时离底 ≥ 24px（跟随已翻成接管）且"回到最新"胶囊在场；
  * ④ **轨迹保持展开**：展开态没被这次滚动意外收掉（`toggleTrace` 的互斥语义没被扰动）。
  * 收尾摘掉探针填充块并点胶囊恢复跟随，不把接管态留给后面的场景。
  */
@@ -1307,26 +1307,26 @@ export const CHAT_TRACE_WHEEL_CHECK = `(async () => {
 })()`
 
 /**
- * 「收起 = 直接消失」探针（step-01）：点交互窗头部操作区的「收起」按钮，再断言窗口真的没了。
+ * "收起 = 直接消失"探针（step-01）：点交互窗头部操作区的"收起"按钮，再断言窗口真的没了。
  *
- * 这一条钉住的是一个已修掉的 bug：原来的「收起」会**另外弹出一个快速对话窗口**
- * （`close()` 里调的是那条已被删除的「显示快速对话」IPC 通道），用户按「收起」却看到多出一个窗口。
+ * 这一条钉住的是一个已修掉的 bug：原来的"收起"会**另外弹出一个快速对话窗口**
+ * （`close()` 里调的是那条已被删除的"显示快速对话"IPC 通道），用户按"收起"却看到多出一个窗口。
  * 现在它必须等价于 `windowStore.hide('chat')`。
  *
  * ⚠️ 为什么**点击写在 check 里、而不是 `act` 里**（与 step-01 原计划不同，实测后改的）：
  * `act` 在截图**之前**跑（见 `captureWindows` 的顺序 show → act → wait → capturePage）。
  * 窗口一旦被真的 `hide()`，紧接着的 `capturePage()` 在 Windows 上**永不返回**——表现为
  * 整个 `AURORA_CAPTURE` 流程卡死、进程不退出、`report.json` 写不出来（实测 8 分钟无进展，已复现）。
- * 所以截图必须发生在窗口仍然可见的时候；而「点完之后窗口是否真的消失」由这条 check 断言，
+ * 所以截图必须发生在窗口仍然可见的时候；而"点完之后窗口是否真的消失"由这条 check 断言，
  * 它跑在截图之后，点击与断言的因果链仍然是真实的（按钮 → Vue handler → IPC → 主进程 hide）。
- * 因此 `chat-collapse.png` 拍到的是**点之前的交互窗**（含那颗「收起」按钮），
- * 「收起后窗口消失」这件事由本探针的 `pass` 负责，不靠截图。
+ * 因此 `chat-collapse.png` 拍到的是**点之前的交互窗**（含那颗"收起"按钮），
+ * "收起后窗口消失"这件事由本探针的 `pass` 负责，不靠截图。
  *
- * 按 `data-caption-btn="close"` 找按钮（Windows 式窗口按钮，2026-09 重构起取代旧「收起」文字钮；
+ * 按 `data-caption-btn="close"` 找按钮（Windows 式窗口按钮，2026-09 重构起取代旧"收起"文字钮；
  * 语义同为隐藏窗口）。找不到时把头部实际按钮清单回传（而不是静默成功），
  * 否则改了锚点会让这条断言变成空转。
  *
- * `primary === null` 是关键：残留的 `primary` 说明「隐藏」被实现成了「换成另一个主窗口」。
+ * `primary === null` 是关键：残留的 `primary` 说明"隐藏"被实现成了"换成另一个主窗口"。
  * `getState()` 带 4s 超时兜底：窗口隐藏后渲染层可能被降频，万一读不回来也不能把整轮截图拖死。
  */
 export const CHAT_COLLAPSE_CHECK = `(async () => {
@@ -1371,7 +1371,7 @@ export const CHAT_COLLAPSE_CHECK = `(async () => {
 /**
  * ClassIsland 课堂状态卡的现场准备（docs/05 §3.4 v3、docs/07 §2.3）。
  *
- * 状态卡只在「模式 = classroom **且** 课表来源 = classisland」时渲染，出厂配置下
+ * 状态卡只在"模式 = classroom **且** 课表来源 = classisland"时渲染，出厂配置下
  * 它整卡不存在 —— 所以要有真实桥接数据才能拍到它。这里在主进程侧写一份**符合桥接契约的
  * 假产出**（`version: 1` + 内嵌 `status.version: 3`）到隔离 userData 下，供捕获场景使用：
  * 文件模式读的是磁盘，因此不需要真的装 ClassIsland。
@@ -1412,7 +1412,7 @@ export async function seedClassIslandFixture(userData: string): Promise<string> 
  *
  * - 定义 / 历史：`AutomationStore` 惰性首读（同 SessionStore 口径），**必须赶在**
  *   窗口第一次 `automation:list` 之前 —— runCapture 在打开窗口前调用本函数，时机正确；
- * - `auto-` 会话文件：给历史探针的「Agent 记录回放」供真实对话（`chat:history` 惰性读盘）。
+ * - `auto-` 会话文件：给历史探针的"Agent 记录回放"供真实对话（`chat:history` 惰性读盘）。
  * 隔离 userData 退出即整体删除，不污染用户数据。
  */
 export async function seedAutomationFixture(userData: string): Promise<void> {
@@ -1508,7 +1508,7 @@ export async function seedAutomationFixture(userData: string): Promise<void> {
 }
 
 /**
- * 把课表来源切到「ClassIsland 联动 + 文件模式 + 夹具路径」，让课堂状态卡出现。
+ * 把课表来源切到"ClassIsland 联动 + 文件模式 + 夹具路径"，让课堂状态卡出现。
  *
  * 必须走 `settings:update` IPC：`SettingsStore.init()` 启动即把 config.json 读进内存并长期缓存，
  * 启动后写文件对运行中的进程无效。`check` 收尾会还原成 `manual`，后续场景读到的仍是出厂门控。
@@ -1817,13 +1817,13 @@ export async function seedMemoryFixture(userData: string): Promise<void> {
 }
 
 /**
- * 设置页「会话管理」的项目区组探针（v13 项目机制，2026-09-30 自右栏迁入设置页）。
+ * 设置页"会话管理"的项目区组探针（v13 项目机制，2026-09-30 自右栏迁入设置页）。
  *
  * 必须走 `settings:update` IPC：`SettingsStore.init()` 启动即把 config.json 读进内存并长期缓存，
  * 启动后写文件对运行中的进程无效。`projects` 是顶层浅合并，但 `list` 是数组整体权威 ——
  * 所以这里显式给出**完整**的 projects 子树（其余键从当前配置展开，不动 `maxAgentsBytes`）。
  *
- * ACT 把「当前项目」指向真实临时目录并等渲染层重算；两个 `projects.*` 锚点
+ * ACT 把"当前项目"指向真实临时目录并等渲染层重算；两个 `projects.*` 锚点
  * （`projects.name` / `projects.root`）随项目管理整组迁到 `?page=sessions`，
  * 本场景的 query 已钉住那个页面。
  */
@@ -1857,14 +1857,14 @@ export function settingsProjectAct(root: string, name: string): string {
 }
 
 /**
- * 右栏「当前项目」卡探针（v13，docs/06 §5.1）：卡恰好一张、文本含项目名与根目录、
+ * 右栏"当前项目"卡探针（v13，docs/06 §5.1）：卡恰好一张、文本含项目名与根目录、
  * **不是**"项目目录不可用"警示态；收尾还原成无项目并把 restored 并入 pass。
  */
 /**
  * 项目区组探针 · 后半（设置页版，假设 7 的现场）：项目行渲染出项目名与根路径、
  * **不是**警示态；随后把根改成一个**不存在**的目录，断言警示文案真的出现
  * （只在日志里 warn 而界面没提示，用户会以为 AGENTS.md 生效了却什么都没发生）。
- * 判据：项目区组文案里出现「项目目录不可用」。收尾还原成无项目。
+ * 判据：项目区组文案里出现"项目目录不可用"。收尾还原成无项目。
  */
 export function settingsProjectCheck(name: string, missingRoot: string): string {
   return `(async () => {
@@ -1940,13 +1940,13 @@ export function settingsProjectCheck(name: string, missingRoot: string): string 
 }
 
 /**
- * 「会话管理」页的**会话列表**探针（2026-09-30 新增）：列表渲染 + 归档往返 + 删除两步确认。
+ * "会话管理"页的**会话列表**探针（2026-09-30 新增）：列表渲染 + 归档往返 + 删除两步确认。
  *
  * 现场：seed 的 main 会话（Agent 空间）+ `chat-seed-archived`（已归档）—— 隔离 userData 里
- * 至少两行，`sessions.row` 数 ≥ 2 顺带验证「归档会话照常列出、只是归到已归档组」。
+ * 至少两行，`sessions.row` 数 ≥ 2 顺带验证"归档会话照常列出、只是归到已归档组"。
  *
  * ACT 做一次完整的可逆往返（归档 → 取消归档）与一次**只到第一步**的删除
- * （点「删除」后断言出现「确认删除」而没有真的删）：真删会毁掉后续场景依赖的 seed 现场，
+ * （点"删除"后断言出现"确认删除"而没有真的删）：真删会毁掉后续场景依赖的 seed 现场，
  * 因此删除的**执行**只断言到确认态为止（真正删文件的那条路径由 store 单测覆盖）。
  */
 export const SETTINGS_SESSIONS_ACT = `(async () => {
@@ -1954,7 +1954,7 @@ export const SETTINGS_SESSIONS_ACT = `(async () => {
   try {
     const rowsNow = () => document.querySelectorAll('[data-field="sessions.row"]').length
     const rows = () => Array.from(document.querySelectorAll('[data-field="sessions.row"]'))
-    // 选一行**未归档**的（归档钮文案为「归档」）：不依赖 seed 标题文本，
+    // 选一行**未归档**的（归档钮文案为"归档"）：不依赖 seed 标题文本，
     // 探针与夹具的文案解耦（标题随首条用户消息变，钉标题是最脆的一种写法）
     const activeRow = () =>
       rows().find((row) => {
@@ -1972,12 +1972,12 @@ export const SETTINGS_SESSIONS_ACT = `(async () => {
       const el = row.querySelector('.session-title')
       return el === null ? '' : (el.textContent || '').trim()
     }
-    // ⚠️ 按**标题**而不是下标找行：归档后该行会移进「已归档」组（分组重排），
+    // ⚠️ 按**标题**而不是下标找行：归档后该行会移进"已归档"组（分组重排），
     // 下标会指向另一行（首跑实测 archivedNow=false 的成因）。
     const findByTitle = (value) =>
       rows().find((row) => titleOf(row) === value) || null
 
-    // ① 归档往返：点「归档」后该行应带「取消归档」（同一次重拉列表后）
+    // ① 归档往返：点"归档"后该行应带"取消归档"（同一次重拉列表后）
     const targetBefore = activeRow()
     const targetTitle = targetBefore === null ? null : titleOf(targetBefore)
     const archiveClicked = clickIn(targetBefore, '[data-field="sessions.archive"]')
@@ -1991,7 +1991,7 @@ export const SETTINGS_SESSIONS_ACT = `(async () => {
     const unarchivedNow =
       afterRestore !== null && (afterRestore.textContent || '').indexOf('取消归档') === -1
 
-    // ② 删除两步确认：第一次点只翻状态（出现「确认删除」，行数不变、没有真删）
+    // ② 删除两步确认：第一次点只翻状态（出现"确认删除"，行数不变、没有真删）
     const deleteClicked = clickIn(afterRestore, '[data-field="sessions.delete"]')
     await wait(350)
     const confirmShown = Array.from(
@@ -2035,7 +2035,7 @@ export const SETTINGS_SESSIONS_CHECK = `(() => {
 })()`
 
 /**
- * 「文件备份」卡移出主界面的探针（2026-09 UI 收拢，回滚 UI 迁设置页 Agent 页）。
+ * "文件备份"卡移出主界面的探针（2026-09 UI 收拢，回滚 UI 迁设置页 Agent 页）。
  *
  * `prepare` 仍然种一份**真实**快照（见 `seedSnapshotFixture`）—— 反例现场必须有数据：
  * 即便备份存在，主界面右栏也不该再出现任何快照卡（`chat.snapshot-card`）。
@@ -2063,11 +2063,11 @@ export const CHAT_SNAPSHOT_CARD_REMOVED_CHECK = `(async () => {
 })()`
 
 /**
- * 设置页「文件备份」列表探针（2026-09，回滚 UI 自主界面右栏迁入 Agent 页）。
+ * 设置页"文件备份"列表探针（2026-09，回滚 UI 自主界面右栏迁入 Agent 页）。
  *
  * `prepare` 已种好一份真实快照（见 `seedSnapshotFixture`），这里断言：
- * 列表在、至少一条记录、条目的文件名与来源都渲染出来了，并且点一次「回滚」只停在
- * 「确认回滚？」（**两段式**）—— 截图正好拍到这个中间态；同时确认「刷新 / 立即清理」
+ * 列表在、至少一条记录、条目的文件名与来源都渲染出来了，并且点一次"回滚"只停在
+ * "确认回滚？"（**两段式**）—— 截图正好拍到这个中间态；同时确认"刷新 / 立即清理"
  * 两个操作入口都在。锚点已从 `chat.snapshot-*` 统一改名 `agent.snapshot-*`。
  */
 export const SETTINGS_SNAPSHOT_LIST_ACT = `(async () => {
@@ -2111,7 +2111,7 @@ export const SETTINGS_SNAPSHOT_LIST_CHECK = `(async () => {
         text.indexOf('写文件') !== -1 &&
         // 种下的快照来自 write_file，来源列必须译成中文
         text.indexOf('回滚') !== -1 &&
-        // 清理 / 刷新两个操作入口都得在（清理走两段式，按钮文案此刻仍是「立即清理」）
+        // 清理 / 刷新两个操作入口都得在（清理走两段式，按钮文案此刻仍是"立即清理"）
         count('[data-field="agent.snapshot-prune"]') === 1 &&
         count('[data-action="agent.snapshot-refresh"]') === 1 &&
         // 两段式：act 点过一次，这里必须是待确认文案（截图拍的就是这个状态）
@@ -2125,7 +2125,7 @@ export const SETTINGS_SNAPSHOT_LIST_CHECK = `(async () => {
 /**
  * 种一条 `paused` 的 job（v15，docs/06 §4.1），供 `chat-job-panel.png` 场景断言。
  *
- * 直接写文件（而不是走进程内的 `JobStore.create`）：这里要造的是「**上一次启动留下的** paused job」，
+ * 直接写文件（而不是走进程内的 `JobStore.create`）：这里要造的是"**上一次启动留下的** paused job"，
  * 这条记录必须先于进程内的 job 存储存在，才等价于"重启后还能续跑"的现场。
  * 场景的 `prepare` 会在种完之后 `reload('chat')`，让任务面板**重新挂载并首读**这份文件 ——
  * 面板只在挂载时拉一次列表，不 reload 就什么都看不到。
@@ -2165,8 +2165,8 @@ export async function seedJobFixture(userData: string, sessionId = 'main'): Prom
 }
 
 /**
- * 「任务」面板探针（v15，docs/06 §4.1）：**只读**断言 —— 面板在、状态是「已暂停」、
- * 暂停原因、步骤痕迹与「继续」按钮都渲染出来了。**不点任何按钮**：点「继续」会真的发起续跑，
+ * "任务"面板探针（v15，docs/06 §4.1）：**只读**断言 —— 面板在、状态是"已暂停"、
+ * 暂停原因、步骤痕迹与"继续"按钮都渲染出来了。**不点任何按钮**：点"继续"会真的发起续跑，
  * 那需要模型服务，不是截图阶段该干的事。
  */
 export const CHAT_JOB_PANEL_CHECK = `(async () => {
@@ -2190,9 +2190,9 @@ export const CHAT_JOB_PANEL_CHECK = `(async () => {
         panel !== null &&
         items >= 1 &&
         text.indexOf('已暂停') !== -1 &&
-        // 暂停原因必须说清「停在哪」，而不是一句含糊的「未完成」
+        // 暂停原因必须说清"停在哪"，而不是一句含糊的"未完成"
         text.indexOf('轮次上限') !== -1 &&
-        // 面板的价值是「看得见进度」：步骤痕迹与 token 用量都要在
+        // 面板的价值是"看得见进度"：步骤痕迹与 token 用量都要在
         text.indexOf('read_file') !== -1 &&
         text.indexOf('token') !== -1 &&
         resume !== null,
@@ -2205,7 +2205,7 @@ export const CHAT_JOB_PANEL_CHECK = `(async () => {
 /**
  * 右栏功能 tab 场景（2026-10-03，docs/07 §2.3；同日二次修订为多标签）。
  *
- * act 顺序刻意是「先终端、后文件、**停在文件 tab 不再切走**」：
+ * act 顺序刻意是"先终端、后文件、**停在文件 tab 不再切走**"：
  * - 文件预览的越界拒绝现场要留在截图里（输入框里的路径 + 红色错误文案）——
  *   切走再切回会让 `FilePreviewPanel` 的输入框与错误文案随历史栈复位（第一版就踩了
  *   这个：切回 files 之后截图里输入框是空的、errorText 也是空串）；
@@ -2269,9 +2269,9 @@ export const CHAT_RIGHT_TABS_ACT = `(async () => {
  * 断言五件事：
  * ① tab 条（4 个锚点）与拖拽把手（`chat.ctx-resizer`）都在，右栏宽度落在
  *    280–560px（`--ctx-w` 变量真的驱动了布局，而不是内联宽度写死）；
- * ② 越界文案含「边界」（安全拒绝在渲染层链路可见，act 留下的现场）；
+ * ② 越界文案含"边界"（安全拒绝在渲染层链路可见，act 留下的现场）；
  * ③ tab 互斥：切到 files 时 `chat.jobs`（上下文 tab 的 DOM）不在，切回 context 时恢复 ——
- *    「旧探针零改动兼容」正依赖这条：上下文 tab 的 DOM 结构逐字保留；
+ *    "旧探针零改动兼容"正依赖这条：上下文 tab 的 DOM 结构逐字保留；
  * ④ 终端 `xterm` 跨标签往返存活（面板首次激活挂载、之后常驻，切走只是 `display:none`）：
  *    切走再切回后 `.xterm` 仍在、行文本长度不减少（缓冲没有丢）；
  * ⑤ 浏览器 tab 面板出现（webview 不等待网络加载 —— 离线可跑）。
@@ -2304,7 +2304,7 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     const navResizerOk =
       navResizer && navInlineVar !== '' && Math.abs(Number.parseFloat(navInlineVar) - navWidth) < 2
     // 诊断字段（不进 pass）：宽度记忆的持久值 + 布局链路的三个读数 ——
-    // 「右栏莫名变窄」时要能一眼看出是 localStorage 残值、变量没生效，还是被 grid 压缩
+    // "右栏莫名变窄"时要能一眼看出是 localStorage 残值、变量没生效，还是被 grid 压缩
     let storedWidth = null
     try {
       storedWidth = window.localStorage.getItem('aurora.chat.ctxWidth')
@@ -2322,11 +2322,11 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     const jobsHiddenOnFiles = !has('[data-field="chat.jobs"]')
     // 文件管理器（2026-10-03）：目录条（根标签 + 相对路径）恒在 ——
     // 列表容器只在列表视图里（act 停在**预览态**：越界拒绝的现场就是预览视图的错误行），
-    // 所以先点「返回」切回列表再断言容器与条目。条目内容取决于会话边界根，这里不追究具体文件
+    // 所以先点"返回"切回列表再断言容器与条目。条目内容取决于会话边界根，这里不追究具体文件
     // （项目现场的断言见 chat-file-project）。
     const fileDirBar = has('[data-field="chat.file-root"]')
     let fileListBack = false
-    // 预览态点「返回列表」（锚点 chat.file-exit）：**不是**工具条上的历史「后退」——
+    // 预览态点"返回列表"（锚点 chat.file-exit）：**不是**工具条上的历史"后退"——
     // 这次预览是越界拒绝（没有成功导航），历史里没有可退的一步，退出按钮必须能兜底。
     if (has('[data-field="chat.file-exit"]')) {
       const exit = document.querySelector('[data-field="chat.file-exit"]')
@@ -2341,7 +2341,7 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     // aside 的 scrollWidth 不超 clientWidth，且四枚工具条按钮的矩形落在 aside 矩形内。
     const asideEl = document.querySelector('aside.context')
     const asideOverflowX = asideEl === null ? -1 : asideEl.scrollWidth - asideEl.clientWidth
-    // 矩形每次现取（下面还有「拖到上限再量一次」的用法）
+    // 矩形每次现取（下面还有"拖到上限再量一次"的用法）
     const toolbarInView = () => {
       const panel = document.querySelector('aside.context')
       if (panel === null) return false
@@ -2372,9 +2372,9 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     const xtermOn = has('[data-field="chat.terminal-host"] .xterm')
     const textBefore = rowText()
     // 终端黑底（2026-10-03 用户口径）：容器必须是纯黑 —— 此前跟随 prefers-color-scheme，
-    // 浅色系统下拿到白底，这条把口径钉死在「黑」。xterm 自己的元素底色是**透明**的
+    // 浅色系统下拿到白底，这条把口径钉死在"黑"。xterm 自己的元素底色是**透明**的
     // （它把 theme.background 画进 canvas，CSS 链上看是透明），所以断言的是
-    // 「容器纯黑 + viewport 不引入别的颜色」：有效底色 = 容器色，就是黑。
+    // "容器纯黑 + viewport 不引入别的颜色"：有效底色 = 容器色，就是黑。
     const hostEl = document.querySelector('[data-field="chat.terminal-host"]')
     const xtermEl = document.querySelector('[data-field="chat.terminal-host"] .xterm')
     const viewportEl = document.querySelector('[data-field="chat.terminal-host"] .xterm-viewport')
@@ -2404,7 +2404,7 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     const contextOn = has('[data-field="chat.jobs"]') && has('.ctx-inner')
 
     // 侧栏拖拽调宽（2026-10-03）：**拖一次真的改宽度**才算数 ——
-    // 「把手在 + 变量驱动布局」推不出拖动可用（此前踩过：合成 PointerEvent 会被
+    // "把手在 + 变量驱动布局"推不出拖动可用（此前踩过：合成 PointerEvent 会被
     // buttons===0 的守卫吞掉、setPointerCapture 在合成事件上会抛）。这里如实复刻
     // down → move → up（buttons 恒为 1），把宽度拖到目标值再双击复位。
     const dragResizer = (selector, toX) => {
@@ -2441,11 +2441,11 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
     await wait(300)
     const ctxBack = asideNow === null ? 0 : Math.round(asideNow.getBoundingClientRect().width)
 
-    // 上限提高（2026-10-03 用户点名「最大宽度不够」）：往左拖 900px（远超旧上限 560）——
+    // 上限提高（2026-10-03 用户点名"最大宽度不够"）：往左拖 900px（远超旧上限 560）——
     // 实际宽度取 **min(绝对上限 720, 窗口 − 左栏 − 主区下限 420)**，且此时
     // ① 主区仍在 380 以上（用户实测踩过：主区被挤成一条、标题栏按钮压到右栏 tab 上）
     // ② 文件工具条按钮仍在右栏可视区内。
-    // 先切回「文件」tab：探针此刻停在 context tab 上，文件工具条根本不在 DOM 里。
+    // 先切回"文件"tab：探针此刻停在 context tab 上，文件工具条根本不在 DOM 里。
     clickTab('files')
     await wait(250)
     dragResizer('[data-field="chat.ctx-resizer"]', Math.round(window.innerWidth) - 900)
@@ -2543,7 +2543,7 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
           ? Math.abs(asideWidth - 384) < 2
           : asideWidth >= 280 && asideWidth <= 720) &&
         filePanelOn &&
-        // 文件管理器：目录条恒在，预览态点「返回列表」后列表容器回来
+        // 文件管理器：目录条恒在，预览态点"返回列表"后列表容器回来
         fileDirBar &&
         fileListBack &&
         // 布局护栏：右栏不横向撑破，工具条按钮都在可视区内
@@ -2552,7 +2552,7 @@ export const CHAT_RIGHT_TABS_CHECK = `(async () => {
         // 左栏把手在，且宽度由 --nav-w 内联变量真正驱动
         navResizerOk &&
         // 两侧拖拽真的改宽度，双击各回缺省（240 / 384）——
-        // 「把手在」推不出「拖得动」；同时主区不许被挤到 380 以下
+        // "把手在"推不出"拖得动"；同时主区不许被挤到 380 以下
         navDragged >= 300 &&
         navMainKept &&
         navBack === 240 &&
@@ -2658,8 +2658,8 @@ async function clickFixtureBlankLink(
  * （折叠时锚点在 ＋N 菜单里，`.click()` 照样派发 —— 它覆盖的是面板生命周期 / 宽度 /
  * caption 互斥），**标签条自身的开 / 折叠 / 关闭交互由本场景走真实 UI 覆盖**。
  *
- * 现场（截图停在这里）：用「＋」菜单开出第二个浏览器标签后，**展开「＋N」菜单** ——
- * 截图要一眼看到三件事：可见标签 + 「＋N」按钮 + 被折叠标签的菜单（菜单在 48px 顶带
+ * 现场（截图停在这里）：用"＋"菜单开出第二个浏览器标签后，**展开"＋N"菜单** ——
+ * 截图要一眼看到三件事：可见标签 + "＋N"按钮 + 被折叠标签的菜单（菜单在 48px 顶带
  * **之下**，不碰窗口三键）。后续的激活 / 关闭 / 第二个终端都在 check 里做（截图之后）。
  */
 export const CHAT_CTX_TABS_ACT = `(async () => {
@@ -2667,7 +2667,7 @@ export const CHAT_CTX_TABS_ACT = `(async () => {
   const report = { ok: false, reason: '', opened: false, menuOpen: false }
   window.__auroraCtxTabsAct = report
   try {
-    // ① 「＋」菜单 → 新建浏览器标签（第二个浏览器实例）
+    // ① "＋"菜单 → 新建浏览器标签（第二个浏览器实例）
     const plus = document.querySelector('[data-field="chat.ctx-new-tab"]')
     if (plus === null) { report.reason = '没有 ＋ 按钮'; return report }
     plus.click()
@@ -2678,7 +2678,7 @@ export const CHAT_CTX_TABS_ACT = `(async () => {
     await wait(500)
     report.opened = document.querySelector('[data-tab-id="browser-2"]') !== null
     if (!report.opened) { report.reason = '第二个浏览器标签没有出现'; return report }
-    // ② 展开「＋N」菜单（截图停在这里）
+    // ② 展开"＋N"菜单（截图停在这里）
     const more = document.querySelector('[data-field="chat.ctx-tab-more"]')
     if (more === null) { report.reason = '没有 ＋N 按钮（标签没被折叠？）'; return report }
     more.click()
@@ -2701,14 +2701,14 @@ export const CHAT_CTX_TABS_ACT = `(async () => {
  * ① **折叠计数**：＋N 的文案 = 标签总数 − 可见数（可见 = 矩形宽 > 8 的那些 ——
  *    被折叠的标签在菜单里，`display:none` 的矩形宽是 0）；
  * ② **菜单不碰三键**：菜单打开时的矩形与任意 caption 按钮矩形**无交集**，且菜单整体在
- *    48px 顶带之下（`top >= 44`）—— 用户点名的「不要遮挡三键」就钉在这两条上；
+ *    48px 顶带之下（`top >= 44`）—— 用户点名的"不要遮挡三键"就钉在这两条上；
  * ③ **滑动窗口**：从菜单激活一个被折叠的标签后，它必须回到可见区（否则用户会看着别的
  *    标签、内容却是另一个的）；
  * ④ **关闭**：点它的 ✕ → 标签总数回落；
  * ⑤ **多终端是不同 PTY**：再开一个终端标签后，两个 `chat.terminal-host` 的
- *    `data-terminal-id` 互异且非空 —— 只数 DOM 个数是数不出「两个标签共用一条 shell」的
- *    （那正是「每窗口一个 shell」时代的失效形态）；
- * ⑥ **收尾**：把多开的两个标签关掉、激活回「上下文」，标签总数回到初始 4 ——
+ *    `data-terminal-id` 互异且非空 —— 只数 DOM 个数是数不出"两个标签共用一条 shell"的
+ *    （那正是"每窗口一个 shell"时代的失效形态）；
+ * ⑥ **收尾**：把多开的两个标签关掉、激活回"上下文"，标签总数回到初始 4 ——
  *    本场景不 reload，收尾不干净会污染后面的场景（docs/07 §5.3 的教训）。
  */
 export const CHAT_CTX_TABS_CHECK = `(async () => {
@@ -2716,7 +2716,7 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
   try {
     const act = window.__auroraCtxTabsAct || { ok: false, reason: 'act 没有留下读数' }
     // 标签条**可见区**里有哪些标签：只看列表里的（菜单打开时，被折叠的标签也在 DOM 且
-    // 有尺寸 —— 按「矩形宽 > 8」判会把菜单项一起数进来，那正是这一版探针踩过的坑）
+    // 有尺寸 —— 按"矩形宽 > 8"判会把菜单项一起数进来，那正是这一版探针踩过的坑）
     const stripTabs = () =>
       Array.from(document.querySelectorAll('[data-field="chat.ctx-tab-list"] [data-tab-id]'))
     const visibleIds = () =>
@@ -2724,7 +2724,7 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
         .filter((el) => el.getBoundingClientRect().width > 8)
         .map((el) => el.getAttribute('data-tab-id'))
     /**
-     * 全部标签（可见 + 被折叠）：用「chat.ctx-tab-」前缀 + data-tab-id 两个条件一起选 ——
+     * 全部标签（可见 + 被折叠）：用"chat.ctx-tab-"前缀 + data-tab-id 两个条件一起选 ——
      * 窗格也有 data-tab-id，只按后者数会把窗格一起数进来（这一版探针踩过）。
      */
     const allTabs = () =>
@@ -2772,7 +2772,7 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
 
     // ⑤ 再开一个终端标签 → 两个终端必须是不同的 PTY
     // 先把**默认**终端标签激活并等它的 PTY 就绪（本场景可能单独跑，那时它还没挂载过），
-    // 再开第二个 —— 两个 host 都就绪才谈得上「是不是同一条 shell」。
+    // 再开第二个 —— 两个 host 都就绪才谈得上"是不是同一条 shell"。
     const defaultTerm = document.querySelector('[data-field="chat.ctx-tab-terminal"]')
     if (defaultTerm !== null) defaultTerm.click()
     for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -2798,7 +2798,7 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
     }
 
     // ⑤′ 容量随宽度变化：把右栏拖宽 → 同时可见的标签变多。
-    // 「固定数量」是**按标签条实测宽度算出来的**（固定 88px 不缩窄 → 宽度里能塞几个就显示几个），
+    // "固定数量"是**按标签条实测宽度算出来的**（固定 88px 不缩窄 → 宽度里能塞几个就显示几个），
     // 不是写死的 2 —— 这一条把它钉住。拖完双击复位（与 chat-right-tabs 同款，收尾不留脏宽度）。
     const dragResizer = (selector, toX) => {
       const el = document.querySelector(selector)
@@ -2822,11 +2822,11 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
     const resetWidth = asideEl === null ? 0 : Math.round(asideEl.getBoundingClientRect().width)
     const widthRestored = Math.abs(resetWidth - 384) < 2
 
-    // ⑤″ 最窄局面（2026-10-03 用户实测：「加号按钮会变得不可用」）：
-    // 把右栏拖到最小宽 280 → 标签条只剩 132px 可用。判据不能只量「元素在不在」，
+    // ⑤″ 最窄局面（2026-10-03 用户实测："加号按钮会变得不可用"）：
+    // 把右栏拖到最小宽 280 → 标签条只剩 132px 可用。判据不能只量"元素在不在"，
     // 要量**矩形落在标签条可视区内** + **elementFromPoint 真的命中它** ——
-    // 之前标签按 88px 起步、按钮跟在后面，标签条的 overflow:hidden 把「＋」整枚裁掉：
-    // DOM 在、矩形也在（只是不在可视区），点不到，看着就是「按钮没了」。
+    // 之前标签按 88px 起步、按钮跟在后面，标签条的 overflow:hidden 把"＋"整枚裁掉：
+    // DOM 在、矩形也在（只是不在可视区），点不到，看着就是"按钮没了"。
     const inListView = (selector) => {
       const el = document.querySelector(selector)
       const list = document.querySelector('[data-field="chat.ctx-tab-list"]')
@@ -2867,7 +2867,7 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
       narrowResetEl.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
     await wait(450)
 
-    // ⑤‴ 左栏缩到最小（200px）时，左栏自己的「＋」入口仍然可点（同一句反馈的另一半）：
+    // ⑤‴ 左栏缩到最小（200px）时，左栏自己的"＋"入口仍然可点（同一句反馈的另一半）：
     // 逐个量矩形 + elementFromPoint 命中测试；存在但不满足可见/命中的一律记进未就绪名单。
     dragResizer('[data-field="chat.nav-resizer"]', 200)
     await wait(450)
@@ -2897,7 +2897,7 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
     await wait(450)
 
     // ⑥ 收尾：关掉多开的两个标签（browser-2 / terminal-2），把步骤 ④ 关掉的那个默认标签
-    // 补回来（种类 id 会复用，补回来的就是原来那个 id），再激活回「上下文」——
+    // 补回来（种类 id 会复用，补回来的就是原来那个 id），再激活回"上下文"——
     // 本场景**不 reload**，收尾不干净会污染后面的场景（docs/07 §5.3 的教训）。
     for (const id of ['browser-2', 'terminal-2']) {
       const btn = document.querySelector('[data-field="chat.ctx-tab-close-' + id + '"]')
@@ -2978,14 +2978,14 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
         // 容量确实随宽度变（不是写死的可见数），且收尾把宽度与标签集都复原
         widenWorks &&
         widthRestored &&
-        // 最窄局面：标签让位，两枚按钮完整可见且「＋」真的点得开（用户实测的失效现场）
+        // 最窄局面：标签让位，两枚按钮完整可见且"＋"真的点得开（用户实测的失效现场）
         narrowWidth <= 282 &&
         narrowVisible >= 1 &&
         narrowTabWidth >= 40 &&
         narrowMoreInView &&
         narrowPlusInView &&
         narrowPlusUsable &&
-        // 左栏缩到最小时，左栏自己的「＋」入口仍可点
+        // 左栏缩到最小时，左栏自己的"＋"入口仍可点
         navMinPlusOk &&
         restored,
     }
@@ -2995,13 +2995,13 @@ export const CHAT_CTX_TABS_CHECK = `(async () => {
 })()`
 
 /**
- * 右栏「文件」tab＝会话项目文件夹的现场准备（2026-10-03，docs/07 §2.3）。
+ * 右栏"文件"tab＝会话项目文件夹的现场准备（2026-10-03，docs/07 §2.3）。
  *
- * 三步：① 经 `settings:update` 登记项目「截图项目」指向 prepare 建出的目录
+ * 三步：① 经 `settings:update` 登记项目"截图项目"指向 prepare 建出的目录
  * （与 settingsProjectAct 同一条口径 —— 启动后写 config.json 对运行中的进程无效）；
  * ② 切到**绑定了该项目的会话**（`sessions/chat-seed-project.json` 的种子会话，
  *    `meta.projectId = 'capture'`）；切之前记下当前激活行，收尾由 check 点它回来；
- * ③ 切到「文件」tab 并等 prepare 种的那份文件出现。
+ * ③ 切到"文件"tab 并等 prepare 种的那份文件出现。
  *
  * act 的返回值不进 report，所以把现场读数挂在 `window` 上（check 里读）——
  * act 里的失败（没找到会话行 / 没等到列表）必须能被 check 看见，否则会静默假 PASS。
@@ -3057,16 +3057,16 @@ export function chatFileProjectAct(root: string): string {
  * 无标签页时的右栏工具快捷入口（2026-10-03，docs/07 §2.3）。
  *
  * 现场（截图停在这里）：reload 回初始四标签后，**走真实 ✕ 按钮**把四个标签逐个关掉 ——
- * 右栏标签条只剩「＋」，右栏正文区出现「工具」分组（四张卡片）。
+ * 右栏标签条只剩"＋"，右栏正文区出现"工具"分组（四张卡片）。
  * 截图要一眼看到：卡片长什么样、右栏确实是空的。
- * 后续（check 里）：卡片矩形与命中、点「文件」卡片把标签开回来、卡片区随之消失。
+ * 后续（check 里）：卡片矩形与命中、点"文件"卡片把标签开回来、卡片区随之消失。
  */
 export const CHAT_CTX_EMPTY_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const report = { ok: false, reason: '', closed: 0 }
   window.__auroraCtxEmptyAct = report
   try {
-    // 关一个标签后标签条会重排 —— 每轮重新取「第一个关闭钮」，直到一个都不剩
+    // 关一个标签后标签条会重排 —— 每轮重新取"第一个关闭钮"，直到一个都不剩
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const close = document.querySelector('[data-field^="chat.ctx-tab-close-"]')
       if (close === null) break
@@ -3088,11 +3088,11 @@ export const CHAT_CTX_EMPTY_ACT = `(async () => {
 /**
  * 无标签页工具快捷卡片的断言（2026-10-03，docs/07 §2.3）。
  *
- * 现场（act 留下）：右栏标签全关、右栏「工具」四张卡片在。
+ * 现场（act 留下）：右栏标签全关、右栏"工具"四张卡片在。
  * 断言：① 标签确实一个不剩；② 四张卡片锚点齐（context / files / terminal / browser）；
  * ③ 每张卡片**矩形** ≥ 80×30；④ 卡片中心
- * `elementFromPoint` 真的命中卡片（只查 DOM 存在会漏「被裁掉 / 被盖住」这一类失效）；
- * ⑤ 卡片区位于右栏而不是左栏；⑥ 点「文件」卡片 → 文件标签回来、卡片区消失、文件窗格挂上 —— 闭环。
+ * `elementFromPoint` 真的命中卡片（只查 DOM 存在会漏"被裁掉 / 被盖住"这一类失效）；
+ * ⑤ 卡片区位于右栏而不是左栏；⑥ 点"文件"卡片 → 文件标签回来、卡片区消失、文件窗格挂上 —— 闭环。
  * 本场景排在 chat 组末尾，收尾不再有 chat 场景依赖初始标签集。
  */
 export const CHAT_CTX_EMPTY_CHECK = `(async () => {
@@ -3162,13 +3162,13 @@ export const CHAT_CTX_EMPTY_CHECK = `(async () => {
 /**
  * 右栏文件面板＝项目文件夹的断言（2026-10-03，docs/07 §2.3；同日补导航与布局护栏）。
  *
- * 现场（act 留下）：会话切到绑项目的种子会话、停在「文件」tab、列表已出。
- * 断言：① 面包屑根段是「项目：截图项目」（绑定生效的**可见**证据）；
+ * 现场（act 留下）：会话切到绑项目的种子会话、停在"文件"tab、列表已出。
+ * 断言：① 面包屑根段是"项目：截图项目"（绑定生效的**可见**证据）；
  * ② 根目录列出 prepare 种的目录与文件（目录排在前）；
  * ③ 进目录 → 面包屑出现该段；**后退**回根（面包屑只剩根段、后退置灰）→
- *    **前进**再进一层 → 「上级」回根（用户点名「进入文件夹后无法返回」）；
- * ④ 点文件在面板内预览（markdown 正文可见 + 「返回列表」按钮在），点它回列表；
- * ⑤ **布局护栏**：预览「宽内容.md」（长 URL / 长标识符 / 长代码行）时 ——
+ *    **前进**再进一层 → "上级"回根（用户点名"进入文件夹后无法返回"）；
+ * ④ 点文件在面板内预览（markdown 正文可见 + "返回列表"按钮在），点它回列表；
+ * ⑤ **布局护栏**：预览"宽内容.md"（长 URL / 长标识符 / 长代码行）时 ——
  *    aside 与面板都不许横向溢出，且工具条五枚按钮的矩形必须落在 aside 可视矩形内。
  *    这一条是对着用户实测症状写的：内容撑破右栏后按钮被推到可视区之外，
  *    **只查 DOM 存在的探针会全绿**（按钮在 DOM 里、`getBoundingClientRect` 也有值）。
@@ -3183,7 +3183,7 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
   try {
     const act = window.__auroraFileProjectAct || { ok: false, reason: 'act 没有留下读数' }
     const rootLabel = text('[data-field="chat.file-root"]')
-    // 面包屑各段文本（根段 = 「项目：截图项目」，其后逐级目录）
+    // 面包屑各段文本（根段 = "项目：截图项目"，其后逐级目录）
     const crumbs = () =>
       Array.from(document.querySelectorAll('[data-field="chat.file-crumbs"] .fp-crumb')).map(
         (el) => (el.textContent || '').replace(/\\s+/g, ' ').trim(),
@@ -3222,7 +3222,7 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
     }
     const upBackToRoot = crumbs().length === 1
 
-    // ④ 点文件 → 面板内预览 → 「返回列表」
+    // ④ 点文件 → 面板内预览 → "返回列表"
     let previewText = ''
     let exitButton = false
     let backToList = false
@@ -3239,7 +3239,7 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
       backToList = document.querySelector('[data-field="chat.file-list"]') !== null
     }
 
-    // ⑤ 宽内容：预览它，量「有没有横向撑破」+ 工具条按钮是否真的在可视区内
+    // ⑤ 宽内容：预览它，量"有没有横向撑破"+ 工具条按钮是否真的在可视区内
     let wideText = ''
     let overflowX = -1
     let panelOverflowX = -1
@@ -3352,7 +3352,7 @@ export const CHAT_FILE_PROJECT_CHECK = `(async () => {
  *
  * 分流的口径：**主进程侧**的目标校验（http(s) / 边界根内的本地文件 / 越界拒绝）由
  * `preview-port.test.ts` 覆盖；这里断言**渲染层那半条链**：收到 `preview:show` 后
- * 右栏自动切到「浏览器」tab、webview 真的加载了目标（`getURL()` 是 file:// 且指向夹具）、
+ * 右栏自动切到"浏览器"tab、webview 真的加载了目标（`getURL()` 是 file:// 且指向夹具）、
  * 地址栏显示原始路径而不是 file:// URL。
  *
  * 推送由 `mainAct` 合成（与工具实际走的 `windows.sendTo('chat', IPC.preview.show, …)`
@@ -3378,7 +3378,7 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
       )
       return el === null ? '' : el.getAttribute('data-tab-id') || ''
     }
-    // 「推送把右栏切到浏览器」：激活的是**某个**浏览器标签（推送先到、链接后点 ——
+    // "推送把右栏切到浏览器"：激活的是**某个**浏览器标签（推送先到、链接后点 ——
     // 夹具页能加载出来本身就依赖这条链路）
     const browserActive = activeTabNow().indexOf('browser') === 0
     const panelOn = primaryPane !== null
@@ -3407,7 +3407,7 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
 
     // 导航工具条（2026-10-03）：后退 / 前进 / 刷新 / 主页 —— 存在且量得出尺寸
     // 工具条断言：**存在性**按主标签的 pane 查（唯一的那份），**尺寸**必须在
-    // 「当前可见的那个浏览器 pane」里量 —— 隐藏的 pane 是 display:none，矩形恒为 0，
+    // "当前可见的那个浏览器 pane"里量 —— 隐藏的 pane 是 display:none，矩形恒为 0，
     // 拿它量尺寸必然假 FAIL（本场景此刻激活的可能是链接另开的那个标签）。
     const toolbarIds = ['back', 'forward', 'reload', 'home', 'new-tab'].filter(
       (id) => inPrimary('[data-field="chat.browser-' + id + '"]') !== null,
@@ -3427,9 +3427,9 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
     // **切标签不重载**（2026-10-03 二次修订，docs/07 §2.3）：浏览器面板随标签常驻，
     // 切走只是 display:none。判据取两个**实测事实**：
     // ① 先在页面里打一个标记，切到文件标签再切回来，标记仍在 —— 页面没有被重新加载
-    //    （旧版「webview 重挂载即重载」的失效形态会让标记消失）；
+    //    （旧版"webview 重挂载即重载"的失效形态会让标记消失）；
     // ② 回来后 guest 的 innerWidth 仍是面板宽度量级 —— 从 display:none 回来时视口没被
-    //    塌成 0（那是「切回来一片空白」的典型失效）。
+    //    塌成 0（那是"切回来一片空白"的典型失效）。
     let noReload = false
     let guestInnerWidth = 0
     if (guest !== null && typeof guest.executeJavaScript === 'function') {
@@ -3451,7 +3451,7 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
     }
     const guestSized = guestInnerWidth > 120
 
-    // **浏览器标签页自己的「新建标签」**（2026-10-03 用户口径）：工具条右端那枚 ＋ 与
+    // **浏览器标签页自己的"新建标签"**（2026-10-03 用户口径）：工具条右端那枚 ＋ 与
     // 网页里的 target="_blank" 链接，都必须**另开一个浏览器标签**，而不是把当前页顶掉。
     const browserTabIds = () =>
       Array.from(document.querySelectorAll('[data-field="chat.ctx-tab-list"] [data-tab-id]'))
@@ -3510,7 +3510,7 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
       }
       if (!blankOpened) await wait(250)
     }
-    // 新标签是「追加实例」（browser-2…）且被激活；主标签（browser）保持自己的夹具页
+    // 新标签是"追加实例"（browser-2…）且被激活；主标签（browser）保持自己的夹具页
     const activeAfterBlank = activeTabId()
     const blankNewActive = blankOpened && activeAfterBlank.indexOf('browser-') === 0
     blankNewId = blankNewActive ? activeAfterBlank : ''
@@ -3567,13 +3567,13 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
         loaded.indexOf('file://') === 0 &&
         urlValue.indexOf('fixture.html') !== -1 &&
         // 导航工具条四枚按钮都在且有实际尺寸（2026-10-03：此前是字形按钮，
-        // 又细又淡到被当成「没有按钮」——这里钉住「有尺寸的按钮」这个事实）
+        // 又细又淡到被当成"没有按钮"——这里钉住"有尺寸的按钮"这个事实）
         toolbarIds.join('|') === 'back|forward|reload|home|new-tab' &&
         browserBarSized &&
         // 切标签往返：页面没重载（标记仍在）且回来后 guest 视口没塌成 0
         noReload &&
         guestSized &&
-        // 浏览器标签页自己的「新建标签」：工具条 ＋ 与 target=_blank 链接都另开标签，
+        // 浏览器标签页自己的"新建标签"：工具条 ＋ 与 target=_blank 链接都另开标签，
         // 且原页面原地不动（当前页被顶掉正是旧口径的失效形态）
         toolbarOpened &&
         toolbarNewActive &&
@@ -3588,7 +3588,7 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
 })()`
 
 /**
- * 右栏「终端」tab 的截图现场（2026-10-03，docs/07 §2.3）。
+ * 右栏"终端"tab 的截图现场（2026-10-03，docs/07 §2.3）。
  *
  * ACT 只切到终端 tab（切走再切回由 `chat-right-tabs` 的 check 覆盖往返存活）；
  * CHECK 断言 **xterm 在 + 容器与 viewport 的底色是纯黑** —— 2026-10-03 的用户口径
@@ -3641,11 +3641,11 @@ export const CHAT_TERMINAL_CHECK = `(async () => {
 })()`
 
 /**
- * 综合概览卡的探针（step 5）：右栏出现「任务」面板 + 上下文卡，用于人工核对布局。
+ * 综合概览卡的探针（step 5）：右栏出现"任务"面板 + 上下文卡，用于人工核对布局。
  *
- * 断言的是**布局不冲突**：任务面板在且显示真内容（「已暂停」），同时断言两类
+ * 断言的是**布局不冲突**：任务面板在且显示真内容（"已暂停"），同时断言两类
  * **已下线卡片**的缺席（回归护栏）：快照卡（2026-09 迁设置页）与两张项目卡
- * （2026-09-30 迁「会话管理」页 —— `context.project-card` / `context.session-project-card`）。
+ * （2026-09-30 迁"会话管理"页 —— `context.project-card` / `context.session-project-card`）。
  */
 export const CHAT_OVERVIEW_CHECK = `(async () => {
   try {
@@ -3668,7 +3668,7 @@ export const CHAT_OVERVIEW_CHECK = `(async () => {
         count('[data-field="chat.job-panel"]') === 1 &&
         // 快照卡已迁设置页（SnapshotList），右栏必须为 0
         count('[data-field="chat.snapshot-card"]') === 0 &&
-        // 两张项目卡已迁「会话管理」页（2026-09-30），右栏必须为 0
+        // 两张项目卡已迁"会话管理"页（2026-09-30），右栏必须为 0
         count('[data-field="context.project-card"]') === 0 &&
         count('[data-field="context.session-project-card"]') === 0 &&
         text.indexOf('已暂停') !== -1,
@@ -3679,7 +3679,7 @@ export const CHAT_OVERVIEW_CHECK = `(async () => {
 })()`
 
 /**
- * 「子代理」页面探针（docs/07 §2.3：子代理独立页面记在主界面小节里；`§2.4` 那个编号
+ * "子代理"页面探针（docs/07 §2.3：子代理独立页面记在主界面小节里；`§2.4` 那个编号
  * 随小 AI 交互窗删除而移除，见 docs/07 开头的编号说明）。
  *
  * act 点左栏固定项 `[data-field="chat.subagent-item"]` 把主区切到子代理页面；
@@ -3687,15 +3687,15 @@ export const CHAT_OVERVIEW_CHECK = `(async () => {
  * 步骤时间线 + 报告，并且**切回对话流**（后续场景依赖 composer 与消息区）。
  *
  * 快照来自 `seedChatTtsHistory` 种下的 `task` 工具卡（含 `subagent` 字段）——
- * 也就是说这条断言同时验证了「快照随工具卡持久化 → 由子代理页面读回」这条链路，
- * 而不只是「实时事件画得出来」。
+ * 也就是说这条断言同时验证了"快照随工具卡持久化 → 由子代理页面读回"这条链路，
+ * 而不只是"实时事件画得出来"。
  */
 /**
  * `ask_user` 提问卡片场景（`chat-ask-user.png`，2026-09，docs/06 §21 / docs/07 §2.3）。
  *
  * act 只**选中**第二个选项（截图要拍到"选中态 + 问题 + 选项"，不拍提交后的空场）；
- * check 里才点「回答」并断言卡片消失；`nativeCheck` 断言主进程侧拿到的回执就是第二个选项的文案
- * —— 三段合起来才证明「点回答 → IPC 回执 → 服务 resolve → 内核拿到答案」这条往返真的通了
+ * check 里才点"回答"并断言卡片消失；`nativeCheck` 断言主进程侧拿到的回执就是第二个选项的文案
+ * —— 三段合起来才证明"点回答 → IPC 回执 → 服务 resolve → 内核拿到答案"这条往返真的通了
  * （只看卡片消失不够：回执失败时卡片也会收起）。
  */
 export const CHAT_ASK_USER_ACT = `(async () => {
@@ -3730,14 +3730,14 @@ export const CHAT_ASK_USER_CHECK = `(async () => {
       activeOptions: options.filter((item) => item.classList.contains('active')).length,
       question: questionEl === null ? '' : (questionEl.textContent || '').trim(),
       header: titleEl === null ? '' : (titleEl.textContent || '').trim(),
-      // 选了选项后提交键应可用（未选时 disabled 是「别手滑提交空回答」的闸门）
+      // 选了选项后提交键应可用（未选时 disabled 是"别手滑提交空回答"的闸门）
       submitEnabled:
         card !== null &&
         card.querySelector('[data-action="chat.ask-user-submit"]')?.disabled === false,
       // 自由输入框在（给了选项也能自己写）
       hasFreeInput: card !== null && card.querySelector('.free-input') !== null,
     }
-    // 提交：点「回答」，卡片应自行收起（回执往返的渲染层证据）
+    // 提交：点"回答"，卡片应自行收起（回执往返的渲染层证据）
     const submit = card === null ? null : card.querySelector('[data-action="chat.ask-user-submit"]')
     if (submit !== null) submit.click()
     for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -3792,7 +3792,7 @@ export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
     const convEl = () => document.querySelector('[data-field="chat.subagent-conversation"]')
     const page = document.querySelector('[data-field="chat.subagent-page"]')
     const runs = count('[data-field="chat.subagent-run"]')
-    // 权限徽章（2026-09）：seed 授予的是 write，卡头必须显示「可读写」
+    // 权限徽章（2026-09）：seed 授予的是 write，卡头必须显示"可读写"
     const perm = document.querySelector('[data-field="chat.subagent-perm"]')
     const permText = perm === null ? '' : (perm.textContent || '').trim()
     const toggle = document.querySelector('[data-action="chat.subagent-conversation-toggle"]')
@@ -3869,7 +3869,7 @@ export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
 })()`
 
 /**
- * 「自动化」探针组（docs/13 §11、docs/07 §5.3）：主界面看列表 /
+ * "自动化"探针组（docs/13 §11、docs/07 §5.3）：主界面看列表 /
  * 内置区，`automation` 独立窗口看编辑器 / 历史与 Agent 回放。
  *
  * 数据来自 `seedAutomationFixture` 种下的 2 份 Normal 定义（一份计数 3/10、一份已用尽 5/5，
@@ -3945,7 +3945,7 @@ export const CHAT_AUTOMATION_NORMAL_ACT = `(async () => {
 export const CHAT_AUTOMATION_NORMAL_CHECK = `(() => {
   try {
     const count = (selector) => document.querySelectorAll(selector).length
-    // 卡片内不许有元素探出边界（前端减负轮的「安全区」口径：文字/组件不冲出容器）
+    // 卡片内不许有元素探出边界（前端减负轮的"安全区"口径：文字/组件不冲出容器）
     const overflowOf = (root) => {
       const box = root.getBoundingClientRect()
       let bad = 0
@@ -3966,7 +3966,7 @@ export const CHAT_AUTOMATION_NORMAL_CHECK = `(() => {
     const runsChips = Array.from(document.querySelectorAll('[data-field="automation.runs"]'))
     const runsText = runsChips.map((chip) => (chip.textContent || '').trim())
     const exhaustedChips = document.querySelectorAll('[data-field="automation.runs"].exhausted').length
-    // 每张卡摘要行都有语义图标（「每个操作都配上图标」的回归护栏）
+    // 每张卡摘要行都有语义图标（"每个操作都配上图标"的回归护栏）
     const cards = Array.from(document.querySelectorAll('.card'))
     const iconsPerCard = cards.map((card) => card.querySelectorAll('.card-meta svg').length)
     const cardOverflow = cards.reduce((total, card) => total + overflowOf(card), 0)
@@ -4020,11 +4020,11 @@ export const CHAT_AUTOMATION_EDITOR_CHECK = `(async () => {
   try {
     const count = (selector) => document.querySelectorAll(selector).length
     const editor = document.querySelector('[data-field="automation.editor"]')
-    // 条件选择器是「图标磁贴网格」（2026-09 前端减负轮）：数磁贴而不是数 option
+    // 条件选择器是"图标磁贴网格"（2026-09 前端减负轮）：数磁贴而不是数 option
     const kindGroup = document.querySelector('[data-field="automation.trigger-kind"]')
     const tiles = kindGroup === null ? [] : Array.from(kindGroup.querySelectorAll('[data-kind]'))
     const tileIcons = tiles.filter((tile) => tile.querySelector('svg') !== null).length
-    // 操作行：每行一个组件胶囊组，胶囊自带图标（「每个操作都配上图标」的回归护栏）
+    // 操作行：每行一个组件胶囊组，胶囊自带图标（"每个操作都配上图标"的回归护栏）
     const actionRows = Array.from(document.querySelectorAll('[data-field^="automation.action-"]'))
     const actionIcons = actionRows.filter((row) => row.querySelector('.chip svg') !== null).length
     const nameInput = editor === null ? null : editor.querySelector('input[type="text"]')
@@ -4046,7 +4046,7 @@ export const CHAT_AUTOMATION_EDITOR_CHECK = `(async () => {
     }
     // 原生下拉应当绝迹（条件 / 参数下拉都改成了磁贴与胶囊）
     const nativeSelect = count('[data-field="automation.editor"] select')
-    // 磁贴里的标签必须留在磁贴内（「文字冲出组件」的几何护栏）
+    // 磁贴里的标签必须留在磁贴内（"文字冲出组件"的几何护栏）
     const tileOverflow = tiles.reduce((total, tile) => {
       const box = tile.getBoundingClientRect()
       let bad = 0
@@ -4105,11 +4105,11 @@ export const CHAT_AUTOMATION_EDITOR_CHECK = `(async () => {
     result.tipClosed = document.querySelector('body > .app-tip') === null
     // Esc 关闭（弹窗的标准键盘路径）：派发到 window，组件监听器接住后应关掉编辑器。
     // v0.2.9 起弹窗有 250ms 淡出过渡（Transition fade），过渡期间元素还在 DOM 里 ——
-    // 等 500ms 再断言，别把「正在退场」误判成「没关掉」。
+    // 等 500ms 再断言，别把"正在退场"误判成"没关掉"。
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await wait(500)
     result.escClosed = document.querySelector('[data-field="automation.editor"]') === null
-    // 收尾：若 Esc 未生效（回归时）再点「取消」，保证后续场景能继续操作列表
+    // 收尾：若 Esc 未生效（回归时）再点"取消"，保证后续场景能继续操作列表
     if (result.escClosed !== true) {
       const cancel = document.querySelector('[data-action="automation.editor-cancel"]')
       if (cancel !== null) cancel.click()
@@ -4150,7 +4150,7 @@ export const CHAT_AUTOMATION_HISTORY_ACT = `(async () => {
       await wait(100)
     }
     await wait(250)
-    // 点开第一条可回放的 Agent 记录：截图本身要能看到「点记录 → 对话回放」这块证据
+    // 点开第一条可回放的 Agent 记录：截图本身要能看到"点记录 → 对话回放"这块证据
     const row = document.querySelector('.run-item.clickable')
     if (row !== null) {
       row.click()
@@ -4244,15 +4244,15 @@ export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
  * 主界面左栏结构 + 门控探针（BetaV2，spec §11）：三栏重构后左栏的固定锚点必须全部在。
  *
  * 断言六件事：
- * ① 左栏三件套：`chat.quick-item`（固定顶置的「快速对话」）、`chat.session-list`（会话列表
+ * ① 左栏三件套：`chat.quick-item`（固定顶置的"快速对话"）、`chat.session-list`（会话列表
  *    容器，且**有会话行**——隔离 userData 由 `seedChatTtsHistory` 种了 main 会话）、
  *    `data-action="chat.new-session"`；
  * ② 右栏开关 `chat.right-panel-toggle` 在，且右栏 `.context` 默认展开（1120px 宽三栏并存）、
- *    classroom 模式的「今日课程」与通用「系统状态」两张卡都渲染
+ *    classroom 模式的"今日课程"与通用"系统状态"两张卡都渲染
  *    （ContextPanel 无 data-field 锚点，按卡头文案定位）；
  * ③ **麦克风门控**：`stt` 未配置时 `[data-field="chat.mic"]` 必须**不存在**
  *    （docs/07 §2.3 口径：连按钮都不渲染，不是 disabled）——反向断言，数到就是坏；
- * ④ 主区标题 `.head-name` 非空（默认 main 会话无用户消息 → 显示「新会话」，不作硬断言只回传）；
+ * ④ 主区标题 `.head-name` 非空（默认 main 会话无用户消息 → 显示"新会话"，不作硬断言只回传）；
  * ⑤ **窗口按钮**：`data-caption-btn="minimize"` 与 `"close"` 两枚都渲染（Windows 式标题栏）；
  * ⑥ **结构化工具卡**：seed 的 todo_write 渲染 `data-field="chat.todo-card"`（3 行条目）、
  *    task 渲染 `data-field="chat.task-card"`；右栏任务清单卡 `context.todo-card` 必须在。
@@ -4263,8 +4263,8 @@ export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
 /**
  * 主界面**点击成本**盘点（`chat-hit-targets.png`，2026-09-29，docs/07 §5.4）。
  *
- * 起因：用户反馈「主界面按钮的位置不太合理，用户点击的成本大」。位置属于偏好，但
- * **命中面积**是客观可量的 —— 小到 22×22 的按钮在鼠标/触控板上就是「点了没反应」。
+ * 起因：用户反馈"主界面按钮的位置不太合理，用户点击的成本大"。位置属于偏好，但
+ * **命中面积**是客观可量的 —— 小到 22×22 的按钮在鼠标/触控板上就是"点了没反应"。
  * 本探针把四个区（左栏 / 标题栏 / 输入区 / 消息区）里**所有可见的可交互控件**量一遍，
  * 按两条标准判定：
  * - **WCAG 2.2 SC 2.5.8（AA）**：任何指针目标 ≥ **24×24 CSS px** —— 硬性下限；
@@ -4372,8 +4372,8 @@ export const CHAT_HIT_TARGETS_CHECK = `(() => {
 /**
  * 左栏结构探针 · 自带前置（2026-10-10）：**自己把 classroom 模式落实到位**再交给 check。
  *
- * 为什么必须有这一步：`CHAT_SIDEBAR_SCRIPT` 断言右栏上下文卡里有「今日课程」，
- * 而「今日课程」只存在于 classroom 模式（`ContextPanel.vue` 里它是恒渲染的，不是条件渲染
+ * 为什么必须有这一步：`CHAT_SIDEBAR_SCRIPT` 断言右栏上下文卡里有"今日课程"，
+ * 而"今日课程"只存在于 classroom 模式（`ContextPanel.vue` 里它是恒渲染的，不是条件渲染
  * —— 所以卡片缺失只可能是模式不对）。此前这条场景**没有 act**，完全依赖前面
  * `edge-bar-work` 场景把模式还原干净：实测 run2 的失败态是
  * `contextCards:["任务清单","工作目录","系统状态"]`（= work 模式），而同一轮
@@ -4381,7 +4381,7 @@ export const CHAT_HIT_TARGETS_CHECK = `(() => {
  *
  * 真根因（2026-10-10 代码核实 + 本文件的哨兵）：**渲染层启动期会永久丢 `mode:changed`**
  * —— `apps/desktop/src/renderer/shared/bootstrap.ts` 旧接线是先 `load()` 再 `bind()`，
- * 落在两者之间的广播**没有任何补偿**，而 `mode.set` 在「主进程已是目标值」时是 no-op
+ * 落在两者之间的广播**没有任何补偿**，而 `mode.set` 在"主进程已是目标值"时是 no-op
  * （`packages/modes/src/manager.ts` 相同 id 提前 return、不 emit）→ 面板自己永远回不来。
  * 触发条件是这个窗口在 work 期间被建窗 / 重载（`edge-bar-work` →
  * `requestGuideIfNeeded` → proactive `showChat()` → `WindowManager.show()` 会 `ensure()`）。
@@ -4392,7 +4392,7 @@ export const CHAT_HIT_TARGETS_CHECK = `(() => {
  * 那为什么本 act 还要保留？两层：① check 里也带了自愈（面板与主进程不一致时做一次
  * **真实的状态变化** classroom → work → classroom 把面板拉回来）—— 只为让截图好看，
  * 自愈一旦被触发哨兵就 FAIL（见上面那段）；② 本 act 负责**确认前置真的生效**再截图：
- * 判据不写「等固定毫秒」，而是**有界轮询真实结果**（等到「今日课程」真的在为止，
+ * 判据不写"等固定毫秒"，而是**有界轮询真实结果**（等到"今日课程"真的在为止，
  * 最多 20 × 150ms = 3s），超时如实回报 `ok:false` 与当前卡片列表。
  *
  * 收尾：本 act **不改别的状态**（只切模式），切到 classroom 正是 chat 组其余场景的
@@ -4415,14 +4415,14 @@ export const CHAT_SIDEBAR_ENSURE_CLASSROOM_ACT = `(async () => {
     }
     const ok = cards.indexOf('今日课程') !== -1
     // 多给一拍：卡片已出现后再让 Vue 把其余卡片（任务清单 / 系统状态）也刷完，
-    // 免得 check 读到「课程卡在、别的卡还没回来」的中间态。
+    // 免得 check 读到"课程卡在、别的卡还没回来"的中间态。
     if (ok) await wait(150)
     return {
       ok,
       attempts,
       cards,
       switched: switched.ok,
-      reason: ok ? '' : 'classroom 前置未在 3s 内生效（右栏仍读不到「今日课程」）',
+      reason: ok ? '' : 'classroom 前置未在 3s 内生效（右栏仍读不到"今日课程"）',
     }
   } catch (error) {
     return { ok: false, reason: String(error), cards: readCards() }
@@ -4466,50 +4466,27 @@ export const CHAT_SIDEBAR_SCRIPT = `(async () => {
     // ── 前置（自带，2026-10-10）：面板模式必须与**主进程**报的模式一致 ──
     // 旧写法只依赖前一个场景（edge-bar-work）把模式还原干净；而模式切换是**跨窗口广播**，
     // 落在渲染层启动窗口期（先 load 再 bind）的那一条会**永久丢失** —— 现场就是
-    // 「主进程已是 classroom、右栏却永久停在 work」。这里做两件事：
-    // ① 自愈：两者不一致时做一次**真实的状态变化**（classroom → work → classroom，
-    //    两次都是真变化、会 emit；同值 mode.set 是 no-op，拿它当前置必然超时），
-    //    只为让截图好看；② 把自愈事实记进 window.__auroraSidebarProbe，由下面的哨兵判 FAIL ——
-    //    **面板本来就该是对的**，一旦需要自愈就说明产品竞态又回来了。
+    // "主进程已是 classroom、右栏却永久停在 work"。本探针**不做自愈**：
+    // 只记录事实（"window.__auroraSidebarProbe"）并由哨兵判 FAIL ——
+    // **面板本来就该是对的**，一旦不一致就说明产品竞态又回来了。
+    //
+    // ⚠️ 为什么**不**自愈（2026-10-10 独立审查）：① "mode.set('work') → mode.set('classroom')"
+    // 是**真实的产品状态变化**（会走 "requestGuideIfNeeded"、可能建窗 / 抬引导），与本场景
+    // "不改任何状态"的承诺冲突；② "location.reload()" 会直接掐掉这段 check 脚本
+    // （外层 "executeJavaScript" 以页面被换掉结束），截图链路会变得不可预测。
+    // 前置由同一场景的 act（"CHAT_SIDEBAR_ENSURE_CLASSROOM_ACT"）保证，这里只需如实判定。
     const listed = await window.aurora.mode.list()
     const mainMode =
       listed && listed.ok === true
         ? (listed.value.find((mode) => mode.active)?.id ?? '')
         : ''
-    let cards = readCards()
+    const cards = readCards()
     const forcedToggle = panelOfCards(cards) !== mainMode
-    let attempts = 0
-    let waitedMs = 0
-    if (forcedToggle) {
-      const startedAt = performance.now()
-      // 先切到 work（若已经是 work 就跳过，避免同值 no-op）
-      const toWork = await window.aurora.mode.set('work')
-      for (; attempts < 20; attempts += 1) {
-        if (readCards().some((name) => name.indexOf('工作目录') !== -1)) break
-        await wait(100)
-      }
-      const toClassroom = await window.aurora.mode.set('classroom')
-      for (; attempts < 40; attempts += 1) {
-        if (readCards().some((name) => name.indexOf('今日课程') !== -1)) break
-        await wait(100)
-      }
-      waitedMs = Math.round(performance.now() - startedAt)
-      window.__auroraSidebarProbe = {
-        forcedToggle: true,
-        attempts,
-        waitedMs,
-        mainMode,
-        toWork: toWork.ok,
-        toClassroom: toClassroom.ok,
-      }
-      cards = readCards()
-    } else {
-      window.__auroraSidebarProbe = {
-        forcedToggle: false,
-        attempts: 0,
-        waitedMs: 0,
-        mainMode,
-      }
+    window.__auroraSidebarProbe = {
+      forcedToggle,
+      attempts: 0,
+      waitedMs: 0,
+      mainMode,
     }
     const probe = window.__auroraSidebarProbe
     const panelMode = panelOfCards(cards)
@@ -4944,14 +4921,14 @@ export const SETTINGS_AWARENESS_RECORDS_CHECK = `(() => {
  * 输入框（composer）探针 · 前半（2026-09 输入框重做，docs/07 §2.3）：斜杠命令浮层 + 权限钮 + 上下文条。
  *
  * act 把 textarea 的内容设成单个斜杠（走真实 input 事件 → v-model → slashQuery），
- * 截图即「命令浮层展开」现场。
+ * 截图即"命令浮层展开"现场。
  *
  * check 断言四件事：
  * ① 浮层 `chat.slash-menu` 在，且含内置命令项（`chat.slash-new`）与技能分组（有技能时）；
- * ② 权限钮 `chat.permission` 在，文案必须是「完全权限」——隔离 userData 的默认档
+ * ② 权限钮 `chat.permission` 在，文案必须是"完全权限"——隔离 userData 的默认档
  *    （2026-09-29 起出厂默认就是 `auto`；读错档位等于闸门状态显示错误）；
- * ③ 上下文条 `chat.context` 在，且 `chat.context-usage` 显示「暂无用量数据」：
- *    离线跑没有真实 LLM，也就没有 usage 事件 —— 这条同时钉住「没有用量就不编造 token 数」；
+ * ③ 上下文条 `chat.context` 在，且 `chat.context-usage` 显示"暂无用量数据"：
+ *    离线跑没有真实 LLM，也就没有 usage 事件 —— 这条同时钉住"没有用量就不编造 token 数"；
  * ④ **textarea 自动增高**：塞 8 行文本后高度明显变大且不超过 CSS 上限，清空后回到一行高。
  *
  * 收尾清空输入框（后续场景依赖空输入），且本场景**不改任何配置**。
@@ -4993,14 +4970,14 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
     const slashCommandItems = count('[data-field="chat.slash-menu"] [data-kind="command"]')
     const slashSkillItems = count('[data-field="chat.slash-menu"] [data-kind="skill"]')
     // 2026-10-03 新增的两条内置命令（/init、/compact）按锚点断言而不是只数数量 ——
-    // 数量断言在「加命令」时无谓变红，锚点断言能同时证明「新命令真的注册到了菜单」
+    // 数量断言在"加命令"时无谓变红，锚点断言能同时证明"新命令真的注册到了菜单"
     const slashInit = count('[data-field="chat.slash-init"]')
     const slashCompact = count('[data-field="chat.slash-compact"]')
     const permissionLabel = textOf('[data-field="chat.permission"]')
     const usageText = textOf('[data-field="chat.context-usage"]')
 
     // 自动增高：独立 try —— 一个探针不该因为某一步抛错就整条返回 undefined
-    //（executeJavaScript 会把它当成「脚本执行失败」，报告里只剩一句无信息量的话）
+    //（executeJavaScript 会把它当成"脚本执行失败"，报告里只剩一句无信息量的话）
     const grow = { oneLine: 0, grown: 0, capped: 0, reset: 0, scrolls: false, error: null }
     const box = document.querySelector('.composer-input')
     if (box === null) {
@@ -5017,7 +4994,7 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
         }
         grow.oneLine = box.getBoundingClientRect().height
         grow.grown = await fill(8)
-        // 30 行足以顶到 200px 上限：这一步同时钉住「上限之后不再长高」与「改为内部滚动」
+        // 30 行足以顶到 200px 上限：这一步同时钉住"上限之后不再长高"与"改为内部滚动"
         grow.capped = await fill(30)
         grow.scrolls = box.scrollHeight > box.clientHeight + 1
         box.value = ''
@@ -5070,50 +5047,50 @@ export const CHAT_COMPOSER_CHECK = `(async () => {
 })()`
 
 /**
- * 输入框探针 · 后半：权限下拉的**两段式放宽**（照「一个误点不该摘掉确认闸门」的口径钉住）。
+ * 输入框探针 · 后半：权限下拉的**两段式放宽**（照"一个误点不该摘掉确认闸门"的口径钉住）。
  *
- * act：先把档位显式切到 `confirm`（出厂默认 2026-09-29 起是 `auto`，而「放宽」这个动作
+ * act：先把档位显式切到 `confirm`（出厂默认 2026-09-29 起是 `auto`，而"放宽"这个动作
  * 只有在还没放宽时才存在 —— 已经是完全权限时点那一项只会收起下拉），再点开
  * `chat.permission`（截图即下拉展开现场）。
  *
  * check 断言：
  * ① 下拉在、三个选项都在（只读 / 变更前确认 / 完全权限）；
- * ② 点一次「完全权限」**不写配置**（只翻成二次确认文案），且 `settings:get` 回报的
+ * ② 点一次"完全权限"**不写配置**（只翻成二次确认文案），且 `settings:get` 回报的
  *    `permissionMode` 仍是 confirm、`confirmSensitiveTools` 仍是 true —— 一次误点不能放权；
  * ③ 点第二次才真正放宽：配置落成 `auto` + 老开关 `false`（**镜像规则**两条一起写），
  *    下拉自行收起。收尾状态就是出厂默认档，后续场景读到的仍是默认闸门状态。
  */
 /**
  * 输入框 → 真实（离线桩）模型往返探针（2026-09 输入框重做：**这是本轮唯一能验证
- * 「发出去 → 流式回来 → 落到 DOM」整条链路的探针**）。
+ * "发出去 → 流式回来 → 落到 DOM"整条链路的探针**）。
  *
  * 为什么必须由 capture 承担：`AURORA_SMOKE` 的脚本跑在引导窗里，只能从事件层断言流式
  * （docs/06 §16.2 的 text / usage 事件），**读不到对话窗的 DOM**；而两个模式互斥（见
- * `index.ts` 的启动分支），所以「事件层对了、界面没画出来」这类问题只有这里能抓到。
+ * `index.ts` 的启动分支），所以"事件层对了、界面没画出来"这类问题只有这里能抓到。
  *
  * 由 `defaultCapturePlan` 在跑本场景前竖起本地桩 LLM 并把配置指向它（只在这一段生效，
- * 排在 chat 组最后，前面的场景读到的仍是「未配置模型」的出厂态）。
+ * 排在 chat 组最后，前面的场景读到的仍是"未配置模型"的出厂态）。
  *
  * act：把提示词写进 textarea → 点发送（走 `send()`，与用户手点同一条路径）→
  *      **先等流式真的开始**（流式类出现 / 助手消息条数超过发送前的基线）→ 再等收尾。
- *      截图即「一问一答 + 上下文条有真实 token」现场。
- *      ⚠️ 基线那一步是 2026-09-29 补的：此前只在点击后轮询「流式类没了 + 有助手消息」，
+ *      截图即"一问一答 + 上下文条有真实 token"现场。
+ *      ⚠️ 基线那一步是 2026-09-29 补的：此前只在点击后轮询"流式类没了 + 有助手消息"，
  *      而本场景的种子会话**本来就有助手消息** —— 第一次判断就成立、act 立刻返回，
  *      整场景靠着种子数据空转通过，从没真正验证过往返（是加 `aria-busy` 断言时才暴露的）。
  *      现在 `started`（真的流过）与 `busy`（流式期间 aria-busy 为真）都进了 pass。
  * check 断言五件事：
  * ① 助手气泡出现且正文含桩服务的标记（回复真的画到了 DOM 上，而不只是事件里有）；
  * ② 用户气泡也在（发送路径把提问渲染出来了）；
- * ③ 上下文条显示**真实 token 数**（桩服务的结束片带 usage → 界面必须不再是「暂无用量数据」），
+ * ③ 上下文条显示**真实 token 数**（桩服务的结束片带 usage → 界面必须不再是"暂无用量数据"），
  *    且累计同样非零 —— 这条同时钉住 usage 事件 → useChat → 上下文条整条链；
  * ④ **缓存命中片段**（`data-field="chat.context-cache"`，docs/06 §21.4）：桩服务回传
  *    `prompt_tokens_details.cached_tokens = 512`，折叠态文案是**平均缓存命中率**
- *    （2026-10-03 起替换「本次缓存命中」）——分子 / 分母都是 totals（累计），桩数据
+ *    （2026-10-03 起替换"本次缓存命中"）——分子 / 分母都是 totals（累计），桩数据
  *    自洽（cached == prompt），因此无论累计几轮占比恒为 100%，文案必须是
- *    「平均缓存命中 100%」。绝对数（512 / 512）移进了详情卡，折叠条不再显示。
- *    这条钉的是「字段解析 → 事件 → totals 累计 → 展示」整条链里**最后一段**：
+ *    "平均缓存命中 100%"。绝对数（512 / 512）移进了详情卡，折叠条不再显示。
+ *    这条钉的是"字段解析 → 事件 → totals 累计 → 展示"整条链里**最后一段**：
  *    解析丢了字段时这里没有该节点，分母算错时占比对不上。
- * ⑤ 流式已收尾（`.thread.streaming` 不存在），即「流式态不会卡住」；
+ * ⑤ 流式已收尾（`.thread.streaming` 不存在），即"流式态不会卡住"；
  * ⑥ **往返真的发生过**（`streamStarted === true`）与**流式期间消息区 `aria-busy` 为真**
  *    （`ariaBusyDuringStream === 'true'`，收尾后必须翻回 `'false'`）——
  *    可访问性口径见 docs/07 §5.4，`aria-busy` 的抓取靠 act 里的 MutationObserver
@@ -5145,7 +5122,7 @@ export function chatStreamAct(question: string): string {
       attributeFilter: ['aria-busy'],
       subtree: true,
     })
-    // 发送前的助手消息条数：**必须记住基线**，否则「已有 seed 消息」会让下面的
+    // 发送前的助手消息条数：**必须记住基线**，否则"已有 seed 消息"会让下面的
     // "等收尾"在点击后的第一次判断就成立（历史 bug：这一场景靠着 seed 数据空转通过，
     // 从没真正验证过"发出去 → 流式回来 → 落到 DOM"）。
     const before = document.querySelectorAll('.message.r-assistant').length
@@ -5209,17 +5186,17 @@ export function chatStreamCheck(marker: string, reasoningMarker: string): string
     // 收尾态（应为 false）+ act 期间抓到的最坏值（应为 true）——两者都要成立
     const ariaBusyNow = messagesEl === null ? null : messagesEl.getAttribute('aria-busy')
     const ariaBusyDuringStream = window.__auroraAriaBusyDuringStream ?? null
-    // 「这一轮真的流过」的证据（见 act 的基线注释）：没有它就等于场景在空转
+    // "这一轮真的流过"的证据（见 act 的基线注释）：没有它就等于场景在空转
     const streamStarted = window.__auroraStreamStarted ?? null
     // 思考增量归属（docs/06 §16.1）：思考块只在 message.reasoning 非空时渲染，
-    // 因此「最后一条助手消息带思考块」= 桩服务产出的 reasoning 增量确实绑到了**它自己那条**消息上
+    // 因此"最后一条助手消息带思考块"= 桩服务产出的 reasoning 增量确实绑到了**它自己那条**消息上
     //（不是前一条、也不是没人要）。请求结束后块已收起为摘要行，所以只断言块头文案。
     const lastAssistant = assistants[assistants.length - 1]
     const lastThinking = lastAssistant === undefined ? null : lastAssistant.querySelector('.thinking')
     const lastThinkingLabel =
       lastThinking === null ? '' : (lastThinking.querySelector('.thinking-head')?.textContent ?? '').trim()
     // 展开它把思考正文读出来：请求结束后块是收起态，正文不在 DOM 里，得点开才看得到。
-    // 这一步比「块存在」更硬 —— 它证明桩服务的 reasoning 增量**内容**真的落在这一条消息上。
+    // 这一步比"块存在"更硬 —— 它证明桩服务的 reasoning 增量**内容**真的落在这一条消息上。
     let lastThinkingText = ''
     if (lastThinking !== null) {
       const head = lastThinking.querySelector('.thinking-head')
@@ -5251,14 +5228,14 @@ export function chatStreamCheck(marker: string, reasoningMarker: string): string
         streamStarted === true &&
         ariaBusyDuringStream === 'true' &&
         reply.indexOf(${markerLiteral}) !== -1 &&
-        // 桩服务的结束片带 usage：界面必须显示真实数字，而不是「暂无用量数据」
+        // 桩服务的结束片带 usage：界面必须显示真实数字，而不是"暂无用量数据"
         usageText !== '' &&
         usageText.indexOf('暂无用量数据') === -1 &&
         /[0-9]/.test(usageText) &&
         /[0-9]/.test(totals) &&
         // 缓存命中片段（docs/06 §21.4）：桩服务每轮都回 512 命中 / 512 prompt，占比恒 100%。
-        // 折叠条文案是「平均缓存命中 N%」（totals 口径）——占比必须出现；
-        // 「平均缓存命中」前缀同时钉住「provider 没回传时整段不渲染」的口径没被改坏。
+        // 折叠条文案是"平均缓存命中 N%"（totals 口径）——占比必须出现；
+        // "平均缓存命中"前缀同时钉住"provider 没回传时整段不渲染"的口径没被改坏。
         cacheText.indexOf('平均缓存命中') !== -1 &&
         cacheText.indexOf('100%') !== -1 &&
         stillStreaming === false &&
@@ -5372,15 +5349,15 @@ export const CHAT_AUTO_TITLE_CHECK = `(async () => {
  */
 const BURST_PROBE_SLOT = '__auroraStreamBurstProbe'
 
-/** 心跳间隔（ms）：比帧间隔略粗，读的是「主线程还剩下多少空档」，不是帧率 */
+/** 心跳间隔（ms）：比帧间隔略粗，读的是"主线程还剩下多少空档"，不是帧率 */
 const BURST_HEARTBEAT_MS = 20
 
 /**
  * 爆发场景的 longtask 阈值（任务书要求的原始口径）。
  *
  * **它在本 BUG 上分辨不出差异**：Chromium 只上报单任务 > 50ms 的 longtask，而本 BUG 的代价
- * 形态是「每片几毫秒、5ms 一片 → 持续饱和」，单任务够不到 50ms 下限 —— 2026-09-26 实测
- * 修复前 0/0/0、修复后 1/50/0，两组都是「没有巨型卡顿」。因此它们只当兜底门限
+ * 形态是"每片几毫秒、5ms 一片 → 持续饱和"，单任务够不到 50ms 下限 —— 2026-09-26 实测
+ * 修复前 0/0/0、修复后 1/50/0，两组都是"没有巨型卡顿"。因此它们只当兜底门限
  *（防止出现真正离谱的单次卡顿），真正参与判定的是下面的心跳 / 帧两组。
  *
  * 口径：修复后实测值 × 约 3 倍；实测为 0 的那项给绝对下限（0 × 3 = 0 会把机器抖动判成 FAIL）。
@@ -5388,8 +5365,8 @@ const BURST_HEARTBEAT_MS = 20
  * **2026-10-03 重标定 `count`（6 → 20）**：主界面默认尺寸从 1120×720 提到 1280×800 ——
  * 主区越宽，消息里的图表画布每帧越大，软件光栅的每帧开销跟着涨，`count` 就是这条曲线的
  * 指示器（同一台机器上的全量实测：1120×720 → 1；1280×800 → 9；1360×860 → 16/27/53）。
- * 20 的三条判据都成立：① 是「新默认窗口」实测 9 的约 2.2 倍余量；② **仍小于「窗口再往大调」
- * 的量级**（1360×860 实测 16–53 —— 这条阈值顺带看住「别把默认窗口调得更大」）；
+ * 20 的三条判据都成立：① 是"新默认窗口"实测 9 的约 2.2 倍余量；② **仍小于"窗口再往大调"
+ * 的量级**（1360×860 实测 16–53 —— 这条阈值顺带看住"别把默认窗口调得更大"）；
  * ③ `maxMs` / `blockingMs` 两项保持原值不动 —— 真正的巨型卡顿照样 FAIL。
  * 主判据仍是心跳 / 帧两组（本次实测最坏心跳 114.8 / 阈值 160）。
  */
@@ -5409,33 +5386,33 @@ const BURST_LONG_TASK_LIMITS = {
  * | maxFrameGapMs | 137.5 | 29.2 | 110 | 3.8 倍余量，仍低于修复前值（能抓住回归） |
  * | droppedFrames | 238 | 0 | 25 | 修复后为 0，只能给绝对下限（约 0.4s 的掉帧代价） |
  *
- * 阈值按「修复后 × 约 3 倍」取宽松余量，防 CI 机器抖动假 FAIL（**`heartbeatOverrunMs` 例外**，
+ * 阈值按"修复后 × 约 3 倍"取宽松余量，防 CI 机器抖动假 FAIL（**`heartbeatOverrunMs` 例外**，
  * 见下）；数值随机器档位浮动，断言的只有数量级 —— 改桩的密度 / transcript 规模等于改基线的量纲，
  * 必须重新标定。
  *
  * **`heartbeatOverrunMs` 是累计量、对 CPU 争用明显更敏感**（同一份代码实测：只跑 chat 组 69ms、
  * 单独重跑 108ms、另一个代理并发跑时 182ms、**四窗口全开 552ms**；修复前是 4749ms）。
  * 因此它取 1200 —— 仍比修复前低约 4 倍，真回归照样 FAIL，但旁边多开两个窗口不会假 FAIL。
- * 需要判断「渲染是否跟不上」时看 `maxUnhiddenHeartbeatMs`（最坏单次，661 → 65，差一个数量级）。
+ * 需要判断"渲染是否跟不上"时看 `maxUnhiddenHeartbeatMs`（最坏单次，661 → 65，差一个数量级）。
  *
  * **2026-10-02 重标定两个累计量**：桌面渲染层代码自 2026-10-01 晚全绿后零改动（git 可证），
  * 但本机连续两轮 droppedFrames 30/67（阈值 25）、heartbeatOverrunMs 1180/1508（阈值 1200）
  * 恒红，而主判据 maxUnhiddenHeartbeatMs / maxFrameGapMs 全在限内 —— 环境性帧距劣化，
  * 高度疑似 ToDesk 虚拟显示适配器压低合成器帧率（代码无关）。两个累计阈值放宽到
- * 「今日稳态 × 约 1.5 倍」，仍远离修复前量纲（238 / 4749），真回归照样 FAIL。
+ * "今日稳态 × 约 1.5 倍"，仍远离修复前量纲（238 / 4749），真回归照样 FAIL。
  *
  * **同日晚 P2 轮把 droppedFrames 再放到 140**：夹具（seedChatTtsHistory 的
  * capture-markdown-probe 样本）本轮扩到含公式 + 3 张图表（普通块级 DOM 多了近百个节点），
  * 全量实测 98（两次全量 98 / 101），**去掉样本的同环境对照跑 ≤90 全绿** —— 即抬升来自
  * 夹具体量而不是渲染路径；同时段 longTaskCount 16→6（修 `chart.resize()` 的每帧重绘后）
- * 已回限内，maxHeartbeatMs / maxFrameGapMs 也都在限内。口径按仓库既定规则「改夹具规模
- * 必须重新标定」执行，140 仍比修复前的 238 低 40%，真回归（渲染跟不上输出）照样 FAIL。
+ * 已回限内，maxHeartbeatMs / maxFrameGapMs 也都在限内。口径按仓库既定规则"改夹具规模
+ * 必须重新标定"执行，140 仍比修复前的 238 低 40%，真回归（渲染跟不上输出）照样 FAIL。
  *
  * **2026-10-03 再把 `heartbeatOverrunMs` 放到 3600（2400 → 3600）**：主界面默认尺寸提到
  * 1280×800 后，本机全量实测 2034 / 2326 —— 贴着 2400 的下沿，下一轮机器再忙一点就是
- * 「恒红收税」（本仓反复踩过）。3600 仍是修复前量纲（4749）的 76%，真回归照样 FAIL；
+ * "恒红收税"（本仓反复踩过）。3600 仍是修复前量纲（4749）的 76%，真回归照样 FAIL；
  * 主判据 `maxUnhiddenHeartbeatMs`（160）与 `maxFrameGapMs`（110）**一分没动**，
- * 本次实测 128.8 / 79.2，仍是能抓住「渲染跟不上输出」的那一把尺。
+ * 本次实测 128.8 / 79.2，仍是能抓住"渲染跟不上输出"的那一把尺。
  */
 const BURST_LAG_LIMITS = {
   maxHeartbeatMs: 160,
@@ -5445,7 +5422,7 @@ const BURST_LAG_LIMITS = {
 }
 
 /**
- * 「灾难闸门」：对**单点**也生效的绝对上限（2026-10-10 新增，与上面的 LAG_LIMITS 分开 ——
+ * "灾难闸门"：对**单点**也生效的绝对上限（2026-10-10 新增，与上面的 LAG_LIMITS 分开 ——
  * 它们语义相反：`BURST_LAG_LIMITS` 是"整体劣化"的容忍线，取值对着**稳态**量纲；
  * 这里是"单帧烂到离谱"的兜底，取值对着**修复前**量纲）。
  *
@@ -5462,42 +5439,46 @@ const BURST_LAG_LIMITS = {
  *   整体劣化时一大批值同时抬高，第二大同样越界；
  * - `BURST_LAG_GUARDS.max*`：绝对上限挡住"单帧烂到离谱"这类灾难。
  *
- * 标定依据（2026-10-10 实测两批共 14 轮 `chat-stream-burst`）：
+ * 标定依据（2026-10-10 实测，**含独立审查后的重标定**）：
  * **离群容忍线**（沿用 BURST_LAG_LIMITS 的 110 / 160）：
- * - `secondMaxFrameGapMs` 最坏 121.1（其中"正常轮"最坏 66；121.1 出现在人为注入 600ms 灾难的对照轮），
- *   5 轮正常单跑最坏 74.9 → 110 有 ≥1.47× 余量；
- * - `secondMaxUnhiddenHeartbeatMs` 最坏 111.4 → 160 有 ≥1.44× 余量。
- * **灾难闸门**（本常量）：取值对着"今天的正常尾巴"与"修复前量纲"两端中间的档位 ——
- * - `maxFrameGapMs`：正常轮最坏 142.1（另有 135.4 / 135.5），取 **260** = 1.83× 余量，
- *   且远低于修复前的整体劣化形态（本次对照注入 130ms/帧 → 单帧 282.9 也会撞线）；
- * - `maxUnhiddenHeartbeatMs`：正常轮实测到过 198.5 的**单拍**尖峰（同轮 `secondMax` 只 100.8、
- *   帧侧 `secondMaxFrameGapMs` 61.9 全绿 —— 即"单点离群"而不是渲染跟不上）。
- *   260 对 198.5 只有 1.31× 余量，会把这类正常尖峰继续判红（标定第一版就是这么红的），
- *   因此放到 **300** = 1.51× 余量、同时仍是修复前 661.4 的 45%（2.2× 判别力）。
- *   再往上抬会开始吃掉"修复前那种整体劣化"的可分性，不再放宽。
+ * - `secondMaxFrameGapMs`：全部 20+ 轮最坏 **74.9**（正常轮）→ 110 有 ≥1.47× 余量；
+ * - `secondMaxUnhiddenHeartbeatMs`：最坏 **146.5**（`s1-chatgrp-3`）→ 160 有 ≥1.09× 余量。
+ * **灾难闸门**（本常量）：只挡"单点烂到离谱"，取值对着**今天的正常尾巴**（不是修复前量纲）——
+ * - `maxFrameGapMs`：修复仪器后 5 轮全量最坏 **54.2**，取 **200** = 3.7× 余量；
+ *   它同时把旧阈值 110 与今日尾巴之间那段**单帧**回归重新纳入判据（这是初版取 260 时让出的盲区）。
+ * - `maxUnhiddenHeartbeatMs`：正常轮实测尾巴到过 **182.1**（`v-full-dark-3`）、
+ *   标定早期的 154 / 159.5，取 **260** = 1.43× 余量、同时是修复前 661.4 的 39%（2.5× 判别力）。
+ *
+ * **⚠️ 2026-10-10 独立审查修正的一条错误叙述**：初版闸门写成 260/300，并在注释里把
+ * "重标定到 300"解释成"否则 198.5 的单拍尖峰会被 260 判红"——**这个因果不成立**：
+ * 198.5 < 260，判红它的是**当时仍保留的旧主判据 `maxUnhiddenHeartbeatMs <= 160`**
+ * （`secondMax <= max` 恒成立，所以 300 那条永远不可达，是死代码）。
+ * 现在心跳侧已与帧侧**同口径**（删掉旧的 160 主判据，改为 `secondMax <= 160` + 闸门 260），
+ * 这才是"单点尖峰不再收税"真正落地的地方；`v2-s5-2`(198.5) / `v3-s5-1`(234.1) /
+ * `v-full-dark-3`(182.1，同轮帧侧全绿) 三轮都属这类单点离群，新口径下按设计**不再判红**。
  *
  * **为什么新口径仍能抓住修复前那种回归**（修复前实测：maxFrameGap 137.5 /
  * maxUnhiddenHeartbeat 661.4 / heartbeatOverrun 4749.4 / droppedFrames 238）：
- * 责任交给**四条互不依赖**的载体 —— `maxUnhiddenHeartbeatMs` 661.4 > 300、
+ * 责任交给**四条互不依赖**的载体 —— `maxUnhiddenHeartbeatMs` 661.4 > 260、
  * `droppedFrames` 238 > 140、`heartbeatOverrunMs` 4749 > 3600 三条今天就会红；
  * 帧侧若整体劣化，主判据 `secondMaxFrameGapMs` 会先红（本次对照实测 177 > 110）。
- * **新判据不靠 `secondMax` 去抓 137.5 那个量级的单帧值**（137.5 在 260 的闸门下是绿的），
+ * **新判据不靠 `secondMax` 去抓 137.5 那个量级的单帧值**（137.5 在 200 的闸门下是绿的），
  * `secondMax` 只负责"单点不再收税"，判别力交给闸门与两个累计量 —— 这是刻意的分工，
  * 别把它读成"阈值被抬松了"。
  */
 const BURST_LAG_GUARDS = {
-  maxFrameGapMs: 260,
-  maxUnhiddenHeartbeatMs: 300,
+  maxFrameGapMs: 200,
+  maxUnhiddenHeartbeatMs: 260,
 }
 
 /**
  * 思考 / 正文**高密度爆发**探针 · 前半（1-D 场景）。
  *
  * 为什么要有这一场：默认对话桩只发 2 条 reasoning + 2 条 content 分片，密度远低于真实推理
- * 模型（100+ token/s）——「渲染跟不上输出」这类问题在那个密度下根本不会出现，
+ * 模型（100+ token/s）——"渲染跟不上输出"这类问题在那个密度下根本不会出现，
  * 现有 chatStream 探针因此**测不出**该症状。这里让桩服务按真实密度喷 150 + 150 片。
  *
- * 与 chatStreamAct 的关键差别：**不等流式结束**。本场景要拍的是「流式进行中」的现场
+ * 与 chatStreamAct 的关键差别：**不等流式结束**。本场景要拍的是"流式进行中"的现场
  *（思考块已展开、正文还在长），所以点完发送只等 600ms 就返回。
  *
  * 仪器必须在这里装好（而不是 check 里）：check 跑在流式收尾之后，
@@ -5536,7 +5517,7 @@ export function chatStreamBurstAct(question: string): string {
     }
 
     // 可见性变化必须留痕：窗口一旦被判定为隐藏/遮挡，Chromium 会把定时器与 rAF 双双节流，
-    // 那时的「心跳 9 秒」不是主线程被占，而是渲染被暂停 —— 两种现象在数值上长得一样，
+    // 那时的"心跳 9 秒"不是主线程被占，而是渲染被暂停 —— 两种现象在数值上长得一样，
     // 不记下来就没法判断这轮数据是否有效。
     probe.visibility.push({ at: 0, state: document.hidden === true ? 'hidden' : 'visible' })
     document.addEventListener('visibilitychange', () => {
@@ -5548,7 +5529,7 @@ export function chatStreamBurstAct(question: string): string {
 
     // 只从**爆发轮**开始采样：前面还有几轮堆量（一次性往里灌几十 KB 的旧消息），
     // 那几轮的一次性开销（首次解析 / 首次布局）不是本 BUG 要测的东西，留在样本里
-    // 会把 max 值抬成「首屏开销」。爆发轮的可靠信号 = 流式思考块的正文出现
+    // 会把 max 值抬成"首屏开销"。爆发轮的可靠信号 = 流式思考块的正文出现
     //（堆量轮只发正文、不发 reasoning，因此思考块只在爆发轮存在）。
     probe.armed = true
     probe.reset = () => {
@@ -5565,7 +5546,7 @@ export function chatStreamBurstAct(question: string): string {
     }
 
     // 主线程占用度的读数：心跳的实际间隔被拉长多少。5ms 一片的流式下，
-    // 单任务永远够不到 longtask 的 50ms 下限，但「排满主线程」会立刻反映成心跳漂移。
+    // 单任务永远够不到 longtask 的 50ms 下限，但"排满主线程"会立刻反映成心跳漂移。
     probe.heartbeat.timer = setInterval(() => {
       probe.reset()
       const now = performance.now()
@@ -5590,7 +5571,7 @@ export function chatStreamBurstAct(question: string): string {
     sendButton.click()
 
     // 等**思考块开始长字**再返回（而不是固定等 600ms）：本场景前面还有几轮堆量，
-    // 固定延时会把截图拍到「前文还在灌」或者「思考已经写完」上，现场就不确定了。
+    // 固定延时会把截图拍到"前文还在灌"或者"思考已经写完"上，现场就不确定了。
     // 判据是流式思考块里的正文有了一小段内容；拿不到（桩挂了 / 思考没开始）也不阻塞，
     // 固定等一次后照样返回，让 check 去报失败原因。
     let reasoningChars = 0
@@ -5620,17 +5601,17 @@ export function chatStreamBurstAct(question: string): string {
  *
  * 三步顺序不能换：
  * 1. **先等流式收尾**（`.thread.streaming` 摘除）。check 在截图之后跑，而截图落在流式中段，
- *    不等就会在「思考还在长」时去读收尾态；
+ *    不等就会在"思考还在长"时去读收尾态；
  * 2. **收仪器要抢在点开思考块之前**：那一步有几百毫秒的等待，混进采样会把主线程占用稀释成 0；
  * 3. 读正文标记必须走 `.md` 元素（而不是整条消息的 textContent）——思考块展开后它的正文也在
  *    textContent 里，两边混在一起就分不清哪个标记落在哪一块。
  *
  * 三组数值的口径与取舍（这是本探针最需要说清的地方）：
  * - `longTask*`：任务书要求的原始口径。**它在修复前后都是 0** —— Chromium 只上报单任务 > 50ms
- *   的 longtask，而本 BUG 的代价形态是「每片几毫秒 + 5ms 一片」的持续占用，单任务永远够不到
- *   50ms。留着它是为了如实留档，判定上只当作「没有离谱的巨型卡顿」；
+ *   的 longtask，而本 BUG 的代价形态是"每片几毫秒 + 5ms 一片"的持续占用，单任务永远够不到
+ *   50ms。留着它是为了如实留档，判定上只当作"没有离谱的巨型卡顿"；
  * - `heartbeat*`：20ms 心跳的实际间隔漂移 —— 主线程被占满时下一拍会被推迟，这是与 BUG 同量级的读数；
- * - `frame*`：rAF 帧间隔 —— 每帧预算约 16.7ms，超出的部分累计即「掉帧代价」，最贴近肉眼观感。
+ * - `frame*`：rAF 帧间隔 —— 每帧预算约 16.7ms，超出的部分累计即"掉帧代价"，最贴近肉眼观感。
  *
  * 阈值在 BURST_LAG_LIMITS / BURST_LONG_TASK_LIMITS，按 2026-09-26 本机实测留约 3 倍余量。
  */
@@ -5652,7 +5633,7 @@ export function chatStreamBurstCheck(markers: {
     }
 
     // 2) 立刻收掉仪器再读 DOM：下面点开思考块会引入几百毫秒的空闲等待，
-    //    混进采样里会把「主线程占用」稀释成接近 0，指标就废了。
+    //    混进采样里会把"主线程占用"稀释成接近 0，指标就废了。
     const probe = window['${BURST_PROBE_SLOT}']
     const usable = probe !== null && probe !== undefined
     if (usable) {
@@ -5703,7 +5684,7 @@ export function chatStreamBurstCheck(markers: {
     let totalBlockingMs = 0
     for (const entry of entries) {
       if (entry.duration > maxLongTaskMs) maxLongTaskMs = entry.duration
-      // 阻塞时长口径：单条长任务超出 50ms 的部分才算「卡住主线程」
+      // 阻塞时长口径：单条长任务超出 50ms 的部分才算"卡住主线程"
       totalBlockingMs += Math.max(0, entry.duration - 50)
     }
     const longTaskCount = entries.length
@@ -5727,10 +5708,10 @@ export function chatStreamBurstCheck(markers: {
       heartbeatTotalMs += sample
       if (hiddenFlags[index] === true) hiddenHeartbeats += 1
       if (sample > maxHeartbeatMs) maxHeartbeatMs = sample
-      // 超过 2 倍心跳间隔才算「这一拍被挤掉」，避免把正常的调度抖动算进来
+      // 超过 2 倍心跳间隔才算"这一拍被挤掉"，避免把正常的调度抖动算进来
       // 被节流（窗口隐藏）的那几拍单独剔除：那是渲染被暂停，不是主线程被占满
       if (hiddenFlags[index] !== true) {
-        // 次序统计量：记「第二大」与「超阈值个数」——单点离群点只抬 max，
+        // 次序统计量：记"第二大"与"超阈值个数"——单点离群点只抬 max，
         // 真回归（整体劣化）会把这两个一起抬起来（见 BURST_LAG_GUARDS 的标定）。
         if (sample >= maxUnhiddenHeartbeatMs) {
           secondMaxUnhiddenHeartbeatMs = maxUnhiddenHeartbeatMs
@@ -5748,7 +5729,7 @@ export function chatStreamBurstCheck(markers: {
     const heartbeatCount = heartbeats.length
     const visibility = usable !== true || Array.isArray(probe.visibility) !== true ? [] : probe.visibility
 
-    // 7) 帧间隔：渲染是否还跟得上（每帧预算约 16.7ms，超出的部分累计即「掉帧代价」）
+    // 7) 帧间隔：渲染是否还跟得上（每帧预算约 16.7ms，超出的部分累计即"掉帧代价"）
     const frames = usable !== true || Array.isArray(probe.frames.times) !== true ? [] : probe.frames.times
     const frameHidden =
       usable !== true || Array.isArray(probe.frames.hidden) !== true ? [] : probe.frames.hidden
@@ -5759,7 +5740,7 @@ export function chatStreamBurstCheck(markers: {
     let hiddenFrameGaps = 0
     const frameGaps = []
     for (let index = 1; index < frames.length; index += 1) {
-      // 跨越隐藏期的帧间隔同样是「渲染被暂停」，不是「渲染跟不上」——剔除并计数
+      // 跨越隐藏期的帧间隔同样是"渲染被暂停"，不是"渲染跟不上"——剔除并计数
       if (frameHidden[index] === true || frameHidden[index - 1] === true) {
         hiddenFrameGaps += 1
         continue
@@ -5767,9 +5748,9 @@ export function chatStreamBurstCheck(markers: {
       const gap = frames[index] - frames[index - 1]
       frameGaps.push(Math.round(gap * 10) / 10)
       // 次序统计量：与心跳同口径 ——
-      // secondMaxFrameGapMs 是「去掉最大那一帧之后的最大帧距」，gapsOverFrameLimit
-      // 是「越过 BURST_LAG_LIMITS.maxFrameGapMs 的帧距个数」。前者对单个 GC / 首编译型
-      // 停顿不敏感，后者直接量「有多少帧真的超了」，两者合起来分辨「单点离群」与「整体劣化」。
+      // secondMaxFrameGapMs 是"去掉最大那一帧之后的最大帧距"，gapsOverFrameLimit
+      // 是"越过 BURST_LAG_LIMITS.maxFrameGapMs 的帧距个数"。前者对单个 GC / 首编译型
+      // 停顿不敏感，后者直接量"有多少帧真的超了"，两者合起来分辨"单点离群"与"整体劣化"。
       if (gap >= maxFrameGapMs) {
         secondMaxFrameGapMs = maxFrameGapMs
         maxFrameGapMs = gap
@@ -5779,7 +5760,7 @@ export function chatStreamBurstCheck(markers: {
       if (gap > ${BURST_LAG_LIMITS.maxFrameGapMs}) gapsOverFrameLimit += 1
       if (gap > 33) droppedFrames += Math.floor(gap / 16.7) - 1
     }
-    // 只留最大的 5 段（与 topHeartbeatGaps 同款）：这是判「单点离群 vs 整体劣化」的形态证据
+    // 只留最大的 5 段（与 topHeartbeatGaps 同款）：这是判"单点离群 vs 整体劣化"的形态证据
     frameGaps.sort((left, right) => right - left)
     const frameGapsTop5 = frameGaps.slice(0, 5)
     const frameCount = frames.length
@@ -5835,10 +5816,10 @@ export function chatStreamBurstCheck(markers: {
         stillStreaming === false &&
         lastThinkingLabel.indexOf('已深度思考') !== -1 &&
         // 性能门限：按 2026-09-26 实测留约 3 倍余量（防止 CI 机器抖动假 FAIL），
-        // 数值随机器档位浮动，断言的只有「数量级」。
+        // 数值随机器档位浮动，断言的只有"数量级"。
         heartbeatCount > 0 &&
         frameCount > 0 &&
-        // 采样起点必须是爆发轮：否则下面的数值是「堆量轮首屏开销」而不是本 BUG 的代价
+        // 采样起点必须是爆发轮：否则下面的数值是"堆量轮首屏开销"而不是本 BUG 的代价
         phaseResetAt !== null &&
         // 窗口被判定隐藏时的那几拍不计入：节流不是主线程占用（hiddenHeartbeats 会一并落盘）
         hiddenHeartbeats <= heartbeatCount / 2 &&
@@ -5846,7 +5827,9 @@ export function chatStreamBurstCheck(markers: {
           (longTaskCount <= ${BURST_LONG_TASK_LIMITS.count} &&
             maxLongTaskMs <= ${BURST_LONG_TASK_LIMITS.maxMs} &&
             totalBlockingMs <= ${BURST_LONG_TASK_LIMITS.blockingMs})) &&
-        maxUnhiddenHeartbeatMs <= ${BURST_LAG_LIMITS.maxHeartbeatMs} &&
+        // 心跳侧与帧侧**同口径**：旧规则 "maxUnhiddenHeartbeatMs <= 160" 已删除 ——
+        // 留着它会让下面的灾难闸门永远不可达（"secondMax <= max" 恒成立，max 超 160 时
+        // 这一条先红），于是"离群容忍"在心跳侧等于没做（2026-10-10 独立审查发现）。
         // 离群容忍：去掉最大一个之后的第二大值仍须在稳态线内
         //（整体劣化时一大批值同时抬高，第二大同样越界；单点离群则只有 max 越界）
         secondMaxUnhiddenHeartbeatMs <= ${BURST_LAG_LIMITS.maxHeartbeatMs} &&
@@ -5867,7 +5850,7 @@ export function chatStreamBurstCheck(markers: {
 export const CHAT_PERMISSION_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
-    // 先钉到 confirm 档：出厂默认是 auto，而「再点一次确认」这条路径只存在于还能放宽时
+    // 先钉到 confirm 档：出厂默认是 auto，而"再点一次确认"这条路径只存在于还能放宽时
     const state = await window.aurora.settings.get()
     if (state.ok && state.value.agent.permissionMode !== 'confirm') {
       const updated = await window.aurora.settings.update({
@@ -5898,7 +5881,7 @@ export const CHAT_PERMISSION_ACT = `(async () => {
  * 只读档现场（v13，docs/06 §11.2）：把 `agent.permissionMode` 切到 `readonly` 并展开权限下拉。
  *
  * 必须走 `settings:update` IPC（`SettingsStore` 启动即缓存配置），并把下拉**打开**再截图 ——
- * 「只读档下写类工具根本不注册」是运行时事实，界面能自证的只有下拉文案与设置页摘要，
+ * "只读档下写类工具根本不注册"是运行时事实，界面能自证的只有下拉文案与设置页摘要，
  * 所以这一条同时钉住"界面没说谎"。
  */
 export const CHAT_PERMISSION_READONLY_ACT = `(async () => {
@@ -5986,7 +5969,7 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
     const autoItemBefore = textOf('[data-field="chat.permission-full"]')
 
     // ── 溢出护栏（菜单还开着的时候量，后面两下点击就把它收起来了）──
-    // 「文字跑出卡片」有两个可读事实。**① 在本布局下恒为真**（原因见下），真正点火的是 ②；
+    // "文字跑出卡片"有两个可读事实。**① 在本布局下恒为真**（原因见下），真正点火的是 ②；
     // 两个都留着是为了语义完整 —— 万一将来布局不再是 width: 100%，① 会接住：
     // ① 每项的矩形必须落在卡片矩形之内 —— 几何越界；
     // ② 每项（连同它的文字容器 .perm-item-body）的 scrollWidth 不得大于 clientWidth。
@@ -5994,7 +5977,7 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
     //    卡片内，而文字是画到自己盒子之外的。成因是 white-space 是**继承**属性 —— 祖先
     //    .composer-bar 的 nowrap 一路继承进菜单，flex 子项被压到可用宽度、文本却按 nowrap 排版。
     //    根治点是 .perm-item-body 复位成 white-space: normal（.perm-menu 的 overflow: hidden
-    //    只是兜底裁剪：它会把「画出卡片」变成「静默截断」，② 对此同样报警）。
+    //    只是兜底裁剪：它会把"画出卡片"变成"静默截断"，② 对此同样报警）。
     const menuEl = document.querySelector('[data-field="chat.permission-menu"]')
     const menuBoxes = []
     if (menuEl !== null) {
@@ -6025,10 +6008,10 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
     }
     const menuOverflow = menuBoxes.filter((box) => box.outOfCard || box.textClipped).length
     // menuBoxes 非空是必需的：量不到任何项时（.perm-item 改了类名 / 菜单没渲染出来），
-    // 「违规数 === 0」会恒真 —— 那是静默失效，不是通过。
+    // "违规数 === 0"会恒真 —— 那是静默失效，不是通过。
     const noOverflow = menuEl !== null && menuBoxes.length > 0 && menuOverflow === 0
 
-    // ── 第一下：只翻成「再点一次确认」，配置一动不动 ──
+    // ── 第一下：只翻成"再点一次确认"，配置一动不动 ──
     const autoButton = document.querySelector('[data-field="chat.permission-full"]')
     if (autoButton !== null) autoButton.click()
     await wait(300)
@@ -6044,7 +6027,7 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
     if (againButton !== null) againButton.click()
     // 落盘链路是 渲染层 → settings:update IPC → SettingsStore → settings:changed 回灌，
     // 比下拉的 leave 过渡（--dur-fast）慢且受负载影响：**必须轮询**而不是读一次 ——
-    // 固定等/读一次在高负载下会读到写入前的值，探针会以「配置没改」假 FAIL（旧版踩过一次）。
+    // 固定等/读一次在高负载下会读到写入前的值，探针会以"配置没改"假 FAIL（旧版踩过一次）。
     let closed = false
     let committed = null
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -6093,7 +6076,7 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
 })()`
 
 /**
- * 输入区三个浮层的「互斥 + 几何不相交 + 工具行可点」探针 · 前半（2026-09-26 修复的回归断言）。
+ * 输入区三个浮层的"互斥 + 几何不相交 + 工具行可点"探针 · 前半（2026-09-26 修复的回归断言）。
  *
  * 现场：三个浮层（斜杠 `chat.slash-menu` / 权限 `chat.permission-menu` / 上下文详解
  * `chat.context-detail`）统一锚在 `.composer-box` 上、共用 `--z-flyout`、互斥打开。
@@ -6101,16 +6084,16 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
  * 把权限 / 模型 / 思考 / 麦克风 / 停止 / 发送整条盖住且不可点 —— 本场景就是那条事故的运行时证据。
  *
  * act 只做两件事，两步都是真实交互链路（focus + input 事件 / 指针点击 → Vue handler）：
- * ① 往 textarea 写 `/` 并派发 `input`（斜杠浮层冒出来）→ 取「斜杠开着」时刻的快照；
- * ② 点权限钮（权限下拉打开、斜杠浮层让位）→ 取「权限开着」时刻的快照。
+ * ① 往 textarea 写 `/` 并派发 `input`（斜杠浮层冒出来）→ 取"斜杠开着"时刻的快照；
+ * ② 点权限钮（权限下拉打开、斜杠浮层让位）→ 取"权限开着"时刻的快照。
  *
  * ⚠️ 每一刻都必须**等过渡稳定**再取数：进出场是 `pop` 的 150ms（`--dur-fast`）缩放 + 4px 位移，
- * 只按「元素存在」判定会拍到中间帧（矩形偏小、位置低 4px），几何断言就变成对中间态下结论。
- * 因此这里按「连续两次采样的矩形完全一致」判稳定，而不是固定等待。
+ * 只按"元素存在"判定会拍到中间帧（矩形偏小、位置低 4px），几何断言就变成对中间态下结论。
+ * 因此这里按"连续两次采样的矩形完全一致"判稳定，而不是固定等待。
  *
  * 快照（含矩形、可见性、层级、`elementFromPoint` 命中描述）挂在 window 上给 check 读 ——
  * act 的返回值会被 `captureWindows` 丢掉，只有 check 的返回值进 `report.json`。
- * 收尾（关浮层 / 清空输入）在 check 里做，因为截图必须先拍到「浮层开着」的现场。
+ * 收尾（关浮层 / 清空输入）在 check 里做，因为截图必须先拍到"浮层开着"的现场。
  */
 export const CHAT_COMPOSER_FLYOUTS_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -6162,7 +6145,7 @@ export const CHAT_COMPOSER_FLYOUTS_ACT = `(async () => {
         boxRect: box === null ? null : rectOf(box),
       }
     }
-    // 发送键的中心命中测试：修复前命中的是浮层（这就是「发送键点不动」的直接读数）
+    // 发送键的中心命中测试：修复前命中的是浮层（这就是"发送键点不动"的直接读数）
     const sendHit = () => {
       const send = document.querySelector('.composer-bar .send')
       if (send === null) return { found: false, hitSelf: false, hit: 'no .composer-bar .send' }
@@ -6253,17 +6236,17 @@ export const CHAT_COMPOSER_FLYOUTS_ACT = `(async () => {
 /**
  * 输入区三个浮层探针 · 后半（几何断言，不数元素个数）。
  *
- * 四个时刻各取一次「可见浮层集合 + 每层矩形 + 发送键命中」：
+ * 四个时刻各取一次"可见浮层集合 + 每层矩形 + 发送键命中"：
  * ① 斜杠开着（act 记录）→ ② 权限开着（act 记录的现场，即截图那一刻）→
  * ③ 权限开着（此刻实时复测，与 ② 互为旁证）→ ④ 上下文详解开着（check 里现开，本场景跑在截图之后，
  *    拍不到不影响证据链；事故的元凶正是这一层，所以必须有一个真实测量点）。
  *
  * 断言四件事：
  * 1. **任一时刻最多一个浮层可见**（可见判定 = `getBoundingClientRect()` 宽高都 > 0），
- *    且「权限开着」时斜杠浮层必须不可见、「上下文详解开着」时权限下拉必须不可见 —— 互斥真的生效；
+ *    且"权限开着"时斜杠浮层必须不可见、"上下文详解开着"时权限下拉必须不可见 —— 互斥真的生效；
  * 2. **浮层不压工具行**：可见浮层的矩形与 `.composer-bar` 的矩形**不相交**，
  *    并且整个矩形都在 `.composer-box` **上方**（`bottom <= box.top + 1`）——
- *    后者是「统一锚在输入卡上」这条修复的几何表达（锚在 `.ctx` 上向上弹时它的底边必然伸进输入卡内部）；
+ *    后者是"统一锚在输入卡上"这条修复的几何表达（锚在 `.ctx` 上向上弹时它的底边必然伸进输入卡内部）；
  * 3. **发送键可点**：`.composer-bar .send` 矩形中心的 `elementFromPoint` 命中它自己或它的后代
  *    —— 事故现场这里命中的是浮层；
  * 4. 收尾：按**当前** `aria-expanded` 逐个关掉还开着的显式浮层、清空输入框（斜杠浮层随之消失）、
@@ -6272,7 +6255,7 @@ export const CHAT_COMPOSER_FLYOUTS_ACT = `(async () => {
  *    收尾过程留痕在 `cleanupTrace` 里。
  *
  * 返回值带上每个时刻的可见集合、每层矩形（含 z-index）、命中元素描述与两次计数 ——
- * 失败时能一眼看出是谁挡住了谁，而不是只知道「断言没过」。
+ * 失败时能一眼看出是谁挡住了谁，而不是只知道"断言没过"。
  */
 export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -6348,7 +6331,7 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
         sendRect: rectOf(send),
       }
     }
-    // 矩形相交（留 0.5px 容差，避免亚像素把「贴边」算成「相交」）
+    // 矩形相交（留 0.5px 容差，避免亚像素把"贴边"算成"相交"）
     const intersects = (left, right) =>
       left !== null &&
       right !== null &&
@@ -6387,7 +6370,7 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
     const permissionNow = snapshot()
     permissionNow.hit = sendHit()
     // ④ 第三个时刻：上下文详解卡 —— 事故的元凶，必须有一次真实测量。
-    //    「aria-expanded」是「组件自认为开着」的权威信号，比矩形可靠：leaving 中的节点矩形仍 > 0，
+    //    "aria-expanded"是"组件自认为开着"的权威信号，比矩形可靠：leaving 中的节点矩形仍 > 0，
     //    只看矩形会对着一个正在消失的浮层下结论（甚至把已关掉的再点开）。
     const triggered = (selector) => {
       const el = document.querySelector(selector)
@@ -6402,9 +6385,9 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
     contextMoment.hit = sendHit()
 
     // ── 详解卡的形状断言（此刻卡是展开的）──
-    // capture 的顺序是「先拍 PNG、后跑 check」，而展开详解卡的代码就在 check 里 ——
-    // 没有任何截图能拍到它的展开态，所以「只有这几行」这件事只能在这里客观钉住：
-    // 标签集合恰为四行且顺序一致、说明里不再出现「消息条数」（统计项已随精简移除）。
+    // capture 的顺序是"先拍 PNG、后跑 check"，而展开详解卡的代码就在 check 里 ——
+    // 没有任何截图能拍到它的展开态，所以"只有这几行"这件事只能在这里客观钉住：
+    // 标签集合恰为四行且顺序一致、说明里不再出现"消息条数"（统计项已随精简移除）。
     // 2026-10-03：缓存命中从折叠条搬进详解卡（折叠条改显示平均命中率）→ 3 行变 4 行。
     const detailCard = document.querySelector('[data-field="chat.context-detail"]')
     const detailLabels =
@@ -6524,10 +6507,10 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
 })()`
 
 /**
- * 工具卡展开高度的「实测终点」探针 · 前半（2026-09-26 修复的回归断言）。
+ * 工具卡展开高度的"实测终点"探针 · 前半（2026-09-26 修复的回归断言）。
  *
  * 背景：`.collapse-*` 的终点此前写死 `70vh`，内容只有约 140px 的工具卡对 504px 的终点做动画，
- * 可见位移全挤在时间轴前一小段（展开「飞快长满再空转」、收起「先空转、末尾猛缩」）。
+ * 可见位移全挤在时间轴前一小段（展开"飞快长满再空转"、收起"先空转、末尾猛缩"）。
  * 现在终点取实测值：`useCollapseTransition` 的 **`@enter`** / `@before-leave` 钩子在量之前
  * 先把元素内联的 `max-height` 临时摘成 `none`（否则被钳制的 flex 列容器会把可收缩子项
  * `.tool-args` 压扁、量少 66px），量完立刻还原，把真实内容高度写进 `--collapse-h`，
@@ -6535,10 +6518,10 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
  * 那时元素还没插入文档、`scrollHeight` 恒为 0（2026-09-26 实测踩过）。
  *
  * act 点 seed 出来的工具卡卡头（优先 `task` 卡，展开体最大：运行轨迹 + 指令 + 参数 + 结果），
- * 中途按 60 / 120 / 180 / 280 / 400ms 采样可见高度，最后轮询到「连续两次高度一致且 > 0」
+ * 中途按 60 / 120 / 180 / 280 / 400ms 采样可见高度，最后轮询到"连续两次高度一致且 > 0"
  * 才算稳定，把采样与稳定高度挂 window 给 check 读（act 的返回值进不了 report.json）。
- * 采样里 **60ms 那次参与 pass 判定**（必须严格小于稳定高度）：终值在「正常过渡」与
- * 「退化成瞬跳」两种实现下相同，只有中间样本能区分它们。
+ * 采样里 **60ms 那次参与 pass 判定**（必须严格小于稳定高度）：终值在"正常过渡"与
+ * "退化成瞬跳"两种实现下相同，只有中间样本能区分它们。
  *
  * **不在这里收起卡片**：截图就是展开现场，且展开态只影响这张卡自身，后续场景不受影响
  *（`chat-tts` 自带 reload）。
@@ -6548,7 +6531,7 @@ export const CHAT_TOOL_CARD_OPEN_ACT = `(async () => {
   try {
     // ⚠️ 先确保**轨迹是展开的**（2026-09-30 轨迹重构后新增）：工具行住在轨迹展开体里，
     // 历史水合出的轨迹默认折叠 —— 折叠态下展开体是 display: none，卡头点击后
-    // 「展开体高度」恒为 0，本探针的「实测高度」断言会整条 FAIL。
+    // "展开体高度"恒为 0，本探针的"实测高度"断言会整条 FAIL。
     const trace = document.querySelector('.message.r-assistant .trace')
     if (trace !== null && trace.classList.contains('open') === false) {
       const traceHead = trace.querySelector('.trace-head')
@@ -6616,7 +6599,7 @@ export const CHAT_TOOL_CARD_OPEN_ACT = `(async () => {
 })()`
 
 /**
- * 工具卡展开探针 · 后半（「实测高度」这条机制的直接断言）。
+ * 工具卡展开探针 · 后半（"实测高度"这条机制的直接断言）。
  *
  * 断言：
  * ① 卡处于展开态（`.open` + `aria-expanded="true"`）且展开体 `.tool-body` 在且可见；
@@ -6624,19 +6607,19 @@ export const CHAT_TOOL_CARD_OPEN_ACT = `(async () => {
  *    相差 ≤ 2px —— 有人把钩子摘掉（回落 70vh）或改回写死值，这条立刻 FAIL；
  * ③ 稳定后展开体的可见高度 ≈ `scrollHeight`（没有被 `max-height` 截住）；
  * ④ 中途采样只回传、不参与判定（曲线平滑度不能从快照断言）。
- * ② 的口径**刻意从严**：它同时是「测量发生在何时」的回归防线 —— 首跑就靠它抓到
- * 「进入方向把 `scrollHeight` 量在**游离**元素上 → `--collapse-h: 0px`」这个真实 bug
+ * ② 的口径**刻意从严**：它同时是"测量发生在何时"的回归防线 —— 首跑就靠它抓到
+ * "进入方向把 `scrollHeight` 量在**游离**元素上 → `--collapse-h: 0px`"这个真实 bug
  * （Vue 的 `beforeEnter` 在 `hostInsert` 之前调用；已由渲染层改挂 `enter` 修掉）。
- * 因此这里的 `≤ 2px` 不能放宽成「接受 0 / 接受一个区间」。
+ * 因此这里的 `≤ 2px` 不能放宽成"接受 0 / 接受一个区间"。
  *
  * 场景自带两条**只回传、不参与 pass** 的诊断（`diagnostic` / `detachedMeasureProbe`），
- * 用来把「钩子量到了什么」变成可复核的读数：
+ * 用来把"钩子量到了什么"变成可复核的读数：
  * - `diagnostic.leaveVar`：收起方向（`before-leave` 时元素尚在文档里）写下的实测值；
- * - `diagnostic.mid` / `diagnostic.settled`：再展开时「进入后约 70ms」与「稳定后」两次布局快照
+ * - `diagnostic.mid` / `diagnostic.settled`：再展开时"进入后约 70ms"与"稳定后"两次布局快照
  *   （`--collapse-h`、元素宽度、`scrollHeight`、`.thread` 的 clientWidth / 有无滚动条、各子元素高度）
- *   —— 用于区分「钩子量错了」与「量的时候布局还没稳」；
+ *   —— 用于区分"钩子量错了"与"量的时候布局还没稳"；
  * - `detachedMeasureProbe`：现造一个同款盒子，未入文档 / 已入文档各量一次 `scrollHeight`
- *   （钉住「游离元素 scrollHeight 恒为 0」这条前提）。
+ *   （钉住"游离元素 scrollHeight 恒为 0"这条前提）。
  */
 export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -6662,13 +6645,13 @@ export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
     const notClipped = body !== null && visibleHeight > 0 && Math.abs(visibleHeight - scrollHeight) <= 2
 
     // ── 诊断（信息，不参与 pass）：展开中途 / 稳定后的布局对比 ──
-    // 保留这段快照是为了让「f77a842 之前 enter 侧少写 66px」那个坑可复现：
+    // 保留这段快照是为了让"f77a842 之前 enter 侧少写 66px"那个坑可复现：
     // 当时中途与稳定后的宽度、.thread 的滚动条状态两次**完全一致**，只有 .tool-args
     // 从 13px 变成 79px（正好 66px）。原因是 .tool-body 是 flex 列容器：enter 钩子跑的时候
     // .collapse-enter-from 的 max-height:0 已经挂上，容器没有可用高度，flex 收缩把
     // 唯一的滚动容器子项（.tool-args，overflow:auto，其 min-height:auto 对滚动容器
-    // 解析为 0）压到 padding + 边框的最小高度 —— 量到的是「被钳制后的布局」而不是真实内容高，
-    // 而且该偏差在整段过渡期间恒定，所以「逐帧轮询到连续两帧相等」也追不到它。
+    // 解析为 0）压到 padding + 边框的最小高度 —— 量到的是"被钳制后的布局"而不是真实内容高，
+    // 而且该偏差在整段过渡期间恒定，所以"逐帧轮询到连续两帧相等"也追不到它。
     // 修法：量之前把元素内联的 max-height 临时摘成 none（见 useCollapseTransition）。
     // 注意：本文件这些探针是模板字面量字符串，字符串**内部**的注释不能出现反引号。
     let diagnostic = null
@@ -6700,7 +6683,7 @@ export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
           await wait(80)
         }
         const collapsedTo = card.querySelector('.tool-body') === null ? 'unmounted' : 'still-present'
-        // 再展开：中途（enter 之后约 70ms）与稳定后各取一次布局，把「量得早」这件事显影
+        // 再展开：中途（enter 之后约 70ms）与稳定后各取一次布局，把"量得早"这件事显影
         head.click()
         await wait(70)
         const mid = layoutOf('enter+70ms')
@@ -6720,8 +6703,8 @@ export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
       }
     }
     // ── 旁证（信息，不参与 pass）：游离元素的 scrollHeight 恒为 0 ──
-    // 现场造一个与 .tool-body 同款（flex 列 + 同 padding）的盒子，先量「未入文档」、
-    // 再量「已入文档」：前者为 0、后者是真实内容高。这条守着「进入方向不能挂 @before-enter」
+    // 现场造一个与 .tool-body 同款（flex 列 + 同 padding）的盒子，先量"未入文档"、
+    // 再量"已入文档"：前者为 0、后者是真实内容高。这条守着"进入方向不能挂 @before-enter"
     // 那个坑 —— Vue 的 beforeEnter 在 hostInsert **之前**调用，量到的是游离元素。
     let detachedMeasureProbe = null
     try {
@@ -6741,8 +6724,8 @@ export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
 
     const stillExpanded = card.classList.contains('open') === true && card.querySelector('.tool-body') !== null
     // 展开**确实在动**的判据：第一帧采样（点击后 60ms）必须严格小于稳定高度。
-    // 终值在「正常过渡」与「退化成瞬跳」两种实现下相同（都已等于内容高），
-    // 所以只有中间样本能区分它们 —— 把「过渡类挂上了但 max-height 不可插值 → 直接落位」
+    // 终值在"正常过渡"与"退化成瞬跳"两种实现下相同（都已等于内容高），
+    // 所以只有中间样本能区分它们 —— 把"过渡类挂上了但 max-height 不可插值 → 直接落位"
     // 这一档也钉住（这种退化的终值照样正确，但观感是瞬跳）。
     // 只取 60ms 那一帧：更晚的样本在慢机器上可能已越过 250ms 的过渡窗口而误判。
     const samples = probe === undefined || probe === null ? [] : probe.samples || []
@@ -6783,7 +6766,7 @@ export const CHAT_TOOL_CARD_OPEN_CHECK = `(async () => {
  * 左栏归档分组探针 · 前半（2026-09-26 归档 UI 的运行时证据）。
  *
  * act 只展开归档分组（点 `chat.archive-toggle`，轮询等 `chat.archive-list` 出现），
- * 截图即「分组展开、已归档会话列在里面」的现场。归档 / 取消归档这条会改状态的往返放在 check 里
+ * 截图即"分组展开、已归档会话列在里面"的现场。归档 / 取消归档这条会改状态的往返放在 check 里
  * （截图先拍，动作后做），并由 check 收尾还原 —— 否则后面的场景看到的会是被改过的左栏。
  *
  * **2026-10-10 加冷窗前置**：分组 toggle 是 `v-if="archivedSessions.length > 0"` 渲染的
@@ -6843,11 +6826,11 @@ export const CHAT_ARCHIVE_ACT = `(async () => {
 })()`
 
 /**
- * 左栏归档探针 · 后半：分组结构 + 「不混进主列表」+ **通过真实 UI 走一遍归档 / 取消归档**。
+ * 左栏归档探针 · 后半：分组结构 + "不混进主列表"+ **通过真实 UI 走一遍归档 / 取消归档**。
  *
  * 断言五件事：
  * 1. `chat.archive-group` 在、`chat.archive-toggle` 的 `aria-expanded === 'true'`、
- *    `chat.archive-list` 里的 `.nav-item` ≥ 1、分组标题带计数（「已归档 · N」）；
+ *    `chat.archive-list` 里的 `.nav-item` ≥ 1、分组标题带计数（"已归档 · N"）；
  * 2. seed 的那条已归档会话**不在** `chat.session-list` 里（按它的唯一标题文本判定），
  *    而在 `chat.archive-list` 里 —— 归档分组不是把同一条渲染两遍；
  * 3. 点主列表某一行的 `[data-action="chat.archive-session"]`（真实 DOM click → Vue emit →
@@ -6868,7 +6851,7 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
     const toggle = document.querySelector('[data-field="chat.archive-toggle"]')
     const problems = []
     // act 前置的就绪状态（act 的返回值会被丢弃，所以它写在 window 上）：
-    // ready !== true 必须变成**显式失败** —— 否则「前置没就绪」会像以前那样静默退化成一堆
+    // ready !== true 必须变成**显式失败** —— 否则"前置没就绪"会像以前那样静默退化成一堆
     // 看着像探针坏了的报错（实测：单场景筛选跑 4/4 轮 ariaExpanded=false / archiveRows=0）。
     const actProbe = window.__auroraArchiveProbe
     const result = {
@@ -6893,7 +6876,7 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
     if (result.togglePresent !== true) problems.push('chat.archive-toggle 不存在')
     if (result.ariaExpanded !== 'true') problems.push('归档分组未展开（aria-expanded=' + result.ariaExpanded + '）')
     if (result.archiveRows < 1) problems.push('归档列表里没有会话行')
-    // 计数与锚点（标题文案「已归档 · N」里的 N 必须与实际行数一致）
+    // 计数与锚点（标题文案"已归档 · N"里的 N 必须与实际行数一致）
     const countMatch = /已归档[^0-9]*([0-9]+)/.exec(result.toggleLabel)
     result.toggleCount = countMatch === null ? null : Number(countMatch[1])
     if (result.toggleCount !== result.archiveRows) {
@@ -6903,7 +6886,7 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
     if (result.seedInArchive !== true) problems.push('seed 的已归档会话不在归档列表里')
 
     // 3) 通过真实 UI 归档一条未归档会话（**优先取当前正在看的那条**）
-    //    为什么优先 active 行：归档当前会话时，主区头部必须出现「已归档 + 取消归档」提示条
+    //    为什么优先 active 行：归档当前会话时，主区头部必须出现"已归档 + 取消归档"提示条
     //    —— 那是这条链路上唯一会显示提示条的时机，也是 docs/07 §2.3 明确写下的行为。
     //    取第一行的话，被归档的可能不是当前会话，提示条那条判据就永远测不到。
     const beforeMain = result.mainRows
@@ -6916,9 +6899,9 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
       targetRow === null ? null : targetRow.querySelector('[data-action="chat.archive-session"]')
     const movedTitle = targetRow === null ? '' : textOf(targetRow.querySelector('.item-title'))
     // 身份键 = data-session-id（SessionRow.vue 的 .nav-row 上，2026-10-10 新增）。
-    // 旧口径取整行文本，而那一行含 .item-time 相对时间：跨分钟时同一行的文本从「刚刚」
-    // 变成「N 分钟前」，于是「归属」判定在**计数已经正确迁移**时仍然两边查找都失配
-    //（实测 payload：movedTitle「新会话刚刚」、
+    // 旧口径取整行文本，而那一行含 .item-time 相对时间：跨分钟时同一行的文本从"刚刚"
+    // 变成"N 分钟前"，于是"归属"判定在**计数已经正确迁移**时仍然两边查找都失配
+    //（实测 payload：movedTitle"新会话刚刚"、
     // afterArchive {mainRows:2,archiveRows:2,inArchive:false,inMain:false}）。
     // 会话 id 才是唯一不会随渲染时间漂移的身份键；
     // movedNavText 只作为排障信息回传（旧口径的文本快照，一眼看出是不是文本漂移）。
@@ -6940,7 +6923,7 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
     result.movedSessionId = movedSessionId
     result.movedTitle = movedTitle
     result.movedNavText = targetRow === null ? '' : textOf(targetRow.querySelector('.nav-item'))
-    // 反向复核读数：旧口径里「会漂移的那一段」（.item-time 的相对时间）+ 旧口径的整行文本。
+    // 反向复核读数：旧口径里"会漂移的那一段"（.item-time 的相对时间）+ 旧口径的整行文本。
     // 用来证明身份键换掉的原因 —— 同一行的相对时间跨分钟就会变，而计数断言仍是对的。
     result.movedNavTime = targetRow === null ? '' : textOf(targetRow.querySelector('.item-time'))
     result.identityUsable = identityUsable
@@ -6971,7 +6954,7 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
         problems.push('归档后计数 / 归属不符：' + JSON.stringify(result.afterArchive))
       }
 
-      // 3b) 归档的是当前会话 → 主区头部必须出现「已归档 + 取消归档」提示条
+      // 3b) 归档的是当前会话 → 主区头部必须出现"已归档 + 取消归档"提示条
       if (result.targetWasActive === true) {
         const banner = document.querySelector('[data-field="chat.archived-banner"]')
         result.bannerAfterArchive = {
@@ -6981,11 +6964,11 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
             banner !== null && banner.querySelector('[data-action="chat.unarchive-current"]') !== null,
         }
         if (result.bannerAfterArchive.present !== true) {
-          problems.push('归档当前会话后头部没有「已归档」提示条')
+          problems.push('归档当前会话后头部没有"已归档"提示条')
         } else if (result.bannerAfterArchive.text.indexOf('已归档') === -1) {
-          problems.push('提示条文案不含「已归档」：' + result.bannerAfterArchive.text)
+          problems.push('提示条文案不含"已归档"：' + result.bannerAfterArchive.text)
         } else if (result.bannerAfterArchive.hasUnarchive !== true) {
-          problems.push('提示条上没有「取消归档」按钮')
+          problems.push('提示条上没有"取消归档"按钮')
         }
       }
 
@@ -6994,7 +6977,7 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
       const movedRow = rowBySessionId('[data-field="chat.archive-list"]', movedSessionId)
       const unarchiveButton = movedRow === null ? null : movedRow.querySelector('[data-action="chat.unarchive-session"]')
       if (unarchiveButton === null) {
-        problems.push('归档列表里没找到刚归档那条的「取消归档」按钮')
+        problems.push('归档列表里没找到刚归档那条的"取消归档"按钮')
       } else {
         unarchiveButton.click()
         let restored = false
@@ -7019,7 +7002,7 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
         ) {
           problems.push('撤销归档后计数 / 归属不符：' + JSON.stringify(result.afterUnarchive))
         }
-        // 撤销之后提示条必须消失（否则它会常驻挂着，误导「这个会话还是归档的」）
+        // 撤销之后提示条必须消失（否则它会常驻挂着，误导"这个会话还是归档的"）
         if (result.targetWasActive === true) {
           let bannerGone = false
           for (let attempt = 0; attempt < 15 && !bannerGone; attempt += 1) {
@@ -7027,7 +7010,7 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
             if (!bannerGone) await wait(120)
           }
           result.bannerGoneAfterUnarchive = bannerGone
-          if (bannerGone !== true) problems.push('撤销归档后「已归档」提示条没有消失')
+          if (bannerGone !== true) problems.push('撤销归档后"已归档"提示条没有消失')
         }
       }
     }
@@ -7067,7 +7050,7 @@ export const CHAT_ARCHIVE_CHECK = `(async () => {
 })()`
 
 /**
- * 右栏开关探针 · 前半（BetaV2）：点两次 `chat.right-panel-toggle` 走「展开 → 收起 → 展开」。
+ * 右栏开关探针 · 前半（BetaV2）：点两次 `chat.right-panel-toggle` 走"展开 → 收起 → 展开"。
  *
  * 点击走真实 DOM 链路（按钮 → emit → App.vue 的 `contextOpen` → `.context.collapsed` 宽度过渡）。
  * 两次点击让场景**自恢复**：截图时右栏回到展开态（截图本身就是三栏默认布局的证据），
@@ -7086,8 +7069,8 @@ export const CHAT_RIGHT_PANEL_TOGGLE_ACT = `(async () => {
     toggle.click()
     await wait(600)
     const afterHide = !isOpen()
-    // 收起态的顶部横带（2026-10-03 用户口径「三键固定在窗口右上角、别破坏协调性」）：
-    // 此刻主区右缘就是窗口右缘 —— 窗口按钮仍贴右缘贴顶，且标题栏的「清空」按钮
+    // 收起态的顶部横带（2026-10-03 用户口径"三键固定在窗口右上角、别破坏协调性"）：
+    // 此刻主区右缘就是窗口右缘 —— 窗口按钮仍贴右缘贴顶，且标题栏的"清空"按钮
     // 必须已经让位（靠 .head--corner 的 padding-right），两者的矩形不许相交。
     const rectOf = (el) => (el === null ? null : el.getBoundingClientRect())
     const trashRect = rectOf(document.querySelector('.head-actions button'))
@@ -7115,10 +7098,10 @@ export const CHAT_RIGHT_PANEL_TOGGLE_ACT = `(async () => {
 })()`
 
 /**
- * 右栏开关探针 · 后半：act 记录的「收起又展开」三态必须全部成立，且此刻右栏仍是展开的
+ * 右栏开关探针 · 后半：act 记录的"收起又展开"三态必须全部成立，且此刻右栏仍是展开的
  * （展开态 = 截图里的布局，收起只允许存在于两次点击之间的瞬时）。
  * 另断言**收起态**的顶部横带：窗口按钮固定在窗口右上角（贴顶贴右缘），
- * 标题栏的「清空」按钮已按 `--caption-w` 让位、两者矩形不相交。
+ * 标题栏的"清空"按钮已按 `--caption-w` 让位、两者矩形不相交。
  */
 export const CHAT_RIGHT_PANEL_TOGGLE_CHECK = `(() => {
   try {
@@ -7134,7 +7117,7 @@ export const CHAT_RIGHT_PANEL_TOGGLE_CHECK = `(() => {
         probe.before === true &&
         probe.afterHide === true &&
         probe.afterShow === true &&
-        // 收起态：窗口按钮仍固定在右上角，且标题栏的「清空」已让位（不叠）
+        // 收起态：窗口按钮仍固定在右上角，且标题栏的"清空"已让位（不叠）
         probe.collapsedCaptionPinned === true &&
         probe.collapsedOverlap === false &&
         openNow,
@@ -7147,14 +7130,14 @@ export const CHAT_RIGHT_PANEL_TOGGLE_CHECK = `(() => {
 /**
  * 右栏模式感知探针（BetaV2，spec §3/§11）：把模式切到 Work，右栏必须整体换成办公卡片。
  *
- * 「非当前模式的功能一律不渲染」钉的是这条：work 态右栏要有「工作目录」卡、
- * 不得再有 classroom 的「今日课程」卡。ContextPanel 没有 data-field 锚点（按卡头文案定位）；
- * 切模式走 `window.aurora.mode.set`（与设置页「启用」同一条 IPC），主进程会广播
+ * "非当前模式的功能一律不渲染"钉的是这条：work 态右栏要有"工作目录"卡、
+ * 不得再有 classroom 的"今日课程"卡。ContextPanel 没有 data-field 锚点（按卡头文案定位）；
+ * 切模式走 `window.aurora.mode.set`（与设置页"启用"同一条 IPC），主进程会广播
  * mode:changed → 渲染层 modeStore / ContextPanel 随之更新。
  *
  * ⚠️ 引导副作用是安全的：work 引导未完成时 `mode.set` 会触发 `requestGuideIfNeeded`，
  * 但主进程的 proactive 实现只是 `showChat()` + 日志（见 index.ts），不写会话、不弹窗体，
- * 不会污染 seed 会话。check 收尾把模式切回 classroom 并等「今日课程」卡回来，
+ * 不会污染 seed 会话。check 收尾把模式切回 classroom 并等"今日课程"卡回来，
  * 后续场景（chat-tts / auto-scroll）的 classroom 现场不受影响。
  */
 export const CHAT_RIGHT_PANEL_WORK_ACT = `(async () => {
@@ -7230,7 +7213,7 @@ export const CHAT_RIGHT_PANEL_WORK_CHECK = `(async () => {
  * ACT 三个阶段：
  * ① 出厂现场（无项目、classroom）：`chat.agent-group` / `chat.session-list` /
  *    `chat.quick-item` 必须在，`chat.work-group` / `chat.project-group` 必须不在 ——
- *    工作目录对话区是 Work 模式专属、项目对话区只在登记了项目时渲染（「无则整区不渲染」）；
+ *    工作目录对话区是 Work 模式专属、项目对话区只在登记了项目时渲染（"无则整区不渲染"）；
  * ② 登记两个截图项目（与 chat-project-card 同一条 `settings:update` 通道，`list` 整体权威；
  *    `chat.project-group` 出现、组头 `+`（`chat.new-project-session`）恰好两枚，
  *    且退役标记 `chat.project-current` **一枚都不许出现**（v25 已整体删除该徽标）；
@@ -7239,7 +7222,7 @@ export const CHAT_RIGHT_PANEL_WORK_CHECK = `(async () => {
  *
  * CHECK 断言三阶段现场后收尾还原（模式切回 classroom、项目清空），
  * 后续场景（chat-tts / archive）读到的仍是出厂门控。seed 的 main 会话是未标记会话
- * （Agent 空间），因此 `chat.session-list .nav-item` ≥ 1 顺带验证「历史会话归 Agent对话区」。
+ * （Agent 空间），因此 `chat.session-list .nav-item` ≥ 1 顺带验证"历史会话归 Agent对话区"。
  */
 export const CHAT_SESSION_GROUPS_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -7254,7 +7237,7 @@ export const CHAT_SESSION_GROUPS_ACT = `(async () => {
       sessionList: count('[data-field="chat.session-list"]'),
       quickItem: count('[data-field="chat.quick-item"]'),
       workGroup: count('[data-field="chat.work-group"]'),
-      // 项目区**常显**（标题行有「添加项目」钮）：出厂现场判定看「有没有项目子分组」
+      // 项目区**常显**（标题行有"添加项目"钮）：出厂现场判定看"有没有项目子分组"
       projectGroup: count('[data-field="chat.project-group"]'),
       projectAddButton: count('[data-action="chat.add-project"]'),
       projectRows: rows(),
@@ -7275,7 +7258,7 @@ export const CHAT_SESSION_GROUPS_ACT = `(async () => {
       },
     })
     if (!update.ok) return { ok: false, reason: update.message }
-    // 等待条件 = **两条项目子分组头都出现**（+ 钮）而不是「子分组里有会话行」：
+    // 等待条件 = **两条项目子分组头都出现**（+ 钮）而不是"子分组里有会话行"：
     // 刚登记的项目还没有任何会话，子分组下自然没有行（这是正确行为，不是缺陷）。
     const projectText = () => {
       const el = document.querySelector('[data-field="chat.project-group"]')
@@ -7291,7 +7274,7 @@ export const CHAT_SESSION_GROUPS_ACT = `(async () => {
     const projectRows = rows()
     const projectNameShown = projectText().indexOf('截图项目') !== -1
     // 退役徽标哨兵（v25）：chat.project-current 随全局 projects.current 退役整体删除，
-    // 两条项目分组在场时它必须一枚都不出现 —— 防止有人把徽标「顺手」加回来。
+    // 两条项目分组在场时它必须一枚都不出现 —— 防止有人把徽标"顺手"加回来。
     const currentBadge = count('[data-field="chat.project-current"]')
     // 阶段 C：切 Work 模式
     const mode = await window.aurora.mode.set('work')
@@ -7371,7 +7354,7 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
       factory.agentAddButton === 1 &&
       factory.agentRows >= 1
     // 项目已登记：**两条**子分组头在场、项目名出现在分组标题里、退役徽标零出现。
-    // 不断言「子分组里有会话行」—— 新登记的项目本来就没有会话（新建入口就是那个 +）。
+    // 不断言"子分组里有会话行"—— 新登记的项目本来就没有会话（新建入口就是那个 +）。
     const projectOk =
       probe !== undefined &&
       probe.projectGroup === 1 &&
@@ -7390,7 +7373,7 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
       probe.expandedAria === 'true' &&
       probe.collapsedAria === 'false'
 
-    // 分区标题可读性（2026-09-30 用户反馈「不够醒目」）：字号 ≥ 13px、字重 ≥ 600、
+    // 分区标题可读性（2026-09-30 用户反馈"不够醒目"）：字号 ≥ 13px、字重 ≥ 600、
     // 且**带左侧强调色竖条**（::before 伪元素 —— 用 getComputedStyle 读背景色判定）。
     const captionStyle = (() => {
       const el = document.querySelector('.group-caption')
@@ -7428,10 +7411,10 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
           Array.from(document.querySelectorAll('[data-field="chat.project-group"] .session-list'))
             .map((el) => el.querySelectorAll('.nav-item').length)
             .reduce((sum, value) => sum + value, 0)
-        // 轮询**直到还原生效**（条件写 && !restored）：写成 && restored 是「已经好了才继续等」，
+        // 轮询**直到还原生效**（条件写 && !restored）：写成 && restored 是"已经好了才继续等"，
         // 需要等一等的场合会在第一轮直接退出并判 FAIL（本探针首跑的 restored:false 即此）。
         for (let attempt = 0; attempt < 15 && !restored; attempt += 1) {
-          // 项目区常显（添加项目钮），还原的判据是「工作目录区消失 + 项目子分组清空」
+          // 项目区常显（添加项目钮），还原的判据是"工作目录区消失 + 项目子分组清空"
           restored = count('[data-field="chat.work-group"]') === 0 && projectRowsNow() === 0
           if (!restored) await wait(200)
         }
@@ -7465,19 +7448,19 @@ export const CHAT_SESSION_GROUPS_CHECK = `(async () => {
 
 /**
  * 思考过程折叠块探针（BetaV2，spec §9/§11）：MessageList 对带 `reasoning` 的助手消息
- * 渲染可折叠「思考过程」块，受 `general.chat.showThinking` 门控。
+ * 渲染可折叠"思考过程"块，受 `general.chat.showThinking` 门控。
  *
  * 前提由 `seedChatTtsHistory` 提供：main 会话的助手消息带 `reasoning`（含探针标记文本），
  * `rendererHistory` 会把它透传回渲染层（agent-core store 的 StoredMessage 支持 `reasoning?`）。
- * 历史水合出的思考块**默认收起**（「已深度思考」摘要行）——act 先记录收起态再点开，
- * 截图拍到展开后的全文；check 断言「曾收起 + 现已展开 + 正文含标记 + 块在正文上方」。
+ * 历史水合出的思考块**默认收起**（"已深度思考"摘要行）——act 先记录收起态再点开，
+ * 截图拍到展开后的全文；check 断言"曾收起 + 现已展开 + 正文含标记 + 块在正文上方"。
  */
 export const CHAT_THINKING_BLOCK_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     // ⚠️ 先确保**轨迹是展开的**（2026-09-30 轨迹重构后新增）：思考块住在轨迹展开体里，
     // 历史水合出的轨迹默认折叠 —— 折叠态下展开体是 display: none，元素在 DOM 里但不可见、
-    // 高度为 0，后面的「展开后必须可见」会直接 FAIL（2026-09-30 实测就是这么失败的）。
+    // 高度为 0，后面的"展开后必须可见"会直接 FAIL（2026-09-30 实测就是这么失败的）。
     // 轨迹已经是展开态时不要点（那会把它收起来）。
     const trace = document.querySelector('.message.r-assistant .trace')
     if (trace !== null && trace.classList.contains('open') === false) {
@@ -7519,7 +7502,7 @@ export const CHAT_THINKING_BLOCK_ACT = `(async () => {
  * Markdown 渲染场景 · 前半：把样本滚进视口并**等图表水合到终态**再放行截图。
  *
  * 为什么需要它：mermaid / echarts 是懒加载 + 视口内才渲染，首次加载 chunk 到出图
- * 要一两秒 —— 不等就截图会拍到「只有工具栏、画布还空着」的中间态（2026-10-02 筛选跑实测）。
+ * 要一两秒 —— 不等就截图会拍到"只有工具栏、画布还空着"的中间态（2026-10-02 筛选跑实测）。
  * 断言不受影响（CHECK 自己也会等），这一步是为了让**截图本身**成为可核对的证据。
  */
 export const CHAT_MARKDOWN_ACT = `(async () => {
@@ -7587,7 +7570,7 @@ export const CHAT_MARKDOWN_CHECK = `(async () => {
     const failedSrcVisible = failedChart !== null && failedChart.querySelector('.md-chart-src') !== null
 
     const conditions = {
-      // 三号标题映射为 h5（# → h3 … #### → h6）；判据只要「有带 .md-h 的标题节点」
+      // 三号标题映射为 h5（# → h3 … #### → h6）；判据只要"有带 .md-h 的标题节点"
       heading: q('.md-h') >= 1,
       orderedList: q('ol.md-list.md-ol') >= 1,
       tableShape: rows === 2 && headerCells === 3,
@@ -7669,7 +7652,7 @@ export const CHAT_THINKING_BLOCK_CHECK = `(() => {
 /**
  * 执行轨迹展开探针 · 前半（2026-09-30 轨迹视觉重构，docs/07 §2.3 / §5.2）。
  *
- * 本轮把「思考块 + 一摞工具卡」收成一个 `AgentTrace`：折叠态是**软胶囊**
+ * 本轮把"思考块 + 一摞工具卡"收成一个 `AgentTrace`：折叠态是**软胶囊**
  * （`--fill-1` 底 + 圆角、无描边），展开态是**左缘连续竖脊 + 节点圆点**，
  * 展开走 grid `0fr ↔ 1fr` 高度过渡（docs/07 §2.3 / §5.2）。
  * 这条 act 负责把折叠态的胶囊点开（已是展开态就不重复点，避免又收回去），
@@ -7705,7 +7688,7 @@ export const CHAT_TRACE_ACT = `(async () => {
     // 前置：**先把轨迹收成折叠态**（2026-09-30 复核加固）。
     // 场景顺序里前面的 chat-thinking-block / chat-tool-card-open 为了点开思考块与工具行
     // 已经把轨迹展开过（实测跑到这里 openClass: true），而本探针要断言的是
-    // 「折叠 → 展开」这条边沿 + 折叠态的几何 —— 必须自己先把状态造出来，不依赖别人的收尾。
+    // "折叠 → 展开"这条边沿 + 折叠态的几何 —— 必须自己先把状态造出来，不依赖别人的收尾。
     if (trace.classList.contains('open')) {
       head.click()
       await wait(400)
@@ -7713,7 +7696,7 @@ export const CHAT_TRACE_ACT = `(async () => {
     const beforeShape = diagnose()
     const openBefore = trace.classList.contains('open')
     /*
-     * 折叠态的判据是「展开体**看不见**」，不是「展开体不在 DOM 里」。
+     * 折叠态的判据是"展开体**看不见**"，不是"展开体不在 DOM 里"。
      *
      * 展开体常驻 DOM（.thinking / .tool-card 这些锚点在折叠态也必须查得到，
      * 见 AgentTrace 的模板注释），折叠由 grid 0fr 轨道收成零高度表达 ——
@@ -7737,7 +7720,7 @@ export const CHAT_TRACE_ACT = `(async () => {
     const collapsedToolsCards = collapsedTools === null ? 0 : collapsedTools.querySelectorAll('.tool-card').length
     const collapsedToolsVisibility =
       collapsedTools === null ? '' : window.getComputedStyle(collapsedTools).visibility
-    // 一行摘要：折叠态时它必须是有文字的（「已深度思考 · N 步」之类）
+    // 一行摘要：折叠态时它必须是有文字的（"已深度思考 · N 步"之类）
     const summary = (head.textContent || '').trim()
     if (openBefore === false) head.click()
     // 展开是 grid 0fr 到 1fr 的高度过渡（250ms 量级）：等一拍再量几何
@@ -7782,7 +7765,7 @@ export const CHAT_TRACE_ACT = `(async () => {
       thinkingTextHeight:
         thinkingText === null ? 0 : Math.round(thinkingText.getBoundingClientRect().height),
       // 展开体常驻 DOM（grid 折叠不再摘显示）：这条读数用来区分
-      // 「块被摘掉了」与「块在、只是被裁剪」，两者在截图上看不出来，在排查时差别很大。
+      // "块被摘掉了"与"块在、只是被裁剪"，两者在截图上看不出来，在排查时差别很大。
       thinkingVisibility: thinking === null ? '' : window.getComputedStyle(thinking).visibility,
       thinkingBeforeRow: thinkingDistance,
       summaryChars: summary.length,
@@ -7794,10 +7777,10 @@ export const CHAT_TRACE_ACT = `(async () => {
 })()`
 
 /**
- * 执行轨迹探针 · 后半：几何与结构断言（「软胶囊 + 左缘竖脊 + 节点圆点」的直接证据）。
+ * 执行轨迹探针 · 后半：几何与结构断言（"软胶囊 + 左缘竖脊 + 节点圆点"的直接证据）。
  *
  * 断言链：
- * ① **点开生效**：act 记录「点之前是折叠的」（`.trace` 无 `open` 类、展开体高度为 0），
+ * ① **点开生效**：act 记录"点之前是折叠的"（`.trace` 无 `open` 类、展开体高度为 0），
  *    点完 `.trace` 有 `open` 类且 `.trace-body` 在文档里、可见高度 > 0；
  * ② **折叠态是"一行软胶囊"**：`.trace-head` 有底色（`--fill-1`）、有圆角（`--radius-sm`），
  *    `.trace` 自身四边无边框，`.trace-head` 里的摘要文字非空 —— 这条钉的是"软胶囊"这个观感口径
@@ -7810,7 +7793,7 @@ export const CHAT_TRACE_ACT = `(async () => {
  * ⑤ **工具行结构没退化**：每行恰好一枚 `.tool-icon`（与 `CHAT_SIDEBAR_SCRIPT` 同口径）、
  *    `.tool-body` 不存在或带可解析的 `--collapse-h`；
  * ⑥ **轨迹内顺序**：思考块在工具行**之上**（`thinkingBeforeRow` > 0）——
- *    与 docs/07 §2.3「思考 → 工具 → 回答」的阅读顺序同一条约束。
+ *    与 docs/07 §2.3"思考 → 工具 → 回答"的阅读顺序同一条约束。
  *
  * ④ 用 `getComputedStyle(…, '::before')` 量伪元素：竖脊是画在展开体上的，
  * 不是独立节点，选择器查不到它。
@@ -7844,7 +7827,7 @@ export const CHAT_TRACE_CHECK = `(() => {
     // 点开生效：act 记录过"点之前是折叠的"，现在必须是展开且有可见高度
     const bodyHeight = body === null ? 0 : Math.round(body.getBoundingClientRect().height)
     /*
-     * 「软胶囊」的判据是**有底色、有圆角、容器无描边**。
+     * "软胶囊"的判据是**有底色、有圆角、容器无描边**。
      *
      * ⚠️ 背景色只断言"非透明"，不比对颜色字面量（明暗两套主题值不同）；
      * 描边量**宽度**而不是颜色（无边框时 border-top-color 解析成 currentColor，
@@ -7866,9 +7849,9 @@ export const CHAT_TRACE_CHECK = `(() => {
     ]
     const traceBorderless = traceBorderWidths.every((width) => width === 0)
     /*
-     * 「任务完成后自动折叠思考与调用历史」这条诉求的硬断言 —— 折叠态必须**真的只剩一行**：
+     * "任务完成后自动折叠思考与调用历史"这条诉求的硬断言 —— 折叠态必须**真的只剩一行**：
      * 思考块与工具行都还在 DOM 里（探针与结构计数依赖它们），但整条轨迹的高度只能是
-     * 「一行软胶囊」这一档（grid 0fr 轨道把展开体收成零高度）。给 12px 余量覆盖过渡与亚像素。
+     * "一行软胶囊"这一档（grid 0fr 轨道把展开体收成零高度）。给 12px 余量覆盖过渡与亚像素。
      * 旧判据里的 collapsedToolsVisibility === 'hidden' 已删：grid 折叠不再需要把内容
      * 摘出布局（轨道收 0 即可），.tools 保持可见是**新口径的正常形态**。
      */
@@ -7940,19 +7923,19 @@ export const CHAT_TRACE_CHECK = `(() => {
 })()`
 
 /**
- * 「工具轮（**没有思考增量**）结束后轨迹必须自动收起」探针（2026-10-01 用户实测的折叠 bug）。
+ * "工具轮（**没有思考增量**）结束后轨迹必须自动收起"探针（2026-10-01 用户实测的折叠 bug）。
  *
  * 与 `CHAT_TRACE_CHECK` 的分工：那条钉**几何**（折叠态一行、展开态竖脊 + 节点），而且它
- * 自己会「先把轨迹收起来」再量（见 `CHAT_TRACE_ACT` 的前置）；这条钉**状态机**——
+ * 自己会"先把轨迹收起来"再量（见 `CHAT_TRACE_ACT` 的前置）；这条钉**状态机**——
  * 完全不碰 DOM 状态，只读"流式结束后应用**自己**留下的那个状态"。
  *
- * 为什么必须单独一条：原先的收尾逻辑只收「这一轮被打开过的」消息，而消息只有思考增量到达
+ * 为什么必须单独一条：原先的收尾逻辑只收"这一轮被打开过的"消息，而消息只有思考增量到达
  * 时才会被打开。桩服务默认分流每轮都发 `reasoning_content`，于是**现有全部探针都覆盖不到**
- * 「有工具调用、没有思考增量」的那一轮 —— 它的轨迹永远停在展开态，用户看到的就是
- * 「模型答完了，工作过程还摊着不折叠」（2026-10-01 实测；现场由 `SKILL_ONLY_MARKER` 分流造出）。
+ * "有工具调用、没有思考增量"的那一轮 —— 它的轨迹永远停在展开态，用户看到的就是
+ * "模型答完了，工作过程还摊着不折叠"（2026-10-01 实测；现场由 `SKILL_ONLY_MARKER` 分流造出）。
  *
  * `pass` 的三段：① 现场成立（这一轮有工具卡、**没有**思考块）；② 轨迹是折叠态
- * （无 `.open` 类 + 展开体不可见）；③ 摘要行有文字（「N 步」这类可读摘要）。
+ * （无 `.open` 类 + 展开体不可见）；③ 摘要行有文字（"N 步"这类可读摘要）。
  * 缺任何一段都 FAIL —— 前两段一起才能区分"收到位了"与"压根没有可收的东西"。
  */
 export const CHAT_TRACE_FOLD_CHECK = `(async () => {
@@ -8012,12 +7995,12 @@ export const CHAT_TRACE_FOLD_CHECK = `(async () => {
 })()`
 
 /**
- * 快速会话探针（BetaV2 口径不变，2026-09 重构确认）：点左栏固定项「快速对话」
+ * 快速会话探针（BetaV2 口径不变，2026-09 重构确认）：点左栏固定项"快速对话"
  * 必须切到 sessionId='quick'（提示条输入入口已于 2026-10 移除，主界面左栏是唯一入口；
- * 主界面左栏固定项沿用「点击切主区会话」）。
+ * 主界面左栏固定项沿用"点击切主区会话"）。
  *
  * 激活的判据有二：`chat.quick-item` 拿到 `.active` 态，且主区标题 `.head-name` 变成
- * 固定名「快速对话」（`currentTitle` 对 quick 会话短路返回）。act 里轮询等标题变化
+ * 固定名"快速对话"（`currentTitle` 对 quick 会话短路返回）。act 里轮询等标题变化
  * （switchSession 的水合是异步往返），check 再读一次激活态兜住时序。
  *
  * 场景结束后停在 quick 会话：后续场景里 `chat-tts` 自带 reload（回到默认 main 会话），
@@ -8041,7 +8024,7 @@ export const CHAT_QUICK_SESSION_ACT = `(async () => {
   }
 })()`
 
-/** 快速会话探针 · 后半：固定项激活 + 主区标题为「快速对话」。 */
+/** 快速会话探针 · 后半：固定项激活 + 主区标题为"快速对话"。 */
 export const CHAT_QUICK_SESSION_CHECK = `(() => {
   try {
     const item = document.querySelector('[data-field="chat.quick-item"]')
@@ -8060,9 +8043,9 @@ export const CHAT_QUICK_SESSION_CHECK = `(() => {
  * 设置页门控探针（docs/08 §6.1）：每个控件带 `data-field="<配置路径>"`，
  * 条件不成立时**整个控件不在 DOM 里**（不是 disabled、也不是靠 CSS 藏），位置改为 `data-empty` 说明块。
  *
- * 这一条钉住的是用户原话里的第三个诉求：「用户无法设置的内容不要显示」。
+ * 这一条钉住的是用户原话里的第三个诉求："用户无法设置的内容不要显示"。
  *
- * BetaV2（六页 IA）：「勿扰时段」（`advanced.quietHours`）自 AdvancedPage 迁到 general 页，
+ * BetaV2（六页 IA）："勿扰时段"（`advanced.quietHours`）自 AdvancedPage 迁到 general 页，
  * 与提示条自己的静默时段同区 —— 所以这里**新增** `advanced.quietHours.start/.end` 两个字段的
  * 存在性断言（AdvancedPage 不再渲染它们， 数到 >0 才是回归）。
  */
@@ -8085,26 +8068,26 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
     const requireAdminField = count('[data-field="general.requireAdmin"]')
     // v30：游戏模式开关常显（docs/06 §8.3）
     const gameModeField = count('[data-field="general.gameMode.enabled"]')
-    // v32：「外观」区组三件套常显（主题三档 / 强调色 / 毛玻璃开关）。
+    // v32："外观"区组三件套常显（主题三档 / 强调色 / 毛玻璃开关）。
     // 主题那档是**两个**锚点同名（区组里只有一组按钮），按数量 1 断言；
     // 强调色沿用 v21 的锚点，毛玻璃是新增的 —— 三者一起挡住"新控件没接线"这类静默回归。
     const appearanceTheme = count('[data-field="appearance.theme"]')
     const appearanceAccent = count('[data-field="appearance.accent"]')
     const appearanceGlass = count('[data-field="appearance.glass"]')
-    // v13 项目机制（docs/06 §5.1）：项目区组常显，列表可空可非空 —— 只断言「空态或至少一行」，
+    // v13 项目机制（docs/06 §5.1）：项目区组常显，列表可空可非空 —— 只断言"空态或至少一行"，
     // 不写死条数（用户有几个项目都能过）。
     const projectsFields = count('[data-field^="projects."]')
     const projectsRows = count('[data-field="projects.name"]')
     const projectsEmpty = emptyStates.indexOf('projects.list') !== -1
-    // 本页**预期**会出现的 data-empty：只剩「提示条停用」那一条（项目区组已于 2026-09-30
-    // 迁「会话管理」页，它的空态不在这页）。
+    // 本页**预期**会出现的 data-empty：只剩"提示条停用"那一条（项目区组已于 2026-09-30
+    // 迁"会话管理"页，它的空态不在这页）。
     // 其余任何空态出现都是回归（照 SETTINGS_AGENT_FIELDS_SCRIPT 的白名单口径）。
-    // ⚠️ 这里曾留下一行多余的「)」（删项目白名单时的残渣）：整段探针字符串是 template
+    // ⚠️ 这里曾留下一行多余的")"（删项目白名单时的残渣）：整段探针字符串是 template
     // literal，语法错**不经过 tsc**，症状是运行时 Script failed to execute、
     // 而 pnpm typecheck / pnpm test 全绿（capture.probe-strings.test.ts 的第一条只查
-    // 「反引号提前终止后被解析成字符串拼接」，查不到这类残渣）。2026-10-01 修掉。
+    // "反引号提前终止后被解析成字符串拼接"，查不到这类残渣）。2026-10-01 修掉。
     // ⚠️ 本注释也踩过同一个坑：注释里写反引号会把 template literal 提前终止 ——
-    // 字符串内部的注释一律用「」或单引号（见 AGENTS.md）。
+    // 字符串内部的注释一律用""或单引号（见 AGENTS.md）。
     const unexpected = emptyStates.filter((name) => name !== 'general.edgeBar')
     const activeMode = document.querySelector('.cards .card.active .card-head strong')
     const activeNav = document.querySelector('.nav-item.active')
@@ -8128,7 +8111,7 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
       emptyStates,
       // 死字段（general.language）在任何页面都不该出现；提示条详情跟着开关走；
       // 全局勿扰时段两个字段必须随页常在；且不得出现预期空态之外的 data-empty。
-      // **项目区组已于 2026-09-30 迁「会话管理」页**：本页 projects.* 锚点必须为 0
+      // **项目区组已于 2026-09-30 迁"会话管理"页**：本页 projects.* 锚点必须为 0
       // （回归护栏 —— 区组在原处留下的话，两处入口会各自写一遍 projects 子树），
       // 项目正例断言见 settings-sessions-project.png。
       pass:
@@ -8150,13 +8133,13 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
 })()`
 
 /**
- * 「Agent 设置」（原「智能与工具」）设置页门控探针（docs/08 §6.1、step 5；BetaV2 六页 IA）。
+ * "Agent 设置"（原"智能与工具"）设置页门控探针（docs/08 §6.1、step 5；BetaV2 六页 IA）。
  *
  * 与 `SETTINGS_FIELDS_SCRIPT` 同一套路：`data-field` 计数 + `data-empty` 列表，
  * 但这里要额外读**总开关的实际状态**——`agent.tools.enabled` 为 false 时三个分栏控件
  * 本来就该整块消失（只剩总开关与工作目录两个常显字段）。
  *
- * ⚠️ BetaV2 变更（spec §9）：技能页与 MCP 页并入本页，「空配置下 emptyStates 为空」的旧断言
+ * ⚠️ BetaV2 变更（spec §9）：技能页与 MCP 页并入本页，"空配置下 emptyStates 为空"的旧断言
  * 不再成立 —— MCP 无服务器时整页**必然**多出 `data-empty="mcp.servers"`（空状态卡整块替换
  * 列表），技能一个都没发现时还会有 `data-empty="skills.disabled"`。所以断言改成：
  * 这两个**预期**空状态允许出现（MCP 必须二选一：空状态或服务器行），
@@ -8169,7 +8152,7 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
  * 这里返回的 Promise（captureWindows 的 check 调用点无需改动）；点击发生在截图**之后**，
  * `settings-agent.png` 拍到的仍是默认收起态。工具组默认展开，无需处理。
  *
- * ⚠️ 2026-09 step 5：终端栏下新增「免确认命令模式」列表（`agent.tools.terminal.allowPatterns`，
+ * ⚠️ 2026-09 step 5：终端栏下新增"免确认命令模式"列表（`agent.tools.terminal.allowPatterns`，
  * v12）。探针只数**容器**（`allowPatternsFields === 1`）—— 列表行与输入框都在容器内部且不带
  * 同前缀的 `data-field`，所以这个数在空列表 / 非空列表下都恒为 1；列表的空状态用的是普通
  * 文案元素（**不是** `data-empty`），否则本页会多出一块 `unexpected` 直接 FAIL。
@@ -8233,7 +8216,7 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
       await wait(400)
       const bodyText = (document.body.textContent || '').replace(/\\s+/g, ' ')
       readonlySummary = bodyText.indexOf('只读模式：仅注册只读工具（不含写入与命令）') !== -1
-      // 只断言「当前生效工具」那一块列出的名字：页面上别处仍会提到写类工具（各个工具箱的标题、
+      // 只断言"当前生效工具"那一块列出的名字：页面上别处仍会提到写类工具（各个工具箱的标题、
       // 门控说明），拿整页文本判定会把正常的说明文字当成违规。
       const activeBlock = Array.from(document.querySelectorAll('.sub')).find((el) => {
         const title = el.querySelector('.sub-title')
@@ -8292,12 +8275,12 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
       snapshotEmpty,
       loopFields,
       // 总开关必须在（否则用户再也开不回来）；开着时四个分栏的详情字段都得在
-      // （终端 / 文件 / 文件检索 / 打开），MCP 区组必须给出「空状态或行」之一，
+      // （终端 / 文件 / 文件检索 / 打开），MCP 区组必须给出"空状态或行"之一，
       // 且不得出现两块预期空态之外的 data-empty。
-      // v12 起终端栏下多一个「免确认命令模式」容器（allowPatternsFields）——
+      // v12 起终端栏下多一个"免确认命令模式"容器（allowPatternsFields）——
       // 它挂在终端卡片之后并跟随总开关渲染，所以断言写进 enabled !== true 的那一支；
       // ⚠️ terminalFields 刻意**不写死数值**（> 0 即可）：这个子前缀下还会继续加字段，
-      // 写死数值会让探针在下一次扩展时无谓变红，而它要守的只是「终端栏的详情字段在不在」。
+      // 写死数值会让探针在下一次扩展时无谓变红，而它要守的只是"终端栏的详情字段在不在"。
       pass:
         toggle !== null &&
         (enabled !== true ||
@@ -8323,7 +8306,7 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
 })()`
 
 /**
- * 「语音」设置页门控探针（docs/08 §6.1、BetaV2 六页 IA；原 `SETTINGS_TTS_FIELDS_SCRIPT` 扩展）。
+ * "语音"设置页门控探针（docs/08 §6.1、BetaV2 六页 IA；原 `SETTINGS_TTS_FIELDS_SCRIPT` 扩展）。
  *
  * BetaV2（spec §9）：voice 页 = TTS 区组（原 TtsPage 整体迁入，`tts.*` 锚点不变）
  * + STT 区组（新增，`stt.*`）。两组各自折叠（默认展开）、各自为**常显字段 + 列表空态二选一**：
@@ -8335,7 +8318,7 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
  * ⚠️ 首版（旧 TtsPage 探针）曾把 `autoRead` / `maxChars` 写进二选一，导致空列表下 `pass`
  * 永远为 false（实测抓到）—— 常显字段与列表空态是两件事，别再混。
  *
- * 「列表是否为空」的判据用**两个信号取或**（`emptyStates` 含对应键，或存在
+ * "列表是否为空"的判据用**两个信号取或**（`emptyStates` 含对应键，或存在
  * `tts|stt.providers.<id>` 行容器）；行容器判定与 `SETTINGS_LLM_STRUCTURE_CHECK` 同构：
  * `data-field` 以 `tts.providers.` / `stt.providers.` 开头、且**后面不再有点**。
  */
@@ -8404,10 +8387,10 @@ export const SETTINGS_VOICE_FIELDS_SCRIPT = `(() => {
 })()`
 
 /**
- * 「Aurora Center」页探针（v0.2.2 设备授权登录改造后的卡片结构）：
- * 连接设置卡必须含 开关 / 服务器地址 / 展示名 / 账号 / 密码（write-only）/「登录账户」
- * （设备授权主按钮）/「密码登录」（直登回落按钮）/ clientId 只读位；隔离 userData 无令牌 →
- * 徽章必须是「未登录」、clientId 显示「尚未生成」；连接状态卡（5s 轮询）必须常在。
+ * "Aurora Center"页探针（v0.2.2 设备授权登录改造后的卡片结构）：
+ * 连接设置卡必须含 开关 / 服务器地址 / 展示名 / 账号 / 密码（write-only）/"登录账户"
+ * （设备授权主按钮）/"密码登录"（直登回落按钮）/ clientId 只读位；隔离 userData 无令牌 →
+ * 徽章必须是"未登录"、clientId 显示"尚未生成"；连接状态卡（5s 轮询）必须常在。
  */
 export const SETTINGS_CENTER_FIELDS_SCRIPT = `(async () => {
   try {
@@ -8472,7 +8455,7 @@ export const SETTINGS_CENTER_FIELDS_SCRIPT = `(async () => {
  * Center 官方 TTS / STT / 生图在 Provider 页的夹具。
  *
  * 目录事件在截图环境里没有真实 Center 服务，因此 UI 会显示 `Center 暂不可用` 分支；
- * 场景仍可钉住「官方条目出现、默认项存在、无编辑/删除、本地覆盖与切回官方」。
+ * 场景仍可钉住"官方条目出现、默认项存在、无编辑/删除、本地覆盖与切回官方"。
  */
 export const SETTINGS_CENTER_PROVIDER_ACT = `(async () => {
   try {
@@ -8717,7 +8700,7 @@ export const SETTINGS_CENTER_IMAGEGEN_CHECK = centerProviderCheck(
 )
 
 /**
- * 「AI 模型」页新区组探针（BetaV2，spec §9）：「对话展示」与「生图模型」。
+ * "AI 模型"页新区组探针（BetaV2，spec §9）："对话展示"与"生图模型"。
  *
  * - `general.chat.showThinking`（v8 新字段）：对话窗思考折叠块的唯一门控，开关必须常在；
  * - `imagegen.enabled` / `imagegen.active`（v8 新 provider 体系）：同样常在；
@@ -8725,10 +8708,10 @@ export const SETTINGS_CENTER_IMAGEGEN_CHECK = centerProviderCheck(
  *   非空 → 行容器（`imagegen.providers.<id>`，后面不再有点）。
  */
 /**
- * 「AI 模型」页的拍图前置（step-06）：把**生图模型区组**滚进视口。
+ * "AI 模型"页的拍图前置（step-06）：把**生图模型区组**滚进视口。
  *
  * 它在该页**最底部**，而设置窗是固定高度 + 内部滚动 —— 不滚的话这张 PNG 永远停在页头，
- * 「生图空状态里有可点的『+ 添加生图模型』按钮」这条人工核对项就无从核对
+ * "生图空状态里有可点的『+ 添加生图模型』按钮"这条人工核对项就无从核对
  *（`SETTINGS_LLM_FIELDS_SCRIPT` 只证明空态元素在 DOM 里，不看它在不在视口内）。
  *
  * 只滚 DOM、不改任何配置，因此不影响同一场景的 check 判据。
@@ -8753,7 +8736,7 @@ export const SETTINGS_LLM_FIELDS_SCRIPT = `(() => {
     )
     const imagegenEmpty = emptyStates.indexOf('imagegen.providers') !== -1
     // 生图空态里的主入口（step-06）：空配置下它必须是**可点的**，不是 disabled ——
-    // 「空态有按钮」是本轮的视觉验收项，只靠人看 PNG 就成了一次性检查。
+    // "空态有按钮"是本轮的视觉验收项，只靠人看 PNG 就成了一次性检查。
     const imagegenAddButtons = Array.from(
       document.querySelectorAll('[data-action="add-imagegen-provider"]'),
     ).filter((el) => el.disabled !== true)
@@ -8790,12 +8773,12 @@ export const SETTINGS_LLM_FIELDS_SCRIPT = `(() => {
 })()`
 
 /**
- * 「模式」页探针 · 前半（BetaV2）：展开「课程表与课前提醒」分组。
+ * "模式"页探针 · 前半（BetaV2）：展开"课程表与课前提醒"分组。
  *
- * ClassroomSection 的四个分组里「课表」与「分类行为」**默认收起**（组件局部状态，非配置），
+ * ClassroomSection 的四个分组里"课表"与"分类行为"**默认收起**（组件局部状态，非配置），
  * `modes.classroom.preClassOpenFolder`（含其空状态替身 `data-empty="modes.classroom.preClassReminder"`）
- * 只在分组展开后才进 DOM —— 不展开的话「课前提醒组二选一」断言两侧都是 0，探针必然假 FAIL。
- * 按分组标题定位（与 `SETTINGS_TTS_ADD_ACT` 的「用户可见文案优先」同一取舍，class 索引会随
+ * 只在分组展开后才进 DOM —— 不展开的话"课前提醒组二选一"断言两侧都是 0，探针必然假 FAIL。
+ * 按分组标题定位（与 `SETTINGS_TTS_ADD_ACT` 的"用户可见文案优先"同一取舍，class 索引会随
  * 分组增删漂移）；点开的是组件局部状态，`settings-modes.png` 场景之间各自 reload，互不影响、
  * 无需还原。
  */
@@ -8810,7 +8793,7 @@ export const SETTINGS_MODES_EXPAND_ACT = `(async () => {
       return { ok: false, reason: 'no 课程表与课前提醒 group head' }
     }
     target.click()
-    // 等分组体渲染出课前提醒字段（或其「先添加节次」空状态），最多 2s
+    // 等分组体渲染出课前提醒字段（或其"先添加节次"空状态），最多 2s
     let ready = false
     for (let attempt = 0; attempt < 10 && !ready; attempt += 1) {
       ready =
@@ -8858,7 +8841,7 @@ export const SETTINGS_CLASSISLAND_SEED_ACT = `(async () => {
     if (!result.ok) return { ok: false, reason: result.message }
     // 等渲染层 store 收到 settings:changed 后重算门控
     await wait(400)
-    // 展开「课表与课前提醒」分组（提前分钟数与提醒通道都在这一组里）
+    // 展开"课表与课前提醒"分组（提前分钟数与提醒通道都在这一组里）
     const heads = Array.from(document.querySelectorAll('.group-head'))
     const head = heads.find((item) =>
       (((item.querySelector('.section-title') || {}).textContent || '')).indexOf('课程表与课前提醒') !== -1,
@@ -8887,7 +8870,7 @@ export const SETTINGS_CLASSISLAND_SEED_ACT = `(async () => {
 /**
  * ClassIsland 联动（v3）设置项探针：提前分钟数 + 提醒通道（状态回显 + 发送测试按钮）两处都在。
  *
- * check 收尾把课表来源还原成 manual、课表清空 —— 否则后续场景会带着「classisland 端点」
+ * check 收尾把课表来源还原成 manual、课表清空 —— 否则后续场景会带着"classisland 端点"
  * 继续跑（那些场景断言的是出厂门控）。
  */
 export const SETTINGS_CLASSISLAND_FIELDS_SCRIPT = `(async () => {
@@ -9002,11 +8985,11 @@ export const APPEARANCE_GLASS_OFF_CHECK = `(async () => {
 })()`
 
 /**
- * 「模式」页（ClassRoom 生效态）结构探针（BetaV2）：模式卡下方只渲染当前模式的配置区。
+ * "模式"页（ClassRoom 生效态）结构探针（BetaV2）：模式卡下方只渲染当前模式的配置区。
  *
- * 前半由 `SETTINGS_MODES_EXPAND_ACT` 展开「课表」分组，否则课前提醒字段不在 DOM。
+ * 前半由 `SETTINGS_MODES_EXPAND_ACT` 展开"课表"分组，否则课前提醒字段不在 DOM。
  * 三个断言：
- * ① ClassRoom 生效 → classroom 区组在（`modes.classroom.watchDir` 恰好一行，「感知文件夹」
+ * ① ClassRoom 生效 → classroom 区组在（`modes.classroom.watchDir` 恰好一行，"感知文件夹"
  *    分组默认展开，可直接数）；
  * ② **work 区组整块不在**（WorkSection 只在当前模式为 work 时渲染，BetaV2 起它有真字段，
  *    数到 `modes.work.*` 说明互斥渲染被破坏）；
@@ -9052,7 +9035,7 @@ export const SETTINGS_MODES_CLASSROOM_SCRIPT = `(() => {
 
 /**
  * 设置页旧深链别名探针（BetaV2）：`?page=tts` 必须经渲染层 `LEGACY_PAGE_ALIASES`
- * 落到合并后的「语音」页 —— TTS 与 STT 两个区组的常显开关都要在。
+ * 落到合并后的"语音"页 —— TTS 与 STT 两个区组的常显开关都要在。
  * 深链清单（`SETTINGS_PAGE_IDS`）只保留新 id，旧链接的兼容行为由本场景单独钉住；
  * `skills|mcp → agent` 走同一张映射表，机制验证一条即可代表。
  */
@@ -9077,7 +9060,7 @@ export const SETTINGS_SWITCH_TO_WORK_SCRIPT = `(() => {
     const cards = Array.from(document.querySelectorAll('.cards .card'))
     const target = cards.find((card) => {
       const head = (((card.querySelector('.card-head strong') || {}).textContent || '')).trim()
-      // BetaV2 的 displayName 是「工作模式」（旧版是 Work Mode）：两种写法都认，
+      // BetaV2 的 displayName 是"工作模式"（旧版是 Work Mode）：两种写法都认，
       // 只认英文会在改名后静默找不到卡片（探针空转比失败更糟）
       return head.indexOf('工作模式') !== -1 || head.toLowerCase().indexOf('work') !== -1
     })
@@ -9096,10 +9079,10 @@ export const SETTINGS_SWITCH_TO_WORK_SCRIPT = `(() => {
 /**
  * 切到 Work 模式后的门控探针（BetaV2 重写；原 `SETTINGS_CLASSROOM_GATING_SCRIPT`）。
  *
- * BetaV2 起 Work 模式**实装**（`WorkSection`）：切过去之后不再是「暂无可配置项」空状态卡，
+ * BetaV2 起 Work 模式**实装**（`WorkSection`）：切过去之后不再是"暂无可配置项"空状态卡，
  * 而是 `modes.work.workspaceDir` 字段出现、classroom 区组整块消失。三个断言：
  * ① classroom 字段数必须为 0；② `modes.work.workspaceDir` 恰好一行；
- * ③ 任何 `data-empty^="modes."` 的空状态卡（占位模式的「暂无可配置项」）都不该有 ——
+ * ③ 任何 `data-empty^="modes."` 的空状态卡（占位模式的"暂无可配置项"）都不该有 ——
  *    Work 不再是占位实现，出现空状态说明互斥渲染或模式实装被破坏。
  */
 export const SETTINGS_WORK_GATING_SCRIPT = `(() => {
@@ -9127,7 +9110,7 @@ export const SETTINGS_WORK_GATING_SCRIPT = `(() => {
  * 真实写盘探针（step-06 拆分 `ClassroomSection` 后最容易踩的坑）：
  * `settings:update` 只做**顶层浅合并**，子组件若直接传 `{ classroom: change }` 会静默丢字段。
  *
- * 走完整的用户路径：展开「分类行为」分组 → 点 `classification.autoMove` 复选框 →
+ * 走完整的用户路径：展开"分类行为"分组 → 点 `classification.autoMove` 复选框 →
  * 经组件的 `patch()` → IPC → `SettingsStore` 落盘。前后快照在渲染层暂存，由 check 比对。
  */
 export const SETTINGS_CLASSROOM_PATCH_ACT = `(async () => {
@@ -9181,21 +9164,21 @@ export const SETTINGS_CLASSROOM_PATCH_CHECK = `(async () => {
 })()`
 
 /**
- * 思考等级探针 · 前半（step-02；step-05 起改写**模型行内**的参数）：走真实用户路径把「思考等级」写进配置。
+ * 思考等级探针 · 前半（step-02；step-05 起改写**模型行内**的参数）：走真实用户路径把"思考等级"写进配置。
  *
  * 截图用的是**隔离 userData**（`index.ts` 的 `AURORA_CAPTURE` 分支），起步时一个
  * provider 都没有，所以先经 `settings.update` 造一个带 `modelParams[<模型>].reasoningEffort: 'high'`
  * 的（v23 起参数按**模型 id** 键，provider 级 temperature / reasoningEffort 已删除）；
- * 等 `settings:changed` 推送把卡片画出来，再点开**生效 provider 那一行**的「编辑」与卡内 `.more`
- *（「高级参数与连接测试」，现在只剩接口类型与连接测试按钮），最后点**当前使用模型那一行**的
+ * 等 `settings:changed` 推送把卡片画出来，再点开**生效 provider 那一行**的"编辑"与卡内 `.more`
+ *（"高级参数与连接测试"，现在只剩接口类型与连接测试按钮），最后点**当前使用模型那一行**的
  * 参数开关 —— 思考等级下拉只在模型行展开后才在 DOM 里。
  */
 export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
   try {
     const state = await window.aurora.settings.get()
     if (!state.ok) return { ok: false, reason: 'settings.get failed' }
-    // 与「对话窗思考等级」探针共用一份配置，两个场景谁先跑都要能自足：
-    // 所以不是「没有 provider 才造」，而是「当前 provider 的思考等级不是 high 就写成 high」。
+    // 与"对话窗思考等级"探针共用一份配置，两个场景谁先跑都要能自足：
+    // 所以不是"没有 provider 才造"，而是"当前 provider 的思考等级不是 high 就写成 high"。
     const providers = state.value.llm.providers
     const active = state.value.llm.active !== '' ? state.value.llm.active : 'capture'
     const existing = providers[active]
@@ -9240,9 +9223,9 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
       if (!result.ok) return { ok: false, reason: result.message }
       await new Promise((resolve) => setTimeout(resolve, 600))
     }
-    // step-04 之后模型页是「provider 行列表 + 一次只开一张编辑卡」：高级参数区在**卡内**，
-    // 列表态 querySelector('.more') 只会拿到 null。所以先按真实用户路径点开「编辑」，
-    // 再点卡内的 .more。行上刻意没有折叠箭头，就是为了让「展开高级参数」只有一个入口、
+    // step-04 之后模型页是"provider 行列表 + 一次只开一张编辑卡"：高级参数区在**卡内**，
+    // 列表态 querySelector('.more') 只会拿到 null。所以先按真实用户路径点开"编辑"，
+    // 再点卡内的 .more。行上刻意没有折叠箭头，就是为了让"展开高级参数"只有一个入口、
     // 一次仍只有一张卡。
     // ⚠️ 必须点**当前生效 provider 那一行**的编辑按钮，不能取第一个 data-action="edit-provider"：
     // 全量截图里 onboarding 会先种一个 local provider，行首未必是 active 的那个 ——
@@ -9273,7 +9256,7 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
     paramsToggle.click()
     await new Promise((resolve) => setTimeout(resolve, 300))
     // 拍图前把刚展开的参数块滚进视口：设置窗是**固定高度 + 内部滚动**，不滚的话
-    // 这张 PNG 停在页头，人工核对「三个参数控件在模型行内」根本看不到它们。
+    // 这张 PNG 停在页头，人工核对"三个参数控件在模型行内"根本看不到它们。
     const paramsBox = currentRow.querySelector('.model-params')
     if (paramsBox !== null) paramsBox.scrollIntoView({ block: 'center' })
     await new Promise((resolve) => setTimeout(resolve, 300))
@@ -9284,7 +9267,7 @@ export const SETTINGS_LLM_EFFORT_ACT = `(async () => {
 })()`
 
 /**
- * 思考等级探针 · 后半：确认「写盘 → 回读 → 渲染」整条链路通了，并把原值写回。
+ * 思考等级探针 · 后半：确认"写盘 → 回读 → 渲染"整条链路通了，并把原值写回。
  *
  * 只数 DOM 不够（一个写死的 `<select>` 也能数出来），所以要读下拉的**当前值**：
  * 它来自刚持久化的配置，`'high'` 才对得上。
@@ -9356,7 +9339,7 @@ export const SETTINGS_LLM_EFFORT_CHECK = `(async () => {
     return {
       active: probe === undefined ? null : probe.active,
       modelId: probe === undefined ? null : probe.modelId,
-      // 这条是「当前模型行存在」的直接证据：harness 会把 ACT 的返回值丢掉（只留 check 的），
+      // 这条是"当前模型行存在"的直接证据：harness 会把 ACT 的返回值丢掉（只留 check 的），
       // 只写进 ACT 的失败文案在报告里看不到 —— 所以在这里如实回传一次。
       currentRow: currentRow !== null,
       effortFields: effortFields.length,
@@ -9370,15 +9353,15 @@ export const SETTINGS_LLM_EFFORT_CHECK = `(async () => {
 })()`
 
 /**
- * 对话窗思考等级探针 · 前半（step-03）：把交互窗输入区的「思考」下拉切到 `high`。
+ * 对话窗思考等级探针 · 前半（step-03）：把交互窗输入区的"思考"下拉切到 `high`。
  *
- * 截图用**隔离 userData**，起步时一个 provider 都没有 —— 而「没有可用 provider」时渲染层按设计把控件
+ * 截图用**隔离 userData**，起步时一个 provider 都没有 —— 而"没有可用 provider"时渲染层按设计把控件
  * `disabled`（不隐藏），此时切不动。所以先像 `SETTINGS_LLM_EFFORT_ACT` 那样造一个 provider，再操作下拉。
  * 原值记到 `window.__auroraEffortProbe`，供 check 阶段**写回**，避免污染后面的截图场景。
  *
  * v23 起思考等级按**模型 id** 键（`llm.providers.<id>.modelParams.<modelId>.reasoningEffort`，
  * provider 级字段已删除）：种子 provider 的 `modelParams` 要与 `model` 同键，`before` 记
- * 「该模型的原值（缺省 `'auto'`）」——**不能**记 `undefined`，否则 CHECK 的
+ * "该模型的原值（缺省 `'auto'`）"——**不能**记 `undefined`，否则 CHECK 的
  * `current === probe.before` 会因两边都是 `undefined` 而误判已还原，把 `high` 留在配置里。
  */
 export const CHAT_THINKING_LEVEL_ACT = `(async () => {
@@ -9554,13 +9537,13 @@ export const CHAT_THINKING_LEVEL_CHECK = `(async () => {
  * 窗口拖动探针（step-06）：能拖的窗口必须有一条**够大**的拖动区，且拖动区里的按钮仍点得到。
  *
  * 背景：拖动能力此前靠各窗自己记得挂 `drag-region`，settings 窗只有侧栏里约 22-30px 的 `.brand` 能拖，
- * 用户感知就是「有些能拖有些不行」。三个断言分别对应三类真实故障：
+ * 用户感知就是"有些能拖有些不行"。三个断言分别对应三类真实故障：
  * ① 一个可见拖动区都没有（没挂 class）；② 高度的最大值 < 32px（挂了但抓不住）；
  * ③ 拖动区里的按钮被 `-webkit-app-region: drag` 吃掉点击（`elementFromPoint` 命中的不是按钮自己）。
  *
  * 读数兼容两种属性名：Chromium 上生效值可能只认 `-webkit-app-region` 或 `app-region` 之一。
  * 若两者都读到空串，说明该属性**不可读**——此时不要把它改成永远 PASS：保留 `regionValue` 原值
- * 供排查，判定口径的取舍写在 docs/07 §5.3（`regions` 数组本身已经能说明「挂没挂、够不够大」）。
+ * 供排查，判定口径的取舍写在 docs/07 §5.3（`regions` 数组本身已经能说明"挂没挂、够不够大"）。
  */
 export const WINDOW_DRAG_SCRIPT = `(() => {
   try {
@@ -9609,7 +9592,7 @@ export const WINDOW_DRAG_SCRIPT = `(() => {
       ).trim()
       // 按钮命中检验有两个现场：按钮**在拖动区内**（chat 头部，验证 no-drag 不被 drag 吃掉）
       // 与按钮**不在任何拖动区内**（设置窗 2026-10 起 caption 贴窗口右上缘 fixed 定位，
-      // 不在拖动区里）——后者回退到全局关闭按钮，验证的语义变成「没被别的浮层盖住」。
+      // 不在拖动区里）——后者回退到全局关闭按钮，验证的语义变成"没被别的浮层盖住"。
       const button =
         biggest.querySelector('button') || document.querySelector('[data-caption-btn="close"]')
       if (button !== null) {
@@ -9948,20 +9931,20 @@ export const CHAT_MODEL_PICKER_CHECK = `(async () => {
 })()`
 
 /**
- * 对话窗「朗读」按钮探针 · 前半（step-06）：在渲染层点一次 [data-action="speak-message"]。
+ * 对话窗"朗读"按钮探针 · 前半（step-06）：在渲染层点一次 [data-action="speak-message"]。
  *
  * ⚠️ **act 只负责触发点击**，不断言真的出声：截图跑在隔离 userData + 离线环境上，
- * 合成必然失败（且顺序上「缺 API Key」先于「请求失败」——`tts.error` 的文案与它无关）。
- * 「点完之后按钮有没有回到朗读态」由 check 断言。
+ * 合成必然失败（且顺序上"缺 API Key"先于"请求失败"——`tts.error` 的文案与它无关）。
+ * "点完之后按钮有没有回到朗读态"由 check 断言。
  *
  * 按钮**没有强制造出来**，这是刻意的取舍：
  * - 不做配置改写：本场景在真实 userData 下也会被跑（`AURORA_CAPTURE_WINDOWS=chat`），
  *   从 0 造一个 TTS provider 再删掉会动到用户的 `tts.providers` / `tts.active` / 明文凭据缓存；
  * - 即便造了也未必成：按钮的出现取决于渲染层的 `ttsReady`，而它读的是**本窗口** `settingsStore`
- *   已水合的 settings。探针里点一次侧栏「新会话」会让 `chat.switchSession` 走一遍
- *   `hydrate` + `loadSessions` 的长往返，期间「对话」侧栏短暂空白，窗口宽度随之伸缩，反而更不稳。
+ *   已水合的 settings。探针里点一次侧栏"新会话"会让 `chat.switchSession` 走一遍
+ *   `hydrate` + `loadSessions` 的长往返，期间"对话"侧栏短暂空白，窗口宽度随之伸缩，反而更不稳。
  *
- * 所以「没有按钮」是**预期分支**：如实返回说明，交给 check 用退化判据处理（不抛错、不假 PASS）。
+ * 所以"没有按钮"是**预期分支**：如实返回说明，交给 check 用退化判据处理（不抛错、不假 PASS）。
  */
 export const CHAT_TTS_SPEAK_ACT = `(async () => {
   try {
@@ -9972,7 +9955,7 @@ export const CHAT_TTS_SPEAK_ACT = `(async () => {
         label: (item.textContent || '').trim(),
         disabled: item.disabled === true,
       }))
-    // 0) 先把 TTS 配置写成「可朗读」（总开关 + 三要素齐全的 provider），否则按钮按设计不渲染。
+    // 0) 先把 TTS 配置写成"可朗读"（总开关 + 三要素齐全的 provider），否则按钮按设计不渲染。
     //    必须走 settings:update IPC，不能像会话那样写文件：SettingsStore 在启动时就把
     //    config.json 读进内存并长期缓存，启动后写文件对运行中的进程无效（实测踩到）。
     //    凭据故意留空：离线合成必然失败，那正是本探针要验证的复位路径。
@@ -10036,20 +10019,20 @@ export const CHAT_TTS_SPEAK_ACT = `(async () => {
 })()`
 
 /**
- * 对话窗「朗读」按钮探针 · 后半（step-06）：按钮存在，且点击后**回到「朗读」态**。
+ * 对话窗"朗读"按钮探针 · 后半（step-06）：按钮存在，且点击后**回到"朗读"态**。
  *
  * 两条判据二选一，用到的哪条写在返回值的 `criterion` 里（排查假 FAIL 先看它）：
  * - `'ready'`（首选）：act 点过按钮之后，它必须在 1.5s 内回到 `data-action="speak-message"`
- *   且文案是「朗读」——说明 `useTts` 的 `loading` 有复位、没有卡死在「合成中…」。
+ *   且文案是"朗读"——说明 `useTts` 的 `loading` 有复位、没有卡死在"合成中…"。
  *   离线环境下合成会失败，但失败路径同样会清 `loading`，所以这条判据离线可跑。
  * - `'presence'`（退化）：页面上确实有助手消息（`.message.r-assistant` 非空），
  *   但 READY 所要求的前提不成立（act 没点到 / 渲染层 `settingsStore` 尚未水合出 TTS 配置），
- *   此时**只断言按钮存在性**，不去冤枉「loading 没复位」。
+ *   此时**只断言按钮存在性**，不去冤枉"loading 没复位"。
  *
- * `pass` 与判据解耦，两种情况下都是「该看到的按钮确实看到了」：
+ * `pass` 与判据解耦，两种情况下都是"该看到的按钮确实看到了"：
  * `'ready'` 要它存在**且**已复位，`'presence'` 只要它存在。
- * 注意这条断言不覆盖「没有回复时按钮不该有」这一面 —— 那个前提在 capture 计划里不成立
- *（见 `CHAT_TTS_SPEAK_ACT` 的注释），单靠本探针无法区分「按设计不渲染」与「渲染漏了」，
+ * 注意这条断言不覆盖"没有回复时按钮不该有"这一面 —— 那个前提在 capture 计划里不成立
+ *（见 `CHAT_TTS_SPEAK_ACT` 的注释），单靠本探针无法区分"按设计不渲染"与"渲染漏了"，
  * 所以不把它写进 `pass`，只在返回值里如实上报。
  *
  * ⚠️ 轮询是必须的，且**不能在 check 里重新点击**：check 跑在**截图之后**（见 `captureWindows`
@@ -10084,7 +10067,7 @@ export const CHAT_TTS_SPEAK_CHECK = `(async () => {
 
     const present = ready !== null || speaking !== null
     const label = ready === null ? (speaking === null ? null : read(speaking).label) : read(ready).label
-    // 首选用「回到朗读态」；它要求的前提不成立时退化成存在性
+    // 首选用"回到朗读态"；它要求的前提不成立时退化成存在性
     const preferReady = present && assistantMessages > 0
     const criterion = preferReady ? 'ready' : 'presence'
     const result = {
@@ -10100,10 +10083,10 @@ export const CHAT_TTS_SPEAK_CHECK = `(async () => {
     }
 
     // 收尾：act 动过 TTS 配置（settings:update），这里把它摘掉。
-    // 只在「是 act 自己造的那一个」时清，用户原有的配置一律不动。
+    // 只在"是 act 自己造的那一个"时清，用户原有的配置一律不动。
     //
-    // ⚠️ 必须带 removedProviders：tts.providers 是 record，「缺项 ≠ 删除」——
-    // 只把键从传回去的对象里删掉，主进程合并时缺项会被当成「本次不动这一项」，
+    // ⚠️ 必须带 removedProviders：tts.providers 是 record，"缺项 ≠ 删除"——
+    // 只把键从传回去的对象里删掉，主进程合并时缺项会被当成"本次不动这一项"，
     // provider 照样留在配置里（实测 cleared=[] 且 providers 仍含该键）。
     // capture 目前恒跑在隔离 userData 下（index.ts 的 isolatedRun），这里属纵深防御。
     const seed = window.__auroraTtsSeed
@@ -10130,7 +10113,7 @@ export const CHAT_TTS_SPEAK_CHECK = `(async () => {
 })()`
 
 /**
- * 「AI 模型」页「模型设置」区探针 · 前半（step-05）：点开第一行的「编辑」并点一次「+ 手动添加」。
+ * "AI 模型"页"模型设置"区探针 · 前半（step-05）：点开第一行的"编辑"并点一次"+ 手动添加"。
  *
  * `+ 手动添加` 只改**本地 draft**（加一行空行，保存时才落盘），所以这一步不动配置；
  * 行数变化由 check 断言，恢复也由 check 收尾（删掉最后一行）。
@@ -10151,7 +10134,7 @@ export const SETTINGS_LLM_MODELS_ACT = `(async () => {
               baseUrl: 'https://api.deepseek.com/v1',
               apiKeyEnc: '',
               model: 'deepseek-chat',
-              // 「+ 手动添加加一行」的行数断言需要**确定的起点**：候选列表写死一行，
+              // "+ 手动添加加一行"的行数断言需要**确定的起点**：候选列表写死一行，
               // 不依赖 syncDrafts 的自动补行。
               modelList: ['deepseek-chat'],
               // 生成参数按**模型 id** 键（v23）：三项一起写全（reasoningEffort 没有 .default()）。
@@ -10175,7 +10158,7 @@ export const SETTINGS_LLM_MODELS_ACT = `(async () => {
     if (section === null) return { ok: false, reason: 'no model list section' }
     // 行 = 模型列表区（[data-field$=".modelList"]）里的 .model-row。两个限定都不能省：
     // ⚠️ 不能用 [data-field*=".modelList."] —— step-05 起行内还有三个参数子字段锚点
-    //（同样以 .modelList. 开头）会让行数虚高，「after === before + 1」当场变假 FAIL；
+    //（同样以 .modelList. 开头）会让行数虚高，"after === before + 1"当场变假 FAIL；
     // ⚠️ 不能用 [data-field*=".modelList."] 数行：行内的三个参数子字段锚点也以 .modelList.
     //    开头，会数虚高。这里按行容器类名数；判据是**相对增量**（after === before + 1），
     //    所以即便 DOM 上同时存在两张卡也不会假 FAIL（本段在模板字符串里，注释不能出现反引号）。
@@ -10196,9 +10179,9 @@ export const SETTINGS_LLM_MODELS_ACT = `(async () => {
 })()`
 
 /**
- * 「模型设置」区探针 · 后半：区存在、列表行数 ≥ 1、「+ 手动添加」使行数恰好 +1，并删回原状。
+ * "模型设置"区探针 · 后半：区存在、列表行数 ≥ 1、"+ 手动添加"使行数恰好 +1，并删回原状。
  *
- * 这里同时也钉住「删除当前模型不静默换模型」的反面：**恢复动作必须只减行、不改 model**
+ * 这里同时也钉住"删除当前模型不静默换模型"的反面：**恢复动作必须只减行、不改 model**
  * （所以删的是刚加出来的那一行，不是当前使用的那行）。配置侧的一致性由
  * `chat-model-picker` 那条探针（配置值 === DOM 值）与设置页保存语义共同覆盖。
  */
@@ -10212,7 +10195,7 @@ export const SETTINGS_LLM_MODELS_CHECK = `(async () => {
     const before = probe === undefined ? null : probe.before
     const after = probe === undefined ? null : probe.after
 
-    // 恢复：删掉「+ 手动添加」加出来的最后一行（它是最新加的空行）
+    // 恢复：删掉"+ 手动添加"加出来的最后一行（它是最新加的空行）
     const rows = Array.from(document.querySelectorAll('[data-field$=".modelList"] .model-row'))
     const last = rows[rows.length - 1]
     const remove = last === undefined ? null : last.querySelector('[data-action="remove-model"]')
@@ -10237,11 +10220,11 @@ export const SETTINGS_LLM_MODELS_CHECK = `(async () => {
 })()`
 
 /**
- * 「AI 模型」页结构探针 · 前半（step-04）：点开第一行 provider 的「编辑」。
+ * "AI 模型"页结构探针 · 前半（step-04）：点开第一行 provider 的"编辑"。
  *
  * 这一步刻意**不写配置**：`settings-llm-params` 那条会造 provider 并断言下拉真值，
- * 两条场景互相干扰的话失败原因很难定位。这里只点开一张卡，验证「一次只开一张」。
- * 优先用 `data-action="edit-provider"` 定位，找不到就按文案「编辑」兜底——
+ * 两条场景互相干扰的话失败原因很难定位。这里只点开一张卡，验证"一次只开一张"。
+ * 优先用 `data-action="edit-provider"` 定位，找不到就按文案"编辑"兜底——
  * 兜底也失败时把行内实际按钮文案回传（而不是静默成功），否则改个文案这条断言就变成空转。
  */
 export const SETTINGS_LLM_STRUCTURE_ACT = `(async () => {
@@ -10251,9 +10234,9 @@ export const SETTINGS_LLM_STRUCTURE_ACT = `(async () => {
       window.__auroraLlmStructureProbe = { clicked: false, reason: 'settings.get failed' }
       return window.__auroraLlmStructureProbe
     }
-    // 行容器是唯一 data-field 恰好等于「llm.providers.<id>」的元素：
+    // 行容器是唯一 data-field 恰好等于"llm.providers.<id>"的元素：
     // 卡内的字段会多一层（llm.providers.<id>.baseUrl），模型列表容器更是 <id>.modelList。
-    // 所以拿配置里的 provider id 做白名单比对，而不是靠「后面还有没有点」去猜。
+    // 所以拿配置里的 provider id 做白名单比对，而不是靠"后面还有没有点"去猜。
     // 注意：本段在模板字符串里，注释不能出现反引号。
     const ids = Object.keys(state.value.llm.providers)
     const rows = Array.from(document.querySelectorAll('[data-field]')).filter((el) => {
@@ -10288,13 +10271,13 @@ export const SETTINGS_LLM_STRUCTURE_ACT = `(async () => {
 })()`
 
 /**
- * 「AI 模型」页结构探针 · 后半：行列表与配置一致，且**一次只开一张编辑卡**。
+ * "AI 模型"页结构探针 · 后半：行列表与配置一致，且**一次只开一张编辑卡**。
  *
  * 三个断言分别钉住重构后的信息架构：
  * ① 每个 provider 恰好一行（行容器的 `data-field` 恰好是 `llm.providers.<id>`，
  *    用配置里的 provider id 做白名单比对 —— 卡内字段与模型列表容器都多一层，不会被算成行）；
- * ② 点开「编辑」之后**恰好一张**可见编辑卡（用卡内必填字段 `.baseUrl` 的可见数量计数）——
- *    恒等 ≤1 会漏掉「一张都没开」这种假通过，所以要求 === 1；
+ * ② 点开"编辑"之后**恰好一张**可见编辑卡（用卡内必填字段 `.baseUrl` 的可见数量计数）——
+ *    恒等 ≤1 会漏掉"一张都没开"这种假通过，所以要求 === 1；
  * ③ `providers` 为空时必须有 `[data-empty="llm.providers"]` 空状态（不再画一排空行）。
  */
 export const SETTINGS_LLM_STRUCTURE_CHECK = `(async () => {
@@ -10304,7 +10287,7 @@ export const SETTINGS_LLM_STRUCTURE_CHECK = `(async () => {
     const expected = Object.keys(state.value.llm.providers).length
     const ids = Object.keys(state.value.llm.providers)
 
-    // 行容器 = data-field 恰好是「llm.providers.<id>」（id 取自配置）的元素。
+    // 行容器 = data-field 恰好是"llm.providers.<id>"（id 取自配置）的元素。
     // 卡内字段多一层（.baseUrl），模型列表容器是 <id>.modelList —— 都不会被算成行。
     const rows = Array.from(document.querySelectorAll('[data-field]')).filter((el) => {
       const value = el.getAttribute('data-field') || ''
@@ -10336,10 +10319,10 @@ export const SETTINGS_LLM_STRUCTURE_CHECK = `(async () => {
 })()`
 
 /**
- * AI 模型页「接口类型 + 图片输入」探针 · 前半（v22 多模态轮，docs/06 §3.1 / §3.2；step-05 起图片输入搬到模型行内）。
+ * AI 模型页"接口类型 + 图片输入"探针 · 前半（v22 多模态轮，docs/06 §3.1 / §3.2；step-05 起图片输入搬到模型行内）。
  *
  * 先把当前生效 provider 的 `type` 写成 `openai-responses`、把**当前生效模型**的
- * `modelParams[<模型>].vision` 写成 `true`，再按真实用户路径打开它的编辑卡、卡内「高级参数」
+ * `modelParams[<模型>].vision` 写成 `true`，再按真实用户路径打开它的编辑卡、卡内"高级参数"
  * 折叠区（只剩接口类型与连接测试）以及**当前使用模型那一行的参数开关** —— 后半只读 DOM 与回读配置。
  *
  * 两条与 `SETTINGS_LLM_EFFORT_ACT` 同款的取舍：
@@ -10348,7 +10331,7 @@ export const SETTINGS_LLM_STRUCTURE_CHECK = `(async () => {
  * - **原值先记进 `window.__auroraMultimodalProbe`**：后半要写回，否则在真实 userData 下跑
  *   （`AURORA_CAPTURE_WINDOWS=settings`）会把用户的协议与开关永久改掉。
  *
- * ⚠️ 本段在模板字符串里，注释里不能出现反引号（用「」）。
+ * ⚠️ 本段在模板字符串里，注释里不能出现反引号（用""）。
  */
 export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
   try {
@@ -10357,9 +10340,9 @@ export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
     const providers = state.value.llm.providers
     const active = state.value.llm.active !== '' ? state.value.llm.active : 'capture'
     const existing = providers[active]
-    // v23 起「支持图片输入」按**模型 id** 键（provider 级 temperature / vision 已删除）：
+    // v23 起"支持图片输入"按**模型 id** 键（provider 级 temperature / vision 已删除）：
     // 合并后真正生效的模型 id 是 existing.model（缺 provider 时用种子的 deepseek-chat），
-    // 写进去的键必须与它对上 —— 否则「当前使用」那一行读的是别的模型的参数，断言必然落空
+    // 写进去的键必须与它对上 —— 否则"当前使用"那一行读的是别的模型的参数，断言必然落空
     //（全量截图里 onboarding 先种的 local provider 用的是别的模型，这条不是理论风险）。
     const modelId = (existing ?? {}).model ?? 'deepseek-chat'
     const table = (existing ?? {}).modelParams ?? {}
@@ -10368,7 +10351,7 @@ export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
       active,
       modelId,
       // 缺 provider 时（隔离 userData 起步）按出厂档记录：写回时把这两项恢复成
-      // 「openai-compat + 关」即可，不必删整条（它与 EFFORT 探针共用同一份配置）。
+      // "openai-compat + 关"即可，不必删整条（它与 EFFORT 探针共用同一份配置）。
       beforeType: existing === undefined ? 'openai-compat' : existing.type,
       beforeVision: entry.vision === true,
     }
@@ -10411,7 +10394,7 @@ export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
     more.click()
     await new Promise((resolve) => setTimeout(resolve, 600))
 
-    // step-05 起「支持图片输入」在**模型行内**（折叠区只剩接口类型）：再点当前使用模型那一行的
+    // step-05 起"支持图片输入"在**模型行内**（折叠区只剩接口类型）：再点当前使用模型那一行的
     // 参数开关，复选框才会进 DOM。本段在模板字符串里，注释不能出现反引号。
     const currentRow = row.querySelector('.model-row.current')
     if (currentRow === null) {
@@ -10422,7 +10405,7 @@ export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
     paramsToggle.click()
     await new Promise((resolve) => setTimeout(resolve, 300))
     // 拍图前把刚展开的参数块滚进视口：设置窗是**固定高度 + 内部滚动**，不滚的话
-    // 这张 PNG 停在页头，人工核对「三个参数控件在模型行内」根本看不到它们。
+    // 这张 PNG 停在页头，人工核对"三个参数控件在模型行内"根本看不到它们。
     const paramsBox = currentRow.querySelector('.model-params')
     if (paramsBox !== null) paramsBox.scrollIntoView({ block: 'center' })
     await new Promise((resolve) => setTimeout(resolve, 300))
@@ -10433,7 +10416,7 @@ export const SETTINGS_LLM_MULTIMODAL_ACT = `(async () => {
 })()`
 
 /**
- * 「接口类型 + 图片输入」探针 · 后半：读 DOM 真值 + 回读配置 + 写回原值。
+ * "接口类型 + 图片输入"探针 · 后半：读 DOM 真值 + 回读配置 + 写回原值。
  *
  * 判据刻意同时要两样：
  * - **DOM**：折叠区里 `type` 是 `<select>` 且当前值 `openai-responses`、
@@ -10450,7 +10433,7 @@ export const SETTINGS_LLM_MULTIMODAL_CHECK = `(async () => {
         : document.querySelector('[data-field="llm.providers.' + probe.active + '"]')
     if (scope === null) return { pass: false, reason: 'no row after act' }
     const typeField = scope.querySelector('[data-field$=".type"] select')
-    // step-05 起「支持图片输入」在**当前使用模型那一行内**：先限定到 .model-row.current
+    // step-05 起"支持图片输入"在**当前使用模型那一行内**：先限定到 .model-row.current
     //（全局取第一个 .vision 会读到别的模型行的参数），再要它展开块里的复选框。
     const currentRow = scope.querySelector('.model-row.current')
     const visionField = scope.querySelector(
@@ -10492,7 +10475,7 @@ export const SETTINGS_LLM_MULTIMODAL_CHECK = `(async () => {
       typeValue,
       visionChecked,
       modelId: probe.modelId,
-      // 「当前模型行存在」的直接证据（harness 丢掉 ACT 的返回值，只留 check 的）
+      // "当前模型行存在"的直接证据（harness 丢掉 ACT 的返回值，只留 check 的）
       currentRow: currentRow !== null,
       savedOk,
       restored: restored.ok === true,
@@ -10504,27 +10487,27 @@ export const SETTINGS_LLM_MULTIMODAL_CHECK = `(async () => {
 })()`
 
 /**
- * 「语音」页编辑卡探针 · 前半（step-05）：进「添加」态 → 点「+ 空白配置」让编辑卡出现。
+ * "语音"页编辑卡探针 · 前半（step-05）：进"添加"态 → 点"+ 空白配置"让编辑卡出现。
  *
  * ⚠️ 三条硬约束（第一条是首跑实测踩出来的）：
  * - **必须先进入添加态**：`+ 空白配置` 渲染在 `<section v-if="mode === 'add'">` 里，
  *   页面初始是列表态（列表为空时更是只有一张空状态卡），直接找这个按钮必然找不到
- *   （首跑实测 `act: null`、六字段全 0）。所以先点「添加 TTS 模型」/「+ 添加 TTS 模型」
- *   进添加态，再点「+ 空白配置」。
- * - **不得点「应用」**：capture 在真实 userData 下也会被跑（`AURORA_CAPTURE_WINDOWS=settings`），
- *   而「+ 空白配置」只往**本地 `drafts`** 里加一行、保存时才落盘，所以这一步不动配置
+ *   （首跑实测 `act: null`、六字段全 0）。所以先点"添加 TTS 模型"/"+ 添加 TTS 模型"
+ *   进添加态，再点"+ 空白配置"。
+ * - **不得点"应用"**：capture 在真实 userData 下也会被跑（`AURORA_CAPTURE_WINDOWS=settings`），
+ *   而"+ 空白配置"只往**本地 `drafts`** 里加一行、保存时才落盘，所以这一步不动配置
  *   （与 `SETTINGS_LLM_MODELS_ACT` 同一取舍）。因此这里**不需要任何恢复动作**。
  * - 定位优先按**按钮文案**：`data-action` 是 TtsPage 的加分项但**没有冻结进 DOM 契约**，
- *   靠它一条路会在页面没写这个属性时变成静默找不到。反过来「+ 空白配置」是 step-05 明确的
+ *   靠它一条路会在页面没写这个属性时变成静默找不到。反过来"+ 空白配置"是 step-05 明确的
  *   用户可见文案，改了文案这条断言本就该失败并报出实际按钮文案（不静默成功）。
- *   匹配时统一去掉首尾空白与「+」前缀，`+ 空白配置` / `空白配置` 两种写法都命中。
+ *   匹配时统一去掉首尾空白与"+"前缀，`+ 空白配置` / `空白配置` 两种写法都命中。
  */
 /**
- * 设置页「安全区」巡检（`settings-overflow.png`，2026-09-29，docs/07 §5.4）。
+ * 设置页"安全区"巡检（`settings-overflow.png`，2026-09-29，docs/07 §5.4）。
  *
- * 用户反馈「文字与组件位置没协调好、许多文字冲出组件」时，此前的几何护栏只覆盖了
+ * 用户反馈"文字与组件位置没协调好、许多文字冲出组件"时，此前的几何护栏只覆盖了
  * 自动化页（卡片 / 磁贴内不探出边界）。设置页有 9 个页面、几十个区组，是最可能出现
- * 「长标签 + 窄控件」的场合，因此单列一条**横向溢出**巡检（纵向滚动是正常行为，不算）：
+ * "长标签 + 窄控件"的场合，因此单列一条**横向溢出**巡检（纵向滚动是正常行为，不算）：
  * act 依次点开左侧每一个导航项、量当前页内容区（`main.content`）内**每个元素**的矩形，
  * 把探出内容区左右边界超过 1px 的节点记下来；check 断言所有页面都是 0，
  * 且**页数校验**（少于 7 页说明导航没点全，防止"巡检了个寂寞"仍判 PASS）。
@@ -10625,8 +10608,8 @@ export const SETTINGS_TTS_ADD_ACT = `(async () => {
       window.__auroraTtsActResult = value
       return value
     }
-    // 1) 先进入「添加」态：「+ 空白配置」只在添加区（空状态里的「添加 TTS 模型」或
-    //    工具行的「+ 添加 TTS 模型」点下去之后）才渲染 —— 直接找它会一无所获。
+    // 1) 先进入"添加"态："+ 空白配置"只在添加区（空状态里的"添加 TTS 模型"或
+    //    工具行的"+ 添加 TTS 模型"点下去之后）才渲染 —— 直接找它会一无所获。
     let opened = null
     if (blankButton() === undefined) {
       const opener =
@@ -10646,7 +10629,7 @@ export const SETTINGS_TTS_ADD_ACT = `(async () => {
       // 等添加区渲染（Vue 的 DOM 更新是微任务，这里留够一帧）
       await new Promise((resolve) => setTimeout(resolve, 300))
     }
-    // 2) 再点「+ 空白配置」进编辑卡
+    // 2) 再点"+ 空白配置"进编辑卡
     const target = blankButton()
     if (target === undefined) {
       return record({
@@ -10676,13 +10659,13 @@ export const SETTINGS_TTS_ADD_ACT = `(async () => {
 })()`
 
 /**
- * 「语音」页编辑卡探针 · 后半（step-05）：六字段的 `data-field` 必须全在。
+ * "语音"页编辑卡探针 · 后半（step-05）：六字段的 `data-field` 必须全在。
  *
  * 用**后缀**选择器（`[data-field$=".baseUrl"]`）而不是写死 provider id：
- * 点「+ 空白配置」之后 id 由页面决定（LlmPage 同款流程用的是 `custom`），
+ * 点"+ 空白配置"之后 id 由页面决定（LlmPage 同款流程用的是 `custom`），
  * 探针假设 id 等于把契约里没冻结的东西当成事实。
  *
- * 「在」的判定是**可见**（`getBoundingClientRect` 有尺寸），不是只数选择器命中数：
+ * "在"的判定是**可见**（`getBoundingClientRect` 有尺寸），不是只数选择器命中数：
  * 一个 `display:none` 的卡也数得出来，那样断言就退化成空转（与 `SETTINGS_LLM_STRUCTURE_CHECK` 同口径）。
  */
 export const SETTINGS_TTS_CARD_CHECK = `(async () => {
@@ -10704,7 +10687,7 @@ export const SETTINGS_TTS_CARD_CHECK = `(async () => {
       pass: missing.length === 0,
       fields: found,
       missing,
-      // act 的结论一并回传：失败时能一眼看出是「没进添加态」还是「没找到空白配置」，
+      // act 的结论一并回传：失败时能一眼看出是"没进添加态"还是"没找到空白配置"，
       // 不用再改代码重跑一次（首跑就是靠它定位到缓存按钮节点的）。
       act: probe === undefined ? null : probe,
       actResult: window.__auroraTtsActResult === undefined ? null : window.__auroraTtsActResult,
@@ -10715,17 +10698,17 @@ export const SETTINGS_TTS_CARD_CHECK = `(async () => {
 })()`
 
 /**
- * 「语音」页 STT 编辑卡探针 · 前半（v24 阿里云原生 ASR）：点开 STT 区组的编辑卡。
+ * "语音"页 STT 编辑卡探针 · 前半（v24 阿里云原生 ASR）：点开 STT 区组的编辑卡。
  *
- * 与 TTS 那条同款，但**必须先锁定 STT 区组容器**再找按钮：两栏同页、且都有「空白配置」，
- * 按文案全页找会点到 TTS 那张卡上去。区组按 `.section-title` 里的「语音输入」识别。
+ * 与 TTS 那条同款，但**必须先锁定 STT 区组容器**再找按钮：两栏同页、且都有"空白配置"，
+ * 按文案全页找会点到 TTS 那张卡上去。区组按 `.section-title` 里的"语音输入"识别。
  */
 export const SETTINGS_STT_ADD_ACT = `(async () => {
   try {
     // ⚠️ 这里刻意**不用任何带反斜杠的正则**（要匹配空白与行首的加号，改成逐字符判定）：
     // 探针是 template literal 字符串，反斜杠要先被模板层吃掉一层，写错一层就退化成非法正则、
-    // 渲染层直接「Script failed to execute」，报告里只剩一句没信息量的话（本轮实测栽在这里）。
-    // 注释里也**不要**写反斜杠转义（如「反斜杠 + s」那种写法）：ESLint 的 no-useless-escape
+    // 渲染层直接"Script failed to execute"，报告里只剩一句没信息量的话（本轮实测栽在这里）。
+    // 注释里也**不要**写反斜杠转义（如"反斜杠 + s"那种写法）：ESLint 的 no-useless-escape
     // 照字符串内容报错，模板串里的注释照样命中（本轮被 lint 抓过一次）。
     const normalize = (text) => {
       const joined = (text || '')
@@ -10781,7 +10764,7 @@ export const SETTINGS_STT_ADD_ACT = `(async () => {
     target.click()
     await new Promise((resolve) => setTimeout(resolve, 500))
     // 把这张卡滚进视野：设置页很长，不滚的话截图里只有上面的 TTS 区组，
-    // 探针量的是「控件有尺寸」（折叠线以下也算），截出来的图却没有它 —— 视觉证据就断了。
+    // 探针量的是"控件有尺寸"（折叠线以下也算），截出来的图却没有它 —— 视觉证据就断了。
     const card = section().querySelector('[data-field$=".baseUrl"]')
     if (card !== null) card.scrollIntoView({ block: 'center' })
     await new Promise((resolve) => setTimeout(resolve, 200))
@@ -10798,12 +10781,12 @@ export const SETTINGS_STT_ADD_ACT = `(async () => {
 })()`
 
 /**
- * 「语音」页 STT 编辑卡探针 · 后半（v24）：五个字段在，且「接口协议」真接在草稿上。
+ * "语音"页 STT 编辑卡探针 · 后半（v24）：五个字段在，且"接口协议"真接在草稿上。
  *
- * 只断言「控件在」是不够的：新建一个 provider、把一个下拉摆上去，测试照样绿而功能是坏的。
+ * 只断言"控件在"是不够的：新建一个 provider、把一个下拉摆上去，测试照样绿而功能是坏的。
  * 所以这里跑一条**行为**断言 —— 把协议切到 `dashscope-native`，baseURL 的提示词必须
  * 跟着改写（两套接口的 baseURL 语义不同），切回后必须逐字复原。
- * 本场景只动本地 draft、**不点「应用」**，因此配置一个字都不写。
+ * 本场景只动本地 draft、**不点"应用"**，因此配置一个字都不写。
  */
 export const SETTINGS_STT_CARD_CHECK = `(async () => {
   try {
@@ -10886,7 +10869,7 @@ export const SETTINGS_STT_CARD_CHECK = `(async () => {
  * ③ 正文与基座的对比度 ≥ 4.5:1、且明暗极性正确（浅色不许白字、深色不许黑字）。
  *
  * 原生窗口底色渲染层读不到，所以那半条由 `themeNativeCheck()` 在主进程侧断言 —— 它才是
- * 「浅色下先闪一层深色底」的真正防线。
+ * "浅色下先闪一层深色底"的真正防线。
  */
 export type ThemeName = 'dark' | 'light'
 
@@ -10910,7 +10893,7 @@ export function activeTheme(): ThemeName {
  * 生成主题探针脚本。
  *
  * 写成工厂而不是常量：期望档位要注入进去，探针才可能**失败**（否则它只会复述"当前是当前"）。
- * 颜色归一化走「挂一个临时元素读 computed style」，比手写 hex/rgba 解析稳：令牌值可能是
+ * 颜色归一化走"挂一个临时元素读 computed style"，比手写 hex/rgba 解析稳：令牌值可能是
  * `var(--neutral-850)`、hex 或 `rgba()`，交给 Chromium 统一输出 `rgb()/rgba()`。
  * 注意本段在模板字符串里，注释里不能出现反引号。
  */
@@ -11060,7 +11043,7 @@ export function nativeGlassCheck(
  * 为什么必须由主进程断言：`appearance.glass = false` 的渲染层那半（`data-glass="off"` +
  * 令牌降级）在页面里可读，但"Acrylic 卸没卸"只存在于 DWM 与 `WindowManager` 的内部状态里。
  * 与 `nativeGlassCheck` 一起构成一对：**开着时必须挂上、关掉时必须摘掉** —— 只断言一半的话，
- * 「开关接线错了但两端都看不出」这类回归会漏过去（例如只改了配置没驱动材质）。
+ * "开关接线错了但两端都看不出"这类回归会漏过去（例如只改了配置没驱动材质）。
  */
 export function nativeGlassGoneCheck(
   manager: WindowManager,
@@ -11109,9 +11092,9 @@ function onboardingWaitScript(index: number, action?: 'next' | 'skip' | 'model')
     function button(label) {
       const hit = Array.from(document.querySelectorAll('.foot button')).find((el) =>
         (el.textContent || '').trim() === label)
-      if (!hit) throw new Error('引导页脚缺少按钮「' + label + '」：' +
+      if (!hit) throw new Error('引导页脚缺少按钮"' + label + '"：' +
         Array.from(document.querySelectorAll('.foot button')).map((el) => (el.textContent || '').trim()).join('、'))
-      if (hit.disabled) throw new Error('引导按钮「' + label + '」已禁用')
+      if (hit.disabled) throw new Error('引导按钮"' + label + '"已禁用')
       return hit
     }
     ${action === undefined ? '' : `await ready(previous, ${index - 1})`}
@@ -11139,8 +11122,8 @@ function onboardingWaitScript(index: number, action?: 'next' | 'skip' | 'model')
     }
     await ready(expected, ${index})
     // 进场动画（.anim-rise 的 aurora-rise-in）在窗口不产生帧时会**停在起始帧**（opacity: 0）：
-    // 采集环境里窗口可能被遮挡 / 未被合成，此时截图会拍到「布局好了但整块透明」的 pane，
-    // 后续 check 也会因为 opacity=0 判 FAIL（实测出现过「期望与实际是同一串标题却 FAIL」的偶发失败）。
+    // 采集环境里窗口可能被遮挡 / 未被合成，此时截图会拍到"布局好了但整块透明"的 pane，
+    // 后续 check 也会因为 opacity=0 判 FAIL（实测出现过"期望与实际是同一串标题却 FAIL"的偶发失败）。
     // 这里把本步 pane 的进场动画显式推到终态 —— 不改变任何样式定义，只是不等那一帧。
     for (const el of document.querySelectorAll('.pane .anim-rise')) {
       for (const animation of el.getAnimations()) {
@@ -11170,8 +11153,8 @@ function onboardingCheckScript(index: number): string {
       }
       // ⚠️ 这里必须**先等到标题真正可见再断言**，不能进函数就采样：
       // act 返回时 pane 的 .anim-rise 进场动画可能还没结束（opacity / transform 中途），
-      // 那时标题的几何与透明度都不满足下面的条件 —— 实测出现过「期望与实际都是同一串标题、
-      // 却判 FAIL」的偶发失败（一轮 0 FAIL、下一轮红一条）。断言本身不放宽：
+      // 那时标题的几何与透明度都不满足下面的条件 —— 实测出现过"期望与实际都是同一串标题、
+      // 却判 FAIL"的偶发失败（一轮 0 FAIL、下一轮红一条）。断言本身不放宽：
       // 1.5s 内始终不可见照样 FAIL，并报出真实几何（rect / 视口 / 滚动位置 / opacity）。
       let waitedMs = 0
       for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -11180,7 +11163,7 @@ function onboardingCheckScript(index: number): string {
         waitedMs += 50
       }
       // act 已经把进场动画推到终态；这里再兜一次（check 可能被单独调试、或窗口恰好在这一刻失焦），
-      // 仍然只处理「动画没跑完」这一种情况 —— 真被样式藏起来的元素 finish() 也救不回来，照样 FAIL。
+      // 仍然只处理"动画没跑完"这一种情况 —— 真被样式藏起来的元素 finish() 也救不回来，照样 FAIL。
       if (!visible(document.querySelector('.pane .pane-title'))) {
         for (const el of document.querySelectorAll('.pane .anim-rise')) {
           for (const animation of el.getAnimations()) {
@@ -11207,7 +11190,7 @@ function onboardingCheckScript(index: number): string {
       const reasons = []
       if (label !== expected.label || active !== ${index}) reasons.push('阶段标识不符：期望 ' + expected.label + ' / ' + ${index} + '，实际 ' + label + ' / ' + active)
       if (!title.includes(expected.title) || !visible(titleEl)) {
-        // 报出真实几何：失败原因里只写「期望 X，实际 X」时两条字符串长得一模一样，根本没法排查
+        // 报出真实几何：失败原因里只写"期望 X，实际 X"时两条字符串长得一模一样，根本没法排查
         // （真凶往往是被滚动容器推出可视区、透明度恰为 0、或元素还没布局出尺寸）
         const box = titleEl === null ? null : titleEl.getBoundingClientRect()
         const body = document.querySelector('.body')
@@ -11244,10 +11227,10 @@ function onboardingCheckScript(index: number): string {
       if (outside > 0) {
         reasons.push('内容横向溢出（' + outside + ' 处）：' + overflowNodes.join('、'))
       }
-      if (!cta) reasons.push('缺少页脚主 CTA「' + expected.cta + '」')
+      if (!cta) reasons.push('缺少页脚主 CTA"' + expected.cta + '"')
       else {
-        if (!visible(cta)) reasons.push('主 CTA「' + expected.cta + '」超出窗口或不可见')
-        if (!clickable) reasons.push('主 CTA「' + expected.cta + '」禁用或中心无法命中')
+        if (!visible(cta)) reasons.push('主 CTA"' + expected.cta + '"超出窗口或不可见')
+        if (!clickable) reasons.push('主 CTA"' + expected.cta + '"禁用或中心无法命中')
       }
       return { pass: reasons.length === 0, stage: label, active, title, cta: (cta?.textContent || '').trim(), visible: visible(cta), clickable, overflow: outside, waitedMs, reason: reasons.join('；') || null }
     } catch (error) {
@@ -11285,11 +11268,11 @@ function onboardingCheckScript(index: number): string {
  * 期望档位由 `activeTheme()` 读取（`bootstrap()` 已按 `AURORA_CAPTURE_THEME` 设好 `themeSource`）。
  */
 /**
- * 为 chat 窗口的多个场景准备「可朗读 / 可展开思考」的历史（主进程侧，在跑计划之前调用一次）。
+ * 为 chat 窗口的多个场景准备"可朗读 / 可展开思考"的历史（主进程侧，在跑计划之前调用一次）。
  *
  * 为什么必须种数据（而不是让探针去点出来）：
  * 隔离 userData 下 `chat:history` 必然是空的，而 `chat-tts` 需要**一条助手消息**
- * 才会渲染「朗读」按钮、`chat-thinking-block` 需要一条带 `reasoning` 的助手消息
+ * 才会渲染"朗读"按钮、`chat-thinking-block` 需要一条带 `reasoning` 的助手消息
  * 才会渲染思考折叠块；离线环境 `chat:send` 只会回 error 事件（没有可用 LLM），
  * 不会产生助手消息。
  *
@@ -11312,15 +11295,15 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
   const sessionId = 'main'
   const now = new Date().toISOString()
 
-  // 1) 会话历史：一条助手消息即可（`MessageList` 只对 assistant 渲染朗读按钮与思考块）
-  //    内容里刻意带一个**裸 URL** 与行内代码：`markdown.ts` 只把裸 URL 转成 `.md-link`
-  //    （不认 `[文字](url)` 语法），而链接色必须用可读的 `--accent-text`
-  //    （浅色档直接写品牌蓝只有 3.14:1）—— 这样两处样式都能在 `theme-chat.png` /
-  //    `chat.png` 里被逐张目视核对，否则它们在两份报告里没有任何可视证据。
-  // 2) `reasoning`（BetaV2）：`StoredMessage` / `ChatMessageDto` 的可选字段，经
-  //    `rendererHistory` 透传后由 MessageList 渲染成思考折叠块。正文里带探针标记
-  //    `capture-reasoning-probe`，`CHAT_THINKING_BLOCK_CHECK` 靠它确认「展开后看到的就是
-  //    seed 的思考全文」而不是别的节点文本。
+  // 1) 会话历史：一条助手消息即可（"MessageList" 只对 assistant 渲染朗读按钮与思考块）
+  //    内容里刻意带一个**裸 URL** 与行内代码："markdown.ts" 只把裸 URL 转成 ".md-link"
+  //    （不认 "[文字](url)" 语法），而链接色必须用可读的 "--accent-text"
+  //    （浅色档直接写品牌蓝只有 3.14:1）—— 这样两处样式都能在 "theme-chat.png" /
+  //    "chat.png" 里被逐张目视核对，否则它们在两份报告里没有任何可视证据。
+  // 2) "reasoning"（BetaV2）："StoredMessage" / "ChatMessageDto" 的可选字段，经
+  //    "rendererHistory" 透传后由 MessageList 渲染成思考折叠块。正文里带探针标记
+  //    "capture-reasoning-probe"，"CHAT_THINKING_BLOCK_CHECK" 靠它确认"展开后看到的就是
+  //    seed 的思考全文"而不是别的节点文本。
   const session = {
     version: 1,
     sessionId,
@@ -11330,7 +11313,7 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
         id: 'capture-tts-a1',
         role: 'assistant',
         content:
-          '这是截图探针种下的一条助手回复，用来验证「朗读」按钮的渲染与状态复位。' +
+          '这是截图探针种下的一条助手回复，用来验证"朗读"按钮的渲染与状态复位。' +
           '参考 https://example.com/aurora 与 `pnpm typecheck` 的说明。' +
           // P1 渲染升级的固定样本（capture-markdown-probe）：表格 / 有序与任务列表 /
           // 提示块与引用 / 删除线与水平线 / 外链 / 带语言围栏代码，CHAT_MARKDOWN_CHECK
@@ -11352,7 +11335,7 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
           '```mermaid\nflowchart LR\n  A[[[ 非法  --> B\n```',
         reasoning:
           'capture-reasoning-probe：这是探针种下的思考过程全文。' +
-          '历史水合出的思考块默认收起为「已深度思考」摘要行，点开应能看到本段全文。',
+          '历史水合出的思考块默认收起为"已深度思考"摘要行，点开应能看到本段全文。',
         // 2026-09：一条 todo_write（3 项清单）+ 一条 task（子代理，已完成）——
         // MessageList 的结构化任务清单卡与子代理卡由此获得截图与探针证据
         // （CHAT_SIDEBAR_SCRIPT 断言 chat.todo-card 恰好 3 行 + chat.task-card 在）。
@@ -11380,7 +11363,7 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
             state: 'success',
             outputSummary: '子代理：汇总系统状态',
             // 子代理运行快照（docs/06 §19）：随工具卡持久化，重启后仍能回看。
-            // 截图与探针证据：工具卡展开体里的**独立对话视图**，以及「子代理」独立页面的
+            // 截图与探针证据：工具卡展开体里的**独立对话视图**，以及"子代理"独立页面的
             // 权限徽章 / 对话展开（2026-09：快照带 permission / tools / messages）。
             subagent: {
               taskId: 'sub-capture-1',
@@ -11466,7 +11449,7 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
     'utf8',
   )
 
-  // 快速会话（BetaV2）：主界面左栏「快速对话」读取 `quick.json`。
+  // 快速会话（BetaV2）：主界面左栏"快速对话"读取 "quick.json"。
   // 不种的话 edge-bar-expanded.png 的最近消息卡是一片大空白（视觉验收判过 fail）。
   const quick = {
     version: 1,
@@ -11490,11 +11473,11 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
   await writeFile(join(userData, 'sessions', 'quick.json'), JSON.stringify(quick, null, 2), 'utf8')
 
   // 3) 归档分组（2026-09 归档 UI，docs/07 §2.3）：再种一条**已归档**会话
-  //    （`meta.archived = true`），让左栏「已归档 · N」分组在隔离 userData 里就有内容 ——
-  //    `chat-archive.png` 场景点开分组要看到它，且它**不得**出现在主列表容器
-  //    `chat.session-list` 里（渲染层按 `archived === true` 分两份，storage 层不过滤）。
-  //    标题取首条用户消息前 24 字（`SessionStore.titleFor`）：这里把标记写在开头，
-  //    且整段文本恰好 23 字（不触发省略号），探针按唯一的子串 `archive-seed` 定位它。
+  //    （"meta.archived = true"），让左栏"已归档 · N"分组在隔离 userData 里就有内容 ——
+  //    "chat-archive.png" 场景点开分组要看到它，且它**不得**出现在主列表容器
+  //    "chat.session-list" 里（渲染层按 "archived === true" 分两份，storage 层不过滤）。
+  //    标题取首条用户消息前 24 字（"SessionStore.titleFor"）：这里把标记写在开头，
+  //    且整段文本恰好 23 字（不触发省略号），探针按唯一的子串 "archive-seed" 定位它。
   //    时间戳比 main 早两天：主列表里 main 仍排第一，归档分组自身的顺序不受影响。
   const archivedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
   const archived = {
@@ -11523,10 +11506,10 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
     'utf8',
   )
 
-  // 4) 绑定项目的会话（2026-09-30 项目分组折叠探针用）：`meta.projectId` 指向探针
+  // 4) 绑定项目的会话（2026-09-30 项目分组折叠探针用）："meta.projectId" 指向探针
   //    随后登记的那个项目 id（'capture'，见 settingsProjectAct）。出厂现场该项目还不存在，
   //    因此这条会话**先是孤儿绑定**（展示层归 Agent对话区，见 App.vue 的 knownProjectIds），
-  //    等 chat-session-groups 场景登记项目后才移进「项目对话」子分组 —— 探针在那一刻
+  //    等 chat-session-groups 场景登记项目后才移进"项目对话"子分组 —— 探针在那一刻
   //    折叠它、断言列表收成 0 高再展开，折叠能力才有真实对象可测。
   const projectSeedAt = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
   const projectSeed = {
@@ -11627,7 +11610,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
   const plan: CaptureTarget[] = [
     { name: 'edge-bar', file: 'edge-bar.png' },
     // 双主题（step-06）：每窗一张主题场景，断言令牌档位、正文背景与原生底色一致。
-    // 提示条整窗透明，所以只断言渲染层（`body` 背景 alpha 必须为 0）+ 不挂原生底色断言。
+    // 提示条整窗透明，所以只断言渲染层（"body" 背景 alpha 必须为 0）+ 不挂原生底色断言。
     {
       name: 'edge-bar',
       file: 'theme-edge-bar.png',
@@ -11698,9 +11681,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       settleMs: 700,
     },
     // 交互窗的场景顺序见函数头注释：能在窗口里操作 DOM 的都排在 chat-collapse 之前。
-    // 这些场景都沿用 `name: 'chat'`（`CaptureTarget.name` 的类型是 `WindowName`，且 `report.json`
-    // 的 checks 是**数组**、靠 `file` 区分），所以靠文件名与 `AURORA_CAPTURE_WINDOWS=chat` 过滤。
-    // 「收起即消失」**不设 act**：点击放在 check 里（原因见 `CHAT_COLLAPSE_CHECK` 的注释——
+    // 这些场景都沿用 "name: 'chat'"（"CaptureTarget.name" 的类型是 "WindowName"，且 "report.json"
+    // 的 checks 是**数组**、靠 "file" 区分），所以靠文件名与 "AURORA_CAPTURE_WINDOWS=chat" 过滤。
+    // "收起即消失"**不设 act**：点击放在 check 里（原因见 "CHAT_COLLAPSE_CHECK" 的注释——
     // 窗口先被 hide 掉会让紧接着的 capturePage 永不返回，整轮截图卡死）。
     {
       name: 'chat',
@@ -11715,7 +11698,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       name: 'chat',
       file: 'chat-sidebar.png',
       // 自带前置（2026-10-10）：先自己确保 classroom 生效再截图 / 判据 ——
-      // 不再依赖前面 `edge-bar-work` 场景的跨窗口还原广播是否已经渲染到本窗口。
+      // 不再依赖前面 "edge-bar-work" 场景的跨窗口还原广播是否已经渲染到本窗口。
       act: CHAT_SIDEBAR_ENSURE_CLASSROOM_ACT,
       check: CHAT_SIDEBAR_SCRIPT,
     },
@@ -11742,14 +11725,14 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       check: CHAT_RIGHT_PANEL_WORK_CHECK,
     },
     // 会话三分（2026-09-30，docs/07 §2.3）：三区结构 + 项目/Work 门控 + 组头新建入口；
-    // act 登记「截图项目」并切 work，check 断言后还原（classroom + 无项目）。
+    // act 登记"截图项目"并切 work，check 断言后还原（classroom + 无项目）。
     {
       name: 'chat',
       file: 'chat-session-groups.png',
       act: CHAT_SESSION_GROUPS_ACT,
       check: CHAT_SESSION_GROUPS_CHECK,
     },
-    // 「文件备份」卡移出主界面（2026-09，回滚 UI 迁设置页 Agent 页）：
+    // "文件备份"卡移出主界面（2026-09，回滚 UI 迁设置页 Agent 页）：
     // prepare 仍种一份真实快照（反例现场必须有数据）并 reload，check 断言右栏
     // **不再出现**快照卡（chat.snapshot-card / chat.snapshot-restore 均为 0）；
     // 正例断言（列表 + 两段式回滚）见 settings-snapshot-list.png 场景。
@@ -11762,9 +11745,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       },
       check: CHAT_SNAPSHOT_CARD_REMOVED_CHECK,
     },
-    // 右栏「任务」面板（v15，docs/06 §4.1）：
+    // 右栏"任务"面板（v15，docs/06 §4.1）：
     // 现场由 runCapture 在跑计划前种好（seedJobFixture，**必须早于面板首读** —— job 存储
-    // 首读即缓存，读到空表后再写文件面板是看不见的）；act 什么都不点（点「继续」会真的
+    // 首读即缓存，读到空表后再写文件面板是看不见的）；act 什么都不点（点"继续"会真的
     // 发起续跑），check 只读断言面板与状态文案。
     {
       name: 'chat',
@@ -11788,7 +11771,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       check: CHAT_RIGHT_TABS_CHECK,
     },
     // 右栏多标签（2026-10-03 二次修订，docs/07 §2.3）：**不 reload** —— 走真实 UI 用
-    // 「＋」菜单开出第二个浏览器标签、展开「＋N」菜单（截图停在这里），check 再验证
+    // "＋"菜单开出第二个浏览器标签、展开"＋N"菜单（截图停在这里），check 再验证
     // 折叠计数、菜单不碰三键、滑动窗口、关闭回落、两个终端是不同 PTY，收尾回初始四标签。
     {
       name: 'chat',
@@ -11805,9 +11788,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       check: CHAT_TERMINAL_CHECK,
     }, // 文件 tab ＝ 会话项目文件夹（2026-10-03，docs/07 §2.3）：prepare 在项目根建出目录与
     // 一份 markdown；act 登记项目 + 切到绑项目的种子会话 + 打开文件 tab；check 断言
-    // 根标签「项目：截图项目」、目录在前、逐层进出（含后退/前进历史）、点文件预览、
+    // 根标签"项目：截图项目"、目录在前、逐层进出（含后退/前进历史）、点文件预览、
     // 返回列表，**外加一条布局护栏**：预览带长行的宽内容时右栏不许横向撑破
-    // （2026-10-03 用户实测：撑破后工具条按钮被推出可视区，看着像「完全没有按钮」）。
+    // （2026-10-03 用户实测：撑破后工具条按钮被推出可视区，看着像"完全没有按钮"）。
     // 收尾切回原会话并撤销项目登记（后续场景读到的仍是出厂门控）。
     {
       name: 'chat',
@@ -11816,7 +11799,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
         const root = captureProjectRoot(userData)
         await mkdir(join(root, 'assets'), { recursive: true })
         await writeFile(join(root, '报告.md'), '# 项目报告\n\n文件面板应该看到这份文件。\n', 'utf8')
-        // 宽内容夹具：长 URL + 长标识符 + 长代码行 —— 三样都是「不许撑破右栏」的现场
+        // 宽内容夹具：长 URL + 长标识符 + 长代码行 —— 三样都是"不许撑破右栏"的现场
         await writeFile(
           join(root, '宽内容.md'),
           [
@@ -11841,9 +11824,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: chatFileProjectAct(captureProjectRoot(userData)),
       check: CHAT_FILE_PROJECT_CHECK,
     },
-    // `show_preview` 推送链路的渲染层半边（2026-10-03，docs/06 §14）：act 与上一条同款
-    // （切到绑项目的会话），mainAct 合成一条 `preview:show`（通道与 payload 形状与工具
-    // 实际推送一致），check 断言右栏自动切到「浏览器」tab、webview 真的加载了 file:// 夹具、
+    // "show_preview" 推送链路的渲染层半边（2026-10-03，docs/06 §14）：act 与上一条同款
+    // （切到绑项目的会话），mainAct 合成一条 "preview:show"（通道与 payload 形状与工具
+    // 实际推送一致），check 断言右栏自动切到"浏览器"tab、webview 真的加载了 file:// 夹具、
     // 地址栏显示原始路径。主进程侧的目标校验由 preview-port.test.ts 覆盖。
     {
       name: 'chat',
@@ -11855,7 +11838,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
           join(root, 'assets', 'fixture.html'),
           [
             '<!doctype html><meta charset="utf-8"><h1>项目夹具页</h1>',
-            // 站点「另开一个标签页」的现场：target=_blank 的 http(s) 链接
+            // 站点"另开一个标签页"的现场：target=_blank 的 http(s) 链接
             // （右栏必须**新开**一个浏览器标签加载它，当前页原地不动）
             '<a id="probe-blank" href="https://example.com/probe-blank" target="_blank">另开标签</a>',
           ].join('\n'),
@@ -11981,9 +11964,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
         }
       })()`,
     },
-    // 综合概览（step 5）：右栏挂「任务」面板 + 上下文卡，用于人工核对布局。
-    // 「当前项目」卡已随项目管理迁设置页（2026-09-30）：这里改为断言右栏**不再有**项目卡
-    // （`context.project-card` / `context.session-project-card` 恒为 0，回归护栏）。
+    // 综合概览（step 5）：右栏挂"任务"面板 + 上下文卡，用于人工核对布局。
+    // "当前项目"卡已随项目管理迁设置页（2026-09-30）：这里改为断言右栏**不再有**项目卡
+    // （"context.project-card" / "context.session-project-card" 恒为 0，回归护栏）。
     // 现场要现种一份 paused job，然后 reload 让面板水合；项目根仍建出来是因为
     // verify 的 AGENTS.md 假设依赖它存在。
     {
@@ -11996,13 +11979,13 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       },
       check: CHAT_OVERVIEW_CHECK,
     },
-    // 思考过程折叠块（BetaV2）：seed 会话的助手消息带 `reasoning`，历史水合后默认收起；
-    // act 点开展开态拍进截图，check 断言「曾收起 + 现已展开 + 全文可见 + 块在正文上方」。
+    // 思考过程折叠块（BetaV2）：seed 会话的助手消息带 "reasoning"，历史水合后默认收起；
+    // act 点开展开态拍进截图，check 断言"曾收起 + 现已展开 + 全文可见 + 块在正文上方"。
     {
       name: 'chat',
       file: 'chat-thinking-block.png',
-      // 现场由 `runCapture` 在跑计划前种好（见 `seedChatTtsHistory`）；这里 reload 一次
-      // 让渲染层重新水合 main 会话 —— 本场景没有 `query`，`captureWindows` 不会替我们 reload。
+      // 现场由 "runCapture" 在跑计划前种好（见 "seedChatTtsHistory"）；这里 reload 一次
+      // 让渲染层重新水合 main 会话 —— 本场景没有 "query"，"captureWindows" 不会替我们 reload。
       prepare: async () => {
         await manager.reload('chat', {})
       },
@@ -12023,7 +12006,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
         await new Promise((resolve) => setTimeout(resolve, 300))
       },
     },
-    // 快速会话（BetaV2）：点左栏固定项切到 sessionId='quick'，主区标题变「快速对话」。
+    // 快速会话（BetaV2）：点左栏固定项切到 sessionId='quick'，主区标题变"快速对话"。
     // 停在 quick 会话没有影响：chat-tts 自带 reload 回到 main，其余场景只依赖 provider 配置。
     {
       name: 'chat',
@@ -12065,9 +12048,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: CHAT_PERMISSION_READONLY_ACT,
       check: CHAT_PERMISSION_READONLY_CHECK,
     },
-    // 输入区三个浮层（2026-09-26 修复）：统一锚在 `.composer-box` 上、共用 `--z-flyout`、互斥打开。
-    // act 走「输入 / → 点权限钮」，check 对两个时刻 + 实时复测 + 上下文详解卡共四个时刻做几何断言
-    //（最多一个可见 / 不与 `.composer-bar` 相交 / 整个矩形在输入卡上方 / 发送键中心命中的是它自己）。
+    // 输入区三个浮层（2026-09-26 修复）：统一锚在 ".composer-box" 上、共用 "--z-flyout"、互斥打开。
+    // act 走"输入 / → 点权限钮"，check 对两个时刻 + 实时复测 + 上下文详解卡共四个时刻做几何断言
+    //（最多一个可见 / 不与 ".composer-bar" 相交 / 整个矩形在输入卡上方 / 发送键中心命中的是它自己）。
     // 必须排在 chat-collapse 之前（窗口一被 hide，后面的 DOM 操作就没了）。
     {
       name: 'chat',
@@ -12075,9 +12058,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: CHAT_COMPOSER_FLYOUTS_ACT,
       check: CHAT_COMPOSER_FLYOUTS_CHECK,
     },
-    // 工具卡展开的「实测高度」终点（2026-09-26 修复）：`--collapse-h` 必须是内联 px 且等于 scrollHeight。
-    // 需要 main 会话里的 seed 工具卡（todo_write / task），而前面的 `chat-quick-session` 停在 quick 会话
-    //（quick 没有工具卡），所以这里像 `chat-tts` 那样 reload 一次回到 main。
+    // 工具卡展开的"实测高度"终点（2026-09-26 修复）："--collapse-h" 必须是内联 px 且等于 scrollHeight。
+    // 需要 main 会话里的 seed 工具卡（todo_write / task），而前面的 "chat-quick-session" 停在 quick 会话
+    //（quick 没有工具卡），所以这里像 "chat-tts" 那样 reload 一次回到 main。
     // 截图即展开现场，**不收卡片**；展开态只影响这张卡自身，后续场景不受影响（chat-tts 自带 reload）。
     {
       name: 'chat',
@@ -12088,10 +12071,10 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: CHAT_TOOL_CARD_OPEN_ACT,
       check: CHAT_TOOL_CARD_OPEN_CHECK,
     },
-    // 执行轨迹（2026-09-30 轨迹视觉重构）：折叠态「一行摘要（1px 上下描边、无盒子）」
-    // → 点开 → 展开态「左缘连续竖脊 + 节点圆点」。act 只点 DOM（**不写配置**），
+    // 执行轨迹（2026-09-30 轨迹视觉重构）：折叠态"一行摘要（1px 上下描边、无盒子）"
+    // → 点开 → 展开态"左缘连续竖脊 + 节点圆点"。act 只点 DOM（**不写配置**），
     // check 断言上面那两组几何 / 结构（见两条探针的注释）。
-    // 与 `chat-tool-card-open` 同为"main 会话 + reload 后默认折叠"的现场，
+    // 与 "chat-tool-card-open" 同为"main 会话 + reload 后默认折叠"的现场，
     // 放在它后面不必再 reload 一次（这条消息的轨迹在每个场景开头都是折叠的）。
     {
       name: 'chat',
@@ -12099,7 +12082,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: CHAT_TRACE_ACT,
       check: CHAT_TRACE_CHECK,
     },
-    // 左栏归档分组（2026-09 新增）：act 展开分组拍图，check 在做完「真实 UI 归档 → 撤销归档」
+    // 左栏归档分组（2026-09 新增）：act 展开分组拍图，check 在做完"真实 UI 归档 → 撤销归档"
     // 的往返后收尾（收起分组、清残留），不留被改过的左栏给后续场景。
     {
       name: 'chat',
@@ -12108,14 +12091,14 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       check: CHAT_ARCHIVE_CHECK,
     },
     // 朗读按钮（step-06）：act 点一次 [data-action="speak-message"]（离线合成必然失败，
-    // 只触发点击、不断言出声），check 断言按钮存在且点击后回到「朗读」态；
-    // 「没有可用助手消息」时退化成只断言按钮存在性，判据写在返回值的 criterion 里。
+    // 只触发点击、不断言出声），check 断言按钮存在且点击后回到"朗读"态；
+    // "没有可用助手消息"时退化成只断言按钮存在性，判据写在返回值的 criterion 里。
     // 同样排在 chat-collapse 之前（窗口一被 hide，紧接着的 capturePage 会永不返回）。
     {
       name: 'chat',
       file: 'chat-tts.png',
-      // 现场由 `runCapture` 在跑计划前种好（见 `seedChatTtsHistory`）；这里只需要
-      // reload 一次让渲染层重新水合 —— 本场景没有 `query`，`captureWindows` 不会替我们 reload。
+      // 现场由 "runCapture" 在跑计划前种好（见 "seedChatTtsHistory"）；这里只需要
+      // reload 一次让渲染层重新水合 —— 本场景没有 "query"，"captureWindows" 不会替我们 reload。
       prepare: async () => {
         await manager.reload('chat', {})
       },
@@ -12128,8 +12111,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: CHAT_SUBAGENT_OPEN_ACT,
       check: CHAT_SUBAGENT_OPEN_CHECK,
     },
-    // Agent 提问卡片（`ask_user`，docs/06 §21）：由 index.ts 注册的 spawner 发起一次真实提问，
-    // act 选中第二个选项 → 截图 → check 点「回答」并断言卡片收起 → nativeCheck 断言回执内容。
+    // Agent 提问卡片（"ask_user"，docs/06 §21）：由 index.ts 注册的 spawner 发起一次真实提问，
+    // act 选中第二个选项 → 截图 → check 点"回答"并断言卡片收起 → nativeCheck 断言回执内容。
     {
       name: 'chat',
       file: 'chat-ask-user.png',
@@ -12214,9 +12197,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     { name: 'chat', file: 'chat-drag.png', check: WINDOW_DRAG_SCRIPT },
     { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },
     // 自动滚底四条：语义（谁能改跟随状态）+ 持续跟进（每帧都到底）+ **底部上滚**（2026-10-01，
-    // 真实用户从底部滚起来时不能被那帧对齐抹回底部 —— 用户实测「答完翻不动历史」）+
-    // **真实滚轮**（2026-10-01，CDP `Input.dispatchMouseEvent` 走原生管线：合成事件测不到
-    // 「对齐帧 / 吸底补齐把用户滚出去的视口吸回去」这类失效，见 docs/07 §5.3「真实滚轮跟随」）。
+    // 真实用户从底部滚起来时不能被那帧对齐抹回底部 —— 用户实测"答完翻不动历史"）+
+    // **真实滚轮**（2026-10-01，CDP "Input.dispatchMouseEvent" 走原生管线：合成事件测不到
+    // "对齐帧 / 吸底补齐把用户滚出去的视口吸回去"这类失效，见 docs/07 §5.3"真实滚轮跟随"）。
     // **必须排在 chat-collapse 之前** —— 窗口一被 hide，后面的 DOM 操作就没了。
     { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
     { name: 'chat', file: 'chat-follow-burst.png', check: CHAT_FOLLOW_BURST_SCRIPT },
@@ -12230,7 +12213,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     },
     // 无标签页时的右栏工具快捷入口（2026-10-03，docs/07 §2.3）：prepare reload 回
     // 初始四标签 → act 走真实 ✕ 关掉全部（截图停在这里：右栏四张卡片）→
-    // check 验证卡片矩形 / 命中，并点「文件」卡片把标签开回来。
+    // check 验证卡片矩形 / 命中，并点"文件"卡片把标签开回来。
     // **排在 chat 组末尾**：它把标签集与面板挂载状态改过了，后面不应再有 chat 场景。
     {
       name: 'chat',
@@ -12282,7 +12265,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       check: onboardingCheckScript(4),
     },
   ]
-  // 双主题（step-06）：设置窗先落在「常规」页拍一张主题场景，后面的深链循环不受影响。
+  // 双主题（step-06）：设置窗先落在"常规"页拍一张主题场景，后面的深链循环不受影响。
   plan.push({
     name: 'settings',
     file: 'theme-settings.png',
@@ -12290,7 +12273,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     check: themeProbeScript({ theme, transparent: true }),
     nativeCheck: nativeGlassCheck(manager, 'settings'),
   })
-  // ClassIsland 联动（v3）：新增的设置项只在「provider = classisland + 至少一节课程」时渲染，
+  // ClassIsland 联动（v3）：新增的设置项只在"provider = classisland + 至少一节课程"时渲染，
   // 出厂默认（manual + lessons: []) 数不到它们，因此单独补一个场景：
   // 先经 settings:update 造出该现场并拍图，check 断言两项都在、随后**还原配置**。
   // 必须排在 settings-modes.png 之前吗？不必 —— 它由自己的 query 重新落页，
@@ -12303,11 +12286,11 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     check: SETTINGS_CLASSISLAND_FIELDS_SCRIPT,
   })
   // 毛玻璃开关（v32）：先经 settings:update 关掉，检查渲染层令牌降级 + **原生材质真的摘掉**，
-  // check 收尾还原成开。刻意排在 `SETTINGS_PAGE_IDS` 循环**之后**：这一节会改配置，
-  // 而上面那批图（含 `theme-settings.png` 的原生材质断言）都要求默认档。
+  // check 收尾还原成开。刻意排在 "SETTINGS_PAGE_IDS" 循环**之后**：这一节会改配置，
+  // 而上面那批图（含 "theme-settings.png" 的原生材质断言）都要求默认档。
   //
-  // ⚠️ 原生材质那半走 `mainAct`（在截图之前、还原之前跑），**不能**用 `nativeCheck` ——
-  // 后者的执行点在渲染层 `check` **之后**，而 check 收尾已经把 glass 改回 true，
+  // ⚠️ 原生材质那半走 "mainAct"（在截图之前、还原之前跑），**不能**用 "nativeCheck" ——
+  // 后者的执行点在渲染层 "check" **之后**，而 check 收尾已经把 glass 改回 true，
   // 那样只会读到"已经还原"的假结果（判据看似通过，实际什么都没证明）。
   plan.push({
     name: 'settings',
@@ -12322,19 +12305,19 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       name: 'settings',
       file: `settings-${page}.png`,
       query: { page },
-      // 「常规」页是 `general.*` 门控的现场：死字段 general.language 必须为 0，
+      // "常规"页是 "general.*" 门控的现场：死字段 general.language 必须为 0，
       // 提示条透明度 / 静默时段要跟着 general.edgeBar.enabled 出现或消失，
       // BetaV2 迁入的全局勿扰时段（advanced.quietHours）两字段必须常在；
-      // 「模式」页（ClassRoom 生效）：classroom 区组在、work 区组整块不在（BetaV2 互斥渲染），
-      // 前置 act 展开「课表」分组（默认收起，否则课前提醒字段不在 DOM）；
-      // 「AI 模型」页（BetaV2）：对话展示开关 + 生图模型区组；
-      // 「语音」页（BetaV2 合并 TTS + STT）：两个区组各自的常显字段与列表空态二选一；
-      // 「Agent 设置」页（BetaV2 合并技能 + MCP）：预期空状态见 SETTINGS_AGENT_FIELDS_SCRIPT；
+      // "模式"页（ClassRoom 生效）：classroom 区组在、work 区组整块不在（BetaV2 互斥渲染），
+      // 前置 act 展开"课表"分组（默认收起，否则课前提醒字段不在 DOM）；
+      // "AI 模型"页（BetaV2）：对话展示开关 + 生图模型区组；
+      // "语音"页（BetaV2 合并 TTS + STT）：两个区组各自的常显字段与列表空态二选一；
+      // "Agent 设置"页（BetaV2 合并技能 + MCP）：预期空状态见 SETTINGS_AGENT_FIELDS_SCRIPT；
       // 技能 / MCP 区组默认收起（docs/07 §2.5），探针在 check 里自己先展开再计数（async），
       // 所以这里**不需要**像 modes 页那样配 act —— PNG 拍到的正是默认收起态。
-      // 「AI 模型」页也配一个拍图前置（step-06）：把页面**底部**的生图区组滚进视口 ——
+      // "AI 模型"页也配一个拍图前置（step-06）：把页面**底部**的生图区组滚进视口 ——
       // 设置窗是固定高度 + 内部滚动，不滚的话这张 PNG 只拍得到页头，而
-      // 「生图空状态里有可点的『+ 添加生图模型』按钮」正是要在这张图上人工核对的一条。
+      // "生图空状态里有可点的『+ 添加生图模型』按钮"正是要在这张图上人工核对的一条。
       act:
         page === 'modes'
           ? SETTINGS_MODES_EXPAND_ACT
@@ -12361,7 +12344,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
                       : undefined,
     })
   }
-  // 旧深链别名（BetaV2）：`?page=tts` 应映射到「语音」页（TTS + STT 都在）；
+  // 旧深链别名（BetaV2）："?page=tts" 应映射到"语音"页（TTS + STT 都在）；
   // skills|mcp → agent 走同一张 LEGACY_PAGE_ALIASES 映射表，机制由本场景代表验证。
   plan.push({
     name: 'settings',
@@ -12384,7 +12367,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: SETTINGS_CENTER_PROVIDER_ACT,
     check: SETTINGS_CENTER_IMAGEGEN_CHECK,
   })
-  // 「会话管理」页 · 项目区组（2026-09-30 自「通用」页迁入，docs/06 §5.1）：
+  // "会话管理"页 · 项目区组（2026-09-30 自"通用"页迁入，docs/06 §5.1）：
   // prepare 先建出真实项目根（让"根可用"这个健康态成立），act 把项目登记进 projects.list，
   // check 断言两个字段锚点在、显示项目名与根路径，再把根改成不存在的目录断言
   // **警示文案**出现（假设 7 的可见提示），最后还原成无项目。
@@ -12398,7 +12381,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: settingsProjectAct(captureProjectRoot(userData), '截图项目'),
     check: settingsProjectCheck('截图项目', captureMissingProjectRoot(userData)),
   })
-  // 「会话管理」页 · 会话列表（2026-09-30 新增）：列表渲染 + 归档往返 + 删除两步确认。
+  // "会话管理"页 · 会话列表（2026-09-30 新增）：列表渲染 + 归档往返 + 删除两步确认。
   // 现场依赖 seed 的 main 会话与已归档会话（runCapture 在跑计划前种好）；本场景带 query，
   // 设置窗会重新挂载，列表在 onMounted 自有首读，不需要额外 reload。
   plan.push({
@@ -12408,10 +12391,10 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: SETTINGS_SESSIONS_ACT,
     check: SETTINGS_SESSIONS_CHECK,
   })
-  // 设置页「文件备份」列表（2026-09，回滚 UI 自主界面右栏迁入 Agent 页）：
+  // 设置页"文件备份"列表（2026-09，回滚 UI 自主界面右栏迁入 Agent 页）：
   // prepare 种一份真实快照（走真实端口 + flush，不是手写 json），随后**带 query 重载**
   // 设置窗让 SnapshotList 重新挂载并首读（列表只在挂载 / 手动刷新时拉取）；
-  // act 点一次「回滚」（两段式的第一下），check 断言列表在、有记录、来源文案、
+  // act 点一次"回滚"（两段式的第一下），check 断言列表在、有记录、来源文案、
   // 清理 / 刷新入口与待确认文案。
   plan.push({
     name: 'settings',
@@ -12424,7 +12407,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: SETTINGS_SNAPSHOT_LIST_ACT,
     check: SETTINGS_SNAPSHOT_LIST_CHECK,
   })
-  // 设置窗拖动区（step-06）：侧栏顶部 / `.brand` / 内容区顶部三处至少要有一条 ≥ 32px 的可见拖动区，
+  // 设置窗拖动区（step-06）：侧栏顶部 / ".brand" / 内容区顶部三处至少要有一条 ≥ 32px 的可见拖动区，
   // 且窗口按钮仍能被 elementFromPoint 命中 —— 按钮在拖动区内验证 no-drag（chat），
   // 不在拖动区内则回退到全局关闭按钮、验证没被浮层盖住（设置窗 caption 已贴窗口右上缘）。
   plan.push({
@@ -12433,8 +12416,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     query: { page: 'general' },
     check: WINDOW_DRAG_SCRIPT,
   })
-  // 模型设置区（step-05）：点开第一行的「编辑」→「+ 手动添加」使行数恰好 +1 → 删回原状。
-  // 排在 `settings-llm-params` **之前**：它只动本地 draft、不改配置，先跑能少一次配置往返。
+  // 模型设置区（step-05）：点开第一行的"编辑"→"+ 手动添加"使行数恰好 +1 → 删回原状。
+  // 排在 "settings-llm-params" **之前**：它只动本地 draft、不改配置，先跑能少一次配置往返。
   plan.push({
     name: 'settings',
     file: 'settings-llm-models.png',
@@ -12442,7 +12425,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: SETTINGS_LLM_MODELS_ACT,
     check: SETTINGS_LLM_MODELS_CHECK,
   })
-  // 思考等级（step-02）：造一个 provider → 展开「高级参数」→ 断言下拉真值来自配置。
+  // 思考等级（step-02）：造一个 provider → 展开"高级参数"→ 断言下拉真值来自配置。
   // 刻意放在 SETTINGS_PAGE_IDS 循环**之外**：塞进循环会让每个设置页都多点一次。
   plan.push({
     name: 'settings',
@@ -12452,7 +12435,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     check: SETTINGS_LLM_EFFORT_CHECK,
   })
   // AI 模型页的新信息架构（step-04）：行列表 + 一次只开一张编辑卡 + 空状态。
-  // 顺序在 `settings-llm-params` 之后；两者互不干扰——每个场景都会 `reload` 设置窗，
+  // 顺序在 "settings-llm-params" 之后；两者互不干扰——每个场景都会 "reload" 设置窗，
   // 页面回到列表态，且本场景自身**不改配置**（只点开一张卡）。
   plan.push({
     name: 'settings',
@@ -12462,8 +12445,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     check: SETTINGS_LLM_STRUCTURE_CHECK,
   })
   // 接口类型 + 图片输入（v22 多模态轮，docs/06 §3.1 / §3.2）：把生效 provider 的协议写成
-  // `openai-responses`、图片输入打开 → 展开折叠区，断言两个控件在 DOM 里且真值来自配置，
-  // 随后写回原值。排在 `settings-llm-structure` 之后（它只点开卡、不改配置，先跑更安全）。
+  // "openai-responses"、图片输入打开 → 展开折叠区，断言两个控件在 DOM 里且真值来自配置，
+  // 随后写回原值。排在 "settings-llm-structure" 之后（它只点开卡、不改配置，先跑更安全）。
   plan.push({
     name: 'settings',
     file: 'settings-llm-multimodal.png',
@@ -12471,12 +12454,12 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: SETTINGS_LLM_MULTIMODAL_ACT,
     check: SETTINGS_LLM_MULTIMODAL_CHECK,
   })
-  // 「语音」页编辑卡（step-05）：点「+ 空白配置」→ 断言六个字段的 data-field 都在。
-  // 只动**本地 draft**、不点「应用」，所以无需恢复动作。
-  // ⚠️ `settings-voice.png` 不在这里 push：上面的 `SETTINGS_PAGE_IDS` 循环已经为每个 page
-  // 生成 `settings-<page>.png`（含 `voice`），再 push 一张同名图会多截一次、`report.json` 里
+  // "语音"页编辑卡（step-05）：点"+ 空白配置"→ 断言六个字段的 data-field 都在。
+  // 只动**本地 draft**、不点"应用"，所以无需恢复动作。
+  // ⚠️ "settings-voice.png" 不在这里 push：上面的 "SETTINGS_PAGE_IDS" 循环已经为每个 page
+  // 生成 "settings-<page>.png"（含 "voice"），再 push 一张同名图会多截一次、"report.json" 里
   // 出现两条同名且后者把前者的 check 顶掉，所以要拍的只有这张卡场景。
-  // 深链用旧 id `tts`（别名场景同款）：顺带覆盖「旧链接打开的页面上编辑卡流程照常可用」。
+  // 深链用旧 id "tts"（别名场景同款）：顺带覆盖"旧链接打开的页面上编辑卡流程照常可用"。
   plan.push({
     name: 'settings',
     file: 'settings-tts-card.png',
@@ -12484,9 +12467,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: SETTINGS_TTS_ADD_ACT,
     check: SETTINGS_TTS_CARD_CHECK,
   })
-  // 「语音」页 STT 编辑卡（v24 阿里云原生 ASR）：点「+ 空白配置」→ 断言五字段在，
-  // 且「接口协议」下拉切到阿里云原生时 baseURL 提示词被改写（行为断言，不是只看控件在）。
-  // 同样只动本地 draft、不点「应用」；用**新页 id** `voice`（与上面 TTS 那条的旧别名 `tts` 相对）。
+  // "语音"页 STT 编辑卡（v24 阿里云原生 ASR）：点"+ 空白配置"→ 断言五字段在，
+  // 且"接口协议"下拉切到阿里云原生时 baseURL 提示词被改写（行为断言，不是只看控件在）。
+  // 同样只动本地 draft、不点"应用"；用**新页 id** "voice"（与上面 TTS 那条的旧别名 "tts" 相对）。
   plan.push({
     name: 'settings',
     file: 'settings-stt-card.png',
@@ -12495,9 +12478,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     check: SETTINGS_STT_CARD_CHECK,
   })
   // 真实写盘：改一个 classroom 字段后其它字段不能丢（浅合并语义回归）。
-  // 必须排在「切到 Work」之前 —— 切走之后 classroom 控件就不在 DOM 里了。
-  // （ClassRoom 生效态的结构断言已由上面循环里的 `settings-modes.png` 承担，
-  // 这里只保留「真实写盘」与「切 Work 门控」两个会改状态的动作场景。）
+  // 必须排在"切到 Work"之前 —— 切走之后 classroom 控件就不在 DOM 里了。
+  // （ClassRoom 生效态的结构断言已由上面循环里的 "settings-modes.png" 承担，
+  // 这里只保留"真实写盘"与"切 Work 门控"两个会改状态的动作场景。）
   plan.push({
     name: 'settings',
     file: 'settings-classroom-patch.png',
@@ -12505,8 +12488,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: SETTINGS_CLASSROOM_PATCH_ACT,
     check: SETTINGS_CLASSROOM_PATCH_CHECK,
   })
-  // 模式页门控（BetaV2 重写）：切到 Work 后 `modes.work.workspaceDir` 必须出现，
-  // classroom 区组与 modes.* 空状态卡必须消失 —— Work 已实装，不再是「暂无可配置项」。
+  // 模式页门控（BetaV2 重写）：切到 Work 后 "modes.work.workspaceDir" 必须出现，
+  // classroom 区组与 modes.* 空状态卡必须消失 —— Work 已实装，不再是"暂无可配置项"。
   plan.push({
     name: 'settings',
     file: 'settings-modes-work-gating.png',
@@ -12514,7 +12497,7 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     act: SETTINGS_SWITCH_TO_WORK_SCRIPT,
     check: SETTINGS_WORK_GATING_SCRIPT,
   })
-  // 设置页「安全区」横向溢出巡检（docs/07 §5.4）：一次点击走完 7 个页面，
+  // 设置页"安全区"横向溢出巡检（docs/07 §5.4）：一次点击走完 7 个页面，
   // 断言内容区里没有元素探出左右边界。排在所有会改配置的设置页场景**之后**：
   // 它只量几何，读哪一版配置都一样，放最后不用担心影响别人。
   plan.push({
@@ -12538,9 +12521,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     file: 'edge-bar-after-click.png',
     act: EDGE_BAR_CLICK_SCRIPT,
     check: EDGE_BAR_CLICK_SCRIPT,
-    // ⚠️ 先**隐藏**交互窗再点击竖条：否则这条会退化成空转 —— 计划前面已经有一次 `manager.show('chat')`
-    //（`chat.png` 场景），状态机里 `chat:true / primary:'chat'` 在点击**之前**就成立，探针不再依赖点击。
-    // 删掉 `mini-chat.png` 场景后窗口互斥不再自动把它藏起来，所以这里显式复位。
+    // ⚠️ 先**隐藏**交互窗再点击竖条：否则这条会退化成空转 —— 计划前面已经有一次 "manager.show('chat')"
+    //（"chat.png" 场景），状态机里 "chat:true / primary:'chat'" 在点击**之前**就成立，探针不再依赖点击。
+    // 删掉 "mini-chat.png" 场景后窗口互斥不再自动把它藏起来，所以这里显式复位。
     prepare: () => {
       manager.hide('chat')
     },

@@ -406,10 +406,21 @@ export function useStickToBottom(
    * 这里补的正是这一步（调用方 `stick()` 不该是让界面回到最新的唯一路径）。
    */
   function restartGuard(): void {
-    if (disposed) return
+    // 隐藏态不重启（2026-10-10 独立审查）：隐藏页不派发 rAF，排了也只会挂一条定时器链；
+    // `listener` 判 `document.hidden`，这里同口径。
+    if (disposed || document.hidden === true) return
+    // **先取消在途句柄再置空**：直接丢弃句柄会让那条 rAF / 定时器回调照旧执行 `guardStep`，
+    // 而 `guardStep` 自己也会置空并重排 —— 每来一次 focus / visibilitychange 就永久多一条
+    // 巡检链，每条链每帧都调一次 `core.onMutated()`，长会话（chat 窗口常驻）会线性变重。
+    if (guardHandle !== null) {
+      window.cancelAnimationFrame(guardHandle)
+      guardHandle = null
+    }
+    if (guardTimer !== null) {
+      window.clearTimeout(guardTimer)
+      guardTimer = null
+    }
     lastActivityAt = Date.now()
-    guardHandle = null
-    guardTimer = null
     scheduleGuardFrame()
     core?.onMutated()
   }

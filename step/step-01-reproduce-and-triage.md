@@ -75,3 +75,69 @@
 
 - 给 step 2–5 的是「执行记录」里的四条结论（含命令与 payload）；step 2–5 的「输入」直接引用本文件路径，不要重新推导。
 - 若某条结论与 `step/00-index.md` 的根因候选不一致（例如 sidebar 其实不是 work 污染），在「执行记录」里显式写"改判"，并说明新证据；step 2 起按改判后的结论执行。
+
+## 执行记录（2026-10-10 20:05–20:30 实测）
+
+**验收口径按 `report.json` 实际字段判定**（不要只按 `result.pass === false`）：
+失败项 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`。
+本文件的「红项数」一律按这个判据计。
+
+### 基线（改动前同 HEAD = 249322f）
+
+命令（每轮独立目录）：
+`Remove-Item env:ELECTRON_RUN_AS_NODE; $env:AURORA_CAPTURE="$env:TEMP\<dir>"; $env:AURORA_CAPTURE_THEME='dark'; pnpm --config.verify-deps-before-run=false dev`
+（不设 `AURORA_CAPTURE_ONLY` = 全量；每轮 140–146s、93 条 checks）
+
+| 轮次 | 目录 | checks | 失败项 |
+| --- | --- | --- | --- |
+| dark-1 | `%TEMP%\s1-fullbase-1` | 93 | `chat-model-picker.png`、`chat-archive.png` |
+| dark-2 | `%TEMP%\s1-fullbase-2` | 93 | `chat-model-picker.png` |
+| dark-3 | `%TEMP%\s1-fullbase-3` | 93 | `chat-model-picker.png`、`chat-stream-burst.png` |
+| 同码基线（既有） | `%TEMP%\aurora-capture-baseline` | 92 | `chat-model-picker.png` |
+
+`chat` 窗口组筛选跑 4 轮（`%TEMP%\s1-chatgrp-1..4`，`AURORA_CAPTURE_ONLY='chat'`，44 checks / 77s）：
+`chat.png`、`chat-follow-burst.png`、`chat-follow-wheel-up.png`、`chat-trace-wheel.png` 4 条**恒红**，
+payload 全是 `{"pass":false,"reason":"no .thread/.messages"}` —— 这是**筛选跑的假 FAIL**
+（缺前置场景），**不计入**四条抖动的证据。`chat-stream-burst` 在 chatgrp-2、chatgrp-3 两轮红（真信号）。
+
+### 四条结论
+
+1. **`chat-sidebar.png`：归属＝场景污染 + 渲染层启动期丢广播（产品缺陷）**
+   - 证据 A（既有失败态，`%TEMP%\aurora-capture-run2`）：`contextCards:["任务清单","工作目录","系统状态"]`
+     （= work 模式）、同轮 `edge-bar-work` 自己 PASS。
+   - 证据 B（机理取证：临时 `mainAct` 探针量 chat 窗口右栏）：`edge-bar-work` 收尾后 chat 窗口
+     **+60ms 时右栏 `.ctx-card` 一张都没有**、**+1060ms 才刚挂上 work 卡** —— "等固定 120ms"
+     从来不是有保证的策略。
+   - 证据 C（代码核实）：`renderer/shared/bootstrap.ts` 先 `load()` 再 `bind()`，落在两者之间的
+     `mode:changed` **没有任何补偿**；且 `mode.set` 同值 no-op → 面板永久卡住。
+   - 复现率：9 次相关跑里只有历史 run2 命中一次 → **低概率竞态**。
+2. **`chat-archive.png`：归属＝探针判据（身份键取整行文本）+ act 冷窗前置**
+   - 证据（`%TEMP%\s1-fullbase-1`，**全量复现成功**）：
+     `{"ariaExpanded":"true","mainRows":3,"archiveRows":1,"movedTitle":"新会话刚刚",`
+     `"afterArchive":{"mainRows":2,"archiveRows":2,"inArchive":false,"inMain":false},`
+     `"problems":["归档后计数 / 归属不符…","归档列表里没找到刚归档那条的「取消归档」按钮"]}`
+     —— **计数已正确迁移、两边文本查找都失配**，正是"身份键含相对时间"的指纹。
+   - 机理：`SessionRow.vue` 的 `.item-time` 是 `formatRelativeTime(updatedAt)`（「刚刚」→「N 分钟前」）。
+   - 单场景筛选跑（`AURORA_CAPTURE_ONLY='chat-archive'`）另有**假 FAIL**：4/4 轮
+     `ariaExpanded:"false"` / `archiveRows:0` —— toggle 是 `v-if` 渲染、act 只等 60ms 且**返回值被丢弃**
+     （`capture.ts` 只合并 `mainAct`）。
+3. **`chat.png`（`CHAT_AUTO_SCROLL_SCRIPT`）：归属＝探针等待策略（一次性 150ms 读值）**
+   - 证据：既有失败态 `followed=1613`（≈填充高度 = 吸底一次都没跟上）、通过态 `followed=1`。
+   - 本轮全量 3 轮未复现；后续在 `k-full-dark-1` **复现为真红**（`followed:1613 / awaitedMs:1000 /
+     timedOut:true`），并据此发现**第二个产品缺陷**（窗口恢复可见后心率巡检没有重启，见 step 06 的 2b）。
+4. **`chat-stream-burst.png`：归属＝探针判据（绝对最大值对单点离群敏感）**
+   - 11 轮汇总：`maxFrameGapMs` 5 轮越过 110（112.6 / 120.9 / 129.2 / 133.2 / 141.7），
+     而**第二大帧距只有 33–75**、`droppedFrames` 恒定 13–20、`overrun` 105–232
+     —— 失败轮与通过轮的整体代价几乎相同 → **单点离群**。
+   - `chat-follow-burst.png` 与它**不同族**（量的是每帧距底像素数 `maxDistance <= 4`），本步不动。
+
+### 对计划前提的校正
+
+- 计划「现状」里 `run1` 的 4 红无法复核（目录已不存在）；本轮基线（`s1-fullbase-1..3`）才是
+  **改动前的事实基线**：dark 3 轮只有 `chat-model-picker` 恒红 + `chat-archive` 1/3 + `chat-stream-burst` 1/3。
+- 计划验收里"连续 3 轮全量只剩 `chat-model-picker`"在当前抖动率下不足以证伪（`chat-archive` 只有 1/3 概率红），
+  因此 step 02–05 的验收一律**以定向条件 + 反向复核**为准，step 06 再跑多轮全量。
+- 判据口径：必须按上面那段"三选一"判定（只按 `result.pass === false` 会把 `checked:false`
+  的纯截图场景误判成失败）。
+- ⚠️ 独立审查（2026-10-10）指出本文件当时**在盘上缺失执行记录**（计划文件曾于 20:19 被上游更新覆盖），
+  现已补回；四条结论的 payload 出处见各 step 的「执行记录」与 `%TEMP%` 下对应目录。
