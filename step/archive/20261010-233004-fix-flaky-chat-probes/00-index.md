@@ -4,8 +4,8 @@
 - 项目根目录：D:\AICOP\Projects\Aurora
 - 创建时间：2026-10-10 20:02
 - 基线提交：249322fd8f08a389c9c6b504cbd9c9cdbe55b285
-- 归档目录：（完成后填写）
-- 归档时间：（完成后填写）
+- 归档目录：step/archive/20261010-233004-fix-flaky-chat-probes
+- 归档时间：20261010-233004
 
 ## 完成标准
 
@@ -70,7 +70,7 @@
 | 4 | step-04-autoscroll-wait.md | 修 chat.png：吸底跟随改有界轮询 | done | step 1 | `apps/desktop/src/main/capture.ts`、`packages/shared/src/browser/composables/stickToBottomCore.ts`（仅当根因在产品侧） |
 | 5 | step-05-burst-robust-metric.md | 修 chat-stream-burst：换对单点离群不敏感的统计量 | done | step 1 | `apps/desktop/src/main/capture.ts` |
 | 6 | step-06-stability-and-docs.md | 稳定性复跑与文档记忆回填 | done | step 2,3,4,5 | `docs/07-ui-spec.md`、`Memory/`、`AGENTS.md` |
-| 7 | step-07-archive.md | 归档清理 | pending | step 1..6 | `step/` |
+| 7 | step-07-archive.md | 归档清理 | done | step 1..6 | `step/` |
 
 ## 审查重点
 

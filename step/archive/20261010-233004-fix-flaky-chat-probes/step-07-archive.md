@@ -2,7 +2,7 @@
 
 - Task: fix-flaky-chat-probes
 - Step: 7 / 7
-- Status: pending
+- Status: done
 - Depends on: step 1..6
 - Writes: step/
 
