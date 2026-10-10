@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-10 | 个性化三件套（明暗档位 / 毛玻璃开关 / set_appearance）的接线口径 + 沙箱跑不了 vitest 的边界 | UI, 主题, 毛玻璃, 配置, 工具, 沙箱, 坑 | [2026-10-10-personalization-theme-glass-tool.md](2026-10-10-personalization-theme-glass-tool.md)             |
 | 2026-10-08 | Center 用量明细分页与官方模型表单的接线口径（含 verify:web 夹具、88 基线与 v0.4.7 云部署）    | Center, 分页, 模型, 验收, 部署, 坑           | [2026-10-08-center-usage-paging-official-models-form.md](2026-10-08-center-usage-paging-official-models-form.md) |
 | 2026-10-08 | git tag -a -F 发布说明会剥掉首行 # 标题，必须 --cleanup=verbatim               | 发布, git, 坑                          | [2026-10-08-git-tag-notes-comment-strip.md](2026-10-08-git-tag-notes-comment-strip.md)                       |
 | 2026-10-07 | Center 后台工作台毛玻璃与移动端适配的接线口径（含 verify:web 86 基线与 v0.4.6 云部署记录） | Center, UI, 毛玻璃, 移动端, 部署, 坑   | [2026-10-07-center-workbench-glass-mobile.md](2026-10-07-center-workbench-glass-mobile.md)                   |
