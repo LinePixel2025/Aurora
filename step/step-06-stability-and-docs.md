@@ -130,4 +130,8 @@
 
 - `pnpm typecheck` 全绿；`pnpm test` **170 文件 / 2544 用例全绿**；
   `pnpm vitest run packages/shared/src/browser` 68/68（含吸底状态机既有用例）。
+- **两端验收补齐**（本轮改了 `packages/shared/src/browser/composables/useStickToBottom.ts`，
+  AGENTS.md 要求"改 shared 渲染层 = 同时改两端"，两端截图都要跑）：
+  `pnpm --filter @aurora/center build && pnpm --filter @aurora/center verify:web`
+  → **88 场景 / 0 失败**（报告 `%TEMP%\aurora-cweb\report.json`）。
 
