@@ -142,6 +142,13 @@
   --scrollbar-hover: rgba(255, 255, 255, 0.24);
   --glass-highlight: rgba(255, 255, 255, 0.06);
   --glass-fallback: rgba(28, 28, 30, 0.96);
+  /*
+   * 提示条面板 / 竖条专用 tint（2026-10-11，v0.6.0）：提示条改回原生 Acrylic 后，
+   * 桌面那层模糊由 DWM 提供，页面这层只负责可读性 —— 因此**故意比其它玻璃面更透**，
+   * 否则材质等于被盖死（旧口径的面板是 `color-mix(--glass-fallback 96%)` ≈ 0.92，
+   * 看着就是实色）。关掉毛玻璃 / 系统要求减少透明度时它必须退成不透明，见文件末尾两处降级块。
+   */
+  --edge-bar-tint: rgba(22, 22, 25, 0.62);
   --glass-tint: rgba(22, 22, 25, 0.62);
   --glass-bar: rgba(22, 22, 25, 0.72);
   --glass-panel: rgba(22, 22, 25, 0.78);
@@ -329,6 +336,8 @@
     --scrollbar-hover: rgba(0, 0, 0, 0.28);
     --glass-highlight: rgba(255, 255, 255, 0.08);
     --glass-fallback: rgba(255, 255, 255, 0.98);
+    /* 浅档提示条 tint：比暗档再实一点，白色 tint 在亮壁纸上更容易保住正文对比度 */
+    --edge-bar-tint: rgba(255, 255, 255, 0.66);
     --glass-tint: rgba(255, 255, 255, 0.62);
     --glass-bar: rgba(255, 255, 255, 0.72);
     --glass-panel: rgba(255, 255, 255, 0.82);
@@ -411,6 +420,24 @@ select {
   font-family: inherit;
   font-size: inherit;
   color: var(--text-primary);
+}
+
+/*
+ * 原生 `<select>` 的**弹出列表**由平台主题绘制，`:root` 上的 `color-scheme` 管不到它 ——
+ * 暗档下会得到「白底 + 从控件继承来的弱字色」（用户实测：模型 / 思考 / 权限下面的
+ * 选项框没有反色，灰字压白底读不出来）。显式给 `option` 一层主题底色后，弹出列表跟随主题。
+ *
+ * **刻意不声明 `color`**：收起态显示的正是选中项的文字，给 `option` 设颜色会把这四枚
+ * 芯片的静息灰字（`--text-muted`）顶成正文色 —— 那是比「弹出列表没反色」更明显的回归。
+ * 选中行的高亮仍由系统 accent 绘制（我们只接管底色与文字继承）。
+ * 桌面与 Center Web 共用本文件，两端一起生效；新增原生下拉不要再各写一套底色。
+ */
+select option {
+  background-color: var(--bg-raised);
+}
+
+select option:checked {
+  background-color: var(--selection-fill);
 }
 
 /* 键盘可达性：只在键盘导航时显形，鼠标点击不出现描边 */
@@ -1207,6 +1234,7 @@ select {
     --glass-tint: var(--glass-fallback);
     --glass-bar: var(--glass-fallback);
     --glass-panel: var(--glass-fallback);
+    --edge-bar-tint: var(--glass-fallback);
     --glass-content: var(--bg-base);
     --glass-surface: var(--bg-raised);
     --glass-surface-strong: var(--bg-overlay);
@@ -1235,8 +1263,9 @@ select {
  * `theme-css.test.ts` 会断言这里的自定义属性是那块的超集）：
  * 三档滤镜置 `none`、玻璃面换实色令牌、画布采样层透明。
  * 两处刻意的差别：
- * - `--glass-fallback` 一并压成 `--bg-base` —— 提示条的圆角面板写的是
- *   `color-mix(in srgb, var(--glass-fallback) 94%, transparent)`，不压它仍是约 90% 半透明；
+ * - `--glass-fallback` 与提示条专用的 `--edge-bar-tint` 一并压成 `--bg-base` ——
+ *   提示条面板读的就是 `--edge-bar-tint`（玻璃开时它是半透明 tint，靠 DWM Acrylic 提供模糊），
+ *   不压它那条最显眼的浮层就会「窗口无材质 + 面板半透明」地裸漏桌面；
  * - `--glass-bar` / `--glass-panel` 用 `--bg-raised`（而不是 `--glass-fallback`）：
  *   实色下要保住"抬升面比基座亮一档"的层次，与浅色档白面板叠在 `#f5f5f7` 上是同一套关系。
  */
@@ -1254,6 +1283,8 @@ select {
   --glass-border: var(--border-strong);
   --glass-border-soft: var(--border-subtle);
   --glass-fallback: var(--bg-base);
+  /* 提示条面板 / 竖条：窗口这时没有原生材质，tint 必须实色，否则「透明窗口 + 半透明面板」裸漏桌面 */
+  --edge-bar-tint: var(--bg-base);
   --canvas-cool: transparent;
   --canvas-warm: transparent;
   --canvas-grid: transparent;
