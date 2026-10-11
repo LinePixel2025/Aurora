@@ -336,6 +336,9 @@ export class FileAwarenessService {
       active: enabled && this.watcher !== undefined && knowledgeDirAvailable,
       waitingForModel: enabled && !this.options.providerReady(),
       waitingForAgent: enabled && this.agentBusy,
+      // v33：流光特效总开关（外观分组）。渲染层用它决定浮层页面是否进入 active，
+      // 与主进程 `shouldShowAwarenessGlow` 那条闸门同源；缺字段按开启（`!== false`）。
+      glowEnabled: settings.appearance.awarenessGlow !== false,
       ...(modelError === undefined || modelError === '' ? {} : { modelError }),
       knowledgeDir: awareness.knowledgeDir,
       knowledgeDirAvailable,

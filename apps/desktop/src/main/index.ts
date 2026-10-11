@@ -2912,13 +2912,29 @@ async function runCapture(dir: string): Promise<void> {
         check: AWARENESS_GLOW_CAPTURE_CHECK,
         nativeCheck: () => {
           const state = manager.getAwarenessGlowDiagnostics()
+          // v33：四边流光的宿主前提是「窗口覆盖整块显示器」——渲染层读不到原生窗口矩形，
+          // 所以这一条必须由主进程断言（只量矩形：72px 顶部条的旧几何会在这里立刻变红）。
+          // 期望值取 `manager` 的同一个取屏口径（提示条可配置为跟随光标所在显示器）。
+          // 容差 1px：Electron 给窗口矩形与显示器 bounds 之间留的这一像素差是既存行为，
+          // 不是"没贴住"（贴边判定看的是窗口 ≥ 显示器，而不是逐像素相等）。
+          const target = manager.getAwarenessGlowTargetBounds()
+          const bounds = state.bounds
+          const coversDisplay =
+            bounds !== undefined &&
+            bounds.x <= target.x &&
+            bounds.y <= target.y &&
+            bounds.x + bounds.width >= target.x + target.width &&
+            bounds.y + bounds.height >= target.y + target.height
           return {
             pass:
               state.exists &&
               state.visible &&
               state.alwaysOnTop === true &&
               state.focused === false &&
-              state.mousePassthrough,
+              state.mousePassthrough &&
+              coversDisplay,
+            coversDisplay,
+            targetBounds: `${target.x},${target.y},${target.width},${target.height}`,
             ...state,
           }
         },
@@ -5635,12 +5651,15 @@ function awarenessGlowShouldShow(): boolean {
     awarenessEnabled: status.enabled,
     consentAccepted: status.consentAccepted,
     knowledgeDirAvailable: status.knowledgeDirAvailable,
+    // v33：流光特效总开关。缺字段按开启兜底（`!== false`）—— 与 Schema 的 `.default(true)`
+    // 同一口径，不允许出现「Schema 说开、这里按关」的第二套默认值。
+    awarenessGlow: current.appearance.awarenessGlow !== false,
     ...(status.analysisProgress === undefined ? {} : { stage: status.analysisProgress.stage }),
   })
 }
 
 /**
- * 自感知流光的唯一显隐入口。
+ * 四周流光的唯一显隐入口。
  *
  * 主进程只负责创建 / 显示 / 收起透明浮层；动画本身在渲染层用合成分层完成。分析结束后
  * 等一帧级的淡出窗口再隐藏，若同一时间重新开始分析则直接取消隐藏。

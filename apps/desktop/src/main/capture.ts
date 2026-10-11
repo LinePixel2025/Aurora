@@ -4780,86 +4780,181 @@ export const AWARENESS_GLOW_SETTLE_ACT = `(async () => {
   return { ok: true }
 })()`
 
-/** 自感知流光的静态预览：只验证视觉层存在、可见并持续做合成动画，不依赖后台模型。 */
+/**
+ * 自感知四周流光的静态预览（v33 起四边）：**只量矩形不量存在**。
+ *
+ * 四条边带（`[data-edge]`）必须各自贴住自己的屏幕边，且只在垂直边带方向上是「薄」的
+ * （沿边那一轴覆盖 ≥95% 视口、厚度远小于视口）—— 只查"四个元素在不在"证明不了四边流光：
+ * 元素齐全但全挤在顶部、或窗口还是旧的 72px 顶部条时，那种探针照样绿。
+ * 另外沿用旧口径：入场动画 + 650ms 之后的真实运动变化（否定"声明了动画但其实是静止的"）。
+ */
 export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     await wait(900)
     const root = document.querySelector('[data-field="awareness-glow.root"]')
-    const bloom = document.querySelector('[data-field="awareness-glow.bloom"]')
-    const halo = document.querySelector('.glow-halo')
-    const line = document.querySelector('[data-field="awareness-glow.line"]')
-    const streak = document.querySelector('[data-field="awareness-glow.streak"]')
     const rootStyle = root === null ? null : getComputedStyle(root)
-    const bloomStyle = bloom === null ? null : getComputedStyle(bloom)
-    const haloStyle = halo === null ? null : getComputedStyle(halo)
-    const lineStyle = line === null ? null : getComputedStyle(line)
-    const streakStyle = streak === null ? null : getComputedStyle(streak)
     const opacity = rootStyle === null ? 0 : Number.parseFloat(rootStyle.opacity)
-    const linePositionA = lineStyle?.backgroundPosition || ''
-    const streakPositionA = streakStyle?.backgroundPosition || ''
-    const haloPositionA = haloStyle?.backgroundPosition || ''
+    const viewportWidth = document.documentElement.clientWidth
+    const viewportHeight = document.documentElement.clientHeight
+    const bandLimitX = Math.max(120, viewportWidth * 0.25)
+    const bandLimitY = Math.max(120, viewportHeight * 0.25)
+    const edgeNames = ['top', 'bottom', 'left', 'right']
+    const sawEdge = {}
+    for (const edge of edgeNames) sawEdge[edge] = document.querySelector('[data-field="awareness-glow.' + edge + '"]')
+    const edges = {}
+    const sample = (edge) => {
+      const shape = sawEdge[edge]
+      if (!shape) return null
+      const bloom = shape.querySelector('.glow-bloom')
+      const halo = shape.querySelector('.glow-halo')
+      const line = shape.querySelector('.glow-line')
+      const streak = shape.querySelector('.glow-streak')
+      const rect = shape.getBoundingClientRect()
+      const bloomStyle = bloom === null ? null : getComputedStyle(bloom)
+      const haloStyle = halo === null ? null : getComputedStyle(halo)
+      const lineStyle = line === null ? null : getComputedStyle(line)
+      const streakStyle = streak === null ? null : getComputedStyle(streak)
+      const haloMask =
+        (haloStyle === null ? '' : haloStyle.getPropertyValue('mask-image')) ||
+        (haloStyle === null ? '' : haloStyle.getPropertyValue('-webkit-mask-image')) ||
+        ''
+      return {
+        bloom: bloom !== null,
+        halo: halo !== null,
+        line: line !== null,
+        streak: streak !== null,
+        rect: {
+          left: Math.round(rect.left),
+          top: Math.round(rect.top),
+          right: Math.round(rect.right),
+          bottom: Math.round(rect.bottom),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        },
+        bloomBlur: bloomStyle === null ? '' : bloomStyle.filter,
+        bloomBackground: bloomStyle === null ? '' : bloomStyle.backgroundImage,
+        bloomAnimation: bloomStyle === null ? '' : bloomStyle.animationName,
+        bloomIteration: bloomStyle === null ? '' : bloomStyle.animationIterationCount,
+        haloAnimation: haloStyle === null ? '' : haloStyle.animationName,
+        haloMask,
+        lineAnimation: lineStyle === null ? '' : lineStyle.animationName,
+        lineBackgroundSize: lineStyle === null ? '' : lineStyle.backgroundSize,
+        streakAnimation: streakStyle === null ? '' : streakStyle.animationName,
+        linePosition: lineStyle === null ? '' : lineStyle.backgroundPosition,
+        streakPosition: streakStyle === null ? '' : streakStyle.backgroundPosition,
+        haloPosition: haloStyle === null ? '' : haloStyle.backgroundPosition,
+      }
+    }
+    for (const edge of edgeNames) edges[edge] = sample(edge)
     await wait(650)
-    const lineStyleB = line === null ? null : getComputedStyle(line)
-    const streakStyleB = streak === null ? null : getComputedStyle(streak)
-    const haloStyleB = halo === null ? null : getComputedStyle(halo)
-    const linePositionB = lineStyleB?.backgroundPosition || ''
-    const streakPositionB = streakStyleB?.backgroundPosition || ''
-    const haloPositionB = haloStyleB?.backgroundPosition || ''
-    const motionChanged =
-      linePositionA !== linePositionB ||
-      streakPositionA !== streakPositionB ||
-      haloPositionA !== haloPositionB
-    const haloMask =
-      haloStyle?.getPropertyValue('mask-image') ||
-      haloStyle?.getPropertyValue('-webkit-mask-image') ||
-      ''
+    for (const edge of edgeNames) {
+      const shape = sawEdge[edge]
+      const line = shape === null ? null : shape.querySelector('.glow-line')
+      const streak = shape === null ? null : shape.querySelector('.glow-streak')
+      const halo = shape === null ? null : shape.querySelector('.glow-halo')
+      const lineStyle = line === null ? null : getComputedStyle(line)
+      const streakStyle = streak === null ? null : getComputedStyle(streak)
+      const haloStyle = halo === null ? null : getComputedStyle(halo)
+      const linePositionB = lineStyle === null ? '' : lineStyle.backgroundPosition
+      const streakPositionB = streakStyle === null ? '' : streakStyle.backgroundPosition
+      const haloPositionB = haloStyle === null ? '' : haloStyle.backgroundPosition
+      const item = edges[edge]
+      if (item === null) continue
+      item.linePositionB = linePositionB
+      item.streakPositionB = streakPositionB
+      item.haloPositionB = haloPositionB
+      item.motionChanged =
+        item.linePosition !== linePositionB ||
+        item.streakPosition !== streakPositionB ||
+        item.haloPosition !== haloPositionB
+    }
+    const shapeOk = (edge, item) => {
+      if (item === null) return false
+      const layerOk =
+        item.bloom &&
+        item.halo &&
+        item.line &&
+        item.streak &&
+        item.bloomBlur.includes('blur') &&
+        item.bloomBackground.includes('radial-gradient') &&
+        item.bloomAnimation.includes('awareness-glow-bloom') &&
+        item.bloomIteration === 'infinite' &&
+        item.haloAnimation.includes('awareness-glow-curtain') &&
+        item.haloAnimation.includes('awareness-glow-color-flow') &&
+        item.haloMask.includes('rgb(0, 0, 0) 0%') &&
+        item.lineAnimation.includes('awareness-glow-flow') &&
+        !item.lineAnimation.includes('reverse') &&
+        item.lineBackgroundSize !== 'auto' &&
+        item.streakAnimation.includes('awareness-glow-flow-slow') &&
+        !item.streakAnimation.includes('reverse')
+      if (!layerOk || item.motionChanged !== true) return false
+      const r = item.rect
+      if (edge === 'top') {
+        return r.top <= 4 && r.left <= 4 && r.right >= viewportWidth - 4 && r.width >= viewportWidth * 0.95 && r.height > 0 && r.height <= bandLimitY
+      }
+      if (edge === 'bottom') {
+        return r.bottom >= viewportHeight - 4 && r.left <= 4 && r.right >= viewportWidth - 4 && r.width >= viewportWidth * 0.95 && r.height > 0 && r.height <= bandLimitY
+      }
+      if (edge === 'left') {
+        return r.left <= 4 && r.top <= 4 && r.bottom >= viewportHeight - 4 && r.height >= viewportHeight * 0.95 && r.width > 0 && r.width <= bandLimitX
+      }
+      return r.right >= viewportWidth - 4 && r.top <= 4 && r.bottom >= viewportHeight - 4 && r.height >= viewportHeight * 0.95 && r.width > 0 && r.width <= bandLimitX
+    }
+    const edgePass = {}
+    for (const edge of edgeNames) edgePass[edge] = shapeOk(edge, edges[edge])
+    /*
+     * 帧成本实测（v33 起浮层覆盖整块显示器，这是真正的性能风险点）：
+     * 量 90 帧的间隔，meanFrameMs / worstFrameMs 直接进报告，人看趋势。
+     * 刻意**不做硬阈值**：这台机器上有 ToDesk 虚拟显示 + 软件光栅级别的抖动（历史基线 63–141ms
+     * 摆过一次），写死阈值只会制造既存红项。动画本身在 prefers-reduced-motion: reduce 下是 no-op，
+     * 那个分支由渲染层 CSS 保证（探针不重复断言）。
+     */
+    const frameGaps = []
+    await new Promise((resolve) => {
+      let last = performance.now()
+      let count = 0
+      const step = () => {
+        const now = performance.now()
+        frameGaps.push(now - last)
+        last = now
+        count += 1
+        if (count >= 90) {
+          resolve()
+          return
+        }
+        requestAnimationFrame(step)
+      }
+      requestAnimationFrame(step)
+    })
+    const measured = frameGaps.slice(5)
+    const meanFrameMs =
+      measured.length === 0
+        ? 0
+        : Math.round((measured.reduce((sum, gap) => sum + gap, 0) / measured.length) * 100) / 100
+    const worstFrameMs = measured.length === 0 ? 0 : Math.round(Math.max(...measured) * 100) / 100
     return {
       root: root !== null,
-      bloom: bloom !== null,
-      halo: halo !== null,
-      line: line !== null,
-      streak: streak !== null,
-      active: root?.classList.contains('active') === true,
+      active: root === null ? false : root.classList.contains('active'),
       opacity,
-      rootAnimation: rootStyle?.animationName || '',
-      rootTransition: rootStyle?.transitionDuration || '',
-      motionChanged,
-      bloomBlur: bloomStyle?.filter || '',
-      bloomBackground: bloomStyle?.backgroundImage || '',
-      bloomAnimation: bloomStyle?.animationName || '',
-      bloomIteration: bloomStyle?.animationIterationCount || '',
-      haloAnimation: haloStyle?.animationName || '',
-      haloMask,
-      lineAnimation: lineStyle?.animationName || '',
-      lineBackgroundSize: lineStyle?.backgroundSize || '',
-      streakAnimation: streakStyle?.animationName || '',
-      text: (root?.textContent || '').trim(),
+      rootAnimation: rootStyle === null ? '' : rootStyle.animationName,
+      rootTransition: rootStyle === null ? '' : rootStyle.transitionDuration,
+      viewportWidth,
+      viewportHeight,
+      frameCount: measured.length,
+      meanFrameMs,
+      worstFrameMs,
+      edges,
+      edgePass,
+      text: (root === null ? '' : root.textContent || '').trim(),
       pass:
         root !== null &&
-        bloom !== null &&
-        halo !== null &&
-        line !== null &&
-        streak !== null &&
         root.classList.contains('active') &&
         opacity > 0.9 &&
-        (rootStyle?.animationName || '').includes('awareness-glow-enter') &&
-        (rootStyle?.transitionDuration || '').includes('0.62s') &&
-        motionChanged &&
-        (bloomStyle?.filter || '').includes('blur') &&
-        (bloomStyle?.backgroundImage || '').includes('radial-gradient') &&
-        (bloomStyle?.animationName || '').includes('awareness-glow-bloom') &&
-        (bloomStyle?.animationIterationCount || '') === 'infinite' &&
-        (haloStyle?.animationName || '').includes('awareness-glow-curtain') &&
-        (haloStyle?.animationName || '').includes('awareness-glow-color-flow') &&
-        haloMask.includes('rgb(0, 0, 0) 0%') &&
-        (lineStyle?.backgroundImage || '').includes('linear-gradient') &&
-        (lineStyle?.backgroundSize || '') !== 'auto' &&
-        (lineStyle?.animationName || '').includes('awareness-glow-flow') &&
-        !(lineStyle?.animationName || '').includes('reverse') &&
-        (streakStyle?.animationName || '').includes('awareness-glow-flow-slow') &&
-        !(streakStyle?.animationName || '').includes('reverse') &&
-        (root.textContent || '').trim() === '',
+        (rootStyle === null ? '' : rootStyle.animationName).includes('awareness-glow-enter') &&
+        (rootStyle === null ? '' : rootStyle.transitionDuration).includes('0.62s') &&
+        edgeNames.every((edge) => edgePass[edge] === true) &&
+        (root === null ? '' : root.textContent || '').trim() === '',
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -8205,12 +8300,13 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
     const requireAdminField = count('[data-field="general.requireAdmin"]')
     // v30：游戏模式开关常显（docs/06 §8.3）
     const gameModeField = count('[data-field="general.gameMode.enabled"]')
-    // v32："外观"区组三件套常显（主题三档 / 强调色 / 毛玻璃开关）。
+    // v32："外观"区组三件套常显（主题三档 / 强调色 / 毛玻璃开关）；v33 加流光特效开关。
     // 主题那档是**两个**锚点同名（区组里只有一组按钮），按数量 1 断言；
-    // 强调色沿用 v21 的锚点，毛玻璃是新增的 —— 三者一起挡住"新控件没接线"这类静默回归。
+    // 强调色沿用 v21 的锚点，毛玻璃与流光是后来新增的 —— 四者一起挡住"新控件没接线"这类静默回归。
     const appearanceTheme = count('[data-field="appearance.theme"]')
     const appearanceAccent = count('[data-field="appearance.accent"]')
     const appearanceGlass = count('[data-field="appearance.glass"]')
+    const appearanceAwarenessGlow = count('[data-field="appearance.awarenessGlow"]')
     // v13 项目机制（docs/06 §5.1）：项目区组常显，列表可空可非空 —— 只断言"空态或至少一行"，
     // 不写死条数（用户有几个项目都能过）。
     const projectsFields = count('[data-field^="projects."]')
@@ -8240,6 +8336,7 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
       appearanceTheme,
       appearanceAccent,
       appearanceGlass,
+      appearanceAwarenessGlow,
       projectsFields,
       projectsRows,
       projectsEmpty,
@@ -8259,6 +8356,7 @@ export const SETTINGS_FIELDS_SCRIPT = `(() => {
         appearanceTheme === 1 &&
         appearanceAccent === 1 &&
         appearanceGlass === 1 &&
+        appearanceAwarenessGlow === 1 &&
         (edgeBarToggle === 0 ? edgeBarDetail === 0 : edgeBarDetail > 0) &&
         projectsFields === 0 &&
         projectsRows === 0 &&

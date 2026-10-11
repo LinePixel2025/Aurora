@@ -136,14 +136,17 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       assertNoSecretLeak('settings.get 无凭据字段', settings)
     }
 
-    // 2.1 外观三件套（v32，docs/07 §5.1）：默认值 + 「改完即时生效」的**真链路**。
+    // 2.1 外观四件套（v32 三件套 + v33 流光开关，docs/07 §5.1）：默认值 + 「改完即时生效」的**真链路**。
     //     主题档位走 settings:update → 主进程 nativeTheme.themeSource → 渲染层
-    //     prefers-color-scheme；毛玻璃走 settings:changed → 文档根 data-glass → theme.css 令牌降级。
-    //     两条都**必须还原**：后面的用例不该看到被这一节改过的外观（截图与探针同样依赖默认档）。
+    //     prefers-color-scheme；毛玻璃走 settings:changed → 文档根 data-glass → theme.css 令牌降级；
+    //     流光开关走 settings:update → 主进程 shouldShowAwarenessGlow 的闸门 → awareness:status
+    //     的 glowEnabled（渲染层与主进程读同一份配置）。
+    //     三条都**必须还原**：后面的用例不该看到被这一节改过的外观（截图与探针同样依赖默认档）。
     //     注意本段在 String.raw 里：不用反引号、不用带反斜杠的正则。
     if (settings) {
       record('appearance 默认主题为跟随系统', settings.appearance && settings.appearance.theme === 'system', String(settings.appearance && settings.appearance.theme))
       record('appearance 默认开启毛玻璃', settings.appearance && settings.appearance.glass === true, String(settings.appearance && settings.appearance.glass))
+      record('appearance 默认开启流光特效', settings.appearance && settings.appearance.awarenessGlow === true, String(settings.appearance && settings.appearance.awarenessGlow))
     }
 
     const waitColorScheme = async (mode) => {
@@ -167,8 +170,17 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
     record('关闭毛玻璃后玻璃滤镜令牌降级为 none', glassFilter === 'none', glassFilter)
 
     // 原生材质那半（Acrylic 卸没卸）渲染层读不到，由截图工具的原生断言覆盖（capture.ts nativeGlassCheck）。
-    const appearanceRestored = expectOk('settings.update(appearance 还原)', await window.aurora.settings.update({ appearance: { theme: 'system', glass: true } }))
-    record('外观已还原（主题跟随系统 / 毛玻璃开）', Boolean(appearanceRestored) && appearanceRestored.appearance.theme === 'system' && appearanceRestored.appearance.glass === true && document.documentElement.getAttribute('data-glass') === 'on', appearanceRestored ? JSON.stringify(appearanceRestored.appearance) : '')
+    expectOk('settings.update(appearance.awarenessGlow=false)', await window.aurora.settings.update({ appearance: { awarenessGlow: false } }))
+    const glowOff = await window.aurora.awareness.status()
+    record('关闭流光后 awareness.status 回报 glowEnabled=false', glowOff && glowOff.ok === true && glowOff.value.glowEnabled === false, glowOff && glowOff.ok ? String(glowOff.value.glowEnabled) : glowOff ? glowOff.message : '无结果')
+    // 流光浮层本身原生窗口的显隐归主进程（渲染层读不到），这里只断言配置→状态的这一段真链路；
+    // 「窗口真的不显示」由 awareness-glow.test.ts 的可见性单测 + 截图工具的原生矩形断言覆盖。
+    expectOk('settings.update(appearance.awarenessGlow=true)', await window.aurora.settings.update({ appearance: { awarenessGlow: true } }))
+    const glowOn = await window.aurora.awareness.status()
+    record('重新开启流光后 glowEnabled 恢复 true', glowOn && glowOn.ok === true && glowOn.value.glowEnabled === true, glowOn && glowOn.ok ? String(glowOn.value.glowEnabled) : glowOn ? glowOn.message : '无结果')
+
+    const appearanceRestored = expectOk('settings.update(appearance 还原)', await window.aurora.settings.update({ appearance: { theme: 'system', glass: true, awarenessGlow: true } }))
+    record('外观已还原（主题跟随系统 / 毛玻璃开 / 流光开）', Boolean(appearanceRestored) && appearanceRestored.appearance.theme === 'system' && appearanceRestored.appearance.glass === true && appearanceRestored.appearance.awarenessGlow === true && document.documentElement.getAttribute('data-glass') === 'on', appearanceRestored ? JSON.stringify(appearanceRestored.appearance) : '')
 
     // 3. 模型配置由主进程在启动自测前写入（指向本地桩 LLM），这里只做读写/脱敏断言：
     //    若在此处再写一次 baseUrl，会把桩服务地址覆盖成真实服务，导致对话断言失败。

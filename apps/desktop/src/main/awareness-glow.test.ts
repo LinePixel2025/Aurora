@@ -11,6 +11,7 @@ function visible(overrides: Partial<Parameters<typeof shouldShowAwarenessGlow>[0
     awarenessEnabled: true,
     consentAccepted: true,
     knowledgeDirAvailable: true,
+    awarenessGlow: true,
     stage: 'analyzing',
     ...overrides,
   })
@@ -32,18 +33,31 @@ describe('awareness-glow', () => {
     expect(visible({ knowledgeDirAvailable: false })).toBe(false)
   })
 
-  it('顶部几何跟随目标显示器并夹取高度', () => {
+  it('用户关掉流光特效后一律不显示（v33 的 appearance.awarenessGlow）', () => {
+    expect(visible({ awarenessGlow: false })).toBe(false)
+    // 关掉时其它条件怎么变都不显示：它是独立的显隐闸门，不是"仅在与其它项同时成立时生效"
+    expect(visible({ awarenessGlow: false, stage: 'extracting' })).toBe(false)
+  })
+
+  it('四周流光覆盖目标显示器整块矩形（bounds，不是 workArea）', () => {
     expect(awarenessGlowBounds({ x: 1920, y: 40, width: 2560, height: 1400 })).toEqual({
       x: 1920,
       y: 40,
       width: 2560,
-      height: 72,
+      height: 1400,
     })
-    expect(awarenessGlowBounds({ x: -1280, y: 0, width: 1280, height: 48 })).toEqual({
+    // 负坐标（副屏在主屏左侧）与小显示器都原样保留；非整数按四舍五入
+    expect(awarenessGlowBounds({ x: -1280, y: 0, width: 1280, height: 720 })).toEqual({
       x: -1280,
       y: 0,
       width: 1280,
-      height: 48,
+      height: 720,
+    })
+    expect(awarenessGlowBounds({ x: 1.4, y: -2.6, width: 100.5, height: 200.4 })).toEqual({
+      x: 1,
+      y: -3,
+      width: 101,
+      height: 200,
     })
   })
 })

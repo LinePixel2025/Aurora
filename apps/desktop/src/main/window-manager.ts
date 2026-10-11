@@ -27,7 +27,6 @@ import {
   type EdgeBarSide,
 } from './edge-bar-geometry.js'
 import {
-  AWARENESS_GLOW_HEIGHT,
   awarenessGlowBounds,
   type AwarenessGlowRect,
 } from './awareness-glow.js'
@@ -378,19 +377,28 @@ export class WindowManager {
   }
 
   /**
-   * 显示自感知顶部流光，并在目标工作区变化时重新定位。
+   * 显示自感知四周流光，并在目标显示器变化时重新定位。
    * 内部窗口没有窗口状态机：调用方只表达“当前是否应该显示”。
+   *
+   * v33 起浮层覆盖**整块显示器**（此前是 72px 的顶部条），因此「工作区是否变了」的比较
+   * 仍然是整块显示器 bounds —— 换显示器 / 改分辨率都会重新 `setBounds`。
    */
   showAwarenessGlow(): boolean {
     const win = this.ensureAwarenessGlow()
     if (win.isDestroyed()) return false
-    const bounds = awarenessGlowBounds(this.edgeBarDisplay().bounds, AWARENESS_GLOW_HEIGHT)
+    const bounds = awarenessGlowBounds(this.edgeBarDisplay().bounds)
     if (!sameBounds(win.getBounds(), bounds)) win.setBounds(bounds)
     // 分析阶段切换会频繁触发 sync；已可见时不再重复 show / 置顶，避免原生合成面被扰动。
     if (win.isVisible()) return true
     this.reassertAwarenessGlowTopmost('shown', win)
     win.showInactive()
     return true
+  }
+
+  /** 自感知流光的**期望**几何：与 `showAwarenessGlow` / `ensureAwarenessGlow` 同一个来源
+   *（自测断言用，避免在探针里另写一套 `screen` 取屏口径 —— 提示条可以跟随光标所在显示器）。 */
+  getAwarenessGlowTargetBounds(): AwarenessGlowRect {
+    return awarenessGlowBounds(this.edgeBarDisplay().bounds)
   }
 
   hideAwarenessGlow(): void {
@@ -711,7 +719,12 @@ export class WindowManager {
     const existing = this.awarenessGlowWindow
     if (existing !== undefined && !existing.isDestroyed()) return existing
 
-    const bounds = awarenessGlowBounds(this.edgeBarDisplay().bounds, AWARENESS_GLOW_HEIGHT)
+    // 与 `showAwarenessGlow()` 同口径：建窗几何就是整块显示器（改一处要同时改两处）。
+    //
+    // v33（2026-10-11）：浮层从「72px 顶部条」扩到**整块显示器**以便四边流光。中部在
+    // 渲染层保持全透明，窗口继续 `setIgnoreMouseEvents(true, { forward: true })`，
+    // 因此它虽然覆盖全屏，仍然只做状态可视化：不截获点击、不挡提示条悬停、不挡桌面与任务栏。
+    const bounds = awarenessGlowBounds(this.edgeBarDisplay().bounds)
     const win = new BrowserWindow({
       ...bounds,
       show: false,
