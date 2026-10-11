@@ -51,10 +51,11 @@
     hover / mouseleave 自动关闭。鼠标行为不受触摸分支影响。
   - 实现状态（前端刷新轮）：
     - 两态由 IPC **`window:setEdgeBarExpanded`** 驱动（渲染层 → preload → `WindowManager.setEdgeBarExpanded`）。
-      主进程把 BrowserWindow **稳定保持在展开态宿主尺寸**（328px × 工作区高 - 48px），
-      两态只切换原生 `setShape`：收起态裁成贴边的 **8×200px 居中区域**，展开态裁成完整的
-      328px 面板区域。这样展开 / 收起只做合成动画，不再瞬切原生窗口尺寸，也不会留下
-      不可见的鼠标遮挡区；几何与 shape 算术在 `main/edge-bar-geometry.ts`（纯函数 + 单测）。
+      主进程把 BrowserWindow **稳定保持在展开态宿主尺寸**（请求 328px × 工作区高 - 48px），
+      两态只切换原生 `setShape`：收起态裁成贴边的 **8×200px 居中区域**，展开态裁成
+      **面板列（客户区宽 − 8px，左圆角 28px 阶梯）+ 竖条 8×200px** 两块。这样展开 / 收起只做合成动画，
+      不再瞬切原生窗口尺寸，也不会留下不可见的鼠标遮挡区；几何与 shape 算术在
+      `main/edge-bar-geometry.ts`（纯函数 + 单测）。
     - **展开态必须跟着长高**：面板内容（自感知总览 / 提醒 / 最近理解 / 上下文 + 3 个操作按钮）
       在 200px 里装不下，只加宽会得到「看得到面板却点不到按钮」——实测按钮落在 y=278~410、窗口仅 202px 高，
       `elementFromPoint` 全部落空。稳定宿主让展开态天然使用完整高度，
@@ -63,9 +64,12 @@
       **250ms 轻滑淡入 / 淡出**（右侧 20px + opacity），退出动画结束后才收回 shape。
       触摸 / 触控笔在按下时直接切换并按同一次手势去重，合成的 click 不再走鼠标的
       「打开主界面」分支。窗口隐藏时主进程会把 shape 复位为收起态。
-    - **面板内容区 320px，`right: 8px`**：面板不能贴到窗口最右缘（否则会盖住 8px 竖条，
-      「展开态竖条仍可点」就不成立、竖条的悬停反馈也看不见）。328 = 320 面板 + 8 竖条。
-      面板内以“自感知总览 + 最近理解”为主要信息层级；所有分组只用轻透明 surface，
+    - **面板左圆角、`right: 8px`（2026-10-11 修订）**：面板盖住「除竖条列以外」的整个客户区
+      （`left: 0; right: 8px`），左缘圆角用 `--radius-xl`；主进程的 `edgeBarShape` 用 1px 阶梯
+      把窗口区域近似成同一条弧，材质因此不会从圆角外露出来（两者必须同步改）。
+      8px 竖条仍叠在面板右缘之上（仍可点、仍有悬停反馈，展开态竖条 `title` 不出现）；
+      实测客户区约 334px（Electron 给透明窗口补的不可见 inset 也算在窗口矩形里）。
+      本面板内以“自感知总览 + 最近理解”为主要信息层级；所有分组只用轻透明 surface，
       不逐项叠加 backdrop-filter。
     - **提示条不承载对话输入（2026-10）**：快速会话仍存在且可从主界面左栏固定项进入，
       但提示条面板不再挂 `useChat`、输入框或消息流。窗口始终保持 `focusable: false`，
@@ -99,12 +103,17 @@
     （`window-manager.ts` 里也写明了「不参与用户拖动」）。允许拖动会让**两套几何来源打架**：
     用户拖出来的位置会被下一次展开 / 收起复位，观感是「拖了没用还乱跳」。
     因此它不挂 `drag-region`，也不在 `DRAGGABLE_WINDOWS` 清单里（见 §1）。
-- **可配置**：显示 / 隐藏、透明度、静默时段。提示条使用**自包含圆角玻璃**，不启用原生 Acrylic：
-  Windows 的 `backgroundMaterial` 与系统窗口阴影都按整个 BrowserWindow 矩形绘制，圆角面板
-  无法闭合左上 / 左下角，会露出矩形材质与阴影（2026-10-04 用户实测）。面板用高不透明度
-  `--glass-fallback` tint + 自身阴影收成完整圆角；主界面仍保留原生 Mica 系统材质。
-  `general.edgeBar.opacity` 只作为整窗额外透明度，不再是“有没有玻璃感”的来源。
-  - 实现状态（v0.6.0；2026-10-04 退出 acrylic）：`general.edgeBar.opacity` 保存后即时应用（`setOpacity`，范围 0.2–1.0）；
+- **可配置**：显示 / 隐藏、透明度、静默时段。提示条**启用原生 Acrylic**（2026-10-11 修订；
+  此前 2026-10-04 曾退出）：面板用半透明 `--edge-bar-tint` 让 DWM 模糊后的桌面透出来，
+  圆角则**用原生窗口区域按 1px 阶梯近似**（`edgeBarShape` 的 `roundLeftCorners`）。
+  关键事实（2026-10-11 实测，推翻了当天早些时候的一个错误结论）：**DWM 的系统材质按窗口区域裁剪**
+  —— 收起态 shape 只有 8×200 时，材质也只画在那 8×200 里（逐像素比对与「不挂材质」完全一致）。
+  因此「圆角 + 真毛玻璃」可以兼得：把窗口区域也切成圆弧，圆角外就不会露出矩形材质。
+  材质**只在展开态挂**，收起态是纯透明确保桌面右缘没有材质带。
+  材质不可用（非 win32 / 旧 Windows / `appearance.glass = false`）时窗口底色回退不透明
+  `--bg-base`，面板 tint 同时退实色（`:root[data-glass='off']`），不出现「透明窗口裸漏桌面」。
+  `general.edgeBar.opacity` 仍是整窗额外透明度（`setOpacity`），不再是“有没有玻璃感”的来源。
+  - 实现状态（v0.6.0；2026-10-11 恢复 acrylic；2026-10-04 曾退出）：`general.edgeBar.opacity` 保存后即时应用（`setOpacity`，范围 0.2–1.0）；
     `general.edgeBar.quietHours` 由 `main/edge-bar-scheduler.ts` 每 30s 判定，**仅控制提示条自身显隐**，
     与 `advanced.quietHours`（控制主动打扰：课前提醒 / 敏感工具确认）职责分离、互不影响。
     可见性只在状态翻转时切换，避免反复 show 把用户刚手动隐藏的提示条拉回来。
@@ -147,12 +156,13 @@
 - **原生毛玻璃（2026-10-04，Windows 11 22H2+）**：主界面 BrowserWindow 使用
   `backgroundMaterial: 'acrylic'`，渲染层 body 透明，系统材质提供长驻窗口的桌面层次；
   页面侧栏、标题栏、输入区再叠加 CSS 玻璃作为可读性层。系统材质不可用或非 win32 时
-  自动回退原有不透明 `--bg-base`，不得用透明窗口裸漏桌面。设置窗与记忆库同样启用原生 Mica
-  （侧栏使用标准玻璃、内容区叠 `--glass-content` 可读性 tint）；引导窗继续保持
+  自动回退原有不透明 `--bg-base`，不得用透明窗口裸漏桌面。设置窗 / 记忆库 / 自动化详情窗
+  同样启用原生 Acrylic（侧栏使用标准玻璃、内容区叠 `--glass-content` 可读性 tint）；
+  提示条（§2.1）自 2026-10-11 起并入同一份材质名单；引导窗继续保持
   不透明基座，避免所有窗口同时采样桌面造成 GPU 重绘与可读性问题。
   **v32 起受 `appearance.glass` 门控**：该开关为 `false` 时窗口管理器不挂系统材质、
   底色改回不透明 `--bg-base`，已存在的窗口由 `applyGlass(false)` 即时摘除材质（关闭=实色，
-  与页面令牌降级同一时刻生效）。
+  与页面令牌降级同一时刻生效）。**覆盖五个窗口**：chat / settings / memory / automation / edge-bar。
   **Electron 44 起恢复系统原生最大化**：Electron 33 的 `backgroundMaterial` 会在
   `WS_MAXIMIZE` 后把 Acrylic 锁成灰底，旧版曾用工作区缩放规避；Electron 44 已修复材质
   更新链路，chat / settings / memory 恢复调用 `BrowserWindow.maximize()` / `unmaximize()`，
@@ -906,8 +916,19 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   `useChat.send` 在流式期间直接返回，若不提示就是「敲了 Enter 没反应也没说法」。
 - **工具行**（左 → 右）：**权限模式** + 模型来源下拉 + 模型下拉 + 思考等级下拉 + 弹性空隙 +
   （右侧）瞬时提示 + 麦克风（STT，门控口径不变）+ 停止（流式中）+ 发送。
-  压缩顺序与旧口径一致：先让瞬时提示文本让位；来源固定 96px、模型下拉可收缩到 76px，
-  **发送按钮绝不能被挤出卡外**。
+  **压缩顺序与下限（2026-10-11 修订，修「拉伸左栏后权限钮与来源下拉重合」）**：让位顺序
+  「瞬时提示 → 模型 → 思考 → 权限」，**权限芯片不参与收缩**（`flex: 0 0 auto`，档位闸门文案保持完整）；
+  下限分别是权限 51px（图标 + 箭头 + 内边距）、来源 68px、模型 68px、思考 56px，**发送按钮绝不收缩**。
+  收缩必须加在**有明确下限**的 flex 项上：`.perm` / `.model-picker-group` 此前写的 `min-width: 0`
+  会让容器被压到子元素 min-content 以下，而 `.perm-btn` 是行内级盒（shrink-to-fit，下限 = 自身
+  min-content ≈ 95px）→ 它带 `overflow: visible` 直接画到相邻芯片身上（现象：权限文字完整、
+  它自己的箭头被来源下拉盖住）。**`min-width: min-content` 不是解**：原生 `<select>` 的固有宽度是
+  最宽的那个 option（实测两个下拉合计 220px），等于「不收缩」，实测整行溢出输入卡 53px ——
+  因此 `.model-picker-group` 写死 `min-width: 140px`（= 68 + 4 + 68，与两个子控件同口径）。
+  主区被夹到下限时输入卡内容宽实测约 354px，下限合计 346px（最坏组合是「变更前确认」档），
+  因此既不重合也不会把发送键挤出卡外。极窄时两个原生下拉的文字会只剩箭头（原生 select 不做
+  省略号），这是本宽度下的已知取舍：两者各有 `title` 悬浮提示，权限档位文案与发送键优先保完整。
+  探针 `chat-composer-narrow.png`：把左栏拖到夹取上限后量五枚控件的矩形两两不相交、均在输入卡内。
 - **四枚「芯片」的视觉口径**（减负轮）：权限 / 来源 / 模型 / 思考都是 `--control-h-xs`（28px）高、
   `--radius-pill` 圆角、**静止态零边框零底色**（只有文字与原生箭头），悬停 / 聚焦浮一层
   `--fill-2`。四者必须逐字对齐才像同一条工具带上的控件；此前的 40px + 逐枚边框
@@ -1055,6 +1076,10 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   `settings:get` 回报 `permissionMode === 'readonly'`，收尾还原成**出厂默认档 `auto`**
   并断言触发器回到「完全权限」）、
   `chat-composer-flyouts.png`（浮层互斥 + 几何不相交 + 发送键 `elementFromPoint` 命中自己）、
+  `chat-composer-narrow.png`（2026-10-11：`act` 把左栏拖到夹取上限 → 主区恰好 420px 的下限现场；
+  check 量权限 / 来源 / 模型 / 思考 / 发送五枚控件的矩形 —— 两两不相交、均在 `.composer-box` 内、
+  各控件不小于文档下限（51 / 72 / 64 / 56），收尾双击把手复位。修的是「拉伸左栏后权限钮
+  与来源下拉重合」）、
   `chat-archive.png`（归档分组）；
   以及 `chat-stream.png`（**唯一一条 DOM 级端到端**：capture 在跑这一段前竖起本地桩 LLM 并把
   `llm.active` 指向它 → 探针把提示词写进 textarea、点发送 → 断言助手气泡里出现了桩服务的回复文本、
@@ -1400,6 +1425,12 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
 强调色纯色或极淡强调色填充；功能性渐变（如遮罩渐隐）允许，但必须注释说明用途。
 组件只引用语义令牌，不直接引用原始中性阶或另写颜色字面量。分层卡片用 `--fill-1`，悬停用 `--fill-2`，选中用 `--fill-3`；输入框用 1px 紧聚焦环。每屏一个主动作，其余使用次要或弱动作。玻璃材质用于悬浮面板，不铺满页面；静止卡片保持边界清楚、正文不降低透明度。
 
+**原生表单控件的主题跟随（2026-10-11）**：`<select>` 的**弹出列表由平台主题绘制**，`:root` 上的
+`color-scheme` 管不到它 —— 暗档下会得到「白底 + 从控件继承来的弱字色」（用户实测「弹出选项框没有反色」）。
+因此 `theme.css` 里显式声明 `select option { background-color: var(--bg-raised) }`（选中项
+`--selection-fill`），**刻意不声明 `color`**：收起态显示的正是选中项文字，给 `option` 设颜色会把
+工具行四枚芯片的静息灰字顶成正文色。新增原生下拉时不要再各写一套底色 —— 桌面与 Center Web 共用这条。
+
 **Aurora Glass 2.0 性能与可读性约束**：
 
 - 玻璃分三层：`glass-shell`（左右栏 / 设置侧栏 / Center 导轨，标准模糊）、`glass-bar`（顶部栏 / 输入带 / 页脚，薄模糊）、`glass-panel`（提示条面板 / 模态 / 浮层，厚模糊）。
@@ -1409,8 +1440,10 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
 - 系统要求减少透明度或提高对比度时，全部玻璃退回不透明材质；`prefers-reduced-motion` 继续沿用全局 1ms 降级。
   **v32 起另有一条应用内开关**：`appearance.glass = false` 时渲染层在文档根挂 `data-glass="off"`，
   `theme.css` 用**与上面这条系统降级同一份令牌口径**（三档 `--glass-filter*: none` + 玻璃面换实色令牌 +
-  画布采样层透明）把页面玻璃退成实色，并额外把 `--glass-fallback` 压成 `--bg-base`
-  （提示条的圆角面板走 `color-mix(--glass-fallback 94%, transparent)`，不压就仍是约 90% 半透明）；
+  画布采样层透明）把页面玻璃退成实色，并额外把 `--glass-fallback` / `--edge-bar-tint` 压成实色
+  （`--glass-fallback` 被多处 `color-mix` 消费；提示条面板与竖条读专用的 `--edge-bar-tint` ——
+  玻璃开时它是半透明 tint，让 DWM Acrylic 的模糊桌面透出来，关闭/系统降级时必须压成不透明，
+  否则「窗口透明 + 面板半透明」会裸漏桌面）；
   原生材质那半由主进程 `WindowManager.applyGlass()` 摘掉（`setBackgroundMaterial('none')` + 不透明底色）。
   **已知限制**：原生 Acrylic 是否跟随应用档位由 DWM 决定，系统级限制（`prefers-reduced-transparency`）
   只降级页面令牌、不摘原生材质。
@@ -1576,6 +1609,7 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
      `settings-classroom-patch.png` → `settings-modes-work-gating.png` →
      `settings-appearance-glass-off.png`（v32：act 关掉 `appearance.glass`，`mainAct` 断言**原生材质真的摘掉**
      —— 必须在 check 的还原动作之前读，放到 `nativeCheck` 只会读到"已还原"的假结果；
+     2026-10-11 起 `mainAct` 同时断言 chat 与 **edge-bar** 两窗的材质都摘掉；
      check 断言文档根 `data-glass="off"` 与 `--glass-filter: none` / `--glass-content` 换成基座色，
      收尾还原成开，后续场景与两档主题图仍看到默认档）。
      「思考等级 / 结构 / 模型列表」三条的配置改写与恢复口径见下面各条探针说明。
@@ -1626,8 +1660,10 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
   `act`（在渲染层派发真实 `mouseenter` / `click`）、`check`（截图后取一份可判定结果）。
   面板是渲染层 hover 驱动的，**只从主进程改窗口尺寸会拍到空面板**，所以提示条展开态走 `act`。
 - 探针返回 `pass: boolean` 时按 `PASS` / `FAIL` 写日志（前缀与 `AURORA_SMOKE_RESULT` 一致）：
-  - 提示条面板：`elementFromPoint` 命中测试 3 个按钮 + 是否落在窗口宽度内 + 窗口宽 ≤ 328px
-    （面板自身的 320px 与自感知 / 最近理解锚点一并作为通过条件）；
+  - 提示条面板（`EDGE_BAR_PANEL_SCRIPT`，2026-10-11 起）：`elementFromPoint` 命中测试 3 个按钮
+    + 是否落在窗口宽度内 + **面板铺满整个客户区**（`coversWindow`）+ **tint 真的半透明**
+    （`translucentTint`，退回不透明就把原生材质盖死了）；材质本身由主进程
+    `nativeGlassCheck('edge-bar')` 单独断言（渲染层看不到 DWM）；
   - 点击竖条后的窗口状态（`chat` 可见、`primary === 'chat'`）；
   - **交互窗收起即隐藏**（`CHAT_COLLAPSE_CHECK`，产物 `chat-collapse.png`）：
     在交互窗里真实点击标题栏 caption「关闭」按钮（按 `data-caption-btn="close"` 定位），等 600ms 后
