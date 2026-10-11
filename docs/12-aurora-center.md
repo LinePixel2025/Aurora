@@ -711,8 +711,12 @@ Center 可为登录客户端提供语言模型、生图、TTS 与 STT 四类官�
 `GET /api/client/model-services/catalog` 只接受客户端令牌，返回已启用且已开放的模型，
 不返回上游 Base URL、API Key 或未开放模型。
 
-`/api/model-gateway/*` 接受客户端令牌并按其绑定 `clientId` 鉴权，覆盖：
+网关按**请求体里的 `model`** 校验是否开放，因此同一能力可以在多个开放模型之间逐请求切换；
+客户端侧的选模（`center.officialModels.<cap>.model`）在主进程构造官方请求时生效——
+读时把所选模型与该条目的参数覆写进 `center-*` 镜像 Provider 副本（目录同步落盘的镜像
+始终是 defaultModel），解析链「选中项 → defaultModel → 首个」，目录缺席时不覆写（口径见 08 §8）。
 
+`/api/model-gateway/*` 接受客户端令牌并按其绑定 `clientId` 鉴权，覆盖：
 ```
 POST /api/model-gateway/llm/chat/completions
 POST /api/model-gateway/llm/responses

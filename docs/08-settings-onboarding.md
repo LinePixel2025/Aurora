@@ -1156,5 +1156,13 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 语言模型由 Center 页开关决定全局覆盖，会话级覆盖仍遵循“会话 > 全局”。
   TTS / STT / 生图以各自 `active` 为实际分派依据：首次开启官方服务自动切到 `center-*`，
   用户之后可在 Provider 页切回本地模型；官方开关保持开启但请求走本地。
+- **`officialModels.<cap>.model` 的生效口径（v0.4.8）**：四类能力的 `model` 都是**真实选模**——
+  主进程在 `createCenterAwareSettingsStore`（`apps/desktop/src/main/center/aware-settings.ts`）
+  **读时**把所选模型与其目录参数（生图 `size`、TTS `voice`/`speed`/`format`、STT `language`）
+  覆写进 `center-*` Provider 的返回副本，三条能力链与 TTS 试听 / 拉模型、Center 远程中转共用
+  同一副本；落盘镜像仍由目录同步维护为 defaultModel。解析链与镜像同源
+  （选中项 → defaultModel → 首个；空串 = 未选择），所选模型被 Center 下线时自动回落
+  defaultModel 并记一次日志，**不**触发「回落本机」提示。选模入口有两处、写同一字段：
+  Center 页「官方模型」区组与各供应商页的官方行下拉。
 - Center 离线、模型被停用时，官方请求按现有本地候选回落，并在对应能力首次回落时提示一次；
   若没有本地候选，保留原始错误。

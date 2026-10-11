@@ -25,6 +25,7 @@ import {
   TTS_FORMATS,
   TTS_PRESETS,
   isCenterOfficialProviderId,
+  type SettingsPatch,
   type TtsFormat,
   type TtsProviderConfig,
   type TtsProviderType,
@@ -35,6 +36,10 @@ import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
 import CenterOfficialProviderRow from './CenterOfficialProviderRow.vue'
 import { useCenterOfficialCatalog } from '../../shared/composables/useCenterOfficialCatalog.js'
+import {
+  officialModelDetails,
+  resolveEffectiveOfficialModel,
+} from '../composables/centerOfficialModel.js'
 import { useTts } from '../../shared/composables/useTts.js'
 import { useSettingsStore } from '../../shared/stores.js'
 
@@ -97,9 +102,15 @@ const officialProvider = computed(
   () => settingsStore.settings?.tts.providers[officialProviderId] ?? null,
 )
 const officialEnabled = computed(() => officialSelection.value.enabled)
-const officialModel = computed(
-  () => officialProvider.value?.model.trim() || officialSelection.value.model.trim(),
+const officialService = computed(() => catalog.value?.services.tts)
+const effectiveOfficial = computed(() =>
+  resolveEffectiveOfficialModel(
+    officialService.value,
+    officialSelection.value.model,
+    officialProvider.value?.model ?? '',
+  ),
 )
+const officialModel = computed(() => effectiveOfficial.value.model)
 const officialAvailable = computed(
   () =>
     officialEnabled.value &&
@@ -107,13 +118,29 @@ const officialAvailable = computed(
     officialProvider.value !== null &&
     officialProvider.value.baseUrl.trim() !== '' &&
     officialModel.value !== '' &&
-    officialProvider.value.voice.trim() !== '',
+    (effectiveOfficial.value.entry?.voice ?? officialProvider.value.voice).trim() !== '',
 )
-const officialDetails = computed(() => [
-  `模型 ${officialModel.value || '未配置'}`,
-  `音色 ${officialProvider.value?.voice.trim() || '未配置'}`,
-  `格式 ${officialProvider.value?.format ?? 'mp3'}`,
-])
+const officialDetails = computed(() =>
+  officialModelDetails(
+    'tts',
+    officialModel.value,
+    effectiveOfficial.value.entry,
+    officialProvider.value ?? undefined,
+  ),
+)
+
+/** 官方行选模：写 `center.officialModels.tts.model`，与 Center 页同一字段、双向联动 */
+async function onOfficialModelChange(model: string): Promise<void> {
+  const settings = settingsStore.settings
+  if (settings === null) return
+  const patch: SettingsPatch = {
+    center: {
+      officialModels: { ...settings.center.officialModels, tts: { enabled: true, model } },
+    },
+  }
+  const ok = await settingsStore.update(patch)
+  error.value = ok ? null : (settingsStore.error ?? '保存失败')
+}
 const selectableProviders = computed<
   Array<{ id: string; model: string; official: boolean; available: boolean }>
 >(() => [
@@ -723,6 +750,9 @@ function stopPreview(): void {
             :active="activeId === officialProviderId"
             :available="officialAvailable"
             :details="officialDetails"
+            :service="officialService"
+            :selection-model="officialSelection.model"
+            @select-model="onOfficialModelChange"
           />
           <article
             v-for="draft in drafts"
@@ -971,7 +1001,6 @@ function stopPreview(): void {
             </template>
           </article>
         </div>
-
       </div>
     </Transition>
   </section>

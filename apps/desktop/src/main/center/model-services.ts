@@ -20,6 +20,11 @@ import {
   type TtsProviderConfig,
 } from '@aurora/shared'
 import { httpBaseUrlOf } from './client-login.js'
+import {
+  normalizeImageSize,
+  normalizeTtsFormat,
+  resolveOfficialModelEntry,
+} from './official-selection.js'
 
 export interface CenterModelServicesDeps {
   settings: {
@@ -130,7 +135,7 @@ export class CenterModelServices {
 
     const image = catalog.services.imagegen
     if (image !== undefined) {
-      const entry = image.models.find((item) => item.id === image.defaultModel) ?? image.models[0]
+      const entry = resolveOfficialModelEntry(image, '')?.entry
       imageProviders[CENTER_OFFICIAL_PROVIDER_IDS.imagegen] = {
         type: 'openai-compat',
         baseUrl: `${base}/api/model-gateway/imagegen`,
@@ -142,7 +147,7 @@ export class CenterModelServices {
 
     const tts = catalog.services.tts
     if (tts !== undefined) {
-      const entry = tts.models.find((item) => item.id === tts.defaultModel) ?? tts.models[0]
+      const entry = resolveOfficialModelEntry(tts, '')?.entry
       ttsProviders[CENTER_OFFICIAL_PROVIDER_IDS.tts] = {
         type: tts.type === 'dashscope' ? 'dashscope' : 'openai-compat',
         baseUrl: `${base}/api/model-gateway/tts`,
@@ -156,7 +161,7 @@ export class CenterModelServices {
 
     const stt = catalog.services.stt
     if (stt !== undefined) {
-      const entry = stt.models.find((item) => item.id === stt.defaultModel) ?? stt.models[0]
+      const entry = resolveOfficialModelEntry(stt, '')?.entry
       sttProviders[CENTER_OFFICIAL_PROVIDER_IDS.stt] = {
         type: stt.type === 'dashscope-native' ? 'dashscope-native' : 'openai-compat',
         baseUrl: `${base}/api/model-gateway/stt`,
@@ -194,20 +199,6 @@ function isCatalog(value: unknown): value is CenterOfficialModelCatalog {
 
 function sameJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
-}
-
-function normalizeImageSize(value: string | undefined): ImageGenProviderConfig['size'] {
-  const allowed = ['512x512', '768x768', '1024x1024', '1024x1792', '1792x1024', 'auto'] as const
-  return (allowed as readonly string[]).includes(value ?? '')
-    ? (value as ImageGenProviderConfig['size'])
-    : '1024x1024'
-}
-
-function normalizeTtsFormat(value: string | undefined): TtsProviderConfig['format'] {
-  const allowed = ['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'] as const
-  return (allowed as readonly string[]).includes(value ?? '')
-    ? (value as TtsProviderConfig['format'])
-    : 'mp3'
 }
 
 export function resolveOfficialModelParams(

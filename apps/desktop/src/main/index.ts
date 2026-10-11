@@ -126,6 +126,7 @@ import { CenterConnector } from './center/connector.js'
 import { DeviceLoginController, type DeviceLoginOutcome } from './center/device-login.js'
 import { httpBaseUrlOf, requestClientLogin } from './center/client-login.js'
 import { CenterModelServices } from './center/model-services.js'
+import { createCenterAwareSettingsStore } from './center/aware-settings.js'
 import { resolveCapabilityRoute } from './center/service-routing.js'
 import { uploadFileToCenter } from './center/ingest.js'
 import { downloadFileFromCenter } from './center/deliver.js'
@@ -605,80 +606,14 @@ function emitOfficialFallback(capability: 'llm' | 'imagegen' | 'tts' | 'stt', la
   })
 }
 
-function createCenterAwareSettingsStore(base: SettingsStoreLike): SettingsStoreLike {
-  const reservedSecretOf = (path: string): string | undefined => {
-    for (const capability of ['tts', 'stt', 'imagegen'] as const) {
-      const providerId = CENTER_OFFICIAL_PROVIDER_IDS[capability]
-      if (
-        path === `${capability}.providers.${providerId}.apiKey` ||
-        path === `${capability}.providers.${providerId}.apiKeyEnc`
-      ) {
-        return base.getSecret('center.token')
-      }
-    }
-    return undefined
-  }
-  const noticeFallback = (capability: 'llm' | 'tts' | 'stt' | 'imagegen'): void => {
-    const key = `global:${capability}`
-    if (centerFallbackNoticeKeys.has(key)) return
-    centerFallbackNoticeKeys.add(key)
-    const label =
-      capability === 'llm'
-        ? '语言'
-        : capability === 'tts'
-          ? '语音合成'
-          : capability === 'stt'
-            ? '语音识别'
-            : '图像生成'
-    emitCenterRuntimeNotice({
-      capability,
-      message: `Aurora Center 官方${label}模型不可用，已回落到本机模型`,
-      at: new Date().toISOString(),
-    })
-  }
-  const applyOfficialSelection = (next: Settings): Settings => {
-    for (const capability of ['llm', 'tts', 'stt', 'imagegen'] as const) {
-      const selection = next.center.officialModels[capability]
-      if (!selection.enabled) continue
-      const providerId = CENTER_OFFICIAL_PROVIDER_IDS[capability]
-      const available =
-        centerModelServices?.service(capability) !== undefined &&
-        next[capability].providers[providerId] !== undefined
-      if (available) {
-        if (capability === 'llm') next.llm.active = providerId
-        else next[capability].enabled = true
-      } else {
-        noticeFallback(capability)
-      }
-    }
-    return next
-  }
-  return {
-    get: () => applyOfficialSelection(base.get()),
-    getSecret(path) {
-      return reservedSecretOf(path) ?? base.getSecret(path)
-    },
-    setSecret(path, plain) {
-      if (reservedSecretOf(path) !== undefined) return false
-      return base.setSecret(path, plain)
-    },
-    clearSecret(path) {
-      if (reservedSecretOf(path) !== undefined) return
-      base.clearSecret(path)
-    },
-    mutate(mutator) {
-      return base.mutate(mutator)
-    },
-    update(patch) {
-      return base.update(patch)
-    },
-    isCryptoAvailable: () => base.isCryptoAvailable(),
-    needsOnboarding: () => base.needsOnboarding(),
-    exportRedacted: () => applyOfficialSelection(base.exportRedacted()),
-    flush: () => base.flush(),
-    onChange: (listener) => base.onChange(listener),
-  }
-}
+/** 能力 → 回落提示里的中文名（与旧提示文案逐字一致）。 */
+const OFFICIAL_FALLBACK_LABELS = {
+  llm: '语言',
+  tts: '语音合成',
+  stt: '语音识别',
+  imagegen: '图像生成',
+} as const
+
 /** 扩展工具七件套装配器（docs/06 §14）：与 set_setting 同级，不受 agent.tools.enabled 门控 */
 let extensionTools: ExtensionToolsRegistry | undefined
 let imageDisplayPort: ReturnType<typeof createImageDisplayPort> | undefined
@@ -1222,7 +1157,12 @@ async function bootstrap(): Promise<void> {
     }),
   })
   settingsTool = registerSettingsTool({ tools, port: settingsPort, logger: logger.child('tools') })
-  const centerSettings = createCenterAwareSettingsStore(settings)
+  const centerSettings = createCenterAwareSettingsStore(settings, {
+    serviceOf: (capability) => centerModelServices?.service(capability),
+    noticeFallback: (capability) =>
+      emitOfficialFallback(capability, OFFICIAL_FALLBACK_LABELS[capability]),
+    logger: logger.child('center-official'),
+  })
   // 7.1.2 STT / 生图服务（docs/06 §15）：出网走注入的 netFetch（代理生效），
   //     生图落盘到 `userData/generated`（imagegen:read 的白名单根，见 ipc.ts 的路径校验）。
   const centerSttService = createSttService({

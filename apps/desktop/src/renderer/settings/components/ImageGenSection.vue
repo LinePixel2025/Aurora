@@ -25,12 +25,17 @@ import {
   RESOURCE_NAME_RULE,
   isCenterOfficialProviderId,
   type ImageGenProviderConfig,
+  type SettingsPatch,
 } from '@aurora/shared/browser'
 import AppButton from '../../shared/components/AppButton.vue'
 import AppToast from '../../shared/components/AppToast.vue'
 import SettingField from '../../shared/components/SettingField.vue'
 import CenterOfficialProviderRow from './CenterOfficialProviderRow.vue'
 import { useCenterOfficialCatalog } from '../../shared/composables/useCenterOfficialCatalog.js'
+import {
+  officialModelDetails,
+  resolveEffectiveOfficialModel,
+} from '../composables/centerOfficialModel.js'
 import { useSettingsStore } from '../../shared/stores.js'
 
 interface ProviderDraft extends ImageGenProviderConfig {
@@ -72,9 +77,15 @@ const officialProvider = computed(
   () => settingsStore.settings?.imagegen.providers[officialProviderId] ?? null,
 )
 const officialEnabled = computed(() => officialSelection.value.enabled)
-const officialModel = computed(
-  () => officialProvider.value?.model.trim() || officialSelection.value.model.trim(),
+const officialService = computed(() => catalog.value?.services.imagegen)
+const effectiveOfficial = computed(() =>
+  resolveEffectiveOfficialModel(
+    officialService.value,
+    officialSelection.value.model,
+    officialProvider.value?.model ?? '',
+  ),
 )
+const officialModel = computed(() => effectiveOfficial.value.model)
 const officialAvailable = computed(
   () =>
     officialEnabled.value &&
@@ -83,10 +94,27 @@ const officialAvailable = computed(
     officialProvider.value.baseUrl.trim() !== '' &&
     officialModel.value !== '',
 )
-const officialDetails = computed(() => [
-  `模型 ${officialModel.value || '未配置'}`,
-  `尺寸 ${officialProvider.value?.size ?? 'auto'}`,
-])
+const officialDetails = computed(() =>
+  officialModelDetails(
+    'imagegen',
+    officialModel.value,
+    effectiveOfficial.value.entry,
+    officialProvider.value ?? undefined,
+  ),
+)
+
+/** 官方行选模：写 `center.officialModels.imagegen.model`，与 Center 页同一字段、双向联动 */
+async function onOfficialModelChange(model: string): Promise<void> {
+  const settings = settingsStore.settings
+  if (settings === null) return
+  const patch: SettingsPatch = {
+    center: {
+      officialModels: { ...settings.center.officialModels, imagegen: { enabled: true, model } },
+    },
+  }
+  const ok = await settingsStore.update(patch)
+  error.value = ok ? null : (settingsStore.error ?? '保存失败')
+}
 const selectableProviders = computed<
   Array<{ id: string; model: string; official: boolean; available: boolean }>
 >(() => [
@@ -493,6 +521,9 @@ async function setActive(id: string): Promise<void> {
             :active="activeId === officialProviderId"
             :available="officialAvailable"
             :details="officialDetails"
+            :service="officialService"
+            :selection-model="officialSelection.model"
+            @select-model="onOfficialModelChange"
           />
           <article
             v-for="draft in drafts"
@@ -611,7 +642,6 @@ async function setActive(id: string): Promise<void> {
             </template>
           </article>
         </div>
-
       </div>
     </Transition>
   </section>
