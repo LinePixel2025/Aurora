@@ -11,8 +11,20 @@
 > --password <密码>` 打印客户端的 `ClientStatus`（含 `voice`）：能力位是 `true` 而网页没有按钮，
 > 就是网页包旧了。
 >
-> `docker-compose.yml` 的 `image:` tag 跟版本号走（当前 `0.4.7`）：别在同一 tag 上反复覆盖，
-> 否则排障时说不清线上跑的是哪一版。
+> `docker-compose.yml` 的 `image:` tag 跟 **Center 自己的版本号**（`packages/center/package.json`，
+> 当前 `0.4.7`，**不必与桌面端版本号相同**）走：更新 Center 先升那个版本号、同步换 tag，
+> 别在同一 tag 上反复覆盖，否则排障时说不清线上跑的是哪一版。
+
+## 0. Center 自身的更新口径（版本线独立）
+
+- Center 版本号只认 `packages/center/package.json`，**不必与 Aurora 客户端相同**；
+  更新时只升这个包的版本（不动 root / apps/desktop）。
+- Center 更新**不创建 git tag、不上传 GitHub Releases** —— 「发布 tag / 发布双投 /
+  release notes」那一套（docs/09 §7/§10、`scripts/release.mjs`）只约束**桌面安装包**，
+  与本目录的部署流程无关。
+- 完整更新流程就是：改代码 → `pnpm --filter @aurora/center build` → 按 §1 打包 →
+  scp 上服务器 → `docker compose up -d --build`（数据在 `./data`，不受影响）。
+
 ## 1. 构建机：打部署包
 
 ```bash

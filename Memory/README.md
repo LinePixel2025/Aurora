@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-11 | Aurora Center 版本线与桌面端解耦：更新 Center 不建 tag、不上传 GitHub          | 发布, Center, 版本, 口径               | [2026-10-11-center-independent-version.md](2026-10-11-center-independent-version.md)                         |
 | 2026-10-11 | v0.4.7 安装包双投（GitHub + Center）：发布说明先补桌面改动、UAC 会卡死 verify:update | 发布, 打包, 更新源, Center, GitHub, 坑 | [2026-10-11-v047-installer-dual-publish.md](2026-10-11-v047-installer-dual-publish.md)                       |
 | 2026-10-11 | 自感知流光改四边（全屏浮层 + CSS 布局摆位）、appearance.awarenessGlow 开关（v33） | 自感知, 流光, UI, CSS, 配置, 探针, 坑   | [2026-10-11-awareness-glow-four-edges-toggle.md](2026-10-11-awareness-glow-four-edges-toggle.md)             |
 | 2026-10-11 | 提示条恢复原生 Acrylic：材质按窗口区域裁剪、圆角用 1px 阶梯区域、只在展开态挂（含取证通道坑） | UI, edge-bar, 毛玻璃, Electron, 坑     | [2026-10-11-edge-bar-native-acrylic-restore.md](2026-10-11-edge-bar-native-acrylic-restore.md)               |

@@ -517,6 +517,13 @@ aurora-center version
 - **Docker 离线部署**：`packages/center/deploy/`（构建机 `pnpm deploy` 打自包含产物 →
   scp → `docker compose up -d --build`，服务器全程无需访问 npm）；步骤、更新与安全
   注意（纯 HTTP 明文风险、反代 / cloudflared 加 TLS）见 `packages/center/deploy/README.md`。
+- **版本线与桌面端独立（2026-10-11 口径）**：Center 的版本号**只以 `packages/center/package.json`
+  为准**（`aurora-center version`、握手 `welcome`、部署 `docker-compose.yml` 的
+  `image: aurora-center:<ver>` tag 都跟着它），**不必与 Aurora 客户端版本相同**。
+  Center 自身的更新 = 升 `packages/center/package.json` → 按 `deploy/README.md` §1 重新打包换装，
+  **不创建 git tag、不上传 GitHub Releases、不动 root / apps/desktop 的版本号、不走
+  `scripts/release.mjs`** —— docs/09 的「发布 tag / 发布双投」只约束桌面安装包发布；
+  往 Center 更新源传安装包（`--publish-center` / `releases publish`）属于桌面发布链路，与此无关。
 
 ## 10. Web UI（官网入口 + 登录后工作台）
 

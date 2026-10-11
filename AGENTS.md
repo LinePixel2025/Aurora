@@ -124,11 +124,16 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **不写 `docs/xx §n` 这类文档引用**；删的是冗余，**边界 / 后果 / 修复路径必须保留**；
   改文案后要同步核对断言了原文串的探针场景（`chat-composer-slash` 等）。
 - **提交信息**用 Conventional Commits、描述用中文（`feat(v0.5.0): ...` / `fix: ...` / `docs: ...`）。
-- **发布 tag**：每次打包安装包前必须相对上一版本 tag 汇总全部更新点，写入
+- **发布 tag（仅约束桌面安装包）**：每次打包安装包前必须相对上一版本 tag 汇总全部更新点，写入
   `docs/release-notes/vX.Y.Z.md`，并把它作为 annotated tag 的完整 message；禁止只写
   `Aurora vX.Y.Z`。（发布脚本会硬检查 `--notes-file` 与上一版本对比）
-- **发布双投**：每次上传桌面安装包时必须同时上传 GitHub Releases 与 Aurora Center
+  **Aurora Center 自身的更新不创建 tag。**
+- **发布双投（仅约束桌面安装包）**：每次上传桌面安装包时必须同时上传 GitHub Releases 与 Aurora Center
   更新源，三者 `installer / blockmap / latest.yml` 版本一致；只上传 GitHub 不算发布完成。
+  **Aurora Center 自身的更新不适用双投：不上传 GitHub Releases、不创建 tag。**
+- **Center 版本线独立**：Aurora Center 更新只升 `packages/center/package.json`
+  （**不必与客户端版本号相同**，不动 root / apps/desktop），按
+  `packages/center/deploy/README.md` §0 重新打包换装；不走 `scripts/release.mjs`。
 
 ## 文档先行（Docs-first）
 

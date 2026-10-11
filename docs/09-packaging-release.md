@@ -165,6 +165,10 @@ electron-builder 首次打包会下载两样东西：Electron 发行包与打包
 
 ### Git tag 规范（以后每个版本都适用）
 
+> **适用范围：仅桌面安装包发布。** Aurora Center 自身的更新**不打 tag、不上传 GitHub Releases**，
+> 版本线与桌面端独立（只动 `packages/center/package.json`，见 docs/12 §9 与
+> `packages/center/deploy/README.md`）。
+
 - 版本 tag 一律使用 **annotated tag**：`git tag -a vX.Y.Z`，不用轻量 tag。
 - **每次打包安装包前**，先相对上一版本 tag 汇总差异：
 
@@ -272,3 +276,8 @@ Content-Length、Range / 206。`latest.yml` 与 `/current` 不缓存，安装包
 无论使用哪个入口，都必须与同一个版本的 GitHub Release 同步双投；`latest.yml` 的 version、
 size 与 sha512 在两端必须一致。Center 发布完成后至少验证
 `GET <Center>/api/updates/latest.yml` 返回 200，并确认安装包 Range 请求返回 206。
+
+> 双投的对象是**桌面安装包**这一批产物。Aurora Center 服务器自身（`packages/center`）的升级
+> **不适用双投**：不上传 GitHub Releases、不创建 tag、不必与客户端版本号相同 ——
+> 只升 `packages/center/package.json` 并按 `packages/center/deploy/README.md` 换装即可
+> （docs/12 §9「版本线与桌面端独立」）。
