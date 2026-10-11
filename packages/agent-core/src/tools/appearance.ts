@@ -1,16 +1,16 @@
 /**
- * `set_appearance` 工具（v32，docs/06 §12.1）。
+ * `set_appearance` 工具（v32；v33 增至四字段，docs/06 §12.1）。
  *
  * 分层与 `set_setting` 完全一致：本文件是**纯逻辑**，真实读写由主进程注入的
  * `SettingsToolPort` 负责（`main/tools/settings-port.ts`），因此内核不依赖 Electron，
  * 也能在 Node 里完整单测。
  *
  * 为什么单开一个工具而不是只靠 `set_setting`：
- * - **无路径**：参数是三个固定字段（枚举 / 布尔），模型不需要记住 `appearance.*` 的写法，
+ * - **无路径**：参数是四个固定字段（枚举 / 布尔），模型不需要记住 `appearance.*` 的写法，
  *   也不可能借它写到别的配置路径上；
- * - **不弹确认卡**：三项都是纯视觉、即时可撤销，不碰文件 / 路径 / 凭据，
+ * - **不弹确认卡**：四项都是纯视觉、即时可撤销，不碰文件 / 路径 / 凭据，
  *   因此 `sensitivity: 'safe'`（`set_setting` 保持 `confirm`，它能改的是一整片可写面）；
- * - **可读**：一个字段都不传 = 报告当前三档，模型想问"现在是什么主题"不必换工具。
+ * - **可读**：一个字段都不传 = 报告当前四项，模型想问"现在是什么主题"不必换工具。
  *
  * 安全边界：真正写盘前仍然逐条过 `port.writable()`（与 `set_setting` 同一条判定，
  * 用户在 `advanced.readonlyPrefixes` 里追加 `appearance` 时这里同样会被拒），
@@ -30,11 +30,12 @@ import type { SettingsToolPort } from './settings.js'
 /** 工具名固定：主进程装配层按它注册 / 摘除（与 `SETTINGS_TOOL_NAME` 同处一个 sync）。 */
 export const APPEARANCE_TOOL_NAME = 'set_appearance'
 
-/** 三条可写路径：路径本身不在模型参数里，只在这里出现一次。 */
+/** 四条可写路径：路径本身不在模型参数里，只在这里出现一次。 */
 const PATHS = {
   theme: 'appearance.theme',
   accent: 'appearance.accent',
   glass: 'appearance.glass',
+  awarenessGlow: 'appearance.awarenessGlow',
 } as const
 
 type AppearanceField = keyof typeof PATHS
@@ -44,6 +45,7 @@ const FIELD_LABELS: Record<AppearanceField, string> = {
   theme: '明暗档位',
   accent: '强调色',
   glass: '毛玻璃',
+  awarenessGlow: '流光特效',
 }
 
 const THEME_LABELS: Record<AppearanceTheme, string> = {
@@ -72,9 +74,10 @@ export function createAppearanceTool(options: AppearanceToolOptions): ToolDefini
   return {
     name: APPEARANCE_TOOL_NAME,
     description:
-      '查看或修改 Aurora 的界面外观。三个字段都可选：theme（明暗档位：system 跟随系统 / light 亮色 / dark 暗色）、' +
+      '查看或修改 Aurora 的界面外观。四个字段都可选：theme（明暗档位：system 跟随系统 / light 亮色 / dark 暗色）、' +
       'accent（强调色：aurora 品牌蓝 / teal / violet / rose / amber）、glass（毛玻璃效果开关，' +
-      'false = 窗口与面板变实色）。**一个字段都不传**时只回报当前外观，不做修改。' +
+      'false = 窗口与面板变实色）、awarenessGlow（文件自感知的四周流光特效开关，false = 分析期间完全不出流光）。' +
+      '**一个字段都不传**时只回报当前外观，不做修改。' +
       '改动即时生效、无需重启（四个窗口一起跟随，用户能立刻看到），完成后请如实告知用户改了什么。',
     parameters: {
       type: 'object',
@@ -92,6 +95,10 @@ export function createAppearanceTool(options: AppearanceToolOptions): ToolDefini
         glass: {
           type: 'boolean',
           description: '毛玻璃效果：true 开启（默认），false 关闭（窗口与面板变实色）',
+        },
+        awarenessGlow: {
+          type: 'boolean',
+          description: '文件自感知的四周流光特效：true 开启（默认），false 关闭（分析期间完全不出流光）',
         },
       },
       additionalProperties: false,
@@ -204,6 +211,14 @@ function parseAppearance(record: Record<string, unknown> | undefined): ParsedApp
   if (glass !== undefined) {
     if (typeof glass !== 'boolean') return { error: 'glass 只能是布尔值（true / false）。' }
     changes.push({ path: PATHS.glass, value: glass })
+  }
+
+  const awarenessGlow = record?.['awarenessGlow']
+  if (awarenessGlow !== undefined) {
+    if (typeof awarenessGlow !== 'boolean') {
+      return { error: 'awarenessGlow 只能是布尔值（true / false）。' }
+    }
+    changes.push({ path: PATHS.awarenessGlow, value: awarenessGlow })
   }
 
   return { changes }

@@ -14,9 +14,11 @@ import type { ToolContext, ToolDefinition } from './registry.js'
 
 const ctx: ToolContext = { sessionId: 'test-session' }
 
-/** 外观三件套的缩小版快照（与真实 `appearance` 分组同形） */
+/** 外观四件套的缩小版快照（与真实 `appearance` 分组同形） */
 function appearanceSnapshot(): Record<string, unknown> {
-  return { appearance: { theme: 'system', accent: 'aurora', glass: true } }
+  return {
+    appearance: { theme: 'system', accent: 'aurora', glass: true, awarenessGlow: true },
+  }
 }
 
 interface FakePortOptions {
@@ -107,7 +109,7 @@ describe('createAppearanceTool 元信息', () => {
     expect(tool.description).toContain('毛玻璃')
   })
 
-  it('三个参数都是可选的，且枚举与 Schema 同源', () => {
+  it('四个参数都是可选的，且枚举与 Schema 同源', () => {
     const { tool } = toolOf()
     const properties = tool.parameters.properties as Record<
       string,
@@ -118,6 +120,7 @@ describe('createAppearanceTool 元信息', () => {
     expect(properties['theme']?.enum).toEqual(['system', 'light', 'dark'])
     expect(properties['accent']?.enum).toEqual(['aurora', 'teal', 'violet', 'rose', 'amber'])
     expect(properties['glass']?.type).toBe('boolean')
+    expect(properties['awarenessGlow']?.type).toBe('boolean')
   })
 })
 
@@ -149,23 +152,28 @@ describe('set_appearance 的写入分支', () => {
     expect(calls.write).toEqual([[{ path: 'appearance.theme', value: 'dark' }]])
     expect(resolvePath(snapshot, 'appearance.theme')).toBe('dark')
     expect(result.content).toContain('暗色')
-    // 未给的两个字段如实标注"未改动"，让模型知道另外两项没被动
+    // 未给的其他字段如实标注"未改动"，让模型知道另外几项没被动
     expect(result.content).toContain('未改动')
   })
 
-  it('批量写三字段：按 path 逐条提交，顺序稳定（theme / accent / glass）', async () => {
+  it('批量写四字段：按 path 逐条提交，顺序稳定（theme / accent / glass / awarenessGlow）', async () => {
     const { tool, calls } = toolOf()
-    const result = await tool.execute({ glass: false, theme: 'light', accent: 'violet' }, ctx)
+    const result = await tool.execute(
+      { glass: false, awarenessGlow: false, theme: 'light', accent: 'violet' },
+      ctx,
+    )
     expect(result.isError).toBeUndefined()
     expect(calls.write).toEqual([
       [
         { path: 'appearance.theme', value: 'light' },
         { path: 'appearance.accent', value: 'violet' },
         { path: 'appearance.glass', value: false },
+        { path: 'appearance.awarenessGlow', value: false },
       ],
     ])
     expect(result.summary).toContain('明暗档位')
     expect(result.summary).toContain('毛玻璃')
+    expect(result.summary).toContain('流光特效')
     expect(result.content).toContain('关闭')
   })
 
@@ -176,7 +184,23 @@ describe('set_appearance 的写入分支', () => {
       expect(result.isError).toBe(true)
       expect(result.content.length).toBeGreaterThan(0)
     }
+    // 流光开关同样是布尔：非布尔值不许落到 Schema 那一层
+    const glow = await tool.execute({ awarenessGlow: 'on' }, ctx)
+    expect(glow.isError).toBe(true)
+    expect(glow.content).toContain('awarenessGlow')
     expect(calls.write).toEqual([])
+  })
+
+  it('单独读写流光开关：路径与中文名都对，读回时也能报告关闭态', async () => {
+    const { tool, calls, snapshot } = toolOf()
+    const result = await tool.execute({ awarenessGlow: false }, ctx)
+    expect(result.isError).toBeUndefined()
+    expect(calls.write).toEqual([[{ path: 'appearance.awarenessGlow', value: false }]])
+    expect(resolvePath(snapshot, 'appearance.awarenessGlow')).toBe(false)
+    expect(result.content).toContain('流光特效')
+
+    const read = await tool.execute({}, ctx)
+    expect(read.content).toContain('流光特效：关闭')
   })
 
   it('部分字段非法时整体拒绝：合法字段也不会被写进去', async () => {

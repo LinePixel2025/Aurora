@@ -22,7 +22,7 @@ export const SETTINGS_HINT = [
   '- general.edgeBar.enabled / opacity / quietHours / display / position（提示条开关、透明度、勿扰时段与贴附的显示器 / 屏幕侧）',
   '- general.gameMode.enabled（游戏模式联动开关）',
   '- general.chat.showThinking（对话界面是否展示思考过程）',
-  '- appearance.theme / accent / glass（界面明暗档位：system / light / dark；强调色：aurora / teal / violet / rose / amber；毛玻璃开关；也可以用 set_appearance 工具改这三项）',
+  '- appearance.theme / accent / glass / awarenessGlow（界面明暗档位：system / light / dark；强调色：aurora / teal / violet / rose / amber；毛玻璃开关；文件自感知流光特效开关；也可以用 set_appearance 工具改这四项）',
   '- modes.current（切换当前模式）',
   '- modes.classroom.*（课堂模式设置：watchDir、subjects、schedule.*、preClassReminder、preClassLeadMinutes、preClassOpenFolder、classification.*）',
   // `agent.tools` 一律逐条列举，**不用通配写法**：`terminal` 下现在还有**只读**的
