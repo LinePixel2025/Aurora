@@ -45,6 +45,11 @@ Electron `BrowserWindow` 的 webContents 是一个独立合成面。CSS `backdro
 和自包含的高不透明度 `.glass-fallback` 圆角面板，不再叠加原生 `backgroundMaterial`。
 这样主界面继续获得真实桌面 Acrylic，提示条则不会出现“圆角矩形套矩形阴影”。
 
+> **⚠️ 2026-10-11 已被推翻**：上述结论的两个前提都不成立 —— ① 阴影由 `hasShadow: false` 关掉；
+> ② **DWM 材质其实按窗口区域裁剪**（当时还没有 `setShape`，现在有），把区域切成 1px 阶梯的圆角
+> 就能兼顾圆角与真毛玻璃。提示条现已恢复原生 Acrylic。完整口径、取证方法与踩坑见
+> [2026-10-11-edge-bar-native-acrylic-restore.md](2026-10-11-edge-bar-native-acrylic-restore.md)。
+
 ## 2026-10-04 设置窗补充
 
 用户实测设置页仍然完全没有毛玻璃。原因是设置窗此前仍被列为实色窗口，

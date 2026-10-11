@@ -10,6 +10,8 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-11 | 提示条恢复原生 Acrylic：材质按窗口区域裁剪、圆角用 1px 阶梯区域、只在展开态挂（含取证通道坑） | UI, edge-bar, 毛玻璃, Electron, 坑     | [2026-10-11-edge-bar-native-acrylic-restore.md](2026-10-11-edge-bar-native-acrylic-restore.md)               |
+| 2026-10-11 | 输入卡工具行的 flex 下限口径，与原生 select 弹出列表反色的唯一解               | UI, chat, flex, CSS, 原生下拉, 坑      | [2026-10-11-composer-toolrow-and-native-select.md](2026-10-11-composer-toolrow-and-native-select.md)         |
 | 2026-10-10 | 截图验收的执行预算：迭代期只跑定向，全量截图只在最后验收阶段跑                 | 测试, 探针, capture, 流程, 性能        | [2026-10-10-full-capture-only-at-final-acceptance.md](2026-10-10-full-capture-only-at-final-acceptance.md)   |
 | 2026-10-10 | 四条抖动截图探针的根因与判据策略（模式广播 / 身份键 / 有界等待 / 离群容忍）    | 测试, 探针, capture, 抖动, 坑          | [2026-10-10-flaky-capture-probes.md](2026-10-10-flaky-capture-probes.md)                                     |
 | 2026-10-10 | 个性化三件套（明暗档位 / 毛玻璃开关 / set_appearance）的接线口径 + 沙箱跑不了 vitest 的边界 | UI, 主题, 毛玻璃, 配置, 工具, 沙箱, 坑 | [2026-10-10-personalization-theme-glass-tool.md](2026-10-10-personalization-theme-glass-tool.md)             |
