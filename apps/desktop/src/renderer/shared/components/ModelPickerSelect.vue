@@ -94,13 +94,23 @@ function onModelChange(event: Event): void {
 <style scoped>
 /**
  * 两个下拉共用一条紧凑芯片线；来源先固定较窄宽度，模型承担长 id 的省略。
+ *
+ * `min-width: 140px`（2026-10-11 修订，此前是 `min-width: 0`）：`min-width: 0` 允许容器被压到
+ * 两个 `<select>` 的最小宽度之和以下，子控件无法再收缩（它们各有 `min-width`），于是带
+ * `overflow: visible` 溢出到相邻 chip 身上。
+ * ⚠️ **不能**用 `min-width: min-content`：原生 `<select>` 的固有宽度是**最宽的那个 option**
+ * （实测「Center 官方」/「deepseek-v4-pro」加起来 220px），`min-content` 于是等于「不收缩」，
+ * 实测结果是整行溢出输入卡 53px。这里写死 140 = 来源 68 + 间距 4 + 模型 68，
+ * 三个数字与两个子控件的 `min-width` 是同一份口径，改一处必须同时改。
+ * 极窄时两个原生下拉的文字会被裁到只剩箭头（原生 select 不做省略号）—— 这是本宽度下的
+ * 已知取舍：两者各有 `title` 悬浮提示，且**权限档位文案与发送键优先保完整**。
  */
 .model-picker-group {
   flex: 0 1 auto;
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  min-width: 0;
+  min-width: 140px;
 }
 
 /**
@@ -115,11 +125,16 @@ function onModelChange(event: Event): void {
  *
  * 模型宽度固定 120px（长模型名省略号，不撑破输入区），来源宽度固定 96px。
  * `flex` 允许窄窗收缩，但两个控件的 min-width 合起来仍给发送 / 麦克风留出空间。
+ *
+ * 下限（2026-10-11）：来源 68px、模型 68px —— 主区被压到下限时输入卡内容宽实测约 354px，
+ * 让位顺序是「瞬时提示 → 模型 → 思考 → 权限」，这两枚是最先让位的控件
+ *（权限芯片 `flex: 0 0 auto` 不参与收缩）。两者之和 + 间距必须与 `.model-picker-group`
+ * 的 `min-width: 140px` 一致；两者给同样宽度是要让**模型名**尽量还看得见（它更长、更需要省略号空间）。
  */
 .model-picker {
   flex: 0 1 120px;
   width: 120px;
-  min-width: 76px;
+  min-width: 68px;
   max-width: 140px;
   height: var(--control-h-xs);
   padding: 0 var(--space-2);
@@ -142,10 +157,12 @@ function onModelChange(event: Event): void {
     color var(--transition-fast);
 }
 
+/* 来源下拉（2026-10-11）：从「固定 96px」放开成可收缩到 68px —— 主区下限下四枚芯片 +
+   发送键要一起装进 ≈354px，来源是仅次于模型的可让位项；标签最长是「Center 官方」。 */
 .model-source-picker {
-  flex: 0 0 96px;
+  flex: 0 1 96px;
   width: 96px;
-  min-width: 96px;
+  min-width: 68px;
   max-width: 108px;
 }
 

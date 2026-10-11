@@ -2572,9 +2572,10 @@ body.col-resizing .nav {
 
 /* 工具行（2026-09-29 减负轮）：三枚 28px 芯片 + 弹性槽 + 右侧动作钮，间距收到 4px，
    整行不再是一条「带边框的工具栏」——三个控件零边框、悬停才出现分层填充。
-   `overflow: hidden` 是最后的兜底：三枚芯片都参与收缩（权限最后让位），但任何极端
-   宽度（超窄窗 / 高 DPI）下内容都只会在行内被裁剪，绝不溢出输入卡的圆角边框
-   （用户实测「权限文字超出组件边框」的根因就是本行此前既不收缩也不裁剪）。 */
+   `overflow: hidden` 是最后的兜底：任何极端宽度（超窄窗 / 高 DPI）下内容都只会在行内被裁剪，
+   绝不溢出输入卡的圆角边框（用户实测「权限文字超出组件边框」的根因就是本行此前既不收缩也不裁剪）。
+   **注意**：`overflow: hidden` 只裁到卡片边缘，管不了**同一行内**两个控件互相压 —— 那是各控件
+   自己 `min-width` 的职责，见下面 `.composer-picker` 的让位顺序注释与 2026-10-11 那次修订。 */
 .composer-bar {
   display: flex;
   align-items: center;
@@ -2584,9 +2585,28 @@ body.col-resizing .nav {
   white-space: nowrap;
 }
 
-/* 保存类操作的瞬时提示：出现时挤占的是弹性空隙，不把发送按钮挤出行外 */
+/*
+ * 让位顺序（2026-10-11 修订）：瞬时提示 → 模型 → 思考 → 权限。
+ * 权重只决定「谁先让」，让到哪儿为止由各控件自己的 `min-width` 决定：
+ * 权限 51px 起（其实是 `flex: 0 0 auto`，不参与收缩）、来源 68 + 模型 68（父容器
+ * `.model-picker-group` 的 `min-width: 140px` 与之一致）、思考 56、发送 32（不收缩）。
+ * 下限合计 346px（最坏组合是「变更前确认」档）—— 主区被夹到下限时输入卡内容宽实测约 354px，
+ * 因此任何一档都不会溢出输入卡，发送键也不会被挤出。
+ * 这层不能省：控件自己的 `min-width: 0` 只会让**容器**被压到子元素 min-content 以下，
+ * 子元素带 `overflow: visible` 就会画到邻居身上（用户实测的「权限钮与来源下拉重合」）。
+ */
+.composer-picker.model-picker-group {
+  flex-shrink: 3;
+}
+
+.composer-picker.thinking-level {
+  flex-shrink: 2;
+}
+
+/* 保存类操作的瞬时提示：出现时挤占的是弹性空隙，不把发送按钮挤出行外 —— 它第一个让位。 */
 .picker-hint {
   flex: 0 1 auto;
+  flex-shrink: 4;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

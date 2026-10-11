@@ -243,18 +243,23 @@ onBeforeUnmount(() => {
  * 刻意**不设** `position: relative`：下拉要锚在整张输入卡（`.composer-box`）上，
  * 这样它永远浮在输入卡上方，绝不会盖住自己所在的这条工具行（docs/07 §2.3）。
  */
-/* 可收缩（`min-width: 0` 是收缩的前提）：窄窗下收缩顺序是
-   「键位提示 → 模型 → 思考档 → 权限（最后让位）」——权限是档位闸门入口，
-   尽量保持全文可见，真放不下时由 `.perm-label` 省略号兜底，绝不允许溢出输入卡边框。 */
+/* **不参与收缩**（2026-10-11 修订）：权限是档位闸门入口，档位文案必须完整。
+   此前写的是 `flex: 0 1 auto; min-width: 0` —— `min-width: 0` 让这个 flex 项能被压到
+   子元素 min-content 以下，而 `.perm-btn` 是行内级盒（shrink-to-fit，下限 = 自身 min-content
+   ≈ 95px，因为 `.perm-label` 的 min-content 贡献就是那段文字），于是按钮带 `overflow: visible`
+   直接画到相邻的来源下拉身上（用户实测：左栏拉宽后「完全权限」文字完整、它自己的箭头被盖住）。
+   让位顺序 =「瞬时提示 → 模型 → 思考 → 权限」，权限排在最后，靠 `.composer-picker` 的
+   `flex-shrink` 权重保证，不再靠把自己压没。 */
 .perm {
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: 0 0 auto;
 }
 
 /* 与模型 / 思考等级两枚下拉共用同一套「零边框芯片」尺寸（28px + pill 圆角 + 悬停浮底），
-   三者必须逐字对齐才像同一条工具带上的控件。 */
+   三者必须逐字对齐才像同一条工具带上的控件。
+   `display: flex`（块级，不是 `inline-flex`）：块级盒按容器宽度铺满，`max-width` 触发的
+   省略号在按钮内收敛；行内级盒是 shrink-to-fit，容器变窄时它保持自身 min-content 并溢出。 */
 .perm-btn {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 5px;
   height: var(--control-h-xs);

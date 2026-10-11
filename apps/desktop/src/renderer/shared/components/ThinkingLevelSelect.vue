@@ -80,11 +80,13 @@ function onChange(event: Event): void {
  * `flex: 0 1 auto`（可收缩到 `min-width`）：`.composer-bar` 的收缩顺序是
  * 「瞬时提示 → 模型 → 本控件 → 权限芯片」，窄窗下依次让位，
  * 谁都不能把发送按钮挤出行外、更不能溢出输入卡边框。
+ * 下限 56px（2026-10-11，原 62px）：主区被压到下限 420px 时，四枚芯片 + 发送要一起
+ * 装进 ≈362px；权限芯片不参与收缩，模型组与来源让位更多，本控件再让 6px。
  */
 .thinking-level {
   flex: 0 1 auto;
   width: auto;
-  min-width: 62px;
+  min-width: 56px;
   max-width: 96px;
   height: var(--control-h-xs);
   padding: 0 var(--space-2);
