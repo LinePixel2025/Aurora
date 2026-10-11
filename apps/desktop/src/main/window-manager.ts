@@ -82,6 +82,18 @@ const SPECS: Record<WindowName, WindowSpec> = {
     width: 8,
     height: 200,
     resizable: false,
+    /*
+     * 2026-10-11：挂原生 Acrylic 时**保持** `transparent: true`（本次实测结论）。
+     *
+     * 排查过程（同日逐项 A/B）要点，避免下次重复踩：
+     * - 材质在这台机器上确实挂上了（DWM 的 `DWMWA_SYSTEMBACKDROP_TYPE` 读到 3 = Acrylic），
+     *   页面也照常渲染（`PrintWindow(PW_RENDERFULLCONTENT)` 有 96% 非黑像素）；
+     * - ⚠️ 桌面抓屏 `Graphics.CopyFromScreen`（BitBlt）**拍不到这个窗口**：它带
+     *   `WS_EX_NOREDIRECTIONBITMAP`（DirectComposition），内容只在 DWM/GPU 合成里。
+     *   用 BitBlt 会误判成「窗口没渲染」。要 OS 级取证就用 `desktopCapturer`（DXGI）
+     *   或系统截图工具（Win+Shift+S 走 Windows.Graphics.Capture）；窗口内容用 `PrintWindow(hwnd, dc, 2)`；
+     * - ⚠️ 重启后 ~15s 内页面还没加载完，那时的「悬停没展开」是**假阴性**，A/B 必须等热态。
+     */
     transparent: true,
     alwaysOnTop: true,
     skipTaskbar: true,
@@ -184,17 +196,29 @@ const LIGHT_BACKGROUND = '#f5f5f7'
  * 回退原有不透明底色，渲染层 body 保持透明但不会裸漏桌面。
  */
 /**
- * 2026-10-04 修订：提示条退出原生 Acrylic。
+ * 2026-10-04 修订：提示条曾退出原生 Acrylic。
  *
- * Acrylic 与窗口阴影都按 BrowserWindow 的矩形区域绘制；面板自身再圆角也只能盖住中间，
- * 左上 / 左下会露出矩形材质或阴影。提示条改为透明窗口 + 自包含圆角玻璃面板，
- * 主界面继续保留能真实采样桌面的 Acrylic。
+ * 当时的根因是 Acrylic 与窗口阴影都按 BrowserWindow 的矩形区域绘制，面板自身再圆角
+ * 也只能盖住中间，左上 / 左下会露出矩形材质或阴影。
+ *
+ * **2026-10-11 恢复**：两个前提都已不成立 ——
+ * ① 阴影已由 `hasShadow: false` 关掉；
+ * ② 圆角由「原生窗口区域按 1px 阶梯近似」解决（`edgeBarShape` 的 `roundLeftCorners`）：
+ *    实测 DWM 的系统材质**按窗口区域裁剪**（收起态 shape 只有 8×200 时材质也只画在那 8×200 里），
+ *    所以把区域切成圆弧，圆角外就不会露出矩形材质。材质**只在展开态挂**
+ *（收起态页面只有 8px 竖条，见 `syncEdgeBarMaterial`）。
  *
  * 2026-10（v32）：以上「要不要挂材质」还多一道用户开关 —— `appearance.glass`
- * （设置页「通用 → 外观」，见 `glassAllowed()`）。它只影响这四个窗口的**原生材质**，
+ * （设置页「通用 → 外观」，见 `glassAllowed()`）。它影响这五个窗口的**原生材质**，
  * 页面内的 CSS 玻璃由渲染层的 `data-glass="off"` 令牌降级负责，两侧同一时刻生效。
  */
-const NATIVE_GLASS_WINDOWS = new Set<WindowName>(['chat', 'settings', 'memory', 'automation'])
+const NATIVE_GLASS_WINDOWS = new Set<WindowName>([
+  'chat',
+  'settings',
+  'memory',
+  'automation',
+  'edge-bar',
+])
 
 /** 常规窗口使用 Acrylic；Electron 44 起系统最大化已能稳定保持材质。 */
 const NATIVE_WINDOW_MATERIAL = 'acrylic' as const
@@ -522,11 +546,27 @@ export class WindowManager {
       // 同时关闭 thickFrame：Electron 41.3 起 frameless 窗口的外部 resize inset 会把
       // 请求的 8px 收起态夹到 33px；提示条本身不参与原生拖拽缩放，不需要这层边框。
       ...(name === 'edge-bar' ? { hasShadow: false, thickFrame: false } : {}),
+      // 提示条（2026-10-11，挂原生 Acrylic 后）：**有材质才靠透明窗口看桌面**。
+      // 没有材质的三条路（非 win32 / 旧 Windows / `appearance.glass = false`）一律给主题实色底，
+      // 免得半透明 tint 叠在「什么都没有」的透明窗口上直接裸漏桌面。
+      // 页面侧还有第二条腿：`:root[data-glass='off']` 会把 `--edge-bar-tint` 压成 `--bg-base`。
+      // 其它窗口维持原语义：透明窗口与毛玻璃窗口透明，其余用主题实色。
       backgroundColor:
-        spec.transparent || this.glassAllowed(name) ? '#00000000' : windowBackgroundColor(),
+        name === 'edge-bar'
+          ? this.glassAllowed(name)
+            ? '#00000000'
+            : windowBackgroundColor()
+          : spec.transparent || this.glassAllowed(name)
+            ? '#00000000'
+            : windowBackgroundColor(),
       // Windows 的桌面模糊由系统材质提供；透明窗口里的 CSS backdrop-filter 只能模糊
       // 页面自身内容，无法模糊桌面。失败时保留 CSS `.glass` 回退。
-      ...(this.glassAllowed(name) ? { backgroundMaterial: NATIVE_WINDOW_MATERIAL } : {}),
+      // ⚠️ 提示条要跟着**展开态**走（收起态页面只有 8px 竖条，别挂材质）——这里的条件必须与
+      // `syncEdgeBarMaterial()` 完全一致，否则建窗时挂上、内部状态却记成「没挂」，
+      // 之后收起就再也不会摘（2026-10-11 实测踩过：收起态 DWM 仍是 Acrylic）。
+      ...(this.glassAllowed(name) && (name !== 'edge-bar' || this.edgeBarExpanded)
+        ? { backgroundMaterial: NATIVE_WINDOW_MATERIAL }
+        : {}),
       title: titleFor(name),
       webPreferences: {
         preload: this.options.preloadPath,
@@ -547,8 +587,11 @@ export class WindowManager {
       this.normalizeEdgeBarBounds(win)
       this.applyEdgeBarShape(win)
       this.reassertEdgeBarTopmost('created', false, win)
+      // 提示条的材质与两态绑定（只在展开态挂），因此走同一个同步口而不是通用的 applyWindowMaterial
+      this.syncEdgeBarMaterial()
+    } else if (this.glassAllowed(name)) {
+      this.applyWindowMaterial(name, win)
     }
-    if (this.glassAllowed(name)) this.applyWindowMaterial(name, win)
     // 提示条透明度取自设置（docs/08 §1）；窗口创建时即应用，避免一次可见的跳变
     if (name === 'edge-bar') {
       this.applyEdgeBarOpacity(this.options.settings.get().general.edgeBar.opacity)
@@ -759,7 +802,9 @@ export class WindowManager {
       this.nativeGlassWindows.add(name)
     } catch (error) {
       this.nativeGlassWindows.delete(name)
-      if (name === 'chat' || name === 'settings' || name === 'memory' || name === 'automation') {
+      // 回退判据就是「这个窗口本来在材质名单里」——不要再手抄一份名单：
+      // 漏掉某一个（2026-10-11 的 edge-bar 就是这种）会让它落在「既不透明也没材质」的裸漏态。
+      if (NATIVE_GLASS_WINDOWS.has(name)) {
         win.setBackgroundColor(windowBackgroundColor())
       }
       this.options.logger.debug('系统毛玻璃材质不可用，回退不透明窗口底色', {
@@ -793,6 +838,38 @@ export class WindowManager {
   }
 
   /**
+   * 提示条的材质开关（2026-10-11）：**只在展开态挂**。
+   *
+   * 收起态页面里只有 8px 竖条，而 DWM 的系统材质会铺满**整个窗口矩形**
+   *（实测 `setWindowRgn` 裁不住它：收起态 shape 只有 8×200 时，材质仍铺满 337×976），
+   * 不摘掉就会在桌面右缘留下一条「看不见内容却看得见模糊」的带子。
+   *
+   * 刻意**不复用** `dropWindowMaterial`：那个会把窗口底色设成不透明主题色（对普通窗口是对的，
+   * 对提示条会变成一块实色矩形）。这里摘材质时把底色恢复成透明。
+   */
+  private syncEdgeBarMaterial(): void {
+    const win = this.windows.get('edge-bar')
+    if (win === undefined || win.isDestroyed()) return
+    const wanted = this.glassAllowed('edge-bar') && this.edgeBarExpanded
+    if (wanted === this.nativeGlassWindows.has('edge-bar')) return
+    if (wanted) {
+      this.applyWindowMaterial('edge-bar', win)
+      return
+    }
+    try {
+      win.setBackgroundMaterial('none')
+    } catch (error) {
+      this.options.logger.debug('卸载提示条材质失败', { error: String(error) })
+    }
+    try {
+      win.setBackgroundColor('#00000000')
+    } catch (error) {
+      this.options.logger.debug('恢复提示条透明底色失败', { error: String(error) })
+    }
+    this.nativeGlassWindows.delete('edge-bar')
+  }
+
+  /**
    * 按 `appearance.glass` 即时切换**已创建窗口**的原生材质（v32，docs/07 §5.1）。
    *
    * 三条口径：
@@ -805,6 +882,11 @@ export class WindowManager {
     for (const name of NATIVE_GLASS_WINDOWS) {
       const win = this.windows.get(name)
       if (win === undefined || win.isDestroyed()) continue
+      // 提示条多一道「展开态」条件（收起态不该有材质），统一交给它的同步口
+      if (name === 'edge-bar') {
+        this.syncEdgeBarMaterial()
+        continue
+      }
       if (enabled === this.nativeGlassWindows.has(name)) continue
       if (enabled) this.applyWindowMaterial(name, win)
       else this.dropWindowMaterial(name, win)
@@ -877,6 +959,8 @@ export class WindowManager {
     if (!win || win.isDestroyed()) return this.getState()
     this.normalizeEdgeBarBounds(win)
     this.applyEdgeBarShape(win)
+    // 材质只在展开态挂（收起态页面只有 8px 竖条，材质却会铺满整窗 —— 见 syncEdgeBarMaterial）
+    this.syncEdgeBarMaterial()
     this.reassertEdgeBarTopmost(expanded ? 'expanded' : 'collapsed')
     return this.getState()
   }

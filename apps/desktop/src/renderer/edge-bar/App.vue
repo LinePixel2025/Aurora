@@ -852,8 +852,10 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  /* 提示条不启用原生 Acrylic：不再暴露矩形 DWM 材质，圆角必须由自己闭合。 */
-  background: color-mix(in srgb, var(--glass-fallback) 94%, transparent);
+  /* 与面板共用同一份材质 tint（`--edge-bar-tint`）：提示条 2026-10-11 起挂原生 Acrylic，
+     桌面模糊由 DWM 提供，页面这层只负责可读性 —— 旧的 94% 不透明底会把材质盖死。
+     左圆角 6px 与 `edgeBarShape` 的竖条阶梯区域同值。 */
+  background: var(--edge-bar-tint);
   border-left: 1px solid var(--glass-border);
   border-radius: 6px 0 0 6px;
   box-shadow: var(--shadow-1);
@@ -889,22 +891,28 @@ onUnmounted(() => {
   color: var(--text-secondary);
 }
 
-/* ───────── 展开面板（320px 感知工作台） ───────── */
+/* ───────── 展开面板（左圆角毛玻璃工作台） ───────── */
 
 .panel {
   position: absolute;
   top: 0;
   bottom: 0;
-  /* 右缘留出 8px 竖条，面板 320px；总窗口 328px */
+  /* 右缘留出 8px 竖条；左缘贴窗口，宽度由客户区决定（实测客户区约 334px，
+     Electron 给透明窗口补的那几 px 归面板，面板实际约 326px 宽）。 */
+  left: 0;
   right: 8px;
-  width: 320px;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
+  /* 左圆角 28px（`--radius-xl`）：窗口区域会用主进程的 `edgeBarShape` 按 1px 阶梯
+     近似同一条弧 —— DWM 材质按窗口区域裁剪，两者必须对齐，否则圆角外会露出矩形材质。 */
   border-radius: var(--radius-xl) 0 0 var(--radius-xl);
   border-color: var(--glass-border);
-  background: color-mix(in srgb, var(--glass-fallback) 96%, transparent);
+  /* 面板与竖条同一份材质 tint（2026-10-11）：半透明 → 看见 DWM 模糊后的桌面。
+     `backdrop-filter` 明确置 none —— 透明窗口里的 CSS backdrop-filter 只能采样页面自身内容，
+     模糊不了窗外桌面；桌面模糊只能由 `backgroundMaterial: 'acrylic'` 提供。 */
+  background: var(--edge-bar-tint);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   box-shadow:

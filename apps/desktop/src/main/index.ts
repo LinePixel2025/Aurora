@@ -4125,39 +4125,54 @@ async function runSmokeTest(userData: string): Promise<void> {
     const near = (a: number, b: number, tolerance: number): boolean => Math.abs(a - b) <= tolerance
     const workArea = screen.getPrimaryDisplay().workArea
     const rightEdge = workArea.x + workArea.width
+    // 2026-10-11：两态 shape 都是**多块**（圆角用 1px 阶梯近似成原生区域，DWM 材质按窗口区域
+    // 裁剪，见 edge-bar-geometry.ts 的 roundLeftCorners），因此这里一律量**并集**、不取第 0 块。
+    const union = (rects: readonly { x: number; y: number; width: number; height: number }[]) => ({
+      left: Math.min(...rects.map((r) => r.x)),
+      top: Math.min(...rects.map((r) => r.y)),
+      right: Math.max(...rects.map((r) => r.x + r.width)),
+      bottom: Math.max(...rects.map((r) => r.y + r.height)),
+    })
     windows?.setEdgeBarExpanded(false)
     const barCollapsed = windows?.getBounds('edge-bar')
-    const collapsedShape = windows?.getEdgeBarShape()[0]
+    const collapsedRects = windows?.getEdgeBarShape() ?? []
+    const collapsedUnion = union(collapsedRects)
     windows?.setEdgeBarExpanded(true)
     const barExpanded = windows?.getBounds('edge-bar')
-    const expandedShape = windows?.getEdgeBarShape()[0]
+    const expandedRects = windows?.getEdgeBarShape() ?? []
+    const expandedUnion = union(expandedRects)
     windows?.setEdgeBarExpanded(false)
     const barBack = windows?.getBounds('edge-bar')
-    const backShape = windows?.getEdgeBarShape()[0]
+    const backRects = windows?.getEdgeBarShape() ?? []
+    const backUnion = union(backRects)
     record(
       '提示条收起态只暴露贴右缘且垂直居中的 8×200px shape',
       barCollapsed !== undefined &&
-        collapsedShape !== undefined &&
-        near(collapsedShape.width, EDGE_BAR_WIDTHS.collapsed, 1) &&
-        near(collapsedShape.height, 200, 1) &&
-        near(collapsedShape.y, (barCollapsed.height - collapsedShape.height) / 2, 1) &&
-        near(collapsedShape.x, barCollapsed.width - collapsedShape.width, 1) &&
+        near(collapsedUnion.right - collapsedUnion.left, EDGE_BAR_WIDTHS.collapsed, 1) &&
+        near(collapsedUnion.bottom - collapsedUnion.top, 200, 1) &&
+        near(collapsedUnion.top, (barCollapsed.height - 200) / 2, 1) &&
+        near(collapsedUnion.left, barCollapsed.width - EDGE_BAR_WIDTHS.collapsed, 1) &&
         near(barCollapsed.x + barCollapsed.width, rightEdge, 4),
-      JSON.stringify({ bounds: barCollapsed, shape: collapsedShape }),
+      JSON.stringify({ bounds: barCollapsed, union: collapsedUnion, count: collapsedRects.length }),
     )
     record(
-      '提示条展开只换 shape：宿主几何不变，展开 shape 覆盖 328px 面板与完整高度',
+      '提示条展开只换 shape：宿主几何不变，展开 shape 铺满面板列 + 竖条（并集贴满整窗）',
       barCollapsed !== undefined &&
         barExpanded !== undefined &&
         near(barExpanded.x, barCollapsed.x, 2) &&
         near(barExpanded.y, barCollapsed.y, 2) &&
         near(barExpanded.width, barCollapsed.width, 2) &&
         near(barExpanded.height, barCollapsed.height, 2) &&
-        expandedShape !== undefined &&
-        near(expandedShape.width, EDGE_BAR_WIDTHS.expanded, 1) &&
-        near(expandedShape.x, barExpanded.width - expandedShape.width, 1) &&
-        near(expandedShape.height, barExpanded.height, 1),
-      JSON.stringify({ bounds: barExpanded, shape: expandedShape }),
+        expandedRects.length > 2 &&
+        near(expandedUnion.left, 0, 1) &&
+        near(expandedUnion.top, 0, 1) &&
+        near(expandedUnion.right, barExpanded.width, 1) &&
+        near(expandedUnion.bottom, barExpanded.height, 1),
+      JSON.stringify({
+        bounds: barExpanded,
+        shape: expandedRects.slice(0, 3),
+        count: expandedRects.length,
+      }),
     )
     record(
       '提示条展开态占满工作区高度（面板按钮不会被挤出可视区）',
@@ -4167,27 +4182,26 @@ async function runSmokeTest(userData: string): Promise<void> {
       barExpanded !== undefined ? `height=${barExpanded.height}, workArea=${workArea.height}` : '',
     )
     record(
-      '提示条展开后 shape 为 328px，收起后重新收成 8×200px',
-      expandedShape !== undefined &&
-        near(expandedShape.width, EDGE_BAR_WIDTHS.expanded, 1) &&
-        backShape !== undefined &&
-        near(backShape.width, EDGE_BAR_WIDTHS.collapsed, 1) &&
-        near(backShape.height, 200, 1),
-      JSON.stringify({ expandedShape, backShape }),
+      '提示条展开 shape 的首块被圆角内缩、收起后重新收成 8×200px',
+      (expandedRects[0]?.x ?? 0) > 0 &&
+        near(backUnion.right - backUnion.left, EDGE_BAR_WIDTHS.collapsed, 1) &&
+        near(backUnion.bottom - backUnion.top, 200, 1),
+      JSON.stringify({ firstExpanded: expandedRects[0], backUnion }),
     )
     record(
       '提示条收起后宿主仍稳定且可见 shape 回到初始档位（往返幂等）',
       barBack !== undefined &&
         barCollapsed !== undefined &&
-        backShape !== undefined &&
-        collapsedShape !== undefined &&
         near(barBack.x, barCollapsed.x, 2) &&
         near(barBack.y, barCollapsed.y, 2) &&
         near(barBack.width, barCollapsed.width, 2) &&
         near(barBack.height, barCollapsed.height, 2) &&
-        near(backShape.width, collapsedShape.width, 1) &&
-        near(backShape.height, collapsedShape.height, 1),
-      JSON.stringify({ before: barCollapsed, after: barBack, shape: backShape }),
+        // 宿主宽度会被 Electron 的透明 inset 抖动 ±2px，因此断言「相对宿主右缘的关系」而不是绝对 x
+        near(backUnion.right, barBack.width, 2) &&
+        near(backUnion.right - backUnion.left, EDGE_BAR_WIDTHS.collapsed, 1) &&
+        near(backUnion.top, (barBack.height - 200) / 2, 1) &&
+        near(backUnion.bottom - backUnion.top, 200, 1),
+      JSON.stringify({ before: barCollapsed, after: barBack, union: backUnion }),
     )
     const nativeEdge = BrowserWindow.getAllWindows().find(
       (win) => win.getTitle() === 'Aurora 提示条',

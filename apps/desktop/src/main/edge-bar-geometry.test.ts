@@ -22,6 +22,14 @@ const hostSize = (workArea: Rect): { width: number; height: number } => ({
   height: expandedEdgeBarHeight(workArea),
 })
 
+/** 一组 shape 矩形的并集包围盒（阶梯圆角下不能再拿单块矩形当整体看） */
+const unionOf = (rects: Rect[]): { x: number; y: number; right: number; bottom: number } => ({
+  x: Math.min(...rects.map((r) => r.x)),
+  y: Math.min(...rects.map((r) => r.y)),
+  right: Math.max(...rects.map((r) => r.x + r.width)),
+  bottom: Math.max(...rects.map((r) => r.y + r.height)),
+})
+
 describe('提示条几何（docs/07 §2.2）', () => {
   it('默认放置：右缘贴工作区右缘、垂直居中', () => {
     const bounds = placeEdgeBar(WORK_AREA, collapsedSize())
@@ -51,27 +59,45 @@ describe('提示条几何（docs/07 §2.2）', () => {
 
     const collapsed = edgeBarShape(host, false)
     const expanded = edgeBarShape(host, true)
-    expect(collapsed).toHaveLength(1)
-    expect(expanded).toHaveLength(1)
+    // 两态都是**多块**：圆角用 1px 阶梯近似（DWM 材质按窗口区域裁剪，见 edgeBarShape 的注释）
+    expect(collapsed.length).toBeGreaterThan(1)
+    expect(expanded.length).toBeGreaterThan(10)
   })
 
-  it('收起 shape：贴渲染右缘、垂直居中，保持 8×200px', () => {
+  it('收起 shape：贴渲染右缘、垂直居中，8×200px，左圆角切成阶梯', () => {
     const host = { width: 330, height: 992 }
-    expect(edgeBarShape(host, false)).toEqual([
-      {
-        x: 322,
-        y: (992 - EDGE_BAR_COLLAPSED_HEIGHT) / 2,
-        width: EDGE_BAR_WIDTHS.collapsed,
-        height: EDGE_BAR_COLLAPSED_HEIGHT,
-      },
-    ])
+    const rects = edgeBarShape(host, false)
+    const union = unionOf(rects)
+    expect(union.x).toBe(322)
+    expect(union.right).toBe(330)
+    expect(union.y).toBe((992 - EDGE_BAR_COLLAPSED_HEIGHT) / 2)
+    expect(union.bottom - union.y).toBe(EDGE_BAR_COLLAPSED_HEIGHT)
+    // 每一块都在竖条列内；最上面那块被圆角内缩（阶梯意味着首块 x > 列左缘）
+    expect(rects.every((r) => r.x >= 322 && r.x + r.width <= 330)).toBe(true)
+    expect(rects[0]?.x).toBeGreaterThan(322)
+    // 中间那块是完整的 8px 宽
+    expect(rects.some((r) => r.x === 322 && r.width === 8)).toBe(true)
   })
 
-  it('展开 shape：贴渲染右缘并覆盖完整宿主宽度与高度', () => {
+  it('展开 shape：面板（左圆角阶梯）+ 竖条两块，覆盖客户区而不覆盖竖条上下那两段', () => {
     const host = { width: 330, height: 992 }
-    expect(edgeBarShape(host, true)).toEqual([
-      { x: 2, y: 0, width: EDGE_BAR_WIDTHS.expanded, height: 992 },
-    ])
+    const rects = edgeBarShape(host, true)
+    const union = unionOf(rects)
+    expect(union.x).toBe(0)
+    expect(union.right).toBe(330)
+    expect(union.y).toBe(0)
+    expect(union.bottom).toBe(992)
+    // 面板主体（除圆角行）铺满 0..322；首行被 28px 圆角内缩
+    expect(rects.some((r) => r.x === 0 && r.width === 322)).toBe(true)
+    const panelTop = rects.find((r) => r.y === 0)
+    expect(panelTop?.x).toBeGreaterThan(0)
+    // 竖条只占 8×200 的居中一段：超过该范围的块不许出现在竖条列里
+    const stripTop = union.y + Math.round((992 - EDGE_BAR_COLLAPSED_HEIGHT) / 2)
+    const stripBottom = stripTop + EDGE_BAR_COLLAPSED_HEIGHT
+    const stray = rects.filter(
+      (r) => r.x >= 322 && (r.y < stripTop || r.y + r.height > stripBottom),
+    )
+    expect(stray).toEqual([])
   })
 
   it('窄宿主：shape 不出现负宽度 / 越界，收紧到实际可用区域', () => {
@@ -80,12 +106,19 @@ describe('提示条几何（docs/07 §2.2）', () => {
     expect(placed.x).toBe(narrow.x)
     expect(placed.width).toBe(EDGE_BAR_WIDTHS.expanded)
 
-    expect(edgeBarShape({ width: 100, height: 100 }, false)).toEqual([
-      { x: 92, y: 0, width: 8, height: 100 },
-    ])
-    expect(edgeBarShape({ width: 100, height: 100 }, true)).toEqual([
-      { x: 0, y: 0, width: 100, height: 100 },
-    ])
+    const collapsed = edgeBarShape({ width: 100, height: 100 }, false)
+    expect(unionOf(collapsed)).toEqual({ x: 92, y: 0, right: 100, bottom: 100 })
+    const expanded = edgeBarShape({ width: 100, height: 100 }, true)
+    expect(unionOf(expanded)).toEqual({ x: 0, y: 0, right: 100, bottom: 100 })
+    expect(expanded.every((r) => r.x >= 0 && r.y >= 0 && r.width >= 0 && r.height >= 0)).toBe(true)
+  })
+
+  it('宿主比竖条还窄：并集仍是实际可用区域、不产生负宽度', () => {
+    for (const expanded of [false, true]) {
+      const rects = edgeBarShape({ width: 5, height: 40 }, expanded)
+      expect(unionOf(rects)).toEqual({ x: 0, y: 0, right: 5, bottom: 40 })
+      expect(rects.every((r) => r.width >= 0 && r.height >= 0)).toBe(true)
+    }
   })
 
   // ───── v21：贴附屏幕侧可配置（general.edgeBar.position，docs/07 §2.2）─────
