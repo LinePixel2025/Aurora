@@ -146,6 +146,19 @@ async function saveGlass(next: boolean): Promise<void> {
   else error.value = settingsStore.error
 }
 
+/**
+ * 流光特效总开关（v33）：关掉后文件分析期间屏幕四周不再出现流光
+ * （主进程的 `shouldShowAwarenessGlow` 直接不显示浮层，见 docs/06 §26）。
+ */
+const glow = ref(settingsStore.settings?.appearance?.awarenessGlow !== false)
+
+async function saveGlow(next: boolean): Promise<void> {
+  if (next === glow.value) return
+  const ok = await settingsStore.update({ appearance: { awarenessGlow: next } })
+  if (ok) glow.value = next
+  else error.value = settingsStore.error
+}
+
 const saved = ref<string | null>(null)
 const error = ref<string | null>(null)
 
@@ -224,6 +237,7 @@ watch(
     accent.value = next.appearance?.accent ?? 'aurora'
     theme.value = next.appearance?.theme ?? 'system'
     glass.value = next.appearance?.glass !== false
+    glow.value = next.appearance?.awarenessGlow !== false
   },
   { immediate: true },
 )
@@ -325,10 +339,10 @@ async function toggleEdgeBar(): Promise<void> {
       </SettingField>
     </section>
 
-    <!-- 外观三件套（v21 强调色，v32 加明暗档位与毛玻璃）：Agent 也可经 set_appearance 调 -->
+    <!-- 外观四件套（v21 强调色，v32 加明暗档位与毛玻璃，v33 加流光）：Agent 也可经 set_appearance 调 -->
     <section class="section-card">
       <h2 class="section-title">外观</h2>
-      <p class="section-desc">明暗档位、强调色与毛玻璃，改完即时生效，四个窗口统一跟随。</p>
+      <p class="section-desc">明暗档位、强调色、毛玻璃与流光，改完即时生效，四个窗口统一跟随。</p>
 
       <SettingField data-field="appearance.theme" label="主题" hint="默认跟随系统外观">
         <div class="theme-row" role="radiogroup" aria-label="主题">
@@ -364,6 +378,14 @@ async function toggleEdgeBar(): Promise<void> {
 
       <SettingField data-field="appearance.glass" label="毛玻璃" hint="关闭后窗口与面板变为实色">
         <input :checked="glass" type="checkbox" @change="saveGlass(!glass)" />
+      </SettingField>
+
+      <SettingField
+        data-field="appearance.awarenessGlow"
+        label="流光特效"
+        hint="文件分析时屏幕四周的流光，关闭后不再显示"
+      >
+        <input :checked="glow" type="checkbox" @change="saveGlow(!glow)" />
       </SettingField>
     </section>
 
