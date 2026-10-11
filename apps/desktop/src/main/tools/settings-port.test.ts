@@ -223,20 +223,31 @@ describe('createSettingsPort 的写入闸门（黑名单 × 顶层分组）', ()
     expect(store.get().center.enabled).toBe(false)
   })
 
-  it('外观三件套可真写入（v32：`appearance` 在顶层分组里，承诺可写 = 写入可写）', async () => {
+  it('外观四件套可真写入（v32 三件套 + v33 流光开关：`appearance` 在顶层分组里，承诺可写 = 写入可写）', async () => {
     const { store, port } = setup()
-    for (const path of ['appearance.theme', 'appearance.accent', 'appearance.glass']) {
+    for (const path of [
+      'appearance.theme',
+      'appearance.accent',
+      'appearance.glass',
+      'appearance.awarenessGlow',
+    ]) {
       expect(port.writable(path).ok, path).toBe(true)
     }
 
     const outcome = await port.write([
       { path: 'appearance.theme', value: 'dark' },
       { path: 'appearance.glass', value: false },
+      { path: 'appearance.awarenessGlow', value: false },
     ])
     expect(outcome.ok).toBe(true)
-    expect(outcome.applied).toEqual(['appearance.theme', 'appearance.glass'])
+    expect(outcome.applied).toEqual([
+      'appearance.theme',
+      'appearance.glass',
+      'appearance.awarenessGlow',
+    ])
     expect(store.get().appearance.theme).toBe('dark')
     expect(store.get().appearance.glass).toBe(false)
+    expect(store.get().appearance.awarenessGlow).toBe(false)
     // 同分组内没被点名的字段不受牵连（`appearance` 是浅合并，但这条断言防的是将来改成整树覆盖）
     expect(store.get().appearance.accent).toBe('aurora')
 

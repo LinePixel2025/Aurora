@@ -1149,6 +1149,32 @@ const migrateV31ToV32: Migration = {
   },
 }
 
+/**
+ * v32 → v33：为已有 `appearance` 补流光特效开关（docs/08 §1、docs/06 §26）。
+ *
+ * 默认值 `awarenessGlow: true` = 「保持 v33 之前的行为」（此前自感知流光一直开着）。
+ * 与 v31 → v32 同一套路：整组缺失补完整默认，已存在时只补缺字段，
+ * 用户已写的 `theme` / `accent` / `glass` 原样保留、幂等。
+ */
+const migrateV32ToV33: Migration = {
+  from: 32,
+  to: 33,
+  describe: 'v32 → v33：新增 appearance.awarenessGlow（自感知流光特效开关）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const appearance = asRecord(next['appearance'])
+    next['appearance'] =
+      appearance === undefined
+        ? { theme: 'system', accent: 'aurora', glass: true, awarenessGlow: true }
+        : {
+            ...appearance,
+            awarenessGlow: appearance['awarenessGlow'] ?? true,
+          }
+    next['version'] = 33
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1182,6 +1208,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV29ToV30,
   migrateV30ToV31,
   migrateV31ToV32,
+  migrateV32ToV33,
 ]
 
 export interface MigrationOutcome {

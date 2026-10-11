@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 32 as const
+export const CONFIG_VERSION = 33 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -94,19 +94,31 @@ export const AppearanceAccentSchema = z.enum(APPEARANCE_ACCENT_KEYS)
 export type AppearanceAccent = z.infer<typeof AppearanceAccentSchema>
 
 /**
- * 外观自定义（v21 新增强调色，v32 扩为三件套，docs/08 §1）：用户在设置页「通用 → 外观」选，
- * Agent 也可经 `set_setting`（`appearance.*` 三条都在 `WRITABLE_PATH_OVERRIDES` 登记）
+ * 外观自定义（v21 新增强调色，v32 扩为三件套，v33 加流光开关，docs/08 §1）：
+ * 用户在设置页「通用 → 外观」选，
+ * Agent 也可经 `set_setting`（`appearance.*` 四条都在 `WRITABLE_PATH_OVERRIDES` 登记）
  * 或语义化工具 `set_appearance`（docs/06 §12.1）调。渲染层由
  * `shared/appearance.ts` 应用到文档根 —— `aurora` = 内置品牌蓝（移除覆盖，跟随明暗档）；
  * `glass: false` 在文档根挂 `data-glass="off"`，由 `theme.css` 把毛玻璃降级为实色。
+ * `awarenessGlow` 不经过渲染层令牌：它由主进程的 `shouldShowAwarenessGlow` 门控那个
+ * 自感知流光浮层（`main/awareness-glow.ts`），渲染层只把 `glowEnabled` 回读进显示条件。
  *
- * 三个字段都不带 `.default()`：默认值只有 `createDefaultSettings()` 与迁移链两处来源
+ * `theme` / `accent` / `glass` 三个字段都**不带** `.default()`：默认值只有
+ * `createDefaultSettings()` 与迁移链两处来源
  * （与同文件 `general.edgeBar.display` 同款形状），避免「Schema 默认值」与「迁移补值」两份口径。
+ *
+ * `awarenessGlow` 是**例外，必须有** `.default(true)`：`settings:update` 的 `appearance` 是
+ * **整组浅合并**（`Object.assign(draft.appearance, patch.appearance)`），设置页与 `set_appearance`
+ * 都可能回传一个「按旧版字段集构造的完整对象」—— 没有默认值时它缺这一键，
+ * 会被 `SettingsSchema.parse` 判为不合法 → 整份配置备份重建。默认值同时与迁移链补的
+ * `true` 同口径（= 保持 v33 之前的行为）。
  */
 export const AppearanceSchema = z.object({
   theme: AppearanceThemeSchema,
   accent: AppearanceAccentSchema,
   glass: z.boolean(),
+  /** v33：文件自感知的四周流光总开关。`false` = 分析期间完全不出流光。 */
+  awarenessGlow: z.boolean().default(true),
 })
 export type AppearanceSettings = z.infer<typeof AppearanceSchema>
 
@@ -1193,6 +1205,7 @@ export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
   { pattern: 'appearance.theme', reason: '切换界面明暗档位（跟随系统 / 亮色 / 暗色）' },
   { pattern: 'appearance.accent', reason: '切换界面强调色主题' },
   { pattern: 'appearance.glass', reason: '开关界面毛玻璃效果（关掉后窗口与面板变实色）' },
+  { pattern: 'appearance.awarenessGlow', reason: '开关文件自感知的四周流光特效' },
   { pattern: 'general.chat.showThinking', reason: '开关对话界面的思考过程展示' },
   // 模式
   { pattern: 'modes.current', reason: '切换当前模式' },

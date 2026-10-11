@@ -1102,6 +1102,13 @@ export interface FileAwarenessStatus {
   lastError?: string
   /** 当前排队 / 分析文件的阶段进度；空闲时不带键。 */
   analysisProgress?: FileAwarenessAnalysisProgress
+  /**
+   * v33：四周流光特效是否开启（`appearance.awarenessGlow`）。
+   *
+   * **刻意可选**：老夹具 / 第三方构造的这个结构不必补字段；读取方一律按
+   * 「`!== false`」判开（缺字段 = 开），与 Schema 的 `.default(true)` 同一口径。
+   */
+  glowEnabled?: boolean
   current?: {
     fileName: string
     sourcePath: string

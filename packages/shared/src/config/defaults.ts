@@ -240,6 +240,8 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     theme: 'system',
     accent: 'aurora',
     glass: true,
+    // v33：文件自感知的四周流光总开关（保持 v33 之前的行为 = 开）
+    awarenessGlow: true,
   },
   llm: {
     active: '',

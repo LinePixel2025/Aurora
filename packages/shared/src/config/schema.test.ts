@@ -853,10 +853,15 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     expect(settingsReadonlyReason('agent.tools.search.maxResults')).toBeUndefined()
   })
 
-  it('外观三件套对 AI 开放（v32：主题 / 强调色 / 毛玻璃）', () => {
-    // 覆盖表登记了这三条（`set_setting` 工具描述、settingsHint 与 `set_appearance` 都向模型
+  it('外观四件套对 AI 开放（v32：主题 / 强调色 / 毛玻璃；v33：流光特效）', () => {
+    // 覆盖表登记了这四条（`set_setting` 工具描述、settingsHint 与 `set_appearance` 都向模型
     // 承诺可写），任一条被判不可写就是「说能改但不能改」。
-    for (const path of ['appearance.theme', 'appearance.accent', 'appearance.glass']) {
+    for (const path of [
+      'appearance.theme',
+      'appearance.accent',
+      'appearance.glass',
+      'appearance.awarenessGlow',
+    ]) {
       expect(canWriteSettingPath(path), path).toBe(true)
       expect(settingsReadonlyReason(path), path).toBeUndefined()
     }
