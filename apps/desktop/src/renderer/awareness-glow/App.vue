@@ -70,6 +70,11 @@ onUnmounted(() => {
  * 四周流光（v33）：窗口覆盖整块显示器，只在**四条边**上画极光边带 ——
  * 中部保持完全透明，配合主进程的鼠标穿透，全屏矩形不会挡住桌面与提示条。
  *
+ * 配色是**强调色单色**（2026-10-11 用户口径：彩虹渐变太艳，改成提示条「正在感知」
+ * 卡片那种淡青/薄荷绿单色柔光）：唯一色源是 `--aurora-blue`，靠与白 / 深色混合拉开
+ * 明暗层次，不再出现跨色相的彩虹；浮层窗口在 `main.ts` 里同样跑 `applyAppearance`，
+ * 所以换强调色（青绿 / 紫 / 玫瑰…）时四边光幕与卡片一起跟随。
+ *
  * 每条边带的**内容、动画与关键帧与顶部那条完全同源**（只写一份）：方向差异靠三处：
  * 1. 上下边带的流光沿 screen-x 走（`background-position-x`），左右边带沿 screen-y 走
  *    （`background-position-y`）—— 同一条 `background-position` 简写，两个轴向都能生效，
@@ -81,6 +86,10 @@ onUnmounted(() => {
  *    贴着屏幕边缘时方向不可辨，这是刻意接受的简化（真要四向一致就得四套关键帧 + 四份图层规则）。
  */
 .awareness-glow {
+  /* 单色板（唯一色源 = 强调色）：soft = 混白提亮（薄荷高光），ink = 混深色压暗（波谷）。 */
+  --glow-accent: var(--aurora-blue, #0a84ff);
+  --glow-soft: color-mix(in srgb, var(--glow-accent) 42%, #ffffff);
+  --glow-ink: color-mix(in srgb, var(--glow-accent) 72%, #0b1f2a);
   position: fixed;
   inset: 0;
   /* 边带的 bloom 用 blur 溢出边带 —— 这里不能裁，否则四条边会出现硬切边 */
@@ -164,10 +173,26 @@ onUnmounted(() => {
 .glow-bloom {
   height: 60px;
   background:
-    radial-gradient(ellipse 32% 90% at 16% 0%, rgb(84 216 255 / 28%), transparent 72%),
-    radial-gradient(ellipse 46% 104% at 45% 0%, rgb(124 111 255 / 30%), transparent 74%),
-    radial-gradient(ellipse 38% 96% at 74% 0%, rgb(236 119 255 / 24%), transparent 72%),
-    radial-gradient(ellipse 26% 82% at 94% 0%, rgb(255 172 108 / 18%), transparent 70%);
+    radial-gradient(
+      ellipse 32% 90% at 16% 0%,
+      color-mix(in srgb, var(--glow-soft) 34%, transparent),
+      transparent 72%
+    ),
+    radial-gradient(
+      ellipse 46% 104% at 45% 0%,
+      color-mix(in srgb, var(--glow-accent) 30%, transparent),
+      transparent 74%
+    ),
+    radial-gradient(
+      ellipse 38% 96% at 74% 0%,
+      color-mix(in srgb, var(--glow-soft) 26%, transparent),
+      transparent 72%
+    ),
+    radial-gradient(
+      ellipse 26% 82% at 94% 0%,
+      color-mix(in srgb, var(--glow-ink) 24%, transparent),
+      transparent 70%
+    );
   filter: blur(22px);
   opacity: 0.55;
   animation: awareness-glow-bloom 9s ease-in-out -2.2s infinite;
@@ -178,18 +203,18 @@ onUnmounted(() => {
   background:
     linear-gradient(
       101deg,
-      rgb(86 219 255 / 36%) 0%,
-      rgb(104 128 255 / 50%) 20%,
-      rgb(104 128 255 / 56%) 27%,
-      rgb(194 112 255 / 52%) 50%,
-      rgb(246 127 220 / 40%) 70%,
-      rgb(255 174 105 / 28%) 88%,
+      color-mix(in srgb, var(--glow-accent) 26%, transparent) 0%,
+      color-mix(in srgb, var(--glow-accent) 36%, transparent) 20%,
+      color-mix(in srgb, var(--glow-soft) 42%, transparent) 27%,
+      color-mix(in srgb, var(--glow-accent) 32%, transparent) 50%,
+      color-mix(in srgb, var(--glow-ink) 34%, transparent) 70%,
+      color-mix(in srgb, var(--glow-soft) 24%, transparent) 88%,
       transparent 100%
     ),
     repeating-linear-gradient(
       94deg,
       transparent 0 13%,
-      rgb(255 255 255 / 10%) 14% 18%,
+      rgb(255 255 255 / 8%) 14% 18%,
       transparent 20% 34%
     );
   background-size: 150% 100%;
@@ -210,11 +235,11 @@ onUnmounted(() => {
   content: '';
   background: linear-gradient(
     100deg,
-    rgb(86 219 255 / 52%) 0%,
-    rgb(104 128 255 / 64%) 28%,
-    rgb(194 112 255 / 60%) 54%,
-    rgb(246 127 220 / 48%) 74%,
-    rgb(255 174 105 / 34%) 90%,
+    color-mix(in srgb, var(--glow-accent) 44%, transparent) 0%,
+    color-mix(in srgb, var(--glow-soft) 58%, transparent) 28%,
+    color-mix(in srgb, var(--glow-accent) 48%, transparent) 54%,
+    color-mix(in srgb, var(--glow-soft) 40%, transparent) 74%,
+    color-mix(in srgb, var(--glow-ink) 34%, transparent) 90%,
     transparent 100%
   );
   filter: blur(4px);
@@ -227,8 +252,8 @@ onUnmounted(() => {
   content: '';
   background: linear-gradient(
     180deg,
-    rgb(255 255 255 / 18%) 0%,
-    rgb(144 226 255 / 24%) 28%,
+    rgb(255 255 255 / 16%) 0%,
+    color-mix(in srgb, var(--glow-soft) 24%, transparent) 28%,
     transparent 68%
   );
   filter: blur(7px);
@@ -241,9 +266,9 @@ onUnmounted(() => {
     104deg,
     transparent 0%,
     transparent 25%,
-    rgb(255 255 255 / 16%) 34%,
-    rgb(180 232 255 / 46%) 47%,
-    rgb(185 143 255 / 32%) 57%,
+    rgb(255 255 255 / 14%) 34%,
+    color-mix(in srgb, var(--glow-soft) 46%, transparent) 47%,
+    color-mix(in srgb, var(--glow-accent) 30%, transparent) 57%,
     transparent 72%,
     transparent 100%
   );
@@ -262,9 +287,9 @@ onUnmounted(() => {
     102deg,
     transparent 0%,
     transparent 18%,
-    rgb(255 192 255 / 18%) 32%,
-    rgb(255 255 255 / 28%) 48%,
-    rgb(139 220 255 / 22%) 61%,
+    color-mix(in srgb, var(--glow-soft) 20%, transparent) 32%,
+    rgb(255 255 255 / 26%) 48%,
+    color-mix(in srgb, var(--glow-accent) 22%, transparent) 61%,
     transparent 78%,
     transparent 100%
   );
