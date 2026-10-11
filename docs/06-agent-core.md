@@ -1215,18 +1215,19 @@ v0.7.0 起 Agent 能读写**自己的配置**：内核新增内置工具 `set_se
 | 工具 | 参数 | sensitivity | 实现文件 |
 |---|---|---|---|
 | `set_setting` | `{ action: 'get', path }` / `{ action: 'list', group? }` / `{ action: 'set', values: Array<{ path, value }> }` | confirm | `packages/agent-core/src/tools/settings.ts` + `apps/desktop/src/main/tools/settings-port.ts` |
-| `set_appearance`（v32） | `{ theme?, accent?, glass? }`（三个都可选；全缺 = 只读当前外观） | safe | `packages/agent-core/src/tools/appearance.ts` + **同一个** `settings-port.ts` |
+| `set_appearance`（v32；v33 增至四字段） | `{ theme?, accent?, glass?, awarenessGlow? }`（四个都可选；全缺 = 只读当前外观） | safe | `packages/agent-core/src/tools/appearance.ts` + **同一个** `settings-port.ts` |
 
 - **`set_appearance` 与 `set_setting` 的关系**：它不是第二条写入通道 —— 仍然复用 `SettingsToolPort`
   （`canWriteSettingPath` 判定 → `applyPatch` → Schema 二次校验 → 审计日志），只是给「换主题 / 换强调色 /
-  开关毛玻璃」这三件事一个**无路径**的语义化入口：参数是三个固定枚举 / 布尔字段，模型不需要记住
+  开关毛玻璃 / 开关流光」这四件事一个**无路径**的语义化入口：参数是四个固定枚举 / 布尔字段，模型不需要记住
   `appearance.*` 的路径，也不可能借它写到别的配置上。
-  因此它的 `sensitivity` 是 `safe`：三项都是**纯视觉、即时可撤销**、不碰文件 / 路径 / 凭据，
+  因此它的 `sensitivity` 是 `safe`：四项都是**纯视觉、即时可撤销**、不碰文件 / 路径 / 凭据，
   `confirm` 权限档下不该为「把界面换成暗色」弹一张确认卡（`set_setting` 保持 `confirm`，
   因为它能改的是一整片可写面）。注册与 `set_setting` 同口径：**不受** `agent.tools.enabled` 门控
   （§12.6），也不随 `readonly` 档摘除 —— 可写面本身仍由覆盖表与黑名单约束。
-- 三个字段的合法取值：`theme` = `system | light | dark`，`accent` = `aurora | teal | violet | rose | amber`，
-  `glass` = 布尔。枚举外 / 类型不符**在工具层就地失败**（不会写进去一半，也不会把非法值留给 Schema）。
+- 四个字段的合法取值：`theme` = `system | light | dark`，`accent` = `aurora | teal | violet | rose | amber`，
+  `glass` = 布尔，`awarenessGlow` = 布尔（v33：文件自感知的四周流光总开关，`false` = 完全不出流光）。
+  枚举外 / 类型不符**在工具层就地失败**（不会写进去一半，也不会把非法值留给 Schema）。
 
 - `get`：读一个路径的当前值（值经脱敏）。不可读的路径（凭据类）返回 `isError` 与「该路径不可读」，
   与 `set` 用的是**同一套可写性判定**——不可写即不可读。
@@ -1809,7 +1810,7 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
 - 主进程在 `main/settings-hint.ts` 维护**一段固定中文清单**：逐条列出 §12.2 显式可写覆盖表
   同口径的路径（`llm.providers.<id>.model/modelParams.<modelId>.reasoningEffort`、`tts.*`、`stt.*`、
   `imagegen.*` 开关、`general.edgeBar.*`、`general.chat.showThinking`、
-  `appearance.theme / accent / glass`（v32 起；同一批字段也有语义化工具 `set_appearance`，见 §12.1）、
+  `appearance.theme / accent / glass / awarenessGlow`（v32 起三件套、v33 起加流光开关；同一批字段也有语义化工具 `set_appearance`，见 §12.1）、
   `modes.current`、
   `modes.classroom.*`、
   `agent.tools` 下的**逐条枚举**——`enabled` / `workspaceDir` /
@@ -2396,13 +2397,14 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
   队列 / 运行记录 / 最近使用 / 建议 / 累计用量 / 版本备份，并删除隐藏的 `awareness-*` 后台会话；
   保留监控目录、知识库路径、正文授权、模型配置与源文件。重置完成后自动恢复监听，但**不自动扫描
   或重建记忆**，避免意外消耗模型额度。状态文件版本为 `v4`，加载旧状态时丢弃过时的过程记录。
-- **顶部流光**：主进程维护一个内部透明浮层，在文件进入 `extracting / analyzing / writing`
-  阶段且提示条已启用、当前可见、未处于首次引导 / 勿扰 / 游戏模式时显示。浮层跟随
-  `general.edgeBar.display` 的 `primary / cursor` 选择，横跨目标显示器 bounds 顶部并贴住第 0 像素，
-  不因提示条左右贴边位置改变；鼠标穿透、不可聚焦，排队阶段与空闲阶段不显示。
+- **四周流光（v33 起四边）**：主进程维护一个内部透明浮层，在文件进入 `extracting / analyzing / writing`
+  阶段且提示条已启用、当前可见、未处于首次引导 / 勿扰 / 游戏模式、且 `appearance.awarenessGlow` 未关闭时
+  显示。浮层跟随 `general.edgeBar.display` 的 `primary / cursor` 选择，覆盖目标显示器 bounds
+  **整块矩形**（四条物理边缘都贴住第 0 像素），渲染层只在四条边上画极光边带，其余区域完全透明 ——
+  因此不因提示条左右贴边位置改变；鼠标穿透、不可聚焦，排队阶段与空闲阶段不显示。
   连续分析多个文件时，文件切换不广播空闲帧，极光保持连续显示；只有队列批次真正结束
-  或停在模型 / 授权 / Agent 忙态门控时才退场。视觉层以竖向光幕为主，内部叠加两条宽而软的
-  左→右流光带，颜色分布也沿同一方向循环流转；它们使用缓入缓出，不形成硬边扫描线。光幕本身缓慢呼吸和轻微漂移，
+  或停在模型 / 授权 / Agent 忙态门控时才退场。视觉层以光幕为主，内部叠加两条宽而软的
+  沿边流光带，颜色分布也沿同一方向循环流转；它们使用缓入缓出，不形成硬边扫描线。光幕本身缓慢呼吸和轻微漂移，
   出场时模糊淡出，再在约 680ms 后隐藏。连续分析期间不会重新播放入场。叠加层不截取或改变
   桌面窗口的真实像素。
 - **只读 Agent 工具**：`awareness_status` 始终注册，说明启用状态、当前文件、队列、笔记数、

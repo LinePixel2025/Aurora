@@ -40,6 +40,8 @@
     "accent": "aurora", // 界面强调色：aurora 品牌蓝（默认）| teal | violet | rose | amber
     // v32 新增：界面毛玻璃总开关。false = 原生 Acrylic 与页面内 .glass-* 一起退为实色（见 07 §5.1）
     "glass": true,
+    // v33 新增：文件自感知的四周流光总开关。false = 文件分析期间屏幕四周不出流光（见 06 §26）
+    "awarenessGlow": true,
   },
   "llm": {
     "active": "deepseek",
@@ -401,7 +403,7 @@
   AI 把窗口改大或打开视觉，只是把一条假事实告诉用户，出问题的还是用户）；`temperature` 已随
   v23 从 Schema 删除，不再存在这条可写路径（请求也不再下发它，见 06 §3）；
   ② **显式登记** —— `tts.enabled|active|autoRead|maxChars`、
-  `stt.enabled|active`、`imagegen.enabled|active`、`general.edgeBar.enabled|opacity|quietHours|display|position`、`appearance.theme|accent|glass`、
+  `stt.enabled|active`、`imagegen.enabled|active`、`general.edgeBar.enabled|opacity|quietHours|display|position`、`appearance.theme|accent|glass|awarenessGlow`、
   `general.chat.showThinking`、`modes.current`、`agent.tools.*`
   （`terminal.allowPatterns` **除外** —— 它在黑名单里，见 §1）、
   `skills.userDir|disabled`、`advanced.quietHours` 等本就可写的路径逐条入表
@@ -777,11 +779,14 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `v31 → v32`（**外观：明暗档位与毛玻璃开关**，见 §1 的 `appearance`：为已有 `appearance`
   补 `theme: 'system'` 与 `glass: true` 两个缺字段，用户已写的 `accent` 与已写值原样保留；
   `appearance` 整组缺失时补完整默认 `{ theme: 'system', accent: 'aurora', glass: true }`
-  —— 与 `v20 → v21` 的 appearance 同一套路）。
-  三十二条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  —— 与 `v20 → v21` 的 appearance 同一套路）、
+  `v32 → v33`（**流光特效开关**，见 §1 的 `appearance`：为已有 `appearance` 补
+  `awarenessGlow: true` 一个缺字段，其余已写值原样保留；`appearance` 整组缺失时补完整默认
+  `{ theme: 'system', accent: 'aurora', glass: true, awarenessGlow: true }` —— 默认即「保持 v33 之前的行为」）。
+  三十三条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**），重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **32** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **33** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
