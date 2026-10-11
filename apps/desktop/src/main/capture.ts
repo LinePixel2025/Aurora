@@ -587,10 +587,21 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
           ? Number(backgroundParts[3])
           : 1
     const frosted = panelBackdrop.indexOf('blur') !== -1 && panelAlpha < 0.7
-    // 2026-10-04：提示条退出原生 Acrylic / backdrop-filter，改为高不透明度自包含圆角玻璃，
-    // 避免 Windows 矩形材质与窗口阴影从圆角外露出。探针接受“毛玻璃”或“实体圆角”两种成熟形态。
-    const solidRounded = panelBackdrop === 'none' && panelAlpha >= 0.9
-    const surfaceReady = frosted || solidRounded
+    // 2026-10-11：提示条改回**原生 Acrylic**（桌面模糊由 DWM 提供，页面 backdrop-filter 仍是 none）。
+    // DOM 侧能证明两件事：① 面板 tint 真的半透明（退回不透明就把材质盖死、看着仍是实色条）；
+    // ② 面板铺满**整个客户区**（系统材质裁不出圆角，只能让窗口矩形 == 想看到的矩形，
+    //    见 edge-bar/App.vue 的 .panel）。材质到底挂没挂，由主进程的 nativeGlassCheck
+    //    （窗口名 edge-bar）单独断言 —— 渲染层看不到 DWM。
+    const panelRect = panel.getBoundingClientRect()
+    // 面板铺满客户区、只让出右缘 8px 竖条列（2026-10-11：圆角面板 + 窗口区域阶梯近似，
+    // 面板必须把「除竖条以外」的整窗盖住，材质才不会从面板边缘露出来）
+    const coversWindow =
+      Math.abs(panelRect.left) <= 1 &&
+      Math.abs(panelRect.top) <= 1 &&
+      Math.abs(panelRect.height - document.documentElement.clientHeight) <= 1 &&
+      Math.abs(panelRect.right - (width - 8)) <= 2
+    const translucentTint = panelAlpha > 0 && panelAlpha < 0.85
+    const surfaceReady = panelBackdrop === 'none' && translucentTint && coversWindow
     const buttons = Array.from(panel.querySelectorAll('.actions button'))
     const probes = buttons.map((button) => {
       const rect = button.getBoundingClientRect()
@@ -644,7 +655,8 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       panelBackground,
       panelAlpha,
       frosted,
-      solidRounded,
+      translucentTint,
+      coversWindow,
       buttonCount: buttons.length,
       probes,
       quickAbsent,
@@ -662,7 +674,7 @@ export const EDGE_BAR_PANEL_SCRIPT = `(() => {
       allClickable: probes.length > 0 && probes.every((p) => p.hit && p.insideWindow),
       pass:
         buttons.length === 3 &&
-        panelStyle.width === '320px' &&
+        coversWindow &&
         quickAbsent &&
         awarenessStatus &&
         analysisProgress !== null &&
@@ -6068,6 +6080,131 @@ export const CHAT_PERMISSION_CHECK = `(async () => {
       menuBoxes: menuBoxes,
       permissionModeBefore: first.ok ? first.value.agent.permissionMode : null,
       triggerAfter: triggerAfter,
+      pass: Object.keys(conditions).every((key) => conditions[key] === true),
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 输入卡工具行「主区被压到下限」的几何护栏（2026-10-11，修「拉伸左栏后权限钮与来源下拉重合」）。
+ *
+ * 现场：用户把左栏拖宽后，权限芯片压到了来源下拉身上。根因是 `.perm` 的 `min-width: 0`
+ * 让 flex 项被压到子元素 min-content 以下，而 `.perm-btn` 是行内级盒（shrink-to-fit，下限 =
+ * 自身 min-content），带 `overflow: visible` 直接画到邻居身上 —— 现象是「完全权限」四字完整、
+ * 它自己的箭头被来源下拉盖住。
+ *
+ * act：把左栏把手拖到夹取上限（`min(520, 视口 − 右栏 − 420)`）。右栏默认展开，因此
+ * 主区恰好落在下限 **420px**，也就是这个 bug 唯一能复现的现场。
+ * check：量权限 / 来源 / 模型 / 思考 / 发送五枚控件的矩形 —— 两两不相交、都在 `.composer-box` 内、
+ * 各自不小于文档下限、权限档位文案没被截断；收尾双击把手复位，后续场景仍看到默认栏宽。
+ *
+ * ⚠️ 必须断言 `compressed`：栏宽没被压到下限时（右栏被收起的场景跑到前面去了），
+ * 五个矩形本来就互不相交 —— 那样「零相交」是恒真的假 PASS。
+ */
+export const CHAT_COMPOSER_NARROW_ACT = `(async () => {
+  try {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    const el = document.querySelector('[data-field="chat.nav-resizer"]')
+    if (el === null) return { dragged: false, reason: 'no nav-resizer' }
+    const target = Math.round(window.innerWidth)
+    const opts = { bubbles: true, pointerId: 11, clientX: el.getBoundingClientRect().left }
+    el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, button: 0, buttons: 1 }))
+    el.dispatchEvent(new PointerEvent('pointermove', { ...opts, button: 0, buttons: 1, clientX: target }))
+    el.dispatchEvent(new PointerEvent('pointerup', { ...opts, button: 0, buttons: 0, clientX: target }))
+    await wait(400)
+    const nav = document.querySelector('aside.nav')
+    const main = document.querySelector('main.main')
+    return {
+      dragged: true,
+      navWidth: nav === null ? 0 : Math.round(nav.getBoundingClientRect().width),
+      mainWidth: main === null ? 0 : Math.round(main.getBoundingClientRect().width),
+    }
+  } catch (error) {
+    return { dragged: false, reason: String(error) }
+  }
+})()`
+
+export const CHAT_COMPOSER_NARROW_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const pick = (selector) => document.querySelector(selector)
+    const rectOf = (selector) => {
+      const el = pick(selector)
+      if (el === null) return null
+      const r = el.getBoundingClientRect()
+      return {
+        left: Math.round(r.left * 10) / 10,
+        right: Math.round(r.right * 10) / 10,
+        top: Math.round(r.top * 10) / 10,
+        bottom: Math.round(r.bottom * 10) / 10,
+        width: Math.round(r.width * 10) / 10,
+      }
+    }
+    const boxes = {
+      permission: rectOf('[data-field="chat.permission"]'),
+      source: rectOf('[data-field="chat.modelSource"]'),
+      model: rectOf('[data-field="chat.model"]'),
+      effort: rectOf('[data-field="chat.reasoningEffort"]'),
+      send: rectOf('[aria-label="发送"]'),
+    }
+    const box = rectOf('.composer-box')
+    const main = pick('main.main')
+    const mainWidth = main === null ? 0 : Math.round(main.getBoundingClientRect().width)
+    const entries = Object.keys(boxes).map((key) => [key, boxes[key]])
+    // 同一行的控件只可能在横向上压到对方：矩形相交 = dx > 0.5 且 dy > 0.5
+    let overlaps = 0
+    const pairs = []
+    for (let i = 0; i < entries.length; i += 1) {
+      for (let j = i + 1; j < entries.length; j += 1) {
+        const a = entries[i][1]
+        const b = entries[j][1]
+        if (a === null || b === null) continue
+        const dx = Math.min(a.right, b.right) - Math.max(a.left, b.left)
+        const dy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top)
+        if (dx > 0.5 && dy > 0.5) {
+          overlaps += 1
+          pairs.push(entries[i][0] + '×' + entries[j][0])
+        }
+      }
+    }
+    const insideCard =
+      box !== null && entries.every(([, r]) => r !== null && r.left >= box.left - 1 && r.right <= box.right + 1)
+    // 下限与 CSS 里的 min-width 同口径（docs/07 §2.3）：权限 = flex: 0 0 auto（不收缩）
+    const floors = { permission: 51, source: 68, model: 68, effort: 56, send: 30 }
+    const tooNarrow = entries.filter(([key, r]) => r !== null && r.width < floors[key] - 0.5).map(([key]) => key)
+    const missing = entries.filter(([, r]) => r === null).map(([key]) => key)
+    // 权限档位文案必须完整：它不参与收缩，被截断说明又回到「把自己压没」的老路
+    const permEl = pick('[data-field="chat.permission"]')
+    const permLabelFull = permEl !== null && permEl.scrollWidth <= permEl.clientWidth + 1
+    const compressed = mainWidth > 0 && mainWidth <= 440
+    const resizer = pick('[data-field="chat.nav-resizer"]')
+    if (resizer !== null) resizer.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    await wait(300)
+    const mainAfter = main === null ? 0 : Math.round(main.getBoundingClientRect().width)
+    const conditions = {
+      /** 真的压到了主区下限 —— 否则「零相交」是恒真的假 PASS */
+      compressed: compressed,
+      /** 五枚控件都在（缺一枚就没在量真东西） */
+      boxesPresent: missing.length === 0,
+      insideCard: insideCard,
+      noOverlap: overlaps === 0,
+      floorsKept: tooNarrow.length === 0,
+      permLabelFull: permLabelFull,
+      /** 收尾复位：后续场景读到的仍是默认栏宽 */
+      navRestored: mainAfter > mainWidth,
+    }
+    return {
+      ...conditions,
+      mainWidth: mainWidth,
+      mainAfter: mainAfter,
+      boxes: boxes,
+      cardBox: box,
+      overlaps: overlaps,
+      pairs: pairs,
+      tooNarrow: tooNarrow,
+      missing: missing,
       pass: Object.keys(conditions).every((key) => conditions[key] === true),
     }
   } catch (error) {
@@ -11621,6 +11758,9 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       file: 'edge-bar-expanded.png',
       act: EDGE_BAR_HOVER_SCRIPT,
       check: EDGE_BAR_PANEL_SCRIPT,
+      // 2026-10-11：提示条改回原生 Acrylic —— 面板 tint 的半透明只是「材质有没有被盖死」的
+      // DOM 证据，材质本身只有主进程知道（`usesNativeGlass`），所以两端各断言一次。
+      nativeCheck: nativeGlassCheck(manager, 'edge-bar'),
       // 展开要等主进程 shape 与渲染层面板挂载走完（跨进程异步，rAF 等不到它）
       settleMs: 700,
     },
@@ -12040,6 +12180,14 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: CHAT_PERMISSION_ACT,
       check: CHAT_PERMISSION_CHECK,
     },
+    // 工具行几何护栏（2026-10-11）：把左栏拖到夹取上限 → 主区压到下限 420px 的现场，
+    // 量五枚控件的矩形。必须排在 chat-collapse 之前（窗口一被 hide，DOM 操作就没了）。
+    {
+      name: 'chat',
+      file: 'chat-composer-narrow.png',
+      act: CHAT_COMPOSER_NARROW_ACT,
+      check: CHAT_COMPOSER_NARROW_CHECK,
+    },
     // 只读档现场（v13，docs/06 §11.2）：切到 readonly + 展开下拉，断言文案与配置一致后还原。
     // 必须排在 chat-collapse 之前（窗口一被 hide，后面的 DOM 操作就没了）。
     {
@@ -12297,7 +12445,12 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     file: 'settings-appearance-glass-off.png',
     query: { page: 'general' },
     act: APPEARANCE_GLASS_OFF_ACT,
-    mainAct: async () => nativeGlassGoneCheck(manager, 'settings')(),
+    mainAct: async () => {
+      // 2026-10-11：提示条也进了材质名单，两窗一起断言「关掉毛玻璃后材质真的摘掉」。
+      const settings = await nativeGlassGoneCheck(manager, 'settings')()
+      const edgeBar = await nativeGlassGoneCheck(manager, 'edge-bar')()
+      return { ...settings, edgeBar, pass: settings.pass === true && edgeBar.pass === true }
+    },
     check: APPEARANCE_GLASS_OFF_CHECK,
   })
   for (const page of SETTINGS_PAGE_IDS) {
