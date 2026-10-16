@@ -4781,12 +4781,11 @@ export const AWARENESS_GLOW_SETTLE_ACT = `(async () => {
 })()`
 
 /**
- * 自感知四周流光的静态预览（v33 起四边）：**只量矩形不量存在**。
+ * 顶部流光的静态预览（2026-10-16：只保留顶边，删除三边与光帘）。
  *
- * 四条边带（`[data-edge]`）必须各自贴住自己的屏幕边，且只在垂直边带方向上是「薄」的
- * （沿边那一轴覆盖 ≥95% 视口、厚度远小于视口）—— 只查"四个元素在不在"证明不了四边流光：
- * 元素齐全但全挤在顶部、或窗口还是旧的 72px 顶部条时，那种探针照样绿。
- * 另外沿用旧口径：入场动画 + 650ms 之后的真实运动变化（否定"声明了动画但其实是静止的"）。
+ * 顶部边带（[data-edge="top"]）必须贴住屏幕上边、沿水平方向覆盖 ≥95% 视口、
+ * 垂直方向厚度远小于视口。另外沿用旧口径：入场动画 + 650ms 之后的真实运动变化
+ * （否定"声明了动画但其实是静止的"）。
  */
 export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -4799,7 +4798,7 @@ export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
     const viewportHeight = document.documentElement.clientHeight
     const bandLimitX = Math.max(120, viewportWidth * 0.25)
     const bandLimitY = Math.max(120, viewportHeight * 0.25)
-    const edgeNames = ['top', 'bottom', 'left', 'right']
+    const edgeNames = ['top']
     const sawEdge = {}
     for (const edge of edgeNames) sawEdge[edge] = document.querySelector('[data-field="awareness-glow.' + edge + '"]')
     const edges = {}
@@ -4880,7 +4879,6 @@ export const AWARENESS_GLOW_CAPTURE_CHECK = `(async () => {
         item.bloomBackground.includes('radial-gradient') &&
         item.bloomAnimation.includes('awareness-glow-bloom') &&
         item.bloomIteration === 'infinite' &&
-        item.haloAnimation.includes('awareness-glow-curtain') &&
         item.haloAnimation.includes('awareness-glow-color-flow') &&
         item.haloMask.includes('rgb(0, 0, 0) 0%') &&
         item.lineAnimation.includes('awareness-glow-flow') &&

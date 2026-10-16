@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 
-/** 四条边：屏幕上下左右各一条极光边带（v33）。顺序稳定，探针按它逐条量矩形。 */
-const EDGES = ['top', 'bottom', 'left', 'right'] as const
+/** 顶部单条极光边带（2026-10-16 用户口径：只保留顶部，删除三边与光帘）。 */
+const EDGES = ['top'] as const
 
 const preview = new URLSearchParams(window.location.search).has('preview')
 const active = ref(preview)
@@ -67,32 +67,23 @@ onUnmounted(() => {
 
 <style scoped>
 /*
- * 四周流光（v33）：窗口覆盖整块显示器，只在**四条边**上画极光边带 ——
- * 中部保持完全透明，配合主进程的鼠标穿透，全屏矩形不会挡住桌面与提示条。
+ * 顶部流光（2026-10-16）：只在屏幕顶边画一条 Apple Intelligence 光谱极光带。
+ * 配色为多色光谱（品红 → 紫罗兰 → 蓝 → 青 → 琥珀），每层 ≤36% 不透明度 +
+ * 大半径高斯模糊，呈「液态弥散光」而非硬边彩条。
+ * --aurora-blue 参与光谱冷色主调，换强调色时微微偏移，其余色相固定。
  *
- * 配色是**强调色单色**（2026-10-11 用户口径：彩虹渐变太艳，改成提示条「正在感知」
- * 卡片那种淡青/薄荷绿单色柔光）：唯一色源是 `--aurora-blue`，靠与白 / 深色混合拉开
- * 明暗层次，不再出现跨色相的彩虹；浮层窗口在 `main.ts` 里同样跑 `applyAppearance`，
- * 所以换强调色（青绿 / 紫 / 玫瑰…）时四边光幕与卡片一起跟随。
- *
- * 每条边带的**内容、动画与关键帧与顶部那条完全同源**（只写一份）：方向差异靠三处：
- * 1. 上下边带的流光沿 screen-x 走（`background-position-x`），左右边带沿 screen-y 走
- *    （`background-position-y`）—— 同一条 `background-position` 简写，两个轴向都能生效，
- *    于是不需要四套关键帧，也不需要恢复 `alternate` 往复（那会让光带看起来在扫描）；
- * 2. 四条边都用**布局**摆位，只有下边带保留一个 `scaleY(-1)`（它要把「光幕向屏内渐隐」
- *    翻成自下而上；左右边带改用**换轴 + 横向遮罩**，不做旋转）；
- * 3. 关键帧里的 `opacity` / `translate` / `scale` 值在四条边上一字不差 —— 镜像与换轴只发生在
- *    容器与图层盒上。左右两条边带的世界坐标走向与上下相反：带内光带是宽而软的低对比度色团，
- *    贴着屏幕边缘时方向不可辨，这是刻意接受的简化（真要四向一致就得四套关键帧 + 四份图层规则）。
+ * 已删除：三边（bottom / left / right）与光帘（curtain）动画。
  */
 .awareness-glow {
-  /* 单色板（唯一色源 = 强调色）：soft = 混白提亮（薄荷高光），ink = 混深色压暗（波谷）。 */
   --glow-accent: var(--aurora-blue, #0a84ff);
+  --glow-rose: #ff6b9d;
+  --glow-violet: #bc82f3;
+  --glow-cyan: #56d8ff;
+  --glow-amber: #ffb347;
   --glow-soft: color-mix(in srgb, var(--glow-accent) 42%, #ffffff);
   --glow-ink: color-mix(in srgb, var(--glow-accent) 72%, #0b1f2a);
   position: fixed;
   inset: 0;
-  /* 边带的 bloom 用 blur 溢出边带 —— 这里不能裁，否则四条边会出现硬切边 */
   overflow: visible;
   opacity: 0;
   transform: translate3d(0, -8px, 0) scaleY(0.84);
@@ -112,17 +103,6 @@ onUnmounted(() => {
   animation: awareness-glow-enter 920ms cubic-bezier(0.16, 0.84, 0.3, 1) both;
 }
 
-/*
- * 边带容器：四条边都用**布局**定位（不用 rotate 摆位）——这样布局盒本身就是屏幕上
- * 那条边带，探针量到的矩形才有意义（rotate 只改渲染、不改布局盒，量出来的是旋转前的
- * 位置，会得出"边带跑到屏幕外"的假结论）。
- * 朝向差异只保留一处 `scaleY(-1)`：下边带需要把「bloom 贴边、光幕向屏内渐隐」翻过来。
- *
- * ⚠️ 这里**必须**用 `top` / `right` / `bottom` / `left` 长手属性，不能用 `inset` 简写：
- * CSS 的 `inset` 只接受长度与百分比，**不接受 `auto`** —— `inset: 0 auto auto 0` 整条声明
- * 非法被丢弃，回落到基准规则的 `inset: 0 0 auto`，纵向边带于是被 top+bottom 夹成 72px 方块
- * （2026-10-11 实测：左/右边带量到 72×72，只有左上角发光；长手属性则一切正常）。
- */
 .glow-edge {
   --glow-band: 72px;
   position: absolute;
@@ -133,34 +113,6 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-.glow-edge[data-edge='bottom'] {
-  top: auto;
-  bottom: 0;
-  transform: scaleY(-1);
-  transform-origin: 50% 100%;
-}
-
-/* 左 / 右边带：沿屏幕**纵向**的一条边带（换轴，不做旋转）。
- * 高度必须显式 `auto` 把基准规则的 `height: 72px` 让掉，再由 top+bottom 拉满整条视口。 */
-.glow-edge[data-edge='left'] {
-  bottom: 0;
-  width: var(--glow-band);
-  height: auto;
-}
-
-.glow-edge[data-edge='right'] {
-  left: auto;
-  right: 0;
-  bottom: 0;
-  width: var(--glow-band);
-  height: auto;
-}
-
-/*
- * 图层：参考「顶部 72px 边带」的原始比例定尺寸。
- * 基准形（上下边带）：沿边带方向 = 116% / -8%（两端各溢出 8%，避免 blur 后露硬边）；
- * 向屏内 = 52px / 60px。
- */
 .glow-edge > span {
   position: absolute;
   top: 0;
@@ -170,62 +122,69 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
+/* ─── Bloom：宽幅弥散光谱底色 ─── */
 .glow-bloom {
   height: 60px;
   background:
     radial-gradient(
-      ellipse 32% 90% at 16% 0%,
-      color-mix(in srgb, var(--glow-soft) 34%, transparent),
+      ellipse 34% 92% at 8% 0%,
+      color-mix(in srgb, var(--glow-rose) 26%, transparent),
       transparent 72%
     ),
     radial-gradient(
-      ellipse 46% 104% at 45% 0%,
-      color-mix(in srgb, var(--glow-accent) 30%, transparent),
+      ellipse 40% 100% at 28% 0%,
+      color-mix(in srgb, var(--glow-violet) 30%, transparent),
       transparent 74%
     ),
     radial-gradient(
-      ellipse 38% 96% at 74% 0%,
-      color-mix(in srgb, var(--glow-soft) 26%, transparent),
+      ellipse 44% 104% at 50% 0%,
+      color-mix(in srgb, var(--glow-accent) 32%, transparent),
+      transparent 74%
+    ),
+    radial-gradient(
+      ellipse 38% 96% at 72% 0%,
+      color-mix(in srgb, var(--glow-cyan) 28%, transparent),
       transparent 72%
     ),
     radial-gradient(
-      ellipse 26% 82% at 94% 0%,
-      color-mix(in srgb, var(--glow-ink) 24%, transparent),
+      ellipse 30% 88% at 92% 0%,
+      color-mix(in srgb, var(--glow-amber) 22%, transparent),
       transparent 70%
     );
-  filter: blur(22px);
-  opacity: 0.55;
-  animation: awareness-glow-bloom 9s ease-in-out -2.2s infinite;
+  filter: blur(28px);
+  opacity: 0.6;
+  animation: awareness-glow-bloom 10s ease-in-out -2.2s infinite;
 }
 
+/* ─── Halo：主光谱流带（色相沿边带方向流转） ─── */
 .glow-halo {
   height: 52px;
   background:
     linear-gradient(
-      101deg,
-      color-mix(in srgb, var(--glow-accent) 26%, transparent) 0%,
-      color-mix(in srgb, var(--glow-accent) 36%, transparent) 20%,
-      color-mix(in srgb, var(--glow-soft) 42%, transparent) 27%,
-      color-mix(in srgb, var(--glow-accent) 32%, transparent) 50%,
-      color-mix(in srgb, var(--glow-ink) 34%, transparent) 70%,
-      color-mix(in srgb, var(--glow-soft) 24%, transparent) 88%,
-      transparent 100%
+      100deg,
+      color-mix(in srgb, var(--glow-rose) 28%, transparent) 0%,
+      color-mix(in srgb, var(--glow-violet) 34%, transparent) 12%,
+      color-mix(in srgb, var(--glow-accent) 36%, transparent) 26%,
+      color-mix(in srgb, var(--glow-cyan) 34%, transparent) 40%,
+      color-mix(in srgb, var(--glow-soft) 38%, transparent) 52%,
+      color-mix(in srgb, var(--glow-accent) 34%, transparent) 64%,
+      color-mix(in srgb, var(--glow-violet) 30%, transparent) 76%,
+      color-mix(in srgb, var(--glow-amber) 26%, transparent) 88%,
+      color-mix(in srgb, var(--glow-rose) 24%, transparent) 100%
     ),
     repeating-linear-gradient(
       94deg,
       transparent 0 13%,
-      rgb(255 255 255 / 8%) 14% 18%,
+      rgb(255 255 255 / 6%) 14% 18%,
       transparent 20% 34%
     );
-  background-size: 150% 100%;
+  background-size: 200% 100%;
   background-repeat: repeat-x;
-  filter: blur(4px);
-  opacity: 0.9;
+  filter: blur(5px);
+  opacity: 0.88;
   -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 62%, transparent 100%);
   mask-image: linear-gradient(180deg, #000 0%, #000 62%, transparent 100%);
-  animation:
-    awareness-glow-curtain 11.5s ease-in-out -2.6s infinite,
-    awareness-glow-color-flow 13s linear infinite;
+  animation: awareness-glow-color-flow 18s linear infinite;
 }
 
 .glow-halo::before {
@@ -235,15 +194,16 @@ onUnmounted(() => {
   content: '';
   background: linear-gradient(
     100deg,
-    color-mix(in srgb, var(--glow-accent) 44%, transparent) 0%,
-    color-mix(in srgb, var(--glow-soft) 58%, transparent) 28%,
-    color-mix(in srgb, var(--glow-accent) 48%, transparent) 54%,
-    color-mix(in srgb, var(--glow-soft) 40%, transparent) 74%,
-    color-mix(in srgb, var(--glow-ink) 34%, transparent) 90%,
+    color-mix(in srgb, var(--glow-rose) 34%, transparent) 0%,
+    color-mix(in srgb, var(--glow-violet) 40%, transparent) 16%,
+    color-mix(in srgb, var(--glow-soft) 48%, transparent) 34%,
+    color-mix(in srgb, var(--glow-cyan) 42%, transparent) 52%,
+    color-mix(in srgb, var(--glow-accent) 38%, transparent) 70%,
+    color-mix(in srgb, var(--glow-amber) 32%, transparent) 86%,
     transparent 100%
   );
   filter: blur(4px);
-  opacity: 0.86;
+  opacity: 0.8;
 }
 
 .glow-halo::after {
@@ -253,92 +213,62 @@ onUnmounted(() => {
   background: linear-gradient(
     180deg,
     rgb(255 255 255 / 16%) 0%,
-    color-mix(in srgb, var(--glow-soft) 24%, transparent) 28%,
+    color-mix(in srgb, var(--glow-soft) 22%, transparent) 28%,
     transparent 68%
   );
   filter: blur(7px);
-  animation: awareness-glow-sheen 6.4s ease-in-out -1.4s infinite;
+  animation: awareness-glow-sheen 7s ease-in-out -1.4s infinite;
 }
 
+/* ─── Line：聚焦光谱高光带 ─── */
 .glow-line {
   height: 52px;
   background: linear-gradient(
     104deg,
     transparent 0%,
-    transparent 25%,
-    rgb(255 255 255 / 14%) 34%,
-    color-mix(in srgb, var(--glow-soft) 46%, transparent) 47%,
-    color-mix(in srgb, var(--glow-accent) 30%, transparent) 57%,
-    transparent 72%,
+    transparent 18%,
+    color-mix(in srgb, var(--glow-rose) 20%, transparent) 28%,
+    rgb(255 255 255 / 14%) 36%,
+    color-mix(in srgb, var(--glow-cyan) 30%, transparent) 46%,
+    color-mix(in srgb, var(--glow-violet) 24%, transparent) 56%,
+    color-mix(in srgb, var(--glow-amber) 18%, transparent) 66%,
+    transparent 78%,
     transparent 100%
   );
-  background-size: 200% 100%;
+  background-size: 220% 100%;
   background-repeat: no-repeat;
   filter: blur(5px);
-  opacity: 0.86;
+  opacity: 0.82;
   -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 62%, transparent 100%);
   mask-image: linear-gradient(180deg, #000 0%, #000 62%, transparent 100%);
-  animation: awareness-glow-flow 7.6s ease-in-out -1.2s infinite;
+  animation: awareness-glow-flow 8.4s ease-in-out -1.2s infinite;
 }
 
+/* ─── Streak：宽幅柔和光谱 ─── */
 .glow-streak {
   height: 52px;
   background: linear-gradient(
     102deg,
     transparent 0%,
-    transparent 18%,
-    color-mix(in srgb, var(--glow-soft) 20%, transparent) 32%,
-    rgb(255 255 255 / 26%) 48%,
-    color-mix(in srgb, var(--glow-accent) 22%, transparent) 61%,
-    transparent 78%,
+    transparent 12%,
+    color-mix(in srgb, var(--glow-violet) 16%, transparent) 24%,
+    color-mix(in srgb, var(--glow-soft) 20%, transparent) 38%,
+    rgb(255 255 255 / 22%) 48%,
+    color-mix(in srgb, var(--glow-cyan) 18%, transparent) 60%,
+    color-mix(in srgb, var(--glow-amber) 14%, transparent) 74%,
+    transparent 86%,
     transparent 100%
   );
-  background-size: 240% 100%;
+  background-size: 260% 100%;
   background-repeat: no-repeat;
-  filter: blur(10px);
-  opacity: 0.46;
+  filter: blur(12px);
+  opacity: 0.5;
   -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 62%, transparent 100%);
   mask-image: linear-gradient(180deg, #000 0%, #000 62%, transparent 100%);
-  animation: awareness-glow-flow-slow 10.6s ease-in-out -3.8s infinite;
+  animation: awareness-glow-flow-slow 11.5s ease-in-out -3.8s infinite;
 }
 
-/*
- * 左 / 右两条边带的**图层重排**：换轴后，「沿边带方向」是纵向（top/height），
- * 「向屏内」是横向（left/width）。百分比在这里会失真（8% of 72px ≈ 6px，另一轴 8% of 2000px
- * 却是 160px），所以两条边一律用**固定像素**溢出：向屏内 8px、沿屏幕高度铺满并加 8px。
- */
-.glow-edge[data-edge='left'] > span,
-.glow-edge[data-edge='right'] > span {
-  top: -8px;
-  left: 0;
-  width: 100%;
-  height: calc(100% + 16px);
-  transform-origin: 0 0;
-}
-
-/* 左 / 右两条边带：遮罩改横向（贴屏处不透明、向屏内渐隐），其余（曲率、呼吸、柔光）不变 */
-.glow-edge[data-edge='left'] .glow-halo,
-.glow-edge[data-edge='right'] .glow-halo,
-.glow-edge[data-edge='left'] .glow-line,
-.glow-edge[data-edge='right'] .glow-line,
-.glow-edge[data-edge='left'] .glow-streak,
-.glow-edge[data-edge='right'] .glow-streak {
-  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 62%, transparent 100%);
-  mask-image: linear-gradient(90deg, #000 0%, #000 62%, transparent 100%);
-}
-
-/* 左右边带的流动沿屏幕纵向（上下边带沿屏幕横向）：同一个 `background-position` 简写 */
-.glow-edge[data-edge='left'] .glow-line,
-.glow-edge[data-edge='right'] .glow-line {
-  background-size: 100% 200%;
-  background-repeat: repeat-y;
-}
-
-.glow-edge[data-edge='left'] .glow-streak,
-.glow-edge[data-edge='right'] .glow-streak {
-  background-size: 100% 240%;
-  background-repeat: repeat-y;
-}
+/* ─── 关键帧 ─── */
 
 @keyframes awareness-glow-enter {
   0% {
@@ -361,39 +291,23 @@ onUnmounted(() => {
 @keyframes awareness-glow-bloom {
   0%,
   100% {
-    opacity: 0.48;
+    opacity: 0.5;
     transform: translate3d(-2%, 0, 0) scaleX(1.03) scaleY(0.97);
   }
   50% {
-    opacity: 0.78;
+    opacity: 0.76;
     transform: translate3d(2%, 1px, 0) scaleX(0.99) scaleY(1.04);
-  }
-}
-
-@keyframes awareness-glow-curtain {
-  0%,
-  100% {
-    opacity: 0.66;
-    transform: translate3d(-2%, 0, 0) skewX(-1.6deg) scaleX(1.02);
-  }
-  46% {
-    opacity: 0.9;
-    transform: translate3d(1%, 2px, 0) skewX(1.2deg) scaleX(0.99);
-  }
-  74% {
-    opacity: 0.74;
-    transform: translate3d(3%, -1px, 0) skewX(-0.5deg) scaleX(1.01);
   }
 }
 
 @keyframes awareness-glow-sheen {
   0%,
   100% {
-    opacity: 0.16;
+    opacity: 0.14;
     transform: translate3d(0, -18%, 0);
   }
   50% {
-    opacity: 0.42;
+    opacity: 0.38;
     transform: translate3d(0, 22%, 0);
   }
 }
@@ -405,10 +319,10 @@ onUnmounted(() => {
     transform: translate3d(-3%, 0, 0);
   }
   24% {
-    opacity: 0.58;
+    opacity: 0.56;
   }
   58% {
-    opacity: 0.84;
+    opacity: 0.82;
     transform: translate3d(1%, 1px, 0);
   }
   100% {
@@ -425,10 +339,10 @@ onUnmounted(() => {
     transform: translate3d(-4%, 0, 0);
   }
   30% {
-    opacity: 0.34;
+    opacity: 0.32;
   }
   64% {
-    opacity: 0.62;
+    opacity: 0.58;
     transform: translate3d(-1%, -1px, 0);
   }
   100% {
@@ -443,7 +357,7 @@ onUnmounted(() => {
     background-position: 0% 0;
   }
   to {
-    background-position: 150% 0;
+    background-position: 200% 0;
   }
 }
 
