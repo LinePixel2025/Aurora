@@ -29,7 +29,10 @@ source: 模型自动记录
   新窗口为单例 `780×720`（min `560×480`）、非置顶、可最小化 / 最大化，关闭 = 隐藏。
 - 主界面只保留自动化列表。历史 / 新建 / 编辑经 `automation:openWindow` 打开或复用窗口，
   参数由 `automation:windowRequest` 推送；主进程必须等页面加载完成后再发送并显示窗口。
-- 保留 `automation.editor` / `automation.history-panel` / `.run-item` / `.detail-message` 等锚点；
+- 保留 `automation.editor` / `automation.history-panel` / `.run-item` 等锚点
+  （**2026-10-16 更正**：`.detail-message` 随「纯文本回放」一起删掉了，新契约是
+  `.day-head` / `.run-meta` / `.step-item` + `data-field="automation.replay"` /
+  `automation.run-detail`，见 `Memory/2026-10-16-automation-history-detail-layers.md`）；
   新窗口使用独立 renderer entry（`electron.vite.config.ts` 的 `windowEntries.automation`），
   不要把 chat 窗口整页重载来承载详情。
 - 验收基线：自动化相关定向截图 4/4、全量截图 85 张 / 0 失败、全量 Electron 冒烟 185/185。

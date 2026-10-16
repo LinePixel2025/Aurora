@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-16 | 自动化历史详略三层、auto- 会话对 Center 只放开两条只读命令，与两处只在打包后暴露的坑 | 自动化, 历史, Center, UI, 探针, 口径   | [2026-10-16-automation-history-detail-layers.md](2026-10-16-automation-history-detail-layers.md)             |
 | 2026-10-16 | 自感知流光改 Apple Intelligence 光谱 + 只保留顶边 + 删除光帘                   | 自感知, 流光, UI, CSS, 口径, Apple     | [2026-10-16-awareness-glow-apple-spectral.md](2026-10-16-awareness-glow-apple-spectral.md)                   |
 | 2026-10-16 | github.com 的 HTTPS 被整域掐断（重试无效），推 GitHub 改走 SSH 443 的一次性 URL ；并更正「重试即成功」旧口径 | 发布, git, GitHub, 网络, 坑, 口径      | [2026-10-16-github-https-blocked-ssh443-push.md](2026-10-16-github-https-blocked-ssh443-push.md)             |
 | 2026-10-11 | 自感知流光改强调色单色（与提示条卡片同源）、浮层窗口要自己接 applyAppearance   | 自感知, 流光, UI, CSS, 口径            | [2026-10-11-awareness-glow-mono-accent.md](2026-10-11-awareness-glow-mono-accent.md)                         |
