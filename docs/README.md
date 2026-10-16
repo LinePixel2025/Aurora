@@ -7,7 +7,47 @@
 
 ## 当前实现状态
 
-**当前版本 v0.4.5（Provider 与 Center 模型联动、会话模型来源双下拉与路由修复），
+**当前版本 v0.4.8（Center 官方模型客户端选模真正生效、四周流光改强调色单色），
+配置 Schema v33（无迁移），桌面端发布 v0.4.8 安装包；Aurora Center 本版无代码改动，线上沿用 0.4.7** ——
+三块：
+① **官方图片 / 语音模型支持客户端选模并真正生效**：设置 → 供应商页的生图 / TTS / STT 官方行新增
+「官方模型」下拉，与 Aurora Center 页「官方模型」区组写同一字段（`center.officialModels.<cap>.model`）；
+主进程新增读时改写层 `center/aware-settings.ts`，把所选模型与其能力参数（生图 `size`、TTS
+`voice` / `speed` / `format`、STT `language`）覆写进 `center-*` Provider 的返回副本，生图、TTS（含试听与拉模型）、
+STT、Center 远程中转四条链路共用同一副本；解析链为选中项 → defaultModel → 首个，
+模型被 Center 下线时自动回落 defaultModel；
+② **四周流光改强调色单色**：四边光幕从彩虹渐变改为 `--aurora-blue` 单色柔光（混白得薄荷高光、
+混深色得波谷，三档明暗起伏替代色相流转），与提示条「正在感知」卡片视觉语言同源；流光浮层窗口接入
+`applyAppearance`，换强调色时四边光幕与卡片一起变；几何、动画节奏与全部显隐门控（含「流光特效」开关）不变，
+实测帧成本 mean 5.53ms / worst 6.3ms（≈60fps）；
+③ **Center 版本线与桌面端解耦**（[09 §7/§10](./09-packaging-release.md)、[12 §9](./12-aurora-center.md)、
+[deploy/README §0](../packages/center/deploy/README.md)）：更新 Center 只升 `packages/center/package.json`、
+按部署文档换装，**不创建 git tag、不上传 GitHub Releases**，不必与客户端同号；「发布 tag / 发布双投」
+两条硬规则的主语明确为**桌面安装包**。
+验收：`pnpm test` 173 文件 / 2574 用例、`verify-p1` 26/26（`version=33`、迁移 33/33）、冒烟 204/204、
+Center 侧无改动不重跑（基线 88/88 仍有效）。
+面向用户的说明见 [release-notes/v0.4.8.md](./release-notes/v0.4.8.md)。
+
+**上一版本 v0.4.7（外观个性化三件套与四周流光、提示条原生 Acrylic、Center 工作台与用量分页），
+配置 Schema v32 → v33，桌面安装包在 v0.4.5 之后首次重新双投** ——
+四块：
+① **外观与个性化（v32 / v33）**：明暗档位（跟随系统 / 亮 / 暗，真值只有一处 —— 主进程写
+`nativeTheme.themeSource`，四个窗口一起跟随、改档即刻生效）、毛玻璃整体开关（同一份配置驱动两条腿：
+主进程摘原生材质 + 渲染层把 `.glass-*` 令牌压成实底）、AI 侧新工具 `set_appearance`；
+自感知流光从顶部一条改为**铺满显示器四周**（中部完全透明、鼠标照常穿透）并新增
+`appearance.awarenessGlow`「流光特效」开关；
+② **提示条与输入卡**：提示条恢复原生 Acrylic（材质按窗口区域裁剪、圆角用 1px 阶梯区域，
+收起态不挂材质）、输入卡工具行芯片加显式宽度下限（修「拉宽左栏后权限钮与来源下拉重合」）、
+原生 `<select>` 弹出列表跟随主题反色、渲染层改为先订阅再加载（不再丢掉启动瞬间的 `mode:changed`）、
+窗口恢复可见时重启吸底心跳巡检；
+③ **稳定性**：四条抖动截图探针（吸底 / 归档 / 侧栏 / 流式突发）改为身份键 + 有界等待 + 离群容忍，
+隐藏窗口下不再整轮挂死；
+④ **Aurora Center 0.4.6 / 0.4.7**：后台工作台重构（用量页信息层级、全站毛玻璃与移动端适配）、
+「最近请求」改服务端分页（`GET /api/usage` 新增 `offset`，响应新增 `recentTotal`，
+`totals` / `daily` / `lifetime` 仍按全量算）、管理端官方模型配置表单重做（「拉取模型」由替换改合并）。
+面向用户的说明见 [release-notes/v0.4.7.md](./release-notes/v0.4.7.md) 与 [v0.4.6.md](./release-notes/v0.4.6.md)。
+
+**上一版本 v0.4.5（Provider 与 Center 模型联动、会话模型来源双下拉与路由修复），
 配置 Schema v31（无迁移），桌面端与 Aurora Center 同步更新** ——
 三块：
 ① **模型来源与模型双下拉**：对话窗直接区分 `Center 官方` 与 `用户模型`，用户模型聚合全部
@@ -48,7 +88,7 @@ Center 不可用时提示并回落本机 Provider；
 同步到 0.4.3；桌面安装包与 Center 服务端同轮发布。
 面向用户的说明见 [release-notes/v0.4.3.md](./release-notes/v0.4.3.md)。
 
-**当前版本 v0.4.2（OfficeCLI 结构化读写、元素级编辑、渲染回看与 PDF 导出），
+**v0.4.2（OfficeCLI 结构化读写、元素级编辑、渲染回看与 PDF 导出），
 配置 Schema v30（迁移 v29 → v30，新增 Windows 游戏模式联动）** ——
 七块：
 ① **运行时升级**：Electron 33.4.11 → **44.5.1**（Chromium 130 → 152、Node 20.18 → 24.18.1、
