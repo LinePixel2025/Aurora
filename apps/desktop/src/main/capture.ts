@@ -26,7 +26,14 @@ import {
   type AskUserAnswer,
   type AskUserQuestion,
 } from '@aurora/agent-core'
-import { IPC, createNoopLogger, nodeFileSystem, type Logger, type WindowName } from '@aurora/shared'
+import {
+  IPC,
+  createNoopLogger,
+  nodeFileSystem,
+  type AutomationRun,
+  type Logger,
+  type WindowName,
+} from '@aurora/shared'
 import type { WindowManager } from './window-manager.js'
 /**
  * 设置页可深链的页面 id，需与 `renderer/settings/App.vue` 的 `PageId` 保持一致。
@@ -1457,7 +1464,7 @@ export async function seedAutomationFixture(userData: string): Promise<void> {
       updatedAt: new Date(now - 3_600_000).toISOString(),
     },
   ]
-  const runs = [
+  const runs: AutomationRun[] = [
     {
       id: 'auto-capture-normal',
       automationId: 'am-capture1',
@@ -1497,6 +1504,33 @@ export async function seedAutomationFixture(userData: string): Promise<void> {
       summary: '已确认明早有课，提醒已发出',
     },
   ]
+  /**
+   * 追加多天 / 多条 Agent 记录（2026-10-17）：**刻意不带 `sessionId`**（这些行不可展开，
+   * 「点开第一条可回放的记录」仍命中上面种下的那条）。
+   *
+   * 目的只有一个：让列表真的能滚起来。分组标题吸顶时的表现（底色透不透、上沿留不留缝）
+   * 只有滚起来才看得见、量得到 —— 此前种 2 条记录、1 个分组，截图与探针都覆盖不到那条路径，
+   * 于是「标题压住滚过去的行 → 时间标识叠字」一路漏到了用户手上。
+   */
+  for (let index = 0; index < 16; index += 1) {
+    const at = new Date(now - (Math.floor(index / 6) + 1) * 86_400_000)
+    at.setHours(9 + (index % 6), (index * 7) % 60, 0, 0)
+    const failed = index % 5 === 4
+    runs.push({
+      id: `auto-capture-filler-${index + 1}`,
+      automationId: 'am-capture1',
+      automationName: '早读提醒',
+      mode: 'agent',
+      status: failed ? 'failed' : 'success',
+      triggeredAt: at.toISOString(),
+      finishedAt: new Date(at.getTime() + 4200).toISOString(),
+      durationMs: 4200 + index * 130,
+      triggerDetail: '定时触发',
+      toolCallCount: (index % 4) + 1,
+      summary: `第 ${index + 1} 条历史记录的结论摘要（capture 夹具）`,
+      ...(failed ? { error: '模型调用超时（capture 夹具）' } : {}),
+    })
+  }
   const session = {
     version: 2,
     sessionId: 'auto-capture1',
@@ -4204,6 +4238,13 @@ export const CHAT_AUTOMATION_HISTORY_ACT = `(async () => {
       }
       await wait(200)
     }
+    // 再滚一小段，让分组标题吸在滚动区上沿：截图要停在这个状态 —— 标题条压在滚过去的
+    // 记录上（2026-10-17 用户报的「时间标识叠字」就出在这里，不滚起来根本拍不到）
+    const body = document.querySelector('[data-field="automation.history-panel"] .view-body')
+    if (body !== null) {
+      body.scrollTop = 90
+      await wait(150)
+    }
     return {
       opened:
         opened.ok && document.querySelector('[data-field="automation.history-panel"]') !== null,
@@ -4239,6 +4280,78 @@ export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
     const agentMarker =
       panelAfter !== null &&
       ((panelAfter.textContent || '').indexOf('capture-automation-run') !== -1)
+
+    // ── 回放里的点击不许把记录收起来（2026-10-17 用户报「点折叠的工具调用记录，历史对话就关了」）──
+    // 整行挂着 toggleRow，而明细是行内的一块 —— 明细里的点击一旦冒泡上去就把记录收起了。
+    // 走真实链路：先展开轨迹，再点开一条工具行；两步之后明细都必须还在。
+    const replayRoot = document.querySelector('[data-field="automation.replay"]')
+    const traceHead = replayRoot === null ? null : replayRoot.querySelector('.trace-head')
+    if (traceHead !== null) {
+      traceHead.click()
+      await wait(200)
+    }
+    const keptAfterTrace = document.querySelector('[data-field="automation.run-detail"]') !== null
+    const toolHead = replayRoot === null ? null : replayRoot.querySelector('.tool-card .tool-head')
+    if (toolHead !== null) {
+      toolHead.click()
+      await wait(220)
+    }
+    const keptAfterTool = document.querySelector('[data-field="automation.run-detail"]') !== null
+    const toolOpened = replayRoot !== null && replayRoot.querySelector('.tool-card.open') !== null
+    /** 两次点击都必须保住明细 —— 这条就是「点折叠的工具调用记录会把记录收起来」的回归护栏 */
+    const detailKept = keptAfterTrace === true && keptAfterTool === true
+
+    // ── 吸顶的分组标题（2026-10-17）：底色必须不透明、吸顶时必须与滚动区上沿齐平 ──
+    // 半透明底会把滚过去的记录透出来；吸顶盒上方的外间距（或容器上边距把首组往下顶）会留出
+    // 一条没上色的缝，记录照样从缝里露出来 —— 两者都让标题文字与行里的时间叠成花屏
+    // （用户报的「时间标识 ui 错乱」）。这里量的是「吸顶那条离上沿多远」。
+    const viewBody = panelAfter === null ? null : panelAfter.querySelector('.view-body')
+    let headOpaque = null
+    let headGap = null
+    let headGaps = null
+    let headOnTop = null
+    if (viewBody !== null) {
+      const firstHead = document.querySelector('.day-head')
+      if (firstHead !== null) {
+        // 「不透明」不看字面：算出来的颜色有 3 段（rgb）或第 4 段 alpha 为 1 才算盖得住
+        const raw = getComputedStyle(firstHead).backgroundColor
+        const inside = raw.slice(raw.indexOf('(') + 1, raw.indexOf(')'))
+        const parts = inside.split(',').map((part) => Number(part.trim()))
+        headOpaque = parts.length === 3 || (parts.length === 4 && parts[3] === 1)
+      }
+      // 两个位置各量一次：浅处（首组内）与深处（列表中部，后面某个分组内）——
+      // 每个位置都得有一条标题贴住上沿（离上沿最近的那条 ≤ 1px）
+      const gapsAt = async (top) => {
+        viewBody.scrollTop = top
+        await wait(160)
+        const portTop = viewBody.getBoundingClientRect().top
+        return Array.from(document.querySelectorAll('.day-head')).map(
+          (head) => Math.round((head.getBoundingClientRect().top - portTop) * 10) / 10,
+        )
+      }
+      const shallow = await gapsAt(200)
+      const deep = await gapsAt(Math.round(viewBody.scrollHeight / 2))
+      headGaps = { shallow, deep }
+      const nearest = (gaps) => Math.min(...gaps.map((gap) => Math.abs(gap)))
+      headGap = Math.max(nearest(shallow), nearest(deep))
+      // 还得真的压在上面：吸顶那条矩形内取样，命中测试的最上层必须是标题自己
+      // （底色不透明 + 位置齐平仍可能被后来居上的兄弟元素盖住，这条把「压住」也钉住）
+      const portTop = viewBody.getBoundingClientRect().top
+      const stuck = Array.from(document.querySelectorAll('.day-head')).find(
+        (head) => Math.abs(head.getBoundingClientRect().top - portTop) <= 1,
+      )
+      if (stuck !== undefined) {
+        const box = stuck.getBoundingClientRect()
+        headOnTop = [
+          [box.left + box.width / 2, box.top + 3],
+          [box.left + box.width / 2, box.top + box.height / 2],
+          [box.left + 4, box.top + box.height - 3],
+        ].every(([x, y]) => {
+          const hit = document.elementsFromPoint(x, y)[0]
+          return hit !== undefined && (hit === stuck || stuck.contains(hit))
+        })
+      }
+    }
 
     // Normal tab：一行摘要 + 就地展开逐个操作组件的结果（不再「无详情层」，docs/13 §11）
     const tabNormal = document.querySelector('[data-field="automation.tab-normal"]')
@@ -4276,6 +4389,14 @@ export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
       replayMessages,
       traceCards,
       agentMarker,
+      keptAfterTrace,
+      keptAfterTool,
+      toolOpened,
+      detailKept,
+      headOpaque,
+      headGap,
+      headGaps,
+      headOnTop,
       normalRuns,
       normalClickable,
       normalHasTime,
@@ -4285,11 +4406,19 @@ export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
         panel !== null &&
         agentRuns >= 1 &&
         clickable >= 1 &&
-        dayHeads >= 1 &&
+        // 两个分组起：夹具种了跨天的记录，列表才滚得起来（吸顶那两条断言依赖它）
+        dayHeads >= 2 &&
         metaLines >= 1 &&
         replayMessages >= 2 &&
         traceCards >= 1 &&
         agentMarker === true &&
+        // 明细里的两次点击都不许把记录收起来，且工具行真的开出来了
+        detailKept === true &&
+        toolOpened === true &&
+        headOpaque === true &&
+        headGap !== null &&
+        headGap <= 1 &&
+        headOnTop === true &&
         normalRuns >= 1 &&
         normalClickable >= 1 &&
         normalHasTime === true &&

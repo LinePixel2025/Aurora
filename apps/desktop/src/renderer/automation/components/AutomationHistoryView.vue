@@ -360,7 +360,17 @@ onUnmounted(() => {
               {{ run.error }}
             </p>
 
-            <div v-if="expandedId === run.id" class="run-detail" data-field="automation.run-detail">
+            <!--
+              明细不是行首的一部分：整行挂着 `toggleRow`，回放里任何一次点击（展开轨迹 /
+              点开一条工具行）冒泡上来都会把这条记录收起来 —— 2026-10-17 用户报的
+              「点折叠的工具调用记录，历史对话就关了」就是这个冒泡。这里阻断冒泡。
+            -->
+            <div
+              v-if="expandedId === run.id"
+              class="run-detail"
+              data-field="automation.run-detail"
+              @click.stop
+            >
               <p class="detail-head tiny muted">
                 {{ formatTime(run.triggeredAt) }}
                 <template v-if="run.triggerDetail"> · {{ run.triggerDetail }}</template>
@@ -446,7 +456,13 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-4);
+  /*
+   * 左右 / 底部留白照旧，**顶部必须为 0**：吸顶是按滚动区**内容盒**上沿对齐的，
+   * 容器上边距会把每条分组标题整体顶下去，标题上方留出一条没上色的缝 —— 记录照样从缝里
+   * 露出来（2026-10-17 实测：滚动区顶部 16px 内边距 → 所有吸顶标题都停在离上沿 16px 处）。
+   * 顶部留白改由标题自己的上内边距给，提示语另给上外边距。
+   */
+  padding: 0 var(--space-4) var(--space-4);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -482,10 +498,15 @@ onUnmounted(() => {
 }
 
 .feedback {
-  margin: 0;
+  margin: var(--space-4) 0 0;
   padding: 6px var(--space-3);
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
+}
+
+/* 加载中 / 空列表两句提示：顶部留白让给了吸顶标题（见 .view-body），这里自己补上 */
+.view-body > p.tiny {
+  margin: var(--space-4) 0 0;
 }
 
 .feedback.error {
@@ -499,14 +520,20 @@ onUnmounted(() => {
   gap: 2px;
 }
 
-/* 分组标题吸顶：列表一长就没有时间坐标了（吸在滚动区上沿） */
+/*
+ * 分组标题吸顶：列表一长就没有时间坐标了（吸在滚动区上沿）。
+ * 底色必须不透明、且不许留外间距：半透明底（原 `--glass-content`）或吸顶盒上方的 margin
+ * 缝都会让滚过去的记录透出来 / 露出来，与标题文字叠成花屏（2026-10-17 用户报的「时间标识错乱」）。
+ */
 .day-head {
   position: sticky;
   top: 0;
   z-index: 1;
-  margin: var(--space-2) 0 0;
-  padding: 2px var(--space-2) 2px 0;
-  background: var(--glass-content);
+  margin: 0;
+  /* 上内边距兼作首组标题的上方留白（滚动区不再有上内边距，见 .view-body） */
+  padding: var(--space-3) var(--space-2) 3px 0;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border-subtle);
   color: var(--text-muted);
   font-weight: var(--weight-medium);
 }
