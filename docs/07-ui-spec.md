@@ -140,7 +140,9 @@
 - **打开链**：主界面的「历史 / 新建 / 编辑」经 `automation:openWindow` 发请求；
   主进程校验后复用同一个窗口，等待页面加载完成再经 `automation:windowRequest` 推送视图参数。
 - **锚点**：保留 `automation.editor` / `automation.history-panel` / `automation.history-list`
-  及 `.run-item` / `.run-time` / `.clickable` / `.detail-message`，截图场景改为直接截 `automation` 窗口。
+  及 `.run-item` / `.run-time` / `.clickable` / `.day-head` / `.run-meta` / `.step-item` /
+  `automation.replay` / `automation.run-detail`（2026-10-16：`.detail-message` 随纯文本回放一起退役），
+  截图场景改为直接截 `automation` 窗口。
 
 ### 2.3 主界面（Chat Window）
 
@@ -1178,13 +1180,24 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   「取消」/ **Esc**，均为隐藏窗口。历史视图里正展开某条运行回放时，第一下 Esc 只收回放。
 - **历史视图**（`data-field="automation.history-panel"`，关闭钮
   `data-action="automation.history-close"`）：列表容器 `data-field="automation.history-list"`，
-  每条 = **状态图标**（进行中旋转 / 成功对勾 / 失败叉 / 已中断停止，与状态文案同色）
-  - **触发时间 + 归属自动化名 + 状态 + 用时**；
-    同样**按当前 tab 过滤**（Agent tab 只列 Agent 运行）。**Agent 记录可点开**（行加 `.clickable`）
-    → 窗口内展开**对话回放**（`.detail-message`，「任务」/「Agent」两侧气泡，数据经既有
-    `chat:history` 按 `sessionId` 读取，见 docs/13 §7；会话被删则显示「会话已被删除或还没有消息」）；
-    **Normal 记录不可点、没有详情层** —— 产品口径是「只显示触发时间与状态，不展示具体操作」。
-    `.run-item` / `.run-time` / `.clickable` / `.detail-message` 四个类名是 capture 探针契约，别改名。
+  **按本地日期分组**（`.day-head` 标题 = 今天 / 昨天 / `10 月 12 日`，跨年补年份，`position: sticky`
+  吸在滚动区上沿），同样**按当前 tab 过滤**（Agent tab 只列 Agent 运行）。
+  详略三层（两种模式同构，docs/13 §11）：
+  ① 一行 = **状态图标**（进行中旋转 / 成功对勾 / 失败叉 / 已中断停止，与状态文案同色）
+  + **时刻 `HH:mm`**（日期由分组给出，不重复）+ 归属自动化名 + 触发上下文 chip + 状态 + 用时；
+  ② 第二行小字 `.run-meta` = 派生摘要（Agent「N 步 · 结论首行」/ Normal「N 步全部完成 /
+  N 步 · M 步失败」），失败原因再给一行 `.run-error`（截断 + 悬浮全文）；
+  ③ **可点的行加 `.clickable`**（Agent 需有 `sessionId`；Normal 需有 `steps` 或 `error`），
+  点行**就地展开**明细 `data-field="automation.run-detail"`（再点收起）：
+  Agent = 复用主界面 `MessageList` 的**完整对话回放**（`.replay` 容器带
+  `data-field="automation.replay"`，Markdown / 执行轨迹折叠 / 工具卡 / 子代理卡 / 图片都在，
+  数据经既有 `chat:history` 按 `sessionId` 读取，见 docs/13 §7；会话被删则显示
+  「会话已被删除或还没有消息」），Normal = `.step-item` 逐项「序号 + 组件名 + 结果摘要 / 原因」。
+  **Normal 原先「不可点、无详情层」的口径本轮作废**（连失败原因都看不到，见 docs/13 §11）。
+  每页 40 条，到底判据是「这次没取满一页」，「加载更多」`data-action="automation.history-more"`
+  追加一页；`automation:historyChanged` 推送做**静默重拉**，不清列表、不收起正在看的明细。
+  `.run-item` / `.run-time` / `.clickable` / `.day-head` / `.run-meta` / `.step-item` 与
+  `automation.replay` / `automation.run-detail` 是 capture 探针契约，别改名。
 - **门控口径**：catalog 里 `available: false` 的操作组件（如未配置桥接时的 ClassIsland 提醒）
   **在选项里不出现**，不是 `disabled` —— 与麦克风 / 朗读按钮同款口径。
 - **推送订阅**：`automation:changed` → 重拉列表；`automation:historyChanged` → 历史视图开着时重拉
@@ -1910,13 +1923,15 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
       = 双向绑定真的接上了，不只是"元素在 DOM 里"），
       再派发一次 `pointerenter` 断言悬浮提示真的出现（`body > .app-tip` 文案非空、不探出视口）
       且 `pointerleave` 后自行收回，然后 Esc 并断言编辑器**已隐藏**；
-      ④ `automation` 窗口内打开 history 请求，点开一条 Agent 记录
-      （`.run-item.clickable`）断言
-      `.detail-message` **≥ 2** 且面板文本含 seed 标记（证明回放的是**真实会话**，不是占位）；
-      随后切 Normal tab，断言 Normal 记录 `clickable === 0`
-      （**不可点、无详情层**，产品口径）且 `.run-time` 存在；
+      ④ `automation` 窗口内打开 history 请求，断言**日期分组标题**（`.day-head`）与
+      **摘要行**（`.run-meta`）都在，点开一条 Agent 记录（`.run-item.clickable`）断言
+      `[data-field="automation.replay"]` 内 `.message` **≥ 2** 且 `.tool-card` **≥ 1**
+      （回放走的是主界面同款消息流、且是**真实会话**而不是占位文本）；
+      随后切 Normal tab，断言记录**同样可点**、展开后 `.step-item` **恰好 2**
+      且失败原因文案在场（2026-10-16 口径：Normal 不再「无详情层」，见 §2.2.1 与 docs/13 §11）；
       主界面自动化页仍保留，后续 `chat-classisland-status` 等场景可直接切回对话流。
-      这一组同时钉住三条产品语义：**按 tab 分别过滤**、**两种记录的详情口径不同**、
+      这一组同时钉住四条产品语义：**按 tab 分别过滤**、**两种模式都是三层详略**
+      （一行事实 / 一行摘要 / 就地展开明细）、回放复用对话渲染器、
       自动化页与子代理页一样是**主区替换内容**（不属任何会话）；
   - **右栏开关**（`CHAT_RIGHT_PANEL_TOGGLE_ACT` / `CHAT_RIGHT_PANEL_TOGGLE_CHECK`，
     产物 `chat-right-panel-toggle.png`，BetaV2）：act 内点两次 `chat.right-panel-toggle`

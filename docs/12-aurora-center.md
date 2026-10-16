@@ -408,10 +408,13 @@ Center 的远程修改**不走** AI 的 `set_setting` 通道，也不受 `SETTIN
 | `automation.save` | 新建（`definition.id` 为空）/ 修改一份自建自动化；`result.data` 携带保存后的定义。校验与拒绝语义同 `automation_create` 工具（非法组件 / 参数回错误原因） |
 | `automation.delete` | 删除自建自动化（内置 `builtin.` 前缀不可删，回错误原因） |
 | `automation.run` | 手动触发一次；`result.data` 携带 `{ runId }`（Agent 模式即该次会话 id） |
-| `automation.history` | 运行历史（`AutomationRun[]`，`triggeredAt` 倒序；可按 `automationId` / `mode` / `limit` 过滤），服务器不缓存 |
+| `automation.history` | 运行历史（`AutomationRun[]`，`triggeredAt` 倒序；可按 `automationId` / `mode` 过滤，`limit` 缺省 50 上限 200、`offset` 分页），服务器不缓存。记录自带详略层字段：`triggerDetail` / Agent 的 `toolCallCount` + `summary` / Normal 的 `steps[]`（docs/13 §7） |
 
 会话管理范围**仅限 `center-` 前缀会话**：客户端本地会话对 Center 不可见、不可枚举、
-不可切换。自动化命令**不受该前缀限制**（它们操作的是自动化元数据，不是会话）；但同样受
+不可切换。**唯一放宽**是 `auto-` 前缀的自动化会话，且只放行 `session.history` /
+`session.readImage` 两条**只读**命令（网页按 `automation.history` 给的 `sessionId`
+定点回放某一次运行；`session.list` 仍不列它，实时事件仍不转发它，docs/13 §12）。
+自动化命令本身**不受该前缀限制**（它们操作的是自动化元数据，不是会话）；但同样受
 客户端 `center.allowRemoteSession` 闸门与服务器侧属主 / 管理员鉴权约束。
 **自动化定义与历史只存在客户端**（`<userData>/automations/*.json`），服务器零存储改动
 —— 与 `session.history` 的「只转发不缓存」同一口径。
@@ -640,7 +643,13 @@ aurora-center version
   Agent Mode / Normal Mode / 内置三组卡片（名称 + 触发描述 + 启停开关 + 立即运行 +
   编辑 / 删除；内置无编辑删除、启停提示去客户端设置页）；「新建 / 编辑」弹层按
   `automation.catalog` 渲染动态字段（触发器 7 类 + 操作组件 3 类，`available: false`
-  的组件不可选）；底部运行历史（时间 / 自动化 / 状态 / 用时，可按自动化筛选）。
+  的组件不可选）；底部运行历史是**卡片化表格**（`ui-table--cards`，窄屏不再横向滚动）：
+  时间 / 自动化（附触发上下文小字）/ 模式 / 状态 / 用时 / **结果**——结果列放派生摘要
+  （Agent「N 步 · 结论首行」、Normal「N 步全部完成 / N 步 · M 步失败」）与失败原因，
+  裸 `sessionId` 不再当正文显示；每页 20 条 +「加载更多」，可按自动化筛选。
+  行内「看对话」/「看明细」打开**运行明细弹层**（`data-panel="automation-run-detail"`）：
+  Agent 经 `session.history` 定点读那次运行的 `auto-` 会话（§6.3 的只读放宽）并复用
+  `MessageStream` 渲染完整对话（轨迹折叠、工具卡、图片），Normal 列 `steps[]` 逐项结果。
   刷新为显式按钮 + 操作后重拉（桌面端的 `automation:changed` 推送不经 Center WS，
   网页端不做实时订阅）。
 - 文件管理页：全部上传文件的表格（名称 / 来源客户端 / 大小 / 备注 / 上传与过期时间 /

@@ -263,6 +263,13 @@ ClassRoom 模式既有的自动操作（**自动分类除外**，它是独立管
   `'automation'`（内核只把它写进 job 记录与日志，无分支逻辑，扩联合即安全）。
 - **标题**：会话标题沿用「首条用户消息前 24 字」推导（即任务指令摘要）。
 - **用时**：从 `agent.send` 到 `done`/`error` 事件的墙钟时间。
+- **运行记录只存「能一行读完的派生量」**（详略分层，见 §11）：
+  `triggerDetail`（触发上下文，如「距上课 5 分钟」/「手动触发」）、
+  Agent 的 `toolCallCount`（本次工具调用数）与 `summary`（最终结论首行，去掉 Markdown 标记后
+  截 90 字）、Normal 的 `steps[]`（逐个操作组件的 `{ kind, label, ok, summary? | error? }`）。
+  `toolCallCount` / `summary` 由引擎在**已有的事件订阅**里累加（`tool` 事件按 `call.id` 去重计数、
+  `text` 事件按消息 id 切段留最后一段非空正文），不额外回读会话文件。
+  消息正文仍然只在会话里（§12），历史永远不复制。
 
 ### 7.1 运行档（RunProfile，v0.2.8）
 
@@ -333,7 +340,7 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
 | `automation:list`           | 渲染层 → 主         | → `{ user: AutomationDefinition[], builtin: AutomationDefinition[] }` |
 | `automation:save`           | 渲染层 → 主         | `AutomationDefinition`（id 为空 = 新建）→ 定义                        |
 | `automation:delete`         | 渲染层 → 主         | `{ id }`                                                              |
-| `automation:history`        | 渲染层 → 主         | `{ automationId?, mode?, limit? }` → `AutomationRun[]`                |
+| `automation:history`        | 渲染层 → 主         | `{ automationId?, mode?, limit?, offset? }` → `AutomationRun[]`       |
 | `automation:run`            | 渲染层 → 主         | `{ id }` → `{ runId }`                                                |
 | `automation:catalog`        | 渲染层 → 主         | → `{ conditions, actions }`（§4.3；available 现取，不推送）           |
 | `automation:changed`        | 主 → 渲染层（推送） | —（定义变化，各窗口重拉 list）                                        |
@@ -342,6 +349,9 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
 - 返回值统一 `Result<T>`；内置自动化的启停走**既有** `settings:update`
   （`modes.classroom.preClassReminder` / `preClassOpenFolder`），不新增通道；
 - 运行记录的对话回放复用 `chat:history`（§7），**不**新增历史明细通道；
+- **历史分页**：`limit` 缺省 50、正数上限 200（`store.ts` 的 `AUTOMATION_HISTORY_QUERY_CAP`），
+  `offset` 是倒序后的跳过条数；`limit = 0` 保留「不分页、全量」语义（引擎重建 daily 去重键用）。
+  回执**没有总数字段**，所以两端的「加载更多」按「这次没取满一页 = 到底了」判；
 - preload 三处同步（`shared/channels.ts` ↔ `preload/channels.ts` 编译期断言、
   `preload/index.ts`、`AuroraApi`）。
 
@@ -365,8 +375,14 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
 - **Web UI**：新增「自动化」视图（hash 路由 `#/automations`）——设备选择后
   列出该客户端的自动化（Agent / Normal 分组、内置徽章）、启停开关、手动运行、
   新建 / 编辑表单（catalog 动态渲染，与桌面编辑器同构简化版）、历史列表
-  （触发时间 / 用时 / 状态；Agent 记录经 `session.history` 同款命令回放对话——
-  复用 `automation.history` 返回的 `sessionId`）。
+  （触发时间 / 用时 / 状态 / **结果**：Agent 是「N 步 · 结论摘要」、Normal 是「N 步全部完成 /
+  M 步失败」，失败原因与摘要同时在场，不再把裸 `sessionId` 当正文显示）。
+  每页 20 条走 `automation.history` 的 `limit` 取（服务器不缓存，切片发生在客户端），
+  「加载更多」追加一页。点「看对话」/「看明细」弹**运行明细层**
+  （`data-panel="automation-run-detail"`）：Agent 复用 `session.history` 拉本次运行的会话正文，
+  经 `commands.ts` 的 `loadRunTranscript` 落成一个**只读** `SessionState`
+  （不进 `activeSessionKey`、不收实时事件），直接交给 `MessageStream` 渲染 ——
+  与远程会话同款气泡 / 执行轨迹 / 工具卡 / 子代理卡 / 图片；Normal 列 `steps[]` 逐项结果。
 - **调用次数（v0.2.8）**：Web UI 与桌面端同步支持 —— 列表卡片显示次数徽章
   （「已调用 N/M」）与「已用尽」标记，编辑表单有「调用次数上限」输入与「重置计数」按钮，
   保存回传 `maxRuns` / `runCount`（`runCount` 从原定义继承，防编辑清零）。
@@ -400,11 +416,21 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
     （沿用原定义的启停状态，避免「编辑一次顺带启用」）；在列表上重新启用一条**已用尽**的
     自动化会就地提示「次数已用尽：请提高上限或重置计数」—— 打开不会立刻报错，但下一次触发
     会被引擎停回去（§3.1），如实说明而不是让用户以为「开了就能用」；
-  - **历史独立窗口**：Agent tab 列出状态图标 / 触发时间 / 用时 / 归属自动化 / 「查看对话」入口，
-    点行展开对话回放（数据 = `chat:history(sessionId)`，回放头带运行元信息）；
-    失败记录在行内直接显示一行失败原因小字（两种模式同款）；
-    Normal tab 只列触发时间（+ 自动化名 + 状态图标），**无详情层**（口径：不展示
-    具体操作）；
+  - **历史独立窗口**（详略三层，两种模式同构）：
+    - **列表**按本地日期分组（`今天` / `昨天` / `10 月 12 日`，跨年补年份），组标题吸顶；
+      一行读完的字段是 状态图标 / 时刻（`HH:mm`，日期由分组给出，不再重复）/ 自动化名 /
+      触发上下文 chip / 状态 / 用时；下面第二行小字是**派生摘要**（Agent =「N 步 · 结论首行」，
+      Normal =「N 步全部完成 / N 步 · M 步失败」）；失败原因在行内再给一行小字（截断 + 悬浮全文）。
+      每页 40 条，「加载更多」追加一页；
+    - **点行就地展开**明细（`data-field="automation.run-detail"`，展开态再点收起、`Esc` 也收起）：
+      Agent = 复用主界面的 `MessageList` 完整回放对话（Markdown / 执行轨迹折叠 / 工具卡 /
+      子代理卡 / 图片，数据 = `chat:history(sessionId)`，回放头一行运行元信息），
+      Normal = `steps[]` 逐项「序号 + 组件名 + 成功/失败 + 摘要或原因」；
+    - `automation:historyChanged` 推送触发的是**静默重拉当前页**：不清列表、不收起正在看的
+      明细，只把那条记录的状态 / 用时 / 摘要刷新成终态（旧实现整表重建会把回放冲掉）。
+    - 口径变更（本轮）：Normal **不再**「无详情层」——它原先连失败原因都看不到，
+      「不展示具体操作」被误读成「什么都不给」；操作组件是封闭清单（§5），逐步结果没有
+      额外隐私面，所以放开。
   - 文案密度与安全区的通用口径（悬浮提示组件 `AppTooltip`、左标签右控件、无原生下拉）
     见 docs/07 §5.4；
   - 推送订阅：`automation:changed` → 重拉列表；`automation:historyChanged` →
@@ -427,8 +453,19 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
   `allowRemoteSession` 闸门；
 - 会话 id 前缀 `auto-` 归一白名单（`[A-Za-z0-9_-]`）天然合法；
   `normalizeSessionId` 防路径穿越语义直接复用；
-- 自动化历史是**运行元数据 + Agent 会话引用**，不复制消息正文——删除会话后
-  对话回放显示「会话不存在」（正常降级）。
+- 自动化历史是**运行元数据 + 派生摘要 + Agent 会话引用**，不复制消息正文——删除会话后
+  对话回放显示「会话已被删除或还没有消息。」（正常降级）。
+  Normal 的 `steps[].summary` 可能含本机路径 / 网址（`已打开 …`），这是它作为
+  「本机执行结果」的本职；两端的明细层都按原样显示，不做假脱敏。
+- **`auto-` 会话对 Center 只放开「读对话」这一条**（§10）：连接器的前缀闸门
+  （`center/connector.ts`）原先只认 `center-`，现额外放行 `session.history` 与
+  `session.readImage` 两条**只读**命令命中 `isAutomationSession()`，其余
+  （`activate` / `visibility` / `setPermission` / `setModel` / `input` / `abort` …）
+  对 `auto-` 依旧 `E_SESSION_NOT_FOUND`。三条边界不变：
+  ① 整组仍受 `center.allowRemoteSession` 闸门；② `session.list` 依旧只列 `center-`，
+  `auto-` 会话**不可枚举**，网页只能拿着 `automation.history` 给的 id 定点读；
+  ③ 实时事件转发（`session-bridge.ts`）依旧只走 `center-`，`auto-` 运行的过程**不出网**，
+  网页看到的是「点开后的一次历史快照」。
 
 ## 13. 验证口径
 
@@ -450,8 +487,18 @@ SKILL.md 双保险，模型给不出 catalog 之外的组件）。`maxRuns` 同�
   `auto-` 会话且历史落 `success`。
 - **capture（`AURORA_CAPTURE`）**：`chat-automation.png`（自动化页双 tab + 列表 +
   内置区 + data-field 门控计数）、`automation-editor.png`（独立编辑器窗口 +
-  触发器动态字段）、`automation-history.png`（独立历史窗口的 Normal 历史 / Agent 历史
-  详情弹窗）；设置页 modes 门控计数补 `automations.enabled`。
+  触发器动态字段）、`automation-history.png`（独立历史窗口：Agent 行就地展开的对话回放）；
+  设置页 modes 门控计数补 `automations.enabled`。
+  历史探针（本轮改口径）断言：`.day-head` 分组标题 ≥1、`.run-meta` 摘要行 ≥1、
+  Agent 展开后 `[data-field="automation.replay"]` 里 `.message` ≥2 且 `.tool-card` ≥1
+  （= 回放真的走了主界面同款消息流，不是纯文本倾倒）、Normal 展开后
+  `[data-field="automation.run-detail"] .step-item` **恰好 2** 且失败原因文案在场
+  （旧断言 `normalClickable === 0` 随「Normal 无详情层」口径一起作废）。
+  夹具同步补：两条 run 各带 `triggerDetail` / `steps` / `toolCallCount` / `summary`，
+  会话文件里的助手消息带 `requestId` + `reasoning` + 一枚 `toolCalls`。
+  Center 侧对应 `verify:web` 的 `automations-history`（结果列 + Normal 明细）与
+  `automations-replay`（弹层回放：轨迹折叠 `aria-expanded=false`、`.trace-clip` 高度 ≤1、
+  工具卡在场、表里不再出现裸 `sessionId`）两条场景。
   v0.2.8 的夹具与断言：`seedAutomationFixture` 种两份定义（一份 `3/10` 未用尽、
   一份 `5/5` 已用尽且已停用），列表探针断言 **`automation.runs` 徽章恰好 2 枚**、
   文本含 `3/10` 与 `5/5`、**`.exhausted` 恰好 1 枚**（用尽转警示色是 DOM 事实，

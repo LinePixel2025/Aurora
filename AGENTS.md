@@ -66,12 +66,12 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：`$env:AURORA_SMOKE='1'; pnpm dev`，
   结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`（调试渲染层加 `AURORA_DEVTOOLS=1`）。
-  **全量约 25 秒、199 条断言应当全绿（`SUMMARY 199/199 passed`）**——**先把基线修绿再动被测代码**。
+  **全量约 25 秒、204 条断言应当全绿（`SUMMARY 204/204 passed`，2026-10-16 实测）**——**先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
   **提交前仍必须跑全量**。
 - **Center 网页端验收（视觉 + 行为）**：`pnpm --filter @aurora/center build && pnpm --filter @aurora/center verify:web`
   —— 真实服务器子进程（临时数据目录）+ 协议忠实的桩客户端 + 系统 Edge，逐场景截图 / 读 DOM 并写 `report.json`
-  （口径同 `capture.ts`：任一条 `ok: false` → 退出码 2），当前基线 **88/88**（43 场景 × 暗浅两档 ＋ 2 个单档主题场景）。
+  （口径同 `capture.ts`：任一条 `ok: false` → 退出码 2），当前基线 **92/92**（45 场景 × 暗浅两档 ＋ 2 个单档主题场景）。
   整轮开跑前会用假上游 + 临时 `AURORA_CENTER_SECRET` 灌 20 条真实用量明细当夹具（见 docs/12 §10）。
   开关：`AURORA_CWEB_ONLY`（子串过滤 / 特殊值 `failed`）、`AURORA_CWEB_THEME=dark|light`、
   `AURORA_CWEB_VIEWPORT=mobile`、`AURORA_CWEB_OUT`、`AURORA_CWEB_KEEP=1`（保留子服务器与数据目录排障）、
@@ -84,7 +84,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   再细一级 `$env:AURORA_CAPTURE_ONLY='<PNG 名子串>'`（逗号分隔，特殊值 `failed` = 只重跑上次没过的）。
   **张数与构成以 `report.json` 为准；「截了没有」只看日志 count 与报告，退出码 0 不等于截到了**；
   ⚠️ 筛选跑会产生假 FAIL（看到 FAIL 先问"是不是筛选跑的"，再用全量确认）。userData 自动隔离。规则见 docs/07 §5.3。
-  当前基线（2026-10-10 实测）：**全量 93 条 checks**，唯一恒红项是范围外的 `chat-model-picker.png`；
+  当前基线（2026-10-16 实测）：**全量 94 条 checks**，唯一恒红项是范围外的 `chat-model-picker.png`；
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`
   （只按 `pass === false` 会把纯截图场景误判成失败）。`AURORA_CAPTURE_ONLY` 是**子串**匹配
   （`'chat.png'` 连带命中 `theme-chat.png`），且**每轮必须写独立目录**（同目录会覆盖上一轮 `report.json`）。
