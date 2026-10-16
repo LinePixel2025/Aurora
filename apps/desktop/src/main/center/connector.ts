@@ -25,6 +25,7 @@ import type {
 import type { Logger } from '@aurora/shared'
 import type { CenterStatusInfo } from '@aurora/agent-core'
 import { CENTER_SESSION_PREFIX } from '@aurora/shared'
+import { isAutomationSession } from '../automation/session-id.js'
 import { checkRemotePatch } from './remote-control.js'
 
 export interface WsLike {
@@ -632,11 +633,17 @@ export class CenterConnector {
           reply(false, undefined, 'E_SESSION_NOT_FOUND')
           return
         }
-        // 带 sessionId 的命令一律先过 center- 前缀：本地会话对 Center 不可见、
-        // 不可枚举、不可切换（docs/12 §6.3）
+        // 带 sessionId 的命令一律先过前缀闸门：本地会话对 Center 不可见、不可枚举、
+        // 不可切换（docs/12 §6.3）。唯一放宽 = 两条**只读**命令对 `auto-` 放行，
+        // 让自动化历史能按 run 里的 sessionId 回放对话（docs/13 §10）：不列举、不激活、
+        // 不写入，网页拿到的是「某一次运行」而不是「本机的会话」。
+        const automationRead =
+          (cmd.kind === 'session.history' || cmd.kind === 'session.readImage') &&
+          isAutomationSession(cmd.sessionId)
         if (
           cmd.kind !== 'session.list' &&
           cmd.kind !== 'project.list' &&
+          !automationRead &&
           !cmd.sessionId.startsWith(CENTER_SESSION_PREFIX)
         ) {
           reply(false, undefined, 'E_SESSION_NOT_FOUND')
@@ -754,6 +761,7 @@ export class CenterConnector {
                   ...(cmd.automationId === undefined ? {} : { automationId: cmd.automationId }),
                   ...(cmd.mode === undefined ? {} : { mode: cmd.mode }),
                   ...(cmd.limit === undefined ? {} : { limit: cmd.limit }),
+                  ...(cmd.offset === undefined ? {} : { offset: cmd.offset }),
                 }),
               )
               return

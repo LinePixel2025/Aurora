@@ -934,7 +934,24 @@ export interface AutomationWindowRequest extends AutomationOpenWindowRequest {
   requestId: string
 }
 
-/** 一次自动化运行（Normal 只记触发时间与状态，不落操作明细；Agent 带 sessionId 供对话回放） */
+/** Normal Mode 单个操作组件的执行结果（列表折叠成一行，展开逐步看） */
+export interface AutomationRunStep {
+  kind: AutomationActionKind
+  /** 组件中文名（落库时按 catalog 取好，历史视图不必再拉 catalog） */
+  label: string
+  ok: boolean
+  /** 成功时的一句话摘要（可能含本机路径 / 网址） */
+  summary?: string
+  /** 失败时的原因 */
+  error?: string
+}
+
+/**
+ * 一次自动化运行。
+ *
+ * 列表只放**能一行读完的派生信息**（触发上下文 / Normal 逐步结果 / Agent 结论摘要与步数），
+ * Agent 的完整对话仍然只在会话里（`sessionId`），历史不复制正文（docs/13 §12）。
+ */
 export interface AutomationRun {
   id: string
   automationId: string
@@ -947,6 +964,14 @@ export interface AutomationRun {
   durationMs?: number
   /** Agent Mode：本次会话 id（= runId，`auto-` 前缀），经 `chat:history` 回放对话 */
   sessionId?: string
+  /** 触发上下文（「距上课 5 分钟」/「手动触发」；定时到点触发时省略） */
+  triggerDetail?: string
+  /** Normal Mode：逐个操作组件的执行结果（按定义里的顺序） */
+  steps?: AutomationRunStep[]
+  /** Agent Mode：本次会话的工具调用数（列表行的「N 步」） */
+  toolCallCount?: number
+  /** Agent Mode：最终结论首行摘要（列表行显示；正文看回放） */
+  summary?: string
   error?: string
 }
 
@@ -998,8 +1023,10 @@ export interface AutomationListResult {
 export interface AutomationHistoryQuery {
   automationId?: string
   mode?: AutomationMode
-  /** 默认 50，上限 200 */
+  /** 默认 50，上限 200（`0` = 不分页、返回全部，供引擎内部重建去重键使用） */
   limit?: number
+  /** 分页偏移（`triggeredAt` 倒序后的跳过条数） */
+  offset?: number
 }
 
 // ───────────────────────── Agent 向用户提问（`ask_user`，docs/06 §21） ─────────────────────────

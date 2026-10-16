@@ -493,7 +493,7 @@ export async function runAutomation(clientId: string, id: string): Promise<strin
   return typeof data?.runId === 'string' ? data.runId : ''
 }
 
-/** 拉取运行历史（triggeredAt 倒序）并缓存 */
+/** 拉取运行历史（triggeredAt 倒序）；缓存最后一次结果供列表读 */
 export async function fetchAutomationHistory(
   clientId: string,
   query?: AutomationHistoryQuery,
@@ -505,10 +505,34 @@ export async function fetchAutomationHistory(
     ...(query?.automationId === undefined ? {} : { automationId: query.automationId }),
     ...(query?.mode === undefined ? {} : { mode: query.mode }),
     ...(query?.limit === undefined ? {} : { limit: query.limit }),
+    ...(query?.offset === undefined ? {} : { offset: query.offset }),
   })
   const list = Array.isArray(data) ? data : []
   state.automationHistoryByClient.set(clientId, list)
   return list
+}
+
+/**
+ * 自动化某次运行的对话回放（docs/13 §10）：按 run 里的 `auto-` sessionId 走 `session.history`
+ * 拉正文，落进一个**只读**的 SessionState（不进 `activeSessionKey`、不收实时事件），
+ * 交给 `MessageStream` 与远程会话同款渲染。已拉过的会话直接复用缓存。
+ */
+export async function loadRunTranscript(
+  clientId: string,
+  sessionId: string,
+): Promise<SessionState> {
+  const session = ensureSessionState(clientId, sessionId)
+  if (session.historyLoaded === true) return session
+  session.historyLoaded = true
+  try {
+    const history = await fetchSessionHistory(clientId, sessionId)
+    mergeHistory(session, history)
+  } catch (error) {
+    // 失败要回退标记：否则重开同一条记录永远显示空回放
+    session.historyLoaded = false
+    throw error
+  }
+  return session
 }
 
 // ───────────────────────── 语音中转（docs/12 §6.4） ─────────────────────────

@@ -19,11 +19,14 @@ import type {
   AutomationMode,
   AutomationRun,
   AutomationRunStatus,
+  AutomationRunStep,
 } from '@aurora/shared'
 
 export const AUTOMATIONS_FILE_VERSION = 1
 /** 运行历史上限：超出淘汰最旧（docs/13 §2.1） */
 export const AUTOMATION_HISTORY_LIMIT = 500
+/** 单次历史查询的条数上限（`limit` 是正数时钳到这里；0 = 不分页） */
+export const AUTOMATION_HISTORY_QUERY_CAP = 200
 export const AUTOMATIONS_WRITE_DEBOUNCE_MS = 300
 /** 损坏备份上限（同 SessionStore / FileJobStore） */
 const MAX_CORRUPT_BACKUPS = 3
@@ -42,8 +45,10 @@ export interface AutomationHistoryQuery {
   automationId?: string
   mode?: AutomationMode
   status?: AutomationRunStatus
-  /** 缺省 50，上限由调用方裁剪 */
+  /** 缺省 50；`0` = 不分页返回全部，正数上限 {@link AUTOMATION_HISTORY_QUERY_CAP} */
   limit?: number
+  /** 分页偏移（倒序后跳过条数，缺省 0） */
+  offset?: number
 }
 
 export interface AutomationRunPatch {
@@ -52,6 +57,11 @@ export interface AutomationRunPatch {
   durationMs?: number
   /** Agent 模式：send 接受后补会话 id（历史面板据此回放对话） */
   sessionId?: string
+  triggerDetail?: string
+  /** Normal 模式：逐个操作组件的执行结果 */
+  steps?: AutomationRunStep[]
+  toolCallCount?: number
+  summary?: string
   error?: string | undefined
 }
 
@@ -137,7 +147,10 @@ export class AutomationStore {
     })
     filtered.sort((a, b) => b.triggeredAt.localeCompare(a.triggeredAt))
     const limit = query.limit ?? 50
-    return (limit > 0 ? filtered.slice(0, limit) : filtered).map((run) => structuredClone(run))
+    const offset = Math.max(0, Math.floor(query.offset ?? 0))
+    // `limit = 0` 保留「不分页、全量返回」语义（引擎重建 daily 去重键要用）
+    const end = limit > 0 ? offset + Math.min(limit, AUTOMATION_HISTORY_QUERY_CAP) : filtered.length
+    return filtered.slice(offset, end).map((run) => structuredClone(run))
   }
 
   async appendRun(run: AutomationRun): Promise<AutomationRun> {

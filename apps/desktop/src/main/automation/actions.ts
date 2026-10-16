@@ -33,7 +33,7 @@ export interface AutomationActionPorts {
 export interface ActionExecutionResult {
   ok: boolean
   error?: string
-  /** 给日志 / 审计的一句话摘要（**不进** Normal 历史记录） */
+  /** 给日志 / 历史明细的一句话摘要（Normal 运行历史按步落库，可能含本机路径或网址） */
   summary: string
 }
 

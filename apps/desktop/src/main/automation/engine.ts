@@ -22,6 +22,7 @@ import type {
   AutomationDefinition,
   AutomationHistoryQuery,
   AutomationRun,
+  AutomationRunStep,
 } from '@aurora/shared'
 import type { Settings } from '@aurora/shared'
 import { createNoopLogger, type Logger } from '@aurora/shared'
@@ -29,6 +30,7 @@ import { isQuietHour } from '../proactive.js'
 import { needsNextDayLessons, type IScheduleProvider, type Lesson } from '../schedule.js'
 import { executeAction, type AutomationActionPorts } from './actions.js'
 import {
+  actionLabelOf,
   buildCatalog,
   isRunsExhausted,
   normalizeDefinition,
@@ -158,10 +160,25 @@ export class AutomationEngine {
    * 必须与并发触发互斥（双击「立即运行」/ 定时与手动撞在一起 / UI 与 AI 工具同时触发）。
    */
   private readonly definitionLocks = new Map<string, Promise<void>>()
-  /** 在途 Agent 运行：sessionId → run 信息 */
+  /**
+   * 在途 Agent 运行：sessionId → run 信息。
+   *
+   * 顺带累加**历史行要用的派生量**（工具调用数、最后一段非空正文）—— 引擎已经在订阅这条
+   * 会话的事件流，不必再回读会话文件；累加只活在运行期间，收尾即随条目一起丢弃。
+   */
   private readonly pendingAgentRuns = new Map<
     string,
-    { runId: string; requestId: string; startedAt: number; timer?: NodeJS.Timeout }
+    {
+      runId: string
+      requestId: string
+      startedAt: number
+      timer?: NodeJS.Timeout
+      toolCallIds: Set<string>
+      /** 当前正在累加的助手正文消息 id（切到下一条消息时重开缓冲） */
+      textMessageId?: string
+      /** 最近一段非空助手正文（= 最终结论的来源） */
+      lastText?: string
+    }
   >()
   private timer?: NodeJS.Timeout
   private ticking = false
@@ -464,8 +481,10 @@ export class AutomationEngine {
     if (definition.mode === 'agent') {
       return await this.fireAgentRun(definition, detail)
     }
-    return await this.startRun(definition, detail, async () => {
-      await this.executeDefinitionActions(definition)
+    return await this.startRun(definition, detail, async (run) => {
+      const steps = await this.executeDefinitionActions(definition)
+      // 明细先落库、再由 startRun 收尾补终态：两次 updateRun 在同一条 await 链上，顺序确定
+      await this.store.updateRun(run.id, { steps })
     })
   }
 
@@ -597,6 +616,7 @@ export class AutomationEngine {
         requestId,
         startedAt: Date.now(),
         timer,
+        toolCallIds: new Set(),
       })
     })
   }
@@ -604,6 +624,20 @@ export class AutomationEngine {
   private handleAgentEvent(event: AgentEvent): void {
     const pending = this.pendingAgentRuns.get(event.sessionId)
     if (pending === undefined) return
+    if (event.type === 'tool') {
+      // 同一次调用会随状态变化推多条，按 call.id 去重
+      if (event.call.id !== '') pending.toolCallIds.add(event.call.id)
+      return
+    }
+    if (event.type === 'text') {
+      if (pending.textMessageId !== event.messageId) {
+        pending.textMessageId = event.messageId
+        pending.lastText = ''
+      }
+      const buffered = `${pending.lastText ?? ''}${event.delta}`
+      if (buffered.trim() !== '') pending.lastText = buffered
+      return
+    }
     if (event.type === 'done') {
       this.finalizeAgentRun(event.sessionId, 'success')
     } else if (event.type === 'error') {
@@ -619,7 +653,14 @@ export class AutomationEngine {
     const finishedAt = this.clock().toISOString()
     const durationMs = Date.now() - pending.startedAt
     void this.store
-      .updateRun(pending.runId, { status, finishedAt, durationMs, error })
+      .updateRun(pending.runId, {
+        status,
+        finishedAt,
+        durationMs,
+        error,
+        toolCallCount: pending.toolCallIds.size,
+        summary: summarizeConclusion(pending.lastText),
+      })
       .then((settled) => {
         this.logger.info('自动化 Agent 运行结束', { runId: pending.runId, status, durationMs })
         if (settled !== undefined) this.reportRun(settled)
@@ -630,10 +671,21 @@ export class AutomationEngine {
       })
   }
 
-  private async executeDefinitionActions(definition: AutomationDefinition): Promise<void> {
+  /** 顺序执行操作组件，并把逐个结果落成历史明细（失败不阻断后续）。 */
+  private async executeDefinitionActions(
+    definition: AutomationDefinition,
+  ): Promise<AutomationRunStep[]> {
     const actions = definition.actions ?? []
+    const steps: AutomationRunStep[] = []
     for (const action of actions) {
       const result = await executeAction(action, this.actions)
+      const step: AutomationRunStep = {
+        kind: action.kind,
+        label: actionLabelOf(action.kind),
+        ok: result.ok,
+        ...(result.ok ? { summary: result.summary } : { error: result.error ?? '操作执行失败' }),
+      }
+      steps.push(step)
       if (!result.ok) {
         this.logger.warn('自动化操作执行失败（继续后续操作）', {
           automationId: definition.id,
@@ -648,6 +700,7 @@ export class AutomationEngine {
         })
       }
     }
+    return steps
   }
 
   /**
@@ -669,6 +722,7 @@ export class AutomationEngine {
       mode: definition.mode,
       status: 'running',
       triggeredAt,
+      ...(detail === undefined || detail === '' ? {} : { triggerDetail: detail }),
     }
     await this.store.appendRun(run)
     this.reportRun(run)
@@ -926,4 +980,26 @@ function resolveSubjectDirSafe(ctx: BuiltinRunContext, subject: string): string 
     ctx.logger.warn('解析科目目录失败', { subject, error: String(error) })
     return ''
   }
+}
+
+/**
+ * Agent 结论摘要（历史行的一行小字）：跳过 Markdown 的标题 / 列表前缀取首行，压掉换行，
+ * 截到 {@link AUTOMATION_SUMMARY_CHARS}。空正文返回 undefined（行上不显示假摘要）。
+ */
+const AUTOMATION_SUMMARY_CHARS = 90
+
+function summarizeConclusion(text: string | undefined): string | undefined {
+  if (text === undefined) return undefined
+  for (const line of text.split('\n')) {
+    const clean = line
+      .replace(/^#+\s*/, '')
+      .replace(/^([-*+]|\d+[.、])\s+/, '')
+      .replace(/[*_`>]/g, '')
+      .trim()
+    if (clean === '') continue
+    return clean.length > AUTOMATION_SUMMARY_CHARS
+      ? `${clean.slice(0, AUTOMATION_SUMMARY_CHARS)}…`
+      : clean
+  }
+  return undefined
 }

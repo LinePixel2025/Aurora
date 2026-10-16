@@ -229,7 +229,7 @@ export function fixtureAutomationCatalog() {
   }
 }
 
-/** `automation.history` 回执：2 次运行（一次成功、一次失败） */
+/** `automation.history` 回执：2 次运行（一次 Agent 成功、一次 Normal 失败，都带明细） */
 export function fixtureAutomationHistory() {
   const base = Date.now() - 7_200_000
   return [
@@ -243,6 +243,9 @@ export function fixtureAutomationHistory() {
       finishedAt: new Date(base + 3_660_000).toISOString(),
       durationMs: 60_000,
       sessionId: 'auto-verify-1',
+      triggerDetail: '每天 08:00',
+      toolCallCount: 3,
+      summary: '课件已按科目归档（verify 夹具）',
     },
     {
       id: 'run-1',
@@ -254,6 +257,16 @@ export function fixtureAutomationHistory() {
       finishedAt: new Date(base + 1_000).toISOString(),
       durationMs: 1_000,
       error: '通知被系统拦截（夹具）',
+      triggerDetail: '距上课 5 分钟',
+      steps: [
+        {
+          kind: 'system-notify',
+          label: '系统通知',
+          ok: false,
+          error: '通知被系统拦截（夹具）',
+        },
+        { kind: 'open-folder', label: '打开文件夹', ok: true, summary: '已打开 数学' },
+      ],
     },
   ]
 }

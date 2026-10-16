@@ -351,6 +351,8 @@ export type CenterCommand =
    * 历史回放（v0.2.4，docs/12 §5 第 7 步 / §6.3）：客户端从 SessionStore 读该会话的
    * 渲染层历史（`rendererHistory`，最近 200 条），经 `result.data` 携带
    * `CenterSessionHistoryMessage[]` 回执。**服务器不缓存**——历史只在回执里路过。
+   * 前缀闸门在客户端：`center-` 之外只额外放行 `auto-`（自动化历史的对话回放，
+   * 且只放行这条只读命令，docs/13 §10）。
    */
   | { kind: 'session.history'; requestId: string; sessionId: string }
   /**
@@ -389,6 +391,8 @@ export type CenterCommand =
       automationId?: string
       mode?: AutomationMode
       limit?: number
+      /** 分页偏移（倒序后跳过条数，docs/13 §10 的网页历史翻页） */
+      offset?: number
     }
   // ── 语音中转（v0.3.2，docs/12 §6.4）：客户端用本机已配 provider，服务器只转发不缓存 ──
   /**
@@ -593,6 +597,7 @@ export type CenterWebMessage =
       automationId?: string
       mode?: AutomationMode
       limit?: number
+      offset?: number
     }
   // ── 语音中转（v0.3.2，docs/12 §6.4）：授权与回执同其他命令；网页端回执等待放宽到 60s ──
   | {

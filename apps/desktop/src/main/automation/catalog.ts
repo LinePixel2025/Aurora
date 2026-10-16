@@ -194,6 +194,11 @@ export function buildCatalog(classislandAvailable: boolean): AutomationCatalog {
   }
 }
 
+/** 操作组件的中文名（运行历史落库时用，渲染端不必再拉 catalog）；未知 kind 回落原值。 */
+export function actionLabelOf(kind: AutomationActionKind): string {
+  return ACTION_DESCRIPTORS.find((descriptor) => descriptor.kind === kind)?.label ?? kind
+}
+
 /**
  * open-url 的协议白名单（docs/13 §5）：只放 http / https —— `file:` / 自定义协议
  * 一律视为非法，防「打开网址」变成协议逃逸面。保存校验与执行器共用这一个口径。

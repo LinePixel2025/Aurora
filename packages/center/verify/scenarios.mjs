@@ -1632,6 +1632,92 @@ export const SCENARIOS = [
     },
   },
 
+  // ── 25b. 自动化历史：结果摘要列 + Normal 逐步明细 ──
+  {
+    name: 'automations-history',
+    async run(ctx) {
+      ctx.stub.setHistory('auto-verify-1', fixtureHistoryMessages())
+      await fresh(ctx, { hash: '#/automations', expect: '[data-panel="automation-history"]' })
+      const rows = await ctx.page.evaluate(() => {
+        const table = document.querySelector('[data-panel="automation-history"]')
+        const text = table?.textContent ?? ''
+        return {
+          runs: table?.querySelectorAll('tbody tr').length ?? 0,
+          summaryShown: text.includes('课件已按科目归档'),
+          errorShown: text.includes('通知被系统拦截'),
+          noRawSessionId: !text.includes('auto-verify-1'),
+          detailButtons:
+            table?.querySelectorAll('[data-action="automation.history-detail"]').length ?? 0,
+        }
+      })
+      // Normal 行「看明细」→ 逐个操作组件的结果（失败原因在场）
+      await ctx.page.evaluate(() => {
+        const buttons = document.querySelectorAll('[data-action="automation.history-detail"]')
+        buttons[buttons.length - 1]?.click()
+      })
+      await ctx.page.waitForSelector('[data-panel="automation-run-detail"] .auto-step', {
+        timeout: TIMEOUT,
+      })
+      const steps = await ctx.page.evaluate(() => {
+        const panel = document.querySelector('[data-panel="automation-run-detail"]')
+        return {
+          items: panel?.querySelectorAll('.auto-step').length ?? 0,
+          text: panel?.textContent ?? '',
+        }
+      })
+      return verdict(
+        {
+          runs: rows.runs === 2,
+          summaryShown: rows.summaryShown,
+          errorShown: rows.errorShown,
+          noRawSessionId: rows.noRawSessionId,
+          detailButtons: rows.detailButtons === 2,
+          steps: steps.items === 2,
+          stepErrorShown: steps.text.includes('通知被系统拦截'),
+        },
+        { rows, steps },
+      )
+    },
+  },
+
+  // ── 25c. 自动化历史的 Agent 对话回放（复用会话消息流：轨迹折叠 + 工具卡） ──
+  {
+    name: 'automations-replay',
+    async run(ctx) {
+      ctx.stub.setHistory('auto-verify-1', fixtureHistoryMessages())
+      await fresh(ctx, { hash: '#/automations', expect: '[data-panel="automation-history"]' })
+      await ctx.page.click('[data-action="automation.history-detail"]')
+      await ctx.page.waitForSelector('[data-panel="automation-run-detail"]', { timeout: TIMEOUT })
+      await ctx.page.waitForSelector('[data-field="automation.replay"] [data-field="chat.trace"]', {
+        timeout: TIMEOUT,
+      })
+      await sleep(400)
+      const replay = await ctx.page.evaluate(() => {
+        const panel = document.querySelector('[data-panel="automation-run-detail"]')
+        const scope = panel?.querySelector('[data-field="automation.replay"]') ?? null
+        const head = scope?.querySelector('[data-action="chat.trace-toggle"]') ?? null
+        const clip = scope?.querySelector('.trace-clip') ?? null
+        return {
+          userMessages: scope?.querySelectorAll('[data-field="chat.user-message"]').length ?? 0,
+          markdown: scope?.querySelectorAll('[data-field="chat.markdown"]').length ?? 0,
+          toolCards: scope?.querySelectorAll('.tool-card').length ?? 0,
+          ariaExpanded: head?.getAttribute('aria-expanded') ?? null,
+          clipHeight: clip === null ? -1 : Math.round(clip.getBoundingClientRect().height),
+          meta: panel?.querySelector('.auto-detail-meta')?.textContent?.trim() ?? '',
+        }
+      })
+      return verdict(
+        {
+          replayRendered: replay.userMessages >= 1 && replay.markdown >= 1,
+          toolCards: replay.toolCards >= 1,
+          collapsedTrace: replay.ariaExpanded === 'false' && replay.clipHeight <= 1,
+          metaHasStatus: replay.meta.includes('成功'),
+        },
+        { replay },
+      )
+    },
+  },
+
   // ── 26. 管理端：用户表 + 客户端表（在线） ──
   {
     name: 'admin',

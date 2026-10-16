@@ -14,8 +14,10 @@ import type {
   AutomationRunStatus,
   AutomationTriggerKind,
 } from '@aurora/shared'
+import type { SessionState } from '../state'
 import { History, Pencil, Play, Plus, Trash2, Workflow, X } from '@aurora/shared/browser'
 import AutomationFields from '../components/AutomationFields.vue'
+import MessageStream from '../components/console/MessageStream.vue'
 import { formatTime } from '../lib/format'
 import {
   clientsSorted,
@@ -23,6 +25,7 @@ import {
   fetchAutomationCatalog,
   fetchAutomationHistory,
   listAutomations,
+  loadRunTranscript,
   runAutomation,
   saveAutomation,
   selectClient,
@@ -36,6 +39,13 @@ const error = ref('')
 const notice = ref('')
 /** 历史筛选（'' = 全部；点行「历史」按钮切换）；watch 回调会重置它，须先声明 */
 const historyFilter = ref('')
+/** 每页条数（历史上限 500 在客户端，翻页就是把「取到第几条」推给客户端）。
+ *  与下面的分页态都必须在 `watch(clientId, …, { immediate: true })` 之前声明 ——
+ *  immediate 回调会在 setup 期就调 `load()` → `requestHistory()` 读到它们。 */
+const HISTORY_PAGE_SIZE = 20
+const historyLimit = ref(HISTORY_PAGE_SIZE)
+/** 已取到末尾（客户端没有回传比请求更多的记录）—— 没有总数字段，只能这样判 */
+const historyExhausted = ref(false)
 
 const clientId = computed(() => state.selectedClientId)
 const online = computed(() => state.clients.get(clientId.value)?.client.online ?? false)
@@ -69,7 +79,7 @@ async function load(): Promise<void> {
   const [listResult, catalogResult, historyResult] = await Promise.allSettled([
     listAutomations(id),
     fetchAutomationCatalog(id),
-    fetchAutomationHistory(id),
+    requestHistory(),
   ])
   loading.value = false
   if (clientId.value !== id) return // 期间已切走客户端
@@ -232,7 +242,7 @@ function onRun(def: AutomationDefinition): void {
   void run(async () => {
     await runAutomation(clientId.value, def.id)
     notice.value = `已触发「${def.name}」`
-    await fetchAutomationHistory(clientId.value).catch(() => {})
+    await requestHistory().catch(() => {})
   })
 }
 
@@ -425,21 +435,32 @@ async function submitEditor(): Promise<void> {
 
 // ───────────────────────── 运行历史 ─────────────────────────
 
-const historyRuns = computed<AutomationRun[]>(() => {
+const historyDetail = ref<AutomationRun | null>(null)
+const historyDetailSession = ref<SessionState | null>(null)
+const historyDetailLoading = ref(false)
+const historyDetailError = ref('')
+
+const historyRuns = computed<AutomationRun[]>(
+  () => state.automationHistoryByClient.get(clientId.value) ?? [],
+)
+const historyDetailEntry = computed(() => state.clients.get(clientId.value) ?? null)
+
+async function requestHistory(): Promise<void> {
+  await fetchAutomationHistory(clientId.value, {
+    ...(historyFilter.value === '' ? {} : { automationId: historyFilter.value }),
+    limit: historyLimit.value,
+  })
   const list = state.automationHistoryByClient.get(clientId.value) ?? []
-  const filtered =
-    historyFilter.value === ''
-      ? list
-      : list.filter((item) => item.automationId === historyFilter.value)
-  return filtered.slice(0, 50)
-})
+  historyExhausted.value = list.length < historyLimit.value
+}
 
 async function refreshHistory(): Promise<void> {
   if (!clientId.value) return
   loading.value = true
   error.value = ''
+  historyLimit.value = HISTORY_PAGE_SIZE
   try {
-    await fetchAutomationHistory(clientId.value)
+    await requestHistory()
   } catch (err) {
     error.value = translateError(err instanceof Error ? err.message : String(err))
   } finally {
@@ -447,8 +468,60 @@ async function refreshHistory(): Promise<void> {
   }
 }
 
+async function loadMoreHistory(): Promise<void> {
+  if (!clientId.value) return
+  historyLimit.value += HISTORY_PAGE_SIZE
+  try {
+    await requestHistory()
+  } catch (err) {
+    historyLimit.value -= HISTORY_PAGE_SIZE
+    error.value = translateError(err instanceof Error ? err.message : String(err))
+  }
+}
+
+/** 明细行（略读层）：Agent 看结论摘要，Normal 看步数；失败时补一句失败原因。 */
+function historyResultLine(record: AutomationRun): string {
+  if (record.mode === 'agent') {
+    const steps = record.toolCallCount === undefined ? '' : `${record.toolCallCount} 步`
+    return [steps, record.summary ?? ''].filter((part) => part !== '').join(' · ')
+  }
+  const steps = record.steps ?? []
+  const failed = steps.filter((step) => !step.ok).length
+  if (steps.length === 0) return ''
+  return failed === 0 ? `${steps.length} 步全部完成` : `${steps.length} 步 · ${failed} 步失败`
+}
+
+function canOpenRunDetail(record: AutomationRun): boolean {
+  if (record.mode === 'agent') return record.sessionId !== undefined
+  return (record.steps?.length ?? 0) > 0 || record.error !== undefined
+}
+
+async function openRunDetail(record: AutomationRun): Promise<void> {
+  if (!canOpenRunDetail(record)) return
+  historyDetail.value = record
+  historyDetailSession.value = null
+  historyDetailError.value = ''
+  if (record.mode !== 'agent' || record.sessionId === undefined) return
+  historyDetailLoading.value = true
+  try {
+    historyDetailSession.value = await loadRunTranscript(clientId.value, record.sessionId)
+  } catch (err) {
+    historyDetailError.value = translateError(err instanceof Error ? err.message : String(err))
+  } finally {
+    historyDetailLoading.value = false
+  }
+}
+
+function closeRunDetail(): void {
+  historyDetail.value = null
+  historyDetailSession.value = null
+  historyDetailError.value = ''
+}
+
 function filterHistory(automationId: string): void {
   historyFilter.value = historyFilter.value === automationId ? '' : automationId
+  historyLimit.value = HISTORY_PAGE_SIZE
+  if (clientId.value) void refreshHistory()
 }
 </script>
 
@@ -750,13 +823,13 @@ function filterHistory(automationId: string): void {
           <header class="auto-group-head">
             <span class="auto-group-title">运行历史</span>
             <span class="auto-group-sub">
-              {{ historyFilter === '' ? '最近 50 条' : '已按自动化筛选' }}
+              {{ historyFilter === '' ? `最近 ${historyRuns.length} 条` : '已按自动化筛选' }}
             </span>
             <button
               v-if="historyFilter !== ''"
               class="ui-btn ui-btn--ghost"
               type="button"
-              @click="historyFilter = ''"
+              @click="filterHistory(historyFilter)"
             >
               取消筛选
             </button>
@@ -770,61 +843,87 @@ function filterHistory(automationId: string): void {
             </button>
           </header>
 
-          <p v-if="historyRuns.length === 0" class="auto-group-empty">暂无运行记录。</p>
-          <div v-else class="auto-scroll">
-            <table class="ui-table" data-panel="automation-history">
-              <thead>
-                <tr>
-                  <th>触发时间</th>
-                  <th>自动化</th>
-                  <th>模式</th>
-                  <th>状态</th>
-                  <th>耗时</th>
-                  <th>会话 / 错误</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="record in historyRuns" :key="record.id">
-                  <td class="auto-dim auto-num">{{ formatTime(record.triggeredAt) }}</td>
-                  <td>
-                    <button
-                      class="auto-link"
-                      type="button"
-                      @click="filterHistory(record.automationId)"
-                    >
-                      {{ record.automationName }}
-                    </button>
-                  </td>
-                  <td>
-                    <span
-                      class="ui-chip"
-                      :class="record.mode === 'agent' ? 'ui-chip--accent' : 'ui-chip--muted'"
-                    >
-                      {{ record.mode === 'agent' ? 'Agent' : 'Normal' }}
-                    </span>
-                  </td>
-                  <td>
-                    <span class="ui-chip" :class="statusClass(record.status)">
-                      {{ statusLabel(record.status) }}
-                    </span>
-                  </td>
-                  <td class="auto-dim auto-num">{{ formatDuration(record.durationMs) }}</td>
-                  <td>
-                    <span
-                      v-if="record.sessionId"
-                      class="auto-dim auto-session"
-                      :title="record.sessionId"
-                    >
-                      会话 {{ record.sessionId }}
-                    </span>
-                    <span v-else-if="record.error" class="auto-error" :title="record.error">
-                      {{ record.error }}
-                    </span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <p v-if="loading" class="auto-group-empty">加载中…</p>
+          <p v-else-if="historyRuns.length === 0" class="auto-group-empty">暂无运行记录。</p>
+          <template v-else>
+            <div class="auto-scroll">
+              <table class="ui-table ui-table--cards" data-panel="automation-history">
+                <thead>
+                  <tr>
+                    <th>触发时间</th>
+                    <th>自动化</th>
+                    <th>模式</th>
+                    <th>状态</th>
+                    <th>耗时</th>
+                    <th>结果</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="record in historyRuns" :key="record.id">
+                    <td data-label="触发时间" class="auto-dim auto-num">
+                      {{ formatTime(record.triggeredAt) }}
+                    </td>
+                    <td data-label="自动化">
+                      <button
+                        class="auto-link"
+                        type="button"
+                        @click="filterHistory(record.automationId)"
+                      >
+                        {{ record.automationName }}
+                      </button>
+                      <span v-if="record.triggerDetail" class="auto-dim auto-trigger">
+                        {{ record.triggerDetail }}
+                      </span>
+                    </td>
+                    <td data-label="模式">
+                      <span
+                        class="ui-chip"
+                        :class="record.mode === 'agent' ? 'ui-chip--accent' : 'ui-chip--muted'"
+                      >
+                        {{ record.mode === 'agent' ? 'Agent' : 'Normal' }}
+                      </span>
+                    </td>
+                    <td data-label="状态">
+                      <span class="ui-chip" :class="statusClass(record.status)">
+                        {{ statusLabel(record.status) }}
+                      </span>
+                    </td>
+                    <td data-label="耗时" class="auto-dim auto-num">
+                      {{ formatDuration(record.durationMs) }}
+                    </td>
+                    <td data-label="结果">
+                      <p v-if="record.error" class="auto-error" :title="record.error">
+                        {{ record.error }}
+                      </p>
+                      <p v-if="historyResultLine(record) !== ''" class="auto-dim auto-result">
+                        {{ historyResultLine(record) }}
+                      </p>
+                      <button
+                        v-if="canOpenRunDetail(record)"
+                        class="ui-btn ui-btn--ghost auto-open-detail"
+                        type="button"
+                        data-action="automation.history-detail"
+                        @click="openRunDetail(record)"
+                      >
+                        {{ record.mode === 'agent' ? '看对话' : '看明细' }}
+                      </button>
+                      <span v-else class="auto-dim auto-result">—</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <button
+              v-if="!historyExhausted"
+              class="ui-btn ui-btn--ghost auto-more"
+              type="button"
+              data-action="automation.history-more"
+              :disabled="!online"
+              @click="loadMoreHistory"
+            >
+              加载更多
+            </button>
+          </template>
         </section>
       </template>
     </template>
@@ -1002,6 +1101,83 @@ function filterHistory(automationId: string): void {
               {{ editorSaving ? '保存中…' : '保存' }}
             </button>
           </footer>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 运行明细弹层：Agent 复用会话消息流回放对话，Normal 列逐个操作组件的结果 -->
+    <Transition name="fade">
+      <div v-if="historyDetail !== null" class="auto-mask" @click.self="closeRunDetail">
+        <div
+          class="auto-editor auto-detail glass-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-label="运行明细"
+          data-panel="automation-run-detail"
+        >
+          <header class="auto-editor-head">
+            <span class="auto-editor-title">{{ historyDetail.automationName }}</span>
+            <button
+              class="auto-icon-btn"
+              type="button"
+              aria-label="关闭"
+              data-action="automation.detail-close"
+              @click="closeRunDetail"
+            >
+              <X :size="16" :stroke-width="1.8" aria-hidden="true" />
+            </button>
+          </header>
+
+          <div class="auto-editor-body">
+            <p class="auto-detail-meta auto-dim">
+              {{ formatTime(historyDetail.triggeredAt) }} ·
+              {{ statusLabel(historyDetail.status) }}
+              <template v-if="historyDetail.durationMs !== undefined">
+                · {{ formatDuration(historyDetail.durationMs) }}</template
+              >
+              <template v-if="historyDetail.triggerDetail">
+                · {{ historyDetail.triggerDetail }}</template
+              >
+            </p>
+            <p v-if="historyDetail.error !== undefined" class="auto-error auto-detail-error">
+              {{ historyDetail.error }}
+            </p>
+
+            <template v-if="historyDetail.mode === 'agent'">
+              <p v-if="historyDetailLoading" class="auto-group-empty">加载对话…</p>
+              <p v-else-if="historyDetailError !== ''" class="auto-error">
+                {{ historyDetailError }}
+              </p>
+              <div
+                v-else-if="historyDetailSession !== null && historyDetailEntry !== null"
+                class="auto-transcript"
+                data-field="automation.replay"
+              >
+                <MessageStream
+                  :session="historyDetailSession"
+                  :entry="historyDetailEntry"
+                  :following="false"
+                />
+              </div>
+              <p v-else class="auto-group-empty">这次运行没有可回放的对话（会话可能已删除）。</p>
+            </template>
+
+            <ol
+              v-else-if="historyDetail.steps !== undefined && historyDetail.steps.length > 0"
+              class="auto-steps"
+            >
+              <li v-for="(step, index) in historyDetail.steps" :key="index" class="auto-step">
+                <span class="ui-chip" :class="step.ok ? 'ui-chip--ok' : 'ui-chip--danger'">
+                  {{ step.ok ? '成功' : '失败' }}
+                </span>
+                <span class="auto-step-label">{{ index + 1 }}. {{ step.label }}</span>
+                <span class="auto-dim auto-step-result">{{
+                  step.summary ?? step.error ?? ''
+                }}</span>
+              </li>
+            </ol>
+            <p v-else class="auto-group-empty">这次运行没有记录到操作明细。</p>
+          </div>
         </div>
       </div>
     </Transition>
@@ -1443,7 +1619,6 @@ select.ui-input {
   text-decoration: underline;
 }
 
-.auto-session,
 .auto-error {
   display: inline-block;
   max-width: 260px;
@@ -1451,6 +1626,91 @@ select.ui-input {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--text-xs);
+}
+
+/* 运行历史：触发上下文与结果摘要都是「略读层」的小字 */
+.auto-trigger {
+  display: block;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+}
+
+.auto-open-detail {
+  margin-top: var(--space-1);
+}
+
+.auto-result {
+  display: block;
+  margin: 0;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+}
+
+.auto-detail {
+  width: 720px;
+  max-height: 86vh;
+  overflow-y: auto;
+}
+
+.auto-detail-meta {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+/* 弹层里的失败原因不参与表格单元格的单行截断 */
+.auto-detail-error {
+  display: block;
+  max-width: none;
+  white-space: normal;
+}
+
+.auto-transcript {
+  min-height: 0;
+  max-height: 56vh;
+  overflow-y: auto;
+  padding-right: var(--space-2);
+}
+
+/* 回放是只读的：没有「跟随最新」状态机，那枚胶囊点了也没东西可回 */
+.auto-transcript :deep(.jump-latest) {
+  display: none;
+}
+
+.auto-steps {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.auto-step {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.auto-step-label {
+  flex: 0 0 auto;
+}
+
+.auto-step-result {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+}
+
+.auto-more {
+  margin-top: var(--space-3);
 }
 
 .auto-error {
@@ -1650,10 +1910,6 @@ select.ui-input {
 
   .auto-switch {
     min-height: var(--hit-target);
-  }
-
-  .ui-table {
-    min-width: 640px;
   }
 }
 </style>

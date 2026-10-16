@@ -424,6 +424,7 @@ export class Hub {
           ...(message.automationId === undefined ? {} : { automationId: message.automationId }),
           ...(message.mode === undefined ? {} : { mode: message.mode }),
           ...(message.limit === undefined ? {} : { limit: message.limit }),
+          ...(message.offset === undefined ? {} : { offset: message.offset }),
         })
         break
       // ── 语音中转（v0.3.2，docs/12 §6.4）：客户端用本机已配 STT / TTS provider，

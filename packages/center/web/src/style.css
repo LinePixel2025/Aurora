@@ -179,7 +179,7 @@ body,
 
 /*
  * 窄屏表格卡片化（opt-in：给 <table> 加 .ui-table--cards，td 标 data-label）。
- * 不开的表（如自动化页）维持 min-width 横向滚动。字段名由 td 的 data-label 提供。
+ * 没加的表维持 min-width 横向滚动。字段名由 td 的 data-label 提供。
  */
 @media (max-width: 720px) {
   #app .ui-table--cards thead {

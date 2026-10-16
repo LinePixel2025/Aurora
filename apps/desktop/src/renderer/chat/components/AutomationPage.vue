@@ -20,7 +20,7 @@
  * 历史窗口里 Normal 记录**只显示触发时间与状态**（不展开操作明细，产品口径）。
  *
  * `data-field` / `data-action` 锚点是 capture 探针契约（spec §5.3），不可改名；
- * 编辑器与历史的 `.run-item` / `.detail-message` 等契约锚点已随视图迁到 `automation` 窗口。
+ * 编辑器与历史的 `.run-item` 等契约锚点已随视图迁到 `automation` 窗口。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { Component } from 'vue'
@@ -978,10 +978,6 @@ async function removeDef(def: AutomationDefinition): Promise<void> {
   animation: aurora-pop-in var(--dur-base) var(--ease-spring) both;
 }
 
-.modal.history {
-  width: min(660px, calc(100vw - 48px));
-}
-
 .modal-head {
   display: flex;
   align-items: center;
@@ -1270,160 +1266,4 @@ async function removeDef(def: AutomationDefinition): Promise<void> {
   color: var(--text-primary);
 }
 
-/* ── 历史 ── */
-.run-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.run-item {
-  display: flex;
-  /* wrap 是给失败原因行留的：`.run-error` 占满一整行折到状态行下面 */
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 6px var(--space-2);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-sm);
-}
-
-.run-item.clickable {
-  cursor: pointer;
-}
-
-.run-item.clickable:hover {
-  background: var(--fill-2);
-}
-
-.run-status-icon {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  color: var(--text-muted);
-}
-
-.run-status-icon.success {
-  color: var(--status-ok);
-}
-
-.run-status-icon.failed,
-.run-status-icon.interrupted {
-  color: var(--status-error);
-}
-
-.run-status-icon.running {
-  color: var(--accent-text);
-}
-
-.run-time {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--text-secondary);
-  font-variant-numeric: var(--num-tabular);
-  flex: 0 0 auto;
-}
-
-.run-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-primary);
-}
-
-.run-status {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-}
-
-.run-status.success {
-  color: var(--status-ok);
-}
-
-.run-status.failed,
-.run-status.interrupted {
-  color: var(--status-error);
-}
-
-.run-status.running {
-  color: var(--accent-text);
-}
-
-.run-duration {
-  flex: 0 0 auto;
-  font-variant-numeric: var(--num-tabular);
-}
-
-/* Agent 记录的「查看对话」入口：muted 常驻、hover 行上才提亮（低噪声但可发现） */
-.run-open {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex: 0 0 auto;
-  color: var(--text-muted);
-  transition: color var(--transition-fast);
-}
-
-.run-item.clickable:hover .run-open {
-  color: var(--accent-text);
-}
-
-/* 失败原因：占满整行折到第二行，单行省略（全文挂 title） */
-.run-error {
-  flex-basis: 100%;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--status-error);
-}
-
-/* 运行中的记录：状态图标自旋（模板里挂 .spin）之外，颜色再缓慢呼吸一档，
-   与主界面工具卡的运行态是同一种语言（全局 aurora-breathe，theme.css） */
-.run-status-icon.running {
-  animation: aurora-breathe var(--dur-pulse) var(--ease-standard) infinite;
-}
-
-.run-detail {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border-subtle);
-}
-
-.detail-title {
-  margin: 0;
-}
-
-.detail-message {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--fill-1);
-}
-
-.detail-message.user {
-  background: color-mix(in srgb, var(--aurora-blue) 8%, transparent);
-}
-
-.role-tag {
-  letter-spacing: var(--tracking-eyebrow);
-}
-
-.detail-content {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: var(--text-sm);
-  line-height: var(--leading-relaxed);
-}
 </style>

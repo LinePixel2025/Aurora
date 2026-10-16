@@ -1467,6 +1467,21 @@ export async function seedAutomationFixture(userData: string): Promise<void> {
       triggeredAt: new Date(now - 3_600_000).toISOString(),
       finishedAt: new Date(now - 3_600_000 + 120).toISOString(),
       durationMs: 120,
+      triggerDetail: '手动触发',
+      steps: [
+        {
+          kind: 'system-notify',
+          label: '系统通知',
+          ok: true,
+          summary: '已发出通知「早读提醒」',
+        },
+        {
+          kind: 'open-folder',
+          label: '打开文件夹',
+          ok: false,
+          error: '科目「语文」未映射文件夹',
+        },
+      ],
     },
     {
       id: 'auto-capture1',
@@ -1478,6 +1493,8 @@ export async function seedAutomationFixture(userData: string): Promise<void> {
       finishedAt: new Date(now - 1_799_000).toISOString(),
       durationMs: 1000,
       sessionId: 'auto-capture1',
+      toolCallCount: 1,
+      summary: '已确认明早有课，提醒已发出',
     },
   ]
   const session = {
@@ -1490,12 +1507,26 @@ export async function seedAutomationFixture(userData: string): Promise<void> {
         role: 'user',
         content: 'capture-automation-run：这是自动化触发种下的任务指令（早读提醒）。',
         createdAt: new Date(now - 1_800_000).toISOString(),
+        requestId: 'capture-auto-req',
       },
       {
         id: 'capture-auto-a1',
         role: 'assistant',
         content: 'capture-automation-run：这是自动化会话里 Agent 的回复，历史回放应显示本条。',
         createdAt: new Date(now - 1_799_500).toISOString(),
+        requestId: 'capture-auto-req',
+        reasoning: 'capture-automation-run：这段思考应折叠在执行轨迹里。',
+        toolCalls: [
+          {
+            id: 'capture-auto-call-1',
+            name: 'read_file',
+            arguments: '{"path":"C:/capture/早读.txt"}',
+            state: 'success',
+            outputSummary: 'capture-automation-run：工具结果摘要',
+            startedAt: new Date(now - 1_799_800).toISOString(),
+            endedAt: new Date(now - 1_799_600).toISOString(),
+          },
+        ],
       },
     ],
   }
@@ -4155,6 +4186,7 @@ export const CHAT_AUTOMATION_EDITOR_CHECK = `(async () => {
 
 export const CHAT_AUTOMATION_HISTORY_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const count = (selector) => document.querySelectorAll(selector).length
   try {
     const opened = await window.aurora.automation.openWindow({ view: 'history', mode: 'agent' })
     for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -4162,12 +4194,12 @@ export const CHAT_AUTOMATION_HISTORY_ACT = `(async () => {
       await wait(100)
     }
     await wait(250)
-    // 点开第一条可回放的 Agent 记录：截图本身要能看到"点记录 → 对话回放"这块证据
+    // 点开第一条可回放的 Agent 记录：截图要能看到「行 → 就地展开的对话回放」这块证据
     const row = document.querySelector('.run-item.clickable')
     if (row !== null) {
       row.click()
-      for (let attempt = 0; attempt < 25; attempt += 1) {
-        if (document.querySelectorAll('.detail-message').length >= 2) break
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        if (count('[data-field="automation.replay"] .message') >= 2) break
         await wait(150)
       }
       await wait(200)
@@ -4184,29 +4216,31 @@ export const CHAT_AUTOMATION_HISTORY_ACT = `(async () => {
 
 export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const count = (selector) => document.querySelectorAll(selector).length
   try {
-    const count = (selector) => document.querySelectorAll(selector).length
     const panel = document.querySelector('[data-field="automation.history-panel"]')
-    const panelText = panel === null ? '' : panel.textContent || ''
-    // Agent tab 的历史：记录可点开回放（点开 → 出现对话气泡，且能看到 seed 的探针标记）
+    // Agent tab：按日期分组 + 记录就地展开（回放复用主界面同款消息流：气泡 / 轨迹 / 工具卡）
     const agentRuns = count('.run-item')
     const clickable = count('.run-item.clickable')
-    let detailMessages = 0
+    const dayHeads = count('.day-head')
+    const metaLines = count('.run-meta')
     const agentRow = document.querySelector('.run-item.clickable')
-    if (agentRow !== null) {
+    if (agentRow !== null && document.querySelector('[data-field="automation.replay"]') === null) {
       agentRow.click()
-      for (let attempt = 0; attempt < 25; attempt += 1) {
-        if (count('.detail-message') >= 2) break
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        if (count('[data-field="automation.replay"] .message') >= 2) break
         await wait(150)
       }
-      detailMessages = count('.detail-message')
     }
+    await wait(150)
+    const replayMessages = count('[data-field="automation.replay"] .message')
+    const traceCards = count('[data-field="automation.replay"] .tool-card')
     const panelAfter = document.querySelector('[data-field="automation.history-panel"]')
     const agentMarker =
       panelAfter !== null &&
       ((panelAfter.textContent || '').indexOf('capture-automation-run') !== -1)
 
-    // Normal tab 的历史：**只显示触发时间与状态**（无详情层，产品口径 docs/13 §11）
+    // Normal tab：一行摘要 + 就地展开逐个操作组件的结果（不再「无详情层」，docs/13 §11）
     const tabNormal = document.querySelector('[data-field="automation.tab-normal"]')
     if (tabNormal !== null) {
       tabNormal.click()
@@ -4219,31 +4253,49 @@ export const CHAT_AUTOMATION_HISTORY_CHECK = `(async () => {
     const normalRuns = count('.run-item')
     const normalClickable = count('.run-item.clickable')
     const normalHasTime = count('.run-time') > 0
-    const normalStatuses = Array.from(document.querySelectorAll('.run-status')).map((el) =>
-      (el.textContent || '').trim(),
-    )
+    const normalRow = document.querySelector('.run-item.clickable')
+    if (normalRow !== null) {
+      normalRow.click()
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (count('[data-field="automation.run-detail"] .step-item') > 0) break
+        await wait(120)
+      }
+    }
+    await wait(120)
+    const detail = document.querySelector('[data-field="automation.run-detail"]')
+    const stepItems = count('[data-field="automation.run-detail"] .step-item')
+    const detailText = detail === null ? '' : detail.textContent || ''
+    const stepFailureShown = detailText.indexOf('未映射文件夹') !== -1
 
     const result = {
       panel: panel !== null,
       agentRuns,
       clickable,
-      detailMessages,
+      dayHeads,
+      metaLines,
+      replayMessages,
+      traceCards,
       agentMarker,
       normalRuns,
       normalClickable,
       normalHasTime,
-      normalStatuses,
+      stepItems,
+      stepFailureShown,
       pass:
         panel !== null &&
         agentRuns >= 1 &&
         clickable >= 1 &&
-        detailMessages >= 2 &&
+        dayHeads >= 1 &&
+        metaLines >= 1 &&
+        replayMessages >= 2 &&
+        traceCards >= 1 &&
         agentMarker === true &&
         normalRuns >= 1 &&
-        normalClickable === 0 &&
-        normalHasTime === true,
+        normalClickable >= 1 &&
+        normalHasTime === true &&
+        stepItems === 2 &&
+        stepFailureShown === true,
     }
-    void panelText
     await window.aurora.window.hide('automation')
     result.hidden = true
     return result
