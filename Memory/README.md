@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-16 | github.com 的 HTTPS 被整域掐断（重试无效），推 GitHub 改走 SSH 443 的一次性 URL ；并更正「重试即成功」旧口径 | 发布, git, GitHub, 网络, 坑, 口径      | [2026-10-16-github-https-blocked-ssh443-push.md](2026-10-16-github-https-blocked-ssh443-push.md)             |
 | 2026-10-11 | 自感知流光改强调色单色（与提示条卡片同源）、浮层窗口要自己接 applyAppearance   | 自感知, 流光, UI, CSS, 口径            | [2026-10-11-awareness-glow-mono-accent.md](2026-10-11-awareness-glow-mono-accent.md)                         |
 | 2026-10-11 | Aurora Center 版本线与桌面端解耦：更新 Center 不建 tag、不上传 GitHub          | 发布, Center, 版本, 口径               | [2026-10-11-center-independent-version.md](2026-10-11-center-independent-version.md)                         |
 | 2026-10-11 | v0.4.7 安装包双投（GitHub + Center）：发布说明先补桌面改动、UAC 会卡死 verify:update | 发布, 打包, 更新源, Center, GitHub, 坑 | [2026-10-11-v047-installer-dual-publish.md](2026-10-11-v047-installer-dual-publish.md)                       |

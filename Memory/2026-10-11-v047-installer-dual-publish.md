@@ -72,6 +72,11 @@ isDev:false}` → `配置就绪` → `Aurora 就绪` → 工具清单与 `set_ap
 **核对 GitHub 资产内容优先用 `gh`，别用裸 HTTP 重试赌运气**。
 另外 `gh release view --json` 的字段名是 `isDraft`/`isPrerelease`，**没有 `isLatest`**
 （列表里的 "Latest" 列来自 `gh release list`）。
+> **2026-10-16 补充**：同一现象后来被定位为**不是间歇** —— `github.com` 这个域 / IP 被整域掐断时
+> HTTPS 重试永远不通，而 `api.github.com` 仍可达（所以 `gh` 正常）。此时改走 SSH 443 的一次性 URL：
+> `git push git@github.com:LinePixel2025/Aurora.git main --follow-tags`，见
+> [2026-10-16-github-https-blocked-ssh443-push.md](2026-10-16-github-https-blocked-ssh443-push.md)。
+> 本轮的 5 个提交与 v0.4.5 / v0.4.6 / v0.4.8 三个 tag 就是因此积压到 10-16 才推上去。
 
 ## 下一版的提醒
 
