@@ -66,7 +66,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：`$env:AURORA_SMOKE='1'; pnpm dev`，
   结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`（调试渲染层加 `AURORA_DEVTOOLS=1`）。
-  **全量约 25 秒、204 条断言应当全绿（`SUMMARY 204/204 passed`，2026-10-16 实测）**——**先把基线修绿再动被测代码**。
+  **全量约 25 秒、203 条断言应当全绿（v34 删掉「预算触顶落 paused」这条断言后由 204 → 203，
+  **该数字尚未复跑确认**；旧实测 `SUMMARY 204/204 passed` 见 2026-10-16）**——**先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
   **提交前仍必须跑全量**。
 - **Center 网页端验收（视觉 + 行为）**：`pnpm --filter @aurora/center build && pnpm --filter @aurora/center verify:web`
@@ -119,7 +120,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **绝不允许裸 `v-html` 模型原文**；链接 scheme 走 markdown-it `validateLink`（`javascript:` 拒绝）；
   外链一律 `target=_blank` + `rel="noopener noreferrer nofollow"`；图片降级为链接（生产 CSP `img-src 'self' data:` 会拦远程图）。
 - **文件 / 命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
-- **配置改动**（当前 `CONFIG_VERSION = 33`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
+- **配置改动**（当前 `CONFIG_VERSION = 34`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 - **界面文案口径**（用户连续两轮点名「冗杂」）：区组说明段 **≤45 汉字**、字段 hint **≤40 汉字**，各只写 1 句；
   **不写 `docs/xx §n` 这类文档引用**；删的是冗余，**边界 / 后果 / 修复路径必须保留**；
   改文案后要同步核对断言了原文串的探针场景（`chat-composer-slash` 等）。
@@ -152,7 +153,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **跨 IPC 不传 Vue `reactive` / Proxy**：渲染层往主进程送对象前统一 `deepClone()`（`@aurora/shared/browser`）。
 - **写前快照顺序不能换**：`resolveWithin` → `capture`（存**原内容**）→ 写盘；主写失败不回滚快照。
 - **三处 `ensureLoaded`（会话 / 待办 / job）必须用 in-flight promise**；job 落盘前必须先 `ensureLoaded`。
-- **自动续轮的 `history` / `systemPrompt` 必须在 attempt 循环内每轮重算**（回归护栏 `agentHost.test.ts`）。
+- **续跑（`appendUserMessage = false`）前必须重读会话重算 `history` / `systemPrompt`**：该标志的语义前提是"提问已在 history 里"，不重算模型就会重复已执行的写 / 命令（v34 已删「自动续轮」与 attempt 循环，这条不变，回归护栏在 `agentHost.test.ts`）。
 - **上限类配置以 getter 注入内核**（`agent.loop.*` 等），写成构造时常量就是"改设置要重启"的死字段。
 - **`edit_file` 的「改前必须先读」守卫不许挪进 `sync()`**（会话级单例，建在 `registerComputerTools` 闭包里）。
 - **新增密文路径要同步 5 处**：`SettingsStore` 的 `canonicalSecretPath` / `readSecretField` / `writeSecretField` / `toPersisted` + 主进程 `redactSettings`；派生字段名另补 `SENSITIVE_KEY_PATTERN`。

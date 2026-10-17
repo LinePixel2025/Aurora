@@ -616,12 +616,16 @@ Center 网页端移动端对话区保底 60% 高度（面板收进分段切换�
   `exists:false` 的快照回滚 = 删除该文件。
 - **Task/Job 持久化与可续跑（v15，`agent.loop.*`）**（[06 §4.1](./06-agent-core.md)）：
   一次请求 = 一条 job，落在 `<userData>/jobs/<sessionId>.json`，每轮结束落游标；
-  轮次用尽 / token 预算触顶时落 `paused` 并给出原因（`max-rounds` / `budget`）。
-  右栏「任务」面板可看进度（第几轮 / token / 步骤 / 待办）并点「继续」**接着上次的进度跑**
-  （**不重复落盘**那条用户消息）。`agent.loop` 三项 = `maxRounds: 8` / `maxTotalTokens: 0`（不限）/
-  `autoContinueRounds: 2`，预算内的自动续轮次数**持久化**（重启不会重新获得额度）；
-  **应用重启后 `paused` 的 job 仍在面板里，可直接继续**。配置 Schema 升到 **v15**
-  （`v12 → v13 → v14 → v15` 三条迁移）。
+  **v34 起**只有碰到防失控轮次上限（内核常量 `RUNAWAY_MAX_ROUNDS`）才落 `paused`，
+  原因两态 `max-rounds` / `aborted`（`budget` 随 token 预算一起退役）。
+  右栏「任务」面板可看进度（第几轮 / token 用量 / 步骤 / 待办）并点「继续」**接着上次的进度跑**
+  （**不重复落盘**那条用户消息）。`agent.loop` 在 v34 收窄成**一项**
+  `maxParallelCalls: 8`（同轮只读工具调用的并发度，超出的排队等位）——
+  早先的 `maxRounds` / `maxTotalTokens` / `autoContinueRounds` 三项已删除，迁移 `v33 → v34`
+  整体丢弃旧值不做映射；**应用重启后 `paused` 的 job 仍在面板里，可直接继续**。
+  （v15 当时：`agent.loop` 三项 = `maxRounds: 8` / `maxTotalTokens: 0`（不限）/
+  `autoContinueRounds: 2`，自动续轮次数**持久化**（重启不会重新获得额度）；配置 Schema 升到 **v15**
+  （`v12 → v13 → v14 → v15` 三条迁移）。）
 - **顺带修掉一处既有竞态**：`SessionStore` 与待办清单端口的「首读竞态」——并发首读会拿到**空快照**，
   随后一次写入把磁盘上的历史**整体覆盖**；改成 **in-flight promise 共享**，并在读回时与在途写入合并。
 - **验证**：`pnpm typecheck` / `pnpm lint` / `pnpm format:check` / `pnpm build` / `pnpm verify` 全绿

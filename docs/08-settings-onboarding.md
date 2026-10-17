@@ -209,11 +209,10 @@
       "maxSnapshotBytes": 524288, // 单个文件超过这个大小就不留底（工具结果里会说明）
       "totalBudgetBytes": 209715200, // 备份目录总预算，超出时从最旧开始删
     },
-    // v15 新增：Agent 循环（见 06 §4.1）。轮次用尽 / 预算触顶时任务落「已暂停」，可续跑
+    // v15 新增、v34 收窄：Agent 循环（见 06 §4.1 / §5）。
+    // 轮次上限与 token 预算已退役（前者回到内核常量 RUNAWAY_MAX_ROUNDS，后者只统计不限制）
     "loop": {
-      "maxRounds": 32, // 1–128；一次请求内最多几轮「工具调用 → 结果回填」（默认 32）
-      "maxTotalTokens": 0, // ≥0；累计 token 预算，0 = 不限，触顶即暂停
-      "autoContinueRounds": 8, // 0–8；轮次用完后自动再续几轮，0 = 不自动续、直接暂停等点「继续」
+      "maxParallelCalls": 8, // 1–32；同一轮里最多同时执行几个只读工具调用，超出的排队等位
     },
     "tools": {
       "enabled": true, // 电脑操控工具总开关；false 时全部工具都不注册
@@ -550,14 +549,17 @@
   **用户可写**（「智能与工具」页调整），**AI 不可写**：`agent.snapshots` 在
   `SETTINGS_READONLY_PREFIXES` 里（与 `agent.permissionMode` 同款），AI 的 `set_setting` 一律拒绝——
   关掉写前备份等于拆掉回滚保险。
-- `agent.loop`（**v15 新增**，见 06 §4.1）：Agent 循环的刹车与油门 ——
-  `maxRounds`（一次请求内最多几轮「工具调用 → 结果回填」，1–128，默认 **32**）、
-  `maxTotalTokens`（累计 token 预算，≥0，**0 = 不限**即默认；触顶时任务暂停而不是静默结束）、
-  `autoContinueRounds`（轮次用完后允许自动再续几轮，0–8，默认 8；**0 = 不自动续**，
-  直接落「已暂停」等用户点「继续」）。
-  三个值都以 **getter** 注入装配层，设置页改完**下一次请求即生效**（v15 之前轮次上限是常量，改配置要重启）。
+- `agent.loop`（**v15 新增、v34 收窄**，见 06 §4.1 / §5）：Agent 循环唯一剩下的旋钮是
+  **`maxParallelCalls`**（同一轮里最多同时执行几个只读工具调用，1–32，默认 **8**；
+  超出的**排队等位**，不丢弃也不改序 —— 所以调小只会变慢，不会断任务）。
+  值以 **getter** 注入装配层，设置页改完**下一次请求即生效**。
+  - **v34 删掉的三项**：`maxRounds`（轮次上限回到内核常量 `RUNAWAY_MAX_ROUNDS = 512`，
+    对齐主流代理"跑到模型自己收敛"的口径，不再是用户会按任务调的量）、
+    `maxTotalTokens`（token **只统计不限制**，用量照常展示）、
+    `autoContinueRounds`（没有"轮次用尽"这个日常事件，就没有"自动续几轮"）。
+    迁移 `v33 → v34` 把三个旧值**整体丢弃**、不做映射 —— 搬进新字段只会造出没人消费的影子配置。
   **用户可写**（「智能与工具 → Agent 循环」里调），**AI 不可写**：`agent.loop` 在
-  `SETTINGS_READONLY_PREFIXES` 里（与 `agent.permissionMode` 同款）—— 让 AI 给自己放大预算，
+  `SETTINGS_READONLY_PREFIXES` 里（与 `agent.permissionMode` 同款）—— 让 AI 给自己放大执行预算，
   等于绕过"该停下来问用户"的那道闸门。
 - `automations`（**v19 新增**，见 docs/13 §2.2 / §11）：**自动化（Agent Mode / Normal Mode）**的
   总开关，整组只有 `enabled` 一个字段（默认 `true`）。**关闭 = 引擎停止评估与触发**，
@@ -687,9 +689,9 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   分类流水 `classification.json`、日志 `logs/`、用户技能 `skills/`。
 - 写入：原子写（临时文件 + rename）+ 写防抖（300ms）；启动时校验 Schema，非法字段回退默认值。
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
-  `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（`maxRounds` / 预算 /
-  自动续轮等）热路径使用，避免每 attempt 深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 32`：
+  `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（v34 起只有
+  `maxParallelCalls` 一项）热路径使用，避免每轮深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 34`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -782,11 +784,16 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   —— 与 `v20 → v21` 的 appearance 同一套路）、
   `v32 → v33`（**流光特效开关**，见 §1 的 `appearance`：为已有 `appearance` 补
   `awarenessGlow: true` 一个缺字段，其余已写值原样保留；`appearance` 整组缺失时补完整默认
-  `{ theme: 'system', accent: 'aurora', glass: true, awarenessGlow: true }` —— 默认即「保持 v33 之前的行为」）。
-  三十三条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
-  方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**），重复执行结果一致 ——
+  `{ theme: 'system', accent: 'aurora', glass: true, awarenessGlow: true }` —— 默认即「保持 v33 之前的行为」）、
+  `v33 → v34`（**Agent 循环三退一**，见 §1 的 `agent.loop` 与 06 §5：删 `maxRounds` /
+  `maxTotalTokens` / `autoContinueRounds`，换成单一 `maxParallelCalls`（默认 8）。
+  旧值**整体丢弃、不做映射**（轮次上限回到内核常量、预算取消），这是本链里第一条**删除字段**的迁移；
+  `agent` 或 `agent.loop` 缺失时**不造对象**，交给默认配置兜底）。
+  三十四条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
+  重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **33** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **34** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -1072,7 +1079,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 | `projects.*`                                                                                  | 常显（否则用户无法添加第一个项目；v13 新增）。`projects.list` 为空时列表区换成 `data-empty="projects.list"` 空状态（「尚未添加项目」），「添加项目」按钮**始终在** |
 | `agent.permissionMode`                                                                        | 常显（权限档位必须随时能改回来；v13 新增）                                                                                                                         |
 | `agent.snapshots.*`                                                                           | 常显（`enabled` 必须随时能改回来；v14 新增）。关掉 `enabled` 时三个数字字段整块换成 `data-empty="agent.snapshots"`                                                 |
-| `agent.loop.*`                                                                                | 常显（**不跟 `agent.tools.enabled` 门控**：它管的是"一次请求怎么停下来"，不是"注册哪些工具"；v15 新增）。三个字段一次到位、没有空态                                |
+| `agent.loop.*`                                                                                | 常显（**不跟 `agent.tools.enabled` 门控**：它管的是"一次请求怎么跑"，不是"注册哪些工具"；v15 新增、v34 收窄为「同轮并行上限」一项）                                |
 | `automations.enabled`                                                                         | 常显（总开关关掉必须还能开回来；v19 新增）。所在区组在「模式」页顶部，**不跟模式门控**                                                                             |
 | `general.requireAdmin`                                                                        | 常显（「常规」页「启动」区组；v20 新增）。被删掉 / 改名时 capture 的 general 页探针立刻报 FAIL                                                                     |
 
@@ -1094,8 +1101,8 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 **具体计数以 `report.json` 的实际条目为准**），关着时只要求总开关自己还在；
 **文件备份区组**（`agent.snapshots.*`，v14 新增）要求"四个字段都在、或给出
 `data-empty="agent.snapshots"`"，且该页 `data-empty` 白名单里要放行它（默认开启时不会出现）。
-**Agent 循环区组**（`agent.loop.*`，v15 新增）要求 `[data-field^="agent.loop."]` 计数 **≥ 3**
-（轮次上限 / token 预算 / 自动续轮三个字段常显，不跟 `agent.tools.enabled` 门控），
+**Agent 循环区组**（`agent.loop.*`，v15 新增、v34 收窄为一项）要求
+`[data-field^="agent.loop."]` 计数 **≥ 1**（`maxParallelCalls` 常显，不跟 `agent.tools.enabled` 门控），
 且**不为它放行任何 `data-empty`**（它没有空态，多一个就说明门控串了）。
 探针结果写 `<目录>/report.json` 并以 `AURORA_SMOKE_RESULT:` 前缀落日志，存在 FAIL 时进程退出码为 2。
 

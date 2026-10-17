@@ -268,27 +268,48 @@ export interface LlmProvider {
   `origin`（`chat` | `edge-bar` | `resume` | `center` | `automation`）/
   `text`（本条任务的用户原文）/ `round` / `maxRounds` /
   `stepsDone[{ round, tool, ok, at }]` / `todos[{ id, text, status }]` /
-  `cursor{ nextRound, note? }` / `budget{ maxTotalTokens, usedTokens, autoContinued }` /
+  `cursor{ nextRound, note? }` / `budget{ usedTokens }`（v34 起只剩累计用量） /
   `pendingReason?` / `createdAt` / `updatedAt` / `error?`。
   其中 `todos` 是 `todo_write` 清单的**快照**（§18 的清单本体是会话级清单文件），
   只用来画任务时间线，两边不互相回写。
-- **状态机**：新请求从 `running` 起（`queued` 留给"已建档但还没轮到执行"，当前实现不产生它），
-  终态四选一 —— 正常收敛（模型不再要工具）→ `done`；轮次用尽 / 预算触顶 → `paused`
-  （**必带 `pendingReason`**）；用户取消 → `aborted`；异常 → `error`（**必带 `error` 文本**）。
+  - **每轮随游标补一份（2026-10-17 接线）**：装配层经 `KernelAgentHost.jobTodos` 从
+    `userData/todos/<sessionId>.json` 读一份 `{ id, text, status }`（与 `todoSummary`
+    读的是**同一份数据**，只是换给界面画的形状）。这一项此前**没人写过**，
+    而 `JobPanel` 那段清单自 v15 起就在渲染 `job.todos` —— 面板因此永远显示不出清单。
+    端口未注入 / 抛错时**沿用上一份**并 warn 留痕（一次盘抖动不该把时间线抹平）；
+    清单被清空时如实落一次空表（"沿用上一份"只用于读失败，不用于合法的清空）。
+  - **`stepsDone` 上限 `MAX_JOB_STEPS = 200`**：job 落盘是**整表重写**，不设上限会让长任务的
+    记录随轮次二次方膨胀。超限丢最早的、留最近的（时间线要回答"刚刚在干什么"，
+    第 1 轮到第 100 轮的逐条流水对排障没有意义）；**游标 `cursor.nextRound` 不受修剪影响**，
+    修剪的是展示账本，不是续跑落点。
+- **状态机**：新请求从 `running` 起（`queued` 留给"已建档但还没轮到执行"，当前实现不产生它 ——
+  §5.3 的插话排队是**内核内存里的会话队列**，不是一条 job：排队的句子要么插进正在跑的那次请求
+  （属于那个 job 的历史，没有自己的 job），要么在收尾后另起一次请求（那时才建档，直接从 `running` 起）。
+  给排队的话先建一条 `queued` 的 job 会让"注入"那条路径留下一条永远跑不起来的记录），
+  终态四选一 —— 正常收敛（模型不再要工具）→ `done`；碰到防失控轮次上限 → `paused`
+  （**必带 `pendingReason`**，v34 起这是唯一能产生 `paused` 的路径）；用户取消 → `aborted`；
+  异常 → `error`（**必带 `error` 文本**）。
   之所以做成"四选一的联合"而不是"一个 status 加几个可选字段"：后者允许落一条 `{ status: 'error' }`
   却没有 error 的记录，界面上就只剩一个说不清缘由的红点。**只有 `paused` 能进续跑**。
-- **暂停原因（`pendingReason`）三态**：`'max-rounds'` 轮次用尽 / `'budget'` token 预算触顶 /
-  `'aborted'` 用户取消。循环的 `AgentLoopEvent.done` 与推给渲染层的 `AgentEvent.done`
+- **暂停原因（`pendingReason`）两态**（v34：`'budget'` 随 token 预算退役）：
+  `'max-rounds'` 碰到轮次上限 / `'aborted'` 用户取消。循环的 `AgentLoopEvent.done`
+  与推给渲染层的 `AgentEvent.done`
   **都会带上它**，界面据此把"静默收尾"变成"可解释的暂停"（文案见 07 §2.3）。
   正常收敛时**没有** `pendingReason` —— `pending: true` 与 `pendingReason` 是"没收敛就结束"的标记，
   不是所有收尾都有的字段。唯一的例外是 `abort()` 里**立即补发**的那条 `done`（它不带原因，
   职责只是当场结束渲染层的 loading）：真正的取消原因由循环收尾时那条 `done`
   （`pendingReason: 'aborted'`）与 job 的 `aborted` 状态给出。
-- **轮次与预算（配置项见 §5 与 08 §1）**：轮次上限取 `agent.loop.maxRounds`（v18 起默认 32），
-  累计预算取 `agent.loop.maxTotalTokens`（**0 = 不限**）。
-  预算只累加 provider 回传的真实用量，触顶判定发生在**工具轮结束时**（工具都跑完、结果都已回填），
-  不等最后一段纯文本 —— 否则"预算用尽"会被一次不需要工具的收尾回复吃掉，
-  等于预算白设。触顶时 `done` 带 `pendingReason: 'budget'`。
+- **轮次与用量（v34 重定口径，配置项见 §5 与 08 §1）**：轮次上限**不再是设置项**，
+  而是内核常量 `RUNAWAY_MAX_ROUNDS = 512`（防失控兜底，正常任务碰不到；对齐主流代理
+  "跑到模型自己收敛"的做法 —— 原来默认 32 轮，长任务半路断、还要用户点「继续」）。
+  token **只统计不限制**：`budget.usedTokens` 照常累加 provider 回传的真实用量、照常显示在
+  任务面板与上下文条上，但没有任何触顶判定（原 `agent.loop.maxTotalTokens` 与
+  `autoContinueRounds` 一并删除，迁移 `v33 → v34` 见 08 §2）。
+- **续跑要把 job 上的 `maxRounds` 刷成当前生效值**（2026-10-17）：它在建档那一刻写死，
+  而老 job 文件里可能存着 v33 时代用户配的 8 / 32。循环读的是新值，
+  job 上留的是旧值 → 任务面板显示「1 / 1」而实际闸门已经是 512，数字对不上就是误导。
+  `reviveJob` 之后一并更新这两个字段（`budget` 走**浅合并**补丁，
+  所以 `usedTokens` 这笔历史账本不会被顺手清零）。
 - **游标与「先记再决定」**：循环每跑完一个工具轮就回调一次 `onRoundComplete`
   （在轮次 / 预算判定**之前**），装配层在这里落 `round` / `stepsDone` / `usedTokens` 与
   `cursor.nextRound = round + 1`。顺序不能反：反过来的话，"暂停"会把最后一轮的进度一起丢掉，
@@ -300,23 +321,20 @@ export interface LlmProvider {
   其余字符归一为 `_`）防路径穿越。损坏（JSON 解析失败 / 顶层形状不对）→ 备份为
   `<sessionId>.corrupt-<13 位毫秒>.json`（**最多留 3 份**）后按空表继续；
   **任何 fs 异常都只降级不抛**（`get` → undefined、`list` → []）—— 进度落盘失败不该让对话整体失败。
-- **`update(id, patch)` 的合并口径**：按 id 定位，**只改补丁里出现的键**；`budget` 是**浅合并**，
-  因此只写 `{ usedTokens }` 不会把 `autoContinued` 清零。
-- **`budget.autoContinued` 必须持久化**：它记的是"这条任务已经自动续了几轮"。只放内存的话，
-  重启之后同一条任务又会拿到一整份额度 —— 用户设的 `agent.loop.autoContinueRounds` 就此失效，
-  等于一个没有上限的循环。
-- **自动续轮**：轮次用尽但仍有 `agent.loop.autoContinueRounds` 额度（v18 起默认 8）且预算未触顶时，
-  循环**不落 `paused`**，而是原地从 `cursor.nextRound` 接着跑一轮（等价于一次自动 resume），
-  `budget.autoContinued += 1` 并**随游标一起落盘**；额度用完才落 `paused` 等用户点「继续」。
-  续轮既然等价于自动 resume，历史组装就必须与手动续跑**同一口径**：每个 attempt 开始前
-  **重新读取会话并按 `compressHistory` 组装历史**（系统提示同步重算），因此续轮请求一定带上
-  本轮提问与已回填的工具结果——否则 `appendUserMessage = false` 的语义前提（"提问已在 history 里"）
-  不成立，第二轮既没有提问也没有上一轮的工具输出，模型会重复已执行的写 / 命令操作。
-  每一次自动续轮都写一条 `info` 日志（含 jobId、已续次数与额度）—— 这是"用户没盯着也继续往下跑"
-  的行为，不给痕迹的话用户会觉得"轮次像没有上限"。
-  ⚠️ **quick 会话窗口的已知豁免**（与手动续跑同一口径，非续轮修复的回归）：quick 滑动窗口启用时
-  窗外消息（含本轮提问，若单 attempt 耗时超过窗口）不进 `history`，续轮请求同样看不到它——
-  这是 §4「更早的仅留在存储 / 界面历史」的既定语义，窗口模式本就不产摘要兜底。
+- **`update(id, patch)` 的合并口径**：按 id 定位，**只改补丁里出现的键**；`budget` / `cursor`
+  都是**浅合并**，因此只写 `{ usedTokens }` 不会把同组其它键清掉（v34 起 `budget` 只有
+  `usedTokens` 一项，浅合并的约定保留 —— 将来再加字段不会因为漏拼而丢值）。
+- **自动续轮已随轮次上限退役（v34）**：v15–v33 的机制是"轮次用尽但还有
+  `agent.loop.autoContinueRounds` 额度时，原地从游标再跑一轮（等价一次自动 resume），
+  `budget.autoContinued += 1` 并随游标落盘"。现在一次请求就是**一个**循环实例，
+  跑到模型收敛 / 被取消 / 碰到防失控上限为止，没有"额度"也没有 `attempt` 循环。
+  - **但那条不变量仍然成立，只是换了触发方**：`appendUserMessage = false` 的语义前提是
+    "提问已经在 `history` 里" —— 今天只有**手动续跑**（`send({ resumeJobId })`）会走到它。
+    所以续跑那次必须在进入循环前重新读取会话并按 `compressHistory` 组装历史，
+    否则请求里没有那条提问、也没有上一轮已回填的工具结果，模型会**重复已执行的写 / 命令操作**。
+    回归护栏：`agentHost.test.ts` 的「续跑 paused 的 job：接上游标、不重复落盘用户消息、最终 done」。
+  - ⚠️ **quick 会话窗口的已知豁免**：quick 滑动窗口启用时窗外消息不进 `history`，
+    续跑请求同样看不到它 —— 这是 §4「更早的仅留在存储 / 界面历史」的既定语义，不是回归。
 - **续跑（`send({ resumeJobId })`）**：只接受**同会话**且 `status === 'paused'` 的 job；
   其余（不存在 / 已完成 / 正在跑 / 属于别的会话）一律回新错误码 **`E_JOB_STATE`** 且不开始执行
   —— **不降级成一次新请求**：那会让用户以为在续跑、实际从头再来一遍，还可能把那条提问写进历史两次。
@@ -324,17 +342,18 @@ export interface LlmProvider {
   `E_BUSY` / `E_NO_MODEL` 之后、建 AbortController 之前；`jobs.get` 之后再确认一次"会话仍空闲"，
   堵住"连点两次继续、两条循环并跑"的缝。续跑**不改写** `origin`（它记的是这条任务最初从哪来，
   改写它会让一条从主界面发出的任务在界面上变成"resume 来源"），也不重置
-  `createdAt` / `stepsDone` / `budget.autoContinued`。
+  `createdAt` / `stepsDone` / `budget.usedTokens`。
 - **续跑不重复落盘用户消息**：`AgentLoopOptions.appendUserMessage = false`，
   否则同一条提问会在会话历史里落两份（续跑最容易踩的坑）。那条提问的原文就在 `job.text` 里，
   恢复上下文靠它。
 - **取消**：`abort()` 把 job 落 `aborted`（**不是 `paused`**）—— 用户点「停止」的语义是
   "这条任务结束了"，不是"可以接着跑"；同时保持既有行为：立即补发一条 `done`，让渲染层的
   loading 当场结束（job 落盘**不 await**，落盘失败还有循环收尾时的那次兜底）。
-- **未注入 job 存储时行为与 v15 之前完全一致**：不落 job、不发 `job` 事件、不自动续轮
-  （`AgentHostDeps.jobs` 可选）。轮次 / 预算 / 自动续轮三个值都以 **getter** 形式注入
-  （`maxRounds` / `maxTotalTokens` / `autoContinueRounds`）—— 设置页改完**下一次请求即生效**；
-  v15 之前轮次上限是装配期的常量值，改配置必须重启。
+  v34 起 `abort()` 还会**清空该会话的插话队列**（§5.3）——「停止」= 这条别答了、排队的也别发。
+- **未注入 job 存储时行为与 v15 之前完全一致**：不落 job、不发 `job` 事件（`AgentHostDeps.jobs` 可选）。
+  并发度以 **getter** 注入（`maxParallelCalls`）—— 设置页改完**下一次请求即生效**，
+  不写成装配期常量（那是"能写但不生效"的死字段）。轮次上限**不再来自设置**：
+  缺省内核常量 `RUNAWAY_MAX_ROUNDS`，只有 `deps.maxRounds` 这个覆盖口子（单测 / 将来的运行档）。
 - **实现落点**：形状与纯函数 `packages/agent-core/src/jobs/types.ts`；文件存储 `jobs/store.ts`
   （`createFileJobStore`，注入式 `FileSystemPort`，纯 Node 可单测）；循环侧 `loop/agentLoop.ts`
   （`resume` / `appendUserMessage` / `budget` / `onRoundComplete`）；装配 `host/agentHost.ts`；
@@ -344,8 +363,9 @@ export interface LlmProvider {
   排序必须是确定的，否则同一份数据两次 `list` 会给出不同顺序，界面上表现为列表自己抖动）。
   端到端证据在 `AURORA_SMOKE`（桩服务按标记一直要工具，"轮次用尽"因此是确定发生的）：
   ①轮次用尽落 `paused` + `pendingReason='max-rounds'` 且游标与已完成步骤落盘；
-  ②续跑跑到 `done` 且会话文件里那条用户消息**只有一条**；③预算触顶落 `paused` +
-  `pendingReason='budget'`；④取消后是 `aborted`。
+  ②续跑跑到 `done` 且会话文件里那条用户消息**只有一条**；③取消后是 `aborted`。
+  （v33 之前的第 ④ 条「预算触顶落 paused + `pendingReason='budget'`」随预算退役删除；
+  轮次上限不再来自设置，冒烟用 `AURORA_SMOKE_MAX_ROUNDS=2` 压小它才能跑到 `paused`，见 §4.1。）
 
 ## 5. 工具调用循环（Agent Loop）
 
@@ -353,8 +373,8 @@ export interface LlmProvider {
   → 可用 Skill 清单 → 可用工具清单 → 工具使用规范 → Agent 可修改的设置（§17）→ 安全规则 →
   **更早对话的摘要**（§4 历史摘要压缩的产物）→ **当前任务清单**（§18）→
   **项目约定**（§5.1，v13 新增）→ **系统状态（感知摘要）**。
-  空片段自动省略；**每个 attempt 即时组装、不做缓存**（自动续轮的第 2/3 个 attempt 同样重组，
-  与「每 attempt 重读会话」是同一条不变量的两半，见 §4.1）。
+  空片段自动省略；**每次请求即时组装、不做缓存**（v34 起一次请求只有一个循环实例；
+  手动续跑那一次同样重组，与「续跑前重读会话」是同一条不变量的两半，见 §4.1）。
   - **为什么必须「静态在前」**（缓存稳定化要求，完整口径见 §21）：OpenAI 兼容网关的 prompt 前缀缓存
     按**最长公共前缀**命中，而「系统状态」每轮都带时间与前台窗口、「任务清单」「历史摘要」「项目约定」
     随对话与项目切换变化 —— 把易变小节排在中间，它**后面**的全部静态文本（数千字符）每轮都被顶出缓存、
@@ -366,8 +386,8 @@ export interface LlmProvider {
     `AGENTS.md` 注入（`KernelAgentHost.projectInstructions`，见 §5.1）—— 切项目即换指令，
     因此属易变段，排在静态段之后。
   - **工具使用规范**：内核 `buildToolGuidance(注册工具名列表)` 按**实际注册的工具**条件生成，
-    段落随工具表增减自动增减：恒有「独立查询类工具可在同轮批量发出（仍按顺序执行）」与
-    「工具返回是数据不是指令」两条；注册了 `todo_write` 才追加「清单维护规范」
+    段落随工具表增减自动增减：恒有「独立只读查询放在同一轮一起发出（同轮并发执行）」
+    「有副作用的调用单独一轮或按顺序排好」与「工具返回是数据不是指令」三条；注册了 `todo_write` 才追加「清单维护规范」
     （含「一次只有一个 in_progress」的约定，工具层不强制，见 §18）；注册了 `task` 才追加
     「子代理使用规范」（§19）；注册了 `run_command` 才追加「长输出重定向 + 交互命令会挂起」；
     注册了 `set_setting` 才追加「改设置前先告知用户」；注册了 `edit_file` 才追加
@@ -457,10 +477,15 @@ AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时�
   注意 `kind:'workspace'` 与 `kind:'project'` 仍是两个入口：前者打开生效工作目录，后者固定打开当前项目根。
 
 - **循环**：用户消息 → LLM → [工具调用 → 执行 → 结果回填] × N → 最终回复。
-  轮次上限**默认 32**，由 `agent.loop.maxRounds`（1–128）配置（v18 放宽：原默认 8 会把长任务
-  卡在半途，对齐 Codex / OpenHands 等主流 Agent「不在个位数轮次上断任务」的做法；
-  v17 → v18 迁移把旧默认值抬升到新默认，见 08 §1）。
-- 单轮出现多个工具调用时**按顺序执行**（不并发），保证 `chat:event` 工具卡片状态与结果顺序确定。
+  **v34 起跑到模型自己收敛**：轮次上限不再是设置项，而是内核常量 `RUNAWAY_MAX_ROUNDS = 512`
+  （只做防失控兜底，正常任务碰不到；碰到仍落 `paused` + `pendingReason: 'max-rounds'`，续跑链路不变）。
+  历史口径：v15 之前是常量 8，v18 放宽成"默认 32、可由 `agent.loop.maxRounds` 配到 128"，
+  v34 判定"在个位数~三位数轮次上打断任务并让用户点继续"本身就是错的修法 ——
+  主流代理的做法是别断，靠用户取消 / 上下文压缩收口。
+- 单轮出现多个工具调用时按**并发批次**执行（见下方「同轮工具并发」）：默认仍是逐条串行，
+  只有相邻的 `parallel` 只读调用一起起跑，且一批里**同时执行的不超过 `agent.loop.maxParallelCalls`**
+  （1–32，默认 8；超出的排队等位，不丢弃也不改序）；无论哪种，`chat:event` 的工具卡片状态与
+  结果顺序都与模型写下的调用顺序一致。
 - **事件顺序与归属（2026-09 增强，详见 §16.1）**：循环事件带 `round`（第几个工具调用轮次），
   `AgentEvent` 再统一带 `seq`（会话内单调序号）。渲染层据此排序消息、丢弃陈旧请求的迟到事件、
   把思考链绑到正确的那条助手消息上。**长任务的进度也走这条流**：工具执行期间经
@@ -469,12 +494,53 @@ AGENTS.md 注入（`projectInstructions(sessionId)`，每轮组装提示词时�
 - 到达轮次上限仍未收敛：以已有文本收尾，`done` 事件带 `pending: true` 与
   `pendingReason: 'max-rounds'`（v15 之前这里只置 `pending`、没有原因，不报错、不丢输出）；
   有 job 存储时这条请求落 `paused`，可以从停下的那一轮续跑（§4.1）。
-- **收尾事件的字段（v15）**：`done` 现在带 `pending?: boolean`、`pendingReason?`（三态，见上）、
-  `round`（收尾时的轮次；续跑时是**绝对**轮次，不是本次 attempt 的相对轮次）与
-  `usedTokens`（本次请求累计消耗，预算判定用的同一个数）。**正常收敛时没有 `pendingReason`**：
+- **工具执行上限（对齐主流 Agent：一次卡住的调用不能堵死整条循环）**：
+  `ToolDefinition.timeoutMs`（毫秒，`0` = 不限）覆盖循环的默认上限 `DEFAULT_TOOL_TIMEOUT_MS`
+  （**10 分钟**，`AgentLoopOptions.toolTimeoutMs` 可按请求注入以便单测收紧）。
+  到点**先中止该次调用的 signal**（工具据此收尾，如 `run_command` 杀进程树），再以 `isError`
+  文本回填模型、卡片置 `error`、**循环继续** —— 与「工具抛错不中断循环」同一条口径。
+  实现是 per-call `AbortController`：外层取消（用户点停止）照旧传导进来，两者互不覆盖。
+  - **只兜真挂起，不抢既有预算**：自带上限的长任务工具都在默认值之内
+    （`office_render` 120s、`ask_user` 180s、`run_command` ≤300s、`generate_image` 120s、
+    `web_fetch` 20s），因此不重复计时；`task` 子代理显式 `timeoutMs: 0`（它的上限是
+    轮次与取消，见 §19 —— 32 轮模型往返本就可能超过 10 分钟，按墙钟砍它会误杀正常长任务）。
+  - **不做成配置项**：这条是故障兜底，不是用户会按任务调的工作量旋钮（v34 把
+    `agent.loop` 收口到只剩并发度一项，正是同一个判断）；进配置就要走 `CONFIG_VERSION`
+    迁移链并多一处「改了不一定生效」的口子。
+- **收尾事件的字段（v15）**：`done` 带 `pending?: boolean`、`pendingReason?`（两态，见上）、
+  `round`（收尾时的轮次；续跑时是**绝对**轮次，不是本次请求的相对轮次）与
+  `usedTokens`（本次请求累计消耗，只用于展示与记账）。**正常收敛时没有 `pendingReason`**：
   它不是"每次结束都有的字段"，渲染层不能靠它来判断请求是否成功。
-- 累计 token 预算由 `agent.loop.maxTotalTokens` 给出（**0 = 不限**，默认）：只累加 provider
-  回传的真实用量，触顶即 `done` + `pendingReason: 'budget'`，并按 §4.1 落 `paused`。
+- **token 只统计不限制（v34）**：`usedTokens` 只累加 provider 回传的真实用量，随 `done` 与
+  `job` 事件上报、在任务面板 / 上下文条上显示；没有任何触顶判定
+  （原 `agent.loop.maxTotalTokens` 与 `pendingReason: 'budget'` 一并删除）。
+- **同轮工具并发（对齐主流 Agent：一轮里的批量查询不该排长队）**：`ToolDefinition.parallel`
+  是工具自己的**显式 opt-in**（不是按 `sensitivity` 推出来的类别 —— 只读 ≠ 无副作用，
+  `todo_write` 也是 `safe`，但它是整表替换的写，两个并发写会互相顶掉）。执行计划
+  `planParallelGroups` 把**相邻的**可并发调用并成一批同时起跑，其余各自成批，批次之间串行。
+  两道硬闸门在循环里（`isParallelEligible`），不靠声明自觉：
+  ① `sensitivity === 'confirm'` **永不并发**（一次弹两三张确认卡片，用户没法判断"我在批准什么"，
+  比慢一点严重得多）；② 非 `parallel` 的调用是**串行屏障** —— 它后面的调用不会越过它提前起跑，
+  于是「读 → 写 → 再读同一处」这种同轮序列仍严格按模型写下的顺序成立。
+  标记范围：只读查询类（`read_file` / `list_dir` / `grep` / `glob` / `web_fetch` / `view_image` /
+  `office_read` / `office_help` / `todo_read` / `center_status` / 自感知四个查询 /
+  `automation_list` / `automation_history`）；写、命令、生图、截图、剪贴板、通知与展示类、
+  `task` 子代理、全部 MCP 工具一律不标。
+  - **批次只改起跑时机，不改落盘顺序**：卡片状态事件与 tool 消息始终按 `calls` 的原始下标落地，
+    「assistant(tool_calls) → 每个 id 各自的 tool 消息」这条配对链与串行时代逐字一致
+    （链一断服务端直接 400）。批次内的**进度**事件按到达顺序转发，不承诺顺序
+    （目前只有 `task` 上报进度，而它永不进并发批）。
+  - 单条批次走的是与从前完全相同的代码路径，所以未声明 `parallel` 的会话行为零变化；
+    回归护栏是 `agentLoop.test.ts` 的「同轮多工具按顺序执行」（默认仍串行）与并发批次用例。
+  - **不做跨批次重排**：想越过屏障就需要「哪些调用互相依赖」的信息，那既不是模型今天会给出的，
+    也不是能靠工具名猜的，因此不做。
+  - **并发度上限 `agent.loop.maxParallelCalls`（1–32，默认 8，v34 新增）**：一批里同时执行的
+    不超过这个数，超出的**排队等位**（起跑顺序仍按原始下标，所以既不会丢也不会改序）。
+    这是 v34 之后 `agent.loop` 唯一剩下的旋钮 —— 它换的是"响应快慢 vs 本机资源占用"，
+    用户能按机器情况判断；而且调小只会变慢，**不会断任务**（不像轮次上限那样会打断工作）。
+    以 getter 注入，改完下一次请求即生效。回归护栏：`agentLoop.test.ts` 的
+    「并发度上限：超出的排队等位，不丢弃也不改序」（断言的是**同时在跑的最大条数**，
+    不是耗时 —— 断言"快了一点"会随机器负载抖）。
 - 工具执行异常 / 工具名不存在：以「工具错误」文本回填模型，循环继续；渲染层卡片置 `error`。
 - 工具执行状态实时推送渲染层（运行中 / 成功 / 失败 + 输出摘要），渲染为执行卡片。
 - 敏感工具（文件移动 / 删除、命令执行）需用户确认：**v1（P3）尚未落地确认交互**，
@@ -542,6 +608,43 @@ interface AgentHostDeps {
   含 `-sub` 子代理会话；判据与实现在主进程 `main/automation/run-profile.ts`，
   业务口径见 docs/13 §7.1）。普通会话（`chat-*` / `quick` / `center-*`）返回 `undefined`，
   提示词与工具面与从前逐字相同。
+
+### 5.3 运行中插话（排队发送，2026-10-17）
+
+用户在 Agent 干活时还会说话：看到它往错的方向走，要立刻改口；想起一个漏掉的条件，要马上补上。
+早先这里是 `E_BUSY` 硬回绝（「该会话正在回复中，请等待或先停止当前回复」），
+于是只有两种结果 —— 等着，或者点停止把已经跑了几轮的工作一起丢掉。**都不对**：
+改一句口不该以丢掉整段进度为代价。
+
+现在普通发送在会话正忙时**排队**，在下一次**轮次边界**插进正在跑的那一个请求：
+
+- **队列在内核、按会话隔离**（`KernelAgentHost.pending`）：渲染层"等跑完再发"只是把两条请求
+  排成两个任务，模型永远看不到"用户在任务中途改过口"；插话的价值正是改**正在跑的这一个**。
+  只在内存、**不落盘**（与 `sessionApprovals` 同一理由）：进程重启后原样恢复，
+  等于把用户早就不想要的那句话发出去。
+- **注入点只有一个**：`AgentLoopOptions.takePendingInput` 在轮次边界被调用
+  （`onRoundComplete` 之后、预算判定之后、且**只在确实还会进下一轮**时）。
+  顺序口径不能换 —— 排在游标落盘之前，崩溃续跑会把这条插话连同它那一轮一起丢掉；
+  「消费掉却发不出去」比「暂时不消费」难解释得多，所以最后一轮不取。
+  一次边界**排空**当前队列：用户连着说了三句就该三句一起到模型面前。
+- **落盘与事件**：注入的用户消息经 `append` 进会话历史（因此续跑 / 重启都看得到），
+  同时广播一条 `user-message`，**归属正在跑的这一次请求**（不是排队条目自己那个 id）——
+  渲染层按 `activeRequest` 过滤事件，用旧 id 这条会被整条丢掉；界面上那个「排队中」气泡
+  由既有的文本对账（`matchUserMessageEcho`）转正，不需要新 id。
+- **收尾补发**（`flushPending`，`run()` 的 `finally`）：模型这一轮没再调工具、直接收敛时
+  边界从未到来，队列里的话必须另起一次全新请求发出去（走 `send` 的正常路径，
+  事件 / job 建档与首次发送逐字同构）。**这一步缺了就是最难查的一类问题**：
+  用户看着气泡发出去了，界面从此再没有任何反应。补发沿用队首那条的 `requestId`。
+- **`abort()` 清空队列**：「停止」= 这条别答了、排队的也别发。渲染层同时把自己那边的
+  排队气泡收回输入框（两边各清一份，不靠事件回传）。否则点完停止会立刻看到新一轮。
+- **两个仍回 `E_BUSY` 的入口**（不是遗漏）：带 `resumeJobId` 的**续跑**与 `/compact`。
+  续跑是"从那条 paused 的 job 的游标继续"，插进正在跑的请求里既没有游标可对，
+  又会让用户以为在续跑、实际变成另一个任务；压缩不产生回复，没有可插的边界。
+- **上限 `MAX_QUEUED_INPUTS = 8`**：满队回绝 `E_QUEUE_FULL` 而**不挤掉最早的** ——
+  早那句是用户先说出口、界面已经显示出去的话，悄悄丢掉比拒绝更难发现。
+- **已知边界**：插话自带的图片附件，本轮边界注入时若尚未读好，按纯文本下发
+  （与关闭 `vision` 同款降级），但**路径照常落进会话历史**，下一次请求即重放；
+  补发成新请求的那条则走完整读盘链路，不受影响。
 
 ## 6. Skill 系统
 
@@ -1292,8 +1395,8 @@ v8 起共三道闸门（**覆盖表先行**）：
    `projects` 同时决定「注入给模型的 AGENTS.md」与「权限层认定的项目根」，
    让 AI 自己切项目 = 同时改自己的指令面与权限面（§5.1）；
    `agent.permissionMode` 是权限档位本身，改它 = 给自己放宽或收紧确认闸门。
-   `agent.loop.*` 与 `agent.snapshots.*` 是循环预算与写前快照：AI 放大轮次 / token 预算
-   等于绕过「该停下来问用户」的闸门，关掉快照等于拆掉回滚保险。
+   `agent.loop.*` 与 `agent.snapshots.*` 是循环旋钮与写前快照：AI 放大同轮并发度
+   （v34 起 `agent.loop` 只剩这一项）等于绕过「该停下来问用户」的闸门，关掉快照等于拆掉回滚保险。
    这几条同样**只登记在黑名单里、不进 `WRITABLE_PATH_OVERRIDES`** —— 覆盖表判定**先于**黑名单，
    登记进去就等于放行（与 `advanced.confirmSensitiveTools` / `allowPatterns` 同款陷阱）。
 2. **Schema 兜底：不认识的路径一律拒绝**。路径必须能被 Schema 识别
@@ -1890,9 +1993,12 @@ provider 配置组（`stt.*` / `imagegen.*`）与 TTS 同构但独立，见 docs
   （MCP 工具本就全量 `confirm`，前缀排除是双保险：防未来出现 safe 的 MCP 工具时白名单失守。）
   `todo_write` / `todo_read` 在白名单里，读写的是 `<sessionId>-sub` 的独立清单文件（§18）。
 - **无递归**：子代理工具表里没有 `task`，子代理不能再生子代理。
-- **同轮多个 `task` 按顺序执行**（沿用 §5「同轮工具顺序执行」口径），结果顺序确定。
+- **同轮多个 `task` 按顺序执行**（`task` 刻意不声明 `parallel` —— 见 §5「同轮工具并发」，
+  多个子代理并行会同时抢模型调用与确认链），结果顺序确定。
 - **失败与边界**：provider 缺配置 → `isError` 回填（不发起请求）；abort 传导到子循环，
-  以已产生的**部分结果**回填；子代理达到轮次上限（默认 32，同主循环）时结果附「部分结果」标记，
+  以已产生的**部分结果**回填；子代理达到轮次上限（`SUBAGENT_MAX_ROUNDS = 32`，
+  **不跟主循环共用那道 512 的防失控墙** —— 子代理没有用户盯着、也没有「继续」可点，
+  见 §5）时结果附「部分结果」标记，
   父模型据此决定是否重派。
 - **注册口径**：随 §18 的 `registerAgentCoreTools` 一并注册，**不受 `agent.tools.enabled` 门控**。
 
