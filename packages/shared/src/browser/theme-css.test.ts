@@ -59,6 +59,28 @@ describe('theme.css 的玻璃降级令牌', () => {
 })
 
 /**
+ * 输入卡浮层的锚点 / 宽度 / 层级是**双端同一份**（2026-10-18，docs/07 §2.3）：
+ * 桌面与 Center Web 的五个浮层都要贴在输入卡上方、同宽、走 `--z-flyout`。
+ * 这里钉住 `.composer-flyout` 的四条声明，防止某一端又写回自己的数字。
+ */
+describe('theme.css 的输入卡浮层契约', () => {
+  const block = blockAfter(/\.composer-flyout \{([\s\S]*?)\}/) ?? ''
+
+  it('规则存在且用共享令牌定位', () => {
+    expect(block, '未找到 .composer-flyout 规则').toBeTruthy()
+    expect(block).toContain('bottom: calc(100% + var(--composer-flyout-gap))')
+    expect(block).toContain('width: var(--composer-flyout-width)')
+    expect(block).toContain('z-index: var(--z-flyout)')
+    expect(block).toContain('max-width: 100%')
+  })
+
+  it('有高度上限并内部滚动，窗口压到最小时不被裁掉', () => {
+    expect(block).toContain('max-height: min(320px, 42dvh)')
+    expect(block).toContain('overflow-y: auto')
+  })
+})
+
+/**
  * 原生 `<select>` 的**弹出列表**由平台主题绘制，`:root` 的 `color-scheme` 管不到它 ——
  * 暗档下会得到「白底 + 继承自控件的弱字色」（用户实测「弹出选项框没有反色」）。
  * `theme.css` 因此显式给 `option` 上主题底色。这里钉住两件事：

@@ -56,7 +56,7 @@ function indexOf(item: SlashItem): number {
 <template>
   <div
     v-if="items.length > 0"
-    class="slash glass-panel"
+    class="slash glass-panel composer-flyout"
     role="listbox"
     data-field="chat.slash-menu"
   >
@@ -112,10 +112,13 @@ function indexOf(item: SlashItem): number {
       </template>
     </div>
     <p class="slash-hint tiny muted">
-      <kbd>↑</kbd><kbd>↓</kbd> 选择 · <kbd>Enter</kbd> 确认{{
-        commands.length > 0 ? '（命令直接执行）' : ''
-      }}
-      · <kbd>Esc</kbd> 关闭
+      <span class="slash-hint-group"><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+      <span class="slash-hint-sep" aria-hidden="true">·</span>
+      <span class="slash-hint-group">
+        <kbd>Enter</kbd> 确认<template v-if="commands.length > 0">（命令直接执行）</template>
+      </span>
+      <span class="slash-hint-sep" aria-hidden="true">·</span>
+      <span class="slash-hint-group"><kbd>Esc</kbd> 关闭</span>
     </p>
   </div>
 </template>
@@ -124,25 +127,23 @@ function indexOf(item: SlashItem): number {
 /*
  * 浮层贴在**输入卡**（`.composer-box`，唯一的定位祖先）上方：
  * 输入框在窗口底部，向下弹没有空间。
- * 三个输入区浮层（斜杠 / 权限 / 上下文详解）共用这套锚点与层级令牌，且由调用方保证互斥
- * —— 它们高度重合，同时开着必然互相遮挡（docs/07 §2.3）。
+ * 2026-10-18：定位 / 宽度 / 层级 / 材质来自共享的 `.composer-flyout`（与权限 / 模型 /
+ * 思考 / 上下文详解**同一份**锚点与 `--composer-flyout-width`，docs/07 §2.3）。
+ * 这里只补一层「卡片内部怎么排」：列表自己滚、键位提示钉在底部（长列表时提示不跟着滚走）。
+ * `overflow: hidden` 覆盖 flyout 的纵向 auto —— 滚动交给内层列表，避免双重滚动条。
  */
 .slash {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + 6px);
-  z-index: var(--z-flyout);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--glass-border);
-  background: var(--glass-panel);
-  box-shadow: var(--shadow-2);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
+/* 列表是唯一的滚动区：高度上限由 `.composer-flyout` 的 max-height 决定，这里只管溢出滚动 */
 .slash-list {
-  max-height: 260px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--space-1);
 }
 
@@ -210,14 +211,28 @@ function indexOf(item: SlashItem): number {
   opacity: 1;
 }
 
+/*
+ * 键位提示：浮层宽度固定为 `--composer-flyout-width`（320px，2026-10-18 起与权限 / 模型 /
+ * 思考 / 上下文同宽），一行放不下时只在**组之间**换行 —— 每一组用 nowrap 包住，
+ * 否则中文会在「命令直接执 / 行」这种词中间断开（视觉上像文本被裁了）。
+ */
 .slash-hint {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: 2px 4px;
   margin: 0;
   padding: 5px var(--space-3);
   border-top: 1px solid var(--border-subtle);
   background: var(--fill-1);
+}
+
+.slash-hint-group,
+.slash-hint-sep {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
 }
 
 .slash-hint kbd {

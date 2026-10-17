@@ -140,6 +140,8 @@ const CHANNELS = {
     cancelJob: 'chat:cancelJob',
     // 附件缩略图（v22 多模态输入，docs/07 §2.3）：与 shared 契约同构，编译期双向断言兜住
     readAttachment: 'chat:readAttachment',
+    // 粘贴图片暂存（2026-10-18，docs/07 §2.3）：写 <userData>/pasted/ 后回路径与预览图
+    stageImage: 'chat:stageImage',
     // 助手消息图片区（show_image / generate_image）：与 shared 契约同构
     readDisplayImage: 'chat:readDisplayImage',
   },

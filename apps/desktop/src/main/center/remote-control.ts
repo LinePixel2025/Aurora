@@ -114,6 +114,9 @@ export function buildClientStatus(
       allowRemoteSession: settings.center.allowRemoteSession,
       allowRemoteConfig: settings.center.allowRemoteConfig,
       allowFileTransfer: settings.center.allowFileTransfer,
+      // 本端支持随远程消息接收图片附件（2026-10-18，docs/12 §5）：网页端据此渲染粘贴入口，
+      // 服务器转发前也按它与 hello 的能力位校验（旧客户端缺省 = 不支持）。
+      inputAttachments: true,
     },
     llm: {
       activeProviderId: settings.llm.active,

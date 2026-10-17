@@ -171,6 +171,8 @@ describe('CenterConnector · 连接状态机', () => {
       session: true,
       remoteConfig: true,
       fileTransfer: true,
+      // 2026-10-18：本端支持远程图片附件（docs/12 §5）
+      inputAttachments: true,
     })
     expect(JSON.parse(socket.sent[1] as string).type).toBe('status')
   })
@@ -322,6 +324,39 @@ describe('CenterConnector · 命令处理', () => {
     })
     socket.emit('message', JSON.stringify({ type: 'ping' }))
     expect(socket.lastMessage()).toEqual({ type: 'pong' })
+  })
+
+  it('session.input：attachments 原样透传给会话桥（docs/12 §5，2026-10-18）', async () => {
+    const harness = makeConnector()
+    const seen: unknown[] = []
+    harness.deps.sessionHandler.handleInput = async (message) => {
+      seen.push(message)
+      return { ok: true, data: { agentRequestId: 'req-c-9' } }
+    }
+    harness.connector.start()
+    vi.advanceTimersByTime(1)
+    const socket = harness.lastSocket()
+    socket.emit('open')
+    socket.emit(
+      'message',
+      JSON.stringify({
+        type: 'cmd',
+        cmd: {
+          kind: 'session.input',
+          requestId: 'c-9',
+          sessionId: 'center-abc',
+          text: '看看这张图',
+          attachments: [{ fileId: 'f-1', name: '截图.png' }],
+        },
+      }),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(seen[0]).toMatchObject({
+      sessionId: 'center-abc',
+      text: '看看这张图',
+      attachments: [{ fileId: 'f-1', name: '截图.png' }],
+    })
   })
 
   it('allowRemoteSession=false：会话命令被本地闸门拒绝（E_REMOTE_DISABLED）', async () => {

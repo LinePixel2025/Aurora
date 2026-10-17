@@ -90,6 +90,8 @@ export interface CenterConnectorDeps {
       requestId: string
       sessionId: string
       text: string
+      /** 随消息下发的图片附件（2026-10-18，docs/12 §5）：服务器已校验归属并补齐 name */
+      attachments?: Array<{ fileId: string; name: string }>
     }): Promise<{ ok: boolean; data?: unknown; error?: string }>
     handleAbort(message: { requestId: string; sessionId: string; agentRequestId: string }): {
       ok: boolean
@@ -481,6 +483,9 @@ export class CenterConnector {
               session: config.allowRemoteSession,
               remoteConfig: config.allowRemoteConfig,
               fileTransfer: config.allowFileTransfer,
+              // 本端支持随 `session.input` 接收图片附件（2026-10-18）：服务器据此决定是否
+              // 转发带附件的命令、网页端据此渲染粘贴入口。缺省（旧客户端）不报 = 不支持。
+              inputAttachments: true,
             },
           },
         }),

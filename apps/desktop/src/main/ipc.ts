@@ -19,15 +19,11 @@ import {
 import { resolveWorkspaceOpenTarget } from './tools/workspace-target.js'
 import { executeFileAwarenessSuggestion } from './file-awareness-execute.js'
 import { buildFileList } from './file-list.js'
-import {
-  buildAttachmentPreview,
-  imageFallbackBlock,
-  splitAttachments,
-  type ImageReadPort,
-} from './attachments.js'
+import { buildAttachmentPreview, type ImageReadPort } from './attachments.js'
+// 附件链路与 Center 远程会话共用一份实现（docs/07 §2.3）：从 ipc.ts 抽出，行为不变。
+import { prepareAttachments, type AttachmentDigest } from './attachment-prepare.js'
+import { PastedImageError, writePastedImage } from './pasted-image.js'
 import { isPathOutsideError, type WorkspaceGuardOptions } from './tools/file-port.js'
-// 图片输入开关的**唯一判据**（docs/06 §3.1 / §25）：附件降级与图像工具门控共用同一份实现。
-import { visionEnabled as resolveVisionEnabled } from './vision.js'
 import {
   assertRestorablePath,
   isRestorePathRejectedError,
@@ -67,6 +63,8 @@ import {
   type ChatSessionModelRequest,
   type ChatSessionProjectRequest,
   type ChatSessionSummary,
+  type ChatStageImageRequest,
+  type ChatStageImageResult,
   type CenterConnectionStatus,
   type CenterDeviceLoginRequest,
   type CenterDeviceLoginStarted,
@@ -147,12 +145,7 @@ import { redactSettings } from './settings-redact.js'
 import { createEventBuffer } from './event-buffer.js'
 import { isFileAwarenessSession } from './file-awareness-run-profile.js'
 
-/** 附件正文入上下文的字符上限（超出截断，避免一个 PDF 吃掉整个上下文预算） */
-const MAX_ATTACHMENT_CHARS = 8_000
-
 /** 快速会话 id（`useChat` 的 `sessionIdFor('quick')` 与 docs/06 §4 同一口径）。 */
-/** 单条消息最多处理的附件数（图文合计；图片分片同样占这个额度） */
-const MAX_ATTACHMENTS = 5
 
 /**
  * 附件缩略图的读盘端口（docs/07 §2.3）。
@@ -264,15 +257,8 @@ export interface DesktopDeps {
   onSettingsChanged?: (settings: Settings) => void
 }
 
-/** 单个附件提取结果（用文件名 + 截断正文入上下文） */
-export interface AttachmentDigest {
-  path: string
-  fileName: string
-  /** 提取到的文本（已截断）；无法提取时为 undefined */
-  text?: string
-  /** 提取失败 / 不支持时的原因（会一并告给模型，避免它假装读过） */
-  note?: string
-}
+/** 附件提取结果（实现与 `chat:send` 共用 `attachment-prepare.ts`；这里保留导出以稳定消费方）。 */
+export type { AttachmentDigest }
 
 /**
  * ClassIsland 控制器（`ClassIslandControllerLike` + v3 的提醒通道）。
@@ -772,6 +758,42 @@ export function registerIpc(deps: DesktopDeps): () => void {
         )
     },
   )
+  /**
+   * 粘贴图片暂存（`chat:stageImage`，2026-10-18，docs/07 §2.3）：paste 拿到的 `File`
+   * 没有本地路径，主进程写进 `<userData>/pasted/` 后回路径 + 96px 预览图 ——
+   * 之后与拖拽进来的图片走完全相同的附件链路（`chat:readAttachment` / `chat:send`）。
+   *
+   * 渲染层传来的 mime / 大小一律不可信：白名单、空内容、8 MiB 上限都在
+   * `pasted-image.ts` 里再判一次；失败按 `Result.code` 如实回，不写半个文件。
+   */
+  handle<ChatStageImageResult>(IPC.chat.stageImage, async (request: ChatStageImageRequest) => {
+    const mimeType = typeof request?.mimeType === 'string' ? request.mimeType : ''
+    const raw = (request as { data?: unknown } | undefined)?.data
+    const bytes =
+      raw instanceof ArrayBuffer
+        ? Buffer.from(raw)
+        : ArrayBuffer.isView(raw)
+          ? Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength)
+          : undefined
+    if (bytes === undefined) return err('E_INVALID_ARGUMENT', '缺少图片数据')
+    try {
+      const staged = await writePastedImage({
+        dir: join(deps.paths.userData, 'pasted'),
+        mimeType,
+        data: bytes,
+        logger: deps.logger,
+      })
+      const previewDataUrl = buildPastedPreview(bytes, staged.mimeType)
+      return ok({
+        path: staged.path,
+        name: staged.name,
+        ...(previewDataUrl === undefined ? {} : { previewDataUrl }),
+      })
+    } catch (error) {
+      if (error instanceof PastedImageError) return err(error.code, error.message)
+      return err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
+    }
+  })
   handle<boolean>(IPC.chat.abort, (requestId: string) => ok(deps.agent.abort(requestId)))
   handle<ChatMessageDto[]>(IPC.chat.history, (request: ChatHistoryRequest) => {
     const sessionId = typeof request?.sessionId === 'string' ? request.sessionId : ''
@@ -1416,114 +1438,47 @@ function shrinkDisplayImage(
   }
 }
 
+/** 粘贴图片预览图的长边（像素；`chat:stageImage` 随结果回传的那张）。 */
+const PASTED_PREVIEW_MAX_DIMENSION = 96
+
+/**
+ * 粘贴图片的 96px 预览（`chat:stageImage`，2026-10-18）。
+ *
+ * 粘贴图可能超过 `PREVIEW_MAX_BYTES`（2 MiB），此时 `chat:readAttachment` 拿不到缩略图；
+ * 这里在落盘时顺手缩一张随结果回传，保证「粘贴进去就看得见」。
+ * 解码 / 缩放失败一律返回 `undefined`（结果里省略该字段）—— 预览只是锦上添花，
+ * 不能因为某个格式 `nativeImage` 解不开就让整次粘贴失败。
+ */
+function buildPastedPreview(bytes: Buffer, mimeType: string): string | undefined {
+  try {
+    let image = nativeImage.createFromBuffer(bytes)
+    if (image.isEmpty()) {
+      image = nativeImage.createFromDataURL(`data:${mimeType};base64,${bytes.toString('base64')}`)
+    }
+    if (image.isEmpty()) return undefined
+    const size = image.getSize()
+    const longest = Math.max(size.width, size.height)
+    if (longest === 0) return undefined
+    const scale = Math.min(1, PASTED_PREVIEW_MAX_DIMENSION / longest)
+    if (scale >= 1) return image.toDataURL()
+    return image
+      .resize({
+        width: Math.max(1, Math.round(size.width * scale)),
+        height: Math.max(1, Math.round(size.height * scale)),
+        quality: 'good',
+      })
+      .toDataURL()
+  } catch {
+    return undefined
+  }
+}
+
 /** 广播到所有可见窗口（渲染层按需过滤）。 */
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue
     win.webContents.send(channel, payload)
   }
-}
-
-/**
- * 把附件整理成「本轮要额外给模型看的内容」（docs/07 §2.3、docs/06 §3.1）。
- *
- * 分流规则：图片（`png / jpg / jpeg / webp / gif / bmp`）**不提取文本**，而是作为图片分片下发；
- * 其余文件走分类管线的 `extract.ts` 提取文本。两类可以同时存在于一轮消息里。
- *
- * 降级策略（一律**不阻断发送**）：
- * - 关闭了图片输入（当前模型的 `modelParams.<modelId>.vision` 为假）→ 图片写成一行「未读取」说明，
- *   请求体里不出现图片分片（对不支持视觉的模型发图片会被服务端 400）；
- * - 无法提取的文档 → 同样如实写明「内容未读取」，避免模型以为读过而编造。
- *
- * 返回的 `images` 是**路径**（读盘在内核的 `loadImages` 端口里发生，一处读、一处缓存），
- * 只有真正要下发时才是非空。
- */
-async function prepareAttachments(
-  deps: DesktopDeps,
-  attachments: string[] | undefined,
-): Promise<{ extraContext?: string; images: string[] }> {
-  if (attachments === undefined || attachments.length === 0) return { images: [] }
-
-  const targets = attachments.slice(0, MAX_ATTACHMENTS)
-  if (attachments.length > MAX_ATTACHMENTS) {
-    deps.logger.warn('附件数量超过上限，多余的已忽略', {
-      provided: attachments.length,
-      limit: MAX_ATTACHMENTS,
-    })
-  }
-
-  const { images, documents } = splitAttachments(targets)
-  const blocks: string[] = []
-
-  // 图片：能力开关决定「下发」还是「降级成一行说明」
-  const vision = visionEnabled(deps)
-  for (const path of images) {
-    if (!vision) {
-      blocks.push(imageFallbackBlock(fileNameOf(path), '当前模型未开启图片输入'))
-    }
-  }
-
-  // 文档：沿用既有提取链（officeparser / 纯文本读取器）
-  const extract = deps.attachmentExtract
-  if (documents.length > 0 && extract === undefined) {
-    // 未装配提取能力（例如精简场景）：如实说明，不静默假装附件存在
-    blocks.push(`【附件】${documents.length} 个文件未读取内容（当前环境未启用附件解析）`)
-  } else if (extract !== undefined) {
-    for (const path of documents) {
-      try {
-        const digest = await extract(path)
-        if (digest === undefined) {
-          blocks.push(`【附件】${fileNameOf(path)}：内容未读取（不支持的格式）`)
-          continue
-        }
-        if (digest.text === undefined || digest.text.trim() === '') {
-          blocks.push(
-            `【附件】${digest.fileName}：内容未读取${digest.note === undefined ? '' : `（${digest.note}）`}`,
-          )
-          continue
-        }
-        blocks.push(
-          [
-            `【附件】${digest.fileName}`,
-            digest.text.length > MAX_ATTACHMENT_CHARS
-              ? `${digest.text.slice(0, MAX_ATTACHMENT_CHARS)}\n（内容过长，已截断）`
-              : digest.text,
-          ].join('\n'),
-        )
-      } catch (error) {
-        deps.logger.warn('附件提取失败，按未读取处理', { path, error: String(error) })
-        blocks.push(`【附件】${fileNameOf(path)}：内容未读取（提取失败）`)
-      }
-    }
-  }
-
-  return {
-    ...(blocks.length === 0
-      ? {}
-      : {
-          extraContext: [
-            '以下是用户随消息一起发送的本地文件内容，仅供本次回复参考。',
-            ...blocks,
-          ].join('\n\n'),
-        }),
-    images: vision ? images : [],
-  }
-}
-
-/**
- * 当前默认 provider 的**当前生效模型**是否开了**图片输入**（docs/06 §3.1）。
- *
- * 判据只有一处，实现搬到了 `main/vision.ts`：图像工具的门控（`tools/index.ts` 的
- * `registerImageTools`）用的是**同一个函数**，两边不会漂移。
- */
-function visionEnabled(deps: DesktopDeps): boolean {
-  return deps.visionEnabled?.() ?? resolveVisionEnabled(deps.settings.get())
-}
-
-/** 从绝对路径取文件名（渲染层传来的路径可能含 Windows 反斜杠） */
-function fileNameOf(path: string): string {
-  const segments = path.split(/[\\/]/)
-  return segments[segments.length - 1] ?? path
 }
 
 // ───────────────────────── 辅助 ─────────────────────────

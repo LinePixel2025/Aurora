@@ -6474,13 +6474,25 @@ export const CHAT_COMPOSER_NARROW_CHECK = `(async () => {
     }
     const insideCard =
       box !== null && entries.every(([, r]) => r !== null && r.left >= box.left - 1 && r.right <= box.right + 1)
-    // 下限与 CSS 里的 min-width 同口径（docs/07 §2.3）：权限 = flex: 0 0 auto（不收缩）
-    const floors = { permission: 51, source: 68, model: 68, effort: 56, send: 30 }
+    // 下限与 CSS 同口径（docs/07 §2.3，2026-10-18 自绘芯片后）：权限不参与收缩；
+    // 来源 / 模型 / 思考在容器 <=430px 时只留图标 + 箭头（约 45px），发送键 30px 不收缩。
+    const floors = { permission: 51, source: 40, model: 40, effort: 40, send: 30 }
     const tooNarrow = entries.filter(([key, r]) => r !== null && r.width < floors[key] - 0.5).map(([key]) => key)
     const missing = entries.filter(([, r]) => r === null).map(([key]) => key)
     // 权限档位文案必须完整：它不参与收缩，被截断说明又回到「把自己压没」的老路
     const permEl = pick('[data-field="chat.permission"]')
     const permLabelFull = permEl !== null && permEl.scrollWidth <= permEl.clientWidth + 1
+    // 四枚触发器自己也不能把字画到按钮外（窄宽下标签隐藏，读数应为 scrollWidth <= clientWidth）
+    const clipped = []
+    for (const [key, selector] of [
+      ['permission', '[data-field="chat.permission"]'],
+      ['source', '[data-field="chat.modelSource"]'],
+      ['model', '[data-field="chat.model"]'],
+      ['effort', '[data-field="chat.reasoningEffort"]'],
+    ]) {
+      const el = pick(selector)
+      if (el !== null && el.scrollWidth > el.clientWidth + 1) clipped.push(key)
+    }
     const compressed = mainWidth > 0 && mainWidth <= 440
     const resizer = pick('[data-field="chat.nav-resizer"]')
     if (resizer !== null) resizer.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
@@ -6495,6 +6507,7 @@ export const CHAT_COMPOSER_NARROW_CHECK = `(async () => {
       noOverlap: overlaps === 0,
       floorsKept: tooNarrow.length === 0,
       permLabelFull: permLabelFull,
+      noTextClip: clipped.length === 0,
       /** 收尾复位：后续场景读到的仍是默认栏宽 */
       navRestored: mainAfter > mainWidth,
     }
@@ -6507,6 +6520,7 @@ export const CHAT_COMPOSER_NARROW_CHECK = `(async () => {
       overlaps: overlaps,
       pairs: pairs,
       tooNarrow: tooNarrow,
+      clipped: clipped,
       missing: missing,
       pass: Object.keys(conditions).every((key) => conditions[key] === true),
     }
@@ -6538,11 +6552,20 @@ export const CHAT_COMPOSER_NARROW_CHECK = `(async () => {
 export const CHAT_COMPOSER_FLYOUTS_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
-    const KEYS = ['slash', 'permission', 'context']
+    const KEYS = ['slash', 'permission', 'model', 'effort', 'context']
     const SELECTORS = {
       slash: '[data-field="chat.slash-menu"]',
       permission: '[data-field="chat.permission-menu"]',
+      model: '[data-field="chat.model-menu"]',
+      effort: '[data-field="chat.effort-menu"]',
       context: '[data-field="chat.context-detail"]',
+    }
+    // 浮层横向应贴住触发它的按钮（2026-10-18 用户口径：不要固定 left: 0）
+    const TRIGGERS = {
+      permission: '[data-field="chat.permission"]',
+      model: '[data-field="chat.model"]',
+      effort: '[data-field="chat.reasoningEffort"]',
+      context: '[data-field="chat.context"]',
     }
     const round = (value) => Math.round(value * 10) / 10
     const rectOf = (el) => {
@@ -6577,10 +6600,16 @@ export const CHAT_COMPOSER_FLYOUTS_ACT = `(async () => {
       }
       const bar = document.querySelector('.composer-bar')
       const box = document.querySelector('.composer-box')
+      const triggers = {}
+      for (const [key, selector] of Object.entries(TRIGGERS)) {
+        const el = document.querySelector(selector)
+        triggers[key] = el === null ? null : rectOf(el)
+      }
       return {
         visible,
         visibleCount: visible.length,
         items,
+        triggers,
         barRect: bar === null ? null : rectOf(bar),
         boxRect: box === null ? null : rectOf(box),
       }
@@ -6666,8 +6695,51 @@ export const CHAT_COMPOSER_FLYOUTS_ACT = `(async () => {
     button.click()
     await settle(SELECTORS.permission, 12)
     const permissionMoment = moment()
-    window.__auroraFlyoutProbe = { slash: slashMoment, permission: permissionMoment }
-    return { ready: true, skillItems: skills, slash: slashMoment, permission: permissionMoment }
+
+    // 2026-10-18 新增：模型 / 思考等级也走同一套 .composer-flyout。无 provider 时触发器 disabled，
+    // 这一档如实跳过（形状由 theme-css 测试与 actual DOM class 兜底），有 provider 时必须量到。
+    const openOne = async (triggerSelector, menuSelector) => {
+      const trigger = document.querySelector(triggerSelector)
+      if (trigger === null || trigger.disabled === true) return false
+      if (trigger.getAttribute('aria-expanded') !== 'true') trigger.click()
+      await settle(menuSelector, 12)
+      return document.querySelector(menuSelector) !== null
+    }
+    const modelOpen = await openOne('[data-field="chat.model"]', '[data-field="chat.model-menu"]')
+    const modelMoment = modelOpen ? moment() : null
+    const effortOpen = await openOne(
+      '[data-field="chat.reasoningEffort"]',
+      '[data-field="chat.effort-menu"]',
+    )
+    const effortMoment = effortOpen ? moment() : null
+
+    // 截图现场停在权限浮层：点权限钮会挤掉上下文 / 模型 / 思考中的任意一个（openFlyout 单值）。
+    // ⚠️ 无 provider 时模型/思考触发器 disabled，上面两步都没打开任何浮层 —— 此时权限仍是开的，
+    // 再点一次会把它关掉、斜杠浮层重新冒出来（第一跑实测就拍成了斜杠）。所以只在没开时才点。
+    const permissionAgain = document.querySelector('[data-field="chat.permission"]')
+    if (
+      permissionAgain !== null &&
+      permissionAgain.getAttribute('aria-expanded') !== 'true'
+    ) {
+      permissionAgain.click()
+    }
+    await settle(SELECTORS.permission, 12)
+    const permissionFinal = moment()
+    window.__auroraFlyoutProbe = {
+      slash: slashMoment,
+      permission: permissionMoment,
+      model: modelMoment,
+      effort: effortMoment,
+      permissionFinal: permissionFinal,
+    }
+    return {
+      ready: true,
+      skillItems: skills,
+      slash: slashMoment,
+      permission: permissionMoment,
+      modelOpen: modelOpen,
+      effortOpen: effortOpen,
+    }
   } catch (error) {
     return { ready: false, reason: String(error) }
   }
@@ -6700,11 +6772,20 @@ export const CHAT_COMPOSER_FLYOUTS_ACT = `(async () => {
 export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
-    const KEYS = ['slash', 'permission', 'context']
+    const KEYS = ['slash', 'permission', 'model', 'effort', 'context']
     const SELECTORS = {
       slash: '[data-field="chat.slash-menu"]',
       permission: '[data-field="chat.permission-menu"]',
+      model: '[data-field="chat.model-menu"]',
+      effort: '[data-field="chat.effort-menu"]',
       context: '[data-field="chat.context-detail"]',
+    }
+    // 浮层横向应贴住触发它的按钮（2026-10-18 用户口径：不要固定 left: 0）
+    const TRIGGERS = {
+      permission: '[data-field="chat.permission"]',
+      model: '[data-field="chat.model"]',
+      effort: '[data-field="chat.reasoningEffort"]',
+      context: '[data-field="chat.context"]',
     }
     const round = (value) => Math.round(value * 10) / 10
     const rectOf = (el) => {
@@ -6739,10 +6820,16 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
       }
       const bar = document.querySelector('.composer-bar')
       const box = document.querySelector('.composer-box')
+      const triggers = {}
+      for (const [key, selector] of Object.entries(TRIGGERS)) {
+        const el = document.querySelector(selector)
+        triggers[key] = el === null ? null : rectOf(el)
+      }
       return {
         visible,
         visibleCount: visible.length,
         items,
+        triggers,
         barRect: bar === null ? null : rectOf(bar),
         boxRect: box === null ? null : rectOf(box),
       }
@@ -6783,10 +6870,20 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
       const rows = []
       for (const key of moment.visible) {
         const rect = moment.items[key].rect
+        const trigger = moment.triggers === undefined ? null : moment.triggers[key]
+        const expectedLeft =
+          trigger === null || trigger === undefined || moment.boxRect === null
+            ? null
+            : Math.min(trigger.left, moment.boxRect.left + moment.boxRect.width - rect.width)
         rows.push({
           key: key,
           zIndex: moment.items[key].zIndex,
           rect: rect,
+          triggerLeft: trigger === null || trigger === undefined ? null : trigger.left,
+          expectedLeft: expectedLeft,
+          // 浮层左缘贴住触发按钮；靠右时按「卡右缘 - 浮层宽」夹取
+          triggerAligned:
+            expectedLeft === null || Math.abs(rect.left - expectedLeft) <= 1.5,
           barClear: intersects(rect, moment.barRect) === false,
           aboveComposerBox: moment.boxRect !== null && rect.bottom <= moment.boxRect.top + 1,
         })
@@ -6799,6 +6896,7 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
         rows: rows,
         barClear: rows.every((row) => row.barClear === true),
         aboveComposerBox: rows.every((row) => row.aboveComposerBox === true),
+        triggerAligned: rows.every((row) => row.triggerAligned === true),
         hit: moment.hit,
       }
     }
@@ -6900,16 +6998,47 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
     const audits = [
       audit('slash-open(act)', probe.slash),
       audit('permission-open(act)', probe.permission),
-      audit('permission-open(now)', permissionNow),
-      audit('context-open(check)', contextMoment),
     ]
+    if (probe.model !== null && probe.model !== undefined) {
+      audits.push(audit('model-open(act)', probe.model))
+    }
+    if (probe.effort !== null && probe.effort !== undefined) {
+      audits.push(audit('effort-open(act)', probe.effort))
+    }
+    audits.push(audit('permission-final(act)', probe.permissionFinal))
+    audits.push(audit('permission-open(now)', permissionNow))
+    audits.push(audit('context-open(check)', contextMoment))
     const oneAtMost = audits.every((row) => row.visibleCount <= 1)
     const mutual =
       audits[0].visible.indexOf('slash') !== -1 &&
-      audits[2].visible.indexOf('permission') !== -1 &&
-      audits[2].visible.indexOf('slash') === -1 &&
-      audits[3].visible.indexOf('context') !== -1 &&
-      audits[3].visible.indexOf('permission') === -1
+      audits[1].visible.indexOf('permission') !== -1 &&
+      audits[1].visible.indexOf('slash') === -1 &&
+      audits[audits.length - 1].visible.indexOf('context') !== -1 &&
+      audits[audits.length - 1].visible.indexOf('permission') === -1
+    // 2026-10-18：五个浮层必须同锚点 / 同宽 —— 这是「都对齐权限弹窗」的几何判据。
+    // 只在真的量到可见浮层时比（无 provider 时 model/effort 触发器 disabled，如实跳过）。
+    const geometryRows = audits.flatMap((row) => row.rows)
+    const baseRect = geometryRows.length === 0 ? null : geometryRows[0].rect
+    const sameAnchor =
+      baseRect !== null &&
+      geometryRows.every((row) => Math.abs(row.rect.bottom - baseRect.bottom) <= 1)
+    // 2026-10-18 用户口径：浮层横向贴住自己的触发按钮，不再固定 left: 0。
+    const triggerAligned = audits.every((row) => row.triggerAligned === true)
+    const sameWidth =
+      baseRect !== null &&
+      geometryRows.every((row) => Math.abs(row.rect.width - baseRect.width) <= 1)
+    const modelVisibleOk =
+      probe.model === null ||
+      probe.model === undefined ||
+      audits.some(
+        (row) => row.moment === 'model-open(act)' && row.visible.indexOf('model') !== -1,
+      )
+    const effortVisibleOk =
+      probe.effort === null ||
+      probe.effort === undefined ||
+      audits.some(
+        (row) => row.moment === 'effort-open(act)' && row.visible.indexOf('effort') !== -1,
+      )
     const barClear = audits.every((row) => row.barClear === true)
     const aboveComposerBox = audits.every((row) => row.aboveComposerBox === true)
     const sendClickable = audits.every(
@@ -6920,6 +7049,10 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
       audits,
       oneAtMost,
       mutual,
+      sameAnchor,
+      sameWidth,
+      triggerAligned,
+      flyoutCount: geometryRows.length,
       barClear,
       aboveComposerBox,
       sendClickable,
@@ -6934,12 +7067,149 @@ export const CHAT_COMPOSER_FLYOUTS_CHECK = `(async () => {
       pass:
         oneAtMost &&
         mutual &&
+        modelVisibleOk &&
+        effortVisibleOk &&
+        sameAnchor &&
+        sameWidth &&
+        triggerAligned &&
         barClear &&
         aboveComposerBox &&
         sendClickable &&
         cleared === true &&
         // 详解卡只留三行（输入 / 上下文窗口 / 模型）+ 一句说明
         detailShape === true,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 输入卡粘贴图片（2026-10-18，docs/07 §2.3）· 前半。
+ *
+ * 为什么用合成 `ClipboardEvent`：本机 Electron 44 的 `clipboard` 已改成异步
+ * `read()/write(ClipboardItem[])`，不再提供 `writeImage`；而本场景真正要验证的是
+ * **渲染层 paste 处理器 → chat:stageImage 落盘 → 缩略图回填** 这条链，合成事件同样会
+ * 走 `onComposerPaste`（`event.clipboardData.files` 由 `DataTransfer` 提供），
+ * 不会因为绕开 OS 剪贴板而漏掉应用代码。先清掉已有附件再粘贴，避免前面场景残留把计数弄成 >1。
+ */
+const PASTE_TEST_PNG =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+
+export async function chatComposerPasteMainAct(
+  win: BrowserWindow,
+): Promise<{ pass: boolean; thumbnails: number; reason?: string }> {
+  try {
+    await win.webContents.executeJavaScript(
+      'for (const b of document.querySelectorAll(\'[data-field="chat.attachment-remove"]\')) b.click();',
+      true,
+    )
+    // 先聚焦输入框，确保 paste 事件落在 textarea 的监听上
+    await win.webContents.executeJavaScript(
+      "const el = document.querySelector('.composer-input'); if (el) { el.focus(); }",
+      true,
+    )
+    const pngBase64 = PASTE_TEST_PNG.split(',')[1] || ''
+    await win.webContents.executeJavaScript(
+      `(() => {
+        const input = document.querySelector('.composer-input')
+        if (input === null) return false
+        const binary = atob(${JSON.stringify(pngBase64)})
+        const bytes = new Uint8Array(binary.length)
+        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+        const file = new File([bytes], 'capture-paste.png', { type: 'image/png' })
+        const transfer = new DataTransfer()
+        transfer.items.add(file)
+        input.dispatchEvent(
+          new ClipboardEvent('paste', {
+            clipboardData: transfer,
+            bubbles: true,
+            cancelable: true,
+          }),
+        )
+        return true
+      })()`,
+      true,
+    )
+    let thumbnails = 0
+    for (let attempt = 0; attempt < 40 && thumbnails === 0; attempt += 1) {
+      thumbnails = (await win.webContents.executeJavaScript(
+        'document.querySelectorAll(\'[data-field="chat.attachment-thumb"]\').length',
+        true,
+      )) as number
+      if (thumbnails === 0) await wait(100)
+    }
+    return {
+      pass: thumbnails === 1,
+      thumbnails,
+      ...(thumbnails === 1 ? {} : { reason: '粘贴后没有出现 1 张附件缩略图' }),
+    }
+  } catch (error) {
+    return { pass: false, thumbnails: 0, reason: String(error) }
+  }
+}
+
+/**
+ * 粘贴图片探针 · 后半：缩略图必须在 textarea **上方**、卡片内部，且移除按钮真的能删掉。
+ * 只量矩形，不量存在：一张 `src` 为空的 `<img>` 或一个被浮层盖住的缩略图都不算数。
+ */
+export const CHAT_COMPOSER_PASTE_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const round = (value) => Math.round(value * 10) / 10
+    const rectOf = (el) => {
+      const rect = el.getBoundingClientRect()
+      return { top: round(rect.top), bottom: round(rect.bottom), left: round(rect.left), right: round(rect.right) }
+    }
+    const card = document.querySelector('.composer-box')
+    const input = document.querySelector('.composer-input')
+    const thumb = document.querySelector('[data-field="chat.attachment-thumb"]')
+    const remove = document.querySelector('[data-field="chat.attachment-remove"]')
+    const before = document.querySelectorAll('[data-field="chat.attachment"]').length
+    if (card === null || input === null || thumb === null || remove === null) {
+      return {
+        pass: false,
+        reason: '缺少 .composer-box / .composer-input / 缩略图 / 移除按钮',
+        attachments: before,
+      }
+    }
+    const cardRect = rectOf(card)
+    const inputRect = rectOf(input)
+    const thumbRect = rectOf(thumb)
+    const thumbAboveInput = thumbRect.bottom <= inputRect.top + 1
+    const thumbInsideCard =
+      thumbRect.top >= cardRect.top - 1 &&
+      thumbRect.bottom <= cardRect.bottom + 1 &&
+      thumbRect.left >= cardRect.left - 1 &&
+      thumbRect.right <= cardRect.right + 1
+    const src = thumb.getAttribute('src') || ''
+    const thumbIsDataUrl = src.indexOf('data:image/') === 0
+    const removeRect = remove.getBoundingClientRect()
+    const hit = document.elementFromPoint(
+      removeRect.left + removeRect.width / 2,
+      removeRect.top + removeRect.height / 2,
+    )
+    const removeClickable = hit === remove || (hit !== null && remove.contains(hit))
+    remove.click()
+    await wait(300)
+    const after = document.querySelectorAll('[data-field="chat.attachment"]').length
+    return {
+      attachments: before,
+      thumbAboveInput,
+      thumbInsideCard,
+      thumbIsDataUrl,
+      removeClickable,
+      removed: after === 0,
+      thumbRect,
+      inputRect,
+      cardRect,
+      pass:
+        before === 1 &&
+        thumbAboveInput &&
+        thumbInsideCard &&
+        thumbIsDataUrl &&
+        removeClickable &&
+        after === 0,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -9857,28 +10127,45 @@ export const CHAT_THINKING_LEVEL_ACT = `(async () => {
       before: beforeParams === null ? null : beforeParams.reasoningEffort || 'auto',
     }
 
-    // 轮询等控件可用：它的 disabled 取决于**渲染层 settingsStore 是否已水合**（不是配置本身），
-    // 而 disabled 元素上的 change 事件不冒泡 → setEffort 根本不执行 → 探针会假 FAIL。
-    // 最多等 2.5s，仍不可用就如实报错（不静默、不假装改过）。本段在模板字符串里，注释不能带反引号。
-    let select = null
-    for (let attempt = 0; attempt < 10 && select === null; attempt += 1) {
-      const field = document.querySelector('[data-field="chat.reasoningEffort"]')
-      const candidate =
-        field === null ? null : field.tagName === 'SELECT' ? field : field.querySelector('select')
+    // 轮询等触发器可用：它的 disabled 取决于**渲染层 settingsStore 是否已水合**（不是配置本身），
+    // 而 disabled 元素上的 click 不触发处理函数 → 探针会假 FAIL。最多等 2.5s。
+    // 2026-10-18：思考等级从原生 select 改成自绘浮层（触发器 + chat.effort-menu），
+    // 这里走真实点击链路：点触发器 → 等 chat.effort-high 选项 → 点它。
+    let trigger = null
+    for (let attempt = 0; attempt < 10 && trigger === null; attempt += 1) {
+      const candidate = document.querySelector('[data-field="chat.reasoningEffort"]')
       if (candidate !== null && candidate.disabled !== true) {
-        select = candidate
+        trigger = candidate
       } else {
         await new Promise((resolve) => setTimeout(resolve, 250))
       }
     }
-    if (select === null) {
-      return { changed: false, reason: 'chat.reasoningEffort 下拉始终不可用（settingsStore 未水合？）' }
+    if (trigger === null) {
+      return { changed: false, reason: 'chat.reasoningEffort 触发器始终不可用（settingsStore 未水合？）' }
     }
 
-    select.value = 'high'
-    select.dispatchEvent(new Event('change', { bubbles: true }))
+    trigger.click()
+    let highOption = null
+    let optionCount = 0
+    for (let attempt = 0; attempt < 12 && highOption === null; attempt += 1) {
+      const menu = document.querySelector('[data-field="chat.effort-menu"]')
+      optionCount = menu === null ? 0 : menu.querySelectorAll('[data-level]').length
+      const candidate = document.querySelector('[data-field="chat.effort-high"]')
+      if (candidate !== null) highOption = candidate
+      else await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    if (highOption === null) {
+      return { changed: false, reason: 'chat.effort-high 选项没有出现（浮层未打开？）' }
+    }
+    highOption.click()
+    window.__auroraEffortProbe.options = optionCount
     await new Promise((resolve) => setTimeout(resolve, 600))
-    return { changed: true, options: select.options.length, disabled: select.disabled === true }
+    return {
+      changed: true,
+      options: optionCount,
+      triggerText: (trigger.textContent || '').trim(),
+      disabled: trigger.disabled === true,
+    }
   } catch (error) {
     return { changed: false, reason: String(error) }
   }
@@ -9919,10 +10206,12 @@ export const CHAT_THINKING_LEVEL_CHECK = `(async () => {
     const configValue = configParams === null ? null : configParams.reasoningEffort || 'auto'
 
     const field = document.querySelector('[data-field="chat.reasoningEffort"]')
-    const select =
-      field === null ? null : field.tagName === 'SELECT' ? field : field.querySelector('select')
-    const domValue = select === null ? null : select.value
-    const optionCount = select === null ? 0 : select.options.length
+    const domValue = field === null ? null : field.getAttribute('data-value')
+    const probeForOptions = window.__auroraEffortProbe
+    const optionCount =
+      probeForOptions === undefined || probeForOptions === null
+        ? 0
+        : probeForOptions.options || 0
 
     // 写回原值：本场景会改配置，后面还有别的截图场景，不能让它们看到 high。
     // 写回落在**模型 id** 那一项上（provider 级字段已随 v23 删除），且整份替换该键对象、
@@ -10145,95 +10434,112 @@ export const CHAT_MODEL_PICKER_ACT = `(async () => {
       sessionsAfterSeed.ok === true &&
       sessionsAfterSeed.value.some((item) => item.llm !== undefined)
 
-    const findSelect = (field) => {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    const triggerOf = (field) => {
       const node = document.querySelector('[data-field="' + field + '"]')
-      return node === null ? null : node.tagName === 'SELECT' ? node : node.querySelector('select')
+      return node !== null && node.tagName === 'BUTTON' ? node : null
+    }
+    const menuOf = () => document.querySelector('[data-field="chat.model-menu"]')
+    const optionByKey = (key) =>
+      Array.from(document.querySelectorAll('[data-field="chat.model-option"]')).find(
+        (el) => el.getAttribute('data-model-key') === key,
+      )
+    // 2026-10-18：模型来源 / 模型从原生 select 改成自绘浮层。这里走真实交互：
+    // 点触发器 → 等 chat.model-menu → 点来源 / 模型项；aria-expanded 是"组件自认为开着"的权威信号。
+    const openMenu = async (which) => {
+      const trigger = triggerOf(which === 'source' ? 'chat.modelSource' : 'chat.model')
+      if (trigger === null) return false
+      if (trigger.getAttribute('aria-expanded') !== 'true') {
+        trigger.click()
+        await wait(180)
+      }
+      return menuOf() !== null
+    }
+    const chooseSource = async (id) => {
+      if (!(await openMenu('source'))) return false
+      const node = document.querySelector('[data-field="chat.model-source-' + id + '"]')
+      if (node === null) return false
+      node.click()
+      await wait(700)
+      return true
+    }
+    const chooseModel = async (providerId, model) => {
+      if (!(await openMenu('model'))) return false
+      const key = JSON.stringify([providerId, model])
+      let node = null
+      for (let attempt = 0; attempt < 20 && node === null; attempt += 1) {
+        node = optionByKey(key)
+        if (node === null) await wait(100)
+      }
+      if (node === null) return false
+      node.click()
+      await wait(600)
+      return true
     }
 
-    let sourceSelect = null
-    let modelSelect = null
-    for (let attempt = 0; attempt < 12 && (sourceSelect === null || modelSelect === null); attempt += 1) {
-      const sourceCandidate = findSelect('chat.modelSource')
-      const modelCandidate = findSelect('chat.model')
+    let sourceTrigger = null
+    let modelTrigger = null
+    for (
+      let attempt = 0;
+      attempt < 12 && (sourceTrigger === null || modelTrigger === null);
+      attempt += 1
+    ) {
+      const sourceCandidate = triggerOf('chat.modelSource')
+      const modelCandidate = triggerOf('chat.model')
       if (
         sourceCandidate !== null &&
         modelCandidate !== null &&
         sourceCandidate.disabled !== true &&
         modelCandidate.disabled !== true
       ) {
-        sourceSelect = sourceCandidate
-        modelSelect = modelCandidate
+        sourceTrigger = sourceCandidate
+        modelTrigger = modelCandidate
       } else {
-        await new Promise((resolve) => setTimeout(resolve, 250))
+        await wait(250)
       }
     }
-    if (sourceSelect === null || modelSelect === null) {
-      return { changed: false, reason: '模型来源 / 模型下拉始终不可用' }
+    if (sourceTrigger === null || modelTrigger === null) {
+      return { changed: false, reason: '模型来源 / 模型触发器始终不可用' }
     }
 
-    const sourceValues = Array.from(sourceSelect.options).map((item) => item.value)
+    if (!(await openMenu('source'))) {
+      return { changed: false, reason: '模型菜单没有打开' }
+    }
+    const sourceValues = ['center', 'local'].filter(
+      (id) => document.querySelector('[data-field="chat.model-source-' + id + '"]') !== null,
+    )
     if (sourceValues.indexOf('center') === -1 || sourceValues.indexOf('local') === -1) {
-      return { changed: false, reason: '双下拉来源未同时出现', sourceValues }
+      return { changed: false, reason: '双来源没有同时出现', sourceValues }
     }
-    window.__auroraModelProbe.initialSource = sourceSelect.value
+    window.__auroraModelProbe.initialSource = sourceTrigger.getAttribute('data-source-id') || ''
 
-    sourceSelect.value = 'local'
-    sourceSelect.dispatchEvent(new Event('change', { bubbles: true }))
-    await new Promise((resolve) => setTimeout(resolve, 700))
-
-    sourceSelect = findSelect('chat.modelSource')
-    sourceSelect.value = 'center'
-    sourceSelect.dispatchEvent(new Event('change', { bubbles: true }))
-    await new Promise((resolve) => setTimeout(resolve, 700))
+    if (!(await chooseSource('local'))) {
+      return { changed: false, reason: '点不到本机来源' }
+    }
+    window.__auroraModelProbe.localOptionCount =
+      document.querySelectorAll('[data-field="chat.model-option"]').length
+    if (!(await chooseSource('center'))) {
+      return { changed: false, reason: '点不到 Center 来源' }
+    }
     const centerSessions = await window.aurora.chat.sessions()
     const centerOverride =
       centerSessions.ok === true ? centerSessions.value.find((item) => item.llm !== undefined) : undefined
 
-    modelSelect = findSelect('chat.model')
-    const centerOption = modelSelect === null
-      ? undefined
-      : Array.from(modelSelect.options).find((item) => {
-          try {
-            const parsed = JSON.parse(item.value)
-            return parsed[0] === 'center-llm' && parsed[1] === 'center-b'
-          } catch {
-            return false
-          }
-        })
-    if (centerOption === undefined || modelSelect === null) {
+    if (!(await chooseModel('center-llm', 'center-b'))) {
       return { changed: false, reason: 'Center 候选 center-b 不存在' }
     }
-    modelSelect.value = centerOption.value
-    modelSelect.dispatchEvent(new Event('change', { bubbles: true }))
-    await new Promise((resolve) => setTimeout(resolve, 500))
     const centerModelSessions = await window.aurora.chat.sessions()
     const centerModelOverride =
       centerModelSessions.ok === true
         ? centerModelSessions.value.find((item) => item.llm !== undefined)
         : undefined
 
-    sourceSelect = findSelect('chat.modelSource')
-    sourceSelect.value = 'local'
-    sourceSelect.dispatchEvent(new Event('change', { bubbles: true }))
-    await new Promise((resolve) => setTimeout(resolve, 500))
-
-    modelSelect = findSelect('chat.model')
-    const localOption = modelSelect === null
-      ? undefined
-      : Array.from(modelSelect.options).find((item) => {
-          try {
-            const parsed = JSON.parse(item.value)
-            return parsed[0] === localId && parsed[1] === 'deepseek-reasoner'
-          } catch {
-            return false
-          }
-        })
-    if (localOption === undefined || modelSelect === null) {
+    if (!(await chooseSource('local'))) {
+      return { changed: false, reason: '切不回本机来源' }
+    }
+    if (!(await chooseModel(localId, 'deepseek-reasoner'))) {
       return { changed: false, reason: '本机候选 deepseek-reasoner 不存在' }
     }
-    modelSelect.value = localOption.value
-    modelSelect.dispatchEvent(new Event('change', { bubbles: true }))
-    await new Promise((resolve) => setTimeout(resolve, 600))
     window.__auroraModelProbe.centerProvider =
       centerOverride === undefined || centerOverride.llm === undefined
         ? null
@@ -10278,18 +10584,20 @@ export const CHAT_MODEL_PICKER_CHECK = `(async () => {
     const globalModel = globalProvider === undefined ? null : globalProvider.model
 
     const field = document.querySelector('[data-field="chat.model"]')
-    const select =
-      field === null ? null : field.tagName === 'SELECT' ? field : field.querySelector('select')
     const sourceField = document.querySelector('[data-field="chat.modelSource"]')
-    const sourceSelect =
-      sourceField === null
-        ? null
-        : sourceField.tagName === 'SELECT'
-          ? sourceField
-          : sourceField.querySelector('select')
-    const domValue = select === null ? null : JSON.parse(select.value)
-    const sourceValue = sourceSelect === null ? null : sourceSelect.value
-    const optionCount = select === null ? 0 : select.options.length
+    const domKey = field === null ? '' : field.getAttribute('data-model-key') || ''
+    let domValue = null
+    try {
+      domValue = domKey === '' ? null : JSON.parse(domKey)
+    } catch {
+      domValue = null
+    }
+    const sourceValue = sourceField === null ? null : sourceField.getAttribute('data-source-id')
+    const probeForOptions = window.__auroraModelProbe
+    const optionCount =
+      probeForOptions === undefined || probeForOptions === null
+        ? 0
+        : probeForOptions.localOptionCount || 0
 
     const sessions = await window.aurora.chat.sessions()
     const overridden =
@@ -12558,6 +12866,14 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       act: CHAT_COMPOSER_NARROW_ACT,
       check: CHAT_COMPOSER_NARROW_CHECK,
     },
+    // 粘贴图片（2026-10-18）：主进程侧真实剪贴板 + webContents.paste()，验证
+    // paste → chat:stageImage 落盘 → 卡内缩略图 → 移除 的整条链。
+    {
+      name: 'chat',
+      file: 'chat-composer-paste.png',
+      mainAct: chatComposerPasteMainAct,
+      check: CHAT_COMPOSER_PASTE_CHECK,
+    },
     // 只读档现场（v13，docs/06 §11.2）：切到 readonly + 展开下拉，断言文案与配置一致后还原。
     // 必须排在 chat-collapse 之前（窗口一被 hide，后面的 DOM 操作就没了）。
     {
@@ -12622,6 +12938,22 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       },
       act: CHAT_TTS_SPEAK_ACT,
       check: CHAT_TTS_SPEAK_CHECK,
+    },
+    // 自动滚底四条：语义（谁能改跟随状态）+ 持续跟进（每帧都到底）+ **底部上滚**（2026-10-01，
+    // 真实用户从底部滚起来时不能被那帧对齐抹回底部 —— 用户实测"答完翻不动历史"）+
+    // **真实滚轮**（2026-10-01，CDP "Input.dispatchMouseEvent" 走原生管线：合成事件测不到
+    // "对齐帧 / 吸底补齐把用户滚出去的视口吸回去"这类失效，见 docs/07 §5.3"真实滚轮跟随"）。
+    // 必须排在 `chat-subagent-page` / `chat-automation` 之前（它们会把主区切到别的 view，
+    // `.thread` 整个不渲染），也必须排在 `chat-collapse` / `chat-drag` 之前（窗口一 hide 就没了）。
+    { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
+    { name: 'chat', file: 'chat-follow-burst.png', check: CHAT_FOLLOW_BURST_SCRIPT },
+    { name: 'chat', file: 'chat-follow-wheel-up.png', check: CHAT_FOLLOW_WHEEL_UP_SCRIPT },
+    {
+      name: 'chat',
+      file: 'chat-trace-wheel.png',
+      act: CHAT_TRACE_WHEEL_ACT,
+      mainAct: chatTraceWheelMainAct,
+      check: CHAT_TRACE_WHEEL_CHECK,
     },
     {
       name: 'chat',
@@ -12713,22 +13045,8 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       check: CHAT_CLASSISLAND_CHECK,
     },
     { name: 'chat', file: 'chat-drag.png', check: WINDOW_DRAG_SCRIPT },
+    // 收起窗口放在自动滚底四条之后（四条都要读 .thread/.messages，窗口一 hide 就没了）。
     { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },
-    // 自动滚底四条：语义（谁能改跟随状态）+ 持续跟进（每帧都到底）+ **底部上滚**（2026-10-01，
-    // 真实用户从底部滚起来时不能被那帧对齐抹回底部 —— 用户实测"答完翻不动历史"）+
-    // **真实滚轮**（2026-10-01，CDP "Input.dispatchMouseEvent" 走原生管线：合成事件测不到
-    // "对齐帧 / 吸底补齐把用户滚出去的视口吸回去"这类失效，见 docs/07 §5.3"真实滚轮跟随"）。
-    // **必须排在 chat-collapse 之前** —— 窗口一被 hide，后面的 DOM 操作就没了。
-    { name: 'chat', file: 'chat.png', check: CHAT_AUTO_SCROLL_SCRIPT },
-    { name: 'chat', file: 'chat-follow-burst.png', check: CHAT_FOLLOW_BURST_SCRIPT },
-    { name: 'chat', file: 'chat-follow-wheel-up.png', check: CHAT_FOLLOW_WHEEL_UP_SCRIPT },
-    {
-      name: 'chat',
-      file: 'chat-trace-wheel.png',
-      act: CHAT_TRACE_WHEEL_ACT,
-      mainAct: chatTraceWheelMainAct,
-      check: CHAT_TRACE_WHEEL_CHECK,
-    },
     // 无标签页时的右栏工具快捷入口（2026-10-03，docs/07 §2.3）：prepare reload 回
     // 初始四标签 → act 走真实 ✕ 关掉全部（截图停在这里：右栏四张卡片）→
     // check 验证卡片矩形 / 命中，并点"文件"卡片把标签开回来。

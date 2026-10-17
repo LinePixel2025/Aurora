@@ -187,6 +187,11 @@ export const IPC = {
      */
     readAttachment: 'chat:readAttachment',
     /**
+     * 剪贴板图片暂存（2026-10-18，docs/07 §2.3）：paste 的 `File` 没有本地路径，
+     * 主进程写进 `<userData>/pasted/` 后回路径与 96px 预览图。**只写这一个目录**。
+     */
+    stageImage: 'chat:stageImage',
+    /**
      * 助手消息图片区（`show_image` / `generate_image`，docs/06 §14）：
      * 按会话 + imageId 读盘并只回 data URL。
      */

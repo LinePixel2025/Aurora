@@ -309,6 +309,15 @@ function jobSummary() {
   }
 }
 
+/**
+ * 1×1 PNG（base64）：`composer-paste` 场景用它合成剪贴板文件。
+ *
+ * 必须是**真的能解码的 PNG**：缩略图是 `<img src="blob:">`，假字节会让浏览器出裂图，
+ * 探针读到 `naturalWidth === 0` 就分不清"没显示"与"图片坏了"。
+ */
+const PASTE_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+
 /** Markdown 夹具：围栏 ts 代码块 + GFM 表格 + 外链（三样都是渲染契约的硬点） */
 const MARKDOWN_FIXTURE = [
   '# 渲染夹具',
@@ -2448,6 +2457,113 @@ export const SCENARIOS = [
         ),
         createError: document.querySelector('.err')?.textContent?.trim() ?? '',
       }))
+
+      /*
+       * 窄屏输入卡（2026-10-18，docs/07 §2.3）：三枚芯片 + 麦克风 + 发送必须
+       * ① 全在图卡内、② 两两不相交、③ 权限档位文案不被截断。
+       * 判据只看**矩形**（"量矩形不量存在"）：存在性在窄屏是恒真的。
+       */
+      await ctx.page.waitForSelector('[data-field="chat.permission"]', { timeout: TIMEOUT })
+      const composer = await ctx.page.evaluate(() => {
+        const box = document.querySelector('.composer-box')
+        if (box === null) return null
+        const boxRect = box.getBoundingClientRect()
+        const nodes = []
+        for (const field of ['chat.permission', 'chat.model', 'chat.reasoningEffort', 'chat.mic']) {
+          const node = document.querySelector(`[data-field="${field}"]`)
+          if (node !== null) nodes.push({ name: field, node })
+        }
+        const send = document.querySelector('[data-action="chat.send"]')
+        if (send !== null) nodes.push({ name: 'chat.send', node: send })
+        const rects = nodes.map(({ name, node }) => {
+          const rect = node.getBoundingClientRect()
+          return {
+            name,
+            left: rect.left,
+            right: rect.right,
+            top: rect.top,
+            bottom: rect.bottom,
+            w: Math.round(rect.width),
+            h: Math.round(rect.height),
+            insideCard:
+              rect.left >= boxRect.left - 1 &&
+              rect.right <= boxRect.right + 1 &&
+              rect.top >= boxRect.top - 1 &&
+              rect.bottom <= boxRect.bottom + 1,
+          }
+        })
+        const overlaps = []
+        for (let i = 0; i < rects.length; i += 1) {
+          for (let j = i + 1; j < rects.length; j += 1) {
+            const a = rects[i]
+            const b = rects[j]
+            if (
+              a.left < b.right - 0.5 &&
+              b.left < a.right - 0.5 &&
+              a.top < b.bottom - 0.5 &&
+              b.top < a.bottom - 0.5
+            ) {
+              overlaps.push(`${a.name} × ${b.name}`)
+            }
+          }
+        }
+        const label = document.querySelector('[data-field="chat.permission"] .chip-label')
+        return {
+          box: {
+            left: Math.round(boxRect.left),
+            right: Math.round(boxRect.right),
+            top: Math.round(boxRect.top),
+            bottom: Math.round(boxRect.bottom),
+            w: Math.round(boxRect.width),
+          },
+          rects,
+          overlaps,
+          permissionLabel: label?.textContent?.trim() ?? '',
+          labelTruncated: label === null ? true : label.scrollWidth > label.clientWidth + 1,
+        }
+      })
+
+      // 权限浮层在手机上必须完整落在视口内、且底边在整张输入卡上方；Esc 关掉不留场
+      let permissionFlyout = null
+      if (composer !== null) {
+        await ctx.page.click('[data-field="chat.permission"]')
+        await ctx.page
+          .waitForSelector('[data-field="chat.permission-menu"]', { timeout: 3000 })
+          .catch(() => undefined)
+        // 入场过渡期间 transform 会把矩形整体下移 8px —— 等动画结束再量（否则 aboveCard 假红）
+        await ctx.page
+          .waitForFunction(
+            () => {
+              const menu = document.querySelector('[data-field="chat.permission-menu"]')
+              if (menu === null) return false
+              const transform = getComputedStyle(menu).transform
+              return transform === 'none' || transform === ''
+            },
+            { timeout: 3000 },
+          )
+          .catch(() => undefined)
+        permissionFlyout = await ctx.page.evaluate(() => {
+          const box = document.querySelector('.composer-box')
+          const menu = document.querySelector('[data-field="chat.permission-menu"]')
+          if (box === null || menu === null) return null
+          const boxRect = box.getBoundingClientRect()
+          const rect = menu.getBoundingClientRect()
+          return {
+            left: Math.round(rect.left),
+            right: Math.round(rect.right),
+            top: Math.round(rect.top),
+            bottom: Math.round(rect.bottom),
+            aboveCard: rect.bottom <= boxRect.top + 1,
+            inViewport:
+              rect.left >= 0 &&
+              rect.right <= window.innerWidth + 0.5 &&
+              rect.top >= 0 &&
+              rect.bottom <= window.innerHeight + 0.5,
+          }
+        })
+        await ctx.page.keyboard.press('Escape').catch(() => undefined)
+      }
+
       return verdict(
         {
           offCanvasWhenClosed:
@@ -2469,6 +2585,18 @@ export const SCENARIOS = [
             drawerContent !== null &&
             Number(drawerContent.opacity) > 0 &&
             drawerContent.pointerEvents !== 'none',
+          // 2026-10-18：窄屏输入卡三类几何断言（见上方 composer 段）
+          composerControlsInsideCard:
+            composer !== null &&
+            composer.rects.length >= 4 &&
+            composer.rects.every((rect) => rect.insideCard),
+          composerControlsDontOverlap: composer !== null && composer.overlaps.length === 0,
+          permissionLabelIntact:
+            composer !== null &&
+            composer.permissionLabel.length >= 2 &&
+            composer.labelTruncated === false,
+          permissionFlyoutAboveCard: permissionFlyout !== null && permissionFlyout.aboveCard,
+          permissionFlyoutInViewport: permissionFlyout !== null && permissionFlyout.inViewport,
         },
         {
           hidden,
@@ -2481,6 +2609,8 @@ export const SCENARIOS = [
           drawerBg,
           clickPath,
           drawerShot,
+          composer,
+          permissionFlyout,
           notes: ['移动端：移动标签栏被 grid 行高拉伸成巨型胶囊（tabsHeight 读数 + 截图可核对）'],
         },
       )
@@ -2642,6 +2772,471 @@ export const SCENARIOS = [
           valueApplied: after === 'aurora-test-2',
         },
         { before, sent, after, followGlobal },
+      )
+    },
+  },
+
+  // ── 34b. 输入卡三枚浮层：同锚点 / 同宽 / 互斥 / 选择命令（2026-10-18） ──
+  {
+    name: 'composer-pickers',
+    async run(ctx) {
+      await fresh(ctx)
+      await openFixtureSession(ctx)
+      await ctx.page.waitForSelector('[data-field="chat.permission"]', { timeout: TIMEOUT })
+
+      // 三枚触发器必须是**按钮**（原生 `<select>` 做不出图标 + 标签 + 箭头的芯片观感）
+      const triggerTags = await ctx.page.evaluate(() =>
+        ['chat.permission', 'chat.model', 'chat.reasoningEffort'].map(
+          (field) => document.querySelector(`[data-field="${field}"]`)?.tagName ?? '',
+        ),
+      )
+
+      const MENU_FIELDS = ['chat.permission-menu', 'chat.model-menu', 'chat.effort-menu']
+
+      /**
+       * 等某一层**入场动画跑完**、且其它层都已从 DOM 消失，再读几何。
+       *
+       * 为什么必须等：`.composer-menu` 用 `rise` 过渡，入场那 250ms 里
+       * `transform: translateY(8px)` 会被 `getBoundingClientRect()` 算进去 —— 探针在
+       * 动画中途量，就会把"浮层贴在卡上方"读成"浮层压进卡片 8px"（同类坑见
+       * Memory/2026-10-05-cweb-mobile-drawer-probe.md）。
+       */
+      const waitMenuSettled = async (menuField) => {
+        const settled = await ctx.page
+          .waitForFunction(
+            (field) => {
+              const menu = document.querySelector(`[data-field="${field}"]`)
+              if (menu === null) return false
+              const transform = getComputedStyle(menu).transform
+              const others = ['chat.permission-menu', 'chat.model-menu', 'chat.effort-menu'].filter(
+                (name) =>
+                  name !== field && document.querySelector(`[data-field="${name}"]`) !== null,
+              )
+              return (transform === 'none' || transform === '') && others.length === 0
+            },
+            { timeout: 3000 },
+            menuField,
+          )
+          .then(() => true)
+          .catch(() => false)
+        return settled
+      }
+
+      /** 等三层都从 DOM 消失（选完一档后的收尾；离场是瞬时的，正常一两帧） */
+      const waitMenusClosed = () =>
+        ctx.page
+          .waitForFunction(
+            (fields) =>
+              fields.every((name) => document.querySelector(`[data-field="${name}"]`) === null),
+            { timeout: 3000 },
+            MENU_FIELDS,
+          )
+          .then(() => true)
+          .catch(() => false)
+
+      /**
+       * 打开某一层并读几何：
+       * - `openMenus`：同一时刻**还有哪几层在 DOM 里**（互斥的判据，不是"当前层在不在"）；
+       * - `left` / `width`：三层必须同锚点同宽（都来自 `.composer-flyout` 的共享令牌）；
+       * - `aboveCard`：底边在**整张输入卡**上方（不能压住工具行 / 缩略图条）；
+       * - `inViewport`：不被裁到视口外（`max-width: 100%` + 内部滚动兜底）。
+       */
+      const probeMenu = async (triggerField, menuField) => {
+        await ctx.page.click(`[data-field="${triggerField}"]`)
+        await ctx.page.waitForSelector(`[data-field="${menuField}"]`, { timeout: TIMEOUT })
+        const settled = await waitMenuSettled(menuField)
+        const reading = await ctx.page.evaluate((field) => {
+          const box = document.querySelector('.composer-box')
+          const menu = document.querySelector(`[data-field="${field}"]`)
+          const triggerField =
+            field === 'chat.effort-menu' ? 'chat.reasoningEffort' : field.replace('-menu', '')
+          const trigger = document.querySelector(`[data-field="${triggerField}"]`)
+          const boxRect = box === null ? null : box.getBoundingClientRect()
+          const triggerRect = trigger === null ? null : trigger.getBoundingClientRect()
+          const rect = menu === null ? null : menu.getBoundingClientRect()
+          const style = menu === null ? null : getComputedStyle(menu)
+          const openMenus = ['chat.permission-menu', 'chat.model-menu', 'chat.effort-menu'].filter(
+            (name) => document.querySelector(`[data-field="${name}"]`) !== null,
+          )
+          // 2026-10-18 用户口径：浮层横向贴住自己的触发按钮；靠右时按卡右缘夹取。
+          const expectedLeft =
+            rect === null || triggerRect === null || boxRect === null
+              ? null
+              : Math.min(triggerRect.left, boxRect.right - rect.width)
+          return {
+            openMenus,
+            left: rect === null ? -1 : Math.round(rect.left),
+            width: rect === null ? -1 : Math.round(rect.width),
+            top: rect === null ? -1 : Math.round(rect.top),
+            right: rect === null ? -1 : Math.round(rect.right),
+            bottom: rect === null ? -1 : Math.round(rect.bottom),
+            triggerLeft: triggerRect === null ? -1 : Math.round(triggerRect.left),
+            expectedLeft: expectedLeft === null ? -1 : Math.round(expectedLeft),
+            triggerAligned: expectedLeft !== null && Math.abs(rect.left - expectedLeft) <= 1.5,
+            position: style === null ? '' : style.position,
+            zIndex: style === null ? '' : style.zIndex,
+            aboveCard: rect !== null && boxRect !== null && rect.bottom <= boxRect.top + 1,
+            inViewport:
+              rect !== null &&
+              rect.left >= 0 &&
+              rect.right <= window.innerWidth + 0.5 &&
+              rect.top >= 0 &&
+              rect.bottom <= window.innerHeight + 0.5,
+            items: menu === null ? 0 : menu.querySelectorAll('[role="menuitemradio"]').length,
+          }
+        }, menuField)
+        return { ...reading, settled }
+      }
+
+      const permissionMenu = await probeMenu('chat.permission', 'chat.permission-menu')
+      // 权限三档：只读 / 变更前确认 / 完全权限（auto 档的锚点是 `-full`，沿用桌面端命名）
+      const permissionItems = await ctx.page.evaluate(() =>
+        ['readonly', 'confirm', 'full'].map(
+          (name) => document.querySelectorAll(`[data-field="chat.permission-mode-${name}"]`).length,
+        ),
+      )
+      // 模型浮层打开时会补拉 `config.get`（`remoteLlm` 还没到时）；等候选落位
+      const modelMenu = await probeMenu('chat.model', 'chat.model-menu')
+      await ctx.page.waitForFunction(
+        () =>
+          document.querySelector('[data-field="chat.model-option"]') !== null ||
+          document.querySelector('[data-field="chat.model-menu"] .menu-empty') !== null,
+        { timeout: TIMEOUT },
+      )
+      const modelMenuReading = await ctx.page.evaluate(() => ({
+        options: [...document.querySelectorAll('[data-field="chat.model-option"]')].map((node) => ({
+          providerId: node.getAttribute('data-provider-id'),
+          model: node.getAttribute('data-model'),
+        })),
+        followGlobal: document.querySelectorAll('[data-field="chat.model-follow-global"]').length,
+      }))
+      const effortMenu = await probeMenu('chat.reasoningEffort', 'chat.effort-menu')
+      const effortItems = await ctx.page.evaluate(() =>
+        ['auto', 'low', 'medium', 'high'].map(
+          (level) => document.querySelectorAll(`[data-field="chat.effort-${level}"]`).length,
+        ),
+      )
+
+      // 1) 思考等级 → llm.switch（客户端全局值）
+      const effortSince = ctx.stub.mark()
+      await ctx.page.click('[data-field="chat.effort-high"]')
+      const effortCmd = await ctx.stub.waitForCommand('llm.switch', {
+        since: effortSince,
+        timeout: 4000,
+      })
+      const effortMenuClosed = await waitMenusClosed()
+
+      // 2) 权限 → session.setPermission（会话级覆盖）
+      await ctx.page.click('[data-field="chat.permission"]')
+      await waitMenuSettled('chat.permission-menu')
+      const permissionSince = ctx.stub.mark()
+      await ctx.page.click('[data-field="chat.permission-mode-readonly"]')
+      const permissionCmd = await ctx.stub.waitForCommand('session.setPermission', {
+        since: permissionSince,
+        timeout: 4000,
+      })
+      const permissionMenuClosed = await waitMenusClosed()
+
+      // 3) 模型 → session.setModel（选项带 data-provider-id / data-model）
+      await ctx.page.click('[data-field="chat.model"]')
+      await waitMenuSettled('chat.model-menu')
+      await ctx.page.waitForFunction(
+        () => document.querySelector('[data-field="chat.model-option"]') !== null,
+        { timeout: TIMEOUT },
+      )
+      const modelSince = ctx.stub.mark()
+      const modelChoice = await ctx.page.evaluate(() => {
+        const node =
+          document.querySelector('[data-field="chat.model-option"][data-model="aurora-test-2"]') ??
+          document.querySelector('[data-field="chat.model-option"]')
+        if (node === null) return null
+        const choice = {
+          providerId: node.getAttribute('data-provider-id'),
+          model: node.getAttribute('data-model'),
+        }
+        node.click()
+        return choice
+      })
+      const modelCmd = await ctx.stub.waitForCommand('session.setModel', {
+        since: modelSince,
+        timeout: 4000,
+      })
+      const modelMenuClosed = await waitMenusClosed()
+      // 芯片文案跟着会话摘要的乐观更新变（只改会话，不动客户端全局）
+      await ctx.page
+        .waitForFunction(
+          () =>
+            (
+              document.querySelector('[data-field="chat.permission"] .chip-label')?.textContent ??
+              ''
+            ).trim() === '只读' &&
+            (
+              document.querySelector('[data-field="chat.model"] .chip-label')?.textContent ?? ''
+            ).trim() === 'aurora-test-2',
+          { timeout: 3000 },
+        )
+        .catch(() => undefined)
+      const afterPick = await ctx.page.evaluate(() => ({
+        permissionMenu: document.querySelectorAll('[data-field="chat.permission-menu"]').length,
+        modelMenu: document.querySelectorAll('[data-field="chat.model-menu"]').length,
+        effortMenu: document.querySelectorAll('[data-field="chat.effort-menu"]').length,
+        modelLabel:
+          document.querySelector('[data-field="chat.model"] .chip-label')?.textContent?.trim() ??
+          '',
+        permissionLabel:
+          document
+            .querySelector('[data-field="chat.permission"] .chip-label')
+            ?.textContent?.trim() ?? '',
+      }))
+
+      const sameWidth =
+        permissionMenu.width > 0 &&
+        permissionMenu.width === modelMenu.width &&
+        modelMenu.width === effortMenu.width
+      const triggerAligned =
+        permissionMenu.triggerAligned === true &&
+        modelMenu.triggerAligned === true &&
+        effortMenu.triggerAligned === true
+
+      return verdict(
+        {
+          triggersAreButtons: triggerTags.every((tag) => tag === 'BUTTON'),
+          permissionMenuExclusive:
+            permissionMenu.openMenus.length === 1 &&
+            permissionMenu.openMenus[0] === 'chat.permission-menu',
+          modelMenuExclusive:
+            modelMenu.openMenus.length === 1 && modelMenu.openMenus[0] === 'chat.model-menu',
+          effortMenuExclusive:
+            effortMenu.openMenus.length === 1 && effortMenu.openMenus[0] === 'chat.effort-menu',
+          triggerAligned,
+          sameWidth: sameWidth,
+          sharedPositionAndLayer:
+            permissionMenu.position === 'absolute' &&
+            modelMenu.position === 'absolute' &&
+            effortMenu.position === 'absolute' &&
+            permissionMenu.zIndex === modelMenu.zIndex &&
+            modelMenu.zIndex === effortMenu.zIndex &&
+            permissionMenu.zIndex !== 'auto',
+          aboveInputCard: permissionMenu.aboveCard && modelMenu.aboveCard && effortMenu.aboveCard,
+          insideViewport:
+            permissionMenu.inViewport && modelMenu.inViewport && effortMenu.inViewport,
+          menusSettled:
+            permissionMenu.settled === true &&
+            modelMenu.settled === true &&
+            effortMenu.settled === true,
+          permissionOptions: permissionItems.every((count) => count === 1),
+          modelOptions: modelMenuReading.followGlobal === 1 && modelMenuReading.options.length >= 2,
+          effortOptions: effortItems.every((count) => count === 1),
+          permissionCommand: permissionCmd !== null && permissionCmd.permissionMode === 'readonly',
+          modelCommand:
+            modelCmd !== null &&
+            modelCmd.model === (modelChoice?.model ?? '') &&
+            modelCmd.providerId === (modelChoice?.providerId ?? ''),
+          effortCommand: effortCmd !== null && effortCmd.reasoningEffort === 'high',
+          menuClosedAfterPick:
+            effortMenuClosed &&
+            permissionMenuClosed &&
+            modelMenuClosed &&
+            afterPick.permissionMenu === 0 &&
+            afterPick.modelMenu === 0 &&
+            afterPick.effortMenu === 0,
+          // 选择后芯片文案跟着变（会话摘要的乐观更新）
+          modelLabelApplied: afterPick.modelLabel.includes(String(modelChoice?.model ?? '—')),
+          permissionLabelApplied: afterPick.permissionLabel === '只读',
+        },
+        {
+          triggerTags,
+          permissionMenu,
+          modelMenu,
+          effortMenu,
+          permissionItems,
+          modelMenuReading,
+          effortItems,
+          modelChoice,
+          permissionCmd,
+          modelCmd,
+          effortCmd,
+          afterPick,
+        },
+      )
+    },
+  },
+
+  // ── 34c. 粘贴图片 → 缩略图 → 随消息上传 → 移除（2026-10-18，docs/12 §5） ──
+  {
+    name: 'composer-paste',
+    async run(ctx) {
+      await fresh(ctx)
+      await openFixtureSession(ctx)
+      await ctx.page.waitForSelector('[data-field="chat.composer-input"]', { timeout: TIMEOUT })
+
+      /**
+       * 在页面里合成一次真实的 paste 事件（DataTransfer 装一张 PNG）。
+       *
+       * 优先 `new ClipboardEvent('paste', { clipboardData })`；Edge/Chromium 若忽略
+       * 构造参数里的 clipboardData（读出来是 null），退回同页面可用的做法：
+       * 造一个普通 `Event` + `defineProperty(clipboardData)` 再 dispatch —— 两条路
+       * 都**真的进组件的 paste 处理器**，不是绕过它直接调上传。
+       */
+      const pastePng = () =>
+        ctx.page.evaluate((base64) => {
+          const textarea = document.querySelector('[data-field="chat.composer-input"]')
+          if (textarea === null) return { dispatched: false, mode: 'no-textarea', prevented: false }
+          const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
+          const file = new File([bytes], 'paste-verify.png', { type: 'image/png' })
+          const data = new DataTransfer()
+          data.items.add(file)
+          let mode = 'constructor'
+          let event = null
+          try {
+            event = new ClipboardEvent('paste', {
+              bubbles: true,
+              cancelable: true,
+              clipboardData: data,
+            })
+          } catch {
+            event = null
+          }
+          if (
+            event === null ||
+            event.clipboardData === null ||
+            event.clipboardData.items.length === 0
+          ) {
+            mode = 'define-property'
+            event = new Event('paste', { bubbles: true, cancelable: true })
+            Object.defineProperty(event, 'clipboardData', { value: data })
+          }
+          textarea.focus()
+          const notPrevented = textarea.dispatchEvent(event)
+          return { dispatched: true, mode, prevented: !notPrevented }
+        }, PASTE_PNG_BASE64)
+
+      const pasted = await pastePng()
+      const uploaded = await ctx.page
+        .waitForFunction(
+          () => {
+            const item = document.querySelector('[data-field="chat.attachment"]')
+            return item !== null && !item.classList.contains('uploading')
+          },
+          { timeout: TIMEOUT },
+        )
+        .then(() => true)
+        .catch(() => false)
+
+      const layout = await ctx.page.evaluate(() => {
+        const box = document.querySelector('.composer-box')
+        const strip = document.querySelector('[data-field="chat.attachments"]')
+        const item = document.querySelector('[data-field="chat.attachment"]')
+        const thumb = document.querySelector('[data-field="chat.attachment-thumb"]')
+        const input = document.querySelector('[data-field="chat.composer-input"]')
+        const boxRect = box === null ? null : box.getBoundingClientRect()
+        const stripRect = strip === null ? null : strip.getBoundingClientRect()
+        const itemRect = item === null ? null : item.getBoundingClientRect()
+        const thumbRect = thumb === null ? null : thumb.getBoundingClientRect()
+        const inputRect = input === null ? null : input.getBoundingClientRect()
+        return {
+          count: document.querySelectorAll('[data-field="chat.attachment"]').length,
+          removeCount: document.querySelectorAll('[data-field="chat.attachment-remove"]').length,
+          src: thumb?.getAttribute('src') ?? '',
+          naturalWidth: thumb instanceof HTMLImageElement ? thumb.naturalWidth : 0,
+          item:
+            itemRect === null
+              ? null
+              : { w: Math.round(itemRect.width), h: Math.round(itemRect.height) },
+          thumb:
+            thumbRect === null
+              ? null
+              : { w: Math.round(thumbRect.width), h: Math.round(thumbRect.height) },
+          strip:
+            stripRect === null
+              ? null
+              : { top: Math.round(stripRect.top), bottom: Math.round(stripRect.bottom) },
+          input: inputRect === null ? null : { top: Math.round(inputRect.top) },
+          box:
+            boxRect === null
+              ? null
+              : {
+                  left: Math.round(boxRect.left),
+                  right: Math.round(boxRect.right),
+                  top: Math.round(boxRect.top),
+                },
+          aboveInput:
+            thumbRect !== null && inputRect !== null && thumbRect.bottom <= inputRect.top + 1,
+          stripInCard:
+            stripRect !== null &&
+            boxRect !== null &&
+            stripRect.left >= boxRect.left - 1 &&
+            stripRect.right <= boxRect.right + 1 &&
+            stripRect.top >= boxRect.top - 1,
+        }
+      })
+
+      // 发送：命令体里必须带 1 个附件（服务器转发时补齐 name）
+      const since = ctx.stub.mark()
+      await ctx.page.type('[data-field="chat.composer-input"]', '看看这张图')
+      const sendEnabled = await ctx.page.evaluate(() => {
+        const send = document.querySelector('[data-action="chat.send"]')
+        return send !== null && send.disabled === false
+      })
+      await ctx.page.click('[data-action="chat.send"]')
+      const input = await ctx.stub.waitForInput({ since, timeout: 6000 })
+      const clearedAfterSend = await ctx.page
+        .waitForFunction(
+          () => document.querySelectorAll('[data-field="chat.attachment"]').length === 0,
+          { timeout: 4000 },
+        )
+        .then(() => true)
+        .catch(() => false)
+
+      // 移除路径：再粘一张 → 点右上角移除 → 缩略图消失
+      const pastedAgain = await pastePng()
+      const secondUploaded = await ctx.page
+        .waitForFunction(
+          () => {
+            const item = document.querySelector('[data-field="chat.attachment"]')
+            return item !== null && !item.classList.contains('uploading')
+          },
+          { timeout: TIMEOUT },
+        )
+        .then(() => true)
+        .catch(() => false)
+      const removed = await ctx.page.evaluate(() => {
+        const button = document.querySelector('[data-field="chat.attachment-remove"]')
+        if (button === null) return false
+        button.click()
+        return true
+      })
+      const removedGone = await ctx.page
+        .waitForFunction(
+          () => document.querySelectorAll('[data-field="chat.attachment"]').length === 0,
+          { timeout: 4000 },
+        )
+        .then(() => true)
+        .catch(() => false)
+
+      const attachments = input === null ? [] : input.attachments
+      const first = attachments[0] ?? null
+
+      return verdict(
+        {
+          pasteHandlerReached: pasted.dispatched && pasted.prevented,
+          thumbnailRendered:
+            uploaded &&
+            layout.count === 1 &&
+            layout.src.startsWith('blob:') &&
+            layout.naturalWidth > 0,
+          thumbnailInCardAboveInput: layout.aboveInput && layout.stripInCard,
+          thumbnailSize: layout.item !== null && layout.item.w === 56 && layout.item.h === 56,
+          removeButtonPresent: layout.removeCount === 1,
+          sendEnabledBeforeUpload: sendEnabled,
+          sendCarriesAttachment: first !== null,
+          attachmentName: first !== null && first.name === 'paste-verify.png',
+          attachmentFileId: first !== null && first.fileId !== '',
+          textSent: input !== null && input.text.includes('看看这张图'),
+          clearedAfterSend,
+          removedByButton: removed && secondUploaded && removedGone,
+        },
+        { pasted, layout, input, clearedAfterSend, pastedAgain, secondUploaded, removedGone },
       )
     },
   },

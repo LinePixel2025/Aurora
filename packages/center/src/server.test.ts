@@ -378,6 +378,66 @@ describe('Aurora Center · 客户端上线', () => {
     web.close()
   }, 20_000)
 
+  it('hello 的 capabilities.inputAttachments 解析进占位快照；旧 hello 缺省 false（2026-10-18）', async () => {
+    // 新客户端上报能力位；旧客户端不上报。两者的 hello 占位快照都要能被网页端读对，
+    // 网页端据此决定是否提供「粘贴图片」（docs/12 §5）。
+    const capable = await clientLogin({
+      username: USER.username,
+      password: USER.password,
+      clientId: 'client-attach-on',
+    })
+    const legacy = await clientLogin({
+      username: USER.username,
+      password: USER.password,
+      clientId: 'client-attach-old',
+    })
+    const capableWs = await connectClient(capable.data['token'] as string, {
+      clientId: 'client-attach-on',
+      name: '新客户端',
+      version: '0.5.0',
+      platform: 'win32',
+      mode: 'work',
+      capabilities: {
+        session: true,
+        remoteConfig: true,
+        fileTransfer: true,
+        inputAttachments: true,
+      },
+    })
+    const legacyWs = await connectClient(legacy.data['token'] as string, {
+      clientId: 'client-attach-old',
+      name: '旧客户端',
+      version: '0.4.0',
+      platform: 'win32',
+      mode: 'work',
+      capabilities: { session: true, remoteConfig: true, fileTransfer: true },
+    })
+    try {
+      const web = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${userToken}`)
+      const waitForWeb = collector(web)
+      await new Promise<void>((resolveOpen, reject) => {
+        web.once('open', () => resolveOpen())
+        web.once('error', reject)
+      })
+      const on = await waitForWeb(
+        (m) => m['type'] === 'client.status' && m['clientId'] === 'client-attach-on',
+      )
+      expect(
+        (on['status'] as { center: { inputAttachments?: boolean } }).center.inputAttachments,
+      ).toBe(true)
+      const off = await waitForWeb(
+        (m) => m['type'] === 'client.status' && m['clientId'] === 'client-attach-old',
+      )
+      expect(
+        (off['status'] as { center: { inputAttachments?: boolean } }).center.inputAttachments,
+      ).toBe(false)
+      web.close()
+    } finally {
+      capableWs.close()
+      legacyWs.close()
+    }
+  }, 20_000)
+
   it('提问卡端到端：ask.request 上行 → 网页作答 → 客户端收到 ask.resolve → 回执转回（v0.3.3）', async () => {
     const paired = await clientLogin({
       username: USER.username,
@@ -1416,6 +1476,91 @@ describe('Aurora Center · 网页上传与客户端令牌下载（本轮 docs/12
     })
     expect(missing.status).toBe(404)
   })
+
+  it('网页上传图片 → session.input 带附件 → 服务器补齐 name 下发，客户端回执转回（2026-10-18）', async () => {
+    // 客户端按新协议 hello（能力位为真），服务器的 hello 占位快照就能通过附件能力校验
+    const ws = await connectClient(pairingToken, {
+      clientId: 'client-e2e-1',
+      name: '测试机',
+      version: '0.5.0',
+      platform: 'win32',
+      mode: 'work',
+      capabilities: {
+        session: true,
+        remoteConfig: true,
+        fileTransfer: true,
+        inputAttachments: true,
+      },
+    })
+    const waitForClient = collector(ws)
+    try {
+      const user = await login(USER)
+      const upload = await fetch(`${base}/api/uploads?clientId=client-e2e-1`, {
+        method: 'POST',
+        headers: {
+          ...authed(user.token),
+          'X-File-Name': encodeURIComponent('截图.png'),
+          'Content-Type': 'application/octet-stream',
+        },
+        body: Buffer.from('fake-png-bytes'),
+      })
+      expect(upload.status).toBe(200)
+      const { fileId } = (await upload.json()) as { fileId: string }
+
+      const web = new WebSocket(`ws://127.0.0.1:${port}/api/ws?token=${user.token}`)
+      const waitForWeb = collector(web)
+      await new Promise<void>((resolveOpen, reject) => {
+        web.once('open', () => resolveOpen())
+        web.once('error', reject)
+      })
+      web.send(
+        JSON.stringify({
+          type: 'session.create',
+          requestId: 'web-att-1',
+          clientId: 'client-e2e-1',
+        }),
+      )
+      const created = await waitForWeb(
+        (m) => m['type'] === 'result' && m['requestId'] === 'web-att-1',
+      )
+      const sessionId = (created['data'] as { sessionId: string }).sessionId
+
+      web.send(
+        JSON.stringify({
+          type: 'session.input',
+          requestId: 'web-att-2',
+          clientId: 'client-e2e-1',
+          sessionId,
+          text: '看看这张图',
+          attachments: [fileId],
+        }),
+      )
+      const cmd = await waitForClient(
+        (m) =>
+          m['type'] === 'cmd' && (m['cmd'] as { requestId?: string }).requestId === 'web-att-2',
+      )
+      // 服务器在转发前补齐了 name（客户端不必自己 HEAD / 查索引）
+      expect(
+        (cmd['cmd'] as { attachments?: Array<{ fileId: string; name: string }> }).attachments,
+      ).toEqual([{ fileId, name: '截图.png' }])
+
+      ws.send(
+        JSON.stringify({
+          type: 'result',
+          requestId: 'web-att-2',
+          ok: true,
+          data: { agentRequestId: 'req-attach' },
+        }),
+      )
+      const result = await waitForWeb(
+        (m) => m['type'] === 'result' && m['requestId'] === 'web-att-2',
+      )
+      expect((result['data'] as { agentRequestId: string }).agentRequestId).toBe('req-attach')
+      web.close()
+    } finally {
+      ws.close()
+    }
+  }, 20_000)
 })
 
 describe('Aurora Center · 公开更新目录', () => {

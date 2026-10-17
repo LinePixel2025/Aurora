@@ -596,10 +596,26 @@ export async function sendFile(clientId: string, fileId: string): Promise<string
 /** 文件下发的等待窗口（毫秒）：与服务器侧 `FILE_KINDS` 的超时同量级（10 分钟略短一点） */
 const FILE_COMMAND_TIMEOUT_MS = 9 * 60_000
 
-/** 发送输入：乐观插入用户气泡（后续 user-message 事件按「内容 + 出现次数」逐条配对） */
-export async function sendInput(session: SessionState, text: string): Promise<void> {
+/**
+ * 发送输入：乐观插入用户气泡（后续 user-message 事件按「内容 + 出现次数」逐条配对）。
+ *
+ * `attachments` 是网页端先 `POST /api/uploads` 拿到的 fileId 列表（2026-10-18，docs/12 §5）：
+ * 只有非空时才带上 `attachments` 字段（协议只增不改 —— 空数组没有意义，还会让服务器多跑一遍
+ * 校验）；命令体里也**只有真的发出去**才为 true，调用方据此决定是否清空草稿与缩略图。
+ *
+ * 返回 `boolean`：true = 服务器回了成功回执；false = 没发（空文本 / 正在回复）或失败
+ * （失败时已按既有口径在流里落一条 error 条目，草稿与图片该退回原处）。
+ */
+export async function sendInput(
+  session: SessionState,
+  text: string,
+  attachments?: string[],
+): Promise<boolean> {
   const trimmed = text.trim()
-  if (!trimmed || session.pending) return
+  if (!trimmed || session.pending) return false
+  const fileIds = (attachments ?? []).filter(
+    (fileId) => typeof fileId === 'string' && fileId !== '',
+  )
   session.items.push({
     id: `local-${Date.now()}-${session.items.length}`,
     kind: 'user',
@@ -615,8 +631,10 @@ export async function sendInput(session: SessionState, text: string): Promise<vo
       clientId: session.clientId,
       sessionId: session.sessionId,
       text: trimmed,
+      ...(fileIds.length === 0 ? {} : { attachments: fileIds }),
     })
     if (typeof data?.agentRequestId === 'string') session.agentRequestId = data.agentRequestId
+    return true
   } catch (error) {
     session.pending = false
     session.items.push({
@@ -625,6 +643,7 @@ export async function sendInput(session: SessionState, text: string): Promise<vo
       content: error instanceof Error ? error.message : String(error),
       tools: [],
     })
+    return false
   }
 }
 

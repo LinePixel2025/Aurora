@@ -40,7 +40,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { PermissionMode } from '@aurora/shared'
-import { ChevronDown, ShieldCheck, ShieldOff } from '@aurora/shared/browser'
+import { ChevronDown, ShieldCheck, ShieldOff, useComposerFlyoutLeft } from '@aurora/shared/browser'
 
 const props = withDefaults(
   defineProps<{
@@ -62,6 +62,12 @@ const emit = defineEmits<{
 /** 「切到完全权限」的二次确认态：第一次点只把那一项变成确认按钮 */
 const pendingDanger = ref(false)
 const rootEl = ref<HTMLElement | null>(null)
+/** 触发按钮：浮层横向要贴住它（不再是固定 left: 0） */
+const triggerEl = ref<HTMLElement | null>(null)
+const { left: menuLeft } = useComposerFlyoutLeft(
+  () => triggerEl.value,
+  () => props.open,
+)
 
 /**
  * 收起时丢掉半途的二次确认态。放在 watcher 里而不是每个关闭路径各写一遍：
@@ -150,6 +156,7 @@ onBeforeUnmount(() => {
 <template>
   <div ref="rootEl" class="perm" :class="{ open }">
     <button
+      ref="triggerEl"
       type="button"
       class="perm-btn"
       :class="{ danger, readonly: mode === 'readonly', disabled }"
@@ -167,7 +174,13 @@ onBeforeUnmount(() => {
     </button>
 
     <Transition name="pop">
-      <div v-if="open" class="perm-menu glass-panel" role="menu" data-field="chat.permission-menu">
+      <div
+        v-if="open"
+        class="perm-menu glass-panel composer-flyout"
+        :style="{ left: `${menuLeft}px` }"
+        role="menu"
+        data-field="chat.permission-menu"
+      >
         <!-- 只读：最严的一档，收窄权限不需要二次确认（单击即提交） -->
         <button
           type="button"
@@ -343,22 +356,15 @@ onBeforeUnmount(() => {
 
 /*
  * 下拉向上弹、锚在**输入卡**上（输入框贴着窗口底部，向下弹会被裁掉）。
- * `left: 0` 相对的是 `.composer-box` 的左内边距 —— 与另外两个输入区浮层共用同一套锚点
- * 与 `--z-flyout` 层级；宽度保持紧凑，三个选项铺满整卡反而难扫读。
+ * 2026-10-18：定位 / 宽度 / 层级 / 材质一律来自共享的 `.composer-flyout`
+ * （`left: 0` 相对 `.composer-box` 的 padding box、`bottom: calc(100% + 6px)`、
+ * `--composer-flyout-width`、`--z-flyout`、玻璃底 + 描边 + `--shadow-2`），
+ * 这里**不再**写 position / left / bottom / width / z-index / 背景 / 描边 / 阴影 ——
+ * 输入区四个浮层必须共用同一份锚点，各写一份就是互相遮挡的来源（docs/07 §2.3）。
  */
 .perm-menu {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + 6px);
-  z-index: var(--z-flyout);
-  width: 320px;
   padding: var(--space-1);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--glass-border);
-  background: var(--glass-panel);
-  box-shadow: var(--shadow-2);
-  /* 兜住极端窄窗 / 高 DPI：卡片自己裁掉溢出，长串（模型 id、路径）在词内也能断 */
-  overflow: hidden;
+  /* 兜住极端窄窗 / 高 DPI：长串（模型 id、路径）在词内也能断 */
   word-break: break-word;
 }
 

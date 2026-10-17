@@ -10,6 +10,8 @@
  */
 import { randomBytes } from 'node:crypto'
 import {
+  CENTER_INPUT_ATTACHMENT_LIMIT,
+  CENTER_INPUT_IMAGE_MAX_BYTES,
   CENTER_REMOTE_CONFIG_PREFIXES,
   CENTER_SESSION_PREFIX,
   type AskSettleOutcome,
@@ -44,9 +46,10 @@ export interface HubDeps {
   serverVersion(): string
   logger?: Logger
   /**
-   * 查暂存文件（`file.send` 用，本轮 docs/12 §5）：服务器据此在转发前补齐 `name` / `size`。
+   * 查暂存文件（`file.send` 与 `session.input` 的附件校验共用，docs/12 §5）：
+   * 服务器据此在转发前补齐 `name` / `size`，并校验附件归属与大小。
    * 返回 `undefined` = 文件不存在 / 已过期 → 命令回 `E_NOT_FOUND` 且不进 pending。
-   * 未注入时该命令一律 `E_NOT_FOUND`（老装配器兼容）。
+   * 未注入时两条命令一律 `E_NOT_FOUND`（老装配器兼容）。
    */
   fileLookup?: (fileId: string) => { clientId: string; name: string; size: number } | undefined
 }
@@ -71,6 +74,30 @@ const VOICE_KINDS: ReadonlySet<string> = new Set(['stt.transcribe', 'tts.synthes
 const FILE_PENDING_TIMEOUT_MS = 10 * 60_000
 /** 文件下发命令（按 cmd.kind 判定，用放宽后的超时） */
 const FILE_KINDS: ReadonlySet<string> = new Set(['file.send'])
+
+/**
+ * 带图片附件的 `session.input` 的待回执超时（2026-10-18，docs/12 §5）：
+ * 回执不再只是"收下了"——客户端要先按 `attachments` 逐张用自身令牌下载
+ * （每张 ≤ 8 MiB，最多 5 张），弱网下可能远超 15s；沿用默认值会把一次成功的
+ * 收下报成 `E_CLIENT_TIMEOUT`（与 `VOICE_KINDS` / `FILE_KINDS` 同一类坑）。
+ */
+const INPUT_ATTACHMENT_PENDING_TIMEOUT_MS = 5 * 60_000
+
+/**
+ * 待回执超时按命令分级（与 `VOICE_KINDS` / `FILE_KINDS` 同风格）：
+ * 语音要等本机 provider（30s 级 → 60s）；文件下发要等整份文件落盘（→ 10 分钟）；
+ * 带附件的 `session.input` 要等客户端下载多张图片（→ 5 分钟）；
+ * 其余（会话数据 / 配置）毫秒级，15s 足够。
+ */
+function pendingTimeoutMs(cmd: CenterCommand): number {
+  if (VOICE_KINDS.has(cmd.kind)) return VOICE_PENDING_TIMEOUT_MS
+  if (FILE_KINDS.has(cmd.kind)) return FILE_PENDING_TIMEOUT_MS
+  // 附件是同一 kind 的载荷差异，只能看 cmd 本身（其余 kind 用集合判定即可）
+  if (cmd.kind === 'session.input' && (cmd.attachments?.length ?? 0) > 0) {
+    return INPUT_ATTACHMENT_PENDING_TIMEOUT_MS
+  }
+  return PENDING_TIMEOUT_MS
+}
 
 /**
  * 待回执条目（P1-03），键为 `${webConnId}:${requestId}`。
@@ -118,6 +145,20 @@ function stringMatrixOf(value: unknown): string[][] | undefined {
     groups.push(parsed)
   }
   return groups
+}
+
+/**
+ * `session.input` 的附件 id 列表（2026-10-18，docs/12 §5）：去重并保持发送顺序。
+ *
+ * 畸形入站帧（`attachments: 'x'` / `{}` / 元素非字符串）整体拒绝为 `undefined`
+ * ——不静默吞掉一半附件（否则网页端以为图发出去了，模型却只看到文字）。
+ * 缺省（undefined）按"没有附件"处理，返回空数组。
+ */
+function attachmentIdsOf(value: unknown): string[] | undefined {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) return undefined
+  if (!value.every((item) => typeof item === 'string')) return undefined
+  return [...new Set(value as string[])]
 }
 
 const pendingKey = (webConnId: string, requestId: string): string => `${webConnId}:${requestId}`
@@ -224,12 +265,7 @@ export class Hub {
         this.handleSessionCreate(conn, message.clientId, message.requestId)
         break
       case 'session.input':
-        this.forwardCommand(conn, message.clientId, {
-          kind: 'session.input',
-          requestId: message.requestId,
-          sessionId: message.sessionId,
-          text: message.text,
-        })
+        this.forwardSessionInput(conn, message)
         break
       case 'session.abort':
         this.forwardCommand(conn, message.clientId, {
@@ -503,6 +539,73 @@ export class Hub {
   }
 
   /**
+   * 远程消息（`session.input`，2026-10-18 起可带图片附件，docs/12 §5）：
+   * 授权 → 附件形状 / 数量 → 逐个查索引（存在、归属目标客户端、大小）→
+   * 目标客户端能力位 → 补齐 `name` 后交给 `forwardCommand`。
+   *
+   * 为什么服务器要逐个校验而不是转发后让客户端失败：客户端拿到一个已过期 / 别人的
+   * fileId 只会得到一次无谓的下载失败，模型那边却已经把"带图的消息"当成功了；
+   * 网页端也拿不到可读的失败原因。这里任一附件不合法就**整条拒绝**（不进 pending），
+   * 与 `file.send` 的 `E_NOT_FOUND` 同一口径。
+   */
+  private forwardSessionInput(
+    conn: WebConn,
+    message: Extract<CenterWebMessage, { type: 'session.input' }>,
+  ): void {
+    const { clientId, requestId } = message
+    const denial = this.authorize(conn, clientId)
+    if (denial !== undefined) {
+      conn.send({ type: 'result', requestId, ok: false, error: denial })
+      return
+    }
+    const fileIds = attachmentIdsOf(message.attachments)
+    if (fileIds === undefined) {
+      conn.send({ type: 'result', requestId, ok: false, error: 'E_INVALID_ARGUMENT' })
+      return
+    }
+    // 先去重再计数：同一张图被网页端重复选中不算"超数量"
+    if (fileIds.length > CENTER_INPUT_ATTACHMENT_LIMIT) {
+      conn.send({ type: 'result', requestId, ok: false, error: 'E_INVALID_ARGUMENT' })
+      return
+    }
+    const attachments: Array<{ fileId: string; name: string }> = []
+    for (const fileId of fileIds) {
+      const record = this.deps.fileLookup?.(fileId)
+      if (record === undefined) {
+        conn.send({ type: 'result', requestId, ok: false, error: 'E_NOT_FOUND' })
+        return
+      }
+      // 附件必须就是**为这台客户端**上传的（网页 `POST /api/uploads?clientId=` 的归属），
+      // 否则任何登录用户都能把任意暂存文件塞进别人设备的模型输入里（跨租户读）。
+      if (record.clientId !== clientId) {
+        conn.send({ type: 'result', requestId, ok: false, error: 'E_FORBIDDEN' })
+        return
+      }
+      if (record.size > CENTER_INPUT_IMAGE_MAX_BYTES) {
+        conn.send({ type: 'result', requestId, ok: false, error: 'E_INVALID_ARGUMENT' })
+        return
+      }
+      attachments.push({ fileId, name: record.name })
+    }
+    // 旧客户端（hello 未上报 `inputAttachments` 能力位）收到附件只会静默丢掉图片；
+    // 网页端按同一能力位不提供粘贴，这里再拒一道（缺省 = 不支持）。
+    if (attachments.length > 0) {
+      const target = this.statusByClient.get(clientId)
+      if (target?.center.inputAttachments !== true) {
+        conn.send({ type: 'result', requestId, ok: false, error: 'E_UNSUPPORTED' })
+        return
+      }
+    }
+    this.forwardCommand(conn, clientId, {
+      kind: 'session.input',
+      requestId,
+      sessionId: message.sessionId,
+      text: message.text,
+      ...(attachments.length === 0 ? {} : { attachments }),
+    })
+  }
+
+  /**
    * 通用命令转发：授权 → 在线 → 白名单预检 → 记 pending → 发给客户端。
    * `precheckError` 由调用方传入（config.update 的白名单预检），非空直接回执。
    */
@@ -534,12 +637,9 @@ export class Hub {
     }
     const key = pendingKey(conn.id, requestId)
     // 超时按命令分级：语音要等本机 provider（30s 级 → 60s）；文件下发要等整份文件落盘
-    // （可能几十 MB → 10 分钟）；其余（会话数据 / 配置）毫秒级，15s 足够。
-    const timeoutMs = VOICE_KINDS.has(cmd.kind)
-      ? VOICE_PENDING_TIMEOUT_MS
-      : FILE_KINDS.has(cmd.kind)
-        ? FILE_PENDING_TIMEOUT_MS
-        : PENDING_TIMEOUT_MS
+    // （可能几十 MB → 10 分钟）；带附件的 session.input 要等客户端下载多张图片（→ 5 分钟）；
+    // 其余（会话数据 / 配置）毫秒级，15s 足够。
+    const timeoutMs = pendingTimeoutMs(cmd)
     const timer = setTimeout(() => {
       const current = this.pending.get(key)
       // 只回收自己那一条：同一条网页连接复用同一个 requestId 时（协议上允许），

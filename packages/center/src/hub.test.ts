@@ -5,6 +5,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ClientStatus } from '@aurora/shared'
+import { CENTER_INPUT_ATTACHMENT_LIMIT, CENTER_INPUT_IMAGE_MAX_BYTES } from '@aurora/shared'
 
 interface Harness {
   hub: Hub
@@ -1530,5 +1531,319 @@ describe('Aurora Center · 文件下发（file.send）', () => {
       fileId: 'f-mine',
     })
     expect(target.sent.at(-1)).toMatchObject({ cmd: { kind: 'file.send', requestId: 'fs-4' } })
+  })
+})
+
+/**
+ * 网页端随消息发的图片附件（`session.input.attachments`，2026-10-18，docs/12 §5）。
+ *
+ * 客户端只负责"下载 + 交给模型"，校验全部由服务器在转发前做完：数量上限、文件存在、
+ * 归属就是目标客户端、单张 ≤ 8 MiB、目标客户端能力位为真。任何一条不满足整条拒绝
+ * （不进 pending、不下发 cmd），网页端拿到的失败原因必须可读。
+ */
+describe('Aurora Center · 消息附件（session.input.attachments）', () => {
+  /** fileId → 暂存文件记录（与 server.ts 的 fileLookup 返回形状一致） */
+  interface StoredFile {
+    clientId: string
+    name: string
+    size: number
+  }
+
+  /** 支持附件的客户端快照（hello / status 都会带这个能力位） */
+  const ATTACH_CAPABLE: ClientStatus = {
+    ...STATUS,
+    center: { ...STATUS.center, inputAttachments: true },
+  }
+
+  /** 带 fileLookup 的 hub：附件校验与 `file.send` 共用同一份索引 */
+  async function makeAttachmentHub(files: Record<string, StoredFile>) {
+    const dir = await mkdtemp(join(tmpdir(), 'aurora-center-hub-attach-'))
+    const clients = new ClientRegistry({ dataDir: dir })
+    await clients.init()
+    const hub = new Hub({
+      clients,
+      usernameOf: (id) => `user-${id}`,
+      serverVersion: () => '0.0.0-test',
+      fileLookup: (fileId) => files[fileId],
+    })
+    return {
+      hub,
+      clients,
+      connectClient(clientId: string, status: ClientStatus = STATUS) {
+        const sent: unknown[] = []
+        const conn: ClientConn = { clientId, send: (m) => sent.push(m), close: () => {} }
+        hub.registerClient(conn, status)
+        return { sent, conn }
+      },
+      connectWeb(user: { id: string; username: string; role: 'admin' | 'user' }) {
+        webConnSeq += 1
+        const sent: unknown[] = []
+        const conn: WebConn = { id: `w-${webConnSeq}`, user, send: (m) => sent.push(m) }
+        hub.registerWeb(conn)
+        return { id: conn.id, sent, conn }
+      },
+    }
+  }
+
+  it('合法附件：去重、保持顺序，服务器补齐 name 后转发；回执按 requestId 转回网页端', async () => {
+    const harness = await makeAttachmentHub({
+      'f-1': { clientId: 'c1', name: '截图一.png', size: 1024 },
+      'f-2': { clientId: 'c1', name: '截图二.png', size: 2048 },
+    })
+    await seedClient(harness, 'c1', 'u1')
+    const target = harness.connectClient('c1', ATTACH_CAPABLE)
+    target.sent.length = 0
+    const web = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    web.sent.length = 0
+
+    harness.hub.handleWebMessage(web.conn, {
+      type: 'session.input',
+      requestId: 'si-1',
+      clientId: 'c1',
+      sessionId: 'center-abc',
+      text: '看看这两张图',
+      // 重复的 f-2 只保留第一次出现；顺序按网页端给的来
+      attachments: ['f-2', 'f-1', 'f-2'],
+    })
+    expect(target.sent).toEqual([
+      {
+        type: 'cmd',
+        cmd: {
+          kind: 'session.input',
+          requestId: 'si-1',
+          sessionId: 'center-abc',
+          text: '看看这两张图',
+          attachments: [
+            { fileId: 'f-2', name: '截图二.png' },
+            { fileId: 'f-1', name: '截图一.png' },
+          ],
+        },
+      },
+    ])
+    expect(web.sent).toEqual([])
+
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'si-1',
+      ok: true,
+      data: { agentRequestId: 'req-9' },
+    })
+    expect(web.sent).toEqual([
+      { type: 'result', requestId: 'si-1', ok: true, data: { agentRequestId: 'req-9' } },
+    ])
+  })
+
+  it('不带附件的 session.input 形状不变（cmd 里不出现 attachments）', async () => {
+    const harness = await makeAttachmentHub({})
+    await seedClient(harness, 'c1', 'u1')
+    const target = harness.connectClient('c1')
+    target.sent.length = 0
+    const web = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    web.sent.length = 0
+
+    harness.hub.handleWebMessage(web.conn, {
+      type: 'session.input',
+      requestId: 'si-plain',
+      clientId: 'c1',
+      sessionId: 'center-plain',
+      text: '纯文本消息',
+    })
+    // toEqual：多出 attachments 键（哪怕是空数组）都会被抓住
+    expect(target.sent).toEqual([
+      {
+        type: 'cmd',
+        cmd: {
+          kind: 'session.input',
+          requestId: 'si-plain',
+          sessionId: 'center-plain',
+          text: '纯文本消息',
+        },
+      },
+    ])
+  })
+
+  it('未知 / 跨客户端 / 超大小 / 超数量：整条拒绝且不下发', async () => {
+    const harness = await makeAttachmentHub({
+      'f-mine': { clientId: 'c1', name: 'mine.png', size: 1024 },
+      'f-theirs': { clientId: 'c9', name: 'theirs.png', size: 1024 },
+      'f-big': { clientId: 'c1', name: 'big.png', size: CENTER_INPUT_IMAGE_MAX_BYTES + 1 },
+    })
+    await seedClient(harness, 'c1', 'u1')
+    await seedClient(harness, 'c9', 'u2')
+    const target = harness.connectClient('c1', ATTACH_CAPABLE)
+    target.sent.length = 0
+    const web = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    web.sent.length = 0
+
+    const send = (requestId: string, attachments: unknown): void => {
+      harness.hub.handleWebMessage(web.conn, {
+        type: 'session.input',
+        requestId,
+        clientId: 'c1',
+        sessionId: 'center-reject',
+        text: '带图',
+        attachments,
+      } as unknown as Parameters<typeof harness.hub.handleWebMessage>[1])
+    }
+
+    // 已过期 / 已删：E_NOT_FOUND
+    send('si-missing', ['missing'])
+    expect(web.sent.at(-1)).toMatchObject({
+      requestId: 'si-missing',
+      ok: false,
+      error: 'E_NOT_FOUND',
+    })
+
+    // 文件来源不是目标客户端（别人的暂存文件）：E_FORBIDDEN
+    send('si-theirs', ['f-theirs'])
+    expect(web.sent.at(-1)).toMatchObject({
+      requestId: 'si-theirs',
+      ok: false,
+      error: 'E_FORBIDDEN',
+    })
+
+    // 单张超过 8 MiB：E_INVALID_ARGUMENT
+    send('si-big', ['f-big'])
+    expect(web.sent.at(-1)).toMatchObject({
+      requestId: 'si-big',
+      ok: false,
+      error: 'E_INVALID_ARGUMENT',
+    })
+
+    // 去重后仍超过上限（5 张）：E_INVALID_ARGUMENT
+    const tooMany = Array.from(
+      { length: CENTER_INPUT_ATTACHMENT_LIMIT + 1 },
+      (_, index) => `f-${index}`,
+    )
+    send('si-many', tooMany)
+    expect(web.sent.at(-1)).toMatchObject({
+      requestId: 'si-many',
+      ok: false,
+      error: 'E_INVALID_ARGUMENT',
+    })
+
+    // 畸形帧（attachments 不是字符串数组）：同一码拒绝，不半截放行
+    send('si-malformed', 'f-mine')
+    expect(web.sent.at(-1)).toMatchObject({
+      requestId: 'si-malformed',
+      ok: false,
+      error: 'E_INVALID_ARGUMENT',
+    })
+
+    // 被拒的命令一条都没到客户端，也不留 pending
+    expect(target.sent).toEqual([])
+    harness.hub.handleClientMessage('c1', {
+      type: 'result',
+      requestId: 'si-missing',
+      ok: true,
+      data: { agentRequestId: 'req-x' },
+    })
+    expect(web.sent.filter((m) => (m as { type: string }).type === 'result')).toHaveLength(5)
+  })
+
+  it('恰好 5 张、单张恰好 8 MiB 的边界值放行', async () => {
+    const files: Record<string, StoredFile> = {}
+    for (let index = 0; index < CENTER_INPUT_ATTACHMENT_LIMIT - 1; index += 1) {
+      files[`f-${index}`] = { clientId: 'c1', name: `图${index}.png`, size: 1024 }
+    }
+    files['f-edge'] = {
+      clientId: 'c1',
+      name: 'edge.png',
+      size: CENTER_INPUT_IMAGE_MAX_BYTES,
+    }
+    const harness = await makeAttachmentHub(files)
+    await seedClient(harness, 'c1', 'u1')
+    const target = harness.connectClient('c1', ATTACH_CAPABLE)
+    target.sent.length = 0
+    const web = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    web.sent.length = 0
+
+    harness.hub.handleWebMessage(web.conn, {
+      type: 'session.input',
+      requestId: 'si-edge',
+      clientId: 'c1',
+      sessionId: 'center-edge',
+      text: '边界',
+      attachments: [
+        'f-edge',
+        ...Array.from({ length: CENTER_INPUT_ATTACHMENT_LIMIT - 1 }, (_, index) => `f-${index}`),
+      ],
+    })
+    const cmd = target.sent.at(-1) as {
+      cmd: { attachments?: Array<{ fileId: string; name: string }> }
+    }
+    expect(cmd.cmd.attachments).toHaveLength(CENTER_INPUT_ATTACHMENT_LIMIT)
+    expect(cmd.cmd.attachments?.[0]).toEqual({ fileId: 'f-edge', name: 'edge.png' })
+  })
+
+  it('目标客户端能力位为假（旧 hello 缺省）：E_UNSUPPORTED，不下发', async () => {
+    const harness = await makeAttachmentHub({
+      'f-1': { clientId: 'c1', name: 'a.png', size: 1024 },
+    })
+    await seedClient(harness, 'c1', 'u1')
+    // STATUS 没有 center.inputAttachments —— 与旧客户端一致
+    const target = harness.connectClient('c1')
+    target.sent.length = 0
+    const web = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+    web.sent.length = 0
+
+    harness.hub.handleWebMessage(web.conn, {
+      type: 'session.input',
+      requestId: 'si-old',
+      clientId: 'c1',
+      sessionId: 'center-old',
+      text: '带图',
+      attachments: ['f-1'],
+    })
+    expect(web.sent.at(-1)).toMatchObject({
+      requestId: 'si-old',
+      ok: false,
+      error: 'E_UNSUPPORTED',
+    })
+    expect(target.sent).toEqual([])
+
+    // 不带附件的消息不受能力位影响（旧客户端仍能正常对话）
+    harness.hub.handleWebMessage(web.conn, {
+      type: 'session.input',
+      requestId: 'si-old-plain',
+      clientId: 'c1',
+      sessionId: 'center-old',
+      text: '纯文本',
+    })
+    expect(target.sent.at(-1)).toMatchObject({
+      cmd: { kind: 'session.input', requestId: 'si-old-plain' },
+    })
+  })
+
+  it('带附件的 session.input 待回执超时放宽到 5 分钟（客户端下载多图，15s 会误判）', async () => {
+    vi.useFakeTimers()
+    try {
+      const harness = await makeAttachmentHub({
+        'f-1': { clientId: 'c1', name: 'a.png', size: 1024 },
+      })
+      await seedClient(harness, 'c1', 'u1')
+      harness.connectClient('c1', ATTACH_CAPABLE)
+      const web = harness.connectWeb({ id: 'u1', username: 'u1', role: 'user' })
+      web.sent.length = 0
+      harness.hub.handleWebMessage(web.conn, {
+        type: 'session.input',
+        requestId: 'si-slow',
+        clientId: 'c1',
+        sessionId: 'center-slow',
+        text: '带图',
+        attachments: ['f-1'],
+      })
+      // 16s（普通命令的超时点）不合成超时：客户端还在下载图片
+      await vi.advanceTimersByTimeAsync(16_000)
+      expect(web.sent.filter((m) => (m as { type: string }).type === 'result')).toHaveLength(0)
+      // 接近 5 分钟时仍不超时
+      await vi.advanceTimersByTimeAsync(5 * 60_000 - 16_000 - 1)
+      expect(web.sent.filter((m) => (m as { type: string }).type === 'result')).toHaveLength(0)
+      // 5 分钟后仍未回执才合成 E_CLIENT_TIMEOUT，不让请求悬死
+      await vi.advanceTimersByTimeAsync(2)
+      expect(web.sent.at(-1)).toMatchObject({ ok: false, error: 'E_CLIENT_TIMEOUT' })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

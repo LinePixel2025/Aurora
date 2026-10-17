@@ -200,7 +200,13 @@ interface HelloBody {
   version: string
   platform: string
   mode: ModeId
-  capabilities: { session: boolean; remoteConfig: boolean; fileTransfer: boolean }
+  capabilities: {
+    session: boolean
+    remoteConfig: boolean
+    fileTransfer: boolean
+    /** 支持随 `session.input` 接收图片附件（2026-10-18，docs/12 §5）；旧客户端缺省 false */
+    inputAttachments: boolean
+  }
 }
 
 export function createCenterServer(options: CenterServerOptions): RunningCenterServer {
@@ -477,6 +483,8 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
         allowRemoteSession: hello.capabilities.session,
         allowRemoteConfig: hello.capabilities.remoteConfig,
         allowFileTransfer: hello.capabilities.fileTransfer,
+        // 能力位随 hello 上报（旧客户端缺省 false）；真实 `status` 到达后整体覆盖
+        inputAttachments: hello.capabilities.inputAttachments,
       },
       // 同 agent：占位快照，客户端连上后的第一条 `status` 会整体覆盖（含生效 LLM）
       llm: { activeProviderId: '', model: '', reasoningEffort: 'auto' },
@@ -1456,6 +1464,8 @@ function readHello(raw: Record<string, unknown>): HelloBody | undefined {
       session: capabilitiesRaw['session'] !== false,
       remoteConfig: capabilitiesRaw['remoteConfig'] !== false,
       fileTransfer: capabilitiesRaw['fileTransfer'] !== false,
+      // 旧 hello 没有这个键 = 不支持：服务器据此拒绝带附件的 session.input（E_UNSUPPORTED）
+      inputAttachments: capabilitiesRaw['inputAttachments'] === true,
     },
   }
 }

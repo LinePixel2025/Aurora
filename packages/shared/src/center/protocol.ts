@@ -16,6 +16,22 @@ import type {
 import type { CenterOfficialCapability, ModeId, ReasoningEffort } from '../config/schema.js'
 import type { PermissionMode } from '../config/permission.js'
 
+/**
+ * 网页端随 `session.input` 上行的图片附件上限（2026-10-18，docs/12 §5）。
+ *
+ * 与桌面端 `MAX_ATTACHMENTS` 同一个数：一条消息最多 5 个附件，再多就该走文件传输。
+ * 服务器在转发前校验，客户端下载前再校验一次（两层都保留，旧客户端不静默吞图）。
+ */
+export const CENTER_INPUT_ATTACHMENT_LIMIT = 5
+
+/**
+ * 网页端图片附件单张上限（8 MiB，docs/12 §5）。
+ *
+ * 与桌面端 `IMAGE_MAX_BYTES` / `PASTED_IMAGE_MAX_BYTES` 同值：超过 8 MiB 的图
+ * base64 之后会把请求体顶得过大，应该走“发送文件”而不是“随消息发图”。
+ */
+export const CENTER_INPUT_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+
 /** 客户端能力声明（hello 上报；服务器据此决定哪些命令可发） */
 export interface ClientCapabilities {
   /** 允许远程开 session 对话（`center.allowRemoteSession`） */
@@ -24,6 +40,11 @@ export interface ClientCapabilities {
   remoteConfig: boolean
   /** 允许接收文件（`center.allowFileTransfer`） */
   fileTransfer: boolean
+  /**
+   * 支持随 `session.input` 接收图片附件（2026-10-18）。**可选**：旧客户端不上报 = false，
+   * 网页端据此不提供图片粘贴，服务器也拒绝带附件的命令（避免图片被静默丢掉）。
+   */
+  inputAttachments?: boolean
 }
 
 /** 客户端握手信息（连接后第一条消息） */
@@ -45,7 +66,16 @@ export interface ClientStatus {
     permissionMode: string
     tools: { enabled: boolean; files: boolean; search: boolean; open: boolean; terminal: boolean }
   }
-  center: { allowRemoteSession: boolean; allowRemoteConfig: boolean; allowFileTransfer: boolean }
+  center: {
+    allowRemoteSession: boolean
+    allowRemoteConfig: boolean
+    allowFileTransfer: boolean
+    /**
+     * 是否支持随远程消息接收图片附件（2026-10-18）。**可选**：旧客户端缺省 = 不支持；
+     * 网页端据此决定粘贴图片是否可用，服务器转发前再校验一次。
+     */
+    inputAttachments?: boolean
+  }
   /** 生效 LLM 快照（网页端据此展示/切换模型与思考等级，docs/12 §6.3） */
   llm: { activeProviderId: string; model: string; reasoningEffort: ReasoningEffort }
   /**
@@ -279,7 +309,20 @@ export interface FileEntryInfo {
 
 /** 服务器发给客户端的命令 */
 export type CenterCommand =
-  | { kind: 'session.input'; requestId: string; sessionId: string; text: string }
+  | {
+      kind: 'session.input'
+      requestId: string
+      sessionId: string
+      text: string
+      /**
+       * 随消息一起下发的图片附件（2026-10-18，docs/12 §5）。
+       *
+       * 网页端先 `POST /api/uploads` 拿到 fileId，服务器转发**前**用 `fileLookup`
+       * 校验归属/大小并补齐 `name`；客户端据此用自身令牌下载到本地，再交给
+       * 与 `chat:send` 同一条 `prepareAttachments` 链路。
+       */
+      attachments?: Array<{ fileId: string; name: string }>
+    }
   | {
       kind: 'session.abort'
       requestId: string
@@ -489,7 +532,21 @@ export interface CenterProjectOption {
 /** 网页 → 服务器 */
 export type CenterWebMessage =
   | { type: 'session.create'; requestId: string; clientId: string }
-  | { type: 'session.input'; requestId: string; clientId: string; sessionId: string; text: string }
+  | {
+      type: 'session.input'
+      requestId: string
+      clientId: string
+      sessionId: string
+      text: string
+      /**
+       * 网页端上传后拿到的 fileId 列表（2026-10-18，docs/12 §5）。
+       *
+       * 服务器转发前校验：最多 `CENTER_INPUT_ATTACHMENT_LIMIT` 个、每张
+       * ≤ `CENTER_INPUT_IMAGE_MAX_BYTES`、文件来源就是目标客户端；
+       * 通过后补齐 name 再下发。旧客户端能力位为假时整条拒绝。
+       */
+      attachments?: string[]
+    }
   | {
       type: 'session.readImage'
       requestId: string

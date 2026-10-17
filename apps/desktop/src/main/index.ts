@@ -5,7 +5,7 @@
  *  单实例锁 → 日志 → 配置（加密/迁移）→ 感知 → 窗口 → 模式装配 → IPC → 托盘
  *  → 首次引导判断（无可用模型配置则进入引导向导，否则显示服务窗与提示条）。
  */
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import {
   existsSync,
   mkdirSync,
@@ -16,7 +16,7 @@ import {
   statSync,
 } from 'node:fs'
 import { hostname as osHostname, tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, extname, join } from 'node:path'
 import {
   BrowserWindow,
   Notification,
@@ -49,6 +49,7 @@ import {
 import type { AgentProviderFactory, SettingsToolPort, ToolDefinition } from '@aurora/agent-core'
 import {
   COMPUTER_TOOL_NAMES,
+  CENTER_INPUT_IMAGE_MAX_BYTES,
   CENTER_OFFICIAL_PROVIDER_IDS,
   CENTER_SESSION_PREFIX,
   IPC,
@@ -235,6 +236,9 @@ import { OWNED_IMAGE_SUBDIRS } from './tools/image-read.js'
 import { createScreenshotPort } from './tools/screenshot-port.js'
 // 图片输入开关的**唯一判据**（docs/06 §3.1 / §25）：图像工具门控与附件降级共用同一份实现
 import { visionEnabled } from './vision.js'
+// 附件准备（docs/07 §2.3）：`chat:send` 与 Center 远程会话共用同一条链路
+import { prepareAttachments, type AttachmentDigest } from './attachment-prepare.js'
+import { selectExpiredFiles } from './tools/image-store.js'
 import { createNotificationPort } from './tools/notify.js'
 import { createImageGenPort } from './tools/imagegen-port.js'
 import { createImageDisplayPort } from './tools/image-display-port.js'
@@ -719,6 +723,40 @@ if (!gotLock) {
         app.quit()
       })
   })
+}
+
+/**
+ * Center 图片附件的落盘根目录与保留个数（2026-10-18，docs/12 §5）。
+ *
+ * 网页端随 `session.input` 下发的图片先落到 `<userData>/center-attachments/`，
+ * 再走与本地附件同一条准备链。一条消息一个目录：目录名以 13 位毫秒时间戳打头
+ * （`<ts>-<rand>`），字典序即时间序，清理不必 stat 每个目录。
+ */
+const CENTER_ATTACHMENT_KEEP = 50
+
+/** 一条远程消息的附件目录：`<userData>/center-attachments/<13 位时间戳>-<随机段>/`。 */
+function centerAttachmentDir(root: string, now: number, random: string): string {
+  return join(root, `${now}-${random}`)
+}
+
+/** 只保留最近 `keep` 个附件目录（清理失败只 warn：维护动作不能挡住消息发送）。 */
+async function pruneCenterAttachmentDirs(
+  root: string,
+  keep: number,
+  logger: Logger,
+): Promise<void> {
+  try {
+    const names = (await fs.readdir(root, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+    const expired = selectExpiredFiles(names, keep)
+    for (const name of expired) await fs.rm(join(root, name), { recursive: true, force: true })
+    if (expired.length > 0) logger.debug('已清理旧的 Center 附件目录', { removed: expired.length })
+  } catch (error) {
+    logger.warn('清理 Center 附件目录失败', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
 }
 
 async function bootstrap(): Promise<void> {
@@ -1828,7 +1866,71 @@ async function bootstrap(): Promise<void> {
   // 7.1a Aurora Center 连接（docs/12）：出站 WS + 远程会话桥 + 远程配置。
   //     远程会话与本地 chat:send 走同一个 DesktopAgentHost；远程配置先在副本上
   //     演练再落库（mutate 的 draft 是活对象，半写会污染内存态）。
-  sessionBridge = new SessionBridge({ agent, logger: logger.child('center-bridge') })
+  /**
+   * 附件提取（docs/07 §2.3）：`chat:send` 与 Center 远程附件**共用同一份**实现 ——
+   * 复用分类管线的提取器（`extract.ts`，与 officeparser 同一套能力），走 utilityProcess
+   * 池以免一个几十 MB 的 PDF 卡住主进程事件循环。
+   * `extractPool` 在下方 7.2 才装配；这里只定义函数，真正调用发生在消息到达时（那时已就绪）。
+   */
+  const extractAttachmentDigest = async (path: string): Promise<AttachmentDigest | undefined> => {
+    const fileName = basename(path)
+    const ext = extname(path).replace(/^\./, '').toLowerCase()
+    try {
+      const stat = await fs.stat(path)
+      if (!stat.isFile()) return { path, fileName, note: '不是文件' }
+      const result = await extractPool!.extract({ path, ext, sizeBytes: stat.size })
+      const warnings = result.warnings ?? []
+      return {
+        path,
+        fileName,
+        ...(result.evidence.trim() === '' ? {} : { text: result.evidence }),
+        ...(warnings.length > 0 ? { note: warnings.join('；') } : {}),
+      }
+    } catch (error) {
+      return { path, fileName, note: `提取失败：${String(error)}` }
+    }
+  }
+  /**
+   * 远程附件的准备链（与 `chat:send` 同一份 `prepareAttachments`）：vision 取**当前设置**、
+   * 提取复用上面的 `extractAttachmentDigest` —— 两条发送通路的降级口径不会漂移。
+   */
+  const prepareRemoteAttachments = (paths: string[]) =>
+    prepareAttachments(
+      {
+        settings: centerSettings,
+        logger: logger!.child('center-attachments'),
+        attachmentExtract: extractAttachmentDigest,
+        visionEnabled: () => visionEnabled(centerSettings.get()),
+      },
+      paths,
+    )
+  sessionBridge = new SessionBridge({
+    agent,
+    logger: logger.child('center-bridge'),
+    // 网页端随 `session.input` 上行的图片附件（2026-10-18，docs/12 §5）：用自身令牌拉回
+    // 本机独立目录（一条消息一个目录），再走与本地 `chat:send` 同一条附件准备链。
+    fetchAttachment: async (input) => {
+      const root = join(userData, 'center-attachments')
+      const targetDir = centerAttachmentDir(root, Date.now(), randomBytes(3).toString('hex'))
+      const result = await downloadFileFromCenter({
+        serverUrl: settings!.get().center.serverUrl,
+        token: settings!.getSecret('center.token'),
+        clientId: settings!.get().center.clientId,
+        fileId: input.fileId,
+        name: input.name,
+        targetDir,
+        maxBytes: CENTER_INPUT_IMAGE_MAX_BYTES,
+      })
+      logger!.info('已下载远程会话附件', {
+        fileId: input.fileId,
+        size: result.size,
+        path: result.path,
+      })
+      await pruneCenterAttachmentDirs(root, CENTER_ATTACHMENT_KEEP, logger!)
+      return result.path
+    },
+    prepareAttachments: prepareRemoteAttachments,
+  })
   centerConnector = new CenterConnector({
     logger: logger.child('center'),
     config: () => {
@@ -2504,31 +2606,9 @@ async function bootstrap(): Promise<void> {
       automationRuns: smokeMode ? [...automationRunLog] : undefined,
     }),
     onQuit: () => app.quit(),
-    // 附件提取（docs/07 §2.3）：复用分类管线的提取器（同一份 officeparser 能力），
-    // 走 utilityProcess 池以免一个几十 MB 的 PDF 卡住主进程事件循环。
-    attachmentExtract: async (path) => {
-      const { basename, extname } = await import('node:path')
-      const fileName = basename(path)
-      const ext = extname(path).replace(/^\./, '').toLowerCase()
-      try {
-        const stat = await fs.stat(path)
-        if (!stat.isFile()) return { path, fileName, note: '不是文件' }
-        const result = await extractPool!.extract({
-          path,
-          ext,
-          sizeBytes: stat.size,
-        })
-        const warnings = result.warnings ?? []
-        return {
-          path,
-          fileName,
-          ...(result.evidence.trim() === '' ? {} : { text: result.evidence }),
-          ...(warnings.length > 0 ? { note: warnings.join('；') } : {}),
-        }
-      } catch (error) {
-        return { path, fileName, note: `提取失败：${String(error)}` }
-      }
-    },
+    // 附件提取（docs/07 §2.3）：与 Center 远程附件共用 `extractAttachmentDigest`
+    //（复用分类管线的提取器，走 utilityProcess 池以免一个几十 MB 的 PDF 卡住主进程）。
+    attachmentExtract: extractAttachmentDigest,
     onSettingsChanged: (next) => {
       // 高级页的三项「真生效」路径（docs/08 §6）：
       // 日志级别热改、代理即时重应用、提示条透明度重新取值。

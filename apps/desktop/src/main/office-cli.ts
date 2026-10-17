@@ -65,8 +65,8 @@ export class OfficeCliRunner {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
-    let stdout = Buffer.alloc(0)
-    let stderr = Buffer.alloc(0)
+    let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0)
+    let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0)
     let outputExceeded = false
     const append = (current: Buffer, chunk: Buffer): Buffer => {
       if (current.length + chunk.length > this.maxOutputBytes) {

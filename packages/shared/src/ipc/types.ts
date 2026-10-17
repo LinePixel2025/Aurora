@@ -1293,6 +1293,43 @@ export interface ChatAttachmentPreview {
 }
 
 /**
+ * 粘贴图片上限（2026-10-18，docs/07 §2.3）。
+ *
+ * 与主进程 `IMAGE_MAX_BYTES` 同一个值：剪贴板图片先落盘再走附件链路，
+ * 超过这个尺寸就该走“发文件”而不是“发一张图”。渲染层在粘贴时先拦一道，
+ * 主进程再校验一次（渲染层传入的 mime / 大小不可信）。
+ */
+export const PASTED_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+
+/**
+ * 把剪贴板图片暂存成本地附件（通道 `chat:stageImage`，2026-10-18）。
+ *
+ * 渲染进程的 paste 事件只能拿到 `File`（没有本地路径），而附件链路按路径工作：
+ * 主进程负责把字节写进 `<userData>/pasted/`，返回路径与一张小预览图。
+ * `data` 用 ArrayBuffer 而不是 base64：结构化克隆不需要再编码一次。
+ */
+export interface ChatStageImageRequest {
+  mimeType: string
+  /** 原始文件名（只用于展示参考；落盘名由主进程生成） */
+  name?: string
+  data: ArrayBuffer
+}
+
+export interface ChatStageImageResult {
+  /** 暂存后的绝对路径（与 `SendMessageRequest.attachments` 里的同一个值） */
+  path: string
+  /** 落盘文件名（chip / title 用） */
+  name: string
+  /**
+   * 96px 缩略图的 `data:` URL。
+   *
+   * 粘贴图可能超过 `PREVIEW_MAX_BYTES`（2 MiB），此时走 `chat:readAttachment` 拿不到缩略图；
+   * 主进程在落盘时顺手缩一张随结果回传，保证“粘贴进去就看得见缩略图”。
+   */
+  previewDataUrl?: string
+}
+
+/**
  * 助手消息里展示的一张图片（`show_image` / `generate_image`，docs/06 §14）。
  *
  * 渲染层与 Center 只拿到这份**无路径元数据**；真实文件按 `id` 通过 IPC / Center
@@ -2065,6 +2102,13 @@ export interface AuroraApi {
      * 渲染层据此退回纯文字 chip（不显示裂图）。
      */
     readAttachment(request: ChatAttachmentPreviewRequest): Promise<Result<ChatAttachmentPreview>>
+    /**
+     * 把剪贴板图片暂存成本地附件（2026-10-18，docs/07 §2.3）。
+     *
+     * 渲染层粘贴时拿到的 `File` 没有本地路径，主进程写盘后回路径 + 96px 预览图；
+     * 只在渲染层调用，写入目录固定为 `<userData>/pasted/`，不接受任意目标路径。
+     */
+    stageImage(request: ChatStageImageRequest): Promise<Result<ChatStageImageResult>>
     /**
      * 读取助手消息图片区的一张图片（`show_image` / `generate_image`）。
      * 主进程按会话 + imageId 查会话记录并读盘，只回 data URL。

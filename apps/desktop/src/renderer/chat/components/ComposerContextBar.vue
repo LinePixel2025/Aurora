@@ -26,7 +26,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { TokenUsage } from '@aurora/shared'
 import { formatExactCount, formatTokenCount } from '@aurora/shared/browser'
-import { ChevronDown, Gauge } from '@aurora/shared/browser'
+import { ChevronDown, Gauge, useComposerFlyoutLeft } from '@aurora/shared/browser'
 
 const props = withDefaults(
   defineProps<{
@@ -49,6 +49,12 @@ const props = withDefaults(
 const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 
 const rootEl = ref<HTMLElement | null>(null)
+/** 整条状态栏就是触发器：详情卡横向贴住它（而不是固定卡片左缘） */
+const triggerEl = ref<HTMLElement | null>(null)
+const { left: cardLeft } = useComposerFlyoutLeft(
+  () => triggerEl.value,
+  () => props.open,
+)
 
 /** 点面板外部 / Esc 收起（与输入框工具行上的权限下拉同一套行为） */
 function onDocumentPointerDown(event: PointerEvent): void {
@@ -138,7 +144,12 @@ const cachedText = computed(() =>
   <div ref="rootEl" class="ctx" :class="[tone, { open }]">
     <!-- 详情卡向上弹：这一条贴着窗口底部，向下弹会被裁掉 -->
     <Transition name="pop">
-      <div v-if="open" class="ctx-card glass-panel" data-field="chat.context-detail">
+      <div
+        v-if="open"
+        class="ctx-card glass-panel composer-flyout"
+        :style="{ left: `${cardLeft}px` }"
+        data-field="chat.context-detail"
+      >
         <p class="ctx-card-title tiny muted">上下文详解</p>
         <dl class="ctx-grid">
           <div class="ctx-row">
@@ -187,6 +198,7 @@ const cachedText = computed(() =>
     </Transition>
 
     <button
+      ref="triggerEl"
       type="button"
       class="ctx-bar"
       data-field="chat.context"
@@ -357,54 +369,58 @@ const cachedText = computed(() =>
   transform: rotate(180deg);
 }
 
-/* 详情卡（向上弹、锚在**输入卡**上；与另外两个输入区浮层共用 `--z-flyout`） */
+/*
+ * 详情卡向上弹、锚在**输入卡**上（与另外三个输入区浮层共用 `.composer-flyout` 的
+ * 定位 / 宽度 / 层级 / 材质，docs/07 §2.3「浮层的锚点与层级」）。
+ * 这里是「工具行被盖死」事故的原点：详情卡此前锚在 `.ctx`（工具行**下方**）上向上弹，
+ * 底边正好落在工具行内部，把权限 / 模型 / 思考 / 麦克风 / 停止 / 发送整条盖住且不可点。
+ * 2026-10-18 起**不再**写 position / left / right / bottom / width / z-index /
+ * 背景 / 描边 / 阴影 —— 四个浮层只保留一份锚点来源，各写一份就会再次漂移。
+ */
 .ctx-card {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + 6px);
-  z-index: var(--z-flyout);
   padding: var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--glass-border);
-  background: var(--glass-panel);
-  box-shadow: var(--shadow-2);
 }
 
 .ctx-card-title {
   margin: 0 0 var(--space-2);
 }
 
+/*
+ * 2026-10-18：从「两列网格」改成**单列 label/value**。
+ * 旧布局每行各占半张 320px 卡，长模型 id / 「1,000,000 tokens」会把 dt 与 dd 挤到
+ * 互相重叠（用户截图）。现在一行一条，label 定宽、value 占满剩余并可在词内换行。
+ */
 .ctx-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   margin: 0;
 }
 
 .ctx-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: start;
   gap: var(--space-2);
   min-width: 0;
 }
 
 .ctx-row dt {
-  flex: 0 1 auto;
+  margin: 0;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--text-muted);
   font-size: var(--text-xs);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .ctx-row dd {
-  flex: 0 0 auto;
   margin: 0;
+  min-width: 0;
   color: var(--text-primary);
   font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font-variant-numeric: var(--num-tabular);
 }
 

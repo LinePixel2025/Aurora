@@ -32,14 +32,26 @@ export function defaultStatus() {
       permissionMode: 'auto',
       tools: { enabled: true, files: true, search: true, open: true, terminal: true },
     },
-    center: { allowRemoteSession: true, allowRemoteConfig: true, allowFileTransfer: true },
+    center: {
+      allowRemoteSession: true,
+      allowRemoteConfig: true,
+      allowFileTransfer: true,
+      // 随消息接收图片附件（2026-10-18，docs/12 §5）：网页端据此提供图片粘贴，
+      // 服务器转发前也按这个能力位裁决 —— 缺省不带 = 旧客户端。
+      inputAttachments: true,
+    },
     llm: { activeProviderId: 'p1', model: 'aurora-test-1', reasoningEffort: 'medium' },
     voice: { stt: true, tts: true },
   }
 }
 
 /** hello 上报的能力位（与 status.center 一致） */
-const CAPABILITIES = { session: true, remoteConfig: true, fileTransfer: true }
+const CAPABILITIES = {
+  session: true,
+  remoteConfig: true,
+  fileTransfer: true,
+  inputAttachments: true,
+}
 
 /**
  * `config.get` 的脱敏回执（网页端只读 `llm` 这一段，见 `web/src/lib/remote-llm.ts`）：
@@ -312,6 +324,15 @@ export class StubClient {
     this.token = ''
     this.ws = null
     this.commands = []
+    /**
+     * 网页端发来的 `session.input`（2026-10-18，docs/12 §5）：
+     * `{ sessionId, text, attachments: [{ fileId, name }], at }`。
+     *
+     * 单独记一份而不是翻 `commands` 数组：图片粘贴场景要断言的就是**服务器转发后**
+     * 命令体里到底有没有附件、以及附件条目是否被补齐了 name —— 这是"图真的上路了"
+     * 的唯一事实来源（网页端的 blob: 缩略图只证明本地预览在）。
+     */
+    this.inputs = []
     this.status = defaultStatus()
     this.seq = 0
     /** 会话列表条数（默认 2 条夹具会话；`setSessionCount` 可调大） */
@@ -405,6 +426,16 @@ export class StubClient {
     if (message.type !== 'cmd') return
     const cmd = message.cmd
     this.commands.push({ kind: cmd.kind, cmd, at: Date.now() })
+    if (cmd.kind === 'session.input') {
+      this.inputs.push({
+        sessionId: cmd.sessionId,
+        text: cmd.text,
+        attachments: Array.isArray(cmd.attachments)
+          ? cmd.attachments.map((item) => ({ fileId: item.fileId, name: item.name }))
+          : [],
+        at: Date.now(),
+      })
+    }
     this.respond(cmd)
   }
 
@@ -558,6 +589,23 @@ export class StubClient {
           entry.kind === kind && entry.at >= since && (where === undefined || where(entry.cmd)),
       )
       if (hit !== undefined) return hit.cmd
+      if (Date.now() > deadline) return null
+      await sleep(50)
+    }
+  }
+
+  /**
+   * 等一条 `session.input` 到达（图片粘贴场景用）：返回
+   * `{ sessionId, text, attachments, at }`，超时返回 `null`（不抛错，读数进报告）。
+   */
+  async waitForInput(options = {}) {
+    const { since = 0, timeout = 4000, where } = options
+    const deadline = Date.now() + timeout
+    for (;;) {
+      const hit = this.inputs.find(
+        (entry) => entry.at >= since && (where === undefined || where(entry)),
+      )
+      if (hit !== undefined) return hit
       if (Date.now() > deadline) return null
       await sleep(50)
     }

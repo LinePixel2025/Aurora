@@ -106,6 +106,186 @@ describe('SessionBridge · 远程会话', () => {
   })
 })
 
+describe('SessionBridge · 远程图片附件（docs/12 §5，2026-10-18）', () => {
+  function makeAttachmentBridge(overrides: {
+    fetchAttachment?: (input: { fileId: string; name: string }) => Promise<string>
+    prepareAttachments?: (
+      paths: string[],
+    ) => Promise<{ extraContext?: string; images: readonly string[] }>
+  }) {
+    const agent = makeAgent()
+    const bridge = new SessionBridge({
+      agent,
+      logger,
+      ...(overrides.fetchAttachment === undefined
+        ? {}
+        : { fetchAttachment: overrides.fetchAttachment }),
+      ...(overrides.prepareAttachments === undefined
+        ? {}
+        : { prepareAttachments: overrides.prepareAttachments }),
+    })
+    return { agent, bridge }
+  }
+
+  it('成功：逐个下载 → 同一附件准备链 → agent.send 带 extraContext / images', async () => {
+    const fetched: Array<{ fileId: string; name: string }> = []
+    const preparedPaths: string[][] = []
+    const { agent, bridge } = makeAttachmentBridge({
+      fetchAttachment: async (input) => {
+        fetched.push(input)
+        return `C:\\userData\\center-attachments\\${input.fileId}.png`
+      },
+      prepareAttachments: async (paths) => {
+        preparedPaths.push(paths)
+        return { extraContext: '【附件】截图.png', images: [paths[0] as string] }
+      },
+    })
+    const result = await bridge.handleInput({
+      requestId: 'c-1',
+      sessionId: 'center-abc',
+      text: '看看这张图',
+      attachments: [
+        { fileId: 'f-1', name: 'a.png' },
+        { fileId: 'f-2', name: 'b.png' },
+      ],
+    })
+    expect(result).toEqual({ ok: true, data: { agentRequestId: 'req-from-agent' } })
+    expect(fetched).toEqual([
+      { fileId: 'f-1', name: 'a.png' },
+      { fileId: 'f-2', name: 'b.png' },
+    ])
+    expect(preparedPaths).toEqual([
+      [expect.stringContaining('f-1'), expect.stringContaining('f-2')],
+    ])
+    expect(agent.send).toHaveBeenCalledWith({
+      sessionId: 'center-abc',
+      text: '看看这张图',
+      origin: 'center',
+      extraContext: '【附件】截图.png',
+      images: [expect.stringContaining('f-1')],
+    })
+  })
+
+  it('下载失败：回 E_ATTACHMENT_FAILED 且不发送（不发半套附件）', async () => {
+    const { agent, bridge } = makeAttachmentBridge({
+      fetchAttachment: async () => {
+        throw new Error('Center 返回 404')
+      },
+      prepareAttachments: async () => ({ images: [] }),
+    })
+    const result = await bridge.handleInput({
+      requestId: 'c-1',
+      sessionId: 'center-abc',
+      text: '看图',
+      attachments: [{ fileId: 'f-1', name: 'a.png' }],
+    })
+    expect(result).toEqual({ ok: false, error: 'E_ATTACHMENT_FAILED' })
+    expect(agent.send).not.toHaveBeenCalled()
+  })
+
+  it('附件准备抛错同样按 E_ATTACHMENT_FAILED 处理（不发送）', async () => {
+    const { agent, bridge } = makeAttachmentBridge({
+      fetchAttachment: async () => 'C:\\tmp\\a.png',
+      prepareAttachments: async () => {
+        throw new Error('配置读取失败')
+      },
+    })
+    const result = await bridge.handleInput({
+      requestId: 'c-1',
+      sessionId: 'center-abc',
+      text: '看图',
+      attachments: [{ fileId: 'f-1', name: 'a.png' }],
+    })
+    expect(result).toEqual({ ok: false, error: 'E_ATTACHMENT_FAILED' })
+    expect(agent.send).not.toHaveBeenCalled()
+  })
+
+  it('超过 5 个附件：E_INVALID_ARGUMENT，不下载也不发送', async () => {
+    const fetchAttachment = vi.fn(async () => 'C:\\tmp\\a.png')
+    const { agent, bridge } = makeAttachmentBridge({
+      fetchAttachment,
+      prepareAttachments: async () => ({ images: [] }),
+    })
+    const result = await bridge.handleInput({
+      requestId: 'c-1',
+      sessionId: 'center-abc',
+      text: '看图',
+      attachments: Array.from({ length: 6 }, (_, index) => ({
+        fileId: `f-${index}`,
+        name: `${index}.png`,
+      })),
+    })
+    expect(result).toEqual({ ok: false, error: 'E_INVALID_ARGUMENT' })
+    expect(fetchAttachment).not.toHaveBeenCalled()
+    expect(agent.send).not.toHaveBeenCalled()
+  })
+
+  it('未注入下载器 / 准备链：E_UNSUPPORTED（旧装配器兼容），不发送', async () => {
+    const { agent, bridge } = makeAttachmentBridge({})
+    const result = await bridge.handleInput({
+      requestId: 'c-1',
+      sessionId: 'center-abc',
+      text: '看图',
+      attachments: [{ fileId: 'f-1', name: 'a.png' }],
+    })
+    expect(result).toEqual({ ok: false, error: 'E_UNSUPPORTED' })
+    expect(agent.send).not.toHaveBeenCalled()
+  })
+
+  it('附件条目形状非法：E_INVALID_ARGUMENT', async () => {
+    const { agent, bridge } = makeAttachmentBridge({
+      fetchAttachment: async () => 'C:\\tmp\\a.png',
+      prepareAttachments: async () => ({ images: [] }),
+    })
+    const result = await bridge.handleInput({
+      requestId: 'c-1',
+      sessionId: 'center-abc',
+      text: '看图',
+      attachments: [{ fileId: '', name: 'a.png' }],
+    })
+    expect(result).toEqual({ ok: false, error: 'E_INVALID_ARGUMENT' })
+    expect(agent.send).not.toHaveBeenCalled()
+  })
+
+  it('attachments 不是数组：E_INVALID_ARGUMENT（不崩溃、不发送）', async () => {
+    const { agent, bridge } = makeAttachmentBridge({
+      fetchAttachment: async () => 'C:\\tmp\\a.png',
+      prepareAttachments: async () => ({ images: [] }),
+    })
+    const result = await bridge.handleInput({
+      requestId: 'c-1',
+      sessionId: 'center-abc',
+      text: '看图',
+      attachments: 'not-an-array' as unknown as Array<{ fileId: string; name: string }>,
+    })
+    expect(result).toEqual({ ok: false, error: 'E_INVALID_ARGUMENT' })
+    expect(agent.send).not.toHaveBeenCalled()
+  })
+
+  it('纯图片消息（text 为空）允许发送；无附件且空文本仍拒绝', async () => {
+    const { agent, bridge } = makeAttachmentBridge({
+      fetchAttachment: async () => 'C:\\tmp\\a.png',
+      prepareAttachments: async () => ({ images: ['C:\\tmp\\a.png'] }),
+    })
+    const sent = await bridge.handleInput({
+      requestId: 'c-1',
+      sessionId: 'center-abc',
+      text: '',
+      attachments: [{ fileId: 'f-1', name: 'a.png' }],
+    })
+    expect(sent.ok).toBe(true)
+    expect(agent.send).toHaveBeenCalledTimes(1)
+
+    const empty = await bridge.handleInput({
+      requestId: 'c-2',
+      sessionId: 'center-abc',
+      text: '  ',
+    })
+    expect(empty).toEqual({ ok: false, error: 'E_INVALID_ARGUMENT' })
+    expect(agent.send).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('toConfirmRequest · 确认卡上行消息', () => {
   it('SensitiveToolRequest → ConfirmRequestPayload：补 createdAt，其余字段原样对齐', () => {
     const message = toConfirmRequest({

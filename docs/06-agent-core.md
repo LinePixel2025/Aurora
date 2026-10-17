@@ -83,11 +83,15 @@ export interface LlmProvider {
   正文一段 `{ type: 'text', text }` + 每张图一段
   `{ type: 'image_url', image_url: { url: 'data:image/png;base64,…' } }`。
   正文为空时**只发图片分片**、不发空 text 分片 —— 部分服务把空 text 当「空消息」直接 400。
-- **落地链**：渲染层拖入的附件始终是**绝对路径**（`SendMessageRequest.attachments`，没有第二套
-  上传通道）。主进程按扩展名分流：`png / jpg / jpeg / webp / gif / bmp` 是图片，其余仍走
+- **落地链**：渲染层拖入 / `Ctrl+V` 粘贴的附件始终是**绝对路径**（`SendMessageRequest.attachments`，
+  没有第二套上传通道）。主进程按扩展名分流：`png / jpg / jpeg / webp / gif / bmp` 是图片，其余仍走
   `extract.ts` 提取文本 —— 同一轮里「一段提取文本 + 若干图片」可以并存，两者走的是同一条
   `chat:send`（图片路径经 `agent.send({ images })` 透传给内核，内核用注入的 `loadImages`
   端口读成 base64）。
+- **Center 网页输入（2026-10-18）**：网页端 composer 粘贴的图片先存进 Center 的 24h 临时文件，
+  `session.input` 只带 `fileId`；客户端下载到本地后**走与 `chat:send` 同一个
+  `prepareAttachments`**（`main/attachment-prepare.ts`），因此 vision 开关、文档提取、8 MiB / 5 张
+  上限与降级文案完全同源，不存在第二套“远程附件”规则。
 - **会话历史存路径、不存 base64**（`StoredMessage.images?: string[]`）：会话文件体积不被图片
   撑大（一张 4 MB 的图 base64 后是 5.3 MB，几轮对话就能把 `sessions/*.json` 顶成几十 MB），
   跨轮次续聊时按路径**重新读盘**，用户追问「刚才那张图里的公式」时模型仍看得到图。

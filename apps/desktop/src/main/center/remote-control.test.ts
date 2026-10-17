@@ -130,6 +130,8 @@ describe('buildClientStatus · 状态快照', () => {
     const status = buildClientStatus(settings, '0.1.6', 'win32')
     expect(status.mode).toBe(settings.modes.current)
     expect(status.agent.tools.enabled).toBe(true)
+    // 远程图片附件能力位（2026-10-18，docs/12 §5）：本端始终支持，网页端据此渲染粘贴入口
+    expect(status.center.inputAttachments).toBe(true)
     // 出厂默认 = auto（完全权限，2026-09-29 起）
     expect(status.agent.permissionMode).toBe('auto')
     // 用户切回逐次确认：镜像的两条一起写

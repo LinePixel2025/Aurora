@@ -12,7 +12,7 @@
  * 主区只承载普通会话。标题栏「收起」文字按钮由 WindowCaption 的「关闭」取代（隐藏语义不变）。
  *
  * 保留的既有能力：敏感工具确认卡片与 `proactive.onSensitiveTool` 订阅、TTS 自动朗读
- * （streaming false 边沿）与朗读按钮、附件拖拽 + chips、模型 / 思考等级写 provider
+ * （streaming false 边沿）与朗读按钮、附件拖拽 / 粘贴图片 + 卡内缩略图条、模型 / 思考等级写 provider
  * （`stripSecretFields` 剔除 apiKeyEnc/apiKeySet 后经 `settingsStore.update` 落盘）、
  * 收起 = 隐藏窗口（不 abort 正在进行的流式回复）。
  *
@@ -34,6 +34,7 @@ import type {
 } from '@aurora/shared'
 import {
   DEFAULT_REASONING_EFFORT,
+  PASTED_IMAGE_MAX_BYTES,
   resolveModelParams,
   resolvePermissionMode,
   type ReasoningEffort,
@@ -47,6 +48,7 @@ import SensitiveToolCard from '../shared/components/SensitiveToolCard.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
 import ThinkingLevelSelect from '../shared/components/ThinkingLevelSelect.vue'
 import WindowCaption from '../shared/components/WindowCaption.vue'
+import ComposerAttachments from './components/ComposerAttachments.vue'
 import ComposerContextBar from './components/ComposerContextBar.vue'
 import ComposerPermissionSelect from './components/ComposerPermissionSelect.vue'
 import SlashCommandMenu from './components/SlashCommandMenu.vue'
@@ -75,7 +77,7 @@ import { appendProject, pickProjectEntry } from '../shared/projects.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
 import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.js'
-import { ArrowUp, Mic, PanelLeft, Trash2, X } from '@aurora/shared/browser'
+import { ArrowUp, Mic, PanelLeft, Trash2 } from '@aurora/shared/browser'
 
 const chat = useChat('chat', 'main')
 const { catalog: centerCatalog } = useCenterOfficialCatalog()
@@ -1224,7 +1226,33 @@ function toggleRecording(): void {
   void startRecording()
 }
 
-// ───────────────────────── 附件拖拽（docs/07 §2.3） ─────────────────────────
+// ───────────────────── 附件（拖拽 / 粘贴图片，docs/07 §2.3） ─────────────────────
+
+/** 单条消息最多 5 个附件（主进程发送链同一个口径：超出的不静默截断） */
+const MAX_ATTACHMENTS = 5
+
+/** 粘贴可接受的图片 mime（与主进程 pasted-image 的扩展名白名单同口径） */
+const PASTED_IMAGE_MIME = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+  'image/bmp',
+])
+
+/**
+ * 追加附件（去重 + 上限）。拖拽与粘贴共用**唯一**入口：各写一份就会漂移成
+ * 「拖拽能超过 5 个、粘贴不能」这种两套口径。
+ */
+function addAttachments(paths: string[]): void {
+  const next = new Set(attachments.value)
+  for (const path of paths) {
+    if (path === '' || next.has(path)) continue
+    if (next.size >= MAX_ATTACHMENTS) break
+    next.add(path)
+  }
+  attachments.value = [...next]
+}
 
 /**
  * 取拖入文件路径。
@@ -1244,8 +1272,13 @@ function onDrop(event: DragEvent): void {
     chatError.value = '无法读取拖入文件的本地路径（仅支持从资源管理器拖入的文件）'
     return
   }
-  const next = new Set([...attachments.value, ...paths])
-  attachments.value = [...next]
+  const room = Math.max(0, MAX_ATTACHMENTS - attachments.value.length)
+  if (room === 0) {
+    chatError.value = `最多附带 ${MAX_ATTACHMENTS} 个文件，先移除几个再拖入`
+    return
+  }
+  if (paths.length > room) chatError.value = `最多附带 ${MAX_ATTACHMENTS} 个文件`
+  addAttachments(paths.slice(0, room))
 }
 
 function removeAttachment(path: string): void {
@@ -1253,17 +1286,14 @@ function removeAttachment(path: string): void {
 }
 
 /**
- * 附件缩略图（v22 多模态输入，docs/07 §2.3）：图片附件在 chip 上显示一张小图，
- * 非图片 / 超限 / 读失败时只是没有 `dataUrl`，chip 退回纯文字（**不显示裂图**）。
+ * 附件缩略图（v22 多模态输入，docs/07 §2.3）：图片附件在缩略图卡上显示一张小图
+ * （2026-10-18 起 56×56，画在输入卡内的附件条里），非图片 / 超限 / 读失败时只是没有
+ * `dataUrl`，卡片退回占位图标（**不显示裂图**）。
  *
  * 一次性读盘（`chat:readAttachment`，上限 `PREVIEW_MAX_BYTES`）而不是丢个 `file://` 给渲染层：
  * 渲染进程没有 fs 能力，这条通道也是它唯一的读图途径。
  */
 const attachmentPreviews = ref<Record<string, ChatAttachmentPreview>>({})
-
-function previewOf(path: string): ChatAttachmentPreview | undefined {
-  return attachmentPreviews.value[path]
-}
 
 async function loadAttachmentPreview(path: string): Promise<void> {
   if (attachmentPreviews.value[path] !== undefined) return
@@ -1283,14 +1313,114 @@ watch(attachments, (paths) => {
   attachmentPreviews.value = kept
 })
 
-function fileNameOf(path: string): string {
-  const segments = path.split(/[\\/]/)
-  return segments[segments.length - 1] ?? path
+/**
+ * 剪贴板里取图片 `File`。
+ *
+ * **只认图片**：粘贴纯文字 / 富文本时必须保留浏览器默认行为（由 textarea 自己落字），
+ * 所以「没有图片时不 preventDefault」是这条链的第一条硬规则 —— 否则一贴文字就被吞掉。
+ */
+function pastedImagesOf(data: DataTransfer | null): File[] {
+  if (data === null) return []
+  const files: File[] = []
+  for (const item of Array.from(data.items)) {
+    if (item.kind !== 'file' || !item.type.startsWith('image/')) continue
+    const file = item.getAsFile()
+    if (file !== null) files.push(file)
+  }
+  return files
+}
+
+/**
+ * 把一张粘贴图暂存成本地附件（`chat:stageImage`）。
+ *
+ * 渲染进程只能拿到 `File`（没有本地路径），而附件链按路径工作：主进程把字节写进
+ * `<userData>/pasted/` 并顺手缩一张 96px 预览。**预览先塞进缓存** —— 粘贴的图常超过
+ * `PREVIEW_MAX_BYTES`，靠 `chat:readAttachment` 那条通道本来就拿不到缩略图。
+ */
+async function stagePastedImage(file: File): Promise<string> {
+  const result = await window.aurora.chat.stageImage({
+    mimeType: file.type,
+    ...(file.name === '' ? {} : { name: file.name }),
+    data: await file.arrayBuffer(),
+  })
+  if (!result.ok) {
+    chatError.value = `粘贴图片失败：${result.message}`
+    return ''
+  }
+  const staged = result.value
+  if (staged.previewDataUrl !== undefined) {
+    attachmentPreviews.value = {
+      ...attachmentPreviews.value,
+      [staged.path]: {
+        path: staged.path,
+        name: staged.name,
+        image: true,
+        dataUrl: staged.previewDataUrl,
+      },
+    }
+  }
+  return staged.path
+}
+
+/**
+ * 把焦点还给输入框（只在焦点已经掉到 `body` 时）。
+ *
+ * 不能无条件 `focus()`：`chat:stageImage` 是异步的，这期间用户可能已经点到了别的按钮，
+ * 硬抢焦点会让那次点击的后续操作落空。
+ */
+function keepComposerFocus(): void {
+  const el = textareaEl.value
+  if (el === null) return
+  const active = document.activeElement
+  if (active === null || active === document.body || active === el) el.focus()
+}
+
+/**
+ * 粘贴图片进附件条（2026-10-18，docs/07 §2.3）。
+ *
+ * 三条硬口径：
+ * ① **只处理图片**：没有图片时直接返回、不 `preventDefault`（文字粘贴保持原生行为）；
+ * ② **渲染层先拦一道上限**（5 张 / 8 MiB / 支持的 mime），主进程还会再校验一次 ——
+ *    渲染层拿到的大小与 mime 不可信，而用户不该为一次超限等一个 IPC 往返才看到原因；
+ * ③ **焦点留在输入框**：粘贴是输入动作，收完附件后光标必须还在原处（否则接着打字会发现字没进去）。
+ */
+async function onPaste(event: ClipboardEvent): Promise<void> {
+  const files = pastedImagesOf(event.clipboardData)
+  if (files.length === 0) return
+  event.preventDefault()
+  const room = Math.max(0, MAX_ATTACHMENTS - attachments.value.length)
+  if (room === 0) {
+    chatError.value = `最多附带 ${MAX_ATTACHMENTS} 个文件，先移除几个再粘贴`
+    return
+  }
+  if (files.length > room) chatError.value = `最多附带 ${MAX_ATTACHMENTS} 个文件`
+  for (const file of files.slice(0, room)) {
+    const fileName = file.name === '' ? '剪贴板图片' : file.name
+    if (!PASTED_IMAGE_MIME.has(file.type)) {
+      chatError.value = `不支持的图片格式：${fileName}（支持 PNG / JPEG / WebP / GIF / BMP）`
+      continue
+    }
+    if (file.size > PASTED_IMAGE_MAX_BYTES) {
+      chatError.value = `图片过大：${fileName}（上限 8 MiB）`
+      continue
+    }
+    // 有本地路径的来源（部分平台的剪贴板文件 / 资源管理器拖拽）直接用，省一次落盘
+    const path = window.aurora.chat.filePath(file)
+    if (path !== '') {
+      addAttachments([path])
+      continue
+    }
+    const staged = await stagePastedImage(file)
+    if (staged !== '') addAttachments([staged])
+  }
+  keepComposerFocus()
 }
 
 async function send(): Promise<void> {
   const text = input.value.trim()
   if (text === '' && attachments.value.length === 0) return
+  // 发送是「这一句结束了」的动作：输入区四个浮层一并收起（别让菜单悬在刚清空的输入框上）
+  openFlyout.value = null
   // 流式期间再发一条 = **排队**（docs/06 §5.3）：内核会在下一个轮次边界把它插进正在跑的请求。
   // 早先这里是「敲 Enter 没反应，只闪一句提示」，用户只剩等或把进度全丢掉两个选择。
   const files = attachments.value
@@ -1335,10 +1465,13 @@ async function onInterruptSend(): Promise<void> {
   const drafts = await abort()
   const text = input.value.trim()
   const files = [...attachments.value, ...drafts.flatMap((draft) => draft.attachments)]
-  const merged = [...drafts.map((draft) => draft.text), text].filter((part) => part !== '').join('\n')
+  const merged = [...drafts.map((draft) => draft.text), text]
+    .filter((part) => part !== '')
+    .join('\n')
   input.value = ''
   attachments.value = []
   if (merged.trim() === '' && files.length === 0) return
+  openFlyout.value = null
   await sendMessage(merged, files)
   void loadSessions()
 }
@@ -1438,22 +1571,32 @@ const slashItems = computed<SlashItem[]>(() => {
 const slashOpen = computed(() => slashQuery.value !== null && slashItems.value.length > 0)
 
 /**
- * 输入区浮层的归属（docs/07 §2.3「三个浮层的锚点与层级」）。
+ * 输入区浮层的归属（docs/07 §2.3「浮层的锚点与层级」）。
  *
- * 三个浮层（斜杠 / 权限 / 上下文详解）锚在**同一张输入卡**上、共用 `--z-flyout`，
+ * **五个浮层共用同一套锚点**：斜杠 / 权限 / 模型+来源 / 思考等级 / 上下文详解
+ * 都锚在**同一张输入卡**（`.composer-box`）上、共用 `.composer-flyout`（`--z-flyout`），
  * 因此必须**互斥** —— 同时开着两个只会互相遮挡（曾经斜杠浮层压住权限下拉、
- * 上下文详解卡把整条工具行连同发送键盖死）。斜杠是「输入隐含触发」的，
- * 另外两个是「点击显式打开」的，所以这里只存显式的那一个；
- * 斜杠的可见性由 `showSlash` 把它们一并算进去，避免两处状态各说各话。
+ * 上下文详解卡把整条工具行连同发送键盖死）。
+ * 斜杠是「输入隐含触发」的，其余四个是「点击显式打开」的，所以这里只存显式的那一个；
+ * 斜杠的可见性由 `showSlash` 把它一并算进去，避免两处状态各说各话。
  */
-const openFlyout = ref<'permission' | 'context' | null>(null)
+const openFlyout = ref<'permission' | 'model' | 'effort' | 'context' | null>(null)
 
-/** 斜杠浮层是否可见：候选存在，且没有被另外两个显式浮层挤掉 */
+/** 斜杠浮层是否可见：候选存在，且没有被四个显式浮层挤掉 */
 const showSlash = computed(() => slashOpen.value && openFlyout.value === null)
 
-/** 一开始输入 `/`（斜杠浮层冒出来）就让另外两个浮层让位 —— 它俩占的是同一块地方 */
+/** 一开始输入 `/`（斜杠浮层冒出来）就让四个显式浮层让位 —— 它们占的是同一块地方 */
 watch(slashOpen, (open) => {
   if (open) openFlyout.value = null
+})
+
+/**
+ * 切会话后收起所有显式浮层：菜单里的「当前模型 / 思考等级」是**本会话**的当场读数，
+ * 换了一条会话还悬着就是上一句的残影。收在这里而不是逐个入口各写一遍 ——
+ * 左栏点选 / 新对话 / 项目 `+` / 工作 `+` / 远程激活全走 `sessionId` 变化这一条。
+ */
+watch(sessionId, () => {
+  openFlyout.value = null
 })
 
 /** 输入卡根节点：斜杠浮层「点击外部关闭」的判定边界（另两个浮层各自管自己的） */
@@ -1603,7 +1746,8 @@ const composerTitle = computed(() =>
     ? // Enter 的语义随流式期改成「排队插入」（docs/06 §5.3），提示必须跟着口径走，
       // 否则用户以为敲了没反应、转而点「停止」把进度全丢掉
       '正在回复中：Enter 排队发送（下一个轮次插进当前任务），或用「打断并发送」'
-    : 'Enter 发送，Shift + Enter 换行；输入 / 调用命令与技能；可直接拖入文件',
+    : // 2026-10-18：粘贴图片已落地，能力说明里必须写上它（不然用户不会去试）
+      'Enter 发送，Shift + Enter 换行；输入 / 调用命令与技能；可直接拖入文件或粘贴图片',
 )
 
 // ───────────────────────── 模式引导（交互语义不变） ─────────────────────────
@@ -1809,44 +1953,24 @@ async function markGuideDone(): Promise<void> {
 
       <footer v-if="view === 'chat'" class="composer">
         <div class="composer-inner">
-          <div v-if="attachments.length > 0" class="attachments">
-            <!--
-              附件 chip（v22 起图片带缩略图，docs/07 §2.3）：
-              图片 → `data:` URL 渲染 48×48 小图（CSP 的 `img-src 'self' data:` 放行），
-              非图片 / 超限 / 读失败 → 只有文件名（`title` 里给出未生成缩略图的原因）。
-              `show-thumb` 这个类只影响图片 chip 的内边距，纯文字 chip 的观感与从前一致。
-            -->
-            <span
-              v-for="path in attachments"
-              :key="path"
-              class="chip tiny"
-              :class="{ 'show-thumb': previewOf(path)?.dataUrl !== undefined }"
-              :title="previewOf(path)?.note ?? fileNameOf(path)"
-            >
-              <img
-                v-if="previewOf(path)?.dataUrl !== undefined"
-                class="chip-thumb"
-                :src="previewOf(path)?.dataUrl"
-                :alt="fileNameOf(path)"
-              />
-              {{ fileNameOf(path) }}
-              <button
-                type="button"
-                class="chip-remove"
-                aria-label="移除附件"
-                @click="removeAttachment(path)"
-              >
-                <X :size="11" :stroke-width="2.4" aria-hidden="true" />
-              </button>
-            </span>
-          </div>
-
           <div ref="composerBoxEl" class="composer-box glass-surface-strong" :class="{ streaming }">
+            <!--
+              附件条（2026-10-18，docs/07 §2.3）：在**输入卡内部**、textarea 上方。
+              此前挂在整张卡片外面 —— 拖进一张图会把消息列顶下一行，缩略图看起来不属于输入框。
+              图片 56×56、非图片 chip、单行横向滚动（见 ComposerAttachments.vue）。
+            -->
+            <ComposerAttachments
+              :attachments="attachments"
+              :previews="attachmentPreviews"
+              @remove="removeAttachment"
+            />
+
             <!--
               斜杠命令浮层（2026-09 输入框重做）：贴在输入卡上方。
               键盘（↑↓ / Enter / Tab / Esc）由下面 textarea 的 onComposerKeydown 统一处理，
               浮层只是键位操作的可视反馈，焦点始终留在输入框里。
-              与另外两个浮层**互斥**：`showSlash` 已经把「权限 / 上下文详解 正开着」排除在外。
+              与其余四个显式浮层**互斥**：`showSlash` 已经把「权限 / 模型 / 思考 / 上下文详解正开着」
+              排除在外。
             -->
             <SlashCommandMenu
               v-if="showSlash"
@@ -1859,6 +1983,7 @@ async function markGuideDone(): Promise<void> {
             <!--
               输入区：`rows=1` + 自动增高（`autoGrow`）——高度由 JS 按 scrollHeight 钉住，
               因此 CSS 里不保留 `resize`（手动拖动会与自动增高互相打架）。
+              `@paste` 只接图片（docs/07 §2.3）：剪贴板里没有图片时**不拦截**，文字粘贴保持原生行为。
             -->
             <textarea
               ref="textareaEl"
@@ -1869,6 +1994,7 @@ async function markGuideDone(): Promise<void> {
               :placeholder="placeholder"
               :title="composerTitle"
               @keydown="onComposerKeydown"
+              @paste="onPaste"
             />
 
             <div class="composer-bar">
@@ -1880,7 +2006,7 @@ async function markGuideDone(): Promise<void> {
                 @change="setPermission"
                 @update:open="openFlyout = $event ? 'permission' : null"
               />
-              <!-- 模型 / 思考等级（2026-09 移入 composer 工具行）：data-field 锚点不变 -->
+              <!-- 模型 / 思考等级（2026-09 移入 composer 工具行）：data-field 锚点不变，2026-10-18 起自绘浮层 -->
               <ModelPickerSelect
                 class="composer-picker"
                 :selection="modelPicker?.choice ?? null"
@@ -1888,15 +2014,19 @@ async function markGuideDone(): Promise<void> {
                 :source-id="modelPicker?.sourceId ?? null"
                 :disabled="modelPicker?.choice === null"
                 :title="modelTitle"
+                :open="openFlyout === 'model'"
                 @update:source="setModelSource"
                 @update:selection="setModel"
+                @update:open="openFlyout = $event ? 'model' : null"
               />
               <ThinkingLevelSelect
                 class="composer-picker"
                 :model-value="effortValue"
                 :disabled="effort === null || centerModelReadOnly"
                 :title="effortTitle"
+                :open="openFlyout === 'effort'"
                 @update:model-value="setEffort"
+                @update:open="openFlyout = $event ? 'effort' : null"
               />
               <span class="grow" />
               <!--
@@ -1945,7 +2075,9 @@ async function markGuideDone(): Promise<void> {
                   size="sm"
                   variant="primary"
                   :aria-label="streaming ? '排队发送' : '发送'"
-                  :title="streaming ? '排队发送（Enter）：下一个轮次插进正在跑的任务' : '发送（Enter）'"
+                  :title="
+                    streaming ? '排队发送（Enter）：下一个轮次插进正在跑的任务' : '发送（Enter）'
+                  "
                   :disabled="input.trim() === '' && attachments.length === 0"
                   @click="send"
                 >
@@ -2508,54 +2640,14 @@ body.col-resizing .nav {
   gap: var(--space-2);
 }
 
-.attachments {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 2px 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-pill);
-  background: var(--fill-2);
-}
-
-.chip-remove {
-  display: grid;
-  place-items: center;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  line-height: 1;
-  padding: 0;
-}
-
-/* 图片附件 chip（v22 多模态输入，docs/07 §2.3）：左侧 24×24 缩略图（与 `chip tiny` 同高）。
-   `cover` 让非正方形图不拉伸；chip 的左侧内边距收窄一档，让图与胶囊边距一致。 */
-.chip.show-thumb {
-  padding: 2px 8px 2px 2px;
-}
-
-.chip-thumb {
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius-sm, 4px);
-  object-fit: cover;
-  flex: none;
-}
-
-.chip-remove:hover {
-  color: var(--text-primary);
-}
+/* 附件条已经移进 `ComposerAttachments.vue`（卡内、textarea 上方）：chip / 缩略图那套样式
+   随之搬进组件，这里不再留第二份 —— 两份同名类正是「父 scope 泄漏到子组件根节点」的温床。 */
 
 /**
  * 输入卡（2026-09-29 输入框减负轮）：内边距与行距都收紧一档，
- * 让「文字 → 工具行 → 上下文条」三段贴得更紧，卡本身不再是页面上最重的一块。
+ * 让「附件条 → 文字 → 工具行 → 上下文条」几段贴得更紧，卡本身不再是页面上最重的一块。
+ * `position: relative` 是输入区所有浮层（`.composer-flyout`）唯一的定位祖先 ——
+ * 浮层锚在整张卡上，因此永远在卡上方、不会盖住工具行与卡内的附件缩略图（docs/07 §2.3）。
  */
 .composer-box {
   position: relative;
@@ -2611,12 +2703,17 @@ body.col-resizing .nav {
   color: var(--text-muted);
 }
 
-/* 工具行（2026-09-29 减负轮）：三枚 28px 芯片 + 弹性槽 + 右侧动作钮，间距收到 4px，
-   整行不再是一条「带边框的工具栏」——三个控件零边框、悬停才出现分层填充。
+/* 工具行（2026-09-29 减负轮）：四枚 28px 芯片 + 弹性槽 + 右侧动作钮，间距收到 4px，
+   整行不再是一条「带边框的工具栏」——控件零边框、悬停才出现分层填充。
    `overflow: hidden` 是最后的兜底：任何极端宽度（超窄窗 / 高 DPI）下内容都只会在行内被裁剪，
    绝不溢出输入卡的圆角边框（用户实测「权限文字超出组件边框」的根因就是本行此前既不收缩也不裁剪）。
    **注意**：`overflow: hidden` 只裁到卡片边缘，管不了**同一行内**两个控件互相压 —— 那是各控件
-   自己 `min-width` 的职责，见下面 `.composer-picker` 的让位顺序注释与 2026-10-11 那次修订。 */
+   自己 `min-width` 的职责，见下面 `.composer-picker` 的让位顺序注释与 2026-10-11 那次修订。
+   ⚠️ 浮层不会被本行裁剪：它们的定位祖先是 `.composer-box`（`position: relative`），
+   绝对定位元素逃出本行的包含块，`overflow: hidden` 管不到它们。
+   `container: composer-bar / inline-size`（2026-10-18）：模型 / 思考两枚触发器靠
+   `@container composer-bar (max-width: 430px)` 在窄宽隐藏文字标签（权限档位文案不隐藏）。
+   容器的 inline-size 由父级决定，不影响本行的 flex 行布局。 */
 .composer-bar {
   display: flex;
   align-items: center;
@@ -2624,17 +2721,14 @@ body.col-resizing .nav {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
+  container: composer-bar / inline-size;
 }
 
 /*
- * 让位顺序（2026-10-11 修订）：瞬时提示 → 模型 → 思考 → 权限。
- * 权重只决定「谁先让」，让到哪儿为止由各控件自己的 `min-width` 决定：
- * 权限 51px 起（其实是 `flex: 0 0 auto`，不参与收缩）、来源 68 + 模型 68（父容器
- * `.model-picker-group` 的 `min-width: 140px` 与之一致）、思考 56、发送 32（不收缩）。
- * 下限合计 346px（最坏组合是「变更前确认」档）—— 主区被夹到下限时输入卡内容宽实测约 354px，
- * 因此任何一档都不会溢出输入卡，发送键也不会被挤出。
- * 这层不能省：控件自己的 `min-width: 0` 只会让**容器**被压到子元素 min-content 以下，
- * 子元素带 `overflow: visible` 就会画到邻居身上（用户实测的「权限钮与来源下拉重合」）。
+ * 让位顺序（2026-10-11 修订，2026-10-18 适配自绘触发器）：模型 → 思考 → 权限。
+ * 权重的意义只剩「谁先让」，因为自绘触发器没有原生 `<select>` 那种「固有宽度 = 最宽 option」
+ * 的问题：窄宽时两枚触发器直接隐藏文字标签（`@container`），只留图标 + 箭头。
+ * 权限芯片 `flex: 0 0 auto` 不参与收缩（档位闸门文案必须完整），发送键同样不收缩。
  */
 .composer-picker.model-picker-group {
   flex-shrink: 3;

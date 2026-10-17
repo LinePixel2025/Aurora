@@ -264,6 +264,14 @@
   --transition-fast: var(--dur-fast) var(--ease-standard);
   --transition-base: var(--dur-base) var(--ease-spring);
 
+  /* ───────── 输入卡浮层（2026-10-18，双端共用）───────── */
+  /*
+   * 输入卡上的所有弹出层共用同一套锚点与宽度：底边在卡片上方 6px、横向由组件按触发按钮
+   * 实测 `left`（缺省 0 只给没有触发按钮的斜杠）。宽度写成令牌，两端不再各写一份数字。
+   */
+  --composer-flyout-width: 320px;
+  --composer-flyout-gap: 6px;
+
   /* ───────── 层级（2026-09 性能轮新增，见 docs/07 §5.1）───────── */
   /*
    * 浮出物的**唯一**来源：新代码不许再写 z-index 字面量。
@@ -618,6 +626,35 @@ select option:checked {
 
 .no-drag {
   -webkit-app-region: no-drag;
+}
+
+/**
+ * 输入卡浮层（2026-10-18）：双端唯一的锚点 / 宽度 / 外观来源。
+ *
+ * 定位相对于 `.composer-box`（两端都必须 `position: relative`）：
+ * 底边在整张输入卡上方 6px、层级走 `--z-flyout`，因此永远不会盖住工具行；
+ * 横向 `left` 由使用方按触发按钮实测后内联覆盖（这里只给没有触发按钮的斜杠留 0），
+ * 因此也不会盖住卡片顶部那排图片缩略图。
+ *
+ * `max-height` 与内部滚动是「任何情况下不被裁掉」的兜底：窗口压到最小高度、卡片被
+ * 30 行文本撑到 200px 时，浮层仍停在窗口内，只是自己滚动。
+ */
+.composer-flyout {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + var(--composer-flyout-gap));
+  z-index: var(--z-flyout);
+  width: var(--composer-flyout-width);
+  max-width: 100%;
+  max-height: min(320px, 42vh);
+  max-height: min(320px, 42dvh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  background-color: var(--glass-panel);
+  box-shadow: var(--shadow-2);
 }
 
 /**

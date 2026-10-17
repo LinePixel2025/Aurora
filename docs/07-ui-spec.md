@@ -290,9 +290,10 @@
     `chat.reasoningEffort`，旧 `chat.model` 锚点保留），「收起」文字按钮由 caption
     「关闭」按钮取代（隐藏语义不变）。
   - **composer（2026-09 输入框重做，2026-09-29 减负轮，见下方「输入框规格」）**：单张悬浮卡
-    （附件 chips → textarea → 工具行 → 上下文详解条）；工具行 = 权限模式 + 模型下拉 +
-    来源下拉 + 模型下拉 + 思考等级下拉 +（右侧）麦克风 + 停止 / 打断并发送 / 发送（后两者只在流式中）；旧「会话：xxx ·
-    可调用 Skill 与 MCP 工具」常驻 meta 文案移除，三枚工具控件是 28px 零边框「芯片」，
+    （附件缩略图 → textarea → 工具行 → 上下文详解条）；附件缩略图在**卡内顶部**，支持拖拽与
+    `Ctrl+V` 粘贴图片；工具行 = 权限模式 + 模型来源 + 模型 + 思考等级（四枚自绘芯片，
+    浮层统一贴在卡上方）+（右侧）麦克风 + 停止 / 打断并发送 / 发送（后两者只在流式中）；
+    旧「会话：xxx · 可调用 Skill 与 MCP 工具」常驻 meta 文案移除，三枚工具控件是 28px 零边框「芯片」，
     占位文案只留一句（`输入消息…`）。
   - **右栏「任务」面板（v15 新增，`data-field="chat.jobs"`；面板自身 `chat.job-panel`）**：
     停在右栏**最上方、`ContextPanel` 之上**（右栏是两行网格：任务面板按内容高度、上下文栏占满
@@ -916,6 +917,14 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   1 行起步、**200px 上限**后内部滚动）。CSS 上刻意**不设** `min/max-height` 与 `resize`：
   手动拖动高度会与自动增高互相打架，结果是「发完消息输入框还保持着刚拖出来的高度」。
   `Enter` 发送、`Shift + Enter` 换行（`Ctrl + Enter` 与 `Enter` 等价，兼容老习惯）。
+- **附件缩略图（2026-10-18）**：附件条从卡**外**移入输入卡**内部顶端**（textarea 之前）——
+  浮层一律锚在卡上方，放在卡外就会被浮层盖住。图片显示 56×56 缩略图、非图片显示文件名 chip；
+  单行横向滚动（不换行、不把卡片撑高），移除按钮命中区 ≥24px。锚点：
+  `chat.attachments` / `chat.attachment` / `chat.attachment-thumb` / `chat.attachment-remove`。
+- **粘贴图片（2026-10-18）**：textarea 监听 `paste`，只处理剪贴板里的图片文件；普通文本粘贴
+  不拦截。有本地路径（从资源管理器复制）直接加入附件；没有路径（网页复制 / 截图）经
+  `chat:stageImage` 写入 `<userData>/pasted/` 并把 96px 预览图一并带回（保证 >2 MiB 的图也有
+  缩略图）。上限 5 张 / 单张 8 MiB / png·jpeg·webp·gif·bmp；超限或失败写一行可行动提示，不静默丢。
 - **占位文案只留一句**（减负轮）：`输入消息…`（流式中 `正在回复中，可继续输入…`）。
   它**不再当说明栏用** —— 旧版把「Enter 发送 / Shift + Enter 换行 / 输入 / 调用命令与技能 /
   可直接拖入文件」整串塞进占位，长度超过一行，而 textarea 的高度由**内容**决定
@@ -935,23 +944,19 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   「停止」同时收回排队的那几句（文本 + 附件退回输入框、气泡从消息区摘掉）；
   新按钮 **「打断并发送」**（`data-field="chat.interrupt"`）= 先停止、再把排队内容与当前输入
   合并成**新一轮**立刻发出（不给这次任务继续跑的机会）。
-- **工具行**（左 → 右）：**权限模式** + 模型来源下拉 + 模型下拉 + 思考等级下拉 + 弹性空隙 +
+- **工具行**（左 → 右）：**权限模式** + 模型来源 + 模型 + 思考等级 + 弹性空隙 +
   （右侧）麦克风（STT，门控口径不变）+ 停止 / 打断并发送（两者只在流式中）+ 发送。
+  **四枚选择器（2026-10-18 起）都是自绘芯片 + 浮层**：不再用原生 `<select>`（系统弹出层
+  无法定位，也没法与权限弹窗对齐）。点击芯片打开 `.composer-flyout` 菜单，菜单与权限弹窗
+  同宽、同外观，**左缘贴住各自触发按钮**；触发器保留 `chat.permission` / `chat.modelSource` / `chat.model` /
+  `chat.reasoningEffort` 锚点。
   「打断并发送」是文字钮（28px，与「停止」同规格），只在输入框有内容时可点 ——
   空框时按它等于"只停止"，那个动作已经有专门的钮了。
   **压缩顺序与下限（2026-10-11 修订，修「拉伸左栏后权限钮与来源下拉重合」）**：让位顺序
   「模型 → 思考 → 权限」，**权限芯片不参与收缩**（`flex: 0 0 auto`，档位闸门文案保持完整）；
-  下限分别是权限 51px（图标 + 箭头 + 内边距）、来源 68px、模型 68px、思考 56px，**发送按钮绝不收缩**。
-  收缩必须加在**有明确下限**的 flex 项上：`.perm` / `.model-picker-group` 此前写的 `min-width: 0`
-  会让容器被压到子元素 min-content 以下，而 `.perm-btn` 是行内级盒（shrink-to-fit，下限 = 自身
-  min-content ≈ 95px）→ 它带 `overflow: visible` 直接画到相邻芯片身上（现象：权限文字完整、
-  它自己的箭头被来源下拉盖住）。**`min-width: min-content` 不是解**：原生 `<select>` 的固有宽度是
-  最宽的那个 option（实测两个下拉合计 220px），等于「不收缩」，实测整行溢出输入卡 53px ——
-  因此 `.model-picker-group` 写死 `min-width: 140px`（= 68 + 4 + 68，与两个子控件同口径）。
-  主区被夹到下限时输入卡内容宽实测约 354px，下限合计 346px（最坏组合是「变更前确认」档），
-  因此既不重合也不会把发送键挤出卡外。极窄时两个原生下拉的文字会只剩箭头（原生 select 不做
-  省略号），这是本宽度下的已知取舍：两者各有 `title` 悬浮提示，权限档位文案与发送键优先保完整。
-  探针 `chat-composer-narrow.png`：把左栏拖到夹取上限后量五枚控件的矩形两两不相交、均在输入卡内。
+  **2026-10-18 窄宽口径**：`.composer-bar` 成为 container，容器 ≤430px 时来源/模型/思考
+  只保留图标 + 箭头（完整文案在 `title` 里），权限档位文案仍完整保留；发送键永不收缩。
+  这样既不会文字被邻座盖住，也不会把任何控件挤出卡外。
 - **四枚「芯片」的视觉口径**（减负轮）：权限 / 来源 / 模型 / 思考都是 `--control-h-xs`（28px）高、
   `--radius-pill` 圆角、**静止态零边框零底色**（只有文字与原生箭头），悬停 / 聚焦浮一层
   `--fill-2`。四者必须逐字对齐才像同一条工具带上的控件；此前的 40px + 逐枚边框
@@ -1005,7 +1010,9 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   命中片段改为**平均缓存命中率**（`平均缓存命中 N%`，分子分母都是**累计**，06 §21.4 ——
   替换早先的「本次缓存命中」单轮口径；探针锚点 `chat.context-usage` 的文案因此含「平均缓存命中」）。
   点开在上方弹出明细（`data-field="chat.context-detail"`）——本轮输入 / 上下文窗口 / 模型 /
-  **平均缓存命中**（绝对数与占比）四行。
+  **平均缓存命中**（绝对数与占比）四行。**一行一条单列布局**（`grid-template-columns: 96px minmax(0,1fr)`）：
+  320px 卡里两列会把长模型 id / 「1,000,000 tokens」/「模型未回传缓存字段」挤到互相重叠
+  （2026-10-18 用户截图），label 与 value 都必须允许换行。
   - **分子**：最近一轮的 `promptTokens`（`usage` 事件，06 §16.2）——就是这一轮真实送进模型的上下文长度；
   - **平均缓存命中**：`totals.cachedTokens / totals.promptTokens`（累计口径，含种子恢复的部分，
     06 §21.4）——按**会话**算，跨切换、跨重启连续。provider 是否回传缓存字段以
@@ -1022,21 +1029,36 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   下一次发送 / 清空 / 切会话时由 `useChat` 复位（`pendingNotice`）；动作入口是右栏「任务」面板里
   那条 job 的「继续」，这条提示只负责把"为什么停了"说清楚。
   文案与面板的「暂停原因」**共用同一份**（`PENDING_REASON_TEXT`），两处措辞不许漂移。
-- **三个浮层的锚点与层级（2026-09 修复「浮层互相遮挡」）**：斜杠命令、权限下拉、上下文详解卡
-  三者**一律锚在输入卡 `.composer-box` 上**（`.perm` / `.ctx` 都是 `position: static`，
-  浮层用 `left/right: 0` + `bottom: calc(100% + 6px)` + `z-index: var(--z-flyout)`），
-  于是它们永远浮在**整张输入卡上方**、**绝不覆盖工具行**。
+- **输入卡浮层的锚点与层级（2026-09 修复「浮层互相遮挡」，2026-10-18 扩为五个并改为贴按钮）**：
+  斜杠命令、权限、模型、思考等级、上下文详解**五者的底边一律锚在输入卡 `.composer-box` 上方**
+  （组件根节点都是 `position: static`），统一使用共享原子类 `.composer-flyout`：
+  `bottom: calc(100% + var(--composer-flyout-gap))`、
+  `width: var(--composer-flyout-width)`（320px，`max-width: 100%`）、`z-index: var(--z-flyout)`、
+  同一套圆角/描边/玻璃底/阴影。于是它们永远浮在**整张输入卡上方**、**绝不覆盖工具行**，
+  也绝不覆盖卡内顶部的附件缩略图。
+  **横向（2026-10-18 用户二次口径）**：不再固定 `left: 0`，而是贴住**触发它的那枚按钮**——
+  `useComposerFlyoutLeft()`（`packages/shared/src/browser/composables/`）用触发按钮与卡片的
+  矩形算出 `left`，再经 `clampComposerFlyoutLeft()` 夹在卡内（靠右的思考/模型菜单会按
+  「卡右缘 − 浮层宽」回退）；窗口 resize 时重算。斜杠浮层没有按钮，保持卡片左缘。
+  权限 → 权限芯片、模型 → 当前点开的来源/模型芯片、思考 → 思考芯片、上下文 → 底部状态栏。
+  **高度上限与内部滚动**：`max-height: min(320px, 42dvh)` + `overflow-y: auto` —— 窗口压到
+  最小高度、textarea 顶到 200px、卡内还有缩略图条时，浮层仍停在窗口内（自己滚），不会被
+  `.app-shell` 的 `overflow: hidden` 从顶部裁掉。
   这条是有具体事故的：此前 `.ctx-card` 锚在工具行**下方**的 `.ctx` 上向上弹，
   底边落在工具行内部，把权限 / 模型 / 思考 / 麦克风 / 停止 / 发送**整条盖住且不可点**
   （`z-index: 20` 在同一个层叠上下文里压住了全是 `z-index: auto` 的工具行内容）。
-  三者**互斥**：打开任一个自动关闭其余两个（`chat/App.vue` 持有唯一的 `openFlyout`，三个浮层受控）；
-  三者都支持**点击外部**与 `Esc` 关闭（此前斜杠浮层只能靠「输入内容变化」或 `Esc` 关闭，
+  五者**互斥**：打开任一个自动关闭其余（`chat/App.vue` 持有唯一的 `openFlyout`，五个浮层受控）；
+  五者都支持**点击外部**与 `Esc` 关闭（此前斜杠浮层只能靠「输入内容变化」或 `Esc` 关闭，
   于是输入 `/` 之后再点权限钮，权限下拉会被 z-index 更高的斜杠浮层压住）。
-  新增浮层时必须复用这套锚点与令牌，**不要新写 z-index 魔数**（层级令牌见 §5.1）。
+  新增浮层时必须复用这套锚点、原子类与令牌，**不要新写 z-index 魔数**（层级令牌见 §5.1）。
 - **`data-field` 锚点清单（capture 探针依赖）**：`chat.permission` / `chat.permission-menu` /
   `chat.permission-confirm` / `chat.permission-full` / `chat.permission-mode-readonly`（v13 三档；
   `-full` 仍是 auto 档的唯一锚点，不要给它换名）/ `chat.slash-menu` / `chat.slash-<name>` /
   `chat.context` / `chat.context-usage` / `chat.context-cache` / `chat.context-detail`；
+  2026-10-18 新增：`chat.model-menu` / `chat.model-source-center` / `chat.model-source-local` /
+  `chat.model-option`（带 `data-model-key` / `data-provider-id` / `data-model`）/
+  `chat.effort-menu` / `chat.effort-<level>` / `chat.attachments` / `chat.attachment` /
+  `chat.attachment-thumb` / `chat.attachment-remove`；
   旧的 `chat.model` / `chat.reasoningEffort` / `chat.mic` 位置变了但锚点不变。
   左栏归档（2026-09-26 新增）：`chat.archive-group` / `chat.archive-toggle` / `chat.archive-list` /
   `chat.archived-banner`，动作锚点 `data-action="chat.archive-session"` / `"chat.unarchive-session"`
@@ -1097,11 +1119,19 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   `chat-permission-readonly.png`（v13 只读档：切到 `readonly` 后触发器与菜单项都显示「只读」、
   `settings:get` 回报 `permissionMode === 'readonly'`，收尾还原成**出厂默认档 `auto`**
   并断言触发器回到「完全权限」）、
-  `chat-composer-flyouts.png`（浮层互斥 + 几何不相交 + 发送键 `elementFromPoint` 命中自己）、
-  `chat-composer-narrow.png`（2026-10-11：`act` 把左栏拖到夹取上限 → 主区恰好 420px 的下限现场；
-  check 量权限 / 来源 / 模型 / 思考 / 发送五枚控件的矩形 —— 两两不相交、均在 `.composer-box` 内、
-  各控件不小于文档下限（51 / 72 / 64 / 56），收尾双击把手复位。修的是「拉伸左栏后权限钮
-  与来源下拉重合」）、
+  `chat-composer-flyouts.png`（2026-10-18 扩为五个浮层：斜杠 / 权限 / 模型 / 思考 / 上下文；
+  act 依次打开并记录每个时刻，check 断言任一时刻最多一个可见、五者 `bottom/width` 一致、
+  **每个浮层左缘贴住自己的触发按钮**（`triggerAligned`；靠右时按卡右缘回退）、
+  都在 `.composer-box` 上方、与 `.composer-bar` 不相交、发送键 `elementFromPoint` 命中自己；
+  无 provider 时模型/思考触发器 disabled，该项如实跳过但其余几何仍量）、
+  `chat-composer-paste.png`（2026-10-18：页面内合成 `ClipboardEvent('paste')` + `DataTransfer`
+  粘贴 1×1 PNG → 断言 `chat.attachment` 恰好 1 个、56×56 缩略图在 textarea **上方**且卡内、
+  `src` 是 `data:image/…`、右上移除钮命中自己且点击后附件归零）、
+  `chat-composer-narrow.png`（2026-10-11，2026-10-18 更新：`act` 把左栏拖到夹取上限 →
+  主区恰好 420px 的下限现场；check 量权限 / 来源 / 模型 / 思考 / 发送五枚控件的矩形 ——
+  两两不相交、均在 `.composer-box` 内、各控件不小于下限（51 / 40 / 40 / 40 / 30，
+  窄宽下来源/模型/思考只留图标+箭头）、权限文案完整、四枚触发器都无 `scrollWidth` 截断；
+  收尾双击把手复位。修的是「拉伸左栏后权限钮与来源下拉重合」）、
   `chat-archive.png`（归档分组）；
   以及 `chat-stream.png`（**唯一一条 DOM 级端到端**：capture 在跑这一段前竖起本地桩 LLM 并把
   `llm.active` 指向它 → 探针把提示词写进 textarea、点发送 → 断言助手气泡里出现了桩服务的回复文本、
@@ -1120,8 +1150,9 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
 > 自动增高那段会把输入框清空，一清空斜杠浮层就自行关闭，在那之后再查 `chat.slash-*` 恒为 0
 > （这两条都真踩过）。
 
-> **未实现**：`@` 提及浮层；附件按钮（选文件）—— 附件仍只走拖拽（`webUtils.getPathForFile`），
-> 原因是渲染进程拿不到文件系统能力，加选择器要新开一条 IPC + 主进程 `dialog.showOpenDialog`。
+> **未实现**：`@` 提及浮层；附件按钮（选文件）—— 附件仍只走拖拽与 `Ctrl+V` 粘贴
+> （粘贴经 `chat:stageImage` 落盘，渲染进程仍拿不到文件系统能力；加选择器要新开一条 IPC +
+> 主进程 `dialog.showOpenDialog`）。
 
 > **新增（v0.4.0 / v0.5.0）**：
 >
@@ -1449,7 +1480,7 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
 | 缓动                                        | `--ease-standard` / `--ease-spring` / `--ease-smooth`                                                                                                   | 颜色/透明度用 standard，大面积位移用 smooth，出现/展开用 spring                                                                                                                                                                                                         |
 | 时长                                        | `--dur-fast(150)` / `base(250)` / `slow(350)` / `press(120)` / `pulse(1600)`；`--transition-fast\|base`                                                 | `--dur-press` / `--dur-pulse` 为 BetaV2 新增（按下微缩 / 脉冲环），`--transition-*` 是前两者的组合别名                                                                                                                                                                  |
 | 时长（循环与终态，2026-09 动画轮 / 轨迹轮） | `--dur-spin(1200)` / `--dur-caret(1100)` / `--dur-bounce(1000)` / `--dur-breathe(2400)` / `--dur-tint(800)`                                             | 循环动画（加载旋转 / 流式光标 / 三点等待 / 边框呼吸）节奏与「出现」动画不同，单列令牌；`--dur-tint` 是 2026-09-30 轨迹重构新增（工具行**终态底色淡出** `aurora-tint-out` 用），**新名 append-only**                                                                     |
-| 层级                                        | `--z-sticky` / `--z-flyout` / `--z-popover` / `--z-toast`                                                                                               | **2026-09 新增**（1 / 20 / 30 / 200）：浮出物的唯一来源。此前是散落在三个组件里的 `z-index: 20/20/30` 魔数，直接后果是输入区浮层互相遮挡（见 §2.3「三个浮层的锚点与层级」）。**新代码不许再写 z-index 字面量**（`edge-bar` 内部那处 `z-index: 1` 是窗内分层，保持原样） |
+| 层级                                        | `--z-sticky` / `--z-flyout` / `--z-popover` / `--z-toast`                                                                                               | **2026-09 新增**（1 / 20 / 30 / 200）：浮出物的唯一来源。此前是散落在三个组件里的 `z-index: 20/20/30` 魔数，直接后果是输入区浮层互相遮挡（见 §2.3「输入卡浮层的锚点与层级」）。**新代码不许再写 z-index 字面量**（`edge-bar` 内部那处 `z-index: 1` 是窗内分层，保持原样） |
 
 **硬约束**：既有令牌名（`--bg-*`、`--border-*`、`--text-*`、`--status-*`、`--radius-sm|md|lg`、
 `--space-1..6`、`--transition-fast|base`、`--font-ui|mono`、`--aurora-gradient`）**只增不删**——
@@ -1761,7 +1792,7 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     2026-09-26）：act 里**依次**打开斜杠浮层（输入 `/`）与权限下拉（点权限钮），
     check 再在**四个时刻**（斜杠开 / 权限开（act 快照）/ 权限开（实时复测）/ 上下文详解开（check 里现开））
     各取一次可见集合与矩形，做的是**几何断言**而不是只数个数 ——
-    ①**任一时刻最多一个浮层可见**（三个浮层的矩形都取自真实 `getBoundingClientRect`，
+    ①**任一时刻最多一个浮层可见**（五个浮层的矩形都取自真实 `getBoundingClientRect`，
     可见判据是宽高都 > 0）、
     ②可见浮层与 `.composer-bar` 的矩形**不相交**（浮层只许盖在输入卡上方，不许压工具行）、
     ③在**发送键中心**做 `elementFromPoint`，命中的必须是发送键自己或其后代。

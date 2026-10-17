@@ -38,11 +38,15 @@ export * from './browser/toolLabels.js'
 export * from './browser/composables/stickToBottomCore.js'
 export * from './browser/composables/useStickToBottom.js'
 export * from './browser/composables/useCollapseTransition.js'
+// 输入卡浮层的横向定位（2026-10-18）：贴住触发按钮，两端同一份实现。
+export * from './browser/composables/useComposerFlyoutLeft.js'
 // 流式增量的按帧合并缓冲（2026-10-02 迁入）：桌面端 `useChat` 与网页端 `state/events` 共用一份
 // —— 四条语义（同 key 合并 / 一帧一次 apply / 顺序保持 / flush 立即）两端必须逐字一致。
 export * from './browser/composables/deltaBuffer.js'
 // 请求级工作分组（桌面与 Center 共用同一份边界语义）。
 export * from './browser/agentTurns.js'
+// 输入卡浮层的横向定位（2026-10-18）：桌面与 Center Web 共用同一份夹取算法。
+export * from './browser/composerFlyout.js'
 
 // IPC 契约（仅类型）
 export * from './ipc/channels.js'

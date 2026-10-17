@@ -124,7 +124,7 @@ Aurora Center 是与 Aurora 桌面客户端配套的**独立服务器 + Web 控�
   { type: 'ping' }                             // 心跳；客户端回 'pong'（在 result 通道之外固定处理）
 
 CenterCommand =
-  | { kind: 'session.input',  requestId, sessionId, text }
+  | { kind: 'session.input',  requestId, sessionId, text, attachments?: [{fileId, name}] }  // 网页图片随消息上行（2026-10-18，§5）
   | { kind: 'session.abort',  requestId, sessionId, agentRequestId }
   | { kind: 'config.get',     requestId }
   | { kind: 'config.update',  requestId, patch }      // 白名单校验后落到 SettingsStore（§7）
@@ -189,7 +189,7 @@ WS（登录令牌经 `?token=` 传递——浏览器 WebSocket 无法自定义�
 ```
 网页 → 服务器
   { type: 'session.create', requestId, clientId }
-  { type: 'session.input',  requestId, clientId, sessionId, text }
+  { type: 'session.input',  requestId, clientId, sessionId, text, attachments?: fileId[] }  // 图片附件先 POST /api/uploads（2026-10-18，§5）
   { type: 'session.abort',  requestId, clientId, sessionId, agentRequestId }
   { type: 'config.get',     requestId, clientId }
   { type: 'config.update',  requestId, clientId, patch }
@@ -309,6 +309,17 @@ GET /api/client/device/info?code=<userCode>                      （无需登录
    落盘到本机下载目录（重名追加 ` (1)`，超 `center.maxFileMb` 拒绝）并弹系统通知告知路径，
    回执带 `{ path }`。该命令的待回执超时**放宽到 10 分钟**（大文件远超 15s，
    否则服务器会先超时把成功下载报成 `E_CLIENT_TIMEOUT`）；
+   **网页图片随消息上行（2026-10-18）**：网页端 composer 粘贴图片 → `POST /api/uploads`
+   存进同一个 `FileStore`（`source: 'web'`）→ 发送时 `session.input` 额外带
+   `attachments: [fileId…]` → 服务器按 `fileLookup` 校验（最多
+   `CENTER_INPUT_ATTACHMENT_LIMIT = 5` 张、单张 ≤ `CENTER_INPUT_IMAGE_MAX_BYTES = 8 MiB`、
+   文件来源必须就是目标客户端）并补齐 `name` → 客户端**用自身令牌**从
+   `GET /api/client/files/:fileId` 下载到 `<userData>/center-attachments/<时间戳>-<随机>/`
+   → 交给与 `chat:send` 同一条 `prepareAttachments` 链路（图片进多模态分片，vision 关闭时
+   如实降级成“未读取”文案）。带附件的 `session.input` 待回执超时放宽到 5 分钟；
+   目标客户端必须在 `ClientStatus.center.inputAttachments` 上报 `true`（旧客户端缺省 false，
+   服务器回 `E_UNSUPPORTED`、网页端不提供粘贴），避免图片被静默丢掉。
+   上传文件仍按 24h 自动过期；客户端侧目录按时间戳保留最近 50 个。
 6. **会话管理（v0.2.3 起，仅 `center-` 会话，§6.3）**：网页端可枚举客户端的远程会话
    （`session.list`）、让客户端主界面切到某个会话（`session.activate`）、为会话开关
    **客户端左栏可见性**（`session.visibility`，缺省可见，隐藏仍可远程输入）、覆盖
@@ -602,7 +613,7 @@ aurora-center version
   （子串过滤；特殊值 `failed` = 只重跑上次失败的）、`AURORA_CWEB_THEME=dark|light`、
   `AURORA_CWEB_VIEWPORT=mobile`、`AURORA_CWEB_KEEP=1`（保留子服务器与数据目录排障）、
   `AURORA_CWEB_BROWSER`（指定浏览器；找不到浏览器时**明确 SKIP 并退出 0**）。
-  覆盖 43 个场景 ×（暗/浅两档）＋ 2 个单档主题场景 ＝ 88 条断言：官网首页（下载信息、真实控制台预览、无重型分包） /
+  覆盖 48 个场景 ×（暗/浅两档）＝ 96 条断言：官网首页（下载信息、真实控制台预览、无重型分包） /
   登录 / 设备授权 / 空态控制台 / 设备能力位芯片 /
   语音门控两态 / 建会话 / 用户气泡 / 流式光标 / Markdown 代码块与外链（含复制按钮回执）/
   轨迹折叠与阅读顺序（思考 → 工具行 → 正文）/ 思考块（220px 内滚 + 秒数）/ 工具三态与
@@ -615,6 +626,10 @@ aurora-center version
   自托管 Release 管理卡 / **Token 用量页**（总量卡 + 折线图画布 + 管理员筛选 +
   `usage` 场景新增的分页断言：一页 15 条、共 20 条 → 第 2 页 5 条、边界按钮禁用） /
   三个面板 / **会话行模型下拉发出 `session.setModel`**（`panel-session-model`，本轮）/
+  **输入卡三浮层**（`composer-pickers`，2026-10-18：权限/模型/思考菜单**左缘贴各自触发按钮**、
+  同宽、同一 `z-index`，互斥且都在卡上方；分别发出 `session.setPermission` / `session.setModel` /
+  `llm.switch`）/ **粘贴图片**（`composer-paste`，2026-10-18：合成 `ClipboardEvent` + PNG →
+  卡内缩略图 → 发送后 stub 收到 `session.input.attachments.length === 1` → 移除后消失）/
   主题两档 / **Center 系统字体与不下载中文 TTF**（`font-system-performance`，本轮）/
   **`prefers-reduced-motion` 兜底把过渡压到 1ms**（`reduced-motion`，本轮）/
   移动端单栏抽屉 / 移动端工作台（底部导航、KPI 堆叠、管理表与**官方模型表**卡片化）。
@@ -661,6 +676,18 @@ aurora-center version
   未配置连按钮都不渲染）录音 → `stt.transcribe` 中转识别 → 文本填入输入框；
   助手消息行内「朗读」按钮（按 `voice.tts` 门控）→ `tts.synthesize` 中转合成 → blob 播放。
   录音需安全上下文（HTTPS / localhost），见 §6.4 已知限制。
+- **输入卡（2026-10-18）**：与桌面端同构 —— 缩略图条在**卡内顶部**，textarea，工具行四枚
+  自绘芯片（权限 / 模型 / 思考；来源概念在网页端不单独暴露，模型菜单按 `provider · model`
+  展平）。三枚芯片点开都是 `.composer-flyout`：底边同锚在输入卡上方、同宽、同外观，
+  **左缘贴住各自触发按钮**（靠右时按卡右缘回退），且与桌面一样互斥打开；权限写会话级覆盖
+  （`session.setPermission`）、模型写会话级覆盖
+  （`session.setModel`，含「跟随全局」清除项）、思考写全局（`llm.switch`），门控分别是
+  `allowRemoteSession` / `allowRemoteConfig`。粘贴图片走 §5 的上传 + `session.input` 附件链路
+  （客户端能力位 `center.inputAttachments` 为真才提供），失败/超限只给一行可行动提示。
+  窄屏下模型/思考只留图标 + 箭头，权限档位文案保留；极窄时工具行允许换行，发送键不被挤出。
+  验收：`composer-pickers`（三浮层贴各自按钮/同宽/互斥 + 三条命令）、`composer-paste`
+  （合成 `ClipboardEvent` 粘贴 PNG → 缩略图 → `session.input.attachments`）、
+  `mobile-single-column` 扩展的输入卡几何断言。
 - **移动端适配（v0.3.3 跟随三栏布局重做）**：≤ 720px 单栏——会话流占满，**设备列表与
   控制面板都变成覆盖式抽屉**（`grid-template-rows: minmax(0,1fr) auto`：主区吃剩余高度、
   底部标签栏按内容高），开会话后抽屉自动收起；表格横向滚动、触摸目标 ≥ `--hit-target`（40px）、
