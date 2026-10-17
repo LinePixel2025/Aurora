@@ -3760,8 +3760,8 @@ export const CHAT_OVERVIEW_CHECK = `(async () => {
  * 随小 AI 交互窗删除而移除，见 docs/07 开头的编号说明）。
  *
  * act 点左栏固定项 `[data-field="chat.subagent-item"]` 把主区切到子代理页面；
- * check 断言：页面在、命中 seed 的那 1 次运行（`chat.subagent-run`）、轨迹有进度条 +
- * 步骤时间线 + 报告，并且**切回对话流**（后续场景依赖 composer 与消息区）。
+ * check 断言：页面在、命中 seed 的 **2** 次运行（`chat.subagent-run`，2026-10-18 起一条 write
+ * 一条 read）、轨迹有进度条 + 步骤时间线 + 报告，并且**切回对话流**（后续场景依赖 composer 与消息区）。
  *
  * 快照来自 `seedChatTtsHistory` 种下的 `task` 工具卡（含 `subagent` 字段）——
  * 也就是说这条断言同时验证了"快照随工具卡持久化 → 由子代理页面读回"这条链路，
@@ -3847,8 +3847,19 @@ export const CHAT_SUBAGENT_OPEN_ACT = `(async () => {
       if (document.querySelector('[data-field="chat.subagent-page"]') !== null) break
       await wait(100)
     }
-    // 展开**独立对话视图**（截图要拍的就是它 —— 断言留在 check，但证据必须在图上）
-    const toggle = document.querySelector('[data-action="chat.subagent-conversation-toggle"]')
+    // 展开**独立对话视图**（截图要拍的就是它 —— 断言留在 check，但证据必须在图上）。
+    // 2026-10-18：seed 有两条运行（write / read），列表按开始时间倒序 → 第一条是 read。
+    // 这里明确挑「可读写」那条（write），断言仍是“有 2 个工具调用的对话视图”。
+    const runs = Array.from(document.querySelectorAll('[data-field="chat.subagent-run"]'))
+    const writeRun =
+      runs.find((card) => {
+        const chip = card.querySelector('[data-field="chat.subagent-perm"]')
+        return chip !== null && (chip.textContent || '').includes('可读写')
+      }) ?? runs[0]
+    const toggle =
+      writeRun === undefined
+        ? null
+        : writeRun.querySelector('[data-action="chat.subagent-conversation-toggle"]')
     if (toggle === null) return { clicked: false, reason: 'no conversation toggle' }
     toggle.click()
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -3869,15 +3880,29 @@ export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
     const convEl = () => document.querySelector('[data-field="chat.subagent-conversation"]')
     const page = document.querySelector('[data-field="chat.subagent-page"]')
     const runs = count('[data-field="chat.subagent-run"]')
-    // 权限徽章（2026-09）：seed 授予的是 write，卡头必须显示"可读写"
-    const perm = document.querySelector('[data-field="chat.subagent-perm"]')
-    const permText = perm === null ? '' : (perm.textContent || '').trim()
-    const toggle = document.querySelector('[data-action="chat.subagent-conversation-toggle"]')
+    // 2026-10-18：seed 两条运行（一条 write、一条 read；列表按开始时间倒序，read 在前）。
+    // 断言不依赖顺序：徽章数组做集合判断，对话展开明确挑「可读写」那条。
+    const runCards = Array.from(document.querySelectorAll('[data-field="chat.subagent-run"]'))
+    const permTexts = runCards.map((card) => {
+      const chip = card.querySelector('[data-field="chat.subagent-perm"]')
+      return chip === null ? '' : (chip.textContent || '').trim()
+    })
+    const writeRun =
+      runCards.find((card) => {
+        const chip = card.querySelector('[data-field="chat.subagent-perm"]')
+        return chip !== null && (chip.textContent || '').includes('可读写')
+      }) ?? runCards[0] ?? null
+    const permText = permTexts.find((text) => text.includes('可读写')) ?? permTexts[0] ?? ''
+    const toggle =
+      writeRun === null
+        ? null
+        : writeRun.querySelector('[data-action="chat.subagent-conversation-toggle"]')
     const result = {
       page: page !== null,
       runs,
       toggleFound: toggle !== null,
       permText,
+      permTexts,
       summary: count('[data-field="chat.subagent-summary"]'),
       // 导航项此时应是激活态（否则说明 view 状态没接上）
       navActive:
@@ -3890,9 +3915,10 @@ export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
       if (convEl() === null) break
       await wait(50)
     }
-    const reports = document.querySelectorAll('[data-field="chat.subagent-report"]')
-    result.traceSteps = count('.trace-step')
-    result.traceBar = count('.trace-bar')
+    const reports =
+      writeRun === null ? [] : writeRun.querySelectorAll('[data-field="chat.subagent-report"]')
+    result.traceSteps = writeRun === null ? 0 : writeRun.querySelectorAll('.trace-step').length
+    result.traceBar = writeRun === null ? 0 : writeRun.querySelectorAll('.trace-bar').length
     result.traceReportChars = reports.length > 0 ? (reports[0].textContent || '').trim().length : 0
     result.traceHiddenWhenOpen = convEl() === null
     // ② 展开态 = 独立对话视图：任务指令气泡 / 工具行 / 最终报告，且**只读**（无输入控件）
@@ -3914,12 +3940,15 @@ export const CHAT_SUBAGENT_OPEN_CHECK = `(async () => {
         ? false
         : conv.querySelector('textarea, input, [contenteditable="true"]') === null
     result.convReport = count('[data-field="chat.subagent-conversation"] .conv-report-tag')
-    // 展开态下轨迹必须让位（两个缩放级别不同时出现 —— 同一段内容不说两遍）
-    result.traceDeduped = count('.trace-step') === 0
+    // 展开态下**这条运行**的轨迹必须让位（两个缩放级别不同时出现）。
+    // 注意只量第一条运行：seed 有两条，全局的 .trace-step 还会包含另一条折叠卡的轨迹。
+    result.traceDeduped =
+      writeRun !== null && writeRun.querySelectorAll('.trace-step').length === 0
     result.pass =
       result.page === true &&
-      result.runs === 1 &&
+      result.runs === 2 &&
       result.permText.includes('可读写') &&
+      result.permTexts.some((text) => text.includes('只读')) &&
       result.navActive === true &&
       result.toggleFound === true &&
       result.traceSteps >= 3 &&
@@ -11751,6 +11780,7 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
           'capture-reasoning-probe：这是探针种下的思考过程全文。' +
           '历史水合出的思考块默认收起为"已深度思考"摘要行，点开应能看到本段全文。',
         // 2026-09：一条 todo_write（3 项清单）+ 一条 task（子代理，已完成）——
+        // 2026-10-18：再加一条只读 task，子代理页因此同时展示 write / read 两种权限徽章。
         // MessageList 的结构化任务清单卡与子代理卡由此获得截图与探针证据
         // （CHAT_SIDEBAR_SCRIPT 断言 chat.todo-card 恰好 3 行 + chat.task-card 在）。
         toolCalls: [
@@ -11849,6 +11879,69 @@ export async function seedChatTtsHistory(userData: string | undefined): Promise<
               report:
                 '当前时间 09:20，已接通电源（82%，非充电）；网络在线（Wi-Fi）；' +
                 '前台应用为 Code.exe。整体状态正常，未发现需要处理的事项。',
+            },
+          },
+          // 2026-10-18：第二条 task（只读）—— 同轮多子代理的列表 / 双权限徽章证据。
+          // 与上面那条 write 运行并排出现在「子代理」页（探针断言 runs=2、一条可读写一条只读）。
+          {
+            id: 'capture-task-2',
+            name: 'task',
+            input: {
+              description: '核对课程表',
+              prompt: '读取今天的课程安排，核对是否有课并给出结论。',
+            },
+            state: 'success',
+            outputSummary: '子代理：核对课程表',
+            subagent: {
+              taskId: 'sub-capture-2',
+              callId: 'capture-task-2',
+              description: '核对课程表',
+              prompt: '读取今天的课程安排，核对是否有课并给出结论。',
+              status: 'success',
+              startedAt: Date.parse(now) + 5_000,
+              endedAt: Date.parse(now) + 6_500,
+              toolCalls: 1,
+              permission: 'read',
+              tools: ['grep', 'read_file'],
+              steps: [
+                { id: 's1', kind: 'text', text: '先读课表再核对。' },
+                {
+                  id: 'capture-tool-3',
+                  kind: 'tool',
+                  name: 'read_file',
+                  state: 'success',
+                  summary: '已读取 0.4 KB',
+                  args: '{"path":"schedule.json"}',
+                },
+              ],
+              messages: [
+                {
+                  id: 'capture-sub2-u1',
+                  role: 'user',
+                  text: '读取今天的课程安排，核对是否有课并给出结论。',
+                },
+                {
+                  id: 'capture-sub2-a1',
+                  role: 'assistant',
+                  text: '先读课表再核对。',
+                  toolCalls: [
+                    {
+                      id: 'capture-tool-3',
+                      name: 'read_file',
+                      state: 'success',
+                      args: '{"path":"schedule.json"}',
+                      summary: '已读取 0.4 KB',
+                      output: '{"lessons":[{"subject":"数学","start":"00:15"}]}',
+                    },
+                  ],
+                },
+                {
+                  id: 'capture-sub2-a2',
+                  role: 'assistant',
+                  text: '今天两节课：数学 00:15、语文 01:00；无冲突。',
+                },
+              ],
+              report: '今天两节课：数学 00:15、语文 01:00；无冲突。',
             },
           },
         ],

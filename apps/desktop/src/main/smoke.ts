@@ -611,6 +611,80 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       'n=' + roundEvents.length,
     )
 
+    // 9.4b 多子代理并发（docs/06 §19.5）：父对话一轮发两个 task，两个子代理真的重叠运行。
+    //      桩服务给多子代理首轮加了 180ms 延迟（见 smoke-llm.ts），所以「两个 running 都早于
+    //      任一终态」是并行实现的硬证据；串行实现会是 A 完成之后 B 才开始。
+    const multiEvents = []
+    const offMulti = window.aurora.chat.onEvent((event) => multiEvents.push(event))
+    const sentMulti = expectOk(
+      'chat.send(多子代理)',
+      await window.aurora.chat.send({
+        sessionId: 'smoke-subagent-multi',
+        text: 'STUB_MULTI_TASK_MARKER 派两个子代理',
+        origin: 'edge-bar',
+      }),
+    )
+    if (sentMulti) {
+      for (
+        let i = 0;
+        i < 400 && !multiEvents.some((e) => e.type === 'done' || e.type === 'error');
+        i += 1
+      ) {
+        await wait(50)
+      }
+    }
+    offMulti()
+    const multiProgress = multiEvents.filter((e) => e.type === 'subagent' && e.subagent)
+    const multiTool = multiEvents.filter((e) => e.type === 'tool' && e.call.name === 'task')
+    const multiRuns = new Map()
+    multiProgress.forEach((event, index) => {
+      const key = event.subagent.callId || event.subagent.taskId
+      const run = multiRuns.get(key) ?? { first: index, last: index, snapshots: [] }
+      run.last = index
+      run.snapshots.push(event.subagent)
+      multiRuns.set(key, run)
+    })
+    const runEntries = [...multiRuns.values()]
+    const reportOf = (entry) => entry.snapshots.at(-1)?.report ?? ''
+    record(
+      '多子代理：两个 task 都执行并各自回传终态报告',
+      runEntries.length === 2 &&
+        runEntries.every((entry) => entry.snapshots.at(-1)?.status === 'success') &&
+        runEntries.some((entry) => reportOf(entry).includes('STUB_SUB_A_OK')) &&
+        runEntries.some((entry) => reportOf(entry).includes('STUB_SUB_B_OK')),
+      'runs=' +
+        runEntries.length +
+        ' reports=' +
+        runEntries.map((entry) => reportOf(entry).slice(0, 20)).join(' | '),
+    )
+    record(
+      '多子代理：两个 running 都在任一终态之前（真并发，不是顺序跑）',
+      runEntries.length === 2 &&
+        runEntries[0].first < runEntries[1].last &&
+        runEntries[1].first < runEntries[0].last,
+      'windows=' + runEntries.map((entry) => entry.first + '..' + entry.last).join(' | '),
+    )
+    record(
+      '多子代理：两张 task 工具卡都成功，历史里各带自己的报告',
+      multiTool.filter((e) => e.call.state === 'success').length === 2 &&
+        (await (async () => {
+          const multiHistory = expectOk(
+            'chat.history(多子代理)',
+            await window.aurora.chat.history({ sessionId: 'smoke-subagent-multi' }),
+          )
+          const calls = (multiHistory ?? [])
+            .flatMap((item) => item.toolCalls ?? [])
+            .filter((item) => item.name === 'task')
+          const reports = calls.map((call) => call.subagent?.report ?? '').join('\n')
+          return (
+            calls.length === 2 &&
+            reports.includes('STUB_SUB_A_OK') &&
+            reports.includes('STUB_SUB_B_OK')
+          )
+        })()),
+      'taskCards=' + multiTool.length,
+    )
+
     // 9.5 免确认命令模式（docs/06 §11.7，v12）：命中列表 → 直接执行、不弹卡片；未命中 → 仍然弹卡片。
     //     两条断言必须成对：只断言「没收到卡片」证明不了什么 —— 整条链路没走（工具压根没被调用、
     //     或走了 enabled() 为假的那条更宽的放行路径）同样收不到卡片，负对照才是这条断言的本体。

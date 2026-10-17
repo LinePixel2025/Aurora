@@ -40,6 +40,16 @@ export const REASONING_MARKER = 'STUB_REASONING_OK'
 export const SUBAGENT_REPORT_MARKER = 'STUB_SUB_OK'
 
 /**
+ * 多子代理场景（docs/06 §19.5）：父对话一轮里派两个 `task`，两个子代理各带自己的标记。
+ * 子代理桩在首轮加一小段延迟，让“两个 running 同时存在”可被事件序列证明（而不是靠耗时猜）。
+ */
+export const STUB_MULTI_TASK_MARKER = 'STUB_MULTI_TASK_MARKER'
+export const STUB_MULTI_SUBTASK_A = 'STUB_MULTI_SUB_A'
+export const STUB_MULTI_SUBTASK_B = 'STUB_MULTI_SUB_B'
+export const STUB_MULTI_REPORT_A = 'STUB_SUB_A_OK'
+export const STUB_MULTI_REPORT_B = 'STUB_SUB_B_OK'
+
+/**
  * 用户消息含此标记 → 对话分流改走**终端工具链路**（docs/06 §11.7 的免确认模式）：
  * 第 1 轮返回一个 `run_command` 的 `tool_calls`，拿到工具结果后的第 2 轮回一句收尾文本。
  *
@@ -286,10 +296,14 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
 
       // ── 子代理分流（docs/06 §19）：第 1 轮要一次工具，第 2 轮给报告 ──
       if (isSubagentRequest(record)) {
+        const prompt = lastUserContent(record)
+        const isMultiA = prompt.includes(STUB_MULTI_SUBTASK_A)
+        const isMultiB = prompt.includes(STUB_MULTI_SUBTASK_B)
+        const isMulti = isMultiA || isMultiB
         const hasToolResult = (record.body?.messages ?? []).some(
           (message) => message.role === 'tool',
         )
-        if (!hasToolResult) {
+        const emitFirstRound = (): void => {
           sendSse(res, {
             choices: [
               {
@@ -298,9 +312,91 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
                   tool_calls: [
                     {
                       index: 0,
-                      id: 'call_smoke_sub_1',
+                      id: isMulti ? `call_smoke_sub_${isMultiA ? 'a' : 'b'}_1` : 'call_smoke_sub_1',
                       type: 'function',
                       function: { name: 'list_dir', arguments: '{"path":"."}' },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          })
+          sendSse(res, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
+        }
+        const emitReport = (): void => {
+          const report = isMultiA
+            ? `已列出目录。${STUB_MULTI_REPORT_A} 子代理 A 报告完成。`
+            : isMultiB
+              ? `已列出目录。${STUB_MULTI_REPORT_B} 子代理 B 报告完成。`
+              : `已列出目录。${SUBAGENT_REPORT_MARKER} 子代理报告完成。`
+          sendSse(res, {
+            choices: [{ index: 0, delta: { content: report }, finish_reason: null }],
+          })
+          sendSseStop(res)
+        }
+        const finish = (): void => {
+          res.write('data: [DONE]\n\n')
+          res.end()
+        }
+
+        if (!hasToolResult) {
+          // 多子代理：首轮延迟一小段，让两个子代理的 running 快照在事件序列里真实重叠
+          // （串行实现会变成 A 完成之后 B 才开始，冒烟的并发断言据此失败）
+          if (isMulti) {
+            setTimeout(() => {
+              emitFirstRound()
+              finish()
+            }, 180)
+          } else {
+            emitFirstRound()
+            finish()
+          }
+        } else {
+          emitReport()
+          finish()
+        }
+        return
+      }
+
+      // ── 父对话的多子代理分流（docs/06 §19.5）：一轮里派两个 task，拿到两条结果后收尾 ──
+      const lastUser = [...(record.body?.messages ?? [])]
+        .reverse()
+        .find((message) => message.role === 'user')
+      const wantsMultiTask =
+        typeof lastUser?.content === 'string' && lastUser.content.includes(STUB_MULTI_TASK_MARKER)
+      if (wantsMultiTask) {
+        const taskDone = (record.body?.messages ?? []).some((message) => message.role === 'tool')
+        if (!taskDone) {
+          sendSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_smoke_multi_task_a',
+                      type: 'function',
+                      function: {
+                        name: 'task',
+                        arguments: JSON.stringify({
+                          description: '冒烟子代理 A',
+                          prompt: `${STUB_MULTI_SUBTASK_A} 列一下当前目录并给一句汇总。`,
+                        }),
+                      },
+                    },
+                    {
+                      index: 1,
+                      id: 'call_smoke_multi_task_b',
+                      type: 'function',
+                      function: {
+                        name: 'task',
+                        arguments: JSON.stringify({
+                          description: '冒烟子代理 B',
+                          prompt: `${STUB_MULTI_SUBTASK_B} 再列一次当前目录并给一句汇总。`,
+                        }),
+                      },
                     },
                   ],
                 },
@@ -314,7 +410,7 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
             choices: [
               {
                 index: 0,
-                delta: { content: `已列出目录。${SUBAGENT_REPORT_MARKER} 子代理报告完成。` },
+                delta: { content: `${STUB_MARKER} 两个子代理都已完成。` },
                 finish_reason: null,
               },
             ],
@@ -327,9 +423,6 @@ export async function startStubLlmServer(logger?: Logger): Promise<StubLlmServer
       }
 
       // ── 父对话的 task 分流：用户消息带标记时派一次子代理，拿到结果后收尾 ──
-      const lastUser = [...(record.body?.messages ?? [])]
-        .reverse()
-        .find((message) => message.role === 'user')
       const wantsTask =
         typeof lastUser?.content === 'string' && lastUser.content.includes(SUBAGENT_TASK_MARKER)
       if (wantsTask) {
