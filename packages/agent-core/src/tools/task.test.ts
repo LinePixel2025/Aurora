@@ -20,6 +20,9 @@ import type { ToolDefinition } from './registry.js'
 import type { SubagentSnapshot } from '@aurora/shared'
 import { createFakeProvider } from '../testing/fakeProvider.js'
 import type { ScriptRound } from '../testing/fakeProvider.js'
+import type { LoopProvider } from '../loop/agentLoop.js'
+import type { ChatEvent } from '../llm/types.js'
+import { createSubagentLimiter } from './subagent-limiter.js'
 
 const DESCRIPTION = '调研资料'
 const PROMPT = '整理 Aurora 项目的模块清单并汇总'
@@ -103,10 +106,12 @@ describe('parentSessionIdOf', () => {
 })
 
 describe('createTaskTool', () => {
-  it('声明 task 名、safe 敏感级与必填参数', () => {
+  it('声明 task 名、safe 敏感级、可并发与必填参数', () => {
     const { tool } = createHarness({ rounds: [] })
     expect(tool.name).toBe(TASK_TOOL_NAME)
     expect(tool.sensitivity).toBe('safe')
+    // 同轮多个 task 可入并发批（真正并发度由 subagent-limiter 按父会话限制，docs/06 §19.5）
+    expect(tool.parallel).toBe(true)
     expect(tool.parameters.required).toEqual(['description', 'prompt'])
   })
 
@@ -488,6 +493,9 @@ describe('createTaskTool 的写权限授予', () => {
 
     expect(provider.calls[0]?.tools?.map((item) => item.name)).toEqual(['read_file'])
     expect(result.subagent?.tools).toEqual(['read_file'])
+    // 白名单把写工具滤掉后，快照必须按**实际**授予落 read（不能拿请求参数充数）
+    expect(result.subagent?.permission).toBe('read')
+    expect(result.content).toContain('当前权限档未提供写工具')
   })
 
   it('permission 非法取值 → isError 且不触碰 provider', async () => {
@@ -536,5 +544,174 @@ describe('createTaskTool 的写权限授予', () => {
     // 轨迹步骤也带上入参（「它拿什么参数做了什么」）
     const toolStep = (result.subagent?.steps ?? []).find((step) => step.kind === 'tool')
     expect(toolStep?.args).toBe('{"path":"."}')
+  })
+})
+
+describe('createTaskTool 的多子代理与可写（docs/06 §19.5）', () => {
+  /** 记录“同时在跑几个子代理”的假 provider：maxActive 是并发的唯一硬证据 */
+  function createCountingProvider(options: { holdMs: number }): {
+    provider: LoopProvider
+    get maxActive(): number
+  } {
+    let active = 0
+    let maxActive = 0
+    let started = 0
+    let releaseBarrier: () => void = () => undefined
+    const barrier = new Promise<void>((resolve) => {
+      releaseBarrier = resolve
+    })
+    const provider: LoopProvider = {
+      id: 'counting',
+      chat() {
+        return (async function* (): AsyncIterable<ChatEvent> {
+          started += 1
+          active += 1
+          maxActive = Math.max(maxActive, active)
+          if (started >= 2) releaseBarrier()
+          try {
+            // 两个并发用例靠这行让“同时起跑”真的发生；串行用例会等满 holdMs 后 maxActive=1
+            await Promise.race([
+              barrier,
+              new Promise<void>((resolve) => setTimeout(resolve, options.holdMs)),
+            ])
+            yield { type: 'text', delta: '报告' }
+            yield { type: 'done', finishReason: 'stop' }
+          } finally {
+            active -= 1
+          }
+        })()
+      },
+    }
+    return {
+      provider,
+      get maxActive(): number {
+        return maxActive
+      },
+    }
+  }
+
+  function makeTaskTool(options: {
+    provider: LoopProvider
+    tools: ToolRegistry
+    limiter?: ReturnType<typeof createSubagentLimiter>
+    confirmTool?: (info: {
+      name: string
+      input: unknown
+      sensitivity: 'confirm'
+      sessionId: string
+    }) => Promise<'machine'>
+  }): ToolDefinition {
+    return createTaskTool({
+      provider: { create: () => ({ provider: options.provider, model: 'fake-model' }) },
+      tools: options.tools,
+      ...(options.limiter === undefined ? {} : { limiter: options.limiter }),
+      ...(options.confirmTool === undefined ? {} : { confirmTool: options.confirmTool }),
+    })
+  }
+
+  it('两个只读 task 并发：provider 同时在跑 2 个（不是“看起来快”）', async () => {
+    const counting = createCountingProvider({ holdMs: 100 })
+    const tool = makeTaskTool({
+      provider: counting.provider,
+      tools: new ToolRegistry(),
+      limiter: createSubagentLimiter(3),
+    })
+    const sessionId = 'task-parallel-read'
+    const [first, second] = await Promise.all([
+      tool.execute({ description: '任务 A', prompt: '做 A' }, { sessionId }),
+      tool.execute({ description: '任务 B', prompt: '做 B' }, { sessionId }),
+    ])
+
+    expect(counting.maxActive).toBe(2)
+    expect(first.subagent?.permission).toBe('read')
+    expect(second.subagent?.permission).toBe('read')
+    expect(first.subagent?.report).toContain('报告')
+    expect(second.subagent?.report).toContain('报告')
+  })
+
+  it('两个写 task 串行：provider 同时最多 1 个（整段串行，不是只锁写工具）', async () => {
+    const counting = createCountingProvider({ holdMs: 60 })
+    const parent = new ToolRegistry()
+    parent.register(makeTool('write_file', 'confirm'))
+    parent.register(makeTool('edit_file', 'confirm'))
+    const tool = makeTaskTool({
+      provider: counting.provider,
+      tools: parent,
+      limiter: createSubagentLimiter(3),
+      confirmTool: async () => 'machine',
+    })
+    const sessionId = 'task-parallel-write'
+    const input = { description: '写任务', prompt: '写点东西', permission: 'write' as const }
+    const [first, second] = await Promise.all([
+      tool.execute(input, { sessionId }),
+      tool.execute(input, { sessionId }),
+    ])
+
+    expect(counting.maxActive).toBe(1)
+    expect(first.subagent?.permission).toBe('write')
+    expect(second.subagent?.permission).toBe('write')
+  })
+
+  it('只读档（父表没有写工具）即使请求 write 也按实际授予落 read，并说明原因', async () => {
+    const counting = createCountingProvider({ holdMs: 10 })
+    const parent = new ToolRegistry()
+    parent.register(makeTool('read_file'))
+    const tool = makeTaskTool({
+      provider: counting.provider,
+      tools: parent,
+      limiter: createSubagentLimiter(3),
+      confirmTool: async () => 'machine',
+    })
+    const result = await tool.execute(
+      { description: '写任务', prompt: '写点东西', permission: 'write' },
+      { sessionId: 'task-write-downgrade' },
+    )
+
+    expect(result.subagent?.permission).toBe('read')
+    expect(result.subagent?.tools).toEqual(['read_file'])
+    expect(result.content).toContain('当前权限档未提供写工具')
+  })
+
+  it('排队中被 abort：返回“未启动”，不会偷偷跑，也不占着槽位', async () => {
+    const limiter = createSubagentLimiter(1)
+    const parent = new ToolRegistry()
+    let releaseFirst: () => void = () => undefined
+    let enteredFirst: () => void = () => undefined
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const firstEntered = new Promise<void>((resolve) => {
+      enteredFirst = resolve
+    })
+    const provider: LoopProvider = {
+      id: 'gated',
+      chat() {
+        return (async function* (): AsyncIterable<ChatEvent> {
+          enteredFirst()
+          await firstGate
+          yield { type: 'text', delta: '报告' }
+          yield { type: 'done', finishReason: 'stop' }
+        })()
+      },
+    }
+    const tool = makeTaskTool({ provider, tools: parent, limiter })
+    const sessionId = 'task-queue-abort'
+    const first = tool.execute({ description: '先跑', prompt: '先跑' }, { sessionId })
+    await firstEntered
+
+    const controller = new AbortController()
+    const second = tool.execute(
+      { description: '排队', prompt: '排队' },
+      { sessionId, signal: controller.signal },
+    )
+    controller.abort()
+    const queued = await second
+    expect(queued.isError).toBe(true)
+    expect(queued.content).toContain('父请求已取消，子代理未启动')
+
+    releaseFirst()
+    const done = await first
+    expect(done.content).toContain('报告')
+    expect(limiter.snapshot(sessionId)).toEqual({ active: 0, queued: 0, writeLocked: false })
   })
 })

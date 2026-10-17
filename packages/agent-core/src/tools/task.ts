@@ -34,12 +34,23 @@ import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types
 import { ToolRegistry } from './registry.js'
 import type { ToolDefinition, ToolProgress, ToolResult } from './registry.js'
 import { ASK_USER_TOOL_NAME } from './ask-user.js'
+import { createSubagentLimiter } from './subagent-limiter.js'
+import type { SubagentLimiter, SubagentSlotRelease } from './subagent-limiter.js'
 
 export const TASK_TOOL_NAME = 'task'
 /** 回传给主代理的报告长度上限：超过从尾部截断（防子代理结果刷爆主对话上下文） */
 export const MAX_TASK_RESULT_CHARS = 20_000
 /** 子代理会话 id 后缀：todo 等按会话隔离的端口据此与主对话分清单 */
 export const SUBAGENT_SESSION_SUFFIX = '-sub'
+
+/**
+ * 进程级子代理限流器（docs/06 §19.5）：按**父会话**限制并发、写子代理串行。
+ *
+ * 刻意放在模块级而不是 `createTaskTool` 里：装配层每次 `settings:changed` 都会重建工具表，
+ * 若限流器跟着工具实例走，旧实例里还在跑的子代理与新实例就各有一份额度，
+ * 同一会话实际并发会超过 `SUBAGENT_MAX_PARALLEL`。
+ */
+const subagentLimiter = createSubagentLimiter()
 
 /**
  * 子代理会话 id → 父会话 id：剥掉末尾的 `-sub` 后缀（幂等；无后缀原样返回）。
@@ -136,16 +147,24 @@ export interface TaskToolOptions {
     sensitivity: 'confirm'
     sessionId: string
   }) => Promise<ConfirmDecision>
+  /**
+   * 并发限流器（docs/06 §19.5）。缺省用进程级单例 —— 装配层每次 `settings:changed`
+   * 都会重建工具表，限流额度不能跟着工具实例走，否则同一会话会多出一份额度。
+   * 单测可注入独立实例，避免用例之间通过模块级状态互相影响。
+   */
+  limiter?: SubagentLimiter
 }
 
 export function createTaskTool(options: TaskToolOptions): ToolDefinition {
   return {
     name: TASK_TOOL_NAME,
     description:
-      '派生一个子代理独立完成调研、排查、整理类的多步子任务。' +
+      '派生一个或多个子代理独立完成调研、排查、整理类的多步子任务。' +
       '子代理拥有独立上下文（看不到当前对话），默认只能使用查询与只读类工具；' +
       '需要它改文件时把 `permission` 设为 `write`（此时它还能用 write_file / edit_file，' +
       '每次写入仍会按当前权限档确认）。子代理不能执行命令、不能访问 MCP、不能再派生子代理。' +
+      '相互独立的任务可以在同一轮里发多个 `task`：它们会并发执行（同一会话最多 3 个同时跑，' +
+      '超出的排队；写文件的子代理串行）。' +
       '`prompt` 必须自包含：写清目标、背景、约束与期望返回的内容。' +
       '适合需要大量读取后汇总、或避免占用当前对话上下文预算的任务。',
     parameters: {
@@ -167,6 +186,9 @@ export function createTaskTool(options: TaskToolOptions): ToolDefinition {
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    // 同轮多个 task 可以并发起跑（docs/06 §5 / §19.5）：真正的同时执行数由模块级限流器
+    // 按父会话压到 SUBAGENT_MAX_PARALLEL，写入类子代理再串行；这里只声明"可入并发批"。
+    parallel: true,
     // 子代理**不按墙钟中止**（docs/06 §5 的工具执行上限）：它的上限是轮次与取消 ——
     // 一次 32 轮的调研本就可能跑过默认 10 分钟，按时间砍它会误杀正常长任务，
     // 而那正是本节要避免的「把设计内的慢当成挂起」。
@@ -243,15 +265,18 @@ async function runSubagent(
     }
   }
 
-  // 写入授权：需要装配层注入了父会话的确认回调才算数（没注入时连"能不能写"都无从判定，
-  // 一律降级为只读，并把降级事实写进结果 —— 静默降级会让主代理误以为文件已经改好了）。
+  // 写入授权分两层（docs/06 §19.2）：
+  // ① 请求了 write 且装配层注入了父会话确认回调（没注入时连"能不能写"都无从判定）；
+  // ② 子表里**真的**有写工具（只读档父表根本不注册 write_file / edit_file，白名单也可能把它滤掉）。
+  // 只看 ① 会让快照写着「可读写」却一个写工具都没有 —— 那是说假话。
   const confirmForSubagent = options.confirmTool
-  const writeGranted = request.permission === 'write' && confirmForSubagent !== undefined
+  const writeRequested = request.permission === 'write'
+  const allowWrite = writeRequested && confirmForSubagent !== undefined
 
   // 子工具表：从父表过滤出子代理可用的工具。
   // 默认拿不到敏感工具（confirm）、不能递归派生（task 自身）、碰不到 MCP 工具；
   // 授予 write 时放开**文件写白名单**（仍受白名单交集与确认链约束）。
-  // 只读档下装配层再叠一层白名单（`subagentToolNames`）：白名单只做减法，未注入即不过滤。
+  // `subagentToolNames` 是内核预留钩子（生产装配当前未注入）：只做减法，未注入即不过滤。
   const allowedNames =
     options.subagentToolNames === undefined ? undefined : new Set(options.subagentToolNames())
   const subTools = new ToolRegistry()
@@ -262,190 +287,217 @@ async function runSubagent(
     // 澄清需求是主代理的职责，子代理只负责把派下来的活干完。
     if (tool.name === ASK_USER_TOOL_NAME) continue
     if (tool.name.startsWith('mcp.')) continue
-    const writable = writeGranted && SUBAGENT_WRITE_TOOLS.has(tool.name)
+    const writable = allowWrite && SUBAGENT_WRITE_TOOLS.has(tool.name)
     if (tool.sensitivity === 'confirm' && !writable) continue
     if (allowedNames !== undefined && !allowedNames.has(tool.name)) continue
     subTools.register(tool)
   }
   const grantedTools = subTools.list().map((tool) => tool.name)
+  const writeGranted = writeRequested && grantedTools.some((name) => SUBAGENT_WRITE_TOOLS.has(name))
 
-  // 内存会话收集器（不落盘）：子代理的对话过程只存在于本次调用的闭包里
-  const collected: StoredMessage[] = []
-  let sequence = 0
-  const append = async (message: NewMessage): Promise<StoredMessage> => {
-    sequence += 1
-    const stored: StoredMessage = {
-      // 循环预领的 id 优先（`NewMessage.id`，见 docs/06 §16.2）：子代理的 text / reasoning 增量
-      // 事件带的是**预领的那个 id**，落盘若另发一个 `sub-N`，同一轮就会出现两个 id —— 今天不炸
-      // 只是因为子代理不把这些事件的 messageId 往外发，但这属于「将来一转发就写错消息」的雷。
-      id: message.id ?? `sub-${sequence}`,
-      role: message.role,
-      content: message.content,
-      createdAt: new Date().toISOString(),
-      ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls }),
-      ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
-      ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
-    }
-    collected.push(stored)
-    return stored
-  }
-  const updateToolCall = async (messageId: string, call: StoredToolCall): Promise<void> => {
-    const target = collected.find((message) => message.id === messageId)
-    const calls = target?.toolCalls
-    if (calls === undefined) return
-    const index = calls.findIndex((item) => item.id === call.id)
-    if (index >= 0) calls[index] = call // 原地替换，保持收集器内状态与循环同步
-  }
-
-  const subSessionId = `${request.sessionId}${SUBAGENT_SESSION_SUFFIX}`
-  const catalog = describeTools(subTools.list())
-
-  const events = runAgentLoop({
-    provider: config.provider,
-    model: config.model,
-    ...(config.temperature === undefined ? {} : { temperature: config.temperature }),
-    ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort }),
-    systemPrompt: buildSystemPrompt({
-      persona: SUBAGENT_PERSONA,
-      ...(catalog === undefined ? {} : { toolCatalog: catalog }),
-    }),
-    userInput: request.prompt,
-    history: [],
-    tools: subTools,
-    sessionId: subSessionId,
+  // 并发限流（docs/06 §19.5）：同一父会话最多 SUBAGENT_MAX_PARALLEL 个子代理；
+  // 实际授予了写工具的再拿写锁，整段串行（避免交错「读 → 改 → 写」与多张确认卡叠加）。
+  // 排队中被父请求取消时 acquire 返回 undefined —— 不再启动、也不留下假快照。
+  const release: SubagentSlotRelease | undefined = await (
+    options.limiter ?? subagentLimiter
+  ).acquire(request.sessionId, {
+    write: writeGranted,
     ...(request.signal === undefined ? {} : { signal: request.signal }),
-    maxRounds: options.maxRounds ?? SUBAGENT_MAX_ROUNDS,
-    append,
-    updateToolCall,
-    onToolCall: (info) => options.logger?.info('子代理工具调用', info),
-    // 写入授权下把父会话的确认链交进子循环：循环只在 `sensitivity === 'confirm'` 时调用它，
-    // 因此这一句的效果是「子代理的写操作与主对话走同一条判定」（档位 / 项目根 / 免确认模式）。
-    // 会话 id **钉回父会话**：`-sub` 在会话库里不存在，按它解析项目根会换一条护栏。
-    // 缺省 cwd / 搜索根 / 边界根的同一类钉回在**装配层**做（`session-project.ts` 的
-    // `adaptForSubagent` 用 `parentSessionIdOf` 剥后缀）—— 那边的 getter 由主进程注入，
-    // 内核只知道 `-sub`（todo 清单的状态隔离依赖它，不能整体换 id）。
-    ...(writeGranted && confirmForSubagent !== undefined
-      ? {
-          confirmTool: (info: { name: string; input: unknown; sensitivity: 'confirm' }) =>
-            confirmForSubagent({ ...info, sessionId: request.sessionId }),
-        }
-      : {}),
   })
-
-  // 运行快照（docs/06 §19）：子代理的过程不落盘，这份快照是它唯一的对外可见形态。
-  // 内存里随事件流实时推给渲染层（「子代理」页面），结束时随工具卡一起持久化。
-  const startedAt = Date.now()
-  const taskId = `sub-${startedAt.toString(36)}-${(taskSequence += 1)}`
-  const callId = request.toolCallId ?? ''
-  const steps: SubagentStep[] = []
-  let stepSequence = 0
-  let report = ''
-  let firstError: string | undefined
-  let pending = false
-  let status: SubagentSnapshot['status'] = 'running'
-
-  /** 组一份快照；`endedAt` 只在收尾时给（运行中不给，页面据此显示已运行时长） */
-  const snapshot = (endedAt?: number): SubagentSnapshot => {
-    const transcript = projectTranscript(collected)
+  if (release === undefined) {
     return {
-      taskId,
-      callId,
-      description: request.description,
-      prompt: request.prompt,
-      status,
-      startedAt,
-      ...(endedAt === undefined ? {} : { endedAt }),
-      steps: steps.map((step) => ({ ...step })),
-      toolCalls: steps.filter((step) => step.kind === 'tool').length,
-      ...(report === '' ? {} : { report: truncateReport(report, MAX_TASK_RESULT_CHARS) }),
-      // 本次授予的权限与**实际**拿到的工具（不是请求的权限：降级时要看得出来）
-      permission: writeGranted ? ('write' as const) : ('read' as const),
-      tools: [...grantedTools],
-      messages: transcript.messages,
-      ...(transcript.truncated ? { transcriptTruncated: true } : {}),
+      content: '父请求已取消，子代理未启动。',
+      isError: true,
+      summary: '子代理已取消',
     }
   }
-  const publish = (endedAt?: number): void => {
-    request.emitProgress?.({ kind: 'subagent', snapshot: snapshot(endedAt) })
-  }
-  // 立刻推一份「已开始」的空快照：页面上卡片要在派生的瞬间就出现，而不是等第一个事件
-  publish()
 
-  // 遍历循环事件：文本 delta 累积成最终报告；工具调用落成步骤；首个 error 留痕
-  for await (const event of events) {
-    if (event.type === 'text') {
-      report += event.delta
-      // 连续的正文增量**合并成一段**：早先每个 delta 各成一步，时间线上是一堆半句，
-      // 读起来像卡带（「思考/工具展示不够优雅」的原始症状之一）。
-      const last = steps[steps.length - 1]
-      if (last !== undefined && last.kind === 'text') {
-        last.text = truncateReport(`${last.text ?? ''}${event.delta}`, MAX_STEP_CHARS)
-      } else {
-        steps.push({
-          id: `s${(stepSequence += 1)}`,
-          kind: 'text',
-          text: truncateReport(event.delta, MAX_STEP_CHARS),
-        })
+  try {
+    // 内存会话收集器（不落盘）：子代理的对话过程只存在于本次调用的闭包里
+    const collected: StoredMessage[] = []
+    let sequence = 0
+    const append = async (message: NewMessage): Promise<StoredMessage> => {
+      sequence += 1
+      const stored: StoredMessage = {
+        // 循环预领的 id 优先（`NewMessage.id`，见 docs/06 §16.2）：子代理的 text / reasoning 增量
+        // 事件带的是**预领的那个 id**，落盘若另发一个 `sub-N`，同一轮就会出现两个 id —— 今天不炸
+        // 只是因为子代理不把这些事件的 messageId 往外发，但这属于「将来一转发就写错消息」的雷。
+        id: message.id ?? `sub-${sequence}`,
+        role: message.role,
+        content: message.content,
+        createdAt: new Date().toISOString(),
+        ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls }),
+        ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
+        ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
       }
-      pruneSteps(steps)
-      publish()
-      continue
+      collected.push(stored)
+      return stored
     }
-    if (event.type === 'error') {
-      firstError ??= event.message
-      continue
+    const updateToolCall = async (messageId: string, call: StoredToolCall): Promise<void> => {
+      const target = collected.find((message) => message.id === messageId)
+      const calls = target?.toolCalls
+      if (calls === undefined) return
+      const index = calls.findIndex((item) => item.id === call.id)
+      if (index >= 0) calls[index] = call // 原地替换，保持收集器内状态与循环同步
     }
-    if (event.type === 'done') {
-      pending = event.pending === true
-      continue
-    }
-    if (event.type === 'tool') {
-      upsertToolStep(steps, event.call, `s${(stepSequence += 1)}`)
-      pruneSteps(steps)
-      publish()
-    }
-  }
 
-  // 结果组装：报告为主；异常路径转 isError；截断与附注按口径追加
-  let content: string
-  let isError: boolean | undefined
-  if (report !== '') {
-    content = truncateReport(report, MAX_TASK_RESULT_CHARS, '…（子代理结果过长，已截断）')
-    if (firstError !== undefined) {
-      content += `\n\n（子代理执行中出现过一次错误：${firstError}）`
+    const subSessionId = `${request.sessionId}${SUBAGENT_SESSION_SUFFIX}`
+    const catalog = describeTools(subTools.list())
+
+    const events = runAgentLoop({
+      provider: config.provider,
+      model: config.model,
+      ...(config.temperature === undefined ? {} : { temperature: config.temperature }),
+      ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort }),
+      systemPrompt: buildSystemPrompt({
+        persona: SUBAGENT_PERSONA,
+        ...(catalog === undefined ? {} : { toolCatalog: catalog }),
+      }),
+      userInput: request.prompt,
+      history: [],
+      tools: subTools,
+      sessionId: subSessionId,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+      maxRounds: options.maxRounds ?? SUBAGENT_MAX_ROUNDS,
+      append,
+      updateToolCall,
+      onToolCall: (info) => options.logger?.info('子代理工具调用', info),
+      // 写入授权下把父会话的确认链交进子循环：循环只在 `sensitivity === 'confirm'` 时调用它，
+      // 因此这一句的效果是「子代理的写操作与主对话走同一条判定」（档位 / 项目根 / 免确认模式）。
+      // 会话 id **钉回父会话**：`-sub` 在会话库里不存在，按它解析项目根会换一条护栏。
+      // 缺省 cwd / 搜索根 / 边界根的同一类钉回在**装配层**做（`session-project.ts` 的
+      // `adaptForSubagent` 用 `parentSessionIdOf` 剥后缀）—— 那边的 getter 由主进程注入，
+      // 内核只知道 `-sub`（todo 清单的状态隔离依赖它，不能整体换 id）。
+      ...(writeGranted && confirmForSubagent !== undefined
+        ? {
+            confirmTool: (info: { name: string; input: unknown; sensitivity: 'confirm' }) =>
+              confirmForSubagent({ ...info, sessionId: request.sessionId }),
+          }
+        : {}),
+    })
+
+    // 运行快照（docs/06 §19）：子代理的过程不落盘，这份快照是它唯一的对外可见形态。
+    // 内存里随事件流实时推给渲染层（「子代理」页面），结束时随工具卡一起持久化。
+    const startedAt = Date.now()
+    const taskId = `sub-${startedAt.toString(36)}-${(taskSequence += 1)}`
+    const callId = request.toolCallId ?? ''
+    const steps: SubagentStep[] = []
+    let stepSequence = 0
+    let report = ''
+    let firstError: string | undefined
+    let pending = false
+    let status: SubagentSnapshot['status'] = 'running'
+
+    /** 组一份快照；`endedAt` 只在收尾时给（运行中不给，页面据此显示已运行时长） */
+    const snapshot = (endedAt?: number): SubagentSnapshot => {
+      const transcript = projectTranscript(collected)
+      return {
+        taskId,
+        callId,
+        description: request.description,
+        prompt: request.prompt,
+        status,
+        startedAt,
+        ...(endedAt === undefined ? {} : { endedAt }),
+        steps: steps.map((step) => ({ ...step })),
+        toolCalls: steps.filter((step) => step.kind === 'tool').length,
+        ...(report === '' ? {} : { report: truncateReport(report, MAX_TASK_RESULT_CHARS) }),
+        // 本次授予的权限与**实际**拿到的工具（不是请求的权限：降级时要看得出来）
+        permission: writeGranted ? ('write' as const) : ('read' as const),
+        tools: [...grantedTools],
+        messages: transcript.messages,
+        ...(transcript.truncated ? { transcriptTruncated: true } : {}),
+      }
     }
-  } else if (firstError !== undefined) {
-    content = `子代理执行失败：${firstError}`
-    isError = true
-  } else {
-    content = '（子代理没有返回文本结果，请调整任务指令后重试。）'
-  }
-  if (pending) {
-    content += '\n\n（子代理已到轮次上限，以上为部分结果。）'
-  }
-  // 请求了 write 但没有确认链可交接：如实说明降级（否则主代理会以为文件已经改好了）
-  if (request.permission === 'write' && !writeGranted) {
-    content += '\n\n（装配层未接入确认链，本次已按只读执行：子代理没有写入类工具。）'
-  }
+    const publish = (endedAt?: number): void => {
+      request.emitProgress?.({ kind: 'subagent', snapshot: snapshot(endedAt) })
+    }
+    // 立刻推一份「已开始」的空快照：页面上卡片要在派生的瞬间就出现，而不是等第一个事件
+    publish()
 
-  status = isError === true ? 'error' : 'success'
-  const endedAt = Date.now()
-  publish(endedAt)
+    // 遍历循环事件：文本 delta 累积成最终报告；工具调用落成步骤；首个 error 留痕
+    for await (const event of events) {
+      if (event.type === 'text') {
+        report += event.delta
+        // 连续的正文增量**合并成一段**：早先每个 delta 各成一步，时间线上是一堆半句，
+        // 读起来像卡带（「思考/工具展示不够优雅」的原始症状之一）。
+        const last = steps[steps.length - 1]
+        if (last !== undefined && last.kind === 'text') {
+          last.text = truncateReport(`${last.text ?? ''}${event.delta}`, MAX_STEP_CHARS)
+        } else {
+          steps.push({
+            id: `s${(stepSequence += 1)}`,
+            kind: 'text',
+            text: truncateReport(event.delta, MAX_STEP_CHARS),
+          })
+        }
+        pruneSteps(steps)
+        publish()
+        continue
+      }
+      if (event.type === 'error') {
+        firstError ??= event.message
+        continue
+      }
+      if (event.type === 'done') {
+        pending = event.pending === true
+        continue
+      }
+      if (event.type === 'tool') {
+        upsertToolStep(steps, event.call, `s${(stepSequence += 1)}`)
+        pruneSteps(steps)
+        publish()
+      }
+    }
 
-  options.logger?.info('子代理任务完成', {
-    description: request.description,
-    permission: writeGranted ? 'write' : 'read',
-    tools: grantedTools.length,
-    toolCalls: steps.filter((step) => step.kind === 'tool').length,
-    reportChars: report.length,
-    elapsedMs: endedAt - startedAt,
-  })
+    // 结果组装：报告为主；异常路径转 isError；截断与附注按口径追加
+    let content: string
+    let isError: boolean | undefined
+    if (report !== '') {
+      content = truncateReport(report, MAX_TASK_RESULT_CHARS, '…（子代理结果过长，已截断）')
+      if (firstError !== undefined) {
+        content += `\n\n（子代理执行中出现过一次错误：${firstError}）`
+      }
+    } else if (firstError !== undefined) {
+      content = `子代理执行失败：${firstError}`
+      isError = true
+    } else {
+      content = '（子代理没有返回文本结果，请调整任务指令后重试。）'
+    }
+    if (pending) {
+      content += '\n\n（子代理已到轮次上限，以上为部分结果。）'
+    }
+    // 请求了 write 但实际没授到写工具：如实说明降级（否则主代理会以为文件已经改好了）。
+    // 两种原因分开写：确认链缺失是装配层问题；权限档 / 白名单没给写工具是当前配置的正常结果。
+    if (writeRequested && !writeGranted) {
+      content +=
+        confirmForSubagent === undefined
+          ? '\n\n（装配层未接入确认链，本次已按只读执行：子代理没有写入类工具。）'
+          : '\n\n（当前权限档未提供写工具，本次按只读执行。）'
+    }
 
-  return {
-    content,
-    ...(isError === undefined ? {} : { isError }),
-    summary: `子代理：${request.description}`,
-    subagent: snapshot(endedAt),
+    status = isError === true ? 'error' : 'success'
+    const endedAt = Date.now()
+    publish(endedAt)
+
+    options.logger?.info('子代理任务完成', {
+      description: request.description,
+      permission: writeGranted ? 'write' : 'read',
+      tools: grantedTools.length,
+      toolCalls: steps.filter((step) => step.kind === 'tool').length,
+      reportChars: report.length,
+      elapsedMs: endedAt - startedAt,
+    })
+
+    return {
+      content,
+      ...(isError === undefined ? {} : { isError }),
+      summary: `子代理：${request.description}`,
+      subagent: snapshot(endedAt),
+    }
+  } finally {
+    // 无论正常收尾、异常还是 abort，都必须把槽位 / 写锁还回去（释放是幂等的）
+    release()
   }
 }
 

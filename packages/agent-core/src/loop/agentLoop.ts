@@ -925,7 +925,8 @@ async function* runToolGroup(
   }
 
   // 批次内并发：每条各自消费自己的进度流，事件汇到一条共享队列上由本生成器转发。
-  // 汇流这一层必要但顺序不承诺 —— 只有 `task` 会上报进度，而它永不进并发批。
+  // 汇流这一层必要但顺序不承诺 —— `task` 子代理现在也会进并发批（docs/06 §19.5），
+  // 多路进度按到达顺序交错；渲染层按事件里的 `callId` 各自归位，结算仍按原始下标。
   const queue: AgentLoopEvent[] = []
   let wake: (() => void) | undefined
   const notify = (): void => {

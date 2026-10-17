@@ -7,7 +7,7 @@ import {
   type LoopProvider,
 } from './agentLoop.js'
 import { ToolRegistry } from '../tools/registry.js'
-import type { ToolResult } from '../tools/registry.js'
+import type { ToolContext, ToolResult } from '../tools/registry.js'
 import { createFakeProvider } from '../testing/fakeProvider.js'
 import type { ChatEvent } from '../llm/types.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
@@ -2052,5 +2052,55 @@ describe('同轮工具并发（docs/06 §5）', () => {
     // 未注册的工具按串行走：让它去拿「工具不存在」的确定性错误，而不是混进并发批
     expect(grouped(['p1', 'nope', 'p1'])).toEqual([['p1'], ['nope'], ['p1']])
     expect(grouped([])).toEqual([])
+  })
+
+  it('两路并行子代理的进度事件都带自己的 callId（任务卡各自归位）', async () => {
+    const makeProgressTool = (name: string) => ({
+      name,
+      description: name,
+      parameters: { type: 'object' as const, properties: {} },
+      sensitivity: 'safe' as const,
+      parallel: true,
+      execute: async (_input: unknown, ctx: ToolContext) => {
+        const snapshot = (status: 'running' | 'success') => ({
+          taskId: `task-${name}`,
+          callId: ctx.toolCallId ?? '',
+          description: name,
+          prompt: name,
+          status,
+          startedAt: Date.now(),
+          steps: [],
+          toolCalls: 0,
+        })
+        ctx.emitProgress?.({ kind: 'subagent', snapshot: snapshot('running') })
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        ctx.emitProgress?.({ kind: 'subagent', snapshot: snapshot('success') })
+        return { content: name, summary: name }
+      },
+    })
+    const tools = registryOf(new ToolRegistry(), [
+      makeProgressTool('sub-a'),
+      makeProgressTool('sub-b'),
+    ])
+    const { events } = await runWith(tools, [
+      { id: 'c-a', name: 'sub-a' },
+      { id: 'c-b', name: 'sub-b' },
+    ])
+
+    const progress = events.filter(
+      (event): event is Extract<AgentLoopEvent, { type: 'subagent' }> => event.type === 'subagent',
+    )
+    expect(new Set(progress.map((event) => event.callId))).toEqual(new Set(['c-a', 'c-b']))
+    // 每路都至少到达终态；快照是“当前态”，中间态可能被合并
+    expect(
+      progress.some(
+        (event) => event.snapshot.taskId === 'task-sub-a' && event.snapshot.status === 'success',
+      ),
+    ).toBe(true)
+    expect(
+      progress.some(
+        (event) => event.snapshot.taskId === 'task-sub-b' && event.snapshot.status === 'success',
+      ),
+    ).toBe(true)
   })
 })

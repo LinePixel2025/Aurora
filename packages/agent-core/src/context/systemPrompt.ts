@@ -215,7 +215,9 @@ export function buildToolGuidance(toolNames: readonly string[]): string | undefi
   if (has('task')) {
     lines.push(
       '- 独立的调研、排查、大范围读取类子任务派给 task 子代理（上下文隔离，不占当前对话预算）；' +
-        'prompt 必须自包含并明确要求返回的内容。需要执行命令或写文件的步骤子代理做不了，要在主对话里完成。',
+        'prompt 必须自包含并明确要求返回的内容。相互独立的任务可以在同一轮发多个 task（会并发，' +
+        '同一会话最多 3 个同时跑，超出的排队）；有依赖就按顺序派。需要执行命令的步骤子代理做不了；' +
+        '要它写文件得显式传 permission: "write"，写入仍会按当前权限档确认。',
     )
   }
   if (has('run_command')) {
