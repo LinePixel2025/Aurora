@@ -273,6 +273,7 @@ function createOfficeReadTool(
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (input, ctx): Promise<ToolResult> => {
       const record = asRecord(input)
       const path = readNonEmptyString(record, 'path')
@@ -336,6 +337,7 @@ function createOfficeHelpTool(office: OfficePort): ToolDefinition {
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (input): Promise<ToolResult> => {
       const record = asRecord(input)
       const format = readFormat(record?.['format'])

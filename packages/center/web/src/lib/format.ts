@@ -76,13 +76,11 @@ export function jobStatusLabel(status: string): string {
   }
 }
 
-/** 暂停原因 → 中文说明 */
+/** 暂停原因 → 中文说明（v34 起 token 预算那一态已随预算一起退役） */
 export function pendingReasonLabel(reason: string): string {
   switch (reason) {
     case 'max-rounds':
       return '已达轮次上限'
-    case 'budget':
-      return '已达 token 预算'
     case 'aborted':
       return '已被取消'
     default:

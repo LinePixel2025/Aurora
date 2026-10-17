@@ -2228,7 +2228,7 @@ export async function seedJobFixture(userData: string, sessionId = 'main'): Prom
       { id: 't2', text: '生成整理后的表格', status: 'in_progress' },
     ],
     cursor: { nextRound: 2, note: '轮次用尽，等待用户继续' },
-    budget: { maxTotalTokens: 0, usedTokens: 1284, autoContinued: 0 },
+    budget: { usedTokens: 1284 },
     pendingReason: 'max-rounds',
     createdAt: now,
     updatedAt: now,
@@ -8603,7 +8603,7 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
     // v14 写前快照（docs/06 §11.8）：四个字段常显（enabled=false 时三块换成 data-empty="agent.snapshots"）
     const snapshotFields = count('[data-field^="agent.snapshots."]')
     const snapshotEmpty = emptyStates.indexOf('agent.snapshots') !== -1
-    // v15 Agent 循环（docs/06 §4.1）：三个字段常显（不跟 agent.tools.enabled 门控）
+    // v15 新增、v34 收窄：Agent 循环字段常显（不跟 agent.tools.enabled 门控）
     const loopFields = count('[data-field^="agent.loop."]')
     const unexpected = emptyStates.filter(
       (name) =>
@@ -8710,8 +8710,8 @@ export const SETTINGS_AGENT_FIELDS_SCRIPT = `(async () => {
         readonlyRestored === true &&
         // 文件备份区组：开着时四个字段都在，关掉时是空态（两种形态都算过，不写死数字）
         (snapshotFields >= 4 || snapshotEmpty === true) &&
-        // v15：Agent 循环三个字段常显（关掉工具总开关也必须在）
-        loopFields >= 3 &&
+        // v34：Agent 循环只剩「同轮并行上限」一项，且常显（关掉工具总开关也必须在）
+        loopFields >= 1 &&
         unexpected.length === 0,
     }
   } catch (error) {

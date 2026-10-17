@@ -640,8 +640,6 @@ onUnmounted(() => {
   document.removeEventListener('pointerdown', onComposerPointerDown)
   document.removeEventListener('keydown', onDocumentEscape)
   window.removeEventListener('resize', onViewportResize)
-  if (pickerHintTimer !== null) window.clearTimeout(pickerHintTimer)
-  pickerHintTimer = null
   disposeRecording()
 })
 
@@ -896,19 +894,6 @@ const effortTitle = computed(() =>
       ? 'Center 官方模型的思考等级由管理员目录配置，本机只读展示'
       : '思考等级（越高越深入，但更慢更贵）；auto 不下发该参数，兼容性最好',
 )
-
-/** 输入区瞬时提示：当前只用于流式期间按 Enter 的操作说明，失败仍走 chatError。 */
-const pickerHint = ref<string | null>(null)
-let pickerHintTimer: number | null = null
-
-function flashPickerHint(text: string): void {
-  pickerHint.value = text
-  if (pickerHintTimer !== null) window.clearTimeout(pickerHintTimer)
-  pickerHintTimer = window.setTimeout(() => {
-    pickerHint.value = null
-    pickerHintTimer = null
-  }, 2000)
-}
 
 /**
  * 去掉只在渲染层存在的两个字段，其余字段原样透传（将来给 provider 加业务字段不会被漏掉）。
@@ -1306,17 +1291,55 @@ function fileNameOf(path: string): string {
 async function send(): Promise<void> {
   const text = input.value.trim()
   if (text === '' && attachments.value.length === 0) return
-  // 流式期间 useChat.send 会直接返回：那样「敲了 Enter 没反应也没提示」。
-  // 这里给一句瞬时提示（发送按钮同时是 disabled 的，两处口径一致）。
-  if (streaming.value) {
-    flashPickerHint('正在回复中，先点「停止」或等它结束')
-    return
-  }
+  // 流式期间再发一条 = **排队**（docs/06 §5.3）：内核会在下一个轮次边界把它插进正在跑的请求。
+  // 早先这里是「敲 Enter 没反应，只闪一句提示」，用户只剩等或把进度全丢掉两个选择。
   const files = attachments.value
   input.value = ''
   attachments.value = []
-  await sendMessage(text, files)
+  const outcome = await sendMessage(text, files)
+  // 队列已满被拒（`queued: false`）：这句没有出路，原样还给输入框 —— 静默吞掉用户打好的字
+  // 比回绝更糟（内核同时广播的 E_QUEUE_FULL 事件按 activeRequest 过滤，到不了这个窗口）
+  if (outcome === 'rejected') {
+    input.value = text
+    attachments.value = files
+    void nextTick(autoGrow)
+  }
   // 新会话此时才有标题，刷新列表让左栏显示出来
+  void loadSessions()
+}
+
+/**
+ * 停止当前回复，并把排队中的那几句收回输入框（docs/06 §5.3）。
+ *
+ * 内核在 abort 时同时清空了会话队列，所以这些话既不会被注入也不会补发 ——
+ * 界面上必须给它们一个去处，「我说的话去哪儿了」不该靠用户自己回忆。
+ */
+async function onStop(): Promise<void> {
+  const drafts = await abort()
+  if (drafts.length === 0) return
+  const texts = [input.value.trim(), ...drafts.map((draft) => draft.text)].filter(
+    (part) => part !== '',
+  )
+  input.value = texts.join('\n')
+  attachments.value = [...attachments.value, ...drafts.flatMap((draft) => draft.attachments)]
+  void nextTick(autoGrow)
+}
+
+/**
+ * 打断并发送：立刻停掉正在跑的回复，把这句话（连同之前排队的）作为**新一轮**直接发出。
+ *
+ * 与「排队」的区别是时机：模型要等下一个轮次边界才看见插话，而这条不给它继续跑的机会。
+ * 排队的几句一并带出去，不给用户留"说了两遍"的困惑。
+ */
+async function onInterruptSend(): Promise<void> {
+  const drafts = await abort()
+  const text = input.value.trim()
+  const files = [...attachments.value, ...drafts.flatMap((draft) => draft.attachments)]
+  const merged = [...drafts.map((draft) => draft.text), text].filter((part) => part !== '').join('\n')
+  input.value = ''
+  attachments.value = []
+  if (merged.trim() === '' && files.length === 0) return
+  await sendMessage(merged, files)
   void loadSessions()
 }
 
@@ -1504,7 +1527,8 @@ function applySlash(item: SlashItem): void {
       void compactContext()
       break
     case 'stop':
-      void abort()
+      // 与「停止」按钮同一条路径：收回排队的那几句，别让它们只在这次调用里被静默丢掉
+      void onStop()
       break
     case 'subagents':
       view.value = 'subagents'
@@ -1576,7 +1600,9 @@ const placeholder = computed(() => (streaming.value ? '正在回复中，可继�
 /** 输入框悬浮提示：占位串里放不下的那部分能力说明（键位说明现在只在这里） */
 const composerTitle = computed(() =>
   streaming.value
-    ? '正在回复中，可继续输入；回复结束后按 Enter 发送'
+    ? // Enter 的语义随流式期改成「排队插入」（docs/06 §5.3），提示必须跟着口径走，
+      // 否则用户以为敲了没反应、转而点「停止」把进度全丢掉
+      '正在回复中：Enter 排队发送（下一个轮次插进当前任务），或用「打断并发送」'
     : 'Enter 发送，Shift + Enter 换行；输入 / 调用命令与技能；可直接拖入文件',
 )
 
@@ -1874,12 +1900,6 @@ async function markGuideDone(): Promise<void> {
               />
               <span class="grow" />
               <!--
-                保存类操作的瞬时提示（2 秒自灭）。它是工具行右侧**唯一**的提示文案：
-                旧常驻「会话：xxx · 可调用 Skill…」meta 与常驻键位提示都已移除
-                （键位说明改由 textarea 的 `title` 承担）。宽度不够时它仍第一个让位。
-              -->
-              <span v-if="pickerHint" class="tiny muted picker-hint">{{ pickerHint }}</span>
-              <!--
                 麦克风（STT）：门控口径同 TTS——未配置可用的 provider 时**不渲染**（不是 disabled）。
                 录音态套 `.pulse-ring` 扩散环（theme.css 动效基线）。与发送键同侧，
                 对齐主流 Agent Desktop 的「输入动作在右」动线。
@@ -1897,15 +1917,36 @@ async function markGuideDone(): Promise<void> {
                 <span v-if="recording" class="mic-ring pulse-ring" aria-hidden="true" />
                 <Mic :size="15" :stroke-width="1.6" aria-hidden="true" />
               </button>
-              <AppButton v-if="streaming" size="sm" @click="abort">停止</AppButton>
+              <!--
+                流式期的三个动作（docs/06 §5.3，用户点名要「可以选择排队还是直接停止」）：
+                停止 = 中止这次回复，并把排队的几句收回输入框；打断并发送 = 中止 + 立刻作为新一轮发出。
+                发送键此时**不再 disabled**：Enter / 点它 = 排进队列，在下一次轮次边界插进正在跑的请求。
+              -->
+              <template v-if="streaming">
+                <AppButton
+                  size="sm"
+                  data-field="chat.stop"
+                  title="停止当前回复；排队的消息会退回输入框"
+                  @click="onStop"
+                  >停止</AppButton
+                >
+                <AppButton
+                  size="sm"
+                  data-field="chat.interrupt"
+                  title="停止当前回复并立刻发送这一句"
+                  :disabled="input.trim() === '' && attachments.length === 0"
+                  @click="onInterruptSend"
+                  >打断并发送</AppButton
+                >
+              </template>
               <span class="send-slot">
                 <AppButton
                   class="send"
                   size="sm"
                   variant="primary"
-                  aria-label="发送"
-                  title="发送（Enter）"
-                  :disabled="streaming || (input.trim() === '' && attachments.length === 0)"
+                  :aria-label="streaming ? '排队发送' : '发送'"
+                  :title="streaming ? '排队发送（Enter）：下一个轮次插进正在跑的任务' : '发送（Enter）'"
+                  :disabled="input.trim() === '' && attachments.length === 0"
                   @click="send"
                 >
                   <ArrowUp class="icon" :size="15" :stroke-width="2.2" aria-hidden="true" />
@@ -2604,14 +2645,6 @@ body.col-resizing .nav {
 }
 
 /* 保存类操作的瞬时提示：出现时挤占的是弹性空隙，不把发送按钮挤出行外 —— 它第一个让位。 */
-.picker-hint {
-  flex: 0 1 auto;
-  flex-shrink: 4;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* 发送按钮不允许被压缩：它被挤出圆角输入框是这一行最容易破的版 */
 .send-slot {
   flex: 0 0 auto;

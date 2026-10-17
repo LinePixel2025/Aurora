@@ -8,12 +8,23 @@
  * 几个刻意区分开的字段：
  * - `todos` 是 `todo_write` 清单的**快照**（不同一份数据，见 docs/06 §18）：
  *   清单工具写的是会话级清单文件，这里只是画时间线用的一份拷贝，两边不互相回写。
- * - `budget.autoContinued` **必须持久化**：只放内存会让重启后又拿到一份新的自动续轮额度。
+ * - `budget` v34 起只有 `usedTokens`（累计用量，只统计不限制）—— 预算上限与自动续轮额度
+ *   随那两个概念一起退役，留着一个永远等于 0 的字段就是下一个"能写不生效"的死口子。
  * - `cursor.nextRound` 是续跑的落点：恢复时从这一轮继续，而不是从头再来。
  */
 
 /** 落盘文件形状版本（独立于 SESSION_FILE_VERSION，读侧宽容） */
 export const JOBS_FILE_VERSION = 1
+
+/**
+ * `stepsDone` 的保留条数（docs/06 §4.1）。
+ *
+ * 每一步都要落盘、而落盘是**整表重写**（`{ jobs: [...] }` 一次序列化），
+ * 无上限会让一个长任务的 job 文件随轮次二次方地膨胀，最后一轮的写盘比第一轮贵几十倍。
+ * 超限时**丢最早的**、保住最近的：时间线要回答的是"它刚刚在干什么"，
+ * 第 1 轮到第 100 轮的逐条流水对排障没有意义，`round` / `budget.usedTokens` 才是进度真相。
+ */
+export const MAX_JOB_STEPS = 200
 
 // 形状的**唯一定义在 `@aurora/shared`**（渲染层要经 IPC 读它、`AgentEvent` 也带它）；
 // 这里只再导出，避免"界面看到的 job"和"内核写的 job"变成两个会漂移的类型。
@@ -39,8 +50,8 @@ export interface CreateJobInput {
   sessionId: string
   text: string
   origin: AgentJob['origin']
+  /** 本次请求实际生效的轮次上限（v34 起来自内核常量，不再是设置项） */
   maxRounds: number
-  maxTotalTokens: number
   requestId?: string
   /** 缺省由本函数生成（保留给"从磁盘恢复后重建"这类场景） */
   id?: string
@@ -73,7 +84,7 @@ export function createJob(input: CreateJobInput, options: CreateJobOptions = {})
     stepsDone: [],
     todos: [],
     cursor: { nextRound: 0 },
-    budget: { maxTotalTokens: input.maxTotalTokens, usedTokens: 0, autoContinued: 0 },
+    budget: { usedTokens: 0 },
     createdAt: input.createdAt ?? at,
     updatedAt: at,
   }
@@ -89,8 +100,6 @@ export function toJobSummary(job: AgentJob): JobSummary {
     round: job.round,
     maxRounds: job.maxRounds,
     usedTokens: job.budget.usedTokens,
-    maxTotalTokens: job.budget.maxTotalTokens,
-    autoContinued: job.budget.autoContinued,
     ...(job.pendingReason === undefined ? {} : { pendingReason: job.pendingReason }),
     stepCount: job.stepsDone.length,
     ...(last === undefined ? {} : { lastStep: formatStep(last) }),

@@ -83,7 +83,7 @@ export interface JobPatch {
   todos?: JobTodoSnapshot[]
   cursor?: { nextRound: number; note?: string }
   // budget 也做一层浅合并：调用方只改 usedTokens 时不必自己拼出整个对象，
-  // 更不会因为漏字段把持久化的 autoContinued 冲掉（那正是本节要防的 bug）。
+  // 将来这一组再加字段也不会因为漏拼而把已有值冲掉。
   budget?: Partial<AgentJob['budget']>
   pendingReason?: JobPendingReason | undefined
   error?: string | undefined
@@ -628,7 +628,7 @@ const STATUSES: readonly AgentJobStatus[] = [
   'error',
   'aborted',
 ]
-const PENDING_REASONS: readonly JobPendingReason[] = ['max-rounds', 'budget', 'aborted']
+const PENDING_REASONS: readonly JobPendingReason[] = ['max-rounds', 'aborted']
 /**
  * 允许从磁盘读回的 origin 白名单。
  *
@@ -684,10 +684,9 @@ function toAgentJob(value: unknown, sessionId: string): AgentJob | undefined {
       ...(typeof cursor['note'] === 'string' ? { note: cursor['note'] } : {}),
     },
     budget: {
-      maxTotalTokens: toCount(budget['maxTotalTokens'], 0),
+      // v34 起只有累计用量：老文件里的 `maxTotalTokens` / `autoContinued` 按"多余键"忽略即可
+      // （读侧宽容是这里的既定口径，不需要为此升 JOBS_FILE_VERSION）
       usedTokens: toCount(budget['usedTokens'], 0),
-      // 这一项的持久化正是本层的核心价值：读不到就只能归零，等于重启后又发一份额度
-      autoContinued: toCount(budget['autoContinued'], 0),
     },
     createdAt: toTimestamp(value['createdAt']),
     updatedAt: toTimestamp(value['updatedAt']),

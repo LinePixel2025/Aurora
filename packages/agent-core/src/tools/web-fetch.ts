@@ -42,6 +42,7 @@ export function createWebFetchTool(options: WebFetchToolOptions): ToolDefinition
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (input): Promise<ToolResult> => {
       const record = asRecord(input)
       const url = readNonEmptyString(record, 'url')

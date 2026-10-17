@@ -260,11 +260,13 @@ async function setSnapshotsEnabled(enabled: boolean): Promise<void> {
 }
 
 /**
- * Agent 循环配置（`agent.loop`，v15，docs/06 §4.1）。
+ * Agent 循环配置（`agent.loop`，docs/06 §4.1 / §5）。
  *
- * 第三个**不在** `agent.tools` 下的配置：轮次 / token 预算 / 自动续轮描述的是
- * 「一次请求怎么跑完」，与「注册哪些工具」无关，因此同样不跟总开关门控，
- * 保存也走独立的 `saveLoop()`。
+ * 这一组**不在** `agent.tools` 下：并发度描述的是「一次请求怎么跑完」，
+ * 与「注册哪些工具」无关，因此同样不跟总开关门控，保存也走独立的 `saveLoop()`。
+ *
+ * v34 起这一组只剩并发度一项：轮次上限回到内核常量（防失控）、token 预算取消（只统计不限制）、
+ * 自动续轮随"轮次用尽"一起退役 —— 三个都不是用户会按任务去调的量。
  *
  * 配置未水合时回落到 Schema 默认值（`DEFAULT_TOOLCHAIN_CONFIG` 与 `defaults.ts` 是同一份对象，
  * 见 `snapshots` 的同一处理）：只是让控件有初值，保存时仍会再确认配置已就绪。
@@ -277,8 +279,7 @@ const loop = computed<AgentSettings['loop']>(
  * 保存循环配置：与工具区组同一套回执口径（失败时 Toast 展示 `settingsStore.error`）。
  *
  * `settings:update` 只有顶层浅合并 —— `agent` 整棵都要带上（只传 `{ loop }` 会把
- * `tools` / `permissionMode` / `snapshots` 整块替换掉），patch 里带完整的 `loop` 子树
- * （否则同级的另外两个字段会被一并丢掉）。
+ * `tools` / `permissionMode` / `snapshots` 整块替换掉），patch 里带完整的 `loop` 子树。
  */
 async function saveLoop(patch: Partial<AgentSettings['loop']>): Promise<boolean> {
   const current = settingsStore.settings?.agent
@@ -294,13 +295,6 @@ async function saveLoop(patch: Partial<AgentSettings['loop']>): Promise<boolean>
   }
   return ok
 }
-
-/**
- * `loop.maxTotalTokens` 的取值上限：Schema 里**只有下限**（≥ 0）、没有上限，
- * 这里按 JS 安全整数收口 —— 拦的是 `Infinity` / `1e30` 这类会被原样存进配置、
- * 之后所有预算比较都恒真的脏值。
- */
-const MAX_LOOP_TOKENS = Number.MAX_SAFE_INTEGER
 
 /**
  * `totalBudgetBytes` 的取值上限：Schema 里**只有下限**（≥ 1 MiB）、没有上限，
@@ -924,62 +918,30 @@ async function openWorkspace(): Promise<void> {
           -->
           <div class="sub">
             <h3 class="sub-title">Agent 循环</h3>
-            <p class="section-desc">一次请求里「思考 → 调用工具 → 再思考」的循环上限。</p>
             <p class="section-desc">
-              触顶时任务<strong>不会静默结束</strong>：它会停成「已暂停」，可在主界面右栏的任务面板继续。
+              一次请求里「思考 → 调用工具 → 再思考」的循环，会一直跑到模型给出结论。
             </p>
 
             <SettingField
-              data-field="agent.loop.maxRounds"
-              label="轮次上限"
-              hint="1 ～ 128，默认 32；一次请求最多几轮工具调用，用完即暂停等续跑"
+              data-field="agent.loop.maxParallelCalls"
+              label="同轮并行上限"
+              hint="1 ～ 32，默认 8；一轮里最多同时执行几个只读查询，超出的排队等位"
             >
               <input
                 class="input input-num"
                 type="number"
                 min="1"
-                max="128"
+                max="32"
                 step="1"
-                :value="loop.maxRounds"
-                @change="saveLoop({ maxRounds: clampNumber($event, 1, 128, loop.maxRounds) })"
-              />
-            </SettingField>
-
-            <SettingField
-              data-field="agent.loop.maxTotalTokens"
-              label="token 预算"
-              hint="0 = 不限（默认）；本请求累计消耗达到预算即暂停"
-            >
-              <input
-                class="input input-num"
-                type="number"
-                min="0"
-                :max="MAX_LOOP_TOKENS"
-                step="1000"
-                :value="loop.maxTotalTokens"
+                :value="loop.maxParallelCalls"
                 @change="
                   saveLoop({
-                    maxTotalTokens: clampNumber($event, 0, MAX_LOOP_TOKENS, loop.maxTotalTokens),
-                  })
-                "
-              />
-            </SettingField>
-
-            <SettingField
-              data-field="agent.loop.autoContinueRounds"
-              label="自动续轮"
-              hint="0 ～ 8，默认 8；轮次用完后自动再续几轮，0 = 暂停等用户点「继续」"
-            >
-              <input
-                class="input input-num"
-                type="number"
-                min="0"
-                max="8"
-                step="1"
-                :value="loop.autoContinueRounds"
-                @change="
-                  saveLoop({
-                    autoContinueRounds: clampNumber($event, 0, 8, loop.autoContinueRounds),
+                    maxParallelCalls: clampNumber(
+                      $event,
+                      1,
+                      32,
+                      loop.maxParallelCalls,
+                    ),
                   })
                 "
               />

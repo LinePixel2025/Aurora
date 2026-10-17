@@ -104,6 +104,29 @@ export interface ToolDefinition {
   parameters: LlmToolParameterSchema
   /** 敏感工具需用户确认（docs/06 §5） */
   sensitivity?: 'safe' | 'confirm'
+  /**
+   * 可与**同轮里相邻的**其它 `parallel` 调用并发执行（docs/06 §5「同轮工具并发」）。
+   *
+   * 这是**显式 opt-in**，不是按 `sensitivity` 推出来的类别：只读 ≠ 无副作用
+   * （`todo_write` 也是 `safe`，但它是整表替换的写，两个并发写会互相顶掉）。
+   * 因此这条只由工具自己声明，默认串行 —— 忘记声明的后果只是"慢一点"，
+   * 误声明的后果是"结果依赖被打破"，两者不对称。
+   *
+   * 两道硬闸门（都在 `loop/agentLoop.ts` 的执行计划里，不靠声明自觉）：
+   * ① `sensitivity === 'confirm'` 的工具**永不并发** —— 一次弹两三张确认卡片，
+   *    用户无法判断"我在批准什么"，那比慢更糟；
+   * ② 非 `parallel` 的调用是**串行屏障**：它后面的 `parallel` 调用不会越过它提前起跑，
+   *    于是「读 → 写 → 读同一处」这种同轮序列仍按模型写下的顺序成立。
+   */
+  parallel?: boolean
+  /**
+   * 单次调用的执行上限（毫秒，docs/06 §5）；`0` = 不限，缺省用循环的默认上限。
+   *
+   * 只用来**放宽**那些天生慢的调用（`task` 子代理），不是给模型用的旋钮：
+   * 自带超时预算的工具（`run_command` / `office_render` / `web_fetch` …）都在默认值之内，
+   * 缺省即可，不必重复声明 —— 两道计时器抢同一次调用只会让归因变模糊。
+   */
+  timeoutMs?: number
   execute(input: unknown, ctx: ToolContext): Promise<ToolResult>
 }
 

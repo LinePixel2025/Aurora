@@ -4,7 +4,9 @@
  * 纯逻辑：不依赖 Electron / 文件系统 / 网络实现，全部经参数注入，
  * 因此可以用假 provider + 内存会话完整单测（含多轮工具调用）。
  *
- * 循环形态：用户消息 → LLM → [工具调用 → 顺序执行 → 结果回填] × N（`maxRounds`，默认 32）→ 最终回复。
+ * 循环形态：用户消息 → LLM → [工具调用 → 按并发批次执行 → 结果回填] × N（`maxRounds`，默认 32）→ 最终回复。
+ * 同轮的多个调用按「相邻且声明了 `parallel` 的并成一批」起跑（docs/06 §5「同轮工具并发」），
+ * 但结果始终按模型写下的原始顺序落盘 —— 批次只改起跑时机，不改配对顺序。
  * 每个 LLM 轮次产生的助手消息（文本 + 工具调用）**立即持久化**：
  * 工具结果必须能对应到发起它的 assistant 消息，否则续接上下文时服务端会拒绝请求。
  */
@@ -17,10 +19,47 @@ import type {
   LlmToolDefinition,
   ReasoningEffortLevel,
 } from '../llm/types.js'
-import type { ToolDisplayImage, ToolImage, ToolProgress, ToolSource } from '../tools/registry.js'
+import type {
+  ToolDefinition,
+  ToolDisplayImage,
+  ToolImage,
+  ToolProgress,
+  ToolResult,
+  ToolSource,
+} from '../tools/registry.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
 
-export const DEFAULT_MAX_ROUNDS = 32
+/**
+ * 一次请求的轮次兜底上限（docs/06 §5，v34 起是**内核常量、不是设置项**）。
+ *
+ * 对齐主流编码代理的口径：一次任务应当跑到模型自己收敛，而不是在第 32 轮被墙打断、
+ * 再靠"自动续轮额度"续命 —— 那种设计把"我们怕它失控"的焦虑摊派成了用户的点击。
+ * 但"完全不设上限"也不行：模型偶发会陷入「调用 → 看结果 → 再调用同一个」的循环，
+ * 那会一直烧到上下文耗尽。所以留一道**只在真失控时才碰得到**的墙：512 轮。
+ *
+ * 碰上了仍然落 `paused` + `pendingReason: 'max-rounds'`（续跑链路保留，见 §4.1）——
+ * 只是正常情况下没人会再看到它。
+ */
+export const RUNAWAY_MAX_ROUNDS = 512
+
+/**
+ * 子代理（`task`，§19）的轮次上限：它没有用户盯着、也没有「继续」可点，
+ * 所以**不跟主循环共用**那道 512 的墙 —— 保持 v33 之前的 32，跑不完就以部分结果回报父代理。
+ */
+export const SUBAGENT_MAX_ROUNDS = 32
+
+/** 同轮工具调用的默认并发度（`agent.loop.maxParallelCalls` 缺省值，docs/06 §5） */
+export const DEFAULT_MAX_PARALLEL_CALLS = 8
+
+/**
+ * 单次工具调用的默认执行上限（毫秒，docs/06 §5）。
+ *
+ * 这一条**只兜「真挂起」**：一次卡死的调用不该把整条循环永久堵在那里。
+ * 自带超时预算的长任务工具（`run_command` ≤300s、`office_render` 120s、`ask_user` 180s、
+ * `generate_image` 120s、`web_fetch` 20s）都已经在默认值之内，不重复计时；
+ * 天生没有墙钟上限的（`task` 子代理，靠轮次与取消自限）显式声明 `timeoutMs: 0`。
+ */
+export const DEFAULT_TOOL_TIMEOUT_MS = 600_000
 
 /**
  * 确认结果（四态，docs/06 §5、§11.2）：
@@ -73,15 +112,16 @@ export type AgentLoopEvent =
    * 收尾事件（docs/06 §4.1，v15）。
    *
    * - `pending: true` 表示"没有正常收敛就结束了"（轮次用尽 / 预算用尽 / 被中断）；
-   * - `pendingReason` 说明**停在哪**（v15 新增）：`'max-rounds'` 轮次用尽、`'budget'` token 预算用尽、
-   *   `'aborted'` 用户取消。客户端据此把"静默收尾"变成"可解释的暂停"，并给出「继续」入口。
+   * - `pendingReason` 说明**停在哪**：`'max-rounds'` 轮次用尽（v34 起只有防失控上限这一种）、
+   *   `'aborted'` 用户取消。
+   *   （v15 曾有 `'budget'`，随 token 预算一起退役。）客户端据此把"静默收尾"变成"可解释的暂停"，并给出「继续」入口。
    * - `round` 是**收尾时的轮次**（从 0 起，续跑时是绝对轮次不是相对轮次）；`usedTokens` 是本请求
    *   累计消耗（预算判定用的同一个数）。
    */
   | {
       type: 'done'
       pending?: boolean
-      pendingReason?: 'max-rounds' | 'budget' | 'aborted'
+      pendingReason?: 'max-rounds' | 'aborted'
       round: number
       usedTokens?: number
     }
@@ -102,6 +142,19 @@ export interface LoopProvider {
     },
     signal?: AbortSignal,
   ): AsyncIterable<ChatEvent>
+}
+
+/**
+ * 一条「运行中插话」的最小形状（docs/06 §5.3）。
+ *
+ * 刻意只有正文 + 图片路径：附件提取出来的 `extraContext` 由装配层在入队时就拼好
+ * （与一次普通发送同一口径），循环不再关心"这条是从哪来的"。
+ */
+export interface PendingUserInput {
+  text: string
+  /** 与一次普通发送同款的一次性上下文（附件提取正文等）：作为一条 system 片段紧跟其后下发，不落会话历史 */
+  extraContext?: string
+  images?: readonly string[]
 }
 
 export interface AgentLoopOptions {
@@ -147,6 +200,15 @@ export interface AgentLoopOptions {
   signal?: AbortSignal
   maxRounds?: number
   /**
+   * 单次工具调用的默认执行上限（毫秒，docs/06 §5）：缺省 `DEFAULT_TOOL_TIMEOUT_MS`，
+   * `0` = 不限。工具自己声明的 `ToolDefinition.timeoutMs` **优先于**这一项。
+   *
+   * 做成请求级参数主要是给单测用（真等 10 分钟不叫测试）；装配层目前没有对应的
+   * 设置项——这条是故障兜底，不是用户会按任务调的工作量旋钮，因此不进 `agent.loop.*`
+   * （口径见 docs/06 §5 的「工具执行上限」）。
+   */
+  toolTimeoutMs?: number
+  /**
    * 敏感工具（`sensitivity === 'confirm'`）执行前的用户确认（docs/06 §5）。
    *
    * 返回 `false` 表示用户拒绝：不执行工具，以「用户拒绝执行」文本回填模型，
@@ -191,8 +253,25 @@ export interface AgentLoopOptions {
    * 再 append 一次会话历史里就会出现两条一模一样的提问 —— 这是续跑最容易踩的坑。
    */
   appendUserMessage?: boolean
-  /** 累计 token 预算（`maxTotalTokens = 0` 表示不限）。触顶即停止进入下一轮并置 `pendingReason: 'budget'` */
-  budget?: { maxTotalTokens: number }
+  /**
+   * 同轮工具调用的**并发度**（docs/06 §5，来自设置 `agent.loop.maxParallelCalls`）：
+   * 一个并发批次里最多同时执行几个调用，超出的排队等位（**不丢弃、不改序**）。
+   * 缺省 `DEFAULT_MAX_PARALLEL_CALLS`。只有 `parallel` 的只读调用会成批，
+   * 所以这一项限的是"同时压给磁盘 / 网络 / 本机检索的量"，不影响任务能否跑完。
+   */
+  maxParallelCalls?: number
+  /**
+   * 取走「运行中插话」（docs/06 §5.3）：队列归**装配层**持有（它是会话级状态，
+   * 循环是一次请求一个实例、跑完即弃），循环只在这个边界问一次"有要插进来的话吗"。
+   *
+   * 返回一条用户输入时，循环把它**落盘**并 push 进本次请求的 messages，于是下一个轮次
+   * 模型就看见这句话 —— 这就是"插话"的全部语义：改的是**正在跑的这一个**任务的方向，
+   * 不是等它跑完再发一轮。
+   *
+   * 只在**确实还会进下一轮**时才调用（预算已触顶、或这就是最后一轮时不调）：
+   * 消费掉却发不出去，比不消费更难解释。剩下的排队条目由调用方在请求收尾后发起新一轮。
+   */
+  takePendingInput?: () => PendingUserInput | undefined
   /**
    * 每轮结束（工具都跑完、结果都已回填）时回调一次：调用方在这里把**游标**落盘。
    *
@@ -216,7 +295,7 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
   const startRound = Math.max(0, options.resume?.nextRound ?? 0)
   const endRound = Math.max(
     startRound + 1,
-    startRound + Math.max(1, options.maxRounds ?? DEFAULT_MAX_ROUNDS),
+    startRound + Math.max(1, options.maxRounds ?? RUNAWAY_MAX_ROUNDS),
   )
   const messages: ChatRequestMessage[] = [
     { role: 'system', content: options.systemPrompt },
@@ -256,10 +335,9 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
   // 顺序只取决于名字集合，与注册先后无关 —— 请求体的 tools 因此是稳定前缀的一部分。
   const llmTools = options.tools.toLlmTools()
   let pending = false
-  let pendingReason: 'max-rounds' | 'budget' | 'aborted' | undefined
-  /** 本次请求累计消耗（预算判定的唯一依据；只累加 provider 回传的真实用量，不估算） */
+  let pendingReason: 'max-rounds' | 'aborted' | undefined
+  /** 本次请求累计消耗（只累加 provider 回传的真实用量，不估算）—— v34 起**只统计、不做闸门** */
   let usedTokens = 0
-  const maxTotalTokens = Math.max(0, options.budget?.maxTotalTokens ?? 0)
 
   for (let round = startRound; round < endRound; round += 1) {
     if (options.signal?.aborted) {
@@ -383,76 +461,84 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
      */
     const roundImages: ToolImage[] = []
 
-    // 同轮多个工具调用：顺序执行，保证事件与结果顺序确定（docs/06 §5）
-    for (const call of calls) {
+    // 同轮多个工具调用：按**并发批次**执行（docs/06 §5「同轮工具并发」）。
+    //
+    // 批次只决定「什么时候一起起跑」，**不决定落盘顺序**：结算始终按 `calls` 的原始下标走，
+    // 「assistant(tool_calls) → 每个 id 各自的 tool 消息」这条配对链因此与串行时代逐字一致
+    // （链一断服务端直接 400，见上面 `roundImages` 那段同款约束）。
+    for (const group of planParallelGroups(options.tools, calls)) {
       if (options.signal?.aborted) {
         /**
          * 用户在本轮中途点了「停止」：本轮**已落盘**的 tool_call 里，还没跑到的那几个仍是
-         * `running`（`appendAssistant` 在 :330 已把整组落盘）。不收敛就会让工具卡在未来所有
+         * `running`（`appendAssistant` 上面已把整组落盘）。不收敛就会让工具卡在未来所有
          * 会话视图里永远显示「运行中」，重启也不修正 —— 与 P2-03 是同一个症状，只是入口不同
          * （那条修的是「流中断」，这条修的是「取消」）。
+         *
+         * 并发化的影响只到「未起跑的批次」为止：起跑中的那一批已经各自有了终态
+         * （中止的调用会走超时或 signal 拒绝），不会留下 `running` 的悬空卡片。
          */
         await settleUnexecutedCalls(options, assistant.id, calls, '已取消未执行')
         yield { type: 'done', pending: true, pendingReason: 'aborted', round, usedTokens }
         return
       }
 
-      const running = toAgentToolCall(call)
-      yield { type: 'tool', round, messageId: assistant.id, call: running }
-
-      // 工具执行与进度事件并行推进：`task` 子代理在执行期间持续上报进度快照，
-      // 由 runToolStreaming 边收边转成 `subagent` 事件（否则要等工具跑完才看得到）
-      const streaming = runToolStreaming(options, call, assistant.id, round)
-      let outcome: ToolOutcome
+      // ① 起跑：把整批的 `running` 卡片先发出去，再边跑边转进度事件（子代理靠这一条）
+      const running = runToolGroup(options, group, assistant.id, round)
+      let outcomes: ToolOutcome[] = []
       for (;;) {
-        const step = await streaming.next()
+        const step = await running.next()
         if (step.done === true) {
-          outcome = step.value
+          outcomes = step.value
           break
         }
         yield step.value
       }
 
-      call.state = outcome.state
-      call.outputSummary = outcome.summary
-      // 结算时刻随工具卡落盘（与 startedAt 配对，渲染层据此显示真实耗时）
-      call.endedAt = new Date().toISOString()
-      // 子代理快照随工具卡一起持久化（渲染层「子代理」页面据此回看历史运行）
-      if (outcome.subagent !== undefined) call.subagent = outcome.subagent
-      // 对话展示图片随工具卡持久化；路径只留在客户端内部，事件里由 toAgentToolCall 脱敏
-      if (outcome.displayImages !== undefined && outcome.displayImages.length > 0) {
-        call.displayImages = outcome.displayImages.map((item) => ({
-          id: item.id,
-          path: item.path,
-          name: item.name,
-          mime: item.mime,
-          ...(item.caption === undefined ? {} : { caption: item.caption }),
-        }))
-      }
-      // 持久化工具卡片状态（同一 messageId 原地更新，渲染层据此刷新）
-      await options.updateToolCall(assistant.id, { ...call })
+      // ② 结算：按原始顺序逐条落卡片状态、tool 消息与本轮图片
+      for (const [index, call] of group.entries()) {
+        const outcome = outcomes[index] ?? MISSING_OUTCOME
 
-      yield { type: 'tool', round, messageId: assistant.id, call: toAgentToolCall(call) }
+        call.state = outcome.state
+        call.outputSummary = outcome.summary
+        // 结算时刻随工具卡落盘（与 startedAt 配对，渲染层据此显示真实耗时）
+        call.endedAt = new Date().toISOString()
+        // 子代理快照随工具卡一起持久化（渲染层「子代理」页面据此回看历史运行）
+        if (outcome.subagent !== undefined) call.subagent = outcome.subagent
+        // 对话展示图片随工具卡持久化；路径只留在客户端内部，事件里由 toAgentToolCall 脱敏
+        if (outcome.displayImages !== undefined && outcome.displayImages.length > 0) {
+          call.displayImages = outcome.displayImages.map((item) => ({
+            id: item.id,
+            path: item.path,
+            name: item.name,
+            mime: item.mime,
+            ...(item.caption === undefined ? {} : { caption: item.caption }),
+          }))
+        }
+        // 持久化工具卡片状态（同一 messageId 原地更新，渲染层据此刷新）
+        await options.updateToolCall(assistant.id, { ...call })
 
-      const toolMessage = await options.append({
-        role: 'tool',
-        content: outcome.content,
-        toolCallId: call.id,
-        // 图片**存路径不存内容**（与用户附件同一条回放口径，docs/06 §25）：
-        // 会话文件不因截图膨胀，跨轮重放时按路径重读，关闭 vision 后自动不再下发。
-        ...(outcome.images === undefined || outcome.images.length === 0
-          ? {}
-          : { images: outcome.images.map((item) => item.path) }),
-      })
-      messages.push({
-        role: 'tool',
-        content: toolMessage.content,
-        toolCallId: call.id,
-      })
-      // 本轮请求的图片分片用**端口刚读好的内容**（不必回查缓存）：同一批图在这一轮里
-      // 手上就有，跨轮重放才走 `resolveImages`。
-      if (outcome.images !== undefined && outcome.images.length > 0) {
-        roundImages.push(...outcome.images)
+        yield { type: 'tool', round, messageId: assistant.id, call: toAgentToolCall(call) }
+
+        const toolMessage = await options.append({
+          role: 'tool',
+          content: outcome.content,
+          toolCallId: call.id,
+          // 图片**存路径不存内容**（与用户附件同一条回放口径，docs/06 §25）：
+          // 会话文件不因截图膨胀，跨轮重放时按路径重读，关闭 vision 后自动不再下发。
+          ...(outcome.images === undefined || outcome.images.length === 0
+            ? {}
+            : { images: outcome.images.map((item) => item.path) }),
+        })
+        messages.push({
+          role: 'tool',
+          content: toolMessage.content,
+          toolCallId: call.id,
+        })
+        // 本轮请求的图片分片用**端口刚读好的内容**（不必回查缓存）：同一批图在这一轮里
+        // 手上就有，跨轮重放才走 `resolveImages`。
+        if (outcome.images !== undefined && outcome.images.length > 0) {
+          roundImages.push(...outcome.images)
+        }
       }
     }
 
@@ -475,10 +561,35 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       pendingCalls: calls,
     })
 
-    // 预算触顶：停止进入下一轮，并明确告诉调用方"停在哪"（不是静默收尾）
-    if (maxTotalTokens > 0 && usedTokens >= maxTotalTokens) {
-      yield { type: 'done', pending: true, pendingReason: 'budget', round, usedTokens }
-      return
+    // 运行中插话（docs/06 §5.3）：装配层的会话队列在**轮次边界**被取走，落盘成一条用户消息
+    // 并 push 进本次请求 —— 模型在下一个轮次就看见它，而不是等这次任务跑完再重新起一轮。
+    //
+    // 顺序口径：必须排在 `onRoundComplete` **之后**（游标已经落盘，这条插话属于下一轮的内容，
+    // 崩溃重启续跑时它会从会话历史里自然读回来，不会丢也不会重），且排在预算判定之后、
+    // 「还有下一轮吗」的判定之内 —— 只有确实要进下一轮才消费，消费掉却发不出去最难解释。
+    if (round < endRound - 1) {
+      // 一次边界**排空**当前队列：排队时用户连着说了三句，就应该三句一起到模型面前，
+      // 一句一轮会让后面的句子越排越晚
+      for (;;) {
+        const injected = options.takePendingInput?.()
+        if (injected === undefined) break
+        const injectedMessage = await options.append({
+          role: 'user',
+          content: injected.text,
+          ...(injected.images === undefined || injected.images.length === 0
+            ? {}
+            : { images: [...injected.images] }),
+        })
+        // 图片走与历史回放同一条解析口径（本轮读好的内容已在装配层的缓存里）
+        messages.push({
+          role: 'user',
+          content: injectedMessage.content,
+          ...imagesOfMessage(injectedMessage, options.resolveImages),
+        })
+        // 附件正文这类一次性上下文：与本轮首次发送同一形状（system 片段，不进会话历史）
+        const context = injected.extraContext?.trim() ?? ''
+        if (context !== '') messages.push({ role: 'system', content: context })
+      }
     }
 
     // 轮次用尽：同上，标成 max-rounds（v15 之前这里只置 pending、没有原因）
@@ -729,6 +840,171 @@ interface ToolOutcome {
 }
 
 /**
+ * 本次调用能否与同轮的邻居**并发起跑**（docs/06 §5「同轮工具并发」）。
+ *
+ * 两道闸门都在循环这一层，不靠工具自己的声明自觉（口径见 `ToolDefinition.parallel`）：
+ * ① 必须**显式** `parallel: true` —— 只读不等于无副作用，`todo_write` 就是反例；
+ * ② `confirm` 级永不并发 —— 一次弹两三张确认卡片，用户没法判断"我在批准什么"，
+ *    那比慢一点严重得多。
+ * 工具查不到（未注册 / 被运行档摘除）也按串行走：让它去拿「工具不存在」的确定性错误，
+ * 比让一次无法归因的并发执行混进批次好。
+ */
+function isParallelEligible(tool: ToolDefinition | undefined): boolean {
+  return tool !== undefined && tool.parallel === true && tool.sensitivity !== 'confirm'
+}
+
+/**
+ * 把本轮的工具调用切成执行批次：**连续的**可并发调用并成一批，其余各自成批。
+ *
+ * 「连续」这一条是刻意的保守口径：非并发的调用是一道**串行屏障**，它后面的调用不会越过它
+ * 提前起跑。于是「读 → 写 → 再读同一处」这种同轮序列仍然严格按模型写下的顺序成立，
+ * 而模型最常见的批量查询（一轮里全是 `read_file` / `grep`）照样并发拿满收益。
+ * 想越过屏障去重排，就需要一套「哪些调用互相依赖」的信息 —— 那既不是模型今天会提供的东西，
+ * 也不是能靠工具名猜出来的东西，因此不做。
+ */
+export function planParallelGroups(
+  tools: ToolSource,
+  calls: readonly StoredToolCall[],
+): StoredToolCall[][] {
+  const groups: StoredToolCall[][] = []
+  /** 上一批是否是「还能继续并入」的并发批（串行调用成批后立即置 false） */
+  let joinable = false
+  for (const call of calls) {
+    const eligible = isParallelEligible(tools.get(call.name))
+    const current = groups[groups.length - 1]
+    if (eligible && joinable && current !== undefined) {
+      current.push(call)
+      continue
+    }
+    groups.push([call])
+    joinable = eligible
+  }
+  return groups
+}
+
+/** 批次里某次调用没有交出结果时的兜底（与 `runToolStreaming` 的缺省口径同一句） */
+const MISSING_OUTCOME: ToolOutcome = {
+  content: '工具没有返回结果',
+  summary: '工具没有返回结果',
+  state: 'error',
+}
+
+/**
+ * 执行一个批次：先把整批的 `running` 卡片发出去，再并发推进、边跑边转发进度事件；
+ * 返回值是**与批次同序**的结果，交给调用方按原始顺序结算。
+ *
+ * 单条批次走的是与串行时代逐字相同的路径（一次 `runToolStreaming` 消费到底），
+ * 因此「只有 `echo` 这类默认工具」的历史行为没有任何变化 —— 并发只发生在
+ * 工具自己声明了 `parallel` 且相邻成批的时候。
+ *
+ * 事件顺序的取舍：批次内进度事件按**到达顺序**转发（不排队等齐），
+ * 但工具卡的状态事件与 tool 消息一律在②阶段按原始下标落地，
+ * 所以渲染层看到的卡片状态序列、以及回给模型的结果序列都是确定的。
+ */
+async function* runToolGroup(
+  options: AgentLoopOptions,
+  group: readonly StoredToolCall[],
+  messageId: string,
+  round: number,
+): AsyncGenerator<AgentLoopEvent, ToolOutcome[]> {
+  for (const call of group) {
+    yield { type: 'tool', round, messageId, call: toAgentToolCall(call) }
+  }
+
+  if (group.length === 1) {
+    const only = group[0]
+    if (only === undefined) return [MISSING_OUTCOME]
+    // 工具执行与进度事件并行推进：`task` 子代理在执行期间持续上报进度快照，
+    // 由 runToolStreaming 边收边转成 `subagent` 事件（否则要等工具跑完才看得到）
+    const streaming = runToolStreaming(options, only, messageId, round)
+    for (;;) {
+      const step = await streaming.next()
+      if (step.done === true) return [step.value]
+      yield step.value
+    }
+  }
+
+  // 批次内并发：每条各自消费自己的进度流，事件汇到一条共享队列上由本生成器转发。
+  // 汇流这一层必要但顺序不承诺 —— 只有 `task` 会上报进度，而它永不进并发批。
+  const queue: AgentLoopEvent[] = []
+  let wake: (() => void) | undefined
+  const notify = (): void => {
+    const resume = wake
+    wake = undefined
+    resume?.()
+  }
+  const outcomes = new Array<ToolOutcome | undefined>(group.length).fill(undefined)
+  let remaining = group.length
+  /**
+   * 并发度闸门（docs/06 §5）：同时在跑的不超过 `maxParallelCalls` 条，其余**排队等位**。
+   *
+   * 排队不是丢弃：起跑顺序仍按 `group` 的原始下标（`started` 单调递增），
+   * 结算也按原始下标，所以这一项只影响"同一时刻有几个工具在占磁盘 / 网络"，
+   * 不影响任何一条调用会不会被执行。
+   */
+  const limit = Math.max(1, options.maxParallelCalls ?? DEFAULT_MAX_PARALLEL_CALLS)
+  let started = 0
+  let inFlight = 0
+
+  const launchReady = (): void => {
+    while (started < group.length && inFlight < limit) {
+      const index = started
+      const call = group[index]
+      started += 1
+      if (call === undefined) {
+        outcomes[index] = MISSING_OUTCOME
+        remaining -= 1
+        continue
+      }
+      inFlight += 1
+      const streaming = runToolStreaming(options, call, messageId, round)
+      void (async () => {
+        for (;;) {
+          const step = await streaming.next()
+          if (step.done === true) {
+            outcomes[index] = step.value
+            break
+          }
+          queue.push(step.value)
+          notify()
+        }
+      })()
+        .catch((error: unknown) => {
+          // 单条批内意外不能拖垮整批（`runToolStreaming` 自身已兜底，这里只留一道保险）
+          const message = error instanceof Error ? error.message : String(error)
+          outcomes[index] = {
+            content: `工具执行失败：${message}`,
+            summary: '工具执行失败',
+            state: 'error',
+          }
+        })
+        .finally(() => {
+          inFlight -= 1
+          remaining -= 1
+          // 让出的是一个槽位：把下一个排队的补进来（否则整批会卡在 limit 条上不再前进）
+          launchReady()
+          notify()
+        })
+    }
+  }
+  launchReady()
+
+  while (remaining > 0 || queue.length > 0) {
+    if (queue.length === 0) {
+      // 单线程：`wake` 在下一个 await 之前就已赋值，生产者的 notify 不会丢唤醒
+      await new Promise<void>((resolve) => {
+        wake = resolve
+      })
+      continue
+    }
+    const event = queue.shift()
+    if (event !== undefined) yield event
+  }
+
+  return group.map((_call, index) => outcomes[index] ?? MISSING_OUTCOME)
+}
+
+/**
  * 执行一次工具调用，并把工具在执行期间上报的进度（`emitProgress`）转成循环事件。
  *
  * 异步生成器的返回值是最终 `ToolOutcome`：消费方一路 `yield` 出去即可，
@@ -877,14 +1153,43 @@ async function runTool(
     if (decision === true || decision === 'always') approvedByUser = true
   }
 
+  // 执行上限（docs/06 §5）：工具自己声明的 `timeoutMs` 优先，其次请求级注入，最后循环默认。
+  // 这里用**本次调用自己的** AbortController，而不是把 `options.signal` 直接交给工具：
+  // 超时只该中止这一次调用，同时外层取消（用户点停止）仍要照常传导进来 —— 两者互不覆盖。
+  const timeoutMs = tool.timeoutMs ?? options.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
+  const callController = new AbortController()
+  const outerSignal = options.signal
+  const onOuterAbort = (): void => callController.abort(outerSignal?.reason)
+  if (outerSignal !== undefined) {
+    if (outerSignal.aborted) callController.abort(outerSignal.reason)
+    else outerSignal.addEventListener('abort', onOuterAbort, { once: true })
+  }
+  const running = tool.execute(input, {
+    sessionId: options.sessionId,
+    toolCallId: call.id,
+    signal: callController.signal,
+    ...(emitProgress === undefined ? {} : { emitProgress }),
+    ...(approvedByUser ? { approvedByUser: true } : {}),
+  })
+  // 超时之后这次调用可能仍在后台跑完：它的拒绝没有人接会变成 unhandledRejection，
+  // 而循环此刻已经把「超时」回填给模型了 —— 挂一个 catch 只做兜底，不改变已给出的结果。
+  running.catch(() => undefined)
+
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    const result = await tool.execute(input, {
-      sessionId: options.sessionId,
-      toolCallId: call.id,
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-      ...(emitProgress === undefined ? {} : { emitProgress }),
-      ...(approvedByUser ? { approvedByUser: true } : {}),
-    })
+    const result =
+      timeoutMs > 0
+        ? await new Promise<ToolResult>((resolve, reject) => {
+            timer = setTimeout(() => {
+              // 先中止再拒绝：工具据此收尾（`run_command` 会杀进程树），别让它背后空跑
+              const failure = new ToolTimeoutError(timeoutMs)
+              callController.abort(failure)
+              reject(failure)
+            }, timeoutMs)
+            timer.unref?.()
+            running.then(resolve, reject)
+          })
+        : await running
     const isError = result.isError === true
     options.onToolCall?.({ name: call.name, sensitivity: tool.sensitivity ?? 'safe', isError })
     const summary = result.summary ?? truncate(result.content, 200)
@@ -909,19 +1214,48 @@ async function runTool(
         : {}),
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
     options.onToolCall?.({
       name: call.name,
       sensitivity: tool.sensitivity ?? 'safe',
       isError: true,
     })
+    // 超时单独给一句可执行的解释：与「工具坏了」区分开，模型才会拆小任务或换路径，
+    // 而不是原样重试同一次调用（重试只会再烧掉一个上限）。
+    if (error instanceof ToolTimeoutError) {
+      const limit = formatDuration(timeoutMs)
+      return {
+        content:
+          `工具 "${call.name}" 本次调用超过 ${limit} 已中止。` +
+          '请把任务拆小、缩小读取范围或改用别的路径，不要原样重试同一次调用。',
+        summary: `工具执行超时（${limit}）`,
+        state: 'error',
+      }
+    }
+    const message = error instanceof Error ? error.message : String(error)
     // 工具抛错不中断循环：以错误文本回填，让模型自行决定下一步
     return {
       content: `工具执行失败：${message}`,
       summary: `工具执行失败：${message}`,
       state: 'error',
     }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    outerSignal?.removeEventListener('abort', onOuterAbort)
   }
+}
+
+/** 超时中止的标记错误：与「工具自己抛错」区分开，回填文案因此能说清是哪回事 */
+class ToolTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`工具执行超过 ${formatDuration(timeoutMs)} 已中止`)
+  }
+}
+
+/** 上限的中文读法（回填给模型的文案与卡片摘要共用，避免同一数字两处各拼一遍） */
+function formatDuration(ms: number): string {
+  if (ms % 60_000 === 0) return `${ms / 60_000} 分钟`
+  if (ms % 1_000 === 0) return `${ms / 1_000} 秒`
+  return `${ms} 毫秒`
 }
 
 function truncate(text: string, max: number): string {

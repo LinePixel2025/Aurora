@@ -821,14 +821,12 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
   })
 
   it('agent.loop / agent.snapshots 进黑名单（放大预算与关快照均系自我提权）', () => {
-    // 循环预算：AI 给自己放大轮次 / token 上限 = 绕过"该停下来问用户"的闸门；
+    // 循环旋钮：AI 给自己放大并发度 = 拆掉"该停下来问用户"的那道节流；
     // 写前快照：AI 关掉 enabled 或压低预算 = 拆掉写文件后的回滚保险。
     // 两者此前"不在黑名单也不在覆盖表"看似不可写，实际默认可写——本轮封进黑名单才对得上文档意图。
     for (const path of [
       'agent.loop',
-      'agent.loop.maxRounds',
-      'agent.loop.maxTotalTokens',
-      'agent.loop.autoContinueRounds',
+      'agent.loop.maxParallelCalls',
       'agent.snapshots',
       'agent.snapshots.enabled',
       'agent.snapshots.keepPerFile',

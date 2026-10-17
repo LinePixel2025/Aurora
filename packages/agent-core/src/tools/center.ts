@@ -61,6 +61,7 @@ export function createCenterStatusTool(options: CenterToolOptions): ToolDefiniti
       '查询与 Aurora Center（网页控制中心）的连接状态：是否启用、是否在线、服务器地址与本机展示名。',
     parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (): Promise<ToolResult> => {
       const status = options.port.status()
       if (!status.enabled) {

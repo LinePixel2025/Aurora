@@ -109,6 +109,7 @@ function createGrepTool(
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (input, ctx): Promise<ToolResult> => {
       const record = asRecord(input)
       const pattern = readPatternString(record, 'pattern')
@@ -218,6 +219,7 @@ function createGlobTool(
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (input, ctx): Promise<ToolResult> => {
       const record = asRecord(input)
       const pattern = readPatternString(record, 'pattern')

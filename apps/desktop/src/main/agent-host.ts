@@ -100,10 +100,17 @@ export class DesktopAgentHost implements AgentHost {
    * 与 `AgentHost` 契约同形（见 `contracts.ts`）：`extraContext` 是附件提取的文本，
    * `images` 是本轮**图片附件的路径**（多模态输入，docs/06 §3.1）——
    * 后者由 `ipc.ts` 按扩展名挑出、并按 `vision` 判定是否下发，主进程只是透传给内核。
+   *
+   * `queued`（docs/06 §5.3）原样透传：会话正在跑时这条已进队列而不是立即执行，
+   * 渲染层要在气泡上挂「排队中」。
    */
   send(
-    request: SendMessageRequest & { extraContext?: string; images?: readonly string[] },
-  ): Promise<{ requestId: string }> {
+    request: SendMessageRequest & {
+      extraContext?: string
+      images?: readonly string[]
+      requestId?: string
+    },
+  ): Promise<{ requestId: string; queued?: boolean }> {
     return this.options.kernel.send(request)
   }
 

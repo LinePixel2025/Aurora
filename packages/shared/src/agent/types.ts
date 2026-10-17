@@ -9,8 +9,14 @@ export type AgentCompactOutcome =
   { ok: true; summaryChars: number; coveredMessages: number } | { ok: false; error: string }
 
 export interface AgentHost {
-  /** 提交一条用户消息，事件通过 `onEvent` 推送。 */
-  send(request: SendMessageRequest): Promise<{ requestId: string }>
+  /**
+   * 提交一条用户消息，事件通过 `onEvent` 推送。
+   *
+   * `queued: true`（docs/06 §5.3）= 该会话已有请求在跑，这条**没有立刻开始**，而是排进
+   * 会话队列、在下一次轮次边界插进那一个请求；插不上（该请求先收敛了）则由内核接着发起
+   * 新一轮。发送方据此决定气泡上是「排队中」还是照常显示。
+   */
+  send(request: SendMessageRequest): Promise<{ requestId: string; queued?: boolean }>
   abort(requestId: string): boolean
   onEvent(listener: (event: AgentEvent) => void): () => void
   /** 当前装配是否已接真实内核（P1 为 false：窗口可输入但无对话能力）。 */

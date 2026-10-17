@@ -46,6 +46,12 @@ export interface ChatMessage {
   seq?: number
   /** 产生这条消息的 Agent 请求 id（实时事件 / 历史回放透传）。 */
   requestId?: string
+  /**
+   * 排队中（docs/06 §5.3）：会话正在回复时发出去的那句话，内核把它排进了队列而不是立即执行，
+   * 会在下一次轮次边界插进正在跑的请求。界面据此在气泡上挂一枚「排队中」，
+   * 并由 `user-message` 的回声（同文本对账）把它转正；点「停止」时这些气泡会被收回输入框。
+   */
+  queued?: boolean
   /** 工具执行卡片（运行中 / 成功 / 失败） */
   toolCalls?: AgentToolCall[]
   /** 本条用户消息携带的附件文件名（仅用于气泡内展示） */
@@ -61,6 +67,17 @@ export interface ChatMessage {
 /** 子代理运行记录：快照 + 它挂在哪条助手消息上（「子代理」页面按会话聚合展示） */
 export interface SubagentRun extends SubagentSnapshot {
   messageId: string
+}
+
+/**
+ * 排队中又被收回的那句话（docs/06 §5.3）：文本 + 原始附件路径。
+ *
+ * 单独一份是因为气泡上只有**文件名**（展示用），而「停止 / 打断并发送」要能把这句话
+ * 连同附件一起还原回输入框或立刻发出去。
+ */
+export interface QueuedDraft {
+  text: string
+  attachments: string[]
 }
 
 /**
@@ -97,7 +114,6 @@ export function sessionIdFor(context: ChatContext): string {
  */
 export const PENDING_REASON_TEXT: Record<NonNullable<AgentJob['pendingReason']>, string> = {
   'max-rounds': '已达到轮次上限，已暂停',
-  budget: '已达到 token 预算，已暂停',
   aborted: '已取消',
 }
 
@@ -309,6 +325,12 @@ export function useChat(windowName: WindowName, context: ChatContext) {
             existing.seq = event.seq
             existing.createdAt = event.createdAt
             existing.requestId = event.requestId
+            // 排队的那句此刻真的进了请求（docs/06 §5.3）：气泡摘掉「排队中」转正。
+            // 靠文本对账而不是靠 id —— 注入事件的 requestId 属于正在跑的那次请求，
+            // 拿排队时那个 id 去比对永远不相等（内核刻意这么广播，见 docs/06 §5.3）。
+            existing.queued = false
+            // 这句已经真的进了请求，草稿不再是"待发"（docs/06 §5.3）
+            queuedDrafts.delete(existing.id)
           }
           break
         }
@@ -854,11 +876,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       status: summary.status,
       round: summary.round,
       maxRounds: summary.maxRounds,
-      budget: {
-        maxTotalTokens: summary.maxTotalTokens,
-        usedTokens: summary.usedTokens,
-        autoContinued: summary.autoContinued,
-      },
+      budget: { usedTokens: summary.usedTokens },
       updatedAt: summary.updatedAt,
       // 这两个字段是「覆盖」而不是「有才写」：续跑后再暂停之前的原因/错误必须能被清掉
       pendingReason: summary.pendingReason,
@@ -886,11 +904,7 @@ export function useChat(windowName: WindowName, context: ChatContext) {
       stepsDone: [],
       todos: [],
       cursor: { nextRound: summary.round },
-      budget: {
-        maxTotalTokens: summary.maxTotalTokens,
-        usedTokens: summary.usedTokens,
-        autoContinued: summary.autoContinued,
-      },
+      budget: { usedTokens: summary.usedTokens },
       ...(summary.pendingReason === undefined ? {} : { pendingReason: summary.pendingReason }),
       createdAt: summary.updatedAt,
       updatedAt: summary.updatedAt,
@@ -1037,6 +1051,8 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     deltaBuffer.flush()
     sessionId.value = id
     messages.value = []
+    // 排队草稿属于**上一个会话**：气泡随整表换掉消失了，条目也要跟上
+    queuedDrafts.clear()
     error.value = null
     unread.value = false
     streaming.value = false
@@ -1082,31 +1098,78 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     await switchSession(result.value)
   }
 
-  async function send(text: string, attachments: string[] = []): Promise<void> {
+  /**
+   * 排队中的草稿（docs/06 §5.3）：气泡 id → 原文与附件路径。
+   *
+   * 为什么要单独记一份：气泡上只有**文件名**（展示用），而点「停止 / 打断」要把这句话
+   * 连同附件一起还给输入框或立刻发出去 —— 只靠 messages 里那条气泡，附件路径就丢了。
+   * 注入成功（回声对上门）或本次发送被拒时立即删除，不留过期条目。
+   */
+  const queuedDrafts = new Map<string, { text: string; attachments: string[] }>()
+
+  /**
+   * 发送一条消息。
+   *
+   * 返回 `'sent'`（立即开始）/ `'queued'`（会话正忙，已排进内核队列，docs/06 §5.3）/
+   * `'rejected'`（**没有发出去**：调用方要把文本收回输入框，别让用户以为话已送达）。
+   */
+  async function send(
+    text: string,
+    attachments: string[] = [],
+  ): Promise<'sent' | 'queued' | 'rejected'> {
     const trimmed = text.trim()
     // 允许「只发附件」：有附件时文本可以为空
-    if (trimmed === '' && attachments.length === 0) return
-    if (streaming.value) return
+    if (trimmed === '' && attachments.length === 0) return 'rejected'
+    // 流式期间再发一条 = 插话排队（docs/06 §5.3）：早先这里是直接 return，
+    // 表现为「敲了 Enter 没反应也没提示」
+    const queueing = streaming.value
 
-    error.value = null
-    // 上一条「已暂停」提示在新请求发出后不再成立（它描述的是上一次收尾）
-    pendingNotice.value = null
     const names = attachments.map(fileNameOf)
+    const draftId = `u-${Date.now()}-${messages.value.length}`
     messages.value.push({
-      id: `u-${Date.now()}-${messages.value.length}`,
+      id: draftId,
       role: 'user',
       content: trimmed,
       createdAt: Date.now(),
       ...(names.length === 0 ? {} : { attachments: names }),
     })
 
-    streaming.value = true
-    unread.value = false
-    lastSettledAt.value = null
-    latestTurnGroupable.value = false
-    activeRequest = null
-    assistantId = null
-    resetReasoning()
+    /**
+     * 这次发送没有出路：把那条气泡**摘掉**再落一条失败提示。
+     * 留着气泡，用户读到的是"我已经发出去了"，而模型永远不会看到那句话 —— 比报错更糟。
+     */
+    const reject = (message: string): 'rejected' => {
+      const index = messages.value.findIndex((item) => item.id === draftId)
+      if (index >= 0) messages.value.splice(index, 1)
+      queuedDrafts.delete(draftId)
+      messages.value.push({
+        id: `e-${Date.now()}`,
+        role: 'assistant',
+        content: `发送失败：${message}`,
+        error: true,
+        createdAt: Date.now(),
+      })
+      // 排队的这条被拒时**不能动 `streaming`**：那会抹掉正在跑的那次请求的界面状态
+      // （输入区从「流式中」跳回「可发送」，而模型还在说话）
+      if (!queueing) {
+        streaming.value = false
+        error.value = message
+      }
+      return 'rejected'
+    }
+
+    if (!queueing) {
+      error.value = null
+      // 上一条「已暂停」提示在新请求发出后不再成立（它描述的是上一次收尾）
+      pendingNotice.value = null
+      streaming.value = true
+      unread.value = false
+      lastSettledAt.value = null
+      latestTurnGroupable.value = false
+      activeRequest = null
+      assistantId = null
+      resetReasoning()
+    }
 
     const request: SendMessageRequest = {
       sessionId: sessionId.value,
@@ -1121,31 +1184,24 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     try {
       result = await window.aurora.chat.send(request)
     } catch (cause) {
-      // invoke 本身也可能抛（序列化失败等）：必须复位 streaming，否则输入区永久停在「流式中」
-      streaming.value = false
-      error.value = String(cause)
-      messages.value.push({
-        id: `e-${Date.now()}`,
-        role: 'assistant',
-        content: `发送失败：${String(cause)}`,
-        error: true,
-        createdAt: Date.now(),
-      })
-      return
+      // invoke 本身也可能抛（序列化失败等）：必须复位，否则输入区永久停在「流式中」
+      return reject(String(cause))
     }
-    if (!result.ok) {
-      streaming.value = false
-      error.value = result.message
-      messages.value.push({
-        id: `e-${Date.now()}`,
-        role: 'assistant',
-        content: `发送失败：${result.message}`,
-        error: true,
-        createdAt: Date.now(),
-      })
-      return
+    if (!result.ok) return reject(result.message)
+
+    // 排队（docs/06 §5.3）：这次没有开新请求，流式状态仍归正在跑的那一次，一律不碰
+    if (result.value.queued === true) {
+      const bubble = messages.value.find((item) => item.id === draftId)
+      if (bubble) bubble.queued = true
+      queuedDrafts.set(draftId, { text: trimmed, attachments: [...attachments] })
+      return 'queued'
     }
+    // 显式 `false` = 队列已满（内核同时广播 E_QUEUE_FULL，但那条事件按 activeRequest 过滤到不了这里）：
+    // 气泡上的失败提示是用户唯一能看见的交代
+    if (result.value.queued === false) return reject('排队已满，请等当前任务告一段落或先停止')
+
     activeRequest = result.value.requestId
+    return 'sent'
   }
 
   /**
@@ -1178,8 +1234,15 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     error.value = result.message
   }
 
-  async function abort(): Promise<void> {
-    if (activeRequest === null) return
+  /**
+   * 停止当前回复。
+   *
+   * 同时**收回排队中的那几句**（docs/06 §5.3）：内核收到 abort 会清掉该会话的队列，
+   * 这些话既不会注入也不会补发，所以把文本还给输入框、把气泡从消息区摘掉 ——
+   * 用户点「停止」要的是"这些都别发了"，而不是"我说的话凭空消失了"。
+   */
+  async function abort(): Promise<QueuedDraft[]> {
+    if (activeRequest === null) return []
     const requestId = activeRequest
     await window.aurora.chat.abort(requestId)
     streaming.value = false
@@ -1187,14 +1250,27 @@ export function useChat(windowName: WindowName, context: ChatContext) {
     latestTurnGroupable.value = false
     settleReasoning()
     settlePending()
+    const drafts: QueuedDraft[] = []
+    // 倒着扫：splice 会让后面的下标前移，正着删会跳条目
+    for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+      const item = messages.value[index]
+      if (item?.queued !== true) continue
+      const stored = queuedDrafts.get(item.id)
+      drafts.unshift({ text: item.content, attachments: stored?.attachments ?? [] })
+      queuedDrafts.delete(item.id)
+      messages.value.splice(index, 1)
+    }
     // 本地主动中止：紧随其后的内核事件一律丢弃（否则「已停止」之后还会继续长内容）
     finishRequest(requestId)
+    return drafts
   }
 
   function clear(): void {
     // 同上：整表清空之前先把在途增量落地，否则清空后它会把消息又插回来
     deltaBuffer.flush()
     messages.value = []
+    // 排队草稿随本地视图一起作废（气泡已经没了，留着条目只是泄漏；内核那份仍在队列里）
+    queuedDrafts.clear()
     unread.value = false
     error.value = null
     pendingNotice.value = null

@@ -11,12 +11,20 @@ import type {
   AgentToolCall,
 } from '@aurora/shared'
 import type { Logger } from '@aurora/shared'
-import { createJob, toJobSummary, type AgentJob, type JobPendingReason } from '../jobs/types.js'
+import {
+  createJob,
+  toJobSummary,
+  MAX_JOB_STEPS,
+  type AgentJob,
+  type JobPendingReason,
+  type JobTodoSnapshot,
+} from '../jobs/types.js'
 import type { JobPatch, JobStore } from '../jobs/store.js'
 import { createNoopLogger } from '@aurora/shared'
 import { buildSystemPrompt, buildToolGuidance, describeTools } from '../context/systemPrompt.js'
 import {
-  DEFAULT_MAX_ROUNDS,
+  DEFAULT_MAX_PARALLEL_CALLS,
+  RUNAWAY_MAX_ROUNDS,
   runAgentLoop,
   type ConfirmDecision,
   type LoopProvider,
@@ -152,6 +160,16 @@ export interface AgentHostDeps {
    */
   todoSummary?(sessionId: string): Promise<string>
   /**
+   * 任务清单的**结构化快照**（docs/06 §4.1 的 `job.todos`，2026-10-17 接线）：
+   * 装配层从会话级清单文件（§18 的 `userData/todos/<sessionId>.json`）读一份
+   * `{ id, text, status }` 回来，每轮结束时随游标一起写进 job，只给任务时间线看。
+   *
+   * 与 `todoSummary` 是同一份数据的两种形状（一个给模型读、一个给界面画），
+   * **两边都不回写**：清单本体永远只有会话级那一份。
+   * 未注入 / 抛错时该字段整个不动（保留上一轮的快照），绝不影响这次请求。
+   */
+  jobTodos?(sessionId: string): Promise<JobTodoSnapshot[]>
+  /**
    * 项目级约定（docs/06 §5.1，v13）：从项目根到当前工作目录逐层收集的 `AGENTS.md` 文本。
    * 入参是**发起请求的会话**：装配层据此解析会话绑定的项目（未绑定回落全局当前项目），
    * 两个绑定不同项目的会话各拿各的 AGENTS.md。
@@ -180,14 +198,21 @@ export interface AgentHostDeps {
    */
   jobs?: JobStore
   /**
-   * 轮次上限（**getter**，v15 起）：设置页改完下一次请求即生效。
-   * v15 之前这里是常量值，改配置必须重启才生效。
+   * 同轮工具调用的并发度（**getter**，`agent.loop.maxParallelCalls`，v34）：
+   * 设置页改完下一次请求即生效 —— 上限类配置一律走 getter，写成构造期常量就是
+   * "改了不生效"的死字段（AGENTS.md 硬规则）。
+   *
+   * v34 删掉的三个同源依赖：`maxRounds`（轮次上限回到内核常量 `RUNAWAY_MAX_ROUNDS`）、
+   * `maxTotalTokens`（token 只统计不限制）、`autoContinueRounds`（没有"轮次用尽"就没有"续几轮"）。
+   */
+  maxParallelCalls?: () => number
+  /**
+   * 覆盖本次请求的轮次上限。**生产不传**（缺省即内核常量 `RUNAWAY_MAX_ROUNDS`，
+   * v34 起它不再是设置项），留给两类真实需要：
+   * ① 单测要造出「跑到上限 → paused → 续跑」的时序（不然得真跑 512 轮）；
+   * ② 将来按运行档给无人值守会话一个**比交互档更小**的天花板（RunProfile 的同类口子）。
    */
   maxRounds?: () => number
-  /** 累计 token 预算；0 = 不限（触顶即暂停，附 `pendingReason: 'budget'`） */
-  maxTotalTokens?: () => number
-  /** 轮次用尽后允许自动再续几轮；0 = 不自动续，直接落 `paused` 等用户点「继续」 */
-  autoContinueRounds?: () => number
   /** 时钟注入（单测用它造确定性的时间戳；缺省 `new Date()`） */
   clock?: () => Date
 }
@@ -196,6 +221,23 @@ export const ERROR_NO_MODEL = 'E_NO_MODEL'
 export const ERROR_BUSY = 'E_BUSY'
 /** 续跑时 job 不处于 `paused`（已完成 / 在跑 / 出错）：拒绝而不是"假装续跑" */
 export const ERROR_JOB_STATE = 'E_JOB_STATE'
+/** 排队上限（docs/06 §5.3）：超了直接回绝，而不是让队列无界长下去把 token 预算摊薄 */
+export const ERROR_QUEUE_FULL = 'E_QUEUE_FULL'
+export const MAX_QUEUED_INPUTS = 8
+
+/**
+ * 一条「运行中插话」的排队条目（docs/06 §5.3）。
+ *
+ * 保留 `requestId`：发送方拿到的就是这个 id，注入时广播的 `user-message` 也带它 ——
+ * 渲染层据此把气泡上的「排队中」摘掉，而不是靠文本比对。
+ */
+interface QueuedInput {
+  requestId: string
+  text: string
+  origin: string
+  extraContext?: string
+  images?: readonly string[]
+}
 
 /** 手动压缩结局：形状定义在 shared（`AgentCompactOutcome`，contracts 与内核共用一份） */
 export type CompactOutcome = AgentCompactOutcome
@@ -218,7 +260,7 @@ type AgentEventInput = AgentEvent extends infer T
  * `{ status: 'error' }`（没有 error）这种自相矛盾的终态，落盘后界面就只剩一个红点。
  */
 type JobTerminal =
-  | { status: 'paused'; pendingReason: 'max-rounds' | 'budget' }
+  | { status: 'paused'; pendingReason: 'max-rounds' }
   | { status: 'aborted' }
   | { status: 'done' }
   | { status: 'error'; error: string }
@@ -229,7 +271,7 @@ type JobTerminal =
  * 刻意只动**内存副本**（随后 `update` 落盘），且**不碰**这些字段：
  * - `origin`：它记录的是"这条 job 最初从哪来"（chat / edge-bar），续跑**不改写**它 ——
  *   否则界面上一条从主界面发出的任务，续跑一次就变成了"resume 来源"；
- * - `createdAt` / `stepsDone` / `budget.autoContinued`：都是这段任务的历史账本，
+ * - `createdAt` / `stepsDone` / `budget.usedTokens`：都是这段任务的历史账本，
  *   重置它们等于"续跑就洗掉之前的进度与已用额度"。
  *
  * 清掉上一次的收尾结论（`pendingReason` / `error`）：那是**上一段**的结论，
@@ -252,6 +294,17 @@ export class KernelAgentHost implements AgentHostContract {
   private readonly logger: Logger
   private readonly listeners = new Set<(event: AgentEvent) => void>()
   private readonly active = new Map<string, { requestId: string; controller: AbortController }>()
+  /**
+   * 每个会话的「运行中插话」队列（docs/06 §5.3）。
+   *
+   * 为什么放在内核而不是渲染层：渲染层的"等这次跑完再发"只是把两条请求排成两个任务，
+   * 模型永远看不到"用户在任务中途改过口"；插话的价值正是改**正在跑的这一个**。
+   * 队列按会话隔离（键是 sessionId），因此快速会话与主会话互不影响。
+   *
+   * 只在内存：它是"这一次运行"的临时缓冲，进程重启后原样恢复反而会把用户早就不想要的话
+   * 发出去 —— 与 `sessionApprovals` 同一条「不落盘」的理由。
+   */
+  private readonly pending = new Map<string, QueuedInput[]>()
   /**
    * requestId → 本次请求的 job（v15）。
    *
@@ -321,10 +374,15 @@ export class KernelAgentHost implements AgentHostContract {
      * 其余一律回 `E_JOB_STATE` 且不开始执行。给了它时本轮**不重复落盘**那条用户消息。
      */
     resumeJobId?: string
-  }): Promise<{ requestId: string }> {
+    /**
+     * 复用既有的 requestId（**只由 `flushPending` 内部传入**，IPC 请求不带）。
+     * 排队那条消息的界面气泡是按它认领的，收尾补发时换 id 会让「排队中」永远挂着。
+     */
+    requestId?: string
+  }): Promise<{ requestId: string; queued?: boolean }> {
     const sessionId = request.sessionId
     this.counter += 1
-    const requestId = `req-${Date.now()}-${this.counter}`
+    const requestId = request.requestId ?? `req-${Date.now()}-${this.counter}`
 
     this.emit({ type: 'queued', sessionId, requestId })
 
@@ -340,9 +398,18 @@ export class KernelAgentHost implements AgentHostContract {
       return { requestId }
     }
 
+    /**
+     * 会话正忙：普通发送**排队**（docs/06 §5.3，对齐主流 Agent 的插话），
+     * 但带 `resumeJobId` 的续跑照旧回 `E_BUSY` —— 续跑不是"再说一句话"，
+     * 它是"从那条 paused 的 job 的游标继续"，插进正在跑的请求里既没有游标可对，
+     * 又会让用户以为在续跑、实际变成了另一个任务。
+     */
     if (this.active.has(sessionId)) {
-      this.emitBusy(sessionId, requestId)
-      return { requestId }
+      if (request.resumeJobId !== undefined) {
+        this.emitBusy(sessionId, requestId)
+        return { requestId }
+      }
+      return this.enqueue(sessionId, requestId, text, request.origin, request)
     }
 
     const config = this.deps.provider.create({ sessionId })
@@ -412,6 +479,10 @@ export class KernelAgentHost implements AgentHostContract {
       if (entry.requestId !== requestId) continue
       entry.controller.abort()
       this.active.delete(sessionId)
+      // 「停止」= 这条别答了、排队的也别发（docs/06 §5.3）：清掉队列，
+      // 否则取消之后 `finally` 会立刻拿队首补发一次，用户看到的却是"点了停止又开新一轮"。
+      // 渲染层同时把自己那边的排队气泡收回输入框（两边各清一份，不靠事件回传）。
+      this.pending.delete(sessionId)
       this.logger.info('已取消 Agent 请求', { requestId, sessionId })
       // job 侧同步乐观落 `aborted`（v15）：**不 await** —— 见 `markJobAborted`
       this.markJobAborted(requestId)
@@ -534,10 +605,14 @@ export class KernelAgentHost implements AgentHostContract {
     const { sessionId, requestId } = input
     const jobs = this.deps.jobs
     const clock = this.deps.clock ?? ((): Date => new Date())
-    // 三个上限都是 **getter**（v15）：设置页改完下一次请求即生效，不必重启
-    const maxRoundsLimit = this.deps.maxRounds?.() ?? DEFAULT_MAX_ROUNDS
-    const maxTotalTokens = Math.max(0, this.deps.maxTotalTokens?.() ?? 0)
-    const autoContinueLimit = Math.max(0, this.deps.autoContinueRounds?.() ?? 0)
+    // 并发度是 **getter**（v34）：设置页改完下一次请求即生效，不必重启。
+    // 轮次上限不再来自设置 —— 缺省是内核的防失控常量 `RUNAWAY_MAX_ROUNDS`（docs/06 §5），
+    // `deps.maxRounds` 只是单测 / 将来运行档的覆盖口子。
+    const maxParallelCalls = Math.max(
+      1,
+      this.deps.maxParallelCalls?.() ?? DEFAULT_MAX_PARALLEL_CALLS,
+    )
+    const maxRoundsLimit = Math.max(1, this.deps.maxRounds?.() ?? RUNAWAY_MAX_ROUNDS)
     /**
      * 本次运行的运行档（v20）：按 `origin` 现取值。取值失败一律降级为「无运行档」
      * （提示词与工具面退回默认）——提示词细节永远不该让一次请求跑不起来。
@@ -615,7 +690,6 @@ export class KernelAgentHost implements AgentHostContract {
               text: input.text,
               origin: input.origin as AgentJob['origin'],
               maxRounds: maxRoundsLimit,
-              maxTotalTokens,
               requestId,
             },
             { clock },
@@ -625,6 +699,10 @@ export class KernelAgentHost implements AgentHostContract {
           job.status = 'running'
         } else {
           job = reviveJob(paused, requestId, clock)
+          // 轮次上限按**本次实际生效的值**重写：老 job 文件里可能存着 v33 时代用户配的 8 / 32，
+          // 留着会让任务面板显示「3 / 8」而循环其实按新的上限在跑 ——
+          // 循环用新值、展示用旧值，数字对不上就是误导。
+          job.maxRounds = maxRoundsLimit
         }
         job.updatedAt = clock().toISOString()
         if (paused === undefined) {
@@ -636,6 +714,7 @@ export class KernelAgentHost implements AgentHostContract {
             status: 'running',
             pendingReason: undefined,
             error: undefined,
+            maxRounds: maxRoundsLimit,
             updatedAt: job.updatedAt,
           })
         }
@@ -652,389 +731,395 @@ export class KernelAgentHost implements AgentHostContract {
         input.extraContext,
       ])
 
-      // 一次请求可能跑好几个 attempt（自动续轮，docs/06 §4.1）：每个 attempt 都是
-      // 「从游标起、最多 maxRounds 轮」的一个完整循环实例，因此事件映射被整段包进 `for (;;)`。
-      /** 是否落盘本轮用户消息：只有本次请求的**第一次** attempt 落，续跑 / 自动续轮都不落 */
-      let appendUserMessage = input.resumeJob === undefined
-      /** 本次 attempt 的收尾结论（在下面 switch 的 `done` / `error` 分支里捕获） */
+      // v34 起一次请求只跑**一个**循环实例：自动续轮（"轮次用尽后再给它几轮"）随
+      // 「轮次上限」这个用户可配概念一起退役（docs/06 §4.1 / §5），所以这里不再有 attempt 循环。
+      /** 是否落盘本轮用户消息：续跑不落（那条提问在上一个 job 里已经写过了） */
+      const appendUserMessage = input.resumeJob === undefined
+      /** 收尾结论（在下面 switch 的 `done` / `error` 分支里捕获） */
       let pendingReason: JobPendingReason | undefined
       let errorMessage: string | undefined
-      for (;;) {
-        // 历史与系统提示**在每个 attempt 内重算**（docs/06 §4.1）：自动续轮等价于一次自动
-        // resume，`appendUserMessage = false` 的语义前提正是"提问已在 history 里"——只有
-        // 在这里重读会话才成立。放在循环外算的话，续轮拿到的是**请求前**的旧快照：
-        // 既没有本轮提问、也没有上一 attempt 已落盘的助手 / 工具消息，模型会重复
-        // 已执行的写 / 命令操作。每 attempt 重算滚动摘要同样是本不变量的既定行为
-        // （超预算时每次可能多一次 summarize 调用、压缩日志可能多条），不是回归。
-        //
-        // 会话压缩：超预算时把丢弃的旧消息压成摘要（跨轮次累计，存在内存里）。
-        // summarizer 缺失 / 抛错时 compressHistory 会退回纯截断，不会让请求失败。
-        //
-        // quick 会话滑动窗口（docs/06 §4）：窗口启用时先把窗外消息滤掉再交给压缩组装，
-        // 更早的仅留在存储 / 界面历史（过滤后为空 = 只有本轮输入，compressHistory 对
-        // 空输入安全返回空历史）。窗口模式下同步跳过滚动摘要 —— 旧摘要本身就是同样的
-        // 污染源：不读 previousSummary、不写 summaries，compression.summary 恒为
-        // undefined，buildSystemPrompt 的 historySummary 小节随之自动省略。
-        const quickWindowMs = this.deps.quickContextWindowMs ?? 0
-        const quickWindowActive = sessionId === 'quick' && quickWindowMs > 0
-        const storedMessages = await this.deps.sessions.get(sessionId)
-        // 手动压缩游标（/compact，docs/06 §4）：`upToMessageId` **之前**的消息不进组装，
-        // 由 `meta.compact.summary` 顶替（元文本进 systemPrompt，下一条 compressHistory
-        // 的 previousSummary 优先取内存 Map——compact() 会把两者写成同一份，
-        // 进程内它总是最新的；重启后内存 Map 为空，才回落落盘的 meta.compact）。
-        // 游标 id 已被条数环挤掉（找不到）时按「全部进组装」兜底：摘要链仍然连续，
-        // 只是这部分旧消息会被重复计入 —— 这是极端长会话下的可接受退化。
-        const compacted = await this.deps.sessions.compactOf(sessionId)
-        const scopedMessages = sliceAfterCompact(
-          quickWindowActive
-            ? filterMessagesWithinWindow(storedMessages, quickWindowMs)
-            : storedMessages,
-          compacted?.upToMessageId,
-        )
-        const inMemorySummary = this.summaries.get(sessionId)
-        const compression = await compressHistory(scopedMessages, {
-          maxChars: this.deps.maxChars ?? DEFAULT_MAX_CHARS,
-          ...(quickWindowActive || this.deps.summarize === undefined
-            ? {}
-            : { summarize: this.deps.summarize }),
-          ...(quickWindowActive
-            ? {}
-            : {
-                previousSummary:
-                  inMemorySummary ??
-                  (compacted === undefined || compacted.summary === ''
-                    ? undefined
-                    : compacted.summary),
-              }),
-        })
-        if (!quickWindowActive && compression.summary !== undefined) {
-          this.summaries.set(sessionId, compression.summary)
-        }
-        if (compression.compressed) {
-          this.logger.info('已完成历史摘要压缩', {
-            sessionId,
-            dropped: compression.dropped,
-            summaryChars: compression.summary?.length ?? 0,
-          })
-        }
-        const history = compression.messages
-
-        /**
-         * 图片附件读盘（多模态输入，docs/06 §3.1）。
-         *
-         * 只在**当前 provider 声明支持图片输入**（`vision`）且装配层注入了 `loadImages` 时读：
-         * 关掉开关的模型收到图片分片会被服务端 400，所以降级必须在**发出去之前**完成
-         * （降级文案由装配层在 `extraContext` 里给出，内核这边只是不读、不发）。
-         *
-         * 缓存跨 attempt 复用（自动续轮会重进这个循环）：读过的路径不再读第二遍，
-         * 因此续轮不会因为"重新读一遍图"而变慢；读不出的路径**不缓存**，
-         * 于是也不会把一次偶发失败永久记成本轮失败。
-         */
-        const visionEnabled = input.config.vision === true
-        const loadImages = this.deps.loadImages
-        if (visionEnabled && loadImages !== undefined) {
-          await primeImageCache(
-            [...collectImagePaths(history), ...(input.images ?? [])],
-            loadImages,
-            this.imageCache,
-            this.logger,
-          )
-        }
-        const resolveImages: LlmImageResolver = (paths) => {
-          /**
-           * 能力开关**在解析处再判一次**，而不是只判「要不要读盘」。
-           *
-           * `imageCache` 是进程级、不淘汰的（同一张图跨轮次只读一次盘），因此
-           * 「先开着开关跑一轮（图进了缓存）→ 再关掉」时，缓存里那几张图照样能被解析出来 ——
-           * 于是关闭态仍然把图片发了出去。这条路径是 smoke 实测出来的：
-           * 同一个进程里连续两次发送（开 / 关），第二次的内容分片里仍然有 `image_url`。
-           */
-          if (!visionEnabled) return []
-          const out: LlmImageInput[] = []
-          for (const path of paths) {
-            const image = this.imageCache.get(path)
-            if (image !== undefined) out.push(image)
-          }
-          return out
-        }
-        const userImages = resolveImages(input.images ?? [])
-
-        // 三个可选提示片段：读取失败一律降级为省略该小节，不让提示词问题拖垮请求
-        const settingsHint = this.readSettingsHint()
-        const todoSummary = await this.readTodoSummary(sessionId)
-        const projectInstructions = await this.readProjectInstructions(sessionId)
-        const workspaceHint = await this.readWorkspaceHint(sessionId)
-
-        const systemPrompt = buildSystemPrompt({
-          ...(profile?.persona === undefined ? {} : { persona: profile.persona }),
-          ...(profile?.runContext === undefined ? {} : { runContext: profile.runContext }),
-          ...(this.deps.modePrompt === undefined ? {} : { modePrompt: this.deps.modePrompt() }),
-          ...(this.deps.perceptionSummary === undefined
-            ? {}
-            : { perceptionSummary: await this.deps.perceptionSummary() }),
-          ...(compression.summary === undefined ? {} : { historySummary: compression.summary }),
-          ...(todoSummary === undefined ? {} : { todoSummary }),
-          ...(workspaceHint === undefined ? {} : { workspaceHint }),
-          ...(projectInstructions === undefined ? {} : { projectInstructions }),
-          skillCatalog: this.deps.skills.catalogPrompt,
-          ...(() => {
-            // 用**同一个**有序列表（toLlmTools 已按名字排序）生成提示词里的工具清单：
-            // 与请求体的 tools 数组同序，否则缓存与展示会拧（docs/06 §21.2）。
-            // 注意这里用的是**本次请求的工具面**（可能是过滤视图）：命令行与清单必须一致，
-            // 否则模型会看到"清单里有、请求体里没有"的工具并反复尝试（docs/06 §5.2）
-            const catalog = describeTools(tools.toLlmTools())
-            return catalog === undefined ? {} : { toolCatalog: catalog }
-          })(),
-          ...(() => {
-            const guidance = buildToolGuidance(tools.list().map((tool) => tool.name))
-            return guidance === undefined ? {} : { toolGuidance: guidance }
-          })(),
-          ...(settingsHint === undefined ? {} : { settingsHint }),
-        })
-
-        /** 本次 attempt 的用量基准（见 `onRoundComplete` 里的差值累加） */
-        let attemptUsedTokens = 0
-        // 游标每个 attempt 现读一次：自动续轮刚刚把 `nextRound` 推到了下一轮。
-        // 新请求的游标是 0，与"不传 resume"等价；续跑则从被中断的那一轮接着跑
-        const resume =
-          job === undefined
-            ? undefined
-            : { nextRound: job.cursor.nextRound, stepsDone: job.stepsDone.length }
-        /** 本次 attempt 收尾时的轮次（`done` 带回来；自动续轮据此推进游标） */
-        let finalRound = resume?.nextRound ?? 0
-
-        const loop = runAgentLoop({
-          provider: input.config.provider,
-          model: input.config.model,
-          ...(input.config.temperature === undefined
-            ? {}
-            : { temperature: input.config.temperature }),
-          // 思考等级（`auto` 已在装配层映射成 undefined，这里只做透传）
-          ...(input.config.reasoningEffort === undefined
-            ? {}
-            : { reasoningEffort: input.config.reasoningEffort }),
-          systemPrompt,
-          userInput,
-          ...(extraContext === undefined ? {} : { extraContext }),
-          history,
-          // 图片（docs/06 §3.1）：本轮读好的内容 + 供跨轮次重放的同步解析器。
-          // 路径**无条件**落盘（即使 vision 关着）：用户后来在设置页打开开关，
-          // 历史里那张图应该立刻能被重放，而不是要求他重新发一次。
-          ...(userImages.length === 0 ? {} : { userImages }),
-          ...(input.images === undefined || input.images.length === 0
-            ? {}
-            : { userImagePaths: input.images }),
-          resolveImages,
-          tools,
+      // 历史与系统提示**在每个 attempt 内重算**（docs/06 §4.1）：自动续轮等价于一次自动
+      // resume，`appendUserMessage = false` 的语义前提正是"提问已在 history 里"——只有
+      // 在这里重读会话才成立。放在循环外算的话，续轮拿到的是**请求前**的旧快照：
+      // 既没有本轮提问、也没有上一 attempt 已落盘的助手 / 工具消息，模型会重复
+      // 已执行的写 / 命令操作。每 attempt 重算滚动摘要同样是本不变量的既定行为
+      // （超预算时每次可能多一次 summarize 调用、压缩日志可能多条），不是回归。
+      //
+      // 会话压缩：超预算时把丢弃的旧消息压成摘要（跨轮次累计，存在内存里）。
+      // summarizer 缺失 / 抛错时 compressHistory 会退回纯截断，不会让请求失败。
+      //
+      // quick 会话滑动窗口（docs/06 §4）：窗口启用时先把窗外消息滤掉再交给压缩组装，
+      // 更早的仅留在存储 / 界面历史（过滤后为空 = 只有本轮输入，compressHistory 对
+      // 空输入安全返回空历史）。窗口模式下同步跳过滚动摘要 —— 旧摘要本身就是同样的
+      // 污染源：不读 previousSummary、不写 summaries，compression.summary 恒为
+      // undefined，buildSystemPrompt 的 historySummary 小节随之自动省略。
+      const quickWindowMs = this.deps.quickContextWindowMs ?? 0
+      const quickWindowActive = sessionId === 'quick' && quickWindowMs > 0
+      const storedMessages = await this.deps.sessions.get(sessionId)
+      // 手动压缩游标（/compact，docs/06 §4）：`upToMessageId` **之前**的消息不进组装，
+      // 由 `meta.compact.summary` 顶替（元文本进 systemPrompt，下一条 compressHistory
+      // 的 previousSummary 优先取内存 Map——compact() 会把两者写成同一份，
+      // 进程内它总是最新的；重启后内存 Map 为空，才回落落盘的 meta.compact）。
+      // 游标 id 已被条数环挤掉（找不到）时按「全部进组装」兜底：摘要链仍然连续，
+      // 只是这部分旧消息会被重复计入 —— 这是极端长会话下的可接受退化。
+      const compacted = await this.deps.sessions.compactOf(sessionId)
+      const scopedMessages = sliceAfterCompact(
+        quickWindowActive
+          ? filterMessagesWithinWindow(storedMessages, quickWindowMs)
+          : storedMessages,
+        compacted?.upToMessageId,
+      )
+      const inMemorySummary = this.summaries.get(sessionId)
+      const compression = await compressHistory(scopedMessages, {
+        maxChars: this.deps.maxChars ?? DEFAULT_MAX_CHARS,
+        ...(quickWindowActive || this.deps.summarize === undefined
+          ? {}
+          : { summarize: this.deps.summarize }),
+        ...(quickWindowActive
+          ? {}
+          : {
+              previousSummary:
+                inMemorySummary ??
+                (compacted === undefined || compacted.summary === ''
+                  ? undefined
+                  : compacted.summary),
+            }),
+      })
+      if (!quickWindowActive && compression.summary !== undefined) {
+        this.summaries.set(sessionId, compression.summary)
+      }
+      if (compression.compressed) {
+        this.logger.info('已完成历史摘要压缩', {
           sessionId,
-          signal: input.controller.signal,
-          // 轮次上限走上面那个 getter 解析出来的值（v15）：改设置后下一次请求即生效
-          maxRounds: maxRoundsLimit,
-          // 续跑（v15）：从游标那一轮继续，而不是从第 0 轮重来
-          ...(resume === undefined ? {} : { resume }),
-          // 续跑 / 自动续轮时**不落盘**用户消息：那条提问在上一个 job 里已经写过了，
-          // 再 append 一次会话历史里就会出现两条一模一样的提问（续跑最经典的坑）
-          appendUserMessage,
-          budget: { maxTotalTokens },
-          // 每轮结束（工具都跑完、结果都回填）时把游标 / 进度 / 用量落盘，
-          // **在决定是否继续之前**：顺序反过来的话，"暂停"会把最后一轮的进度一起丢掉，
-          // 续跑只能重跑它
-          onRoundComplete: async ({ round, usedTokens, pendingCalls }) => {
-            if (job === undefined || jobs === undefined) return
-            const at = clock().toISOString()
-            job.round = round
-            job.cursor.nextRound = round + 1
-            job.stepsDone.push(
-              ...pendingCalls.map((call) => ({
-                round,
-                tool: call.name,
-                // 走到这里工具都已执行完、`state` 已是终态：只有 `error` 算失败
-                ok: call.state !== 'error',
-                at,
-              })),
-            )
-            // `usedTokens` 是**本次 attempt** 从 0 起的累计值，不是本轮增量 ——
-            // 直接相加会在每次回调里把前面几轮重复计一遍（续轮时尤其明显）
-            job.budget.usedTokens += usedTokens - attemptUsedTokens
-            attemptUsedTokens = usedTokens
-            job.updatedAt = at
-            await jobs.update(job.id, {
-              round: job.round,
-              cursor: { ...job.cursor },
-              stepsDone: [...job.stepsDone],
-              budget: { usedTokens: job.budget.usedTokens },
-              updatedAt: at,
-            })
-            this.emit({ type: 'job', sessionId, requestId, job: toJobSummary(job) })
-          },
-          ...(this.deps.confirmTool === undefined
-            ? {}
-            : { confirmTool: this.wrapConfirmTool(sessionId) }),
-          append: (message: NewMessage) =>
-            this.deps.sessions.append(sessionId, { ...message, requestId }),
-          // 正文流式的 id 预领（docs/06 §16.2）：与 append 共用同一个计数器，
-          // 因此「边流边发」用的 id 就是落盘后的 id，渲染层那条消息不需要被替换
-          nextMessageId: () => this.deps.sessions.nextMessageId(),
-          updateToolCall: (messageId: string, call: StoredToolCall) =>
-            this.deps.sessions.updateToolCall(messageId, call),
-          onToolCall: (info) => {
-            this.logger.info('工具调用', {
-              name: info.name,
-              sensitivity: info.sensitivity,
-              isError: info.isError,
-            })
-          },
+          dropped: compression.dropped,
+          summaryChars: compression.summary?.length ?? 0,
         })
+      }
+      const history = compression.messages
 
-        for await (const event of loop) {
-          switch (event.type) {
-            case 'reasoning': {
-              // 思考链增量（Design/betav2-spec.md §5/§6）：带该轮预领的 messageId，
-              // 渲染层据此把「正在思考」挂在正确的消息上（docs/06 §16.1）。
-              this.emit({
-                type: 'reasoning',
-                sessionId,
-                requestId,
-                round: event.round,
-                messageId: event.messageId,
-                delta: event.delta,
-              })
-              break
-            }
-            case 'text': {
-              this.emit({
-                type: 'text',
-                sessionId,
-                requestId,
-                round: event.round,
-                messageId: event.messageId,
-                delta: event.delta,
-              })
-              break
-            }
-            case 'tool': {
-              this.emit({
-                type: 'tool',
-                sessionId,
-                requestId,
-                round: event.round,
-                messageId: event.messageId,
-                call: event.call,
-              })
-              break
-            }
-            case 'subagent': {
-              // 子代理进度（docs/06 §19）：只转发，不落盘 —— 最终快照会随工具卡持久化
-              this.emit({
-                type: 'subagent',
-                sessionId,
-                requestId,
-                round: event.round,
-                messageId: event.messageId,
-                callId: event.callId,
-                subagent: event.snapshot,
-              })
-              break
-            }
-            case 'usage': {
-              // token 用量（docs/06 §16.2）：展示之外，本轮起同步累加进会话 meta
-              //（meta.usage，随会话落盘）——渲染层切回会话时以它为种子恢复累计口径。
-              // 刻意**先累计、后广播**：渲染层若在「累计之后、种子之前」的窗口里收到事件，
-              // 种子（meta）也已包含这一轮，不会少计。
-              void this.deps.sessions.addUsage(sessionId, event.usage).catch(() => undefined)
-              this.emit({
-                type: 'usage',
-                sessionId,
-                requestId,
-                round: event.round,
-                usage: event.usage,
-              })
-              break
-            }
-            case 'done': {
-              // 收尾原因与轮次先收下来：终态判定与自动续轮都靠它们（渲染层同样需要，
-              // 客户端据此把"静默收尾"变成"可解释的暂停"）
-              pendingReason = event.pendingReason
-              finalRound = event.round
-              this.emit({
-                type: 'done',
-                sessionId,
-                requestId,
-                ...(event.pending === true ? { pending: true } : {}),
-                ...(event.pendingReason === undefined
-                  ? {}
-                  : { pendingReason: event.pendingReason }),
-                round: event.round,
-                ...(event.usedTokens === undefined ? {} : { usedTokens: event.usedTokens }),
-              })
-              break
-            }
-            case 'error': {
-              errorMessage = event.message
-              this.emit({
-                type: 'error',
-                sessionId,
-                requestId,
-                code: event.code,
-                message: event.message,
-              })
-              break
-            }
-            default:
-              break
+      /**
+       * 图片附件读盘（多模态输入，docs/06 §3.1）。
+       *
+       * 只在**当前 provider 声明支持图片输入**（`vision`）且装配层注入了 `loadImages` 时读：
+       * 关掉开关的模型收到图片分片会被服务端 400，所以降级必须在**发出去之前**完成
+       * （降级文案由装配层在 `extraContext` 里给出，内核这边只是不读、不发）。
+       *
+       * 缓存跨 attempt 复用（自动续轮会重进这个循环）：读过的路径不再读第二遍，
+       * 因此续轮不会因为"重新读一遍图"而变慢；读不出的路径**不缓存**，
+       * 于是也不会把一次偶发失败永久记成本轮失败。
+       */
+      const visionEnabled = input.config.vision === true
+      const loadImages = this.deps.loadImages
+      if (visionEnabled && loadImages !== undefined) {
+        await primeImageCache(
+          [...collectImagePaths(history), ...(input.images ?? [])],
+          loadImages,
+          this.imageCache,
+          this.logger,
+        )
+      }
+      const resolveImages: LlmImageResolver = (paths) => {
+        /**
+         * 能力开关**在解析处再判一次**，而不是只判「要不要读盘」。
+         *
+         * `imageCache` 是进程级、不淘汰的（同一张图跨轮次只读一次盘），因此
+         * 「先开着开关跑一轮（图进了缓存）→ 再关掉」时，缓存里那几张图照样能被解析出来 ——
+         * 于是关闭态仍然把图片发了出去。这条路径是 smoke 实测出来的：
+         * 同一个进程里连续两次发送（开 / 关），第二次的内容分片里仍然有 `image_url`。
+         */
+        if (!visionEnabled) return []
+        const out: LlmImageInput[] = []
+        for (const path of paths) {
+          const image = this.imageCache.get(path)
+          if (image !== undefined) out.push(image)
+        }
+        return out
+      }
+      const userImages = resolveImages(input.images ?? [])
+
+      // 三个可选提示片段：读取失败一律降级为省略该小节，不让提示词问题拖垮请求
+      const settingsHint = this.readSettingsHint()
+      const todoSummary = await this.readTodoSummary(sessionId)
+      const projectInstructions = await this.readProjectInstructions(sessionId)
+      const workspaceHint = await this.readWorkspaceHint(sessionId)
+
+      const systemPrompt = buildSystemPrompt({
+        ...(profile?.persona === undefined ? {} : { persona: profile.persona }),
+        ...(profile?.runContext === undefined ? {} : { runContext: profile.runContext }),
+        ...(this.deps.modePrompt === undefined ? {} : { modePrompt: this.deps.modePrompt() }),
+        ...(this.deps.perceptionSummary === undefined
+          ? {}
+          : { perceptionSummary: await this.deps.perceptionSummary() }),
+        ...(compression.summary === undefined ? {} : { historySummary: compression.summary }),
+        ...(todoSummary === undefined ? {} : { todoSummary }),
+        ...(workspaceHint === undefined ? {} : { workspaceHint }),
+        ...(projectInstructions === undefined ? {} : { projectInstructions }),
+        skillCatalog: this.deps.skills.catalogPrompt,
+        ...(() => {
+          // 用**同一个**有序列表（toLlmTools 已按名字排序）生成提示词里的工具清单：
+          // 与请求体的 tools 数组同序，否则缓存与展示会拧（docs/06 §21.2）。
+          // 注意这里用的是**本次请求的工具面**（可能是过滤视图）：命令行与清单必须一致，
+          // 否则模型会看到"清单里有、请求体里没有"的工具并反复尝试（docs/06 §5.2）
+          const catalog = describeTools(tools.toLlmTools())
+          return catalog === undefined ? {} : { toolCatalog: catalog }
+        })(),
+        ...(() => {
+          const guidance = buildToolGuidance(tools.list().map((tool) => tool.name))
+          return guidance === undefined ? {} : { toolGuidance: guidance }
+        })(),
+        ...(settingsHint === undefined ? {} : { settingsHint }),
+      })
+
+      /** 已计入 job 的累计用量（见 `onRoundComplete` 里的差值累加） */
+      let countedTokens = 0
+      // 游标现读一次：新请求的游标是 0，与"不传 resume"等价；续跑则从被中断的那一轮接着跑
+      const resume =
+        job === undefined
+          ? undefined
+          : { nextRound: job.cursor.nextRound, stepsDone: job.stepsDone.length }
+
+      const loop = runAgentLoop({
+        provider: input.config.provider,
+        model: input.config.model,
+        ...(input.config.temperature === undefined
+          ? {}
+          : { temperature: input.config.temperature }),
+        // 思考等级（`auto` 已在装配层映射成 undefined，这里只做透传）
+        ...(input.config.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: input.config.reasoningEffort }),
+        systemPrompt,
+        userInput,
+        ...(extraContext === undefined ? {} : { extraContext }),
+        history,
+        // 图片（docs/06 §3.1）：本轮读好的内容 + 供跨轮次重放的同步解析器。
+        // 路径**无条件**落盘（即使 vision 关着）：用户后来在设置页打开开关，
+        // 历史里那张图应该立刻能被重放，而不是要求他重新发一次。
+        ...(userImages.length === 0 ? {} : { userImages }),
+        ...(input.images === undefined || input.images.length === 0
+          ? {}
+          : { userImagePaths: input.images }),
+        resolveImages,
+        tools,
+        sessionId,
+        signal: input.controller.signal,
+        // 轮次上限 = 内核的防失控墙（v34 起不再来自设置），与 job 上记的那个数同一个来源
+        maxRounds: maxRoundsLimit,
+        // 续跑（v15）：从游标那一轮继续，而不是从第 0 轮重来
+        ...(resume === undefined ? {} : { resume }),
+        // 续跑时**不落盘**用户消息：那条提问在上一个 job 里已经写过了，
+        // 再 append 一次会话历史里就会出现两条一模一样的提问（续跑最经典的坑）
+        appendUserMessage,
+        // 同轮并发度走上面的 getter：改设置后下一次请求即生效
+        maxParallelCalls,
+        // 每轮结束（工具都跑完、结果都回填）时把游标 / 进度 / 用量落盘，
+        // **在决定是否继续之前**：顺序反过来的话，"暂停"会把最后一轮的进度一起丢掉，
+        // 续跑只能重跑它
+        onRoundComplete: async ({ round, usedTokens, pendingCalls }) => {
+          if (job === undefined || jobs === undefined) return
+          const at = clock().toISOString()
+          job.round = round
+          job.cursor.nextRound = round + 1
+          job.stepsDone.push(
+            ...pendingCalls.map((call) => ({
+              round,
+              tool: call.name,
+              // 走到这里工具都已执行完、`state` 已是终态：只有 `error` 算失败
+              ok: call.state !== 'error',
+              at,
+            })),
+          )
+          // 步数上限（docs/06 §4.1）：job 落盘是**整表重写**，不设上限会让长任务的
+          // 记录随轮次二次方膨胀，最后一轮比第一轮贵几十倍。丢最早的、留最近的。
+          if (job.stepsDone.length > MAX_JOB_STEPS) {
+            job.stepsDone.splice(0, job.stepsDone.length - MAX_JOB_STEPS)
           }
-        }
-
-        // 后续 attempt 一律是"续轮"：用户消息已经落过盘了
-        appendUserMessage = false
-
-        // 循环自报的 error 事件 = 本次请求就此结束（`error` 在循环里就是终止语义）
-        if (errorMessage !== undefined) {
-          await finishJob({ status: 'error', error: errorMessage })
-          return
-        }
-
-        // 自动续轮（v15）：轮次用尽但还有额度、且预算没触顶时，直接把下一轮接上继续跑。
-        // 这是"长任务不必每 maxRounds 轮就让用户点一次继续"的全部实现 —— 额度持久化在
-        // job 上（`budget.autoContinued`），否则重启一次又会拿到一份新额度，等于没有上限。
-        if (
-          pendingReason === 'max-rounds' &&
-          job !== undefined &&
-          jobs !== undefined &&
-          autoContinueLimit > 0 &&
-          job.budget.autoContinued < autoContinueLimit &&
-          (maxTotalTokens === 0 || job.budget.usedTokens < maxTotalTokens)
-        ) {
-          job.budget.autoContinued += 1
-          job.cursor.nextRound = finalRound + 1
-          job.updatedAt = clock().toISOString()
+          // 待办快照（docs/06 §4.1）：JobPanel 那段清单一直在渲染 `job.todos`，
+          // 而这一侧从来没人写过它 —— 面板于是永远显示不出清单。每轮随游标补一份拷贝。
+          const snapshot = await this.readJobTodos(sessionId)
+          // 空清单且上一份也空 → 不进补丁：不让"没有清单"的会话每轮多写一个空数组
+          const carry =
+            snapshot !== undefined && (snapshot.length > 0 || job.todos.length > 0)
+              ? snapshot
+              : undefined
+          if (carry !== undefined) job.todos = carry
+          // `usedTokens` 是**本次请求**从 0 起的累计值，不是本轮增量 ——
+          // 直接相加会在每次回调里把前面几轮重复计一遍
+          job.budget.usedTokens += usedTokens - countedTokens
+          countedTokens = usedTokens
+          job.updatedAt = at
           await jobs.update(job.id, {
-            budget: { autoContinued: job.budget.autoContinued },
+            round: job.round,
             cursor: { ...job.cursor },
-            updatedAt: job.updatedAt,
+            stepsDone: [...job.stepsDone],
+            ...(carry === undefined ? {} : { todos: [...carry] }),
+            budget: { usedTokens: job.budget.usedTokens },
+            updatedAt: at,
           })
           this.emit({ type: 'job', sessionId, requestId, job: toJobSummary(job) })
-          // 自动续轮是"用户没盯着也继续往下跑"的行为，必须留下可审计的痕迹
-          this.logger.info('轮次用尽但仍有自动续轮额度，继续执行', {
-            autoContinued: job.budget.autoContinued,
-            autoContinueLimit,
+        },
+        // 运行中插话（docs/06 §5.3）：循环在轮次边界问一次队列。
+        //
+        // **身份校验代替"是否已取消"**：`active` 里还是本次请求才允许取队首。
+        // 用户点了停止（`active` 已删、队列已清）或取消后立刻又发了一条（`active` 换了主人）时，
+        // 这个还在收尾的旧循环都可能越过边界把不属于它的排队话抢走 —— 表现为"停止之后又长出一句提问"。
+        takePendingInput: () => {
+          if (this.active.get(sessionId)?.requestId !== requestId) return undefined
+          const next = this.dequeue(sessionId)
+          if (next === undefined) return undefined
+          // 广播归属**正在跑的这一次请求**（不是那条插话自己的 requestId）：
+          // 这条消息确实是这次请求历史的一部分，而渲染层正是按 `activeRequest` 过滤事件的
+          // （见 useChat 的 user-message 分支）——用排队时的旧 id，事件会被当成"别的请求"整条丢掉。
+          // 界面那个「排队中」气泡靠既有的文本对账（`matchUserMessageEcho`）认领，不需要新 id。
+          this.emit({
+            type: 'user-message',
             sessionId,
-            jobId: job.id,
+            requestId,
+            content: next.text,
+            createdAt: Date.now(),
           })
-          continue
-        }
+          this.logger.info('插话已注入正在运行的请求', {
+            sessionId,
+            requestId: next.requestId,
+            runningRequestId: requestId,
+          })
+          return {
+            text: next.text,
+            ...(next.extraContext === undefined ? {} : { extraContext: next.extraContext }),
+            ...(next.images === undefined ? {} : { images: next.images }),
+          }
+        },
+        ...(this.deps.confirmTool === undefined
+          ? {}
+          : { confirmTool: this.wrapConfirmTool(sessionId) }),
+        append: (message: NewMessage) =>
+          this.deps.sessions.append(sessionId, { ...message, requestId }),
+        // 正文流式的 id 预领（docs/06 §16.2）：与 append 共用同一个计数器，
+        // 因此「边流边发」用的 id 就是落盘后的 id，渲染层那条消息不需要被替换
+        nextMessageId: () => this.deps.sessions.nextMessageId(),
+        updateToolCall: (messageId: string, call: StoredToolCall) =>
+          this.deps.sessions.updateToolCall(messageId, call),
+        onToolCall: (info) => {
+          this.logger.info('工具调用', {
+            name: info.name,
+            sensitivity: info.sensitivity,
+            isError: info.isError,
+          })
+        },
+      })
 
-        // 终态（不再 continue）：`max-rounds` / `budget` → `paused`（可续跑），
-        // `aborted` → `aborted`，**没有 pendingReason** = 正常收敛 → `done`
-        if (pendingReason === 'max-rounds' || pendingReason === 'budget') {
-          await finishJob({ status: 'paused', pendingReason })
-        } else if (pendingReason === 'aborted') {
-          await finishJob({ status: 'aborted' })
-        } else {
-          await finishJob({ status: 'done' })
+      for await (const event of loop) {
+        switch (event.type) {
+          case 'reasoning': {
+            // 思考链增量（Design/betav2-spec.md §5/§6）：带该轮预领的 messageId，
+            // 渲染层据此把「正在思考」挂在正确的消息上（docs/06 §16.1）。
+            this.emit({
+              type: 'reasoning',
+              sessionId,
+              requestId,
+              round: event.round,
+              messageId: event.messageId,
+              delta: event.delta,
+            })
+            break
+          }
+          case 'text': {
+            this.emit({
+              type: 'text',
+              sessionId,
+              requestId,
+              round: event.round,
+              messageId: event.messageId,
+              delta: event.delta,
+            })
+            break
+          }
+          case 'tool': {
+            this.emit({
+              type: 'tool',
+              sessionId,
+              requestId,
+              round: event.round,
+              messageId: event.messageId,
+              call: event.call,
+            })
+            break
+          }
+          case 'subagent': {
+            // 子代理进度（docs/06 §19）：只转发，不落盘 —— 最终快照会随工具卡持久化
+            this.emit({
+              type: 'subagent',
+              sessionId,
+              requestId,
+              round: event.round,
+              messageId: event.messageId,
+              callId: event.callId,
+              subagent: event.snapshot,
+            })
+            break
+          }
+          case 'usage': {
+            // token 用量（docs/06 §16.2）：展示之外，本轮起同步累加进会话 meta
+            //（meta.usage，随会话落盘）——渲染层切回会话时以它为种子恢复累计口径。
+            // 刻意**先累计、后广播**：渲染层若在「累计之后、种子之前」的窗口里收到事件，
+            // 种子（meta）也已包含这一轮，不会少计。
+            void this.deps.sessions.addUsage(sessionId, event.usage).catch(() => undefined)
+            this.emit({
+              type: 'usage',
+              sessionId,
+              requestId,
+              round: event.round,
+              usage: event.usage,
+            })
+            break
+          }
+          case 'done': {
+            // 收尾原因先收下来：终态判定靠它（渲染层同样需要，
+            // 客户端据此把"静默收尾"变成"可解释的暂停"）
+            pendingReason = event.pendingReason
+            this.emit({
+              type: 'done',
+              sessionId,
+              requestId,
+              ...(event.pending === true ? { pending: true } : {}),
+              ...(event.pendingReason === undefined ? {} : { pendingReason: event.pendingReason }),
+              round: event.round,
+              ...(event.usedTokens === undefined ? {} : { usedTokens: event.usedTokens }),
+            })
+            break
+          }
+          case 'error': {
+            errorMessage = event.message
+            this.emit({
+              type: 'error',
+              sessionId,
+              requestId,
+              code: event.code,
+              message: event.message,
+            })
+            break
+          }
+          default:
+            break
         }
+      }
+
+      // 循环自报的 error 事件 = 本次请求就此结束（`error` 在循环里就是终止语义）
+      if (errorMessage !== undefined) {
+        await finishJob({ status: 'error', error: errorMessage })
         return
       }
+
+      // 终态：`max-rounds`（防失控墙，正常碰不到）→ `paused`（可续跑），
+      // `aborted` → `aborted`，**没有 pendingReason** = 正常收敛 → `done`
+      if (pendingReason === 'max-rounds') {
+        await finishJob({ status: 'paused', pendingReason })
+      } else if (pendingReason === 'aborted') {
+        await finishJob({ status: 'aborted' })
+      } else {
+        await finishJob({ status: 'done' })
+      }
+      return
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.logger.error('Agent 请求失败', { requestId, sessionId, error: message })
@@ -1051,6 +1136,9 @@ export class KernelAgentHost implements AgentHostContract {
       if (entry?.requestId === requestId) this.active.delete(sessionId)
       // 请求结束就不再是"在跑的请求"：abort 只认在跑的请求，历史 job 由存储层负责
       this.jobsByRequest.delete(requestId)
+      // 排队的话不能跟着这次请求一起消失（docs/06 §5.3）：模型直接收敛、边界从未到来时，
+      // 队首在这里补发一次全新请求；被 `abort()` 清过队列则自然什么都不做
+      this.flushPending(sessionId)
     }
   }
 
@@ -1065,7 +1153,12 @@ export class KernelAgentHost implements AgentHostContract {
     }
   }
 
-  /** 「该会话正在回复中」的固定回绝（E_BUSY 的几个调用点共用同一句文案） */
+  /**
+   * 「该会话正在回复中」的固定回绝（E_BUSY 的几个调用点共用同一句文案）。
+   *
+   * 普通发送不再走这里（改为排队，见 `enqueue`）；仍走这里的只有**续跑**与 `/compact`：
+   * 两者都不是"再说一句话"，插进正在跑的请求里没有意义。
+   */
   private emitBusy(sessionId: string, requestId: string): void {
     this.emit({
       type: 'error',
@@ -1073,6 +1166,88 @@ export class KernelAgentHost implements AgentHostContract {
       requestId,
       code: ERROR_BUSY,
       message: '该会话正在回复中，请等待或先停止当前回复',
+    })
+  }
+
+  /**
+   * 会话正忙时把这条发送排进队列（docs/06 §5.3）。
+   *
+   * 满队回绝而**不挤掉最早的**：早那句是用户先说出口、界面已经显示出去的话，
+   * 悄悄丢掉比拒绝更难发现；这里宁可用完额度，让用户等一次边界。
+   */
+  private enqueue(
+    sessionId: string,
+    requestId: string,
+    text: string,
+    origin: string,
+    request: { extraContext?: string; images?: readonly string[] },
+  ): { requestId: string; queued: boolean } {
+    const queue = this.pending.get(sessionId) ?? []
+    if (queue.length >= MAX_QUEUED_INPUTS) {
+      this.emit({
+        type: 'error',
+        sessionId,
+        requestId,
+        code: ERROR_QUEUE_FULL,
+        message: `排队中的消息已达 ${MAX_QUEUED_INPUTS} 条，请等当前任务告一段落，或先停止再发`,
+      })
+      return { requestId, queued: false }
+    }
+    queue.push({
+      requestId,
+      text,
+      origin,
+      ...(request.extraContext === undefined ? {} : { extraContext: request.extraContext }),
+      ...(request.images === undefined || request.images.length === 0
+        ? {}
+        : { images: request.images }),
+    })
+    this.pending.set(sessionId, queue)
+    this.logger.info('会话正在运行，消息已排队', {
+      sessionId,
+      requestId,
+      position: queue.length,
+    })
+    return { requestId, queued: true }
+  }
+
+  /** 取走队首一条（纯出队，不广播 —— 谁来通知界面由调用点决定，见 `run()` 的注入钩子与 `flushPending`） */
+  private dequeue(sessionId: string): QueuedInput | undefined {
+    const queue = this.pending.get(sessionId)
+    if (queue === undefined || queue.length === 0) return undefined
+    const next = queue.shift()
+    if (queue.length === 0) this.pending.delete(sessionId)
+    return next
+  }
+
+  /**
+   * 一次请求收尾后，队列里剩下的要有个去处（docs/06 §5.3）。
+   *
+   * 注入只发生在**轮次边界**，而"模型这一轮没再调工具、直接收敛"那条路径上边界从未到来 ——
+   * 不做这一步，用户看着气泡发出去了，界面从此再没有任何反应（排队里最难查的一类问题）。
+   * 这里取队首**发起一次全新请求**：事件、job 建档与首次发送逐字同构，不另开一条路。
+   *
+   * `requestId` 沿用排队那一条的：界面那个「排队中」气泡正是按它认领的，
+   * 换新 id 就等于让那条气泡永远挂着。
+   */
+  private flushPending(sessionId: string): void {
+    if (this.active.has(sessionId)) return
+    const next = this.dequeue(sessionId)
+    if (next === undefined) return
+    void this.send({
+      sessionId,
+      text: next.text,
+      origin: next.origin,
+      requestId: next.requestId,
+      ...(next.extraContext === undefined ? {} : { extraContext: next.extraContext }),
+      ...(next.images === undefined ? {} : { images: next.images }),
+    }).catch((error: unknown) => {
+      // 收尾路径上的一次失败不该冒泡（`finally` 里抛出会盖掉本次请求自己的结论）
+      this.logger.error('排队消息补发失败', {
+        sessionId,
+        requestId: next.requestId,
+        error: error instanceof Error ? error.message : String(error),
+      })
     })
   }
 
@@ -1140,6 +1315,20 @@ export class KernelAgentHost implements AgentHostContract {
         this.sessionApprovals.set(sessionId, approved)
       }
       return decision
+    }
+  }
+
+  /** 任务清单的 job 快照：读失败保留上一份（`undefined` = 这一项整个不动），不中断这次请求 */
+  private async readJobTodos(sessionId: string): Promise<JobTodoSnapshot[] | undefined> {
+    if (this.deps.jobTodos === undefined) return undefined
+    try {
+      return await this.deps.jobTodos(sessionId)
+    } catch (error) {
+      this.logger.warn('任务清单快照读取失败，本轮沿用上一份', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return undefined
     }
   }
 

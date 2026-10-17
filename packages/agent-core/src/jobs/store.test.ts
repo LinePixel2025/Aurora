@@ -171,7 +171,7 @@ function makeJob(overrides: Partial<AgentJob> = {}): AgentJob {
     stepsDone: [],
     todos: [],
     cursor: { nextRound: 0 },
-    budget: { maxTotalTokens: 100000, usedTokens: 0, autoContinued: 0 },
+    budget: { usedTokens: 0 },
     createdAt: CLOCK_START,
     updatedAt: CLOCK_START,
     ...overrides,
@@ -210,17 +210,18 @@ function requireJob(job: AgentJob | undefined): AgentJob {
 }
 
 describe('createJob / toJobSummary', () => {
-  it('生成 running、round 0、空进度账本与持久化的 autoContinued', () => {
+  it('生成 running、round 0 与空进度账本（budget 只有累计用量，v34）', () => {
     const clock = new ClockController(CLOCK_START)
     const job = createJob(
-      { sessionId: 's1', text: '你好', maxRounds: 5, maxTotalTokens: 8000, origin: 'chat' },
+      { sessionId: 's1', text: '你好', maxRounds: 5, origin: 'chat' },
       { clock: clock.now },
     )
     expect(job.status).toBe('running')
     expect(job.round).toBe(0)
     expect(job.cursor.nextRound).toBe(0)
     expect(job.stepsDone).toEqual([])
-    expect(job.budget).toEqual({ maxTotalTokens: 8000, usedTokens: 0, autoContinued: 0 })
+    // 预算上限与自动续轮额度随那两个概念一起退役：这里多一个字段就是下一个死口子
+    expect(job.budget).toEqual({ usedTokens: 0 })
     expect(job.createdAt).toBe(CLOCK_START)
     expect(job.updatedAt).toBe(CLOCK_START)
     expect(job.id).toMatch(/^job-[0-9a-z]+-\d+$/)
@@ -228,11 +229,11 @@ describe('createJob / toJobSummary', () => {
 
   it('同一固定时钟下连建多条也不会撞 id', () => {
     const first = createJob(
-      { sessionId: 's1', text: 'a', maxRounds: 1, maxTotalTokens: 1, origin: 'chat' },
+      { sessionId: 's1', text: 'a', maxRounds: 1, origin: 'chat' },
       { clock: () => new Date(CLOCK_START) },
     )
     const second = createJob(
-      { sessionId: 's1', text: 'b', maxRounds: 1, maxTotalTokens: 1, origin: 'chat' },
+      { sessionId: 's1', text: 'b', maxRounds: 1, origin: 'chat' },
       { clock: () => new Date(CLOCK_START) },
     )
     expect(first.id).not.toBe(second.id)
@@ -245,7 +246,7 @@ describe('createJob / toJobSummary', () => {
         { round: 1, tool: 'run_command', ok: false, at: CLOCK_START },
       ],
       todos: [{ id: 't1', text: '分类', status: 'in_progress' }],
-      budget: { maxTotalTokens: 500, usedTokens: 120, autoContinued: 2 },
+      budget: { usedTokens: 120 },
       error: '上一次失败了',
     })
     const summary = toJobSummary(job)
@@ -256,8 +257,6 @@ describe('createJob / toJobSummary', () => {
       round: 0,
       maxRounds: 8,
       usedTokens: 120,
-      maxTotalTokens: 500,
-      autoContinued: 2,
       stepCount: 2,
       lastStep: 'run_command ✗',
       updatedAt: CLOCK_START,
@@ -329,7 +328,7 @@ describe('FileJobStore', () => {
     const harness = createHarness()
     mountJobs(harness, 's1', [makeJob({ id: 'job-seeded' })])
     const job = createJob(
-      { sessionId: 's1', text: '并发', maxRounds: 4, maxTotalTokens: 1000, origin: 'chat' },
+      { sessionId: 's1', text: '并发', maxRounds: 4, origin: 'chat' },
       { clock: harness.clock.now },
     )
 
@@ -430,8 +429,8 @@ describe('FileJobStore', () => {
       round: 2,
       text: '另一条请求',
       status: 'paused',
-      pendingReason: 'budget',
-      budget: { maxTotalTokens: 100000, usedTokens: 777, autoContinued: 1 },
+      pendingReason: 'max-rounds',
+      budget: { usedTokens: 777 },
       cursor: { nextRound: 2, note: '等额度' },
       todos: [{ id: 't1', text: 'B 的清单', status: 'pending' }],
     })
@@ -455,10 +454,10 @@ describe('FileJobStore', () => {
     const job = makeJob({
       id: 'job-patch',
       status: 'paused',
-      pendingReason: 'budget',
-      error: '额度用尽',
+      pendingReason: 'max-rounds',
+      error: '轮次用尽',
       cursor: { nextRound: 3, note: '继续第 3 轮' },
-      budget: { maxTotalTokens: 900, usedTokens: 300, autoContinued: 1 },
+      budget: { usedTokens: 300 },
     })
     await harness.store.create(job)
     // update 的 updatedAt 取注入时钟，推进时钟才能断言"确实被刷新了"
@@ -473,8 +472,8 @@ describe('FileJobStore', () => {
       }),
     )
 
-    // 浅合并：没给的 budget 字段保持原值（尤其 autoContinued 不能被冲掉）
-    expect(updated.budget).toEqual({ maxTotalTokens: 900, usedTokens: 450, autoContinued: 1 })
+    // 浅合并：没给的键保持原值（`budget` 现在只有 usedTokens，浅合并的守卫落在 cursor 上）
+    expect(updated.budget).toEqual({ usedTokens: 450 })
     expect(updated.cursor).toEqual({ nextRound: 3, note: '继续第 3 轮' })
     expect(updated.status).toBe('paused')
     expect(updated.maxRounds).toBe(job.maxRounds)
@@ -546,19 +545,17 @@ describe('FileJobStore', () => {
     expect(combined.map((job) => job.id)).toEqual(['job-a'])
   })
 
-  it('autoContinued 持久化：换一个 store 实例读同一份文件仍是 2', async () => {
+  it('用量跨实例持久化：换一个 store 实例读同一份文件仍是那份累计值', async () => {
     const harness = createHarness()
     const job = makeJob({ id: 'job-budget' })
     await harness.store.create(job)
-    await harness.store.update(job.id, { budget: { autoContinued: 2 } })
+    await harness.store.update(job.id, { budget: { usedTokens: 2 } })
     await harness.store.flush()
 
     const restarted = harness.reopen()
     const reloaded = requireJob(await restarted.get(job.id))
-    expect(reloaded.budget.autoContinued).toBe(2)
-    expect((await restarted.list()).find((item) => item.id === job.id)?.budget.autoContinued).toBe(
-      2,
-    )
+    expect(reloaded.budget.usedTokens).toBe(2)
+    expect((await restarted.list()).find((item) => item.id === job.id)?.budget.usedTokens).toBe(2)
   })
 
   it('路径穿越：sessionId 归一后写不出 <dir> 之外', async () => {
@@ -645,7 +642,7 @@ describe('FileJobStore · origin 白名单（P1-10）', () => {
         sessionId: 'center-abc',
         origin: 'center',
         status: 'paused',
-        pendingReason: 'budget',
+        pendingReason: 'max-rounds',
       }),
     ])
     mountJobs(harness, 'auto-abc', [

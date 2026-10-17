@@ -428,6 +428,7 @@ function createReadFileTool(
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (input, ctx): Promise<ToolResult> => {
       const record = asRecord(input)
       const path = readNonEmptyString(record, 'path')
@@ -662,6 +663,7 @@ function createListDirTool(files: FilePort, defaultLimit: number): ToolDefinitio
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (input, ctx): Promise<ToolResult> => {
       const record = asRecord(input)
       const path = readNonEmptyString(record, 'path')

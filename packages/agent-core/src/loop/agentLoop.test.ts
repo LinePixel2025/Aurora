@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  planParallelGroups,
   runAgentLoop,
   type AgentLoopEvent,
   type ConfirmDecision,
   type LoopProvider,
 } from './agentLoop.js'
 import { ToolRegistry } from '../tools/registry.js'
+import type { ToolResult } from '../tools/registry.js'
 import { createFakeProvider } from '../testing/fakeProvider.js'
 import type { ChatEvent } from '../llm/types.js'
-import type { NewMessage, StoredMessage } from '../session/types.js'
+import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
 
 /** 极简内存会话：记录落盘顺序，等价于 SessionStore 的可观察行为 */
 function createRecorder() {
@@ -1399,14 +1401,15 @@ describe('runAgentLoop · 工具产出的图片（图像工具，docs/06 §25）
 })
 
 /**
- * 续跑、预算与暂停原因（docs/06 §4.1，v15）。
+ * 续跑与暂停原因（docs/06 §4.1，v15；v34 去掉预算那一态）。
  *
  * 这一组钉的是"长任务停下来时有说法、能接着跑"：
  * - `resume.nextRound` 从游标继续，且**不重复落盘用户消息**（续跑最经典的 bug）；
- * - 轮次用尽 / 预算用尽 / 被中断分别给 `pendingReason = 'max-rounds' | 'budget' | 'aborted'`；
+ * - 轮次用尽 / 被中断分别给 `pendingReason = 'max-rounds' | 'aborted'`
+ *   （v34 起轮次上限是内核的防失控墙，`'budget'` 那一态随 token 预算一起退役）；
  * - `onRoundComplete` 每轮被调用一次且带本轮工具，让调用方能在"决定继续之前"落游标。
  */
-describe('runAgentLoop · 续跑与预算（v15）', () => {
+describe('runAgentLoop · 续跑与暂停原因（v15 / v34）', () => {
   /** 每轮都发起一次工具调用的桩：rd-1 → rd-2 → … → 最后一段纯文本 */
   function toolRounds(count: number) {
     return Array.from({ length: count }, (_, index) => ({
@@ -1417,7 +1420,7 @@ describe('runAgentLoop · 续跑与预算（v15）', () => {
           arguments: JSON.stringify({ text: `r${index + 1}` }),
         },
       ],
-      // 每轮 100 token：预算用例据此在**第一轮结束之后**触顶
+      // 每轮 100 token：`usedTokens` 是累计量，用例据此核对上报的数
       usage: { promptTokens: 60, completionTokens: 40, totalTokens: 100 },
     }))
   }
@@ -1480,33 +1483,6 @@ describe('runAgentLoop · 续跑与预算（v15）', () => {
     expect(rec.messages.filter((item) => item.role === 'tool')).toHaveLength(2)
   })
 
-  it('预算触顶：done 带 pendingReason=budget，且不再进入下一轮', async () => {
-    const rec = createRecorder()
-    // 桩的 usage 固定：每轮 100 token
-    const provider = createFakeProvider(toolRounds(3))
-    const events = await drain(
-      runAgentLoop({
-        provider,
-        model: 'm',
-        systemPrompt: 'sys',
-        userInput: '干活',
-        history: [],
-        tools: registryWithEcho(),
-        sessionId: 's1',
-        maxRounds: 8,
-        budget: { maxTotalTokens: 100 },
-        append: rec.append,
-        updateToolCall: rec.updateToolCall,
-      }),
-    )
-
-    const done = events.at(-1)
-    expect(done).toMatchObject({ type: 'done', pending: true, pendingReason: 'budget' })
-    // 触顶发生在**第一轮结束之后**：只跑了一轮，不再进第二轮
-    expect(provider.calls).toHaveLength(1)
-    expect((done as { usedTokens?: number }).usedTokens).toBeGreaterThanOrEqual(100)
-  })
-
   it('中断：done 带 pendingReason=aborted', async () => {
     const rec = createRecorder()
     const controller = new AbortController()
@@ -1561,5 +1537,520 @@ describe('runAgentLoop · 续跑与预算（v15）', () => {
     expect(rounds.every((item) => item.tools.includes('echo'))).toBe(true)
     // 游标数据在"决定继续之前"就已就绪（最后一轮同样回调过）
     expect(rounds[1]?.usedTokens).toBeGreaterThan(0)
+  })
+})
+
+describe('工具执行上限（docs/06 §5）', () => {
+  function baseLoop(tools: ToolRegistry, rec: ReturnType<typeof createRecorder>) {
+    return {
+      model: 'm',
+      systemPrompt: 'sys',
+      userInput: 'x',
+      history: [] as never[],
+      tools,
+      sessionId: 'quick',
+      append: rec.append,
+      updateToolCall: rec.updateToolCall,
+    }
+  }
+
+  it('挂起到达上限：超时错误回填、卡片置 error、循环继续收敛（不是整条请求报错）', async () => {
+    const rec = createRecorder()
+    const tools = new ToolRegistry()
+    let callSignal: AbortSignal | undefined
+    let settledAfterAbort = false
+    tools.register({
+      name: 'hang',
+      description: '永不返回',
+      parameters: { type: 'object', properties: {} },
+      execute: (_input, ctx) =>
+        new Promise<ToolResult>((_resolve, reject) => {
+          callSignal = ctx.signal
+          ctx.signal?.addEventListener('abort', () => {
+            // 超时之后这次调用仍在背后跑完并拒绝：循环必须吞掉它（不变成 unhandledRejection）
+            settledAfterAbort = true
+            reject(new Error('背后拒绝'))
+          })
+        }),
+    })
+    const provider = createFakeProvider([
+      { toolCalls: [{ id: 'c1', name: 'hang', arguments: '{}' }] },
+      { text: '已改道' },
+    ])
+    const events = await drain(
+      runAgentLoop({ ...baseLoop(tools, rec), provider, toolTimeoutMs: 20 }),
+    )
+
+    const toolEvents = events.filter((event) => event.type === 'tool')
+    expect(toolEvents.map((event) => event.call.state)).toEqual(['running', 'error'])
+    expect(toolEvents[1]?.call.outputSummary).toContain('超时')
+    // 真的中止了这一次调用（工具据此能收尾，不是让它背后空跑）
+    expect(callSignal?.aborted).toBe(true)
+
+    // 落盘仍是 user → assistant(toolCalls) → tool → assistant：超时不破坏配对链
+    expect(rec.messages.map((item) => item.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+    ])
+    const toolMessage = rec.messages[2]
+    expect(toolMessage?.content).toContain('不要原样重试')
+    // 回填给模型后循环继续，第二轮正常收敛
+    expect(events.at(-1)).toMatchObject({ type: 'done' })
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    await Promise.resolve()
+    expect(settledAfterAbort).toBe(true)
+  })
+
+  it('工具声明 timeoutMs: 0 = 不限：请求级上限不砍它', async () => {
+    const rec = createRecorder()
+    const tools = new ToolRegistry()
+    tools.register({
+      name: 'slow',
+      description: '比请求级上限慢，但不该被砍',
+      parameters: { type: 'object', properties: {} },
+      timeoutMs: 0,
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60))
+        return { content: '慢但正常' }
+      },
+    })
+    const provider = createFakeProvider([
+      { toolCalls: [{ id: 'c1', name: 'slow', arguments: '{}' }] },
+      { text: '好' },
+    ])
+    const events = await drain(
+      runAgentLoop({ ...baseLoop(tools, rec), provider, toolTimeoutMs: 5 }),
+    )
+
+    const toolEvents = events.filter((event) => event.type === 'tool')
+    expect(toolEvents.map((event) => event.call.state)).toEqual(['running', 'success'])
+    expect(events.at(-1)).toMatchObject({ type: 'done' })
+  })
+
+  it('外层取消照常传到本次调用：per-call controller 不吞掉用户的停止', async () => {
+    const rec = createRecorder()
+    const tools = new ToolRegistry()
+    let callSignal: AbortSignal | undefined
+    tools.register({
+      name: 'hang',
+      description: '永不返回',
+      parameters: { type: 'object', properties: {} },
+      // 上限给足：这一次中止必须来自外层取消，而不是超时
+      timeoutMs: 60_000,
+      execute: (_input, ctx) =>
+        new Promise<ToolResult>((_resolve, reject) => {
+          callSignal = ctx.signal
+          ctx.signal?.addEventListener('abort', () => reject(new Error('已取消')))
+        }),
+    })
+    const controller = new AbortController()
+    const provider = createFakeProvider([
+      { toolCalls: [{ id: 'c1', name: 'hang', arguments: '{}' }] },
+      { text: '不该到这里' },
+    ])
+    const timer = setTimeout(() => controller.abort(), 20)
+    const events = await drain(
+      runAgentLoop({
+        ...baseLoop(tools, rec),
+        provider,
+        signal: controller.signal,
+        toolTimeoutMs: 5,
+      }),
+    )
+    clearTimeout(timer)
+
+    expect(callSignal?.aborted).toBe(true)
+    // 按「暂停」收尾（与既有的取消口径一致）
+    expect(events.at(-1)).toMatchObject({ type: 'done', pending: true, pendingReason: 'aborted' })
+  })
+})
+
+describe('运行中插话的注入点（docs/06 §5.3）', () => {
+  function echoRegistry(): ToolRegistry {
+    const tools = new ToolRegistry()
+    tools.register({
+      name: 'echo',
+      description: '回显',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => ({ content: 'done', summary: 'done' }),
+    })
+    return tools
+  }
+
+  it('注入排在游标回调之后：这一轮的进度不会因为插话而丢', async () => {
+    const rec = createRecorder()
+    const provider = createFakeProvider([
+      { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }] },
+      { text: '收到' },
+    ])
+    const order: string[] = []
+    let pending: string | undefined = '插话的一句'
+    await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: 'x',
+        history: [],
+        tools: echoRegistry(),
+        sessionId: 'quick',
+        append: (message) => {
+          order.push(`append:${message.role}`)
+          return rec.append(message)
+        },
+        updateToolCall: rec.updateToolCall,
+        onRoundComplete: () => {
+          order.push('cursor')
+        },
+        takePendingInput: () => {
+          order.push('take')
+          const text = pending
+          pending = undefined
+          return text === undefined ? undefined : { text }
+        },
+      }),
+    )
+
+    // take（取话）→ append（落那条用户消息）→ 都排在 cursor 之后：
+    // 游标先落盘，崩溃续跑时这条插话已经在会话历史里，既不会丢也不会重。
+    // 两次 take 是同一条边界的**排空**语义：第二次取到 undefined 才知道队列真的空了
+    expect(order).toEqual([
+      'append:user',
+      'append:assistant',
+      'append:tool',
+      'cursor',
+      'take',
+      'append:user',
+      'take',
+      'append:assistant',
+    ])
+    // 下一轮请求真的带上了这句话
+    expect(
+      provider.calls[1]?.messages.some((m) => m.role === 'user' && m.content === '插话的一句'),
+    ).toBe(true)
+  })
+
+  it('这就是最后一轮时不消费队列：留给调用方收尾后另起一次请求', async () => {
+    const rec = createRecorder()
+    const provider = createFakeProvider([
+      { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }] },
+      { text: '永远等不到' },
+    ])
+    let taken = 0
+    const events = await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: 'x',
+        history: [],
+        tools: echoRegistry(),
+        sessionId: 'quick',
+        maxRounds: 1,
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+        takePendingInput: () => {
+          taken += 1
+          return { text: '排队的一句' }
+        },
+      }),
+    )
+
+    // 消费掉却发不出去 = 这句话凭空消失；所以最后一轮**不问**队列
+    expect(taken).toBe(0)
+    expect(events.at(-1)).toMatchObject({
+      type: 'done',
+      pending: true,
+      pendingReason: 'max-rounds',
+    })
+    expect(rec.messages.some((message) => message.content === '排队的一句')).toBe(false)
+  })
+
+  it('插话的附件走一次性 system 片段，不进会话历史', async () => {
+    const rec = createRecorder()
+    const provider = createFakeProvider([
+      { toolCalls: [{ id: 'c1', name: 'echo', arguments: '{}' }] },
+      { text: '读到了' },
+    ])
+    let pending: { text: string; extraContext: string } | undefined = {
+      text: '看这个文件',
+      extraContext: '【附件正文】第一行',
+    }
+    await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: 'x',
+        history: [],
+        tools: echoRegistry(),
+        sessionId: 'quick',
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+        takePendingInput: () => {
+          const next = pending
+          pending = undefined
+          return next
+        },
+      }),
+    )
+
+    expect(
+      provider.calls[1]?.messages.some(
+        (m) => m.role === 'system' && m.content === '【附件正文】第一行',
+      ),
+    ).toBe(true)
+    // 落盘的只有那句话本身：附件正文是本轮性上下文，与首次发送同一口径
+    expect(rec.messages.filter((m) => m.role === 'user').map((m) => m.content)).toEqual([
+      'x',
+      '看这个文件',
+    ])
+  })
+})
+
+describe('同轮工具并发（docs/06 §5）', () => {
+  /**
+   * 记录「同时在跑几条」的工具工厂。
+   *
+   * `maxActive` 是这类用例唯一的硬证据：断言"看起来快了一点"会随机器负载抖，
+   * 而并发计数为 2 只有真的同时在跑才可能出现。
+   */
+  function createTracker() {
+    let active = 0
+    let maxActive = 0
+    const order: string[] = []
+    return {
+      get maxActive(): number {
+        return maxActive
+      },
+      order,
+      tool(
+        name: string,
+        options: { parallel?: boolean; sensitivity?: 'safe' | 'confirm'; ms?: number } = {},
+      ) {
+        return {
+          name,
+          description: name,
+          parameters: { type: 'object' as const, properties: {} },
+          ...(options.parallel === undefined ? {} : { parallel: options.parallel }),
+          ...(options.sensitivity === undefined ? {} : { sensitivity: options.sensitivity }),
+          execute: async (): Promise<ToolResult> => {
+            active += 1
+            maxActive = Math.max(maxActive, active)
+            order.push(`start:${name}`)
+            await new Promise((resolve) => setTimeout(resolve, options.ms ?? 10))
+            order.push(`end:${name}`)
+            active -= 1
+            return { content: name }
+          },
+        }
+      },
+    }
+  }
+
+  function registryOf(tools: ToolRegistry, list: Parameters<ToolRegistry['register']>[0][]) {
+    for (const item of list) tools.register(item)
+    return tools
+  }
+
+  async function runWith(tools: ToolRegistry, calls: Array<{ id: string; name: string }>) {
+    const rec = createRecorder()
+    const provider = createFakeProvider([
+      { toolCalls: calls.map((call) => ({ ...call, arguments: '{}' })) },
+      { text: '收工' },
+    ])
+    const events = await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: 'x',
+        history: [],
+        tools,
+        sessionId: 'quick',
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+      }),
+    )
+    return { rec, events, provider }
+  }
+
+  it('相邻的只读并发批：两条真的同时在跑', async () => {
+    const tracker = createTracker()
+    const tools = registryOf(new ToolRegistry(), [
+      tracker.tool('a', { parallel: true }),
+      tracker.tool('b', { parallel: true }),
+    ])
+    const { events, rec } = await runWith(tools, [
+      { id: 'a', name: 'a' },
+      { id: 'b', name: 'b' },
+    ])
+
+    expect(tracker.maxActive).toBe(2)
+    // 起跑事件成对先发，结果事件按原始下标落地 —— 卡片状态序列仍然确定
+    const toolEvents = events.filter((event) => event.type === 'tool')
+    expect(toolEvents.map((event) => event.call.id)).toEqual(['a', 'b', 'a', 'b'])
+    expect(toolEvents.map((event) => event.call.state)).toEqual([
+      'running',
+      'running',
+      'success',
+      'success',
+    ])
+    // 落盘顺序仍是「assistant(toolCalls) → a 的结果 → b 的结果」：配对链没被并发打断
+    const toolMessages = rec.messages.filter((item) => item.role === 'tool')
+    expect(toolMessages.map((item) => item.toolCallId)).toEqual(['a', 'b'])
+  })
+
+  it('并发度上限：超出的排队等位，不丢弃也不改序（agent.loop.maxParallelCalls）', async () => {
+    const tracker = createTracker()
+    const tools = registryOf(new ToolRegistry(), [
+      tracker.tool('a', { parallel: true }),
+      tracker.tool('b', { parallel: true }),
+      tracker.tool('c', { parallel: true }),
+      tracker.tool('d', { parallel: true }),
+    ])
+    const rec = createRecorder()
+    const provider = createFakeProvider([
+      {
+        toolCalls: [
+          { id: 'a', name: 'a', arguments: '{}' },
+          { id: 'b', name: 'b', arguments: '{}' },
+          { id: 'c', name: 'c', arguments: '{}' },
+          { id: 'd', name: 'd', arguments: '{}' },
+        ],
+      },
+      { text: '好' },
+    ])
+    await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: 'x',
+        history: [],
+        tools,
+        sessionId: 'quick',
+        maxParallelCalls: 2,
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+      }),
+    )
+
+    // 闸门真的生效：同一时刻最多 2 条在跑
+    expect(tracker.maxActive).toBe(2)
+    // 四条都被执行，且顺序仍是模型写下的那一条（排队 ≠ 丢弃 / 重排）
+    expect(tracker.order).toEqual([
+      'start:a',
+      'start:b',
+      'end:a',
+      'start:c',
+      'end:b',
+      'start:d',
+      'end:c',
+      'end:d',
+    ])
+    expect(
+      rec.messages.filter((item) => item.role === 'tool').map((item) => item.toolCallId),
+    ).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('非并发调用是串行屏障：它后面的只读调用不越过它提前起跑', async () => {
+    const tracker = createTracker()
+    const tools = registryOf(new ToolRegistry(), [
+      tracker.tool('a', { parallel: true }),
+      tracker.tool('b'), // 未声明 parallel → 屏障
+      tracker.tool('c', { parallel: true }),
+    ])
+    await runWith(tools, [
+      { id: 'a', name: 'a' },
+      { id: 'b', name: 'b' },
+      { id: 'c', name: 'c' },
+    ])
+
+    expect(tracker.maxActive).toBe(1)
+    expect(tracker.order).toEqual(['start:a', 'end:a', 'start:b', 'end:b', 'start:c', 'end:c'])
+  })
+
+  it('confirm 级即使声明 parallel 也绝不并发', async () => {
+    const tracker = createTracker()
+    const tools = registryOf(new ToolRegistry(), [
+      tracker.tool('a', { parallel: true, sensitivity: 'confirm' }),
+      tracker.tool('b', { parallel: true, sensitivity: 'confirm' }),
+    ])
+    const rec = createRecorder()
+    const provider = createFakeProvider([
+      {
+        toolCalls: [
+          { id: 'a', name: 'a', arguments: '{}' },
+          { id: 'b', name: 'b', arguments: '{}' },
+        ],
+      },
+      { text: '好' },
+    ])
+    await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: 'x',
+        history: [],
+        tools,
+        sessionId: 'quick',
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+        // 两道确认都放行：并发与否只该由执行计划决定，不该由"卡片还没点"卡住
+        confirmTool: () => Promise.resolve(true as const),
+      }),
+    )
+
+    // 一次弹两张确认卡片是不可接受的：批准动作必须逐次发生
+    expect(tracker.maxActive).toBe(1)
+  })
+
+  it('planParallelGroups：连续可并发并批，串行与未知工具各自成批', () => {
+    const tools = new ToolRegistry()
+    tools.register({
+      name: 'p1',
+      description: 'p',
+      parameters: { type: 'object', properties: {} },
+      sensitivity: 'safe',
+      parallel: true,
+      execute: async () => ({ content: 'p1' }),
+    })
+    tools.register({
+      name: 'p2',
+      description: 'p',
+      parameters: { type: 'object', properties: {} },
+      sensitivity: 'safe',
+      parallel: true,
+      execute: async () => ({ content: 'p2' }),
+    })
+    tools.register({
+      name: 'serial',
+      description: 's',
+      parameters: { type: 'object', properties: {} },
+      sensitivity: 'safe',
+      execute: async () => ({ content: 'serial' }),
+    })
+    const call = (name: string, index: number): StoredToolCall => ({
+      id: `c${index}`,
+      name,
+      arguments: '{}',
+      state: 'running',
+    })
+
+    const grouped = (names: string[]): string[][] =>
+      planParallelGroups(
+        tools,
+        names.map((name, index) => call(name, index)),
+      ).map((group) => group.map((item) => item.name))
+
+    expect(grouped(['p1', 'p2', 'p1'])).toEqual([['p1', 'p2', 'p1']])
+    expect(grouped(['p1', 'serial', 'p1', 'p1'])).toEqual([['p1'], ['serial'], ['p1', 'p1']])
+    // 未注册的工具按串行走：让它去拿「工具不存在」的确定性错误，而不是混进并发批
+    expect(grouped(['p1', 'nope', 'p1'])).toEqual([['p1'], ['nope'], ['p1']])
+    expect(grouped([])).toEqual([])
   })
 })

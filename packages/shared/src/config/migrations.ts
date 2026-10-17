@@ -1175,6 +1175,37 @@ const migrateV32ToV33: Migration = {
   },
 }
 
+/**
+ * v33 → v34：`agent.loop` 三退一（docs/08 §1、docs/06 §5）。
+ *
+ * 删 `maxRounds` / `maxTotalTokens` / `autoContinueRounds`，只留新的 `maxParallelCalls`（默认 8）。
+ * 三个旧值**不做映射**：轮次上限回到内核常量（防失控，见 `RUNAWAY_MAX_ROUNDS`）、
+ * token 预算取消（只统计不限制）、自动续轮额度随「轮次用尽」这个概念一起消失。
+ * 把旧数字搬进新字段只会造出一个谁都不消费的影子配置 —— 迁移的职责是换形状，不是留档。
+ * 整组缺失时**不造对象**（与 v13 → v14 等步骤同一约定，缺失交给默认配置兜底）；
+ * `agent.loop` 存在时整体换成新形状（旧键因此被显式丢掉，不靠 Schema 兜）。
+ */
+const migrateV33ToV34: Migration = {
+  from: 33,
+  to: 34,
+  describe: 'v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const agent = asRecord(next['agent'])
+    const loop = asRecord(agent?.['loop'])
+    if (agent === undefined || loop === undefined) {
+      next['version'] = 34
+      return next
+    }
+    next['agent'] = {
+      ...agent,
+      loop: { maxParallelCalls: loop['maxParallelCalls'] ?? 8 },
+    }
+    next['version'] = 34
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1209,6 +1240,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV30ToV31,
   migrateV31ToV32,
   migrateV32ToV33,
+  migrateV33ToV34,
 ]
 
 export interface MigrationOutcome {

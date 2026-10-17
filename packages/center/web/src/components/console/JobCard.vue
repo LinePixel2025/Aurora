@@ -2,9 +2,10 @@
 /**
  * 任务（Job）状态卡：一条长任务在会话流里的当前状态（docs/06 §4.1）。
  *
- * 长任务可能因「轮次用尽」或「token 预算触顶」暂停，也可能被自动续轮带着继续跑 ——
- * 这些都不体现在正文里，只有这张卡说得清：跑到第几轮、花了多少 token、做过多少步、
- * 为什么停下、最近一步是什么。卡是纯展示，续跑 / 取消在客户端操作。
+ * 长任务可能因「轮次用尽」（v34 起只剩这一种，且是内核的防失控上限）而暂停，
+ * 也可能被用户取消 —— 这些都不体现在正文里，只有这张卡说得清：跑到第几轮、
+ * 花了多少 token、做过多少步、为什么停下、最近一步是什么。卡是纯展示，
+ * 续跑 / 取消在客户端操作。
  */
 import { computed } from 'vue'
 import type { JobSummary } from '@aurora/shared'
@@ -23,10 +24,6 @@ const TONES: Record<string, string> = {
 }
 
 const tone = computed(() => TONES[props.job.status] ?? 'idle')
-/** `maxTotalTokens === 0` 是 Schema 里的「不限」，别显示成 0/0 */
-const maxTokenLabel = computed(() =>
-  props.job.maxTotalTokens === 0 ? '不限' : String(props.job.maxTotalTokens),
-)
 </script>
 
 <template>
@@ -43,8 +40,7 @@ const maxTokenLabel = computed(() =>
 
     <div class="meta">
       <span>第 {{ job.round }} / {{ job.maxRounds }} 轮</span>
-      <span>Token {{ job.usedTokens }} / {{ maxTokenLabel }}</span>
-      <span v-if="job.autoContinued > 0">已自动续 {{ job.autoContinued }} 轮</span>
+      <span>Token {{ job.usedTokens }}</span>
       <span>已执行 {{ job.stepCount }} 步</span>
     </div>
 

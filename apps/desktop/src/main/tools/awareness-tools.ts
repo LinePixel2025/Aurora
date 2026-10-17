@@ -47,6 +47,7 @@ export function createAwarenessStatusTool(port: AwarenessToolPort): ToolDefiniti
       '查看 Aurora 文件自感知的运行状态、今日分析进度、队列、笔记数、冲突、错误与累计 token。',
     parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (): Promise<ToolResult> => {
       try {
         const status = port.status()
@@ -102,6 +103,7 @@ export function createAwarenessRecentTool(port: AwarenessToolPort): ToolDefiniti
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (input): Promise<ToolResult> => {
       const record = asRecord(input)
       const limit = clampInteger(record?.['limit'], DEFAULT_RECENT_LIMIT, 1, MAX_RECENT_LIMIT)
@@ -154,6 +156,7 @@ export function createAwarenessSearchTool(port: AwarenessToolPort): ToolDefiniti
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (input): Promise<ToolResult> => {
       const record = asRecord(input)
       const query = readString(record, 'query')?.toLowerCase()
@@ -232,6 +235,7 @@ export function createAwarenessReadTool(port: AwarenessToolPort): ToolDefinition
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (input): Promise<ToolResult> => {
       const record = asRecord(input)
       const noteId = readString(record, 'noteId')

@@ -56,6 +56,7 @@ export function createViewImageTool(options: ViewImageToolOptions): ToolDefiniti
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (input, ctx): Promise<ToolResult> => {
       const path = readNonEmptyString(asRecord(input), 'path')
       if (path === undefined) {

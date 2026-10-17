@@ -98,6 +98,8 @@ export function createTodoTools(options: { port: TodoPort; logger?: Logger }): T
     description: '读取当前会话的任务清单。',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     sensitivity: 'safe',
+    // 读侧可并发；写侧（`todo_write`）刻意不标 —— 整表替换的两个并发写会互相顶掉
+    parallel: true,
     execute: async (_input, ctx: ToolContext): Promise<ToolResult> => {
       try {
         const todos = await options.port.read(ctx.sessionId)

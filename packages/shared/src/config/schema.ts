@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 33 as const
+export const CONFIG_VERSION = 34 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -936,23 +936,24 @@ export const AgentSchema = z.object({
     })
     .default({}),
   /**
-   * Agent 循环的轮次与预算（docs/06 §5 / §4.1，v15）。
+   * Agent 循环的执行旋钮（docs/06 §5 / §4.1，v34 起只剩一个）。
    *
-   * 为什么这三个终于变成配置字段：`maxRounds` 此前是内核里写死的 8（`DEFAULT_MAX_ROUNDS`），
-   * 用户遇到"长任务跑到一半停下"既看不到原因也改不了。现在轮次与 token 预算都可配，
-   * 且用尽时 job 进入 `paused`（附 `pendingReason`）而不是静默收尾。
+   * **v34 删掉了 `maxRounds` / `maxTotalTokens` / `autoContinueRounds` 三项**（对齐主流编码代理）：
+   * 一次请求应当跑到模型自己收敛，而不是在第 32 轮被墙打断、再靠"自动续轮额度"续命。
+   * 防失控的兜底上限回到内核常量 `RUNAWAY_MAX_ROUNDS`（docs/06 §5），token 只统计不限制 ——
+   * 它们从来不是用户会按任务去调的量，摆进设置页只会变成"改了不知道有没有生效"的旋钮。
    *
-   * 本分组在 `SETTINGS_READONLY_PREFIXES` 里（AI 改不动）：让 AI 给自己放大预算，
+   * 留下的是**并发度**：同一轮里最多同时执行几个工具调用（超出排队等位，不丢弃）。
+   * 这个值得配，是因为它换的是"响应快慢 vs 本机资源占用"，用户能按机器情况判断；
+   * 而它不影响任务能否跑完（超出只是排队），所以调小也不会断任务。
+   *
+   * 本分组仍在 `SETTINGS_READONLY_PREFIXES` 里（AI 改不动）：让 AI 给自己放大执行预算，
    * 等于绕过"该停下来问用户"的那道闸门。用户当然可以调——设置页 / `settings:update` 不经过本黑名单。
    */
   loop: z
     .object({
-      /** 一次请求内最多几轮「工具调用 → 结果回填」（1–128，默认 32 = v18 放宽后的值）。 */
-      maxRounds: z.number().int().min(1).max(128).default(32),
-      /** 累计 token 预算；**0 = 不限**（默认）。触顶时 job 暂停，不静默结束。 */
-      maxTotalTokens: z.number().int().min(0).default(0),
-      /** 轮次用尽后允许自动再续几轮（0–8，默认 8 = v18 放宽后的值）；0 = 不自动续，直接暂停等用户点「继续」。 */
-      autoContinueRounds: z.number().int().min(0).max(8).default(8),
+      /** 同一轮工具调用最多几个**同时在跑**（1–32，默认 8）。只读类工具才会并发，见 docs/06 §5。 */
+      maxParallelCalls: z.number().int().min(1).max(32).default(8),
     })
     .default({}),
 })
@@ -1137,7 +1138,7 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'modes.work.workspaceDir':
     'Work 工作目录是权限边界根的一级，AI 改写它等于把免确认范围扩到任意目录，不允许通过工具修改',
   'agent.permissionMode': '权限档位等于 Agent 自己的确认闸门，不允许通过工具修改',
-  'agent.loop': '循环轮次与 token 预算等于 Agent 自己的停止闸门，不允许通过工具修改',
+  'agent.loop': '循环的并发度与防失控口径属于 Agent 自己的停止闸门，不允许通过工具修改',
   'agent.snapshots': '写前快照是改动可回滚的兜底，不允许通过工具关闭',
   'advanced.readonlyPrefixes':
     '只读黑名单的配置自身不允许通过工具修改（防自我收紧；放宽本就不生效）',

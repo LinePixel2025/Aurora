@@ -75,10 +75,9 @@ function recentSteps(job: AgentJob): AgentJob['stepsDone'] {
   return job.stepsDone.slice(-STEP_LIMIT).reverse()
 }
 
-/** token 用量：`maxTotalTokens === 0` 表示不限（Schema 语义，别显示成 `0/0`） */
+/** token 用量：v34 起只报累计值（预算上限已退役，没有「/ 不限」这回事了） */
 function tokenLabel(job: AgentJob): string {
-  const { usedTokens, maxTotalTokens } = job.budget
-  return maxTotalTokens === 0 ? `${usedTokens} / 不限` : `${usedTokens} / ${maxTotalTokens}`
+  return String(job.budget.usedTokens)
 }
 
 /** 轮次：与 StatusDot / 会话列表同一套等宽数字排版 */
@@ -134,9 +133,6 @@ const summary = computed(() => {
         <div class="job-meta tiny muted">
           <span>{{ roundLabel(job) }}</span>
           <span>token {{ tokenLabel(job) }}</span>
-          <span v-if="job.budget.autoContinued > 0"
-            >已自动续 {{ job.budget.autoContinued }} 轮</span
-          >
         </div>
 
         <!-- 暂停原因：说清「为什么停下、怎么接着跑」，与 done 事件的提示同一份措辞 -->

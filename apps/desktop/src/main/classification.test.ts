@@ -165,8 +165,8 @@ function settingsWith(overrides: {
         maxSnapshotBytes: 524288,
         totalBudgetBytes: 200 * 1024 * 1024,
       },
-      // v15 起 agent 还多了 loop（zod .default() ⇒ 输出类型必填）
-      loop: { maxRounds: 8, maxTotalTokens: 0, autoContinueRounds: 2 },
+      // v15 起 agent 还多了 loop（zod .default() ⇒ 输出类型必填）；v34 只剩并发度一项
+      loop: { maxParallelCalls: 8 },
     },
     // v16 新增顶层分组（Aurora Center 连接，docs/12）：本用例不涉及远程控制，保持默认空态
     center: {

@@ -41,6 +41,7 @@ import {
   createFileSnapshotPort,
   createProjectInstructionsSource,
   nodeProjectFs,
+  RUNAWAY_MAX_ROUNDS,
   type JobStore,
   type SnapshotPort,
   renderTodoList,
@@ -1611,6 +1612,15 @@ async function bootstrap(): Promise<void> {
     // 即时读取——空值一律由 buildSystemPrompt 自动省略对应小节。
     settingsHint: () => SETTINGS_HINT,
     todoSummary: async (sessionId) => renderTodoList(await todoPort!.read(sessionId)),
+    // job 的待办快照（docs/06 §4.1）：与 `todoSummary` 读的是**同一份**会话级清单，
+    // 只是换给界面画的形状（`content` → `text`）。JobPanel 那段清单自 v15 起就在渲染
+    // `job.todos`，而内核这一侧此前没人写它，面板因此永远显示不出清单。
+    jobTodos: async (sessionId) =>
+      (await todoPort!.read(sessionId)).map((item) => ({
+        id: item.id,
+        text: item.content,
+        status: item.status,
+      })),
     projectInstructions,
     // 工作目录提示（docs/06 §4 会话三分，2026-09-30）：按会话现解析生效工作目录，
     // 渲染为「## 工作目录」易变小节 —— 模型要先知道「在哪干活」，再读「那片地方的约定」。
@@ -1644,14 +1654,23 @@ async function bootstrap(): Promise<void> {
       })
     },
     // Job 持久化（docs/06 §4.1，v15）：一次请求 = 一条可查询 / 可续跑的 job。
-    // 三个上限都走 **getter** —— 设置页改完下一次请求即生效（v15 之前 maxRounds 是常量值，
-    // 改配置必须重启，属于"能写但不生效"的死字段）。
     jobs: jobStore,
-    // 上限类 getter 走 snapshot()（只读、不深拷贝）：每次 attempt / 每轮都会读，
+    // 上限类 getter 走 snapshot()（只读、不深拷贝）：每轮都会读，
     // `get()` 的整份深拷贝在这里是纯浪费（docs/08 §2，2026-10-04 性能轮）。
-    maxRounds: () => settings!.snapshot().agent.loop.maxRounds,
-    maxTotalTokens: () => settings!.snapshot().agent.loop.maxTotalTokens,
-    autoContinueRounds: () => settings!.snapshot().agent.loop.autoContinueRounds,
+    // v34：只剩并发度一项可配 —— 轮次上限回到内核常量 `RUNAWAY_MAX_ROUNDS`、
+    // token 预算取消（只统计不限制），所以这里不再有三个 getter。
+    maxParallelCalls: () => settings!.snapshot().agent.loop.maxParallelCalls,
+    // 冒烟专用钩子（`AURORA_SMOKE_MAX_ROUNDS=2`）：v34 起轮次上限不再是设置项，
+    // 而「轮次用尽 → paused → 续跑 → done」这一圈必须在**真实 IPC + 真实 job 磁盘链**上跑一遍
+    // （单测只能证明内存形状对）。生产不设这个变量 → 走内核常量 `RUNAWAY_MAX_ROUNDS`。
+    ...(smokeMode
+      ? {
+          maxRounds: () => {
+            const parsed = Number((process.env['AURORA_SMOKE_MAX_ROUNDS'] ?? '').trim())
+            return Number.isInteger(parsed) && parsed >= 1 ? parsed : RUNAWAY_MAX_ROUNDS
+          },
+        }
+      : {}),
     // 运行档（v0.2.8，docs/06 §5.2 / docs/13 §7.1）：自动化触发的会话换一套人设
     // （无人值守：不反问、自己决定、做完汇报）并摘掉写类自动化工具
     // （create / update / delete / run）——「自动化 → 会话 → 自动化」不得成为闭环。
@@ -3622,16 +3641,16 @@ async function runSmokeTest(userData: string): Promise<void> {
   // 2.5 Job 持久化与续跑（v15，docs/06 §4.1）：走**真实链路** —— `kernel.send()` → 真循环 →
   //     真 job 存储 → 磁盘。桩服务按 JOB_LOOP_MARKER 一直要工具，"轮次用尽 → paused"
   //     因此是**确定发生**的，不依赖模型自觉。
+  //     v34：轮次上限不再来自设置，这里改用 `AURORA_SMOKE_MAX_ROUNDS` 环境变量压小它
+  //     （装配处只在冒烟模式下读），token 预算那一态已随预算一起退役。
   if (smokeSection('2.5')) {
     const jobSession = 'smoke-job'
     let pausedOk = false
     let resumeOk = false
     let singleUserMessage = false
-    let budgetOk = false
     let cancelOk = false
     let cursorOk = false
     let jobDetail = ''
-    const previousLoop = settings?.get().agent.loop
     // 收窄到局部常量：下面有闭包（事件回调）要引用它们，`let` 的可变绑定会让 TS 丢掉收窄
     const host = agent
     const store = jobStore
@@ -3659,16 +3678,14 @@ async function runSmokeTest(userData: string): Promise<void> {
         sessionStore !== undefined &&
         host !== undefined
       ) {
-        const setLoop = (loop: {
-          maxRounds: number
-          maxTotalTokens: number
-          autoContinueRounds: number
-        }): void => {
-          settingsStore.update({ agent: { ...settingsStore.get().agent, loop } })
+        // 轮次上限由装配处在冒烟模式下读这个变量（见 KernelAgentHost 装配）
+        const setMaxRounds = (rounds: number | undefined): void => {
+          if (rounds === undefined) delete process.env['AURORA_SMOKE_MAX_ROUNDS']
+          else process.env['AURORA_SMOKE_MAX_ROUNDS'] = String(rounds)
         }
 
-        // ① 轮次用尽 → paused + pendingReason='max-rounds'（关掉自动续轮，否则它会自己跑完）
-        setLoop({ maxRounds: 2, maxTotalTokens: 0, autoContinueRounds: 0 })
+        // ① 轮次用尽 → paused + pendingReason='max-rounds'
+        setMaxRounds(2)
         await host.send({ sessionId: jobSession, text: JOB_LOOP_MARKER, origin: 'chat' })
         await waitDone(jobSession)
         await store.flush()
@@ -3697,16 +3714,8 @@ async function runSmokeTest(userData: string): Promise<void> {
           singleUserMessage = userBefore === 1 && userAfter === 1
         }
 
-        // ③ 预算触顶 → paused + pendingReason='budget'（桩每轮都带 usage）
-        setLoop({ maxRounds: 8, maxTotalTokens: 1, autoContinueRounds: 0 })
-        await host.send({ sessionId: 'smoke-job-budget', text: JOB_LOOP_MARKER, origin: 'chat' })
-        await waitDone('smoke-job-budget')
-        await store.flush()
-        const budgetJob = (await store.list({ sessionId: 'smoke-job-budget' }))[0]
-        budgetOk = budgetJob?.status === 'paused' && budgetJob.pendingReason === 'budget'
-
-        // ④ 取消 → aborted（不是 paused）：先等 job 真进入 running 再 abort
-        setLoop({ maxRounds: 8, maxTotalTokens: 0, autoContinueRounds: 0 })
+        // ③ 取消 → aborted（不是 paused）：先等 job 真进入 running 再 abort
+        setMaxRounds(undefined)
         const cancelSend = await host.send({
           sessionId: 'smoke-job-cancel',
           text: JOB_LOOP_MARKER,
@@ -3722,21 +3731,15 @@ async function runSmokeTest(userData: string): Promise<void> {
         await store.flush()
         cancelOk = (await store.list({ sessionId: 'smoke-job-cancel' }))[0]?.status === 'aborted'
 
-        jobDetail = `paused=${pausedOk} cursor=${cursorOk} resume=${resumeOk} oneUserMsg=${singleUserMessage} budget=${budgetOk} cancel=${cancelOk}`
+        jobDetail = `paused=${pausedOk} cursor=${cursorOk} resume=${resumeOk} oneUserMsg=${singleUserMessage} cancel=${cancelOk}`
       } else {
         jobDetail = 'jobStore / settings / agent 不可用'
       }
     } catch (error) {
       jobDetail = `异常：${String(error)}`
     } finally {
-      // 还原循环配置：后面的场景（提示条 / 分类）不该被 maxRounds=2 之类的临时值影响
-      if (previousLoop !== undefined && settings !== undefined) {
-        try {
-          settings.update({ agent: { ...settings.get().agent, loop: previousLoop } })
-        } catch {
-          // 还原失败不影响本次自测结论（配置本来就在临时 userData 里）
-        }
-      }
+      // 还原轮次上限：后面的场景（提示条 / 分类 / 重启续跑）不该被 maxRounds=2 影响
+      delete process.env['AURORA_SMOKE_MAX_ROUNDS']
     }
     record(
       "Job：轮次用尽落 paused 且 pendingReason='max-rounds'，游标与已完成步骤都已落盘",
@@ -3748,7 +3751,6 @@ async function runSmokeTest(userData: string): Promise<void> {
       resumeOk && singleUserMessage,
       jobDetail,
     )
-    record("Job：预算触顶落 paused 且 pendingReason='budget'", budgetOk, jobDetail)
     record('Job：取消后状态是 aborted（不是 paused）', cancelOk, jobDetail)
   }
 
@@ -3789,7 +3791,7 @@ async function runSmokeTest(userData: string): Promise<void> {
           stepsDone: [],
           todos: [],
           cursor: { nextRound: 0 },
-          budget: { maxTotalTokens: 0, usedTokens: 0, autoContinued: 0 },
+          budget: { usedTokens: 0 },
           createdAt: now,
           updatedAt: now,
         })
@@ -3864,7 +3866,6 @@ async function runSmokeTest(userData: string): Promise<void> {
       const target = join(projectRoot, 'note.txt')
       const readonlyTarget = join(projectRoot, 'blocked.txt')
       const previousProjects = settings?.get().projects
-      const previousLoop = settings?.get().agent.loop
       const previousAgent = settings?.get().agent
       const projectId = 'smoke-integration'
       if (
@@ -3872,7 +3873,6 @@ async function runSmokeTest(userData: string): Promise<void> {
         settings !== undefined &&
         desktopDeps !== undefined &&
         previousProjects !== undefined &&
-        previousLoop !== undefined &&
         previousAgent !== undefined
       ) {
         // AGENTS.md 两层：项目根里的必须进提示词，**项目根的父目录**里的绝不能进
@@ -3889,12 +3889,9 @@ async function runSmokeTest(userData: string): Promise<void> {
             ...previousProjects,
             list: [{ id: projectId, name: '集成自测项目', root: projectRoot }],
           },
-          // 一轮工具就够：第 0 轮写文件、第 1 轮收尾；关掉自动续轮让行为确定
-          agent: {
-            ...previousAgent,
-            loop: { maxRounds: 2, maxTotalTokens: 0, autoContinueRounds: 0 },
-          },
         })
+        // 一轮工具就够：第 0 轮写文件、第 1 轮收尾。轮次上限走冒烟环境变量（v34 起不是设置项）
+        process.env['AURORA_SMOKE_MAX_ROUNDS'] = '2'
         // 会话绑定（v17 口径）：项目边界与 AGENTS.md 注入都按**会话**解析根，
         // 只设全局 current 落不到夹具根上 —— 断言会退化成"越界拒绝"。
         await bindSmokeProject('smoke-integration', projectId, projectRoot)
@@ -3985,8 +3982,10 @@ async function runSmokeTest(userData: string): Promise<void> {
         off()
         settings.update({
           projects: { ...settings.get().projects, list: [] },
-          agent: { ...settings.get().agent, loop: previousLoop, permissionMode: 'confirm' },
+          agent: { ...settings.get().agent, permissionMode: 'confirm' },
         })
+        // 还原冒烟期间压小的轮次上限（v34 起它走环境变量，不再是设置）
+        delete process.env['AURORA_SMOKE_MAX_ROUNDS']
         integrationDetail = `scope=${scopeOk} auto=${autoOk} readonly=${readonlyOk} rollback=${rollbackOk} events=[${[...seenTypes].join(',')}] unknown=[${unknown.join(',')}]`
       } else {
         integrationDetail = 'settings / agent / deps 不可用'
@@ -4030,14 +4029,9 @@ async function runSmokeTest(userData: string): Promise<void> {
     try {
       const host = agent
       const store = jobStore
-      const loopBefore = settings?.get().agent.loop
       if (host !== undefined && store !== undefined && settings !== undefined) {
-        settings.update({
-          agent: {
-            ...settings!.get().agent,
-            loop: { maxRounds: 2, maxTotalTokens: 0, autoContinueRounds: 0 },
-          },
-        })
+        // 轮次上限压到 2（v34 起走冒烟环境变量，不再是设置项）：让桩服务确定在第 2 轮停下
+        process.env['AURORA_SMOKE_MAX_ROUNDS'] = '2'
         await host.send({ sessionId: 'smoke-job-restart', text: JOB_LOOP_MARKER, origin: 'chat' })
         await new Promise<void>((resolve) => {
           const off = host.onEvent((event) => {
@@ -4059,9 +4053,8 @@ async function runSmokeTest(userData: string): Promise<void> {
         prepared = job?.status === 'paused' && (job.cursor.nextRound ?? 0) > 0 && onDisk
         detail = `status=${job?.status ?? '-'} cursor=${job?.cursor.nextRound ?? -1} steps=${job?.stepsDone.length ?? -1} file=${onDisk ? 'yes' : 'NO'}`
         if (!onDisk) logger?.error('job 未落盘：第二次启动的续跑验证会失败', { jobFile })
-        if (loopBefore !== undefined) {
-          settings.update({ agent: { ...settings.get().agent, loop: loopBefore } })
-        }
+        // 还原被压小的轮次上限：本阶段后面的场景（含第二次启动的续跑）不该带着 maxRounds=2 跑
+        delete process.env['AURORA_SMOKE_MAX_ROUNDS']
       } else {
         detail = 'agent / jobStore / settings 不可用'
       }
@@ -4670,9 +4663,9 @@ async function runSmokeTest(userData: string): Promise<void> {
     const setSetting = tools.get('set_setting')
     const configPath = join(userData, 'config.json')
     // 「拒绝后逐字未变」的判据取**改动前**的实测值，不写死数字：
-    // `agent.loop.maxRounds` 的默认值历史上是 8，v0.2.4 放宽到 32 —— 写死数字的断言
-    // 会在默认值调整时变成假失败（本轮实测就踩到）。
-    const loopMaxRoundsBefore = settings.get().agent.loop.maxRounds
+    // `agent.loop.maxParallelCalls` 的默认值可能随版本调整 —— 写死数字的断言
+    // 会在默认值变化时变成假失败（本轮实测就踩到）。
+    const loopParallelBefore = settings.get().agent.loop.maxParallelCalls
     const crashMatrix: Array<{
       path: string
       value: unknown
@@ -4713,10 +4706,10 @@ async function runSmokeTest(userData: string): Promise<void> {
       { path: 'modes.classroom.typo', value: 1, expectReject: true },
       { path: 'llm.providers.x.apiKeyEnc', value: 'leak', expectReject: true },
       {
-        path: 'agent.loop.maxRounds',
-        value: 64,
+        path: 'agent.loop.maxParallelCalls',
+        value: 32,
         expectReject: true,
-        expect: (current) => current.agent.loop.maxRounds === loopMaxRoundsBefore,
+        expect: (current) => current.agent.loop.maxParallelCalls === loopParallelBefore,
         expectNote: '拒绝后配置逐字未变',
       },
       {

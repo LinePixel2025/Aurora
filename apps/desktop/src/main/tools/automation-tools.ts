@@ -190,6 +190,7 @@ export function createAutomationListTool(port: AutomationManagePort): ToolDefini
     description: `列出所有自动化（含内置的课前提醒 / 课前打开科目文件夹），含 id、模式、触发条件与启停状态。管理自动化前先调用它拿到 id。\n${TRIGGER_REFERENCE}`,
     parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (): Promise<ToolResult> => {
       const { user, builtin } = await port.list()
       const catalog = port.catalog()
@@ -431,6 +432,7 @@ export function createAutomationHistoryTool(port: AutomationManagePort): ToolDef
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    parallel: true,
     execute: async (input): Promise<ToolResult> => {
       const record = asRecord(input)
       const automationId = readString(record, 'automationId')

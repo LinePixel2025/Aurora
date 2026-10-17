@@ -1114,6 +1114,7 @@ describe('配置迁移链', () => {
         'v30 → v31：v30 → v31：新增 center.officialModels（Center 官方模型，默认全部关闭）',
         'v31 → v32：v31 → v32：新增 appearance.theme / glass（明暗档位与毛玻璃开关）',
         'v32 → v33：v32 → v33：新增 appearance.awarenessGlow（自感知流光特效开关）',
+        'v33 → v34：v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1159,6 +1160,7 @@ describe('配置迁移链', () => {
         'v30 → v31：v30 → v31：新增 center.officialModels（Center 官方模型，默认全部关闭）',
         'v31 → v32：v31 → v32：新增 appearance.theme / glass（明暗档位与毛玻璃开关）',
         'v32 → v33：v32 → v33：新增 appearance.awarenessGlow（自感知流光特效开关）',
+        'v33 → v34：v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1207,18 +1209,25 @@ describe('配置迁移链', () => {
   })
 
   describe('v17 → v18（放宽 agent.loop 轮次上限，docs/06 §5）', () => {
+    // 这三条**钉在 v18 这一步**（`migrate(raw, undefined, 18)`）：v34 已经把 `agent.loop`
+    // 整体换成 `maxParallelCalls`，跑满链的话这里断言的旧值必然不存在，
+    // 用例就从"验证 v17→v18 抬升了默认哨兵"变成"验证 v34 删了字段"——那是另一条用例的职责。
     it('旧默认哨兵（maxRounds 8 / autoContinueRounds 2）抬升为新默认值', () => {
-      const outcome = migrate({
-        version: 17,
-        general: {},
-        agent: { loop: { maxRounds: 8, maxTotalTokens: 0, autoContinueRounds: 2 } },
-      })
+      const outcome = migrate(
+        {
+          version: 17,
+          general: {},
+          agent: { loop: { maxRounds: 8, maxTotalTokens: 0, autoContinueRounds: 2 } },
+        },
+        undefined,
+        18,
+      )
       const loop = (outcome.data['agent'] as Record<string, unknown>)['loop'] as Record<
         string,
         unknown
       >
       expect(loop).toEqual({ maxRounds: 32, maxTotalTokens: 0, autoContinueRounds: 8 })
-      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+      expect(outcome.data['version']).toBe(18)
     })
 
     it('用户显式改过的值原样保留；幂等', () => {
@@ -1227,14 +1236,14 @@ describe('配置迁移链', () => {
         general: {},
         agent: { loop: { maxRounds: 16, maxTotalTokens: 1000, autoContinueRounds: 0 } },
       }
-      const outcome = migrate(raw)
+      const outcome = migrate(raw, undefined, 18)
       const loop = (outcome.data['agent'] as Record<string, unknown>)['loop'] as Record<
         string,
         unknown
       >
       expect(loop).toEqual({ maxRounds: 16, maxTotalTokens: 1000, autoContinueRounds: 0 })
 
-      const again = migrate(outcome.data as Record<string, unknown>)
+      const again = migrate(outcome.data as Record<string, unknown>, undefined, 18)
       const loopAgain = (again.data['agent'] as Record<string, unknown>)['loop'] as Record<
         string,
         unknown
@@ -1243,9 +1252,9 @@ describe('配置迁移链', () => {
     })
 
     it('agent.loop 缺失时不造对象，交给默认配置兜底', () => {
-      const outcome = migrate({ version: 17, general: {}, agent: {} })
+      const outcome = migrate({ version: 17, general: {}, agent: {} }, undefined, 18)
       expect((outcome.data['agent'] as Record<string, unknown>)['loop']).toBeUndefined()
-      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+      expect(outcome.data['version']).toBe(18)
     })
   })
 
@@ -1577,6 +1586,7 @@ describe('配置迁移链', () => {
         'v30 → v31：v30 → v31：新增 center.officialModels（Center 官方模型，默认全部关闭）',
         'v31 → v32：v31 → v32：新增 appearance.theme / glass（明暗档位与毛玻璃开关）',
         'v32 → v33：v32 → v33：新增 appearance.awarenessGlow（自感知流光特效开关）',
+        'v33 → v34：v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -1658,7 +1668,7 @@ describe('配置迁移链', () => {
         general: { windowState: { chat: { x: 10, y: 20, width: 1120, height: 720 } } },
       })
       // v32 → v33 已进链，因此从 v25 起要跑 8 步（末步是流光开关）
-      expect(outcome.applied).toHaveLength(8)
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 25)
       expect(outcome.applied[0]).toContain('v25 → v26')
       expect(outcome.applied[1]).toContain('v26 → v27')
       expect(outcome.applied[2]).toContain('v27 → v28')
@@ -1744,7 +1754,7 @@ describe('配置迁移链', () => {
         defaultMemoryTtlDays: 0,
         backgroundModel: { providerId: '', model: '' },
       })
-      expect(missing.applied).toHaveLength(6)
+      expect(missing.applied).toHaveLength(CONFIG_VERSION - 27)
       expect(missing.applied[5]).toContain('v32 → v33')
 
       const existing = migrate({
@@ -1778,7 +1788,7 @@ describe('配置迁移链', () => {
           dailyAnalysisLimit: 7,
         },
       })
-      expect(missing.applied).toHaveLength(5)
+      expect(missing.applied).toHaveLength(CONFIG_VERSION - 28)
       expect(missing.applied[4]).toContain('v32 → v33')
       expect(missing.data['fileAwareness']).toEqual({
         enabled: true,
@@ -1813,7 +1823,7 @@ describe('配置迁移链', () => {
         version: 29,
         general: { language: 'zh-CN' },
       })
-      expect(missing.applied).toHaveLength(4)
+      expect(missing.applied).toHaveLength(CONFIG_VERSION - 29)
       expect(missing.applied[3]).toContain('v32 → v33')
       expect(missing.data['general']).toEqual({
         language: 'zh-CN',
@@ -1848,7 +1858,7 @@ describe('配置迁移链', () => {
         version: 30,
         center: { enabled: true, serverUrl: 'wss://center.example.com' },
       })
-      expect(missing.applied).toHaveLength(3)
+      expect(missing.applied).toHaveLength(CONFIG_VERSION - 30)
       expect(missing.applied[2]).toContain('v32 → v33')
       expect(missing.data['center']).toMatchObject({
         enabled: true,
@@ -1882,7 +1892,7 @@ describe('配置迁移链', () => {
     it('为已有 appearance 补 theme / glass，用户已写的 accent 原样保留', () => {
       const outcome = migrate({ version: 31, appearance: { accent: 'violet' } })
       // v31 起两步：v31 → v32 补三件套，v32 → v33 再补 awarenessGlow（末态一起断言）
-      expect(outcome.applied).toHaveLength(2)
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 31)
       expect(outcome.applied[0]).toContain('v31 → v32')
       expect(outcome.applied[1]).toContain('v32 → v33')
       expect(appearanceOf(outcome.data)).toEqual({
@@ -1936,7 +1946,7 @@ describe('配置迁移链', () => {
         version: 32,
         appearance: { theme: 'dark', accent: 'teal', glass: false },
       })
-      expect(outcome.applied).toHaveLength(1)
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 32)
       expect(outcome.applied[0]).toContain('v32 → v33')
       expect(appearanceOf(outcome.data)).toEqual({
         theme: 'dark',
@@ -1972,6 +1982,46 @@ describe('配置迁移链', () => {
         awarenessGlow: true,
       })
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+  })
+
+  describe('v33 → v34（agent.loop 三退一：轮次上限与 token 预算退役，docs/06 §5）', () => {
+    const loopOf = (raw: Record<string, unknown>): Record<string, unknown> =>
+      (raw['agent'] as Record<string, unknown>)['loop'] as Record<string, unknown>
+
+    it('三个旧字段整体换成 maxParallelCalls；agent 的其它子组原样保留', () => {
+      const outcome = migrate({
+        version: 33,
+        agent: {
+          permissionMode: 'auto',
+          tools: { enabled: true, terminal: { timeoutMs: 30_000 } },
+          loop: { maxRounds: 16, maxTotalTokens: 500_000, autoContinueRounds: 3 },
+        },
+      })
+      // 旧值**不做映射**：轮次上限回到内核常量、预算取消，搬进新字段只会造出影子配置
+      expect(loopOf(outcome.data)).toEqual({ maxParallelCalls: 8 })
+      const agent = outcome.data['agent'] as Record<string, unknown>
+      expect(agent['permissionMode']).toBe('auto')
+      expect(agent['tools']).toEqual({ enabled: true, terminal: { timeoutMs: 30_000 } })
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('已有 maxParallelCalls 时保留用户值；重复迁移幂等', () => {
+      const once = migrate({
+        version: 33,
+        agent: { loop: { maxParallelCalls: 2, maxRounds: 128 } },
+      })
+      expect(loopOf(once.data)).toEqual({ maxParallelCalls: 2 })
+
+      const twice = migrate({ ...once.data, version: 33 })
+      expect(twice.data['agent']).toEqual(once.data['agent'])
+    })
+
+    it('缺 agent / 缺 agent.loop 时都不造对象，交给默认配置兜底', () => {
+      expect(migrate({ version: 33, general: {} }).data['agent']).toBeUndefined()
+      const noLoop = migrate({ version: 33, agent: { permissionMode: 'confirm' } })
+      expect((noLoop.data['agent'] as Record<string, unknown>)['loop']).toBeUndefined()
+      expect((noLoop.data['agent'] as Record<string, unknown>)['permissionMode']).toBe('confirm')
     })
   })
 })

@@ -324,9 +324,7 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
      * 卡断长任务），复杂任务不必频繁手动点「继续」。用尽即 job 暂停（附原因），不再静默收尾。
      */
     loop: {
-      maxRounds: 32,
-      maxTotalTokens: 0,
-      autoContinueRounds: 8,
+      maxParallelCalls: 8,
     },
   },
   /**

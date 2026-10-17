@@ -1552,8 +1552,13 @@ export interface SnapshotRestoreRequest {
 
 /** Job 状态（docs/06 §4.1，v15）：一次 Agent 请求就是一条 job。 */
 export type AgentJobStatus = 'queued' | 'running' | 'paused' | 'done' | 'error' | 'aborted'
-/** 为什么停在 `paused`：轮次用尽 / 预算用尽 / 被用户取消 */
-export type JobPendingReason = 'max-rounds' | 'budget' | 'aborted'
+/**
+ * 为什么停在 `paused`：轮次用尽 / 被用户取消。
+ *
+ * v34 起少了 `'budget'`：token 预算这个上限被取消（只统计不限制，docs/06 §4.1 / §5），
+ * 而轮次上限退回内核常量 `RUNAWAY_MAX_ROUNDS`（防失控，不再是用户可配的 32/128）。
+ */
+export type JobPendingReason = 'max-rounds' | 'aborted'
 /** job 已完成的一步（工具调用）—— 界面画时间线用 */
 export interface JobStep {
   round: number
@@ -1578,17 +1583,21 @@ export interface AgentJob {
   text: string
   /** 已经跑到第几轮（从 0 起） */
   round: number
+  /**
+   * 本次请求实际生效的轮次上限。v34 起它不再是设置项，而是内核的防失控常量
+   * `RUNAWAY_MAX_ROUNDS`（docs/06 §5）—— 记下来是为了让界面能说清「第 N / 上限」这个数从哪来。
+   */
   maxRounds: number
   stepsDone: JobStep[]
   todos: Array<{ id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }>
   /** 游标：下一轮从哪里开始（续跑的起点） */
   cursor: { nextRound: number; note?: string }
-  budget: {
-    maxTotalTokens: number
-    usedTokens: number
-    /** 已自动续轮的次数 —— **必须持久化**，否则重启后会重新拿到一份额度 */
-    autoContinued: number
-  }
+  /**
+   * 用量账本。**v34 起只有累计值**：`maxTotalTokens`（预算上限）与 `autoContinued`
+   * （自动续轮额度）随那两个概念一起退役 —— 留着一个永远等于 0 的字段，
+   * 就是下一个"能写不生效"的死口子。
+   */
+  budget: { usedTokens: number }
   pendingReason?: JobPendingReason
   createdAt: string
   updatedAt: string
@@ -1603,8 +1612,6 @@ export interface JobSummary {
   round: number
   maxRounds: number
   usedTokens: number
-  maxTotalTokens: number
-  autoContinued: number
   pendingReason?: JobPendingReason
   stepCount: number
   lastStep?: string
@@ -1953,7 +1960,11 @@ export interface AuroraApi {
     onExit(listener: (event: TerminalExitEvent) => void): () => void
   }
   chat: {
-    send(request: SendMessageRequest): Promise<Result<{ requestId: string }>>
+    /**
+     * `queued: true`（docs/06 §5.3）：该会话正在跑请求，这条消息**排进了队列**而不是立即开始，
+     * 会在下一次轮次边界作为一条用户消息插进那一轮。缺省 / false = 本轮立即执行。
+     */
+    send(request: SendMessageRequest): Promise<Result<{ requestId: string; queued?: boolean }>>
     abort(requestId: string): Promise<Result<boolean>>
     onEvent(listener: (event: AgentEvent) => void): () => void
     /** 会话历史（窗口挂载时水合，docs/06 §4） */

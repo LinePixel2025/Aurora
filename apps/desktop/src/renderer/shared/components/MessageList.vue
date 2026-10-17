@@ -1320,6 +1320,18 @@ async function onContentClick(event: MouseEvent): Promise<void> {
             {{ message.role === 'user' ? '我' : message.role === 'assistant' ? 'A' : 'S' }}
           </span>
           <div class="bubble">
+            <!--
+              排队中（docs/06 §5.3）：会话正忙时敲出去的这句话已经排进内核队列，
+              要在下一个轮次边界才插进正在跑的任务。气泡必须先说清"还没送达"，
+              否则用户读到的是一条看起来像已经发出去的消息。
+            -->
+            <p
+              v-if="message.queued === true"
+              class="queued-hint tiny muted"
+              data-field="chat.queued-chip"
+            >
+              排队中 · 下一个轮次插入当前任务
+            </p>
             <!-- 附件 chip（docs/07 §2.3）：只显示文件名，正文已在主进程提取并入上下文 -->
             <div v-if="(message.attachments?.length ?? 0) > 0" class="attached">
               <span v-for="name in message.attachments" :key="name" class="attached-chip tiny">
@@ -1855,6 +1867,12 @@ async function onContentClick(event: MouseEvent): Promise<void> {
   /* 2px：一屏要能连着读 3-5 行（"做过一串事"），行距按行高走，不再按卡片间距走 */
   gap: 2px;
   margin-top: var(--space-1);
+}
+
+/* 排队中（docs/06 §5.3）：一行弱化说明，压在正文之前，不抢注意力也不需要边框 */
+.queued-hint {
+  margin: 0 0 var(--space-1);
+  opacity: 0.72;
 }
 
 .attached {

@@ -27,7 +27,7 @@ import type {
   SubagentTranscriptToolCall,
 } from '@aurora/shared'
 import { buildSystemPrompt, describeTools } from '../context/systemPrompt.js'
-import { DEFAULT_MAX_ROUNDS, runAgentLoop } from '../loop/agentLoop.js'
+import { SUBAGENT_MAX_ROUNDS, runAgentLoop } from '../loop/agentLoop.js'
 import type { ConfirmDecision } from '../loop/agentLoop.js'
 import type { AgentProviderFactory } from '../host/agentHost.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
@@ -104,7 +104,7 @@ export interface TaskToolOptions {
   provider: AgentProviderFactory
   /** 父工具表：内部过滤出子代理可用工具 */
   tools: ToolRegistry
-  /** 子代理轮次上限，缺省 `DEFAULT_MAX_ROUNDS` */
+  /** 子代理轮次上限，缺省 `SUBAGENT_MAX_ROUNDS`（不跟主循环的防失控墙共用，见 §19） */
   maxRounds?: number
   logger?: Logger
   /**
@@ -167,6 +167,10 @@ export function createTaskTool(options: TaskToolOptions): ToolDefinition {
       additionalProperties: false,
     },
     sensitivity: 'safe',
+    // 子代理**不按墙钟中止**（docs/06 §5 的工具执行上限）：它的上限是轮次与取消 ——
+    // 一次 32 轮的调研本就可能跑过默认 10 分钟，按时间砍它会误杀正常长任务，
+    // 而那正是本节要避免的「把设计内的慢当成挂起」。
+    timeoutMs: 0,
     execute: async (input, ctx): Promise<ToolResult> => {
       const record = asRecord(input)
       const description = readNonEmptyString(record, 'description')
@@ -310,7 +314,7 @@ async function runSubagent(
     tools: subTools,
     sessionId: subSessionId,
     ...(request.signal === undefined ? {} : { signal: request.signal }),
-    maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
+    maxRounds: options.maxRounds ?? SUBAGENT_MAX_ROUNDS,
     append,
     updateToolCall,
     onToolCall: (info) => options.logger?.info('子代理工具调用', info),
