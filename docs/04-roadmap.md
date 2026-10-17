@@ -5,6 +5,10 @@ P6 打包与自动更新完成、余下打磨项待做，**P6++ 电脑操控（�
 模型思考等级 + 「电脑操控」设置页与安全边界）已于 v0.7.0 落地**，
 P7 的 **ClassIsland 联动已提前落地**；进度随开发更新
 
+**2026-10 增量**：v0.4.1 → v0.4.8 已发布；**HEAD 未发版**，含配置 Schema v34 的任务编排
+（并发批次 / 插话注入 / 工具超时）与子代理增强（多子代理并行 / 可写）。索引见文末
+「2026-10 增量轮索引」，当前验收口径以 [docs/README](./README.md) 的状态段为准。
+
 **窗口 UX 修复轮（v1.0 前）**：独立小窗已删除，「快速会话」并入交互窗侧栏（配置 Schema **v6**），
 交互窗「收起」= 直接隐藏窗口 —— 历史阶段行仍按当时实现记录，能力以 §5 变更记录与 07 / 08 为准。
 
@@ -539,3 +543,22 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
   （新增 `settings-llm-multimodal.png`：接口类型与图片输入两枚控件在折叠区里、真值来自配置并写回原值）。
   另有一条**反向复核**：把「开关关闭时不得解析缓存里的图」那行守卫去掉，
   `agentHost.test.ts` 的「中途关闭开关」用例实测 FAIL（`expected [...] to be undefined`）。
+
+## 2026-10 增量轮索引（v0.4.0 → HEAD，追加）
+
+> 本节只做索引：详细内容分别见 [docs/README](./README.md) 的版本段与
+> [release-notes](./release-notes/)。上面 §5 的历史轮次保持发布时口径，不逐项回写。
+
+| 版本 / 日期 | 主题 | 详见 |
+|---|---|---|
+| v0.4.0（2026-10-01） | Electron 44 升级、OfficeCLI 结构化读写、提示条 Acrylic、原生最大化 | [release-notes/v0.4.0.md](./release-notes/v0.4.0.md) |
+| v0.4.1 | 应用图标与品牌标统一 | [release-notes/v0.4.1.md](./release-notes/v0.4.1.md) |
+| v0.4.2 | OfficeCLI 结构化读写 / 元素级编辑 / 渲染回看 / PDF | [release-notes/v0.4.2.md](./release-notes/v0.4.2.md) |
+| v0.4.3 | 请求级工作折叠、会话自动标题与级联清理、自感知流式进度 | [release-notes/v0.4.3.md](./release-notes/v0.4.3.md) |
+| v0.4.4 | Aurora Center 官方模型网关 / Token 用量 / 自托管更新 | [release-notes/v0.4.4.md](./release-notes/v0.4.4.md) |
+| v0.4.5 | Provider 与会话模型来源双下拉、Center 模型路由 | [release-notes/v0.4.5.md](./release-notes/v0.4.5.md) |
+| v0.4.6 / v0.4.7 | Center 工作台毛玻璃与移动端、用量分页、官方模型表单、外观个性化三件套 | [v0.4.6](./release-notes/v0.4.6.md) / [v0.4.7](./release-notes/v0.4.7.md) |
+| v0.4.8 | Center 官方图片 / 语音模型客户端选模、四周流光强调色单色 | [release-notes/v0.4.8.md](./release-notes/v0.4.8.md) |
+| 2026-10-16（未发版） | 自感知流光改 Apple Intelligence 光谱 + 只留顶边；自动化历史详略三层 + 双端回放 | [docs/06 §26](./06-agent-core.md)、[docs/13](./13-automation.md) |
+| 2026-10-17（未发版） | 任务编排对齐主流代理（并发批次 / 插话排队注入 / 工具超时），配置 Schema v34 + `agent.loop` 三退一 | [docs/06 §5 / §19](./06-agent-core.md)、[docs/08 §1](./08-settings-onboarding.md) |
+| 2026-10-18（未发版） | 子代理增强：同轮多实例并行（每会话上限 3）、写入类子代理串行、写权限按实际授予落徽章 | [docs/06 §19.5](./06-agent-core.md)、[docs/07 §2.3](./07-ui-spec.md) |

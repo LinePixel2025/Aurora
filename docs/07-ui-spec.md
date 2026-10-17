@@ -666,6 +666,9 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
     （页头「回到对话」按钮 `data-action="chat.subagent-back"`，左栏点任意会话也会切回）。
   - 数据来源：`useChat().subagentRuns` —— 实时 `subagent` 事件（本会话内存）与
     消息流里 `task` 工具卡的持久化快照（重启后仍可回看）按 `callId` 合并，实时那份优先。
+  - **多运行（2026-10-18）**：同轮多个 `task` 并行时，页面按运行逐张渲染、概览条显示
+    「共 N 次运行 / M 个进行中」（`M` 来自 `status === 'running'`），侧栏角标同样是运行数；
+    每条运行各有权限徽章与对话折叠，互不干扰。并发上限与写子代理串行见 `06 §19.5`。
 - **轨迹 / 工具行的生命周期动效（2026-10-01 重塑后）**：
   轨迹容器折叠 ⇄ 展开走 **grid `0fr ↔ 1fr` 高度过渡**（`--dur-base`，`prefers-reduced-motion`
   降级为瞬时）：终点是 `1fr` —— **每一帧都按当下内容现解**，动画期间内容再长也不会被裁掉
@@ -1859,9 +1862,9 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     （1120px 宽三栏并存）且 classroom「今日课程」与通用「系统状态」两卡都渲染（ContextPanel 无
     data-field 锚点，按卡头文案定位）。**含麦克风门控反向断言**：`stt` 未配置时
     `[data-field="chat.mic"]` 必须**不存在**（数到即坏 —— 钉「未配置连按钮都不渲染，不是 disabled」口径）。
-    另外断言 2026-09 新增的两条：`chat.subagent-item` 恰好 1 个、角标 `chat.subagent-count`
-    恰好 1 个（seed 的 `task` 工具卡带子代理快照），以及**每张工具卡头恰好一枚语义图标**
-    （`.tool-card .tool-head .tool-icon` 数 == `.tool-card` 数）。
+    另外断言 2026-09 新增的两条：`chat.subagent-item` 恰好 1 个、角标元素 `chat.subagent-count`
+    恰好 1 个（seed 两条 `task` 工具卡各带子代理快照，2026-10-18 起为一 write 一 read，角标值应为 2），以及
+    **每张工具卡头恰好一枚语义图标**（`.tool-card .tool-head .tool-icon` 数 == `.tool-card` 数）。
     **模式一致性哨兵（2026-10-10 新增，探针由同步改 async）**：本探针额外读
     `window.aurora.mode.list()` 得到主进程当前模式，并与面板卡片推出的模式比对，断言
     ① `panelMatchesMain === true`、② `window.__auroraSidebarProbe.forcedToggle === false`
@@ -1896,15 +1899,17 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     至此「安全区」的运行时证据覆盖：自动化页（卡片 / 磁贴）、设置页 7 页、引导窗 5 段、
     提示条展开面板、输入区三个下拉 —— 都是几何判据，不是"看着没问题"。
   - **子代理页面**（`CHAT_SUBAGENT_OPEN_ACT` / `CHAT_SUBAGENT_OPEN_CHECK`，
-    产物 `chat-subagent-page.png`，2026-09）：「子代理」固定项点击后主区切到页面，断言
-    `chat.subagent-page` 在、`chat.subagent-run` 恰好 1 张（来自 seed 的 `task` 工具卡快照）、
-    轨迹步骤 ≥ 3、进度条 1 条、报告文本非空、权限徽章文案含「可读写」（seed 授予 `write`）、
-    导航项为激活态；随后点 `chat.subagent-conversation-toggle` 展开**独立对话视图**，断言
+    产物 `chat-subagent-page.png`，2026-09；2026-10-18 扩到两条运行）：「子代理」固定项点击后主区切到页面，断言
+    `chat.subagent-page` 在、`chat.subagent-run` 恰好 **2** 张（来自 seed 的两条 `task` 工具卡快照：
+    一条 `write`、一条 `read`）、轨迹步骤 ≥ 3、进度条 1 条、报告文本非空、
+    权限徽章分别含「可读写」与「只读」、导航项为激活态；随后点
+    `chat.subagent-conversation-toggle` 展开**第一条运行**的独立对话视图，断言
     容器在、`.conv-turn` ≥ 3（任务 + 两轮正文）、`.conv-tool` ≥ 2（工具调用行）、
     「最终报告」标签恰好 1 个、且**容器内没有 `textarea` / `input` / `contenteditable`**
     （只读 —— 用户无法干预的口径判据）；check 收尾点「回到对话」并断言页面已消失
     —— 后续场景（composer / 自动滚底）依赖对话流在前台。
     这条同时验证「子代理快照随工具卡持久化 → 页面读回」这条链路（`06 §19`）；
+    seed 的第二条只读运行也钉住多运行列表与双权限徽章（`06 §19.5`）；
   - **自动化页与详情窗口**（`CHAT_AUTOMATION_*`，产物 `chat-automation.png` /
     `chat-automation-normal.png` / `automation-editor.png` / `automation-history.png`，
     v19，docs/13 §11）：
