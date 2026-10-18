@@ -74,11 +74,7 @@ function formatRelativeTime(iso: string): string {
         会话级模型徽标（docs/06 §3，本轮）：**只在覆盖态出现** —— 跟随全局时不显示，
         否则每一行都挂一个「模型」标签，等于没信息。`item-llm` 用与 Center 标签同款的小字风格。
       -->
-      <span
-        v-if="item.llm"
-        class="item-tag item-llm tiny"
-        :title="`本会话模型：${item.llm.model}`"
-      >
+      <span v-if="item.llm" class="item-tag item-llm tiny" :title="`本会话模型：${item.llm.model}`">
         {{ item.llm.model }}
       </span>
       <span class="item-time tiny muted">{{ formatRelativeTime(item.updatedAt) }}</span>
@@ -119,6 +115,14 @@ function formatRelativeTime(iso: string): string {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
+  /* 窄栏硬护栏（2026-10-18）：行内文字**绝不许**画到右侧归档钮底下。
+     起因（用户实测）：左栏拖到 200px 时行内容宽只剩 118px，96px 的模型徽标把标题挤成 0，
+     相对时间溢出 18px 正好压在归档图标上 —— 看起来就是「文字重叠」。
+     `overflow: hidden` 只兜底（正常让位靠下面 .item-title / .item-tag / .item-llm 的规则），
+     命中兜底说明让位顺序又坏了，`chat-nav-narrow` 场景（`CHAT_NAV_NARROW_CHECK`）会量出来。 */
+  overflow: hidden;
+  /* 容器查询的锚点：`.item-llm` 按**本行可用宽度**决定是否让位（见文件末尾 @container） */
+  container-type: inline-size;
   /* 32px：固定项（子代理 / 自动化 / 任务）与会话行都是高频点击，
      量出来原来只有 30px（`chat-hit-targets` 探针），补到 32 的手感线 */
   min-height: 32px;
@@ -199,22 +203,37 @@ function formatRelativeTime(iso: string): string {
   color: var(--text-primary);
 }
 
+/**
+ * 标题是这一行的**身份信息**，优先级最高（2026-10-18）：
+ *
+ * `flex: 1 1 0%` 的旧口径在空间不足时会把标题直接算成 0 宽（basis 0 没有可收缩的量，
+ * 剩余空间只分给别的项）—— 左栏拖到 200px、行里有模型徽标时，标题整条消失、
+ * 只看得见徽标和时间。现在改成 `auto` + `min-width: 3em`：标题按内容宽度参与收缩，
+ * 且**永远保留至少约 3 个汉字**的可见宽度（省略号照旧）。
+ */
 .item-title {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 auto;
+  min-width: 3em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* 相对时间：不收缩、不换行 —— 它是这一行的第二优先级，宁可让药丸让位，也不许它被挤出去 */
 .item-time {
   flex: 0 0 auto;
+  white-space: nowrap;
   font-variant-numeric: var(--num-tabular);
 }
 
-/* 远程会话来源标签（center-*，docs/12 §5）：轻量药丸，弱于激活指示条 */
+/*
+ * 远程会话来源标签（center-*，docs/12 §5）：轻量药丸，弱于激活指示条。
+ * `flex: 0 1 auto`（不是 0 0 auto）：空间不足时药丸**可以收缩**，否则它会把
+ * 相对时间顶出行内容盒、压到归档钮底下（2026-10-18 用户实测的「文字重叠」）。
+ */
 .item-tag {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   padding: 0 5px;
   border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--aurora-blue) 16%, transparent);
@@ -224,19 +243,30 @@ function formatRelativeTime(iso: string): string {
 }
 
 /*
- * 模型徽标可能很长（`deepseek-reasoner`）：允许收缩并省略号，避免把标题挤成一条线。
- * `max-width` 给到 96px 是因为它只是「这个会话绑过模型」的提示，完整值在 title 与
- * 输入区下拉里都能看全（docs/07 §5.4：关键信息看全的路径要留在手边）。
- */
-/*
- * 模型徽标可能很长（`deepseek-reasoner`）：允许收缩并省略号，避免把标题挤成一条线。
- * `max-width` 给到 96px 是因为它只是「这个会话绑过模型」的提示，完整值在 title 与
- * 输入区下拉里都能看全（docs/07 §5.4：关键信息看全的路径要留在手边）。
+ * 模型徽标：它只是「这个会话绑过模型」的提示 —— 完整值在行 `title` 与输入区下拉里
+ * 都能看全（docs/07 §5.4：关键信息看全的路径要留在手边）。`max-width: 96px` 允许
+ * 收缩并省略号；**窄栏时整枚让位**（见文件末尾 @container）—— 左栏 200px 夹取下限下
+ * 行内容宽只剩 ~118px，标题（≥3em）+ 相对时间已吃掉大半，再塞 96px 徽标只会把标题
+ * 挤没、把时间顶到归档钮底下（2026-10-18 用户实测的「文字重叠」）。
  */
 .item-llm {
   max-width: 96px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/**
+ * 窄栏让位顺序（2026-10-18）：会话行内优先级 = **标题 > 相对时间 > Center 药丸 > 模型徽标**。
+ * `.nav-item` 是查询容器（文件顶部 `container-type: inline-size`），阈值按**行内容宽**取：
+ * 左栏 200px（夹取下限）时内容宽 ~118px —— 徽标在这里没有可用空间，整枚隐藏；
+ * 缺省 240px（内容宽 ~158px）起恢复显示（仍可收缩 + 省略号）。
+ * 探针 `CHAT_NAV_NARROW_CHECK`（场景 `chat-nav-narrow.png`）在左栏 200px 的现场量
+ * 「徽标让位 + 标题不归零 + 相对时间不压归档钮」，`overflow: hidden` 只是最后一道兜底。
+ */
+@container (max-width: 150px) {
+  .item-llm {
+    display: none;
+  }
 }
 </style>

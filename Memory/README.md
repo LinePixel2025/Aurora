@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-18 | 可拖窄左栏的会话行：标题 basis 0 归零、模型徽标容器查询与压测注入 | UI, chat, 左栏, flex, CSS, 模型徽标, 探针, 坑 | [2026-10-18-session-row-narrow-overlap.md](2026-10-18-session-row-narrow-overlap.md) |
 | 2026-10-18 | 双端输入卡：缩略图必须在卡内、五浮层统一锚点、图片粘贴链路与探针口径 | UI, composer, 粘贴, 缩略图, 浮层, Center, 协议, 探针, 坑 | [2026-10-18-composer-paste-and-flyouts.md](2026-10-18-composer-paste-and-flyouts.md) |
 | 2026-10-18 | pnpm verify-deps + CI=true 会真清 node_modules；dev 占 electron 时 install 必 EPERM | 构建, pnpm, node_modules, Electron, 坑, 环境 | [2026-10-18-pnpm-ci-install-purge.md](2026-10-18-pnpm-ci-install-purge.md) |
 | 2026-10-18 | 子代理多实例并行、写入串行与实际授予（限流/写锁/快照不说假话/测试口径） | agent-core, 子代理, 并发, 写权限, 测试, 口径 | [2026-10-18-subagent-parallel-write.md](2026-10-18-subagent-parallel-write.md) |

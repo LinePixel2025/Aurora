@@ -16,7 +16,7 @@
 整段串行（确认卡不叠加），`permission: 'write'` 按「子表里是否真的有写工具」落实际权限徽章 ——
 只读档不会再显示「可读写」。详见 [06 §19.5](./06-agent-core.md)。
 验收（HEAD 实测）：`pnpm test` 174 文件 / 2602 用例、`verify-p1` 26/26（`version=34`、迁移 34/34）、
-端到端冒烟 **206/206**；窗口截图按窗口拆三轮覆盖全量 94 条 checks（非 onboarding 85 条、仅范围外
+端到端冒烟 **206/206**；窗口截图按窗口拆三轮覆盖全量 96 条 checks（非 onboarding 87 条、仅范围外
 `chat-model-picker` 恒红；onboarding 6 条全绿；memory / awareness-glow 3 条全绿）——**全量单轮在本机会卡在
 onboarding 截图**（窗口被完成流程隐藏后 `capturePage()` 不返回，已知 Electron 坑，待单独修，与本轮子代理改动无关）。
 Center 侧无代码改动，当前基线 **92/92**。
