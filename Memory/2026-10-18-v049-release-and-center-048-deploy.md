@@ -36,11 +36,14 @@ source: 模型自动记录
 5. 验证：`docker compose exec -T aurora-center node bin/aurora-center.js version`（=0.4.8）、
    `curl /api/updates/current`、`docker compose ps`（healthy）、客户端重连日志
 
-## 发现（历史遗留）
+## 发现（历史遗留，当日已修）
 
-- **v0.4.8 的 GitHub Release 资产为 0**（`gh api repos/LinePixel2025/Aurora-releases/releases/tags/v0.4.8 --jq '.assets|length'` → `0`），
-  当时 Center 侧正常；v0.4.9 已按双投发齐。若要让 GitHub 回退源的历史也一致，可把本地
-  `apps/desktop/release/Aurora-Setup-0.4.8.*` 与该版本 `latest.yml` 补传到那个 release。
+- **v0.4.8 的 GitHub Release 资产曾经为 0**（`gh api repos/LinePixel2025/Aurora-releases/releases/tags/v0.4.8 --jq '.assets|length'` → `0`），
+  当时 Center 侧正常。**2026-10-18 已补传完成**：同一批产物（exe 203,135,017 B / blockmap 211,015 B /
+  latest.yml 341 B）上传到该 release，补传后 GitHub 与 Center 两侧 `latest.yml` **逐字相同**，
+  本地 exe 的 sha512 与 latest.yml 记录一致；Latest 仍是 v0.4.9（补传不改 Latest）。
+  原始 `latest.yml` 的来源：Center 保留的 `data/releases/files/0.4.8/latest.yml`（Center 会按版本
+  保留上传暂存目录，历史版本资产可从那里取回，不要凭印象重写）。
 - 发版前要先处理 pnpm `verify-deps-before-run` 在“版本号变化”后触发的自动安装，
   否则 `release.mjs` 会在 `pnpm build` 第一步就中断 —— 处置见
   [2026-10-18-pnpm-ci-install-purge.md](2026-10-18-pnpm-ci-install-purge.md) 的追加节。
@@ -49,6 +52,9 @@ source: 模型自动记录
 
 - 顺序：**先换装 Center**（协议增量、兼容旧客户端）→ 再打包桌面安装包并双投；
   上传后用 `curl /api/updates/current` 与 `gh release view --json assets` 双向核对。
+- 历史 release 缺资产时：Center 的 `data/releases/files/<version>/` 保留了当时的
+  `latest.yml` 与安装包（按版本分目录），从那里取回再 `gh release upload --clobber`，
+  别用别的版本文件或手写 YAML 冒充。
 - 凭据（Center 管理员密码）只经命令行环境变量使用，不写仓库 / 记忆 / 日志。
 - tag message 与 notes 的比对用 `git tag -l vX.Y.Z --format='%(contents)'`（别用 `git show`，
   会把 commit subject 混进来造成假不一致）；GitHub Release body 与 notes 的差异只是 CRLF，
