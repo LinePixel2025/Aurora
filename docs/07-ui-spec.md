@@ -328,7 +328,8 @@
       浏览器 / 上下文；「上下文」已在就切过去、不在则重建），标签总数上限 **12**。
     - **标签形制**：图标 + 标题 + 关闭 ✕（`chat.ctx-tab-close-<id>`，悬停 / 激活才显形，
       命中区 ≥ 24×24）。标题由**面板上报**：文件 = 当前目录名或文件名、终端 = cwd 末段、
-      浏览器 = 页面标题（`page-title-updated`，回落主机名）、上下文 = 固定「上下文」。
+      浏览器 = 页面标题（`page-title-updated`，回落主机名；Agent 专属标签另前置
+      `Agent · `，见下方「Agent 模式」）、上下文 = 固定「上下文」。
       关闭终端标签 = `terminal:kill`（浏览器式语义：关标签就是关那个 shell）。
     - **溢出折叠 = 固定数量 + 「＋N」菜单**（2026-10-03 用户口径）：标签**不缩窄**
       （固定 88px），可见数量由标签条**实测宽度**算出
@@ -356,10 +357,12 @@
       且旧探针 `jobsHiddenOnFiles`（files 下 `chat.jobs` 必须缺席）正依赖这条语义。
       **内存回收（2026-10-04 性能轮）**：隐藏的**浏览器**标签在连续 10 分钟未被激活后，
       自动把 webview 导航到 `about:blank` 释放页面进程（地址、标题、标签都保留；再次激活时
-      按原地址重载，可接受一次重载）。终端保留 shell（xterm scrollback 有 5000 行硬上限），
+      按原地址重载，可接受一次重载）。**Agent 会话占用中的标签不参与这条回收**（见下方
+      「Agent 模式」），否则网页测到一半会被抽走。终端保留 shell（xterm scrollback 有 5000 行硬上限），
       文件面板无本地状态；这样常驻成本由「开过多少网页」变成「最近活跃的网页」。
       **标签是窗口级的**（不是每会话一套）：面板内容仍随当前会话变化（文件面板切会话即
-      重新 bootstrap、终端标签保留自己的 shell、浏览器标签与会话无关）。
+      重新 bootstrap、终端标签保留自己的 shell、浏览器标签与会话无关 —— **Agent 专属标签除外**，
+      每个会话一个，见下方「Agent 模式」）。
       **刻意不做跨重启记忆**：恢复浏览器 / 终端标签会在启动时偷偷加载页面、拉起 shell，
       收益不抵惊扰；宽度记忆（localStorage）不受影响。
       左栏「任务」入口会先**确保上下文标签在**（被关掉则重建）并激活它，再翻面板显隐
@@ -473,6 +476,16 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
       **切标签不再重载**（2026-10-03 二次修订）：浏览器面板随标签常驻，切走只是隐藏，
       webview 只在**标签关闭**时 `remove()`；标签标题跟随页面标题
       （`page-title-updated`，回落主机名）。隐藏期间页面照常运行（与真浏览器一致）。
+      **Agent 模式（v35，内置浏览器工具组，见 06 §27）**：`browser_open` 打开的标签是
+      **Agent 专属标签** —— 标题前缀固定 `Agent · `（其后才是页面标题），标签条上另有徽章
+      `chat.browser-agent-badge`（文案「Agent 操作中 · <detail>」，随动作更新）与停止按钮
+      `chat.browser-agent-stop`（点击 = `browser:agentStop`，**只结束控制、标签页保留**）。
+      主进程先 `windows.showChat()` 再推 `browser:agentOpen`，所以渲染层收到即**展开右栏、
+      新建（同会话复用）并激活**该标签，用户当场看到 Agent 在页面上操作；**Agent 从不导航
+      用户自己的标签**（用户正在看的页面不被顶掉）。Agent 会话占用期间该标签**不参与 10 分钟
+      空闲回收**（见上方「内存回收」）；控制结束 / 空闲超时 / 用户关标签 / guest 崩溃后恢复常规
+      回收。**兼容 UA（`agent.browser.compatUserAgent`）只作用于 Agent 标签**：用户手动打开的
+      浏览器标签仍用默认 UA。标签关闭、崩溃、应用退出都会结束对应的 Agent 会话并把槽位还回来。
     - **Agent 展示（`show_preview` 工具 → `preview:show` 推送）**：Agent 产出的
       HTML 报告 / 网页 / 图片可以直接在右栏看，不必把内容贴进对话。工具目标两类：
       `http(s)` 网址，或**会话边界根之内**的本地文件（相对路径按会话工作目录解析，
@@ -1295,6 +1308,14 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   毛玻璃（`data-field="appearance.glass"`，复选框）→ 流光特效（`data-field="appearance.awarenessGlow"`，
   复选框：文件分析时屏幕四周的流光总开关）。四项都是**改动即落盘**，主进程与四个窗口即时跟随，
   不需要「保存」按钮；Agent 侧同一份字段由 `set_setting` / `set_appearance` 改（见 06 §12）。
+- **「智能与工具（`agent`）」页「内置浏览器」区组（v35，见 06 §27 / 08 §6）**：与
+  `agent.tools.*`、技能、MCP 同页折叠，顺序排「电脑操控」之后；六项锚点
+  `agent.browser.enabled`（总开关）、`agent.browser.maxSessions`（并发上限，数字）、
+  `agent.browser.idleMinutes`（空闲释放分钟数，数字）、`agent.browser.allowPrivateNetwork`
+  （内网访问，复选框）、`agent.browser.compatUserAgent`（兼容 UA，复选框）、
+  `agent.browser.allowMedia`（网页媒体权限，复选框）。关掉总开关时六项**仍渲染**
+  （可先配置后开启，门控见 08 §6.1），本区组**不新增 `data-empty`**；整组在
+  `SETTINGS_READONLY_PREFIXES` 里，AI 改不动。
 
 ### 2.6 记忆库窗口
 
@@ -2103,6 +2124,14 @@ Electron `nativeTheme.themeSource` 常态由 `appearance.theme` 决定（v32 起
     `file:` 之外的协议 / 子代理会话 id 剥回父会话）由
     `apps/desktop/src/main/tools/preview-port.test.ts` 覆盖，
     工具层契约由 `packages/agent-core/src/tools/preview.test.ts` 覆盖；
+  - **Agent 内置浏览器（v35，docs/06 §27）**（`mainAct` + `CHAT_BROWSER_AGENT_CHECK`，
+    产物 `chat-browser-agent.png`）：`mainAct` 通过 index.ts 注册的 runner 走**真实管理器链路**
+    （open → snapshot → 输入 → 点击 → 读结果 → 截图，夹具页 `capture-browser-agent.html`），
+    check 断言右栏激活的是 Agent 浏览器标签、标题以 `Agent · ` 开头、
+    `chat.browser-agent-badge` 可见且文案含 `Agent`、`chat.browser-agent-stop` 矩形 ≥ 20×20、
+    webview `getURL()` 落在夹具页；截图与探针完成后**关掉该标签**，避免污染后续场景。
+    运行结果（`ok:aurora`、控制台命中、截图字节）由 `mainAct` 回执合并进同一条 check；
+    `nativeCheck` 断言清理器已注册并结束会话；
   - **思考过程折叠块**（`CHAT_THINKING_BLOCK_ACT` / `CHAT_THINKING_BLOCK_CHECK`，
     产物 `chat-thinking-block.png`，BetaV2）：前提是 `seedChatTtsHistory` 种下的带 `reasoning`
     （标记 `capture-reasoning-probe`）的助手消息 —— 本场景先 reload 让渲染层重新水合 main 会话，

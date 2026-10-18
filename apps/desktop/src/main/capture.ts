@@ -79,6 +79,31 @@ export function registerAskUserSpawner(spawn: () => Promise<AskUserAnswer>): voi
 let askUserCaptureAnswer: AskUserAnswer | undefined
 
 /**
+ * Agent 内置浏览器的自测执行器（v35，docs/06 §27）。
+ *
+ * `capture.ts` 拿不到 `index.ts` 的 `BrowserAgentManager` 实例（反向依赖会成环），
+ * 因此由 `index.ts` 在截图模式下反向注册一个「跑一轮真实驱动」的函数 ——
+ * 与 `registerAskUserSpawner` 同一个方向、同一个理由。
+ * 未注册时场景的 `mainAct` 如实返回失败（不是静默通过）。
+ */
+export interface BrowserAgentCaptureOutcome {
+  ok: boolean
+  reason?: string
+  detail?: Record<string, unknown>
+}
+
+let browserAgentCaptureRunner: (() => Promise<BrowserAgentCaptureOutcome>) | undefined
+let browserAgentCaptureCleanup: (() => void) | undefined
+
+export function registerBrowserAgentCaptureRunner(
+  run: () => Promise<BrowserAgentCaptureOutcome>,
+  cleanup: () => void,
+): void {
+  browserAgentCaptureRunner = run
+  browserAgentCaptureCleanup = cleanup
+}
+
+/**
  * 截图用的提问内容（3 个选项、单选）：
  * 选项文案固定，好让探针断言"选中的就是第 2 个"以及回执里的答案与之一致。
  */
@@ -3659,6 +3684,95 @@ export const CHAT_PREVIEW_TOOL_CHECK = `(async () => {
         blankNewActive &&
         fixtureKept,
     }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * Agent 内置浏览器（v35，docs/06 §27）：主进程侧驱动 + 渲染层可见性。
+ *
+ * 本场景的 mainAct 走**真实的** `BrowserAgentManager`（与工具同一条链路：
+ * open → snapshot → type → click → read → screenshot），check 只断言渲染层事实
+ * （右栏激活 Agent 浏览器标签、徽章可见、停止按钮量得出尺寸、webview 落在夹具页）。
+ */
+export const CHAT_BROWSER_AGENT_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const browserPane = () =>
+      Array.from(document.querySelectorAll('.ctx-pane[data-tab-kind="browser"]')).find(
+        (el) => el.getBoundingClientRect().width > 8,
+      ) || null
+    const activeTabId = () => {
+      const el = document.querySelector(
+        '[data-field="chat.ctx-tab-list"] [data-tab-id][class*="active"]',
+      )
+      return el === null ? '' : el.getAttribute('data-tab-id') || ''
+    }
+    const activeTabText = () => {
+      const el = document.querySelector(
+        '[data-field="chat.ctx-tab-list"] [data-tab-id][class*="active"]',
+      )
+      return el === null ? '' : (el.textContent || '').replace(/\\s+/g, ' ').trim()
+    }
+    let badge = null
+    let stop = null
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const pane = browserPane()
+      badge = pane === null ? null : pane.querySelector('[data-field="chat.browser-agent-badge"]')
+      stop = pane === null ? null : pane.querySelector('[data-field="chat.browser-agent-stop"]')
+      if (badge !== null && stop !== null) break
+      await wait(150)
+    }
+    const badgeRect = badge === null ? null : badge.getBoundingClientRect()
+    const stopRect = stop === null ? null : stop.getBoundingClientRect()
+    const samePane = badge !== null && stop !== null && badge.contains(stop)
+    let loaded = ''
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      for (const el of document.querySelectorAll('webview')) {
+        try {
+          const url = typeof el.getURL === 'function' ? el.getURL() || '' : ''
+          if (url.indexOf('capture-browser-agent.html') !== -1) loaded = url
+        } catch (error) {
+          /* 还没导航完的 guest 读不到 URL：忽略 */
+        }
+      }
+      if (loaded !== '') break
+      await wait(150)
+    }
+    const badgeText = badge === null ? '' : (badge.textContent || '').replace(/\\s+/g, ' ').trim()
+    const conditions = [
+      activeTabId().indexOf('browser') === 0,
+      badge !== null,
+      stop !== null,
+      badgeRect !== null && badgeRect.width > 60 && badgeRect.height >= 12,
+      stopRect !== null && stopRect.width >= 20 && stopRect.height >= 20,
+      samePane,
+      badgeText.indexOf('Agent') !== -1,
+      activeTabText().indexOf('Agent') === 0,
+      loaded !== '' && loaded.indexOf('file://') === 0,
+    ]
+    const result = {
+      pass: conditions.every(Boolean),
+      conditions,
+      badgeText,
+      activeTabText: activeTabText(),
+      loaded,
+      stopSize:
+        stopRect === null ? null : { width: stopRect.width, height: stopRect.height },
+    }
+    // 收尾：关掉这个 Agent 标签，避免后续截图场景在「多出来的标签 + 已释放会话」残局上跑
+    // （场景之间互相污染是 capture 最常见的假红来源，见 Memory/2026-10-03-capture-probe-gotchas.md）。
+    const agentTabId = activeTabId()
+    const closeBtn =
+      agentTabId === ''
+        ? null
+        : document.querySelector('[data-field="chat.ctx-tab-close-' + agentTabId + '"]')
+    if (closeBtn !== null) {
+      closeBtn.click()
+      await wait(300)
+    }
+    return result
   } catch (error) {
     return { reason: String(error), pass: false }
   }
@@ -12843,6 +12957,40 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
         return { pass: blankClick.ok, sent: fixture, blankClick }
       },
       check: CHAT_PREVIEW_TOOL_CHECK,
+    },
+    // Agent 内置浏览器（v35，docs/06 §27）：真实驱动 + 渲染层可见性。
+    // mainAct 由 index.ts 注册的 runner 完成 open → snapshot → 输入 → 点击 → 读结果 → 截图；
+    // check 只看渲染层事实（Agent 标签激活、徽章、停止按钮尺寸、webview 落到夹具页）。
+    {
+      name: 'chat',
+      file: 'chat-browser-agent.png',
+      prepare: async () => {
+        // 清掉上一场景可能留下的 Agent 标签/会话（reload 会销毁 webview，这里再兜一层）
+        await manager.reload('chat', {})
+      },
+      mainAct: async () => {
+        const run = browserAgentCaptureRunner
+        if (run === undefined) {
+          return { pass: false, reason: '浏览器自测执行器未注册' }
+        }
+        let outcome: BrowserAgentCaptureOutcome
+        try {
+          outcome = await run()
+        } catch (error) {
+          // 失败时立刻收尾，别把半开的会话留给下一个场景
+          browserAgentCaptureCleanup?.()
+          return { pass: false, reason: error instanceof Error ? error.message : String(error) }
+        }
+        if (!outcome.ok) browserAgentCaptureCleanup?.()
+        return { pass: outcome.ok, ...outcome.detail, reason: outcome.reason ?? '' }
+      },
+      check: CHAT_BROWSER_AGENT_CHECK,
+      nativeCheck: () => {
+        // 收尾：结束会话（标签保留），并断言清理器确实注册了 —— 未注册时不能静默通过
+        const registered = browserAgentCaptureCleanup !== undefined
+        browserAgentCaptureCleanup?.()
+        return { pass: registered }
+      },
     },
     // 对话图片区（2026-10-04）：夹具会话带 show_image 工具卡，图片从主进程按 id 读取。
     // 同时核对 HarmonyOS Sans 已应用到消息区、mono 令牌未被替换。

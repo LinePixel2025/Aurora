@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v31）
+## 1. 配置 Schema（config.json，v35）
 
 ```jsonc
 {
-  "version": 30,
+  "version": 35,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -196,6 +196,8 @@
       "general.requireAdmin",
       // 权限边界根的一级（boundaryRoot → Work 空间目录）：AI 改写它 = 把 confirm 档根内免确认扩到任意目录
       "modes.work.workspaceDir",
+      // v35 新增：内置浏览器（开关 / 并发 / 内网访问 = Agent 的数据外发面，见 06 §27）
+      "agent.browser",
     ],
   },
   "agent": {
@@ -229,6 +231,17 @@
       // v12 新增：文件检索（grep / glob）的开关与单次检索的结果条数上限
       "search": { "enabled": true, "maxResults": 200 },
       "open": { "enabled": true },
+    },
+    // v35 新增：内置浏览器 Agent 工具组（见 06 §27）。
+    // 整组在 SETTINGS_READONLY_PREFIXES 里 —— 浏览器能访问什么（私网 / 媒体）与
+    // 同时开几个会话是用户对 Agent 的授权边界，AI 的 set_setting 改不动
+    "browser": {
+      "enabled": true,
+      "maxSessions": 2, // 1–4（硬上限 4）；满额拒绝不排队
+      "idleMinutes": 10, // 1–60；单会话空闲多少分钟自动释放
+      "allowPrivateNetwork": true, // false = 拒绝 localhost / 内网 / 私有网段
+      "compatUserAgent": true, // 只作用于 Agent 标签：改用桌面 Chrome UA
+      "allowMedia": false, // 是否放行 Agent 标签的摄像头 / 麦克风权限请求
     },
   },
   // v16 新增：Aurora Center 连接（docs/12）。整组在 SETTINGS_READONLY_PREFIXES 里 ——
@@ -320,7 +333,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **30**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **35**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.modelParams.<modelId>.reasoningEffort`（v5 新增，v23 起按模型绑定）：
@@ -561,6 +574,17 @@
   **用户可写**（「智能与工具 → Agent 循环」里调），**AI 不可写**：`agent.loop` 在
   `SETTINGS_READONLY_PREFIXES` 里（与 `agent.permissionMode` 同款）—— 让 AI 给自己放大执行预算，
   等于绕过"该停下来问用户"的那道闸门。
+- `agent.browser`（**v35 新增**，见 06 §27）：内置浏览器 Agent 工具组 —— 能力面等价 Playwright MCP，
+  但作为内置原生工具运行（不走 MCP 子系统）。`enabled`（默认 `true`）是总开关，关掉后八个
+  `browser_*` 工具全量注销、并结束全部 Agent 浏览器会话；`maxSessions`（1–4，默认 **2**，硬上限 4）
+  是**全局**并存的 Agent 浏览器会话数，满额**拒绝不排队**；`idleMinutes`（1–60，默认 **10**）是
+  单会话空闲多久自动释放（只结束控制、标签页保留）；`allowPrivateNetwork`（默认 `true`）允许
+  localhost / 内网地址，关掉后只允许公网 http(s)；`compatUserAgent`（默认 `true`）给 Agent 标签
+  改用桌面 Chrome UA（只作用于 Agent 标签，用户自己开的标签不受影响；已在运行的标签保持原 UA，
+  下一次新建生效）；`allowMedia`（默认 `false`）是否放行 Agent 标签的摄像头 / 麦克风权限请求
+  （不控制自动播放；播放策略仍由 Chromium 默认行为决定）。
+  **整组在 `SETTINGS_READONLY_PREFIXES` 里**：放开并发 / 内网 / 媒体等于扩大 Agent 的数据外发面，
+  AI 的 `set_setting` 一律拒绝，只能由用户在设置页改；`readonly` 权限档下整组**不注册**。
 - `automations`（**v19 新增**，见 docs/13 §2.2 / §11）：**自动化（Agent Mode / Normal Mode）**的
   总开关，整组只有 `enabled` 一个字段（默认 `true`）。**关闭 = 引擎停止评估与触发**，
   定义与运行历史原样保留（回看历史不受影响）；设置页入口在「模式」页顶部的「自动化」区组
@@ -691,7 +715,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
   `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（v34 起只有
   `maxParallelCalls` 一项）热路径使用，避免每轮深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 34`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 35`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -788,12 +812,16 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `v33 → v34`（**Agent 循环三退一**，见 §1 的 `agent.loop` 与 06 §5：删 `maxRounds` /
   `maxTotalTokens` / `autoContinueRounds`，换成单一 `maxParallelCalls`（默认 8）。
   旧值**整体丢弃、不做映射**（轮次上限回到内核常量、预算取消），这是本链里第一条**删除字段**的迁移；
-  `agent` 或 `agent.loop` 缺失时**不造对象**，交给默认配置兜底）。
-  三十四条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  `agent` 或 `agent.loop` 缺失时**不造对象**，交给默认配置兜底）、
+  `v34 → v35`（**Agent 内置浏览器**，见 §1 的 `agent.browser` 与 06 §27：为**已存在的 `agent`** 补
+  `browser` 分组（`enabled` / `maxSessions` / `idleMinutes` / `allowPrivateNetwork` /
+  `compatUserAgent` / `allowMedia`）。以默认值为底、已有对象在上，用户已写的开关 / 上限原样保留；
+  `agent` 整组缺失时**不造对象**，交给默认配置兜底 —— 与 `v14 → v15` 同一套路）。
+  三十五条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
   重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **34** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **35** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -999,6 +1027,21 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     生效后由权限档决定：`auto` 完全权限直接放行；`confirm` 档按旧 auto 的项目边界执行
     （根内直接执行、越界弹卡、无项目直接放行）；命中 `allowPatterns` 的 `run_command`
     在 confirm 档仍免确认（见 06 §11.7）。
+- **内置浏览器**（`agent.browser.*`，v35，见 06 §27）：并入「智能与工具（`agent`）」页的折叠区组，
+  六项 —— 总开关（`agent.browser.enabled`）、并发上限（`maxSessions`，1–4）、空闲释放分钟数
+  （`idleMinutes`，1–60）、内网访问（`allowPrivateNetwork`）、兼容 UA（`compatUserAgent`）、
+  网页媒体权限（`allowMedia`）。字段路径见 §1，工具与安全边界见 06 §27。
+  - 总开关关闭 = 八个 `browser_*` 工具全部不注册，**并结束全部 Agent 浏览器会话**；
+    已打开的标签页保留为普通浏览器标签，`Agent · ` 前缀、徽章与停止按钮一并撤掉。
+  - 并发上限是「同时开几个会话」（全局），不是「开几个标签」：满额时工具**拒绝并提示先
+    `browser_close`**，不排队；改设置对下一次 `browser_open` 生效（getter 现读，不用重启）。
+  - 空闲释放只结束控制、不关标签页；用户仍能在标签上看到最后停留的页面。
+  - 内网访问关闭后仍可打开公网 http(s)，localhost / `127.0.0.1` / 私有网段 / `::1` 一律拒绝。
+  - 兼容 UA 只作用于 **Agent 标签**：用户自己开的浏览器标签不受影响（避免站点行为对用户变样）。
+  - 网页媒体权限默认关闭：页面请求摄像头 / 麦克风一律拒绝；打开后只放行该 Agent 标签
+    （不改变自动播放策略）。
+  - 整组**只读**（`SETTINGS_READONLY_PREFIXES`）：AI 的 `set_setting` 一律拒绝，只能由用户在这里改；
+    只读权限档下整组不注册（门控见 §6.1）。
 - **语音**（`tts.*` / `stt.*`，v0.8.0 起）：目标 6 页 IA 下为「语音」页（`voice`，TTS 区组 + STT 区组；
   v8 前为「AI 能力」组第 2 项、仅 TTS）。TTS 区组提供「总开关」（`tts.enabled`）、「默认 TTS 模型」
   （`tts.active`）、「自动朗读」（`tts.autoRead`）、「截断上限」（`tts.maxChars`），以及 provider 列表的
@@ -1080,6 +1123,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 | `agent.permissionMode`                                                                        | 常显（权限档位必须随时能改回来；v13 新增）                                                                                                                         |
 | `agent.snapshots.*`                                                                           | 常显（`enabled` 必须随时能改回来；v14 新增）。关掉 `enabled` 时三个数字字段整块换成 `data-empty="agent.snapshots"`                                                 |
 | `agent.loop.*`                                                                                | 常显（**不跟 `agent.tools.enabled` 门控**：它管的是"一次请求怎么跑"，不是"注册哪些工具"；v15 新增、v34 收窄为「同轮并行上限」一项）                                |
+| `agent.browser.*`                                                                             | 常显（总开关关着时六项仍渲染，可先配置后开启；**不新增 `data-empty`** —— 本区组没有空态。v35 新增；只读档由注册层决定，与显示无关）                                 |
 | `automations.enabled`                                                                         | 常显（总开关关掉必须还能开回来；v19 新增）。所在区组在「模式」页顶部，**不跟模式门控**                                                                             |
 | `general.requireAdmin`                                                                        | 常显（「常规」页「启动」区组；v20 新增）。被删掉 / 改名时 capture 的 general 页探针立刻报 FAIL                                                                     |
 

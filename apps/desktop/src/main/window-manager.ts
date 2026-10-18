@@ -26,10 +26,7 @@ import {
   placeEdgeBar,
   type EdgeBarSide,
 } from './edge-bar-geometry.js'
-import {
-  awarenessGlowBounds,
-  type AwarenessGlowRect,
-} from './awareness-glow.js'
+import { awarenessGlowBounds, type AwarenessGlowRect } from './awareness-glow.js'
 import { zoomActionForInput } from './zoom-shortcuts.js'
 
 export interface WindowManagerOptions {
@@ -1055,6 +1052,19 @@ export class WindowManager {
     const win = this.windows.get(name)
     if (win === undefined || win.isDestroyed()) return
     win.webContents.send(channel, payload)
+  }
+
+  /**
+   * 指定窗口的 `webContents.id`（未创建 / 已销毁时 undefined）。
+   *
+   * 内置浏览器用它校验渲染层上报的 webview guest 归属
+   * （`guest.hostWebContents.id` 必须等于 chat 的 id，docs/06 §27）——
+   * 不能只信渲染层上报的数字，否则主进程会把任意 guest 当成自己的浏览器。
+   */
+  webContentsId(name: WindowName): number | undefined {
+    const win = this.windows.get(name)
+    if (win === undefined || win.isDestroyed()) return undefined
+    return win.webContents.id
   }
 
   /** 退出前：允许窗口真正关闭并落盘几何信息。 */

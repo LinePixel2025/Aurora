@@ -73,6 +73,12 @@ const CHANNELS = {
   // 右栏「终端」（2026-10-03）：与 shared 契约同构，编译期双向断言兜住
   browser: {
     openTab: 'browser:openTab',
+    // Agent 内置浏览器（v35，docs/06 §27）：open/status 是主→渲染推送，
+    // report/stop 是渲染→主 invoke —— 四条都要与 shared 同步，漏改 typecheck 会挂
+    agentOpen: 'browser:agentOpen',
+    agentStatus: 'browser:agentStatus',
+    agentReport: 'browser:agentReport',
+    agentStop: 'browser:agentStop',
   },
   terminal: {
     create: 'terminal:create',

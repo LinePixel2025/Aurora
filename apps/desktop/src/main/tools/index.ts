@@ -39,6 +39,8 @@ import {
 import {
   APPEARANCE_TOOL_NAME,
   createAppearanceTool,
+  BROWSER_TOOL_NAMES,
+  createBrowserTools,
   createClipboardTools,
   createClipboardImageTool,
   createEditTool,
@@ -63,6 +65,7 @@ import {
   createCenterStatusTool,
   type AgentProviderFactory,
   type AskUserPort,
+  type BrowserSessionPort,
   type CenterPort,
   type ClipboardImagePort,
   type ClipboardPort,
@@ -769,6 +772,51 @@ export function registerAwarenessTools(deps: AwarenessToolsDeps): { sync(): stri
       }
       const names = AWARENESS_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
       deps.logger.info('已同步文件自感知工具', { names: [...names] })
+      return [...names]
+    },
+  }
+}
+
+export interface BrowserToolsDeps {
+  tools: ToolRegistry
+  logger: Logger
+  /** 浏览器会话端口（`tools/browser-port.ts` → `browser-agent.ts`） */
+  port: BrowserSessionPort
+  /**
+   * `agent.browser.enabled`（live getter）。关闭时**整组不注册**（模型看不到工具），
+   * 同时由装配层调用 `onDisabled` 结束全部会话，避免留下 Agent 徽章与后台 webview。
+   */
+  enabled: () => boolean
+  /** 当前生效权限档（live getter）：`readonly` 档整组摘除，与 `open_path` 同口径。 */
+  permissionMode: () => PermissionMode
+  /** 能力被关闭 / 降为只读时收掉所有会话（幂等） */
+  onDisabled: () => void
+}
+
+/**
+ * 内置浏览器工具装配器（v35，docs/06 §27）。
+ *
+ * 与 `registerExtensionTools` 同级：**不受 `agent.tools.enabled` 门控** —— 它不是
+ * 「电脑操控」（不碰文件 / 进程 / 配置），而是一组独立的网页测试能力，由
+ * `agent.browser.enabled` 自己控制。`readonly` 档整组不注册：直接在外部网页上
+ * 点击输入属于有外部副作用的动作，与 `open_path` 的口径保持一致。
+ */
+export function registerBrowserTools(deps: BrowserToolsDeps): { sync(): string[] } {
+  return {
+    sync(): string[] {
+      for (const name of BROWSER_TOOL_NAMES) deps.tools.unregister(name)
+
+      if (!deps.enabled() || deps.permissionMode() === 'readonly') {
+        deps.onDisabled()
+        deps.logger.debug('内置浏览器工具不注册（开关关闭或只读档）', {
+          names: [...BROWSER_TOOL_NAMES],
+        })
+        return []
+      }
+
+      for (const tool of createBrowserTools({ port: deps.port })) deps.tools.register(tool)
+      const names = BROWSER_TOOL_NAMES.filter((name) => deps.tools.get(name) !== undefined)
+      deps.logger.info('已同步内置浏览器工具', { names: [...names] })
       return [...names]
     },
   }

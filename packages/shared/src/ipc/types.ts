@@ -448,6 +448,63 @@ export interface BrowserOpenTabEvent {
   url: string
 }
 
+// ─────────────────── Agent 内置浏览器控制（v35，docs/06 §27） ───────────────────
+
+/**
+ * `browser:agentOpen` 推送（主进程 → 渲染层，on/off 成对）。
+ *
+ * Agent 要操作网页时先让渲染层**新建一个 Agent 专属浏览器标签**：渲染层建好 webview、
+ * 拿到 `getWebContentsId()` 后经 `browser:agentReport` 回执，主进程才真正接管驱动。
+ * 与 `preview:show` 的区别：这条是**控制**通道（需要回执），展示仍走同一个
+ * `panelTarget` → BrowserPanel 管线，不另造第二条"右栏打开 URL"通道。
+ */
+export interface BrowserAgentOpenEvent {
+  /** 一次打开请求的幂等 id：回执据此配对（超时即失效） */
+  requestId: string
+  /** 发起工具的会话（`ctx.sessionId`，子代理各自独立） */
+  sessionId: string
+  /** 初始地址（http/https；本地夹具只在开发自测里经主进程直调） */
+  url: string
+  /** 标签初始标题（缺省空串，页面加载后由 page-title-updated 覆盖） */
+  title: string
+}
+
+/**
+ * `browser:agentStatus` 推送（主进程 → 渲染层，on/off 成对）。
+ *
+ * 只用于**可见性**：徽章文案、`focus`（截图前把标签切到前台）、以及 `released`
+ * （会话结束：清映射、恢复正常标签行为）。
+ */
+export interface BrowserAgentStatusEvent {
+  sessionId: string
+  /** 对应的右栏标签 id（会话还没 attach 时缺省） */
+  tabId?: string
+  state: 'opening' | 'ready' | 'busy' | 'released'
+  /** 徽章副文案（如「点击 e3」「空闲 10 分钟已释放」） */
+  detail: string
+  /** true = 渲染层应激活该标签（Agent 正在操作 / 即将截图） */
+  focus?: boolean
+}
+
+/**
+ * `browser:agentReport` 回执（渲染层 → 主进程 invoke）。
+ *
+ * 成功路径只带 `webContentsId`；失败路径（标签达 12 上限 / 窗口没建好）带 `error`，
+ * 主进程把错误原样折成工具失败 —— 不允许静默丢弃（否则 Agent 会一直等到超时）。
+ */
+export interface BrowserAgentReportRequest {
+  requestId: string
+  sessionId: string
+  tabId?: string
+  webContentsId?: number
+  error?: string
+}
+
+/** `browser:agentStop`（渲染层 → 主进程 invoke）：用户点「停止」或关闭标签时结束控制 */
+export interface BrowserAgentStopRequest {
+  sessionId: string
+}
+
 // ───────────────────────── PTY 终端（右栏「终端」标签，2026-10-03） ─────────────────────────
 
 export interface TerminalCreateRequest {
@@ -1977,6 +2034,17 @@ export interface AuroraApi {
      * 主界面收到后**另开一个浏览器标签**加载 `url`（当前页不动）。
      */
     onOpenTab(listener: (event: BrowserOpenTabEvent) => void): () => void
+    /**
+     * Agent 请求新建/复用浏览器标签（docs/06 §27，on/off 成对）：渲染层建好 webview 后
+     * 必须经 `agentReport` 回执 `webContentsId`，主进程才能接管驱动。
+     */
+    onAgentOpen(listener: (event: BrowserAgentOpenEvent) => void): () => void
+    /** Agent 会话状态推送（on/off 成对）：徽章 / 激活标签 / 释放 */
+    onAgentStatus(listener: (event: BrowserAgentStatusEvent) => void): () => void
+    /** 回执一次 agentOpen（成功带 webContentsId，失败带 error） */
+    agentReport(request: BrowserAgentReportRequest): Promise<Result<void>>
+    /** 用户点「停止」或关闭标签：结束该会话的控制（保留标签页） */
+    agentStop(request: BrowserAgentStopRequest): Promise<Result<void>>
   }
   terminal: {
     /**

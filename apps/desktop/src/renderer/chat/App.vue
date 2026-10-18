@@ -26,6 +26,8 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
   AskUserRequest,
+  BrowserAgentOpenEvent,
+  BrowserAgentStatusEvent,
   ChatAttachmentPreview,
   LlmProviderConfig,
   PermissionMode,
@@ -73,6 +75,16 @@ import {
 import { useCenterOfficialCatalog } from '../shared/composables/useCenterOfficialCatalog.js'
 import { useCtxTabs } from './composables/useCtxTabs.js'
 import { CTX_TABS_MAX, type CtxTab, type CtxTabKind } from './composables/ctxTabsCore.js'
+// Agent 内置浏览器（v35，docs/06 §27）：标签 ↔ 会话映射与兼容 UA
+import {
+  agentSessionOfTab,
+  agentTabIdOfSession,
+  assignAgentTab,
+  releaseAgentSession,
+  releaseAgentTab,
+  type AgentTabMap,
+} from './composables/agentBrowserTabs.js'
+import { compatUserAgent } from './composables/compatUserAgent.js'
 import { appendProject, pickProjectEntry } from '../shared/projects.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
@@ -331,6 +343,16 @@ function openCtxTabFromEmpty(kind: CtxTabKind): void {
 
 /** 关标签：把「已挂载」记录一并清掉（编号会被复用，留着会让新标签一开就挂载） */
 function onCloseCtxTab(id: string): void {
+  // Agent 控制的标签被用户关掉 = 结束该会话（主进程也会在 guest destroyed 时兜底）
+  const agentSessionId = agentSessionOfTab(agentTabSessions.value, id)
+  if (agentSessionId !== undefined) {
+    agentTabSessions.value = releaseAgentTab(agentTabSessions.value, id)
+    forgetAgentSession(agentSessionId)
+    const nextRequests = { ...agentRequests.value }
+    delete nextRequests[id]
+    agentRequests.value = nextRequests
+    void window.aurora.browser.agentStop({ sessionId: agentSessionId })
+  }
   closeCtxTab(id)
   if (ctxMountedTabs.value.has(id)) {
     const next = new Set(ctxMountedTabs.value)
@@ -355,6 +377,187 @@ const panelTargetTabId = ref('')
 let panelTokenSequence = 0
 let offPreviewShow: (() => void) | null = null
 let offBrowserOpenTab: (() => void) | null = null
+let offAgentOpen: (() => void) | null = null
+let offAgentStatus: (() => void) | null = null
+
+/**
+ * Agent 内置浏览器（v35，docs/06 §27）：标签 → 会话的映射与徽章状态。
+ *
+ * 主进程只认识 `sessionId`，右栏只认识 `tabId`；这份映射是**唯一**的对齐处
+ * （纯逻辑在 `composables/agentBrowserTabs.ts`，有单测）。`agentRequests` 把建标签
+ * 请求与回执配对 —— 回执必须带 requestId，主进程才能把 webContentsId 交给正确的那次打开。
+ */
+const agentTabSessions = ref<AgentTabMap>({})
+const agentStatusDetail = ref<Record<string, string>>({})
+const agentBusy = ref<Record<string, boolean>>({})
+const agentRequests = ref<Record<string, string>>({})
+/** 兼容 UA（仅 Agent 标签用；设置关闭时返回 undefined → 面板不设属性） */
+const compatAgentUserAgent = computed(() => compatUserAgent(navigator.userAgent))
+
+function hostOfRawUrl(raw: string): string {
+  try {
+    const parsed = new URL(raw)
+    return parsed.hostname === '' ? raw : parsed.hostname
+  } catch {
+    return raw
+  }
+}
+
+function agentSessionOfTabId(tabId: string): string | null {
+  return agentSessionOfTab(agentTabSessions.value, tabId) ?? null
+}
+
+function agentDetailOfTab(tabId: string): string {
+  const sessionId = agentSessionOfTabId(tabId)
+  if (sessionId === null) return ''
+  return agentStatusDetail.value[sessionId] ?? '已就绪'
+}
+
+function agentBusyOfTab(tabId: string): boolean {
+  const sessionId = agentSessionOfTabId(tabId)
+  return sessionId !== null && agentBusy.value[sessionId] === true
+}
+
+function agentUserAgentForTab(tabId: string): string | undefined {
+  if (agentSessionOfTabId(tabId) === null) return undefined
+  if (settingsStore.settings?.agent.browser.compatUserAgent !== true) return undefined
+  return compatAgentUserAgent.value
+}
+
+/** 会话状态（忙 / 已就绪）是两份按 sessionId 的字典，释放时一并清掉，避免长跑进程里累积 */
+function forgetAgentSession(sessionId: string): void {
+  const nextDetail = { ...agentStatusDetail.value }
+  delete nextDetail[sessionId]
+  agentStatusDetail.value = nextDetail
+  const nextBusy = { ...agentBusy.value }
+  delete nextBusy[sessionId]
+  agentBusy.value = nextBusy
+}
+
+/**
+ * 主进程请求新建 / 复用 Agent 专属浏览器标签（`browser:agentOpen`）。
+ *
+ * 与 `preview:show` 的区别：这条是**控制**通道，必须有回执（webContentsId）；
+ * 展示仍走同一个 `panelTarget` → BrowserPanel 管线，不另造第二条打开 URL 的通道。
+ * 标签到 12 上限时**明确回错**（主进程据此让工具失败），不静默。
+ */
+function onAgentOpen(event: BrowserAgentOpenEvent): void {
+  contextOpen.value = true
+  const existingTabId = agentTabIdOfSession(agentTabSessions.value, event.sessionId)
+  let tab: CtxTab | null = null
+  if (existingTabId !== undefined) {
+    tab = ctxTabs.value.find((item) => item.id === existingTabId) ?? null
+  }
+  if (tab === null) tab = onNewCtxTab('browser')
+  if (tab === null) {
+    void window.aurora.browser.agentReport({
+      requestId: event.requestId,
+      sessionId: event.sessionId,
+      error: `标签已达上限（${CTX_TABS_MAX} 个），先关掉一个再让 Agent 打开网页`,
+    })
+    return
+  }
+  agentTabSessions.value = assignAgentTab(agentTabSessions.value, tab.id, event.sessionId)
+  agentRequests.value = { ...agentRequests.value, [tab.id]: event.requestId }
+  agentStatusDetail.value = { ...agentStatusDetail.value, [event.sessionId]: '正在打开页面' }
+  agentBusy.value = { ...agentBusy.value, [event.sessionId]: true }
+  activateCtxTab(tab.id)
+  // 初始标题优先用主进程给的名字（自测夹具 / 工具标题），否则按主机名
+  const initialTitle = event.title.trim() === '' ? hostOfRawUrl(event.url) : event.title.trim()
+  setCtxTabTitle(tab.id, `Agent · ${initialTitle}`)
+  panelTargetTabId.value = tab.id
+  // 刻意**不**把 url 投给面板（与 preview:show 的区别）：Agent 标签先停在 about:blank，
+  // 由主进程在拿到 webContentsId、装好 console/network 监听后再 loadURL ——
+  // 先导航再 attach 会漏掉加载期的日志与失败事件（实测踩过）。
+  panelTarget.value = null
+}
+
+/**
+ * Agent 会话状态（`browser:agentStatus`）：徽章文案 / 忙态 / 截图前激活标签 / 释放。
+ *
+ * `released` 不清空标签内容 —— 那是用户还看得见的页面，只解除 Agent 控制。
+ */
+function onAgentStatus(event: BrowserAgentStatusEvent): void {
+  if (event.state === 'released') {
+    const tabId = agentTabIdOfSession(agentTabSessions.value, event.sessionId)
+    agentTabSessions.value = releaseAgentSession(agentTabSessions.value, event.sessionId)
+    forgetAgentSession(event.sessionId)
+    if (tabId === undefined) return
+    const nextRequests = { ...agentRequests.value }
+    delete nextRequests[tabId]
+    agentRequests.value = nextRequests
+    // 撤掉 `Agent · ` 前缀（docs/06 §27：释放后标签回到普通行为）
+    const tab = ctxTabs.value.find((item) => item.id === tabId)
+    if (tab !== undefined) setCtxTabTitle(tabId, tab.title.replace(/^Agent · /, ''))
+    return
+  }
+  agentStatusDetail.value = { ...agentStatusDetail.value, [event.sessionId]: event.detail }
+  agentBusy.value = {
+    ...agentBusy.value,
+    [event.sessionId]: event.state === 'busy' || event.state === 'opening',
+  }
+  if (event.focus === true) {
+    const tabId = agentTabIdOfSession(agentTabSessions.value, event.sessionId)
+    if (tabId !== undefined) {
+      contextOpen.value = true
+      activateCtxTab(tabId)
+    }
+  }
+}
+
+/** 面板报来 guest 的 webContentsId：回执主进程并配对 requestId */
+function onAgentAttach(tabId: string, webContentsId: number): void {
+  const sessionId = agentSessionOfTab(agentTabSessions.value, tabId)
+  const requestId = agentRequests.value[tabId]
+  if (sessionId === undefined || requestId === undefined) return
+  void window.aurora.browser
+    .agentReport({ requestId, sessionId, tabId, webContentsId })
+    .then((result) => {
+      if (result.ok) {
+        const next = { ...agentRequests.value }
+        delete next[tabId]
+        agentRequests.value = next
+        return
+      }
+      // 回执失败：标签退回普通状态，别让「Agent 操作中」一直挂着
+      agentTabSessions.value = releaseAgentTab(agentTabSessions.value, tabId)
+      forgetAgentSession(sessionId)
+      flashProjectNotice('error', result.message)
+    })
+}
+
+/** 用户点面板上的「停止」：结束控制（标签与页面保留），并清掉本地映射 */
+function onAgentStop(tabId: string): void {
+  const sessionId = agentSessionOfTab(agentTabSessions.value, tabId)
+  agentTabSessions.value = releaseAgentTab(agentTabSessions.value, tabId)
+  const nextRequests = { ...agentRequests.value }
+  delete nextRequests[tabId]
+  agentRequests.value = nextRequests
+  if (sessionId === undefined) return
+  forgetAgentSession(sessionId)
+  void window.aurora.browser.agentStop({ sessionId })
+}
+
+/** 浏览器标签标题：Agent 标签统一加前缀，用户标签原样（docs/06 §27） */
+function onBrowserTabTitle(tabId: string, title: string): void {
+  setCtxTabTitle(tabId, agentSessionOfTabId(tabId) === null ? title : `Agent · ${title}`)
+}
+
+/**
+ * 展示类请求（`show_preview` / `open_path` internal）复用的浏览器标签：
+ * **跳过 Agent 受控标签** —— 否则「测完网页再展示成果」会把 Agent 正在测的页面顶掉，
+ * 主进程的 console/network 缓冲与所有 ref 都会失效（审查发现的实际缺陷）。
+ * 没有可复用标签时新建（与旧口径一致）。
+ */
+function reusableBrowserTab(): CtxTab | null {
+  const free = ctxTabs.value.filter(
+    (tab) =>
+      tab.kind === 'browser' && agentSessionOfTab(agentTabSessions.value, tab.id) === undefined,
+  )
+  if (free.length === 0) return onNewCtxTab('browser')
+  const active = free.find((tab) => tab.id === ctxActiveId.value)
+  return active ?? free[free.length - 1] ?? null
+}
 
 /** 右栏宽度（px）：存 localStorage（视图偏好不进 config schema），280–720 夹取 */
 const CTX_WIDTH_KEY = 'aurora.chat.ctxWidth'
@@ -589,9 +792,13 @@ onMounted(() => {
     if (event.sessionId !== sessionId.value) return
     contextOpen.value = true
     // 复用口径（2026-10-03 二次修订）：激活中的是浏览器标签就用它，否则用最近激活过的那个，
-    // 都没有才新建 —— 每来一次展示就再开一个标签只会把标签条淹掉。
-    const tab = ensureCtxKind('browser')
+    // 都没有才新建 —— 但**跳过 Agent 受控标签**（见 reusableBrowserTab 的注释）。
+    const tab = reusableBrowserTab()
     if (tab === null) return
+    // 必须显式激活：`onNewCtxTab` 会激活，但复用一个**非激活**标签时不会；
+    // 未激活的浏览器面板是 `v-show` 隐藏且可能尚未挂载（webview 不存在），
+    // 预览看起来"什么都没发生"（capture 的 chat-preview-tool 实测）。
+    activateCtxTab(tab.id)
     panelTargetTabId.value = tab.id
     panelTarget.value = {
       url: event.url,
@@ -614,6 +821,13 @@ onMounted(() => {
       title: '',
       token: (panelTokenSequence += 1),
     }
+  })
+  // Agent 内置浏览器（v35，docs/06 §27）：建标签请求 + 会话状态（徽章 / 激活 / 释放）
+  offAgentOpen = window.aurora.browser.onAgentOpen((event) => {
+    onAgentOpen(event)
+  })
+  offAgentStatus = window.aurora.browser.onAgentStatus((event) => {
+    onAgentStatus(event)
   })
   document.addEventListener('pointerdown', onComposerPointerDown)
   document.addEventListener('keydown', onDocumentEscape)
@@ -639,6 +853,10 @@ onUnmounted(() => {
   offPreviewShow = null
   offBrowserOpenTab?.()
   offBrowserOpenTab = null
+  offAgentOpen?.()
+  offAgentOpen = null
+  offAgentStatus?.()
+  offAgentStatus = null
   document.removeEventListener('pointerdown', onComposerPointerDown)
   document.removeEventListener('keydown', onDocumentEscape)
   window.removeEventListener('resize', onViewportResize)
@@ -2220,8 +2438,14 @@ async function markGuideDone(): Promise<void> {
               v-else
               :target="tab.id === panelTargetTabId ? panelTarget : null"
               :active="tab.id === ctxActiveId"
-              @title="(title) => setCtxTabTitle(tab.id, title)"
+              :agent-session-id="agentSessionOfTabId(tab.id)"
+              :agent-detail="agentDetailOfTab(tab.id)"
+              :agent-busy="agentBusyOfTab(tab.id)"
+              :user-agent="agentUserAgentForTab(tab.id)"
+              @title="(title) => onBrowserTabTitle(tab.id, title)"
               @new-tab="onNewCtxTab('browser')"
+              @agent-attach="(payload) => onAgentAttach(tab.id, payload.webContentsId)"
+              @agent-stop="onAgentStop(tab.id)"
             />
           </div>
         </template>

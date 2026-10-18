@@ -37,6 +37,8 @@ import {
   type AppInfo,
   type AskUserAnswerInput,
   type AuroraApi,
+  type BrowserAgentReportRequest,
+  type BrowserAgentStopRequest,
   type ChatArchiveRequest,
   type ChatAttachmentPreview,
   type ChatAttachmentPreviewRequest,
@@ -166,6 +168,18 @@ const previewReadPort: ImageReadPort = {
   readFile: (path) => nodeFs.readFile(path),
 }
 
+/**
+ * Agent 内置浏览器的 IPC 切片（v35，docs/06 §27）。
+ *
+ * 只收两条渲染层 → 主进程的回执：建标签结果（report）与用户停止（stop）；
+ * 反向的状态推送由 `BrowserAgentManager` 经 `windows.sendTo('chat', …)` 做，
+ * 不经过这里（推送不需要 IPC handler）。
+ */
+export interface BrowserAgentIpcLike {
+  report(request: BrowserAgentReportRequest): void
+  stop(sessionId: string, reason: string): boolean
+}
+
 export interface DesktopDeps {
   settings: SettingsStoreLike
   windows: WindowManagerLike
@@ -221,6 +235,11 @@ export interface DesktopDeps {
   workspaceRootOf?: (sessionId?: string) => string | undefined
   /** PTY 终端（terminal:*，docs/07 §2.3）。未装配时四条通道按 E_INVALID_STATE 如实报错 */
   terminal?: TerminalService
+  /**
+   * Agent 内置浏览器（browser:agentReport / browser:agentStop，v35，docs/06 §27）。
+   * 未装配时两条回执通道按 E_INVALID_STATE 如实报错（不静默成功）。
+   */
+  browserAgent?: BrowserAgentIpcLike
   /** Job 存储（chat:jobs / resumeJob / cancelJob，docs/06 §4.1，v15） */
   jobs?: JobStore
   /** 删除会话时级联清理任务清单（docs/06 §18）。未注入时保留旧的单删会话行为。 */
@@ -693,8 +712,40 @@ export function registerIpc(deps: DesktopDeps): () => void {
       )
   })
   /**
-   * 右栏「终端」（2026-10-03，docs/07 §2.3）：PTY 交互终端。
+   * Agent 内置浏览器（v35，docs/06 §27）：渲染层建好 webview 后回报 `webContentsId`。
    *
+   * 主进程在这里校验 guest 归属（`hostWebContents` 必须是 chat 窗口）并交付给
+   * `BrowserAgentManager`；失败要**明确回错**，否则 Agent 会一直等到 15s 超时。
+   */
+  handle<void>(IPC.browser.agentReport, (request: BrowserAgentReportRequest) => {
+    if (deps.browserAgent === undefined) {
+      return Promise.resolve(err('E_INVALID_STATE', '内置浏览器服务不可用'))
+    }
+    try {
+      deps.browserAgent.report(request)
+      return Promise.resolve(ok(undefined))
+    } catch (error) {
+      return Promise.resolve(
+        err('E_INVALID_STATE', error instanceof Error ? error.message : String(error)),
+      )
+    }
+  })
+  /** 用户点「停止」/ 关闭标签：结束该会话的 Agent 控制（标签保留）。 */
+  handle<void>(IPC.browser.agentStop, (request: BrowserAgentStopRequest) => {
+    if (deps.browserAgent === undefined) {
+      return Promise.resolve(err('E_INVALID_STATE', '内置浏览器服务不可用'))
+    }
+    try {
+      deps.browserAgent.stop(request?.sessionId ?? '', '用户停止了 Agent 浏览器操作')
+      return Promise.resolve(ok(undefined))
+    } catch (error) {
+      return Promise.resolve(
+        err('E_UNKNOWN', error instanceof Error ? error.message : String(error)),
+      )
+    }
+  })
+  /**
+   * 右栏「终端」（2026-10-03，docs/07 §2.3）：PTY 交互终端。
    * 刻意**不走上面的 `handle` 封装**：create 需要发起窗口的 `event.sender.id`
    * （输出只推给创建它的窗口 + 按窗口记账的销毁清理），而封装把 event 吞掉了。
    * 其余三条不需要 sender，直接透传给服务。

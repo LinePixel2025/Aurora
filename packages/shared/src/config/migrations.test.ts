@@ -1115,6 +1115,7 @@ describe('配置迁移链', () => {
         'v31 → v32：v31 → v32：新增 appearance.theme / glass（明暗档位与毛玻璃开关）',
         'v32 → v33：v32 → v33：新增 appearance.awarenessGlow（自感知流光特效开关）',
         'v33 → v34：v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
+        'v34 → v35：v34 → v35：新增 agent.browser（Agent 内置浏览器与并发上限）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1161,6 +1162,7 @@ describe('配置迁移链', () => {
         'v31 → v32：v31 → v32：新增 appearance.theme / glass（明暗档位与毛玻璃开关）',
         'v32 → v33：v32 → v33：新增 appearance.awarenessGlow（自感知流光特效开关）',
         'v33 → v34：v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
+        'v34 → v35：v34 → v35：新增 agent.browser（Agent 内置浏览器与并发上限）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1587,6 +1589,7 @@ describe('配置迁移链', () => {
         'v31 → v32：v31 → v32：新增 appearance.theme / glass（明暗档位与毛玻璃开关）',
         'v32 → v33：v32 → v33：新增 appearance.awarenessGlow（自感知流光特效开关）',
         'v33 → v34：v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
+        'v34 → v35：v34 → v35：新增 agent.browser（Agent 内置浏览器与并发上限）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -2022,6 +2025,67 @@ describe('配置迁移链', () => {
       const noLoop = migrate({ version: 33, agent: { permissionMode: 'confirm' } })
       expect((noLoop.data['agent'] as Record<string, unknown>)['loop']).toBeUndefined()
       expect((noLoop.data['agent'] as Record<string, unknown>)['permissionMode']).toBe('confirm')
+    })
+  })
+
+  describe('v34 → v35（Agent 内置浏览器，docs/06 §27 / docs/08 §1）', () => {
+    const browserOf = (raw: Record<string, unknown>): Record<string, unknown> =>
+      (raw['agent'] as Record<string, unknown>)['browser'] as Record<string, unknown>
+
+    it('为已有 agent 补完整 browser 默认值；agent 其它子组与已写的 browser 值原样保留', () => {
+      const outcome = migrate({
+        version: 34,
+        agent: {
+          permissionMode: 'confirm',
+          tools: { enabled: false },
+          loop: { maxParallelCalls: 4 },
+        },
+      })
+      expect(outcome.applied).toHaveLength(CONFIG_VERSION - 34)
+      expect(outcome.applied[0]).toContain('v34 → v35')
+      expect(browserOf(outcome.data)).toEqual({
+        enabled: true,
+        maxSessions: 2,
+        idleMinutes: 10,
+        allowPrivateNetwork: true,
+        compatUserAgent: true,
+        allowMedia: false,
+      })
+      const agent = outcome.data['agent'] as Record<string, unknown>
+      expect(agent['permissionMode']).toBe('confirm')
+      expect(agent['tools']).toEqual({ enabled: false })
+      expect(agent['loop']).toEqual({ maxParallelCalls: 4 })
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+
+      // 用户已写的 browser 值不被默认值覆盖（缺失字段仍由默认值补齐）
+      const kept = migrate({
+        version: 34,
+        agent: { browser: { enabled: false, maxSessions: 4, allowMedia: true } },
+      })
+      expect(browserOf(kept.data)).toEqual({
+        enabled: false,
+        maxSessions: 4,
+        idleMinutes: 10,
+        allowPrivateNetwork: true,
+        compatUserAgent: true,
+        allowMedia: true,
+      })
+    })
+
+    it('幂等：重复迁移不再改 browser 形状', () => {
+      const once = migrate({ version: 34, agent: { browser: { enabled: false } } })
+      expect(browserOf(once.data)['enabled']).toBe(false)
+
+      const twice = migrate({ ...once.data, version: 34 })
+      expect(twice.data['agent']).toEqual(once.data['agent'])
+      expect(browserOf(twice.data)['enabled']).toBe(false)
+    })
+
+    it('agent 整组缺失时不凭空造对象，交给默认配置兜底', () => {
+      const outcome = migrate({ version: 34, general: { language: 'zh-CN' } })
+      expect(outcome.warnings).toEqual([])
+      expect(outcome.data['agent']).toBeUndefined()
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
     })
   })
 })

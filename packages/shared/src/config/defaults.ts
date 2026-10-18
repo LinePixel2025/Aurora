@@ -211,6 +211,22 @@ export const DEFAULT_AGENT_TOOLS = {
   },
 } as const
 
+/**
+ * Agent 内置浏览器默认值（v35，docs/06 §27、docs/08 §1）。
+ *
+ * 默认开启、最多两个并发会话、闲置 10 分钟回收；允许访问私网地址并伪装成常见浏览器 UA
+ * （很多站点对非浏览器 UA 直接拒绝），媒体（音视频）默认关闭。
+ * 该分组在 `SETTINGS_READONLY_PREFIXES` 里（AI 改不动，防自我扩权）。
+ */
+export const DEFAULT_AGENT_BROWSER = {
+  enabled: true,
+  maxSessions: 2,
+  idleMinutes: 10,
+  allowPrivateNetwork: true,
+  compatUserAgent: true,
+  allowMedia: false,
+} as const
+
 export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
   version: CONFIG_VERSION,
   general: {
@@ -326,6 +342,8 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     loop: {
       maxParallelCalls: 8,
     },
+    // Agent 内置浏览器（v35，docs/06 §27、docs/08 §1）：默认开启，授权边界见 schema.ts。
+    browser: { ...DEFAULT_AGENT_BROWSER },
   },
   /**
    * Aurora Center 连接（v16；v17 补 `account`，docs/12）：默认**不启用**（`enabled: false` + 空 serverUrl）

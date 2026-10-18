@@ -17,6 +17,7 @@ import {
 } from 'node:fs'
 import { hostname as osHostname, tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   BrowserWindow,
   Notification,
@@ -195,6 +196,7 @@ import {
   nativeGlassCheck,
   parseCaptureTokens,
   registerAskUserSpawner,
+  registerBrowserAgentCaptureRunner,
   seedChatTtsHistory,
   seedMemoryFixture,
   seedJobFixture,
@@ -220,6 +222,14 @@ import {
   type ImageToolsRegistry,
   type SettingsToolRegistry,
 } from './tools/index.js'
+import { registerBrowserTools } from './tools/index.js'
+import { BrowserAgentManager } from './browser-agent.js'
+import {
+  createBrowserAgentPort,
+  hostnameOf,
+  isPrivateHostname,
+  normalizeBrowserUrl,
+} from './tools/browser-port.js'
 import { AutomationEngine } from './automation/engine.js'
 import { AutomationStore } from './automation/store.js'
 import { automationRunProfile } from './automation/run-profile.js'
@@ -574,6 +584,10 @@ let computerTools: ComputerTools | undefined
 let officePool: OfficePool | undefined
 /** `set_setting` 装配器（docs/06 §12）：与电脑操控工具分开注册，互不摘除 */
 let settingsTool: SettingsToolRegistry | undefined
+/** 内置浏览器会话驱动（v35，docs/06 §27）：并发上限 / 空闲释放 / webview 操作 */
+let browserAgent: BrowserAgentManager | undefined
+/** 内置浏览器工具装配器（v35）：按 agent.browser.enabled 与权限档注册 / 摘除 */
+let browserTools: { sync(): string[] } | undefined
 /** `classisland_remind` 装配器（docs/05 §3.4 v3）：按桥接可用性注册 / 摘除 */
 let classIslandTools: ClassIslandToolsRegistry | undefined
 // Aurora Center（docs/12）：连接器 / 会话桥 / 工具表
@@ -853,7 +867,7 @@ async function bootstrap(): Promise<void> {
       const isOwnWindow = BrowserWindow.getAllWindows().some(
         (win) => !win.isDestroyed() && win.webContents.id === webContents.id,
       )
-      callback(isOwnWindow)
+      callback(isOwnWindow || browserAgent?.allowsMedia(webContents.id) === true)
       return
     }
     callback(true)
@@ -1291,6 +1305,99 @@ async function bootstrap(): Promise<void> {
     ownedDirs: OWNED_IMAGE_SUBDIRS.map((name) => join(userData, name)),
     logger: logger.child('tools'),
   })
+  // 7.1.2b 内置浏览器会话驱动（v35，docs/06 §27）：并发上限 / 空闲释放 / webview guest 驱动。
+  //      windows 已在 7.0 装配完成；这里只拿 getter，避免把窗口实例钉成构造期常量。
+  browserAgent = new BrowserAgentManager({
+    settings: () => settings!.get(),
+    logger: logger.child('browser'),
+    chatWebContentsId: () => windows?.webContentsId('chat'),
+    sendToChat: (channel, payload) => windows?.sendTo('chat', channel, payload),
+    // 先等 chat 窗口加载完再推 agentOpen：首建窗口时 showChat() 是异步加载，
+    // 立刻推送会早于渲染层订阅（window-manager.showWithPayload 同款坑）。
+    presentChat: async () => {
+      windows?.showChat()
+      await windows?.whenLoaded('chat')
+    },
+    // 页面自身发起的导航 / 弹窗也按当前设置判定（不只首次 open）：
+    // 关掉「本机与内网地址」后，页面里的 location / 链接 / 302 与 window.open 都要被拦。
+    allowNavigation: (raw) => {
+      const normalized = normalizeBrowserUrl(raw)
+      if (!normalized.ok) return { ok: false, reason: normalized.error }
+      const browser = settings!.get().agent.browser
+      if (!browser.allowPrivateNetwork) {
+        const host = hostnameOf(normalized.url)
+        if (isPrivateHostname(host)) {
+          return { ok: false, reason: `不允许访问本机与内网地址（${host}）` }
+        }
+      }
+      return { ok: true }
+    },
+    screenshotsDir: join(userData, 'screenshots'),
+  })
+  // 截图自测（`chat-browser-agent.png`）：capture.ts 拿不到这个实例，反向注册一个 runner。
+  // 走的是与工具**同一条**管理器链路（open → snapshot → act → read → screenshot），
+  // 因此它验证的是真实驱动，而不是另写一套假实现。
+  registerBrowserAgentCaptureRunner(
+    async () => {
+      const manager = browserAgent
+      if (manager === undefined) return { ok: false, reason: '浏览器管理器未装配' }
+      const fixture = join(userData, 'capture-browser-agent.html')
+      await fs.writeFile(
+        fixture,
+        [
+          '<!doctype html><meta charset="utf-8"><title>Agent 夹具页</title>',
+          '<h1>Agent 浏览器夹具</h1>',
+          '<label>查询 <input id="q" aria-label="查询"></label>',
+          '<button id="go">运行</button>',
+          '<div id="out">idle</div>',
+          '<script>',
+          "document.getElementById('go').addEventListener('click', function () {",
+          "  document.getElementById('out').textContent = 'ok:' + document.getElementById('q').value",
+          '})',
+          "console.error('agent-fixture-boom')",
+          '</script>',
+        ].join('\n'),
+        'utf8',
+      )
+      manager.stopAll('capture 重跑')
+      const sessionId = 'capture-browser-agent'
+      try {
+        await manager.open(sessionId, pathToFileURL(fixture).toString(), 'Agent 夹具页')
+        const snapshot = await manager.snapshot(sessionId)
+        const input = snapshot.elements.find((element) => element.name === '查询')
+        const button = snapshot.elements.find((element) => element.name === '运行')
+        if (input === undefined || button === undefined) {
+          return {
+            ok: false,
+            reason: '快照里没有夹具元素',
+            detail: {
+              elements: snapshot.elements.map((element) => `${element.role}:${element.name}`),
+            },
+          }
+        }
+        await manager.act(sessionId, 'type', { ref: input.ref, text: 'aurora' })
+        await manager.act(sessionId, 'click', { ref: button.ref })
+        const out = await manager.evaluate(sessionId, "document.getElementById('out').textContent")
+        const logs = await manager.read(sessionId, 'console')
+        const shot = await manager.screenshot(sessionId, false)
+        const consoleHit = (logs.console ?? []).some((entry) =>
+          entry.message.includes('agent-fixture-boom'),
+        )
+        return {
+          ok: out.value.includes('ok:aurora') && consoleHit && shot.bytes > 0,
+          detail: {
+            output: out.value,
+            consoleHit,
+            shotBytes: shot.bytes,
+            elements: snapshot.elements.length,
+          },
+        }
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+      }
+    },
+    () => browserAgent?.stopAll('capture 收尾'),
+  )
   // 7.1.3 扩展工具七件套（docs/06 §14）：web_fetch / clipboard_read / clipboard_write /
   //     notify_user / generate_image / show_preview / show_image。与 set_setting 同级——不受
   //     `agent.tools.enabled` 门控，敏感动作靠工具自身的 `sensitivity: 'confirm'` 逐次确认。
@@ -1319,6 +1426,24 @@ async function bootstrap(): Promise<void> {
       },
       logger: logger.child('tools'),
     }),
+  })
+  // 7.1.3a 内置浏览器工具组（v35，docs/06 §27）：browser_open / snapshot / act / read /
+  //     wait / screenshot / eval / close。与扩展工具同级 —— 不受 agent.tools.enabled 门控，
+  //     由 agent.browser.enabled 自己控制；readonly 档整组摘除（与 open_path 同口径）。
+  browserTools = registerBrowserTools({
+    tools,
+    logger: logger.child('tools'),
+    port: createBrowserAgentPort({
+      driver: browserAgent,
+      settings: () => {
+        const browser = settings!.get().agent.browser
+        return { enabled: browser.enabled, allowPrivateNetwork: browser.allowPrivateNetwork }
+      },
+      logger: logger.child('tools'),
+    }),
+    enabled: () => settings!.get().agent.browser.enabled,
+    permissionMode: () => resolvePermissionMode(centerSettings.get()),
+    onDisabled: () => browserAgent?.stopAll('内置浏览器能力已关闭'),
   })
   // 7.1.3b 图像工具（docs/06 §25）：view_image / screenshot / clipboard_read_image。
   //     门控是**模型能力**而不是开关：当前生效模型没开图片输入就一个都不注册（判据见 vision.ts）。
@@ -2644,6 +2769,8 @@ async function bootstrap(): Promise<void> {
     rootOf: (sessionId) => sessionProjects.boundaryRoot(sessionId),
   })
   deps.terminal = terminalService
+  // 内置浏览器的两条回执通道（browser:agentReport / agentStop）：管理器在 7.1.2b 已建好
+  if (browserAgent !== undefined) deps.browserAgent = browserAgent
   desktopDeps = deps
   disposeIpc = registerIpc(deps)
 
@@ -5030,6 +5157,110 @@ async function runSmokeTest(userData: string): Promise<void> {
     }
   }
 
+  /**
+   * 2.9 内置浏览器（v35，docs/06 §27）：真实 webview guest 驱动 + 并发上限。
+   *
+   * 走的是与工具**同一条**管理器链路（渲染层建标签 → 上报 webContentsId → 主进程
+   * loadURL / executeJavaScript / CDP），因此这一段失败就是功能真的不可用；
+   * 端口层的 URL / 总开关策略由 `browser-port.test.ts` 覆盖，这里不重复造开关。
+   */
+  if (smokeSection('2.9') && browserAgent !== undefined) {
+    const manager = browserAgent
+    const fixture = join(userData, 'smoke-browser.html')
+    const first = 'smoke-browser-1'
+    try {
+      await fs.writeFile(
+        fixture,
+        [
+          '<!doctype html><meta charset="utf-8"><title>自测夹具</title>',
+          '<label>查询 <input id="q" aria-label="查询"></label>',
+          '<button id="go">运行</button>',
+          '<div id="out">idle</div>',
+          '<script>',
+          "document.getElementById('go').addEventListener('click', function () {",
+          "  document.getElementById('out').textContent = 'ok:' + document.getElementById('q').value",
+          '})',
+          "console.error('smoke-browser-boom')",
+          '</script>',
+        ].join('\n'),
+        'utf8',
+      )
+      const fixtureUrl = pathToFileURL(fixture).toString()
+      await manager.open(first, fixtureUrl, '自测夹具')
+      record('内置浏览器：打开本地夹具页', true, fixture)
+
+      const snapshot = await manager.snapshot(first)
+      const input = snapshot.elements.find((element) => element.name === '查询')
+      const button = snapshot.elements.find((element) => element.name === '运行')
+      record(
+        '内置浏览器：快照含可交互元素',
+        input !== undefined &&
+          button !== undefined &&
+          snapshot.url.indexOf('smoke-browser.html') !== -1,
+        `elements=${snapshot.elements.length}`,
+      )
+      if (input !== undefined && button !== undefined) {
+        await manager.act(first, 'type', { ref: input.ref, text: 'aurora' })
+        await manager.act(first, 'click', { ref: button.ref })
+        const out = await manager.evaluate(first, "document.getElementById('out').textContent")
+        record('内置浏览器：输入 + 点击生效', out.value.indexOf('ok:aurora') !== -1, out.value)
+      } else {
+        record('内置浏览器：输入 + 点击生效', false, '缺少夹具元素')
+      }
+
+      const logs = await manager.read(first, 'console')
+      record(
+        '内置浏览器：控制台错误可读',
+        (logs.console ?? []).some((entry) => entry.message.includes('smoke-browser-boom')),
+        `console=${(logs.console ?? []).length}`,
+      )
+
+      const shot = await manager.screenshot(first, false)
+      const stat = await fs.stat(shot.path).catch(() => undefined)
+      record(
+        '内置浏览器：截图落盘',
+        shot.bytes > 0 && stat !== undefined && stat.size === shot.bytes,
+        `${shot.width}x${shot.height} ${shot.bytes}B`,
+      )
+
+      // 并发上限：按 manager 现读的 limit 开满（默认 2），再多一个必须被拒绝（不是静默排队）。
+      // 不写死 2：默认值以后调整时这条断言不该跟着变红。
+      const limit = manager.diagnostics().limit
+      for (let index = 2; index <= limit; index += 1) {
+        await manager.open(`smoke-browser-${index}`, fixtureUrl, '自测夹具')
+      }
+      let rejected = false
+      let rejectedMessage = ''
+      try {
+        await manager.open(`smoke-browser-${limit + 1}`, fixtureUrl, '自测夹具')
+      } catch (error) {
+        rejected = true
+        rejectedMessage = error instanceof Error ? error.message : String(error)
+      }
+      record(
+        '内置浏览器：并发上限拒绝超出上限的会话',
+        rejected && rejectedMessage.includes('上限'),
+        `limit=${limit} ${rejectedMessage}`,
+      )
+
+      manager.stopAll('smoke 收尾')
+      record(
+        '内置浏览器：收尾后没有残留会话',
+        manager.diagnostics().sessions.length === 0,
+        `sessions=${manager.diagnostics().sessions.length}`,
+      )
+      await manager.open(first, fixtureUrl, '自测夹具')
+      record('内置浏览器：释放名额后可重新打开', true, first)
+      manager.stopAll('smoke 收尾')
+    } catch (error) {
+      record('内置浏览器：自测链路', false, error instanceof Error ? error.message : String(error))
+      manager.stopAll('smoke 失败收尾')
+    }
+  } else if (smokeSection('2.9')) {
+    // 管理器没装配时**必须记一条失败**：否则整段 8 条断言静默消失，summary 看起来仍然全绿。
+    record('内置浏览器：管理器未装配', false, 'browserAgent undefined')
+  }
+
   for (const item of results) {
     const line = `${item.ok ? 'PASS' : 'FAIL'} ${item.name}${item.detail === '' ? '' : ` — ${item.detail}`}`
     if (item.ok) logger?.info(`${SMOKE_RESULT_PREFIX} ${line}`)
@@ -5581,6 +5812,8 @@ function createSummarizer(
 async function shutdown(): Promise<void> {
   logger?.info('Aurora 退出中')
   disposeIpc?.()
+  // 内置浏览器会话要先收掉：detach 调试器、停空闲计时器、推 released（标签交给用户）
+  browserAgent?.dispose()
   // PTY shell 先收掉：孤儿 conpty 进程会一直挂着，比任何落盘失败都难看
   terminalService?.dispose()
   centerConnector?.dispose()
@@ -5912,6 +6145,8 @@ function syncToolRegistries(): void {
   computerTools?.sync()
   settingsTool?.sync()
   extensionTools?.sync()
+  // 内置浏览器（v35，docs/06 §27）：开关 / 权限档变化即时注册或摘除；关闭时收掉全部会话
+  browserTools?.sync()
   // 图像工具（docs/06 §25）：换模型 / 改「支持图片输入」开关后即时注册或摘除
   imageTools?.sync()
   agentCoreTools?.sync()

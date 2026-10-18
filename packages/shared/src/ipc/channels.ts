@@ -76,6 +76,18 @@ export const IPC = {
   browser: {
     /** 站点请求另开标签：{ url }（地址栏回显同一个 URL） */
     openTab: 'browser:openTab',
+    /**
+     * Agent 内置浏览器（v35，docs/06 §27，主进程 → 渲染层，on/off 成对）：
+     * 请求渲染层新建/复用 **Agent 专属**浏览器标签；渲染层拿到 webview 的
+     * `webContentsId` 后经 `agentReport` 回执，主进程才接管驱动。
+     */
+    agentOpen: 'browser:agentOpen',
+    /** Agent 会话状态（opening / ready / busy / released）：徽章、激活标签、释放 */
+    agentStatus: 'browser:agentStatus',
+    /** 渲染层 → 主进程回执：成功带 webContentsId，失败带 error（不再造第二条打开 URL 的展示通道） */
+    agentReport: 'browser:agentReport',
+    /** 渲染层 → 主进程：用户点停止 / 关标签，结束该会话的控制（标签保留） */
+    agentStop: 'browser:agentStop',
   },
   /**
    * 右栏「终端」tab（2026-10-03，docs/07 §2.3）：PTY 交互终端。

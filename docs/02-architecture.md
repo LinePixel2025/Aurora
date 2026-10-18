@@ -71,6 +71,8 @@
 | `schedule` / `pre-class-reminder`             | 课程表 provider 与课前 5 分钟提醒（见 05 §3.4）                                                    |
 | `proactive`                                   | 主动引导调度与敏感工具确认（勿扰时段、超时按拒绝，见 06 §9）                                       |
 | `agent-host`                                  | 装配 agent-core 与 modes，向渲染层暴露统一 API                                                     |
+| `browser-agent`                               | 内置浏览器 Agent 工具的主进程端口：会话登记、guest 归属校验、`loadURL` 导航与 CDP 驱动（见 06 §27） |
+| `browser-agent-sessions`                      | Agent 浏览器会话的并发槽位与空闲释放（electron-free，可单测；上限与空闲时长走 live getter）        |
 | `center/*`                                    | Aurora Center 连接器：出站 WS、重连、远程命令处理（会话 / 配置 / 模式），见 12                     |
 | `ipc`                                         | IPC 通道注册（契约见 §6）                                                                          |
 
@@ -170,6 +172,20 @@ chokidar 事件 → FileWatcher 稳定判定 → 分类队列（并发 2）
   `terminal:create / input / resize / kill` + 推送 `terminal:data / exit`
   （PTY 终端，`main/terminal-service.ts`；create 需要发起窗口的 `event.sender.id`，
   输出只推给创建窗口）。preload 白名单与 shared 双向断言同步更新。
+- **内置浏览器 Agent 通道（v35，docs/06 §27）**：`browser_open` 等八个内置工具由主进程驱动
+  右栏 chat 窗口里的 webview，四个通道的方向与语义如下（preload 白名单与 shared 双向断言同步）：
+
+  | 通道 | 方向 | 语义 |
+  |---|---|---|
+  | `browser:agentOpen` | 主进程 → 渲染层（推送，on/off 成对） | 请求渲染层新建 / 复用本会话的 Agent 专属浏览器标签；payload `{ requestId, sessionId, url, title }`，主进程 15s 未收到回执按失败处理 |
+  | `browser:agentReport` | 渲染层 → 主进程（invoke） | 上报创建结果：成功带 `webContentsId`（`tabId?`）、失败带 `error`（如标签达 12 上限）→ `Result<void>` |
+  | `browser:agentStatus` | 主进程 → 渲染层（推送，on/off 成对） | 会话状态 `opening / ready / busy / released` 与徽章 `detail`；`focus: true` 时渲染层激活该标签（Agent 操作中 / 截图前），`released` 清映射 |
+  | `browser:agentStop` | 渲染层 → 主进程（invoke） | 用户点「停止」或关闭标签时结束该会话的控制（标签页保留）→ `Result<void>` |
+
+  标签的 `tabId` 由渲染层新建 / 复用后**自行记账**（只用于回执配对与状态展示，不作为信任依据）；
+  主进程对上报的 `webContentsId` 查 `webContents.fromId` 并校验 `hostWebContents.id` 等于 chat
+  窗口的 webContents id 后才登记并导航，**不按 URL / 标题猜 guest**。实现模块见 §3.1 的
+  `browser-agent` / `browser-agent-sessions`。
 - 窗口控制（`window:*`）：`show` / `hide` / `toggle` / `showChat` / `setPosition` /
   `setEdgeBarExpanded` / `minimize` / `toggleMaximize` / `getState`，事件推送 `window:stateChanged`。
   `minimize` 真最小化（进任务栏，chat / 设置 / 记忆库可用）；`toggleMaximize` 切换系统最大化

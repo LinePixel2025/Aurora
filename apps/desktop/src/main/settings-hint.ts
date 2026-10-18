@@ -43,6 +43,7 @@ export const SETTINGS_HINT = [
   '项目（projects.*）、权限档位（agent.permissionMode）与确认闸门（advanced.confirmSensitiveTools、agent.tools.terminal.allowPatterns）一律只读：',
   'Work 模式的工作目录（modes.work.workspaceDir）同样一律只读 —— 它是权限边界根的一级，改它等于把免确认范围扩到任意目录：',
   '循环预算（agent.loop.*）、写前快照（agent.snapshots.*）与管理员提权（general.requireAdmin）同样一律只读：',
+  '内置浏览器能力（agent.browser.*）同样一律只读 —— 它默认开启，但能否操作网页、最多开几个会话只能由用户在设置页调整：',
   '文件自感知（fileAwareness.*）同样一律只读 —— 它会读取文件、发送正文并安排后台分析，必须由用户在设置页显式开启：',
   '改它们等于改你自己的指令面、摘掉自己的确认闸门，或绕过预算与回滚的兜底，需要用户去设置页操作。',
   '所有凭据类路径（llm/tts/stt/imagegen 的 providers 子树、mcp.servers）一律只读：',

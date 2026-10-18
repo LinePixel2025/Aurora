@@ -257,6 +257,26 @@ describe('createSettingsPort 的写入闸门（黑名单 × 顶层分组）', ()
     expect(rejected.ok).toBe(false)
     expect(store.get().appearance.theme).toBe('dark')
   })
+
+  it('agent.browser.enabled 拒写（浏览器授权边界整组只读，v35）', async () => {
+    const { store, port } = setup()
+    // 浏览器能力（私网 / 媒体）与并发上限是用户对 Agent 的授权边界 ——
+    // 拒绝理由来自 shared 黑名单，而不是端口那句泛化的「未知配置路径」
+    const check = port.writable('agent.browser.enabled')
+    expect(check.ok).toBe(false)
+    if (!check.ok) {
+      expect(check.reason).toContain('授权边界')
+      expect(check.reason).not.toBe('未知配置路径')
+    }
+
+    const outcome = await port.write([{ path: 'agent.browser.enabled', value: false }])
+    expect(outcome.ok).toBe(false)
+    expect(outcome.applied).toEqual([])
+    // 盘上的值一字未动（拒绝发生在合并之前）
+    expect(store.get().agent.browser.enabled).toBe(true)
+    // 同组 agent 的既有可写面不受牵连
+    expect(port.writable('agent.tools.enabled').ok).toBe(true)
+  })
 })
 
 /**

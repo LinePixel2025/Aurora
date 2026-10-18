@@ -105,6 +105,11 @@ const api: AuroraApi = {
   browser: {
     // 站点自开标签（target="_blank" / window.open 的 http(s) 目标）：主进程 → 渲染层，成对
     onOpenTab: (listener) => subscribe(IPC.browser.openTab, listener),
+    // Agent 内置浏览器（v35，docs/06 §27）：建标签请求 / 状态推送 / 回执 / 停止
+    onAgentOpen: (listener) => subscribe(IPC.browser.agentOpen, listener),
+    onAgentStatus: (listener) => subscribe(IPC.browser.agentStatus, listener),
+    agentReport: (request) => invoke(IPC.browser.agentReport, request),
+    agentStop: (request) => invoke(IPC.browser.agentStop, request),
   },
   terminal: {
     // 右栏「终端」（docs/07 §2.3）：PTY 交互终端，输出经 data/exit 推送（on/off 成对）

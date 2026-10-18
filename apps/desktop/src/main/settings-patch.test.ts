@@ -539,3 +539,21 @@ describe('mergeSettingsPatch · fileAwareness 分组（v29）', () => {
     })
   })
 })
+
+describe('mergeSettingsPatch · agent.browser 分组（v35）', () => {
+  it('agent 顶层浅合并：browser 分组整体替换，其余 agent 子组与已存值原样保留', () => {
+    const draft = createDefaultSettings()
+    draft.agent.tools.enabled = false
+    draft.agent.loop.maxParallelCalls = 4
+
+    // 设置页回传的是**完整** browser 分组（`agent` 是顶层浅合并，browser 不做字段级合并）
+    const next = { ...createDefaultSettings().agent.browser, enabled: false, maxSessions: 3 }
+    mergeSettingsPatch(draft, { agent: { browser: next } })
+
+    expect(draft.agent.browser).toEqual(next)
+    // 没被点名的 agent 子组保持原值（浅合并只替换 browser 这一棵）
+    expect(draft.agent.tools.enabled).toBe(false)
+    expect(draft.agent.loop).toEqual({ maxParallelCalls: 4 })
+    expect(draft.agent.snapshots.enabled).toBe(true)
+  })
+})

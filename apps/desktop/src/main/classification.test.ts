@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_AGENT_TOOLS } from '@aurora/shared'
+import { DEFAULT_AGENT_BROWSER, DEFAULT_AGENT_TOOLS } from '@aurora/shared'
 import type { ClassificationRecord, Logger, Settings } from '@aurora/shared'
 import { ClassificationService } from './classification.js'
 import type { ClassifyProvider } from './classify/llm.js'
@@ -167,6 +167,8 @@ function settingsWith(overrides: {
       },
       // v15 起 agent 还多了 loop（zod .default() ⇒ 输出类型必填）；v34 只剩并发度一项
       loop: { maxParallelCalls: 8 },
+      // v35 起 agent 多了 browser（zod .default() ⇒ 输出类型必填；本用例不涉及浏览器，保持默认态）
+      browser: { ...DEFAULT_AGENT_BROWSER },
     },
     // v16 新增顶层分组（Aurora Center 连接，docs/12）：本用例不涉及远程控制，保持默认空态
     center: {

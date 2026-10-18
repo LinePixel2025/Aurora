@@ -66,8 +66,8 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：`$env:AURORA_SMOKE='1'; pnpm dev`，
   结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`（调试渲染层加 `AURORA_DEVTOOLS=1`）。
-  **全量约 40 秒、206 条断言应当全绿（2026-10-18 实测 `SUMMARY 206/206 passed`；
-  v34 删掉「预算触顶落 paused」断言后由 204 → 203，本轮多子代理 +3 条并发/持久化断言）**——
+  **全量约 40 秒、214 条断言应当全绿（2026-10-18 实测 `SUMMARY 214/214 passed`；
+  v34 删掉「预算触顶落 paused」断言后由 204 → 203，本轮多子代理 +3、内置浏览器 +8 条断言）**——
   **先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
   **提交前仍必须跑全量**。
@@ -86,11 +86,12 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   再细一级 `$env:AURORA_CAPTURE_ONLY='<PNG 名子串>'`（逗号分隔，特殊值 `failed` = 只重跑上次没过的）。
   **张数与构成以 `report.json` 为准；「截了没有」只看日志 count 与报告，退出码 0 不等于截到了**；
   ⚠️ 筛选跑会产生假 FAIL（看到 FAIL 先问"是不是筛选跑的"，再用全量确认）。userData 自动隔离。规则见 docs/07 §5.3。
-  当前基线（2026-10-18 实测）：**全量 96 条 checks**（新增 `chat-composer-paste.png` /
-  `chat-nav-narrow.png`），唯一恒红项是范围外的 `chat-model-picker.png`；
+  当前基线（2026-10-18 实测）：**全量 97 条 checks**（四窗 88 + onboarding 6 + memory/awareness-glow 3；
+  本轮新增 `chat-browser-agent.png`，此前新增 `chat-composer-paste.png` / `chat-nav-narrow.png`），
+  唯一恒红项是范围外的 `chat-model-picker.png`；
   **2026-10-18 补充**：本机全量单轮会在 `onboarding-done` 卡住（onboarding 窗口被完成流程隐藏后
-  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 96 条：
-  `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation'`（87 checks，仅 `chat-model-picker` 红）
+  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 97 条：
+  `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation'`（88 checks，仅 `chat-model-picker` 红）
   + `AURORA_CAPTURE_ONLY='onboarding'`（6 checks 全绿）+ `AURORA_CAPTURE_WINDOWS='memory,awareness-glow'`
   （3 checks 全绿）；这是 capture 环境问题，不是子代理改动的回归。
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`
@@ -127,7 +128,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   **绝不允许裸 `v-html` 模型原文**；链接 scheme 走 markdown-it `validateLink`（`javascript:` 拒绝）；
   外链一律 `target=_blank` + `rel="noopener noreferrer nofollow"`；图片降级为链接（生产 CSP `img-src 'self' data:` 会拦远程图）。
 - **文件 / 命令安全**：MCP 服务器以用户显式配置的 argv 数组启动、**绝不经过 shell**；Skill 的 `scripts/` 永不自动执行；敏感工具用 `sensitivity: 'confirm'` 标记，需确认后才执行（确认链路抛错按拒绝处理）。
-- **配置改动**（当前 `CONFIG_VERSION = 34`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
+- **配置改动**（当前 `CONFIG_VERSION = 35`）：Schema 在 `packages/shared/src/config/schema.ts`，改字段必须走版本迁移链（`migrations.ts`）并同步更新 `docs/08 §1`；`pnpm verify` 会断言 `version === CONFIG_VERSION` 与 `v0 → 当前版本` 的迁移条数，版本推进后必须复跑。
 - **界面文案口径**（用户连续两轮点名「冗杂」）：区组说明段 **≤45 汉字**、字段 hint **≤40 汉字**，各只写 1 句；
   **不写 `docs/xx §n` 这类文档引用**；删的是冗余，**边界 / 后果 / 修复路径必须保留**；
   改文案后要同步核对断言了原文串的探针场景（`chat-composer-slash` 等）。
@@ -176,6 +177,9 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **探针字符串**（`apps/desktop/src/main/capture.ts`）不写反引号（注释用「」），能不用带反斜杠的正则就别用；**判据只写一份**、**量矩形不量存在**。
 - **测试**：冒烟基线不绿先修基线；口径变了必须同改夹具（否则以"恒红"持续收税）；全量 capture（3–5 分钟）不是排查探针。
 - **跑 Electron 前先清 `ELECTRON_RUN_AS_NODE`**；无 TTY 时用 `pnpm --config.verify-deps-before-run=false exec …` 绕过（别写进 `package.json`）。
+- **内置浏览器工具组**受 `agent.browser.enabled` 门控、**不受** `agent.tools.enabled`；`maxSessions` / `idleMinutes` 必须用 getter 现读，写成构造常量就是"改设置要重启"的死字段。
+- **webview guest 必须由渲染层上报 `webContentsId`**，主进程校验 `hostWebContents` 归属（chat 窗口）后才接管；不要按 URL / 标题猜 guest。
+- **`agent.browser` 整组在 `SETTINGS_READONLY_PREFIXES`**，AI 不得改；关闭能力（或切只读档）时必须结束全部 Agent 浏览器会话，别留下 Agent 徽章。
 
 ## 尚未生效 / 已知限制（别误当成 bug）
 
@@ -187,6 +191,7 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - 未配置 STT provider 时麦克风按钮**根本不渲染**（不是 disabled）；TTS「朗读」同款口径。
 - **门控口径两组相反**：扩展工具六件套（`web_fetch` / `notify_user` / `clipboard_*` / `generate_image` / `show_preview`）**不受** `agent.tools.enabled`；
   电脑操控工具（含 `edit_file` / Office / `grep` / `glob`）**受**总开关与子开关门控；`todo_*` / `task` 不受门控。
+- **Agent 内置浏览器不接管 `target="_blank"` 弹窗**：页面自己开的窗口仍按普通用户标签打开，Agent 不操作它；需要继续就对该 URL 重新 `browser_open`。
 - 办公文件（docx / xlsx / pptx）已有 `office_read/help/create/edit/render/pdf/raw_edit` 专用工具：
   走 utilityProcess 中固定版 OfficeCLI；普通编辑禁止 raw/COM，默认另存、显式覆盖才写回并先做二进制快照。
 - Markdown 渲染 P3（目录 / 折叠 / 脚注 / 引用 chip）唯一副本在 `git stash@{0}` —— **清 stash 前先落地或转分支**。

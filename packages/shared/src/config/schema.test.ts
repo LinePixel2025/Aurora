@@ -71,6 +71,18 @@ describe('SettingsSchema / defaults 一致性', () => {
     expect(fieldAccepts('general.gameMode.enabled', 'no')).toBe(false)
   })
 
+  it('Agent 内置浏览器默认值（v35，docs/06 §27 / docs/08 §1）', () => {
+    // 默认开启、最多两个并发会话、闲置 10 分钟回收；允许私网与浏览器 UA、媒体默认关闭
+    expect(createDefaultSettings().agent.browser).toEqual({
+      enabled: true,
+      maxSessions: 2,
+      idleMinutes: 10,
+      allowPrivateNetwork: true,
+      compatUserAgent: true,
+      allowMedia: false,
+    })
+  })
+
   it('默认科目为 05 §2 的九科模板，且 folder 指向 分类/<科目>', () => {
     const subjects = createDefaultSettings().modes.classroom.subjects
     expect(subjects.map((s) => s.name)).toEqual([...DEFAULT_SUBJECT_NAMES])
@@ -842,6 +854,18 @@ describe('AI 改配置的路径黑名单（set_setting，docs/06 §12）', () =>
     // 回归护栏：覆盖表内的 agent.tools.* 不受牵连（别误伤既定可写面）
     expect(canWriteSettingPath('agent.tools.enabled')).toBe(true)
     expect(canWriteSettingPath('agent.tools.workspaceDir')).toBe(true)
+  })
+
+  it('Agent 内置浏览器整组不可由 AI 修改（授权边界，v35）', () => {
+    // 浏览器能力（私网访问 / 媒体）与并发会话上限是用户对 Agent 的授权边界：
+    // AI 自行开启或放宽等于给自己扩权。用户走设置页 / `settings:update` 不受该黑名单影响。
+    expect(canWriteSettingPath('agent.browser.enabled')).toBe(false)
+    const reason = settingsReadonlyReason('agent.browser.enabled')
+    expect(reason).toContain('授权边界')
+    // 拒绝来自黑名单，而不是「未知配置路径」那条兜底
+    expect(reason).not.toBe('未知配置路径')
+    // 同一 agent 组里的工具字段仍可写（别把整个 agent 分组一起封死）
+    expect(canWriteSettingPath('agent.tools.enabled')).toBe(true)
   })
 
   it('文件检索（grep / glob）的开关与上限对 AI 开放（v12）', () => {

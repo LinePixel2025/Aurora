@@ -12,6 +12,7 @@ import {
   SttProviderTypes,
 } from './schema.js'
 import {
+  DEFAULT_AGENT_BROWSER,
   DEFAULT_AGENT_TOOLS,
   DEFAULT_CLASSIFICATION,
   DEFAULT_CLASSISLAND_SCHEDULE,
@@ -1206,6 +1207,31 @@ const migrateV33ToV34: Migration = {
   },
 }
 
+/**
+ * v34 → v35：为已存在的 `agent` 补 `browser.*`（Agent 内置浏览器，docs/06 §27、docs/08 §1）。
+ *
+ * 口径同 v13 → v14 / v14 → v15：只在 `agent` 已存在时补，`agent` 整组缺失时不凭空造对象
+ * （交给默认配置兜底）。已有 `browser` 原样保留、缺失字段由默认值补齐，因此幂等；
+ * 补齐时以默认值为底、已有对象在上，用户已写的开关 / 上限不会被覆盖。
+ */
+const migrateV34ToV35: Migration = {
+  from: 34,
+  to: 35,
+  describe: 'v34 → v35：新增 agent.browser（Agent 内置浏览器与并发上限）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const agent = asRecord(next['agent'])
+    if (agent !== undefined) {
+      next['agent'] = {
+        ...agent,
+        browser: { ...DEFAULT_AGENT_BROWSER, ...(asRecord(agent['browser']) ?? {}) },
+      }
+    }
+    next['version'] = 35
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1241,6 +1267,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV31ToV32,
   migrateV32ToV33,
   migrateV33ToV34,
+  migrateV34ToV35,
 ]
 
 export interface MigrationOutcome {

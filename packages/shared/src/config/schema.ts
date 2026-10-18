@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 34 as const
+export const CONFIG_VERSION = 35 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -755,6 +755,10 @@ export const SETTINGS_READONLY_PREFIXES = [
   'agent.loop',
   // 写前快照（v14，docs/06 §11.8）：AI 关掉 `enabled` 或压低预算，等于在自己写文件前拆掉回滚保险。
   'agent.snapshots',
+  // Agent 内置浏览器（v35，docs/06 §27、docs/08 §1）：整组是用户对 Agent 的授权边界 ——
+  // 浏览器能力（含私网访问 / 媒体）与并发会话上限由用户显式开启与放宽，
+  // AI 自行打开或放大等于给自己扩权。只能由用户在设置页操作。
+  'agent.browser',
   // 黑名单配置自身（v15）：AI 往里追加路径等于自己收紧自己的可写面（自我 DoS）；
   // 放宽本就不生效（判定从不读用户配置）。用户经设置页 `settings:update` 修改不受影响。
   'advanced.readonlyPrefixes',
@@ -884,6 +888,22 @@ export const AgentToolsSchema = z.object({
 })
 export type AgentToolsConfig = z.infer<typeof AgentToolsSchema>
 
+/**
+ * Agent 内置浏览器（v35，docs/06 §27、docs/08 §1）。
+ * 整组在 SETTINGS_READONLY_PREFIXES 里：浏览器能力与并发上限是用户对 Agent 的授权边界，AI 不得自行开启或放宽。
+ */
+export const AgentBrowserSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    maxSessions: z.number().int().min(1).max(4).default(2),
+    idleMinutes: z.number().int().min(1).max(60).default(10),
+    allowPrivateNetwork: z.boolean().default(true),
+    compatUserAgent: z.boolean().default(true),
+    allowMedia: z.boolean().default(false),
+  })
+  .default({})
+export type AgentBrowserConfig = z.infer<typeof AgentBrowserSchema>
+
 export const AgentSchema = z.object({
   tools: AgentToolsSchema,
   /**
@@ -956,6 +976,14 @@ export const AgentSchema = z.object({
       maxParallelCalls: z.number().int().min(1).max(32).default(8),
     })
     .default({}),
+  /**
+   * Agent 内置浏览器（v35，docs/06 §27、docs/08 §1）：能力开关、并发会话上限与闲置回收分钟数。
+   *
+   * 整组在 `SETTINGS_READONLY_PREFIXES` 里（AI 改不动）：浏览器能访问什么（私网 / 媒体）与
+   * 同时开几个会话是用户对 Agent 的授权边界 —— 让 AI 自行开启或放宽等于给自己扩权。
+   * 用户走设置页 / `settings:update` 不受该黑名单影响。
+   */
+  browser: AgentBrowserSchema,
 })
 export type AgentSettings = z.infer<typeof AgentSchema>
 
@@ -1140,6 +1168,7 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   'agent.permissionMode': '权限档位等于 Agent 自己的确认闸门，不允许通过工具修改',
   'agent.loop': '循环的并发度与防失控口径属于 Agent 自己的停止闸门，不允许通过工具修改',
   'agent.snapshots': '写前快照是改动可回滚的兜底，不允许通过工具关闭',
+  'agent.browser': '浏览器能力与并发上限是用户对 Agent 的授权边界，AI 不得自行开启或放宽',
   'advanced.readonlyPrefixes':
     '只读黑名单的配置自身不允许通过工具修改（防自我收紧；放宽本就不生效）',
   center: 'Center 连接是数据外发通道，不允许通过工具启用或改向（docs/12 §7）',

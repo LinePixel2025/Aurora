@@ -67,6 +67,8 @@ const openedWorkspace = ref('')
 
 /** 区组折叠状态：工具组默认展开（主配置面，探针字段常在 DOM）；技能 / MCP 默认收起 */
 const openTools = ref(true)
+/** 内置浏览器区组（v35）：默认展开，字段常显（关闭总开关后仍可先配置） */
+const openBrowser = ref(true)
 
 function showToast(tone: ToastTone, text: string): void {
   toast.value = { tone, text }
@@ -97,6 +99,17 @@ const tools = computed<AgentToolsConfig>(
  */
 const snapshots = computed<AgentSettings['snapshots']>(
   () => settingsStore.settings?.agent.snapshots ?? DEFAULT_TOOLCHAIN_CONFIG.agent.snapshots,
+)
+
+/**
+ * 内置浏览器配置（`agent.browser`，v35，docs/06 §27）。
+ *
+ * 与 `agent.tools` 并列、**不跟电脑操控总开关门控**：它是一组独立的网页测试能力。
+ * 整组在 `SETTINGS_READONLY_PREFIXES` 里（AI 不可改），但用户在本页可自由调整；
+ * 配置未水合时回落到默认值，只为让控件有初值（探针要求字段常显）。
+ */
+const browser = computed<AgentSettings['browser']>(
+  () => settingsStore.settings?.agent.browser ?? DEFAULT_TOOLCHAIN_CONFIG.agent.browser,
 )
 
 /**
@@ -184,6 +197,14 @@ const toolsSummary = computed(() => {
     : '已停用'
 })
 
+/** 内置浏览器区组摘要（v35）：收起时也能看出开关与并发上限 */
+const browserSummary = computed(() => {
+  if (permissionReadonly.value) return '只读模式：浏览器工具不注册'
+  const current = browser.value
+  if (!current.enabled) return '已停用'
+  return `最多 ${current.maxSessions} 个会话 · ${current.idleMinutes} 分钟空闲释放`
+})
+
 /**
  * 保存工具配置：失败时的回执口径全页统一（Toast 展示 `settingsStore.error`）。
  * 返回是否写盘成功 —— 只给「免确认命令模式」的输入框用（失败时把原文留在框里便于改）。
@@ -219,6 +240,23 @@ async function saveSearch(patch: Partial<AgentToolsConfig['search']>): Promise<b
 /** 改打开子对象：完整子树回写，避免只改开关时把 urlMode 丢掉 */
 async function saveOpen(patch: Partial<AgentToolsConfig['open']>): Promise<boolean> {
   return save({ open: { ...tools.value.open, ...patch } })
+}
+
+/**
+ * 保存内置浏览器配置（v35）：`agent` 顶层浅合并，patch 只带完整的 `browser` 子树；
+ * `tools` / `snapshots` / `loop` / `permissionMode` 由主进程的 Object.assign 原样保留。
+ */
+async function saveBrowser(patch: Partial<AgentSettings['browser']>): Promise<boolean> {
+  const current = settingsStore.settings?.agent.browser
+  // 未加载完就写等于用兜底默认值覆盖已保存配置（与 save 同口径）
+  if (!current) return false
+  const ok = await settingsStore.update({ agent: { browser: { ...current, ...patch } } })
+  if (!ok) {
+    if (settingsStore.error) showToast('error', settingsStore.error)
+  } else {
+    showToast('ok', '已保存')
+  }
+  return ok
 }
 
 const OPEN_URL_MODES = [
@@ -936,17 +974,150 @@ async function openWorkspace(): Promise<void> {
                 :value="loop.maxParallelCalls"
                 @change="
                   saveLoop({
-                    maxParallelCalls: clampNumber(
-                      $event,
-                      1,
-                      32,
-                      loop.maxParallelCalls,
-                    ),
+                    maxParallelCalls: clampNumber($event, 1, 32, loop.maxParallelCalls),
                   })
                 "
               />
             </SettingField>
           </div>
+        </div>
+      </Transition>
+    </section>
+
+    <!-- ───────── 区组一 B：内置浏览器（v35，docs/06 §27） ───────── -->
+    <section class="group section-card">
+      <button
+        class="group-head"
+        type="button"
+        :aria-expanded="openBrowser"
+        @click="openBrowser = !openBrowser"
+      >
+        <ChevronRight
+          class="chevron"
+          :class="{ open: openBrowser }"
+          :size="14"
+          :stroke-width="1.8"
+          aria-hidden="true"
+        />
+        <span class="section-title">内置浏览器</span>
+        <span class="group-summary tiny muted grow">{{ browserSummary }}</span>
+      </button>
+
+      <Transition name="collapse">
+        <div v-if="openBrowser" class="group-body">
+          <p class="section-desc">让 Agent 在右栏浏览器里做网页测试：打开、点击、输入、截图。</p>
+
+          <SettingField
+            data-field="agent.browser.enabled"
+            label="启用内置浏览器"
+            hint="关闭后 Agent 看不到浏览器工具，正在进行的会话会被结束"
+          >
+            <label class="row tiny">
+              <input
+                type="checkbox"
+                :checked="browser.enabled"
+                @change="saveBrowser({ enabled: ($event.target as HTMLInputElement).checked })"
+              />
+              <span>允许 Agent 操作内置浏览器（默认开启）</span>
+            </label>
+          </SettingField>
+
+          <SettingField
+            data-field="agent.browser.maxSessions"
+            label="同时最多会话"
+            hint="1 ～ 4，默认 2；到上限时 Agent 需先关闭一个会话"
+          >
+            <input
+              class="input input-num"
+              type="number"
+              min="1"
+              max="4"
+              step="1"
+              :value="browser.maxSessions"
+              @change="
+                saveBrowser({
+                  maxSessions: clampNumber($event, 1, 4, browser.maxSessions),
+                })
+              "
+            />
+          </SettingField>
+
+          <SettingField
+            data-field="agent.browser.idleMinutes"
+            label="空闲释放"
+            hint="单位分钟，1 ～ 60，默认 10；到点释放页面内存，标签保留"
+          >
+            <input
+              class="input input-num"
+              type="number"
+              min="1"
+              max="60"
+              step="1"
+              :value="browser.idleMinutes"
+              @change="
+                saveBrowser({
+                  idleMinutes: clampNumber($event, 1, 60, browser.idleMinutes),
+                })
+              "
+            />
+          </SettingField>
+
+          <SettingField
+            data-field="agent.browser.allowPrivateNetwork"
+            label="本机与内网地址"
+            hint="关闭后只允许公网域名，localhost 与内网 IP 会被拒绝"
+          >
+            <label class="row tiny">
+              <input
+                type="checkbox"
+                :checked="browser.allowPrivateNetwork"
+                @change="
+                  saveBrowser({
+                    allowPrivateNetwork: ($event.target as HTMLInputElement).checked,
+                  })
+                "
+              />
+              <span>允许访问本机 / 内网地址（默认开启）</span>
+            </label>
+          </SettingField>
+
+          <SettingField
+            data-field="agent.browser.compatUserAgent"
+            label="兼容 User-Agent"
+            hint="去掉 Electron 标识，减少站点以浏览器不支持为由拒绝"
+          >
+            <label class="row tiny">
+              <input
+                type="checkbox"
+                :checked="browser.compatUserAgent"
+                @change="
+                  saveBrowser({
+                    compatUserAgent: ($event.target as HTMLInputElement).checked,
+                  })
+                "
+              />
+              <span>对 Agent 标签使用兼容 UA（默认开启）</span>
+            </label>
+          </SettingField>
+
+          <SettingField
+            data-field="agent.browser.allowMedia"
+            label="网页媒体权限"
+            hint="默认关闭；仅对 Agent 控制的标签生效，测试音视频页面时再开"
+          >
+            <label class="row tiny">
+              <input
+                type="checkbox"
+                :checked="browser.allowMedia"
+                @change="
+                  saveBrowser({
+                    allowMedia: ($event.target as HTMLInputElement).checked,
+                  })
+                "
+              />
+              <span>允许网页使用摄像头 / 麦克风</span>
+            </label>
+          </SettingField>
         </div>
       </Transition>
     </section>

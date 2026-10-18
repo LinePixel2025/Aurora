@@ -63,6 +63,8 @@ export * from './tools/clipboard.js'
 export * from './tools/notify.js'
 // 右栏成果展示（2026-10-03，docs/06 §14）：`show_preview` —— 同一条端口注入套路。
 export * from './tools/preview.js'
+// 内置浏览器工具组（v35，docs/06 §27）：网页测试；Electron webview 驱动由主进程端口注入。
+export * from './tools/browser.js'
 export * from './tools/image-display.js'
 export * from './tools/center.js'
 export * from './tools/imagegen.js'
