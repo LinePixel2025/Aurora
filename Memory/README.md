@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-18 | v0.5.0 三源发布（内置浏览器 v35）：Center 账号误用与环境限流、GitHub 成功后的标准补发命令 | 发布, 打包, 更新源, Center, GitHub, 凭据, 限流, 记录 | [2026-10-18-v050-release-and-center-credentials.md](2026-10-18-v050-release-and-center-credentials.md) |
 | 2026-10-18 | 内置浏览器 Agent 工具（v35）：guest 归属、先 attach 后导航、CDP 输入与并发槽位 | 浏览器, Agent, Electron, CDP, webview, 并发, 配置, 坑 | [2026-10-18-browser-agent-tools.md](2026-10-18-browser-agent-tools.md) |
 | 2026-10-18 | v0.4.9 三源发布（GitHub + Center）与 Center 0.4.8 阿里云换装记录 | 发布, 打包, 更新源, Center, GitHub, 部署, 记录 | [2026-10-18-v049-release-and-center-048-deploy.md](2026-10-18-v049-release-and-center-048-deploy.md) |
 | 2026-10-18 | 可拖窄左栏的会话行：标题 basis 0 归零、模型徽标容器查询与压测注入 | UI, chat, 左栏, flex, CSS, 模型徽标, 探针, 坑 | [2026-10-18-session-row-narrow-overlap.md](2026-10-18-session-row-narrow-overlap.md) |
