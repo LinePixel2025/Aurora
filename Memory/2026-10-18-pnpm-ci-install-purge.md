@@ -44,3 +44,20 @@ source: 模型自动记录
   `CI=true pnpm install --frozen-lockfile`，且先停掉 Electron。
 - 本次事故与用户需求无关，但会把所有子代理的验证结果变成“模块找不到 / 基线红”，
   排查时先看 `node_modules` 是否只剩骨架。
+
+## 追加（2026-10-18 发 v0.4.9 时实测）：**改 `package.json` 版本号也会触发这条自动安装**
+
+- 现象：版本号从 0.4.8 改到 0.4.9 后跑 `node scripts/release.mjs`，它在第 2 步
+  `pnpm build` 里被 pnpm 的 `verify-deps-before-run` 插入一条 `pnpm install --production`，
+  无 TTY 立刻 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` → 整个 release 中断
+  （tag 未创建、GitHub / Center 都没上传）。而此时 `pnpm install --frozen-lockfile`
+  明确显示 **Already up to date** —— 依赖其实一个都没变，只是 `.modules.yaml` 里的
+  “依赖状态”与新的 `package.json` 对不上。
+- 判定：release 日志里出现 `runDepsStatusCheck` / `install --production`，且失败点在
+  `$ pnpm build` 的**第一条**输出（不是编译错误）。
+- 处置（实测有效，≈1s）：先跑一次 `pnpm install --frozen-lockfile` 刷新状态，再重跑
+  `release.mjs`；整条发版链路不再被打断。
+- 额外注意：`ELECTRON_RUN_AS_NODE` 要清；本机发版时用户自己的 dev 实例可能正占着
+  `node_modules/.pnpm/electron`（实测当时还有 6 个 electron 进程），`--frozen-lockfile`
+  显示 up-to-date 时不会写盘，所以不冲突；但**绝不能用 `CI=true` 去强行 install**（会真清）。
+

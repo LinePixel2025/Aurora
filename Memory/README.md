@@ -10,9 +10,10 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-18 | v0.4.9 三源发布（GitHub + Center）与 Center 0.4.8 阿里云换装记录 | 发布, 打包, 更新源, Center, GitHub, 部署, 记录 | [2026-10-18-v049-release-and-center-048-deploy.md](2026-10-18-v049-release-and-center-048-deploy.md) |
 | 2026-10-18 | 可拖窄左栏的会话行：标题 basis 0 归零、模型徽标容器查询与压测注入 | UI, chat, 左栏, flex, CSS, 模型徽标, 探针, 坑 | [2026-10-18-session-row-narrow-overlap.md](2026-10-18-session-row-narrow-overlap.md) |
 | 2026-10-18 | 双端输入卡：缩略图必须在卡内、五浮层统一锚点、图片粘贴链路与探针口径 | UI, composer, 粘贴, 缩略图, 浮层, Center, 协议, 探针, 坑 | [2026-10-18-composer-paste-and-flyouts.md](2026-10-18-composer-paste-and-flyouts.md) |
-| 2026-10-18 | pnpm verify-deps + CI=true 会真清 node_modules；dev 占 electron 时 install 必 EPERM | 构建, pnpm, node_modules, Electron, 坑, 环境 | [2026-10-18-pnpm-ci-install-purge.md](2026-10-18-pnpm-ci-install-purge.md) |
+| 2026-10-18 | pnpm verify-deps + CI=true 会真清 node_modules；dev 占 electron 时 install 必 EPERM；**改版本号也会触发自动安装** | 构建, pnpm, node_modules, Electron, 坑, 环境 | [2026-10-18-pnpm-ci-install-purge.md](2026-10-18-pnpm-ci-install-purge.md) |
 | 2026-10-18 | 子代理多实例并行、写入串行与实际授予（限流/写锁/快照不说假话/测试口径） | agent-core, 子代理, 并发, 写权限, 测试, 口径 | [2026-10-18-subagent-parallel-write.md](2026-10-18-subagent-parallel-write.md) |
 | 2026-10-17 | Agent 循环"任务编排"层四条形变约束：同轮并发批次、运行中插话注入、工具超时、job 账本死字段 | agent-core, 循环, 工具, 插话, job, 口径 | [2026-10-17-agent-loop-task-orchestration.md](2026-10-17-agent-loop-task-orchestration.md) |
 | 2026-10-17 | 吸顶分组标题的三条硬约束（滚动区上内边距 / 不透明底 / 无外间距）与明细嵌在可点行里的冒泡 | 自动化, UI, CSS, 布局, 探针, 夹具, 坑  | [2026-10-17-sticky-day-head-and-nested-clickable-row.md](2026-10-17-sticky-day-head-and-nested-clickable-row.md) |
