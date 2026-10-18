@@ -5,7 +5,8 @@ P6 打包与自动更新完成、余下打磨项待做，**P6++ 电脑操控（�
 模型思考等级 + 「电脑操控」设置页与安全边界）已于 v0.7.0 落地**，
 P7 的 **ClassIsland 联动已提前落地**；进度随开发更新
 
-**2026-10 增量**：v0.4.1 → v0.4.9 已发布；v0.4.9 含配置 Schema v34 的任务编排
+**2026-10 增量**：v0.4.1 → v0.5.0 已发布；v0.5.0 含内置浏览器 Agent 工具组
+（v35，八个 `browser_*` 工具 + 配置 `agent.browser`）；v0.4.9 含配置 Schema v34 的任务编排
 （并发批次 / 插话注入 / 工具超时 / `agent.loop` 三退一）与子代理增强（多子代理并行 / 可写 / 实际授予）。
 索引见文末「2026-10 增量轮索引」，当前验收口径以 [docs/README](./README.md) 的状态段为准。
 
@@ -560,3 +561,4 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
 | v0.4.6 / v0.4.7 | Center 工作台毛玻璃与移动端、用量分页、官方模型表单、外观个性化三件套 | [v0.4.6](./release-notes/v0.4.6.md) / [v0.4.7](./release-notes/v0.4.7.md) |
 | v0.4.8 | Center 官方图片 / 语音模型客户端选模、四周流光强调色单色 | [release-notes/v0.4.8.md](./release-notes/v0.4.8.md) |
 | v0.4.9（2026-10-18） | 任务编排 v34（并发批次 / 插话排队 / 工具超时 / `agent.loop` 三退一）+ 子代理并行与实际授予 + 自动化历史三层与双端回放 + 自感知光谱流光 + 双端输入卡粘贴与浮层 | [release-notes/v0.4.9.md](./release-notes/v0.4.9.md)、[docs/06 §5/§19](./06-agent-core.md)、[docs/13](./13-automation.md) |
+| v0.5.0（2026-10-18） | 内置浏览器 Agent 工具组 v35（八个 `browser_*` 工具 / CDP 真实输入 / 并发槽位 / 配置 `agent.browser` 与迁移 v34→v35） | [release-notes/v0.5.0.md](./release-notes/v0.5.0.md)、[docs/06 §27](./06-agent-core.md)、[docs/08 §1](./08-settings-onboarding.md) |

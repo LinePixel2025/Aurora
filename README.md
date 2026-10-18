@@ -2,9 +2,10 @@
 
 将 Windows 接入 AI 生态的**系统级 Agent 工具**：常驻系统托盘，以「屏幕右缘提示条」的轻量形态提供无感、自主的 AI 服务。
 
-> 当前发布：**v0.4.9**（任务编排 v34 / 子代理并行 / 自动化历史三层 / 自感知光谱流光 /
-> 双端输入卡粘贴与浮层，配置 Schema v34），详见 [`docs/README.md`](./docs/README.md)「当前实现状态」
-> 与 [release-notes/v0.4.9.md](./docs/release-notes/v0.4.9.md)。
+> 当前发布：**v0.5.0**（内置浏览器 Agent 工具组 v35 —— Agent 在右栏可见的内置浏览器里
+> 打开网页、读快照、点击 / 输入、查控制台与网络、截图，用于网页功能测试；配置 Schema v35），
+> 详见 [`docs/README.md`](./docs/README.md)「当前实现状态」
+> 与 [release-notes/v0.5.0.md](./docs/release-notes/v0.5.0.md)。
 > 桌面客户端为 Electron 44.5.1（Chromium 152 / Node 24.18.1），恢复 Windows 原生最大化并保持 Acrylic；
 > 提示条用 `setShape()` 适配透明窗口平台最小宽度；剪贴板与 `console-message` 完成 Electron 44 API 迁移。
 > 历史进度见 [`docs/README.md`](./docs/README.md)「当前实现状态」。
