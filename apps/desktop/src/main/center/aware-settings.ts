@@ -25,6 +25,8 @@ type NonLlmCapability = Exclude<CenterOfficialCapability, 'llm'>
 
 export interface CenterAwareSettingsDeps {
   serviceOf(capability: CenterOfficialCapability): CenterOfficialServiceCatalog | undefined
+  /** 目录已就绪（含本机缓存）；缺省按「已就绪」处理。未就绪 ≠ 官方不可用。 */
+  catalogLoaded?: () => boolean
   /** 官方目录 / 镜像缺失时的回落提示（由调用方按能力去重）。 */
   noticeFallback(capability: CenterOfficialCapability): void
   logger?: Logger
@@ -101,7 +103,8 @@ export function createCenterAwareSettingsStore(
           applyModelOverride(next, capability, providerId, selection.model)
         }
       } else {
-        deps.noticeFallback(capability)
+        // 目录尚未加载（启动 / 刚登录）不是故障：静默沿用本机档，等目录到达再自然切回官方。
+        if (deps.catalogLoaded?.() !== false) deps.noticeFallback(capability)
       }
     }
     return next

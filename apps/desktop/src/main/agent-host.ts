@@ -192,6 +192,10 @@ export interface ProviderFactoryOptions {
     selection: (
       capability: CenterOfficialCapability,
     ) => { enabled: boolean; model: string } | undefined
+    /** 目录是否已就绪（含本机缓存）；false = 尚未加载，不能当成「官方不可用」。 */
+    loaded?: () => boolean
+    /** 目录缺失时后台补拉（自愈），由装配层节流。 */
+    refresh?: () => void
     onFallback?: (input: {
       requestedProviderId: string
       fallbackProviderId: string
@@ -242,7 +246,14 @@ export function createProviderFactory(
       const service = options?.centerOfficial?.service(officialCapability)
       const token = options?.centerOfficial?.token() ?? ''
       if (service === undefined || token === '') {
-        if (!quiet) logger.warn('Center 官方模型当前不可用', { providerId })
+        if (service === undefined) options?.centerOfficial?.refresh?.()
+        if (!quiet) {
+          if (service === undefined && options?.centerOfficial?.loaded?.() === false) {
+            logger.debug('Center 官方模型目录尚未就绪', { providerId })
+          } else {
+            logger.warn('Center 官方模型当前不可用', { providerId })
+          }
+        }
         return undefined
       }
       if (!service.models.some((model) => model.id === config.model)) {
@@ -311,6 +322,25 @@ export function createProviderFactory(
   }
 
   /**
+   * 官方回落提示的唯一出口：目录尚未加载时**不提示** —— 那不是故障，只是首个请求
+   * 赶在目录到达之前（启动自动化 / 刚登录），静默用本机档，下次请求会自然切回官方。
+   */
+  const notifyOfficialFallback = (
+    requestedProviderId: string,
+    fallbackProviderId: string,
+    sessionId?: string,
+  ): void => {
+    // 只有「请求的是官方、实际用了本机」才算官方回落；本机条目之间的自愈不该借这条通道报官方故障。
+    if (!isCenterOfficialProviderId(requestedProviderId)) return
+    if (options?.centerOfficial?.loaded?.() === false) return
+    options?.centerOfficial?.onFallback?.({
+      requestedProviderId,
+      fallbackProviderId,
+      ...(sessionId === undefined ? {} : { sessionId }),
+    })
+  }
+
+  /**
    * 启动自愈（docs/06 §12）：默认条目不可用时，临时借一个**确实可用**的条目把本轮请求建起来。
    *
    * 这件事只影响本次请求构造：**不写配置**（`llm.active` 改不改由用户或设置页决定），
@@ -329,11 +359,7 @@ export function createProviderFactory(
       const built = build(id, { ...candidate, model: firstModelOf(candidate) }, true)
       if (built !== undefined) {
         logger.warn('默认模型配置不可用，已回退到可用条目', { active: llm.active, fallback: id })
-        options?.centerOfficial?.onFallback?.({
-          requestedProviderId,
-          fallbackProviderId: id,
-          ...(sessionId === undefined ? {} : { sessionId }),
-        })
+        notifyOfficialFallback(requestedProviderId, id, sessionId)
         return built
       }
     }
@@ -391,15 +417,6 @@ export function createProviderFactory(
             providerId: effective.providerId,
             model: effective.model,
           })
-          if (isCenterOfficialProviderId(effective.providerId)) {
-            options?.centerOfficial?.onFallback?.({
-              requestedProviderId: effective.providerId,
-              fallbackProviderId: llm.active,
-              ...(createOptions?.sessionId === undefined
-                ? {}
-                : { sessionId: createOptions.sessionId }),
-            })
-          }
         }
       }
       if (
@@ -414,10 +431,12 @@ export function createProviderFactory(
         return undefined
       }
       if (centerOverrideUnavailable) {
+        // 回落目标由 `fallback` 按真实构造结果回传，不再用 `llm.active` 猜（它可能本身就是官方 id）。
         return fallback(llm, effective.providerId, createOptions?.sessionId)
       }
 
       const officialProviderId = CENTER_OFFICIAL_PROVIDER_IDS.llm
+      let officialFallbackPending = false
       if (official?.enabled === true) {
         const officialConfig = llm.providers[officialProviderId]
         if (officialConfig !== undefined) {
@@ -430,23 +449,15 @@ export function createProviderFactory(
             return localFallback === undefined
               ? builtOfficial
               : withProviderFallback(builtOfficial, localFallback, () =>
-                  options?.centerOfficial?.onFallback?.({
-                    requestedProviderId: officialProviderId,
-                    fallbackProviderId: localFallback.provider.id,
-                    ...(createOptions?.sessionId === undefined
-                      ? {}
-                      : { sessionId: createOptions.sessionId }),
-                  }),
+                  notifyOfficialFallback(
+                    officialProviderId,
+                    localFallback.provider.id,
+                    createOptions?.sessionId,
+                  ),
                 )
           }
-          options?.centerOfficial?.onFallback?.({
-            requestedProviderId: officialProviderId,
-            fallbackProviderId: llm.active,
-            ...(createOptions?.sessionId === undefined
-              ? {}
-              : { sessionId: createOptions.sessionId }),
-          })
         }
+        officialFallbackPending = true
       }
       const providerId = llm.active
       if (providerId === '') {
@@ -463,7 +474,13 @@ export function createProviderFactory(
           : undefined
       }
       const built = build(providerId, config)
-      if (built === undefined && allowFallbackOf(createOptions)) {
+      if (built !== undefined) {
+        if (officialFallbackPending) {
+          notifyOfficialFallback(officialProviderId, built.provider.id, createOptions?.sessionId)
+        }
+        return built
+      }
+      if (allowFallbackOf(createOptions)) {
         return fallback(llm, providerId, createOptions?.sessionId)
       }
       return built

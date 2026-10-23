@@ -26,6 +26,12 @@ import {
   resolveOfficialModelEntry,
 } from './official-selection.js'
 
+export interface CenterCatalogCache {
+  /** 上次成功同步的目录快照（按服务器地址隔离）；缺失 / 损坏返回 null。 */
+  read(serverUrl: string): unknown
+  write(serverUrl: string, catalog: CenterOfficialModelCatalog): void
+}
+
 export interface CenterModelServicesDeps {
   settings: {
     get(): Settings
@@ -34,17 +40,34 @@ export interface CenterModelServicesDeps {
   logger: Logger
   fetchImpl: () => typeof fetch | undefined
   config: () => { enabled: boolean; serverUrl: string; token: string; clientId: string }
+  /**
+   * 目录落盘快照。目录原本只在内存里，首个请求（启动自动化 / 刚登录后的第一条消息）
+   * 常常早于拉取完成，于是「目录还没到」被当成「官方模型不可用」并弹回落提示。
+   */
+  cache?: CenterCatalogCache
   onChanged?: (catalog: CenterOfficialModelCatalog | null) => void
 }
 
 export class CenterModelServices {
   private catalogValue: CenterOfficialModelCatalog | null = null
   private refreshPromise: Promise<CenterOfficialModelCatalog | null> | null = null
+  private lastAttemptAt = 0
 
-  constructor(private readonly deps: CenterModelServicesDeps) {}
+  constructor(private readonly deps: CenterModelServicesDeps) {
+    const config = this.deps.config()
+    if (config.enabled && config.serverUrl.trim() !== '' && config.token !== '') {
+      const cached = this.deps.cache?.read(config.serverUrl)
+      if (isCatalog(cached)) this.catalogValue = cached
+    }
+  }
 
   current(): CenterOfficialModelCatalog | null {
     return this.catalogValue === null ? null : structuredClone(this.catalogValue)
+  }
+
+  /** 目录是否已就绪（含本机缓存）。false = 尚未加载，**不等于**官方模型不可用。 */
+  loaded(): boolean {
+    return this.catalogValue !== null
   }
 
   async refresh(): Promise<CenterOfficialModelCatalog | null> {
@@ -55,6 +78,16 @@ export class CenterModelServices {
     return this.refreshPromise
   }
 
+  /**
+   * 目录缺失时的后台补拉（构造 provider 时调用）：与上次尝试间隔不足 `maxAgeMs` 就跳过，
+   * 避免每个请求都打一次目录接口。
+   */
+  refreshIfStale(maxAgeMs = 30_000): void {
+    if (this.refreshPromise !== null) return
+    if (Date.now() - this.lastAttemptAt < maxAgeMs) return
+    void this.refresh()
+  }
+
   /** Provider 工厂 / 服务层判断某能力当前是否有可用官方目录。 */
   service(capability: CenterOfficialCapability): CenterOfficialServiceCatalog | undefined {
     const service = this.catalogValue?.services[capability]
@@ -62,6 +95,7 @@ export class CenterModelServices {
   }
 
   private async doRefresh(): Promise<CenterOfficialModelCatalog | null> {
+    this.lastAttemptAt = Date.now()
     const config = this.deps.config()
     if (!config.enabled || config.serverUrl.trim() === '' || config.token === '') {
       this.setCatalog(null)
@@ -81,16 +115,20 @@ export class CenterModelServices {
           signal: AbortSignal.timeout(15_000),
         },
       )
+      // 凭据失效时旧目录不能再当作有效来源，否则「未登录 / 令牌过期」会表现成官方模型全挂。
+      if (response.status === 401 || response.status === 403) this.setCatalog(null)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const catalog = (await response.json()) as CenterOfficialModelCatalog
       if (!isCatalog(catalog)) throw new Error('目录响应格式异常')
       this.setCatalog(catalog)
+      this.deps.cache?.write(config.serverUrl, catalog)
       await this.syncProviders(catalog)
       return catalog
     } catch (error) {
       this.deps.logger.warn('刷新 Aurora Center 官方模型目录失败', { error: String(error) })
-      this.setCatalog(null)
-      return null
+      // 网络抖动 / 5xx 时保留上一份目录：静默切回本机模型会让用户以为官方模型坏了，
+      // 真正的失败应由「仍指向官方」的请求本身如实报出。
+      return this.current()
     }
   }
 
@@ -189,12 +227,30 @@ export class CenterModelServices {
 }
 
 function isCatalog(value: unknown): value is CenterOfficialModelCatalog {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { revision?: unknown }).revision === 'string' &&
-    typeof (value as { services?: unknown }).services === 'object'
-  )
+  if (typeof value !== 'object' || value === null) return false
+  const catalog = value as { revision?: unknown; services?: unknown }
+  if (typeof catalog.revision !== 'string') return false
+  if (typeof catalog.services !== 'object' || catalog.services === null) return false
+  const services = catalog.services as Record<string, unknown>
+  for (const capability of ['llm', 'imagegen', 'tts', 'stt']) {
+    const entry = services[capability]
+    if (entry === undefined) continue
+    if (typeof entry !== 'object' || entry === null) return false
+    const service = entry as { type?: unknown; models?: unknown; defaultModel?: unknown }
+    if (typeof service.type !== 'string' || !Array.isArray(service.models)) return false
+    if (service.defaultModel !== undefined && typeof service.defaultModel !== 'string') return false
+    if (
+      !service.models.every(
+        (model) =>
+          typeof model === 'object' &&
+          model !== null &&
+          typeof (model as { id?: unknown }).id === 'string',
+      )
+    ) {
+      return false
+    }
+  }
+  return true
 }
 
 function sameJson(a: unknown, b: unknown): boolean {

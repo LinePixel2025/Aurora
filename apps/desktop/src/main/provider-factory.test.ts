@@ -216,6 +216,7 @@ describe('createProviderFactory · Aurora Center 官方模型', () => {
         token: () => 'ac-token',
         service: () => undefined,
         selection: () => settings.center.officialModels.llm,
+        loaded: () => true,
         onFallback: (input) => fallbacks.push(input),
       },
     })
@@ -225,6 +226,52 @@ describe('createProviderFactory · Aurora Center 官方模型', () => {
     expect(fallbacks).toEqual([
       { requestedProviderId: 'center-llm', fallbackProviderId: 'p-global' },
     ])
+  })
+
+  it('目录尚未加载：静默回落本机、不提示，并在后台补拉一次', () => {
+    const settings = settingsWith()
+    settings.center.officialModels.llm = { enabled: true, model: 'm-center' }
+    settings.llm.providers['center-llm'] = provider('m-center', ['m-center'])
+    let refreshed = 0
+    const fallbacks: unknown[] = []
+    const factory = createProviderFactory(storeOf(settings), createMemoryLogger(), undefined, {
+      centerOfficial: {
+        token: () => 'ac-token',
+        service: () => undefined,
+        selection: () => settings.center.officialModels.llm,
+        loaded: () => false,
+        refresh: () => {
+          refreshed += 1
+        },
+        onFallback: (input) => fallbacks.push(input),
+      },
+    })
+
+    const config = factory.create()
+    expect(config?.provider.id).toBe('p-global')
+    expect(fallbacks).toEqual([])
+    expect(refreshed).toBeGreaterThan(0)
+  })
+
+  it('会话覆盖指向官方但目录未就绪：静默回落本机，不误报「官方不可用」', () => {
+    const settings = settingsWith()
+    settings.center.officialModels.llm = { enabled: true, model: 'm-center' }
+    settings.llm.providers['center-llm'] = provider('m-center', ['m-center'])
+    const fallbacks: unknown[] = []
+    const factory = createProviderFactory(storeOf(settings), createMemoryLogger(), undefined, {
+      sessionModelOf: () => ({ providerId: 'center-llm', model: 'm-center' }),
+      centerOfficial: {
+        token: () => 'ac-token',
+        service: () => undefined,
+        selection: () => settings.center.officialModels.llm,
+        loaded: () => false,
+        onFallback: (input) => fallbacks.push(input),
+      },
+    })
+
+    const config = factory.create({ sessionId: 's-1' })
+    expect(config?.provider.id).toBe('p-global')
+    expect(fallbacks).toEqual([])
   })
 
   it('Center 官方关闭后，旧会话覆盖失效并回落第一个本地 Provider 的第一个模型', () => {

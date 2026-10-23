@@ -14,6 +14,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs'
 import { hostname as osHostname, tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
@@ -60,6 +61,7 @@ import {
   // 三档权限的生效档位（docs/06 §11.2）：确认判定与工具注册必须读同一个来源
   resolvePermissionMode,
   resolveModelParams,
+  isCenterOfficialProviderId,
   err,
   ok,
   type CenterConnectionStatus,
@@ -1212,6 +1214,7 @@ async function bootstrap(): Promise<void> {
   settingsTool = registerSettingsTool({ tools, port: settingsPort, logger: logger.child('tools') })
   const centerSettings = createCenterAwareSettingsStore(settings, {
     serviceOf: (capability) => centerModelServices?.service(capability),
+    catalogLoaded: () => centerModelServices?.loaded() === true,
     noticeFallback: (capability) =>
       emitOfficialFallback(capability, OFFICIAL_FALLBACK_LABELS[capability]),
     logger: logger.child('center-official'),
@@ -1501,6 +1504,7 @@ async function bootstrap(): Promise<void> {
       windows?.focus('chat')
     },
   })
+  const centerCatalogCacheFile = join(userData, 'center-model-services.json')
   centerModelServices = new CenterModelServices({
     settings: settings!,
     logger: logger.child('center-models'),
@@ -1514,11 +1518,34 @@ async function bootstrap(): Promise<void> {
         clientId: center.clientId,
       }
     },
+    cache: {
+      read: (serverUrl) => {
+        try {
+          const cached = JSON.parse(readFileSync(centerCatalogCacheFile, 'utf8')) as {
+            serverUrl?: unknown
+            catalog?: unknown
+          }
+          return cached.serverUrl === serverUrl ? cached.catalog : null
+        } catch {
+          return null
+        }
+      },
+      write: (serverUrl, catalog) => {
+        try {
+          writeFileSync(centerCatalogCacheFile, JSON.stringify({ serverUrl, catalog }), 'utf8')
+        } catch (error) {
+          logger?.warn('缓存 Center 官方模型目录失败', { error: String(error) })
+        }
+      },
+    },
     onChanged: (catalog) => {
       if (catalog !== null) centerFallbackNoticeKeys.clear()
       for (const listener of centerModelServicesListeners) listener(catalog)
     },
   })
+  // 目录只存在内存 + 本机快照：启动即拉一次。等连接器 `connected` 再拉的话，
+  // 启动自动化 / 首条消息会赶在目录之前，被误判成「官方模型不可用」并弹回落提示。
+  void centerModelServices.refresh()
 
   // 7.1.5 provider 工厂提取成常量：KernelAgentHost 与 `task` 子代理共享同一实例，
   //     「常规构造失败 → 临时回退可用条目」的启动自愈语义（docs/06 §12、step 02 第 6 条）
@@ -1536,13 +1563,21 @@ async function bootstrap(): Promise<void> {
       token: () => settings!.getSecret('center.token'),
       service: (capability) => centerModelServices?.service(capability),
       selection: (capability) => settings!.get().center.officialModels[capability],
+      loaded: () => centerModelServices?.loaded() === true,
+      refresh: () => centerModelServices?.refreshIfStale(),
       onFallback: (input) => {
         const key = `${input.sessionId ?? 'global'}:llm`
         if (centerFallbackNoticeKeys.has(key)) return
         centerFallbackNoticeKeys.add(key)
+        // 回落目标只说「本机模型 + 真实条目」：官方 id 出现在这里会让用户以为
+        // 「回落到官方自己」，而它恰恰是刚刚构造不出来的那个。
+        const target =
+          input.fallbackProviderId === '' || isCenterOfficialProviderId(input.fallbackProviderId)
+            ? '本机模型'
+            : `本机模型 ${input.fallbackProviderId}`
         emitCenterRuntimeNotice({
           capability: 'llm',
-          message: `Aurora Center 官方语言模型不可用，已回落到 ${input.fallbackProviderId || '本机模型'}`,
+          message: `Aurora Center 官方语言模型当前不可用，已回落到${target}`,
           at: new Date().toISOString(),
         })
       },

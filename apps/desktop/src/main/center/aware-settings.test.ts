@@ -170,6 +170,19 @@ describe('createCenterAwareSettingsStore 官方选模读时覆写', () => {
     expect(fallbacks).toContain('imagegen')
   })
 
+  it('目录尚未加载：静默沿用本机档，不提示回落', () => {
+    const settings = settingsWithOfficial()
+    const fallbacks: CenterOfficialCapability[] = []
+    const store = createCenterAwareSettingsStore(baseStoreOf(settings), {
+      serviceOf: () => undefined,
+      catalogLoaded: () => false,
+      noticeFallback: (capability) => fallbacks.push(capability),
+    })
+    const next = store.get()
+    expect(fallbacks).toEqual([])
+    expect(next.tts.active).not.toBe('center-tts')
+  })
+
   it('开关未启用：完全不触碰 provider', () => {
     const settings = settingsWithOfficial()
     settings.center.officialModels.tts.enabled = false
