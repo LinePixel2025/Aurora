@@ -12,6 +12,40 @@ import type { UsageStore } from './usage.js'
 
 const JSON_BODY_LIMIT = 64 * 1024 * 1024
 const AUDIO_TICKET_TTL_MS = 10 * 60 * 1000
+/** 上游建连 / 首个响应头的上限。 */
+const UPSTREAM_HEADER_TIMEOUT_MS = 120_000
+/** 正文空闲上限：每收到一片就重置，**不设总时长**（长回复不能被掐断）。 */
+const UPSTREAM_IDLE_TIMEOUT_MS = 120_000
+
+export interface UpstreamAbort {
+  readonly signal: AbortSignal
+  /** 收到一片数据后重新计时；流式正文每片调用一次。 */
+  touch(): void
+  dispose(): void
+}
+
+/**
+ * 上游请求的超时闸门：建连按 `headerTimeoutMs` 计时，拿到数据后改为按**空闲**计时。
+ *
+ * 之前整条请求共用一个 `AbortSignal.timeout(120_000)`，等于给流式回复设了总时长上限 ——
+ * 推理模型正常输出两分钟以上也会被拦腰掐断，客户端只看到「网络异常」。
+ */
+export function createUpstreamAbort(headerTimeoutMs: number, idleTimeoutMs: number): UpstreamAbort {
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const arm = (ms: number): void => {
+    if (timer !== undefined) clearTimeout(timer)
+    timer = setTimeout(() => controller.abort(new Error('E_UPSTREAM_TIMEOUT')), ms)
+  }
+  arm(headerTimeoutMs)
+  return {
+    signal: controller.signal,
+    touch: () => arm(idleTimeoutMs),
+    dispose: () => {
+      if (timer !== undefined) clearTimeout(timer)
+    },
+  }
+}
 
 export interface ModelGatewayIdentity {
   userId: string
@@ -148,37 +182,43 @@ export class ModelGateway {
     }
     const contentType = req.headers['content-type']
     if (typeof contentType === 'string' && contentType !== '') headers['Content-Type'] = contentType
-    const response = await fetch(upstreamUrl, {
-      method: 'POST',
-      headers,
-      body: body.byteLength === 0 ? undefined : new Uint8Array(body),
-      signal: AbortSignal.timeout(120_000),
-    })
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '')
-      res.writeHead(response.status, { 'Content-Type': 'application/json; charset=utf-8' })
-      res.end(detail.slice(0, 4096) || JSON.stringify({ error: 'E_UPSTREAM_FAILED' }))
-      return
-    }
+    const abort = createUpstreamAbort(UPSTREAM_HEADER_TIMEOUT_MS, UPSTREAM_IDLE_TIMEOUT_MS)
+    try {
+      const response = await fetch(upstreamUrl, {
+        method: 'POST',
+        headers,
+        body: body.byteLength === 0 ? undefined : new Uint8Array(body),
+        signal: abort.signal,
+      })
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '')
+        res.writeHead(response.status, { 'Content-Type': 'application/json; charset=utf-8' })
+        res.end(detail.slice(0, 4096) || JSON.stringify({ error: 'E_UPSTREAM_FAILED' }))
+        return
+      }
+      abort.touch()
 
-    const isLlm = service.capability === 'llm'
-    const isImage = service.capability === 'imagegen'
-    const isDashscopeTts = service.capability === 'tts' && service.type === 'dashscope'
-    if (isLlm) {
-      await this.proxyLlm(req, res, response, service, identity, body)
-      return
+      const isLlm = service.capability === 'llm'
+      const isImage = service.capability === 'imagegen'
+      const isDashscopeTts = service.capability === 'tts' && service.type === 'dashscope'
+      if (isLlm) {
+        await this.proxyLlm(req, res, response, service, identity, body, abort.touch)
+        return
+      }
+      if (isImage) {
+        await this.proxyImage(res, response, abort.touch)
+        return
+      }
+      if (isDashscopeTts) {
+        await this.proxyDashscopeTts(res, response, abort.touch)
+        return
+      }
+      res.writeHead(response.status, passthroughHeaders(response))
+      await pipeResponse(response, res, abort.touch)
+      void url
+    } finally {
+      abort.dispose()
     }
-    if (isImage) {
-      await this.proxyImage(res, response)
-      return
-    }
-    if (isDashscopeTts) {
-      await this.proxyDashscopeTts(res, response)
-      return
-    }
-    res.writeHead(response.status, passthroughHeaders(response))
-    await pipeResponse(response, res)
-    void url
   }
 
   private async proxyLlm(
@@ -188,12 +228,14 @@ export class ModelGateway {
     service: ResolvedOfficialService,
     identity: ModelGatewayIdentity,
     requestBody: Buffer,
+    touch: () => void,
   ): Promise<void> {
     const contentType = response.headers.get('content-type') ?? ''
     if (contentType.includes('text/event-stream')) {
       res.writeHead(200, passthroughHeaders(response))
       const parser = new UsageSseParser()
       for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+        touch()
         const buffer = Buffer.from(chunk)
         parser.push(buffer)
         res.write(buffer)
@@ -206,7 +248,7 @@ export class ModelGateway {
       return
     }
 
-    const raw = Buffer.from(await response.arrayBuffer())
+    const raw = await readAll(response, touch)
     let usage: TokenUsage | undefined
     try {
       usage = extractUsage(JSON.parse(raw.toString('utf8')))
@@ -223,8 +265,12 @@ export class ModelGateway {
     }
   }
 
-  private async proxyImage(res: ServerResponse, response: Response): Promise<void> {
-    const raw = Buffer.from(await response.arrayBuffer())
+  private async proxyImage(
+    res: ServerResponse,
+    response: Response,
+    touch: () => void,
+  ): Promise<void> {
+    const raw = await readAll(response, touch)
     let parsed: unknown
     try {
       parsed = JSON.parse(raw.toString('utf8'))
@@ -242,7 +288,7 @@ export class ModelGateway {
         if (sourceUrl !== '') {
           const downloaded = await fetch(sourceUrl, { signal: AbortSignal.timeout(120_000) })
           if (downloaded.ok) {
-            item['b64_json'] = Buffer.from(await downloaded.arrayBuffer()).toString('base64')
+            item['b64_json'] = (await readAll(downloaded, touch)).toString('base64')
             delete item['url']
           }
         }
@@ -252,8 +298,12 @@ export class ModelGateway {
     res.end(JSON.stringify(parsed))
   }
 
-  private async proxyDashscopeTts(res: ServerResponse, response: Response): Promise<void> {
-    const raw = Buffer.from(await response.arrayBuffer())
+  private async proxyDashscopeTts(
+    res: ServerResponse,
+    response: Response,
+    touch: () => void,
+  ): Promise<void> {
+    const raw = await readAll(response, touch)
     let parsed: unknown
     try {
       parsed = JSON.parse(raw.toString('utf8'))
@@ -450,15 +500,31 @@ function passthroughHeaders(response: Response): Record<string, string> {
   return headers
 }
 
-async function pipeResponse(response: Response, res: ServerResponse): Promise<void> {
+async function pipeResponse(
+  response: Response,
+  res: ServerResponse,
+  touch?: () => void,
+): Promise<void> {
   if (response.body === null) {
     res.end()
     return
   }
   for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+    touch?.()
     res.write(Buffer.from(chunk))
   }
   res.end()
+}
+
+/** 读完整响应体，同时按片重置上游空闲计时（非流式路径同样不该被总时长掐断）。 */
+async function readAll(response: Response, touch?: () => void): Promise<Buffer> {
+  if (response.body === null) return Buffer.alloc(0)
+  const chunks: Buffer[] = []
+  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+    touch?.()
+    chunks.push(Buffer.from(chunk))
+  }
+  return Buffer.concat(chunks)
 }
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {

@@ -12,7 +12,7 @@
 > 就是网页包旧了。
 >
 > `docker-compose.yml` 的 `image:` tag 跟 **Center 自己的版本号**（`packages/center/package.json`，
-> 当前 `0.4.8`，**不必与桌面端版本号相同**）走：更新 Center 先升那个版本号、同步换 tag，
+> 当前 `0.4.9`，**不必与桌面端版本号相同**）走：更新 Center 先升那个版本号、同步换 tag，
 > 别在同一 tag 上反复覆盖，否则排障时说不清线上跑的是哪一版。
 
 ## 0. Center 自身的更新口径（版本线独立）
