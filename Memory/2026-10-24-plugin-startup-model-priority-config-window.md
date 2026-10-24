@@ -90,6 +90,25 @@ electron.exe --user-data-dir=<temp> --remote-debugging-port=9333 apps/desktop/ou
 - 启动回归：隔离真实 userData 后两个页面型小组件都挂上 webview 且有内容，
   stderr 无 IPC handler 缺失。
 
+## v0.5.5 双投发布结果（2026-10-24）
+
+| 项 | 值 |
+| --- | --- |
+| 提交 | 修复 `21a5328`；release `45da49a`（版本 0.5.4 → 0.5.5、notes、README / roadmap） |
+| tag | `v0.5.5` annotated（远端对象 `93570d8`）；正文与 `docs/release-notes/v0.5.5.md` 归一化后逐字一致（sha256 `e81d4167…`） |
+| 源码 | main 已推（`0c356ad..45da49a`，SSH 443）；tracking ref 已对齐 |
+| GitHub | `LinePixel2025/Aurora-releases` releases/tag/v0.5.5，3 资产（exe 203,255,868 B / blockmap 211,786 B / latest.yml 341 B） |
+| Center 更新源 | `/api/updates/current`：version=0.5.5、3 文件；`latest.yml` SHA-256 与本地 / GitHub 相同（`3C360962…`）；安装包 Range → 206 |
+| 安装包 | `Aurora-Setup-0.5.5.exe`，SHA-256 `3F211117DF75AE630DB718FC43CFBD060A88617700010FB6B063B508CB687589` |
+| 验收 | `verify-update` 15/15；其余数字见上节 |
+
+- Center 管理员密码校验：旧用户环境变量对 `admin` / `codex-release` 均 401；更新为当前密码后
+  `admin` 登录 200。发布账号固定 `admin`；`AURORA_CENTER_USER` 的历史值不可直接使用。
+- `--push` 仍不可用（origin 是 HTTPS，`github.com` 443 被掐）；发布后手工
+  `git push git@github.com:LinePixel2025/Aurora.git main --follow-tags` 并对齐
+  `refs/remotes/origin/main`，与既有口径一致。
+- 仓库里仍有 54 个与本轮无关的既存 `format:check` 告警；本轮改动文件单独 prettier 通过。
+
 ## 相关文档
 
 - 窗口：docs/07 §2.2.2、§8；docs/02 §2.2；docs/14 §2.1 / §5.3 / §5.6 / §12。
