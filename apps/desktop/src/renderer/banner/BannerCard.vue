@@ -57,7 +57,9 @@ watch(
     // 内容换了 → 高度可能变了：等 DOM 更新再量（ResizeObserver 只在尺寸真的变化时才回调）
     void nextTick(() => requestAnimationFrame(reportHeight))
     if (props.muted) return
-    if (next.sound) playBannerChime()
+    if (next.sound) playBannerChime(next.volume)
+    // 语音也按同一个音量设置播（用户调的是「提醒有多大声」，不是「音效多大声」）
+    tts.volume.value = next.volume
     if (next.speak && props.ttsReady) {
       // 朗读「标题 + 正文」：正文为空时只读标题，避免念出一个孤零零的句号
       const text = next.body === '' ? next.title : `${next.title}。${next.body}`

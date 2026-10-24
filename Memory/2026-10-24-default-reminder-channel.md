@@ -55,3 +55,36 @@ source: 模型自动记录
 - 基线（2026-10-24 实测）：`pnpm test` 199 文件 / 2879 用例；`pnpm verify` 26/26（`version=37`、迁移 37/37）；
   冒烟 **256/256**（新增 5 条：默认 system / 非法值被拒 / banner 下走流光 / off 不投递 / 还原）；
   截图三轮共 **111 条 checks**（新增 `settings-notifications`），唯一恒红项仍是 `chat-model-picker.png`。
+
+## 追加：提醒细节可配置（v38，同一页）
+
+用户要求「提醒界面里能设音效、是否语音朗读、弹窗大小等」。最终落成五项：
+`sound`（提示音）/ `volume`（0–100）/ `speak`（朗读）/ `size`（compact 360 / standard 420 /
+large 480）/ `durationMs`（2–30s）。
+
+## 口径与踩点
+
+- **`sound` / `speak` 是总闸，不是缺省值**：`payload.sound = prefs.sound && (request.sound ?? true)`。
+  写成 `request.sound ?? prefs.sound` 的话，`notify_banner` 显式传 `sound: true` 会**越过**
+  用户关掉的提示音 —— 用户关声音就是不想被吵，请求级只能再关、不能开。
+- **设置注入从「一个布尔」升级成「一个对象 getter」**：`BannerService` 原先是 `speakDefault: () => boolean`，
+  现在是 `preferences: () => { sound, speak, volume, durationMs }`（每次 `show()` 现读）。
+  `speak` 由装配层先合成「用户开关 && TTS 已配置」，服务只管总闸语义 —— 判据不要散在两处。
+- **`size` 只改窗口宽度，不改高度**：高度仍由渲染层量（`banner:measure`），所以
+  `bannerCardWidth()` 是唯一宽度来源，首帧估算的「每行字数」必须按当前宽度折算
+  （写死 28 字会让 360px 的紧凑卡估矮、480px 估高）。
+- **`volume` 要同时作用于提示音与语音**：提示音在 `playBannerChime(volume)` 里乘峰值增益，
+  语音要给 `useTts` 加一个 `volume` ref（创建 `HTMLAudioElement` 时应用）——
+  只改音效会让「音量 20%」时语音仍然满音量。
+- **设置页在非流光通道下是置灰态**：这是有意的（系统通知没有这些参数），但截图里会像坏掉；
+  所以新增的 `settings-notifications-style.png` 场景在 `prepare` 里先把 channel 切成 `banner`
+  （capture 的 userData 是隔离的，不用还原）。
+- 探针：细节区单列一条（`SETTINGS_NOTIFICATIONS_STYLE_CHECK`），量五个控件存在 / 默认选中
+  （标准卡、6 秒）/ 音量滑杆 60 / 每个分段按钮高度 ≥24；`size` 真正生效由**冒烟的原生窗口宽度**
+  证（大档 480 + 24 = 504，给 ±6 容差），比只断言配置回读可靠。
+- v38 迁移：`v37 → v38` 以默认值为底、已有 `notifications` 在上 —— 用户已选 `channel` 原样保留，
+  补出的五项等于 v38 之前写死的行为。`migrations.test.ts` 的 applied 列表同样要加一行。
+- 基线（v38 实测）：`pnpm test` 199 文件 / **2881** 用例；`pnpm verify` 26/26（`version=38`、迁移 38/38）；
+  冒烟 **262/262**（+6：细节默认值 / 非法音量被拒 / 大档卡片窗真的变宽 / 还原 等）；
+  截图三轮共 **112 条 checks**（新增 `settings-notifications-style`）。
+

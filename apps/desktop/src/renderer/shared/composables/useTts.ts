@@ -18,6 +18,11 @@ export interface UseTts {
   /** 最近一次失败的说明；成功后清空 */
   error: Ref<string | null>
   /**
+   * 播放音量（0–1，默认 1）。流光提醒按用户设置的音量播报时改它；
+   * 对话窗朗读保持默认 1（音量归用户系统音量管）。
+   */
+  volume: Ref<number>
+  /**
    * 合成并播放；同一时刻只有一个音频，播新的会先停掉旧的。
    *
    * `providerId` 缺省 = 主进程按 `tts.active` 选（会话朗读走这条）；
@@ -40,6 +45,8 @@ export function useTts(): UseTts {
   const speaking = ref<string | null>(null)
   const loading = ref<string | null>(null)
   const error = ref<string | null>(null)
+  /** 播放音量（0–1）：每次创建 audio 时应用一次（改完在下一条生效即可） */
+  const volume = ref(1)
 
   let audio: HTMLAudioElement | null = null
   let objectUrl: string | null = null
@@ -109,6 +116,7 @@ export function useTts(): UseTts {
     objectUrl = URL.createObjectURL(blob)
     const element = new Audio(objectUrl)
     audio = element
+    element.volume = Math.min(1, Math.max(0, volume.value))
 
     element.onended = () => {
       release()
@@ -139,5 +147,5 @@ export function useTts(): UseTts {
 
   onScopeDispose(stop)
 
-  return { speaking, loading, error, speak, stop }
+  return { speaking, loading, error, volume, speak, stop }
 }

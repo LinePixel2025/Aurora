@@ -256,6 +256,50 @@ export function smokeScript(
       record('默认提醒方式已还原为系统通知', restored === 'system', String(restored))
     }
 
+    // 2.4 提醒细节（v38，docs/07 §4）：提示音 / 音量 / 朗读 / 卡片大小 / 停留时长。
+    //     size 用**原生窗口宽度**证（cardWidth），其余用配置回读 + 非法值拒绝证；
+    //     sound / speak 的总闸语义由 banner.test.ts 的单测覆盖（这里只验接线）。
+    {
+      const details = await window.aurora.settings.get()
+      const initial = details && details.ok ? details.value.notifications : undefined
+      record(
+        '提醒细节默认值（提示音开 / 音量 60 / 朗读开 / 标准卡 / 6 秒）',
+        Boolean(initial) && initial.sound === true && initial.volume === 60 && initial.speak === true && initial.size === 'standard' && initial.durationMs === 6000,
+        JSON.stringify(initial),
+      )
+
+      const invalidVolume = await window.aurora.settings.update({ notifications: { volume: 200 } })
+      record('非法音量（200）被拒绝', Boolean(invalidVolume) && invalidVolume.ok === false, invalidVolume ? (invalidVolume.ok ? '意外成功' : invalidVolume.message) : '无结果')
+
+      expectOk('settings.update(notifications 细节)', await window.aurora.settings.update({
+        notifications: { channel: 'banner', sound: false, speak: false, volume: 20, size: 'large', durationMs: 8000 },
+      }))
+      const largeTest = await window.aurora.notifications.test()
+      const largeDiag = await waitFor(
+        async () => {
+          const result = await window.aurora.app.getSmokeDiagnostics()
+          return result && result.ok ? result.value.banner : undefined
+        },
+        (value) => Boolean(value && value.cardVisible === true && typeof value.cardWidth === 'number'),
+        4000,
+      )
+      // 大档卡片 480 + 两侧 12px 外边距 = 504（Windows 无边框窗口可能多出几个像素，给 ±6 容差）
+      const width = largeDiag && typeof largeDiag.cardWidth === 'number' ? largeDiag.cardWidth : -1
+      record('弹窗大小=宽大时卡片窗真的变宽（≈504）', Boolean(largeTest) && largeTest.ok === true && width >= 498 && width <= 510, 'cardWidth=' + String(width))
+      await window.aurora.app.smokeBanner('dismiss')
+
+      expectOk('settings.update(notifications 细节还原)', await window.aurora.settings.update({
+        notifications: { channel: 'system', sound: true, speak: true, volume: 60, size: 'standard', durationMs: 6000 },
+      }))
+      const restoredDetails = await window.aurora.settings.get()
+      const back = restoredDetails && restoredDetails.ok ? restoredDetails.value.notifications : undefined
+      record(
+        '提醒细节已还原（提示音开 / 音量 60 / 标准卡 / 6 秒）',
+        Boolean(back) && back.sound === true && back.volume === 60 && back.size === 'standard' && back.durationMs === 6000 && back.channel === 'system',
+        JSON.stringify(back),
+      )
+    }
+
     // 3. 模型配置由主进程在启动自测前写入（指向本地桩 LLM），这里只做读写/脱敏断言：
     //    若在此处再写一次 baseUrl，会把桩服务地址覆盖成真实服务，导致对话断言失败。
     const update = expectOk('settings.update(llm)', await window.aurora.settings.update({

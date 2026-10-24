@@ -17,6 +17,7 @@ import {
   type WebPreferences,
 } from 'electron'
 import {
+  BANNER_CARD_WIDTHS,
   IPC,
   WINDOW_NAMES,
   createInitialWindowState,
@@ -98,12 +99,11 @@ type InternalWindowName = 'awareness-glow' | 'banner'
 /**
  * 流光提醒卡片窗的几何（docs/07 §2.2.3）。
  *
- * 卡片宽度固定、高度按正文行数算：**窗口矩形必须与卡片一样大**，否则透明窗口多出来的
- * 那块区域会挡住下面窗口的点击（透明 ≠ 可穿透）。卡片自带 12px 外边距画柔和阴影，
- * 所以窗口 = 卡片 + 上下左右各 12px。
+ * 宽度来自用户设置的三档（`notifications.size` → `BANNER_CARD_WIDTHS`），高度按正文行数估算：
+ * **窗口矩形必须与卡片一样大**，否则透明窗口多出来的那块区域会挡住下面窗口的点击
+ * （透明 ≠ 可穿透）。卡片自带 12px 外边距画柔和阴影，所以窗口 = 卡片 + 上下左右各 12px。
  */
 const BANNER_CARD = {
-  width: 420,
   margin: 12,
   /** 标题行 20 + 上下内边距 11×2 = 42；正文每行 19 + 与标题的间距 6 */
   baseHeight: 48,
@@ -112,8 +112,6 @@ const BANNER_CARD = {
   maxLines: 3,
   /** 顶到屏幕上边缘的距离（卡片「从流光里落下」，不是贴死第 0 像素） */
   topOffset: 16,
-  /** 一行正文大致容纳的汉字数（卡片内宽 420 − 左右内边距 20×2）：只用于**首帧**估算 */
-  charsPerLine: 28,
   /** 卡片高度区间：46 只够标题 + 内边距；200 已能放 3 行正文还有余量（再高必然是误报） */
   minHeight: 46,
   maxHeight: 200,
@@ -692,22 +690,27 @@ export class WindowManager {
     card.webContents.send(IPC.banner.show, payload)
   }
 
-  /** 卡片窗几何：水平居中、贴顶下浮，高度按正文行数算（窗口 = 卡片 + 阴影外边距）。 */
+  /**
+   * 卡片窗几何：水平居中、贴顶下浮。
+   *
+   * 宽度取用户设置的三档（`notifications.size`，v38）；高度仍是「内容量出来 + 24px」——
+   * 这一处只给**首帧**估算（渲染层随后用 `banner:measure` 回报真实高度并覆盖它），
+   * 所以按当前宽度折算每行字数，别用固定 28 字（360px 的紧凑卡会估矮、480px 的会估高）。
+   */
   private bannerCardBounds(
     payload: BannerShowPayload | undefined,
     displayBounds: AwarenessGlowRect,
   ): AwarenessGlowRect {
     const body = payload?.body ?? ''
+    const cardWidth = this.bannerCardWidth()
+    const charsPerLine = Math.max(16, Math.floor((cardWidth - 76) / 12.6))
     const lines =
       body === ''
         ? 0
-        : Math.min(
-            BANNER_CARD.maxLines,
-            Math.max(1, Math.ceil(body.length / BANNER_CARD.charsPerLine)),
-          )
+        : Math.min(BANNER_CARD.maxLines, Math.max(1, Math.ceil(body.length / charsPerLine)))
     const cardHeight =
       BANNER_CARD.baseHeight + (lines === 0 ? 0 : BANNER_CARD.gap + lines * BANNER_CARD.lineHeight)
-    const width = BANNER_CARD.width + BANNER_CARD.margin * 2
+    const width = cardWidth + BANNER_CARD.margin * 2
     const height = cardHeight + BANNER_CARD.margin * 2
     return {
       x: Math.round(displayBounds.x + (displayBounds.width - width) / 2),
@@ -715,6 +718,12 @@ export class WindowManager {
       width,
       height,
     }
+  }
+
+  /** 当前生效的卡片宽度（读设置，现读即生效；未知值回落标准档） */
+  private bannerCardWidth(): number {
+    const size = this.options.settings.get().notifications.size
+    return BANNER_CARD_WIDTHS[size] ?? BANNER_CARD_WIDTHS.standard
   }
 
   private bannerWindowDiagnostics(

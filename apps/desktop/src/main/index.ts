@@ -182,6 +182,8 @@ import {
   AWARENESS_GLOW_SETTLE_ACT,
   BANNER_CARD_CAPTURE_CHECK,
   BANNER_GLOW_CAPTURE_CHECK,
+  SETTINGS_NOTIFICATIONS_STYLE_ACT,
+  SETTINGS_NOTIFICATIONS_STYLE_CHECK,
   captureWindows,
   CHAT_AUTO_TITLE_CHECK,
   CHAT_TRACE_FOLD_CHECK,
@@ -1034,12 +1036,22 @@ async function bootstrap(): Promise<void> {
   // 4.1 流光提醒（docs/07 §2.2.3）：Agent 工具 / 插件 / `ask_user` 三条来源共用的通道。
   //     在这里（`ask_user` 与插件装配**之前**）建：两者的旁路播报都按调用时点取它，
   //     顺序反了会拿到 undefined，表现为「提问时永远不弹提醒」。
-  //     `speak` 缺省跟随 TTS 配置，判据复用 `voiceReadiness`（与 Center 语音能力位同一份）。
+  //     提醒细节全部来自设置（`notifications.*`，v38），每次 `show()` 现读：
+  //     朗读 = 用户开关 && TTS 真的配置好（判据复用 `voiceReadiness`，与 Center 语音能力位同一份）。
   bannerService = new BannerService({
     logger: logger.child('banner'),
     present: (payload) => windows?.showBanner(payload) ?? false,
     hide: () => windows?.hideBanner(),
-    speakDefault: () => voiceReadiness(settings!.get()).tts,
+    preferences: () => {
+      const current = settings!.get()
+      const notifications = current.notifications
+      return {
+        sound: notifications.sound,
+        speak: notifications.speak && voiceReadiness(current).tts,
+        volume: notifications.volume / 100,
+        durationMs: notifications.durationMs,
+      }
+    },
   })
 
   // 5. Skill 注册表（内置 skills/ + 用户技能目录）
@@ -3400,6 +3412,21 @@ async function runCapture(dir: string): Promise<void> {
         query: { page: 'awareness' },
         act: SETTINGS_AWARENESS_RECORDS_ACT,
         check: SETTINGS_AWARENESS_RECORDS_CHECK,
+      },
+      // 提醒页的细节区组（v38）：通道选择在默认那张图里，这一张拍提示音 / 音量 / 朗读 / 大小 / 时长。
+      // 拍之前把默认提醒方式切成「流光提醒」—— 否则整块细节区是置灰态（非流光通道时不可编辑），
+      // 截图里看不到控件的真实样子。capture 的 userData 是隔离的，不用还原。
+      {
+        name: 'settings',
+        file: 'settings-notifications-style.png',
+        query: { page: 'notifications' },
+        prepare: async () => {
+          const current = settings?.get().notifications
+          if (current === undefined) return
+          settings?.update({ notifications: { ...current, channel: 'banner' } })
+        },
+        act: SETTINGS_NOTIFICATIONS_STYLE_ACT,
+        check: SETTINGS_NOTIFICATIONS_STYLE_CHECK,
       },
       // 流光提醒（docs/07 §2.2.3，2026-10-24）：两个内部窗口各截一张 —— 它们职责不同
       // （卡片可点 / 光带穿透），合不到一张图里；`preview=1` 让页面渲染固定的示例内容，
@@ -6636,6 +6663,7 @@ function bannerDiagnostics(): BannerDiagnostics {
     ...service,
     cardVisible: state?.card.visible === true,
     glowVisible: state?.glow.visible === true,
+    ...(state?.card.bounds === undefined ? {} : { cardWidth: state.card.bounds.width }),
   }
 }
 

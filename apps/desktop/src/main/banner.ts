@@ -41,12 +41,13 @@ export interface BannerServiceOptions {
   /** 注入的隐藏载体（`WindowManager.hideBanner`）：必须幂等 */
   hide: () => void
   /**
-   * `speak` 的缺省值（live getter）：是否已配置可用的 TTS。
+   * 请求级缺省值的**唯一来源**（live getter，每次 `show()` 现读）。
    *
-   * 为什么是 getter 而不是构造时的布尔：用户在设置页配好 / 清掉 TTS 之后，
-   * 下一批提醒就该按新配置走，不必重启（与 `agent.loop.*` 的上限注入同一条规矩）。
+   * `speak` 已经由装配层合成过「用户开关 + TTS 是否配置」两层判据；本服务只负责
+   * 「请求级只能再关、不能越过总闸」这条语义。缺省（未注入）时按
+   * `{ sound: true, speak: false, volume: 1, durationMs: 6000 }` 处理，便于单测直接构造。
    */
-  speakDefault?: () => boolean
+  preferences?: () => BannerPreferences
   now?: () => number
   /** 去重窗口（缺省 3s，与 `NotificationService` 同口径） */
   dedupeWindowMs?: number
@@ -55,6 +56,18 @@ export interface BannerServiceOptions {
   defaultDurationMs?: number
   minDurationMs?: number
   maxDurationMs?: number
+}
+
+/** 用户设置解算后的提醒细节（`notifications.*`，v38） */
+export interface BannerPreferences {
+  /** 提示音总闸 */
+  sound: boolean
+  /** 朗读总闸（装配层已叠加「TTS 是否配置」） */
+  speak: boolean
+  /** 音量 0–1 */
+  volume: number
+  /** 每次停留时长（毫秒） */
+  durationMs: number
 }
 
 /** 单条提醒的时长区间：太短看不清，太长会赖在屏幕上 */
@@ -71,6 +84,17 @@ const MAX_QUEUE = 8
 const BACKSTOP_GRACE_MS = 1500
 
 /**
+ * 未注入 `preferences` 时的保守缺省（单测 / 别的装配方）：提示音开、**不朗读**、满音量、6 秒。
+ * 「不朗读」是刻意的保守项：朗读要花 TTS 额度且会出声，缺省不开。
+ */
+const FALLBACK_PREFERENCES: BannerPreferences = {
+  sound: true,
+  speak: false,
+  volume: 1,
+  durationMs: 6000,
+}
+
+/**
  * 流光提醒服务（纯逻辑，不 import electron）。
  *
  * 状态机只有两态：`current`（正在显示）与 `queue`（排队）。`show()` 要么占住 `current`，
@@ -81,7 +105,7 @@ export class BannerService {
   private readonly logger: Logger
   private readonly present: (payload: BannerShowPayload) => boolean
   private readonly hide: () => void
-  private readonly speakDefault: () => boolean
+  private readonly preferences: () => BannerPreferences
   private readonly now: () => number
   private readonly dedupeWindowMs: number
   private readonly maxQueue: number
@@ -103,7 +127,7 @@ export class BannerService {
     this.logger = options.logger
     this.present = options.present
     this.hide = options.hide
-    this.speakDefault = options.speakDefault ?? (() => false)
+    this.preferences = options.preferences ?? (() => FALLBACK_PREFERENCES)
     this.now = options.now ?? (() => Date.now())
     this.dedupeWindowMs = options.dedupeWindowMs ?? 3_000
     this.maxQueue = Math.max(1, options.maxQueue ?? MAX_QUEUE)
@@ -135,8 +159,11 @@ export class BannerService {
     this.recent.set(key, now)
     this.pruneRecent(now)
 
+    // 提醒细节来自用户设置（live getter）：请求级只能**再关**，不能越过总闸。
+    // `sound` / `speak` 是总闸：`&&` 让「设置里关掉」永远优先于请求里的 `true`。
+    const prefs = this.safePreferences()
     const durationMs = clampNumber(
-      request.durationMs ?? this.defaultDurationMs,
+      request.durationMs ?? prefs.durationMs ?? this.defaultDurationMs,
       this.minDurationMs,
       this.maxDurationMs,
     )
@@ -144,8 +171,9 @@ export class BannerService {
       id: `banner-${now.toString(36)}-${(this.sequence += 1)}`,
       title,
       body,
-      speak: request.speak ?? this.safeSpeakDefault(),
-      sound: request.sound ?? true,
+      speak: prefs.speak && (request.speak ?? true),
+      sound: prefs.sound && (request.sound ?? true),
+      volume: clampUnit(prefs.volume),
       durationMs,
       level: normalizeLevel(request.level),
     }
@@ -211,13 +239,16 @@ export class BannerService {
 
   // ───────────────────────── 内部 ─────────────────────────
 
-  /** `speakDefault()` 是用户配置的取值器，抛错时按「不朗读」处理（不能因设置读失败而不弹提醒） */
-  private safeSpeakDefault(): boolean {
+  /**
+   * 读取用户设置（live getter）。抛错时按**保守缺省**处理：
+   * 提示音开、朗读关、音量 1、6 秒 —— 不能因为读配置失败就不弹提醒。
+   */
+  private safePreferences(): BannerPreferences {
     try {
-      return this.speakDefault()
+      return this.preferences()
     } catch (error) {
-      this.logger.debug('读取 TTS 朗读缺省值失败，按不朗读处理', { error: String(error) })
-      return false
+      this.logger.debug('读取提醒设置失败，按缺省处理', { error: String(error) })
+      return FALLBACK_PREFERENCES
     }
   }
 
@@ -305,6 +336,12 @@ function clampText(text: string, max: number): string {
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min
   return Math.min(max, Math.max(min, Math.round(value)))
+}
+
+/** 音量归一到 0–1（非法值按 0 处理：静音比突然满音量安全） */
+function clampUnit(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(1, Math.max(0, value))
 }
 
 function normalizeLevel(level: BannerLevel | undefined): BannerLevel {

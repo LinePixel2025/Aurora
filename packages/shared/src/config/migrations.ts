@@ -1282,6 +1282,28 @@ const migrateV36ToV37: Migration = {
   },
 }
 
+/**
+ * v37 → v38：`notifications` 补齐提醒细节（提示音 / 音量 / 朗读 / 卡片大小 / 停留时长）。
+ *
+ * 口径同前面各步：以默认值为底、已有对象在上 —— 用户已经选好的 `channel` 原样保留，
+ * 补出来的五项等于 v38 之前写死在代码里的行为（提示音开、朗读开、标准卡、6 秒）。
+ */
+const migrateV37ToV38: Migration = {
+  from: 37,
+  to: 38,
+  describe: 'v37 → v38：notifications 补提示音 / 音量 / 朗读 / 卡片大小 / 停留时长',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const notifications = asRecord(next['notifications'])
+    next['notifications'] = {
+      ...DEFAULT_NOTIFICATIONS,
+      ...(notifications ?? {}),
+    }
+    next['version'] = 38
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1320,6 +1342,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV34ToV35,
   migrateV35ToV36,
   migrateV36ToV37,
+  migrateV37ToV38,
 ]
 
 export interface MigrationOutcome {

@@ -288,11 +288,16 @@
       "model": "",
     },
   },
-  // v37 新增：默认提醒方式（docs/07 §4）。只管 Aurora 自己发起的提醒
+  // v37 / v38 新增：提醒（docs/07 §4）。channel 只管 Aurora 自己发起的提醒
   // （分类完成 / 课前提醒 / 引导 / notify_user）；notify_banner 与插件 ctx.banner
-  // 是显式请求流光，不受它影响。
+  // 是显式请求流光，不受 channel 影响，但同样受 sound / speak 两个总闸约束。
   "notifications": {
     "channel": "system", // system 系统通知 | banner 流光提醒 | both 两者都发 | off 不打扰（只记日志）
+    "sound": true, // v38：提示音总闸（关掉后请求级 sound:true 也不响）
+    "volume": 60, // v38：提示音与语音播报音量（0–100）
+    "speak": true, // v38：语音朗读总闸（仍需 tts 已配置）
+    "size": "standard", // v38：compact 360 | standard 420 | large 480（只改卡片宽度）
+    "durationMs": 6000, // v38：停留时长（2000–30000）
   },
 }
 ```
@@ -618,12 +623,15 @@
   provider + model，严格使用该选择，不可用时暂停而不是回落。整组在 `SETTINGS_READONLY_PREFIXES` 里：
   它同时改变文件读取范围、数据出网与后台任务，AI 不得自行开启或放宽。
   内嵌图片是否真正读取由有效后台模型的 `vision` 决定；运行状态会如实显示「已开启 / 仅分析文字」。
-- `notifications`（**v37 新增**，见 07 §4）：默认提醒方式。只有一个字段 `channel`：
-  `system`（默认，系统通知中心）/ `banner`（流光提醒）/ `both`（两条都发）/ `off`（不打扰，只记日志）。
-  它只决定 Aurora 自己发起的提醒（分类完成 / 课前提醒 / 引导 / `notify_user`）走哪条通道；
-  `notify_banner` 与插件 `ctx.banner` 是**显式**请求流光，不受它影响。`SettingsPatch` 新增
-  可选 `notifications` 字段（顶层浅合并）；路径登记在 `WRITABLE_PATH_OVERRIDES`
-  （AI 可以照用户要求切换打扰方式），**不在** `SETTINGS_READONLY_PREFIXES`。
+- `notifications`（**v37 新增，v38 扩展**，见 07 §4）：提醒通道与细节。
+  `channel`：`system`（默认，系统通知中心）/ `banner`（流光提醒）/ `both`（两条都发）/
+  `off`（不打扰，只记日志）；`sound` / `volume` / `speak` / `size` / `durationMs`（v38）：
+  流光提醒的提示音、音量（0–100）、语音朗读、卡片大小（`compact` / `standard` / `large`）与停留时长（2–30s）。
+  `sound` / `speak` 是**总闸**：关掉后请求级 `true` 也不越过。`channel` 只决定 Aurora 自己发起的提醒
+  （分类完成 / 课前提醒 / 引导 / `notify_user`）；`notify_banner` 与插件 `ctx.banner` 是**显式**请求流光，
+  不受 `channel` 影响（但仍受两个总闸约束）。`SettingsPatch` 新增可选 `notifications` 字段（顶层浅合并）；
+  路径登记在 `WRITABLE_PATH_OVERRIDES` 的 `notifications.*`（AI 可以照用户要求切换打扰方式），
+  **不在** `SETTINGS_READONLY_PREFIXES`。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -832,12 +840,15 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `v35 → v36`（**插件系统**，见 §1 的 `plugins` 与 docs/14 §5：缺 `plugins` 时补
   `{ enabled: true, devDirs: [], activeTheme: { pluginId: '', themeId: '' } }`）、
   `v36 → v37`（**默认提醒方式**，见 §1 的 `notifications` 与 07 §4：缺 `notifications` 时补
-  `{ channel: 'system' }` —— 与 v37 之前的行为一字不差）。
-  三十七条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  `{ channel: 'system' }` —— 与 v37 之前的行为一字不差）、
+  `v37 → v38`（**提醒细节**，见 §1 的 `notifications`：为已有 `notifications` 补
+  `sound: true` / `volume: 60` / `speak: true` / `size: 'standard'` / `durationMs: 6000`，
+  用户已选的 `channel` 原样保留 —— 补出来的值等于 v38 之前写死在代码里的行为）。
+  三十八条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
   重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **37** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **38** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -1002,9 +1013,12 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   - **连接**：`center` Aurora Center；
   - **扩展**：`plugins` 插件（已安装 / 市场 / 桌面小组件，见 docs/14）；
   - **系统**：`advanced` 系统（网络 / 日志 / 安全 / 危险操作）。
-  - **`notifications` 提醒（v37 新增）**：全页只有「默认提醒方式」四选一 +
-    「发送测试提醒」按钮（细节见 07 §2.5 / §4）；锚点 `notifications.channel.<key>` /
-    `notifications.test`，截图场景 `settings-notifications.png`。
+  - **`notifications` 提醒（v37 新增，v38 扩展）**：上半是「默认提醒方式」四选一，
+    下半是流光提醒的细节（提示音 / 音量 / 朗读 / 弹窗大小 / 停留时长，非流光通道时置灰），
+    末尾「发送测试提醒」按钮（细节见 07 §2.2.3 / §4）；锚点 `notifications.channel.<key>` /
+    `notifications.sound` / `.volume` / `.speak` / `.size.<key>` / `.duration.<ms>` /
+    `notifications.test`，截图场景 `settings-notifications.png`（通道）与
+    `settings-notifications-style.png`（细节区，拍前把通道切到流光以显示可用态）。
   - 旧页深链兼容映射：`?page=tts` → `voice`、`?page=skills|mcp` → `agent`；
     `general` / `modes` / `llm` / `advanced` 页 id 不变，旧深链继续可用。
 - **Skill 管理**（目标 6 页 IA 下为「Agent 设置」页的技能区组）：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。

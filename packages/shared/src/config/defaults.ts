@@ -238,11 +238,18 @@ export const DEFAULT_PLUGINS = {
 } as const
 
 /**
- * 默认提醒方式（v37，docs/07 §4）：`system` = 与 v37 之前完全一致（系统通知中心）。
- * 切到 `banner` 后，Aurora 自己发起的提醒改走流光提醒；显式调用流光通道的地方不受影响。
+ * 默认提醒方式与提醒细节（v37 / v38，docs/07 §4）：
+ * `channel` 缺省 `system` = 与 v37 之前完全一致（系统通知中心）；
+ * 其余五项只作用于流光提醒（提示音 / 音量 / 朗读 / 卡宽 / 停留时长），缺省值与
+ * 各实现里的历史常量一致，因此升级不改变观感。
  */
 export const DEFAULT_NOTIFICATIONS = {
   channel: 'system',
+  sound: true,
+  volume: 60,
+  speak: true,
+  size: 'standard',
+  durationMs: 6000,
 } as const
 
 export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {

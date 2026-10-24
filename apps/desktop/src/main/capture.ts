@@ -5880,8 +5880,7 @@ export const BANNER_GLOW_CAPTURE_CHECK = `(async () => {
   }
 })()`
 
-export const SETTINGS_AWARENESS_RECORDS_ACT = `(async () => {
-  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+export const SETTINGS_AWARENESS_RECORDS_ACT = `(async () => {  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     const more = document.querySelector('[data-field="fileAwareness.recent-more"]')
     if (more === null) return { ok: false, reason: '查看更多按钮未出现' }
@@ -5966,8 +5965,80 @@ export const SETTINGS_NOTIFICATIONS_CHECK = `(async () => {
   }
 })()`
 
-export const SETTINGS_AWARENESS_SCROLL_ACT = `(async () => {
+/**
+ * 「提醒」页的**细节区**（v38，docs/07 §4）：把「流光提醒」卡片滚进视口再拍。
+ * 这一屏要看的是提示音 / 音量 / 朗读 / 弹窗大小 / 停留时长五组控件。
+ */
+export const SETTINGS_NOTIFICATIONS_STYLE_ACT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    const style = document.querySelector('[data-field="notifications.style"]')
+    if (style === null) return { ok: false, reason: '提醒细节区组不在 DOM' }
+    style.scrollIntoView({ block: 'start' })
+    await wait(220)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 提醒细节区组的探针（v38）。
+ *
+ * 只量矩形与默认选中态：五个设置项都在、每行都能点（高度 ≥ 24）、
+ * 大小档三选一里「标准」被选中、停留时长三档里「6 秒」被选中、音量滑杆是 60。
+ * 判据只写一份（pass 取 conditions 的乘积）。
+ */
+export const SETTINGS_NOTIFICATIONS_STYLE_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    await wait(260)
+    const field = (id) => document.querySelector('[data-field="notifications.' + id + '"]')
+    const rectOf = (element) => {
+      if (element === null) return null
+      const rect = element.getBoundingClientRect()
+      return { width: Math.round(rect.width), height: Math.round(rect.height) }
+    }
+    const sizes = ['compact', 'standard', 'large'].map((key) => document.querySelector('[data-field="notifications.size.' + key + '"]'))
+    const sizeInfo = sizes.map((element) => element === null ? null : { active: element.classList.contains('active'), rect: rectOf(element) })
+    const durations = ['4000', '6000', '10000'].map((key) => document.querySelector('[data-field="notifications.duration.' + key + '"]'))
+    const durationInfo = durations.map((element) => element === null ? null : { active: element.classList.contains('active'), rect: rectOf(element) })
+    const sound = field('sound') === null ? null : field('sound').querySelector('input')
+    const speak = field('speak') === null ? null : field('speak').querySelector('input')
+    const volumeRange = document.querySelector('[data-field="notifications.volume"] input[type="range"]')
+    const volumeValue = document.querySelector('[data-field="notifications.volume"] .volume-value')
+    const sectionRect = rectOf(field('style'))
+    const conditions = {
+      sectionPresent: sectionRect !== null && sectionRect.width > 300,
+      soundToggle: sound !== null && sound.type === 'checkbox' && sound.checked === true,
+      speakToggle: speak !== null && speak.type === 'checkbox' && speak.checked === true,
+      volumeRange: volumeRange !== null && volumeRange.value === '60',
+      volumeLabel: volumeValue !== null && (volumeValue.textContent || '').includes('60'),
+      sizeOptions: sizeInfo.every((item) => item !== null),
+      // 出厂态是「标准」，不是第一项（第一项是紧凑档）
+      sizeDefault: sizeInfo[1] !== null && sizeInfo[1].active === true && sizeInfo[0].active === false && sizeInfo[2].active === false,
+      durationOptions: durationInfo.every((item) => item !== null),
+      durationDefault: durationInfo[1] !== null && durationInfo[1].active === true,
+      // 每个控件都要是能点的尺寸（分段按钮 ≥ 24 高）
+      controlsClickable: [...sizeInfo, ...durationInfo].every(
+        (item) => item !== null && item.rect !== null && item.rect.height >= 24 && item.rect.width >= 40,
+      ),
+    }
+    const pass = Object.keys(conditions).every((key) => conditions[key] === true)
+    return {
+      section: sectionRect,
+      sizeInfo,
+      durationInfo,
+      volume: volumeRange === null ? '' : volumeRange.value,
+      conditions,
+      pass,
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+export const SETTINGS_AWARENESS_SCROLL_ACT = `(async () => {  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     const usage = document.querySelector('[data-field="fileAwareness.usage"]')
     if (usage === null) return { ok: false, reason: '累计 Token 不在 DOM' }

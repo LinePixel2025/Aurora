@@ -44,7 +44,9 @@ function createHarness(overrides: Partial<BannerServiceOptions> = {}): Harness {
 
 describe('BannerService', () => {
   it('第一条直接显示：标题 / 正文 / 缺省值都按约定解算', () => {
-    const { service, shown } = createHarness({ speakDefault: () => true })
+    const { service, shown } = createHarness({
+      preferences: () => ({ sound: true, speak: true, volume: 0.6, durationMs: 6000 }),
+    })
     const outcome = service.show({ title: '构建完成', body: '产物已写到 out/' })
     expect(outcome.ok).toBe(true)
     expect(outcome.queued).toBe(false)
@@ -54,19 +56,44 @@ describe('BannerService', () => {
       body: '产物已写到 out/',
       speak: true,
       sound: true,
+      volume: 0.6,
       durationMs: 6000,
       level: 'info',
     })
     expect(service.diagnostics().visible).toBe(true)
   })
 
-  it('没配置 TTS 时 speak 缺省为 false，显式 true 仍然照办', () => {
-    const { service, shown } = createHarness()
-    const first = service.show({ title: 'A', body: 'B' })
+  it('提醒细节来自用户设置；请求级只能再关，不能越过总闸', () => {
+    let prefs = { sound: true, speak: true, volume: 0.4, durationMs: 9000 }
+    const { service, shown } = createHarness({ preferences: () => prefs })
+    const first = service.show({ title: 'A', body: '' })
     service.dismiss(first.id ?? '')
-    service.show({ title: 'C', body: 'D', speak: true })
-    expect(shown[0]?.speak).toBe(false)
-    expect(shown[1]?.speak).toBe(true)
+    // 请求级显式关掉其中两项、并覆盖时长
+    service.show({ title: 'B', body: '', sound: false, speak: false, durationMs: 3000 })
+    expect(shown[0]).toMatchObject({ sound: true, speak: true, volume: 0.4, durationMs: 9000 })
+    expect(shown[1]).toMatchObject({ sound: false, speak: false, volume: 0.4, durationMs: 3000 })
+
+    // 总闸关掉后，请求级 true 也不能越过
+    prefs = { ...prefs, sound: false, speak: false }
+    service.dismiss(shown[1]?.id ?? '')
+    service.show({ title: 'C', body: '', sound: true, speak: true })
+    expect(shown[2]).toMatchObject({ sound: false, speak: false })
+  })
+
+  it('未注入设置时按保守缺省（提示音开、不朗读、满音量、6 秒）', () => {
+    const { service, shown } = createHarness()
+    service.show({ title: 'A', body: 'B' })
+    expect(shown[0]).toMatchObject({ speak: false, sound: true, volume: 1, durationMs: 6000 })
+  })
+
+  it('设置读取失败时按保守缺省处理（不能因为读配置失败就不弹）', () => {
+    const { service, shown } = createHarness({
+      preferences: () => {
+        throw new Error('配置读不出来')
+      },
+    })
+    expect(service.show({ title: 'A', body: 'B' }).ok).toBe(true)
+    expect(shown[0]).toMatchObject({ speak: false, sound: true })
   })
 
   it('一次只显示一条：第二条进队列，dismiss 后自动补上', () => {
@@ -205,7 +232,11 @@ describe('BannerService', () => {
   it('超时兜底：没收到渲染层回执时按 durationMs + 宽限强制收尾', async () => {
     vi.useFakeTimers()
     try {
-      const { service, hide } = createHarness({ minDurationMs: 2_000, defaultDurationMs: 2_000 })
+      const { service, hide } = createHarness({
+        minDurationMs: 2_000,
+        // 用户设置的停留时长（v38）：兜底判据跟着它走
+        preferences: () => ({ sound: true, speak: false, volume: 1, durationMs: 2_000 }),
+      })
       service.show({ title: '无人回执', body: '' })
       expect(hide).not.toHaveBeenCalled()
       // 兜底 = durationMs + 1500ms 宽限

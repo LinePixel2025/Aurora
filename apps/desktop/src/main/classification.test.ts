@@ -208,8 +208,15 @@ function settingsWith(overrides: {
     appearance: { theme: 'system', accent: 'aurora', glass: true, awarenessGlow: true },
     // v36 新增顶层分组（插件，docs/14）：本用例不涉及插件，保持默认态
     plugins: { enabled: true, devDirs: [], activeTheme: { pluginId: '', themeId: '' } },
-    // v37：默认提醒方式（本文件的夹具不关心它，取出厂默认）
-    notifications: { channel: 'system' },
+    // v37 / v38：默认提醒方式与提醒细节（本文件的夹具不关心它们，取出厂默认）
+    notifications: {
+      channel: 'system',
+      sound: true,
+      volume: 60,
+      speak: true,
+      size: 'standard',
+      durationMs: 6000,
+    },
   }
 }
 

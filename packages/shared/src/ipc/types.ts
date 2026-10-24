@@ -1224,6 +1224,8 @@ export interface BannerShowPayload {
   body: string
   speak: boolean
   sound: boolean
+  /** 提示音与语音播报音量（0–1，主进程按设置里的 0–100 换算好再下发） */
+  volume: number
   durationMs: number
   level: BannerLevel
 }
@@ -1263,6 +1265,8 @@ export interface BannerDiagnostics {
   shownCount: number
   cardVisible: boolean
   glowVisible: boolean
+  /** 卡片窗当前宽度（CSS 像素；自测据此断言「弹窗大小」真的生效） */
+  cardWidth?: number
 }
 
 // ───────────────────────── 默认提醒方式（v37，docs/07 §4） ─────────────────────────

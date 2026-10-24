@@ -31,6 +31,7 @@ const PREVIEW_PAYLOAD: BannerShowPayload = {
   body: '《高数错题整理.docx》已归档到「数学 / 错题本」，共处理 3 个文件。',
   speak: false,
   sound: false,
+  volume: 0.6,
   durationMs: 60_000,
   level: 'success',
 }

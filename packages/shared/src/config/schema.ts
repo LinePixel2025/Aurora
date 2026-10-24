@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 37 as const
+export const CONFIG_VERSION = 38 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -1163,9 +1163,41 @@ export type PluginsSettings = z.infer<typeof PluginsSchema>
 export const REMINDER_CHANNELS = ['system', 'banner', 'both', 'off'] as const
 export type ReminderChannel = (typeof REMINDER_CHANNELS)[number]
 
+/**
+ * 流光提醒的卡片尺寸档（v38，docs/07 §2.2.3）。
+ *
+ * 只决定**卡片窗宽度**（高度按内容量出来），因为「弹窗大小」对这张卡真正有意义的
+ * 就是一行能放多少字：`compact` 更适合短提醒、`large` 适合长正文。
+ */
+export const BANNER_CARD_SIZE_IDS = ['compact', 'standard', 'large'] as const
+export type BannerCardSize = (typeof BANNER_CARD_SIZE_IDS)[number]
+
+/** 三档对应的卡片宽度（CSS 像素）。卡片窗宽度 = 它 + 两侧各 12px 阴影外边距。 */
+export const BANNER_CARD_WIDTHS: Record<BannerCardSize, number> = {
+  compact: 360,
+  standard: 420,
+  large: 480,
+}
+
 export const NotificationsSchema = z.object({
   /** 默认提醒方式（缺省 `system` = 与 v37 之前的行为一字不差）。 */
   channel: z.enum(REMINDER_CHANNELS).default('system'),
+  /**
+   * 提示音总开关（v38）。**总闸**语义：关掉之后连请求级 `sound: true` 也不再响；
+   * 开着时请求级 `sound: false` 仍可让某一条静音。
+   */
+  sound: z.boolean().default(true),
+  /** 提示音与语音播报的音量（0–100，缺省 60：桌面提醒不该刺耳）。 */
+  volume: z.number().int().min(0).max(100).default(60),
+  /**
+   * 语音朗读总开关（v38）。同样只在「TTS 已配置」之上生效：
+   * 关掉 = 任何请求都不朗读；开着时请求级 `speak: false` 仍可让某一条不读。
+   */
+  speak: z.boolean().default(true),
+  /** 弹窗（卡片）大小档。 */
+  size: z.enum(BANNER_CARD_SIZE_IDS).default('standard'),
+  /** 自动关闭时长（毫秒，2–30 秒；请求级 `durationMs` 优先于此值）。 */
+  durationMs: z.number().int().min(2000).max(30_000).default(6000),
 })
 export type NotificationsSettings = z.infer<typeof NotificationsSchema>
 
@@ -1288,10 +1320,10 @@ export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
   { pattern: 'appearance.accent', reason: '切换界面强调色主题' },
   { pattern: 'appearance.glass', reason: '开关界面毛玻璃效果（关掉后窗口与面板变实色）' },
   { pattern: 'appearance.awarenessGlow', reason: '开关文件自感知的四周流光特效' },
-  // 提醒通道（v37）：这是"打扰方式"的偏好，不是权限闸门；AI 可以照用户要求切换。
+  // 提醒通道与提醒细节（v37 / v38）：这是"打扰方式"的偏好，不是权限闸门；AI 可以照用户要求切换。
   {
-    pattern: 'notifications.channel',
-    reason: '切换默认提醒方式（系统通知 / 流光提醒 / 两者 / 不打扰）',
+    pattern: 'notifications.*',
+    reason: '调整默认提醒方式与提醒细节（通道 / 提示音 / 音量 / 朗读 / 大小 / 停留时长）',
   },
   { pattern: 'general.chat.showThinking', reason: '开关对话界面的思考过程展示' },
   // 模式
