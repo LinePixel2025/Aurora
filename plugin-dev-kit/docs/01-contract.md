@@ -86,8 +86,12 @@ type PluginRpcMessage =
 **宿主 → 插件**：`plugin.init`、`plugin.activate`、`plugin.deactivate`、`plugin.ping`、`tool.invoke`、
 `command.invoke`、`automation.action`、`panel.invoke`、`widget.invoke`、`event.deliver`、`config.changed`、`system.event`。
 
-**插件 → 宿主（按权限白名单）**：`storage.get/set/delete/list`、`net.fetch`、`notify`、`log`、
+**插件 → 宿主（按权限白名单）**：`storage.get/set/delete/list`、`net.fetch`、`notify`、`banner`、`log`、
 `emitEvent`、`ui.openPanel`、`ui.toast`、`ui.panelEvent`、`config.get/set`。
+
+> `banner`（v0.5.6 起）与 `notify` 同属 `notifications` 权限：`notify` 走系统通知中心（可点击打开
+> 文件 / 文件夹），`banner` 在屏幕顶端弹流光 + 置顶卡片（支持朗读 / 提示音，无可点入口）。
+> 两者的提示音 / 朗读都受用户在「设置 → 提醒」里的总闸约束，插件传 `true` 不能越过。
 
 ### 2.4 工具返回
 
