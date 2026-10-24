@@ -7,6 +7,11 @@
  * 各自只取自己关心的部分 —— 光带层只要"有人来了"，卡片层要标题 / 正文 / 时长。
  *
  * 两个窗口都不走 `bootstrapApp`：浮层只跑一次 `settings:get` + 订阅（见 settings.ts）。
+ *
+ * 动效的两条时间线（**必须与 BannerCard.vue / GlowBand.vue 的时长一致**）：
+ * - 入场：卡片由 `<Transition>` 播「从流光里落下」（Vue 会强制插入一帧初始态，所以真的会动）；
+ * - 退场：到 `durationMs - LEAVE_MS` 时把载荷置空（播 leave）+ 光带淡出，
+ *   `durationMs` 时再回执关窗 —— 窗口是全透明浮层，动画只能在窗口内完成。
  */
 import { onMounted, onUnmounted, ref } from 'vue'
 import type { BannerShowPayload } from '@aurora/shared'
@@ -31,15 +36,18 @@ const PREVIEW_PAYLOAD: BannerShowPayload = {
 }
 
 const payload = ref<BannerShowPayload | null>(preview ? PREVIEW_PAYLOAD : null)
+/** 光带层是否点亮（退场时先关掉，让光带跟着淡出） */
 const visible = ref(preview)
-/** 退场中：先播动画，再由 `dismiss()` 真正回执（窗口是全透明浮层，动画只能在窗口内完成） */
-const closing = ref(false)
+/** 当前展示的 id：载荷退场后仍要用它回执（迟到 / 重复回执由主进程按 id 丢弃） */
+const currentId = ref(preview ? PREVIEW_PAYLOAD.id : '')
 let offShow: (() => void) | null = null
 let fadeTimer: number | null = null
 let dismissTimer: number | null = null
+/** 退场动画是否已开始（决定回执要不要再等一个动画时长） */
+let leaving = false
 
-/** 退场动画时长：与 BannerCard 的 transition 一致 */
-const FADE_MS = 320
+/** 退场动画时长：与 BannerCard 的 leave / GlowBand 的淡出一致 */
+const LEAVE_MS = 320
 
 function clearTimers(): void {
   if (fadeTimer !== null) {
@@ -52,19 +60,28 @@ function clearTimers(): void {
   }
 }
 
+/** 开始退场：拿掉载荷（卡片播 leave）+ 熄灭光带。重复调用无副作用。 */
+function startLeave(): void {
+  if (leaving) return
+  leaving = true
+  payload.value = null
+  visible.value = false
+}
+
 /** 收到一条提醒：重置计时并重新播入场动画（排队时上一条已由主进程收掉） */
 function present(next: BannerShowPayload): void {
   clearTimers()
-  closing.value = false
+  leaving = false
+  currentId.value = next.id
   payload.value = next
   visible.value = true
   if (preview) return
   fadeTimer = window.setTimeout(
     () => {
       fadeTimer = null
-      closing.value = true
+      startLeave()
     },
-    Math.max(0, next.durationMs - FADE_MS),
+    Math.max(0, next.durationMs - LEAVE_MS),
   )
   dismissTimer = window.setTimeout(() => {
     dismissTimer = null
@@ -73,7 +90,7 @@ function present(next: BannerShowPayload): void {
 }
 
 /**
- * 关闭：先把卡片淡出，再回主进程。
+ * 关闭（用户点卡片 / 关闭按钮，或到时）：先让卡片播完退场动画，再回主进程。
  *
  * 只有**卡片层**发回执（光带层也订阅了同一条推送，两边都回执会让主进程收到两条，
  * 第二条因 id 不匹配被忽略 —— 不致命但没必要）。主进程另有兜底定时器，
@@ -81,16 +98,19 @@ function present(next: BannerShowPayload): void {
  */
 async function dismiss(): Promise<void> {
   clearTimers()
-  const id = payload.value?.id ?? ''
-  closing.value = true
-  visible.value = false
-  payload.value = null
+  const id = currentId.value
+  currentId.value = ''
+  // 退场还没开始（用户点了关闭）= 需要等一个动画时长；已经开始（到时自动关）= 立刻回执
+  const waitForAnimation = !leaving
+  startLeave()
   if (layer !== 'card' || id === '' || preview) return
-  try {
-    await window.aurora.banner.dismiss(id)
-  } catch {
-    // 主进程已退出 / 通道不可用：不需要补救，窗口会随进程一起消失
+  const send = (): void => {
+    void window.aurora.banner.dismiss(id).catch(() => {
+      // 主进程已退出 / 通道不可用：不需要补救，窗口会随进程一起消失
+    })
   }
+  if (waitForAnimation) window.setTimeout(send, LEAVE_MS)
+  else send()
 }
 
 onMounted(() => {
@@ -106,15 +126,7 @@ onUnmounted(() => {
 
 <template>
   <GlowBand v-if="layer === 'glow'" :active="visible" />
-  <BannerCard
-    v-else
-    :payload="payload"
-    :visible="visible"
-    :closing="closing"
-    :tts-ready="ttsReady"
-    :muted="preview"
-    @close="dismiss"
-  />
+  <BannerCard v-else :payload="payload" :tts-ready="ttsReady" :muted="preview" @close="dismiss" />
 </template>
 
 <style scoped>

@@ -41,11 +41,13 @@ defineProps<{ active: boolean }>()
   overflow: visible;
   pointer-events: none;
   opacity: 0;
-  transform: translate3d(0, -6px, 0) scaleY(0.9);
+  /* 入场：光带从中间向两侧铺开、同时淡入（320ms 与 App.vue 的 LEAVE_MS 同一档） */
+  transform: translate3d(0, -6px, 0) scaleX(0.94) scaleY(0.9);
   transform-origin: 50% 0;
   transition:
-    opacity 420ms var(--ease-standard),
-    transform 620ms var(--ease-spring);
+    opacity 320ms var(--ease-standard),
+    transform 560ms var(--ease-spring);
+  will-change: opacity, transform;
 }
 
 .banner-glow.is-active {

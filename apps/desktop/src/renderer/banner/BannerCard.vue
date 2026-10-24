@@ -6,6 +6,10 @@
  * 大圆角 + `--shadow-2` 柔和阴影；左侧一条 3px 语义色条（info / success / warning / error）。
  * **不用品牌双色渐变**（`--aurora-gradient` 是纯强调色，全仓禁渐变彩带）。
  *
+ * 入场 / 退场走 Vue `<Transition>` 而不是「挂载时就把最终 class 写上」：
+ * 后者浏览器不会播动画（元素插入时没有发生样式变化），表现就是「弹出来没有动效」。
+ * `<Transition>` 会先插入初始态、强制一帧、再切到终态，动画才真的发生。
+ *
  * 高度由**内容**决定（`height: auto`），量出来之后立刻回报主进程 —— 主进程把窗口调成
  * 「卡片 + 24px 外边距」。为什么不按字符数估算：真实换行取决于字体与中英混排，
  * 估算偏大 = 透明窗口多出一块挡点击的死区，偏小 = 正文被裁掉。
@@ -17,8 +21,6 @@ import { playBannerChime } from './chime.js'
 
 const props = defineProps<{
   payload: BannerShowPayload | null
-  visible: boolean
-  closing: boolean
   ttsReady: boolean
   /** 截图核对 / 预览：不播音、不朗读（否则每跑一轮截图都会响） */
   muted: boolean
@@ -64,14 +66,6 @@ watch(
   },
 )
 
-watch(
-  () => props.visible,
-  (next) => {
-    // 卡片退场（超时 / 点关闭）时掐掉还在读的语音：提醒都收起来了，声音不该继续
-    if (!next) tts.stop()
-  },
-)
-
 onMounted(() => {
   observer = new ResizeObserver(() => reportHeight())
   if (cardEl.value !== null) observer.observe(cardEl.value)
@@ -87,35 +81,39 @@ onUnmounted(() => {
 
 <template>
   <div class="banner-card-root">
-    <article
-      v-if="payload !== null"
-      ref="cardEl"
-      class="banner-card"
-      :class="[
-        `banner-card--${payload.level}`,
-        { 'is-visible': visible && !closing, 'is-leaving': closing },
-      ]"
-      role="alert"
-      data-field="banner.card"
-      @click="emit('close')"
-    >
-      <span class="banner-card-accent" aria-hidden="true" />
-      <div class="banner-card-text">
-        <h1 class="banner-card-title" data-field="banner.title">{{ payload.title }}</h1>
-        <p v-if="payload.body !== ''" class="banner-card-body" data-field="banner.body">
-          {{ payload.body }}
-        </p>
-      </div>
-      <button
-        class="banner-card-close"
-        type="button"
-        aria-label="关闭提醒"
-        data-field="banner.close"
-        @click.stop="emit('close')"
+    <!--
+      入场：从流光里落下（位移 + 轻微放大 + 淡入，春季曲线收尾）。
+      退场：向上缩回并淡出 —— 窗口在动画结束后才被主进程隐藏（见 App.vue 的时间线）。
+    -->
+    <Transition name="banner-card">
+      <article
+        v-if="payload !== null"
+        :key="payload.id"
+        ref="cardEl"
+        class="banner-card"
+        :class="`banner-card--${payload.level}`"
+        role="alert"
+        data-field="banner.card"
+        @click="emit('close')"
       >
-        <span aria-hidden="true">×</span>
-      </button>
-    </article>
+        <span class="banner-card-accent" aria-hidden="true" />
+        <div class="banner-card-text">
+          <h1 class="banner-card-title" data-field="banner.title">{{ payload.title }}</h1>
+          <p v-if="payload.body !== ''" class="banner-card-body" data-field="banner.body">
+            {{ payload.body }}
+          </p>
+        </div>
+        <button
+          class="banner-card-close"
+          type="button"
+          aria-label="关闭提醒"
+          data-field="banner.close"
+          @click.stop="emit('close')"
+        >
+          <span aria-hidden="true">×</span>
+        </button>
+      </article>
+    </Transition>
   </div>
 </template>
 
@@ -143,24 +141,42 @@ onUnmounted(() => {
   color: var(--text-primary);
   pointer-events: auto;
   cursor: default;
-  opacity: 0;
-  transform: translate3d(0, -12px, 0) scale(0.97);
-  transition:
-    opacity 260ms var(--ease-standard),
-    transform 420ms var(--ease-spring);
+  transform-origin: 50% 0;
+  will-change: transform, opacity;
 }
 
-.banner-card.is-visible {
+/* ─── 入场：从流光里落下 ─── */
+.banner-card-enter-from {
+  opacity: 0;
+  transform: translate3d(0, -26px, 0) scale(0.93);
+}
+
+.banner-card-enter-active {
+  transition:
+    opacity 280ms var(--ease-standard),
+    transform 540ms var(--ease-spring);
+}
+
+.banner-card-enter-to {
   opacity: 1;
   transform: none;
 }
 
-.banner-card.is-leaving {
-  opacity: 0;
-  transform: translate3d(0, -8px, 0) scale(0.985);
+/* ─── 退场：缩回流光并淡出（时长与 App.vue 的 LEAVE_MS 一致） ─── */
+.banner-card-leave-from {
+  opacity: 1;
+  transform: none;
+}
+
+.banner-card-leave-active {
   transition:
     opacity 320ms var(--ease-standard),
     transform 320ms var(--ease-standard);
+}
+
+.banner-card-leave-to {
+  opacity: 0;
+  transform: translate3d(0, -14px, 0) scale(0.97);
 }
 
 /* 语义色条：只表达档位，不做渐变 */
@@ -189,6 +205,23 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* 标题与正文比卡片晚一点点出现（30ms 错峰），落下的层次更清楚 */
+.banner-card-enter-active .banner-card-text {
+  animation: banner-card-text-in 300ms var(--ease-standard) both;
+  animation-delay: 60ms;
+}
+
+@keyframes banner-card-text-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -4px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .banner-card-title {
@@ -249,11 +282,21 @@ onUnmounted(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .banner-card,
-  .banner-card.is-visible,
-  .banner-card.is-leaving {
-    transition: none;
+  .banner-card-enter-active,
+  .banner-card-leave-active {
+    transition: opacity 120ms linear;
+  }
+
+  .banner-card-enter-from {
     transform: none;
+  }
+
+  .banner-card-leave-to {
+    transform: none;
+  }
+
+  .banner-card-enter-active .banner-card-text {
+    animation: none;
   }
 }
 </style>

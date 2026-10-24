@@ -195,16 +195,26 @@
   - 主进程 `BannerService`（`main/banner.ts`，**不 import electron**）负责**队列、去重、时长、
     超时兜底**：同时只显示一条，其余排队（上限 8 条，超出拒绝并回原因）；去重按
     `dedupeKey`（缺省 `title\0body`）在 3 秒窗口内合并；`durationMs` 缺省 **6000ms**、钳制 2–30s。
+  - **动效（2026-10-24 修过一次「弹出来没有动画」）**：
+    - **入场**：卡片走 Vue `<Transition>` 的 enter —— 从流光里落下（`translate3d(0, -26px, 0)`
+      + `scale(0.93)` + 淡入，540ms `--ease-spring` 收尾），标题 / 正文再晚 60ms 淡入（层次更清楚）；
+      光带同时淡入并横向铺开（320ms 淡入 / 560ms `scaleX 0.94 → 1`）。
+    - **退场**：到 `durationMs - 320ms` 把载荷置空（卡片播 leave：向上缩回 + 淡出，320ms）+ 光带淡出，
+      `durationMs` 回执关窗。用户点关闭时同样先等这 320ms 再回执，动画才不会被"关窗"截断。
+    - **两个硬约束**：① 动画只能靠 `<Transition>`（先插初始态、强制一帧、再切终态）——
+      直接把最终 class 和元素一起挂载，浏览器不会播 transition，观感就是啪一下出现；
+      ② 主进程必须**先 `showInactive()` 再推 `banner:show`**，页面在隐藏窗口里拿不到绘制帧，
+      等窗口显示出来时动画已经走完。
+    - `prefers-reduced-motion: reduce` 时卡片退化为 120ms 线性淡入淡出、无位移，光带的无限动画关闭。
   - 渲染层按 `durationMs - 320ms` 开始淡出、到点回执 `banner:dismiss(id)`；主进程另有
     `durationMs + 1500ms` 的**兜底定时器**（渲染进程崩掉 / 脚本异常时照样收尾，卡片不会永远挂着）。
-  - 点击卡片任意位置或右上角关闭按钮都会立即回执关闭；主进程收到回执后隐藏两扇窗并推进队列。
+  - 点击卡片任意位置或右上角关闭按钮都会播完退场再回执关闭；主进程收到回执后隐藏两扇窗并推进队列。
   - **提示音（R4）**：Web Audio 现场合成两声上行音（A5 → E6，快起慢落、峰值音量很低），
     不新增音频资产（打包体积 / CSP / 资源缺失三件事一起省掉）；失败静默降级。
   - **语音（R3）**：`speak` 为真且 **TTS 已配置**（`tts.enabled` + `tts.active` 指向完整 provider，
     判据与对话窗朗读共用 `renderer/shared/tts-config.ts`）时经 `tts:synthesize` 合成
     `title + '。' + body` 后播放；**未配置时静默跳过、不报错不重试**（口径同 06 §13.5）。
     `speak` 缺省跟随 TTS 配置（主进程 `voiceReadiness(settings).tts` 解算后随载荷下发）。
-  - `prefers-reduced-motion: reduce` 时流光动画与卡片入场/退场全部退化为无动画。
 - **三个来源（R5）**：① Agent 工具 `notify_banner`（`safe`、不受 `agent.tools.enabled` 门控，
   06 §14）；② 插件 `ctx.banner`（`notifications` 权限，15 §3）；③ `ask_user` 提问卡片弹出时
   —— **仅当交互窗未在前台**（不可见或没有键盘焦点）才补一条，`speak: false`、`sound: true`。
@@ -212,7 +222,9 @@
 - **截图与探针**：`banner-card.png` / `banner-glow.png` 两个场景（内部窗口由
   `captureWindows` 现取，`?preview=1` 渲染固定示例内容）。判据只量矩形：卡片必须与窗口同大
   （四边各留 8–16px）、标题单行、正文在卡片内、关闭按钮 ≥12px；光带贴住顶边、横向 ≥95% 视口、
-  厚度 ≤120px，且 600ms 前后 `background-position` 真有变化。
+  厚度 ≤120px，且 600ms 前后 `background-position` 真有变化。另各有一条**动效声明**判据：
+  卡片要能在样式表里找到 `banner-card-enter-active` / `leave-active`，光带根的
+  `transition-duration` 含 `0.32s`（防「动画被删/改名」）。
 
 ### 2.3 主界面（Chat Window）
 

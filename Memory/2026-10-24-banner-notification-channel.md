@@ -63,3 +63,36 @@ source: 模型自动记录
   截图全量 **110 条 checks**（新增 `banner-card` / `banner-glow`），唯一恒红项仍是范围外的
   `chat-model-picker.png`。TTS 就绪判据抽到 `renderer/shared/tts-config.ts`，
   对话窗朗读按钮与卡片朗读共用同一份（没配置就静默跳过，不报错不重试）。
+
+## 追加：卡片「弹出来没有动画」（同一功能，用户点名修）
+
+## 现象
+
+用户反馈「弹窗弹出要有动画」。代码里明明写了 `opacity 0 → 1` + `translate -12px → 0` 的
+transition，可实际是**啪一下出现**。
+
+## 原因
+
+两个独立的「动画不会播」叠在一起：
+
+1. 卡片是 `<article v-if="payload">`，而 `is-visible` 这个"终态 class"在 `payload` 落地的
+   **同一帧**就被绑定上去了 —— 元素插入 DOM 时没有发生样式变化，浏览器直接按终态绘制，
+   transition 一次都不跑。CSS transition 只在**同一元素上样式值发生变化**时生效。
+2. 主进程 `deliverBanner` 原先是「先 `webContents.send` 再 `showInactive()`」。窗口还藏着时
+   推载荷，渲染层拿不到绘制帧；等窗口显示出来，动画早已"走完"。
+
+## 结论与做法
+
+- 入场 / 退场一律走 Vue `<Transition>`（它会在插入后强制一帧初始态再切终态）。
+  卡片的 enter 从 `translate3d(0, -26px, 0) scale(0.93)` + 淡入（540ms `--ease-spring`），
+  文字再晚 60ms 淡入；leave 320ms 缩回淡出。
+- **主进程必须先 `showInactive()` 再 `send`**：顺序反了动画就不会发生（这条与
+  `showWithPayload` 的「先 push 后 show 会丢消息」并不矛盾 —— 正确做法是
+  **等页面加载完 → 显示窗口 → 再推载荷**）。
+- 退场也要有动画：到 `durationMs - 320ms` 把载荷置空（播 leave）+ 光带淡出，
+  `durationMs` 再回执关窗；用户点关闭时同样先等这 320ms 再回执，否则窗口一隐藏动画就被截断。
+- 探针加「动效声明」判据：样式表里能找到 `banner-card-enter-active` / `leave-active`，
+  光带根 `transition-duration` 含 `0.32s` —— 防以后有人删了/改名了动画而没人发现。
+  注意截图场景是 `?preview=1`（payload 在首帧就有，`<Transition>` 不播 appear），
+  所以探针只能查"声明"，不能查"真的在动"。
+

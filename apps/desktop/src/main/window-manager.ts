@@ -661,8 +661,14 @@ export class WindowManager {
   /**
    * 把展示载荷推给两扇窗并显示它们。
    *
-   * 顺序（先流光、后卡片）是有意的：卡片要在流光**之上**，否则光谱光带会盖住卡片顶部。
-   * 推送必须等首次加载完成 —— `show()` 之后立刻 `webContents.send` 时渲染层的
+   * 两条顺序都是硬要求：
+   * 1. **先显示、再推送**：卡片/光带的入场是 CSS transition —— 元素必须在一个**已经可见**的
+   *    页面里被插入，浏览器才会画出初始帧再过渡。窗口还藏着时先推载荷，页面拿不到绘制帧，
+   *    等窗口真的 show 出来时动画已经"走完"，观感就是「啪一下出现、没有动效」。
+   *    （页面在无载荷时是全透明的，先显示不会闪出空白卡片。）
+   * 2. 先流光、后卡片：卡片要在流光**之上**，否则光谱光带会盖住卡片顶部。
+   *
+   * 推送还必须等首次加载完成 —— `show()` 之后立刻 `webContents.send` 时渲染层的
    * `onShow` 监听还没挂上，消息会被丢掉（与 `showWithPayload` 同一个坑）。
    */
   private async deliverBanner(
@@ -672,9 +678,7 @@ export class WindowManager {
   ): Promise<void> {
     await Promise.all([this.bannerGlowLoad, this.bannerCardLoad])
     if (glow.isDestroyed() || card.isDestroyed()) return
-    glow.webContents.send(IPC.banner.show, payload)
-    card.webContents.send(IPC.banner.show, payload)
-    // 已可见时不再重复 show：反复 show 会扰动原生合成面（同 `showAwarenessGlow` 的理由）
+    // 已可见时不重复 show：反复 show 会扰动原生合成面（同 `showAwarenessGlow` 的理由）
     if (!glow.isVisible()) {
       this.reassertBannerTopmost('glow', glow)
       glow.showInactive()
@@ -683,6 +687,9 @@ export class WindowManager {
       this.reassertBannerTopmost('card', card)
       card.showInactive()
     }
+    // 窗口已可见后再推载荷：渲染层插入卡片时才会有"初始态 → 终态"这一帧过渡
+    glow.webContents.send(IPC.banner.show, payload)
+    card.webContents.send(IPC.banner.show, payload)
   }
 
   /** 卡片窗几何：水平居中、贴顶下浮，高度按正文行数算（窗口 = 卡片 + 阴影外边距）。 */

@@ -5709,6 +5709,28 @@ export const BANNER_CARD_CAPTURE_CHECK = `(async () => {
     const shadow = cardStyle === null ? '' : cardStyle.boxShadow
     const titleText = title === null ? '' : (title.textContent || '').trim()
     const bodyText = body === null ? '' : (body.textContent || '').trim()
+    /*
+     * 入场 / 退场动画必须真的**声明**着（2026-10-24 修过「弹出来没有动效」）：
+     * 原先卡片是「挂载时就带着最终 class」，浏览器不会播 transition —— 观感是啪一下出现。
+     * 现在走 Vue 的 Transition（enter-from / enter-active / leave-*），这里查样式表里那几个类
+     * 是否存在；没有它说明动画被谁删了或改名了。
+     */
+    let entranceDeclared = false
+    let leavingDeclared = false
+    for (const sheet of Array.from(document.styleSheets)) {
+      let rules = null
+      try {
+        rules = sheet.cssRules
+      } catch (error) {
+        rules = null
+      }
+      if (rules === null) continue
+      for (const rule of Array.from(rules)) {
+        const selector = rule.selectorText || ''
+        if (selector.includes('banner-card-enter-active')) entranceDeclared = true
+        if (selector.includes('banner-card-leave-active')) leavingDeclared = true
+      }
+    }
     // 卡片四边各留 12px：窗口比卡片大 24px（阴影外边距），这是「透明不挡点击」的前提
     const fillsWindow =
       cardRect !== null &&
@@ -5747,6 +5769,8 @@ export const BANNER_CARD_CAPTURE_CHECK = `(async () => {
       closeInsideCard: insideCard(closeRect),
       closeClickable: closeRect !== null && closeRect.width >= 12 && closeRect.height >= 12,
       accentBar: accentRect !== null && accentRect.width >= 2 && accentRect.height > 0,
+      entranceDeclared,
+      leavingDeclared,
     }
     const pass = Object.keys(conditions).every((key) => conditions[key] === true)
     return {
@@ -5789,6 +5813,8 @@ export const BANNER_GLOW_CAPTURE_CHECK = `(async () => {
     const band = document.querySelector('[data-field="banner.glow.band"]')
     const rootStyle = root === null ? null : getComputedStyle(root)
     const opacity = rootStyle === null ? 0 : Number.parseFloat(rootStyle.opacity)
+    // 入场 / 退场靠 transition（元素常驻、只切 is-active），这里钉住它没被删掉
+    const transitionDuration = rootStyle === null ? '' : rootStyle.transitionDuration
     const viewportWidth = document.documentElement.clientWidth
     const viewportHeight = document.documentElement.clientHeight
     const bandRect = band === null ? null : band.getBoundingClientRect()
@@ -5833,12 +5859,14 @@ export const BANNER_GLOW_CAPTURE_CHECK = `(async () => {
       (bloomStyle === null ? '' : bloomStyle.animationName).includes('banner-glow-breathe') &&
       (haloStyle === null ? '' : haloStyle.animationName).includes('banner-glow-spectrum') &&
       (lineStyle === null ? '' : lineStyle.animationName).includes('banner-glow-spectrum') &&
-      motionChanged
+      motionChanged &&
+      transitionDuration.includes('0.32s')
     return {
       band: rect,
       viewportWidth,
       viewportHeight,
       opacity,
+      transitionDuration,
       haloPositionA,
       haloPositionB,
       linePositionA,
@@ -5852,7 +5880,8 @@ export const BANNER_GLOW_CAPTURE_CHECK = `(async () => {
   }
 })()`
 
-export const SETTINGS_AWARENESS_RECORDS_ACT = `(async () => {  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+export const SETTINGS_AWARENESS_RECORDS_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   try {
     const more = document.querySelector('[data-field="fileAwareness.recent-more"]')
     if (more === null) return { ok: false, reason: '查看更多按钮未出现' }
