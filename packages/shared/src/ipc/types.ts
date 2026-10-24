@@ -20,7 +20,11 @@ import type {
 } from '../config/schema.js'
 import type { CenterOfficialModelCatalog } from '../center/protocol.js'
 import type { PluginPermission } from '../plugin/permissions.js'
-import type { PluginConfigField } from '../plugin/manifest.js'
+import type {
+  PluginConfigField,
+  PluginWidgetWindowLevel,
+  PluginWidgetWindowMaterial,
+} from '../plugin/manifest.js'
 import type { PluginPanelSchema } from '../plugin/ui.js'
 
 export type { ModeId, WindowName }
@@ -75,6 +79,29 @@ export interface ProjectRuntimeStatus {
 }
 
 /**
+ * 桌面小组件窗口诊断（仅 `AURORA_SMOKE=1`，docs/14 §5.3）。
+ *
+ * 层级 / 材质都是原生窗口状态，渲染层无法观察；自测据此断言声明值真的落到了
+ * `BrowserWindow` 上（尤其是 `alwaysOnTop` 与 `desktop` 的 owner 亲和）。
+ */
+export interface WidgetWindowDiagnostics {
+  pluginId: string
+  widgetId: string
+  /** 清单声明值 */
+  windowLevel: PluginWidgetWindowLevel
+  /** 用户覆盖优先后的实际层级 */
+  effectiveWindowLevel: PluginWidgetWindowLevel
+  alwaysOnTop: boolean
+  /** desktop 层是否成功挂到桌面 shell owner（Win32 最佳努力） */
+  desktopOwner: boolean
+  /** minimize 恢复守护是否已连续失败（true = 已按 normal 回落） */
+  desktopGuardFailed: boolean
+  windowMaterial: PluginWidgetWindowMaterial
+  /** 原生 Acrylic 是否真的挂上（false 时渲染层保持不透明） */
+  materialActive: boolean
+}
+
+/**
  * 仅开发态自测用的诊断信息（`AURORA_SMOKE=1`）。
  *
  * 存在的理由：像"课前提醒真的触发过并打开了科目文件夹"这类**主进程内部副作用**
@@ -97,6 +124,8 @@ export interface SmokeDiagnostics {
    * 「触发 → 落历史 → Agent 会话收尾」这条链路真的跑通（而不是只看日志）。
    */
   automationRuns?: AutomationRun[]
+  /** 桌面小组件窗口原生状态（层级 / 材质，v37 起） */
+  widgetWindows?: WidgetWindowDiagnostics[]
 }
 
 // ───────────────────────── 设置 ─────────────────────────
@@ -1954,6 +1983,10 @@ export interface PluginWidgetInfo {
   icon?: string
   slot: 'desktop' | 'edge-bar'
   kind: 'schema' | 'page'
+  /** 桌面小组件声明层级；提示条固定为默认值（v37） */
+  windowLevel: PluginWidgetWindowLevel
+  /** 桌面小组件声明材质；提示条固定为 `none`（v37） */
+  windowMaterial: PluginWidgetWindowMaterial
   /** 页面型小组件的入口（插件包内相对路径） */
   entry?: string
   defaultSize?: { width: number; height: number }
@@ -1966,6 +1999,11 @@ export interface PluginWidgetLayoutEntry {
   y: number
   width: number
   height: number
+  /**
+   * 用户在设置页选择的层级覆盖（v37）；缺省 = 跟随清单 `contributions.widgets[].windowLevel`。
+   * 布局文件仍是 version 1：该字段是可选的向后兼容扩展。
+   */
+  windowLevelOverride?: PluginWidgetWindowLevel
 }
 
 export interface PluginWidgetLayout {
@@ -2134,6 +2172,20 @@ export interface PluginSetWidgetVisibleRequest {
   pluginId: string
   widgetId: string
   visible: boolean
+}
+
+/** 用户层级覆盖（v37）：`auto` = 清除覆盖、跟随清单声明。 */
+export interface PluginSetWidgetWindowLevelRequest {
+  pluginId: string
+  widgetId: string
+  windowLevel: 'auto' | PluginWidgetWindowLevel
+}
+
+/** 主进程 → 小组件窗口：当前实际可用的原生材质（v37）。 */
+export interface PluginWidgetMaterialEvent {
+  pluginId: string
+  widgetId: string
+  material: PluginWidgetWindowMaterial
 }
 
 export interface PluginPageRpcRequest {
@@ -2652,6 +2704,10 @@ export interface AuroraApi {
     widgetLayout(): Promise<Result<PluginWidgetLayout>>
     /** 显示 / 隐藏某个桌面小组件（写入布局文件并立即生效） */
     setWidgetVisible(request: PluginSetWidgetVisibleRequest): Promise<Result<boolean>>
+    /** 设置 / 清除某个桌面小组件的层级覆盖（写入布局文件并立即生效，v37） */
+    setWidgetWindowLevel(request: PluginSetWidgetWindowLevelRequest): Promise<Result<boolean>>
+    /** 宿主内部：小组件窗口实际可用的原生材质变化（on/off 成对，v37） */
+    onWidgetMaterial(listener: (event: PluginWidgetMaterialEvent) => void): () => void
     /** 插件页面（webview）的 RPC 中继 */
     pageRpc(request: PluginPageRpcRequest): Promise<Result<unknown>>
     /** Center 插件市场列表（未配置 Center 时 entries 为空并带 error） */

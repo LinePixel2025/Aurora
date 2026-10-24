@@ -492,6 +492,8 @@ export class PluginManager {
           ...(widget.icon === undefined ? {} : { icon: normalizePluginPanelIcon(widget.icon) }),
           slot: widget.slot,
           kind: widget.schema === undefined ? 'page' : 'schema',
+          windowLevel: widget.windowLevel,
+          windowMaterial: widget.windowMaterial,
           ...(widget.entry === undefined ? {} : { entry: widget.entry }),
           ...(widget.defaultSize === undefined ? {} : { defaultSize: { ...widget.defaultSize } }),
         })
@@ -1356,7 +1358,10 @@ export class PluginManager {
         }
       }
       const payload = raw['payload']
-      if (Buffer.byteLength(JSON.stringify(payload) ?? '', 'utf8') > PLUGIN_PANEL_EVENT.payloadMaxBytes) {
+      if (
+        Buffer.byteLength(JSON.stringify(payload) ?? '', 'utf8') >
+        PLUGIN_PANEL_EVENT.payloadMaxBytes
+      ) {
         throw new PluginRpcFailure('E_PLUGIN_INVALID_ARGS', '事件载荷超过 64 KB')
       }
       if (!this.consumePanelEventBudget(entry.manifest.id)) {
@@ -1690,6 +1695,8 @@ export class PluginManager {
       ...(widget.icon === undefined ? {} : { icon: normalizePluginPanelIcon(widget.icon) }),
       slot: widget.slot,
       kind: widget.schema === undefined ? 'page' : 'schema',
+      windowLevel: widget.windowLevel,
+      windowMaterial: widget.windowMaterial,
       ...(widget.entry === undefined ? {} : { entry: widget.entry }),
       ...(widget.defaultSize === undefined ? {} : { defaultSize: { ...widget.defaultSize } }),
     }))

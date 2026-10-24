@@ -346,6 +346,10 @@ export const IPC = {
     /** 桌面小组件布局（位置 / 尺寸 / 显隐）读取与显隐切换 */
     widgetLayout: 'plugins:widgetLayout',
     setWidgetVisible: 'plugins:setWidgetVisible',
+    /** 桌面小组件层级覆盖（v37）：写入布局并即时应用 */
+    setWidgetWindowLevel: 'plugins:setWidgetWindowLevel',
+    /** 主进程 → 小组件窗口：实际可用的原生材质（on/off 成对，v37） */
+    widgetMaterial: 'plugins:widgetMaterial',
     /** 插件页面（webview）的 RPC 中继：主进程校验归属后转发给插件进程 */
     pageRpc: 'plugins:pageRpc',
     marketplaceList: 'plugins:marketplaceList',

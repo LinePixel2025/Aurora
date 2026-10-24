@@ -44,3 +44,11 @@ source: 模型自动记录
 - 截图新增 `widget-desktop-plugin` / `edge-bar-plugin-widget` / `chat-plugin-panel-push`，
   全量基线 105 条；桌面 widget 目标通过 `captureWindows` 的 `widgetWindow` 现取；
 - `node scripts/verify-plugin.mjs examples/plugins/hello-aurora` 通过（含 widgets 文件校验）。
+
+## 2026-10-24 后续修订（v37）
+
+上述「桌面小组件是置顶浮动卡片、层级硬编码」已被后续修订取代：清单现支持
+`windowLevel`（floating / normal / desktop）与 `windowMaterial`（none / acrylic），
+默认仍为 floating / none；用户层级覆盖写布局文件的 `windowLevelOverride`。
+实现口径、Win32 owner 亲和、minimize 恢复守护、Acrylic 圆角 shape 与 PowerShell `$null`
+坑见 [2026-10-24-widget-window-level-and-glass.md](2026-10-24-widget-window-level-and-glass.md)。

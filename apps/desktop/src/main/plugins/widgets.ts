@@ -11,7 +11,17 @@
  */
 import { join } from 'node:path'
 import { screen, BrowserWindow, type Session } from 'electron'
-import type { Logger, PluginWidgetInfo, PluginWidgetLayout, PluginWidgetLayoutEntry } from '@aurora/shared'
+import {
+  IPC,
+  PLUGIN_WIDGET_WINDOW_LEVELS,
+  type Logger,
+  type PluginWidgetInfo,
+  type PluginWidgetLayout,
+  type PluginWidgetLayoutEntry,
+  type PluginWidgetWindowLevel,
+  type PluginWidgetWindowMaterial,
+  type WidgetWindowDiagnostics,
+} from '@aurora/shared'
 import { ensurePluginPageProtocol, registerPluginPageGuest } from '../page-protocol.js'
 import { isPluginPageUrl, pluginPageTargetOf } from '../plugin-page-url.js'
 import {
@@ -22,6 +32,14 @@ import {
   WIDGET_MIN_HEIGHT,
   WIDGET_MIN_WIDTH,
 } from './widget-layout.js'
+import { attachDesktopOwner, detachDesktopOwner } from './widget-desktop-layer.js'
+import {
+  nativeHandleToNumber,
+  resolveWidgetWindowLevel,
+  shouldUseWidgetMaterial,
+  widgetRoundedShape,
+  WIDGET_CARD_RADIUS,
+} from './widget-window.js'
 
 /** 同时存在的桌面小组件窗口上限（防失控常量，不做成设置项）。 */
 export const PLUGIN_WIDGET_MAX_WINDOWS = 8
@@ -41,6 +59,15 @@ export interface WidgetManagerOptions {
   rendererDir: string
   /** 按启用 + `ui.widgets` 权限过滤后的桌面小组件 */
   contributions: () => PluginWidgetInfo[]
+  /** 用户外观总开关；false 时所有小组件保持不透明（v37） */
+  glassAllowed: () => boolean
+  /** 平台门控（默认 process.platform；单测 / 诊断可注入） */
+  platform?: NodeJS.Platform
+  /** 桌面层 owner 操作（默认走 PowerShell helper；测试可注入） */
+  desktopLayer?: {
+    attach(hwnd: number): Promise<boolean>
+    detach(hwnd: number): Promise<boolean>
+  }
 }
 
 interface WidgetRecord {
@@ -48,6 +75,16 @@ interface WidgetRecord {
   win: BrowserWindow
   /** 入口 / 类型签名：开发目录热重载换了入口时重建内容 */
   signature: string
+  /** 用户覆盖优先后的实际层级 */
+  windowLevel: PluginWidgetWindowLevel
+  /** 原生 Acrylic 是否真的挂上（false 时渲染层保持不透明） */
+  materialActive: boolean
+  /** desktop 层是否成功挂到桌面 shell owner */
+  desktopOwner: boolean
+  /** minimize 恢复守护连续失败，已按 normal 回落 */
+  desktopGuardFailed: boolean
+  /** 最近一次 Show Desktop 恢复尝试时刻（用于限频，避免死循环） */
+  restoreAttempts: number[]
   persistTimer?: NodeJS.Timeout
   loadTask?: Promise<void>
 }
@@ -64,6 +101,8 @@ function hardenSession(session: Session): void {
 
 export class WidgetManager {
   private readonly options: WidgetManagerOptions
+  private readonly platform: NodeJS.Platform
+  private readonly desktopLayer: NonNullable<WidgetManagerOptions['desktopLayer']>
   private layout: PluginWidgetLayout = { version: 1, widgets: {} }
   private readonly records = new Map<string, WidgetRecord>()
   private persistTimer: NodeJS.Timeout | undefined
@@ -74,6 +113,11 @@ export class WidgetManager {
 
   constructor(options: WidgetManagerOptions) {
     this.options = options
+    this.platform = options.platform ?? process.platform
+    this.desktopLayer = options.desktopLayer ?? {
+      attach: (hwnd) => attachDesktopOwner(hwnd, { logger: options.logger }),
+      detach: (hwnd) => detachDesktopOwner(hwnd, { logger: options.logger }),
+    }
   }
 
   async init(): Promise<void> {
@@ -109,6 +153,9 @@ export class WidgetManager {
       const signature = this.signatureOf(info)
       if (existing !== undefined && existing.signature === signature) {
         if (existing.win.getTitle() !== info.title) existing.win.setTitle(info.title)
+        // 清单层级没变、但用户覆盖在别处被改过时，这里也兜底对齐一次（幂等）
+        const level = resolveWidgetWindowLevel(info.windowLevel, entry.windowLevelOverride)
+        if (existing.windowLevel !== level) this.applyWindowLevel(existing, level)
         continue
       }
       if (existing !== undefined) this.destroyRecord(key, existing)
@@ -138,6 +185,68 @@ export class WidgetManager {
     this.schedulePersist()
     this.sync()
     return true
+  }
+
+  /**
+   * 设置 / 清除桌面小组件的层级覆盖（v37，docs/14 §5.3）。
+   *
+   * `auto` = 删除覆盖、跟随清单；其余值持久化到布局文件。已创建的窗口**原地**应用，
+   * 不重建（位置 / 尺寸 / 页面状态都不丢）。隐藏中的 widget 只落盘，下次创建时生效。
+   */
+  async setWindowLevel(
+    pluginId: string,
+    widgetId: string,
+    windowLevel: 'auto' | PluginWidgetWindowLevel,
+  ): Promise<boolean> {
+    const info = this.options
+      .contributions()
+      .find((item) => item.pluginId === pluginId && item.id === widgetId && item.slot === 'desktop')
+    if (info === undefined) return false
+    if (windowLevel !== 'auto' && !PLUGIN_WIDGET_WINDOW_LEVELS.includes(windowLevel)) {
+      return false
+    }
+    const key = this.keyOf(pluginId, widgetId)
+    const entry = this.ensureEntry(key, info)
+    if (windowLevel === 'auto') delete entry.windowLevelOverride
+    else entry.windowLevelOverride = windowLevel
+    this.schedulePersist()
+    const record = this.records.get(key)
+    if (record !== undefined) {
+      this.applyWindowLevel(
+        record,
+        resolveWidgetWindowLevel(info.windowLevel, entry.windowLevelOverride),
+      )
+    }
+    return true
+  }
+
+  /**
+   * 外观毛玻璃总开关即时生效（v37）：只动已创建窗口的**原生材质**；
+   * 页面内的 `data-glass` 由现有的 `settings:changed` 广播负责，两侧同一份配置驱动。
+   */
+  applyGlass(enabled: boolean): void {
+    if (this.disposed) return
+    for (const record of this.records.values()) {
+      if (record.win.isDestroyed()) continue
+      this.applyRecordMaterial(record, enabled)
+    }
+  }
+
+  /** 自测诊断：桌面小组件窗口的层级 / 置顶 / owner / 材质真实状态。 */
+  diagnostics(): WidgetWindowDiagnostics[] {
+    return [...this.records.values()]
+      .filter((record) => !record.win.isDestroyed())
+      .map((record) => ({
+        pluginId: record.info.pluginId,
+        widgetId: record.info.id,
+        windowLevel: record.info.windowLevel,
+        effectiveWindowLevel: record.windowLevel,
+        alwaysOnTop: record.win.isAlwaysOnTop(),
+        desktopOwner: record.desktopOwner,
+        desktopGuardFailed: record.desktopGuardFailed,
+        windowMaterial: record.info.windowMaterial,
+        materialActive: record.materialActive,
+      }))
   }
 
   /** 主进程推送 → 对应桌面小组件窗口。 */
@@ -184,6 +293,8 @@ export class WidgetManager {
       entry: info.entry ?? '',
       defaultSize: info.defaultSize ?? null,
       title: info.title,
+      windowLevel: info.windowLevel,
+      windowMaterial: info.windowMaterial,
     })
   }
 
@@ -217,6 +328,7 @@ export class WidgetManager {
       Object.assign(entry, bounds)
       this.schedulePersist()
     }
+    const level = resolveWidgetWindowLevel(info.windowLevel, entry.windowLevelOverride)
     const win = new BrowserWindow({
       ...bounds,
       minWidth: WIDGET_MIN_WIDTH,
@@ -225,7 +337,8 @@ export class WidgetManager {
       frame: false,
       transparent: true,
       backgroundColor: '#00000000',
-      alwaysOnTop: true,
+      // floating = 0.5.1 的置顶卡片；normal / desktop 都按普通 z-order 参与层叠
+      alwaysOnTop: level === 'floating',
       skipTaskbar: true,
       resizable: true,
       maximizable: false,
@@ -244,15 +357,34 @@ export class WidgetManager {
       },
     })
     win.setMenuBarVisibility(false)
-    win.setAlwaysOnTop(true, 'floating')
+    if (level === 'floating') win.setAlwaysOnTop(true, 'floating')
 
-    const record: WidgetRecord = { info, win, signature }
+    const record: WidgetRecord = {
+      info,
+      win,
+      signature,
+      windowLevel: level,
+      materialActive: false,
+      desktopOwner: false,
+      desktopGuardFailed: false,
+      restoreAttempts: [],
+    }
     this.records.set(key, record)
     this.wireWebview(info, win)
     this.wireWindowEvents(key, record)
-    record.loadTask = this.load(win, info).then(
+    const materialActive = this.applyInitialMaterial(record)
+    if (level === 'desktop') this.attachDesktopOwner(record)
+    record.loadTask = this.load(win, info, materialActive).then(
       () => {
-        if (!win.isDestroyed() && entry.visible && !this.disposed) win.showInactive()
+        if (win.isDestroyed() || this.disposed) return
+        // 建窗时窗口还没显示，contentBounds 可能尚未稳定；加载完成后再裁圆角，
+        // 裁失败就按不透明卡片回落，避免「材质挂着、形状却是矩形」露角。
+        if (record.materialActive && !this.tryApplyShape(win)) {
+          this.dropMaterial(win)
+          record.materialActive = false
+          this.sendMaterial(record)
+        }
+        if (entry.visible) win.showInactive()
       },
       (error: unknown) => {
         this.options.logger.warn('桌面小组件加载失败', {
@@ -264,9 +396,15 @@ export class WidgetManager {
     )
   }
 
-  private async load(win: BrowserWindow, info: PluginWidgetInfo): Promise<void> {
+  private async load(
+    win: BrowserWindow,
+    info: PluginWidgetInfo,
+    materialActive: boolean,
+  ): Promise<void> {
     const { rendererUrl, rendererDir } = this.options
-    const query = { pluginId: info.pluginId, widgetId: info.id }
+    // 只有原生材质真的挂上时才告诉渲染层用玻璃令牌；失败时保持不透明，避免裸漏桌面。
+    const query: Record<string, string> = { pluginId: info.pluginId, widgetId: info.id }
+    if (materialActive) query['material'] = 'acrylic'
     if (rendererUrl !== undefined && rendererUrl !== '') {
       const search = new URLSearchParams(query).toString()
       await win.loadURL(`${rendererUrl}/widget/index.html?${search}`)
@@ -300,10 +438,26 @@ export class WidgetManager {
     }
     win.on('move', schedule)
     win.on('resize', schedule)
+    // 材质开启时窗口 shape 必须跟着尺寸重算；`resized` 在拖拽结束后只触发一次，成本可控
+    win.on('resized', () => {
+      if (record.materialActive) this.tryApplyShape(win)
+    })
+    // desktop 层：Win+D / Win+M / 任务栏「显示桌面」会最小化普通窗口；这里立即恢复
+    win.on('minimize', () => this.onWidgetMinimize(record))
     win.on('closed', () => {
       const current = this.records.get(key)
       if (current === record) this.records.delete(key)
       if (record.persistTimer !== undefined) clearTimeout(record.persistTimer)
+      record.restoreAttempts = []
+    })
+    win.webContents.on('did-finish-load', () => {
+      // 运行时切换玻璃时事件可能早于页面订阅；加载完成后再补一次确定态
+      this.sendMaterial(record)
+      if (record.materialActive && !this.tryApplyShape(win)) {
+        this.dropMaterial(win)
+        record.materialActive = false
+        this.sendMaterial(record)
+      }
     })
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     if (this.options.isDev) {
@@ -315,6 +469,230 @@ export class WidgetManager {
         })
       })
     }
+  }
+
+  /** 应用层级（幂等）；desktop 与 floating/normal 互切不重建窗口。 */
+  private applyWindowLevel(record: WidgetRecord, level: PluginWidgetWindowLevel): void {
+    if (record.win.isDestroyed() || record.windowLevel === level) return
+    record.windowLevel = level
+    record.desktopGuardFailed = false
+    record.restoreAttempts = []
+    if (level === 'floating') {
+      this.detachDesktopOwner(record)
+      try {
+        record.win.setAlwaysOnTop(true, 'floating')
+      } catch (error) {
+        this.options.logger.warn('设置小组件置顶失败', {
+          pluginId: record.info.pluginId,
+          widgetId: record.info.id,
+          error: String(error),
+        })
+      }
+      return
+    }
+    try {
+      record.win.setAlwaysOnTop(false)
+    } catch (error) {
+      this.options.logger.debug('取消小组件置顶失败', {
+        pluginId: record.info.pluginId,
+        widgetId: record.info.id,
+        error: String(error),
+      })
+    }
+    if (level === 'desktop') this.attachDesktopOwner(record)
+    else this.detachDesktopOwner(record)
+  }
+
+  /**
+   * desktop 层 owner 亲和（Win32 最佳努力，v37）。
+   *
+   * 目标是把窗口 owner 指到桌面 `SHELLDLL_DefView`，让 Show Desktop 把它当桌面的一部分；
+   * 不改父窗口、不改窗口样式，因此拖动 / 缩放 / 透明表面都不受影响。失败只记日志，
+   * 继续依赖 `onWidgetMinimize()` 的恢复守护。
+   */
+  private attachDesktopOwner(record: WidgetRecord): void {
+    if (this.platform !== 'win32' || record.win.isDestroyed()) return
+    const hwnd = nativeHandleToNumber(record.win.getNativeWindowHandle())
+    if (hwnd === undefined) {
+      this.options.logger.warn('取小组件 HWND 失败，desktop 层按普通窗口显示', {
+        pluginId: record.info.pluginId,
+        widgetId: record.info.id,
+      })
+      return
+    }
+    void this.desktopLayer
+      .attach(hwnd)
+      .then((ok) => {
+        if (record.win.isDestroyed()) return
+        // 切换层级与 PowerShell 落定存在竞争：已经离开 desktop 就立刻解掉，别把 owner 留脏
+        if (record.windowLevel !== 'desktop') {
+          if (ok) void this.desktopLayer.detach(hwnd)
+          return
+        }
+        record.desktopOwner = ok
+        if (!ok) {
+          this.options.logger.debug('小组件桌面 owner 亲和失败，依赖 minimize 守护', {
+            pluginId: record.info.pluginId,
+            widgetId: record.info.id,
+          })
+        }
+      })
+      .catch((error: unknown) => {
+        this.options.logger.warn('小组件桌面 owner 亲和异常', {
+          pluginId: record.info.pluginId,
+          widgetId: record.info.id,
+          error: String(error),
+        })
+      })
+  }
+
+  private detachDesktopOwner(record: WidgetRecord): void {
+    if (this.platform !== 'win32' || !record.desktopOwner || record.win.isDestroyed()) return
+    record.desktopOwner = false
+    const hwnd = nativeHandleToNumber(record.win.getNativeWindowHandle())
+    if (hwnd === undefined) return
+    void this.desktopLayer.detach(hwnd).catch((error: unknown) => {
+      this.options.logger.debug('解除小组件桌面 owner 失败', {
+        pluginId: record.info.pluginId,
+        widgetId: record.info.id,
+        error: String(error),
+      })
+    })
+  }
+
+  /**
+   * Show Desktop 恢复守护：普通窗口会被 Win+D / Win+M 最小化；desktop 层在 minimize
+   * 后立即 restore + showInactive。2 秒内最多 3 次，超过则按 normal 回落并 stop。
+   */
+  private onWidgetMinimize(record: WidgetRecord): void {
+    if (this.disposed || record.windowLevel !== 'desktop') return
+    if (record.desktopGuardFailed) return
+    const now = Date.now()
+    record.restoreAttempts = record.restoreAttempts.filter((at) => now - at < 2_000)
+    if (record.restoreAttempts.length >= 3) {
+      record.desktopGuardFailed = true
+      this.options.logger.warn('桌面小组件恢复守护连续失败，按普通窗口回落', {
+        pluginId: record.info.pluginId,
+        widgetId: record.info.id,
+      })
+      return
+    }
+    record.restoreAttempts.push(now)
+    const restore = (): void => {
+      const win = record.win
+      if (win.isDestroyed() || this.disposed) return
+      if (win.isMinimized()) win.restore()
+      win.showInactive()
+    }
+    setImmediate(restore)
+    // 部分系统在 Win+D 的动画帧后才落最小化，补一次短延迟
+    const timer = setTimeout(restore, 80)
+    timer.unref?.()
+  }
+
+  /** 按当前「声明 + 外观开关 + 平台」挂 / 摘原生材质，并通知渲染层。 */
+  private applyRecordMaterial(record: WidgetRecord, glassAllowed: boolean): void {
+    if (record.win.isDestroyed()) return
+    const wanted = shouldUseWidgetMaterial(record.info.windowMaterial, glassAllowed, this.platform)
+    if (wanted) {
+      if (record.materialActive) return
+      if (!this.tryApplyMaterial(record.win) || !this.tryApplyShape(record.win)) {
+        this.dropMaterial(record.win)
+        this.sendMaterial(record)
+        return
+      }
+      record.materialActive = true
+      this.sendMaterial(record)
+      return
+    }
+    if (!record.materialActive) return
+    this.dropMaterial(record.win)
+    record.materialActive = false
+    this.sendMaterial(record)
+  }
+
+  /** 建窗时尝试材质；任何一步失败都回落到不透明卡片。 */
+  private applyInitialMaterial(record: WidgetRecord): boolean {
+    if (
+      !shouldUseWidgetMaterial(
+        record.info.windowMaterial,
+        this.options.glassAllowed(),
+        this.platform,
+      )
+    ) {
+      return false
+    }
+    if (!this.tryApplyMaterial(record.win)) return false
+    record.materialActive = true
+    return true
+  }
+
+  private tryApplyMaterial(win: BrowserWindow): boolean {
+    try {
+      win.setBackgroundColor('#00000000')
+      win.setBackgroundMaterial('acrylic')
+      return true
+    } catch (error) {
+      this.options.logger.debug('小组件原生材质不可用，保持不透明', { error: String(error) })
+      return false
+    }
+  }
+
+  /**
+   * 把窗口 shape 裁成圆角。
+   *
+   * 坐标用**整个窗口矩形**（含 Windows 给无边框可缩放窗口补的不可见 resize 边框）：
+   * 只按内容区裁会把边框切出 shape，用户就点不到边缘缩放。内容区相对窗口的内缩量
+   * 加到圆角半径上，让材质的外缘弧与 CSS 卡片弧保持同一条曲线（多出的 1–2px 是
+   * 无边框窗口的 resize 边框，材质会在卡片外形成极细的一圈，属可接受代价）。
+   */
+  private tryApplyShape(win: BrowserWindow): boolean {
+    try {
+      const windowBounds = win.getBounds()
+      const content = win.getContentBounds()
+      const inset = Math.max(
+        0,
+        Math.round((content.x - windowBounds.x + (content.y - windowBounds.y)) / 2),
+      )
+      win.setShape(
+        widgetRoundedShape(
+          { x: 0, y: 0, width: windowBounds.width, height: windowBounds.height },
+          WIDGET_CARD_RADIUS + inset,
+        ),
+      )
+      return true
+    } catch (error) {
+      this.options.logger.debug('小组件圆角 shape 应用失败', { error: String(error) })
+      return false
+    }
+  }
+
+  private dropMaterial(win: BrowserWindow): void {
+    try {
+      win.setBackgroundMaterial('none')
+    } catch (error) {
+      this.options.logger.debug('摘除小组件材质失败', { error: String(error) })
+    }
+    try {
+      win.setShape([])
+    } catch (error) {
+      this.options.logger.debug('恢复小组件矩形失败', { error: String(error) })
+    }
+  }
+
+  private sendMaterial(record: WidgetRecord): void {
+    if (record.win.isDestroyed()) return
+    const payload = {
+      pluginId: record.info.pluginId,
+      widgetId: record.info.id,
+      material: (record.materialActive ? 'acrylic' : 'none') as PluginWidgetWindowMaterial,
+    }
+    const send = (): void => {
+      if (record.win.isDestroyed()) return
+      record.win.webContents.send(IPC.plugins.widgetMaterial, payload)
+    }
+    if (record.win.webContents.isLoading()) record.win.webContents.once('did-finish-load', send)
+    else send()
   }
 
   /**
@@ -367,7 +745,12 @@ export class WidgetManager {
         if (pluginPageTargetOf(url)?.pluginId !== info.pluginId) event.preventDefault()
       })
       guest.on('did-fail-load', (_event, code, description, url) => {
-        this.options.logger.warn('小组件页面加载失败', { pluginId: info.pluginId, code, description, url })
+        this.options.logger.warn('小组件页面加载失败', {
+          pluginId: info.pluginId,
+          code,
+          description,
+          url,
+        })
       })
       void guest.loadURL(src).catch((error: unknown) => {
         this.options.logger.warn('小组件页面 loadURL 失败', {
@@ -400,6 +783,7 @@ export class WidgetManager {
         clamped.height !== current.height
       ) {
         record.win.setBounds(clamped)
+        if (record.materialActive) this.tryApplyShape(record.win)
         Object.assign(entry, clamped)
         changed = true
       }

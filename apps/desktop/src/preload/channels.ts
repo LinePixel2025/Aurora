@@ -257,6 +257,8 @@ const CHANNELS = {
     widgetData: 'plugins:widgetData',
     widgetLayout: 'plugins:widgetLayout',
     setWidgetVisible: 'plugins:setWidgetVisible',
+    setWidgetWindowLevel: 'plugins:setWidgetWindowLevel',
+    widgetMaterial: 'plugins:widgetMaterial',
     pageRpc: 'plugins:pageRpc',
     marketplaceList: 'plugins:marketplaceList',
     marketplaceInstall: 'plugins:marketplaceInstall',

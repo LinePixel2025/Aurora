@@ -3336,6 +3336,7 @@ export const WIDGET_DESKTOP_PLUGIN_CHECK = `(() => {
       text.includes('完成一项') &&
       (card.dataset.widgetId ?? '') === 'duty-week',
     widgetId: card === null ? '' : card.dataset.widgetId ?? '',
+    material: card === null ? '' : card.dataset.material ?? '',
     detail: text.slice(0, 160),
   }
 })()`
@@ -3486,13 +3487,15 @@ export const SETTINGS_PLUGINS_DETAIL_CHECK = `(() => {
   const details = document.querySelector('.plugin-details')
   const text = details === null ? '' : details.innerText
   const actions = details === null ? [] : [...details.querySelectorAll('.detail-actions button')]
+  const level = document.querySelector('[data-field="plugins.widget-level.duty-week"]')
   return {
     pass:
       details !== null &&
       text.includes('权限') &&
       text.includes('扩展点') &&
       text.includes('信任此插件') &&
-      actions.some((button) => (button.textContent ?? '').includes('卸载')),
+      actions.some((button) => (button.textContent ?? '').includes('卸载')) &&
+      level !== null,
     detail: text.slice(0, 220),
   }
 })()`

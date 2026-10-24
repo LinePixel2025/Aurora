@@ -18,6 +18,7 @@ import type {
   PluginSummary,
   PluginWidgetInfo,
   PluginWidgetLayout,
+  PluginWidgetWindowLevel,
 } from '@aurora/shared'
 import {
   Blocks,
@@ -111,6 +112,44 @@ async function refresh(): Promise<void> {
 function widgetVisible(widget: PluginWidgetInfo): boolean {
   const entry = widgetLayout.value?.widgets[`${widget.pluginId}/${widget.id}`]
   return entry?.visible ?? true
+}
+
+/** 桌面小组件当前层级：用户覆盖优先，缺省跟随插件清单（auto）。 */
+function widgetLevel(widget: PluginWidgetInfo): 'auto' | PluginWidgetWindowLevel {
+  const entry = widgetLayout.value?.widgets[`${widget.pluginId}/${widget.id}`]
+  return entry?.windowLevelOverride ?? 'auto'
+}
+
+/** 层级下拉选项：`auto` 表示清除覆盖、回到清单声明的层级。 */
+const WIDGET_LEVEL_OPTIONS: ReadonlyArray<{
+  value: 'auto' | PluginWidgetWindowLevel
+  label: string
+}> = [
+  { value: 'auto', label: '跟随插件' },
+  { value: 'floating', label: '置顶' },
+  { value: 'normal', label: '普通' },
+  { value: 'desktop', label: '桌面层' },
+]
+
+async function setWidgetLevel(
+  plugin: PluginSummary,
+  widget: PluginWidgetInfo,
+  rawLevel: string,
+): Promise<void> {
+  const option = WIDGET_LEVEL_OPTIONS.find((item) => item.value === rawLevel)
+  if (option === undefined) return
+  busy.value = plugin.id
+  try {
+    const result = await window.aurora.plugins.setWidgetWindowLevel({
+      pluginId: widget.pluginId,
+      widgetId: widget.id,
+      windowLevel: option.value,
+    })
+    if (!result.ok) fail(result.message)
+    await refresh()
+  } finally {
+    busy.value = null
+  }
 }
 
 async function toggleWidgetVisible(plugin: PluginSummary, widget: PluginWidgetInfo): Promise<void> {
@@ -378,7 +417,8 @@ onMounted(() => {
   loading.value = true
   void refresh()
   void loadMarket()
-  offChanged = window.aurora.plugins.onChanged(() => void refresh())})
+  offChanged = window.aurora.plugins.onChanged(() => void refresh())
+})
 
 onUnmounted(() => {
   offChanged?.()
@@ -628,26 +668,48 @@ onUnmounted(() => {
               class="widget-switches"
             >
               <span class="block-label">桌面</span>
-              <label
+              <span
                 v-for="widget in plugin.widgets.filter((item) => item.slot === 'desktop')"
-                :key="`widget-visible-${widget.id}`"
-                class="widget-switch"
-                :data-field="`plugins.widget-visible.${widget.id}`"
+                :key="`widget-control-${widget.id}`"
+                class="widget-control"
               >
-                <input
-                  type="checkbox"
-                  :checked="widgetVisible(widget)"
+                <label class="widget-switch" :data-field="`plugins.widget-visible.${widget.id}`">
+                  <input
+                    type="checkbox"
+                    :checked="widgetVisible(widget)"
+                    :disabled="busy === plugin.id || !plugin.enabled"
+                    @change="toggleWidgetVisible(plugin, widget)"
+                  />
+                  <span>{{ widget.title }}</span>
+                </label>
+                <select
+                  class="widget-level"
+                  :data-field="`plugins.widget-level.${widget.id}`"
+                  :value="widgetLevel(widget)"
                   :disabled="busy === plugin.id || !plugin.enabled"
-                  @change="toggleWidgetVisible(plugin, widget)"
-                />
-                <span>{{ widget.title }}</span>
-              </label>
+                  title="桌面层失败时回落普通窗口"
+                  aria-label="小组件窗口层级"
+                  @change="
+                    setWidgetLevel(plugin, widget, ($event.target as HTMLSelectElement).value)
+                  "
+                >
+                  <option
+                    v-for="level in WIDGET_LEVEL_OPTIONS"
+                    :key="level.value"
+                    :value="level.value"
+                  >
+                    {{ level.label }}
+                  </option>
+                </select>
+              </span>
             </div>
 
             <div v-if="expandedPlugin === plugin.id" class="plugin-details">
               <div class="detail-row">
                 <span class="detail-label">来源</span>
-                <span class="detail-value">{{ SOURCE_TEXT[plugin.source] }} · {{ plugin.author }}</span>
+                <span class="detail-value"
+                  >{{ SOURCE_TEXT[plugin.source] }} · {{ plugin.author }}</span
+                >
               </div>
 
               <div v-if="plugin.permissions.length > 0" class="detail-row">
@@ -686,6 +748,9 @@ onUnmounted(() => {
                     <span class="muted">
                       （{{ widget.slot === 'desktop' ? '桌面' : '提示条' }} ·
                       {{ widget.kind === 'page' ? '页面' : '声明式' }}）
+                    </span>
+                    <span v-if="widget.windowMaterial === 'acrylic'" class="badge material-badge">
+                      毛玻璃
                     </span>
                   </li>
                 </ul>
@@ -1079,6 +1144,28 @@ onUnmounted(() => {
 .widget-switch input {
   margin: 0;
   accent-color: var(--aurora-blue);
+}
+
+/* 复选框 + 层级下拉作为一组留在同一行，避免把插件卡片撑高 */
+.widget-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* 紧凑层级下拉：覆盖下方通用 `.section-card select` 的内边距与字号 */
+.section-card select.widget-level {
+  padding: 1px 4px;
+  border-radius: var(--radius-xs);
+  background: var(--fill-1);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  cursor: pointer;
+}
+
+.material-badge {
+  margin-left: 4px;
 }
 
 .plugin-details {

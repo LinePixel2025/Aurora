@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-24 | 桌面小组件层级（floating / normal / desktop）与原生 Acrylic：owner 亲和 / 恢复守护 / 圆角 shape | 插件, 小组件, Electron, 窗口, 毛玻璃, Win32, PowerShell, 坑, 口径 | [2026-10-24-widget-window-level-and-glass.md](2026-10-24-widget-window-level-and-glass.md) |
 | 2026-10-24 | 插件小组件（桌面 / 提示条）与面板事件推送：窗口归属、限速与布局口径            | 插件, 小组件, Electron, IPC, 推送, 布局, 探针, 坑, 口径 | [2026-10-24-plugin-widgets-and-push.md](2026-10-24-plugin-widgets-and-push.md) |
 | 2026-10-24 | 插件系统 v36：清单优先 / 独立进程 / 面板与沙箱页面 / Center 市场与踩坑口径 | 插件, 架构, Electron, webview, RPC, 自动化, Center, 坑, 口径 | [2026-10-24-plugin-system.md](2026-10-24-plugin-system.md) |
 | 2026-10-24 | Center 官方模型：网关 120s 总时长截断流、启动期目录误报回落；0.4.9 换装记录 | center, 网关, 超时, 官方模型, 回落提示, 部署, 记录 | [2026-10-24-center-049-idle-timeout-and-official-catalog.md](2026-10-24-center-049-idle-timeout-and-official-catalog.md) |

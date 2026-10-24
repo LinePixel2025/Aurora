@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
   clampWidgetBounds,
   defaultWidgetEntry,
+  effectiveWidgetWindowLevel,
   parseWidgetLayout,
   readWidgetLayout,
   writeWidgetLayout,
@@ -71,5 +72,84 @@ describe('桌面小组件布局', () => {
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+
+  it('windowLevelOverride 合法值原样保留，旧文件（无该字段）读出来仍没有', () => {
+    const parsed = parseWidgetLayout({
+      version: 1,
+      widgets: {
+        'com.example.hello/duty-week': {
+          visible: true,
+          x: 1,
+          y: 2,
+          width: 300,
+          height: 200,
+          windowLevelOverride: 'desktop',
+        },
+        'com.example.hello/legacy': { visible: false, x: 3, y: 4, width: 300, height: 200 },
+      },
+    })
+    expect(parsed.widgets['com.example.hello/duty-week']).toMatchObject({
+      windowLevelOverride: 'desktop',
+    })
+    const legacy = parsed.widgets['com.example.hello/legacy']
+    expect(legacy).toMatchObject({ visible: false, x: 3, y: 4 })
+    expect(legacy?.windowLevelOverride).toBeUndefined()
+    expect(Object.hasOwn(legacy ?? {}, 'windowLevelOverride')).toBe(false)
+    // 版本仍是 1（可选扩展字段，不升 layout 版本、更不升 CONFIG_VERSION）
+    expect(parsed.version).toBe(1)
+  })
+
+  it('windowLevelOverride 非法值只丢该字段，其余字段照常保留', () => {
+    const badValues: unknown[] = ['topmost', 'AUTO', 'floating ', 42, null, {}, ['normal']]
+    for (const bad of badValues) {
+      const parsed = parseWidgetLayout({
+        version: 1,
+        widgets: {
+          'com.example.hello/duty-week': {
+            visible: false,
+            x: 5,
+            y: 6,
+            width: 300,
+            height: 200,
+            windowLevelOverride: bad,
+          },
+        },
+      })
+      const entry = parsed.widgets['com.example.hello/duty-week']
+      expect(entry).toMatchObject({ visible: false, x: 5, y: 6, width: 300, height: 200 })
+      expect(entry?.windowLevelOverride).toBeUndefined()
+    }
+  })
+
+  it('层级覆盖写盘后能读回（读写往返不丢）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aurora-widget-layout-'))
+    try {
+      await writeWidgetLayout(dir, {
+        version: 1,
+        widgets: {
+          'com.example.hello/duty-week': {
+            visible: true,
+            x: 1,
+            y: 2,
+            width: 300,
+            height: 200,
+            windowLevelOverride: 'normal',
+          },
+        },
+      })
+      const loaded = await readWidgetLayout(dir)
+      expect(loaded.version).toBe(1)
+      expect(loaded.widgets['com.example.hello/duty-week']?.windowLevelOverride).toBe('normal')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('effectiveWidgetWindowLevel 复用 widget-window 的解析器（覆盖优先，缺省跟随声明）', () => {
+    expect(effectiveWidgetWindowLevel('floating', 'desktop')).toBe('desktop')
+    expect(effectiveWidgetWindowLevel('desktop', 'normal')).toBe('normal')
+    expect(effectiveWidgetWindowLevel('normal', undefined)).toBe('normal')
+    expect(effectiveWidgetWindowLevel('desktop', undefined)).toBe('desktop')
   })
 })

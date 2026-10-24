@@ -98,6 +98,7 @@
         "icon": "CalendarClock",
         "slot": "desktop",
         "schema": "ui/widget.json",
+        "windowMaterial": "acrylic",
         "defaultSize": { "width": 300, "height": 200 }
       },
       {

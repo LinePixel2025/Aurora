@@ -375,6 +375,8 @@ export function buildPreview(
       ...(widget.icon === undefined ? {} : { icon: widget.icon }),
       slot: widget.slot,
       kind: widget.schema === undefined ? 'page' : 'schema',
+      windowLevel: widget.windowLevel,
+      windowMaterial: widget.windowMaterial,
       ...(widget.entry === undefined ? {} : { entry: widget.entry }),
       ...(widget.defaultSize === undefined ? {} : { defaultSize: { ...widget.defaultSize } }),
     })),

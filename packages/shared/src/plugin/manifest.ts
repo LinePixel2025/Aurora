@@ -123,6 +123,21 @@ const PluginPanelSchema = z
 export const PLUGIN_WIDGET_SLOTS = ['desktop', 'edge-bar'] as const
 export type PluginWidgetSlot = (typeof PLUGIN_WIDGET_SLOTS)[number]
 
+/**
+ * 桌面小组件窗口层级（docs/14 §5.3）：
+ * - `floating`：默认，置顶浮动卡片（与 0.5.1 行为一致）；
+ * - `normal`：不置顶，按普通无边框窗口参与 z-order；
+ * - `desktop`：不置顶，并在 Windows 上尽力做到显示桌面后仍可见（失败回落 normal）。
+ *
+ * 只对 `slot = "desktop"` 生效；提示条小组件在清单校验阶段拒绝非默认值。
+ */
+export const PLUGIN_WIDGET_WINDOW_LEVELS = ['floating', 'normal', 'desktop'] as const
+export type PluginWidgetWindowLevel = (typeof PLUGIN_WIDGET_WINDOW_LEVELS)[number]
+
+/** 桌面小组件原生材质：默认 `none`；`acrylic` 需要 Windows 11 22H2+ 且外观毛玻璃开启。 */
+export const PLUGIN_WIDGET_WINDOW_MATERIALS = ['none', 'acrylic'] as const
+export type PluginWidgetWindowMaterial = (typeof PLUGIN_WIDGET_WINDOW_MATERIALS)[number]
+
 export const PLUGIN_WIDGET_SIZE_LIMITS = {
   minWidth: 120,
   minHeight: 80,
@@ -149,6 +164,10 @@ const PluginWidgetSchema = z
     title: z.string().min(1).max(40),
     icon: z.enum(PLUGIN_PANEL_ICONS).optional(),
     slot: z.enum(PLUGIN_WIDGET_SLOTS),
+    /** 桌面小组件的窗口层级（提示条忽略，且非默认值会在 superRefine 拒绝） */
+    windowLevel: z.enum(PLUGIN_WIDGET_WINDOW_LEVELS).default('floating'),
+    /** 桌面小组件的原生材质（提示条忽略，且非默认值会在 superRefine 拒绝） */
+    windowMaterial: z.enum(PLUGIN_WIDGET_WINDOW_MATERIALS).default('none'),
     /** 声明式 schema 文件（与 entry 二选一） */
     schema: relativePath.optional(),
     /** 沙箱页面入口 HTML（只允许 desktop） */
@@ -226,7 +245,10 @@ export const PluginManifestSchema = z
     homepage: z.string().url().max(300).optional(),
     main: relativePath,
     activation: z.enum(['startup', 'lazy']).default('startup'),
-    permissions: z.array(z.enum(PLUGIN_PERMISSIONS)).max(PLUGIN_MANIFEST_LIMITS.maxPermissions).default([]),
+    permissions: z
+      .array(z.enum(PLUGIN_PERMISSIONS))
+      .max(PLUGIN_MANIFEST_LIMITS.maxPermissions)
+      .default([]),
     contributes: PluginContributesSchema.default({
       tools: [],
       skills: [],
@@ -237,7 +259,12 @@ export const PluginManifestSchema = z
       themes: [],
     }),
     config: z
-      .object({ fields: z.array(PluginConfigFieldSchema).max(PLUGIN_MANIFEST_LIMITS.maxConfigFields).default([]) })
+      .object({
+        fields: z
+          .array(PluginConfigFieldSchema)
+          .max(PLUGIN_MANIFEST_LIMITS.maxConfigFields)
+          .default([]),
+      })
       .default({ fields: [] }),
     /** 订阅的宿主事件；未在此声明的事件不会投递给插件 */
     events: z.array(z.enum(PLUGIN_HOST_EVENTS)).max(PLUGIN_HOST_EVENTS.length).default([]),
@@ -269,16 +296,16 @@ export const PluginManifestSchema = z
     require('tools', manifest.contributes.tools.length > 0, ['contributes', 'tools'])
     require('skills', manifest.contributes.skills.length > 0, ['contributes', 'skills'])
     require('commands', manifest.contributes.commands.length > 0, ['contributes', 'commands'])
-    require(
+    require('automation', manifest.contributes.automation.actions.length > 0, [
+      'contributes',
       'automation',
-      manifest.contributes.automation.actions.length > 0,
-      ['contributes', 'automation', 'actions'],
-    )
-    require(
-      'automation.events',
-      manifest.contributes.automation.events.length > 0,
-      ['contributes', 'automation', 'events'],
-    )
+      'actions',
+    ])
+    require('automation.events', manifest.contributes.automation.events.length > 0, [
+      'contributes',
+      'automation',
+      'events',
+    ])
     require('ui.panels', manifest.contributes.panels.length > 0, ['contributes', 'panels'])
     require('ui.widgets', manifest.contributes.widgets.length > 0, ['contributes', 'widgets'])
     require('themes', manifest.contributes.themes.length > 0, ['contributes', 'themes'])
@@ -350,16 +377,8 @@ export const PluginManifestSchema = z
       ['config', 'fields'],
       '配置项 key',
     )
-    unique(
-      manifest.contributes.skills,
-      ['contributes', 'skills'],
-      'Skill 目录',
-    )
-    unique(
-      manifest.events,
-      ['events'],
-      '事件名',
-    )
+    unique(manifest.contributes.skills, ['contributes', 'skills'], 'Skill 目录')
+    unique(manifest.events, ['events'], '事件名')
 
     // 工具最终名长度（`plugin.<id>.<name>` ≤ 64）与参数 schema 形状
     for (const [index, tool] of manifest.contributes.tools.entries()) {
@@ -395,6 +414,20 @@ export const PluginManifestSchema = z
           message: '提示条小组件不支持 defaultSize',
         })
       }
+      if (widget.slot === 'edge-bar' && widget.windowLevel !== 'floating') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['contributes', 'widgets', index, 'windowLevel'],
+          message: '提示条小组件不支持 windowLevel（只允许默认 floating）',
+        })
+      }
+      if (widget.slot === 'edge-bar' && widget.windowMaterial !== 'none') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['contributes', 'widgets', index, 'windowMaterial'],
+          message: '提示条小组件不支持 windowMaterial（只允许默认 none）',
+        })
+      }
     }
 
     for (const [index, theme] of manifest.contributes.themes.entries()) {
@@ -415,7 +448,11 @@ export const PluginManifestSchema = z
     }
 
     for (const [index, field] of manifest.config.fields.entries()) {
-      if (field.type === 'select' && field.default !== undefined && typeof field.default !== 'string') {
+      if (
+        field.type === 'select' &&
+        field.default !== undefined &&
+        typeof field.default !== 'string'
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['config', 'fields', index, 'default'],

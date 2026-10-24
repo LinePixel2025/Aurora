@@ -289,16 +289,30 @@ const off = window.auroraPlugin.onEvent((event, payload) => console.log(event, p
 { "permissions": ["ui.widgets"],
   "contributes": { "widgets": [
     { "id": "duty-week", "title": "本周值日", "icon": "CalendarClock", "slot": "desktop",
+      "windowLevel": "desktop", "windowMaterial": "acrylic",
       "schema": "ui/widget.json", "defaultSize": { "width": 300, "height": 200 } },
     { "id": "todo-strip", "title": "事务", "icon": "ListChecks", "slot": "edge-bar",
       "schema": "ui/strip.json" }
   ] } }
 ```
 
-- `slot = "desktop"`：置顶浮动卡片，位置 / 尺寸 / 显隐由用户在设置页或拖动决定并持久化；
+- `slot = "desktop"`：默认置顶浮动卡片，位置 / 尺寸 / 显隐由用户在设置页或拖动决定并持久化；
 - `slot = "edge-bar"`：提示条展开面板底部的条目，**只允许声明式 schema**（不能 `entry`）。
 - schema 与面板同一套组件与限额；动作调用 `invokeWidget(widgetId, method, params, ctx)`；
 - 页面型桌面 widget 用 `entry`，内部仍走 `aurora-plugin://` + 专用 preload（无法在提示条使用）。
+
+桌面 widget 可选的窗口字段（只对 `slot = "desktop"` 生效，**不新增权限 / 宿主 API**）：
+
+- `windowLevel`：`"floating"`（默认，置顶浮动）/ `"normal"`（普通 z-order）/
+  `"desktop"`（不置顶并尽力贴合桌面层，Win+D / Win+M 后仍尽量可见，失败回落 `normal`）。
+  `desktop` 是普通窗口 + Win32 owner 亲和 + 最小化恢复守护，不是壁纸嵌入 / 桌面图标层 / 点击穿透；
+- `windowMaterial`：`"none"`（默认，不透明卡片）/ `"acrylic"`（原生 Acrylic，需 Windows 11 22H2+
+  且外观毛玻璃开启；不满足时保持不透明卡片）；
+- 两个字段只对桌面小组件有效：`slot = "edge-bar"` 声明非默认值会在清单校验被拒绝；
+- 用户在设置 → 插件详情可给每个桌面 widget 覆盖层级（跟随插件 / 置顶 / 普通 / 桌面层），
+  覆盖值写在 `<userData>/plugin-widget-layout.json` 的 `windowLevelOverride`，不改清单；
+- 旧宿主会**静默忽略**未知字段：用这两个字段时把 `minAuroraVersion` 设为支持它们的宿主版本，
+  否则旧宿主按默认 `floating` / `none` 渲染。
 
 ```js
 async invokeWidget(widgetId, method, params, ctx) {

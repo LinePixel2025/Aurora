@@ -185,7 +185,10 @@ describe('插件主题令牌', () => {
 })
 
 describe('插件小组件清单', () => {
-  function withWidgets(widgets: unknown[], permissions = ['ui.widgets']): ReturnType<typeof baseManifest> {
+  function withWidgets(
+    widgets: unknown[],
+    permissions = ['ui.widgets'],
+  ): ReturnType<typeof baseManifest> {
     return baseManifest({ permissions, contributes: { widgets } })
   }
 
@@ -237,6 +240,64 @@ describe('插件小组件清单', () => {
     )
     expect(result.ok).toBe(false)
     expect(result.errors.join('\n')).toContain('不支持 defaultSize')
+  })
+
+  it('桌面小组件未声明层级 / 材质时补齐 floating / none 默认值', () => {
+    const result = parsePluginManifest(
+      withWidgets([
+        { id: 'w', title: 'W', slot: 'desktop', schema: 'ui/w.json' },
+        { id: 's', title: 'S', slot: 'edge-bar', schema: 'ui/s.json' },
+      ]),
+    )
+    expect(result.ok).toBe(true)
+    const widgets = result.manifest?.contributes.widgets ?? []
+    expect(widgets[0]).toMatchObject({ windowLevel: 'floating', windowMaterial: 'none' })
+    expect(widgets[1]).toMatchObject({ windowLevel: 'floating', windowMaterial: 'none' })
+  })
+
+  it('接受桌面小组件的 normal / desktop 层级与 acrylic 材质', () => {
+    const result = parsePluginManifest(
+      withWidgets([
+        {
+          id: 'w',
+          title: 'W',
+          slot: 'desktop',
+          schema: 'ui/w.json',
+          windowLevel: 'desktop',
+          windowMaterial: 'acrylic',
+        },
+        { id: 'n', title: 'N', slot: 'desktop', schema: 'ui/n.json', windowLevel: 'normal' },
+      ]),
+    )
+    expect(result.ok).toBe(true)
+    expect(result.manifest?.contributes.widgets[0]).toMatchObject({
+      windowLevel: 'desktop',
+      windowMaterial: 'acrylic',
+    })
+    expect(result.manifest?.contributes.widgets[1]?.windowLevel).toBe('normal')
+  })
+
+  it('提示条小组件拒绝非默认层级 / 材质', () => {
+    for (const patch of [
+      { windowLevel: 'normal' },
+      { windowLevel: 'desktop' },
+      { windowMaterial: 'acrylic' },
+    ]) {
+      const result = parsePluginManifest(
+        withWidgets([{ id: 's', title: 'S', slot: 'edge-bar', schema: 'ui/s.json', ...patch }]),
+      )
+      expect(result.ok).toBe(false)
+      expect(result.errors.join('\n')).toContain('提示条小组件不支持')
+    }
+  })
+
+  it('非法层级 / 材质枚举被拒绝', () => {
+    for (const patch of [{ windowLevel: 'wallpaper' }, { windowMaterial: 'mica' }]) {
+      const result = parsePluginManifest(
+        withWidgets([{ id: 'w', title: 'W', slot: 'desktop', schema: 'ui/w.json', ...patch }]),
+      )
+      expect(result.ok).toBe(false)
+    }
   })
 
   it('schema 与 entry 必须二选一', () => {

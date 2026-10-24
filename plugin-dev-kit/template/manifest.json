@@ -40,6 +40,8 @@
         "title": "示例卡片",
         "icon": "Sparkles",
         "slot": "desktop",
+        "windowLevel": "floating",
+        "windowMaterial": "none",
         "schema": "ui/widget.json",
         "defaultSize": { "width": 300, "height": 200 }
       },

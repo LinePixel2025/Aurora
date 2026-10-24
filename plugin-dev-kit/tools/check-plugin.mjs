@@ -35,6 +35,10 @@ const UI_NODE_TYPES = new Set([
   'list', 'table', 'keyValue', 'button', 'input', 'textarea', 'select', 'toggle', 'number', 'slider',
 ])
 
+// 桌面小组件窗口层级 / 原生材质：与宿主 zod schema 手动同口径（本工具不依赖 Aurora 工作区）。
+const WIDGET_WINDOW_LEVELS = new Set(['floating', 'normal', 'desktop'])
+const WIDGET_WINDOW_MATERIALS = new Set(['none', 'acrylic'])
+
 const ID_PATTERN = /^[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])?)+$/
 const PANEL_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/
 const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]{0,24}$/
@@ -349,6 +353,15 @@ async function main() {
     if (widget.icon !== undefined && !PANEL_ICONS.has(widget.icon)) {
       warnings.push(`小组件 ${widget.id} 的图标不在白名单，运行时会回落 Puzzle：${widget.icon}`)
     }
+    if (widget.windowLevel !== undefined && !WIDGET_WINDOW_LEVELS.has(widget.windowLevel)) {
+      error(`小组件 ${widget.id} 的 windowLevel 必须是 floating / normal / desktop`)
+    }
+    if (
+      widget.windowMaterial !== undefined &&
+      !WIDGET_WINDOW_MATERIALS.has(widget.windowMaterial)
+    ) {
+      error(`小组件 ${widget.id} 的 windowMaterial 必须是 none / acrylic`)
+    }
     const hasSchema = widget.schema !== undefined
     const hasEntry = widget.entry !== undefined
     if (hasSchema === hasEntry) {
@@ -359,6 +372,12 @@ async function main() {
       if (hasEntry) error(`提示条小组件 ${widget.id} 只允许 schema，不允许 entry`)
       if (widget.defaultSize !== undefined) {
         error(`提示条小组件 ${widget.id} 不支持 defaultSize`)
+      }
+      if (WIDGET_WINDOW_LEVELS.has(widget.windowLevel) && widget.windowLevel !== 'floating') {
+        error(`提示条小组件 ${widget.id} 不支持 windowLevel（只允许默认 floating）`)
+      }
+      if (WIDGET_WINDOW_MATERIALS.has(widget.windowMaterial) && widget.windowMaterial !== 'none') {
+        error(`提示条小组件 ${widget.id} 不支持 windowMaterial（只允许默认 none）`)
       }
     }
     if (widget.defaultSize !== undefined) {

@@ -9,6 +9,9 @@
 - [ ] 工具 ≤ 32，名称合法，最终名 `plugin.<id>.<name>` ≤ 64，参数是 `type: "object"`
 - [ ] 面板 ≤ 8，`schema` / `entry` 二选一，引用文件存在
 - [ ] 小组件 ≤ 4，`slot` 正确；提示条只有 `schema`、没有 `defaultSize`
+- [ ] 桌面小组件若声明窗口层级 / 材质：`windowLevel` 取 `floating`（默认）/ `normal` / `desktop`，
+      `windowMaterial` 取 `none`（默认）/ `acrylic`；提示条不得声明非默认值
+- [ ] 用到 `windowLevel` / `windowMaterial` 时，`minAuroraVersion` 已设为支持它们的宿主版本
 - [ ] 图标在 `PLUGIN_PANEL_ICONS` 白名单内（否则回落 `Puzzle`）
 - [ ] 所有路径都是包内相对路径，没有 `..`、盘符、UNC、绝对路径
 
@@ -42,5 +45,5 @@
 - [ ] `node <工具包>/tools/check-plugin.mjs <插件目录>` 退出码 0
 - [ ] （在 Aurora 源码环境）`node scripts/verify-plugin.mjs <目录|zip>` 通过
 - [ ] 真机安装：设置 → 插件 → 开发 / 安装插件包，状态为「运行中」
-- [ ] 面板、桌面小组件、提示条小组件、推送刷新各试一次
+- [ ] 面板、桌面小组件、提示条小组件、推送刷新各试一次；声明了层级 / 毛玻璃的 widget 在真机确认实际表现
 - [ ] 停用 / 卸载后对应小组件窗口与面板正确关闭

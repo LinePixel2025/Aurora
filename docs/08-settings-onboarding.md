@@ -1242,7 +1242,11 @@ plugins: {
 - **AI 只读**：`plugins` 整组在 `SETTINGS_READONLY_PREFIXES`，`set_setting` 不得安装 / 启停 / 信任插件；
   也不在 `settings-port.ts` 的 `TOP_LEVEL_GROUPS` 里。
 - **无密文**：插件配置不支持密文字段，也不向插件暴露 Aurora 凭据；不需要动 secret 链路与 `redactSettings`。
-- **桌面小组件布局不进 settings**：位置 / 尺寸 / 显隐在 `<userData>/plugin-widget-layout.json`，
-  独立版本号（`version: 1`），不升 `CONFIG_VERSION`；删掉它只丢位置，不丢插件数据。
+- **桌面小组件布局不进 settings**：位置 / 尺寸 / 显隐与用户选的层级在
+  `<userData>/plugin-widget-layout.json`；层级是可选 `windowLevelOverride`（缺省跟随清单，
+  值 `floating` / `normal` / `desktop`）。文件版本仍为 `1`，不升 `CONFIG_VERSION`；
+  删掉它只丢位置与层级覆盖，不丢插件数据。
+- 层级入口是设置 → 插件详情里每个桌面 widget 的下拉（跟随插件 / 置顶 / 普通 / 桌面层），
+  只写上述布局文件，不新增权限 / 插件 API。
 - 设置重置不会卸载插件；`plugins.enabled` 回到默认 `true`，已安装插件与信任状态保留。
 - 设置页 UI 见 [07 §8](./07-ui-spec.md)。

@@ -622,6 +622,70 @@ export function smokeScript(
         JSON.stringify(widgetLayout).slice(0, 300),
       )
 
+      // 层级 / 材质（v37，docs/14 §5.3）：清单默认值、用户覆盖、原生置顶状态
+      const dutyWidget = hello?.widgets.find((widget) => widget.id === 'duty-week')
+      record(
+        '桌面小组件声明层级 / 材质默认值与 Acrylic 夹具',
+        dutyWidget?.windowLevel === 'floating' &&
+          dutyWidget?.windowMaterial === 'acrylic',
+        JSON.stringify(dutyWidget),
+      )
+      const readWidgetDiagnostics = async () => {
+        const result = await window.aurora.app.getSmokeDiagnostics()
+        const list = result?.ok ? (result.value.widgetWindows ?? []) : []
+        return list.find(
+          (item) => item.pluginId === PLUGIN_ID && item.widgetId === 'duty-week',
+        )
+      }
+      const setNormal = await window.aurora.plugins.setWidgetWindowLevel({
+        pluginId: PLUGIN_ID,
+        widgetId: 'duty-week',
+        windowLevel: 'normal',
+      })
+      await wait(350)
+      const layoutNormal = await window.aurora.plugins.widgetLayout()
+      const diagNormal = await readWidgetDiagnostics()
+      record(
+        '桌面小组件层级覆盖写入布局并即时取消置顶',
+        setNormal?.ok === true &&
+          layoutNormal?.ok === true &&
+          layoutNormal.value.widgets[PLUGIN_ID + '/duty-week']?.windowLevelOverride === 'normal' &&
+          diagNormal?.effectiveWindowLevel === 'normal' &&
+          diagNormal?.alwaysOnTop === false,
+        JSON.stringify({ setNormal, layoutNormal, diagNormal }).slice(0, 400),
+      )
+      const setDesktop = await window.aurora.plugins.setWidgetWindowLevel({
+        pluginId: PLUGIN_ID,
+        widgetId: 'duty-week',
+        windowLevel: 'desktop',
+      })
+      await wait(700)
+      const diagDesktop = await readWidgetDiagnostics()
+      record(
+        '桌面小组件 desktop 层级保持非置顶',
+        setDesktop?.ok === true &&
+          diagDesktop?.effectiveWindowLevel === 'desktop' &&
+          diagDesktop?.alwaysOnTop === false,
+        JSON.stringify({ setDesktop, diagDesktop }).slice(0, 400),
+      )
+      const resetLevel = await window.aurora.plugins.setWidgetWindowLevel({
+        pluginId: PLUGIN_ID,
+        widgetId: 'duty-week',
+        windowLevel: 'auto',
+      })
+      await wait(350)
+      const diagReset = await readWidgetDiagnostics()
+      const layoutReset = await window.aurora.plugins.widgetLayout()
+      record(
+        '桌面小组件层级清除覆盖后恢复清单置顶',
+        resetLevel?.ok === true &&
+          layoutReset?.ok === true &&
+          layoutReset.value.widgets[PLUGIN_ID + '/duty-week']?.windowLevelOverride === undefined &&
+          diagReset?.effectiveWindowLevel === 'floating' &&
+          diagReset?.alwaysOnTop === true,
+        JSON.stringify({ resetLevel, layoutReset, diagReset }).slice(0, 400),
+      )
+
       // 面板事件推送（docs/14 §5.5）：打开声明式面板 → 插件主动推送 → DOM 不点刷新即更新
       const pushFlow = await (async () => {
         const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

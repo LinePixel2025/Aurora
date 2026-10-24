@@ -1172,6 +1172,8 @@ async function bootstrap(): Promise<void> {
     rendererUrl: process.env['ELECTRON_RENDERER_URL'] ?? '',
     rendererDir,
     contributions: () => pluginManager?.widgetContributions() ?? [],
+    // 外观毛玻璃总开关：false 时小组件保持不透明（v37，docs/14 §5.3）
+    glassAllowed: () => settings?.get().appearance.glass ?? true,
   })
   await widgetManager.init()
   widgetManager.sync()
@@ -2883,6 +2885,7 @@ async function bootstrap(): Promise<void> {
       enabled: true,
       preClassFired: smokeMode ? [...preClassFired] : undefined,
       automationRuns: smokeMode ? [...automationRunLog] : undefined,
+      widgetWindows: smokeMode ? widgetManager?.diagnostics() : undefined,
     }),
     onQuit: () => app.quit(),
     // 附件提取（docs/07 §2.3）：与 Center 远程附件共用 `extractAttachmentDigest`
@@ -2899,6 +2902,8 @@ async function bootstrap(): Promise<void> {
       // 渲染层那半走 `settings:changed` 广播 → settings store 的 watch，不需要在这里推。
       syncThemeSource()
       windows?.applyGlass(next.appearance.glass)
+      // 插件桌面小组件（v37）：与上面同一份外观开关，摘 / 挂原生 Acrylic 与圆角 shape
+      widgetManager?.applyGlass(next.appearance.glass)
       // 快捷键改绑（幂等：值没变时内部直接返回，不会闪断）
       hotkeys?.apply(next.general.hotkey)
       if (!next.general.edgeBar.enabled) windows?.hide('edge-bar')

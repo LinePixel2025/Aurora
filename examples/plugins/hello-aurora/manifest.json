@@ -97,6 +97,7 @@
         "title": "本周值日",
         "icon": "CalendarClock",
         "slot": "desktop",
+        "windowMaterial": "acrylic",
         "schema": "ui/widget.json",
         "defaultSize": { "width": 300, "height": 200 }
       },

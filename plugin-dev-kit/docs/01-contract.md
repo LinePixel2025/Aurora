@@ -169,6 +169,10 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
 - 小组件 ≤ 4；`slot ∈ { "desktop", "edge-bar" }`；`schema` 与 `entry` 二选一；
   **`slot = "edge-bar"` 只允许 `schema`**（不允许在提示条里塞 webview），也不接受 `defaultSize`；
   桌面小组件 `defaultSize` 宽 120–1200、高 80–900；同时存在的桌面小组件窗口总数 ≤ 8（防失控常量）。
+- 桌面小组件窗口：`windowLevel ∈ { "floating", "normal", "desktop" }`（默认 `"floating"`）；
+  `windowMaterial ∈ { "none", "acrylic" }`（默认 `"none"`）。两者只对 `slot = "desktop"` 生效，
+  提示条小组件声明非默认值时**清单校验直接拒绝**；不新增权限 / 宿主 API。
+  使用这两个字段时把 `minAuroraVersion` 设为支持它们的宿主版本（旧宿主会静默忽略未知字段）。
 - 主题 ≤ 8；令牌走白名单（§7），颜色只接受 `#rgb/#rrggbb/rgb()/rgba()/hsl()/hsla()`；单主题 ≤ 64 个令牌。
 - `apiVersion` 必须等于宿主 `PLUGIN_API_VERSION = 1`；`minAuroraVersion` 与宿主版本比较。
 - `main` / `skills` / `ui` / icon 路径 `resolve` 后必须仍在插件根内。
@@ -253,22 +257,34 @@ window.auroraPlugin = {
 
 ### 5.3 桌面小组件
 
-`slot = "desktop"` 的小组件是**置顶浮动卡片**（不是壁纸层嵌入）：每个可见 widget 一张
-`BrowserWindow`，`frame:false` / `transparent:true` / `alwaysOnTop:true` / `skipTaskbar:true`、
-最小 120×80；位置与尺寸夹取到当前显示器 `workArea`，屏幕变化时重新夹取。
+`slot = "desktop"` 的小组件默认是**置顶浮动卡片**：每个可见 widget 一张 `BrowserWindow`，
+`frame:false` / `transparent:true` / `skipTaskbar:true`、最小 120×80；位置与尺寸夹取到当前显示器
+`workArea`，屏幕变化时重新夹取。窗口层级由清单 `windowLevel` 声明，用户可在设置页逐 widget 覆盖：
 
+- `"floating"`（默认）：置顶浮动卡片（`alwaysOnTop: true`），与旧版本行为一致；
+- `"normal"`：不置顶，按普通无边框窗口参与 z-order；
+- `"desktop"`：不置顶；宿主把窗口的 Win32 owner 指向桌面 shell 视图（`SHELLDLL_DefView`），
+  并带最小化恢复守护，让 Win+D / Win+M 后仍尽量可见；属尽力而为，失败回落 `"normal"`。
+  它只是「普通窗口 + owner 亲和 + 恢复守护」，**不是**壁纸层嵌入 / 桌面图标层 / 点击穿透。
+- 材质由 `windowMaterial` 声明：`"none"`（默认）保持现有不透明卡片；`"acrylic"` 使用原生 Acrylic，
+  仅 Windows 11 22H2+ 且外观 `appearance.glass` 开启时逐 widget 生效，窗口 shape 按卡片四角圆角
+  裁剪；不满足条件或启用失败时保持不透明卡片。
 - 声明式 widget 复用 `PluginSchemaRenderer`；页面型复用 `aurora-plugin://` + 专用 preload
   （与 §5.2 完全同一套沙箱口径；widget 窗口只为它开启 `webviewTag`）。
-- 布局写 `<userData>/plugin-widget-layout.json`（**不进 settings、不升 `CONFIG_VERSION`**）：
+- 布局写 `<userData>/plugin-widget-layout.json`（**不进 settings、不升 `CONFIG_VERSION`**，
+  文件版本仍为 `1`；`windowLevelOverride` 是可选扩展字段）：
 
 ```ts
 { "version": 1, "widgets": { "<pluginId>/<widgetId>": {
-  "visible": boolean, "x": number, "y": number, "width": number, "height": number
+  "visible": boolean, "x": number, "y": number, "width": number, "height": number,
+  "windowLevelOverride"?: "floating" | "normal" | "desktop"
 } } }
 ```
 
-- 新 widget 默认可见，位置从工作区右上角级联；用户拖动 / 缩放后 250ms 防抖原子写。
-- 设置 → 插件详情里每个桌面 widget 一枚「显示在桌面」开关；关闭即销毁窗口、保留布局条目。
+- `windowLevelOverride` 记录用户在设置页选的层级，缺省 = 跟随清单；读取时丢弃非法值。
+- 新 widget 默认可见，位置从工作区右上角级联；用户拖动 / 缩放 / 改层级后 250ms 防抖原子写。
+- 设置 → 插件详情里每个桌面 widget 一枚「显示在桌面」开关 + 一枚层级下拉
+  （跟随插件 / 置顶 / 普通 / 桌面层）；关闭开关即销毁窗口、保留布局条目。
 - 插件停用 / 卸载 / 总开关关闭 / 崩溃反复超限：立即销毁窗口；布局文件保留用户位置。
 - 开发目录热重载：同 id widget 更新标题 / 入口，位置不丢；入口类型变化时重建窗口。
 - 布局文件损坏按空布局重建；未知 id 原样保留，不主动删用户布局。
@@ -393,7 +409,7 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 <userData>/plugins/registry.json              安装 / 启用 / 信任状态（原子写）
 <userData>/plugin-data/<id>/config.json       插件配置（非密文）
 <userData>/plugin-data/<id>/storage.json      插件键值存储（5 MB 配额）
-<userData>/plugin-widget-layout.json         桌面小组件位置 / 尺寸 / 显隐（独立于 settings）
+<userData>/plugin-widget-layout.json         桌面小组件位置 / 尺寸 / 显隐 / 层级覆盖（独立于 settings）
 <userData>/logs/plugins/<id>.log
 ```
 
@@ -437,7 +453,9 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 - 页面 `connect-src 'none'`，出网必须经 `invokePanel` → 插件进程的 `ctx.net.fetch`；
 - 插件返回工具结果只支持文本；
 - 市场不提供签名 / 发布者认证；
-- 桌面小组件是置顶浮动卡片，不做壁纸层嵌入 / 桌面图标层 / 点击穿透；
-- 提示条小组件只支持声明式 schema；
+- 桌面小组件默认置顶，可声明 `normal` / `desktop` 层级；`desktop` 的桌面亲和是尽力而为
+  （失败回落 `normal`），不做壁纸层嵌入 / 桌面图标层 / 点击穿透；
+- `windowMaterial: "acrylic"` 只在 Windows 11 22H2+ 且外观毛玻璃开启时生效，否则保持不透明卡片；
+- 提示条小组件只支持声明式 schema（并拒绝 `windowLevel` / `windowMaterial` 非默认值）；
 - 插件工具不参与 `agent.tools.enabled` 门控（与扩展工具六件套同口径），只受插件总开关 /
   单插件开关 / 只读档 / 信任约束。

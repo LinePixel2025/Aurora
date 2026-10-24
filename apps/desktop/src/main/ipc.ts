@@ -35,6 +35,7 @@ import {
 } from './tools/restore-guard.js'
 import {
   IPC,
+  PLUGIN_WIDGET_WINDOW_LEVELS,
   createDefaultSettings,
   err,
   ok,
@@ -108,6 +109,7 @@ import {
   type PluginRunCommandRequest,
   type PluginRunCommandResult,
   type PluginSetWidgetVisibleRequest,
+  type PluginSetWidgetWindowLevelRequest,
   type PluginSummary,
   type PluginUninstallRequest,
   type PluginUpdateInfo,
@@ -1315,18 +1317,35 @@ export function registerIpc(deps: DesktopDeps): () => void {
     }
     return ok(deps.widgets.layoutSnapshot())
   })
+  handle<boolean>(IPC.plugins.setWidgetVisible, (request: PluginSetWidgetVisibleRequest) => {
+    if (deps.widgets === undefined) return pluginsMissing<boolean>()
+    const pluginId = typeof request?.pluginId === 'string' ? request.pluginId : ''
+    const widgetId = typeof request?.widgetId === 'string' ? request.widgetId : ''
+    if (pluginId === '' || widgetId === '') {
+      return err('E_INVALID_ARGUMENT', '缺少插件或小组件 id')
+    }
+    return deps.widgets
+      .setVisible(pluginId, widgetId, request.visible === true)
+      .then(ok, pluginError)
+  })
   handle<boolean>(
-    IPC.plugins.setWidgetVisible,
-    (request: PluginSetWidgetVisibleRequest) => {
+    IPC.plugins.setWidgetWindowLevel,
+    (request: PluginSetWidgetWindowLevelRequest) => {
       if (deps.widgets === undefined) return pluginsMissing<boolean>()
       const pluginId = typeof request?.pluginId === 'string' ? request.pluginId : ''
       const widgetId = typeof request?.widgetId === 'string' ? request.widgetId : ''
       if (pluginId === '' || widgetId === '') {
         return err('E_INVALID_ARGUMENT', '缺少插件或小组件 id')
       }
-      return deps.widgets
-        .setVisible(pluginId, widgetId, request.visible === true)
-        .then(ok, pluginError)
+      const level = request?.windowLevel
+      if (
+        level !== 'auto' &&
+        (typeof level !== 'string' ||
+          !(PLUGIN_WIDGET_WINDOW_LEVELS as readonly string[]).includes(level))
+      ) {
+        return err('E_INVALID_ARGUMENT', '小组件层级必须是 auto / floating / normal / desktop')
+      }
+      return deps.widgets.setWindowLevel(pluginId, widgetId, level).then(ok, pluginError)
     },
   )
   handle<unknown>(IPC.plugins.pageRpc, async (request: PluginPageRpcRequest) => {
