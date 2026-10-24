@@ -295,6 +295,7 @@ export class WidgetManager {
       title: info.title,
       windowLevel: info.windowLevel,
       windowMaterial: info.windowMaterial,
+      hideCloseButton: info.hideCloseButton,
     })
   }
 
@@ -405,6 +406,7 @@ export class WidgetManager {
     // 只有原生材质真的挂上时才告诉渲染层用玻璃令牌；失败时保持不透明，避免裸漏桌面。
     const query: Record<string, string> = { pluginId: info.pluginId, widgetId: info.id }
     if (materialActive) query['material'] = 'acrylic'
+    if (info.hideCloseButton) query['hideCloseButton'] = '1'
     if (rendererUrl !== undefined && rendererUrl !== '') {
       const search = new URLSearchParams(query).toString()
       await win.loadURL(`${rendererUrl}/widget/index.html?${search}`)

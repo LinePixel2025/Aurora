@@ -494,6 +494,7 @@ export class PluginManager {
           kind: widget.schema === undefined ? 'page' : 'schema',
           windowLevel: widget.windowLevel,
           windowMaterial: widget.windowMaterial,
+          hideCloseButton: widget.hideCloseButton,
           ...(widget.entry === undefined ? {} : { entry: widget.entry }),
           ...(widget.defaultSize === undefined ? {} : { defaultSize: { ...widget.defaultSize } }),
         })
@@ -859,7 +860,13 @@ export class PluginManager {
     method = 'refresh',
     params: unknown = {},
     signal?: AbortSignal,
-  ): Promise<{ schema?: unknown; toast?: string; data?: unknown }> {
+  ): Promise<{
+    schema?: unknown
+    toast?: string
+    data?: unknown
+    message?: string
+    error?: string
+  }> {
     const entry = this.requireEnabled(pluginId, 'ui.panels')
     const panel = entry.manifest.contributes.panels.find((item) => item.id === panelId)
     if (panel === undefined) {
@@ -873,11 +880,19 @@ export class PluginManager {
         timeoutMs: PLUGIN_RPC_TIMEOUTS.panel,
         ...(signal === undefined ? {} : { signal }),
       },
-    )) as { schema?: unknown; toast?: unknown; data?: unknown }
+    )) as {
+      schema?: unknown
+      toast?: unknown
+      data?: unknown
+      message?: unknown
+      error?: unknown
+    }
     return {
       ...(result?.schema === undefined ? {} : { schema: result.schema }),
       ...(typeof result?.toast === 'string' ? { toast: result.toast } : {}),
       ...(result?.data === undefined ? {} : { data: result.data }),
+      ...(typeof result?.message === 'string' ? { message: result.message } : {}),
+      ...(typeof result?.error === 'string' ? { error: result.error } : {}),
     }
   }
 
@@ -887,15 +902,19 @@ export class PluginManager {
     method = 'refresh',
     params: unknown = {},
     signal?: AbortSignal,
-  ): Promise<{ schema?: unknown; toast?: string; data?: unknown }> {
+  ): Promise<{
+    schema?: unknown
+    toast?: string
+    data?: unknown
+    message?: string
+    error?: string
+  }> {
     const entry = this.requireEnabled(pluginId, 'ui.widgets')
     const widget = entry.manifest.contributes.widgets.find((item) => item.id === widgetId)
     if (widget === undefined) {
       throw new PluginRpcFailure('E_PLUGIN_INVALID_ARGS', `插件未声明小组件：${widgetId}`)
     }
-    if (widget.schema === undefined) {
-      throw new PluginRpcFailure('E_PLUGIN_INVALID_ARGS', '页面型小组件请通过小组件页面打开')
-    }
+    // 页面型小组件也走这里（plugins:pageRpc）；旧声明式通道的拦截在 ipc.ts 的 plugins:widgetData。
     await this.ensureStarted(entry)
     const result = (await entry.process!.peer.request(
       PLUGIN_HOST_CALLS.widget,
@@ -904,11 +923,19 @@ export class PluginManager {
         timeoutMs: PLUGIN_RPC_TIMEOUTS.widget,
         ...(signal === undefined ? {} : { signal }),
       },
-    )) as { schema?: unknown; toast?: unknown; data?: unknown }
+    )) as {
+      schema?: unknown
+      toast?: unknown
+      data?: unknown
+      message?: unknown
+      error?: unknown
+    }
     return {
       ...(result?.schema === undefined ? {} : { schema: result.schema }),
       ...(typeof result?.toast === 'string' ? { toast: result.toast } : {}),
       ...(result?.data === undefined ? {} : { data: result.data }),
+      ...(typeof result?.message === 'string' ? { message: result.message } : {}),
+      ...(typeof result?.error === 'string' ? { error: result.error } : {}),
     }
   }
 
@@ -1697,6 +1724,7 @@ export class PluginManager {
       kind: widget.schema === undefined ? 'page' : 'schema',
       windowLevel: widget.windowLevel,
       windowMaterial: widget.windowMaterial,
+      hideCloseButton: widget.hideCloseButton,
       ...(widget.entry === undefined ? {} : { entry: widget.entry }),
       ...(widget.defaultSize === undefined ? {} : { defaultSize: { ...widget.defaultSize } }),
     }))

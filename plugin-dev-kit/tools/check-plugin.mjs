@@ -362,6 +362,9 @@ async function main() {
     ) {
       error(`小组件 ${widget.id} 的 windowMaterial 必须是 none / acrylic`)
     }
+    if (widget.hideCloseButton !== undefined && typeof widget.hideCloseButton !== 'boolean') {
+      error(`小组件 ${widget.id} 的 hideCloseButton 必须是布尔值`)
+    }
     const hasSchema = widget.schema !== undefined
     const hasEntry = widget.entry !== undefined
     if (hasSchema === hasEntry) {
@@ -378,6 +381,9 @@ async function main() {
       }
       if (WIDGET_WINDOW_MATERIALS.has(widget.windowMaterial) && widget.windowMaterial !== 'none') {
         error(`提示条小组件 ${widget.id} 不支持 windowMaterial（只允许默认 none）`)
+      }
+      if (widget.hideCloseButton === true) {
+        error(`提示条小组件 ${widget.id} 不支持 hideCloseButton`)
       }
     }
     if (widget.defaultSize !== undefined) {

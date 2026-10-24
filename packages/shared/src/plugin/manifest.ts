@@ -168,6 +168,8 @@ const PluginWidgetSchema = z
     windowLevel: z.enum(PLUGIN_WIDGET_WINDOW_LEVELS).default('floating'),
     /** 桌面小组件的原生材质（提示条忽略，且非默认值会在 superRefine 拒绝） */
     windowMaterial: z.enum(PLUGIN_WIDGET_WINDOW_MATERIALS).default('none'),
+    /** 隐藏宿主标题栏右上角的「隐藏小组件」按钮（提示条不支持，非默认值会在 superRefine 拒绝） */
+    hideCloseButton: z.boolean().default(false),
     /** 声明式 schema 文件（与 entry 二选一） */
     schema: relativePath.optional(),
     /** 沙箱页面入口 HTML（只允许 desktop） */
@@ -426,6 +428,13 @@ export const PluginManifestSchema = z
           code: z.ZodIssueCode.custom,
           path: ['contributes', 'widgets', index, 'windowMaterial'],
           message: '提示条小组件不支持 windowMaterial（只允许默认 none）',
+        })
+      }
+      if (widget.slot === 'edge-bar' && widget.hideCloseButton) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['contributes', 'widgets', index, 'hideCloseButton'],
+          message: '提示条小组件不支持 hideCloseButton',
         })
       }
     }

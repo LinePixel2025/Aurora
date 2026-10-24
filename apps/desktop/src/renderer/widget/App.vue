@@ -32,6 +32,8 @@ const widgetId = params.get('widgetId') ?? ''
  * 之后随外观开关 / 平台能力变化由 `plugins:widgetMaterial` 推送（v37）。
  */
 const material = ref<'none' | 'acrylic'>(params.get('material') === 'acrylic' ? 'acrylic' : 'none')
+/** 建窗查询参数先给出首帧；插件摘要加载后再以清单值为准（开发态改清单可即时生效）。 */
+const hideCloseButton = ref(params.get('hideCloseButton') === '1')
 
 const info = ref<PluginWidgetInfo | null>(null)
 const summary = ref<PluginSummary | null>(null)
@@ -81,12 +83,13 @@ async function loadInfo(): Promise<PluginSummary | null> {
     error.value = result.message
     return null
   }
-  const found = result.value.find((plugin) => plugin.id === pluginId)
-  summary.value = found ?? null
+  const found = result.value.find((plugin) => plugin.id === pluginId) ?? null
+  summary.value = found
   info.value = found?.widgets.find((widget) => widget.id === widgetId) ?? null
-  if (found === undefined) error.value = '插件不存在'
+  hideCloseButton.value = info.value?.hideCloseButton === true
+  if (found === null) error.value = '插件不存在'
   else if (info.value === null) error.value = '小组件不存在'
-  return found ?? null
+  return found
 }
 
 async function invoke(method: string, params?: unknown): Promise<void> {
@@ -176,7 +179,15 @@ onBeforeUnmount(() => {
     <header class="widget-head">
       <span class="widget-title">{{ title }}</span>
       <span v-if="statusHint !== ''" class="widget-status">{{ statusHint }}</span>
-      <button type="button" class="widget-hide" title="隐藏小组件" @click="hide">×</button>
+      <button
+        v-if="!hideCloseButton"
+        type="button"
+        class="widget-hide"
+        title="隐藏小组件"
+        @click="hide"
+      >
+        ×
+      </button>
     </header>
 
     <div class="widget-body">

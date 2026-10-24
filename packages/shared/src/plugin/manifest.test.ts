@@ -242,7 +242,7 @@ describe('插件小组件清单', () => {
     expect(result.errors.join('\n')).toContain('不支持 defaultSize')
   })
 
-  it('桌面小组件未声明层级 / 材质时补齐 floating / none 默认值', () => {
+  it('桌面小组件未声明层级 / 材质 / 关闭按钮时补齐默认值', () => {
     const result = parsePluginManifest(
       withWidgets([
         { id: 'w', title: 'W', slot: 'desktop', schema: 'ui/w.json' },
@@ -251,8 +251,16 @@ describe('插件小组件清单', () => {
     )
     expect(result.ok).toBe(true)
     const widgets = result.manifest?.contributes.widgets ?? []
-    expect(widgets[0]).toMatchObject({ windowLevel: 'floating', windowMaterial: 'none' })
-    expect(widgets[1]).toMatchObject({ windowLevel: 'floating', windowMaterial: 'none' })
+    expect(widgets[0]).toMatchObject({
+      windowLevel: 'floating',
+      windowMaterial: 'none',
+      hideCloseButton: false,
+    })
+    expect(widgets[1]).toMatchObject({
+      windowLevel: 'floating',
+      windowMaterial: 'none',
+      hideCloseButton: false,
+    })
   })
 
   it('接受桌面小组件的 normal / desktop 层级与 acrylic 材质', () => {
@@ -289,6 +297,37 @@ describe('插件小组件清单', () => {
       expect(result.ok).toBe(false)
       expect(result.errors.join('\n')).toContain('提示条小组件不支持')
     }
+  })
+
+  it('桌面小组件可隐藏关闭按钮，提示条拒绝该字段', () => {
+    const desktop = parsePluginManifest(
+      withWidgets([
+        {
+          id: 'w',
+          title: 'W',
+          slot: 'desktop',
+          schema: 'ui/w.json',
+          hideCloseButton: true,
+        },
+      ]),
+    )
+    expect(desktop.ok).toBe(true)
+    expect(desktop.manifest?.contributes.widgets[0]?.hideCloseButton).toBe(true)
+
+    const strip = parsePluginManifest(
+      withWidgets([
+        { id: 's', title: 'S', slot: 'edge-bar', schema: 'ui/s.json', hideCloseButton: true },
+      ]),
+    )
+    expect(strip.ok).toBe(false)
+    expect(strip.errors.join('\n')).toContain('不支持 hideCloseButton')
+
+    const invalid = parsePluginManifest(
+      withWidgets([
+        { id: 'w2', title: 'W2', slot: 'desktop', schema: 'ui/w.json', hideCloseButton: 'yes' },
+      ]),
+    )
+    expect(invalid.ok).toBe(false)
   })
 
   it('非法层级 / 材质枚举被拒绝', () => {

@@ -1987,6 +1987,8 @@ export interface PluginWidgetInfo {
   windowLevel: PluginWidgetWindowLevel
   /** 桌面小组件声明材质；提示条固定为 `none`（v37） */
   windowMaterial: PluginWidgetWindowMaterial
+  /** 隐藏宿主标题栏的「隐藏小组件」按钮；提示条恒为 false */
+  hideCloseButton: boolean
   /** 页面型小组件的入口（插件包内相对路径） */
   entry?: string
   defaultSize?: { width: number; height: number }

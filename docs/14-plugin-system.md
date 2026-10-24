@@ -251,7 +251,8 @@ window.auroraPlugin = {
 ```
 
 `request` 经宿主渲染层 `plugins:pageRpc` 中继到 `invokePanel`；主进程校验 guest 归属、插件 id、
-参数 ≤ 256 KB、方法名 ≤ 64。页面型面板的 `invokePanel` 可返回 `data`（原样交给页面）。
+参数 ≤ 256 KB、方法名 ≤ 64。页面型面板 / 桌面小组件的处理器可返回 `data`，以及可选的
+`message` / `error` 字符串——三者都原样交给页面，用于渲染数据与页面内状态条。
 
 页面**没有** `window.aurora`、没有 Node、没有文件系统。
 
@@ -269,6 +270,8 @@ window.auroraPlugin = {
 - 材质由 `windowMaterial` 声明：`"none"`（默认）保持现有不透明卡片；`"acrylic"` 使用原生 Acrylic，
   仅 Windows 11 22H2+ 且外观 `appearance.glass` 开启时逐 widget 生效，窗口 shape 按卡片四角圆角
   裁剪；不满足条件或启用失败时保持不透明卡片。
+- 标题栏右上角的「×」由宿主绘制；清单 `hideCloseButton: true`（默认 `false`）可隐藏它，
+  只对桌面小组件生效（提示条声明 `true` 会被拒绝）。
 - 声明式 widget 复用 `PluginSchemaRenderer`；页面型复用 `aurora-plugin://` + 专用 preload
   （与 §5.2 完全同一套沙箱口径；widget 窗口只为它开启 `webviewTag`）。
 - 布局写 `<userData>/plugin-widget-layout.json`（**不进 settings、不升 `CONFIG_VERSION`**，

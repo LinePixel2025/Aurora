@@ -11,7 +11,8 @@
 - [ ] 小组件 ≤ 4，`slot` 正确；提示条只有 `schema`、没有 `defaultSize`
 - [ ] 桌面小组件若声明窗口层级 / 材质：`windowLevel` 取 `floating`（默认）/ `normal` / `desktop`，
       `windowMaterial` 取 `none`（默认）/ `acrylic`；提示条不得声明非默认值
-- [ ] 用到 `windowLevel` / `windowMaterial` 时，`minAuroraVersion` 已设为支持它们的宿主版本
+- [ ] `hideCloseButton` 必须是布尔值；提示条不得声明 `true`
+- [ ] 用到 `windowLevel` / `windowMaterial` / `hideCloseButton` 时，`minAuroraVersion` 已设为支持它们的宿主版本
 - [ ] 图标在 `PLUGIN_PANEL_ICONS` 白名单内（否则回落 `Puzzle`）
 - [ ] 所有路径都是包内相对路径，没有 `..`、盘符、UNC、绝对路径
 

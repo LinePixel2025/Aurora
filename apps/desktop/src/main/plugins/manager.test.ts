@@ -38,6 +38,8 @@ interface FakeBehavior {
   silent: Set<string>
   /** `tool.invoke` 的返回值 */
   toolResult?: (input: unknown) => unknown
+  /** `panel.invoke` 的返回值 */
+  panelResult?: (panelId: string, method: string, params: unknown) => unknown
   /** `widget.invoke` 的返回值 */
   widgetResult?: (widgetId: string, method: string, params: unknown) => unknown
 }
@@ -81,6 +83,16 @@ class FakePluginProcess implements PluginProcessHandle {
     if (message.method === 'tool.invoke') {
       const params = message.params as { input?: unknown } | undefined
       result = this.behavior.toolResult?.(params?.input) ?? { content: 'ok' }
+    }
+    if (message.method === 'panel.invoke') {
+      const params = message.params as {
+        panelId?: string
+        method?: string
+        params?: unknown
+      }
+      result =
+        this.behavior.panelResult?.(params?.panelId ?? '', params?.method ?? '', params?.params) ??
+        {}
     }
     if (message.method === 'widget.invoke') {
       const params = message.params as {
@@ -180,7 +192,9 @@ async function createHarness(options: HarnessOptions): Promise<Harness> {
     await mkdir(dirname(absolute), { recursive: true })
     await writeFile(
       absolute,
-      item.schema === undefined ? '<!doctype html><html><body>page</body></html>' : '{"version":1,"nodes":[]}',
+      item.schema === undefined
+        ? '<!doctype html><html><body>page</body></html>'
+        : '{"version":1,"nodes":[]}',
     )
   }
 
@@ -559,11 +573,15 @@ describe('PluginManager · 小组件与事件推送', () => {
 
   it('widgetContributions 按权限过滤，摘要带 slot / kind；invokeWidget 转发 widget.invoke', async () => {
     const h = await readyHarness()
-    expect(h.manager.widgetContributions().map((widget) => [widget.id, widget.slot, widget.kind])).toEqual([
+    expect(
+      h.manager.widgetContributions().map((widget) => [widget.id, widget.slot, widget.kind]),
+    ).toEqual([
       ['duty-week', 'desktop', 'schema'],
       ['todo-strip', 'edge-bar', 'schema'],
     ])
     expect(h.manager.get(PLUGIN_ID)?.widgets).toHaveLength(2)
+    expect(h.manager.widgetContributions()[0]).toMatchObject({ hideCloseButton: false })
+    expect(h.manager.get(PLUGIN_ID)?.widgets[0]).toMatchObject({ hideCloseButton: false })
 
     h.behavior.widgetResult = (widgetId, method) => ({
       schema: { version: 1, nodes: [{ type: 'text', text: `${widgetId}:${method}` }] },
@@ -573,9 +591,11 @@ describe('PluginManager · 小组件与事件推送', () => {
     expect(result).toMatchObject({ toast: '已更新' })
     expect(result.schema).toMatchObject({ nodes: [{ text: 'duty-week:bump' }] })
 
-    await expect(h.manager.invokeWidget(PLUGIN_ID, 'missing', 'refresh', {})).rejects.toMatchObject({
-      code: 'E_PLUGIN_INVALID_ARGS',
-    })
+    await expect(h.manager.invokeWidget(PLUGIN_ID, 'missing', 'refresh', {})).rejects.toMatchObject(
+      {
+        code: 'E_PLUGIN_INVALID_ARGS',
+      },
+    )
   })
 
   it('总开关关闭后小组件贡献消失、invokeWidget 被拒', async () => {
@@ -586,6 +606,76 @@ describe('PluginManager · 小组件与事件推送', () => {
     await expect(
       h.manager.invokeWidget(PLUGIN_ID, 'duty-week', 'refresh', {}),
     ).rejects.toMatchObject({ code: 'E_PLUGIN_DISABLED' })
+  })
+
+  it('页面型小组件（entry）也走 invokeWidget，供 plugins:pageRpc 调用', async () => {
+    const h = await createHarness({
+      mode: 'dev',
+      manifest: helloManifest({
+        permissions: ['ui.widgets'],
+        contributes: {
+          widgets: [
+            {
+              id: 'page-card',
+              title: '页面小组件',
+              slot: 'desktop',
+              entry: 'ui/widget-page.html',
+              defaultSize: { width: 320, height: 300 },
+            },
+          ],
+        },
+      }),
+    })
+    await h.manager.start()
+    await waitFor(() => h.manager.get(PLUGIN_ID)?.status === 'ready')
+    expect(h.manager.widgetContributions()).toEqual([
+      expect.objectContaining({ id: 'page-card', kind: 'page' }),
+    ])
+
+    h.behavior.widgetResult = (widgetId, method) => ({
+      data: { widgetId, method },
+      message: '已添加事务',
+    })
+    await expect(h.manager.invokeWidget(PLUGIN_ID, 'page-card', 'load', {})).resolves.toEqual({
+      data: { widgetId: 'page-card', method: 'load' },
+      message: '已添加事务',
+    })
+
+    h.behavior.widgetResult = () => ({ error: '这条事务已不存在，请刷新后重试' })
+    await expect(
+      h.manager.invokeWidget(PLUGIN_ID, 'page-card', 'toggle-task', {}),
+    ).resolves.toEqual({ error: '这条事务已不存在，请刷新后重试' })
+  })
+
+  it('hideCloseButton 透传到 widgetContributions 与插件摘要', async () => {
+    const h = await createHarness({
+      mode: 'dev',
+      manifest: helloManifest({
+        permissions: ['ui.widgets'],
+        contributes: {
+          widgets: [
+            {
+              id: 'bare',
+              title: '无关闭键',
+              slot: 'desktop',
+              schema: 'ui/widget.json',
+              hideCloseButton: true,
+            },
+          ],
+        },
+      }),
+    })
+    await h.manager.start()
+    await waitFor(() => h.manager.get(PLUGIN_ID)?.status === 'ready')
+
+    expect(h.manager.widgetContributions()[0]).toMatchObject({
+      id: 'bare',
+      hideCloseButton: true,
+    })
+    expect(h.manager.get(PLUGIN_ID)?.widgets[0]).toMatchObject({
+      id: 'bare',
+      hideCloseButton: true,
+    })
   })
 
   it('ui.panelEvent：只投给自己声明过的目标，载荷 / 二选一 / 事件名逐项校验', async () => {
@@ -656,5 +746,37 @@ describe('PluginManager · 小组件与事件推送', () => {
     })
     expect(overflow).toMatchObject({ ok: true, result: { ok: true, dropped: true } })
     expect(h.panelEvents).toHaveLength(20)
+  })
+})
+
+describe('PluginManager · 页面反馈透传', () => {
+  it('invokePanel 把 message / error 原样交给页面', async () => {
+    const h = await createHarness({
+      mode: 'dev',
+      manifest: helloManifest({
+        permissions: ['ui.panels'],
+        contributes: {
+          panels: [{ id: 'board', title: '面板', schema: 'ui/panel.json' }],
+        },
+      }),
+    })
+    await h.manager.start()
+    await waitFor(() => h.manager.get(PLUGIN_ID)?.status === 'ready')
+
+    h.behavior.panelResult = (panelId, method) => ({
+      data: { panelId, method },
+      message: '已保存通知',
+    })
+    await expect(
+      h.manager.invokePanel(PLUGIN_ID, 'board', 'save-announcement', {}),
+    ).resolves.toEqual({
+      data: { panelId: 'board', method: 'save-announcement' },
+      message: '已保存通知',
+    })
+
+    h.behavior.panelResult = () => ({ error: '过去周只读，不能修改' })
+    await expect(h.manager.invokePanel(PLUGIN_ID, 'board', 'delete-task', {})).resolves.toEqual({
+      error: '过去周只读，不能修改',
+    })
   })
 })

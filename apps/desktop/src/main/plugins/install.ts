@@ -377,6 +377,7 @@ export function buildPreview(
       kind: widget.schema === undefined ? 'page' : 'schema',
       windowLevel: widget.windowLevel,
       windowMaterial: widget.windowMaterial,
+      hideCloseButton: widget.hideCloseButton,
       ...(widget.entry === undefined ? {} : { entry: widget.entry }),
       ...(widget.defaultSize === undefined ? {} : { defaultSize: { ...widget.defaultSize } }),
     })),

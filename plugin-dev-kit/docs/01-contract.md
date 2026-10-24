@@ -172,7 +172,9 @@ v1 不开放图片 / 附件返回值。面板 / 页面返回值见 §5。
 - 桌面小组件窗口：`windowLevel ∈ { "floating", "normal", "desktop" }`（默认 `"floating"`）；
   `windowMaterial ∈ { "none", "acrylic" }`（默认 `"none"`）。两者只对 `slot = "desktop"` 生效，
   提示条小组件声明非默认值时**清单校验直接拒绝**；不新增权限 / 宿主 API。
-  使用这两个字段时把 `minAuroraVersion` 设为支持它们的宿主版本（旧宿主会静默忽略未知字段）。
+- `hideCloseButton`（默认 `false`）：设为 `true` 时宿主不渲染标题栏右上角的「隐藏小组件」按钮；
+  只对 `slot = "desktop"` 生效，提示条小组件声明 `true` 会被清单校验拒绝。
+  使用这些字段时把 `minAuroraVersion` 设为支持它们的宿主版本（旧宿主会静默忽略未知字段）。
 - 主题 ≤ 8；令牌走白名单（§7），颜色只接受 `#rgb/#rrggbb/rgb()/rgba()/hsl()/hsla()`；单主题 ≤ 64 个令牌。
 - `apiVersion` 必须等于宿主 `PLUGIN_API_VERSION = 1`；`minAuroraVersion` 与宿主版本比较。
 - `main` / `skills` / `ui` / icon 路径 `resolve` 后必须仍在插件根内。
@@ -251,7 +253,8 @@ window.auroraPlugin = {
 ```
 
 `request` 经宿主渲染层 `plugins:pageRpc` 中继到 `invokePanel`；主进程校验 guest 归属、插件 id、
-参数 ≤ 256 KB、方法名 ≤ 64。页面型面板的 `invokePanel` 可返回 `data`（原样交给页面）。
+参数 ≤ 256 KB、方法名 ≤ 64。页面型面板 / 桌面小组件的处理器可返回 `data`，以及可选的
+`message` / `error` 字符串——三者都原样交给页面，用于渲染数据与页面内状态条。
 
 页面**没有** `window.aurora`、没有 Node、没有文件系统。
 
