@@ -186,6 +186,10 @@ const CHANNELS = {
     dismiss: 'banner:dismiss',
     measure: 'banner:measure',
   },
+  // 默认提醒方式（v37，docs/07 §4）：设置页「试一下」按当前方式投递一条示例提醒
+  notifications: {
+    test: 'notifications:test',
+  },
   mcp: {
     status: 'mcp:status',
     statusChanged: 'mcp:statusChanged',

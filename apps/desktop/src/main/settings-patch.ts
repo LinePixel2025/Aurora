@@ -285,6 +285,10 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
   // 插件（v36，docs/14）：顶层浅合并。安装/启用/信任状态**不在 settings** 里
   //（各自落 `<userData>/plugins/registry.json`），这里只有总开关、开发目录与当前主题。
   if (patch.plugins !== undefined) Object.assign(draft.plugins, patch.plugins)
+  // 默认提醒方式（v37，docs/07 §4）：顶层浅合并（当前只有 `channel`，形状上留扩展余地）。
+  if (patch.notifications !== undefined) {
+    Object.assign(draft.notifications, patch.notifications)
+  }
 
   return cleared
 }

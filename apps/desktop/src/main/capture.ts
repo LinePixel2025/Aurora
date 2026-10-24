@@ -49,6 +49,8 @@ export const SETTINGS_PAGE_IDS = [
   // 会话管理（2026-09-30 新增：项目管理自"通用"页迁入 + 会话列表）
   'sessions',
   'modes',
+  // v37 新增：默认提醒方式（docs/07 §4）
+  'notifications',
   'llm',
   'voice',
   'agent',
@@ -5870,6 +5872,65 @@ export const SETTINGS_AWARENESS_USAGE_CHECK = `(() => {
       usage: text,
       title: usage === null ? '' : usage.getAttribute('title') || '',
       pass: text !== '' && text !== '暂无用量',
+    }
+  } catch (error) {
+    return { reason: String(error), pass: false }
+  }
+})()`
+
+/**
+ * 「提醒」设置页（v37，docs/07 §4、docs/08 §6.1）。
+ *
+ * 只量矩形与状态：四个选项都在、默认选中「系统通知」、每行都带一句说明、
+ * 「发送测试提醒」按钮点击区足够大。判据只写一份（pass 取 conditions 的乘积）。
+ */
+export const SETTINGS_NOTIFICATIONS_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    await wait(300)
+    const heading = document.querySelector('.page-title')
+    const group = document.querySelector('[data-field="notifications.channel"]')
+    const keys = ['system', 'banner', 'both', 'off']
+    const options = keys.map((key) => document.querySelector('[data-field="notifications.channel.' + key + '"]'))
+    const optionInfo = options.map((element) => {
+      if (element === null) return null
+      const rect = element.getBoundingClientRect()
+      // 说明文字用 .tiny 子元素量：整行 textContent 会把标题也算进去（长度判据就没意义了）
+      const hint = element.querySelector('.tiny')
+      return {
+        active: element.classList.contains('active'),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        description: hint === null ? 0 : (hint.textContent || '').trim().length,
+      }
+    })
+    const testButton = document.querySelector('[data-field="notifications.test"]')
+    const testRect = testButton === null ? null : testButton.getBoundingClientRect()
+    const groupRect = group === null ? null : group.getBoundingClientRect()
+    const activeCount = optionInfo.filter((item) => item !== null && item.active).length
+    const conditions = {
+      headingIsReminders: heading !== null && (heading.textContent || '').trim() === '提醒',
+      groupPresent: group !== null && group.getAttribute('role') === 'radiogroup',
+      allFourOptions: optionInfo.every((item) => item !== null),
+      defaultIsSystem: options[0] !== null && options[0].classList.contains('active'),
+      singleSelection: activeCount === 1,
+      // 每行都要有说明文字（只剩标题的选择项等于没有任何解释）
+      optionsReadable: optionInfo.every(
+        (item) => item !== null && item.width > 200 && item.height >= 44 && item.description >= 8,
+      ),
+      optionsInsideGroup:
+        groupRect !== null &&
+        optionInfo.every((item) => item === null ? false : item.width <= groupRect.width + 1),
+      testButtonClickable: testRect !== null && testRect.width >= 80 && testRect.height >= 24,
+    }
+    const pass = Object.keys(conditions).every((key) => conditions[key] === true)
+    return {
+      heading: heading === null ? '' : (heading.textContent || '').trim(),
+      options: optionInfo,
+      activeCount,
+      testButton: testRect === null ? null : { width: Math.round(testRect.width), height: Math.round(testRect.height) },
+      conditions,
+      pass,
     }
   } catch (error) {
     return { reason: String(error), pass: false }
@@ -14265,11 +14326,13 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
                 ? SETTINGS_VOICE_FIELDS_SCRIPT
                 : page === 'center'
                   ? SETTINGS_CENTER_FIELDS_SCRIPT
-                  : page === 'agent'
-                    ? SETTINGS_AGENT_FIELDS_SCRIPT
-                    : page === 'awareness'
-                      ? SETTINGS_AWARENESS_USAGE_CHECK
-                      : undefined,
+                  : page === 'notifications'
+                    ? SETTINGS_NOTIFICATIONS_CHECK
+                    : page === 'agent'
+                      ? SETTINGS_AGENT_FIELDS_SCRIPT
+                      : page === 'awareness'
+                        ? SETTINGS_AWARENESS_USAGE_CHECK
+                        : undefined,
     })
   }
   // 旧深链别名（BetaV2）："?page=tts" 应映射到"语音"页（TTS + STT 都在）；

@@ -70,6 +70,7 @@ const TOP_LEVEL_GROUPS = [
   'advanced',
   'agent',
   'appearance',
+  'notifications',
 ] as const
 
 /**

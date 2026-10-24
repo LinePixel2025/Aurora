@@ -237,6 +237,14 @@ export const DEFAULT_PLUGINS = {
   activeTheme: { pluginId: '', themeId: '' },
 } as const
 
+/**
+ * 默认提醒方式（v37，docs/07 §4）：`system` = 与 v37 之前完全一致（系统通知中心）。
+ * 切到 `banner` 后，Aurora 自己发起的提醒改走流光提醒；显式调用流光通道的地方不受影响。
+ */
+export const DEFAULT_NOTIFICATIONS = {
+  channel: 'system',
+} as const
+
 export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
   version: CONFIG_VERSION,
   general: {
@@ -391,6 +399,8 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     devDirs: [...DEFAULT_PLUGINS.devDirs],
     activeTheme: { ...DEFAULT_PLUGINS.activeTheme },
   },
+  // v37：默认提醒方式（docs/07 §4）
+  notifications: { ...DEFAULT_NOTIFICATIONS },
 }
 
 /** 返回一份全新的默认配置（避免调用方共享同一引用）。 */

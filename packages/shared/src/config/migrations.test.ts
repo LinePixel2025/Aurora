@@ -1117,6 +1117,7 @@ describe('配置迁移链', () => {
         'v33 → v34：v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
         'v34 → v35：v34 → v35：新增 agent.browser（Agent 内置浏览器与并发上限）',
         'v35 → v36：v35 → v36：新增 plugins（插件总开关 / 开发目录 / 当前主题）',
+        'v36 → v37：v36 → v37：新增 notifications（默认提醒方式）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1165,6 +1166,7 @@ describe('配置迁移链', () => {
         'v33 → v34：v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
         'v34 → v35：v34 → v35：新增 agent.browser（Agent 内置浏览器与并发上限）',
         'v35 → v36：v35 → v36：新增 plugins（插件总开关 / 开发目录 / 当前主题）',
+        'v36 → v37：v36 → v37：新增 notifications（默认提醒方式）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1593,6 +1595,7 @@ describe('配置迁移链', () => {
         'v33 → v34：v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
         'v34 → v35：v34 → v35：新增 agent.browser（Agent 内置浏览器与并发上限）',
         'v35 → v36：v35 → v36：新增 plugins（插件总开关 / 开发目录 / 当前主题）',
+        'v36 → v37：v36 → v37：新增 notifications（默认提醒方式）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>

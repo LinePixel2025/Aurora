@@ -45,6 +45,7 @@ import {
   type BannerDiagnostics,
   type BannerDismissResult,
   type BannerMeasureRequest,
+  type NotificationTestResult,
   type BrowserAgentReportRequest,
   type BrowserAgentStopRequest,
   type ChatArchiveRequest,
@@ -267,6 +268,11 @@ export interface DesktopDeps {
   bannerCardResize?: (request: BannerMeasureRequest) => boolean
   /** 仅自测：`app:smokeBanner` 的触发器（未注入 = 该通道如实回 E_INVALID_STATE） */
   smokeBanner?: (action: 'show' | 'dismiss') => BannerDiagnostics
+  /**
+   * 默认提醒方式的「试一下」（`notifications:test`，v37）：按当前方式真的投递一条示例提醒。
+   * 未注入时回 E_INVALID_STATE（设置页据此如实报错，不静默成功）。
+   */
+  notificationTest?: () => NotificationTestResult
   /** 全局快捷键状态（hotkey:*，docs/07 §5） */
   hotkey: HotkeyControllerLike
   /**
@@ -1561,6 +1567,21 @@ export function registerIpc(deps: DesktopDeps): () => void {
       return err('E_INVALID_ARGUMENT', 'action 只能是 show / dismiss')
     }
     return ok(deps.smokeBanner(action))
+  })
+
+  // ───────────────────────── 默认提醒方式（v37，docs/07 §4） ─────────────────────────
+
+  /**
+   * 设置页「试一下」：按当前默认提醒方式真的投递一条示例提醒。
+   *
+   * 不接受调用方传标题 / 正文 —— 这个口子只验证「默认方式是否生效」，
+   * 而不是给渲染层再开一条任意内容的提醒通道（那件事归 `notify_banner` 与插件）。
+   */
+  handle<NotificationTestResult>(IPC.notifications.test, () => {
+    if (deps.notificationTest === undefined) {
+      return err('E_INVALID_STATE', '提醒服务尚未装配')
+    }
+    return ok(deps.notificationTest())
   })
 
   // ───────────────────────── Aurora Center（docs/12） ─────────────────────────

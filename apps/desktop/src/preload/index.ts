@@ -221,6 +221,10 @@ const api: AuroraApi = {
     // 卡片内容高度上报：窗口矩形必须等于「卡片 + 24px」，靠估算会在某些文案上留死区
     measure: (request) => invoke(IPC.banner.measure, request),
   },
+  // 提醒通道（v37）：设置页「提醒」的试一下按钮（按当前默认方式投递一条示例）
+  notifications: {
+    test: () => invoke(IPC.notifications.test),
+  },
   mcp: {
     status: () => invoke(IPC.mcp.status),
     onStatusChanged: (listener) => subscribe(IPC.mcp.statusChanged, listener),

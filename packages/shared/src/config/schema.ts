@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 36 as const
+export const CONFIG_VERSION = 37 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -1148,6 +1148,27 @@ export const PluginsSchema = z.object({
 })
 export type PluginsSettings = z.infer<typeof PluginsSchema>
 
+/**
+ * 默认提醒方式（v37，docs/07 §4、docs/08 §6.1）。
+ *
+ * 四个取值覆盖「提醒走哪条通道」这一件事，不含任何通道自身的参数：
+ * - `system`：系统通知中心（可点击打开文件 / 文件夹）；
+ * - `banner`：Aurora 自己的流光提醒（屏幕顶端流光 + 置顶卡片，支持朗读 / 提示音）；
+ * - `both`：两条都发（系统通知负责可操作入口，流光负责醒目）；
+ * - `off`：不打扰，只写日志（用户自己看的通知面板仍会有记录）。
+ *
+ * **只管"默认"**：`notify_banner` 工具与插件 `ctx.banner` 是**显式**请求流光，不受这里影响；
+ * `ask_user` 的旁路播报也是定点的交互提醒，同样不走默认值。
+ */
+export const REMINDER_CHANNELS = ['system', 'banner', 'both', 'off'] as const
+export type ReminderChannel = (typeof REMINDER_CHANNELS)[number]
+
+export const NotificationsSchema = z.object({
+  /** 默认提醒方式（缺省 `system` = 与 v37 之前的行为一字不差）。 */
+  channel: z.enum(REMINDER_CHANNELS).default('system'),
+})
+export type NotificationsSettings = z.infer<typeof NotificationsSchema>
+
 export const SettingsSchema = z.object({
   version: z.number().int().min(0),
   general: GeneralSchema,
@@ -1166,6 +1187,7 @@ export const SettingsSchema = z.object({
   fileAwareness: FileAwarenessSchema,
   appearance: AppearanceSchema,
   plugins: PluginsSchema,
+  notifications: NotificationsSchema,
 })
 
 export type Settings = z.infer<typeof SettingsSchema>
@@ -1266,6 +1288,11 @@ export const WRITABLE_PATH_OVERRIDES: readonly WritablePathOverride[] = [
   { pattern: 'appearance.accent', reason: '切换界面强调色主题' },
   { pattern: 'appearance.glass', reason: '开关界面毛玻璃效果（关掉后窗口与面板变实色）' },
   { pattern: 'appearance.awarenessGlow', reason: '开关文件自感知的四周流光特效' },
+  // 提醒通道（v37）：这是"打扰方式"的偏好，不是权限闸门；AI 可以照用户要求切换。
+  {
+    pattern: 'notifications.channel',
+    reason: '切换默认提醒方式（系统通知 / 流光提醒 / 两者 / 不打扰）',
+  },
   { pattern: 'general.chat.showThinking', reason: '开关对话界面的思考过程展示' },
   // 模式
   { pattern: 'modes.current', reason: '切换当前模式' },

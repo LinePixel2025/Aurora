@@ -219,6 +219,43 @@ export function smokeScript(
       record('smokeBanner(dismiss) 后两扇窗都不可见', Boolean(hidden && hidden.visible === false && hidden.cardVisible === false && hidden.glowVisible === false), JSON.stringify(hidden ?? (dismissed && dismissed.ok ? dismissed.value : undefined)))
     }
 
+    // 2.3 默认提醒方式（v37，docs/07 §4）：设置页「提醒」的唯一字段。
+    //     断言的是**真实路由**：默认系统通知 → 切到流光后 notifications.test 真的落到流光窗口
+    //     → 切到不打扰后不投递 → 还原。
+    {
+      const readChannel = async () => {
+        const result = await window.aurora.settings.get()
+        return result && result.ok ? result.value.notifications.channel : ''
+      }
+      const initial = await readChannel()
+      record('默认提醒方式为系统通知', initial === 'system', String(initial))
+
+      const invalid = await window.aurora.settings.update({ notifications: { channel: 'bogus' } })
+      record('非法的默认提醒方式被拒绝', Boolean(invalid) && invalid.ok === false, invalid ? (invalid.ok ? '意外成功' : invalid.message) : '无结果')
+
+      expectOk('settings.update(notifications.channel=banner)', await window.aurora.settings.update({ notifications: { channel: 'banner' } }))
+      const bannerTest = await window.aurora.notifications.test()
+      const bannerVisible = await waitFor(
+        async () => {
+          const result = await window.aurora.app.getSmokeDiagnostics()
+          return result && result.ok ? result.value.banner : undefined
+        },
+        (value) => Boolean(value && value.visible === true && value.cardVisible === true),
+        4000,
+      )
+      const bannerRouteOk = Boolean(bannerTest && bannerTest.ok && bannerTest.value.delivered === true && bannerTest.value.channel === 'banner' && bannerVisible && bannerVisible.cardVisible === true)
+      record('默认提醒方式=流光时，试一下真的走流光窗口', bannerRouteOk, JSON.stringify(bannerTest && bannerTest.ok ? bannerTest.value : bannerTest) + ' / ' + JSON.stringify(bannerVisible))
+      await window.aurora.app.smokeBanner('dismiss')
+
+      expectOk('settings.update(notifications.channel=off)', await window.aurora.settings.update({ notifications: { channel: 'off' } }))
+      const offTest = await window.aurora.notifications.test()
+      record('默认提醒方式=不打扰时，试一下不投递', Boolean(offTest) && offTest.ok === true && offTest.value.delivered === false && offTest.value.channel === 'off', offTest && offTest.ok ? JSON.stringify(offTest.value) : (offTest ? offTest.message : '无结果'))
+
+      expectOk('settings.update(notifications 还原)', await window.aurora.settings.update({ notifications: { channel: 'system' } }))
+      const restored = await readChannel()
+      record('默认提醒方式已还原为系统通知', restored === 'system', String(restored))
+    }
+
     // 3. 模型配置由主进程在启动自测前写入（指向本地桩 LLM），这里只做读写/脱敏断言：
     //    若在此处再写一次 baseUrl，会把桩服务地址覆盖成真实服务，导致对话断言失败。
     const update = expectOk('settings.update(llm)', await window.aurora.settings.update({

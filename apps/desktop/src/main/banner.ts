@@ -16,8 +16,13 @@
  */
 import type { BannerLevel, BannerRequest, BannerShowPayload, Logger } from '@aurora/shared'
 
-/** 提醒来源：只用于日志与排障，不参与任何权限判定。 */
-export type BannerSource = 'agent' | 'plugin' | 'ask' | 'smoke'
+/**
+ * 提醒来源：只用于日志与排障，不参与任何权限判定。
+ *
+ * `system` = Aurora 自己发起的提醒（分类完成 / 课前提醒 / 引导 / `notify_user` 等，
+ * 即按「默认提醒方式」投递的那一类）；其余三条是显式请求流光提醒的来源。
+ */
+export type BannerSource = 'agent' | 'plugin' | 'ask' | 'system' | 'smoke'
 
 /** `show()` 的回报：`ok: false` 是业务结果（去重 / 队列满 / 载体失败），不是异常。 */
 export interface BannerShowOutcome {

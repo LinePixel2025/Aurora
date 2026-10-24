@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
- * 设置窗口（docs/07 §2.5、docs/08 §5/§6）：单窗口分栏七页
- * 通用 / 模式 / AI 模型 / 语音 / Agent 设置 / Aurora Center / 系统（BetaV2 由 8 页合并而来，spec §9）。
+ * 设置窗口（docs/07 §2.5、docs/08 §5/§6）：单窗口分栏多页
+ * 通用 / 会话管理 / 模式 / 提醒 / AI 模型 / 语音 / Agent 设置 / 文件自感知 / Aurora Center / 插件 / 系统。
+ * （BetaV2 由 8 页合并而来，spec §9；v37 新增「提醒」页 —— 默认提醒方式，docs/07 §4。）
  *
  * 合并去向：TtsPage → voice（与 STT 同页）；SkillsPage / McpPage → agent；
  * AdvancedPage 的勿扰时段 → general。旧深链（`?page=tts|skills|mcp`）经
@@ -19,6 +20,7 @@ import AppToast from '../shared/components/AppToast.vue'
 import GeneralPage from './pages/GeneralPage.vue'
 import SessionsPage from './pages/SessionsPage.vue'
 import ModesPage from './pages/ModesPage.vue'
+import NotificationsPage from './pages/NotificationsPage.vue'
 import LlmPage from './pages/LlmPage.vue'
 import VoicePage from './pages/VoicePage.vue'
 import AgentPage from './pages/AgentPage.vue'
@@ -32,6 +34,7 @@ import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/
 import {
   Archive,
   AudioLines,
+  Bell,
   Blocks,
   Cpu,
   House,
@@ -46,6 +49,7 @@ type PageId =
   | 'general'
   | 'sessions'
   | 'modes'
+  | 'notifications'
   | 'llm'
   | 'voice'
   | 'agent'
@@ -66,6 +70,7 @@ const nav: NavItem[] = [
   { id: 'general', label: '通用', icon: House },
   { id: 'sessions', label: '会话管理', icon: Archive },
   { id: 'modes', label: '模式', icon: LayoutGrid },
+  { id: 'notifications', label: '提醒', icon: Bell },
   { id: 'llm', label: 'AI 模型', icon: Cpu },
   { id: 'voice', label: '语音', icon: AudioLines },
   { id: 'agent', label: 'Agent 设置', icon: Puzzle },
@@ -76,12 +81,13 @@ const nav: NavItem[] = [
 ]
 
 /**
- * 侧栏分组（七页两级）：基础（本机行为）/ 智能（AI 能力）/ 连接（外部服务）/ 系统（运维）。
+ * 侧栏分组（两级）：基础（本机行为）/ 智能（AI 能力）/ 连接（外部服务）/ 系统（运维）。
+ * 「提醒」属于本机行为（提醒方式与 AI 无关），放「基础」组最后一项。
  * Aurora Center 是独立的远程控制通道（docs/12），不属智能能力也不属本机运维，单独成组；
  * 插件既是外部来源的扩展又影响 Agent 能力，单列「扩展」组，避免被误读成普通系统设置。
  */
 const navGroups: Array<{ title: string; ids: PageId[] }> = [
-  { title: '基础', ids: ['general', 'sessions', 'modes'] },
+  { title: '基础', ids: ['general', 'sessions', 'modes', 'notifications'] },
   { title: '智能', ids: ['llm', 'voice', 'agent', 'awareness'] },
   { title: '连接', ids: ['center'] },
   { title: '扩展', ids: ['plugins'] },
@@ -103,6 +109,7 @@ const pages: Record<PageId, Component> = {
   general: GeneralPage,
   sessions: SessionsPage,
   modes: ModesPage,
+  notifications: NotificationsPage,
   llm: LlmPage,
   voice: VoicePage,
   agent: AgentPage,

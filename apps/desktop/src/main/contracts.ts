@@ -222,7 +222,7 @@ export interface AskUserLike {
 export interface BannerServiceLike {
   show(
     request: BannerRequest,
-    options?: { source?: 'agent' | 'plugin' | 'ask' | 'smoke' },
+    options?: { source?: 'agent' | 'plugin' | 'ask' | 'system' | 'smoke' },
   ): { ok: boolean; reason?: string; id?: string; queued?: boolean }
   dismiss(id: string): BannerDismissResult
   diagnostics(): { visible: boolean; pending: number; shownCount: number }

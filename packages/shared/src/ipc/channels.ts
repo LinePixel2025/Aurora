@@ -259,6 +259,13 @@ export const IPC = {
     /** 渲染层上报卡片内容高度（窗口必须与卡片同大，不能靠字符数估算） */
     measure: 'banner:measure',
   },
+  /**
+   * 默认提醒方式（v37，docs/07 §4、docs/08 §6.1）：
+   * 设置页「提醒」的**试一下**按钮 —— 按当前默认方式真的投递一条示例提醒。
+   */
+  notifications: {
+    test: 'notifications:test',
+  },
   mcp: {
     status: 'mcp:status',
     statusChanged: 'mcp:statusChanged',

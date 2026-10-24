@@ -2611,10 +2611,28 @@ async function bootstrap(): Promise<void> {
   })
 
   // 7.2 分类管线装配（docs/05 §3、docs/02 §5.2）
-  //     chokidar 监听 → 并发队列 → utilityProcess 内容提取 → 规则/LLM 判定 → 落盘 → 通知
+  //     chokidar 监听 → 并发队列 → utilityProcess 内容提取 → 规则/LLM 判定 → 落盘 → 提醒
+  //
+  //     提醒出口按用户设置的**默认提醒方式**分流（v37，docs/07 §4）：`present` 是系统通知，
+  //     `banner` 是流光提醒。两个载体都在这里注入 —— 本服务只决定「发哪条通道」，
+  //     通道自身的长相 / 时长 / 朗读全归各自的实现（`notifications.channel` 是唯一开关）。
   notifications = new NotificationService({
     logger: logger.child('notify'),
     present: createNotificationPresenter(),
+    channel: () => settings!.get().notifications.channel,
+    banner: (request) =>
+      bannerService?.show(
+        {
+          title: request.title,
+          body: request.body,
+          // 系统级提醒（分类完成 / 课前提醒 / 引导 / notify_user）统一按 info 档 + 提示音；
+          // 是否朗读仍由请求级 speak 缺省（= 用户 TTS 配置）决定
+          level: 'info',
+          sound: true,
+          ...(request.dedupeKey === undefined ? {} : { dedupeKey: request.dedupeKey }),
+        },
+        { source: 'system' },
+      ).ok ?? false,
     openPath: (target) =>
       shell.openPath(target).then((error) => {
         if (error !== '') throw new Error(error)
@@ -2963,6 +2981,21 @@ async function bootstrap(): Promise<void> {
       const current = bannerService?.currentId() ?? ''
       if (request.id !== '' && current !== '' && request.id !== current) return false
       return windows?.resizeBannerCard(request.height) ?? false
+    },
+    /**
+     * 默认提醒方式的「试一下」（v37，docs/07 §4）：走**同一条** `NotificationService.notify`，
+     * 因此验证的是真实路由（系统通知 / 流光 / 两者 / 不打扰），不是另开一条演示通道。
+     */
+    notificationTest: () => {
+      const channel = settings!.get().notifications.channel
+      const delivered =
+        notifications?.notify({
+          title: '这是一条测试提醒',
+          body: '当前默认提醒方式已生效。',
+          // 每次换 key：试一下不该被 3s 去重挡成"没反应"
+          dedupeKey: `settings:test:${Date.now()}`,
+        }) ?? false
+      return { channel, delivered }
     },
     onQuit: () => app.quit(),
     // 附件提取（docs/07 §2.3）：与 Center 远程附件共用 `extractAttachmentDigest`

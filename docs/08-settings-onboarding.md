@@ -2,11 +2,11 @@
 
 状态：`已定稿`（v1 基线）
 
-## 1. 配置 Schema（config.json，v35）
+## 1. 配置 Schema（config.json，v37）
 
 ```jsonc
 {
-  "version": 35,
+  "version": 37,
   "general": {
     "language": "zh-CN",
     "launchAtLogin": false,
@@ -288,6 +288,12 @@
       "model": "",
     },
   },
+  // v37 新增：默认提醒方式（docs/07 §4）。只管 Aurora 自己发起的提醒
+  // （分类完成 / 课前提醒 / 引导 / notify_user）；notify_banner 与插件 ctx.banner
+  // 是显式请求流光，不受它影响。
+  "notifications": {
+    "channel": "system", // system 系统通知 | banner 流光提醒 | both 两者都发 | off 不打扰（只记日志）
+  },
 }
 ```
 
@@ -333,7 +339,7 @@
   可写面（自我 DoS）、放宽又本就不生效，因此 `set_setting` 一律拒绝；用户经设置页
   `settings:update` 修改不受影响（设置页不经过该黑名单）。
   `v5 → v6` 迁移会为旧配置补齐这一项（本字段是在 v6 内追加的，当时没有另起新版本号；
-  当前 `CONFIG_VERSION` 已是 **35**，见 §2）。
+  当前 `CONFIG_VERSION` 已是 **37**，见 §2）。
   **`tts.providers` / `stt.providers` / `imagegen.providers` 含凭据密文**（`apiKeyEnc`），
   同样在默认黑名单里，因此 AI 的 `set_setting` 对它们的任何写入**一律拒绝**。
 - `llm.providers.<id>.modelParams.<modelId>.reasoningEffort`（v5 新增，v23 起按模型绑定）：
@@ -612,6 +618,12 @@
   provider + model，严格使用该选择，不可用时暂停而不是回落。整组在 `SETTINGS_READONLY_PREFIXES` 里：
   它同时改变文件读取范围、数据出网与后台任务，AI 不得自行开启或放宽。
   内嵌图片是否真正读取由有效后台模型的 `vision` 决定；运行状态会如实显示「已开启 / 仅分析文字」。
+- `notifications`（**v37 新增**，见 07 §4）：默认提醒方式。只有一个字段 `channel`：
+  `system`（默认，系统通知中心）/ `banner`（流光提醒）/ `both`（两条都发）/ `off`（不打扰，只记日志）。
+  它只决定 Aurora 自己发起的提醒（分类完成 / 课前提醒 / 引导 / `notify_user`）走哪条通道；
+  `notify_banner` 与插件 `ctx.banner` 是**显式**请求流光，不受它影响。`SettingsPatch` 新增
+  可选 `notifications` 字段（顶层浅合并）；路径登记在 `WRITABLE_PATH_OVERRIDES`
+  （AI 可以照用户要求切换打扰方式），**不在** `SETTINGS_READONLY_PREFIXES`。
 - 新需求字段一律**先更新本文档 Schema**，再加代码。
 
 ### 1.1 仅存在于 IPC 层的字段（非持久化）
@@ -715,7 +727,7 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - 读取：`get()` 返回**深拷贝**（调用方可安全改写，用于设置页 / 迁移等低频路径）；
   `snapshot()` 返回**只读的当前快照**，供 agent loop 的每轮 getter（v34 起只有
   `maxParallelCalls` 一项）热路径使用，避免每轮深拷贝整份配置。两者只差拷贝成本，语义都是"当前值"。
-- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 35`：
+- 迁移：`version` 字段 + `migrations` 链式执行。当前 `CONFIG_VERSION = 37`：
   `v0 → v1`（补齐 version、扁平字段归一、`llm.apiKey → apiKeyEnc`）、
   `v1 → v2`（补齐 `modes.classroom.classification` 与 `advanced.confirmSensitiveTools`）、
   `v2 → v3`（补齐 `modes.classroom.schedule.classisland`）、
@@ -816,12 +828,16 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   `v34 → v35`（**Agent 内置浏览器**，见 §1 的 `agent.browser` 与 06 §27：为**已存在的 `agent`** 补
   `browser` 分组（`enabled` / `maxSessions` / `idleMinutes` / `allowPrivateNetwork` /
   `compatUserAgent` / `allowMedia`）。以默认值为底、已有对象在上，用户已写的开关 / 上限原样保留；
-  `agent` 整组缺失时**不造对象**，交给默认配置兜底 —— 与 `v14 → v15` 同一套路）。
-  三十五条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
+  `agent` 整组缺失时**不造对象**，交给默认配置兜底 —— 与 `v14 → v15` 同一套路）、
+  `v35 → v36`（**插件系统**，见 §1 的 `plugins` 与 docs/14 §5：缺 `plugins` 时补
+  `{ enabled: true, devDirs: [], activeTheme: { pluginId: '', themeId: '' } }`）、
+  `v36 → v37`（**默认提醒方式**，见 §1 的 `notifications` 与 07 §4：缺 `notifications` 时补
+  `{ channel: 'system' }` —— 与 v37 之前的行为一字不差）。
+  三十七条迁移都**幂等且不覆盖用户已写入的值**（`v17 → v18` 例外：它**刻意**改写旧默认哨兵，
   方向是放宽；`v25 → v26` 同样刻意改写，但**只往上抬**；`v33 → v34` 则是刻意**删字段**），
   重复执行结果一致 ——
   `pnpm verify` 的迁移条数断言
-  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **35** 条。
+  （`v0 → 当前版本的迁移条数 === CONFIG_VERSION`）随之变为 **37** 条。
 - 凭据：`apiKeyEnc` / `envEnc` / `headersEnc` 用 **safeStorage** 加密后落盘；日志、错误上报、配置导出时一律脱敏（`***`）。
 
 ## 3. 首次安装引导流程
@@ -963,11 +979,10 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
 - **页面骨架**：所有页面统一「标题 + 一句话说明 + 分组卡片」（`theme.css` 的
   `.page` / `.page-title` / `.page-sub` + `settings/settings.css` 的 `.section-card` /
   `.section-title` / `.section-desc` / `.empty-state`）；侧栏按「基础 / AI 能力 / 系统」三组排列。
-- **页面结构（2026-09-30 起 8 页；本节为目标 IA）**：设置页由 8 页并为 **6 页**，
-  再于 2026-09-30 新增 `sessions` 会话管理，现为 **8 页**
-  （`SETTINGS_PAGE_IDS = ['general', 'sessions', 'modes', 'llm', 'voice', 'agent', 'center', 'advanced']`），
-  侧栏仍三组排列：
-  - **基础**：`general` 通用（启动与快捷键 / 提示条 / 勿扰时段——全局 + 提示条两组同区 / 关于与更新）、
+- **页面结构（v37 起 11 页）**：`SETTINGS_PAGE_IDS = ['general', 'sessions', 'modes', 'notifications',
+  'llm', 'voice', 'agent', 'awareness', 'center', 'plugins', 'advanced']`（数组顺序即截图出图顺序），
+  侧栏按「基础 / 智能 / 连接 / 扩展 / 系统」五组排列：
+  - **基础**：`general` 通用（启动与快捷键 / 外观 / 提示条 / 勿扰时段 / 关于与更新）、
     **`sessions` 会话管理（2026-09-30 新增）**：
     **项目管理区组整体自「通用」页迁入**（`projects.*` 锚点与逻辑原样搬，见 §1 的 `projects`；
     项目根可用性警示也从右栏卡改到这里的 AppToast 文案「项目目录不可用」）+
@@ -982,8 +997,14 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
     ClassRoom 区组 + Work 区组，见 §7）；
   - **AI 能力**：`llm` AI 模型（provider 管理 + 「显示思考过程」开关 + 生图模型区组，见 §5）、
     `voice` 语音（TTS 区组 + STT 区组）、
-    `agent` Agent 设置（`agent.tools` 区组 + 技能区组 + MCP 区组，三组同页折叠；2026-10 前称「智能与工具」）；
+    `agent` Agent 设置（`agent.tools` 区组 + 技能区组 + MCP 区组，三组同页折叠；2026-10 前称「智能与工具」）、
+    `awareness` 文件自感知（见 06 §26）；
+  - **连接**：`center` Aurora Center；
+  - **扩展**：`plugins` 插件（已安装 / 市场 / 桌面小组件，见 docs/14）；
   - **系统**：`advanced` 系统（网络 / 日志 / 安全 / 危险操作）。
+  - **`notifications` 提醒（v37 新增）**：全页只有「默认提醒方式」四选一 +
+    「发送测试提醒」按钮（细节见 07 §2.5 / §4）；锚点 `notifications.channel.<key>` /
+    `notifications.test`，截图场景 `settings-notifications.png`。
   - 旧页深链兼容映射：`?page=tts` → `voice`、`?page=skills|mcp` → `agent`；
     `general` / `modes` / `llm` / `advanced` 页 id 不变，旧深链继续可用。
 - **Skill 管理**（目标 6 页 IA 下为「Agent 设置」页的技能区组）：内置 Skill 列表 + 用户目录导入 / 添加、启用开关（`skills.disabled`）。

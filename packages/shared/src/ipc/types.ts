@@ -11,6 +11,7 @@ import type {
   LlmProviderType,
   LlmSettings,
   ModeId,
+  ReminderChannel,
   Settings,
   SttSettings,
   TtsFormat,
@@ -202,6 +203,10 @@ export interface SettingsPatch {
    * 顶层浅合并，只传改动的键即可（`Object.assign(draft.appearance, patch.appearance)`）。
    */
   appearance?: Partial<Settings['appearance']>
+  /**
+   * 默认提醒方式（v37，docs/07 §4）：顶层浅合并，只传 `{ channel }` 即可。
+   */
+  notifications?: Partial<Settings['notifications']>
 }
 
 /** 敏感字段路径 → 明文值；由主进程加密后落盘（docs/08 §2）。 */
@@ -1258,6 +1263,16 @@ export interface BannerDiagnostics {
   shownCount: number
   cardVisible: boolean
   glowVisible: boolean
+}
+
+// ───────────────────────── 默认提醒方式（v37，docs/07 §4） ─────────────────────────
+
+/** 「试一下」的回执：只回报本次实际走的通道与是否投递成功，不回传任何正文。 */
+export interface NotificationTestResult {
+  /** 本次实际使用的通道（= 当前默认提醒方式） */
+  channel: ReminderChannel
+  /** 是否真的投递出去了（`off` / 载体不可用时为 false） */
+  delivered: boolean
 }
 
 // ───────────────────────── 敏感工具确认（docs/06 §5） ─────────────────────────
@@ -2722,6 +2737,13 @@ export interface AuroraApi {
     dismiss(id: string): Promise<Result<BannerDismissResult>>
     /** 上报卡片内容高度（主进程据此把卡片窗调到「卡片 + 外边距」） */
     measure(request: BannerMeasureRequest): Promise<Result<boolean>>
+  }
+  /**
+   * 提醒通道（v37，docs/07 §4）：设置页「提醒」的试一下按钮。
+   * 只按当前默认方式投递一条固定的示例提醒，不接受调用方指定标题 / 正文。
+   */
+  notifications: {
+    test(): Promise<Result<NotificationTestResult>>
   }
   mcp: {
     status(): Promise<Result<McpServerStatus[]>>

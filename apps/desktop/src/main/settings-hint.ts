@@ -23,6 +23,7 @@ export const SETTINGS_HINT = [
   '- general.gameMode.enabled（游戏模式联动开关）',
   '- general.chat.showThinking（对话界面是否展示思考过程）',
   '- appearance.theme / accent / glass / awarenessGlow（界面明暗档位：system / light / dark；强调色：aurora / teal / violet / rose / amber；毛玻璃开关；文件自感知流光特效开关；也可以用 set_appearance 工具改这四项）',
+  '- notifications.channel（默认提醒方式：system 系统通知 / banner 流光提醒 / both 两者都发 / off 不打扰）',
   '- modes.current（切换当前模式）',
   '- modes.classroom.*（课堂模式设置：watchDir、subjects、schedule.*、preClassReminder、preClassLeadMinutes、preClassOpenFolder、classification.*）',
   // `agent.tools` 一律逐条列举，**不用通配写法**：`terminal` 下现在还有**只读**的

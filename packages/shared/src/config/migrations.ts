@@ -18,6 +18,7 @@ import {
   DEFAULT_CLASSISLAND_SCHEDULE,
   DEFAULT_FILE_AWARENESS,
   DEFAULT_IMAGEGEN,
+  DEFAULT_NOTIFICATIONS,
   DEFAULT_PLUGINS,
   DEFAULT_REASONING_EFFORT,
   DEFAULT_STT,
@@ -1259,6 +1260,28 @@ const migrateV35ToV36: Migration = {
   },
 }
 
+/**
+ * v36 → v37：新增 `notifications` 组（默认提醒方式，docs/07 §4、docs/08 §6.1）。
+ *
+ * 口径同前面各步：只在缺失时补默认；已有 `notifications` 原样保留（缺字段由 Schema 默认值
+ * 补齐），因此幂等。旧配置补出来的 `channel: 'system'` 与 v37 之前的行为一字不差。
+ */
+const migrateV36ToV37: Migration = {
+  from: 36,
+  to: 37,
+  describe: 'v36 → v37：新增 notifications（默认提醒方式）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const notifications = asRecord(next['notifications'])
+    next['notifications'] = {
+      ...DEFAULT_NOTIFICATIONS,
+      ...(notifications ?? {}),
+    }
+    next['version'] = 37
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1296,6 +1319,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV33ToV34,
   migrateV34ToV35,
   migrateV35ToV36,
+  migrateV36ToV37,
 ]
 
 export interface MigrationOutcome {

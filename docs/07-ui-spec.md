@@ -1368,9 +1368,13 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
 共享 `SettingField` 内只有按钮时必须用 `as="div"`：`label` 不仅会把点击代理给按钮，还会让整行 hover
 命中 button 的 `:hover`。按钮操作必须命中真实按钮才响应，避免 Center 等页面出现「鼠标未到按钮先响应」。
 
-- 单窗口分栏（**BetaV2**：8 页合并为 **6 页**；2026-09 重构起条目为图标 + 单行文字；v0.2.0 起新增 **Aurora Center** 页共 **7 页**）：侧栏按四组排列 —— **基础**（常规 `general` /
-  模式 `modes`）／**智能**（AI 模型 `llm` / 语音 `voice` / Agent 设置 `agent`）／**连接**（Aurora Center `center`）／
-  **系统**（高级 `advanced`）；`SETTINGS_PAGE_IDS = ['general','modes','llm','voice','agent','center','advanced']`。
+- 单窗口分栏（**BetaV2**：8 页合并为 **6 页**；2026-09 重构起条目为图标 + 单行文字；v0.2.0 起新增
+  **Aurora Center** 页；此后又增会话管理 / 文件自感知 / 插件 / **提醒**（v37）共 **11 页**）：
+  侧栏按五组排列 —— **基础**（常规 `general` / 会话管理 `sessions` / 模式 `modes` / 提醒 `notifications`）／
+  **智能**（AI 模型 `llm` / 语音 `voice` / Agent 设置 `agent` / 文件自感知 `awareness`）／
+  **连接**（Aurora Center `center`）／**扩展**（插件 `plugins`）／**系统**（高级 `advanced`）；
+  `SETTINGS_PAGE_IDS = ['general','sessions','modes','notifications','llm','voice','agent','awareness','center','plugins','advanced']`
+  （数组顺序即截图出图顺序）。
   当前项用分层填充 + 左侧**强调色**指示条（不再用品牌渐变）。合并口径：Skill 与 MCP 并入 `agent` 页、
   STT 并入 `voice` 页、生图模型并入 `llm` 页、勿扰时段并入 `general` 页（全局 + 提示条两组同区）；
   旧深链兼容映射：`?page=tts→voice`、`?page=skills|mcp→agent`。
@@ -1379,6 +1383,14 @@ input / resize / kill` + `terminal:data / exit` 推送（on/off 成对）。
   毛玻璃（`data-field="appearance.glass"`，复选框）→ 流光特效（`data-field="appearance.awarenessGlow"`，
   复选框：文件分析时屏幕四周的流光总开关）。四项都是**改动即落盘**，主进程与四个窗口即时跟随，
   不需要「保存」按钮；Agent 侧同一份字段由 `set_setting` / `set_appearance` 改（见 06 §12）。
+- **「提醒（`notifications`）」页（v37，见 08 §1 / §6.1）**：全页只有一个字段 `notifications.channel`
+  —— 四选一的「默认提醒方式」（`data-field="notifications.channel.<system|banner|both|off>"`，
+  选中态 `active`）：`system` 系统通知（点击可打开对应文件 / 文件夹）、`banner` 流光提醒
+  （见 §2.2.3）、`both` 两者都发、`off` 不打扰（只记日志）。选项行必须是「粗体标题 + 一句说明」，
+  只写标题等于没有解释。本页还有「发送测试提醒」（`data-field="notifications.test"`）：
+  走主进程**同一条**提醒路由（`notifications:test`），因此验证的是真实生效路径，而不是另开一条演示通道。
+  边界写进页面文案：它只管**默认**方式 —— `notify_banner` 与插件 `ctx.banner` 是显式请求流光，不受影响；
+  流光提醒不支持点击打开文件夹，需要那个入口要选系统通知或两者都发。
 - **「智能与工具（`agent`）」页「内置浏览器」区组（v35，见 06 §27 / 08 §6）**：与
   `agent.tools.*`、技能、MCP 同页折叠，顺序排「电脑操控」之后；六项锚点
   `agent.browser.enabled`（总开关）、`agent.browser.maxSessions`（并发上限，数字）、
@@ -1540,6 +1552,11 @@ Markdown 全文预览；顶部提供「打开文件夹」「用系统打开当�
 
 ## 4. 通知与反馈
 
+- **默认提醒方式（v37，设置 → 提醒）**：Aurora 自己发起的提醒（分类完成 / 课前提醒 / 引导 /
+  `notify_user`）按 `notifications.channel` 投递 —— `system` 系统通知（点击打开对应文件夹）/
+  `banner` 流光提醒 / `both` 两者都发 / `off` 不打扰（只记日志）。去重（3s，`dedupeKey`）在
+  通道判定**之前**：`both` 下同一条提醒也只算一次，不会出现「系统通知被合并、流光却弹了两次」。
+  `notify_banner` 与插件 `ctx.banner` 是**显式**请求流光，不受这个默认值影响。
 - **系统通知**：分类完成（点击打开对应文件夹）、课前提醒、引导提醒。
 - **流光提醒（2026-10-24，§2.2.3）**：屏幕顶端流光 + 置顶卡片的第三条提醒通道，
   由 Agent 工具 `notify_banner`、插件 `ctx.banner`、`ask_user` 提问三处触发；
