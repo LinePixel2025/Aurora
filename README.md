@@ -2,11 +2,10 @@
 
 将 Windows 接入 AI 生态的**系统级 Agent 工具**：常驻系统托盘，以「屏幕右缘提示条」的轻量形态提供无感、自主的 AI 服务。
 
-> 当前发布：**v0.5.2**（桌面小组件窗口层级与原生毛玻璃 —— `windowLevel` 支持
-> `floating` / `normal` / `desktop`，`windowMaterial` 支持 Windows 原生 Acrylic；
-> 含独立插件开发工具包 `plugin-dev-kit/`；配置 Schema 仍为 v36），
+> 当前发布：**v0.5.3**（页面型小组件 RPC 修复、页面动作 `message` / `error` 回传，
+> 并新增桌面小组件 `hideCloseButton` 清单字段；配置 Schema 仍为 v36），
 > 详见 [`docs/README.md`](./docs/README.md)「当前实现状态」
-> 与 [release-notes/v0.5.2.md](./docs/release-notes/v0.5.2.md)。
+> 与 [release-notes/v0.5.3.md](./docs/release-notes/v0.5.3.md)。
 > 桌面客户端为 Electron 44.5.1（Chromium 152 / Node 24.18.1），恢复 Windows 原生最大化并保持 Acrylic；
 > 提示条用 `setShape()` 适配透明窗口平台最小宽度；剪贴板与 `console-message` 完成 Electron 44 API 迁移。
 > 历史进度见 [`docs/README.md`](./docs/README.md)「当前实现状态」。

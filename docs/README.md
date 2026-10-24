@@ -7,7 +7,16 @@
 
 ## 当前实现状态
 
-**当前发布 v0.5.2：桌面小组件窗口层级与原生毛玻璃**（配置 Schema 仍为 **v36**，无新增迁移）——
+**当前发布 v0.5.3：页面型小组件修复与标题栏关闭键开关**（配置 Schema 仍为 **v36**，无新增迁移）——
+修复 `plugins:pageRpc` 页面型小组件请求被 `invokeWidget` 旧守卫误拦截的问题；
+页面型面板 / 小组件现在能把插件返回的 `message` / `error` 原样交给页面；
+桌面小组件清单新增 `hideCloseButton`（默认 `false`），设为 `true` 时宿主不再渲染标题栏右上角的
+「隐藏小组件」按钮（提示条小组件拒绝该字段）。
+定向验收（2026-10-24）：插件与 shared plugin 单测 **107/107**、desktop typecheck、desktop build 通过；
+本轮未跑全量 smoke / 截图。
+面向用户的说明见 [release-notes/v0.5.3.md](./release-notes/v0.5.3.md)。
+
+**上一发布 v0.5.2：桌面小组件窗口层级与原生毛玻璃**（配置 Schema 仍为 **v36**，无新增迁移）——
 桌面小组件清单新增 `windowLevel`（`floating` / `normal` / `desktop`，默认 `floating`）与
 `windowMaterial`（`none` / `acrylic`，默认 `none`）：`normal` 不再置顶，`desktop` 用 Win32 owner
 亲和 + 最小化恢复守护尽力在显示桌面后保持可见（失败回落 `normal`）；Acrylic 需 Windows 11 22H2+
@@ -19,7 +28,7 @@
 端到端冒烟 **243/243**；全量截图 97 + 6 + 3 条，除既存范围外的 `chat-model-picker` 外全部通过。
 面向用户的说明见 [release-notes/v0.5.2.md](./release-notes/v0.5.2.md)。
 
-**上一发布 v0.5.1：插件系统 v36**（配置 Schema v36，迁移 `v35 → v36`，新增 `plugins`）——
+**更早发布 v0.5.1：插件系统 v36**（配置 Schema v36，迁移 `v35 → v36`，新增 `plugins`）——
 用户可安装第三方插件来扩展 Agent 能力与界面：清单声明工具 / Skill / 斜杠命令 / 自动化动作与事件 /
 右栏面板 / 桌面与提示条小组件 / 主题 / 配置字段，插件运行在独立 `utilityProcess`，
 支持本地 zip / 文件夹、开发目录热重载与 Aurora Center 插件市场；

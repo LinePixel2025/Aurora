@@ -5,7 +5,8 @@ P6 打包与自动更新完成、余下打磨项待做，**P6++ 电脑操控（�
 模型思考等级 + 「电脑操控」设置页与安全边界）已于 v0.7.0 落地**，
 P7 的 **ClassIsland 联动已提前落地**；进度随开发更新
 
-**2026-10 增量**：v0.4.1 → v0.5.2 已发布；v0.5.2 含桌面小组件窗口层级
+**2026-10 增量**：v0.4.1 → v0.5.3 已发布；v0.5.3 修复页面型小组件 RPC 并新增桌面小组件
+`hideCloseButton`；v0.5.2 含桌面小组件窗口层级
 （`windowLevel`：floating / normal / desktop）与原生 Acrylic 材质（`windowMaterial`），
 并收入独立 `plugin-dev-kit/` 工具包；v0.5.1 含插件系统 v36（清单优先 / 独立进程 /
 面板与沙箱页面 / 桌面与提示条小组件 / 事件推送 / Center 插件市场），配置 Schema v36。
@@ -566,6 +567,7 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
 | v0.4.9（2026-10-18） | 任务编排 v34（并发批次 / 插话排队 / 工具超时 / `agent.loop` 三退一）+ 子代理并行与实际授予 + 自动化历史三层与双端回放 + 自感知光谱流光 + 双端输入卡粘贴与浮层 | [release-notes/v0.4.9.md](./release-notes/v0.4.9.md)、[docs/06 §5/§19](./06-agent-core.md)、[docs/13](./13-automation.md) |
 | v0.5.0（2026-10-18） | 内置浏览器 Agent 工具组 v35（八个 `browser_*` 工具 / CDP 真实输入 / 并发槽位 / 配置 `agent.browser` 与迁移 v34→v35） | [release-notes/v0.5.0.md](./release-notes/v0.5.0.md)、[docs/06 §27](./06-agent-core.md)、[docs/08 §1](./08-settings-onboarding.md) |
 | v0.5.1（2026-10-24） | 插件系统 v36（清单优先 / 独立进程 / 面板与沙箱页面 / 桌面与提示条小组件 / 事件推送 / Center 市场 / 配置 `plugins` 与迁移 v35→v36） | [release-notes/v0.5.1.md](./release-notes/v0.5.1.md)、[docs/14](./14-plugin-system.md)、[docs/15](./15-plugin-development-guide.md) |
+| v0.5.3（2026-10-24） | 页面型小组件 RPC 修复；页面动作 `message` / `error` 回传；桌面小组件 `hideCloseButton` | [release-notes/v0.5.3.md](./release-notes/v0.5.3.md)、[docs/14 §5.3](./14-plugin-system.md)、[docs/15 §7.5](./15-plugin-development-guide.md) |
 | v0.5.2（2026-10-24） | 桌面小组件窗口层级（floating / normal / desktop）与原生 Acrylic（`windowMaterial`）；用户逐 widget 覆盖；独立 `plugin-dev-kit/` | [release-notes/v0.5.2.md](./release-notes/v0.5.2.md)、[docs/14 §5.3](./14-plugin-system.md)、[docs/15 §7.5](./15-plugin-development-guide.md) |
 
 ## 2026-10-24 插件系统轮（配置 Schema v36）
