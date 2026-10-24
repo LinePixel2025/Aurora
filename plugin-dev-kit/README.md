@@ -68,8 +68,9 @@ node scripts/verify-plugin.mjs <插件目录|zip>
 1. 从 Aurora 仓库的 `v0.5.2` tag 取整包（推荐先备份旧目录）：
 
 ```powershell
-# 在 Aurora 源码仓库根目录
-git archive v0.5.2 plugin-dev-kit | tar -x -C <你的工作目录>
+# 在 Aurora 源码仓库根目录（建议取 main；v0.5.2 tag 已含新字段/校验器，
+# 两处版本标记在后续提交 6a973dd 修正，固定历史版本时请取该提交或更新后的 main）
+git archive main plugin-dev-kit | tar -x -C <你的工作目录>
 # 或直接复制当前工作树（注意不要覆盖你自己的插件目录）
 Copy-Item -Recurse plugin-dev-kit <你的工作目录>\plugin-dev-kit
 ```
