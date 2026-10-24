@@ -1,0 +1,70 @@
+/*
+ * 插件页面的推荐样式：CSP 只允许自身资源，页面自己带一份观感。
+ * 想贴近 Aurora，可参考 docs/15 §7 的令牌表手动取色（页面拿不到宿主的 CSS 变量）。
+ */
+:root {
+  color-scheme: dark;
+  --bg: #141210;
+  --raised: #1e1a17;
+  --text: #f5f0e8;
+  --muted: #cbbfae;
+  --border: #3a322b;
+  --accent: #5b9dff;
+}
+
+body {
+  margin: 0;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.muted {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--raised);
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.count {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--raised);
+  font-size: 14px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}

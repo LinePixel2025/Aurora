@@ -229,6 +229,68 @@ describe('validateDefinition · ClassIsland 可用性门控', () => {
   })
 })
 
+describe('插件组件（v36，docs/14 §3.5）', () => {
+  it('catalog 含 plugin-event 触发器与 plugin-action 操作组件', () => {
+    const condition = CATALOG.conditions.find((item) => item.kind === 'plugin-event')
+    const action = CATALOG.actions.find((item) => item.kind === 'plugin-action')
+    expect(condition?.requiresSchedule).toBe(false)
+    expect(condition?.fields.map((field) => field.key)).toEqual(['pluginId', 'event'])
+    expect(action?.available).toBe(true)
+    expect(action?.fields.map((field) => field.key)).toEqual(['pluginId', 'action', 'params'])
+    expect(action?.fields.find((field) => field.key === 'params')?.type).toBe('json')
+  })
+
+  it('plugin-event：插件 id 与事件名填齐即合法，缺任一拒绝', () => {
+    const definition = (params: Record<string, unknown>) => ({
+      name: '待办联动',
+      mode: 'agent',
+      trigger: { kind: 'plugin-event', params },
+      prompt: '整理待办',
+    })
+    expect(
+      validateDefinition(
+        definition({ pluginId: 'com.example.todo', event: 'todo-added' }),
+        CATALOG,
+      ),
+    ).toEqual({ ok: true })
+    expect(validateDefinition(definition({ event: 'todo-added' }), CATALOG).ok).toBe(false)
+    expect(
+      validateDefinition(definition({ pluginId: 'com.example.todo', event: '  ' }), CATALOG).ok,
+    ).toBe(false)
+  })
+
+  it('plugin-action：JSON 参数合法通过；缺字段 / 非 JSON / 非对象 / 超 8 KB 拒绝', () => {
+    const definition = (params: Record<string, unknown>) =>
+      normalDefinition([{ kind: 'plugin-action', params }])
+    expect(
+      validateDefinition(
+        definition({ pluginId: 'com.example.todo', action: 'add', params: '{"text":"买牛奶"}' }),
+        CATALOG,
+      ),
+    ).toEqual({ ok: true })
+    // 参数可留空（缺省 / 空对象都是合法形状）
+    expect(
+      validateDefinition(definition({ pluginId: 'com.example.todo', action: 'add' }), CATALOG),
+    ).toEqual({ ok: true })
+    expect(
+      validateDefinition(
+        definition({ pluginId: 'com.example.todo', action: 'add', params: '{}' }),
+        CATALOG,
+      ),
+    ).toEqual({ ok: true })
+
+    for (const params of [
+      { action: 'add' },
+      { pluginId: 'com.example.todo' },
+      { pluginId: 'com.example.todo', action: 'add', params: '{oops' },
+      { pluginId: 'com.example.todo', action: 'add', params: '[]' },
+      { pluginId: 'com.example.todo', action: 'add', params: `{"x":"${'a'.repeat(9000)}"}` },
+    ]) {
+      expect(validateDefinition(definition(params), CATALOG).ok).toBe(false)
+    }
+  })
+})
+
 describe('normalizeDefinition', () => {
   it('裁剪 name 空白、enabled 缺省 true、params 拷贝', () => {
     const normalized = normalizeDefinition({

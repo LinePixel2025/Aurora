@@ -30,6 +30,7 @@ import { Hub, type ClientConn, type WebConn } from './hub.js'
 import { ModelGateway } from './model-gateway.js'
 import { ModelServicesStore } from './model-services.js'
 import { ReleaseStore } from './releases.js'
+import { PluginStore } from './plugins.js'
 import { createSecretBox } from './secrets.js'
 import { UsageStore } from './usage.js'
 import { serverVersion } from './version.js'
@@ -51,6 +52,8 @@ export interface RunningCenterServer {
 
 const MAX_JSON_BODY = 2 * 1024 * 1024
 const MAX_RELEASE_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+/** 插件 zip 上传上限（与 `PluginStore` 的默认 20 MB 一致） */
+const MAX_PLUGIN_UPLOAD_BYTES = 20 * 1024 * 1024
 const HELLO_TIMEOUT_MS = 10_000
 /*
  * 半开连接的判死节奏（2026-09-29 提速，用户反馈「客户端下线时 Center 更新太慢」）：
@@ -231,6 +234,8 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     logger,
     maxBytes: MAX_RELEASE_UPLOAD_BYTES,
   })
+  // 插件市场（docs/14 §4）：与桌面安装器共用清单 schema；v1 无签名
+  const plugins = new PluginStore({ dataDir: options.dataDir, logger })
   const modelGateway = new ModelGateway({
     services: modelServices,
     usage,
@@ -661,6 +666,60 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
       return
     }
 
+    // ── 插件市场（docs/14 §4）：公开浏览 / 下载，放在登录门禁之前 ──
+    if (path === '/api/plugins' && req.method === 'GET') {
+      const limitRaw = Number(url.searchParams.get('limit') ?? '20')
+      const pageRaw = Number(url.searchParams.get('page') ?? '1')
+      const sort = url.searchParams.get('sort') === 'downloads' ? 'downloads' : 'updated'
+      res.setHeader('Cache-Control', 'no-cache')
+      sendJson(
+        res,
+        200,
+        plugins.list({
+          q: url.searchParams.get('q') ?? '',
+          ...(Number.isFinite(limitRaw) ? { limit: limitRaw } : {}),
+          ...(Number.isFinite(pageRaw) ? { page: pageRaw } : {}),
+          sort,
+        }),
+      )
+      return
+    }
+    const pluginDetail = /^\/api\/plugins\/([^/]+)$/.exec(path)
+    if (pluginDetail && req.method === 'GET') {
+      const id = safeDecode(pluginDetail[1] as string)
+      const entry = id === undefined ? undefined : plugins.get(id)
+      if (entry === undefined) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      sendJson(res, 200, { entry })
+      return
+    }
+    const pluginDownload = /^\/api\/plugins\/([^/]+)\/download$/.exec(path)
+    if (pluginDownload && (req.method === 'GET' || req.method === 'HEAD')) {
+      const id = safeDecode(pluginDownload[1] as string)
+      const version = url.searchParams.get('version') ?? ''
+      const asset = id === undefined ? undefined : plugins.assetOf(id, version)
+      if (id === undefined || asset === undefined) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      await servePluginAsset(req, res, asset.path, asset.fileName, asset.sha256)
+      void plugins.recordDownload(id)
+      return
+    }
+    const pluginIcon = /^\/api\/plugins\/([^/]+)\/icon$/.exec(path)
+    if (pluginIcon && (req.method === 'GET' || req.method === 'HEAD')) {
+      const id = safeDecode(pluginIcon[1] as string)
+      const file = id === undefined ? undefined : plugins.iconPathOf(id)
+      if (file === undefined) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      await serveStaticFile(req, res, file, 'image/png', 'public, max-age=3600')
+      return
+    }
+
     // DashScope TTS 的短期签名音频代理不携带客户端令牌（客户端按协议只 GET 签名 URL）。
     if (path.startsWith('/api/model-gateway/tts/audio/')) {
       if (await modelGateway.handleSignedAudio(req, res, url)) return
@@ -909,6 +968,75 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     // ── 管理员 ──
     if (user.role !== 'admin') {
       sendJson(res, 403, { error: 'E_FORBIDDEN' })
+      return
+    }
+    // 插件市场管理（docs/14 §4）：上传先 staging、再显式 publish；同版本不可覆盖
+    if (path === '/api/admin/plugins' && req.method === 'GET') {
+      sendJson(res, 200, plugins.list({ page: 1, limit: 50, sort: 'updated' }))
+      return
+    }
+    if (path === '/api/admin/plugins/upload' && req.method === 'POST') {
+      try {
+        const body = await readRawBody(req, MAX_PLUGIN_UPLOAD_BYTES)
+        const staged = await plugins.stage(body)
+        sendJson(res, 200, {
+          token: staged.token,
+          plugin: {
+            id: staged.inspection.manifest.id,
+            name: staged.inspection.manifest.name,
+            version: staged.inspection.manifest.version,
+            permissions: staged.inspection.manifest.permissions,
+            sha256: staged.inspection.sha256,
+            size: staged.inspection.size,
+          },
+        })
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'E_INVALID_ARGUMENT' })
+      }
+      return
+    }
+    if (path === '/api/admin/plugins/publish' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req)
+        const token = typeof body['token'] === 'string' ? body['token'] : ''
+        const changelog = typeof body['changelog'] === 'string' ? body['changelog'] : undefined
+        if (token === '') {
+          sendJson(res, 400, { error: '缺少上传 token' })
+          return
+        }
+        sendJson(res, 200, { entry: await plugins.publish(token, changelog) })
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'E_INVALID_ARGUMENT' })
+      }
+      return
+    }
+    const adminPluginDelete = /^\/api\/admin\/plugins\/([^/]+)\/([^/]+)$/.exec(path)
+    if (adminPluginDelete && req.method === 'DELETE') {
+      const id = safeDecode(adminPluginDelete[1] as string)
+      const version = safeDecode(adminPluginDelete[2] as string)
+      const removed =
+        id === undefined || version === undefined ? false : await plugins.remove(id, version)
+      if (!removed) {
+        sendJson(res, 404, { error: 'E_NOT_FOUND' })
+        return
+      }
+      sendJson(res, 200, { ok: true })
+      return
+    }
+    const adminPluginIcon = /^\/api\/admin\/plugins\/([^/]+)\/icon$/.exec(path)
+    if (adminPluginIcon && req.method === 'POST') {
+      const id = safeDecode(adminPluginIcon[1] as string)
+      if (id === undefined) {
+        sendJson(res, 400, { error: 'E_INVALID_ARGUMENT' })
+        return
+      }
+      try {
+        const body = await readRawBody(req, 256 * 1024)
+        await plugins.setIcon(id, body)
+        sendJson(res, 200, { ok: true })
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'E_INVALID_ARGUMENT' })
+      }
       return
     }
     if (path === '/api/admin/model-services' && req.method === 'GET') {
@@ -1256,6 +1384,7 @@ export function createCenterServer(options: CenterServerOptions): RunningCenterS
     await modelServices.init()
     await usage.init()
     await releases.init()
+    await plugins.init()
     allowRegistration = await readAllowRegistration(options.dataDir)
     // 启动清一次过期文件，之后每 15 分钟一轮（unref：不拦进程退出）
     await files.pruneExpired().catch((error) => {
@@ -1426,6 +1555,73 @@ async function serveReleaseAsset(
   const stream = createReadStream(filePath, { start, end })
   stream.on('error', () => res.destroy())
   stream.pipe(res)
+}
+
+/** `decodeURIComponent` 对畸形百分号编码会抛错：路由参数一律走这里收敛成 undefined。 */
+function safeDecode(value: string): string | undefined {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return undefined
+  }
+}
+
+/** 插件归档下载：带校验和与 `Content-Disposition`（桌面市场据此确认落盘文件名）。 */
+async function servePluginAsset(
+  req: IncomingMessage,
+  res: ServerResponse,
+  filePath: string,
+  fileName: string,
+  sha256: string,
+): Promise<void> {
+  let stat
+  try {
+    stat = await fs.stat(filePath)
+  } catch {
+    sendJson(res, 404, { error: 'E_NOT_FOUND' })
+    return
+  }
+  res.writeHead(200, {
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': String(stat.size),
+    'Content-Disposition': `attachment; filename="${fileName}"`,
+    'X-Checksum-Sha256': sha256,
+    'Cache-Control': 'no-store',
+  })
+  if (req.method === 'HEAD') {
+    res.end()
+    return
+  }
+  const stream = createReadStream(filePath)
+  stream.on('error', () => res.destroy())
+  stream.pipe(res)
+}
+
+/** 小文件直出（插件图标等）。 */
+async function serveStaticFile(
+  req: IncomingMessage,
+  res: ServerResponse,
+  filePath: string,
+  contentType: string,
+  cacheControl: string,
+): Promise<void> {
+  let body: Buffer
+  try {
+    body = await fs.readFile(filePath)
+  } catch {
+    sendJson(res, 404, { error: 'E_NOT_FOUND' })
+    return
+  }
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Length': String(body.byteLength),
+    'Cache-Control': cacheControl,
+  })
+  if (req.method === 'HEAD') {
+    res.end()
+    return
+  }
+  res.end(body)
 }
 
 function parseMessage(data: unknown): Record<string, unknown> | undefined {

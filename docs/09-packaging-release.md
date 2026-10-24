@@ -281,3 +281,14 @@ size 与 sha512 在两端必须一致。Center 发布完成后至少验证
 > **不适用双投**：不上传 GitHub Releases、不创建 tag、不必与客户端版本号相同 ——
 > 只升 `packages/center/package.json` 并按 `packages/center/deploy/README.md` 换装即可
 > （docs/12 §9「版本线与桌面端独立」）。
+
+## 11. 插件入口与依赖（v36）
+
+- `electron.vite.config.ts` 新增两个入口：
+  - `out/main/plugin-host.js` —— 插件 `utilityProcess` bootstrap（一个启用插件一个进程）；
+  - `out/preload/plugin-page.js` —— 插件沙箱页面专用 preload（只暴露 `window.auroraPlugin`）。
+- `out/**` 已覆盖新入口；打包后需确认这两个文件存在（见 §6 验证方式）。
+- 桌面端运行时依赖新增 **`fflate`**（读取插件 zip；已在 lockfile 中），`electron-builder` 需随包携带。
+- **插件本体不随安装包分发**：插件安装 / 开发目录 / 配置 / 日志都在 `<userData>`，升级客户端不会覆盖用户插件；
+  示例插件在仓库 `examples/plugins/`（打包产物里不存在，冒烟 / 截图会按其是否存在决定是否跑插件断言）。
+- Center 侧新增 `fflate` 依赖（市场上传校验与 CLI 打包）。

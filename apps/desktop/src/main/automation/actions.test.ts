@@ -87,6 +87,86 @@ describe('executeAction · open-url', () => {
   })
 })
 
+describe('executeAction · plugin-action', () => {
+  it('转发插件 id / 动作名与解析后的 JSON 参数', async () => {
+    const { ports } = openPorts()
+    const calls: Array<{ pluginId: string; action: string; params: Record<string, unknown> }> = []
+    ports.pluginAction = async (input) => {
+      calls.push(input)
+      return { ok: true, summary: '已加入待办' }
+    }
+    const result = await executeAction(
+      {
+        kind: 'plugin-action',
+        params: { pluginId: 'com.example.todo', action: 'add', params: '{"text":"买牛奶"}' },
+      },
+      ports,
+    )
+    expect(result).toEqual({ ok: true, summary: '已加入待办' })
+    expect(calls).toEqual([
+      { pluginId: 'com.example.todo', action: 'add', params: { text: '买牛奶' } },
+    ])
+  })
+
+  it('参数缺省按空对象转发；已是对象的参数原样转发', async () => {
+    const { ports } = openPorts()
+    const calls: Array<Record<string, unknown>> = []
+    ports.pluginAction = async (input) => {
+      calls.push(input.params)
+      return { ok: true }
+    }
+    await executeAction(
+      { kind: 'plugin-action', params: { pluginId: 'com.example.todo', action: 'add' } },
+      ports,
+    )
+    await executeAction(
+      {
+        kind: 'plugin-action',
+        params: { pluginId: 'com.example.todo', action: 'add', params: { text: '直接对象' } },
+      },
+      ports,
+    )
+    expect(calls).toEqual([{}, { text: '直接对象' }])
+  })
+
+  it('缺端口 / 缺字段 / 非法 JSON / 端口失败都回落失败回执（不抛错）', async () => {
+    const { ports } = openPorts()
+    const missing = await executeAction(
+      { kind: 'plugin-action', params: { pluginId: 'com.example.todo', action: 'add' } },
+      ports,
+    )
+    expect(missing.ok).toBe(false)
+
+    ports.pluginAction = async () => ({ ok: false, error: '插件已停用' })
+    for (const params of [
+      { action: 'add' },
+      { pluginId: 'com.example.todo' },
+      { pluginId: 'com.example.todo', action: 'add', params: '{oops' },
+      { pluginId: 'com.example.todo', action: 'add', params: '[]' },
+    ]) {
+      const result = await executeAction({ kind: 'plugin-action', params }, ports)
+      expect(result.ok).toBe(false)
+    }
+
+    const failed = await executeAction(
+      { kind: 'plugin-action', params: { pluginId: 'com.example.todo', action: 'add' } },
+      ports,
+    )
+    expect(failed.ok).toBe(false)
+    expect(failed.error).toContain('插件已停用')
+
+    ports.pluginAction = async () => {
+      throw new Error('进程已退出')
+    }
+    const thrown = await executeAction(
+      { kind: 'plugin-action', params: { pluginId: 'com.example.todo', action: 'add' } },
+      ports,
+    )
+    expect(thrown.ok).toBe(false)
+    expect(thrown.error).toContain('进程已退出')
+  })
+})
+
 describe('executeAction · open-app', () => {
   it('路径经 openPath 打开（与打开文件夹同一通道，不经 shell）', async () => {
     const { ports, openedPaths } = openPorts()

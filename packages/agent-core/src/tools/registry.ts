@@ -204,7 +204,7 @@ export class ToolRegistry implements ToolSource {
   private readonly shadowed = new Map<string, ToolDefinition>()
   private readonly log: Array<{ message: string; detail?: string }> = []
 
-  register(tool: ToolDefinition, source: 'builtin' | 'skill' | 'mcp' = 'builtin'): void {
+  register(tool: ToolDefinition, source: 'builtin' | 'skill' | 'mcp' | 'plugin' = 'builtin'): void {
     const existing = this.tools.get(tool.name)
     if (existing) {
       // MCP 优先于 Skill（docs/06 §7），同名冲突必须留痕

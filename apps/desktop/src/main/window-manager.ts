@@ -7,7 +7,15 @@
  * - 位置 / 尺寸写入 `general.windowState`，跨启动保留。
  */
 import { join } from 'node:path'
-import { BrowserWindow, nativeTheme, screen, shell, type Display } from 'electron'
+import {
+  BrowserWindow,
+  nativeTheme,
+  screen,
+  shell,
+  type Display,
+  type Session,
+  type WebPreferences,
+} from 'electron'
 import {
   IPC,
   WINDOW_NAMES,
@@ -28,6 +36,12 @@ import {
 } from './edge-bar-geometry.js'
 import { awarenessGlowBounds, type AwarenessGlowRect } from './awareness-glow.js'
 import { zoomActionForInput } from './zoom-shortcuts.js'
+import {
+  ensurePluginPageProtocol,
+  isPluginPageUrl,
+  pluginPageTargetOf,
+  registerPluginPageGuest,
+} from './page-protocol.js'
 
 export interface WindowManagerOptions {
   settings: SettingsStore
@@ -44,6 +58,11 @@ export interface WindowManagerOptions {
   iconPath?: string
   /** 自测时关闭后台节流，保证隐藏 / 后台窗口仍按正常时钟处理 IPC。 */
   backgroundThrottling?: boolean
+  /**
+   * 插件页面专用 preload（docs/14 §2.4）。为空时拒绝一切 `aurora-plugin://` webview。
+   * 普通网页 webview 不受影响。
+   */
+  pluginPagePreloadPath?: string
 }
 
 export interface AwarenessGlowDiagnostics {
@@ -228,6 +247,15 @@ const NATIVE_WINDOW_MATERIAL = 'acrylic' as const
  * 的惯用值：拖动期间只重排定时器，停手后落一次。
  */
 const GEOMETRY_PERSIST_DEBOUNCE_MS = 250
+
+/** 已加固过的插件页面 session（按插件 partition；授权、下载与弹窗只关一次） */
+const hardenPluginSessions = new WeakSet<Session>()
+/**
+ * `will-attach-webview` 里拿到的插件页面地址。
+ * guest 自动导航在自定义协议下不一定发生（实测 guest.getURL() 为空），
+ * `did-attach-webview` 里用它显式 `loadURL` 一次。
+ */
+let pendingPluginPageSrc = ''
 
 /** 窗口几何（与 `BrowserWindow.getBounds()` 同形，单独命名只为让短路比较读得懂） */
 interface WindowBounds {
@@ -643,7 +671,81 @@ export class WindowManager {
      * 沙箱与窗口管理语义不变（仍然不新开 Electron 窗口）。
      */
     if (name === 'chat') {
+      /**
+       * 插件页面（docs/14 §2.4）：凡是 `aurora-plugin://` 源，一律覆盖 webPreferences ——
+       * 专用 preload、按插件隔离的非持久 partition、sandbox + contextIsolation、
+       * 关掉 Node 与 insecure content。调用方自带的 preload / partition 不接受。
+       * 普通浏览器 webview（http/https）原样放行，不受这条影响。
+       */
+      win.webContents.on(
+        'will-attach-webview',
+        (event, webPreferences: WebPreferences, params: Record<string, string>) => {
+          const src = params['src'] ?? ''
+          if (!isPluginPageUrl(src)) return
+          const target = pluginPageTargetOf(src)
+          const preload = this.options.pluginPagePreloadPath
+          this.options.logger.debug('插件页面 webview 挂载请求', {
+            src,
+            pluginId: target?.pluginId ?? '',
+            preload: preload ?? '',
+          })
+          if (target === null || preload === undefined) {
+            event.preventDefault()
+            return
+          }
+          pendingPluginPageSrc = src
+          delete params['preload']
+          params['partition'] = `plugin-${target.pluginId}`
+          webPreferences.preload = preload
+          webPreferences.partition = `plugin-${target.pluginId}`
+          webPreferences.sandbox = true
+          webPreferences.contextIsolation = true
+          webPreferences.nodeIntegration = false
+          webPreferences.nodeIntegrationInSubFrames = false
+          webPreferences.webviewTag = false
+          webPreferences.webSecurity = true
+          webPreferences.allowRunningInsecureContent = false
+          webPreferences.devTools = false
+        },
+      )
       win.webContents.on('did-attach-webview', (_event, guest) => {
+        const src = pendingPluginPageSrc
+        pendingPluginPageSrc = ''
+        this.options.logger.debug('webview 已挂载', { url: guest.getURL(), pending: src })
+        if (isPluginPageUrl(src)) {
+          registerPluginPageGuest(guest, win.webContents, src)
+          // 独立 partition 有自己的 session：协议处理器必须逐 session 注册
+          ensurePluginPageProtocol(guest.session)
+          guest.on('did-fail-load', (_e, code, description, url) => {
+            this.options.logger.warn('插件页面加载失败', { code, description, url })
+          })
+          if (this.options.isDev) {
+            guest.on('console-message', (details) => {
+              this.options.logger.debug('[plugin-page] ' + details.message, {
+                level: details.level,
+                source: `${details.sourceId}:${details.lineNumber}`,
+              })
+            })
+          }
+          const pluginId = pluginPageTargetOf(src)?.pluginId ?? ''
+          void guest.loadURL(src).catch((error: unknown) => {
+            this.options.logger.warn('插件页面 loadURL 失败', { src, error: String(error) })
+          })
+          guest.setWindowOpenHandler(() => ({ action: 'deny' }))
+          guest.on('will-navigate', (event, url) => {
+            if (pluginPageTargetOf(url)?.pluginId !== pluginId) event.preventDefault()
+          })
+          const session = guest.session
+          if (!hardenPluginSessions.has(session)) {
+            hardenPluginSessions.add(session)
+            session.setPermissionRequestHandler((_contents, _permission, callback) =>
+              callback(false),
+            )
+            session.setPermissionCheckHandler(() => false)
+            session.on('will-download', (event) => event.preventDefault())
+          }
+          return
+        }
         guest.setWindowOpenHandler(({ url }) => {
           if (/^https?:\/\//i.test(url)) {
             // 处理函数里 return deny 之后 guest 就与这次请求脱钩了，转交渲染层开新标签

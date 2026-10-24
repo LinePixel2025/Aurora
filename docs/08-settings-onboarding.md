@@ -1225,3 +1225,24 @@ provider id（`llm.providers.<id>` / `tts.providers.<id>` / `stt.providers.<id>`
   「官方模型全部失效」；凭据失效（401 / 403）才清空目录。
 - **回落提示只说真实落点**：语言模型提示固定为「已回落到本机模型 <真实 provider id>」，
   官方 id（`center-*`）不会出现在回落目标里。
+
+## 9. 插件配置（v36）
+
+`CONFIG_VERSION = 36`，迁移 `v35 → v36`：缺 `plugins` 时补默认值，不改其它对象。
+
+```ts
+plugins: {
+  enabled: boolean              // 默认 true；关闭 = 停止全部插件进程并注销贡献
+  devDirs: string[]             // 最多 8 个；原地加载、改文件自动重启
+  activeTheme: { pluginId: string; themeId: string }  // 空串 = 跟随外观
+}
+```
+
+- **安装态不在 settings**：安装 / 启用 / 信任在 `<userData>/plugins/registry.json`。
+- **AI 只读**：`plugins` 整组在 `SETTINGS_READONLY_PREFIXES`，`set_setting` 不得安装 / 启停 / 信任插件；
+  也不在 `settings-port.ts` 的 `TOP_LEVEL_GROUPS` 里。
+- **无密文**：插件配置不支持密文字段，也不向插件暴露 Aurora 凭据；不需要动 secret 链路与 `redactSettings`。
+- **桌面小组件布局不进 settings**：位置 / 尺寸 / 显隐在 `<userData>/plugin-widget-layout.json`，
+  独立版本号（`version: 1`），不升 `CONFIG_VERSION`；删掉它只丢位置，不丢插件数据。
+- 设置重置不会卸载插件；`plugins.enabled` 回到默认 `true`，已安装插件与信任状态保留。
+- 设置页 UI 见 [07 §8](./07-ui-spec.md)。

@@ -45,6 +45,9 @@ function scrollTo(id: string): void {
       <button type="button" @click="scrollTo('capabilities')">能力</button>
       <button type="button" @click="scrollTo('security')">安全</button>
       <button type="button" @click="scrollTo('download')">下载</button>
+      <button type="button" data-action="landing.marketplace" @click="navigate('marketplace')">
+        插件市场
+      </button>
     </nav>
 
     <span class="public-header-spacer" />

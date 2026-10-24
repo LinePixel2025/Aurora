@@ -29,13 +29,15 @@ const UsageView = defineAsyncComponent(() => import('./views/UsageView.vue'))
 const AutomationsView = defineAsyncComponent(() => import('./views/AutomationsView.vue'))
 const FilesView = defineAsyncComponent(() => import('./views/FilesView.vue'))
 const AdminView = defineAsyncComponent(() => import('./views/AdminView.vue'))
+const MarketplaceView = defineAsyncComponent(() => import('./views/MarketplaceView.vue'))
+const PluginsAdminView = defineAsyncComponent(() => import('./views/PluginsAdminView.vue'))
 
 onMounted(() => {
   void boot()
 })
 
 /** 未登录时仍可访问的路由（官网、登录页与设备授权页） */
-const publicRoutes = new Set(['home', 'login', 'device'])
+const publicRoutes = new Set(['home', 'login', 'device', 'marketplace'])
 const needsLogin = computed(() => booted.value && currentUser.value === null)
 const isDeviceRoute = computed(() => route.value.name === 'device')
 const isPublicShell = computed(() => needsLogin.value || isDeviceRoute.value)
@@ -46,6 +48,8 @@ const mobileNavOpen = ref(false)
 
 const activeView = computed(() => {
   if (route.value.name === 'device') return DeviceView
+  if (route.value.name === 'marketplace') return MarketplaceView
+  if (route.value.name === 'pluginsAdmin') return PluginsAdminView
   if (needsLogin.value) {
     if (route.value.name === 'login') return LoginView
     return LandingView
@@ -71,7 +75,10 @@ watch(
       navigate('console')
       return
     }
-    if (current === 'admin' && currentUser.value?.role !== 'admin') {
+    if (
+      (current === 'admin' || current === 'pluginsAdmin') &&
+      currentUser.value?.role !== 'admin'
+    ) {
       showNotice('需要管理员权限')
       navigate('console')
     }
@@ -95,6 +102,8 @@ const pageTitle = computed(() => {
     console: '控制台',
     usage: '用量',
     automations: '自动化',
+    marketplace: '插件市场',
+    pluginsAdmin: '插件管理',
     files: '文件',
     admin: '管理',
   }

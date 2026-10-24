@@ -7,7 +7,16 @@
 import { ref } from 'vue'
 
 export type RouteName =
-  'home' | 'login' | 'console' | 'usage' | 'admin' | 'files' | 'automations' | 'device'
+  | 'home'
+  | 'login'
+  | 'console'
+  | 'usage'
+  | 'admin'
+  | 'files'
+  | 'automations'
+  | 'device'
+  | 'marketplace'
+  | 'pluginsAdmin'
 
 export interface Route {
   name: RouteName
@@ -28,6 +37,8 @@ function parse(): Route {
     'files',
     'automations',
     'device',
+    'marketplace',
+    'pluginsAdmin',
   ]
   return {
     name: known.includes(name) ? name : 'home',

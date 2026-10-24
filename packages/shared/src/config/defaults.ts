@@ -227,6 +227,16 @@ export const DEFAULT_AGENT_BROWSER = {
   allowMedia: false,
 } as const
 
+/**
+ * 插件默认配置（v36，docs/14 §5）：总开关默认开（未安装插件时零行为变化），
+ * 无开发目录、无插件主题。
+ */
+export const DEFAULT_PLUGINS = {
+  enabled: true,
+  devDirs: [] as string[],
+  activeTheme: { pluginId: '', themeId: '' },
+} as const
+
 export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
   version: CONFIG_VERSION,
   general: {
@@ -376,6 +386,11 @@ export const DEFAULT_TOOLCHAIN_CONFIG: Settings = {
     enabled: true,
   },
   fileAwareness: { ...DEFAULT_FILE_AWARENESS },
+  plugins: {
+    enabled: DEFAULT_PLUGINS.enabled,
+    devDirs: [...DEFAULT_PLUGINS.devDirs],
+    activeTheme: { ...DEFAULT_PLUGINS.activeTheme },
+  },
 }
 
 /** 返回一份全新的默认配置（避免调用方共享同一引用）。 */

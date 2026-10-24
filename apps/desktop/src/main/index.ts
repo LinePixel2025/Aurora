@@ -225,6 +225,13 @@ import {
   type SettingsToolRegistry,
 } from './tools/index.js'
 import { registerBrowserTools } from './tools/index.js'
+// 插件系统（docs/14）：贡献在清单里声明，运行在独立 utilityProcess（非 OS 沙箱）
+import { PluginManager } from './plugins/manager.js'
+import { PluginMarketplaceClient } from './plugins/marketplace.js'
+import { createUtilityPluginProcessFactory } from './plugins/process.js'
+import { WidgetManager } from './plugins/widgets.js'
+import { registerPluginTools } from './plugins/contributions/tools.js'
+import { registerPluginPageProtocol, registerPluginPageScheme } from './page-protocol.js'
 import { BrowserAgentManager } from './browser-agent.js'
 import {
   createBrowserAgentPort,
@@ -428,6 +435,11 @@ let awarenessGlowHideTimer: ReturnType<typeof setTimeout> | undefined
 let gameMode: GameModeController | undefined
 let hotkeys: HotkeyManager | undefined
 let skillsService: SkillsService | undefined
+/** 插件管理器（docs/14）：安装态 / 进程 / 宿主 API；工具表由 `pluginTools` 同步 */
+let pluginManager: PluginManager | undefined
+let pluginTools: { sync(): string[] } | undefined
+/** 桌面小组件窗口（docs/14 §5.3）；插件系统未装配时为空 */
+let widgetManager: WidgetManager | undefined
 /** 当前生效的出网 fetch（按代理设置重建） */
 let netFetch: typeof fetch | undefined
 /** ClassIsland 桥接 provider（配置里选 classisland 且已填端点时才有值） */
@@ -677,6 +689,8 @@ if (!gotLock) {
   })
 
   app.setAppUserModelId('com.aurora.desktop')
+  // 插件页面的自定义协议必须在 ready 之前登记特权（docs/14 §2.4）
+  registerPluginPageScheme()
 
   app.whenReady().then(() => {
     void bootstrap().catch((error: unknown) => {
@@ -997,6 +1011,7 @@ async function bootstrap(): Promise<void> {
     settings,
     logger: logger.child('window'),
     preloadPath: join(__dirname, '../preload/index.js'),
+    pluginPagePreloadPath: join(__dirname, '../preload/plugin-page.js'),
     rendererUrl: process.env['ELECTRON_RENDERER_URL'],
     rendererDir,
     isDev,
@@ -1101,6 +1116,89 @@ async function bootstrap(): Promise<void> {
     onWriteError: (error) => logger?.error('会话写入失败', { error: error.message }),
   })
   tools = new ToolRegistry()
+  // 7.0 插件系统（docs/14）：清单优先 —— 先把已安装 / 开发目录插件的贡献读进内存并注册，
+  // 进程启动推迟到首次 `syncToolRegistries()` 之后（fire-and-forget），不拖慢启动。
+  pluginManager = new PluginManager({
+    userData,
+    hostVersion: app.getVersion(),
+    logger: logger.child('plugin'),
+    processFactory: createUtilityPluginProcessFactory(join(__dirname, 'plugin-host.js')),
+    getSettings: () => settings!.get(),
+    // 贡献变化（启停 / 信任 / 安装 / 开发目录热重载）→ 工具表 + Skill 目录 + 渲染层
+    onChanged: () => syncPluginContributions(),
+    onOpenPanel: (pluginId, panelId) => {
+      windows?.sendTo('chat', IPC.plugins.openPanel, { pluginId, panelId })
+    },
+    // `emitEvent` → 自动化引擎的 `plugin-event` 触发器（引擎在本函数末尾才装配，
+    // 这里用闭包现取，不能捕获构造瞬间的 undefined）
+    onAutomationEvent: (payload) => {
+      void automationEngine
+        ?.emitPluginEvent({ pluginId: payload.pluginId, event: payload.event })
+        .catch((error: unknown) => {
+          logger?.warn('插件事件自动化触发失败', {
+            pluginId: payload.pluginId,
+            event: payload.event,
+            error: String(error),
+          })
+        })
+    },
+    notify: (input) => notifications?.notify(input) ?? false,
+    resolveFetch: () => netFetch,
+    // 插件主动推送（`ctx.ui.panelEvent`）：桌面小组件走自己的窗口，其余走对应渲染窗口。
+    // 同一事件只投给发起插件自己的目标（manager 已校验归属）。
+    onPanelEvent: (event) => {
+      if (event.widgetId !== undefined) {
+        const info = pluginManager
+          ?.widgetContributions()
+          .find((item) => item.pluginId === event.pluginId && item.id === event.widgetId)
+        if (info?.slot === 'desktop') {
+          widgetManager?.sendTo(event.pluginId, event.widgetId, IPC.plugins.widgetEvent, event)
+        } else {
+          windows?.sendTo('edge-bar', IPC.plugins.widgetEvent, event)
+        }
+        return
+      }
+      windows?.sendTo('chat', IPC.plugins.panelEvent, event)
+    },
+  })
+  await pluginManager.init()
+  // 桌面小组件（docs/14 §5.3）：按布局文件创建 / 销毁浮动卡片；布局独立于 settings。
+  widgetManager = new WidgetManager({
+    userData,
+    logger: logger.child('plugin-widget'),
+    isDev,
+    preloadPath: join(__dirname, '../preload/index.js'),
+    pluginPagePreloadPath: join(__dirname, '../preload/plugin-page.js'),
+    rendererUrl: process.env['ELECTRON_RENDERER_URL'] ?? '',
+    rendererDir,
+    contributions: () => pluginManager?.widgetContributions() ?? [],
+  })
+  await widgetManager.init()
+  widgetManager.sync()
+  // 插件页面协议（`aurora-plugin://`）：路径 realpath 前缀 + MIME 白名单 + CSP（docs/14 §2.4）
+  registerPluginPageProtocol(pluginManager, logger.child('plugin-page'))
+  // 插件市场客户端（P4）：公开列表 / 下载校验 / 更新检查；Center 未配置时如实返回空态
+  const pluginMarketplace = new PluginMarketplaceClient({
+    manager: pluginManager,
+    getCenter: () => {
+      const current = settings!.get()
+      return {
+        enabled: current.center.enabled,
+        serverUrl: current.center.serverUrl,
+        token: settings!.getSecret('center.token'),
+      }
+    },
+    fetchImpl: () => netFetch,
+    logger: logger.child('plugin-market'),
+  })
+  // 插件 Skill 目录参与 `builtin → plugin → user` 扫描（内置同名优先、用户同名覆盖插件）
+  await skillsService.setPluginDirs(pluginManager.skillDirs())
+  pluginTools = registerPluginTools({
+    tools,
+    manager: pluginManager,
+    getSettings: () => settings!.get(),
+    logger: logger.child('tools'),
+  })
   const skillBridge = new SkillsBridge(skills)
   skillBridge.registerInto(tools)
 
@@ -1720,6 +1818,8 @@ async function bootstrap(): Promise<void> {
     },
   })
   syncToolRegistries()
+  // 首次注册完成后启动 `activation: "startup"` 的插件进程（fire-and-forget，失败只标状态）
+  void pluginManager?.start()
 
   const mcpLogger = logger.child('mcp')
   mcp = new McpController({
@@ -2592,6 +2692,21 @@ async function bootstrap(): Promise<void> {
       const subject = classroom.subjects.find((item) => item.name === subjectName)
       return resolveSubjectFolder(classroom.watchDir, subject?.folder ?? '')
     },
+    // 插件动作（docs/14 §3.5）：插件未装配 / 已停用 / 执行失败都回落成步骤错误，
+    // 由引擎落进运行历史（绝不抛错拖垮后续步骤）。
+    pluginAction: async (input) => {
+      if (pluginManager === undefined) return { ok: false, error: '插件系统尚未装配' }
+      try {
+        const result = await pluginManager.invokeAutomationAction(
+          input.pluginId,
+          input.action,
+          input.params,
+        )
+        return { ok: true, ...(result.summary === undefined ? {} : { summary: result.summary }) }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    },
     logger: logger.child('automation-actions'),
   }
   automationEngine = new AutomationEngine({
@@ -2643,6 +2758,10 @@ async function bootstrap(): Promise<void> {
     stt: sttService,
     imagegen: imageGenService,
     skills: skillsService,
+    // 插件系统（docs/14）：plugins:* 的 IPC 切片；未装配时各通道如实回 E_INVALID_STATE
+    plugins: pluginManager,
+    widgets: widgetManager,
+    pluginMarketplace,
     sessions,
     sessionTitles,
     readDisplayImage: async ({ sessionId, imageId }) => {
@@ -2785,6 +2904,10 @@ async function bootstrap(): Promise<void> {
       if (!next.general.edgeBar.enabled) windows?.hide('edge-bar')
       // Skill 用户目录可能被改（`skills.userDir`），按新配置重解析并重扫
       void skillsService?.reconfigure(next)
+      // 插件总开关 / 开发目录：停用全部或重载开发目录；贡献同步由 manager 的 onChanged 触发
+      void pluginManager?.onSettingsChanged()
+      // 宿主事件（docs/14 §3.5）：载荷暂为空对象，插件应重新读自己关心的配置
+      void pluginManager?.deliverEvent('settings.changed', {})
       syncLaunchAtLogin(next.general.launchAtLogin)
       // 电脑操控工具（docs/06 §11）+ `set_setting`（docs/06 §12）：开关 / 超时 / 上限改完立即生效
       // ——重建工具实例，工具表变化会进下一次请求的系统提示词，无需重启。
@@ -2964,6 +3087,20 @@ async function runCapture(dir: string): Promise<void> {
   // 不重读的话「夹具写了、界面照样是空的」（本场景首跑实测就是 0 条）。
   await seedAutomationFixture(app.getPath('userData'))
   await automationEngine?.reload()
+  // 插件截图现场（P3，docs/14）：安装仓库里的示例插件。打包产物里没有 examples → 跳过，
+  // 插件场景会如实报 FAIL（不是静默通过）。
+  const capturePluginDir = join(__dirname, '../../../../examples/plugins/hello-aurora')
+  if (pluginManager !== undefined && existsSync(capturePluginDir)) {
+    try {
+      await pluginManager.install({ kind: 'file', path: capturePluginDir })
+      const deadline = Date.now() + 20_000
+      while (Date.now() < deadline && pluginManager.get('com.example.hello')?.status !== 'ready') {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+    } catch (error) {
+      logger?.warn('截图：示例插件安装失败', { error: String(error) })
+    }
+  }
   // `ask_user` 提问卡片场景（docs/06 §21）需要**主进程发起一次真实提问**：
   // capture.ts 拿不到这里的服务实例（循环依赖），所以由这边反向注册一个 spawner。
   // 注册的是同一个 `askUserService`（内核端口与 ipc 依赖的那个实例），
@@ -3161,6 +3298,9 @@ async function runCapture(dir: string): Promise<void> {
     dir,
     targets: plan,
     manager,
+    widgetWindow: (pluginId, widgetId) => widgetManager?.windowOf(pluginId, widgetId),
+    widgetLoaded: (pluginId, widgetId) =>
+      widgetManager?.whenLoaded(pluginId, widgetId) ?? Promise.resolve(),
     logger: logger ?? undefined,
     // `delayMs` 不在这里传：它是「等两帧渲染后再补多久」的 settle 值，
     // 缺省由 capture.ts 定义（原先写死 700 是"固定等待"，已随 waitForPaint 一起改语义）。
@@ -3343,9 +3483,16 @@ async function runSmokeTest(userData: string): Promise<void> {
   })
 
   let payload: { results?: Array<{ name: string; ok: boolean; detail: string }>; fatal?: string }
+  // 示例插件目录只用于自测安装链路（仓库内相对位置；打包产物里不存在 → 跳过插件断言）
+  const pluginExampleDir = join(__dirname, '../../../../examples/plugins/hello-aurora')
   try {
     payload = (await target.webContents.executeJavaScript(
-      smokeScript(stub.baseUrl, STUB_MODEL, watchDir),
+      smokeScript(
+        stub.baseUrl,
+        STUB_MODEL,
+        watchDir,
+        existsSync(pluginExampleDir) ? pluginExampleDir : '',
+      ),
       true,
     )) as typeof payload
   } catch (error) {
@@ -5888,6 +6035,13 @@ async function shutdown(): Promise<void> {
   officePool?.close()
   // 会话与任务清单必须在退出前收尾（docs/06 §4 / §18，同一套防抖 + flush 约定）
   skillsService?.stopWatching()
+  // 插件子进程先停（拒绝在途 RPC、释放句柄），再继续落盘
+  await widgetManager?.dispose().catch((error: unknown) => {
+    logger?.warn('退出前关闭桌面小组件失败', { error: String(error) })
+  })
+  await pluginManager?.stopAll().catch((error: unknown) => {
+    logger?.warn('退出前停止插件进程失败', { error: String(error) })
+  })
   await sessions?.flush().catch((error: unknown) => {
     logger?.warn('退出前落盘会话失败', { error: String(error) })
   })
@@ -6193,6 +6347,28 @@ function syncToolRegistries(): void {
   automationTools?.sync()
   // 文件自感知工具（docs/06 §26）：启用 / 授权 / 知识库可用性变化即时生效
   awarenessTools?.sync()
+  // 插件工具（docs/14）：`plugin.<id>.<name>`，默认 confirm；只读档只注册 readonly 工具
+  pluginTools?.sync()
+}
+
+/**
+ * 插件贡献变化（启停 / 信任 / 安装 / 开发目录热重载）的统一落点。
+ *
+ * 工具表重建是同步的；Skill 目录重扫是异步的（`setPluginDirs` 内部会重扫并广播），
+ * 因此这里不 await —— 管理器本身也不等 IPC 广播。
+ */
+function syncPluginContributions(): void {
+  syncToolRegistries()
+  if (pluginManager === undefined) return
+  if (skillsService !== undefined) {
+    void skillsService.setPluginDirs(pluginManager.skillDirs()).catch((error: unknown) => {
+      logger?.warn('插件 Skill 目录重扫失败', { error: String(error) })
+    })
+  }
+  // 启停 / 卸载 / 崩溃都会走到这里：同步创建或关闭桌面小组件窗口。
+  widgetManager?.sync()
+  windows?.sendTo('chat', IPC.plugins.changed, {})
+  windows?.sendTo('settings', IPC.plugins.changed, {})
 }
 
 function syncClassification(): void {

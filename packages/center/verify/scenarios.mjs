@@ -416,7 +416,7 @@ export const SCENARIOS = [
       return verdict(
         {
           landing: reading.landing === 1,
-          nav: reading.nav === 3,
+          nav: reading.nav >= 4,
           headline: reading.headline.includes('Windows'),
           download: reading.downloadHref !== '',
           previewLoaded: reading.previewLoaded,
@@ -1723,6 +1723,62 @@ export const SCENARIOS = [
           metaHasStatus: replay.meta.includes('成功'),
         },
         { replay },
+      )
+    },
+  },
+
+  // ── 26b. 插件市场（公开浏览）与插件管理（管理员） ──
+  {
+    name: 'marketplace',
+    async run(ctx) {
+      await fresh(ctx, { hash: '#/marketplace', expect: '[data-route="marketplace"]' })
+      await ctx.page.waitForSelector('[data-plugin-id="com.example.hello"]', { timeout: TIMEOUT })
+      const reading = await ctx.page.evaluate(() => {
+        const card = document.querySelector('[data-plugin-id="com.example.hello"]')
+        const link = card?.querySelector('a.download')
+        return {
+          cards: document.querySelectorAll('[data-plugin-id]').length,
+          name: card?.querySelector('h2')?.textContent?.trim() ?? '',
+          version: card?.querySelector('.card-version')?.textContent?.trim() ?? '',
+          downloadHref: link?.getAttribute('href') ?? '',
+          summary: card?.querySelector('.card-summary')?.textContent?.trim() ?? '',
+        }
+      })
+      return verdict(
+        {
+          cards: reading.cards >= 1,
+          name: reading.name === 'Hello Aurora',
+          version: reading.version === 'v1.0.0',
+          download: reading.downloadHref.includes('/api/plugins/com.example.hello/download'),
+          summary: reading.summary.length > 0,
+        },
+        { reading },
+      )
+    },
+  },
+  {
+    name: 'plugins-admin',
+    async run(ctx) {
+      await fresh(ctx, { hash: '#/pluginsAdmin', expect: '[data-route="pluginsAdmin"]' })
+      await ctx.page.waitForSelector('[data-plugin-id="com.example.hello"]', { timeout: TIMEOUT })
+      const reading = await ctx.page.evaluate(() => {
+        const row = document.querySelector('[data-plugin-id="com.example.hello"]')
+        return {
+          rows: document.querySelectorAll('[data-plugin-id]').length,
+          uploadInput: document.querySelectorAll('input[type="file"]').length,
+          versionText: row?.querySelector('.version-list')?.textContent?.trim() ?? '',
+          title:
+            document.querySelector('[data-route="pluginsAdmin"] h1')?.textContent?.trim() ?? '',
+        }
+      })
+      return verdict(
+        {
+          rows: reading.rows >= 1,
+          upload: reading.uploadInput === 1,
+          version: reading.versionText.includes('v1.0.0'),
+          title: reading.title === '插件管理',
+        },
+        { reading },
       )
     },
   },
@@ -3530,6 +3586,33 @@ export const SCENARIOS = [
         },
         { reading },
         ['time 场景只读令牌与计算值，不依赖观感：任一环失效都会让这四个读数至少一个不成立'],
+      )
+    },
+  },
+  // 公开市场：未登录也能浏览与下载（放在最后，场景本身会清 localStorage）
+  {
+    name: 'marketplace-public',
+    async run(ctx) {
+      await freshLoggedOut(ctx, {
+        hash: '#/marketplace',
+        expect: '[data-route="marketplace"]',
+      })
+      await ctx.page.waitForSelector('[data-plugin-id="com.example.hello"]', { timeout: TIMEOUT })
+      const reading = await ctx.page.evaluate(() => {
+        const card = document.querySelector('[data-plugin-id="com.example.hello"]')
+        return {
+          cards: document.querySelectorAll('[data-plugin-id]').length,
+          downloadHref: card?.querySelector('a.download')?.getAttribute('href') ?? '',
+          loginLink: document.querySelectorAll('[data-action="landing.login"]').length,
+        }
+      })
+      return verdict(
+        {
+          cards: reading.cards >= 1,
+          download: reading.downloadHref.includes('/api/plugins/com.example.hello/download'),
+          publicShell: reading.loginLink >= 1,
+        },
+        { reading },
       )
     },
   },

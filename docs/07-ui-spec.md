@@ -2448,3 +2448,29 @@ Center 开关，官方卡片继续展示并标记为未作为默认；目录不�
 语言模型仍只通过会话模型选择器覆盖，不在 Provider 页显示。Center Web 新增 `#/usage`：用户看本人，管理员可按用户、
 设备、模型筛选全站；两页均显示总量卡、输入/输出/缓存折线图与最近记录。管理页新增
 官方模型配置与 Release 管理卡。
+
+## 8. 插件界面（v36）
+
+- **设置 → 插件**（侧栏「扩展」组）三 tab：已安装 / 市场 / 开发。
+  - 已安装：总开关、插件主题选择、安装确认（权限 / 工具 / SHA-256）、插件详情
+    （启停 / 信任 / 重启 / 回滚 / 打开目录 / 日志 / 卸载）、桌面小组件「显示在桌面」开关、
+    配置表单（文本 / 数字 / 布尔 / 下拉 / 多行）；
+  - 市场：Center 公开列表，显示更新标记与「安装 / 更新」；未配置 Center 时明确空态；
+  - 开发：`plugins.devDirs` 增删（≤ 8），目录内插件原地加载、改文件自动重启。
+- **右栏插件标签**：`CtxTabKind` 新增 `plugin`，同一 `(pluginId, panelId)` 只开一个标签；
+  「＋」菜单新增「插件面板」分组（图标走白名单，未知回落 `Puzzle`）；
+  插件停用 / 卸载 / 崩溃后对应标签自动关闭。
+- **声明式面板**（`PluginPanel.vue` + `PluginSchemaRenderer.vue`）：只渲染受控组件，
+  没有 `v-html`；按钮 `confirm` 用面板底部确认条（不用 `window.confirm`）。
+- **页面型面板**（`PluginPageFrame.vue`）：沙箱 webview，专用 preload 只暴露
+  `window.auroraPlugin.request/onEvent`；页面 RPC 由宿主带 guest id 中继，主进程校验归属。
+- **插件主题**：令牌内联到 `document.documentElement`，在 `applyAppearance()` 之后应用；
+  切换 / 卸载时清理上一组令牌。只允许表面 / 文字 / 边框 / 圆角，强调色与毛玻璃仍由外观设置决定。
+- **桌面小组件**：每个可见 widget 一张无边框 / 透明 / 置顶 / 不占任务栏的浮动卡片，页头为
+  `-webkit-app-region: drag` 拖动区；大小最小 120×80，位置夹到显示器 workArea。
+  窗口内容复用 `PluginSchemaRenderer`（声明式）或 `PluginPageFrame`（页面型）。
+- **提示条小组件**：展开面板底部「小组件」区（`edge-bar.plugin-widgets`），只渲染声明式条目，
+  单条最高 220px 内部滚动；无 widget 时整块不渲染，不改变提示条窗口 shape。
+- 截图锚点：`chat-plugin-panel` / `chat-plugin-page` / `settings-plugins-installed` /
+  `settings-plugins-marketplace` / `widget-desktop-plugin` / `edge-bar-plugin-widget` /
+  `chat-plugin-panel-push`（另含设置页深链 `settings-plugins.png`）。

@@ -130,6 +130,108 @@ describe('SkillsRegistry', () => {
   })
 })
 
+describe('SkillsRegistry 插件技能', () => {
+  let pluginRoot = ''
+  let helloDir = ''
+  let batchDir = ''
+
+  const SKILL = (name: string, description = '插件技能') =>
+    `---\nname: ${name}\ndescription: ${description}\n---\n插件指令\n`
+
+  beforeAll(async () => {
+    pluginRoot = join(root, 'plugins')
+    // 清单形态：contributes.skills 直接指向含 SKILL.md 的技能目录
+    helloDir = join(pluginRoot, 'hello', 'skills', 'hello')
+    await fs.mkdir(helloDir, { recursive: true })
+    await fs.writeFile(join(helloDir, 'SKILL.md'), SKILL('hello-aurora'), 'utf8')
+    // 父目录形态：目录下是一层技能子目录（与内置 skills/ 同构）
+    batchDir = join(pluginRoot, 'batch', 'skills')
+    await fs.mkdir(join(batchDir, 'alpha'), { recursive: true })
+    await fs.writeFile(join(batchDir, 'alpha', 'SKILL.md'), SKILL('plugin-alpha'), 'utf8')
+    // 与内置同名（应被跳过）、与另一个插件同名（先到先得）
+    await fs.mkdir(join(pluginRoot, 'shadow', 'file-classify'), { recursive: true })
+    await fs.writeFile(
+      join(pluginRoot, 'shadow', 'file-classify', 'SKILL.md'),
+      SKILL('file-classify', '插件想遮蔽内置'),
+      'utf8',
+    )
+    await fs.mkdir(join(pluginRoot, 'dup', 'hello'), { recursive: true })
+    await fs.writeFile(
+      join(pluginRoot, 'dup', 'hello', 'SKILL.md'),
+      SKILL('hello-aurora', '后到者'),
+      'utf8',
+    )
+  })
+
+  it('技能目录与父目录两种形态都能扫到，source / pluginId 正确', async () => {
+    const registry = new SkillsRegistry({
+      builtinDir,
+      pluginDirs: [
+        { dir: helloDir, pluginId: 'com.example.hello' },
+        { dir: batchDir, pluginId: 'com.example.batch' },
+      ],
+    })
+    const report = await registry.scan()
+    expect(report.skills.map((s) => s.name)).toEqual([
+      'file-classify',
+      'hello-aurora',
+      'plugin-alpha',
+      'system-status',
+    ])
+    const hello = registry.get('hello-aurora')
+    expect(hello?.source).toBe('plugin')
+    expect(hello?.pluginId).toBe('com.example.hello')
+    expect(hello?.dir).toBe(helloDir)
+    expect(registry.get('plugin-alpha')?.pluginId).toBe('com.example.batch')
+  })
+
+  it('内置同名不被插件遮蔽；插件之间先到先得并记 issue', async () => {
+    const registry = new SkillsRegistry({
+      builtinDir,
+      pluginDirs: [
+        { dir: join(pluginRoot, 'shadow', 'file-classify'), pluginId: 'com.example.shadow' },
+        { dir: helloDir, pluginId: 'com.example.hello' },
+        { dir: join(pluginRoot, 'dup', 'hello'), pluginId: 'com.example.dup' },
+      ],
+    })
+    const report = await registry.scan()
+    expect(registry.get('file-classify')?.source).toBe('builtin')
+    expect(registry.get('hello-aurora')?.pluginId).toBe('com.example.hello')
+    expect(report.issues).toHaveLength(2)
+    expect(report.issues.every((issue) => issue.error.includes('重名'))).toBe(true)
+  })
+
+  it('用户同名技能覆盖插件技能', async () => {
+    const overrideUserDir = join(root, 'plugin-user')
+    await fs.mkdir(join(overrideUserDir, 'hello'), { recursive: true })
+    await fs.writeFile(
+      join(overrideUserDir, 'hello', 'SKILL.md'),
+      SKILL('hello-aurora', '用户版本'),
+      'utf8',
+    )
+    const registry = new SkillsRegistry({
+      builtinDir,
+      userDir: overrideUserDir,
+      pluginDirs: [{ dir: helloDir, pluginId: 'com.example.hello' }],
+    })
+    await registry.scan()
+    expect(registry.get('hello-aurora')?.source).toBe('user')
+    expect(registry.get('hello-aurora')?.description).toBe('用户版本')
+  })
+
+  it('setPluginDirs 为空后重扫，插件技能消失', async () => {
+    const registry = new SkillsRegistry({
+      builtinDir,
+      pluginDirs: [{ dir: helloDir, pluginId: 'com.example.hello' }],
+    })
+    await registry.scan()
+    expect(registry.get('hello-aurora')).toBeDefined()
+    registry.setPluginDirs([])
+    await registry.scan()
+    expect(registry.get('hello-aurora')).toBeUndefined()
+  })
+})
+
 describe('ToolRegistry', () => {
   const params: LlmToolParameterSchema = { type: 'object', properties: {} }
   const makeTool = (name: string) => ({

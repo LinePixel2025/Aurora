@@ -18,6 +18,7 @@ import {
   DEFAULT_CLASSISLAND_SCHEDULE,
   DEFAULT_FILE_AWARENESS,
   DEFAULT_IMAGEGEN,
+  DEFAULT_PLUGINS,
   DEFAULT_REASONING_EFFORT,
   DEFAULT_STT,
   DEFAULT_TTS,
@@ -1232,6 +1233,32 @@ const migrateV34ToV35: Migration = {
   },
 }
 
+/**
+ * v35 → v36：新增 `plugins` 组（插件系统，docs/14 §5）。
+ *
+ * 口径同 v19 → v20 等步骤：只在缺失时补默认；已有 `plugins` 原样保留、
+ * 缺字段由 Schema 默认值补齐，因此幂等。
+ */
+const migrateV35ToV36: Migration = {
+  from: 35,
+  to: 36,
+  describe: 'v35 → v36：新增 plugins（插件总开关 / 开发目录 / 当前主题）',
+  transform(raw) {
+    const next: Record<string, unknown> = { ...raw }
+    const plugins = asRecord(next['plugins'])
+    next['plugins'] = {
+      ...DEFAULT_PLUGINS,
+      ...(plugins ?? {}),
+      activeTheme: {
+        ...DEFAULT_PLUGINS.activeTheme,
+        ...(asRecord(plugins?.['activeTheme']) ?? {}),
+      },
+    }
+    next['version'] = 36
+    return next
+  },
+}
+
 export const MIGRATIONS: Migration[] = [
   migrateV0ToV1,
   migrateV1ToV2,
@@ -1268,6 +1295,7 @@ export const MIGRATIONS: Migration[] = [
   migrateV32ToV33,
   migrateV33ToV34,
   migrateV34ToV35,
+  migrateV35ToV36,
 ]
 
 export interface MigrationOutcome {

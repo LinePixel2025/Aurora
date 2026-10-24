@@ -54,6 +54,7 @@ export const SETTINGS_PAGE_IDS = [
   'agent',
   'awareness',
   'center',
+  'plugins',
   'advanced',
 ] as const
 
@@ -121,10 +122,15 @@ export const ASK_USER_CAPTURE_QUESTION: AskUserQuestion = {
 /** 第二个选项的 label（探针用它断言"点哪个就回哪个"） */
 export const ASK_USER_CAPTURE_SECOND = ASK_USER_CAPTURE_QUESTION.options?.[1]?.label ?? ''
 
-export type CaptureWindowName = WindowName | 'awareness-glow'
+export type CaptureWindowName = WindowName | 'awareness-glow' | 'widget'
 
 export interface CaptureTarget {
   name: CaptureWindowName
+  /**
+   * 桌面小组件窗口（不在 `WindowName` 里）：由 `CaptureOptions.widgetWindow` 现取。
+   * 给了这一项就不再走 `WindowManager.ensure/show`。
+   */
+  widget?: { pluginId: string; widgetId: string }
   /** 输出文件名（不含目录），默认 `<name>.png` */
   file?: string
   /** 需要深链时附带（如设置页 `{ page: 'llm' }`） */
@@ -173,6 +179,10 @@ export interface CaptureOptions {
   dir: string
   targets: CaptureTarget[]
   manager: WindowManager
+  /** 桌面小组件窗口取用（插件系统未装配时为空 → 对应场景如实 FAIL） */
+  widgetWindow?: (pluginId: string, widgetId: string) => BrowserWindow | undefined
+  /** 等小组件窗口首次加载结束 */
+  widgetLoaded?: (pluginId: string, widgetId: string) => Promise<void>
   logger?: Logger
   /** 每张截图前的等待（默认 700ms，等过渡动画结束） */
   delayMs?: number
@@ -276,24 +286,36 @@ export async function captureWindows(options: CaptureOptions): Promise<CaptureRe
       // 3) 后续页面复用同一个窗口，只走 reload。
       const requestedName = target.name
       const internalGlow = requestedName === 'awareness-glow'
+      const widgetTarget = target.widget
+      // 走 WindowManager 的目标名（widget 目标单独走下面的分支，不会到这里）
+      const windowName = requestedName as WindowName
       let win: BrowserWindow
-      if (internalGlow) {
+      if (widgetTarget !== undefined) {
+        const resolved = options.widgetWindow?.(widgetTarget.pluginId, widgetTarget.widgetId)
+        if (resolved === undefined) throw new Error('桌面小组件窗口不存在')
+        win = resolved
+        await options.widgetLoaded?.(widgetTarget.pluginId, widgetTarget.widgetId)
+      } else if (internalGlow) {
         win = manager.ensureAwarenessGlowForCapture()
         await manager.whenAwarenessGlowLoaded()
       } else {
-        win = manager.ensure(requestedName)
-        await manager.whenLoaded(requestedName)
+        win = manager.ensure(windowName)
+        await manager.whenLoaded(windowName)
       }
-      if (target.query !== undefined) {
+      if (widgetTarget !== undefined) {
+        await target.prepare?.()
+      } else if (target.query !== undefined) {
         if (internalGlow) await manager.reloadAwarenessGlow(target.query)
-        else await manager.reload(requestedName, target.query)
+        else await manager.reload(windowName, target.query)
       }
-      await target.prepare?.()
-      if (internalGlow) manager.showAwarenessGlow()
-      else manager.show(requestedName)
-      // ensure() 里的加载是 fire-and-forget，必须显式等它结束（否则会截到空图）
-      if (internalGlow) await manager.whenAwarenessGlowLoaded()
-      else await manager.whenLoaded(requestedName)
+      if (widgetTarget === undefined) {
+        await target.prepare?.()
+        if (internalGlow) manager.showAwarenessGlow()
+        else manager.show(windowName)
+        // ensure() 里的加载是 fire-and-forget，必须显式等它结束（否则会截到空图）
+        if (internalGlow) await manager.whenAwarenessGlowLoaded()
+        else await manager.whenLoaded(windowName)
+      }
       if (target.act !== undefined) {
         await wait(60)
         await win.webContents.executeJavaScript(target.act, true)
@@ -3188,7 +3210,262 @@ export const CHAT_CTX_EMPTY_ACT = `(async () => {
 })()`
 
 /**
- * 无标签页工具快捷卡片的断言（2026-10-03，docs/07 §2.3）。
+ * 插件声明式面板 / 沙箱页面（P3，docs/14 §3.4）。
+ *
+ * 示例插件由 `runCapture` 预装（dev 仓库内的 examples/plugins/hello-aurora）；
+ * act 走真实「＋」菜单点击，check 读面板文本 / 在 guest 里读页面文本 —— 面板与页面
+ * 两条渲染路径都要求真实 IPC（`plugins:panelData` / `plugins:pageRpc`）走通。
+ */
+export const CHAT_PLUGIN_PANEL_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const click = (selector) => {
+    const el = document.querySelector(selector)
+    if (el === null) return false
+    el.click()
+    return true
+  }
+  if (!click('[data-field="chat.ctx-new-tab"]')) return { ok: false, reason: '新建标签按钮缺失' }
+  await wait(250)
+  if (!click('[data-field="chat.ctx-new-plugin-com.example.hello.board"]')) {
+    return { ok: false, reason: '插件面板菜单项缺失' }
+  }
+  await wait(900)
+  return { ok: document.querySelector('.plugin-panel') !== null }
+})()`
+
+export const CHAT_PLUGIN_PANEL_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const panel = document.querySelector('.plugin-panel')
+    const text = panel === null ? '' : panel.innerText
+    if (panel !== null && text.includes('Hello Aurora') && text.includes('计数 +1')) {
+      return { pass: true, detail: text.slice(0, 120) }
+    }
+    await wait(150)
+  }
+  const panel = document.querySelector('.plugin-panel')
+  return {
+    pass: false,
+    reason: '插件声明式面板没有渲染出期望内容',
+    detail: panel === null ? 'no .plugin-panel' : panel.innerText.slice(0, 200),
+  }
+})()`
+
+/** 提示条小组件场景：先走真实 hover 展开，再把面板滚到底部让「小组件」区完整入镜。 */
+export const EDGE_BAR_PLUGIN_WIDGET_ACT = `(async () => {
+  try {
+    const el = document.querySelector('.edge')
+    if (!el) return { hovered: false, reason: 'no .edge' }
+    el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, pointerType: 'mouse' }))
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    const scroll = document.querySelector('.panel-scroll')
+    if (scroll !== null) scroll.scrollTop = scroll.scrollHeight
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    // 小组件是挂载后才异步拉取的：高度稳定前先滚一次可能没到底，这里再补一次
+    if (scroll !== null) scroll.scrollTop = scroll.scrollHeight
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    return { hovered: true }
+  } catch (error) {
+    return { hovered: false, reason: String(error) }
+  }
+})()`
+
+/**
+ * 面板事件推送（docs/14 §5.5）：打开声明式面板 → 插件 `ctx.ui.panelEvent` 推送 →
+ * 面板不点刷新就换上新 schema。act 里记下推送前后的计数，check 在截图后读回。
+ */
+export const CHAT_PLUGIN_PANEL_PUSH_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const click = (selector) => {
+    const el = document.querySelector(selector)
+    if (el === null) return false
+    el.click()
+    return true
+  }
+  if (!click('[data-field="chat.ctx-new-tab"]')) return { ok: false, reason: '新建标签按钮缺失' }
+  await wait(250)
+  if (!click('[data-field="chat.ctx-new-plugin-com.example.hello.board"]')) {
+    return { ok: false, reason: '插件面板菜单项缺失' }
+  }
+  await wait(600)
+  const readCount = () => {
+    const values = [...document.querySelectorAll('.plugin-panel .kv-value')].map(
+      (node) => node.textContent?.trim() ?? '',
+    )
+    return values[0] ?? ''
+  }
+  const before = readCount()
+  const pushed = await window.aurora.plugins.runCommand({
+    pluginId: 'com.example.hello',
+    name: 'hello-push',
+  })
+  let after = before
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    after = readCount()
+    if (after !== '' && after !== before) break
+    await wait(100)
+  }
+  window.__auroraPushProbe = { before, after, pushed: pushed && pushed.ok === true }
+  return { ok: after !== before, before, after }
+})()`
+
+export const CHAT_PLUGIN_PANEL_PUSH_CHECK = `(() => {
+  const probe = window.__auroraPushProbe ?? {}
+  const panel = document.querySelector('.plugin-panel')
+  const text = panel === null ? '' : panel.innerText
+  return {
+    pass:
+      panel !== null &&
+      probe.pushed === true &&
+      probe.before !== '' &&
+      probe.after !== probe.before &&
+      text.includes('计数'),
+    probe,
+    detail: text.slice(0, 180),
+  }
+})()`
+
+/** 桌面小组件（docs/14 §5.3）：独立窗口里的浮动卡片。 */
+export const WIDGET_DESKTOP_PLUGIN_CHECK = `(() => {
+  const card = document.querySelector('.widget-card')
+  const text = card === null ? '' : card.innerText
+  return {
+    pass:
+      card !== null &&
+      text.includes('本周值日') &&
+      text.includes('完成一项') &&
+      (card.dataset.widgetId ?? '') === 'duty-week',
+    widgetId: card === null ? '' : card.dataset.widgetId ?? '',
+    detail: text.slice(0, 160),
+  }
+})()`
+
+/** 提示条小组件（docs/14 §5.4）：展开面板底部、只渲染声明式条目、单条高度有上限。 */
+export const EDGE_BAR_PLUGIN_WIDGET_SCRIPT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const section = document.querySelector('[data-field="edge-bar.plugin-widgets"]')
+    const item = section === null ? null : section.querySelector('.widget-item')
+    if (section !== null && item !== null) {
+      const rect = item.getBoundingClientRect()
+      const text = section.innerText
+      return {
+        pass:
+          text.includes('事务') &&
+          rect.height > 0 &&
+          rect.height <= 220 &&
+          document.querySelector('webview') === null,
+        detail: text.slice(0, 160),
+        height: Math.round(rect.height),
+      }
+    }
+    await wait(150)
+  }
+  return { pass: false, reason: '提示条没有渲染插件小组件' }
+})()`
+
+export const CHAT_PLUGIN_PAGE_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const click = (selector) => {
+    const el = document.querySelector(selector)
+    if (el === null) return false
+    el.click()
+    return true
+  }
+  if (!click('[data-field="chat.ctx-new-tab"]')) return { ok: false, reason: '新建标签按钮缺失' }
+  await wait(250)
+  if (!click('[data-field="chat.ctx-new-plugin-com.example.hello.info"]')) {
+    return { ok: false, reason: '插件页面菜单项缺失' }
+  }
+  await wait(1800)
+  return { ok: document.querySelector('webview[src^="aurora-plugin://"]') !== null }
+})()`
+
+export const CHAT_PLUGIN_PAGE_CHECK = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const withTimeout = (promise, ms) =>
+    Promise.race([
+      promise,
+      new Promise((resolve) => setTimeout(() => resolve('__TIMEOUT__'), ms)),
+    ])
+  let view = null
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    view = document.querySelector('webview[src^="aurora-plugin://"]')
+    if (view !== null) break
+    await wait(150)
+  }
+  if (view === null) return { pass: false, reason: '插件页面 webview 没有出现' }
+  const info = { url: '', loading: null, src: '', outer: '', guest: -1, error: '' }
+  try {
+    info.url = view.getURL()
+    info.loading = view.isLoading()
+    info.src = view.src
+    info.outer = view.outerHTML.slice(0, 300)
+    try {
+      info.guest = view.getWebContentsId()
+    } catch (error) {
+      info.error = String(error)
+    }
+  } catch (error) {
+    info.url = 'getURL failed: ' + String(error)
+  }
+  try {
+    const text = await withTimeout(
+      view.executeJavaScript(
+        '(async () => {' +
+          'for (let i = 0; i < 20; i += 1) {' +
+          '  const t = document.body ? document.body.innerText : "";' +
+          '  if (t.indexOf("计数：") >= 0) return t;' +
+          '  await new Promise((r) => setTimeout(r, 150));' +
+          '}' +
+          'return document.body ? document.body.innerText : "";' +
+          '})()',
+      ),
+      5000,
+    )
+    return {
+      pass:
+        typeof text === 'string' && text.includes('Hello Aurora') && text.includes('计数：'),
+      detail: { info, text: typeof text === 'string' ? text.slice(0, 160) : String(text) },
+    }
+  } catch (error) {
+    return { pass: false, reason: String(error), detail: { info } }
+  }
+})()`
+
+/** 设置页插件「已安装」视图（P3）：示例插件由 runCapture 预装 */
+export const SETTINGS_PLUGINS_INSTALLED_CHECK = `(() => {
+  const text = document.body ? document.body.innerText : ''
+  const tab = document.querySelector('[data-field="plugins.tab-installed"]')
+  const active = tab !== null && tab.classList.contains('active')
+  return {
+    pass: active && text.includes('Hello Aurora') && text.includes('安装插件包'),
+    detail: text.slice(0, 200),
+  }
+})()`
+
+/** 设置页插件「市场」tab（P3；Center 未接入时是明确空态，不放假数据） */
+export const SETTINGS_PLUGINS_MARKET_ACT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const tab = document.querySelector('[data-field="plugins.tab-market"]')
+  if (tab === null) return { ok: false, reason: '插件市场 tab 缺失' }
+  tab.click()
+  await wait(400)
+  return { ok: tab.classList.contains('active') }
+})()`
+
+export const SETTINGS_PLUGINS_MARKET_CHECK = `(() => {
+  const marketTab = document.querySelector('[data-field="plugins.tab-market"]')
+  const text = document.body ? document.body.innerText : ''
+  const active = marketTab !== null && marketTab.classList.contains('active')
+  // P4 之前 / 未配置 Center 时市场是明确空态（不是假数据）：空态块里必须有文案
+  const emptyState = document.querySelector('.page-plugins .empty-state')
+  const empty = emptyState !== null && (emptyState.textContent ?? '').trim().length > 0
+  const entries = document.querySelectorAll('.plugin-item').length
+  return { pass: active && (empty || entries > 0), detail: { active, empty, entries } }
+})()`
+
+/** 无标签页工具快捷卡片的断言（2026-10-03，docs/07 §2.3）。
  *
  * 现场（act 留下）：右栏标签全关、右栏"工具"四张卡片在。
  * 断言：① 标签确实一个不剩；② 四张卡片锚点齐（context / files / terminal / browser）；
@@ -12721,6 +12998,14 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
       settleMs: 700,
     },
     {
+      // 插件小组件（docs/14 §5.4）：展开面板底部的声明式条目；列表与 widgetData 都是异步拉取
+      name: 'edge-bar',
+      file: 'edge-bar-plugin-widget.png',
+      act: EDGE_BAR_PLUGIN_WIDGET_ACT,
+      check: EDGE_BAR_PLUGIN_WIDGET_SCRIPT,
+      settleMs: 1200,
+    },
+    {
       name: 'edge-bar',
       file: 'edge-bar-animation.png',
       prepare: () => {
@@ -13369,6 +13654,37 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     { name: 'chat', file: 'chat-drag.png', check: WINDOW_DRAG_SCRIPT },
     // 收起窗口放在自动滚底四条之后（四条都要读 .thread/.messages，窗口一 hide 就没了）。
     { name: 'chat', file: 'chat-collapse.png', check: CHAT_COLLAPSE_CHECK },
+    // 插件面板（P3，docs/14 §3.4）：声明式 schema 与沙箱页面两条渲染路径。
+    // 示例插件由 runCapture 预装；这两条都通过真实「＋」菜单打开标签。
+    {
+      name: 'chat',
+      file: 'chat-plugin-panel.png',
+      act: CHAT_PLUGIN_PANEL_ACT,
+      check: CHAT_PLUGIN_PANEL_CHECK,
+    },
+    {
+      name: 'chat',
+      file: 'chat-plugin-page.png',
+      act: CHAT_PLUGIN_PAGE_ACT,
+      check: CHAT_PLUGIN_PAGE_CHECK,
+      // webview 的 guest 首次加载 + RPC 往返比普通 DOM 慢
+      settleMs: 900,
+    },
+    {
+      name: 'chat',
+      file: 'chat-plugin-panel-push.png',
+      act: CHAT_PLUGIN_PANEL_PUSH_ACT,
+      check: CHAT_PLUGIN_PANEL_PUSH_CHECK,
+      settleMs: 500,
+    },
+    {
+      // 桌面小组件窗口不在 WindowName 里：由 captureWindows 的 widgetWindow 现取。
+      name: 'widget',
+      file: 'widget-desktop-plugin.png',
+      widget: { pluginId: 'com.example.hello', widgetId: 'duty-week' },
+      check: WIDGET_DESKTOP_PLUGIN_CHECK,
+      settleMs: 600,
+    },
     // 无标签页时的右栏工具快捷入口（2026-10-03，docs/07 §2.3）：prepare reload 回
     // 初始四标签 → act 走真实 ✕ 关掉全部（截图停在这里：右栏四张卡片）→
     // check 验证卡片矩形 / 命中，并点"文件"卡片把标签开回来。
@@ -13514,6 +13830,21 @@ export function defaultCapturePlan(manager: WindowManager, userData: string): Ca
     file: 'settings-legacy-tts-alias.png',
     query: { page: 'tts' },
     check: SETTINGS_LEGACY_ALIAS_SCRIPT,
+  })
+  // 插件（P3，docs/14 §5）：已安装视图 + 市场占位。示例插件由 `runCapture` 预装；
+  // 「已安装」页同时钉住主题选择区组与「安装插件包」入口在 DOM 里。
+  plan.push({
+    name: 'settings',
+    file: 'settings-plugins-installed.png',
+    query: { page: 'plugins' },
+    check: SETTINGS_PLUGINS_INSTALLED_CHECK,
+  })
+  plan.push({
+    name: 'settings',
+    file: 'settings-plugins-marketplace.png',
+    query: { page: 'plugins' },
+    act: SETTINGS_PLUGINS_MARKET_ACT,
+    check: SETTINGS_PLUGINS_MARKET_CHECK,
   })
   // Center 官方 TTS / STT / 生图在 Provider 页的只读卡片（目录不可用时也要常显）。
   plan.push({

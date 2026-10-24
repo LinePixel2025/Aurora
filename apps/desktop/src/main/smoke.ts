@@ -21,12 +21,19 @@ export const SMOKE_RESULT_PREFIX = 'AURORA_SMOKE_RESULT:'
  * `watchDir` 是本轮自测的临时感知文件夹——引导步骤必须写回它，
  * 否则会把配置指向开发者的真实目录，破坏隔离且让多次运行互相干扰。
  */
-export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: string): string {
+export function smokeScript(
+  stubBaseUrl: string,
+  stubModel: string,
+  watchDir: string,
+  pluginDir: string,
+): string {
   return String.raw`
 (async () => {
   const STUB_BASE = ${JSON.stringify(stubBaseUrl)}
   const STUB_MODEL = ${JSON.stringify(stubModel)}
   const WATCH_DIR = ${JSON.stringify(watchDir)}
+  // 示例插件目录（仓库 examples/plugins/hello-aurora）：空串 = 找不到，本轮跳过插件断言
+  const PLUGIN_DIR = ${JSON.stringify(pluginDir)}
   // 终端工具场景的提问标记（标记之后那一行就是命令）：与桩 LLM 共用同一个常量，避免两处各写一份
   const RUN_COMMAND_MARKER = ${JSON.stringify(RUN_COMMAND_MARKER)}
   // 期望的配置版本由主进程注入（不再写死数字：Schema 升版时这里必须跟着走，否则自测会假 FAIL）
@@ -430,6 +437,331 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       requiredSkills.every((name) => skillNames.includes(name)),
       skillNames.join(','),
     )
+
+    // 5.1 插件（docs/14）：安装示例 → 工具 / Skill / 命令 → 停用 → 重新启用 → 卸载。
+    //     真实走 utilityProcess + RPC + 工具装配，覆盖单测到不了的装配时序。
+    if (PLUGIN_DIR !== '') {
+      const PLUGIN_ID = 'com.example.hello'
+      const installed = expectOk(
+        'plugins.install',
+        await window.aurora.plugins.install({ kind: 'file', path: PLUGIN_DIR }),
+      )
+      record('安装返回插件摘要', installed?.id === PLUGIN_ID && installed?.status !== 'error', installed?.status ?? '')
+
+      const readPlugins = async () => {
+        const result = await window.aurora.plugins.list()
+        return result && result.ok ? result.value : []
+      }
+      const listAfterInstall = await waitFor(
+        readPlugins,
+        (list) => list.some((plugin) => plugin.id === PLUGIN_ID && plugin.status === 'ready'),
+        15000,
+      )
+      const hello = Array.isArray(listAfterInstall)
+        ? listAfterInstall.find((plugin) => plugin.id === PLUGIN_ID)
+        : undefined
+      record('插件进程进入 ready', hello?.status === 'ready', hello?.status ?? 'missing')
+      record(
+        '清单工具进入摘要且默认需确认',
+        hello?.tools.some(
+          (tool) =>
+            tool.fullName === 'plugin.com.example.hello.echo' && tool.sensitivity === 'confirm',
+        ) === true,
+        JSON.stringify(hello?.tools ?? []),
+      )
+      record(
+        '插件面板、主题与命令进入摘要',
+        hello?.panels.some((panel) => panel.id === 'board' && panel.kind === 'schema') === true &&
+          hello?.panels.some(
+            (panel) => panel.id === 'info' && panel.kind === 'page' && panel.entry === 'ui/page.html',
+          ) === true &&
+          hello?.themes.some((theme) => theme.id === 'sand') === true,
+        JSON.stringify({
+          panels: hello?.panels ?? [],
+          themes: hello?.themes.map((theme) => theme.id) ?? [],
+        }),
+      )
+
+      // 声明式面板数据（主进程读 schema 文件 + 调用 invokePanel）
+      const panelData = await window.aurora.plugins.panelData({
+        pluginId: PLUGIN_ID,
+        panelId: 'board',
+        method: 'refresh',
+      })
+      record(
+        '声明式面板返回可渲染 schema',
+        panelData?.ok === true &&
+          Array.isArray(panelData.value?.schema?.nodes) &&
+          panelData.value.schema.nodes.length > 0,
+        JSON.stringify(panelData).slice(0, 300),
+      )
+
+      // 插件主题：改设置后渲染层应把白名单令牌写到 documentElement 上（P3，docs/14 §3.4）
+      const themeApplied = await (async () => {
+        const settings = await window.aurora.settings.get()
+        if (settings?.ok !== true) return 'settings unavailable'
+        const updated = await window.aurora.settings.update({
+          plugins: {
+            ...settings.value.plugins,
+            activeTheme: { pluginId: PLUGIN_ID, themeId: 'sand' },
+          },
+        })
+        if (updated?.ok !== true) return 'update failed: ' + JSON.stringify(updated)
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          const value = getComputedStyle(document.documentElement)
+            .getPropertyValue('--bg-base')
+            .trim()
+          if (value.toLowerCase() === '#141210') {
+            await window.aurora.settings.update({
+              plugins: {
+                ...settings.value.plugins,
+                activeTheme: { pluginId: '', themeId: '' },
+              },
+            })
+            return 'ok'
+          }
+          await wait(100)
+        }
+        return 'token not applied'
+      })()
+      record('插件主题令牌应用到文档', themeApplied === 'ok', themeApplied)
+
+      // 插件事件 → 自动化 → 插件动作（docs/14 §3.5）：先建定义，稍后 /hello-count 触发。
+      const pluginAutomation = await window.aurora.automation.save({
+        id: '',
+        name: '插件联动（自测）',
+        enabled: true,
+        mode: 'normal',
+        trigger: {
+          kind: 'plugin-event',
+          params: { pluginId: PLUGIN_ID, event: 'count-changed' },
+        },
+        actions: [
+          {
+            kind: 'plugin-action',
+            params: { pluginId: PLUGIN_ID, action: 'add-count', params: '{}' },
+          },
+        ],
+        createdAt: '',
+        updatedAt: '',
+      })
+      record(
+        '插件事件自动化定义可保存',
+        pluginAutomation.ok === true,
+        JSON.stringify(pluginAutomation),
+      )
+      const pluginAutomationId = pluginAutomation.ok ? pluginAutomation.value.id : ''
+
+      const pluginSkills = await waitFor(
+        async () => {
+          const result = await window.aurora.skills.list()
+          return result && result.ok ? result.value : []
+        },
+        (list) => list.some((skill) => skill.name === 'hello-aurora' && skill.source === 'plugin'),
+        5000,
+      )
+      record(
+        '插件 Skill 出现在清单',
+        Array.isArray(pluginSkills) &&
+          pluginSkills.some((skill) => skill.name === 'hello-aurora' && skill.source === 'plugin'),
+        JSON.stringify(
+          (Array.isArray(pluginSkills) ? pluginSkills : []).map((skill) => skill.name + ':' + skill.source),
+        ),
+      )
+
+      const promptCommand = await window.aurora.plugins.runCommand({
+        pluginId: PLUGIN_ID,
+        name: 'hello',
+        args: '你好',
+      })
+      record(
+        'prompt 命令返回提示词',
+        promptCommand?.ok === true && typeof promptCommand.value?.prompt === 'string' && promptCommand.value.prompt.includes('你好'),
+        JSON.stringify(promptCommand),
+      )
+
+      const countCommand = await window.aurora.plugins.runCommand({
+        pluginId: PLUGIN_ID,
+        name: 'hello-count',
+      })
+      record(
+        'action 命令执行并写入插件存储',
+        countCommand?.ok === true && String(countCommand.value?.summary ?? '').includes('1'),
+        JSON.stringify(countCommand),
+      )
+
+      // 小组件（docs/14 §5.3 / §5.4）：声明、摘要与桌面 widget 数据链路
+      record(
+        '插件小组件进入摘要（桌面 + 提示条）',
+        hello?.widgets.some(
+          (widget) => widget.id === 'duty-week' && widget.slot === 'desktop' && widget.kind === 'schema',
+        ) === true &&
+          hello?.widgets.some(
+            (widget) => widget.id === 'todo-strip' && widget.slot === 'edge-bar' && widget.kind === 'schema',
+          ) === true,
+        JSON.stringify((hello?.widgets ?? []).map((widget) => widget.id + ':' + widget.slot)),
+      )
+      const widgetData = await window.aurora.plugins.widgetData({
+        pluginId: PLUGIN_ID,
+        widgetId: 'duty-week',
+        method: 'refresh',
+      })
+      record(
+        '桌面小组件返回可渲染 schema',
+        widgetData?.ok === true &&
+          Array.isArray(widgetData.value?.schema?.nodes) &&
+          widgetData.value.schema.nodes.length > 0,
+        JSON.stringify(widgetData).slice(0, 300),
+      )
+      const widgetLayout = await window.aurora.plugins.widgetLayout()
+      record(
+        '桌面小组件布局写入默认位置且默认可见',
+        widgetLayout?.ok === true &&
+          widgetLayout.value.widgets[PLUGIN_ID + '/duty-week']?.visible === true &&
+          (widgetLayout.value.widgets[PLUGIN_ID + '/duty-week']?.width ?? 0) >= 120,
+        JSON.stringify(widgetLayout).slice(0, 300),
+      )
+
+      // 面板事件推送（docs/14 §5.5）：打开声明式面板 → 插件主动推送 → DOM 不点刷新即更新
+      const pushFlow = await (async () => {
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+        const click = (selector) => {
+          const el = document.querySelector(selector)
+          if (el === null) return false
+          el.click()
+          return true
+        }
+        if (!click('[data-field="chat.ctx-new-tab"]')) return { ok: false, reason: '新建标签按钮缺失' }
+        await wait(250)
+        if (!click('[data-field="chat.ctx-new-plugin-com.example.hello.board"]')) {
+          return { ok: false, reason: '插件面板菜单项缺失' }
+        }
+        await wait(300)
+        const readCount = () => {
+          const values = [...document.querySelectorAll('.plugin-panel .kv-value')].map(
+            (node) => node.textContent?.trim() ?? '',
+          )
+          return values[0] ?? ''
+        }
+        const before = readCount()
+        const pushed = await window.aurora.plugins.runCommand({
+          pluginId: PLUGIN_ID,
+          name: 'hello-push',
+        })
+        const deadline = Date.now() + 2000
+        let after = before
+        while (Date.now() < deadline) {
+          after = readCount()
+          if (after !== '' && after !== before) break
+          await wait(100)
+        }
+        const closeButton = document.querySelector(
+          '.ctx-tab.active [data-field^="chat.ctx-tab-close-"]',
+        )
+        if (closeButton !== null) closeButton.click()
+        await wait(150)
+        return {
+          ok: pushed?.ok === true && before !== '' && after !== before,
+          before,
+          after,
+          detail: JSON.stringify(pushed),
+        }
+      })()
+      record('面板事件推送后 DOM 无需刷新即更新', pushFlow.ok === true, JSON.stringify(pushFlow))
+
+      if (pluginAutomationId !== '') {
+        const pluginRuns = await waitFor(
+          async () => {
+            const result = await window.aurora.automation.history({
+              automationId: pluginAutomationId,
+              limit: 5,
+            })
+            return result && result.ok ? result.value : []
+          },
+          // 事件投递是异步的（runCommand 先回执、自动化随后跑），等终态再断言
+          (runs) =>
+            Array.isArray(runs) && runs.length > 0 && runs[0].status !== 'running',
+          10000,
+        )
+        const pluginRun = Array.isArray(pluginRuns) ? pluginRuns[0] : undefined
+        record(
+          '插件事件触发自动化并执行插件动作',
+          pluginRun?.status === 'success' &&
+            pluginRun.steps?.some(
+              (step) => step.kind === 'plugin-action' && step.ok === true,
+            ) === true,
+          JSON.stringify(pluginRun ?? null),
+        )
+        record(
+          '插件事件自动化记录事件来源且未自激重入',
+          pluginRun?.triggerDetail === '插件事件 ' + PLUGIN_ID + '/count-changed' &&
+            Array.isArray(pluginRuns) &&
+            pluginRuns.length === 1,
+          JSON.stringify(pluginRun?.triggerDetail ?? null) +
+            ' runs=' +
+            (pluginRuns ? pluginRuns.length : '?'),
+        )
+        const pluginAutomationRemoved = await window.aurora.automation.delete({
+          id: pluginAutomationId,
+        })
+        record(
+          '插件事件自动化定义可删除',
+          pluginAutomationRemoved.ok === true,
+          JSON.stringify(pluginAutomationRemoved),
+        )
+      }
+
+      const handled = await window.aurora.chat.send({
+        sessionId: 'quick',
+        text: '/hello-count',
+        origin: 'edge-bar',
+      })
+      record(
+        'chat.send 拦截 action 命令',
+        handled?.ok === true && handled.value?.handled !== undefined,
+        JSON.stringify(handled),
+      )
+
+      const disabled = await window.aurora.plugins.setEnabled({ pluginId: PLUGIN_ID, enabled: false })
+      record('停用插件后状态为 disabled', disabled?.ok === true && disabled.value?.status === 'disabled', JSON.stringify(disabled))
+      const skillsAfterDisable = await waitFor(
+        async () => {
+          const result = await window.aurora.skills.list()
+          return result && result.ok ? result.value : []
+        },
+        (list) => !list.some((skill) => skill.name === 'hello-aurora'),
+        5000,
+      )
+      record(
+        '停用后插件 Skill 消失',
+        Array.isArray(skillsAfterDisable) && !skillsAfterDisable.some((skill) => skill.name === 'hello-aurora'),
+        JSON.stringify((Array.isArray(skillsAfterDisable) ? skillsAfterDisable : []).map((skill) => skill.name)),
+      )
+      const disabledCommand = await window.aurora.plugins.runCommand({ pluginId: PLUGIN_ID, name: 'hello-count' })
+      record('停用后命令被拒绝', disabledCommand?.ok === false, JSON.stringify(disabledCommand))
+
+      const enabled = await window.aurora.plugins.setEnabled({ pluginId: PLUGIN_ID, enabled: true })
+      record('重新启用成功', enabled?.ok === true && enabled.value?.enabled === true, JSON.stringify(enabled))
+      const readyAgain = await waitFor(
+        readPlugins,
+        (list) => list.some((plugin) => plugin.id === PLUGIN_ID && plugin.status === 'ready'),
+        15000,
+      )
+      record(
+        '重新启用后回到 ready',
+        Array.isArray(readyAgain) && readyAgain.some((plugin) => plugin.id === PLUGIN_ID && plugin.status === 'ready'),
+        JSON.stringify(readyAgain),
+      )
+
+      const removed = await window.aurora.plugins.uninstall({ pluginId: PLUGIN_ID, deleteData: true })
+      record('卸载插件成功', removed?.ok === true && removed.value === true, JSON.stringify(removed))
+      const afterUninstall = await readPlugins()
+      record(
+        '卸载后插件从列表消失',
+        Array.isArray(afterUninstall) && !afterUninstall.some((plugin) => plugin.id === PLUGIN_ID),
+        JSON.stringify(afterUninstall),
+      )
+    }
 
     // 6. 系统感知
     const summary = expectOk('perception.summary', await window.aurora.perception.summary())
@@ -1174,8 +1506,14 @@ export function smokeScript(stubBaseUrl: string, stubModel: string, watchDir: st
       'pre-end',
       'class-end',
       'next-lesson',
+      'plugin-event',
     ]
-    const REQUIRED_ACTIONS = ['system-notify', 'classisland-remind', 'open-folder']
+    const REQUIRED_ACTIONS = [
+      'system-notify',
+      'classisland-remind',
+      'open-folder',
+      'plugin-action',
+    ]
     const conditionKinds =
       catalog.ok === true ? catalog.value.conditions.map((item) => item.kind) : []
     const actionKinds = catalog.ok === true ? catalog.value.actions.map((item) => item.kind) : []

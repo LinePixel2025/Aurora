@@ -11,18 +11,27 @@
  * - `skill`：**只补全成 `/技能名 `** 并把焦点留在输入框，用户接着写需求 ——
  *   `/system-status 现在几点` 里的技能名只是「本轮把这份指令注入上下文」的开关。
  */
-import type { SkillSummary } from '@aurora/shared'
+import type { PluginCommandInfo, SkillSummary } from '@aurora/shared'
 
 export interface SlashItem {
-  /** 唯一 id（`command:new` / `skill:file-classify`），既是 key 也是执行判据 */
+  /** 唯一 id（`command:new` / `skill:file-classify` / `plugin:<id>:<name>`） */
   id: string
-  kind: 'command' | 'skill'
+  /**
+   * 三类：
+   * - `command`：内置命令，选中即执行；
+   * - `plugin-command`：插件命令（清单 `contributes.commands`），`action` 选中即执行、`prompt` 只补全；
+   * - `skill`：技能，只补全成 `/技能名 `。
+   */
+  kind: 'command' | 'plugin-command' | 'skill'
   /** 插入 / 匹配用的名字（不含前缀），如 `new` / `file-classify` */
   name: string
   /** 主文案 */
   label: string
   /** 一句话说明 */
   description: string
+  /** 插件命令的归属与模式（仅 `plugin-command` 使用） */
+  pluginId?: string
+  pluginMode?: 'action' | 'prompt'
 }
 
 /** 常驻命令（「停止回复」只在流式期间出现，单独一条） */
@@ -102,10 +111,25 @@ export function filterSlashItems(
   query: string,
   skills: readonly SkillSummary[],
   streaming: boolean,
+  pluginCommands: readonly PluginCommandInfo[] = [],
 ): SlashItem[] {
   const needle = query.toLowerCase()
   const commands = streaming ? [SLASH_STOP_COMMAND, ...BUILTIN_COMMANDS] : BUILTIN_COMMANDS
   const matchedCommands = commands.filter((item) => item.name.startsWith(needle))
+  const matchedPluginCommands = pluginCommands
+    .filter((command) => command.name.toLowerCase().startsWith(needle))
+    .map<SlashItem>((command) => ({
+      id: `plugin:${command.pluginId}:${command.name}`,
+      kind: 'plugin-command',
+      name: command.name,
+      label: command.title,
+      description:
+        command.description.trim() === ''
+          ? `${command.pluginName} · ${command.mode === 'action' ? '选中即执行' : '补全为提示词'}`
+          : `${command.pluginName} · ${command.description}`,
+      pluginId: command.pluginId,
+      pluginMode: command.mode,
+    }))
   const matchedSkills = skills
     .filter((skill) => skill.enabled && skill.name.toLowerCase().startsWith(needle))
     .map<SlashItem>((skill) => ({
@@ -115,5 +139,5 @@ export function filterSlashItems(
       label: skill.name,
       description: skill.description.trim() === '' ? '调用该技能' : skill.description,
     }))
-  return [...matchedCommands, ...matchedSkills]
+  return [...matchedCommands, ...matchedPluginCommands, ...matchedSkills]
 }

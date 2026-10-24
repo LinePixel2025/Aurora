@@ -224,3 +224,22 @@ Skill 目录下的 `scripts/` **永远不会被自动执行**（技能只提供�
 - Center 离线或能力停用时可回落本机模型，回落首次发生时界面会明确提示。
 
 公网使用时 Center 必须置于 HTTPS 反代之后；主密钥轮换前应先备份并不会自动解密旧数据。
+
+## 9. 插件的数据与风险（v36）
+
+**数据位置**（全部在本机，除非插件自己外发）：
+
+- `<userData>/plugins/<id>/versions/<version>/`：安装的插件代码；
+- `<userData>/plugins/registry.json`：安装 / 启用 / 信任状态；
+- `<userData>/plugin-data/<id>/config.json`：插件配置（**不支持密文字段**）；
+- `<userData>/plugin-data/<id>/storage.json`：插件键值存储（5 MB 配额）；
+- `<userData>/logs/plugins/<id>.log`：插件日志（统一脱敏）。
+
+**边界与如实披露**：
+
+- 插件进程以**当前用户权限**运行，**不是 OS 沙箱**：它可以绕过 Aurora API 直接读取本机文件、
+  截屏、联网外发数据；宿主只保证崩溃隔离、API 白名单、工具确认与安装 / 更新路径安全。
+- **安装插件 = 信任其代码**；市场 **不签名**，SHA-256 只保证完整性，不保证发布者身份。
+- 插件**拿不到** Aurora 的 API Key / Center 令牌 / MCP env；Aurora 也不会把凭据写进插件配置。
+- 卸载默认保留 `plugin-data/<id>`（便于重装恢复），可在卸载时勾选「同时删除插件数据与配置」。
+- Center 插件市场只保存插件包、图标与下载计数，不接触用户对话 / 文件内容。

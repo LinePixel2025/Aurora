@@ -805,3 +805,39 @@ Center 短期签名代理地址，客户端不直接访问上游。网关不持�
 上传、校验与发布；公开路由只提供 `latest.yml` 与已登记资产。上传接口仅管理员可用。
 **每次桌面安装包发布都必须把同一份 installer / blockmap / `latest.yml` 同时上传 GitHub
 Releases 与本 Center**；Center 未更新的版本即使 GitHub 已发布，也不得视为发布完成。
+
+## 14. 插件市场（v36）
+
+**数据**：`<dataDir>/plugins/index.json`、`files/<id>/<version>/<id>-<version>.aurora-plugin`、
+`icons/<id>.png`、`.staging/`。上传先 staging（解压校验清单 / 路径 / 大小 / 压缩比 + SHA-256），
+publish 才原子切换 index；同版本不可覆盖，删除当前版本后 `latestVersion` 回落。
+
+**公开路由**（无需登录，放在 web-session 门禁之前）：
+
+- `GET /api/plugins?q=&page=&limit=&sort=updated|downloads`（limit ≤ 50）
+- `GET /api/plugins/:id`
+- `GET /api/plugins/:id/download?version=`（`X-Checksum-Sha256` + `Content-Disposition`）
+- `GET /api/plugins/:id/icon`
+
+**管理员路由**（`role === 'admin'`）：
+
+- `GET /api/admin/plugins`
+- `POST /api/admin/plugins/upload`（原始 zip，≤ 20 MB；返回 `token` 与解析出的 id / 版本 / sha256）
+- `POST /api/admin/plugins/publish`（`{ token, changelog? }`）
+- `DELETE /api/admin/plugins/:id/:version`
+- `POST /api/admin/plugins/:id/icon`（PNG ≤ 256 KB）
+
+**CLI**：
+
+```
+aurora-center plugins list      --server <url> --user <名> [--password <密码>]
+aurora-center plugins publish   --server <url> --user <名> [--dir <插件目录>] [--changelog <说明>]
+aurora-center plugins unpublish --server <url> --user <名> --id <插件 id> --version <版本>
+```
+
+**Web UI**：公开 `#/marketplace`（搜索 / 卡片 / 下载；未登录也可访问）；管理员 `#/pluginsAdmin`
+（上传 → 确认发布 → 版本列表 / 撤回）。登录后工作台侧栏新增「插件市场」「插件管理」入口。
+
+**桌面客户端**：`PluginMarketplaceClient` 读取 `center.serverUrl`（公开列表无需令牌），
+下载后校验大小与 SHA-256，再交给 `PluginManager.install`（来源 `marketplace`）；
+校验失败不落任何安装状态。`plugins:checkUpdates` 返回有更新的插件。

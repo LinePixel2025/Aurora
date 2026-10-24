@@ -29,6 +29,7 @@ import type {
 } from '@aurora/shared'
 import AppButton from '../shared/components/AppButton.vue'
 import StatusDot from '../shared/components/StatusDot.vue'
+import PluginWidgetStrip from '../plugins/PluginWidgetStrip.vue'
 import {
   BookOpen,
   ChevronDown,
@@ -805,6 +806,9 @@ onUnmounted(() => {
               <span v-for="chip in systemChips" :key="chip" class="mini-chip">{{ chip }}</span>
             </div>
           </section>
+
+          <!-- 插件小组件（docs/14 §5.4）：只放声明式 widget，无 widget 时整块不渲染 -->
+          <PluginWidgetStrip />
         </div>
 
         <section class="actions">

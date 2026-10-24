@@ -78,6 +78,30 @@ export const CONDITION_DESCRIPTORS: AutomationConditionDescriptor[] = [
     fields: [{ key: 'subject', label: '科目名', type: 'text', placeholder: '与课程表科目名一致' }],
     requiresSchedule: true,
   },
+  {
+    // 插件事件（docs/14 §3.5）：一个通用描述符，插件 id 与事件名都手填。
+    // 不做动态下拉 —— catalog 是静态表，插件启停时重建会让已保存的定义失去可见性。
+    kind: 'plugin-event',
+    label: '插件事件',
+    description: '插件触发它声明的自动化事件时运行（需在清单里声明事件）。',
+    fields: [
+      {
+        key: 'pluginId',
+        label: '插件 id',
+        type: 'text',
+        placeholder: 'com.example.todo',
+        hint: '与插件清单的 id 一致',
+      },
+      {
+        key: 'event',
+        label: '事件名',
+        type: 'text',
+        placeholder: 'todo-added',
+        hint: '与插件声明的事件名一致',
+      },
+    ],
+    requiresSchedule: false,
+  },
 ]
 
 // ───────────────────────── 操作组件（Normal Mode 封闭能力集） ─────────────────────────
@@ -181,6 +205,37 @@ export const ACTION_DESCRIPTORS: Omit<AutomationActionDescriptor, 'available'>[]
     ],
     requiresClassIsland: false,
   },
+  {
+    // 插件动作（docs/14 §3.5）：参数是自由 JSON，交给插件自己解释。
+    // 字段用 text + json 而非动态下拉（catalog 不随插件启停重建）。
+    kind: 'plugin-action',
+    label: '插件动作',
+    description: '调用已启用插件声明的自动化动作（插件需声明自动化权限）。',
+    fields: [
+      {
+        key: 'pluginId',
+        label: '插件 id',
+        type: 'text',
+        placeholder: 'com.example.todo',
+        hint: '与插件清单的 id 一致',
+      },
+      {
+        key: 'action',
+        label: '动作名',
+        type: 'text',
+        placeholder: 'add',
+        hint: '与插件声明的动作名一致',
+      },
+      {
+        key: 'params',
+        label: '参数（JSON）',
+        type: 'json',
+        placeholder: '{}',
+        hint: '传给插件动作的对象，可留空',
+      },
+    ],
+    requiresClassIsland: false,
+  },
 ]
 
 /** 组装 catalog；`classislandAvailable` 决定 classisland-remind 的 `available`。 */
@@ -217,6 +272,8 @@ export interface ValidationResult {
 const NAME_MAX = 60
 const PROMPT_MAX = 8000
 const MAX_ACTIONS = 10
+/** 插件动作参数 JSON 的文本上限（8 KB，与 docs/14 §3.5 同口径） */
+export const JSON_FIELD_MAX = 8 * 1024
 /** 调用次数上限的取值区间（0 = 不限；与工具层 `MAX_RUNS_MAX` 同源口径） */
 export const MAX_RUNS_MAX = 100_000
 
@@ -283,7 +340,18 @@ function validateTrigger(trigger: unknown, catalog: AutomationCatalog): Validati
   const record = trigger as Record<string, unknown>
   const descriptor = catalog.conditions.find((item) => item.kind === record['kind'])
   if (descriptor === undefined) return fail('不支持的触发器类型')
-  return validateParams(record['params'], descriptor.fields, `触发器「${descriptor.label}」`)
+  const result = validateParams(
+    record['params'],
+    descriptor.fields,
+    `触发器「${descriptor.label}」`,
+  )
+  if (!result.ok) return result
+  if (descriptor.kind === 'plugin-event') {
+    const params = isRecord(record['params']) ? record['params'] : {}
+    if (isBlank(params['pluginId'])) return fail('触发器「插件事件」：必须填写插件 id')
+    if (isBlank(params['event'])) return fail('触发器「插件事件」：必须填写事件名')
+  }
+  return { ok: true }
 }
 
 function validateAction(action: unknown, catalog: AutomationCatalog): ValidationResult {
@@ -318,6 +386,12 @@ function validateAction(action: unknown, catalog: AutomationCatalog): Validation
   if (descriptor.kind === 'open-app') {
     const params = isRecord(record['params']) ? record['params'] : {}
     if (isBlank(params['path'])) return fail('操作「打开应用」：必须填写应用路径')
+  }
+  // plugin-action：插件 id / 动作名必填；params 的 JSON 合法性由字段类型（json）校验
+  if (descriptor.kind === 'plugin-action') {
+    const params = isRecord(record['params']) ? record['params'] : {}
+    if (isBlank(params['pluginId'])) return fail('操作「插件动作」：必须填写插件 id')
+    if (isBlank(params['action'])) return fail('操作「插件动作」：必须填写动作名')
   }
   return { ok: true }
 }
@@ -369,6 +443,22 @@ function validateParams(
           return fail(`${scope}：${field.label} 的取值无效`)
         }
         break
+      case 'json': {
+        if (typeof value !== 'string') return fail(`${scope}：${field.label} 必须是 JSON 文本`)
+        if (value.length > JSON_FIELD_MAX) {
+          return fail(`${scope}：${field.label} 不能超过 8 KB`)
+        }
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(value)
+        } catch {
+          return fail(`${scope}：${field.label} 不是合法 JSON`)
+        }
+        if (!isRecord(parsed) || Array.isArray(parsed)) {
+          return fail(`${scope}：${field.label} 必须是 JSON 对象`)
+        }
+        break
+      }
     }
   }
   return { ok: true }

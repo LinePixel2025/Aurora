@@ -27,6 +27,15 @@ export interface AutomationActionPorts {
   openExternal(url: string): Promise<void>
   /** 科目名 → 科目文件夹绝对路径（空串 = 未映射，复用 `paths.resolveSubjectFolder` 链） */
   resolveSubjectDir(subjectName: string): string
+  /**
+   * 插件自动化动作（docs/14 §3.5）：装配层转发给 `PluginManager`。
+   * 未注入 / 插件不存在 / 动作失败统一由这里回落 `{ ok: false }`，绝不抛错。
+   */
+  pluginAction?(input: {
+    pluginId: string
+    action: string
+    params: Record<string, unknown>
+  }): Promise<{ ok: boolean; summary?: string; error?: string }>
   logger: Logger
 }
 
@@ -53,6 +62,8 @@ export async function executeAction(
       return await executeOpenUrl(params, ports)
     case 'open-app':
       return await executeOpenApp(params, ports)
+    case 'plugin-action':
+      return await executePluginAction(params, ports)
     default:
       return { ok: false, error: `不支持的操作组件：${String(action.kind)}`, summary: '' }
   }
@@ -172,6 +183,51 @@ async function executeOpenApp(
     return { ok: false, error: `打开应用失败：${String(error)}`, summary: '' }
   }
   return { ok: true, summary: `已打开应用 ${path}` }
+}
+
+/**
+ * 插件动作（plugin-action）：`params` 在编辑器里是 JSON 文本（8 KB 上限，catalog 已校验），
+ * 这里解析成对象再转发 —— 也接受已经是对象的形状（历史数据 / 单测直接构造）。
+ * 插件 id / 动作名的存在性由 `PluginManager` 在调用时校验。
+ */
+async function executePluginAction(
+  params: Record<string, unknown>,
+  ports: AutomationActionPorts,
+): Promise<ActionExecutionResult> {
+  if (ports.pluginAction === undefined) {
+    return { ok: false, error: '插件系统未装配', summary: '' }
+  }
+  const pluginId = readString(params['pluginId'], '').trim()
+  const action = readString(params['action'], '').trim()
+  if (pluginId === '') return { ok: false, error: '未指定插件 id', summary: '' }
+  if (action === '') return { ok: false, error: '未指定动作名', summary: '' }
+
+  let actionParams: Record<string, unknown> = {}
+  const raw = params['params']
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return { ok: false, error: '参数不是合法 JSON', summary: '' }
+    }
+    if (!isRecord(parsed) || Array.isArray(parsed)) {
+      return { ok: false, error: '参数必须是 JSON 对象', summary: '' }
+    }
+    actionParams = parsed
+  } else if (isRecord(raw)) {
+    actionParams = raw
+  }
+
+  try {
+    const result = await ports.pluginAction({ pluginId, action, params: actionParams })
+    if (!result.ok) {
+      return { ok: false, error: result.error ?? '插件动作执行失败', summary: '' }
+    }
+    return { ok: true, summary: result.summary ?? `已执行插件动作 ${action}` }
+  } catch (error) {
+    return { ok: false, error: `插件动作执行失败：${String(error)}`, summary: '' }
+  }
 }
 
 /**

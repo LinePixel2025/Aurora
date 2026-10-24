@@ -93,6 +93,30 @@
 - `apps/desktop` + `packages/{agent-core, modes, shared}`；agent-core / modes 为纯 Node 包（vitest 单测）。
 - CI：GitHub Actions（Windows，`lint / typecheck / test / build`），**按需手动触发**、不跟随 push / PR（见 09 §2）。
 
+### ADR-010 插件运行时：独立 `utilityProcess` + 白名单 RPC（v36）
+
+- **决策**：一个启用插件一个 `utilityProcess`（上限 8），结构化克隆消息 + 关联 id + 超时 / 取消 /
+  帧上限；贡献在 `manifest.json` 声明，运行期不动态注册。
+- **理由**：崩溃 / 死循环 / OOM 隔离；主进程不必等进程 ready 就能注册工具表；清单可被安装器、
+  Center 市场与校验脚本共用。
+- **代价**：内存随插件数增长（上限 8 + lazy 启动）；跨进程调用有序列化成本。
+
+### ADR-011 插件权限是 API 门控，不是 OS 沙箱（v36）
+
+- **决策**：权限按宿主 API 逐条校验；插件进程仍有当前用户权限，**安装 = 信任**。
+- **理由**：OS 沙箱（AppContainer / 受限令牌）在 Windows 上工程量大、兼容性风险高；
+  v1 先解决"扩展能力 + 可展示的权限 + 崩溃隔离"，并在安装 UI / 文档中如实披露边界。
+- **代价**：恶意插件可绕过 API 直接读文件 / 外发数据；签名与发布者认证留待后续。
+
+### ADR-012 插件界面：声明式优先 + 沙箱 webview（v36）
+
+- **决策**：常规面板用受控组件 schema（无 HTML / v-html）；需要任意 HTML 时用
+  `aurora-plugin://` + 专用 preload + 独立非持久 partition 的 webview，并施加严格 CSP。
+- **理由**：声明式没有脚本注入面、观感统一；webview 给复杂界面留出口，同时不暴露 `window.aurora`
+  与 Node。
+- **代价**：两套面板 API；webview 的协议处理器必须逐 session 注册（自定义 partition），
+  页面拿不到宿主令牌（需自行配色）。
+
 ## 3. 依赖风险清单
 
 | 依赖 | 风险 | 缓解 |

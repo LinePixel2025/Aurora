@@ -54,6 +54,7 @@ pnpm typecheck        # 全仓 tsc / vue-tsc
 pnpm test             # vitest 全量单测
 pnpm lint             # ESLint        pnpm format  # Prettier
 pnpm verify           # 真实磁盘配置层验收（需先 pnpm build）
+pnpm verify:plugin <目录|zip>   # 插件包独立校验（共用 shared 清单 schema；需先 build:packages）
 pnpm package          # 构建 + electron-builder NSIS 安装包
 # Aurora Center 服务器（docs/12）：开发态直接 node 跑
 # node packages/center/bin/aurora-center.js start --port 8787 --data <目录>
@@ -66,14 +67,15 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   在包目录下执行会一个用例都匹配不到，直接以 `No test files found` 退出码 1 失败。
 - **端到端自测（真实 Electron + IPC，离线可跑）**：`$env:AURORA_SMOKE='1'; pnpm dev`，
   结束后看 `%TEMP%\aurora-smoke-logs` 里的 `AURORA_SMOKE_RESULT`（调试渲染层加 `AURORA_DEVTOOLS=1`）。
-  **全量约 40 秒、214 条断言应当全绿（2026-10-18 实测 `SUMMARY 214/214 passed`；
-  v34 删掉「预算触顶落 paused」断言后由 204 → 203，本轮多子代理 +3、内置浏览器 +8 条断言）**——
+  **全量约 40 秒、239 条断言应当全绿（2026-10-24 实测 `SUMMARY 239/239 passed`；
+  v34 删掉「预算触顶落 paused」断言后由 204 → 203，此后多子代理 +3、内置浏览器 +8、
+  v36 插件系统 +24、小组件与推送 +4 条断言）**——
   **先把基线修绿再动被测代码**。
   聚焦用 `$env:AURORA_SMOKE_ONLY='2.3'`；跨进程续跑用 `AURORA_SMOKE_PHASE='resume'` + `AURORA_SMOKE_WORKSPACE=<同一目录>`。
   **提交前仍必须跑全量**。
 - **Center 网页端验收（视觉 + 行为）**：`pnpm --filter @aurora/center build && pnpm --filter @aurora/center verify:web`
   —— 真实服务器子进程（临时数据目录）+ 协议忠实的桩客户端 + 系统 Edge，逐场景截图 / 读 DOM 并写 `report.json`
-  （口径同 `capture.ts`：任一条 `ok: false` → 退出码 2），当前基线 **96/96**（48 场景 × 暗/浅两档）。
+  （口径同 `capture.ts`：任一条 `ok: false` → 退出码 2），当前基线 **102/102**（51 场景 × 暗/浅两档）。
   整轮开跑前会用假上游 + 临时 `AURORA_CENTER_SECRET` 灌 20 条真实用量明细当夹具（见 docs/12 §10）。
   开关：`AURORA_CWEB_ONLY`（子串过滤 / 特殊值 `failed`）、`AURORA_CWEB_THEME=dark|light`、
   `AURORA_CWEB_VIEWPORT=mobile`、`AURORA_CWEB_OUT`、`AURORA_CWEB_KEEP=1`（保留子服务器与数据目录排障）、
@@ -86,12 +88,14 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
   再细一级 `$env:AURORA_CAPTURE_ONLY='<PNG 名子串>'`（逗号分隔，特殊值 `failed` = 只重跑上次没过的）。
   **张数与构成以 `report.json` 为准；「截了没有」只看日志 count 与报告，退出码 0 不等于截到了**；
   ⚠️ 筛选跑会产生假 FAIL（看到 FAIL 先问"是不是筛选跑的"，再用全量确认）。userData 自动隔离。规则见 docs/07 §5.3。
-  当前基线（2026-10-18 实测）：**全量 97 条 checks**（四窗 88 + onboarding 6 + memory/awareness-glow 3；
-  本轮新增 `chat-browser-agent.png`，此前新增 `chat-composer-paste.png` / `chat-nav-narrow.png`），
+  当前基线（2026-10-24 实测）：**全量 105 条 checks**（四窗 93 + onboarding 6 + memory/awareness-glow 3 +
+  小组件 / 推送 3）。四窗 93 含 v36 插件场景 `chat-plugin-panel` / `chat-plugin-page` /
+  `settings-plugins-installed` / `settings-plugins-marketplace` 与设置页 `settings-plugins`。
+  桌面 widget 窗口不在 `WindowName` 里，走 `captureWindows` 的 `widgetWindow` 现取。
   唯一恒红项是范围外的 `chat-model-picker.png`；
   **2026-10-18 补充**：本机全量单轮会在 `onboarding-done` 卡住（onboarding 窗口被完成流程隐藏后
-  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 97 条：
-  `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation'`（88 checks，仅 `chat-model-picker` 红）
+  `capturePage()` 不返回；与 `CHAT_COLLAPSE_CHECK` 注释同款 Windows 坑）。验收改用三轮覆盖全量 105 条：
+  `AURORA_CAPTURE_WINDOWS='edge-bar,chat,settings,automation,widget'`（96 checks，仅 `chat-model-picker` 红）
   + `AURORA_CAPTURE_ONLY='onboarding'`（6 checks 全绿）+ `AURORA_CAPTURE_WINDOWS='memory,awareness-glow'`
   （3 checks 全绿）；这是 capture 环境问题，不是子代理改动的回归。
   失败判定 = `ok === false` **或**（`checked === true` 且 `result == null`）**或** `result.pass === false`
@@ -180,6 +184,30 @@ pnpm package          # 构建 + electron-builder NSIS 安装包
 - **内置浏览器工具组**受 `agent.browser.enabled` 门控、**不受** `agent.tools.enabled`；`maxSessions` / `idleMinutes` 必须用 getter 现读，写成构造常量就是"改设置要重启"的死字段。
 - **webview guest 必须由渲染层上报 `webContentsId`**，主进程校验 `hostWebContents` 归属（chat 窗口）后才接管；不要按 URL / 标题猜 guest。
 - **`agent.browser` 整组在 `SETTINGS_READONLY_PREFIXES`**，AI 不得改；关闭能力（或切只读档）时必须结束全部 Agent 浏览器会话，别留下 Agent 徽章。
+- **插件贡献必须写在 `manifest.json`**（工具 / Skill / 命令 / 自动化 / 面板 / 主题 / 配置），
+  运行期不得动态注册；工具最终名必须 `plugin.<id>.<name>`（≤ 64），默认 `confirm`，
+  只有用户「信任此插件」后清单里的 `safe` 才生效；只读档只注册 `readonly:true` 的插件工具。
+- **`plugins` 设置组 AI 只读**：留在 `SETTINGS_READONLY_PREFIXES`，**不要**加进
+  `tools/settings-port.ts` 的 `TOP_LEVEL_GROUPS`；插件配置不支持密文字段。
+- **插件页面只能走 `aurora-plugin://` + `src/preload/plugin-page.ts`**：协议处理器必须
+  逐 session 注册（插件用独立非持久 partition `plugin-<id>`，默认 session 的 `protocol.handle`
+  不覆盖它）；`will-attach-webview` 只拦截该协议并强制 sandbox / contextIsolation /
+  `nodeIntegration:false`，拒绝调用方自带 preload / partition；页面不得暴露 `window.aurora`。
+- **桌面小组件窗口只在 `main/plugins/widgets.ts` 创建**（唯一 import electron 的 widget 模块）：
+  无边框 / 透明 / 置顶 / 不占任务栏；位置、尺寸、显隐写 `<userData>/plugin-widget-layout.json`，
+  **不进 settings、不升 `CONFIG_VERSION`**；桌面窗口总数上限 8（防失控常量）。
+- **提示条小组件只接受声明式 schema**：`slot = "edge-bar"` 清单层就拒绝 `entry` / `defaultSize`；
+  不要为了它改提示条窗口的 shape / 尺寸逻辑，也不要嵌 webview。
+- **插件推送（`ui.panelEvent`）必须在主进程校验**：panelId / widgetId 二选一、目标在本插件清单、
+  面板目标要 `ui.panels`、小组件目标要 `ui.widgets`、payload ≤ 64 KB、每插件每秒 ≤ 20 条（超出丢弃记 warn）；
+  路由只投给发起插件自己的面板 / 小组件（桌面窗口走 `plugins:widgetEvent`，右栏面板走 `plugins:panelEvent`）。
+- **页面型小组件的 guest 归属带 `widgetId`**：`plugins:pageRpc` 必须同时校验 guest 登记的小组件 id，
+  且目标确实是该插件的页面型 widget；不要只按 pluginId 放行。
+- **插件事件自动化有防自激守卫**：同一 `(pluginId, event)` 在自动化执行期间的重入会被忽略；
+  不要移除 `AutomationEngine.pluginEventsInFlight`（否则动作里再 emit 会无限递归）。
+- **插件进程不是 OS 沙箱**：文档 / 安装弹窗必须如实写「安装即信任」；不要宣称隔离。
+- `agent-core` / `modes` 仍不得 import electron；插件相关的 Electron 代码只在
+  `apps/desktop/src/main` 与 `main/plugins/`。
 
 ## 尚未生效 / 已知限制（别误当成 bug）
 

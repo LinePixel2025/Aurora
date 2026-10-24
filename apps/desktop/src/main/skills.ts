@@ -82,10 +82,20 @@ export class SkillsService {
       description: skill.description,
       ...(skill.whenToUse === undefined ? {} : { whenToUse: skill.whenToUse }),
       source: skill.source,
+      ...(skill.pluginId === undefined ? {} : { pluginId: skill.pluginId }),
       hasScripts: skill.hasScripts,
       enabled: skill.enabled,
       dir: skill.dir,
     }))
+  }
+
+  /**
+   * 注入插件贡献的 Skill 目录并重扫（docs/14）。
+   * 冲突口径由 `SkillsRegistry` 决定：内置同名优先、用户同名覆盖插件、插件之间先到先得。
+   */
+  async setPluginDirs(dirs: Array<{ dir: string; pluginId: string }>): Promise<SkillsStatus> {
+    this.registry.setPluginDirs(dirs)
+    return this.rescan()
   }
 
   /** 供内核组装提示词 / 工具表使用 */

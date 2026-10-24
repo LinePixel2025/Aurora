@@ -1,0 +1,9 @@
+{
+  "name": "aurora-plugin-hello",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Aurora 插件模板（与 manifest.json 的版本保持一致）",
+  "scripts": {
+    "verify": "node ../../../scripts/verify-plugin.mjs ."
+  }
+}

@@ -2729,3 +2729,27 @@ docs/12 §5）—— **只影响展示**：会话与 job 照常落盘、可经 `
     更省 token）；浏览器工具用于需要真实渲染与交互的场景，两者并存。
   - **不做视频 / 音频播放控制**：媒体请求由 `agent.browser.allowMedia` 统一放行 / 拒绝，
     没有播放、音量、全屏等细粒度工具。
+
+## 28. 插件系统与 Agent 内核的接线（v36）
+
+契约全文见 [14-plugin-system.md](./14-plugin-system.md)。内核侧只有四处变化：
+
+1. **工具来源 `plugin`**：插件工具以 `plugin.<id>.<name>` 注册（最终名 ≤ 64）。
+   - 不参与 `agent.tools.enabled` 门控（与扩展工具六件套同口径），但受 `plugins.enabled`、
+     单插件 enabled、`agent.permissionMode='readonly'`（只注册 `readonly:true`）与用户信任约束；
+   - 清单 `sensitivity` 默认按 `confirm` 处理；用户「信任此插件」后声明的 `safe` 才生效；
+   - 内核 `ToolContext.signal` abort 会以 `cancel` 帧传给插件进程，宿主回 `E_PLUGIN_CANCELLED`。
+2. **插件 Skill**：`SkillsRegistry` 扫描顺序 **builtin → plugin → user**；
+   用户同名覆盖插件，插件不能遮蔽内置，两个插件同名时先加载者优先（后者记 issue）。
+3. **插件斜杠命令**：`chat:send` 在附件准备之后、`agent.send` 之前解析 `/name args`；
+   `mode: 'action'` 直接执行并回执 summary，`mode: 'prompt'` 把插件返回的提示词拼进本轮；
+   渲染层 `/` 浮层新增「插件命令」分组。
+4. **自动化**：触发器 `plugin-event`（插件 `emitEvent`）与操作 `plugin-action`（调用插件动作）。
+   - 事件是边沿触发，不走定时去重键；
+   - **防自激**：同一 `(pluginId,event)` 在自动化执行期间的重入会被忽略（插件动作里再发同名事件
+     不会无限递归），执行结束释放；
+   - 运行历史记 `triggerDetail=插件事件 <id>/<event>`。
+
+**宿主事件**（需清单 `events` + `events` 权限）：`settings.changed`、`message.user`、
+`message.assistant`、`tool.after`、`session.created`、`session.deleted`、`theme.changed`。
+只投给正在运行且声明了该事件的插件；投递失败只记 debug。

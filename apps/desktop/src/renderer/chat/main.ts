@@ -4,5 +4,10 @@ import '@aurora/shared/browser/theme.css'
 import { bootstrapApp } from '../shared/bootstrap.js'
 
 const app = createApp(App)
-await bootstrapApp(app, { trackWindows: true, trackModes: true, trackSettings: true })
+await bootstrapApp(app, {
+  trackWindows: true,
+  trackModes: true,
+  trackSettings: true,
+  trackPlugins: true,
+})
 app.mount('#app')

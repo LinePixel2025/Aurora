@@ -316,6 +316,50 @@ export const IPC = {
     suggestion: 'awareness:suggestion',
     changed: 'awareness:changed',
   },
+  /**
+   * 插件（v36，docs/14）：安装 / 启停 / 信任 / 配置 / 命令 / 面板 / 市场。
+   * 安装态数据在 `<userData>/plugins/registry.json`，与 `plugins` 配置组（总开关/开发目录）
+   * 是两回事 —— 后者走 `settings:update`，且对 AI 只读。
+   */
+  plugins: {
+    list: 'plugins:list',
+    inspect: 'plugins:inspect',
+    install: 'plugins:install',
+    uninstall: 'plugins:uninstall',
+    setEnabled: 'plugins:setEnabled',
+    setTrusted: 'plugins:setTrusted',
+    restart: 'plugins:restart',
+    rollback: 'plugins:rollback',
+    /** 弹系统文件选择框选 .aurora-plugin / .zip，返回路径（不安装） */
+    choosePackage: 'plugins:choosePackage',
+    /** 弹系统目录选择框选开发目录，返回路径（只返回，不写配置） */
+    chooseDir: 'plugins:chooseDir',
+    openFolder: 'plugins:openFolder',
+    openLog: 'plugins:openLog',
+    getConfig: 'plugins:getConfig',
+    setConfig: 'plugins:setConfig',
+    listCommands: 'plugins:listCommands',
+    runCommand: 'plugins:runCommand',
+    panelData: 'plugins:panelData',
+    /** 渲染层拉取小组件 schema / 执行小组件动作 */
+    widgetData: 'plugins:widgetData',
+    /** 桌面小组件布局（位置 / 尺寸 / 显隐）读取与显隐切换 */
+    widgetLayout: 'plugins:widgetLayout',
+    setWidgetVisible: 'plugins:setWidgetVisible',
+    /** 插件页面（webview）的 RPC 中继：主进程校验归属后转发给插件进程 */
+    pageRpc: 'plugins:pageRpc',
+    marketplaceList: 'plugins:marketplaceList',
+    marketplaceInstall: 'plugins:marketplaceInstall',
+    checkUpdates: 'plugins:checkUpdates',
+    /** 插件集合变化推送（on/off 成对）：各窗口重拉 list */
+    changed: 'plugins:changed',
+    /** 主进程 → 渲染层：插件请求打开右栏面板（on/off 成对） */
+    openPanel: 'plugins:openPanel',
+    /** 主进程 → 渲染层：插件推送的面板事件（on/off 成对） */
+    panelEvent: 'plugins:panelEvent',
+    /** 主进程 → 渲染层：插件推送的小组件事件（on/off 成对） */
+    widgetEvent: 'plugins:widgetEvent',
+  },
 } as const
 
 export type IpcChannel =
@@ -342,3 +386,4 @@ export type IpcChannel =
   | (typeof IPC.mcp)[keyof typeof IPC.mcp]
   | (typeof IPC.update)[keyof typeof IPC.update]
   | (typeof IPC.automation)[keyof typeof IPC.automation]
+  | (typeof IPC.plugins)[keyof typeof IPC.plugins]

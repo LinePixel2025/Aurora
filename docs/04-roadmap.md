@@ -562,3 +562,20 @@ desktop `main/center` 22 用例（连接状态机 / 命令闸门 / 会话桥 / �
 | v0.4.8 | Center 官方图片 / 语音模型客户端选模、四周流光强调色单色 | [release-notes/v0.4.8.md](./release-notes/v0.4.8.md) |
 | v0.4.9（2026-10-18） | 任务编排 v34（并发批次 / 插话排队 / 工具超时 / `agent.loop` 三退一）+ 子代理并行与实际授予 + 自动化历史三层与双端回放 + 自感知光谱流光 + 双端输入卡粘贴与浮层 | [release-notes/v0.4.9.md](./release-notes/v0.4.9.md)、[docs/06 §5/§19](./06-agent-core.md)、[docs/13](./13-automation.md) |
 | v0.5.0（2026-10-18） | 内置浏览器 Agent 工具组 v35（八个 `browser_*` 工具 / CDP 真实输入 / 并发槽位 / 配置 `agent.browser` 与迁移 v34→v35） | [release-notes/v0.5.0.md](./release-notes/v0.5.0.md)、[docs/06 §27](./06-agent-core.md)、[docs/08 §1](./08-settings-onboarding.md) |
+
+## 2026-10-24 插件系统轮（配置 Schema v36）
+
+**目标**：让第三方插件扩展 Aurora 的 Agent 能力与界面，并提供可被其他编码 Agent 遵循的开发契约。
+
+- 清单优先：工具 / Skill / 命令 / 自动化动作与事件 / 面板 / 主题 / 配置字段全部在 `manifest.json` 声明；
+- 受控运行时：一个启用插件一个 `utilityProcess`（上限 8），白名单 RPC + 权限门控 + 工具确认，
+  **明确不是 OS 沙箱**（安装即信任）；
+- 界面：受控组件组成的声明式面板 + `aurora-plugin://` 专用 preload 的沙箱 webview；
+- 分发：本地 zip / 文件夹、开发目录热重载、Center 插件市场（公开浏览下载 + 管理员发布）；
+- 自动化：新增 `plugin-event` 触发器与 `plugin-action` 操作，事件带防自激守卫；
+- 配置：`plugins.enabled / devDirs / activeTheme`，整组 AI 只读；迁移 `v35 → v36`；
+- 验证：单测覆盖清单 / RPC / 管理器 / 自动化 / 市场；冒烟新增插件链路与主题断言；
+  截图新增插件面板 / 页面 / 设置页；Center `verify:web` 新增 `marketplace` / `plugins-admin`。
+
+风险与回退：`plugins.enabled=false` 一键停用全部插件并注销贡献；单个插件可停用；
+更新失败保留 `previousVersion` 可回滚；迁移只新增 `plugins` 组，旧客户端忽略该字段。

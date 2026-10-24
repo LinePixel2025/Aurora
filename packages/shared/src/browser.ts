@@ -56,5 +56,16 @@ export * from './ipc/types.js'
 export * from './mode/types.js'
 export * from './agent/types.js'
 
+// 插件契约（纯函数 + 类型）：渲染层要用清单类型、面板 schema 校验与主题令牌白名单。
+// 注意 `plugin/manifest.ts` 依赖 zod，但 zod 本身可在浏览器运行（与本文件已转出的
+// `config/schema.ts` 同一前提）；整个依赖链不得出现 Node 内置模块。
+export * from './plugin/ids.js'
+export * from './plugin/permissions.js'
+export * from './plugin/protocol.js'
+export * from './plugin/ui.js'
+export * from './plugin/themes.js'
+export * from './plugin/icons.js'
+export * from './plugin/manifest.js'
+
 // Center 协议（CENTER_SESSION_PREFIX 等常量；该文件只有类型与字面量常量，无 Node 依赖）
 export * from './center/protocol.js'

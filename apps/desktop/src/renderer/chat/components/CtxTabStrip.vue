@@ -16,6 +16,8 @@
  *   锚点消失就是静默 FAIL（docs/07 §5.3）。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { Component } from 'vue'
+import type { PluginPanelInfo } from '@aurora/shared'
 import { FileText, Globe, LayoutGrid, Plus, Terminal, X } from '@aurora/shared/browser'
 import {
   CTX_TABS_MAX,
@@ -26,26 +28,37 @@ import {
   ctxTabWindow,
   type CtxTab,
   type CtxTabKind,
+  type PluginTabInfo,
 } from '../composables/ctxTabsCore'
+import { pluginPanelIcon } from '../../plugins/pluginIcons.js'
 
 const props = defineProps<{
   tabs: CtxTab[]
   activeId: string
+  /** 启用的插件面板（「＋」菜单里的插件分组；没有就不显示分组） */
+  pluginPanels?: PluginPanelInfo[]
 }>()
 
 const emit = defineEmits<{
   (event: 'activate', id: string): void
   (event: 'close', id: string): void
   (event: 'new-tab', kind: CtxTabKind): void
+  (event: 'open-plugin', panel: PluginTabInfo): void
 }>()
 
 /** 每种标签的图标（与左栏固定项 / 工具卡片同一套 lucide 语言；语义优先，别按外观挑） */
-const TAB_ICONS = {
+const TAB_ICONS: Record<CtxTabKind, Component> = {
   context: LayoutGrid,
   files: FileText,
   terminal: Terminal,
   browser: Globe,
-} as const
+  plugin: pluginPanelIcon(undefined),
+}
+
+/** 插件标签按清单图标显示（白名单外的名字回落 Puzzle） */
+function iconOf(tab: CtxTab): Component {
+  return tab.kind === 'plugin' ? pluginPanelIcon(tab.plugin?.icon) : TAB_ICONS[tab.kind]
+}
 
 /** 新建菜单里的条目文案：上下文是单例，已有就「切过去」而不是再开一个 */
 const NEW_TAB_LABEL: Record<CtxTabKind, string> = {
@@ -53,6 +66,7 @@ const NEW_TAB_LABEL: Record<CtxTabKind, string> = {
   files: '新建文件标签',
   terminal: '新建终端标签',
   browser: '新建浏览器标签',
+  plugin: '插件面板',
 }
 
 const rootEl = ref<HTMLElement | null>(null)
@@ -159,6 +173,16 @@ function pickNewTab(kind: CtxTabKind): void {
   emit('new-tab', kind)
 }
 
+function pickPlugin(panel: PluginPanelInfo): void {
+  closeMenus()
+  emit('open-plugin', {
+    pluginId: panel.pluginId,
+    panelId: panel.id,
+    title: panel.title,
+    icon: panel.icon,
+  })
+}
+
 function titleOf(tab: CtxTab): string {
   return tab.title === '' ? CTX_TAB_DEFAULT_TITLE[tab.kind] : tab.title
 }
@@ -195,7 +219,7 @@ function titleOf(tab: CtxTab): string {
         @keydown.space.prevent="emit('activate', tab.id)"
       >
         <component
-          :is="TAB_ICONS[tab.kind]"
+          :is="iconOf(tab)"
           :size="13"
           :stroke-width="1.8"
           class="ctx-tab-icon"
@@ -259,7 +283,7 @@ function titleOf(tab: CtxTab): string {
         :title="titleOf(tab)"
         @click="activateFromMenu(tab.id)"
       >
-        <component :is="TAB_ICONS[tab.kind]" :size="13" :stroke-width="1.8" aria-hidden="true" />
+        <component :is="iconOf(tab)" :size="13" :stroke-width="1.8" aria-hidden="true" />
         <span class="ctx-menu-title">{{ titleOf(tab) }}</span>
         <button
           type="button"
@@ -287,6 +311,25 @@ function titleOf(tab: CtxTab): string {
         <component :is="TAB_ICONS[kind]" :size="13" :stroke-width="1.8" aria-hidden="true" />
         <span class="ctx-menu-title">{{ NEW_TAB_LABEL[kind] }}</span>
       </button>
+      <template v-if="(pluginPanels?.length ?? 0) > 0">
+        <p class="ctx-menu-caption">插件面板</p>
+        <button
+          v-for="panel in pluginPanels ?? []"
+          :key="`${panel.pluginId}.${panel.id}`"
+          type="button"
+          class="ctx-menu-item ctx-menu-action"
+          :data-field="`chat.ctx-new-plugin-${panel.pluginId}.${panel.id}`"
+          @click="pickPlugin(panel)"
+        >
+          <component
+            :is="pluginPanelIcon(panel.icon)"
+            :size="13"
+            :stroke-width="1.8"
+            aria-hidden="true"
+          />
+          <span class="ctx-menu-title">{{ panel.title }}</span>
+        </button>
+      </template>
     </div>
   </div>
 </template>

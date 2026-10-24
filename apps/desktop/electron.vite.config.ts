@@ -13,6 +13,8 @@ const windowEntries = {
   onboarding: r('src/renderer/onboarding/index.html'),
   automation: r('src/renderer/automation/index.html'),
   'awareness-glow': r('src/renderer/awareness-glow/index.html'),
+  // 桌面小组件浮动卡片（docs/14 §5.3）：窗口 URL 带 `?pluginId=&widgetId=`
+  widget: r('src/renderer/widget/index.html'),
 }
 
 /**
@@ -32,10 +34,13 @@ export default defineConfig({
       rollupOptions: {
         // 第二个入口是**文档内容提取 worker**（docs/02 §2.1、docs/05 §3.2）：
         // 由主进程以 `utilityProcess.fork` 启动，重任务隔离在子进程里，不阻塞事件循环。
+        // 第三个入口是**插件宿主进程**（docs/14 §2.2）：一个启用插件一个
+        // `utilityProcess`，崩溃 / 死循环不波及主进程；权限白名单仍在主进程判定。
         input: {
           index: r('src/main/index.ts'),
           'extract-worker': r('src/main/extract-worker.ts'),
           'office-worker': r('src/main/office-worker.ts'),
+          'plugin-host': r('src/main/plugin-host.ts'),
         },
       },
     },
@@ -47,7 +52,11 @@ export default defineConfig({
     build: {
       outDir: r('out/preload'),
       rollupOptions: {
-        input: { index: r('src/preload/index.ts') },
+        input: {
+          index: r('src/preload/index.ts'),
+          // 插件页面（沙箱 webview）专用：只暴露 window.auroraPlugin（docs/14 §2.4）
+          'plugin-page': r('src/preload/plugin-page.ts'),
+        },
         output: { format: 'cjs', entryFileNames: '[name].js' },
       },
     },

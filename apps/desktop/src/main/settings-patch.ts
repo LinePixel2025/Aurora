@@ -282,6 +282,9 @@ export function mergeSettingsPatch(draft: Settings, patch: SettingsPatch): strin
   }
   // 外观自定义（v21，docs/08 §1）：顶层浅合并（当前只有强调色主题）。
   if (patch.appearance !== undefined) Object.assign(draft.appearance, patch.appearance)
+  // 插件（v36，docs/14）：顶层浅合并。安装/启用/信任状态**不在 settings** 里
+  //（各自落 `<userData>/plugins/registry.json`），这里只有总开关、开发目录与当前主题。
+  if (patch.plugins !== undefined) Object.assign(draft.plugins, patch.plugins)
 
   return cleared
 }

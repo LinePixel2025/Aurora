@@ -31,6 +31,7 @@ import type {
   ChatAttachmentPreview,
   LlmProviderConfig,
   PermissionMode,
+  PluginPanelInfo,
   SensitiveToolRequest,
   SkillSummary,
 } from '@aurora/shared'
@@ -61,6 +62,8 @@ import TerminalPanel from './components/TerminalPanel.vue'
 import BrowserPanel, { type BrowserTarget } from './components/BrowserPanel.vue'
 import CtxTabStrip from './components/CtxTabStrip.vue'
 import CtxQuickAccess from './components/CtxQuickAccess.vue'
+import PluginPanel from '../plugins/PluginPanel.vue'
+import PluginPageFrame from '../plugins/PluginPageFrame.vue'
 import SessionNav from './components/SessionNav.vue'
 import SubagentPage from './components/SubagentPage.vue'
 import AutomationPage from './components/AutomationPage.vue'
@@ -74,7 +77,12 @@ import {
 } from '../shared/composables/modelPickerCore.js'
 import { useCenterOfficialCatalog } from '../shared/composables/useCenterOfficialCatalog.js'
 import { useCtxTabs } from './composables/useCtxTabs.js'
-import { CTX_TABS_MAX, type CtxTab, type CtxTabKind } from './composables/ctxTabsCore.js'
+import {
+  CTX_TABS_MAX,
+  type CtxTab,
+  type CtxTabKind,
+  type PluginTabInfo,
+} from './composables/ctxTabsCore.js'
 // Agent 内置浏览器（v35，docs/06 §27）：标签 ↔ 会话映射与兼容 UA
 import {
   agentSessionOfTab,
@@ -87,6 +95,7 @@ import {
 import { compatUserAgent } from './composables/compatUserAgent.js'
 import { appendProject, pickProjectEntry } from '../shared/projects.js'
 import { useModeStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
+import { usePluginsStore } from '../shared/plugins-store.js'
 import { parseTodoWriteInput, type TodoRow } from '../shared/agentTodo.js'
 import { filterSlashItems, slashQueryOf, type SlashItem } from './slashCommands.js'
 import { ArrowUp, Mic, PanelLeft, Trash2 } from '@aurora/shared/browser'
@@ -124,6 +133,7 @@ const {
 const windowStore = useWindowStore()
 const settingsStore = useSettingsStore()
 const modeStore = useModeStore()
+const pluginsStore = usePluginsStore()
 // 拖动统一走显式清单：主窗口头部 / 左栏品牌行可拖，按钮区显式 no-drag
 const { dragClass, noDragClass } = useWindowDrag('chat')
 
@@ -297,6 +307,7 @@ const {
   activeId: ctxActiveId,
   activate: activateCtxTab,
   openTab: openCtxTab,
+  openPlugin: openPluginCtxTab,
   ensureKind: ensureCtxKind,
   closeTab: closeCtxTab,
   setTitle: setCtxTabTitle,
@@ -341,6 +352,51 @@ function openCtxTabFromEmpty(kind: CtxTabKind): void {
   onNewCtxTab(kind)
 }
 
+/** 打开插件面板标签（`ui.openPanel` / 「＋」菜单共用；同一面板只开一个） */
+function openPluginTab(panel: PluginTabInfo): void {
+  contextOpen.value = true
+  const tab = openPluginCtxTab(panel)
+  if (tab === null) flashProjectNotice('error', `标签已达上限（${CTX_TABS_MAX} 个），先关掉一个`)
+}
+
+/** 主进程推来的 `plugins:openPanel`：按 store 里的面板元数据补标题与图标 */
+function openPluginPanelById(pluginId: string, panelId: string): void {
+  const panel = pluginsStore.panels.find(
+    (item) => item.pluginId === pluginId && item.id === panelId,
+  )
+  if (panel === undefined) return
+  openPluginTab({
+    pluginId,
+    panelId,
+    title: panel.title,
+    icon: panel.icon,
+  })
+}
+
+/**
+ * 插件被停用 / 卸载 / 崩溃后，右栏里属于它的面板标签要跟着消失：
+ * 留着只会渲染一个永远失败的请求。
+ */
+watch(
+  () => pluginsStore.panels.map((panel) => `${panel.pluginId}.${panel.id}`),
+  (keys) => {
+    const available = new Set(keys)
+    for (const tab of ctxTabs.value) {
+      if (tab.kind !== 'plugin' || tab.plugin === undefined) continue
+      if (!available.has(`${tab.plugin.pluginId}.${tab.plugin.panelId}`)) onCloseCtxTab(tab.id)
+    }
+  },
+)
+
+/** 标签 → 当前面板元数据（插件禁用后可能暂时找不到，模板按「不可用」处理） */
+function panelOfTab(tab: CtxTab): PluginPanelInfo | undefined {
+  const owner = tab.plugin
+  if (owner === undefined) return undefined
+  return pluginsStore.panels.find(
+    (panel) => panel.pluginId === owner.pluginId && panel.id === owner.panelId,
+  )
+}
+
 /** 关标签：把「已挂载」记录一并清掉（编号会被复用，留着会让新标签一开就挂载） */
 function onCloseCtxTab(id: string): void {
   // Agent 控制的标签被用户关掉 = 结束该会话（主进程也会在 guest destroyed 时兜底）
@@ -379,6 +435,7 @@ let offPreviewShow: (() => void) | null = null
 let offBrowserOpenTab: (() => void) | null = null
 let offAgentOpen: (() => void) | null = null
 let offAgentStatus: (() => void) | null = null
+let offPluginOpenPanel: (() => void) | null = null
 
 /**
  * Agent 内置浏览器（v35，docs/06 §27）：标签 → 会话的映射与徽章状态。
@@ -829,6 +886,10 @@ onMounted(() => {
   offAgentStatus = window.aurora.browser.onAgentStatus((event) => {
     onAgentStatus(event)
   })
+  // 插件请求打开右栏面板（`ctx.ui.openPanel`，docs/14 §2.3）
+  offPluginOpenPanel = window.aurora.plugins.onOpenPanel((event) => {
+    openPluginPanelById(event.pluginId, event.panelId)
+  })
   document.addEventListener('pointerdown', onComposerPointerDown)
   document.addEventListener('keydown', onDocumentEscape)
   // 窗口缩放 → 重算两侧栏的生效宽度（宽度记忆是 px，主区下限靠 viewportWidth 兜）
@@ -857,6 +918,8 @@ onUnmounted(() => {
   offAgentOpen = null
   offAgentStatus?.()
   offAgentStatus = null
+  offPluginOpenPanel?.()
+  offPluginOpenPanel = null
   document.removeEventListener('pointerdown', onComposerPointerDown)
   document.removeEventListener('keydown', onDocumentEscape)
   window.removeEventListener('resize', onViewportResize)
@@ -1783,7 +1846,7 @@ watch(
 const slashItems = computed<SlashItem[]>(() => {
   const query = slashQuery.value
   if (query === null || slashDismissed.value) return []
-  return filterSlashItems(query, slashSkills.value, streaming.value)
+  return filterSlashItems(query, slashSkills.value, streaming.value, pluginsStore.commands)
 })
 
 const slashOpen = computed(() => slashQuery.value !== null && slashItems.value.length > 0)
@@ -1859,8 +1922,21 @@ watch(
 )
 
 /** 选中一项：命令立即执行，技能补全成 `/技能名 `（焦点留在输入框，光标移到末尾） */
+async function runPluginCommand(item: SlashItem): Promise<void> {
+  const pluginId = item.pluginId ?? ''
+  if (pluginId === '') return
+  const result = await window.aurora.plugins.runCommand({ pluginId, name: item.name })
+  if (!result.ok) {
+    flashProjectNotice('error', result.message)
+    return
+  }
+  if (typeof result.value.summary === 'string' && result.value.summary !== '') {
+    flashProjectNotice('ok', result.value.summary)
+  }
+}
+
 function applySlash(item: SlashItem): void {
-  if (item.kind === 'skill') {
+  if (item.kind === 'skill' || (item.kind === 'plugin-command' && item.pluginMode === 'prompt')) {
     input.value = `/${item.name} `
     void nextTick(() => {
       const el = textareaEl.value
@@ -1869,6 +1945,11 @@ function applySlash(item: SlashItem): void {
       el.setSelectionRange(el.value.length, el.value.length)
       autoGrow()
     })
+    return
+  }
+  if (item.kind === 'plugin-command') {
+    input.value = ''
+    void runPluginCommand(item)
     return
   }
   input.value = ''
@@ -2380,9 +2461,11 @@ async function markGuideDone(): Promise<void> {
         class="glass-surface-strong"
         :tabs="ctxTabs"
         :active-id="ctxActiveId"
+        :plugin-panels="pluginsStore.panels"
         @activate="activateCtxTab"
         @close="onCloseCtxTab"
         @new-tab="onNewCtxTab"
+        @open-plugin="openPluginTab"
       />
       <div class="ctx-panes">
         <!--
@@ -2434,6 +2517,32 @@ async function markGuideDone(): Promise<void> {
               :session-id="sessionId"
               @title="(title) => setCtxTabTitle(tab.id, title)"
             />
+            <!--
+              插件面板（docs/14 §3.4）：声明式 schema 用受控组件渲染；
+              页面型走沙箱 webview（`aurora-plugin://` + 专用 preload）。
+            -->
+            <PluginPanel
+              v-else-if="tab.kind === 'plugin' && panelOfTab(tab)?.kind === 'schema' && tab.plugin"
+              :plugin-id="tab.plugin.pluginId"
+              :panel-id="tab.plugin.panelId"
+              :title="tab.title"
+              :active="tab.id === ctxActiveId"
+            />
+            <PluginPageFrame
+              v-else-if="
+                tab.kind === 'plugin' &&
+                panelOfTab(tab)?.kind === 'page' &&
+                panelOfTab(tab)?.entry !== undefined &&
+                tab.plugin
+              "
+              :plugin-id="tab.plugin.pluginId"
+              :panel-id="tab.plugin.panelId"
+              :entry="panelOfTab(tab)?.entry ?? ''"
+              :title="tab.title"
+            />
+            <div v-else-if="tab.kind === 'plugin'" class="plugin-pane-missing">
+              插件面板不可用（插件已停用或已卸载）
+            </div>
             <BrowserPanel
               v-else
               :target="tab.id === panelTargetTabId ? panelTarget : null"
@@ -2626,9 +2735,20 @@ body.col-resizing .nav {
 /* 文件预览 / 终端 / 浏览器面板是单列 flex（组件内部自管滚动），不吃两行网格 */
 .ctx-pane > :deep(.fp),
 .ctx-pane > :deep(.tp),
-.ctx-pane > :deep(.bp) {
+.ctx-pane > :deep(.bp),
+.ctx-pane > :deep(.plugin-panel),
+.ctx-pane > :deep(.plugin-page),
+.ctx-pane > :deep(.plugin-pane-missing) {
   grid-row: 1 / -1;
   min-height: 0;
+}
+
+.plugin-pane-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
 }
 
 /* 任务面板容器（上下文 tab 第一行）：宽度跟着栏走，高度由面板内容决定 */

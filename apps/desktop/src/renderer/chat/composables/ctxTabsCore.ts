@@ -15,15 +15,24 @@
  */
 
 /** 右栏标签种类（同时也是「首个实例」的 id） */
-export type CtxTabKind = 'context' | 'files' | 'terminal' | 'browser'
+export type CtxTabKind = 'context' | 'files' | 'terminal' | 'browser' | 'plugin'
+
+/** 插件面板标签的归属（docs/14 §3.4，P3）：同一个面板只开一个标签 */
+export interface PluginTabInfo {
+  pluginId: string
+  panelId: string
+  title: string
+  icon?: string
+}
 
 export interface CtxTab {
   id: string
   kind: CtxTabKind
   title: string
+  plugin?: PluginTabInfo
 }
 
-/** 开新标签菜单的条目顺序（也是标签默认顺序） */
+/** 开新标签菜单的条目顺序（也是标签默认顺序；插件面板由菜单里的插件分组追加） */
 export const CTX_TAB_KINDS: readonly CtxTabKind[] = ['context', 'files', 'terminal', 'browser']
 
 /** 面板上报标题之前的默认展示名（面板上报空串时回落到它） */
@@ -32,6 +41,7 @@ export const CTX_TAB_DEFAULT_TITLE: Record<CtxTabKind, string> = {
   files: '文件',
   terminal: '终端',
   browser: '浏览器',
+  plugin: '插件',
 }
 
 /**
@@ -91,10 +101,24 @@ export interface CtxTabOpenResult {
  * 「上下文」单例已存在时**不新建**，返回 `created: false` + 已有的那个（调用方切过去即可）。
  * 上下文单例**不受上限约束**：左栏「任务」入口随时要能把它叫出来，不能因为标签开满而失联。
  */
-export function openCtxTab(tabs: readonly CtxTab[], kind: CtxTabKind): CtxTabOpenResult | null {
+export function openCtxTab(
+  tabs: readonly CtxTab[],
+  kind: CtxTabKind,
+  options: { title?: string; plugin?: PluginTabInfo } = {},
+): CtxTabOpenResult | null {
   if (kind === 'context') {
     const existing = tabs.find((tab) => tab.kind === 'context')
     if (existing !== undefined) return { tabs: [...tabs], tab: existing, created: false }
+  } else if (kind === 'plugin' && options.plugin !== undefined) {
+    const target = options.plugin
+    const existing = tabs.find(
+      (tab) =>
+        tab.kind === 'plugin' &&
+        tab.plugin?.pluginId === target.pluginId &&
+        tab.plugin?.panelId === target.panelId,
+    )
+    if (existing !== undefined) return { tabs: [...tabs], tab: existing, created: false }
+    if (tabs.length >= CTX_TABS_MAX) return null
   } else if (tabs.length >= CTX_TABS_MAX) {
     return null
   }
@@ -102,7 +126,8 @@ export function openCtxTab(tabs: readonly CtxTab[], kind: CtxTabKind): CtxTabOpe
   const tab: CtxTab = {
     id: nextCtxTabId(kind, tabs),
     kind,
-    title: CTX_TAB_DEFAULT_TITLE[kind],
+    title: options.title?.trim() || CTX_TAB_DEFAULT_TITLE[kind],
+    ...(options.plugin === undefined ? {} : { plugin: { ...options.plugin } }),
   }
   return { tabs: [...tabs, tab], tab, created: true }
 }

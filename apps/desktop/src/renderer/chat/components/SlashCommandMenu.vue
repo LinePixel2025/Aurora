@@ -6,14 +6,14 @@
  * 在 textarea 上处理 —— 焦点自始至终留在输入框里，浮层只是键位操作的可视反馈。
  * 组件自己只做两件带 DOM 的事：把高亮项滚进可视区，以及鼠标悬停 / 点击时回报选中项。
  *
- * 条目分两类（`kind`，视觉上分组）：
+ * 条目分三类（`kind`，视觉上分组）：
  * - `command`：客户端命令（新对话 / 清空 / 停止 / 打开设置 / 子代理）—— 选中即执行；
+ * - `plugin-command`：插件斜杠命令（docs/14 §3.3）—— `action` 选中即执行，`prompt` 只补全；
  * - `skill`：Skill 显式调用（`/技能名`）—— 选中只把 `/技能名 ` 填进输入框，用户接着写需求。
- *   技能清单来自主进程 `skills:list`（只含 enabled 的），渲染层不缓存第二份。
  */
 import { computed, ref, watch } from 'vue'
 import type { SlashItem } from '../slashCommands.js'
-import { ChevronRight, Command, Puzzle } from '@aurora/shared/browser'
+import { Blocks, ChevronRight, Command, Puzzle } from '@aurora/shared/browser'
 
 const props = defineProps<{
   /** 已过滤 + 排序的候选（空数组时整块不渲染） */
@@ -31,6 +31,7 @@ const listEl = ref<HTMLElement | null>(null)
 
 /** 是否已输入到「命令名」区间：调用方过滤后可能把 `command` 与 `skill` 混在一起 */
 const commands = computed(() => props.items.filter((item) => item.kind === 'command'))
+const pluginCommands = computed(() => props.items.filter((item) => item.kind === 'plugin-command'))
 const skills = computed(() => props.items.filter((item) => item.kind === 'skill'))
 
 /**
@@ -81,6 +82,31 @@ function indexOf(item: SlashItem): number {
           <span class="slash-body">
             <span class="slash-name mono">/{{ item.name }}</span>
             <span class="tiny muted slash-desc">{{ item.label }} — {{ item.description }}</span>
+          </span>
+          <ChevronRight class="slash-go" :size="12" :stroke-width="2" aria-hidden="true" />
+        </button>
+      </template>
+
+      <template v-if="pluginCommands.length > 0">
+        <p class="slash-group tiny muted">插件命令</p>
+        <button
+          v-for="item in pluginCommands"
+          :key="item.id"
+          type="button"
+          class="slash-item"
+          role="option"
+          :aria-selected="indexOf(item) === activeIndex"
+          :class="{ active: indexOf(item) === activeIndex }"
+          :data-index="indexOf(item)"
+          :data-field="`chat.slash-${item.name}`"
+          :data-kind="item.kind"
+          @mouseenter="emit('hover', indexOf(item))"
+          @click="emit('select', item)"
+        >
+          <Blocks class="slash-icon" :size="13" :stroke-width="1.8" aria-hidden="true" />
+          <span class="slash-body">
+            <span class="slash-name mono">/{{ item.name }}</span>
+            <span class="tiny muted slash-desc">{{ item.description }}</span>
           </span>
           <ChevronRight class="slash-go" :size="12" :stroke-width="2" aria-hidden="true" />
         </button>

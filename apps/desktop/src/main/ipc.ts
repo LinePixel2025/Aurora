@@ -23,6 +23,10 @@ import { buildAttachmentPreview, type ImageReadPort } from './attachments.js'
 // 附件链路与 Center 远程会话共用一份实现（docs/07 §2.3）：从 ipc.ts 抽出，行为不变。
 import { prepareAttachments, type AttachmentDigest } from './attachment-prepare.js'
 import { PastedImageError, writePastedImage } from './pasted-image.js'
+import type { PluginManager } from './plugins/manager.js'
+import type { WidgetManager } from './plugins/widgets.js'
+import type { PluginMarketplaceClient } from './plugins/marketplace.js'
+import { pluginPageGuestOf } from './page-protocol.js'
 import { isPathOutsideError, type WorkspaceGuardOptions } from './tools/file-port.js'
 import {
   assertRestorablePath,
@@ -90,6 +94,26 @@ import {
   type ModeId,
   type ModeSummary,
   type OpenPathRequest,
+  // 插件系统（docs/14）
+  type PluginCommandInfo,
+  type PluginConfigValues,
+  type PluginInstallPreview,
+  type PluginMarketplaceInstallRequest,
+  type PluginMarketplaceListResult,
+  type PluginPackageRef,
+  type PluginPageRpcRequest,
+  type PluginPanelDataRequest,
+  type PluginPanelDataResult,
+  type PluginPanelSchema,
+  type PluginRunCommandRequest,
+  type PluginRunCommandResult,
+  type PluginSetWidgetVisibleRequest,
+  type PluginSummary,
+  type PluginUninstallRequest,
+  type PluginUpdateInfo,
+  type PluginWidgetDataRequest,
+  type PluginWidgetDataResult,
+  type PluginWidgetLayout,
   type ProjectStatus,
   type ProjectRuntimeStatus,
   type SnapshotListRequest,
@@ -195,6 +219,15 @@ export interface DesktopDeps {
   /** 图像生成（imagegen:*，Design/betav2-spec.md §8.3、docs/06 §15） */
   imagegen: ImageGenServiceLike
   skills: SkillsInfoLike
+  /**
+   * 插件系统（docs/14，`plugins:*`）。未装配时各通道如实回 `E_INVALID_STATE`
+   * （不静默成功）——安装 / 启停 / 配置都要求用户能看到失败原因。
+   */
+  plugins?: PluginManager
+  /** 桌面小组件窗口（docs/14 §5.3）；插件系统未装配时为空 */
+  widgets?: WidgetManager
+  /** 插件市场客户端（P4）；未装配时市场通道回 E_INVALID_STATE */
+  pluginMarketplace?: PluginMarketplaceClient
   /** 会话历史（chat:history 水合，docs/06 §4） */
   sessions: SessionStore
   /**
@@ -279,6 +312,24 @@ export interface DesktopDeps {
 /** 附件提取结果（实现与 `chat:send` 共用 `attachment-prepare.ts`；这里保留导出以稳定消费方）。 */
 export type { AttachmentDigest }
 
+/** 插件斜杠命令：`/name args`（命令名规则与清单一致，见 `PLUGIN_COMMAND_NAME_PATTERN`）。 */
+const PLUGIN_COMMAND_PATTERN = /^\/([a-z][a-z0-9_-]{0,31})(?:\s+([\s\S]*))?$/
+
+/** `message.assistant` 投递给插件的正文上限（16 KB；再长对事件订阅方也没有意义） */
+const PLUGIN_ASSISTANT_TEXT_MAX = 16 * 1024
+
+function matchPluginCommand(
+  text: string,
+  commands: PluginCommandInfo[],
+): { command: PluginCommandInfo; args: string } | undefined {
+  const match = PLUGIN_COMMAND_PATTERN.exec(text.trim())
+  if (match === null) return undefined
+  const name = match[1] ?? ''
+  const command = commands.find((item) => item.name === name)
+  if (command === undefined) return undefined
+  return { command, args: (match[2] ?? '').trim() }
+}
+
 /**
  * ClassIsland 控制器（`ClassIslandControllerLike` + v3 的提醒通道）。
  *
@@ -314,6 +365,7 @@ export function registerIpc(deps: DesktopDeps): () => void {
   const handlers: Array<[string, (...args: never[]) => unknown]> = []
   const snapshots = deps.snapshots
   const jobs = deps.jobs
+  const plugins = deps.plugins
 
   const handle = <T>(
     channel: string,
@@ -610,9 +662,47 @@ export function registerIpc(deps: DesktopDeps): () => void {
         (message) => message.role === 'user',
       )
       const prepared = await prepareAttachments(deps, request.attachments)
+      // 插件斜杠命令（docs/14）：`action` 立即执行并回 `handled`，不进入 Agent；
+      // `prompt` 把插件返回的提示词并入 extraContext，用户气泡仍显示 `/name args`。
+      const pluginCommand = matchPluginCommand(request.text, plugins?.commands() ?? [])
+      if (pluginCommand !== undefined && pluginCommand.command.mode === 'action') {
+        if (plugins === undefined) {
+          return err('E_INVALID_STATE', '插件系统尚未装配')
+        }
+        try {
+          const result = await plugins.invokeCommand(
+            pluginCommand.command.pluginId,
+            pluginCommand.command.name,
+            pluginCommand.args,
+          )
+          return ok({
+            requestId: randomUUID(),
+            handled: result.summary === undefined ? {} : { summary: result.summary },
+          })
+        } catch (error) {
+          return err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
+        }
+      }
       // 内置命令 `/init`（docs/06 §6）：指令正文拼进 extraContext（与技能正文同一通道），
       // 用户气泡显示的仍是三个字符 `/init`。边界根解析不出时原样透传，不造一个假目录。
       const extraSections: Array<string | undefined> = [prepared.extraContext]
+      if (pluginCommand !== undefined && pluginCommand.command.mode === 'prompt') {
+        if (plugins === undefined) {
+          return err('E_INVALID_STATE', '插件系统尚未装配')
+        }
+        try {
+          const result = await plugins.invokeCommand(
+            pluginCommand.command.pluginId,
+            pluginCommand.command.name,
+            pluginCommand.args,
+          )
+          if (result.prompt !== undefined && result.prompt.trim() !== '') {
+            extraSections.push(result.prompt)
+          }
+        } catch (error) {
+          return err('E_UNKNOWN', error instanceof Error ? error.message : String(error))
+        }
+      }
       if (isInitCommand(request.text)) {
         const root = deps.workspaceRootOf?.(request.sessionId) ?? ''
         if (root !== '') {
@@ -639,6 +729,11 @@ export function registerIpc(deps: DesktopDeps): () => void {
             hadUserMessage ? undefined : request.text,
             hadUserMessage ? [] : (request.attachments ?? []),
           )
+          // 宿主事件（docs/14 §3.5）：正文按上限截断后再投递
+          void deps.plugins?.deliverEvent('message.user', {
+            sessionId: request.sessionId,
+            text: request.text.slice(0, PLUGIN_ASSISTANT_TEXT_MAX),
+          })
           return result
         })
         .then(ok, (error: unknown) =>
@@ -888,6 +983,8 @@ export function registerIpc(deps: DesktopDeps): () => void {
     return deps.sessions
       .createSession(space === undefined ? undefined : { space })
       .then(async (sessionId) => {
+        // 宿主事件（docs/14 §3.5）：会话已创建即投递，绑定项目失败不影响这条事实
+        void deps.plugins?.deliverEvent('session.created', { sessionId })
         if (projectId !== '') await deps.sessions.setProject(sessionId, projectId)
         return sessionId
       })
@@ -1017,6 +1114,7 @@ export function registerIpc(deps: DesktopDeps): () => void {
       if (result.ok) {
         // 广播在**删除成功之后**（失败/被守卫拒绝时不发，避免渲染层对着不存在的删除动作回落）
         broadcast(IPC.chat.sessionDeleted, { sessionId })
+        void deps.plugins?.deliverEvent('session.deleted', { sessionId })
       }
       return result
     })
@@ -1030,6 +1128,282 @@ export function registerIpc(deps: DesktopDeps): () => void {
       ),
   )
   handle<SkillsStatus>(IPC.skills.status, () => ok(deps.skills.status()))
+
+  // ───────────────────────── plugins（docs/14）─────────────────────────
+  // 安装 / 启停 / 信任 / 配置全部经 `PluginManager`；未装配时如实回错，不静默成功。
+  const pluginsMissing = <T>(): Result<T> => err('E_INVALID_STATE', '插件系统尚未装配')
+  const pluginError = (error: unknown): Result<never> =>
+    err('E_INVALID_ARGUMENT', error instanceof Error ? error.message : String(error))
+
+  handle<PluginSummary[]>(IPC.plugins.list, () =>
+    plugins === undefined ? pluginsMissing<PluginSummary[]>() : ok(plugins.list()),
+  )
+  handle<PluginInstallPreview>(IPC.plugins.inspect, (ref: PluginPackageRef) =>
+    plugins === undefined
+      ? Promise.resolve(pluginsMissing<PluginInstallPreview>())
+      : plugins.inspect(ref).then(ok, pluginError),
+  )
+  handle<PluginSummary>(IPC.plugins.install, (ref: PluginPackageRef) =>
+    plugins === undefined
+      ? Promise.resolve(pluginsMissing<PluginSummary>())
+      : plugins.install(ref).then(ok, pluginError),
+  )
+  handle<boolean>(IPC.plugins.uninstall, (request: PluginUninstallRequest) =>
+    plugins === undefined
+      ? Promise.resolve(pluginsMissing<boolean>())
+      : plugins.uninstall(request.pluginId, request.deleteData === true).then(ok, pluginError),
+  )
+  handle<PluginSummary>(
+    IPC.plugins.setEnabled,
+    (request: { pluginId: string; enabled: boolean }) =>
+      plugins === undefined
+        ? Promise.resolve(pluginsMissing<PluginSummary>())
+        : plugins.setEnabled(request.pluginId, request.enabled).then(ok, pluginError),
+  )
+  handle<PluginSummary>(
+    IPC.plugins.setTrusted,
+    (request: { pluginId: string; trusted: boolean }) =>
+      plugins === undefined
+        ? Promise.resolve(pluginsMissing<PluginSummary>())
+        : plugins.setTrusted(request.pluginId, request.trusted).then(ok, pluginError),
+  )
+  handle<PluginSummary>(IPC.plugins.restart, (request: { pluginId: string }) =>
+    plugins === undefined
+      ? Promise.resolve(pluginsMissing<PluginSummary>())
+      : plugins.restart(request.pluginId).then(ok, pluginError),
+  )
+  handle<PluginSummary>(IPC.plugins.rollback, (request: { pluginId: string }) =>
+    plugins === undefined
+      ? Promise.resolve(pluginsMissing<PluginSummary>())
+      : plugins.rollback(request.pluginId).then(ok, pluginError),
+  )
+  handle<string | null>(IPC.plugins.choosePackage, async () => {
+    const picked = await dialog.showOpenDialog({
+      title: '选择 Aurora 插件包',
+      buttonLabel: '选择插件包',
+      properties: ['openFile'],
+      filters: [{ name: 'Aurora 插件包', extensions: ['aurora-plugin', 'zip'] }],
+    })
+    return ok(picked.canceled ? null : (picked.filePaths[0] ?? null))
+  })
+  handle<string | null>(IPC.plugins.chooseDir, async () => {
+    const picked = await dialog.showOpenDialog({
+      title: '选择插件开发目录',
+      buttonLabel: '使用此目录',
+      properties: ['openDirectory'],
+    })
+    return ok(picked.canceled ? null : (picked.filePaths[0] ?? null))
+  })
+  handle<string>(IPC.plugins.openFolder, (request: { pluginId: string }) => {
+    if (plugins === undefined) return pluginsMissing<string>()
+    const path = plugins.installPathOf(request?.pluginId ?? '')
+    if (path === undefined) return err('E_INVALID_ARGUMENT', '插件不存在')
+    shell.showItemInFolder(path)
+    return ok(path)
+  })
+  handle<string>(IPC.plugins.openLog, async (request: { pluginId: string }) => {
+    if (plugins === undefined) return pluginsMissing<string>()
+    const pluginId = request?.pluginId ?? ''
+    if (plugins.get(pluginId) === undefined) return err('E_INVALID_ARGUMENT', '插件不存在')
+    const file = plugins.logFileOf(pluginId)
+    await nodeFs.mkdir(dirname(file), { recursive: true }).catch(() => undefined)
+    const failure = await shell.openPath(file)
+    if (failure !== '') return err('E_IO', failure)
+    return ok(file)
+  })
+  handle<Record<string, unknown>>(IPC.plugins.getConfig, (request: { pluginId: string }) =>
+    plugins === undefined
+      ? Promise.resolve(pluginsMissing<Record<string, unknown>>())
+      : plugins.getConfig(request.pluginId).then(ok, pluginError),
+  )
+  handle<Record<string, unknown>>(IPC.plugins.setConfig, (request: PluginConfigValues) =>
+    plugins === undefined
+      ? Promise.resolve(pluginsMissing<Record<string, unknown>>())
+      : plugins.setConfig(request.pluginId, request.values).then(ok, pluginError),
+  )
+  handle<PluginCommandInfo[]>(IPC.plugins.listCommands, () =>
+    plugins === undefined ? pluginsMissing<PluginCommandInfo[]>() : ok(plugins.commands()),
+  )
+  handle<PluginRunCommandResult>(IPC.plugins.runCommand, (request: PluginRunCommandRequest) =>
+    plugins === undefined
+      ? Promise.resolve(pluginsMissing<PluginRunCommandResult>())
+      : plugins
+          .invokeCommand(request.pluginId, request.name, request.args ?? '')
+          .then(ok, pluginError),
+  )
+  handle<PluginPanelDataResult>(IPC.plugins.panelData, async (request: PluginPanelDataRequest) => {
+    if (plugins === undefined) return pluginsMissing<PluginPanelDataResult>()
+    const pluginId = typeof request?.pluginId === 'string' ? request.pluginId : ''
+    const panelId = typeof request?.panelId === 'string' ? request.panelId : ''
+    if (pluginId === '' || panelId === '') {
+      return err('E_INVALID_ARGUMENT', '缺少插件或面板 id')
+    }
+    const panel = plugins.get(pluginId)?.panels.find((item) => item.id === panelId)
+    if (panel === undefined) return err('E_INVALID_ARGUMENT', '插件面板不存在')
+    if (panel.kind === 'page') {
+      return err('E_INVALID_ARGUMENT', '页面型面板请通过插件页面打开')
+    }
+    try {
+      let schema: PluginPanelSchema | undefined
+      const file = await plugins.panelSchemaFile(pluginId, panelId)
+      if (file !== undefined) schema = JSON.parse(file) as PluginPanelSchema
+      // 插件可以返回动态 schema；失败时保留静态 schema（面板不至于整块打不开）
+      try {
+        const result = await plugins.invokePanel(pluginId, panelId, request.method ?? 'refresh', {
+          params: request.params,
+          values: request.values ?? {},
+        })
+        if (result.schema !== undefined) schema = result.schema as PluginPanelSchema
+        return ok({
+          ...(schema === undefined ? {} : { schema }),
+          ...(result.toast === undefined ? {} : { toast: result.toast }),
+        })
+      } catch (error) {
+        if (schema === undefined) throw error
+        return ok({ schema })
+      }
+    } catch (error) {
+      return pluginError(error)
+    }
+  })
+  handle<PluginWidgetDataResult>(
+    IPC.plugins.widgetData,
+    async (request: PluginWidgetDataRequest) => {
+      if (plugins === undefined) return pluginsMissing<PluginWidgetDataResult>()
+      const pluginId = typeof request?.pluginId === 'string' ? request.pluginId : ''
+      const widgetId = typeof request?.widgetId === 'string' ? request.widgetId : ''
+      if (pluginId === '' || widgetId === '') {
+        return err('E_INVALID_ARGUMENT', '缺少插件或小组件 id')
+      }
+      const widget = plugins.get(pluginId)?.widgets.find((item) => item.id === widgetId)
+      if (widget === undefined) return err('E_INVALID_ARGUMENT', '插件小组件不存在')
+      if (widget.kind === 'page') {
+        return err('E_INVALID_ARGUMENT', '页面型小组件请通过小组件页面打开')
+      }
+      const paramsBytes = JSON.stringify(request.params ?? null).length
+      if (paramsBytes > 256 * 1024) {
+        return err('E_INVALID_ARGUMENT', '小组件参数超过 256 KB')
+      }
+      try {
+        let schema: PluginPanelSchema | undefined
+        const file = await plugins.widgetSchemaFile(pluginId, widgetId)
+        if (file !== undefined) schema = JSON.parse(file) as PluginPanelSchema
+        try {
+          const result = await plugins.invokeWidget(
+            pluginId,
+            widgetId,
+            request.method ?? 'refresh',
+            { params: request.params, values: request.values ?? {} },
+          )
+          if (result.schema !== undefined) schema = result.schema as PluginPanelSchema
+          return ok({
+            ...(schema === undefined ? {} : { schema }),
+            ...(result.toast === undefined ? {} : { toast: result.toast }),
+          })
+        } catch (error) {
+          if (schema === undefined) throw error
+          return ok({ schema })
+        }
+      } catch (error) {
+        return pluginError(error)
+      }
+    },
+  )
+  handle<PluginWidgetLayout>(IPC.plugins.widgetLayout, () => {
+    if (deps.widgets === undefined) {
+      return pluginsMissing<PluginWidgetLayout>()
+    }
+    return ok(deps.widgets.layoutSnapshot())
+  })
+  handle<boolean>(
+    IPC.plugins.setWidgetVisible,
+    (request: PluginSetWidgetVisibleRequest) => {
+      if (deps.widgets === undefined) return pluginsMissing<boolean>()
+      const pluginId = typeof request?.pluginId === 'string' ? request.pluginId : ''
+      const widgetId = typeof request?.widgetId === 'string' ? request.widgetId : ''
+      if (pluginId === '' || widgetId === '') {
+        return err('E_INVALID_ARGUMENT', '缺少插件或小组件 id')
+      }
+      return deps.widgets
+        .setVisible(pluginId, widgetId, request.visible === true)
+        .then(ok, pluginError)
+    },
+  )
+  handle<unknown>(IPC.plugins.pageRpc, async (request: PluginPageRpcRequest) => {
+    if (plugins === undefined) return pluginsMissing<unknown>()
+    const pluginId = typeof request?.pluginId === 'string' ? request.pluginId : ''
+    const method = typeof request?.method === 'string' ? request.method : ''
+    if (pluginId === '' || method === '' || method.length > 64) {
+      return err('E_INVALID_ARGUMENT', '插件页面请求无效')
+    }
+    // 只接受自家窗口里真实挂载过的插件页面（`did-attach-webview` 登记）；
+    // 主渲染层冒充别的插件 id 也过不了这一关。
+    const guest = pluginPageGuestOf(request?.guestId ?? -1)
+    if (guest === undefined) {
+      return err('E_INVALID_STATE', '插件页面请求必须来自已登记的页面')
+    }
+    if (guest.pluginId !== pluginId) {
+      return err('E_INVALID_STATE', '插件页面归属不匹配')
+    }
+    const summary = plugins.get(pluginId)
+    if (summary === undefined) return err('E_INVALID_ARGUMENT', '插件不存在')
+    const paramsBytes = JSON.stringify(request.params ?? null).length
+    if (paramsBytes > 256 * 1024) {
+      return err('E_INVALID_ARGUMENT', '插件页面请求超过 256 KB')
+    }
+    // 桌面小组件里的页面：guest 登记的是 widgetId，必须与请求一致，
+    // 且目标确实是该插件的页面型小组件。
+    const widgetId = typeof request.widgetId === 'string' ? request.widgetId : ''
+    if (widgetId !== '') {
+      if (guest.widgetId !== widgetId) {
+        return err('E_INVALID_STATE', '小组件页面归属不匹配')
+      }
+      const widget = summary.widgets.find((item) => item.id === widgetId && item.kind === 'page')
+      if (widget === undefined) return err('E_INVALID_ARGUMENT', '插件没有该页面型小组件')
+      try {
+        return ok(await plugins.invokeWidget(pluginId, widgetId, method, request.params ?? {}))
+      } catch (error) {
+        return pluginError(error)
+      }
+    }
+    if (guest.widgetId !== undefined) {
+      return err('E_INVALID_STATE', '小组件页面必须声明 widgetId')
+    }
+    const panelId =
+      typeof request.panelId === 'string' && request.panelId !== ''
+        ? request.panelId
+        : summary.panels.find((item) => item.kind === 'page')?.id
+    if (panelId === undefined) return err('E_INVALID_ARGUMENT', '插件没有页面型面板')
+    try {
+      const result = await plugins.invokePanel(pluginId, panelId, method, request.params ?? {})
+      return ok(result)
+    } catch (error) {
+      return pluginError(error)
+    }
+  })
+  handle<PluginMarketplaceListResult>(
+    IPC.plugins.marketplaceList,
+    (request?: { refresh?: boolean }) =>
+      deps.pluginMarketplace === undefined
+        ? pluginsMissing<PluginMarketplaceListResult>()
+        : deps.pluginMarketplace
+            .list(request?.refresh === true)
+            .then(ok, (error: unknown) => pluginError(error)),
+  )
+  handle<PluginSummary>(
+    IPC.plugins.marketplaceInstall,
+    (request: PluginMarketplaceInstallRequest) =>
+      deps.pluginMarketplace === undefined
+        ? Promise.resolve(pluginsMissing<PluginSummary>())
+        : deps.pluginMarketplace
+            .install(request.pluginId, request.version)
+            .then(ok, (error: unknown) => pluginError(error)),
+  )
+  handle<PluginUpdateInfo[]>(IPC.plugins.checkUpdates, () =>
+    deps.pluginMarketplace === undefined
+      ? pluginsMissing<PluginUpdateInfo[]>()
+      : deps.pluginMarketplace.checkUpdates().then(ok, (error: unknown) => pluginError(error)),
+  )
   handle<HotkeyStatus>(IPC.hotkey.status, () => ok(deps.hotkey.getStatus()))
   // 状态接口会按需重读桥接（缓存 15 秒，见 `STATUS_MAX_AGE_MS`）：因此是异步的
   handle<ClassIslandStatus>(IPC.classisland.status, () =>
@@ -1383,8 +1757,44 @@ export function registerIpc(deps: DesktopDeps): () => void {
     // 不应被高密度流式 IPC 无谓唤醒。窗口不存在时 sendTo 会静默跳过。
     deps.windows.sendTo('chat', IPC.chat.event, event)
   })
+  // 插件宿主事件（docs/14 §3.5）：助手正文按请求聚合到 done 再投递（逐 token 投递没有意义），
+  // 工具结算即时投递。缓冲只在主进程内存、上限 16 KB / 64 个在途请求。
+  const pluginAssistantText = new Map<string, { sessionId: string; text: string }>()
   const offAgent = deps.agent.onEvent((event) => {
     eventBuffer.push(event)
+    if (deps.plugins === undefined) return
+    if (event.type === 'text') {
+      const key = `${event.sessionId}:${event.requestId}`
+      const buffered = pluginAssistantText.get(key) ?? { sessionId: event.sessionId, text: '' }
+      buffered.text = (buffered.text + event.delta).slice(0, PLUGIN_ASSISTANT_TEXT_MAX)
+      pluginAssistantText.delete(key)
+      pluginAssistantText.set(key, buffered)
+      if (pluginAssistantText.size > 64) {
+        const oldest = pluginAssistantText.keys().next()
+        if (oldest.done !== true) pluginAssistantText.delete(oldest.value)
+      }
+      return
+    }
+    if (event.type === 'done' || event.type === 'error') {
+      const key = `${event.sessionId}:${event.requestId}`
+      const buffered = pluginAssistantText.get(key)
+      pluginAssistantText.delete(key)
+      if (event.type === 'done' && buffered !== undefined && buffered.text.trim() !== '') {
+        void deps.plugins.deliverEvent('message.assistant', {
+          sessionId: buffered.sessionId,
+          text: buffered.text,
+        })
+      }
+      return
+    }
+    if (event.type === 'tool' && event.call.state !== 'running') {
+      void deps.plugins.deliverEvent('tool.after', {
+        sessionId: event.sessionId,
+        name: event.call.name,
+        state: event.call.state,
+        ...(event.call.outputSummary === undefined ? {} : { summary: event.call.outputSummary }),
+      })
+    }
   })
   const offClassification = deps.classification.onEvent((event) => {
     broadcast(IPC.classification.event, event)
@@ -1443,6 +1853,7 @@ export function registerIpc(deps: DesktopDeps): () => void {
     offModes()
     offWindows()
     offAgent()
+    pluginAssistantText.clear()
     // 在途增量不再下发（窗口正在销毁 / 进程要退出）
     eventBuffer.dispose()
     offClassification()

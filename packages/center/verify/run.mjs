@@ -1,4 +1,4 @@
-/* global process */
+/* global process, Buffer */
 /**
  * Aurora Center Web 的**视觉 + 行为验收 harness**（`pnpm --filter @aurora/center verify:web`）。
  *
@@ -27,7 +27,7 @@
  */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer as createHttpServer } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -41,6 +41,7 @@ import {
   scenarioMatches,
 } from './scenarios.mjs'
 import { StubClient } from './stub-client.mjs'
+import { zipSync } from 'fflate'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CENTER_ROOT = dirname(HERE)
@@ -216,6 +217,59 @@ async function seedUsageRecords({ baseUrl, clientToken }) {
       throw new Error(`夹具：第 ${index + 1} 次网关调用失败 HTTP ${response.status}`)
     }
     await response.arrayBuffer()
+  }
+}
+
+/**
+ * 插件市场夹具（docs/14 §4）：把仓库里的示例插件真的打包 → 管理员上传 → 发布。
+ *
+ * 幂等：两档主题共用同一个服务器子进程，第二档发现已发布就跳过。
+ */
+async function seedPluginFixture(baseUrl) {
+  const existing = await fetch(`${baseUrl}/api/plugins`)
+  if (existing.ok) {
+    const body = await existing.json()
+    if ((body.entries ?? []).some((entry) => entry.id === 'com.example.hello')) return
+  }
+  const dir = join(CENTER_ROOT, '..', '..', 'examples', 'plugins', 'hello-aurora')
+  if (!existsSync(join(dir, 'manifest.json'))) return
+  const files = {}
+  const walk = async (current) => {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue
+      const absolute = join(current, entry.name)
+      if (entry.isDirectory()) await walk(absolute)
+      else if (entry.isFile()) {
+        const name = absolute
+          .slice(dir.length + 1)
+          .split('\\')
+          .join('/')
+        files[name] = new Uint8Array(await readFile(absolute))
+      }
+    }
+  }
+  await walk(dir)
+  const archive = Buffer.from(zipSync(files, { level: 6 }))
+  const token = await adminToken(baseUrl)
+  const upload = await fetch(`${baseUrl}/api/admin/plugins/upload`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/octet-stream',
+    },
+    body: archive,
+  })
+  if (!upload.ok) {
+    throw new Error(`夹具：上传示例插件失败 HTTP ${upload.status} ${await upload.text()}`)
+  }
+  const staged = await upload.json()
+  const publish = await fetch(`${baseUrl}/api/admin/plugins/publish`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: staged.token, changelog: '验收夹具版本' }),
+  })
+  if (!publish.ok) {
+    throw new Error(`夹具：发布示例插件失败 HTTP ${publish.status} ${await publish.text()}`)
   }
 }
 
@@ -430,6 +484,7 @@ async function main() {
     upstream = await startUpstream()
     await configureLlmFixture(baseUrl, upstream.port)
     await seedUsageRecords({ baseUrl, clientToken: stub.token })
+    await seedPluginFixture(baseUrl)
     console.log(
       `夹具已就绪：假上游 127.0.0.1:${upstream.port}，灌入 ${SEED_USAGE_REQUESTS} 条用量明细`,
     )

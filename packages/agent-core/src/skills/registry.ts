@@ -12,7 +12,7 @@ import { isParseError, parseSkillMarkdown } from './parse.js'
 
 export const SKILL_FILE_NAME = 'SKILL.md'
 
-export type SkillSource = 'builtin' | 'user'
+export type SkillSource = 'builtin' | 'user' | 'plugin'
 
 export interface Skill {
   name: string
@@ -23,6 +23,8 @@ export interface Skill {
   /** SKILL.md 所在目录 */
   dir: string
   source: SkillSource
+  /** source = 'plugin' 时：提供该 Skill 的插件 id */
+  pluginId?: string
   /** 目录下是否存在 scripts/ */
   hasScripts: boolean
   enabled: boolean
@@ -33,6 +35,12 @@ export interface SkillsRegistryOptions {
   builtinDir: string
   /** 用户技能根目录（userData/skills） */
   userDir?: string
+  /**
+   * 插件贡献的技能目录（见 docs/14 §3.3）。两种形态都支持：
+   * 目录本身含 `SKILL.md`（清单 `contributes.skills` 指向技能目录），
+   * 或目录下是一层技能子目录（与内置 `skills/` 同构）。
+   */
+  pluginDirs?: Array<{ dir: string; pluginId: string }>
   logger?: Logger
 }
 
@@ -51,18 +59,32 @@ export class SkillsRegistry {
   private readonly logger: Logger
   private readonly builtinDir: string
   private userDir: string | undefined
+  private pluginDirs: Array<{ dir: string; pluginId: string }> = []
   private disabled = new Set<string>()
   private issues: SkillScanIssue[] = []
 
   constructor(options: SkillsRegistryOptions) {
     this.builtinDir = options.builtinDir
     this.userDir = options.userDir
+    this.pluginDirs = options.pluginDirs ?? []
     this.logger = options.logger ?? createNoopLogger()
   }
 
   /** 当前生效的用户技能目录（`undefined` 表示不扫描用户目录）。 */
   get directory(): string | undefined {
     return this.userDir
+  }
+
+  /**
+   * 替换插件技能目录（插件启用 / 停用 / 卸载后调用）。
+   * 与 `setUserDir` 同理：只改数据，**必须**由调用方再 `scan()` 一次。
+   */
+  setPluginDirs(dirs: Array<{ dir: string; pluginId: string }>): void {
+    this.pluginDirs = [...dirs]
+  }
+
+  get pluginSkillDirs(): ReadonlyArray<{ dir: string; pluginId: string }> {
+    return this.pluginDirs
   }
 
   /**
@@ -76,16 +98,31 @@ export class SkillsRegistry {
     this.userDir = dir === undefined || dir.trim() === '' ? undefined : dir
   }
 
-  /** 扫描并重建注册表；用户目录中的同名技能覆盖内置技能。 */
+  /** 扫描并重建注册表；用户目录中的同名技能覆盖内置与插件技能。 */
   async scan(): Promise<SkillScanReport> {
     const skills = new Map<string, Skill>()
     const issues: SkillScanIssue[] = []
 
-    for (const [dir, source] of this.directories()) {
-      const found = await this.loadDirectory(dir, source, issues)
+    for (const [dir, source, pluginId] of this.directories()) {
+      const found = await this.loadDirectory(dir, source, issues, pluginId)
       for (const skill of found) {
-        if (skills.has(skill.name)) {
-          this.logger.info('用户技能覆盖同名内置技能', { name: skill.name })
+        const existing = skills.get(skill.name)
+        if (existing !== undefined) {
+          // 口径（docs/14 §3.3）：用户覆盖一切；插件不能遮蔽内置，插件之间先到先得。
+          // 判定看**新来的**这个技能：只有 user 来源允许覆盖已加载的同名技能。
+          if (skill.source !== 'user') {
+            issues.push({
+              path: skill.dir,
+              error: `技能名「${skill.name}」与已加载的 ${existing.source} 技能重名，已跳过`,
+            })
+            this.logger.warn('技能重名，已跳过', {
+              name: skill.name,
+              kept: existing.source,
+              skipped: skill.source,
+            })
+            continue
+          }
+          this.logger.info('用户技能覆盖同名技能', { name: skill.name })
         }
         skills.set(skill.name, skill)
       }
@@ -162,8 +199,9 @@ export class SkillsRegistry {
       .join('\n')
   }
 
-  private directories(): Array<[string, SkillSource]> {
-    const entries: Array<[string, SkillSource]> = [[this.builtinDir, 'builtin']]
+  private directories(): Array<[string, SkillSource, string?]> {
+    const entries: Array<[string, SkillSource, string?]> = [[this.builtinDir, 'builtin']]
+    for (const plugin of this.pluginDirs) entries.push([plugin.dir, 'plugin', plugin.pluginId])
     if (this.userDir) entries.push([this.userDir, 'user'])
     return entries
   }
@@ -172,48 +210,66 @@ export class SkillsRegistry {
     dir: string,
     source: SkillSource,
     issues: SkillScanIssue[],
+    pluginId?: string,
   ): Promise<Skill[]> {
-    const skills: Skill[] = []
+    // 目录本身就是技能（插件清单把 `contributes.skills` 指向技能目录，如 `skills/hello`）
+    const direct = await this.loadSkill(dir, source, issues, pluginId)
+    if (direct !== null) return direct === undefined ? [] : [direct]
+
     let entries: string[]
     try {
       entries = await fs.readdir(dir)
     } catch {
       this.logger.debug('技能目录不存在，跳过', { dir, source })
-      return skills
+      return []
     }
 
+    const skills: Skill[] = []
     for (const entry of entries) {
-      const skillDir = join(dir, entry)
-      const file = join(skillDir, SKILL_FILE_NAME)
-      let content: string
-      try {
-        content = await fs.readFile(file, 'utf8')
-      } catch {
-        continue // 目录内没有 SKILL.md 视为普通目录，不算错误
-      }
+      const skill = await this.loadSkill(join(dir, entry), source, issues, pluginId)
+      if (skill !== undefined && skill !== null) skills.push(skill)
+    }
+    return skills
+  }
 
-      const parsed = parseSkillMarkdown(content)
-      if (isParseError(parsed)) {
-        issues.push({ path: file, error: parsed.error })
-        this.logger.warn('技能解析失败，已跳过', { path: file, error: parsed.error })
-        continue
-      }
-
-      skills.push({
-        name: parsed.frontmatter.name,
-        description: parsed.frontmatter.description,
-        ...(parsed.frontmatter['when_to_use'] === undefined
-          ? {}
-          : { whenToUse: parsed.frontmatter['when_to_use'] }),
-        body: parsed.body,
-        dir: skillDir,
-        source,
-        hasScripts: await directoryExists(join(skillDir, 'scripts')),
-        enabled: true,
-      })
+  /**
+   * 读 `skillDir/SKILL.md`。返回 `null` 表示文件不存在（调用方继续按父目录扫描），
+   * `undefined` 表示存在但解析失败（已记 issue，不再向下扫）。
+   */
+  private async loadSkill(
+    skillDir: string,
+    source: SkillSource,
+    issues: SkillScanIssue[],
+    pluginId?: string,
+  ): Promise<Skill | undefined | null> {
+    const file = join(skillDir, SKILL_FILE_NAME)
+    let content: string
+    try {
+      content = await fs.readFile(file, 'utf8')
+    } catch {
+      return null
     }
 
-    return skills
+    const parsed = parseSkillMarkdown(content)
+    if (isParseError(parsed)) {
+      issues.push({ path: file, error: parsed.error })
+      this.logger.warn('技能解析失败，已跳过', { path: file, error: parsed.error })
+      return undefined
+    }
+
+    return {
+      name: parsed.frontmatter.name,
+      description: parsed.frontmatter.description,
+      ...(parsed.frontmatter['when_to_use'] === undefined
+        ? {}
+        : { whenToUse: parsed.frontmatter['when_to_use'] }),
+      body: parsed.body,
+      dir: skillDir,
+      source,
+      ...(pluginId === undefined ? {} : { pluginId }),
+      hasScripts: await directoryExists(join(skillDir, 'scripts')),
+      enabled: true,
+    }
   }
 }
 

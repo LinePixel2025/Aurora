@@ -206,6 +206,8 @@ function settingsWith(overrides: {
     },
     // v21 新增顶层分组（外观，docs/08 §1）：本用例不涉及外观，保持默认态（v32 起三件套、v33 加流光开关）
     appearance: { theme: 'system', accent: 'aurora', glass: true, awarenessGlow: true },
+    // v36 新增顶层分组（插件，docs/14）：本用例不涉及插件，保持默认态
+    plugins: { enabled: true, devDirs: [], activeTheme: { pluginId: '', themeId: '' } },
   }
 }
 

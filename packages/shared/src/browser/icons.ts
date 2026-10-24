@@ -105,11 +105,12 @@ export {
   CircleStop,
   Hourglass,
   BookOpen,
-  // 自动化编辑器的参数类型提示（文本 / 数字 / 星期多选 / 下拉）
+  // 自动化编辑器的参数类型提示（文本 / 数字 / 星期多选 / 下拉 / JSON）
   TextCursorInput,
   Hash,
   CalendarDays,
   ListFilter,
+  Braces,
   // 悬浮提示的「说明」标记
   Info,
   // 反馈条（成功 / 失败提示，替代裸文字）

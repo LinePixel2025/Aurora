@@ -5,5 +5,5 @@ import './settings.css'
 import { bootstrapApp } from '../shared/bootstrap.js'
 
 const app = createApp(App)
-await bootstrapApp(app, { trackWindows: true })
+await bootstrapApp(app, { trackWindows: true, trackPlugins: true })
 app.mount('#app')

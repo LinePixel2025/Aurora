@@ -1116,6 +1116,7 @@ describe('配置迁移链', () => {
         'v32 → v33：v32 → v33：新增 appearance.awarenessGlow（自感知流光特效开关）',
         'v33 → v34：v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
         'v34 → v35：v34 → v35：新增 agent.browser（Agent 内置浏览器与并发上限）',
+        'v35 → v36：v35 → v36：新增 plugins（插件总开关 / 开发目录 / 当前主题）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const agent = outcome.data['agent'] as Record<string, unknown>
@@ -1163,6 +1164,7 @@ describe('配置迁移链', () => {
         'v32 → v33：v32 → v33：新增 appearance.awarenessGlow（自感知流光特效开关）',
         'v33 → v34：v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
         'v34 → v35：v34 → v35：新增 agent.browser（Agent 内置浏览器与并发上限）',
+        'v35 → v36：v35 → v36：新增 plugins（插件总开关 / 开发目录 / 当前主题）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       expect(outcome.data['center']).toEqual({
@@ -1590,6 +1592,7 @@ describe('配置迁移链', () => {
         'v32 → v33：v32 → v33：新增 appearance.awarenessGlow（自感知流光特效开关）',
         'v33 → v34：v33 → v34：agent.loop 换成单一 maxParallelCalls（轮次上限与 token 预算退役）',
         'v34 → v35：v34 → v35：新增 agent.browser（Agent 内置浏览器与并发上限）',
+        'v35 → v36：v35 → v36：新增 plugins（插件总开关 / 开发目录 / 当前主题）',
       ])
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
       const provider = outcome.data['stt'] as Record<string, unknown> as Record<string, unknown>
@@ -2086,6 +2089,54 @@ describe('配置迁移链', () => {
       expect(outcome.warnings).toEqual([])
       expect(outcome.data['agent']).toBeUndefined()
       expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+  })
+
+  describe('v35 → v36（插件系统，docs/14 §5）', () => {
+    it('为老配置补 plugins 默认值，且不影响其它分组', () => {
+      const outcome = migrate({ version: 35, general: { language: 'zh-CN' } })
+      expect(outcome.applied[0]).toContain('v35 → v36')
+      expect(outcome.data['plugins']).toEqual({
+        enabled: true,
+        devDirs: [],
+        activeTheme: { pluginId: '', themeId: '' },
+      })
+      expect(outcome.data['version']).toBe(CONFIG_VERSION)
+    })
+
+    it('已有 plugins 值原样保留，只补缺失字段（幂等）', () => {
+      const once = migrate({
+        version: 35,
+        plugins: { enabled: false, devDirs: ['D:/dev/hello'] },
+      })
+      expect(once.data['plugins']).toEqual({
+        enabled: false,
+        devDirs: ['D:/dev/hello'],
+        activeTheme: { pluginId: '', themeId: '' },
+      })
+
+      const twice = migrate({ ...once.data, version: 35 })
+      expect(twice.data['plugins']).toEqual(once.data['plugins'])
+    })
+
+    it('迁移结果能通过当前 Schema（含已写入的插件主题）', () => {
+      const outcome = migrate({
+        version: 35,
+        plugins: { activeTheme: { pluginId: 'com.example.todo', themeId: 'sand' } },
+      })
+      const parsed = SettingsSchema.safeParse(outcome.data)
+      // 老配置缺其它分组时 Schema 会拒绝；这里只断言 plugins 段本身合法
+      if (parsed.success) {
+        expect(parsed.data.plugins.activeTheme).toEqual({
+          pluginId: 'com.example.todo',
+          themeId: 'sand',
+        })
+      } else {
+        expect(
+          parsed.error.issues.every((issue) => issue.path[0] !== 'plugins'),
+          JSON.stringify(parsed.error.issues),
+        ).toBe(true)
+      }
     })
   })
 })

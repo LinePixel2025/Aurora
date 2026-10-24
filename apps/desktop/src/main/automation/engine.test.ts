@@ -230,6 +230,7 @@ function createHarness(options: HarnessOptions = {}) {
     },
     store,
     agent,
+    ports,
     notifies,
     opened,
     builtinFired,
@@ -861,6 +862,185 @@ describe('AutomationEngine · 启动补偿', () => {
     const runs = await h.store.listRuns()
     expect(runs[0]?.status).toBe('interrupted')
     expect(runs[0]?.finishedAt).toBeDefined()
+  })
+})
+
+describe('AutomationEngine · 插件事件触发（v36，docs/14 §3.5）', () => {
+  function pluginEventDefinition(
+    overrides: Partial<AutomationDefinition> = {},
+  ): AutomationDefinition {
+    return {
+      id: 'am-plugin',
+      name: '待办联动',
+      enabled: true,
+      mode: 'normal',
+      trigger: {
+        kind: 'plugin-event',
+        params: { pluginId: 'com.example.todo', event: 'todo-added' },
+      },
+      actions: [{ kind: 'system-notify', params: { title: '新待办' } }],
+      createdAt: '',
+      updatedAt: '',
+      ...overrides,
+    }
+  }
+
+  it('匹配的事件触发一次，历史带「插件事件 id/event」来源', async () => {
+    const h = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+      },
+    })
+    await h.store.saveDefinition(pluginEventDefinition())
+
+    await h.engine.emitPluginEvent({ pluginId: 'com.example.todo', event: 'todo-added' })
+
+    expect(h.notifies).toHaveLength(1)
+    expect(h.notifies[0]?.title).toBe('新待办')
+    const runs = await h.store.listRuns({ automationId: 'am-plugin' })
+    expect(runs).toHaveLength(1)
+    expect(runs[0]?.status).toBe('success')
+    expect(runs[0]?.triggerDetail).toBe('插件事件 com.example.todo/todo-added')
+  })
+
+  it('插件 id / 事件名不匹配不触发；同一事件重复 emit 每次都跑（边沿触发，不走 firedKeys）', async () => {
+    const h = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+      },
+    })
+    await h.store.saveDefinition(pluginEventDefinition())
+
+    await h.engine.emitPluginEvent({ pluginId: 'com.example.other', event: 'todo-added' })
+    await h.engine.emitPluginEvent({ pluginId: 'com.example.todo', event: 'todo-removed' })
+    expect(h.notifies).toEqual([])
+
+    await h.engine.emitPluginEvent({ pluginId: 'com.example.todo', event: 'todo-added' })
+    await h.engine.emitPluginEvent({ pluginId: 'com.example.todo', event: 'todo-added' })
+    expect(h.notifies).toHaveLength(2)
+    expect(await h.store.listRuns({ automationId: 'am-plugin' })).toHaveLength(2)
+  })
+
+  it('automations.enabled=false / 定义停用 / 空白事件都不触发', async () => {
+    const disabled = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+        s.automations.enabled = false
+      },
+    })
+    await disabled.store.saveDefinition(pluginEventDefinition())
+    await disabled.engine.emitPluginEvent({
+      pluginId: 'com.example.todo',
+      event: 'todo-added',
+    })
+    expect(disabled.notifies).toEqual([])
+
+    const stopped = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+      },
+    })
+    await stopped.store.saveDefinition(pluginEventDefinition({ enabled: false }))
+    await stopped.engine.emitPluginEvent({
+      pluginId: 'com.example.todo',
+      event: 'todo-added',
+    })
+    await stopped.engine.emitPluginEvent({ pluginId: '  ', event: 'todo-added' })
+    expect(stopped.notifies).toEqual([])
+  })
+
+  it('plugin-action 步骤经端口执行：参数按 JSON 解析、summary 落进历史步骤', async () => {
+    const h = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+      },
+    })
+    const calls: Array<{ pluginId: string; action: string; params: Record<string, unknown> }> = []
+    h.ports.pluginAction = async (input) => {
+      calls.push(input)
+      return { ok: true, summary: '已加入 1 条：买牛奶' }
+    }
+    await h.store.saveDefinition(
+      pluginEventDefinition({
+        actions: [
+          {
+            kind: 'plugin-action',
+            params: {
+              pluginId: 'com.example.todo',
+              action: 'add',
+              params: '{"text":"买牛奶"}',
+            },
+          },
+        ],
+      }),
+    )
+
+    await h.engine.emitPluginEvent({ pluginId: 'com.example.todo', event: 'todo-added' })
+
+    expect(calls).toEqual([
+      { pluginId: 'com.example.todo', action: 'add', params: { text: '买牛奶' } },
+    ])
+    const runs = await h.store.listRuns({ automationId: 'am-plugin' })
+    expect(runs[0]?.steps).toEqual([
+      { kind: 'plugin-action', label: '插件动作', ok: true, summary: '已加入 1 条：买牛奶' },
+    ])
+  })
+
+  it('插件动作里再次 emit 同一事件不会自激成循环（在途事件忽略重入）', async () => {
+    const h = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+      },
+    })
+    let calls = 0
+    h.ports.pluginAction = async () => {
+      calls += 1
+      // 插件动作内部再发同名事件：没有在途守卫会无限递归
+      await h.engine.emitPluginEvent({ pluginId: 'com.example.todo', event: 'todo-added' })
+      return { ok: true, summary: 'done' }
+    }
+    await h.store.saveDefinition(
+      pluginEventDefinition({
+        actions: [
+          { kind: 'plugin-action', params: { pluginId: 'com.example.todo', action: 'add' } },
+        ],
+      }),
+    )
+
+    await h.engine.emitPluginEvent({ pluginId: 'com.example.todo', event: 'todo-added' })
+    expect(calls).toBe(1)
+    expect(await h.store.listRuns({ automationId: 'am-plugin' })).toHaveLength(1)
+
+    // 收尾后守卫必须释放：下一次独立事件照常触发
+    await h.engine.emitPluginEvent({ pluginId: 'com.example.todo', event: 'todo-added' })
+    expect(calls).toBe(2)
+  })
+
+  it('plugin-action 端口未注入 / 返回失败：步骤记 failed 且不影响运行收尾', async () => {
+    const h = createHarness({
+      settings: (s) => {
+        s.modes.current = 'work'
+      },
+    })
+    await h.store.saveDefinition(
+      pluginEventDefinition({
+        actions: [
+          { kind: 'plugin-action', params: { pluginId: 'com.example.todo', action: 'add' } },
+        ],
+      }),
+    )
+
+    await h.engine.emitPluginEvent({ pluginId: 'com.example.todo', event: 'todo-added' })
+    let runs = await h.store.listRuns({ automationId: 'am-plugin' })
+    expect(runs[0]?.steps?.[0]?.ok).toBe(false)
+    expect(runs[0]?.steps?.[0]?.error).toContain('插件系统未装配')
+
+    h.ports.pluginAction = async () => ({ ok: false, error: '插件未启用' })
+    await h.engine.emitPluginEvent({ pluginId: 'com.example.todo', event: 'todo-added' })
+    runs = await h.store.listRuns({ automationId: 'am-plugin' })
+    // 两次触发同秒，`listRuns` 的降序排序是稳定的 → 用内容找第二条，不依赖顺序
+    expect(runs.find((run) => run.steps?.[0]?.error === '插件未启用')?.status).toBe('success')
+    expect(runs).toHaveLength(2)
   })
 })
 

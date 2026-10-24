@@ -4,6 +4,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import type { App } from 'vue'
 import { useModeStore, usePerceptionStore, useSettingsStore, useWindowStore } from './stores.js'
+import { usePluginsStore } from './plugins-store.js'
 
 export interface BootstrapOptions {
   /** 是否订阅窗口可见性变化（提示条 / 交互窗 / 设置页 / 引导页需要） */
@@ -14,6 +15,8 @@ export interface BootstrapOptions {
   trackModes?: boolean
   /** 是否读取系统感知（服务窗 / 提示条状态） */
   trackPerception?: boolean
+  /** 是否加载插件列表并应用插件主题（chat / settings / edge-bar） */
+  trackPlugins?: boolean
 }
 
 export async function bootstrapApp(app: App, options: BootstrapOptions = {}): Promise<void> {
@@ -27,6 +30,7 @@ export async function bootstrapApp(app: App, options: BootstrapOptions = {}): Pr
   const modes = useModeStore()
   const windows = useWindowStore()
   const perception = usePerceptionStore()
+  const plugins = usePluginsStore()
 
   // ── 顺序硬口径（2026-10-10）：**先订阅、再加载**。不要改回「先 load 再 bind」。
   //
@@ -47,10 +51,12 @@ export async function bootstrapApp(app: App, options: BootstrapOptions = {}): Pr
   if (options.trackSettings !== false) disposers.push(settings.bind())
   if (options.trackModes !== false) disposers.push(modes.bind())
   if (options.trackWindows) disposers.push(windows.bind())
+  if (options.trackPlugins) disposers.push(plugins.bind())
 
   await settings.load()
   if (options.trackModes !== false) await modes.load()
   if (options.trackWindows) await windows.load()
+  if (options.trackPlugins) await plugins.reload()
   if (options.trackPerception) void perception.refresh()
 
   window.addEventListener('beforeunload', () => {

@@ -19,6 +19,9 @@ import type {
   WindowName,
 } from '../config/schema.js'
 import type { CenterOfficialModelCatalog } from '../center/protocol.js'
+import type { PluginPermission } from '../plugin/permissions.js'
+import type { PluginConfigField } from '../plugin/manifest.js'
+import type { PluginPanelSchema } from '../plugin/ui.js'
 
 export type { ModeId, WindowName }
 
@@ -158,6 +161,11 @@ export interface SettingsPatch {
   automations?: Partial<Settings['automations']>
   /** 文件自感知（v28，docs/06 §26）：顶层浅合并，调用方需回传完整分组。 */
   fileAwareness?: Partial<Settings['fileAwareness']>
+  /**
+   * 插件（v36，docs/14 §5）：总开关 / 开发目录 / 当前主题。**已安装插件不在这里**
+   * （安装态走 `plugins:*` 通道），因此这里的 patch 只影响"启用哪些插件与主题"。
+   */
+  plugins?: Partial<Settings['plugins']>
   /**
    * 外观自定义（v21 强调色；v32 起扩为明暗档位 / 强调色 / 毛玻璃，docs/08 §1）：
    * 顶层浅合并，只传改动的键即可（`Object.assign(draft.appearance, patch.appearance)`）。
@@ -609,10 +617,12 @@ export interface SkillSummary {
   name: string
   description: string
   whenToUse?: string
-  source: 'builtin' | 'user'
+  source: 'builtin' | 'user' | 'plugin'
   hasScripts: boolean
   enabled: boolean
   dir: string
+  /** source = 'plugin' 时：提供该 Skill 的插件 id（设置页归组展示） */
+  pluginId?: string
 }
 
 /** Skill 扫描状态（`skills:rescan` / `skills:status`，docs/06 §6） */
@@ -930,13 +940,20 @@ export interface ClassificationCorrection {
 /** 自动化模式：agent = 触发后跑一次完整 Agent 会话；normal = 顺序执行预设操作组件 */
 export type AutomationMode = 'agent' | 'normal'
 
-/** 触发器类型：调度类（daily / interval）+ 课堂条件类（依赖课程表，docs/13 §4.2） */
+/** 触发器类型：调度类（daily / interval）+ 课堂条件类（依赖课程表）+ 插件事件（v36） */
 export type AutomationTriggerKind =
-  'daily' | 'interval' | 'pre-class' | 'class-start' | 'pre-end' | 'class-end' | 'next-lesson'
+  | 'daily'
+  | 'interval'
+  | 'pre-class'
+  | 'class-start'
+  | 'pre-end'
+  | 'class-end'
+  | 'next-lesson'
+  | 'plugin-event'
 
-/** 操作组件类型（Normal Mode 的封闭能力集，docs/13 §5） */
+/** 操作组件类型（Normal Mode 的封闭能力集 + 插件动作，docs/13 §5 / docs/14 §3.5） */
 export type AutomationActionKind =
-  'system-notify' | 'classisland-remind' | 'open-folder' | 'open-url' | 'open-app'
+  'system-notify' | 'classisland-remind' | 'open-folder' | 'open-url' | 'open-app' | 'plugin-action'
 
 /** 触发器参数（按 kind 取子集；宽容 JSON 形状，主进程评估时逐字段校验） */
 export interface AutomationTrigger {
@@ -1036,7 +1053,7 @@ export interface AutomationRun {
 export interface AutomationDescriptorField {
   key: string
   label: string
-  type: 'text' | 'number' | 'time' | 'weekdays' | 'select'
+  type: 'text' | 'number' | 'time' | 'weekdays' | 'select' | 'json'
   min?: number
   max?: number
   step?: number
@@ -1892,6 +1909,313 @@ export type CenterDeviceLoginResult =
   | { status: 'denied' }
   | { status: 'error'; message: string }
 
+// ───────────────────────── 插件（v36，docs/14） ─────────────────────────
+
+/** `disabled` = 用户关闭或总开关关闭；`stopped` = 已启用但懒加载尚未启动。 */
+export type PluginRuntimeStatus =
+  'disabled' | 'stopped' | 'starting' | 'ready' | 'crashed' | 'error'
+
+export type PluginSource = 'local' | 'marketplace' | 'dev'
+
+export interface PluginToolInfo {
+  name: string
+  /** 实际注册名 `plugin.<id>.<name>` */
+  fullName: string
+  description: string
+  sensitivity: 'safe' | 'confirm'
+  readonly: boolean
+}
+
+export interface PluginPanelInfo {
+  pluginId: string
+  pluginName: string
+  id: string
+  title: string
+  icon: string
+  kind: 'schema' | 'page'
+  /** 页面型面板的入口（插件包内相对路径；渲染层拼成 `aurora-plugin://` URL） */
+  entry?: string
+}
+
+export interface PluginThemeInfo {
+  pluginId: string
+  pluginName: string
+  id: string
+  name: string
+  tokens: Record<string, string>
+}
+
+/** 小组件快照（桌面浮动卡片或提示条条目）。 */
+export interface PluginWidgetInfo {
+  pluginId: string
+  pluginName: string
+  id: string
+  title: string
+  icon?: string
+  slot: 'desktop' | 'edge-bar'
+  kind: 'schema' | 'page'
+  /** 页面型小组件的入口（插件包内相对路径） */
+  entry?: string
+  defaultSize?: { width: number; height: number }
+}
+
+/** 桌面小组件的持久化布局（`<userData>/plugin-widget-layout.json`，不进 settings）。 */
+export interface PluginWidgetLayoutEntry {
+  visible: boolean
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface PluginWidgetLayout {
+  version: 1
+  widgets: Record<string, PluginWidgetLayoutEntry>
+}
+
+/** 主进程 → 渲染层的插件推送（面板 / 桌面小组件 / 提示条小组件共用）。 */
+export interface PluginPushEvent {
+  pluginId: string
+  panelId?: string
+  widgetId?: string
+  event: string
+  payload?: unknown
+}
+
+export interface PluginCommandInfo {
+  pluginId: string
+  pluginName: string
+  name: string
+  title: string
+  description: string
+  mode: 'action' | 'prompt'
+}
+
+export interface PluginAutomationActionInfo {
+  pluginId: string
+  pluginName: string
+  name: string
+  title: string
+  description: string
+}
+
+export interface PluginAutomationEventInfo {
+  pluginId: string
+  pluginName: string
+  name: string
+  title: string
+  description?: string
+}
+
+/** 设置页「已安装」列表与详情用的完整快照（含声明式贡献，不读盘）。 */
+export interface PluginSummary {
+  id: string
+  name: string
+  version: string
+  description: string
+  author: string
+  license?: string
+  homepage?: string
+  enabled: boolean
+  trusted: boolean
+  source: PluginSource
+  status: PluginRuntimeStatus
+  activeVersion: string
+  previousVersion?: string
+  installPath: string
+  checksum?: string
+  installedAt: string
+  updatedAt: string
+  lastError?: string
+  isDev: boolean
+  permissions: PluginPermission[]
+  tools: PluginToolInfo[]
+  commands: PluginCommandInfo[]
+  panels: PluginPanelInfo[]
+  widgets: PluginWidgetInfo[]
+  themes: PluginThemeInfo[]
+  automationActions: PluginAutomationActionInfo[]
+  automationEvents: PluginAutomationEventInfo[]
+  configFields: PluginConfigField[]
+  events: string[]
+  skills: string[]
+}
+
+/** 安装前预览（安装同意弹窗唯一的数据来源）。 */
+export interface PluginInstallPreview {
+  id: string
+  name: string
+  version: string
+  apiVersion: number
+  minAuroraVersion?: string
+  description: string
+  author: string
+  license?: string
+  homepage?: string
+  checksum: string
+  sizeBytes: number
+  permissions: PluginPermission[]
+  tools: PluginToolInfo[]
+  commands: PluginCommandInfo[]
+  panels: PluginPanelInfo[]
+  widgets: PluginWidgetInfo[]
+  themes: PluginThemeInfo[]
+  automationActions: PluginAutomationActionInfo[]
+  automationEvents: PluginAutomationEventInfo[]
+  configFields: PluginConfigField[]
+  events: string[]
+  /** 与已安装版本 / 其他插件的冲突（非空时安装会被拒绝） */
+  conflicts: string[]
+  warnings: string[]
+  /** 同 id 已安装时：将被替换的版本 */
+  replaces: { version: string; enabled: boolean } | null
+  /** 包来源（本地路径或市场下载缓存路径，仅用于诊断） */
+  sourcePath: string
+}
+
+/** 安装来源：本地文件，或 Center 市场的某个版本。 */
+export interface PluginPackageRef {
+  kind: 'file' | 'marketplace'
+  /** kind = file 时必填 */
+  path?: string
+  /** kind = marketplace 时必填 */
+  pluginId?: string
+  version?: string
+}
+
+export interface PluginUninstallRequest {
+  pluginId: string
+  /** 同时删除 `<userData>/plugin-data/<id>`（默认保留） */
+  deleteData?: boolean
+}
+
+export interface PluginConfigValues {
+  pluginId: string
+  values: Record<string, unknown>
+}
+
+export interface PluginSetConfigRequest {
+  pluginId: string
+  /** 只传改动的键；主进程按清单字段过滤未知键并做类型校验 */
+  values: Record<string, unknown>
+}
+
+export interface PluginPanelDataRequest {
+  pluginId: string
+  panelId: string
+  method?: string
+  params?: unknown
+  /** 面板控件当前值（`bind` 键 → 值） */
+  values?: Record<string, unknown>
+}
+
+export interface PluginPanelDataResult {
+  schema?: PluginPanelSchema
+  toast?: string
+}
+
+export interface PluginWidgetDataRequest {
+  pluginId: string
+  widgetId: string
+  /** 拉取 / 动作方法名（事件推送时为 `event`） */
+  method?: string
+  params?: unknown
+  /** 控件当前值（`bind` 键 → 值） */
+  values?: Record<string, unknown>
+}
+
+export interface PluginWidgetDataResult {
+  schema?: PluginPanelSchema
+  toast?: string
+  data?: unknown
+}
+
+export interface PluginSetWidgetVisibleRequest {
+  pluginId: string
+  widgetId: string
+  visible: boolean
+}
+
+export interface PluginPageRpcRequest {
+  pluginId: string
+  /** 页面所属面板 id（同一插件有多个页面面板时必填；缺省取第一个页面面板） */
+  panelId?: string
+  /** 页面属于桌面小组件时必填（与 panelId 二选一） */
+  widgetId?: string
+  /**
+   * 承载页面的 webview guest 的 `webContentsId`（渲染层从 `<webview>` 读）。
+   * 主进程只接受已由 `did-attach-webview` 登记、且归属该插件的 guest。
+   */
+  guestId: number
+  /** `invokePanel` 的方法名（页面侧 `auroraPlugin.request(method, params)`） */
+  method: string
+  params?: unknown
+}
+
+export interface PluginRunCommandRequest {
+  pluginId: string
+  name: string
+  args?: string
+}
+
+export interface PluginRunCommandResult {
+  summary?: string
+  /** prompt 命令返回的提示词（渲染层插入输入框 / 主进程直接替换发送文本） */
+  prompt?: string
+}
+
+export interface PluginMarketVersionInfo {
+  version: string
+  apiVersion: number
+  minAuroraVersion?: string
+  sha256: string
+  size: number
+  publishedAt: string
+  changelog?: string
+}
+
+export interface PluginMarketEntry {
+  id: string
+  name: string
+  summary: string
+  author: string
+  license?: string
+  homepage?: string
+  iconUrl?: string
+  latestVersion: string
+  updatedAt: string
+  downloads: number
+  versions: PluginMarketVersionInfo[]
+  /** 本机已安装版本（未安装时缺省） */
+  installedVersion?: string
+  updateAvailable?: boolean
+}
+
+export interface PluginMarketplaceListResult {
+  /** 当前使用的 Center 地址；未配置时为空串（界面展示空态） */
+  serverUrl: string
+  entries: PluginMarketEntry[]
+  error?: string
+}
+
+export interface PluginMarketplaceInstallRequest {
+  pluginId: string
+  version?: string
+}
+
+export interface PluginUpdateInfo {
+  pluginId: string
+  name: string
+  currentVersion: string
+  latestVersion: string
+  sha256: string
+}
+
+export interface PluginOpenPanelEvent {
+  pluginId: string
+  panelId: string
+}
+
 export interface AuroraApi {
   app: {
     getInfo(): Promise<Result<AppInfo>>
@@ -2069,7 +2393,9 @@ export interface AuroraApi {
      * `queued: true`（docs/06 §5.3）：该会话正在跑请求，这条消息**排进了队列**而不是立即开始，
      * 会在下一次轮次边界作为一条用户消息插进那一轮。缺省 / false = 本轮立即执行。
      */
-    send(request: SendMessageRequest): Promise<Result<{ requestId: string; queued?: boolean }>>
+    send(
+      request: SendMessageRequest,
+    ): Promise<Result<{ requestId: string; queued?: boolean; handled?: { summary?: string } }>>
     abort(requestId: string): Promise<Result<boolean>>
     onEvent(listener: (event: AgentEvent) => void): () => void
     /** 会话历史（窗口挂载时水合，docs/06 §4） */
@@ -2292,6 +2618,55 @@ export interface AuroraApi {
     onChanged(listener: () => void): () => void
     /** 运行记录落库 / 状态变化推送（on/off 成对） */
     onHistoryChanged(listener: () => void): () => void
+  }
+  /** 插件（v36，docs/14）：安装 / 启停 / 配置 / 命令 / 面板 / 市场 */
+  plugins: {
+    /** 已安装（含启用 / 信任 / 运行状态）与开发目录里的插件 */
+    list(): Promise<Result<PluginSummary[]>>
+    /** 安装前预览（校验清单、计算校验和、列出权限与冲突；不改动任何状态） */
+    inspect(ref: PluginPackageRef): Promise<Result<PluginInstallPreview>>
+    install(ref: PluginPackageRef): Promise<Result<PluginSummary>>
+    uninstall(request: PluginUninstallRequest): Promise<Result<boolean>>
+    setEnabled(request: { pluginId: string; enabled: boolean }): Promise<Result<PluginSummary>>
+    setTrusted(request: { pluginId: string; trusted: boolean }): Promise<Result<PluginSummary>>
+    /** 重启单个插件进程（崩溃 / 开发态改代码后） */
+    restart(request: { pluginId: string }): Promise<Result<PluginSummary>>
+    /** 回滚到上一版本（仅本地 / 市场安装的插件有 previousVersion） */
+    rollback(request: { pluginId: string }): Promise<Result<PluginSummary>>
+    /** 系统选择框：选 `.aurora-plugin` / `.zip`（只返回路径，不安装） */
+    choosePackage(): Promise<Result<string | null>>
+    /** 系统选择框：选开发目录（只返回路径，写配置走 settings:update） */
+    chooseDir(): Promise<Result<string | null>>
+    openFolder(request: { pluginId: string }): Promise<Result<string>>
+    openLog(request: { pluginId: string }): Promise<Result<string>>
+    getConfig(request: { pluginId: string }): Promise<Result<Record<string, unknown>>>
+    setConfig(request: PluginSetConfigRequest): Promise<Result<Record<string, unknown>>>
+    /** 当前可用的插件斜杠命令（action 立即执行 / prompt 插入输入框） */
+    listCommands(): Promise<Result<PluginCommandInfo[]>>
+    runCommand(request: PluginRunCommandRequest): Promise<Result<PluginRunCommandResult>>
+    /** 打开 / 刷新一个面板（声明式返回 schema；页面型面板不走这里） */
+    panelData(request: PluginPanelDataRequest): Promise<Result<PluginPanelDataResult>>
+    /** 打开 / 刷新一个小组件（声明式返回 schema；页面型小组件走 pageRpc） */
+    widgetData(request: PluginWidgetDataRequest): Promise<Result<PluginWidgetDataResult>>
+    /** 桌面小组件布局（位置 / 尺寸 / 显隐；与 settings 无关） */
+    widgetLayout(): Promise<Result<PluginWidgetLayout>>
+    /** 显示 / 隐藏某个桌面小组件（写入布局文件并立即生效） */
+    setWidgetVisible(request: PluginSetWidgetVisibleRequest): Promise<Result<boolean>>
+    /** 插件页面（webview）的 RPC 中继 */
+    pageRpc(request: PluginPageRpcRequest): Promise<Result<unknown>>
+    /** Center 插件市场列表（未配置 Center 时 entries 为空并带 error） */
+    marketplaceList(request?: { refresh?: boolean }): Promise<Result<PluginMarketplaceListResult>>
+    marketplaceInstall(request: PluginMarketplaceInstallRequest): Promise<Result<PluginSummary>>
+    /** 检查已安装插件是否有市场新版本（每个插件一次 HEAD/元数据请求） */
+    checkUpdates(): Promise<Result<PluginUpdateInfo[]>>
+    /** 插件集合 / 状态变化推送（on/off 成对） */
+    onChanged(listener: () => void): () => void
+    /** 插件请求打开右栏面板（on/off 成对） */
+    onOpenPanel(listener: (event: PluginOpenPanelEvent) => void): () => void
+    /** 插件推送 → 面板事件（on/off 成对；渲染层按 pluginId + panelId 过滤） */
+    onPanelEvent(listener: (event: PluginPushEvent) => void): () => void
+    /** 插件推送 → 小组件事件（on/off 成对；桌面窗口与提示条各自过滤） */
+    onWidgetEvent(listener: (event: PluginPushEvent) => void): () => void
   }
   /** 文件自感知（v28，docs/06 §26） */
   awareness: {

@@ -25,12 +25,14 @@ import AgentPage from './pages/AgentPage.vue'
 import CenterPage from './pages/CenterPage.vue'
 import AdvancedPage from './pages/AdvancedPage.vue'
 import FileAwarenessPage from './pages/FileAwarenessPage.vue'
+import PluginsPage from './pages/PluginsPage.vue'
 import WindowCaption from '../shared/components/WindowCaption.vue'
 import { useWindowDrag } from '../shared/composables/useWindowDrag.js'
 import { usePerceptionStore, useSettingsStore, useWindowStore } from '../shared/stores.js'
 import {
   Archive,
   AudioLines,
+  Blocks,
   Cpu,
   House,
   LayoutGrid,
@@ -41,7 +43,16 @@ import {
 } from '@aurora/shared/browser'
 
 type PageId =
-  'general' | 'sessions' | 'modes' | 'llm' | 'voice' | 'agent' | 'awareness' | 'center' | 'advanced'
+  | 'general'
+  | 'sessions'
+  | 'modes'
+  | 'llm'
+  | 'voice'
+  | 'agent'
+  | 'awareness'
+  | 'center'
+  | 'plugins'
+  | 'advanced'
 
 interface NavItem {
   id: PageId
@@ -60,17 +71,20 @@ const nav: NavItem[] = [
   { id: 'agent', label: 'Agent 设置', icon: Puzzle },
   { id: 'awareness', label: '文件自感知', icon: FolderSearch },
   { id: 'center', label: 'Aurora Center', icon: MonitorSmartphone },
+  { id: 'plugins', label: '插件', icon: Blocks },
   { id: 'advanced', label: '系统', icon: SettingsGear },
 ]
 
 /**
  * 侧栏分组（七页两级）：基础（本机行为）/ 智能（AI 能力）/ 连接（外部服务）/ 系统（运维）。
- * Aurora Center 是独立的远程控制通道（docs/12），不属智能能力也不属本机运维，单独成组。
+ * Aurora Center 是独立的远程控制通道（docs/12），不属智能能力也不属本机运维，单独成组；
+ * 插件既是外部来源的扩展又影响 Agent 能力，单列「扩展」组，避免被误读成普通系统设置。
  */
 const navGroups: Array<{ title: string; ids: PageId[] }> = [
   { title: '基础', ids: ['general', 'sessions', 'modes'] },
   { title: '智能', ids: ['llm', 'voice', 'agent', 'awareness'] },
   { title: '连接', ids: ['center'] },
+  { title: '扩展', ids: ['plugins'] },
   { title: '系统', ids: ['advanced'] },
 ]
 
@@ -94,6 +108,7 @@ const pages: Record<PageId, Component> = {
   agent: AgentPage,
   awareness: FileAwarenessPage,
   center: CenterPage,
+  plugins: PluginsPage,
   advanced: AdvancedPage,
 }
 

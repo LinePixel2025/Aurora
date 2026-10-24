@@ -1,0 +1,30 @@
+{
+  "id": "com.yourname.hello",
+  "name": "Hello Plugin",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "minAuroraVersion": "0.5.0",
+  "description": "最小插件模板：一个 ping 工具。改 id / 名称 / 贡献后即可开发。",
+  "author": { "name": "Your Name" },
+  "license": "MIT",
+  "main": "main.js",
+  "activation": "lazy",
+  "permissions": ["tools", "logging"],
+  "contributes": {
+    "tools": [
+      {
+        "name": "ping",
+        "description": "返回 pong 与一段回显文本，用来验证插件链路。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string", "description": "要回显的文本" }
+          }
+        },
+        "sensitivity": "safe",
+        "readonly": true,
+        "timeoutMs": 10000
+      }
+    ]
+  }
+}

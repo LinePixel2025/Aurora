@@ -7,7 +7,18 @@
 
 ## 当前实现状态
 
-**最新发布 v0.5.0**（内置浏览器 Agent 工具组 v35）；配置 Schema **v35**（迁移 `v34 → v35`，
+**本轮（未发版）：插件系统 v36**（配置 Schema **v36**，迁移 `v35 → v36`，新增 `plugins`）——
+用户可安装第三方插件来扩展 Agent 能力与界面：插件包在 `manifest.json` 声明工具 / Skill / 斜杠命令 /
+自动化动作与事件 / 右栏面板 / 主题 / 配置字段，代码跑在独立 `utilityProcess`，通过白名单 RPC 访问
+Aurora API；支持本地 zip / 文件夹、开发目录热重载与 Aurora Center 插件市场。面板有两种形态：
+受控组件组成的声明式 schema，或 `aurora-plugin://` + 专用 preload 的沙箱 webview。
+**插件进程不是 OS 沙箱，安装即信任**（[14](./14-plugin-system.md)、[15](./15-plugin-development-guide.md)）。
+验收（2026-10-24 实测）：`pnpm test` 192 文件 / 2782 用例、`verify-p1` 26/26（`version=36`、迁移 36/36）、
+端到端冒烟 **235/235**；定向截图新增 `chat-plugin-panel` / `chat-plugin-page` /
+`settings-plugins-installed` / `settings-plugins-marketplace`；Center `verify:web` 新增
+`marketplace` / `plugins-admin` 场景。
+
+**上一发布 v0.5.0**（内置浏览器 Agent 工具组 v35）；配置 Schema **v35**（迁移 `v34 → v35`，
 新增 `agent.browser`）——
 ① **内置浏览器 Agent 工具（v35）**：Agent 可在右栏**用户看得见**的内置浏览器里打开网页、读快照、
 点击 / 输入 / 按键 / 滚动、查控制台与网络、截图与执行 JS，用于网页功能测试；并发会话有上限
@@ -30,7 +41,7 @@ token 只统计不限制，迁移整体丢弃旧值）；
 端到端冒烟 **206/206**；窗口截图按窗口拆三轮覆盖全量 96 条 checks（非 onboarding 87 条、仅范围外
 `chat-model-picker` 恒红；onboarding 6 条全绿；memory / awareness-glow 3 条全绿）——**全量单轮在本机会卡在
 onboarding 截图**（窗口被完成流程隐藏后 `capturePage()` 不返回，已知 Electron 坑）。
-Center `verify:web` **96/96**（48 场景 × 暗/浅两档）。
+Center `verify:web` **102/102**（51 场景 × 暗/浅两档；v36 新增 `marketplace` / `marketplace-public` / `plugins-admin`）。
 更早发布 **v0.4.8（Center 官方模型客户端选模真正生效、四周流光改强调色单色），
 配置 Schema v33（无迁移），桌面端发布 v0.4.8 安装包；Aurora Center 本版无代码改动，线上沿用 0.4.7** ——
 （以下为该版本发布时的记录，验收数字不随 HEAD 回写）
@@ -699,6 +710,8 @@ Center 网页端移动端对话区保底 60% 高度（面板收进分段切换�
 | 11 | [11-privacy.md](./11-privacy.md) | 隐私说明：数据位置、凭据加密、出网场景、权限清单 | 合规说明 |
 | 12 | [12-aurora-center.md](./12-aurora-center.md) | Aurora Center：网页控制中心（服务器 / Web UI / CLI / 客户端连接器 / Center 工具） | 远程控制 |
 | 13 | [13-automation.md](./13-automation.md) | 自动化：Agent Mode / Normal Mode、触发器与操作组件、内置自动化、Center 远程管理 | 功能设计 |
+| 14 | [14-plugin-system.md](./14-plugin-system.md) | 插件系统：清单、权限、进程 / RPC、面板与页面、主题、市场与安全模型 | 扩展契约 |
+| 15 | [15-plugin-development-guide.md](./15-plugin-development-guide.md) | 插件开发指南：快速开始、API 参考、面板 / 页面、打包校验与 Agent 提示词模板 | 开发者文档 |
 
 ## 阅读顺序建议
 
@@ -706,6 +719,7 @@ Center 网页端移动端对话区保底 60% 高度（面板收进分段切换�
 2. **了解怎么落地** → 04 实现路径（阶段与里程碑）
 3. **了解怎么搭** → 02 系统架构、03 技术选型
 4. **深入功能设计** → 05 模式系统、06 Agent 内核、07 窗口交互、08 设置与引导
+5. **写插件** → 14 插件系统（契约与安全边界）、15 插件开发指南（快速开始与 API）
 
 ## 文档约定
 

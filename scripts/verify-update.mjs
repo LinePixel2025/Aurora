@@ -121,6 +121,17 @@ const unpacked = join(releaseDir, 'win-unpacked')
 record('win-unpacked 存在', await exists(unpacked), 'win-unpacked')
 record('asar 已打包', await exists(join(unpacked, 'resources', 'app.asar')), 'resources/app.asar')
 
+// 插件子进程 / 页面 preload 是 electron.vite 的独立入口，漏掉任何一个打包后运行时才炸
+const pluginHostBuilt = await exists(join(root, 'apps', 'desktop', 'out', 'main', 'plugin-host.js'))
+const pluginPagePreloadBuilt = await exists(
+  join(root, 'apps', 'desktop', 'out', 'preload', 'plugin-page.js'),
+)
+record(
+  '插件入口已构建（plugin-host / plugin-page）',
+  pluginHostBuilt && pluginPagePreloadBuilt,
+  `host=${pluginHostBuilt} page=${pluginPagePreloadBuilt}`,
+)
+
 const skillsDir = join(unpacked, 'resources', 'skills')
 const skillEntries = await fs.readdir(skillsDir).catch(() => [])
 record(

@@ -23,7 +23,8 @@
   },
   "dependencies": {
     "@aurora/shared": "workspace:*",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "fflate": "^0.8.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

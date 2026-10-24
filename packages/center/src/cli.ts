@@ -17,9 +17,10 @@
 import { spawn } from 'node:child_process'
 import { existsSync, promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline/promises'
+import { zipSync } from 'fflate'
 import type { Logger } from '@aurora/shared'
 import { AuthStore } from './auth.js'
 import { ClientRegistry } from './clients.js'
@@ -50,6 +51,9 @@ const USAGE = `aurora-center —— Aurora Center 控制中心（docs/12）
                         # 写命令（add / passwd / remove）需先停服，见 docs/12 §9
   aurora-center status  [--data <dir>]
   aurora-center releases publish --server <url> --user <名> [--password <密码>] --dir <目录>
+  aurora-center plugins list   --server <url> --user <名> [--password <密码>]
+  aurora-center plugins publish --server <url> --user <名> [--password <密码>] --dir <插件目录> [--changelog <说明>]
+  aurora-center plugins unpublish --server <url> --user <名> --id <插件 id> --version <版本>
   aurora-center update  [--check] [--registry <npm 源>]
   aurora-center version
 `
@@ -81,6 +85,8 @@ export async function runCli(options: CliOptions): Promise<number> {
       return runStatus(argv.slice(1), out, err)
     case 'releases':
       return runReleases(argv.slice(1), out, err)
+    case 'plugins':
+      return runPlugins(argv.slice(1), out, err)
     case 'update':
       return runUpdate(argv.slice(1), out, err)
     default:
@@ -168,8 +174,159 @@ async function runReleases(
   return 0
 }
 
-// ─────────────── 参数工具 ───────────────
+/**
+ * 插件市场（docs/14 §4）：发布 = 本地打包（zip）→ admin upload → admin publish。
+ * `--dir` 指向插件目录（含 manifest.json）；`--changelog` 可选。
+ */
+async function runPlugins(
+  argv: string[],
+  out: (s: string) => void,
+  err: (s: string) => void,
+): Promise<number> {
+  const action = positional(argv, 0)
+  if (action !== 'list' && action !== 'publish' && action !== 'unpublish') {
+    err(
+      '用法：aurora-center plugins list|publish|unpublish --server <url> --user <名> [--password <密码>]',
+    )
+    return 2
+  }
+  const rest = argv.slice(1)
+  const server = flagOf(rest, '--server')?.replace(/\/+$/, '') ?? ''
+  const username = flagOf(rest, '--user') ?? 'admin'
+  const password =
+    flagOf(rest, '--password') ?? process.env['AURORA_CENTER_PASSWORD'] ?? (await promptPassword())
+  if (server === '') {
+    err('缺少 --server')
+    return 2
+  }
+  const login = await fetch(`${server}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  const loginBody = (await login.json().catch(() => ({}))) as { token?: string; error?: string }
+  if (!login.ok || typeof loginBody.token !== 'string') {
+    err(`Center 登录失败：${loginBody.error ?? `HTTP ${login.status}`}`)
+    return 1
+  }
+  const auth = { Authorization: `Bearer ${loginBody.token}` }
 
+  if (action === 'list') {
+    const response = await fetch(`${server}/api/plugins?limit=50&sort=updated`)
+    const body = (await response.json().catch(() => ({}))) as {
+      entries?: Array<{ id: string; name: string; latestVersion: string; downloads: number }>
+      error?: string
+    }
+    if (!response.ok) {
+      err(`读取市场失败：${body.error ?? `HTTP ${response.status}`}`)
+      return 1
+    }
+    const entries = body.entries ?? []
+    if (entries.length === 0) {
+      out('市场暂无插件')
+      return 0
+    }
+    for (const entry of entries) {
+      out(`${entry.id}\t${entry.name}\t${entry.latestVersion}\t下载 ${entry.downloads}`)
+    }
+    return 0
+  }
+
+  if (action === 'unpublish') {
+    const id = flagOf(rest, '--id') ?? ''
+    const version = flagOf(rest, '--version') ?? ''
+    if (id === '' || version === '') {
+      err('缺少 --id 或 --version')
+      return 2
+    }
+    const response = await fetch(
+      `${server}/api/admin/plugins/${encodeURIComponent(id)}/${encodeURIComponent(version)}`,
+      { method: 'DELETE', headers: auth },
+    )
+    const body = (await response.json().catch(() => ({}))) as { error?: string }
+    if (!response.ok) {
+      err(`撤回失败：${body.error ?? `HTTP ${response.status}`}`)
+      return 1
+    }
+    out(`已撤回 ${id} ${version}`)
+    return 0
+  }
+
+  const dir = flagOf(rest, '--dir')
+  if (dir === undefined) {
+    err('缺少 --dir')
+    return 2
+  }
+  let archive: Uint8Array
+  try {
+    archive = await zipDirectory(dir)
+  } catch (error) {
+    err(`打包失败：${String(error)}`)
+    return 1
+  }
+  const upload = await fetch(
+    `${server}/api/admin/plugins/upload?name=${encodeURIComponent(`${basename(dir)}.aurora-plugin`)}`,
+    {
+      method: 'POST',
+      headers: { ...auth, 'Content-Type': 'application/octet-stream' },
+      body: archive,
+    },
+  )
+  const uploadBody = (await upload.json().catch(() => ({}))) as {
+    token?: string
+    plugin?: { id?: string; version?: string }
+    error?: string
+  }
+  if (!upload.ok || typeof uploadBody.token !== 'string') {
+    err(`上传失败：${uploadBody.error ?? `HTTP ${upload.status}`}`)
+    return 1
+  }
+  out(`已上传 ${uploadBody.plugin?.id ?? ''} ${uploadBody.plugin?.version ?? ''}（待发布）`)
+  const publish = await fetch(`${server}/api/admin/plugins/publish`, {
+    method: 'POST',
+    headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      token: uploadBody.token,
+      ...(flagOf(rest, '--changelog') === undefined
+        ? {}
+        : { changelog: flagOf(rest, '--changelog') }),
+    }),
+  })
+  const publishBody = (await publish.json().catch(() => ({}))) as {
+    entry?: { id?: string; latestVersion?: string }
+    error?: string
+  }
+  if (!publish.ok) {
+    err(`发布失败：${publishBody.error ?? `HTTP ${publish.status}`}`)
+    return 1
+  }
+  out(`已发布 ${publishBody.entry?.id ?? ''} v${publishBody.entry?.latestVersion ?? ''}`)
+  return 0
+}
+
+/** 把插件目录打成 zip（跳过依赖目录与编辑器临时文件；路径统一 `/`）。 */
+async function zipDirectory(dir: string): Promise<Uint8Array> {
+  const files: Record<string, Uint8Array> = {}
+  const walk = async (current: string): Promise<void> => {
+    const entries = await fs.readdir(current, { withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue
+      if (/(?:\.DS_Store|\.log|~|\.tmp)$/.test(entry.name)) continue
+      const absolute = join(current, entry.name)
+      if (entry.isDirectory()) {
+        await walk(absolute)
+      } else if (entry.isFile()) {
+        const name = relative(dir, absolute).replace(/\\/g, '/')
+        files[name] = new Uint8Array(await fs.readFile(absolute))
+      }
+    }
+  }
+  await walk(dir)
+  if (files['manifest.json'] === undefined) throw new Error('目录根缺少 manifest.json')
+  return zipSync(files, { level: 6 })
+}
+
+// ─────────────── 参数工具 ───────────────
 function flagOf(argv: string[], name: string): string | undefined {
   const index = argv.indexOf(name)
   return index >= 0 ? (argv[index + 1] as string | undefined) : undefined

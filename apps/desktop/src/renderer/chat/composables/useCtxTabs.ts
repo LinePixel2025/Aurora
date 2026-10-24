@@ -16,6 +16,7 @@ import {
   withCtxTabTitle,
   type CtxTab,
   type CtxTabKind,
+  type PluginTabInfo,
 } from './ctxTabsCore'
 
 export interface UseCtxTabs {
@@ -26,6 +27,8 @@ export interface UseCtxTabs {
   activate(id: string): CtxTab | null
   /** 开一个新标签并激活（到上限返回 null，调用方给提示） */
   openTab(kind: CtxTabKind): CtxTab | null
+  /** 打开插件面板标签（同一 `(pluginId, panelId)` 只开一个，已存在则激活） */
+  openPlugin(info: PluginTabInfo): CtxTab | null
   /** 已有就切过去、没有才新建（「任务」入口 / `show_preview` 的复用口径） */
   ensureKind(kind: CtxTabKind): CtxTab | null
   closeTab(id: string): void
@@ -55,6 +58,13 @@ export function useCtxTabs(): UseCtxTabs {
 
   function openTab(kind: CtxTabKind): CtxTab | null {
     const result = openCtxTab(tabs.value, kind)
+    if (result === null) return null
+    tabs.value = result.tabs
+    return activate(result.tab.id)
+  }
+
+  function openPlugin(info: PluginTabInfo): CtxTab | null {
+    const result = openCtxTab(tabs.value, 'plugin', { title: info.title, plugin: info })
     if (result === null) return null
     tabs.value = result.tabs
     return activate(result.tab.id)
@@ -106,6 +116,7 @@ export function useCtxTabs(): UseCtxTabs {
     activeTab,
     activate,
     openTab,
+    openPlugin,
     ensureKind,
     closeTab,
     setTitle,

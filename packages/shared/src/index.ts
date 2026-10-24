@@ -22,3 +22,12 @@ export * from './mode/types.js'
 export * from './mode/windowState.js'
 export * from './agent/types.js'
 export * from './center/protocol.js'
+
+// 插件契约（docs/14）：清单 schema、权限、RPC、标识、声明式 UI 与主题令牌
+export * from './plugin/ids.js'
+export * from './plugin/permissions.js'
+export * from './plugin/protocol.js'
+export * from './plugin/ui.js'
+export * from './plugin/themes.js'
+export * from './plugin/icons.js'
+export * from './plugin/manifest.js'

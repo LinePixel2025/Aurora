@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hello Aurora 插件页面</title>
+    <link rel="stylesheet" href="page.css" />
+  </head>
+  <body>
+    <h1>Hello Aurora</h1>
+    <p class="muted">
+      这个页面运行在沙箱 webview 里：没有 Node、没有 <code>window.aurora</code>， 只有
+      <code>window.auroraPlugin</code>。
+    </p>
+    <p id="count" class="count">读取中…</p>
+    <div class="actions">
+      <button id="refresh" type="button">刷新计数</button>
+      <button id="toast" type="button">让宿子弹 toast</button>
+    </div>
+    <script src="page.js"></script>
+  </body>
+</html>

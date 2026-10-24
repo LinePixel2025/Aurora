@@ -6,7 +6,7 @@
  */
 import { z } from 'zod'
 
-export const CONFIG_VERSION = 35 as const
+export const CONFIG_VERSION = 36 as const
 
 /**
  * 模式展示 / 装配顺序：**ClassRoom 在前**（v1 首发且唯一完整实现）。
@@ -772,6 +772,9 @@ export const SETTINGS_READONLY_PREFIXES = [
   // 文件自感知（v28，docs/06 §26）：整组同时改变文件读取范围、正文出网与后台预算，
   // 属自我扩权 / 数据外发路径，只能由用户在设置页开启与调整。
   'fileAwareness',
+  // 插件（v36，docs/14 §5）：安装 / 启停 / 信任 / 开发目录是用户的授权边界 ——
+  // AI 自己装一个插件就等于给自己加任意代码执行与工具面，属自我提权路径。
+  'plugins',
 ] as const
 
 export const AdvancedSchema = z.object({
@@ -1120,6 +1123,30 @@ export const FileAwarenessSchema = z.object({
 })
 export type FileAwarenessSettings = z.infer<typeof FileAwarenessSchema>
 
+/**
+ * 插件（v36，docs/14 §5）。
+ *
+ * 这里只放**总开关 / 开发目录 / 当前主题**；已安装插件、启用与否、信任状态
+ * 落在 `<userData>/plugins/registry.json`（安装态数据，不进配置迁移链）。
+ *
+ * 整组在 `SETTINGS_READONLY_PREFIXES`：安装插件等于引入任意代码执行与新的工具面，
+ * AI 的 `set_setting` 必须不能操作它。
+ */
+export const PluginsSchema = z.object({
+  /** 插件总开关；false 时全部插件停用、贡献全部注销（进程也一起退出）。 */
+  enabled: z.boolean().default(true),
+  /** 开发目录（原地加载、文件变化自动重启；最多 8 个）。 */
+  devDirs: z.array(z.string()).max(8).default([]),
+  /** 当前启用的插件主题；空串 = 不使用插件主题。 */
+  activeTheme: z
+    .object({
+      pluginId: z.string().default(''),
+      themeId: z.string().default(''),
+    })
+    .default({ pluginId: '', themeId: '' }),
+})
+export type PluginsSettings = z.infer<typeof PluginsSchema>
+
 export const SettingsSchema = z.object({
   version: z.number().int().min(0),
   general: GeneralSchema,
@@ -1137,6 +1164,7 @@ export const SettingsSchema = z.object({
   automations: AutomationsSchema,
   fileAwareness: FileAwarenessSchema,
   appearance: AppearanceSchema,
+  plugins: PluginsSchema,
 })
 
 export type Settings = z.infer<typeof SettingsSchema>
@@ -1174,6 +1202,7 @@ const READONLY_PREFIX_REASONS: Record<(typeof SETTINGS_READONLY_PREFIXES)[number
   center: 'Center 连接是数据外发通道，不允许通过工具启用或改向（docs/12 §7）',
   automations: '自动化总开关是用户对后台动作的总闸门，不允许通过工具修改（docs/13 §2.2）',
   fileAwareness: '文件自感知会读取文件并发送正文，必须由用户显式配置，不允许通过工具修改',
+  plugins: '插件的安装与信任是用户的授权边界，不允许通过工具修改（docs/14）',
 }
 
 /** 显式可写覆盖表的一条登记：模式 + 中文说明。 */

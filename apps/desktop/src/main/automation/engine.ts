@@ -161,6 +161,11 @@ export class AutomationEngine {
    */
   private readonly definitionLocks = new Map<string, Promise<void>>()
   /**
+   * 正在执行的插件事件键（`pluginId/event`）。插件动作里再 `emitEvent` 同名事件时，
+   * 不清这个集合就会自激成无限循环（A 事件 → 动作 → 再发 A）；嵌套的重入直接忽略。
+   */
+  private readonly pluginEventsInFlight = new Set<string>()
+  /**
    * 在途 Agent 运行：sessionId → run 信息。
    *
    * 顺带累加**历史行要用的派生量**（工具调用数、最后一段非空正文）—— 引擎已经在订阅这条
@@ -447,6 +452,43 @@ export class AutomationEngine {
     // 按模式分派（**不能**只执行操作组件）：Agent 模式的定义没有 actions，
     // 手动触发若走错分支会落一条永远「进行中」的历史（本轮 smoke 实测就是这个症状）。
     return await this.runDefinition(gate.definition, '手动触发')
+  }
+
+  /**
+   * 插件事件触发（docs/14 §3.5）：匹配 `plugin-event` 定义的插件 id + 事件名后逐条运行。
+   *
+   * 事件是**边沿触发**（每次 emit 都是一次独立机会），不走 firedKeys；
+   * 计数 / 用尽 / 并发互斥由 `runDefinition` 现有的定义级锁保证
+   * （同一插件事件并发 emit 也不会把 `runCount` 写丢）。
+   */
+  async emitPluginEvent(input: { pluginId: string; event: string }): Promise<void> {
+    if (!this.settings().automations.enabled) return
+    const pluginId = input.pluginId.trim()
+    const event = input.event.trim()
+    if (pluginId === '' || event === '') return
+    const key = `${pluginId}/${event}`
+    if (this.pluginEventsInFlight.has(key)) {
+      this.logger.debug('插件事件在自动化执行中再次触发，已忽略（防自激循环）', { key })
+      return
+    }
+    const definitions = await this.store.listDefinitions()
+    const matched = definitions.filter(
+      (item) =>
+        item.enabled &&
+        item.trigger.kind === 'plugin-event' &&
+        item.trigger.params['pluginId'] === pluginId &&
+        item.trigger.params['event'] === event,
+    )
+    if (matched.length === 0) return
+    const detail = `插件事件 ${pluginId}/${event}`
+    this.pluginEventsInFlight.add(key)
+    try {
+      for (const definition of matched) {
+        await this.runDefinition(definition, detail)
+      }
+    } finally {
+      this.pluginEventsInFlight.delete(key)
+    }
   }
 
   // ───────────────────────── 触发执行 ─────────────────────────

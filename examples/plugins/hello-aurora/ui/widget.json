@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "type": "text",
+      "text": "桌面小组件：置顶浮动卡片，位置与显隐会自动记住。",
+      "tone": "muted"
+    },
+    {
+      "type": "keyValue",
+      "items": [
+        { "label": "今日", "value": "数学 · 物理" },
+        { "label": "计数", "value": "0" }
+      ]
+    },
+    {
+      "type": "button",
+      "text": "完成一项",
+      "action": { "method": "bump", "toast": "已更新" }
+    }
+  ]
+}

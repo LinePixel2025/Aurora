@@ -10,6 +10,8 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-24 | 插件小组件（桌面 / 提示条）与面板事件推送：窗口归属、限速与布局口径            | 插件, 小组件, Electron, IPC, 推送, 布局, 探针, 坑, 口径 | [2026-10-24-plugin-widgets-and-push.md](2026-10-24-plugin-widgets-and-push.md) |
+| 2026-10-24 | 插件系统 v36：清单优先 / 独立进程 / 面板与沙箱页面 / Center 市场与踩坑口径 | 插件, 架构, Electron, webview, RPC, 自动化, Center, 坑, 口径 | [2026-10-24-plugin-system.md](2026-10-24-plugin-system.md) |
 | 2026-10-24 | Center 官方模型：网关 120s 总时长截断流、启动期目录误报回落；0.4.9 换装记录 | center, 网关, 超时, 官方模型, 回落提示, 部署, 记录 | [2026-10-24-center-049-idle-timeout-and-official-catalog.md](2026-10-24-center-049-idle-timeout-and-official-catalog.md) |
 | 2026-10-18 | v0.5.0 三源发布（内置浏览器 v35）：Center 账号误用与环境限流、GitHub 成功后的标准补发命令 | 发布, 打包, 更新源, Center, GitHub, 凭据, 限流, 记录 | [2026-10-18-v050-release-and-center-credentials.md](2026-10-18-v050-release-and-center-credentials.md) |
 | 2026-10-18 | 内置浏览器 Agent 工具（v35）：guest 归属、先 attach 后导航、CDP 输入与并发槽位 | 浏览器, Agent, Electron, CDP, webview, 并发, 配置, 坑 | [2026-10-18-browser-agent-tools.md](2026-10-18-browser-agent-tools.md) |

@@ -15,7 +15,14 @@
  */
 import type { AutomationDescriptorField } from '@aurora/shared'
 import AppTooltip from '../../shared/components/AppTooltip.vue'
-import { CalendarDays, Hash, Info, ListFilter, TextCursorInput } from '@aurora/shared/browser'
+import {
+  Braces,
+  CalendarDays,
+  Hash,
+  Info,
+  ListFilter,
+  TextCursorInput,
+} from '@aurora/shared/browser'
 
 const props = defineProps<{
   field: AutomationDescriptorField
@@ -36,6 +43,7 @@ const TYPE_ICONS = {
   number: Hash,
   weekdays: CalendarDays,
   select: ListFilter,
+  json: Braces,
 } as const
 
 function value(): string | number {
@@ -68,7 +76,7 @@ function toggleDay(day: number): void {
 }
 
 function inputValue(event: Event): string {
-  return (event.target as HTMLInputElement).value
+  return (event.target as HTMLInputElement | HTMLTextAreaElement).value
 }
 </script>
 
@@ -138,6 +146,17 @@ function inputValue(event: Event): string {
         class="input time"
         type="time"
         :value="value()"
+        :aria-label="props.field.label"
+        @input="setValue(inputValue($event))"
+      />
+
+      <!-- 插件动作的 JSON 参数（v36）：多行文本，合法性由主进程按 8 KB 上限校验 -->
+      <textarea
+        v-else-if="props.field.type === 'json'"
+        class="input json"
+        rows="3"
+        :value="value()"
+        :placeholder="props.field.placeholder ?? '{}'"
         :aria-label="props.field.label"
         @input="setValue(inputValue($event))"
       />
@@ -234,6 +253,16 @@ function inputValue(event: Event): string {
 
 .input.time {
   width: 116px;
+}
+
+/* JSON 参数：多行 + 等宽，高度可拖；内容上限由主进程校验，这里不管 */
+.input.json {
+  height: auto;
+  min-height: 62px;
+  padding: 6px var(--space-2);
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  resize: vertical;
 }
 
 .chip-group {

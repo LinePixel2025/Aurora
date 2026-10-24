@@ -11,6 +11,7 @@ import type {
   CenterOfficialServicesConfig,
   CenterReleaseInfo,
   CenterUsageQuery,
+  PluginMarketEntry,
   CenterUsageResponse,
   ClientInfo,
   FileEntryInfo,
@@ -104,7 +105,25 @@ async function request<T>(path: string, method = 'GET', body?: unknown): Promise
   return (await response.json()) as T
 }
 
+export type CenterPluginEntry = PluginMarketEntry
+
 export const api = {
+  /** 插件市场（公开浏览，无需登录） */
+  marketplace(
+    query: { q?: string; page?: number; limit?: number; sort?: 'updated' | 'downloads' } = {},
+  ) {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    }
+    const suffix = params.size === 0 ? '' : `?${params.toString()}`
+    return request<{ total: number; entries: CenterPluginEntry[] }>(`/api/plugins${suffix}`)
+  },
+  /** 下载直链（无需登录；浏览器直接跳转） */
+  pluginDownloadUrl(pluginId: string, version?: string): string {
+    const suffix = version === undefined ? '' : `?version=${encodeURIComponent(version)}`
+    return `/api/plugins/${encodeURIComponent(pluginId)}/download${suffix}`
+  },
   login(username: string, password: string): Promise<LoginResponse> {
     return request('/api/auth/login', 'POST', { username, password })
   },
@@ -179,6 +198,51 @@ export const api = {
 
   /** 管理员接口（role=admin） */
   admin: {
+    /** 市场列表（管理员看到的是与公开列表同形的全量快照） */
+    plugins(): Promise<{ total: number; entries: CenterPluginEntry[] }> {
+      return request('/api/admin/plugins')
+    },
+    /** 上传插件 zip 到 staging；返回 token，需再调用 publish 才进市场 */
+    async uploadPlugin(file: File): Promise<{
+      token: string
+      plugin: { id: string; name: string; version: string; sha256: string; size: number }
+    }> {
+      const token = getToken()
+      const response = await fetch('/api/admin/plugins/upload', {
+        method: 'POST',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          'Content-Type': 'application/octet-stream',
+        },
+        body: file,
+      })
+      if (!response.ok) {
+        let message = `HTTP ${response.status}`
+        try {
+          const data = (await response.json()) as { error?: string }
+          if (data.error) message = data.error
+        } catch {
+          // 非 JSON 错误体：保留状态码
+        }
+        throw new ApiError(message, response.status)
+      }
+      return (await response.json()) as {
+        token: string
+        plugin: { id: string; name: string; version: string; sha256: string; size: number }
+      }
+    },
+    publishPlugin(token: string, changelog?: string): Promise<{ entry: CenterPluginEntry }> {
+      return request('/api/admin/plugins/publish', 'POST', {
+        token,
+        ...(changelog === undefined || changelog.trim() === '' ? {} : { changelog }),
+      })
+    },
+    deletePlugin(pluginId: string, version: string): Promise<{ ok: true }> {
+      return request(
+        `/api/admin/plugins/${encodeURIComponent(pluginId)}/${encodeURIComponent(version)}`,
+        'DELETE',
+      )
+    },
     users(): Promise<{ users: AdminUser[] }> {
       return request('/api/admin/users')
     },
