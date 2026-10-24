@@ -10,6 +10,7 @@
 
 | 日期       | 主题                                                                           | 标签                                   | 文件                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-10-24 | v0.5.4 双投发布 + Aurora Center 0.5.0 插件市场换装上线（Center 入口统一直连 IP） | 发布, 打包, 更新源, Center, GitHub, 插件, 市场, 部署, 记录, 口径 | [2026-10-24-v054-release-and-marketplace.md](2026-10-24-v054-release-and-marketplace.md) |
 | 2026-10-24 | 插件 / MCP 点号工具名发给严格网关会整请求 400：出站线路名编解码                | agent-core, 工具, 插件, MCP, LLM, provider, 坑, 口径 | [2026-10-24-tool-wire-names.md](2026-10-24-tool-wire-names.md) |
 | 2026-10-24 | v0.5.2 三源发布：桌面小组件层级 / Acrylic + 独立插件工具包 + 双投验收          | 发布, 打包, 更新源, Center, GitHub, 记录 | [2026-10-24-v052-release.md](2026-10-24-v052-release.md) |
 | 2026-10-24 | 桌面小组件层级（floating / normal / desktop）与原生 Acrylic：owner 亲和 / 恢复守护 / 圆角 shape | 插件, 小组件, Electron, 窗口, 毛玻璃, Win32, PowerShell, 坑, 口径 | [2026-10-24-widget-window-level-and-glass.md](2026-10-24-widget-window-level-and-glass.md) |
