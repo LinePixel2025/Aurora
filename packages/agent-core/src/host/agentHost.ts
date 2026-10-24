@@ -21,6 +21,7 @@ import {
 } from '../jobs/types.js'
 import type { JobPatch, JobStore } from '../jobs/store.js'
 import { createNoopLogger } from '@aurora/shared'
+import { createToolNameCodec } from '../llm/toolNames.js'
 import { buildSystemPrompt, buildToolGuidance, describeTools } from '../context/systemPrompt.js'
 import {
   DEFAULT_MAX_PARALLEL_CALLS,
@@ -859,8 +860,11 @@ export class KernelAgentHost implements AgentHostContract {
           // 用**同一个**有序列表（toLlmTools 已按名字排序）生成提示词里的工具清单：
           // 与请求体的 tools 数组同序，否则缓存与展示会拧（docs/06 §21.2）。
           // 注意这里用的是**本次请求的工具面**（可能是过滤视图）：命令行与清单必须一致，
-          // 否则模型会看到"清单里有、请求体里没有"的工具并反复尝试（docs/06 §5.2）
-          const catalog = describeTools(tools.toLlmTools())
+          // 否则模型会看到"清单里有、请求体里没有"的工具并反复尝试（docs/06 §5.2）。
+          // 名字必须与请求体同用**线路名**（docs/06 §21.5）：提示词里写点号、tools 数组里是下划线，
+          // 模型会照着提示词调用一个服务端不认识的名字。
+          const list = tools.toLlmTools()
+          const catalog = describeTools(createToolNameCodec(list).toWireTools(list))
           return catalog === undefined ? {} : { toolCatalog: catalog }
         })(),
         ...(() => {

@@ -341,6 +341,8 @@ await ctx.ui.panelEvent({ widgetId: 'todo-strip', event: 'count-changed', payloa
 - 插件工具不参与 `agent.tools.enabled` 门控，但受 `plugins.enabled`、插件自身 enabled、
   只读档与信任开关约束；
 - 工具名天然带 `plugin.<id>.` 前缀，不会与内置 / MCP 工具撞名。
+- **出站名称**：发给 LLM 的线路名会把点号归一为下划线（`plugin.<id>.<name>` → `plugin_<id>_<name>`，
+  见 docs/06 §21.5）；插件清单与插件进程仍只认原始工具名，不需要感知这一层。
 
 ### 6.3 事件推送的边界
 

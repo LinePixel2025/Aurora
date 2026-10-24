@@ -3,6 +3,8 @@
 // LLM 提供者层
 export * from './llm/types.js'
 export * from './llm/sse.js'
+// 出站工具名编解码（docs/06 §21.5）：插件 / MCP 的点号名不能原样发给严格网关。
+export * from './llm/toolNames.js'
 export * from './llm/openai-compat.js'
 // Responses API（docs/06 §3.2，v22）：第二个 provider 实现。
 // 共享传输层（`llm/transport.ts`）**不在这里二次导出**：`openai-compat.js` 已经把它们

@@ -28,6 +28,7 @@ import type {
   ToolSource,
 } from '../tools/registry.js'
 import type { NewMessage, StoredMessage, StoredToolCall } from '../session/types.js'
+import { createToolNameCodec, type ToolNameCodec } from '../llm/toolNames.js'
 
 /**
  * 一次请求的轮次兜底上限（docs/06 §5，v34 起是**内核常量、不是设置项**）。
@@ -333,7 +334,11 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
 
   // 工具数组走注册表的**唯一**实现：它按工具名排序返回（docs/06 §21.2），
   // 顺序只取决于名字集合，与注册先后无关 —— 请求体的 tools 因此是稳定前缀的一部分。
-  const llmTools = options.tools.toLlmTools()
+  const internalTools = options.tools.toLlmTools()
+  // 出站线路名（docs/06 §21.5）：内部名里的点号（插件 / MCP）必须先归一成
+  // `[A-Za-z0-9_-]`，否则严格网关会在调用模型之前整条请求 400。
+  const toolNames = createToolNameCodec(internalTools)
+  const llmTools = toolNames.toWireTools(internalTools)
   let pending = false
   let pendingReason: 'max-rounds' | 'aborted' | undefined
   /** 本次请求累计消耗（只累加 provider 回传的真实用量，不估算）—— v34 起**只统计、不做闸门** */
@@ -358,7 +363,7 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
     for await (const event of options.provider.chat(
       {
         model: options.model,
-        messages,
+        messages: toWireMessages(messages, toolNames),
         ...(llmTools.length === 0 ? {} : { tools: llmTools }),
         ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
         ...(options.reasoningEffort === undefined
@@ -385,7 +390,8 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncIterable<Ag
       if (event.type === 'tool_call') {
         calls.push({
           id: event.call.id,
-          name: event.call.name,
+          // 模型回传的是线路名，解码回内部注册名再执行 / 落盘 / 展示。
+          name: toolNames.toInternal(event.call.name),
           arguments: event.call.arguments,
           state: 'running',
           // 发起时刻随工具卡落盘：渲染层耗时徽章的真实计时起点（切走再切回、重启后
@@ -729,6 +735,28 @@ function toMessages(
   // 历史以 tool 消息结尾时也要把最后一段发出去
   flushImages()
   return out
+}
+
+/**
+ * 出站消息里的工具名统一换成线路名（docs/06 §21.5）。
+ *
+ * 只改 `tool_calls[].name` 这一处：`tool` 消息靠 `toolCallId` 配对，内容里的工具名
+ * 是给模型看的正文，不做字符串替换（避免误改用户文本）。
+ */
+function toWireMessages(
+  messages: readonly ChatRequestMessage[],
+  toolNames: ToolNameCodec,
+): ChatRequestMessage[] {
+  return messages.map((message) => {
+    if (message.toolCalls === undefined || message.toolCalls.length === 0) return message
+    return {
+      ...message,
+      toolCalls: message.toolCalls.map((call) => ({
+        ...call,
+        name: toolNames.toWire(call.name),
+      })),
+    }
+  })
 }
 
 /**

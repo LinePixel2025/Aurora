@@ -141,6 +141,52 @@ describe('runAgentLoop', () => {
     ])
   })
 
+  it('插件点号工具名：出站归一、回传解码，落盘与事件仍是内部名', async () => {
+    const rec = createRecorder()
+    const tools = new ToolRegistry()
+    let executed = false
+    tools.register({
+      name: 'plugin.com.x.foo',
+      description: '插件工具',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        executed = true
+        return { content: 'ok', summary: 'ok' }
+      },
+    })
+    const provider = createFakeProvider([
+      // 模型看到的是线路名，回传的也是线路名
+      { toolCalls: [{ id: 'c1', name: 'plugin_com_x_foo', arguments: '{}' }] },
+      { text: '完成' },
+    ])
+
+    const events = await drain(
+      runAgentLoop({
+        provider,
+        model: 'm',
+        systemPrompt: 'sys',
+        userInput: '跑一下插件工具',
+        history: [],
+        tools,
+        sessionId: 'quick',
+        append: rec.append,
+        updateToolCall: rec.updateToolCall,
+      }),
+    )
+
+    // 请求体里没有点号（严格网关的 400 就来自这里）
+    expect(provider.calls[0]?.tools?.map((tool) => tool.name)).toEqual(['plugin_com_x_foo'])
+    expect(executed).toBe(true)
+    // 内部名一路保留：落盘、工具事件、第二轮历史重放都用它 / 再归一
+    expect(rec.messages[1]?.toolCalls?.[0]?.name).toBe('plugin.com.x.foo')
+    const toolEvent = events.find((event) => event.type === 'tool')
+    expect(toolEvent !== undefined && toolEvent.type === 'tool' ? toolEvent.call.name : null).toBe(
+      'plugin.com.x.foo',
+    )
+    const replay = provider.calls[1]?.messages.find((message) => message.role === 'assistant')
+    expect(replay?.toolCalls?.[0]?.name).toBe('plugin_com_x_foo')
+  })
+
   it('同轮多工具按顺序执行', async () => {
     const rec = createRecorder()
     const provider = createFakeProvider([

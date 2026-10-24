@@ -701,6 +701,11 @@ interface AgentHostDeps {
     服务器工具数超过单页上限时不再静默丢工具。
 - **工具注册**：MCP tools → Agent 工具表，命名 `mcp.<server>.<tool>`；与 Skill 冲突时 MCP 优先并记日志。
   全部 MCP 工具标记 `sensitivity = 'confirm'`（确认交互归 P5，见 §5）。
+- **出站线路名（v37）**：内部注册名保持点号（`plugin.<id>.<name>` / `mcp.<server>.<tool>`），
+  但发给 provider 的 `tools[].name` 与历史 `tool_calls[].name` 一律经 `llm/toolNames.ts`
+  归一为 `[A-Za-z0-9_-]`（点号 → 下划线），模型回传的调用名再映射回内部名。
+  原因：OpenAI 官方与部分严格网关（含 DeepSeek Responses）只接受 `^[a-zA-Z0-9_-]+$`，
+  带点号会在**调用模型之前**整条请求 400（详见 §21.5）。
 - **配置**：设置页添加 / 删除 / 编辑服务器（URL 或 command + args + env）；env 中凭据安全存储（见 08 §2）。
 - **生命周期**：由 `mcp.lazyConnect` 决定——`false`（默认）启动即连，`true` 首次使用某工具时才连接。
   设置变更后 `reconfigure()` 幂等 diff（新增 / 移除 / 改动），单个服务器失败不影响其它服务器，
@@ -2249,7 +2254,22 @@ Aurora 只讲 OpenAI 兼容协议，而主流网关（DeepSeek / OpenAI / 硅基
   防重集合 `countedUsage`（键 `requestId#round`）**跨会话切换不清**——
   切回后迟到的旧事件不能把种子里的轮次再加一遍。
 
-### 21.5 明确不做
+### 21.5 出站工具名：线路名编解码（v37）
+
+- **内部名不迁就服务端**：插件 / MCP 的名字（`plugin.com.x.foo`、`mcp.server.tool`）是注册表、
+  前缀摘除（`unregisterByPrefix('plugin.')`）、审计与 UI 的唯一标识，**不改成下划线**。
+- 出站前由 `createToolNameCodec()` 生成一份**确定性映射**：非法字符（含 `.`）替换为 `_`，
+  超过 64 字符截断；同一批工具内重名时按排序后的顺序追加 `_2` / `_3`…（因此同一组工具的
+  线路名跨请求稳定，不影响前缀缓存）。系统提示词里的工具清单（`describeTools`）使用**同一份**
+  线路名，避免模型看到两套名字。
+- 发请求时改两处：`tools[].name` 与消息历史里的 `tool_calls[].name`；模型回传的
+  `tool_call.name` 在进入循环时解码回内部名。**落盘、确认卡片、事件与 UI 始终是内部名**。
+- 解码接受线路名与内部名两种写法；线路名优先（它是模型实际看到的那一套）。
+- 落点：`llm/toolNames.ts`（纯函数）、`loop/agentLoop.ts`（请求组装 / 事件解码）、
+  `host/agentHost.ts`（系统提示词清单）。两套 provider 协议共用这一层，不在
+  `openai-compat.ts` / `responses.ts` 里各写一份。
+
+### 21.6 明确不做
 
 - **不引入显式 `cache_control` 断点**：那是 Anthropic 方言，写进请求体在不少网关会直接 400
   （与既有 `stream_options` 降级同一个坑）。
