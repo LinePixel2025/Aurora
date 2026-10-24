@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "nodes": [
+    { "type": "heading", "text": "我的插件" },
+    { "type": "text", "text": "模板面板：受控组件，没有 HTML。", "tone": "muted" },
+    { "type": "keyValue", "items": [{ "label": "计数", "value": "0" }] },
+    { "type": "button", "text": "计数 +1", "action": { "method": "bump", "toast": "已更新" } }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "type": "row",
+      "children": [
+        { "type": "badge", "text": "事务", "tone": "muted" },
+        { "type": "badge", "text": "数学作业", "tone": "ok" },
+        { "type": "badge", "text": "值日", "tone": "warn" }
+      ]
+    },
+    {
+      "type": "text",
+      "text": "提示条小组件只接受声明式 schema，单条高度有上限。",
+      "tone": "muted"
+    },
+    {
+      "type": "keyValue",
+      "items": [{ "label": "计数", "value": "0" }]
+    },
+    {
+      "type": "button",
+      "text": "计数 +1",
+      "action": { "method": "bump", "toast": "已更新" }
+    }
+  ]
+}

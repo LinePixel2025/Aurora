@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "nodes": [
+    { "type": "badge", "text": "计数 0", "tone": "muted" },
+    { "type": "button", "text": "计数 +1", "action": { "method": "bump", "toast": "已更新" } }
+  ]
+}

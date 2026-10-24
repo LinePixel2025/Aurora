@@ -11,6 +11,8 @@
 > 历史进度见 [`docs/README.md`](./docs/README.md)「当前实现状态」。
 > 需求源头见 [`Aurora.md`](./Aurora.md)，设计与验收标准见 [`docs/`](./docs/README.md)（单一事实来源）。
 > 用户手册见 [docs/10](./docs/10-user-guide.md)，隐私说明见 [docs/11](./docs/11-privacy.md)。
+> 插件开发：可整体拷走的独立工具包见 [`plugin-dev-kit/`](./plugin-dev-kit/README.md)
+> （契约全文 + 模板 + 两个示例 + 零依赖校验器）。
 
 ## 快速开始
 

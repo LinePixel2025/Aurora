@@ -1,0 +1,66 @@
+{
+  "id": "com.example.agentplugin",
+  "name": "Agent 插件模板",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "minAuroraVersion": "0.5.1",
+  "description": "Aurora 插件模板：echo 工具、声明式面板、桌面与提示条小组件、事件推送。",
+  "author": { "name": "Your Name" },
+  "license": "MIT",
+  "main": "main.js",
+  "activation": "startup",
+  "permissions": [
+    "tools",
+    "storage",
+    "config",
+    "logging",
+    "ui.panels",
+    "ui.widgets"
+  ],
+  "contributes": {
+    "tools": [
+      {
+        "name": "echo",
+        "description": "原样回显输入文本，用于验证插件工具链路。",
+        "parameters": {
+          "type": "object",
+          "properties": { "text": { "type": "string", "description": "要回显的文本" } },
+          "required": ["text"]
+        },
+        "sensitivity": "safe",
+        "readonly": true
+      }
+    ],
+    "panels": [
+      { "id": "home", "title": "示例面板", "icon": "Puzzle", "schema": "ui/panel.json" }
+    ],
+    "widgets": [
+      {
+        "id": "card",
+        "title": "示例卡片",
+        "icon": "Sparkles",
+        "slot": "desktop",
+        "schema": "ui/widget.json",
+        "defaultSize": { "width": 300, "height": 200 }
+      },
+      {
+        "id": "strip",
+        "title": "示例事务",
+        "icon": "ListChecks",
+        "slot": "edge-bar",
+        "schema": "ui/strip.json"
+      }
+    ]
+  },
+  "config": {
+    "fields": [
+      {
+        "key": "title",
+        "label": "标题",
+        "type": "text",
+        "description": "显示在面板与小组件里的标题",
+        "default": "我的插件"
+      }
+    ]
+  }
+}

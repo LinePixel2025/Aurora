@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "nodes": [
+    { "type": "heading", "text": "高一(3)班" },
+    { "type": "text", "text": "这里的事务会同步到桌面与提示条小组件。", "tone": "muted" },
+    {
+      "type": "row",
+      "children": [
+        { "type": "input", "bind": "text", "placeholder": "要加的事务，例如：收物理作业" },
+        { "type": "button", "text": "添加", "action": { "method": "add", "toast": "已添加事务" } }
+      ]
+    },
+    {
+      "type": "keyValue",
+      "items": [
+        { "label": "未完成", "value": "0", "tone": "ok" },
+        { "label": "已完成", "value": "0" }
+      ]
+    },
+    {
+      "type": "list",
+      "items": [{ "label": "暂无事务", "value": "用工具或上面的输入框添加", "tone": "muted" }]
+    },
+    {
+      "type": "button",
+      "text": "清理已完成",
+      "action": { "method": "clear-done", "confirm": "确定删除所有已完成事务？" }
+    }
+  ]
+}

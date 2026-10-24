@@ -1,0 +1,146 @@
+{
+  "id": "com.example.hello",
+  "name": "Hello Aurora",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "示例插件：echo 工具、hello Skill、两条斜杠命令、配置项与自动化动作 / 事件。",
+  "author": { "name": "Aurora" },
+  "license": "MIT",
+  "main": "main.js",
+  "activation": "startup",
+  "permissions": [
+    "tools",
+    "skills",
+    "commands",
+    "storage",
+    "logging",
+    "automation",
+    "automation.events",
+    "config",
+    "notifications",
+    "events",
+    "ui.panels",
+    "ui.widgets",
+    "themes"
+  ],
+  "contributes": {
+    "tools": [
+      {
+        "name": "echo",
+        "description": "原样回显输入文本，用于验证插件工具链路。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string", "description": "要回显的文本" }
+          },
+          "required": ["text"]
+        },
+        "sensitivity": "safe",
+        "readonly": true
+      }
+    ],
+    "skills": ["skills/hello"],
+    "commands": [
+      {
+        "name": "hello",
+        "title": "向用户打招呼",
+        "description": "插入一段打招呼提示词，由 Agent 继续发送",
+        "mode": "prompt"
+      },
+      {
+        "name": "hello-count",
+        "title": "计数一次",
+        "description": "记录一次计数并触发 count-changed 自动化事件",
+        "mode": "action"
+      },
+      {
+        "name": "hello-push",
+        "title": "推送面板刷新",
+        "description": "计数 +1 后向已打开的面板与小组件推送事件",
+        "mode": "action"
+      }
+    ],
+    "automation": {
+      "actions": [
+        {
+          "name": "add-count",
+          "title": "计数 +1",
+          "description": "把插件计数器加一并触发 count-changed 事件",
+          "fields": []
+        }
+      ],
+      "events": [
+        {
+          "name": "count-changed",
+          "title": "计数变化",
+          "description": "计数更新后触发，payload 为 { count }"
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": "board",
+        "title": "忙碌计数",
+        "icon": "ListChecks",
+        "schema": "ui/panel.json"
+      },
+      {
+        "id": "info",
+        "title": "插件页面",
+        "icon": "Globe",
+        "entry": "ui/page.html"
+      }
+    ],
+    "widgets": [
+      {
+        "id": "duty-week",
+        "title": "本周值日",
+        "icon": "CalendarClock",
+        "slot": "desktop",
+        "schema": "ui/widget.json",
+        "defaultSize": { "width": 300, "height": 200 }
+      },
+      {
+        "id": "todo-strip",
+        "title": "事务",
+        "icon": "ListChecks",
+        "slot": "edge-bar",
+        "schema": "ui/strip.json"
+      }
+    ],
+    "themes": [
+      {
+        "id": "sand",
+        "name": "沙丘",
+        "tokens": {
+          "--bg-base": "#141210",
+          "--bg-raised": "#1e1a17",
+          "--bg-overlay": "#221d19",
+          "--text-primary": "#f5f0e8",
+          "--text-secondary": "#cbbfae",
+          "--border-subtle": "#3a322b",
+          "--radius-md": "10px"
+        }
+      }
+    ]
+  },
+  "config": {
+    "fields": [
+      {
+        "key": "greeting",
+        "label": "问候语",
+        "type": "text",
+        "description": "自动化动作通知里使用的前缀",
+        "default": "你好"
+      },
+      {
+        "key": "notifyOnCount",
+        "label": "计数时发系统通知",
+        "type": "boolean",
+        "description": "打开后每次计数都会弹一条系统通知",
+        "default": false
+      }
+    ]
+  },
+  "events": ["settings.changed"]
+}
